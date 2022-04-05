@@ -40,6 +40,8 @@ FString FTickRecordSeries::FormatValue(double Value) const
 	case ESeriesType::PlayRate:
 	case ESeriesType::BlendSpacePositionX:
 	case ESeriesType::BlendSpacePositionY:
+	case ESeriesType::BlendSpaceFilteredPositionX:
+	case ESeriesType::BlendSpaceFilteredPositionY:
 		return FText::AsNumber(Value).ToString();
 	}
 
@@ -98,7 +100,7 @@ void FAnimationTickRecordsTrack::AddAllSeries()
 	const FAnimationProvider* AnimationProvider = SharedData.GetAnalysisSession().ReadProvider<FAnimationProvider>(FAnimationProvider::ProviderName);
 	if(GameplayProvider && AnimationProvider)
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
 
 		AnimationProvider->EnumerateTickRecordIds(GetGameplayTrack().GetObjectId(), [this, &GameplayProvider](uint64 InAssetId, int32 InNodeId)
 		{
@@ -150,6 +152,18 @@ void FAnimationTickRecordsTrack::AddAllSeries()
 						LOCTEXT("SeriesNameBlendSpacePositionY", "BlendSpace Position Y"),
 						LOCTEXT("SeriesDescBlendSpacePositionY", "The Y value used to sample this blend space"),
 						FTickRecordSeries::ESeriesType::BlendSpacePositionY,
+						false
+					},
+					{
+						LOCTEXT("SeriesNameBlendSpaceFilteredPositionX", "BlendSpace Filtered Position X"),
+						LOCTEXT("SeriesDescBlendSpaceFilteredPositionX", "The X value after filtering used to sample this blend space"),
+						FTickRecordSeries::ESeriesType::BlendSpaceFilteredPositionX,
+						false
+					},
+					{
+						LOCTEXT("SeriesNameBlendSpaceFilteredPositionY", "BlendSpace Filtered Position Y"),
+						LOCTEXT("SeriesDescBlendSpaceFilteredPositionY", "The Y value after filtering used to sample this blend space"),
+						FTickRecordSeries::ESeriesType::BlendSpaceFilteredPositionY,
 						false
 					},
 				};
@@ -204,7 +218,7 @@ bool FAnimationTickRecordsTrack::UpdateSeriesBoundsHelper(FTickRecordSeries& InS
 
 	if(AnimationProvider)
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
 
 		InSeries.CurrentMin = 0.0;
 		InSeries.CurrentMax = 0.0;
@@ -220,7 +234,7 @@ bool FAnimationTickRecordsTrack::UpdateSeriesBoundsHelper(FTickRecordSeries& InS
 					InSeries.CurrentMax = FMath::Max(InSeries.CurrentMax, Value);
 					bFoundEvents = true;
 				}
-				return Trace::EEventEnumerate::Continue;
+				return TraceServices::EEventEnumerate::Continue;
 			});
 		});
 	}
@@ -235,7 +249,7 @@ void FAnimationTickRecordsTrack::UpdateSeriesHelper(FTickRecordSeries& InSeries,
 
 	if(AnimationProvider)
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
 
 		FGraphTrackBuilder Builder(*this, InSeries, InViewport);
 
@@ -254,7 +268,7 @@ void FAnimationTickRecordsTrack::UpdateSeriesHelper(FTickRecordSeries& InSeries,
 
 					LastFrameWithTickRecord = InMessage.FrameCounter;
 				}
-				return Trace::EEventEnumerate::Continue;
+				return TraceServices::EEventEnumerate::Continue;
 			});
 		});
 	}
@@ -277,6 +291,10 @@ bool FAnimationTickRecordsTrack::UpdateSeriesBounds(FGameplayGraphSeries& InSeri
 		return UpdateSeriesBoundsHelper(TickRecordSeries, InViewport, &FTickRecordMessage::BlendSpacePositionX);
 	case FTickRecordSeries::ESeriesType::BlendSpacePositionY:
 		return UpdateSeriesBoundsHelper(TickRecordSeries, InViewport, &FTickRecordMessage::BlendSpacePositionY);
+	case FTickRecordSeries::ESeriesType::BlendSpaceFilteredPositionX:
+		return UpdateSeriesBoundsHelper(TickRecordSeries, InViewport, &FTickRecordMessage::BlendSpaceFilteredPositionX);
+	case FTickRecordSeries::ESeriesType::BlendSpaceFilteredPositionY:
+		return UpdateSeriesBoundsHelper(TickRecordSeries, InViewport, &FTickRecordMessage::BlendSpaceFilteredPositionY);
 	}
 
 	return false;
@@ -304,6 +322,12 @@ void FAnimationTickRecordsTrack::UpdateSeries(FGameplayGraphSeries& InSeries, co
 		break;
 	case FTickRecordSeries::ESeriesType::BlendSpacePositionY:
 		UpdateSeriesHelper(TickRecordSeries, InViewport, &FTickRecordMessage::BlendSpacePositionY);
+		break;
+	case FTickRecordSeries::ESeriesType::BlendSpaceFilteredPositionX:
+		UpdateSeriesHelper(TickRecordSeries, InViewport, &FTickRecordMessage::BlendSpaceFilteredPositionX);
+		break;
+	case FTickRecordSeries::ESeriesType::BlendSpaceFilteredPositionY:
+		UpdateSeriesHelper(TickRecordSeries, InViewport, &FTickRecordMessage::BlendSpaceFilteredPositionY);
 		break;
 	}
 }
@@ -365,14 +389,14 @@ void FAnimationTickRecordsTrack::FindTickRecordMessage(const FTimingEventSearchP
 
 			if(AnimationProvider)
 			{
-				Trace::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
+				TraceServices::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
 
 				AnimationProvider->ReadTickRecordTimeline(GetGameplayTrack().GetObjectId(), [this, &InContext](const FAnimationProvider::TickRecordTimeline& InTimeline)
 				{
 					InTimeline.EnumerateEvents(InContext.GetParameters().StartTime, InContext.GetParameters().EndTime, [&InContext](double InEventStartTime, double InEventEndTime, uint32 InDepth, const FTickRecordMessage& InMessage)
 					{
 						InContext.Check(InEventStartTime, InEventEndTime, 0, InMessage);
-						return Trace::EEventEnumerate::Continue;
+						return TraceServices::EEventEnumerate::Continue;
 					});
 				});
 			}
@@ -439,13 +463,13 @@ void FAnimationTickRecordsTrack::BuildContextMenu(FMenuBuilder& MenuBuilder)
 	FGameplayGraphTrack::BuildContextMenu(MenuBuilder);
 }
 
-void FAnimationTickRecordsTrack::GetVariantsAtFrame(const Trace::FFrame& InFrame, TArray<TSharedRef<FVariantTreeNode>>& OutVariants) const
+void FAnimationTickRecordsTrack::GetVariantsAtFrame(const TraceServices::FFrame& InFrame, TArray<TSharedRef<FVariantTreeNode>>& OutVariants) const
 {
 	const FGameplayProvider* GameplayProvider = SharedData.GetAnalysisSession().ReadProvider<FGameplayProvider>(FGameplayProvider::ProviderName);
 	const FAnimationProvider* AnimationProvider = SharedData.GetAnalysisSession().ReadProvider<FAnimationProvider>(FAnimationProvider::ProviderName);
 	if(GameplayProvider && AnimationProvider)
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
 
 		AnimationProvider->ReadTickRecordTimeline(GetGameplayTrack().GetObjectId(), [&GameplayProvider, &OutVariants, &InFrame](const FAnimationProvider::TickRecordTimeline& InTimeline)
 		{
@@ -464,9 +488,11 @@ void FAnimationTickRecordsTrack::GetVariantsAtFrame(const Trace::FFrame& InFrame
 					{
 						Header->AddChild(FVariantTreeNode::MakeFloat(LOCTEXT("BlendSpacePositionX", "Blend Space Position X"), InMessage.BlendSpacePositionX));
 						Header->AddChild(FVariantTreeNode::MakeFloat(LOCTEXT("BlendSpacePositionY", "Blend Space Position Y"), InMessage.BlendSpacePositionY));
+						Header->AddChild(FVariantTreeNode::MakeFloat(LOCTEXT("BlendSpaceFilteredPositionX", "Blend Space Filtered Position X"), InMessage.BlendSpaceFilteredPositionX));
+						Header->AddChild(FVariantTreeNode::MakeFloat(LOCTEXT("BlendSpaceFilteredPositionY", "Blend Space Filtered Position Y"), InMessage.BlendSpaceFilteredPositionY));
 					}
 				}
-				return Trace::EEventEnumerate::Continue;
+				return TraceServices::EEventEnumerate::Continue;
 			});
 		});
 	}

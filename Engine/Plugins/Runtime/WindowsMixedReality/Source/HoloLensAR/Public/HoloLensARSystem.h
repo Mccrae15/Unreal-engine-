@@ -83,6 +83,10 @@ private:
 
 	//~ FGCObject
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FHoloLensARSystem");
+	}
 	//~ FGCObject
 
 	//~IARSystemSupport
@@ -145,8 +149,8 @@ public:
 	FTransform GetPVCameraToWorldTransform();
 	bool GetPVCameraIntrinsics(FVector2D& focalLength, int& width, int& height, FVector2D& principalPoint, FVector& radialDistortion, FVector2D& tangentialDistortion);
 	FVector GetWorldSpaceRayFromCameraPoint(FVector2D pixelCoordinate);
-	bool StartCameraCapture();
-	bool StopCameraCapture();
+	void StartCameraCapture();
+	void StopCameraCapture();
 
 	// Use the legacy MRMesh support for rendering the hand tracker.  Otherwise, use XRVisualization.
 	void SetUseLegacyHandMeshVisualization(bool bInUseLegacyHandMeshVisualization)
@@ -156,9 +160,9 @@ public:
 
 #if SUPPORTS_WINDOWS_MIXED_REALITY_AR
 	/** Starts the camera with the desired settings */
-	bool SetupCameraImageSupport();
+	void SetupCameraImageSupport();
 	/** Starts the interop layer mesh observer that will notify us of mesh changes */
-	bool SetupMeshObserver();
+	void SetupMeshObserver();
 
 	// Mesh observer callback support
 	static void StartMeshUpdates_Raw();
@@ -184,9 +188,6 @@ public:
 	TSet<FGuid> LastKnownMeshes;
 	FCriticalSection HandMeshLock;
 	TArray<FMeshUpdate> HandMeshes;
-	bool bShouldStartSpatialMapping = false;
-	bool bShouldStartQRDetection = false;
-	bool bShouldStartPVCamera = false;
 	//~ Mesh observer callback support
 
 private:
@@ -195,8 +196,8 @@ private:
 
 public:
 	/** Starts the interop layer QR code observer that will notify us of QR codes tracked by the system */
-	bool SetupQRCodeTracking();
-	bool StopQRCodeTracking();
+	void SetupQRCodeTracking();
+	void StopQRCodeTracking();
 
 private:
 	// QR Code observer callback support

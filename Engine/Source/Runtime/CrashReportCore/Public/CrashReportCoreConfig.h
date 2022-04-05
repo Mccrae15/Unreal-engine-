@@ -18,8 +18,8 @@ class FConfigFile;
 /**
 *  Holds FullCrashDump properties from the config.
 *
-*	FullCrashDump_0_Branch=UE4
-*	FullCrashDump_0_Location=\\epicgames.net\root\Builds\UE4
+*	FullCrashDump_0_Branch=UE
+*	FullCrashDump_0_Location=\\epicgames.net\root\Builds\UE
 *	FullCrashDump_1_Branch=...
 *	...
 */
@@ -40,8 +40,8 @@ struct FFullCrashDumpEntry
 	const FString Location;
 
 	/**
-	*	Branch=UE4 means exact match
-	*	Branch=UE4* means contain match
+	*	Branch=UE means exact match
+	*	Branch=UE* means contain match
 	*/
 	const bool bExactMatch;
 };
@@ -92,6 +92,11 @@ struct FCrashReportCoreConfig
 	const bool& GetHideLogFilesOption() const
 	{
 		return bHideLogFilesOption;
+	}
+
+	const bool& GetHideRestartOption() const
+	{
+		return bHideRestartOption;
 	}
 
 	const bool& IsAllowedToCloseWithoutSending() const
@@ -152,6 +157,9 @@ protected:
 
 	/** Whether the user is shown the option to enable/disable sending the log file. */
 	bool bHideLogFilesOption;
+
+	/** Whether the user is shown the option to restart the crashed application */
+	bool bHideRestartOption;
 
 	/** Whether the user is allowed to close the crash reporter without sending a report */
 	bool bIsAllowedToCloseWithoutSending;

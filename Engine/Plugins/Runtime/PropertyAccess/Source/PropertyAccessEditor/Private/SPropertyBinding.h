@@ -26,7 +26,7 @@ public:
 
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, UBlueprint* InBlueprint);
+	void Construct(const FArguments& InArgs, UBlueprint* InBlueprint, const TArray<FBindingContextStruct>& InBindingContextStructs);
 
 protected:
 	struct FFunctionInfo
@@ -37,7 +37,7 @@ protected:
 		}
 
 		FFunctionInfo(UFunction* InFunction)
-			: DisplayName(FText::FromName(InFunction->GetFName()))
+			: DisplayName(InFunction->HasMetaData("ScriptName") ? InFunction->GetMetaDataText("ScriptName") : FText::FromName(InFunction->GetFName()))
 			, Tooltip(InFunction->GetMetaData("Tooltip"))
 			, FuncName(InFunction->GetFName())
 			, Function(InFunction)
@@ -55,6 +55,7 @@ protected:
 
 	const FSlateBrush* GetCurrentBindingImage() const;
 	FText GetCurrentBindingText() const;
+	FText GetCurrentBindingToolTipText() const;
 	FSlateColor GetCurrentBindingColor() const;
 
 	bool CanRemoveBinding();
@@ -70,9 +71,11 @@ protected:
 	FReply HandleGotoBindingClicked();
 
 private:
-	bool IsClassBlackListed(UClass* OwnerClass) const;
-	bool IsFieldFromBlackListedClass(FFieldVariant Field) const;
-
+	bool IsClassDenied(UClass* OwnerClass) const;
+	bool IsFieldFromDeniedClass(FFieldVariant Field) const;
+	bool HasBindableProperties(UStruct* InStruct) const;
+	bool HasBindablePropertiesRecursive(UStruct* InStruct, TSet<UStruct*>& VisitedStructs, const int32 RecursionDepth) const;
+	
 	template <typename Predicate>
 	void ForEachBindableProperty(UStruct* InStruct, Predicate Pred) const;
 
@@ -80,6 +83,7 @@ private:
 	void ForEachBindableFunction(UClass* FromClass, Predicate Pred) const;
 
 	UBlueprint* Blueprint;
+	TArray<FBindingContextStruct> BindingContextStructs;
 	FPropertyBindingWidgetArgs Args;
 	FName PropertyName;
 };

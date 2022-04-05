@@ -13,7 +13,7 @@ ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogCameraAnim, Log, All);
 /**
  * A predefined animation to be played on a camera
  */
-UCLASS(BlueprintType, notplaceable, MinimalAPI)
+UCLASS(BlueprintType, MinimalAPI)
 class UCameraAnim : public UObject
 {
 	GENERATED_UCLASS_BODY()
@@ -21,12 +21,12 @@ class UCameraAnim : public UObject
 public:
 	/** The UInterpGroup that holds our actual interpolation data. */
 	UPROPERTY()
-	class UInterpGroup* CameraInterpGroup;
+	TObjectPtr<class UInterpGroup> CameraInterpGroup;
 
 #if WITH_EDITORONLY_DATA
 	/** This is to preview and they only exists in editor */
 	UPROPERTY(transient)
-	class UInterpGroup* PreviewInterpGroup;
+	TObjectPtr<class UInterpGroup> PreviewInterpGroup;
 #endif // WITH_EDITORONLY_DATA
 
 	/** Length, in seconds. */
@@ -64,7 +64,11 @@ public:
 	float BasePostProcessBlendWeight;
 
 	//~ Begin UObject Interface
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void PostLoad() override;
 	//~ End UObject Interface
 

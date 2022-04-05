@@ -6,7 +6,8 @@ using System.Text;
 using System.IO;
 using System.Diagnostics;
 using System.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -15,8 +16,8 @@ namespace UnrealBuildTool
 	/// </summary>
 	class HoloLensDeploy : UEBuildDeploy
 	{
-		private FileReference MakeAppXPath;
-		private FileReference SignToolPath;
+		private FileReference? MakeAppXPath;
+		private FileReference? SignToolPath;
 		private string Extension = ".appx";
 
 		/// <summary>
@@ -180,11 +181,11 @@ namespace UnrealBuildTool
 			}
 		}
 
-		public bool PrepForUATPackageOrDeploy(FileReference ProjectFile, string ProjectName, string ProjectDirectory, WindowsArchitecture Architecture, List<UnrealTargetConfiguration> TargetConfigurations, List<string> ExecutablePaths, string EngineDirectory, bool bForDistribution, string CookFlavor, bool bIsDataDeploy)
+		public bool PrepForUATPackageOrDeploy(FileReference? ProjectFile, string ProjectName, string ProjectDirectory, WindowsArchitecture Architecture, List<UnrealTargetConfiguration> TargetConfigurations, List<string> ExecutablePaths, string EngineDirectory, bool bForDistribution, string CookFlavor, bool bIsDataDeploy)
 		{
 			//@todo need to support dlc and other targets
 			//string LocalizedContentDirectory = Path.Combine(ProjectDirectory, "Content", "Localization", "Game");
-			string AbsoluteExeDirectory = Path.GetDirectoryName(ExecutablePaths[0]);
+			string AbsoluteExeDirectory = Path.GetDirectoryName(ExecutablePaths[0])!;
 			//bool IsGameSpecificExe = ProjectFile != null && AbsoluteExeDirectory.StartsWith(ProjectDirectory);
 			//string RelativeExeFilePath = Path.Combine(IsGameSpecificExe ? ProjectName : "Engine", "Binaries", "HoloLens", Path.GetFileName(ExecutablePaths[0]));
 
@@ -199,10 +200,10 @@ namespace UnrealBuildTool
 			}
 
 			// If using Xbox Live generate the json config file expected by the SDK
-			DirectoryReference ConfigDirRef = DirectoryReference.FromFile(ProjectFile);
+			DirectoryReference? ConfigDirRef = DirectoryReference.FromFile(ProjectFile);
 			if (ConfigDirRef == null && !string.IsNullOrEmpty(UnrealBuildTool.GetRemoteIniPath()))
 			{
-				ConfigDirRef = new DirectoryReference(UnrealBuildTool.GetRemoteIniPath());
+				ConfigDirRef = new DirectoryReference(UnrealBuildTool.GetRemoteIniPath()!);
 			}
 
 			MakeAppXPath = HoloLensExports.GetWindowsSdkToolPath("makeappx.exe");
@@ -211,37 +212,18 @@ namespace UnrealBuildTool
 			return true;
 		}
 
-		private static void FillMapfile(string DirectoryName, string SearchPath, string Mask, StringBuilder AppXRecipeBuiltFiles)
-		{
-			string StageDir = DirectoryName;
-			if (!StageDir.EndsWith("\\") && !StageDir.EndsWith("/"))
-			{
-				StageDir += Path.DirectorySeparatorChar;
-			}
-			Uri StageDirUri = new Uri(StageDir);
-			foreach (var pf in Directory.GetFiles(SearchPath, Mask, SearchOption.AllDirectories))
-			{
-				var FileUri = new Uri(pf);
-				var relativeUri = StageDirUri.MakeRelativeUri(FileUri);
-				var relativePath = Uri.UnescapeDataString(relativeUri.ToString());
-				var newPath = relativePath.Replace('/', Path.DirectorySeparatorChar);
-
-				AppXRecipeBuiltFiles.AppendLine(String.Format("\"{0}\"\t\"{1}\"", pf, newPath));
-			}
-		}
-
 		private void MakePackage(TargetReceipt Receipt, TargetReceipt NewReceipt, WindowsArchitecture Architecture, List<string> UpdatedFiles)
 		{
 			string OutputName = String.Format("{0}_{1}_{2}_{3}", Receipt.TargetName, Receipt.Platform, Receipt.Configuration, WindowsExports.GetArchitectureSubpath(Architecture));
-			string IntermediateDirectory = Path.Combine(Receipt.ProjectDir != null ? Receipt.ProjectDir.FullName : UnrealBuildTool.EngineDirectory.FullName, "Intermediate", "Deploy", WindowsExports.GetArchitectureSubpath(Architecture));
-			string OutputDirectory = Receipt.Launch.Directory.FullName;
+			string IntermediateDirectory = Path.Combine(Receipt.ProjectDir != null ? Receipt.ProjectDir.FullName : Unreal.EngineDirectory.FullName, "Intermediate", "Deploy", WindowsExports.GetArchitectureSubpath(Architecture));
+			string OutputDirectory = Receipt.Launch!.Directory.FullName;
 			string OutputAppX = Path.Combine(OutputDirectory, OutputName + Extension);
 			string SigningCertificate = @"Build\HoloLens\SigningCertificate.pfx";
-			string SigningCertificatePath = Path.Combine(Receipt.ProjectDir != null ? Receipt.ProjectDir.FullName : UnrealBuildTool.EngineDirectory.FullName, SigningCertificate);
+			string SigningCertificatePath = Path.Combine(Receipt.ProjectDir != null ? Receipt.ProjectDir.FullName : Unreal.EngineDirectory.FullName, SigningCertificate);
 
 			string MapFilename = Path.Combine(IntermediateDirectory, OutputName + ".pkgmap");
 			var LocalRoot = Receipt.ProjectDir;
-			var EngineRoot = UnrealBuildTool.RootDirectory;
+			var EngineRoot = Unreal.RootDirectory;
 			var AddedFiles = new Dictionary<string, string>();
 			bool PackageFileNeedToBeUpdated = !File.Exists(OutputAppX);
 
@@ -267,7 +249,7 @@ namespace UnrealBuildTool
 
 						if (LocalRoot != null && Product.Path.IsUnderDirectory(LocalRoot))
 						{
-							Filename = Product.Path.MakeRelativeTo(LocalRoot.ParentDirectory);
+							Filename = Product.Path.MakeRelativeTo(LocalRoot.ParentDirectory!);
 						}
 						else if(Product.Path.IsUnderDirectory(EngineRoot))
 						{
@@ -294,7 +276,7 @@ namespace UnrealBuildTool
 						string Filename;
 						if (LocalRoot != null && Dep.Path.IsUnderDirectory(LocalRoot))
 						{
-							Filename = Dep.Path.MakeRelativeTo(LocalRoot.ParentDirectory);
+							Filename = Dep.Path.MakeRelativeTo(LocalRoot.ParentDirectory!);
 						}
 						else if (Dep.Path.IsUnderDirectory(EngineRoot))
 						{
@@ -445,7 +427,7 @@ namespace UnrealBuildTool
 
 			string MakeAppXCommandLine = String.Format("pack /o /f \"{0}\" /p \"{1}\"", MapFilename, OutputAppX);
 
-			var StartInfo = new ProcessStartInfo(MakeAppXPath.FullName, MakeAppXCommandLine);
+			var StartInfo = new ProcessStartInfo(MakeAppXPath!.FullName, MakeAppXCommandLine);
 			StartInfo.UseShellExecute = false;
 			StartInfo.CreateNoWindow = true;
 			var ExitCode = Utils.RunLocalProcessAndPrintfOutput(StartInfo);
@@ -457,7 +439,7 @@ namespace UnrealBuildTool
 			if (File.Exists(SigningCertificatePath))
 			{
 				string SignToolCommandLine = String.Format("sign /a /f \"{0}\" /fd SHA256 \"{1}\"", SigningCertificatePath, OutputAppX);
-				StartInfo = new ProcessStartInfo(SignToolPath.FullName, SignToolCommandLine);
+				StartInfo = new ProcessStartInfo(SignToolPath!.FullName, SignToolCommandLine);
 				StartInfo.UseShellExecute = false;
 				StartInfo.CreateNoWindow = true;
 				ExitCode = Utils.RunLocalProcessAndPrintfOutput(StartInfo);
@@ -488,29 +470,16 @@ namespace UnrealBuildTool
 		public override bool PrepTargetForDeployment(TargetReceipt Receipt)
 		{
 			// Use the project name if possible - InTarget.AppName changes for 'Client'/'Server' builds
-			string ProjectName = Receipt.ProjectFile != null ? Receipt.ProjectFile.GetFileNameWithoutAnyExtensions() : Receipt.Launch.GetFileNameWithoutExtension();
+			string ProjectName = Receipt.ProjectFile != null ? Receipt.ProjectFile.GetFileNameWithoutAnyExtensions() : Receipt.Launch!.GetFileNameWithoutExtension();
 			Log.TraceInformation("Prepping {0} for deployment to {1}", ProjectName, Receipt.Platform.ToString());
 			System.DateTime PrepDeployStartTime = DateTime.UtcNow;
 
 			// Note: TargetReceipt.Read now expands path variables internally.
-			TargetReceipt NewReceipt = null;
-			FileReference ReceiptFileName = TargetReceipt.GetDefaultPath(Receipt.ProjectDir != null ? Receipt.ProjectDir : UnrealBuildTool.EngineDirectory, Receipt.TargetName, Receipt.Platform, Receipt.Configuration, "Multi");
-			if (!TargetReceipt.TryRead(ReceiptFileName, UnrealBuildTool.EngineDirectory, out NewReceipt))
+			TargetReceipt? NewReceipt = null;
+			FileReference ReceiptFileName = TargetReceipt.GetDefaultPath(Receipt.ProjectDir != null ? Receipt.ProjectDir : Unreal.EngineDirectory, Receipt.TargetName, Receipt.Platform, Receipt.Configuration, "Multi");
+			if (!TargetReceipt.TryRead(ReceiptFileName, Unreal.EngineDirectory, out NewReceipt))
 			{
 				NewReceipt = new TargetReceipt(Receipt.ProjectFile, Receipt.TargetName, Receipt.TargetType, Receipt.Platform, Receipt.Configuration, Receipt.Version, "Multi");
-			}
-
-			AddWinMDReferencesFromReceipt(Receipt, Receipt.ProjectDir != null ? Receipt.ProjectDir : UnrealBuildTool.EngineDirectory, UnrealBuildTool.EngineDirectory.ParentDirectory.FullName);
-
-			//PrepForUATPackageOrDeploy(InTarget.ProjectFile, InAppName, InTarget.ProjectDirectory.FullName, InTarget.OutputPath.FullName, TargetBuildEnvironment.RelativeEnginePath, false, "", false);
-			List<UnrealTargetConfiguration> TargetConfigs = new List<UnrealTargetConfiguration> { Receipt.Configuration };
-			List<string> ExePaths = new List<string> { Receipt.Launch.FullName };
-			string RelativeEnginePath = UnrealBuildTool.EngineDirectory.MakeRelativeTo(DirectoryReference.GetCurrentDirectory());
-
-			WindowsArchitecture Arch = WindowsArchitecture.ARM64;
-			if (Receipt.Architecture.ToLower() == "x64")
-			{
-				Arch = WindowsArchitecture.x64;
 			}
 
 			string SDK = "";
@@ -521,16 +490,30 @@ namespace UnrealBuildTool
 			}
 			HoloLensExports.InitWindowsSdkToolPath(SDK);
 
-			string AbsoluteExeDirectory = Path.GetDirectoryName(ExePaths[0]);
-			UnrealTargetPlatform Platform = UnrealTargetPlatform.HoloLens;
-			string IntermediateDirectory = Path.Combine(Receipt.ProjectDir != null ? Receipt.ProjectDir.FullName : UnrealBuildTool.EngineDirectory.FullName, "Intermediate", "Deploy", WindowsExports.GetArchitectureSubpath(Arch));
-			List<string> UpdatedFiles = new HoloLensManifestGenerator().CreateManifest(Platform, Arch, AbsoluteExeDirectory, IntermediateDirectory, Receipt.ProjectFile, Receipt.ProjectDir != null ? Receipt.ProjectDir.FullName : UnrealBuildTool.EngineDirectory.FullName, TargetConfigs, ExePaths, WinMDReferences);
+			AddWinMDReferencesFromReceipt(Receipt, Receipt.ProjectDir != null ? Receipt.ProjectDir : Unreal.EngineDirectory, Unreal.EngineDirectory.ParentDirectory!.FullName, SDK);
 
-			PrepForUATPackageOrDeploy(Receipt.ProjectFile, ProjectName, Receipt.ProjectDir != null ? Receipt.ProjectDir.FullName : UnrealBuildTool.EngineDirectory.FullName, Arch, TargetConfigs, ExePaths, RelativeEnginePath, false, "", false);
+			//PrepForUATPackageOrDeploy(InTarget.ProjectFile, InAppName, InTarget.ProjectDirectory.FullName, InTarget.OutputPath.FullName, TargetBuildEnvironment.RelativeEnginePath, false, "", false);
+			List<UnrealTargetConfiguration> TargetConfigs = new List<UnrealTargetConfiguration> { Receipt.Configuration };
+			List<string> ExePaths = new List<string> { Receipt.Launch!.FullName };
+			string RelativeEnginePath = Unreal.EngineDirectory.MakeRelativeTo(DirectoryReference.GetCurrentDirectory());
+
+			WindowsArchitecture Arch = WindowsArchitecture.ARM64;
+			if (Receipt.Architecture.ToLower() == "x64")
+			{
+				Arch = WindowsArchitecture.x64;
+			}
+
+
+			string AbsoluteExeDirectory = Path.GetDirectoryName(ExePaths[0])!;
+			UnrealTargetPlatform Platform = UnrealTargetPlatform.HoloLens;
+			string IntermediateDirectory = Path.Combine(Receipt.ProjectDir != null ? Receipt.ProjectDir.FullName : Unreal.EngineDirectory.FullName, "Intermediate", "Deploy", WindowsExports.GetArchitectureSubpath(Arch));
+			List<string> UpdatedFiles = new HoloLensManifestGenerator().CreateManifest(Platform, Arch, AbsoluteExeDirectory, IntermediateDirectory, Receipt.ProjectFile, Receipt.ProjectDir != null ? Receipt.ProjectDir.FullName : Unreal.EngineDirectory.FullName, TargetConfigs, ExePaths, WinMDReferences)!;
+
+			PrepForUATPackageOrDeploy(Receipt.ProjectFile, ProjectName, Receipt.ProjectDir != null ? Receipt.ProjectDir.FullName : Unreal.EngineDirectory.FullName, Arch, TargetConfigs, ExePaths, RelativeEnginePath, false, "", false);
 			MakePackage(Receipt, NewReceipt, Arch, UpdatedFiles);
 			CopyDataAndSymbolsBetweenReceipts(Receipt, NewReceipt, Arch);
 
-			NewReceipt.Write(ReceiptFileName, UnrealBuildTool.EngineDirectory);
+			NewReceipt.Write(ReceiptFileName, Unreal.EngineDirectory);
 
 			// Log out the time taken to deploy...
 			double PrepDeployDuration = (DateTime.UtcNow - PrepDeployStartTime).TotalSeconds;
@@ -539,7 +522,7 @@ namespace UnrealBuildTool
 			return true;
 		}
 
-		public void AddWinMDReferencesFromReceipt(TargetReceipt Receipt, DirectoryReference SourceProjectDir, string DestRelativeTo)
+		public void AddWinMDReferencesFromReceipt(TargetReceipt Receipt, DirectoryReference SourceProjectDir, string DestRelativeTo, string SDKVersion)
 		{
 			// Dependency paths in receipt are already expanded at this point
 			foreach (var Dep in Receipt.RuntimeDependencies)
@@ -551,10 +534,10 @@ namespace UnrealBuildTool
 					if (File.Exists(WinMDFile))
 					{
 						string DestPath = Dep.Path.FullName;
-						DestPath = Dep.Path.FullName.Replace(UnrealBuildTool.EngineDirectory.FullName, Path.Combine(DestRelativeTo, "Engine"));
+						DestPath = Dep.Path.FullName.Replace(Unreal.EngineDirectory.FullName, Path.Combine(DestRelativeTo, "Engine"));
 						DestPath = DestPath.Replace(SourceProjectDir.FullName, Path.Combine(DestRelativeTo, SourceProjectDir.GetDirectoryName()));
 						DestPath = Utils.MakePathRelativeTo(DestPath, DestRelativeTo);
-						WinMDReferences.Add(new WinMDRegistrationInfo(new FileReference(WinMDFile), DestPath));
+						WinMDReferences.Add(new WinMDRegistrationInfo(new FileReference(WinMDFile), DestPath, SDKVersion));
 					}
 				}
 			}

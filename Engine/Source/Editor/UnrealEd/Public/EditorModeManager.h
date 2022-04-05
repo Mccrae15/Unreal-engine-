@@ -5,11 +5,13 @@
 #include "CoreMinimal.h"
 #include "InputCoreTypes.h"
 #include "UObject/GCObject.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "Editor.h"
 #include "EditorUndoClient.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "EdMode.h"
+
+#include "Elements/Framework/TypedElementSelectionSet.h"
 
 class FCanvas;
 class FEditorViewportClient;
@@ -25,11 +27,13 @@ struct FViewportClick;
 class UEdMode;
 class UInteractiveGizmoManager;
 class UInputRouter;
+class UModeManagerInteractiveToolsContext;
+class UTypedElementSelectionSet;
 
 /**
  * A helper class to store the state of the various editor modes.
  */
-class UNREALED_API FEditorModeTools : public FGCObject, public FEditorUndoClient
+class UNREALED_API FEditorModeTools : public FGCObject, public FEditorUndoClient, public TSharedFromThis<FEditorModeTools>
 {
 public:
 	FEditorModeTools();
@@ -91,15 +95,7 @@ public:
 	 */
 	void DestroyMode(FEditorModeID InID);
 
-	/**
-	 * Creates the mode toolbar tab if needed
-	 */
-	TSharedRef<SDockTab> MakeModeToolbarTab();
 
-	/**
-	 * Whether or not the mode toolbar should be shown.  If any active modes generated a toolbar this method will return true
-	 */
-	bool ShouldShowModeToolbar() const;
 
 	/**
 	 * Whether or not the mode toolbox (where mode details panels and some tools are) should be shown.
@@ -107,15 +103,12 @@ public:
 	UE_DEPRECATED(4.26, "Individual toolkit hosts, such as the level editor, should handle determining if they show a mode toolbox for hosted toolkits.")
 	bool ShouldShowModeToolbox() const;
 protected:
-	/** Deactivates the editor mode at the specified index */
-	void DeactivateScriptableModeAtIndex(int32 InIndex);
+	/** Exits the given editor mode */
+	void ExitMode(UEdMode* InMode);
 
 	/** Removes the mode ID from the tools manager when a mode is unregistered */
 	void OnModeUnregistered(FEditorModeID ModeID);
 		
-private:
-	void RebuildModeToolBar();
-	void SpawnOrUpdateModeToolbar();
 public:
 
 	/**
@@ -124,6 +117,8 @@ public:
 	void DeactivateAllModes();
 
 	UEdMode* GetActiveScriptableMode(FEditorModeID InID) const;
+
+	virtual UTexture2D* GetVertexTexture() const;
 
 	/**
 	 * Returns true if the current mode is not the specified ModeID.  Also optionally warns the user.
@@ -184,7 +179,7 @@ public:
 	void LoadWidgetSettings();
 
 	/** Gets the widget axis to be drawn */
-	EAxisList::Type GetWidgetAxisToDraw( FWidget::EWidgetMode InWidgetMode ) const;
+	EAxisList::Type GetWidgetAxisToDraw( UE::Widget::EWidgetMode InWidgetMode ) const;
 
 	/** Mouse tracking interface.  Passes tracking messages to all active modes */
 	bool StartTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport);
@@ -209,7 +204,7 @@ public:
 	bool UsesTransformWidget() const;
 
 	/** true if any active mode uses the passed in transform widget */
-	bool UsesTransformWidget( FWidget::EWidgetMode CheckMode ) const;
+	bool UsesTransformWidget( UE::Widget::EWidgetMode CheckMode ) const;
 
 	/** Sets the current widget axis */
 	void SetCurrentWidgetAxis( EAxisList::Type NewAxis );
@@ -245,8 +240,14 @@ public:
 	/** Notifies all active modes of all captured mouse movement */	
 	bool ProcessCapturedMouseMoves( FEditorViewportClient* InViewportClient, FViewport* InViewport, const TArrayView<FIntPoint>& CapturedMouseMoves );
 
-	/** Notifies all active modes of keyboard input */
-	bool InputKey( FEditorViewportClient* InViewportClient, FViewport* Viewport, FKey Key, EInputEvent Event);
+	/** 
+	 * Notifies all active modes of keyboard input 
+	 * @param bRouteToToolsContext If true, routes to the tools context and its input router before routing
+	 *  to modes (and does not route to modes if tools context handles it). We currently need the ability to
+	 *  set this to false due to some behaviors being routed in different conditions to legacy modes compared
+	 *  to the input router (see its use in EditorViewportClient.cpp).
+	 */
+	bool InputKey( FEditorViewportClient* InViewportClient, FViewport* Viewport, FKey Key, EInputEvent Event, bool bRouteToToolsContext = true);
 
 	/** Notifies all active modes of axis movement */
 	bool InputAxis( FEditorViewportClient* InViewportClient, FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime);
@@ -312,18 +313,19 @@ public:
 	/**
 	 * Changes the current widget mode.
 	 */
-	void SetWidgetMode( FWidget::EWidgetMode InWidgetMode );
+	void SetWidgetMode( UE::Widget::EWidgetMode InWidgetMode );
 
 	/**
 	 * Allows you to temporarily override the widget mode.  Call this function again
 	 * with WM_None to turn off the override.
 	 */
-	void SetWidgetModeOverride( FWidget::EWidgetMode InWidgetMode );
+	void SetWidgetModeOverride( UE::Widget::EWidgetMode InWidgetMode );
 
 	/**
 	 * Retrieves the current widget mode, taking overrides into account.
 	 */
-	FWidget::EWidgetMode GetWidgetMode() const;
+	UE::Widget::EWidgetMode GetWidgetMode() const;
+
 
 	/**
 	* Set Scale On The Widget
@@ -335,86 +337,12 @@ public:
 	*/
 	float GetWidgetScale() const;
 
-	/**
-	 * Gets the current state of script editor usage of show friendly names
-	 * @deprecated Use GetDefault<UEditorStyleSettings>()->bShowFriendlyNames instead
-	 *
-	 * @ return - If true, replace variable names with sanitized ones
-	 */
-	UE_DEPRECATED(4.26, "Use GetDefault<UEditorStyleSettings>()->bShowFriendlyNames")
-	static bool GetShowFriendlyVariableNames();
-
-	/**
-	 * Gets the maximum number of bookmarks.
-	 * @deprecated Use IBookmarkTypeTools::Get().GetMaxNumberOfBookmarks instead
-	 *
-	 * @param InViewportClient	Level editor viewport client used to reference the world which owns the bookmarks.
-	 */
-	UE_DEPRECATED(4.26, "Use IBookmarkTypeTools::Get().GetMaxNumberOfBookmarks")
-	static const uint32 GetMaxNumberOfBookmarks(FEditorViewportClient* InViewportClient);
-
-	/**
-	 * Compacts the available bookmarks into mapped spaces.
-	 * Does nothing if all valid bookmarks are already mapped.
-	 * @deprecated Use IBookmarkTypeTools::Get().CompactBookmarks instead
-	 *
-	 * @param InViewportClient	Level editor viewport client used to reference the world which owns the bookmarks.
-	 */
-	UE_DEPRECATED(4.26, "Use IBookmarkTypeTools::Get().CompactBookmarks")
-	static void CompactBookmarks(FEditorViewportClient* InViewportClient);
-
-	/**
-	 * Sets a bookmark in the levelinfo file, allocating it if necessary.
-	 * @deprecated Use IBookmarkTypeTools::Get().CreateOrSetBookmark instead
-	 * 
-	 * @param InIndex			Index of the bookmark to set.
-	 * @param InViewportClient	Level editor viewport client used to reference the world which owns the bookmark.
-	 */
-	UE_DEPRECATED(4.26, "Use IBookmarkTypeTools::Get().CreateOrSetBookmark")
-	static void SetBookmark( uint32 InIndex, FEditorViewportClient* InViewportClient );
-
-	/**
-	 * Checks to see if a bookmark exists at a given index
-	 * @deprecated Use IBookmarkTypeTools::Get().CheckBookmark instead
-	 * 
-	 * @param InIndex			Index of the bookmark to set.
-	 * @param InViewportClient	Level editor viewport client used to reference the world which owns the bookmark.
-	 */
-	UE_DEPRECATED(4.26, "Use IBookmarkTypeTools::Get().CheckBookmark")
-	static bool CheckBookmark( uint32 InIndex, FEditorViewportClient* InViewportClient );
-
-	/**
-	 * Activates a bookmark from the list.
-	 * @deprecated Use IBookmarkTypeTools::Get().JumpToBookmark instead
-	 * 
-	 * @param InIndex			Index of the bookmark to set.
-	 * @param InSettings		Settings to used when jumpting to the bookmark.
-	 * @param InViewportClient	Level editor viewport client used to reference the world which owns the bookmark.
-	 */
-	UE_DEPRECATED(4.26, "Use IBookmarkTypeTools::Get().JumpToBookmark")
-	void JumpToBookmark( uint32 InIndex, TSharedPtr<struct FBookmarkBaseJumpToSettings> InSettings, FEditorViewportClient* InViewportClient );
-
-	/**
-	 * Clears a bookmark from the list.
-	 * @deprecated Use IBookmarkTypeTools::Get().ClearBookmark instead
-	 * 
-	 * @param InIndex			Index of the bookmark to clear.
-	 * @param InViewportClient	Level editor viewport client used to reference the world which owns the bookmark.
-	 */
-	UE_DEPRECATED(4.26, "Use IBookmarkTypeTools::Get().ClearBookmark")
-	static void ClearBookmark( uint32 InIndex, FEditorViewportClient* InViewportClient );
-
-	/**
-	 * Clears all book marks
-	 * @deprecated Use IBookmarkTypeTools::Get().ClearAllBookmarks instead
-	 * 
-	 * @param InViewportClient	Level editor viewport client used to reference the world which owns the bookmarks.
-	 */
-	UE_DEPRECATED(4.26, "Use IBookmarkTypeTools::Get().ClearAllBookmarks")
-	static void ClearAllBookmarks( FEditorViewportClient* InViewportClient );
-
 	// FGCObject interface
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FEditorModeTools");
+	}
 	// End of FGCObject interface
 
 	/**
@@ -445,11 +373,11 @@ public:
 	FEditorModeIDChangedEvent& OnEditorModeIDChanged() { return EditorModeIDChangedEvent; }
 
 	/** delegate type for triggering when widget mode changed */
-	DECLARE_EVENT_OneParam( FEditorModeTools, FWidgetModeChangedEvent, FWidget::EWidgetMode );
+	DECLARE_EVENT_OneParam( FEditorModeTools, FWidgetModeChangedEvent, UE::Widget::EWidgetMode );
 	FWidgetModeChangedEvent& OnWidgetModeChanged() { return WidgetModeChangedEvent; }
 
 	/**	Broadcasts the WidgetModeChanged event */
-	void BroadcastWidgetModeChanged(FWidget::EWidgetMode InWidgetMode) { WidgetModeChangedEvent.Broadcast(InWidgetMode); }
+	void BroadcastWidgetModeChanged(UE::Widget::EWidgetMode InWidgetMode) { WidgetModeChangedEvent.Broadcast(InWidgetMode); }
 
 	/**	Broadcasts the EditorModeIDChanged event */
 	void BroadcastEditorModeIDChanged(const FEditorModeID& ModeID, bool IsEnteringMode) { EditorModeIDChangedEvent.Broadcast(ModeID, IsEnteringMode); }
@@ -477,8 +405,8 @@ public:
 	/** Is the viewport UI hidden? */
 	bool IsViewportUIHidden() const { return bHideViewportUI; }
 
-	/** The toolbar tab name that should be used as the tab identifier */
-	static const FName EditorModeToolbarTabName;
+	/** Called by Editors when they are about to close */
+	bool OnRequestClose();
 
 	bool PivotShown;
 	bool Snapping;
@@ -523,6 +451,22 @@ public:
 	virtual USelection* GetSelectedComponents() const;
 
 	/**
+	 * Returns the selection set for the toolkit host.
+	 * (i.e. the selection set for the level editor)
+	 */
+	UTypedElementSelectionSet* GetEditorSelectionSet() const;
+
+	/**
+	 * Stores the current selection under the given key, and clears the current selection state if requested.
+	 */
+	void StoreSelection(FName SelectionStoreKey, bool bClearSelection = true);
+
+	/**
+	 * Restores the selection to the state that was stored using the given key.
+	 */
+	void RestoreSelection(FName SelectionStoreKey);
+
+	/**
 	 * Returns the world that is being edited by this mode manager
 	 */ 
 	virtual UWorld* GetWorld() const;
@@ -557,6 +501,7 @@ public:
 	EEditAction::Type  GetActionEditCopy();
 	EEditAction::Type GetActionEditPaste();
 
+	UE_DEPRECATED(5.0, "This function is redundant, and is handled as part of a call to ActivateMode.")
 	void DeactivateOtherVisibleModes(FEditorModeID InMode);
 	bool IsSnapRotationEnabled() const;
 	bool SnapRotatorToGridOverride(FRotator& InRotation) const;
@@ -567,13 +512,22 @@ public:
 	void UpdateInternalData();
 	bool IsOnlyVisibleActiveMode(FEditorModeID InMode) const;
 
-	/** returns true if all active EdModes are OK with an AutoSave happening now  */
-	bool CanAutoSave() const;
-
 	/*
 	* Sets the active Modes ToolBar Palette Tab to the named Palette
 	*/
-	void  InvokeToolPaletteTab(FEditorModeID InMode, FName InPaletteName);
+	//void  InvokeToolPaletteTab(FEditorModeID InMode, FName InPaletteName);
+
+	/** returns true if all active EdModes are OK with an AutoSave happening now  */
+	bool CanAutoSave() const;
+	
+	/** returns true if all active EdModes are OK support operation on current asset */
+	bool IsOperationSupportedForCurrentAsset(EAssetOperation InOperation) const;
+
+	void RemoveAllDelegateHandlers();
+
+	/** @return ToolsContext for this Mode Manager */
+	UModeManagerInteractiveToolsContext* GetInteractiveToolsContext() const;
+
 
 protected:
 	/** 
@@ -581,6 +535,31 @@ protected:
 	 **/
 	void OnEditorSelectionChanged(UObject* NewSelection);
 	void OnEditorSelectNone();
+
+
+	/** Handles the notification when a world is going through GC to clean up any modes pending deactivation. */
+	void OnWorldCleanup(UWorld* InWorld, bool bSessionEnded, bool bCleanupResources);
+
+	virtual void DrawBrackets(FEditorViewportClient* ViewportClient, FViewport* Viewport, const FSceneView* View, FCanvas* Canvas);
+
+	void ForEachEdMode(TFunctionRef<bool(UEdMode*)> InCalllback) const;
+	bool TestAllModes(TFunctionRef<bool(UEdMode*)> InCalllback, bool bExpected) const;
+	
+	template <class InterfaceToCastTo>
+	void ForEachEdMode(TFunctionRef<bool(InterfaceToCastTo*)> InCallback) const
+	{
+		ForEachEdMode([InCallback](UEdMode* Mode)
+		{
+			if (InterfaceToCastTo* CastedMode = Cast<InterfaceToCastTo>(Mode))
+			{
+				return InCallback(CastedMode);
+			}
+
+			return true;
+		});
+	}
+
+	void ExitAllModesPendingDeactivate();
 
 	/** List of default modes for this tool.  These must all be compatible with each other. */
 	TArray<FEditorModeID> DefaultModeIDs;
@@ -594,11 +573,14 @@ protected:
 	/** A list of previously active editor modes that we will potentially recycle */
 	TMap< FEditorModeID, UEdMode* > RecycledScriptableModes;
 
+	/** A list of previously active editor modes that we will potentially recycle */
+	TMap< FEditorModeID, UEdMode* > PendingDeactivateModes;
+
 	/** The mode that the editor viewport widget is in. */
-	FWidget::EWidgetMode WidgetMode;
+	UE::Widget::EWidgetMode WidgetMode;
 
 	/** If the widget mode is being overridden, this will be != WM_None. */
-	FWidget::EWidgetMode OverrideWidgetMode;
+	UE::Widget::EWidgetMode OverrideWidgetMode;
 
 	/** If 1, draw the widget and let the user interact with it. */
 	bool bShowWidget;
@@ -613,22 +595,6 @@ protected:
 	float WidgetScale;
 
 private:
-	struct FEdModeToolbarRow
-	{
-		FEdModeToolbarRow(FName InModeID, FName InPaletteName, FText InDisplayName, TSharedRef<SWidget> InToolbarWidget)
-			: ModeID(InModeID)
-			, PaletteName(InPaletteName)
-			, DisplayName(InDisplayName)
-			, ToolbarWidget(InToolbarWidget)
-		{}
-		FName ModeID;
-		FName PaletteName;
-		FText DisplayName;
-		TSharedPtr<SWidget> ToolbarWidget;
-	};
-
-	/** All toolbar rows generated by active modes.  There will be one row per active mode that generates a toolbar */
-	TArray<FEdModeToolbarRow> ActiveToolBarRows;
 
 	/** The coordinate system the widget is operating within. */
 	ECoordSystem CoordSystem;
@@ -642,18 +608,13 @@ private:
 	/** Multicast delegate that is broadcast when the coordinate system is changed */
 	FCoordSystemChangedEvent CoordSystemChangedEvent;
 
-	/** The dock tab for any modes that generate a toolbar */
-	TWeakPtr<SDockTab> ModeToolbarTab;
-
-	/** The actual toolbar rows will be placed in this vertical box */
-	TWeakPtr<SVerticalBox> ModeToolbarBox;
-
-	/** The modes palette toolbar **/	
-	TWeakPtr<SWidgetSwitcher> ModeToolbarPaletteSwitcher;
-
 	/** Flag set between calls to StartTracking() and EndTracking() */
 	bool bIsTracking;
 
+	UModeManagerInteractiveToolsContext* InteractiveToolsContext;
+
 	FEditorViewportClient* HoveredViewportClient = nullptr;
 	FEditorViewportClient* FocusedViewportClient = nullptr;
+
+	TMap<FName, FTypedElementSelectionSetState> StoredSelectionSets;
 };

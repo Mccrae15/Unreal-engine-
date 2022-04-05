@@ -10,10 +10,13 @@
 #include "ARFilter.h"
 #include "ContentBrowserItem.h"
 #include "ContentBrowserDelegates.h"
+#include "ContentBrowserDataSubsystem.h"
 #include "Developer/CollectionManager/Public/CollectionManagerTypes.h"
 #include "Misc/FilterCollection.h"
 #include "Framework/Views/ITypedTableView.h"
 #include "AssetThumbnail.h"
+#include "ContentBrowserItemPath.h"
+#include "Misc/NamePermissionList.h"
 
 class FViewport;
 class UFactory;
@@ -270,6 +273,9 @@ struct FAssetPickerConfig
 	/** Indicates if the 'Show folders' option should be enabled or disabled */
 	bool bCanShowFolders;
 
+	/** If true, will allow read-only folders to be shown in the picker */
+	bool bCanShowReadOnlyFolders;
+
 	/** Indicates if the 'Real-Time Thumbnails' option should be enabled or disabled */
 	bool bCanShowRealTimeThumbnails;
 
@@ -310,6 +316,7 @@ struct FAssetPickerConfig
 		, bAllowDragging(true)
 		, bCanShowClasses(true)
 		, bCanShowFolders(false)
+		, bCanShowReadOnlyFolders(true)
 		, bCanShowRealTimeThumbnails(false)
 		, bCanShowDevelopersFolder(true)
 		, bForceShowEngineContent(false)
@@ -328,6 +335,9 @@ struct FPathPickerConfig
 {
 	/** The initial path to select. Leave empty to skip initial selection. */
 	FString DefaultPath;
+
+	/** Custom Folder permissions to be used to filter folders in this Path Picker. */
+	TSharedPtr<FPathPermissionList> CustomFolderPermissionList;
 
 	/** The delegate that fires when a path was selected */
 	FOnPathSelected OnPathSelected;
@@ -356,12 +366,16 @@ struct FPathPickerConfig
 	/** If true, will add the path specified in DefaultPath to the tree if it doesn't exist already */
 	bool bAddDefaultPath;
 
+	/** If true, passes virtual paths to OnPathSelected instead of internal asset paths */
+	bool bOnPathSelectedPassesVirtualPaths;
+
 	FPathPickerConfig()
 		: bFocusSearchBoxWhenOpened(true)
 		, bAllowContextMenu(true)
 		, bAllowClassesFolder(false)
 		, bAllowReadOnlyFolders(true)
 		, bAddDefaultPath(false)
+		, bOnPathSelectedPassesVirtualPaths(false)
 	{}
 };
 
@@ -497,6 +511,15 @@ public:
 	virtual TSharedRef<class SWidget> CreateCollectionPicker(const FCollectionPickerConfig& CollectionPickerConfig) = 0;
 
 	/**
+	 * Generates a content browser for use in a drawer. This content browser is a singleton and is reused among all drawers.
+	 *
+	 * @param ContentBrowserConfig	Initial defaults for the new content browser
+	 *
+	 * @return The content browser drawer widget
+	 */
+	virtual TSharedRef<class SWidget> CreateContentBrowserDrawer(const FContentBrowserConfig& ContentBrowserConfig, TFunction<TSharedPtr<SDockTab>()> InOnGetTabForDrawer) = 0;
+
+	/**
 	 * Opens the Open Asset dialog in a non-modal window
 	 *
 	 * @param OpenAssetConfig				A struct containing details about how the open asset dialog should behave
@@ -535,6 +558,9 @@ public:
 
 	/** Brings the primary content browser to the front or opens one if it does not exist. */
 	virtual void FocusPrimaryContentBrowser(bool bFocusSearch) = 0;
+
+	/** Focuses the search field of a content browser widget */
+	virtual void FocusContentBrowserSearchField(TSharedPtr<SWidget> ContentBrowserWidget) = 0;
 
 	/** Sets up an inline-name for the creation of a new asset in the primary content browser using the specified path and the specified class and/or factory */
 	virtual void CreateNewAsset(const FString& DefaultAssetName, const FString& PackagePath, UClass* AssetClass, UFactory* Factory) = 0;
@@ -602,7 +628,11 @@ public:
 	virtual void GetSelectedPathViewFolders(TArray<FString>& SelectedFolders) = 0;
 
 	/** Gets the current path if one exists, otherwise returns empty string. */
-	virtual FString GetCurrentPath() = 0;
+	UE_DEPRECATED(5.0, "This function is deprecated. Use GetCurrentPath without argument instead.")
+	virtual FString GetCurrentPath(const EContentBrowserPathType PathType) = 0;
+
+	/** Gets the current path if one exists, otherwise returns empty string. */
+	virtual FContentBrowserItemPath GetCurrentPath() = 0;
 
 	/**
 	 * Capture active viewport to thumbnail and assigns that thumbnail to incoming assets
@@ -615,12 +645,43 @@ public:
 	/**
 	 * Sets the content browser to display the selected paths
 	 */
-	virtual void SetSelectedPaths(const TArray<FString>& FolderPaths, bool bNeedsRefresh = false) = 0;
+	virtual void SetSelectedPaths(const TArray<FString>& FolderPaths, bool bNeedsRefresh = false, bool bPathsAreVirtual = false) = 0;
 
 	/**
-	* Forces the content browser to show plugin content if it's not already showing.
-	*
-	* @param bEnginePlugin	If this is true, it will also force the content browser to show engine content
-	*/
+	 * Forces the content browser to show plugin content if it's not already showing.
+	 *
+	 * @param bEnginePlugin	If this is true, it will also force the content browser to show engine content
+	 */
 	virtual void ForceShowPluginContent(bool bEnginePlugin) = 0;
+
+	/**
+	 * Saves the settings for a particular content browser instance
+	 *
+	 * @param ContentBrowserWidget The content browser widget to save
+	 */
+	virtual void SaveContentBrowserSettings(TSharedPtr<SWidget> ContentBrowserWidget) = 0;
+
+	/**
+	 * Rename current first selected content item on the passed in widget.
+	 *
+	 * @param PickerWidget The picker widget whose asset we want to rename, should be a asset or path picker widget.
+	 */
+	virtual void ExecuteRename(TSharedPtr<SWidget> PickerWidget) = 0;
+
+	/**
+	 * Add a folder to the path picker widget under the current selected path.
+	 *
+	 * @param PathPickerWidget The path picker widget where we want to add an folder
+	 */
+	virtual void ExecuteAddFolder(TSharedPtr<SWidget> PathPickerWidget) = 0;
+
+	/**
+	 * Force refresh on the path picker widget.  You may need to do this if you have changed the filter on the path picker.
+	 *
+	 * @param PathPickerWidget The path picker widget where we want to add an folder
+	*/
+	virtual void RefreshPathView(TSharedPtr<SWidget> PathPickerWidget) = 0;
+
+	/** Returns InPath if can be written to, otherwise picks a default path that can be written to */
+	virtual FContentBrowserItemPath GetInitialPathToSaveAsset(const FContentBrowserItemPath& InPath) = 0;
 };

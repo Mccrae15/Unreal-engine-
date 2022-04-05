@@ -2,6 +2,7 @@
 #pragma once
 
 #include "UObject/ObjectMacros.h"
+#include "Field/FieldSystemTypes.h"
 
 #include "GeometryCollectionSimulationTypes.generated.h"
 
@@ -22,6 +23,7 @@ enum class EImplicitTypeEnum : uint8
 	Chaos_Implicit_Capsule UMETA(DisplayName = "Capsule"),
 	Chaos_Implicit_LevelSet UMETA(DisplayName = "Level Set"),
 	Chaos_Implicit_None UMETA(DisplayName = "None"),
+	Chaos_Implicit_Convex UMETA(DisplayName = "Convex"),
 	//
 	Chaos_Max                UMETA(Hidden)
 };
@@ -29,14 +31,14 @@ enum class EImplicitTypeEnum : uint8
 UENUM(BlueprintType)
 enum class EObjectStateTypeEnum : uint8
 {
-	Chaos_NONE = 0 UMETA(Hidden),
-	Chaos_Object_Sleeping  = 1 /*Chaos::EObjectStateType::Sleeping*/   UMETA(DisplayName = "Sleeping"),
-	Chaos_Object_Kinematic = 2 /*Chaos::EObjectStateType::Kinematic*/  UMETA(DisplayName = "Kinematic"),
-	Chaos_Object_Static = 3    /*Chaos::EObjectStateType::Static*/     UMETA(DisplayName = "Static"),
-	Chaos_Object_Dynamic   = 4 /*Chaos::EObjectStateType::Dynamic*/    UMETA(DisplayName = "Dynamic"),
-	Chaos_Object_UserDefined     = 100                                 UMETA(DisplayName = "User Defined"),
+	Chaos_NONE = 0 UMETA(Hidden, DisplayName = "None"),
+	Chaos_Object_Sleeping  = 1 UMETA(DisplayName = "Sleeping"),
+	Chaos_Object_Kinematic = 2 UMETA(DisplayName = "Kinematic"),
+	Chaos_Object_Static = 3    UMETA(DisplayName = "Static"),
+	Chaos_Object_Dynamic = 4 UMETA(DisplayName = "Dynamic"),
+	Chaos_Object_UserDefined = 100 UMETA(DisplayName = "User Defined"),
 	//
-	Chaos_Max                UMETA(Hidden)
+	Chaos_Max UMETA(Hidden)
 };
 
 UENUM(BlueprintType)
@@ -50,36 +52,20 @@ enum class EGeometryCollectionPhysicsTypeEnum : uint8
 	Chaos_CollisionGroup           UMETA(DisplayName = "Collision Group", ToolTip = "Set the particles collision group."),
 	Chaos_LinearForce              UMETA(DisplayName = "Linear Force", ToolTip = "Add a vector field to the particles linear force."),
 	Chaos_AngularTorque            UMETA(DisplayName = "Angular Torque", ToolTip = "Add a vector field to the particles angular torque."),
+	Chaos_DisableThreshold         UMETA(DisplayName = "Disable Threshold", ToolTip = "Disable the particles if their linear and angular velocity are less than the threshold."),
+	Chaos_SleepingThreshold        UMETA(DisplayName = "Sleeping Threshold", ToolTip = "Set particles in sleeping mode if their linear and angular velocity are less than the threshold."),
 	//
 	Chaos_Max						UMETA(Hidden)
 };
 
-inline
-FName CHAOS_API 
-GetGeometryCollectionPhysicsTypeName(EGeometryCollectionPhysicsTypeEnum Attribute)
+inline CHAOS_API EFieldPhysicsType GetGeometryCollectionPhysicsType(const EGeometryCollectionPhysicsTypeEnum GeoCollectionType)
 {
-	switch (Attribute)
-	{
-	case EGeometryCollectionPhysicsTypeEnum::Chaos_AngularVelocity:
-		return "AngularVelocity";
-	case EGeometryCollectionPhysicsTypeEnum::Chaos_DynamicState:
-		return "DynamicState";
-	case EGeometryCollectionPhysicsTypeEnum::Chaos_LinearVelocity:
-		return "LinearVelocity";
-	case EGeometryCollectionPhysicsTypeEnum::Chaos_InitialLinearVelocity:
-		return "InitialLinearVelocity";
-	case EGeometryCollectionPhysicsTypeEnum::Chaos_InitialAngularVelocity:
-		return "InitialAngularVelocity";
-	case EGeometryCollectionPhysicsTypeEnum::Chaos_CollisionGroup:
-		return "CollisionGroup";
-	case EGeometryCollectionPhysicsTypeEnum::Chaos_LinearForce:
-		return "LinearForce";
-	case EGeometryCollectionPhysicsTypeEnum::Chaos_AngularTorque:
-		return "AngularTorque";
-	}
-	return "None";
-}
+	static const TArray<EFieldPhysicsType> PhysicsTypes = { EFieldPhysicsType::Field_AngularVelociy , EFieldPhysicsType::Field_DynamicState, EFieldPhysicsType::Field_LinearVelocity, 
+		EFieldPhysicsType::Field_InitialAngularVelocity, EFieldPhysicsType::Field_InitialLinearVelocity, EFieldPhysicsType::Field_CollisionGroup, 
+		EFieldPhysicsType::Field_LinearForce, EFieldPhysicsType::Field_AngularTorque, EFieldPhysicsType::Field_DisableThreshold, EFieldPhysicsType::Field_SleepingThreshold, EFieldPhysicsType::Field_PhysicsType_Max };
 
+	return PhysicsTypes[(uint8)GeoCollectionType];
+}
 
 UENUM(BlueprintType)
 enum class EInitialVelocityTypeEnum : uint8

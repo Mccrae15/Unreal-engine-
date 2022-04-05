@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Misc/AccessDetection.h"
 #include "Misc/AssertionMacros.h"
 #include "Templates/UnrealTemplate.h"
 #include "Containers/UnrealString.h"
@@ -89,6 +90,9 @@ enum EConsoleVariableFlags
 	/* those cvars control other cvars with the flag ECVF_Scalability, names should start with "sg." */
 	ECVF_ScalabilityGroup = 0x80,
 
+	/* CVars with this flag will be included in the device profile previews. */
+	ECVF_Preview = 0x100,
+
 	// ------------------------------------------------
 
 	/* Set flags */
@@ -102,28 +106,30 @@ enum EConsoleVariableFlags
 	/* to get some history of where the last value was set by ( useful for track down why a cvar is in a specific state */
 	ECVF_SetByMask =				0xff000000,
 
-	// the ECVF_SetBy are sorted in override order (weak to strong), the value is not serialized, it only affects it's override behavior when calling Set()
+	// The ECVF_SetBy flags are sorted in override order (weak to strong), the value is not serialized. It only affects the override behavior when calling Set()
 
-	// lowest priority (default after console variable creation)
+	// Lowest priority (default after console variable creation)
 	ECVF_SetByConstructor =			0x00000000,
-	// from Scalability.ini (lower priority than game settings so it's easier to override partially)
+	// Set by scalability groups from Scalability.ini (lower priority than game settings so it's easier to override partially)
 	ECVF_SetByScalability =			0x01000000,
-	// (in game UI or from file)
+	// Default priority for engine-level game user settings, platform-specific settings will override this
 	ECVF_SetByGameSetting =			0x02000000,
-	// project settings (editor UI or from file, higher priority than game setting to allow to enforce some setting fro this project)
+	// Set by project settings UI or specific sections in ini file (higher priority than game setting to allow enforcing some settings for this project)
 	ECVF_SetByProjectSetting =		0x03000000,
-	// per project setting (ini file e.g. Engine.ini or Game.ini)
+	// Used by the [ConsoleVariables] section of Engine.ini as well as FSystemSettings
 	ECVF_SetBySystemSettingsIni =	0x04000000,
-	// per device setting (e.g. specific iOS device, higher priority than per project to do device specific settings)
+	// Per device settings using the DeviceProfiles.ini hierarchy (e.g. specific iOS device, higher priority than per project to do device specific settings)
 	ECVF_SetByDeviceProfile =		0x05000000,
-	// consolevariables.ini (for multiple projects)
-	ECVF_SetByConsoleVariablesIni = 0x06000000,
-	// a minus command e.g. -VSync (very high priority to enforce the setting for the application)
-	ECVF_SetByCommandline =			0x07000000,
-	// least useful, likely a hack, maybe better to find the correct SetBy...
-	ECVF_SetByCode =				0x08000000,
-	// editor UI or console in game or editor
-	ECVF_SetByConsole =				0x09000000,
+	// User settable game overrides, used for GameUserSettings fields that need to override device specific settings
+	ECVF_SetByGameOverride =		0x06000000,
+	// Set by local consolevariables.ini, mostly used for testing multiple projects
+	ECVF_SetByConsoleVariablesIni = 0x07000000,
+	// Used by some command line parameters, others use the Console priority instead
+	ECVF_SetByCommandline =			0x08000000,
+	// Used for high priority temporary debugging or operation modes 
+	ECVF_SetByCode =				0x09000000,
+	// Highest priority used via editor UI or or game/editor interactive console
+	ECVF_SetByConsole =				0x0A000000,
 
 	// ------------------------------------------------
 };
@@ -133,7 +139,7 @@ class IConsoleVariable;
 #if !NO_CVARS
 
 /** Console variable delegate type  This is a void callback function. */
-DECLARE_DELEGATE_OneParam(FConsoleVariableDelegate, IConsoleVariable*);
+DECLARE_DELEGATE_OneParam( FConsoleVariableDelegate, IConsoleVariable* );
 
 /** Console variable multicast delegate type. */
 DECLARE_MULTICAST_DELEGATE_OneParam(FConsoleVariableMulticastDelegate, IConsoleVariable*);
@@ -194,12 +200,12 @@ struct FNullConsoleVariableDelegate
 	}
 
 	template <typename UserClass, typename... VarTypes>
-	inline static DerivedType CreateSP(const TSharedRef<UserClass, ESPMode::Fast>&, typename TMemFunPtrType<false, UserClass, void (ParamTypes..., VarTypes...)>::Type, VarTypes...)
+	inline static DerivedType CreateSP(const TSharedRef<UserClass>&, typename TMemFunPtrType<false, UserClass, void (ParamTypes..., VarTypes...)>::Type, VarTypes...)
 	{
 		return {};
 	}
 	template <typename UserClass, typename... VarTypes>
-	inline static DerivedType CreateSP(const TSharedRef<UserClass, ESPMode::Fast>&, typename TMemFunPtrType<true, UserClass, void (ParamTypes..., VarTypes...)>::Type, VarTypes...)
+	inline static DerivedType CreateSP(const TSharedRef<UserClass>&, typename TMemFunPtrType<true, UserClass, void (ParamTypes..., VarTypes...)>::Type, VarTypes...)
 	{
 		return {};
 	}
@@ -449,6 +455,35 @@ public:
 
 	virtual FConsoleVariableMulticastDelegate& OnChangedDelegate() = 0;
 
+	/**
+	 * Get the saved off default value, in a cvar variable, if one was created
+	 */
+	virtual IConsoleVariable* GetDefaultValueVariable()
+	{
+		return nullptr;
+	}
+
+#if ALLOW_OTHER_PLATFORM_CONFIG
+
+	/**
+	 * Get a CVar opject that matches this cvar, but contains the value of the platform given.
+	 */
+	virtual TSharedPtr<IConsoleVariable> GetPlatformValueVariable(FName PlatformName)
+	{
+		// this could be called for some special subclass like FConsoleVariableBitRef that don't implement this (yet)
+		unimplemented();
+		return TSharedPtr<IConsoleVariable>();
+	}
+
+	/**
+	 * Used only for debugging/iterating, this will clear all of the other platform's cvar objects, which will 
+	 * force a fresh lookup (with fresh ini files, likely) on next call to GetPlatformValueVariable
+	 */
+	virtual void ClearPlatformVariables(FName PlatformName=NAME_None)
+	{
+	}
+#endif
+
 	// convenience methods
 
 	/** Set the internal value from the specified bool. */
@@ -493,6 +528,8 @@ public:
 		EConsoleVariableFlags CurFlags = (EConsoleVariableFlags)(GetFlags() & ECVF_SetByMask);
 		Set(InValue, CurFlags);
 	}
+
+
 };
 
 /**
@@ -840,6 +877,13 @@ struct CORE_API IConsoleManager
 	virtual IConsoleObject* FindConsoleObject(const TCHAR* Name, bool bTrackFrequentCalls = true) const = 0;
 
 	/**
+	 * Lookup the name of a console object by its pointer 
+	 * @param Object to lookup
+	 * @return Name of the object, or an empty string if the object can't be found
+	 */
+	virtual FString FindConsoleObjectName(const IConsoleObject* Obj) const = 0;
+
+	/**
 	 * Find a typed console variable (faster access to the value, no virtual function call)
 	 * @param Name must not be 0
 	 * @return 0 if the object wasn't found
@@ -920,6 +964,20 @@ struct CORE_API IConsoleManager
 		}
 		return *Singleton;
 	}
+
+#if ALLOW_OTHER_PLATFORM_CONFIG
+	/**
+	 * Walks over the best set of ini sections for another platform that can be used to emulate cvars as the platform
+	 * will have set - WITH THE NOTABLE EXCEPTION OF specific DeviceProfiles. Use the DeviceProfileManager code to get a DP
+	 * for a platform, as this code cannot easily access DeviceProfile logic.
+	 * It also won't include any UserSettings or ConsoleVariables.ini settings.
+	 * 
+	 * @param PlatformName The platform name (the ini name, so Windows, not Win64)
+	 * @param bVisitPlatformDeviceProfile Set to true if you want Visit called with CVars found in the base DeviceProfile named PlatformName 
+	 * @param Visit the callback to run for each CVar found
+	 */
+	static bool VisitPlatformCVarsForEmulation(FName PlatformName, bool bVisitPlatformDeviceProfile, TFunctionRef<void(const FString& CVarName, const FString& CVarValue, EConsoleVariableFlags SetBy)> Visit);
+#endif
 
 protected:
 	virtual ~IConsoleManager() { }
@@ -1310,6 +1368,7 @@ public:
 	// faster than GetValueOnAnyThread()
 	T GetValueOnGameThread() const
 	{
+		UE::AccessDetection::ReportAccess(UE::AccessDetection::EType::CVar);
 		// compiled out in shipping for performance (we can change in development later), if this get triggered you need to call GetValueOnRenderThread() or GetValueOnAnyThread(), the last one is a bit slower
 		cvarCheckCode(ensure(GetShadowIndex() == 0));	// ensure to not block content creators, #if to optimize in shipping
 		return ShadowedValue[0];
@@ -1318,6 +1377,7 @@ public:
 	// faster than GetValueOnAnyThread()
 	T GetValueOnRenderThread() const
 	{
+		UE::AccessDetection::ReportAccess(UE::AccessDetection::EType::CVar);
 #if !defined(__clang__) // @todo Mac: figure out how to make this compile
 		// compiled out in shipping for performance (we can change in development later), if this get triggered you need to call GetValueOnGameThread() or GetValueOnAnyThread(), the last one is a bit slower
 		cvarCheckCode(ensure(IsInParallelRenderingThread()));	// ensure to not block content creators, #if to optimize in shipping
@@ -1328,6 +1388,7 @@ public:
 	// convenient, for better performance consider using GetValueOnGameThread() or GetValueOnRenderThread()
 	T GetValueOnAnyThread(bool bForceGameThread = false) const
 	{
+		UE::AccessDetection::ReportAccess(UE::AccessDetection::EType::CVar);
 		return ShadowedValue[GetShadowIndex(bForceGameThread)];
 	}
 
@@ -1344,12 +1405,13 @@ private: // ----------------------------------------------------
 			cvarCheckCode(ensure(!IsInActualRenderingThread()));
 			return 0;
 		}
-		return IsInGameThread() ? 0 : 1;
+		return IsInParallelGameThread() || IsInGameThread() ? 0 : 1;
 	}
 
 	// needed for FConsoleVariable and FConsoleVariableRef2, intentionally not public
 	T& GetReferenceOnAnyThread(bool bForceGameThread = false)
 	{
+		UE::AccessDetection::ReportAccess(UE::AccessDetection::EType::CVar);
 		return ShadowedValue[GetShadowIndex(bForceGameThread)];
 	}
 
@@ -1372,6 +1434,19 @@ public:
 	 * @param Flags bitmask combined from EConsoleVariableFlags
 	 */
 	TAutoConsoleVariable(const TCHAR* Name, const T& DefaultValue, const TCHAR* Help, uint32 Flags = ECVF_Default);
+
+	/**
+	 * Create a float, int or string console variable
+	 * @param Name must not be 0
+	 * @param Help must not be 0
+	 * @param Callback Delegate called when the variable changes. @see IConsoleVariable::SetOnChangedCallback
+	 * @param Flags bitmask combined from EConsoleVariableFlags
+	 */
+	TAutoConsoleVariable(const TCHAR* Name, const T& DefaultValue, const TCHAR* Help, const FConsoleVariableDelegate& Callback, uint32 Flags = ECVF_Default)
+		: TAutoConsoleVariable(Name, DefaultValue, Help, Flags)
+	{
+		AsVariable()->SetOnChangedCallback(Callback);
+	}
 
 	T GetValueOnGameThread() const
 	{

@@ -12,25 +12,32 @@ public class SkeletonEditor : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"ApplicationCore",
-                "InputCore",
+				"InputCore",
 				"Slate",
 				"SlateCore",
-                "EditorStyle",
-                "UnrealEd",
-                "Persona",
-                "AnimGraph",
-                "AnimGraphRuntime",
-                "ContentBrowser",
-                "AssetRegistry",
-                "BlueprintGraph",
-                "Kismet",
-                "PinnedCommandList",
-            }
+				"EditorStyle",
+				"EditorFramework",
+				"UnrealEd",
+				"Persona",
+				"AnimGraph",
+				"AnimGraphRuntime",
+				"ContentBrowser",
+				"AssetRegistry",
+				"BlueprintGraph",
+				"Kismet",
+				"PinnedCommandList",
+				"ToolMenus",
+				"EditorWidgets",
+				"ToolWidgets",
+				"AnimationCore",
+				"AnimationWidgets",
+			}
 		);
 
         PublicIncludePathModuleNames.AddRange(
             new string[] {
                 "Persona",
+                "AnimationWidgets",
             }
         );
 

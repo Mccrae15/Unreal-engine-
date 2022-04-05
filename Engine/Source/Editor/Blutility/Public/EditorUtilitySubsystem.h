@@ -8,12 +8,16 @@
 #include "UObject/UObjectGlobals.h"
 #include "Templates/SubclassOf.h"
 #include "Containers/Queue.h"
+#include "Containers/Ticker.h"
 
 #include "EditorUtilitySubsystem.generated.h"
 
 class SWindow;
 class UEditorUtilityWidget;
 class UEditorUtilityTask;
+
+/** Delegate for a PIE event exposed via Editor Utility (begin, end, pause/resume, etc) */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEditorUtilityPIEEvent, const bool, bIsSimulating);
 
 UCLASS(config = EditorPerProjectUserSettings)
 class BLUTILITY_API UEditorUtilitySubsystem : public UEditorSubsystem
@@ -25,6 +29,8 @@ public:
 
 	virtual void Initialize(FSubsystemCollectionBase& Collection);
 	virtual void Deinitialize();
+
+	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 
 	void MainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsNewProjectWindow);
 	void HandleStartup();
@@ -72,15 +78,28 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Development|Editor")
 	UEditorUtilityWidget* FindUtilityWidgetFromBlueprint(class UEditorUtilityWidgetBlueprint* InBlueprint);
 
+	/**  */
 	UFUNCTION(BlueprintCallable, Category = "Development|Editor")
-	void RegisterAndExecuteTask(UEditorUtilityTask* NewTask);
+	void RegisterAndExecuteTask(UEditorUtilityTask* NewTask, UEditorUtilityTask* OptionalParentTask = nullptr);
 
 	void RemoveTaskFromActiveList(UEditorUtilityTask* Task);
 
 	void RegisterReferencedObject(UObject* ObjectToReference);
 	void UnregisterReferencedObject(UObject* ObjectToReference);
 
+	/** Expose Begin PIE to blueprints.*/
+	UPROPERTY(BlueprintAssignable)
+	FOnEditorUtilityPIEEvent OnBeginPIE;
+
+	/** Expose End PIE to blueprints.*/
+	UPROPERTY(BlueprintAssignable)
+	FOnEditorUtilityPIEEvent OnEndPIE;
+
 protected:
+	UEditorUtilityTask* GetActiveTask() { return ActiveTaskStack.Num() > 0 ? ActiveTaskStack[ActiveTaskStack.Num() - 1] : nullptr; };
+
+	void StartTask(UEditorUtilityTask* Task);
+
 	bool Tick(float DeltaTime);
 
 	void ProcessRunTaskCommands();
@@ -91,24 +110,30 @@ protected:
 	UClass* FindClassByName(const FString& RawTargetName);
 	UClass* FindBlueprintClass(const FString& TargetNameRaw);
 
+	/** Called when Play in Editor begins. */
+	void HandleOnBeginPIE(const bool bIsSimulating);
+
+	/** Called when Play in Editor stops. */
+	void HandleOnEndPIE(const bool bIsSimulating);
+
 private:
 	IConsoleObject* RunTaskCommandObject = nullptr;
 	IConsoleObject* CancelAllTasksCommandObject = nullptr;
 	
 	UPROPERTY()
-	TMap<UObject* /*Asset*/, UObject* /*Instance*/> ObjectInstances;
+	TMap<TObjectPtr<UObject> /*Asset*/, TObjectPtr<UObject> /*Instance*/> ObjectInstances;
 
 	TQueue< TArray<FString> > RunTaskCommandBuffer;
 
-	UPROPERTY(Transient)
-	TArray<UEditorUtilityTask*> PendingTasks;
+	/** AddReferencedObjects is used to report these references to GC. */
+	TMap<TObjectPtr<UEditorUtilityTask>, TArray<TObjectPtr<UEditorUtilityTask>>> PendingTasks;
 
 	UPROPERTY(Transient)
-	UEditorUtilityTask* ActiveTask;
+	TArray<TObjectPtr<UEditorUtilityTask>> ActiveTaskStack;
 
-	FDelegateHandle TickerHandle;
+	FTSTicker::FDelegateHandle TickerHandle;
 
 	/** List of objects that are being kept alive by this subsystem. */
 	UPROPERTY()
-	TSet<UObject*> ReferencedObjects;
+	TSet<TObjectPtr<UObject>> ReferencedObjects;
 };

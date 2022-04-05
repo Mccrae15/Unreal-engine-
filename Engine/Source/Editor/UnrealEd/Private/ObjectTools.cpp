@@ -2,13 +2,14 @@
 
 
 #include "ObjectTools.h"
+#include "Engine/World.h"
 #include "Engine/Level.h"
 #include "UObject/UnrealType.h"
 #include "Components/ActorComponent.h"
 #include "GameFramework/Actor.h"
 #include "Engine/Blueprint.h"
 #include "Exporters/Exporter.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
@@ -39,6 +40,7 @@
 #include "Engine/Texture.h"
 #include "ThumbnailRendering/ThumbnailManager.h"
 #include "ThumbnailRendering/TextureThumbnailRenderer.h"
+#include "ThumbnailExternalCache.h"
 #include "Engine/StaticMesh.h"
 #include "Factories/Factory.h"
 #include "AssetToolsModule.h"
@@ -46,6 +48,7 @@
 #include "GameFramework/Volume.h"
 #include "UObject/MetaData.h"
 #include "Serialization/ArchiveReplaceObjectRef.h"
+#include "Serialization/ArchiveReplaceObjectAndStructPropertyRef.h"
 #include "GameFramework/WorldSettings.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
@@ -92,10 +95,10 @@
 #include "HAL/PlatformApplicationMisc.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "TextureCompiler.h"
 #include "UObject/ReferencerFinder.h"
 #include "Containers/Set.h"
 #include "UObject/StrongObjectPtr.h"
-#include "DistanceFieldAtlas.h"
 #include "Logging/LogMacros.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogObjectTools, Log, All);
@@ -167,7 +170,8 @@ namespace ObjectTools
 			{
 				if( ObjectPackage != GetTransientPackage()
 					&& (ObjectPackage->HasAnyPackageFlags(PKG_PlayInEditor) == false)
-					&& !Obj->IsPendingKill() )
+					&& IsValidChecked(Obj) 
+					&& !Obj->IsA<AActor>())
 				{
 					bIsSupported = true;
 				}
@@ -176,9 +180,62 @@ namespace ObjectTools
 
 		return bIsSupported;
 	}
-	
+
+	bool IsNonGCObject(UObject* Object)
+	{
+		FUObjectItem* ObjectItem = GUObjectArray.ObjectToObjectItem(Object);
+		return
+			ObjectItem->IsRootSet() ||
+			ObjectItem->HasAnyFlags(EInternalObjectFlags::GarbageCollectionKeepFlags) ||
+			(GARBAGE_COLLECTION_KEEPFLAGS != RF_NoFlags && Object->HasAnyFlags(GARBAGE_COLLECTION_KEEPFLAGS));
+	}
+
+	TSet<UObject*> FindObjectsRoots(TSet<UObject*>& InObjects)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FindObjectsRoots)
+
+		TSet<UObject*> Roots;
+		UTransactor* Transactor = GEditor ? ToRawPtr(GEditor->Trans) : nullptr;
+
+		// Handle the objects themselves if they can't be GCed
+		for (UObject* Object : InObjects)
+		{
+			if (IsNonGCObject(Object))
+			{
+				Roots.Add(Object);
+			}
+		}
+
+		// We recursively grow the cluster of objects we need to find referencers on until no more referencers are found
+		int32 LastObjectCount = 0;
+		while (InObjects.Num() != LastObjectCount)
+		{
+			LastObjectCount = InObjects.Num();
+			for (UObject* NewReferencer : FReferencerFinder::GetAllReferencers(InObjects, &InObjects))
+			{
+				// Stop walking the dependency chain when the transactor is the referencer
+				if (Transactor == NewReferencer)
+				{
+					Roots.Add(Transactor);
+				}
+				else if (IsNonGCObject(NewReferencer))
+				{
+					Roots.Add(NewReferencer);
+				}
+				else
+				{
+					InObjects.Add(NewReferencer);
+				}
+			}
+		}
+
+		return MoveTemp(Roots);
+	}
+
 	void GatherObjectReferencersForDeletion(UObject* InObject, bool& bOutIsReferenced, bool& bOutIsReferencedInMemoryByUndo, FReferencerInformationList* OutMemoryReferences, bool bInRequireReferencingProperties)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(GatherObjectReferencersForDeletion)
+
 		if (OutMemoryReferences)
 		{
 			OutMemoryReferences->ExternalReferences.Reset();
@@ -193,7 +250,7 @@ namespace ObjectTools
 
 		if (!CVarUseLegacyGetReferencersForDeletion.GetValueOnAnyThread())
 		{
-			const UTransactor* Transactor = GEditor ? GEditor->Trans : nullptr;
+			const UTransactor* Transactor = GEditor ? ToRawPtr(GEditor->Trans) : nullptr;
 			bool bIsGatheringPackageRef = InObject->IsA<UPackage>();
 
 			// Get the cluster of objects that are going to be deleted
@@ -271,6 +328,30 @@ namespace ObjectTools
 				}
 			}
 
+			// Walk the ref chain to make sure external refs we found are actually reachable and can't be GCed
+			if (bOutIsReferenced)
+			{
+				TSet<UObject*> Referencers;
+				Referencers.Reserve(References.ExternalReferences.Num());
+
+				for (FReferencerInformation& RefInfo : References.ExternalReferences)
+				{
+					Referencers.Add(RefInfo.Referencer);
+				}
+
+				TSet<UObject*> Roots = FindObjectsRoots(Referencers);
+
+				if (Roots.Contains(Transactor))
+				{
+					bOutIsReferencedInMemoryByUndo = true;
+					bOutIsReferenced = Roots.Num() > 1;
+				}
+				else
+				{
+					bOutIsReferenced = Roots.Num() > 0;
+				}
+			}
+
 			// For now, only IsReferenced can output which Property refers to an object and it is required
 			// when showing the graph dialog of referencers. 
 			// Only called when required and only when references are found, effect of this slower path is expected to be mostly negligible.
@@ -319,15 +400,20 @@ namespace ObjectTools
 			TArray<UObject*> AdditionalObjectsToExclude;
 			for (UObject* ObjectToExclude : ObjectsToExclude)
 			{
+				GetObjectsWithOuter(ObjectToExclude, AdditionalObjectsToExclude);
+
 				if (UBlueprint* BlueprintObject = Cast<UBlueprint>(ObjectToExclude))
 				{
-					TArray<UObject*> ClassSubObjects;
-					GetObjectsWithOuter(BlueprintObject->GeneratedClass, ClassSubObjects, false);
-					for (UObject* ClassSubObject : ClassSubObjects)
+					if (BlueprintObject->GeneratedClass)
 					{
-						if (ClassSubObject->HasAnyFlags(RF_ArchetypeObject))
+						TArray<UObject*> ClassSubObjects;
+						GetObjectsWithOuter(BlueprintObject->GeneratedClass, ClassSubObjects, /*bIncludeNestedObjects=*/false);
+						for (UObject* ClassSubObject : ClassSubObjects)
 						{
-							AdditionalObjectsToExclude.Add(ClassSubObject);
+							if (ClassSubObject->HasAnyFlags(RF_ArchetypeObject))
+							{
+								AdditionalObjectsToExclude.Add(ClassSubObject);
+							}
 						}
 					}
 				}
@@ -342,7 +428,7 @@ namespace ObjectTools
 				TArray<UObject*> AdditionalObjects;
 				{
 					TArray<UObject*> SubObjects;
-					GetObjectsWithOuter(InObject, SubObjects, false);
+					GetObjectsWithOuter(InObject, SubObjects, /*bIncludeNestedObjects=*/false);
 					for (UObject* SubObject : SubObjects)
 					{
 						if (SubObject->HasAnyFlags(RF_ArchetypeObject)
@@ -356,20 +442,23 @@ namespace ObjectTools
 
 				if (UBlueprint* BlueprintObject = Cast<UBlueprint>(InObject))
 				{
-					if (AdditionalObjects.Contains(BlueprintObject->GeneratedClass))
+					if (BlueprintObject->GeneratedClass)
 					{
-						// We don't want to replace within the generated class. 
-						AdditionalObjects.Remove(BlueprintObject->GeneratedClass);
-					}
-					TArray<UObject*> ClassSubObjects;
-					GetObjectsWithOuter(BlueprintObject->GeneratedClass, ClassSubObjects, false);
-					for (UObject* ClassSubObject : ClassSubObjects)
-					{
-						if (ClassSubObject->HasAnyFlags(RF_ArchetypeObject)
-							&& !ObjectsToExclude.Contains(ClassSubObject)
-							&& !InObjects.Contains(ClassSubObject))
+						if (AdditionalObjects.Contains(BlueprintObject->GeneratedClass))
 						{
-							AdditionalObjects.Add(ClassSubObject);
+							// We don't want to replace within the generated class. 
+							AdditionalObjects.Remove(BlueprintObject->GeneratedClass);
+						}
+						TArray<UObject*> ClassSubObjects;
+						GetObjectsWithOuter(BlueprintObject->GeneratedClass, ClassSubObjects, /*bIncludeNestedObjects=*/false);
+						for (UObject* ClassSubObject : ClassSubObjects)
+						{
+							if (ClassSubObject->HasAnyFlags(RF_ArchetypeObject)
+								&& !ObjectsToExclude.Contains(ClassSubObject)
+								&& !InObjects.Contains(ClassSubObject))
+							{
+								AdditionalObjects.Add(ClassSubObject);
+							}
 						}
 					}
 				}
@@ -498,6 +587,16 @@ namespace ObjectTools
 		TSet<UPackage*> PackagesUserRefusedToFullyLoad;
 		TArray<UPackage*> OutermostPackagesToSave;
 
+		// If any objects are cooked, show just one dialog now so user is not flooded with a large number of dialogs
+		for (UObject* Object : SelectedObjects)
+		{
+			if (Object && Object->RootPackageHasAnyFlags(PKG_FilterEditorOnly))
+			{
+				FMessageDialog::Open( EAppMsgType::Ok, FText::Format(NSLOCTEXT("UnrealEd", "CannotDuplicateCooked", "Cannot duplicate object: '{0}'\nPackage is cooked or missing editor data"), FText::FromString(Object->GetName())) );
+				return;
+			}
+		}
+
 		for( int32 ObjectIndex = 0 ; ObjectIndex < SelectedObjects.Num() ; ++ObjectIndex )
 		{
 			UObject* Object = SelectedObjects[ObjectIndex];
@@ -544,7 +643,7 @@ namespace ObjectTools
 		}
 	}
 
-	UObject* DuplicateSingleObject(UObject* Object, const FPackageGroupName& PGN, TSet<UPackage*>& InOutPackagesUserRefusedToFullyLoad, bool bPromptToOverwrite)
+	UObject* DuplicateSingleObject(UObject* Object, const FPackageGroupName& PGN, TSet<UPackage*>& InOutPackagesUserRefusedToFullyLoad, bool bPromptToOverwrite, TMap<TSoftObjectPtr<UObject>, TSoftObjectPtr<UObject>>* DuplicatedObjects /*= nullptr*/)
 	{
 		UObject* ReturnObject = NULL;
 
@@ -570,6 +669,10 @@ namespace ObjectTools
 		{
 			ErrorMessage += TEXT("Invalid package name supplied\n");
 		}
+		else if (Object->RootPackageHasAnyFlags(PKG_FilterEditorOnly))
+		{
+			ErrorMessage += TEXT("Package is cooked or missing editor data\n");
+		}
 		else
 		{
 			// Make a full path from the target package and group.
@@ -585,7 +688,7 @@ namespace ObjectTools
 			if ( !ExistingPackage )
 			{
 				FString Filename;
-				if ( FPackageName::DoesPackageExist(FullPackageName, NULL, &Filename) )
+				if ( FPackageName::DoesPackageExist(FullPackageName, &Filename) )
 				{
 					// There is an unloaded package file at the destination.
 					ExistingPackage = LoadPackage(NULL, *FullPackageName, LOAD_None);
@@ -748,7 +851,26 @@ namespace ObjectTools
 		if ( ensure(ExistingObject == NULL) )
 		{
 			EDuplicateMode::Type DuplicateMode = Object->IsA(UWorld::StaticClass()) ? EDuplicateMode::World : EDuplicateMode::Normal;
-			DupObject = StaticDuplicateObject( Object, CreatePackage(*PkgName), *ObjName, RF_AllFlags, nullptr, DuplicateMode );
+
+			FObjectDuplicationParameters Params = InitStaticDuplicateObjectParams(Object, CreatePackage(*PkgName), *ObjName, RF_AllFlags, nullptr, DuplicateMode);
+
+			TMap<UObject*, UObject*> CreatedObjects;
+			if (DuplicatedObjects)
+			{
+				Params.CreatedObjects = &CreatedObjects;
+			}
+
+			DupObject = StaticDuplicateObjectEx(Params);
+
+			if (DuplicatedObjects)
+			{
+				// Convert DuplicatedObjects map into an object paths map
+				DuplicatedObjects->Reserve(CreatedObjects.Num());
+				for (const auto& DuplicatedObjectPair : CreatedObjects)
+				{
+					DuplicatedObjects->Add(DuplicatedObjectPair.Key, DuplicatedObjectPair.Value);
+				}
+			}
 		}
 
 		if( DupObject )
@@ -773,9 +895,9 @@ namespace ObjectTools
 			}
 
 			// When duplicating a World Composition map, make sure to properly initialize WorldTileInfo
-			if (Object->GetOutermost()->WorldTileInfo.IsValid())
+			if (Object->GetOutermost()->GetWorldTileInfo())
 			{
-				DupObject->GetOutermost()->WorldTileInfo = MakeUnique<FWorldTileInfo>(*Object->GetOutermost()->WorldTileInfo);
+				DupObject->GetOutermost()->SetWorldTileInfo(MakeUnique<FWorldTileInfo>(*Object->GetOutermost()->GetWorldTileInfo()));
 			}
 
 			// Notify the asset registry
@@ -800,7 +922,7 @@ namespace ObjectTools
 		GEditor->GetSelectedObjects()->Select( Object );
 
 		// Replace all references
-		FArchiveReplaceObjectRef<UObject> ReplaceAr( DupObject, ReplacementMap, false, true, true );
+		FArchiveReplaceObjectRef<UObject> ReplaceAr( DupObject, ReplacementMap, EArchiveReplaceObjectFlags::IgnoreOuterRef | EArchiveReplaceObjectFlags::IgnoreArchetypeRef );
 
 		return ReturnObject;
 	}
@@ -930,8 +1052,11 @@ namespace ObjectTools
 			}
 		}
 
-		// Reset linker loaders to remove the possibility that any references to 'ObjectsToReplace' exist in the loaders (these can't get picked up by the replace archives)
-		ResetLoaders(nullptr);
+		// @note FH: There shouldn't be a need to reset all loaders here to replace references. This actually currently causes all bulkdata to be force loaded since we are getting rid on the underlying loader archive
+		// Although object references in linkers aren't tracked by the GC nor can't be replaced by the reference gathering archives, they will be properly cleaned out of the linker if the linker outlives the objects for one thing,
+		// but moreover the linkers associated with the packages of the object we are replacing will also been cleaned up if we are deleting those packages after the force replace references.
+		// For both of these reasons, a call to reset all linkers here seems entirely unnecessary
+		//ResetLoaders(nullptr);
 
 		TMap<UObject*, int32> ObjToNumRefsMap;
 		if( ObjectToReplaceWith != NULL )
@@ -945,7 +1070,7 @@ namespace ObjectTools
 		}
 
 		// Objects already loaded and in memory have to have any of their references to the objects to replace swapped with a reference to
-		// the "object to replace with". FArchiveReplaceObjectRef can serve this purpose, but it expects a TMap of object to replace : object to replace with.
+		// the "object to replace with". FArchiveReplaceObjectAndStructPropertyRef can serve this purpose, but it expects a TMap of object to replace : object to replace with.
 		// Therefore, populate a map with all of the valid objects to replace as keys, with the object to replace with as the value for each one.
 		TMap<UObject*, UObject*> ReplacementMap;
 		for ( TArray<UObject*>::TConstIterator ReplaceItr( ObjectsToReplace ); ReplaceItr; ++ReplaceItr )
@@ -1001,7 +1126,7 @@ namespace ObjectTools
 			UObject* CurObject = *ObjIter;
 
 			// Don't bother replacing in objects that are about to be garbage collected
-			if ((ObjectsToReplaceWithin.Num() > 0 && !ObjectsToReplaceWithin.Contains(CurObject)) || CurObject->IsPendingKillOrUnreachable())
+			if ((ObjectsToReplaceWithin.Num() > 0 && !ObjectsToReplaceWithin.Contains(CurObject)) || !IsValidChecked(CurObject) || CurObject->IsUnreachable())
 			{
 				CurObject = nullptr;
 			}
@@ -1073,19 +1198,10 @@ namespace ObjectTools
 					UBlueprint* BPObjectToUpdate = Cast<UBlueprint>(CurObject);
 					if (BPObjectToUpdate)
 					{
-						const bool bNullPrivateRefs = false;
-						const bool bIgnoreOuterRef = false;
-						const bool bIgnoreArchetypeRef = false;
-						const bool bDelayStart = false;
-						const bool bIgnoreClassGeneratedByRef = false;
-						FArchiveReplaceObjectRef<UObject> ReplaceAr(BPObjectToUpdate->GeneratedClass->ClassDefaultObject, ReplacementMap, bNullPrivateRefs, bIgnoreOuterRef, bIgnoreArchetypeRef, bDelayStart, bIgnoreClassGeneratedByRef);
+						FArchiveReplaceObjectAndStructPropertyRef<UObject> ReplaceInBPClassObject_Ar(BPObjectToUpdate->GeneratedClass, ReplacementMap, EArchiveReplaceObjectFlags::IncludeClassGeneratedByRef);
+						FArchiveReplaceObjectAndStructPropertyRef<UObject> ReplaceInBPClassDefaultObject_Ar(BPObjectToUpdate->GeneratedClass->ClassDefaultObject, ReplacementMap, EArchiveReplaceObjectFlags::IncludeClassGeneratedByRef);
 					}
-					const bool bNullPrivateRefs = false;
-					const bool bIgnoreOuterRef = false;
-					const bool bIgnoreArchetypeRef = false;
-					const bool bDelayStart = false;
-					const bool bIgnoreClassGeneratedByRef = false;
-					FArchiveReplaceObjectRef<UObject> ReplaceAr(CurObject, ReplacementMap, bNullPrivateRefs, bIgnoreOuterRef, bIgnoreArchetypeRef, bDelayStart, bIgnoreClassGeneratedByRef);
+					FArchiveReplaceObjectAndStructPropertyRef<UObject> ReplaceAr(CurObject, ReplacementMap, EArchiveReplaceObjectFlags::IncludeClassGeneratedByRef);
 				}
 			}
 		}
@@ -1099,12 +1215,7 @@ namespace ObjectTools
 				GWarn->StatusUpdate( NumObjsReplaced, ReferencingPropertiesMapKeys.Num(), NSLOCTEXT("UnrealEd", "ConsolidateAssetsUpdate_ReplacingReferences", "Replacing Asset References...") );
 
 				UObject* CurReplaceObj = ReferencingPropertiesMapKeys[Index];
-				const bool bNullPrivateRefs = false;
-				const bool bIgnoreOuterRef = false;
-				const bool bIgnoreArchetypeRef = false;
-				const bool bDelayStart = false;
-				const bool bIgnoreClassGeneratedByRef = false;
-				FArchiveReplaceObjectRef<UObject> ReplaceAr( CurReplaceObj, ReplacementMap, bNullPrivateRefs, bIgnoreOuterRef, bIgnoreArchetypeRef, bDelayStart, bIgnoreClassGeneratedByRef);
+				FArchiveReplaceObjectAndStructPropertyRef<UObject> ReplaceAr(CurReplaceObj, ReplacementMap, EArchiveReplaceObjectFlags::IncludeClassGeneratedByRef);
 			}
 		}
 		// Now alter the referencing objects the change has completed via PostEditChange,
@@ -1382,6 +1493,14 @@ namespace ObjectTools
 					}
 
 					ReplaceInfo.AppendUnique(GeneratedClassReplaceInfo);
+
+					// Find and cache all Blueprints that have a new dependency on the consolidation target after reference replacement.
+					TArray<UBlueprint*> DependentBPs;
+					FBlueprintEditorUtils::FindDependentBlueprints(ObjectToConsolidateTo_BP, DependentBPs);
+					for (UBlueprint* DependentBP : DependentBPs)
+					{
+						ObjectToConsolidateTo_BP->CachedDependents.Add(DependentBP);
+					}
 				}
 				DirtiedPackages.Append( ReplaceInfo.DirtiedPackages );
 				UnconsolidatableObjects.Append( ReplaceInfo.UnreplaceableObjects );
@@ -1389,12 +1508,12 @@ namespace ObjectTools
 
 			// See if this is a blueprint consolidate and replace instances of the generated class
 			UBlueprint* BlueprintToConsolidateTo = Cast<UBlueprint>(ObjectToConsolidateTo);
-			if ( BlueprintToConsolidateTo != NULL && ensure(BlueprintToConsolidateTo->GeneratedClass) )
+			if (BlueprintToConsolidateTo != NULL && BlueprintToConsolidateTo->GeneratedClass)
 			{
 				for ( TArray<UObject*>::TConstIterator ConsolIter( ReplaceInfo.ReplaceableObjects ); ConsolIter; ++ConsolIter )
 				{
 					UBlueprint* BlueprintToConsolidate = Cast<UBlueprint>(*ConsolIter);
-					if ( BlueprintToConsolidate != NULL && ensure(BlueprintToConsolidate->GeneratedClass) )
+					if (BlueprintToConsolidate != NULL && BlueprintToConsolidate->GeneratedClass)
 					{
 						// Replace all instances of objects based on the old blueprint's class with objects based on the new class,
 						// then repair the references on the object being consolidated so those objects can be properly disposed of upon deletion.
@@ -1629,7 +1748,7 @@ namespace ObjectTools
 		return ConsolidationResults;
 	}
 
-	void CompileBlueprintsAfterRefUpdate(TArray<UObject*>& ObjectsConsolidatedWithin)
+	void CompileBlueprintsAfterRefUpdate(const TArray<UObject*>& ObjectsConsolidatedWithin)
 	{
 		for (UObject* CurObject : ObjectsConsolidatedWithin)
 		{
@@ -1997,7 +2116,7 @@ namespace ObjectTools
 			UPackage* Package = PackagesToDelete[PackageIdx];
 
 			FString PackageFilename;
-			if( !FPackageName::DoesPackageExist( Package->GetName(), NULL, &PackageFilename ) )
+			if( !FPackageName::DoesPackageExist( Package->GetName(), &PackageFilename ) )
 			{
 				// Could not determine filename for package so we can not delete
 				PackagesToDelete.RemoveAt(PackageIdx);
@@ -2033,7 +2152,7 @@ namespace ObjectTools
 				{
 					const UPackage* Package = PackagesToDelete[PackageIdx];
 					FString PackageFilename;
-					if(FPackageName::DoesPackageExist(Package->GetName(), NULL, &PackageFilename))
+					if(FPackageName::DoesPackageExist(Package->GetName(), &PackageFilename))
 					{
 						FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*PackageFilename, false);
 					}
@@ -2090,7 +2209,7 @@ namespace ObjectTools
 				UPackage* CurrentPackage = Cast<UPackage>(Package);
 
 				FString PackageFilename;
-				if( Package != nullptr && FPackageName::DoesPackageExist( Package->GetName(), NULL, &PackageFilename ) )
+				if( Package != nullptr && FPackageName::DoesPackageExist( Package->GetName(), &PackageFilename ) )
 				{
 					PackageFilesToDelete.Add(PackageFilename);
 					CurrentPackage->SetDirtyFlag(false);
@@ -2128,6 +2247,7 @@ namespace ObjectTools
 		for (UPackage* PackageToDelete : PackagesToDelete)
 		{
 			FAssetRegistryModule::PackageDeleted(PackageToDelete);
+			FEditorDelegates::OnPackageDeleted.Broadcast(PackageToDelete);
 		}
 
 		// Unload the packages and collect garbage.
@@ -2164,7 +2284,8 @@ namespace ObjectTools
 
 					// Revert the file if it is checked out
 					const bool bIsAdded = SourceControlState->IsAdded();
-					if ( SourceControlState->IsCheckedOut() || bIsAdded || SourceControlState->IsDeleted() )
+					const bool bIsCheckedOut = SourceControlState->IsCheckedOut();
+					if ( bIsCheckedOut || bIsAdded || SourceControlState->IsDeleted() )
 					{
 						// Batch the revert operation so that we only make one request to the source control module.
 						SCCFilesToRevert.Add(FullPackageFilename);
@@ -2173,6 +2294,11 @@ namespace ObjectTools
 					if ( bIsAdded )
 					{
 						// The file was open for add and reverted, this leaves the file on disk so here we delete it
+						IFileManager::Get().Delete(*PackageFilename);
+					}
+					else if ((!bIsCheckedOut) && (!IFileManager::Get().IsReadOnly(*PackageFilename)))
+					{
+						// The file was made writable and deleted, so we delete it on disk.
 						IFileManager::Get().Delete(*PackageFilename);
 					}
 					else
@@ -2252,6 +2378,7 @@ namespace ObjectTools
 		for ( int i = 0; i < AssetsToDelete.Num(); i++ )
 		{
 			const FAssetData& AssetData = AssetsToDelete[i];
+			FScopedLoadAllExternalObjects Scope(AssetData.PackageName);
 			UObject *ObjectToDelete = AssetData.GetAsset();
 			// Assets can be loaded even when their underlying type/class no longer exists...
 			if ( ObjectToDelete!=nullptr )
@@ -2262,7 +2389,7 @@ namespace ObjectTools
 			{
 				// ... In this cases there is no underlying asset or type so remove the package itself directly after confirming it's valid to do so.
 				FString PackageFilename;
-				if( !FPackageName::DoesPackageExist( AssetData.PackageName.ToString(), NULL, &PackageFilename ) )
+				if( !FPackageName::DoesPackageExist( AssetData.PackageName.ToString(), &PackageFilename ) )
 				{
 					// Could not determine filename for package so we can not delete
 					continue;
@@ -2534,7 +2661,7 @@ namespace ObjectTools
 			check(ObjectPackage != nullptr);
 
 			FString PackageFilename;
-			if (FPackageName::DoesPackageExist(ObjectPackage->GetName(), nullptr, &PackageFilename))
+			if (FPackageName::DoesPackageExist(ObjectPackage->GetName(), &PackageFilename))
 			{
 				if (IFileManager::Get().IsReadOnly(*PackageFilename))
 				{
@@ -2659,19 +2786,12 @@ namespace ObjectTools
 			{
 				World->CleanupWorld();
 			}
-
-			// Make sure the object is not still referenced by async tasks
-			UStaticMesh* StaticMesh = Cast<UStaticMesh>(ObjectToDelete);
-			if (StaticMesh != nullptr)
-			{
-				GDistanceFieldAsyncQueue->BlockUntilBuildComplete(StaticMesh, true);
-			}
 		}
 
 		if ( bPerformReferenceCheck )
 		{
 			FReferencerInformationList Refs;
-			
+
 			bool bIsReferenced = false;
 			bool bIsReferencedByUndo = false;
 			const bool bRequireReferencedProperties = true;
@@ -2817,7 +2937,7 @@ namespace ObjectTools
 		{
 			return 0;
 		}
-		
+
 		// Recursively find all references to objects being deleted
 		TSet<FWeakObjectPtr> ReferencingObjects;
 		RecursiveRetrieveReferencers(InObjectsToDelete, ReferencingObjects);
@@ -2855,7 +2975,8 @@ namespace ObjectTools
 			for(int32 I = 0; I < ShownObjectsToDelete.Num() && I < MAX_PACKAGES_TO_LOG; ++I)
 			{
 				Msg.Append(TEXT("\n"));
-				Msg.Append(FString::Printf(TEXT("\tAsset Name: %s"), *GetPathNameSafe(ShownObjectsToDelete[I])));
+				Msg.Append(FString::Printf(TEXT("\tAsset Name: %s\n"), *GetPathNameSafe(ShownObjectsToDelete[I])));
+				Msg.Append(FString::Printf(TEXT("\tAsset Type: %s"), *(ShownObjectsToDelete[I]->GetClass()->GetName())));
 			}
 			UE_LOG(LogUObjectGlobals, Log, TEXT("%s"), *Msg);
 		}
@@ -2970,7 +3091,7 @@ namespace ObjectTools
 				UActorComponent* CurComponent = *ComponentItr;
 
 				// Skip if already pending GC
-				if (!CurComponent->IsPendingKill())
+				if (IsValid(CurComponent))
 				{
 					// Deselect if active
 					USelection* SelectedComponents = GEditor->GetSelectedComponents();
@@ -3000,7 +3121,7 @@ namespace ObjectTools
 				AActor* CurActor = *ActorItr;
 
 				// Skip if already pending GC
-				if ( !CurActor->IsPendingKill() )
+				if ( IsValid(CurActor) )
 				{
 					// Deselect if active
 					USelection* SelectedActors = GEditor->GetSelectedActors();
@@ -3334,7 +3455,7 @@ namespace ObjectTools
 			else
 			{
 				FString PackageFilename;
-				if ( FPackageName::DoesPackageExist(PackageName, NULL, &PackageFilename) )
+				if ( FPackageName::DoesPackageExist(PackageName, &PackageFilename) )
 				{
 					NewPackage = LoadPackage(NULL, *PackageFilename, LOAD_None);
 				}
@@ -3388,7 +3509,7 @@ namespace ObjectTools
 						else
 						{
 							FString PackageFilename;
-							if ( FPackageName::DoesPackageExist(PackageName, NULL, &PackageFilename) )
+							if ( FPackageName::DoesPackageExist(PackageName, &PackageFilename) )
 							{
 								NewPackage = LoadPackage(NULL, *PackageFilename, LOAD_None);
 							}
@@ -3555,7 +3676,7 @@ namespace ObjectTools
 			FString OriginPackageFilename;
 			// If the object was is in a localized directory.  SoundWaves in non localized package file paths should  be able to move anywhere.
 			bool bOriginPackageInLocalizedDir = false;
-			if ( FPackageName::DoesPackageExist( Object->GetOutermost()->GetName(), NULL, &OriginPackageFilename ) )
+			if ( FPackageName::DoesPackageExist( Object->GetOutermost()->GetName(), &OriginPackageFilename ) )
 			{
 				// if the language specific path cant be found in the origin package filename, this package is not in a directory for only localized packages
 				bOriginPackageInLocalizedDir = (OriginPackageFilename.Contains( LanguageSpecificPath ) );
@@ -3564,7 +3685,7 @@ namespace ObjectTools
 			// Filename of the package we are moving to
 			FString DestPackageName;
 			// Find the package filename of the package we are moving to.
-			bPackageIsNew = !FPackageName::DoesPackageExist( NewPackageName, NULL, &DestPackageName );
+			bPackageIsNew = !FPackageName::DoesPackageExist( NewPackageName, &DestPackageName );
 			if( !bPackageIsNew && bOriginPackageInLocalizedDir && !DestPackageName.Contains( LanguageSpecificPath ) )
 			{
 				// Skip new packages or packages not in localized dirs (objects in these can move anywhere)
@@ -3605,7 +3726,7 @@ namespace ObjectTools
 				FString ExistingOutermostPackageFilename;
 				if ( ExistingOutermostPackage )
 				{
-					FPackageName::DoesPackageExist( ExistingOutermostPackage->GetName(), NULL, &ExistingOutermostPackageFilename );
+					FPackageName::DoesPackageExist( ExistingOutermostPackage->GetName(), &ExistingOutermostPackageFilename );
 				}
 
 				// Fully load the ref objects package
@@ -3644,48 +3765,60 @@ namespace ObjectTools
 				{
 					// We can rename on top of an object redirection (basically destroy the redirection and put us in its place).
 					UPackage* NewPackage = CreatePackage( *FullPackageName );
-					NewPackage->GetOutermost()->FullyLoad();
 
-					// Make sure we copy all the cooked package flags if the asset was already cooked.
-					if (Object->GetOutermost()->HasAnyPackageFlags(PKG_FilterEditorOnly))
-					{
-						NewPackage->SetPackageFlags(PKG_FilterEditorOnly);
-					}
-					NewPackage->bIsCookedForEditor = Object->GetOutermost()->bIsCookedForEditor;
-
-					// Renaming an asset should respect the export controls of the original.
-					if (Object->GetOutermost()->HasAnyPackageFlags(PKG_DisallowExport))
-					{
-						NewPackage->SetPackageFlags(PKG_DisallowExport);
-					}
-
-					// When renaming a World Composition map, make sure to properly initialize WorldTileInfo
-					if (Object->GetOutermost()->WorldTileInfo.IsValid())
-					{
-						NewPackage->WorldTileInfo = MakeUnique<FWorldTileInfo>(*Object->GetOutermost()->WorldTileInfo);
-					}
-
-					UObjectRedirector* Redirector = Cast<UObjectRedirector>( StaticFindObject(UObjectRedirector::StaticClass(), NewPackage, *NewObjectName) );
 					bool bFoundCompatibleRedirector = false;
-					// If we found a redirector, check that the object it points to is of the same class.
-					if ( Redirector
-						&& Redirector->DestinationObject
-						&& Redirector->DestinationObject->GetClass() == Object->GetClass() )
-					{
-						// Test renaming the redirector into a dummy package.
-						if ( Redirector->Rename(*Redirector->GetName(), CreatePackage( TEXT("/Temp/TempRedirectors")), REN_Test) )
-						{
-							// Actually rename the redirector here so it doesn't get in the way of the rename below.
-							Redirector->Rename(*Redirector->GetName(), CreatePackage( TEXT("/Temp/TempRedirectors")), REN_DontCreateRedirectors);
+					UObjectRedirector* Redirector = nullptr;
 
-							bFoundCompatibleRedirector = true;
-						}
-						else
+					if (NewPackage != Object->GetPackage())
+					{
+						NewPackage->GetOutermost()->FullyLoad();
+
+						// Make sure we copy all the cooked package flags if the asset was already cooked.
+						if (Object->GetOutermost()->HasAnyPackageFlags(PKG_FilterEditorOnly))
 						{
-							bMoveFailed = true;
-							bMoveRedirectorFailed = true;
+							NewPackage->SetPackageFlags(PKG_FilterEditorOnly);
+						}
+						NewPackage->bIsCookedForEditor = Object->GetOutermost()->bIsCookedForEditor;
+
+						// Renaming an asset should respect the export controls of the original.
+						if (Object->GetOutermost()->HasAnyPackageFlags(PKG_DisallowExport))
+						{
+							NewPackage->SetPackageFlags(PKG_DisallowExport);
+						}
+
+						// When renaming a World Composition map, make sure to properly initialize WorldTileInfo
+						if (Object->GetOutermost()->GetWorldTileInfo())
+						{
+							NewPackage->SetWorldTileInfo(MakeUnique<FWorldTileInfo>(*Object->GetOutermost()->GetWorldTileInfo()));
+						}
+
+						Redirector = Cast<UObjectRedirector>(StaticFindObject(UObjectRedirector::StaticClass(), NewPackage, *NewObjectName));
+						// If we found a redirector, check that the object it points to is of the same class.
+						if (Redirector
+							&& Redirector->DestinationObject
+							&& Redirector->DestinationObject->GetClass() == Object->GetClass())
+						{
+							// Test renaming the redirector into a dummy package.
+							if (Redirector->Rename(*Redirector->GetName(), CreatePackage(TEXT("/Temp/TempRedirectors")), REN_Test))
+							{
+								// Actually rename the redirector here so it doesn't get in the way of the rename below.
+								Redirector->Rename(*Redirector->GetName(), CreatePackage(TEXT("/Temp/TempRedirectors")), REN_DontCreateRedirectors);
+
+								bFoundCompatibleRedirector = true;
+							}
+							else
+							{
+								bMoveFailed = true;
+								bMoveRedirectorFailed = true;
+							}
 						}
 					}
+					else
+					{
+						bMoveFailed = true;
+						ErrorMessage += (NSLOCTEXT("UnrealEd", "Error_ObjectNameCaseChange", "Cannot change the case of an object name.\n")).ToString();
+					}
+
 
 					if ( !bMoveFailed )
 					{
@@ -3772,18 +3905,30 @@ namespace ObjectTools
 				Object->SetFlags(RF_Standalone);
 			}
 
+			// The object must be fully loaded to realize latent thumbnail data
+			EnsureLoadingComplete(Object->GetOutermost());
+
+			// Look for a thumbnail for this asset before we rename it
+			FObjectThumbnail* Thumbnail = ThumbnailTools::GetThumbnailForObject(Object);
+
 			FString OldObjectFullName = Object->GetFullName();
 			FString OldObjectPathName = Object->GetPathName();
 			GEditor->RenameObject( Object, NewPackage, *ObjName, bLeaveRedirector ? REN_None : REN_DontCreateRedirectors );
 
-			if (OldPackage && OldPackage->MetaData)
+			if (OldPackage && OldPackage->HasMetaData())
 			{
 				// Migrate the localization ID to the new package
 				TextNamespaceUtil::ForcePackageNamespace(NewPackage, TextNamespaceUtil::GetPackageNamespace(OldPackage));
 				TextNamespaceUtil::ClearPackageNamespace(OldPackage);
 
 				// Remove any metadata from old package pointing to moved objects
-				OldPackage->MetaData->RemoveMetaDataOutsidePackage();
+				OldPackage->GetMetaData()->RemoveMetaDataOutsidePackage();
+			}
+
+			// Migrate any thumbnail from the old package to the new one
+			if (Thumbnail)
+			{
+				ThumbnailTools::CacheThumbnail(Object->GetFullName(), Thumbnail, NewPackage);
 			}
 
 			// Notify the asset registry of the rename
@@ -3847,8 +3992,11 @@ namespace ObjectTools
 
 	bool RenameObjects( const TArray< UObject* >& SelectedObjects, bool bIncludeLocInstances, const FString& SourcePath, const FString& DestinationPath, bool bOpenDialog )
 	{
+	// seems like bug in pvs makes disabling the warning not work as expected
+	#ifndef PVS_STUDIO
 		// @todo asset: Find a proper location for localized files
 		bIncludeLocInstances = false; //-V763
+	#endif
 		if( !bIncludeLocInstances )
 		{
 			return RenameObjectsInternal( SelectedObjects, bIncludeLocInstances, NULL, SourcePath, DestinationPath, bOpenDialog );
@@ -3916,18 +4064,16 @@ namespace ObjectTools
 	}
 
 	/**
-	 * Internal helper function to obtain format descriptions and extensions of formats supported by the provided factory
+	 * Internal helper function to obtain format descriptions and extensions of formats list
 	 *
-	 * @param	InFactory			Factory whose formats should be retrieved
+	 * @param	Formats				List of formats who should be retrieved
 	 * @param	out_Descriptions	Array of format descriptions associated with the current factory; should equal the number of extensions
 	 * @param	out_Extensions		Array of format extensions associated with the current factory; should equal the number of descriptions
 	 */
-	void InternalGetFactoryFormatInfo( const UFactory* InFactory, TArray<FString>& out_Descriptions, TArray<FString>& out_Extensions )
+	void InternalGetFormatInfo(const TArray<FString>& Formats, TArray<FString>& out_Descriptions, TArray<FString>& out_Extensions )
 	{
-		check(InFactory);
-
-		// Iterate over each format the factory accepts
-		for ( TArray<FString>::TConstIterator FormatIter( InFactory->Formats ); FormatIter; ++FormatIter )
+		// Iterate over each formats.
+		for ( TArray<FString>::TConstIterator FormatIter( Formats ); FormatIter; ++FormatIter )
 		{
 			const FString& CurFormat = *FormatIter;
 
@@ -3980,7 +4126,7 @@ namespace ObjectTools
 
 			TArray<FString> Descriptions;
 			TArray<FString> Extensions;
-			InternalGetFactoryFormatInfo( CurFactory, Descriptions, Extensions );
+			InternalGetFormatInfo( CurFactory->Formats, Descriptions, Extensions );
 			check( Descriptions.Num() == Extensions.Num() );
 
 			// Make sure to only store each key, value pair once
@@ -4060,20 +4206,14 @@ namespace ObjectTools
 		}
 	}
 
-	/**
-	 * Generates a list of file types for a given class.
-	 */
-	void AppendFactoryFileExtensions ( UFactory* InFactory, FString& out_Filetypes, FString& out_Extensions )
+	void InternalAppendFileExtensions(const TArray<FString>& InDescriptions, const TArray<FString>& InExtensions, FString& out_Filetypes, FString& out_Extensions)
 	{
-		TArray<FString> Descriptions;
-		TArray<FString> Extensions;
-		InternalGetFactoryFormatInfo( InFactory, Descriptions, Extensions );
-		check( Descriptions.Num() == Extensions.Num() );
+		check(InDescriptions.Num() == InExtensions.Num());
 
-		for ( int32 FormatIndex = 0; FormatIndex < Descriptions.Num() && FormatIndex < Extensions.Num(); ++FormatIndex )
+		for (int32 FormatIndex = 0; FormatIndex < InDescriptions.Num() && FormatIndex < InExtensions.Num(); ++FormatIndex)
 		{
-			const FString& CurDescription = Descriptions[FormatIndex];
-			const FString& CurExtension = Extensions[FormatIndex];
+			const FString& CurDescription = InDescriptions[FormatIndex];
+			const FString& CurExtension = InExtensions[FormatIndex];
 			const FString& CurLine = FString::Printf( TEXT("%s (*.%s)|*.%s"), *CurDescription, *CurExtension, *CurExtension );
 
 			// Only append the extension if it's not already one of the found extensions
@@ -4096,6 +4236,26 @@ namespace ObjectTools
 				out_Filetypes += CurLine;
 			}
 		}
+	}
+
+	void AppendFormatsFileExtensions(const TArray<FString>& InFormats, FString& out_FileTypes, FString& out_Extensions)
+	{
+		TArray<FString> Descriptions;
+		TArray<FString> Extensions;
+		InternalGetFormatInfo(InFormats, Descriptions, Extensions);
+		InternalAppendFileExtensions(Descriptions, Extensions, out_FileTypes, out_Extensions);
+	}
+
+	/**
+	 * Generates a list of file types for a given class.
+	 */
+	void AppendFactoryFileExtensions ( UFactory* InFactory, FString& out_Filetypes, FString& out_Extensions )
+	{
+		check(InFactory);
+		TArray<FString> Descriptions;
+		TArray<FString> Extensions;
+		InternalGetFormatInfo( InFactory->Formats, Descriptions, Extensions );
+		InternalAppendFileExtensions( Descriptions, Extensions, out_Filetypes, out_Extensions);
 	}
 
 	/**
@@ -4130,33 +4290,11 @@ namespace ObjectTools
 	}
 
 	/**
-	 * Exports the specified objects to file.
-	 *
-	 * @param	ObjectsToExport					The set of objects to export.
-	 * @param	bPromptIndividualFilenames		If true, prompt individually for filenames.  If false, bulk export to a single directory.
-	 * @param	ExportPath						receives the value of the path the user chose for exporting.
-	 * @param	bUseProvidedExportPath			If true and out_ExportPath is specified, use the value in out_ExportPath as the export path w/o prompting for a directory when applicable
-	 */
-	void ExportObjects(const TArray<UObject*>& ObjectsToExport, bool bPromptIndividualFilenames, FString* ExportPath/*=NULL*/, bool bUseProvidedExportPath /*= false*/ )
-	{
-		FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools"));
-
-		if (ExportPath && bUseProvidedExportPath && !bPromptIndividualFilenames)
-		{
-			AssetToolsModule.Get().ExportAssets(ObjectsToExport, *ExportPath);
-		}
-		else
-		{
-			AssetToolsModule.Get().ExportAssetsWithDialog(ObjectsToExport, bPromptIndividualFilenames);
-		}
-	}
-
-	/**
 	 * Tags objects which are in use by levels specified by the search option
 	 *
 	 * @param SearchOption	 The search option for finding in use objects
 	 */
-	void TagInUseObjects( EInUseSearchOption SearchOption )
+	void TagInUseObjects( EInUseSearchOption SearchOption, EInUseSearchFlags InUseSearchFlags )
 	{
 		UWorld* World = GWorld;
 		TSet<UObject*> LevelPackages;
@@ -4228,7 +4366,7 @@ namespace ObjectTools
 
 
 			// If the object is not flagged for GC and it is in one of the level packages do an indepth search to see what references it.
-			if( !Obj->IsPendingKillOrUnreachable() && LevelPackages.Find( Obj->GetOutermost() ) != NULL )
+			if( IsValidChecked(Obj) && !Obj->IsUnreachable() && LevelPackages.Find( Obj->GetOutermost() ) != NULL )
 			{
 				// Determine if the current object is in one of the search levels.  This is the same as UObject::IsIn except that we can
 				// search through many levels at once.
@@ -4257,8 +4395,14 @@ namespace ObjectTools
 			}
 		}
 
-		// Tag all objects that are referenced by objects in the levels were are searching.
-		FArchiveReferenceMarker Marker( ObjectsInLevels );
+		EArchiveReferenceMarkerFlags MarkerFlags = EArchiveReferenceMarkerFlags::None;
+		if ((InUseSearchFlags & EInUseSearchFlags::SkipCompilingAssets) != EInUseSearchFlags::None)
+		{
+			MarkerFlags |= EArchiveReferenceMarkerFlags::SkipCompilingAssets;
+		
+}
+		// Tag all objects that are referenced by objects in the levels we are searching.
+		FArchiveReferenceMarker Marker( ObjectsInLevels, MarkerFlags);
 	}
 
 	TSharedPtr<SWindow> OpenPropertiesForSelectedObjects( const TArray<UObject*>& SelectedObjects )
@@ -4319,7 +4463,7 @@ namespace ObjectTools
 	{
 		check(InClass);
 
-		const bool bIsPlaceable = !InClass->HasAllClassFlags(CLASS_NotPlaceable) && (InClass->IsChildOf(AActor::StaticClass()) || InClass->IsChildOf(ABrush::StaticClass()) || InClass->IsChildOf(AVolume::StaticClass()));
+		const bool bIsPlaceable = !InClass->HasAllClassFlags(CLASS_NotPlaceable);
 		const bool bIsAbstractOrDeprecated = InClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists);
 		const bool bIsSkeletonClass = FKismetEditorUtilities::IsClassABlueprintSkeleton(InClass);
 
@@ -4417,6 +4561,8 @@ namespace ThumbnailTools
 		{
 			return;
 		}
+		
+		TRACE_CPUPROFILER_EVENT_SCOPE(ThumbnailTools::RenderThumbnail);
 
 		// Renderer must be initialized before generating thumbnails
 		check( GIsRHIInitialized );
@@ -4447,15 +4593,9 @@ namespace ThumbnailTools
 		}
 		check( RenderTargetResource != NULL );
 
-		if (GShaderCompilingManager)
-		{
-			GShaderCompilingManager->ProcessAsyncResults(false, true);
-		}
-
 		// Create a canvas for the render target and clear it to black
-		FCanvas Canvas( RenderTargetResource, NULL, FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime, GMaxRHIFeatureLevel );
+		FCanvas Canvas( RenderTargetResource, NULL, FGameTime::GetTimeSinceAppStart(), GMaxRHIFeatureLevel );
 		Canvas.Clear( FLinearColor::Black );
-
 
 		// Get the rendering info for this object
 		FThumbnailRenderingInfo* RenderInfo = GUnrealEd ? GUnrealEd->GetThumbnailManager()->GetRenderingInfo( InObject ) : nullptr;
@@ -4464,6 +4604,16 @@ namespace ThumbnailTools
 		// @todo CB: This helps but doesn't result in 100%-streamed-in resources every time! :(
 		if( InFlushMode == EThumbnailTextureFlushMode::AlwaysFlush )
 		{
+			if (GShaderCompilingManager)
+			{
+				GShaderCompilingManager->ProcessAsyncResults(false, true);
+			}
+
+			if (UTexture* Texture = Cast<UTexture>(InObject))
+			{
+				FTextureCompilingManager::Get().FinishCompilation({Texture});
+			}
+
 			FlushAsyncLoading();
 
 			IStreamingManager::Get().StreamAllResources( 100.0f );
@@ -4474,6 +4624,10 @@ namespace ThumbnailTools
 
 		if( RenderInfo != NULL && RenderInfo->Renderer != NULL )
 		{
+			// Make sure we suppress any message dialogs that might result from constructing
+			// or initializing any of the renderable objects.
+			TGuardValue<bool> Unattended(GIsRunningUnattendedScript, true);
+
 			const float ZoomFactor = 1.0f;
 
 			uint32 DrawWidth = InImageWidth;
@@ -4587,6 +4741,12 @@ namespace ThumbnailTools
 			//@todo - come up with a cleaner solution for this, preferably not blocking on texture streaming at all but updating when textures are fully streamed in
 			ThumbnailTools::EThumbnailTextureFlushMode::Type TextureFlushMode = ThumbnailTools::EThumbnailTextureFlushMode::NeverFlush;
 
+			if ( UTexture* Texture = Cast<UTexture>(InObject) )
+			{
+				FTextureCompilingManager::Get().FinishCompilation({Texture});
+				Texture->WaitForStreaming();
+			}
+
 			// When generating a material thumbnail to save in a package, make sure we finish compilation on the material first
 			if ( UMaterial* InMaterial = Cast<UMaterial>(InObject) )
 			{
@@ -4597,6 +4757,10 @@ namespace ThumbnailTools
 				FMaterialResource* CurrentResource = InMaterial->GetMaterialResource(GMaxRHIFeatureLevel);
 				if (CurrentResource)
 				{
+					if (!CurrentResource->IsGameThreadShaderMapComplete())
+					{
+						CurrentResource->SubmitCompileJobs(EShaderCompileJobPriority::High);
+					}
 					CurrentResource->FinishCompilation();
 				}
 			}
@@ -4625,30 +4789,30 @@ namespace ThumbnailTools
 	 */
 	FObjectThumbnail* CacheThumbnail( const FString& ObjectFullName, FObjectThumbnail* Thumbnail, UPackage* DestPackage )
 	{
-		FObjectThumbnail* Result = NULL;
+		FObjectThumbnail* Result = nullptr;
 
-		if ( ObjectFullName.Len() > 0 && DestPackage != NULL )
+		if ( ObjectFullName.Len() > 0 && DestPackage != nullptr)
 		{
 			// Create a new thumbnail map if we don't have one already
-			if( !DestPackage->ThumbnailMap )
+			if( !DestPackage->HasThumbnailMap() )
 			{
-				DestPackage->ThumbnailMap = MakeUnique<FThumbnailMap>();
+				DestPackage->SetThumbnailMap(MakeUnique<FThumbnailMap>());
 			}
 
 			// @todo thumbnails: Backwards compat
 			FName ObjectFullNameFName( *ObjectFullName );
-			FObjectThumbnail* CachedThumbnail = DestPackage->ThumbnailMap->Find( ObjectFullNameFName );
-			if ( Thumbnail != NULL )
+			const FObjectThumbnail* CachedThumbnail = DestPackage->GetThumbnailMap().Find( ObjectFullNameFName );
+			if ( Thumbnail != nullptr )
 			{
 				// Cache the thumbnail (possibly replacing an existing thumb!)
-				Result = &DestPackage->ThumbnailMap->Add( ObjectFullNameFName, *Thumbnail );
+				Result = &DestPackage->AccessThumbnailMap().Add( ObjectFullNameFName, *Thumbnail );
 			}
 			//only let thumbnails loaded from disk to be removed.
 			//When capturing thumbnails from the content browser, it will only exist in memory until it is saved out to a package.
 			//Don't let the recycling purge them
-			else if ((CachedThumbnail != NULL) && (CachedThumbnail->IsLoadedFromDisk()))
+			else if ((CachedThumbnail != nullptr) && (CachedThumbnail->IsLoadedFromDisk()))
 			{
-				DestPackage->ThumbnailMap->Remove( ObjectFullNameFName );
+				DestPackage->AccessThumbnailMap().Remove( ObjectFullNameFName );
 			}
 
 		}
@@ -4701,7 +4865,7 @@ namespace ThumbnailTools
 		FString PackageName = GetPackageNameForObject( InFullName );
 
 		// Ask the package file cache for the full path to this package
-		if( PackageName.IsEmpty() || !FPackageName::DoesPackageExist( PackageName, NULL, &OutPackageFileName ) )
+		if( PackageName.IsEmpty() || !FPackageName::DoesPackageExist( PackageName, &OutPackageFileName ) )
 		{
 			// Couldn't find the package
 			return false;
@@ -4788,7 +4952,7 @@ namespace ThumbnailTools
 
 
 	/** Loads thumbnails from the specified package file name */
-	bool LoadThumbnailsFromPackage( const FString& InPackageFileName, const TSet< FName >& InObjectFullNames, FThumbnailMap& InOutThumbnails )
+	bool LoadThumbnailsFromPackageInternal( const FString& InPackageFileName, const TSet< FName >& InObjectFullNames, FThumbnailMap& InOutThumbnails )
 	{
 		// Create a file reader to load the file
 		TUniquePtr< FArchive > FileReader( IFileManager::Get().CreateFileReader( *InPackageFileName ) );
@@ -4802,7 +4966,6 @@ namespace ThumbnailTools
 		// Read package file summary from the file
 		FPackageFileSummary FileSummary;
 		(*FileReader) << FileSummary;
-
 
 		// Make sure this is indeed a package
 		if( FileSummary.Tag != PACKAGE_FILE_TAG || FileReader->IsError() )
@@ -4818,7 +4981,6 @@ namespace ThumbnailTools
 			// No thumbnails to be loaded
 			return false;
 		}
-
 
 		// Seek the the part of the file where the thumbnail table lives
 		FileReader->Seek( FileSummary.ThumbnailTableOffset );
@@ -4947,6 +5109,23 @@ namespace ThumbnailTools
 
 
 		return true;
+	}
+
+
+
+	/** Loads thumbnails from the specified package file name, try loading from external cache file if not found in package file */
+	bool LoadThumbnailsFromPackage( const FString& InPackageFileName, const TSet< FName >& InObjectFullNames, FThumbnailMap& InOutThumbnails )
+	{
+		if (LoadThumbnailsFromPackageInternal(InPackageFileName, InObjectFullNames, InOutThumbnails))
+		{
+			return true;
+		}
+		else if (FThumbnailExternalCache::Get().LoadThumbnailsFromExternalCache(InObjectFullNames, InOutThumbnails))
+		{
+			return true;
+		}
+
+		return false;
 	}
 
 

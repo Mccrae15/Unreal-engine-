@@ -52,13 +52,14 @@ void FTimespanStructCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> S
 
 FSlateColor FTimespanStructCustomization::HandleTextBoxForegroundColor() const
 {
-	if (!InputValid)
+	if (InputValid)
 	{
-		return FLinearColor::Red;
+		static const FName DefaultForeground("Colors.Foreground");
+		return FAppStyle::Get().GetSlateColor(DefaultForeground);
 	}
 
-	static const FName InvertedForegroundName("InvertedForeground");
-	return FEditorStyle::GetSlateColor(InvertedForegroundName);
+	static const FName Red("Colors.AccentRed");
+	return FAppStyle::Get().GetSlateColor(Red);
 }
 
 
@@ -112,7 +113,7 @@ void FTimespanStructCustomization::HandleTextBoxTextCommited(const FText& NewTex
 			*(FTimespan*)RawDataInstance = ParsedTimespan;
 		}
 
-		PropertyHandle->NotifyPostChange();
+		PropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 		PropertyHandle->NotifyFinishedChangingProperties();
 	}
 }

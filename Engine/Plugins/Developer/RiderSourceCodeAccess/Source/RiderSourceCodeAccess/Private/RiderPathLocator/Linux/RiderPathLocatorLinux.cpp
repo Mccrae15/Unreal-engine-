@@ -2,6 +2,7 @@
 
 #include "RiderPathLocator/RiderPathLocator.h"
 
+#include "Internationalization/Regex.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -11,27 +12,43 @@
 
 #if PLATFORM_LINUX
 
-TOptional<FInstallInfo> FRiderPathLocator::GetInstallInfoFromRiderPath(const FString& PathToRiderApp, FInstallInfo::EInstallType InstallType)
+TOptional<FInstallInfo> FRiderPathLocator::GetInstallInfoFromRiderPath(const FString& Path, FInstallInfo::EInstallType InstallType)
 {
-	if(!FPaths::DirectoryExists(PathToRiderApp))
+	if(!FPaths::FileExists(Path))
+	{
+		return {};
+	}
+	
+	const FString PatternString(TEXT("(.*)(?:\\\\|/)bin"));
+	const FRegexPattern Pattern(PatternString);
+	FRegexMatcher RiderPathMatcher(Pattern, Path);
+	if (!RiderPathMatcher.FindNext())
 	{
 		return {};
 	}
 
-	const FString RiderCppPluginPath = FPaths::Combine(PathToRiderApp, TEXT("plugins"), TEXT("rider-cpp"));
-
+	const FString RiderDir = RiderPathMatcher.GetCaptureGroup(1);
+	const FString RiderCppPluginPath = FPaths::Combine(RiderDir, TEXT("plugins"), TEXT("rider-cpp"));
 	if (!FPaths::DirectoryExists(RiderCppPluginPath))
 	{
 		return {};
 	}
-
+	
 	FInstallInfo Info;
-	Info.Path = FPaths::Combine(PathToRiderApp, TEXT("bin"), TEXT("rider.sh"));
+	Info.Path = Path;
 	Info.InstallType = InstallType;
-	const FString ProductInfoJsonPath = FPaths::Combine(PathToRiderApp, TEXT("product-info.json"));
+	const FString ProductInfoJsonPath = FPaths::Combine(RiderDir, TEXT("product-info.json"));
 	if (FPaths::FileExists(ProductInfoJsonPath))
 	{
 		ParseProductInfoJson(Info, ProductInfoJsonPath);
+	}
+	if(!Info.Version.IsInitialized())
+	{
+		Info.Version = FPaths::GetBaseFilename(RiderDir);
+		if(Info.Version.Major() >= 221)
+		{
+			Info.SupportUprojectState = FInstallInfo::ESupportUproject::Release;
+		}
 	}
 	return Info;
 }
@@ -53,15 +70,30 @@ static TArray<FInstallInfo> GetManuallyInstalledRiders()
 {
 	TArray<FInstallInfo> Result;
 	TArray<FString> RiderPaths;
+
 	const FString FHomePath = GetHomePath();
+	const FString HomePathMask = FPaths::Combine(FHomePath, TEXT("Rider.sh"));
 
-	const FString LocalPathMask = FPaths::Combine(FHomePath, TEXT("Rider*"));
-
-	IFileManager::Get().FindFiles(RiderPaths, *LocalPathMask, false, true);
+	IFileManager::Get().FindFiles(RiderPaths, *HomePathMask, false, true);
 
 	for(const FString& RiderPath: RiderPaths)
 	{
 		FString FullPath = FPaths::Combine(FHomePath, RiderPath);
+		TOptional<FInstallInfo> InstallInfo = FRiderPathLocator::GetInstallInfoFromRiderPath(FullPath, FInstallInfo::EInstallType::Installed);
+		if(InstallInfo.IsSet())
+		{
+			Result.Add(InstallInfo.GetValue());
+		}
+	}
+
+	const FString FOptPath = TEXT("/opt");
+	const FString OptPathMask = FPaths::Combine(FOptPath, TEXT("Rider.sh"));
+
+	IFileManager::Get().FindFiles(RiderPaths, *OptPathMask, false, true);
+
+	for(const FString& RiderPath: RiderPaths)
+	{
+		FString FullPath = FPaths::Combine(FOptPath, RiderPath);
 		TOptional<FInstallInfo> InstallInfo = FRiderPathLocator::GetInstallInfoFromRiderPath(FullPath, FInstallInfo::EInstallType::Installed);
 		if(InstallInfo.IsSet())
 		{
@@ -123,7 +155,7 @@ TSet<FInstallInfo> FRiderPathLocator::CollectAllPaths()
 	TSet<FInstallInfo> InstallInfos;
 	InstallInfos.Append(GetInstalledRidersWithMdfind());
 	InstallInfos.Append(GetManuallyInstalledRiders());
-	InstallInfos.Append(GetInstallInfosFromToolbox(GetToolboxPath(), "Rider*"));
+	InstallInfos.Append(GetInstallInfosFromToolbox(GetToolboxPath(), "Rider.sh"));
 	InstallInfos.Append(GetInstallInfosFromResourceFile());
 	return InstallInfos;
 }

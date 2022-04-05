@@ -62,19 +62,19 @@ void SetupPPSettingPropertyTrack(TrackType* Track)
 }
 
 template<>
-void SetupPPSettingPropertyTrack<UMovieSceneVectorTrack, FVector2D>(UMovieSceneVectorTrack* Track)
+void SetupPPSettingPropertyTrack<UMovieSceneFloatVectorTrack, FVector2D>(UMovieSceneFloatVectorTrack* Track)
 {
 	Track->SetNumChannelsUsed(2);
 }
 
 template<>
-void SetupPPSettingPropertyTrack<UMovieSceneVectorTrack, FVector>(UMovieSceneVectorTrack* Track)
+void SetupPPSettingPropertyTrack<UMovieSceneFloatVectorTrack, FVector3f>(UMovieSceneFloatVectorTrack* Track)
 {
 	Track->SetNumChannelsUsed(3);
 }
 
 template<>
-void SetupPPSettingPropertyTrack<UMovieSceneVectorTrack, FVector4>(UMovieSceneVectorTrack* Track)
+void SetupPPSettingPropertyTrack<UMovieSceneFloatVectorTrack, FVector4>(UMovieSceneFloatVectorTrack* Track)
 {
 	Track->SetNumChannelsUsed(4);
 }
@@ -160,7 +160,7 @@ void SetDefaultPPSettingPropertyChannels<UMovieSceneFloatSection, float>(UMovieS
 
 // Vector properties.
 template<>
-void SetDefaultPPSettingPropertyChannels<UMovieSceneVectorSection, FVector2D>(UMovieSceneVectorSection* Section, const FVector2D Value)
+void SetDefaultPPSettingPropertyChannels<UMovieSceneFloatVectorSection, FVector2D>(UMovieSceneFloatVectorSection* Section, const FVector2D Value)
 {
 	Section->SetChannelsUsed(2);
 
@@ -170,7 +170,7 @@ void SetDefaultPPSettingPropertyChannels<UMovieSceneVectorSection, FVector2D>(UM
 }
 
 template<>
-void SetDefaultPPSettingPropertyChannels<UMovieSceneVectorSection, FVector>(UMovieSceneVectorSection* Section, const FVector Value)
+void SetDefaultPPSettingPropertyChannels<UMovieSceneFloatVectorSection, FVector3f>(UMovieSceneFloatVectorSection* Section, const FVector3f Value)
 {
 	Section->SetChannelsUsed(3);
 
@@ -181,7 +181,7 @@ void SetDefaultPPSettingPropertyChannels<UMovieSceneVectorSection, FVector>(UMov
 }
 
 template<>
-void SetDefaultPPSettingPropertyChannels<UMovieSceneVectorSection, FVector4>(UMovieSceneVectorSection* Section, const FVector4 Value)
+void SetDefaultPPSettingPropertyChannels<UMovieSceneFloatVectorSection, FVector4f>(UMovieSceneFloatVectorSection* Section, const FVector4f Value)
 {
 	Section->SetChannelsUsed(4);
 
@@ -654,17 +654,17 @@ UObject* FCameraAnimToTemplateSequenceConverter::ConvertSingleCameraAnimToTempla
 			const FStructProperty* OverridenFieldProperty = CastField<FStructProperty>(OverridenProperty);
 			if (OverridenFieldProperty->Struct == TBaseStructure<FVector2D>::Get())
 			{
-				CreateDefaultPPSettingPropertyValueTrack<UMovieSceneVectorTrack, UMovieSceneVectorSection, FVector2D>(
+				CreateDefaultPPSettingPropertyValueTrack<UMovieSceneFloatVectorTrack, UMovieSceneFloatVectorSection, FVector2D>(
 						*NewMovieScene, CameraComponentBindingID, BasePPSettings, *OverridenFieldProperty);
 			}
-			else if (OverridenFieldProperty->Struct == TBaseStructure<FVector>::Get())
+			else if (OverridenFieldProperty->Struct->GetFName() == NAME_Vector3f)
 			{
-				CreateDefaultPPSettingPropertyValueTrack<UMovieSceneVectorTrack, UMovieSceneVectorSection, FVector>(
+				CreateDefaultPPSettingPropertyValueTrack<UMovieSceneFloatVectorTrack, UMovieSceneFloatVectorSection, FVector3f>(
 						*NewMovieScene, CameraComponentBindingID, BasePPSettings, *OverridenFieldProperty);
 			}
-			else if (OverridenFieldProperty->Struct == TBaseStructure<FVector4>::Get())
+			else if (OverridenFieldProperty->Struct->GetFName() == NAME_Vector4f)
 			{
-				CreateDefaultPPSettingPropertyValueTrack<UMovieSceneVectorTrack, UMovieSceneVectorSection, FVector4>(
+				CreateDefaultPPSettingPropertyValueTrack<UMovieSceneFloatVectorTrack, UMovieSceneFloatVectorSection, FVector4f>(
 						*NewMovieScene, CameraComponentBindingID, BasePPSettings, *OverridenFieldProperty);
 			}
 			else if (OverridenFieldProperty->Struct == TBaseStructure<FLinearColor>::Get())

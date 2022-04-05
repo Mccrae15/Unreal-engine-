@@ -107,7 +107,7 @@ void FInstanceGroup::AllocateLightmaps(TEntityArray<FLightmap>& LightmapContaine
 		{
 			check(LightMapWidth == LightMapHeight);
 
-			int32 TotalLightmapRes = LightMapWidth * FMath::CeilToInt(FMath::Sqrt(ComponentUObject->PerInstanceSMData.Num()));
+			int32 TotalLightmapRes = LightMapWidth * FMath::CeilToInt(FMath::Sqrt(static_cast<float>(ComponentUObject->PerInstanceSMData.Num())));
 
 			// Shrink LOD texture lightmaps by half for each LOD level
 			const int32 TotalLightMapWidth = /*LODIndex > 0 ? FMath::Max(TotalLightmapRes / (2 << (LODIndex - 1)), 32) : */ TotalLightmapRes;
@@ -130,11 +130,15 @@ TArray<FMeshBatch> FInstanceGroupRenderState::GetMeshBatchesForGBufferRendering(
 {
 	TArray<FMeshBatch> MeshBatches;
 
-	// TODO: potentital race conditions between GT & RT everywhere in the following code
+	// TODO: potential race conditions between GT & RT everywhere in the following code
 	FStaticMeshLODResources& LODModel = RenderData->LODResources[LODIndex];
 	for (int32 SectionIndex = 0; SectionIndex < LODModel.Sections.Num(); SectionIndex++)
 	{
 		const FStaticMeshSection& Section = LODModel.Sections[SectionIndex];
+		if (Section.NumTriangles == 0)
+		{
+			continue;
+		}
 
 		FMeshBatch MeshBatch;
 
@@ -161,7 +165,6 @@ TArray<FMeshBatch> FInstanceGroupRenderState::GetMeshBatchesForGBufferRendering(
 		MeshBatchElement.PrimitiveIdMode = PrimID_DynamicPrimitiveShaderData;
 
 		MeshBatchElement.InstancedLODIndex = LODIndex;
-		MeshBatchElement.PrimitiveUniformBuffer = UniformBuffer;
 		MeshBatch.LODIndex = LODIndex;
 		MeshBatch.SegmentIndex = SectionIndex;
 		MeshBatch.CastShadow = bCastShadow && Section.bCastShadow;
@@ -171,7 +174,7 @@ TArray<FMeshBatch> FInstanceGroupRenderState::GetMeshBatchesForGBufferRendering(
 		{
 			MeshBatch.MaterialRenderProxy = ComponentUObject->GetMaterial(Section.MaterialIndex)->GetRenderProxy();
 
-			if (CoordsForCulling.MipLevel == -1)
+			if (true || CoordsForCulling.MipLevel == -1)
 			{
 				// No culling, should be for ray tracing scene
 				MeshBatchElement.UserIndex = 0;
@@ -191,7 +194,7 @@ TArray<FMeshBatch> FInstanceGroupRenderState::GetMeshBatchesForGBufferRendering(
 						FIntPoint MinInInstanceTile(FMath::DivideAndRoundDown(Min.X, LODPerInstanceLightmapSize[LODIndex].X >> CoordsForCulling.MipLevel), FMath::DivideAndRoundDown(Min.Y, LODPerInstanceLightmapSize[LODIndex].Y >> CoordsForCulling.MipLevel));
 						FIntPoint MaxInInstanceTile(FMath::DivideAndRoundUp(Max.X, LODPerInstanceLightmapSize[LODIndex].X >> CoordsForCulling.MipLevel), FMath::DivideAndRoundUp(Max.Y, LODPerInstanceLightmapSize[LODIndex].Y >> CoordsForCulling.MipLevel));
 
-						int32 InstancesPerRow = FMath::CeilToInt(FMath::Sqrt(InstancedRenderData->PerInstanceRenderData->InstanceBuffer.GetNumInstances()));
+						int32 InstancesPerRow = FMath::CeilToInt(FMath::Sqrt(static_cast<float>(InstancedRenderData->PerInstanceRenderData->InstanceBuffer.GetNumInstances())));
 
 						for (int32 Y = MinInInstanceTile.Y; Y < MaxInInstanceTile.Y; Y++)
 						{

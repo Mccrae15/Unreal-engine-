@@ -20,6 +20,7 @@ struct FShaderStatsInfo
 	FContent InterpolatorsCount;
 	FContent TextureSampleCount;
 	FContent VirtualTextureLookupCount;
+	FContent ShaderCount;
 	FString StrShaderErrors;
 
 	void Reset()
@@ -37,6 +38,9 @@ struct FShaderStatsInfo
 
 		VirtualTextureLookupCount.StrDescription = TEXT("Compiling...");
 		VirtualTextureLookupCount.StrDescriptionLong = TEXT("Compiling...");
+
+		ShaderCount.StrDescription = TEXT("Compiling...");
+		ShaderCount.StrDescriptionLong = TEXT("Compiling...");
 		
 		StrShaderErrors.Empty();
 	}
@@ -57,6 +61,9 @@ struct FShaderStatsInfo
 		VirtualTextureLookupCount.StrDescription.Empty();
 		VirtualTextureLookupCount.StrDescriptionLong.Empty();
 
+		ShaderCount.StrDescription.Empty();
+		ShaderCount.StrDescriptionLong.Empty();
+
 		StrShaderErrors.Empty();
 	}
 
@@ -64,6 +71,12 @@ struct FShaderStatsInfo
 	{
 		return !StrShaderErrors.IsEmpty();
 	}
+};
+
+struct FMaterialShaderEntry
+{
+	FShaderId ShaderId;
+	FString Text;
 };
 
 /** structure used to manage shader compilation and source code extraction for a specified shader platform
@@ -81,10 +94,10 @@ public:
 
 		/** array of shader ids for this platform; needed to fill ComboBox in MaterialEditor's shader viewer
 		* generated from ShaderID.ShaderType->GetFName() */
-		TArray<TSharedPtr<FName>> ArrShaderNames;
+		TArray<TSharedPtr<FMaterialShaderEntry>> ArrShaderEntries;
 
 		/** ComboBox current entry */
-		FName ComboBoxSelectedName;
+		FMaterialShaderEntry ComboBoxSelectedEntry;
 
 		/** flag that marks the usage of this data structure */
 		bool bExtractStats = false;
@@ -106,6 +119,9 @@ public:
 		TWeakPtr<class SDockTab> CodeViewerTab;
 
 		FShaderStatsInfo ShaderStatsInfo;
+
+		/** Time when the previous compilation was requested.*/
+		double LastTimeCompilationRequested = 0.0;
 	};
 	/////////////////////
 
@@ -181,7 +197,7 @@ public:
 	FORCEINLINE TWeakPtr<class SDockTab> GetCodeViewerTab(const EMaterialQualityLevel::Type QualityLevel);
 
 	/** returns an array with the names of all the compiled shaders for this material with specified quality level */
-	FORCEINLINE const TArray<TSharedPtr<FName>> *GetShaderNames(const EMaterialQualityLevel::Type QualityLevel);
+	FORCEINLINE const TArray<TSharedPtr<FMaterialShaderEntry>> *GetShaderEntries(const EMaterialQualityLevel::Type QualityLevel);
 
 	/** when set this flag will indicate the presence of this material with a particular quality level inside the stats widget */
 	void SetExtractStatsFlag(const EMaterialQualityLevel::Type QualityType, const bool bValue);
@@ -219,7 +235,7 @@ public:
 	FText GetSelectedShaderViewComboText(EMaterialQualityLevel::Type QualityLevel) const;
 
 	/** callback function called when we change the content of the shader viewer combo-box, used to select a different shader to be displayed */
-	void OnShaderViewComboSelectionChanged(TSharedPtr<FName> Item, EMaterialQualityLevel::Type QualityType);
+	void OnShaderViewComboSelectionChanged(TSharedPtr<FMaterialShaderEntry> Item, EMaterialQualityLevel::Type QualityType);
 
 	/** returns the actual shader source selected by the shaders viewer's combo-box */
 	FText GetShaderCode(const EMaterialQualityLevel::Type QualityType);
@@ -406,6 +422,10 @@ public:
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FMaterialStats");
+	}
 	// end Utilities Functions
 	///////////////////////////////////////////
 
@@ -432,7 +452,7 @@ public:
 	/** this will set the material to be analyzed by this class */
 	/** TMaterial should be UMaterial or UMaterialInstance */
 	template <typename TMaterial>
-	void SetMaterial(TMaterial *InMaterial);
+	void SetMaterial(TMaterial& InMaterial);
 
 	// end Update Functions
 	///////////////////////////////////////////
@@ -506,7 +526,7 @@ FORCEINLINE TSharedPtr<class SMaterialEditorStatsWidget> FMaterialStats::GetGrid
 
 //TMaterial should be UMaterial or UMaterialInstance
 template <typename TMaterial>
-void FMaterialStats::SetMaterial(TMaterial *MaterialPtr)
+void FMaterialStats::SetMaterial(TMaterial& MaterialPtr)
 {
 	if (MaterialInterface != MaterialPtr)
 	{
@@ -568,10 +588,10 @@ FORCEINLINE TWeakPtr<class SDockTab> FShaderPlatformSettings::GetCodeViewerTab(c
 	return SomePlatformData.CodeViewerTab;
 }
 
-FORCEINLINE const TArray<TSharedPtr<FName>> *FShaderPlatformSettings::GetShaderNames(const EMaterialQualityLevel::Type QualityLevel)
+FORCEINLINE const TArray<TSharedPtr<FMaterialShaderEntry>> *FShaderPlatformSettings::GetShaderEntries(const EMaterialQualityLevel::Type QualityLevel)
 {
 	FPlatformData& SomePlatformData = GetPlatformData(QualityLevel);
-	return &SomePlatformData.ArrShaderNames;
+	return &SomePlatformData.ArrShaderEntries;
 }
 
 FORCEINLINE void FShaderPlatformSettings::SetExtractStatsFlag(const EMaterialQualityLevel::Type QualityType, const bool bValue)

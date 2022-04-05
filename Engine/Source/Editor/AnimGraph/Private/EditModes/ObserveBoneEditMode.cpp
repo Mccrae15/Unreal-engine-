@@ -54,9 +54,14 @@ FVector FObserveBoneEditMode::GetWidgetLocation() const
 	return WidgetLoc;
 }
 
-FWidget::EWidgetMode FObserveBoneEditMode::GetWidgetMode() const
+UE::Widget::EWidgetMode FObserveBoneEditMode::GetWidgetMode() const
 {
-	return FWidget::WM_Translate;
+	return UE::Widget::WM_Translate;
+}
+
+bool FObserveBoneEditMode::UsesTransformWidget(UE::Widget::EWidgetMode InWidgetMode) const
+{
+	return InWidgetMode == UE::Widget::WM_Translate;
 }
 
 FName FObserveBoneEditMode::GetSelectedBone() const

@@ -105,7 +105,7 @@ struct FNamedEmitterMaterial
 	FName Name;
 
 	UPROPERTY(EditAnywhere, Category = NamedMaterial)
-	UMaterialInterface* Material;
+	TObjectPtr<UMaterialInterface> Material;
 };
 
 UCLASS(Abstract, MinimalAPI, BlueprintType)
@@ -114,6 +114,8 @@ class UFXSystemAsset : public UObject
 	GENERATED_UCLASS_BODY()
 public:
 	UFXSystemAsset() {}
+
+	ENGINE_API virtual void PostInitProperties() override;
 
 	/** Max number of components of this system to keep resident in the world component pool. */
 	UPROPERTY(EditAnywhere, Category = Performance)
@@ -130,7 +132,24 @@ public:
 
 #if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
 	mutable FParticlePerfStats* ParticlePerfStats = nullptr;
+
+	//Cached CSV Stat names for this system.
+#if WITH_PARTICLE_PERF_CSV_STATS
+	FName CSVStat_Count = NAME_None;
+	FName CSVStat_Total = NAME_None;
+	FName CSVStat_GTOnly = NAME_None;
+	FName CSVStat_InstAvgGT = NAME_None;
+	FName CSVStat_RT = NAME_None;
+	FName CSVStat_InstAvgRT = NAME_None;
+	FName CSVStat_GPU = NAME_None;
+	FName CSVStat_InstAvgGPU = NAME_None;
+	FName CSVStat_Activation = NAME_None;
+	FName CSVStat_Waits = NAME_None;
+	FName CSVStat_Culled = NAME_None;
 #endif
+#endif
+
+
 };
 
 /**
@@ -173,11 +192,11 @@ class UParticleSystem : public UFXSystemAsset
 
 	/** Emitters	- internal - the array of emitters in the system				*/
 	UPROPERTY(instanced)
-	TArray<UParticleEmitter*> Emitters;
+	TArray<TObjectPtr<UParticleEmitter>> Emitters;
 
 	/** The component used to preview the particle system in Cascade				*/
 	UPROPERTY(transient)
-	UParticleSystemComponent* PreviewComponent;
+	TObjectPtr<UParticleSystemComponent> PreviewComponent;
 
 #if WITH_EDITORONLY_DATA
 	/** The angle to use when rendering the thumbnail image							*/
@@ -195,7 +214,7 @@ class UParticleSystem : public UFXSystemAsset
 #endif // WITH_EDITORONLY_DATA
 	/** Used for curve editor to remember curve-editing setup.						*/
 	UPROPERTY(export)
-	UInterpCurveEdSetup* CurveEdSetup;
+	TObjectPtr<UInterpCurveEdSetup> CurveEdSetup;
 
 	//
 	//	LOD
@@ -315,7 +334,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Internal: The PSys thumbnail image									*/
 	UPROPERTY()
-	class UTexture2D* ThumbnailImage;
+	TObjectPtr<class UTexture2D> ThumbnailImage;
 
 #endif // WITH_EDITORONLY_DATA
 
@@ -404,7 +423,11 @@ public:
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void PostLoad() override;
 	virtual bool IsPostLoadThreadSafe() const override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;

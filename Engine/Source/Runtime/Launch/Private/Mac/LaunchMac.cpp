@@ -84,7 +84,7 @@ static int32 MacOSVersionCompare(const NSOperatingSystemVersion& VersionA, const
 	return 0;
 }
 
-@interface UE4AppDelegate : NSObject <NSApplicationDelegate, NSFileManagerDelegate>
+@interface UEAppDelegate : NSObject <NSApplicationDelegate, NSFileManagerDelegate>
 {
 #if WITH_EDITOR
 	NSString* Filename;
@@ -98,7 +98,7 @@ static int32 MacOSVersionCompare(const NSOperatingSystemVersion& VersionA, const
 
 @end
 
-@implementation UE4AppDelegate
+@implementation UEAppDelegate
 
 - (void)awakeFromNib
 {
@@ -212,6 +212,11 @@ static int32 MacOSVersionCompare(const NSOperatingSystemVersion& VersionA, const
 	}
 }
 
+- (void) applicationWillTerminate:(NSNotification*)notification
+{
+	FTaskTagScope::SetTagStaticInit();
+}
+
 - (void) runGameThread:(id)Arg
 {
 	bool bIsBuildMachine = false;
@@ -262,8 +267,8 @@ static int32 MacOSVersionCompare(const NSOperatingSystemVersion& VersionA, const
 	NSString* MinimumSystemVersionString = (NSString*)InfoDictionary[@"LSMinimumSystemVersion"];
 	NSOperatingSystemVersion MinimumSystemVersion = { 0 };
 	NSOperatingSystemVersion CurrentSystemVersion = [[NSProcessInfo processInfo] operatingSystemVersion];
-	NSOperatingSystemVersion MinSupportedMacOSVersion = { 10, 14, 6 };
-	NSString* MinSupportedMacOSVersionString = @"10.14.6";
+	NSOperatingSystemVersion MinSupportedMacOSVersion = { 10, 15, 7 };
+	NSString* MinSupportedMacOSVersionString = @"10.15.7";
 
 	NSArray<NSString*>* VersionComponents = [MinimumSystemVersionString componentsSeparatedByString:@"."];
 	MinimumSystemVersion.majorVersion = [[VersionComponents objectAtIndex:0] integerValue];
@@ -376,6 +381,8 @@ extern bool GIsConsoleExecutable;
 
 INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 {
+	FTaskTagScope::SetTagNone();
+	
 	for (int32 Option = 1; Option < ArgC; Option++)
 	{
 		GSavedCommandLine += TEXT(" ");
@@ -409,7 +416,7 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 
 	SCOPED_AUTORELEASE_POOL;
 	[NSApplication sharedApplication];
-	[NSApp setDelegate:[UE4AppDelegate new]];
+	[NSApp setDelegate:[UEAppDelegate new]];
 	[NSApp run];
 	return GGuardedMainErrorLevel;
 }

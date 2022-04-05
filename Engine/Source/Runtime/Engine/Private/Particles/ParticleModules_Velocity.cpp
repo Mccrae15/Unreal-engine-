@@ -108,8 +108,8 @@ void UParticleModuleVelocity::SpawnEx(FParticleEmitterInstance* Owner, int32 Off
 		}
 		Vel *= OwnerScale;
 		Vel += FromOrigin * StartVelocityRadial.GetValue(Owner->EmitterTime, Owner->Component, InRandomStream) * OwnerScale;
-		Particle.Velocity		+= Vel;
-		Particle.BaseVelocity	+= Vel;
+		Particle.Velocity		+= (FVector3f)Vel;
+		Particle.BaseVelocity	+= (FVector3f)Vel;
 	}
 }
 
@@ -190,8 +190,8 @@ void UParticleModuleVelocityInheritParent::Spawn(FParticleEmitterInstance* Owner
 
 	Vel *= vScale;
 
-	Particle.Velocity		+= Vel;
-	Particle.BaseVelocity	+= Vel;
+	Particle.Velocity		+= (FVector3f)Vel;
+	Particle.BaseVelocity	+= (FVector3f)Vel;
 }
 
 /*-----------------------------------------------------------------------------
@@ -242,8 +242,8 @@ void UParticleModuleVelocityOverLifetime::Spawn(FParticleEmitterInstance* Owner,
 			OwnerScale = Owner->Component->GetComponentTransform().GetScale3D();
 		}
 		FVector Vel = VelOverLife.GetValue(Particle.RelativeTime, Owner->Component) * OwnerScale;
-		Particle.Velocity		= Vel;
-		Particle.BaseVelocity	= Vel;
+		Particle.Velocity		= (FVector3f)Vel;
+		Particle.BaseVelocity	= (FVector3f)Vel;
 	}
 }
 
@@ -269,7 +269,7 @@ void UParticleModuleVelocityOverLifetime::Update(FParticleEmitterInstance* Owner
 				BEGIN_UPDATE_LOOP;
 				{
 					Vel = VelOverLife.GetValue(Particle.RelativeTime, Owner->Component);
-					Particle.Velocity = LocalToWorld.TransformVector(Vel) * OwnerScale;
+					Particle.Velocity = FVector4f(LocalToWorld.TransformVector(Vel) * OwnerScale);
 				}
 				END_UPDATE_LOOP;
 			}
@@ -277,7 +277,7 @@ void UParticleModuleVelocityOverLifetime::Update(FParticleEmitterInstance* Owner
 			{
 				BEGIN_UPDATE_LOOP;
 				{
-					Particle.Velocity = VelOverLife.GetValue(Particle.RelativeTime, Owner->Component) * OwnerScale;
+					Particle.Velocity = FVector3f(VelOverLife.GetValue(Particle.RelativeTime, Owner->Component) * OwnerScale);
 				}
 				END_UPDATE_LOOP;
 			}
@@ -288,7 +288,7 @@ void UParticleModuleVelocityOverLifetime::Update(FParticleEmitterInstance* Owner
 			{
 				BEGIN_UPDATE_LOOP;
 				{
-					Particle.Velocity = VelOverLife.GetValue(Particle.RelativeTime, Owner->Component) * OwnerScale;
+					Particle.Velocity = FVector3f(VelOverLife.GetValue(Particle.RelativeTime, Owner->Component) * OwnerScale);
 				}
 				END_UPDATE_LOOP;
 			}
@@ -300,7 +300,7 @@ void UParticleModuleVelocityOverLifetime::Update(FParticleEmitterInstance* Owner
 				BEGIN_UPDATE_LOOP;
 				{
 					Vel = VelOverLife.GetValue(Particle.RelativeTime, Owner->Component);
-					Particle.Velocity = InvMat.TransformVector(Vel) * OwnerScale;
+					Particle.Velocity = FVector4f(InvMat.TransformVector(Vel) * OwnerScale);
 				}
 				END_UPDATE_LOOP;
 			}
@@ -317,7 +317,7 @@ void UParticleModuleVelocityOverLifetime::Update(FParticleEmitterInstance* Owner
 				BEGIN_UPDATE_LOOP;
 				{
 					Vel = VelOverLife.GetValue(Particle.RelativeTime, Owner->Component);
-					Particle.Velocity *= LocalToWorld.TransformVector(Vel) * OwnerScale;
+					Particle.Velocity *= FVector4f(LocalToWorld.TransformVector(Vel) * OwnerScale);
 				}
 				END_UPDATE_LOOP;
 			}
@@ -325,7 +325,7 @@ void UParticleModuleVelocityOverLifetime::Update(FParticleEmitterInstance* Owner
 			{
 				BEGIN_UPDATE_LOOP;
 				{
-					Particle.Velocity *= VelOverLife.GetValue(Particle.RelativeTime, Owner->Component) * OwnerScale;
+					Particle.Velocity *= FVector3f(VelOverLife.GetValue(Particle.RelativeTime, Owner->Component) * OwnerScale);
 				}
 				END_UPDATE_LOOP;
 			}
@@ -336,7 +336,7 @@ void UParticleModuleVelocityOverLifetime::Update(FParticleEmitterInstance* Owner
 			{
 				BEGIN_UPDATE_LOOP;
 				{
-					Particle.Velocity *= VelOverLife.GetValue(Particle.RelativeTime, Owner->Component) * OwnerScale;
+					Particle.Velocity *= FVector3f(VelOverLife.GetValue(Particle.RelativeTime, Owner->Component) * OwnerScale);
 				}
 				END_UPDATE_LOOP;
 			}
@@ -348,7 +348,7 @@ void UParticleModuleVelocityOverLifetime::Update(FParticleEmitterInstance* Owner
 				BEGIN_UPDATE_LOOP;
 				{
 					Vel = VelOverLife.GetValue(Particle.RelativeTime, Owner->Component);
-					Particle.Velocity *= InvMat.TransformVector(Vel) * OwnerScale;
+					Particle.Velocity *= FVector4f(InvMat.TransformVector(Vel) * OwnerScale);
 				}
 				END_UPDATE_LOOP;
 			}
@@ -430,7 +430,11 @@ void UParticleModuleVelocityCone::SpawnEx(FParticleEmitterInstance* Owner, int32
 		const FVector DefaultSpawnDirection = DefaultDirectionRotation.TransformVector(DefaultDirection);
 
 		// Orientate the cone along the direction vector		
-		const FVector ForwardDirection = (Direction != FVector::ZeroVector)? Direction.GetSafeNormal(): DefaultDirection;
+		FVector ForwardDirection = DefaultDirection;
+		if (Direction != FVector::ZeroVector)
+		{
+			ForwardDirection = Direction.GetSafeNormal();
+		}
 		FVector UpDirection(0.0f, 0.0f, 1.0f);
 		FVector RightDirection(1.0f, 0.0f, 0.0f);
 
@@ -463,7 +467,7 @@ void UParticleModuleVelocityCone::SpawnEx(FParticleEmitterInstance* Owner, int32
 		}
 
 		// Set final velocity vector
-		const FVector FinalVelocity = SpawnDirection * SpawnVelocity * OwnerScale;
+		const FVector3f FinalVelocity(SpawnDirection * SpawnVelocity * OwnerScale);
 		Particle.Velocity += FinalVelocity;
 		Particle.BaseVelocity += FinalVelocity;
 	}

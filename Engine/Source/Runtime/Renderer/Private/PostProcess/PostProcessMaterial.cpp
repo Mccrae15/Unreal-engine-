@@ -20,6 +20,7 @@
 #include "PostProcessMobile.h"
 #include "BufferVisualizationData.h"
 #include "SceneTextureParameters.h"
+#include "SystemTextures.h"
 
 namespace
 {
@@ -51,16 +52,7 @@ bool IsPostProcessStencilTestAllowed()
 	return CVarPostProcessAllowStencilTest.GetValueOnRenderThread() != 0;
 }
 
-bool IsCustomDepthEnabled()
-{
-	static const IConsoleVariable* CVarCustomDepth = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CustomDepth"));
-
-	check(CVarCustomDepth);
-
-	return CVarCustomDepth->GetInt() == 3;
-}
-
-enum class ECustomDepthPolicy : uint32
+enum class EMaterialCustomDepthPolicy : uint32
 {
 	// Custom depth is disabled.
 	Disabled,
@@ -69,7 +61,7 @@ enum class ECustomDepthPolicy : uint32
 	Enabled
 };
 
-ECustomDepthPolicy GetMaterialCustomDepthPolicy(const FMaterial* Material, ERHIFeatureLevel::Type FeatureLevel)
+EMaterialCustomDepthPolicy GetMaterialCustomDepthPolicy(const FMaterial* Material, ERHIFeatureLevel::Type FeatureLevel)
 {
 	check(Material);
 
@@ -77,9 +69,9 @@ ECustomDepthPolicy GetMaterialCustomDepthPolicy(const FMaterial* Material, ERHIF
 	if (Material->IsStencilTestEnabled() && IsPostProcessStencilTestAllowed())
 	{
 		// Custom stencil texture allocated and available.
-		if (IsCustomDepthEnabled())
+		if (GetCustomDepthMode() == ECustomDepthMode::EnabledWithStencil)
 		{
-			return ECustomDepthPolicy::Enabled;
+			return EMaterialCustomDepthPolicy::Enabled;
 		}
 		else
 		{
@@ -87,7 +79,7 @@ ECustomDepthPolicy GetMaterialCustomDepthPolicy(const FMaterial* Material, ERHIF
 		}
 	}
 
-	return ECustomDepthPolicy::Disabled;
+	return EMaterialCustomDepthPolicy::Disabled;
 }
 
 FRHIDepthStencilState* GetMaterialStencilState(const FMaterial* Material)
@@ -134,6 +126,40 @@ FRHIBlendState* GetMaterialBlendState(const FMaterial* Material)
 	check(Material);
 
 	return BlendStates[Material->GetBlendMode()];
+}
+
+bool PostProcessStencilTest(uint32 StencilValue, uint32 StencilComp, uint32 StencilRef)
+{
+	bool bStencilTestPassed = true;
+
+	switch (StencilComp)
+	{
+	case EMaterialStencilCompare::MSC_Less:
+		bStencilTestPassed = (StencilRef < StencilValue);
+		break;
+	case EMaterialStencilCompare::MSC_LessEqual:
+		bStencilTestPassed = (StencilRef <= StencilValue);
+		break;
+	case EMaterialStencilCompare::MSC_GreaterEqual:
+		bStencilTestPassed = (StencilRef >= StencilValue);
+		break;
+	case EMaterialStencilCompare::MSC_Equal:
+		bStencilTestPassed = (StencilRef == StencilValue);
+		break;
+	case EMaterialStencilCompare::MSC_Greater:
+		bStencilTestPassed = (StencilRef > StencilValue);
+		break;
+	case EMaterialStencilCompare::MSC_NotEqual:
+		bStencilTestPassed = (StencilRef != StencilValue);
+		break;
+	case EMaterialStencilCompare::MSC_Never:
+		bStencilTestPassed = false;
+		break;
+	default:
+		break;
+	}
+
+	return !bStencilTestPassed;
 }
 
 class FPostProcessMaterialShader : public FMaterialShader
@@ -391,9 +417,9 @@ FScreenPassTexture AddPostProcessMaterialPass(
 	FRDGTextureRef DepthStencilTexture = nullptr;
 
 	// Allocate custom depth stencil texture(s) and depth stencil state.
-	const ECustomDepthPolicy CustomStencilPolicy = GetMaterialCustomDepthPolicy(Material, FeatureLevel);
+	const EMaterialCustomDepthPolicy CustomStencilPolicy = GetMaterialCustomDepthPolicy(Material, FeatureLevel);
 
-	if (CustomStencilPolicy == ECustomDepthPolicy::Enabled)
+	if (CustomStencilPolicy == EMaterialCustomDepthPolicy::Enabled && HasBeenProduced(Inputs.CustomDepthTexture))
 	{
 		check(Inputs.CustomDepthTexture);
 		DepthStencilTexture = Inputs.CustomDepthTexture;
@@ -436,7 +462,8 @@ FScreenPassTexture AddPostProcessMaterialPass(
 	// We can re-use the scene color texture as the render target if we're not simultaneously reading from it.
 	// This is only necessary to do if we're going to be priming content from the render target since it avoids
 	// the copy. Otherwise, we just allocate a new render target.
-	if (!Output.IsValid() && !MaterialShaderMap->UsesSceneTexture(PPI_PostProcessInput0) && bPrimeOutputColor && !bForceIntermediateTarget && Inputs.bAllowSceneColorInputAsOutput && GMaxRHIShaderPlatform != SP_PCD3D_ES3_1)
+	const bool bValidShaderPlatform = (GMaxRHIShaderPlatform != SP_PCD3D_ES3_1) && (GMaxRHIShaderPlatform != SP_D3D_ES3_1_HOLOLENS); // This might actually work with Hololens GPUs, but we haven't enabled it before
+	if (!Output.IsValid() && !MaterialShaderMap->UsesSceneTexture(PPI_PostProcessInput0) && bPrimeOutputColor && !bForceIntermediateTarget && Inputs.bAllowSceneColorInputAsOutput && bValidShaderPlatform)
 	{
 		Output = FScreenPassRenderTarget(SceneColor, ERenderTargetLoadAction::ELoad);
 	}
@@ -452,6 +479,7 @@ FScreenPassTexture AddPostProcessMaterialPass(
 				OutputDesc.Format = Inputs.OutputFormat;
 			}
 			OutputDesc.ClearValue = FClearValueBinding(FLinearColor::Black);
+			OutputDesc.Flags &= (~ETextureCreateFlags::FastVRAM);
 			OutputDesc.Flags |= GFastVRamConfig.PostProcessMaterial;
 
 			Output = FScreenPassRenderTarget(GraphBuilder.CreateTexture(OutputDesc, TEXT("PostProcessMaterial")), SceneColor.ViewRect, View.GetOverwriteLoadAction());
@@ -475,7 +503,7 @@ FScreenPassTexture AddPostProcessMaterialPass(
 	const FScreenPassTextureViewport SceneColorViewport(SceneColor);
 	const FScreenPassTextureViewport OutputViewport(Output);
 
-	RDG_EVENT_SCOPE(GraphBuilder, "PostProcessMaterial %dx%d Material=%s", SceneColorViewport.Rect.Width(), SceneColorViewport.Rect.Height(), *Material->GetFriendlyName());
+	RDG_EVENT_SCOPE(GraphBuilder, "PostProcessMaterial %dx%d Material=%s", SceneColorViewport.Rect.Width(), SceneColorViewport.Rect.Height(), *Material->GetAssetName());
 
 	const uint32 MaterialStencilRef = Material->GetStencilRefValue();
 
@@ -486,7 +514,7 @@ FScreenPassTexture AddPostProcessMaterialPass(
 	PostProcessMaterialParameters->View = View.ViewUniformBuffer;
 	if (bMobilePlatform)
 	{
-		PostProcessMaterialParameters->EyeAdaptationBuffer = GetEyeAdaptationBuffer(View);
+		PostProcessMaterialParameters->EyeAdaptationBuffer = GraphBuilder.CreateSRV(GetEyeAdaptationBuffer(GraphBuilder, View), PF_A32B32G32R32F);
 	}
 	else
 	{
@@ -568,44 +596,82 @@ FScreenPassTexture AddPostProcessMaterialPass(
 		ScreenPassFlags |= EScreenPassDrawFlags::FlipYAxis;
 	}
 
-	AddDrawScreenPass(
-		GraphBuilder,
-		RDG_EVENT_NAME("PostProcessMaterial"),
-		View,
-		OutputViewport,
-		SceneColorViewport,
-		FScreenPassPipelineState(VertexShader, PixelShader, BlendState, DepthStencilState),
-		PostProcessMaterialParameters,
-		ScreenPassFlags,
-		[&View, VertexShader, PixelShader, MaterialRenderProxy, Material, PostProcessMaterialParameters, MaterialStencilRef](FRHICommandListImmediate& RHICmdList)
-	{
-		FPostProcessMaterialVS::SetParameters(RHICmdList, VertexShader, View, MaterialRenderProxy, *Material, *PostProcessMaterialParameters);
-		FPostProcessMaterialPS::SetParameters(RHICmdList, PixelShader, View, MaterialRenderProxy, *Material, *PostProcessMaterialParameters);
-		RHICmdList.SetStencilRef(MaterialStencilRef);
-	});
+	// check if we can skip that draw call in case if all pixels will fail the stencil test of the material
+	bool bSkipPostProcess = false;
 
-	if (bForceIntermediateTarget && !bCompositeWithInputAndDecode)
+	if (Material->IsStencilTestEnabled() && IsPostProcessStencilTestAllowed())
 	{
-		if (!Inputs.bFlipYAxis)
+		bool bFailStencil = true;
+
+		// Always check against clear value, since a material might want to perform operations against that value
+		uint32 StencilClearValue = Inputs.CustomDepthTexture ? Inputs.CustomDepthTexture->Desc.ClearValue.Value.DSValue.Stencil : 0;
+		bFailStencil &= PostProcessStencilTest(StencilClearValue, Material->GetStencilCompare(), PostProcessMaterialParameters->MobileStencilValueRef);
+
+		for (const uint32& Value : View.CustomDepthStencilValues)
 		{
-			// We shouldn't get here unless we had an override target.
-			check(Inputs.OverrideOutput.IsValid());
-			AddDrawTexturePass(GraphBuilder, View, Output.Texture, Inputs.OverrideOutput.Texture);
-			Output = Inputs.OverrideOutput;
-		}
-		else
-		{
-			FScreenPassRenderTarget TempTarget = Output;
-			if (Inputs.OverrideOutput.IsValid())
+			bFailStencil &= PostProcessStencilTest(Value, Material->GetStencilCompare(), PostProcessMaterialParameters->MobileStencilValueRef);
+
+			if (!bFailStencil)
 			{
+				break;
+			}
+		}
+
+		bSkipPostProcess = bFailStencil;
+	}
+
+	if (!bSkipPostProcess)
+	{
+		AddDrawScreenPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("PostProcessMaterial"),
+			View,
+			OutputViewport,
+			SceneColorViewport,
+			FScreenPassPipelineState(VertexShader, PixelShader, BlendState, DepthStencilState, MaterialStencilRef),
+			PostProcessMaterialParameters,
+			ScreenPassFlags,
+			[&View, VertexShader, PixelShader, MaterialRenderProxy, Material, PostProcessMaterialParameters, MaterialStencilRef](FRHICommandList& RHICmdList)
+			{
+				FPostProcessMaterialVS::SetParameters(RHICmdList, VertexShader, View, MaterialRenderProxy, *Material, *PostProcessMaterialParameters);
+				FPostProcessMaterialPS::SetParameters(RHICmdList, PixelShader, View, MaterialRenderProxy, *Material, *PostProcessMaterialParameters);
+			});
+
+		if (bForceIntermediateTarget && !bCompositeWithInputAndDecode)
+		{
+			if (!Inputs.bFlipYAxis)
+			{
+				// We shouldn't get here unless we had an override target.
+				check(Inputs.OverrideOutput.IsValid());
+				AddDrawTexturePass(GraphBuilder, View, Output.Texture, Inputs.OverrideOutput.Texture);
 				Output = Inputs.OverrideOutput;
 			}
 			else
 			{
-				Output = FScreenPassRenderTarget(SceneColor, ERenderTargetLoadAction::ENoAction);
-			}
+				FScreenPassRenderTarget TempTarget = Output;
+				if (Inputs.OverrideOutput.IsValid())
+				{
+					Output = Inputs.OverrideOutput;
+				}
+				else
+				{
+					Output = FScreenPassRenderTarget(SceneColor, ERenderTargetLoadAction::ENoAction);
+				}
 
-			AddCopyAndFlipTexturePass(GraphBuilder, View, TempTarget.Texture, Output.Texture);
+				AddCopyAndFlipTexturePass(GraphBuilder, View, TempTarget.Texture, Output.Texture);
+			}
+		}
+	}
+	else
+	{
+		// When skipping the pass, we still need to output a valid FScreenPassRenderTarget
+		Output = FScreenPassRenderTarget(SceneColor, ERenderTargetLoadAction::ENoAction);
+
+		// If there is override output, we need to output to that
+		if (Inputs.OverrideOutput.IsValid())
+		{
+			AddDrawTexturePass(GraphBuilder, View, Output.Texture, Inputs.OverrideOutput.Texture);
+			Output = Inputs.OverrideOutput;
 		}
 	}
 
@@ -716,7 +782,7 @@ FScreenPassTexture AddPostProcessMaterialChain(
 	return Outputs;
 }
 
-extern void AddDumpToColorArrayPass(FRDGBuilder& GraphBuilder, FScreenPassTexture Input, TArray<FColor>* OutputColorArray);
+extern void AddDumpToColorArrayPass(FRDGBuilder& GraphBuilder, FScreenPassTexture Input, TArray<FColor>* OutputColorArray, FIntPoint* OutputExtents);
 
 bool IsHighResolutionScreenshotMaskEnabled(const FViewInfo& View)
 {
@@ -789,7 +855,7 @@ FScreenPassTexture AddHighResolutionScreenshotMaskPass(
 		PassInputs.bAllowSceneColorInputAsOutput = false;
 
 		FScreenPassTexture MaskOutput = AddPostProcessMaterialPass(GraphBuilder, View, PassInputs, Inputs.MaskMaterial);
-		AddDumpToColorArrayPass(GraphBuilder, MaskOutput, FScreenshotRequest::GetHighresScreenshotMaskColorArray());
+		AddDumpToColorArrayPass(GraphBuilder, MaskOutput, FScreenshotRequest::GetHighresScreenshotMaskColorArray(), &FScreenshotRequest::GetHighresScreenshotMaskExtents());
 
 		// The mask material pass is actually outputting to system memory. If we're the last pass in the chain
 		// and the override output is valid, we need to perform a copy of the input to the output. Since we can't
@@ -813,33 +879,4 @@ FScreenPassTexture AddHighResolutionScreenshotMaskPass(
 	}
 
 	return Output;
-}
-
-void AddHighResScreenshotMask(FPostprocessContext& Context)
-{
-	FRenderingCompositePass* Pass = Context.Graph.RegisterPass(
-		new(FMemStack::Get()) TRCPassForRDG<1, 1>(
-			[](FRenderingCompositePass* InPass, FRenderingCompositePassContext& InContext)
-	{
-		FRDGBuilder GraphBuilder(InContext.RHICmdList);
-
-		FHighResolutionScreenshotMaskInputs PassInputs;
-		PassInputs.SceneColor.Texture = InPass->CreateRDGTextureForRequiredInput(GraphBuilder, ePId_Input0, TEXT("SceneColor"));
-		PassInputs.SceneColor.ViewRect = InContext.SceneColorViewRect;
-
-		if (FRDGTextureRef OverrideOutputTexture = InPass->FindRDGTextureForOutput(GraphBuilder, ePId_Output0, TEXT("FrameBuffer")))
-		{
-			PassInputs.OverrideOutput.Texture = OverrideOutputTexture;
-			PassInputs.OverrideOutput.ViewRect = InContext.GetSceneColorDestRect(InPass);
-			PassInputs.OverrideOutput.LoadAction = InContext.View.IsFirstInFamily() ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ELoad;
-		}
-
-		FScreenPassTexture PassOutput = AddHighResolutionScreenshotMaskPass(GraphBuilder, InContext.View, PassInputs);
-
-		InPass->ExtractRDGTextureForOutput(GraphBuilder, ePId_Output0, PassOutput.Texture);
-
-		GraphBuilder.Execute();
-	}));
-	Pass->SetInput(ePId_Input0, Context.FinalOutput);
-	Context.FinalOutput = Pass;
 }

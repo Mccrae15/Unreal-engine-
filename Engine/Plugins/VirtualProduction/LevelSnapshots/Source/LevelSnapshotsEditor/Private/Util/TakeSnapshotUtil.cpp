@@ -2,7 +2,13 @@
 
 #include "Util/TakeSnapshotUtil.h"
 
+#include "Data/LevelSnapshotsEditorData.h"
+#include "LevelSnapshot.h"
+#include "LevelSnapshotsEditorSettings.h"
+#include "LevelSnapshotsEditorModule.h"
+#include "LevelSnapshotsEditorStyle.h"
 #include "LevelSnapshotsLog.h"
+#include "Widgets/SLevelSnapshotsEditorCreationForm.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
@@ -10,60 +16,54 @@
 #include "IAssetTools.h"
 #include "Editor.h"
 #include "Engine/World.h"
-#include "LevelSnapshot.h"
-#include "LevelSnapshotsEditorModule.h"
-#include "LevelSnapshotsEditorStyle.h"
 #include "ObjectTools.h"
-#include "Data/LevelSnapshotsEditorData.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "GameplayMediaEncoder/Private/GameplayMediaEncoderCommon.h"
-#include "Logging/MessageLog.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/MessageDialog.h"
 #include "UObject/Package.h"
-#include "Widgets/SLevelSnapshotsEditorCreationForm.h"
+#include "UObject/SavePackage.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "LevelSnapshotEditorLibrary"
 
-namespace
+namespace UE::LevelSnapshots::Editor
 {
-	void HandleFormReply(const FText& InDescription, bool bShouldUseOverrides, bool bSaveAsync)
+	TAutoConsoleVariable<bool> CVarSaveAsync(TEXT("LevelSnapshots.SnapshotFormUsesSaveAsync"), true, TEXT("Set whether the Take Snapshot Form, opened by pressing the toolbar icon, saves snapshots using the SAVE_Async flag."));
+	
+	static void HandleFormReply(const FText& InDescription, bool bShouldUseOverrides)
 	{
-		FLevelSnapshotsEditorModule& Module = FLevelSnapshotsEditorModule::Get();
-		TWeakObjectPtr<ULevelSnapshotsEditorProjectSettings> ProjectSettings = Module.GetLevelSnapshotsUserSettings();
-		TWeakObjectPtr<ULevelSnapshotsEditorDataManagementSettings> DataMangementSettings = Module.GetLevelSnapshotsDataManagementSettings();
-		
 		UWorld* World = ULevelSnapshotsEditorData::GetEditorWorld();
-		if (!ensure(World && ProjectSettings.IsValid() && DataMangementSettings.IsValid()))
+		if (!ensure(World))
 		{
 			return;
 		}
 		
-		ULevelSnapshotsEditorDataManagementSettings* DataManagementSettings = DataMangementSettings.Get();
+		ULevelSnapshotsEditorSettings* DataManagementSettings = ULevelSnapshotsEditorSettings::Get();
 		DataManagementSettings->ValidateRootLevelSnapshotSaveDirAsGameContentRelative();
 		DataManagementSettings->SanitizeAllProjectSettingsPaths(true);
 
-		const FText& NewSnapshotDir = ULevelSnapshotsEditorDataManagementSettings::ParseLevelSnapshotsTokensInText(
+		const FText& NewSnapshotDir = ULevelSnapshotsEditorSettings::ParseLevelSnapshotsTokensInText(
 			FText::FromString(FPaths::Combine(DataManagementSettings->RootLevelSnapshotSaveDir.Path, DataManagementSettings->LevelSnapshotSaveDir)),
 			World->GetName()
 			);
 		const FString& DescriptionString = bShouldUseOverrides && DataManagementSettings->IsNameOverridden() ?	DataManagementSettings->GetNameOverride() : DataManagementSettings->DefaultLevelSnapshotName;
-		const FText& NewSnapshotName = ULevelSnapshotsEditorDataManagementSettings::ParseLevelSnapshotsTokensInText(
+		const FText& NewSnapshotName = ULevelSnapshotsEditorSettings::ParseLevelSnapshotsTokensInText(
 				FText::FromString(DescriptionString),
 				World->GetName()
 				);
 
 		const FString& ValidatedName = FPaths::MakeValidFileName(NewSnapshotName.ToString());
 
+		const bool bSaveAsync = CVarSaveAsync.GetValueOnAnyThread();
 		SnapshotEditor::TakeLevelSnapshotAndSaveToDisk(World, ValidatedName, NewSnapshotDir.ToString(), InDescription.ToString(), false, bSaveAsync);
 	}
 	
-	void DestroySnapshot(ULevelSnapshot* SnapshotAsset)
+	static void DestroySnapshot(ULevelSnapshot* SnapshotAsset)
 	{
 		SnapshotAsset->ClearFlags(RF_Public | RF_Standalone);
 		SnapshotAsset->Rename(nullptr, GetTransientPackage());
-		SnapshotAsset->MarkPendingKill();
+		SnapshotAsset->MarkAsGarbage();
 		SnapshotAsset->RemoveFromRoot();
 	}
 }
@@ -71,23 +71,17 @@ namespace
 void SnapshotEditor::TakeSnapshotWithOptionalForm()
 {
 	FLevelSnapshotsEditorModule& Module = FLevelSnapshotsEditorModule::Get();
-	TWeakObjectPtr<ULevelSnapshotsEditorProjectSettings> ProjectSettings = Module.GetLevelSnapshotsUserSettings();
-	TWeakObjectPtr<ULevelSnapshotsEditorDataManagementSettings> DataMangementSettings = Module.GetLevelSnapshotsDataManagementSettings();
-	
-	if (ProjectSettings.Get()->bUseCreationForm)
+	if (ULevelSnapshotsEditorSettings::Get()->bUseCreationForm)
 	{
 		TSharedRef<SWidget> CreationForm = SLevelSnapshotsEditorCreationForm::MakeAndShowCreationWindow(
-			FCloseCreationFormDelegate::CreateLambda([](const FText& Description, bool bSaveAsync)
+			FCloseCreationFormDelegate::CreateLambda([](const FText& Description)
 			{
-				HandleFormReply(Description, true, bSaveAsync);
-			}),
-			ProjectSettings.Get(),
-			DataMangementSettings.Get()
-			);
+				UE::LevelSnapshots::Editor::HandleFormReply(Description, true);
+			}));
 	}
 	else
 	{
-		HandleFormReply(FText::GetEmpty(), false, false);
+		UE::LevelSnapshots::Editor::HandleFormReply(FText::GetEmpty(), false);
 	}
 }
 
@@ -157,7 +151,7 @@ ULevelSnapshot* SnapshotEditor::TakeLevelSnapshotAndSaveToDisk(UWorld* World, co
         if (!bSuccessful)
         {
             // Package and snapshot need to be destroyed again
-            DestroySnapshot(SnapshotAsset);
+            UE::LevelSnapshots::Editor:: DestroySnapshot(SnapshotAsset);
             ObjectTools::DeleteObjectsUnchecked({ SavePackage });
             
             NotificationItem->SetText(
@@ -174,7 +168,12 @@ ULevelSnapshot* SnapshotEditor::TakeLevelSnapshotAndSaveToDisk(UWorld* World, co
     	bool bSavingSuccessful;
     	{
     		SCOPED_SNAPSHOT_EDITOR_TRACE(SaveSnapshotPackage);
-    		bSavingSuccessful = UPackage::SavePackage(SavePackage, SnapshotAsset, RF_Public | RF_Standalone, *PackageFileName, GWarn, nullptr, false, false,  bSaveAsync ? SAVE_Async | SAVE_NoError : SAVE_None);
+			FSavePackageArgs SaveArgs;
+			SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+			SaveArgs.Error = GWarn;
+			SaveArgs.bWarnOfLongFilename = false;
+			SaveArgs.SaveFlags = bSaveAsync ? SAVE_Async | SAVE_NoError : SAVE_None;
+			bSavingSuccessful = UPackage::SavePackage(SavePackage, SnapshotAsset, *PackageFileName, SaveArgs);
     	}
     	
     	// Notify the user of the outcome
@@ -189,7 +188,7 @@ ULevelSnapshot* SnapshotEditor::TakeLevelSnapshotAndSaveToDisk(UWorld* World, co
     	{
     		NotificationItem->SetText(
     			FText::Format(
-    				NSLOCTEXT("LevelSnapshots", "NotificationFormatText_CreateSnapshotSuccess", "Failed to create Level Snapshot \"{0}\". Check the file name."), FText::FromString(FileName)));
+    				NSLOCTEXT("LevelSnapshots", "NotificationFormatText_CreateSnapshotFailure", "Failed to create Level Snapshot \"{0}\". Check the file name."), FText::FromString(FileName)));
     		NotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
     	}
 

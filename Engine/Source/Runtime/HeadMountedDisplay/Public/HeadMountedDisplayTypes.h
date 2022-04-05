@@ -33,8 +33,8 @@ public:
 
 	void BuildMesh(const FVector2D Positions[], uint32 VertexCount, EHMDMeshType MeshType);
 
-	FVertexBufferRHIRef VertexBufferRHI;
-	FIndexBufferRHIRef IndexBufferRHI;
+	FBufferRHIRef VertexBufferRHI;
+	FBufferRHIRef IndexBufferRHI;
 
 	unsigned  NumVertices;
 	unsigned  NumIndices;
@@ -345,10 +345,13 @@ struct HEADMOUNTEDDISPLAY_API FXRMotionControllerData
 	UPROPERTY(BlueprintReadOnly, Category = "XR")
 	FQuat AimRotation = FQuat(EForceInit::ForceInitToZero);
 
+	// The indices of this array are the values of EHandKeypoint (Palm, Wrist, ThumbMetacarpal, etc).
 	UPROPERTY(BlueprintReadOnly, Category = "XR")
-	TArray<struct FVector> HandKeyPositions;
+	TArray<FVector> HandKeyPositions;
+	// The indices of this array are the values of EHandKeypoint (Palm, Wrist, ThumbMetacarpal, etc).
 	UPROPERTY(BlueprintReadOnly, Category = "XR")
-	TArray<struct FQuat> HandKeyRotations;
+	TArray<FQuat> HandKeyRotations;
+	// The indices of this array are the values of EHandKeypoint (Palm, Wrist, ThumbMetacarpal, etc).
 	UPROPERTY(BlueprintReadOnly, Category = "XR")
 	TArray<float> HandKeyRadii;
 

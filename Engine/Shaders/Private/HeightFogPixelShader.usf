@@ -8,11 +8,15 @@
 #include "SceneTexturesCommon.ush"
 #include "SHCommon.ush"
 #include "HeightFogCommon.ush"
+#include "Random.ush"
+
+float UpsampleJitterMultiplier;
 
 float bOnlyOnRenderedOpaque;
 float bUseLinearDepthTexture;
 
 float4 LinearDepthTextureMinMaxUV;
+float4 OcclusionTextureMinMaxUV;
 
 Texture2D OcclusionTexture;
 SamplerState OcclusionSampler;
@@ -51,17 +55,21 @@ void ExponentialPixelMain(
 	float3 WorldPositionRelativeToCamera = ScreenVector.xyz * SceneDepth;
 
 	float ZSlice = log2(SceneDepth * View.VolumetricFogGridZParams.x + View.VolumetricFogGridZParams.y) * View.VolumetricFogGridZParams.z * View.VolumetricFogInvGridSize.z;
-	float3 VolumeUV = float3((SVPos.xy - View.ViewRectMin.xy) * View.VolumetricFogSVPosToVolumeUV, ZSlice);
+	
+	uint3 Rand16Bits = Rand3DPCG16(int3(SVPos.xy, View.StateFrameIndexMod8));	
+	float3 Rand3D = (float3(Rand16Bits) / float(uint(0xffff))) * 2.0f - 1.0f;
+	float3 CellOffset = UpsampleJitterMultiplier * Rand3D;
+
+	float3 VolumeUV = float3(((SVPos.xy - View.ViewRectMin.xy) + CellOffset.xy) * View.VolumetricFogSVPosToVolumeUV, ZSlice);
 
 	float4 HeightFogInscatteringAndOpacity = CalculateHeightFog(WorldPositionRelativeToCamera);
 
 	float4 FogInscatteringAndOpacity = CombineVolumetricFog(HeightFogInscatteringAndOpacity, VolumeUV, 0);
-	float LightShaftMask = Texture2DSample(OcclusionTexture, OcclusionSampler, TexCoord).x;
+	float2 OcclusionTexCoord = clamp(TexCoord, OcclusionTextureMinMaxUV.xy, OcclusionTextureMinMaxUV.zw);
+	float LightShaftMask = Texture2DSample(OcclusionTexture, OcclusionSampler, OcclusionTexCoord).x;
 	FogInscatteringAndOpacity.rgb *= LightShaftMask;
 
-#if USE_PREEXPOSURE 
 	FogInscatteringAndOpacity.rgb *= View.PreExposure;
-#endif
 
 	if (bOnlyOnRenderedOpaque > 0.0 && !bIsRendered)
 	{

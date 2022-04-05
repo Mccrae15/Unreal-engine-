@@ -30,27 +30,24 @@ enum class EPowerUsageFrameRateLock : uint8
 UENUM()
 	enum class EIOSVersion : uint8
 {
-    /** iOS 12 */
-	IOS_12 = 12 UMETA(DisplayName = "12.0"),
-
-	/** iOS 13 */
-	IOS_13 = 13 UMETA(DisplayName = "13.0"),
-
     /** iOS 14 */
     IOS_14 = 14 UMETA(DisplayName = "14.0"),
+    
+    /** iOS 15 */
+    IOS_15 = 15 UMETA(DisplayName = "15.0"),
+
 };
 
 UENUM()
 enum class EIOSMetalShaderStandard : uint8
 {
-	/** Metal Shaders Compatible With iOS 10.0/tvOS 10.0 or later (std=ios-metal1.2) */
-	IOSMetalSLStandard_1_2 = 2 UMETA(DisplayName="Metal v1.2 (iOS 10.0/tvOS 10.0)", Hidden),
-	
-    /** Metal Shaders Compatible With iOS 11.0/tvOS 11.0 or later (std=ios-metal2.0) */
-	IOSMetalSLStandard_2_0 = 3 UMETA(DisplayName="Metal v2.0 (iOS 11.0/tvOS 11.0)"),
-    
-    /** Metal Shaders Compatible With iOS 12.0/tvOS 12.0 or later (std=ios-metal2.1) */
-    IOSMetalSLStandard_2_1 = 4 UMETA(DisplayName="Metal v2.1 (iOS 12.0/tvOS 12.0)"),
+    /** Metal Shader 2.3 is the minimum as of UE5.0*/
+    IOSMetalSLStandard_Minimum = 0 UMETA(DisplayName="Minimum, Currently v2.3 (iOS 14.0/tvOS 14.0)"),
+    /** Metal Shaders Compatible With iOS 14.0/tvOS 14.0 or later (std=ios-metal2.3) */
+    IOSMetalSLStandard_2_3 = 6 UMETA(DisplayName="Metal v2.3 (iOS 14.0/tvOS 14.0)"),
+    /** Metal Shaders Compatible With iOS 15.0/tvOS 15.0 or later (std=ios-metal2.4) */
+    IOSMetalSLStandard_2_4 = 7 UMETA(DisplayName="Metal v2.4 (iOS 15.0/tvOS 15.0)"),
+
 };
 
 UENUM()
@@ -219,14 +216,6 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Rendering, meta = (DisplayName = "Metal Desktop Renderer"))
 	bool bSupportsMetalMRT;
 	
-	// Whether or not to add support for PVRTC textures
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Rendering, meta = (DisplayName = "Cook PVRTC texture data for OpenGL ES or Metal on A7 and earlier devices"))
-	bool bCookPVRTCTextures;
-
-	// Whether or not to add support for ASTC textures
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Rendering, meta = (DisplayName = "Cook ASTC texture data for Metal on A8 or later devices"))
-	bool bCookASTCTextures;
-	
     // Whether to build the iOS project as a framework.
     UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Build project as a framework (Experimental)"))
     bool bBuildAsFramework;
@@ -235,11 +224,11 @@ public:
 	FIOSBuildResourceDirectory WindowsMetalToolchainOverride;
 
 	// Enable generation of dSYM file
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Generate dSYM file for code debugging and profiling"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Generate dSYMs for code debugging and profiling"))
 	bool bGeneratedSYMFile;
 
 	// Enable generation of dSYM bundle
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Generate dSYM bundle for third party crash tools"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Generate dSYMs as a bundle for third party crash tools"), meta = (EditCondition = "bGeneratedSYMFile"))
 	bool bGeneratedSYMBundle;
 
 	// Enable generation of a .udebugsymbols file, which allows offline, platform-independent symbolication for the Malloc Profiler or external crash reporting tools. Requires a dSYM file or bundle.
@@ -278,7 +267,7 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Build", meta = (EditCondition = "bUseRSync", DisplayName = "Username on Remote Server.", ConfigHierarchyEditable))
 	FString RSyncUsername;
 
-	// Optional path on the remote mac where the build files will be copied. If blank, ~/UE4/Builds will be used.
+	// Optional path on the remote mac where the build files will be copied. If blank, ~/UE5/Builds will be used.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Build", meta = (ConfigHierarchyEditable))
 	FString RemoteServerOverrideBuildPath;
 
@@ -286,7 +275,7 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Build", meta = (EditCondition = "bUseRSync", ConfigHierarchyEditable))
 	FIOSBuildResourceDirectory CwRsyncInstallPath;
 
-	// The existing location of an SSH Key found by UE4.
+	// The existing location of an SSH Key found by Unreal Engine.
 	UPROPERTY(VisibleAnywhere, Category = "Build", meta = (DisplayName = "Found Existing SSH permissions file"))
 	FString SSHPrivateKeyLocation;
 
@@ -411,11 +400,13 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Online, meta = (EditCondition = "bEnableFacebookSupport"))
 	FString FacebookAppID;
     
-    // Mobile provision to utilize when signing
+    // Mobile provision to utilize when signing.
+	// This value is stripped out when making builds.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build)
 	FString MobileProvision;
 
-	// Signing certificate to utilize when signing
+	// Signing certificate to utilize when signing.
+	// This value is stripped out when making builds.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build)
 	FString SigningCertificate;
 	
@@ -423,19 +414,31 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build)
 	bool bAutomaticSigning;
 
-	// The team ID of the apple developer account to be used to autmatically sign IOS builds
+	// The team ID of the apple developer account to be used to autmatically sign IOS builds.
+	// This can be overridden in Turnkey with "RunUAT Turnkey -command=ManageSettings"
+	// This value is stripped out when making builds.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (ConfigHierarchyEditable))
 	FString IOSTeamID;
 
+	// The username/email to use when logging in to DevCenter with Turnkey.
+	// This can be overridden in Turnkey with "RunUAT Turnkey -command=ManageSettings"
+	// This value is stripped out when making builds.
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (ConfigHierarchyEditable))
+	FString DevCenterUsername;
+	
+	// The password to use when logging in to DevCenter with Turnkey. NOTE: This is saved in plaintext, and is meant for shared accounts!
+	// This value is stripped out when making builds.
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (ConfigHierarchyEditable))
+	FString DevCenterPassword;
+	
 	// Whether the app supports HTTPS
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Online, meta = (DisplayName = "Allow web connections to non-HTTPS websites"))
 	bool bDisableHTTPS;
 
 
-    // The maximum supported Metal shader langauge version.
-    // This defines what features may be used and OS versions supported.
-    UPROPERTY(EditAnywhere, config, Category=Rendering, meta = (DisplayName = "Max. Metal Shader Standard To Target", ConfigRestartRequired = true))
-	uint8 MaxShaderLanguageVersion;
+    // The Metal shader language version which will be used when compiling the shaders.
+    UPROPERTY(EditAnywhere, config, Category=Rendering, meta = (DisplayName = "Metal Shader Standard To Target", ConfigRestartRequired = true))
+	uint8 MetalLanguageVersion;
 	
 	/**
 	 * Whether to use the Metal shading language's "fast" intrinsics.
@@ -467,6 +470,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Rendering, Meta = (DisplayName = "Tier of Indirect Argument Buffers to use when compiling shaders", ConfigRestartRequired = true))
 	int32 IndirectArgumentTier;
 	
+    /** Supports Apple A8 devices, disables 3d texture compression */
+    UPROPERTY(config, EditAnywhere, Category = Rendering, Meta = (DisplayName = "Support Apple A8", ConfigRestartRequired = true))
+    bool bSupportAppleA8;
+    
 	// Whether or not the keyboard should be usable on it's own without a UITextField
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Input)
 	bool bUseIntegratedKeyboard;
@@ -491,25 +498,21 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Audio", meta = (ClampMin = "0", UIMin = "0", DisplayName = "Number of Source Workers"))
 	int32 AudioNumSourceWorkers;
 
-	/** Which of the currently enabled spatialization plugins to use on Windows. */
+	/** Which of the currently enabled spatialization plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString SpatializationPlugin;
 
-	/** Which of the currently enabled reverb plugins to use on Windows. */
+	/** Which of the currently enabled reverb plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString ReverbPlugin;
 
-	/** Which of the currently enabled occlusion plugins to use on Windows. */
+	/** Which of the currently enabled occlusion plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString OcclusionPlugin;
 
 	/** Various overrides for how this platform should handle compression and decompression */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FPlatformRuntimeAudioCompressionOverrides CompressionOverrides;
-
-	/** When this is enabled, Actual compressed data will be separated from the USoundWave, and loaded into a cache. */
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio|CookOverrides", meta = (DisplayName = "Use Stream Caching (Experimental)"))
-	bool bUseAudioStreamCaching;
 
 	/** This determines the max amount of memory that should be used for the cache at any given time. If set low (<= 8 MB), it lowers the size of individual chunks of audio during cook. */
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio|CookOverrides|Stream Caching", meta = (DisplayName = "Max Cache Size (KB)"))
@@ -548,7 +551,7 @@ public:
 	float CompressionQualityModifier;
 
 	// When set to anything beyond 0, this will ensure any SoundWaves longer than this value, in seconds, to stream directly off of the disk.
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio|CookOverrides", meta = (DisplayName = "Stream All Soundwaves Longer Than: "))
+	UPROPERTY(GlobalConfig)
 	float AutoStreamingThreshold;
 
 	/** Whether to enable LOD streaming for landscape visual meshes. Requires Metal support. */

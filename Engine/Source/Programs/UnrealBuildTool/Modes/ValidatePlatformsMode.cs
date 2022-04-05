@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -53,11 +53,11 @@ namespace UnrealBuildTool
 			// Output a line for each registered platform
 			foreach (UnrealTargetPlatform Platform in Platforms)
 			{
-				UEBuildPlatform BuildPlatform = UEBuildPlatform.GetBuildPlatform(Platform, true);
+				UEBuildPlatform.TryGetBuildPlatform(Platform, out UEBuildPlatform? BuildPlatform);
 				string PlatformSDKString = "";
 				if (bOutputSDKs)
 				{
-					PlatformSDKString = BuildPlatform != null ? BuildPlatform.GetRequiredSDKString() : "<UNKNOWN>";
+					PlatformSDKString = BuildPlatform != null ? UEBuildPlatform.GetSDK(Platform)!.GetMainVersion() : "<UNKNOWN>";
 				}
 
 				if (BuildPlatform != null && BuildPlatform.HasRequiredSDKsInstalled() == SDKStatus.Valid)

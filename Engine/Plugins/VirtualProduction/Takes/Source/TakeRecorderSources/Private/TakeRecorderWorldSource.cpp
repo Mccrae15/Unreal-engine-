@@ -98,7 +98,7 @@ TArray<UTakeRecorderSource*> UTakeRecorderWorldSource::PreRecording(ULevelSequen
 	return NewSources;
 }
 
-TArray<UTakeRecorderSource*> UTakeRecorderWorldSource::PostRecording(class ULevelSequence* InSequence, class ULevelSequence* InMasterSequence)
+TArray<UTakeRecorderSource*> UTakeRecorderWorldSource::PostRecording(class ULevelSequence* InSequence, class ULevelSequence* InMasterSequence, const bool bCancelled)
 {
 	TArray<UTakeRecorderSource*> SourcesToRemove;
 
@@ -128,7 +128,7 @@ bool UTakeRecorderWorldSource::CanAddSource(UTakeRecorderSources* InSources) con
 
 void UTakeRecorderWorldSource::AutotrackActors(class ULevelSequence* InSequence, UWorld* InWorld)
 {
-	if (!InWorld)
+	if (!InWorld || !GEditor)
 	{
 		return;
 	}

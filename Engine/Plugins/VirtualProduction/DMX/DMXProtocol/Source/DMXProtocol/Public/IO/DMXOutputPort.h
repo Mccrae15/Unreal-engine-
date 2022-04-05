@@ -9,9 +9,13 @@
 #include "CoreMinimal.h"
 #include "Tickable.h"
 #include "Containers/Queue.h" 
-#include "Templates/SharedPointer.h"
+#include "HAL/Runnable.h"
+#include "Misc/ScopeLock.h" 
+#include "Misc/SingleThreadRunnable.h"
+#include "Templates/Atomic.h"
 
 struct FDMXOutputPortConfig;
+struct FDMXOutputPortDestinationAddress;
 class FDMXPortManager;
 class FDMXSignal;
 class IDMXSender;
@@ -39,20 +43,46 @@ struct FDMXOutputPortCommunicationDeterminator
 	/** Sets if there is a valid sender obj */
 	FORCEINLINE void SetHasValidSender(bool bInHasValidSender) { bHasValidSender = bInHasValidSender; }
 
-	/** Determinates if loopback to engine is needed. If true, loopback is needed */
+	/** Determinates if loopback to engine is needed (may be true even is loopback to engine is not enabled) */
 	FORCEINLINE bool NeedsLoopbackToEngine() const { return bLoopbackToEngine || !bReceiveEnabled || !bSendEnabled; }
 
-	/** Determinates if loopback to engine is needed. If true, loopback is needed */
+	/** Determinates if dmx needs to be sent (may be false even if send is enabled) */
 	FORCEINLINE bool NeedsSendDMX() const { return bSendEnabled && bHasValidSender; }
 
-	/** Determinates if loopback to engine is needed. If true, loopback is needed */
+	/** Determinates if send dmx is enabled */
 	FORCEINLINE bool IsSendDMXEnabled() const { return bSendEnabled; }
+
+	/** Returns true if loopback to engine is enabled (only true if loopback to engine is set enabled) */
+	FORCEINLINE bool IsLoopbackToEngineEnabled() const { return bLoopbackToEngine; }
 
 private:
 	bool bLoopbackToEngine;
 	bool bReceiveEnabled;
 	bool bSendEnabled;
 	bool bHasValidSender;
+};
+
+
+/** Structs that holds the fragmented values to be sent along with a timestamp when to send it */
+struct DMXPROTOCOL_API FDMXSignalFragment
+	: TSharedFromThis<FDMXSignalFragment, ESPMode::ThreadSafe>
+{
+	FDMXSignalFragment() = delete;
+
+	FDMXSignalFragment(int32 InExternUniverseID, const TMap<int32, uint8>& InChannelToValueMap, double InSendTime)
+		: ExternUniverseID(InExternUniverseID)
+		, ChannelToValueMap(InChannelToValueMap)
+		, SendTime(InSendTime)
+	{}
+
+	/** The universe the fragment needs to be written to */
+	int32 ExternUniverseID;
+
+	/** The map of channels and values to send */
+	TMap<int32, uint8> ChannelToValueMap;
+
+	/** The time when the Fragment needs be sent */
+	double SendTime;
 };
 
 
@@ -67,6 +97,8 @@ private:
  */
 class DMXPROTOCOL_API FDMXOutputPort
 	: public FDMXPort
+	, public FRunnable
+	, public FSingleThreadRunnable
 {
 	// Friend DMXPortManager so it can create instances and unregister void instances
 	friend FDMXPortManager;
@@ -81,20 +113,17 @@ protected:
 public:
 	virtual ~FDMXOutputPort();
 
-	/** Updates the Port to use the config of the OutputPortConfig */
-	void UpdateFromConfig(FDMXOutputPortConfig& OutputPortConfig);
+	/** Creates a dmx output port config that corresponds to the port */
+	FDMXOutputPortConfig MakeOutputPortConfig() const;
 
-	//~ Begin DMXPort Interface 
-	virtual bool IsRegistered() const override;
-	virtual const FGuid& GetPortGuid() const override;
-protected:
-	virtual void AddRawListener(TSharedRef<FDMXRawListener> InRawListener) override;
-	virtual void RemoveRawListener(TSharedRef<FDMXRawListener> InRawListenerToRemove) override;
-	virtual bool Register() override;
-	virtual void Unregister() override;
-	//~ End DMXPort Interface
+	/**
+	 * Updates the Port to use the config of the OutputPortConfig. Makes the config valid if it's invalid.
+	 *
+	 * @param InOutInputPortConfig					The config that is applied. May be changed to a valid config.
+	 * @param bForceUpdateRegistrationWithProtocol	Optional: Forces the port to update its registration with the protocol (useful for runtime changes)
+	 */
+	void UpdateFromConfig(FDMXOutputPortConfig& OutputPortConfig, bool bForceUpdateRegistrationWithProtocol = false);
 
-public:
 	/** Sends DMX over the port */
 	void SendDMX(int32 LocalUniverseID, const TMap<int32, uint8>& ChannelToValueMap);
 
@@ -118,37 +147,74 @@ public:
 	 */
 	bool GameThreadGetDMXSignal(int32 LocalUniverseID, FDMXSignalSharedPtr& OutDMXSignal, bool bEvenIfNotLoopbackToEngine);
 
+	/** Returns the Destination Addresses */
+	TArray<FString> GetDestinationAddresses() const;
+
 	/**  DEPRECATED 4.27. Gets the DMX signal from an extern (remote) Universe ID. */
 	UE_DEPRECATED(4.27, "Use GameThreadGetDMXSignal instead. GameThreadGetDMXSignalFromRemoteUniverse only exists to support deprecated blueprint nodes.")
 	bool GameThreadGetDMXSignalFromRemoteUniverse(FDMXSignalSharedPtr& OutDMXSignal, int32 RemoteUniverseID, bool bEvenIfNotLoopbackToEngine);
 
-	/** Returns the Destination Address */
-	FORCEINLINE const FString& GetDestinationAddress() const { return DestinationAddress; }
+	/** DEPRECATED 5.0 */
+	UE_DEPRECATED(5.0, "Output Ports now support many destination addresses. Please use FDMXOutputPort::GetDestinationAddresses instead.")
+	FString GetDestinationAddress() const;
 
-private:
-	/** Called to set if DMX should be enabled */
+	/** Returns the output port's delay in seconds */
+	FORCEINLINE double GetDelaySeconds() const { return DelaySeconds; }
+
+public:
+	//~ Begin DMXPort Interface 
+	virtual bool IsRegistered() const override;
+	virtual const FGuid& GetPortGuid() const override;
+
+protected:
+	virtual void AddRawListener(TSharedRef<FDMXRawListener> InRawListener) override;
+	virtual void RemoveRawListener(TSharedRef<FDMXRawListener> InRawListenerToRemove) override;
+	virtual bool Register() override;
+	virtual void Unregister() override;
+	//~ End DMXPort Interface
+
+		/** Called to set if DMX should be enabled */
 	void OnSetSendDMXEnabled(bool bEnabled);
 
 	/** Called to set if DMX should be enabled */
 	void OnSetReceiveDMXEnabled(bool bEnabled);
 
-	/** Returns the port config that corresponds to the guid of this port. */
-	FDMXOutputPortConfig* FindOutputPortConfigChecked() const;
-	
-	/** The DMX sender, or nullptr if not registered */
-	TSharedPtr<IDMXSender> DMXSender;
+	//~ Begin FRunnable implementation
+	virtual bool Init() override;
+	virtual uint32 Run() override;
+	virtual void Stop() override;
+	virtual void Exit() override;
+	//~ End FRunnable implementation
+
+	//~ Begin FSingleThreadRunnable implementation
+	virtual void Tick() override;
+	virtual class FSingleThreadRunnable* GetSingleThreadInterface() override;
+	//~ End FSingleThreadRunnable implementation
+
+	/** Updates the thread, sending DMX */
+	void ProcessSendDMX();
+
+private:
+	/** The DMX senders in use */
+	TArray<TSharedPtr<IDMXSender>> DMXSenderArray;
+
+	/** Buffer of the signals that are to be sent in the next frame */
+	TQueue<TSharedPtr<FDMXSignalFragment, ESPMode::ThreadSafe>> SignalFragments;
+
+	/** Map that holds the latest Signal per Universe on the Game Thread */
+	TMap<int32, FDMXSignalSharedPtr> ExternUniverseToLatestSignalMap_GameThread;
+
+	/** Map that holds the latest Signal per Universe on the Port Thread */
+	TMap<int32, FDMXSignalSharedPtr> ExternUniverseToLatestSignalMap_PortThread;
 
 	/** The Destination Address to send to, can be irrelevant, e.g. for art-net broadcast */
-	FString DestinationAddress;
+	TArray<FDMXOutputPortDestinationAddress> DestinationAddresses;
 
 	/** Helper to determine how dmx should be communicated (loopback, send) */
 	FDMXOutputPortCommunicationDeterminator CommunicationDeterminator;
 
 	/** Priority on which packets are being sent */
-	int32 Priority;
-
-	/** Map of latest Singals per Universe */
-	TMap<int32, FDMXSignalSharedPtr> ExternUniverseToLatestSignalMap;
+	int32 Priority = 0;
 
 	/** Map of raw Inputs */
 	TSet<TSharedRef<FDMXRawListener>> RawListeners;
@@ -158,4 +224,22 @@ private:
 
 	/** The unique identifier of this port, shared with the port config this was constructed from. Should not be changed after construction. */
 	FGuid PortGuid;
+
+	/** Delay to apply on packets being sent */
+	double DelaySeconds = 0.0;
+
+	/** The frame rate of the delay */
+	FFrameRate DelayFrameRate;
+
+	/** Critical section required to be used when clearing buffers */
+	FCriticalSection AccessSenderArrayCriticalSection;
+
+	/** Critical section required to be used when clearing buffers */
+	FCriticalSection ClearBuffersCriticalSection;
+
+	/** Holds the thread object. */
+	FRunnableThread* Thread = nullptr;
+
+	/** Flag indicating that the thread is stopping. */
+	TAtomic<bool> bStopping;
 };

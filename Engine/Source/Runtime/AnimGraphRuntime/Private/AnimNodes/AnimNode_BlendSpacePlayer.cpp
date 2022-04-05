@@ -1,28 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimNodes/AnimNode_BlendSpacePlayer.h"
-#include "Animation/BlendSpaceBase.h"
+#include "Animation/BlendSpace.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "AnimGraphRuntimeTrace.h"
+#include "Animation/AnimSync.h"
+#include "Animation/AnimSyncScope.h"
 
 /////////////////////////////////////////////////////
 // FAnimNode_BlendSpacePlayer
 
-FAnimNode_BlendSpacePlayer::FAnimNode_BlendSpacePlayer()
-	: X(0.0f)
-	, Y(0.0f)
-	, Z(0.0f)
-	, PlayRate(1.0f)
-	, bLoop(true)
-	, bResetPlayTimeWhenBlendSpaceChanges(true)
-	, StartPosition(0.f)
-	, BlendSpace(nullptr)
-	, PreviousBlendSpace(nullptr)
-{
-}
-
-float FAnimNode_BlendSpacePlayer::GetCurrentAssetTime()
+float FAnimNode_BlendSpacePlayer::GetCurrentAssetTime() const
 {
 	if(const FBlendSampleData* HighestWeightedSample = GetHighestWeightedSample())
 	{
@@ -33,20 +22,21 @@ float FAnimNode_BlendSpacePlayer::GetCurrentAssetTime()
 	return 0.0f;
 }
 
-float FAnimNode_BlendSpacePlayer::GetCurrentAssetTimePlayRateAdjusted()
+float FAnimNode_BlendSpacePlayer::GetCurrentAssetTimePlayRateAdjusted() const
 {
 	float Length = GetCurrentAssetLength();
-	return PlayRate < 0.0f ? Length - InternalTimeAccumulator * Length : Length * InternalTimeAccumulator;
+	return GetPlayRate() < 0.0f ? Length - InternalTimeAccumulator * Length : Length * InternalTimeAccumulator;
 }
 
-float FAnimNode_BlendSpacePlayer::GetCurrentAssetLength()
+float FAnimNode_BlendSpacePlayer::GetCurrentAssetLength() const
 {
 	if(const FBlendSampleData* HighestWeightedSample = GetHighestWeightedSample())
 	{
-		if (BlendSpace != nullptr)
+		UBlendSpace* CurrentBlendSpace = GetBlendSpace();
+		if (CurrentBlendSpace != nullptr)
 		{
-			const FBlendSample& Sample = BlendSpace->GetBlendSample(HighestWeightedSample->SampleDataIndex);
-			return Sample.Animation->SequenceLength;
+			const FBlendSample& Sample = CurrentBlendSpace->GetBlendSample(HighestWeightedSample->SampleDataIndex);
+			return Sample.Animation->GetPlayLength();
 		}
 	}
 
@@ -63,7 +53,7 @@ void FAnimNode_BlendSpacePlayer::Initialize_AnyThread(const FAnimationInitialize
 
 	Reinitialize();
 
-	PreviousBlendSpace = BlendSpace;
+	PreviousBlendSpace = GetBlendSpace();
 }
 
 void FAnimNode_BlendSpacePlayer::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context)
@@ -81,53 +71,58 @@ void FAnimNode_BlendSpacePlayer::UpdateAssetPlayer(const FAnimationUpdateContext
 void FAnimNode_BlendSpacePlayer::UpdateInternal(const FAnimationUpdateContext& Context)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(UpdateInternal)
-	if ((BlendSpace != NULL) && (Context.AnimInstanceProxy->IsSkeletonCompatible(BlendSpace->GetSkeleton())))
-	{
-		// Create a tick record and fill it out
-		FAnimGroupInstance* SyncGroup;
-		FAnimTickRecord& TickRecord = Context.AnimInstanceProxy->CreateUninitializedTickRecordInScope(/*out*/ SyncGroup, GroupName, GroupScope);
 
-		const FVector BlendInput(X, Y, Z);
-	
-		if (PreviousBlendSpace != BlendSpace)
+	UBlendSpace* CurrentBlendSpace = GetBlendSpace();
+	if ((CurrentBlendSpace != nullptr) && (Context.AnimInstanceProxy->IsSkeletonCompatible(CurrentBlendSpace->GetSkeleton())))
+	{	
+		if (PreviousBlendSpace != CurrentBlendSpace)
 		{
-			Reinitialize(bResetPlayTimeWhenBlendSpaceChanges);
+			Reinitialize(ShouldResetPlayTimeWhenBlendSpaceChanges());
 		}
 
-		Context.AnimInstanceProxy->MakeBlendSpaceTickRecord(TickRecord, BlendSpace, BlendInput, BlendSampleDataCache, BlendFilter, bLoop, PlayRate, Context.GetFinalBlendWeight(), /*inout*/ InternalTimeAccumulator, MarkerTickRecord);
+		const FVector Position = GetPosition();
 
-		// Update the sync group if it exists
-		if (SyncGroup != NULL)
-		{
-			SyncGroup->TestTickRecordForLeadership(GroupRole);
-		}
+		// Create a tick record and push into the closest scope
+		UE::Anim::FAnimSyncGroupScope& SyncScope = Context.GetMessageChecked<UE::Anim::FAnimSyncGroupScope>();
 
+		FAnimTickRecord TickRecord(
+			CurrentBlendSpace, Position, BlendSampleDataCache, BlendFilter, GetLoop(), GetPlayRate(), ShouldTeleportToTime(), 
+			IsEvaluator(), Context.GetFinalBlendWeight(), /*inout*/ InternalTimeAccumulator, MarkerTickRecord);
+		TickRecord.RootMotionWeightModifier = Context.GetRootMotionWeightModifier();
+		TickRecord.DeltaTimeRecord = &DeltaTimeRecord;
+
+		UE::Anim::FAnimSyncParams SyncParams(GetGroupName(), GetGroupRole(), GetGroupMethod());
+		TickRecord.GatherContextData(Context);
+
+		SyncScope.AddTickRecord(TickRecord, SyncParams, UE::Anim::FAnimSyncDebugInfo(Context));
 
 		TRACE_ANIM_TICK_RECORD(Context, TickRecord);
 
-#if ANIM_NODE_IDS_AVAILABLE && WITH_EDITORONLY_DATA
+#if WITH_EDITORONLY_DATA
 		if (FAnimBlueprintDebugData* DebugData = Context.AnimInstanceProxy->GetAnimBlueprintDebugData())
 		{
-			DebugData->RecordBlendSpacePlayer(Context.GetCurrentNodeId(), BlendSpace, BlendInput.X, BlendInput.Y, BlendInput.Z);
+			DebugData->RecordBlendSpacePlayer(Context.GetCurrentNodeId(), CurrentBlendSpace, Position, BlendFilter.GetFilterLastOutput());
 		}
 #endif
 
-		PreviousBlendSpace = BlendSpace;
+		PreviousBlendSpace = CurrentBlendSpace;
 	}
 
 	TRACE_BLENDSPACE_PLAYER(Context, *this);
-	TRACE_ANIM_NODE_VALUE(Context, TEXT("Name"), BlendSpace ? *BlendSpace->GetName() : TEXT("None"));
-	TRACE_ANIM_NODE_VALUE(Context, TEXT("Blend Space"), BlendSpace);
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Name"), CurrentBlendSpace ? *CurrentBlendSpace->GetName() : TEXT("None"));
+	TRACE_ANIM_NODE_VALUE(Context, TEXT("Blend Space"), CurrentBlendSpace);
 	TRACE_ANIM_NODE_VALUE(Context, TEXT("Playback Time"), InternalTimeAccumulator);
 }
 
 void FAnimNode_BlendSpacePlayer::Evaluate_AnyThread(FPoseContext& Output)
 {
-	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread)
-	if ((BlendSpace != NULL) && (Output.AnimInstanceProxy->IsSkeletonCompatible(BlendSpace->GetSkeleton())))
+	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread) 
+
+	UBlendSpace* CurrentBlendSpace = GetBlendSpace();
+	if ((CurrentBlendSpace != nullptr) && (Output.AnimInstanceProxy->IsSkeletonCompatible(CurrentBlendSpace->GetSkeleton())))
 	{
 		FAnimationPoseData AnimationPoseData(Output);
-		BlendSpace->GetAnimationPose(BlendSampleDataCache, AnimationPoseData);
+		CurrentBlendSpace->GetAnimationPose(BlendSampleDataCache, FAnimExtractContext(InternalTimeAccumulator, Output.AnimInstanceProxy->ShouldExtractRootMotion(), DeltaTimeRecord, GetLoop()), AnimationPoseData);
 	}
 	else
 	{
@@ -135,36 +130,30 @@ void FAnimNode_BlendSpacePlayer::Evaluate_AnyThread(FPoseContext& Output)
 	}
 }
 
-void FAnimNode_BlendSpacePlayer::OverrideAsset(UAnimationAsset* NewAsset)
-{
-	if(UBlendSpaceBase* NewBlendSpace = Cast<UBlendSpaceBase>(NewAsset))
-	{
-		BlendSpace = NewBlendSpace;
-	}
-}
-
 void FAnimNode_BlendSpacePlayer::GatherDebugData(FNodeDebugData& DebugData)
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(GatherDebugData)
 	FString DebugLine = DebugData.GetNodeName(this);
-	if (BlendSpace)
+
+	UBlendSpace* CurrentBlendSpace = GetBlendSpace();
+	if (CurrentBlendSpace)
 	{
-		DebugLine += FString::Printf(TEXT("('%s' Play Time: %.3f)"), *BlendSpace->GetName(), InternalTimeAccumulator);
+		DebugLine += FString::Printf(TEXT("('%s' Play Time: %.3f)"), *CurrentBlendSpace->GetName(), InternalTimeAccumulator);
 
 		DebugData.AddDebugItem(DebugLine, true);
-
-		//BlendSpace->GetBlendSamples();
 	}
 }
 
-float FAnimNode_BlendSpacePlayer::GetTimeFromEnd(float CurrentTime)
+float FAnimNode_BlendSpacePlayer::GetTimeFromEnd(float CurrentTime) const
 {
-	return BlendSpace != nullptr ? BlendSpace->GetMaxCurrentTime() - CurrentTime : 0.0f;
+	// Blend-spaces use normalized time value
+	const float PlayLength = 1.0f;
+	return GetBlendSpace() != nullptr ? PlayLength - CurrentTime : 0.0f;
 }
 
-UAnimationAsset* FAnimNode_BlendSpacePlayer::GetAnimAsset()
+UAnimationAsset* FAnimNode_BlendSpacePlayer::GetAnimAsset() const
 {
-	return BlendSpace;
+	return GetBlendSpace();
 }
 
 const FBlendSampleData* FAnimNode_BlendSpacePlayer::GetHighestWeightedSample() const
@@ -192,16 +181,145 @@ void FAnimNode_BlendSpacePlayer::Reinitialize(bool bResetTime)
 	BlendSampleDataCache.Empty();
 	if(bResetTime)
 	{
-		InternalTimeAccumulator = FMath::Clamp(StartPosition, 0.f, 1.0f);
-		if (StartPosition == 0.f && PlayRate < 0.0f)
+		float CurrentStartPosition = GetStartPosition();
+
+		InternalTimeAccumulator = FMath::Clamp(CurrentStartPosition, 0.f, 1.0f);
+		if (CurrentStartPosition == 0.f && GetPlayRate() < 0.0f)
 		{
 			// Blend spaces run between 0 and 1
 			InternalTimeAccumulator = 1.0f;
 		}
 	}
 
-	if (BlendSpace != NULL)
+	UBlendSpace* CurrentBlendSpace = GetBlendSpace();
+	if (CurrentBlendSpace != nullptr)
 	{
-		BlendSpace->InitializeFilter(&BlendFilter);
+		CurrentBlendSpace->InitializeFilter(&BlendFilter);
 	}
+}
+
+bool FAnimNode_BlendSpacePlayer::SetBlendSpace(UBlendSpace* InBlendSpace)
+{
+#if WITH_EDITORONLY_DATA
+	BlendSpace = InBlendSpace;
+	GET_MUTABLE_ANIM_NODE_DATA(TObjectPtr<UBlendSpace>, BlendSpace) = InBlendSpace;
+#endif
+	
+	if(TObjectPtr<UBlendSpace>* BlendSpacePtr = GET_INSTANCE_ANIM_NODE_DATA_PTR(TObjectPtr<UBlendSpace>, BlendSpace))
+	{
+		*BlendSpacePtr = InBlendSpace;
+		return true;
+	}
+
+	return false;
+}
+
+FVector FAnimNode_BlendSpacePlayer::GetPosition() const
+{
+	return FVector(GET_ANIM_NODE_DATA(float, X), GET_ANIM_NODE_DATA(float, Y), 0.0f);
+}
+
+float FAnimNode_BlendSpacePlayer::GetPlayRate() const
+{
+	return GET_ANIM_NODE_DATA(float, PlayRate);
+}
+
+bool FAnimNode_BlendSpacePlayer::GetLoop() const
+{
+	return GET_ANIM_NODE_DATA(bool, bLoop);
+}
+
+bool FAnimNode_BlendSpacePlayer::ShouldResetPlayTimeWhenBlendSpaceChanges() const
+{
+	return GET_ANIM_NODE_DATA(bool, bResetPlayTimeWhenBlendSpaceChanges);
+}
+
+float FAnimNode_BlendSpacePlayer::GetStartPosition() const
+{
+	return GET_ANIM_NODE_DATA(float, StartPosition);
+}
+
+UBlendSpace* FAnimNode_BlendSpacePlayer::GetBlendSpace() const
+{
+	return GET_ANIM_NODE_DATA(TObjectPtr<UBlendSpace>, BlendSpace);
+}
+
+FName FAnimNode_BlendSpacePlayer::GetGroupName() const
+{
+	return GET_ANIM_NODE_DATA(FName, GroupName);
+}
+
+EAnimGroupRole::Type FAnimNode_BlendSpacePlayer::GetGroupRole() const
+{
+	return GET_ANIM_NODE_DATA(TEnumAsByte<EAnimGroupRole::Type>, GroupRole);
+}
+
+EAnimSyncMethod FAnimNode_BlendSpacePlayer::GetGroupMethod() const
+{
+	return GET_ANIM_NODE_DATA(EAnimSyncMethod, Method);
+}
+
+bool FAnimNode_BlendSpacePlayer::GetIgnoreForRelevancyTest() const
+{
+	return GET_ANIM_NODE_DATA(bool, bIgnoreForRelevancyTest);
+}
+
+bool FAnimNode_BlendSpacePlayer::SetGroupName(FName InGroupName)
+{
+#if WITH_EDITORONLY_DATA
+	GroupName = InGroupName;
+#endif
+
+	if(FName* GroupNamePtr = GET_INSTANCE_ANIM_NODE_DATA_PTR(FName, GroupName))
+	{
+		*GroupNamePtr = InGroupName;
+		return true;
+	}
+
+	return false;
+}
+
+bool FAnimNode_BlendSpacePlayer::SetGroupRole(EAnimGroupRole::Type InRole)
+{
+#if WITH_EDITORONLY_DATA
+	GroupRole = InRole;
+#endif
+	
+	if(TEnumAsByte<EAnimGroupRole::Type>* GroupRolePtr = GET_INSTANCE_ANIM_NODE_DATA_PTR(TEnumAsByte<EAnimGroupRole::Type>, GroupRole))
+	{
+		*GroupRolePtr = InRole;
+		return true;
+	}
+
+	return false;
+}
+
+bool FAnimNode_BlendSpacePlayer::SetGroupMethod(EAnimSyncMethod InMethod)
+{
+#if WITH_EDITORONLY_DATA
+	Method = InMethod;
+#endif
+
+	if(EAnimSyncMethod* MethodPtr = GET_INSTANCE_ANIM_NODE_DATA_PTR(EAnimSyncMethod, Method))
+	{
+		*MethodPtr = InMethod;
+		return true;
+	}
+
+	return false;
+}
+
+bool FAnimNode_BlendSpacePlayer::SetIgnoreForRelevancyTest(bool bInIgnoreForRelevancyTest)
+{
+#if WITH_EDITORONLY_DATA
+	bIgnoreForRelevancyTest = bInIgnoreForRelevancyTest;
+#endif
+
+	if(bool* bIgnoreForRelevancyTestPtr = GET_INSTANCE_ANIM_NODE_DATA_PTR(bool, bIgnoreForRelevancyTest))
+	{
+		*bIgnoreForRelevancyTestPtr = bInIgnoreForRelevancyTest;
+		return true;
+	}
+
+	return false;
 }

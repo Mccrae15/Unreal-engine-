@@ -2,7 +2,7 @@
 
 #include "ContentSourceProviders/FeaturePack/FeaturePackContentSourceProvider.h"
 #include "GenericPlatform/GenericPlatformFile.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "Modules/ModuleManager.h"
 
@@ -40,7 +40,7 @@ FFeaturePackContentSourceProvider::FFeaturePackContentSourceProvider()
 	RefreshFeaturePacks();
 }
 
-const TArray<TSharedRef<IContentSource>> FFeaturePackContentSourceProvider::GetContentSources()
+const TArray<TSharedRef<IContentSource>>& FFeaturePackContentSourceProvider::GetContentSources() const
 {
 	return ContentSources;
 }

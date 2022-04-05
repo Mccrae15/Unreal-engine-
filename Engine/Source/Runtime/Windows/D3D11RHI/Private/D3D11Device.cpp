@@ -64,7 +64,7 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 	AmdAgsContext(NULL),
 #if INTEL_EXTENSIONS
 	IntelExtensionContext(nullptr),
-	IntelD3D11ExtensionFuncs(nullptr),
+	bIntelSupportsUAVOverlap(false),
 #endif
 	bCurrentDepthStencilStateIsReadOnly(false),
 	CurrentDepthTexture(NULL),
@@ -74,8 +74,7 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 	PresentCounter(0),
 	ResourceTableFrameCounter(INDEX_NONE),
 	CurrentDSVAccessType(FExclusiveDepthStencil::DepthWrite_StencilWrite),
-	bDiscardSharedConstants(false),
-	bUsingTessellation(false),
+	bDiscardSharedConstants(false),	
 	GPUProfilingData(this),
 	Adapter(InAdapter),
 	bAllowVendorDevice(!FParse::Param(FCommandLine::Get(), TEXT("novendordevice")))
@@ -96,7 +95,7 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 	GConfig->GetInt( TEXT( "TextureStreaming" ), TEXT( "PoolSizeVRAMPercentage" ), GPoolSizeVRAMPercentage, GEngineIni );	
 
 	// Initialize the RHI capabilities.
-	check(FeatureLevel == D3D_FEATURE_LEVEL_11_1 || FeatureLevel == D3D_FEATURE_LEVEL_11_0);
+	check(FeatureLevel >= D3D_FEATURE_LEVEL_11_0);
 
    	
 	TRefCountPtr<IDXGIFactory5> Factory5;
@@ -173,6 +172,9 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 	GPixelFormats[ PF_R16G16B16A16_SINT].PlatformFormat = DXGI_FORMAT_R16G16B16A16_SINT;
 
 	GPixelFormats[ PF_R5G6B5_UNORM	].PlatformFormat	= DXGI_FORMAT_B5G6R5_UNORM;
+	GPixelFormats[ PF_R5G6B5_UNORM  ].Supported         = true;
+	GPixelFormats[ PF_B5G5R5A1_UNORM].PlatformFormat    = DXGI_FORMAT_B5G5R5A1_UNORM;
+	GPixelFormats[ PF_B5G5R5A1_UNORM].Supported         = true;
 	GPixelFormats[ PF_R8G8B8A8		].PlatformFormat	= DXGI_FORMAT_R8G8B8A8_TYPELESS;
 	GPixelFormats[ PF_R8G8B8A8_UINT	].PlatformFormat	= DXGI_FORMAT_R8G8B8A8_UINT;
 	GPixelFormats[ PF_R8G8B8A8_SNORM].PlatformFormat	= DXGI_FORMAT_R8G8B8A8_SNORM;
@@ -192,15 +194,19 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 	GPixelFormats[PF_NV12].PlatformFormat = DXGI_FORMAT_NV12;
 	GPixelFormats[PF_NV12].Supported = true;
 
-	if (FeatureLevel >= D3D_FEATURE_LEVEL_11_0)
-	{
-		GSupportsSeparateRenderTargetBlendState = true;
-		GMaxTextureDimensions = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
-		GMaxCubeTextureDimensions = D3D11_REQ_TEXTURECUBE_DIMENSION;
-		GMaxTextureArrayLayers = D3D11_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION;
-		GRHISupportsMSAADepthSampleAccess = true;
-		GRHISupportsRHIThread = !!EXPERIMENTAL_D3D11_RHITHREAD;
-	}
+	GPixelFormats[PF_G16R16_SNORM	].PlatformFormat = DXGI_FORMAT_R16G16_SNORM;
+	GPixelFormats[PF_R8G8_UINT		].PlatformFormat = DXGI_FORMAT_R8G8_UINT;
+	GPixelFormats[PF_R32G32B32_UINT	].PlatformFormat = DXGI_FORMAT_R32G32B32_UINT;
+	GPixelFormats[PF_R32G32B32_SINT	].PlatformFormat = DXGI_FORMAT_R32G32B32_SINT;
+	GPixelFormats[PF_R32G32B32F		].PlatformFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+	GPixelFormats[PF_R8_SINT		].PlatformFormat = DXGI_FORMAT_R8_SINT;
+
+	GSupportsSeparateRenderTargetBlendState = true;
+	GMaxTextureDimensions = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+	GMaxCubeTextureDimensions = D3D11_REQ_TEXTURECUBE_DIMENSION;
+	GMaxTextureArrayLayers = D3D11_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION;
+	GRHISupportsMSAADepthSampleAccess = true;
+	GRHISupportsRHIThread = !!EXPERIMENTAL_D3D11_RHITHREAD;
 
 	GMaxTextureMipCount = FMath::CeilLogTwo( GMaxTextureDimensions ) + 1;
 	GMaxTextureMipCount = FMath::Min<int32>( MAX_TEXTURE_MIP_COUNT, GMaxTextureMipCount );
@@ -209,6 +215,10 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 	GSupportsTimestampRenderQueries = true;
 	GRHISupportsResolveCubemapFaces = true;
 	GRHISupportsCopyToTextureMultipleMips = true;
+
+	GRHIMaxDispatchThreadGroupsPerDimension.X = D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
+	GRHIMaxDispatchThreadGroupsPerDimension.Y = D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
+	GRHIMaxDispatchThreadGroupsPerDimension.Z = D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
 
 	GRHITransitionPrivateData_SizeInBytes = sizeof(FD3D11TransitionData);
 	GRHITransitionPrivateData_AlignInBytes = alignof(FD3D11TransitionData);
@@ -221,7 +231,7 @@ FD3D11DynamicRHI::FD3D11DynamicRHI(IDXGIFactory1* InDXGIFactory1, D3D_FEATURE_LE
 		DirtyUniformBuffers[Frequency] = 0;
 	}
 
-	GlobalUniformBuffers.AddZeroed(FUniformBufferStaticSlotRegistry::Get().GetSlotCount());
+	StaticUniformBuffers.AddZeroed(FUniformBufferStaticSlotRegistry::Get().GetSlotCount());
 }
 
 FD3D11DynamicRHI::~FD3D11DynamicRHI()
@@ -374,23 +384,109 @@ uint32 FD3D11DynamicRHI::GetMaxMSAAQuality(uint32 SampleCount)
 	return 0xffffffff;
 }
 
-static bool GFormatSupportsTypedUAVLoad[PF_MAX];
-
-#if !defined(D3D11_PLATFORM_HAS_OPTIONS3)
-	#define D3D11_PLATFORM_HAS_OPTIONS3 PLATFORM_HOLOLENS
-#endif
-
-// The D3D11 header is not recent enough to check support for this
-static const D3D11_FEATURE D3D11_FEATURE_FORMAT_SUPPORT3 = (D3D11_FEATURE)15;
-#if !D3D11_PLATFORM_HAS_OPTIONS3
-typedef struct D3D11_FEATURE_DATA_D3D11_OPTIONS3
+struct FFormatSupport
 {
-	BOOL VPAndRTArrayIndexFromAnyShaderFeedingRasterizer;
-} D3D11_FEATURE_DATA_D3D11_OPTIONS3;
-#endif
+	D3D11_FORMAT_SUPPORT FormatSupport;
+	D3D11_FORMAT_SUPPORT2 FormatSupport2;
+};
+
+static FFormatSupport GetFormatSupport(FD3D11Device* InDevice, DXGI_FORMAT InFormat)
+{
+	FFormatSupport Result{};
+
+	{
+		D3D11_FEATURE_DATA_FORMAT_SUPPORT FormatSupport{};
+		FormatSupport.InFormat = InFormat;
+
+		HRESULT SupportHR = InDevice->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT, &FormatSupport, sizeof(FormatSupport));
+		if (SUCCEEDED(SupportHR))
+		{
+			Result.FormatSupport = (D3D11_FORMAT_SUPPORT)FormatSupport.OutFormatSupport;
+		}
+	}
+
+	{
+		D3D11_FEATURE_DATA_FORMAT_SUPPORT2 FormatSupport2{};
+		FormatSupport2.InFormat = InFormat;
+
+		HRESULT Support2HR = InDevice->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &FormatSupport2, sizeof(FormatSupport2));
+		if (SUCCEEDED(Support2HR))
+		{
+			Result.FormatSupport2 = (D3D11_FORMAT_SUPPORT2)FormatSupport2.OutFormatSupport2;
+		}
+	}
+
+	return Result;
+}
 
 void FD3D11DynamicRHI::SetupAfterDeviceCreation()
 {
+	for (uint32 FormatIndex = PF_Unknown; FormatIndex < PF_MAX; FormatIndex++)
+	{
+		FPixelFormatInfo& PixelFormatInfo = GPixelFormats[FormatIndex];
+		const DXGI_FORMAT PlatformFormat = static_cast<DXGI_FORMAT>(PixelFormatInfo.PlatformFormat);
+		const DXGI_FORMAT UAVFormat = FindUnorderedAccessDXGIFormat(PlatformFormat);
+
+		EPixelFormatCapabilities Capabilities = EPixelFormatCapabilities::None;
+
+		if (PlatformFormat != DXGI_FORMAT_UNKNOWN)
+		{
+			const FFormatSupport FormatSupport    = GetFormatSupport(Direct3DDevice, PlatformFormat);
+			const FFormatSupport SRVFormatSupport = GetFormatSupport(Direct3DDevice, FindShaderResourceDXGIFormat(PlatformFormat, false));
+			const FFormatSupport UAVFormatSupport = GetFormatSupport(Direct3DDevice, FindUnorderedAccessDXGIFormat(PlatformFormat));
+			const FFormatSupport RTVFormatSupport = GetFormatSupport(Direct3DDevice, FindShaderResourceDXGIFormat(PlatformFormat, false));
+			const FFormatSupport DSVFormatSupport = GetFormatSupport(Direct3DDevice, FindDepthStencilDXGIFormat(PlatformFormat));
+
+			auto ConvertCap1 = [&Capabilities](const FFormatSupport& InSupport, EPixelFormatCapabilities UnrealCap, D3D11_FORMAT_SUPPORT InFlag)
+			{
+				if (EnumHasAllFlags(InSupport.FormatSupport, InFlag))
+				{
+					EnumAddFlags(Capabilities, UnrealCap);
+				}
+			};
+			auto ConvertCap2 = [&Capabilities](const FFormatSupport& InSupport, EPixelFormatCapabilities UnrealCap, D3D11_FORMAT_SUPPORT2 InFlag)
+			{
+				if (EnumHasAllFlags(InSupport.FormatSupport2, InFlag))
+				{
+					EnumAddFlags(Capabilities, UnrealCap);
+				}
+			};
+
+            ConvertCap1(FormatSupport, EPixelFormatCapabilities::Texture1D,               D3D11_FORMAT_SUPPORT_TEXTURE1D);
+            ConvertCap1(FormatSupport, EPixelFormatCapabilities::Texture2D,               D3D11_FORMAT_SUPPORT_TEXTURE2D);
+            ConvertCap1(FormatSupport, EPixelFormatCapabilities::Texture3D,               D3D11_FORMAT_SUPPORT_TEXTURE3D);
+            ConvertCap1(FormatSupport, EPixelFormatCapabilities::TextureCube,             D3D11_FORMAT_SUPPORT_TEXTURECUBE);
+            ConvertCap1(FormatSupport, EPixelFormatCapabilities::Buffer,                  D3D11_FORMAT_SUPPORT_BUFFER);
+            ConvertCap1(FormatSupport, EPixelFormatCapabilities::VertexBuffer,            D3D11_FORMAT_SUPPORT_IA_VERTEX_BUFFER);
+            ConvertCap1(FormatSupport, EPixelFormatCapabilities::IndexBuffer,             D3D11_FORMAT_SUPPORT_IA_INDEX_BUFFER);
+
+            if (EnumHasAnyFlags(Capabilities, EPixelFormatCapabilities::AnyTexture))
+            {
+                ConvertCap1(FormatSupport, EPixelFormatCapabilities::RenderTarget,        D3D11_FORMAT_SUPPORT_RENDER_TARGET);
+                ConvertCap1(FormatSupport, EPixelFormatCapabilities::DepthStencil,        D3D11_FORMAT_SUPPORT_DEPTH_STENCIL);
+                ConvertCap1(FormatSupport, EPixelFormatCapabilities::TextureMipmaps,      D3D11_FORMAT_SUPPORT_MIP);
+                ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureLoad,      D3D11_FORMAT_SUPPORT_SHADER_LOAD);
+                ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureSample,    D3D11_FORMAT_SUPPORT_SHADER_SAMPLE);
+                ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureGather,    D3D11_FORMAT_SUPPORT_SHADER_GATHER);
+                ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::TextureAtomics,   D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE);
+                ConvertCap1(RTVFormatSupport, EPixelFormatCapabilities::TextureBlendable, D3D11_FORMAT_SUPPORT_BLENDABLE);
+            }
+
+            if (EnumHasAnyFlags(Capabilities, EPixelFormatCapabilities::Buffer))
+            {
+                ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::BufferLoad,       D3D11_FORMAT_SUPPORT_SHADER_LOAD);
+                ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::BufferStore,      D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE);
+                ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::BufferAtomics,    D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE);
+            }
+
+			ConvertCap1(UAVFormatSupport, EPixelFormatCapabilities::UAV,                  D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW);
+			ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::TypedUAVLoad,         D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD);
+			ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::TypedUAVStore,        D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE);
+		}
+
+		PixelFormatInfo.Capabilities = Capabilities;
+	}
+
 	// without that the first RHIClear would get a scissor rect of (0,0)-(0,0) which means we get a draw call clear 
 	RHISetScissorRect(false, 0, 0, 0, 0);
 
@@ -405,47 +501,41 @@ void FD3D11DynamicRHI::SetupAfterDeviceCreation()
 		UE_LOG(LogD3D11RHI, Log, TEXT("Async texture creation disabled: %s"),
 			D3D11RHI_ShouldAllowAsyncResourceCreation() ? TEXT("no driver support") : TEXT("disabled by user"));
 	}
+	{
+		D3D11_FEATURE_DATA_D3D11_OPTIONS Data;
+		if (const HRESULT Result = Direct3DDevice->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &Data, sizeof(Data)); SUCCEEDED(Result))
+		{
+			GRHISupportsMapWriteNoOverwrite = Data.MapNoOverwriteOnDynamicBufferSRV;
+			if (GRHISupportsMapWriteNoOverwrite)
+			{
+				UE_LOG(LogD3D11RHI, Log, TEXT("D3D11_MAP_WRITE_NO_OVERWRITE for dynamic buffer SRVs is supported"));
+			}
+		}
+	}
+
+	{
+#if 0
+		D3D11_FEATURE_DATA_D3D11_OPTIONS2 Data;
+		HRESULT Result = Direct3DDevice->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS2, &Data, sizeof(Data));
+		GRHISupportsStencilRefFromPixelShader = SUCCEEDED(Result) && Data.PSSpecifiedStencilRefSupported;
+		if (GRHISupportsStencilRefFromPixelShader)
+		{
+			UE_LOG(LogD3D11RHI, Log, TEXT("Stencil ref from pixel shader is supported"));
+		}
+#else
+		GRHISupportsStencilRefFromPixelShader = false; // this boolean is later used to choose a code path that requires DXIL shaders. Cannot set to true without fixing that first.
+#endif
+	}
 
 	{
 		D3D11_FEATURE_DATA_D3D11_OPTIONS3 Data;
-		HRESULT Result = Direct3DDevice->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT3, &Data, sizeof(Data));
+		HRESULT Result = Direct3DDevice->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS3, &Data, sizeof(Data));
 		GRHISupportsArrayIndexFromAnyShader = SUCCEEDED(Result) && Data.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer;
 		if (GRHISupportsArrayIndexFromAnyShader)
 		{
 			UE_LOG(LogD3D11RHI, Log, TEXT("Array index from any shader is supported"));
 		}
 	}
-
-	// Check for typed UAV load support
-	for (uint32 PF = 0; PF < PF_MAX; ++PF)
-	{
-		if (GPixelFormats[PF].PlatformFormat != 0)
-		{
-			D3D11_FEATURE_DATA_FORMAT_SUPPORT2 Data;
-			Data.InFormat = static_cast<DXGI_FORMAT>(GPixelFormats[PF].PlatformFormat);
-			Data.OutFormatSupport2 = 0;
-			HRESULT Result = Direct3DDevice->CheckFeatureSupport(D3D11_FEATURE_FORMAT_SUPPORT2, &Data, sizeof(Data));
-			GFormatSupportsTypedUAVLoad[PF] =
-				SUCCEEDED(Result) &&
-				(Data.OutFormatSupport2 & D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD) == D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD;
-		}
-		else
-		{
-			GFormatSupportsTypedUAVLoad[PF] = false;
-		}
-	}
-
-	if (FeatureLevel >= D3D_FEATURE_LEVEL_11_0)
-	{
-		GFormatSupportsTypedUAVLoad[PF_R32_FLOAT] = true;
-		GFormatSupportsTypedUAVLoad[PF_R32_UINT] = true;
-		GFormatSupportsTypedUAVLoad[PF_R32_SINT] = true;
-	}
-}
-
-bool FD3D11DynamicRHI::RHIIsTypedUAVLoadSupported(EPixelFormat PixelFormat)
-{
-	return GFormatSupportsTypedUAVLoad[PixelFormat];
 }
 
 void FD3D11DynamicRHI::UpdateMSAASettings()
@@ -493,6 +583,8 @@ void FD3D11DynamicRHI::CleanupD3DDevice()
 
 		check(!GIsCriticalError);
 
+		CurrentComputeShader = nullptr;
+
 		// Ask all initialized FRenderResources to release their RHI resources.
 		FRenderResource::ReleaseRHIForAllResources();
 
@@ -512,7 +604,13 @@ void FD3D11DynamicRHI::CleanupD3DDevice()
 		StateCache.SetContext(nullptr);
 
 		// Flush all pending deletes before destroying the device.
-		FRHIResource::FlushPendingDeletes();
+		int32 NumDeletes = 0;
+		do
+		{
+			FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+			NumDeletes = FRHIResource::FlushPendingDeletes(RHICmdList);
+			RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
+		} while (NumDeletes > 0);
 
 		ReleasePooledUniformBuffers();
 		ReleasePooledTextures();
@@ -528,7 +626,7 @@ void FD3D11DynamicRHI::CleanupD3DDevice()
 			// AGS is holding an extra reference to the immediate context. Release it before calling DestroyDevice.
 			Direct3DDeviceIMContext->Release();
 			agsDriverExtensionsDX11_DestroyDevice(AmdAgsContext, Direct3DDevice, NULL, Direct3DDeviceIMContext, NULL);
-			agsDeInit(AmdAgsContext);
+			agsDeInitialize(AmdAgsContext);
 			GRHIDeviceIsAMDPreGCNArchitecture = false;
 			AmdAgsContext = NULL;
 		}
@@ -622,9 +720,14 @@ void* FD3D11DynamicRHI::RHIGetNativeInstance()
 	return nullptr;
 }
 
+void* FD3D11DynamicRHI::RHIGetNativeCommandBuffer()
+{
+	return (void*)Direct3DDeviceIMContext.GetReference();
+}
+
 static bool CanFormatBeDisplayed(const FD3D11DynamicRHI* InD3DRHI, EPixelFormat InPixelFormat)
 {
-	const DXGI_FORMAT DxgiFormat = GetRenderTargetFormat(InPixelFormat);
+	const DXGI_FORMAT DxgiFormat = FD3D11Viewport::GetRenderTargetFormat(InPixelFormat);
 
 	UINT FormatSupport = 0;
 	const HRESULT FormatSupportResult = InD3DRHI->GetDevice()->CheckFormatSupport(DxgiFormat, &FormatSupport);

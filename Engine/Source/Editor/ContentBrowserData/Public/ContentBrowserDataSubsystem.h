@@ -4,10 +4,24 @@
 
 #include "CoreMinimal.h"
 #include "EditorSubsystem.h"
+#include "Misc/StringBuilder.h"
 #include "Containers/SortedMap.h"
+#include "Containers/StringView.h"
 #include "ContentBrowserItem.h"
 #include "ContentBrowserDataFilter.h"
+#include "Containers/Ticker.h"
 #include "ContentBrowserDataSubsystem.generated.h"
+
+UENUM(BlueprintType)
+enum class EContentBrowserPathType : uint8
+{
+	/** No path type set */
+	None,
+	/** Internal path compatible with asset registry and engine calls (eg,. "/PluginA/MyFile") */
+	Internal,
+	/** Virtual path for enumerating Content Browser data (eg, "/All/Plugins/PluginA/MyFile") */
+	Virtual
+};
 
 /** Called for incremental item data updates from data sources that can provide delta-updates */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnContentBrowserItemDataUpdated, TArrayView<const FContentBrowserItemDataUpdate>);
@@ -17,6 +31,9 @@ DECLARE_MULTICAST_DELEGATE(FOnContentBrowserItemDataRefreshed);
 
 /** Called when all active data sources have completed their initial content discovery scan. May be called multiple times if new data sources are registered after the current set of active data sources have completed their initial scan */
 DECLARE_MULTICAST_DELEGATE(FOnContentBrowserItemDataDiscoveryComplete);
+
+/** Called when generating a virtual path, allows customization of how a virtual path is generated. */
+DECLARE_DELEGATE_TwoParams(FContentBrowserGenerateVirtualPathDelegate, const FStringView, FStringBuilderBase&);
 
 /** Internal - Filter data used to inject dummy items for the path down to the mount root of each data source */
 USTRUCT()
@@ -48,9 +65,12 @@ class CONTENTBROWSERDATA_API UContentBrowserDataSubsystem : public UEditorSubsys
 	GENERATED_BODY()
 
 public:
+	friend class FScopedSuppressContentBrowserDataTick;
+
 	//~ UEditorSubsystem interface
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
+	virtual void ConvertInternalPathToVirtual(const FStringView InPath, FStringBuilderBase& OutPath) override;
 
 	/**
 	 * Attempt to activate the named data source.
@@ -138,6 +158,25 @@ public:
 	void EnumerateItemsAtPath(const FName InPath, const EContentBrowserItemTypeFilter InItemTypeFilter, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback) const;
 
 	/**
+	 * Enumerate the items (files) that exist at the given paths.
+	 * @note Multiple items may have the same virtual path if they are different types, or come from different data sources.
+	 *
+	 * @param InItemPaths The paths to enumerate
+	 * @param InItemTypeFilter The types of items we want to find.
+	 * @param InCallback The function to invoke for each matching item (return true to continue enumeration).
+	 */
+	bool EnumerateItemsAtPaths(const TArrayView<class FContentBrowserItemPath> InItemPaths, const EContentBrowserItemTypeFilter InItemTypeFilter, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback) const;
+
+	/**
+	 * Enumerate the items (files) that exist for the given objects.
+	 * @note Multiple items may have the same virtual path if they are different types, or come from different data sources.
+	 *
+	 * @param InObjects The objects to enumerate
+	 * @param InCallback The function to invoke for each matching item (return true to continue enumeration).
+	 */
+	bool EnumerateItemsForObjects(const TArrayView<UObject*> InObjects, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback) const;
+
+	/**
 	 * Get the items (folders and/or files) that exist at the given virtual path.
 	 * @note Multiple items may have the same virtual path if they are different types, or come from different data sources.
 	 */
@@ -198,6 +237,67 @@ public:
 	 */
 	void Legacy_TryConvertAssetDataToVirtualPaths(const FAssetData& InAssetData, const bool InUseFolderPaths, TFunctionRef<bool(FName)> InCallback);
 
+	/**
+	 * Rebuild the virtual path tree if rules have changed.
+	 */
+	void RefreshVirtualPathTreeIfNeeded();
+
+	/**
+	 * Call when rules of virtual path generation have changed beyond content browser settings.
+	 */
+	void SetVirtualPathTreeNeedsRebuild();
+
+	/**
+	 * Converts an internal path to a virtual path based on current rules
+	 */
+	void ConvertInternalPathToVirtual(const FStringView InPath, FName& OutPath);
+	void ConvertInternalPathToVirtual(FName InPath, FName& OutPath);
+	FName ConvertInternalPathToVirtual(FName InPath);
+	TArray<FString> ConvertInternalPathsToVirtual(const TArray<FString>& InPaths);
+
+	/**
+	 * Converts virtual path back into an internal or invariant path
+	 */
+	EContentBrowserPathType TryConvertVirtualPath(const FStringView InPath, FStringBuilderBase& OutPath) const;
+	EContentBrowserPathType TryConvertVirtualPath(const FStringView InPath, FString& OutPath) const;
+	EContentBrowserPathType TryConvertVirtualPath(const FStringView InPath, FName& OutPath) const;
+	EContentBrowserPathType TryConvertVirtualPath(const FName InPath, FName& OutPath) const;
+
+	/**
+	 * Returns array of paths converted to internal.
+	 */
+	TArray<FString> TryConvertVirtualPathsToInternal(const TArray<FString>& InVirtualPaths) const;
+
+	/**
+	 * Customize list of folders that appear first in content browser based on internal or invariant paths
+	 */
+	void SetPathViewSpecialSortFolders(const TArray<FName>& InSpecialSortFolders);
+
+	/**
+	 * Returns reference to list of paths that appear first in content browser based on internal or invariant paths
+	 */
+	const TArray<FName>& GetPathViewSpecialSortFolders() const;
+
+	/**
+	 * Returns reference to default list of paths that appear first in content browser based on internal or invariant paths
+	 */
+	const TArray<FName>& GetDefaultPathViewSpecialSortFolders() const;
+
+	/**
+	 * Set delegate used to generate a virtual path.
+	 */
+	void SetGenerateVirtualPathPrefixDelegate(const FContentBrowserGenerateVirtualPathDelegate& InDelegate);
+
+	/**
+	 * Delegate called to generate a virtual path. Can be set to override default behavior.
+	 */
+	FContentBrowserGenerateVirtualPathDelegate& OnGenerateVirtualPathPrefix();
+
+	/**
+	 * Prefix to use when generating virtual paths and "Show All Folder" option is enabled
+	 */
+	const FString& GetAllFolderPrefix() const;
+
 private:
 	using FNameToDataSourceMap = TSortedMap<FName, UContentBrowserDataSource*, FDefaultAllocator, FNameFastLess>;
 
@@ -219,6 +319,21 @@ private:
 	 */
 	void Tick(const float InDeltaTime);
 
+	/**
+	 * Returns true if item data modifications are being processed.
+	 */
+	bool AllowModifiedItemDataUpdates() const;
+
+	/**
+	 * Called when Play in Editor begins.
+	 */
+	void OnBeginPIE(const bool bIsSimulating);
+
+	/**
+	 * Called when Play in Editor stops.
+	 */
+	void OnEndPIE(const bool bIsSimulating);
+
 	//~ IContentBrowserItemDataSink interface
 	virtual void QueueItemDataUpdate(FContentBrowserItemDataUpdate&& InUpdate) override;
 	virtual void NotifyItemDataRefreshed() override;
@@ -226,7 +341,7 @@ private:
 	/**
 	 * Handle for the Tick callback.
 	 */
-	FDelegateHandle TickHandle;
+	FTSTicker::FDelegateHandle TickHandle;
 
 	/**
 	 * Map of data sources that are currently active.
@@ -262,6 +377,22 @@ private:
 	bool bPendingItemDataRefreshedNotification = false;
 
 	/**
+	 * True if there are currently any ignored changes.
+	 */
+	bool bHasIgnoredItemUpdates = false;
+
+	/**
+	 * True if Play in Editor is active.
+	 */
+	bool bIsPIEActive = false;
+
+	/**
+	 * >0 if Tick events have currently been suppressed.
+	 * @see FScopedSuppressContentBrowserDataTick
+	 */
+	int32 TickSuppressionCount = 0;
+
+	/**
 	 * Delegate called for incremental item data updates from data sources that can provide delta-updates.
 	 */
 	FOnContentBrowserItemDataUpdated ItemDataUpdatedDelegate;
@@ -276,4 +407,50 @@ private:
 	 * @note May be called multiple times if new data sources are registered after the current set of active data sources have completed their initial scan.
 	 */
 	FOnContentBrowserItemDataDiscoveryComplete ItemDataDiscoveryCompleteDelegate;
+
+	/**
+	 * Generates an optional virtual path prefix for a given internal path
+	 */
+	FContentBrowserGenerateVirtualPathDelegate GenerateVirtualPathPrefixDelegate;
+
+	/**
+	 * Optional array of invariant paths to use when sorting
+	 */
+	TArray<FName> PathViewSpecialSortFolders;
+
+	/**
+	 * Default array of invariant paths to use when sorting
+	 */
+	TArray<FName> DefaultPathViewSpecialSortFolders;
+
+	/**
+	 * Prefix to use when generating virtual paths and "Show All Folder" option is enabled
+	 */
+	FString AllFolderPrefix;
+};
+
+/**
+ * Helper to suppress Tick events during critical times, when the underlying data should not be updated.
+ */
+class FScopedSuppressContentBrowserDataTick
+{
+public:
+	explicit FScopedSuppressContentBrowserDataTick(UContentBrowserDataSubsystem* InContentBrowserData)
+		: ContentBrowserData(InContentBrowserData)
+	{
+		check(ContentBrowserData);
+		++ContentBrowserData->TickSuppressionCount;
+	}
+
+	~FScopedSuppressContentBrowserDataTick()
+	{
+		checkf(ContentBrowserData->TickSuppressionCount > 0, TEXT("TickSuppressionCount underflow!"));
+		--ContentBrowserData->TickSuppressionCount;
+	}
+
+	FScopedSuppressContentBrowserDataTick(const FScopedSuppressContentBrowserDataTick&) = delete;
+	FScopedSuppressContentBrowserDataTick& operator=(const FScopedSuppressContentBrowserDataTick&) = delete;
+
+private:
+	UContentBrowserDataSubsystem* ContentBrowserData = nullptr;
 };

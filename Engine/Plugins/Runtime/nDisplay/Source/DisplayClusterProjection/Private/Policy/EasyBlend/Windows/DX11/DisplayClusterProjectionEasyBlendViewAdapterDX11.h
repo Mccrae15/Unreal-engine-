@@ -18,7 +18,7 @@ public:
 	virtual ~FDisplayClusterProjectionEasyBlendViewAdapterDX11();
 
 public:
-	virtual bool Initialize(const FString& File) override;
+	virtual bool Initialize(class IDisplayClusterViewport* InViewport, const FString& File) override;
 
 public:
 	virtual bool CalculateView(class IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP) override;
@@ -29,7 +29,7 @@ public:
 
 protected:
 	void ImplInitializeResources_RenderThread();
-	bool ImplApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, int ContextNum, FRHITexture2D* InputTextures, FRHITexture2D* OutputTextures);
+	bool ImplApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, uint32 ContextNum, FRHITexture2D* InputTextures, FRHITexture2D* OutputTextures);
 
 private:
 	float ZNear;

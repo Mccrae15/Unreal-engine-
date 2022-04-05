@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -27,12 +27,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The inner scope object
 		/// </summary>
-		LogStatusScope Status;
+		LogStatusScope? Status;
 
 		/// <summary>
 		/// The current progress message
 		/// </summary>
-		string CurrentProgressString;
+		string? CurrentProgressString;
 
 		/// <summary>
 		/// Constructor

@@ -186,6 +186,9 @@ public:
 	/** Combines the two rectanges. */
 	void Union( const FIntRect& Other);
 
+	/** Returns true if the two rects have any overlap. */
+	bool Intersect(const FIntRect& Other) const;
+
 	/**
 	 * Test whether this rectangle contains a point.
 	 *
@@ -312,8 +315,9 @@ public:
 
 FORCEINLINE FIntRect FIntRect::Scale( float Fraction ) const
 {
-	FVector2D Min2D = FVector2D((float)Min.X, (float)Min.Y) * Fraction;
-	FVector2D Max2D = FVector2D((float)Max.X, (float)Max.Y) * Fraction;
+	using Vec2D = UE::Math::TVector2<float>;
+	const Vec2D Min2D = Vec2D((float)Min.X, (float)Min.Y) * Fraction;
+	const Vec2D Max2D = Vec2D((float)Max.X, (float)Max.Y) * Fraction;
 
 	return FIntRect(FMath::FloorToInt(Min2D.X), FMath::FloorToInt(Min2D.Y), FMath::CeilToInt(Max2D.X), FMath::CeilToInt(Max2D.Y));
 }
@@ -463,6 +467,11 @@ FORCEINLINE void FIntRect::Union( const FIntRect& R )
 	Min.Y = FMath::Min<int32>(Min.Y, R.Min.Y);
 	Max.X = FMath::Max<int32>(Max.X, R.Max.X);
 	Max.Y = FMath::Max<int32>(Max.Y, R.Max.Y);
+}
+
+FORCEINLINE bool FIntRect::Intersect(const FIntRect& Other) const
+{
+	return Other.Min.X < Max.X && Other.Max.X > Min.X && Other.Min.Y < Max.Y && Other.Max.Y > Min.Y;
 }
 
 FORCEINLINE bool FIntRect::Contains( FIntPoint P ) const

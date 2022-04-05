@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/CoreOnlineFwd.h"
+#include "Online/CoreOnlineFwd.h"
 #include "OnlineDelegateMacros.h"
 #include "OnlineStatsInterface.h"
 
@@ -404,6 +404,7 @@ public:
 	 * @param bReviewTeam - Whether not to review a team or only the members of the team
 	 * @param CompletionDelegate - Completion delegate called when GameMatchFeedback is complete
 	 */
-	virtual void ProvideGameMatchFeedback(const FUniqueNetId& UserId, const FString& MatchId, const bool bReviewTeam, const FOnGameMatchFeedbackComplete& CompletionDelegate) = 0;
+	UE_DEPRECATED(5.0, "ProvideGameMatchFeedback is now deprecated and will be removed.")
+	virtual void ProvideGameMatchFeedback(const FUniqueNetId& UserId, const FString& MatchId, const bool bReviewTeam, const FOnGameMatchFeedbackComplete& CompletionDelegate) {}
 
 };

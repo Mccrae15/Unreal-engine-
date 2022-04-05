@@ -160,7 +160,8 @@ int32 FCoreRedirectObjectName::MatchScore(const FCoreRedirectObjectName& Other) 
 
 bool FCoreRedirectObjectName::HasValidCharacters() const
 {
-	static FString InvalidRedirectCharacters = TEXT("\"' ,|&!~\n\r\t@#(){}[]=;^%$`");
+	// ObjectNames in Blueprint may contain spaces.
+	static FString InvalidRedirectCharacters = TEXT("\"',|&!~\n\r\t@#(){}[]=;^%$`");
 
 	return ObjectName.IsValidXName(InvalidRedirectCharacters) && OuterName.IsValidXName(InvalidRedirectCharacters) && PackageName.IsValidXName(InvalidRedirectCharacters);
 }
@@ -520,7 +521,7 @@ bool FCoreRedirects::RedirectNameAndValues(ECoreRedirectFlags Type, const FCoreR
 				{
 					if (*FoundValueRedirect)
 					{
-						if (!LegacyCompareEqual((*FoundValueRedirect)->ValueChanges, Redirect->ValueChanges))
+						if ((*FoundValueRedirect)->ValueChanges.OrderIndependentCompareEqual(Redirect->ValueChanges) == false)
 						{
 							UE_LOG(LogLinker, Error, TEXT("RedirectNameAndValues(%s) found multiple conflicting value redirects, %s and %s!"), *OldObjectName.ToString(), *(*FoundValueRedirect)->OldName.ToString(), *Redirect->OldName.ToString());
 						}
@@ -954,7 +955,8 @@ bool FCoreRedirects::AddRedirectList(TArrayView<const FCoreRedirect> Redirects, 
 			continue;
 		}
 
-		if (!NewRedirect.OldName.HasValidCharacters() || !NewRedirect.NewName.HasValidCharacters())
+		if ((!NewRedirect.OldName.HasValidCharacters() && !FPackageName::IsVersePackage(NewRedirect.OldName.PackageName.ToString()))
+			|| (!NewRedirect.NewName.HasValidCharacters() && !FPackageName::IsVersePackage(NewRedirect.NewName.PackageName.ToString())))
 		{
 			UE_LOG(LogLinker, Error, TEXT("AddRedirectList(%s) failed to add redirector from %s to %s with invalid characters!"), *SourceString, *NewRedirect.OldName.ToString(), *NewRedirect.NewName.ToString());
 			continue;
@@ -1426,6 +1428,9 @@ static void RegisterNativeRedirects40(TArray<FCoreRedirect>& Redirects)
 	PROPERTY_REDIRECT("PawnSensingComponent.bWantsSeePlayerNotify", "PawnSensingComponent.bSeePawns");
 	PROPERTY_REDIRECT("PlayerController.LookRightScale", "PlayerController.InputYawScale");
 	PROPERTY_REDIRECT("PlayerController.LookUpScale", "PlayerController.InputPitchScale");
+	PROPERTY_REDIRECT("PlayerController.InputYawScale", "PlayerController.InputYawScale_DEPRECATED");
+	PROPERTY_REDIRECT("PlayerController.InputPitchScale", "PlayerController.InputPitchScale_DEPRECATED");
+	PROPERTY_REDIRECT("PlayerController.InputRollScale", "PlayerController.InputRollScale_DEPRECATED");
 	PROPERTY_REDIRECT("PlayerController.PlayerCamera", "PlayerController.PlayerCameraManager");
 	PROPERTY_REDIRECT("PlayerController.PlayerCameraClass", "PlayerController.PlayerCameraManagerClass");
 	PROPERTY_REDIRECT("PointLightComponent.Radius", "PointLightComponent.AttenuationRadius");
@@ -1447,6 +1452,7 @@ static void RegisterNativeRedirects40(TArray<FCoreRedirect>& Redirects)
 	PROPERTY_REDIRECT("SceneComponent.ModifyFrequency", "SceneComponent.Mobility");
 	PROPERTY_REDIRECT("SceneComponent.RelativeTranslation", "SceneComponent.RelativeLocation");
 	PROPERTY_REDIRECT("SceneComponent.bAbsoluteTranslation", "SceneComponent.bAbsoluteLocation");
+	PROPERTY_REDIRECT("SceneComponent.bComputeBoundsOnceDuringCook", "SceneComponent.bComputeBoundsOnceForGame");
 	PROPERTY_REDIRECT("SkeletalMeshComponent.AnimationBlueprint", "SkeletalMeshComponent.AnimBlueprintGeneratedClass");
 	PROPERTY_REDIRECT("SlateBrush.TextureName", "SlateBrush.ResourceName");
 	PROPERTY_REDIRECT("SlateBrush.TextureObject", "SlateBrush.ResourceObject");
@@ -1700,7 +1706,7 @@ static void RegisterNativeRedirects46(TArray<FCoreRedirect>& Redirects)
 	FUNCTION_REDIRECT("LightComponent.SetBrightness", "LightComponent.SetIntensity");
 	FUNCTION_REDIRECT("NavigationPath.GetPathLenght", "NavigationPath.GetPathLength");
 	FUNCTION_REDIRECT("Pawn.GetMovementInputVector", "Pawn.K2_GetMovementInputVector");
-	FUNCTION_REDIRECT("PawnMovementComponent.GetInputVector", "PawnMovementComponent.K2_GetInputVector");
+	FUNCTION_REDIRECT("PawnMovementComponent.GetInputVector", "PawnMovementComponent.GetPendingInputVector");
 	FUNCTION_REDIRECT("SceneComponent.AttachTo", "SceneComponent.K2_AttachTo");
 	FUNCTION_REDIRECT("SkyLightComponent.SetBrightness", "SkyLightComponent.SetIntensity");
 

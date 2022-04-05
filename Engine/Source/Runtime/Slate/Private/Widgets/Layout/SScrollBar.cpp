@@ -18,6 +18,8 @@ void SScrollBar::Construct(const FArguments& InArgs)
 	check(InArgs._Style);
 	SetStyle(InArgs._Style);
 
+	const TAttribute<FVector2D> Thickness = InArgs._Thickness.IsSet() ? InArgs._Thickness : FVector2D(InArgs._Style->Thickness, InArgs._Style->Thickness);
+
 	EHorizontalAlignment HorizontalAlignment = Orientation == Orient_Vertical ? HAlign_Center : HAlign_Fill;
 	EVerticalAlignment VerticalAlignment = Orientation == Orient_Vertical ? VAlign_Fill : VAlign_Center;
 
@@ -38,7 +40,7 @@ void SScrollBar::Construct(const FArguments& InArgs)
 				.BorderImage(BackgroundBrush)
 				.HAlign(HorizontalAlignment)
 				.VAlign(VerticalAlignment)
-				.Padding(0)
+				.Padding(0.f)
 				[
 					SAssignNew(Track, SScrollBarTrack)
 					.Orientation(InArgs._Orientation)
@@ -57,10 +59,10 @@ void SScrollBar::Construct(const FArguments& InArgs)
 						SAssignNew(DragThumb, SBorder)
 						.HAlign(HAlign_Center)
 						.VAlign(VAlign_Center)
-						.Padding(0)
+						.Padding(0.f)
 						[
 							SAssignNew(ThicknessSpacer, SSpacer)
-							.Size(InArgs._Thickness)
+							.Size(Thickness)
 						]
 					]
 					.BottomSlot()
@@ -95,6 +97,7 @@ void SScrollBar::SetState( float InOffsetFraction, float InThumbSizeFraction )
 		// Note that the maximum offset depends on how many items fit per screen
 		// It is 1.0f-InThumbSizeFraction.
 		Track->SetSizes(InOffsetFraction, InThumbSizeFraction);
+		GetVisibilityAttribute().UpdateValue();
 
 		LastInteractionTime = FSlateApplication::Get().GetCurrentTime();
 	}
@@ -284,7 +287,7 @@ const FSlateBrush* SScrollBar::GetDragThumbImage() const
 	{
 		return DraggedThumbImage;
 	}
-	else if (DragThumb->IsDirectlyHovered())
+	else if (IsHovered())
 	{
 		return HoveredThumbImage;
 	}

@@ -87,6 +87,12 @@ protected:
 		ToolTip = "Batching granularity used to register actor components during level streaming."))
 	int32 LevelStreamingComponentsRegistrationGranularity;
 
+	/** Batching granularity used to add primitives to scene in parallel when registering actor components during level streaming */
+	UPROPERTY(EditAnywhere, config, Category = LevelStreaming, AdvancedDisplay, meta = (
+		ConsoleVariable = "s.LevelStreamingAddPrimitiveGranularity", DisplayName = "Added Primitive Granularity",
+		ToolTip = "Batching granularity used to add primitives to scene in parallel when registering actor components during level streaming."))
+	int32 LevelStreamingAddPrimitiveGranularity;
+
 	/** Maximum allowed time to spend while unregistering components during level streaming (ms per frame) */
 	UPROPERTY(EditAnywhere, config, Category = LevelStreaming, AdvancedDisplay, meta = (
 		ConsoleVariable = "s.UnregisterComponentsTimeLimit", DisplayName = "Component Unregister Update Time Limit",
@@ -112,9 +118,6 @@ protected:
 	//~ Begin UObject Interface
 	virtual void PostInitProperties() override;
 
-#if WITH_EDITOR
-	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
-#endif
 	//~ End UObject Interface
 };
 
@@ -132,19 +135,28 @@ extern ENGINE_API float GLevelStreamingActorsUpdateTimeLimit;
 extern ENGINE_API float GPriorityLevelStreamingActorsUpdateExtraTime;
 /** Batching granularity used to register actor components during level streaming. */
 extern ENGINE_API int32 GLevelStreamingComponentsRegistrationGranularity;
+/** Batching granularity used to add primitives to scene in parallel when registering actor components during level streaming. */
+extern ENGINE_API int32 GLevelStreamingAddPrimitiveGranularity;
 /** Batching granularity used to unregister actor components during level streaming.  */
 extern ENGINE_API int32 GLevelStreamingComponentsUnregistrationGranularity;
+/** Batching granularity used to initialize actors during level streaming. If this is zero, we process all actors and stages in one pass. */
+extern ENGINE_API int32 GLevelStreamingRouteActorInitializationGranularity;
 /** Maximum allowed time to spend for actor unregistration steps during level streaming (ms per frame). If this is 0.0 then we don't timeslice.*/
 extern ENGINE_API float GLevelStreamingUnregisterComponentsTimeLimit;
 /** Whether to force a GC after levels are streamed out to instantly reclaim the memory at the expensive of a hitch. */
 extern ENGINE_API int32 GLevelStreamingForceGCAfterLevelStreamedOut;
-/** Whether to repeatedly kick off incremental GC when there are levels still waiting to be purged. */
+/** Whether to kick off incremental GC when there are over the specified amount of levels still waiting to be purged. */
 extern ENGINE_API int32 GLevelStreamingContinuouslyIncrementalGCWhileLevelsPendingPurge;
+/** Whether to override GLevelStreamingContinuouslyIncrementalGCWhileLevelsPendingPurge temporarily until at least one level needs to be purged.  */
+extern ENGINE_API int32 GLevelStreamingContinuouslyIncrementalGCWhileLevelsPendingPurgeOverride;
 /** Enables level streaming requests while async loading (of anything) while the match is already in progress and no loading screen is up. */
 extern ENGINE_API int32 GLevelStreamingAllowLevelRequestsWhileAsyncLoadingInMatch;
 /** When we're already loading this many levels and actively in match, don't allow any more requests until one of those completes.  Set to zero to disable. */
 extern ENGINE_API int32 GLevelStreamingMaxLevelRequestsAtOnceWhileInMatch;
-
+/** Whether to force a verification of objects residing in a GC'ed level package (ignored in shipping builds). */
+extern ENGINE_API int32 GLevelStreamingForceVerifyLevelsGotRemovedByGC;
+/** Whether to force routing actor initialize phase in its own frame. */
+extern ENGINE_API int32 GLevelStreamingForceRouteActorInitializeNextFrame;
 
 /**
 * Implements the settings for garbage collection.
@@ -209,6 +221,20 @@ protected:
 		ConsoleVariable = "gc.UseDisregardForGCOnDedicatedServers", DisplayName = "Use DisregardForGC On Dedicated Servers",
 		ToolTip = "If false, DisregardForGC will be disabled for dedicated servers."))
 	uint32 UseDisregardForGCOnDedicatedServers : 1;
+
+	UPROPERTY(EditAnywhere, config, Category = Debug, meta = (
+		ConsoleVariable = "gc.VerifyGCObjectNames", DisplayName = "Verify FGCObject names",
+		ToolTip = "If true, the engine will verify if all FGCObject-derived classes define GetReferencerName() function overrides."))
+	uint32 VerifyGCObjectNames : 1;
+
+	UPROPERTY(EditAnywhere, config, Category = Debug, meta = (
+		ConsoleVariable = "gc.VerifyUObjectsAreNotFGCObjects", DisplayName = "Verify UObjects Are Not FGCObjects",
+		ToolTip = "If true, the engine will throw a warning when it detects a UObject-derived class which also derives from FGCObject or any of its members is derived from FGCObject."))
+	uint32 VerifyUObjectsAreNotFGCObjects : 1;
+	UPROPERTY(EditAnywhere, config, Category = Optimization, meta = (
+		ConsoleVariable = "gc.PendingKillEnabled", DisplayName = "Pending Kill Enabled",
+		ToolTip = "If true, objects marked as PendingKill will be automatically nulled and destroyed by Garbage Collector."))
+	uint32 PendingKillEnabled : 1;
 
 	UPROPERTY(EditAnywhere, config, Category = Optimization, meta = (
 		ConsoleVariable = "gc.MinGCClusterSize", DisplayName = "Minimum GC Cluster size",

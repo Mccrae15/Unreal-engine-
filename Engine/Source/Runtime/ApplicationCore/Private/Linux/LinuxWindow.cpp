@@ -20,7 +20,7 @@ DEFINE_LOG_CATEGORY( LogLinuxWindowEvent );
 
 // SDL 2.0.4 as of 10374:dccf51aee79b will account for border width/height automatically (see SDL_x11window.c)
 // might need to be a function in case SDL gets overriden at runtime
-#define UE4_USING_BORDERS_AWARE_SDL					1
+#define UE_USING_BORDERS_AWARE_SDL					1
 
 FLinuxWindow::~FLinuxWindow()
 {
@@ -133,10 +133,10 @@ void FLinuxWindow::Initialize( FLinuxApplication* const Application, const TShar
 
 	// This is a tool tip window.
 	if (!InParent.IsValid() && !Definition->HasOSWindowBorder &&
-		!Definition->AcceptsInput && Definition->IsTopmostWindow && 
-		!Definition->AppearsInTaskbar && !Definition->HasSizingFrame &&
-		!Definition->IsModalWindow && !Definition->IsRegularWindow &&
-		Definition->SizeWillChangeOften)
+		(Definition->Type == EWindowType::ToolTip || !Definition->AcceptsInput) && // tooltips can now be interactive which means they can accept input at times
+		Definition->IsTopmostWindow && !Definition->AppearsInTaskbar &&
+		!Definition->HasSizingFrame && !Definition->IsModalWindow &&
+		!Definition->IsRegularWindow && Definition->SizeWillChangeOften)
 	{
 		WindowStyle |= SDL_WINDOW_TOOLTIP;
 		bIsTooltipWindow = true;
@@ -317,7 +317,7 @@ void FLinuxWindow::Initialize( FLinuxApplication* const Application, const TShar
 	/* 
 		Do not set for Notification Windows the transient flag because the WM's usually raise the the parent window
 		if the Notificaton Window gets raised. That behaviour is to aggresive and disturbs users doing other things 
-		while UE4 calculates lights and other things and pop ups notifications. Notifications will be handled so that 
+		while UnrealEngine calculates lights and other things and pop ups notifications. Notifications will be handled so that 
 		they are some sort of independend but will be raised if the TopLevel Window gets focused or activated.
 	*/
 	// Make the Window modal for it's parent.
@@ -384,7 +384,7 @@ SDL_HitTestResult FLinuxWindow::HitTest( SDL_Window *SDLwin, const SDL_Point *po
 /** Native windows should implement MoveWindowTo by relocating the platform-specific window to (X,Y). */
 void FLinuxWindow::MoveWindowTo( int32 X, int32 Y )
 {
-	if (UE4_USING_BORDERS_AWARE_SDL)
+	if (UE_USING_BORDERS_AWARE_SDL)
 	{
 		SDL_SetWindowPosition( HWnd, X, Y );
 	}
@@ -510,30 +510,6 @@ static void GetBestFullscreenResolution( SDL_HWindow hWnd, int32 *pWidth, int32 
 
 void FLinuxWindow::ReshapeWindow( int32 NewX, int32 NewY, int32 NewWidth, int32 NewHeight )
 {
-	// Some vulkan video drivers have issues with specific height ranges causing them to corrupt the texture rendered
-	// Moving these nearest values removes this corruption.
-	static bool bDisableVulkanWorkaround = FParse::Param(FCommandLine::Get(), TEXT("disablevulkanworkaround"));
-
-	if (!bDisableVulkanWorkaround)
-	{
-		if (NewHeight >= 9 && NewHeight <= 10)
-		{
-			NewHeight = 11;
-		}
-		else if (NewHeight >= 17 && NewHeight <= 21)
-		{
-			NewHeight = 22;
-		}
-		else if (NewHeight >= 33 && NewHeight <= 43)
-		{
-			NewHeight = 44;
-		}
-		else if (NewHeight >= 65 && NewHeight <= 85)
-		{
-			NewHeight = 86;
-		}
-	}
-
 	// If we have set our self to 0,0 Width/Height it will not be allowed we will still show the window
 	// this is a work around to at least reduce the visibile impact of a window that is lingering
 	NewWidth  = FMath::Max(NewWidth, 1);
@@ -569,7 +545,7 @@ void FLinuxWindow::ReshapeWindow( int32 NewX, int32 NewY, int32 NewWidth, int32 
 
 		case EWindowMode::Windowed:
 		{
-			if (UE4_USING_BORDERS_AWARE_SDL == 0 && Definition->HasOSWindowBorder)
+			if (UE_USING_BORDERS_AWARE_SDL == 0 && Definition->HasOSWindowBorder)
 			{
 				// we are passed coordinates of a client area, so account for decorations
 				checkf(bValidNativePropertiesCache, TEXT("Attempted to use border sizes too early, native properties aren't yet cached. Review the flow"));
@@ -785,7 +761,7 @@ bool FLinuxWindow::IsPointInWindow( int32 X, int32 Y ) const
 
 	SDL_GetWindowSize( HWnd, &width, &height );
 	
-	return X > 0 && Y > 0 && X < width && Y < height;
+	return X >= 0 && Y >= 0 && X < width && Y < height;
 }
 
 int32 FLinuxWindow::GetWindowBorderSize() const
@@ -848,11 +824,6 @@ bool FLinuxWindow::IsDragAndDropWindow() const
 bool FLinuxWindow::IsUtilityWindow() const
 {
 	return bIsUtilityWindow;
-}
-
-bool FLinuxWindow::IsActivateWhenFirstShown() const
-{
-	return GetActivationPolicy() != EWindowActivationPolicy::Never;
 }
 
 EWindowActivationPolicy FLinuxWindow::GetActivationPolicy() const

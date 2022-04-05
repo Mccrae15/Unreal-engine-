@@ -153,8 +153,8 @@ namespace
 				Task.EnterProgressFrame();
 
 				bool bFunctionModified = false;
-				const TArray<UMaterialExpression*> *Expressions = Function->GetFunctionExpressions();
-				for (UMaterialExpression *Expression : *Expressions)
+				const TArray<TObjectPtr<UMaterialExpression>> *Expressions = Function->GetFunctionExpressions();
+				for (const TObjectPtr<UMaterialExpression>& Expression : *Expressions)
 				{
 					UMaterialExpressionRuntimeVirtualTextureSample* RVTSampleExpression = Cast<UMaterialExpressionRuntimeVirtualTextureSample>(Expression);
 					if (RVTSampleExpression)
@@ -216,7 +216,7 @@ FColor FAssetTypeActions_RuntimeVirtualTexture::GetTypeColor() const
 
 uint32 FAssetTypeActions_RuntimeVirtualTexture::GetCategories() 
 {
-	return EAssetTypeCategories::MaterialsAndTextures; 
+	return EAssetTypeCategories::Textures; 
 }
 
 void FAssetTypeActions_RuntimeVirtualTexture::GetActions(TArray<UObject*> const& InObjects, FMenuBuilder& MenuBuilder)

@@ -53,8 +53,6 @@ void ClearShaderResource(ID3D11DeviceContext* Direct3DDeviceIMContext, uint32 Re
 	case SF_Pixel:   Direct3DDeviceIMContext->PSSetShaderResources(ResourceIndex,1,&NullView); break;
 	case SF_Compute: Direct3DDeviceIMContext->CSSetShaderResources(ResourceIndex,1,&NullView); break;
 	case SF_Geometry:Direct3DDeviceIMContext->GSSetShaderResources(ResourceIndex,1,&NullView); break;
-	case SF_Domain:  Direct3DDeviceIMContext->DSSetShaderResources(ResourceIndex,1,&NullView); break;
-	case SF_Hull:    Direct3DDeviceIMContext->HSSetShaderResources(ResourceIndex,1,&NullView); break;
 	case SF_Vertex:  Direct3DDeviceIMContext->VSSetShaderResources(ResourceIndex,1,&NullView); break;
 	};
 }
@@ -139,7 +137,7 @@ void GetMipAndSliceInfoFromSRV(ID3D11ShaderResourceView* SRV, int32& MipLevel, i
 }
 
 template <EShaderFrequency ShaderFrequency>
-void FD3D11DynamicRHI::InternalSetShaderResourceView(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex, FName SRVName, FD3D11StateCache::ESRV_Type SrvType)
+void FD3D11DynamicRHI::InternalSetShaderResourceView(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex)
 {
 	// Check either both are set, or both are null.
 	check((Resource && SRV) || (!Resource && !SRV));
@@ -180,15 +178,13 @@ void FD3D11DynamicRHI::InternalSetShaderResourceView(FD3D11BaseShaderResource* R
 	}
 
 	// Set the SRV we have been given (or null).
-	StateCache.SetShaderResourceView<ShaderFrequency>(SRV, ResourceIndex, SrvType);
+	StateCache.SetShaderResourceView<ShaderFrequency>(SRV, ResourceIndex);
 }
 
-template void FD3D11DynamicRHI::InternalSetShaderResourceView<SF_Vertex>(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex, FName SRVName, FD3D11StateCache::ESRV_Type SrvType);
-template void FD3D11DynamicRHI::InternalSetShaderResourceView<SF_Hull>(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex, FName SRVName, FD3D11StateCache::ESRV_Type SrvType);
-template void FD3D11DynamicRHI::InternalSetShaderResourceView<SF_Domain>(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex, FName SRVName, FD3D11StateCache::ESRV_Type SrvType);
-template void FD3D11DynamicRHI::InternalSetShaderResourceView<SF_Pixel>(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex, FName SRVName, FD3D11StateCache::ESRV_Type SrvType);
-template void FD3D11DynamicRHI::InternalSetShaderResourceView<SF_Geometry>(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex, FName SRVName, FD3D11StateCache::ESRV_Type SrvType);
-template void FD3D11DynamicRHI::InternalSetShaderResourceView<SF_Compute>(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex, FName SRVName, FD3D11StateCache::ESRV_Type SrvType);
+template void FD3D11DynamicRHI::InternalSetShaderResourceView<SF_Vertex>(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex);
+template void FD3D11DynamicRHI::InternalSetShaderResourceView<SF_Pixel>(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex);
+template void FD3D11DynamicRHI::InternalSetShaderResourceView<SF_Geometry>(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex);
+template void FD3D11DynamicRHI::InternalSetShaderResourceView<SF_Compute>(FD3D11BaseShaderResource* Resource, ID3D11ShaderResourceView* SRV, int32 ResourceIndex);
 
 void FD3D11DynamicRHI::TrackResourceBoundAsVB(FD3D11BaseShaderResource* Resource, int32 StreamIndex)
 {
@@ -232,7 +228,7 @@ void FD3D11DynamicRHI::ClearShaderResourceViews(FD3D11BaseShaderResource* Resour
 		if (CurrentResourcesBoundAsSRVs[ShaderFrequency][ResourceIndex] == Resource)
 		{
 			// Unset the SRV from the device context
-			InternalSetShaderResourceView<ShaderFrequency>(nullptr, nullptr, ResourceIndex, NAME_None);
+			SetShaderResourceView<ShaderFrequency>(nullptr, nullptr, ResourceIndex);
 		}
 	}
 }
@@ -242,8 +238,6 @@ void FD3D11DynamicRHI::ConditionalClearShaderResource(FD3D11BaseShaderResource* 
 	SCOPE_CYCLE_COUNTER(STAT_D3D11ClearShaderResourceTime);
 	check(Resource);
 	ClearShaderResourceViews<SF_Vertex>(Resource);
-	ClearShaderResourceViews<SF_Hull>(Resource);
-	ClearShaderResourceViews<SF_Domain>(Resource);
 	ClearShaderResourceViews<SF_Pixel>(Resource);
 	ClearShaderResourceViews<SF_Geometry>(Resource);
 	ClearShaderResourceViews<SF_Compute>(Resource);
@@ -277,7 +271,7 @@ void FD3D11DynamicRHI::ClearAllShaderResourcesForFrequency()
 		if (CurrentResourcesBoundAsSRVs[ShaderFrequency][ResourceIndex] != nullptr)
 		{
 			// Unset the SRV from the device context
-			InternalSetShaderResourceView<ShaderFrequency>(nullptr, nullptr, ResourceIndex, NAME_None);
+			SetShaderResourceView<ShaderFrequency>(nullptr, nullptr, ResourceIndex);
 		}
 	}
 	StateCache.ClearConstantBuffers<ShaderFrequency>();
@@ -286,8 +280,6 @@ void FD3D11DynamicRHI::ClearAllShaderResourcesForFrequency()
 void FD3D11DynamicRHI::ClearAllShaderResources()
 {
 	ClearAllShaderResourcesForFrequency<SF_Vertex>();
-	ClearAllShaderResourcesForFrequency<SF_Hull>();
-	ClearAllShaderResourcesForFrequency<SF_Domain>();
 	ClearAllShaderResourcesForFrequency<SF_Geometry>();
 	ClearAllShaderResourcesForFrequency<SF_Pixel>();
 	ClearAllShaderResourcesForFrequency<SF_Compute>();
@@ -599,9 +591,11 @@ bool FD3DGPUProfiler::CheckGpuHeartbeat(bool bShowActiveStatus) const
 	if (GDX11NVAfterMathEnabled && bTrackingGPUCrashData)
 	{
 		GFSDK_Aftermath_Device_Status Status;
-		D3D11StallRHIThread();
-		GFSDK_Aftermath_Result Result = GFSDK_Aftermath_GetDeviceStatus(&Status);
-		D3D11UnstallRHIThread();
+		GFSDK_Aftermath_Result Result;
+		{
+			FScopedD3D11RHIThreadStaller StallRHIThread;
+			Result = GFSDK_Aftermath_GetDeviceStatus(&Status);
+		}
 		if (Result == GFSDK_Aftermath_Result_Success)
 		{
 			if (Status != GFSDK_Aftermath_Device_Status_Active || bShowActiveStatus)
@@ -621,9 +615,10 @@ bool FD3DGPUProfiler::CheckGpuHeartbeat(bool bShowActiveStatus) const
 				if (AftermathContext)
 				{
 					GFSDK_Aftermath_ContextData ContextDataOut;
-					D3D11StallRHIThread();
-					Result = GFSDK_Aftermath_GetData(1, &AftermathContext, &ContextDataOut);
-					D3D11UnstallRHIThread();
+					{
+						FScopedD3D11RHIThreadStaller StallRHIThread;
+						Result = GFSDK_Aftermath_GetData(1, &AftermathContext, &ContextDataOut);
+					}
 					if (Result == GFSDK_Aftermath_Result_Success)
 					{
 						UE_LOG(LogRHI, Error, TEXT("[Aftermath] GPU Stack Dump"));
@@ -766,16 +761,3 @@ void UpdateBufferStats(TRefCountPtr<ID3D11Buffer> Buffer, bool bAllocating)
 #endif
 	}
 }
-
-#ifndef PLATFORM_IMPLEMENTS_FASTVRAMALLOCATOR
-	#define PLATFORM_IMPLEMENTS_FASTVRAMALLOCATOR		0
-#endif
-
-#if !PLATFORM_IMPLEMENTS_FASTVRAMALLOCATOR
-FFastVRAMAllocator* FFastVRAMAllocator::GetFastVRAMAllocator()
-{
-	static FFastVRAMAllocator FastVRAMAllocatorSingleton;
-	return &FastVRAMAllocatorSingleton;
-}
-#endif
-

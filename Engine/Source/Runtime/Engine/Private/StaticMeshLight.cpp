@@ -36,15 +36,15 @@ static void GetStaticLightingVertex(
 	FStaticLightingVertex& OutVertex
 	)
 {
-	OutVertex.WorldPosition = LocalToWorld.TransformPosition(PositionVertexBuffer.VertexPosition(VertexIndex));
-	OutVertex.WorldTangentX = LocalToWorld.TransformVector(VertexBuffer.VertexTangentX(VertexIndex)).GetSafeNormal();
-	OutVertex.WorldTangentY = LocalToWorld.TransformVector(VertexBuffer.VertexTangentY(VertexIndex)).GetSafeNormal();
-	OutVertex.WorldTangentZ = LocalToWorldInverseTranspose.TransformVector(VertexBuffer.VertexTangentZ(VertexIndex)).GetSafeNormal();
+	OutVertex.WorldPosition = LocalToWorld.TransformPosition((FVector)PositionVertexBuffer.VertexPosition(VertexIndex));
+	OutVertex.WorldTangentX = LocalToWorld.TransformVector((FVector4)VertexBuffer.VertexTangentX(VertexIndex)).GetSafeNormal();
+	OutVertex.WorldTangentY = LocalToWorld.TransformVector((FVector)VertexBuffer.VertexTangentY(VertexIndex)).GetSafeNormal();
+	OutVertex.WorldTangentZ = LocalToWorldInverseTranspose.TransformVector((FVector4)VertexBuffer.VertexTangentZ(VertexIndex)).GetSafeNormal();
 
 	checkSlow(VertexBuffer.GetNumTexCoords() <= UE_ARRAY_COUNT(OutVertex.TextureCoordinates));
 	for(uint32 LightmapTextureCoordinateIndex = 0;LightmapTextureCoordinateIndex < VertexBuffer.GetNumTexCoords();LightmapTextureCoordinateIndex++)
 	{
-		OutVertex.TextureCoordinates[LightmapTextureCoordinateIndex] = VertexBuffer.GetVertexUV(VertexIndex,LightmapTextureCoordinateIndex);
+		OutVertex.TextureCoordinates[LightmapTextureCoordinateIndex] = FVector2D(VertexBuffer.GetVertexUV(VertexIndex,LightmapTextureCoordinateIndex));
 	}
 }
 
@@ -461,7 +461,8 @@ FStaticMeshStaticLightingMesh* UStaticMeshComponent::AllocateStaticLightingMesh(
 void UStaticMeshComponent::InvalidateLightingCacheDetailed(bool bInvalidateBuildEnqueuedLighting, bool bTranslationOnly)
 {
 #if WITH_EDITOR
-	if (HasStaticLighting() && HasValidSettingsForStaticLighting(false))
+	// If still compiling, static lighting is not registered and doesn't need unregistration
+	if (!IsCompiling() && HasStaticLighting() && HasValidSettingsForStaticLighting(false))
 	{
 		FStaticLightingSystemInterface::OnPrimitiveComponentUnregistered.Broadcast(this);
 	}
@@ -479,7 +480,8 @@ void UStaticMeshComponent::InvalidateLightingCacheDetailed(bool bInvalidateBuild
 	}
 
 #if WITH_EDITOR
-	if (HasStaticLighting() && HasValidSettingsForStaticLighting(false))
+	// If still compiling, static lighting will be registered when compilation finishes
+	if (!IsCompiling() && HasStaticLighting() && HasValidSettingsForStaticLighting(false))
 	{
 		FStaticLightingSystemInterface::OnPrimitiveComponentRegistered.Broadcast(this);
 	}

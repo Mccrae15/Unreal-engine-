@@ -12,12 +12,14 @@
 class FJsonObject;
 
 /** UStruct that holds a JsonObject, can be used by structs passed to JsonObjectConverter to pass through JsonObjects directly */
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (DisplayName = "JsonObject"))
 struct JSONUTILITIES_API FJsonObjectWrapper
 {
 	GENERATED_USTRUCT_BODY()
+	
 public:
-
+	FJsonObjectWrapper();
+	
 	UPROPERTY(EditAnywhere, Category = "JSON")
 	FString JsonString;
 
@@ -27,10 +29,7 @@ public:
 	bool ExportTextItem(FString& ValueStr, FJsonObjectWrapper const& DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope) const;
 	void PostSerialize(const FArchive& Ar);
 
-	explicit operator bool() const
-	{
-		return JsonObject.IsValid();
-	}
+	explicit operator bool() const;
 
 	bool JsonObjectToString(FString& Str) const;
 	bool JsonObjectFromString(const FString& Str);

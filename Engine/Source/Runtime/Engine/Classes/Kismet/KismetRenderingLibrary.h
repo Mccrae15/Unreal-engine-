@@ -8,6 +8,8 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Components/SkinnedMeshComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "ProfilingDebugging/RealtimeGPUProfiler.h"
+#include "Camera/CameraTypes.h"
 #include "KismetRenderingLibrary.generated.h"
 
 class UCanvas;
@@ -20,15 +22,12 @@ struct FDrawToRenderTargetContext
 {
 	GENERATED_USTRUCT_BODY()
 
-	FDrawToRenderTargetContext() :
-		RenderTarget(NULL),
-		DrawEvent(NULL)
-	{}
-
 	UPROPERTY()
-	UTextureRenderTarget2D* RenderTarget;
+	TObjectPtr<UTextureRenderTarget2D> RenderTarget = nullptr;
 
-	FDrawEvent* DrawEvent;
+#if WANTS_DRAW_MESH_EVENTS
+	FDrawEvent* DrawEvent = nullptr;
+#endif // WANTS_DRAW_MESH_EVENTS
 };
 
 UCLASS(MinimalAPI, meta=(ScriptName="RenderingLibrary"))
@@ -113,16 +112,42 @@ class UKismetRenderingLibrary : public UBlueprintFunctionLibrary
 	static ENGINE_API FColor ReadRenderTargetUV(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, float U, float V);
 
 	/**
+	* Incredibly inefficient and slow operation! Reads entire render target as sRGB color and returns a linear array of sRGB colors.
+	* LDR render targets are assumed to be in sRGB space. HDR ones are assumed to be in linear space.
+	* Result whether the operation succeeded.  If successful, OutSamples will an entry per pixel, where each is 8-bit per channel [0,255] BGRA in sRGB space.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Rendering", meta = (Keywords = "ReadRenderTarget", WorldContext = "WorldContextObject"))
+	static ENGINE_API bool ReadRenderTarget(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, TArray<FColor>& OutSamples, bool bNormalize = true);
+
+	/**
 	* Incredibly inefficient and slow operation! Read a value as-is from a render target using integer pixel coordinates.
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Rendering", meta = (Keywords = "ReadRenderTarget", WorldContext = "WorldContextObject"))
-	static ENGINE_API FLinearColor ReadRenderTargetRawPixel(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, int32 X, int32 Y);
+	static ENGINE_API FLinearColor ReadRenderTargetRawPixel(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, int32 X, int32 Y, bool bNormalize = true);
 
 	/**
-	* Incredibly inefficient and slow operation! Read a value as-is color from a render target using UV [0,1]x[0,1] coordinates.
+    * Incredibly inefficient and slow operation! Read an area of values as-is from a render target using a rectangle defined by integer pixel coordinates.
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Rendering", meta = (Keywords = "ReadRenderTarget", WorldContext = "WorldContextObject"))
-	static ENGINE_API FLinearColor ReadRenderTargetRawUV(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, float U, float V);
+	static ENGINE_API TArray<FLinearColor> ReadRenderTargetRawPixelArea(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, int32 MinX, int32 MinY, int32 MaxX, int32 MaxY, bool bNormalize = true);
+
+	/**
+	* Incredibly inefficient and slow operation! Read a value as-is from a render target using UV [0,1]x[0,1] coordinates.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Rendering", meta = (Keywords = "ReadRenderTarget", WorldContext = "WorldContextObject"))
+	static ENGINE_API FLinearColor ReadRenderTargetRawUV(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, float U, float V, bool bNormalize = true);
+
+	/**
+	* Incredibly inefficient and slow operation! Read entire texture as-is from a render target.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Rendering", meta = (Keywords = "ReadRenderTarget", WorldContext = "WorldContextObject"))
+	static ENGINE_API bool ReadRenderTargetRaw(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, TArray<FLinearColor>& OutLinearSamples, bool bNormalize = true);
+
+	/**
+	* Incredibly inefficient and slow operation! Read an area of values as-is from a render target using a rectangle defined by UV [0,1]x[0,1] coordinates.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Rendering", meta = (Keywords = "ReadRenderTarget", WorldContext = "WorldContextObject"))
+	static ENGINE_API TArray<FLinearColor> ReadRenderTargetRawUVArea(UObject* WorldContextObject, UTextureRenderTarget2D* TextureRenderTarget, FBox2D Area, bool bNormalize = true);
 
 	/**
 	 * Exports a Texture2D as a HDR image onto the disk.
@@ -169,4 +194,8 @@ class UKismetRenderingLibrary : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintCallable, Category="Rendering", meta=(Keywords="SetCastShadowForAllAttachments", UnsafeDuringActorConstruction="true"))
 	static ENGINE_API void SetCastInsetShadowForAllAttachments(UPrimitiveComponent* PrimitiveComponent, bool bCastInsetShadow, bool bLightAttachmentsAsGroup);
+
+	/** Calculates the projection matrix using this view info's aspect ratio (regardless of bConstrainAspectRatio) */
+	UFUNCTION(BlueprintPure, Category="Rendering", meta = (DisplayName = "Calculate Projection Matrix (Minimal View Info)", ScriptMethod = "CalculateProjectionMatrix"))
+	static ENGINE_API FMatrix CalculateProjectionMatrix(const FMinimalViewInfo& MinimalViewInfo);
 };

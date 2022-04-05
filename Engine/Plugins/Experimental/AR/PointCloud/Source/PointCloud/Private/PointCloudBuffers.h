@@ -49,7 +49,7 @@ protected:
 		NumVerts = InNumVerts;
 
 		FPointCloudVertexResourceArray ResourceArray(InVertexData, InSizeInBytes);
-		FRHIResourceCreateInfo CreateInfo(&ResourceArray);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FPointCloudVertexBufferBase"), &ResourceArray);
 		VertexBufferRHI = RHICreateVertexBuffer(InSizeInBytes, BUF_Static | BUF_ShaderResource, CreateInfo);
 	}
 
@@ -130,10 +130,9 @@ public:
 		NumPrimitives = NumPoints;
 		const uint32 Size = sizeof(INDEX_TYPE) * 4 * NumPoints;
 		const uint32 Stride = sizeof(INDEX_TYPE);
-		FRHIResourceCreateInfo CreateInfo;
-		void* Buffer = nullptr;
-		IndexBufferRHI = RHICreateAndLockIndexBuffer( Stride, Size, BUF_Static, CreateInfo, Buffer );
-		INDEX_TYPE* Indices = (INDEX_TYPE*)Buffer;
+		FRHIResourceCreateInfo CreateInfo(TEXT("PointCloudQuadList"));
+		IndexBufferRHI = RHICreateBuffer( Size, BUF_Static | BUF_IndexBuffer, Stride, ERHIAccess::VertexOrIndexBuffer, CreateInfo );
+		INDEX_TYPE* Indices = (INDEX_TYPE*)RHILockBuffer( IndexBufferRHI, 0, Size, RLM_WriteOnly );
 		for (uint32 SpriteIndex = 0; SpriteIndex < NumPoints; ++SpriteIndex)
 		{
 			Indices[SpriteIndex * 4 + 0] = SpriteIndex * 4 + 0;
@@ -141,7 +140,7 @@ public:
 			Indices[SpriteIndex * 4 + 2] = SpriteIndex * 4 + 3;
 			Indices[SpriteIndex * 4 + 3] = SpriteIndex * 4 + 2;
 		}
-		RHIUnlockIndexBuffer( IndexBufferRHI );
+		RHIUnlockBuffer( IndexBufferRHI );
 	}
 
 	/** Generates a tri list when quad lists are not available on the platform */
@@ -151,10 +150,9 @@ public:
 		NumPrimitives = 2 * NumPoints;
 		const uint32 Size = sizeof(INDEX_TYPE) * 6 * NumPoints;
 		const uint32 Stride = sizeof(INDEX_TYPE);
-		FRHIResourceCreateInfo CreateInfo;
-		void* Buffer = nullptr;
-		IndexBufferRHI = RHICreateAndLockIndexBuffer( Stride, Size, BUF_Static, CreateInfo, Buffer );
-		INDEX_TYPE* Indices = (INDEX_TYPE*)Buffer;
+		FRHIResourceCreateInfo CreateInfo(TEXT("PointCloudTriList"));
+		IndexBufferRHI = RHICreateBuffer( Size, BUF_Static | BUF_IndexBuffer, Stride, ERHIAccess::VertexOrIndexBuffer, CreateInfo );
+		INDEX_TYPE* Indices = (INDEX_TYPE*)RHILockBuffer( IndexBufferRHI, 0, Size, RLM_WriteOnly );
 		for (uint32 SpriteIndex = 0; SpriteIndex < NumPoints; ++SpriteIndex)
 		{
 			Indices[SpriteIndex * 6 + 0] = SpriteIndex * 4 + 0;
@@ -164,7 +162,7 @@ public:
 			Indices[SpriteIndex * 6 + 4] = SpriteIndex * 4 + 1;
 			Indices[SpriteIndex * 6 + 5] = SpriteIndex * 4 + 3;
 		}
-		RHIUnlockIndexBuffer( IndexBufferRHI );
+		RHIUnlockBuffer( IndexBufferRHI );
 	}
 
 	virtual void InitRHI() override

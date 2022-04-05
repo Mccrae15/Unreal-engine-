@@ -2,7 +2,7 @@
 
 using UnrealBuildTool;
 
-[SupportedPlatformsAttribute(new string[] {"Win32", "Win64", "Linux", "Android", "LinuxAArch64"})]
+[SupportedPlatforms("Win64", "Linux", "Android", "LinuxArm64")]
 public class OpenGLDrv : ModuleRules
 {
 	public OpenGLDrv(ReadOnlyTargetRules Target) : base(Target)
@@ -16,6 +16,7 @@ public class OpenGLDrv : ModuleRules
 				"ApplicationCore",
 				"Engine",
 				"RHI",
+				"RHICore",
 				"RenderCore",
 				"PreLoadScreen"
 			}
@@ -47,7 +48,7 @@ public class OpenGLDrv : ModuleRules
 			);
 		}
 
-		if ((Target.Platform == UnrealTargetPlatform.Android) || (Target.Platform == UnrealTargetPlatform.Lumin))
+		if (Target.Platform == UnrealTargetPlatform.Android)
 		{
 			PrivateDependencyModuleNames.Add("detex");
 		}
@@ -72,10 +73,10 @@ public class OpenGLDrv : ModuleRules
 			);
 		}
 
-        if (Target.Platform != UnrealTargetPlatform.Win32 && Target.Platform != UnrealTargetPlatform.Win64
+        if (Target.Platform != UnrealTargetPlatform.Win64
 			&& Target.Platform != UnrealTargetPlatform.IOS && Target.Platform != UnrealTargetPlatform.Android
 			&& !Target.IsInPlatformGroup(UnrealPlatformGroup.Linux)
-			&& Target.Platform != UnrealTargetPlatform.TVOS && Target.Platform != UnrealTargetPlatform.Lumin)
+			&& Target.Platform != UnrealTargetPlatform.TVOS)
 		{
 			PrecompileForTargets = PrecompileTargetsType.None;
 		}

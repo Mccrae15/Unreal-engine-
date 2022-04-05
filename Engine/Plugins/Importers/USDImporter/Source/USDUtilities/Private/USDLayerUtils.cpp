@@ -9,6 +9,8 @@
 
 #include "UsdWrappers/SdfChangeBlock.h"
 #include "UsdWrappers/SdfLayer.h"
+#include "UsdWrappers/UsdAttribute.h"
+#include "UsdWrappers/UsdPrim.h"
 #include "UsdWrappers/UsdStage.h"
 
 #include "Framework/Application/SlateApplication.h"
@@ -44,7 +46,7 @@ namespace UsdUtils
 	}
 }
 
-bool UsdUtils::InsertSubLayer( const pxr::SdfLayerRefPtr& ParentLayer, const TCHAR* SubLayerFile, int32 Index )
+bool UsdUtils::InsertSubLayer( const pxr::SdfLayerRefPtr& ParentLayer, const TCHAR* SubLayerFile, int32 Index, double OffsetTimeCodes, double TimeCodesScale )
 {
 	if ( !ParentLayer )
 	{
@@ -66,6 +68,16 @@ bool UsdUtils::InsertSubLayer( const pxr::SdfLayerRefPtr& ParentLayer, const TCH
 	FScopedUsdAllocs UsdAllocs;
 
 	ParentLayer->InsertSubLayerPath( UnrealToUsd::ConvertString( *RelativeSubLayerPath ).Get(), Index );
+
+	if ( !FMath::IsNearlyZero( OffsetTimeCodes ) || !FMath::IsNearlyEqual( TimeCodesScale, 1.0 ) )
+	{
+		if ( Index == -1 )
+		{
+			Index = ParentLayer->GetNumSubLayerPaths() - 1;
+		}
+
+		ParentLayer->SetSubLayerOffset( pxr::SdfLayerOffset{ OffsetTimeCodes, TimeCodesScale }, Index );
+	}
 
 	return true;
 }
@@ -94,32 +106,48 @@ TOptional< FString > UsdUtils::BrowseUsdFile( EBrowseFileMode Mode, TSharedRef< 
 		UE_LOG(LogUsd, Error, TEXT("No file extensions supported by the USD SDK!"));
 		return {};
 	}
-	FString JoinedExtensions = FString::Join(SupportedExtensions, TEXT(";*.")); // Combine "usd" and "usda" into "usd; *.usda"
-	FString FileTypes = FString::Printf(TEXT("usd files (*.%s)|*.%s"), *JoinedExtensions, *JoinedExtensions);
+
+	if ( Mode == EBrowseFileMode::Save )
+	{
+		// USD 21.08 doesn't yet support saving to USDZ, so instead of allowing this option and leading to an error we'll just hide it
+		SupportedExtensions.Remove( TEXT( "usdz" ) );
+	}
+
+	FString JoinedExtensions = FString::Join( SupportedExtensions, TEXT( ";*." ) ); // Combine "usd" and "usda" into "usd; *.usda"
+	FString FileTypes = FString::Printf( TEXT( "Universal Scene Description files (*.%s)|*.%s|" ), *JoinedExtensions, *JoinedExtensions );
+	for ( const FString& SupportedExtension : SupportedExtensions )
+	{
+		// The '(*.%s)' on the actual name (before the '|') is not optional: We need the name part to be different for each format
+		// or else the options will overwrite each other on the Mac
+		FileTypes += FString::Printf( TEXT( "Universal Scene Description file (*.%s)|*.%s|" ), *SupportedExtension, *SupportedExtension );
+	}
 
 	switch ( Mode )
 	{
 		case EBrowseFileMode::Open :
+		{
 			if ( !DesktopPlatform->OpenFileDialog( ParentWindowHandle, LOCTEXT( "ChooseFile", "Choose file").ToString(), TEXT(""), TEXT(""), *FileTypes, EFileDialogFlags::None, OutFiles ) )
 			{
 				return {};
 			}
 			break;
-
+		}
 		case EBrowseFileMode::Save :
+		{
 			if ( !DesktopPlatform->SaveFileDialog( ParentWindowHandle, LOCTEXT( "ChooseFile", "Choose file").ToString(), TEXT(""), TEXT(""), *FileTypes, EFileDialogFlags::None, OutFiles ) )
 			{
 				return {};
 			}
 			break;
-
+		}
 		default:
 			break;
 	}
 
 	if ( OutFiles.Num() > 0 )
 	{
-		return MakePathRelativeToProjectDir( OutFiles[0] );
+		// Always make this an absolute path because it may try generating a relative path to the engine binary if it can
+		return FPaths::ConvertRelativePathToFull( OutFiles[ 0 ] );
 	}
 
 	return {};
@@ -190,16 +218,16 @@ UE::FSdfLayer UsdUtils::FindLayerForPrim( const pxr::UsdPrim& Prim )
 
 	FScopedUsdAllocs UsdAllocs;
 
-	pxr::UsdPrimCompositionQuery PrimCompositionQuery( Prim );
-	std::vector< pxr::UsdPrimCompositionQueryArc > CompositionArcs = PrimCompositionQuery.GetCompositionArcs();
-
-	for ( const pxr::UsdPrimCompositionQueryArc& CompositionArc : CompositionArcs )
+	// Use this instead of UsdPrimCompositionQuery as that one can simply fail in some scenarios
+	// (e.g. empty parent layer pointing at a sublayer with a prim, where it fails to provide the sublayer arc's layer)
+	for ( const pxr::SdfPrimSpecHandle& Handle : Prim.GetPrimStack() )
 	{
-		pxr::SdfLayerHandle IntroducingLayer = CompositionArc.GetIntroducingLayer();
-
-		if ( IntroducingLayer )
+		if ( Handle )
 		{
-			return UE::FSdfLayer( IntroducingLayer );
+			if ( pxr::SdfLayerHandle Layer = Handle->GetLayer() )
+			{
+				return UE::FSdfLayer( Layer );
+			}
 		}
 	}
 
@@ -220,6 +248,54 @@ UE::FSdfLayer UsdUtils::FindLayerForAttribute( const pxr::UsdAttribute& Attribut
 		if ( PropertySpec->HasDefaultValue() || PropertySpec->GetLayer()->GetNumTimeSamplesForPath( PropertySpec->GetPath() ) > 0 )
 		{
 			return UE::FSdfLayer( PropertySpec->GetLayer() );
+		}
+	}
+
+	return {};
+}
+
+UE::FSdfLayer UsdUtils::FindLayerForAttributes( const TArray<UE::FUsdAttribute>& Attributes, double TimeCode, bool bIncludeSessionLayers )
+{
+	FScopedUsdAllocs UsdAllocs;
+
+	TMap<FString, UE::FSdfLayer> IdentifierToLayers;
+	IdentifierToLayers.Reserve( Attributes.Num() );
+
+	pxr::UsdStageRefPtr Stage;
+	for ( const UE::FUsdAttribute& Attribute : Attributes )
+	{
+		if ( Attribute )
+		{
+			if ( UE::FSdfLayer Layer = UsdUtils::FindLayerForAttribute( Attribute, TimeCode ) )
+			{
+				IdentifierToLayers.Add( Layer.GetIdentifier(), Layer );
+
+				if ( !Stage )
+				{
+					Stage = pxr::UsdStageRefPtr{ Attribute.GetPrim().GetStage() };
+				}
+			}
+		}
+	}
+
+	if ( !Stage || IdentifierToLayers.Num() == 0)
+	{
+		return {};
+	}
+
+	if ( IdentifierToLayers.Num() == 1 )
+	{
+		return IdentifierToLayers.CreateIterator().Value();
+	}
+
+	// Iterate through the layer stack in strong to weak order, and return the first of those layers
+	// that is actually one of the attribute layers
+	for ( const pxr::SdfLayerHandle& LayerHandle : Stage->GetLayerStack( bIncludeSessionLayers ) )
+	{
+		FString Identifier = UsdToUnreal::ConvertString( LayerHandle->GetIdentifier() );
+		if ( UE::FSdfLayer* AttributeLayer = IdentifierToLayers.Find( Identifier ) )
+		{
+			return *AttributeLayer;
 		}
 	}
 
@@ -310,6 +386,56 @@ UE::FSdfLayerOffset UsdUtils::GetLayerToStageOffset( const pxr::UsdAttribute& At
 	return UE::FSdfLayerOffset( LocalOffset.GetOffset(), LocalOffset.GetScale() );
 }
 
+UE::FSdfLayerOffset UsdUtils::GetPrimToStageOffset( const UE::FUsdPrim& Prim )
+{
+	// In most cases all we care about is an offset from the prim's layer to the stage, but it is also possible for a prim
+	// to directly reference another layer with an offset and scale as well, and this function will pick up on that. Example:
+	//
+	// def SkelRoot "Model" (
+	//	  prepend references = @sublayer.usda@ ( offset = 15; scale = 2.0 )
+	// )
+	// {
+	// }
+	//
+	// Otherwise, this function really has the same effect as GetLayerToStageOffset, but we need to use an actual prim to be able
+	// to get USD to combine layer offsets and scales for us (via UsdPrimCompositionQuery).
+
+	FScopedUsdAllocs Allocs;
+
+	UE::FSdfLayer StrongestLayerForPrim = UsdUtils::FindLayerForPrim( Prim );
+
+	pxr::UsdPrim UsdPrim{ Prim };
+
+	pxr::UsdPrimCompositionQuery PrimCompositionQuery( UsdPrim );
+	pxr::UsdPrimCompositionQuery::Filter Filter;
+	Filter.hasSpecsFilter = pxr::UsdPrimCompositionQuery::HasSpecsFilter::HasSpecs;
+	PrimCompositionQuery.SetFilter( Filter );
+
+	for ( const pxr::UsdPrimCompositionQueryArc& CompositionArc : PrimCompositionQuery.GetCompositionArcs() )
+	{
+		if ( pxr::PcpNodeRef Node = CompositionArc.GetTargetNode() )
+		{
+			pxr::SdfLayerOffset Offset;
+
+			// This part of the offset will handle direct prim references
+			const pxr::PcpMapExpression& MapToRoot = Node.GetMapToRoot();
+			if ( !MapToRoot.IsNull() )
+			{
+				Offset = MapToRoot.GetTimeOffset();
+			}
+
+			if ( const pxr::SdfLayerOffset* LayerOffset = Node.GetLayerStack()->GetLayerOffsetForLayer( pxr::SdfLayerRefPtr{ StrongestLayerForPrim } ) )
+			{
+				Offset = Offset * (*LayerOffset);
+			}
+
+			return UE::FSdfLayerOffset{ Offset.GetOffset(), Offset.GetScale() };
+		}
+	}
+
+	return UE::FSdfLayerOffset{};
+}
+
 void UsdUtils::AddTimeCodeRangeToLayer( const pxr::SdfLayerRefPtr& Layer, double StartTimeCode, double EndTimeCode )
 {
 	FScopedUsdAllocs UsdAllocs;
@@ -341,7 +467,10 @@ void UsdUtils::MakePathRelativeToLayer( const UE::FSdfLayer& Layer, FString& Pat
 	{
 		std::string RepositoryPath = UsdLayer->GetRepositoryPath().empty() ? UsdLayer->GetRealPath() : UsdLayer->GetRepositoryPath();
 		FString LayerAbsolutePath = UsdToUnreal::ConvertString( RepositoryPath );
-		FPaths::MakePathRelativeTo( Path, *LayerAbsolutePath );
+		if ( !LayerAbsolutePath.IsEmpty() )
+		{
+			FPaths::MakePathRelativeTo( Path, *LayerAbsolutePath );
+		}
 	}
 #endif // #if USE_USD_SDK
 }
@@ -505,6 +634,34 @@ UE::FSdfLayer UsdUtils::FindLayerForIdentifier( const TCHAR* Identifier, const U
 	}
 
 	return UE::FSdfLayer{};
+}
+
+bool UsdUtils::IsSessionLayerWithinStage( const pxr::SdfLayerRefPtr& Layer, const pxr::UsdStageRefPtr& Stage )
+{
+	if ( !Layer || !Stage )
+	{
+		return false;
+	}
+
+	pxr::SdfLayerRefPtr RootLayer = Stage->GetRootLayer();
+
+	const bool bIncludeSessionLayers = true;
+	for ( const pxr::SdfLayerHandle& ExistingLayer : Stage->GetLayerStack( bIncludeSessionLayers ) )
+	{
+		// All session layers come before the root layer within the layer stack
+		// Break before we compare with Layer because if Layer is the actual stage's RootLayer we want to return false
+		if ( ExistingLayer == RootLayer )
+		{
+			break;
+		}
+
+		if ( ExistingLayer == Layer )
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 #undef LOCTEXT_NAMESPACE

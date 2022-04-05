@@ -42,5 +42,12 @@ struct FDisplayClusterViewport_OverscanSettings
 
 	// Overscan sides in pixels
 	FOverscanPixels  OverscanPixels;
+
+	static float ClampPercent(float InValue)
+	{
+		static const float MaxCustomFrustumValue = 5.f;
+
+		return FMath::Clamp(InValue, -MaxCustomFrustumValue, MaxCustomFrustumValue);
+	}
 };
 

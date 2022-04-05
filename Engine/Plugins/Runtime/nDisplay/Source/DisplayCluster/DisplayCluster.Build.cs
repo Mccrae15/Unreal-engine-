@@ -23,14 +23,6 @@ public class DisplayCluster : ModuleRules
 				"Engine"
 			});
 
-		if (Target.Platform == UnrealTargetPlatform.Win64)
-		{
-			PublicDependencyModuleNames.AddRange(
-			new string[] {
-				"TextureShare"
-			});
-		}
-
 		PrivateDependencyModuleNames.AddRange(
 		new string[] {
 			"HeadMountedDisplay",
@@ -45,6 +37,7 @@ public class DisplayCluster : ModuleRules
 			"Slate",
 			"SlateCore",
 			"Sockets",
+			"ProceduralMeshComponent",
 		});
 
 		if (Target.bBuildEditor == true)
@@ -55,14 +48,21 @@ public class DisplayCluster : ModuleRules
 			PrivateDependencyModuleNames.Add("LevelEditor");
 		}
 
+		if (Target.Type == TargetType.Editor)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"ConcertSyncClient"
+				});
+		}
+
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"D3D11RHI",
 					"D3D12RHI",
-					"TextureShare",
-					"TextureShareCore",
 			});
 
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11");

@@ -9,10 +9,15 @@
 #include "EdGraph/EdGraphPin.h"
 #include "AssetData.h"
 #include "UObject/ObjectKey.h"
+#include "Input/Reply.h"
+#if WITH_EDITOR
+#include "Kismet2/Kismet2NameValidators.h"
+#endif
 #include "EdGraphSchema.generated.h"
 
 class FSlateRect;
 class UEdGraph;
+struct FBPVariableDescription;
 
 /** Distinguishes between different graph types. Graphs can have different properties; for example: functions have one entry point, ubergraphs can have multiples. */
 UENUM()
@@ -47,6 +52,9 @@ enum ECanCreateConnectionResponse
 
 	/** Make the connection via an intermediate cast node, or some other conversion node. */
 	CONNECT_RESPONSE_MAKE_WITH_CONVERSION_NODE,
+
+	/** Make the connection by promoting a lower type to a higher type. Ex: Connecting a Float -> Double, float should become a double */
+	CONNECT_RESPONSE_MAKE_WITH_PROMOTION,
 
 	CONNECT_RESPONSE_MAX,
 };
@@ -284,6 +292,15 @@ public:
 	// (e.g., both are variables in the same Blueprint)
 	virtual FEdGraphSchemaActionDefiningObject GetPersistentItemDefiningObject() const { return FEdGraphSchemaActionDefiningObject(nullptr); }
 
+	// Returns true if the action refers to a external or local variable
+	virtual bool IsA(const FName& InType) const
+	{
+		return InType == GetTypeId();
+	}
+
+	// Returns true if the action refers to a member or local variable
+	virtual bool IsAVariable() const { return false; }
+
 private:
 	void UpdateSearchText();
 };
@@ -300,7 +317,7 @@ struct ENGINE_API FEdGraphSchemaAction_NewNode : public FEdGraphSchemaAction
 
 	/** Template of node we want to create */
 	UPROPERTY()
-	class UEdGraphNode* NodeTemplate;
+	TObjectPtr<class UEdGraphNode> NodeTemplate;
 
 
 	FEdGraphSchemaAction_NewNode() 
@@ -398,7 +415,7 @@ public:
 	/** If a connection can be made without breaking existing connections */
 	bool CanSafeConnect() const
 	{
-		return (Response == CONNECT_RESPONSE_MAKE);
+		return (Response == CONNECT_RESPONSE_MAKE  || Response == CONNECT_RESPONSE_MAKE_WITH_PROMOTION);
 	}
 
 	bool IsFatal() const
@@ -712,6 +729,16 @@ class ENGINE_API UEdGraphSchema : public UObject
 	virtual bool CreateAutomaticConversionNodeAndConnections(UEdGraphPin* A, UEdGraphPin* B) const;
 
 	/**
+	* Try to create a promotion from one type to another in order to make a connection between two pins.
+	* 
+	* @param	A	The first pin.
+	* @param	B	The second pin.
+	*
+	* @return	True if the promotion and connection were successful; False if the connection failed.
+	*/
+	virtual bool CreatePromotedConnection(UEdGraphPin* A, UEdGraphPin* B) const;
+
+	/**
 	 * Determine if the supplied pin default values would be valid.
 	 *
 	 * @param	Pin			   	The pin to check the default value on.
@@ -750,6 +777,14 @@ class ENGINE_API UEdGraphSchema : public UObject
 	virtual void ClearPinWatch(UEdGraphPin const* Pin) const {}
 
 	/**
+	 * Checks to see if a pin supports Pin Value Inspection Tooltips
+	 *
+	 * @param	Pin The pin to check
+	 * @return	true if it supports data tooltips
+	 */
+	virtual bool CanShowDataTooltipForPin(const UEdGraphPin& Pin) const { return false; }
+
+	/**
 	 * Sets the string to the specified pin; even if it is invalid it is still set.
 	 *
 	 * @param	Pin			   	The pin on which to set the default value.
@@ -779,6 +814,12 @@ class ENGINE_API UEdGraphSchema : public UObject
 	/** Should the Pin in question display an asset picker */
 	virtual bool ShouldShowAssetPickerForPin(UEdGraphPin* Pin) const { return true; }
 
+	/** Returns true if the schema supports the pin type through the schema action */
+	virtual bool SupportsPinType(TWeakPtr<const FEdGraphSchemaAction> SchemaAction, const FEdGraphPinType& PinType) const { return true; }
+
+	/** Returns true if the schema supports the pin type through the schema action */
+	virtual bool SupportsPinTypeContainer(TWeakPtr<const FEdGraphSchemaAction> SchemaAction, const FEdGraphPinType& PinType, const EPinContainerType& ContainerType) const { return true; }
+
 	/**
 	 * Gets the draw color of a pin based on it's type.
 	 *
@@ -787,6 +828,8 @@ class ENGINE_API UEdGraphSchema : public UObject
 	 * @return	The color representing the passed in type.
 	 */
 	virtual FLinearColor GetPinTypeColor(const FEdGraphPinType& PinType) const { return FLinearColor::Black; }
+
+	virtual FLinearColor GetSecondaryPinTypeColor(const FEdGraphPinType& PinType) const { return FLinearColor::White; };
 
 #if WITH_EDITORONLY_DATA
 	/** Get the name to show in the editor */
@@ -908,6 +951,13 @@ class ENGINE_API UEdGraphSchema : public UObject
 	 */
 	virtual UEdGraphNode* CreateSubstituteNode(UEdGraphNode* Node, const UEdGraph* Graph, FObjectInstancingGraph* InstanceGraph, TSet<FName>& InOutExtraNames) const { return nullptr; }
 
+	/**
+	 * Sets a node's position.
+	 *
+	 * @param	Node			The node to set
+	 * @param	Position		The target position
+	 */
+	virtual void SetNodePosition(UEdGraphNode* Node, const FVector2D& Position) const;
 
 	/**
 	 * Returns the currently selected graph node count
@@ -924,10 +974,36 @@ class ENGINE_API UEdGraphSchema : public UObject
 	 */
 	virtual void HandleGraphBeingDeleted(UEdGraph& GraphBeingRemoved) const {}
 
+	/*
+	 * Try to delete the graph through the schema, return true if successful
+	 */
+	virtual bool TryDeleteGraph(UEdGraph* GraphToDelete) const { return false; }
+
+	/*
+	 * Try to rename a graph through the schema, return true if successful
+	 */
+	virtual bool TryRenameGraph(UEdGraph* GraphToRename, const FName& InNewName) const { return false; }
+
 	/**
 	 * Can TestNode be encapsulated into a child graph?
 	 */
 	virtual bool CanEncapuslateNode(UEdGraphNode const& TestNode) const { return true; }
+
+	/*
+	 * Can the function graph be dropped into another graph
+	 */
+	virtual bool CanGraphBeDropped(TSharedPtr<FEdGraphSchemaAction> InAction) const { return false; }
+
+	/*
+	 * Begins a drag and drop action to drag a graph action into another graph
+	 */
+	UE_DEPRECATED(5.0, "Use version that takes FPointerEvent instead.")
+	virtual FReply BeginGraphDragAction(TSharedPtr<FEdGraphSchemaAction> InAction) const { return FReply::Unhandled(); }
+
+	/*
+	* Begins a drag and drop action to drag a graph action into another graph
+	*/
+	virtual FReply BeginGraphDragAction(TSharedPtr<FEdGraphSchemaAction> InAction, const FPointerEvent& MouseEvent) const { return FReply::Unhandled(); }
 
 	/**
 	 * Gets display information for a graph
@@ -936,6 +1012,21 @@ class ENGINE_API UEdGraphSchema : public UObject
 	 * @param	[out] DisplayInfo	Appropriate display info for Graph
 	 */
 	virtual void GetGraphDisplayInformation(const UEdGraph& Graph, /*out*/ FGraphDisplayInfo& DisplayInfo) const;
+
+	/**
+	 * Returns an optional category for a graph
+	 *
+	 * @param	InGraph				Graph to get the category for
+	 */
+	virtual FText GetGraphCategory(const UEdGraph* InGraph) const { return FText(); }
+
+	/**
+	 * Tentatively sets the category for a given graph
+	 *
+	 * @param	InGraph				Graph to set the category for
+	 * @param	InCategory			Pipe "|" separated category for the graph.
+	 */
+	virtual FReply TrySetGraphCategory(const UEdGraph* InGraph, const FText& InCategory) { return FReply::Unhandled(); }
 
 	/** Called when asset(s) are dropped onto a graph background. */
 	virtual void DroppedAssetsOnGraph(const TArray<struct FAssetData>& Assets, const FVector2D& GraphPosition, UEdGraph* Graph) const {}
@@ -1015,6 +1106,13 @@ class ENGINE_API UEdGraphSchema : public UObject
 	virtual bool SupportsDropPinOnNode(UEdGraphNode* InTargetNode, const FEdGraphPinType& InSourcePinType, EEdGraphPinDirection InSourcePinDirection, FText& OutErrorMessage) const { return false; }
 
 	/**
+	 * Let's the schema know about the next pin being dropped
+	 *
+	 * @param InSourcePin					The pin which is about to be dropped
+	 */
+	virtual void SetPinBeingDroppedOnNode(UEdGraphPin* InSourcePin) const {}
+
+	/**
 	 * Checks if a CacheRefreshID is out of date
 	 *
 	 * @param InVisualizationCacheID	The current refresh ID to check if out of date
@@ -1086,7 +1184,17 @@ class ENGINE_API UEdGraphSchema : public UObject
 	 *
 	 * @return	true if the pin types and directions are compatible.
 	 */
-	virtual bool ArePinsCompatible(const UEdGraphPin* PinA, const UEdGraphPin* PinB, const UClass* CallingContext = NULL, bool bIgnoreArray = false) const { return true; }
+	virtual bool ArePinsCompatible(const UEdGraphPin* PinA, const UEdGraphPin* PinB, const UClass* CallingContext = nullptr, bool bIgnoreArray = false) const { return true; }
+
+	/**
+	 * Returns true if the types are schema Equivalent. 
+	 *
+	 * @param	PinA		  	The type of Pin A.
+	 * @param	PinB		  	The type of Pin B.
+	 *
+	 * @return	true if the pin types and directions are compatible.
+	 */
+	virtual bool ArePinTypesEquivalent(const FEdGraphPinType& PinA, const FEdGraphPinType& PinB) const { return true; }
 
 	/**
 	 * Returns true if the schema wants to overdrive the behaviour of dirtying the blueprint on new node creation.
@@ -1097,4 +1205,49 @@ class ENGINE_API UEdGraphSchema : public UObject
 	 * @return  true if the blueprint marking has been taken care off.
 	 */
 	virtual bool MarkBlueprintDirtyFromNewNode(UBlueprint* InBlueprint, UEdGraphNode* InEdGraphNode) const { return false; }
+
+	/**
+	* Returns the local variables related to the graph.
+	*
+	* @param   InGraph    The graph where to look for local variables
+	* @param   OutLocalVariables    The local variables found in the graph
+	* 
+	* @return  true if the graph can contain local variables (even if it has no local variables)
+	*/
+	virtual bool GetLocalVariables(const UEdGraph* InGraph, TArray<FBPVariableDescription>& OutLocalVariables) const { return false; }
+
+	/**
+	* Generates a graph schema action from a graph and a variable description.
+	*
+	* @param   InGraph    The graph where the variable is located
+	* @param   VariableDescription    The description of the variable from which to generate the action
+	* 
+	* @return  a shared pointer to the newly created action.
+	*/
+	virtual TSharedPtr<FEdGraphSchemaAction> MakeActionFromVariableDescription(const UEdGraph* InEdGraph, const FBPVariableDescription& VariableDescription) const { return nullptr; }
+
+	/**
+	 * Insert additional actions into the blueprint action menu
+	 * @param InBlueprints List of all blueprints you want actions for.
+	 * @param InGraphs A list of graphs you want compatible actions for.
+	 * @param InPins A list of pins you want compatible actions for.
+	 * @param OutAllActions Resulting compatible actions
+	 */
+	virtual void InsertAdditionalActions(TArray<UBlueprint*> InBlueprints, TArray<UEdGraph*> InGraphs, TArray<UEdGraphPin*> InPins, FGraphActionListBuilderBase& OutAllActions) const {}
+
+#if WITH_EDITOR
+	/**
+	 * Returns a name validator appropiate for the schema and object that is being named
+	 * @param InBlueprintObj The blueprint where the object being named lives.
+	 * @param InOriginalName The original name of the object.
+	 * @param InValidationScope The scope where the named object lives.
+	 * @param InActionTypeId The type of object that is being named.
+	 * @param NameValidator The name validator to use when naming this object.
+	 */
+	virtual TSharedPtr<INameValidatorInterface> GetNameValidator(const UBlueprint* InBlueprintObj, const FName& InOriginalName, const UStruct* InValidationScope, const FName& InActionTypeId) const
+	{
+		return MakeShareable(new FKismetNameValidator(InBlueprintObj, InOriginalName, InValidationScope));
+	}
+#endif
+	
 };

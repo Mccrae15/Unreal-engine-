@@ -3,10 +3,12 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Misc/Paths.h"
+
 #include "AssetData.h"
-#include "Misc/AssetRegistryInterface.h"
 #include "AssetRegistryState.h"
+#include "Misc/AssetRegistryInterface.h"
+#include "Misc/Paths.h"
+#include "Templates/UniquePtr.h"
 #include "UObject/UObjectHash.h"
 
 class FSandboxPlatformFile;
@@ -40,39 +42,67 @@ public:
 	const ITargetPlatform* GetTargetPlatform() const { return TargetPlatform; }
 
 	/** 
-	 * Loads asset registry from a previous run that is used for iterative or DLC cooking
+	 * Sets asset registry from a previous run that is used for iterative cooking
 	 */
-	bool LoadPreviousAssetRegistry(const FString& Filename);
+	void SetPreviousAssetRegistry(TUniquePtr<FAssetRegistryState>&& PreviousState);
 
 	/**
-	 * Computes differences between the previous asset registry and the current one 
+	 * Options when computing the differences between current and previous state.
+	 */
+	struct FComputeDifferenceOptions
+	{
+		/** if true, modified packages are recursed to X in X->Y->Z chains. Otherwise, only Y and Z are seen as modified */
+		bool bRecurseModifications;
+		/** if true, modified script / c++ packages are recursed, if false only asset references are recursed */
+		bool bRecurseScriptModifications;
+	};
+
+	/**
+	 * Differences between the current and the previous state.
+	 */
+	struct FAssetRegistryDifference
+	{
+		/** ModifiedPackages list of packages which existed beforeand now, but need to be recooked */
+		TSet<FName> ModifiedPackages;
+		/** NewPackages list of packages that did not exist before, but exist now */
+		TSet<FName> NewPackages;
+		/** RemovedPackages list of packages that existed before, but do not any more */
+		TSet<FName> RemovedPackages;
+		/** IdenticalCookedPackages list of cooked packages that have not changed */
+		TSet<FName> IdenticalCookedPackages;
+		/** IdenticalUncookedPackages list of uncooked packages that have not changed.These were filtered out by platform or editor only */
+		TSet<FName> IdenticalUncookedPackages;
+	};
+
+	/**
+	 * Computes differences between the current asset registry state and the provided previous state.
 	 *
-	 * @param ModifiedPackages list of packages which existed before and now, but need to be recooked
-	 * @param NewPackages list of packages that did not exist before, but exist now
-	 * @param RemovedPackages list of packages that existed before, but do not any more
-	 * @param IdenticalCookedPackages list of cooked packages that have not changed
-	 * @param IdenticalUncookedPackages list of uncooked packages that have not changed. These were filtered out by platform or editor only
-	 * @param bRecurseModifications if true, modified packages are recursed to X in X->Y->Z chains. Otherwise, only Y and Z are seen as modified
-	* @param bRecurseModifications if true, modified script/c++ packages are recursed, if false only asset references are recursed
+	 * @param Options options to use when computing the differences
+	 * @param PreviousAssetPackageDataMap previously cooked asset package data
+	 * @param OutDifference the differences between the current and the previous state
 	 */
-	void ComputePackageDifferences(TSet<FName>& ModifiedPackages, TSet<FName>& NewPackages, TSet<FName>& RemovedPackages, TSet<FName>& IdenticalCookedPackages, TSet<FName>& IdenticalUncookedPackages, bool bRecurseModifications, bool bRecurseScriptModifications);
+	void ComputePackageDifferences(const FComputeDifferenceOptions& Options, const FAssetRegistryState& PreviousState, FAssetRegistryDifference& OutDifference);
+
+	/** Computes just the list of packages in the PreviousState that no longer exist in the current state. */
+	void ComputePackageRemovals(const FAssetRegistryState& PreviousState, TArray<FName>& RemovedPackages);
 
 	/**
-	 * Tracks packages that were kept from a previous cook.
-	 * Updates the current asset registry from the previous one for all kept packages.
-	 */
-	void UpdateKeptPackages(const TArray<FName>& InKeptPackages);
-
-	/**
-	 * GenerateChunkManifest 
-	 * generate chunk manifest for the packages passed in using the asset registry to determine dependencies
+	 * FinalizeChunkIDs 
+	 * Create the list of packages to store in each Chunk; each Chunk corresponds to a pak file, or group of pak files if the chunk is split.
+	 * Each package may be in multiple chunks. The selection of chunks for each package is based on
+	 * ChunkIds explicitly assigned to the package in the editor (UPackage::GetChunkIds()) and
+	 * on assignment rules defined by the AssetManager
 	 *
 	 * @param CookedPackages list of packages which were cooked
 	 * @param DevelopmentOnlyPackages list of packages that were specifically not cooked, but to add to the development asset registry
 	 * @param InSandboxFile sandbox to load/save data
-	 * @param bGenerateStreamingInstallManifest should we build a streaming install manifest 
+	 * @param bGenerateStreamingInstallManifest should we build a streaming install manifest
+	 *        If false, no manifest is written and all packages are implicitly assigned to chunk 0 by the automation tool.
+	 *        If true, packages are assigned to chunks based on settings (possibly all in chunk 0 if settings are empty)
+	 *        and a manifest of packagenames is written for each chunk
 	 */
-	void BuildChunkManifest(const TSet<FName>& CookedPackages, const TSet<FName>& DevelopmentOnlyPackages, FSandboxPlatformFile* InSandboxFile, bool bGenerateStreamingInstallManifest);
+	void FinalizeChunkIDs(const TSet<FName>& CookedPackages, const TSet<FName>& DevelopmentOnlyPackages,
+		FSandboxPlatformFile& InSandboxFile, bool bGenerateStreamingInstallManifest);
 
 	/**
 	 * Register a chunk data generator with this generator.
@@ -107,24 +137,6 @@ public:
 	FAssetPackageData* GetAssetPackageData(const FName& PackageName);
 
 	/**
-	 * Adds a package to chunk manifest (just calls the other AddPackageToChunkManifestFunction with more parameters)
-	 *
-	 * @param Package Package to add to one of the manifests
-	 * @param SandboxFilename Cooked sandbox path of the package to add to a manifest
-	 * @param LastLoadedMapName Name of the last loaded map (can be empty)
-	 * @param the SandboxPlatformFile used during cook
-	 */
-	void AddPackageToChunkManifest(const FName& PackageFName, const FString& PackagePathName, const FString& SandboxFilename, const FString& LastLoadedMapName, FSandboxPlatformFile* InSandboxFile);
-	
-	/**
-	 * Add a package to the manifest but don't assign it to any chunk yet, packages which are not assigned by the end of the cook will be put into chunk 0
-	 * 
-	 * @param Package which is unassigned
-	 * @param The sandbox file path of the package
-	 */
-	void AddUnassignedPackageToManifest(UPackage* Package, const FString& PackageSandboxPath );
-
-	/**
 	 * Deletes temporary manifest directories.
 	 */
 	void CleanManifestDirectories();
@@ -133,9 +145,13 @@ public:
 	 * Saves all generated manifests for each target platform.
 	 * 
 	 * @param InSandboxFile the InSandboxFile used during cook
-	 * @param InExtraFlavorChunkSize the ChunkSize used during cooking for InExtraFlavor, value greater than 0 will trigger a cook for extra flavor with specified chunk size
+	 * @param InOverrideChunkSize the ChunkSize used during chunk division.
+	 *        If greater than 0, this overrides the default chunksize derived from the platform.
+	 * @param InManifestSubDir If non-null, the manifests are written into this subpath
+	 *        of the usual location.
 	 */
-	bool SaveManifests(FSandboxPlatformFile* InSandboxFile, int64 InExtraFlavorChunkSize = 0);
+	bool SaveManifests(FSandboxPlatformFile& InSandboxFile, int64 InOverrideChunkSize = 0,
+		const TCHAR* InManifestSubDir = nullptr);
 
 	/**
 	* Saves generated asset registry data for each platform.
@@ -145,7 +161,7 @@ public:
 	/** 
 	 * Writes out CookerOpenOrder.log file 
 	 */
-	bool WriteCookerOpenOrder(FSandboxPlatformFile* InSandboxFile);
+	bool WriteCookerOpenOrder(FSandboxPlatformFile& InSandboxFile);
 
 	/**
 	 * Follows an assets dependency chain to build up a list of package names in the same order as the runtime would attempt to load them
@@ -172,6 +188,15 @@ public:
 	void GetChunkAssignments(TArray<TSet<FName>>& OutAssignments) const;
 
 	/**
+	 * Attempts to update the metadata for a package in an asset registry generator
+	 *
+	 * @param Package The package to update info on
+	 * @param SavePackageResult The metadata to associate with the given package name
+	 */
+	void UpdateAssetRegistryPackageData(const UPackage& Package, FSavePackageResultStruct& SavePackageResult, TFuture<FMD5Hash>& CookedHash);
+
+private:
+	/**
 	 * Ensures all assets in the input package are present in the registry
 	 * @param Package - Package to process
 	 * @return - Array of FAssetData entries for all assets in the input package
@@ -179,14 +204,25 @@ public:
 	typedef TArray<const FAssetData*, TInlineAllocator<1>> FCreateOrFindArray;
 	FCreateOrFindArray CreateOrFindAssetDatas(const UPackage& Package);
 
-private:
+	/**
+	 * Updates all asset package flags in the specified package
+	 *
+	 * @param PackageName The name of the package
+	 * @param PackageFlags Package flags to set
+	 * @return True if any assets exists in the package
+	 */
+	bool UpdateAssetPackageFlags(const FName& PackageName, const uint32 PackageFlags);
+
+	/**
+	 * Updates AssetData with previous TagsAndValues, and updates PackageData values with previous PackageData,
+	 * for all packages kept from a previous cook.
+	 */
+	void UpdateKeptPackages();
 
 	/** State of the asset registry that is being built for this platform */
 	FAssetRegistryState State;
 
-	/** Base state, which is either a release build or an iterative cook */
-	FAssetRegistryState PreviousState;
-
+	TMap<FName, TPair<TArray<FAssetData>, FAssetPackageData>> PreviousPackagesToUpdate;
 	/** List of packages that were loaded at startup */
 	TSet<FName> StartupPackages;
 	/** List of packages that were successfully cooked */
@@ -203,8 +239,8 @@ private:
 	const ITargetPlatform* TargetPlatform;
 	/** List of all asset packages that were created while loading the last package in the cooker. */
 	TSet<FName> AssetsLoadedWithLastPackage;
-	/** Lookup for the original ChunkID Mappings */
-	TMap<FName, TArray<int32> > PackageChunkIDMap;
+	/** Lookup for the ChunkIDs that were explicitly set by the user in the editor */
+	TMap<FName, TArray<int32>> ExplicitChunkIDs;
 	/** Set of packages containing a map */
 	TSet<FName> PackagesContainingMaps;
 	/** Should the chunks be generated or only asset registry */
@@ -214,19 +250,19 @@ private:
 	/** Highest chunk id, being used for geneating dependency tree */
 	int32 HighestChunkId;
 	/** Array of Maps with chunks<->packages assignments */
-	TArray<FChunkPackageSet*>		ChunkManifests;
+	TArray<TUniquePtr<FChunkPackageSet>> ChunkManifests;
 	/** Map of packages that has not been assigned to chunks */
-	FChunkPackageSet				UnassignedPackageSet;
+	FChunkPackageSet UnassignedPackageSet;
 	/** Map of all cooked Packages */
-	FChunkPackageSet				AllCookedPackageSet;
+	FChunkPackageSet AllCookedPackageSet;
 	/** Array of Maps with chunks<->packages assignments. This version contains all dependent packages */
-	TArray<FChunkPackageSet*>		FinalChunkManifests;
+	TArray<TUniquePtr<FChunkPackageSet>> FinalChunkManifests;
 	/** Additional data generators used when creating chunks */
 	TArray<TSharedRef<IChunkDataGenerator>> ChunkDataGenerators;
 	/** Lookup table of used package names used when searching references. */
-	TSet<FName>						InspectedNames;
-	/** */
-	UChunkDependencyInfo*			DependencyInfo;
+	TSet<FName> InspectedNames;
+	/** Source of the config-driven parent-child relationships between chunks. */
+	UChunkDependencyInfo& DependencyInfo;
 
 	/** Required flags a dependency must have if it is to be followed when adding package dependencies to chunks.*/
 	UE::AssetRegistry::EDependencyQuery DependencyQuery;
@@ -251,18 +287,6 @@ private:
 		FName		PackageName;
 		uint32		ParentNodeIndex;
 	};
-
-	/**
-	 * Updates disk data with CookedHash and DiskSize from previous asset registry
-	 * for all packages kept from a previous cook.
-	 */
-	void UpdateKeptPackagesDiskData(const TArray<FName>& InKeptPackages);
-
-	/**
-	 * Updates AssetData with TagsAndValues from previous asset registry
-	 * for all packages kept from a previous cook.
-	 */
-	void UpdateKeptPackagesAssetData();
 
 	/**
 	 * Updates AssetData with TagsAndValues corresponding to any collections 
@@ -292,14 +316,15 @@ private:
 	 * 
 	 * @param the InSandboxFile used during cook
 	 */
-	void FixupPackageDependenciesForChunks(FSandboxPlatformFile* InSandboxFile);
+	void FixupPackageDependenciesForChunks(FSandboxPlatformFile& InSandboxFile);
 
 	/**
 	 * Attaches encryption key guids into the registry data for encrypted primary assets
 	 */
 	void InjectEncryptionData(FAssetRegistryState& TargetState);
 
-	void AddPackageAndDependenciesToChunk(FChunkPackageSet* ThisPackageSet, FName InPkgName, const FString& InSandboxFile, int32 PakchunkIndex, FSandboxPlatformFile* SandboxPlatformFile);
+	void AddPackageAndDependenciesToChunk(FChunkPackageSet& ThisPackageSet, FName InPkgName,
+		const FString& InSandboxFile, int32 PakchunkIndex, FSandboxPlatformFile& SandboxPlatformFile);
 
 	/**
 	 * Returns the path of the temporary packaging directory for the specified platform.
@@ -309,58 +334,31 @@ private:
 		return FPaths::ProjectSavedDir() / TEXT("TmpPackaging") / Platform;
 	}
 
-	/**
-	 * 
-	 */
+	/** Returns the config-driven max size of a chunk for the given platform, or -1 for no limit. */
 	int64 GetMaxChunkSizePerPlatform( const ITargetPlatform* Platform ) const;
 
-	/**
-	* Returns an array of chunks ID for a package name that have been assigned during the cook process.
-	*/
-	FORCEINLINE TArray<int32> GetExistingPackageChunkAssignments(FName PackageFName)
-	{
-		TArray<int32> ExistingChunkIDs;
-		for (uint32 ChunkIndex = 0, MaxChunk = ChunkManifests.Num(); ChunkIndex < MaxChunk; ++ChunkIndex)
-		{
-			if (ChunkManifests[ChunkIndex] && ChunkManifests[ChunkIndex]->Contains(PackageFName))
-			{
-				ExistingChunkIDs.AddUnique(ChunkIndex);
-			}
-		}
-
-		if ( StartupPackages.Contains(PackageFName ))
-		{
-			ExistingChunkIDs.AddUnique(0);
-		}
-
-		return ExistingChunkIDs;
-	}
+	/** Returns an array of chunks ID for a package name that have been assigned during the cook process. */
+	TArray<int32> GetExistingPackageChunkAssignments(FName PackageFName);
 
 	/**
-	* Returns an array of chunks IDs for a package that have been assigned in the editor.
-	*/
-	FORCEINLINE TArray<int32> GetAssetRegistryChunkAssignments(const FName& PackageFName)
-	{
-		TArray<int32> RegistryChunkIDs;
-		auto* FoundIDs = PackageChunkIDMap.Find(PackageFName);
-		if (FoundIDs)
-		{
-			RegistryChunkIDs = *FoundIDs;
-		}
-		return RegistryChunkIDs;
-	}
+	 * Get chunks IDs for a package that were assigned to the package in the editor from AssetFileContextMenu.
+	 * These explicit chunkids are unioned with the chunkids calculated by the AssetManager.
+	 */
+	TArray<int32> GetExplicitChunkIDs(const FName& PackageFName);
 
-	/** Generate manifest for a single package */
-	void GenerateChunkManifestForPackage(const FName& PackageFName, const FString& PackagePathName, const FString& SandboxFilename, const FString& LastLoadedMapName, FSandboxPlatformFile* InSandboxFile);
+	/** Calculate the final ChunkIds used by the package and store the package in the manifest for each of those chunks. */
+	void CalculateChunkIdsAndAssignToManifest(const FName& PackageFName, const FString& PackagePathName,
+		const FString& SandboxFilename, const FString& LastLoadedMapName, FSandboxPlatformFile& InSandboxFile);
 
 	/** Deletes the temporary packaging directory for the specified platform */
 	bool CleanTempPackagingDirectory(const FString& Platform) const;
 
-	/** Returns true if the specific platform desires a chunk manifest */
+	/** Returns true if the specific platform desires multiple chunks suitable for streaming install */
 	bool ShouldPlatformGenerateStreamingInstallManifest(const ITargetPlatform* Platform) const;
 
 	/** Generates and saves streaming install chunk manifest */
-	bool GenerateStreamingInstallManifest(int64 InExtraFlavorChunkSize, FSandboxPlatformFile* InSandboxFile);
+	bool GenerateStreamingInstallManifest(int64 InOverrideChunkSize, const TCHAR* InManifestSubDir,
+		FSandboxPlatformFile& InSandboxFile);
 
 	/** Gather a list of dependencies required by to completely load this package */
 	bool GatherAllPackageDependencies(FName PackageName, TArray<FName>& DependentPackageNames);
@@ -380,8 +378,9 @@ private:
 	/** Helper function for FindShortestReferenceChain */
 	FString	GetShortestReferenceChain(FName PackageName, int32 ChunkID);
 
-	/** Deprecated method to remove redundant chunks */
-	void ResolveChunkDependencyGraph(const FChunkDependencyTreeNode& Node, const TSet<FName>& BaseAssetSet, TArray<TArray<FName>>& OutPackagesMovedBetweenChunks);
+	/** Recursively remove redundant packages from child chunks based on the chunk dependency tree. */
+	void SubtractParentChunkPackagesFromChildChunks(const FChunkDependencyTreeNode& Node,
+		const TSet<FName>& CumulativeParentPackages, TArray<TArray<FName>>& OutPackagesMovedBetweenChunks);
 
 	/** Helper function to verify Chunk asset assignment is valid */
 	bool CheckChunkAssetsAreNotInChild(const FChunkDependencyTreeNode& Node);

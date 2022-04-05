@@ -219,12 +219,7 @@ void UMovieSceneSection::MoveSection(FFrameNumber DeltaFrame)
 			}
 		}
 	}
-
-#if WITH_EDITORONLY_DATA
-	TimecodeSource.DeltaFrame += DeltaFrame;
-#endif
 }
-
 
 TRange<FFrameNumber> UMovieSceneSection::ComputeEffectiveRange() const
 {
@@ -314,7 +309,7 @@ void UMovieSceneSection::BuildDefaultComponents(UMovieSceneEntitySystemLinker* E
 
 	OutImportedEntity->AddBuilder(
 		FEntityBuilder()
-		.AddConditional(Components->Easing,                     FEasingComponentData{ this }, bHasEasing)
+		.AddConditional(Components->Easing,                     FEasingComponentData{ decltype(FEasingComponentData::Section)(this) }, bHasEasing)
 		.AddConditional(Components->HierarchicalEasingChannel, uint16(-1), Params.Sequence.bHasHierarchicalEasing)
 		.AddConditional(Components->HierarchicalBias,           Params.Sequence.HierarchicalBias, Params.Sequence.HierarchicalBias != 0)
 		.AddConditional(Components->Interrogation.InputKey,     Params.InterrogationKey, Params.InterrogationKey.IsValid())
@@ -322,7 +317,7 @@ void UMovieSceneSection::BuildDefaultComponents(UMovieSceneEntitySystemLinker* E
 		.AddTagConditional(Components->Tags.RestoreState,       bShouldRestoreState)
 		.AddTagConditional(Components->Tags.FixedTime,          bHasForcedTime)
 		.AddTagConditional(Components->Tags.SectionPreRoll,     bHasSectionPreRoll)
-		.AddTagConditional(Components->Tags.PreRoll,            bHasSequencePreRoll)
+		.AddTagConditional(Components->Tags.PreRoll,            bHasSequencePreRoll || bHasSectionPreRoll)
 		.AddTagConditional(BlendTag,                            BlendTag != FComponentTypeID::Invalid())
 	);
 
@@ -571,6 +566,34 @@ UMovieSceneSection* UMovieSceneSection::SplitSection(FQualifiedFrameTime SplitTi
 	return nullptr;
 }
 
+UObject* UMovieSceneSection::GetImplicitObjectOwner()
+{
+	if (UMovieSceneTrack* Track = GetTypedOuter<UMovieSceneTrack>())
+	{
+		if (UMovieScene* MovieScene = Track->GetTypedOuter<UMovieScene>())
+		{
+			FGuid Guid;
+			if (MovieScene->FindTrackBinding(*Track, Guid))
+			{
+				if (FMovieSceneSpawnable* MovieSceneSpanwable = MovieScene->FindSpawnable(Guid))
+				{
+					return MovieSceneSpanwable->GetObjectTemplate();
+				}
+				else if (FMovieScenePossessable* MovieScenePossessable = MovieScene->FindPossessable(Guid))
+				{
+#if WITH_EDITORONLY_DATA
+					if (MovieScenePossessable->GetPossessedObjectClass() && MovieScenePossessable->GetPossessedObjectClass()->GetDefaultObject())
+					{
+						return MovieScenePossessable->GetPossessedObjectClass()->GetDefaultObject();
+					}
+#endif
+				}
+			}
+		}
+	}
+	return nullptr;
+}
+
 
 void UMovieSceneSection::TrimSection(FQualifiedFrameTime TrimTime, bool bTrimLeft, bool bDeleteKeys)
 {
@@ -733,5 +756,31 @@ void UMovieSceneSection::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 	}
 }
 
-#endif
+ECookOptimizationFlags UMovieSceneSection::GetCookOptimizationFlags() const
+{
+	UMovieSceneTrack* Track = GetTypedOuter<UMovieSceneTrack>();
 
+	if (UMovieSceneTrack::RemoveMutedTracksOnCook() && Track && Track->IsRowEvalDisabled(GetRowIndex()))
+	{
+		return ECookOptimizationFlags::RemoveSection;
+	}
+	return ECookOptimizationFlags::None; 
+}
+
+void UMovieSceneSection::RemoveForCook()
+{
+	Modify();
+
+	for (const FMovieSceneChannelEntry& Entry : GetChannelProxy().GetAllEntries())
+	{
+		for (FMovieSceneChannel* Channel : Entry.GetChannels())
+		{
+			if (Channel)
+			{
+				Channel->Reset();
+			}
+		}
+	}
+}
+
+#endif

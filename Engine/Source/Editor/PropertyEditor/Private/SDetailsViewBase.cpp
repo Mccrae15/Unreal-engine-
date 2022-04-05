@@ -1,36 +1,66 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SDetailsViewBase.h"
-#include "GameFramework/Actor.h"
-#include "EngineGlobals.h"
-#include "Engine/Engine.h"
-#include "Presentation/PropertyEditor/PropertyEditor.h"
-#include "ObjectPropertyNode.h"
-#include "Modules/ModuleManager.h"
-#include "Settings/EditorExperimentalSettings.h"
-#include "IDetailCustomization.h"
-#include "SDetailsView.h"
-#include "DetailLayoutBuilderImpl.h"
-#include "DetailCategoryBuilderImpl.h"
-#include "CategoryPropertyNode.h"
-#include "ScopedTransaction.h"
-#include "SDetailNameArea.h"
-#include "UserInterface/PropertyEditor/SPropertyEditorEditInline.h"
-#include "ObjectEditorUtils.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Widgets/Colors/SColorPicker.h"
-#include "DetailPropertyRow.h"
-#include "Widgets/Input/SSearchBox.h"
+
 #include "Classes/EditorStyleSettings.h"
+#include "Engine/Engine.h"
+#include "GameFramework/Actor.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Modules/ModuleManager.h"
+#include "Presentation/PropertyEditor/PropertyEditor.h"
+#include "Settings/EditorExperimentalSettings.h"
+#include "UserInterface/PropertyEditor/SPropertyEditorEditInline.h"
+#include "Widgets/Colors/SColorPicker.h"
+#include "Widgets/Input/SSearchBox.h"
+
+#include "CategoryPropertyNode.h"
+#include "DetailCategoryBuilderImpl.h"
+#include "DetailLayoutBuilderImpl.h"
 #include "DetailLayoutHelpers.h"
+#include "DetailPropertyRow.h"
 #include "EditConditionParser.h"
 #include "Editor.h"
+#include "EditorConfigSubsystem.h"
+#include "IDetailCustomization.h"
+#include "ObjectEditorUtils.h"
+#include "ObjectPropertyNode.h"
+#include "ScopedTransaction.h"
+#include "SDetailNameArea.h"
+#include "SDetailsView.h"
+#include "PropertyEditorPermissionList.h"
+
+#include "ThumbnailRendering/ThumbnailManager.h"
+
+SDetailsViewBase::SDetailsViewBase() :
+	bHasActiveFilter(false)
+	, bIsLocked(false)
+	, bHasOpenColorPicker(false)
+	, bDisableCustomDetailLayouts( false )
+	, NumVisibleTopLevelObjectNodes(0)
+	, bPendingCleanupTimerSet(false)
+{
+	UDetailsConfig* DetailsConfig = GetMutableDefault<UDetailsConfig>();
+	DetailsConfig->LoadEditorConfig();
+
+	const FDetailsViewConfig* ViewConfig = GetConstViewConfig();
+	if (ViewConfig != nullptr)
+	{
+		CurrentFilter.bShowAllAdvanced = ViewConfig->bShowAllAdvanced;
+		CurrentFilter.bShowAllChildrenIfCategoryMatches = ViewConfig->bShowAllChildrenIfCategoryMatches;
+		CurrentFilter.bShowOnlyAnimated = ViewConfig->bShowOnlyAnimated;
+		CurrentFilter.bShowOnlyKeyable = ViewConfig->bShowOnlyKeyable;
+		CurrentFilter.bShowOnlyModified = ViewConfig->bShowOnlyModified;
+	}
+
+	PropertyPermissionListChangedDelegate = FPropertyEditorPermissionList::Get().PermissionListUpdatedDelegate.AddLambda([this](TSoftObjectPtr<UStruct> Struct, FName Owner) { ForceRefresh(); });
+	PropertyPermissionListEnabledDelegate = FPropertyEditorPermissionList::Get().PermissionListEnabledDelegate.AddRaw(this, &SDetailsViewBase::ForceRefresh);
+}
 
 SDetailsViewBase::~SDetailsViewBase()
 {
-	ThumbnailPool.Reset();
+	FPropertyEditorPermissionList::Get().PermissionListUpdatedDelegate.Remove(PropertyPermissionListChangedDelegate);
+	FPropertyEditorPermissionList::Get().PermissionListEnabledDelegate.Remove(PropertyPermissionListEnabledDelegate);
 }
-
 
 void SDetailsViewBase::OnGetChildrenForDetailTree(TSharedRef<FDetailTreeNode> InTreeNode, TArray< TSharedRef<FDetailTreeNode> >& OutChildren)
 {
@@ -39,7 +69,7 @@ void SDetailsViewBase::OnGetChildrenForDetailTree(TSharedRef<FDetailTreeNode> In
 
 TSharedRef<ITableRow> SDetailsViewBase::OnGenerateRowForDetailTree(TSharedRef<FDetailTreeNode> InTreeNode, const TSharedRef<STableViewBase>& OwnerTable)
 {
-	return InTreeNode->GenerateWidgetForTableView(OwnerTable, ColumnSizeData, DetailsViewArgs.bAllowFavoriteSystem);
+	return InTreeNode->GenerateWidgetForTableView(OwnerTable, DetailsViewArgs.bAllowFavoriteSystem);
 }
 
 void SDetailsViewBase::SetRootExpansionStates(const bool bExpand, const bool bRecurse)
@@ -388,7 +418,7 @@ void SDetailsViewBase::UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyNode> 
 	TSharedPtr<FComplexPropertyNode> RootPropertyNode = InRootPropertyNode;
 	check(RootPropertyNode.IsValid());
 
-	const bool bEnableFavoriteSystem = IsEngineExitRequested() ? false : (GetDefault<UEditorExperimentalSettings>()->bEnableFavoriteSystem && DetailsViewArgs.bAllowFavoriteSystem);
+	const bool bEnableFavoriteSystem = IsEngineExitRequested() ? false : DetailsViewArgs.bAllowFavoriteSystem;
 
 	DetailLayoutHelpers::FUpdatePropertyMapArgs Args;
 
@@ -404,16 +434,36 @@ void SDetailsViewBase::UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyNode> 
 
 	// Ask for custom detail layouts, unless disabled. One reason for disabling custom layouts is that the custom layouts
 	// inhibit our ability to find a single property's tree node. This is problematic for the diff and merge tools, that need
-	// to display and highlight each changed property for the user. We could whitelist 'good' customizations here if 
+	// to display and highlight each changed property for the user. We could allow 'known good' customizations here if 
 	// we can make them work with the diff/merge tools.
-	if(!bDisableCustomDetailLayouts)
+	if (!bDisableCustomDetailLayouts)
 	{
 		DetailLayoutHelpers::QueryCustomDetailLayout(LayoutData, InstancedClassToDetailLayoutMap, GenericLayoutDelegate);
 	}
 
+	if (bEnableFavoriteSystem && InRootPropertyNode->GetInstancesNum() > 0)
+	{
+		static const FName FavoritesCategoryName("Favorites");
+		FDetailCategoryImpl& FavoritesCategory = LayoutData.DetailLayout->DefaultCategory(FavoritesCategoryName);
+		FavoritesCategory.SetSortOrder(0);
+		FavoritesCategory.SetCategoryAsSpecialFavorite();
+
+		if (FavoritesCategory.GetNumCustomizations() == 0)
+		{
+			FavoritesCategory.AddCustomRow(NSLOCTEXT("DetailLayoutHelpers", "Favorites", "Favorites"))
+				.WholeRowContent()
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(NSLOCTEXT("DetailLayoutHelpers", "AddToFavoritesDescription", "Right-click on a property to add it to your Favorites."))
+					.TextStyle(FAppStyle::Get(), "HintText")
+				];
+		}
+	}
+
 	LayoutData.DetailLayout->GenerateDetailLayout();
 }
-
 
 void SDetailsViewBase::OnColorPickerWindowClosed(const TSharedRef<SWindow>& Window)
 {
@@ -434,7 +484,6 @@ void SDetailsViewBase::OnColorPickerWindowClosed(const TSharedRef<SWindow>& Wind
 	ColorPropertyNode.Reset();
 }
 
-
 void SDetailsViewBase::SetIsPropertyVisibleDelegate(FIsPropertyVisible InIsPropertyVisible)
 {
 	IsPropertyVisibleDelegate = InIsPropertyVisible;
@@ -445,14 +494,14 @@ void SDetailsViewBase::SetIsPropertyReadOnlyDelegate(FIsPropertyReadOnly InIsPro
 	IsPropertyReadOnlyDelegate = InIsPropertyReadOnly;
 }
 
-void SDetailsViewBase::SetIsCustomRowVisibilityFilteredDelegate(FIsCustomRowVisibilityFiltered InIsCustomRowVisibilityFilteredDelegate)
-{
-	IsCustomRowVisibilityFilteredDelegate = InIsCustomRowVisibilityFilteredDelegate;
-};
-
 void SDetailsViewBase::SetIsCustomRowVisibleDelegate(FIsCustomRowVisible InIsCustomRowVisible)
 {
 	IsCustomRowVisibleDelegate = InIsCustomRowVisible;
+}
+
+void SDetailsViewBase::SetIsCustomRowReadOnlyDelegate(FIsCustomRowReadOnly InIsCustomRowReadOnly)
+{
+	IsCustomRowReadOnlyDelegate = InIsCustomRowReadOnly;
 }
 
 void SDetailsViewBase::SetIsPropertyEditingEnabledDelegate(FIsPropertyEditingEnabled IsPropertyEditingEnabled)
@@ -468,22 +517,28 @@ bool SDetailsViewBase::IsPropertyEditingEnabled() const
 
 void SDetailsViewBase::SetKeyframeHandler( TSharedPtr<class IDetailKeyframeHandler> InKeyframeHandler )
 {
-	KeyframeHandler = InKeyframeHandler;
-}
+	// if we don't have a keyframe handler and a valid handler is set, add width to the right column
+	// if we do have a keyframe handler and an invalid handler is set, remove width
+	float ExtraWidth = 0;
+	if (!KeyframeHandler.IsValid() && InKeyframeHandler.IsValid())
+	{
+		ExtraWidth = 22;
+	}
+	else if (KeyframeHandler.IsValid() && !InKeyframeHandler.IsValid())
+	{
+		ExtraWidth = -22;
+	}
+	
+	const float NewWidth = ColumnSizeData.GetRightColumnMinWidth() + ExtraWidth;
+	ColumnSizeData.SetRightColumnMinWidth(NewWidth);
 
-TSharedPtr<IDetailKeyframeHandler> SDetailsViewBase::GetKeyframeHandler() 
-{
-	return KeyframeHandler;
+	KeyframeHandler = InKeyframeHandler;
+	RefreshTree();
 }
 
 void SDetailsViewBase::SetExtensionHandler(TSharedPtr<class IDetailPropertyExtensionHandler> InExtensionHandler)
 {
 	ExtensionHandler = InExtensionHandler;
-}
-
-TSharedPtr<IDetailPropertyExtensionHandler> SDetailsViewBase::GetExtensionHandler()
-{
-	return ExtensionHandler;
 }
 
 void SDetailsViewBase::SetGenericLayoutDetailsDelegate(FOnGetDetailCustomizationInstance OnGetGenericDetails)
@@ -498,23 +553,12 @@ void SDetailsViewBase::RefreshRootObjectVisibility()
 
 TSharedPtr<FAssetThumbnailPool> SDetailsViewBase::GetThumbnailPool() const
 {
-	if (!ThumbnailPool.IsValid())
-	{
-		// Create a thumbnail pool for the view if it doesnt exist.  This does not use resources of no thumbnails are used
-		ThumbnailPool = MakeShareable(new FAssetThumbnailPool(50, TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &SDetailsView::IsHovered))));
-	}
-
-	return ThumbnailPool;
+	return UThumbnailManager::Get().GetSharedThumbnailPool();
 }
 
-TSharedPtr<FEditConditionParser> SDetailsViewBase::GetEditConditionParser() const
+const TArray<TSharedRef<class IClassViewerFilter>>& SDetailsViewBase::GetClassViewerFilters() const
 {
-	if (!EditConditionParser.IsValid())
-	{
-		EditConditionParser = MakeShareable(new FEditConditionParser);
-	}
-
-	return EditConditionParser;
+	return ClassViewerFilters;
 }
 
 void SDetailsViewBase::NotifyFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent)
@@ -524,11 +568,7 @@ void SDetailsViewBase::NotifyFinishedChangingProperties(const FPropertyChangedEv
 
 void SDetailsViewBase::RequestItemExpanded(TSharedRef<FDetailTreeNode> TreeNode, bool bExpand)
 {
-	// Don't change expansion state if its already in that state
-	if (DetailTree->IsItemExpanded(TreeNode) != bExpand)
-	{
-		FilteredNodesRequestingExpansionState.Add(TreeNode, bExpand);
-	}
+	FilteredNodesRequestingExpansionState.Add(TreeNode, bExpand);
 }
 
 void SDetailsViewBase::RefreshTree()
@@ -568,18 +608,14 @@ bool SDetailsViewBase::IsPropertyReadOnly( const FPropertyAndParent& PropertyAnd
 	return IsPropertyReadOnlyDelegate.IsBound() ? IsPropertyReadOnlyDelegate.Execute(PropertyAndParent) : false;
 }
 
-bool SDetailsViewBase::IsCustomRowVisibilityFiltered() const
-{
-	if (!IsCustomRowVisibleDelegate.IsBound())
-	{
-		return false;
-	}
-	return IsCustomRowVisibilityFilteredDelegate.IsBound() ? IsCustomRowVisibilityFilteredDelegate.Execute() : true;
-}
-
 bool SDetailsViewBase::IsCustomRowVisible(FName InRowName, FName InParentName) const
 {
 	return IsCustomRowVisibleDelegate.IsBound() ? IsCustomRowVisibleDelegate.Execute(InRowName, InParentName) : true;
+}
+
+bool SDetailsViewBase::IsCustomRowReadOnly(FName InRowName, FName InParentName) const
+{
+	return IsCustomRowReadOnlyDelegate.IsBound() ? IsCustomRowReadOnlyDelegate.Execute(InRowName, InParentName) : false;
 }
 
 TSharedPtr<IPropertyUtilities> SDetailsViewBase::GetPropertyUtilities()
@@ -587,9 +623,43 @@ TSharedPtr<IPropertyUtilities> SDetailsViewBase::GetPropertyUtilities()
 	return PropertyUtilities;
 }
 
+const FDetailsViewConfig* SDetailsViewBase::GetConstViewConfig() const 
+{
+	if (DetailsViewArgs.ViewIdentifier.IsNone())
+	{
+		return nullptr;
+	}
+
+	const UDetailsConfig* DetailsConfig = GetDefault<UDetailsConfig>();
+	return DetailsConfig->Views.Find(DetailsViewArgs.ViewIdentifier);
+}
+
+FDetailsViewConfig* SDetailsViewBase::GetMutableViewConfig()
+{ 
+	if (DetailsViewArgs.ViewIdentifier.IsNone())
+	{
+		return nullptr;
+	}
+
+	UDetailsConfig* DetailsConfig = GetMutableDefault<UDetailsConfig>();
+	return &DetailsConfig->Views.FindOrAdd(DetailsViewArgs.ViewIdentifier);
+}
+
+void SDetailsViewBase::SaveViewConfig()
+{
+	GetMutableDefault<UDetailsConfig>()->SaveEditorConfig();
+}
+
 void SDetailsViewBase::OnShowOnlyModifiedClicked()
 {
-	CurrentFilter.bShowOnlyModifiedProperties = !CurrentFilter.bShowOnlyModifiedProperties;
+	CurrentFilter.bShowOnlyModified = !CurrentFilter.bShowOnlyModified;
+
+	FDetailsViewConfig* ViewConfig = GetMutableViewConfig();
+	if (ViewConfig != nullptr)
+	{
+		ViewConfig->bShowOnlyModified = CurrentFilter.bShowOnlyModified;
+		SaveViewConfig();
+	}
 
 	UpdateFilteredDetails();
 }
@@ -606,15 +676,20 @@ void SDetailsViewBase::OnCustomFilterClicked()
 void SDetailsViewBase::OnShowAllAdvancedClicked()
 {
 	CurrentFilter.bShowAllAdvanced = !CurrentFilter.bShowAllAdvanced;
-	GetMutableDefault<UEditorStyleSettings>()->bShowAllAdvancedDetails = CurrentFilter.bShowAllAdvanced;
-	GConfig->SetBool(TEXT("/Script/EditorStyle.EditorStyleSettings"), TEXT("bShowAllAdvancedDetails"), GetMutableDefault<UEditorStyleSettings>()->bShowAllAdvancedDetails, GEditorPerProjectIni);
+
+	FDetailsViewConfig* ViewConfig = GetMutableViewConfig();
+	if (ViewConfig != nullptr)
+	{
+		ViewConfig->bShowAllAdvanced = CurrentFilter.bShowAllAdvanced;
+		SaveViewConfig();
+	}
 
 	UpdateFilteredDetails();
 }
 
-void SDetailsViewBase::OnShowOnlyDifferingClicked()
+void SDetailsViewBase::OnShowOnlyAllowedClicked()
 {
-	CurrentFilter.bShowOnlyDiffering = !CurrentFilter.bShowOnlyDiffering;
+	CurrentFilter.bShowOnlyAllowed = !CurrentFilter.bShowOnlyAllowed;
 
 	UpdateFilteredDetails();
 }
@@ -623,22 +698,43 @@ void SDetailsViewBase::OnShowAllChildrenIfCategoryMatchesClicked()
 {
 	CurrentFilter.bShowAllChildrenIfCategoryMatches = !CurrentFilter.bShowAllChildrenIfCategoryMatches;
 
+	FDetailsViewConfig* ViewConfig = GetMutableViewConfig();
+	if (ViewConfig != nullptr)
+	{
+		ViewConfig->bShowAllChildrenIfCategoryMatches = CurrentFilter.bShowAllChildrenIfCategoryMatches;
+		SaveViewConfig();
+	}
+
 	UpdateFilteredDetails();
 }
 
 void SDetailsViewBase::OnShowKeyableClicked()
 {
-	CurrentFilter.bShowKeyable = !CurrentFilter.bShowKeyable;
+	CurrentFilter.bShowOnlyKeyable = !CurrentFilter.bShowOnlyKeyable;
 
+	FDetailsViewConfig* ViewConfig = GetMutableViewConfig();
+	if (ViewConfig != nullptr)
+	{
+		ViewConfig->bShowOnlyKeyable = CurrentFilter.bShowOnlyKeyable;
+		SaveViewConfig();
+	}
 	UpdateFilteredDetails();
 }
 
 void SDetailsViewBase::OnShowAnimatedClicked()
 {
-	CurrentFilter.bShowAnimated = !CurrentFilter.bShowAnimated;
+	CurrentFilter.bShowOnlyAnimated = !CurrentFilter.bShowOnlyAnimated;
+
+	FDetailsViewConfig* ViewConfig = GetMutableViewConfig();
+	if (ViewConfig != nullptr)
+	{
+		ViewConfig->bShowOnlyAnimated = CurrentFilter.bShowOnlyAnimated;
+		SaveViewConfig();
+	}
 
 	UpdateFilteredDetails();
 }
+
 /** Called when the filter text changes.  This filters specific property nodes out of view */
 void SDetailsViewBase::OnFilterTextChanged(const FText& InFilterText)
 {
@@ -658,6 +754,11 @@ void SDetailsViewBase::OnFilterTextCommitted(const FText& InSearchText, ETextCom
 TSharedPtr<SWidget> SDetailsViewBase::GetNameAreaWidget()
 {
 	return DetailsViewArgs.bCustomNameAreaLocation ? NameArea : nullptr;
+}
+
+void SDetailsViewBase::SetNameAreaCustomContent( TSharedRef<SWidget>& InCustomContent )
+{
+	NameArea->SetCustomContent(InCustomContent);	
 }
 
 TSharedPtr<SWidget> SDetailsViewBase::GetFilterAreaWidget()
@@ -804,10 +905,17 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 {
 	HandlePendingCleanup();
 
+	FDetailsViewConfig* ViewConfig = GetMutableViewConfig();
+	if (ViewConfig && ViewConfig->ValueColumnWidth != ColumnSizeData.ValueColumnWidth.Get(0))
+	{
+		ViewConfig->ValueColumnWidth = ColumnSizeData.ValueColumnWidth.Get(0);
+		SaveViewConfig();
+	}
+
 	FRootPropertyNodeList& RootPropertyNodes = GetRootNodes();
 
 	bool bHadDeferredActions = DeferredActions.Num() > 0;
-	auto PreProcessRootNode = [&bHadDeferredActions, this](TSharedPtr<FComplexPropertyNode> RootPropertyNode) 
+	auto PreProcessRootNode = [bHadDeferredActions, this](TSharedPtr<FComplexPropertyNode> RootPropertyNode) 
 	{
 		check(RootPropertyNode.IsValid());
 
@@ -845,6 +953,7 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 		
 		do
 		{
+			// Execute any deferred actions
 			DeferredActionsCopy = MoveTemp(DeferredActions);
 			DeferredActions.Reset();
 
@@ -855,21 +964,7 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 			}
 		} while (DeferredActions.Num() > 0);
 
-		for (TSharedPtr<FComplexPropertyNode>& RootPropertyNode : RootPropertyNodes)
-		{
-			check(RootPropertyNode.IsValid());
-			RestoreExpandedItems(RootPropertyNode.ToSharedRef());
-		}
-
-		for (FDetailLayoutData& LayoutData : DetailLayouts)
-		{
-			FRootPropertyNodeList& ExternalRootPropertyNodes = LayoutData.DetailLayout->GetExternalRootPropertyNodes();
-			for (TSharedPtr<FComplexPropertyNode>& ExternalRootPropertyNode : ExternalRootPropertyNodes)
-			{
-				check(ExternalRootPropertyNode.IsValid());
-				RestoreExpandedItems(ExternalRootPropertyNode.ToSharedRef());
-			}
-		}
+		RestoreAllExpandedItems();
 	}
 
 	TSharedPtr<FComplexPropertyNode> LastRootPendingKill;
@@ -884,7 +979,7 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 	bool bUpdateFilteredDetails = false;
 	if (FoundIndex != INDEX_NONE)
 	{ 
-		// Reaquire the root property nodes.  It may have been changed by the deferred actions if something like a blueprint editor forcefully resets a details panel during a posteditchange
+		// Reacquire the root property nodes.  It may have been changed by the deferred actions if something like a blueprint editor forcefully resets a details panel during a posteditchange
 		ForceRefresh();
 
 		// All objects are being reset, no need to validate external nodes
@@ -892,25 +987,31 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 	}
 	else
 	{
-		for(TSharedPtr<FComplexPropertyNode>& RootPropertyNode : RootPropertyNodes)
+		if (CustomValidatePropertyNodesFunction.IsBound())
 		{
-			EPropertyDataValidationResult Result = RootPropertyNode->EnsureDataIsValid();
-			if(Result == EPropertyDataValidationResult::PropertiesChanged || Result == EPropertyDataValidationResult::EditInlineNewValueChanged)
+			bool bIsValid = CustomValidatePropertyNodesFunction.Execute(RootPropertyNodes);
+		}
+		else // standard validation behavior
+		{
+			for (TSharedPtr<FComplexPropertyNode>& RootPropertyNode : RootPropertyNodes)
 			{
-				UpdatePropertyMaps();
-				bUpdateFilteredDetails = true;
-			}
-			else if(Result == EPropertyDataValidationResult::ArraySizeChanged || Result == EPropertyDataValidationResult::ChildrenRebuilt)
-			{
-				bUpdateFilteredDetails = true;
-			}
-			else if(Result == EPropertyDataValidationResult::ObjectInvalid)
-			{
-				ForceRefresh();
-				break;
+				EPropertyDataValidationResult Result = RootPropertyNode->EnsureDataIsValid();
+				if (Result == EPropertyDataValidationResult::PropertiesChanged || Result == EPropertyDataValidationResult::EditInlineNewValueChanged)
+				{
+					UpdatePropertyMaps();
+					bUpdateFilteredDetails = true;
+				}
+				else if (Result == EPropertyDataValidationResult::ArraySizeChanged || Result == EPropertyDataValidationResult::ChildrenRebuilt)
+				{
+					bUpdateFilteredDetails = true;
+				}
+				else if (Result == EPropertyDataValidationResult::ObjectInvalid)
+				{
+					bValidateExternalNodes = false;
 
-				// All objects are being reset, no need to validate external nodes
-				bValidateExternalNodes = false;
+					ForceRefresh();
+					break;
+				}
 			}
 		}
 	}
@@ -948,6 +1049,8 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 	if (bUpdateFilteredDetails)
 	{
 		UpdateFilteredDetails();
+
+		RestoreAllExpandedItems();
 	}
 
 	for(FDetailLayoutData& LayoutData : DetailLayouts)
@@ -965,16 +1068,15 @@ void SDetailsViewBase::Tick( const FGeometry& AllottedGeometry, const double InC
 		bHasOpenColorPicker = false;
 	}
 
-
 	if (FilteredNodesRequestingExpansionState.Num() > 0)
 	{
 		// change expansion state on the nodes that request it
 		for (TMap<TWeakPtr<FDetailTreeNode>, bool>::TConstIterator It(FilteredNodesRequestingExpansionState); It; ++It)
 		{
-			TWeakPtr<FDetailTreeNode> DetailTreeNode = It.Key();
+			TSharedPtr<FDetailTreeNode> DetailTreeNode = It.Key().Pin();
 			if (DetailTreeNode.IsValid())
 			{
-				DetailTree->SetItemExpansion(DetailTreeNode.Pin().ToSharedRef(), It.Value());
+				DetailTree->SetItemExpansion(DetailTreeNode.ToSharedRef(), It.Value());
 			}
 		}
 
@@ -1166,6 +1268,25 @@ void SDetailsViewBase::SaveExpandedItems(TSharedRef<FPropertyNode> StartNode)
 	}
 }
 
+void SDetailsViewBase::RestoreAllExpandedItems()
+{
+	for (TSharedPtr<FComplexPropertyNode>& RootPropertyNode : GetRootNodes())
+	{
+		check(RootPropertyNode.IsValid());
+		RestoreExpandedItems(RootPropertyNode.ToSharedRef());
+	}
+
+	for (FDetailLayoutData& LayoutData : DetailLayouts)
+	{
+		FRootPropertyNodeList& ExternalRootPropertyNodes = LayoutData.DetailLayout->GetExternalRootPropertyNodes();
+		for (TSharedPtr<FComplexPropertyNode>& ExternalRootPropertyNode : ExternalRootPropertyNodes)
+		{
+			check(ExternalRootPropertyNode.IsValid());
+			RestoreExpandedItems(ExternalRootPropertyNode.ToSharedRef());
+		}
+	}
+}
+
 void SDetailsViewBase::RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode)
 {
 	FString ExpandedCustomItems;
@@ -1193,6 +1314,32 @@ void SDetailsViewBase::RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode)
 	}
 }
 
+void SDetailsViewBase::MarkNodeAnimating(TSharedPtr<FPropertyNode> InNode, float InAnimationDuration)
+{
+	if (InNode.IsValid() && InAnimationDuration > 0.0f)
+	{
+		CurrentlyAnimatingNodePath = FPropertyNode::CreatePropertyPath(InNode.ToSharedRef());
+		GEditor->GetTimerManager()->ClearTimer(AnimateNodeTimer);
+		GEditor->GetTimerManager()->SetTimer(AnimateNodeTimer, FTimerDelegate::CreateSP(this, &SDetailsViewBase::HandleNodeAnimationComplete), InAnimationDuration, false);
+	}
+}
+
+bool SDetailsViewBase::IsNodeAnimating(TSharedPtr<FPropertyNode> InNode)
+{
+	if (CurrentlyAnimatingNodePath.IsValid() && InNode.IsValid())
+	{
+		TSharedRef<FPropertyPath> InNodePath = FPropertyNode::CreatePropertyPath(InNode.ToSharedRef());
+		return FPropertyPath::AreEqual(CurrentlyAnimatingNodePath.ToSharedRef(), InNodePath);
+	}
+
+	return false;
+}
+
+void SDetailsViewBase::HandleNodeAnimationComplete()
+{
+	CurrentlyAnimatingNodePath = nullptr;
+}
+
 void SDetailsViewBase::UpdateFilteredDetails()
 {
 	RootTreeNodes.Reset();
@@ -1200,22 +1347,19 @@ void SDetailsViewBase::UpdateFilteredDetails()
 	FDetailNodeList InitialRootNodeList;
 	
 	NumVisibleTopLevelObjectNodes = 0;
-	FRootPropertyNodeList& RootPropertyNodes = GetRootNodes();
-
-	if( GetDefault<UEditorStyleSettings>()->bShowAllAdvancedDetails )
-	{
-		CurrentFilter.bShowAllAdvanced = true;
-	}
 	
+	FRootPropertyNodeList& RootPropertyNodes = GetRootNodes();
 	for(int32 RootNodeIndex = 0; RootNodeIndex < RootPropertyNodes.Num(); ++RootNodeIndex)
 	{
-		TSharedPtr<FComplexPropertyNode>& RootPropertyNode = RootPropertyNodes[RootNodeIndex];
+		const TSharedPtr<FComplexPropertyNode>& RootPropertyNode = RootPropertyNodes[RootNodeIndex];
 		if(RootPropertyNode.IsValid())
 		{
 			RootPropertyNode->FilterNodes(CurrentFilter.FilterStrings);
 			RootPropertyNode->ProcessSeenFlags(true);
 
-			TSharedPtr<FDetailLayoutBuilderImpl>& DetailLayout = DetailLayouts[RootNodeIndex].DetailLayout;
+			RestoreExpandedItems(RootPropertyNode.ToSharedRef());
+
+			const TSharedPtr<FDetailLayoutBuilderImpl>& DetailLayout = DetailLayouts[RootNodeIndex].DetailLayout;
 			if(DetailLayout.IsValid())
 			{
 				FRootPropertyNodeList& ExternalRootPropertyNodes = DetailLayout->GetExternalRootPropertyNodes();
@@ -1225,6 +1369,8 @@ void SDetailsViewBase::UpdateFilteredDetails()
 					{
 						ExternalRootNode->FilterNodes(CurrentFilter.FilterStrings);
 						ExternalRootNode->ProcessSeenFlags(true);
+
+						RestoreExpandedItems(ExternalRootNode.ToSharedRef());
 					}
 				}
 
@@ -1241,7 +1387,6 @@ void SDetailsViewBase::UpdateFilteredDetails()
 			}
 		}
 	}
-
 
 	// for multiple top level object we need to do a secondary pass on top level object nodes after we have determined if there is any nodes visible at all.  If there are then we ask the details panel if it wants to show childen
 	for(TSharedRef<class FDetailTreeNode> RootNode : InitialRootNodeList)

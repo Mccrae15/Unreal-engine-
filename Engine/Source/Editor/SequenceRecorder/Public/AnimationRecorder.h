@@ -31,10 +31,10 @@ private:
 	static const int32 UnBoundedFrameCount = -1;
 
 private:
-	float IntervalTime;
-	int32 MaxFrame;
-	int32 LastFrame;
-	float TimePassed;
+	FFrameRate RecordingRate;
+	FFrameNumber MaxFrame;
+	FFrameNumber LastFrame;
+	double TimePassed;
 	UAnimSequence* AnimationObject;
 	TArray<FTransform> PreviousSpacesBases;
 	FBlendedHeapCurve PreviousAnimCurves;
@@ -52,6 +52,9 @@ private:
 	/** Unique notify states added to this sequence during recording */
 	TMap<UAnimNotifyState*, UAnimNotifyState*> UniqueNotifyStates;
 
+	/** Notify events recorded at any point, processed and inserted into animation when recording has finished */
+	TArray<FAnimNotifyEvent> RecordedNotifyEvents;
+
 	static float DefaultSampleRate;
 
 	/** Array of times recorded */
@@ -63,6 +66,10 @@ public:
 
 	// FGCObject interface start
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FAnimationRecorder");
+	}
 	// FGCObject interface end
 
 	/** Starts recording an animation. Prompts for asset path and name via dialog if none provided */
@@ -74,10 +81,10 @@ public:
 	void UpdateRecord(USkeletalMeshComponent* Component, float DeltaTime);
 	UAnimSequence* GetAnimationObject() const { return AnimationObject; }
 	bool InRecording() const { return AnimationObject != nullptr; }
-	float GetTimeRecorded() const { return TimePassed; }
+	double GetTimeRecorded() const { return TimePassed; }
 
 	/** Sets a new sample rate & max length for this recorder. Don't call while recording. */
-	void SetSampleRateAndLength(float SampleRateHz, float LengthInMinutes);
+	void SetSampleRateAndLength(FFrameRate SampleFrameRate, float LengthInSeconds);
 
 	bool SetAnimCompressionScheme(UAnimBoneCompressionSettings* Settings);
 
@@ -101,8 +108,12 @@ public:
 	FAnimationSerializer* AnimationSerializer;
 	/** Whether or not to record transforms*/
 	uint8 bRecordTransforms : 1;
-	/** Whether or not to record curves*/
-	uint8 bRecordCurves : 1;
+	/** Whether or not to record morph targets*/
+	uint8 bRecordMorphTargets : 1;
+	/** Whether or not to record attribute curves*/
+	uint8 bRecordAttributeCurves : 1;
+	/** Whether or not to record material curves*/
+	uint8 bRecordMaterialCurves : 1;
 public:
 	/** Helper function to get space bases depending on master pose component */
 	static void GetBoneTransforms(USkeletalMeshComponent* Component, TArray<FTransform>& BoneTransforms);
@@ -112,7 +123,7 @@ private:
 
 	void RecordNotifies(USkeletalMeshComponent* Component, const TArray<FAnimNotifyEventReference>& AnimNotifies, float DeltaTime, float RecordTime);
 
-	void FixupNotifies();
+	void ProcessNotifies();
 
 	// recording curve data 
 	struct FBlendedCurve
@@ -130,6 +141,7 @@ private:
 
 	TArray<FBlendedCurve> RecordedCurves;
 	TArray<uint16> const * UIDToArrayIndexLUT;
+	TArray<FRawAnimSequenceTrack> RawTracks;
 };
 
 //////////////////////////////////////////////////////////////////////////

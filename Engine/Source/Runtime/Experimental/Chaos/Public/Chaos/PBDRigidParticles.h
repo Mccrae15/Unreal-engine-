@@ -33,6 +33,7 @@ class TPBDRigidParticles : public TRigidParticles<T, d>
 		TArrayCollection::AddArray(&MQ);
 		TArrayCollection::AddArray(&MPreV);
 		TArrayCollection::AddArray(&MPreW);
+		TArrayCollection::AddArray(&MSolverBodyIndex);
 	}
 	TPBDRigidParticles(const TPBDRigidParticles<T, d>& Other) = delete;
 	CHAOS_API TPBDRigidParticles(TPBDRigidParticles<T, d>&& Other)
@@ -41,12 +42,14 @@ class TPBDRigidParticles : public TRigidParticles<T, d>
 		, MQ(MoveTemp(Other.MQ))
 		, MPreV(MoveTemp(Other.MPreV))
 		, MPreW(MoveTemp(Other.MPreW))
+		, MSolverBodyIndex(MoveTemp(Other.MSolverBodyIndex))
 	{
 		this->MParticleType = EParticleType::Rigid;
 		TArrayCollection::AddArray(&MP);
 		TArrayCollection::AddArray(&MQ);
 		TArrayCollection::AddArray(&MPreV);
 		TArrayCollection::AddArray(&MPreW);
+		TArrayCollection::AddArray(&MSolverBodyIndex);
 	}
 
 	CHAOS_API virtual ~TPBDRigidParticles()
@@ -63,6 +66,11 @@ class TPBDRigidParticles : public TRigidParticles<T, d>
 
 	CHAOS_API const TVector<T, d>& PreW(const int32 index) const { return MPreW[index]; }
 	CHAOS_API TVector<T, d>& PreW(const int32 index) { return MPreW[index]; }
+
+	// The index into an FSolverBodyContainer (for dynamic particles only), or INDEX_NONE.
+	// \see FSolverBodyContainer
+	CHAOS_API int32 SolverBodyIndex(const int32 index) const { return MSolverBodyIndex[index]; }
+	CHAOS_API void SetSolverBodyIndex(const int32 index, const int32 InSolverBodyIndex) { MSolverBodyIndex[index] = InSolverBodyIndex; }
 
     // Must be reinterpret cast instead of static_cast as it's a forward declare
 	typedef TPBDRigidParticleHandle<T, d> THandleType;
@@ -118,27 +126,27 @@ class TPBDRigidParticles : public TRigidParticles<T, d>
 		{
 			// When the state is first initialized, treat it like a static.
 			this->InvM(Index) = 0.0f;
-			this->InvI(Index) = FMatrix33(0);
+			this->InvI(Index) = TVec3<FRealSingle>(0);
 		}
 
 		if ((CurrentState == EObjectStateType::Dynamic || CurrentState == EObjectStateType::Sleeping) && (InObjectState == EObjectStateType::Kinematic || InObjectState == EObjectStateType::Static))
 		{
 			// Transitioning from dynamic to static or kinematic, set inverse mass and inertia tensor to zero.
 			this->InvM(Index) = 0.0f;
-			this->InvI(Index) = FMatrix33(0);
+			this->InvI(Index) = TVec3<FRealSingle>(0);
 		}
 		else if ((CurrentState == EObjectStateType::Kinematic || CurrentState == EObjectStateType::Static || CurrentState == EObjectStateType::Uninitialized) && (InObjectState == EObjectStateType::Dynamic || InObjectState == EObjectStateType::Sleeping))
 		{
 			// Transitioning from kinematic or static to dynamic, compute the inverses.
 			checkSlow(this->M(Index) != 0.0);
-			checkSlow(this->I(Index).M[0][0] != 0.0);
-			checkSlow(this->I(Index).M[1][1] != 0.0);
-			checkSlow(this->I(Index).M[2][2] != 0.0);
+			checkSlow(this->I(Index)[0] != 0.0);
+			checkSlow(this->I(Index)[1] != 0.0);
+			checkSlow(this->I(Index)[2] != 0.0);
 			this->InvM(Index) = 1.f / this->M(Index);
-			this->InvI(Index) = Chaos::FMatrix33(
-				1.f / this->I(Index).M[0][0], 0.f, 0.f,
-				0.f, 1.f / this->I(Index).M[1][1], 0.f,
-				0.f, 0.f, 1.f / this->I(Index).M[2][2]);
+			this->InvI(Index) = TVec3<FRealSingle>(
+				1.f / this->I(Index)[0], 
+				1.f / this->I(Index)[1],
+				1.f / this->I(Index)[2]);
 
 			this->P(Index) = this->X(Index);
 			this->Q(Index) = this->R(Index);
@@ -160,19 +168,29 @@ class TPBDRigidParticles : public TRigidParticles<T, d>
 		this->ObjectState(Index) = InObjectState;
 	}
 
+	CHAOS_API void SetSleepType(int32 Index, ESleepType InSleepType)
+	{
+		if (InSleepType == ESleepType::NeverSleep && this->ObjectState(Index) == EObjectStateType::Sleeping)
+		{
+			SetObjectState(Index, EObjectStateType::Dynamic);
+		}
+
+		this->SleepType(Index) = InSleepType;
+	}
+
 
 	void ResetVSmoothFromForces(int32 Index)
 	{
 		// Reset VSmooth to something roughly in the same direction as what V will be after integration.
 		// This is temp fix, if this is only re-computed after solve, island will get incorrectly put back to sleep even if it was just impulsed.
 		FReal FakeDT = (FReal)1. / (FReal)30.;
-		if (this->LinearImpulse(Index).IsNearlyZero() == false || this->F(Index).IsNearlyZero() == false)
+		if (this->LinearImpulseVelocity(Index).IsNearlyZero() == false || this->Acceleration(Index).IsNearlyZero() == false)
 		{
-			this->VSmooth(Index) = this->F(Index) * this->InvM(Index) * FakeDT + this->LinearImpulse(Index) * this->InvM(Index);
+			this->VSmooth(Index) = this->Acceleration(Index) * FakeDT + this->LinearImpulseVelocity(Index);
 		}
-		if (this->AngularImpulse(Index).IsNearlyZero() == false || this->Torque(Index).IsNearlyZero() == false)
+		if (this->AngularImpulseVelocity(Index).IsNearlyZero() == false || this->AngularAcceleration(Index).IsNearlyZero() == false)
 		{
-			this->WSmooth(Index) = this->Torque(Index) * FakeDT + this->AngularImpulse(Index);
+			this->WSmooth(Index) = this->AngularAcceleration(Index) * FakeDT + this->AngularImpulseVelocity(Index);
 		}
 	}
 
@@ -198,13 +216,8 @@ class TPBDRigidParticles : public TRigidParticles<T, d>
 	TArrayCollectionArray<TRotation<T, d>> MQ;
 	TArrayCollectionArray<TVector<T, d>> MPreV;
 	TArrayCollectionArray<TVector<T, d>> MPreW;
+	TArrayCollectionArray<int32> MSolverBodyIndex;	// Transient for use in constraint solver
 };
-
-#if PLATFORM_MAC || PLATFORM_LINUX
-extern template class CHAOS_API TPBDRigidParticles<FReal,3>;
-#else
-extern template class TPBDRigidParticles<FReal,3>;
-#endif
 
 using FPBDRigidParticles = TPBDRigidParticles<FReal, 3>;
 

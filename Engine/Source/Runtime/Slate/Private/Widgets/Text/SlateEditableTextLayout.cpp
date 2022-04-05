@@ -130,7 +130,7 @@ FSlateEditableTextLayout::FSlateEditableTextLayout(ISlateEditableTextWidget& InO
 	TextSelectionHighlighter = SlateEditableTextTypes::FTextSelectionHighlighter::Create();
 	SearchSelectionHighlighter = SlateEditableTextTypes::FTextSearchHighlighter::Create();
 
-	ScrollOffset = FVector2D::ZeroVector;
+	ScrollOffset = FVector2f::ZeroVector;
 	PreferredCursorScreenOffsetInLine = 0.0f;
 	SelectionStart = TOptional<FTextLocation>();
 	CurrentUndoLevel = INDEX_NONE;
@@ -143,7 +143,7 @@ FSlateEditableTextLayout::FSlateEditableTextLayout(ISlateEditableTextWidget& InO
 	bSelectionChangedExternally = false;
 	VirtualKeyboardTextCommitType = ETextCommit::Default;
 
-	CachedSize = FVector2D::ZeroVector;
+	CachedSize = FVector2f::ZeroVector;
 
 	auto ExecuteDeleteAction = [this]()
 	{
@@ -493,6 +493,21 @@ void FSlateEditableTextLayout::SetLineHeightPercentage(const TAttribute<float>& 
 	OwnerWidget->GetSlateWidget()->Invalidate(EInvalidateWidget::LayoutAndVolatility);
 }
 
+void FSlateEditableTextLayout::SetOverflowPolicy(TOptional<ETextOverflowPolicy> InOverflowPolicy)
+{
+	if(OverflowPolicyOverride != InOverflowPolicy)
+	{
+		OverflowPolicyOverride = InOverflowPolicy;
+		TextLayout->SetTextOverflowPolicy(OverflowPolicyOverride);
+		if (HintTextLayout.IsValid())
+		{
+			HintTextLayout->SetTextOverflowPolicy(OverflowPolicyOverride);
+		}
+
+		OwnerWidget->GetSlateWidget()->Invalidate(EInvalidateWidget::LayoutAndVolatility);
+	}
+}
+
 void FSlateEditableTextLayout::SetDebugSourceInfo(const TAttribute<FString>& InDebugSourceInfo)
 {
 	DebugSourceInfo = InDebugSourceInfo;
@@ -641,13 +656,13 @@ void FSlateEditableTextLayout::AdvanceSearch(const bool InReverse)
 FVector2D FSlateEditableTextLayout::SetHorizontalScrollFraction(const float InScrollOffsetFraction)
 {
 	ScrollOffset.X = FMath::Clamp<float>(InScrollOffsetFraction, 0.0, 1.0) * TextLayout->GetSize().X;
-	return ScrollOffset;
+	return FVector2D(ScrollOffset);
 }
 
 FVector2D FSlateEditableTextLayout::SetVerticalScrollFraction(const float InScrollOffsetFraction)
 {
 	ScrollOffset.Y = FMath::Clamp<float>(InScrollOffsetFraction, 0.0, 1.0) * TextLayout->GetSize().Y;
-	return ScrollOffset;
+	return FVector2D(ScrollOffset);
 }
 
 FVector2D FSlateEditableTextLayout::SetScrollOffset(const FVector2D& InScrollOffset, const FGeometry& InGeometry)
@@ -655,12 +670,12 @@ FVector2D FSlateEditableTextLayout::SetScrollOffset(const FVector2D& InScrollOff
 	const FVector2D ContentSize = TextLayout->GetSize();
 	ScrollOffset.X = FMath::Clamp(InScrollOffset.X, 0.0f, ContentSize.X - InGeometry.GetLocalSize().X);
 	ScrollOffset.Y = FMath::Clamp(InScrollOffset.Y, 0.0f, ContentSize.Y - InGeometry.GetLocalSize().Y);
-	return ScrollOffset;
+	return FVector2D(ScrollOffset);
 }
 
 FVector2D FSlateEditableTextLayout::GetScrollOffset() const
 {
-	return ScrollOffset;
+	return FVector2D(ScrollOffset);
 }
 
 
@@ -1183,6 +1198,7 @@ FReply FSlateEditableTextLayout::HandleMouseButtonDown(const FGeometry& MyGeomet
 				{
 					// Deselect any text that was selected
 					ClearSelection();
+					MoveCursor(FMoveCursor::ViaScreenPointer(MyGeometry.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition()), MyGeometry.Scale, ECursorAction::MoveCursor));
 				}
 			}
 
@@ -2825,6 +2841,11 @@ TArray<TSharedRef<const IRun>> FSlateEditableTextLayout::GetSelectedRuns() const
 	return Runs;
 }
 
+FTextLocation FSlateEditableTextLayout::GetCursorLocation() const
+{
+	return CursorInfo.GetCursorInteractionLocation();
+}
+
 FTextLocation FSlateEditableTextLayout::TranslatedLocation(const FTextLocation& Location, int8 Direction) const
 {
 	check(Direction != 0);
@@ -2968,12 +2989,11 @@ bool FSlateEditableTextLayout::HasTextChangedFromOriginal() const
 
 void FSlateEditableTextLayout::BeginEditTransation()
 {
-	// Never change text on read only controls! 
-	check(!OwnerWidget->IsTextReadOnly());
-
-	if (StateBeforeChangingText.IsSet())
+	if (StateBeforeChangingText.IsSet() || OwnerWidget->IsTextReadOnly())
 	{
 		// Already within a translation - don't open another
+		//Or never change text on read only controls.
+		//The TextReadOnly is an attribute, the return value may have changed since the last time it was checked.
 		return;
 	}
 
@@ -3238,11 +3258,15 @@ void FSlateEditableTextLayout::Tick(const FGeometry& AllottedGeometry, const dou
 		(OwnerWidget->GetSlateWidget()->HasAnyUserFocus().IsSet() || HasActiveContextMenu());
 	if (bShouldAppearFocused)
 	{
+		// When focused the user is editing or selecting text. Never allow ellipsis to replace text
+		TextLayout->SetTextOverflowPolicy(ETextOverflowPolicy::Clip);
 		// If we have focus then we don't allow the editable text itself to update, but we do still need to refresh the password and marshaller state
 		RefreshImpl(nullptr);
 	}
 	else
 	{
+		TextLayout->SetTextOverflowPolicy(OverflowPolicyOverride);
+
 		// We don't have focus, so we can perform a full refresh
 		Refresh();
 	}
@@ -3351,14 +3375,14 @@ void FSlateEditableTextLayout::Tick(const FGeometry& AllottedGeometry, const dou
 		ScrollOffset.Y = OwnerWidget->UpdateAndClampVerticalScrollBar(ViewOffset, ViewFraction, ScrollBarVisiblityOverride);
 	}
 
-	TextLayout->SetVisibleRegion(AllottedGeometry.Size, ScrollOffset * TextLayout->GetScale());
+	TextLayout->SetVisibleRegion(AllottedGeometry.Size, FVector2D(ScrollOffset) * TextLayout->GetScale());
 }
 
 int32 FSlateEditableTextLayout::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled)
 {
 	// Update the auto-wrap size now that we have computed paint geometry; won't take affect until text frame
 	// Note: This is done here rather than in Tick(), because Tick() doesn't get called while resizing windows, but OnPaint() does
-	CachedSize = AllottedGeometry.GetLocalSize();
+	CachedSize = FVector2f(AllottedGeometry.GetLocalSize());
 
 	// Only paint the hint text layout if we don't have any text set
 	if (TextLayout->IsEmpty() && HintTextLayout.IsValid())
@@ -3404,7 +3428,7 @@ void FSlateEditableTextLayout::CacheDesiredSize(float LayoutScaleMultiplier)
 	TextLayout->SetMargin(MarginValue);
 	TextLayout->SetLineHeightPercentage(LineHeightPercentage.Get());
 	TextLayout->SetJustification(Justification.Get());
-	TextLayout->SetVisibleRegion(CachedSize, ScrollOffset * TextLayout->GetScale());
+	TextLayout->SetVisibleRegion(FVector2D(CachedSize), FVector2D(ScrollOffset) * TextLayout->GetScale());
 	TextLayout->UpdateIfNeeded();
 }
 
@@ -3428,7 +3452,7 @@ FVector2D FSlateEditableTextLayout::ComputeDesiredSize(float LayoutScaleMultipli
 		MarginValue.Right += CaretWidth;
 
 		const FVector2D HintTextSize = HintTextLayout->ComputeDesiredSize(
-			FSlateTextBlockLayout::FWidgetArgs(HintText, FText::GetEmpty(), WrapTextAt, AutoWrapText, WrappingPolicy, ETextTransformPolicy::None, MarginValue, LineHeightPercentage, Justification),
+			FSlateTextBlockLayout::FWidgetDesiredSizeArgs(HintText.Get(), FText::GetEmpty(), WrapTextAt.Get(), AutoWrapText.Get(), WrappingPolicy.Get(), ETextTransformPolicy::None, MarginValue, LineHeightPercentage.Get(), Justification.Get()),
 			LayoutScaleMultiplier, HintTextStyle
 			);
 
@@ -3865,7 +3889,7 @@ bool FSlateEditableTextLayout::FTextInputMethodContext::GetTextBounds(const uint
 
 	// Translate the position (which is in local space) into screen (absolute) space
 	// Note: The local positions are pre-scaled, so we don't scale them again here
-	Position += CachedGeometry.AbsolutePosition;
+	Position += FVector2D(CachedGeometry.AbsolutePosition);
 	
 	return false; // false means "not clipped"
 }
@@ -3879,7 +3903,7 @@ void FSlateEditableTextLayout::FTextInputMethodContext::GetScreenBounds(FVector2
 		return;
 	}
 
-	Position = CachedGeometry.AbsolutePosition;
+	Position = FVector2D(CachedGeometry.AbsolutePosition);
 	Size = CachedGeometry.GetDrawSize();
 }
 

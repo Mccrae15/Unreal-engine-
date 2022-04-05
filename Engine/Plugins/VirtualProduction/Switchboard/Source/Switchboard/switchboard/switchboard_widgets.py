@@ -13,9 +13,15 @@ DEVICE_WIDGET_HIDE_IP_ADDRESS_WIDTH = 500
 
 
 class NonScrollableComboBox(QtWidgets.QComboBox):
+    onHoverScrollBox = QtCore.Signal()
+    
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.installEventFilter(self)
+        
+    def enterEvent(self, event):
+        self.onHoverScrollBox.emit()
+        super().enterEvent(event)
 
     def eventFilter(self, obj, event):
         if obj == self and event.type() == QtCore.QEvent.Wheel:
@@ -118,6 +124,36 @@ class MultiSelectionComboBox(QtWidgets.QComboBox):
         self.setEditText(self.separator.join(selected_entries))
         self.signal_selection_changed.emit(selected_entries)
 
+
+# A combo box that has a static icon and opens a list of options when pressed, e.g. view options in settings
+class DropDownMenuComboBox(QtWidgets.QComboBox):
+    on_select_option = QtCore.Signal(str)
+    
+    def __init__(self, icon: QtGui.QIcon = None, icon_size: int = 25, parent=None):
+        super().__init__(parent=parent)
+        
+        drop_down_arrow_size = 15
+        if icon is not None:
+            self.addItem(icon, "")
+            self.setFixedWidth(icon_size + drop_down_arrow_size)
+        else:
+            self.addItem("")
+            self.setFixedWidth(drop_down_arrow_size)
+        
+        self.model().setData(self.model().index(0, 0), QtCore.QSize(100, 100), QtCore.Qt.SizeHintRole)
+        self.view().setRowHidden(0, True)
+        self.currentIndexChanged.connect(self._on_index_changed)
+    
+    def _on_index_changed(self, index: int):
+        selected_item = self.itemText(index)
+        self.on_select_option.emit(selected_item)
+        # Always make sure that the icon is shown
+        self.setCurrentIndex(0)
+    
+    def showPopup(self):
+        self.view().setMinimumWidth(self.view().sizeHintForColumn(0))
+        super().showPopup()
+    
 
 class ControlQPushButton(QtWidgets.QPushButton):
     def __init__(self, parent = None, *, hover_focus: bool = True):
@@ -263,7 +299,44 @@ class FramelessQLineEdit(QtWidgets.QLineEdit):
         elif e.key() == QtCore.Qt.Key_Escape:
             self.setText(self.current_text)
             self.clearFocus()
+    
+    
 
+class CollapsibleGroupBox(QtWidgets.QGroupBox):
+    def __init__(self):
+        super().__init__()
+        
+        self.setCheckable(True)
+        self.setStyleSheet(
+            'QGroupBox::indicator:checked:hover {image: url(:icons/images/tree_arrow_expanded_hovered.png);}'
+            'QGroupBox::indicator:checked {image: url(:icons/images/tree_arrow_expanded.png);}'
+            'QGroupBox::indicator:unchecked:hover {image: url(:icons/images/tree_arrow_collapsed_hovered.png);}'
+            'QGroupBox::indicator:unchecked {image: url(:icons/images/tree_arrow_collapsed.png);}'
+        )
+
+        self.toggled.connect(self._on_set_expanded)
+        self.setChecked(True)
+        
+    @property
+    def is_expanded(self):
+        return self.isChecked()
+        
+    def set_expanded(self, value: bool):
+        if value and not self.is_expanded or not value and self.is_expanded:
+            self._on_set_expanded(value)
+            self.blockSignals(True)
+            self.setChecked(value)
+            self.blockSignals(False)
+        
+    def _on_set_expanded(self, should_expand: bool):
+        if should_expand:
+            self.setMaximumHeight(self._original_maximum_height)
+        else:
+            self._original_maximum_height = self.maximumHeight()
+            # Just font height does not suffice ... need to investigate how to get a better value programmatically
+            safety_margin = 6
+            self.setMaximumHeight(self.fontMetrics().height() + safety_margin)
+            
 
 def set_qt_property(
     widget: QtWidgets.QWidget, prop, value, *,

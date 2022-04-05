@@ -18,7 +18,7 @@ namespace SkeletalMeshTools
 {
 	bool AreSkelMeshVerticesEqual( const FSoftSkinBuildVertex& V1, const FSoftSkinBuildVertex& V2, const FOverlappingThresholds& OverlappingThresholds)
 	{
-		if(!PointsEqual(V1.Position, V2.Position, OverlappingThresholds))
+		if(!PointsEqual((FVector)V1.Position, (FVector)V2.Position, OverlappingThresholds))
 		{
 			return false;
 		}
@@ -31,17 +31,17 @@ namespace SkeletalMeshTools
 			}
 		}
 
-		if(!NormalsEqual(V1.TangentX, V2.TangentX, OverlappingThresholds))
+		if(!NormalsEqual((FVector)V1.TangentX, (FVector)V2.TangentX, OverlappingThresholds))
 		{
 			return false;
 		}
 
-		if(!NormalsEqual(V1.TangentY, V2.TangentY, OverlappingThresholds))
+		if(!NormalsEqual((FVector)V1.TangentY, (FVector)V2.TangentY, OverlappingThresholds))
 		{
 			return false;
 		}
 
-		if(!NormalsEqual(V1.TangentZ, V2.TangentZ, OverlappingThresholds))
+		if(!NormalsEqual((FVector)V1.TangentZ, (FVector)V2.TangentZ, OverlappingThresholds))
 		{
 			return false;
 		}
@@ -103,8 +103,8 @@ namespace SkeletalMeshTools
 
 					// check to see if the points are really overlapping
 					if(PointsEqual(
-						RawVertices[RawVertIndexAndZ[i].Index].Position,
-						RawVertices[RawVertIndexAndZ[j].Index].Position, OverlappingThresholds))
+						(FVector)RawVertices[RawVertIndexAndZ[i].Index].Position,
+						(FVector)RawVertices[RawVertIndexAndZ[j].Index].Position, OverlappingThresholds))
 					{
 						RawVerts2Dupes.Add(RawVertIndexAndZ[i].Index, RawVertIndexAndZ[j].Index);
 						RawVerts2Dupes.Add(RawVertIndexAndZ[j].Index, RawVertIndexAndZ[i].Index);
@@ -217,11 +217,11 @@ namespace SkeletalMeshTools
 				int32 VertexIndex = Indices[IndiceIndex];
 				checkSlow(Vertices.IsValidIndex(VertexIndex));
 				const FSoftSkinBuildVertex& SoftSkinVertRef = Vertices[VertexIndex];
-				const FVector& PositionRef = SoftSkinVertRef.Position;
-				const FVector& TangentXRef = SoftSkinVertRef.TangentX;
-				const FVector& TangentYRef = SoftSkinVertRef.TangentY;
-				const FVector& TangentZRef = SoftSkinVertRef.TangentZ;
-				const FVector2D& UVRef = SoftSkinVertRef.UVs[0];
+				const FVector& PositionRef = (FVector)SoftSkinVertRef.Position;
+				const FVector& TangentXRef = (FVector)SoftSkinVertRef.TangentX;
+				const FVector& TangentYRef = (FVector)SoftSkinVertRef.TangentY;
+				const FVector& TangentZRef = (FVector)SoftSkinVertRef.TangentZ;
+				const FVector2f& UVRef = SoftSkinVertRef.UVs[0];
 				const FColor& ColorRef = SoftSkinVertRef.Color;
 				const TArray<int32>& AdjacentFaces = VertexIndexToAdjacentFaces.FindChecked(VertexIndex);
 				for (int32 AdjacentFaceArrayIndex = 0; AdjacentFaceArrayIndex < AdjacentFaces.Num(); ++AdjacentFaceArrayIndex)
@@ -238,10 +238,10 @@ namespace SkeletalMeshTools
 							const int32 VertexIndexAdj = Indices[IndiceIndexAdj];
 							checkSlow(Vertices.IsValidIndex(VertexIndexAdj));
 							const FSoftSkinBuildVertex& SoftSkinVertAdj = Vertices[VertexIndexAdj];
-							if (PositionRef.Equals(SoftSkinVertAdj.Position, SMALL_NUMBER) &&
-								TangentXRef.Equals(SoftSkinVertAdj.TangentX, SMALL_NUMBER) &&
-								TangentYRef.Equals(SoftSkinVertAdj.TangentY, SMALL_NUMBER) &&
-								TangentZRef.Equals(SoftSkinVertAdj.TangentZ, SMALL_NUMBER) &&
+							if (PositionRef.Equals((FVector)SoftSkinVertAdj.Position, SMALL_NUMBER) &&
+								TangentXRef.Equals((FVector)SoftSkinVertAdj.TangentX, SMALL_NUMBER) &&
+								TangentYRef.Equals((FVector)SoftSkinVertAdj.TangentY, SMALL_NUMBER) &&
+								TangentZRef.Equals((FVector)SoftSkinVertAdj.TangentZ, SMALL_NUMBER) &&
 								UVRef.Equals(SoftSkinVertAdj.UVs[0], KINDA_SMALL_NUMBER) &&
 								ColorRef == SoftSkinVertAdj.Color)
 							{
@@ -613,76 +613,6 @@ namespace SkeletalMeshTools
 			SrcChunks[SrcChunkIndex] = NULL;
 		}
 #endif // #if WITH_EDITORONLY_DATA
-	}
-
-	
-	// Find the most dominant bone for each vertex
-	int32 GetDominantBoneIndex(FSoftSkinVertex* SoftVert)
-	{
-		uint8 MaxWeightBone = 0;
-		uint8 MaxWeightWeight = 0;
-
-		for(int32 i=0; i<MAX_TOTAL_INFLUENCES; i++)
-		{
-			if(SoftVert->InfluenceWeights[i] > MaxWeightWeight)
-			{
-				MaxWeightWeight = SoftVert->InfluenceWeights[i];
-				MaxWeightBone = SoftVert->InfluenceBones[i];
-			}
-		}
-
-		return MaxWeightBone;
-	}
-
-	
-	void CalcBoneVertInfos(USkeletalMesh* SkeletalMesh, TArray<FBoneVertInfo>& Infos, bool bOnlyDominant)
-	{
-		FSkeletalMeshModel* ImportedResource = SkeletalMesh->GetImportedModel();
-		if (ImportedResource->LODModels.Num() == 0)
-			return;
-
-		SkeletalMesh->CalculateInvRefMatrices();
-		check( SkeletalMesh->GetRefSkeleton().GetRawBoneNum() == SkeletalMesh->GetRefBasesInvMatrix().Num() );
-
-		Infos.Empty();
-		Infos.AddZeroed( SkeletalMesh->GetRefSkeleton().GetRawBoneNum() );
-
-		FSkeletalMeshLODModel* LODModel = &ImportedResource->LODModels[0];
-		for(int32 SectionIndex = 0; SectionIndex < LODModel->Sections.Num(); SectionIndex++)
-		{
-			FSkelMeshSection& Section = LODModel->Sections[SectionIndex];
-			for(int32 i=0; i<Section.SoftVertices.Num(); i++)
-			{
-				FSoftSkinVertex* SoftVert = &Section.SoftVertices[i];
-
-				if(bOnlyDominant)
-				{
-					int32 BoneIndex = Section.BoneMap[GetDominantBoneIndex(SoftVert)];
-
-					FVector LocalPos = SkeletalMesh->GetRefBasesInvMatrix()[BoneIndex].TransformPosition(SoftVert->Position);
-					Infos[BoneIndex].Positions.Add(LocalPos);
-
-					FVector LocalNormal = SkeletalMesh->GetRefBasesInvMatrix()[BoneIndex].TransformVector(SoftVert->TangentZ);
-					Infos[BoneIndex].Normals.Add(LocalNormal);
-				}
-				else
-				{
-					for(int32 j=0; j<MAX_TOTAL_INFLUENCES; j++)
-					{
-						if(SoftVert->InfluenceWeights[j] > 0)
-						{
-							int32 BoneIndex = Section.BoneMap[SoftVert->InfluenceBones[j]];
-
-							FVector LocalPos = SkeletalMesh->GetRefBasesInvMatrix()[BoneIndex].TransformPosition(SoftVert->Position);
-							Infos[BoneIndex].Positions.Add(LocalPos);
-
-							FVector LocalNormal = SkeletalMesh->GetRefBasesInvMatrix()[BoneIndex].TransformVector(SoftVert->TangentZ);
-							Infos[BoneIndex].Normals.Add(LocalNormal);
-						}
-					}
-				}
-			}
-		}
 	}
 }
 

@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Misc/BlacklistNames.h"
+#include "Misc/NamePermissionList.h"
 
 #include "ToolMenuBase.generated.h"
 
@@ -74,7 +74,7 @@ struct SLATE_API FCustomizedToolMenu
 	UPROPERTY()
 	TArray<FName> SectionOrder;
 
-	FBlacklistNames BlacklistFilter;
+	FNamePermissionList MenuPermissions;
 
 	FCustomizedToolMenuEntry* FindEntry(const FName InEntryName);
 	const FCustomizedToolMenuEntry* FindEntry(const FName InEntryName) const;
@@ -120,5 +120,6 @@ public:
 	virtual FCustomizedToolMenu* AddMenuCustomization() const { return nullptr; }
 	virtual FCustomizedToolMenuHierarchy GetMenuCustomizationHierarchy() const { return FCustomizedToolMenuHierarchy(); }
 	virtual void UpdateMenuCustomizationFromMultibox(const TSharedRef<const FMultiBox>& InMultiBox) {}
+	virtual void OnMenuDestroyed() {}
 };
 

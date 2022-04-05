@@ -4,8 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/UObjectGlobals.h"
-#include "UObject/Class.h"
-#include "UObject/GarbageCollection.h"
+#include "UObject/GarbageCollectionHistory.h"
 #include "HAL/ThreadHeartBeat.h"
 
 /** Search mode flags */
@@ -54,25 +53,42 @@ public:
 	template <typename T>
 	struct TReferenceInfo
 	{
+		// Maximum number of stack frames to keep for AddReferencedObjects function calls
+		static constexpr uint32 MaxStackFrames = 30;
+
 		/** Object that is being referenced */
 		T* Object;
 		/** Type of reference to the object being referenced */
 		EReferenceType Type;
 		/** Name of the object or property that is referencing this object */
 		FName ReferencerName;
+		uint64 StackFrames[MaxStackFrames];
+		int32 NumStackFrames;
 
 		/** Default ctor */
 		TReferenceInfo()
 			: Object(nullptr)
 			, Type(EReferenceType::Unknown)
-		{}
+		{
+			InitStackFrames(nullptr, 0);
+		}
 
-		/** Ctor */
-		TReferenceInfo(T* InObject, EReferenceType InType = EReferenceType::Unknown, const FName& InReferencerName = NAME_None)
+		/** Simple refernce constructor. Probably will be filled with more info later */
+		TReferenceInfo(T* InObject)
+			: Object(InObject)
+			, Type(EReferenceType::Unknown)
+		{
+			InitStackFrames(nullptr, 0);
+		}
+
+		/** Full reference infor constructor */
+		TReferenceInfo(T* InObject, EReferenceType InType, const FName& InReferencerName, uint64* InStackFrames, int32 InNumStackFrames)
 			: Object(InObject)
 			, Type(InType)
 			, ReferencerName(InReferencerName)
-		{}
+		{
+			InitStackFrames(InStackFrames, InNumStackFrames);
+		}
 
 		bool operator == (const TReferenceInfo& Other) const
 		{
@@ -104,28 +120,38 @@ public:
 			}
 			return FString();
 		}
+	private:
+
+		void InitStackFrames(uint64* InStackFrames,int32 InNumStackFrames)
+		{
+			check(InNumStackFrames <= MaxStackFrames);
+			NumStackFrames = InNumStackFrames;
+			FMemory::Memset(StackFrames, 0, sizeof(StackFrames));
+			if (InStackFrames && InNumStackFrames)
+			{
+				FMemory::Memcpy(StackFrames, InStackFrames, InNumStackFrames * sizeof(uint64));
+			}
+		}
 	};
 
 	/** Single node in the reference graph */
 	struct FGraphNode
 	{
-		FGraphNode()
-			: Object(nullptr)
-			, Visited(0)
-		{}
-
 		/** Object pointer */
-		UObject* Object;
+		UE_DEPRECATED(5.0, "Direct Object reference has been deprecated. Use ObjectInfo member variable instead.")
+		UObject* Object = nullptr;
+		/** Object pointer */
+		FGCObjectInfo* ObjectInfo = nullptr;
 		/** Objects referenced by this object with reference info */
 		TSet< TReferenceInfo<FGraphNode> > ReferencedObjects;
 		/** Objects that have references to this object */
 		TSet<FGraphNode*> ReferencedByObjects;
 		/** Non-zero if this node has been already visited during reference search */
-		int32 Visited;
+		int32 Visited = 0;
 	};
 
 	/** Convenience type definitions to avoid template hell */
-	typedef TReferenceInfo<UObject> FObjectReferenceInfo;
+	typedef TReferenceInfo<FGCObjectInfo> FObjectReferenceInfo;
 	typedef TReferenceInfo<FGraphNode> FNodeReferenceInfo;
 
 	/** Reference chain. The first object in the list is the target object and the last object is a root object */
@@ -191,11 +217,34 @@ public:
 		bool IsExternal() const;
 	};
 
+	/** Parameters passed to callback function when printing results */
+	struct FCallbackParams
+	{
+		/** Referenced object */
+		FGCObjectInfo* Object = nullptr;
+		/** Object that is referencing the current object */
+		FGCObjectInfo* Referencer = nullptr;
+		/** Information about the type of reference (Referencer -> Object) */
+		const FNodeReferenceInfo* ReferenceInfo = nullptr;
+		/** For use when outputting custom information: current indent */
+		int32 Indent = 0;
+		/** Output device used for printing */
+		FOutputDevice* Out = nullptr;
+	};
+
 	/** Constructs a new search engine and finds references to the specified object */
-	COREUOBJECT_API FReferenceChainSearch(UObject* InObjectToFindReferencesTo, EReferenceChainSearchMode Mode = EReferenceChainSearchMode::PrintResults);
+	COREUOBJECT_API explicit FReferenceChainSearch(UObject* InObjectToFindReferencesTo, EReferenceChainSearchMode Mode = EReferenceChainSearchMode::PrintResults);
+
+	/** Constructs a new search engine but does not find references to any objects until one of the PerformSearch*() functions is called */
+	COREUOBJECT_API explicit FReferenceChainSearch(EReferenceChainSearchMode Mode);
 
 	/** Destructor */
 	COREUOBJECT_API ~FReferenceChainSearch();
+
+#if ENABLE_GC_HISTORY
+	/** Searches for references in a previous GC run snapshot temporarily acquiring its object info */
+	COREUOBJECT_API void PerformSearchFromGCSnapshot(UObject* InObjectToFindReferencesTo, FGCSnapshot& InSnapshot);
+#endif //ENABLE_GC_HISTORY
 
 	/**
 	 * Dumps results to log
@@ -203,8 +252,21 @@ public:
 	 */
 	COREUOBJECT_API void PrintResults(bool bDumpAllChains = false) const;
 
+	/**
+	 * Dumps results to log
+	 * @param ReferenceCallback - function called when processing each reference, if true is returned the next reference will be processed otherwise printing will be aborted
+	 * @param bDumpAllChains - if set to false, the output will be trimmed to the first 100 reference chains
+	 */
+	COREUOBJECT_API void PrintResults(TFunctionRef<bool(FCallbackParams& Params)> ReferenceCallback, bool bDumpAllChains = false) const;
+
 	/** Returns a string with a short report explaining the root path, will contain newlines */
 	COREUOBJECT_API FString GetRootPath() const;
+
+	/** 
+	 * Returns a string with a short report explaining the root path, will contain newlines 
+	 * @param ReferenceCallback - function called when processing each reference, if true is returned the next reference will be processed otherwise printing will be aborted
+	 */
+	COREUOBJECT_API FString GetRootPath(TFunctionRef<bool(FCallbackParams& Params)> ReferenceCallback) const;
 
 	/** Returns all reference chains */
 	COREUOBJECT_API const TArray<FReferenceChain*>& GetReferenceChains() const
@@ -215,14 +277,21 @@ public:
 private:
 
 	/** The object we're going to look for references to */
-	UObject* ObjectToFindReferencesTo;
+	UObject* ObjectToFindReferencesTo = nullptr;
+	FGCObjectInfo* ObjectInfoToFindReferencesTo = nullptr;
+
+	/** Search mode and options */
+	EReferenceChainSearchMode SearchMode = EReferenceChainSearchMode::Default;
+
 	/** All reference chain found during the search */
 	TArray<FReferenceChain*> ReferenceChains;
 	/** All nodes created during the search */
-	TMap<UObject*, FGraphNode*> AllNodes;
+	TMap<FGCObjectInfo*, FGraphNode*> AllNodes;
+	/** Maps UObject pointers to object info structs */
+	TMap<UObject*, FGCObjectInfo*> ObjectToInfoMap;
 
 	/** Performs the search */
-	void PerformSearch(EReferenceChainSearchMode SearchMode);
+	void PerformSearch();
 
 	/** Performs the search */
 	void FindDirectReferencesForObjects();
@@ -231,7 +300,9 @@ private:
 	void Cleanup();
 
 	/** Tries to find a node for an object and if it doesn't exists creates a new one and returns it */
-	static FGraphNode* FindOrAddNode(TMap<UObject*, FGraphNode*>& AllNodes, UObject* InObjectToFindNodeFor);
+	FGraphNode* FindOrAddNode(UObject* InObjectToFindNodeFor);
+	FGraphNode* FindOrAddNode(FGCObjectInfo* InObjectInfo);
+
 	/** Builds reference chains */
 	static int32 BuildReferenceChains(FGraphNode* TargetNode, TArray<FReferenceChain*>& ProducedChains, int32 ChainDepth, const int32 VisitCounter, EReferenceChainSearchMode SearchMode);
 	/** Builds reference chains */
@@ -244,9 +315,7 @@ private:
 	static void RemoveDuplicatedChains(TArray<FReferenceChain*>& AllChains);
 
 	/** Returns a string with all flags (we care about) set on an object */
-	static FString GetObjectFlags(UObject* InObject);
+	static FString GetObjectFlags(FGCObjectInfo* InObject);
 	/** Dumps a reference chain to log */
-	static void DumpChain(FReferenceChain* Chain);
-	/** Writes a reference chain to a string */
-	static void WriteChain(FReferenceChain* Chain, FString& OutString);
+	static void DumpChain(FReferenceChainSearch::FReferenceChain* Chain, TFunctionRef<bool(FCallbackParams& Params)> ReferenceCallback, FOutputDevice& Out);
 };

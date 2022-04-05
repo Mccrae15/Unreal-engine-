@@ -4,6 +4,7 @@
 #include "NiagaraEditorWidgetsStyle.h"
 #include "NiagaraEditorStyle.h"
 #include "EditorStyleSet.h"
+#include "Stack/SNiagaraStackInheritanceIcon.h"
 #include "Stack/SNiagaraStackItemGroupAddButton.h"
 #include "ViewModels/Stack/NiagaraStackItemGroup.h"
 #include "ViewModels/Stack/NiagaraStackViewModel.h"
@@ -11,6 +12,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackItemGroup"
 
@@ -30,27 +32,42 @@ void SNiagaraStackItemGroup::Construct(const FArguments& InArgs, UNiagaraStackIt
 	[
 		SNew(SNiagaraStackDisplayName, InGroup, *InStackViewModel)
 		.NameStyle(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.GroupText")
+		.EditableNameStyle(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.EditableGroupText")
 	];
 
-	// Delete group button
-	RowBox->AddSlot()
-	.AutoWidth()
-	[
-		SNew(SButton)
-		.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-		.IsFocusable(false)
-		.ForegroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.ForegroundColor"))
-		.ToolTipText(this, &SNiagaraStackItemGroup::GetDeleteButtonToolTip)
-		.OnClicked(this, &SNiagaraStackItemGroup::DeleteClicked)
-		.IsEnabled(this, &SNiagaraStackItemGroup::GetDeleteButtonIsEnabled)
-		.Visibility(this, &SNiagaraStackItemGroup::GetDeleteButtonVisibility)
-		.Content()
+	// Inheritance Icon
+	if (Group->SupportsInheritance())
+	{
+		RowBox->AddSlot()
+		.VAlign(VAlign_Center)
+		.AutoWidth()
+		.Padding(0, 0, 2, 0)
 		[
-			SNew(STextBlock)
-			.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-			.Text(FText::FromString(FString(TEXT("\xf1f8"))))
-		]
-	];
+			SNew(SNiagaraStackInheritanceIcon, Group)
+		];
+	}
+
+	// Delete group button
+	if (Group->SupportsDelete())
+	{
+		RowBox->AddSlot()
+		.AutoWidth()
+		.Padding(0, 0, 2, 0)
+		[
+			SNew(SButton)
+			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+			.IsFocusable(false)
+			.ToolTipText(this, &SNiagaraStackItemGroup::GetDeleteButtonToolTip)
+			.OnClicked(this, &SNiagaraStackItemGroup::DeleteClicked)
+			.Visibility(this, &SNiagaraStackItemGroup::GetDeleteButtonVisibility)
+			.Content()
+			[
+				SNew(SImage)
+				.Image(FAppStyle::Get().GetBrush("Icons.Delete"))
+				.ColorAndOpacity(FSlateColor::UseForeground())
+			]
+		];
+	}
 
 	// Enabled button
 	if (Group->SupportsChangeEnabled())
@@ -87,7 +104,7 @@ TSharedRef<SWidget> SNiagaraStackItemGroup::ConstructAddButton()
 	INiagaraStackItemGroupAddUtilities* AddUtilities = Group->GetAddUtilities();
 	if (AddUtilities != nullptr)
 	{
-		return SNew(SNiagaraStackItemGroupAddButton, *Group);
+		return SNew(SNiagaraStackItemGroupAddButton, Group, AddUtilities);
 	}
 	return SNullWidget::NullWidget;
 }
@@ -99,15 +116,11 @@ FText SNiagaraStackItemGroup::GetDeleteButtonToolTip() const
 	return Message;
 }
 
-bool SNiagaraStackItemGroup::GetDeleteButtonIsEnabled() const
-{
-	FText UnusedMessage;
-	return Group->TestCanDeleteWithMessage(UnusedMessage);
-}
-
 EVisibility SNiagaraStackItemGroup::GetDeleteButtonVisibility() const
 {
-	return Group->SupportsDelete() ? EVisibility::Visible : EVisibility::Collapsed;
+	FText UnusedMessage;
+	return Group->SupportsDelete() && Group->TestCanDeleteWithMessage(UnusedMessage)
+		? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FReply SNiagaraStackItemGroup::DeleteClicked()

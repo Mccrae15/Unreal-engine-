@@ -19,6 +19,8 @@ struct FImportImage
 	int32 SizeX = 0;
 	int32 SizeY = 0;
 	bool SRGB = true;
+	/** Which compression format (if any) that is applied to RawData */
+	ETextureSourceCompressionFormat RawDataCompressionFormat = TSCF_None;
 
 	void Init2DWithParams(int32 InSizeX, int32 InSizeY, ETextureSourceFormat InFormat, bool InSRGB);
 	void Init2DWithOneMip(int32 InSizeX, int32 InSizeY, ETextureSourceFormat InFormat, const void* InData = nullptr);
@@ -113,10 +115,14 @@ class UNREALED_API UTextureFactory : public UFactory, public IImportSettingsPars
 	/** If enabled, mip-map alpha values will be dithered for smooth transitions */
 	UPROPERTY(EditAnywhere, Category=DitherMipMaps, meta=(ToolTip="If enabled, mip-map alpha values will be dithered for smooth transitions"))
 	uint32 bDitherMipMapAlpha:1;
+	
+	/** Whether mip RGBA should be scaled to preserve the number of pixels with Value >= AlphaCoverageThresholds */
+	UPROPERTY(EditAnywhere, Category=PreserveAlphaCoverage, meta=(ToolTip="Whether mip RGBA should be scaled to preserve the number of pixels with Value >= AlphaCoverageThresholds"))
+	bool bDoScaleMipsForAlphaCoverage = false;
 
 	/** Channel values to compare to when preserving alpha coverage from a mask. */
 	UPROPERTY(EditAnywhere, Category=PreserveAlphaCoverage, meta=(ToolTip="Channel values to compare to when preserving alpha coverage from a mask for mips"))
-	FVector4 AlphaCoverageThresholds;
+	FVector4 AlphaCoverageThresholds = FVector4(0,0,0,0);
 
 	/** If enabled, preserve the value of border pixels when creating mip-maps */
 	UPROPERTY(EditAnywhere, Category=PreserveBorder, meta=(ToolTip="If enabled, preserve the value of border pixels when creating mip-maps"))
@@ -196,11 +202,15 @@ public:
 	// @todo document
 	bool InitializeFromT3DTextureCubeDataText(UTextureCube* InTextureCube, const TCHAR*& Buffer, FFeedbackContext* Warn);
 
+protected:
+	/** Keep track of if we are doing a reimport */
+	bool bIsDoingAReimport = false;
+
 private:
 	/** This variable is static because in StaticImportObject() the type of the factory is not known. */
 	static bool bSuppressImportOverwriteDialog;
 
-    /** force overwriting the existing texture without the dialog box */
+	/** Force overwriting the existing texture without the dialog box */
 	static bool bForceOverwriteExistingSettings;
 
 	/**
@@ -215,8 +225,20 @@ private:
 	*/
 	static bool IsImportResolutionValid(int32 Width, int32 Height, bool bAllowNonPowerOfTwo, FFeedbackContext* Warn);
 
+	/** Flags to be used when calling ImportImage */
+	enum class EImageImportFlags
+	{
+		/** No options selected */
+		None						= 0,
+		/** Allows textures to be imported with dimensions that are not to the power of two */
+		AllowNonPowerOfTwo			= 1 << 0,
+		/** Allows the return of texture data in it's original compressed format, if this occurs then FImportImage::RawDataCompressionFormat will contain the returned format. */
+		AllowReturnOfCompressedData	= 1 << 1
+	};
+	FRIEND_ENUM_CLASS_FLAGS(EImageImportFlags);
+
 	/** Import image file into generic image struct, may be easily copied to FTextureSource */
-	bool ImportImage(const uint8* Buffer, uint32 Length, FFeedbackContext* Warn, bool bAllowNonPowerOfTwo, FImportImage& OutImage);
+	bool ImportImage(const uint8* Buffer, uint32 Length, FFeedbackContext* Warn, EImageImportFlags Flags, FImportImage& OutImage);
 
 	/** used by CreateTexture() */
 	UTexture* ImportTexture(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, const TCHAR* Type, const uint8*& Buffer, const uint8* BufferEnd, FFeedbackContext* Warn);
@@ -229,3 +251,5 @@ private:
 	/** Texture settings from the automated importer that should be applied to the new texture */
 	TSharedPtr<class FJsonObject> AutomatedImportSettings;
 };
+
+ENUM_CLASS_FLAGS(UTextureFactory::EImageImportFlags);

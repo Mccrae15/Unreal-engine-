@@ -19,14 +19,13 @@ public:
 	DECLARE_NIAGARA_DI_PARAMETER();
 
 	UPROPERTY(EditAnywhere, Category = "Texture")
-	UTextureCube* Texture;
+	TObjectPtr<UTextureCube> Texture;
+
+	UPROPERTY(EditAnywhere, Category = "Texture", meta = (ToolTip = "When valid the user parameter is used as the texture rather than the one on the data interface"))
+	FNiagaraUserParameterBinding TextureUserParameter;
 
 	//UObject Interface
 	virtual void PostInitProperties()override;
-	virtual void PostLoad() override;
-#if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-#endif
 	//UObject Interface End
 
 	//UNiagaraDataInterface Interface
@@ -34,12 +33,16 @@ public:
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc) override;
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target)const override { return Target == ENiagaraSimTarget::GPUComputeSim; }
 
+	virtual int32 PerInstanceDataSize() const override;
+	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
+	virtual void DestroyPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
+
 	virtual bool HasPreSimulateTick() const override { return true; }
 	virtual bool PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) override;
 	//UNiagaraDataInterface Interface End
 
-	void SampleCubeTexture(FVectorVMContext& Context);
-	void GetTextureDimensions(FVectorVMContext& Context);
+	void SampleCubeTexture(FVectorVMExternalFunctionContext& Context);
+	void GetTextureDimensions(FVectorVMExternalFunctionContext& Context);
 
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
 
@@ -59,11 +62,7 @@ public:
 protected:
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;
 
-	virtual void PushToRenderThreadImpl() override;
-
 protected:
-	FIntPoint TextureSize = FIntPoint::ZeroValue;
-
 	static const FName SampleCubeTextureName;
 	static const FName TextureDimsName;
 };

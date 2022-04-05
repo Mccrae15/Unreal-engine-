@@ -7,6 +7,7 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/Canvas.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 #include "VisualLogger/VisualLogger.h"
 
 #if CHAOS_DEBUG_DRAW
@@ -18,14 +19,20 @@ void ChaosDebugDraw_Enabled_Changed(IConsoleVariable* CVar)
 bool bChaosDebugDraw_Enabled = false;
 FAutoConsoleVariableRef CVarChaos_DebugDraw_Enabled(TEXT("p.Chaos.DebugDraw.Enabled"), bChaosDebugDraw_Enabled, TEXT("Whether to debug draw low level physics solver information"), FConsoleVariableDelegate::CreateStatic(ChaosDebugDraw_Enabled_Changed));
 
-// Deprecated, but widely used...
-FAutoConsoleVariableRef CVarChaos_DebugDraw_Enabled_Deprecated(TEXT("p.Chaos.DebugDrawing"), bChaosDebugDraw_Enabled, TEXT("Deprecated. Please use p.Chaos.DebugDraw.Enabled"), FConsoleVariableDelegate::CreateStatic(ChaosDebugDraw_Enabled_Changed));
-
 int ChaosDebugDraw_MaxElements = 20000;
 FAutoConsoleVariableRef CVarChaos_DebugDraw_MaxElements(TEXT("p.Chaos.DebugDraw.MaxLines"), ChaosDebugDraw_MaxElements, TEXT("Set the maximum number of debug draw lines that can be rendered (to limit perf drops)"));
 
 float ChaosDebugDraw_Radius = 3000.0f;
 FAutoConsoleVariableRef CVarChaos_DebugDraw_Radius(TEXT("p.Chaos.DebugDraw.Radius"), ChaosDebugDraw_Radius, TEXT("Set the radius from the camera where debug draw capture stops (0 means infinite)"));
+
+bool bChaosDebugDraw_SingleActor = false;
+FAutoConsoleVariableRef CVarChaosDebugDraw_SingleActor(TEXT("p.Chaos.DebugDraw.SingleActor"), bChaosDebugDraw_SingleActor, TEXT("If true, then we draw for the actor the camera is looking at."));
+
+float ChaosDebugDraw_SingleActorTraceLength = 2000.0f;
+FAutoConsoleVariableRef CVarChaosDebugDraw_SingleActorTraceLength(TEXT("p.Chaos.DebugDraw.SingleActorTraceLength"), ChaosDebugDraw_SingleActorTraceLength, TEXT("Set the trace length from the camera that is used to select the single actor."));
+
+float ChaosDebugDraw_SingleActorMaxRadius = 1000.0f;
+FAutoConsoleVariableRef CVarChaosDebugDraw_SingleActorMaxRadius(TEXT("p.Chaos.DebugDraw.SingleActorMaxRadius"), ChaosDebugDraw_SingleActorMaxRadius, TEXT("Set the max radius to draw around the single actor."));
 
 float ChaosDebugDraw_ShowPIEServer = false;
 FAutoConsoleVariableRef CVarChaos_DebugDraw_ShowPIEServer(TEXT("p.Chaos.DebugDraw.ShowPIEServer"), ChaosDebugDraw_ShowPIEServer, TEXT("When running in PIE mode, show the server debug draw"));
@@ -147,8 +154,11 @@ void DebugDrawChaos(AActor* DebugDrawActor, const TArray<Chaos::FLatentDrawComma
 				UE_VLOG(Command.TestBaseActor, LogChaos, Log, TEXT("%s"), *Command.Text);
 				break;
 			case FLatentDrawCommand::EDrawType::Circle:
-				//	UE_VLOG_CONE(Actor, LogChaos, Log, Command.Center, Command.ZAxis, 0.1f, PI, Command.Color, TEXT_EMPTY);
+			{
+				const FMatrix M = FRotationMatrix::MakeFromYZ(Command.YAxis, Command.ZAxis);
+				UE_VLOG_CIRCLE(Actor, LogChaos, Log, Command.Center, M.GetUnitAxis(EAxis::X), Command.Radius, Command.Color, TEXT_EMPTY);
 				break;
+			}
 			case FLatentDrawCommand::EDrawType::Capsule:
 			{
 				// VLOG Capsule uses the bottom end as the origin (though the variable is named Center)
@@ -196,6 +206,8 @@ void UChaosDebugDrawComponent::BeginPlay()
 
 #if CHAOS_DEBUG_DRAW
 	Chaos::FDebugDrawQueue::GetInstance().SetConsumerActive(this, bInPlay);
+
+	ChaosDebugDraw_Enabled_Changed(&(*CVarChaos_DebugDraw_Enabled));
 #endif
 }
 
@@ -227,7 +239,38 @@ void UChaosDebugDrawComponent::TickComponent(float DeltaTime, enum ELevelTick Ti
 	{
 		if (World->ViewLocationsRenderedLastFrame.Num() > 0)
 		{
-			FDebugDrawQueue::GetInstance().SetRegionOfInterest(World->ViewLocationsRenderedLastFrame[0], ChaosDebugDraw_Radius);
+			if (bChaosDebugDraw_SingleActor)
+			{
+				if (const APlayerController* Controller = GEngine->GetFirstLocalPlayerController(World))
+				{
+					FVector CamLoc;
+					FRotator CamRot;
+					Controller->GetPlayerViewPoint(CamLoc, CamRot);
+					FVector CamForward = CamRot.Vector();
+					CamForward *= ChaosDebugDraw_SingleActorTraceLength;
+
+					FVector TraceStart = CamLoc;
+					FVector TraceEnd = TraceStart + CamForward;
+
+					FHitResult HitResult(ForceInit);
+					FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(ChaosDebugVisibilityTrace), true, Controller->GetPawn());
+					bool bHit = World->LineTraceSingleByChannel(HitResult, TraceStart, TraceEnd, ECC_Visibility, TraceParams);
+					if (bHit && HitResult.GetActor() != nullptr)
+					{
+						FVector Origin, BoxExtent;
+						HitResult.GetActor()->GetActorBounds(true, Origin, BoxExtent);
+						const float Radius = BoxExtent.Size();
+						if (Radius <= ChaosDebugDraw_SingleActorMaxRadius)
+						{
+							FDebugDrawQueue::GetInstance().SetRegionOfInterest(Origin, Radius);
+						}
+					}
+				}
+			}
+			else
+			{
+				FDebugDrawQueue::GetInstance().SetRegionOfInterest(World->ViewLocationsRenderedLastFrame[0], ChaosDebugDraw_Radius);
+			}
 		}
 
 		FDebugDrawQueue::GetInstance().SetMaxCost(ChaosDebugDraw_MaxElements);
@@ -263,7 +306,7 @@ void UChaosDebugDrawComponent::HandlePostWorldInitialization(UWorld* World, cons
 void UChaosDebugDrawComponent::CreateDebugDrawActor(UWorld* World)
 {
 #if CHAOS_DEBUG_DRAW
-	if (!World->IsClient())
+	if ((World->GetNetMode() != ENetMode::NM_Client) && (World->GetNetMode() != ENetMode::NM_Standalone))
 		return;
 
 	static FName NAME_ChaosDebugDrawActor = TEXT("ChaosDebugDrawActor");

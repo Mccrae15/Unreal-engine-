@@ -90,15 +90,15 @@ Injecting particles in to the GPU for simulation.
 struct FNewParticle
 {
 	/** The initial position of the particle. */
-	FVector Position;
+	FVector3f Position;
 	/** The relative time of the particle. */
 	float RelativeTime;
 	/** The initial velocity of the particle. */
-	FVector Velocity;
+	FVector3f Velocity;
 	/** The time scale for the particle. */
 	float TimeScale;
 	/** Initial size of the particle. */
-	FVector2D Size;
+	FVector2f Size;
 	/** Initial rotation of the particle. */
 	float Rotation;
 	/** Relative rotation rate of the particle. */
@@ -116,7 +116,7 @@ struct FNewParticle
 	/** Random selection of orbit attributes. */
 	float RandomOrbit;
 	/** The offset at which to inject the new particle. */
-	FVector2D Offset;
+	FVector2f Offset;
 };
 
 /*-----------------------------------------------------------------------------
@@ -140,7 +140,7 @@ public:
 	virtual FFXSystemInterface* GetInterface(const FName& InName) override;
 
 	// Begin FFXSystemInterface.
-	virtual void Tick(float DeltaSeconds) override;
+	virtual void Tick(UWorld* World, float DeltaSeconds) override;
 #if WITH_EDITOR
 	virtual void Suspend() override;
 	virtual void Resume() override;
@@ -150,18 +150,14 @@ public:
 	virtual void RemoveVectorField(UVectorFieldComponent* VectorFieldComponent) override;
 	virtual void UpdateVectorField(UVectorFieldComponent* VectorFieldComponent) override;
 	FParticleEmitterInstance* CreateGPUSpriteEmitterInstance(FGPUSpriteEmitterInfo& EmitterInfo);
-	virtual void PreInitViews(FRHICommandListImmediate& RHICmdList, bool bAllowGPUParticleUpdate) override;
-	virtual void PostInitViews(FRHICommandListImmediate& RHICmdList, FRHIUniformBuffer* ViewUniformBuffer, bool bAllowGPUParticleUpdate) override;
+	virtual void PreInitViews(class FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate) override;
+	virtual void PostInitViews(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate) override;
 	virtual bool UsesGlobalDistanceField() const override;
 	virtual bool UsesDepthBuffer() const override;
 	virtual bool RequiresEarlyViewUniformBuffer() const override;
-	virtual void PreRender(FRHICommandListImmediate& RHICmdList, const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData, bool bAllowGPUParticleUpdate) override;
-	virtual void PostRenderOpaque(
-		FRHICommandListImmediate& RHICmdList, 
-		FRHIUniformBuffer* ViewUniformBuffer,
-		const FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-		FRHIUniformBuffer* SceneTexturesUniformBuffer,
-		bool bAllowGPUParticleUpdate) override;
+	virtual bool RequiresRayTracingScene() const override;
+	virtual void PreRender(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate) override;
+	virtual void PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate) override;
 	// End FFXSystemInterface.
 
 	/*--------------------------------------------------------------------------
@@ -221,6 +217,8 @@ public:
 	/** Get the shared SortManager, used in the rendering loop to call FGPUSortManager::OnPreRender() and FGPUSortManager::OnPostRenderOpaque() */
 	virtual FGPUSortManager* GetGPUSortManager() const override;
 
+	virtual void SetSceneTexturesUniformBuffer(FRHIUniformBuffer* InSceneTexturesUniformParams) override { SceneTexturesUniformParams = InSceneTexturesUniformParams; }
+
 private:
 
 	/**
@@ -275,6 +273,7 @@ private:
 	bool UsesGlobalDistanceFieldInternal() const;
 	bool UsesDepthBufferInternal() const;
 	bool RequiresEarlyViewUniformBufferInternal() const;
+	bool RequiresRayTracingSceneInternal() const;
 
 	/**
 	* Updates resources used in a multi-GPU context
@@ -290,9 +289,7 @@ private:
 		FRHICommandListImmediate& RHICmdList,
 		EParticleSimulatePhase::Type Phase,
 		FRHIUniformBuffer* ViewUniformBuffer,
-		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData,
-		const FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-		FRHIUniformBuffer* SceneTexturesUniformBuffer
+		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData
 		);
 
 	/**
@@ -346,5 +343,7 @@ private:
 	EParticleSimulatePhase::Type PhaseToWaitForTemporalEffect = EParticleSimulatePhase::First;
 	EParticleSimulatePhase::Type PhaseToBroadcastTemporalEffect = EParticleSimulatePhase::First;
 #endif
+
+	FRHIUniformBuffer* SceneTexturesUniformParams = nullptr;
 };
 

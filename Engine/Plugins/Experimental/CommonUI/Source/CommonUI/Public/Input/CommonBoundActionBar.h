@@ -9,7 +9,10 @@
 class IWidgetCompilerLog;
 class IConsoleVariable;
 
-UCLASS()
+/**
+ * A box populated with current actions available per CommonUI's Input Handler.
+ */
+UCLASS(Blueprintable, ClassGroup = UI, meta = (Category = "Common UI"))
 class COMMONUI_API UCommonBoundActionBar : public UDynamicEntryBoxBase
 {
 	GENERATED_BODY()
@@ -39,6 +42,9 @@ private:
 
 	UPROPERTY(EditAnywhere, Category = Display)
 	bool bDisplayOwningPlayerActionsOnly = true;
+
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Display)
+	bool bIgnoreDuplicateActions = true;
 
 	bool bIsRefreshQueued = false;
 };

@@ -6,15 +6,65 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
 #include "Containers/ArrayView.h"
+#include "Containers/StringFwd.h"
 #include "Containers/StringView.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
+#include "Internationalization/Text.h"
+#include "Logging/LogMacros.h"
+#include "Misc/PackagePath.h"
+#include "Templates/Function.h"
+#include "UObject/NameTypes.h"
 
+class FPackagePath;
+class UPackage;
 struct FFileStatData;
+struct FGuid;
+
+DECLARE_LOG_CATEGORY_EXTERN(LogPackageName, Log, All);
 
 class COREUOBJECT_API FPackageName
 {
 public:
+	/** Indicates the format the input was in in functions that take flexible input that can be a LocalPath, PackageName, or ObjectPath */
+	enum class EFlexNameType
+	{
+		Invalid,
+		PackageName,
+		LocalPath,
+		ObjectPath,
+	};
+	enum class EErrorCode
+	{
+		PackageNameUnknown,
+		PackageNameEmptyPath,
+		PackageNamePathNotMounted,
+		PackageNamePathIsMemoryOnly,
+		PackageNameSpacesNotAllowed,
+		PackageNameContainsInvalidCharacters,
+		LongPackageNames_PathTooShort,
+		LongPackageNames_PathWithNoStartingSlash,
+		LongPackageNames_PathWithTrailingSlash,
+	};
+
+	/**
+	 * Return a user-readable string for the error code returned from a FPackageName function
+	 *
+	 * @param InPath the path that was passed to the convert function
+	 * @param ErrorCode The error code returned from the convert function
+	 */
+	static FString FormatErrorAsString(FStringView InPath, EErrorCode ErrorCode);
+
+	/**
+	 * Return a user-readable string for the error code returned from a FPackageName function
+	 *
+	 * @param InPath the path that was passed to the convert function
+	 * @param ErrorCode The error code returned from the convert function
+	 */
+	static FText FormatErrorAsText(FStringView InPath, EErrorCode ErrorCode);
 
 	/**
 	 * Helper function for converting short to long script package name (InputCore -> /Script/InputCore)
@@ -23,6 +73,10 @@ public:
 	 * @return Long package name.
 	 */
 	static FString ConvertToLongScriptPackageName(const TCHAR* InShortName);
+
+	/** Return the LongPackageName of module's native script package. Does not check whether module is native. */
+	static FName GetModuleScriptPackageName(FName ModuleName);
+	static FString GetModuleScriptPackageName(FStringView ModuleName);
 
 	/**
 	 * Registers all short package names found in ini files.
@@ -68,6 +122,20 @@ public:
 	static bool TryConvertLongPackageNameToFilename(const FString& InLongPackageName, FString& OutFilename, const FString& InExtension = TEXT(""));
 
 	/** 
+	 * Find the MountPoint for a LocalPath, LongPackageName, or ObjectPath and return its elements. Use this function instead of TryConvertFilenameToLongPackageName or
+	 * TryConvertLongPackageNameToFilename if you need to handle InPaths that might be ObjectPaths.
+	 * @param InPath					The LocalPath (with path,name,extension), PackageName, or ObjectPath we want to 
+	 * @param OutLocalPathNoExtension	If non-null, will be set to the LocalPath with path and basename but not extension, or empty string if input was not mounted
+	 * @param OutPackageName			If non-null, will be set to the LongPackageName, or empty string if input was not mounted
+	 * @param OutObjectName				If non-null, will be set to the ObjectName, or empty string if the input was a LocalPath or PackageName or was not mounted
+	 * @param OutSubObjectName			If non-null, will be set to the SubObjectName, or empty string if the input was a LocalPath or PackageName or was not mounted
+	 * @param OutExtension				If non-null, will be set to the LocalPath's extension, or empty string if the input was not a LocalPath or was not mounted
+	 * @param OutFlexNameType			If non-null, will be set to the FlexNameType of InPath.
+	 * @param OutFailureReason			If non-null, will be set to the reason InPath could not be converted, or to EErrorCode::Unknown if the function was successful.
+	 */
+	static bool TryConvertToMountedPath(FStringView InPath, FString* OutLocalPathNoExtension, FString* OutPackageName, FString* OutObjectName, FString* OutSubObjectName, FString* OutExtension, EFlexNameType* OutFlexNameType = nullptr, EErrorCode* OutFailureReason = nullptr);
+
+	/** 
 	 * Converts a long package name to a file name with the supplied extension.
 	 * Throws a fatal error if the conversion is not successful.
 	 *
@@ -108,13 +176,20 @@ public:
 	/**
 	 * Split a full object path (Class /Path/To/A/Package.Object:SubObject) into its constituent pieces
 	 *  
-	 * @param InFullObjectPath			Full object path we want to split
-	 * @param OutClassName				The extracted class name (Class)
-	 * @param OutPackageName			The extracted package name (/Path/To/A/Package)
-	 * @param OutObjectName				The extracted object name (Object)
-	 * @param OutSubObjectName			The extracted subobject name (SubObject)
+	 * @param InFullObjectPath  Full object path we want to split
+	 * @param OutClassName      The extracted class name (Class)
+	 * @param OutPackageName    The extracted package name (/Path/To/A/Package)
+	 * @param OutObjectName     The extracted object name (Object)
+	 * @param OutSubObjectName  The extracted subobject name (SubObject)
+	 * @param bDetectClassName  If true, the optional Class will be detected and separated based on a space.
+	 *                          If false, and there is a space, the space and text before it will be included in the
+	 *                          other names. Spaces in those names is invalid, but some code ignores the
+	 *                          invalidity in ObjectName if it only cares about packageName.
 	 */
-	static void SplitFullObjectPath(const FString& InFullObjectPath, FString& OutClassName, FString& OutPackageName, FString& OutObjectName, FString& OutSubObjectName);
+	static void SplitFullObjectPath(const FString& InFullObjectPath, FString& OutClassName,
+		FString& OutPackageName, FString& OutObjectName, FString& OutSubObjectName, bool bDetectClassName = true);
+	static void SplitFullObjectPath(FStringView InFullObjectPath, FStringView& OutClassName,
+		FStringView& OutPackageName, FStringView& OutObjectName, FStringView& OutSubObjectName, bool bDetectClassName=true);
 
 	/** 
 	 * Returns true if the path starts with a valid root (i.e. /Game/, /Engine/, etc) and contains no illegal characters.
@@ -124,7 +199,19 @@ public:
 	 * @param OutReason					When returning false, this will provide a description of what was wrong with the name.
 	 * @return							true if a valid long package name
 	 */
-	static bool IsValidLongPackageName(const FString& InLongPackageName, bool bIncludeReadOnlyRoots = false, FText* OutReason = nullptr);
+	static bool IsValidLongPackageName(FStringView InLongPackageName, bool bIncludeReadOnlyRoots = false, EErrorCode* OutReason = nullptr);
+	static bool IsValidLongPackageName(FStringView InLongPackageName, bool bIncludeReadOnlyRoots, FText* OutReason );
+
+	/**
+	 * Report whether a given name is the proper format for a PackageName, without checking whether it is in one of the registered mount points
+	 *
+	 * @param InLongPackageName			The package name to test
+	 * @param OutReason					When returning false, this will provide a description of what was wrong with the name.
+	 * @return							true if valid text for a long package name
+	 */
+	static bool IsValidTextForLongPackageName(FStringView InLongPackageName, EErrorCode* OutReason = nullptr);
+	static bool IsValidTextForLongPackageName(FStringView InLongPackageName, FText* OutReason);
+
 
 	/**
 	 * Returns true if the path starts with a valid root (i.e. /Game/, /Engine/, etc) and contains no illegal characters.
@@ -140,7 +227,6 @@ public:
 	/**
 	 * Returns true if the path starts with a valid root (i.e. /Game/, /Engine/, etc).
 	 * 
-	 *
 	 * @param InObjectPath				The object path to test
 	 * @return							true if a valid object path
 	 */
@@ -230,11 +316,67 @@ public:
 	 * Checks if the package exists on disk.
 	 * 
 	 * @param LongPackageName Package name.
+	 * @param Guid If nonnull, and the package is found on disk but does not have this PackageGuid in its FPackageFileSummary::Guid, false is returned
 	 * @param OutFilename Package filename on disk.
 	 * @param InAllowTextFormats Detect text format packages as well as binary (priority to text)
 	 * @return true if the specified package name points to an existing package, false otherwise.
 	 **/
-	static bool DoesPackageExist(const FString& LongPackageName, const FGuid* Guid = NULL, FString* OutFilename = NULL, bool InAllowTextFormats = true);
+	UE_DEPRECATED(5.0, "Deprecated. UPackage::Guid has not been used by the engine for a long time. Call DoesPackageExist without a Guid.")
+	static bool DoesPackageExist(const FString& LongPackageName, const FGuid* Guid, FString* OutFilename, bool InAllowTextFormats = true)
+	{
+		return DoesPackageExist(LongPackageName, OutFilename, InAllowTextFormats);
+	}
+
+
+	/**
+	 * Checks if the package exists on disk.
+	 * 
+	 * @param LongPackageName Package name.
+	 * @param OutFilename Package filename on disk.
+	 * @param InAllowTextFormats Detect text format packages as well as binary (priority to text)
+	 * @return true if the specified package name points to an existing package, false otherwise.
+	 **/
+	static bool DoesPackageExist(const FString& LongPackageName, FString* OutFilename = nullptr, bool InAllowTextFormats = true);
+
+	/**
+	 * Checks if the package exists on disk. PackagePath must be a mounted path, otherwise returns false
+	 * 
+	 * @param PackagePath Package package.
+	 * @param Guid If nonnull, and the package is found on disk but does not have this PackageGuid in its FPackageFileSummary::Guid, false is returned
+	 * @param bMatchCaseOnDisk If true, the OutPackagePath is modified to match the capitalization of the discovered file
+	 * @param OutPackagePath If nonnull and the package exists, set to a copy of PackagePath with the HeaderExtension set to the extension that exists on disk (and if bMatchCaseOnDisk is true, capitalization changed to match). If not found, this variable is not written
+	 * @return true if the specified package name points to an existing package, false otherwise.
+	 **/
+	static bool DoesPackageExist(const FPackagePath& PackagePath, bool bMatchCaseOnDisk = false, FPackagePath* OutPackagePath = nullptr);
+
+	/**
+	 * Checks if the package exists on disk. PackagePath must be a mounted path, otherwise returns false
+	 * 
+	 * @param PackagePath Package package.
+	 * @param OutPackagePath If nonnull and the package exists, set to a copy of PackagePath with the HeaderExtension set to the extension that exists on disk. If not found, this variable is not written
+	 * @return true if the specified package name points to an existing package, false otherwise.
+	 **/
+	static bool DoesPackageExist(const FPackagePath& PackagePath, FPackagePath* OutPackagePath);
+
+	enum class EPackageLocationFilter : uint8
+	{
+		None = 0,
+		IoDispatcher = 1,
+		FileSystem = 2,
+		Any = 0xFF, // special filter to find if it exists anywhere at all, and won't need to check both. in this case, as soon as one is found, DoesPackageExistEx will return true
+	};
+
+	/**
+	 * Checks if the package exists in IOStore containers, on disk outsode of IOStore, both, or neither
+	 *
+	 * @param PackagePath Package package.
+	 * @param Filter Indication of where it should look for 
+	 * @param Guid If nonnull, and the package is found on disk but does not have this PackageGuid in its FPackageFileSummary::Guid, false is returned
+	 * @param bMatchCaseOnDisk If true, the OutPackagePath is modified to match the capitalization of the discovered file
+	 * @param OutPackagePath If nonnull and the package exists, set to a copy of PackagePath with the HeaderExtension set to the extension that exists on disk (and if bMatchCaseOnDisk is true, capitalization changed to match). If not found, this variable is not written
+	 * @return the set of locations where the package exists (IoDispatcher or FileSystem, both or neither)
+	 **/
+	static EPackageLocationFilter DoesPackageExistEx(const FPackagePath& PackagePath, EPackageLocationFilter Filterconst, bool bMatchCaseOnDisk = false, FPackagePath* OutPackagePath = nullptr);
 
 	/**
 	 * Attempts to find a package given its short name on disk (very slow).
@@ -251,7 +393,7 @@ public:
 	 * @param ObjectPath Path to the object.
 	 * @param OutLongPackageName Converted object path.
 	 *
-	 * @returns True if succeeded. False otherwise.
+	 * @return True if succeeded. False otherwise.
 	 */
 	static bool TryConvertShortPackagePathToLongInObjectPath(const FString& ObjectPath, FString& ConvertedObjectPath);
 
@@ -260,7 +402,7 @@ public:
 	 *
 	 * @param ObjectPath Path to the object.
 	 *
-	 * @returns Normalized path (or empty path, if short object path was given and it wasn't found on the disk).
+	 * @return Normalized path (or empty path, if short object path was given and it wasn't found on the disk).
 	 */
 	static FString GetNormalizedObjectPath(const FString& ObjectPath);
 
@@ -271,7 +413,7 @@ public:
 	 *
 	 * @param InSourcePackagePath	Path to the source package.
 	 *
-	 * @returns Resolved package path, or the source package path if there is no resolution occurs.
+	 * @return Resolved package path, or the source package path if there is no resolution occurs.
 	 */
 	static FString GetDelegateResolvedPackagePath(const FString& InSourcePackagePath);
 
@@ -280,7 +422,7 @@ public:
 	 *
 	 * @param InLocalizedPackagePath Path to the localized package.
 	 *
-	 * @returns Source package path.
+	 * @return Source package path.
 	 */
 	static FString GetSourcePackagePath(const FString& InLocalizedPackagePath);
 
@@ -289,7 +431,7 @@ public:
 	 *
 	 * @param InSourcePackagePath	Path to the source package.
 	 *
-	 * @returns Localized package path, or the source package path if there is no suitable localized package.
+	 * @return Localized package path, or the source package path if there is no suitable localized package.
 	 */
 	static FString GetLocalizedPackagePath(const FString& InSourcePackagePath);
 
@@ -299,7 +441,7 @@ public:
 	 * @param InSourcePackagePath	Path to the source package.
 	 * @param InCultureName			Culture name to get the localized package for.
 	 *
-	 * @returns Localized package path, or the source package path if there is no suitable localized package.
+	 * @return Localized package path, or the source package path if there is no suitable localized package.
 	 */
 	static FString GetLocalizedPackagePath(const FString& InSourcePackagePath, const FString& InCultureName);
 
@@ -308,39 +450,27 @@ public:
 	 *
 	 * @return	file extension for asset packages ( dot included )
 	 */
-	static FORCEINLINE const FString& GetAssetPackageExtension()
-	{
-		return AssetPackageExtension;
-	}
+	static const FString& GetAssetPackageExtension();
 	/** 
 	 * Returns the file extension for packages containing assets.
 	 *
 	 * @return	file extension for asset packages ( dot included )
 	 */
-	static FORCEINLINE const FString& GetMapPackageExtension()
-	{
-		return MapPackageExtension;
-	}
+	static const FString& GetMapPackageExtension();
 
 	/**
 	* Returns the file extension for packages containing text assets.
 	*
 	* @return	file extension for text asset packages ( dot included )
 	*/
-	static FORCEINLINE const FString& GetTextAssetPackageExtension()
-	{
-		return TextAssetPackageExtension;
-	}
+	static const FString& GetTextAssetPackageExtension();
 
 	/**
 	* Returns the file extension for packages containing text maps.
 	*
 	* @return	file extension for text map packages ( dot included )
 	*/
-	static FORCEINLINE const FString& GetTextMapPackageExtension()
-	{
-		return TextMapPackageExtension;
-	}
+	static const FString& GetTextMapPackageExtension();
 
 	/**
 	 * Returns whether the passed in extension is a valid text package
@@ -350,6 +480,14 @@ public:
 	 * @return	True if Ext is either an text asset or a text map extension, otherwise false
 	 */
 	static bool IsTextPackageExtension(const TCHAR* Ext);
+
+	/**
+	 * Returns whether the passed in extension is a text header extension
+	 *
+	 * @param	Extension to test.
+	 * @return	True if Ext is either an text asset or a text map extension, otherwise false
+	 */
+	static bool IsTextPackageExtension(EPackageExtension Extension);
 
 	/**
 	 * Returns whether the passed in extension is a valid text asset package
@@ -379,6 +517,14 @@ public:
 	static bool IsPackageExtension(const TCHAR* Ext);
 
 	/**
+	 * Returns whether the passed in extension is a valid binary package extension.
+	 *
+	 * @param	Extension to test.
+	 * @return	True if Ext is either a binary asset or a binary map extension, otherwise false
+	 */
+	static bool IsPackageExtension(EPackageExtension Extension);
+
+	/**
 	 * Returns whether the passed in extension is a valid binary asset package
 	 * extension. Extensions with and without trailing dots are supported.
 	 *
@@ -403,8 +549,10 @@ public:
 	 * @param	Filename to test. 
 	 * @return	True if the filename ends with a package extension.
 	 */
-	static FORCEINLINE bool IsPackageFilename(const FString& Filename)
+	static FORCEINLINE bool IsPackageFilename(FStringView Filename)
 	{
+		FStringView AssetPackageExtension(LexToString(EPackageExtension::Asset));
+		FStringView MapPackageExtension(LexToString(EPackageExtension::Map));
 		return Filename.EndsWith(AssetPackageExtension) || Filename.EndsWith(MapPackageExtension);
 	}
 
@@ -462,7 +610,7 @@ public:
 	static void QueryRootContentPaths( TArray<FString>& OutRootContentPaths, bool bIncludeReadOnlyRoots = false, bool bWithoutLeadingSlashes = false, bool bWithoutTrailingSlashes = false);
 	
 	/** If the FLongPackagePathsSingleton is not created yet, this function will create it and thus allow mount points to be added */
-	static void EnsureContentPathsAreRegistered();
+	static void OnCoreUObjectInitialized();
 
 	/** 
 	 * Converts the supplied export text path to an object path and class name.
@@ -504,9 +652,9 @@ public:
 	static FString ObjectPathToObjectName(const FString& InObjectPath);
 
 	/**
-	 * Checks the root of the package's path to see if it's an extra package
+	 * Checks the package's path to see if it's a Verse package
 	 */
-	static bool IsExtraPackage(FStringView InPackageName);
+	static bool IsVersePackage(FStringView InPackageName);
 
 	/**
 	 * Checks the root of the package's path to see if it is a script package
@@ -537,17 +685,21 @@ public:
 	/**
 	 * Checks if a package name contains characters that are invalid for package names.
 	 */
-	static bool DoesPackageNameContainInvalidCharacters(FStringView InLongPackageName, FText* OutReason = NULL);
+	static bool DoesPackageNameContainInvalidCharacters(FStringView InLongPackageName, FText* OutReason);
+	static bool DoesPackageNameContainInvalidCharacters(FStringView InLongPackageName, EErrorCode* OutReason = nullptr);
 	
 	/**
-	* Checks if a package can be found using known package extensions.
+	* Checks if a package can be found using known package extensions (header extensions only; files with the extensions of other segments are not returned).
 	*
 	* @param InPackageFilename Package filename without the extension.
 	* @param OutFilename If the package could be found, filename with the extension.
 	* @param InAllowTextFormats Detect text format packages as well as binary (priority to text)
 	* @return true if the package could be found on disk.
 	*/
-	static bool FindPackageFileWithoutExtension(const FString& InPackageFilename, FString& OutFilename, bool InAllowTextFormats = true);
+	static bool FindPackageFileWithoutExtension(const FString& InPackageFilename, FString& OutFilename);
+
+	UE_DEPRECATED(5.0, "Specifying AllowTextFormats is no longer supported. Text format is instead specified as a field on the result struct from IPackageResourceManager->OpenReadPackage.")
+	static bool FindPackageFileWithoutExtension(const FString& InPackageFilename, FString& OutFilename, bool InAllowTextFormats);
 
 	/**
 	 * Converts a long package name to the case it exists as on disk.
@@ -558,12 +710,6 @@ public:
 	 */
 	static bool FixPackageNameCase(FString& LongPackageName, FStringView Extension);
 
-	UE_DEPRECATED(4.17, "Deprecated. Call TryConvertLongPackageNameToFilename instead, which also works on nested paths")
-	static bool ConvertRootPathToContentPath(const FString& RootPath, FString& OutContentPath);
-
-	UE_DEPRECATED(4.17, "Deprecated. Call TryConvertFilenameToLongPackageName instead")
-	static FString PackageFromPath(const TCHAR* InPathName);
-
 	/** Override whether a package exist or not. */
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FDoesPackageExistOverride, FName);
 	static FDoesPackageExistOverride& DoesPackageExistOverride()
@@ -571,12 +717,23 @@ public:
 		return DoesPackageExistOverrideDelegate;
 	}
 
-private:
+	/**
+	 * Find a mount point that contains the given LocalFilePath or PackageName, and if found, return the MountPoint and RelativePath
+	 *
+	 * @param InFilePathOrPackageName The path to test, either a LocalFilePath or a PackageName or an ObjectPath
+	 * @param OutMountPointPackageName If the MountPoint is found, the PackageName of the MountPoint is copied into this variable, otherwise it is set to empty string
+	 * @param OutMountPointFilePath If the MountPoint is found, the LocalFilePath of the MountPoint is copied into this variable, otherwise it is set to empty string
+	 * @param OutRelPath If the MountPoint is found, the RelativePath from the MountPoint to InFilePathOrPackageName is copied into this variable, otherwise it is set to empty string
+	 * 					 If InFilePathOrPackageName was a filepath, the extension is removed before copying it into OutRelpath
+	 *					 The OutRelPath is the same for both the LocalFilePath and the PackageName
+	 * @param OutFlexNameType If non-null, will be set to whether InFilePathOrPackageName was a PackageName or Filename if the MountPoint is found, otherwise it is set to EFlexNameType::Invalid
+	 * @param OutFailureReason If non-null, will be set to the reason InPath could not be converted, or to EErrorCode::Unknown if the function was successful.
+	 * @return True if the MountPoint was found, else false
+	 */
+	static bool TryGetMountPointForPath(FStringView InFilePathOrPackageName, FStringBuilderBase& OutMountPointPackageName, FStringBuilderBase& OutMountPointFilePath, FStringBuilderBase& OutRelPath,
+		EFlexNameType* OutFlexNameType = nullptr, EErrorCode* OutFailureReason = nullptr);
 
-	static FString AssetPackageExtension;
-	static FString MapPackageExtension;
-	static FString TextAssetPackageExtension;
-	static FString TextMapPackageExtension;
+private:
 
 	/**
 	 * Internal function used to rename filename to long package name.
@@ -586,6 +743,23 @@ private:
 	 */
 	static void InternalFilenameToLongPackageName(FStringView InFilename, FStringBuilderBase& OutPackageName);
 
+	/**
+	 * Internal helper to find a mount point that contains the given LocalFilePath or PackageName, and if found, return the MountPoint, RelativePath, and PackageExtension
+	 *
+	 * @param InPath The path to test, either a LocalFilePath, PackageName, or ObjectPath
+	 * @param OutMountPointPackageName If the MountPoint is found, the PackageName of the MountPoint is copied into this variable, otherwise it is set to empty string
+	 * @param OutMountPointFilePath If the MountPoint is found, the LocalFilePath of the MountPoint is copied into this variable, otherwise it is set to empty string
+	 * @param OutRelPath If the MountPoint is found, the RelativePath from the MountPoint to the PackageName is copied into this variable, otherwise it is set to empty string
+	 * @param OutObjectPath If the MountPoint is found and InPath was an ObjectPath, this variable is set to the object's relative path from the package: ObjectPath:SubObject1.SubObject2, otherwise it is set to the empty string
+	 * @param OutExtension If the MountPoint is found and InPath was a LocalFilePath, this variable is set to the EPackageExtension that was in the filepath, otherwise it is set to EPackageExtension::Unspecified
+	 * @param OutCustomExtension If the mount point was found and InPath was a filepath with extension and the extension was not a recognized package extension, this varialbe is set to the extension text (including .), otherwise it is set to the empty string
+	 * @param OutFlexNameType If non-null, it is set to whether InFilePathOrPackageName is a PackageName or Filename if the MountPoint is found, otherwise it is set to EFlexNameType::Invalid
+	 * @param OutFailureReason If non-null, it is set to the failurereason if the MountPoint is not found, otherwise it is set to EErrorCode::PackageNameUnknown
+	 * @return True if the MountPoint was found, else false
+	 */
+	static bool TryConvertToMountedPathComponents(FStringView InPath, FStringBuilderBase& OutMountPointPackageName, FStringBuilderBase& OutMountPointFilePath, FStringBuilderBase& OutRelPath,
+		FStringBuilderBase& OutObjectName, EPackageExtension& OutExtension, FStringBuilderBase& OutCustomExtension, EFlexNameType* OutFlexNameType = nullptr, EErrorCode* OutFailureReason = nullptr);
+
 	/** Event that is triggered when a new content path is mounted */
 	static FOnContentPathMountedEvent OnContentPathMountedEvent;
 
@@ -594,5 +768,7 @@ private:
 
 	/** Delegate used to check whether a package exist without using the filesystem. */
 	static FDoesPackageExistOverride DoesPackageExistOverrideDelegate;
+
+	friend class FPackagePath;
 };
 

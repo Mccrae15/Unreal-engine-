@@ -556,6 +556,7 @@ FErrorDetail FManifestBuilderHLS::SetupVariants(FManifestHLSInternal* Manifest, 
 						si.SetProfileConstraints(TempValue);
 						LexFromStringHex(TempValue, *CodecOTI[2]);
 						si.SetProfileLevel(TempValue);
+						si.SetBitrate(vs->Bandwidth);
 						bHasVideo = true;
 					}
 					// Does it match the alternate AVC form (invalid, but we allow it) of avc1.profile.level ?
@@ -570,6 +571,7 @@ FErrorDetail FManifestBuilderHLS::SetupVariants(FManifestHLSInternal* Manifest, 
 						si.SetProfileLevel(TempValue);
 						// Convert the .profile.level integers into the normal hexdigit grouping notation.
 						si.SetCodecSpecifierRFC6381(FString::Printf(TEXT("avc1.%02x00%02x"), si.GetProfile(), si.GetProfileLevel()));
+						si.SetBitrate(vs->Bandwidth);
 						bHasVideo = true;
 					}
 				}
@@ -579,6 +581,10 @@ FErrorDetail FManifestBuilderHLS::SetupVariants(FManifestHLSInternal* Manifest, 
 					si.SetStreamType(EStreamType::Audio);
 					si.SetCodec(FStreamCodecInformation::ECodec::AAC);
 					si.SetCodecSpecifierRFC6381(CodecList[nCodec]);
+					// For lack of knowledge pretend this is stereo.
+					si.SetChannelConfiguration(2);
+					si.SetNumberOfChannels(2);
+					si.SetBitrate(vs->Bandwidth);
 					bHasAudio = true;
 				}
 				else
@@ -623,6 +629,7 @@ FErrorDetail FManifestBuilderHLS::SetupVariants(FManifestHLSInternal* Manifest, 
 				si.SetProfile(100);
 				si.SetProfileLevel(42);
 				si.SetCodecSpecifierRFC6381(FString::Printf(TEXT("avc1.%02x00%02x"), si.GetProfile(), si.GetProfileLevel()));
+				si.SetBitrate(vs->Bandwidth);
 
 				if (bHaveResolution)
 				{
@@ -649,6 +656,11 @@ FErrorDetail FManifestBuilderHLS::SetupVariants(FManifestHLSInternal* Manifest, 
 				// For codec we assume standard LC-AAC
 				si.SetCodec(FStreamCodecInformation::ECodec::AAC);
 				si.SetCodecSpecifierRFC6381(TEXT("mp4a.40.2"));
+				// For lack of knowledge pretend this is stereo.
+				si.SetChannelConfiguration(2);
+				si.SetNumberOfChannels(2);
+				si.SetBitrate(vs->Bandwidth);
+
 				vs->StreamCodecInformationList.Push(si);
 				bHasAudio = true;
 			}
@@ -853,6 +865,8 @@ FErrorDetail FManifestBuilderHLS::SetupVariants(FManifestHLSInternal* Manifest, 
 							for(int32 ii=0; ii<RenditionRange.Num(); ++ii)
 							{
 								TSharedPtrTS<FManifestHLSInternal::FRendition>& Rendition = *RenditionRange[ii];
+								// Renditions do not have a BANDWIDTH attribute. Set their bitrate to the one we have on the variant where it is mandatory.
+								Rendition->Bitrate = vs->Bandwidth;
 								if (Rendition->URI.Len() == 0)
 								{
 									// When the rendition has no dedicated URL then it is merely informational and this audio-only variant is the stream itself to use.
@@ -1528,7 +1542,7 @@ FErrorDetail FManifestBuilderHLS::UpdateFromVariantPlaylist(TSharedPtrTS<FManife
 				// Is there an EXT-X-PROGRAM-DATE-TIME ?
 				if (GetSegmentTagString(AttrValue, HLSPlaylistParser::ExtXProgramDateTime))
 				{
-					if (ISO8601::ParseDateTime(Seg.AbsoluteDateTime, AttrValue)== UEMEDIA_ERROR_OK)
+					if (ISO8601::ParseDateTime(Seg.AbsoluteDateTime, AttrValue))
 					{
 						if (nSeg)
 						{

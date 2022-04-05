@@ -35,7 +35,7 @@ namespace BitArrayTest
 	{
 		FString Out;
 		int32 Index = 0;
-		for (TBitArray<>::FConstIterator It(BitArray); It; ++It)
+		for (TBitArray<>::FConstIterator It(BitArray); It; ++It, ++Index)
 		{
 			if (Index != 0 && Index % 8 == 0)
 			{
@@ -2257,7 +2257,7 @@ protected:
 				Actual[Index] = '\0';
 				if (!bMatch)
 				{
-					AddError(FString::Printf(TEXT("MemmoveBitsWordOrder ModularizeWordOffset Offset=%d\nExpected=%s\nActual  =%s"), Offset, Expected, Actual));
+					AddError(FString::Printf(TEXT("MemmoveBitsWordOrder ModularizeWordOffset Offset=%d\nExpected=%s\nActual  =%s"), Offset, ANSI_TO_TCHAR(Expected), ANSI_TO_TCHAR(Actual)));
 				}
 			}
 		}

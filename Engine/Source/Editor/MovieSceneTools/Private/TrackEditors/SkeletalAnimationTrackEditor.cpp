@@ -13,6 +13,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Layout/SBox.h"
 #include "SequencerSectionPainter.h"
+#include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Editor/UnrealEdEngine.h"
 #include "UnrealEdGlobals.h"
@@ -24,15 +25,20 @@
 #include "ContentBrowserModule.h"
 #include "MatineeImportTools.h"
 #include "Matinee/InterpTrackAnimControl.h"
+#include "SequencerSettings.h"
 #include "SequencerUtilities.h"
 #include "ISectionLayoutBuilder.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/PoseAsset.h"
+#include "Animation/MirrorDataTable.h"
 #include "EditorStyleSet.h"
 #include "DragAndDrop/AssetDragDropOp.h"
 #include "MovieSceneTimeHelpers.h"
 #include "SequencerTimeSliderController.h"
+#include "FrameNumberDisplayFormat.h"
+#include "FrameNumberNumericInterface.h"
+#include "AnimationBlueprintLibrary.h"
 #include "AnimationEditorUtils.h"
 #include "Factories/PoseAssetFactory.h"
 #include "Misc/MessageDialog.h"
@@ -294,6 +300,11 @@ USkeletalMeshComponent* AcquireSkeletalMeshFromObjectGuid(const FGuid& Guid, TSh
 
 	if (AActor* Actor = Cast<AActor>(BoundObject))
 	{
+		if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Actor->GetRootComponent()))
+		{
+			return SkeletalMeshComponent;
+		}
+
 		TArray<USkeletalMeshComponent*> SkeletalMeshComponents;
 		Actor->GetComponents(SkeletalMeshComponents);
 		
@@ -325,8 +336,10 @@ USkeleton* GetSkeletonFromComponent(UActorComponent* InComponent)
 	return nullptr;
 }
 
-USkeleton* AcquireSkeletonFromObjectGuid(const FGuid& Guid, TSharedPtr<ISequencer> SequencerPtr)
+TArray<USkeletalMeshComponent*> AcquireSkeletalMeshComponentsFromObjectGuid(const FGuid& Guid, TSharedPtr<ISequencer> SequencerPtr)
 {
+	TArray<USkeletalMeshComponent*> SkeletalMeshComponents;
+
 	UObject* BoundObject = SequencerPtr.IsValid() ? SequencerPtr->FindSpawnedObjectOrTemplate(Guid) : nullptr;
 
 	AActor* Actor = Cast<AActor>(BoundObject);
@@ -341,23 +354,32 @@ USkeleton* AcquireSkeletonFromObjectGuid(const FGuid& Guid, TSharedPtr<ISequence
 
 	if (Actor)
 	{
-		TArray<USkeletalMeshComponent*> SkeletalMeshComponents;
-		Actor->GetComponents(SkeletalMeshComponents);
-		if (SkeletalMeshComponents.Num() == 1)
+		if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Actor->GetRootComponent()))
 		{
-			return GetSkeletonFromComponent(SkeletalMeshComponents[0]);
+			SkeletalMeshComponents.Add(SkeletalMeshComponent);
+			return SkeletalMeshComponents;
 		}
-		SkeletalMeshComponents.Empty();
+
+		Actor->GetComponents(SkeletalMeshComponents);
+		if (SkeletalMeshComponents.Num())
+		{
+			return SkeletalMeshComponents;
+		}
 
 		AActor* ActorCDO = Cast<AActor>(Actor->GetClass()->GetDefaultObject());
 		if (ActorCDO)
 		{
-			ActorCDO->GetComponents(SkeletalMeshComponents);
-			if (SkeletalMeshComponents.Num() == 1)
+			if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(ActorCDO->GetRootComponent()))
 			{
-				return GetSkeletonFromComponent(SkeletalMeshComponents[0]);
+				SkeletalMeshComponents.Add(SkeletalMeshComponent);
+				return SkeletalMeshComponents;
 			}
-			SkeletalMeshComponents.Empty();
+
+			ActorCDO->GetComponents(SkeletalMeshComponents);
+			if (SkeletalMeshComponents.Num())
+			{
+				return SkeletalMeshComponents;
+			}
 		}
 
 		UBlueprintGeneratedClass* ActorBlueprintGeneratedClass = Cast<UBlueprintGeneratedClass>(Actor->GetClass());
@@ -376,18 +398,28 @@ USkeleton* AcquireSkeletonFromObjectGuid(const FGuid& Guid, TSharedPtr<ISequence
 				}
 			}
 
-			if (SkeletalMeshComponents.Num() == 1)
+			if (SkeletalMeshComponents.Num())
 			{
-				return GetSkeletonFromComponent(SkeletalMeshComponents[0]);
+				return SkeletalMeshComponents;
 			}
 		}
 	}
-	else if(USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(BoundObject))
+	else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(BoundObject))
 	{
-		if (USkeleton* Skeleton = GetSkeletonFromComponent(SkeletalMeshComponent))
-		{
-			return Skeleton;
-		}
+		SkeletalMeshComponents.Add(SkeletalMeshComponent);
+		return SkeletalMeshComponents;
+	}
+	
+	return SkeletalMeshComponents;
+}
+
+USkeleton* AcquireSkeletonFromObjectGuid(const FGuid& Guid, TSharedPtr<ISequencer> SequencerPtr)
+{
+	TArray<USkeletalMeshComponent*> SkeletalMeshComponents = AcquireSkeletalMeshComponentsFromObjectGuid(Guid, SequencerPtr);
+
+	if (SkeletalMeshComponents.Num() == 1)
+	{
+		return GetSkeletonFromComponent(SkeletalMeshComponents[0]);
 	}
 
 	return nullptr;
@@ -410,6 +442,7 @@ public:
 	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override
 	{
 		const FName AnimationPropertyName = GET_MEMBER_NAME_CHECKED(FMovieSceneSkeletalAnimationParams, Animation);
+		const FName MirrorDataTableName = GET_MEMBER_NAME_CHECKED(FMovieSceneSkeletalAnimationParams, MirrorDataTable);
 
 		uint32 NumChildren;
 		PropertyHandle->GetNumChildren(NumChildren);
@@ -417,10 +450,10 @@ public:
 		{
 			TSharedPtr<IPropertyHandle> ChildPropertyHandle = PropertyHandle->GetChildHandle(i);
 			IDetailPropertyRow& ChildPropertyRow = ChildBuilder.AddProperty(ChildPropertyHandle.ToSharedRef());
-
-			// Let most properties be whatever they want to be... we just want to customize the `Animation` property
+			FName ChildPropertyName = ChildPropertyHandle->GetProperty()->GetFName();
+			// Let most properties be whatever they want to be... we just want to customize the `Animation` and `MirrorDataTable` properties
 			// by making it look like a normal asset reference property, but with some custom filtering.
-			if (ChildPropertyHandle->GetProperty()->GetFName() == AnimationPropertyName)
+			if (ChildPropertyName == AnimationPropertyName || ChildPropertyName == MirrorDataTableName)
 			{
 				FDetailWidgetRow& Row = ChildPropertyRow.CustomWidget();
 
@@ -428,14 +461,15 @@ public:
 				{
 					// Store the compatible skeleton's name, and create a property widget with a filter that will check
 					// for animations that match that skeleton.
-					USkeleton* Skeleton = AcquireSkeletonFromObjectGuid(Params.ParentObjectBindingGuid, Params.Sequencer);
+					Skeleton = AcquireSkeletonFromObjectGuid(Params.ParentObjectBindingGuid, Params.Sequencer);
 					SkeletonName = FAssetData(Skeleton).GetExportTextName();
 
 					TSharedPtr<IPropertyUtilities> PropertyUtilities = CustomizationUtils.GetPropertyUtilities();
+					UClass* AllowedStaticClass = ChildPropertyName == AnimationPropertyName ? UAnimSequenceBase::StaticClass() : UMirrorDataTable::StaticClass(); 
 
 					TSharedRef<SObjectPropertyEntryBox> ContentWidget = SNew(SObjectPropertyEntryBox)
 						.PropertyHandle(ChildPropertyHandle)
-						.AllowedClass(UAnimSequenceBase::StaticClass())
+						.AllowedClass(AllowedStaticClass)
 						.DisplayThumbnail(true)
 						.ThumbnailPool(PropertyUtilities.IsValid() ? PropertyUtilities->GetThumbnailPool() : nullptr)
 						.OnShouldFilterAsset(FOnShouldFilterAsset::CreateRaw(this, &FMovieSceneSkeletalAnimationParamsDetailCustomization::ShouldFilterAsset));
@@ -467,21 +501,13 @@ public:
 			return true;
 		}
 
-		if (!SkeletonName.IsEmpty())
-		{
-			const FString& SkeletonTag = AssetData.GetTagValueRef<FString>(TEXT("Skeleton"));
-			if (SkeletonTag != SkeletonName)
-			{
-				return true;
-			}
-		}
-
-		return false;
+		return !(Skeleton && Skeleton->IsCompatibleSkeletonByAssetData(AssetData));
 	}
 
 private:
 	FSequencerSectionPropertyDetailsViewCustomizationParams Params;
 	FString SkeletonName;
+	USkeleton* Skeleton = nullptr;
 };
 
 
@@ -513,7 +539,14 @@ FText FSkeletalAnimationSection::GetSectionTitle() const
 {
 	if (Section.Params.Animation != nullptr)
 	{
-		return FText::FromString( Section.Params.Animation->GetName() );
+		if (Section.Params.MirrorDataTable.IsNull())
+		{
+			return FText::FromString( Section.Params.Animation->GetName() );
+		}
+		else
+		{
+			return FText::Format(LOCTEXT("SectionTitleContentFormat", "{0} mirrored with {1}"), FText::FromString(Section.Params.Animation->GetName()), FText::FromString(Section.Params.MirrorDataTable->GetName()));
+		}
 	}
 	return LOCTEXT("NoAnimationSection", "No Animation");
 }
@@ -603,10 +636,34 @@ int32 FSkeletalAnimationSection::OnPaintSection( FSequencerSectionPainter& Paint
 		if (Section.GetRange().Contains(CurrentTime.FrameNumber) && Section.Params.Animation != nullptr)
 		{
 			// Draw the current time next to the scrub handle
-			const float AnimTime = Section.MapTimeToAnimation(CurrentTime, TickResolution);
-			int32 FrameTime = Section.Params.Animation->GetFrameAtTime(AnimTime);
+			const double AnimTime = Section.MapTimeToAnimation(CurrentTime, TickResolution);
+			const FFrameRate SamplingFrameRate = Section.Params.Animation->GetSamplingFrameRate();
 
-			DrawFrameNumberHint(Painter, CurrentTime, FrameTime);
+			FQualifiedFrameTime HintFrameTime;
+			if (!UAnimationBlueprintLibrary::EvaluateRootBoneTimecodeAttributesAtTime(Section.Params.Animation, static_cast<float>(AnimTime), HintFrameTime))
+			{
+				const FFrameTime FrameTime = SamplingFrameRate.AsFrameTime(AnimTime);
+				HintFrameTime = FQualifiedFrameTime(FrameTime, SamplingFrameRate);
+			}
+
+			// Get the desired frame display format and zero padding from
+			// the sequencer settings, if possible.
+			TAttribute<EFrameNumberDisplayFormats> DisplayFormatAttr(EFrameNumberDisplayFormats::Frames);
+			TAttribute<uint8> ZeroPadFrameNumbersAttr(0u);
+			if (const USequencerSettings* SequencerSettings = SequencerPtr->GetSequencerSettings())
+			{
+				DisplayFormatAttr.Set(SequencerSettings->GetTimeDisplayFormat());
+				ZeroPadFrameNumbersAttr.Set(SequencerSettings->GetZeroPadFrames());
+			}
+
+			// No frame rate conversion necessary since we're displaying
+			// the source frame time/rate.
+			const TAttribute<FFrameRate> TickResolutionAttr(HintFrameTime.Rate);
+			const TAttribute<FFrameRate> DisplayRateAttr(HintFrameTime.Rate);
+
+			const FFrameNumberInterface FrameNumberInterface(DisplayFormatAttr, ZeroPadFrameNumbersAttr, TickResolutionAttr, DisplayRateAttr);
+
+			DrawFrameTimeHint(Painter, CurrentTime, HintFrameTime.Time, &FrameNumberInterface);
 		}
 	}
 	
@@ -1019,11 +1076,16 @@ FSkeletalAnimationTrackEditor::FSkeletalAnimationTrackEditor( TSharedRef<ISequen
 
 	SequencerSavedHandle = InSequencer->OnPostSave().AddRaw(this, &FSkeletalAnimationTrackEditor::OnSequencerSaved);
 
+	FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &FSkeletalAnimationTrackEditor::OnPostPropertyChanged);
 }
 
 void FSkeletalAnimationTrackEditor::OnInitialize()
 {
 	++FSkeletalAnimationTrackEditor::NumberActive;
+
+	// Activate the default mode in case FEditorModeTools::Tick isn't run before here. 
+	// This can be removed once a general fix for UE-143791 has been implemented.
+	GLevelEditorModeTools().ActivateDefaultMode();
 
 	GLevelEditorModeTools().ActivateMode(FSkeletalAnimationTrackEditMode::ModeName);
 	FSkeletalAnimationTrackEditMode* EditMode = static_cast<FSkeletalAnimationTrackEditMode*>(GLevelEditorModeTools().GetActiveMode(FSkeletalAnimationTrackEditMode::ModeName));
@@ -1035,6 +1097,8 @@ void FSkeletalAnimationTrackEditor::OnInitialize()
 }
 void FSkeletalAnimationTrackEditor::OnRelease()
 {
+	FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(this);
+
 	--FSkeletalAnimationTrackEditor::NumberActive;
 
 	if (GetSequencer().IsValid() && SequencerSavedHandle.IsValid())
@@ -1089,7 +1153,7 @@ bool FSkeletalAnimationTrackEditor::HandleAssetAdded(UObject* Asset, const FGuid
 		{
 			USkeleton* Skeleton = AcquireSkeletonFromObjectGuid(TargetObjectGuid, GetSequencer());
 
-			if (Skeleton && Skeleton == AnimSequence->GetSkeleton())
+			if (Skeleton && Skeleton->IsCompatible(AnimSequence->GetSkeleton()))
 			{
 				UObject* Object = SequencerPtr->FindSpawnedObjectOrTemplate(TargetObjectGuid);
 				
@@ -1132,9 +1196,15 @@ void FSkeletalAnimationTrackEditor::OnSequencerSaved(ISequencer& )
 				UMovieScene* MovieScene = SequencerPtr->GetFocusedMovieSceneSequence()->GetMovieScene();
 				FMovieSceneSequenceIDRef Template = SequencerPtr->GetFocusedTemplateID();
 				FMovieSceneSequenceTransform RootToLocalTransform;
-				for (FLevelSequenceAnimSequenceLinkItem& Item : LevelAnimLink->AnimSequenceLinks)
+				for (int32 Index = LevelAnimLink->AnimSequenceLinks.Num() -1; Index >=0 ; --Index) 
 				{
+					FLevelSequenceAnimSequenceLinkItem& Item = LevelAnimLink->AnimSequenceLinks[Index];
 					UAnimSequence* AnimSequence = Item.ResolveAnimSequence();
+					if (AnimSequence == nullptr)
+					{
+						LevelAnimLink->AnimSequenceLinks.RemoveAt(Index);
+						continue;
+					}
 					if (IInterface_AssetUserData* AnimAssetUserData = Cast< IInterface_AssetUserData >(AnimSequence))
 					{
 						UAnimSequenceLevelSequenceLink* AnimLevelLink = AnimAssetUserData->GetAssetUserData< UAnimSequenceLevelSequenceLink >();
@@ -1149,16 +1219,22 @@ void FSkeletalAnimationTrackEditor::OnSequencerSaved(ISequencer& )
 					USkeletalMeshComponent* SkelMeshComp = AcquireSkeletalMeshFromObjectGuid(Item.SkelTrackGuid, GetSequencer());
 					if (AnimSequence && SkelMeshComp)
 					{
-						bool bSavedExportCurves = AnimSeqExportOption->bExportCurves;
-						bool bSavedExportTransforms = AnimSeqExportOption->bExportTransforms;
-						bool bSavedIncludeComponentTransform = AnimSeqExportOption->bRecordInWorldSpace;
-						AnimSeqExportOption->bExportCurves = Item.bExportCurves;
+						const bool bSavedExportMorphTargets = AnimSeqExportOption->bExportMorphTargets;
+						const bool bSavedExportAttributeCurves = AnimSeqExportOption->bExportAttributeCurves;
+						const bool bSavedExportMaterialCurves = AnimSeqExportOption->bExportMaterialCurves;
+						const bool bSavedExportTransforms = AnimSeqExportOption->bExportTransforms;
+						const bool bSavedIncludeComponentTransform = AnimSeqExportOption->bRecordInWorldSpace;
+						AnimSeqExportOption->bExportMorphTargets = Item.bExportMorphTargets;
+						AnimSeqExportOption->bExportAttributeCurves = Item.bExportAttributeCurves;
+						AnimSeqExportOption->bExportMaterialCurves = Item.bExportMaterialCurves;
 						AnimSeqExportOption->bExportTransforms = Item.bExportTransforms;
 						AnimSeqExportOption->bRecordInWorldSpace = Item.bRecordInWorldSpace;
 
 						bool bResult = MovieSceneToolHelpers::ExportToAnimSequence(AnimSequence, AnimSeqExportOption, MovieScene, SequencerPtr.Get(), SkelMeshComp, Template, RootToLocalTransform);
 
-						AnimSeqExportOption->bExportCurves = bSavedExportCurves;
+						AnimSeqExportOption->bExportMorphTargets = bSavedExportMorphTargets;
+						AnimSeqExportOption->bExportAttributeCurves = bSavedExportAttributeCurves;
+						AnimSeqExportOption->bExportMaterialCurves = bSavedExportMaterialCurves;
 						AnimSeqExportOption->bExportTransforms = bSavedExportTransforms;
 						AnimSeqExportOption->bRecordInWorldSpace = bSavedIncludeComponentTransform;
 					}
@@ -1168,6 +1244,54 @@ void FSkeletalAnimationTrackEditor::OnSequencerSaved(ISequencer& )
 	}
 }
 
+void FSkeletalAnimationTrackEditor::OnPostPropertyChanged(UObject* InObject, FPropertyChangedEvent& InPropertyChangedEvent)
+{
+	// This attempts to fix tposes when changing properties without evaluating Sequencer UE-101261, 
+	// but unfortunately causes other problems like the temporary unkeyed value getting lost UE-136405
+/*
+	if (InPropertyChangedEvent.ChangeType != EPropertyChangeType::ValueSet)
+	{
+		return;
+	}
+
+	// If the object changed has any animation track:
+	// 1. Store the current transform (which may be an unkeyed value),
+	// 2. Evaluate Sequencer so that the skeletal animation track will be evaluated, and then the skeletal mesh with tick
+	// 3. Restore the current transform
+	// Without this, changing a value on a skeletal mesh will tick but not necessarily evaluate Sequencer, resulting in a tpose.
+	const bool bCreateIfMissing = false;
+	FFindOrCreateHandleResult HandleResult = FindOrCreateHandleToObject(InObject, bCreateIfMissing );
+	FGuid ObjectHandle = HandleResult.Handle;
+	if (ObjectHandle.IsValid())
+	{
+		FFindOrCreateTrackResult TrackResult = FindOrCreateTrackForObject(ObjectHandle, UMovieSceneSkeletalAnimationTrack::StaticClass(), NAME_None, bCreateIfMissing);
+		if (TrackResult.Track)
+		{
+			USceneComponent* SceneComponent = Cast<USceneComponent>(InObject);
+			if (!SceneComponent)
+			{
+				if (AActor* Actor = Cast<AActor>(InObject))
+				{
+					SceneComponent = Actor->GetRootComponent();
+				}
+			}
+
+			FTransform RelativeTransform;
+			if (SceneComponent)
+			{
+				RelativeTransform = SceneComponent->GetRelativeTransform();
+			}
+
+			GetSequencer()->ForceEvaluate();
+
+			if (SceneComponent)
+			{
+				SceneComponent->SetRelativeTransform(RelativeTransform);
+			}
+		}
+	}
+*/
+}
 
 bool FSkeletalAnimationTrackEditor::CreateAnimationSequence(const TArray<UObject*> NewAssets, USkeletalMeshComponent* SkelMeshComp, FGuid Binding, bool bCreateSoftLink)
 {
@@ -1202,20 +1326,26 @@ bool FSkeletalAnimationTrackEditor::CreateAnimationSequence(const TArray<UObject
 
 			FSlateApplication::Get().AddModalWindow(Window, ParentWindow, false);
 
-			const TSharedPtr<ISequencer> ParentSequencer = GetSequencer();
-			UMovieScene* MovieScene = ParentSequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
-			FMovieSceneSequenceIDRef Template = ParentSequencer->GetFocusedTemplateID();
-			FMovieSceneSequenceTransform RootToLocalTransform = ParentSequencer->GetFocusedMovieSceneSequenceTransform();
-			bResult  = MovieSceneToolHelpers::ExportToAnimSequence(AnimSequence, AnimSeqExportOption,MovieScene, ParentSequencer.Get(), SkelMeshComp, Template, RootToLocalTransform);
+			if (OptionWindow->ShouldExport())
+			{
+				const TSharedPtr<ISequencer> ParentSequencer = GetSequencer();
+				UMovieScene* MovieScene = ParentSequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
+				FMovieSceneSequenceIDRef Template = ParentSequencer->GetFocusedTemplateID();
+				FMovieSceneSequenceTransform RootToLocalTransform = ParentSequencer->GetFocusedMovieSceneSequenceTransform();
+
+				bResult  = MovieSceneToolHelpers::ExportToAnimSequence(AnimSequence, AnimSeqExportOption,MovieScene, ParentSequencer.Get(), SkelMeshComp, Template, RootToLocalTransform);
+			}
 		}
-		
+
 		if (bResult && bCreateSoftLink)
 		{
+			FScopedTransaction Transaction(LOCTEXT("SaveLinkedAnimation_Transaction", "Save Link Animation"));
 			TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
 			ULevelSequence* LevelSequence = Cast<ULevelSequence>(SequencerPtr->GetFocusedMovieSceneSequence());
 			if (LevelSequence && LevelSequence->GetClass()->ImplementsInterface(UInterface_AssetUserData::StaticClass())
 				&& AnimSequence->GetClass()->ImplementsInterface(UInterface_AssetUserData::StaticClass()))
 			{
+				LevelSequence->Modify();
 				if (IInterface_AssetUserData* AnimAssetUserData = Cast< IInterface_AssetUserData >(AnimSequence))
 				{
 					UAnimSequenceLevelSequenceLink* AnimLevelLink = AnimAssetUserData->GetAssetUserData< UAnimSequenceLevelSequenceLink >();
@@ -1253,7 +1383,9 @@ bool FSkeletalAnimationTrackEditor::CreateAnimationSequence(const TArray<UObject
 									}
 								}
 								LevelAnimLinkItem.PathToAnimSequence = FSoftObjectPath(AnimSequence);
-								LevelAnimLinkItem.bExportCurves = AnimSeqExportOption->bExportCurves;
+								LevelAnimLinkItem.bExportMorphTargets = AnimSeqExportOption->bExportMorphTargets;
+								LevelAnimLinkItem.bExportAttributeCurves = AnimSeqExportOption->bExportAttributeCurves;
+								LevelAnimLinkItem.bExportMaterialCurves = AnimSeqExportOption->bExportMaterialCurves;
 								LevelAnimLinkItem.bExportTransforms = AnimSeqExportOption->bExportTransforms;
 								LevelAnimLinkItem.bRecordInWorldSpace = AnimSeqExportOption->bRecordInWorldSpace;
 
@@ -1271,7 +1403,9 @@ bool FSkeletalAnimationTrackEditor::CreateAnimationSequence(const TArray<UObject
 						FLevelSequenceAnimSequenceLinkItem LevelAnimLinkItem;
 						LevelAnimLinkItem.SkelTrackGuid = Binding;
 						LevelAnimLinkItem.PathToAnimSequence = FSoftObjectPath(AnimSequence);
-						LevelAnimLinkItem.bExportCurves = AnimSeqExportOption->bExportCurves;
+						LevelAnimLinkItem.bExportMorphTargets = AnimSeqExportOption->bExportMorphTargets;
+						LevelAnimLinkItem.bExportAttributeCurves = AnimSeqExportOption->bExportAttributeCurves;
+						LevelAnimLinkItem.bExportMaterialCurves = AnimSeqExportOption->bExportMaterialCurves;
 						LevelAnimLinkItem.bExportTransforms = AnimSeqExportOption->bExportTransforms;
 						LevelAnimLinkItem.bRecordInWorldSpace = AnimSeqExportOption->bRecordInWorldSpace;
 
@@ -1546,6 +1680,7 @@ void FSkeletalAnimationTrackEditor::AddAnimationSubMenu(FMenuBuilder& MenuBuilde
 		AssetPickerConfig.Filter.bRecursiveClasses = true;
 		AssetPickerConfig.Filter.ClassNames.Add(UAnimSequenceBase::StaticClass()->GetFName());
 		AssetPickerConfig.Filter.TagsAndValues.Add(TEXT("Skeleton"), FAssetData(Skeleton).GetExportTextName());
+		AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
 	}
 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
@@ -1601,9 +1736,13 @@ FKeyPropertyResult FSkeletalAnimationTrackEditor::AddKeyInternal( FFrameNumber K
 	KeyPropertyResult.bHandleCreated |= HandleResult.bWasCreated;
 	if (ObjectHandle.IsValid())
 	{
-		if (!Track)
+		UMovieScene* MovieScene = GetSequencer()->GetFocusedMovieSceneSequence()->GetMovieScene();
+		FMovieSceneBinding* Binding = MovieScene->FindBinding(ObjectHandle);
+
+		// Add a track if no track was specified or if the track specified doesn't belong to the tracks of the targeted guid
+		if (!Track || (Binding && !Binding->GetTracks().Contains(Track)))
 		{
-			Track = AddTrack(GetSequencer()->GetFocusedMovieSceneSequence()->GetMovieScene(), ObjectHandle, UMovieSceneSkeletalAnimationTrack::StaticClass(), NAME_None);
+			Track = AddTrack(MovieScene, ObjectHandle, UMovieSceneSkeletalAnimationTrack::StaticClass(), NAME_None);
 			KeyPropertyResult.bTrackCreated = true;
 		}
 
@@ -1640,24 +1779,7 @@ void FSkeletalAnimationTrackEditor::BuildTrackContextMenu( FMenuBuilder& MenuBui
 
 	TSharedPtr<ISequencer> SequencerPtr = GetSequencer();
 
-	UInterpTrackAnimControl* MatineeAnimControlTrack = nullptr;
-	for ( UObject* CopyPasteObject : GUnrealEd->MatineeCopyPasteBuffer )
-	{
-		MatineeAnimControlTrack = Cast<UInterpTrackAnimControl>( CopyPasteObject );
-		if ( MatineeAnimControlTrack != nullptr )
-		{
-			break;
-		}
-	}
 	UMovieSceneSkeletalAnimationTrack* SkeletalAnimationTrack = Cast<UMovieSceneSkeletalAnimationTrack>( Track );
-	MenuBuilder.AddMenuEntry(
-		NSLOCTEXT( "Sequencer", "PasteMatineeAnimControlTrack", "Paste Matinee SkeletalAnimation Track" ),
-		NSLOCTEXT( "Sequencer", "PasteMatineeAnimControlTrackTooltip", "Pastes keys from a Matinee float track into this track." ),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateStatic( &CopyInterpAnimControlTrack, GetSequencer().ToSharedRef(), MatineeAnimControlTrack, SkeletalAnimationTrack ),
-			FCanExecuteAction::CreateLambda( [=]()->bool { return MatineeAnimControlTrack != nullptr && MatineeAnimControlTrack->AnimSeqs.Num() > 0 && SkeletalAnimationTrack != nullptr; } ) ) );
-
 	/** Put this back when and if it works
 	MenuBuilder.BeginSection(NAME_None, LOCTEXT("MotionBlendingOptions", "Motion Blending Options"));
 	{
@@ -1746,13 +1868,8 @@ TSharedPtr<SWidget> FSkeletalAnimationTrackEditor::BuildOutlinerEditWidget(const
 
 bool FSkeletalAnimationTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequencerDragDropParams& DragDropParams)
 {
-	if (!DragDropParams.Track->IsA(UMovieSceneSkeletalAnimationTrack::StaticClass()))
-	{
-		return false;
-	}
-
 	TSharedPtr<FDragDropOperation> Operation = DragDropEvent.GetOperation();
-
+	  
 	if (!Operation.IsValid() || !Operation->IsOfType<FAssetDragDropOp>() )
 	{
 		return false;
@@ -1763,7 +1880,7 @@ bool FSkeletalAnimationTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEv
 		return false;
 	}
 
-	USkeleton* Skeleton = AcquireSkeletonFromObjectGuid(DragDropParams.TargetObjectGuid, GetSequencer());
+	TArray<USkeletalMeshComponent*> SkeletalMeshComponents = AcquireSkeletalMeshComponentsFromObjectGuid(DragDropParams.TargetObjectGuid, GetSequencer());
 
 	TSharedPtr<FAssetDragDropOp> DragDropOp = StaticCastSharedPtr<FAssetDragDropOp>( Operation );
 
@@ -1772,12 +1889,17 @@ bool FSkeletalAnimationTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEv
 		UAnimSequenceBase* AnimSequence = Cast<UAnimSequenceBase>(AssetData.GetAsset());
 
 		const bool bValidAnimSequence = AnimSequence && AnimSequence->CanBeUsedInComposition();
-		if (bValidAnimSequence && Skeleton && Skeleton == AnimSequence->GetSkeleton())
+
+		for (USkeletalMeshComponent* SkeletalMeshComponent : SkeletalMeshComponents)
 		{
-			FFrameRate TickResolution = GetSequencer()->GetFocusedTickResolution();
-			FFrameNumber LengthInFrames = TickResolution.AsFrameNumber(AnimSequence->GetPlayLength());
-			DragDropParams.FrameRange = TRange<FFrameNumber>(DragDropParams.FrameNumber, DragDropParams.FrameNumber + LengthInFrames);
-			return true;
+			USkeleton* Skeleton = GetSkeletonFromComponent(SkeletalMeshComponent);
+			if (bValidAnimSequence && Skeleton && Skeleton->IsCompatible(AnimSequence->GetSkeleton()))
+			{
+				FFrameRate TickResolution = GetSequencer()->GetFocusedTickResolution();
+				FFrameNumber LengthInFrames = TickResolution.AsFrameNumber(AnimSequence->GetPlayLength());
+				DragDropParams.FrameRange = TRange<FFrameNumber>(DragDropParams.FrameNumber, DragDropParams.FrameNumber + LengthInFrames);
+				return true;
+			}
 		}
 	}
 
@@ -1787,11 +1909,6 @@ bool FSkeletalAnimationTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEv
 
 FReply FSkeletalAnimationTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, const FSequencerDragDropParams& DragDropParams)
 {
-	if (!DragDropParams.Track->IsA(UMovieSceneSkeletalAnimationTrack::StaticClass()))
-	{
-		return FReply::Unhandled();
-	}
-
 	TSharedPtr<FDragDropOperation> Operation = DragDropEvent.GetOperation();
 
 	if (!Operation.IsValid() || !Operation->IsOfType<FAssetDragDropOp>() )
@@ -1804,7 +1921,7 @@ FReply FSkeletalAnimationTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent
 		return FReply::Unhandled();
 	}
 
-	USkeleton* Skeleton = AcquireSkeletonFromObjectGuid(DragDropParams.TargetObjectGuid, GetSequencer());
+	TArray<USkeletalMeshComponent*> SkeletalMeshComponents = AcquireSkeletalMeshComponentsFromObjectGuid(DragDropParams.TargetObjectGuid, GetSequencer());
 
 	const FScopedTransaction Transaction(LOCTEXT("DropAssets", "Drop Assets"));
 
@@ -1817,13 +1934,17 @@ FReply FSkeletalAnimationTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent
 	{
 		UAnimSequenceBase* AnimSequence = Cast<UAnimSequenceBase>(AssetData.GetAsset());
 		const bool bValidAnimSequence = AnimSequence && AnimSequence->CanBeUsedInComposition();
-		if (bValidAnimSequence && Skeleton && Skeleton == AnimSequence->GetSkeleton())
-		{
-			UObject* Object = GetSequencer()->FindSpawnedObjectOrTemplate(DragDropParams.TargetObjectGuid);
-				
-			AnimatablePropertyChanged( FOnKeyProperty::CreateRaw(this, &FSkeletalAnimationTrackEditor::AddKeyInternal, Object, AnimSequence, DragDropParams.Track, DragDropParams.RowIndex));
 
-			bAnyDropped = true;
+		for (USkeletalMeshComponent* SkeletalMeshComponent : SkeletalMeshComponents)
+		{
+			USkeleton* Skeleton = GetSkeletonFromComponent(SkeletalMeshComponent);
+
+			if (bValidAnimSequence && Skeleton && Skeleton->IsCompatible(AnimSequence->GetSkeleton()))
+			{
+				AnimatablePropertyChanged( FOnKeyProperty::CreateRaw(this, &FSkeletalAnimationTrackEditor::AddKeyInternal, (UObject*)SkeletalMeshComponent, AnimSequence, DragDropParams.Track.Get(), DragDropParams.RowIndex));
+
+				bAnyDropped = true;
+			}
 		}
 	}
 

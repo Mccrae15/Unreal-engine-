@@ -234,6 +234,7 @@ public:
 	FTexture2DRHIRef VelocityTextureRHI;
 
 	bool bTexturesCleared;
+	int32 ParticleStateIndex = 0;
 
 	/**
 	 * Initialize RHI resources used for particle simulation.
@@ -247,7 +248,10 @@ public:
 		check( !IsValidRef( PositionTextureTargetRHI ) );
 		check( !IsValidRef( PositionTextureRHI ) );
 
-		FRHIResourceCreateInfo CreateInfo(FClearValueBinding::Transparent);
+#define PARTICLE_STATE_POSITION_TEXTURE_NAME	TEXT("ParticleStatePosition")
+#define PARTICLE_STATE_VELOCITY_TEXTURE_NAME	TEXT("ParticleStateVelocity")
+
+		FRHIResourceCreateInfo CreateInfo(PARTICLE_STATE_POSITION_TEXTURE_NAME, FClearValueBinding::Transparent);
 		RHICreateTargetableShaderResource2D(
 			SizeX,
 			SizeY,
@@ -265,6 +269,7 @@ public:
 		check( !IsValidRef( VelocityTextureTargetRHI ) );
 		check( !IsValidRef( VelocityTextureRHI ) );
 
+		CreateInfo.DebugName = PARTICLE_STATE_VELOCITY_TEXTURE_NAME;
 		RHICreateTargetableShaderResource2D(
 			SizeX,
 			SizeY,
@@ -278,14 +283,13 @@ public:
 			VelocityTextureRHI
 			);
 
-#define PARTICLE_STATE_POSITION_TEXTURE_NAME	TEXT("ParticleStatePosition")
-#define PARTICLE_STATE_VELOCITY_TEXTURE_NAME	TEXT("ParticleStateVelocity")
-		static FName PositionTextureName(PARTICLE_STATE_POSITION_TEXTURE_NAME);
-		static FName VelocityTextureName(PARTICLE_STATE_VELOCITY_TEXTURE_NAME);
+		// using FName's ability to append a number to a string (..._0) without an extra string allocation, except suffixing is done when number > 0 hence the +1 here : 
+		FName PositionTextureName(PARTICLE_STATE_POSITION_TEXTURE_NAME, ParticleStateIndex + 1); 
+		FName VelocityTextureName(PARTICLE_STATE_VELOCITY_TEXTURE_NAME, ParticleStateIndex + 1);
 		PositionTextureTargetRHI->SetName(PositionTextureName);
 		VelocityTextureTargetRHI->SetName(VelocityTextureName);
-		RHIBindDebugLabelName(PositionTextureTargetRHI, PARTICLE_STATE_POSITION_TEXTURE_NAME);
-		RHIBindDebugLabelName(VelocityTextureTargetRHI, PARTICLE_STATE_VELOCITY_TEXTURE_NAME);
+		RHIBindDebugLabelName(PositionTextureTargetRHI, *PositionTextureName.ToString());
+		RHIBindDebugLabelName(VelocityTextureTargetRHI, *VelocityTextureName.ToString());
 #undef PARTICLE_STATE_VELOCITY_TEXTURE_NAME
 #undef PARTICLE_STATE_POSITION_TEXTURE_NAME
 
@@ -326,7 +330,8 @@ public:
 
 		const ETextureCreateFlags ExtraFlags = CVarGPUParticleAFRReinject.GetValueOnRenderThread() == 1 ? TexCreate_AFRManual : TexCreate_None;
 
-		FRHIResourceCreateInfo CreateInfo(FClearValueBinding::Transparent);
+#define ATTRIBUTES_TEXTURE_NAME	TEXT("ParticleAttributes")
+		FRHIResourceCreateInfo CreateInfo(ATTRIBUTES_TEXTURE_NAME, FClearValueBinding::Transparent);
 		RHICreateTargetableShaderResource2D(
 			SizeX,
 			SizeY,
@@ -340,7 +345,6 @@ public:
 			TextureRHI
 			);
 
-#define ATTRIBUTES_TEXTURE_NAME	TEXT("ParticleAttributes")
 		static FName AttributesTextureName(ATTRIBUTES_TEXTURE_NAME);
 		TextureTargetRHI->SetName(AttributesTextureName);
 		RHIBindDebugLabelName(TextureTargetRHI, ATTRIBUTES_TEXTURE_NAME);
@@ -381,12 +385,18 @@ public:
 
 	/** Frame index used to track double buffered resources on the GPU. */
 	int32 FrameIndex = 0;
+	/** LWC tile offset, will be 0,0,0 for localspace emitters. */
+	FVector3f LWCTile = FVector3f::ZeroVector;
 
 	/**
 	 * Initialize resources.
 	 */
 	void Init()
 	{
+		// Help debugging by identifying each state :
+		StateTextures[0].ParticleStateIndex = 0;
+		StateTextures[1].ParticleStateIndex = 1;
+
 		FParticleSimulationResources* ParticleResources = this;
 		ENQUEUE_RENDER_COMMAND(FInitParticleSimulationResourcesCommand)([ParticleResources](FRHICommandList& RHICmdList)
 		{
@@ -395,10 +405,13 @@ public:
 			ParticleResources->RenderAttributesTexture.InitResource();
 			ParticleResources->SimulationAttributesTexture.InitResource();
 
-			FRHITransitionInfo AttributeTextures[2];
-			AttributeTextures[0] = FRHITransitionInfo(ParticleResources->RenderAttributesTexture.TextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask);
-			AttributeTextures[1] = FRHITransitionInfo(ParticleResources->SimulationAttributesTexture.TextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask);
-			RHICmdList.Transition(MakeArrayView(AttributeTextures, 2));
+			RHICmdList.Transition({ 
+				FRHITransitionInfo(ParticleResources->RenderAttributesTexture.TextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics),
+				FRHITransitionInfo(ParticleResources->SimulationAttributesTexture.TextureRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics),
+				FRHITransitionInfo(ParticleResources->StateTextures[0].PositionTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics),
+				FRHITransitionInfo(ParticleResources->StateTextures[0].VelocityTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics),
+				FRHITransitionInfo(ParticleResources->StateTextures[1].PositionTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics),
+				FRHITransitionInfo(ParticleResources->StateTextures[1].VelocityTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVGraphics)});
 		});
 	}
 
@@ -497,21 +510,21 @@ private:
  * Uniform buffer for GPU particle sprite emitters.
  */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FGPUSpriteEmitterUniformParameters,)
-	SHADER_PARAMETER(FVector4, ColorCurve)
-	SHADER_PARAMETER(FVector4, ColorScale)
-	SHADER_PARAMETER(FVector4, ColorBias)
-	SHADER_PARAMETER(FVector4, MiscCurve)
-	SHADER_PARAMETER(FVector4, MiscScale)
-	SHADER_PARAMETER(FVector4, MiscBias)
-	SHADER_PARAMETER(FVector4, SizeBySpeed)
-	SHADER_PARAMETER(FVector4, SubImageSize)
-	SHADER_PARAMETER(FVector4, TangentSelector)
-	SHADER_PARAMETER(FVector, CameraFacingBlend)
+	SHADER_PARAMETER(FVector4f, ColorCurve)
+	SHADER_PARAMETER(FVector4f, ColorScale)
+	SHADER_PARAMETER(FVector4f, ColorBias)
+	SHADER_PARAMETER(FVector4f, MiscCurve)
+	SHADER_PARAMETER(FVector4f, MiscScale)
+	SHADER_PARAMETER(FVector4f, MiscBias)
+	SHADER_PARAMETER(FVector4f, SizeBySpeed)
+	SHADER_PARAMETER(FVector4f, SubImageSize)
+	SHADER_PARAMETER(FVector4f, TangentSelector)
+	SHADER_PARAMETER(FVector3f, CameraFacingBlend)
 	SHADER_PARAMETER(float, RemoveHMDRoll)
 	SHADER_PARAMETER(float, RotationRateScale)
 	SHADER_PARAMETER(float, RotationBias)
 	SHADER_PARAMETER(float, CameraMotionBlurAmount)
-	SHADER_PARAMETER(FVector2D, PivotOffset)
+	SHADER_PARAMETER(FVector2f, PivotOffset)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FGPUSpriteEmitterUniformParameters, "EmitterUniforms");
@@ -522,12 +535,13 @@ typedef TUniformBufferRef<FGPUSpriteEmitterUniformParameters> FGPUSpriteEmitterU
  * Uniform buffer to hold dynamic parameters for GPU particle sprite emitters.
  */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FGPUSpriteEmitterDynamicUniformParameters, )
-	SHADER_PARAMETER( FVector2D, LocalToWorldScale )
+	SHADER_PARAMETER( FVector3f, LWCTile )
+	SHADER_PARAMETER( FVector2f, LocalToWorldScale )
 	SHADER_PARAMETER( float, EmitterInstRandom)
-	SHADER_PARAMETER( FVector4, AxisLockRight )
-	SHADER_PARAMETER( FVector4, AxisLockUp )
-	SHADER_PARAMETER( FVector4, DynamicColor)
-	SHADER_PARAMETER( FVector4, MacroUVParameters )
+	SHADER_PARAMETER( FVector4f, AxisLockRight )
+	SHADER_PARAMETER( FVector4f, AxisLockUp )
+	SHADER_PARAMETER( FVector4f, DynamicColor)
+	SHADER_PARAMETER( FVector4f, MacroUVParameters )
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FGPUSpriteEmitterDynamicUniformParameters, "EmitterDynamicUniforms");
@@ -539,9 +553,9 @@ typedef TUniformBufferRef<FGPUSpriteEmitterDynamicUniformParameters> FGPUSpriteE
  */
 class FGPUSpriteVertexFactoryShaderParametersVS : public FVertexFactoryShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FGPUSpriteVertexFactoryShaderParametersVS, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FGPUSpriteVertexFactoryShaderParametersVS, NonVirtual);
 public:
-	void Bind( const FShaderParameterMap& ParameterMap )
+	void Bind(const FShaderParameterMap& ParameterMap)
 	{
 		ParticleIndices.Bind(ParameterMap, TEXT("ParticleIndices"));
 		ParticleIndicesOffset.Bind(ParameterMap, TEXT("ParticleIndicesOffset"));
@@ -566,33 +580,32 @@ public:
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams) const;
 private:
-
-	
-		/** Buffer containing particle indices. */
-		LAYOUT_FIELD(FShaderResourceParameter, ParticleIndices)
-		/** Offset in to the particle indices buffer. */
-		LAYOUT_FIELD(FShaderParameter, ParticleIndicesOffset)
-		/** Texture containing positions for all particles. */
-		LAYOUT_FIELD(FShaderResourceParameter, PositionTexture)
-		LAYOUT_FIELD(FShaderResourceParameter, PositionTextureSampler)
-		/** Texture containing velocities for all particles. */
-		LAYOUT_FIELD(FShaderResourceParameter, VelocityTexture)
-		LAYOUT_FIELD(FShaderResourceParameter, VelocityTextureSampler)
-		/** Texture containint attributes for all particles. */
-		LAYOUT_FIELD(FShaderResourceParameter, AttributesTexture)
-		LAYOUT_FIELD(FShaderResourceParameter, AttributesTextureSampler)
-		/** Texture containing curves from which attributes are sampled. */
-		LAYOUT_FIELD(FShaderResourceParameter, CurveTexture)
-		LAYOUT_FIELD(FShaderResourceParameter, CurveTextureSampler)
-	
+	/** Buffer containing particle indices. */
+	LAYOUT_FIELD(FShaderResourceParameter, ParticleIndices);
+	/** Offset in to the particle indices buffer. */
+	LAYOUT_FIELD(FShaderParameter, ParticleIndicesOffset);
+	/** Texture containing positions for all particles. */
+	LAYOUT_FIELD(FShaderResourceParameter, PositionTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, PositionTextureSampler);
+	/** Texture containing velocities for all particles. */
+	LAYOUT_FIELD(FShaderResourceParameter, VelocityTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, VelocityTextureSampler);
+	/** Texture containint attributes for all particles. */
+	LAYOUT_FIELD(FShaderResourceParameter, AttributesTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, AttributesTextureSampler);
+	/** Texture containing curves from which attributes are sampled. */
+	LAYOUT_FIELD(FShaderResourceParameter, CurveTexture);
+	LAYOUT_FIELD(FShaderResourceParameter, CurveTextureSampler);
 };
+
+IMPLEMENT_TYPE_LAYOUT(FGPUSpriteVertexFactoryShaderParametersVS);
 
 /**
  * Pixel shader parameters for the particle vertex factory.
  */
 class FGPUSpriteVertexFactoryShaderParametersPS : public FVertexFactoryShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FGPUSpriteVertexFactoryShaderParametersPS, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FGPUSpriteVertexFactoryShaderParametersPS, NonVirtual);
 public:
 	void GetElementShaderBindings(
 		const FSceneInterface* Scene,
@@ -604,10 +617,9 @@ public:
 		const FMeshBatchElement& BatchElement,
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams) const;
-
-	
-	
 };
+
+IMPLEMENT_TYPE_LAYOUT(FGPUSpriteVertexFactoryShaderParametersPS);
 
 /**
  * GPU Sprite vertex factory vertex declaration.
@@ -627,7 +639,7 @@ public:
 		FVertexDeclarationElementList Elements;
 
 		/** The stream to read the texture coordinates from. */
-		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, sizeof(FVector2D), false));
+		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, sizeof(FVector2f), false));
 
 		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
@@ -678,7 +690,8 @@ public:
 	FRHITexture2D* VelocityTextureRHI;
 	/** Texture containint attributes for all particles. */
 	FRHITexture2D* AttributesTextureRHI;
-
+	/** LWC tile offset, will be 0,0,0 for localspace emitters. */
+	FVector3f LWCTile;
 
 	FGPUSpriteVertexFactory()
 		: FParticleVertexFactoryBase(PVFT_MAX, ERHIFeatureLevel::Num)
@@ -686,6 +699,7 @@ public:
 		, PositionTextureRHI(nullptr)
 		, VelocityTextureRHI(nullptr)
 		, AttributesTextureRHI(nullptr)
+		, LWCTile(FVector3f::ZeroVector)
 	{}
 
 	/**
@@ -700,7 +714,7 @@ public:
 
 		// Stream 0: Global particle texture coordinate buffer.
 		Stream.VertexBuffer = &GParticleTexCoordVertexBuffer;
-		Stream.Stride = sizeof(FVector2D);
+		Stream.Stride = sizeof(FVector2f);
 		Stream.Offset = 0;
 		Streams.Add( Stream );
 
@@ -791,7 +805,10 @@ void FGPUSpriteVertexFactoryShaderParametersPS::GetElementShaderBindings(
 
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FGPUSpriteVertexFactory, SF_Vertex, FGPUSpriteVertexFactoryShaderParametersVS);
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FGPUSpriteVertexFactory, SF_Pixel, FGPUSpriteVertexFactoryShaderParametersPS);
-IMPLEMENT_VERTEX_FACTORY_TYPE(FGPUSpriteVertexFactory,"/Engine/Private/ParticleGPUSpriteVertexFactory.ush",true,false,true,false,false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FGPUSpriteVertexFactory,"/Engine/Private/ParticleGPUSpriteVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsDynamicLighting
+);
 
 /*-----------------------------------------------------------------------------
 	Shaders used for simulation.
@@ -801,21 +818,21 @@ IMPLEMENT_VERTEX_FACTORY_TYPE(FGPUSpriteVertexFactory,"/Engine/Private/ParticleG
  * Uniform buffer to hold parameters for particle simulation.
  */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FParticleSimulationParameters,)
-	SHADER_PARAMETER(FVector4, AttributeCurve)
-	SHADER_PARAMETER(FVector4, AttributeCurveScale)
-	SHADER_PARAMETER(FVector4, AttributeCurveBias)
-	SHADER_PARAMETER(FVector4, AttributeScale)
-	SHADER_PARAMETER(FVector4, AttributeBias)
-	SHADER_PARAMETER(FVector4, MiscCurve)
-	SHADER_PARAMETER(FVector4, MiscScale)
-	SHADER_PARAMETER(FVector4, MiscBias)
-	SHADER_PARAMETER(FVector, Acceleration)
-	SHADER_PARAMETER(FVector, OrbitOffsetBase)
-	SHADER_PARAMETER(FVector, OrbitOffsetRange)
-	SHADER_PARAMETER(FVector, OrbitFrequencyBase)
-	SHADER_PARAMETER(FVector, OrbitFrequencyRange)
-	SHADER_PARAMETER(FVector, OrbitPhaseBase)
-	SHADER_PARAMETER(FVector, OrbitPhaseRange)
+	SHADER_PARAMETER(FVector4f, AttributeCurve)
+	SHADER_PARAMETER(FVector4f, AttributeCurveScale)
+	SHADER_PARAMETER(FVector4f, AttributeCurveBias)
+	SHADER_PARAMETER(FVector4f, AttributeScale)
+	SHADER_PARAMETER(FVector4f, AttributeBias)
+	SHADER_PARAMETER(FVector4f, MiscCurve)
+	SHADER_PARAMETER(FVector4f, MiscScale)
+	SHADER_PARAMETER(FVector4f, MiscBias)
+	SHADER_PARAMETER(FVector3f, Acceleration)
+	SHADER_PARAMETER(FVector3f, OrbitOffsetBase)
+	SHADER_PARAMETER(FVector3f, OrbitOffsetRange)
+	SHADER_PARAMETER(FVector3f, OrbitFrequencyBase)
+	SHADER_PARAMETER(FVector3f, OrbitFrequencyRange)
+	SHADER_PARAMETER(FVector3f, OrbitPhaseBase)
+	SHADER_PARAMETER(FVector3f, OrbitPhaseRange)
 	SHADER_PARAMETER(float, CollisionRadiusScale)
 	SHADER_PARAMETER(float, CollisionRadiusBias)
 	SHADER_PARAMETER(float, CollisionTimeBias)
@@ -834,11 +851,11 @@ typedef TUniformBufferRef<FParticleSimulationParameters> FParticleSimulationBuff
 struct FParticlePerFrameSimulationParameters
 {
 	/** Position (XYZ) and squared radius (W) of the point attractor. */
-	FVector4 PointAttractor;
+	FVector4f PointAttractor;
 	/** Position offset (XYZ) to add to particles and strength of the attractor (W). */
-	FVector4 PositionOffsetAndAttractorStrength;
+	FVector4f PositionOffsetAndAttractorStrength;
 	/** Amount by which to scale bounds for collision purposes. */
-	FVector2D LocalToWorldScale;
+	FVector2f LocalToWorldScale;
 
 	/** Amount of time by which to simulate particles in the fix dt pass. */
 	float DeltaSecondsInFix;
@@ -853,15 +870,19 @@ struct FParticlePerFrameSimulationParameters
 	/** Amount of time by which to simulate particles. */
 	float DeltaSeconds;
 
+	/** LWC tile offset, will be 0,0,0 for localspace emitters. */
+	FVector3f LWCTile;
+
 	FParticlePerFrameSimulationParameters()
-		: PointAttractor(FVector::ZeroVector,0.0f)
-		, PositionOffsetAndAttractorStrength(FVector::ZeroVector,0.0f)
+		: PointAttractor(FVector3f::ZeroVector,0.0f)
+		, PositionOffsetAndAttractorStrength(FVector3f::ZeroVector,0.0f)
 		, LocalToWorldScale(1.0f, 1.0f)
 		, DeltaSecondsInFix(0.0f)
 		, NumIterationsInFix(0)
 		, DeltaSecondsInVar(0.0f)
 		, NumIterationsInVar(0)
 		, DeltaSeconds(0.0f)
+		, LWCTile(FVector3f::ZeroVector)
 
 	{
 	}
@@ -891,6 +912,7 @@ public:
 		LocalToWorldScale.Bind(ParameterMap,TEXT("LocalToWorldScale"));
 		DeltaSeconds.Bind(ParameterMap,TEXT("DeltaSeconds"));
 		NumIterations.Bind(ParameterMap,TEXT("NumIterations"));
+		LWCTile.Bind(ParameterMap,TEXT("LWCTile"));
 	}
 
 	template <typename ShaderRHIParamRef>
@@ -899,13 +921,14 @@ public:
 		// The offset must only be applied once in the frame, and be stored in the persistent data (not the interpolated one).
 		const float FixDeltaSeconds = CVarGPUParticleFixDeltaSeconds.GetValueOnRenderThread();
 		const bool bApplyOffset = FixDeltaSeconds <= 0 || bUseFixDT;
-		const FVector4 OnlyAttractorStrength = FVector4(0, 0, 0, Parameters.PositionOffsetAndAttractorStrength.W);
+		const FVector4f OnlyAttractorStrength = FVector4f(0, 0, 0, Parameters.PositionOffsetAndAttractorStrength.W);
 
 		SetShaderValue(RHICmdList,ShaderRHI,PointAttractor,Parameters.PointAttractor);
 		SetShaderValue(RHICmdList,ShaderRHI,PositionOffsetAndAttractorStrength, bApplyOffset ? Parameters.PositionOffsetAndAttractorStrength : OnlyAttractorStrength);
 		SetShaderValue(RHICmdList,ShaderRHI,LocalToWorldScale,Parameters.LocalToWorldScale);
 		SetShaderValue(RHICmdList,ShaderRHI,DeltaSeconds, bUseFixDT ? Parameters.DeltaSecondsInFix : Parameters.DeltaSecondsInVar);
 		SetShaderValue(RHICmdList,ShaderRHI,NumIterations, bUseFixDT ? Parameters.NumIterationsInFix : Parameters.NumIterationsInVar);
+		SetShaderValue(RHICmdList,ShaderRHI,LWCTile, Parameters.LWCTile);
 	}
 
 	LAYOUT_FIELD(FShaderParameter, PointAttractor);
@@ -913,6 +936,7 @@ public:
 	LAYOUT_FIELD(FShaderParameter, LocalToWorldScale);
 	LAYOUT_FIELD(FShaderParameter, DeltaSeconds);
 	LAYOUT_FIELD(FShaderParameter, NumIterations);
+	LAYOUT_FIELD(FShaderParameter, LWCTile);
 	
 };
 
@@ -923,6 +947,7 @@ FArchive& operator<<(FArchive& Ar, FParticlePerFrameSimulationShaderParameters& 
 	Ar << PerFrameParameters.LocalToWorldScale;
 	Ar << PerFrameParameters.DeltaSeconds;
 	Ar << PerFrameParameters.NumIterations;
+	Ar << PerFrameParameters.LWCTile;
 	return Ar;
 }
 
@@ -932,11 +957,11 @@ FArchive& operator<<(FArchive& Ar, FParticlePerFrameSimulationShaderParameters& 
  */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FVectorFieldUniformParameters,)
 	SHADER_PARAMETER( int32, Count )
-	SHADER_PARAMETER_ARRAY( FMatrix, WorldToVolume, [MAX_VECTOR_FIELDS] )
-	SHADER_PARAMETER_ARRAY( FMatrix, VolumeToWorld, [MAX_VECTOR_FIELDS] )
-	SHADER_PARAMETER_ARRAY( FVector4, IntensityAndTightness, [MAX_VECTOR_FIELDS] )
-	SHADER_PARAMETER_ARRAY( FVector4, VolumeSize, [MAX_VECTOR_FIELDS] )
-	SHADER_PARAMETER_ARRAY( FVector4, TilingAxes, [MAX_VECTOR_FIELDS] )
+	SHADER_PARAMETER_ARRAY( FMatrix44f, WorldToVolume, [MAX_VECTOR_FIELDS] )
+	SHADER_PARAMETER_ARRAY( FMatrix44f, VolumeToWorld, [MAX_VECTOR_FIELDS] )
+	SHADER_PARAMETER_ARRAY( FVector4f, IntensityAndTightness, [MAX_VECTOR_FIELDS] )
+	SHADER_PARAMETER_ARRAY( FVector4f, VolumeSize, [MAX_VECTOR_FIELDS] )
+	SHADER_PARAMETER_ARRAY( FVector4f, TilingAxes, [MAX_VECTOR_FIELDS] )
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FVectorFieldUniformParameters, "VectorFields");
@@ -1059,9 +1084,7 @@ public:
 		const FParticleAttributesTexture& InRenderAttributesTexture,
 		FRHIUniformBuffer* ViewUniformBuffer,
 		ERHIFeatureLevel::Type FeatureLevel,
-		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData,
-		const FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-		FRHIUniformBuffer* SceneTexturesUniformBuffer
+		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData
 		)
 	{
 		FRHIPixelShader* PixelShaderRHI = RHICmdList.GetBoundPixelShader();
@@ -1077,7 +1100,6 @@ public:
 			check(ViewUniformBuffer != NULL);
 			FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, PixelShaderRHI, ViewUniformBuffer);
 
-			SetUniformBufferParameter(RHICmdList, PixelShaderRHI, GetUniformBufferParameter(SceneTexturesUniformBufferStruct), SceneTexturesUniformBuffer);
 			SetTextureParameter(
 				RHICmdList, 
 				PixelShaderRHI,
@@ -1090,6 +1112,9 @@ public:
 		}
 		else if (CollisionMode == PCM_DistanceField)
 		{
+			check(ViewUniformBuffer != NULL);
+			FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, PixelShaderRHI, ViewUniformBuffer);
+
 			GlobalDistanceFieldParameters.Set(RHICmdList, PixelShaderRHI, *GlobalDistanceFieldParameterData);
 
 			SetTextureParameter(
@@ -1227,7 +1252,7 @@ public:
 	{
 		FVertexDeclarationElementList Elements;
 		// TexCoord.
-		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, sizeof(FVector2D), /*bUseInstanceIndex=*/ false));
+		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, sizeof(FVector2f), /*bUseInstanceIndex=*/ false));
 		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration( Elements );
 	}
 
@@ -1254,9 +1279,9 @@ public:
 	{
 		FVertexDeclarationElementList Elements;
 		// TexCoord.
-		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, sizeof(FVector2D), /*bUseInstanceIndex=*/ false));
+		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, sizeof(FVector2f), /*bUseInstanceIndex=*/ false));
 		// TileOffsets
-		Elements.Add(FVertexElement(1, 0, VET_Float2, 1, sizeof(FVector2D), /*bUseInstanceIndex=*/ true));
+		Elements.Add(FVertexElement(1, 0, VET_Float2, 1, sizeof(FVector2f), /*bUseInstanceIndex=*/ true));
 		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration( Elements );
 	}
 
@@ -1290,14 +1315,14 @@ FORCEINLINE int32 ComputeAlignedTileCount(int32 TileCount)
 
 /**
  * Builds a vertex buffer containing the offsets for a set of tiles.
- * @param TileOffsetsRef - The vertex buffer to fill. Must be at least TileCount * sizeof(FVector4) in size.
+ * @param TileOffsetsRef - The vertex buffer to fill. Must be at least TileCount * sizeof(FVector4f) in size.
  * @param Tiles - The tiles which will be drawn.
  * @param TileCount - The number of tiles in the array.
  * @param AlignedTileCount - The number of tiles to create in buffer for aligned rendering.
  */
 static void BuildTileVertexBuffer(FParticleBufferParamRef TileOffsetsRef, const uint32* Tiles, int32 TileCount, int32 AlignedTileCount)
 {
-	FVector2D* TileOffset = (FVector2D*)RHILockVertexBuffer( TileOffsetsRef, 0, AlignedTileCount * sizeof(FVector2D), RLM_WriteOnly );
+	FVector2f* TileOffset = (FVector2f*)RHILockBuffer( TileOffsetsRef, 0, AlignedTileCount * sizeof(FVector2f), RLM_WriteOnly );
 	for ( int32 Index = 0; Index < TileCount; ++Index )
 	{
 		const uint32 TileIndex = Tiles[Index];
@@ -1309,7 +1334,7 @@ static void BuildTileVertexBuffer(FParticleBufferParamRef TileOffsetsRef, const 
 		TileOffset[Index].X = 100.0f;
 		TileOffset[Index].Y = 100.0f;
 	}
-	RHIUnlockVertexBuffer( TileOffsetsRef );
+	RHIUnlockBuffer( TileOffsetsRef );
 }
 
 /**
@@ -1421,7 +1446,6 @@ void ExecuteSimulationCommands(
 	FParticleSimulationResources* ParticleSimulationResources,
 	FRHIUniformBuffer* ViewUniformBuffer,
 	const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData,
-	const FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
 	FRHIUniformBuffer* SceneTexturesUniformBuffer,
 	bool bUseFixDT)
 {
@@ -1434,12 +1458,12 @@ void ExecuteSimulationCommands(
 	SCOPED_DRAW_EVENT(RHICmdList, ParticleSimulation);
 	SCOPED_GPU_STAT(RHICmdList, ParticleSimulation);
 
-	FUniformBufferStaticBindings GlobalUniformBuffers;
+	FUniformBufferStaticBindings StaticUniformBuffers;
 	if (SceneTexturesUniformBuffer)
 	{
-		GlobalUniformBuffers.AddUniformBuffer(SceneTexturesUniformBuffer);
+		StaticUniformBuffers.AddUniformBuffer(SceneTexturesUniformBuffer);
 	}
-	SCOPED_UNIFORM_BUFFER_GLOBAL_BINDINGS(RHICmdList, GlobalUniformBuffers);
+	SCOPED_UNIFORM_BUFFER_STATIC_BINDINGS(RHICmdList, StaticUniformBuffers);
 
 	const float FixDeltaSeconds = CVarGPUParticleFixDeltaSeconds.GetValueOnRenderThread();
 	const FParticleStateTextures& TextureResources = (FixDeltaSeconds <= 0 || bUseFixDT) ? ParticleSimulationResources->GetPreviousStateTextures() : ParticleSimulationResources->GetCurrentStateTextures();
@@ -1455,9 +1479,9 @@ void ExecuteSimulationCommands(
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-	PixelShader->SetParameters(RHICmdList, TextureResources, AttributeTexture, RenderAttributeTexture, ViewUniformBuffer, FeatureLevel, GlobalDistanceFieldParameterData, SceneTexturesUniformBufferStruct, SceneTexturesUniformBuffer);
+	PixelShader->SetParameters(RHICmdList, TextureResources, AttributeTexture, RenderAttributeTexture, ViewUniformBuffer, FeatureLevel, GlobalDistanceFieldParameterData);
 
 	// Draw tiles to perform the simulation step.
 	const int32 CommandCount = SimulationCommands.Num();
@@ -1496,7 +1520,6 @@ void ExecuteSimulationCommands(
 	FParticleSimulationResources* ParticleSimulationResources,
 	FRHIUniformBuffer* ViewUniformBuffer,
 	const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData,
-	const FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
 	FRHIUniformBuffer* SceneTexturesUniformBuffer,
 	EParticleSimulatePhase::Type Phase,
 	bool bUseFixDT)
@@ -1511,7 +1534,6 @@ void ExecuteSimulationCommands(
 			ParticleSimulationResources,
 			ViewUniformBuffer,
 			GlobalDistanceFieldParameterData,
-			SceneTexturesUniformBufferStruct,
 			SceneTexturesUniformBuffer,
 			bUseFixDT);
 	}
@@ -1525,7 +1547,6 @@ void ExecuteSimulationCommands(
 			ParticleSimulationResources,
 			ViewUniformBuffer,
 			GlobalDistanceFieldParameterData,
-			SceneTexturesUniformBufferStruct,
 			SceneTexturesUniformBuffer,
 			bUseFixDT);
 	}
@@ -1539,7 +1560,6 @@ void ExecuteSimulationCommands(
 			ParticleSimulationResources,
 			NULL,
 			GlobalDistanceFieldParameterData,
-			SceneTexturesUniformBufferStruct,
 			SceneTexturesUniformBuffer,
 			bUseFixDT);
 	}
@@ -1573,9 +1593,9 @@ void ClearTiles(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& 
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 	
-	const int32 MaxTilesPerDrawCallUnaligned = GParticleScratchVertexBufferSize / sizeof(FVector2D);
+	const int32 MaxTilesPerDrawCallUnaligned = GParticleScratchVertexBufferSize / sizeof(FVector2f);
 	const int32 MaxTilesPerDrawCall = (FeatureLevel <= ERHIFeatureLevel::ES3_1 ? MaxTilesPerDrawCallUnaligned : MaxTilesPerDrawCallUnaligned & (~(TILES_PER_INSTANCE-1)));
 	int32 TileCount = Tiles.Num();
 	int32 FirstTile = 0;
@@ -1609,7 +1629,7 @@ void ClearTiles(FRHICommandList& RHICmdList, FGraphicsPipelineStateInitializer& 
  * Uniform buffer to hold parameters for particle simulation.
  */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FParticleInjectionParameters, )
-	SHADER_PARAMETER( FVector2D, PixelScale )
+	SHADER_PARAMETER( FVector2f, PixelScale )
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FParticleInjectionParameters, "ParticleInjection");
@@ -1722,27 +1742,27 @@ public:
 			uint16 Stride = sizeof(FNewParticle);
 			// InitialPosition.
 			Elements.Add(FVertexElement(0, Offset, VET_Float4, 0, Stride, /*bUseInstanceIndex=*/ true));
-			Offset += sizeof(FVector4);
+			Offset += sizeof(FVector4f);
 			// InitialVelocity.
 			Elements.Add(FVertexElement(0, Offset, VET_Float4, 1, Stride, /*bUseInstanceIndex=*/ true));
-			Offset += sizeof(FVector4);
+			Offset += sizeof(FVector4f);
 			// RenderAttributes.
 			Elements.Add(FVertexElement(0, Offset, VET_Float4, 2, Stride, /*bUseInstanceIndex=*/ true));
-			Offset += sizeof(FVector4);
+			Offset += sizeof(FVector4f);
 			// SimulationAttributes.
 			Elements.Add(FVertexElement(0, Offset, VET_Float4, 3, Stride, /*bUseInstanceIndex=*/ true));
-			Offset += sizeof(FVector4);
+			Offset += sizeof(FVector4f);
 			// ParticleIndex.
 			Elements.Add(FVertexElement(0, Offset, VET_Float2, 4, Stride, /*bUseInstanceIndex=*/ true));
-			Offset += sizeof(FVector2D);
+			Offset += sizeof(FVector2f);
 		}
 
 		// Stream 1.
 		{
 			int32 Offset = 0;
 			// TexCoord.
-			Elements.Add(FVertexElement(1, Offset, VET_Float2, 5, sizeof(FVector2D), /*bUseInstanceIndex=*/ false));
-			Offset += sizeof(FVector2D);
+			Elements.Add(FVertexElement(1, Offset, VET_Float2, 5, sizeof(FVector2f), /*bUseInstanceIndex=*/ false));
+			Offset += sizeof(FVector2f);
 		}
 
 		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration( Elements );
@@ -1770,7 +1790,7 @@ void InjectNewParticles(FRHICommandList& RHICmdList, FGraphicsPipelineStateIniti
 	}
 
 	const int32 MaxParticlesPerDrawCall = GParticleScratchVertexBufferSize / sizeof(FNewParticle);
-	FRHIVertexBuffer* ScratchVertexBufferRHI = GParticleScratchVertexBuffer.VertexBufferRHI;
+	FRHIBuffer* ScratchVertexBufferRHI = GParticleScratchVertexBuffer.VertexBufferRHI;
 	int32 ParticleCount = NewParticles.Num();
 	int32 FirstParticle = 0;
 
@@ -1780,9 +1800,9 @@ void InjectNewParticles(FRHICommandList& RHICmdList, FGraphicsPipelineStateIniti
 		// Copy new particles in to the vertex buffer.
 		const int32 ParticlesThisDrawCall = FMath::Min<int32>( ParticleCount, MaxParticlesPerDrawCall );
 		const void* Src = NewParticles.GetData() + FirstParticle;
-		void* Dest = RHILockVertexBuffer( ScratchVertexBufferRHI, 0, ParticlesThisDrawCall * sizeof(FNewParticle), RLM_WriteOnly );
+		void* Dest = RHILockBuffer( ScratchVertexBufferRHI, 0, ParticlesThisDrawCall * sizeof(FNewParticle), RLM_WriteOnly );
 		FMemory::Memcpy( Dest, Src, ParticlesThisDrawCall * sizeof(FNewParticle) );
-		RHIUnlockVertexBuffer( ScratchVertexBufferRHI );
+		RHIUnlockBuffer( ScratchVertexBufferRHI );
 		ParticleCount -= ParticlesThisDrawCall;
 		FirstParticle += ParticlesThisDrawCall;
 
@@ -1795,7 +1815,7 @@ void InjectNewParticles(FRHICommandList& RHICmdList, FGraphicsPipelineStateIniti
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 		
 		VertexShader->SetParameters(RHICmdList);
@@ -1835,7 +1855,7 @@ void InjectNewParticles(FRHICommandList& RHICmdList, FGraphicsPipelineStateIniti
  * Uniform buffer to hold parameters for visualizing particle simulation.
  */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FParticleSimVisualizeParameters, )
-	SHADER_PARAMETER( FVector4, ScaleBias )
+	SHADER_PARAMETER( FVector4f, ScaleBias )
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FParticleSimVisualizeParameters,"PSV");
@@ -1945,7 +1965,7 @@ public:
 	virtual void InitRHI() override
 	{
 		FVertexDeclarationElementList Elements;
-		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, sizeof(FVector2D)));
+		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, sizeof(FVector2f)));
 		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration( Elements );
 	}
 
@@ -2004,7 +2024,7 @@ static void VisualizeGPUSimulation(
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 		// Parameters for the visualization.
 		FParticleSimVisualizeParameters Parameters;
@@ -2016,7 +2036,7 @@ static void VisualizeGPUSimulation(
 		VertexShader->SetParameters(RHICmdList, UniformBuffer);
 		PixelShader->SetParameters(RHICmdList, VisualizationMode, StateTextures.PositionTextureRHI, CurveTextureRHI);
 
-		const int32 VertexStride = sizeof(FVector2D);
+		const int32 VertexStride = sizeof(FVector2f);
 
 		// Bind vertex stream.
 		RHICmdList.SetStreamSource(
@@ -2044,7 +2064,7 @@ static void VisualizeGPUSimulation(
  * @param VertexBuffer - The buffer with which to fill with particle indices.
  * @param InTiles - The list of tiles for which to generate indices.
  */
-static void BuildParticleVertexBuffer(FRHIVertexBuffer* VertexBufferRHI, const TArray<uint32>& InTiles )
+static void BuildParticleVertexBuffer(FRHIBuffer* VertexBufferRHI, const TArray<uint32>& InTiles )
 {
 	check( IsInRenderingThread() );
 
@@ -2052,7 +2072,7 @@ static void BuildParticleVertexBuffer(FRHIVertexBuffer* VertexBufferRHI, const T
 	const int32 IndexCount = TileCount * GParticlesPerTile;
 	const int32 BufferSize = IndexCount * sizeof(FParticleIndex);
 	const int32 Stride = 1;
-	FParticleIndex* RESTRICT ParticleIndices = (FParticleIndex*)RHILockVertexBuffer( VertexBufferRHI, 0, BufferSize, RLM_WriteOnly );
+	FParticleIndex* RESTRICT ParticleIndices = (FParticleIndex*)RHILockBuffer( VertexBufferRHI, 0, BufferSize, RLM_WriteOnly );
 
 	for ( int32 Index = 0; Index < TileCount; ++Index )
 	{
@@ -2067,15 +2087,18 @@ static void BuildParticleVertexBuffer(FRHIVertexBuffer* VertexBufferRHI, const T
 			{
 				const float IndexX = TileOffset.X + ((float)ParticleX / (float)GParticleSimulationTextureSizeX) + (0.5f / (float)GParticleSimulationTextureSizeX);
 				const float IndexY = TileOffset.Y + ((float)ParticleY / (float)GParticleSimulationTextureSizeY) + (0.5f / (float)GParticleSimulationTextureSizeY);
-				ParticleIndices->X.SetWithoutBoundsChecks(IndexX);
-				ParticleIndices->Y.SetWithoutBoundsChecks(IndexY);					
+
+				// @todo faster float32 -> float16 conversion
+				//	use AVX2/F16C for _mm_cvtps_ph
+				ParticleIndices->X.Set(IndexX);
+				ParticleIndices->Y.Set(IndexY);					
 
 				// move to next particle
 				ParticleIndices += Stride;
 			}
 		}
 	}
-	RHIUnlockVertexBuffer( VertexBufferRHI );
+	RHIUnlockBuffer( VertexBufferRHI );
 }
 
 /*-----------------------------------------------------------------------------
@@ -2219,6 +2242,7 @@ static bool AreBoundsValid( const FVector& Mins, const FVector& Maxs )
  */
 static FBox ComputeParticleBounds(
 	FRHICommandListImmediate& RHICmdList,
+	ERHIFeatureLevel::Type FeatureLevel,
 	FRHIShaderResourceView* VertexBufferSRV,
 	FRHITexture2D* PositionTextureRHI,
 	int32 ParticleCount )
@@ -2227,7 +2251,7 @@ static FBox ComputeParticleBounds(
 	FParticleBoundsParameters Parameters;
 	FParticleBoundsUniformBufferRef UniformBuffer;
 
-	if (ParticleCount > 0 && GMaxRHIFeatureLevel == ERHIFeatureLevel::SM5)
+	if (ParticleCount > 0 && FeatureLevel >= ERHIFeatureLevel::SM5)
 	{
 		// Determine how to break the work up over individual work groups.
 		const uint32 MaxGroupCount = 128;
@@ -2242,9 +2266,9 @@ static FBox ComputeParticleBounds(
 		UniformBuffer = FParticleBoundsUniformBufferRef::CreateUniformBufferImmediate( Parameters, UniformBuffer_SingleFrame );
 
 		// Create a buffer for storing bounds.
-		const int32 BufferSize = GroupCount * 2 * sizeof(FVector4);
-		FRHIResourceCreateInfo CreateInfo;
-		FVertexBufferRHIRef BoundsVertexBufferRHI = RHICreateVertexBuffer(
+		const int32 BufferSize = GroupCount * 2 * sizeof(FVector4f);
+		FRHIResourceCreateInfo CreateInfo(TEXT("BoundsVertexBuffer"));
+		FBufferRHIRef BoundsVertexBufferRHI = RHICreateVertexBuffer(
 			BufferSize,
 			BUF_Static | BUF_UnorderedAccess | BUF_KeepCPUAccessible,
 			CreateInfo);
@@ -2253,7 +2277,7 @@ static FBox ComputeParticleBounds(
 			PF_A32B32G32R32F );
 
 		// Grab the shader.
-		TShaderMapRef<FParticleBoundsCS> ParticleBoundsCS(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+		TShaderMapRef<FParticleBoundsCS> ParticleBoundsCS(GetGlobalShaderMap(FeatureLevel));
 		RHICmdList.SetComputeShader(ParticleBoundsCS.GetComputeShader());
 
 		// Dispatch shader to compute bounds.
@@ -2268,14 +2292,14 @@ static FBox ComputeParticleBounds(
 		ParticleBoundsCS->UnbindBuffers(RHICmdList);
 
 		// Read back bounds.
-		FVector4* GroupBounds = (FVector4*)RHILockVertexBuffer( BoundsVertexBufferRHI, 0, BufferSize, RLM_ReadOnly );
+		FVector4f* GroupBounds = (FVector4f*)RHILockBuffer( BoundsVertexBufferRHI, 0, BufferSize, RLM_ReadOnly );
 
 		// Find valid starting bounds.
 		uint32 GroupIndex = 0;
 		do
 		{
-			BoundingBox.Min = FVector(GroupBounds[GroupIndex * 2 + 0]);
-			BoundingBox.Max = FVector(GroupBounds[GroupIndex * 2 + 1]);
+			BoundingBox.Min = FVector(FVector4(GroupBounds[GroupIndex * 2 + 0]));
+			BoundingBox.Max = FVector(FVector4(GroupBounds[GroupIndex * 2 + 1]));
 			GroupIndex++;
 		} while ( GroupIndex < GroupCount && !AreBoundsValid( BoundingBox.Min, BoundingBox.Max ) );
 
@@ -2290,8 +2314,8 @@ static FBox ComputeParticleBounds(
 			BoundingBox.IsValid = true;
 			while ( GroupIndex < GroupCount )
 			{
-				const FVector Mins( GroupBounds[GroupIndex * 2 + 0] );
-				const FVector Maxs( GroupBounds[GroupIndex * 2 + 1] );
+				FVector Mins( (FVector4)GroupBounds[GroupIndex * 2 + 0] );
+				FVector Maxs( (FVector4)GroupBounds[GroupIndex * 2 + 1] );
 				if ( AreBoundsValid( Mins, Maxs ) )
 				{
 					BoundingBox += Mins;
@@ -2302,7 +2326,7 @@ static FBox ComputeParticleBounds(
 		}
 
 		// Release buffer.
-		RHICmdList.UnlockVertexBuffer(BoundsVertexBufferRHI);
+		RHICmdList.UnlockBuffer(BoundsVertexBufferRHI);
 		BoundsVertexBufferUAV.SafeRelease();
 		BoundsVertexBufferRHI.SafeRelease();
 	}
@@ -2378,11 +2402,11 @@ public:
 		if ( AlignedTileCount > 0 )
 		{
 			int32 BufferAlignedTileCount = (GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1 ? TileCount : AlignedTileCount);
-			const int32 TileBufferSize = BufferAlignedTileCount * sizeof(FVector2D);
+			const int32 TileBufferSize = BufferAlignedTileCount * sizeof(FVector2f);
 			check(TileBufferSize > 0);
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FParticleTileVertexBuffer"));
 			VertexBufferRHI = RHICreateVertexBuffer( TileBufferSize, BUF_Static | BUF_KeepCPUAccessible | BUF_ShaderResource, CreateInfo );
-			VertexBufferSRV = RHICreateShaderResourceView( VertexBufferRHI, /*Stride=*/ sizeof(FVector2D), PF_G32R32F );
+			VertexBufferSRV = RHICreateShaderResourceView( VertexBufferRHI, /*Stride=*/ sizeof(FVector2f), PF_G32R32F );
 		}
 	}
 
@@ -2440,8 +2464,8 @@ public:
 			int32 Count = FMath::Max(ParticleCount, 1);
 			const int32 BufferStride = sizeof(FParticleIndex);
 			const int32 BufferSize = Count * BufferStride;
-			uint32 Flags = BUF_Static | /*BUF_KeepCPUAccessible | */BUF_ShaderResource;
-			FRHIResourceCreateInfo CreateInfo;
+			const EBufferUsageFlags Flags = BUF_Static | /*BUF_KeepCPUAccessible | */BUF_ShaderResource;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FGPUParticleVertexBuffer"));
 			VertexBufferRHI = RHICreateVertexBuffer(BufferSize, Flags, CreateInfo);
 			VertexBufferSRV = RHICreateShaderResourceView(VertexBufferRHI, BufferStride, PF_G16R16F);
 		}
@@ -2924,7 +2948,7 @@ public:
 				FVector2D ObjectNDCPosition;
 				FVector2D ObjectMacroUVScales;
 				Proxy->GetObjectPositionAndScale(*View,ObjectNDCPosition, ObjectMacroUVScales);
-				PerViewDynamicParameters.MacroUVParameters = FVector4(ObjectNDCPosition.X, ObjectNDCPosition.Y, ObjectMacroUVScales.X, ObjectMacroUVScales.Y); 
+				PerViewDynamicParameters.MacroUVParameters = FVector4f(ObjectNDCPosition.X, ObjectNDCPosition.Y, ObjectMacroUVScales.X, ObjectMacroUVScales.Y);
 
 				if (bUseLocalSpace == false)
 				{
@@ -2977,6 +3001,7 @@ public:
 					VertexFactory.PositionTextureRHI = StateTextures.PositionTextureRHI;
 					VertexFactory.VelocityTextureRHI = StateTextures.VelocityTextureRHI;
 					VertexFactory.AttributesTextureRHI = ParticleSimulationResources->RenderAttributesTexture.TextureRHI;
+					VertexFactory.LWCTile = ParticleSimulationResources->LWCTile;
 
 					FMeshBatch& Mesh = Collector.AllocateMesh();
 					FMeshBatchElement& BatchElement = Mesh.Elements[0];
@@ -3218,18 +3243,30 @@ FGPUSpriteParticleEmitterInstance(FFXSystem* InFXSystem, FGPUSpriteEmitterInfo& 
 		UParticleSystem *Template = Component->Template;
 
 		const bool bLocalSpace = EmitterInfo.RequiredModule->bUseLocalSpace;
-		const FMatrix ComponentToWorldMatrix = Component->GetComponentTransform().ToMatrixWithScale();
+		const bool bUseTileOffset = bLocalSpace == false && EmitterInfo.RequiredModule->bSupportLargeWorldCoordinates;
+		FTransform ComponentTransform = Component->GetComponentTransform();
+		if (bUseTileOffset)
+		{
+			ComponentTransform.AddToTranslation(FVector(Component->GetLWCTile()) * -FLargeWorldRenderScalar::GetTileSize());	
+		}
+		const FMatrix ComponentToWorldMatrix = ComponentTransform.ToMatrixWithScale();
 		const FMatrix ComponentToWorld = (bLocalSpace || EmitterInfo.LocalVectorField.bIgnoreComponentTransform) ? FMatrix::Identity : ComponentToWorldMatrix;
-
-		const FRotationMatrix VectorFieldTransform(LocalVectorFieldRotation);
-		const FMatrix VectorFieldToWorld = VectorFieldTransform * EmitterInfo.LocalVectorField.Transform.ToMatrixWithScale() * ComponentToWorld;
+		
 		FGPUSpriteDynamicEmitterData* DynamicData = new FGPUSpriteDynamicEmitterData(EmitterInfo.RequiredModule);
 		DynamicData->FXSystem = FXSystem;
 		DynamicData->Resources = EmitterInfo.Resources;
 		DynamicData->MaterialProxy = GetCurrentMaterial()->GetRenderProxy();
 		DynamicData->bIsMaterialTranslucent = IsTranslucentBlendMode(GetCurrentMaterial()->GetBlendMode());
 		DynamicData->Simulation = Simulation;
-		DynamicData->SimulationBounds = Template->bUseFixedRelativeBoundingBox ? Template->FixedRelativeBoundingBox.TransformBy(ComponentToWorldMatrix) : Component->Bounds.GetBox();
+		DynamicData->SimulationBounds = Template->bUseFixedRelativeBoundingBox ? Template->FixedRelativeBoundingBox.TransformBy(Component->GetComponentTransform()) : Component->Bounds.GetBox();
+		DynamicData->SortMode = EmitterInfo.RequiredModule->SortMode;
+		DynamicData->bSelected = bSelected;
+		DynamicData->bUseLocalSpace = EmitterInfo.RequiredModule->bUseLocalSpace;
+
+		// set up vector field data
+		const FMatrix VectorFieldComponentToWorld = (bLocalSpace || EmitterInfo.LocalVectorField.bIgnoreComponentTransform) ? FMatrix::Identity : Component->GetComponentTransform().ToMatrixWithScale();
+		const FRotationMatrix VectorFieldTransform(LocalVectorFieldRotation);
+		const FMatrix VectorFieldToWorld = VectorFieldTransform * EmitterInfo.LocalVectorField.Transform.ToMatrixWithScale() * VectorFieldComponentToWorld;
 		DynamicData->LocalVectorFieldToWorld = VectorFieldToWorld;
 		DynamicData->LocalVectorFieldIntensity = EmitterInfo.LocalVectorField.Intensity;
 		DynamicData->LocalVectorFieldTightness = EmitterInfo.LocalVectorField.Tightness;	
@@ -3237,12 +3274,12 @@ FGPUSpriteParticleEmitterInstance(FFXSystem* InFXSystem, FGPUSpriteEmitterInfo& 
 		DynamicData->bLocalVectorFieldTileY = EmitterInfo.LocalVectorField.bTileY;	
 		DynamicData->bLocalVectorFieldTileZ = EmitterInfo.LocalVectorField.bTileZ;	
 		DynamicData->bLocalVectorFieldUseFixDT = EmitterInfo.LocalVectorField.bUseFixDT;
-		DynamicData->SortMode = EmitterInfo.RequiredModule->SortMode;
-		DynamicData->bSelected = bSelected;
-		DynamicData->bUseLocalSpace = EmitterInfo.RequiredModule->bUseLocalSpace;
+
+		// Get LWC tile
+		DynamicData->EmitterDynamicParameters.LWCTile = bUseTileOffset ? Component->GetLWCTile() : FVector3f::ZeroVector;
 
 		// Account for LocalToWorld scaling
-		FVector ComponentScale = Component->GetComponentTransform().GetScale3D();
+		FVector ComponentScale = ComponentTransform.GetScale3D();
 		// Figure out if we need to replicate the X channel of size to Y.
 		const bool bSquare = (EmitterInfo.ScreenAlignment == PSA_Square)
 			|| (EmitterInfo.ScreenAlignment == PSA_FacingCameraPosition)
@@ -3254,8 +3291,8 @@ FGPUSpriteParticleEmitterInstance(FFXSystem* InFXSystem, FGPUSpriteEmitterInfo& 
 		// Setup axis lock parameters if required.
 		const FMatrix& LocalToWorld = ComponentToWorld;
 		const EParticleAxisLock LockAxisFlag = (EParticleAxisLock)EmitterInfo.LockAxisFlag;
-		DynamicData->EmitterDynamicParameters.AxisLockRight = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
-		DynamicData->EmitterDynamicParameters.AxisLockUp = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
+		DynamicData->EmitterDynamicParameters.AxisLockRight = FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
+		DynamicData->EmitterDynamicParameters.AxisLockUp = FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
 
 		if(LockAxisFlag != EPAL_NONE)
 		{
@@ -3264,9 +3301,9 @@ FGPUSpriteParticleEmitterInstance(FFXSystem* InFXSystem, FGPUSpriteEmitterInfo& 
 			extern void ComputeLockedAxes(EParticleAxisLock, const FMatrix&, FVector&, FVector&);
 			ComputeLockedAxes( LockAxisFlag, AxisLocalToWorld, AxisLockUp, AxisLockRight );
 
-			DynamicData->EmitterDynamicParameters.AxisLockRight = AxisLockRight;
+			DynamicData->EmitterDynamicParameters.AxisLockRight = (FVector3f)AxisLockRight; // LWC_TODO: precision loss
 			DynamicData->EmitterDynamicParameters.AxisLockRight.W = 1.0f;
-			DynamicData->EmitterDynamicParameters.AxisLockUp = AxisLockUp;
+			DynamicData->EmitterDynamicParameters.AxisLockUp = (FVector3f)AxisLockUp; // LWC_TODO: precision loss
 			DynamicData->EmitterDynamicParameters.AxisLockUp.W = 1.0f;
 		}
 
@@ -3291,11 +3328,11 @@ FGPUSpriteParticleEmitterInstance(FFXSystem* InFXSystem, FGPUSpriteEmitterInfo& 
 		{
 			ColorOverLife.W = EmitterInfo.DynamicAlpha.GetValue(0.0f,Component);
 		}
-		DynamicData->EmitterDynamicParameters.DynamicColor = ColorOverLife * ColorScaleOverLife;
+		DynamicData->EmitterDynamicParameters.DynamicColor = FVector4f(ColorOverLife * ColorScaleOverLife); // LWC_TODO: precision loss
 
 		DynamicData->MacroUVOverride.bOverride = LODLevel->RequiredModule->bOverrideSystemMacroUV;
 		DynamicData->MacroUVOverride.Radius = LODLevel->RequiredModule->MacroUVRadius;
-		DynamicData->MacroUVOverride.Position = LODLevel->RequiredModule->MacroUVPosition;
+		DynamicData->MacroUVOverride.Position = FVector3f(LODLevel->RequiredModule->MacroUVPosition);	// LWC_TODO: Precision loss
 
 		DynamicData->EmitterDynamicParameters.EmitterInstRandom = EmitterInstRandom;
 
@@ -3388,12 +3425,13 @@ FGPUSpriteParticleEmitterInstance(FFXSystem* InFXSystem, FGPUSpriteEmitterInfo& 
 			#endif
 
 			}
-
-			FVector PointAttractorPosition = ComponentToWorld.TransformPosition(EmitterInfo.PointAttractorPosition);
-			DynamicData->PerFrameSimulationParameters.PointAttractor = FVector4(PointAttractorPosition, EmitterInfo.PointAttractorRadiusSq);
-			DynamicData->PerFrameSimulationParameters.PositionOffsetAndAttractorStrength = FVector4(PositionOffsetThisTick, PointAttractorStrength);
+			
+			FVector3f PointAttractorPosition((FVector4f)ComponentToWorld.TransformPosition(EmitterInfo.PointAttractorPosition));	// LWC_TODO: Precision loss
+			DynamicData->PerFrameSimulationParameters.PointAttractor = FVector4f(PointAttractorPosition, EmitterInfo.PointAttractorRadiusSq);
+			DynamicData->PerFrameSimulationParameters.PositionOffsetAndAttractorStrength = FVector4f(FVector3f(PositionOffsetThisTick), PointAttractorStrength);
 			DynamicData->PerFrameSimulationParameters.LocalToWorldScale = DynamicData->EmitterDynamicParameters.LocalToWorldScale;
 			DynamicData->PerFrameSimulationParameters.DeltaSeconds = PendingDeltaSeconds; // This value is used when updating vector fields.
+			DynamicData->PerFrameSimulationParameters.LWCTile = bUseTileOffset ? Component->GetLWCTile() : FVector3f::ZeroVector;
 			Exchange(DynamicData->TilesToClear, TilesToClear);
 			Exchange(DynamicData->NewParticles, NewParticles);
 		}
@@ -3440,6 +3478,8 @@ FGPUSpriteParticleEmitterInstance(FFXSystem* InFXSystem, FGPUSpriteEmitterInfo& 
 		EmitterInstRandom = RandomStream.GetFraction();
 
 		FParticleSimulationResources* ParticleSimulationResources = FXSystem->GetParticleSimulationResources();
+		const bool bUseTileOffset = EmitterInfo.RequiredModule->bUseLocalSpace == false && EmitterInfo.RequiredModule->bSupportLargeWorldCoordinates;
+		ParticleSimulationResources->LWCTile = bUseTileOffset ? Component->GetLWCTile() : FVector3f::ZeroVector;
 		const int32 MinTileCount = GetMinTileCount();
 		int32 NumAllocated = 0;
 		{
@@ -3757,12 +3797,15 @@ FGPUSpriteParticleEmitterInstance(FFXSystem* InFXSystem, FGPUSpriteEmitterInfo& 
 			return;
 		}
 
+		ERHIFeatureLevel::Type FeatureLevel = FXSystem->GetFeatureLevel();
+
 		FGPUSpriteParticleEmitterInstance* EmitterInstance = this;
 		ENQUEUE_RENDER_COMMAND(FComputeGPUSpriteBoundsCommand)(
-			[EmitterInstance](FRHICommandListImmediate& RHICmdList)
+			[EmitterInstance, FeatureLevel](FRHICommandListImmediate& RHICmdList)
 			{
 				EmitterInstance->ParticleBoundingBox = ComputeParticleBounds(
 					RHICmdList,
+					FeatureLevel,
 					EmitterInstance->Simulation->VertexBuffer.VertexBufferSRV,
 					EmitterInstance->FXSystem->GetParticleSimulationResources()->GetVisualizeStateTextures().PositionTextureRHI,
 					EmitterInstance->Simulation->VertexBuffer.ParticleCount
@@ -4073,8 +4116,8 @@ private:
 		for (int32 ParticleIndex = 0; ParticleIndex < ParticleCount; ++ParticleIndex)
 		{
 			FNewParticle* Particle = InNewParticles + ParticleIndex;
-			Particle->Position += (Particle->Velocity + 0.5f * Acceleration * WarmupTime) * WarmupTime;
-			Particle->Velocity += Acceleration * WarmupTime;
+			Particle->Position += (Particle->Velocity + 0.5f * FVector3f(Acceleration) * WarmupTime) * WarmupTime;
+			Particle->Velocity += FVector3f(Acceleration) * WarmupTime;
 			Particle->RelativeTime += Particle->TimeScale * WarmupTime;
 		}
 	}
@@ -4121,7 +4164,7 @@ private:
 			int32 ForceSpawnedOffset = SpawnInfo.Count - ForceSpawned.Num();
 			if (ForceSpawned.Num() && i > ForceSpawnedOffset)
 			{
-				TempParticle->Location = ForceSpawned[i - ForceSpawnedOffset - 1].Position;
+				TempParticle->Location = FVector(ForceSpawned[i - ForceSpawnedOffset - 1].Position);
 				TempParticle->RelativeTime = ForceSpawned[i - ForceSpawnedOffset - 1].RelativeTime;
 				TempParticle->Velocity += ForceSpawned[i - ForceSpawnedOffset - 1].Velocity;
 			}
@@ -4141,16 +4184,24 @@ private:
 			float InterpFraction = (float)i / (float)SpawnInfo.Count;
 
 			NewParticle->Velocity = TempParticle->BaseVelocity;
-			NewParticle->Position = TempParticle->Location + InterpFraction * EmitterDelta + SpawnInfo.StartTime * NewParticle->Velocity + EmitterInfo.OrbitOffsetBase + EmitterInfo.OrbitOffsetRange * RandomOrbit;
+			FVector WSPosition = TempParticle->Location + InterpFraction * EmitterDelta + SpawnInfo.StartTime * (FVector)NewParticle->Velocity + EmitterInfo.OrbitOffsetBase + EmitterInfo.OrbitOffsetRange * RandomOrbit;
+			if (RequiredModule->bUseLocalSpace == false && RequiredModule->bSupportLargeWorldCoordinates)
+			{
+				NewParticle->Position = FVector3f(WSPosition - FLargeWorldRenderScalar::GetTileSize() * FVector(Component->GetLWCTile()));
+			}
+			else
+			{
+				NewParticle->Position = (FVector3f)WSPosition;
+			}
 			NewParticle->RelativeTime = TempParticle->RelativeTime;
 			NewParticle->TimeScale = FMath::Max<float>(TempParticle->OneOverMaxLifetime, 0.001f);
 
 			//So here I'm reducing the size to 0-0.5 range and using < 0.5 to indicate flipped UVs.
-			FVector BaseSize = GetParticleBaseSize(*TempParticle, true);
+			FVector BaseSize = (FVector)GetParticleBaseSize(*TempParticle, true);
 			FVector2D UVFlipSizeOffset = FVector2D(BaseSize.X < 0.0f ? 0.0f : 0.5f, BaseSize.Y < 0.0f ? 0.0f : 0.5f);
 			NewParticle->Size.X = (FMath::Abs(BaseSize.X) * EmitterInfo.InvMaxSize.X * 0.5f);
 			NewParticle->Size.Y = bSquare ? (NewParticle->Size.X) : (FMath::Abs(BaseSize.Y) * EmitterInfo.InvMaxSize.Y * 0.5f);
-			NewParticle->Size += UVFlipSizeOffset;
+			NewParticle->Size += FVector2f(UVFlipSizeOffset);
 
 			NewParticle->Rotation = FMath::Fractional( TempParticle->Rotation * OneOverTwoPi );
 			NewParticle->RelativeRotationRate = TempParticle->BaseRotationRate * OneOverTwoPi * EmitterInfo.InvRotationRateScale / NewParticle->TimeScale;
@@ -4290,8 +4341,8 @@ private:
 		{
 
 			FNewParticle Particle;
-			Particle.Position = SpawnLocation;
-			Particle.Velocity = InVelocity;
+			Particle.Position = (FVector3f)SpawnLocation;
+			Particle.Velocity = (FVector3f)InVelocity;
 			Particle.RelativeTime = Increment*i;
 			ForceSpawnedParticles.Add(Particle);
 		}
@@ -4302,8 +4353,8 @@ private:
 		for (int32 i = 0; i < InBurstCount; i++)
 		{
 			FNewParticle Particle;
-			Particle.Position = SpawnLocation;
-			Particle.Velocity = InVelocity;
+			Particle.Position = (FVector3f)SpawnLocation;
+			Particle.Velocity = (FVector3f)InVelocity;
 			Particle.RelativeTime = 0.0f;
 			ForceBurstSpawnedParticles.Add(Particle);
 		}
@@ -4565,10 +4616,10 @@ static void SetParametersForVectorField(FVectorFieldUniformParameters& OutParame
 			Tightness = FMath::Clamp<float>(VectorFieldInstance->Tightness, 0.0f, 1.0f);
 		}
 
-		OutParameters.WorldToVolume[Index] = VectorFieldInstance->WorldToVolume;
-		OutParameters.VolumeToWorld[Index] = VectorFieldInstance->VolumeToWorldNoScale;
-		OutParameters.VolumeSize[Index] = FVector4(Resource->SizeX, Resource->SizeY, Resource->SizeZ, 0);
-		OutParameters.IntensityAndTightness[Index] = FVector4(Intensity, Tightness, 0, 0 );
+		OutParameters.WorldToVolume[Index] = FMatrix44f(VectorFieldInstance->WorldToVolume);		// LWC_TODO: Precision loss
+		OutParameters.VolumeToWorld[Index] = FMatrix44f(VectorFieldInstance->VolumeToWorldNoScale);
+		OutParameters.VolumeSize[Index] = FVector4f(Resource->SizeX, Resource->SizeY, Resource->SizeZ, 0);
+		OutParameters.IntensityAndTightness[Index] = FVector4f(Intensity, Tightness, 0, 0 );
 		OutParameters.TilingAxes[Index].X = VectorFieldInstance->bTileX ? 1.0f : 0.0f;
 		OutParameters.TilingAxes[Index].Y = VectorFieldInstance->bTileY ? 1.0f : 0.0f;
 		OutParameters.TilingAxes[Index].Z = VectorFieldInstance->bTileZ ? 1.0f : 0.0f;
@@ -4612,6 +4663,11 @@ bool FFXSystem::RequiresEarlyViewUniformBufferInternal() const
 	return false;
 }
 
+bool FFXSystem::RequiresRayTracingSceneInternal() const
+{
+	return false;
+}
+
 void FFXSystem::PrepareGPUSimulation(FRHICommandListImmediate& RHICmdList)
 {
 	// Grab resources.
@@ -4622,32 +4678,22 @@ void FFXSystem::PrepareGPUSimulation(FRHICommandListImmediate& RHICmdList)
 	if (GNumAlternateFrameRenderingGroups == 1)
 	{
 		// Setup render states.
-		FRHITransitionInfo RTVTransitions[2];
-		RTVTransitions[0] = FRHITransitionInfo(CurrentStateTextures.PositionTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::RTV);
-		RTVTransitions[1] = FRHITransitionInfo(CurrentStateTextures.VelocityTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::RTV);
-		RHICmdList.Transition(MakeArrayView(RTVTransitions, 2));
+		RHICmdList.Transition({
+			FRHITransitionInfo(CurrentStateTextures.PositionTextureTargetRHI, ERHIAccess::SRVGraphics, ERHIAccess::RTV),
+			FRHITransitionInfo(CurrentStateTextures.VelocityTextureTargetRHI, ERHIAccess::SRVGraphics, ERHIAccess::RTV)
+		});
 	}
 }
 
 void FFXSystem::FinalizeGPUSimulation(FRHICommandListImmediate& RHICmdList)
 {
-	// Grab resources.
-	FParticleStateTextures& CurrentStateTextures = ParticleSimulationResources->GetVisualizeStateTextures();
-
-	// Setup render states.
-	FRHITransitionInfo SRVTransitions[2];
-	SRVTransitions[0] = FRHITransitionInfo(CurrentStateTextures.PositionTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask);
-	SRVTransitions[1] = FRHITransitionInfo(CurrentStateTextures.VelocityTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask);
-	RHICmdList.Transition(MakeArrayView(SRVTransitions, 2));
 }
 
 void FFXSystem::SimulateGPUParticles(
 	FRHICommandListImmediate& RHICmdList,
 	EParticleSimulatePhase::Type Phase,
 	FRHIUniformBuffer* ViewUniformBuffer,
-	const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData,
-	const FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-	FRHIUniformBuffer* SceneTexturesUniformBuffer
+	const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData
 	)
 {
 	LLM_SCOPE(ELLMTag::Particles);
@@ -4680,13 +4726,35 @@ void FFXSystem::SimulateGPUParticles(
 			// Only the previous state textures are actually being copied, but due to the data
 			// race mentioned in the BroadcastTemporalEffect block below we need to delay
 			// transitioning the current textures to writable state as well.
-			FRHITransitionInfo RTVTransitions[2];
-			RTVTransitions[0] = FRHITransitionInfo(CurrentStateRenderTargets[0], ERHIAccess::Unknown, ERHIAccess::RTV);
-			RTVTransitions[1] = FRHITransitionInfo(CurrentStateRenderTargets[1], ERHIAccess::Unknown, ERHIAccess::RTV);
-			RHICmdList.Transition(MakeArrayView(RTVTransitions, 2));
+			RHICmdList.Transition({
+				FRHITransitionInfo(CurrentStateRenderTargets[0], ERHIAccess::Unknown, ERHIAccess::RTV),
+				FRHITransitionInfo(CurrentStateRenderTargets[1], ERHIAccess::Unknown, ERHIAccess::RTV)});
 		}
 		TemporalEffectTextures.Add(CurrentStateRenderTargets[0]);
 		TemporalEffectTextures.Add(CurrentStateRenderTargets[1]);
+	}
+
+	TArray<FTransferResourceParams, TFixedAllocator<4>> CrossGPUTransferResources;
+	const bool bCrossTransferEnabled = GNumAlternateFrameRenderingGroups == 1 && GNumExplicitGPUsForRendering > 1;
+	auto AddCrossGPUTransferResource =
+		[&](FRHITexture* TextureToTransfer)
+		{
+			const bool bPullData = false;
+			const bool bLockStep = false;
+
+			const FRHIGPUMask GPUMask = RHICmdList.GetGPUMask();
+			for (uint32 GPUIndex : FRHIGPUMask::All())
+			{
+				if (!GPUMask.Contains(GPUIndex))
+				{
+					CrossGPUTransferResources.Emplace(TextureToTransfer, GPUMask.GetFirstIndex(), GPUIndex, bPullData, bLockStep);
+				}
+			}
+		};
+	if (bCrossTransferEnabled)
+	{
+		AddCrossGPUTransferResource(CurrentStateRenderTargets[0]);
+		AddCrossGPUTransferResource(CurrentStateRenderTargets[1]);
 	}
 #endif
 
@@ -4717,15 +4785,17 @@ void FFXSystem::SimulateGPUParticles(
 			RHICmdList.BeginUpdateMultiFrameResource(PreviousStateRenderTargets[1]);
 
 			{
-				RHICmdList.Transition(FRHITransitionInfo(PreviousStateRenderTargets[0], ERHIAccess::Unknown, ERHIAccess::RTV));
-				RHICmdList.Transition(FRHITransitionInfo(PreviousStateRenderTargets[1], ERHIAccess::Unknown, ERHIAccess::RTV));
+				RHICmdList.Transition({
+					FRHITransitionInfo(PreviousStateRenderTargets[0], ERHIAccess::SRVGraphics, ERHIAccess::RTV),
+					FRHITransitionInfo(PreviousStateRenderTargets[1], ERHIAccess::SRVGraphics, ERHIAccess::RTV)});
 
 				FRHIRenderPassInfo RPInfo(2, PreviousStateRenderTargets, ERenderTargetActions::Clear_Store);
 				RHICmdList.BeginRenderPass(RPInfo, TEXT("GPUParticlesClearPreviousStateTextures"));
 				RHICmdList.EndRenderPass();
 
-				RHICmdList.CopyToResolveTarget(PreviousStateRenderTargets[0], PrevStateTextures.PositionTextureTargetRHI, FResolveParams());
-				RHICmdList.CopyToResolveTarget(PreviousStateRenderTargets[1], PrevStateTextures.VelocityTextureTargetRHI, FResolveParams());
+				RHICmdList.Transition({
+					FRHITransitionInfo(PreviousStateRenderTargets[0], ERHIAccess::RTV, ERHIAccess::SRVGraphics),
+					FRHITransitionInfo(PreviousStateRenderTargets[1], ERHIAccess::RTV, ERHIAccess::SRVGraphics) });
 			}
 			
 			PrevStateTextures.bTexturesCleared = true;
@@ -4748,10 +4818,10 @@ void FFXSystem::SimulateGPUParticles(
 			FRHITexture3D* BlackVolumeTextureRHI = (FRHITexture3D*)(FRHITexture*)GBlackVolumeTexture->TextureRHI;
 			for (int32 Index = 0; Index < MAX_VECTOR_FIELDS; ++Index)
 			{
-				VectorFieldParameters.WorldToVolume[Index] = FMatrix::Identity;
-				VectorFieldParameters.VolumeToWorld[Index] = FMatrix::Identity;
-				VectorFieldParameters.VolumeSize[Index] = FVector4(1.0f);
-				VectorFieldParameters.IntensityAndTightness[Index] = FVector4(0.0f);
+				VectorFieldParameters.WorldToVolume[Index] = FMatrix44f::Identity;
+				VectorFieldParameters.VolumeToWorld[Index] = FMatrix44f::Identity;
+				VectorFieldParameters.VolumeSize[Index] = FVector4f(1.0f);
+				VectorFieldParameters.IntensityAndTightness[Index] = FVector4f(0.0f);
 			}
 			VectorFieldParameters.Count = 0;
 			EmptyVectorFieldUniformBuffer = FVectorFieldUniformBufferRef::CreateUniformBufferImmediate(VectorFieldParameters, UniformBuffer_SingleFrame);	
@@ -4803,7 +4873,6 @@ void FFXSystem::SimulateGPUParticles(
 
 			// Determine which vector fields affect this simulation and build the appropriate parameters.
 			{
-				SCOPE_CYCLE_COUNTER(STAT_GPUParticleVFCullTime);
 				FVectorFieldUniformParameters VectorFieldParameters;
 				const FBox SimulationBounds = Simulation->Bounds;
 
@@ -4852,10 +4921,10 @@ void FFXSystem::SimulateGPUParticles(
 					while (PadCount < MAX_VECTOR_FIELDS)
 					{
 						const int32 Index = PadCount++;
-						VectorFieldParameters.WorldToVolume[Index] = FMatrix::Identity;
-						VectorFieldParameters.VolumeToWorld[Index] = FMatrix::Identity;
-						VectorFieldParameters.VolumeSize[Index] = FVector4(1.0f);
-						VectorFieldParameters.IntensityAndTightness[Index] = FVector4(0.0f);
+						VectorFieldParameters.WorldToVolume[Index] = FMatrix44f::Identity;
+						VectorFieldParameters.VolumeToWorld[Index] = FMatrix44f::Identity;
+						VectorFieldParameters.VolumeSize[Index] = FVector4f(1.0f);
+						VectorFieldParameters.IntensityAndTightness[Index] = FVector4f(0.0f);
 					}
 #endif
 		
@@ -4918,8 +4987,7 @@ void FFXSystem::SimulateGPUParticles(
 					ParticleSimulationResources,
 					ViewUniformBuffer,
 					GlobalDistanceFieldParameterData,
-					SceneTexturesUniformBufferStruct,
-					SceneTexturesUniformBuffer,
+					SceneTexturesUniformParams,
 					Phase,
 					FixDeltaSeconds > 0
 				);
@@ -4956,7 +5024,11 @@ void FFXSystem::SimulateGPUParticles(
 
 		FRHIRenderPassInfo RPInfo(4, InjectRenderTargets, ERenderTargetActions::Load_Store);
 		{
-			TransitionRenderPassTargets(RHICmdList, RPInfo);
+			// Transition attribute textures to writeble, particle state texture are in writeble state already
+			RHICmdList.Transition({ 
+				FRHITransitionInfo(InjectRenderTargets[2], ERHIAccess::SRVGraphics, ERHIAccess::RTV),
+				FRHITransitionInfo(InjectRenderTargets[3], ERHIAccess::SRVGraphics, ERHIAccess::RTV)});
+
 			RHICmdList.BeginRenderPass(RPInfo, TEXT("ParticleInjection"));
 
 			FGraphicsPipelineStateInitializer GraphicsPSOInit;
@@ -5002,15 +5074,21 @@ void FFXSystem::SimulateGPUParticles(
 #endif
 			}
 		}
+#if WITH_MGPU
+		if (bCrossTransferEnabled)
+		{
+			AddCrossGPUTransferResource(ParticleSimulationResources->RenderAttributesTexture.TextureTargetRHI);
+			AddCrossGPUTransferResource(ParticleSimulationResources->SimulationAttributesTexture.TextureTargetRHI);
+		}
+#endif
 		RHICmdList.EndUpdateMultiFrameResource(ParticleSimulationResources->RenderAttributesTexture.TextureTargetRHI);
 		RHICmdList.EndUpdateMultiFrameResource(ParticleSimulationResources->SimulationAttributesTexture.TextureTargetRHI);
 	}
 	
 	// finish current state render
-	FRHITransitionInfo SRVTransitions[2];
-	SRVTransitions[0] = FRHITransitionInfo(CurrentStateRenderTargets[0], ERHIAccess::Unknown, ERHIAccess::SRVMask);
-	SRVTransitions[1] = FRHITransitionInfo(CurrentStateRenderTargets[1], ERHIAccess::Unknown, ERHIAccess::SRVMask);
-	RHICmdList.Transition(MakeArrayView(SRVTransitions, 2));
+	RHICmdList.Transition({ 
+		FRHITransitionInfo(CurrentStateRenderTargets[0], ERHIAccess::RTV, ERHIAccess::SRVGraphics),
+		FRHITransitionInfo(CurrentStateRenderTargets[1], ERHIAccess::RTV, ERHIAccess::SRVGraphics)});
 
 	RHICmdList.EndUpdateMultiFrameResource(CurrentStateRenderTargets[0]);
 	RHICmdList.EndUpdateMultiFrameResource(CurrentStateRenderTargets[1]);
@@ -5020,11 +5098,14 @@ void FFXSystem::SimulateGPUParticles(
 		//the fixed timestep works in two stages.  A first stage which simulates the fixed timestep and this second stage which simulates any remaining time from the actual delta time.  e.g.  fixed timestep of 16ms and actual dt of 23ms
 		//will make this second step simulate an interpolated extra 7ms.  This second interpolated step is what we render on THIS frame, but it is NOT fed into the next frame's simulation.  Thus we do not need to transfer it between GPUs in AFR mode.
 		FParticleStateTextures& VisualizeStateTextures = ParticleSimulationResources->GetPreviousStateTextures();
+		
+		RHICmdList.Transition({ 
+			FRHITransitionInfo(VisualizeStateTextures.PositionTextureTargetRHI, ERHIAccess::SRVGraphics, ERHIAccess::RTV),
+			FRHITransitionInfo(VisualizeStateTextures.VelocityTextureTargetRHI, ERHIAccess::SRVGraphics, ERHIAccess::RTV)});
 				
 		FRHITexture* VisualizeStateRHIs[2] = { VisualizeStateTextures.PositionTextureTargetRHI, VisualizeStateTextures.VelocityTextureTargetRHI };
 		FRHIRenderPassInfo RPInfo(2, VisualizeStateRHIs, ERenderTargetActions::Load_Store);
 		{
-			TransitionRenderPassTargets(RHICmdList, RPInfo);
 			RHICmdList.BeginRenderPass(RPInfo, TEXT("ExecuteSimulationCommands"));
 			FGraphicsPipelineStateInitializer GraphicsPSOInit;
 			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
@@ -5041,8 +5122,7 @@ void FFXSystem::SimulateGPUParticles(
 				ParticleSimulationResources,
 				ViewUniformBuffer,
 				GlobalDistanceFieldParameterData,
-				SceneTexturesUniformBufferStruct,
-				SceneTexturesUniformBuffer,
+				SceneTexturesUniformParams,
 				Phase,
 				false
 			);
@@ -5050,10 +5130,9 @@ void FFXSystem::SimulateGPUParticles(
 			RHICmdList.EndRenderPass();
 		}
 
-		FRHITransitionInfo VisualizeSRVTransitions[2];
-		VisualizeSRVTransitions[0] = FRHITransitionInfo(VisualizeStateTextures.PositionTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask);
-		VisualizeSRVTransitions[1] = FRHITransitionInfo(VisualizeStateTextures.VelocityTextureTargetRHI, ERHIAccess::Unknown, ERHIAccess::SRVMask);
-		RHICmdList.Transition(MakeArrayView(VisualizeSRVTransitions, 2));
+		RHICmdList.Transition({ 
+			FRHITransitionInfo(VisualizeStateTextures.PositionTextureTargetRHI, ERHIAccess::RTV, ERHIAccess::SRVGraphics),
+			FRHITransitionInfo(VisualizeStateTextures.VelocityTextureTargetRHI, ERHIAccess::RTV, ERHIAccess::SRVGraphics)});
 	}
 
 #if WITH_MGPU
@@ -5072,9 +5151,16 @@ void FFXSystem::SimulateGPUParticles(
 	// using the textures until we're done, however for a potential AFR performance
 	// boost, we can put the broadcast back to where it was, and use a third buffer for
 	// temporary extra particle simulation work.
-	if (GNumAlternateFrameRenderingGroups > 1 && Phase == PhaseToBroadcastTemporalEffect)
+	if (Phase == PhaseToBroadcastTemporalEffect)
 	{
-		RHICmdList.BroadcastTemporalEffect(TemporalEffectName, TemporalEffectTextures);
+		if (GNumAlternateFrameRenderingGroups > 1)
+		{
+			RHICmdList.BroadcastTemporalEffect(TemporalEffectName, TemporalEffectTextures);
+		}
+		if (CrossGPUTransferResources.Num() > 0)
+		{
+			RHICmdList.TransferResources(CrossGPUTransferResources);
+		}
 	}
 #endif
 
@@ -5189,21 +5275,21 @@ static void SetGPUSpriteResourceData( FGPUSpriteResources* Resources, const FGPU
 
 	// Setup uniform parameters for the emitter.
 	Resources->UniformParameters.ColorCurve = GParticleCurveTexture.ComputeCurveScaleBias(Resources->ColorTexelAllocation);
-	Resources->UniformParameters.ColorScale = InResourceData.ColorScale;
-	Resources->UniformParameters.ColorBias = InResourceData.ColorBias;
+	Resources->UniformParameters.ColorScale = (FVector4f)InResourceData.ColorScale; // LWC_TODO: change property to FVector4f
+	Resources->UniformParameters.ColorBias = (FVector4f)InResourceData.ColorBias; // LWC_TODO: change property to FVector4f
 
 	Resources->UniformParameters.MiscCurve = GParticleCurveTexture.ComputeCurveScaleBias(Resources->MiscTexelAllocation);
-	Resources->UniformParameters.MiscScale = InResourceData.MiscScale;
-	Resources->UniformParameters.MiscBias = InResourceData.MiscBias;
+	Resources->UniformParameters.MiscScale = (FVector4f)InResourceData.MiscScale; // LWC_TODO: change property to FVector4f
+	Resources->UniformParameters.MiscBias = (FVector4f)InResourceData.MiscBias; // LWC_TODO: change property to FVector4f
 
-	Resources->UniformParameters.SizeBySpeed = InResourceData.SizeBySpeed;
-	Resources->UniformParameters.SubImageSize = InResourceData.SubImageSize;
+	Resources->UniformParameters.SizeBySpeed = (FVector4f)InResourceData.SizeBySpeed; // LWC_TODO: change property to FVector4f
+	Resources->UniformParameters.SubImageSize = (FVector4f)InResourceData.SubImageSize; // LWC_TODO: change property to FVector4f
 
 	// Setup tangent selector parameter.
 	const EParticleAxisLock LockAxisFlag = (EParticleAxisLock)InResourceData.LockAxisFlag;
 	const bool bRotationLock = (LockAxisFlag >= EPAL_ROTATE_X) && (LockAxisFlag <= EPAL_ROTATE_Z);
 
-	Resources->UniformParameters.TangentSelector = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
+	Resources->UniformParameters.TangentSelector = FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
 	Resources->UniformParameters.RotationBias = 0.0f;
 
 	if (InResourceData.ScreenAlignment == PSA_Velocity)
@@ -5263,18 +5349,18 @@ static void SetGPUSpriteResourceData( FGPUSpriteResources* Resources, const FGPU
 	Resources->UniformParameters.RotationRateScale = InResourceData.RotationRateScale;
 	Resources->UniformParameters.CameraMotionBlurAmount = InResourceData.CameraMotionBlurAmount;
 
-	Resources->UniformParameters.PivotOffset = InResourceData.PivotOffset;
+	Resources->UniformParameters.PivotOffset = FVector2f(InResourceData.PivotOffset);
 
 	Resources->SimulationParameters.AttributeCurve = GParticleCurveTexture.ComputeCurveScaleBias(Resources->SimulationAttrTexelAllocation);
-	Resources->SimulationParameters.AttributeCurveScale = InResourceData.SimulationAttrCurveScale;
-	Resources->SimulationParameters.AttributeCurveBias = InResourceData.SimulationAttrCurveBias;
-	Resources->SimulationParameters.AttributeScale = FVector4(
+	Resources->SimulationParameters.AttributeCurveScale = (FVector4f)InResourceData.SimulationAttrCurveScale; // LWC_TODO: change property to FVector4f
+	Resources->SimulationParameters.AttributeCurveBias = (FVector4f)InResourceData.SimulationAttrCurveBias; // LWC_TODO: change property to FVector4f
+	Resources->SimulationParameters.AttributeScale = FVector4f(
 		InResourceData.DragCoefficientScale,
 		InResourceData.PerParticleVectorFieldScale,
 		InResourceData.ResilienceScale,
 		1.0f  // OrbitRandom
 		);
-	Resources->SimulationParameters.AttributeBias = FVector4(
+	Resources->SimulationParameters.AttributeBias = FVector4f(
 		InResourceData.DragCoefficientBias,
 		InResourceData.PerParticleVectorFieldBias,
 		InResourceData.ResilienceBias,
@@ -5283,13 +5369,13 @@ static void SetGPUSpriteResourceData( FGPUSpriteResources* Resources, const FGPU
 	Resources->SimulationParameters.MiscCurve = Resources->UniformParameters.MiscCurve;
 	Resources->SimulationParameters.MiscScale = Resources->UniformParameters.MiscScale;
 	Resources->SimulationParameters.MiscBias = Resources->UniformParameters.MiscBias;
-	Resources->SimulationParameters.Acceleration = InResourceData.ConstantAcceleration;
-	Resources->SimulationParameters.OrbitOffsetBase = InResourceData.OrbitOffsetBase;
-	Resources->SimulationParameters.OrbitOffsetRange = InResourceData.OrbitOffsetRange;
-	Resources->SimulationParameters.OrbitFrequencyBase = InResourceData.OrbitFrequencyBase;
-	Resources->SimulationParameters.OrbitFrequencyRange = InResourceData.OrbitFrequencyRange;
-	Resources->SimulationParameters.OrbitPhaseBase = InResourceData.OrbitPhaseBase;
-	Resources->SimulationParameters.OrbitPhaseRange = InResourceData.OrbitPhaseRange;
+	Resources->SimulationParameters.Acceleration = (FVector3f)InResourceData.ConstantAcceleration;
+	Resources->SimulationParameters.OrbitOffsetBase = (FVector3f)InResourceData.OrbitOffsetBase;
+	Resources->SimulationParameters.OrbitOffsetRange = (FVector3f)InResourceData.OrbitOffsetRange;
+	Resources->SimulationParameters.OrbitFrequencyBase = (FVector3f)InResourceData.OrbitFrequencyBase;
+	Resources->SimulationParameters.OrbitFrequencyRange = (FVector3f)InResourceData.OrbitFrequencyRange;
+	Resources->SimulationParameters.OrbitPhaseBase = (FVector3f)InResourceData.OrbitPhaseBase;
+	Resources->SimulationParameters.OrbitPhaseRange = (FVector3f)InResourceData.OrbitPhaseRange;
 	Resources->SimulationParameters.CollisionRadiusScale = InResourceData.CollisionRadiusScale;
 	Resources->SimulationParameters.CollisionRadiusBias = InResourceData.CollisionRadiusBias;
 	Resources->SimulationParameters.CollisionTimeBias = InResourceData.CollisionTimeBias;

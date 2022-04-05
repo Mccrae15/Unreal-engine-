@@ -13,6 +13,9 @@ class FDisplayClusterRenderSyncPolicyNvidia
 	: public FDisplayClusterRenderSyncPolicyBase
 {
 public:
+
+	using Super = FDisplayClusterRenderSyncPolicyBase;
+
 	FDisplayClusterRenderSyncPolicyNvidia(const TMap<FString, FString>& Parameters);
 	virtual ~FDisplayClusterRenderSyncPolicyNvidia();
 
@@ -26,6 +29,10 @@ public:
 		return NvidiaPolicy;
 	}
 
+	// Initialization
+	virtual bool Initialize() override;
+
+	// Performs rendering and frame output synchronization
 	virtual bool SynchronizeClusterRendering(int32& InOutSyncInterval) override;
 
 private:

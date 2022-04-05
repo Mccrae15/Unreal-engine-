@@ -6,6 +6,19 @@
 
 #include "LensFile.h"
 
+#if WITH_OPENCV
+
+#include <vector>
+
+#include "OpenCVHelper.h"
+#include "PreOpenCVHeaders.h"
+#include "opencv2/calib3d.hpp"
+#include "opencv2/imgproc.hpp"
+#include "PostOpenCVHeaders.h"
+
+#endif //WITH_OPENCV
+
+
 #include "CameraLensDistortionAlgoCheckerboard.generated.h"
 
 struct FGeometry;
@@ -49,6 +62,8 @@ public:
 	virtual bool OnViewportClicked(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual TSharedRef<SWidget> BuildUI() override;
 	virtual FName FriendlyName() const override { return TEXT("Lens Distortion Checkerboard"); };
+	virtual UMaterialInterface* GetOverlayMaterial() const override;
+	virtual bool IsOverlayEnabled() const override { return bShouldShowOverlay; };
 	virtual void OnDistortionSavedToLens() override;
 	virtual bool GetLensDistortion(
 		float& OutFocus,
@@ -132,13 +147,27 @@ private:
 	/** Caches the last camera data.  Will hold last value before the media is paused */
 	FCameraDataCache LastCameraData;
 
+	/** True if the coverage overlay should be shown */
+	bool bShouldShowOverlay = false;
+
 	/** True if a detection window should be shown after every capture */
 	bool bShouldShowDetectionWindow = false;
+
+	/** Texture into which detected chessboard corners from each calibration row are drawn */
+	TObjectPtr<UTexture2D> CoverageTexture;
+
+#if WITH_OPENCV
+	/** OpenCV matrix used to draw chessboard corners */
+	cv::Mat CvCoverage;
+#endif
 
 private:
 
 	/** Builds the UI of the calibration device picker */
 	TSharedRef<SWidget> BuildCalibrationDevicePickerWidget();
+
+	/** Builds the UI for the user to select if they want to display the coverage overlay */
+	TSharedRef<SWidget> BuildShowOverlayWidget();
 
 	/** Builds the UI for the user to select if they want a corner detection window to be shown after every capture */
 	TSharedRef<SWidget> BuildShowDetectionWidget();
@@ -171,4 +200,7 @@ private:
 
 	/** Returns the steps controller */
 	FCameraCalibrationStepsController* GetStepsController() const;
+
+	/** Update the coverage texture to reflect the current set of calibration rows */
+	void RefreshCoverage();
 };

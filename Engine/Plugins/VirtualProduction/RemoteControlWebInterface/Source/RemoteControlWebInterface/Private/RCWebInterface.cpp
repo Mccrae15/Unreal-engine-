@@ -7,6 +7,7 @@
 #include "RemoteControlSettings.h"
 #include "IWebRemoteControlModule.h"
 #include "Misc/CommandLine.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/Parse.h"
 
 #if WITH_EDITOR
@@ -16,6 +17,11 @@
 #endif
 
 #define LOCTEXT_NAMESPACE "FRemoteControlWebInterfaceModule"
+
+static TAutoConsoleVariable<int32> CVarRCWebInterfaceAutoStart(
+	TEXT("RCWebInterface.AutoStart"),
+	1,
+	TEXT("Auto Start Remote Control Web App"));
 
 namespace RCWebInterface
 {
@@ -33,14 +39,20 @@ namespace RCWebInterface
 
 void FRemoteControlWebInterfaceModule::StartupModule()
 {
+	WebApp = MakeShared<FRemoteControlWebInterfaceProcess>();
+
 	if (!RCWebInterface::IsWebInterfaceEnabled())
 	{
 		UE_LOG(LogRemoteControlWebInterface, Display, TEXT("Remote Control Web Interface is disabled by default when running outside the editor. Use the -RCWebInterfaceEnable flag when launching in order to use it."));
 		return;
 	}
-	
-	WebApp = MakeShared<FRemoteControlWebInterfaceProcess>();
 
+	if (CVarRCWebInterfaceAutoStart.GetValueOnGameThread() == 0)
+	{
+		UE_LOG(LogRemoteControlWebInterface, Display, TEXT("Remote Control Web Interface did not launch WebApp because CVar RCWebInterface.AutoStart is set to 0"));
+		return;
+	}
+	
 	TSharedPtr<FRemoteControlWebInterfaceProcess> WebAppLocal = WebApp;
 
 	FCoreDelegates::OnFEngineLoopInitComplete.AddLambda([WebAppLocal]()
@@ -88,6 +100,51 @@ void FRemoteControlWebInterfaceModule::ShutdownModule()
 	}
 }
 
+bool FRemoteControlWebInterfaceModule::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+{
+	if (!FParse::Command(&Cmd, TEXT("RCWebInterface")))
+	{
+		return false;
+	}
+
+	FRemoteControlWebInterfaceModule& RCWebInf = FRemoteControlWebInterfaceModule::Get();
+	const FRemoteControlWebInterfaceProcess::EStatus WebAppStatus = RCWebInf.WebApp->GetStatus();
+
+	const bool bIsCurrentlyRunning = (
+		WebAppStatus == FRemoteControlWebInterfaceProcess::EStatus::Running ||
+		WebAppStatus == FRemoteControlWebInterfaceProcess::EStatus::Launching
+	);
+
+	if (FParse::Command(&Cmd, TEXT("Start")))
+	{
+		if (!bIsCurrentlyRunning) // Ignore if already running
+		{
+			Ar.Log(TEXT("RCWebInterface: Starting WebApp"));
+
+			RCWebInf.WebApp->Start();
+		}
+		else
+		{
+			Ar.Log(TEXT("RCWebInterface: WebApp was already running"));
+		}
+	}
+	else if (FParse::Command(&Cmd, TEXT("Stop")))
+	{
+		Ar.Log(TEXT("RCWebInterface: Stopping WebApp"));
+
+		RCWebInf.WebApp->Shutdown();
+	}
+	else if (FParse::Command(&Cmd, TEXT("Restart")))
+	{
+		Ar.Log(TEXT("RCWebInterface: Restarting WebApp"));
+
+		RCWebInf.WebApp->Shutdown();
+		RCWebInf.WebApp->Start();
+	}
+
+	return true;
+}
+
 void FRemoteControlWebInterfaceModule::OnSettingsModified(UObject* Settings, FPropertyChangedEvent& PropertyChangedEvent)
 {
 	FName PropertyName = PropertyChangedEvent.GetPropertyName();
@@ -95,6 +152,12 @@ void FRemoteControlWebInterfaceModule::OnSettingsModified(UObject* Settings, FPr
 	{
 		WebApp->Shutdown();
 		WebApp->Start();
+	}
+
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(URemoteControlSettings, bWebAppLogRequestDuration))
+	{
+		const URemoteControlSettings* RCSettings = CastChecked<URemoteControlSettings>(Settings);
+		WebApp->SetExternalLoggerEnabled(RCSettings->bWebAppLogRequestDuration);
 	}
 }
 

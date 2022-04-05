@@ -7,6 +7,7 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
 #include "UObject/StrongObjectPtr.h"
+#include "Containers/Ticker.h"
 
 
 class ACameraActor;
@@ -25,6 +26,12 @@ struct FGeometry;
 struct FLensFileEvalData;
 struct FPointerEvent;
 
+/** Enumeration of overlay passes used to indicate which overlay pass to interact with */
+enum class EOverlayPassType : uint8
+{
+	ToolOverlay = 0,
+	UserOverlay = 1
+};
 
 /**
  * Controller for SCameraCalibrationSteps, where the calibration steps are hosted in.
@@ -50,6 +57,9 @@ public:
 
 	/** Returns the render target of the Media Plate */
 	UTextureRenderTarget2D* GetMediaPlateRenderTarget() const;
+
+	/** Returns the size of the render target used by the Comp */
+	FIntPoint GetCompRenderTargetSize() const;
 
 	/** Creates a way to read the media plate pixels for processing by any calibration step */
 	void CreateMediaPlateOutput();
@@ -117,10 +127,25 @@ public:
 	/** Reads the pixels in the media plate */
 	bool ReadMediaPixels(TArray<FColor>& Pixels, FIntPoint& Size, ETextureRenderTargetFormat& PixelFormat, FText& OutErrorMessage) const;
 
+	/** Returns true if the overlay transform pass is currently enabled */
+	bool IsOverlayEnabled(EOverlayPassType OverlayPass = EOverlayPassType::ToolOverlay) const;
+
+	/** Sets the enabled state of the overlay transform pass */
+	void SetOverlayEnabled(const bool bEnabled = true, EOverlayPassType OverlayPass = EOverlayPassType::ToolOverlay);
+
+	/** Sets the overlay material to be used by the overlay transform pass */
+	void SetOverlayMaterial(UMaterialInterface* OverlayMaterial, bool bShowOverlay = true, EOverlayPassType OverlayPass = EOverlayPassType::ToolOverlay);
+
+	/** Redraw the overlay material used by the input overlay pass */
+	void RefreshOverlay(EOverlayPassType OverlayPass = EOverlayPassType::ToolOverlay);
+
 public:
 
 	/** Called by the UI when the Simulcam Viewport is clicked */
 	void OnSimulcamViewportClicked(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent);
+
+	/** Called by the UI when the Simulcam Viewport receives keyboard input */
+	bool OnSimulcamViewportInputKey(const FKey& InKey, const EInputEvent& InEvent);
 
 private:
 
@@ -151,10 +176,25 @@ private:
 	/** Finds and creates the available calibration steps */
 	void CreateSteps();
 
+	/** Create a new material transform pass to represent an overlay and add it to the master comp */
+	void CreateOverlayPass(FName PassName, TWeakObjectPtr<UCompositingElementMaterialPass>& OverlayPass, TWeakObjectPtr<UTextureRenderTarget2D>& OverlayRenderTarget);
+
+	/** Returns the overlay material pass associated with the input overlay pass type */
+	UCompositingElementMaterialPass* GetOverlayMaterialPass(EOverlayPassType OverlayPassType) const;
+
+	/** Returns the overlay render target used by the input overlay pass type */
+	UTextureRenderTarget2D* GetOverlayRenderTarget(EOverlayPassType OverlayPassType) const;
+
+	/** Returns the overlay material used by the input overlay pass type */
+	UMaterialInterface* GetOverlayMaterial(EOverlayPassType OverlayPass) const;
+
 private:
 
 	/** Pointer to the camera calibration toolkit */
 	TWeakPtr<FCameraCalibrationToolkit> CameraCalibrationToolkit;
+
+	/** Size to use when creating the render targets for the comp and media output */
+	FIntPoint RenderTargetSize;
 
 	/** Array of the calibration steps that this controller is managing */
 	TArray<TStrongObjectPtr<UCameraCalibrationStep>> CalibrationSteps;
@@ -186,11 +226,29 @@ private:
 	/** The material pass the does the CG + MediaPlate composite with a wiper weight */
 	TWeakObjectPtr<UCompositingElementMaterialPass> MaterialPass;
 
+	/** A material pass set by one of the calibration steps that renders an overlay on top of the composite */
+	TWeakObjectPtr<UCompositingElementMaterialPass> ToolOverlayPass;
+
+	/** A material pass set by the user (via the editor UI) that renders an overlay on top of the composite */
+	TWeakObjectPtr<UCompositingElementMaterialPass> UserOverlayPass;
+
+	/** The material used to render the overlay for the tool overlay pass */
+	TWeakObjectPtr<UMaterialInterface> ToolOverlayMaterial;
+
+	/** The material used to render the overlay for the user overlay pass */
+	TWeakObjectPtr<UMaterialInterface> UserOverlayMaterial;
+
+	/** The render target used as input to the tool overlay material */
+	TWeakObjectPtr<UTextureRenderTarget2D> ToolOverlayRenderTarget;
+
+	/** The render target used as input to the user overlay material */
+	TWeakObjectPtr<UTextureRenderTarget2D> UserOverlayRenderTarget;
+
 	/** The currently selected camera */
 	TWeakObjectPtr<ACameraActor> Camera;
 
 	/** The delegate for the core ticker callback */
-	FDelegateHandle TickerHandle;
+	FTSTicker::FDelegateHandle TickerHandle;
 
 	/** Pointer to the LensFileEvalData used in the current frame. Only valid during the current frame. */
 	const FLensFileEvalData* LensFileEvalData;

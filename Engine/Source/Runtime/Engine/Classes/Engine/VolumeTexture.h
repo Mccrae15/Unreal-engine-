@@ -25,7 +25,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** A (optional) reference texture from which the volume texture was built */
 	UPROPERTY(EditAnywhere, Category=Source2D, meta=(DisplayName="Source Texture"))
-	UTexture2D* Source2DTexture;
+	TObjectPtr<UTexture2D> Source2DTexture;
 	/** The lighting Guid of the source 2D texture, used to trigger rebuild when the source changes. */
 	UPROPERTY()
 	FGuid SourceLightingGuid;
@@ -82,8 +82,10 @@ public:
 	}
 
 	//~ Begin UTexture Interface
-	virtual float GetSurfaceWidth() const override { return GetSizeX(); }
-	virtual float GetSurfaceHeight() const override { return GetSizeY(); }
+	virtual float GetSurfaceWidth() const override { return static_cast<float>(GetSizeX()); }
+	virtual float GetSurfaceHeight() const override { return static_cast<float>(GetSizeY()); }
+	virtual float GetSurfaceDepth() const override { return static_cast<float>(GetSizeZ()); }
+	virtual uint32 GetSurfaceArraySize() const override { return 0; }
 	virtual FTextureResource* CreateResource() override;
 #if WITH_EDITOR
 	ENGINE_API void SetDefaultSource2DTileSize();
@@ -119,9 +121,6 @@ public:
 
 #endif
 
-	ENGINE_API static bool ShaderPlatformSupportsCompression(FStaticShaderPlatform ShaderPlatform);
-
-
 	//~ Begin UStreamableRenderAsset Interface
 	virtual int32 CalcCumulativeLODSize(int32 NumLODs) const final override { return CalcTextureMemorySize(NumLODs); }
 	virtual bool StreamOut(int32 NewMipCount) final override;
@@ -132,6 +131,7 @@ protected:
 
 #if WITH_EDITOR
 	void UpdateMipGenSettings();
+	virtual bool GetStreamableRenderResourceState(FTexturePlatformData* InPlatformData, FStreamableRenderResourceState& OutState) const override;
 #endif
 };
 

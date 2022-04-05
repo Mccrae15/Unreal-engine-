@@ -40,7 +40,11 @@ public:
 	~SNiagaraSystemViewport();
 	
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
-	
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SNiagaraSystemViewport");
+	}
+
 	virtual void Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime ) override;
 
 	void RefreshViewport();
@@ -98,7 +102,7 @@ protected:
 	virtual void BindCommands() override;
 	virtual void OnFocusViewportToSelection() override;
 	virtual void PopulateViewportOverlays(TSharedRef<class SOverlay> Overlay) override;
-	EVisibility OnGetViewportCompileTextVisibility() const;
+	FText GetViewportCompileStatusText() const;
 
 private:
 	bool IsVisible() const override;
@@ -148,6 +152,10 @@ public:
 	virtual ~SNiagaraBaselineViewport();
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SNiagaraBaselineViewport");
+	}
 
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 

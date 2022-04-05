@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "OnlineSubsystemNames.h"  // can be removed once we have no more temporary FUniqueNetId subtypes
 #include "OnlineSubsystemPackage.h"
 
@@ -22,17 +22,6 @@ extern ONLINESUBSYSTEM_API bool IsUniqueIdLocal(const FUniqueNetId& UniqueId);
 #else
 #define OSS_REDACT(x) (x)
 #endif
-
-/** Maximum players supported on a given platform */
-#if !defined(MAX_LOCAL_PLAYERS)
-	#if PLATFORM_MAX_LOCAL_PLAYERS
-		#define MAX_LOCAL_PLAYERS PLATFORM_MAX_LOCAL_PLAYERS
-	#elif PLATFORM_WINDOWS
-		#define MAX_LOCAL_PLAYERS 4
-	#else
-		#define MAX_LOCAL_PLAYERS 1
-	#endif
-#endif //MAX_LOCAL_PLAYERS
 
 #define DEDICATED_SERVER_USER_INDEX 0
 
@@ -679,6 +668,52 @@ namespace EOnlineCachedResult
 	}
 }
 
+/** Permissions for who can send invites to a user. */
+enum class EFriendInvitePolicy : uint8
+{
+	/** Anyone can send a friend invite. */
+	Public,
+	/** Only friends of friends can send a friend invite. */
+	Friends_of_Friends,
+	/** No one can send a friend invite. */
+	Private,
+	/** Invalid enum type, may be used as a number of enumerations. */
+	InvalidOrMax
+};
+
+inline const TCHAR* LexToString(EFriendInvitePolicy EnumVal)
+{
+	switch (EnumVal)
+	{
+	case EFriendInvitePolicy::Public: return TEXT("PUBLIC");
+	case EFriendInvitePolicy::Friends_of_Friends: return TEXT("FRIENDS_OF_FRIENDS");
+	case EFriendInvitePolicy::Private: return TEXT("PRIVATE");
+	default: return TEXT("Invalid");
+	}
+}
+
+inline void LexFromString(EFriendInvitePolicy& Value, const TCHAR* String)
+{
+	if (FCString::Stricmp(String, TEXT("PUBLIC")) == 0)
+	{
+		Value = EFriendInvitePolicy::Public;			
+	}
+	else if (FCString::Stricmp(String, TEXT("FRIENDS_OF_FRIENDS")) == 0)
+	{
+		Value = EFriendInvitePolicy::Friends_of_Friends;
+	}
+	else if (FCString::Stricmp(String, TEXT("PRIVATE")) == 0)
+	{
+		Value = EFriendInvitePolicy::Private;
+	}
+	else
+	{
+		Value = EFriendInvitePolicy::InvalidOrMax;
+	}
+}
+
+
+
 /*
  *	Base class for anything meant to be opaque so that the data can be passed around 
  *  without consideration for the data it contains.
@@ -815,8 +850,8 @@ public:
 // placeholder "type" until we can make FUniqueNetIdString sufficiently abstract
 static FName NAME_Unset = TEXT("UNSET");
 
-using FUniqueNetIdStringRef = TSharedRef<const class FUniqueNetIdString, UNIQUENETID_ESPMODE>;
-using FUniqueNetIdStringPtr = TSharedPtr<const class FUniqueNetIdString, UNIQUENETID_ESPMODE>;
+using FUniqueNetIdStringRef = TSharedRef<const class FUniqueNetIdString>;
+using FUniqueNetIdStringPtr = TSharedPtr<const class FUniqueNetIdString>;
 
 /**
  * Unique net id wrapper for a string
@@ -829,63 +864,41 @@ public:
 
 	FName Type = NAME_Unset;
 	
-	template<typename... TArgs>
-	static FUniqueNetIdStringRef Create(TArgs&&... Args)
+	UE_DEPRECATED(5.0, "This FUniqueNetIdString Create method is deprecated. Please use Create(const FString& InUniqueNetId, const FName InType)")
+	static FUniqueNetIdStringRef Create(const FString& InUniqueNetId)
 	{
-		return MakeShareable(new FUniqueNetIdString(Forward<TArgs>(Args)...));
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return MakeShareable(new FUniqueNetIdString(InUniqueNetId, NAME_Unset));
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
-	// Define these to increase visibility to public (from parent's protected)
-	FUniqueNetIdString() = default;
+	UE_DEPRECATED(5.0, "This FUniqueNetIdString Create method is deprecated. Please use Create(FString&& InUniqueNetId, const FName InType)")
+	static FUniqueNetIdStringRef Create(FString&& InUniqueNetId)
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return MakeShareable(new FUniqueNetIdString(MoveTemp(InUniqueNetId), NAME_Unset));
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
 
-	FUniqueNetIdString(FUniqueNetIdString&&) = default;
-	FUniqueNetIdString(const FUniqueNetIdString&) = default;
-	FUniqueNetIdString& operator=(FUniqueNetIdString&&) = default;
-	FUniqueNetIdString& operator=(const FUniqueNetIdString&) = default;
+	static FUniqueNetIdStringRef Create(const FString& InUniqueNetId, const FName InType)
+	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return MakeShareable(new FUniqueNetIdString(InUniqueNetId, InType));
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	static FUniqueNetIdStringRef Create(FString&& InUniqueNetId, const FName InType)
+	{
+		return MakeShareable(new FUniqueNetIdString(MoveTemp(InUniqueNetId), InType));
+	}
+
+	static FUniqueNetIdStringRef& EmptyId()
+	{
+		static FUniqueNetIdStringRef EmptyId(Create(FString(), NAME_Unset));
+		return EmptyId;
+	}
 
 	virtual ~FUniqueNetIdString() = default;
-
-	/**
-	 * Constructs this object with the specified net id
-	 *
-	 * @param InUniqueNetId the id to set ours to
-	 */
-	explicit FUniqueNetIdString(const FString& InUniqueNetId)
-		: UniqueNetIdStr(InUniqueNetId)
-		, Type(NAME_Unset)
-	{
-	}
-
-	/**
-	 * Constructs this object with the specified net id
-	 *
-	 * @param InUniqueNetId the id to set ours to
-	 */
-	explicit FUniqueNetIdString(FString&& InUniqueNetId)
-		: UniqueNetIdStr(MoveTemp(InUniqueNetId))
-		, Type(NAME_Unset)
-	{
-	}
-
-	/**
-	 * Constructs this object with the string value of the specified net id
-	 *
-	 * @param Src the id to copy
-	 */
-	explicit FUniqueNetIdString(const FUniqueNetId& Src)
-		: UniqueNetIdStr(Src.ToString())
-		, Type(Src.GetType())
-	{
-	}
-
-	/** 
-	* don.eubanks - Including a constructor that allows for type passing to make transitioning easier, if we determine we want to abstract-ify this class, this constructor will be removed
-	*/
-	FUniqueNetIdString(const FString& InUniqueNetId, const FName InType)
-		: UniqueNetIdStr(InUniqueNetId)
-		, Type(InType)
-	{
-	}
 
 	// IOnlinePlatformData
 
@@ -931,37 +944,101 @@ public:
 	{
 		return ::GetTypeHash(A.UniqueNetIdStr);
 	}
+
+public:
+	UE_DEPRECATED(5.0, "Public constructors of FUniqueNetId types are deprecated. Please use the corresponding Create method instead to create a FUniqueNetIdRef")
+	FUniqueNetIdString() = default;
+
+	/**
+	 * Constructs this object with the specified net id
+	 *
+	 * @param InUniqueNetId the id to set ours to
+	 */
+	UE_DEPRECATED(5.0, "Public constructors of FUniqueNetId types are deprecated. Please use the corresponding Create method instead to create a FUniqueNetIdRef")
+	explicit FUniqueNetIdString(const FString& InUniqueNetId)
+		: UniqueNetIdStr(InUniqueNetId)
+		, Type(NAME_Unset)
+	{
+	}
+
+	/**
+	 * Constructs this object with the specified net id
+	 *
+	 * @param InUniqueNetId the id to set ours to
+	 */
+	UE_DEPRECATED(5.0, "Public constructors of FUniqueNetId types are deprecated. Please use the corresponding Create method instead to create a FUniqueNetIdRef")
+	explicit FUniqueNetIdString(FString&& InUniqueNetId)
+		: UniqueNetIdStr(MoveTemp(InUniqueNetId))
+		, Type(NAME_Unset)
+	{
+	}
+
+	/**
+	 * Constructs this object with the string value of the specified net id
+	 *
+	 * @param Src the id to copy
+	 */
+	UE_DEPRECATED(5.0, "Public constructors of FUniqueNetId types are deprecated. Please use the corresponding Create method instead to create a FUniqueNetIdRef")
+	explicit FUniqueNetIdString(const FUniqueNetId& Src)
+		: UniqueNetIdStr(Src.ToString())
+		, Type(Src.GetType())
+	{
+	}
+
+	/**
+	* don.eubanks - Including a constructor that allows for type passing to make transitioning easier, if we determine we want to abstract-ify this class, this constructor will be removed
+	*/
+	UE_DEPRECATED(5.0, "Public constructors of FUniqueNetId types are deprecated. Please use the corresponding Create method instead to create a FUniqueNetIdRef")
+	FUniqueNetIdString(const FString& InUniqueNetId, const FName InType)
+		: UniqueNetIdStr(InUniqueNetId)
+		, Type(InType)
+	{
+	}
+
+protected:
+	FUniqueNetIdString(FString&& InUniqueNetId, const FName InType)
+		: UniqueNetIdStr(MoveTemp(InUniqueNetId))
+		, Type(InType)
+	{
+	}
 };
 
 
 #define TEMP_UNIQUENETIDSTRING_SUBCLASS(SUBCLASSNAME, TYPE) \
-using SUBCLASSNAME##Ptr = TSharedPtr<const class SUBCLASSNAME, UNIQUENETID_ESPMODE>; \
-using SUBCLASSNAME##Ref = TSharedRef<const class SUBCLASSNAME, UNIQUENETID_ESPMODE>; \
+using SUBCLASSNAME##Ptr = TSharedPtr<const class SUBCLASSNAME>; \
+using SUBCLASSNAME##Ref = TSharedRef<const class SUBCLASSNAME>; \
 class SUBCLASSNAME : public FUniqueNetIdString \
 { \
 public: \
 	template<typename... TArgs> \
 	static SUBCLASSNAME##Ref Create(TArgs&&... Args) \
 	{ \
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS \
 		return MakeShareable(new SUBCLASSNAME(Forward<TArgs>(Args)...)); \
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS \
 	} \
-	SUBCLASSNAME() \
-		: FUniqueNetIdString()	 \
+	static SUBCLASSNAME##Ref Cast(const FUniqueNetIdRef& InNetId) \
 	{ \
-		Type = TYPE; \
+		check(InNetId->GetType() == TYPE); \
+		return StaticCastSharedRef<const SUBCLASSNAME>(InNetId); \
 	} \
-	explicit SUBCLASSNAME(const FString& InUniqueNetId) \
-		: FUniqueNetIdString(InUniqueNetId, TYPE) \
+	static SUBCLASSNAME##Ptr Cast(const FUniqueNetIdPtr& InNetId) \
 	{ \
+		if(InNetId.IsValid()) \
+		{ \
+			check(InNetId->GetType() == TYPE); \
+			return StaticCastSharedPtr<const SUBCLASSNAME>(InNetId); \
+		} \
+		return nullptr; \
 	} \
-	explicit SUBCLASSNAME(FString&& InUniqueNetId) \
-		: FUniqueNetIdString(MoveTemp(InUniqueNetId), TYPE) \
+	static const SUBCLASSNAME& Cast(const FUniqueNetId& InNetId) \
 	{ \
+		check(InNetId.GetType() == TYPE); \
+		return static_cast<const SUBCLASSNAME&>(InNetId); \
 	} \
-	explicit SUBCLASSNAME(const FUniqueNetId& Src) \
-		: FUniqueNetIdString(Src) \
+	SUBCLASSNAME##Ref AsShared() const \
 	{ \
-		check(GetType() == TYPE); \
+		return StaticCastSharedRef<const SUBCLASSNAME>(FUniqueNetId::AsShared()); \
 	} \
 	friend uint32 GetTypeHash(const SUBCLASSNAME& A) \
 	{ \
@@ -969,8 +1046,31 @@ public: \
 	} \
 	static const SUBCLASSNAME##Ref& EmptyId() \
 	{ \
-		static const SUBCLASSNAME##Ref EmptyId = SUBCLASSNAME::Create(); \
+		static const SUBCLASSNAME##Ref EmptyId(Create()); \
 		return EmptyId; \
+	} \
+public: \
+	UE_DEPRECATED(5.0, "Public constructors of FUniqueNetId types are deprecated. Please use the ::Create(Args) method instead to create a FUniqueNetIdRef") \
+	SUBCLASSNAME() \
+		: FUniqueNetIdString() \
+	{ \
+		Type = TYPE; \
+	} \
+	UE_DEPRECATED(5.0, "Public constructors of FUniqueNetId types are deprecated. Please use the ::Create(Args) method instead to create a FUniqueNetIdRef") \
+	explicit SUBCLASSNAME(const FString& InUniqueNetId) \
+		: FUniqueNetIdString(InUniqueNetId, TYPE) \
+	{ \
+	} \
+	UE_DEPRECATED(5.0, "Public constructors of FUniqueNetId types are deprecated. Please use the ::Create(Args) method instead to create a FUniqueNetIdRef") \
+	explicit SUBCLASSNAME(FString&& InUniqueNetId) \
+		: FUniqueNetIdString(MoveTemp(InUniqueNetId), TYPE) \
+	{ \
+	} \
+	UE_DEPRECATED(5.0, "Public constructors of FUniqueNetId types are deprecated. Please use the ::Create(Args) method instead to create a FUniqueNetIdRef") \
+	explicit SUBCLASSNAME(const FUniqueNetId& Src) \
+		: FUniqueNetIdString(Src) \
+	{ \
+		check(GetType() == TYPE); \
 	} \
 };
 
@@ -1241,6 +1341,11 @@ public:
 	 * @return Access token which is provided to user once authenticated by the online service
 	 */
 	virtual FString GetAccessToken() const = 0;
+	/**
+	 * Tests if token has exceeded its time-to-live, when applicable.  Default is true, i.e. always expire.
+	 * @return True, if access token has expired.
+	 */
+	virtual bool HasAccessTokenExpired(const FDateTime& Time) const { return true; }
 	/** 
 	 * @return Any additional auth data associated with a registered user
 	 */

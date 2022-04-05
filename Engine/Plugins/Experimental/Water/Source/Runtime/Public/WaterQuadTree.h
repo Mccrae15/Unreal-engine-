@@ -24,7 +24,7 @@ struct FWaterBodyRenderData
 	UMaterialInterface* RiverToOceanMaterial = nullptr;
 
 	/** World Z position of the waterbody, this is where the tiles for this water body will be rendered*/
-	float SurfaceBaseHeight = 0.0f;
+	double SurfaceBaseHeight = 0.0;
 
 	/** Render priority. If two water bodies overlap, this will decide which water body is used for a tile */
 	int16 Priority = TNumericLimits<int16>::Min();
@@ -64,24 +64,16 @@ struct FWaterBodyRenderData
 	}
 };
 
-/** Instance data to feed the GPU, each array is bound as an instanced vertex stream */
-struct FWaterTileInstanceData 
-{
-	static constexpr int32 NumStreams = WITH_WATER_SELECTION_SUPPORT ? 3 : 2;
-
-	TArray<FVector4> Streams[NumStreams];
-};
-
 struct FWaterQuadTree 
 {
 	enum { INVALID_PARENT = 0xFFFFFFF };
 
-	typedef TArray<FWaterTileInstanceData, TInlineAllocator<12>> FInstanceDataBuckets;
+	static constexpr int32 NumStreams = WITH_WATER_SELECTION_SUPPORT ? 3 : 2;
 
 	struct FStagingInstanceData
 	{
 		int32 BucketIndex;
-		FVector4 Data[FWaterTileInstanceData::NumStreams];
+		FVector4f Data[NumStreams];
 	};
 
 	/** Output of the quadtree when asking to traverse it for visible water tiles */
@@ -112,6 +104,7 @@ struct FWaterQuadTree
 		int32 ForceCollapseDensityLevel = TNumericLimits<int32>::Max();
 		float LODScale = 1.0;
 		FVector ObserverPosition = FVector::ZeroVector;
+		FVector PreViewTranslation = FVector::ZeroVector;
 		FConvexVolume Frustum;
 		bool bLODMorphingEnabled = true;
 
@@ -141,8 +134,11 @@ struct FWaterQuadTree
 	/** Add Lake by giving a closed spline that represents the lake */
 	void AddLake(const TArray<FVector2D>& InPoly, const FBox& InLakeBounds, uint32 InWaterBodyIndex);
 
-	/** Assign an index to each material and return the index of FarDistanceMaterial if not null. */
-	int32 BuildMaterialIndices(UMaterialInterface* FarDistanceMaterial);
+	/** Add an automatically generated mesh (8 quads) skirt around the main water quadtree which extends out InFarDistanceMeshExtent, is placed at Z value InFarDistanceMeshHeight and is rendered using InFarMeshMaterial */
+	void AddFarMesh(const UMaterialInterface* InFarMeshMaterial, double InFarDistanceMeshExtent, double InFarDistanceMeshHeight);
+
+	/** Assign an index to each material */
+	void BuildMaterialIndices();
 
 	/** Add water body render data to this tree. Returns the index in the array. Use this index to add tiles with this water body to the tree, see AddWaterTilesInsideBounds(..) */
 	uint32 AddWaterBodyRenderData(const FWaterBodyRenderData& InWaterBodyRenderData) { return NodeData.WaterBodyRenderData.Add(InWaterBodyRenderData); }
@@ -275,6 +271,33 @@ private:
 	} NodeData;
 
 	TArray<FMaterialRenderProxy*> WaterMaterials;
+
+	/** Contains everything needed to render the far mesh. This data lives outside the quadtree structure itself */
+	struct FFarMeshData
+	{
+		struct FFarMeshInstanceData
+		{
+			FVector WorldPosition = FVector::ZeroVector;
+			FVector2f Scale = FVector2f(1.0f, 1.0f);
+		};
+
+		/** Stored data for rendering all far mesh instances (8 or them if used). This is built once when the quadtree is built and then read and transformed each time the quadtree is traversed */
+		TArray<FFarMeshInstanceData> InstanceData;
+
+		/** Material for the Far Distance Mesh, its material render proxy will be cached in WaterMaterials when BuildMaterialIndices is called */
+		const UMaterialInterface* Material = nullptr;
+
+		/** Cached material index */
+		int16 MaterialIndex = INDEX_NONE;
+
+		void Clear()
+		{
+			InstanceData.Empty();
+			Material = nullptr;
+			MaterialIndex = INDEX_NONE;
+		}
+
+	} FarMeshData;
 
 	/** If true, the tree may not change */
 	bool bIsReadOnly = true;

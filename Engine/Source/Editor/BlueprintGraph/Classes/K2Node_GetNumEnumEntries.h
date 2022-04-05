@@ -19,7 +19,7 @@ class UK2Node_GetNumEnumEntries : public UK2Node, public INodeDependingOnEnumInt
 	GENERATED_UCLASS_BODY()
 
 	UPROPERTY()
-	UEnum* Enum;
+	TObjectPtr<UEnum> Enum;
 
 	//~ Begin UEdGraphNode Interface
 	virtual void AllocateDefaultPins() override;
@@ -37,6 +37,7 @@ class UK2Node_GetNumEnumEntries : public UK2Node, public INodeDependingOnEnumInt
 
 	// INodeDependingOnEnumInterface
 	virtual class UEnum* GetEnum() const override { return Enum; }
+	virtual void ReloadEnum(class UEnum* InEnum) override;
 	virtual bool ShouldBeReconstructedAfterEnumChanged() const override {return false;}
 	// End of INodeDependingOnEnumInterface
 

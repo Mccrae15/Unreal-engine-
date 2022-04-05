@@ -9,9 +9,53 @@
 
 namespace Chaos
 {
+	class FAccelerationStructureHandle;
+	class FCollisionConstraintAllocator;
+	template <typename PayloadType, typename T, int d> class ISpatialAcceleration;
+	class FPBDSuspensionConstraints;
+	class FRigidClustering;
+	class FShapeOrShapesArray;
+
 	namespace DebugDraw
 	{
 #if CHAOS_DEBUG_DRAW
+
+		struct CHAOS_API FChaosDebugDrawColorsByState
+		{
+			FChaosDebugDrawColorsByState(
+				FColor InDynamicColor,
+				FColor InSleepingColor,
+				FColor InKinematicColor,
+				FColor InStaticColor
+			);
+
+			FColor DynamicColor;
+			FColor SleepingColor;
+			FColor KinematicColor;
+			FColor StaticColor;
+
+			FColor GetColorFromState(EObjectStateType State) const;
+		};
+
+		struct CHAOS_API FChaosDebugDrawColorsByShapeType
+		{
+			FChaosDebugDrawColorsByShapeType(
+				FColor InSimpleTypeColor,
+				FColor InConvexColor,
+				FColor InHeightFieldColor,
+				FColor InTriangleMeshColor,
+				FColor InLevelSetColor
+			);
+
+			//Note: add entries in order to avoid serialization issues (but before IsInstanced)
+			FColor SimpleTypeColor; // Sphere, Plane, Cube. Capsule, Cylinder, tapered shapes
+			FColor ConvexColor;
+			FColor HeightFieldColor;
+			FColor TriangleMeshColor;
+			FColor LevelSetColor;
+
+			FColor GetColorFromShapeType(EImplicitObjectType ShapeType) const;
+		};
 
 		struct CHAOS_API FChaosDebugDrawSettings
 		{
@@ -22,6 +66,7 @@ namespace Chaos
 				FRealSingle InContactLen,
 				FRealSingle InContactWidth,
 				FRealSingle InContactPhiWidth,
+				FRealSingle InContactInfoWidth,
 				FRealSingle InContactOwnerWidth,
 				FRealSingle InConstraintAxisLen,
 				FRealSingle InJointComSize,
@@ -34,16 +79,23 @@ namespace Chaos
 				FRealSingle InVelScale,
 				FRealSingle InAngVelScale,
 				FRealSingle InImpulseScale,
-				int InDrawPriority,
+				FRealSingle InPushOutScale,
+				FRealSingle InInertiaScale,
+				uint8 InDrawPriority,
 				bool bInShowSimpleCollision,
 				bool bInShowComplexCollision,
-				bool bInShowLevelSetCollision
+				bool bInShowLevelSetCollision,
+				const FChaosDebugDrawColorsByState& InShapesColorsPerState,
+				const FChaosDebugDrawColorsByShapeType& InShapesColorsPerShapeType,
+				const FChaosDebugDrawColorsByState& InBoundsColorsPerState,
+				const FChaosDebugDrawColorsByShapeType& InBoundsColorsPerShapeType
 				)
 				: ArrowSize(InArrowSize)
 				, BodyAxisLen(InBodyAxisLen)
 				, ContactLen(InContactLen)
 				, ContactWidth(InContactWidth)
 				, ContactPhiWidth(InContactPhiWidth)
+				, ContactInfoWidth(InContactInfoWidth)
 				, ContactOwnerWidth(InContactOwnerWidth)
 				, ConstraintAxisLen(InConstraintAxisLen)
 				, JointComSize(InJointComSize)
@@ -56,17 +108,25 @@ namespace Chaos
 				, VelScale(InVelScale)
 				, AngVelScale(InAngVelScale)
 				, ImpulseScale(InImpulseScale)
+				, PushOutScale(InPushOutScale)
+				, InertiaScale(InInertiaScale)
 				, DrawPriority(InDrawPriority)
 				, bShowSimpleCollision(bInShowSimpleCollision)
 				, bShowComplexCollision(bInShowComplexCollision)
 				, bShowLevelSetCollision(bInShowLevelSetCollision)
-			{}
+				, ShapesColorsPerState(InShapesColorsPerState)
+				, ShapesColorsPerShapeType(InShapesColorsPerShapeType)
+				, BoundsColorsPerState(InBoundsColorsPerState)
+				, BoundsColorsPerShapeType(InBoundsColorsPerShapeType)
+			{
+			}
 
 			FRealSingle ArrowSize;
 			FRealSingle BodyAxisLen;
 			FRealSingle ContactLen;
 			FRealSingle ContactWidth;
 			FRealSingle ContactPhiWidth;
+			FRealSingle ContactInfoWidth;
 			FRealSingle ContactOwnerWidth;
 			FRealSingle ConstraintAxisLen;
 			FRealSingle JointComSize;
@@ -79,10 +139,16 @@ namespace Chaos
 			FRealSingle VelScale;
 			FRealSingle AngVelScale;
 			FRealSingle ImpulseScale;
-			int DrawPriority;
+			FRealSingle PushOutScale;
+			FRealSingle InertiaScale;
+			uint8 DrawPriority;
 			bool bShowSimpleCollision;
 			bool bShowComplexCollision;
 			bool bShowLevelSetCollision;
+			FChaosDebugDrawColorsByState ShapesColorsPerState;
+			FChaosDebugDrawColorsByShapeType ShapesColorsPerShapeType;
+			FChaosDebugDrawColorsByState BoundsColorsPerState;
+			FChaosDebugDrawColorsByShapeType BoundsColorsPerShapeType;
 		};
 
 		// A bitmask of features to show when drawing joints
@@ -97,7 +163,6 @@ namespace Chaos
 				, bLevel(false)
 				, bIndex(false)
 				, bColor(false)
-				, bBatch(false)
 				, bIsland(false)
 			{}
 
@@ -121,30 +186,38 @@ namespace Chaos
 			bool bLevel;
 			bool bIndex;
 			bool bColor;
-			bool bBatch;
 			bool bIsland;
 		};
 
-		CHAOS_API void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<FGeometryParticles>& ParticlesView, const FColor& Color, const FChaosDebugDrawSettings* Settings = nullptr);
-		CHAOS_API void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<FKinematicGeometryParticles>& ParticlesView, const FColor& Color, const FChaosDebugDrawSettings* Settings = nullptr);
-		CHAOS_API void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<FPBDRigidParticles>& ParticlesView, const FColor& Color, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API const FChaosDebugDrawColorsByState& GetDefaultShapesColorsByState();
+		CHAOS_API const FChaosDebugDrawColorsByState& GetDefaultBoundsColorsByState();
+
+		CHAOS_API const FChaosDebugDrawColorsByShapeType& GetDefaultShapesColorsByShapeType();
+		CHAOS_API const FChaosDebugDrawColorsByShapeType& GetDefaultBoundsColorsByShapeType();
+
+		CHAOS_API void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<FGeometryParticles>& ParticlesView,  FReal ColorScale, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<FKinematicGeometryParticles>& ParticlesView,  FReal ColorScale, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const TParticleView<FPBDRigidParticles>& ParticlesView,  FReal ColorScale, const FChaosDebugDrawSettings* Settings = nullptr);
 		CHAOS_API void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const FGeometryParticleHandle* Particle, const FColor& Color, const FChaosDebugDrawSettings* Settings = nullptr);
 		CHAOS_API void DrawParticleShapes(const FRigidTransform3& SpaceTransform, const FGeometryParticle* Particle, const FColor& Color, const FChaosDebugDrawSettings* Settings = nullptr);
-		CHAOS_API void DrawParticleBounds(const FRigidTransform3& SpaceTransform, const TParticleView<FGeometryParticles>& ParticlesView, const FReal Dt, const FReal BoundsThickness, const FReal BoundsThicknessVelocityInflation, const FChaosDebugDrawSettings* Settings = nullptr);
-		CHAOS_API void DrawParticleBounds(const FRigidTransform3& SpaceTransform, const TParticleView<FKinematicGeometryParticles>& ParticlesView, const FReal Dt, const FReal BoundsThickness, const FReal BoundsThicknessVelocityInflation, const FChaosDebugDrawSettings* Settings = nullptr);
-		CHAOS_API void DrawParticleBounds(const FRigidTransform3& SpaceTransform, const TParticleView<FPBDRigidParticles>& ParticlesView, const FReal Dt, const FReal BoundsThickness, const FReal BoundsThicknessVelocityInflation, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawParticleBounds(const FRigidTransform3& SpaceTransform, const TParticleView<FGeometryParticles>& ParticlesView, const FReal Dt, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawParticleBounds(const FRigidTransform3& SpaceTransform, const TParticleView<FKinematicGeometryParticles>& ParticlesView, const FReal Dt, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawParticleBounds(const FRigidTransform3& SpaceTransform, const TParticleView<FPBDRigidParticles>& ParticlesView, const FReal Dt, const FChaosDebugDrawSettings* Settings = nullptr);
 		CHAOS_API void DrawParticleTransforms(const FRigidTransform3& SpaceTransform, const TParticleView<FGeometryParticles>& ParticlesView, const FChaosDebugDrawSettings* Settings = nullptr);
 		CHAOS_API void DrawParticleTransforms(const FRigidTransform3& SpaceTransform, const TParticleView<FKinematicGeometryParticles>& ParticlesView, const FChaosDebugDrawSettings* Settings = nullptr);
 		CHAOS_API void DrawParticleTransforms(const FRigidTransform3& SpaceTransform, const TParticleView<FPBDRigidParticles>& ParticlesView, const FChaosDebugDrawSettings* Settings = nullptr);
 		CHAOS_API void DrawParticleCollisions(const FRigidTransform3& SpaceTransform, const FGeometryParticleHandle* Particle, const FPBDCollisionConstraints& Collisions, const FChaosDebugDrawSettings* Settings = nullptr);
 		CHAOS_API void DrawCollisions(const FRigidTransform3& SpaceTransform, const FPBDCollisionConstraints& Collisions, FRealSingle ColorScale, const FChaosDebugDrawSettings* Settings = nullptr);
-		CHAOS_API void DrawCollisions(const FRigidTransform3& SpaceTransform, const TArray<FPBDCollisionConstraintHandle*>& ConstraintHandles, FRealSingle ColorScale, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawCollisions(const FRigidTransform3& SpaceTransform, const FCollisionConstraintAllocator& CollisionAllocator, FRealSingle ColorScale, const FChaosDebugDrawSettings* Settings = nullptr);
 		CHAOS_API void DrawJointConstraints(const FRigidTransform3& SpaceTransform, const TArray<FPBDJointConstraintHandle*>& ConstraintHandles, FRealSingle ColorScale, const FChaosDebugDrawJointFeatures& FeatureMask = FChaosDebugDrawJointFeatures::MakeDefault(), const FChaosDebugDrawSettings* Settings = nullptr);
 		CHAOS_API void DrawJointConstraints(const FRigidTransform3& SpaceTransform, const FPBDJointConstraints& Constraints, FRealSingle ColorScale, const FChaosDebugDrawJointFeatures& FeatureMask = FChaosDebugDrawJointFeatures::MakeDefault(), const FChaosDebugDrawSettings* Settings = nullptr);
 		CHAOS_API void DrawSimulationSpace(const FSimulationSpace& SimSpace, const FChaosDebugDrawSettings* Settings = nullptr);
-		CHAOS_API void DrawShape(const FRigidTransform3& ShapeTransform, const FImplicitObject* Shape, const FColor& Color, const FChaosDebugDrawSettings* Settings = nullptr);
-		CHAOS_API void DrawConstraintGraph(const FRigidTransform3& ShapeTransform, const FPBDConstraintColor& Graph, const FChaosDebugDrawSettings* Settings = nullptr);
-		CHAOS_API void DrawCollidingShapes(const FRigidTransform3& SpaceTransform, const FPBDCollisionConstraints& Collisions, float ColorScale, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawShape(const FRigidTransform3& ShapeTransform, const FImplicitObject* Implicit, const FShapeOrShapesArray& Shapes, const FColor& Color, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawConstraintGraph(const FRigidTransform3& ShapeTransform, const FPBDConstraintGraph& Graph, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawConnectionGraph(const FRigidClustering& Clustering, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawCollidingShapes(const FRigidTransform3& SpaceTransform, const FPBDCollisionConstraints& Collisions, FRealSingle ColorScale, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawSpatialAccelerationStructure(const ISpatialAcceleration<FAccelerationStructureHandle, FReal, 3>& SpatialAccelerationStructure, const FChaosDebugDrawSettings* Settings = nullptr);
+		CHAOS_API void DrawSuspensionConstraints(const FRigidTransform3& SpaceTransform, const FPBDSuspensionConstraints& Constraints, const FChaosDebugDrawSettings* Settings = nullptr);
 #endif
 	}
 }

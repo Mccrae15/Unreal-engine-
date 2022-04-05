@@ -35,6 +35,7 @@ SMaterialAnalyzer::SMaterialAnalyzer()
 	BasePropertyOverrideNames.Add(TEXT("bOverride_DitheredLODTransition"), TEXT("DitheredLODTransitionOverride"));
 	BasePropertyOverrideNames.Add(TEXT("bOverride_CastDynamicShadowAsMasked"), TEXT("CastDynamicShadowAsMaskedOverride"));
 	BasePropertyOverrideNames.Add(TEXT("bOverride_TwoSided"), TEXT("TwoSidedOverride"));
+	BasePropertyOverrideNames.Add(TEXT("bOverride_OutputTranslucentVelocity"), TEXT("bOutputTranslucentVelocity"));
 }
 
 SMaterialAnalyzer::~SMaterialAnalyzer()
@@ -419,7 +420,7 @@ TSharedRef< ITableRow > SMaterialAnalyzer::OnGenerateSuggestionRow(TSharedPtr<FP
 							.Padding(2.0f)
 							[
 								SNew(SImage)
-								.Image(FEditorStyle::GetBrush("ContentBrowser.AddCollectionButtonIcon"))
+								.Image(FAppStyle::Get().GetBrush("Icons.Plus"))
 								.ColorAndOpacity(FSlateColor::UseForeground())
 							]
 							+SHorizontalBox::Slot()
@@ -689,13 +690,12 @@ void FAnalyzeMaterialTreeAsyncTask::DoWork()
 	TArray<FGuid> Guids;
 
 	UMaterial* CurrentMaterial = Cast<UMaterial>(CurrentMaterialInterface);
+	UMaterialInstance* CurrentMaterialInstance = Cast<UMaterialInstance>(CurrentMaterialInterface);
 
 	bool bCanBeOverriden = CurrentMaterial != nullptr;
 
 	if(CurrentMaterial != nullptr)
 	{
-		CurrentMaterial->GetAllMaterialLayersParameterInfo(MaterialLayerParameterInfo, MaterialLayerGuids);
-	
 		CurrentMaterial->GetAllStaticSwitchParameterInfo(StaticSwitchParameterInfo, StaticSwitchGuids);
 	
 		CurrentMaterial->GetAllStaticComponentMaskParameterInfo(StaticMaskParameterInfo, StaticMaskGuids);
@@ -707,8 +707,6 @@ void FAnalyzeMaterialTreeAsyncTask::DoWork()
 	{
 		float TempValue = 0.0f;
 		bool bIsOverridden = false;
-
-		UMaterialInstance* CurrentMaterialInstance = Cast<UMaterialInstance>(CurrentMaterialInterface);
 
 		if (BasePropertyOverrideName.Key.IsEqual(TEXT("bOverride_OpacityMaskClipValue")))
 		{
@@ -767,6 +765,14 @@ void FAnalyzeMaterialTreeAsyncTask::DoWork()
 				bIsOverridden = CurrentMaterialInstance->BasePropertyOverrides.bOverride_TwoSided;
 			}
 		}
+		else if (BasePropertyOverrideName.Key.IsEqual(TEXT("bOverride_OutputTranslucentVelocity")))
+		{
+			TempValue = CurrentMaterialInterface->IsTranslucencyWritingVelocity();
+			if (CurrentMaterialInstance)
+			{
+				bIsOverridden = CurrentMaterialInstance->BasePropertyOverrides.bOverride_OutputTranslucentVelocity;
+			}
+		}
 
 		// Check the parent for this variable
 		FAnalyzedMaterialNodePtr Parent = CurrentMaterialNode->Parent;
@@ -788,43 +794,37 @@ void FAnalyzeMaterialTreeAsyncTask::DoWork()
 		}
 	}
 
-
-	CurrentMaterialNode->MaterialLayerParameters.Empty(MaterialLayerParameterInfo.Num());
-
-	for (int ParameterIndex = 0; ParameterIndex < MaterialLayerParameterInfo.Num(); ++ParameterIndex)
+	FMaterialLayersFunctions MaterialLayers;
+	if (CurrentMaterialInterface->GetMaterialLayers(MaterialLayers))
 	{
-		FMaterialLayersFunctions Functions;
-		bool bIsOverridden = CurrentMaterialInterface->GetMaterialLayersParameterValue(MaterialLayerParameterInfo[ParameterIndex], Functions, MaterialLayerGuids[ParameterIndex], false);
-
-		if (!bIsOverridden)
+		bool bIsOverridden = false;
+		if (CurrentMaterialInstance)
 		{
-			// Check the parent for this variable
-			FAnalyzedMaterialNodePtr Parent = CurrentMaterialNode->Parent;
-			// We shouldn't be able to get in here for the base Material
-			check(Parent.IsValid());
-
-			FStaticMaterialLayerParameterNodeRef ParentParameter = Parent->FindMaterialLayerParameter(MaterialLayerParameterInfo[ParameterIndex].Name);
-
-			CurrentMaterialNode->MaterialLayerParameters.Add(FStaticMaterialLayerParameterNodeRef(
-					new FStaticMaterialLayerParameterNode(ParentParameter->ParameterName,
-						ParentParameter->ParameterValue,
-						false)));
+			FMaterialLayersFunctions ParentMaterialLayers;
+			const bool bParentHasLayers = CurrentMaterialInstance->Parent->GetMaterialLayers(ParentMaterialLayers);
+			bIsOverridden = !bParentHasLayers || MaterialLayers != ParentMaterialLayers;
 		}
-		else
-		{
-			CurrentMaterialNode->MaterialLayerParameters.Add(FStaticMaterialLayerParameterNodeRef(
-				new FStaticMaterialLayerParameterNode(MaterialLayerParameterInfo[ParameterIndex].Name,
-					Functions.GetStaticPermutationString(),
-					true)));
-		}
+
+		CurrentMaterialNode->MaterialLayerParameters.Add(FStaticMaterialLayerParameterNodeRef(
+			new FStaticMaterialLayerParameterNode(FName(),
+				MaterialLayers.GetStaticPermutationString(),
+				bIsOverridden)));
 	}
 	
 	CurrentMaterialNode->StaticSwitchParameters.Empty(StaticSwitchParameterInfo.Num());
 	
 	for (int ParameterIndex = 0; ParameterIndex < StaticSwitchParameterInfo.Num(); ++ParameterIndex)
 	{
-		bool bStaticSwitchValue;
-		bool bIsOverridden = CurrentMaterialInterface->GetStaticSwitchParameterValue(StaticSwitchParameterInfo[ParameterIndex], bStaticSwitchValue, StaticSwitchGuids[ParameterIndex], false, false);
+		FMaterialParameterMetadata Meta;
+		bool bIsOverridden = false;
+		if (CurrentMaterialInstance)
+		{
+			bIsOverridden = CurrentMaterialInstance->GetParameterOverrideValue(EMaterialParameterType::StaticSwitch, StaticSwitchParameterInfo[ParameterIndex], Meta);
+		}
+		else if(CurrentMaterial)
+		{
+			bIsOverridden = CurrentMaterial->GetParameterValue(EMaterialParameterType::StaticSwitch, StaticSwitchParameterInfo[ParameterIndex], Meta);
+		}
 
 		if (!bIsOverridden)
 		{
@@ -843,7 +843,7 @@ void FAnalyzeMaterialTreeAsyncTask::DoWork()
 		else
 		{
 			CurrentMaterialNode->StaticSwitchParameters.Add(FStaticSwitchParameterNodeRef(
-				new FStaticSwitchParameterNode(StaticSwitchParameterInfo[ParameterIndex].Name, bStaticSwitchValue, true)));
+				new FStaticSwitchParameterNode(StaticSwitchParameterInfo[ParameterIndex].Name, Meta.Value.AsStaticSwitch(), true)));
 		}
 	}
 	
@@ -851,9 +851,16 @@ void FAnalyzeMaterialTreeAsyncTask::DoWork()
 	
 	for (int ParameterIndex = 0; ParameterIndex < StaticMaskParameterInfo.Num(); ++ParameterIndex)
 	{
-		bool R, G, B, A;
-	
-		bool bIsOverridden = CurrentMaterialInterface->GetStaticComponentMaskParameterValue(StaticMaskParameterInfo[ParameterIndex], R, G, B, A, StaticMaskGuids[ParameterIndex], false, false);
+		FMaterialParameterMetadata Meta;
+		bool bIsOverridden = false;
+		if (CurrentMaterialInstance)
+		{
+			bIsOverridden = CurrentMaterialInstance->GetParameterOverrideValue(EMaterialParameterType::StaticComponentMask, StaticSwitchParameterInfo[ParameterIndex], Meta);
+		}
+		else if (CurrentMaterial)
+		{
+			bIsOverridden = CurrentMaterial->GetParameterValue(EMaterialParameterType::StaticComponentMask, StaticSwitchParameterInfo[ParameterIndex], Meta);
+		}
 
 		if(!bIsOverridden)
 		{
@@ -875,7 +882,12 @@ void FAnalyzeMaterialTreeAsyncTask::DoWork()
 		else
 		{
 			CurrentMaterialNode->StaticComponentMaskParameters.Add(FStaticComponentMaskParameterNodeRef(
-				new FStaticComponentMaskParameterNode(StaticMaskParameterInfo[ParameterIndex].Name, R, G, B, A, true)));
+				new FStaticComponentMaskParameterNode(StaticMaskParameterInfo[ParameterIndex].Name,
+					Meta.Value.Bool[0],
+					Meta.Value.Bool[1],
+					Meta.Value.Bool[2],
+					Meta.Value.Bool[3],
+					true)));
 		}
 	}
 

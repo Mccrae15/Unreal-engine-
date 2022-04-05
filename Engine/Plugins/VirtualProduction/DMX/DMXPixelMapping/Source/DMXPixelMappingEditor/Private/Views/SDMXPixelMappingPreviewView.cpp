@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Views/SDMXPixelMappingPreviewView.h"
+
+#include "DMXPixelMappingEditorStyle.h"
 #include "Toolkits/DMXPixelMappingToolkit.h"
 #include "Widgets/SDMXPixelMappingPreviewViewport.h"
 #include "Widgets/SDMXPixelMappingZoomPan.h"
@@ -280,13 +282,14 @@ TSharedRef<SWidget> SDMXPixelMappingPreviewView::CreateOverlayUI()
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
+				.ButtonColorAndOpacity(FLinearColor::Transparent)
 				.ButtonStyle(FEditorStyle::Get(), "ViewportMenu.Button")
 				.ToolTipText(LOCTEXT("ZoomToFit_ToolTip", "Zoom To Fit"))
 				.OnClicked(this, &SDMXPixelMappingPreviewView::HandleZoomToFitClicked)
 				.ContentPadding(FEditorStyle::Get().GetMargin("ViewportMenu.SToolBarButtonBlock.Button.Padding"))
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("UMGEditor.ZoomToFit"))
+					.Image(FDMXPixelMappingEditorStyle::Get().GetBrush("Icons.ZoomToFit"))
 				]
 			]
 		];

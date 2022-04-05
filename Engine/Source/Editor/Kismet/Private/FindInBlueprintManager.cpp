@@ -11,6 +11,7 @@
 #include "Serialization/MemoryReader.h"
 #include "Misc/FeedbackContext.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/SavePackage.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
@@ -32,7 +33,6 @@
 #include "EdGraphSchema_K2.h"
 #include "K2Node_FunctionEntry.h"
 #include "EditorStyleSet.h"
-#include "BlueprintEditorSettings.h"
 #include "Framework/Docking/TabManager.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "WorkspaceMenuStructure.h"
@@ -46,7 +46,6 @@
 #include "ImaginaryBlueprintData.h"
 #include "FiBSearchInstance.h"
 #include "Misc/ConfigCacheIni.h"
-#include "Misc/HotReloadInterface.h"
 #include "BlueprintAssetHandler.h"
 
 #include "JsonObjectConverter.h"
@@ -400,7 +399,7 @@ namespace FiBSerializationHelpers
 			// Determine the editor object version that the asset package was last serialized with
 			FString PackageFilename;
 			const FString PackageName = FPackageName::ObjectPathToPackageName(InAssetPath);
-			if (ensureMsgf(FPackageName::DoesPackageExist(PackageName, nullptr, &PackageFilename), TEXT("FiB: Failed to map package to filename.")))
+			if (ensureMsgf(FPackageName::DoesPackageExist(PackageName, &PackageFilename), TEXT("FiB: Failed to map package to filename.")))
 			{
 				// Open a new file archive for reading
 				FArchive* PackageFile = IFileManager::Get().CreateFileReader(*PackageFilename);
@@ -1052,13 +1051,13 @@ namespace BlueprintSearchMetaDataHelpers
 		// Collect all macro graphs
 		InWriter->WriteArrayStart(FFindInBlueprintSearchTags::FiB_Nodes);
 		{
-			for(auto* Node : InGraph->Nodes)
+			for(auto& Node : InGraph->Nodes)
 			{
 				if(Node)
 				{
 					{
 						// Make sure we don't collect search data for nodes that are going away soon
-						if (Node->GetOuter()->IsPendingKill())
+						if (!IsValid(Node->GetOuter()))
 						{
 							continue;
 						}
@@ -1590,11 +1589,11 @@ public:
 		{
 			// Don't utilize the task graph if any of the following conditions hold TRUE:
 			// a) The application has throttled the tick rate.
-			// b) No global search tabs are currently open and visible.
+			// b) No global search tabs are currently open and visible, or there are no async search queries that are otherwise pending completion.
 			// c) The initial asset discovery phase has not yet been completed.
 			// d) Multiprocessing has been explicitly disabled for this operation.
 			return FSlateThrottleManager::Get().IsAllowingExpensiveTasks()
-				&& FFindInBlueprintSearchManager::Get().IsGlobalFindResultsOpen()
+				&& (FFindInBlueprintSearchManager::Get().IsGlobalFindResultsOpen() || FFindInBlueprintSearchManager::Get().IsAsyncSearchQueryInProgress())
 				&& !FFindInBlueprintSearchManager::Get().IsAssetDiscoveryInProgress()
 				&& !EnumHasAnyFlags(CacheParams.OpFlags, EFiBCacheOpFlags::ExecuteOnSingleThread);
 		}
@@ -1841,9 +1840,10 @@ public:
 									UWorld* WorldAsset = Cast<UWorld>(Asset);
 
 									// Save the package
-									EObjectFlags ObjectFlags = (WorldAsset == nullptr) ? RF_Standalone : RF_NoFlags;
-
-									if (GEditor->SavePackage(Package, WorldAsset, ObjectFlags, *FinalPackageFilename, GError, nullptr, false, true, SAVE_NoError))
+									FSavePackageArgs SaveArgs;
+									SaveArgs.TopLevelFlags = (WorldAsset == nullptr) ? RF_Standalone : RF_NoFlags;
+									SaveArgs.SaveFlags = SAVE_NoError;
+									if (GEditor->SavePackage(Package, WorldAsset, *FinalPackageFilename, SaveArgs))
 									{
 										bFailedToCache = false;
 									}
@@ -1996,12 +1996,7 @@ FFindInBlueprintSearchManager::~FFindInBlueprintSearchManager()
 	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().RemoveAll(this);
 	FCoreUObjectDelegates::GetPostGarbageCollect().RemoveAll(this);
 	FCoreUObjectDelegates::OnAssetLoaded.RemoveAll(this);
-
-	if(FModuleManager::Get().IsModuleLoaded("HotReload"))
-	{
-		IHotReloadInterface& HotReloadSupport = FModuleManager::GetModuleChecked<IHotReloadInterface>("HotReload");
-		HotReloadSupport.OnHotReload().RemoveAll(this);
-	}
+	FCoreUObjectDelegates::ReloadCompleteDelegate.RemoveAll(this);
 
 	// Shut down the global find results tab feature.
 	EnableGlobalFindResults(false);
@@ -2017,6 +2012,7 @@ void FFindInBlueprintSearchManager::Initialize()
 	GConfig->GetBool(TEXT("BlueprintSearchSettings"), TEXT("bEnableDeveloperMenuTools"), bEnableDeveloperMenuTools, GEditorIni);
 	GConfig->GetBool(TEXT("BlueprintSearchSettings"), TEXT("bDisableSearchResultTemplates"), bDisableSearchResultTemplates, GEditorIni);
 
+#if CSV_PROFILER
 	// If profiling has been enabled, turn on the stat category and begin a capture.
 	if (bEnableCSVStatsProfiling)
 	{
@@ -2027,6 +2023,7 @@ void FFindInBlueprintSearchManager::Initialize()
 			FCsvProfiler::Get()->BeginCapture(-1, CaptureFolder);
 		}
 	}
+#endif
 
 	// Must ensure we do not attempt to load the AssetRegistry Module while saving a package, however, if it is loaded already we can safely obtain it
 	if (!GIsSavingPackage || (GIsSavingPackage && FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry"))))
@@ -2054,9 +2051,8 @@ void FFindInBlueprintSearchManager::Initialize()
 	FCoreUObjectDelegates::GetPostGarbageCollect().AddRaw(this, &FFindInBlueprintSearchManager::UnpauseFindInBlueprintSearch);
 	FCoreUObjectDelegates::OnAssetLoaded.AddRaw(this, &FFindInBlueprintSearchManager::OnAssetLoaded);
 	
-	// Register to be notified of hot reloads
-	IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>("HotReload");
-	HotReloadSupport.OnHotReload().AddRaw(this, &FFindInBlueprintSearchManager::OnHotReload);
+	// Register to be notified of reloads
+	FCoreUObjectDelegates::ReloadCompleteDelegate.AddRaw(this, &FFindInBlueprintSearchManager::OnReloadComplete);
 
 	if(!GIsSavingPackage && AssetRegistryModule)
 	{
@@ -2064,28 +2060,25 @@ void FFindInBlueprintSearchManager::Initialize()
 		BuildCache();
 	}
 
-	// Register global find results tabs if the feature is enabled.
-	if (GetDefault<UBlueprintEditorSettings>()->bHostFindInBlueprintsInGlobalTab)
-	{
-		EnableGlobalFindResults(true);
-	}
+	// Register global find results tabs.
+	EnableGlobalFindResults(true);
 }
 
 void FFindInBlueprintSearchManager::OnAssetAdded(const FAssetData& InAssetData)
 {
 	const UClass* AssetClass = nullptr;
 	{
-		const UClass** FoundClass = CachedAssetClasses.Find(InAssetData.AssetClass);
-		if (FoundClass)
+		TWeakObjectPtr<const UClass> FoundClass = CachedAssetClasses.FindRef(InAssetData.AssetClass);
+		if (FoundClass.IsValid())
 		{
-			AssetClass = *FoundClass;
+			AssetClass = FoundClass.Get();
 		}
 		else
 		{
 			AssetClass = InAssetData.GetClass();
 			if (AssetClass)
 			{
-				CachedAssetClasses.Add(InAssetData.AssetClass, AssetClass);
+				CachedAssetClasses.Add(InAssetData.AssetClass, TWeakObjectPtr<const UClass>(AssetClass));
 			}
 		}
 	}
@@ -2417,16 +2410,25 @@ void FFindInBlueprintSearchManager::OnBlueprintUnloaded(UBlueprint* InBlueprint)
 					const FString PackageName = AssetData.PackageName.ToString();
 					if (FPackageName::IsValidLongPackageName(PackageName))
 					{
-						FString PackageFilename;
-						if (FPackageName::DoesPackageExist(PackageName, nullptr, &PackageFilename))
+						FPackagePath PackagePath;
+						if (FPackagePath::TryFromPackageName(PackageName, PackagePath))
 						{
-							TArray<FString> FilesToScan = { PackageFilename };
-							AssetRegistryModule->Get().ScanModifiedAssetFiles(FilesToScan);
-
-							AssetData = AssetRegistryModule->Get().GetAssetByObjectPath(AssetPath, bIncludeOnlyOnDiskAssets);
-							if (AssetData.IsValid())
+							FPackagePath OutPackagePath;
+							const FPackageName::EPackageLocationFilter PackageLocation = FPackageName::DoesPackageExistEx(PackagePath, FPackageName::EPackageLocationFilter::Any, /*bMatchCaseOnDisk*/ false, &OutPackagePath);
+							if (PackageLocation != FPackageName::EPackageLocationFilter::None)
 							{
-								AddUnloadedBlueprintSearchMetadata(AssetData);
+								if (PackageLocation == FPackageName::EPackageLocationFilter::FileSystem && OutPackagePath.HasLocalPath())
+								{
+									TArray<FString> FilesToScan = { OutPackagePath.GetLocalFullPath() };
+									AssetRegistryModule->Get().ScanModifiedAssetFiles(FilesToScan);
+
+									AssetData = AssetRegistryModule->Get().GetAssetByObjectPath(AssetPath, bIncludeOnlyOnDiskAssets);
+								}
+
+								if (AssetData.IsValid())
+								{
+									AddUnloadedBlueprintSearchMetadata(AssetData);
+								}
 							}
 						}
 					}
@@ -2436,7 +2438,7 @@ void FFindInBlueprintSearchManager::OnBlueprintUnloaded(UBlueprint* InBlueprint)
 	}
 }
 
-void FFindInBlueprintSearchManager::OnHotReload(bool bWasTriggeredAutomatically)
+void FFindInBlueprintSearchManager::OnReloadComplete(EReloadCompleteReason Reason)
 {
 	CachedAssetClasses.Reset();
 }
@@ -2890,7 +2892,7 @@ void FFindInBlueprintSearchManager::CleanCache()
 		if (!SearchData.IsValid()
 			|| SearchData.IsMarkedForDeletion()
 			|| SearchData.Blueprint.IsStale()
-			|| (SearchData.Blueprint.IsValid(bEvenIfPendingKill) && SearchData.Blueprint->IsPendingKill()))
+			|| (SearchData.Blueprint.IsValid(bEvenIfPendingKill) && !IsValid(SearchData.Blueprint.Get(bEvenIfPendingKill))))
 		{
 			// Also remove it from the list of loaded assets that require indexing
 			PendingAssets.Remove(SearchData.AssetPath);
@@ -3333,6 +3335,12 @@ bool FFindInBlueprintSearchManager::IsAssetDiscoveryInProgress() const
 	return GIsRunning && AssetRegistryModule && AssetRegistryModule->Get().IsLoadingAssets();
 }
 
+bool FFindInBlueprintSearchManager::IsAsyncSearchQueryInProgress() const
+{
+	// Note: Not using ActiveSearchCounter here, as that's used to block on pause and thus can be decremented during an active search.
+	return ActiveSearchQueries.Num() > 0;
+}
+
 TSharedPtr< FJsonObject > FFindInBlueprintSearchManager::ConvertJsonStringToObject(FSearchDataVersionInfo InVersionInfo, FString InJsonString, TMap<int32, FText>& OutFTextLookupTable)
 {
 	/** The searchable data is more complicated than a Json string, the Json being the main searchable body that is parsed. Below is a diagram of the full data:
@@ -3519,7 +3527,7 @@ void FFindInBlueprintSearchManager::EnableGlobalFindResults(bool bEnable)
 	if (bEnable)
 	{
 		// Register the spawners for all global Find Results tabs
-		const FSlateIcon GlobalFindResultsIcon(FEditorStyle::GetStyleSetName(), "Kismet.Tabs.FindResults");
+		const FSlateIcon GlobalFindResultsIcon(FEditorStyle::GetStyleSetName(), "BlueprintEditor.FindInBlueprints.MenuIcon");
 		GlobalFindResultsMenuItem = WorkspaceMenu::GetMenuStructure().GetToolsCategory()->AddGroup(
 			LOCTEXT("WorkspaceMenu_GlobalFindResultsCategory", "Find in Blueprints"),
 			LOCTEXT("GlobalFindResultsMenuTooltipText", "Find references to functions, events and variables in all Blueprints."),
@@ -3626,8 +3634,8 @@ bool FFindInBlueprintSearchManager::IsTickable() const
 	const bool bHasPendingAssets = PendingAssets.Num() > 0;
 	const bool bNeedsFirstIndex = bHasFirstSearchOccurred && AssetsToIndexOnFirstSearch.Num() > 0;
 
-	// Tick only if we have an active caching operation or if a search has occured before we're ready or if we have pending assets and an open FiB context
-	return IsCacheInProgress() || bNeedsFirstIndex || (bHasPendingAssets && IsGlobalFindResultsOpen());
+	// Tick only if we have an active caching operation or if a search has occured before we're ready or if we have pending assets and an open FiB context or an active async search query
+	return IsCacheInProgress() || bNeedsFirstIndex || (bHasPendingAssets && (IsGlobalFindResultsOpen() || IsAsyncSearchQueryInProgress()));
 }
 
 TStatId FFindInBlueprintSearchManager::GetStatId() const

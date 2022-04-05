@@ -23,10 +23,12 @@ public:
 	virtual uint32 GetPlaybackSequenceID() const override;
 
 	virtual void SetExecutionDelay(const FTimeValue& ExecutionDelay) override;
+	virtual FTimeValue GetExecuteAtUTCTime() const override;
 
 	virtual EStreamType GetType() const override;
 
-	virtual void GetDependentStreams(TArray<FDependentStreams>& OutDependentStreams) const override;
+	virtual void GetDependentStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutDependentStreams) const override;
+	virtual void GetRequestedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutRequestedStreams) override;
 	virtual void GetEndedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutAlreadyEndedStreams) override;
 
 	//! Returns the first PTS value as indicated by the media timeline. This should correspond to the actual absolute PTS of the sample.
@@ -57,7 +59,10 @@ public:
 	int64																		DiscontinuitySequence;				//!< The discontinuity index after which this segment is located in the media playlist.
 	int32																		LocalIndex;							//!< Local index of the segment in the media playlist at the time the request was generated.
 
-	FTimeValue																	FirstAUTimeOffset;					//!< A time offset into the segment to the first access unit to be sent to the decoder (audio).
+	int64																		TimestampSequenceIndex;
+	FTimeValue																	EarliestPTS;
+	FTimeValue																	LastPTS;
+	bool																		bFrameAccuracyRequired;
 
 	bool																		bIsPrefetch;
 	bool																		bIsEOSSegment;
@@ -79,13 +84,10 @@ public:
 	TArray<TSharedPtrTS<FStreamSegmentRequestHLSfmp4>>							DependentStreams;
 	bool																		bIsInitialStartRequest;
 
-	FPlayerLoopState															PlayerLoopState;
-
 	uint32																		CurrentPlaybackSequenceID;			//!< Set by the player before adding the request to the stream reader.
 
 	Metrics::FSegmentDownloadStats												DownloadStats;
 	HTTP::FConnectionInfo														ConnectionInfo;
-	FTimeValue																	NextLargestExpectedTimestamp;	//!< Largest timestamp of all samples (plus its duration) across all tracks.
 };
 
 
@@ -196,27 +198,28 @@ private:
 		IStreamReader::CreateParam								Parameters;
 		TSharedPtrTS<FStreamSegmentRequestHLSfmp4>				CurrentRequest;
 		FMediaSemaphore											WorkSignal;
-		volatile bool											bTerminate;
-		volatile bool											bRequestCanceled;
-		volatile bool											bSilentCancellation;
-		volatile bool											bHasErrored;
-		bool													bAbortedByABR;
-		bool													bAllowEarlyEmitting;
-		bool													bFillRemainingDuration;
+		volatile bool											bWasStarted = false;
+		volatile bool											bTerminate = false;
+		volatile bool											bRequestCanceled = false;
+		volatile bool											bSilentCancellation = false;
+		volatile bool											bHasErrored = false;
+		bool													bAbortedByABR = false;
+		bool													bAllowEarlyEmitting = false;
+		bool													bFillRemainingDuration = false;
 
-		IPlayerSessionServices*									PlayerSessionService;
+		IPlayerSessionServices*									PlayerSessionService = nullptr;
 		FReadBuffer												ReadBuffer;
 		TSharedPtr<ElectraCDM::IStreamDecrypterAES128, ESPMode::ThreadSafe>	Decrypter;
 		FMediaEvent												DownloadCompleteSignal;
 		TSharedPtrTS<IParserISO14496_12>						MP4Parser;
-		int32													NumMOOFBoxesFound;
+		int32													NumMOOFBoxesFound = 0;
 
 		TMediaQueueDynamicNoLock<FAccessUnit *>					AccessUnitFIFO;
 		FTimeValue 												DurationSuccessfullyRead;
 		FTimeValue 												DurationSuccessfullyDelivered;
 
 		FMediaCriticalSection									MetricUpdateLock;
-		int32													ProgressReportCount;
+		int32													ProgressReportCount = 0;
 		TSharedPtrTS<IAdaptiveStreamSelector>					StreamSelector;
 
 

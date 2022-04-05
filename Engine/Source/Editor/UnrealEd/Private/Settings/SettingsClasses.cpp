@@ -20,16 +20,16 @@
 #include "Settings/EditorLoadingSavingSettings.h"
 #include "Settings/EditorMiscSettings.h"
 #include "Settings/LevelEditorMiscSettings.h"
-#include "Settings/ProjectPackagingSettings.h"
 #include "EngineGlobals.h"
 #include "Components/ArrowComponent.h"
 #include "Components/BillboardComponent.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "EditorModeManager.h"
 #include "UnrealEdMisc.h"
 #include "CrashReporterSettings.h"
 #include "AutoReimport/AutoReimportUtilities.h"
 #include "Misc/ConfigCacheIni.h" // for FConfigCacheIni::GetString()
+#include "Misc/AssertionMacros.h"
 #include "SourceCodeNavigation.h"
 #include "Interfaces/IProjectManager.h"
 #include "ProjectDescriptor.h"
@@ -40,6 +40,7 @@
 #include "InstalledPlatformInfo.h"
 #include "DrawDebugHelpers.h"
 #include "ToolMenus.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "SettingsClasses"
 
@@ -50,7 +51,7 @@ UContentBrowserSettings::FSettingChangedEvent UContentBrowserSettings::SettingCh
 
 UContentBrowserSettings::UContentBrowserSettings( const FObjectInitializer& ObjectInitializer )
 	: Super(ObjectInitializer)
-	, bShowFullCollectionNameInToolTip(true)
+	, DockCollections(true)
 {
 }
 
@@ -149,41 +150,16 @@ static TAutoConsoleVariable<float> CVarEditorHDRNITLevel(
 
 UEditorExperimentalSettings::UEditorExperimentalSettings( const FObjectInitializer& ObjectInitializer )
 	: Super(ObjectInitializer)
+	, bEnableAsyncTextureCompilation(false)
+	, bEnableAsyncStaticMeshCompilation(false)
+	, bEnableAsyncSkeletalMeshCompilation(false)
 	, bHDREditor(false)
 	, HDREditorNITLevel(160.0f)
-	, bEnableLocalizationDashboard(true)
 	, bUseOpenCLForConvexHullDecomp(false)
 	, bAllowPotentiallyUnsafePropertyEditing(false)
+	, bPackedLevelActor(true)
+	, bLevelInstance(true)
 {
-}
-
-bool UEditorExperimentalSettings::IsClassAllowedToRecompileDuringPIE(UClass* TestClass) const
-{
-	if (TestClass != nullptr)
-	{
-		// Rebuild the list if necessary (if the list was edited, either number of entires or value, ResolvedBaseClassesToAllowRecompilingDuringPlayInEditor will get reset below)
-		if (ResolvedBaseClassesToAllowRecompilingDuringPlayInEditor.Num() != BaseClassesToAllowRecompilingDuringPlayInEditor.Num())
-		{
-			ResolvedBaseClassesToAllowRecompilingDuringPlayInEditor.Reset();
-			for (TSoftClassPtr<UObject> BaseClassPtr : BaseClassesToAllowRecompilingDuringPlayInEditor)
-			{
-				if (UClass* BaseClass = BaseClassPtr.Get())
-				{
-					ResolvedBaseClassesToAllowRecompilingDuringPlayInEditor.Add(BaseClass);
-				}
-			}
-		}
-
-		// See if the test class matches any of the enabled base classes
-		for (UClass* BaseClass : ResolvedBaseClassesToAllowRecompilingDuringPlayInEditor)
-		{
-			if ((BaseClass != nullptr) && TestClass->IsChildOf(BaseClass))
-			{
-				return true;
-			}
-		}
-	}
-	return false;
 }
 
 void UEditorExperimentalSettings::PostInitProperties()
@@ -199,24 +175,37 @@ void UEditorExperimentalSettings::PostEditChangeProperty( struct FPropertyChange
 
 	const FName Name = (PropertyChangedEvent.Property != nullptr) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
 
-	if (Name == FName(TEXT("ConsoleForGamepadLabels")))
+	if (Name == GET_MEMBER_NAME_CHECKED(UEditorExperimentalSettings, ConsoleForGamepadLabels))
 	{
 		EKeys::SetConsoleForGamepadLabels(ConsoleForGamepadLabels);
 	}
-	else if (Name == FName(TEXT("bHDREditor")))
+	else if (Name == GET_MEMBER_NAME_CHECKED(UEditorExperimentalSettings, bHDREditor))
 	{
 		CVarEditorHDRSupport->Set(bHDREditor ? 1 : 0, ECVF_SetByProjectSetting);
 	}
-	else if (Name == FName(TEXT("HDREditorNITLevel")))
+	else if (Name == GET_MEMBER_NAME_CHECKED(UEditorExperimentalSettings, HDREditorNITLevel))
 	{
 		CVarEditorHDRNITLevel->Set(HDREditorNITLevel, ECVF_SetByProjectSetting);
 	}
+	else if (Name == GET_MEMBER_NAME_CHECKED(UEditorExperimentalSettings, bEnableInterchangeFramework))
+	{
+		if (bEnableInterchangeFramework)
+		{
+			bEnableInterchangeFrameworkForTextureOnly = false;
+		}
+	}
+	else if (Name == GET_MEMBER_NAME_CHECKED(UEditorExperimentalSettings, bEnableInterchangeFrameworkForTextureOnly))
+	{
+		if (bEnableInterchangeFrameworkForTextureOnly)
+		{
+			bEnableInterchangeFramework = false;
+		}
+	}
+
 	if (!FUnrealEdMisc::Get().IsDeletePreferences())
 	{
 		SaveConfig();
 	}
-
-	ResolvedBaseClassesToAllowRecompilingDuringPlayInEditor.Reset();
 
 	SettingChangedEvent.Broadcast(Name);
 }
@@ -423,7 +412,6 @@ ULevelEditorMiscSettings::ULevelEditorMiscSettings( const FObjectInitializer& Ob
 	PercentageThresholdForPrompt = 20.0f;
 	MinimumBoundsForCheckingSize = FVector(500.0f, 500.0f, 50.0f);
 	bCreateNewAudioDeviceForPlayInEditor = true;
-	bEnableLegacyMeshPaintMode = false;
 	bAvoidRelabelOnPasteSelected = false;
 }
 
@@ -505,7 +493,7 @@ void FPlayScreenResolution::PostInitProperties()
 
 void ULevelEditorPlaySettings::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
-	if (BuildGameBeforeLaunch != EPlayOnBuildMode::PlayOnBuild_Always && !FSourceCodeNavigation::IsCompilerAvailable())
+	if (BuildGameBeforeLaunch != EPlayOnBuildMode::PlayOnBuild_Always && !FSourceCodeNavigation::IsCompilerAvailable() && !PLATFORM_LINUX)
 	{
 		BuildGameBeforeLaunch = EPlayOnBuildMode::PlayOnBuild_Never;
 	}
@@ -892,15 +880,13 @@ ULevelEditorViewportSettings::ULevelEditorViewportSettings( const FObjectInitial
 	bLevelStreamingVolumePrevis = false;
 	BillboardScale = 1.0f;
 	TransformWidgetSizeAdjustment = 0.0f;
-	SelectedSplinePointSizeAdjustment = 0.0f;
-	SplineLineThicknessAdjustment = 0.0f;
-	SplineTangentHandleSizeAdjustment = 0.0f;
-	SplineTangentScale = 1.0f;
 	MeasuringToolUnits = MeasureUnits_Centimeters;
 	bAllowArcballRotate = false;
 	bAllowScreenRotate = false;
+	MouseSensitivty = .2f;
 	// Set a default preview mesh
 	PreviewMeshes.Add(FSoftObjectPath("/Engine/EditorMeshes/ColorCalibrator/SM_ColorCalibrator.SM_ColorCalibrator"));
+	LastInViewportMenuLocation = FVector2D(EForceInit::ForceInitToZero);
 }
 
 void ULevelEditorViewportSettings::PostInitProperties()
@@ -908,6 +894,9 @@ void ULevelEditorViewportSettings::PostInitProperties()
 	Super::PostInitProperties();
 	UBillboardComponent::SetEditorScale(BillboardScale);
 	UArrowComponent::SetEditorScale(BillboardScale);
+
+	// Make sure the mouse sensitivity is not set below a valid value somehow. This can cause weird viewport interactions.
+	MouseSensitivty = FMath::Max(MouseSensitivty, .01f);
 }
 
 void ULevelEditorViewportSettings::PostEditChangeProperty( struct FPropertyChangedEvent& PropertyChangedEvent )
@@ -922,11 +911,11 @@ void ULevelEditorViewportSettings::PostEditChangeProperty( struct FPropertyChang
 	{
 		if (bAllowTranslateRotateZWidget)
 		{
-			GLevelEditorModeTools().SetWidgetMode(FWidget::WM_TranslateRotateZ);
+			GLevelEditorModeTools().SetWidgetMode(UE::Widget::WM_TranslateRotateZ);
 		}
-		else if (GLevelEditorModeTools().GetWidgetMode() == FWidget::WM_TranslateRotateZ)
+		else if (GLevelEditorModeTools().GetWidgetMode() == UE::Widget::WM_TranslateRotateZ)
 		{
-			GLevelEditorModeTools().SetWidgetMode(FWidget::WM_Translate);
+			GLevelEditorModeTools().SetWidgetMode(UE::Widget::WM_Translate);
 		}
 	}
 	else if (Name == GET_MEMBER_NAME_CHECKED(ULevelEditorViewportSettings, bHighlightWithBrackets))
@@ -1002,372 +991,6 @@ void ULevelEditorViewportSettings::PostEditChangeProperty( struct FPropertyChang
 	SettingChangedEvent.Broadcast(Name);
 }
 
-/* UProjectPackagingSettings interface
- *****************************************************************************/
-
-const UProjectPackagingSettings::FConfigurationInfo UProjectPackagingSettings::ConfigurationInfo[PPBC_MAX] = 
-{
-	/* PPBC_Debug */         { EBuildConfiguration::Debug, LOCTEXT("DebugConfiguration", "Debug"), LOCTEXT("DebugConfigurationTooltip", "Package the game in Debug configuration") },
-	/* PPBC_DebugGame */     { EBuildConfiguration::DebugGame, LOCTEXT("DebugGameConfiguration", "DebugGame"), LOCTEXT("DebugGameConfigurationTooltip", "Package the game in DebugGame configuration") },
-	/* PPBC_Development */   { EBuildConfiguration::Development, LOCTEXT("DevelopmentConfiguration", "Development"), LOCTEXT("DevelopmentConfigurationTooltip", "Package the game in Development configuration") },
-	/* PPBC_Test */          { EBuildConfiguration::Test, LOCTEXT("TestConfiguration", "Test"), LOCTEXT("TestConfigurationTooltip", "Package the game in Test configuration") },
-	/* PPBC_Shipping */      { EBuildConfiguration::Shipping, LOCTEXT("ShippingConfiguration", "Shipping"), LOCTEXT("ShippingConfigurationTooltip", "Package the game in Shipping configuration") },
-};
-
-UProjectPackagingSettings::UProjectPackagingSettings( const FObjectInitializer& ObjectInitializer )
-	: Super(ObjectInitializer)
-{
-}
-
-
-void UProjectPackagingSettings::PostInitProperties()
-{
-	// Build code projects by default
-	Build = EProjectPackagingBuild::IfProjectHasCode;
-
-	// Cache the current set of Blueprint assets selected for nativization.
-	CachedNativizeBlueprintAssets = NativizeBlueprintAssets;
-
-	FixCookingPaths();
-
-	Super::PostInitProperties();
-}
-
-void UProjectPackagingSettings::FixCookingPaths()
-{
-	// Fix AlwaysCook/NeverCook paths to use content root
-	for (FDirectoryPath& PathToFix : DirectoriesToAlwaysCook)
-	{
-		if (!PathToFix.Path.IsEmpty() && !PathToFix.Path.StartsWith(TEXT("/"), ESearchCase::CaseSensitive))
-		{
-			PathToFix.Path = FString::Printf(TEXT("/Game/%s"), *PathToFix.Path);
-		}
-	}
-
-	for (FDirectoryPath& PathToFix : DirectoriesToNeverCook)
-	{
-		if (!PathToFix.Path.IsEmpty() && !PathToFix.Path.StartsWith(TEXT("/"), ESearchCase::CaseSensitive))
-		{
-			PathToFix.Path = FString::Printf(TEXT("/Game/%s"), *PathToFix.Path);
-		}
-	}
-
-	for (FDirectoryPath& PathToFix : TestDirectoriesToNotSearch)
-	{
-		if (!PathToFix.Path.IsEmpty() && !PathToFix.Path.StartsWith(TEXT("/"), ESearchCase::CaseSensitive))
-		{
-			PathToFix.Path = FString::Printf(TEXT("/Game/%s"), *PathToFix.Path);
-		}
-	}
-}
-
-void UProjectPackagingSettings::PostEditChangeProperty( FPropertyChangedEvent& PropertyChangedEvent )
-{
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-
-	const FName Name = (PropertyChangedEvent.MemberProperty != nullptr)
-		? PropertyChangedEvent.MemberProperty->GetFName()
-		: NAME_None;
-
-	if (Name == FName(TEXT("DirectoriesToAlwaysCook")) || Name == FName(TEXT("DirectoriesToNeverCook")) || Name == FName(TEXT("TestDirectoriesToNotSearch")) || Name == NAME_None)
-	{
-		// We need to fix paths for no name updates to catch the reloadconfig call
-		FixCookingPaths();
-	}
-	else if (Name == FName((TEXT("StagingDirectory"))))
-	{
-		// fix up path
-		FString Path = StagingDirectory.Path;
-		FPaths::MakePathRelativeTo(Path, FPlatformProcess::BaseDir());
-		StagingDirectory.Path = Path;
-	}
-	else if (Name == FName(TEXT("ForDistribution")))
-	{
-		if (ForDistribution && BuildConfiguration != EProjectPackagingBuildConfigurations::PPBC_Shipping)
-		{
-			BuildConfiguration = EProjectPackagingBuildConfigurations::PPBC_Shipping;
-			// force serialization for "Build COnfiguration"
-			UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UProjectPackagingSettings, BuildConfiguration)), GetDefaultConfigFilename());
-		}
-	}
-	else if (Name == FName(TEXT("bGenerateChunks")))
-	{
-		if (bGenerateChunks)
-		{
-			UsePakFile = true;
-		}
-	}
-	else if (Name == FName(TEXT("UsePakFile")))
-	{
-		if (!UsePakFile)
-		{
-			bGenerateChunks = false;
-			bBuildHttpChunkInstallData = false;
-		}
-	}
-	else if (Name == FName(TEXT("bBuildHTTPChunkInstallData")))
-	{
-		if (bBuildHttpChunkInstallData)
-		{
-			UsePakFile = true;
-			bGenerateChunks = true;
-			//Ensure data is something valid
-			if (HttpChunkInstallDataDirectory.Path.IsEmpty())
-			{
-				auto CloudInstallDir = FPaths::ConvertRelativePathToFull(FPaths::GetPath(FPaths::GetProjectFilePath())) / TEXT("ChunkInstall");
-				HttpChunkInstallDataDirectory.Path = CloudInstallDir;
-			}
-			if (HttpChunkInstallDataVersion.IsEmpty())
-			{
-				HttpChunkInstallDataVersion = TEXT("release1");
-			}
-		}
-	}
-	else if (Name == FName((TEXT("ApplocalPrerequisitesDirectory"))))
-	{
-		// If a variable is already in use, assume the user knows what they are doing and don't modify the path
-		if(!ApplocalPrerequisitesDirectory.Path.Contains("$("))
-		{
-			// Try making the path local to either project or engine directories.
-			FString EngineRootedPath = ApplocalPrerequisitesDirectory.Path;
-			FString EnginePath = FPaths::ConvertRelativePathToFull(FPaths::GetPath(FPaths::EngineDir())) + "/";
-			FPaths::MakePathRelativeTo(EngineRootedPath, *EnginePath);
-			if (FPaths::IsRelative(EngineRootedPath))
-			{
-				ApplocalPrerequisitesDirectory.Path = "$(EngineDir)/" + EngineRootedPath;
-				return;
-			}
-
-			FString ProjectRootedPath = ApplocalPrerequisitesDirectory.Path;
-			FString ProjectPath = FPaths::ConvertRelativePathToFull(FPaths::GetPath(FPaths::GetProjectFilePath())) + "/";
-			FPaths::MakePathRelativeTo(ProjectRootedPath, *ProjectPath);
-			if (FPaths::IsRelative(EngineRootedPath))
-			{
-				ApplocalPrerequisitesDirectory.Path = "$(ProjectDir)/" + ProjectRootedPath;
-				return;
-			}
-		}
-	}
-	else if (Name == FName((TEXT("NativizeBlueprintAssets"))))
-	{
-		int32 AssetIndex;
-		auto OnSelectBlueprintForExclusiveNativizationLambda = [](const FString& PackageName, bool bSelect)
-		{
-			if (!PackageName.IsEmpty())
-			{
-				// This should only apply to loaded packages. Any unloaded packages defer setting the transient flag to when they're loaded.
-				if (UPackage* Package = FindPackage(nullptr, *PackageName))
-				{
-					// Find the Blueprint asset within the package.
-					if (UBlueprint* Blueprint = FindObject<UBlueprint>(Package, *FPaths::GetBaseFilename(PackageName)))
-					{
-						// We're toggling the transient flag on or off.
-						if ((Blueprint->NativizationFlag == EBlueprintNativizationFlag::ExplicitlyEnabled) != bSelect)
-						{
-							Blueprint->NativizationFlag = bSelect ? EBlueprintNativizationFlag::ExplicitlyEnabled : EBlueprintNativizationFlag::Disabled;
-						}
-					}
-				}
-			}
-		};
-
-		if (NativizeBlueprintAssets.Num() > 0)
-		{
-			for (AssetIndex = 0; AssetIndex < NativizeBlueprintAssets.Num(); ++AssetIndex)
-			{
-				const FString& PackageName = NativizeBlueprintAssets[AssetIndex].FilePath;
-				if (AssetIndex >= CachedNativizeBlueprintAssets.Num())
-				{
-					// A new entry was added; toggle the exclusive flag on the corresponding Blueprint asset (if loaded).
-					OnSelectBlueprintForExclusiveNativizationLambda(PackageName, true);
-
-					// Add an entry to the end of the cached list.
-					CachedNativizeBlueprintAssets.Add(NativizeBlueprintAssets[AssetIndex]);
-				}
-				else if (!PackageName.Equals(CachedNativizeBlueprintAssets[AssetIndex].FilePath))
-				{
-					if (NativizeBlueprintAssets.Num() < CachedNativizeBlueprintAssets.Num())
-					{
-						// An entry was removed; toggle the exclusive flag on the corresponding Blueprint asset (if loaded).
-						OnSelectBlueprintForExclusiveNativizationLambda(CachedNativizeBlueprintAssets[AssetIndex].FilePath, false);
-
-						// Remove this entry from the cached list.
-						CachedNativizeBlueprintAssets.RemoveAt(AssetIndex);
-					}
-					else if(NativizeBlueprintAssets.Num() > CachedNativizeBlueprintAssets.Num())
-					{
-						// A new entry was inserted; toggle the exclusive flag on the corresponding Blueprint asset (if loaded).
-						OnSelectBlueprintForExclusiveNativizationLambda(PackageName, true);
-
-						// Insert the new entry into the cached list.
-						CachedNativizeBlueprintAssets.Insert(NativizeBlueprintAssets[AssetIndex], AssetIndex);
-					}
-					else
-					{
-						// An entry was changed; toggle the exclusive flag on the corresponding Blueprint assets (if loaded).
-						OnSelectBlueprintForExclusiveNativizationLambda(CachedNativizeBlueprintAssets[AssetIndex].FilePath, false);
-						OnSelectBlueprintForExclusiveNativizationLambda(PackageName, true);
-
-						// Update the cached entry.
-						CachedNativizeBlueprintAssets[AssetIndex].FilePath = PackageName;
-					}
-				}
-			}
-
-			if (CachedNativizeBlueprintAssets.Num() > NativizeBlueprintAssets.Num())
-			{
-				// Removed entries at the end of the list; toggle the exclusive flag on the corresponding Blueprint asset(s) (if loaded).
-				for (AssetIndex = NativizeBlueprintAssets.Num(); AssetIndex < CachedNativizeBlueprintAssets.Num(); ++AssetIndex)
-				{
-					OnSelectBlueprintForExclusiveNativizationLambda(CachedNativizeBlueprintAssets[AssetIndex].FilePath, false);
-				}
-
-				// Remove entries from the end of the cached list.
-				CachedNativizeBlueprintAssets.RemoveAt(NativizeBlueprintAssets.Num(), CachedNativizeBlueprintAssets.Num() - NativizeBlueprintAssets.Num());
-			}
-		}
-		else if(CachedNativizeBlueprintAssets.Num() > 0)
-		{
-			// Removed all entries; toggle the exclusive flag on the corresponding Blueprint asset(s) (if loaded).
-			for (AssetIndex = 0; AssetIndex < CachedNativizeBlueprintAssets.Num(); ++AssetIndex)
-			{
-				OnSelectBlueprintForExclusiveNativizationLambda(CachedNativizeBlueprintAssets[AssetIndex].FilePath, false);
-			}
-
-			// Clear the cached list.
-			CachedNativizeBlueprintAssets.Empty();
-		}
-	}
-}
-
-bool UProjectPackagingSettings::CanEditChange( const FProperty* InProperty ) const
-{
-	if (InProperty->GetFName() == FName(TEXT("NativizeBlueprintAssets")))
-	{
-		return BlueprintNativizationMethod == EProjectPackagingBlueprintNativizationMethod::Exclusive;
-	}
-
-	return Super::CanEditChange(InProperty);
-}
-
-bool UProjectPackagingSettings::AddBlueprintAssetToNativizationList(const class UBlueprint* InBlueprint)
-{
-	if (InBlueprint)
-	{
-		const FString PackageName = InBlueprint->GetOutermost()->GetName();
-
-		// Make sure it's not already in the exclusive list. This can happen if the user previously added this asset in the Project Settings editor.
-		const bool bFound = IsBlueprintAssetInNativizationList(InBlueprint);
-		if (!bFound)
-		{
-			// Add this Blueprint asset to the exclusive list.
-			FFilePath FileInfo;
-			FileInfo.FilePath = PackageName;
-			NativizeBlueprintAssets.Add(FileInfo);
-
-			// Also add it to the mirrored list for tracking edits.
-			CachedNativizeBlueprintAssets.Add(FileInfo);
-
-			return true;
-		}
-	}
-
-	return false;
-}
-
-bool UProjectPackagingSettings::RemoveBlueprintAssetFromNativizationList(const class UBlueprint* InBlueprint)
-{
-	if (InBlueprint)
-	{
-		const FString PackageName = InBlueprint->GetOutermost()->GetName();
-
-		int32 AssetIndex = FindBlueprintInNativizationList(InBlueprint);
-		if (AssetIndex >= 0)
-		{
-			// Note: Intentionally not using RemoveAtSwap() here, so that the order is preserved.
-			NativizeBlueprintAssets.RemoveAt(AssetIndex);
-
-			// Also remove it from the mirrored list (for tracking edits).
-			CachedNativizeBlueprintAssets.RemoveAt(AssetIndex);
-
-			return true;
-		}
-	}
-
-	return false;
-}
-
-TArray<EProjectPackagingBuildConfigurations> UProjectPackagingSettings::GetValidPackageConfigurations()
-{
-	// Check if the project has code
-	FProjectStatus ProjectStatus;
-	bool bHasCode = IProjectManager::Get().QueryStatusForCurrentProject(ProjectStatus) && ProjectStatus.bCodeBasedProject;
-
-	// If if does, find all the targets
-	const TArray<FTargetInfo>* Targets = nullptr;
-	if (bHasCode)
-	{
-		Targets = &(FDesktopPlatformModule::Get()->GetTargetsForCurrentProject());
-	}
-
-	// Set up all the configurations
-	TArray<EProjectPackagingBuildConfigurations> Configurations;
-	for (int32 Idx = 0; Idx < PPBC_MAX; Idx++)
-	{
-		EProjectPackagingBuildConfigurations PackagingConfiguration = (EProjectPackagingBuildConfigurations)Idx;
-
-		// Check the target type is valid
-		const UProjectPackagingSettings::FConfigurationInfo& Info = UProjectPackagingSettings::ConfigurationInfo[Idx];
-		if(!bHasCode && Info.Configuration == EBuildConfiguration::DebugGame)
-		{
-			continue;
-		}
-
-		Configurations.Add(PackagingConfiguration);
-	}
-	return Configurations;
-}
-
-const FTargetInfo* UProjectPackagingSettings::GetBuildTargetInfo() const
-{
-	const FTargetInfo* DefaultGameTarget = nullptr;
-	const FTargetInfo* DefaultClientTarget = nullptr;
-	for (const FTargetInfo& Target : FDesktopPlatformModule::Get()->GetTargetsForCurrentProject())
-	{
-		if (Target.Name == BuildTarget)
-		{
-			return &Target;
-		}
-		else if (Target.Type == EBuildTargetType::Game && (DefaultGameTarget == nullptr || Target.Name < DefaultGameTarget->Name))
-		{
-			DefaultGameTarget = &Target;
-		}
-		else if (Target.Type == EBuildTargetType::Client && (DefaultClientTarget == nullptr || Target.Name < DefaultClientTarget->Name))
-		{
-			DefaultClientTarget = &Target;
-		}
-	}
-	return (DefaultGameTarget != nullptr)? DefaultGameTarget : DefaultClientTarget;
-}
-
-int32 UProjectPackagingSettings::FindBlueprintInNativizationList(const UBlueprint* InBlueprint) const
-{
-	int32 ListIndex = INDEX_NONE;
-	if (InBlueprint)
-	{
-		const FString PackageName = InBlueprint->GetOutermost()->GetName();
-
-		for (int32 AssetIndex = 0; AssetIndex < NativizeBlueprintAssets.Num(); ++AssetIndex)
-		{
-			if (NativizeBlueprintAssets[AssetIndex].FilePath.Equals(PackageName, ESearchCase::IgnoreCase))
-			{
-				ListIndex = AssetIndex;
-				break;
-			}
-		}
-	}
-	return ListIndex;
-}
 
 /* UCrashReporterSettings interface
 *****************************************************************************/

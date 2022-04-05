@@ -92,7 +92,7 @@ void FLiveLinkModule::OnEngineLoopInitComplete()
 
 	if (StartupPreset)
 	{
-		StartupPreset->ApplyToClient();
+		StartupPreset->ApplyToClientLatent();
 	}
 }
 

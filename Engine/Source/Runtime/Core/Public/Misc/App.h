@@ -102,7 +102,7 @@ public:
 	}
 
 	/**
-	 * Gets the name of the application, i.e. "UE4" or "Rocket".
+	 * Gets the name of the application, i.e. "UE" or "Rocket".
 	 *
 	 * @todo need better application name discovery. this is quite horrible and may not work on future platforms.
 	 * @return Application name string.
@@ -174,7 +174,7 @@ public:
 		// At the moment Strcpy is not safe as we don't check the buffer size on all platforms, so we use strncpy here.
 		FCString::Strncpy(GInternalProjectName, InProjectName, UE_ARRAY_COUNT(GInternalProjectName));
 		// And make sure the ProjectName string is null terminated.
-		GInternalProjectName[UE_ARRAY_COUNT(GInternalProjectName) - 1] = 0;
+		GInternalProjectName[UE_ARRAY_COUNT(GInternalProjectName) - 1] = TEXT('\0');
 	}
 
 public:
@@ -222,6 +222,7 @@ public:
 	 */
 	FORCEINLINE static FGuid GetInstanceId()
 	{
+		static FGuid InstanceId = FGuid::NewGuid();
 		return InstanceId;
 	}
 
@@ -316,7 +317,7 @@ public:
 	 */
 	FORCEINLINE static bool IsThisInstance(const FGuid& InInstanceId)
 	{
-		return (InInstanceId == InstanceId);
+		return (InInstanceId == GetInstanceId());
 	};
 
 	/**
@@ -405,7 +406,7 @@ public:
 	/**
 	 * Checks whether the engine components of this application have been installed.
 	 *
-	 * In binary UE4 releases, the engine can be installed while the game is not. The game IsInstalled()
+	 * In binary Unreal Engine releases, the engine can be installed while the game is not. The game IsInstalled()
 	 * setting will take precedence over this flag.
 	 *
 	 * To override, pass -engineinstalled or -enginenotinstalled on the command line.
@@ -422,17 +423,7 @@ public:
 	 *
 	 * @return true if the application runs unattended, false otherwise.
 	 */
-#if ( !PLATFORM_WINDOWS ) || ( !defined(__clang__) )
-	static bool IsUnattended()
-	{
-		// FCommandLine::Get() will assert that the command line has been set.
-		// This function may not be used before FCommandLine::Set() is called.
-		static bool bIsUnattended = FParse::Param(FCommandLine::Get(), TEXT("UNATTENDED"));
-		return bIsUnattended || GIsAutomationTesting;
-	}
-#else
-	static bool IsUnattended(); // @todo clang: Workaround for missing symbol export
-#endif
+	static bool IsUnattended();
 
 	/**
 	 * Checks whether the application should run multi-threaded for performance critical features.
@@ -739,6 +730,19 @@ public:
 		return bHasVRFocus;
 	}
 	
+	/**
+	 * Sets HasFocus, which is a function that indicates that the application window has focus.
+	 *
+	 * @param  InHasFocusFunction	address of a function that can query the focus state, typically &FPlatformApplicationMisc::IsThisApplicationForeground
+	 */
+	static void SetHasFocusFunction(bool (*InHasFocusFunction)());
+
+	/**
+	 * Gets Focus, Indicates that the application should continue to render
+	 * Audio and Video as if it had window focus, even though it may not.
+	 */
+	static bool HasFocus();
+
 	/* If the random seed started with a constant or on time, can be affected by -FIXEDSEED or -BENCHMARK */
 	static bool bUseFixedSeed;
 
@@ -751,9 +755,6 @@ private:
 	/** The current build configuration */
 	static bool bIsDebugGame;
 #endif
-
-	/** Holds the instance identifier. */
-	static FGuid InstanceId;
 
 	/** Holds the session identifier. */
 	static FGuid SessionId;
@@ -817,6 +818,9 @@ private:
 
 	/** Holds a flag indicating if app has focus in side the VR headset */
 	static bool bHasVRFocus;
+
+	/** Holds a function address that can indicate if application has focus */
+	static bool (*HasFocusFunction)();
 };
 
 

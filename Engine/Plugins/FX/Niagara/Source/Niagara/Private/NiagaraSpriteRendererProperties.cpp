@@ -7,6 +7,7 @@
 #include "NiagaraRendererSprites.h"
 #include "NiagaraBoundsCalculatorHelper.h"
 #include "NiagaraCustomVersion.h"
+#include "NiagaraEmitterInstance.h"
 #include "Modules/ModuleManager.h"
 #include "NiagaraEmitter.h"
 #include "NiagaraScriptSourceBase.h"
@@ -95,10 +96,10 @@ UNiagaraSpriteRendererProperties::UNiagaraSpriteRendererProperties()
 	AttributeBindings.Add(&RendererVisibilityTagBinding);
 }
 
-FNiagaraRenderer* UNiagaraSpriteRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent)
+FNiagaraRenderer* UNiagaraSpriteRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController)
 {
-	FNiagaraRenderer* NewRenderer = new FNiagaraRendererSprites(FeatureLevel, this, Emitter);	
-	NewRenderer->Initialize(this, Emitter, InComponent);
+	FNiagaraRenderer* NewRenderer = new FNiagaraRendererSprites(FeatureLevel, this, Emitter);
+	NewRenderer->Initialize(this, Emitter, InController);
 	return NewRenderer;
 }
 
@@ -109,15 +110,13 @@ FNiagaraBoundsCalculator* UNiagaraSpriteRendererProperties::CreateBoundsCalculat
 
 void UNiagaraSpriteRendererProperties::GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const
 {
-	UMaterialInterface* UserParamMaterial = nullptr;
-	if (InEmitter != nullptr && MaterialUserParamBinding.Parameter.IsValid() && InEmitter->FindBinding(MaterialUserParamBinding, UserParamMaterial))
+	UMaterialInterface* MaterialInterface = nullptr;
+	if (InEmitter != nullptr)
 	{
-		OutMaterials.Add(UserParamMaterial);
+		MaterialInterface = Cast<UMaterialInterface>(InEmitter->FindBinding(MaterialUserParamBinding.Parameter));
 	}
-	else
-	{
-		OutMaterials.Add(Material);
-	}
+
+	OutMaterials.Add(MaterialInterface ? MaterialInterface : ToRawPtr(Material));
 }
 
 void UNiagaraSpriteRendererProperties::PostLoad()
@@ -144,6 +143,8 @@ void UNiagaraSpriteRendererProperties::PostLoad()
 		}
 		CacheDerivedData();
 	}
+	ChangeToPositionBinding(PositionBinding);
+	ChangeToPositionBinding(PrevPositionBinding);
 	PostLoadBindings(SourceMode);
 
 	// Fix up these bindings from their loaded source bindings
@@ -229,7 +230,7 @@ void UNiagaraSpriteRendererProperties::InitBindings()
 		MaterialRandomBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_MATERIAL_RANDOM);
 		NormalizedAgeBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_NORMALIZED_AGE);
 		RendererVisibilityTagBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_VISIBILITY_TAG);
-		
+
 		//Default custom sorting to age
 		CustomSortingBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_NORMALIZED_AGE);
 	}
@@ -268,7 +269,7 @@ void UNiagaraSpriteRendererProperties::CacheFromCompiledData(const FNiagaraDataS
 	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, PivotOffsetBinding, ENiagaraSpriteVFLayout::PivotOffset);
 	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, NormalizedAgeBinding, ENiagaraSpriteVFLayout::NormalizedAge);
 	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, MaterialRandomBinding, ENiagaraSpriteVFLayout::MaterialRandom);
-	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, CustomSortingBinding, ENiagaraSpriteVFLayout::CustomSorting);	
+	RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, CustomSortingBinding, ENiagaraSpriteVFLayout::CustomSorting);
 	MaterialParamValidMask  = RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterialBinding, ENiagaraSpriteVFLayout::MaterialParam0) ? 0x1 : 0;
 	MaterialParamValidMask |= RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial1Binding, ENiagaraSpriteVFLayout::MaterialParam1) ? 0x2 : 0;
 	MaterialParamValidMask |= RendererLayoutWithCustomSort.SetVariableFromBinding(CompiledData, DynamicMaterial2Binding, ENiagaraSpriteVFLayout::MaterialParam2) ? 0x4 : 0;
@@ -320,9 +321,9 @@ void UNiagaraSpriteRendererProperties::CacheFromCompiledData(const FNiagaraDataS
 }
 
 
-bool UNiagaraSpriteRendererProperties::PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore) 
+bool UNiagaraSpriteRendererProperties::PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore)
 {
-	bool bAnyAdded = false;
+	bool bAnyAdded = Super::PopulateRequiredBindings(InParameterStore);
 
 	for (const FNiagaraVariableAttributeBinding* Binding : AttributeBindings)
 	{
@@ -362,10 +363,10 @@ void UNiagaraSpriteRendererProperties::UpdateSourceModeDerivates(ENiagaraRendere
 
 bool UNiagaraSpriteRendererProperties::IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const
 {
-	if ((SourceMode == ENiagaraRendererSourceDataMode::Particles && InSourceForBinding.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespace)) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::UserNamespace) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::SystemNamespace) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::EmitterNamespace))
+	if ((SourceMode == ENiagaraRendererSourceDataMode::Particles && InSourceForBinding.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString)) ||
+		InSourceForBinding.IsInNameSpace(FNiagaraConstants::UserNamespaceString) ||
+		InSourceForBinding.IsInNameSpace(FNiagaraConstants::SystemNamespaceString) ||
+		InSourceForBinding.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString))
 	{
 		return true;
 	}
@@ -387,7 +388,7 @@ bool UNiagaraSpriteRendererProperties::IsSupportedVariableForBinding(const FNiag
 //}
 //#endif
 
-void UNiagaraSpriteRendererProperties::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) 
+void UNiagaraSpriteRendererProperties::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
 	SubImageSize.X = FMath::Max<float>(SubImageSize.X, 1.f);
 	SubImageSize.Y = FMath::Max<float>(SubImageSize.Y, 1.f);
@@ -395,7 +396,7 @@ void UNiagaraSpriteRendererProperties::PostEditChangeProperty(struct FPropertyCh
 	// DerivedData.BoundingGeometry in case we cleared the CutoutTexture
 	if (bUseMaterialCutoutTexture || CutoutTexture || DerivedData.BoundingGeometry.Num())
 	{
-		const bool bUpdateCutoutDDC = 
+		const bool bUpdateCutoutDDC =
 			PropertyChangedEvent.GetPropertyName() == TEXT("bUseMaterialCutoutTexture") ||
 			PropertyChangedEvent.GetPropertyName() == TEXT("CutoutTexture") ||
 			PropertyChangedEvent.GetPropertyName() == TEXT("BoundingMode") ||
@@ -453,7 +454,7 @@ void UNiagaraSpriteRendererProperties::RenameVariable(const FNiagaraVariableBase
 void UNiagaraSpriteRendererProperties::RemoveVariable(const FNiagaraVariableBase& OldVariable, const UNiagaraEmitter* InEmitter)
 {
 	Super::RemoveVariable(OldVariable, InEmitter);
-	
+
 	// Handle resetting material bindings to defaults
 	for (FNiagaraMaterialAttributeBinding& Binding : MaterialParameterBindings)
 	{
@@ -544,8 +545,13 @@ void UNiagaraSpriteRendererProperties::GetRendererFeedback(const UNiagaraEmitter
 			if (UVScaleBinding.DoesBindingExistOnSource())
 			{
 				OutInfo.Add(LOCTEXT("SpriteRendererUVScaleWithCutout", "Cutouts will not be sized dynamically with UVScale variable. If scaling above 1.0, geometry may clip."));
-			}			
+			}
 		}
+	}
+
+	if (CutoutTexture)
+	{
+		DerivedData.GetFeedback(CutoutTexture, (int32)SubImageSize.X, (int32)SubImageSize.Y, BoundingMode, AlphaThreshold, OpacitySourceMode, OutErrors, OutWarnings, OutInfo);
 	}
 }
 
@@ -620,16 +626,16 @@ void UNiagaraSpriteRendererProperties::CacheDerivedData()
 		if (GetDerivedDataCacheRef().GetSynchronous(*KeyString, Data, GetPathName()))
 		{
 			COOK_STAT(Timer.AddHit(Data.Num()));
-			DerivedData.BoundingGeometry.Empty(Data.Num() / sizeof(FVector2D));
-			DerivedData.BoundingGeometry.AddUninitialized(Data.Num() / sizeof(FVector2D));
+			DerivedData.BoundingGeometry.Empty(Data.Num() / sizeof(FVector2f));
+			DerivedData.BoundingGeometry.AddUninitialized(Data.Num() / sizeof(FVector2f));
 			FPlatformMemory::Memcpy(DerivedData.BoundingGeometry.GetData(), Data.GetData(), Data.Num() * Data.GetTypeSize());
 		}
 		else
 		{
 			DerivedData.Build(CutoutTexture, (int32)SubImageSize.X, (int32)SubImageSize.Y, BoundingMode, AlphaThreshold, OpacitySourceMode);
 
-			Data.Empty(DerivedData.BoundingGeometry.Num() * sizeof(FVector2D));
-			Data.AddUninitialized(DerivedData.BoundingGeometry.Num() * sizeof(FVector2D));
+			Data.Empty(DerivedData.BoundingGeometry.Num() * sizeof(FVector2f));
+			Data.AddUninitialized(DerivedData.BoundingGeometry.Num() * sizeof(FVector2f));
 			FPlatformMemory::Memcpy(Data.GetData(), DerivedData.BoundingGeometry.GetData(), DerivedData.BoundingGeometry.Num() * DerivedData.BoundingGeometry.GetTypeSize());
 			GetDerivedDataCacheRef().Put(*KeyString, Data, GetPathName());
 			COOK_STAT(Timer.AddMiss(Data.Num()));

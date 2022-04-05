@@ -61,7 +61,7 @@ public:
 
 	/** Use this UMaterialInterface if set to a valid value. This will be subordinate to UserParamBinding if it is set to a valid user variable.*/
 	UPROPERTY(EditAnywhere, Category = "Mesh Rendering", meta = (EditCondition = "bOverrideMaterials"))
-	UMaterialInterface* ExplicitMat;
+	TObjectPtr<UMaterialInterface> ExplicitMat;
 
 	/** Use the UMaterialInterface bound to this user variable if it is set to a valid value. If this is bound to a valid value and ExplicitMat is also set, UserParamBinding wins.*/
 	UPROPERTY(EditAnywhere, Category = "Mesh Rendering", meta = (EditCondition = "bOverrideMaterials"))
@@ -124,11 +124,19 @@ struct NIAGARA_API FNiagaraMeshRendererMeshProperties
 
 	/** The mesh to use when rendering this slot */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
-	UStaticMesh* Mesh;
+	TObjectPtr<UStaticMesh> Mesh;
+
+	/** Use the UStaticMesh bound to this user variable if it is set to a valid value. If this is bound to a valid value and Mesh is also set, UserParamBinding wins.*/
+	UPROPERTY(EditAnywhere, Category = "Mesh")
+	FNiagaraUserParameterBinding UserParamBinding;
 
 	/** Scale of the mesh */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
 	FVector Scale;
+
+	/** Rotation of the mesh */
+	UPROPERTY(EditAnywhere, Category = "Mesh")
+	FRotator Rotation;
 
 	/** Offset of the mesh pivot */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
@@ -137,6 +145,9 @@ struct NIAGARA_API FNiagaraMeshRendererMeshProperties
 	/** What space is the pivot offset in? */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
 	ENiagaraMeshPivotOffsetSpace PivotOffsetSpace;
+
+    UStaticMesh* ResolveStaticMesh(const FNiagaraEmitterInstance* Emitter) const;
+	bool HasValidMeshProperties() const;
 };
 
 UCLASS(editinlinenew, meta = (DisplayName = "Mesh Renderer"))
@@ -163,7 +174,7 @@ public:
 	static void InitCDOPropertiesAfterModuleStartup();
 
 	//~ UNiagaraRendererProperties interface
-	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent) override;
+	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
 	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override;
 	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return true; };
@@ -365,7 +376,7 @@ public:
 	 * will not be found or used.
 	 */
 	UPROPERTY(EditAnywhere, Category = "Mesh Flipbook", meta = (EditCondition = "bEnableMeshFlipbook"))
-	UStaticMesh* FirstFlipbookFrame;
+	TObjectPtr<UStaticMesh> FirstFlipbookFrame;
 
 	/**
 	 * Provides the format of the suffix of the names of the static meshes when searching for flipbook frames. "{frame_number}" is used to mark
@@ -409,7 +420,7 @@ private:
 
 	// These properties are deprecated and moved to FNiagaraMeshRendererMeshProperties
 	UPROPERTY()
-	UStaticMesh* ParticleMesh_DEPRECATED;
+	TObjectPtr<UStaticMesh> ParticleMesh_DEPRECATED;
 
 	UPROPERTY()
 	FVector PivotOffset_DEPRECATED;

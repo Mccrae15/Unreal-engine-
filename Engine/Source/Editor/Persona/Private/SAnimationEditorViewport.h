@@ -219,11 +219,14 @@ public:
 	virtual void RestoreState(TSharedRef<IPersonaViewportState> InState) override;
 	virtual FEditorViewportClient& GetViewportClient() const override;
 	virtual TSharedRef<IPinnedCommandList> GetPinnedCommandList() const override;
-	virtual TWeakPtr<SWidget> AddNotification(TAttribute<EMessageSeverity::Type> InSeverity, TAttribute<bool> InCanBeDismissed, const TSharedRef<SWidget>& InNotificationWidget) override;
+	virtual TWeakPtr<SWidget> AddNotification(TAttribute<EMessageSeverity::Type> InSeverity, TAttribute<bool> InCanBeDismissed, const TSharedRef<SWidget>& InNotificationWidget, FPersonaViewportNotificationOptions InOptions) override;
+	virtual void RemoveNotification(const TWeakPtr<SWidget>& InContainingWidget) override;
 	virtual void AddToolbarExtender(FName MenuToExtend, FMenuExtensionDelegate MenuBuilderDelegate) override;
 	virtual FPersonaViewportKeyDownDelegate& GetKeyDownDelegate() override { return OnKeyDownDelegate; }
-	virtual void RemoveNotification(const TWeakPtr<SWidget>& InContainingWidget) override;
+	virtual void AddOverlayWidget( TSharedRef<SWidget> InOverlaidWidget ) override;
+	virtual void RemoveOverlayWidget( TSharedRef<SWidget> InOverlaidWidget ) override;
 
+	
 	/** SWidget interface */
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 
@@ -242,6 +245,7 @@ public:
 
 	/** LOD model selection checking function*/
 	bool IsLODModelSelected( int32 LODSelectionType ) const;
+	bool IsTrackingAttachedMeshLOD() const;
 	int32 GetLODSelection() const;
 
 	/** Function to set the current playback speed*/
@@ -287,7 +291,9 @@ public:
 
 	/** Function to set LOD model selection*/
 	void OnSetLODModel(int32 LODSelectionType);
+	void OnSetLODTrackDebuggedInstance();
 	void OnLODModelChanged();
+	void OnDebugForcedLODChanged();
 
 	/** Get the preview scene we are viewing */
 	TSharedRef<class FAnimationEditorPreviewScene> GetPreviewScene() const { return PreviewScenePtr.Pin().ToSharedRef(); }
@@ -386,6 +392,12 @@ private:
 	/** Function to check whether socket hit points are displayed or not*/
 	bool IsShowingSockets() const;
 
+	/** Function to show/hide extracted transform attributes */
+	void OnShowAttributes();
+
+	/** Function to check whether extracted transform attributes are displayed or not */
+	bool IsShowingAttributes() const;
+
 	/** Function to show/hide mesh info*/
 	void OnShowDisplayInfo(int32 DisplayInfoMode);
 
@@ -472,11 +484,15 @@ private:
 	/** Whether audio from the viewport is attenuated */
 	bool IsAudioAttenuationEnabled() const;
 
-	/** Function to set whether we are previewing root motion */
-	void OnTogglePreviewRootMotion();
-	
-	/** Whether or not we are previewing root motion */
-	bool IsPreviewingRootMotion() const;
+	/** Sets process root motion mode on the debug mesh */
+	void SetProcessRootMotionMode(EProcessRootMotionMode Mode);
+
+	/** Checks whether the supplied mode is set on the debug mesh */
+	bool IsProcessRootMotionModeSet(EProcessRootMotionMode Mode) const;
+
+	/** Whether the supplied mode can be used */
+	bool CanUseProcessRootMotionMode(EProcessRootMotionMode Mode) const;
+
 private:
 	/** Selected Turn Table speed  */
 	EAnimationPlaybackSpeeds::Type SelectedTurnTableSpeed;

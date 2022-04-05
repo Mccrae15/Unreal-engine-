@@ -84,7 +84,7 @@ public:
 /**
  * The behavior of audio playback is defined within Sound Cues.
  */
-UCLASS(hidecategories=object, BlueprintType)
+UCLASS(hidecategories=object, BlueprintType, meta= (LoadBehavior = "LazyOnDemand"))
 class ENGINE_API USoundCue : public USoundBase
 {
 	GENERATED_UCLASS_BODY()
@@ -94,7 +94,7 @@ class ENGINE_API USoundCue : public USoundBase
 	uint32 bPrimeOnLoad : 1;
 
 	UPROPERTY()
-	USoundNode* FirstNode;
+	TObjectPtr<USoundNode> FirstNode;
 
 	/* Base volume multiplier */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Sound, AssetRegistrySearchable)
@@ -110,10 +110,10 @@ class ENGINE_API USoundCue : public USoundBase
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	TArray<USoundNode*> AllNodes;
+	TArray<TObjectPtr<USoundNode>> AllNodes;
 
 	UPROPERTY()
-	UEdGraph* SoundCueGraph;
+	TObjectPtr<UEdGraph> SoundCueGraph;
 #endif
 
 protected:
@@ -171,7 +171,7 @@ public:
 	virtual float GetVolumeMultiplier() override;
 	virtual float GetPitchMultiplier() override;
 	virtual float GetMaxDistance() const override;
-	virtual float GetDuration() override;
+	virtual float GetDuration() const override;
 	virtual const FSoundAttenuationSettings* GetAttenuationSettingsToApply() const override;
 	virtual float GetSubtitlePriority() const override;
 	virtual bool GetSoundWavesWithCookedAnalysisData(TArray<USoundWave*>& OutSoundWaves) override;

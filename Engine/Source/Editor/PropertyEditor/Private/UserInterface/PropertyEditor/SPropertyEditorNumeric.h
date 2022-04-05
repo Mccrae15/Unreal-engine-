@@ -20,6 +20,7 @@
 #include "Textures/SlateIcon.h"
 #include "PropertyHandle.h"
 #include "Presentation/PropertyEditor/PropertyEditor.h"
+#include "PropertyEditorHelpers.h"
 #include "UserInterface/PropertyEditor/PropertyEditorConstants.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -74,7 +75,7 @@ public:
 				if (BitmaskEnum)
 				{
 					const bool bUseEnumValuessAsMaskValues = BitmaskEnum->GetBoolMetaData(PropertyEditorConstants::MD_UseEnumValuesAsMaskValuesInEditor);
-					auto AddNewBitmaskFlagLambda = [BitmaskEnum, &Result](int32 InEnumIndex, int32 InFlagValue)
+					auto AddNewBitmaskFlagLambda = [BitmaskEnum, &Result](int32 InEnumIndex, int64 InFlagValue)
 					{
 						Result.Emplace();
 						FBitmaskFlagInfo* BitmaskFlag = &Result.Last();
@@ -88,23 +89,28 @@ public:
 						}
 					};
 
+					const TArray<FName> AllowedPropertyEnums = PropertyEditorHelpers::GetValidEnumsFromPropertyOverride(Prop, BitmaskEnum);
 					// Note: This loop doesn't include (BitflagsEnum->NumEnums() - 1) in order to skip the implicit "MAX" value that gets added to the enum type at compile time.
 					for (int32 BitmaskEnumIndex = 0; BitmaskEnumIndex < BitmaskEnum->NumEnums() - 1; ++BitmaskEnumIndex)
 					{
 						const int64 EnumValue = BitmaskEnum->GetValueByIndex(BitmaskEnumIndex);
-						const bool bIsHidden = BitmaskEnum->HasMetaData(TEXT("Hidden"), BitmaskEnumIndex);
-						if (EnumValue >= 0 && !bIsHidden)
+						bool bShouldBeHidden = BitmaskEnum->HasMetaData(TEXT("Hidden"), BitmaskEnumIndex);
+						if (!bShouldBeHidden && AllowedPropertyEnums.Num() > 0)
+						{
+							bShouldBeHidden = AllowedPropertyEnums.Find(BitmaskEnum->GetNameByIndex(BitmaskEnumIndex)) == INDEX_NONE;
+						}
+						if (EnumValue >= 0 && !bShouldBeHidden)
 						{
 							if (bUseEnumValuessAsMaskValues)
 							{
-								if (EnumValue < MAX_int32 && FMath::IsPowerOfTwo(EnumValue))
+								if (EnumValue < MAX_int64 && FMath::IsPowerOfTwo(EnumValue))
 								{
-									AddNewBitmaskFlagLambda(BitmaskEnumIndex, static_cast<int32>(EnumValue));
+									AddNewBitmaskFlagLambda(BitmaskEnumIndex, EnumValue);
 								}
 							}
 							else if (EnumValue < BitmaskBitCount)
 							{
-								AddNewBitmaskFlagLambda(BitmaskEnumIndex, TBitmaskValueHelpers<NumericType>::LeftShift(static_cast<NumericType>(1), static_cast<int32>(EnumValue)));
+								AddNewBitmaskFlagLambda(BitmaskEnumIndex, TBitmaskValueHelpers<NumericType>::LeftShift(static_cast<NumericType>(1), EnumValue));
 							}
 						}
 					}
@@ -135,21 +141,25 @@ public:
 					NumericType BitmaskValue = Value.GetValue();
 					if (BitmaskValue != 0)
 					{
-						if (TBitmaskValueHelpers<NumericType>::BitwiseAND(BitmaskValue, BitmaskValue - static_cast<NumericType>(1)))
+						TArray<FBitmaskFlagInfo> BitmaskFlags = CreateBitmaskFlagsArray(Property);
+
+						TArray<FText> SetFlags;
+						SetFlags.Reserve(BitmaskFlags.Num());
+
+						for (const FBitmaskFlagInfo& FlagInfo : BitmaskFlags)
 						{
-							return LOCTEXT("BitmaskButtonContentMultipleBitsSet", "(Mixed Flags)");
-						}
-						else
-						{
-							TArray<FBitmaskFlagInfo> BitmaskFlags = CreateBitmaskFlagsArray(Property);
-							for (int i = 0; i < BitmaskFlags.Num(); ++i)
+							if (TBitmaskValueHelpers<NumericType>::BitwiseAND(Value.GetValue(), FlagInfo.Value))
 							{
-								if (TBitmaskValueHelpers<NumericType>::BitwiseAND(BitmaskValue, BitmaskFlags[i].Value))
-								{
-									return BitmaskFlags[i].DisplayName;
-								}
+								SetFlags.Add(FlagInfo.DisplayName);
 							}
 						}
+						if (SetFlags.Num() > 3)
+						{
+							SetFlags.SetNum(3);
+							SetFlags.Add(FText::FromString("..."));
+						}
+
+						return FText::Join(FText::FromString(" | "), SetFlags);
 					}
 
 					return LOCTEXT("BitmaskButtonContentNoFlagsSet", "(No Flags Set)");
@@ -163,7 +173,6 @@ public:
 			// Constructs the UI for bitmask property editing.
 			SAssignNew(PrimaryWidget, SComboButton)
 			.ComboButtonStyle(&ComboBoxStyle.ComboButtonStyle)
-			.ContentPadding(FMargin(4.0, 2.0))
 			.ToolTipText_Lambda([this, CreateBitmaskFlagsArray, Property]
 			{
 				TOptional<NumericType> Value = OnGetValue();
@@ -247,6 +256,7 @@ public:
 			const FString& MetaUIMinString = GetMetaDataFromKey("UIMin");
 			const FString& MetaUIMaxString = GetMetaDataFromKey("UIMax");
 			const FString& SliderExponentString = GetMetaDataFromKey("SliderExponent");
+			const FString& LinearDeltaSensitivityString = GetMetaDataFromKey("LinearDeltaSensitivity");
 			const FString& DeltaString = GetMetaDataFromKey("Delta");
 			const FString& ClampMinString = GetMetaDataFromKey("ClampMin");
 			const FString& ClampMaxString = GetMetaDataFromKey("ClampMax");
@@ -285,6 +295,14 @@ public:
 				TTypeFromString<NumericType>::FromString(Delta, *DeltaString);
 			}
 
+			int32 LinearDeltaSensitivity = 0;
+			if (LinearDeltaSensitivityString.Len())
+			{
+				TTypeFromString<int32>::FromString(LinearDeltaSensitivity, *LinearDeltaSensitivityString);
+			}
+			// LinearDeltaSensitivity only works in SSpinBox if delta is provided, so add it in if it wasn't.
+			Delta = (LinearDeltaSensitivity != 0 && Delta == NumericType(0)) ? NumericType(1) : Delta;
+
 			if (ClampMin >= ClampMax && (ClampMinString.Len() || ClampMaxString.Len()))
 			{
 				UE_LOG(LogPropertyNode, Warning, TEXT("Clamp Min (%s) >= Clamp Max (%s) for Ranged Numeric property %s"), *ClampMinString, *ClampMaxString, *Property->GetPathName());
@@ -309,7 +327,7 @@ public:
 
 			// Set up the correct type interface if we want to display units on the property editor
 
-			// First off, check for ForceUnits= meta data. This meta tag tells us to interpret, and always display the value in these units. FUnitConversion::Settings().ShouldDisplayUnits does not apply to suce properties
+			// First off, check for ForceUnits= meta data. This meta tag tells us to interpret, and always display the value in these units. FUnitConversion::Settings().ShouldDisplayUnits does not apply to such properties
 			const FString& ForcedUnits = InPropertyEditor->GetProperty()->GetMetaData(TEXT("ForceUnits"));
 			auto PropertyUnits = FUnitConversion::UnitFromString(*ForcedUnits);
 			if (PropertyUnits.IsSet())
@@ -362,6 +380,8 @@ public:
 				.MaxSliderValue(SliderMaxValue)
 				.SliderExponent(SliderExponent)
 				.Delta(Delta)
+				// LinearDeltaSensitivity needs to be left unset if not provided, rather than being set to some default
+				.LinearDeltaSensitivity(LinearDeltaSensitivity != 0 ? LinearDeltaSensitivity : TAttribute<int32>())
 				.UndeterminedString(LOCTEXT("MultipleValues", "Multiple Values"))
 				.OnValueChanged(this, &SPropertyEditorNumeric<NumericType>::OnValueChanged)
 				.OnValueCommitted(this, &SPropertyEditorNumeric<NumericType>::OnValueCommitted)
@@ -618,30 +638,33 @@ private:
 	};
 
 	/** Integral bitmask value helper methods. */
-	template<typename T, typename U = void>
+	template<typename T>
 	struct TBitmaskValueHelpers
 	{
 		static T BitwiseAND(T Base, T Mask) { return Base & Mask; }
 		static T BitwiseXOR(T Base, T Mask) { return Base ^ Mask; }
-		static T LeftShift(T Base, int32 Shift) { return Base << Shift; }
+		template <typename U>
+		static T LeftShift(T Base, U Shift) { return Base << Shift; }
 	};
 
 	/** Explicit specialization for numeric 'float' types (these will not be used). */
-	template<typename U>
-	struct TBitmaskValueHelpers<float, U>
+	template<>
+	struct TBitmaskValueHelpers<float>
 	{
 		static float BitwiseAND(float Base, float Mask) { return 0.0f; }
 		static float BitwiseXOR(float Base, float Mask) { return 0.0f; }
-		static float LeftShift(float Base, int32 Shift) { return 0.0f; }
+		template <typename U>
+		static float LeftShift(float Base, U Shift) { return 0.0f; }
 	};
 
 	/** Explicit specialization for numeric 'double' types (these will not be used). */
-	template<typename U>
-	struct TBitmaskValueHelpers<double, U>
+	template<>
+	struct TBitmaskValueHelpers<double>
 	{
 		static double BitwiseAND(double Base, double Mask) { return 0.0f; }
 		static double BitwiseXOR(double Base, double Mask) { return 0.0f; }
-		static double LeftShift(double Base, int32 Shift)  { return 0.0f; }
+		template <typename U>
+		static double LeftShift(double Base, U Shift)  { return 0.0f; }
 	};
 
 private:

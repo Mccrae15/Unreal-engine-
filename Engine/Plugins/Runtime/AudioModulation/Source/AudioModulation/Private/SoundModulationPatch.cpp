@@ -7,35 +7,41 @@
 #include "AudioModulationStatics.h"
 #include "AudioModulationSystem.h"
 #include "SoundControlBus.h"
+#include "SoundModulationParameter.h"
+#include "SoundModulationPatchProxy.h"
 #include "SoundModulationTransform.h"
 
 
 #define LOCTEXT_NAMESPACE "SoundModulationPatch"
 
-namespace AudioModulation
-{
-	template <typename T>
-	void ClampPatchInputs(TArray<T>& Inputs)
-	{
-		for (T& Input : Inputs)
-		{
-			if (Input.Transform.InputMin > Input.Transform.InputMax)
-			{
-				Input.Transform.InputMin = Input.Transform.InputMax;
-			}
-		}
-	}
-} // namespace AudioModulation
 
 USoundModulationPatch::USoundModulationPatch(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 }
 
+TUniquePtr<Audio::IProxyData> USoundModulationPatch::CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams)
+{
+	using namespace AudioModulation;
+	return MakeUnique<FSoundModulatorAssetProxy>(*this);
+}
+
+TUniquePtr<Audio::IModulatorSettings> USoundModulationPatch::CreateProxySettings() const
+{
+	using namespace AudioModulation;
+	return TUniquePtr<Audio::IModulatorSettings>(new FModulationPatchSettings(*this));
+}
+
+const Audio::FModulationParameter& USoundModulationPatch::GetOutputParameter() const
+{
+	const FString Breadcrumb = FString::Format(TEXT("{0} '{1}'"), { *GetClass()->GetName(), *GetName() });
+	return AudioModulation::GetOrRegisterParameter(PatchSettings.OutputParameter, Breadcrumb);
+}
+
 #if WITH_EDITOR
 void USoundModulationPatch::PostEditChangeProperty(FPropertyChangedEvent& InPropertyChangedEvent)
 {
-	AudioModulation::IterateModulationImpl([this](AudioModulation::FAudioModulation& OutModulation)
+	AudioModulation::IterateModulationManagers([this](AudioModulation::FAudioModulationManager& OutModulation)
 	{
 		OutModulation.UpdateModulator(*this);
 	});
@@ -45,7 +51,7 @@ void USoundModulationPatch::PostEditChangeProperty(FPropertyChangedEvent& InProp
 
 void USoundModulationPatch::PostEditChangeChainProperty(FPropertyChangedChainEvent& InPropertyChangedEvent)
 {
-	AudioModulation::IterateModulationImpl([this](AudioModulation::FAudioModulation& OutModulation)
+	AudioModulation::IterateModulationManagers([this](AudioModulation::FAudioModulationManager& OutModulation)
 	{
 		OutModulation.UpdateModulator(*this);
 	});
@@ -69,5 +75,4 @@ const USoundControlBus& FSoundControlModulationInput::GetBusChecked() const
 	check(Bus);
 	return *Bus;
 }
-
 #undef LOCTEXT_NAMESPACE // SoundModulationPatch

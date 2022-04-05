@@ -20,7 +20,9 @@ class FOctreeChildNodeRef;
 class FBoxCenterAndExtent
 {
 public:
-	FVector4 Center;
+	using FReal = FVector4::FReal;
+
+	FVector4 Center;	// LWC_TODO: Case for FVector4d
 	FVector4 Extent;
 
 	/** Default constructor. */
@@ -35,24 +37,26 @@ public:
 	/** FBox conversion constructor. */
 	FBoxCenterAndExtent(const FBox& Box)
 	{
-		Box.GetCenterAndExtents((FVector&)Center,(FVector&)Extent);
-		Center.W = Extent.W = 0;
+		FVector C, E;
+		Box.GetCenterAndExtents(C,E);	// LWC_TODO: Perf pessimization
+		Center = FVector4(C, 0); 
+		Extent = FVector4(E, 0);
 	}
 
 	/** FBoxSphereBounds conversion constructor. */
-	explicit FBoxCenterAndExtent(const FBoxSphereBounds& BoxSphere)
+	template<typename TExtent>
+	explicit FBoxCenterAndExtent(const UE::Math::TBoxSphereBounds<FReal, TExtent>& BoxSphere)
 	{
 		Center = BoxSphere.Origin;
-		Extent = BoxSphere.BoxExtent;
+		Extent = FVector(BoxSphere.BoxExtent);
 		Center.W = Extent.W = 0;
 	}
 
 	/** Center - radius as four contiguous floats conversion constructor. */
 	explicit FBoxCenterAndExtent(const float PositionRadius[4])
 	{
-		Center = FVector(PositionRadius[0],PositionRadius[1],PositionRadius[2]);
-		Extent = FVector(PositionRadius[3]);
-		Center.W = Extent.W = 0;
+		Center = FVector4(PositionRadius[0],PositionRadius[1],PositionRadius[2], 0);
+		Extent = FVector4(PositionRadius[3],PositionRadius[3],PositionRadius[3], 0);
 	}
 
 	/** Converts to a FBox. */
@@ -83,7 +87,8 @@ public:
 	 * Warning: this operates on the W of the bounds positions!
 	 * @return true if the boxes intersect, or false.
 	 */
-	friend FORCEINLINE bool Intersect(const FBoxSphereBounds& A,const FBoxCenterAndExtent& B)
+	template<typename TExtent>
+	friend FORCEINLINE bool Intersect(const UE::Math::TBoxSphereBounds<FReal, TExtent>& A,const FBoxCenterAndExtent& B)
 	{
 		// CenterDifference is the vector between the centers of the bounding boxes.
 		const VectorRegister CenterDifference = VectorAbs(VectorSubtract(VectorLoadFloat3_W0(&A.Origin),VectorLoadAligned(&B.Center)));
@@ -226,6 +231,8 @@ class FOctreeNodeContext
 {
 public:
 
+	using FReal = FVector4::FReal;
+
 	/** The node bounds are expanded by their extent divided by LoosenessDenominator. */
 	enum { LoosenessDenominator = 16 };
 
@@ -233,10 +240,10 @@ public:
 	FBoxCenterAndExtent Bounds;
 
 	/** The extent of the node's children. */
-	float ChildExtent;
+	FReal ChildExtent;
 
 	/** The offset of the childrens' centers from the center of this node. */
-	float ChildCenterOffset;
+	FReal ChildCenterOffset;
 
 	/** Bits used for culling, semantics left up to the caller (except that it is always set to zero at the root). This does not consume storage because it is leftover in the padding.*/
 	uint32 InCullBits;
@@ -260,8 +267,8 @@ public:
 	:	Bounds(InBounds)
 	{
 		// A child node's tight extents are half its parent's extents, and its loose extents are expanded by 1/LoosenessDenominator.
-		const float TightChildExtent = Bounds.Extent.X * 0.5f;
-		const float LooseChildExtent = TightChildExtent * (1.0f + 1.0f / (float)LoosenessDenominator);
+		const FReal TightChildExtent = Bounds.Extent.X * 0.5f;
+		const FReal LooseChildExtent = TightChildExtent * (1.0f + 1.0f / (FReal)LoosenessDenominator);
 
 		ChildExtent = LooseChildExtent;
 		ChildCenterOffset = Bounds.Extent.X - LooseChildExtent;
@@ -274,8 +281,8 @@ public:
 		,	OutCullBits(InOutCullBits)
 	{
 		// A child node's tight extents are half its parent's extents, and its loose extents are expanded by 1/LoosenessDenominator.
-		const float TightChildExtent = Bounds.Extent.X * 0.5f;
-		const float LooseChildExtent = TightChildExtent * (1.0f + 1.0f / (float)LoosenessDenominator);
+		const FReal TightChildExtent = Bounds.Extent.X * 0.5f;
+		const FReal LooseChildExtent = TightChildExtent * (1.0f + 1.0f / (FReal)LoosenessDenominator);
 
 		ChildExtent = LooseChildExtent;
 		ChildCenterOffset = Bounds.Extent.X - LooseChildExtent;
@@ -283,7 +290,8 @@ public:
 
 	inline VectorRegister GetChildOffsetVec(int i) const
 	{
-		union MaskType { VectorRegister v;  VectorRegisterInt i; 
+		// LWC_TODO: not sure this is correct for VectorRegister = VectorRegister4Double
+		union MaskType { VectorRegister4Float v;  VectorRegister4Int i; 
 #if PLATFORM_HOLOLENS
 			MaskType() 
 				: v(MakeVectorRegister(0.0f, 0.0f, 0.0f, 0.0f))
@@ -293,8 +301,8 @@ public:
 		} Mask;
 
 		Mask.v = MakeVectorRegister(1u, 2u, 4u, 8u);
-		VectorRegisterInt X = VectorIntLoad1(&i);
-		VectorRegisterInt A = VectorIntAnd(X, Mask.i);
+		VectorRegister4Int X = VectorIntLoad1(&i);
+		VectorRegister4Int A = VectorIntAnd(X, Mask.i);
 		Mask.i = VectorIntCompareEQ(Mask.i, A);
 		return VectorSelect(Mask.v, VectorSetFloat1(ChildCenterOffset), VectorSetFloat1(-ChildCenterOffset));
 	}
@@ -304,8 +312,8 @@ public:
 	{
 		FBoxCenterAndExtent LocalBounds;
 		VectorRegister ZeroW = MakeVectorRegister(1.0f, 1.0f, 1.0f, 0.0f);
-		VectorStoreAligned(VectorMultiply(ZeroW, VectorAdd(VectorLoadAligned(&Bounds.Center), GetChildOffsetVec(ChildRef.Index))), &LocalBounds.Center);
-		VectorStoreAligned(VectorMultiply(ZeroW, VectorSetFloat1(ChildExtent)), &LocalBounds.Extent);
+		VectorStoreAligned(VectorMultiply(ZeroW, VectorAdd(VectorLoadAligned(&Bounds.Center), GetChildOffsetVec(ChildRef.Index))), &(LocalBounds.Center.X));
+		VectorStoreAligned(VectorMultiply(ZeroW, VectorSetFloat1(ChildExtent)), &(LocalBounds.Extent.X));
 		return FOctreeNodeContext(LocalBounds);
 	}
 
@@ -313,11 +321,11 @@ public:
 	inline void GetChildContext(FOctreeChildNodeRef ChildRef, FOctreeNodeContext* ChildContext) const
 	{
 		VectorRegister ZeroW = MakeVectorRegister(1.0f, 1.0f, 1.0f, 0.0f);
-		VectorStoreAligned(VectorMultiply(ZeroW, VectorAdd(VectorLoadAligned(&Bounds.Center), GetChildOffsetVec(ChildRef.Index))), &ChildContext->Bounds.Center);
-		VectorStoreAligned(VectorMultiply(ZeroW, VectorSetFloat1(ChildExtent)), &ChildContext->Bounds.Extent);
+		VectorStoreAligned(VectorMultiply(ZeroW, VectorAdd(VectorLoadAligned(&Bounds.Center), GetChildOffsetVec(ChildRef.Index))), &(ChildContext->Bounds.Center.X));
+		VectorStoreAligned(VectorMultiply(ZeroW, VectorSetFloat1(ChildExtent)), &(ChildContext->Bounds.Extent.X));
 
-		const float TightChildExtent = ChildExtent * 0.5f;
-		const float LooseChildExtent = TightChildExtent * (1.0f + 1.0f / (float)LoosenessDenominator);
+		const FReal TightChildExtent = ChildExtent * 0.5f;
+		const FReal LooseChildExtent = TightChildExtent * (1.0f + 1.0f / (FReal)LoosenessDenominator);
 		ChildContext->ChildExtent = LooseChildExtent;
 		ChildContext->ChildCenterOffset = ChildExtent - LooseChildExtent;
 	}
@@ -327,8 +335,8 @@ public:
 	{
 		FBoxCenterAndExtent LocalBounds;
 		VectorRegister ZeroW = MakeVectorRegister(1.0f, 1.0f, 1.0f, 0.0f);
-		VectorStoreAligned(VectorMultiply(ZeroW, VectorAdd(VectorLoadAligned(&Bounds.Center), GetChildOffsetVec(ChildRef.Index))), &LocalBounds.Center);
-		VectorStoreAligned(VectorMultiply(ZeroW, VectorSetFloat1(ChildExtent)), &LocalBounds.Extent);
+		VectorStoreAligned(VectorMultiply(ZeroW, VectorAdd(VectorLoadAligned(&Bounds.Center), GetChildOffsetVec(ChildRef.Index))), &(LocalBounds.Center.X));
+		VectorStoreAligned(VectorMultiply(ZeroW, VectorSetFloat1(ChildExtent)), &(LocalBounds.Extent.X));
 		return FOctreeNodeContext(LocalBounds, InInCullBits, InOutCullBits);
 	}
 	/**
@@ -356,6 +364,7 @@ class TOctree2
 	using ElementArrayType = TArray<ElementType, typename OctreeSemantics::ElementAllocator>;
 public:
 	using FNodeIndex = uint32;
+	using FReal = FVector::FReal;
 
 private:
 	struct FNode
@@ -372,7 +381,7 @@ private:
 	FOctreeNodeContext RootNodeContext;
 	TArray<FNode> TreeNodes;
 	TArray<FNodeIndex> ParentLinks;
-	TArray<ElementArrayType> TreeElements;
+	TArray<ElementArrayType, TAlignedHeapAllocator<alignof(ElementArrayType)>> TreeElements;
 
 	class FFreeList
 	{
@@ -409,7 +418,7 @@ private:
 			}
 
 			//small size array optimization
-			int ArrayEnd = Index + Size;
+			int ArrayEnd = FMath::Min(Index + Size + 1, FreeList.Num());
 			while (Index < ArrayEnd)
 			{
 				if (FreeList[Index].Start < NodeIndex)
@@ -477,7 +486,7 @@ private:
 
 	TArray<FNodeIndex> FreeList;
 	/** The extent of a leaf at the maximum allowed depth of the tree. */
-	float MinLeafExtent;
+	FVector::FReal MinLeafExtent;
 
 	FNodeIndex AllocateEightNodes()
 	{
@@ -578,20 +587,20 @@ private:
 	}
 
 	template<typename PredicateFunc, typename IterateFunc>
-	void FindNodesWithPredicateInternal(FNodeIndex CurrentNodeIndex, const FOctreeNodeContext& NodeContext, const PredicateFunc& Predicate, const IterateFunc& Func) const
+	void FindNodesWithPredicateInternal(FNodeIndex ParentNodeIndex, FNodeIndex CurrentNodeIndex, const FOctreeNodeContext& NodeContext, const PredicateFunc& Predicate, const IterateFunc& Func) const
 	{
 		if (TreeNodes[CurrentNodeIndex].InclusiveNumElements > 0)
 		{
-			if (Predicate(NodeContext.Bounds))
+			if (Predicate(ParentNodeIndex, CurrentNodeIndex, NodeContext.Bounds))
 			{
-				Func(CurrentNodeIndex);
+				Func(ParentNodeIndex, CurrentNodeIndex, NodeContext.Bounds);
 
 				if (!TreeNodes[CurrentNodeIndex].IsLeaf())
 				{
 					FNodeIndex ChildStartIndex = TreeNodes[CurrentNodeIndex].ChildNodes;
 					for (int8 i = 0; i < 8; i++)
 					{
-						FindNodesWithPredicateInternal(ChildStartIndex + i, NodeContext.GetChildContext(FOctreeChildNodeRef(i)), Predicate, Func);
+						FindNodesWithPredicateInternal(CurrentNodeIndex, ChildStartIndex + i, NodeContext.GetChildContext(FOctreeChildNodeRef(i)), Predicate, Func);
 					}
 				}
 			}
@@ -692,6 +701,8 @@ private:
 	}
 public:
 
+	int32 GetNumNodes() const { return TreeNodes.Num(); }
+
 	/**
 	 * this function will call the passed in function for all elements in the Octree in node by node in no specified order.
 	 * @param Func - Function to call with each Element.
@@ -716,7 +727,7 @@ public:
 	template<typename PredicateFunc, typename IterateFunc>
 	inline void FindNodesWithPredicate(const PredicateFunc& Predicate, const IterateFunc& Func) const
 	{
-		FindNodesWithPredicateInternal(0, RootNodeContext, Predicate, Func);
+		FindNodesWithPredicateInternal(INDEX_NONE, 0, RootNodeContext, Predicate, Func);
 	}
 
 	/**
@@ -727,17 +738,17 @@ public:
 	template<typename PredicateFunc, typename IterateFunc>
 	inline void FindElementsWithPredicate(const PredicateFunc& Predicate, const IterateFunc& Func) const
 	{
-		FindNodesWithPredicateInternal(0, RootNodeContext, Predicate, [&Func, this](FNodeIndex NodeIndex)
+		FindNodesWithPredicateInternal(INDEX_NONE, 0, RootNodeContext, Predicate, [&Func, this](FNodeIndex /*ParentNodeIndex*/, FNodeIndex NodeIndex, const FBoxCenterAndExtent& /*NodeBounds*/ )
 		{
 			for (typename TCallTraits<ElementType>::ConstReference Element : TreeElements[NodeIndex])
 			{
-				Func(Element);
+				Func(NodeIndex, Element);
 			}
 		});
 	}
 
 	/**
-	 * this function will traverse the Octree using a fast box-box interssection this should be the preferred way of traversing the tree.
+	 * this function will traverse the Octree using a fast box-box intersection this should be the preferred way of traversing the tree.
 	 * @param BoxBounds - the bounds to test if a node is traversed or skipped.
 	 * @param Func - Function to call with each Element for nodes that passed bounds test.
 	 */
@@ -896,7 +907,7 @@ public:
 		int32 MaxElementsPerNode = 0;
 		TArray<int32> NodeElementDistribution;
 
-		FindNodesWithPredicateInternal(0, RootNodeContext, [](const FBoxCenterAndExtent&) { return true; }, [&, this](FNodeIndex NodeIndex)
+		FindNodesWithPredicateInternal(INDEX_NONE, 0, RootNodeContext, [](FNodeIndex /*ParentNodeIndex*/, FNodeIndex /*NodeIndex*/, const FBoxCenterAndExtent&) { return true; }, [&, this](FNodeIndex /*ParentNodeIndex*/, FNodeIndex NodeIndex, const FBoxCenterAndExtent&)
 		{
 			const int32 CurrentNodeElementCount = GetElementsForNode(NodeIndex).Num();
 
@@ -939,10 +950,10 @@ public:
 		return TotalSizeBytes;
 	}
 
-	float GetNodeLevelExtent(int32 Level) const
+	FReal GetNodeLevelExtent(int32 Level) const
 	{
 		const int32 ClampedLevel = FMath::Clamp<uint32>(Level, 0, OctreeSemantics::MaxNodeDepth);
-		return RootNodeContext.Bounds.Extent.X * FMath::Pow((1.0f + 1.0f / (float)FOctreeNodeContext::LoosenessDenominator) / 2.0f, ClampedLevel);
+		return RootNodeContext.Bounds.Extent.X * FMath::Pow((1.0f + 1.0f / (FReal)FOctreeNodeContext::LoosenessDenominator) / 2.0f, FReal(ClampedLevel));
 	}
 
 	FBoxCenterAndExtent GetRootBounds() const
@@ -988,9 +999,9 @@ public:
 	}
 
 	/** Initialization constructor. */
-	TOctree2(const FVector& InOrigin,float InExtent)
+	TOctree2(const FVector& InOrigin,FVector::FReal InExtent)
 		: RootNodeContext(FBoxCenterAndExtent(InOrigin, FVector(InExtent, InExtent, InExtent)), 0, 0)
-		, MinLeafExtent(InExtent* FMath::Pow((1.0f + 1.0f / (float)FOctreeNodeContext::LoosenessDenominator) / 2.0f, OctreeSemantics::MaxNodeDepth))
+		, MinLeafExtent(InExtent* FMath::Pow((1.0f + 1.0f / (FReal)FOctreeNodeContext::LoosenessDenominator) / 2.0f, FReal(OctreeSemantics::MaxNodeDepth)))
 	{
 		TreeNodes.AddDefaulted();
 		TreeElements.AddDefaulted();
@@ -1040,6 +1051,7 @@ class TOctree_DEPRECATED
 {
 public:
 
+	using FReal = FVector4::FReal;
 	typedef TArray<ElementType, typename OctreeSemantics::ElementAllocator> ElementArrayType;
 	typedef typename ElementArrayType::TConstIterator ElementConstIt;
 
@@ -1547,10 +1559,10 @@ public:
 		return TotalSizeBytes;
 	}
 
-	float GetNodeLevelExtent(int32 Level) const
+	FReal GetNodeLevelExtent(int32 Level) const
 	{
 		const int32 ClampedLevel = FMath::Clamp<uint32>(Level, 0, OctreeSemantics::MaxNodeDepth);
-		return RootNodeContext.Bounds.Extent.X * FMath::Pow((1.0f + 1.0f / (float)FOctreeNodeContext::LoosenessDenominator) / 2.0f, ClampedLevel);
+		return RootNodeContext.Bounds.Extent.X * FMath::Pow((1.0f + 1.0f / (FReal)FOctreeNodeContext::LoosenessDenominator) / 2.0f, FReal(ClampedLevel));
 	}
 
 	FBoxCenterAndExtent GetRootBounds() const
@@ -1611,10 +1623,10 @@ public:
 
 
 	/** Initialization constructor. */
-	TOctree_DEPRECATED(const FVector& InOrigin, float InExtent)
+	TOctree_DEPRECATED(const FVector& InOrigin, FReal InExtent)
 		: RootNode(NULL)
 		, RootNodeContext(FBoxCenterAndExtent(InOrigin, FVector(InExtent, InExtent, InExtent)), 0, 0)
-		, MinLeafExtent(InExtent* FMath::Pow((1.0f + 1.0f / (float)FOctreeNodeContext::LoosenessDenominator) / 2.0f, OctreeSemantics::MaxNodeDepth))
+		, MinLeafExtent(InExtent* FMath::Pow((1.0f + 1.0f / (FReal)FOctreeNodeContext::LoosenessDenominator) / 2.0f, FReal(OctreeSemantics::MaxNodeDepth)))
 		, TotalSizeBytes(0)
 	{
 	}
@@ -1634,7 +1646,7 @@ private:
 	FOctreeNodeContext RootNodeContext;
 
 	/** The extent of a leaf at the maximum allowed depth of the tree. */
-	float MinLeafExtent;
+	FReal MinLeafExtent;
 
 	/** this function basically set TotalSizeBytes, but gives opportunity to
 	 *	include this Octree in memory stats */
@@ -1774,7 +1786,7 @@ template<typename ElementType, typename OctreeSemantics>
 class UE_DEPRECATED(4.26, "The old Octree is deprecated use TOctree2.") TOctree : public TOctree_DEPRECATED<ElementType, OctreeSemantics>
 {
 public:
-	TOctree(const FVector& InOrigin, float InExtent) : TOctree_DEPRECATED<ElementType, OctreeSemantics>(InOrigin, InExtent)
+	TOctree(const FVector& InOrigin, FVector::FReal InExtent) : TOctree_DEPRECATED<ElementType, OctreeSemantics>(InOrigin, InExtent)
 	{
 	}
 

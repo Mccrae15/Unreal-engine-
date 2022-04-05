@@ -11,11 +11,11 @@
 
 #define LOCTEXT_NAMESPACE "PerforceSourceControl"
 
-bool FPerforceSourceControlRevision::Get( FString& InOutFilename ) const
+bool FPerforceSourceControlRevision::Get( FString& InOutFilename, EConcurrency::Type InConcurrency) const
 {
 	bool bCommandOK = false;
 	FPerforceSourceControlModule& PerforceSourceControl = FModuleManager::LoadModuleChecked<FPerforceSourceControlModule>("PerforceSourceControl");
-	FScopedPerforceConnection ScopedConnection(EConcurrency::Synchronous, PerforceSourceControl.AccessSettings().GetConnectionInfo());
+	FScopedPerforceConnection ScopedConnection(InConcurrency, PerforceSourceControl.AccessSettings().GetConnectionInfo());
 	if(ScopedConnection.IsValid())
 	{
 		FPerforceConnection& Connection = ScopedConnection.GetConnection();
@@ -28,7 +28,20 @@ bool FPerforceSourceControlRevision::Get( FString& InOutFilename ) const
 		Parameters.Add(TEXT("-q"));
 
 		// Make temp filename to 'print' to
-		FString RevString = (RevisionNumber < 0) ? TEXT("head") : FString::Printf(TEXT("%d"), RevisionNumber);
+		FString RevString;
+		FString RevParam;
+		
+		if (bIsShelve)
+		{
+			RevString = FString::Printf(TEXT("%d"), ChangelistNumber);
+			RevParam = TEXT("@=") + RevString;
+		}
+		else
+		{
+			RevString = (RevisionNumber < 0) ? TEXT("head") : FString::Printf(TEXT("%d"), RevisionNumber);
+			RevParam = TEXT("#") + RevString;
+		}
+		
 		FString AbsoluteFileName;
 		if(InOutFilename.Len() > 0)
 		{
@@ -43,7 +56,7 @@ bool FPerforceSourceControlRevision::Get( FString& InOutFilename ) const
 
 		// output to file
 		Parameters.Add(FString("-o") + AbsoluteFileName);
-		Parameters.Add(FileName + TEXT("#") + RevString);
+		Parameters.Add(FileName + RevParam);
 		
 		bCommandOK = Connection.RunCommand(TEXT("print"), Parameters, Records, ErrorMessages, FOnIsCancelled(), bConnectionDropped);
 		if(bCommandOK)

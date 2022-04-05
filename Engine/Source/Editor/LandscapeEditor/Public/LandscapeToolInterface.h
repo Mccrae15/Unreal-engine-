@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "InputCoreTypes.h"
 #include "UObject/GCObject.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "EdMode.h"
 #include "LandscapeEdit.h"
 
@@ -114,6 +114,10 @@ public:
 
 	// FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override {}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FLandscapeBrush");
+	}
 };
 
 struct FLandscapeBrushSet
@@ -206,12 +210,13 @@ public:
 	virtual FText GetDisplayMessage() = 0;
 	virtual void SetEditRenderType();
 	virtual void Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI) {}
+	virtual bool HitTrace(const FVector& TraceStart, const FVector& TraceEnd, FVector& OutHitLocation) { return false; }
 	virtual bool SupportsMask() { return true; }
 	virtual bool SupportsComponentSelection() { return false; }
 	virtual bool OverrideSelection() const { return false; }
 	virtual bool IsSelectionAllowed(AActor* InActor, bool bInSelection) const { return false; }
 	virtual bool UsesTransformWidget() const { return false; }
-	virtual EAxisList::Type GetWidgetAxisToDraw(FWidget::EWidgetMode InWidgetMode) const { return EAxisList::All; }
+	virtual EAxisList::Type GetWidgetAxisToDraw(UE::Widget::EWidgetMode InWidgetMode) const { return EAxisList::All; }
 
 	virtual bool OverrideWidgetLocation() const { return true; }
 	virtual bool OverrideWidgetRotation() const { return true; }
@@ -230,7 +235,6 @@ public:
 
 	virtual void SetCanToolBeActivated(bool Value) { }
 	virtual bool CanToolBeActivated() const { return true;  }
-	virtual void SetExternalModifierPressed(const bool bPressed) {};
 
 	virtual EEditAction::Type GetActionEditDuplicate() { return EEditAction::Skip; }
 	virtual EEditAction::Type GetActionEditDelete() { return EEditAction::Skip; }
@@ -250,6 +254,10 @@ public:
 
 	// FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override {}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FLandscapeTool");
+	}
 
 public:
 	int32					PreviousBrushIndex;

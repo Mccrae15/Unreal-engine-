@@ -31,16 +31,17 @@ void FAnimNode_CustomProperty::PropagateInputProperties(const UObject* InSourceI
 			FProperty* CallerProperty = SourceProperties[PropIdx];
 			FProperty* SubProperty = DestProperties[PropIdx];
 
-			check(CallerProperty && SubProperty);
-
-#if WITH_EDITOR
-			if (ensure(CallerProperty->SameType(SubProperty)))
-#endif
+			if(CallerProperty && SubProperty)
 			{
-				const uint8* SrcPtr = CallerProperty->ContainerPtrToValuePtr<uint8>(InSourceInstance);
-				uint8* DestPtr = SubProperty->ContainerPtrToValuePtr<uint8>(TargetInstance);
+#if WITH_EDITOR
+				if (ensure(CallerProperty->SameType(SubProperty)))
+#endif
+				{
+					const uint8* SrcPtr = CallerProperty->ContainerPtrToValuePtr<uint8>(InSourceInstance);
+					uint8* DestPtr = SubProperty->ContainerPtrToValuePtr<uint8>(TargetInstance);
 
-				CallerProperty->CopyCompleteValue(DestPtr, SrcPtr);
+					CallerProperty->CopyCompleteValue(DestPtr, SrcPtr);
+				}
 			}
 		}
 	}
@@ -73,24 +74,25 @@ void FAnimNode_CustomProperty::InitializeProperties(const UObject* InSourceInsta
 
 		for(int32 Idx = 0; Idx < SourcePropertyNames.Num(); ++Idx)
 		{
-			const FName& SourceName = SourcePropertyNames[Idx];
 			const FName& DestName = DestPropertyNames[Idx];
 
-			FProperty* SourceProperty = FindFProperty<FProperty>(SourceClass, SourceName);
-			FProperty* DestProperty = FindFProperty<FProperty>(InTargetClass, DestName);
-
-			if (SourceProperty && DestProperty
-#if WITH_EDITOR
-				// This type check can fail when anim blueprints are in an error state:
-				&& SourceProperty->SameType(DestProperty)
-#endif
-				)
+			if (FProperty* DestProperty = FindFProperty<FProperty>(InTargetClass, DestName))
 			{
-				SourceProperties.Add(SourceProperty);
-				DestProperties.Add(DestProperty);
+				const FName& SourceName = SourcePropertyNames[Idx];
+				FProperty* SourceProperty = FindFProperty<FProperty>(SourceClass, SourceName);
+
+				if (SourceProperty
+#if WITH_EDITOR
+					// This type check can fail when anim blueprints are in an error state:
+					&& SourceProperty->SameType(DestProperty)
+#endif
+					)
+				{
+					SourceProperties.Add(SourceProperty);
+					DestProperties.Add(DestProperty);
+				}
 			}
 		}
-		
 	}
 }
 

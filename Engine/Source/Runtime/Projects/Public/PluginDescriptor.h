@@ -9,6 +9,7 @@
 #include "PluginReferenceDescriptor.h"
 
 class FJsonObject;
+class FJsonValue;
 
 /**
  * Setting for whether a plugin is enabled by default
@@ -86,6 +87,9 @@ struct PROJECTS_API FPluginDescriptor
 	/** Can this plugin contain content? */
 	bool bCanContainContent;
 
+	/** Can this plugin contain Verse code? */
+	bool bCanContainVerse;
+
 	/** Marks the plugin as beta in the UI */
 	bool bIsBetaVersion;
 
@@ -104,6 +108,9 @@ struct PROJECTS_API FPluginDescriptor
 	/** When true, this plugin's modules will not be loaded automatically nor will it's content be mounted automatically. It will load/mount when explicitly requested and LoadingPhases will be ignored */
 	bool bExplicitlyLoaded;
 
+	/** When true, an empty SupportedTargetPlatforms is interpreted as 'no platforms' with the expectation that explicit platforms will be added in plugin platform extensions */
+	bool bHasExplicitPlatforms;
+
 	/** If true, this plugin from a platform extension extending another plugin */
 	bool bIsPluginExtension;
 
@@ -118,20 +125,38 @@ struct PROJECTS_API FPluginDescriptor
 
 #if WITH_EDITOR
 	/** Cached json for custom data */
-	TSharedPtr<FJsonObject> CachedJson;
+	mutable TSharedPtr<FJsonObject> CachedJson;
+
+	/** Additional fields to write */
+	TMap<FString, TSharedPtr<FJsonValue>> AdditionalFieldsToWrite;
 #endif
+
+	/** Return the .uplugin extension (with dot) */
+	static const FString& GetFileExtension();
 
 	/** Constructor. */
 	FPluginDescriptor();
 
 	/** Loads the descriptor from the given file. */
+	bool Load(const FString& FileName, FText* OutFailReason = nullptr);
+
+	/** Loads the descriptor from the given file. */
 	bool Load(const FString& FileName, FText& OutFailReason);
+
+	/** Reads the descriptor from the given string */
+	bool Read(const FString& Text, FText* OutFailReason = nullptr);
 
 	/** Reads the descriptor from the given string */
 	bool Read(const FString& Text, FText& OutFailReason);
 
 	/** Reads the descriptor from the given JSON object */
+	bool Read(const FJsonObject& Object, FText* OutFailReason = nullptr);
+
+	/** Reads the descriptor from the given JSON object */
 	bool Read(const FJsonObject& Object, FText& OutFailReason);
+
+	/** Saves the descriptor from the given file. */
+	bool Save(const FString& FileName, FText* OutFailReason = nullptr) const;
 
 	/** Saves the descriptor from the given file. */
 	bool Save(const FString& FileName, FText& OutFailReason) const;
@@ -144,6 +169,12 @@ struct PROJECTS_API FPluginDescriptor
 
 	/** Updates the given json object with values in this descriptor */
 	void UpdateJson(FJsonObject& JsonObject) const;
+
+	/**
+	 * Updates the content of the specified plugin file with values in this descriptor
+	 * (hence preserving json fields that the plugin descriptor doesn't know about)
+	 */
+	bool UpdatePluginFile(const FString& FileName, FText* OutFailReason = nullptr) const;
 
 	/**
 	 * Updates the content of the specified plugin file with values in this descriptor

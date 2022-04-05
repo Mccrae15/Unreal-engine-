@@ -42,7 +42,7 @@ void SNiagaraScriptGraph::Construct(const FArguments& InArgs, TSharedRef<FNiagar
 	bUpdatingGraphSelectionFromViewModel = false;
 
 	GraphTitle = InArgs._GraphTitle;
-	ForegroundColor = InArgs._ForegroundColor;
+	SetForegroundColor(InArgs._ForegroundColor);
 
 	GraphEditor = ConstructGraphEditor();
 	if (InArgs._ZoomToFitOnLoad)
@@ -307,6 +307,12 @@ void SNiagaraScriptGraph::OnNodeTitleCommitted(const FText& NewText, ETextCommit
 			const FScopedTransaction Transaction(LOCTEXT("RenameNode", "Rename Node"));
 			NodeBeingChanged->Modify();
 			NodeBeingChanged->OnRenameNode(NewText.ToString());
+
+			// If the node isn't a NiagarNode, like say a comment, go ahead and mark it dirty
+			if (!NodeBeingChanged->IsA(UNiagaraNode::StaticClass()))
+			{
+				ViewModel->GetGraph()->NotifyGraphNeedsRecompile();
+			}
 		}
 	}
 }
@@ -342,7 +348,7 @@ FReply SNiagaraScriptGraph::OnSpawnGraphNodeByShortcut(FInputChord InChord, cons
 
 	for (int32 i = 0; i < Settings->GraphCreationShortcuts.Num(); i++)
 	{
-		if (Settings->GraphCreationShortcuts[i].Input.GetRelationship(InChord) == FInputChord::Same)
+		if (Settings->GraphCreationShortcuts[i].Input.GetRelationship(InChord) == FInputChord::ERelationshipType::Same)
 		{
 			const UEdGraphSchema_Niagara* Schema = GetDefault<UEdGraphSchema_Niagara>();
 
@@ -506,7 +512,7 @@ void SNiagaraScriptGraph::FocusGraphElement(const INiagaraScriptGraphFocusInfo* 
 	{
 		const FNiagaraScriptGraphNodeToFocusInfo* NodeFocusInfo = static_cast<const FNiagaraScriptGraphNodeToFocusInfo*>(FocusInfo);
 		const FGuid& NodeGuidToMatch = NodeFocusInfo->GetNodeGuidToFocus();
-		UEdGraphNode* const* NodeToFocus = ViewModel->GetGraph()->Nodes.FindByPredicate([&NodeGuidToMatch](const UEdGraphNode* Node) {return Node->NodeGuid == NodeGuidToMatch; });
+		TObjectPtr<UEdGraphNode> const* NodeToFocus = ViewModel->GetGraph()->Nodes.FindByPredicate([&NodeGuidToMatch](const UEdGraphNode* Node) {return Node->NodeGuid == NodeGuidToMatch; });
 		if (NodeToFocus != nullptr && *NodeToFocus != nullptr)
 		{
 			GetGraphEditor()->JumpToNode(*NodeToFocus);

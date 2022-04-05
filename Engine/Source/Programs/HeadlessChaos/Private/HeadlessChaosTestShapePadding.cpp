@@ -5,11 +5,14 @@
 #include "HeadlessChaos.h"
 #include "HeadlessChaosCollisionConstraints.h"
 #include "Chaos/Box.h"
+#include "Chaos/CollisionResolution.h"
 #include "Chaos/CollisionResolutionTypes.h"
+#include "Chaos/Collision/SolverCollisionContainer.h"
 #include "Chaos/Convex.h"
 #include "Chaos/Sphere.h"
 #include "Chaos/GJK.h"
 #include "Chaos/Pair.h"
+#include "Chaos/PBDCollisionConstraints.h"
 #include "Chaos/PBDRigidParticles.h"
 #include "Chaos/PBDRigidsEvolution.h"
 #include "Chaos/Utilities.h"
@@ -37,7 +40,8 @@ namespace ChaosTest {
 		TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>> PhysicsMaterials;
 		TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>> PerParticlePhysicsMaterials;
 
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		Particles.GetParticleHandles().AddArray(&Collided);
 		Particles.GetParticleHandles().AddArray(&PhysicsMaterials);
 		Particles.GetParticleHandles().AddArray(&PerParticlePhysicsMaterials);
@@ -81,25 +85,31 @@ namespace ChaosTest {
 		EXPECT_NEAR(BoxBounds1.Extents().Y, Size.Y, Tolerance);
 		EXPECT_NEAR(BoxBounds1.Extents().Z, Size.Z, Tolerance);
 
-		FRigidBodyPointContactConstraint Constraint(
+		FCollisionConstraintAllocator CollisionAllocator;
+
+		TUniquePtr<FPBDCollisionConstraint> Constraint = FPBDCollisionConstraint::Make(
 			Box0,
 			Box0->Geometry().Get(),
+			Box0->ShapesArray()[0].Get(),
 			nullptr,
 			FRigidTransform3(),
 			Box1,
 			Box1->Geometry().Get(),
+			Box1->ShapesArray()[0].Get(),
 			nullptr,
 			FRigidTransform3(),
 			FLT_MAX,
-			EContactShapesType::BoxBox, true);
+			true,
+			EContactShapesType::BoxBox);
 
 		// Detect collisions
-		Collisions::Update(Constraint, 1/30.0f);
+		Constraint->ResetPhi(Constraint->GetCullDistance());
+		Collisions::UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest>(*Constraint, FParticleUtilitiesPQ::GetActorWorldTransform(Box0), FParticleUtilitiesPQ::GetActorWorldTransform(Box1), 1 / 30.0f);
 
-		EXPECT_NEAR(Constraint.Manifold.Phi, ExpectedPhi, Tolerance);
-		EXPECT_NEAR(Constraint.Manifold.Normal.X, ExpectedNormal.X, Tolerance);
-		EXPECT_NEAR(Constraint.Manifold.Normal.Y, ExpectedNormal.Y, Tolerance);
-		EXPECT_NEAR(Constraint.Manifold.Normal.Z, ExpectedNormal.Z, Tolerance);
+		EXPECT_NEAR(Constraint->GetPhi(), ExpectedPhi, Tolerance);
+		EXPECT_NEAR(Constraint->CalculateWorldContactNormal().X, ExpectedNormal.X, Tolerance);
+		EXPECT_NEAR(Constraint->CalculateWorldContactNormal().Y, ExpectedNormal.Y, Tolerance);
+		EXPECT_NEAR(Constraint->CalculateWorldContactNormal().Z, ExpectedNormal.Z, Tolerance);
 	}
 
 	TEST(CollisionTests, TestBoxBoxCollisionMargin)
@@ -144,7 +154,8 @@ namespace ChaosTest {
 		TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>> PhysicsMaterials;
 		TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>> PerParticlePhysicsMaterials;
 
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		Particles.GetParticleHandles().AddArray(&Collided);
 		Particles.GetParticleHandles().AddArray(&PhysicsMaterials);
 		Particles.GetParticleHandles().AddArray(&PerParticlePhysicsMaterials);
@@ -186,25 +197,30 @@ namespace ChaosTest {
 		EXPECT_NEAR(BoxBounds1.Extents().Y, Size.Y, Tolerance);
 		EXPECT_NEAR(BoxBounds1.Extents().Z, Size.Z, Tolerance);
 
-		FRigidBodyPointContactConstraint Constraint(
+		FCollisionConstraintAllocator CollisionConstraintAllocator;
+
+		TUniquePtr<FPBDCollisionConstraint> Constraint = FPBDCollisionConstraint::Make(
 			Box0,
 			Box0->Geometry().Get(),
+			Box0->ShapesArray()[0].Get(),
 			nullptr,
 			FRigidTransform3(),
 			Box1,
 			Box1->Geometry().Get(),
+			Box1->ShapesArray()[0].Get(),
 			nullptr,
 			FRigidTransform3(),
 			FLT_MAX,
-			EContactShapesType::GenericConvexConvex, true);
+			true,
+			EContactShapesType::GenericConvexConvex);
 
 		// Detect collisions
-		Collisions::Update(Constraint, 1 / 30.0f);
+		Collisions::UpdateConstraintFromGeometry<ECollisionUpdateType::Deepest>(*Constraint, FParticleUtilitiesPQ::GetActorWorldTransform(Box0), FParticleUtilitiesPQ::GetActorWorldTransform(Box1), 1 / 30.0f);
 
-		EXPECT_NEAR(Constraint.Manifold.Phi, ExpectedPhi, Tolerance);
-		EXPECT_NEAR(Constraint.Manifold.Normal.X, ExpectedNormal.X, Tolerance);
-		EXPECT_NEAR(Constraint.Manifold.Normal.Y, ExpectedNormal.Y, Tolerance);
-		EXPECT_NEAR(Constraint.Manifold.Normal.Z, ExpectedNormal.Z, Tolerance);
+		EXPECT_NEAR(Constraint->GetPhi(), ExpectedPhi, Tolerance);
+		EXPECT_NEAR(Constraint->CalculateWorldContactNormal().X, ExpectedNormal.X, Tolerance);
+		EXPECT_NEAR(Constraint->CalculateWorldContactNormal().Y, ExpectedNormal.Y, Tolerance);
+		EXPECT_NEAR(Constraint->CalculateWorldContactNormal().Z, ExpectedNormal.Z, Tolerance);
 	}
 
 
@@ -257,7 +273,8 @@ namespace ChaosTest {
 		TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>> PhysicsMaterials;
 		TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>> PerParticlePhysicsMaterials;
 
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		Particles.GetParticleHandles().AddArray(&Collided);
 		Particles.GetParticleHandles().AddArray(&PhysicsMaterials);
 		Particles.GetParticleHandles().AddArray(&PerParticlePhysicsMaterials);
@@ -302,7 +319,7 @@ namespace ChaosTest {
 			FVec3 InvDir;
 			for (int Axis = 0; Axis < 3; ++Axis)
 			{
-				bParallel[Axis] = FMath::IsNearlyZero(Dir[Axis], 1.e-8f);
+				bParallel[Axis] = FMath::IsNearlyZero(Dir[Axis], (FReal)1.e-8);
 				InvDir[Axis] = bParallel[Axis] ? 0 : 1 / Dir[Axis];
 			}
 

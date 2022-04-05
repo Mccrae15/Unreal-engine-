@@ -8,6 +8,8 @@
 
 #include "GameFramework/PlayerController.h"
 
+const FQuat HandRootFixupRotation = FQuat(-0.5f, -0.5f, 0.5f, 0.5f);
+
 UOculusHandComponent::UOculusHandComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -16,11 +18,8 @@ UOculusHandComponent::UOculusHandComponent(const FObjectInitializer& ObjectIniti
 	PrimaryComponentTick.TickGroup = TG_PrePhysics;
 
 	bHasAuthority = false;
-
-	RuntimeSkeletalMesh = nullptr;
-	CachedBaseMaterial = nullptr;
-
 	bAutoActivate = true;
+
 	bWantsInitializeComponent = true;
 
 	for (uint8 BoneIndex = 0; BoneIndex < (uint8)EBone::Bone_Max; BoneIndex++)

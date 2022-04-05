@@ -106,15 +106,20 @@ struct FPrimaryAssetTypeInfo
 	UPROPERTY(EditAnywhere, Category = AssetType)
 	FName PrimaryAssetType;
 
+#if WITH_EDITOR
+	const TSoftClassPtr<UObject>& GetAssetBaseClass() const { return AssetBaseClass; }
+	void SetAssetBaseClass(const TSoftClassPtr<UObject>& InAssetBaseClass) { AssetBaseClass = InAssetBaseClass; }
+#endif //if WITH_EDITOR
+
 private:
 	/** Base Class of all assets of this type */
 	UPROPERTY(EditAnywhere, Category = AssetType, meta = (AllowAbstract))
 	TSoftClassPtr<UObject> AssetBaseClass;
-public:
 
+public:
 	/** Base Class of all assets of this type */
 	UPROPERTY(Transient)
-	UClass* AssetBaseClassLoaded;
+	TObjectPtr<UClass> AssetBaseClassLoaded;
 
 	/** True if the assets loaded are blueprints classes, false if they are normal UObjects */
 	UPROPERTY(EditAnywhere, Category = AssetType)
@@ -124,6 +129,12 @@ public:
 	UPROPERTY(EditAnywhere, Category = AssetType)
 	bool bIsEditorOnly;
 
+#if WITH_EDITOR
+	TArray<FDirectoryPath>& GetDirectories() { return Directories; }
+
+	TArray<FSoftObjectPath>& GetSpecificAssets() { return SpecificAssets; }
+#endif //if WITH_EDITOR
+
 private:
 	/** Directories to search for this asset type */
 	UPROPERTY(EditAnywhere, Category = AssetType, meta = (RelativeToGameContentDir, LongPackageName))
@@ -132,8 +143,8 @@ private:
 	/** Individual assets to scan */
 	UPROPERTY(EditAnywhere, Category = AssetType)
 	TArray<FSoftObjectPath> SpecificAssets;
-public:
 
+public:
 	/** Default management rules for this type, individual assets can be overridden */
 	UPROPERTY(EditAnywhere, Category = Rules, meta = (ShowOnlyInnerProperties))
 	FPrimaryAssetRules Rules;
@@ -152,13 +163,29 @@ public:
 
 	FPrimaryAssetTypeInfo() : AssetBaseClass(UObject::StaticClass()), AssetBaseClassLoaded(UObject::StaticClass()), bHasBlueprintClasses(false), bIsEditorOnly(false),  bIsDynamicAsset(false), NumberOfAssets(0) {}
 
-	FPrimaryAssetTypeInfo(FName InPrimaryAssetType, UClass* InAssetBaseClass, bool bInHasBlueprintClasses, bool bInIsEditorOnly) 
+	FPrimaryAssetTypeInfo(FName InPrimaryAssetType, UClass* InAssetBaseClass, bool bInHasBlueprintClasses, bool bInIsEditorOnly)
 		: PrimaryAssetType(InPrimaryAssetType), AssetBaseClass(InAssetBaseClass), AssetBaseClassLoaded(InAssetBaseClass), bHasBlueprintClasses(bInHasBlueprintClasses), bIsEditorOnly(bInIsEditorOnly), bIsDynamicAsset(false), NumberOfAssets(0)
+	{
+	}
+
+	FPrimaryAssetTypeInfo(FName InPrimaryAssetType, UClass* InAssetBaseClass, bool bInHasBlueprintClasses, bool bInIsEditorOnly, TArray<FDirectoryPath>&& InDirectories, TArray<FSoftObjectPath>&& InSpecificAssets)
+		: PrimaryAssetType(InPrimaryAssetType)
+		, AssetBaseClass(InAssetBaseClass)
+		, AssetBaseClassLoaded(InAssetBaseClass)
+		, bHasBlueprintClasses(bInHasBlueprintClasses)
+		, bIsEditorOnly(bInIsEditorOnly)
+		, Directories(MoveTemp(InDirectories))
+		, SpecificAssets(MoveTemp(InSpecificAssets))
+		, bIsDynamicAsset(false)
+		, NumberOfAssets(0)
 	{
 	}
 
 	/** Fills out transient variables based on parsed ones. Sets status bools saying rather data is valid, and rather it had to synchronously load the base class */
 	ENGINE_API void FillRuntimeData(bool& bIsValid, bool& bBaseClassWasLoaded);
+
+	/** Very temporary workaround for the gamefeatures subsystem needing to modify directories **/
+	friend class UGameFeaturesSubsystem;
 };
 
 /** Information about a package chunk, computed by the asset manager or read out of the cooked asset registry */
@@ -206,7 +233,7 @@ struct FAssetManagerSearchRules
 
 	/** Assets must inherit from this class, for blueprints this should be the instance base class */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Default)
-	UClass* AssetBaseClass = nullptr;
+	TObjectPtr<UClass> AssetBaseClass = nullptr;
 
 	/** True if scanning for blueprints, false for all other assets */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Default)

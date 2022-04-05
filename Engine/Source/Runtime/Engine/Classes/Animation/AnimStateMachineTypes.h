@@ -7,9 +7,9 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "AlphaBlend.h"
+#include "BlendProfile.h"
 #include "AnimStateMachineTypes.generated.h"
 
-class UBlendProfile;
 class UCurveFloat;
 
 //@TODO: Document
@@ -141,10 +141,10 @@ struct FAnimationTransitionBetweenStates : public FAnimationStateBase
 	EAlphaBlendOption BlendMode;
 
 	UPROPERTY()
-	UCurveFloat* CustomCurve;
+	TObjectPtr<UCurveFloat> CustomCurve;
 
 	UPROPERTY()
-	UBlendProfile* BlendProfile;
+	TObjectPtr<UBlendProfile> BlendProfile;
 
 	UPROPERTY()
 	TEnumAsByte<ETransitionLogicType::Type> LogicType;
@@ -198,6 +198,10 @@ struct FBakedStateExitTransition
 	UPROPERTY()
 	bool bAutomaticRemainingTimeRule;
 	
+	// Additional rule around SyncGroup requiring Valid Markers
+	UPROPERTY()
+	FName SyncGroupNameToRequireValidMarkersRule;
+
 	UPROPERTY()
 	TArray<int32> PoseEvaluatorLinks;
 
@@ -207,6 +211,7 @@ struct FBakedStateExitTransition
 		, TransitionIndex(INDEX_NONE)
 		, bDesiredTransitionReturnValue(true)
 		, bAutomaticRemainingTimeRule(false)
+		, SyncGroupNameToRequireValidMarkersRule(NAME_None)
 	{
 	}
 };

@@ -12,7 +12,7 @@
 #include "Misc/CoreDelegates.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Serialization/JsonSerializerMacros.h"
 #include "Stats/Stats.h"
 
@@ -830,7 +830,7 @@ namespace InstallBundleUtil
 				//Only setup a tick function if we would use it
 				if ((bShouldAutoUpdateTimersInTick || bShouldSaveDirtyStatsOnTick) && !TickHandle.IsValid())
 				{
-					TickHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FPersistentStatContainerBase::Tick));
+					TickHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FPersistentStatContainerBase::Tick));
 				}
 
 				//Only setup Foreground/Background delegates if we should be using them to swap stats
@@ -852,7 +852,7 @@ namespace InstallBundleUtil
 		{
 			if (TickHandle.IsValid())
 			{
-				FTicker::GetCoreTicker().RemoveTicker(TickHandle);
+				FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
 				TickHandle.Reset();
 			}
 
@@ -1103,6 +1103,7 @@ namespace InstallBundleUtil
 
 		void FPersistentStatContainerBase::OnApp_EnteringBackground()
 		{
+			SCOPED_ENTER_BACKGROUND_EVENT(STAT_InstallBundle_OnApp_EnteringBackground);
 			OnBackground_HandleBundleStats();
 			OnBackground_HandleSessionStats();
 		}

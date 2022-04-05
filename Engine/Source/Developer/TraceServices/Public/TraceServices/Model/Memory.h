@@ -7,13 +7,13 @@
 #include "Templates/Function.h"
 #include "TraceServices/Model/AnalysisSession.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 typedef int32 FMemoryTrackerId;
 typedef int64 FMemoryTagId;
 
-struct FMemoryTracker
+struct FMemoryTrackerInfo
 {
 	static const FMemoryTrackerId InvalidTrackerId = -1;
 	static const FMemoryTrackerId MaxValidTrackerId = 63;
@@ -25,17 +25,17 @@ struct FMemoryTracker
 	FString Name;
 };
 
-struct FMemoryTag
+struct FMemoryTagInfo
 {
 	static const FMemoryTagId InvalidTagId = 0;
 
-	// Unique identifier of the llm tag. Values larger than uint8 (or even uint32) are possible, but rare.
+	// Unique identifier of the llm tag.
 	FMemoryTagId Id;
 
 	// Name of the stat associated with the llm tag.
 	FString Name;
 
-	// Id of parent, -1 if no parent.
+	// Id of parent, 0 if no parent.
 	FMemoryTagId ParentId;
 
 	// Bit flags for trackers using this llm tag.
@@ -71,14 +71,14 @@ public:
 	 * Enumerate the registered tags.
 	 * @param Callback Function that will be called for each registered tag.
 	 */
-	virtual void EnumerateTags(TFunctionRef<void(const FMemoryTag&)> Callback) const = 0;
+	virtual void EnumerateTags(TFunctionRef<void(const FMemoryTagInfo&)> Callback) const = 0;
 
 	/**
 	 * Returns the meta data for a tag id.
 	 * @param Id Tag id
 	 * @return Memory tag information.
 	 */
-	virtual const FMemoryTag* GetTag(FMemoryTagId Id) const = 0;
+	virtual const FMemoryTagInfo* GetTag(FMemoryTagId Id) const = 0;
 
 	/**
 	 * Gets the number of samples for a given tag from a given tracker.
@@ -98,7 +98,7 @@ public:
 	 * Enumerate the registered trackers.
 	 * @param Callback Function that is called for each registered tracker.
 	 */
-	virtual void EnumerateTrackers(TFunctionRef<void(const FMemoryTracker&)> Callback) const = 0;
+	virtual void EnumerateTrackers(TFunctionRef<void(const FMemoryTrackerInfo&)> Callback) const = 0;
 
 	/** Enumerates samples (values) for a specified LLM tag.
 	 * @param Tracker Tracker index.
@@ -111,6 +111,7 @@ public:
 	virtual void EnumerateTagSamples(FMemoryTrackerId Tracker, FMemoryTagId Tag, double StartTime, double EndTime, bool bIncludeRangeNeighbours, TFunctionRef<void(double Time, double Duration, const FMemoryTagSample&)> Callback) const = 0;
 };
 
-TRACESERVICES_API const IMemoryProvider& ReadMemoryProvider(const IAnalysisSession& Session);
+TRACESERVICES_API FName GetMemoryProviderName();
+TRACESERVICES_API const IMemoryProvider* ReadMemoryProvider(const IAnalysisSession& Session);
 
-} // namespace Trace
+} // namespace TraceServices

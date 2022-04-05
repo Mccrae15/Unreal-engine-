@@ -23,6 +23,7 @@
 #include "Logging/MessageLog.h"
 #include "AssetTools.h"
 #include "Engine/Blueprint.h"
+#include "SourceControlHelpers.h"
 
 #define LOCTEXT_NAMESPACE "AssetFixUpRedirectors"
 
@@ -43,7 +44,7 @@ struct FRedirectorRefs
 };
 
 
-void FAssetFixUpRedirectors::FixupReferencers(const TArray<UObjectRedirector*>& Objects, const bool bCheckoutDialogPrompt) const
+void FAssetFixUpRedirectors::FixupReferencers(const TArray<UObjectRedirector*>& Objects, const bool bCheckoutDialogPrompt, ERedirectFixupMode FixupMode) const
 {
 	// Transform array into TWeakObjectPtr array
 	TArray<TWeakObjectPtr<UObjectRedirector>> ObjectWeakPtrs;
@@ -60,18 +61,18 @@ void FAssetFixUpRedirectors::FixupReferencers(const TArray<UObjectRedirector*>& 
 		{
 			// Open a dialog asking the user to wait while assets are being discovered
 			SDiscoveringAssetsDialog::OpenDiscoveringAssetsDialog(
-				SDiscoveringAssetsDialog::FOnAssetsDiscovered::CreateSP(this, &FAssetFixUpRedirectors::ExecuteFixUp, ObjectWeakPtrs, bCheckoutDialogPrompt)
+				SDiscoveringAssetsDialog::FOnAssetsDiscovered::CreateSP(this, &FAssetFixUpRedirectors::ExecuteFixUp, ObjectWeakPtrs, bCheckoutDialogPrompt, FixupMode)
 				);
 		}
 		else
 		{
 			// No need to wait, attempt to fix references now.
-			ExecuteFixUp(ObjectWeakPtrs, bCheckoutDialogPrompt);
+			ExecuteFixUp(ObjectWeakPtrs, bCheckoutDialogPrompt, FixupMode);
 		}
 	}
 }
 
-void FAssetFixUpRedirectors::ExecuteFixUp(TArray<TWeakObjectPtr<UObjectRedirector>> Objects, const bool bCheckoutDialogPrompt) const
+void FAssetFixUpRedirectors::ExecuteFixUp(TArray<TWeakObjectPtr<UObjectRedirector>> Objects, const bool bCheckoutDialogPrompt, ERedirectFixupMode FixupMode) const
 {
 	TGuardValue<bool> Guard(bIsFixupReferencersInProgress, true);
 
@@ -96,7 +97,21 @@ void FAssetFixUpRedirectors::ExecuteFixUp(TArray<TWeakObjectPtr<UObjectRedirecto
 		{
 			// Load all referencing packages.
 			TArray<UPackage*> ReferencingPackagesToSave;
-			LoadReferencingPackages(RedirectorRefsList, ReferencingPackagesToSave);
+			TArray<UPackage*> LoadedPackages;
+			LoadReferencingPackages(RedirectorRefsList, ReferencingPackagesToSave, LoadedPackages);
+
+			// Add all referencing packages objects that aren't RF_Standalone to the root set to avoid them being GC'd during the following processing
+			TSet<UObject*> RootedObjects;
+			for (UPackage* Package : ReferencingPackagesToSave)
+			{
+				ForEachObjectWithPackage(Package, [&RootedObjects](UObject* Object)
+				{
+					check(!Object->IsRooted());
+					Object->AddToRoot();
+					RootedObjects.Add(Object);
+					return true;
+				}, false, RF_Standalone, EInternalObjectFlags::RootSet);
+			}
 
 			// Check out all referencing packages, leave redirectors for assets referenced by packages that are not checked out and remove those packages from the save list.
 			const bool bUserAcceptedCheckout = CheckOutReferencingPackages(RedirectorRefsList, ReferencingPackagesToSave, bCheckoutDialogPrompt);
@@ -118,11 +133,36 @@ void FAssetFixUpRedirectors::ExecuteFixUp(TArray<TWeakObjectPtr<UObjectRedirecto
 				// Wait for package referencers to be updated
 				UpdateAssetReferencers(RedirectorRefsList);
 
-				// Delete any redirectors that are no longer referenced
-				DeleteRedirectors(RedirectorRefsList, FailedToSave);
+				if (FixupMode == ERedirectFixupMode::DeleteFixedUpRedirectors)
+				{
+					// Delete any redirectors that are no longer referenced
+					DeleteRedirectors(RedirectorRefsList, FailedToSave);
+				}
 
 				// Finally, report any failures that happened during the rename
 				ReportFailures(RedirectorRefsList);
+			}
+
+			// Remove objects we manually rooted to allow them to be properly GC'd
+			for (UObject* Object : RootedObjects)
+			{
+				Object->RemoveFromRoot();
+			}
+
+			// If any packages were loaded during the fixup process, make sure we unload them here
+			if (!LoadedPackages.IsEmpty())
+			{
+				for (UPackage* LoadedPackage : LoadedPackages)
+				{
+					ForEachObjectWithPackage(LoadedPackage, [](UObject* Object)
+					{
+						Object->ClearFlags(RF_Standalone);
+						return true;
+					}, false);
+				}
+
+				// Collect garbage.
+				CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 			}
 		}
 	}
@@ -166,7 +206,7 @@ bool FAssetFixUpRedirectors::UpdatePackageStatus(const TArray<FRedirectorRefs>& 
 	return true;
 }
 
-void FAssetFixUpRedirectors::LoadReferencingPackages(TArray<FRedirectorRefs>& RedirectorsToFix, TArray<UPackage*>& OutReferencingPackagesToSave) const
+void FAssetFixUpRedirectors::LoadReferencingPackages(TArray<FRedirectorRefs>& RedirectorsToFix, TArray<UPackage*>& OutReferencingPackagesToSave, TArray<UPackage*>& OutLoadedPackages) const
 {
 	FScopedSlowTask SlowTask( RedirectorsToFix.Num(), LOCTEXT( "LoadingReferencingPackages", "Loading Referencing Packages..." ) );
 	SlowTask.MakeDialog();
@@ -201,6 +241,10 @@ void FAssetFixUpRedirectors::LoadReferencingPackages(TArray<FRedirectorRefs>& Re
 			if ( !Package )
 			{
 				Package = LoadPackage(NULL, *PackageName, LOAD_None);
+				if (Package)
+				{
+					OutLoadedPackages.Add(Package);
+				}
 			}
 
 			if ( Package )
@@ -292,7 +336,7 @@ void FAssetFixUpRedirectors::DetectReadOnlyPackages(TArray<FRedirectorRefs>& Red
 		{
 			// Find the package filename
 			FString Filename;
-			if ( FPackageName::DoesPackageExist(Package->GetName(), NULL, &Filename) )
+			if ( FPackageName::DoesPackageExist(Package->GetName(), &Filename) )
 			{
 				// If the file is read only
 				if ( IFileManager::Get().IsReadOnly(*Filename) )
@@ -322,11 +366,14 @@ void FAssetFixUpRedirectors::SaveReferencingPackages(const TArray<UPackage*>& Re
 {
 	if ( ReferencingPackagesToSave.Num() > 0 )
 	{
+		// Get the list of filenames before calling save because some of the saved packages can get GCed if they are empty packages
+		const TArray<FString> Filenames = USourceControlHelpers::PackageFilenames(ReferencingPackagesToSave);
+
 		const bool bCheckDirty = false;
 		const bool bPromptToSave = false;
 		FEditorFileUtils::PromptForCheckoutAndSave(ReferencingPackagesToSave, bCheckDirty, bPromptToSave, &OutFailedToSave);
 
-		ISourceControlModule::Get().QueueStatusUpdate(ReferencingPackagesToSave);
+		ISourceControlModule::Get().QueueStatusUpdate(Filenames);
 	}
 }
 

@@ -1,16 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SLevelSnapshotsEditorFilter.h"
+#include "Widgets/SLevelSnapshotsEditorFilter.h"
 
+#include "Data/Filters/NegatableFilter.h"
+#include "Data/LevelSnapshotsEditorData.h"
 #include "LevelSnapshotsEditorStyle.h"
-#include "LevelSnapshotsEditorFilters.h"
-#include "SLevelSnapshotsFilterCheckBox.h"
+#include "Widgets/Filter/SLevelSnapshotsFilterCheckBox.h"
+#include "Widgets/Filter/SHoverableFilterActions.h"
 
 #include "EditorStyleSet.h"
-#include "ILevelSnapshotsEditorView.h"
-#include "LevelSnapshotsEditorData.h"
-#include "NegatableFilter.h"
-#include "SHoverableFilterActions.h"
+#include "Styling/StyleColors.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/SOverlay.h"
@@ -76,16 +75,18 @@ void SLevelSnapshotsEditorFilter::Construct(const FArguments& InArgs, const TWea
 		[
 			SNew(SBorder)
 			.Padding(0)
-			.BorderBackgroundColor( FLinearColor(0.2f, 0.2f, 0.2f, 0.2f) )
-			.BorderImage(FEditorStyle::GetBrush("ContentBrowser.FilterButtonBorder"))
+			.BorderBackgroundColor(FLinearColor(0.2, 0.2, 0.2, 1))
+			.BorderImage(FEditorStyle::GetBrush("ContentBrowser.FilterBackground"))
 			.ColorAndOpacity_Lambda([this](){ return SnapshotFilter.IsValid() && SnapshotFilter->IsIgnored() ? FLinearColor(0.175f, 0.175f, 0.175f, 1.f) : FLinearColor(1,1,1,1); })
 			[
 				SAssignNew(ToggleButtonPtr, SLevelSnapshotsFilterCheckBox) 
 				.ToolTipText(this, &SLevelSnapshotsEditorFilter::GetFilterTooltip)
 				.OnFilterClickedOnce(this, &SLevelSnapshotsEditorFilter::OnNegateFilter)
 				.ForegroundColor(this, &SLevelSnapshotsEditorFilter::GetFilterColor)
+				.Padding(FMargin(5.f, 1.f))
 				[
 					SAssignNew(FilterNamePtr, SClickableText)
+					.MinDesiredWidth(65.f)	//  SHoverableFilterActions (see below) makes clicking filters with short names difficult
 					.ColorAndOpacity(FLinearColor::White)
 					.Font(FEditorStyle::GetFontStyle("ContentBrowser.FilterNameFont"))
 					.ShadowOffset(FVector2D(1.f, 1.f))

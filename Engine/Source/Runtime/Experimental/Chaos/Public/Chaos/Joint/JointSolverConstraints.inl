@@ -24,7 +24,7 @@ namespace Chaos
 		InvMs[0] = JointSettings.ParentInvMassScale * InvM0;
 		InvMs[1] = InvM1;
 
-		FPBDJointUtilities::ConditionInverseMassAndInertia(InvMs[0], InvMs[1], InvILs[0], InvILs[1], SolverSettings.MinParentMassRatio, SolverSettings.MaxInertiaRatio);
+		FPBDJointUtilities::ConditionInverseMassAndInertia(InvMs[0], InvMs[1], InvILs[0], InvILs[1], SolverSettings.MinParentMassRatio, SolverSettings.MaxInertiaRatio, InvMs[0], InvMs[1], InvILs[0], InvILs[1]);
 
 		PrevPs[0] = PrevP0;
 		PrevPs[1] = PrevP1;
@@ -397,7 +397,7 @@ namespace Chaos
 		const FRotation3& RSwing)
 	{
 		const FReal R01SwingYorZ = (FJointConstants::AxisIndex((EJointAngularConstraintIndex)RowData.ConstraintIndex) == 2) ? RSwing.Z : RSwing.Y;	// Can't index a quat :(
-		const FReal Angle = 4.0f * FMath::Atan2(R01SwingYorZ, 1.0f + RSwing.W);
+		const FReal Angle = (FReal)4. * FMath::Atan2(R01SwingYorZ, (FReal)(1. + RSwing.W));
 		const FVec3& AxisLocal = (RowData.ConstraintIndex == (int32)EJointAngularConstraintIndex::Swing1) ? FJointConstants::Swing1Axis() : FJointConstants::Swing2Axis();
 
 		RowState.Axis = R0 * AxisLocal;
@@ -418,7 +418,7 @@ namespace Chaos
 		if (Utilities::NormalizeSafe(Axis, KINDA_SMALL_NUMBER))
 		{
 			FReal SwingTwistDot = FVec3::DotProduct(Swing0, Twist1);
-			FReal Position = FMath::Asin(FMath::Clamp(-SwingTwistDot, -1.0f, 1.0f));
+			FReal Position = FMath::Asin(FMath::Clamp(-SwingTwistDot, FReal(-1), FReal(1)));
 			RowState.Axis = Axis;
 			RowState.CalculateError(Position, RowData.Limit);
 		}

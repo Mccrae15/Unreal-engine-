@@ -46,12 +46,19 @@ namespace WindowsMixedReality
 				OSSubVersionLabel = OSSubVersionLabel.Mid(Begin, End - Begin);
 				bHasSupportedWindowsBuild = FCString::Atoi(*OSSubVersionLabel) >= MIN_WIN_10_VERSION_FOR_WMR;
 			}
+			else
+			{
+				// Hack: Later versions of windows change the format of this sub version label string, so if we hit this case, we should be on a supported version.
+				// This isn't an ideal method, but ran this by Microsoft and for now I think this is a reasonable fix. The WMR path is deprecated in the UE 5.0
+				// release and will be removed completely in a later release.
+				bHasSupportedWindowsBuild = true;
+			}
 		}
 
 		if (bHasSupportedWindowsBuild && bHasSupportedWindowsVersion)
 		{
 			// Get the base directory of this plugin
-			FString BaseDir = IPluginManager::Get().FindPlugin("WindowsMixedReality")->GetBaseDir();
+			FString BaseDir = IPluginManager::Get().FindPlugin(TEXT("WindowsMixedReality"))->GetBaseDir();
 
 			FString EngineDir = FPaths::EngineDir();
 			FString BinariesSubDir = FPlatformProcess::GetBinariesSubdirectory();
@@ -72,9 +79,6 @@ namespace WindowsMixedReality
 			FPlatformProcess::GetDllHandle(_TEXT("Microsoft.MixedReality.SceneUnderstanding.dll"));
 			FPlatformProcess::GetDllHandle(_TEXT("Microsoft.Azure.SpatialAnchors.dll"));
 			FPlatformProcess::PopDllDirectory(*HoloLensLibraryDir);
-
-			FPlatformProcess::GetDllHandle(*(EngineDir / "Binaries" / BinariesSubDir / "HolographicStreamerDesktop.dll"));
-			FPlatformProcess::GetDllHandle(*(EngineDir / "Binaries" / BinariesSubDir / "Microsoft.Perception.Simulation.dll"));
 #endif // PLATFORM_64BITS
 
 			// Then finally try to load the WMR Interop Library
@@ -92,7 +96,7 @@ namespace WindowsMixedReality
 		}
 		else
 		{
-			FText ErrorText = FText::Format(FTextFormat(NSLOCTEXT("WindowsMixedRealityHMD", "MixedRealityInteropLibraryNotSupported", "Windows Mixed Reality is not supported on this Windows version. \nNote: UE4 only supports Windows Mixed Reality on Windows 10 Release {0} or higher. Current version: {1}")),
+			FText ErrorText = FText::Format(FTextFormat(NSLOCTEXT("WindowsMixedRealityHMD", "MixedRealityInteropLibraryNotSupported", "Windows Mixed Reality is not supported on this Windows version. \nNote: UE only supports Windows Mixed Reality on Windows 10 Release {0} or higher. Current version: {1}")),
 				FText::FromString(FString::FromInt(MIN_WIN_10_VERSION_FOR_WMR)), FText::FromString(OSVersionLabel));
 			FMessageDialog::Open(EAppMsgType::Ok, ErrorText);
 			if (IsRunningCommandlet())

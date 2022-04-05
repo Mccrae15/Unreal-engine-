@@ -11,6 +11,7 @@
 #include "FoliageInstanceBase.h"
 #include "InstancedFoliage.h"
 #include "InstancedFoliageCustomVersion.h"
+#include "ISMPartition/ISMPartitionActor.h"
 
 #include "InstancedFoliageActor.generated.h"
 
@@ -20,7 +21,7 @@ class UProceduralFoliageComponent;
 typedef TFunction<bool(const UPrimitiveComponent*)> FFoliageTraceFilterFunc;
 
 UCLASS(notplaceable, hidecategories = (Object, Rendering, Mobility), MinimalAPI, NotBlueprintable)
-class AInstancedFoliageActor : public AActor
+class AInstancedFoliageActor : public AISMPartitionActor
 {
 	GENERATED_UCLASS_BODY()
 
@@ -32,9 +33,18 @@ public:
 	UActorComponent* GetBaseComponentFromBaseId(const FFoliageInstanceBaseId& BaseId) const;
 #endif// WITH_EDITORONLY_DATA
 
+private:
+	friend struct FFoliageInstanceBaseCache;
+	
 	TMap<UFoliageType*, TUniqueObj<FFoliageInfo>> FoliageInfos;
 
 public:
+	FOLIAGE_API bool ForEachFoliageInfo(TFunctionRef<bool(UFoliageType* FoliageType, FFoliageInfo& FoliageInfo)> InOperation);
+	FOLIAGE_API const TMap<UFoliageType*, TUniqueObj<FFoliageInfo>>& GetFoliageInfos() const { return FoliageInfos; }
+	FOLIAGE_API TUniqueObj<FFoliageInfo>& AddFoliageInfo(UFoliageType* FoliageType);
+	FOLIAGE_API TUniqueObj<FFoliageInfo>& AddFoliageInfo(UFoliageType* FoliageType, TUniqueObj<FFoliageInfo>&& FoliageInfo);
+	FOLIAGE_API bool RemoveFoliageInfoAndCopyValue(UFoliageType* FoliageType, TUniqueObj<FFoliageInfo>& OutFoliageInfo);
+
 	//~ Begin UObject Interface.
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
@@ -46,16 +56,47 @@ public:
 	virtual void RerunConstructionScripts() override {}
 	virtual bool IsLevelBoundsRelevant() const override { return false; }
 
-protected:
-	// Default InternalTakeRadialDamage behavior finds and scales damage for the closest component which isn't appropriate for foliage.
-	virtual float InternalTakeRadialDamage(float Damage, struct FRadialDamageEvent const& RadialDamageEvent, class AController* EventInstigator, AActor* DamageCauser) override;
 public:
 #if WITH_EDITOR
+	bool CanEditFoliageInstance(const FFoliageInstanceId& InstanceId) const;
+	bool CanMoveFoliageInstance(const FFoliageInstanceId& InstanceId, const ETypedElementWorldType WorldType) const;
+	bool GetFoliageInstanceTransform(const FFoliageInstanceId& InstanceId, FTransform& OutInstanceTransform, bool bWorldSpace) const;
+	bool SetFoliageInstanceTransform(const FFoliageInstanceId& InstanceId, const FTransform& InstanceTransform, bool bWorldSpace, bool bTeleport);
+	void NotifyFoliageInstanceMovementStarted(const FFoliageInstanceId& InstanceId);
+	void NotifyFoliageInstanceMovementOngoing(const FFoliageInstanceId& InstanceId);
+	void NotifyFoliageInstanceMovementEnded(const FFoliageInstanceId& InstanceId);
+	void NotifyFoliageInstanceSelectionChanged(const FFoliageInstanceId& InstanceId, const bool bIsSelected);
+	bool DeleteFoliageInstances(TArrayView<const FFoliageInstanceId> InstanceIds);
+	bool DuplicateFoliageInstances(TArrayView<const FFoliageInstanceId> InstanceIds, TArray<FFoliageInstanceId>& OutNewInstanceIds);
+
+	UFoliageType* GetFoliageTypeForInfo(const FFoliageInfo* FoliageInfo) const;
+#endif
+
+protected:
+#if WITH_EDITOR
+	void HandleFoliageInstancePreMove(const FFoliageInstanceId& InstanceId);
+	void HandleFoliageInstancePostMove(const FFoliageInstanceId& InstanceId);
+#endif
+
+	//~ ISMInstanceManagerProvider interface
+	virtual ISMInstanceManager* GetSMInstanceManager(const FSMInstanceId& InstanceId) override;
+
+	// Default InternalTakeRadialDamage behavior finds and scales damage for the closest component which isn't appropriate for foliage.
+	virtual float InternalTakeRadialDamage(float Damage, struct FRadialDamageEvent const& RadialDamageEvent, class AController* EventInstigator, AActor* DamageCauser) override;
+
+public:
+#if WITH_EDITOR
+	FOLIAGE_API void EnterEditMode();
+	FOLIAGE_API void ExitEditMode();
+
 	virtual void PostInitProperties() override;
 	virtual void BeginDestroy() override;
 	virtual void Destroyed() override;
 	FOLIAGE_API void CleanupDeletedFoliageType();
 	FOLIAGE_API void DetectFoliageTypeChangeAndUpdate();
+
+	virtual uint32 GetDefaultGridSize(UWorld* InWorld) const override;
+	virtual bool ShouldIncludeGridSizeInName(UWorld* InWorld) const override;
 
 	// Delegate type for selection change events
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnSelectionChanged, bool, const TArray<AActor*>&);
@@ -94,26 +135,39 @@ public:
 	/**
 	* Get the instanced foliage actor for the current streaming level.
 	*
-	* @param InCreationWorldIfNone			World to create the foliage instance in
+	* @param InWorld						World to create the foliage instance in
 	* @param bCreateIfNone					Create if doesnt already exist
 	* returns								pointer to foliage object instance
 	*/
-	static FOLIAGE_API AInstancedFoliageActor* GetInstancedFoliageActorForCurrentLevel(UWorld* InWorld, bool bCreateIfNone = false);
+	static FOLIAGE_API AInstancedFoliageActor* GetInstancedFoliageActorForCurrentLevel(const UWorld* InWorld, bool bCreateIfNone = false);
 
 
 	/**
 	* Get the instanced foliage actor for the specified streaming level.
+	* @param InLevel						Level to create the foliage instance in
 	* @param bCreateIfNone					Create if doesnt already exist
 	* returns								pointer to foliage object instance
 	*/
 	static FOLIAGE_API AInstancedFoliageActor* GetInstancedFoliageActorForLevel(ULevel* Level, bool bCreateIfNone = false);
-
+						
 #if WITH_EDITOR
-	static FOLIAGE_API bool FoliageTrace(const UWorld* InWorld, FHitResult& OutHit, const FDesiredFoliageInstance& DesiredInstance, FName InTraceTag = NAME_None, bool InbReturnFaceIndex = false, const FFoliageTraceFilterFunc& FilterFunc = FFoliageTraceFilterFunc());
+	/**
+	 * Get the instanced foliage actor for the specified params
+	 * @param InWorld						World to create the foliage instance in
+	 * @param bCreateIfNone					Create if doesnt already exist
+	 * @param InLevelHint					Level hint for foliage instance creation
+	 * @param InLocationHint				Location hint for foliage instance creation
+	 */
+	static FOLIAGE_API AInstancedFoliageActor* Get(UWorld* InWorld, bool bCreateIfNone, ULevel* InLevelHint = nullptr, const FVector& InLocationHint = FVector(ForceInitToZero));
+
+	static FOLIAGE_API AInstancedFoliageActor* GetDefault(UWorld* InWorld);
+
+	static FOLIAGE_API bool FoliageTrace(const UWorld* InWorld, FHitResult& OutHit, const FDesiredFoliageInstance& DesiredInstance, FName InTraceTag = NAME_None, bool InbReturnFaceIndex = false, const FFoliageTraceFilterFunc& FilterFunc = FFoliageTraceFilterFunc(), bool bAverageNormal = false);
 	static FOLIAGE_API bool CheckCollisionWithWorld(const UWorld* InWorld, const UFoliageType* Settings, const FFoliageInstance& Inst, const FVector& HitNormal, const FVector& HitLocation, UPrimitiveComponent* HitComponent);
 
 	virtual void PreEditUndo() override;
 	virtual void PostEditUndo() override;
+	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	virtual bool ShouldExport() override;
 	virtual bool ShouldImport(FString* ActorPropString, bool IsMovingLevel) override;
 
@@ -177,7 +231,10 @@ public:
 	FOLIAGE_API void SelectInstance(UInstancedStaticMeshComponent* InComponent, int32 InComponentInstanceIndex, bool bToggle);
 
 	// Select an individual instance.
-	FOLIAGE_API void SelectInstance(AActor* InActor, bool bToggle);
+	FOLIAGE_API bool SelectInstance(AActor* InActor, bool bToggle);
+
+	//Get the bounds of all selected instances
+	FOLIAGE_API FBox GetSelectionBoundingBox() const;
 
 	// Whether actor has selected instances
 	FOLIAGE_API bool HasSelectedInstances() const;
@@ -211,6 +268,12 @@ public:
 	void RepairDuplicateIFA(AInstancedFoliageActor* InDuplicateIFA);
 
 	void RemoveBaseComponentOnFoliageTypeInstances(UFoliageType* FoliageType);
+
+	UFUNCTION(BlueprintCallable, Category="Foliage", meta = (WorldContext = "WorldContextObject"))
+	static void AddInstances(UObject* WorldContextObject, UFoliageType* InFoliageType, const TArray<FTransform>& InTransforms);
+
+	UFUNCTION(BlueprintCallable, Category="Foliage", meta = (WorldContext = "WorldContextObject"))
+	static void RemoveAllInstances(UObject* WorldContextObject, UFoliageType* InFoliageType);
 #endif	//WITH_EDITOR
 
 private:
@@ -228,6 +291,7 @@ private:
 	void OnApplyLevelTransform(const FTransform& InTransform);
 	void OnPostApplyLevelOffset(ULevel* InLevel, UWorld* InWorld, const FVector& InOffset, bool bWorldShift);
 	void OnPostWorldInitialization(UWorld* World, const UWorld::InitializationValues IVS);
+	void MoveInstancesToNewComponent(UPrimitiveComponent* InOldComponent, UPrimitiveComponent* InNewComponent, TFunctionRef<TArray<int32>(const FFoliageInfo&)> GetInstancesToMoveFunc);
 #endif
 private:
 #if WITH_EDITOR
@@ -237,7 +301,7 @@ private:
 	FDelegateHandle OnPostApplyLevelOffsetDelegateHandle;
 	FDelegateHandle OnApplyLevelTransformDelegateHandle;
 	FDelegateHandle OnPostWorldInitializationDelegateHandle;
-
+	
 	FOnFoliageTypeMeshChanged OnFoliageTypeMeshChangedEvent;
 #endif
 

@@ -587,6 +587,7 @@ bool IPlatformFile::IterateDirectoryRecursively(const TCHAR* Directory, FDirecto
 	TArray<FString> DirectoriesToVisitNext;
 	DirectoriesToVisitNext.Add(Directory);
 
+	const bool IsTaskGraphReady = FTaskGraphInterface::IsRunning();
 	TAtomic<bool> bResult(true);
 	FRecurse Recurse(*this, Visitor, DirectoriesToVisitNext);
 	while (bResult && DirectoriesToVisitNext.Num() > 0)
@@ -601,7 +602,7 @@ bool IPlatformFile::IterateDirectoryRecursively(const TCHAR* Directory, FDirecto
 					bResult = false;
 				}
 			},
-			Visitor.IsThreadSafe() ? EParallelForFlags::Unbalanced : EParallelForFlags::ForceSingleThread
+			(IsTaskGraphReady && Visitor.IsThreadSafe()) ? EParallelForFlags::Unbalanced : EParallelForFlags::ForceSingleThread
 		);
 	}
 
@@ -771,13 +772,20 @@ bool IPlatformFile::CopyFile(const TCHAR* To, const TCHAR* From, EPlatformFileRe
 	while (Size)
 	{
 		int64 ThisSize = FMath::Min<int64>(AllocSize, Size);
-		FromFile->Read(Buffer, ThisSize);
-		ToFile->Write(Buffer, ThisSize);
+		if (!FromFile->Read(Buffer, ThisSize))
+		{
+			break;
+		}
+		if (!ToFile->Write(Buffer, ThisSize))
+		{
+			break;
+		}
 		Size -= ThisSize;
 		check(Size >= 0);
 	}
 	FMemory::Free(Buffer);
-	return true;
+	check(Size >= 0);
+	return Size == 0;
 }
 
 bool IPlatformFile::CopyDirectoryTree(const TCHAR* DestinationDirectory, const TCHAR* Source, bool bOverwriteAllExisting)

@@ -8,6 +8,9 @@
 #include "Framework/Commands/Commands.h"
 #include "EditorStyleSet.h"
 #include "BufferVisualizationMenuCommands.h"
+#include "NaniteVisualizationMenuCommands.h"
+#include "LumenVisualizationMenuCommands.h"
+#include "VirtualShadowMapVisualizationMenuCommands.h"
 
 /**
  * Public identifiers for the viewport layouts available in LevelViewportLayoutX.h files
@@ -89,6 +92,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Toggles immersive mode in the viewport */
 	TSharedPtr< FUICommandInfo > ToggleImmersive;
+	 
+	/** Toggles moving all tabs except the viewport to a sidebar or removing them from a sidebar */
+	TSharedPtr< FUICommandInfo > ToggleSidebarAllTabs;
 
 	/** Toggles maximize mode in the viewport */
 	TSharedPtr< FUICommandInfo > ToggleMaximize;
@@ -122,6 +128,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Hides all layers */
 	TSharedPtr< FUICommandInfo > HideAllLayers;
+
+	/** Shows all DataLayers */
+	TSharedPtr< FUICommandInfo > ShowAllDataLayers;
+
+	/** Hides all DataLayers */
+	TSharedPtr< FUICommandInfo > HideAllDataLayers;
 
 	/** Shows all sprite categories */
 	TSharedPtr< FUICommandInfo > ShowAllSprites;
@@ -199,10 +211,12 @@ public:
 	void RegisterShowSpriteCommands();
 
 private:
+#if STATS
 	/** Registers additional commands as they are loaded */
 	void HandleNewStatGroup(const TArray<FStatNameAndInfo>& NameAndInfos);
 	void HandleNewStat(const FName& InStatName, const FName& InStatCategory, const FText& InStatDescription);
 	int32 FindStatIndex(const TArray< FShowMenuCommand >* ShowStatCommands, const FString& InCommandName) const;
+#endif
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// Dummy function that's never used.

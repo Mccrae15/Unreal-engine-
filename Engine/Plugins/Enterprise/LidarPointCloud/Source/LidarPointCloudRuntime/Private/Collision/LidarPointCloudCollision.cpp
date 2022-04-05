@@ -273,35 +273,35 @@ int8 TriangleTable[256][16] =
 /** Stores pre-computed data, ready for processing. */
 uint8 VertexData[256][181];
 
-FORCEINLINE FVector ExtractCoordinatesFromIndex(const int32& Index, const FIntVector& Dimensions)
+FORCEINLINE FVector3f ExtractCoordinatesFromIndex(const int32& Index, const FIntVector& Dimensions)
 {
 	const int32 W = Index % (Dimensions.X * Dimensions.Y);
-	return FVector(W % Dimensions.X, W / Dimensions.X, Index / (Dimensions.X * Dimensions.Y));
+	return FVector3f(W % Dimensions.X, W / Dimensions.X, Index / (Dimensions.X * Dimensions.Y));
 }
 
 void BuildScaledVertexTable(float CellSize)
 {
 	const float HalfCellSize = CellSize * 0.5f;
 
-	FVector VertexOffsetTable[12] =
+	FVector3f VertexOffsetTable[12] =
 	{
-		FVector(HalfCellSize, 0, 0),
-		FVector(CellSize, HalfCellSize, 0),
-		FVector(HalfCellSize, CellSize, 0),
-		FVector(0, HalfCellSize, 0),
-		FVector(HalfCellSize, 0, CellSize),
-		FVector(CellSize, HalfCellSize, CellSize),
-		FVector(HalfCellSize, CellSize, CellSize),
-		FVector(0, HalfCellSize, CellSize),
-		FVector(0, 0, HalfCellSize),
-		FVector(CellSize, 0, HalfCellSize),
-		FVector(CellSize, CellSize, HalfCellSize),
-		FVector(0, CellSize, HalfCellSize)
+		FVector3f(HalfCellSize, 0, 0),
+		FVector3f(CellSize, HalfCellSize, 0),
+		FVector3f(HalfCellSize, CellSize, 0),
+		FVector3f(0, HalfCellSize, 0),
+		FVector3f(HalfCellSize, 0, CellSize),
+		FVector3f(CellSize, HalfCellSize, CellSize),
+		FVector3f(HalfCellSize, CellSize, CellSize),
+		FVector3f(0, HalfCellSize, CellSize),
+		FVector3f(0, 0, HalfCellSize),
+		FVector3f(CellSize, 0, HalfCellSize),
+		FVector3f(CellSize, CellSize, HalfCellSize),
+		FVector3f(0, CellSize, HalfCellSize)
 	};
 
 	int8* VertexList = nullptr;
 
-	TArray<FVector> TempArray;
+	TArray<FVector3f> TempArray;
 	for (int32 i = 0; i < 256; ++i)
 	{
 		VertexList = TriangleTable[i];
@@ -323,9 +323,9 @@ void BuildScaledVertexTable(float CellSize)
 }
 
 /** Applies Marching Cubes algorith to extract mesh information from the given voxelized grid */
-void MarchingCubes(uint8* VoxelizedGrid, int32 GridDimension, float CellSize, FVector VertexOffset, TArray<FVector>& OutVertices)
+void MarchingCubes(uint8* VoxelizedGrid, int32 GridDimension, float CellSize, FVector3f VertexOffset, TArray<FVector3f>& OutVertices)
 {
-	FVector Coords;
+	FVector3f Coords;
 	uint8* Vertices = nullptr;
 
 	const int32 GridDimensionSq = GridDimension * GridDimension;
@@ -375,7 +375,7 @@ void MarchingCubes(uint8* VoxelizedGrid, int32 GridDimension, float CellSize, FV
 				}
 
 				int32 Offset = OutVertices.AddUninitialized(NumVertices);
-				for (FVector* Vertex = OutVertices.GetData() + Offset, *SourceData = (FVector*)(Vertices + 1), *DataEnd = Vertex + NumVertices; Vertex != DataEnd; ++Vertex, ++SourceData)
+				for (FVector3f* Vertex = OutVertices.GetData() + Offset, *SourceData = (FVector3f*)(Vertices + 1), *DataEnd = Vertex + NumVertices; Vertex != DataEnd; ++Vertex, ++SourceData)
 				{
 					*Vertex = Coords + *SourceData;
 				}
@@ -397,14 +397,14 @@ void LidarPointCloudCollision::BuildCollisionMesh(FLidarPointCloudOctree* Octree
 
 	// Expand original bounds to make sure the mesh is closed at the edges
 	const FBox Bounds = Octree->GetBounds().ExpandBy(FVector::OneVector * CellSize, FVector::OneVector * CellSize);
-	const FVector BoundsSize = Bounds.GetSize();
-	const FVector LocationOffset = Octree->GetOwner()->LocationOffset.ToVector();
+	const FVector3f BoundsSize = (FVector3f)Bounds.GetSize();
+	const FVector3f LocationOffset = (FVector3f)Octree->GetOwner()->LocationOffset;
 
 	// Number of cells in each axis
 	const int32 BatchSize = GetDefault<ULidarPointCloudSettings>()->MeshingBatchSize;
 
 	// Determines the number of samples to perform
-	const FIntVector NumSamples(BoundsSize / ((BatchSize - 1) * CellSize) + 1);
+	const FIntVector NumSamples((FVector)BoundsSize / ((BatchSize - 1) * CellSize) + 1);
 	const int32 TotalNumSamples = NumSamples.X * NumSamples.Y * NumSamples.Z;
 
 	// Precalculated for performance reasons
@@ -417,7 +417,7 @@ void LidarPointCloudCollision::BuildCollisionMesh(FLidarPointCloudOctree* Octree
 	FThreadSafeCounter SampleIndex = 0;
 
 	// Data storage
-	TArray<TArray<FVector>> Vertices;
+	TArray<TArray<FVector3f>> Vertices;
 	Vertices.AddDefaulted(MaxNumThreads);
 	FThreadSafeCounter NumVertices = 0;
 
@@ -437,7 +437,7 @@ void LidarPointCloudCollision::BuildCollisionMesh(FLidarPointCloudOctree* Octree
 			ThreadResults.Add(Async(EAsyncExecution::TaskGraph, [t, &SampleIndex, &Vertices, &NumVertices, CollisionMesh, BatchSize, TotalNumSamples, NumSamples, BaseSamplingBounds, CellSize, OctreeConst, InversedCellSize, bVisibleOnly, LocationOffset]
 				{
 					// Local caching arrays to reduce number of syncs required
-					TArray<FVector> _Vertices;
+					TArray<FVector3f> _Vertices;
 
 					const int32 NumCellsSq = BatchSize * BatchSize;
 					const int32 NumCellsCu = NumCellsSq * BatchSize;
@@ -451,7 +451,7 @@ void LidarPointCloudCollision::BuildCollisionMesh(FLidarPointCloudOctree* Octree
 					int32 Index;
 					while ((Index = SampleIndex.Add(1)) < TotalNumSamples)
 					{
-						const FBox SamplingBounds = BaseSamplingBounds.ShiftBy(ExtractCoordinatesFromIndex(Index, NumSamples) * OffsetMultiplier);
+						const FBox SamplingBounds = BaseSamplingBounds.ShiftBy((FVector)ExtractCoordinatesFromIndex(Index, NumSamples) * OffsetMultiplier);
 
 						// Sample the data using the calculated bounds
 						OctreeConst->GetPointsInBox(Selection, SamplingBounds, bVisibleOnly);
@@ -469,7 +469,7 @@ void LidarPointCloudCollision::BuildCollisionMesh(FLidarPointCloudOctree* Octree
 						for (const FLidarPointCloudPoint** Point = Selection.GetData(), **DataEnd = Selection.GetData() + Selection.Num(); Point != DataEnd; ++Point)
 						{
 							// Calculate location relative to sampling bounds
-							FVector Location = (*Point)->Location - SamplingBounds.Min;
+							FVector3f Location = (*Point)->Location - (FVector3f)SamplingBounds.Min;
 
 							// Calculate grid coordinates
 							const FIntVector Grid(FMath::Min(BatchSize - 1, (int32)(Location.X * InversedCellSize)), FMath::Min(BatchSize - 1, (int32)(Location.Y * InversedCellSize)), FMath::Min(BatchSize - 1, (int32)(Location.Z * InversedCellSize)));
@@ -477,7 +477,7 @@ void LidarPointCloudCollision::BuildCollisionMesh(FLidarPointCloudOctree* Octree
 							VoxelizedGrid[Grid.Z * NumCellsSq + Grid.Y * BatchSize + Grid.X] = 1;
 						}
 
-						MarchingCubes(VoxelizedGrid, BatchSize, CellSize, SamplingBounds.Min + LocationOffset, _Vertices);
+						MarchingCubes(VoxelizedGrid, BatchSize, CellSize, (FVector3f)SamplingBounds.Min + LocationOffset, _Vertices);
 					}
 
 					// Sync
@@ -503,7 +503,7 @@ void LidarPointCloudCollision::BuildCollisionMesh(FLidarPointCloudOctree* Octree
 	bool bWeldVertices = false;
 	if (bWeldVertices)
 	{
-		TSet<FVector> TmpVertexData;
+		TSet<FVector3f> TmpVertexData;
 		TmpVertexData.Reserve(NumVertices.GetValue());
 		CollisionMesh->Vertices.Empty(NumVertices.GetValue());
 		CollisionMesh->Indices.Empty(NumVertices.GetValue() / 3);
@@ -514,7 +514,7 @@ void LidarPointCloudCollision::BuildCollisionMesh(FLidarPointCloudOctree* Octree
 
 		for (int32 i = 0, Offset = 0; i < Vertices.Num(); ++i)
 		{
-			for (FVector* Vertex = Vertices[i].GetData(), *DataEnd = Vertex + Vertices[i].Num(); Vertex != DataEnd; ++Vertex, ++Indices)
+			for (FVector3f* Vertex = Vertices[i].GetData(), *DataEnd = Vertex + Vertices[i].Num(); Vertex != DataEnd; ++Vertex, ++Indices)
 			{
 				*Indices = TmpVertexData.Add(*Vertex, &bInSet).AsInteger();
 				if (!bInSet)
@@ -533,7 +533,7 @@ void LidarPointCloudCollision::BuildCollisionMesh(FLidarPointCloudOctree* Octree
 		CollisionMesh->Vertices.Empty(NumVertices.GetValue());
 		CollisionMesh->Vertices.AddUninitialized(NumVertices.GetValue());
 
-		FVector* Dest = CollisionMesh->Vertices.GetData();
+		FVector3f* Dest = CollisionMesh->Vertices.GetData();
 
 		for (int32 i = 0, Offset = 0; i < Vertices.Num(); ++i)
 		{

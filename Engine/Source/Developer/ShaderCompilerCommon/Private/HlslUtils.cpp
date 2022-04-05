@@ -810,7 +810,7 @@ struct FRemoveUnusedOutputs : FRemoveAlgorithm
 								NewDeclaratorList->Declarations.Add(MemberDeclaration);
 								DestStruct->Members.Add(NewDeclaratorList);
 
-								CopyMember(MemberDeclaration, SourcePrefix, DestPrefix, BodyContext.PostInstructions);
+								CopyMember(MemberDeclaration, DestPrefix, SourcePrefix, BodyContext.PostInstructions);
 							}
 
 							for (uint32 Index = 0; Index < ArrayLength; ++Index)
@@ -1270,7 +1270,7 @@ struct FRemoveUnusedInputs : FRemoveAlgorithm
 							TCHAR* ElementSemanticPrefix = GetNonDigitSemanticPrefix(Allocator, MemberDeclaration->Semantic->Semantic, StartIndex);
 							if (!ElementSemanticPrefix)
 							{
-								Errors.Add(FString::Printf(TEXT("RemoveUnusedInputs: Member (%s) %s : %s is expected to have an indexed semantic!"), MemberDeclarator->Type->Specifier->TypeName, MemberDeclaration->Identifier, MemberDeclaration->Semantic));
+								Errors.Add(FString::Printf(TEXT("RemoveUnusedInputs: Member (%s) %s : %s is expected to have an indexed semantic!"), MemberDeclarator->Type->Specifier->TypeName, MemberDeclaration->Identifier, MemberDeclaration->Semantic->Semantic));
 
 								// Fatal: Array of non-indexed semantic (eg float4 Colors[4] : MYSEMANTIC; )
 								// Assume semantic is used and just fallback
@@ -1279,7 +1279,7 @@ struct FRemoveUnusedInputs : FRemoveAlgorithm
 								NewDeclaratorList->Declarations.Add(MemberDeclaration);
 								DestStruct->Members.Add(NewDeclaratorList);
 
-								CopyMember(MemberDeclaration, SourcePrefix, DestPrefix, BodyContext.PreInstructions);
+								CopyMember(MemberDeclaration, DestPrefix, SourcePrefix, BodyContext.PreInstructions);
 							}
 
 							for (uint32 Index = 0; Index < ArrayLength; ++Index)
@@ -1412,12 +1412,6 @@ bool RemoveUnusedInputs(FString& InOutSourceCode, const TArray<FString>& InInput
 
 	OutErrors = Data.Errors;
 	return false;
-}
-
-void StripInstancedStereo(FString& ShaderSource)
-{
-	ShaderSource.ReplaceInline(TEXT("ResolvedView = ResolveView();"), TEXT(""));
-	ShaderSource.ReplaceInline(TEXT("ResolvedView"), TEXT("View"));
 }
 
 struct FConvertFP32ToFP16 {

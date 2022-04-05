@@ -24,6 +24,7 @@ struct FLightmapGBufferVSToPS
 	// float4 SavedWorldPositionWithShaderOffsets : POSITION2;
 }; 
 
+#if VERTEXSHADER
 void LightmapGBufferVS(
 	FVertexFactoryInput Input,
 	out FLightmapGBufferVSToPS Output
@@ -39,7 +40,7 @@ void LightmapGBufferVS(
 
 	Output.FactoryInterpolants = VertexFactoryGetInterpolantsVSToPS(Input, VFIntermediates, VertexParameters);
 
-    float2 LightmapUV, UnusedLightmapUV1;
+	float2 LightmapUV, UnusedLightmapUV1;
 	uint UnusedLightmapDataIndex;
     GetLightMapCoordinates(Output.FactoryInterpolants, LightmapUV, UnusedLightmapUV1, UnusedLightmapDataIndex);
 	// Unscale with float2(1, 2)
@@ -62,6 +63,7 @@ void LightmapGBufferVS(
 	// Support WPO in the far future
 	// Output.SavedWorldPositionWithShaderOffsets = Output.SavedWorldPosition + float4(GetMaterialWorldPositionOffset(VertexParameters), 0.0f);
 }
+#endif
 
 #define WorldPositionScalar 0.00001f
 
@@ -77,10 +79,10 @@ void LightmapGBufferPS(
 	// CalcMaterialParametersEx(MaterialParameters, PixelMaterialInputs, float4(0, 0, 0, 0), float4(0, 0, 0, 0), bIsFrontFace, Input.SavedWorldPositionWithShaderOffsets, Input.SavedWorldPosition);
 	CalcMaterialParametersEx(MaterialParameters, PixelMaterialInputs, float4(0, 0, 0, 0), float4(0, 0, 0, 0), bIsFrontFace, Input.SavedWorldPosition, Input.SavedWorldPosition);
 	
-	float4 OutWorldPosition = float4(MaterialParameters.AbsoluteWorldPosition * WorldPositionScalar, 1.0f);
+	float4 OutWorldPosition = float4(LWCHackToFloat(MaterialParameters.AbsoluteWorldPosition) * WorldPositionScalar, 1.0f);
     float4 OutWorldNormal = float4(normalize(cross(ddx(OutWorldPosition.xyz), ddy(OutWorldPosition.xyz))), 1.0f);
-    OutWorldNormal *= bIsFrontFace ? 1.0f : -1.0f;
-	OutWorldNormal *= GetPrimitiveData(MaterialParameters.PrimitiveId).InvNonUniformScaleAndDeterminantSign.w;
+    OutWorldNormal *= CondMask(bIsFrontFace, 1.0f, -1.0f);
+	OutWorldNormal *= GetPrimitive_DeterminantSign(MaterialParameters.PrimitiveId);
 #if 0 // Normal with shader effects (e.g. normal maps). Can bring high frequency artifacts into lightmaps
 	float4 OutShadingNormal = float4(normalize(MaterialParameters.WorldNormal), 0.0f);
 	#if MATERIAL_TANGENTSPACENORMAL

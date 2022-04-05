@@ -190,8 +190,6 @@ struct FNiagaraScriptExecutionContextBase
 
 	const TArray<UNiagaraDataInterface*>& GetDataInterfaces()const { return Parameters.GetDataInterfaces(); }
 
-	bool CanExecute()const;
-
 	TArrayView<const uint8> GetScriptLiterals() const;
 
 	void DirtyDataInterfaces();
@@ -247,7 +245,7 @@ protected:
 	ENiagaraSystemSimulationScript ScriptType;
 
 	/** Helper function that handles calling into per instance DI calls and massages the VM context appropriately. */
-	void PerInstanceFunctionHook(FVectorVMContext& Context, int32 PerInstFunctionIndex, int32 UserPtrIndex);
+	void PerInstanceFunctionHook(FVectorVMExternalFunctionContext& Context, int32 PerInstFunctionIndex, int32 UserPtrIndex);
 
 public:
 	FNiagaraSystemScriptExecutionContext(ENiagaraSystemSimulationScript InScriptType) : SystemInstances(nullptr), ScriptType(InScriptType){}

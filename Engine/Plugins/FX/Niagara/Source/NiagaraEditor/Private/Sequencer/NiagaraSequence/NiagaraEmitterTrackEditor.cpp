@@ -86,7 +86,14 @@ public:
 				SAssignNew(RenderersBox, SHorizontalBox)
 			];
 		ConstructRendererWidgets();
-		EmitterTrack->GetEmitterHandleViewModel()->GetEmitterViewModel()->GetEmitter()->OnRenderersChanged().AddSP(this, &SEmitterTrackWidget::ConstructRendererWidgets);
+
+		// We refresh the renderer widgets when renderers changed.
+		// The OnRenderersChanged delegate will cause the renderer items to be created that are used for widget creation,
+		// Due to delegate bind order, the item creation happens after the refresh. To solve this, we just wait a frame. 
+		UNiagaraEmitter* NiagaraEmitter = EmitterTrack->GetEmitterHandleViewModel()->GetEmitterViewModel()->GetEmitter();
+		WeakNiagaraEmitter = NiagaraEmitter;
+		NiagaraEmitter->OnRenderersChanged().AddSP(this, &SEmitterTrackWidget::RefreshRenderers);
+
 
 		// Enabled checkbox.
 		TrackBox->AddSlot()
@@ -109,17 +116,22 @@ public:
 
 	~SEmitterTrackWidget()
 	{
-		if (EmitterTrack.IsValid() && EmitterTrack->GetEmitterHandleViewModel().IsValid())
+		if ( UNiagaraEmitter* NiagaraEmitter = WeakNiagaraEmitter.Get() )
 		{
-			UNiagaraEmitter* Emitter = EmitterTrack->GetEmitterHandleViewModel()->GetEmitterViewModel()->GetEmitter();
-			if (Emitter != nullptr)
-			{
-				Emitter->OnRenderersChanged().RemoveAll(this);
-			}
+			NiagaraEmitter->OnRenderersChanged().RemoveAll(this);
 		}
 	}
 
 private:
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
+	{
+		if(bShouldRefreshRenderers)
+		{
+			ConstructRendererWidgets();
+			bShouldRefreshRenderers = false;
+		}
+	}
+	
 	void ConstructRendererWidgets()
 	{
 		RenderersBox->ClearChildren();
@@ -241,10 +253,17 @@ private:
 		return EmitterTrack.IsValid() && EmitterTrack->GetSystemViewModel().GetEditMode() == ENiagaraSystemViewModelEditMode::SystemAsset ? EVisibility::Visible : EVisibility::Collapsed;
 	}
 
+	void RefreshRenderers()
+	{
+		bShouldRefreshRenderers = true;
+	}
+
 private:
 	TWeakObjectPtr<UMovieSceneNiagaraEmitterTrack> EmitterTrack;
+	TWeakObjectPtr<UNiagaraEmitter> WeakNiagaraEmitter;
 	mutable TOptional<FText> TrackErrorIconToolTip;
 	TSharedPtr<SHorizontalBox> RenderersBox;
+	bool bShouldRefreshRenderers = false;
 };
 
 FNiagaraEmitterTrackEditor::FNiagaraEmitterTrackEditor(TSharedPtr<ISequencer> Sequencer) 

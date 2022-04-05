@@ -5,7 +5,7 @@
 #include "Containers/UnrealString.h"
 #include "TraceServices/Model/AnalysisSession.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 struct FSessionInfo
@@ -13,8 +13,11 @@ struct FSessionInfo
 	FString Platform;
 	FString AppName;
 	FString CommandLine;
-	EBuildConfiguration ConfigurationType;
-	EBuildTargetType TargetType;
+	FString Branch;
+	FString BuildVersion;
+	uint32 Changelist = 0;
+	EBuildConfiguration ConfigurationType = EBuildConfiguration::Unknown;
+	EBuildTargetType TargetType = EBuildTargetType::Unknown;
 };
 
 class IDiagnosticsProvider : public IProvider
@@ -27,6 +30,7 @@ public:
 	virtual const FSessionInfo& GetSessionInfo() const = 0;
 };
 
-TRACESERVICES_API const IDiagnosticsProvider& ReadDiagnosticsProvider(const IAnalysisSession& Session);
+TRACESERVICES_API FName GetDiagnosticsProviderName();
+TRACESERVICES_API const IDiagnosticsProvider* ReadDiagnosticsProvider(const IAnalysisSession& Session);
 
-} // namespace Trace
+} // namespace TraceServices

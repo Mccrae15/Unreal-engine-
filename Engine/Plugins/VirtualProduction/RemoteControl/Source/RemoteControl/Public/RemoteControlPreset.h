@@ -20,6 +20,7 @@ struct FPropertyChangedEvent;
 struct FRCFieldPathInfo;
 struct FRemoteControlActor;
 struct FRemoteControlPresetLayout;
+class FTransactionObjectEvent;
 class FRemoteControlPresetRebindingManager;
 class UBlueprint;
 class URemoteControlExposeRegistry;
@@ -528,7 +529,7 @@ public:
 	/**
 	 * Get the exposed entities of a certain type.
 	 */
-	template <typename ExposableEntityType>
+	template <typename ExposableEntityType = FRemoteControlEntity>
 	TArray<TWeakPtr<const ExposableEntityType>> GetExposedEntities() const
 	{
 		static_assert(TIsDerivedFrom<ExposableEntityType, FRemoteControlEntity>::Value, "ExposableEntityType must derive from FRemoteControlEntity.");
@@ -545,7 +546,7 @@ public:
 	/**
 	 * Get the exposed entities of a certain type.
 	 */
-	template <typename ExposableEntityType>
+	template <typename ExposableEntityType = FRemoteControlEntity>
 	TArray<TWeakPtr<ExposableEntityType>> GetExposedEntities()
 	{
 		static_assert(TIsDerivedFrom<ExposableEntityType, FRemoteControlEntity>::Value, "ExposableEntityType must derive from FRemoteControlEntity.");
@@ -557,6 +558,14 @@ public:
 			{
 				return StaticCastSharedPtr<ExposableEntityType>(Entity);
 			});
+		return ReturnedEntities;
+	}
+
+	TArray<TWeakPtr<FRemoteControlEntity>> GetExposedEntities(UScriptStruct* EntityType)
+	{
+		TArray<TWeakPtr<FRemoteControlEntity>> ReturnedEntities;
+		const TArray<TSharedPtr<FRemoteControlEntity>> Entities = GetEntities(EntityType);
+		ReturnedEntities.Append(Entities);
 		return ReturnedEntities;
 	}
 
@@ -586,6 +595,9 @@ public:
 
 	/** Get the type of an exposed entity by querying with its id. (ie. FRemoteControlActor) */
 	const UScriptStruct* GetExposedEntityType(const FGuid& ExposedEntityId) const;
+	
+	/** Get all types of exposed entities currently exposed. (ie. FRemoteControlActor) */
+	const TSet<UScriptStruct*>& GetExposedEntityTypes() const;
 
 	/** Returns whether an entity is exposed on the preset. */
 	bool IsExposed(const FGuid& ExposedEntityId) const;
@@ -723,6 +735,11 @@ public:
 	 * Attempt to rebind all currently unbound properties.
 	 */
 	void RebindUnboundEntities();
+	
+	/**
+	 * Given a RC Entity, rebind all entities with the same owner to a new actor.
+	 */
+	void RebindAllEntitiesUnderSameActor(const FGuid& EntityId, AActor* NewActor, bool bUseRebindingContext = true);
 
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPresetEntityEvent, URemoteControlPreset* /*Preset*/, const FGuid& /*EntityId*/);
 	FOnPresetEntityEvent& OnEntityExposed() { return OnEntityExposedDelegate; }
@@ -764,6 +781,18 @@ public:
 	void NotifyExposedPropertyChanged(FName PropertyLabel);
 
 	virtual void Serialize(FArchive& Ar) override;
+
+	/**
+	* Get entity name from given Desired or UObject + Field Path 
+	* @param InDesiredName		Given name, it might be none
+	* @param InObject			Bound object input
+	* @param InFieldPath		Bound field path
+	* @return Computing name of the entity
+	*/
+	FName GetEntityName(const FName InDesiredName, UObject* InObject, const FRCFieldPathInfo& InFieldPath) const;
+
+	/** Generate label from Registry */
+	FName GenerateUniqueLabel(const FName InDesiredName) const;
 
 public:
 	/** The visual layout for this preset. */
@@ -808,6 +837,7 @@ private:
 	//~ Keep track of any property change to notify if one of the exposed property has changed
 	void OnObjectPropertyChanged(UObject* Object, FPropertyChangedEvent& Event);
 	void OnPreObjectPropertyChanged(UObject* Object, const class FEditPropertyChain& PropertyChain);
+	void OnObjectTransacted(UObject* InObject, const FTransactionObjectEvent& InTransactionEvent);
 
 #if WITH_EDITOR	
 	//~ Handle events that can incur bindings to be modified.
@@ -819,6 +849,9 @@ private:
 
 	/** Handles a package reloaded, used to detect a multi-user session being joined in order to update entities. */
 	void OnPackageReloaded(EPackageReloadPhase Phase, FPackageReloadedEvent* Event);
+
+	/** Remove deleted actors from bindings */
+	void CleanUpBindings();
 #endif
 
 	//~ Frame events handlers.
@@ -839,11 +872,17 @@ private:
 	TArray<TSharedPtr<FRemoteControlEntity>> GetEntities(UScriptStruct* EntityType);
 	TArray<TSharedPtr<const FRemoteControlEntity>> GetEntities(UScriptStruct* EntityType) const;
 
+public:	
 	/** Expose an entity in the registry. */
 	TSharedPtr<FRemoteControlEntity> Expose(FRemoteControlEntity&& Entity, UScriptStruct* EntityType, const FGuid& GroupId);
-	
+
+
 	/** Try to get a binding and creates a new one if it doesn't exist. */
 	URemoteControlBinding* FindOrAddBinding(const TSoftObjectPtr<UObject>& Object);
+private:
+
+	/** Find a binding that has the same boundobjectmap but that currently points to the object passed as argument. */
+	URemoteControlBinding* FindMatchingBinding(const URemoteControlBinding* InBinding, UObject* InObject);
 
 	/** Handler called upon an entity being modified. */
 	void OnEntityModified(const FGuid& EntityId);
@@ -868,6 +907,12 @@ private:
 
 	/** Create property watchers for exposed properties that need them. */
 	void CreatePropertyWatchers();
+
+	/** Remove bindings that do not have properties pointing to them. */
+	void RemoveUnusedBindings();
+
+	/** Call post load function for exposed properties. */
+	void PostLoadProperties();
 	
 private:
 	/** Preset unique ID */
@@ -968,6 +1013,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #if WITH_EDITOR
 	/** List of blueprints for which we have registered events. */
 	TSet<TWeakObjectPtr<UBlueprint>> BlueprintsWithRegisteredDelegates;
+
+	/** List of bindings for which we need to remove stale object pointers. */
+	TSet<URemoteControlBinding*> PerFrameBindingsToClean;
 #endif
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -975,4 +1023,5 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	friend FRemoteControlPresetLayout;
 	friend FRemoteControlEntity;
+	friend class FRemoteControlPresetRebindingManager;
 };

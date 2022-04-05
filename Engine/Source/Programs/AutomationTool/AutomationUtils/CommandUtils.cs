@@ -13,10 +13,15 @@ using UnrealBuildTool;
 using System.Runtime.CompilerServices;
 using System.Linq;
 using System.Reflection;
+using System.Security.Permissions;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Xml;
 using System.Xml.Serialization;
+using System.IO.Compression;
+using JetBrains.Annotations;
+using UnrealBuildBase;
+using Microsoft.Extensions.Logging;
 
 namespace AutomationTool
 {
@@ -69,7 +74,7 @@ namespace AutomationTool
 		static private CommandEnvironment CmdEnvironment;
 
 		/// <summary>
-		/// BuildEnvironment to use for this buildcommand. This is initialized by InitBuildEnvironment. As soon
+		/// BuildEnvironment to use for this buildcommand. This is initialized by InitCommandEnvironment. As soon
 		/// as the script execution in ExecuteBuild begins, the BuildEnv is set up and ready to use.
 		/// </summary>
 		static public CommandEnvironment CmdEnv
@@ -92,42 +97,34 @@ namespace AutomationTool
 		static internal void InitCommandEnvironment()
 		{
 			CmdEnvironment = new CommandEnvironment();
+
+			// Initializing a type in system.Security.Permissions to make sure it is present as Ionic.Zip requires this assembly
+			EnvironmentPermission _ = new EnvironmentPermission(PermissionState.None);
 		}
 
 		/// <summary>
-		/// Returns true if AutomationTool is running using installed Engine components
+		/// Provides access to the structured logging interface
 		/// </summary>
-		/// <returns>True if running using installed Engine components</returns>
-		static public bool IsEngineInstalled()
-		{
-			if (!bIsEngineInstalled.HasValue)
-			{
-				bIsEngineInstalled = FileReference.Exists(FileReference.Combine(CommandUtils.EngineDirectory, "Build", "InstalledBuild.txt"));
-			}
-			return bIsEngineInstalled.Value;
-		}
-
-		static private bool? bIsEngineInstalled;
+		public ILogger Logger => Log.Logger;
 
 		/// <summary>
 		/// Writes formatted text to log (with LogEventType.Console).
 		/// </summary>
 		/// <param name="Format">Format string</param>
 		/// <param name="Args">Parameters</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
+		[StringFormatMethod("Format")]
 		public static void LogInformation(string Format, params object[] Args)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Console, Format, Args);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Console, Format, Args);
 		}
 
 		/// <summary>
 		/// Writes formatted text to log (with LogEventType.Console).
 		/// </summary>
 		/// <param name="Message">Text</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
 		public static void LogInformation(string Message)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Console, Message);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Console, Message);
 		}
 
 		/// <summary>
@@ -135,20 +132,19 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="Format">Format string</param>
 		/// <param name="Args">Parameters</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
+		[StringFormatMethod("Format")]
 		public static void LogError(string Format, params object[] Args)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Error, Format, Args);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Error, Format, Args);
 		}
 
 		/// <summary>
 		/// Writes formatted text to log (with LogEventType.Error).
 		/// </summary>
 		/// <param name="Message">Text</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
 		public static void LogError(string Message)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Error, Message);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Error, Message);
 		}
 
 		/// <summary>
@@ -156,20 +152,19 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="Format">Format string</param>
 		/// <param name="Args">Parameters</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
+		[StringFormatMethod("Format")]
 		public static void LogWarning(string Format, params object[] Args)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Warning, Format, Args);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Warning, Format, Args);
 		}
 
 		/// <summary>
 		/// Writes a message to log (with LogEventType.Warning).
 		/// </summary>
 		/// <param name="Message">Text</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
 		public static void LogWarning(string Message)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Warning, Message);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Warning, Message);
 		}
 
 		/// <summary>
@@ -177,20 +172,19 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="Foramt">Format string</param>
 		/// <param name="Args">Arguments</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
+		[StringFormatMethod("Format")]
 		public static void LogVerbose(string Format, params object[] Args)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Verbose, Format, Args);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Verbose, Format, Args);
 		}
 
 		/// <summary>
 		/// Writes formatted text to log (with LogEventType.Verbose).
 		/// </summary>
 		/// <param name="Message">Text</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
 		public static void LogVerbose(string Message)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Verbose, Message);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Verbose, Message);
 		}
 
 		/// <summary>
@@ -198,20 +192,19 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="Foramt">Format string</param>
 		/// <param name="Args">Arguments</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
+		[StringFormatMethod("Format")]
 		public static void LogVeryVerbose(string Format, params object[] Args)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.VeryVerbose, Format, Args);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.VeryVerbose, Format, Args);
 		}
 
 		/// <summary>
 		/// Writes formatted text to log (with LogEventType.VeryVerbose).
 		/// </summary>
 		/// <param name="Message">Text</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
 		public static void LogVeryVerbose(string Message)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.VeryVerbose, Message);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.VeryVerbose, Message);
 		}
 
 		/// <summary>
@@ -219,20 +212,19 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="Foramt">Format string</param>
 		/// <param name="Args">Arguments</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
+		[StringFormatMethod("Format")]
 		public static void LogLog(string Format, params object[] Args)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, Tools.DotNETCommon.LogEventType.Log, Format, Args);
+			EpicGames.Core.Log.WriteLine(EpicGames.Core.LogEventType.Log, Format, Args);
 		}
 
 		/// <summary>
 		/// Writes formatted text to log (with LogEventType.Log).
 		/// </summary>
 		/// <param name="Message">Text</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
 		public static void LogLog(string Message)
 		{
-			Tools.DotNETCommon.Log.WriteLine(1, LogEventType.Log, Message);
+			EpicGames.Core.Log.WriteLine(LogEventType.Log, Message);
 		}
 
 		/// <summary>
@@ -241,10 +233,10 @@ namespace AutomationTool
 		/// <param name="Verbosity">Verbosity</param>
 		/// <param name="Format">Format string</param>
 		/// <param name="Args">Arguments</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
-		public static void LogWithVerbosity(Tools.DotNETCommon.LogEventType Verbosity, string Format, params object[] Args)
+		[StringFormatMethod("Format")]
+		public static void LogWithVerbosity(EpicGames.Core.LogEventType Verbosity, string Format, params object[] Args)
 		{
-            Tools.DotNETCommon.Log.WriteLine(1, Verbosity, Format, Args);
+            EpicGames.Core.Log.WriteLine(Verbosity, Format, Args);
 		}
 
 		/// <summary>
@@ -252,10 +244,9 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="Verbosity">Verbosity</param>
 		/// <param name="Message">Text</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
-		public static void LogWithVerbosity(Tools.DotNETCommon.LogEventType Verbosity, string Message)
+		public static void LogWithVerbosity(EpicGames.Core.LogEventType Verbosity, string Message)
 		{
-            Tools.DotNETCommon.Log.WriteLine(1, Verbosity, Message);
+            EpicGames.Core.Log.WriteLine(Verbosity, Message);
 		}
 
 		/// <summary>
@@ -263,10 +254,9 @@ namespace AutomationTool
 		/// </summary>
 		/// <param name="Verbosity">Verbosity</param>
 		/// <param name="Ex">Exception</param>
-		[MethodImplAttribute(MethodImplOptions.NoInlining)]
-		public static void LogWithVerbosity(Tools.DotNETCommon.LogEventType Verbosity, Exception Ex)
+		public static void LogWithVerbosity(EpicGames.Core.LogEventType Verbosity, Exception Ex)
 		{
-            Tools.DotNETCommon.Log.WriteLine(1, Verbosity, LogUtils.FormatException(Ex));
+            EpicGames.Core.Log.WriteLine(Verbosity, LogUtils.FormatException(Ex));
 		}
 
 		public static void LogPushProgress(bool bShowProgress, int Numerator, int Denominator)
@@ -293,6 +283,7 @@ namespace AutomationTool
 			}
 		}
 
+		[StringFormatMethod("Format")]
 		public static void LogSetProgress(bool bShowProgress, string Format, params string[] Args)
 		{
 			if(bShowProgress)
@@ -301,6 +292,7 @@ namespace AutomationTool
 			}
 		}
 
+		[StringFormatMethod("Format")]
 		public static void LogSetProgress(bool bShowProgress, int Numerator, int Denominator, string Format, params string[] Args)
 		{
 			if(bShowProgress)
@@ -1288,7 +1280,8 @@ namespace AutomationTool
 		/// <param name="Source"></param>
 		/// <param name="Dest"></param>
         /// <param name="bQuiet">When true, logging is suppressed.</param>
-        public static void CopyFile(string Source, string Dest, bool bQuiet = false)
+		/// <param name="bRetry">When true, the copy will be attempted up to 5 times before failing.</param>
+        public static void CopyFile(string Source, string Dest, bool bQuiet = false, bool bRetry = false)
 		{
 			Source = ConvertSeparators(PathSeparator.Default, Source);
 			Dest = ConvertSeparators(PathSeparator.Default, Dest);
@@ -1303,24 +1296,41 @@ namespace AutomationTool
 				throw new AutomationException(String.Format("Failed to get directory name for dest: {0}, {1}", Dest, Ex.Message));
 			}
 
-			if (InternalUtils.SafeFileExists(Dest, true))
-			{
-				InternalUtils.SafeDeleteFile(Dest, bQuiet);
-			}
-			else if (!InternalUtils.SafeDirectoryExists(DestDirName, true))
+			if (!InternalUtils.SafeDirectoryExists(DestDirName, true))
 			{
 				if (!InternalUtils.SafeCreateDirectory(DestDirName, bQuiet))
 				{
 					throw new AutomationException("Failed to create directory {0} for copy", DestDirName);
 				}
 			}
-			if (InternalUtils.SafeFileExists(Dest, true))
+
+			for (int AttemptsRemaining = 5; AttemptsRemaining > 0; --AttemptsRemaining)
 			{
-				throw new AutomationException("Failed to delete {0} for copy", Dest);
-			}
-			if (!InternalUtils.SafeCopyFile(Source, Dest, bQuiet))
-			{
-				throw new AutomationException("Failed to copy {0} to {1}", Source, Dest);
+				if (InternalUtils.SafeFileExists(Dest, true))
+				{
+					InternalUtils.SafeDeleteFile(Dest, bQuiet);
+				}
+				if (InternalUtils.SafeFileExists(Dest, true))
+				{
+					if (bRetry && AttemptsRemaining > 0)
+					{
+						Log.TraceLog("Failed to delete {0} for copy, retrying..", Dest);
+						Thread.Sleep(1000);
+						continue;
+					}
+					throw new AutomationException("Failed to delete {0} for copy", Dest);
+				}
+				if (!InternalUtils.SafeCopyFile(Source, Dest, bQuiet))
+				{
+					if (bRetry && AttemptsRemaining > 0)
+					{
+						Log.TraceLog("Failed to copy {0} to {1}, retrying..", Source, Dest);
+						Thread.Sleep(1000);
+						continue;
+					}
+					throw new AutomationException("Failed to copy {0} to {1}", Source, Dest);
+				}
+				break;
 			}
 		}
 
@@ -1379,7 +1389,7 @@ namespace AutomationTool
 		/// <param name="Dest">The full path to the destination file</param>
 		/// <param name="bAllowDifferingTimestamps">If true, will always skip a file if the destination exists, even if timestamp differs; defaults to false</param>
 		/// <returns>True if the operation was successful, false otherwise.</returns>
-		public static void CopyFileIncremental(FileReference Source, FileReference Dest, bool bAllowDifferingTimestamps = false, List<string> IniKeyBlacklist = null, List<string> IniSectionBlacklist = null)
+		public static void CopyFileIncremental(FileReference Source, FileReference Dest, bool bAllowDifferingTimestamps = false, List<string> IniKeyDenyList = null, List<string> IniSectionDenyList = null)
 		{
 			if (InternalUtils.SafeFileExists(Dest.FullName, true))
 			{
@@ -1407,7 +1417,7 @@ namespace AutomationTool
 			{
 				throw new AutomationException("Failed to delete {0} for copy", Dest);
 			}
-			if (!InternalUtils.SafeCopyFile(Source.FullName, Dest.FullName, IniKeyBlacklist:IniKeyBlacklist, IniSectionBlacklist:IniSectionBlacklist))
+			if (!InternalUtils.SafeCopyFile(Source.FullName, Dest.FullName, IniKeyDenyList: IniKeyDenyList, IniSectionDenyList: IniSectionDenyList))
 			{
 				throw new AutomationException("Failed to copy {0} to {1}", Source, Dest);
 			}
@@ -1457,21 +1467,25 @@ namespace AutomationTool
 			{
 				return false;
 			}
-			foreach (var SourceSubDirectory in Directory.GetDirectories(Source))
+
+			if (InternalUtils.SafeDirectoryExists(Source))
 			{
-				string DestPath = Dest + GetPathSeparatorChar(PathSeparator.Default) + GetLastDirectoryName(SourceSubDirectory + GetPathSeparatorChar(PathSeparator.Default));
-				if (!CopyDirectory_NoExceptions(SourceSubDirectory, DestPath, bQuiet))
+				foreach (var SourceSubDirectory in Directory.GetDirectories(Source))
 				{
-					return false;
+					string DestPath = Dest + GetPathSeparatorChar(PathSeparator.Default) + GetLastDirectoryName(SourceSubDirectory + GetPathSeparatorChar(PathSeparator.Default));
+					if (!CopyDirectory_NoExceptions(SourceSubDirectory, DestPath, bQuiet))
+					{
+						return false;
+					}
 				}
-			}
-			foreach (var SourceFile in Directory.GetFiles(Source))
-			{
-				int FilenameStart = SourceFile.LastIndexOf(GetPathSeparatorChar(PathSeparator.Default));
-				string DestPath = Dest + SourceFile.Substring(FilenameStart);
-				if (!CopyFile_NoExceptions(SourceFile, DestPath, bQuiet))
+				foreach (var SourceFile in Directory.GetFiles(Source))
 				{
-					return false;
+					int FilenameStart = SourceFile.LastIndexOf(GetPathSeparatorChar(PathSeparator.Default));
+					string DestPath = Dest + SourceFile.Substring(FilenameStart);
+					if (!CopyFile_NoExceptions(SourceFile, DestPath, bQuiet))
+					{
+						return false;
+					}
 				}
 			}
 
@@ -1553,11 +1567,8 @@ namespace AutomationTool
 				// Get the xml data stream to read from
 				XmlStream = XmlReader.Create( ManifestFile.FullName, ReaderSettings );
 
-				// Creates an instance of the XmlSerializer class so we can read the settings object
-				XmlSerializer ObjectReader = new XmlSerializer( typeof( UnrealBuildTool.BuildManifest ) );
-
 				// Create an object from the xml data
-				Instance = ( BuildManifest )ObjectReader.Deserialize( XmlStream );
+				Instance = ( BuildManifest )BuildManifestSerializer.Deserialize( XmlStream );
 			}
 			catch( Exception Ex )
 			{
@@ -1574,6 +1585,9 @@ namespace AutomationTool
 
 			return Instance;
 		}
+
+		// statically create this to avoid exceptions while not leaking to much memory
+		private static readonly XmlSerializer BuildManifestSerializer = XmlSerializer.FromTypes(new[] { typeof( UnrealBuildTool.BuildManifest ) })[0];
 
 		private static void CloneDirectoryRecursiveWorker(string SourcePathBase, string TargetPathBase, List<string> ClonedFiles, bool bIncremental = false)
 		{
@@ -1663,11 +1677,45 @@ namespace AutomationTool
 
 		/// <summary>
 		/// Copies files using multiple threads
-        /// </summary>
+		/// </summary>
+		/// <param name="SourceFiles">List of source files to copy</param>
+		/// <param name="TargetFiles">List of target files</param>
+		public static void ThreadedCopyFiles(List<FileReference> SourceFiles, List<FileReference> TargetFiles)
+		{
+			ThreadedCopyFiles(SourceFiles.ConvertAll(x => x.FullName), TargetFiles.ConvertAll(x => x.FullName));
+		}
+
+		/// <summary>
+		/// Copies files using multiple threads
+		/// </summary>
+		/// <param name="SourceFiles">List of source files to copy</param>
+		/// <param name="SourceDir">The source directory</param>
+		/// <param name="TargetDir">The target directory</param>
+		public static void ThreadedCopyFiles(List<FileReference> SourceFiles, DirectoryReference SourceDir, DirectoryReference TargetDir)
+		{
+			List<FileReference> TargetFiles = new List<FileReference>();
+			foreach (FileReference SourceFile in SourceFiles)
+			{
+				if (!SourceFile.IsUnderDirectory(SourceDir))
+				{
+					throw new AutomationException($"Source file '{SourceFile}' is not under source directory '{SourceDir}'");
+				}
+				else
+				{
+					TargetFiles.Add(FileReference.Combine(TargetDir, SourceFile.MakeRelativeTo(SourceDir)));
+				}
+			}
+			ThreadedCopyFiles(SourceFiles, TargetFiles);
+		}
+
+		/// <summary>
+		/// Copies files using multiple threads
+		/// </summary>
 		/// <param name="Source"></param>
 		/// <param name="Dest"></param>
 		/// <param name="MaxThreads"></param>
-		public static void ThreadedCopyFiles(List<string> Source, List<string> Dest, int MaxThreads = 64, bool bQuiet = false)
+		/// <param name="bRetry"></param>
+		public static void ThreadedCopyFiles(List<string> Source, List<string> Dest, int MaxThreads = 64, bool bQuiet = false, bool bRetry = false)
 		{
 			if(!bQuiet)
 			{
@@ -1680,7 +1728,7 @@ namespace AutomationTool
 			}
 			Parallel.ForEach(Source.Zip(Dest, (Src, Dst) => new { SourceFile = Src, DestFile = Dst }), new ParallelOptions { MaxDegreeOfParallelism = MaxThreads }, (Pair) =>
 			{
-				CommandUtils.CopyFile(Pair.SourceFile, Pair.DestFile, true);
+				CommandUtils.CopyFile(Pair.SourceFile, Pair.DestFile, true, bRetry);
 			});
         }
 
@@ -1840,51 +1888,6 @@ namespace AutomationTool
 		}
 
 		/// <summary>
-		/// Converts a list of arguments to a string where each argument is separated with a space character.
-		/// </summary>
-		/// <param name="Args">Arguments</param>
-		/// <returns>Single string containing all arguments separated with a space.</returns>
-		public static string FormatCommandLine(IEnumerable<string> Arguments)
-		{
-			StringBuilder Result = new StringBuilder();
-			foreach(string Argument in Arguments)
-			{
-				if(Result.Length > 0)
-				{
-					Result.Append(" ");
-				}
-				Result.Append(FormatArgumentForCommandLine(Argument));
-			}
-			return Result.ToString();
-		}
-
-		/// <summary>
-		/// Format a single argument for passing on the command line, inserting quotes as necessary.
-		/// </summary>
-		/// <param name="Argument">The argument to quote</param>
-		/// <returns>The argument, with quotes if necessary</returns>
-		public static string FormatArgumentForCommandLine(string Argument)
-		{
-			// Check if the argument contains a space. If not, we can just pass it directly.
-			int SpaceIdx = Argument.IndexOf(' ');
-			if(SpaceIdx == -1)
-			{
-				return Argument;
-			}
-
-			// If it does have a space, and it's formatted as an option (ie. -Something=), try to insert quotes after the equals character
-			int EqualsIdx = Argument.IndexOf('=');
-			if(Argument.StartsWith("-") && EqualsIdx != -1 && EqualsIdx < SpaceIdx)
-			{
-				return String.Format("{0}=\"{1}\"", Argument.Substring(0, EqualsIdx), Argument.Substring(EqualsIdx + 1));
-			}
-			else
-			{
-				return String.Format("\"{0}\"", Argument);
-			}
-		}
-
-		/// <summary>
 		/// Parses the argument list for a parameter and returns whether it is defined or not.
 		/// </summary>
 		/// <param name="ArgList">Argument list.</param>
@@ -1993,22 +1996,12 @@ namespace AutomationTool
 		}
 
 		/// <summary>
-		/// Path to the root directory
-		/// </summary>
-		public static readonly DirectoryReference RootDirectory = new DirectoryReference(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().GetOriginalLocation()), "..", "..", ".."));
-
-		/// <summary>
-		/// Path to the engine directory
-		/// </summary>
-		public static readonly DirectoryReference EngineDirectory = DirectoryReference.Combine(RootDirectory, "Engine");
-
-		/// <summary>
 		/// Return the main engine directory and any platform extension engine directories
 		/// </summary>
  		public static DirectoryReference[] GetAllEngineDirectories()
 		{
-			List<DirectoryReference> EngineDirectories = new List<DirectoryReference>() { EngineDirectory };
-			DirectoryReference EnginePlatformsDirectory = DirectoryReference.Combine(EngineDirectory, "Platforms");
+			List<DirectoryReference> EngineDirectories = new List<DirectoryReference>() { Unreal.EngineDirectory };
+			DirectoryReference EnginePlatformsDirectory = DirectoryReference.Combine(Unreal.EngineDirectory, "Platforms");
 			if (DirectoryReference.Exists(EnginePlatformsDirectory))
 			{
 				EngineDirectories.AddRange(DirectoryReference.EnumerateDirectories(EnginePlatformsDirectory).ToList());
@@ -2045,7 +2038,7 @@ namespace AutomationTool
         /// <summary>
         /// "P:\Builds" or "/Volumes/Builds". Root Folder for all build storage.
         /// </summary>
-        /// <returns>"P:\Builds" or "/Volumes/Builds" unless overridden by -UseLocalBuildStorage from the commandline, where is uses Engine\Saved\LocalBuilds\.</returns>
+        /// <returns>"P:\Builds" or "/Volumes/Builds" or "/mnt/Builds" unless overridden by -UseLocalBuildStorage from the commandline, where is uses Engine\Saved\LocalBuilds\.</returns>
         public static string RootBuildStorageDirectory()
         {
             if (string.IsNullOrEmpty(CachedRootBuildStorageDirectory))
@@ -2058,7 +2051,18 @@ namespace AutomationTool
                 }
                 else
                 {
-                    CachedRootBuildStorageDirectory = Utils.IsRunningOnMono ? "/Volumes/Builds" : CombinePaths("P:", "Builds");
+					if (RuntimePlatform.IsMac)
+					{
+						CachedRootBuildStorageDirectory = CombinePaths("/Volumes", "Builds");
+					}
+					else if (RuntimePlatform.IsLinux)
+					{
+						CachedRootBuildStorageDirectory = CombinePaths("/mnt", "Builds");
+					}
+					else
+					{
+						CachedRootBuildStorageDirectory = CombinePaths("P:", "Builds");
+					}
                 }
             }
             return CachedRootBuildStorageDirectory;
@@ -2133,11 +2137,11 @@ namespace AutomationTool
 		/// <param name="Platform">Specific platform</param>
 		public static string GetGenericPlatformName(UnrealBuildTool.UnrealTargetPlatform Platform)
 		{
-			if(Platform == UnrealTargetPlatform.Win32 || Platform == UnrealTargetPlatform.Win64)
+			if(Platform == UnrealTargetPlatform.Win64)
 			{
 				return "Windows";
 			}
-			else if(Platform == UnrealTargetPlatform.Linux || Platform == UnrealTargetPlatform.LinuxAArch64)
+			else if(Platform == UnrealTargetPlatform.Linux || Platform == UnrealTargetPlatform.LinuxArm64)
 			{
 				return "Linux";
 			}
@@ -2165,19 +2169,31 @@ namespace AutomationTool
 		/// <param name="ZipFile">Filename for the zip</param>
 		/// <param name="BaseDirectory">Base directory to store relative paths in the zip file to</param>
 		/// <param name="Files">Files to include in the archive</param>
-		public static void ZipFiles(FileReference ZipFile, DirectoryReference BaseDirectory, IEnumerable<FileReference> Files)
+		public static void ZipFiles(FileReference OutputFile, DirectoryReference BaseDirectory, IEnumerable<FileReference> Files)
 		{
-				using(Ionic.Zip.ZipFile Zip = new Ionic.Zip.ZipFile(Encoding.UTF8))
+			if (!DirectoryReference.Exists(OutputFile.Directory))
+			{
+				DirectoryReference.CreateDirectory(OutputFile.Directory);
+			}
+
+			if (FileReference.Exists(OutputFile))
+			{
+				FileUtils.ForceDeleteFile(OutputFile);
+			}
+
+			using (ZipArchive ZipArchive = ZipFile.Open(OutputFile.FullName, ZipArchiveMode.Create))
+			{
+				foreach (FileReference File in Files)
 				{
-				Zip.UseZip64WhenSaving = Ionic.Zip.Zip64Option.AsNecessary;
-					foreach(FileReference File in Files)
+					string Name = File.MakeRelativeTo(BaseDirectory);
+					if (Path.DirectorySeparatorChar != '/')
 					{
-						Zip.AddFile(File.FullName, Path.GetDirectoryName(File.MakeRelativeTo(BaseDirectory)));
+						Name = Name.Replace(Path.DirectorySeparatorChar, '/');
 					}
-					CommandUtils.CreateDirectory(ZipFile.Directory);
-					Zip.Save(ZipFile.FullName);
+					ZipArchive.CreateEntryFromFile_CrossPlatform(File.FullName, Name, CompressionLevel.Fastest);
 				}
 			}
+		}
 
 		/// <summary>
 		/// Extracts the contents of a zip file
@@ -2187,8 +2203,41 @@ namespace AutomationTool
 		/// <returns>List of files written</returns>
 		public static IEnumerable<string> UnzipFiles(string ZipFileName, string BaseDirectory)
 		{
+			return UnzipFiles(new FileReference(ZipFileName), new DirectoryReference(BaseDirectory)).Select(x => x.FullName);
+		}
+
+		/// <summary>
+		/// Extracts the contents of a zip file
+		/// </summary>
+		/// <param name="ZipFileName">Name of the zip file</param>
+		/// <param name="BaseDirectory">Output directory</param>
+		/// <returns>List of files written</returns>
+		public static IEnumerable<FileReference> UnzipFiles(FileReference ZipFileName, DirectoryReference BaseDirectory)
+		{
+			List<FileReference> OutputFiles = new List<FileReference>();
+			using (ZipArchive ZipArchive = ZipFile.Open(ZipFileName.FullName, ZipArchiveMode.Read))
+			{
+				foreach (ZipArchiveEntry Entry in ZipArchive.Entries)
+				{
+					FileReference OutputFile = FileReference.Combine(BaseDirectory, Entry.FullName);
+					DirectoryReference.CreateDirectory(OutputFile.Directory);
+					Entry.ExtractToFile_CrossPlatform(OutputFile.FullName, true);
+					OutputFiles.Add(OutputFile);
+				}
+			}
+			return OutputFiles;
+		}
+
+		/// <summary>
+		/// Extracts the contents of a zip file
+		/// </summary>
+		/// <param name="ZipFileName">Name of the zip file</param>
+		/// <param name="BaseDirectory">Output directory</param>
+		/// <returns>List of files written</returns>
+		public static IEnumerable<string> LegacyUnzipFiles(string ZipFileName, string BaseDirectory)
+		{
 			List<string> OutputFileNames = new List<string>();
-			if (Utils.IsRunningOnMono)
+			if (!RuntimePlatform.IsWindows)
 			{
 				CommandUtils.CreateDirectory(BaseDirectory);
 
@@ -2211,7 +2260,7 @@ namespace AutomationTool
 						CommandUtils.LogInformation(FilePath);
 						if (File.Exists(FilePath) && !OutputFileNames.Contains(FilePath) && FilePath != ZipFileName)
 						{
-							if (CommandUtils.IsProbablyAMacOrIOSExe(FilePath))
+							if (CommandUtils.IsProbablyAMacOrIOSExe(FilePath) || CommandUtils.IsProbablyALinuxExe(FilePath))
 							{
 								FixUnixFilePermissions(FilePath);
 							}
@@ -2230,7 +2279,7 @@ namespace AutomationTool
 				// but that problem is now fixed. Leaving this code as is as we need to return the list of created files anyway.
 				using (Ionic.Zip.ZipFile Zip = new Ionic.Zip.ZipFile(ZipFileName))
 				{
-					
+
 					foreach (Ionic.Zip.ZipEntry Entry in Zip.Entries.Where(x => !x.IsDirectory))
 					{
 						string OutputFileName = Path.Combine(BaseDirectory, Entry.FileName);
@@ -2421,6 +2470,38 @@ namespace AutomationTool
 				Callback();
 			}
 		}
+
+		public static FileReference FindToolInPath(string ToolName)
+		{
+			string PathVariable = Environment.GetEnvironmentVariable("PATH");
+			foreach (string PathEntry in PathVariable.Split(Path.PathSeparator))
+			{
+				try
+				{
+					DirectoryReference PathDir = new DirectoryReference(PathEntry);
+					if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64)
+					{
+						FileReference ToolFile = FileReference.Combine(PathDir, $"{ToolName}.exe");
+						if (FileReference.Exists(ToolFile))
+						{
+							return ToolFile;
+						}
+					}
+					else
+					{
+						FileReference ToolFile = FileReference.Combine(PathDir, ToolName);
+						if (FileReference.Exists(ToolFile))
+						{
+							return ToolFile;
+						}
+					}
+				}
+				catch
+				{
+				}
+			}
+			return null;
+		}
 	}
 
 	/// <summary>
@@ -2575,6 +2656,7 @@ namespace AutomationTool
         DateTime StartTime;
         bool bFinished;
 
+		[StringFormatMethod("Format")]
         public TelemetryStopwatch(string Format, params object[] Args)
         {
             Name = String.Format(Format, Args);
@@ -2856,9 +2938,9 @@ namespace AutomationTool
 		/// </summary>
 		public static void SignSingleExecutableIfEXEOrDLL(string Filename, bool bIgnoreExtension = false)
 		{
-            if (UnrealBuildTool.Utils.IsRunningOnMono)
+            if (!RuntimePlatform.IsWindows)
             {
-                CommandUtils.LogLog(String.Format("Can't sign '{0}', we are running under mono.", Filename));
+                CommandUtils.LogLog(String.Format("Can't sign '{0}' on non-Windows platform.", Filename));
                 return;
             }
             if (!CommandUtils.FileExists(Filename))
@@ -3050,9 +3132,9 @@ namespace AutomationTool
 
 		public static void SignMultipleFilesIfEXEOrDLL(List<FileReference> Files, bool bIgnoreExtension = false)
 		{
-			if (UnrealBuildTool.Utils.IsRunningOnMono)
+			if (!RuntimePlatform.IsWindows)
 			{
-				CommandUtils.LogLog(String.Format("Can't sign we are running under mono."));
+				CommandUtils.LogLog(String.Format("Can't sign on non-Windows platform."));
 				return;
 			}
 			List<FileReference> FinalFiles = new List<FileReference>();
@@ -3083,7 +3165,7 @@ namespace AutomationTool
 				{
 					FinalFiles.Add(new FileReference(TargetFileInfo));
 				}
-			}			
+			}
 			CodeSignWindows.Sign(FinalFiles, CodeSignWindows.SignatureType.SHA1);
 			CodeSignWindows.Sign(FinalFiles.Where(x => !x.HasExtension(".msi")).ToList(), CodeSignWindows.SignatureType.SHA256); // MSI files can only have one signature; prefer SHA1 for compatibility
 		}

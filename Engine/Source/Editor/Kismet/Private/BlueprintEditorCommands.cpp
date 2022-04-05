@@ -57,6 +57,7 @@ void FBlueprintEditorCommands::RegisterCommands()
 	UI_COMMAND( DisableAllBreakpoints, "Disable All Breakpoints", "Disable all breakpoints", EUserInterfaceActionType::Button, FInputChord() );
 	UI_COMMAND( ClearAllBreakpoints, "Delete All Breakpoints", "Delete all breakpoints", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control | EModifierKey::Shift, EKeys::F9) );
 	UI_COMMAND(	ClearAllWatches, "Delete All Watches", "Delete all watches", EUserInterfaceActionType::Button, FInputChord() );
+	UI_COMMAND( OpenBlueprintDebugger, "Blueprint Debugger", "Open the Blueprint Debugger tab.", EUserInterfaceActionType::Button, FInputChord() );
 
 	// New documents
 	UI_COMMAND( AddNewVariable, "Variable", "Adds a new variable to this blueprint.", EUserInterfaceActionType::Button, FInputChord() );
@@ -69,7 +70,6 @@ void FBlueprintEditorCommands::RegisterCommands()
 
 	// Development commands
 	UI_COMMAND( SaveIntermediateBuildProducts, "Save Intermediate Build Products", "Should the compiler save intermediate build products for debugging.", EUserInterfaceActionType::ToggleButton, FInputChord() );
-	UI_COMMAND(GenerateNativeCode, "Generate Native Code", "Generate C++ code from the blueprint", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(GenerateSearchIndex, "Generate Search Index", "Generate the search index for this blueprint.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(DumpCachedIndexData, "Dump Cached Index Data", "Dump the cached index data for this blueprint.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ShowActionMenuItemSignatures, "Show Action Menu Item Signatures", "If enabled, tooltips on action menu items will show the associated action's signature id (can be used to setup custom favorites menus).", EUserInterfaceActionType::ToggleButton, FInputChord());

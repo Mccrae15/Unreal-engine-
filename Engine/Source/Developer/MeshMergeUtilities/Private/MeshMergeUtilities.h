@@ -4,8 +4,10 @@
 
 #include "IMeshMergeUtilities.h"
 #include "SceneTypes.h"
+#include "MaterialShared.h"
 
 class FMeshMergeDataTracker;
+class FMaterialUpdateContext;
 struct FMeshLODKey;
 
 typedef TPair<uint32, uint32> MaterialRemapPair;
@@ -24,7 +26,7 @@ public:
 	virtual void BakeMaterialsForComponent(USkeletalMeshComponent* SkeletalMeshComponent) const override;
 	virtual void BakeMaterialsForMesh(UStaticMesh* Mesh) const override;
 	virtual void MergeComponentsToStaticMesh(const TArray<UPrimitiveComponent*>& ComponentsToMerge, UWorld* World, const FMeshMergingSettings& InSettings, UMaterialInterface* InBaseMaterial, UPackage* InOuter, const FString& InBasePackageName, TArray<UObject*>& OutAssetsToSync, FVector& OutMergedActorLocation, const float ScreenSize, bool bSilent /*= false*/) const;
-	virtual void MergeComponentsToInstances(const TArray<UPrimitiveComponent*>& ComponentsToMerge, UWorld* World, ULevel* Level, const FMeshInstancingSettings& InSettings, bool bActuallyMerge = true, FText* OutResultsText = nullptr) const override;
+	virtual void MergeComponentsToInstances(const TArray<UPrimitiveComponent*>& ComponentsToMerge, UWorld* World, ULevel* Level, const FMeshInstancingSettings& InSettings, bool bActuallyMerge = true, bool bReplaceSourceActors = false, FText* OutResultsText = nullptr) const override;
 
 	virtual void CreateProxyMesh(const TArray<AActor*>& InActors, const struct FMeshProxySettings& InMeshProxySettings, UMaterialInterface* InBaseMaterial, UPackage* InOuter, const FString& InProxyBasePackageName, const FGuid InGuid, const FCreateProxyDelegate& InProxyCreatedDelegate, const bool bAllowAsync = false, const float ScreenSize = 1.0f) const override;
 	virtual void CreateProxyMesh(const TArray<UStaticMeshComponent*>& InStaticMeshComps, const struct FMeshProxySettings& InMeshProxySettings, UMaterialInterface* InBaseMaterial, UPackage* InOuter, const FString& InProxyBasePackageName, const FGuid InGuid, const FCreateProxyDelegate& InProxyCreatedDelegate, const bool bAllowAsync = false, const float ScreenSize = 1.0f) const override;
@@ -34,9 +36,12 @@ public:
 	UE_DEPRECATED(4.20, "Use different signature containing BaseMaterial parameter")
 	virtual void CreateProxyMesh(const TArray<UStaticMeshComponent*>& InStaticMeshComps, const struct FMeshProxySettings& InMeshProxySettings, UPackage* InOuter, const FString& InProxyBasePackageName, const FGuid InGuid, const FCreateProxyDelegate& InProxyCreatedDelegate, const bool bAllowAsync = false, const float ScreenSize = 1.0f) const override;
 
-	virtual void ExtractImposterToRawMesh(const UStaticMeshComponent* InImposterComponent, FMeshDescription& OutImposterMesh) const override;
-
+	UE_DEPRECATED(5.0, "Use FMaterialUtilities::IsValidFlattenMaterial()")
 	virtual bool IsValidBaseMaterial(const UMaterialInterface* InBaseMaterial, bool bShowToaster) const override;
+
+	virtual void RetrieveMeshDescription(const UStaticMeshComponent* InStaticMeshComponent, int32 LODIndex, FMeshDescription& InOutMeshDescription, bool bPropagateVertexColours) const override;
+	virtual void RetrieveMeshDescription(const USkeletalMeshComponent* InSkeletalMeshComponent, int32 LODIndex, FMeshDescription& InOutMeshDescription, bool bPropagateVertexColours) const override;
+	virtual void RetrieveMeshDescription(const UStaticMesh* InStaticMesh, int32 LODIndex, FMeshDescription& InOutMeshDescription) const override;
 
 	virtual void RegisterExtension(IMeshMergeExtension* InExtension) override;
 	virtual void UnregisterExtension(IMeshMergeExtension* InExtension) override;	
@@ -47,9 +52,7 @@ protected:
 	/** Determines whether or not an individual material uses model vertex data during the shading process and outputs per-material flags */
 	void DetermineMaterialVertexDataUsage(TArray<bool>& InOutMaterialUsesVertexData, const TArray<UMaterialInterface*>& UniqueMaterials, const UMaterialOptions* MaterialOptions) const;
 	/** Creates a proxy material instance at givne path and name */
-	UMaterialInterface* CreateProxyMaterial(const FString &InBasePackageName, FString MergedAssetPackageName, UMaterialInterface* InBaseMaterial, UPackage* InOuter, const FMeshMergingSettings &InSettings, FFlattenMaterial OutMaterial, TArray<UObject *>& OutAssetsToSync) const;	
-	/** Scales texture coordinates to the specified box, e.g. to 0-1 range in U and V */
-	void ScaleTextureCoordinatesToBox(const FBox2D& Box, TArray<FVector2D>& InOutTextureCoordinates) const;
+	UMaterialInterface* CreateProxyMaterial(const FString &InBasePackageName, FString MergedAssetPackageName, UMaterialInterface* InBaseMaterial, UPackage* InOuter, const FMeshMergingSettings &InSettings, FFlattenMaterial OutMaterial, TArray<UObject *>& OutAssetsToSync, FMaterialUpdateContext* InMaterialUpdateContext = nullptr) const;
 	/** Merges flattened material into atlas textures */
 	void MergeFlattenedMaterials(TArray<struct FFlattenMaterial>& InMaterialList, int32 InGutter, FFlattenMaterial& OutMergedMaterial, TArray<FUVOffsetScalePair>& OutUVTransforms) const;
 	/** Merges flattened material into binned textures */
@@ -76,8 +79,9 @@ protected:
 	  * @warning This is a destructive operation for InOutBakeOutputs
 	  */
 	void TransferOutputToFlatMaterials(const TArray<FMaterialData>& InMaterialData, TArray<FBakeOutput>& InOutBakeOutputs, TArray<FFlattenMaterial> &OutFlattenedMaterials) const;
-	/** Converts new material property value to old legacy enum values */
-	EFlattenMaterialProperties NewToOldProperty(int32 OldProperty) const;
+
+	/** Converts material property enum value to flatten material property */
+	EFlattenMaterialProperties ToFlattenProperty(EMaterialProperty MaterialProperty) const;
 private:
 	FProxyGenerationProcessor* Processor;
 	FDelegateHandle ModuleLoadedDelegateHandle;

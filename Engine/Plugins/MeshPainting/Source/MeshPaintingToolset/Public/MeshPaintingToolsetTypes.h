@@ -96,7 +96,13 @@ struct FPaintableTexture
 	UTexture*	Texture;
 	int32		UVChannelIndex;
 
-	FPaintableTexture(UTexture* InTexture = nullptr, uint32 InUVChannelIndex = 0)
+	FPaintableTexture()
+		: Texture(nullptr)
+		, UVChannelIndex(0)
+	{}
+
+	template<typename T, decltype(ImplicitConv<UTexture*>(DeclVal<T>()))* = nullptr>
+	FPaintableTexture(T InTexture = nullptr, uint32 InUVChannelIndex = 0)
 		: Texture(InTexture)
 		, UVChannelIndex(InUVChannelIndex)
 	{}
@@ -115,24 +121,24 @@ struct FPaintTexture2DData
 	GENERATED_BODY()
 	/** The original texture that we're painting */
 	UPROPERTY(Transient)
-	UTexture2D* PaintingTexture2D;
+	TObjectPtr<UTexture2D> PaintingTexture2D;
 	bool bIsPaintingTexture2DModified;
 
 	/** A copy of the original texture we're painting, used for restoration. */
 	UPROPERTY(Transient)
-	UTexture2D* PaintingTexture2DDuplicate;
+	TObjectPtr<UTexture2D> PaintingTexture2DDuplicate;
 
 	/** Render target texture for painting */
 	UPROPERTY(Transient)
-	UTextureRenderTarget2D* PaintRenderTargetTexture;
+	TObjectPtr<UTextureRenderTarget2D> PaintRenderTargetTexture;
 
 	/** Render target texture used as an input while painting that contains a clone of the original image */
 	UPROPERTY(Transient)
-	UTextureRenderTarget2D* CloneRenderTargetTexture;
+	TObjectPtr<UTextureRenderTarget2D> CloneRenderTargetTexture;
 
 	/** List of materials we are painting on */
 	UPROPERTY(Transient)
-	TArray< UMaterialInterface* > PaintingMaterials;
+	TArray< TObjectPtr<UMaterialInterface> > PaintingMaterials;
 
 	/** Default ctor */
 	FPaintTexture2DData() :

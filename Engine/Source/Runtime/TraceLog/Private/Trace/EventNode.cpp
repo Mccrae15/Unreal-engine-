@@ -7,22 +7,30 @@
 #include "Trace/Detail/Atomic.h"
 #include "Trace/Detail/LogScope.inl"
 
+namespace UE {
 namespace Trace {
 namespace Private {
 
 ////////////////////////////////////////////////////////////////////////////////
 void					Writer_InternalInitialize();
 FEventNode* volatile	GNewEventList; // = nullptr;
+FEventNode*				GEventListHead;// = nullptr;
+FEventNode*				GEventListTail;// = nullptr;
 
 
 
 ////////////////////////////////////////////////////////////////////////////////
 const FEventNode* FEventNode::FIter::GetNext()
 {
-	auto* Ret = (const FEventNode*)Inner;
+	auto* Ret = (FEventNode*)Inner;
 	if (Ret != nullptr)
 	{
 		Inner = Ret->Next;
+
+		if (Inner == nullptr)
+		{
+			GEventListTail = Ret;
+		}
 	}
 	return Ret;
 }
@@ -32,16 +40,19 @@ const FEventNode* FEventNode::FIter::GetNext()
 ////////////////////////////////////////////////////////////////////////////////
 FEventNode::FIter FEventNode::ReadNew()
 {
-	FEventNode* EventList = AtomicLoadRelaxed(&GNewEventList);
+	FEventNode* EventList = AtomicExchangeAcquire(&GNewEventList, (FEventNode*)nullptr);
 	if (EventList == nullptr)
 	{
 		return {};
 	}
 
-	while (!AtomicCompareExchangeAcquire(&GNewEventList, (FEventNode*)nullptr, EventList))
+	if (GEventListHead == nullptr)
 	{
-		PlatformYield();
-		EventList = AtomicLoadRelaxed(&GNewEventList);
+		GEventListHead = EventList;
+	}
+	else
+	{
+		GEventListTail->Next = EventList;
 	}
 
 	return { EventList };
@@ -106,16 +117,17 @@ void FEventNode::Describe() const
 	}
 
 	// Allocate the new event event in the log stream.
-	uint16 EventUid = EKnownEventUids::NewEvent << EKnownEventUids::_UidShift;
-
-	uint16 EventSize = sizeof(FNewEventEvent);
+	uint32 EventSize = sizeof(FNewEventEvent);
 	EventSize += sizeof(FNewEventEvent::Fields[0]) * Info->FieldCount;
 	EventSize += NamesSize;
 
-	FLogScope LogScope = FLogScope::Enter<FEventInfo::Flag_NoSync>(EventUid, EventSize);
-	auto& Event = *(FNewEventEvent*)(LogScope.GetPointer());
+	FLogScope LogScope = FLogScope::EnterImpl<FEventInfo::Flag_NoSync>(0, EventSize + sizeof(uint16));
+	auto* Ptr = (uint16*)(LogScope.GetPointer());
+	Ptr[-1] = EKnownEventUids::NewEvent; // Make event look like an important one. Ideally they are sent
+	Ptr[ 0] = uint16(EventSize);		 // as important and not Writer_DescribeEvents()'s redirected buf.
 
 	// Write event's main properties.
+	auto& Event = *(FNewEventEvent*)(Ptr + 1);
 	Event.EventUid = uint16(Uid) >> EKnownEventUids::_UidShift;
 	Event.LoggerNameSize = LoggerName.Length;
 	Event.EventNameSize = EventName.Length;
@@ -157,8 +169,23 @@ void FEventNode::Describe() const
 	LogScope.Commit();
 }
 
+////////////////////////////////////////////////////////////////////////////////
+void FEventNode::OnConnect()
+{
+	// Re-add known events back as new events so that they get described again
+	if (GEventListHead == nullptr)
+	{
+		return;
+	}
+
+	GEventListTail->Next = AtomicExchangeAcquire(&GNewEventList, GEventListHead);
+
+	GEventListHead = GEventListTail = nullptr;
+}
+
 } // namespace Private
 } // namespace Trace
+} // namespace UE
 
 #endif // UE_TRACE_ENABLED
 

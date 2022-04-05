@@ -16,10 +16,10 @@
 #include "Logging/LogMacros.h"
 #include "ObjectTrace.h"
 
-struct FTraceFilterObjectAnnotation
+struct ENGINE_API FTraceFilterObjectAnnotation
 {
 	FTraceFilterObjectAnnotation()
-		: bIsTraceable(false)
+		: bIsTraceable(true)
 	{}
 
 	bool bIsTraceable;
@@ -27,7 +27,7 @@ struct FTraceFilterObjectAnnotation
 	/** Determine if this annotation is default - required for annotations */
 	FORCEINLINE bool IsDefault() const
 	{
-		return !bIsTraceable;
+		return bIsTraceable;
 	}
 };
 
@@ -284,7 +284,8 @@ template<>
 bool ENGINE_API FTraceFilter::IsObjectTraceable</*bForceThreadSafe = */ false>(const UObject* InObject)
 {
 	check(GObjectFilterAnnotations.IsLocked());
-	return GObjectFilterAnnotations.GetAnnotationMap().Find(InObject) != nullptr;
+	// Object not found in the AnnotationMap means that it is at the default value, which is bIsTraceable == true
+	return GObjectFilterAnnotations.GetAnnotationMap().Find(InObject) == nullptr;
 }
 
 template<>
@@ -292,17 +293,13 @@ void ENGINE_API FTraceFilter::SetObjectIsTraceable</*bForceThreadSafe = */ true>
 {
 	ensure(InObject);
 		
+	FTraceFilterObjectAnnotation Annotation;
+	Annotation.bIsTraceable = bIsTraceable;
+	GObjectFilterAnnotations.AddAnnotation(InObject, Annotation);
+
 	if (bIsTraceable)
 	{
-		FTraceFilterObjectAnnotation Annotation;
-		Annotation.bIsTraceable = true;
-		GObjectFilterAnnotations.AddAnnotation(InObject, Annotation);
-
 		TRACE_OBJECT(InObject);
-	}
-	else
-	{
-		GObjectFilterAnnotations.RemoveAnnotation(InObject);
 	}
 }
 
@@ -313,15 +310,15 @@ void ENGINE_API FTraceFilter::SetObjectIsTraceable</*bForceThreadSafe = */ false
 
 	check(GObjectFilterAnnotations.IsLocked());
 	TMap<const UObjectBase*, FTraceFilterObjectAnnotation>& AnnotationMap = GObjectFilterAnnotations.GetAnnotationMap();
-	if (bIsTraceable)
+	if (!bIsTraceable)
 	{
-		AnnotationMap.FindOrAdd(InObject).bIsTraceable = true;
-		TRACE_OBJECT(InObject);
+		AnnotationMap.FindOrAdd(InObject).bIsTraceable = false;
 	}
 	else
 	{
 		AnnotationMap.Remove(InObject);
-	}
+		TRACE_OBJECT(InObject);
+	}	
 }
 
 template<>

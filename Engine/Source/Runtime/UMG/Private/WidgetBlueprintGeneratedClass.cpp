@@ -183,16 +183,12 @@ void UWidgetBlueprintGeneratedClass::InitializeWidgetStatic(UUserWidget* UserWid
 {
 	check(InClass);
 
-	// Note: It's not safe to assume here that the UserWidget class type is a UWidgetBlueprintGeneratedClass! In the case of a nativized widget
-	// blueprint class, it will be a UDynamicClass instead, and this API will be invoked by the blueprint's C++ code that's generated at cook time.
-	// - @see FBackendHelperUMG::EmitWidgetInitializationFunctions()
-
 	if ( UserWidget->IsTemplate() )
 	{
 		return;
 	}
 
-#if !UE_BUILD_SHIPPING
+#if UE_HAS_WIDGET_GENERATED_BY_CLASS
 	TWeakObjectPtr<UClass> WidgetGeneratedByClass = MakeWeakObjectPtr(const_cast<UClass*>(InClass));
 	UserWidget->WidgetGeneratedByClass = WidgetGeneratedByClass;
 #endif
@@ -231,7 +227,7 @@ void UWidgetBlueprintGeneratedClass::InitializeWidgetStatic(UUserWidget* UserWid
 				return;
 			}
 
-#if !UE_BUILD_SHIPPING
+#if UE_HAS_WIDGET_GENERATED_BY_CLASS
 			Widget->WidgetGeneratedByClass = WidgetGeneratedByClass;
 #endif
 
@@ -265,7 +261,10 @@ void UWidgetBlueprintGeneratedClass::InitializeWidgetStatic(UUserWidget* UserWid
 		InitializeBindingsStatic(UserWidget, InBindings);
 
 		// Bind any delegates on widgets
-		UBlueprintGeneratedClass::BindDynamicDelegates(InClass, UserWidget);
+		if (!UserWidget->IsDesignTime())
+		{
+			UBlueprintGeneratedClass::BindDynamicDelegates(InClass, UserWidget);
+		}
 
 		//TODO UMG Add OnWidgetInitialized?
 	}
@@ -336,7 +335,7 @@ void UWidgetBlueprintGeneratedClass::PostLoad()
 	}
 
 #if WITH_EDITOR
-	if ( GetLinkerUE4Version() < VER_UE4_RENAME_WIDGET_VISIBILITY )
+	if ( GetLinkerUEVersion() < VER_UE4_RENAME_WIDGET_VISIBILITY )
 	{
 		static const FName Visiblity(TEXT("Visiblity"));
 		static const FName Visibility(TEXT("Visibility"));
@@ -391,7 +390,7 @@ void UWidgetBlueprintGeneratedClass::SetWidgetTreeArchetype(UWidgetTree* InWidge
 	if (WidgetTree)
 	{
 		// We don't want any of these flags to carry over from the WidgetBlueprint
-		WidgetTree->ClearFlags(RF_Public | RF_ArchetypeObject | RF_DefaultSubObject);
+		WidgetTree->ClearFlags(RF_Public | RF_ArchetypeObject | RF_DefaultSubObject | RF_Transient);
 	}
 }
 

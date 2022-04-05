@@ -66,6 +66,7 @@ public:
 	//~ Begin UObject Interface
 	UNREALED_API static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual bool IsSelectedInEditor() const override;
 	//~ End UObject Interface
 
 	//~ Begin UEdGraphNode Interface
@@ -96,11 +97,21 @@ public:
 	/** Return the set of nodes underneath the comment */
 	UNREALED_API const FCommentNodeSet& GetNodesUnderComment() const;
 
+	/** Return the font size of the comment */
+	UNREALED_API virtual int32 GetFontSize() const { return FontSize; }
+
+	/** Override the default selection state of this graph node */
+	enum class ESelectionState : uint8 { Inherited, Selected, Deselected };
+	UNREALED_API void SetSelectionState(const ESelectionState InSelectionState);
+
 private:
 	/** Nodes currently within the region of the comment */
 	FCommentNodeSet	NodesUnderComment;
 
 	/** Constructing FText strings can be costly, so we cache the node's tooltip */
 	FNodeTextCache CachedTooltip;
+
+	/** Override the default selection state of this graph node */
+	ESelectionState SelectionState = ESelectionState::Inherited;
 };
 

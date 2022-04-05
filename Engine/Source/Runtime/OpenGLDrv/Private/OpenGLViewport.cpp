@@ -230,7 +230,7 @@ FOpenGLViewport::FOpenGLViewport(FOpenGLDynamicRHI* InOpenGLRHI,void* InWindowHa
 {
 	check(OpenGLRHI);
 	// @todo lumin: Add a "PLATFORM_HAS_NO_NATIVE_WINDOW" or something
-#if !PLATFORM_LUMIN && !PLATFORM_ANDROID
+#if !PLATFORM_ANDROID
 	check(InWindowHandle);
 #endif
 	check(IsInGameThread());
@@ -253,7 +253,7 @@ FOpenGLViewport::~FOpenGLViewport()
 		PlatformRestoreDesktopDisplayMode();
 	}
 
-	FrameSyncEvent.ReleaseResource();
+	BeginReleaseResource(&FrameSyncEvent);
 
 	// Release back buffer, before OpenGL context becomes invalid, making it impossible
 	BackBuffer.SafeRelease();

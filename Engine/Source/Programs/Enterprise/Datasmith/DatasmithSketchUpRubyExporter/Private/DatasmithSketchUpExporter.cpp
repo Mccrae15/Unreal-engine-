@@ -11,6 +11,7 @@
 #include "DatasmithSketchUpString.h"
 #include "DatasmithSketchUpSummary.h"
 
+
 #include "DatasmithSketchUpExportContext.h"
 
 #include "DatasmithDirectLink.h"
@@ -37,6 +38,8 @@
 #pragma warning(disable: 4005)
 // disable(SU2021): 'reinterpret_cast': unsafe conversion from 'ruby::backward::cxxanyargs::void_type (__cdecl *)' to 'rb_gvar_setter_t (__cdecl *)'	
 #pragma warning(disable: 4191)
+// disable(SU2019 & SU2020): 'register' is no longer a supported storage class	
+#pragma warning(disable: 5033)
 #undef DEPRECATED
 #include <ruby.h>
 #pragma warning(pop)
@@ -50,7 +53,7 @@
 #include "Misc/Paths.h"
 
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "DatasmithSceneXmlWriter.h"
 
 #include "DatasmithSceneFactory.h"
@@ -180,7 +183,7 @@ public:
 
 			for (const FRawInfo::FStreamInfo& StreamInfo : RawInfo.StreamsInfo)
 			{
-				if (!StreamInfo.bIsActive)
+				if (StreamInfo.ConnectionState != EStreamConnectionState::Active)
 				{
 					continue;
 				}
@@ -502,7 +505,7 @@ public:
 	
 	bool OnMaterialAdded(DatasmithSketchUp::FEntityIDType EntityId)
 	{
-		Context.Materials.CreateMaterial(EntityId);
+		// Not handling material additon here - materials are created when needed by geometry/components
 		return true;
 	}
 

@@ -87,11 +87,11 @@ bool FTimingTrackViewport::RelativeZoomWithFixedX(const float Delta, const float
 
 	if (Delta > 0)
 	{
-		NewScaleX = ScaleX * FMath::Pow(1.0 + ZoomStep, Delta);
+		NewScaleX = ScaleX * FMath::Pow(1.0 + ZoomStep, static_cast<double>(Delta));
 	}
 	else
 	{
-		NewScaleX = ScaleX * FMath::Pow(1.0 / (1.0 + ZoomStep), -Delta);
+		NewScaleX = ScaleX * FMath::Pow(1.0 / (1.0 + ZoomStep), static_cast<double>(-Delta));
 	}
 
 	return ZoomWithFixedX(NewScaleX, X);
@@ -112,6 +112,20 @@ bool FTimingTrackViewport::ZoomWithFixedX(const double NewScaleX, const float X)
 		ScaleX = LocalNewScaleX;
 		EndTime = SlateUnitsToTime(Width);
 		AddDirtyFlags(ETimingTrackViewportDirtyFlags::HPositionChanged | ETimingTrackViewportDirtyFlags::HScaleChanged);
+		return true;
+	}
+	return false;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool FTimingTrackViewport::SetScaleX(const double NewScaleX)
+{
+	const double LocalNewScaleX = FMath::Clamp(NewScaleX, MinScaleX, MaxScaleX);
+	if (LocalNewScaleX != ScaleX)
+	{
+		ScaleX = LocalNewScaleX;
+		AddDirtyFlags(ETimingTrackViewportDirtyFlags::HScaleChanged);
 		return true;
 	}
 	return false;

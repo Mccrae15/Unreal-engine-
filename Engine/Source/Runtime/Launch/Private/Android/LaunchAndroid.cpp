@@ -182,8 +182,8 @@ static void* AndroidEventThreadWorker(void* param);
 // How often to process (read & dispatch) events, in seconds.
 static const float EventRefreshRate = 1.0f / 20.0f;
 
-// Name of the UE4 commandline append setprop
-static constexpr char UE4CommandLineSetprop[] = "debug.ue4.commandline";
+// Name of the UE commandline append setprop
+static constexpr char UECommandLineSetprop[] = "debug.ue.commandline";
 
 //Android event callback functions
 static int32_t HandleInputCB(struct android_app* app, AInputEvent* event); //Touch and key input events
@@ -237,7 +237,7 @@ void FPlatformMisc::UnlockAndroidWindow()
 	GAndroidWindowLock.Unlock();
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeResumeMainInit(JNIEnv* jenv, jobject thiz)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeResumeMainInit(JNIEnv* jenv, jobject thiz)
 {
 	GResumeMainInit = true;
 
@@ -280,7 +280,7 @@ static void InitCommandLine()
 	FCommandLine::Set(TEXT(""));
 
 	AAssetManager* AssetMgr = AndroidThunkCpp_GetAssetManager();
-	AAsset* asset = AAssetManager_open(AssetMgr, TCHAR_TO_UTF8(TEXT("UE4CommandLine.txt")), AASSET_MODE_BUFFER);
+	AAsset* asset = AAssetManager_open(AssetMgr, TCHAR_TO_UTF8(TEXT("UECommandLine.txt")), AASSET_MODE_BUFFER);
 	if (nullptr != asset)
 	{
 		const void* FileContents = AAsset_getBuffer(asset);
@@ -304,12 +304,12 @@ static void InitCommandLine()
 	}
 
 	// read in the command line text file from the sdcard if it exists
-	FString CommandLineFilePath = GFilePathBase + FString("/UE4Game/") + (!FApp::IsProjectNameEmpty() ? FApp::GetProjectName() : FPlatformProcess::ExecutableName()) + FString("/UE4CommandLine.txt");
+	FString CommandLineFilePath = GFilePathBase + FString("/UnrealGame/") + (!FApp::IsProjectNameEmpty() ? FApp::GetProjectName() : FPlatformProcess::ExecutableName()) + FString("/UECommandLine.txt");
 	FILE* CommandLineFile = fopen(TCHAR_TO_UTF8(*CommandLineFilePath), "r");
 	if(CommandLineFile == NULL)
 	{
 		// if that failed, try the lowercase version
-		CommandLineFilePath = CommandLineFilePath.Replace(TEXT("UE4CommandLine.txt"), TEXT("ue4commandline.txt"));
+		CommandLineFilePath = CommandLineFilePath.Replace(TEXT("UECommandLine.txt"), TEXT("uecommandline.txt"));
 		CommandLineFile = fopen(TCHAR_TO_UTF8(*CommandLineFilePath), "r");
 	}
 
@@ -341,11 +341,11 @@ static void InitCommandLine()
 	}
 
 	char CommandLineSetpropAppend[CMD_LINE_MAX];
-	if (__system_property_get(UE4CommandLineSetprop, CommandLineSetpropAppend) > 0)
+	if (__system_property_get(UECommandLineSetprop, CommandLineSetpropAppend) > 0)
 	{
 		FCommandLine::Append(UTF8_TO_TCHAR(" "));
 		FCommandLine::Append(UTF8_TO_TCHAR(CommandLineSetpropAppend));
-		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("UE4 setprop appended: %s"), UTF8_TO_TCHAR(CommandLineSetpropAppend));
+		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("UE setprop appended: %s"), UTF8_TO_TCHAR(CommandLineSetpropAppend));
 	}
 #endif
 }
@@ -434,6 +434,8 @@ int32 AndroidMain(struct android_app* state)
 		ValidGamepadKeyCodes.Add(ValidGamepadKeyCodesList[i]);
 	}
 
+	FAndroidPlatformStackWalk::InitStackWalking();
+
 	// wait for java activity onCreate to finish
 	{
 		SCOPED_BOOT_TIMING("Wait for GResumeMainInit");
@@ -458,6 +460,7 @@ int32 AndroidMain(struct android_app* state)
 	// Initialize file system access (i.e. mount OBBs, etc.).
 	// We need to do this really early for Android so that files in the
 	// OBBs and APK are found.
+	// Have to use a special initialize if using the PersistentStorageManager
 	IPlatformFile::GetPlatformPhysical().Initialize(nullptr, FCommandLine::Get());
 
 	{
@@ -683,14 +686,15 @@ bool IsInAndroidEventThread()
 
 static void* AndroidEventThreadWorker( void* param )
 {
-	FAndroidMisc::SetThreadName("EventWorker");
+	pthread_setname_np(pthread_self(), "EventWorker");
+	EventThreadID = FPlatformTLS::GetCurrentThreadId();
+	FAndroidMisc::RegisterThreadName("EventWorker", EventThreadID);
 
 	struct android_app* state = (struct android_app*)param;
 
 	FPlatformProcess::SetThreadAffinityMask(FPlatformAffinity::GetMainGameMask());
 
 	FPlatformMisc::LowLevelOutputDebugString(TEXT("Entering event processing thread engine entry point"));
-	EventThreadID = FPlatformTLS::GetCurrentThreadId();
 
 	ALooper* looper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
 	ALooper_addFd(looper, state->msgread, LOOPER_ID_MAIN, ALOOPER_EVENT_INPUT, NULL,
@@ -753,6 +757,8 @@ struct android_app* GNativeAndroidApp = NULL;
 
 void android_main(struct android_app* state)
 {
+	FTaskTagScope Scope(ETaskTag::EGameThread);
+
 	GGameThreadId = FPlatformTLS::GetCurrentThreadId();
 
 	BootTimingPoint("android_main");
@@ -1543,12 +1549,12 @@ static void OnAppCommandCB(struct android_app* app, int32_t cmd)
 
 //Native-defined functions
 
-JNI_METHOD jint Java_com_epicgames_ue4_GameActivity_nativeGetCPUFamily(JNIEnv* jenv, jobject thiz)
+JNI_METHOD jint Java_com_epicgames_unreal_GameActivity_nativeGetCPUFamily(JNIEnv* jenv, jobject thiz)
 {
 	return (jint)android_getCpuFamily();
 }
 
-JNI_METHOD jboolean Java_com_epicgames_ue4_GameActivity_nativeSupportsNEON(JNIEnv* jenv, jobject thiz)
+JNI_METHOD jboolean Java_com_epicgames_unreal_GameActivity_nativeSupportsNEON(JNIEnv* jenv, jobject thiz)
 {
 	AndroidCpuFamily Family = android_getCpuFamily();
 
@@ -1564,7 +1570,7 @@ JNI_METHOD jboolean Java_com_epicgames_ue4_GameActivity_nativeSupportsNEON(JNIEn
 }
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeOnConfigurationChanged(boolean bPortrait);
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnConfigurationChanged(JNIEnv* jenv, jobject thiz, jboolean bPortrait)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnConfigurationChanged(JNIEnv* jenv, jobject thiz, jboolean bPortrait)
 {
 	bool bChangedToPortrait = bPortrait == JNI_TRUE;
 
@@ -1583,7 +1589,7 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnConfigurationChanged
 }
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeConsoleCommand(String commandString);"
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeConsoleCommand(JNIEnv* jenv, jobject thiz, jstring commandString)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeConsoleCommand(JNIEnv* jenv, jobject thiz, jstring commandString)
 {
 	FString Command = FJavaHelper::FStringFromParam(jenv, commandString);
 	if (GEngine != NULL)
@@ -1601,7 +1607,7 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeConsoleCommand(JNIEnv*
 }
 
 // This is called from the Java UI thread for initializing VR HMDs
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeInitHMDs(JNIEnv* jenv, jobject thiz)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeInitHMDs(JNIEnv* jenv, jobject thiz)
 {
 	for (auto HMDModuleIt = GHMDImplementations.CreateIterator(); HMDModuleIt; ++HMDModuleIt)
 	{
@@ -1611,7 +1617,7 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeInitHMDs(JNIEnv* jenv,
 	GHMDsInitialized = true;
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetAndroidVersionInformation(JNIEnv* jenv, jobject thiz, jstring androidVersion, jint targetSDKversion, jstring phoneMake, jstring phoneModel, jstring phoneBuildNumber, jstring osLanguage)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeSetAndroidVersionInformation(JNIEnv* jenv, jobject thiz, jstring androidVersion, jint targetSDKversion, jstring phoneMake, jstring phoneModel, jstring phoneBuildNumber, jstring osLanguage)
 {
 	auto UEAndroidVersion = FJavaHelper::FStringFromParam(jenv, androidVersion);
 	auto UEPhoneMake = FJavaHelper::FStringFromParam(jenv, phoneMake);
@@ -1620,24 +1626,23 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetAndroidVersionInfor
 	auto UEOSLanguage = FJavaHelper::FStringFromParam(jenv, osLanguage);
 
 	FAndroidMisc::SetVersionInfo(UEAndroidVersion, targetSDKversion, UEPhoneMake, UEPhoneModel, UEPhoneBuildNumber, UEOSLanguage);
-	FAndroidPlatformStackWalk::NotifyPlatformVersionInit();
 }
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeOnInitialDownloadStarted();
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnInitialDownloadStarted(JNIEnv* jenv, jobject thiz)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnInitialDownloadStarted(JNIEnv* jenv, jobject thiz)
 {
 	bIgnorePauseOnDownloaderStart = true;
 }
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeOnInitialDownloadCompleted();
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnInitialDownloadCompleted(JNIEnv* jenv, jobject thiz)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnInitialDownloadCompleted(JNIEnv* jenv, jobject thiz)
 {
 	bIgnorePauseOnDownloaderStart = false;
 }
 
 // MERGE-TODO: Anticheat concerns with custom input
 bool GAllowCustomInput = true;
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_HandleCustomTouchEvent(JNIEnv* jenv, jobject thiz, jint deviceId, jint pointerId, jint action, jint soucre, jfloat x, jfloat y)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_HandleCustomTouchEvent(JNIEnv* jenv, jobject thiz, jint deviceId, jint pointerId, jint action, jint soucre, jfloat x, jfloat y)
 {
 #if ANDROID_ALLOWCUSTOMTOUCHEVENT
 	// make sure fake input is allowed, so hacky Java can't run bots
@@ -1672,7 +1677,7 @@ JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_HandleCustomTouchEvent(JNIEnv
 #endif
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_AllowJavaBackButtonEvent(JNIEnv* jenv, jobject thiz, jboolean allow)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_AllowJavaBackButtonEvent(JNIEnv* jenv, jobject thiz, jboolean allow)
 {
 	GAllowJavaBackButtonEvent = (allow == JNI_TRUE);
 }

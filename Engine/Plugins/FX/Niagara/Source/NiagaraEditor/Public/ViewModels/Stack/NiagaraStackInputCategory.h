@@ -24,16 +24,16 @@ class NIAGARAEDITOR_API UNiagaraStackInputCategory : public UNiagaraStackItemCon
 public:
 	void Initialize(
 		FRequiredEntryData InRequiredEntryData,
-		UNiagaraNodeFunctionCall& InModuleNode,
-		UNiagaraNodeFunctionCall& InInputFunctionCallNode, 
+		FString InputCategoryStackEditorDataKey,
 		FText InCategoryName,
+		bool bInIsTopLevelCategory,
 		FString InOwnerStackItemEditorDataKey);
 	
 	const FText& GetCategoryName() const;
 
 	void ResetInputs();
 
-	void AddInput(FName InInputParameterHandle, FNiagaraTypeDefinition InInputType, EStackParameterBehavior InParameterBehavior, bool bIsHidden, bool bIsChildInput);
+	void AddInput(UNiagaraNodeFunctionCall* InModuleNode, UNiagaraNodeFunctionCall* InInputFunctionCallNode, FName InInputParameterHandle, FNiagaraTypeDefinition InInputType, EStackParameterBehavior InParameterBehavior, TOptional<FText> InOptionalDisplayName, bool bIsHidden, bool bIsChildInput);
 
 	//~ UNiagaraStackEntry interface
 	virtual FText GetDisplayName() const override;
@@ -49,11 +49,11 @@ public:
 	void SetStaticSwitchValuesFromClipboardFunctionInputs(const TArray<const UNiagaraClipboardFunctionInput*>& ClipboardFunctionInputs);
 
 	void SetStandardValuesFromClipboardFunctionInputs(const TArray<const UNiagaraClipboardFunctionInput*>& ClipboardFunctionInputs);
+
 protected:
-
-
 	//~ UNiagaraStackEntry interface
 	virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues) override;
+	virtual int32 GetChildIndentLevel() const override;
 
 private:
 	bool FilterForVisibleCondition(const UNiagaraStackEntry& Child) const;
@@ -62,16 +62,23 @@ private:
 private:
 	struct FInputParameterHandleAndType
 	{
+		UNiagaraNodeFunctionCall* ModuleNode;
+		UNiagaraNodeFunctionCall* InputFunctionCallNode;
 		FName ParameterHandle;
 		FNiagaraTypeDefinition Type;
 		EStackParameterBehavior ParameterBehavior;
+		TOptional<FText> DisplayName;
 		bool bIsHidden;
 		bool bIsChildInput;
 	};
 
-	UNiagaraNodeFunctionCall* ModuleNode;
-	UNiagaraNodeFunctionCall* InputFunctionCallNode;
+	TOptional<FText> DisplayName;
 	FText CategoryName;
 	TArray<FInputParameterHandleAndType> Inputs;
+
+	UPROPERTY()
+	TObjectPtr<UNiagaraStackSpacer> CategorySpacer;
+
 	bool bShouldShowInStack;
+	bool bIsTopLevelCategory;
 };

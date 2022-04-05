@@ -17,7 +17,6 @@
 #include "Editor.h"
 #include "Misc/ScopedSlowTask.h"
 #include "EditorSupportDelegates.h"
-#include "Factories/TextureImportSettings.h"
 #include "MaterialGraph/MaterialGraph.h"
 #include "MaterialEditingLibrary.h"
 
@@ -275,15 +274,17 @@ void FVTConversionWorker::FindAllTexturesAndMaterials_Iteration(TArray<UMaterial
 
 		for (auto ParamInfo : ParameterInfos)
 		{
-			UTexture *ParamValue;
-			ParentMaterial->GetTextureParameterValue(ParamInfo, ParamValue);
-			UTexture2D *ParamValue2D = Cast<UTexture2D>(ParamValue);
-			if (ParamValue2D != nullptr)
+			UTexture *ParamValue = nullptr;
+			if (ParentMaterial->GetTextureParameterValue(ParamInfo, ParamValue))
 			{
-				if (InAffectedTextures.Contains(ParamValue2D))
+				UTexture2D *ParamValue2D = Cast<UTexture2D>(ParamValue);
+				if (ParamValue2D != nullptr)
 				{
-					//UE_LOG(LogVirtualTextureConversion, Display, TEXT("Adding parameter %s because it references  %s on %s >> %s"), *ParamInfo.Name.ToString(), *ParamValue2D->GetPathName(), *ParentMaterial->GetMaterial()->GetPathName(), *ParentMaterial->GetPathName());
-					ParametersToVtIze.FindOrAdd(ParentMaterial->GetMaterial()).Add(ParamInfo);
+					if (InAffectedTextures.Contains(ParamValue2D))
+					{
+						//UE_LOG(LogVirtualTextureConversion, Display, TEXT("Adding parameter %s because it references  %s on %s >> %s"), *ParamInfo.Name.ToString(), *ParamValue2D->GetPathName(), *ParentMaterial->GetMaterial()->GetPathName(), *ParentMaterial->GetPathName());
+						ParametersToVtIze.FindOrAdd(ParentMaterial->GetMaterial()).Add(ParamInfo);
+					}
 				}
 			}
 		}
@@ -314,16 +315,18 @@ void FVTConversionWorker::FindAllTexturesAndMaterials_Iteration(TArray<UMaterial
 		UMaterial *Mat = If->GetMaterial();
 		for (const FMaterialParameterInfo &Parameter : ParametersToVtIze.FindOrAdd(Mat))
 		{
-			UTexture *Tex;
-			If->GetTextureParameterValue(Parameter, Tex);
-			UTexture2D *Tex2D = Cast<UTexture2D>(Tex);
-			if (Tex2D && !Tex2D->VirtualTextureStreaming)
+			UTexture *Tex = nullptr;
+			if (If->GetTextureParameterValue(Parameter, Tex))
 			{
-				InAffectedTextures.AddUnique(Tex2D);
-				AuditTrail.Add(Tex2D, FAuditTrail(
-					Mat,
-					FString::Printf(TEXT("set on parameter %s in instance %s of material"), *Parameter.Name.ToString(), *If->GetName())
-				));
+				UTexture2D *Tex2D = Cast<UTexture2D>(Tex);
+				if (Tex2D && !Tex2D->VirtualTextureStreaming)
+				{
+					InAffectedTextures.AddUnique(Tex2D);
+					AuditTrail.Add(Tex2D, FAuditTrail(
+						Mat,
+						FString::Printf(TEXT("set on parameter %s in instance %s of material"), *Parameter.Name.ToString(), *If->GetName())
+					));
+				}
 			}
 		}
 	}
@@ -402,28 +405,19 @@ void FVTConversionWorker::FindAllTexturesAndMaterials_Iteration(TArray<UMaterial
 	{
 		UMaterialFunctionInterface *ParentFunction = FunctionHeap[0];
 		FunctionHeap.RemoveAt(0);
-
-		// Check all parameters of the current material. If they reference a texture
-		// we want to convert to VT flag the parameter (this will then cause all textures assigned to this parameter to convert to vt as well)
-		TArray<FMaterialParameterInfo> ParameterInfos;
-		TArray<FGuid> ParameterGuids;
-
-		FMaterialParameterInfo BaseParameterInfo;
-		BaseParameterInfo.Association = EMaterialParameterAssociation::GlobalParameter;
-		BaseParameterInfo.Index = INDEX_NONE;
-
-		ParentFunction->GetAllParameterInfo<UMaterialExpressionTextureSampleParameter>(ParameterInfos, ParameterGuids, BaseParameterInfo);
-
-		for (auto ParamInfo : ParameterInfos)
 		{
-			UTexture *ParamValue = nullptr;
-			ParentFunction->OverrideNamedTextureParameter(ParamInfo, ParamValue);
-			UTexture2D *ParamValue2D = Cast<UTexture2D>(ParamValue);
-			if (ParamValue2D != nullptr)
+			UMaterialFunctionInstance* FunctionInstance = Cast<UMaterialFunctionInstance>(ParentFunction);
+			if (FunctionInstance)
 			{
-				if (InAffectedTextures.Contains(ParamValue2D))
+				// Check all parameters of the current material. If they reference a texture
+				// we want to convert to VT flag the parameter (this will then cause all textures assigned to this parameter to convert to vt as well)
+				for (const FTextureParameterValue& TextureParameter : FunctionInstance->TextureParameterValues)
 				{
-					FunctionParametersToVtIze.FindOrAdd(ParentFunction->GetBaseFunction()).Add(ParamInfo);
+					UTexture2D* ParamValue2D = Cast<UTexture2D>(TextureParameter.ParameterValue);
+					if (InAffectedTextures.Contains(ParamValue2D))
+					{
+						FunctionParametersToVtIze.FindOrAdd(ParentFunction->GetBaseFunction()).Add(TextureParameter.ParameterInfo);
+					}
 				}
 			}
 		}
@@ -548,7 +542,7 @@ void FVTConversionWorker::DoConvert()
 		for (UTexture2D *Tex : Textures)
 		{
 			UTexture2D* TextureToUpdate = Tex;
-			if (TextureToUpdate->GetPathName().StartsWith(TEXT("/Engine/")))
+			if (TextureToUpdate->GetPathName().StartsWith(TEXT("/Engine/")) && TextureToUpdate->GetPackage() != GetTransientPackage())
 			{
 				// rather than modify engine content, create a copy and update that
 				// any materials that we modify will be updated to point to the copy
@@ -593,12 +587,11 @@ void FVTConversionWorker::DoConvert()
 				UE_LOG(LogVirtualTextureConversion, Display, TEXT("Texture %s"), *TextureToUpdate->GetName());
 				TextureTask.EnterProgressFrame();
 
-				bool OldVt = TextureToUpdate->VirtualTextureStreaming;
-				TextureToUpdate->VirtualTextureStreaming = bVirtualTextureEnable;
-				if (OldVt != TextureToUpdate->VirtualTextureStreaming)
+				if (TextureToUpdate->VirtualTextureStreaming != bVirtualTextureEnable)
 				{
 					FPropertyChangedEvent PropertyChangeEvent(UTexture::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UTexture, VirtualTextureStreaming)));
 					TextureToUpdate->Modify();
+					TextureToUpdate->VirtualTextureStreaming = bVirtualTextureEnable;
 					TextureToUpdate->PostEditChangeProperty(PropertyChangeEvent);
 				}
 			}
@@ -684,8 +677,8 @@ void FVTConversionWorker::DoConvert()
 			MaterialTask.EnterProgressFrame();
 
 			bool FuncModified = false;
-			const TArray<UMaterialExpression*> *Expressions = Func->GetFunctionExpressions();
-			for (UMaterialExpression *Expr : *Expressions)
+			const TArray<TObjectPtr<UMaterialExpression>> *Expressions = Func->GetFunctionExpressions();
+			for (const TObjectPtr<UMaterialExpression>& Expr : *Expressions)
 			{
 				UMaterialExpressionTextureBase *TexExpr = Cast<UMaterialExpressionTextureBase>(Expr);
 				if (TexExpr)

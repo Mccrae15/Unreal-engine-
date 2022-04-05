@@ -51,13 +51,17 @@ struct FLinearColor
 	/**
 	 * Converts an FColor which is assumed to be in sRGB space, into linear color space.
 	 * @param Color The sRGB color that needs to be converted into linear space.
+	 * to get direct conversion use ReinterpretAsLinear
 	 */
 	CORE_API FLinearColor(const FColor& Color);
 
-	CORE_API FLinearColor(const FVector& Vector);
+	CORE_API FLinearColor(const FVector3f& Vector);
+	CORE_API explicit FLinearColor(const FVector3d& Vector); // Warning: keep this explicit, or FVector4f will be implicitly created from FVector3d via FLinearColor
 
-	CORE_API explicit FLinearColor(const FVector4& Vector);
+	CORE_API FLinearColor(const FVector4f& Vector);
+	CORE_API explicit FLinearColor(const FVector4d& Vector); // Warning: keep this explicit, or FVector4f will be implicitly created from FVector4d via FLinearColor
 	
+	// use Float16Color::GetFloats() directly
 	CORE_API explicit FLinearColor(const FFloat16Color& C);
 
 	// Serializer.
@@ -81,7 +85,10 @@ struct FLinearColor
 	 * Converts an FColor coming from an observed sRGB output, into a linear color.
 	 * @param Color The sRGB color that needs to be converted into linear space.
 	 */
-	CORE_API static FLinearColor FromSRGBColor(const FColor& Color);
+	CORE_API static FLinearColor FromSRGBColor(const FColor& Color)
+	{
+		return FLinearColor(Color);
+	}
 
 	/**
 	 * Converts an FColor coming from an observed Pow(1/2.2) output, into a linear color.
@@ -302,15 +309,33 @@ struct FLinearColor
 	 */
 	static CORE_API FLinearColor LerpUsingHSV( const FLinearColor& From, const FLinearColor& To, const float Progress );
 
-	/** Quantizes the linear color and returns the result as a FColor.  This bypasses the SRGB conversion. */
+	/** Quantizes the linear color with rounding and returns the result as a FColor.  This bypasses the SRGB conversion. 
+	* QuantizeRound can be dequantized back to linear with FColor::ReinterpretAsLinear (just /255.f)
+	* this matches the GPU U8<->float conversion spec and should be preferred
+	*/
+	CORE_API FColor QuantizeRound() const;
+	
+	/** Quantizes the linear color and returns the result as a FColor.  This bypasses the SRGB conversion.
+	* Uses floor quantization, which does not match the GPU standard conversion.
+	* Restoration to float should be done with a +0.5 bias to restore to centered buckets.
+	* Do NOT use this for graphics or textures or images, use QuantizeRound instead.
+	*/
+	CORE_API FColor QuantizeFloor() const;
+
+	/** backwards compatible Quantize function name, does QuantizeFloor.
+	* @todo deprecate me
+	*/
+	UE_DEPRECATED(5.0,"Most callers of Quantize should have been calling QuantizeRound; to match old behavior use QuantizeFloor")
 	CORE_API FColor Quantize() const;
 
-	/** Quantizes the linear color with rounding and returns the result as a FColor.  This bypasses the SRGB conversion. */
-	CORE_API FColor QuantizeRound() const;
-
-	/** Quantizes the linear color and returns the result as a FColor with optional sRGB conversion and quality as goal. */
-	CORE_API FColor ToFColor(const bool bSRGB) const;
-
+	/** Quantizes the linear color and returns the result as a FColor with optional sRGB conversion. 
+	* Clamps in [0,1] range before conversion.
+	* ToFColor(false) is QuantizeRound
+	*/
+	CORE_API FColor ToFColorSRGB() const;
+	
+	FORCEINLINE FColor ToFColor(const bool bSRGB) const;
+	
 	/**
 	 * Returns a desaturated color, with 0 meaning no desaturation and 1 == full desaturation
 	 *
@@ -320,11 +345,11 @@ struct FLinearColor
 	CORE_API FLinearColor Desaturate( float Desaturation ) const;
 
 	/** Computes the perceptually weighted luminance value of a color. */
-	inline float ComputeLuminance() const
+	inline float GetLuminance() const
 	{		
 		return R * 0.3f + G * 0.59f + B * 0.11f;
 	}
-
+	
 	/**
 	 * Returns the maximum value in this color structure
 	 *
@@ -349,11 +374,6 @@ struct FLinearColor
 	FORCEINLINE float GetMin() const
 	{
 		return FMath::Min( FMath::Min( FMath::Min( R, G ), B ), A );
-	}
-
-	FORCEINLINE float GetLuminance() const 
-	{ 
-		return R * 0.3f + G * 0.59f + B * 0.11f; 
 	}
 
 	FString ToString() const
@@ -519,6 +539,81 @@ public:
 	static CORE_API FColor MakeFromColorTemperature( float Temp );
 
 	/**
+	* Conversions to/from GPU UNorm floats, U8, U16
+	* matches convention of FColor FLinearColor::QuantizeRound
+	*/
+
+	static uint8 QuantizeUNormFloatTo8( float UnitFloat )
+	{
+		UnitFloat = FMath::Clamp(UnitFloat,0.f,1.f);
+		return (uint8)( 0.5f + UnitFloat * 255.f );
+	}
+	
+	static uint16 QuantizeUNormFloatTo16( float UnitFloat )
+	{
+		UnitFloat = FMath::Clamp(UnitFloat,0.f,1.f);
+		return (uint16)( 0.5f + UnitFloat * 65535.f );
+	}
+
+	static float DequantizeUNorm8ToFloat( int Value8 )
+	{
+		check( Value8 >= 0 && Value8 <= 255 );
+
+		return (float)Value8 / 255.f;
+	}
+	
+	static float DequantizeUNorm16ToFloat( int Value16 )
+	{
+		check( Value16 >= 0 && Value16 <= 65535 );
+
+		return (float)Value16 / 65535.f;
+	}
+
+	static uint8 Requantize10to8( int Value10 )
+	{
+		check( Value10 >= 0 && Value10 <= 1023 );
+
+		// Dequantize from 10 bit (Value10/1023.f)
+		// requantize to 8 bit with rounding (GPU convention UNorm)
+		//  this is the computation we want :
+		// (int)( (Value10/1023.f)*255.f + 0.5f );
+		// this gives the exactly the same results :
+		int Temp = Value10*255 + (1<<9);
+		int Value8 = (Temp + (Temp >> 10)) >> 10;
+		return (uint8)Value8;
+	}
+	
+	static uint8 Requantize16to8(int Value16)
+	{
+		check( Value16 >= 0 && Value16 <= 65535 );
+
+		// Dequantize x from 16 bit (Value16/65535.f)
+		// then requantize to 8 bit with rounding (GPU convention UNorm)
+
+		// matches exactly with :
+		//  (int)( (Value16/65535.f) * 255.f + 0.5f );
+		int Value8 = (Value16*255 + 32895)>>16;
+		return (uint8)Value8;
+	}
+
+	/**
+	* Return 8-bit color Quantized from 10-bit RGB , 2-bit A
+	*/
+	static FColor MakeRequantizeFrom1010102( int R, int G, int B, int A )
+	{
+		check( A >= 0 && A <= 3 );
+
+		// requantize 2 bits to 8 ; could bit-replicate or just table lookup :
+		const uint8 Requantize2to8[4] = { 0, 0x55, 0xAA, 0xFF };
+		return FColor(
+			Requantize10to8(R),
+			Requantize10to8(G),
+			Requantize10to8(B),
+			Requantize2to8[A] );
+
+	}
+
+	/**
 	 *	@return a new FColor based of this color with the new alpha value.
 	 *	Usage: const FColor& MyColor = FColorList::Green.WithAlpha(128);
 	 */
@@ -529,7 +624,8 @@ public:
 
 	/**
 	 * Reinterprets the color as a linear color.
-	 *
+	 * This is the correct dequantizer for QuantizeRound.
+	 * This matches the GPU spec conversion for U8<->float
 	 * @return The linear color representation.
 	 */
 	FORCEINLINE FLinearColor ReinterpretAsLinear() const
@@ -641,6 +737,19 @@ private:
 	explicit FColor(const FLinearColor& LinearColor);
 };
 DECLARE_INTRINSIC_TYPE_LAYOUT(FColor);
+
+
+FORCEINLINE FColor FLinearColor::ToFColor(const bool bSRGB) const
+{
+	if ( bSRGB )
+	{
+		return ToFColorSRGB();
+	}
+	else
+	{
+		return QuantizeRound();
+	}
+}
 
 FORCEINLINE uint32 GetTypeHash( const FColor& Color )
 {

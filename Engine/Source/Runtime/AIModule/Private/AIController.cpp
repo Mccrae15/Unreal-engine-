@@ -62,7 +62,7 @@ void AAIController::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
 
-	if (bWantsPlayerState && !IsPendingKill() && (GetNetMode() != NM_Client))
+	if (bWantsPlayerState && IsValid(this) && (GetNetMode() != NM_Client))
 	{
 		InitPlayerState();
 	}
@@ -93,7 +93,7 @@ void AAIController::PostRegisterAllComponents()
 
 	// cache PerceptionComponent if not already set
 	// note that it's possible for an AI to not have a perception component at all
-	if (PerceptionComponent == NULL || PerceptionComponent->IsPendingKill() == true)
+	if (!IsValid(PerceptionComponent))
 	{
 		PerceptionComponent = FindComponentByClass<UAIPerceptionComponent>();
 	}
@@ -113,7 +113,6 @@ void AAIController::DisplayDebug(UCanvas* Canvas, const FDebugDisplayInfo& Debug
 {
 	Super::DisplayDebug(Canvas, DebugDisplay, YL, YPos);
 
-	static FName NAME_AI = FName(TEXT("AI"));
 	if (DebugDisplay.IsDisplayOn(NAME_AI))
 	{
 		if (PathFollowingComponent)
@@ -467,7 +466,7 @@ void AAIController::UpdateControlRotation(float DeltaTime, bool bUpdatePawn)
 void AAIController::OnPossess(APawn* InPawn)
 {
 	// don't even try possessing pending-kill pawns
-	if (InPawn != nullptr && InPawn->IsPendingKill())
+	if (InPawn != nullptr && !IsValid(InPawn))
 	{
 		return;
 	}
@@ -793,7 +792,14 @@ bool AAIController::BuildPathfindingQuery(const FAIMoveRequest& MoveRequest, FPa
 	}
 	else
 	{
-		UE_VLOG(this, LogAINavigation, Warning, TEXT("Unable to find NavigationData instance while calling AAIController::BuildPathfindingQuery"));
+		if (NavSys == nullptr)
+		{
+			UE_VLOG(this, LogAINavigation, Warning, TEXT("Unable AAIController::BuildPathfindingQuery due to no NavigationSystem present. Note that even pathfinding-less movement requires presence of NavigationSystem."));
+		}
+		else 
+		{
+			UE_VLOG(this, LogAINavigation, Warning, TEXT("Unable to find NavigationData instance while calling AAIController::BuildPathfindingQuery"));
+		}
 	}
 
 	return bResult;
@@ -1010,6 +1016,7 @@ bool AAIController::UseBlackboard(UBlackboardData* BlackboardAsset, UBlackboardC
 	if (Blackboard == nullptr)
 	{
 		Blackboard = NewObject<UBlackboardComponent>(this, TEXT("BlackboardComponent"));
+		REDIRECT_OBJECT_TO_VLOG(Blackboard, this);
 		if (Blackboard != nullptr)
 		{
 			InitializeBlackboard(*Blackboard, *BlackboardAsset);
@@ -1045,7 +1052,7 @@ bool AAIController::ShouldSyncBlackboardWith(const UBlackboardComponent& OtherBl
 bool AAIController::SuggestTossVelocity(FVector& OutTossVelocity, FVector Start, FVector End, float TossSpeed, bool bPreferHighArc, float CollisionRadius, bool bOnlyTraceUp)
 {
 	// pawn's physics volume gets 2nd priority
-	APhysicsVolume const* const PhysicsVolume = GetPawn() ? GetPawn()->GetPawnPhysicsVolume() : NULL;
+	APhysicsVolume const* const PhysicsVolume = GetPawn() ? GetPawn()->GetPhysicsVolume() : nullptr;
 	float const GravityOverride = PhysicsVolume ? PhysicsVolume->GetGravityZ() : 0.f;
 	ESuggestProjVelocityTraceOption::Type const TraceOption = bOnlyTraceUp ? ESuggestProjVelocityTraceOption::OnlyTraceWhileAscending : ESuggestProjVelocityTraceOption::TraceFullPath;
 

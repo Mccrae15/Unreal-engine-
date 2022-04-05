@@ -1,7 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceGBuffer.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
+#include "NiagaraGpuComputeDispatch.h"
 #include "NiagaraTypes.h"
+#include "NiagaraRenderViewDataManager.h"
 #include "NiagaraWorldManager.h"
 #include "ShaderParameterUtils.h"
 #include "Internationalization/Internationalization.h"
@@ -11,6 +14,18 @@
 
 namespace NiagaraDataInterfaceGBufferLocal
 {
+	struct EDIFunctionVersion
+	{
+		enum Type
+		{
+			InitialVersion = 0,
+			AddedApplyViewportOffset = 1,
+
+			VersionPlusOne,
+			LatestVersion = VersionPlusOne - 1
+		};
+	};
+
 	struct FGBufferAttribute
 	{
 		FGBufferAttribute(const TCHAR* InAttributeName, const TCHAR* InAttributeType, FNiagaraTypeDefinition InTypeDef, FText InDescription)
@@ -73,12 +88,13 @@ namespace NiagaraDataInterfaceGBufferLocal
 			FGBufferAttribute(TEXT("Specular"),			TEXT("float"),	FNiagaraTypeDefinition::GetFloatDef(), FText::GetEmpty()),
 			FGBufferAttribute(TEXT("Roughness"),		TEXT("float"),	FNiagaraTypeDefinition::GetFloatDef(), FText::GetEmpty()),
 			FGBufferAttribute(TEXT("Depth"),			TEXT("float"),	FNiagaraTypeDefinition::GetFloatDef(), FText::GetEmpty()),
+			//FGBufferAttribute(TEXT("Stencil"),			TEXT("int"),	FNiagaraTypeDefinition::GetIntDef(), FText::GetEmpty()),
 
 			FGBufferAttribute(TEXT("CustomDepth"),		TEXT("float"),	FNiagaraTypeDefinition::GetFloatDef(), FText::GetEmpty()),
-			// CustomStencil appears broken currently across the board so not exposing until that's working
-			//FGBufferAttribute(TEXT("CustomStencil"),	TEXT("int"),	FNiagaraTypeDefinition::GetIntDef(), FText::GetEmpty()),
+			FGBufferAttribute(TEXT("CustomStencil"),	TEXT("int"),	FNiagaraTypeDefinition::GetIntDef(), FText::GetEmpty()),
 
 			FGBufferAttribute(TEXT("SceneColor"),		TEXT("float4"),	FNiagaraTypeDefinition::GetVec4Def(), GetDescription_SceneColor()),
+			FGBufferAttribute(TEXT("ShadingModelID"),	TEXT("int"),	FNiagaraTypeDefinition::GetIntDef(), FText::GetEmpty()),
 		};
 
 		return MakeArrayView(GBufferAttributes);
@@ -98,7 +114,6 @@ struct FNiagaraDataInterfaceParametersCS_GBuffer : public FNiagaraDataInterfaceP
 public:
 	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
 	{
-		PassUniformBuffer.Bind(ParameterMap, FSceneTextureUniformParameters::StaticStructMetadata.GetShaderVariableName());
 		VelocityTextureParam.Bind(ParameterMap, TEXT("NDIGBuffer_VelocityTexture"));
 		VelocityTextureSamplerParam.Bind(ParameterMap, TEXT("NDIGBuffer_VelocityTextureSampler"));
 	}
@@ -108,18 +123,19 @@ public:
 		check(IsInRenderingThread());
 		FRHIComputeShader* ComputeShaderRHI = RHICmdList.GetBoundComputeShader();
 
-		//-Note: Scene textures will not exist in the Mobile rendering path
-		TUniformBufferRef<FSceneTextureUniformParameters> SceneTextureUniformParams = GNiagaraViewDataManager.GetSceneTextureUniformParameters();
-		check(!PassUniformBuffer.IsBound() || SceneTextureUniformParams);
-		SetUniformBufferParameter(RHICmdList, ComputeShaderRHI, PassUniformBuffer, SceneTextureUniformParams);
-
 		FRHISamplerState* VelocitySamplerState = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-		FRHITexture* VelocityTexture = GNiagaraViewDataManager.GetSceneVelocityTexture() ? GNiagaraViewDataManager.GetSceneVelocityTexture() : GBlackTexture->TextureRHI;
-		SetTextureParameter(RHICmdList, ComputeShaderRHI, VelocityTextureParam, VelocityTextureSamplerParam, VelocitySamplerState, VelocityTexture);
+		FRHITexture* VelocityRHITexture = GBlackTexture->TextureRHI;
+		if ( FNiagaraSceneTextureParameters* NiagaraSceneTextures = static_cast<const FNiagaraGpuComputeDispatch*>(Context.ComputeDispatchInterface)->GetNiagaraSceneTextures() )	//-BATCHERTODO:
+		{
+			if ( FRDGTexture* VelocityRDGTexture = NiagaraSceneTextures->Velocity.GetTexture() )
+			{
+				VelocityRHITexture = VelocityRDGTexture->GetRHI();
+			}
+		}
+		SetTextureParameter(RHICmdList, ComputeShaderRHI, VelocityTextureParam, VelocityTextureSamplerParam, VelocitySamplerState, VelocityRHITexture);
 	}
 
 private:
-	LAYOUT_FIELD(FShaderUniformBufferParameter, PassUniformBuffer);
 	LAYOUT_FIELD(FShaderResourceParameter, VelocityTextureParam);
 	LAYOUT_FIELD(FShaderResourceParameter, VelocityTextureSamplerParam);
 };
@@ -168,8 +184,12 @@ void UNiagaraDataInterfaceGBuffer::GetFunctions(TArray<FNiagaraFunctionSignature
 		Signature.bExperimental = true;
 		Signature.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("GBufferInterface")));
 		Signature.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("ScreenUV")));
+		Signature.Inputs.Add_GetRef(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("ApplyViewportOffset"))).SetValue(true);
 		Signature.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsValid")));
 		Signature.Outputs.Add(FNiagaraVariable(Attribute.TypeDef, Attribute.AttributeName));
+#if WITH_EDITORONLY_DATA
+		Signature.FunctionVersion = EDIFunctionVersion::LatestVersion;
+#endif
 	}
 }
 
@@ -205,12 +225,35 @@ bool UNiagaraDataInterfaceGBuffer::GetFunctionHLSL(const FNiagaraDataInterfaceGP
 			ArgsSample.Emplace(TEXT("AttributeName"), Attribute.AttributeName);
 			ArgsSample.Emplace(TEXT("AttributeType"), Attribute.AttributeType);
 
-			static const TCHAR* FormatSample = TEXT("void {InstanceFunctionName}(float2 ScreenUV, out bool IsValid, out {AttributeType} {AttributeName}) { DIGBuffer_Decode{AttributeName}(ScreenUV, IsValid, {AttributeName}); }\n");
+			static const TCHAR* FormatSample = TEXT("void {InstanceFunctionName}(float2 ScreenUV, bool bApplyViewportOffset, out bool IsValid, out {AttributeType} {AttributeName}) { DIGBuffer_Decode{AttributeName}(ScreenUV, bApplyViewportOffset, IsValid, {AttributeName}); }\n");
 			OutHLSL += FString::Format(FormatSample, ArgsSample);
 			return true;
 		}
 	}
 
 	return false;
+}
+
+bool UNiagaraDataInterfaceGBuffer::UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature)
+{
+	using namespace NiagaraDataInterfaceGBufferLocal;
+
+	bool bWasChanged = false;
+
+	// Early out for version matching
+	if (FunctionSignature.FunctionVersion == EDIFunctionVersion::LatestVersion)
+	{
+		return bWasChanged;
+	}
+
+	// AddedApplyViewportOffset
+	if ( FunctionSignature.FunctionVersion < EDIFunctionVersion::AddedApplyViewportOffset )
+	{
+		FunctionSignature.Inputs.Add_GetRef(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("ApplyViewportOffset"))).SetValue(false);
+		bWasChanged = true;
+	}
+
+	FunctionSignature.FunctionVersion = EDIFunctionVersion::LatestVersion;
+	return bWasChanged;
 }
 #endif

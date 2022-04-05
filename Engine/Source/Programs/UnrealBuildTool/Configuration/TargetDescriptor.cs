@@ -1,11 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -14,7 +16,7 @@ namespace UnrealBuildTool
 	/// </summary>
 	class TargetDescriptor
 	{
-		public FileReference ProjectFile;
+		public FileReference? ProjectFile;
 		public string Name;
 		public UnrealTargetPlatform Platform;
 		public UnrealTargetConfiguration Configuration;
@@ -25,7 +27,7 @@ namespace UnrealBuildTool
 		/// Foreign plugin to compile against this target
 		/// </summary>
 		[CommandLine("-Plugin=")]
-		public FileReference ForeignPlugin = null;
+		public FileReference? ForeignPlugin = null;
 
 		/// <summary>
 		/// Set of module names to compile.
@@ -34,8 +36,15 @@ namespace UnrealBuildTool
 		public HashSet<string> OnlyModuleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
 		/// <summary>
+		/// Lists of files to compile
+		/// </summary>
+		[CommandLine("-FileList=")]
+		public List<FileReference> FileLists = new List<FileReference>(); 
+
+		/// <summary>
 		/// Individual file(s) to compile
 		/// </summary>
+		[CommandLine("-File=")]
 		[CommandLine("-SingleFile=")]
 		public List<FileReference> SpecificFilesToCompile = new List<FileReference>();
 
@@ -53,28 +62,34 @@ namespace UnrealBuildTool
 		public Dictionary<string, int> HotReloadModuleNameToSuffix = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
 		/// <summary>
-		/// Export the actions for the target to a file
-		/// </summary>
-		[CommandLine("-WriteActions=")]
-		public List<FileReference> WriteActionFiles = new List<FileReference>();
-
-		/// <summary>
 		/// Path to a file containing a list of modules that may be modified for live coding.
 		/// </summary>
 		[CommandLine("-LiveCodingModules=")]
-		public FileReference LiveCodingModules = null;
+		public FileReference? LiveCodingModules = null;
 
 		/// <summary>
 		/// Path to the manifest for passing info about the output to live coding
 		/// </summary>
 		[CommandLine("-LiveCodingManifest=")]
-		public FileReference LiveCodingManifest = null;
+		public FileReference? LiveCodingManifest = null;
+
+		/// <summary>
+		/// If a non-zero value, a live coding request will be terminated if more than the given number of actions are required.
+		/// </summary>
+		[CommandLine("-LiveCodingLimit=")]
+		public uint LiveCodingLimit = 0;
 
 		/// <summary>
 		/// Suppress messages about building this target
 		/// </summary>
 		[CommandLine("-Quiet")]
 		public bool bQuiet;
+
+		/// <summary>
+		/// Clean the target before trying to build it
+		/// </summary>
+		[CommandLine("-Rebuild")]
+		public bool bRebuild;
 
 		/// <summary>
 		/// Constructor
@@ -85,7 +100,7 @@ namespace UnrealBuildTool
 		/// <param name="Configuration">Configuration to build</param>
 		/// <param name="Architecture">Architecture to build for</param>
 		/// <param name="Arguments">Other command-line arguments for the target</param>
-		public TargetDescriptor(FileReference ProjectFile, string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, string Architecture, CommandLineArguments Arguments)
+		public TargetDescriptor(FileReference? ProjectFile, string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, string Architecture, CommandLineArguments? Arguments)
 		{
 			this.ProjectFile = ProjectFile;
 			this.Name = TargetName;
@@ -99,6 +114,19 @@ namespace UnrealBuildTool
 			{
 				// Apply the arguments to this object
 				Arguments.ApplyTo(this);
+
+				// Read the file lists
+				foreach (FileReference FileList in FileLists)
+				{
+					string[] Files = FileReference.ReadAllLines(FileList);
+					foreach (string File in Files)
+					{
+						if (!String.IsNullOrWhiteSpace(File))
+						{
+							SpecificFilesToCompile.Add(new FileReference(File));
+						}
+					}
+				}
 
 				// Parse all the hot-reload module names
 				foreach(string ModuleWithSuffix in Arguments.GetValues("-ModuleWithSuffix="))
@@ -143,11 +171,12 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command-line arguments</param>
 		/// <param name="bUsePrecompiled">Whether to use a precompiled engine distribution</param>
 		/// <param name="bSkipRulesCompile">Whether to skip compiling rules assemblies</param>
+		/// <param name="bForceRulesCompile">Whether to always compile all rules assemblies</param>
 		/// <returns>List of target descriptors</returns>
-		public static List<TargetDescriptor> ParseCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile)
+		public static List<TargetDescriptor> ParseCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, bool bForceRulesCompile)
 		{
 			List<TargetDescriptor> TargetDescriptors = new List<TargetDescriptor>();
-			ParseCommandLine(Arguments, bUsePrecompiled, bSkipRulesCompile, TargetDescriptors);
+			ParseCommandLine(Arguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors);
 			return TargetDescriptors;
 		}
 
@@ -157,8 +186,9 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command-line arguments</param>
 		/// <param name="bUsePrecompiled">Whether to use a precompiled engine distribution</param>
 		/// <param name="bSkipRulesCompile">Whether to skip compiling rules assemblies</param>
+		/// <param name="bForceRulesCompile">Whether to always compile rules assemblies</param>
 		/// <param name="TargetDescriptors">Receives the list of parsed target descriptors</param>
-		public static void ParseCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, List<TargetDescriptor> TargetDescriptors)
+		public static void ParseCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, bool bForceRulesCompile, List<TargetDescriptor> TargetDescriptors)
 		{
 			List<string> TargetLists;
 			Arguments = Arguments.Remove("-TargetList=", out TargetLists);
@@ -178,7 +208,7 @@ namespace UnrealBuildTool
 						if(TrimLine.Length > 0 && TrimLine[0] != ';')
 						{
 							CommandLineArguments NewArguments = Arguments.Append(CommandLineArguments.Split(TrimLine));
-							ParseCommandLine(NewArguments, bUsePrecompiled, bSkipRulesCompile, TargetDescriptors);
+							ParseCommandLine(NewArguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors);
 						}
 					}
 				}
@@ -186,13 +216,13 @@ namespace UnrealBuildTool
 				foreach(string Target in Targets)
 				{
 					CommandLineArguments NewArguments = Arguments.Append(CommandLineArguments.Split(Target));
-					ParseCommandLine(NewArguments, bUsePrecompiled, bSkipRulesCompile, TargetDescriptors);
+					ParseCommandLine(NewArguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors);
 				}
 			}
 			else
 			{
 				// Otherwise just process the whole command line together
-				ParseSingleCommandLine(Arguments, bUsePrecompiled, bSkipRulesCompile, TargetDescriptors);
+				ParseSingleCommandLine(Arguments, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile, TargetDescriptors);
 			}
 		}
 
@@ -202,13 +232,14 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">Command-line arguments</param>
 		/// <param name="bUsePrecompiled">Whether to use a precompiled engine distribution</param>
 		/// <param name="bSkipRulesCompile">Whether to skip compiling rules assemblies</param>
+		/// <param name="bForceRulesCompile">Whether to always compile all rules assemblies</param>
 		/// <param name="TargetDescriptors">List of target descriptors</param>
-		public static void ParseSingleCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, List<TargetDescriptor> TargetDescriptors)
+		public static void ParseSingleCommandLine(CommandLineArguments Arguments, bool bUsePrecompiled, bool bSkipRulesCompile, bool bForceRulesCompile, List<TargetDescriptor> TargetDescriptors)
 		{
 			List<UnrealTargetPlatform> Platforms = new List<UnrealTargetPlatform>();
 			List<UnrealTargetConfiguration> Configurations = new List<UnrealTargetConfiguration>();
 			List<string> TargetNames = new List<string>();
-			FileReference ProjectFile = Arguments.GetFileReferenceOrDefault("-Project=", null);
+			FileReference? ProjectFile = Arguments.GetFileReferenceOrDefault("-Project=", null);
 
 			// Settings for creating/using static libraries for the engine
 			for (int ArgumentIndex = 0; ArgumentIndex < Arguments.Count; ArgumentIndex++)
@@ -336,11 +367,11 @@ namespace UnrealBuildTool
 
 							if (ProjectFile == null)
 							{
-								throw new BuildException("-TargetType=... requires a project file to be specified");
+								TargetNames.Add(RulesCompiler.CreateEngineRulesAssembly(bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile).GetTargetNameByType(TargetType, Platform, Configuration, Architecture, null));
 							}
 							else
 							{
-								TargetNames.Add(RulesCompiler.CreateProjectRulesAssembly(ProjectFile, bUsePrecompiled, bSkipRulesCompile).GetTargetNameByType(TargetType, Platform, Configuration, Architecture, ProjectFile));
+								TargetNames.Add(RulesCompiler.CreateProjectRulesAssembly(ProjectFile, bUsePrecompiled, bSkipRulesCompile, bForceRulesCompile).GetTargetNameByType(TargetType, Platform, Configuration, Architecture, ProjectFile));
 							}
 						}
 
@@ -373,9 +404,9 @@ namespace UnrealBuildTool
 		/// <param name="Arguments">The command line arguments</param>
 		/// <param name="ProjectFile">The project file that was parsed</param>
 		/// <returns>True if the project file was parsed, false otherwise</returns>
-		public static bool TryParseProjectFileArgument(CommandLineArguments Arguments, out FileReference ProjectFile)
+		public static bool TryParseProjectFileArgument(CommandLineArguments Arguments, [NotNullWhen(true)] out FileReference? ProjectFile)
 		{
-			FileReference ExplicitProjectFile;
+			FileReference? ExplicitProjectFile;
 			if(Arguments.TryGetValue("-Project=", out ExplicitProjectFile))
 			{
 				ProjectFile = ExplicitProjectFile;
@@ -394,33 +425,12 @@ namespace UnrealBuildTool
 
 			if(UnrealBuildTool.IsProjectInstalled())
 			{
-				ProjectFile = UnrealBuildTool.GetInstalledProjectFile();
+				ProjectFile = UnrealBuildTool.GetInstalledProjectFile()!;
 				return true;
 			}
 
 			ProjectFile = null;
 			return false;
-		}
-
-		/// <summary>
-		/// Parse a single argument value, of the form -Foo=Bar
-		/// </summary>
-		/// <param name="Argument">The argument to parse</param>
-		/// <param name="Prefix">The argument prefix, eg. "-Foo="</param>
-		/// <param name="Value">Receives the value of the argument</param>
-		/// <returns>True if the argument could be parsed, false otherwise</returns>
-		private static bool ParseArgumentValue(string Argument, string Prefix, out string Value)
-		{
-			if(Argument.StartsWith(Prefix, StringComparison.InvariantCultureIgnoreCase))
-			{
-				Value = Argument.Substring(Prefix.Length);
-				return true;
-			}
-			else
-			{
-				Value = null;
-				return false;
-			}
 		}
 
 		/// <summary>
@@ -448,16 +458,16 @@ namespace UnrealBuildTool
 
 		public override int GetHashCode()
 		{
-			return ProjectFile.GetHashCode() + 
+			return String.GetHashCode(ProjectFile?.FullName) + 
 				Name.GetHashCode() + 
 				Platform.GetHashCode() + 
 				Configuration.GetHashCode() + 
 				Architecture.GetHashCode();
 		}
 
-		public override bool Equals(object Obj) 
+		public override bool Equals(object? Obj) 
 		{
-			TargetDescriptor Other = Obj as TargetDescriptor;
+			TargetDescriptor? Other = Obj as TargetDescriptor;
 			if (Other != null)
 			{
 				return

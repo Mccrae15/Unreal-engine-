@@ -20,7 +20,7 @@ static void AddMcppDefines(TArray<TArray<ANSICHAR>>& OutOptions, const TMap<FStr
 	{
 		FString Argument(FString::Printf(TEXT("-D%s=%s"), *(It.Key()), *(It.Value())));
 		FTCHARToUTF8 Converter(Argument.GetCharArray().GetData());
-		OutOptions.Emplace(Converter.Get(), Converter.Length() + 1);
+		OutOptions.Emplace((const ANSICHAR*)Converter.Get(), Converter.Length() + 1);
 	}
 }
 
@@ -52,7 +52,7 @@ public:
 		return Loader;
 	}
 
-	bool HasIncludedMendatoryHeaders() const
+	bool HasIncludedMandatoryHeaders() const
 	{
 		return CachedFileContents.Contains(TEXT("/Engine/Public/Platform.ush"));
 	}
@@ -71,6 +71,9 @@ private:
 
 		// Substitute virtual platform path here to make sure that #line directives refer to the platform-specific file.
 		ReplaceVirtualFilePathForShaderPlatform(VirtualFilePath, This->ShaderInput.Target.GetPlatform());
+
+		// Fixup autogen file
+		ReplaceVirtualFilePathForShaderAutogen(VirtualFilePath, This->ShaderInput.Target.GetPlatform());
 
 		// Collapse any relative directories to allow #include "../MyFile.ush"
 		FPaths::CollapseRelativeDirectories(VirtualFilePath);
@@ -197,10 +200,13 @@ static void DumpShaderDefinesAsCommentedCode(const FShaderCompilerInput& ShaderI
 	Definitions.GetKeys(/* out */ Keys);
 	Keys.Sort();
 
+	FString Defines;
 	for (const FString& Key : Keys)
 	{
-		*OutDefines += FString::Printf(TEXT("// #define %s %s\n"), *Key, *Definitions[Key]);
+		Defines += FString::Printf(TEXT("// #define %s %s\n"), *Key, *Definitions[Key]);
 	}
+
+	*OutDefines = MakeInjectedShaderCodeBlock(TEXT("DumpShaderDefinesAsCommentedCode"), Defines);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -222,6 +228,8 @@ bool PreprocessShader(
 	EDumpShaderDefines DefinesPolicy
 	)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(PreprocessShader);
+
 	// Skip the cache system and directly load the file path (used for debugging)
 	if (ShaderInput.bSkipPreprocessedCache)
 	{
@@ -237,7 +245,7 @@ bool PreprocessShader(
 
 	static FCriticalSection McppCriticalSection;
 
-	bool bHasIncludedMendatoryHeaders;
+	bool bHasIncludedMandatoryHeaders = false;
 	{
 		FMcppFileLoader FileLoader(ShaderInput, ShaderOutput);
 
@@ -282,7 +290,7 @@ bool PreprocessShader(
 		McppOutput = McppOutAnsi;
 		McppErrors = McppErrAnsi;
 
-		bHasIncludedMendatoryHeaders = FileLoader.HasIncludedMendatoryHeaders();
+		bHasIncludedMandatoryHeaders = FileLoader.HasIncludedMandatoryHeaders();
 	}
 
 	if (!ParseMcppErrors(ShaderOutput.Errors, ShaderOutput.PragmaDirectives, McppErrors))
@@ -300,7 +308,7 @@ bool PreprocessShader(
 		return false;
 	}
 
-	if (!bHasIncludedMendatoryHeaders)
+	if (!bHasIncludedMandatoryHeaders)
 	{
 		FShaderCompilerError Error;
 		Error.ErrorVirtualFilePath = ShaderInput.VirtualSourceFilePath;

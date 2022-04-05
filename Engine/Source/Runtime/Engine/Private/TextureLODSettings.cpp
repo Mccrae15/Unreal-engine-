@@ -2,8 +2,10 @@
 
 #include "Engine/TextureLODSettings.h"
 #include "Engine/Texture2D.h"
+#include "Engine/TextureCube.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
+#include "VT/VirtualTextureBuiltData.h"
 #include "PlatformInfo.h"
 
 int32 GUITextureLODBias = 0;
@@ -58,10 +60,7 @@ void FTextureLODGroup::SetupGroup()
 		}
 	}
 
-	MinLODMipCount = FMath::CeilLogTwo(MinLODSize);
 	MaxLODMipCount = FMath::CeilLogTwo(MaxLODSize);
-
-	OptionalMaxLODMipCount = FMath::CeilLogTwo(OptionalMaxLODSize);
 
 	// Linear filtering
 	if (MinMagFilter == NAME_Linear)
@@ -92,6 +91,14 @@ void FTextureLODGroup::SetupGroup()
 			Filter = ETextureSamplerFilter::AnisotropicLinear;
 		}
 	}
+}
+
+bool FTextureLODGroup::operator==(const FTextureLODGroup& Other) const
+{
+	// Do a UPROPERTY compare to avoid easily broken manual checks
+	UScriptStruct* ScriptStruct = FTextureLODGroup::StaticStruct();
+	
+	return ScriptStruct->CompareScriptStruct(this, &Other, 0);
 }
 
 UTextureLODSettings::UTextureLODSettings(const FObjectInitializer& ObjectInitializer)
@@ -136,18 +143,15 @@ int32 UTextureLODSettings::CalculateLODBias(const UTexture* Texture, bool bIncCi
 
 int32 UTextureLODSettings::CalculateLODBias(int32 Width, int32 Height, int32 MaxSize, int32 LODGroup, int32 LODBias, int32 NumCinematicMipLevels, TextureMipGenSettings InMipGenSetting, bool bVirtualTexture ) const
 {	
+	checkf(LODGroup < TextureLODGroups.Num(), TEXT("A texture had passed a bad LODGroup to UTextureLODSettings::CalculateLODBias (%d, out of %d groups). This code does not have the texture name. The LODSettings object is '%s'"), LODGroup, TextureLODGroups.Num(), *GetPathName());
+
 	// Find LOD group.
 	const FTextureLODGroup& LODGroupInfo = TextureLODGroups[LODGroup];
 
 	// Test to see if we have no mip generation as in which case the LOD bias will be ignored
+	// VTs don't respect NoMipmaps, mips are required for VTs
 	const TextureMipGenSettings FinalMipGenSetting = (InMipGenSetting == TMGS_FromTextureGroup) ? (TextureMipGenSettings)LODGroupInfo.MipGenSettings : InMipGenSetting;
-	if ( FinalMipGenSetting == TMGS_NoMipmaps )
-	{
-		return 0;
-	}
-
-	// Ignore LODBias for virtual textures, as these are not restricted by any GPU max size
-	if (bVirtualTexture)
+	if ( !bVirtualTexture && FinalMipGenSetting == TMGS_NoMipmaps )
 	{
 		return 0;
 	}
@@ -161,12 +165,22 @@ int32 UTextureLODSettings::CalculateLODBias(int32 Width, int32 Height, int32 Max
 	int32 TextureMaxLOD	= FMath::CeilLogTwo( FMath::Max( Width, Height ) );
 
 	// Calculate LOD bias.
-	int32 UsedLODBias	= NumCinematicMipLevels;
+	int32 UsedLODBias = 0;
+	if (!bVirtualTexture)
+	{
+		// VT doesn't support cinematic mips
+		UsedLODBias += NumCinematicMipLevels;
+	}
 	if (!FPlatformProperties::RequiresCookedData())
 	{
 		// When cooking, LODBias and LODGroupInfo.LODBias are taken into account to strip the top mips.
 		// Considering them again here would apply them twice.
-		UsedLODBias	+= LODBias + LODGroupInfo.LODBias;
+		UsedLODBias	+= LODBias;
+		if (!bVirtualTexture)
+		{
+			// Don't include LOD group's bias for VT, could include a separate bias that applies only to VT if needed
+			UsedLODBias += LODGroupInfo.LODBias;
+		}
 	}
 	
 	if (LODGroup == TEXTUREGROUP_UI)
@@ -174,8 +188,16 @@ int32 UTextureLODSettings::CalculateLODBias(int32 Width, int32 Height, int32 Max
 		UsedLODBias += GUITextureLODBias;
 	}
 
-	int32 MinLOD		= LODGroupInfo.MinLODMipCount;
-	int32 MaxLOD		= LODGroupInfo.MaxLODMipCount;
+	int32 MinLOD = FMath::CeilLogTwo(LODGroupInfo.MinLODSize);
+	int32 MaxLOD = FMath::CeilLogTwo(LODGroupInfo.MaxLODSize);
+
+	if (bVirtualTexture)
+	{
+		// Virtual textures have no MinLOD and a specific MaxLOD setting.
+		MinLOD = 0;
+		MaxLOD = LODGroupInfo.MaxLODSize_VT > 0 ? FMath::CeilLogTwo(LODGroupInfo.MaxLODSize_VT) : TextureMaxLOD;
+	}
+
 	int32 WantedMaxLOD	= FMath::Clamp( TextureMaxLOD - UsedLODBias, MinLOD, MaxLOD );
 	WantedMaxLOD		= FMath::Clamp( WantedMaxLOD, 0, TextureMaxLOD );
 	UsedLODBias			= TextureMaxLOD - WantedMaxLOD;
@@ -196,7 +218,7 @@ int32 UTextureLODSettings::CalculateNumOptionalMips(int32 LODGroup, const int32 
 		return 0;
 	}
 
-	int32 OptionalLOD = FMath::Min(LODGroupInfo.OptionalMaxLODMipCount+1, NumMips);
+	int32 OptionalLOD = FMath::Min<int32>(FMath::CeilLogTwo(LODGroupInfo.OptionalMaxLODSize) + 1, NumMips);
 
 	int32 NumOptionalMips = FMath::Min(NumMips - (OptionalLOD - LODGroupInfo.OptionalLODBias), MinMipToInline);
 	return NumOptionalMips;
@@ -246,6 +268,13 @@ void UTextureLODSettings::GetMipGenSettings(const UTexture& Texture, TextureMipG
 
 		Setting = LODGroup.MipGenSettings;
 	}
+
+	// angular filtering only applies to cubemaps
+	if (Setting == TMGS_Angular && !Texture.IsA(UTextureCube::StaticClass()))
+	{
+		Setting = TMGS_NoMipmaps;
+	}
+
 	OutMipGenSettings = Setting;
 
 	// ------------
@@ -280,8 +309,7 @@ void UTextureLODSettings::GetDownscaleOptions(const UTexture& Texture, const ITa
 		GroupDownscaleOptions = ETextureDownscaleOptions::SimpleAverage;
 	}
 		
-	const PlatformInfo::FPlatformInfo& Info = CurrentPlatform.GetPlatformInfo();
-	Downscale = Texture.Downscale.GetValueForPlatformIdentifiers(Info.PlatformGroupName, Info.VanillaPlatformName);;
+	Downscale = Texture.Downscale.GetValueForPlatform(*CurrentPlatform.IniPlatformName());
 	if (Downscale < 1.f)
 	{
 		// value is not overriden for this texture

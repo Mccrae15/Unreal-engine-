@@ -8,6 +8,8 @@
 #include "GPULightmassSettings.h"
 #include "Scene/Scene.h"
 
+class SNotificationItem;
+
 class FGPULightmass : public IStaticLightingSystem
 {
 public:

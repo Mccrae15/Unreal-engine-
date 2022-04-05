@@ -21,6 +21,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "EditorStyleSet.h"
 #include "Materials/MaterialInterface.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 #include "ISourceControlModule.h"
 #include "Engine/Texture.h"
 #include "AssetData.h"
@@ -365,7 +366,7 @@ void SConsolidateToolWidget::Construct( const FArguments& InArgs )
 	SelectedListItem = NULL;
 	bSavePackagesChecked = ISourceControlModule::Get().IsEnabled();
 
-	this->BorderImage = FInvalidatableBrushAttribute(FEditorStyle::GetBrush("NoBorder"));
+	SetBorderImage(FEditorStyle::GetBrush("NoBorder"));
 
 	ChildSlot
 	[
@@ -614,6 +615,7 @@ bool SConsolidateToolWidget::DetermineAssetCompatibility( const TArray<UObject*>
 				// If the proposed object doesn't share a common class or a common base that is allowed as an exception, it is not a compatible object
 				if ( !( NearestCommonBase->IsChildOf( UTexture::StaticClass() ) )  &&
 					 !( NearestCommonBase->IsChildOf( UMaterialInterface::StaticClass() ) ) &&
+					 !( NearestCommonBase->IsChildOf( UPhysicalMaterial::StaticClass() ) ) &&
 					 !( NearestCommonBase->IsChildOf( UDataTable::StaticClass() ) ) )
 				{
 					bAllAssetsValid = false;

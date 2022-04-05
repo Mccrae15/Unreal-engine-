@@ -1,5 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System.IO;
+
 namespace UnrealBuildTool.Rules
 {
 	public class AjaMediaOutput : ModuleRules
@@ -15,7 +17,7 @@ namespace UnrealBuildTool.Rules
 			PrivateIncludePaths.AddRange(
 				new string[]
 				{
-					"AjaMediaOutput/Private",
+					"AjaMediaOutput/Private"
 				}
 			);
 
@@ -31,12 +33,13 @@ namespace UnrealBuildTool.Rules
 					"RHI",
 					"Slate",
 					"SlateCore",
-					"TimeManagement",
+					"TimeManagement"
 				}
 			);
 
 			if (Target.bBuildEditor == true)
 			{
+				PrivateDependencyModuleNames.Add("EditorFramework");
 				PrivateDependencyModuleNames.Add("UnrealEd");
 			}
 		}

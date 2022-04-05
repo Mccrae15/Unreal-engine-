@@ -10,48 +10,32 @@
 
 namespace Chaos
 {
-	DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::BroadPhase"), STAT_Collisions_BroadPhase, STATGROUP_ChaosCollision, CHAOS_API);
-
 	/**
 	 * Run through a list of particle pairs and pass them onto the collision detector if their AABBs overlap.
 	 * In addition, collide all particles in ParticlesA with all particles in ParticlesB.
 	 *
 	 * No spatial acceleration, and the order is assumed to be already optimized for cache efficiency.
 	 */
-	class CHAOS_API FParticlePairBroadPhase
+	class CHAOS_API FBasicBroadPhase
 	{
 	public:
 		using FParticleHandle = TGeometryParticleHandle<FReal, 3>;
 		using FParticlePair = TVector<FParticleHandle*, 2>;
 		using FAABB = FAABB3;
 
-		FParticlePairBroadPhase(const TArray<FParticlePair>* InParticlePairs, const TArray<FParticleHandle*>* InParticlesA, const TArray<FParticleHandle*>* InParticlesB, const FReal InCullDistance)
+		FBasicBroadPhase(const TArray<FParticlePair>* InParticlePairs, const TArray<FParticleHandle*>* InParticlesA, const TArray<FParticleHandle*>* InParticlesB)
 			: ParticlePairs(InParticlePairs)
 			, ParticlesA(InParticlesA)
 			, ParticlesB(InParticlesB)
-			, CullDistance(InCullDistance)
 		{
-		}
-
-		FReal GetCullDistance() const 
-		{
-			return CullDistance;
-		}
-
-		void SetCullDustance(const FReal InCullDistance)
-		{
-			CullDistance = InCullDistance;
 		}
 
 		/**
 		 *
 		 */
-		void ProduceOverlaps(FReal Dt,
-			FCollisionConstraintsArray& ConstraintsArray,
-			FNarrowPhase& NarrowPhase,
-			CollisionStats::FStatData& StatData)
+		void ProduceOverlaps(FReal Dt, FNarrowPhase& NarrowPhase)
 		{
-			SCOPE_CYCLE_COUNTER(STAT_Collisions_BroadPhase);
+			SCOPE_CYCLE_COUNTER(STAT_Collisions_ParticlePairBroadPhase);
 
 			if (ParticlePairs != nullptr)
 			{
@@ -63,7 +47,7 @@ namespace Chaos
 
 					if ((ParticleA != nullptr) && (ParticleB != nullptr))
 					{
-						ProduceOverlaps(Dt, ConstraintsArray, NarrowPhase, ParticleA, ParticleB, StatData);
+						ProduceOverlaps(Dt, NarrowPhase, ParticleA, ParticleB, ParticleA);
 					}
 				}
 			}
@@ -78,7 +62,7 @@ namespace Chaos
 						{
 							if (ParticleB != nullptr)
 							{
-								ProduceOverlaps(Dt, ConstraintsArray, NarrowPhase, ParticleA, ParticleB, StatData);
+								ProduceOverlaps(Dt, NarrowPhase, ParticleA, ParticleB, ParticleA);
 							}
 						}
 					}
@@ -89,26 +73,21 @@ namespace Chaos
 	private:
 		inline void ProduceOverlaps(
 			FReal Dt,
-			FCollisionConstraintsArray& ConstraintsArray,
 			FNarrowPhase& NarrowPhase,
 			FParticleHandle* ParticleA,
 			FParticleHandle* ParticleB,
-			CollisionStats::FStatData& StatData)
+			FParticleHandle* SearchParticle)
 		{
 			const FAABB3& Box0 = ParticleA->WorldSpaceInflatedBounds();
 			const FAABB3& Box1 = ParticleB->WorldSpaceInflatedBounds();
 			if (Box0.Intersects(Box1))
 			{
-				NarrowPhase.GenerateCollisions(ConstraintsArray, Dt, ParticleA, ParticleB, CullDistance);
+				NarrowPhase.GenerateCollisions(Dt, ParticleA, ParticleB, SearchParticle, true);
 			}
-
-			CHAOS_COLLISION_STAT(if (ConstraintsArray.Num()) { StatData.IncrementCountNP(ConstraintsArray.Num()); });
-			CHAOS_COLLISION_STAT(if (!ConstraintsArray.Num()) { StatData.IncrementRejectedNP(); });
 		}
 
 		const TArray<FParticlePair>* ParticlePairs;
 		const TArray<FParticleHandle*>* ParticlesA;
 		const TArray<FParticleHandle*>* ParticlesB;
-		FReal CullDistance;
 	};
 }

@@ -59,6 +59,7 @@ FVisualLogEntry::FVisualLogEntry(const FVisualLogEntry& Entry)
 {
 	TimeStamp = Entry.TimeStamp;
 	Location = Entry.Location;
+	bIsLocationValid = Entry.bIsLocationValid;
 
 	Events = Entry.Events;
 	LogLines = Entry.LogLines;
@@ -70,27 +71,31 @@ FVisualLogEntry::FVisualLogEntry(const FVisualLogEntry& Entry)
 
 FVisualLogEntry::FVisualLogEntry(const AActor* InActor, TArray<TWeakObjectPtr<UObject> >* Children)
 {
-	if (InActor && InActor->IsPendingKill() == false)
+	if (!IsValid(InActor))
 	{
-		TimeStamp = InActor->GetWorld()->TimeSeconds;
-		Location = InActor->GetActorLocation();
-		const IVisualLoggerDebugSnapshotInterface* DebugSnapshotInterface = Cast<const IVisualLoggerDebugSnapshotInterface>(InActor);
-		if (DebugSnapshotInterface)
+		Reset();
+	}
+
+	TimeStamp = InActor->GetWorld()->TimeSeconds;
+	Location = InActor->GetActorLocation();
+	bIsLocationValid = true;
+
+	const IVisualLoggerDebugSnapshotInterface* DebugSnapshotInterface = Cast<const IVisualLoggerDebugSnapshotInterface>(InActor);
+	if (DebugSnapshotInterface)
+	{
+		DebugSnapshotInterface->GrabDebugSnapshot(this);
+	}
+	if (Children != nullptr)
+	{
+		TWeakObjectPtr<UObject>* WeakActorPtr = Children->GetData();
+		for (int32 Index = 0; Index < Children->Num(); ++Index, ++WeakActorPtr)
 		{
-			DebugSnapshotInterface->GrabDebugSnapshot(this);
-		}
-		if (Children != nullptr)
-		{
-			TWeakObjectPtr<UObject>* WeakActorPtr = Children->GetData();
-			for (int32 Index = 0; Index < Children->Num(); ++Index, ++WeakActorPtr)
+			if (WeakActorPtr->IsValid())
 			{
-				if (WeakActorPtr->IsValid())
+				const IVisualLoggerDebugSnapshotInterface* ChildActor = Cast<const IVisualLoggerDebugSnapshotInterface>(WeakActorPtr->Get());
+				if (ChildActor)
 				{
-					const IVisualLoggerDebugSnapshotInterface* ChildActor = Cast<const IVisualLoggerDebugSnapshotInterface>(WeakActorPtr->Get());
-					if (ChildActor)
-					{
-						ChildActor->GrabDebugSnapshot(this);
-					}
+					ChildActor->GrabDebugSnapshot(this);
 				}
 			}
 		}
@@ -101,6 +106,8 @@ FVisualLogEntry::FVisualLogEntry(float InTimeStamp, FVector InLocation, const UO
 {
 	TimeStamp = InTimeStamp;
 	Location = InLocation;
+	bIsLocationValid = true;
+
 	const IVisualLoggerDebugSnapshotInterface* DebugSnapshotInterface = Cast<const IVisualLoggerDebugSnapshotInterface>(Object);
 	if (DebugSnapshotInterface)
 	{
@@ -123,27 +130,57 @@ FVisualLogEntry::FVisualLogEntry(float InTimeStamp, FVector InLocation, const UO
 	}
 }
 
+void FVisualLogEntry::InitializeEntry(const float InTimeStamp)
+{
+	Reset();
+	TimeStamp = InTimeStamp;
+	bIsInitialized = true;
+}
+
 void FVisualLogEntry::Reset()
 {
 	TimeStamp = -1;
 	Location = FVector::ZeroVector;
+	bIsLocationValid = false;
 	Events.Reset();
 	LogLines.Reset();
 	Status.Reset();
 	ElementsToDraw.Reset();
 	HistogramSamples.Reset();
 	DataBlocks.Reset();
+	bIsInitialized = false;
+}
+
+void FVisualLogEntry::SetPassedObjectAllowList(const bool bPassed)
+{
+	bPassedObjectAllowList = bPassed;
+	UpdateAllowedToLog();
 }
 
 void FVisualLogEntry::UpdateAllowedToLog()
 {
-	// object whitelist purpose is to create exceptions in class whitelist filter, expanding allowed set
-	bIsAllowedToLog = bIsClassWhitelisted || bIsObjectWhitelisted;
+	bIsAllowedToLog = bPassedClassAllowList || bPassedObjectAllowList;
 }
 
 int32 FVisualLogEntry::AddEvent(const FVisualLogEventBase& Event)
 {
 	return Events.Add(Event);
+}
+
+void FVisualLogEntry::MoveTo(FVisualLogEntry& Other)
+{
+	ensureMsgf(bIsInitialized && Other.bIsInitialized, TEXT("Both entries need to be initialized to move to the other"));
+	ensureMsgf(TimeStamp == Other.TimeStamp, TEXT("Can only move similar entries"));
+	ensureMsgf(bPassedClassAllowList == Other.bPassedClassAllowList, TEXT("Can only move similar entries"));
+	ensureMsgf(bPassedObjectAllowList == Other.bPassedObjectAllowList, TEXT("Can only move similar entries"));
+	ensureMsgf(bIsAllowedToLog == Other.bIsAllowedToLog, TEXT("Can only move similar entries"));
+	Other.Events.Append(Events);
+	Other.LogLines.Append(LogLines);
+	Other.Status.Append(Status);
+	Other.ElementsToDraw.Append(ElementsToDraw);
+	Other.HistogramSamples.Append(HistogramSamples);
+	Other.DataBlocks.Append(DataBlocks);
+	Reset();
 }
 
 void FVisualLogEntry::AddText(const FString& TextLine, const FName& CategoryName, ELogVerbosity::Type Verbosity)
@@ -198,6 +235,21 @@ void FVisualLogEntry::AddArrow(const FVector& Start, const FVector& End, const F
 	ElementsToDraw.Add(Element);
 }
 
+void FVisualLogEntry::AddCircle(const FVector& Center, const FVector& UpAxis, const float Radius, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FColor& Color, const FString& Description, const uint16 Thickness)
+{
+	FVisualLogShapeElement Element(EVisualLoggerShapeElement::Circle);
+	Element.Category = CategoryName;
+	Element.SetColor(Color);
+	Element.Thicknes = Thickness;
+	Element.Description = Description;
+	Element.Points.Reserve(3);
+	Element.Points.Add(Center);
+	Element.Points.Add(UpAxis);
+	Element.Points.Add(FVector(Radius, 0.0f, 0.0f));
+	Element.Verbosity = Verbosity;
+	ElementsToDraw.Add(Element);
+}
+
 void FVisualLogEntry::AddElement(const FBox& Box, const FMatrix& Matrix, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FColor& Color, const FString& Description, uint16 Thickness)
 {
 	FVisualLogShapeElement Element(Description, Color, Thickness, CategoryName);
@@ -248,11 +300,11 @@ void FVisualLogEntry::AddElement(const FVector& Start, const FVector& End, float
 	ElementsToDraw.Add(Element);
 }
 
-void FVisualLogEntry::AddElement(const FVector& Center, float HalfHeight, float Radius, const FQuat & Rotation, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FColor& Color, const FString& Description)
+void FVisualLogEntry::AddElement(const FVector& Base, float HalfHeight, float Radius, const FQuat & Rotation, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FColor& Color, const FString& Description)
 {
 	FVisualLogShapeElement Element(Description, Color, 0, CategoryName);
 	Element.Points.Reserve(3);
-	Element.Points.Add(Center);
+	Element.Points.Add(Base);
 	Element.Points.Add(FVector(HalfHeight, Radius, Rotation.X));
 	Element.Points.Add(FVector(Rotation.Y, Rotation.Z, Rotation.W));
 	Element.Type = EVisualLoggerShapeElement::Capsule;
@@ -342,7 +394,18 @@ FArchive& operator<<(FArchive& Ar, FVisualLogHistogramSample& Sample)
 	FVisualLoggerHelpers::Serialize(Ar, Sample.GraphName);
 	FVisualLoggerHelpers::Serialize(Ar, Sample.DataName);
 	Ar << Sample.Verbosity;
-	Ar << Sample.SampleValue;
+
+	if (Ar.CustomVer(EVisualLoggerVersion::GUID) >= EVisualLoggerVersion::LargeWorldCoordinatesAndLocationValidityFlag)
+	{
+		Ar << Sample.SampleValue;
+	}
+	else
+	{
+		FVector2f SampleValueFlt;
+		Ar << SampleValueFlt;
+		Sample.SampleValue = FVector2D(SampleValueFlt);
+	}
+
 	Ar << Sample.UniqueId;
 
 	return Ar;
@@ -368,12 +431,37 @@ FArchive& operator<<(FArchive& Ar, FVisualLogShapeElement& Element)
 	Ar << Element.Verbosity;
 	const int32 VLogsVer = Ar.CustomVer(EVisualLoggerVersion::GUID);
 
+	const bool bUseLargeWorldCoordinates = (VLogsVer >= EVisualLoggerVersion::LargeWorldCoordinatesAndLocationValidityFlag);
+	
 	if (VLogsVer >= EVisualLoggerVersion::TransformationForShapes)
 	{
-		Ar << Element.TransformationMatrix;
+		if (bUseLargeWorldCoordinates)
+		{
+			Ar << Element.TransformationMatrix;
+		}
+		else
+		{
+			FMatrix44f TransformationMatrixFlt;
+        	Ar << TransformationMatrixFlt;
+        	Element.TransformationMatrix = FMatrix(TransformationMatrixFlt);
+		}
 	}
 
-	Ar << Element.Points;
+	if (bUseLargeWorldCoordinates)
+	{
+		Ar << Element.Points;
+	}
+	else
+	{
+		TArray<FVector3f> FltPoints;
+		Ar << FltPoints;
+		Element.Points.Reserve(FltPoints.Num());
+		for (FVector3f Point : FltPoints)
+		{
+			Element.Points.Emplace(Point);
+		}
+	}
+
 	Ar << Element.UniqueId;
 	Ar << Element.Type;
 	Ar << Element.Color;
@@ -461,14 +549,29 @@ FArchive& operator<<(FArchive& Ar, FVisualLogStatusCategory& Status)
 FArchive& operator<<(FArchive& Ar, FVisualLogEntry& LogEntry)
 {
 	Ar << LogEntry.TimeStamp;
-	Ar << LogEntry.Location;
+
+	const int32 VLogsVer = Ar.CustomVer(EVisualLoggerVersion::GUID);
+	if (VLogsVer >= EVisualLoggerVersion::LargeWorldCoordinatesAndLocationValidityFlag)
+	{
+		Ar << LogEntry.Location;
+
+		uint8 bTempIsLocationValid = (LogEntry.bIsLocationValid != 0);
+		Ar.SerializeBits(&bTempIsLocationValid, 1);
+		LogEntry.bIsLocationValid = bTempIsLocationValid != 0;
+	}
+	else
+	{
+		FVector3f LocationFlt(LogEntry.Location);
+		Ar << LocationFlt;
+		LogEntry.Location = FVector(LocationFlt);
+	}
+
 	Ar << LogEntry.LogLines;
 	Ar << LogEntry.Status;
 	Ar << LogEntry.Events;
 	Ar << LogEntry.ElementsToDraw;
 	Ar << LogEntry.DataBlocks;
-
-	const int32 VLogsVer = Ar.CustomVer(EVisualLoggerVersion::GUID);
+	
 	if (VLogsVer > EVisualLoggerVersion::Initial)
 	{
 		Ar << LogEntry.HistogramSamples;

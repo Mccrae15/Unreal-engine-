@@ -8,9 +8,11 @@
 #include "Curves/KeyHandle.h"
 #include "MovieSceneSection.h"
 #include "MovieSceneKeyStruct.h"
+#include "Channels/MovieSceneDoubleChannel.h"
 #include "Channels/MovieSceneFloatChannel.h"
 #include "EntitySystem/IMovieSceneEntityProvider.h"
 #include "TransformData.h"
+#include "Misc/LargeWorldCoordinates.h"
 #include "MovieScene3DTransformSection.generated.h"
 
 
@@ -24,7 +26,6 @@ enum class EShow3DTrajectory : uint8
 	EST_Never UMETA(DisplayName="Never"),
 };
 #endif
-
 
 
 /**
@@ -85,7 +86,7 @@ struct FMovieScene3DScaleKeyStruct
 
 	/** The key's scale value. */
 	UPROPERTY(EditAnywhere, Category=Key)
-	FVector Scale = FVector::OneVector;
+	FVector3f Scale = FVector3f::OneVector;
 
 	/** The key's time. */
 	UPROPERTY(EditAnywhere, Category=Key)
@@ -117,7 +118,7 @@ struct FMovieScene3DTransformKeyStruct
 
 	/** The key's scale value. */
 	UPROPERTY(EditAnywhere, Category=Key)
-	FVector Scale = FVector::OneVector;
+	FVector3f Scale = FVector3f::OneVector;
 
 	/** The key's time. */
 	UPROPERTY(EditAnywhere, Category=Key)
@@ -271,15 +272,15 @@ private:
 
 	/** Translation curves */
 	UPROPERTY()
-	FMovieSceneFloatChannel Translation[3];
+	FMovieSceneDoubleChannel Translation[3];
 	
 	/** Rotation curves */
 	UPROPERTY()
-	FMovieSceneFloatChannel Rotation[3];
+	FMovieSceneDoubleChannel Rotation[3];
 
 	/** Scale curves */
 	UPROPERTY()
-	FMovieSceneFloatChannel Scale[3];
+	FMovieSceneDoubleChannel Scale[3];
 
 	/** Manual weight curve */
 	UPROPERTY()

@@ -27,8 +27,8 @@ namespace Chaos
 *
 	FManagedArrayCollection* Collection(NewObject<FManagedArrayCollection>());
 	Collection->AddElements(10, "GroupBar"); // Create a group GroupBar and add 10 elements.
-	Collection->AddAttribute<FVector>("AttributeFoo", "GroupBar"); // Add a FVector array named AttributeFoo to GroupBar.
-	TManagedArray<FVector>&  Foo = Collection->GetAttribute<FVector>("AttributeFoo", "GroupBar"); // Get AttributeFoo
+	Collection->AddAttribute<FVector3f>("AttributeFoo", "GroupBar"); // Add a FVector array named AttributeFoo to GroupBar.
+	TManagedArray<FVector3f>&  Foo = Collection->GetAttribute<FVector3f>("AttributeFoo", "GroupBar"); // Get AttributeFoo
 	for (int32 i = 0; i < Foo.Num(); i++)
 	{
 		Foo[i] = FVector(i, i, i); // Update AttribureFoo's elements
@@ -446,8 +446,6 @@ private:
 
 	virtual void SetDefaults(FName Group, uint32 StartSize, uint32 NumElements) {};
 
-	void GenerateGuids(FName Group, int32 StartIdx);
-
 	TMap< FKeyType, FValueType> Map;	//data is owned by the map explicitly
 	TMap< FName, FGroupInfo> GroupInfo;
 	bool bDirty;
@@ -482,3 +480,22 @@ protected:
 
 };
 
+
+/*
+*  FManagedArrayInterface
+*/
+class CHAOS_API FManagedArrayInterface
+{
+public:
+	FManagedArrayInterface() : ManagedCollection(nullptr) {}
+	FManagedArrayInterface(FManagedArrayCollection* InManagedArray)
+		: ManagedCollection(InManagedArray) {}
+
+	virtual void InitializeInterface() = 0;
+	virtual void CleanInterfaceForCook() = 0; 
+	virtual void RemoveInterfaceAttributes() = 0;
+
+protected:
+	FManagedArrayCollection* ManagedCollection;
+
+};

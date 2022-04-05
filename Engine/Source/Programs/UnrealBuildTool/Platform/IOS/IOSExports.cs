@@ -8,7 +8,8 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -26,7 +27,7 @@ namespace UnrealBuildTool
 		/// <param name="SigningCertificate"></param>
 		/// <param name="TeamUUID"></param>
 		/// <param name="bAutomaticSigning"></param>
-		public static void GetProvisioningData(FileReference InProject, bool Distribution, out string MobileProvision, out string SigningCertificate, out string TeamUUID, out bool bAutomaticSigning)
+		public static void GetProvisioningData(FileReference InProject, bool Distribution, out string? MobileProvision, out string? SigningCertificate, out string? TeamUUID, out bool bAutomaticSigning)
 		{
 			IOSProjectSettings ProjectSettings = ((IOSPlatform)UEBuildPlatform.GetBuildPlatform(UnrealTargetPlatform.IOS)).ReadProjectSettings(InProject);
 			if (ProjectSettings == null)
@@ -91,7 +92,7 @@ namespace UnrealBuildTool
 		/// <param name="ProjectFile"></param>
 		/// <param name="Config"></param>
 		/// <param name="ProjectDirectory"></param>
-		/// <param name="bIsUE4Game"></param>
+		/// <param name="bIsUnrealGame"></param>
 		/// <param name="GameName"></param>
 		/// <param name="bIsClient"></param>
 		/// <param name="ProjectName"></param>
@@ -100,12 +101,11 @@ namespace UnrealBuildTool
 		/// <param name="BuildReceiptFileName"></param>
 		/// <param name="bSupportsPortrait"></param>
 		/// <param name="bSupportsLandscape"></param>
-		/// <param name="bSkipIcons"></param>
 		/// <returns></returns>
-		public static bool GeneratePList(FileReference ProjectFile, UnrealTargetConfiguration Config, DirectoryReference ProjectDirectory, bool bIsUE4Game, string GameName, bool bIsClient, string ProjectName, DirectoryReference InEngineDir, DirectoryReference AppDirectory, FileReference BuildReceiptFileName, out bool bSupportsPortrait, out bool bSupportsLandscape, out bool bSkipIcons)
+		public static bool GeneratePList(FileReference ProjectFile, UnrealTargetConfiguration Config, DirectoryReference ProjectDirectory, bool bIsUnrealGame, string GameName, bool bIsClient, string ProjectName, DirectoryReference InEngineDir, DirectoryReference AppDirectory, FileReference BuildReceiptFileName, out bool bSupportsPortrait, out bool bSupportsLandscape)
 		{
 			TargetReceipt Receipt = TargetReceipt.Read(BuildReceiptFileName);
-			return new UEDeployIOS().GeneratePList(ProjectFile, Config, ProjectDirectory.FullName, bIsUE4Game, GameName, bIsClient, ProjectName, InEngineDir.FullName, AppDirectory.FullName, Receipt, out bSupportsPortrait, out bSupportsLandscape, out bSkipIcons);
+			return new UEDeployIOS().GeneratePList(ProjectFile, Config, ProjectDirectory.FullName, bIsUnrealGame, GameName, bIsClient, ProjectName, InEngineDir.FullName, AppDirectory.FullName, Receipt, out bSupportsPortrait, out bSupportsLandscape);
 		}
 
 		/// <summary>
@@ -117,7 +117,7 @@ namespace UnrealBuildTool
 		public static void StripSymbols(UnrealTargetPlatform PlatformType, FileReference SourceFile, FileReference TargetFile)
 		{
 			IOSProjectSettings ProjectSettings = ((IOSPlatform)UEBuildPlatform.GetBuildPlatform(PlatformType)).ReadProjectSettings(null);
-			IOSToolChain ToolChain = new IOSToolChain(null, ProjectSettings);
+			IOSToolChain ToolChain = new IOSToolChain(null, ProjectSettings, IOSToolChainOptions.None);
 			ToolChain.StripSymbols(SourceFile, TargetFile);
 		}
 
@@ -134,7 +134,7 @@ namespace UnrealBuildTool
 			bool bUserImagesExist = false;
 			DirectoryReference ResourcesDir = IOSToolChain.GenerateAssetCatalog(ProjectFile, Platform, ref bUserImagesExist);
 
-			// Don't attempt to do anything remotely if the user is using the default UE4 images.
+			// Don't attempt to do anything remotely if the user is using the default UE images.
 			if (!bUserImagesExist)
 			{
 				return;
@@ -188,7 +188,7 @@ namespace UnrealBuildTool
 		/// <param name="bForDistribution"></param>
 		/// <param name="IntermediateDir"></param>
 		public static void WriteEntitlements(UnrealTargetPlatform Platform, ConfigHierarchy PlatformGameConfig,
-		string AppName, FileReference MobileProvisionFile, bool bForDistribution, string IntermediateDir)
+		string AppName, FileReference? MobileProvisionFile, bool bForDistribution, string IntermediateDir)
 		{
 			// get some info from the mobileprovisioning file
 			// the iCloud identifier and the bundle id may differ

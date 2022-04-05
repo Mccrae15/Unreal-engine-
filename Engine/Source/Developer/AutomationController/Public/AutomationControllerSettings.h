@@ -18,8 +18,8 @@ struct FAutomatedTestFilter
 
 public:
 
-	FAutomatedTestFilter(FString InContains, bool InMatchFromStart = false)
-		: Contains(InContains), MatchFromStart(InMatchFromStart)
+	FAutomatedTestFilter(FString InContains, bool InMatchFromStart = false, bool InMatchFromEnd = false)
+		: Contains(InContains), MatchFromStart(InMatchFromStart), MatchFromEnd(InMatchFromEnd)
 	{
 	}
 
@@ -32,6 +32,10 @@ public:
 	/** If true start matching from the start of the string, else anywhere */
 	UPROPERTY(Config)
 		bool MatchFromStart;
+
+	/** If true start matching from the end of the string, else anywhere */
+	UPROPERTY(Config)
+		bool MatchFromEnd;	
 };
 
 /*
@@ -75,10 +79,16 @@ public:
 	UPROPERTY(Config)
 	bool bSuppressLogWarnings;
 
-	/** Whether to treat log warnings as test errors (default=true) */
+	/** Whether to treat log warnings as log errors (default=true) */
 	UPROPERTY(Config)
+	bool bElevateLogWarningsToErrors;
+	
+private:
+	/** Whether to treat log warnings as test errors (default=true) */
+	UPROPERTY(Config, Meta = (DeprecatedProperty, DeprecationMessage = "Use bElevateLogWarningsToErrors instead."))
 	bool bTreatLogWarningsAsTestErrors;
 	
+public:
 	/** How long to wait between test updates (default=1sec)*/
 	UPROPERTY(Config)
 	float CheckTestIntervalSeconds;
@@ -86,4 +96,14 @@ public:
 	/** The maximum response wait time for detecting a lost game instance (default=300sec)*/
 	UPROPERTY(Config)
 	float GameInstanceLostTimerSeconds;
+
+	/** Path to where telemetry files are saved (default=<project>/Saved/Automation/Telemetry/)*/
+	UPROPERTY(Config)
+	FString TelemetryDirectory;
+
+	/** Whether to reset data stored in telemetry file (default=false) */
+	UPROPERTY(Config)
+	bool bResetTelemetryStorageOnNewSession;
+
+	virtual void PostInitProperties() override;
 };

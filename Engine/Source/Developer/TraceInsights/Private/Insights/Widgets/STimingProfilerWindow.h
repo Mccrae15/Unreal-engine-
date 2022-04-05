@@ -14,7 +14,7 @@
 
 // Insights
 #include "Insights/InsightsManager.h"
-#include "Insights/IUnrealInsightsModule.h"
+#include "Insights/ITimingViewSession.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -63,9 +63,6 @@ public:
 	TSharedPtr<SLogView> GetLogView() const { return LogView; }
 
 private:
-	TSharedRef<SDockTab> SpawnTab_Toolbar(const FSpawnTabArgs& Args);
-	void OnToolbarTabClosed(TSharedRef<SDockTab> TabBeingClosed);
-
 	TSharedRef<SDockTab> SpawnTab_FramesTrack(const FSpawnTabArgs& Args);
 	void OnFramesTrackTabClosed(TSharedRef<SDockTab> TabBeingClosed);
 
@@ -157,6 +154,8 @@ private:
 	 * @return A reply that indicated whether this event was handled.
 	 */
 	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)  override;
+
+	void OnTimeSelectionChanged(Insights::ETimeChangedFlags InFlags, double InStartTime, double InEndTime);
 
 private:
 	/** The Frame track widget */

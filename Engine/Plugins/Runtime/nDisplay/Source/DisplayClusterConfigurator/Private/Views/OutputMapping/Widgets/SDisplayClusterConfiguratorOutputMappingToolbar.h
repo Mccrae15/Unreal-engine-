@@ -32,7 +32,10 @@ public:
 	TSharedRef< SWidget > MakeToolBar(const TSharedPtr< FExtender > InExtenders);
 
 private:
-	TSharedRef<SWidget> MakePositioningMenu();
+	TSharedRef<SWidget> MakeWindowDisplayMenu();
+	FText GetWindowDisplayText() const;
+
+	TSharedRef<SWidget> MakeTransformMenu();
 
 	TSharedRef<SWidget> MakeSnappingMenu();
 

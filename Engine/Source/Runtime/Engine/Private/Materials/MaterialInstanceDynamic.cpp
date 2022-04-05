@@ -10,6 +10,7 @@
 #include "Engine/Texture.h"
 #include "Misc/RuntimeErrors.h"
 #include "UnrealEngine.h"
+#include "ObjectCacheEventSink.h"
 #include "Materials/MaterialUniformExpressions.h"
 #include "Stats/StatsMisc.h"
 #include "HAL/LowLevelMemTracker.h"
@@ -19,12 +20,46 @@ UMaterialInstanceDynamic::UMaterialInstanceDynamic(const FObjectInitializer& Obj
 {
 }
 
+void UMaterialInstanceDynamic::UpdateCachedDataDynamic()
+{
+	FMaterialLayersFunctions ParentLayers;
+	bool bParentHasLayers = false;
+	if (Parent)
+	{
+		bParentHasLayers = Parent->GetMaterialLayers(ParentLayers);
+	}
+
+	if (!CachedData)
+	{
+		CachedData.Reset(new FMaterialInstanceCachedData());
+	}
+	CachedData->InitializeForDynamic(bParentHasLayers ? &ParentLayers : nullptr);
+
+	if (Resource)
+	{
+		Resource->GameThread_UpdateCachedData(*CachedData);
+	}
+}
+
+#if WITH_EDITOR
+void UMaterialInstanceDynamic::UpdateCachedData()
+{
+	UpdateCachedDataDynamic();
+}
+#endif // WITH_EDITOR
+
+void UMaterialInstanceDynamic::InitializeMID(class UMaterialInterface* ParentMaterial)
+{
+	SetParentInternal(ParentMaterial, false);
+	UpdateCachedDataDynamic();
+}
+
 UMaterialInstanceDynamic* UMaterialInstanceDynamic::Create(UMaterialInterface* ParentMaterial, UObject* InOuter)
 {
 	LLM_SCOPE(ELLMTag::MaterialInstance);
 	UObject* Outer = InOuter ? InOuter : GetTransientPackage();
 	UMaterialInstanceDynamic* MID = NewObject<UMaterialInstanceDynamic>(Outer);
-	MID->SetParentInternal(ParentMaterial, false);
+	MID->InitializeMID(ParentMaterial);
 	return MID;
 }
 
@@ -71,7 +106,7 @@ UMaterialInstanceDynamic* UMaterialInstanceDynamic::Create(UMaterialInterface* P
 		}
 	}
 	UMaterialInstanceDynamic* MID = NewObject<UMaterialInstanceDynamic>(Outer, Name);
-	MID->SetParentInternal(ParentMaterial, false);
+	MID->InitializeMID(ParentMaterial);
 	return MID;
 }
 
@@ -79,6 +114,12 @@ void UMaterialInstanceDynamic::SetVectorParameterValue(FName ParameterName, FLin
 {
 	FMaterialParameterInfo ParameterInfo(ParameterName);
 	SetVectorParameterValueInternal(ParameterInfo,Value);
+}
+
+void UMaterialInstanceDynamic::SetDoubleVectorParameterValue(FName ParameterName, FVector Value)
+{
+	FMaterialParameterInfo ParameterInfo(ParameterName);
+	SetDoubleVectorParameterValueInternal(ParameterInfo, Value);
 }
 
 void UMaterialInstanceDynamic::SetVectorParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo, FLinearColor Value)
@@ -189,6 +230,17 @@ void UMaterialInstanceDynamic::SetTextureParameterValueByInfo(const FMaterialPar
 	}
 
 	SetTextureParameterValueInternal(ParameterInfo, Value);
+}
+
+void UMaterialInstanceDynamic::SetRuntimeVirtualTextureParameterValue(FName ParameterName, class URuntimeVirtualTexture* Value)
+{
+	FMaterialParameterInfo ParameterInfo(ParameterName);
+	SetRuntimeVirtualTextureParameterValueInternal(ParameterInfo, Value);
+}
+
+void UMaterialInstanceDynamic::SetRuntimeVirtualTextureParameterValueByInfo(const FMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture* Value)
+{
+	SetRuntimeVirtualTextureParameterValueInternal(ParameterInfo, Value);
 }
 
 UTexture* UMaterialInstanceDynamic::K2_GetTextureParameterValue(FName ParameterName)
@@ -420,6 +472,11 @@ void UMaterialInstanceDynamic::CopyParameterOverrides(UMaterialInstance* Materia
 		TextureParameterValues = MaterialInstance->TextureParameterValues;
 		FontParameterValues = MaterialInstance->FontParameterValues;
 	}
+
+#if WITH_EDITOR
+	FObjectCacheEventSink::NotifyReferencedTextureChanged_Concurrent(this);
+#endif
+
 	InitResources();
 }
 

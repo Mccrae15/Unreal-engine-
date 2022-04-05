@@ -7,7 +7,7 @@
 #include "Containers/Set.h"
 #include "Misc/ScopeLock.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 class IAnalysisSession;
@@ -18,6 +18,8 @@ class FModuleService
 public:
 	FModuleService();
 	virtual void GetAvailableModules(TArray<FModuleInfo>& OutModules) override;
+	virtual void GetAvailableModulesEx(TArray<FModuleInfoEx>& OutModules) override;
+	virtual void GetEnabledModules(TArray<FModuleInfo>& OutModules) override;
 	virtual void SetModuleEnabled(const FName& ModuleName, bool bEnabled) override;
 	virtual void GenerateReports(const IAnalysisSession& Session, const TCHAR* CmdLine, const TCHAR* OutputDirectory) override;
 	void OnAnalysisBegin(IAnalysisSession& Session);
@@ -33,4 +35,4 @@ private:
 	TMap<FName, IModule*> ModulesMap;
 };
 
-}
+} // namespace TraceServices

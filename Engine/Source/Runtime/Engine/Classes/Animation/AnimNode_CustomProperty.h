@@ -37,7 +37,7 @@ public:
 	template<class T>
 	T* GetTargetInstance() const
 	{
-		if (TargetInstance && !TargetInstance->IsPendingKill())
+		if (IsValid(TargetInstance))
 		{
 			return Cast<T>(TargetInstance);
 		}
@@ -56,7 +56,7 @@ protected:
 
 	/** This is the actual instance allocated at runtime that will run. Set by child class. */
 	UPROPERTY(Transient)
-	UObject* TargetInstance;
+	TObjectPtr<UObject> TargetInstance;
 
 	/** List of properties on the calling Source Instances instance to push from  */
 	TArray<FProperty*> SourceProperties;

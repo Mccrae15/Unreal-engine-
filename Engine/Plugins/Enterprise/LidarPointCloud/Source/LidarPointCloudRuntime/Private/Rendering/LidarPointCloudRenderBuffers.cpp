@@ -21,6 +21,7 @@
 
 TGlobalResource<FLidarPointCloudIndexBuffer> GLidarPointCloudIndexBuffer;
 TGlobalResource<FLidarPointCloudSharedVertexFactory> GLidarPointCloudSharedVertexFactory;
+TGlobalResource<FLidarPointCloudRenderBuffer> GDummyLidarPointCloudRenderBuffer(4);
 
 //////////////////////////////////////////////////////////// Index Buffer
 
@@ -39,14 +40,13 @@ void FLidarPointCloudIndexBuffer::Resize(const uint32 & RequestedCapacity)
 
 void FLidarPointCloudIndexBuffer::InitRHI()
 {
-	FRHIResourceCreateInfo CreateInfo;
-	void* Buffer = nullptr;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FLidarPointCloudIndexBuffer"));
 	const uint32 Size = Capacity * 7 * sizeof(uint32);
 	PointOffset = Capacity * 6;
 
-	IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint32), Size, BUF_Dynamic, CreateInfo, Buffer);
+	IndexBufferRHI = RHICreateBuffer(Size, BUF_Dynamic | BUF_IndexBuffer, sizeof(uint32), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
-	uint32* Data = (uint32*)Buffer;
+	uint32* Data = (uint32*)RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
 	for (uint32 i = 0, idx = 0; i < Capacity; i++)
 	{
 		const uint32 v = i * 4;
@@ -62,9 +62,7 @@ void FLidarPointCloudIndexBuffer::InitRHI()
 		// Points
 		Data[PointOffset + i] = v;
 	}
-
-	RHIUnlockIndexBuffer(IndexBufferRHI);
-	Buffer = nullptr;
+	RHIUnlockBuffer(IndexBufferRHI);
 }
 
 //////////////////////////////////////////////////////////// Structured Buffer
@@ -91,7 +89,7 @@ void FLidarPointCloudRenderBuffer::InitRHI()
 	// This must be called from Rendering thread
 	check(IsInRenderingThread());
 
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FLidarPointCloudRenderBuffer"));
 	Buffer = RHICreateVertexBuffer(sizeof(uint32) * Capacity, BUF_ShaderResource | BUF_Dynamic, CreateInfo);
 	SRV = RHICreateShaderResourceView(Buffer, sizeof(uint32), PF_R32_FLOAT);
 }
@@ -103,7 +101,6 @@ void FLidarPointCloudRenderBuffer::ReleaseRHI()
 
 	if (Buffer)
 	{
-		RHIDiscardTransientResource(Buffer);
 		Buffer.SafeRelease();
 	}
 
@@ -119,14 +116,14 @@ FLidarPointCloudBatchElementUserData::FLidarPointCloudBatchElementUserData()
 {
 	for (int32 i = 0; i < 16; ++i)
 	{
-		ClippingVolume[i] = FMatrix(FPlane(FVector::ZeroVector, 0),
-									FPlane(FVector::ForwardVector, FLT_MAX),
-									FPlane(FVector::RightVector, FLT_MAX),
-									FPlane(FVector::UpVector, FLT_MAX));
+		ClippingVolume[i] = FMatrix44f(FPlane4f(FVector3f::ZeroVector, 0),
+									FPlane4f(FVector3f::ForwardVector, FLT_MAX),
+									FPlane4f(FVector3f::RightVector, FLT_MAX),
+									FPlane4f(FVector3f::UpVector, FLT_MAX));
 	}
 
 #if WITH_EDITOR
-	SelectionColor = FVector(GetDefault<UEditorStyleSettings>()->SelectionColor.ToFColor(true));
+	SelectionColor = FVector3f(GetDefault<UEditorStyleSettings>()->SelectionColor.ToFColor(true));
 #endif
 }
 
@@ -135,7 +132,7 @@ void FLidarPointCloudBatchElementUserData::SetClassificationColors(const TMap<in
 	for (int32 i = 0; i < 32; ++i)
 	{
 		const FLinearColor* Color = InClassificationColors.Find(i);
-		ClassificationColors[i] = Color ? FVector4(*Color) : FVector4(1, 1, 1);
+		ClassificationColors[i] = Color ? FVector4f(*Color) : FVector4f(1, 1, 1);
 	}
 }
 
@@ -185,6 +182,12 @@ void FLidarPointCloudVertexFactoryShaderParameters::GetElementShaderBindings(con
 
 	SETSRVPARAM(TreeBuffer);
 	SETSRVPARAM(DataBuffer);
+	if (!UserData->DataBuffer && DataBuffer.IsBound())
+	{
+		FRHIShaderResourceView* Ptr = GDummyLidarPointCloudRenderBuffer.SRV;
+		ShaderBindings.Add(DataBuffer, Ptr);
+	}
+
 	SETPARAM(bEditorView);
 	SETPARAM(SelectionColor);
 	SETPARAM(LocationOffset);
@@ -239,9 +242,10 @@ void FLidarPointCloudVertexFactory::Initialize(FLidarPointCloudPoint* Data, int3
 
 void FLidarPointCloudVertexFactory::FPointCloudVertexBuffer::InitRHI()
 {
-	FRHIResourceCreateInfo CreateInfo;
-	void* Buffer = nullptr;
-	VertexBufferRHI = RHICreateAndLockVertexBuffer(NumPoints * 4 * sizeof(FLidarPointCloudPoint), BUF_Static, CreateInfo, Buffer);
+	const uint32 BufferSize = NumPoints * 4 * sizeof(FLidarPointCloudPoint);
+	FRHIResourceCreateInfo CreateInfo(TEXT("FPointCloudVertexBuffer"));
+	VertexBufferRHI = RHICreateBuffer(BufferSize, BUF_Static | BUF_VertexBuffer, sizeof(FLidarPointCloudPoint), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+	void* Buffer = RHILockBuffer(VertexBufferRHI, 0, BufferSize, RLM_WriteOnly);
 
 	uint8* Dest = (uint8*)Buffer;
 	for (int32 i = 0; i < NumPoints; ++i, ++Data)
@@ -252,8 +256,7 @@ void FLidarPointCloudVertexFactory::FPointCloudVertexBuffer::InitRHI()
 		FMemory::Memcpy(Dest, Data, sizeof(FLidarPointCloudPoint)); Dest += sizeof(FLidarPointCloudPoint);
 	}
 
-	RHIUnlockVertexBuffer(VertexBufferRHI);
-	Buffer = nullptr;
+	RHIUnlockBuffer(VertexBufferRHI);
 }
 
 void FLidarPointCloudVertexFactory::InitRHI()
@@ -275,12 +278,11 @@ void FLidarPointCloudVertexFactory::ReleaseRHI()
 
 void FLidarPointCloudSharedVertexFactory::FPointCloudVertexBuffer::InitRHI()
 {
-	FRHIResourceCreateInfo CreateInfo;
-	void* Buffer = nullptr;
-	VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(FVector), BUF_Static, CreateInfo, Buffer);
+	FRHIResourceCreateInfo CreateInfo(TEXT("FPointCloudVertexBuffer"));
+	VertexBufferRHI = RHICreateBuffer(sizeof(FVector), BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+	void* Buffer = RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector), RLM_WriteOnly);
 	FMemory::Memzero(Buffer, sizeof(FVector));
-	RHIUnlockVertexBuffer(VertexBufferRHI);
-	Buffer = nullptr;
+	RHIUnlockBuffer(VertexBufferRHI);
 }
 
 void FLidarPointCloudSharedVertexFactory::InitRHI()
@@ -300,8 +302,15 @@ void FLidarPointCloudSharedVertexFactory::ReleaseRHI()
 	VertexBuffer.ReleaseResource();
 }
 
+IMPLEMENT_TYPE_LAYOUT(FLidarPointCloudVertexFactoryShaderParameters);
+
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLidarPointCloudVertexFactoryBase, SF_Vertex, FLidarPointCloudVertexFactoryShaderParameters);
-IMPLEMENT_VERTEX_FACTORY_TYPE(FLidarPointCloudVertexFactoryBase, "/Plugin/LidarPointCloud/Private/LidarPointCloudVertexFactory.ush", /* bUsedWithMaterials */ true, /* bSupportsStaticLighting */ false, /* bSupportsDynamicLighting */ true, /* bPrecisePrevWorldPos */ false, /* bSupportsPositionOnly */ true);
+
+IMPLEMENT_VERTEX_FACTORY_TYPE(FLidarPointCloudVertexFactoryBase, "/Plugin/LidarPointCloud/Private/LidarPointCloudVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsPositionOnly
+);
 
 #undef BINDPARAM
 #undef SETPARAM

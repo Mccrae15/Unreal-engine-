@@ -2,7 +2,7 @@
 
 #include "GameplayTagsManager.h"
 #include "Engine/Engine.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
@@ -579,7 +579,7 @@ void UGameplayTagsManager::ConstructNetIndex()
 	}
 
 	InvalidTagNetIndex = NetworkGameplayTagNodeIndex.Num()+1;
-	NetIndexTrueBitNum = FMath::CeilToInt(FMath::Log2(InvalidTagNetIndex));
+	NetIndexTrueBitNum = FMath::CeilToInt(FMath::Log2(static_cast<float>(InvalidTagNetIndex)));
 	
 	// This should never be smaller than NetIndexTrueBitNum
 	NetIndexFirstBitSegment = FMath::Min<int64>(NetIndexFirstBitSegment, NetIndexTrueBitNum);
@@ -1135,7 +1135,7 @@ int32 UGameplayTagsManager::InsertTagIntoNodeArray(FName Tag, FName FullTag, TSh
 #endif				
 				break;
 			}
-			else if (Tag.LexicalLess(SimpleTagName) && WhereToInsert == INDEX_NONE)
+			else if (UE::ComparisonUtility::CompareWithNumericSuffix(Tag, SimpleTagName) < 0 && WhereToInsert == INDEX_NONE)
 			{
 				// Insert new node before this
 				WhereToInsert = CurIdx;
@@ -1255,7 +1255,7 @@ void UGameplayTagsManager::PrintReplicationFrequencyReport()
 		for (auto& It : ReplicationCountMap)
 		{
 			int32 ExpectedCostBits = 0;
-			bool FirstSeg = ExpectedNetIndex < FMath::Pow(2, Bits);
+			bool FirstSeg = ExpectedNetIndex < FMath::Pow(2.f, Bits);
 			if (FirstSeg)
 			{
 				// This would fit in the first Bits segment
@@ -1298,13 +1298,13 @@ void UGameplayTagsManager::PrintReplicationFrequencyReport()
 	{
 		UE_LOG(LogGameplayTags, Warning, TEXT("+CommonlyReplicatedTags=%s"), *It.Key.ToString());
 
-		if (Count == FMath::Pow(2, BestBits))
+		if (Count == FMath::Pow(2.f, BestBits))
 		{
 			// Print a blank line out, indicating tags after this are not necessary but still may be useful if the user wants to manually edit the list.
 			UE_LOG(LogGameplayTags, Warning, TEXT(""));
 		}
 
-		if (Count++ >= FMath::Pow(2, BestBits+1))
+		if (Count++ >= FMath::Pow(2.f, BestBits+1))
 		{
 			break;
 		}
@@ -1478,6 +1478,15 @@ FString UGameplayTagsManager::StaticGetCategoriesMetaFromPropertyHandle(TSharedP
 			if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
 			{
 				if (GetFieldMetaData(ArrayProperty->Inner))
+				{
+					break;
+				}
+			}
+
+			/**	TMap<FGameplayTag, ValueType> GameplayTagMap; */
+			if (FMapProperty* MapProperty = CastField<FMapProperty>(Property))
+			{
+				if (GetFieldMetaData(MapProperty->KeyProp))
 				{
 					break;
 				}
@@ -1960,6 +1969,8 @@ void UGameplayTagsManager::DoneAddingNativeTags()
 	// is initialized (DoneAddingNativeTags is bound to PostEngineInit to cover anything that's skipped).
 	if (GEngine && !bDoneAddingNativeTags)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(UGameplayTagsManager::DoneAddingNativeTags);
+
 		UE_CLOG(GAMEPLAYTAGS_VERBOSE, LogGameplayTags, Display, TEXT("UGameplayTagsManager::DoneAddingNativeTags. DelegateIsBound: %d"), (int32)OnLastChanceToAddNativeTags().IsBound());
 		OnLastChanceToAddNativeTags().Broadcast();
 		bDoneAddingNativeTags = true;
@@ -2160,7 +2171,7 @@ bool FGameplayTagTableRow::operator!=(FGameplayTagTableRow const& Other) const
 
 bool FGameplayTagTableRow::operator<(FGameplayTagTableRow const& Other) const
 {
-	return Tag.LexicalLess(Other.Tag);
+	return UE::ComparisonUtility::CompareWithNumericSuffix(Tag, Other.Tag) < 0;
 }
 
 FRestrictedGameplayTagTableRow::FRestrictedGameplayTagTableRow(FRestrictedGameplayTagTableRow const& Other)

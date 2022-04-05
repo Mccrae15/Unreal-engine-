@@ -32,6 +32,11 @@ TSharedRef<IPropertyTypeCustomization> FCurveStructCustomization::MakeInstance()
 
 FCurveStructCustomization::~FCurveStructCustomization()
 {
+	if (CurveWidget.IsValid() && CurveWidget->GetCurveOwner() == this)
+	{
+		CurveWidget->SetCurveOwner(nullptr, false);
+	}
+
 	DestroyPopOutWindow();
 }
 
@@ -249,7 +254,7 @@ void FCurveStructCustomization::MakeTransactional()
 
 void FCurveStructCustomization::OnCurveChanged(const TArray<FRichCurveEditInfo>& ChangedCurveEditInfos)
 {
-	StructPropertyHandle->NotifyPostChange();
+	StructPropertyHandle->NotifyPostChange(EPropertyChangeType::Unspecified);
 }
 
 bool FCurveStructCustomization::IsValidCurve( FRichCurveEditInfo CurveInfo )

@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "../Common.ush"
+#include "../MonteCarlo.ush"
+#include "HairStrandsClusterCommon.ush"
 #include "HairStrandsVertexFactoryCommon.ush"
 #include "HairStrandsVisibilityCommon.ush"
 
@@ -10,6 +12,15 @@
 #define RASTER_NVIDIA 1
 #define RASTER_AMD_DX11 2
 #define RASTER_AMD_DX12 3
+
+// Group size
+#if PERMUTATION_GROUP_SIZE == 64
+	#define GROUP_SIZE 64
+#elif PERMUTATION_GROUP_SIZE == 32
+	#define GROUP_SIZE 32
+#else
+	#error Unknown group size	
+#endif
 
 // Add permutation for AMD/other
 #if PERMUTATION_RASTER_ATOMIC == RASTER_NVIDIA
@@ -28,39 +39,24 @@ PackedType ToPackedType(uint2 Data)
 {
 	return PackUlongType(Data);
 }
-PackedType NextValue(PackedType In, PackedType Out)
-{
-	return In < Out ? In : Out;
-}
 #else
 #define PackedType uint2
 PackedType ToPackedType(uint2 Data)
 {
 	return Data;
 }
-PackedType NextValue(PackedType In, PackedType Out)
-{
-	return In.y < Out.y ? In : Out;
-}
 #endif
 
-PackedType WriteVisibilityData(RWTexture2D<PackedType> OutTexture, uint2 Coords, PackedType Data)
+void WriteVisibilityData(RWTexture2D<PackedType> OutTexture, uint2 Coords, PackedType Data)
 {
 #if PERMUTATION_RASTER_ATOMIC == RASTER_NVIDIA
-	PackedType PrevData = NvInterlockedMaxUint64(OutTexture, Coords, Data);
-	return PrevData;
+	NvInterlockedMaxUint64(OutTexture, Coords, Data);
 #elif PERMUTATION_RASTER_ATOMIC == RASTER_AMD_DX11
-	PackedType PrevData = AmdDxExtShaderIntrinsics_AtomicMaxU64(OutTexture, Coords, Data);
-	return PrevData;
+	AmdDxExtShaderIntrinsics_AtomicMaxU64(OutTexture, Coords, Data);
 #elif PERMUTATION_RASTER_ATOMIC == RASTER_AMD_DX12
-	PackedType PrevData = AmdExtD3DShaderIntrinsics_AtomicMaxU64(OutTexture, Coords, Data);
-	return PrevData;
+	AmdExtD3DShaderIntrinsics_AtomicMaxU64(OutTexture, Coords, Data);
 #elif PERMUTATION_RASTER_ATOMIC == RASTER_PLATFORM && COMPILER_SUPPORTS_UINT64_IMAGE_ATOMICS && COMPILER_SUPPORTS_ULONG_TYPES
 	ImageInterlockedMaxUInt64(OutTexture, Coords, Data);
-	// Need to expose the returned value version of ImageInterlockedMaxUInt64
-	return Data;
-#else
-	return (PackedType)0;
 #endif
 }
 
@@ -74,6 +70,8 @@ int2			OutputResolution;
 uint			HairMaterialId;
 uint			HairStrandsVF_bIsCullingEnable;
 float			HairStrandsVF_Radius;
+float			HairStrandsVF_RootScale;
+float			HairStrandsVF_TipScale;
 float			HairStrandsVF_Length;
 float			HairStrandsVF_Density;
 uint			HairStrandsVF_bUseStableRasterization;
@@ -83,7 +81,7 @@ float4x4		HairStrandsVF_LocalToWorldPrimitiveTransform;
 Buffer<uint4>	HairStrandsVF_PositionBuffer;
 Buffer<float4>	HairStrandsVF_PositionOffsetBuffer;
 
-#if PERMUTATION_CULLING == 1
+#if PERMUTATION_CULLING
 Buffer<uint>	HairStrandsVF_CullingIndirectBuffer;
 Buffer<uint>	HairStrandsVF_CullingIndexBuffer;
 Buffer<float>	HairStrandsVF_CullingRadiusScaleBuffer;
@@ -153,7 +151,7 @@ bool IsInScreen(int2 C)
 	return C.x >= 0 && C.x < OutputResolution.x && C.y >= 0 && C.y < OutputResolution.y;
 }
 
-void Rasterize(int2 Coords, float Ratio, float Depth, uint PrimitiveId, float Coverage)
+void InternalRasterize(int2 Coords, float Ratio, float Depth, uint PrimitiveId, float Coverage)
 {
 	if (IsInScreen(Coords))
 	{
@@ -164,12 +162,16 @@ void Rasterize(int2 Coords, float Ratio, float Depth, uint PrimitiveId, float Co
 		if (!bIsVisible)
 			return;
 		#endif
-		const uint PackedCoverage = PackCoverageAndHairCount(Ratio * Coverage);
-		InterlockedAdd(OutHairCountTexture[uint2(Coords)], PackedCoverage);
+
+		const float PrecisionScale = 1000.f;
+		const float ViewTransmittance = 1 - saturate(Ratio * Coverage);
+		const float LogViewTransmittance = -log2(ViewTransmittance);
+		const uint PackedViewTransmittance = uint(LogViewTransmittance * PrecisionScale);
+		InterlockedAdd(OutHairCountTexture[uint2(Coords)], PackedViewTransmittance);
 
 		uint2 PackedVisibility;
-		PackedVisibility.x = PackHairVisSample(PrimitiveId, HairMaterialId);
-		PackedVisibility.y = PackHairVisSampleDepth(Depth, Coverage);
+		PackedVisibility.x = PackHairVisPrimitiveMaterialId(PrimitiveId, HairMaterialId);
+		PackedVisibility.y = PackHairVisDepthCoverage(Depth, Ratio * Coverage);
 
 		PackedType In = ToPackedType(PackedVisibility);
 		PackedType Out = 0;
@@ -179,23 +181,21 @@ void Rasterize(int2 Coords, float Ratio, float Depth, uint PrimitiveId, float Co
 	#endif
 
 	#if PERMUTATION_SPP == 2
-		Out = WriteVisibilityData(OutVisibilityTexture0, Coords, In);
-		In  = NextValue(In, Out);
-			
-		WriteVisibilityData(OutVisibilityTexture1, Coords, In);
+		if (Ratio < 0.5f)
+			WriteVisibilityData(OutVisibilityTexture0, Coords, In);
+		else
+			WriteVisibilityData(OutVisibilityTexture1, Coords, In);
 	#endif
 
 	#if PERMUTATION_SPP == 4
-		Out = WriteVisibilityData(OutVisibilityTexture0, Coords, In);
-		In  = NextValue(In, Out);
-			
-		Out = WriteVisibilityData(OutVisibilityTexture1, Coords, In);
-		In  = NextValue(In, Out);
-			
-		Out = WriteVisibilityData(OutVisibilityTexture2, Coords, In);
-		In  = NextValue(In, Out);
-			
-		WriteVisibilityData(OutVisibilityTexture3, Coords, In);
+		if (Ratio < 0.25f)
+			WriteVisibilityData(OutVisibilityTexture0, Coords, In);
+		else if (Ratio < 0.5f)
+			WriteVisibilityData(OutVisibilityTexture1, Coords, In);
+		else if (Ratio < 0.75f)
+			WriteVisibilityData(OutVisibilityTexture2, Coords, In);
+		else
+			WriteVisibilityData(OutVisibilityTexture3, Coords, In);
 	#endif
 	}
 }
@@ -225,19 +225,58 @@ FRasterInfo UnpackRasterInfo(uint4 In)
 	return (FRasterInfo)0;
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////
-
-// These number need to match HairStrandsClusterCulling.usf
-#define GROUP_SIZE 32
-#define GROUP_COUNT_X 16
-
-[numthreads(GROUP_SIZE, 1, 1)]
-void MainCS(uint3 DispatchThreadID : SV_DispatchThreadID)
+float2 StochasticRasterRandom(uint2 PixelPosition)
 {
-#if PERMUTATION_CULLING == 1
-	uint VertexIndex0 = DispatchThreadID.x + DispatchThreadID.y * GROUP_SIZE * GROUP_COUNT_X;
+	const uint InSeed = View.StateFrameIndexMod8;
+	const uint2 Seed0 = Rand3DPCG16(int3(PixelPosition, InSeed)).xy;
+	return Hammersley16(InSeed, 8, Seed0);
+}
+
+// Rasterize a given pixel with anti-aliasing. 
+// This can be done by writing the two adjacents pixel covered by the segments, or stochastically, by picking one of the two pixels randomly based on coverage
+uint2 Rasterize(uint2 PixelCoord, bool bIsSteep, float FracY, float RatioScale, float Coverage, float DeviceZ, uint ProvokingVertexId, bool bStochastic=true, uint2 SeedCoord=uint2(0,0))
+{
+#if PERMUTATION_STOCHASTIC
+	// Select randomly Bottom Left/Right
+	{
+		// No select based on the exact frac amount, as this will oscillate too much. 
+		// The stochastic raster only acts on the visibility check. The final covarage is computed analytically
+		float U = StochasticRasterRandom(SeedCoord).x;
+		const bool bLower = bStochastic ? (U < 0.5 ? FracY < 0.5 : FracY > 0.5) : FracY < 0.5f;
+
+		uint2 Coord = PixelCoord + (bLower ? uint2(0, 0) : uint2(0, 1));
+		Coord = bIsSteep ? Coord.yx : Coord.xy;
+		const float Ratio = (bLower ? 1 - FracY : FracY) * RatioScale;;
+		InternalRasterize(Coord, Ratio * RatioScale, DeviceZ, ProvokingVertexId, Coverage);
+		SeedCoord = Coord;
+	}
 #else
-	uint VertexIndex0 = DispatchThreadID.x + DispatchThreadID.y * GROUP_SIZE * DispatchCountX;
+	const bool bLower = FracY < 0.5f;
+	const float Ratio = (bLower ? 1 - FracY : FracY) * RatioScale;
+
+	// Bottom/Left Pixel (or inverse)
+	{
+		uint2 Coord = PixelCoord + (bLower ? uint2(0, 0) : uint2(0, 1));
+		Coord = bIsSteep ? Coord.yx : Coord.xy;
+		InternalRasterize(Coord, Ratio, DeviceZ, ProvokingVertexId, Coverage);
+	}
+	// Top/Right Pixel (or inverse)
+	{
+		uint2 Coord = PixelCoord + (bLower ? uint2(0, 0) : uint2(0, 1));
+		Coord = bIsSteep ? Coord.yx : Coord.xy;
+		InternalRasterize(Coord, 1.f - Ratio, DeviceZ, ProvokingVertexId, Coverage);
+	}
+#endif
+	return SeedCoord;
+}
+//////////////////////////////////////////////////////////////////////////////////////////
+[numthreads(GROUP_SIZE, 1, 1)]
+void MainCS(uint2 DispatchThreadID : SV_DispatchThreadID)
+{
+#if PERMUTATION_CULLING
+	uint VertexIndex0 = GetHairStrandsVertexFetchIndex_Culled(DispatchThreadID, GROUP_SIZE);
+#else
+	uint VertexIndex0 = GetHairStrandsVertexFetchIndex(DispatchThreadID, GROUP_SIZE, DispatchCountX);
 #endif
 
 	uint VertexIndex1 = min(VertexIndex0 + 1, HairStrandsVF_VertexCount - 1);
@@ -248,7 +287,7 @@ void MainCS(uint3 DispatchThreadID : SV_DispatchThreadID)
 
 	float LodRadiusScale0 = 1;
 	float LodRadiusScale1 = 1;
-#if PERMUTATION_CULLING == 1
+#if PERMUTATION_CULLING
 	if (HairStrandsVF_bIsCullingEnable)
 	{
 		const uint VertexCountAfterCulling = HairStrandsVF_CullingIndirectBuffer[3];
@@ -281,7 +320,8 @@ void MainCS(uint3 DispatchThreadID : SV_DispatchThreadID)
 		HairStrandsVF_PositionBuffer[VertexIndex0],
 		PositionOffset,
 		HairStrandsVF_Radius * LodRadiusScale0,
-		HairStrandsVF_Length);
+		HairStrandsVF_RootScale,
+		HairStrandsVF_TipScale);
 
 	if (CP0.Type == HAIR_CONTROLPOINT_END)
 		return;
@@ -290,7 +330,8 @@ void MainCS(uint3 DispatchThreadID : SV_DispatchThreadID)
 		HairStrandsVF_PositionBuffer[VertexIndex1],
 		PositionOffset,
 		HairStrandsVF_Radius * LodRadiusScale1,
-		HairStrandsVF_Length);
+		HairStrandsVF_RootScale,
+		HairStrandsVF_TipScale);
 
 
 	const FHairRenderInfo HairRenderInfo = GetHairRenderInfo(ResolvedView.HairRenderInfo, ResolvedView.HairRenderInfoBits, HairStrandsVF_bUseStableRasterization > 0);
@@ -303,10 +344,10 @@ void MainCS(uint3 DispatchThreadID : SV_DispatchThreadID)
 	HairViewInfo.bIsOrthoView = false;
 
 	const float3 WP0  = mul(float4(CP0.Position, 1), HairStrandsVF_LocalToWorldPrimitiveTransform).xyz;
-	const float4 NDC0 = mul(float4(WP0, 1), View.WorldToClip);
+	const float4 NDC0 = mul(float4(WP0, 1), LWCHackToFloat(PrimaryView.WorldToClip));
 
 	const float3 WP1  = mul(float4(CP1.Position, 1), HairStrandsVF_LocalToWorldPrimitiveTransform).xyz;
-	const float4 NDC1 = mul(float4(WP1, 1), View.WorldToClip);
+	const float4 NDC1 = mul(float4(WP1, 1), LWCHackToFloat(PrimaryView.WorldToClip));
 	
 	float3 SP0 = NDCToPixelCoord(NDC0);
 	float3 SP1 = NDCToPixelCoord(NDC1);
@@ -362,11 +403,7 @@ void MainCS(uint3 DispatchThreadID : SV_DispatchThreadID)
 		PX0.y = floor(End.y);
 
 		const float FracY = frac(End.y);
-		const bool bLower = FracY < 0.5f;
-		int2 Coord = PX0 + (bLower ? int2(0, 0) : int2(0, 1));
-		Coord = bIsSteep ? Coord.yx : Coord.xy;
-		const float Ratio = bLower ? 1 - FracY : FracY;
-		Rasterize(Coord, Ratio * XGap, SP0.z, VertexIndex0, Coverage0);
+		Rasterize(PX0, bIsSteep, FracY, XGap, Coverage0, SP0.z, VertexIndex0, false);
 
 		DeltaY = End.y + GradientY; // first y-intersection for the main loop
 		DeltaZ = SP1.z + GradientZ; // This is not perspective correct. Interpolate linear depth instead
@@ -385,35 +422,28 @@ void MainCS(uint3 DispatchThreadID : SV_DispatchThreadID)
 
 		// In order to avoid doubled rasterizated point at segments connection we exclude 
 		// the last pixel apart for pixel placed at the end of a curve
-		if (CP1.Type == HAIR_CONTROLPOINT_END)
+		//if (CP1.Type == HAIR_CONTROLPOINT_END)
 		{
 			const float FracY = frac(End.y);
-			const bool bLower = FracY < 0.5f;
-			int2 Coord = PX1 + (bLower ? int2(0, 0) : int2(0, 1));
-			Coord = bIsSteep ? Coord.yx : Coord.xy;
-			const float Ratio = bLower ? 1 - FracY : FracY;
-			Rasterize(Coord, Ratio * XGap, SP1.z, VertexIndex0, max(Coverage1,0.01f));
+			Rasterize(PX1, bIsSteep, FracY, XGap, max(Coverage1, 0.01f), SP1.z, VertexIndex0, false);
 		}
 	}
 
 	// Inner points
 	const uint MaxIteration = MaxRasterCount;
 	const float PixelCount = abs(PX1.x - (PX0.x + 1));
+	uint2 SeedCoord = PX0;
 	for (int i = PX0.x + 1, j = 0; i < PX1.x && j < MaxIteration; ++i, ++j)
 	{
 		const float S = float(j) / PixelCount;
 		const float FracY = frac(DeltaY);
-		const bool bLower = FracY < 0.5;
-		const float Ratio = bLower ? 1 - FracY : FracY;
-		const float Coverage = lerp(Coverage0, Coverage1, S);
-
 		const float DC_Z = lerp(NDC0.z, NDC1.z, S);
 		const float DC_W = lerp(NDC0.w, NDC1.w, S);
 		const float DeviceZ = DC_Z / DC_W;
+		
+		const uint2 PixelCoord = uint2(int2(i, floor(DeltaY)));
 
-		int2 Coord = int2(i, floor(DeltaY)) + (bLower ? int2(0, 0) : int2(0, 1));
-		Coord = bIsSteep ? Coord.yx : Coord.xy;
-		Rasterize(Coord, Ratio, DeviceZ /*DeltaZ*/, VertexIndex0, Coverage);
+		SeedCoord = Rasterize(PixelCoord, bIsSteep, FracY, 1.0f, lerp(Coverage0, Coverage1, S), DeviceZ, VertexIndex0, true, SeedCoord);
 
 		DeltaY += GradientY;
 		DeltaZ += GradientZ;

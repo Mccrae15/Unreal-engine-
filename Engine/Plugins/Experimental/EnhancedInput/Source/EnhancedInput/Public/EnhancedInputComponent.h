@@ -17,14 +17,14 @@
 enum class ETriggerEvent : uint8;
 
 /** Delegate signature for debug key events. */
-DECLARE_DELEGATE_OneParam(FInputDebugKeyHandlerSignature, FKey);
-DECLARE_DYNAMIC_DELEGATE_OneParam(FInputDebugKeyHandlerDynamicSignature, FKey, Key);
+DECLARE_DELEGATE_TwoParams(FInputDebugKeyHandlerSignature, FKey, FInputActionValue);
+DECLARE_DYNAMIC_DELEGATE_TwoParams(FInputDebugKeyHandlerDynamicSignature, FKey, Key, FInputActionValue, ActionValue);
 
 /** Delegate signature for action events. */
 DECLARE_DELEGATE(FEnhancedInputActionHandlerSignature);
 DECLARE_DELEGATE_OneParam(FEnhancedInputActionHandlerValueSignature, const FInputActionValue&);
 DECLARE_DELEGATE_OneParam(FEnhancedInputActionHandlerInstanceSignature, const FInputActionInstance&);	// Provides full access to value and timers
-DECLARE_DYNAMIC_DELEGATE_ThreeParams(FEnhancedInputActionHandlerDynamicSignature, FInputActionValue, ActionValue, float, ElapsedTime, float, TriggeredTime);
+DECLARE_DYNAMIC_DELEGATE_FourParams(FEnhancedInputActionHandlerDynamicSignature, FInputActionValue, ActionValue, float, ElapsedTime, float, TriggeredTime, const UInputAction*, SourceAction);
 
 /** Unified storage for both native and dynamic delegates with any signature  */
 template<typename TSignature>
@@ -56,7 +56,7 @@ public:
 	/** Binds a native delegate, hidden for script delegates */
 	template<	typename UserClass,
 				typename TSig = TSignature>
-	void BindDelegate(UserClass* Object, typename TSig::template TUObjectMethodDelegate<UserClass>::FMethodPtr Func)
+	void BindDelegate(UserClass* Object, typename TSig::template TMethodPtr<UserClass> Func)
 	{
 		Unbind();
 		Delegate = MakeShared<TSig>(TSig::CreateUObject(Object, Func));
@@ -191,11 +191,9 @@ public:
 		, Chord(InChord)
 	{ }
 
-	virtual void Execute() const = 0;
+	virtual void Execute(const FInputActionValue& ActionValue) const = 0;
 	virtual TUniquePtr<FInputDebugKeyBinding> Clone() const = 0;
 };
-// TODO:: Add FInputDebugKeyValueBinding?
-
 
 
 /**
@@ -230,9 +228,9 @@ private:
 public:
 	FInputDebugKeyDelegateBinding(const FInputChord Chord, const EInputEvent KeyEvent, bool bExecuteWhenPaused) : FInputDebugKeyBinding(Chord, KeyEvent, bExecuteWhenPaused) {}
 
-	virtual void Execute() const override
+	virtual void Execute(const FInputActionValue& ActionValue) const override
 	{
-		Delegate.Execute(Chord.Key);	// TODO: Remove FKey param? We don't support AnyKey, so it isn't terribly useful. TODO: Provide key raw value param to support axis keys.
+		Delegate.Execute(Chord.Key, ActionValue);	// TODO: Remove FKey param? We don't support AnyKey, so it isn't terribly useful.
 	}
 	virtual TUniquePtr<FInputDebugKeyBinding> Clone() const override 
 	{
@@ -266,7 +264,7 @@ inline void FEnhancedInputActionEventDelegateBinding<FEnhancedInputActionHandler
 template<>
 inline void FEnhancedInputActionEventDelegateBinding<FEnhancedInputActionHandlerDynamicSignature>::Execute(const FInputActionInstance& ActionData) const
 {
-	Delegate.Execute(ActionData.GetValue(), ActionData.GetElapsedTime(), ActionData.GetTriggeredTime());
+	Delegate.Execute(ActionData.GetValue(), ActionData.GetElapsedTime(), ActionData.GetTriggeredTime(), ActionData.GetSourceAction());
 }
 
 
@@ -356,13 +354,13 @@ public:
 	/**
 	 * Binds a delegate function matching any of the handler signatures to a UInputAction assigned via UInputMappingContext to the owner of this component.
 	 */
-#define DEFINE_BIND_ACTION(HANDLER_SIG)																																									\
-	template<class UserClass>																																											\
-	FEnhancedInputActionEventBinding& BindAction(const UInputAction* Action, ETriggerEvent TriggerEvent, UserClass* Object, typename HANDLER_SIG::TUObjectMethodDelegate< UserClass >::FMethodPtr Func) \
-	{																																																	\
-		TUniquePtr<FEnhancedInputActionEventDelegateBinding<HANDLER_SIG>> AB = MakeUnique<FEnhancedInputActionEventDelegateBinding<HANDLER_SIG>>(Action, TriggerEvent);									\
-		AB->Delegate.BindDelegate<UserClass>(Object, Func);																																				\
-		return *EnhancedActionEventBindings.Add_GetRef(MoveTemp(AB));																																	\
+#define DEFINE_BIND_ACTION(HANDLER_SIG)																																			\
+	template<class UserClass>																																					\
+	FEnhancedInputActionEventBinding& BindAction(const UInputAction* Action, ETriggerEvent TriggerEvent, UserClass* Object, typename HANDLER_SIG::TMethodPtr< UserClass > Func) \
+	{																																											\
+		TUniquePtr<FEnhancedInputActionEventDelegateBinding<HANDLER_SIG>> AB = MakeUnique<FEnhancedInputActionEventDelegateBinding<HANDLER_SIG>>(Action, TriggerEvent);			\
+		AB->Delegate.BindDelegate<UserClass>(Object, Func);																														\
+		return *EnhancedActionEventBindings.Add_GetRef(MoveTemp(AB));																											\
 	}
 
 	DEFINE_BIND_ACTION(FEnhancedInputActionHandlerSignature);
@@ -406,7 +404,7 @@ public:
 	 * Binds a chord event to a delegate function in development builds only.
 	 */
 	template<class UserClass>
-	FInputDebugKeyBinding& BindDebugKey(const FInputChord Chord, const EInputEvent KeyEvent, UserClass* Object, typename FInputDebugKeyHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func, bool bExecuteWhenPaused = true)
+	FInputDebugKeyBinding& BindDebugKey(const FInputChord Chord, const EInputEvent KeyEvent, UserClass* Object, typename FInputDebugKeyHandlerSignature::TMethodPtr< UserClass > Func, bool bExecuteWhenPaused = true)
 	{
 #ifdef DEV_ONLY_KEY_BINDINGS_AVAILABLE
 		TUniquePtr<FInputDebugKeyDelegateBinding<FInputDebugKeyHandlerSignature>> KB = MakeUnique<FInputDebugKeyDelegateBinding<FInputDebugKeyHandlerSignature>>(Chord, KeyEvent, bExecuteWhenPaused);
@@ -436,26 +434,26 @@ public:
 
 	// Delete all InputComponent binding helpers. Indicates intentions going forward and improves intellisense/VAX when working with EnhancedInputCompoennts.
 	template<class UserClass>
-	FInputActionBinding& BindAction(const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func) = delete;
+	FInputActionBinding& BindAction(const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TMethodPtr< UserClass > Func) = delete;
 	template<class UserClass>
-	FInputActionBinding& BindAction(const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerWithKeySignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func) = delete;
+	FInputActionBinding& BindAction(const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerWithKeySignature::TMethodPtr< UserClass > Func) = delete;
 	template< class DelegateType, class UserClass, typename... VarTypes >
-	FInputActionBinding& BindAction(const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename DelegateType::template TUObjectMethodDelegate< UserClass >::FMethodPtr Func, VarTypes... Vars) = delete;
+	FInputActionBinding& BindAction(const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename DelegateType::template TMethodPtr< UserClass > Func, VarTypes... Vars) = delete;
 	template<class UserClass>
-	FInputAxisBinding& BindAxis(const FName AxisName, UserClass* Object, typename FInputAxisHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func) = delete;
+	FInputAxisBinding& BindAxis(const FName AxisName, UserClass* Object, typename FInputAxisHandlerSignature::TMethodPtr< UserClass > Func) = delete;
 	FInputAxisBinding& BindAxis(const FName AxisName) = delete;
 	template<class UserClass>
-	FInputAxisKeyBinding& BindAxisKey(const FKey AxisKey, UserClass* Object, typename FInputAxisHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func) = delete;
+	FInputAxisKeyBinding& BindAxisKey(const FKey AxisKey, UserClass* Object, typename FInputAxisHandlerSignature::TMethodPtr< UserClass > Func) = delete;
 	FInputAxisKeyBinding& BindAxisKey(const FKey AxisKey) = delete;
 	template<class UserClass>
-	FInputVectorAxisBinding& BindVectorAxis(const FKey AxisKey, UserClass* Object, typename FInputVectorAxisHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func) = delete;
+	FInputVectorAxisBinding& BindVectorAxis(const FKey AxisKey, UserClass* Object, typename FInputVectorAxisHandlerSignature::TMethodPtr< UserClass > Func) = delete;
 	FInputVectorAxisBinding& BindVectorAxis(const FKey AxisKey) = delete;
 	template<class UserClass>
-	FInputKeyBinding& BindKey(const FInputChord Chord, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func) = delete;
+	FInputKeyBinding& BindKey(const FInputChord Chord, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TMethodPtr< UserClass > Func) = delete;
 	template<class UserClass>
-	FInputKeyBinding& BindKey(const FKey Key, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func) = delete;
+	FInputKeyBinding& BindKey(const FKey Key, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TMethodPtr< UserClass > Func) = delete;
 	template<class UserClass>
-	FInputTouchBinding& BindTouch(const EInputEvent KeyEvent, UserClass* Object, typename FInputTouchHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func) = delete;
+	FInputTouchBinding& BindTouch(const EInputEvent KeyEvent, UserClass* Object, typename FInputTouchHandlerSignature::TMethodPtr< UserClass > Func) = delete;
 	template<class UserClass>
-	FInputGestureBinding& BindGesture(const FKey GestureKey, UserClass* Object, typename FInputGestureHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func) = delete;
+	FInputGestureBinding& BindGesture(const FKey GestureKey, UserClass* Object, typename FInputGestureHandlerSignature::TMethodPtr< UserClass > Func) = delete;
 };

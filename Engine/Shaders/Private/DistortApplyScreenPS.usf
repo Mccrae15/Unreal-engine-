@@ -6,6 +6,12 @@
 #include "Common.ush"
 #include "PostProcessCommon.ush"
 
+
+#if USE_ROUGH_REFRACTION
+#include "/Engine/Private/Strata/StrataStatisticalOperators.ush"
+#endif
+
+
 static const half InvDistortionScaleBias = 1 / 4.0f;
 
 /** 
@@ -22,10 +28,15 @@ SamplerState	SceneColorTextureSampler;
  #if USE_MSAA
 Texture2DMS<float4> DistortionMSAATexture;
 Texture2DMS<float4> SceneColorMSAATexture;
+Texture2DMS<float4> RoughnessScatterMSAATexture;
 #else
 Texture2D		DistortionTexture;
 SamplerState	DistortionTextureSampler;
+Texture2D<float4> RoughnessScatterTexture;
+SamplerState      RoughnessScatterSampler;
 #endif
+
+float RefractionRoughnessToMipLevelFactor;
 
 /** distorts screen texture using accumulated distortion offsets */
 void Main(
@@ -50,7 +61,40 @@ void Main(
 	//Scale by the screen size and a fudge factor to come close to the offset values we would have had under normal circumstances before my changes. Also flip Y and invert the precision bias scale.
 	DistBufferUVOffset *= InvDistortionScaleBias;
 	
-	
+#if USE_ROUGH_REFRACTION
+
+#if USE_MSAA
+	half RefractionLobeVariance = RoughnessScatterMSAATexture.Load(int2(TexCoord.xy * View.BufferSizeAndInvSize.xy), SampleIndex).x;
+#else
+	half RefractionLobeVariance = Texture2DSample(RoughnessScatterTexture, RoughnessScatterSampler, TexCoord.xy).x;
+#endif
+	half RefractionRoughness = saturate(StrataLobeVarianceToRoughness(RefractionLobeVariance));
+	half RefractionMipLevel = RefractionRoughness * RefractionRoughnessToMipLevelFactor;
+
+	const float2 NoDistortionUVs = TexCoord.xy * View.BufferSizeAndInvSize.xy * View.ViewSizeAndInvSize.zw;
+	float2 NewBufferUV = NoDistortionUVs + DistBufferUVOffset;
+
+	FLATTEN if (any(NewBufferUV < 0.0f) || any(NewBufferUV > 1.0f))
+	{
+		NewBufferUV = NoDistortionUVs;
+	}
+
+#if USE_MSAA
+	if (RefractionMipLevel < 0.001f)
+	{
+		// Sample the full res MSAA source texture
+		OutColor = SceneColorMSAATexture.Load(int2(TexCoord.xy * View.BufferSizeAndInvSize.xy), SampleIndex);
+	}
+	else
+	{
+		OutColor = Texture2DSampleLevel(SceneColorTexture, SceneColorTextureSampler, NewBufferUV, RefractionMipLevel);
+	}
+#else
+	OutColor = Texture2DSampleLevel(SceneColorTexture, SceneColorTextureSampler, NewBufferUV, RefractionMipLevel);
+#endif
+
+#else // USE_ROUGH_REFRACTION
+
 	float2 NewBufferUV = TexCoord.xy + DistBufferUVOffset;
 
 	// If we're about to sample outside the valid BufferUVMinMax, set to 0 distortion.
@@ -66,6 +110,8 @@ void Main(
 #else
 	OutColor = Texture2DSample(SceneColorTexture, SceneColorTextureSampler, NewBufferUV);
 #endif
+
+#endif // USE_ROUGH_REFRACTION
 }
 
 void Merge(
@@ -88,7 +134,7 @@ SamplerState	DistortionAccumulateSampler;
 
 void Merge_Mobile(
 	in noperspective float4 TexCoord: TEXCOORD0,
-	out half4 OutColor : SV_Target0
+	out HALF4_TYPE OutColor : SV_Target0
 )
 {
 	half4 AccumDist = DistortionAccumulateTexture.Sample(DistortionAccumulateSampler, TexCoord.xy);

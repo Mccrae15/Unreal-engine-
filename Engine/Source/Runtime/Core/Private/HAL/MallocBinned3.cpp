@@ -1307,6 +1307,7 @@ const TCHAR* FMallocBinned3::GetDescriptiveName()
 void FMallocBinned3::FlushCurrentThreadCache()
 {
 	double StartTimeInner = FPlatformTime::Seconds();
+	TRACE_CPUPROFILER_EVENT_SCOPE(FMallocBinned3::FlushCurrentThreadCache);
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FMallocBinned3_FlushCurrentThreadCache);
 	FPerThreadFreeBlockLists* Lists = FPerThreadFreeBlockLists::Get();
 
@@ -1612,4 +1613,4 @@ void FMallocBinned3::DumpAllocatorStats(class FOutputDevice& Ar)
 #endif
 #endif
 
-PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
+PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS

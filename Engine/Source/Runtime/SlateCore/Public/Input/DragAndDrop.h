@@ -88,6 +88,13 @@ public:
 	 */
 	void SetCursorOverride( TOptional<EMouseCursor::Type> CursorType );
 
+	/**
+	 * Checks whether this drag and drop operation can cast safely to the specified type.
+	 */
+	virtual bool IsOfTypeImpl(const FString& Type) const
+	{
+		return false;
+	}
 protected:
 
 	/**
@@ -105,12 +112,9 @@ protected:
 	 */
 	void DestroyCursorDecoratorWindow();
 
-	/**
-	 * Checks whether this drag and drop operation can cast safely to the specified type.
-	 */
-	virtual bool IsOfTypeImpl( const FString& Type ) const
+	virtual TSharedPtr<FDragDropOperation> ConvertTo(const FString& TypeId)
 	{
-		return false;
+		return IsOfTypeImpl(TypeId) ? AsShared() : TSharedPtr<FDragDropOperation>();
 	}
 
 protected:

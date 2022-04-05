@@ -16,7 +16,7 @@ public class FullBodyIK : ModuleRules
 				"Eigen",
 				"RigVM",
 				"ControlRig"
-            }
+			}
 			);
 			
 		

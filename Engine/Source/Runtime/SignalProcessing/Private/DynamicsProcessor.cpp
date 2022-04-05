@@ -1,12 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DSP/DynamicsProcessor.h"
+#include "SignalProcessingModule.h"
 
 namespace Audio
 {
 	FDynamicsProcessor::FDynamicsProcessor()
 		: ProcessingMode(EDynamicsProcessingMode::Compressor)
-		, EnvelopeFollowerPeakMode(EPeakMode::RootMeanSquared)
+		, EnvelopeFollowerPeakMode(EPeakMode::Peak)
 		, LookaheedDelayMsec(10.0f)
 		, AttackTimeMsec(20.0f)
 		, ReleaseTimeMsec(1000.0f)
@@ -45,7 +46,7 @@ namespace Audio
 			LookaheadDelay[Channel].Init(SampleRate, 0.1f);
 			LookaheadDelay[Channel].SetDelayMsec(LookaheedDelayMsec);
 
-			EnvFollower[Channel].Init(SampleRate, AttackTimeMsec, ReleaseTimeMsec, EPeakMode::RootMeanSquared, bIsAnalogMode);
+			EnvFollower[Channel].Init(FInlineEnvelopeFollowerInitParams{SampleRate, AttackTimeMsec, ReleaseTimeMsec, EnvelopeFollowerPeakMode, bIsAnalogMode});
 		}
 
 		InputLowshelfFilter.Init(SampleRate, InNumChannels, EBiquadFilter::LowShelf);
@@ -161,11 +162,10 @@ namespace Audio
 		if (InNumChannels != EnvFollower.Num())
 		{
 			EnvFollower.Reset();
-			EnvFollower.AddDefaulted(InNumChannels);
 
 			for (int32 Channel = 0; Channel < InNumChannels; ++Channel)
 			{
-				EnvFollower[Channel].Init(SampleRate, AttackTimeMsec, ReleaseTimeMsec, EnvelopeFollowerPeakMode, bIsAnalogMode);
+				EnvFollower.Emplace(FInlineEnvelopeFollowerInitParams{SampleRate, AttackTimeMsec, ReleaseTimeMsec, EnvelopeFollowerPeakMode, bIsAnalogMode});
 			}
 		}
 
@@ -231,7 +231,7 @@ namespace Audio
 		EnvelopeFollowerPeakMode = InEnvelopeFollowerModeType;
 		for (int32 Channel = 0; Channel < EnvFollower.Num(); ++Channel)
 		{
-			EnvFollower[Channel].SetMode(InEnvelopeFollowerModeType);
+			EnvFollower[Channel].SetMode(EnvelopeFollowerPeakMode);
 		}
 	}
 
@@ -259,8 +259,34 @@ namespace Audio
 		}
 	}
 
+	void FDynamicsProcessor::ProcessAudioFrame(const float* InFrame, float* OutFrame, const float* InKeyFrame, float* OutGain)
+	{
+		check(OutGain != nullptr);
+
+		const bool bKeyIsInput = InFrame == InKeyFrame;
+		if (ProcessKeyFrame(InKeyFrame, OutFrame, bKeyIsInput))
+		{
+			const int32 NumChannels = GetNumChannels();
+			for (int32 Channel = 0; Channel < NumChannels; ++Channel)
+			{
+				// Write and read into the look ahead delay line.
+				// We apply the compression output of the direct input to the output of this delay line
+				// This way sharp transients can be "caught" with the gain.
+				float LookaheadOutput = LookaheadDelay[Channel].ProcessAudioSample(InFrame[Channel]);
+
+				// Write into the output with the computed gain value
+				OutFrame[Channel] = Gain[Channel] * LookaheadOutput * OutputGain * InputGain;
+				// Also write the output gain value
+				OutGain[Channel] = Gain[Channel];
+			}
+		}
+	}
+
 	void FDynamicsProcessor::ProcessAudio(const float* InBuffer, const int32 InNumSamples, float* OutBuffer, const float* InKeyBuffer)
 	{
+		check(nullptr != InBuffer);
+		check(nullptr != OutBuffer);
+
 		const int32 NumChannels = GetNumChannels();
 		const int32 KeyNumChannels = GetKeyNumChannels();
 
@@ -280,6 +306,36 @@ namespace Audio
 			{
 				const float* KeyFrame = &InBuffer[SampleIndex];
 				ProcessAudioFrame(&InBuffer[SampleIndex], &OutBuffer[SampleIndex], KeyFrame);
+			}
+		}
+	}
+
+	void FDynamicsProcessor::ProcessAudio(const float* InBuffer, const int32 InNumSamples, float* OutBuffer, const float* InKeyBuffer, float* OutEnvelope)
+	{
+		check(nullptr != InBuffer);
+		check(nullptr != OutBuffer);
+		check(nullptr != OutEnvelope);
+
+		const int32 NumChannels = GetNumChannels();
+		const int32 KeyNumChannels = GetKeyNumChannels();
+
+
+		if (InKeyBuffer)
+		{
+			int32 KeySampleIndex = 0;
+			for (int32 SampleIndex = 0; SampleIndex < InNumSamples; SampleIndex += NumChannels)
+			{
+				const float* KeyFrame = &InKeyBuffer[KeySampleIndex];
+				ProcessAudioFrame(&InBuffer[SampleIndex], &OutBuffer[SampleIndex], KeyFrame, &OutEnvelope[SampleIndex]);
+				KeySampleIndex += KeyNumChannels;
+			}
+		}
+		else
+		{
+			for (int32 SampleIndex = 0; SampleIndex < InNumSamples; SampleIndex += NumChannels)
+			{
+				const float* KeyFrame = &InBuffer[SampleIndex];
+				ProcessAudioFrame(&InBuffer[SampleIndex], &OutBuffer[SampleIndex], KeyFrame, &OutEnvelope[SampleIndex]);
 			}
 		}
 	}
@@ -327,8 +383,9 @@ namespace Audio
 
 		for (int32 Channel = 0; Channel < KeyNumChannels; ++Channel)
 		{
-			DetectorOuts[Channel] = EnvFollower[Channel].ProcessAudio(DetectorGain * KeyIn[Channel]);
+			DetectorOuts[Channel] = EnvFollower[Channel].ProcessSample(DetectorGain * KeyIn[Channel]);
 		}
+		ArrayClampInPlace(DetectorOuts, 0.f, 1.f);
 
 		switch (LinkMode)
 		{
@@ -382,6 +439,20 @@ namespace Audio
 		return true;
 	}
 
+	bool FDynamicsProcessor::IsInProcessingThreshold(const float InEnvFollowerDb) const
+	{
+		if (ProcessingMode == EDynamicsProcessingMode::UpwardsCompressor)
+		{
+			return HalfKneeBandwidthDb >= 0.0f
+				&& InEnvFollowerDb < (ThresholdDb - HalfKneeBandwidthDb)
+				&& InEnvFollowerDb > (ThresholdDb + HalfKneeBandwidthDb);
+		}
+
+		return HalfKneeBandwidthDb >= 0.0f
+			&& InEnvFollowerDb > (ThresholdDb - HalfKneeBandwidthDb)
+			&& InEnvFollowerDb < (ThresholdDb + HalfKneeBandwidthDb);
+	}
+
 	float FDynamicsProcessor::ComputeGain(const float InEnvFollowerDb)
 	{
 		float SlopeFactor = 0.0f;
@@ -393,6 +464,8 @@ namespace Audio
 
 			// Compressors smoothly reduce the gain as the gain gets louder
 			// CompressionRatio -> Inifinity is a limiter
+			// Upwards compression applies gain when below a threshold, but uses the same slope
+			case EDynamicsProcessingMode::UpwardsCompressor:
 			case EDynamicsProcessingMode::Compressor:
 				SlopeFactor = 1.0f - 1.0f / Ratio;
 				break;
@@ -415,7 +488,7 @@ namespace Audio
 		}
 
 		// If we are in the range of compression
-		if (HalfKneeBandwidthDb > 0.0f && InEnvFollowerDb > (ThresholdDb - HalfKneeBandwidthDb) && InEnvFollowerDb < ThresholdDb + HalfKneeBandwidthDb)
+		if (IsInProcessingThreshold(InEnvFollowerDb))
 		{
 			// Setup the knee for interpolation. Don't allow the top knee point to exceed 0.0
 			KneePoints[0].X = ThresholdDb - HalfKneeBandwidthDb;
@@ -429,7 +502,17 @@ namespace Audio
 		}
 
 		float OutputGainDb = SlopeFactor * (ThresholdDb - InEnvFollowerDb);
-		OutputGainDb = FMath::Min(0.0f, OutputGainDb);
+
+		if (ProcessingMode == EDynamicsProcessingMode::UpwardsCompressor)
+		{
+			// if left unchecked Upwards compression will try to apply infinite gain
+			OutputGainDb = FMath::Clamp(OutputGainDb, 0.f, UpwardsCompressionMaxGain);
+		}
+		else
+		{
+			OutputGainDb = FMath::Min(0.f, OutputGainDb);
+		}
+
 		return ConvertToLinear(OutputGainDb);
 	}
 }

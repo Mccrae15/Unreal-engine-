@@ -24,6 +24,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "AssetTypeActions_GroundTruthData.h"
 #include "IAssetTools.h"
+#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "EditorAutomation"
 
@@ -105,17 +106,19 @@ class FFunctionalTestingEditorModule : public IFunctionalTestingEditorModule
 {
 	void StartupModule()
 	{
-		// make an extension to add the Orion function menu
-		Extender = MakeShareable(new FExtender());
-		Extender->AddMenuExtension(
-			"General",
-			EExtensionHook::After,
-			nullptr,
-			FMenuExtensionDelegate::CreateRaw(this, &FFunctionalTestingEditorModule::OnAutomationToolsMenuCreation));
-
-		// add the menu extension to the editor
-		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-		LevelEditorModule.GetMenuExtensibilityManager()->AddExtender(Extender);
+		if (FSlateApplication::IsInitialized())
+		{
+			// Add Automation Area to the Tools Menu
+			UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Tools");
+			FToolMenuSection& Section = Menu->AddSection("Automation", LOCTEXT("AutomationHeading", "Automation"));
+			Section.AddMenuEntry( 
+				"TestAutomation",
+				LOCTEXT("AutomationLabel", "Test Automation"),
+				LOCTEXT("Tooltip", "Launch the Testing Automation Frontend."),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "AutomationTools.TestAutomation"),
+				FUIAction(FExecuteAction::CreateStatic(&FFunctionalTestingEditorModule::OnShowAutomationFrontend))
+			);
+		}
 
 		FModuleManager::Get().OnModulesChanged().AddRaw(this, &FFunctionalTestingEditorModule::OnModulesChanged);
 
@@ -144,27 +147,6 @@ class FFunctionalTestingEditorModule : public IFunctionalTestingEditorModule
 		}
 	}
 
-	void OnAutomationToolsMenuCreation(FMenuBuilder& MenuBuilder)
-	{
-		MenuBuilder.BeginSection("Testing", LOCTEXT("Testing", "Testing"));
-		MenuBuilder.AddMenuEntry(
-			LOCTEXT("AutomationLabel", "Test Automation"),
-			LOCTEXT("Tooltip", "Launch the Testing Automation Frontend."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "AutomationTools.MenuIcon"),
-			FUIAction(FExecuteAction::CreateStatic(&FFunctionalTestingEditorModule::OnShowAutomationFrontend)));
-		MenuBuilder.EndSection();
-
-		// TODO Come up with a way to hide this if no tools are registered.
-		if (WorkspaceMenu::GetMenuStructure().GetAutomationToolsCategory()->GetChildItems().Num() > 0)
-		{
-			MenuBuilder.AddSubMenu(
-				LOCTEXT("AutomationTools", "Automation Tools"),
-				LOCTEXT("AutomationToolsToolTip", "Assorted tools to help generate data for some of the automation tests."),
-				FNewMenuDelegate::CreateRaw(this, &FFunctionalTestingEditorModule::PopulateAutomationTools)
-			);
-		}
-	}
-
 	void PopulateAutomationTools(FMenuBuilder& MenuBuilder)
 	{
 		MenuBuilder.BeginSection("AutomationTools", LOCTEXT("AutomationTools", "Automation Tools"));
@@ -185,6 +167,7 @@ class FFunctionalTestingEditorModule : public IFunctionalTestingEditorModule
 		{
 			FPlacementCategoryInfo Info(
 				LOCTEXT("FunctionalTestingCategoryName", "Testing"),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "PlacementBrowser.Icons.Testing"),
 				"Testing",
 				TEXT("PMTesting"),
 				25

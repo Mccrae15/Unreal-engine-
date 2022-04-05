@@ -79,11 +79,11 @@ void SAssetPickerButton::Construct(const FArguments& InArgs)
 			.ButtonColorAndOpacity( this, &SAssetPickerButton::OnGetWidgetBackground )
 			.OnClicked(this, &SAssetPickerButton::OnClickUse)
 			.ContentPadding(1.f)
-			.ToolTipText(NSLOCTEXT("GraphEditor", "ObjectGraphPin_Use_Tooltip", "Use asset browser selection"))
+			.ToolTipText(LOCTEXT("UseSelectionTooltip", "Use asset browser selection"))
 			[
 				SNew(SImage)
 				.ColorAndOpacity( this, &SAssetPickerButton::OnGetWidgetForeground )
-				.Image( FEditorStyle::GetBrush(TEXT("PropertyWindow.Button_Use")) )
+				.Image( FEditorStyle::GetBrush(TEXT("Icons.CircleArrowLeft")) )
 			]
 		]
 		// Browse button
@@ -97,11 +97,11 @@ void SAssetPickerButton::Construct(const FArguments& InArgs)
 			.ButtonColorAndOpacity( this, &SAssetPickerButton::OnGetWidgetBackground )
 			.OnClicked(this, &SAssetPickerButton::OnClickBrowse)
 			.ContentPadding(0)
-			.ToolTipText(NSLOCTEXT("GraphEditor", "ObjectGraphPin_Browse_Tooltip", "Browse"))
+			.ToolTipText(LOCTEXT("BrowseTooltip", "Browse"))
 			[
 				SNew(SImage)
 				.ColorAndOpacity( this, &SAssetPickerButton::OnGetWidgetForeground )
-				.Image( FEditorStyle::GetBrush(TEXT("PropertyWindow.Button_Browse")) )
+				.Image( FEditorStyle::GetBrush(TEXT("Icons.Search")) )
 			]
 		]
 	];

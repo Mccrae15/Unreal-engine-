@@ -204,6 +204,8 @@ public:
 	
 	static TSharedRef<FSlateApplication> InitializeAsStandaloneApplication(const TSharedRef< class FSlateRenderer >& PlatformRenderer, const TSharedRef<class GenericApplication>& InPlatformApplication);
 
+	static void InitializeCoreStyle();
+
 	/**
 	 * Returns true if a Slate application instance is currently initialized and ready
 	 *
@@ -413,6 +415,9 @@ public:
 	/** @return	Returns a ptr to the window that is currently the host of the menu stack or null if no menus are visible */
 	TSharedPtr<SWindow> GetVisibleMenuWindow() const;
 
+	/** @return	Returns a ptr to the widget that created the opened root menu or null if one is not opened */
+	TSharedPtr<SWidget> GetMenuHostWidget() const;
+
 	/** Dismisses all open menus */
 	void DismissAllMenus();
 
@@ -537,6 +542,11 @@ public:
 	 * Activates the Game Viewport if it is properly childed under a window
 	 */
 	void ActivateGameViewport();
+
+	/**
+	 * True if transforming mouse input coordinates to account for fullscreen distortions
+	 */
+	bool GetTransformFullscreenMouseInput() const; 
 
 	/**
 	 * Sets specified user focus to the SWidget passed in.
@@ -825,6 +835,7 @@ public:
 	 *
 	 * @param	bEnableAnimations	True if animations should be used, otherwise false.
 	 */
+	UE_DEPRECATED(5.0, "Enable Window Animations is no longer used and is a no-op so calling this function is no longer necessary.")
 	void EnableMenuAnimations( const bool bEnableAnimations );
 
 	void SetPlatformApplication(const TSharedRef<class GenericApplication>& InPlatformApplication);
@@ -836,6 +847,7 @@ public:
 	void OverridePlatformApplication(TSharedPtr<class GenericApplication> InPlatformApplication);
 
 	/** Set the global application icon */
+	UE_DEPRECATED(4.26, "SetAppIcon has been deprecated.  Set \"AppIcon\" in your applications style to override the icon")
 	void SetAppIcon(const FSlateBrush* const InAppIcon);
 
 	/** Sets the display state of external UI such as Steam. */
@@ -974,6 +986,9 @@ protected:
 	FORCEINLINE TSharedRef<FSlateUser> GetOrCreateUser(const FInputEvent& InputEvent) { return GetOrCreateUser(InputEvent.GetUserIndex()); }
 
 	friend class FEventRouter;
+
+	/** Transforms a pointer event to account for non-standard viewport resolutions */
+	FPointerEvent TransformPointerEvent(const FPointerEvent& PointerEvent, const TSharedPtr<SWindow>& Window) const;
 
 	virtual bool DoesWidgetHaveMouseCaptureByUser(const TSharedPtr<const SWidget> Widget, int32 UserIndex, TOptional<int32> PointerIndex) const override;
 	virtual bool DoesWidgetHaveMouseCapture(const TSharedPtr<const SWidget> Widget) const override;
@@ -1347,7 +1362,11 @@ public:
 	}
 
 	virtual TSharedPtr<SWindow> GetActiveTopLevelWindow() const override;
+
+	virtual TSharedPtr<SWindow> GetActiveTopLevelRegularWindow() const override;
+
 	virtual const FSlateBrush* GetAppIcon() const override;
+	virtual const FSlateBrush* GetAppIconSmall() const override;
 
 	virtual float GetApplicationScale() const override { return Scale; }
 	virtual bool GetSoftwareCursorAvailable() const override { return bSoftwareCursorAvailable; }
@@ -1863,6 +1882,9 @@ private:
 
 	/** Did we synthesize cursor input this frame? */
 	bool bSynthesizedCursorMove = false;
+
+	/** Platform mouse movement event count. */
+	uint64 PlatformMouseMovementEvents = 0;
 		
 	/**
 	 * A helper class to wrap the list of input pre-processors. 

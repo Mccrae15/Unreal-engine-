@@ -21,6 +21,7 @@ class IDetailChildrenBuilder;
 class IDetailLayoutBuilder;
 class IPropertyUtilities;
 class UPreviewMeshCollectionFactory;
+class USkeleton;
 
 // An entry in the preview mode choice box
 struct FPersonaModeComboEntry
@@ -81,6 +82,12 @@ private:
 
 	ECheckBoxState HandleUseCustomAnimBPIsChecked() const;
 
+	// Called when the anim blueprint being edited is compiled.
+	void HandleAnimBlueprintCompiled(UBlueprint* Blueprint);
+
+	// Reinitialize the preview controller in the preview scene.
+	void ReinitializePreviewController();
+
 #if CHAOS_SIMULATION_DETAIL_VIEW_FACTORY_SELECTOR
 	// Make the widget of each item in the preview cloth factory combo box
 	TSharedRef<SWidget> MakeClothingSimulationFactoryWidget(TSharedPtr<TSubclassOf<class UClothingSimulationFactory>> Item) const;
@@ -132,6 +139,7 @@ private:
 	* Called when reset to base is clicked
 	*/
 	void OnResetToBaseClicked(TSharedPtr<IPropertyHandle> PropertyHandle);
+	void OnResetAdditionalMeshes();
 
 	TSharedPtr<IPropertyHandle> AdditionalMeshesProperty;
 };
@@ -152,7 +160,7 @@ public:
 	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override {}
 
 private:
-	bool HandleShouldFilterAsset(const FAssetData& InAssetData, FString SkeletonName);
+	bool HandleShouldFilterAsset(const FAssetData& InAssetData, FString SkeletonName, USkeleton* Skeleton);
 
 	void HandleMeshChanged(const FAssetData& InAssetData);
 

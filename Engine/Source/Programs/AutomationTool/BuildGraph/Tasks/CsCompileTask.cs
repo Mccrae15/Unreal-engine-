@@ -1,12 +1,14 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 using UnrealBuildTool;
 
 namespace AutomationTool.Tasks
@@ -101,7 +103,7 @@ namespace AutomationTool.Tasks
 		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// Get the project file
-			HashSet<FileReference> ProjectFiles = ResolveFilespec(CommandUtils.RootDirectory, Parameters.Project, TagNameToFileSet);
+			HashSet<FileReference> ProjectFiles = ResolveFilespec(Unreal.RootDirectory, Parameters.Project, TagNameToFileSet);
 			foreach(FileReference ProjectFile in ProjectFiles)
 			{
 				if(!FileReference.Exists(ProjectFile))
@@ -124,7 +126,7 @@ namespace AutomationTool.Tasks
 			{
 				Properties["Configuration"] = Parameters.Configuration;
 			}
-			if(!String.IsNullOrEmpty(Parameters.Properties))
+			if (!String.IsNullOrEmpty(Parameters.Properties))
 			{
 				foreach (string Property in Parameters.Properties.Split(';'))
 				{
@@ -158,6 +160,11 @@ namespace AutomationTool.Tasks
 				if(!String.IsNullOrEmpty(Parameters.Target))
 				{
 					Arguments.Add(String.Format("/target:{0}", CommandUtils.MakePathSafeToUseWithCommandLine(Parameters.Target)));
+				}
+				if(!CommandUtils.CmdEnv.FrameworkMsbuildPath.Equals("xbuild"))
+				{
+					// not supported by xbuild
+					Arguments.Add("/restore");
 				}
 				Arguments.Add("/verbosity:minimal");
 				Arguments.Add("/nologo");
@@ -258,10 +265,7 @@ namespace AutomationTool.Tasks
 					// Add any files which are only referenced
 					foreach (KeyValuePair<FileReference, bool> Reference in ProjectInfo.References)
 					{
-						if(!Reference.Value)
-						{
-							CsProjectInfo.AddReferencedAssemblyAndSupportFiles(Reference.Key, OutReferences);
-						}
+						CsProjectInfo.AddReferencedAssemblyAndSupportFiles(Reference.Key, OutReferences);
 					}
 				}
 			}

@@ -37,8 +37,113 @@
 #include "AnimGraphNode_LinkedInputPose.h"
 #include "AnimGraphNode_LinkedAnimLayer.h"
 #include "AnimGraphNode_RigidBody.h"
+#include "AnimationBlendSpaceSampleGraph.h"
+#include "GraphEditorDragDropAction.h"
+#include "AnimationEditorUtils.h"
 
 #define LOCTEXT_NAMESPACE "AnimationGraphSchema"
+
+/////////////////////////////////////////////////////
+// FAnimationLayerDragDropAction
+/** DragDropAction class for drag and dropping animation layers */
+class ANIMGRAPH_API FAnimationLayerDragDropAction : public FGraphSchemaActionDragDropAction
+{
+public:
+	DRAG_DROP_OPERATOR_TYPE(FAnimationLayerDragDropAction, FGraphSchemaActionDragDropAction)
+
+	virtual FReply DroppedOnPanel(const TSharedRef< class SWidget >& Panel, FVector2D ScreenPosition, FVector2D GraphPosition, UEdGraph& Graph) override;
+	virtual FReply DroppedOnNode(FVector2D ScreenPosition, FVector2D GraphPosition) override;
+	virtual FReply DroppedOnPin(FVector2D ScreenPosition, FVector2D GraphPosition) override;
+	virtual FReply DroppedOnAction(TSharedRef<FEdGraphSchemaAction> Action) override;
+	virtual FReply DroppedOnCategory(FText Category) override;
+	virtual void HoverTargetChanged() override;
+
+protected:
+
+	/** Constructor */
+	FAnimationLayerDragDropAction();
+
+	static TSharedRef<FAnimationLayerDragDropAction> New(TSharedPtr<FEdGraphSchemaAction> InAction, FName InFuncName, UAnimBlueprint* InRigBlueprint, UAnimationGraph* InRigGraph);
+
+	UAnimBlueprint* SourceAnimBlueprint;
+	UAnimationGraph* SourceAnimLayerGraph;
+	FName SourceFuncName;
+
+	friend class UAnimationGraphSchema;
+};
+
+
+FAnimationLayerDragDropAction::FAnimationLayerDragDropAction()
+    : FGraphSchemaActionDragDropAction()
+    , SourceAnimBlueprint(nullptr)
+    , SourceAnimLayerGraph(nullptr)
+    , SourceFuncName(NAME_None)
+{
+}
+
+FReply FAnimationLayerDragDropAction::DroppedOnPanel(const TSharedRef< class SWidget >& Panel, FVector2D ScreenPosition, FVector2D GraphPosition, UEdGraph& Graph)
+{
+	if (UAnimationGraph* TargetRigGraph = Cast<UAnimationGraph>(&Graph))
+	{
+		if (UAnimBlueprint* TargetAnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForGraph(TargetRigGraph)))
+		{
+			FGraphNodeCreator<UAnimGraphNode_LinkedAnimLayer> LinkedInputLayerNodeCreator(*TargetRigGraph);
+			UAnimGraphNode_LinkedAnimLayer* LinkedAnimLayerNode = LinkedInputLayerNodeCreator.CreateNode();	
+			const FName GraphName = TargetRigGraph->GetFName();
+			LinkedAnimLayerNode->SetupFromLayerId(SourceFuncName);
+			LinkedInputLayerNodeCreator.Finalize();
+			LinkedAnimLayerNode->NodePosX = GraphPosition.X;
+			LinkedAnimLayerNode->NodePosY = GraphPosition.Y;
+		}
+	}
+	return FReply::Unhandled();
+}
+
+FReply FAnimationLayerDragDropAction::DroppedOnNode(FVector2D ScreenPosition, FVector2D GraphPosition)
+{
+	if (UEdGraphNode* TargetNode = GetHoveredNode())
+	{
+		if (UAnimGraphNode_LinkedAnimLayer* LinkedAnimLayer = Cast<UAnimGraphNode_LinkedAnimLayer>(TargetNode))
+		{
+			LinkedAnimLayer->Node.Layer = SourceFuncName; 
+			return FReply::Handled();
+		}
+	}
+	return FReply::Unhandled();
+}
+
+FReply FAnimationLayerDragDropAction::DroppedOnPin(FVector2D ScreenPosition, FVector2D GraphPosition)
+{
+	return FReply::Unhandled();
+}
+
+FReply FAnimationLayerDragDropAction::DroppedOnAction(TSharedRef<FEdGraphSchemaAction> Action)
+{
+	return FReply::Unhandled();
+}
+
+FReply FAnimationLayerDragDropAction::DroppedOnCategory(FText Category)
+{
+	return FReply::Unhandled();
+}
+
+void FAnimationLayerDragDropAction::HoverTargetChanged()
+{
+	FGraphSchemaActionDragDropAction::HoverTargetChanged();
+	bDropTargetValid = true;
+}
+
+
+TSharedRef<FAnimationLayerDragDropAction> FAnimationLayerDragDropAction::New(TSharedPtr<FEdGraphSchemaAction> InAction, FName InFuncName, UAnimBlueprint* InAnimBlueprint, UAnimationGraph* InAnimationLayerGraph)
+{
+	TSharedRef<FAnimationLayerDragDropAction> Action = MakeShareable(new FAnimationLayerDragDropAction);
+	Action->SourceAction = InAction;
+	Action->SourceAnimBlueprint = InAnimBlueprint;
+	Action->SourceAnimLayerGraph = InAnimationLayerGraph;
+	Action->SourceFuncName = InFuncName; 
+	Action->Construct();
+	return Action;
+}
 
 /////////////////////////////////////////////////////
 // UAnimationGraphSchema
@@ -130,6 +235,12 @@ void UAnimationGraphSchema::HandleGraphBeingDeleted(UEdGraph& GraphBeingRemoved)
 			// Prevent re-entrancy here
 			NodeToDelete->ClearBoundGraph();
 		}
+
+		// Remove pose watches from nodes in this graph
+		if (UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(Blueprint))
+		{
+			AnimationEditorUtils::RemovePoseWatchesFromGraph(AnimBlueprint, &GraphBeingRemoved);
+		}
 	}
 }
 
@@ -189,9 +300,11 @@ bool UAnimationGraphSchema::TryCreateConnection(UEdGraphPin* A, UEdGraphPin* B) 
 	}
 	check(OutputPin && InputPin);
 
-	UEdGraphNode* OutputNode = OutputPin->GetOwningNode();
+	UK2Node_Knot* OutputKnotNode = Cast<UK2Node_Knot>(OutputPin->GetOwningNode());
+	UK2Node_Knot* InputKnotNode = Cast<UK2Node_Knot>(InputPin->GetOwningNode());
+	bool bConnectionWithKnot = OutputKnotNode != nullptr || InputKnotNode != nullptr;
 
-	if(UK2Node_Knot* RerouteNode = Cast<UK2Node_Knot>(OutputNode))
+	if(bConnectionWithKnot)
 	{
 		// Double check this is our "exec"-like line
 		bool bOutputIsPose = IsPosePin(OutputPin->PinType);
@@ -290,7 +403,7 @@ void UAnimationGraphSchema::CreateFunctionGraphTerminators(UEdGraph& Graph, UCla
 			Graph.GetNodesOfClass<UAnimGraphNode_Root>(RootNodes);
 
 			check(RootNodes.Num() == 1);
-			RootNodes[0]->Node.Group = *FObjectEditorUtils::GetCategoryText(InterfaceToImplement).ToString();
+			RootNodes[0]->Node.SetGroup(*FObjectEditorUtils::GetCategoryText(InterfaceToImplement).ToString());
 
 			int32 CurrentPoseIndex = 0;
 			for (TFieldIterator<FProperty> PropIt(InterfaceToImplement); PropIt && (PropIt->PropertyFlags & CPF_Parm); ++PropIt)
@@ -332,21 +445,68 @@ void UAnimationGraphSchema::CreateFunctionGraphTerminators(UEdGraph& Graph, UCla
 	}
 }
 
-bool UAnimationGraphSchema::SearchForAutocastFunction(const UEdGraphPin* OutputPin, const UEdGraphPin* InputPin, FName& TargetFunction, /*out*/ UClass*& FunctionOwner) const
+
+bool UAnimationGraphSchema::CanShowDataTooltipForPin(const UEdGraphPin& Pin) const
 {
-	if (IsComponentSpacePosePin(OutputPin->PinType) && IsLocalSpacePosePin(InputPin->PinType))
+	return !IsPosePin(Pin.PinType) && UEdGraphSchema_K2::CanShowDataTooltipForPin(Pin);
+}
+
+bool UAnimationGraphSchema::CanGraphBeDropped(TSharedPtr<FEdGraphSchemaAction> InAction) const
+{
+	if (!InAction.IsValid())
+	{
+		return false;
+	}
+
+	if (InAction->GetTypeId() == FEdGraphSchemaAction_K2Graph::StaticGetTypeId())
+	{
+		FEdGraphSchemaAction_K2Graph* FuncAction = (FEdGraphSchemaAction_K2Graph*)InAction.Get();
+		if (UAnimationGraph* AnimGraph = Cast<UAnimationGraph>((UEdGraph*)FuncAction->EdGraph))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+FReply UAnimationGraphSchema::BeginGraphDragAction(TSharedPtr<FEdGraphSchemaAction> InAction, const FPointerEvent& MouseEvent) const
+{
+	if (!InAction.IsValid())
+	{
+		return FReply::Unhandled();
+	}
+
+	if (InAction->GetTypeId() == FEdGraphSchemaAction_K2Graph::StaticGetTypeId())
+	{
+		FEdGraphSchemaAction_K2Graph* FuncAction = (FEdGraphSchemaAction_K2Graph*)InAction.Get();
+		if (UAnimationGraph* AnimationLayerGraph = Cast<UAnimationGraph>((UEdGraph*)FuncAction->EdGraph))
+		{
+			if (UAnimBlueprint* TargetAnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForGraph(AnimationLayerGraph)))
+			{
+				return FReply::Handled().BeginDragDrop(FAnimationLayerDragDropAction::New(InAction, FuncAction->FuncName, TargetAnimBlueprint, AnimationLayerGraph));
+			}
+		}
+	}
+	
+	return FReply::Unhandled();
+}
+
+bool UAnimationGraphSchema::SearchForAutocastFunction(const FEdGraphPinType& OutputPinType, const FEdGraphPinType& InputPinType, FName& TargetFunction, /*out*/ UClass*& FunctionOwner) const
+{
+	if (IsComponentSpacePosePin(OutputPinType) && IsLocalSpacePosePin(InputPinType))
 	{
 		// Insert a Component To LocalSpace conversion
 		return true;
 	}
-	else if (IsLocalSpacePosePin(OutputPin->PinType) && IsComponentSpacePosePin(InputPin->PinType))
+	else if (IsLocalSpacePosePin(OutputPinType) && IsComponentSpacePosePin(InputPinType))
 	{
 		// Insert a Local To ComponentSpace conversion
 		return true;
 	}
 	else
 	{
-		return Super::SearchForAutocastFunction(OutputPin, InputPin, TargetFunction, FunctionOwner);
+		return Super::SearchForAutocastFunction(OutputPinType, InputPinType, TargetFunction, FunctionOwner);
 	}
 }
 
@@ -389,7 +549,7 @@ bool UAnimationGraphSchema::CreateAutomaticConversionNodeAndConnections(UEdGraph
 	}
 }
 
-bool IsAimOffsetBlendSpace(UBlendSpaceBase* BlendSpace)
+bool IsAimOffsetBlendSpace(UBlendSpace* BlendSpace)
 {
 	return	BlendSpace->IsA(UAimOffsetBlendSpace::StaticClass()) ||
 			BlendSpace->IsA(UAimOffsetBlendSpace1D::StaticClass());
@@ -403,9 +563,9 @@ void UAnimationGraphSchema::SpawnNodeFromAsset(UAnimationAsset* Asset, const FVe
 
 	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForGraph(Graph));
 
-	const bool bSkelMatch = (AnimBlueprint != NULL) && (AnimBlueprint->TargetSkeleton == Asset->GetSkeleton());
-	const bool bTypeMatch = (PinIfAvailable == NULL) || UAnimationGraphSchema::IsLocalSpacePosePin(PinIfAvailable->PinType);
-	const bool bDirectionMatch = (PinIfAvailable == NULL) || (PinIfAvailable->Direction == EGPD_Input);
+	const bool bSkelMatch = (AnimBlueprint != nullptr) && (AnimBlueprint->TargetSkeleton != nullptr) && (AnimBlueprint->TargetSkeleton->IsCompatible(Asset->GetSkeleton()));
+	const bool bTypeMatch = (PinIfAvailable == nullptr) || UAnimationGraphSchema::IsLocalSpacePosePin(PinIfAvailable->PinType);
+	const bool bDirectionMatch = (PinIfAvailable == nullptr) || (PinIfAvailable->Direction == EGPD_Input);
 
 	if (bSkelMatch && bTypeMatch && bDirectionMatch)
 	{
@@ -511,7 +671,7 @@ void UAnimationGraphSchema::GetAssetsNodeHoverMessage(const TArray<FAssetData>& 
 
 	// this one only should happen when there is an Anim Blueprint
 	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(HoverNode));
-	const bool bSkelMatch = (AnimBlueprint != NULL) && (AnimBlueprint->TargetSkeleton == Asset->GetSkeleton());
+	const bool bSkelMatch = (AnimBlueprint != NULL) && (AnimBlueprint->TargetSkeleton->IsCompatible(Asset->GetSkeleton()));
 
 	if (!bSkelMatch)
 	{
@@ -543,7 +703,7 @@ void UAnimationGraphSchema::GetAssetsPinHoverMessage(const TArray<FAssetData>& A
 	// this one only should happen when there is an Anim Blueprint
 	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(HoverPin->GetOwningNode()));
 
-	const bool bSkelMatch = (AnimBlueprint != NULL) && (AnimBlueprint->TargetSkeleton == Asset->GetSkeleton());
+	const bool bSkelMatch = (AnimBlueprint != NULL) && (AnimBlueprint->TargetSkeleton->IsCompatible(Asset->GetSkeleton()));
 	const bool bTypeMatch = UAnimationGraphSchema::IsLocalSpacePosePin(HoverPin->PinType);
 	const bool bDirectionMatch = HoverPin->Direction == EGPD_Input;
 
@@ -564,11 +724,18 @@ void UAnimationGraphSchema::GetAssetsGraphHoverMessage(const TArray<FAssetData>&
 	if (UAnimationAsset* AnimationAsset = FAssetData::GetFirstAsset<UAnimationAsset>(Assets))
 	{
 		UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForGraph(HoverGraph));
-		const bool bSkelMatch = (AnimBlueprint != NULL) && (AnimBlueprint->TargetSkeleton == AnimationAsset->GetSkeleton());
+		const bool bSkelMatch = (AnimBlueprint != nullptr) && (AnimBlueprint->TargetSkeleton != nullptr) && (AnimBlueprint->TargetSkeleton->IsCompatible(AnimationAsset->GetSkeleton()));
 		if (!bSkelMatch)
 		{
 			OutOkIcon = false;
-			OutTooltipText = LOCTEXT("SkeletonsNotCompatible", "Skeletons are not compatible").ToString();
+			if(AnimBlueprint && AnimBlueprint->bIsTemplate)
+			{
+				OutTooltipText = LOCTEXT("TemplateNotAllowed", "Template animation blueprints cannot reference assets").ToString();
+			}
+			else
+			{
+				OutTooltipText = LOCTEXT("SkeletonsNotCompatible", "Skeletons are not compatible").ToString();
+			}
 		}
 		else if(UAnimMontage* Montage = FAssetData::GetFirstAsset<UAnimMontage>(Assets))
 		{
@@ -591,15 +758,108 @@ void UAnimationGraphSchema::GetAssetsGraphHoverMessage(const TArray<FAssetData>&
 void UAnimationGraphSchema::GetContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
 	Super::GetContextMenuActions(Menu, Context);
-
-	if (const UAnimGraphNode_Base* AnimGraphNode = Cast<const UAnimGraphNode_Base>(Context->Node))
+	
+	if (UAnimGraphNode_Base* AnimGraphNode = Cast<UAnimGraphNode_Base>(Context->Node))
 	{
 		{
 			// Node contextual actions
 			FToolMenuSection& Section = Menu->AddSection("AnimGraphSchemaNodeActions", LOCTEXT("AnimNodeActionsMenuHeader", "Anim Node Actions"));
 			Section.AddMenuEntry(FAnimGraphCommands::Get().TogglePoseWatch);
 		}
+
+		if(Context->Pin && !IsPosePin(Context->Pin->PinType))
+		{
+			TSharedPtr<SWidget> BindingWidget = MakeBindingWidgetForPin({ AnimGraphNode }, Context->Pin->GetFName(), false, true);
+			if(BindingWidget.IsValid())
+			{
+				FToolMenuSection& Section = Menu->AddSection("EdGraphSchemaPinActions");
+				Section.AddEntry(FToolMenuEntry::InitWidget("BindingWidget", BindingWidget.ToSharedRef(), LOCTEXT("BindingWidgetLabel", "Binding"), true));
+			}
+		}
 	}
+}
+
+TSharedPtr<SWidget> UAnimationGraphSchema::MakeBindingWidgetForPin(const TArray<UAnimGraphNode_Base*>& InAnimGraphNodes, FName InPinName, bool bInOnGraphNode, TAttribute<bool> bInIsEnabled)
+{
+	const UAnimGraphNode_Base* FirstNode = InAnimGraphNodes[0];
+	
+	FProperty* PinProperty = nullptr;
+	int32 OptionalPinIndex = INDEX_NONE;
+	FName BindingName = NAME_None;
+	if(FirstNode && FirstNode->GetPinBindingInfo(InPinName, BindingName, PinProperty, OptionalPinIndex))
+	{
+		check(PinProperty);
+		check(OptionalPinIndex != INDEX_NONE);
+		check(BindingName != NAME_None);
+
+		const bool bPropertyIsOnFNode = FirstNode->GetFNodeProperty() != nullptr && (FirstNode->GetFNodeProperty()->Struct->IsChildOf(PinProperty->GetOwner<UScriptStruct>()));
+		
+		UAnimGraphNode_Base::FAnimPropertyBindingWidgetArgs BindingArgs(InAnimGraphNodes, PinProperty, InPinName, BindingName, OptionalPinIndex);
+
+		BindingArgs.OnGetOptionalPins = UAnimGraphNode_Base::FAnimPropertyBindingWidgetArgs::FOnGetOptionalPins::CreateLambda([bPropertyIsOnFNode](UAnimGraphNode_Base* InNode, TArrayView<FOptionalPinFromProperty>& OutOptionalPins)
+		{
+			if(UAnimGraphNode_CustomProperty* CustomProperty = Cast<UAnimGraphNode_CustomProperty>(InNode))
+			{
+				if(bPropertyIsOnFNode)
+				{
+					OutOptionalPins = InNode->ShowPinForProperties;
+				}
+				else
+				{
+					OutOptionalPins = CustomProperty->CustomPinProperties;
+				}
+			}
+			else
+			{
+				OutOptionalPins = InNode->ShowPinForProperties;
+			}
+		});
+		BindingArgs.OnSetPinVisibility = UAnimGraphNode_Base::FAnimPropertyBindingWidgetArgs::FOnSetPinVisibility::CreateLambda([bPropertyIsOnFNode](UAnimGraphNode_Base* InNode, bool bInVisible, int32 InOptionalPinIndex)
+		{
+			if(UAnimGraphNode_CustomProperty* CustomProperty = Cast<UAnimGraphNode_CustomProperty>(InNode))
+			{
+				if(bPropertyIsOnFNode)
+				{
+					InNode->SetPinVisibility(bInVisible, InOptionalPinIndex);
+				}
+				else
+				{
+					CustomProperty->SetCustomPinVisibility(bInVisible, InOptionalPinIndex);
+				}
+			}
+			else
+			{
+				InNode->SetPinVisibility(bInVisible, InOptionalPinIndex);
+			}
+		});
+		
+		// Only show 'always dynamic' for properties of the internal FAnimNode_Base
+		BindingArgs.bPropertyIsOnFNode = bPropertyIsOnFNode;
+		BindingArgs.bOnGraphNode = bInOnGraphNode; 
+
+		// Wrap in a box to control the widget's enabled & visibility states
+		return SNew(SBox)
+		.IsEnabled(bInIsEnabled)
+		.Visibility_Lambda([BindingName, FirstNode, bInOnGraphNode]()
+		{
+			if(bInOnGraphNode)
+			{
+				if (const FAnimGraphNodePropertyBinding* BindingPtr = FirstNode->PropertyBindings.Find(BindingName))
+				{
+					return EVisibility::Visible;
+				}
+
+				return EVisibility::Collapsed;
+			}
+			
+			return EVisibility::Visible;
+		})
+		[
+			UAnimGraphNode_Base::MakePropertyBindingWidget(BindingArgs)
+		];
+	}
+
+	return nullptr;
 }
 
 FText UAnimationGraphSchema::GetPinDisplayName(const UEdGraphPin* Pin) const 
@@ -618,6 +878,11 @@ FText UAnimationGraphSchema::GetPinDisplayName(const UEdGraphPin* Pin) const
 	return DisplayName;
 }
 
+bool UAnimationGraphSchema::CanDuplicateGraph(UEdGraph* InSourceGraph) const
+{
+	return InSourceGraph->GetFName() != UEdGraphSchema_K2::GN_AnimGraph && !InSourceGraph->IsA<UAnimationBlendSpaceSampleGraph>();
+}
+
 void UAnimationGraphSchema::GetGraphDisplayInformation(const UEdGraph& Graph, /*out*/ FGraphDisplayInfo& DisplayInfo) const
 {
 	if (GetGraphType(&Graph) == GT_Animation)
@@ -631,29 +896,31 @@ void UAnimationGraphSchema::GetGraphDisplayInformation(const UEdGraph& Graph, /*
 		if(!Graph.bAllowDeletion)
 		{
 			// Might be from an interface, so check
-			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(&Graph);
-			TSubclassOf<UInterface> Interface;
-
-			auto FindInterfaceForGraph = [&Blueprint, &Graph](TSubclassOf<UInterface>& OutInterface)
+			if(UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(&Graph))
 			{
-				for(const FBPInterfaceDescription& InterfaceDesc : Blueprint->ImplementedInterfaces)
+				TSubclassOf<UInterface> Interface;
+
+				auto FindInterfaceForGraph = [&Blueprint, &Graph](TSubclassOf<UInterface>& OutInterface)
 				{
-					for(UEdGraph* InterfaceGraph : InterfaceDesc.Graphs)
+					for(const FBPInterfaceDescription& InterfaceDesc : Blueprint->ImplementedInterfaces)
 					{
-						if(InterfaceGraph == &Graph)
+						for(UEdGraph* InterfaceGraph : InterfaceDesc.Graphs)
 						{
-							OutInterface = InterfaceDesc.Interface;
-							return true;
+							if(InterfaceGraph == &Graph)
+							{
+								OutInterface = InterfaceDesc.Interface;
+								return true;
+							}
 						}
 					}
+
+					return false;
+				};
+
+				if(FindInterfaceForGraph(Interface))
+				{
+					DisplayInfo.Tooltip = FText::Format(LOCTEXT("GraphTooltip_AnimGraphInterface", "Layer inherited from interface '{0}'."), FText::FromString(Interface.Get()->GetName()));
 				}
-
-				return false;
-			};
-
-			if(FindInterfaceForGraph(Interface))
-			{
-				DisplayInfo.Tooltip = FText::Format(LOCTEXT("GraphTooltip_AnimGraphInterface", "Layer inherited from interface '{0}'."), FText::FromString(Interface.Get()->GetName()));
 			}
 		}
 			
@@ -720,7 +987,7 @@ void UAnimationGraphSchema::ConformAnimGraphToInterface(UBlueprint* InBlueprint,
 		InGraph.GetNodesOfClass<UAnimGraphNode_Root>(RootNodes);
 
 		check(RootNodes.Num() == 1);
-		RootNodes[0]->Node.Group = *FObjectEditorUtils::GetCategoryText(InFunction).ToString();
+		RootNodes[0]->Node.SetGroup(*FObjectEditorUtils::GetCategoryText(InFunction).ToString());
 
 		TArray<UAnimGraphNode_LinkedInputPose*> LinkedInputPoseNodes;
 		InGraph.GetNodesOfClass<UAnimGraphNode_LinkedInputPose>(LinkedInputPoseNodes);
@@ -838,7 +1105,7 @@ FVector2D UAnimationGraphSchema::GetPositionForNewLinkedInputPoseNode(UEdGraph& 
 		InGraph.GetNodesOfClass<UAnimGraphNode_Base>(AllNodes);
 
 		// No nodes, so insert to the top-left of all existing nodes.
-		FBox2D AllNodesBounds;
+		FBox2D AllNodesBounds(ForceInit);
 		for(UAnimGraphNode_Base* Node : AllNodes)
 		{
 			FBox2D NodeBounds(

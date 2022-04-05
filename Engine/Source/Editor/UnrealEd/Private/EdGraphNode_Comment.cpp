@@ -107,7 +107,7 @@ FSlateIcon UEdGraphNode_Comment::GetIconAndTint(FLinearColor& OutColor) const
 {
 	OutColor = FLinearColor::White;
 	
-	static FSlateIcon Icon("EditorStyle", "GraphEditor.Comment_16x");
+	static FSlateIcon Icon("EditorStyle", "Icons.Comment");
 	return Icon;
 }
 
@@ -186,6 +186,20 @@ TSharedPtr<class INameValidatorInterface> UEdGraphNode_Comment::MakeNameValidato
 {
 	// Comments can be duplicated, etc...
 	return MakeShareable(new FDummyNameValidator(EValidatorResult::Ok));
+}
+
+bool UEdGraphNode_Comment::IsSelectedInEditor() const
+{
+	if (SelectionState == ESelectionState::Inherited)
+	{
+		return Super::IsSelectedInEditor();
+	}
+	return SelectionState == ESelectionState::Selected;
+}
+
+void UEdGraphNode_Comment::SetSelectionState(const ESelectionState InSelectionState)
+{
+	SelectionState = InSelectionState;
 }
 
 /////////////////////////////////////////////////////

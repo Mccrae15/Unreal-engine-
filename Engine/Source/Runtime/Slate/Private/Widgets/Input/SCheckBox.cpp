@@ -41,6 +41,10 @@ void SCheckBox::Construct( const SCheckBox::FArguments& InArgs )
 	UndeterminedImage = InArgs._UndeterminedImage;
 	UndeterminedHoveredImage = InArgs._UndeterminedHoveredImage;
 	UndeterminedPressedImage = InArgs._UndeterminedPressedImage;
+
+	BackgroundImage = InArgs._BackgroundImage;
+	BackgroundHoveredImage = InArgs._BackgroundHoveredImage;
+	BackgroundPressedImage = InArgs._BackgroundPressedImage;
 	
 	PaddingOverride = InArgs._Padding;
 	ForegroundColorOverride = InArgs._ForegroundColor;
@@ -286,6 +290,32 @@ bool SCheckBox::IsInteractable() const
 	return IsEnabled();
 }
 
+FSlateColor SCheckBox::GetForegroundColor() const
+{
+	FSlateColor UserColor = ForegroundColorOverride.Get();
+
+	if (UserColor == FSlateColor::UseStyle())
+	{
+		ECheckBoxState State = IsCheckboxChecked.Get();
+
+		switch (State)
+		{
+		case ECheckBoxState::Unchecked:
+			return bIsPressed ? Style->PressedForeground : IsHovered() ? Style->HoveredForeground : Style->ForegroundColor;
+			break;
+		case ECheckBoxState::Checked:
+			return bIsPressed ? Style->CheckedPressedForeground : IsHovered() ? Style->CheckedHoveredForeground : Style->CheckedForeground;
+			break;
+		default:
+		case ECheckBoxState::Undetermined:
+			return Style->UndeterminedForeground;
+			break;
+		}
+	}
+
+	return UserColor;
+}
+
 /**
  * Gets the check image to display for the current state of the check box
  * @return	The name of the image to display
@@ -312,6 +342,11 @@ const FSlateBrush* SCheckBox::OnGetCheckImage() const
 	}
 
 	return ImageToUse;
+}
+
+const FSlateBrush* SCheckBox::OnGetBackgroundImage() const 
+{
+	return IsPressed() ? GetBackgroundPressedImage() : ( IsHovered() ? GetBackgroundHoveredImage() : GetBackgroundImage() );
 }
 
 
@@ -485,9 +520,19 @@ void SCheckBox::BuildCheckBox(TSharedRef<SWidget> InContent)
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Center)
 			[
-				SNew(SImage)
-				.Image(this, &SCheckBox::OnGetCheckImage)
-				.ColorAndOpacity(this, &SCheckBox::OnGetForegroundColor)
+				SNew(SOverlay)
+
+				+SOverlay::Slot()
+				[
+					SNew(SImage)
+					.Image(this, &SCheckBox::OnGetBackgroundImage)
+				]
+				+SOverlay::Slot()
+				[
+					SNew(SImage)
+					.Image(this, &SCheckBox::OnGetCheckImage)
+					.ColorAndOpacity(FSlateColor::UseForeground())
+				]	
 			]
 			+ SHorizontalBox::Slot()
 			.Padding(TAttribute<FMargin>(this, &SCheckBox::OnGetPadding))
@@ -504,7 +549,7 @@ void SCheckBox::BuildCheckBox(TSharedRef<SWidget> InContent)
 		];
 		if (bCheckBoxContentUsesAutoWidth)
 		{
-			ContentSlot->AutoWidth();
+			ContentSlot->SetAutoWidth();
 		}
 	}
 	else if (ensure(CheckBoxType == ESlateCheckBoxType::ToggleButton))
@@ -515,7 +560,6 @@ void SCheckBox::BuildCheckBox(TSharedRef<SWidget> InContent)
 			SAssignNew(ContentContainer, SBorder)
 			.BorderImage(this, &SCheckBox::OnGetCheckImage)
 			.Padding(this, &SCheckBox::OnGetPadding)
-			.ForegroundColor(this, &SCheckBox::OnGetForegroundColor)
 			.BorderBackgroundColor(this, &SCheckBox::OnGetBorderBackgroundColor)
 			.HAlign(HorizontalAlignment)
 			[
@@ -525,10 +569,6 @@ void SCheckBox::BuildCheckBox(TSharedRef<SWidget> InContent)
 	}
 }
 
-FSlateColor SCheckBox::OnGetForegroundColor() const
-{
-	return ForegroundColorOverride.IsSet() ? ForegroundColorOverride.Get() : Style->ForegroundColor;
-}
 
 FMargin SCheckBox::OnGetPadding() const
 {
@@ -588,6 +628,21 @@ const FSlateBrush* SCheckBox::GetUndeterminedHoveredImage() const
 const FSlateBrush* SCheckBox::GetUndeterminedPressedImage() const
 {
 	return UndeterminedPressedImage ? UndeterminedPressedImage : &Style->UndeterminedPressedImage;
+}
+
+const FSlateBrush* SCheckBox::GetBackgroundImage() const
+{
+	return BackgroundImage ? BackgroundImage : &Style->BackgroundImage;
+}
+
+const FSlateBrush* SCheckBox::GetBackgroundHoveredImage() const
+{
+	return BackgroundHoveredImage ? BackgroundHoveredImage : &Style->BackgroundHoveredImage;
+}
+
+const FSlateBrush* SCheckBox::GetBackgroundPressedImage() const
+{
+	return BackgroundPressedImage ? BackgroundPressedImage : &Style->BackgroundPressedImage;
 }
 
 void SCheckBox::SetClickMethod(EButtonClickMethod::Type InClickMethod)

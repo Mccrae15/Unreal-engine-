@@ -345,38 +345,26 @@ FPlatformMemoryStats FApplePlatformMemory::GetStats()
 	// Gather platform memory stats.
 	uint64_t FreeMem = 0;
 #if PLATFORM_IOS
-#if defined(__IPHONE_13_0)
-	if (@available(iOS 13.0,*))
-	{
-		FreeMem = os_proc_available_memory();
-	}
-	else
+	FreeMem = os_proc_available_memory();
+#else
+    vm_statistics Stats;
+    mach_msg_type_number_t StatsSize = sizeof(Stats);
+    host_statistics(mach_host_self(), HOST_VM_INFO, (host_info_t)&Stats, &StatsSize);
+    FreeMem = (Stats.free_count + Stats.inactive_count) * MemoryConstants.PageSize;
 #endif
-#endif
-	{
-		vm_statistics Stats;
-		mach_msg_type_number_t StatsSize = sizeof(Stats);
-		host_statistics(mach_host_self(), HOST_VM_INFO, (host_info_t)&Stats, &StatsSize);
-		FreeMem = (Stats.free_count + Stats.inactive_count) * MemoryConstants.PageSize;
-	}
 	MemoryStats.AvailablePhysical = FreeMem;
+	MemoryStats.AvailableVirtual = FreeMem;
 	
 	// Just get memory information for the process and report the working set instead
 	mach_task_basic_info_data_t TaskInfo;
 	mach_msg_type_number_t TaskInfoCount = MACH_TASK_BASIC_INFO_COUNT;
 	task_info( mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&TaskInfo, &TaskInfoCount );
 #if PLATFORM_IOS
-#if defined(__IPHONE_13_0)
-	if (@available(iOS 13.0,*))
-	{
-		MemoryStats.UsedPhysical = MemoryConstants.TotalPhysical - FreeMem;
-	}
-	else
+    MemoryStats.UsedPhysical = MemoryConstants.TotalPhysical - FreeMem;
+#else
+    MemoryStats.UsedPhysical = TaskInfo.resident_size;
 #endif
-#endif
-	{
-		MemoryStats.UsedPhysical = TaskInfo.resident_size;
-	}
+
 	if(MemoryStats.UsedPhysical > MemoryStats.PeakUsedPhysical)
 	{
 		MemoryStats.PeakUsedPhysical = MemoryStats.UsedPhysical;
@@ -405,43 +393,35 @@ const FPlatformMemoryConstants& FApplePlatformMemory::GetConstants()
 		// Get memory.
 		int64 AvailablePhysical = 0;
 #if PLATFORM_IOS
-#if defined(__IPHONE_13_0)
-		if (@available(iOS 13.0,*))
-		{
-			AvailablePhysical = os_proc_available_memory();
-			
-			// quantize to the known jetsam limits, we should be within 50MB of the correct one
-			uint64 JetsamLimits[] = { 1520435200, 1939865600, 2201170740, 2252710350, 3006477100 }; // { 2GB, gimped 3GB, gimped 4GB, 3GB, 4GB
-			if (AvailablePhysical < JetsamLimits[0])
-			{
-				AvailablePhysical = JetsamLimits[0];
-			}
-			else if (AvailablePhysical < JetsamLimits[1])
-			{
-				AvailablePhysical = JetsamLimits[1];
-			}
-			else if (AvailablePhysical < JetsamLimits[2])
-			{
-				AvailablePhysical = JetsamLimits[2];
-			}
-			else if (AvailablePhysical < JetsamLimits[3])
-			{
-				AvailablePhysical = JetsamLimits[3];
-			}
-			else if (AvailablePhysical < JetsamLimits[4])
-			{
-				AvailablePhysical = JetsamLimits[4];
-			}
-		}
-		else
+        AvailablePhysical = os_proc_available_memory();
+        
+        // quantize to the known jetsam limits, we should be within 50MB of the correct one
+        uint64 JetsamLimits[] = { 1520435200, 1939865600, 2201170740, 2252710350, 3006477100 }; // { 2GB, gimped 3GB, gimped 4GB, 3GB, 4GB
+        if (AvailablePhysical < JetsamLimits[0])
+        {
+            AvailablePhysical = JetsamLimits[0];
+        }
+        else if (AvailablePhysical < JetsamLimits[1])
+        {
+            AvailablePhysical = JetsamLimits[1];
+        }
+        else if (AvailablePhysical < JetsamLimits[2])
+        {
+            AvailablePhysical = JetsamLimits[2];
+        }
+        else if (AvailablePhysical < JetsamLimits[3])
+        {
+            AvailablePhysical = JetsamLimits[3];
+        }
+        else if (AvailablePhysical < JetsamLimits[4])
+        {
+            AvailablePhysical = JetsamLimits[4];
+        }
+#else
+        int Mib[] = {CTL_HW, HW_MEMSIZE};
+        size_t Length = sizeof(int64);
+        sysctl(Mib, 2, &AvailablePhysical, &Length, NULL, 0);
 #endif
-#endif
-		{
-			int Mib[] = {CTL_HW, HW_MEMSIZE};
-			size_t Length = sizeof(int64);
-			sysctl(Mib, 2, &AvailablePhysical, &Length, NULL, 0);
-		}
-		
 		MemoryConstants.TotalPhysical = AvailablePhysical;
 		MemoryConstants.TotalVirtual = AvailablePhysical;
 		MemoryConstants.PageSize = (uint32)vm_page_size;
@@ -765,7 +745,11 @@ void FApplePlatformMemory::FPlatformVirtualMemoryBlock::Decommit(size_t InOffset
 {
 	check(IsAligned(InOffset, GetCommitAlignment()) && IsAligned(InSize, GetCommitAlignment()));
 	check(InOffset >= 0 && InSize >= 0 && InOffset + InSize <= GetActualSize() && Ptr);
-	madvise(((uint8*)Ptr) + InOffset, InSize, MADV_DONTNEED);
+	if (madvise(((uint8*)Ptr) + InOffset, InSize, MADV_DONTNEED) != 0)
+	{
+		// we can ran out of VMAs here too!
+		FPlatformMemory::OnOutOfMemory(InSize, 0);
+	}
 }
 
 

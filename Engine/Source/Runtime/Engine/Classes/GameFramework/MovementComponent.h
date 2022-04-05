@@ -22,6 +22,20 @@ struct FCollisionResponseParams;
 struct FCollisionShape;
 
 
+
+namespace MovementComponentCVars
+{
+	// Typically we want to depenetrate regardless of direction, so we can get all the way out of penetration quickly.
+	// Our rules for "moving with depenetration normal" only get us so far out of the object. We'd prefer to pop out by the full MTD amount.
+	// Depenetration moves (in ResolvePenetration) then ignore blocking overlaps to be able to move out by the MTD amount.
+	extern int32 MoveIgnoreFirstBlockingOverlap;
+
+	extern float PenetrationOverlapCheckInflation;
+
+	extern float PenetrationPullbackDistance;
+}
+
+
 /**
  * Setting that controls behavior when movement is restricted to a 2D plane defined by a specific axis/normal,
  * so that movement along the locked axis is not be possible.
@@ -63,13 +77,13 @@ class ENGINE_API UMovementComponent : public UActorComponent
 	 * @see bAutoRegisterUpdatedComponent, SetUpdatedComponent(), UpdatedPrimitive
 	 */
 	UPROPERTY(BlueprintReadOnly, Transient, DuplicateTransient, Category=MovementComponent)
-	USceneComponent* UpdatedComponent;
+	TObjectPtr<USceneComponent> UpdatedComponent;
 
 	/**
 	 * UpdatedComponent, cast as a UPrimitiveComponent. May be invalid if UpdatedComponent was null or not a UPrimitiveComponent.
 	 */
 	UPROPERTY(BlueprintReadOnly, Transient, DuplicateTransient, Category=MovementComponent)
-	UPrimitiveComponent* UpdatedPrimitive;
+	TObjectPtr<UPrimitiveComponent> UpdatedPrimitive;
 
 	/**
 	 * Flags that control the behavior of calls to MoveComponent() on our UpdatedComponent.
@@ -209,20 +223,6 @@ public:
 	/** Returns maximum speed of component in current movement mode. */
 	UFUNCTION(BlueprintCallable, Category="Components|Movement")
 	virtual float GetMaxSpeed() const;
-
-	UE_DEPRECATED(4.3, "GetMaxSpeedModifier() is deprecated, apply your own modifiers to GetMaxSpeed() if desired.")
-	virtual float GetMaxSpeedModifier() const;
-	
-	/** Returns a scalar applied to the maximum velocity that the component can currently move. */
-	UFUNCTION(BlueprintCallable, Category="Components|Movement", meta=(DeprecatedFunction, DisplayName="GetMaxSpeedModifier", ScriptName="GetMaxSpeedModifier", DeprecationMessage="GetMaxSpeedModifier() is deprecated, apply your own modifiers to GetMaxSpeed() if desired."))
-	virtual float K2_GetMaxSpeedModifier() const;
-
-	UE_DEPRECATED(4.3, "GetModifiedMaxSpeed() is deprecated, use GetMaxSpeed() instead.")
-	virtual float GetModifiedMaxSpeed() const;
-
-	/** Returns the result of GetMaxSpeed() * GetMaxSpeedModifier(). */
-	UFUNCTION(BlueprintCallable, Category="Components|Movement", meta=(DisplayName="GetModifiedMaxSpeed", ScriptName="GetModifiedMaxSpeed", DeprecationMessage="GetModifiedMaxSpeed() is deprecated, apply your own modifiers to GetMaxSpeed() if desired."))
-	virtual float K2_GetModifiedMaxSpeed() const;
 
 	/**
 	 * Returns true if the current velocity is exceeding the given max speed (usually the result of GetMaxSpeed()), within a small error tolerance.

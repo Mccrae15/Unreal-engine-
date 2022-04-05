@@ -61,10 +61,10 @@ class SLATECORE_API FSlateClippingZone
 {
 public:
 
-	FVector2D TopLeft;
-	FVector2D TopRight;
-	FVector2D BottomLeft;
-	FVector2D BottomRight;
+	FVector2f TopLeft;
+	FVector2f TopRight;
+	FVector2f BottomLeft;
+	FVector2f BottomRight;
 
 	explicit FSlateClippingZone(const FShortRect& AxisAlignedRect);
 	explicit FSlateClippingZone(const FSlateRect& AxisAlignedRect);
@@ -111,7 +111,7 @@ public:
 	{
 		if (bIsAxisAligned)
 		{
-			FVector2D Difference = TopLeft - BottomRight;
+			FVector2f Difference = TopLeft - BottomRight;
 			return FMath::IsNearlyZero(Difference.X) || FMath::IsNearlyZero(Difference.Y);
 		}
 
@@ -153,7 +153,7 @@ public:
 
 	FSlateClippingZone ConvertRelativeToAbsolute(const FVector2D& WindowOffset) const
 	{
-		FSlateClippingZone Absolute(TopLeft + WindowOffset, TopRight + WindowOffset, BottomLeft + WindowOffset, BottomRight + WindowOffset);
+		FSlateClippingZone Absolute(FVector2D(TopLeft) + WindowOffset, FVector2D(TopRight) + WindowOffset, FVector2D(BottomLeft) + WindowOffset, FVector2D(BottomRight) + WindowOffset);
 		Absolute.bIsAxisAligned = bIsAxisAligned;
 		Absolute.bIntersect = bIntersect;
 		Absolute.bAlwaysClip = bAlwaysClip;
@@ -213,7 +213,7 @@ public:
 	/** Is a point inside the clipping state? */
 	bool IsPointInside(const FVector2D& Point) const;
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if WITH_SLATE_DEBUGGING
 	/** Set the state index that this clipping state originated from.  We just do this for debugging purposes. */
 	FORCEINLINE void SetDebuggingStateIndex(int32 InStateIndex) const
 	{

@@ -6,7 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "Templates/SubclassOf.h"
 #include "GameFramework/Actor.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "GameFramework/OnlineReplStructs.h"
 #include "GameFramework/Info.h"
 #include "PlayerState.generated.h"
@@ -34,8 +34,9 @@ struct PingAvgData
 /**
  * Struct keeping track of the lowest ping values over a given second.
  */
-struct PingAvgDataV2
+struct UE_DEPRECATED(4.27, "ExactPingV2 is no longer used. Please use ExactPing instead.") PingAvgDataV2
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** List of ping values */
 	TArray<uint16> PingValues;
 
@@ -51,10 +52,13 @@ struct PingAvgDataV2
 			PingValues.Add(MAX_uint16);
 		}
 	}
-
+	
 	/** The average of the values in PingValues, calculated after 1s. */
 	float AvgPingV2;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 };
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnPlayerStatePawnSet, APlayerState*, Player, APawn*, NewPawn, APawn*, OldPawn);
 
 /**
  * A PlayerState is created for every player on a server (or in a standalone game).
@@ -78,17 +82,16 @@ class ENGINE_API APlayerState : public AInfo
 	UPROPERTY(ReplicatedUsing=OnRep_PlayerId, BlueprintReadOnly, Category=PlayerState)
 	int32 PlayerId;
 
-	/** Replicated compressed ping for this player (holds ping in msec divided by 4) */
-	UE_DEPRECATED(4.25, "This member will be made private. Use GetPing or SetPing instead.")
-	UPROPERTY(Replicated, BlueprintReadOnly, Category=PlayerState)
-	uint8 Ping;
-
 private:
+	/** Replicated compressed ping for this player (holds ping in msec divided by 4) */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category=PlayerState, meta=(AllowPrivateAccess))
+	uint8 CompressedPing;
+
 	/** The current PingBucket index that is being filled */
-	uint8			CurPingBucket;
+	uint8 CurPingBucket;
 
 	/**
-	 * Whether or not this player's replicated Ping value is updated automatically.
+	 * Whether or not this player's replicated CompressedPing value is updated automatically.
 	 * Since player states are always relevant by default, in cases where there are many players replicating,
 	 * replicating the ping value can cause additional unnecessary overhead on servers if the value isn't
 	 * needed on clients.
@@ -140,8 +143,10 @@ public:
 	UPROPERTY()
 	TSubclassOf<class ULocalMessage> EngineMessageClass;
 
-	/** Exact ping as float (rounded and compressed in replicated Ping) */
+	/** Exact ping as float (rounded and compressed in replicated CompressedPing) */
 	float ExactPing;
+
+	UE_DEPRECATED(4.27, "Please use ExactPing instead.")
 	float ExactPingV2;
 
 	/** Used to match up InactivePlayerState with rejoining playercontroller. */
@@ -159,13 +164,22 @@ public:
 	/** The session that the player needs to join/remove from as it is created/leaves */
 	FName SessionName;
 
+	/** Broadcast whenever this player's possessed pawn is set */
+	UPROPERTY(BlueprintAssignable, Category = "Events")
+	FOnPlayerStatePawnSet OnPawnSet;
+
 private:
 
 	friend struct FSetPlayerStatePawn;
 
 	/** The pawn that is controlled by by this player state. */
 	UPROPERTY(BlueprintReadOnly, Category=PlayerState, meta=(AllowPrivateAccess="true"))
-	APawn* PawnPrivate;
+	TObjectPtr<APawn> PawnPrivate;
+
+	void SetPawnPrivate(APawn* InPawn);
+
+	UFUNCTION()
+	void OnPawnPrivateDestroyed(AActor* InActor);
 
 	/**
 	 * Stores the last 4 seconds worth of ping data (one second per 'bucket').
@@ -173,7 +187,10 @@ private:
 	 * without using up a lot of space, while also being tolerant of changes in ping update frequency
 	 */
 	PingAvgData		PingBucket[4];
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	PingAvgDataV2	PingBucketV2[4];
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** The timestamp for when the current PingBucket began filling */
 	float			CurPingBucketTimestamp;
@@ -210,12 +227,20 @@ public:
 	//~ End AActor Interface
 
 	/** Return the pawn controlled by this Player State. */
+	UFUNCTION(BlueprintCallable, Category = "PlayerState")
 	APawn* GetPawn() const { return PawnPrivate; }
 
 	/** Convenience helper to return a cast version of the pawn controlled by this Player State. */
 	template<class T>
 	T* GetPawn() const { return Cast<T>(PawnPrivate); }
 
+	/** Returns the AI or player controller that created this player state, or null for remote clients */
+	class AController* GetOwningController() const;
+
+	/** Return the player controller that created this player state, or null for remote clients */
+	UFUNCTION(BlueprintCallable, Category = "PlayerState")
+	class APlayerController* GetPlayerController() const;
+	
 	/** Called by Controller when its PlayerState is initially replicated. */
 	virtual void ClientInitialize(class AController* C);
 
@@ -252,12 +277,6 @@ public:
 
 	/** set the player name to S */
 	virtual void SetOldPlayerName(const FString& S);
-
-	/** 
-	 * Associate an online unique id with this player
-	 * @param InUniqueId the unique id associated with this player
-	 */
-	virtual void SetUniqueId(const FUniqueNetIdPtr& InUniqueId);
 
 	/** 
 	 * Register a player with the online subsystem
@@ -345,14 +364,30 @@ public:
 	/** Sets the value of PlayerId without causing other side effects to this instance. */
 	void SetPlayerId(const int32 NewId);
 
-	/** Gets the literal value of Ping. */
-	uint8 GetPing() const
+	/** Gets the literal value of the compressed Ping value (Ping = PingInMS / 4). */
+	uint8 GetCompressedPing() const
 	{
-		return Ping;
+		return CompressedPing;
 	}
 
-	/** Sets the value of Ping without causing other side effects to this instance. */
-	void SetPing(const uint8 NewPing);
+	UE_DEPRECATED(5.0, "Use GetPingInMilliseconds() or GetCompressedPing() instead")
+	uint8 GetPing() const { return GetCompressedPing(); }
+
+	/** Sets the value of CompressedPing without causing other side effects to this instance. */
+	void SetCompressedPing(const uint8 NewPing);
+
+	/**
+	 * Returns the ping (in milliseconds)
+	 *
+	 * Returns ExactPing if available (local players or when running on the server), and
+	 * the replicated CompressedPing (converted back to milliseconds) otherwise.
+	 * 
+	 * Note that replication of CompressedPing is controlled by bShouldUpdateReplicatedPing,
+	 * and if disabled then this will return 0 or a stale value on clients for player states
+	 * that aren't related to local players
+	 */
+	UFUNCTION(BlueprintCallable, Category = "PlayerState")
+	float GetPingInMilliseconds() const;
 
 	/** Gets the literal value of bIsSpectator. */
 	bool IsSpectator() const
@@ -415,9 +450,32 @@ public:
 		return UniqueId;
 	}
 
-	/** Sets the value of UniqueId without causing other side effects to this instance. */
+	/** Gets the online unique id for a player. If a player is logged in this will be consistent across all clients and servers. */
+	UFUNCTION(BlueprintCallable, Category = "PlayerState", meta = (DisplayName = "Get Unique Net Id"))
+	FUniqueNetIdRepl BP_GetUniqueId() const;
+
+	/**
+	 * Associate an online unique id with this player
+	 * @param InUniqueId the unique id associated with this player
+	 */
+	UE_DEPRECATED(5.0, "Use SetUniqueId(FUniqueNetIdRepl) instead")
+	virtual void SetUniqueId(const FUniqueNetIdPtr& InUniqueId);
+
+	/**
+	 * Associate an online unique id with this player
+	 * @param InUniqueId the unique id associated with this player
+	 */
 	void SetUniqueId(const FUniqueNetIdRepl& NewUniqueId);
+	
+	/**
+	 * Associate an online unique id with this player
+	 * @param InUniqueId the unique id associated with this player
+	 */
 	void SetUniqueId(FUniqueNetIdRepl&& NewUniqueId);
+
+	/** Called on both the client and server when unique ID has been modified */
+	virtual void OnSetUniqueId();
+
 	//~ End Methods for Replicated Members.
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 };
@@ -430,6 +488,8 @@ private:
 
 	FSetPlayerStatePawn(APlayerState* PlayerState, APawn* Pawn)
 	{
-		PlayerState->PawnPrivate = Pawn;
+		APawn* OldPawn = PlayerState->PawnPrivate;
+		PlayerState->SetPawnPrivate(Pawn);
+		PlayerState->OnPawnSet.Broadcast(PlayerState, PlayerState->PawnPrivate, OldPawn); 
 	}
 };

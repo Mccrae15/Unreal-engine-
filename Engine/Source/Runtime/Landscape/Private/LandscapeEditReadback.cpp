@@ -37,7 +37,7 @@ struct FLandscapeEditReadbackTaskImpl
 /** Initialize the read back task data that is written by game thread. */
 bool InitTask_GameThread(FLandscapeEditReadbackTaskImpl& Task, UTexture2D const* InTexture, FLandscapeEditLayerReadback::FReadbackContext&& InReadbackContext, uint32 InFrameId)
 {
-	Task.TextureResource = InTexture->Resource;
+	Task.TextureResource = InTexture->GetResource();
 	Task.ReadbackContext = MoveTemp(InReadbackContext);
 	Task.InitFrameId = InFrameId;
 	Task.Size = FIntPoint(InTexture->GetSizeX(), InTexture->GetSizeY());
@@ -78,7 +78,7 @@ void KickTask_RenderThread(FRHICommandListImmediate& RHICmdList, FLandscapeEditR
 {
 	// Transition staging textures for write.
 	TArray <FRHITransitionInfo> Transitions;
-	Transitions.Add(FRHITransitionInfo(Task.TextureResource->GetTexture2DRHI(), ERHIAccess::Unknown, ERHIAccess::CopySrc));
+	Transitions.Add(FRHITransitionInfo(Task.TextureResource->GetTexture2DRHI(), ERHIAccess::SRVMask, ERHIAccess::CopySrc));
 	for (uint32 MipIndex = 0; MipIndex < Task.NumMips; ++MipIndex)
 	{
 		Transitions.Add(FRHITransitionInfo(Task.StagingTextures[MipIndex], ERHIAccess::Unknown, ERHIAccess::CopyDest));
@@ -100,10 +100,10 @@ void KickTask_RenderThread(FRHICommandListImmediate& RHICmdList, FLandscapeEditR
 
 	// Transition staging textures for read.
 	Transitions.Reset();
-	Transitions.Add(FRHITransitionInfo(Task.TextureResource->GetTexture2DRHI(), ERHIAccess::CopySrc, ERHIAccess::SRVGraphics));
+	Transitions.Add(FRHITransitionInfo(Task.TextureResource->GetTexture2DRHI(), ERHIAccess::CopySrc, ERHIAccess::SRVMask));
 	for (uint32 MipIndex = 0; MipIndex < Task.NumMips; ++MipIndex)
 	{
-		Transitions.Add(FRHITransitionInfo(Task.StagingTextures[MipIndex], ERHIAccess::CopyDest, ERHIAccess::CPURead));
+		Transitions.Add(FRHITransitionInfo(Task.StagingTextures[MipIndex], ERHIAccess::Unknown, ERHIAccess::CPURead));
 	}
 	RHICmdList.Transition(Transitions);
 
@@ -113,8 +113,11 @@ void KickTask_RenderThread(FRHICommandListImmediate& RHICmdList, FLandscapeEditR
 	Task.CompletionState = FLandscapeEditReadbackTaskImpl::ECompletionState::Pending;
 }
 
-/** Update the read back task on the render thread. Check if the GPU work is complete and if it is copy the data. */
-void UpdateTask_RenderThread(FRHICommandListImmediate& RHICmdList, FLandscapeEditReadbackTaskImpl& Task, bool bFlush)
+/**
+ * Update the read back task on the render thread. Check if the GPU work is complete and if it is copy the data.
+ * @return true if the task's state is Complete, false if it is still Pending : 
+ */
+bool UpdateTask_RenderThread(FRHICommandListImmediate& RHICmdList, FLandscapeEditReadbackTaskImpl& Task, bool bFlush)
 {
 	if (Task.CompletionState == FLandscapeEditReadbackTaskImpl::ECompletionState::Pending && (bFlush || Task.ReadbackFence->Poll()))
 	{
@@ -150,6 +153,8 @@ void UpdateTask_RenderThread(FRHICommandListImmediate& RHICmdList, FLandscapeEdi
 		FPlatformMisc::MemoryBarrier();
 		Task.CompletionState = FLandscapeEditReadbackTaskImpl::ECompletionState::Complete;
 	}
+
+	return (Task.CompletionState == FLandscapeEditReadbackTaskImpl::ECompletionState::Complete);
 }
 
 
@@ -295,7 +300,13 @@ void FLandscapeEditLayerReadback::Tick()
 	{
 		for (int32 TaskHandle : TasksToUpdate)
 		{
-			UpdateTask_RenderThread(RHICmdList, GReadbackTaskPool.Pool[TaskHandle], false);
+			// Tick the task : 
+			bool bTaskComplete = UpdateTask_RenderThread(RHICmdList, GReadbackTaskPool.Pool[TaskHandle], false);
+			// Stop processing at the first incomplete task in order not to get a task's state to Complete before a one of its previous task (in case their GPU fences are written in between the calls to UpdateTask_RenderThread) : 
+			if (!bTaskComplete)
+			{
+				break;
+			}
 		}
 	});
 }
@@ -308,7 +319,8 @@ void FLandscapeEditLayerReadback::Flush()
 	{
 		for (int32 TaskHandle : TasksToUpdate)
 		{
-			UpdateTask_RenderThread(RHICmdList, GReadbackTaskPool.Pool[TaskHandle], true);
+			bool bTaskComplete = UpdateTask_RenderThread(RHICmdList, GReadbackTaskPool.Pool[TaskHandle], true);
+			check(bTaskComplete); // Flush should never fail to complete
 		}
 	});
 

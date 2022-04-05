@@ -8,33 +8,44 @@ using System.Diagnostics;
 using System.IO;
 using UnrealBuildTool;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace AutomationTool
 {
 	class MacHostPlatform : HostPlatform
 	{
-		static string CachedMsBuildTool = "";
+		static string CachedFrameworkMsbuildExe = "";
 
-		public override string GetMsBuildExe()
+		public override string GetFrameworkMsbuildExe()
 		{
 			// As of 5.0 mono comes with msbuild which performs better. If that's installed then use it
-			if (string.IsNullOrEmpty(CachedMsBuildTool))
+			if (string.IsNullOrEmpty(CachedFrameworkMsbuildExe))
 			{
 				bool CanUseMsBuild = string.IsNullOrEmpty(CommandUtils.WhichApp("msbuild")) == false;
 
 				if (CanUseMsBuild)
 				{
-					CachedMsBuildTool = "msbuild";
+					CachedFrameworkMsbuildExe = "msbuild";
 				}
 				else
 				{
 					Log.TraceInformation("Using xbuild. Install Mono 5.0 or greater for faster builds!");
-					CachedMsBuildTool = "xbuild";
+					CachedFrameworkMsbuildExe = "xbuild";
 				}
 			}
 
-			return CachedMsBuildTool;
+			return CachedFrameworkMsbuildExe;
+		}
+
+		public override FileReference GetDotnetExe()
+		{
+			return FileReference.Combine(Unreal.EngineDirectory, @"Binaries\ThirdParty\DotNet\Mac\dotnet");
+		}
+
+		public override string GetDotnetMsbuildExe()
+		{
+			return "../../ThirdParty/DotNet/Mac/dotnet";
 		}
 
 		public override string RelativeBinariesFolder
@@ -42,34 +53,34 @@ namespace AutomationTool
 			get { return @"Engine/Binaries/Mac/"; }
 		}
 
-		public override string GetUE4ExePath(string UE4Exe)
+		public override string GetUnrealExePath(string UnrealExe)
 		{
-			if(Path.IsPathRooted(UE4Exe))
+			if(Path.IsPathRooted(UnrealExe))
 			{
-				return CommandUtils.CombinePaths(UE4Exe);
+				return CommandUtils.CombinePaths(UnrealExe);
 			}
 
-			int CmdExeIndex = UE4Exe.IndexOf("-Cmd.exe");
+			int CmdExeIndex = UnrealExe.IndexOf("-Cmd.exe");
 			if (CmdExeIndex != -1)
 			{
-				UE4Exe = UE4Exe.Substring(0, CmdExeIndex + 4);
+				UnrealExe = UnrealExe.Substring(0, CmdExeIndex + 4);
 			}
 			else
 			{
-				CmdExeIndex = UE4Exe.IndexOf(".exe");
+				CmdExeIndex = UnrealExe.IndexOf(".exe");
 				if (CmdExeIndex != -1)
 				{
-					UE4Exe = UE4Exe.Substring(0, CmdExeIndex);
+					UnrealExe = UnrealExe.Substring(0, CmdExeIndex);
 				}
 			}
 
-			if (UE4Exe.EndsWith("-Cmd", StringComparison.OrdinalIgnoreCase))
+			if (UnrealExe.EndsWith("-Cmd", StringComparison.OrdinalIgnoreCase))
 			{
-				return CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, RelativeBinariesFolder, UE4Exe);
+				return CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, RelativeBinariesFolder, UnrealExe);
 			}
 			else
 			{
-				return CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, RelativeBinariesFolder, UE4Exe + ".app/Contents/MacOS", UE4Exe);
+				return CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, RelativeBinariesFolder, UnrealExe + ".app/Contents/MacOS", UnrealExe);
 			}
 		}
 
@@ -135,6 +146,15 @@ namespace AutomationTool
 						AppName = AppName + ".app/Contents/MacOS/" + AppFilename;
 					}
 				}
+				// some of our C# applications are converted to dotnet core, do not run those via mono
+				// they are instead assumed to produce a host executable that can just be run
+
+				// this needs fixing: these applications should be launched through the bundled dotnet
+
+				else if (AppName.Contains("UnrealBuildTool") || AppName.Contains("AutomationTool"))
+				{
+					Options &= ~CommandUtils.ERunOptions.AppMustExist;
+				}
 				else
 				{
 					// It's a C# app, so run it with Mono
@@ -148,24 +168,6 @@ namespace AutomationTool
 		public override void SetConsoleCtrlHandler(ProcessManager.CtrlHandlerDelegate Handler)
 		{
 			// @todo: add mono support
-		}
-
-		public override bool IsScriptModuleSupported(string ModuleName)
-		{
-			// @todo: add more unsupported modules here
-			List<string> UnsupportedModules = new List<string>()
-			{
-				"GauntletExtras", "Anvil", "WinAnvil", "XboxCommonAnvil", "XboxOneAnvil", "MPX",
-				"FortniteGame", "PS4"
-			};
-			foreach (string UnsupportedModule in UnsupportedModules)
-			{
-				if (ModuleName.StartsWith(UnsupportedModule, StringComparison.OrdinalIgnoreCase))
-				{
-					return false;
-				}
-			}
-			return true;
 		}
 
 		public override UnrealTargetPlatform HostEditorPlatform

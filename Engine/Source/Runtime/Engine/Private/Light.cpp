@@ -194,7 +194,7 @@ void APointLight::LoadedFromAnotherClass(const FName& OldClassName)
 {
 	Super::LoadedFromAnotherClass(OldClassName);
 
-	if(GetLinkerUE4Version() < VER_UE4_REMOVE_LIGHT_MOBILITY_CLASSES)
+	if(GetLinkerUEVersion() < VER_UE4_REMOVE_LIGHT_MOBILITY_CLASSES)
 	{
 		static FName PointLightStatic_NAME(TEXT("PointLightStatic"));
 		static FName PointLightMovable_NAME(TEXT("PointLightMovable"));
@@ -259,6 +259,8 @@ ADirectionalLight::ADirectionalLight(const FObjectInitializer& ObjectInitializer
 		ArrowComponent->bLightAttachment = true;
 		ArrowComponent->bIsScreenSizeScaled = true;
 	}
+
+	bIsSpatiallyLoaded = false;
 #endif // WITH_EDITORONLY_DATA
 
 }
@@ -284,7 +286,7 @@ void ADirectionalLight::LoadedFromAnotherClass(const FName& OldClassName)
 {
 	Super::LoadedFromAnotherClass(OldClassName);
 
-	if(GetLinkerUE4Version() < VER_UE4_REMOVE_LIGHT_MOBILITY_CLASSES)
+	if(GetLinkerUEVersion() < VER_UE4_REMOVE_LIGHT_MOBILITY_CLASSES)
 	{
 		static FName DirectionalLightStatic_NAME(TEXT("DirectionalLightStatic"));
 		static FName DirectionalLightMovable_NAME(TEXT("DirectionalLightMovable"));

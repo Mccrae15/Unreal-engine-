@@ -1,15 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DetailLayoutBuilderImpl.h"
-#include "ObjectPropertyNode.h"
+#include "CategoryPropertyNode.h"
 #include "DetailCategoryBuilderImpl.h"
-#include "PropertyHandleImpl.h"
-#include "PropertyEditorHelpers.h"
-#include "StructurePropertyNode.h"
 #include "DetailMultiTopLevelObjectRootNode.h"
-#include "ObjectEditorUtils.h"
 #include "DetailPropertyRow.h"
 #include "IPropertyGenerationUtilities.h"
+#include "ObjectEditorUtils.h"
+#include "ObjectPropertyNode.h"
+#include "PropertyEditorHelpers.h"
+#include "PropertyHandleImpl.h"
+#include "StructurePropertyNode.h"
 
 FDetailLayoutBuilderImpl::FDetailLayoutBuilderImpl(TSharedPtr<FComplexPropertyNode>& InRootNode, FClassToPropertyMap& InPropertyMap, const TSharedRef<IPropertyUtilities>& InPropertyUtilities, const TSharedRef<IPropertyGenerationUtilities>& InPropertyGenerationUtilities, const TSharedPtr< IDetailsViewPrivate >& InDetailsView, bool bIsExternal)
 	: RootNode( InRootNode )
@@ -81,7 +82,7 @@ IDetailCategoryBuilder& FDetailLayoutBuilderImpl::EditCategory(FName CategoryNam
 
 void FDetailLayoutBuilderImpl::GetCategoryNames(TArray<FName>& OutCategoryNames) const
 {
-	OutCategoryNames.Reserve(DefaultCategoryMap.Num() + CustomCategoryMap.Num());
+	OutCategoryNames.Reserve(OutCategoryNames.Num() + DefaultCategoryMap.Num() + CustomCategoryMap.Num());
 
 	TArray<FName> TempCategoryNames;
 	DefaultCategoryMap.GenerateKeyArray(TempCategoryNames);
@@ -175,6 +176,10 @@ TSharedPtr<IPropertyHandle> FDetailLayoutBuilderImpl::AddStructurePropertyData(c
 					FClassInstanceToPropertyMap& ClassInstanceToPropertyMap = PropertyMap.FindOrAdd(PropertyNode->GetProperty()->GetOwnerStruct()->GetFName());
 					FPropertyNodeMap& PropertyNodeMap = ClassInstanceToPropertyMap.FindOrAdd(NAME_None);
 					PropertyNodeMap.Add(PropertyName, PropertyNode);
+
+					RootPropertyNode->AddChildNode(PropertyNode);
+					PropertyNode->RebuildChildren();
+					Handle = GetPropertyHandle(PropertyNode);
 					break;
 				}
 			}
@@ -260,19 +265,27 @@ void FDetailLayoutBuilderImpl::ForceRefreshDetails()
 	PropertyDetailsUtilities.Pin()->ForceRefresh();
 }
 
-FDetailCategoryImpl& FDetailLayoutBuilderImpl::DefaultCategory( FName CategoryName )
+FDetailCategoryImpl& FDetailLayoutBuilderImpl::DefaultCategory(FName CategoryName)
 {
-	TSharedPtr<FDetailCategoryImpl>& CategoryImpl = DefaultCategoryMap.FindOrAdd( CategoryName );
-
-	if( !CategoryImpl.IsValid() )
+	for (const TSharedRef<FDetailTreeNode>& RootTreeNode : AllRootTreeNodes)
 	{
-		CategoryImpl = MakeShareable( new FDetailCategoryImpl( CategoryName, SharedThis(this) ) );
+		if (RootTreeNode->GetNodeType() == EDetailNodeType::Category && 
+			CategoryName == RootTreeNode->GetNodeName())
+		{
+			return (FDetailCategoryImpl&) RootTreeNode.Get();
+		}
+	}
+
+	TSharedPtr<FDetailCategoryImpl>& CategoryImpl = DefaultCategoryMap.FindOrAdd(CategoryName);
+	if (!CategoryImpl.IsValid())
+	{
+		CategoryImpl = MakeShareable(new FDetailCategoryImpl(CategoryName, SharedThis(this)));
 
 		// We want categories within a type to display in the order they were added but sorting is unstable so we make unique numbers 
-		uint32 SortOrder = (uint32)ECategoryPriority::Default * 1000 + (DefaultCategoryMap.Num() - 1);
-		CategoryImpl->SetSortOrder( SortOrder );
+		uint32 SortOrder = (uint32) ECategoryPriority::Default * 1000 + (DefaultCategoryMap.Num() - 1);
+		CategoryImpl->SetSortOrder(SortOrder);
 
-		CategoryImpl->SetDisplayName( CategoryName, FText::GetEmpty() );
+		CategoryImpl->SetDisplayName(CategoryName, FText::GetEmpty());
 	}
 
 	return *CategoryImpl;
@@ -355,7 +368,7 @@ void FDetailLayoutBuilderImpl::GenerateDetailLayout()
 	}
 
 	// Customizations can add more categories while customizing so just keep doing this until the maps are empty
-	while(CustomCategoryMap.Num() > 0)
+	while (CustomCategoryMap.Num() > 0)
 	{
 		FCategoryMap CustomCategoryMapCopy = CustomCategoryMap;
 
@@ -419,14 +432,17 @@ void FDetailLayoutBuilderImpl::GenerateDetailLayout()
 	}
 
 	TSharedPtr<FComplexPropertyNode> RootNodePinned = RootNode.Pin();
-	if(DetailsView && DetailsView->GetRootObjectCustomization() && RootNodePinned->GetInstancesNum())
+	if (DetailsView && DetailsView->GetRootObjectCustomization() && RootNodePinned->GetInstancesNum())
 	{
 		FObjectPropertyNode* ObjectNode = RootNodePinned->AsObjectNode();
 
 		TSharedPtr<IDetailRootObjectCustomization> RootObjectCustomization = DetailsView->GetRootObjectCustomization();
 
 		// there are multiple objects in the details panel.  Separate each one with a unique object name node to differentiate them
-		AllRootTreeNodes.Add(MakeShared<FDetailMultiTopLevelObjectRootNode>(CategoryNodes, RootObjectCustomization, DetailsView, ObjectNode));
+		TSharedRef<FDetailMultiTopLevelObjectRootNode> NewRootNode = MakeShared<FDetailMultiTopLevelObjectRootNode>(RootObjectCustomization, DetailsView, ObjectNode);
+		NewRootNode->SetChildren(CategoryNodes);
+
+		AllRootTreeNodes.Add(NewRootNode);
 	}
 	else
 	{
@@ -719,23 +735,24 @@ TSharedPtr<FAssetThumbnailPool> FDetailLayoutBuilderImpl::GetThumbnailPool() con
 
 bool FDetailLayoutBuilderImpl::IsPropertyVisible( TSharedRef<IPropertyHandle> PropertyHandle ) const
 {
-	if( PropertyHandle->IsValidHandle() )
+	if (PropertyHandle->IsValidHandle() && DetailsView != nullptr)
 	{
-		TArray<UObject*> OuterObjects;
-		PropertyHandle->GetOuterObjects(OuterObjects);
-		
-		TArray<TWeakObjectPtr<UObject>> Objects;
-		for (auto OuterObject : OuterObjects)
+		TSharedPtr<FPropertyNode> PropertyNode = PropertyHandle->GetPropertyNode();
+		const FCategoryPropertyNode* CategoryNode = PropertyNode.IsValid() ? PropertyNode->AsCategoryNode() : nullptr;
+		if (CategoryNode != nullptr)
 		{
-			Objects.Add(OuterObject);
+			// this is a subcategory
+			FName CategoryName = CategoryNode->GetCategoryName();
+			return DetailsView->IsCustomRowVisible(FName(), CategoryName);
 		}
-
-		FPropertyAndParent PropertyAndParent(PropertyHandle, Objects);
-
-		return IsPropertyVisible(PropertyAndParent);
+		else if (PropertyHandle->GetProperty() != nullptr)
+		{
+			FPropertyAndParent PropertyAndParent(PropertyHandle);
+			return DetailsView->IsPropertyVisible(PropertyAndParent);
+		}
 	}
-	
-	return false;
+
+	return true;
 }
 
 bool FDetailLayoutBuilderImpl::IsPropertyVisible( const struct FPropertyAndParent& PropertyAndParent ) const

@@ -34,13 +34,16 @@
 #include "ContentBrowserLog.h"
 #include "ObjectTools.h"
 #include "AssetThumbnail.h"
-#include "Settings/ContentBrowserSettings.h"
 #include "ContentBrowserModule.h"
 #include "ContentBrowserUtils.h"
 #include "ContentBrowserDataSource.h"
+#include "Widgets/Images/SLayeredImage.h"
+#include "Fonts/FontMeasure.h"
+#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
+static float GenericThumbnailSizes[(int32)EThumbnailSize::MAX] = { 24, 32, 64, 128, 200 };
 
 ///////////////////////////////
 // FAssetViewModeUtils
@@ -73,6 +76,31 @@ FReply FAssetViewModeUtils::OnViewModeKeyDown( const TSet< TSharedPtr<FAssetView
 	return FReply::Unhandled();
 }
 
+namespace AssetViewWidgets 
+{
+bool IsTopLevelFolder(const FStringView InFolderPath)
+{
+	int32 SlashCount = 0;
+	for (const TCHAR PathChar : InFolderPath)
+	{
+		if (PathChar == TEXT('/'))
+		{
+			if (++SlashCount > 1)
+			{
+				break;
+			}
+		}
+	}
+
+	return SlashCount == 1;
+}
+
+bool IsTopLevelFolder(const FName InFolderPath)
+{
+	return IsTopLevelFolder(FNameBuilder(InFolderPath));
+}
+
+}
 
 ///////////////////////////////
 // FAssetViewModeUtils
@@ -93,10 +121,10 @@ TSharedRef<SWidget> FAssetViewItemHelper::CreateListTileItemContents(T* const In
 {
 	TSharedRef<SOverlay> ItemContentsOverlay = SNew(SOverlay);
 
+	OutItemShadowBorder = FName("ContentBrowser.AssetTileItem.DropShadow");
+
 	if (InTileOrListItem->IsFolder())
 	{
-		OutItemShadowBorder = FName("NoBorder");
-
 		// TODO: Allow items to customize their widget
 
 		const bool bDeveloperFolder = ContentBrowserUtils::IsItemDeveloperContent(InTileOrListItem->AssetItem->GetItem());
@@ -109,19 +137,21 @@ TSharedRef<SWidget> FAssetViewItemHelper::CreateListTileItemContents(T* const In
 		}
 
 		const FSlateBrush* FolderBaseImage = bDeveloperFolder
-			? FEditorStyle::GetBrush("ContentBrowser.ListViewDeveloperFolderIcon.Base") 
-			: FEditorStyle::GetBrush("ContentBrowser.ListViewFolderIcon.Base");
-
-		const FSlateBrush* FolderTintImage = bDeveloperFolder
-			? FEditorStyle::GetBrush("ContentBrowser.ListViewDeveloperFolderIcon.Mask") 
-			: FEditorStyle::GetBrush("ContentBrowser.ListViewFolderIcon.Mask");
+			? FEditorStyle::GetBrush("ContentBrowser.ListViewDeveloperFolderIcon") 
+			: FEditorStyle::GetBrush("ContentBrowser.ListViewFolderIcon");
 
 		// Folder base
 		ItemContentsOverlay->AddSlot()
+		.Padding(FMargin(5))
 		[
-			SNew(SImage)
-			.Image(FolderBaseImage)
-			.ColorAndOpacity(InTileOrListItem, &T::GetAssetColor)
+			SNew(SBorder)
+			.BorderImage(FAppStyle::Get().GetBrush("ContentBrowser.FolderItem.DropShadow"))
+			.Padding(FMargin(0,0,2.0f,2.0f))
+			[
+				SNew(SImage)
+				.Image(FolderBaseImage)
+				.ColorAndOpacity(InTileOrListItem, &T::GetAssetColor)
+			]
 		];
 
 		if (bCollectionFolder)
@@ -168,17 +198,10 @@ TSharedRef<SWidget> FAssetViewItemHelper::CreateListTileItemContents(T* const In
 				]
 			];
 		}
-
-		// Folder tint
-		ItemContentsOverlay->AddSlot()
-		[
-			SNew(SImage)
-			.Image(FolderTintImage)
-		];
 	}
 	else
 	{
-		OutItemShadowBorder = FName("ContentBrowser.ThumbnailShadow");
+
 
 		// The actual thumbnail
 		ItemContentsOverlay->AddSlot()
@@ -190,13 +213,13 @@ TSharedRef<SWidget> FAssetViewItemHelper::CreateListTileItemContents(T* const In
 		ItemContentsOverlay->AddSlot()
 		.HAlign(HAlign_Right)
 		.VAlign(VAlign_Top)
+		.Padding(FMargin(0.0f, 3.0f, 3.0f, 0.0f))
 		[
 			SNew(SBox)
-			.MaxDesiredWidth(InTileOrListItem, &T::GetStateIconImageSize)
-			.MaxDesiredHeight(InTileOrListItem, &T::GetStateIconImageSize)
+			.WidthOverride(InTileOrListItem, &T::GetStateIconImageSize)
+			.HeightOverride(InTileOrListItem, &T::GetStateIconImageSize)
 			[
-				SNew(SImage)
-				.Image(InTileOrListItem, &T::GetSCCStateImage)
+				InTileOrListItem->GenerateSourceControlIconWidget()
 			]
 		];
 
@@ -234,8 +257,10 @@ TSharedRef<SWidget> FAssetViewItemHelper::CreateListTileItemContents(T* const In
 			.SmallView(!InTileOrListItem->CanDisplayPrimitiveTools())
 			.Visibility(InTileOrListItem, &T::GetThumbnailEditModeUIVisibility)
 		];
-	}
 
+		InTileOrListItem->HandleSourceControlStateChanged();
+	}
+	
 	return ItemContentsOverlay;
 }
 
@@ -311,8 +336,8 @@ FReply SAssetTileView::OnKeyDown( const FGeometry& InGeometry, const FKeyEvent& 
 
 void SAssetTileView::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	// Regreshing an asset view is an intensive task. Do not do this while a user
-	// is dragging arround content for maximum responsiveness.
+	// Refreshing an asset view is an intensive task. Do not do this while a user
+	// is dragging around content for maximum responsiveness.
 	// Also prevents a re-entrancy crash caused by potentially complex thumbnail generators.
 	if (!FSlateApplication::Get().IsDragDropping())
 	{
@@ -336,8 +361,8 @@ FReply SAssetListView::OnKeyDown(const FGeometry& InGeometry, const FKeyEvent& I
 
 void SAssetListView::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	// Regreshing an asset view is an intensive task. Do not do this while a user
-	// is dragging arround content for maximum responsiveness.
+	// Refreshing an asset view is an intensive task. Do not do this while a user
+	// is dragging around content for maximum responsiveness.
 	// Also prevents a re-entrancy crash caused by potentially complex thumbnail generators.
 	if (!FSlateApplication::Get().IsDragDropping())
 	{
@@ -362,8 +387,8 @@ FReply SAssetColumnView::OnKeyDown(const FGeometry& InGeometry, const FKeyEvent&
 
 void SAssetColumnView::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	// Regreshing an asset view is an intensive task. Do not do this while a user
-	// is dragging arround content for maximum responsiveness.
+	// Refreshing an asset view is an intensive task. Do not do this while a user
+	// is dragging around content for maximum responsiveness.
 	// Also prevents a re-entrancy crash caused by potentially complex thumbnail generators.
 	if (!FSlateApplication::Get().IsDragDropping())
 	{
@@ -399,6 +424,7 @@ void SAssetViewItem::Construct( const FArguments& InArgs )
 	OnGetCustomAssetToolTip = InArgs._OnGetCustomAssetToolTip;
 	OnVisualizeAssetToolTip = InArgs._OnVisualizeAssetToolTip;
 	OnAssetToolTipClosing = InArgs._OnAssetToolTipClosing;
+	IsSelected = InArgs._IsSelected;
 
 	bDraggedOver = false;
 
@@ -408,7 +434,6 @@ void SAssetViewItem::Construct( const FArguments& InArgs )
 	AssetItem->OnItemDataChanged().AddSP(this, &SAssetViewItem::OnAssetDataChanged);
 
 	AssetDirtyBrush = FEditorStyle::GetBrush("ContentBrowser.ContentDirty");
-	SCCStateBrush = nullptr;
 
 	// Set our tooltip - this will refresh each time it's opened to make sure it's up-to-date
 	SetToolTip(SNew(SAssetViewItemToolTip).AssetViewItem(SharedThis(this)));
@@ -437,7 +462,8 @@ void SAssetViewItem::Tick( const FGeometry& AllottedGeometry, const double InCur
 	// We set this only when changed because binding a delegate to text wrapping attributes is expensive
 	if( PrevSizeX != AllottedGeometry.Size.X && InlineRenameWidget.IsValid() )
 	{
-		InlineRenameWidget->SetWrapTextAt( GetNameTextWrapWidth() );
+		const float WrapWidth = GetNameTextWrapWidth();
+		InlineRenameWidget->SetWrapTextAt(WrapWidth);
 	}
 
 	UpdateDirtyState();
@@ -541,6 +567,12 @@ void SAssetViewItem::OnAssetDataChanged()
 		InlineRenameWidget->SetText( GetNameText() );
 	}
 
+	if (ClassTextWidget.IsValid())
+	{
+		ClassTextWidget->SetText(GetAssetClassText());
+	}
+
+
 	CacheDisplayTags();
 }
 
@@ -568,11 +600,6 @@ FText SAssetViewItem::GetAssetClassText() const
 	return DisplayNameAttributeValue.IsValid() ? DisplayNameAttributeValue.GetValue<FText>() : FText();
 }
 
-const FSlateBrush* SAssetViewItem::GetSCCStateImage() const
-{
-	return ThumbnailEditMode.Get() ? FEditorStyle::GetNoBrush() : SCCStateBrush;
-}
-
 void SAssetViewItem::HandleSourceControlProviderChanged(ISourceControlProvider& OldProvider, ISourceControlProvider& NewProvider)
 {
 	OldProvider.UnregisterSourceControlStateChanged_Handle(SourceControlStateChangedDelegateHandle);
@@ -581,7 +608,6 @@ void SAssetViewItem::HandleSourceControlProviderChanged(ISourceControlProvider& 
 	// Reset this so the state will be queried from the new provider on the next Tick
 	SourceControlStateDelay = 0.0f;
 	bSourceControlStateRequested = false;
-	SCCStateBrush = nullptr;
 	
 	HandleSourceControlStateChanged();
 }
@@ -596,7 +622,10 @@ void SAssetViewItem::HandleSourceControlStateChanged()
 			FSourceControlStatePtr SourceControlState = ISourceControlModule::Get().GetProvider().GetState(AssetFilename, EStateCacheUsage::Use);
 			if (SourceControlState)
 			{
-				SCCStateBrush = FEditorStyle::GetBrush(SourceControlState->GetIconName());
+				if (SCCStateWidget.IsValid())
+				{
+					SCCStateWidget->SetFromSlateIcon(SourceControlState->GetIcon());
+				}
 			}
 		}
 	}
@@ -605,6 +634,14 @@ void SAssetViewItem::HandleSourceControlStateChanged()
 const FSlateBrush* SAssetViewItem::GetDirtyImage() const
 {
 	return IsDirty() ? AssetDirtyBrush : NULL;
+}
+
+TSharedRef<SWidget> SAssetViewItem::GenerateSourceControlIconWidget()
+{
+	TSharedRef<SLayeredImage> Image = SNew(SLayeredImage).Image(FStyleDefaults::GetNoBrush());
+	SCCStateWidget = Image;
+
+	return Image;
 }
 
 TSharedRef<SWidget> SAssetViewItem::GenerateExtraStateIconWidget(TAttribute<float> InMaxExtraStateIconWidth) const
@@ -682,7 +719,7 @@ EVisibility SAssetViewItem::GetThumbnailEditModeUIVisibility() const
 	return !IsFolder() && ThumbnailEditMode.Get() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
-BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
+
 TSharedRef<SWidget> SAssetViewItem::CreateToolTipWidget() const
 {
 	if ( AssetItem.IsValid() )
@@ -726,6 +763,13 @@ TSharedRef<SWidget> SAssetViewItem::CreateToolTipWidget() const
 
 			if (ItemAssetData.IsValid() && ItemAssetData.PackageName != NAME_None)
 			{
+				const FString PackagePathWithinRoot = ContentBrowserUtils::GetPackagePathWithinRoot(ItemAssetData.PackageName.ToString());
+				int32 PackageNameLength = PackagePathWithinRoot.Len();
+
+				int32 MaxAssetPathLen = ContentBrowserUtils::GetMaxAssetPathLen();
+				AddToToolTipInfoBox( InfoBox, LOCTEXT( "TileViewTooltipAssetPathLengthKey", "Asset Filepath Length" ), FText::Format( LOCTEXT( "TileViewTooltipAssetPathLengthValue", "{0} / {1}" ),
+					FText::AsNumber( PackageNameLength ), FText::AsNumber( MaxAssetPathLen ) ), PackageNameLength > MaxAssetPathLen ? true : false );
+
 				int32 PackageNameLengthForCooking = ContentBrowserUtils::GetPackageLengthForCooking(ItemAssetData.PackageName.ToString(), FEngineBuildSettings::IsInternalBuild());
 
 				int32 MaxCookPathLen = ContentBrowserUtils::GetMaxCookPathLen();
@@ -865,7 +909,6 @@ TSharedRef<SWidget> SAssetViewItem::CreateToolTipWidget() const
 							CollectionPipsWrapBox->AddSlot()
 							.Padding(0, 4, 4, 0)
 							[
-								// TODO: Honor or remove GetDefault<UContentBrowserSettings>()->bShowFullCollectionNameInToolTip
 								SNew(SAssetTagItem)
 								.ViewMode(EAssetTagItemViewMode::Compact)
 								.BaseColor(CollectionViewUtils::ResolveColor(CollectionContainingObject.Name, CollectionContainingObject.Type))
@@ -905,6 +948,25 @@ TSharedRef<SWidget> SAssetViewItem::CreateToolTipWidget() const
 			TSharedRef<SVerticalBox> InfoBox = SNew(SVerticalBox);
 
 			AddToToolTipInfoBox( InfoBox, LOCTEXT("TileViewTooltipPath", "Path"), FolderPath, false );
+
+			const FName InternalPath = AssetItem->GetItem().GetInternalPath();
+			if (!InternalPath.IsNone())
+			{
+				FNameBuilder FolderPathBuilder(InternalPath);
+				if (AssetViewWidgets::IsTopLevelFolder(FStringView(FolderPathBuilder)))
+				{
+					FStringView PluginName(FolderPathBuilder);
+					PluginName.RightChopInline(1);
+
+					if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(PluginName))
+					{
+						if (Plugin->GetDescriptor().Description.Len() > 0)
+						{
+							AddToToolTipInfoBox( InfoBox, LOCTEXT("TileViewTooltipPluginDescription", "Plugin Description"), FText::FromString(Plugin->GetDescriptor().Description), false );
+						}
+					}
+				}
+			}
 
 			return SNew(SBorder)
 				.Padding(6)
@@ -967,7 +1029,6 @@ TSharedRef<SWidget> SAssetViewItem::CreateToolTipWidget() const
 		return SNullWidget::NullWidget;
 	}
 }
-END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 EVisibility SAssetViewItem::GetCheckedOutByOtherTextVisibility() const
 {
@@ -1359,7 +1420,7 @@ FSlateColor SAssetViewItem::GetAssetColor() const
 			}
 			else
 			{
-				if (TSharedPtr<FLinearColor> Color = ContentBrowserUtils::LoadColor(AssetItem->GetItem().GetVirtualPath().ToString()))
+				if (TSharedPtr<FLinearColor> Color = ContentBrowserUtils::LoadColor(AssetItem->GetItem().GetInvariantPath().ToString()))
 				{
 					return *Color;
 				}
@@ -1422,6 +1483,7 @@ void SAssetListItem::Construct( const FArguments& InArgs )
 		.OnGetCustomAssetToolTip(InArgs._OnGetCustomAssetToolTip)
 		.OnVisualizeAssetToolTip(InArgs._OnVisualizeAssetToolTip)
 		.OnAssetToolTipClosing( InArgs._OnAssetToolTipClosing )
+		.IsSelected(InArgs._IsSelected)
 		);
 
 	AssetThumbnail = InArgs._AssetThumbnail;
@@ -1484,13 +1546,7 @@ void SAssetListItem::Construct( const FArguments& InArgs )
 				.WidthOverride( this, &SAssetListItem::GetThumbnailBoxSize )
 				.HeightOverride( this, &SAssetListItem::GetThumbnailBoxSize )
 				[
-					// Drop shadow border
-					SNew(SBorder)
-					.Padding(4.f)
-					.BorderImage(FEditorStyle::GetBrush(ItemShadowBorderName))
-					[
-						ItemContents
-					]
+					ItemContents
 				]
 			]
 
@@ -1512,7 +1568,7 @@ void SAssetListItem::Construct( const FArguments& InArgs )
 					.OnTextCommitted(this, &SAssetListItem::HandleNameCommitted)
 					.OnVerifyTextChanged(this, &SAssetListItem::HandleVerifyNameChanged)
 					.HighlightText(InArgs._HighlightText)
-					.IsSelected(InArgs._IsSelected)
+					.IsSelected(InArgs._IsSelectedExclusively)
 					.IsReadOnly(this, &SAssetListItem::IsNameReadOnly)
 				]
 
@@ -1521,7 +1577,7 @@ void SAssetListItem::Construct( const FArguments& InArgs )
 				.Padding(0, 1)
 				[
 					// Class
-					SAssignNew(ClassText, STextBlock)
+					SAssignNew(ClassTextWidget, STextBlock)
 					.Font(FEditorStyle::GetFontStyle("ContentBrowser.AssetListViewClassFont"))
 					.Text(GetAssetClassText())
 					.HighlightText(InArgs._HighlightText)
@@ -1542,9 +1598,9 @@ void SAssetListItem::OnAssetDataChanged()
 {
 	SAssetViewItem::OnAssetDataChanged();
 
-	if (ClassText.IsValid())
+	if (ClassTextWidget.IsValid())
 	{
-		ClassText->SetText(GetAssetClassText());
+		ClassTextWidget->SetText(GetAssetClassText());
 	}
 
 	if (AssetThumbnail)
@@ -1561,6 +1617,26 @@ void SAssetListItem::OnAssetDataChanged()
 	}
 }
 
+void SAssetListItem::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	SAssetViewItem::OnMouseEnter(MyGeometry, MouseEvent);
+
+	if (AssetThumbnail.IsValid())
+	{
+		AssetThumbnail->SetRealTime(true);
+	}
+}
+
+void SAssetListItem::OnMouseLeave(const FPointerEvent& MouseEvent)
+{
+	SAssetViewItem::OnMouseLeave(MouseEvent);
+
+	if (AssetThumbnail.IsValid())
+	{
+		AssetThumbnail->SetRealTime(false);
+	}
+}
+
 float SAssetListItem::GetExtraStateIconWidth() const
 {
 	return GetStateIconImageSize().Get();
@@ -1573,7 +1649,7 @@ FOptionalSize SAssetListItem::GetExtraStateIconMaxWidth() const
 
 FOptionalSize SAssetListItem::GetStateIconImageSize() const
 {
-	float IconSize = GetThumbnailBoxSize().Get() * 0.3;
+	float IconSize = FMath::TruncToFloat(GetThumbnailBoxSize().Get() * 0.3);
 	return IconSize > 12 ? IconSize : 12;
 }
 
@@ -1591,7 +1667,6 @@ SAssetTileItem::~SAssetTileItem()
 
 }
 
-BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SAssetTileItem::Construct( const FArguments& InArgs )
 {
 	SAssetViewItem::Construct( SAssetViewItem::FArguments()
@@ -1607,11 +1682,17 @@ void SAssetTileItem::Construct( const FArguments& InArgs )
 		.OnGetCustomAssetToolTip(InArgs._OnGetCustomAssetToolTip)
 		.OnVisualizeAssetToolTip(InArgs._OnVisualizeAssetToolTip)
 		.OnAssetToolTipClosing( InArgs._OnAssetToolTipClosing )
+		.IsSelected(InArgs._IsSelected)
 		);
 
+	bShowType = InArgs._ShowType;
 	AssetThumbnail = InArgs._AssetThumbnail;
 	ItemWidth = InArgs._ItemWidth;
-	ThumbnailPadding = IsFolder() ? InArgs._ThumbnailPadding + 5.0f : InArgs._ThumbnailPadding;
+	ThumbnailPadding = InArgs._ThumbnailPadding;
+
+	CurrentThumbnailSize = InArgs._CurrentThumbnailSize;
+
+	InitializeAssetNameHeights();
 
 	TSharedPtr<SWidget> Thumbnail;
 	if ( AssetItem.IsValid() && AssetThumbnail.IsValid() )
@@ -1619,11 +1700,14 @@ void SAssetTileItem::Construct( const FArguments& InArgs )
 		FAssetThumbnailConfig ThumbnailConfig;
 		ThumbnailConfig.bAllowFadeIn = true;
 		ThumbnailConfig.bAllowHintText = InArgs._AllowThumbnailHintLabel;
+		ThumbnailConfig.bAllowRealTimeOnHovered = false; // we use our own OnMouseEnter/Leave for logical asset item
 		ThumbnailConfig.bForceGenericThumbnail = AssetItem->GetItem().GetItemTemporaryReason() == EContentBrowserItemFlags::Temporary_Creation;
 		ThumbnailConfig.bAllowAssetSpecificThumbnailOverlay = !ThumbnailConfig.bForceGenericThumbnail;
 		ThumbnailConfig.ThumbnailLabel = InArgs._ThumbnailLabel;
 		ThumbnailConfig.HighlightedText = InArgs._HighlightText;
 		ThumbnailConfig.HintColorAndOpacity = InArgs._ThumbnailHintColorAndOpacity;
+		ThumbnailConfig.Padding= FMargin(2.0f);
+		ThumbnailConfig.GenericThumbnailSize = MakeAttributeSP(this, &SAssetTileItem::GetGenericThumbnailSize);
 
 		{
 			FContentBrowserItemDataAttributeValue ColorAttributeValue = AssetItem->GetItem().GetItemAttribute(ContentBrowserItemAttributes::ItemColor);
@@ -1643,62 +1727,96 @@ void SAssetTileItem::Construct( const FArguments& InArgs )
 	}
 	else
 	{
-		Thumbnail = SNew(SImage) .Image( FEditorStyle::GetDefaultBrush() );
+		Thumbnail = SNew(SImage).Image(FEditorStyle::GetDefaultBrush());
 	}
 
 	FName ItemShadowBorderName;
 	TSharedRef<SWidget> ItemContents = FAssetViewItemHelper::CreateTileItemContents(this, Thumbnail.ToSharedRef(), ItemShadowBorderName);
 
 	ChildSlot
-	[
+	.Padding(FMargin(0.0f, 0.0f, 4.0f, 4.0f))
+	[				
+		// Drop shadow border
 		SNew(SBorder)
-		.BorderImage(this, &SAssetViewItem::GetBorderImage)
-		.Padding(0)
-		.AddMetaData<FTagMetaData>(FTagMetaData(AssetItem->GetItem().GetVirtualPath()))
+		.Padding(FMargin(0.0f, 0.0f, 5.0f, 5.0f))
+		.BorderImage(IsFolder() ? TAttribute<const FSlateBrush*>(this, &SAssetTileItem::GetFolderBackgroundShadowImage) : FAppStyle::Get().GetBrush(ItemShadowBorderName))
 		[
-			SNew(SVerticalBox)
-
-			// Thumbnail
-			+SVerticalBox::Slot()
-			.AutoHeight()
-			.HAlign(HAlign_Center)
+			SNew(SOverlay)
+			.AddMetaData<FTagMetaData>(FTagMetaData(AssetItem->GetItem().GetVirtualPath()))
+			+SOverlay::Slot()
 			[
-				// The remainder of the space is reserved for the name.
-				SNew(SBox)
-				.Padding(ThumbnailPadding - 4.f)
-				.WidthOverride(this, &SAssetTileItem::GetThumbnailBoxSize)
-				.HeightOverride( this, &SAssetTileItem::GetThumbnailBoxSize )
+				SNew(SBorder)
+				.Padding(0)
+				.BorderImage(IsFolder() ? TAttribute<const FSlateBrush*>(this, &SAssetTileItem::GetFolderBackgroundImage) : FAppStyle::Get().GetBrush("ContentBrowser.AssetTileItem.ThumbnailAreaBackground"))
 				[
-					// Drop shadow border
-					SNew(SBorder)
-					.Padding(4.f)
-					.BorderImage(FEditorStyle::GetBrush(ItemShadowBorderName))
+					SNew(SVerticalBox)
+					// Thumbnail
+					+SVerticalBox::Slot()
+					.AutoHeight()
 					[
-						ItemContents
+						// The remainder of the space is reserved for the name.
+						SNew(SBox)
+						.Padding(0)
+						.WidthOverride(this, &SAssetTileItem::GetThumbnailBoxSize)
+						.HeightOverride(this, &SAssetTileItem::GetThumbnailBoxSize)
+						[
+							ItemContents
+						]
+					]
+
+					+SVerticalBox::Slot()
+					[
+						SNew(SBorder)
+						.Padding(FMargin(2.0f, 3.0f))
+						.BorderImage(this, &SAssetTileItem::GetNameAreaBackgroundImage)
+						[
+							SNew(SVerticalBox)
+							+ SVerticalBox::Slot()
+							.Padding(2.0f,2.0f,0.0f,0.0f)
+							.VAlign(VAlign_Top)
+							[
+								SNew(SBox)
+								.MaxDesiredHeight(this, &SAssetTileItem::GetNameAreaMaxDesiredHeight)
+								[
+									SAssignNew(InlineRenameWidget, SInlineEditableTextBlock)
+									.Font(this, &SAssetTileItem::GetThumbnailFont)
+									.Text(GetNameText())
+									.OnBeginTextEdit(this, &SAssetTileItem::HandleBeginNameChange)
+									.OnTextCommitted(this, &SAssetTileItem::HandleNameCommitted)
+									.OnVerifyTextChanged(this, &SAssetTileItem::HandleVerifyNameChanged)
+									.HighlightText(InArgs._HighlightText)
+									.IsSelected(InArgs._IsSelectedExclusively)
+									.IsReadOnly(this, &SAssetTileItem::IsNameReadOnly)
+									.Justification(IsFolder() ? ETextJustify::Center : ETextJustify::Left)
+									.LineBreakPolicy(FBreakIterator::CreateCamelCaseBreakIterator())
+									.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+									.ColorAndOpacity(this, &SAssetTileItem::GetNameAreaTextColor)
+								]
+							]
+							+ SVerticalBox::Slot()
+							.VAlign(VAlign_Bottom)
+							.AutoHeight()
+							.Padding(2.0f,0.0f, 0.0f, 2.0f)
+							[
+								SAssignNew(ClassTextWidget, STextBlock)
+								.Visibility(this, &SAssetTileItem::GetAssetClassLabelVisibility)
+								.TextStyle(FAppStyle::Get(), "ContentBrowser.ClassFont")
+								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+								.Text(this, &SAssetTileItem::GetAssetClassText)
+								.ColorAndOpacity(this, &SAssetTileItem::GetAssetClassLabelTextColor)
+							]
+							
+						]
 					]
 				]
 			]
-
-			+SVerticalBox::Slot()
-			.Padding(FMargin(1.f, 0))
-			.HAlign(HAlign_Center)
-			.VAlign(VAlign_Center)
-			.FillHeight(1.f)
+			+SOverlay::Slot()
 			[
-				SAssignNew(InlineRenameWidget, SInlineEditableTextBlock)
-					.Font( this, &SAssetTileItem::GetThumbnailFont )
-					.Text( GetNameText() )
-					.OnBeginTextEdit(this, &SAssetTileItem::HandleBeginNameChange)
-					.OnTextCommitted(this, &SAssetTileItem::HandleNameCommitted)
-					.OnVerifyTextChanged(this, &SAssetTileItem::HandleVerifyNameChanged)
-					.HighlightText(InArgs._HighlightText)
-					.IsSelected(InArgs._IsSelected)
-					.IsReadOnly(this, &SAssetTileItem::IsNameReadOnly)
-					.Justification(ETextJustify::Center)
-					.LineBreakPolicy(FBreakIterator::CreateCamelCaseBreakIterator())
+				SNew(SImage)
+				.Image(this, &SAssetViewItem::GetBorderImage)
+				.Visibility(EVisibility::HitTestInvisible)	
 			]
 		]
-	
 	];
 
 	if(AssetItem.IsValid())
@@ -1707,7 +1825,6 @@ void SAssetTileItem::Construct( const FArguments& InArgs )
 		AssetItem->OnRenameCanceled().BindSP(InlineRenameWidget.Get(), &SInlineEditableTextBlock::ExitEditingMode);
 	}
 }
-END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 void SAssetTileItem::OnAssetDataChanged()
 {
@@ -1727,6 +1844,49 @@ void SAssetTileItem::OnAssetDataChanged()
 	}
 }
 
+void SAssetTileItem::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	SAssetViewItem::OnMouseEnter(MyGeometry, MouseEvent);
+
+	if (AssetThumbnail.IsValid())
+	{
+		AssetThumbnail->SetRealTime( true );
+	}
+}
+
+void SAssetTileItem::OnMouseLeave(const FPointerEvent& MouseEvent)
+{
+	SAssetViewItem::OnMouseLeave(MouseEvent);
+
+	if (AssetThumbnail.IsValid())
+	{
+		AssetThumbnail->SetRealTime( false );
+	}
+}
+
+const FSlateBrush* SAssetTileItem::GetBorderImage() const
+{
+	const bool bIsSelected = IsSelected.IsBound() ? IsSelected.Execute() : false;
+	const bool bIsHoveredOrDraggedOver = IsHovered() || bDraggedOver;
+	if (bIsSelected && bIsHoveredOrDraggedOver)
+	{
+		static const FName SelectedHover("ContentBrowser.AssetTileItem.SelectedHoverBorder");
+		return FAppStyle::Get().GetBrush(SelectedHover);
+	}
+	else if (bIsSelected)
+	{
+		static const FName Selected("ContentBrowser.AssetTileItem.SelectedBorder");
+		return FAppStyle::Get().GetBrush(Selected);
+	}
+	else if (bIsHoveredOrDraggedOver && !IsFolder())
+	{
+		static const FName Hovered("ContentBrowser.AssetTileItem.HoverBorder");
+		return FAppStyle::Get().GetBrush(Hovered);
+	}
+
+	return FStyleDefaults::GetNoBrush();
+}
+
 float SAssetTileItem::GetExtraStateIconWidth() const
 {
 	return GetStateIconImageSize().Get();
@@ -1739,13 +1899,39 @@ FOptionalSize SAssetTileItem::GetExtraStateIconMaxWidth() const
 
 FOptionalSize SAssetTileItem::GetStateIconImageSize() const
 {
-	float IconSize = GetThumbnailBoxSize().Get() * 0.2;
+	float IconSize = FMath::TruncToFloat(GetThumbnailBoxSize().Get() * 0.2);
 	return IconSize > 12 ? IconSize : 12;
 }
 
 FOptionalSize SAssetTileItem::GetThumbnailBoxSize() const
 {
-	return FOptionalSize(ItemWidth.Get());
+	return FOptionalSize(ItemWidth.Get()- ThumbnailPadding);
+}
+
+EVisibility SAssetTileItem::GetAssetClassLabelVisibility() const
+{
+	if(!IsFolder() && bShowType)
+	{
+		FOptionalSize ThumbSize = GetThumbnailBoxSize();
+		if (ThumbSize.IsSet())
+		{
+			float Size = ThumbSize.Get() * GetTickSpaceGeometry().Scale;
+			return Size < 100 ? EVisibility::Collapsed : EVisibility::Visible;
+		}
+	}
+	return EVisibility::Collapsed;
+}
+
+FSlateColor SAssetTileItem::GetAssetClassLabelTextColor() const
+{
+	const bool bIsSelected = IsSelected.IsBound() ? IsSelected.Execute() : false;
+	const bool bIsHoveredOrDraggedOver = IsHovered() || bDraggedOver;
+	if (bIsSelected || bIsHoveredOrDraggedOver)
+	{
+		return FStyleColors::White;
+	}
+
+	return FSlateColor::UseSubduedForeground();
 }
 
 FSlateFontInfo SAssetTileItem::GetThumbnailFont() const
@@ -1770,7 +1956,130 @@ FSlateFontInfo SAssetTileItem::GetThumbnailFont() const
 	return FEditorStyle::GetFontStyle(RegularFont);
 }
 
+const FSlateBrush* SAssetTileItem::GetFolderBackgroundImage() const
+{
+	const bool bIsSelected = IsSelected.IsBound() ? IsSelected.Execute() : false;
+	const bool bIsHoveredOrDraggedOver = IsHovered() || bDraggedOver;
 
+	if (bIsSelected && bIsHoveredOrDraggedOver)
+	{
+		static const FName SelectedHoverBackground("ContentBrowser.AssetTileItem.FolderAreaSelectedHoverBackground");
+		return FAppStyle::Get().GetBrush(SelectedHoverBackground);
+	}
+	else if (bIsSelected)
+	{
+		static const FName SelectedBackground("ContentBrowser.AssetTileItem.FolderAreaSelectedBackground");
+		return FAppStyle::Get().GetBrush(SelectedBackground);
+	}
+	else if (bIsHoveredOrDraggedOver)
+	{
+		static const FName HoveredBackground("ContentBrowser.AssetTileItem.FolderAreaHoveredBackground");
+		return FAppStyle::Get().GetBrush(HoveredBackground);
+	}
+
+	return FStyleDefaults::GetNoBrush();
+}
+
+const FSlateBrush* SAssetTileItem::GetFolderBackgroundShadowImage() const
+{
+	const bool bIsSelected = IsSelected.IsBound() ? IsSelected.Execute() : false;
+	const bool bIsHoveredOrDraggedOver = IsHovered() || bDraggedOver;
+
+	if (bIsSelected || bIsHoveredOrDraggedOver)
+	{
+		static const FName DropShadowName("ContentBrowser.AssetTileItem.DropShadow");
+		return FAppStyle::Get().GetBrush(DropShadowName);
+	}
+
+	return FStyleDefaults::GetNoBrush();
+}
+
+const FSlateBrush* SAssetTileItem::GetNameAreaBackgroundImage() const
+{
+	const bool bIsSelected = IsSelected.IsBound() ? IsSelected.Execute() : false;
+	const bool bIsHoveredOrDraggedOver = IsHovered() || bDraggedOver;
+	if (bIsSelected && bIsHoveredOrDraggedOver)
+	{
+		static const FName SelectedHover("ContentBrowser.AssetTileItem.NameAreaSelectedHoverBackground");
+		return FAppStyle::Get().GetBrush(SelectedHover);
+	}
+	else if (bIsSelected)
+	{
+		static const FName Selected("ContentBrowser.AssetTileItem.NameAreaSelectedBackground");
+		return FAppStyle::Get().GetBrush(Selected);
+	}
+	else if (bIsHoveredOrDraggedOver && !IsFolder())
+	{
+		static const FName Hovered("ContentBrowser.AssetTileItem.NameAreaHoverBackground");
+		return FAppStyle::Get().GetBrush(Hovered);
+	}
+	else if (!IsFolder())
+	{
+		static const FName Normal("ContentBrowser.AssetTileItem.NameAreaBackground");
+		return FAppStyle::Get().GetBrush(Normal);
+	}
+
+	return FStyleDefaults::GetNoBrush();
+}
+
+FSlateColor SAssetTileItem::GetNameAreaTextColor() const
+{
+	const bool bIsSelected = IsSelected.IsBound() ? IsSelected.Execute() : false;
+	const bool bIsHoveredOrDraggedOver = IsHovered() || bDraggedOver;
+	if (bIsSelected || bIsHoveredOrDraggedOver)
+	{
+		return FStyleColors::White;
+	}
+
+	return FSlateColor::UseForeground();
+}
+
+FOptionalSize SAssetTileItem::GetNameAreaMaxDesiredHeight() const
+{
+	return AssetNameHeights[(int32)CurrentThumbnailSize.Get()];
+}
+
+int32 SAssetTileItem::GetGenericThumbnailSize() const
+{
+	return GenericThumbnailSizes[(int32)CurrentThumbnailSize.Get()];
+}
+
+void SAssetTileItem::InitializeAssetNameHeights()
+{
+	// The height of the asset name field for each thumbnail size
+	static bool bInitializedHeights = false;
+
+	if (!bInitializedHeights)
+	{
+		AssetNameHeights[(int32)EThumbnailSize::Tiny] = 0;
+
+		{
+			const static FName SmallFontName("ContentBrowser.AssetTileViewNameFontSmall");
+			FSlateFontInfo Font = FEditorStyle::GetFontStyle(SmallFontName);
+			TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+			SmallFontHeight = FontMeasureService->GetMaxCharacterHeight(Font);
+			AssetNameHeights[(int32)EThumbnailSize::Small] = SmallFontHeight * 2 ;
+		}
+
+
+		{
+			const static FName SmallFontName("ContentBrowser.AssetTileViewNameFont");
+			FSlateFontInfo Font = FEditorStyle::GetFontStyle(SmallFontName);
+			TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+			RegularFontHeight = FontMeasureService->GetMaxCharacterHeight(Font);
+			AssetNameHeights[(int32)EThumbnailSize::Medium] = RegularFontHeight * 3;
+			AssetNameHeights[(int32)EThumbnailSize::Large] = RegularFontHeight * 4;
+			AssetNameHeights[(int32)EThumbnailSize::Huge] = RegularFontHeight * 5;
+		}
+
+		bInitializedHeights = true;
+	}
+
+}
+
+float SAssetTileItem::AssetNameHeights[(int32)EThumbnailSize::MAX];
+float SAssetTileItem::RegularFontHeight(0);
+float SAssetTileItem::SmallFontHeight(0);
 
 ///////////////////////////////
 // SAssetColumnItem
@@ -1847,7 +2156,6 @@ void SAssetColumnItem::Construct( const FArguments& InArgs )
 	HighlightText = InArgs._HighlightText;
 }
 
-BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SWidget> SAssetColumnItem::GenerateWidgetForColumn( const FName& ColumnName, FIsSelected InIsSelected )
 {
 	TSharedPtr<SWidget> Content;
@@ -1903,8 +2211,8 @@ TSharedRef<SWidget> SAssetColumnItem::GenerateWidgetForColumn( const FName& Colu
 					.WidthOverride(IconOverlaySize)
 					.HeightOverride(IconOverlaySize)
 					[
-						SNew(SImage)
-						.Image(this, &SAssetColumnItem::GetSCCStateImage)
+						SAssignNew(SCCStateWidget, SLayeredImage)
+						.Image(FStyleDefaults::GetNoBrush())
 					]
 				]
 
@@ -1990,6 +2298,8 @@ TSharedRef<SWidget> SAssetColumnItem::GenerateWidgetForColumn( const FName& Colu
 			.Text( TAttribute<FText>::Create( TAttribute<FText>::FGetter::CreateSP(this, &SAssetColumnItem::GetAssetTagText, ColumnName) ) );
 	}
 
+	HandleSourceControlStateChanged();
+
 	return SNew(SBox)
 		.Padding( ColumnItemPadding )
 		.VAlign(VAlign_Center)
@@ -1998,7 +2308,7 @@ TSharedRef<SWidget> SAssetColumnItem::GenerateWidgetForColumn( const FName& Colu
 			Content.ToSharedRef()
 		];
 }
-END_SLATE_FUNCTION_BUILD_OPTIMIZATION
+
 
 void SAssetColumnItem::OnAssetDataChanged()
 {

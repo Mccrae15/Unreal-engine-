@@ -6,7 +6,8 @@
 
 #include "VertexFactoryCommon.ush"
 
-#define VERTEX_FACTORY_MODIFIES_TESSELLATION 1
+#define VERTEX_FACTORY_MODIFIES_INTERPOLATION 1
+#define VERTEX_FACTORY_HEIGHTFIELD 1
 
 // Set by FLightMapTexturePolicy
 #include "/Engine/Generated/UniformBuffers/PrecomputedLightingBuffer.ush"
@@ -31,6 +32,17 @@ int GetComponentLinearIndex()
 #endif
 }
 
+float GetViewLODData(uint ComponentIndex)
+{
+#if FIXED_GRID
+	// Fixed grid doesn't use LandscapeContinuousLODParameters buffers
+	return 0;
+#else
+	const int AbsoluteSectionLODIndex = View.LandscapeIndirection[LandscapeContinuousLODParameters.LandscapeIndex] + ComponentIndex;
+	return View.OverrideLandscapeLOD >= 0.0f ? View.OverrideLandscapeLOD : View.LandscapePerComponentData[AbsoluteSectionLODIndex];
+#endif
+}
+
 /* Get current Lod for this section instance. */
 float GetSectionLod(uint ComponentIndex)
 {
@@ -38,7 +50,7 @@ float GetSectionLod(uint ComponentIndex)
 	// Fixed grid has fixed Lod
 	return LandscapeFixedGrid.LodValues.x;
 #else
-	return min(LandscapeContinuousLODParameters.SectionLOD[ComponentIndex] + View.FarShadowStaticMeshLODBias, LandscapeParameters.LastLOD);
+	return min(GetViewLODData(ComponentIndex) + View.FarShadowStaticMeshLODBias, LandscapeParameters.LastLOD);
 #endif
 }
 
@@ -79,18 +91,6 @@ float2 GetLodBias(uint ComponentIndex)
 #endif
 }
 
-float2 GetSectionTessellationFalloff(uint ComponentIndex)
-{
-#if FIXED_GRID
-	// Fixed grid doesn't support tessellation
-	return 0;
-#else
-	return float2(
-		LandscapeContinuousLODParameters.SectionTessellationFalloffC[ComponentIndex],
-		LandscapeContinuousLODParameters.SectionTessellationFalloffK[ComponentIndex]);
-#endif
-}
-
 /** 
  * Get current Lods for neighbour section instances. 
  *       -Y
@@ -118,8 +118,13 @@ float4 GetNeighborSectionLod(uint ComponentIndex)
 		int2 NeighborPos = NeighborOffset[i] + int2(LandscapeParameters.ComponentBaseX, LandscapeParameters.ComponentBaseY);
 		NeighborPos = max(LandscapeContinuousLODParameters.Min                                                     , NeighborPos);
 		NeighborPos = min(LandscapeContinuousLODParameters.Min + LandscapeContinuousLODParameters.Size - int2(1, 1), NeighborPos);
-		NeighborLod[i] = max(LandscapeContinuousLODParameters.SectionLOD[(NeighborPos.y - LandscapeContinuousLODParameters.Min.y) * LandscapeContinuousLODParameters.Size.x + (NeighborPos.x - LandscapeContinuousLODParameters.Min.x)], GetSectionLod(ComponentIndex));
-		NeighborLod[i] = min(NeighborLod[i] + View.FarShadowStaticMeshLODBias, LandscapeParameters.LastLOD);
+
+		uint NeighborComponentIndex = (NeighborPos.y - LandscapeContinuousLODParameters.Min.y) * LandscapeContinuousLODParameters.Size.x + (NeighborPos.x - LandscapeContinuousLODParameters.Min.x);
+		float SectionLOD = GetViewLODData(NeighborComponentIndex);
+
+		NeighborLod[i] = max(SectionLOD, GetSectionLod(ComponentIndex));
+		NeighborLod[i] = View.OverrideLandscapeLOD >= 0.0f ? View.OverrideLandscapeLOD : NeighborLod[i] + View.FarShadowStaticMeshLODBias;
+		NeighborLod[i] = min(NeighborLod[i], LandscapeParameters.LastLOD);
 	}
 	return float4(NeighborLod[0], NeighborLod[1], NeighborLod[2], NeighborLod[3]);
 #endif
@@ -156,9 +161,13 @@ struct FVertexFactoryInput
 {
 #if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	float4 Position: ATTRIBUTE0;
+
+	// Dynamic instancing related attributes with InstanceIdOffset : ATTRIBUTE1
+	VF_GPUSCENE_DECLARE_INPUT_BLOCK(1)
 #else
 	float4 PackedPosition: ATTRIBUTE0; 
-	float4 LODHeights[2]: ATTRIBUTE1;  
+	float4 LODHeights0 : ATTRIBUTE1;  
+	float4 LODHeights1 : ATTRIBUTE2;
 #endif
 };
 
@@ -186,6 +195,11 @@ FVertexFactoryInput LoadVertexFactoryInputForHGS(uint TriangleIndex, int VertexI
 		uint Indices[6] = {i00, i11, i10, i00, i01, i10};
 		uint VertexId = Indices[TriangleIndex % 2 * 3 + VertexIndex];
 	#endif
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	// Note: GetInstanceUserData() stores the GPU-Scene primitive ID
+	Input.InstanceIdOffset = GetInstanceUserData() | VF_TREAT_INSTANCE_ID_OFFSET_AS_PRIMITIVE_ID_FLAG;
+	Input.DrawInstanceId = 0;
+#endif // VF_USE_PRIMITIVE_SCENE_DATA
 
 
 	Input.Position.x = VertexId % SubsectionSizeVertsCurrentLOD;
@@ -200,7 +214,7 @@ FVertexFactoryInput LoadVertexFactoryInputForHGS(uint TriangleIndex, int VertexI
 #if COMPUTESHADER
 FVertexFactoryInput LoadVertexFactoryInputForDynamicUpdate(uint TriangleIndex, int VertexIndex, uint PrimitiveId)
 {
-	FVertexFactoryInput Input;
+	FVertexFactoryInput Input = (FVertexFactoryInput)0;
 
 	float4 LodValues = GetLodValues(GetComponentLinearIndex());
 	uint SubsectionSizeQuadsCurrentLOD = LodValues.z;
@@ -213,6 +227,12 @@ FVertexFactoryInput LoadVertexFactoryInputForDynamicUpdate(uint TriangleIndex, i
 	Input.Position.z = LandscapeMVF.SubXY.x;
 	Input.Position.w = LandscapeMVF.SubXY.y;
 
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	// GPUCULL_TODO: Makes use of DynamicDraw workaround, should instead refactor VF interfaces and provide the instance ID data directly.
+	Input.InstanceIdOffset = PrimitiveId | VF_TREAT_INSTANCE_ID_OFFSET_AS_PRIMITIVE_ID_FLAG;
+	Input.DrawInstanceId = 0;
+#endif // VF_USE_PRIMITIVE_SCENE_DATA
+
 	return Input;
 }
 
@@ -224,11 +244,7 @@ uint GetNumRayTracingDynamicMeshVerticesIndirect()
 
 struct FVertexFactoryInterpolantsVSToPS
 {
-#if USING_TESSELLATION
-	float4	LayerTexCoord			: TEXCOORD0; // xy == texcoord, zw == tess falloff params
-#else
 	float2	LayerTexCoord			: TEXCOORD0; // xy == texcoord
-#endif
 #if (ES3_1_PROFILE)
 	float2	WeightMapTexCoord		: TEXCOORD1;
 	float4	TransformedTexCoord0	: TEXCOORD2;
@@ -249,15 +265,15 @@ struct FVertexFactoryInterpolantsVSToPS
 #if INSTANCED_STEREO
 	nointerpolation uint EyeIndex : PACKED_EYE_INDEX;
 #endif
+
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	nointerpolation uint PrimitiveId : PRIMITIVE_ID;
+#endif
 };
 
 struct FLandscapeTexCoords
 {
-#if USING_TESSELLATION
-	float4	LayerTexCoord : TEXCOORD0; // xy == texcoord, zw == tess falloff params
-#else
 	float2	LayerTexCoord : TEXCOORD0; // xy == texcoord
-#endif
 	float2	WeightMapTexCoord;
 #if !(ES3_1_PROFILE)
 	float2	HeightMapTexCoord;
@@ -267,11 +283,11 @@ struct FLandscapeTexCoords
 #endif
 };
 
-struct FVertexFactoryInterpolantsVSToDS
+struct FVertexFactoryRayTracingInterpolants
 {
 	FVertexFactoryInterpolantsVSToPS InterpolantsVSToPS;
 	
-#if USING_TESSELLATION
+#if NEEDS_VERTEX_FACTORY_INTERPOLATION
 	// First row of the tangent to world matrix
 	float3	TangentToWorld0	: VS_To_DS_TangentToWorld0;
 	// Last row of the tangent to world matrix in xyz
@@ -281,8 +297,8 @@ struct FVertexFactoryInterpolantsVSToDS
 #endif
 };
 
-#if USING_TESSELLATION
-float2 VertexFactoryGetTextureCoordinateDS( FVertexFactoryInterpolantsVSToDS Interpolants )
+#if NEEDS_VERTEX_FACTORY_INTERPOLATION
+float2 VertexFactoryGetRayTracingTextureCoordinate( FVertexFactoryRayTracingInterpolants Interpolants )
 {
 #if (ES3_1_PROFILE)
 	return Interpolants.InterpolantsVSToPS.WeightMapTexCoord.xy;
@@ -290,20 +306,9 @@ float2 VertexFactoryGetTextureCoordinateDS( FVertexFactoryInterpolantsVSToDS Int
 	return Interpolants.InterpolantsVSToPS.WeightHeightMapTexCoord.zw;
 #endif
 }
+#endif // #if NEEDS_VERTEX_FACTORY_INTERPOLATION
 
-float VertexFactoryModifyTessellationMultiplier(FVertexFactoryInterpolantsVSToDS Interpolants, float3 CameraLocalWorldPosition, float MaterialTessellationMultiplier)
-{		
-	float CurrentDistance = length(CameraLocalWorldPosition);
-	return MaterialTessellationMultiplier * saturate(Interpolants.InterpolantsVSToPS.LayerTexCoord.z - (Interpolants.InterpolantsVSToPS.LayerTexCoord.w * CurrentDistance));
-}
-
-float VertexFactoryModifyTessellationWorldDisplacementMultiplier(FVertexFactoryInterpolantsVSToDS Interpolants, float3 CameraLocalWorldPosition, float MaterialTessellationMultiplier, float CurrentTessellationMultiplier)
-{
-	return max(CurrentTessellationMultiplier, 0.001) / max(MaterialTessellationMultiplier, 0.001);// smooth out the application of the displacement based on the current tess multiplier
-}
-#endif // #if USING_TESSELLATION
-
-FVertexFactoryInterpolantsVSToPS VertexFactoryAssignInterpolants(FVertexFactoryInterpolantsVSToDS Input)
+FVertexFactoryInterpolantsVSToPS VertexFactoryAssignInterpolants(FVertexFactoryRayTracingInterpolants Input)
 {
 	return Input.InterpolantsVSToPS;
 }
@@ -316,8 +321,19 @@ struct FVertexFactoryIntermediates
 	uint ComponentIndex;
 	float4 LodValues;
 	float2 LodBias;
-	float2 TessellationFalloff;
+	/** Cached primitive and instance data */
+	FSceneDataIntermediates SceneData;
 };
+
+FPrimitiveSceneData GetPrimitiveData(FVertexFactoryIntermediates Intermediates)
+{
+	return Intermediates.SceneData.Primitive;
+}
+
+FInstanceSceneData GetInstanceData(FVertexFactoryIntermediates Intermediates)
+{
+	return Intermediates.SceneData.InstanceData;
+}
 
 float3 GetLocalPosition(FVertexFactoryIntermediates Intermediates)
 {
@@ -326,7 +342,8 @@ float3 GetLocalPosition(FVertexFactoryIntermediates Intermediates)
 
 float4 VertexFactoryGetWorldPosition(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
 {
-	return INVARIANT(TransformLocalToTranslatedWorld(GetLocalPosition(Intermediates)));
+	FLWCMatrix LocalToWorld = GetInstanceData(Intermediates).LocalToWorld;
+	return INVARIANT(TransformLocalToTranslatedWorld(GetLocalPosition(Intermediates), LocalToWorld));
 }
 
 float3 VertexFactoryGetWorldNormal(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates)
@@ -338,8 +355,10 @@ float4 VertexFactoryGetPreviousWorldPosition(FVertexFactoryInput Input, FVertexF
 {
 	// Note we still use LocalToWorld. Landscape's transform never changes.
 	float3 LocalPosition = GetLocalPosition(Intermediates);
-	float3 RotatedPosition = INVARIANT(Primitive.LocalToWorld[0].xyz * LocalPosition.xxx + Primitive.LocalToWorld[1].xyz * LocalPosition.yyy + Primitive.LocalToWorld[2].xyz * LocalPosition.zzz);
-	return INVARIANT(float4(RotatedPosition + (Primitive.LocalToWorld[3].xyz + ResolvedView.PrevPreViewTranslation.xyz),1));
+	FLWCMatrix LocalToWorld = GetInstanceData(Intermediates).LocalToWorld;
+
+	FLWCVector3 WorldPosition = LWCInvariantMultiply(LocalPosition, LocalToWorld);
+	return float4(LWCToFloat(LWCAdd(WorldPosition, ResolvedView.PrevPreViewTranslation)), 1.0f);
 }
 
 /** Calculate the texture coordinates generated by Landscape */
@@ -348,10 +367,6 @@ FLandscapeTexCoords GetLandscapeTexCoords(FVertexFactoryInput Input, FVertexFact
 	FLandscapeTexCoords Result;
 
 	Result.LayerTexCoord.xy = Intermediates.LocalPosition.xy + LandscapeParameters.SubsectionSizeVertsLayerUVPan.zw + Intermediates.InputPosition.zw * LandscapeParameters.SubsectionOffsetParams.ww;
-
-#if USING_TESSELLATION
-	Result.LayerTexCoord.zw = Intermediates.TessellationFalloff;
-#endif
 
 	Result.WeightMapTexCoord = Intermediates.LocalPosition.xy * LandscapeParameters.WeightmapUVScaleBias.xy + LandscapeParameters.WeightmapUVScaleBias.zw + Intermediates.InputPosition.zw * LandscapeParameters.SubsectionOffsetParams.zz;
 
@@ -395,73 +410,6 @@ float3x3 VertexFactoryGetPerPixelTangentBasis(FVertexFactoryInterpolantsVSToPS I
 
 	Result = CalcTangentBasisFromWorldNormal(WorldNormal);
 #endif
-	return Result;
-}
-
-/** Converts from vertex factory specific interpolants to a FMaterialTessellationParameters, which is used by material inputs. */
-FMaterialTessellationParameters GetMaterialTessellationParameters(FVertexFactoryInterpolantsVSToDS Interpolants, float3 CameraLocalWorldPosition)
-{
-	FMaterialTessellationParameters Result;
-
-#if NUM_MATERIAL_TEXCOORDS     // XY layer
-	Result.TexCoords[0] = Interpolants.InterpolantsVSToPS.LayerTexCoord.xy;
-#if NUM_MATERIAL_TEXCOORDS > 1 // VS calcualted TexCoord 1, default is XZ layer
-	#if (ES3_1_PROFILE)
-		Result.TexCoords[1] = Interpolants.InterpolantsVSToPS.TransformedTexCoord0.xy;
-	#else
-		Result.TexCoords[1] = Interpolants.InterpolantsVSToPS.TransformedTexCoords.xy;
-	#endif
-#if NUM_MATERIAL_TEXCOORDS > 2 // VS calcualted TexCoord 2, default is YZ layer
-	#if (ES3_1_PROFILE)
-		Result.TexCoords[2] = Interpolants.InterpolantsVSToPS.TransformedTexCoord1.xy;
-	#else
-		Result.TexCoords[2] = Interpolants.InterpolantsVSToPS.TransformedTexCoords.zw;
-	#endif
-#if NUM_MATERIAL_TEXCOORDS > 3 // Weightmap
-	#if (ES3_1_PROFILE)
-		Result.TexCoords[3] = Interpolants.InterpolantsVSToPS.WeightMapTexCoord;
-	#else
-		Result.TexCoords[3] = Interpolants.InterpolantsVSToPS.WeightHeightMapTexCoord.xy;
-	#endif
-#if NUM_MATERIAL_TEXCOORDS > 4 // Lightmap
-	#if NEEDS_LIGHTMAP_COORDINATE
-		#if (ES3_1_PROFILE)
-			Result.TexCoords[4] = Interpolants.InterpolantsVSToPS.LightMapCoordinate[0].xy;
-		#else
-			Result.TexCoords[4] = Interpolants.InterpolantsVSToPS.LightMapCoordinate.xy;
-		#endif
-	#else
-		Result.TexCoords[4] = float2(0,0);
-	#endif
-#if NUM_MATERIAL_TEXCOORDS > 5 // Height map
-	#if (ES3_1_PROFILE)
-		Result.TexCoords[5] = float2(0, 0); // Height map UV not supported
-	#else
-		Result.TexCoords[5] = Interpolants.InterpolantsVSToPS.WeightHeightMapTexCoord.zw;
-	#endif
-#if NUM_MATERIAL_TEXCOORDS > 6
-	UNROLL
-	for(uint CoordinateIndex = 6;CoordinateIndex < NUM_MATERIAL_TEXCOORDS;CoordinateIndex ++)
-	{
-		Result.TexCoords[CoordinateIndex] = float2(0,0);
-	}
-#endif // 6
-#endif // 5
-#endif // 4
-#endif // 3
-#endif // 2
-#endif // 1
-#endif // 0
-
-	// Use interpolated normal from VS.
-#if USING_TESSELLATION
-	Result.TangentToWorld = AssembleTangentToWorld( Interpolants.TangentToWorld0, Interpolants.TangentToWorld2 );
-#endif
-
-	Result.VertexColor = 1;
-	Result.TangentToWorldPreScale = 1;
-	Result.WorldPosition = CameraLocalWorldPosition + ResolvedView.WorldCameraOrigin;
-
 	return Result;
 }
 
@@ -545,6 +493,11 @@ FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVS
 #endif
 
 	Result.TwoSidedSign = 1;
+
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	Result.PrimitiveId = Interpolants.PrimitiveId;
+#endif
+
 	return Result;
 }
 
@@ -552,6 +505,7 @@ FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVS
 FMaterialVertexParameters GetMaterialVertexParameters(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, float3 WorldPosition, float3x3 TangentToLocal)
 {
 	FMaterialVertexParameters Result = (FMaterialVertexParameters)0;
+	Result.SceneData = Intermediates.SceneData;
 	Result.WorldPosition = WorldPosition;
 	Result.VertexColor = float4(1,1,1,1);
 	Result.TangentToWorld = mul(TangentToLocal, (float3x3)LandscapeParameters.LocalToWorldNoScaling);
@@ -559,7 +513,7 @@ FMaterialVertexParameters GetMaterialVertexParameters(FVertexFactoryInput Input,
 	Result.PreSkinnedNormal = TangentToLocal[2].xyz;
 
 	// Assumes no instancing and landscape's transform never change
-	Result.PrevFrameLocalToWorld = Primitive.LocalToWorld;
+	Result.PrevFrameLocalToWorld = GetInstanceData(Intermediates).LocalToWorld;
 
 	FLandscapeTexCoords LandscapeTexCoords = GetLandscapeTexCoords(Input, Intermediates);
 
@@ -613,7 +567,12 @@ void GetLightMapCoordinates(FVertexFactoryInterpolantsVSToPS Interpolants, out f
 	LightmapUV0 = Interpolants.LightMapCoordinate.xy * float2( 1, 0.5 );
 	LightmapUV1 = LightmapUV0 + float2( 0, 0.5 );
 #endif
+
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	LightmapDataIndex = GetPrimitiveData(Interpolants.PrimitiveId).LightmapDataIndex;
+#else
 	LightmapDataIndex = 0;
+#endif
 }
 
 void GetShadowMapCoordinate(FVertexFactoryInterpolantsVSToPS Interpolants, out float2 ShadowMapCoordinate, out uint LightmapDataIndex)
@@ -623,18 +582,23 @@ void GetShadowMapCoordinate(FVertexFactoryInterpolantsVSToPS Interpolants, out f
 #else
 	ShadowMapCoordinate = Interpolants.LightMapCoordinate.zw;
 #endif
+	
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	LightmapDataIndex = GetPrimitiveData(Interpolants.PrimitiveId).LightmapDataIndex;
+#else
 	LightmapDataIndex = 0;
+#endif
+
 }
 #endif
 
 FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput Input)
 {
-
 	FVertexFactoryIntermediates Intermediates;
+	Intermediates.SceneData = VF_GPUSCENE_GET_INTERMEDIATES(Input);
 	Intermediates.ComponentIndex = GetComponentLinearIndex();
 	Intermediates.LodValues = GetLodValues(Intermediates.ComponentIndex);
 	Intermediates.LodBias = GetLodBias(Intermediates.ComponentIndex);
-	Intermediates.TessellationFalloff = GetSectionTessellationFalloff(Intermediates.ComponentIndex);
 
 #if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	Intermediates.InputPosition = Input.Position;
@@ -668,15 +632,17 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	LodValue = bClampLodForHole ? HoleVertexLod : LodValue;
 
 	// Get range of heights for all LODs
-	float MinHeight = DecodePackedHeight(float2(Input.LODHeights[0].x, Input.LODHeights[0].y));
+	float MinHeight = DecodePackedHeight(float2(Input.LODHeights0.x, Input.LODHeights0.y));
 	float HeightDelta = Input.PackedPosition.w * 255.0 * 256.0 * TERRAIN_ZSCALE;
 
 	// Select the height values from the vertex input corresponding to the current and next LOD
 	uint LODHeightIndex = min((uint)LodValue + 2, (uint)7);
 	uint LODHeightIndexNextLod = min((uint)LodValue + 3, (uint)7);
-
-	float InputHeight = Input.LODHeights[LODHeightIndex >> 2][LODHeightIndex & 3];
-	float InputHeightNextLOD = Input.LODHeights[LODHeightIndexNextLod >> 2][LODHeightIndexNextLod & 3];
+	
+	float4 LODHeight = LODHeightIndex >> 2 ? Input.LODHeights1 : Input.LODHeights0;
+	float InputHeight = LODHeight[LODHeightIndex & 3];
+	float4 LODHeightNext = LODHeightIndexNextLod >> 2 ? Input.LODHeights1 : Input.LODHeights0;
+	float InputHeightNextLOD = LODHeightNext[LODHeightIndexNextLod & 3];
 
 	float Height = MinHeight + InputHeight * HeightDelta;
 	float HeightNextLOD = MinHeight + InputHeightNextLOD * HeightDelta;
@@ -825,16 +791,20 @@ FVertexFactoryInterpolantsVSToPS VertexFactoryGetInterpolantsVSToPS(FVertexFacto
 	Interpolants.EyeIndex = 0;
 #endif
 	
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	Interpolants.PrimitiveId = Intermediates.SceneData.PrimitiveId;
+#endif
+
 	return Interpolants;
 }
 
-FVertexFactoryInterpolantsVSToDS VertexFactoryGetInterpolantsVSToDS(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, FMaterialVertexParameters VertexParameters)
+FVertexFactoryRayTracingInterpolants VertexFactoryGetRayTracingInterpolants(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, FMaterialVertexParameters VertexParameters)
 {
-	FVertexFactoryInterpolantsVSToDS Interpolants;
+	FVertexFactoryRayTracingInterpolants Interpolants;
 	
 	Interpolants.InterpolantsVSToPS = VertexFactoryGetInterpolantsVSToPS(Input, Intermediates, VertexParameters);
 
-#if USING_TESSELLATION
+#if NEEDS_VERTEX_FACTORY_INTERPOLATION
 	// Calculate LocalToTangent directly from normal map texture.
 	float3x3 TangentToLocal = CalcTangentBasisFromWorldNormal(Intermediates.WorldNormal);
 	float3x3 TangentToWorld = mul(TangentToLocal, (float3x3)LandscapeParameters.LocalToWorldNoScaling);
@@ -849,39 +819,36 @@ FVertexFactoryInterpolantsVSToDS VertexFactoryGetInterpolantsVSToDS(FVertexFacto
 	return Interpolants;
 }
 
-FVertexFactoryInterpolantsVSToDS VertexFactoryInterpolate(FVertexFactoryInterpolantsVSToDS a, float aInterp, FVertexFactoryInterpolantsVSToDS b, float bInterp)
+FVertexFactoryRayTracingInterpolants VertexFactoryInterpolate(FVertexFactoryRayTracingInterpolants a, float aInterp, FVertexFactoryRayTracingInterpolants b, float bInterp)
 {
-	FVertexFactoryInterpolantsVSToDS O;
+	FVertexFactoryRayTracingInterpolants O;
 	
 #if NEEDS_LIGHTMAP_COORDINATE && !(ES3_1_PROFILE)
-	TESSELLATION_INTERPOLATE_MEMBER(InterpolantsVSToPS.LightMapCoordinate);
+	INTERPOLATE_MEMBER(InterpolantsVSToPS.LightMapCoordinate);
 #endif
 
-	TESSELLATION_INTERPOLATE_MEMBER(InterpolantsVSToPS.LayerTexCoord);
+	INTERPOLATE_MEMBER(InterpolantsVSToPS.LayerTexCoord);
 #if (ES3_1_PROFILE)
-	TESSELLATION_INTERPOLATE_MEMBER(InterpolantsVSToPS.WeightMapTexCoord);
-	TESSELLATION_INTERPOLATE_MEMBER(InterpolantsVSToPS.TransformedTexCoord0);
-	TESSELLATION_INTERPOLATE_MEMBER(InterpolantsVSToPS.TransformedTexCoord1);
+	INTERPOLATE_MEMBER(InterpolantsVSToPS.WeightMapTexCoord);
+	INTERPOLATE_MEMBER(InterpolantsVSToPS.TransformedTexCoord0);
+	INTERPOLATE_MEMBER(InterpolantsVSToPS.TransformedTexCoord1);
 #else
-	TESSELLATION_INTERPOLATE_MEMBER(InterpolantsVSToPS.WeightHeightMapTexCoord);
-	TESSELLATION_INTERPOLATE_MEMBER(InterpolantsVSToPS.TransformedTexCoords);
+	INTERPOLATE_MEMBER(InterpolantsVSToPS.WeightHeightMapTexCoord);
+	INTERPOLATE_MEMBER(InterpolantsVSToPS.TransformedTexCoords);
 #endif
 
-#if USING_TESSELLATION
-	TESSELLATION_INTERPOLATE_MEMBER(TangentToWorld0);
-	TESSELLATION_INTERPOLATE_MEMBER(TangentToWorld2);
-	TESSELLATION_INTERPOLATE_MEMBER(CalculatedLOD);
+#if NEEDS_VERTEX_FACTORY_INTERPOLATION
+	INTERPOLATE_MEMBER(TangentToWorld0);
+	INTERPOLATE_MEMBER(TangentToWorld2);
+	INTERPOLATE_MEMBER(CalculatedLOD);
+#endif
+
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	O.InterpolantsVSToPS.PrimitiveId = a.InterpolantsVSToPS.PrimitiveId;
 #endif
 
 	return O;
 }
-
-#if USING_TESSELLATION
-float3x3 VertexFactoryGetTangentToLocalDS(FVertexFactoryInterpolantsVSToDS Interpolants)
-{
-	return AssembleTangentToWorld(Interpolants.TangentToWorld0, Interpolants.TangentToWorld2);
-}
-#endif // #if USING_TESSELLATION
 
 #if NUM_VF_PACKED_INTERPOLANTS > 0
 void VertexFactoryPackInterpolants(inout FVertexFactoryInterpolantsVSToPS Interpolants, float4 PackedInterpolants[NUM_VF_PACKED_INTERPOLANTS])
@@ -911,5 +878,11 @@ float4 VertexFactoryGetTranslatedPrimitiveVolumeBounds(FVertexFactoryInterpolant
 
 uint VertexFactoryGetPrimitiveId(FVertexFactoryInterpolantsVSToPS Interpolants)
 {
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	return Interpolants.PrimitiveId;
+#else // VF_USE_PRIMITIVE_SCENE_DATA
 	return 0;
+#endif // VF_USE_PRIMITIVE_SCENE_DATA
 }
+
+#include "VertexFactoryDefaultInterface.ush"

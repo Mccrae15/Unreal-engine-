@@ -5,14 +5,37 @@
 =============================================================================*/
 
 #include "Materials/MaterialInstanceConstant.h"
+#include "Materials/MaterialInstanceSupport.h"
+#include "ProfilingDebugging/CookStats.h"
 #if WITH_EDITOR
 #include "MaterialEditor/DEditorScalarParameterValue.h"
+#include "ObjectCacheEventSink.h"
+#endif
+
+#if ENABLE_COOK_STATS
+#include "ProfilingDebugging/ScopedTimers.h"
+namespace MaterialInstanceCookStats
+{
+static double UpdateCachedExpressionDataSec = 0.0;
+
+static FCookStatsManager::FAutoRegisterCallback RegisterCookStats([](FCookStatsManager::AddStatFuncRef AddStat)
+	{
+		AddStat(TEXT("MaterialInstance"), FCookStatsManager::CreateKeyValueArray(
+			TEXT("UpdateCachedExpressionDataSec"), UpdateCachedExpressionDataSec
+		));
+	});
+}
 #endif
 
 UMaterialInstanceConstant::UMaterialInstanceConstant(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	PhysMaterialMask = nullptr;
+}
+
+void UMaterialInstanceConstant::FinishDestroy()
+{
+	Super::FinishDestroy();
 }
 
 void UMaterialInstanceConstant::PostLoad()
@@ -57,8 +80,14 @@ void UMaterialInstanceConstant::PostEditChangeProperty(FPropertyChangedEvent& Pr
 
 void UMaterialInstanceConstant::SetParentEditorOnly(UMaterialInterface* NewParent, bool RecacheShader)
 {
-	check(GIsEditor || IsRunningCommandlet());
-	SetParentInternal(NewParent, RecacheShader);
+	checkf(!Parent || GIsEditor || IsRunningCommandlet(), TEXT("SetParentEditorOnly() may only be used to initialize (not change) the parent outside of the editor, GIsEditor=%d, IsRunningCommandlet()=%d"),
+		GIsEditor ? 1 : 0,
+		IsRunningCommandlet() ? 1 : 0);
+
+	if (SetParentInternal(NewParent, RecacheShader))
+	{
+		UpdateCachedData();
+	}
 }
 
 void UMaterialInstanceConstant::CopyMaterialUniformParametersEditorOnly(UMaterialInterface* Source, bool bIncludeStaticParams)
@@ -125,4 +154,52 @@ void UMaterialInstanceConstant::ClearParameterValuesEditorOnly()
 	check(GIsEditor || IsRunningCommandlet());
 	ClearParameterValuesInternal();
 }
+
+void UMaterialInstanceConstant::UpdateCachedData()
+{
+	COOK_STAT(FScopedDurationTimer BlockingTimer(MaterialInstanceCookStats::UpdateCachedExpressionDataSec));
+
+	// Don't need to rebuild cached data if it was serialized
+	if (!bLoadedCachedData)
+	{
+		if (!CachedData)
+		{
+			CachedData.Reset(new FMaterialInstanceCachedData());
+		}
+
+		FMaterialLayersFunctions Layers;
+		const bool bHasLayers = GetMaterialLayers(Layers);
+
+		FMaterialLayersFunctions ParentLayers;
+		const bool bParentHasLayers = Parent && Parent->GetMaterialLayers(ParentLayers);
+		CachedData->InitializeForConstant(bHasLayers ? &Layers : nullptr, bParentHasLayers ? &ParentLayers : nullptr);
+		if (Resource)
+		{
+			Resource->GameThread_UpdateCachedData(*CachedData);
+		}
+	}
+
+	if (!bLoadedCachedExpressionData)
+	{
+		FMaterialCachedExpressionData* LocalCachedExpressionData = nullptr;
+
+		// If we have overriden material layers, need to create a local cached expression data
+		// Otherwise we can leave it as null, and use cached data from our parent
+		const FStaticParameterSet& LocalStaticParameters = GetStaticParameters();
+		if (LocalStaticParameters.bHasMaterialLayers)
+		{
+			UMaterial* BaseMaterial = GetMaterial();
+
+			FMaterialCachedExpressionContext Context;
+			Context.LayerOverrides = &LocalStaticParameters.MaterialLayers;
+			LocalCachedExpressionData = new FMaterialCachedExpressionData();
+			LocalCachedExpressionData->Reset();
+			LocalCachedExpressionData->UpdateForExpressions(Context, BaseMaterial->Expressions, GlobalParameter, INDEX_NONE);
+		}
+		CachedExpressionData.Reset(LocalCachedExpressionData);
+
+		FObjectCacheEventSink::NotifyReferencedTextureChanged_Concurrent(this);
+	}
+}
+
 #endif // #if WITH_EDITOR

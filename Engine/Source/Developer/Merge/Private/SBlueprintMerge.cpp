@@ -10,7 +10,6 @@
 #include "Engine/Blueprint.h"
 #include "Misc/PackageName.h"
 #include "Editor.h"
-#include "Toolkits/AssetEditorManager.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/FileManager.h"
 #include "EditorStyleSet.h"
@@ -43,7 +42,7 @@ static FString WriteBackup(UPackage& Package, const FString& Directory, const FS
 	{
 		const FString DestinationFilename = Directory + FString("/") + Filename;
 		FString OriginalFilename;
-		if (FPackageName::DoesPackageExist(Package.GetName(), nullptr, &OriginalFilename))
+		if (FPackageName::DoesPackageExist(Package.GetName(), &OriginalFilename))
 		{
 			if (IFileManager::Get().Copy(*DestinationFilename, *OriginalFilename) == COPY_OK)
 			{

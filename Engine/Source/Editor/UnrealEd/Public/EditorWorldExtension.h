@@ -32,10 +32,10 @@ struct FEditorWorldExtensionActorData
 	GENERATED_BODY()
 
 	UPROPERTY()
-	AActor* Actor = nullptr;
+	TObjectPtr<AActor> Actor = nullptr;
 
 	UPROPERTY()
-	bool bValidForPIE=false;
+	bool bValidForPIE = false;
 };
 
 UCLASS()
@@ -251,5 +251,5 @@ private:
 
 	/** Map of all the editor world maps */
 	UPROPERTY()
-	TArray<UEditorWorldExtensionCollection*> EditorWorldExtensionCollection;
+	TArray<TObjectPtr<UEditorWorldExtensionCollection>> EditorWorldExtensionCollection;
 };

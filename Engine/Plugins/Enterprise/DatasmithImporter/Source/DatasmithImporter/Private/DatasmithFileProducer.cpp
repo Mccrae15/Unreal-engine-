@@ -32,12 +32,15 @@
 #include "EditorDirectories.h"
 #include "EditorFontGlyphs.h"
 #include "Engine/StaticMesh.h"
+#include "ExternalSource.h"
+#include "ExternalSourceModule.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/FileManager.h"
 #include "IDesktopPlatform.h"
 #include "Input/HittestGrid.h"
 #include "Internationalization/Internationalization.h"
 #include "Interfaces/IMainFrameModule.h"
+#include "IUriManager.h"
 #include "LevelSequence.h"
 #include "LevelVariantSets.h"
 #include "Materials/Material.h"
@@ -50,6 +53,7 @@
 #include "PropertyHandle.h"
 #include "PropertyEditorModule.h"
 #include "ScopedTransaction.h"
+#include "SourceUri.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SButton.h"
@@ -165,6 +169,7 @@ namespace FDatasmithFileProducerUtils
 
 bool UDatasmithFileProducer::Initialize()
 {
+	using namespace UE::DatasmithImporter;
 	FText TaskDescription = FText::Format( LOCTEXT( "DatasmithFileProducer_LoadingFile", "Loading {0} ..."), FText::FromString( FilePath ) );
 	ProgressTaskPtr = MakeUnique< FDataprepWorkReporter >( Context.ProgressReporterPtr, TaskDescription, 10.0f, 1.0f );
 
@@ -195,17 +200,13 @@ bool UDatasmithFileProducer::Initialize()
 	DatasmithScene =  NewObject< UDatasmithScene >( TransientPackage, *GetName() );
 	check( DatasmithScene->IsValidLowLevel() );
 
-	if (!TranslatableSourcePtr.IsValid() && !InitTranslator())
+	if (!ExternalSourcePtr.IsValid() && !InitTranslator())
 	{
 		return false;
 	}
 
-	TSharedPtr<IDatasmithTranslator> TranslatorPtr = TranslatableSourcePtr->GetTranslator();
-
-	const FDatasmithSceneSource& Source = TranslatorPtr->GetSource();
-
 	// Create and initialize context
-	ImportContextPtr = MakeUnique< FDatasmithImportContext >( Source.GetSourceFile(), false, TEXT("DatasmithFileProducer"), LOCTEXT("DatasmithFileProducerDescription", "Datasmith File Producer"), TranslatableSourcePtr->GetTranslator() );
+	ImportContextPtr = MakeUnique< FDatasmithImportContext >( ExternalSourcePtr.ToSharedRef(), false, TEXT("DatasmithFileProducer"), LOCTEXT("DatasmithFileProducerDescription", "Datasmith File Producer") );
 
 	// Set import options to default
 	ImportContextPtr->Options->BaseOptions = DefaultImportOptions;
@@ -225,18 +226,21 @@ bool UDatasmithFileProducer::Initialize()
 
 	FPaths::NormalizeDirectoryName( RootPath );
 
-	TSharedRef< IDatasmithScene > SceneElement = FDatasmithSceneFactory::CreateScene( *Source.GetSceneName() );
-
 	constexpr EObjectFlags LocalObjectFlags = RF_Public | RF_Standalone | RF_Transactional;
 	FFeedbackContext* InFeedbackContext = Context.ProgressReporterPtr ? Context.ProgressReporterPtr->GetFeedbackContext() : nullptr;
-	if ( !ImportContextPtr->Init( SceneElement, RootPath, LocalObjectFlags, InFeedbackContext, TSharedPtr< FJsonObject >(), true ) )
+	const bool bIsSilent = true;
+	if (!ImportContextPtr->Init( RootPath, LocalObjectFlags, InFeedbackContext, TSharedPtr< FJsonObject >(), bIsSilent ))
 	{
 		LogError( LOCTEXT( "DatasmithFileProducer_Initialization", "Initialization of producer failed." ) );
 		return false;
 	}
 
 	// Fill up scene element with content of input file
-	if (!TranslatableSourcePtr->Translate( SceneElement ))
+	if (TSharedPtr< IDatasmithScene > SceneElement = ExternalSourcePtr->TryLoad())
+	{
+		ImportContextPtr->InitScene( SceneElement.ToSharedRef() );
+	}
+	else
 	{
 		LogError( LOCTEXT( "DatasmithFileProducer_Translation", "Translation to Datasmith scene failed." ) );
 		return false;
@@ -247,14 +251,15 @@ bool UDatasmithFileProducer::Initialize()
 
 bool UDatasmithFileProducer::InitTranslator()
 {
-	FDatasmithSceneSource Source;
-	Source.SetSourceFile( FilePath );
+	using namespace UE::DatasmithImporter;
 
-	TranslatableSourcePtr = MakeUnique< FDatasmithTranslatableSceneSource >( Source );
-	if ( !TranslatableSourcePtr->IsTranslatable() )
+	const FSourceUri SourceUri = FSourceUri::FromFilePath( FilePath );
+	ExternalSourcePtr = IExternalSourceModule::GetOrCreateExternalSource( SourceUri );
+
+	if ( !ExternalSourcePtr || !ExternalSourcePtr->GetAssetTranslator() )
 	{
 		LogError( LOCTEXT( "DatasmithFileProducer_CannotInit", "No suitable translator found for this source." ) );
-		TranslatableSourcePtr.Reset();
+		ExternalSourcePtr.Reset();
 		return false;
 	}
 
@@ -265,7 +270,7 @@ TArray<TStrongObjectPtr<UDatasmithOptionsBase>> UDatasmithFileProducer::GetTrans
 {
 	TArray<TStrongObjectPtr<UDatasmithOptionsBase>> Result;
 
-	if (!TranslatableSourcePtr.IsValid() && !InitTranslator())
+	if (!ExternalSourcePtr.IsValid() && !InitTranslator())
 	{
 		return Result;
 	}
@@ -274,7 +279,7 @@ TArray<TStrongObjectPtr<UDatasmithOptionsBase>> UDatasmithFileProducer::GetTrans
 	{
 		// Set all import options to defaults for Dataprep
 
-		TSharedPtr<IDatasmithTranslator> TranslatorPtr = TranslatableSourcePtr->GetTranslator();
+		TSharedPtr<IDatasmithTranslator> TranslatorPtr = ExternalSourcePtr->GetAssetTranslator();
 
 		if (IDatasmithTranslator* Translator = TranslatorPtr.Get())
 		{
@@ -421,11 +426,13 @@ void UDatasmithFileProducer::SceneElementToWorld()
 		}
 	}
 
-	for ( TPair< TSharedRef< IDatasmithTextureElement >, UTexture* >& AssetPair : ImportContextPtr->ImportedTextures )
+	for ( TPair< TSharedRef< IDatasmithTextureElement >, UE::Interchange::FAssetImportResultRef >& AssetPair : ImportContextPtr->ImportedTextures )
 	{
-		if(AssetPair.Value)
+		AssetPair.Value->WaitUntilDone();
+
+		if ( UTexture* ImportedTexture = Cast< UTexture >( AssetPair.Value->GetFirstAssetOfClass( UTexture::StaticClass() ) ) )
 		{
-			Assets.Emplace( AssetPair.Value );
+			Assets.Emplace( ImportedTexture );
 		}
 	}
 
@@ -450,7 +457,7 @@ void UDatasmithFileProducer::SceneElementToWorld()
 		}
 	}
 
-	for ( TPair< int32, UMaterialInterface* >& AssetPair : ImportContextPtr->ImportedParentMaterials )
+	for ( TPair< uint32, UMaterialInterface* >& AssetPair : ImportContextPtr->ImportedParentMaterials )
 	{
 		if(AssetPair.Value)
 		{
@@ -733,7 +740,7 @@ void UDatasmithFileProducer::PreventNameCollision()
 void UDatasmithFileProducer::OnFilePathChanged()
 {
 	FilePath = FPaths::ConvertRelativePathToFull( FilePath );
-	TranslatableSourcePtr.Reset();
+	ExternalSourcePtr.Reset();
 	TranslatorImportOptions.Empty();
 	bTranslatorImportOptionsInitialized = false;
 	UpdateName();
@@ -744,7 +751,7 @@ void UDatasmithFileProducer::Reset()
 {
 	DatasmithScene = nullptr;
 	ImportContextPtr.Reset();
-	TranslatableSourcePtr.Reset();
+	ExternalSourcePtr.Reset();
 	ProgressTaskPtr.Reset();
 	Assets.Empty();
 	TransientPackage = nullptr;
@@ -778,7 +785,7 @@ void UDatasmithFileProducer::SetFilePath( const FString& InFilePath )
 
 void UDatasmithFileProducer::OnChangeImportSettings()
 {
-	if (!TranslatableSourcePtr.IsValid() && !InitTranslator())
+	if (!ExternalSourcePtr.IsValid() && !InitTranslator())
 	{
 		return;
 	}
@@ -791,7 +798,7 @@ void UDatasmithFileProducer::OnChangeImportSettings()
 		ParentWindow = MainFrame.GetParentWindow();
 	}
 
-	TSharedPtr<IDatasmithTranslator> TranslatorPtr = TranslatableSourcePtr->GetTranslator();
+	TSharedPtr<IDatasmithTranslator> TranslatorPtr = ExternalSourcePtr->GetAssetTranslator();
 
 	TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(FText::Format(LOCTEXT("ImportSettingsTitle", "{0} Import Settings"), FText::FromName(TranslatorPtr->GetFName())))
@@ -887,6 +894,8 @@ UDatasmithDirProducer::UDatasmithDirProducer()
 	, bRecursive(true)
 	, bHasWildCardSearch(true)
 {
+	TessellationOptions = CreateDefaultSubobject<UDatasmithCommonTessellationOptions>(FName(TEXT("TessellationOptions")));
+
 	if( !HasAnyFlags( RF_ClassDefaultObject ) && SupportedFormats.Num() == 0 )
 	{
 		const TArray<FString>& Formats = FDatasmithTranslatorManager::Get().GetSupportedFormats();
@@ -1134,7 +1143,7 @@ void UDatasmithDirProducer::FixPlmXmlHierarchy()
 			SceneActor->SetActorLabel(Label);
 			SceneActor->SpriteScale = 0.1f;
 
-			USceneComponent* RootComponent = RootComponent = NewObject<USceneComponent>(SceneActor, *Label, RF_Transactional);
+			USceneComponent* RootComponent = NewObject<USceneComponent>(SceneActor, *Label, RF_Transactional);
 			RootComponent->SetWorldTransform(FTransform::Identity);
 			RootComponent->Mobility = EComponentMobility::Static;
 			RootComponent->bVisualizeComponent = true;
@@ -1196,16 +1205,6 @@ void UDatasmithDirProducer::Serialize( FArchive& Ar )
 	if( Ar.IsLoading() )
 	{
 		UpdateExtensions();
-	}
-}
-
-void UDatasmithDirProducer::PostLoad()
-{
-	Super::PostLoad();
-
-	if (!TessellationOptions)
-	{
-		TessellationOptions = NewObject<UDatasmithCommonTessellationOptions>(this);
 	}
 }
 

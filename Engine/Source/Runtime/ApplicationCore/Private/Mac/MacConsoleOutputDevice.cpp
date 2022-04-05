@@ -7,9 +7,11 @@
 #include "Mac/MacApplication.h"
 #include "Mac/MacPlatformApplicationMisc.h"
 #include "Misc/OutputDeviceHelper.h"
+#include "Misc/OutputDeviceRedirector.h"
 #include "Misc/ScopeLock.h"
 #include "Mac/CocoaThread.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "CoreGlobals.h"
 
 FMacConsoleOutputDevice::FMacConsoleOutputDevice()
 	: ConsoleHandle(NULL)
@@ -108,7 +110,7 @@ void FMacConsoleOutputDevice::CreateConsole()
 		}
 		
 		SetDefaultTextColor();
-	}, UE4NilEventMode, true);
+	}, UnrealNilEventMode, true);
 }
 
 void FMacConsoleOutputDevice::DestroyConsole()
@@ -135,7 +137,7 @@ void FMacConsoleOutputDevice::DestroyConsole()
 			
 			[ConsoleWindow close];
 			TextViewTextColor = NULL;
-		}, UE4NilEventMode, true);
+		}, UnrealNilEventMode, true);
 	}
 }
 
@@ -285,6 +287,11 @@ void FMacConsoleOutputDevice::SetDefaultTextColor()
 {
 	if (!MacApplication && [[NSApp orderedWindows] count] == 1)
 	{
+		UE_LOG(LogCore, Warning, TEXT("*** INTERRUPTED *** : Console Window Closed, Shutting Down"));
+		if (GLog)
+		{
+			GLog->PanicFlushThreadedLogs();
+		}
 		_Exit(0);
 	}
 }

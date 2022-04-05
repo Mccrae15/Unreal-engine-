@@ -374,11 +374,11 @@ public:
 			NewTexture = UTexture2D::CreateTransient(RawResource->unWidth, RawResource->unHeight, EPixelFormat::PF_R8G8B8A8, ObjName);
 			if (NewTexture != nullptr)
 			{
-				FTexture2DMipMap& Mip = NewTexture->PlatformData->Mips[0];
+				FTexture2DMipMap& Mip = NewTexture->GetPlatformData()->Mips[0];
 				void* Data = Mip.BulkData.Lock(LOCK_READ_WRITE);
 				FMemory::Memcpy(Data, (void*)RawResource->rubTextureMapData, Mip.BulkData.GetBulkDataSize());
 				Mip.BulkData.Unlock();
-				NewTexture->PlatformData->SetNumSlices(1);
+				NewTexture->GetPlatformData()->SetNumSlices(1);
 #if WITH_EDITORONLY_DATA
 				NewTexture->CompressionNone = true;
 				NewTexture->DeferCompression = false;
@@ -432,6 +432,10 @@ public:
 	//~ FGCObject interface
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FSteamVRAsyncMeshLoader");
+	}
 
 protected:
 	/** */
@@ -779,7 +783,8 @@ UPrimitiveComponent* FSteamVRAssetManager::CreateRenderComponent(const int32 Dev
 				LoadHandler.BindRaw(this, &FSteamVRAssetManager::OnModelFullyLoaded, ModelName);
 				NewMeshLoader->SetLoaderFinishedCallback(LoadHandler);
 
-				const char* RawModelName = TCHAR_TO_UTF8(*ModelName);
+				const auto RawModelNameConvert = TStringConversion<FTCHARToUTF8_Convert>(*ModelName);
+				const char* RawModelName = RawModelNameConvert.Get();
 				const uint32 SubMeshCount = VRModelManager->GetComponentCount(RawModelName);
 
 				if (SubMeshCount > 0)

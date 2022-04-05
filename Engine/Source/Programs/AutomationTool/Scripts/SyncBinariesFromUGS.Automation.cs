@@ -6,9 +6,10 @@ using System.IO;
 using System.Linq;
 using AutomationTool;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Text.RegularExpressions;
 using System.Threading;
+using UnrealBuildBase;
 
 [Help("Attempts to sync UGS binaries for the specified project at the currently synced CL of the project/engine folders")]
 [Help("project=<FortniteGame>", "Project to sync. Will search current path and paths in ueprojectdirs.")]
@@ -103,7 +104,7 @@ class SyncBinariesFromUGS : SyncProjectBase
 			{
 				P4.PrintToFile(VersionedFile, TmpFile);
 
-				LogInformation("Unzipping to {0}", CommandUtils.RootDirectory);
+				LogInformation("Unzipping to {0}", Unreal.RootDirectory);
 
 				// we can't use helpers as unlike UGS we don't want to extract anything for UAT, since that us running us....
 				// That should be fine since we are either being run from the source CL that has already been syned to, or the 
@@ -116,7 +117,7 @@ class SyncBinariesFromUGS : SyncProjectBase
 				{
 					foreach (Ionic.Zip.ZipEntry Entry in Zip.Entries.Where(x => !x.IsDirectory))
 					{
-						string OutputFileName = Path.Combine(CommandUtils.RootDirectory.FullName, Entry.FileName);
+						string OutputFileName = Path.Combine(Unreal.RootDirectory.FullName, Entry.FileName);
 
 						if (Entry.FileName.Replace("\\", "/").StartsWith(UATDirectory, StringComparison.OrdinalIgnoreCase))
 						{
@@ -158,7 +159,7 @@ class SyncBinariesFromUGS : SyncProjectBase
 
 			// Update version files with our current and compatible CLs
 			LogInformation("Updating Version files to CL: {0} CompatibleCL: {1}", CurrentChangeList, CompatibleChangeList);
-			UE4Build Build = new UE4Build(this);
+			UnrealBuild Build = new UnrealBuild(this);
 			Build.UpdateVersionFiles(ActuallyUpdateVersionFiles: true, ChangelistNumberOverride: CurrentChangeList, CompatibleChangelistNumberOverride: CompatibleChangeList, IsPromotedOverride: false);
 		}
 

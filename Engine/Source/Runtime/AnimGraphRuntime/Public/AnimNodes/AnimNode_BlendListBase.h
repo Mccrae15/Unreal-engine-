@@ -23,56 +23,55 @@ enum class EBlendListTransitionType : uint8
 USTRUCT(BlueprintInternalUseOnly)
 struct ANIMGRAPHRUNTIME_API FAnimNode_BlendListBase : public FAnimNode_Base
 {
-	GENERATED_USTRUCT_BODY()
-public:
-	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category=Links)
+	GENERATED_BODY()
+
+protected:	
+	UPROPERTY(EditAnywhere, EditFixedSize, Category=Links)
 	TArray<FPoseLink> BlendPose;
 
-	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category=Config, meta=(PinShownByDefault))
+private:
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(EditAnywhere, EditFixedSize, Category=Config, meta=(PinShownByDefault, FoldProperty))
 	TArray<float> BlendTime;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Config)
-	EBlendListTransitionType TransitionType;
+	UPROPERTY(EditAnywhere, Category=Config, meta=(FoldProperty))
+	EBlendListTransitionType TransitionType = EBlendListTransitionType::StandardBlend;
 
-	UPROPERTY(EditAnywhere, Category=BlendType)
-	EAlphaBlendOption BlendType;
+	UPROPERTY(EditAnywhere, Category=BlendType, meta=(FoldProperty))
+	EAlphaBlendOption BlendType = EAlphaBlendOption::Linear;
+	
+protected:
+	/** This reinitializes the re-activated child if the child's weight was zero. */
+	UPROPERTY(EditAnywhere, Category = Option, meta=(FoldProperty))
+	bool bResetChildOnActivation = false;
+
+private:
+	UPROPERTY(EditAnywhere, Category=BlendType, meta=(FoldProperty))
+	TObjectPtr<UCurveFloat> CustomBlendCurve = nullptr;
+
+	UPROPERTY(EditAnywhere, Category=BlendType, meta=(UseAsBlendProfile=true, FoldProperty))
+	TObjectPtr<UBlendProfile> BlendProfile = nullptr;
+#endif // #if WITH_EDITORONLY_DATA
 
 protected:
-	/** This reinitializes child pose when re-activated. For example, when active child changes */
-	UPROPERTY(EditAnywhere, Category = Option)
-	bool bResetChildOnActivation;
+	// Struct for tracking blends for each pose
+	struct FBlendData
+	{
+		FAlphaBlend Blend;
+		float Weight;
+		float RemainingTime;
+		float StartAlpha;
+	};
 
-	int32 LastActiveChildIndex;
+	TArray<FBlendData> PerBlendData;
 
-public:
-	UPROPERTY(EditAnywhere, Category=BlendType)
-	UCurveFloat* CustomBlendCurve;
-
-	UPROPERTY(EditAnywhere, Category=BlendType)
-	UBlendProfile* BlendProfile;
-
-	TArray<struct FAlphaBlend> Blends;
-
-protected:
-	TArray<float> BlendWeights;
-
-	TArray<float> RemainingBlendTimes;
-
+	// Per-bone blending data, allocated when using blend profiles
 	TArray<FBlendSampleData> PerBoneSampleData;
 
-	//Store which poses we need to evaluate
-	TArray<int32> PosesToEvaluate;
-
+	int32 LastActiveChildIndex = 0;
+	
 public:	
-	FAnimNode_BlendListBase()
-		: TransitionType(EBlendListTransitionType::StandardBlend)
-		, BlendType(EAlphaBlendOption::Linear)
-		, bResetChildOnActivation(false)
-		, LastActiveChildIndex(0)
-		, CustomBlendCurve(nullptr)
-		, BlendProfile(nullptr)
-	{
-	}
+	FAnimNode_BlendListBase() = default;
 
 	// FAnimNode_Base interface
 	virtual void Initialize_AnyThread(const FAnimationInitializeContext& Context) override;
@@ -96,6 +95,25 @@ public:
 	}
 #endif
 
+public:
+	// Get the array of blend times to apply to our input poses
+	const TArray<float>& GetBlendTimes() const;
+
+	// Get the type of transition that this blend list will make
+	EBlendListTransitionType GetTransitionType() const;
+
+	// Get the blend type we will use when blending
+	EAlphaBlendOption GetBlendType() const;
+	
+	/** Get whether to reinitialize the child pose when re-activated. For example, when active child changes */
+	bool GetResetChildOnActivation() const;
+
+	// Get the custom blend curve to apply when blending, if any
+	UCurveFloat* GetCustomBlendCurve() const;
+
+	// Get the blend profile to use when blending, if any
+	UBlendProfile* GetBlendProfile() const;
+	
 protected:
 	virtual int32 GetActiveChildIndex() { return 0; }
 	virtual FString GetNodeName(FNodeDebugData& DebugData) { return DebugData.GetNodeName(this); }

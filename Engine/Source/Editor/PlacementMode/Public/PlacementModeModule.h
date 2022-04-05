@@ -80,29 +80,7 @@ public:
 		return RecentlyPlaced;
 	}
 
-	/** @return the event that is broadcast whenever the placement mode enters a placing session */
-	DECLARE_DERIVED_EVENT(FPlacementModeModule, IPlacementModeModule::FOnStartedPlacingEvent, FOnStartedPlacingEvent);
-	virtual FOnStartedPlacingEvent& OnStartedPlacing() override
-	{
-		return StartedPlacingEvent;
-	}
-	virtual void BroadcastStartedPlacing(const TArray< UObject* >& Assets) override
-	{
-		StartedPlacingEvent.Broadcast(Assets);
-	}
-
-	/** @return the event that is broadcast whenever the placement mode exits a placing session */
-	DECLARE_DERIVED_EVENT(FPlacementModeModule, IPlacementModeModule::FOnStoppedPlacingEvent, FOnStoppedPlacingEvent);
-	virtual FOnStoppedPlacingEvent& OnStoppedPlacing() override
-	{
-		return StoppedPlacingEvent;
-	}
-	virtual void BroadcastStoppedPlacing(bool bWasSuccessfullyPlaced) override
-	{
-		StoppedPlacingEvent.Broadcast(bWasSuccessfullyPlaced);
-	}
-
-	virtual TSharedRef<SWidget> CreatePlacementModeBrowser() override;
+	virtual TSharedRef<SWidget> CreatePlacementModeBrowser(TSharedRef<SDockTab> ParentTab) override;
 
 	virtual bool RegisterPlacementCategory(const FPlacementCategoryInfo& Info);
 
@@ -113,7 +91,7 @@ public:
 
 	virtual void UnregisterPlacementCategory(FName Handle);
 
-	virtual TSharedRef<FBlacklistNames>& GetCategoryBlacklist() override { return CategoryBlacklist; }
+	virtual TSharedRef<FNamePermissionList>& GetCategoryPermissionList() override { return CategoryPermissionList; }
 
 	virtual void GetSortedCategories(TArray<FPlacementCategoryInfo>& OutCategories) const;
 
@@ -147,13 +125,13 @@ private:
 
 	bool PassesFilters(const TSharedPtr<FPlaceableItem>& Item) const;
 
-	void OnCategoryBlacklistChanged();
+	void OnCategoryPermissionListChanged();
 
 private:
 
 	TMap<FName, FPlacementCategory> Categories;
 
-	TSharedRef<FBlacklistNames> CategoryBlacklist;
+	TSharedRef<FNamePermissionList> CategoryPermissionList;
 
 	TMap<FName, TPlaceableItemPredicate> PlaceableItemPredicates;
 
@@ -164,9 +142,6 @@ private:
 	FOnPlacementModeCategoryRefreshed PlacementModeCategoryRefreshed;
 	FOnPlaceableItemFilteringChanged PlaceableItemFilteringChanged;
 	FOnPlacementModeCategoryListChanged PlacementModeCategoryListChanged;
-
-	FOnStartedPlacingEvent StartedPlacingEvent;
-	FOnStoppedPlacingEvent StoppedPlacingEvent;
 
 	TArray< TSharedPtr<FExtender> > ContentPaletteFiltersExtenders;
 	TArray< TSharedPtr<FExtender> > PaletteExtenders;

@@ -24,6 +24,15 @@ struct FSlateGradientStop
 };
 template <> struct TIsPODType<FSlateGradientStop> { enum { Value = true }; };
 
+enum class ETextOverflowDirection : uint8
+{
+	// No overflow
+	NoOverflow,
+	// Left justification overflow
+	LeftToRight,
+	// Right justification overflow
+	RightToLeft
+};
 
 struct FSlateDataPayload
 {
@@ -55,7 +64,7 @@ struct FSlateBoxPayload : public FSlateDataPayload, public FSlateTintableElement
 	ESlateBrushDrawType::Type GetBrushDrawType() const { return DrawType; }
 	const FSlateShaderResourceProxy* GetResourceProxy() const { return ResourceProxy; }
 
-	void SetBrush(const FSlateBrush* InBrush)
+	void SetBrush(const FSlateBrush* InBrush, FVector2D LocalSize, float DrawScale)
 	{
 		check(InBrush);
 		ensureMsgf(InBrush->GetDrawType() != ESlateBrushDrawType::NoDrawType, TEXT("This should have been filtered out earlier in the Make... call."));
@@ -66,7 +75,7 @@ struct FSlateBoxPayload : public FSlateDataPayload, public FSlateTintableElement
 		Tiling = InBrush->GetTiling();
 		Mirroring = InBrush->GetMirroring();
 		DrawType = InBrush->GetDrawType();
-		FSlateResourceHandle Handle = InBrush->GetRenderingResource();
+		FSlateResourceHandle Handle = InBrush->GetRenderingResource(LocalSize, DrawScale);
 		if (Handle.IsValid())
 		{
 			ResourceProxy = Handle.GetResourceProxy();
@@ -80,6 +89,20 @@ struct FSlateBoxPayload : public FSlateDataPayload, public FSlateTintableElement
 	FORCENOINLINE virtual ~FSlateBoxPayload()
 	{
 	}
+};
+
+struct FSlateRoundedBoxPayload : public FSlateBoxPayload
+{
+	FLinearColor OutlineColor;
+	FVector4f Radius;
+	float OutlineWeight;
+
+	FORCEINLINE void SetRadius(FVector4f InRadius) { Radius = InRadius; }
+	FORCEINLINE FVector4f GetRadius() const { return Radius; }
+
+	FORCEINLINE void SetOutline(const FLinearColor& InOutlineColor, float InOutlineWeight) { OutlineColor = InOutlineColor; OutlineWeight = InOutlineWeight; }
+	FORCEINLINE FLinearColor GetOutlineColor() const { return OutlineColor; }
+	FORCEINLINE float GetOutlineWeight() const { return OutlineWeight; }
 };
 
 struct FSlateTextPayload : public FSlateDataPayload, public FSlateTintableElement
@@ -119,12 +142,36 @@ struct FSlateTextPayload : public FSlateDataPayload, public FSlateTintableElemen
 };
 
 
-struct FSlateShapedTextPayload : public FSlateDataPayload, public FSlateTintableElement
+
+struct FTextOverflowArgs
 {
+	FTextOverflowArgs(FShapedGlyphSequencePtr& InOverflowText, ETextOverflowDirection InOverflowDirection)
+		: OverflowTextPtr(InOverflowText)
+		, OverflowDirection(InOverflowDirection)
+		, bForceEllipsisDueToClippedLine(false)
+		
+	{}
+
+	FTextOverflowArgs()
+		: OverflowDirection(ETextOverflowDirection::NoOverflow)
+		, bForceEllipsisDueToClippedLine(false)
+	{}
+
+	/** Sequence that represents the ellipsis glyph */
+	FShapedGlyphSequencePtr OverflowTextPtr;
+	ETextOverflowDirection OverflowDirection;
+	bool bForceEllipsisDueToClippedLine;
+	
+};
+
+struct FSlateShapedTextPayload : public FSlateDataPayload, public FSlateTintableElement
+{ 
 	// Shaped text data
 	FShapedGlyphSequencePtr ShapedGlyphSequence;
 
 	FLinearColor OutlineTint;
+
+	FTextOverflowArgs OverflowArgs;
 
 	const FShapedGlyphSequencePtr& GetShapedGlyphSequence() const { return ShapedGlyphSequence; }
 	FLinearColor GetOutlineTint() const { return OutlineTint; }
@@ -135,11 +182,22 @@ struct FSlateShapedTextPayload : public FSlateDataPayload, public FSlateTintable
 		OutlineTint = InOutlineTint;
 	}
 
+	void SetOverflowArgs(const FTextOverflowArgs& InArgs)
+	{
+		OverflowArgs = InArgs;
+		check(InArgs.OverflowDirection == ETextOverflowDirection::NoOverflow || InArgs.OverflowTextPtr.IsValid());
+	}
+
 	virtual void AddReferencedObjects(FReferenceCollector& Collector)
 	{
 		if (ShapedGlyphSequence.IsValid())
 		{
 			const_cast<FShapedGlyphSequence*>(ShapedGlyphSequence.Get())->AddReferencedObjects(Collector);
+		}
+
+		if (OverflowArgs.OverflowTextPtr.IsValid())
+		{
+			const_cast<FShapedGlyphSequence*>(OverflowArgs.OverflowTextPtr.Get())->AddReferencedObjects(Collector);
 		}
 	}
 };
@@ -148,11 +206,13 @@ struct FSlateGradientPayload : public FSlateDataPayload
 {
 	TArray<FSlateGradientStop> GradientStops;
 	EOrientation GradientType;
+	FVector4f CornerRadius;
 
-	void SetGradient(const TArray<FSlateGradientStop>& InGradientStops, EOrientation InGradientType)
+	void SetGradient(const TArray<FSlateGradientStop>& InGradientStops, EOrientation InGradientType, FVector4f InCornerRadius)
 	{
 		GradientStops = InGradientStops;
 		GradientType = InGradientType;
+		CornerRadius = InCornerRadius;
 	}
 };
 
@@ -322,6 +382,7 @@ struct FSlateCustomVertsPayload : public FSlateDataPayload
 struct FSlatePostProcessPayload : public FSlateDataPayload
 {
 	// Post Process Data
-	FVector4 PostProcessData;
+	FVector4f PostProcessData;
+	FVector4f CornerRadius;
 	int32 DownsampleAmount;
 };

@@ -4,6 +4,7 @@
 D3D12Device.cpp: D3D device RHI implementation.
 =============================================================================*/
 #include "D3D12RHIPrivate.h"
+#include "D3D12RayTracing.h"
 
 namespace D3D12RHI
 {
@@ -33,8 +34,7 @@ FD3D12Device::FD3D12Device(FRHIGPUMask InGPUMask, FD3D12Adapter* InAdapter) :
 	SamplerAllocator(InGPUMask, FD3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 128),
 	GlobalSamplerHeap(this, InGPUMask),
 	GlobalViewHeap(this, InGPUMask),
-	OcclusionQueryHeap(this, D3D12_QUERY_TYPE_OCCLUSION, 65536, 4 /*frames to keep results */ * 1 /*batches per frame*/),
-	TimestampQueryHeap(this, D3D12_QUERY_TYPE_TIMESTAMP, 8192, 4 /*frames to keep results */ * 5 /*batches per frame*/ ),
+	OcclusionQueryHeap(this, D3D12_QUERY_TYPE_OCCLUSION, 65536, 4 /*frames to keep results */, 1 /*batches per frame*/),
 #if WITH_PROFILEGPU || D3D12_SUBMISSION_GAP_RECORDER
 	CmdListExecTimeQueryHeap(new FD3D12LinearQueryHeap(this, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 8192)),
 #endif
@@ -44,12 +44,20 @@ FD3D12Device::FD3D12Device(FRHIGPUMask InGPUMask, FD3D12Adapter* InAdapter) :
 	TextureAllocator(this, FRHIGPUMask::All()),
 	GPUProfilingData(this)
 {
+	for (uint32 QueueType = 0; QueueType < (uint32)ED3D12CommandQueueType::Count; ++QueueType)
+	{
+		TimestampQueryHeaps[QueueType] = new FD3D12QueryHeap(this, D3D12_QUERY_TYPE_TIMESTAMP, 8192, 4 /*frames to keep results */, 5 /*batches per frame*/);
+	}
+
 	InitPlatformSpecific();
 }
 
 FD3D12Device::~FD3D12Device()
 {
 #if D3D12_RHI_RAYTRACING
+	delete RayTracingCompactionRequestHandler;
+	RayTracingCompactionRequestHandler = nullptr;
+
 	DestroyRayTracingDescriptorCache(); // #dxr_todo UE-72158: unify RT descriptor cache with main FD3D12DescriptorCache
 #endif
 
@@ -105,7 +113,18 @@ void FD3D12Device::CreateCommandContexts()
 	check(CommandContextArray.Num() == 0);
 	check(AsyncComputeContextArray.Num() == 0);
 
-	const uint32 NumContexts = FTaskGraphInterface::Get().GetNumWorkerThreads() + 1;
+	uint32 WorkerThreadCount = FTaskGraphInterface::Get().GetNumWorkerThreads();
+
+#if PLATFORM_WINDOWS
+	bool bEnableReserveWorkers = true; // by default
+	GConfig->GetBool(TEXT("TaskGraph"), TEXT("EnableReserveWorkers"), bEnableReserveWorkers, GEngineIni);
+	if (bEnableReserveWorkers)
+	{
+		WorkerThreadCount *= 2;
+	}
+#endif
+
+	const uint32 NumContexts = WorkerThreadCount + 1;
 	const uint32 NumAsyncComputeContexts = GEnableAsyncCompute ? 1 : 0;
 	
 	// We never make the default context free for allocation by the context containers
@@ -116,8 +135,8 @@ void FD3D12Device::CreateCommandContexts()
 	for (uint32 i = 0; i < NumContexts; ++i)
 	{	
 		const bool bIsDefaultContext = (i == 0);
-		const bool bIsAsyncComputeContext = false;
-		FD3D12CommandContext* NewCmdContext = GetOwningRHI()->CreateCommandContext(this, bIsDefaultContext, bIsAsyncComputeContext);
+		const ED3D12CommandQueueType CommandQueueType = ED3D12CommandQueueType::Direct;
+		FD3D12CommandContext* NewCmdContext = GetOwningRHI()->CreateCommandContext(this, CommandQueueType, bIsDefaultContext);
 
 		// without that the first RHIClear would get a scissor rect of (0,0)-(0,0) which means we get a draw call clear 
 		NewCmdContext->RHISetScissorRect(false, 0, 0, 0, 0);
@@ -131,11 +150,11 @@ void FD3D12Device::CreateCommandContexts()
 		}
 	}
 
-	for (uint32 i = 0; i < NumAsyncComputeContexts; ++i)
+	for (uint32 i = 0; i < NumAsyncComputeContexts; ++i) //-V1008
 	{		
 		const bool bIsDefaultContext = (i == 0); //-V547
-		const bool bIsAsyncComputeContext = true;
-		FD3D12CommandContext* NewCmdContext = GetOwningRHI()->CreateCommandContext(this, bIsDefaultContext, bIsAsyncComputeContext);
+		const ED3D12CommandQueueType CommandQueueType = ED3D12CommandQueueType::Async;
+		FD3D12CommandContext* NewCmdContext = GetOwningRHI()->CreateCommandContext(this, CommandQueueType, bIsDefaultContext);
 	
 		AsyncComputeContextArray.Add(NewCmdContext);
 	}
@@ -159,11 +178,87 @@ typedef HRESULT(WINAPI *FDXGIGetDebugInterface1)(UINT, REFIID, void **);
 
 ID3D12CommandQueue* gD3D12CommandQueue;
 
+static D3D12_FEATURE_DATA_FORMAT_SUPPORT GetFormatSupport(ID3D12Device* InDevice, DXGI_FORMAT InFormat)
+{
+	D3D12_FEATURE_DATA_FORMAT_SUPPORT FormatSupport{};
+	FormatSupport.Format = InFormat;
+
+	InDevice->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &FormatSupport, sizeof(FormatSupport));
+
+	return FormatSupport;
+}
+
 void FD3D12Device::SetupAfterDeviceCreation()
 {
 	ID3D12Device* Direct3DDevice = GetParentAdapter()->GetD3DDevice();
 
+	for (uint32 FormatIndex = PF_Unknown; FormatIndex < PF_MAX; FormatIndex++)
+	{
+		FPixelFormatInfo& PixelFormatInfo = GPixelFormats[FormatIndex];
+		const DXGI_FORMAT PlatformFormat = static_cast<DXGI_FORMAT>(PixelFormatInfo.PlatformFormat);
+
+		EPixelFormatCapabilities Capabilities = EPixelFormatCapabilities::None;
+
+		if (PlatformFormat != DXGI_FORMAT_UNKNOWN)
+		{
+			const D3D12_FEATURE_DATA_FORMAT_SUPPORT FormatSupport    = GetFormatSupport(Direct3DDevice, PlatformFormat);
+			const D3D12_FEATURE_DATA_FORMAT_SUPPORT SRVFormatSupport = GetFormatSupport(Direct3DDevice, FindShaderResourceDXGIFormat(PlatformFormat, false));
+			const D3D12_FEATURE_DATA_FORMAT_SUPPORT UAVFormatSupport = GetFormatSupport(Direct3DDevice, FindUnorderedAccessDXGIFormat(PlatformFormat));
+			const D3D12_FEATURE_DATA_FORMAT_SUPPORT RTVFormatSupport = GetFormatSupport(Direct3DDevice, FindShaderResourceDXGIFormat(PlatformFormat, false));
+			const D3D12_FEATURE_DATA_FORMAT_SUPPORT DSVFormatSupport = GetFormatSupport(Direct3DDevice, FindDepthStencilDXGIFormat(PlatformFormat));
+
+			auto ConvertCap1 = [&Capabilities](const D3D12_FEATURE_DATA_FORMAT_SUPPORT& InSupport, EPixelFormatCapabilities UnrealCap, D3D12_FORMAT_SUPPORT1 InFlags)
+			{
+				if (EnumHasAnyFlags(InSupport.Support1, InFlags))
+				{
+					EnumAddFlags(Capabilities, UnrealCap);
+				}
+			};
+			auto ConvertCap2 = [&Capabilities](const D3D12_FEATURE_DATA_FORMAT_SUPPORT& InSupport, EPixelFormatCapabilities UnrealCap, D3D12_FORMAT_SUPPORT2 InFlags)
+			{
+				if (EnumHasAnyFlags(InSupport.Support2, InFlags))
+				{
+					EnumAddFlags(Capabilities, UnrealCap);
+				}
+			};
+
+			ConvertCap1(FormatSupport, EPixelFormatCapabilities::Texture1D,               D3D12_FORMAT_SUPPORT1_TEXTURE1D);
+			ConvertCap1(FormatSupport, EPixelFormatCapabilities::Texture2D,               D3D12_FORMAT_SUPPORT1_TEXTURE2D);
+			ConvertCap1(FormatSupport, EPixelFormatCapabilities::Texture3D,               D3D12_FORMAT_SUPPORT1_TEXTURE3D);
+			ConvertCap1(FormatSupport, EPixelFormatCapabilities::TextureCube,             D3D12_FORMAT_SUPPORT1_TEXTURECUBE);
+			ConvertCap1(FormatSupport, EPixelFormatCapabilities::Buffer,                  D3D12_FORMAT_SUPPORT1_BUFFER);
+			ConvertCap1(FormatSupport, EPixelFormatCapabilities::VertexBuffer,            D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER);
+			ConvertCap1(FormatSupport, EPixelFormatCapabilities::IndexBuffer,             D3D12_FORMAT_SUPPORT1_IA_INDEX_BUFFER);
+
+			if (EnumHasAnyFlags(Capabilities, EPixelFormatCapabilities::AnyTexture))
+			{
+				ConvertCap1(FormatSupport, EPixelFormatCapabilities::RenderTarget,        D3D12_FORMAT_SUPPORT1_RENDER_TARGET);
+				ConvertCap1(FormatSupport, EPixelFormatCapabilities::DepthStencil,        D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL);
+				ConvertCap1(FormatSupport, EPixelFormatCapabilities::TextureMipmaps,      D3D12_FORMAT_SUPPORT1_MIP);
+				ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureLoad,      D3D12_FORMAT_SUPPORT1_SHADER_LOAD);
+				ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureSample,    D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE);
+				ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureGather,    D3D12_FORMAT_SUPPORT1_SHADER_GATHER);
+				ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::TextureAtomics,   D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE);
+				ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::TextureBlendable, D3D12_FORMAT_SUPPORT1_BLENDABLE);
+			}
+
+			if (EnumHasAnyFlags(Capabilities, EPixelFormatCapabilities::Buffer))
+			{
+				ConvertCap1(SRVFormatSupport, EPixelFormatCapabilities::BufferLoad,       D3D12_FORMAT_SUPPORT1_SHADER_LOAD);
+				ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::BufferStore,      D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
+				ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::BufferAtomics,    D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE);
+			}
+
+			ConvertCap1(UAVFormatSupport, EPixelFormatCapabilities::UAV,                  D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW);
+			ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::TypedUAVLoad,         D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD);
+			ConvertCap2(UAVFormatSupport, EPixelFormatCapabilities::TypedUAVStore,        D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
+		}
+
+		PixelFormatInfo.Capabilities = Capabilities;
+	}
+
 	GRHISupportsArrayIndexFromAnyShader = true;
+	GRHISupportsStencilRefFromPixelShader = false; // TODO: Sort out DXC shader database SM6.0 usage. DX12 supports this feature, but need to improve DXC support.
 
 #if (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
 	// Check if we're running under GPU capture
@@ -286,7 +381,10 @@ void FD3D12Device::SetupAfterDeviceCreation()
 
 	// Init the occlusion and timestamp query heaps
 	OcclusionQueryHeap.Init();
-	TimestampQueryHeap.Init();
+	for (uint32 QueueType = 0; QueueType < (uint32)ED3D12CommandQueueType::Count; ++QueueType)
+	{
+		TimestampQueryHeaps[QueueType]->Init();
+	}
 
 	CommandListManager->Create(*FString::Printf(TEXT("3D Queue %d"), GetGPUIndex()));
 	gD3D12CommandQueue = CommandListManager->GetD3DCommandQueue();
@@ -299,6 +397,11 @@ void FD3D12Device::SetupAfterDeviceCreation()
 	CreateCommandContexts();
 
 	UpdateMSAASettings();
+
+#if D3D12_RHI_RAYTRACING
+	check(RayTracingCompactionRequestHandler == nullptr);
+	RayTracingCompactionRequestHandler = new FD3D12RayTracingCompactionRequestHandler(this);
+#endif // D3D12_RHI_RAYTRACING
 
 	GPUProfilingData.Init();
 }
@@ -359,7 +462,7 @@ void FD3D12Device::Cleanup()
 	};
 
 	// Validate that all the D3D command queues are still valid (temp code to check for a shutdown crash)
-	ValidateCommandQueue(ED3D12CommandQueueType::Default, TEXT("Direct"));
+	ValidateCommandQueue(ED3D12CommandQueueType::Direct, TEXT("Direct"));
 	ValidateCommandQueue(ED3D12CommandQueueType::Copy, TEXT("Copy"));
 	ValidateCommandQueue(ED3D12CommandQueueType::Async, TEXT("Async"));
 
@@ -380,7 +483,12 @@ void FD3D12Device::Cleanup()
 	ReleasePooledUniformBuffers();
 
 	// Flush all pending deletes before destroying the device or any command contexts.
-	FRHIResource::FlushPendingDeletes();
+	int32 DeletedCount;
+	do
+	{
+		DeletedCount = FRHIResource::FlushPendingDeletes(RHICmdList);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
+	} while (DeletedCount);
 
 	// Delete array index 0 (the default context) last
 	for (int32 i = CommandContextArray.Num() - 1; i >= 0; i--)
@@ -401,7 +509,7 @@ void FD3D12Device::Cleanup()
 	// Cleanup thread resources
 	for (int32 index; (index = FPlatformAtomics::InterlockedDecrement(&NumThreadDynamicHeapAllocators)) != -1;)
 	{
-		FD3D12DynamicHeapAllocator* pHeapAllocator = ThreadDynamicHeapAllocatorArray[index];
+		FD3D12UploadHeapAllocator* pHeapAllocator = ThreadDynamicHeapAllocatorArray[index];
 		pHeapAllocator->ReleaseAllResources();
 		delete(pHeapAllocator);
 	}
@@ -412,7 +520,12 @@ void FD3D12Device::Cleanup()
 	AsyncCommandListManager->Destroy();
 
 	OcclusionQueryHeap.Destroy();
-	TimestampQueryHeap.Destroy();
+	for (uint32 QueueType = 0; QueueType < (uint32)ED3D12CommandQueueType::Count; ++QueueType)
+	{
+		TimestampQueryHeaps[QueueType]->Destroy();
+		delete TimestampQueryHeaps[QueueType];
+		TimestampQueryHeaps[QueueType] = nullptr;
+	}
 
 #if WITH_PROFILEGPU || D3D12_SUBMISSION_GAP_RECORDER
 	CmdListExecTimeQueryHeap = nullptr;
@@ -428,7 +541,7 @@ FD3D12CommandListManager* FD3D12Device::GetCommandListManager(ED3D12CommandQueue
 {
 	switch (InQueueType)
 	{
-	case ED3D12CommandQueueType::Default:
+	case ED3D12CommandQueueType::Direct:
 		check(CommandListManager->GetQueueType() == InQueueType);
 		return CommandListManager;
 	case ED3D12CommandQueueType::Async:
@@ -466,3 +579,33 @@ void FD3D12Device::BlockUntilIdle()
 	GetCopyCommandListManager().WaitForCommandQueueFlush();
 	GetAsyncCommandListManager().WaitForCommandQueueFlush();
 }
+
+D3D12_RESOURCE_ALLOCATION_INFO FD3D12Device::GetResourceAllocationInfo(const D3D12_RESOURCE_DESC& InDesc)
+{
+	uint64 Hash = CityHash64((const char*)&InDesc, sizeof(D3D12_RESOURCE_DESC));
+
+	// By default there'll be more threads trying to read this than to write it.
+	ResourceAllocationInfoMapMutex.ReadLock();
+	D3D12_RESOURCE_ALLOCATION_INFO* CachedInfo = ResourceAllocationInfoMap.Find(Hash);
+	ResourceAllocationInfoMapMutex.ReadUnlock();
+
+	if (CachedInfo)
+	{
+		return *CachedInfo;
+	}
+	else
+	{
+		D3D12_RESOURCE_ALLOCATION_INFO Result = GetDevice()->GetResourceAllocationInfo(0, 1, &InDesc);
+
+		ResourceAllocationInfoMapMutex.WriteLock();
+		// Try search again with write lock because could have been added already
+		CachedInfo = ResourceAllocationInfoMap.Find(Hash);
+		if (CachedInfo == nullptr)
+		{
+			ResourceAllocationInfoMap.Add(Hash, Result);
+		}
+		ResourceAllocationInfoMapMutex.WriteUnlock();
+		return Result;
+	}
+}
+

@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "PostProcess/RenderingCompositionGraph.h"
 #include "PostProcess/PostProcessEyeAdaptation.h"
 #include "ScreenPass.h"
 #include "OverridePassSequence.h"
@@ -26,7 +25,7 @@ enum class EDeviceEncodingOnlyOutputDevice
 };
 
 BEGIN_SHADER_PARAMETER_STRUCT(FDeviceEncodingOnlyOutputDeviceParameters, )
-	SHADER_PARAMETER(FVector, InverseGamma)
+	SHADER_PARAMETER(FVector3f, InverseGamma)
 	SHADER_PARAMETER(uint32, OutputDevice)
 	SHADER_PARAMETER(uint32, OutputGamut)
 END_SHADER_PARAMETER_STRUCT()

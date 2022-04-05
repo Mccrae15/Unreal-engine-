@@ -102,7 +102,7 @@ namespace WmfMedia
 //		&MFVideoFormat_RGB24,
 //		&MFVideoFormat_RGB555,
 //		&MFVideoFormat_RGB565,
-//		&MFVideoFormat_RGB8,
+		&MFVideoFormat_RGB8,
 
 		// 8-bit YUV (packed)
 //		&MFVideoFormat_AYUV,
@@ -134,6 +134,11 @@ namespace WmfMedia
 		// 16-bit YUV (planar)
 //		&MFVideoFormat_P016,
 //		&MFVideoFormat_P216,
+
+		&MFVideoFormat_L8,
+		&MFVideoFormat_L16,
+		&MFVideoFormat_D16,
+
 	};
 
 
@@ -345,6 +350,11 @@ namespace WmfMedia
 	}
 
 
+	bool IsFormatFamily(const GUID& lhs, const GUID& rhs)
+	{
+		return FMemory::Memcmp(&lhs.Data2, &rhs.Data2, 12) == 0; //-V512
+	}
+
 	TComPtr<IMFMediaType> CreateOutputType(IMFMediaType& InputType, bool AllowNonStandardCodecs, bool IsVideoDevice)
 	{
 		GUID MajorType;
@@ -391,7 +401,7 @@ namespace WmfMedia
 		if (MajorType == MFMediaType_Audio)
 		{
 			// filter unsupported audio formats
-			if (FMemory::Memcmp(&SubType.Data2, &MFMPEG4Format_Base.Data2, 12) == 0)
+			if (IsFormatFamily(SubType, MFMPEG4Format_Base))
 			{
 				if (AllowNonStandardCodecs)
 				{
@@ -420,7 +430,7 @@ namespace WmfMedia
 					}
 				}
 			}
-			else if (FMemory::Memcmp(&SubType.Data2, &MFAudioFormat_Base.Data2, 12) != 0)
+			else if (!IsFormatFamily(SubType, MFAudioFormat_Base))
 			{
 				if (AllowNonStandardCodecs)
 				{
@@ -474,7 +484,7 @@ namespace WmfMedia
 		else if (MajorType == MFMediaType_Video)
 		{
 			// filter unsupported video types
-			if (FMemory::Memcmp(&SubType.Data2, &MFVideoFormat_Base.Data2, 12) != 0)
+			if (!IsFormatFamily(SubType, MFVideoFormat_Base))
 			{
 				if (AllowNonStandardCodecs)
 				{
@@ -1512,7 +1522,7 @@ namespace WmfMedia
 		if (SubType == OtherVideoFormat_LifeCam) return TEXT("LifeCam");
 		if (SubType == OtherVideoFormat_QuickTime) return TEXT("QuickTime");
 
-		if (FMemory::Memcmp(&SubType.Data2, &OtherFormatMpeg2_Base.Data2, 12) == 0)
+		if (IsFormatFamily(SubType, OtherFormatMpeg2_Base))
 		{
 			if (SubType.Data1 == OTHER_FORMAT_MPEG2_AC3) return TEXT("MPEG-2 AC3");
 			if (SubType.Data1 == OTHER_FORMAT_MPEG2_AUDIO) return TEXT("MPEG-2 Audio");
@@ -1526,8 +1536,8 @@ namespace WmfMedia
 		}
 
 		// audio formats
-		if ((FMemory::Memcmp(&SubType.Data2, &MFAudioFormat_Base.Data2, 12) == 0) ||
-			(FMemory::Memcmp(&SubType.Data2, &MFMPEG4Format_Base.Data2, 12) == 0))
+		if (IsFormatFamily(SubType, MFAudioFormat_Base) ||
+			IsFormatFamily(SubType, MFMPEG4Format_Base))
 		{
 			if (SubType.Data1 == WAVE_FORMAT_UNKNOWN) return TEXT("Unknown Audio Format");
 			if (SubType.Data1 == WAVE_FORMAT_PCM) return TEXT("PCM");
@@ -1809,10 +1819,7 @@ namespace WmfMedia
 		case MF_TOPOSTATUS_READY: return TEXT("Ready");
 		case MF_TOPOSTATUS_SINK_SWITCHED: return TEXT("Sink Switched");
 		case MF_TOPOSTATUS_STARTED_SOURCE: return TEXT("Started Source");
-
-#if (WINVER >= _WIN32_WINNT_WIN7)
 		case MF_TOPOSTATUS_DYNAMIC_CHANGED: return TEXT("Dynamic Changed");
-#endif
 
 		default:
 			return FString::Printf(TEXT("Unknown status %i"), (int32)Status);

@@ -2,18 +2,18 @@
 
 #include "STimingProfilerWindow.h"
 
-#include "EditorStyleSet.h"
+#include "Framework/Commands/UICommandList.h"
 #include "Framework/Docking/LayoutExtender.h"
+#include "Framework/Docking/LayoutService.h"
+#include "Framework/Docking/TabManager.h"
 #include "Framework/Docking/WorkspaceItem.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Framework/Docking/LayoutService.h"
 #include "SlateOptMacros.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Modules/ModuleManager.h"
@@ -46,7 +46,7 @@
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const FName FTimingProfilerTabs::ToolbarID(TEXT("Toolbar"));
+const FName FTimingProfilerTabs::ToolbarID(TEXT("Toolbar")); // DEPRECATED
 const FName FTimingProfilerTabs::FramesTrackID(TEXT("Frames"));
 const FName FTimingProfilerTabs::TimingViewID(TEXT("TimingView"));
 const FName FTimingProfilerTabs::TimersID(TEXT("Timers"));
@@ -108,8 +108,6 @@ STimingProfilerWindow::~STimingProfilerWindow()
 		check(FrameTrack == nullptr);
 	}
 
-	HideTab(FTimingProfilerTabs::ToolbarID);
-
 #if WITH_EDITOR
 	if (DurationActive > 0.0f && FEngineAnalytics::IsAvailable())
 	{
@@ -161,29 +159,6 @@ void STimingProfilerWindow::Reset()
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
-
-TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_Toolbar(const FSpawnTabArgs& Args)
-{
-	const TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-		.ShouldAutosize(true)
-		.TabRole(ETabRole::PanelTab)
-		[
-			SNew(STimingProfilerToolbar)
-		];
-
-	DockTab->SetOnTabClosed(SDockTab::FOnTabClosedCallback::CreateRaw(this, &STimingProfilerWindow::OnToolbarTabClosed));
-
-	return DockTab;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void STimingProfilerWindow::OnToolbarTabClosed(TSharedRef<SDockTab> TabBeingClosed)
-{
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_FramesTrack(const FSpawnTabArgs& Args)
 {
 	FTimingProfilerManager::Get()->SetFramesTrackVisible(true);
@@ -199,6 +174,7 @@ TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_FramesTrack(const FSpawnTab
 
 	return DockTab;
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -210,6 +186,7 @@ void STimingProfilerWindow::OnFramesTrackTabClosed(TSharedRef<SDockTab> TabBeing
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_TimingView(const FSpawnTabArgs& Args)
 {
 	FTimingProfilerManager::Get()->SetTimingViewVisible(true);
@@ -222,22 +199,32 @@ TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_TimingView(const FSpawnTabA
 		];
 
 	TimingView->Reset(true);
+	TimingView->OnSelectionChanged().AddSP(this, &STimingProfilerWindow::OnTimeSelectionChanged);
+	const double SelectionStartTime = FTimingProfilerManager::Get()->GetSelectionStartTime();
+	const double SelectionEndTime = FTimingProfilerManager::Get()->GetSelectionEndTime();
+	TimingView->SelectTimeInterval(SelectionStartTime, SelectionEndTime - SelectionStartTime);
 
 	DockTab->SetOnTabClosed(SDockTab::FOnTabClosedCallback::CreateRaw(this, &STimingProfilerWindow::OnTimingViewTabClosed));
 
 	return DockTab;
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void STimingProfilerWindow::OnTimingViewTabClosed(TSharedRef<SDockTab> TabBeingClosed)
 {
 	FTimingProfilerManager::Get()->SetTimingViewVisible(false);
-	TimingView = nullptr;
+	if (TimingView)
+	{
+		TimingView->OnSelectionChanged().RemoveAll(this);
+		TimingView = nullptr;
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_Timers(const FSpawnTabArgs& Args)
 {
 	FTimingProfilerManager::Get()->SetTimersViewVisible(true);
@@ -253,6 +240,7 @@ TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_Timers(const FSpawnTabArgs&
 
 	return DockTab;
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -264,6 +252,7 @@ void STimingProfilerWindow::OnTimersTabClosed(TSharedRef<SDockTab> TabBeingClose
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_Callers(const FSpawnTabArgs& Args)
 {
 	FTimingProfilerManager::Get()->SetCallersTreeViewVisible(true);
@@ -279,6 +268,7 @@ TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_Callers(const FSpawnTabArgs
 
 	return DockTab;
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -290,6 +280,7 @@ void STimingProfilerWindow::OnCallersTabClosed(TSharedRef<SDockTab> TabBeingClos
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_Callees(const FSpawnTabArgs& Args)
 {
 	FTimingProfilerManager::Get()->SetCalleesTreeViewVisible(true);
@@ -305,6 +296,7 @@ TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_Callees(const FSpawnTabArgs
 
 	return DockTab;
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -316,6 +308,7 @@ void STimingProfilerWindow::OnCalleesTabClosed(TSharedRef<SDockTab> TabBeingClos
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_StatsCounters(const FSpawnTabArgs& Args)
 {
 	FTimingProfilerManager::Get()->SetStatsCountersViewVisible(true);
@@ -331,6 +324,7 @@ TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_StatsCounters(const FSpawnT
 
 	return DockTab;
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -342,6 +336,7 @@ void STimingProfilerWindow::OnStatsCountersTabClosed(TSharedRef<SDockTab> TabBei
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_LogView(const FSpawnTabArgs& Args)
 {
 	FTimingProfilerManager::Get()->SetLogViewVisible(true);
@@ -357,6 +352,7 @@ TSharedRef<SDockTab> STimingProfilerWindow::SpawnTab_LogView(const FSpawnTabArgs
 
 	return DockTab;
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -368,10 +364,12 @@ void STimingProfilerWindow::OnLogViewTabClosed(TSharedRef<SDockTab> TabBeingClos
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void STimingProfilerWindow::Construct(const FArguments& InArgs, const TSharedRef<SDockTab>& ConstructUnderMajorTab, const TSharedPtr<SWindow>& ConstructUnderWindow)
 {
 	// Create & initialize tab manager.
 	TabManager = FGlobalTabmanager::Get()->NewTabManager(ConstructUnderMajorTab);
+
 	const auto& PersistLayout = [](const TSharedRef<FTabManager::FLayout>& LayoutToSave)
 	{
 		FLayoutSaveRestore::SaveToConfig(FTraceInsightsModule::GetUnrealInsightsLayoutIni(), LayoutToSave);
@@ -380,46 +378,41 @@ void STimingProfilerWindow::Construct(const FArguments& InArgs, const TSharedRef
 
 	TSharedRef<FWorkspaceItem> AppMenuGroup = TabManager->AddLocalWorkspaceMenuCategory(LOCTEXT("TimingProfilerMenuGroupName", "Timing Insights"));
 
-	Extension = MakeShared<FInsightsMajorTabExtender>(TabManager);
-
-	TabManager->RegisterTabSpawner(FTimingProfilerTabs::ToolbarID, FOnSpawnTab::CreateRaw(this, &STimingProfilerWindow::SpawnTab_Toolbar))
-		.SetDisplayName(LOCTEXT("DeviceToolbarTabTitle", "Toolbar"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Toolbar.Icon.Small"))
-		.SetGroup(AppMenuGroup);
+	Extension = MakeShared<FInsightsMajorTabExtender>(TabManager, AppMenuGroup);
 
 	TabManager->RegisterTabSpawner(FTimingProfilerTabs::FramesTrackID, FOnSpawnTab::CreateRaw(this, &STimingProfilerWindow::SpawnTab_FramesTrack))
 		.SetDisplayName(LOCTEXT("FramesTrackTabTitle", "Frames"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "FramesTrack.Icon.Small"))
+		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.FramesTrack"))
 		.SetGroup(AppMenuGroup);
 
 	TabManager->RegisterTabSpawner(FTimingProfilerTabs::TimingViewID, FOnSpawnTab::CreateRaw(this, &STimingProfilerWindow::SpawnTab_TimingView))
 		.SetDisplayName(LOCTEXT("TimingViewTabTitle", "Timing View"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "TimingView.Icon.Small"))
+		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.TimingView"))
 		.SetGroup(AppMenuGroup);
 
 	TabManager->RegisterTabSpawner(FTimingProfilerTabs::TimersID, FOnSpawnTab::CreateRaw(this, &STimingProfilerWindow::SpawnTab_Timers))
 		.SetDisplayName(LOCTEXT("TimersTabTitle", "Timers"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "TimersView.Icon.Small"))
+		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.TimersView"))
 		.SetGroup(AppMenuGroup);
 
 	TabManager->RegisterTabSpawner(FTimingProfilerTabs::CallersID, FOnSpawnTab::CreateRaw(this, &STimingProfilerWindow::SpawnTab_Callers))
 		.SetDisplayName(LOCTEXT("CallersTabTitle", "Callers"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "TimersView.Icon.Small")) // TODO
+		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.CallersView"))
 		.SetGroup(AppMenuGroup);
 
 	TabManager->RegisterTabSpawner(FTimingProfilerTabs::CalleesID, FOnSpawnTab::CreateRaw(this, &STimingProfilerWindow::SpawnTab_Callees))
 		.SetDisplayName(LOCTEXT("CalleesTabTitle", "Callees"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "TimersView.Icon.Small")) // TODO
+		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.CalleesView"))
 		.SetGroup(AppMenuGroup);
 
 	TabManager->RegisterTabSpawner(FTimingProfilerTabs::StatsCountersID, FOnSpawnTab::CreateRaw(this, &STimingProfilerWindow::SpawnTab_StatsCounters))
 		.SetDisplayName(LOCTEXT("StatsCountersTabTitle", "Counters"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "StatsCountersView.Icon.Small"))
+		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.CountersView"))
 		.SetGroup(AppMenuGroup);
 
 	TabManager->RegisterTabSpawner(FTimingProfilerTabs::LogViewID, FOnSpawnTab::CreateRaw(this, &STimingProfilerWindow::SpawnTab_LogView))
 		.SetDisplayName(LOCTEXT("LogViewTabTitle", "Log View"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "LogView.Icon.Small"))
+		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.LogView"))
 		.SetGroup(AppMenuGroup);
 
 	TSharedPtr<FTimingProfilerManager> TimingProfilerManager = FTimingProfilerManager::Get();
@@ -436,9 +429,9 @@ void STimingProfilerWindow::Construct(const FArguments& InArgs, const TSharedRef
 	}
 
 	// Register any new minor tabs.
-	for (const FInsightsMinorTabConfig& MinorTabConfig : Extension->GetMinorTabs())
+	for (const FMinorTabConfig& MinorTabConfig : Extension->GetMinorTabs())
 	{
-		FTabSpawnerEntry& TabSpawnerEntry = TabManager->RegisterTabSpawner(MinorTabConfig.TabId, MinorTabConfig.OnSpawnTab);
+		FTabSpawnerEntry& TabSpawnerEntry = TabManager->RegisterTabSpawner(MinorTabConfig.TabId, MinorTabConfig.OnSpawnTab, MinorTabConfig.CanSpawnTab);
 
 		TabSpawnerEntry
 		.SetDisplayName(MinorTabConfig.TabLabel)
@@ -461,88 +454,75 @@ void STimingProfilerWindow::Construct(const FArguments& InArgs, const TSharedRef
 		else
 		{
 			// Create tab layout.
-			return FTabManager::NewLayout("InsightsTimingProfilerLayout_v1.1")
+			return FTabManager::NewLayout("InsightsTimingProfilerLayout_v1.2")
 				->AddArea
 				(
 					FTabManager::NewPrimaryArea()
-					->SetOrientation(Orient_Vertical)
+					->SetOrientation(Orient_Horizontal)
 					->Split
 					(
-						FTabManager::NewStack()
-						->AddTab(FTimingProfilerTabs::ToolbarID, ETabState::OpenedTab)
-						->SetHideTabWell(true)
+						FTabManager::NewSplitter()
+						->SetSizeCoefficient(0.65f)
+						->SetOrientation(Orient_Vertical)
+						->Split
+						(
+							FTabManager::NewStack()
+							->SetSizeCoefficient(0.1f)
+							->SetHideTabWell(true)
+							->AddTab(FTimingProfilerTabs::FramesTrackID, ETabState::OpenedTab)
+						)
+						->Split
+						(
+							FTabManager::NewStack()
+							->SetSizeCoefficient(0.5f)
+							->SetHideTabWell(true)
+							->AddTab(FTimingProfilerTabs::TimingViewID, ETabState::OpenedTab)
+						)
+						->Split
+						(
+							FTabManager::NewStack()
+							->SetSizeCoefficient(0.2f)
+							->SetHideTabWell(true)
+							->AddTab(FTimingProfilerTabs::LogViewID, ETabState::OpenedTab)
+						)
 					)
 					->Split
 					(
 						FTabManager::NewSplitter()
-						->SetOrientation(Orient_Horizontal)
-						->SetSizeCoefficient(1.0f)
+						->SetSizeCoefficient(0.35f)
+						->SetOrientation(Orient_Vertical)
 						->Split
 						(
-							FTabManager::NewSplitter()
-							->SetOrientation(Orient_Vertical)
-							->SetSizeCoefficient(0.65f)
-							->Split
-							(
-								FTabManager::NewStack()
-								->SetSizeCoefficient(0.1f)
-								->SetHideTabWell(true)
-								->AddTab(FTimingProfilerTabs::FramesTrackID, ETabState::OpenedTab)
-							)
-							->Split
-							(
-								FTabManager::NewStack()
-								->SetSizeCoefficient(0.5f)
-								->SetHideTabWell(true)
-								->AddTab(FTimingProfilerTabs::TimingViewID, ETabState::OpenedTab)
-							)
-							->Split
-							(
-								FTabManager::NewStack()
-								->SetSizeCoefficient(0.2f)
-								->SetHideTabWell(true)
-								->AddTab(FTimingProfilerTabs::LogViewID, ETabState::OpenedTab)
-							)
+							FTabManager::NewStack()
+							->SetSizeCoefficient(0.67f)
+							->AddTab(FTimingProfilerTabs::TimersID, ETabState::OpenedTab)
+							->AddTab(FTimingProfilerTabs::StatsCountersID, ETabState::OpenedTab)
+							->SetForegroundTab(FTimingProfilerTabs::TimersID)
 						)
 						->Split
 						(
-							FTabManager::NewSplitter()
-							->SetOrientation(Orient_Vertical)
-							->SetSizeCoefficient(0.35f)
-							->Split
-							(
-								FTabManager::NewStack()
-								->SetSizeCoefficient(0.67f)
-								->AddTab(FTimingProfilerTabs::TimersID, ETabState::OpenedTab)
-								->AddTab(FTimingProfilerTabs::StatsCountersID, ETabState::OpenedTab)
-								->SetForegroundTab(FTimingProfilerTabs::TimersID)
-							)
-							->Split
-							(
-								FTabManager::NewStack()
-								->SetSizeCoefficient(0.165f)
-								->SetHideTabWell(true)
-								->AddTab(FTimingProfilerTabs::CallersID, ETabState::OpenedTab)
-							)
-							->Split
-							(
-								FTabManager::NewStack()
-								->SetSizeCoefficient(0.165f)
-								->SetHideTabWell(true)
-								->AddTab(FTimingProfilerTabs::CalleesID, ETabState::OpenedTab)
-							)
+							FTabManager::NewStack()
+							->SetSizeCoefficient(0.165f)
+							->SetHideTabWell(true)
+							->AddTab(FTimingProfilerTabs::CallersID, ETabState::OpenedTab)
+						)
+						->Split
+						(
+							FTabManager::NewStack()
+							->SetSizeCoefficient(0.165f)
+							->SetHideTabWell(true)
+							->AddTab(FTimingProfilerTabs::CalleesID, ETabState::OpenedTab)
 						)
 					)
 				);
 		}
 	}();
-	
+
 	Layout->ProcessExtensions(Extension->GetLayoutExtender());
 	Layout = FLayoutSaveRestore::LoadFromConfig(FTraceInsightsModule::GetUnrealInsightsLayoutIni(), Layout);
 
 	// Create & initialize main menu.
 	FMenuBarBuilder MenuBarBuilder = FMenuBarBuilder(TSharedPtr<FUICommandList>(), Extension->GetMenuExtender());
-
 	MenuBarBuilder.AddPullDownMenu(
 		LOCTEXT("MenuLabel", "Menu"),
 		FText::GetEmpty(),
@@ -550,65 +530,81 @@ void STimingProfilerWindow::Construct(const FArguments& InArgs, const TSharedRef
 		FName(TEXT("Menu"))
 	);
 
+	TSharedRef<SWidget> MenuWidget = MenuBarBuilder.MakeWidget();
+	MenuWidget->SetClipping(EWidgetClipping::ClipToBoundsWithoutIntersecting);
+
 	ChildSlot
+	[
+		SNew(SOverlay)
+
+#if !WITH_EDITOR
+		// Menu
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Top)
+		.Padding(34.0f, -60.0f, 0.0f, 0.0f)
 		[
-			SNew(SOverlay)
+			MenuWidget
+		]
+#endif
 
-			// Version
-			+ SOverlay::Slot()
-				.HAlign(HAlign_Right)
-				.VAlign(VAlign_Top)
-				.Padding(0.0f, -16.0f, 0.0f, 0.0f)
-				[
-					SNew(STextBlock)
-						.Clipping(EWidgetClipping::ClipToBoundsWithoutIntersecting)
-						.Text(LOCTEXT("UnrealInsightsVersion", UNREAL_INSIGHTS_VERSION_STRING_EX))
-						.ColorAndOpacity(FLinearColor(0.15f, 0.15f, 0.15f, 1.0f))
-				]
+		// Version
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Right)
+		.VAlign(VAlign_Top)
+		.Padding(0.0f, -16.0f, 4.0f, 0.0f)
+		[
+			SNew(STextBlock)
+			.Clipping(EWidgetClipping::ClipToBoundsWithoutIntersecting)
+			.Text(LOCTEXT("UnrealInsightsVersion", UNREAL_INSIGHTS_VERSION_STRING_EX))
+			.ColorAndOpacity(FLinearColor(0.15f, 0.15f, 0.15f, 1.0f))
+		]
 
-			// Overlay slot for the main window area
-			+ SOverlay::Slot()
-				.HAlign(HAlign_Fill)
-				.VAlign(VAlign_Fill)
-				[
-					SNew(SVerticalBox)
+		// Overlay slot for the main window area
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Fill)
+		.VAlign(VAlign_Fill)
+		[
+			SNew(SVerticalBox)
+			
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(FMargin(0.0f, 0.0f, 0.0f, 5.0f))
+			[
+				SNew(STimingProfilerToolbar).ToolbarExtender(Extension->GetMenuExtender())
+			]
 
-					+ SVerticalBox::Slot()
-						.AutoHeight()
-						[
-							MenuBarBuilder.MakeWidget()
-						]
+			+ SVerticalBox::Slot()
+			.FillHeight(1.0f)
+			[
+				TabManager->RestoreFrom(Layout, ConstructUnderWindow).ToSharedRef()
+			]
+		]
 
-					+ SVerticalBox::Slot()
-						.FillHeight(1.0f)
-						[
-							TabManager->RestoreFrom(Layout, ConstructUnderWindow).ToSharedRef()
-						]
-				]
+		// Session hint overlay
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		[
+			SNew(SBorder)
+			.Visibility(this, &STimingProfilerWindow::IsSessionOverlayVisible)
+			.BorderImage(FAppStyle::Get().GetBrush("PopupText.Background"))
+			.Padding(8.0f)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("SelectTraceOverlayText", "Please select a trace."))
+			]
+		]
+	];
 
-			// Session hint overlay
-			+ SOverlay::Slot()
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
-				[
-					SNew(SBorder)
-						.Visibility(this, &STimingProfilerWindow::IsSessionOverlayVisible)
-						.BorderImage(FEditorStyle::GetBrush("NotificationList.ItemBackground"))
-						.Padding(8.0f)
-						[
-							SNew(STextBlock)
-								.Text(LOCTEXT("SelectTraceOverlayText", "Please select a trace."))
-						]
-				]
-		];
-
+#if !WITH_EDITOR
 	// Tell tab-manager about the global menu bar.
-	TabManager->SetMenuMultiBox(MenuBarBuilder.GetMultiBox());
+	TabManager->SetMenuMultiBox(MenuBarBuilder.GetMultiBox(), MenuWidget);
+#endif
 
 	// Tell clients about creation
 	TraceInsightsModule.OnMajorTabCreated().Broadcast(FInsightsManagerTabs::TimingProfilerTabId, TabManager.ToSharedRef());
 }
-
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -713,51 +709,34 @@ FReply STimingProfilerWindow::OnKeyDown(const FGeometry& MyGeometry, const FKeyE
 
 FReply STimingProfilerWindow::OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
 {
-	TSharedPtr<FExternalDragOperation> DragDropOp = DragDropEvent.GetOperationAs<FExternalDragOperation>();
-	if (DragDropOp.IsValid())
+	if (FInsightsManager::Get()->OnDragOver(DragDropEvent))
 	{
-		if (DragDropOp->HasFiles())
-		{
-			const TArray<FString>& Files = DragDropOp->GetFiles();
-			if (Files.Num() == 1)
-			{
-				const FString DraggedFileExtension = FPaths::GetExtension(Files[0], true);
-				if (DraggedFileExtension == TEXT(".utrace"))
-				{
-					return FReply::Handled();
-				}
-			}
-		}
+		return FReply::Handled();
 	}
 
-	return SCompoundWidget::OnDragOver(MyGeometry,DragDropEvent);
+	return SCompoundWidget::OnDragOver(MyGeometry, DragDropEvent);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FReply STimingProfilerWindow::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
 {
-	TSharedPtr<FExternalDragOperation> DragDropOp = DragDropEvent.GetOperationAs<FExternalDragOperation>();
-	if (DragDropOp.IsValid())
+	if (FInsightsManager::Get()->OnDrop(DragDropEvent))
 	{
-		if (DragDropOp->HasFiles())
-		{
-			// For now, only allow a single file.
-			const TArray<FString>& Files = DragDropOp->GetFiles();
-			if (Files.Num() == 1)
-			{
-				const FString DraggedFileExtension = FPaths::GetExtension(Files[0], true);
-				if (DraggedFileExtension == TEXT(".utrace"))
-				{
-					// Enqueue load operation.
-					FInsightsManager::Get()->LoadTraceFile(Files[0]);
-					return FReply::Handled();
-				}
-			}
-		}
+		return FReply::Handled();
 	}
 
-	return SCompoundWidget::OnDrop(MyGeometry,DragDropEvent);
+	return SCompoundWidget::OnDrop(MyGeometry, DragDropEvent);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void STimingProfilerWindow::OnTimeSelectionChanged(Insights::ETimeChangedFlags InFlags, double InStartTime, double InEndTime)
+{
+	if (InFlags != Insights::ETimeChangedFlags::Interactive)
+	{
+		FTimingProfilerManager::Get()->SetSelectedTimeRange(InStartTime, InEndTime);
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

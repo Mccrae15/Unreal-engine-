@@ -3,7 +3,7 @@
 #pragma once
 
 #include "IOpenXRARTrackedGeometryHolder.h"
-#include "IOpenXRHMDPlugin.h"
+#include "IOpenXRHMDModule.h"
 #include "ARSystemSupportBase.h"
 #include "ARTraceResult.h"
 #include "ARPin.h"
@@ -204,6 +204,10 @@ public:
  * @param Collector The collector of referenced objects.
  */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector);
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FOpenXRARSystem");
+	}
 
 private:
 	FOpenXRHMD* TrackingSystem;

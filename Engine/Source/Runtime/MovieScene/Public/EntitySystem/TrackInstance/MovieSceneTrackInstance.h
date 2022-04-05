@@ -10,6 +10,18 @@
 class UMovieSceneSection;
 class UMovieSceneEntitySystemLinker;
 
+struct FMovieSceneTrackInstanceComponent;
+
+namespace UE
+{
+namespace MovieScene
+{
+
+struct FPreAnimatedTrackInstanceInputCaptureSources;
+
+}
+}
+
 USTRUCT()
 struct FMovieSceneTrackInstanceInput
 {
@@ -17,18 +29,28 @@ struct FMovieSceneTrackInstanceInput
 
 	/** The section that acts as an input for this animator */
 	UPROPERTY()
-	UMovieSceneSection* Section = nullptr;
+	TObjectPtr<UMovieSceneSection> Section = nullptr;
 
 	/** The instance that this input relates to */
 	UE::MovieScene::FInstanceHandle InstanceHandle;
 
+	/** Whether the input has been processed by being added to a track instance */
+	bool bInputHasBeenProcessed = false;
+
+	/** Check whether this input matches another, ignoring the bInputHasBeenProcessed flag */
+	bool IsSameInput(const FMovieSceneTrackInstanceInput& OtherInput) const
+	{
+		return Section == OtherInput.Section && InstanceHandle == OtherInput.InstanceHandle;
+	}
+
 	friend bool operator==(const FMovieSceneTrackInstanceInput& A, const FMovieSceneTrackInstanceInput& B)
 	{
-		return A.Section == B.Section && A.InstanceHandle == B.InstanceHandle;
+		return A.Section == B.Section && A.InstanceHandle == B.InstanceHandle && A.bInputHasBeenProcessed == B.bInputHasBeenProcessed;
 	}
 
 	friend bool operator<(const FMovieSceneTrackInstanceInput& A, const FMovieSceneTrackInstanceInput& B)
 	{
+		// bInputHasBeenProcessed is not considered for sorting
 		if (A.Section == B.Section)
 		{
 			return A.InstanceHandle < B.InstanceHandle;
@@ -48,7 +70,7 @@ struct FMovieSceneTrackInstanceInput
 	/** Serializer that ensures both the section and instance handle are copied over when an input is copied for a reinstanced animator */
 	bool Serialize(FArchive& Ar)
 	{
-		Ar << (UObject*&)Section << InstanceHandle.InstanceID << InstanceHandle.InstanceSerial;
+		Ar << (UObject*&)Section << InstanceHandle.InstanceID << InstanceHandle.InstanceSerial << bInputHasBeenProcessed;
 		return true;
 	}
 };
@@ -117,7 +139,7 @@ public:
 	 */
 	UMovieSceneEntitySystemLinker* GetLinker() const
 	{
-		return Linker;
+		return PrivateLinker;
 	}
 
 
@@ -157,13 +179,13 @@ private:
 private:
 
 	UPROPERTY()
-	UObject* AnimatedObject;
+	TObjectPtr<UObject> AnimatedObject;
 
 	UPROPERTY()
 	bool bIsMasterTrackInstance;
 
 	UPROPERTY()
-	UMovieSceneEntitySystemLinker* Linker;
+	TObjectPtr<UMovieSceneEntitySystemLinker> PrivateLinker;
 
 	UPROPERTY()
 	TArray<FMovieSceneTrackInstanceInput> Inputs;

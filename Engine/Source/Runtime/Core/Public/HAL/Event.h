@@ -6,6 +6,7 @@
 #include "Math/NumericLimits.h"
 #include "Misc/Timespan.h"
 #include "Templates/Atomic.h"
+#include "Templates/SharedPointer.h"
 
 /**
  * Interface for waitable events.
@@ -29,6 +30,7 @@ public:
 	 * @param bIsManualReset Whether the event requires manual reseting or not.
 	 * @return true if the event was created, false otherwise.
 	 */
+	UE_DEPRECATED(5.0, "Direct creation of FEvent is discouraged for performance reasons. Please use FPlatformProcess::GetSynchEventFromPool/ReturnSynchEventToPool.")
 	virtual bool Create( bool bIsManualReset = false ) = 0;
 
 	/**
@@ -125,7 +127,7 @@ protected:
 enum class EEventMode { AutoReset, ManualReset };
 
 /**
- * RAII-style `FEvent`
+ * RAII-style pooled `FEvent`
  *
  * non-copyable, non-movable
  */
@@ -146,6 +148,28 @@ public:
 		return Event;
 	}
 
+	FEvent* Get()
+	{
+		return Event;
+	}
+
 private:
 	FEvent* Event;
+};
+
+/**
+ * RAII-style shared and pooled `FEvent`
+ */
+class CORE_API FSharedEventRef final
+{
+public:
+	explicit FSharedEventRef(EEventMode Mode = EEventMode::AutoReset);
+
+	FEvent* operator->() const
+	{
+		return Ptr.Get();
+	}
+
+private:
+	TSharedPtr<FEvent> Ptr;
 };

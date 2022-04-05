@@ -48,7 +48,7 @@ struct TInputUnifiedDelegate
 
 	/** Binds a native delegate and unbinds any bound dynamic delegate */
 	template< class UserClass >
-	inline void BindDelegate(UserClass* Object, typename DelegateType::template TUObjectMethodDelegate< UserClass >::FMethodPtr Func)
+	inline void BindDelegate(UserClass* Object, typename DelegateType::template TMethodPtr< UserClass > Func)
 	{
 		FuncDynDelegate.Reset();;
 		FuncDelegate = MakeShared<DelegateType>(DelegateType::CreateUObject(Object, Func));
@@ -207,7 +207,7 @@ struct FInputActionUnifiedDelegate
 
 	/** Binds a native delegate and unbinds any bound dynamic delegate */
 	template< class UserClass >
-	inline void BindDelegate(UserClass* Object, typename FInputActionHandlerSignature::template TUObjectMethodDelegate< UserClass >::FMethodPtr Func)
+	inline void BindDelegate(UserClass* Object, typename FInputActionHandlerSignature::template TMethodPtr< UserClass > Func)
 	{
 		Unbind();
 		BoundDelegateType = EBoundDelegate::Delegate;
@@ -215,7 +215,7 @@ struct FInputActionUnifiedDelegate
 	}
 
 	template< class UserClass >
-	inline void BindDelegate(UserClass* Object, typename FInputActionHandlerWithKeySignature::template TUObjectMethodDelegate< UserClass >::FMethodPtr Func)
+	inline void BindDelegate(UserClass* Object, typename FInputActionHandlerWithKeySignature::template TMethodPtr< UserClass > Func)
 	{
 		Unbind();
 		BoundDelegateType = EBoundDelegate::DelegateWithKey;
@@ -223,7 +223,7 @@ struct FInputActionUnifiedDelegate
 	}
 
 	template< class DelegateType, class UserClass, typename... VarTypes >
-	inline void BindDelegate(UserClass* Object, typename DelegateType::template TUObjectMethodDelegate< UserClass >::FMethodPtr Func, VarTypes... Vars)
+	inline void BindDelegate(UserClass* Object, typename DelegateType::template TMethodPtr< UserClass > Func, VarTypes... Vars)
 	{
 		Unbind();
 		BoundDelegateType = EBoundDelegate::Delegate;
@@ -696,7 +696,7 @@ struct FCachedKeyToActionInfo
 
 	/** Which PlayerInput object this has been built for */
 	UPROPERTY()
-	UPlayerInput* PlayerInput;
+	TObjectPtr<UPlayerInput> PlayerInput;
 
 	/** What index of the player input's key mappings was the map built for. */
 	uint32 KeyMapBuiltForIndex;
@@ -753,6 +753,9 @@ private:
 
 	UPROPERTY(Transient, DuplicateTransient)
 	TArray<FCachedKeyToActionInfo> CachedKeyToActionInfo;
+
+	UFUNCTION()
+	void OnInputOwnerEndPlayed(AActor* InOwner, EEndPlayReason::Type EndPlayReason);
 
 public:
 	/** The priority of this input component when pushed in to the stack. */
@@ -864,7 +867,7 @@ public:
 	 * Returned reference is only guaranteed to be valid until another action is bound.
 	 */
 	template<class UserClass>
-	FInputActionBinding& BindAction( const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func )
+	FInputActionBinding& BindAction( const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TMethodPtr< UserClass > Func )
 	{
 		FInputActionBinding AB( ActionName, KeyEvent );
 		AB.ActionDelegate.BindDelegate(Object, Func);
@@ -876,7 +879,7 @@ public:
 	 * Returned reference is only guaranteed to be valid until another action is bound.
 	 */
 	template<class UserClass>
-	FInputActionBinding& BindAction( const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerWithKeySignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func )
+	FInputActionBinding& BindAction( const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerWithKeySignature::TMethodPtr< UserClass > Func )
 	{
 		FInputActionBinding AB( ActionName, KeyEvent );
 		AB.ActionDelegate.BindDelegate(Object, Func);
@@ -888,7 +891,7 @@ public:
 	* Returned reference is only guaranteed to be valid until another action is bound.
 	*/
 	template< class DelegateType, class UserClass, typename... VarTypes >
-	FInputActionBinding& BindAction( const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename DelegateType::template TUObjectMethodDelegate< UserClass >::FMethodPtr Func, VarTypes... Vars )
+	FInputActionBinding& BindAction( const FName ActionName, const EInputEvent KeyEvent, UserClass* Object, typename DelegateType::template TMethodPtr< UserClass > Func, VarTypes... Vars )
 	{
 		FInputActionBinding AB( ActionName, KeyEvent );
 		AB.ActionDelegate.BindDelegate<DelegateType>(Object, Func, Vars...);
@@ -900,7 +903,7 @@ public:
 	 * Returned reference is only guaranteed to be valid until another axis is bound.
 	 */
 	template<class UserClass>
-	FInputAxisBinding& BindAxis( const FName AxisName, UserClass* Object, typename FInputAxisHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func )
+	FInputAxisBinding& BindAxis( const FName AxisName, UserClass* Object, typename FInputAxisHandlerSignature::TMethodPtr< UserClass > Func )
 	{
 		FInputAxisBinding AB( AxisName );
 		AB.AxisDelegate.BindDelegate(Object, Func);
@@ -925,7 +928,7 @@ public:
 	 * Returned reference is only guaranteed to be valid until another axis key is bound.
 	 */
 	template<class UserClass>
-	FInputAxisKeyBinding& BindAxisKey( const FKey AxisKey, UserClass* Object, typename FInputAxisHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func )
+	FInputAxisKeyBinding& BindAxisKey( const FKey AxisKey, UserClass* Object, typename FInputAxisHandlerSignature::TMethodPtr< UserClass > Func )
 	{
 		FInputAxisKeyBinding AB(AxisKey);
 		AB.AxisDelegate.BindDelegate(Object, Func);
@@ -950,7 +953,7 @@ public:
 	 * Returned reference is only guaranteed to be valid until another vector axis key is bound.
 	 */
 	template<class UserClass>
-	FInputVectorAxisBinding& BindVectorAxis( const FKey AxisKey, UserClass* Object, typename FInputVectorAxisHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func )
+	FInputVectorAxisBinding& BindVectorAxis( const FKey AxisKey, UserClass* Object, typename FInputVectorAxisHandlerSignature::TMethodPtr< UserClass > Func )
 	{
 		FInputVectorAxisBinding AB(AxisKey);
 		AB.AxisDelegate.BindDelegate(Object, Func);
@@ -975,7 +978,7 @@ public:
 	 * Returned reference is only guaranteed to be valid until another input key is bound.
 	 */
 	template<class UserClass>
-	FInputKeyBinding& BindKey( const FInputChord Chord, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func )
+	FInputKeyBinding& BindKey( const FInputChord Chord, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TMethodPtr< UserClass > Func )
 	{
 		FInputKeyBinding KB(Chord, KeyEvent);
 		KB.KeyDelegate.BindDelegate(Object, Func);
@@ -988,7 +991,7 @@ public:
 	 * Returned reference is only guaranteed to be valid until another input key is bound.
 	 */
 	template<class UserClass>
-	FInputKeyBinding& BindKey( const FKey Key, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func )
+	FInputKeyBinding& BindKey( const FKey Key, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerSignature::TMethodPtr< UserClass > Func )
 	{
 		return BindKey(FInputChord(Key, false, false, false, false), KeyEvent, Object, Func);
 	}
@@ -998,7 +1001,7 @@ public:
 	 * Returned reference is only guaranteed to be valid until another input key is bound.
 	 */
 	template <class UserClass>
-	FInputKeyBinding& BindKey(const FKey Key, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerWithKeySignature::TUObjectMethodDelegate<UserClass>::FMethodPtr Func)
+	FInputKeyBinding& BindKey(const FKey Key, const EInputEvent KeyEvent, UserClass* Object, typename FInputActionHandlerWithKeySignature::TMethodPtr<UserClass> Func)
 	{
 		FInputKeyBinding KB(FInputChord(Key, false, false, false, false), KeyEvent);
 		KB.KeyDelegate.BindDelegate(Object, Func);
@@ -1011,7 +1014,7 @@ public:
 	 * Returned reference is only guaranteed to be valid until another touch event is bound.
 	 */
 	template<class UserClass>
-	FInputTouchBinding& BindTouch( const EInputEvent KeyEvent, UserClass* Object, typename FInputTouchHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func )
+	FInputTouchBinding& BindTouch( const EInputEvent KeyEvent, UserClass* Object, typename FInputTouchHandlerSignature::TMethodPtr< UserClass > Func )
 	{
 		FInputTouchBinding TB(KeyEvent);
 		TB.TouchDelegate.BindDelegate(Object, Func);
@@ -1024,7 +1027,7 @@ public:
 	 * Returned reference is only guaranteed to be valid until another gesture event is bound.
 	 */
 	template<class UserClass>
-	FInputGestureBinding& BindGesture( const FKey GestureKey, UserClass* Object, typename FInputGestureHandlerSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr Func )
+	FInputGestureBinding& BindGesture( const FKey GestureKey, UserClass* Object, typename FInputGestureHandlerSignature::TMethodPtr< UserClass > Func )
 	{
 		FInputGestureBinding GB(GestureKey);
 		GB.GestureDelegate.BindDelegate(Object, Func);

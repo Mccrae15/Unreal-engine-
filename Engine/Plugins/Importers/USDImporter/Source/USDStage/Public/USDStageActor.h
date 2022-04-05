@@ -44,9 +44,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "USD")
 	EUsdInitialLoadSet InitialLoadSet;
 
+	UPROPERTY( EditAnywhere, BlueprintReadOnly, Category = "USD" )
+	EUsdInterpolationType InterpolationType;
+
+	/**
+	 * Whether to try to combine individual assets and components of the same type on a kind-per-kind basis,
+	 * like multiple Mesh prims into a single Static Mesh
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "USD", meta = (Bitmask, BitmaskEnum=EUsdDefaultKind))
+	int32 KindsToCollapse;
+
 	/* Only load prims with these specific purposes from the USD file */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "USD", meta = (Bitmask, BitmaskEnum=EUsdPurpose))
 	int32 PurposesToLoad;
+
+	/** Try enabling Nanite for static meshes that are generated with at least this many triangles */
+	UPROPERTY( EditAnywhere, BlueprintReadOnly, Category = "USD", meta = ( NoSpinbox = "true", UIMin = "0", ClampMin = "0" ))
+	int32 NaniteTriangleThreshold;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "USD")
 	FName RenderContext;
@@ -58,8 +72,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "USD", meta = (CallInEditor = "true"))
 	USDSTAGE_API void SetInitialLoadSet( EUsdInitialLoadSet NewLoadSet );
 
+	UFUNCTION( BlueprintCallable, Category = "USD", meta = ( CallInEditor = "true" ) )
+	USDSTAGE_API void SetInterpolationType( EUsdInterpolationType NewType );
+
+	UFUNCTION( BlueprintCallable, Category = "USD", meta = ( CallInEditor = "true" ) )
+	USDSTAGE_API void SetKindsToCollapse( int32 NewKindsToCollapse );
+
 	UFUNCTION(BlueprintCallable, Category = "USD", meta = (CallInEditor = "true"))
 	USDSTAGE_API void SetPurposesToLoad( int32 NewPurposesToLoad );
+
+	UFUNCTION( BlueprintCallable, Category = "USD", meta = ( CallInEditor = "true" ) )
+	USDSTAGE_API void SetNaniteTriangleThreshold( int32 NewNaniteTriangleThreshold );
 
 	UFUNCTION(BlueprintCallable, Category = "USD", meta = (CallInEditor = "true"))
 	USDSTAGE_API void SetRenderContext( const FName& NewRenderContext );
@@ -69,6 +92,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "USD", meta = (CallInEditor = "true"))
 	USDSTAGE_API void SetTime(float InTime);
+
+	UFUNCTION( BlueprintCallable, Category = "USD", meta = ( CallInEditor = "true" ) )
+	USDSTAGE_API ULevelSequence* GetLevelSequence() { return LevelSequence; }
 
 	/**
 	 * Gets the transient component that was generated for a prim with a given prim path.
@@ -131,7 +157,6 @@ public:
 
 public:
 	AUsdStageActor();
-	virtual ~AUsdStageActor();
 
 	USDSTAGE_API void Reset() override;
 	void Refresh() const;
@@ -152,6 +177,8 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void Destroyed() override;
 	virtual void PostActorCreated() override;
+	virtual void PostRename( UObject* OldOuter, const FName OldName ) override;
+	virtual void BeginDestroy() override;
 
 	virtual void PostRegisterAllComponents() override;
 	virtual void PostUnregisterAllComponents() override;

@@ -5,6 +5,7 @@
 =============================================================================*/
 
 #include "Engine/InstancedStaticMesh.h"
+#include "InstancedStaticMeshDelegates.h"
 #include "AI/NavigationSystemBase.h"
 #include "Engine/MapBuildDataRegistry.h"
 #include "Components/LightComponent.h"
@@ -31,12 +32,16 @@
 #endif // WITH_EDITOR
 #include "MeshMaterialShader.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
+#include "NaniteSceneProxy.h"
+
+#include "Elements/Framework/EngineElementsLibrary.h"
+#include "Elements/SMInstance/SMInstanceElementData.h"
+#include "Elements/Interfaces/TypedElementWorldInterface.h"
 
 #if RHI_RAYTRACING
 #include "RayTracingInstance.h"
 #endif
 
-#include "Interfaces/ITargetPlatform.h"
 #if WITH_EDITOR
 #include "DeviceProfiles/DeviceProfile.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
@@ -52,9 +57,10 @@
 
 IMPLEMENT_TYPE_LAYOUT(FInstancedStaticMeshVertexFactoryShaderParameters);
 
+CSV_DEFINE_CATEGORY_MODULE(ENGINE_API, InstancedStaticMeshComponent, true);
 
 const int32 InstancedStaticMeshMaxTexCoord = 8;
-static const int32 MaxSimulatedInstances = 256;
+static const uint32 MaxSimulatedInstances = 256;
 
 IMPLEMENT_HIT_PROXY(HInstancedStaticMeshInstance, HHitProxy);
 
@@ -112,12 +118,60 @@ static TAutoConsoleVariable<int32> CVarRayTracingInstancesEvaluateWPO(
 	TEXT(" -1 - on only for meshes with evaluate WPO enabled")
 );
 
+static TAutoConsoleVariable<float> CVarRayTracingInstancesSimulationClusterRadius(
+	TEXT("r.RayTracing.Geometry.InstancedStaticMeshes.SimulationClusterRadius"),
+	500.0f, // 5 m
+	TEXT("Bucket instances based on distance to camera for simulating WPO (default = 500 (5m), disable if <= 0)"));
+
 static TAutoConsoleVariable<int32> CVarRayTracingSimulatedInstanceCount(
 	TEXT("r.RayTracing.Geometry.InstancedStaticMeshes.SimulationCount"),
 	1,
 	TEXT("Maximum number of instances to simulate per instanced static mesh, presently capped to 256")
 );
 
+class FISMExecHelper : public FSelfRegisteringExec
+{
+	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+	{
+		if (FParse::Command(&Cmd, TEXT("LIST ISM")))
+		{
+			// Flush commands because we will be touching the proxy.
+			FlushRenderingCommands();
+
+			Ar.Logf(TEXT("Name, Num Instances, Has Previous Transform, Num Custom Floats, Has Random, Has Custom Data, Has Dynamic Data, Has LMSMUVBias, Has LocalBounds, Has Instance Hiearchy Offset"));
+
+			for (TObjectIterator<UInstancedStaticMeshComponent> It; It; ++It)
+			{
+				UInstancedStaticMeshComponent* ISMComponent = *It;
+				if ((!ISMComponent->GetWorld() || !ISMComponent->GetWorld()->IsGameWorld()))
+				{
+					continue;
+				}
+
+				UStaticMesh* Mesh = ISMComponent->GetStaticMesh();
+				if (ISMComponent->SceneProxy)
+				{
+					Ar.Logf(TEXT("%s, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d"),
+						Mesh ? *Mesh->GetFullName() : TEXT(""),
+						ISMComponent->GetInstanceCount(),
+						ISMComponent->SceneProxy->GetInstanceSceneData().Num(),
+						ISMComponent->SceneProxy->GetInstanceCustomData().Num(),
+						ISMComponent->PerInstancePrevTransform.Num() > 0,
+						ISMComponent->NumCustomDataFloats,
+						ISMComponent->SceneProxy->HasPerInstanceRandom(),
+						ISMComponent->SceneProxy->HasPerInstanceCustomData(),
+						ISMComponent->SceneProxy->HasPerInstanceDynamicData(),
+						ISMComponent->SceneProxy->HasPerInstanceLMSMUVBias(),
+						ISMComponent->SceneProxy->HasPerInstanceLocalBounds(),
+						ISMComponent->SceneProxy->HasPerInstanceHierarchyOffset());
+				}
+			}
+			return true;
+		}
+		return false;
+	}
+};
+static FISMExecHelper GISMExecHelper;
 
 class FDummyFloatBuffer : public FVertexBufferWithSRV
 {
@@ -130,9 +184,9 @@ public:
 		const int32 NumFloats = 4;
 		VertexBufferRHI = RHICreateVertexBuffer(sizeof(float)*NumFloats, BUF_Static | BUF_ShaderResource, CreateInfo);
 
-		float* BufferData = (float*)RHILockVertexBuffer(VertexBufferRHI, 0, sizeof(float)*NumFloats, RLM_WriteOnly);
+		float* BufferData = (float*)RHILockBuffer(VertexBufferRHI, 0, sizeof(float)*NumFloats, RLM_WriteOnly);
 		FMemory::Memzero(BufferData, sizeof(float)*NumFloats);
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		RHIUnlockBuffer(VertexBufferRHI);
 
 		// Create a view of the buffer
 		ShaderResourceViewRHI = RHICreateShaderResourceView(VertexBufferRHI, sizeof(float), PF_R32_FLOAT);
@@ -141,14 +195,37 @@ public:
 
 TGlobalResource<FDummyFloatBuffer> GDummyFloatBuffer;
 
+FInstancedStaticMeshDelegates::FOnInstanceIndexUpdated FInstancedStaticMeshDelegates::OnInstanceIndexUpdated;
+
 /** InstancedStaticMeshInstance hit proxy */
 void HInstancedStaticMeshInstance::AddReferencedObjects(FReferenceCollector& Collector)
 {
 	Collector.AddReferencedObject(Component);
 }
 
+FTypedElementHandle HInstancedStaticMeshInstance::GetElementHandle() const
+{
+#if WITH_EDITOR
+	if (Component)
+	{
+		// Prefer per-instance selection if available
+		// This may fail to return a handle if the feature is disabled, or if per-instance editing is disabled for this component
+		if (FTypedElementHandle ElementHandle = UEngineElementsLibrary::AcquireEditorSMInstanceElementHandle(Component, InstanceIndex))
+		{
+			return ElementHandle;
+		}
+
+		// If per-instance selection isn't possible, fallback to general per-component selection (which may choose to select the owner actor instead)
+		return UEngineElementsLibrary::AcquireEditorComponentElementHandle(Component);
+	}
+#endif	// WITH_EDITOR
+	return FTypedElementHandle();
+}
+
 FInstanceUpdateCmdBuffer::FInstanceUpdateCmdBuffer()
-	: NumAdds(0)
+	: NumAdds(0),
+	  NumUpdates(0),
+	  NumRemoves(0)
 	, NumEdits(0)
 {
 }
@@ -161,6 +238,7 @@ void FInstanceUpdateCmdBuffer::HideInstance(int32 RenderIndex)
 	Cmd.InstanceIndex = RenderIndex;
 	Cmd.Type = FInstanceUpdateCmdBuffer::Hide;
 
+	NumRemoves++;
 	Edit();
 }
 
@@ -175,6 +253,20 @@ void FInstanceUpdateCmdBuffer::AddInstance(const FMatrix& InTransform)
 	Edit();
 }
 
+void FInstanceUpdateCmdBuffer::AddInstance(int32 InstanceId, const FMatrix& InTransform, const FMatrix& InPreviousTransform, TConstArrayView<float> InCustomDataFloats)
+{
+	FInstanceUpdateCommand& Cmd = Cmds.AddDefaulted_GetRef();
+	Cmd.InstanceIndex = INDEX_NONE;
+	Cmd.InstanceId = InstanceId;
+	Cmd.Type = FInstanceUpdateCmdBuffer::Add;
+	Cmd.XForm = InTransform;
+	Cmd.PreviousXForm = InPreviousTransform;
+	Cmd.CustomDataFloats = InCustomDataFloats;
+
+	NumAdds++;
+	Edit();
+}
+
 void FInstanceUpdateCmdBuffer::UpdateInstance(int32 RenderIndex, const FMatrix& InTransform)
 {
 	FInstanceUpdateCommand& Cmd = Cmds.AddDefaulted_GetRef();
@@ -182,6 +274,19 @@ void FInstanceUpdateCmdBuffer::UpdateInstance(int32 RenderIndex, const FMatrix& 
 	Cmd.Type = FInstanceUpdateCmdBuffer::Update;
 	Cmd.XForm = InTransform;
 
+	NumUpdates++;
+	Edit();
+}
+
+void FInstanceUpdateCmdBuffer::UpdateInstance(int32 RenderIndex, const FMatrix& InTransform, const FMatrix& InPreviousTransform)
+{
+	FInstanceUpdateCommand& Cmd = Cmds.AddDefaulted_GetRef();
+	Cmd.InstanceIndex = RenderIndex;
+	Cmd.Type = FInstanceUpdateCmdBuffer::Update;
+	Cmd.XForm = InTransform;
+	Cmd.PreviousXForm = FMatrix(InPreviousTransform);
+
+	NumUpdates++;
 	Edit();
 }
 
@@ -248,7 +353,7 @@ void FInstanceUpdateCmdBuffer::SetShadowMapData(int32 RenderIndex, const FVector
 	Edit();
 }
 
-void FInstanceUpdateCmdBuffer::SetCustomData(int32 RenderIndex, const TArray<float>& CustomDataFloats)
+void FInstanceUpdateCmdBuffer::SetCustomData(int32 RenderIndex, TConstArrayView<float> CustomDataFloats)
 {
 	bool CommandExist = false;
 
@@ -271,13 +376,18 @@ void FInstanceUpdateCmdBuffer::SetCustomData(int32 RenderIndex, const TArray<flo
 		Cmd.CustomDataFloats = CustomDataFloats;
 	}
 
+	NumCustomFloatUpdates++;
 	Edit();
 }
 
 void FInstanceUpdateCmdBuffer::ResetInlineCommands()
 {
 	Cmds.Empty();
+	NumCustomDataFloats = 0;
 	NumAdds = 0;
+	NumUpdates = 0;
+	NumCustomFloatUpdates = 0;
+	NumRemoves = 0;
 }
 
 void FInstanceUpdateCmdBuffer::Edit()
@@ -288,13 +398,19 @@ void FInstanceUpdateCmdBuffer::Edit()
 void FInstanceUpdateCmdBuffer::Reset()
 {
 	Cmds.Empty();
+	NumCustomDataFloats = 0;
 	NumAdds = 0;
+	NumUpdates = 0;
+	NumCustomFloatUpdates = 0;
+	NumRemoves = 0;
 	NumEdits = 0;
 }
 
-FStaticMeshInstanceBuffer::FStaticMeshInstanceBuffer(ERHIFeatureLevel::Type InFeatureLevel, bool InRequireCPUAccess)
+FStaticMeshInstanceBuffer::FStaticMeshInstanceBuffer(ERHIFeatureLevel::Type InFeatureLevel, bool InRequireCPUAccess, bool bDeferGPUUploadIn)
 	: FRenderResource(InFeatureLevel)
 	, RequireCPUAccess(InRequireCPUAccess)
+	, bDeferGPUUpload(bDeferGPUUploadIn)
+	, bFlushToGPUPending(false)
 {
 }
 
@@ -351,7 +467,7 @@ void FStaticMeshInstanceBuffer::UpdateFromCommandBuffer_RenderThread(FInstanceUp
 		AddIndex = InstanceData->GetNumInstances();
 		int32 NewNumInstances = NumAdds + InstanceData->GetNumInstances();
 
-		InstanceData->AllocateInstances(NewNumInstances, InstanceData->GetNumCustomDataFloats(), GIsEditor ? EResizeBufferFlags::AllowSlackOnGrow | EResizeBufferFlags::AllowSlackOnReduce : EResizeBufferFlags::None, false); // In Editor always permit overallocation, to prevent too much realloc
+		InstanceData->AllocateInstances(NewNumInstances, CmdBuffer.NumCustomDataFloats, GIsEditor ? EResizeBufferFlags::AllowSlackOnGrow | EResizeBufferFlags::AllowSlackOnReduce : EResizeBufferFlags::None, false); // In Editor always permit overallocation, to prevent too much realloc
 	}
 
 	for (int32 i = 0; i < NumCommands; ++i)
@@ -367,13 +483,13 @@ void FStaticMeshInstanceBuffer::UpdateFromCommandBuffer_RenderThread(FInstanceUp
 		switch (Cmd.Type)
 		{
 		case FInstanceUpdateCmdBuffer::Add:
-			InstanceData->SetInstance(InstanceIndex, Cmd.XForm, 0);
+			InstanceData->SetInstance(InstanceIndex, FMatrix44f(Cmd.XForm), 0);		// LWC_TODO: precision loss?
 			break;
 		case FInstanceUpdateCmdBuffer::Hide:
 			InstanceData->NullifyInstance(InstanceIndex);
 			break;
 		case FInstanceUpdateCmdBuffer::Update:
-			InstanceData->SetInstance(InstanceIndex, Cmd.XForm, 0);
+			InstanceData->SetInstance(InstanceIndex, FMatrix44f(Cmd.XForm), 0);		// LWC_TODO: precision loss?
 			break;
 		case FInstanceUpdateCmdBuffer::EditorData:
 			InstanceData->SetInstanceEditorData(InstanceIndex, Cmd.HitProxyColor, Cmd.bSelected);
@@ -392,7 +508,10 @@ void FStaticMeshInstanceBuffer::UpdateFromCommandBuffer_RenderThread(FInstanceUp
 		}
 	}
 
-	UpdateRHI();
+	if (!CondSetFlushToGPUPending())
+	{
+		UpdateRHI();
+	}
 }
 
 /**
@@ -405,6 +524,8 @@ void FStaticMeshInstanceBuffer::operator=(const FStaticMeshInstanceBuffer &Other
 
 void FStaticMeshInstanceBuffer::InitRHI()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_STR("FStaticMeshInstanceBuffer::InitRHI");
+
 	check(InstanceData);
 	if (InstanceData->GetNumInstances() > 0)
 	{
@@ -472,13 +593,13 @@ SIZE_T FStaticMeshInstanceBuffer::GetResourceSize() const
 	return 0;
 }
 
-void FStaticMeshInstanceBuffer::CreateVertexBuffer(FResourceArrayInterface* InResourceArray, uint32 InUsage, uint32 InStride, uint8 InFormat, FVertexBufferRHIRef& OutVertexBufferRHI, FShaderResourceViewRHIRef& OutInstanceSRV)
+void FStaticMeshInstanceBuffer::CreateVertexBuffer(FResourceArrayInterface* InResourceArray, EBufferUsageFlags InUsage, uint32 InStride, uint8 InFormat, FBufferRHIRef& OutVertexBufferRHI, FShaderResourceViewRHIRef& OutInstanceSRV)
 {
 	check(InResourceArray);
 	check(InResourceArray->GetResourceDataSize() > 0);
 
 	// TODO: possibility over allocated the vertex buffer when we support partial update for when working in the editor
-	FRHIResourceCreateInfo CreateInfo(InResourceArray);
+	FRHIResourceCreateInfo CreateInfo(TEXT("FStaticMeshInstanceBuffer"), InResourceArray);
 	OutVertexBufferRHI = RHICreateVertexBuffer(InResourceArray->GetResourceDataSize(), InUsage, CreateInfo);
 	
 	if (RHISupportsManualVertexFetch(GMaxRHIShaderPlatform))
@@ -549,6 +670,24 @@ void FStaticMeshInstanceBuffer::BindInstanceVertexBuffer(const class FVertexFact
 			VET_Short4N,
 			EVertexStreamUsage::ManualFetch | EVertexStreamUsage::Instancing
 		);
+	}
+}
+
+void FStaticMeshInstanceBuffer::FlushGPUUpload()
+{
+	if (bFlushToGPUPending)
+	{
+		check(bDeferGPUUpload);
+
+		if (!IsInitialized())
+		{
+			InitResource();
+		}
+		else
+		{
+			UpdateRHI();
+		}
+		bFlushToGPUPending = false;
 	}
 }
 
@@ -648,7 +787,16 @@ void FInstancedStaticMeshVertexFactory::ModifyCompilationEnvironment(const FVert
 		OutEnvironment.SetDefine(TEXT("MANUAL_VERTEX_FETCH"), TEXT("1"));
 	}
 
-	OutEnvironment.SetDefine(TEXT("USE_INSTANCING"), TEXT("1"));
+	if (UseGPUScene(Parameters.Platform))
+	{
+		// USE_INSTANCE_CULLING - set up additional instancing attributes (basic instancing is the default)
+		OutEnvironment.SetDefine(TEXT("USE_INSTANCE_CULLING"), TEXT("1"));
+	}
+	else
+	{
+		OutEnvironment.SetDefine(TEXT("USE_INSTANCING"), TEXT("1"));
+	}
+
 	if (IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5))
 	{
 		OutEnvironment.SetDefine(TEXT("USE_DITHERED_LOD_TRANSITION_FOR_INSTANCED"), ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES);
@@ -681,6 +829,8 @@ void FInstancedStaticMeshVertexFactory::Copy(const FInstancedStaticMeshVertexFac
 
 void FInstancedStaticMeshVertexFactory::InitRHI()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE_STR("FInstancedStaticMeshVertexFactory::InitRHI");
+
 	SCOPED_LOADTIMER(FInstancedStaticMeshVertexFactory_InitRHI);
 
 	check(HasValidFeatureLevel());
@@ -688,32 +838,28 @@ void FInstancedStaticMeshVertexFactory::InitRHI()
 #if !ALLOW_DITHERED_LOD_FOR_INSTANCED_STATIC_MESHES // position(and normal) only shaders cannot work with dithered LOD
 	// If the vertex buffer containing position is not the same vertex buffer containing the rest of the data,
 	// then initialize PositionStream and PositionDeclaration.
-	if(Data.PositionComponent.VertexBuffer != Data.TangentBasisComponents[0].VertexBuffer)
+	if (Data.PositionComponent.VertexBuffer != Data.TangentBasisComponents[0].VertexBuffer)
 	{
-		auto AddDeclaration = [&Data](EVertexInputStreamType InputStreamType, bool bInstanced, bool bAddNormal)
+		auto AddDeclaration = [&](EVertexInputStreamType InputStreamType)
 		{
 			FVertexDeclarationElementList StreamElements;
-			StreamElements.Add(AccessPositionStreamComponent(Data.PositionComponent, 0));
+			StreamElements.Add(AccessStreamComponent(Data.PositionComponent, 0, InputStreamType));
 
-			bAddNormal = bAddNormal && Data.TangentBasisComponents[1].VertexBuffer != NULL;
-			if (bAddNormal)
+			if (InputStreamType == EVertexInputStreamType::PositionAndNormalOnly && Data.TangentBasisComponents[1].VertexBuffer != NULL)
 			{
 				StreamElements.Add(AccessStreamComponent(Data.TangentBasisComponents[1], 2, InputStreamType));
 			}
 
-			if (bInstanced)
-			{
-				// toss in the instanced location stream
-				StreamElements.Add(AccessPositionStreamComponent(Data.InstanceOriginComponent, 8));
-				StreamElements.Add(AccessPositionStreamComponent(Data.InstanceTransformComponent[0], 9));
-				StreamElements.Add(AccessPositionStreamComponent(Data.InstanceTransformComponent[1], 10));
-				StreamElements.Add(AccessPositionStreamComponent(Data.InstanceTransformComponent[2], 11));
-			}
+			// Add the instanced location streams
+			StreamElements.Add(AccessStreamComponent(Data.InstanceOriginComponent, 8, InputStreamType));
+			StreamElements.Add(AccessStreamComponent(Data.InstanceTransformComponent[0], 9, InputStreamType));
+			StreamElements.Add(AccessStreamComponent(Data.InstanceTransformComponent[1], 10, InputStreamType));
+			StreamElements.Add(AccessStreamComponent(Data.InstanceTransformComponent[2], 11, InputStreamType));
 
 			InitDeclaration(StreamElements, InputStreamType);
 		};
-		AddDeclaration(EVertexInputStreamType::PositionOnly, bInstanced, false);
-		AddDeclaration(EVertexInputStreamType::PositionAndNormalOnly, bInstanced, true);
+		AddDeclaration(EVertexInputStreamType::PositionOnly);
+		AddDeclaration(EVertexInputStreamType::PositionAndNormalOnly);
 	}
 #endif
 
@@ -722,6 +868,8 @@ void FInstancedStaticMeshVertexFactory::InitRHI()
 	{
 		Elements.Add(AccessStreamComponent(Data.PositionComponent,0));
 	}
+
+	const bool bCanUseGPUScene = UseGPUScene(GMaxRHIShaderPlatform, GMaxRHIFeatureLevel);
 
 	// only tangent,normal are used by the stream. the binormal is derived in the shader
 	uint8 TangentBasisAttributes[2] = { 1, 2 };
@@ -770,6 +918,40 @@ void FInstancedStaticMeshVertexFactory::InitRHI()
 				));
 		}
 	}
+	
+	// on mobile with GPUScene enabled instanced attributes[8-12] are used for a general auto-instancing
+	// so we add them only for desktop or if mobile has GPUScene disabled
+	// FIXME mobile: instanced attributes encode some editor related data as well (selection etc), need to split it into separate SRV as it's not supported with auto-instancing
+	uint8 AutoInstancingAttr_Mobile = 8;
+	const bool bMobileUsesGPUScene = MobileSupportsGPUScene();
+	
+	if (GetFeatureLevel() > ERHIFeatureLevel::ES3_1 || !bMobileUsesGPUScene)
+	{
+		// toss in the instanced location stream
+		check(bCanUseGPUScene || Data.InstanceOriginComponent.VertexBuffer);
+		if (Data.InstanceOriginComponent.VertexBuffer)
+		{
+			Elements.Add(AccessStreamComponent(Data.InstanceOriginComponent, 8));
+		}
+
+		check(bCanUseGPUScene || Data.InstanceTransformComponent[0].VertexBuffer);
+		if (Data.InstanceTransformComponent[0].VertexBuffer)
+		{
+			Elements.Add(AccessStreamComponent(Data.InstanceTransformComponent[0], 9));
+			Elements.Add(AccessStreamComponent(Data.InstanceTransformComponent[1], 10));
+			Elements.Add(AccessStreamComponent(Data.InstanceTransformComponent[2], 11));
+		}
+
+		if (Data.InstanceLightmapAndShadowMapUVBiasComponent.VertexBuffer)
+		{
+			Elements.Add(AccessStreamComponent(Data.InstanceLightmapAndShadowMapUVBiasComponent,12));
+		}
+
+		// Do not add general auto-instancing attributes for mobile
+		AutoInstancingAttr_Mobile = 0xff;
+	}
+	
+	AddPrimitiveIdStreamElement(EVertexInputStreamType::Default, Elements, 13, AutoInstancingAttr_Mobile);
 
 	if(Data.LightMapCoordinateComponent.VertexBuffer)
 	{
@@ -779,30 +961,11 @@ void FInstancedStaticMeshVertexFactory::InitRHI()
 	{
 		Elements.Add(AccessStreamComponent(Data.TextureCoordinates[0],15));
 	}
-
-	// toss in the instanced location stream
-	check(Data.InstanceOriginComponent.VertexBuffer);
-	if (Data.InstanceOriginComponent.VertexBuffer)
-	{
-		Elements.Add(AccessStreamComponent(Data.InstanceOriginComponent, 8));
-	}
-
-	check(Data.InstanceTransformComponent[0].VertexBuffer);
-	if (Data.InstanceTransformComponent[0].VertexBuffer)
-	{
-		Elements.Add(AccessStreamComponent(Data.InstanceTransformComponent[0], 9));
-		Elements.Add(AccessStreamComponent(Data.InstanceTransformComponent[1], 10));
-		Elements.Add(AccessStreamComponent(Data.InstanceTransformComponent[2], 11));
-	}
-
-	if (Data.InstanceLightmapAndShadowMapUVBiasComponent.VertexBuffer)
-	{
-		Elements.Add(AccessStreamComponent(Data.InstanceLightmapAndShadowMapUVBiasComponent,12));
-	}
-
+		
 	// we don't need per-vertex shadow or lightmap rendering
 	InitDeclaration(Elements);
 
+	if (!bCanUseGPUScene)
 	{
 		FInstancedStaticMeshVertexFactoryUniformShaderParameters UniformParameters;
 		UniformParameters.VertexFetch_InstanceOriginBuffer = GetInstanceOriginSRV();
@@ -819,7 +982,66 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FInstancedStaticMeshVertexFactory, SF_Ve
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FInstancedStaticMeshVertexFactory, SF_RayHitGroup, FInstancedStaticMeshVertexFactoryShaderParameters);
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FInstancedStaticMeshVertexFactory, SF_Compute, FInstancedStaticMeshVertexFactoryShaderParameters);
 #endif
-IMPLEMENT_VERTEX_FACTORY_TYPE_EX(FInstancedStaticMeshVertexFactory,"/Engine/Private/LocalVertexFactory.ush",true,true,true,true,true,true,false);
+
+IMPLEMENT_VERTEX_FACTORY_TYPE(FInstancedStaticMeshVertexFactory,"/Engine/Private/LocalVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsStaticLighting
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsPrecisePrevWorldPos
+	| EVertexFactoryFlags::SupportsPositionOnly
+	| EVertexFactoryFlags::SupportsCachingMeshDrawCommands
+	| EVertexFactoryFlags::SupportsRayTracing
+	| EVertexFactoryFlags::SupportsRayTracingDynamicGeometry
+	| EVertexFactoryFlags::SupportsPrimitiveIdStream
+);
+
+void FInstancedStaticMeshRenderData::BindBuffersToVertexFactories()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE_STR("FInstancedStaticMeshRenderData::BindBuffersToVertexFactories");
+
+	check(IsInRenderingThread());
+
+	const bool bCanUseGPUScene = UseGPUScene(GMaxRHIShaderPlatform, FeatureLevel);
+	if (!bCanUseGPUScene)
+	{
+		PerInstanceRenderData->InstanceBuffer.FlushGPUUpload();
+	}
+
+	for (int32 LODIndex = 0; LODIndex < VertexFactories.Num(); LODIndex++)
+	{
+		const FStaticMeshLODResources* RenderData = &LODModels[LODIndex];
+
+		FInstancedStaticMeshVertexFactory::FDataType Data;
+		// Assign to the vertex factory for this LOD.
+		FInstancedStaticMeshVertexFactory& VertexFactory = VertexFactories[LODIndex];
+
+		RenderData->VertexBuffers.PositionVertexBuffer.BindPositionVertexBuffer(&VertexFactory, Data);
+		RenderData->VertexBuffers.StaticMeshVertexBuffer.BindTangentVertexBuffer(&VertexFactory, Data);
+		RenderData->VertexBuffers.StaticMeshVertexBuffer.BindPackedTexCoordVertexBuffer(&VertexFactory, Data);
+		if (LightMapCoordinateIndex < (int32)RenderData->VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords() && LightMapCoordinateIndex >= 0)
+		{
+			RenderData->VertexBuffers.StaticMeshVertexBuffer.BindLightMapVertexBuffer(&VertexFactory, Data, LightMapCoordinateIndex);
+		}
+
+		if (RenderData->bHasColorVertexData)
+		{
+			RenderData->VertexBuffers.ColorVertexBuffer.BindColorVertexBuffer(&VertexFactory, Data);
+		}
+		else
+		{
+			FColorVertexBuffer::BindDefaultColorVertexBuffer(&VertexFactory, Data, FColorVertexBuffer::NullBindStride::FColorSizeForComponentOverride);
+		}
+
+		check(PerInstanceRenderData);
+		if (!bCanUseGPUScene)
+		{
+			PerInstanceRenderData->InstanceBuffer.BindInstanceVertexBuffer(&VertexFactory, Data);
+		}
+
+		VertexFactory.SetData(Data);
+		VertexFactory.InitResource();
+	}
+}
 
 void FInstancedStaticMeshRenderData::InitVertexFactories()
 {
@@ -829,59 +1051,27 @@ void FInstancedStaticMeshRenderData::InitVertexFactories()
 		VertexFactories.Add(new FInstancedStaticMeshVertexFactory(FeatureLevel));
 	}
 
-	const int32 LightMapCoordinateIndex = Component->GetStaticMesh()->GetLightMapCoordinateIndex();
 	ENQUEUE_RENDER_COMMAND(InstancedStaticMeshRenderData_InitVertexFactories)(
-		[this, LightMapCoordinateIndex](FRHICommandListImmediate& RHICmdList)
-	{
-		for (int32 LODIndex = 0; LODIndex < VertexFactories.Num(); LODIndex++)
+		[this](FRHICommandListImmediate& RHICmdList)
 		{
-			const FStaticMeshLODResources* RenderData = &LODModels[LODIndex];
-
-			FInstancedStaticMeshVertexFactory::FDataType Data;
-			// Assign to the vertex factory for this LOD.
-			FInstancedStaticMeshVertexFactory& VertexFactory = VertexFactories[LODIndex];
-
-			RenderData->VertexBuffers.PositionVertexBuffer.BindPositionVertexBuffer(&VertexFactory, Data);
-			RenderData->VertexBuffers.StaticMeshVertexBuffer.BindTangentVertexBuffer(&VertexFactory, Data);
-			RenderData->VertexBuffers.StaticMeshVertexBuffer.BindPackedTexCoordVertexBuffer(&VertexFactory, Data);
-			if (LightMapCoordinateIndex < (int32)RenderData->VertexBuffers.StaticMeshVertexBuffer.GetNumTexCoords() && LightMapCoordinateIndex >= 0)
-			{
-				RenderData->VertexBuffers.StaticMeshVertexBuffer.BindLightMapVertexBuffer(&VertexFactory, Data, LightMapCoordinateIndex);
-			}
-			RenderData->VertexBuffers.ColorVertexBuffer.BindColorVertexBuffer(&VertexFactory, Data);
-
-			check(PerInstanceRenderData);
-			PerInstanceRenderData->InstanceBuffer.BindInstanceVertexBuffer(&VertexFactory, Data);
-
-			VertexFactory.SetData(Data);
-			VertexFactory.InitResource();
-		}
-	});
+			BindBuffersToVertexFactories();
+		});
 }
 
-FPerInstanceRenderData::FPerInstanceRenderData(FStaticMeshInstanceData& Other, ERHIFeatureLevel::Type InFeaureLevel, bool InRequireCPUAccess)
-	: ResourceSize(InRequireCPUAccess ? Other.GetResourceSize() : 0)
-	, InstanceBuffer(InFeaureLevel, InRequireCPUAccess)
-	, bTrackBounds(false)
-	, bBoundsTransformsDirty(true)
-{
-	InstanceBuffer.InitFromPreallocatedData(Other);
-	InstanceBuffer_GameThread = InstanceBuffer.InstanceData;
 
-	BeginInitResource(&InstanceBuffer);
-}
-
-FPerInstanceRenderData::FPerInstanceRenderData(FStaticMeshInstanceData& Other, ERHIFeatureLevel::Type InFeaureLevel, bool InRequireCPUAccess, FBox InBounds, bool bTrack)
+FPerInstanceRenderData::FPerInstanceRenderData(FStaticMeshInstanceData& Other, ERHIFeatureLevel::Type InFeaureLevel, bool InRequireCPUAccess, FBox InBounds, bool bTrack, bool bDeferGPUUploadIn)
 	: ResourceSize(InRequireCPUAccess ? Other.GetResourceSize() : 0)
-	, InstanceBuffer(InFeaureLevel, InRequireCPUAccess)
+	, InstanceBuffer(InFeaureLevel, InRequireCPUAccess, bDeferGPUUploadIn)
 	, InstanceLocalBounds(InBounds)
 	, bTrackBounds(bTrack)
 	, bBoundsTransformsDirty(true)
 {
 	InstanceBuffer.InitFromPreallocatedData(Other);
 	InstanceBuffer_GameThread = InstanceBuffer.InstanceData;
-
-	BeginInitResource(&InstanceBuffer);
+	if (!InstanceBuffer.CondSetFlushToGPUPending())
+	{
+		BeginInitResource(&InstanceBuffer);
+	}
 	UpdateBoundsTransforms_Concurrent();
 }
 
@@ -913,7 +1103,10 @@ void FPerInstanceRenderData::UpdateFromPreallocatedData(FStaticMeshInstanceData&
 			// If UpdateBoundsTask is in-flight it will crash
 			EnsureInstanceDataUpdated();
 			InInstanceBuffer->InstanceData = InInstanceBufferDataPtr;
-			InInstanceBuffer->UpdateRHI();
+			if (!InInstanceBuffer->CondSetFlushToGPUPending())
+			{
+				InInstanceBuffer->UpdateRHI();
+			}
 			UpdateBoundsTransforms_Concurrent();
 		}
 	);
@@ -933,70 +1126,70 @@ void FPerInstanceRenderData::UpdateBoundsTransforms_Concurrent()
 				return;
 			}
 
-#if 1
-			UpdateBoundsTransforms();
-#else
-		FGraphEventArray Prerequisites{};
-		if (UpdateBoundsTask.IsValid())
-		{
-			// There's already a task either in flight or unconsumed, but the instance data has now changed so its result might be incorrect.
-			// This new task should run after the first one completes, so make the old one a prerequisite of the new one.
-			Prerequisites = FGraphEventArray{ UpdateBoundsTask };
-			UE_LOG(LogStaticMesh, Warning, TEXT("Unconsumed ISM bounds/transforms update task, we did more work than necessary"));
-		}
+			FGraphEventArray Prerequisites{};
+			if (UpdateBoundsTask.IsValid())
+			{
+				// There's already a task either in flight or unconsumed, but the instance data has now changed so its result might be incorrect.
+				// This new task should run after the first one completes, so make the old one a prerequisite of the new one.
+				Prerequisites = FGraphEventArray{ UpdateBoundsTask };
+				UE_LOG(LogStaticMesh, Warning, TEXT("Unconsumed ISM bounds/transforms update task, we did more work than necessary"));
+			}
 
-		UpdateBoundsTask = FFunctionGraphTask::CreateAndDispatchWhenReady(
-		[this]()
-		{
+			UpdateBoundsTask = FFunctionGraphTask::CreateAndDispatchWhenReady(
+			[this]()
+			{
 				UpdateBoundsTransforms();
-		},
-		TStatId(),
-		&Prerequisites
+			},
+			TStatId(),
+			&Prerequisites
 			);
-#endif
-
 		}
 	);
 }
 
 void FPerInstanceRenderData::UpdateBoundsTransforms()
 {
-	const int32 InstanceCount = InstanceBuffer.GetNumInstances();
-	FBoxSphereBounds LocalBounds;
+	const uint32 InstanceCount = InstanceBuffer.GetNumInstances();
+	PerInstanceTransforms.Empty(InstanceCount);
+
 	if (bTrackBounds)
 	{
-		LocalBounds = FBoxSphereBounds(InstanceLocalBounds);
-		PerInstanceBounds.Empty();
-		PerInstanceBounds.Reserve(InstanceCount);
+		FBoxSphereBounds LocalBounds = FBoxSphereBounds(InstanceLocalBounds);
+		PerInstanceBounds.Empty(InstanceCount);
+
+		for (uint32 InstanceIndex = 0; InstanceIndex < InstanceCount; ++InstanceIndex)
+		{
+			if (!InstanceBuffer.GetInstanceData() || !InstanceBuffer.GetInstanceData()->IsValidIndex(InstanceIndex))
+		    {
+			    continue;
+		    }
+
+			FRenderTransform InstTransform;
+			InstanceBuffer.GetInstanceTransform(InstanceIndex, InstTransform);
+			PerInstanceTransforms.Add(InstTransform);
+
+			FBoxSphereBounds TransformedBounds = LocalBounds.TransformBy(InstTransform.ToMatrix());
+			PerInstanceBounds.Add(FVector4f((FVector3f)TransformedBounds.Origin, TransformedBounds.SphereRadius)); // LWC_TODO: Precision loss
+		}
 	}
-	PerInstanceTransforms.Empty();
-	PerInstanceTransforms.Reserve(InstanceCount);
-
-	for (int InstanceIndex = 0; InstanceIndex < InstanceCount; InstanceIndex++)
+	else
 	{
-		FStaticMeshInstanceData* InstancedData = InstanceBuffer.GetInstanceData();
-		
-		if( !InstancedData || !InstancedData->IsValidIndex(InstanceIndex) || !InstancedData->GetTransformResourceArray())
+		for (uint32 InstanceIndex = 0; InstanceIndex < InstanceCount; ++InstanceIndex)
 		{
-			continue;
+			if (!InstanceBuffer.GetInstanceData() || !InstanceBuffer.GetInstanceData()->IsValidIndex(InstanceIndex))
+		    {
+			    continue;
+		    }
+
+			FRenderTransform InstTransform;
+			InstanceBuffer.GetInstanceTransform(InstanceIndex, InstTransform);
+			PerInstanceTransforms.Add(InstTransform);
 		}
-
-		FMatrix InstTransform;
-
-		InstanceBuffer.GetInstanceTransform(InstanceIndex, InstTransform);
-		InstTransform.M[3][3] = 1.0f;
-
-		if (bTrackBounds)
-		{
-			FBoxSphereBounds TransformedBounds = LocalBounds.TransformBy(InstTransform);
-			PerInstanceBounds.Add(FVector4(TransformedBounds.Origin, TransformedBounds.SphereRadius));
-		}
-		PerInstanceTransforms.Add(InstTransform);
 	}
 }
 
 
-void FPerInstanceRenderData::EnsureInstanceDataUpdated()
+void FPerInstanceRenderData::EnsureInstanceDataUpdated(bool bForceUpdate)
 {
 	check(IsInRenderingThread());
 
@@ -1009,21 +1202,23 @@ void FPerInstanceRenderData::EnsureInstanceDataUpdated()
 	}
 
 	// manually update if there is no pending update task
-	if (bBoundsTransformsDirty)
+	if (bBoundsTransformsDirty || bForceUpdate)
 	{
 		UpdateBoundsTransforms();
 		bBoundsTransformsDirty = false;
 	}
 }
 
-const TArray<FVector4>& FPerInstanceRenderData::GetPerInstanceBounds()
+const TArray<FVector4f>& FPerInstanceRenderData::GetPerInstanceBounds()
 {
-	check(bTrackBounds);
-	EnsureInstanceDataUpdated();
+	// if bounds tracking has not been enabled, it needs to be enabled and instance data must be forced to update
+	bool bForceUpdate = !bTrackBounds;
+	bTrackBounds = true;
+	EnsureInstanceDataUpdated(bForceUpdate);
 	return PerInstanceBounds;
 }
 
-const TArray<FMatrix>& FPerInstanceRenderData::GetPerInstanceTransforms()
+const TArray<FRenderTransform>& FPerInstanceRenderData::GetPerInstanceTransforms()
 {
 	EnsureInstanceDataUpdated();
 	return PerInstanceTransforms;
@@ -1113,27 +1308,27 @@ void FInstancedStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const F
 					}
 				}
 			}
-		}
-	}
-}
 
-int32 FInstancedStaticMeshSceneProxy::CollectOccluderElements(FOccluderElementsCollector& Collector) const
-{
-	if (OccluderData)
-	{	
-		FStaticMeshInstanceBuffer& InstanceBuffer = InstancedRenderData.PerInstanceRenderData->InstanceBuffer;
-		const int32 NumInstances = InstanceBuffer.GetNumInstances();
-		
-		const TArray<FMatrix>& PerInstanceTransforms = InstancedRenderData.PerInstanceRenderData->GetPerInstanceTransforms();
-		for (const FMatrix& InstanceToLocal: PerInstanceTransforms)
-		{
-			Collector.AddElements(OccluderData->VerticesSP, OccluderData->IndicesSP, InstanceToLocal * GetLocalToWorld());
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+			if (View->Family->EngineShowFlags.VisualizeInstanceUpdates && HasInstanceDebugData())
+			{
+				const FRenderTransform PrimitiveToWorld = (FMatrix44f)GetLocalToWorld();
+				for (int i = 0; i < InstanceSceneData.Num(); ++i)
+				{
+					const FPrimitiveInstance& Instance = InstanceSceneData[i];
+
+					FRenderTransform InstanceToWorld = Instance.ComputeLocalToWorld(PrimitiveToWorld);
+					DrawWireStar(Collector.GetPDI(ViewIndex), (FVector)InstanceToWorld.Origin, 40.0f, WasInstanceXFormUpdatedThisFrame(i) ? FColor::Red : FColor::Green, View->Family->EngineShowFlags.Game ? SDPG_World : SDPG_Foreground);
+
+					if (WasInstanceCustomDataUpdatedThisFrame(i))
+					{
+						DrawCircle(Collector.GetPDI(ViewIndex), (FVector)InstanceToWorld.Origin, FVector(1, 0, 0), FVector(0, 1, 0), FColor::Orange, 40.0f, 32, View->Family->EngineShowFlags.Game ? SDPG_World : SDPG_Foreground);
+					}
+				}
+			}
+#endif
 		}
-		
-		return NumInstances;
 	}
-	
-	return 0;
 }
 
 void FInstancedStaticMeshSceneProxy::SetupProxy(UInstancedStaticMeshComponent* InComponent)
@@ -1147,6 +1342,8 @@ void FInstancedStaticMeshSceneProxy::SetupProxy(UInstancedStaticMeshComponent* I
 #endif
 
 	bAnySegmentUsesWorldPositionOffset = false;
+	bHasPerInstanceRandom = false;
+	bHasPerInstanceCustomData = false;
 
 	// Make sure all the materials are okay to be rendered as an instanced mesh.
 	for (int32 LODIndex = 0; LODIndex < LODs.Num(); LODIndex++)
@@ -1159,7 +1356,15 @@ void FInstancedStaticMeshSceneProxy::SetupProxy(UInstancedStaticMeshComponent* I
 			{
 				Section.Material = UMaterial::GetDefaultMaterial(MD_Surface);
 			}
+
 			bAnySegmentUsesWorldPositionOffset |= Section.Material->GetRelevance_Concurrent(GMaxRHIFeatureLevel).bUsesWorldPositionOffset;
+
+			const UMaterial* Material = Section.Material->GetMaterial_Concurrent();
+			check(Material != nullptr); // Should always be valid here
+
+			const FMaterialCachedExpressionData& CachedMaterialData = Material->GetCachedExpressionData();
+			bHasPerInstanceRandom |= CachedMaterialData.bHasPerInstanceRandom;
+			bHasPerInstanceCustomData |= CachedMaterialData.bHasPerInstanceCustomData;
 		}
 	}
 
@@ -1190,6 +1395,170 @@ void FInstancedStaticMeshSceneProxy::SetupProxy(UInstancedStaticMeshComponent* I
 #if RHI_RAYTRACING
 	bSupportRayTracing = InComponent->GetStaticMesh()->bSupportRayTracing;
 #endif
+
+	if (UseGPUScene(GetScene().GetShaderPlatform(), GetScene().GetFeatureLevel()))
+	{
+		const TArray<int32>& InstanceReorderTable = InComponent->InstanceReorderTable;
+
+		// NumRenderInstances is the extent that the reorder table can map to.
+		// Temporarily when removing instances from a HISM this can be sparse so that InComponent->GetInstanceCount() < NumRenderInstances.
+		const int32 NumRenderInstances = FMath::Max<int32>(InComponent->PerInstanceRenderData->InstanceBuffer.GetNumInstances(), InComponent->GetInstanceCount());
+
+		bSupportsInstanceDataBuffer = true;
+		InstanceSceneData.SetNumZeroed(NumRenderInstances);
+
+		bHasPerInstanceDynamicData = InComponent->PerInstancePrevTransform.Num() > 0 && InComponent->PerInstancePrevTransform.Num() == InComponent->GetInstanceCount();
+		InstanceDynamicData.SetNumZeroed(bHasPerInstanceDynamicData ? NumRenderInstances : 0);
+
+		static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
+		const bool bAllowStaticLighting = (!AllowStaticLightingVar || AllowStaticLightingVar->GetValueOnAnyThread() != 0);
+		bHasPerInstanceLMSMUVBias = bAllowStaticLighting;
+		InstanceLightShadowUVBias.SetNumZeroed(bHasPerInstanceLMSMUVBias ? NumRenderInstances : 0);
+
+		InstanceRandomID.SetNumZeroed(bHasPerInstanceRandom ? NumRenderInstances : 0); // Only allocate if material bound which uses this
+
+#if WITH_EDITOR
+		bHasPerInstanceEditorData = true;
+		InstanceEditorData.SetNumZeroed(bHasPerInstanceEditorData ? NumRenderInstances : 0);
+#endif
+
+		// Only allocate if material bound which uses this
+		if (bHasPerInstanceCustomData && InComponent->NumCustomDataFloats > 0)
+		{
+			InstanceCustomData = InComponent->PerInstanceSMCustomData;
+			check(InstanceCustomData.Num() / InComponent->NumCustomDataFloats == InComponent->GetInstanceCount()); // Sanity check on the data packing
+		}
+		else
+		{
+			bHasPerInstanceCustomData = false;
+		}
+
+		FVector TranslatedSpaceOffset = -InComponent->GetTranslatedInstanceSpaceOrigin();
+
+		// Add the visible instances. 
+		// Non visible ones (that are being removed) should not appear due to a zeroed render transform in the entries where we don't add anything here.
+		for (int32 InstanceIndex = 0; InstanceIndex < InComponent->GetInstanceCount(); ++InstanceIndex)
+		{
+			const int32 RenderInstanceIndex = InstanceReorderTable.IsValidIndex(InstanceIndex) ? InstanceReorderTable[InstanceIndex] : InstanceIndex;
+			if (!ensure(InstanceSceneData.IsValidIndex(RenderInstanceIndex)))
+			{
+				continue;
+			}
+
+			FPrimitiveInstance& SceneData = InstanceSceneData[RenderInstanceIndex];
+
+			FTransform InstanceTransform;
+			InComponent->GetInstanceTransform(InstanceIndex, InstanceTransform);
+			InstanceTransform.AddToTranslation(TranslatedSpaceOffset);
+			SceneData.LocalToPrimitive = InstanceTransform.ToMatrixWithScale();
+
+			if (bHasPerInstanceDynamicData)
+			{
+				FTransform InstancePrevTransform;
+				const bool bHasPrevTransform = InComponent->GetInstancePrevTransform(InstanceIndex, InstancePrevTransform);
+				ensure(bHasPrevTransform); // Should always be true here
+				InstancePrevTransform.AddToTranslation(TranslatedSpaceOffset);
+				InstanceDynamicData[RenderInstanceIndex].PrevLocalToPrimitive = InstancePrevTransform.ToMatrixWithScale();
+			}
+
+			if (bHasPerInstanceCustomData)
+			{
+				const int32 SrcCustomDataOffset = InstanceIndex  * InComponent->NumCustomDataFloats;
+				const int32 DstCustomDataOffset = RenderInstanceIndex * InComponent->NumCustomDataFloats;
+				FMemory::Memcpy
+				(
+					&InstanceCustomData[DstCustomDataOffset],
+					&InComponent->PerInstanceSMCustomData[SrcCustomDataOffset],
+					InComponent->NumCustomDataFloats * sizeof(float)
+				);
+			}
+		}
+	}
+}
+
+
+void FInstancedStaticMeshSceneProxy::CreateRenderThreadResources()
+{
+	FStaticMeshSceneProxy::CreateRenderThreadResources();
+
+	const bool bCanUseGPUScene = UseGPUScene(GetScene().GetShaderPlatform(), GetScene().GetFeatureLevel());
+	
+	// Flush upload of GPU data for ISM/HISM
+	if (ensure(InstancedRenderData.PerInstanceRenderData.IsValid()))
+	{
+		FStaticMeshInstanceBuffer& InstanceBuffer = InstancedRenderData.PerInstanceRenderData->InstanceBuffer;
+		if (!bCanUseGPUScene)
+		{
+			InstanceBuffer.FlushGPUUpload();
+		}
+	}
+
+	if (bCanUseGPUScene)
+	{
+		bSupportsInstanceDataBuffer = true;
+		// TODO: can the PerInstanceRenderData ever not be valid here?
+		if (ensure(InstancedRenderData.PerInstanceRenderData.IsValid()))
+		{
+			const FStaticMeshInstanceBuffer& InstanceBuffer = InstancedRenderData.PerInstanceRenderData->InstanceBuffer;
+			ensureMsgf(InstanceBuffer.RequireCPUAccess, TEXT("GPU-Scene instance culling requires CPU access to instance data for setup."));
+
+			// This happens when this is actually a HISM and the data is not present in the component (which is true for landscape grass
+			// which manages its own setup.
+			if (InstanceSceneData.Num() == 0)
+			{
+				InstanceSceneData.SetNum(InstanceBuffer.GetNumInstances());
+				InstanceLightShadowUVBias.SetNumZeroed(bHasPerInstanceLMSMUVBias ? InstanceBuffer.GetNumInstances() : 0);
+
+				// Note: since bHasPerInstanceDynamicData is set based on the number (bHasPerInstanceDynamicData = InComponent->PerInstancePrevTransform.Num() == InComponent->GetInstanceCount();)
+				//       in the ctor, it gets set to true when both are zero as well, for the landscape grass path (or whatever triggers initialization from the InstanceBuffer only)
+				//       there is no component data to get, thus we set the bHasPerInstanceDynamicData to false.
+				bHasPerInstanceDynamicData = false;
+				InstanceDynamicData.Empty();
+
+				InstanceRandomID.SetNumZeroed(bHasPerInstanceRandom ? InstanceBuffer.GetNumInstances() : 0); // Only allocate if material bound which uses this
+
+#if WITH_EDITOR
+				InstanceEditorData.SetNumZeroed(bHasPerInstanceEditorData ? InstanceBuffer.GetNumInstances() : 0);
+#endif
+			}
+
+			// NOTE: we set up partial data in the construction of ISM proxy (yep, awful but the equally awful way the InstanceBuffer is maintained means complete data is not available)
+			if (InstanceSceneData.Num() == InstanceBuffer.GetNumInstances())
+			{
+				const bool bHasLightMapData = bHasPerInstanceLMSMUVBias && InstanceLightShadowUVBias.Num() == InstanceSceneData.Num();
+				const bool bHasRandomID = bHasPerInstanceRandom && InstanceRandomID.Num() == InstanceSceneData.Num();
+#if WITH_EDITOR
+				const bool bHasEditorData = bHasPerInstanceEditorData && InstanceEditorData.Num() == InstanceSceneData.Num();
+#endif
+
+				for (int32 InstanceIndex = 0; InstanceIndex < InstanceSceneData.Num(); ++InstanceIndex)
+				{
+					FPrimitiveInstance& SceneData = InstanceSceneData[InstanceIndex];
+					InstanceBuffer.GetInstanceTransform(InstanceIndex, SceneData.LocalToPrimitive);
+
+					if (bHasRandomID)
+					{
+						InstanceBuffer.GetInstanceRandomID(InstanceIndex, InstanceRandomID[InstanceIndex]);
+					}
+
+					if (bHasLightMapData)
+					{
+						InstanceBuffer.GetInstanceLightMapData(InstanceIndex, InstanceLightShadowUVBias[InstanceIndex]);
+					}
+
+#if WITH_EDITOR
+					if (bHasEditorData)
+					{
+						FColor HitProxyColor;
+						bool bSelected;
+						InstanceBuffer.GetInstanceEditorData(InstanceIndex, HitProxyColor, bSelected);
+						InstanceEditorData[InstanceIndex] = FInstanceUpdateCmdBuffer::PackEditorData(HitProxyColor, bSelected);
+					}
+#endif
+				}
+			}
+		}
+	}
 }
 
 void FInstancedStaticMeshSceneProxy::DestroyRenderThreadResources()
@@ -1206,6 +1575,31 @@ void FInstancedStaticMeshSceneProxy::DestroyRenderThreadResources()
 #endif
 }
 
+void FInstancedStaticMeshSceneProxy::OnTransformChanged()
+{
+	if (!bHasPerInstanceLocalBounds)
+	{
+		check(InstanceLocalBounds.Num() <= 1);
+		InstanceLocalBounds.SetNumUninitialized(1);
+		if (StaticMesh != nullptr)
+		{
+			InstanceLocalBounds[0] = StaticMesh->GetBounds();
+		}
+		else
+		{
+			InstanceLocalBounds[0] = GetLocalBounds();
+		}
+	}
+}
+
+void FInstancedStaticMeshSceneProxy::UpdateInstances_RenderThread(const FInstanceUpdateCmdBuffer& CmdBuffer, const FBoxSphereBounds& InBounds, const FBoxSphereBounds& InLocalBounds, const FBoxSphereBounds& InStaticMeshBounds)
+{
+	// This will flush GPU instance data, create buffers, srvs and vertex factories.
+	InstancedRenderData.BindBuffersToVertexFactories();
+
+	return FPrimitiveSceneProxy::UpdateInstances_RenderThread(CmdBuffer, InBounds, InLocalBounds, InStaticMeshBounds);
+}
+
 void FInstancedStaticMeshSceneProxy::SetupInstancedMeshBatch(int32 LODIndex, int32 BatchIndex, FMeshBatch& OutMeshBatch) const
 {
 	OutMeshBatch.VertexFactory = &InstancedRenderData.VertexFactories[LODIndex];
@@ -1216,6 +1610,20 @@ void FInstancedStaticMeshSceneProxy::SetupInstancedMeshBatch(int32 LODIndex, int
 	BatchElement0.InstancedLODIndex = LODIndex;
 	BatchElement0.UserIndex = 0;
 	BatchElement0.PrimitiveUniformBuffer = GetUniformBuffer();
+	
+	if (OutMeshBatch.MaterialRenderProxy)
+	{
+		// If the material on the mesh batch is translucent, then preserve the instance draw order to prevent flickering
+		// TODO: This should use depth sorting of instances instead, once that is implemented for GPU Scene instances
+		const ERHIFeatureLevel::Type FeatureLevel = GetScene().GetFeatureLevel();
+		
+		// NOTE: For now, this feature is not supported for mobile platforms
+		if (FeatureLevel > ERHIFeatureLevel::ES3_1)
+		{
+			const FMaterial& Material = OutMeshBatch.MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
+			BatchElement0.bPreserveInstanceOrder = IsTranslucentBlendMode(Material.GetBlendMode());
+		}
+	}
 
 	BatchElement0.NumInstances = NumInstances;
 }
@@ -1262,45 +1670,28 @@ bool FInstancedStaticMeshSceneProxy::GetWireframeMeshElement(int32 LODIndex, int
 	return false;
 }
 
-void FInstancedStaticMeshSceneProxy::GetDistancefieldAtlasData(FBox& LocalVolumeBounds, FVector2D& OutDistanceMinMax, FIntVector& OutBlockMin, FIntVector& OutBlockSize, bool& bOutBuiltAsIfTwoSided, bool& bMeshWasPlane, float& SelfShadowBias, TArray<FMatrix>& ObjectLocalToWorldTransforms, bool& bOutThrottled) const
+void FInstancedStaticMeshSceneProxy::GetDistanceFieldAtlasData(const FDistanceFieldVolumeData*& OutDistanceFieldData, float& SelfShadowBias) const
 {
-	FStaticMeshSceneProxy::GetDistancefieldAtlasData(LocalVolumeBounds, OutDistanceMinMax, OutBlockMin, OutBlockSize, bOutBuiltAsIfTwoSided, bMeshWasPlane, SelfShadowBias, ObjectLocalToWorldTransforms, bOutThrottled);
-
-	ObjectLocalToWorldTransforms.Reset();
-
-	const uint32 NumInstances = InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetNumInstances();
-	const TArray<FMatrix>& PerInstanceTransforms = InstancedRenderData.PerInstanceRenderData->GetPerInstanceTransforms();
-	for (const FMatrix& InstanceToLocal: PerInstanceTransforms)
-	{
-		ObjectLocalToWorldTransforms.Add(InstanceToLocal * GetLocalToWorld());
-	}
+	FStaticMeshSceneProxy::GetDistanceFieldAtlasData(OutDistanceFieldData, SelfShadowBias);
 }
 
-void FInstancedStaticMeshSceneProxy::GetDistanceFieldInstanceInfo(int32& NumInstances, float& BoundsSurfaceArea) const
+void FInstancedStaticMeshSceneProxy::GetDistanceFieldInstanceData(TArray<FRenderTransform>& ObjectLocalToWorldTransforms) const
 {
-	NumInstances = DistanceFieldData ? InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetNumInstances() : 0;
+	ObjectLocalToWorldTransforms.Reset();
 
-	if (NumInstances > 0)
+	if (ensureMsgf(InstancedRenderData.PerInstanceRenderData->InstanceBuffer.RequireCPUAccess, TEXT("GetDistanceFieldInstanceData requires a CPU copy of the per-instance data to be accessible. Possible mismatch in ComponentRequestsCPUAccess / IncludePrimitiveInDistanceFieldSceneData filtering.")))
 	{
-		// intentionally not waiting on the transform conversion task because we only need a single converted transform
-		FMatrix InstanceToLocal;
-		const int32 InstanceIndex = 0;
-		InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetInstanceTransform(InstanceIndex, InstanceToLocal);
-		InstanceToLocal.M[3][3] = 1.0f;
-
-		const FMatrix InstanceTransform = InstanceToLocal * GetLocalToWorld();
-		const FVector AxisScales = InstanceTransform.GetScaleVector();
-		const FVector BoxDimensions = RenderData->Bounds.BoxExtent * AxisScales * 2;
-
-		BoundsSurfaceArea = 2 * BoxDimensions.X * BoxDimensions.Y
-			+ 2 * BoxDimensions.Z * BoxDimensions.Y
-			+ 2 * BoxDimensions.X * BoxDimensions.Z;
+		const TArray<FRenderTransform>& PerInstanceTransforms = InstancedRenderData.PerInstanceRenderData->GetPerInstanceTransforms();
+		for (const FRenderTransform& InstanceToLocal : PerInstanceTransforms)
+		{
+			ObjectLocalToWorldTransforms.Add(InstanceToLocal * (FMatrix44f)GetLocalToWorld());
+		}
 	}
 }
 
 HHitProxy* FInstancedStaticMeshSceneProxy::CreateHitProxies(UPrimitiveComponent* Component,TArray<TRefCountPtr<HHitProxy> >& OutHitProxies)
 {
-	if(InstancedRenderData.PerInstanceRenderData.IsValid() && InstancedRenderData.PerInstanceRenderData->HitProxies.Num() )
+	if (InstancedRenderData.PerInstanceRenderData.IsValid() && InstancedRenderData.PerInstanceRenderData->HitProxies.Num())
 	{
 		// Add any per-instance hit proxies.
 		OutHitProxies += InstancedRenderData.PerInstanceRenderData->HitProxies;
@@ -1313,6 +1704,11 @@ HHitProxy* FInstancedStaticMeshSceneProxy::CreateHitProxies(UPrimitiveComponent*
 }
 
 #if RHI_RAYTRACING
+bool FInstancedStaticMeshSceneProxy::HasRayTracingRepresentation() const
+{
+	return bSupportRayTracing;
+}
+
 void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances)
 {
 	if (!CVarRayTracingRenderInstances.GetValueOnRenderThread())
@@ -1331,7 +1727,7 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 		return;
 	}
 
-	const int32 InstanceCount = InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetNumInstances();
+	const uint32 InstanceCount = InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetNumInstances();
 
 	if (InstanceCount == 0)
 	{
@@ -1345,11 +1741,11 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 		return;
 	}
 
-	//if (InstancedRenderData.PerInstanceRenderData->bBoundsTransformsDirty)
-	//{
-	//	InstancedRenderData.PerInstanceRenderData->UpdateBoundsTransforms();
-	//	InstancedRenderData.PerInstanceRenderData->bBoundsTransformsDirty = false;
-	//}
+	struct SVisibleInstance
+	{
+		uint32 InstanceIndex = 0;
+		float DistanceToView = 0;
+	};
 
 	//setup a 'template' for the instance first, so we aren't duplicating work
 	//#dxr_todo: when multiple LODs are used, template needs to be an array of templates, probably best initialized on-demand via a lamda
@@ -1359,10 +1755,13 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 	RayTracingInstanceTemplate.Geometry = &RenderData->LODResources[LOD].RayTracingGeometry;
 
 	// Which index holds the reference to the particular simulated instance
-	TArray<int32> ActiveInstances;
+	TArray<uint32> ActiveInstances;
 
-	const int32 RequestedSimulatedInstances = CVarRayTracingSimulatedInstanceCount.GetValueOnRenderThread();
-	const int32 SimulatedInstances = FMath::Min(RequestedSimulatedInstances == -1 ? InstanceCount : FMath::Clamp(RequestedSimulatedInstances, 1, InstanceCount), MaxSimulatedInstances);
+	// Visible instances
+	TArray<SVisibleInstance> VisibleInstances;
+
+	const uint32 RequestedSimulatedInstances = CVarRayTracingSimulatedInstanceCount.GetValueOnRenderThread();
+	const uint32 SimulatedInstances = FMath::Min(RequestedSimulatedInstances == -1 ? InstanceCount : FMath::Clamp(RequestedSimulatedInstances, 1u, InstanceCount), MaxSimulatedInstances);
 
 	const int32 WPOEvalMode = CVarRayTracingInstancesEvaluateWPO.GetValueOnRenderThread();
 	const bool bWantsWPOEvaluation = WPOEvalMode < 0 ? bDynamicRayTracingGeometry : WPOEvalMode != 0;
@@ -1387,10 +1786,8 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 			RayTracingWPOInstanceTemplate.Materials.Add(MeshBatch);
 			RayTracingWPODynamicTemplate.Materials.Add(DynamicMeshBatch);
 		}
-		RayTracingWPOInstanceTemplate.BuildInstanceMaskAndFlags();
+		RayTracingWPOInstanceTemplate.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 	
-		
-
 		if (RayTracingDynamicData.Num() != SimulatedInstances || LOD != CachedRayTracingLOD)
 		{
 			SetupRayTracingDynamicInstances(SimulatedInstances, LOD);
@@ -1399,22 +1796,37 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 
 		for (auto &Instance : ActiveInstances)
 		{
-			Instance = -1;
+			Instance = INDEX_NONE;
 		}
 	}
 
-	//preallocate the worst-case to prevent an explosion of reallocs
-	//#dxr_todo: possibly track used instances and reserve based on previous behavior
-	RayTracingInstanceTemplate.InstanceTransforms.Reserve(InstanceCount);
+	VisibleInstances.Reserve(InstanceCount);
 
-	FMatrix ToWorld = InstancedRenderData.Component->GetComponentTransform().ToMatrixWithScale();
+	FVector ScaleVector = GetLocalToWorld().GetScaleVector();
+	FMatrix WorldToLocal = GetLocalToWorld().InverseFast();
+	float LocalToWorldScale = FMath::Max3(ScaleVector.X, ScaleVector.Y, ScaleVector.Z);
+	FVector LocalViewPosition = WorldToLocal.TransformPosition(Context.ReferenceView->ViewLocation);
 
-	// whether to use angular culling instead of distance, angle is halved as it is compared against the projection of the radius rather than the diameter
-	const float CullAngle = FMath::Min(CVarRayTracingInstancesCullAngle.GetValueOnRenderThread(), 179.9f) * 0.5f;
+	auto GetDistanceToInstance =
+		[&LocalViewPosition, &LocalToWorldScale](const FVector4f& InstanceSphere, float& InstanceRadius, float& DistanceToInstanceCenter, float& DistanceToInstanceStart)
+	{
+		FVector4f InstanceLocation = InstanceSphere;
+		FVector4f VToInstanceCenter = (FVector3f)LocalViewPosition - InstanceLocation;
 
-	const TArray<FVector4>& PerInstanceBounds = InstancedRenderData.PerInstanceRenderData->GetPerInstanceBounds();
+		DistanceToInstanceCenter = VToInstanceCenter.Size();
+		InstanceRadius = InstanceSphere.W;
+
+		// Scale accounts for possibly scaling in LocalToWorld, since measurements are all in local
+		DistanceToInstanceStart = (DistanceToInstanceCenter - InstanceRadius) * LocalToWorldScale;
+	};
+
+	const TArray<FRenderTransform>& PerInstanceTransforms = InstancedRenderData.PerInstanceRenderData->GetPerInstanceTransforms();
+	const TArray<FVector4f>& PerInstanceBounds = InstancedRenderData.PerInstanceRenderData->GetPerInstanceBounds();
 	if (CVarRayTracingRenderInstancesCulling.GetValueOnRenderThread() > 0 && PerInstanceBounds.Num())
 	{
+		// whether to use angular culling instead of distance, angle is halved as it is compared against the projection of the radius rather than the diameter
+		const float CullAngle = FMath::Min(CVarRayTracingInstancesCullAngle.GetValueOnRenderThread(), 179.9f) * 0.5f;
+
 		if (CullAngle < 0.0f)
 		{
 			//
@@ -1427,38 +1839,23 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 			const bool ApplyGeneralCulling = BVHCullRadius > 0.0f;
 			const bool ApplyLowScaleCulling = BVHLowScaleThreshold > 0.0f && BVHLowScaleRadius > 0.0f;
 
-			FVector ScaleVector = GetLocalToWorld().GetScaleVector();
-			FMatrix WorldToLocal = GetLocalToWorld().InverseFast();
-			float Scale = FMath::Max3(ScaleVector.X, ScaleVector.Y, ScaleVector.Z);
-			FVector LocalViewPosition = WorldToLocal.TransformPosition(Context.ReferenceView->ViewLocation);
-
-			const TArray<FMatrix>& PerInstanceTransforms = InstancedRenderData.PerInstanceRenderData->GetPerInstanceTransforms();
-			if (PerInstanceTransforms.Num() > 0)
+			for (uint32 InstanceIndex = 0; InstanceIndex < InstanceCount; InstanceIndex++)
 			{
-				for (int InstanceIndex = 0; InstanceIndex < InstanceCount; InstanceIndex++)
+				float InstanceRadius, DistanceToInstanceCenter, DistanceToInstanceStart;
+				GetDistanceToInstance(PerInstanceBounds[InstanceIndex], InstanceRadius, DistanceToInstanceCenter, DistanceToInstanceStart);
+
+				// Cull instance based on distance
+				if (DistanceToInstanceStart > BVHCullRadius && ApplyGeneralCulling)
+					continue;
+
+				// Special culling for small scale objects
+				if (InstanceRadius < BVHLowScaleThreshold && ApplyLowScaleCulling)
 				{
-					FVector4 InstanceSphere = PerInstanceBounds[InstanceIndex];
-					FVector InstanceLocation = InstanceSphere;
-					FVector VToInstanceCenter = LocalViewPosition - InstanceLocation;
-					float DistanceToInstanceCenter = VToInstanceCenter.Size();
-					float InstanceRadius = InstanceSphere.W;
-					float DistanceToInstanceStart = (DistanceToInstanceCenter - InstanceRadius) * Scale; //scale accounts for possibly scaling in LocalToWorld, since measurements are all in local
-
-					// Cull instance based on distance
-					if (DistanceToInstanceStart > BVHCullRadius && ApplyGeneralCulling)
+					if (DistanceToInstanceStart > BVHLowScaleRadius)
 						continue;
-
-					// Special culling for small scale objects
-					if (InstanceRadius < BVHLowScaleThreshold && ApplyLowScaleCulling)
-					{
-						if (DistanceToInstanceStart > BVHLowScaleRadius)
-							continue;
-					}
-
-					FMatrix InstanceTransform = PerInstanceTransforms[InstanceIndex] * GetLocalToWorld();
-					RayTracingInstanceTemplate.InstanceTransforms.Add(InstanceTransform);
-
 				}
+
+				VisibleInstances.Add(SVisibleInstance{ InstanceIndex, DistanceToInstanceStart });
 			}
 		}
 		else
@@ -1471,162 +1868,136 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 			//
 			float Ratio = FMath::Tan(CullAngle / 360.0f * 2.0f * PI);
 
-			FVector ScaleVector = GetLocalToWorld().GetScaleVector();
-			FMatrix WorldToLocal = GetLocalToWorld().InverseFast();
-			float Scale = FMath::Max3(ScaleVector.X, ScaleVector.Y, ScaleVector.Z);
-			FVector LocalViewPosition = WorldToLocal.TransformPosition(Context.ReferenceView->ViewLocation);
-
-			const TArray<FMatrix>& PerInstanceTransforms = InstancedRenderData.PerInstanceRenderData->GetPerInstanceTransforms();
-			if (PerInstanceTransforms.Num() > 0)
+			for (uint32 InstanceIndex = 0; InstanceIndex < InstanceCount; InstanceIndex++)
 			{
-				for (int InstanceIndex = 0; InstanceIndex < InstanceCount; InstanceIndex++)
+				float InstanceRadius, DistanceToInstanceCenter, DistanceToInstanceStart;
+				GetDistanceToInstance(PerInstanceBounds[InstanceIndex], InstanceRadius, DistanceToInstanceCenter, DistanceToInstanceStart);
+
+				if (DistanceToInstanceCenter * Ratio <= InstanceRadius * LocalToWorldScale)
 				{
-					FVector4 LocalTransform[3];
-					FVector4 LightMapUV, Origin;
-
-					FVector4 InstanceSphere = PerInstanceBounds[InstanceIndex];
-					FVector InstanceLocation = InstanceSphere;
-					FVector VToInstanceCenter = LocalViewPosition - InstanceLocation;
-							float DistanceToInstanceCenter = VToInstanceCenter.Size();
-
-					if (DistanceToInstanceCenter * Ratio <= InstanceSphere.W * Scale)
-					{
-						FMatrix InstanceTransform = PerInstanceTransforms[InstanceIndex] * GetLocalToWorld();
-						const int32 DynamicInstanceIdx = InstanceIndex % SimulatedInstances;
-
-						if (bHasWorldPositionOffset)
-						{
-							FRayTracingInstance *DynamicInstance = nullptr;
-
-							if (ActiveInstances[DynamicInstanceIdx] == -1)
-							{
-										// first case of this dynamic instance, setup the material and add it
-								InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetInstanceShaderValues(InstanceIndex, LocalTransform, LightMapUV, Origin);
-								float InstanceRandom = Origin.W;
-
-								const FStaticMeshLODResources& LODModel = RenderData->LODResources[LOD];
-
-								FRayTracingDynamicData &DynamicData = RayTracingDynamicData[DynamicInstanceIdx];
-
-								ActiveInstances[DynamicInstanceIdx] = OutRayTracingInstances.Num();
-								FRayTracingInstance &RayTracingInstance = OutRayTracingInstances.Add_GetRef(RayTracingWPOInstanceTemplate);
-								RayTracingInstance.Geometry = &DynamicData.DynamicGeometry;
-								RayTracingInstance.InstanceTransforms.Reserve(InstanceCount);
-
-								DynamicInstance = &RayTracingInstance;
-
-								FRayTracingInstance SimulationInstance = RayTracingWPODynamicTemplate;
-
-								// ToDo - deeper dive into ensuring better instance simulation matching
-								FMatrix Passthrough = FMatrix::Identity;
-								Passthrough.M[3][3] = InstanceRandom;
-
-								Context.DynamicRayTracingGeometriesToUpdate.Add(
-									FRayTracingDynamicGeometryUpdateParams
-									{
-										SimulationInstance.Materials,
-										false,
-										(uint32)LODModel.GetNumVertices(),
-										uint32((SIZE_T)LODModel.GetNumVertices() * sizeof(FVector)),
-										DynamicData.DynamicGeometry.Initializer.TotalPrimitiveCount,
-										&DynamicData.DynamicGeometry,
-										nullptr,
-										true,
-										Passthrough
-									}
-								);
-							}
-							else
-							{
-								DynamicInstance = &OutRayTracingInstances[ActiveInstances[DynamicInstanceIdx]];
-							}
-
-							DynamicInstance->InstanceTransforms.Add(InstanceTransform);
-
-						}
-						else
-						{
-							RayTracingInstanceTemplate.InstanceTransforms.Emplace(InstanceTransform);
-						}
-					}
+					VisibleInstances.Add(SVisibleInstance{ InstanceIndex, DistanceToInstanceStart });
 				}
-
 			}
 		}
 	}
 	else
 	{
 		// No culling
-		const TArray<FMatrix>& PerInstanceTransforms = InstancedRenderData.PerInstanceRenderData->GetPerInstanceTransforms();
-		if (PerInstanceTransforms.Num() > 0)
+		for (uint32 InstanceIndex = 0; InstanceIndex < InstanceCount; ++InstanceIndex)
 		{
-			for (int32 InstanceIdx = 0; InstanceIdx < InstanceCount; ++InstanceIdx)
+			VisibleInstances.Add(SVisibleInstance{ InstanceIndex, -1.0f });
+		}
+	}
+
+	// Bucket which visible instances to simulate based on camera distance
+	if (bHasWorldPositionOffset && VisibleInstances.Num() > 0)
+	{
+		float SimulationClusterRadius = CVarRayTracingInstancesSimulationClusterRadius.GetValueOnRenderThread();
+
+		if (SimulationClusterRadius > 0.0)
+		{
+			if (SimulatedInstances < (uint32)VisibleInstances.Num())
 			{
-				FMatrix InstanceTransform = PerInstanceTransforms[InstanceIdx] * GetLocalToWorld();
+				const FMatrix& InvProjMatrix = Context.ReferenceView->ViewMatrices.GetInvProjectionMatrix();
 
-				if (bHasWorldPositionOffset)
+				// In no culling case, we are missing distance to view, so fill it in now
+				if (CVarRayTracingRenderInstancesCulling.GetValueOnRenderThread() == 0)
 				{
-					FRayTracingInstance *DynamicInstance = nullptr;
-
-					const int32 DynamicInstanceIdx = InstanceIdx % SimulatedInstances;
-
-					if (ActiveInstances[DynamicInstanceIdx] == -1)
+					for (uint32 InstanceIndex = 0; InstanceIndex < (uint32)VisibleInstances.Num(); InstanceIndex++)
 					{
-						// first case of this dynamic instance, setup the material and add it
-						FVector4 LocalTransform[3];
-						FVector4 LightMapUV, Origin;
-						InstancedRenderData.PerInstanceRenderData->InstanceBuffer.GetInstanceShaderValues(InstanceIdx, LocalTransform, LightMapUV, Origin);
-						float InstanceRandom = Origin.W;
+						float InstanceRadius, DistanceToInstanceCenter, DistanceToInstanceStart;
+						GetDistanceToInstance(PerInstanceBounds[InstanceIndex], InstanceRadius, DistanceToInstanceCenter, DistanceToInstanceStart);
 
-						const FStaticMeshLODResources& LODModel = RenderData->LODResources[LOD];
+						VisibleInstances[InstanceIndex].DistanceToView = DistanceToInstanceStart;
+					}
+				}
 
-						FRayTracingDynamicData &DynamicData = RayTracingDynamicData[DynamicInstanceIdx];
+				uint32 PartitionIndex = 0;
 
-						ActiveInstances[DynamicInstanceIdx] = OutRayTracingInstances.Num();
-						FRayTracingInstance &RayTracingInstance = OutRayTracingInstances.Add_GetRef(RayTracingWPOInstanceTemplate);
-						RayTracingInstance.Geometry = &DynamicData.DynamicGeometry;
-						RayTracingInstance.InstanceTransforms.Reserve(InstanceCount);
-
-						DynamicInstance = &RayTracingInstance;
-
-						FRayTracingInstance SimulationInstance = RayTracingWPODynamicTemplate;
-
-						// ToDo - deeper dive into ensuring better instance simulation matching
-						FMatrix Passthrough = FMatrix::Identity;
-						Passthrough.M[3][3] = InstanceRandom;
-
-						Context.DynamicRayTracingGeometriesToUpdate.Add(
-							FRayTracingDynamicGeometryUpdateParams
-							{
-								SimulationInstance.Materials,
-								false,
-								(uint32)LODModel.GetNumVertices(),
-								uint32((SIZE_T)LODModel.GetNumVertices() * sizeof(FVector)),
-								DynamicData.DynamicGeometry.Initializer.TotalPrimitiveCount,
-								&DynamicData.DynamicGeometry,
-								nullptr,
-								true,
-								Passthrough
-							}
-						);
-
+				// Let's partition the array so the closest elements are the ones we want to simulate
+				for (uint32 InstanceIndex = (uint32)VisibleInstances.Num() - 1; PartitionIndex < InstanceIndex; )
+				{
+					if (VisibleInstances[InstanceIndex].DistanceToView > SimulationClusterRadius)
+					{
+						InstanceIndex--;
 					}
 					else
 					{
-						DynamicInstance = &OutRayTracingInstances[ActiveInstances[DynamicInstanceIdx]];
+						Swap(VisibleInstances[PartitionIndex], VisibleInstances[InstanceIndex]);
+
+						PartitionIndex++;
 					}
-
-					DynamicInstance->InstanceTransforms.Add(InstanceTransform);
-
 				}
-				else
+
+				// And partial sort those that fall within this bucket
+				Sort(&VisibleInstances[0], PartitionIndex, [](const SVisibleInstance& Instance0, const SVisibleInstance& Instance1)
 				{
-					RayTracingInstanceTemplate.InstanceTransforms.Add(InstanceTransform);
+					return Instance0.DistanceToView < Instance1.DistanceToView;
 				}
+				);
 			}
 		}
 	}
 
+	//preallocate the worst-case to prevent an explosion of reallocs
+	//#dxr_todo: possibly track used instances and reserve based on previous behavior
+	RayTracingInstanceTemplate.InstanceTransforms.Reserve(InstanceCount);
+
+	// Add all visible instances
+	for (SVisibleInstance VisibleInstance : VisibleInstances)
+	{
+		const uint32 InstanceIndex = VisibleInstance.InstanceIndex;
+
+		FMatrix InstanceToWorld = PerInstanceTransforms[InstanceIndex].ToMatrix() * GetLocalToWorld();
+		const uint32 DynamicInstanceIdx = InstanceIndex % SimulatedInstances;
+
+		if (bHasWorldPositionOffset && InstancedRenderData.VertexFactories[LOD].GetType()->SupportsRayTracingDynamicGeometry())
+		{
+			FRayTracingInstance* DynamicInstance = nullptr;
+
+			if (ActiveInstances[DynamicInstanceIdx] == -1)
+			{
+				// first case of this dynamic instance, setup the material and add it
+				const FStaticMeshLODResources& LODModel = RenderData->LODResources[LOD];
+
+				FRayTracingDynamicData& DynamicData = RayTracingDynamicData[DynamicInstanceIdx];
+
+				ActiveInstances[DynamicInstanceIdx] = OutRayTracingInstances.Num();
+				FRayTracingInstance& RayTracingInstance = OutRayTracingInstances.Add_GetRef(RayTracingWPOInstanceTemplate);
+				RayTracingInstance.Geometry = &DynamicData.DynamicGeometry;
+				RayTracingInstance.InstanceTransforms.Reserve(InstanceCount);
+
+				DynamicInstance = &RayTracingInstance;
+
+				Context.DynamicRayTracingGeometriesToUpdate.Add(
+					FRayTracingDynamicGeometryUpdateParams
+					{
+						RayTracingWPODynamicTemplate.Materials,
+						false,
+						(uint32)LODModel.GetNumVertices(),
+						uint32((SIZE_T)LODModel.GetNumVertices() * sizeof(FVector)),
+						DynamicData.DynamicGeometry.Initializer.TotalPrimitiveCount,
+						&DynamicData.DynamicGeometry,
+						nullptr,
+						true,
+						InstanceIndex,
+						(FMatrix44f) InstanceToWorld.Inverse()
+					}
+				);
+			}
+			else
+			{
+				DynamicInstance = &OutRayTracingInstances[ActiveInstances[DynamicInstanceIdx]];
+			}
+
+			DynamicInstance->InstanceTransforms.Add(InstanceToWorld);
+
+		}
+		else
+		{
+			RayTracingInstanceTemplate.InstanceTransforms.Emplace(InstanceToWorld);
+		}
+	}
 
 	if (RayTracingInstanceTemplate.InstanceTransforms.Num() > 0)
 	{
@@ -1636,11 +2007,11 @@ void FInstancedStaticMeshSceneProxy::GetDynamicRayTracingInstances(struct FRayTr
 		{
 			//#dxr_todo: so far we use the parent static mesh path to get material data
 			FMeshBatch MeshBatch;
-			GetMeshElement(LOD, 0, SectionIdx, 0, false, false, MeshBatch);
+			FStaticMeshSceneProxy::GetMeshElement(LOD, 0, SectionIdx, 0, false, false, MeshBatch);
 
 			RayTracingInstanceTemplate.Materials.Add(MeshBatch);
 		}
-		RayTracingInstanceTemplate.BuildInstanceMaskAndFlags();
+		RayTracingInstanceTemplate.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 
 		OutRayTracingInstances.Add(RayTracingInstanceTemplate);
 	}
@@ -1703,6 +2074,18 @@ UInstancedStaticMeshComponent::UInstancedStaticMeshComponent(const FObjectInitia
 	BodyInstance.bSimulatePhysics = false;
 
 	bDisallowMeshPaintPerInstance = true;
+	bMultiBodyOverlap = true;
+
+#if STATS
+	{
+		UObject const* StatObject = this->AdditionalStatObject();
+		if (!StatObject)
+		{
+			StatObject = this;
+		}
+		StatId = StatObject->GetStatID(true);
+	}
+#endif
 }
 
 UInstancedStaticMeshComponent::UInstancedStaticMeshComponent(FVTableHelper& Helper)
@@ -1739,8 +2122,25 @@ TStructOnScope<FActorComponentInstanceData> UInstancedStaticMeshComponent::GetCo
 
 	// Back up random seed
 	StaticMeshInstanceData->InstancingRandomSeed = InstancingRandomSeed;
+	StaticMeshInstanceData->AdditionalRandomSeeds = AdditionalRandomSeeds;
+
+	// Back up per-instance hit proxies
+	StaticMeshInstanceData->bHasPerInstanceHitProxies = bHasPerInstanceHitProxies;
 #endif
 	return InstanceData;
+}
+
+void UInstancedStaticMeshComponent::GetComponentChildElements(TArray<FTypedElementHandle>& OutElementHandles, const bool bAllowCreate)
+{
+#if WITH_EDITOR
+	for (int32 InstanceIndex = 0; InstanceIndex < PerInstanceSMData.Num(); ++InstanceIndex)
+	{
+		if (FTypedElementHandle ElementHandle = UEngineElementsLibrary::AcquireEditorSMInstanceElementHandle(this, InstanceIndex, bAllowCreate))
+		{
+			OutElementHandles.Add(MoveTemp(ElementHandle));
+		}
+	}
+#endif	// WITH_EDITOR
 }
 
 void UInstancedStaticMeshComponent::ApplyComponentInstanceData(FInstancedStaticMeshComponentInstanceData* InstancedMeshData)
@@ -1788,6 +2188,9 @@ void UInstancedStaticMeshComponent::ApplyComponentInstanceData(FInstancedStaticM
 	SelectedInstances = InstancedMeshData->SelectedInstances;
 
 	InstancingRandomSeed = InstancedMeshData->InstancingRandomSeed;
+	AdditionalRandomSeeds = InstancedMeshData->AdditionalRandomSeeds;
+
+	bHasPerInstanceHitProxies = InstancedMeshData->bHasPerInstanceHitProxies;
 
 	// Force recreation of the render data
 	InstanceUpdateCmdBuffer.Edit();
@@ -1795,32 +2198,72 @@ void UInstancedStaticMeshComponent::ApplyComponentInstanceData(FInstancedStaticM
 #endif
 }
 
-void UInstancedStaticMeshComponent::FlushInstanceUpdateCommands()
+void UInstancedStaticMeshComponent::FlushInstanceUpdateCommands(bool bFlushInstanceUpdateCmdBuffer)
 {
-	InstanceUpdateCmdBuffer.Reset();
+	if (bFlushInstanceUpdateCmdBuffer)
+	{
+		InstanceUpdateCmdBuffer.Reset();
+	}
 
 	FStaticMeshInstanceData RenderInstanceData = FStaticMeshInstanceData(GVertexElementTypeSupport.IsSupported(VET_Half2));
 	BuildRenderData(RenderInstanceData, PerInstanceRenderData->HitProxies);
 	PerInstanceRenderData->UpdateFromPreallocatedData(RenderInstanceData);
 }
 
+bool UInstancedStaticMeshComponent::IsHLODRelevant() const
+{
+	if (GetInstanceCount() == 0)
+	{
+		return false;
+	}
+
+	return Super::IsHLODRelevant();
+}
+
+void UInstancedStaticMeshComponent::SendRenderInstanceData_Concurrent()
+{
+	Super::SendRenderInstanceData_Concurrent();
+
+	// If the primitive isn't hidden update its transform.
+	const bool bDetailModeAllowsRendering = DetailMode <= GetCachedScalabilityCVars().DetailMode;
+	if (InstanceUpdateCmdBuffer.NumTotalCommands() && bDetailModeAllowsRendering && (ShouldRender() || bCastHiddenShadow || bRayTracingFarField))
+	{
+		UpdateBounds();
+
+		// Update the scene info's transform for this primitive.
+		GetWorld()->Scene->UpdatePrimitiveInstances(this);
+		InstanceUpdateCmdBuffer.Reset();
+	}
+}
+
+FBodyInstance* UInstancedStaticMeshComponent::GetBodyInstance(FName BoneName, bool bGetWelded, int32 Index) const
+{
+	if (Index != INDEX_NONE && IsValidInstance(Index))
+	{
+		return const_cast<FBodyInstance*>(InstanceBodies[Index]);
+	}
+	return  const_cast<FBodyInstance*>(&BodyInstance); // If no index is specified we return the primitive component body instance instead
+}
+
 FPrimitiveSceneProxy* UInstancedStaticMeshComponent::CreateSceneProxy()
 {
+	static const auto NaniteProxyRenderModeVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.ProxyRenderMode"));
+	const int32 NaniteProxyRenderMode = (NaniteProxyRenderModeVar != nullptr) ? (NaniteProxyRenderModeVar->GetInt() != 0) : 0;
+
 	LLM_SCOPE(ELLMTag::InstancedMesh);
+
 	ProxySize = 0;
 
 	// Verify that the mesh is valid before using it.
-	const bool bMeshIsValid = 
+	const bool bMeshIsValid =
 		// make sure we have instances
 		PerInstanceSMData.Num() > 0 &&
-		// make sure we have an actual staticmesh
+		// make sure we have an actual static mesh
 		GetStaticMesh() &&
-		GetStaticMesh()->HasValidRenderData() &&
-		// You really can't use hardware instancing on the consoles with multiple elements because they share the same index buffer. 
-		// @todo: Level error or something to let LDs know this
-		1;//GetStaticMesh()->LODModels(0).Elements.Num() == 1;
+		GetStaticMesh()->IsCompiling() == false &&
+		GetStaticMesh()->HasValidRenderData();
 
-	if(bMeshIsValid)
+	if (bMeshIsValid)
 	{
 		check(InstancingRandomSeed != 0);
 		
@@ -1828,16 +2271,37 @@ FPrimitiveSceneProxy* UInstancedStaticMeshComponent::CreateSceneProxy()
 		// generally happens only in editor 
 		if (InstanceUpdateCmdBuffer.NumTotalCommands() != 0)
 		{
-			FlushInstanceUpdateCommands();
+			FlushInstanceUpdateCommands(true);
 		}
 		
 		ProxySize = PerInstanceRenderData->ResourceSize;
-		return ::new FInstancedStaticMeshSceneProxy(this, GetWorld()->FeatureLevel);
+
+		// Is Nanite supported, and is there built Nanite data for this static mesh?
+		if (ShouldCreateNaniteProxy())
+		{
+			return ::new Nanite::FSceneProxy(this);
+		}
+		// If we didn't get a proxy, but Nanite was enabled on the asset when it was built, evaluate proxy creation
+		else if (GetStaticMesh()->HasValidNaniteData() && NaniteProxyRenderMode != 0)
+		{
+			// Do not render Nanite proxy
+			return nullptr;
+		}
+		else
+		{
+			return ::new FInstancedStaticMeshSceneProxy(this, GetWorld()->FeatureLevel);
+		}
 	}
 	else
 	{
-		return NULL;
+		return nullptr;
 	}
+}
+
+FMatrix UInstancedStaticMeshComponent::GetRenderMatrix() const
+{
+	// Apply the translated space to the render matrix.
+	return (FTransform(GetTranslatedInstanceSpaceOrigin()) * GetComponentTransform()).ToMatrixWithScale();
 }
 
 void UInstancedStaticMeshComponent::CreateHitProxyData(TArray<TRefCountPtr<HHitProxy>>& HitProxies)
@@ -1888,7 +2352,12 @@ void UInstancedStaticMeshComponent::BuildRenderData(FStaticMeshInstanceData& Out
 	
 	check(InstancingRandomSeed != 0);
 	FRandomStream RandomStream = FRandomStream(InstancingRandomSeed);
+
+	auto AdditionalRandomSeedsIt = AdditionalRandomSeeds.CreateIterator();
+	int32 SeedResetIndex = AdditionalRandomSeedsIt ? AdditionalRandomSeedsIt->StartInstanceIndex : INDEX_NONE;
 	
+	const FVector TranslatedInstanceSpaceOffset = -GetTranslatedInstanceSpaceOrigin();
+
 	for (int32 Index = 0; Index < NumInstances; ++Index)
 	{
 		const int32 RenderIndex = GetRenderIndex(Index);
@@ -1897,22 +2366,31 @@ void UInstancedStaticMeshComponent::BuildRenderData(FStaticMeshInstanceData& Out
 			// could be skipped by density settings
 			continue;
 		}
-			
+
+		// Reset the random stream if necessary
+		if (Index == SeedResetIndex)
+		{
+			RandomStream = FRandomStream(AdditionalRandomSeedsIt->RandomSeed);
+			AdditionalRandomSeedsIt++;
+			SeedResetIndex = AdditionalRandomSeedsIt ? AdditionalRandomSeedsIt->StartInstanceIndex : INDEX_NONE;
+		}
+
 		const FInstancedStaticMeshInstanceData& InstanceData = PerInstanceSMData[Index];
 		FVector2D LightmapUVBias = FVector2D(-1.0f, -1.0f);
 		FVector2D ShadowmapUVBias = FVector2D(-1.0f, -1.0f);
 
 		if (MeshMapBuildData != nullptr && MeshMapBuildData->PerInstanceLightmapData.IsValidIndex(Index))
 		{
-			LightmapUVBias = MeshMapBuildData->PerInstanceLightmapData[Index].LightmapUVBias;
-			ShadowmapUVBias = MeshMapBuildData->PerInstanceLightmapData[Index].ShadowmapUVBias;
+			LightmapUVBias = FVector2D(MeshMapBuildData->PerInstanceLightmapData[Index].LightmapUVBias);
+			ShadowmapUVBias = FVector2D(MeshMapBuildData->PerInstanceLightmapData[Index].ShadowmapUVBias);
 		}
 	
-		OutData.SetInstance(RenderIndex, InstanceData.Transform, RandomStream.GetFraction(), LightmapUVBias, ShadowmapUVBias);
+		// LWC_TODO: Precision loss here is compensated for by use of TranslatedInstanceSpaceOffset.
+		OutData.SetInstance(RenderIndex, FMatrix44f(InstanceData.Transform.ConcatTranslation(TranslatedInstanceSpaceOffset)), RandomStream.GetFraction(), LightmapUVBias, ShadowmapUVBias);
 
-		for (int32 i = 0; i < NumCustomDataFloats; ++i)
+		for (int32 CustomDataIndex = 0; CustomDataIndex < NumCustomDataFloats; ++CustomDataIndex)
 		{
-			OutData.SetInstanceCustomData(RenderIndex, i, PerInstanceSMCustomData[Index * NumCustomDataFloats + i]);
+			OutData.SetInstanceCustomData(RenderIndex, CustomDataIndex, PerInstanceSMCustomData[Index * NumCustomDataFloats + CustomDataIndex]);
 		}
 
 #if WITH_EDITOR
@@ -1966,7 +2444,9 @@ void UInstancedStaticMeshComponent::InitInstanceBody(int32 InstanceIdx, FBodyIns
 
 void UInstancedStaticMeshComponent::CreateAllInstanceBodies()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UInstancedStaticMeshComponent::CreateAllInstanceBodies);
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_UInstancedStaticMeshComponent_CreateAllInstanceBodies);
+	STAT(FScopeCycleCounter Context(StatId);)
 
 	const int32 NumBodies = PerInstanceSMData.Num();
 	check(InstanceBodies.Num() == 0);
@@ -2036,6 +2516,8 @@ void UInstancedStaticMeshComponent::CreateAllInstanceBodies()
 void UInstancedStaticMeshComponent::ClearAllInstanceBodies()
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_UInstancedStaticMeshComponent_ClearAllInstanceBodies);
+	STAT(FScopeCycleCounter Context(StatId);)
+
 	for (int32 i = 0; i < InstanceBodies.Num(); i++)
 	{
 		if (InstanceBodies[i])
@@ -2051,6 +2533,7 @@ void UInstancedStaticMeshComponent::ClearAllInstanceBodies()
 
 void UInstancedStaticMeshComponent::OnCreatePhysicsState()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UInstancedStaticMeshComponent::OnCreatePhysicsState)
 	check(InstanceBodies.Num() == 0);
 
 	FPhysScene* PhysScene = GetWorld()->GetPhysicsScene();
@@ -2315,6 +2798,11 @@ void UInstancedStaticMeshComponent::ApplyLightMapping(FStaticLightingTextureMapp
 		MarkRenderStateDirty();
 	}
 }
+
+FBox UInstancedStaticMeshComponent::GetStreamingBounds() const
+{
+	return (GetStaticMesh() && PerInstanceSMData.Num()) ? Super::GetStreamingBounds() : FBox(ForceInit);
+}
 #endif
 
 void UInstancedStaticMeshComponent::ReleasePerInstanceRenderData()
@@ -2363,9 +2851,9 @@ void UInstancedStaticMeshComponent::GetLightAndShadowMapMemoryUsage( int32& Ligh
 // Deprecated version of PerInstanceSMData
 struct FInstancedStaticMeshInstanceData_DEPRECATED
 {
-	FMatrix Transform;
-	FVector2D LightmapUVBias;
-	FVector2D ShadowmapUVBias;
+	FMatrix44f Transform;
+	FVector2f LightmapUVBias;
+	FVector2f ShadowmapUVBias;
 	
 	friend FArchive& operator<<(FArchive& Ar, FInstancedStaticMeshInstanceData_DEPRECATED& InstanceData)
 	{
@@ -2424,7 +2912,7 @@ void UInstancedStaticMeshComponent::SerializeRenderData(FArchive& Ar)
 				// This will usually happen when having a BP adding instance through the construct script
 				if (PerInstanceRenderData->InstanceBuffer.GetNumInstances() != PerInstanceSMData.Num() || InstanceUpdateCmdBuffer.NumTotalCommands() > 0)
 				{
-					FlushInstanceUpdateCommands();
+					FlushInstanceUpdateCommands(true);
 					MarkRenderStateDirty();
 				}
 			}
@@ -2512,13 +3000,13 @@ void UInstancedStaticMeshComponent::Serialize(FArchive& Ar)
 		DeprecatedData.BulkSerialize(Ar);
 		PerInstanceSMData.Reset(DeprecatedData.Num());
 		Algo::Transform(DeprecatedData, PerInstanceSMData, [](const FInstancedStaticMeshInstanceData_DEPRECATED& OldData){ 
-			return FInstancedStaticMeshInstanceData(OldData.Transform);
+			return FInstancedStaticMeshInstanceData(FMatrix(OldData.Transform));
 		});
 	}
 	else
 #endif //WITH_EDITOR
 	{
-		PerInstanceSMData.BulkSerialize(Ar);
+		PerInstanceSMData.BulkSerialize(Ar, Ar.UEVer() < EUnrealEngineObjectUE5Version::LARGE_WORLD_COORDINATES); 
 	}
 
 	if (!Ar.IsLoading() || Ar.CustomVer(FRenderingObjectVersion::GUID) >= FRenderingObjectVersion::PerInstanceCustomData)
@@ -2545,16 +3033,17 @@ void UInstancedStaticMeshComponent::PreAllocateInstancesMemory(int32 AddedInstan
 	PerInstanceSMCustomData.Reserve(PerInstanceSMCustomData.Num() + AddedInstanceCount * NumCustomDataFloats);
 }
 
-int32 UInstancedStaticMeshComponent::AddInstanceInternal(int32 InstanceIndex, FInstancedStaticMeshInstanceData* InNewInstanceData, const FTransform& InstanceTransform)
+int32 UInstancedStaticMeshComponent::AddInstanceInternal(int32 InstanceIndex, FInstancedStaticMeshInstanceData* InNewInstanceData, const FTransform& InstanceTransform, bool bWorldSpace)
 {
 	FInstancedStaticMeshInstanceData* NewInstanceData = InNewInstanceData;
 
 	if (NewInstanceData == nullptr)
 	{
-		NewInstanceData = new(PerInstanceSMData) FInstancedStaticMeshInstanceData();
+		NewInstanceData = &PerInstanceSMData.AddDefaulted_GetRef();
 	}
 
-	SetupNewInstanceData(*NewInstanceData, InstanceIndex, InstanceTransform);
+	const FTransform LocalTransform = bWorldSpace ? InstanceTransform.GetRelativeTransform(GetComponentTransform()) : InstanceTransform;
+	SetupNewInstanceData(*NewInstanceData, InstanceIndex, LocalTransform);
 
 	// Add custom data to instance
 	PerInstanceSMCustomData.AddZeroed(NumCustomDataFloats);
@@ -2568,19 +3057,27 @@ int32 UInstancedStaticMeshComponent::AddInstanceInternal(int32 InstanceIndex, FI
 
 	PartialNavigationUpdate(InstanceIndex);
 
+	if (FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.IsBound())
+	{
+		FInstancedStaticMeshDelegates::FInstanceIndexUpdateData IndexUpdate{ FInstancedStaticMeshDelegates::EInstanceIndexUpdateType::Added, InstanceIndex };
+		FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.Broadcast(this, MakeArrayView(&IndexUpdate, 1));
+	}
+
 	InstanceUpdateCmdBuffer.Edit();
 	MarkRenderStateDirty();
 
 	return InstanceIndex;
 }
 
-int32 UInstancedStaticMeshComponent::AddInstance(const FTransform& InstanceTransform)
+int32 UInstancedStaticMeshComponent::AddInstance(const FTransform& InstanceTransform, bool bWorldSpace)
 {
-	return AddInstanceInternal(PerInstanceSMData.Num(), nullptr, InstanceTransform);
+	return AddInstanceInternal(PerInstanceSMData.Num(), nullptr, InstanceTransform, bWorldSpace);
 }
 
-TArray<int32> UInstancedStaticMeshComponent::AddInstancesInternal(int32 Count, const TArray<FTransform>& InstanceTransforms, bool bShouldReturnIndices)
+TArray<int32> UInstancedStaticMeshComponent::AddInstancesInternal(const TArray<FTransform>& InstanceTransforms, bool bShouldReturnIndices, bool bWorldSpace)
 {
+	const int32 Count = InstanceTransforms.Num();
+
 	TArray<int32> NewInstanceIndices;
 
 	if (bShouldReturnIndices)
@@ -2596,11 +3093,12 @@ TArray<int32> UInstancedStaticMeshComponent::AddInstancesInternal(int32 Count, c
 	SelectedInstances.Add(false, Count);
 #endif
 
-	for (int32 i = 0; i < Count; ++i)
+	for (const FTransform& InstanceTransform : InstanceTransforms)
 	{
-		FInstancedStaticMeshInstanceData* NewInstanceData = new(PerInstanceSMData) FInstancedStaticMeshInstanceData();
+		FInstancedStaticMeshInstanceData& NewInstanceData = PerInstanceSMData.AddDefaulted_GetRef();
 
-		SetupNewInstanceData(*NewInstanceData, InstanceIndex, InstanceTransforms[i]);
+		const FTransform LocalTransform = bWorldSpace ? InstanceTransform.GetRelativeTransform(GetComponentTransform()) : InstanceTransform;
+		SetupNewInstanceData(NewInstanceData, InstanceIndex, LocalTransform);
 
 		if (bShouldReturnIndices)
 		{
@@ -2610,6 +3108,12 @@ TArray<int32> UInstancedStaticMeshComponent::AddInstancesInternal(int32 Count, c
 		if (SupportsPartialNavigationUpdate())
 		{
 			PartialNavigationUpdate(InstanceIndex);
+		}
+
+		if (FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.IsBound())
+		{
+			FInstancedStaticMeshDelegates::FInstanceIndexUpdateData IndexUpdate{ FInstancedStaticMeshDelegates::EInstanceIndexUpdateType::Added, InstanceIndex };
+			FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.Broadcast(this, MakeArrayView(&IndexUpdate, 1));
 		}
 
 		++InstanceIndex;
@@ -2628,16 +3132,9 @@ TArray<int32> UInstancedStaticMeshComponent::AddInstancesInternal(int32 Count, c
 	return NewInstanceIndices;
 }
 
-TArray<int32> UInstancedStaticMeshComponent::AddInstances(const TArray<FTransform>& InstanceTransforms, bool bShouldReturnIndices)
+TArray<int32> UInstancedStaticMeshComponent::AddInstances(const TArray<FTransform>& InstanceTransforms, bool bShouldReturnIndices, bool bWorldSpace)
 {
-	return AddInstancesInternal(InstanceTransforms.Num(), InstanceTransforms, bShouldReturnIndices);
-}
-
-int32 UInstancedStaticMeshComponent::AddInstanceWorldSpace(const FTransform& WorldTransform)
- {
-	// Transform from world space to local space
-	FTransform RelativeTM = WorldTransform.GetRelativeTransform(GetComponentTransform());
-	return AddInstance(RelativeTM);
+	return AddInstancesInternal(InstanceTransforms, bShouldReturnIndices, bWorldSpace);
 }
 
 // Per Instance Custom Data - Updating custom data for specific instance
@@ -2691,12 +3188,12 @@ bool UInstancedStaticMeshComponent::SetCustomData(int32 InstanceIndex, const TAr
 
 bool UInstancedStaticMeshComponent::RemoveInstanceInternal(int32 InstanceIndex, bool InstanceAlreadyRemoved)
 {
-	// Request navigation update
-	PartialNavigationUpdate(InstanceIndex);
-
 	// remove instance
 	if (!InstanceAlreadyRemoved && PerInstanceSMData.IsValidIndex(InstanceIndex))
 	{
+		// Request navigation update
+		PartialNavigationUpdate(InstanceIndex);
+
 		PerInstanceSMData.RemoveAt(InstanceIndex);
 		PerInstanceSMCustomData.RemoveAt(InstanceIndex * NumCustomDataFloats, NumCustomDataFloats);
 	}
@@ -2728,6 +3225,22 @@ bool UInstancedStaticMeshComponent::RemoveInstanceInternal(int32 InstanceIndex, 
 		}
 	}
 
+	// Notify that these instances have been removed/relocated
+	if (FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.IsBound())
+	{
+		TArray<FInstancedStaticMeshDelegates::FInstanceIndexUpdateData, TInlineAllocator<128>> IndexUpdates;
+		IndexUpdates.Reserve(1 + (PerInstanceSMData.Num() - InstanceIndex));
+
+		IndexUpdates.Add(FInstancedStaticMeshDelegates::FInstanceIndexUpdateData{ FInstancedStaticMeshDelegates::EInstanceIndexUpdateType::Removed, InstanceIndex });
+		for (int32 MovedInstanceIndex = InstanceIndex; MovedInstanceIndex < PerInstanceSMData.Num(); ++MovedInstanceIndex)
+		{
+			// ISMs use standard remove, so each instance above our removal point is shuffled down by 1
+			IndexUpdates.Add(FInstancedStaticMeshDelegates::FInstanceIndexUpdateData{ FInstancedStaticMeshDelegates::EInstanceIndexUpdateType::Relocated, MovedInstanceIndex, MovedInstanceIndex + 1 });
+		}
+
+		FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.Broadcast(this, IndexUpdates);
+	}
+
 	// Force recreation of the render data
 	InstanceUpdateCmdBuffer.Edit();
 	MarkRenderStateDirty();
@@ -2737,6 +3250,25 @@ bool UInstancedStaticMeshComponent::RemoveInstanceInternal(int32 InstanceIndex, 
 bool UInstancedStaticMeshComponent::RemoveInstance(int32 InstanceIndex)
 {
 	return RemoveInstanceInternal(InstanceIndex, false);
+}
+
+bool UInstancedStaticMeshComponent::RemoveInstances(const TArray<int32>& InstancesToRemove)
+{
+	// Sort so Remove doesn't alter the indices of items still to remove
+	TArray<int32> SortedInstancesToRemove = InstancesToRemove;
+	SortedInstancesToRemove.Sort(TGreater<int32>());
+
+	if (!PerInstanceSMData.IsValidIndex(SortedInstancesToRemove[0]) || !PerInstanceSMData.IsValidIndex(SortedInstancesToRemove.Last()))
+	{
+		return false;
+	}
+
+	for (const int32 InstanceIndex : SortedInstancesToRemove)
+	{
+		RemoveInstanceInternal(InstanceIndex, false);
+	}
+
+	return true;
 }
 
 bool UInstancedStaticMeshComponent::GetInstanceTransform(int32 InstanceIndex, FTransform& OutInstanceTransform, bool bWorldSpace) const
@@ -2756,6 +3288,25 @@ bool UInstancedStaticMeshComponent::GetInstanceTransform(int32 InstanceIndex, FT
 
 	return true;
 }
+
+bool UInstancedStaticMeshComponent::GetInstancePrevTransform(int32 InstanceIndex, FTransform& OutInstanceTransform, bool bWorldSpace) const
+{
+	if (!PerInstancePrevTransform.IsValidIndex(InstanceIndex))
+	{
+		return false;
+	}
+
+	const FMatrix& InstanceData = PerInstancePrevTransform[InstanceIndex];
+
+	OutInstanceTransform = FTransform(InstanceData);
+	if (bWorldSpace)
+	{
+		OutInstanceTransform = OutInstanceTransform * GetComponentTransform();
+	}
+
+	return true;
+}
+
 
 void UInstancedStaticMeshComponent::OnUpdateTransform(EUpdateTransformFlags UpdateTransformFlags, ETeleportType Teleport)
 {
@@ -2848,8 +3399,300 @@ bool UInstancedStaticMeshComponent::UpdateInstanceTransform(int32 InstanceIndex,
 	return true;
 }
 
+bool UInstancedStaticMeshComponent::BatchUpdateInstancesTransforms(int32 StartInstanceIndex, const TArray<FTransform>& NewInstancesTransforms, const TArray<FTransform>& NewInstancesPrevTransforms, bool bWorldSpace, bool bMarkRenderStateDirty, bool bTeleport)
+{
+	// Number of current and prev transforms must match 
+	check(NewInstancesTransforms.Num() == NewInstancesPrevTransforms.Num());
+
+	// Early out if trying to update an invalid range
+	if (!PerInstanceSMData.IsValidIndex(StartInstanceIndex) || !PerInstanceSMData.IsValidIndex(StartInstanceIndex + NewInstancesTransforms.Num() - 1))
+	{
+		return false;
+	}
+
+	// If the new transform index range is ok for PerInstanceSMData, it must also be ok for PerInstancePrevTransform
+	check(PerInstancePrevTransform.IsValidIndex(StartInstanceIndex) && PerInstancePrevTransform.IsValidIndex(StartInstanceIndex + NewInstancesPrevTransforms.Num() - 1));
+
+	Modify();
+
+	for (int32 Index = 0; Index < NewInstancesTransforms.Num(); Index++)
+	{
+		const int32 InstanceIndex = StartInstanceIndex + Index;
+
+		const FTransform& NewInstanceTransform = NewInstancesTransforms[Index];
+		const FTransform& NewInstancePrevTransform = NewInstancesPrevTransforms[Index];
+
+		FInstancedStaticMeshInstanceData& InstanceData = PerInstanceSMData[InstanceIndex];
+		FMatrix& PrevInstanceData = PerInstancePrevTransform[InstanceIndex];
+
+		// TODO: Computing LocalTransform is useless when we're updating the world location for the entire mesh.
+		// Should find some way around this for performance.
+
+		// Render data uses local transform of the instance
+		FTransform LocalTransform = bWorldSpace ? NewInstanceTransform.GetRelativeTransform(GetComponentTransform()) : NewInstanceTransform;
+		InstanceData.Transform = LocalTransform.ToMatrixWithScale();
+
+		FTransform LocalPrevTransform = bWorldSpace ? NewInstancePrevTransform.GetRelativeTransform(GetComponentTransform()) : NewInstancePrevTransform;
+		PrevInstanceData = LocalPrevTransform.ToMatrixWithScale();
+
+		if (bPhysicsStateCreated)
+		{
+			// Physics uses world transform of the instance
+			FTransform WorldTransform = bWorldSpace ? NewInstanceTransform : (LocalTransform * GetComponentTransform());
+			UpdateInstanceBodyTransform(InstanceIndex, WorldTransform, bTeleport);
+		}
+
+		
+	}
+
+	// Request navigation update - Execute on a single index as it updates everything anyway
+	PartialNavigationUpdate(StartInstanceIndex);
+
+	// Force recreation of the render data when proxy is created
+	InstanceUpdateCmdBuffer.Edit();
+
+	if (bMarkRenderStateDirty || NewInstancesPrevTransforms.Num() > 0) // Hack: force invalidation since that's the only way to update the prev tansform on the render thread (proxy constructors)
+	{
+		MarkRenderStateDirty();
+	}
+
+	return true;
+}
+
+bool UInstancedStaticMeshComponent::UpdateInstances(
+	const TArray<int32>& UpdateInstanceIds,
+	const TArray<FTransform>& UpdateInstanceTransforms,
+	const TArray<FTransform>& UpdateInstancePreviousTransforms,
+	int32 InNumCustomDataFloats,
+	const TArray<float>& CustomFloatData)
+{
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(UInstancedStaticMeshComponent_UpdateInstances);
+	TRACE_CPUPROFILER_EVENT_SCOPE_STR("UInstancedStaticMeshComponent::UpdateInstances");
+
+	const float EqualTolerance = 1e-6;
+
+	if (UpdateInstanceIds.Num() != UpdateInstanceTransforms.Num())
+	{
+		UE_LOG(LogStaticMesh, Warning, TEXT("Add instances to ISM has missmatched update arrays.  UpdateInstanceIds and UpdateInstanceTransforms should match."));
+		return false;
+	}
+
+	if (UpdateInstanceTransforms.Num() != UpdateInstancePreviousTransforms.Num())
+	{
+		UE_LOG(LogStaticMesh, Warning, TEXT("Add instances to ISM has missmatched update arrays.  Current transform and previous transform arrays should match."));
+		return false;
+	}
+
+	if (InNumCustomDataFloats > 0)
+	{
+		if ((CustomFloatData.Num() / InNumCustomDataFloats) != UpdateInstanceIds.Num())
+		{
+			UE_LOG(LogStaticMesh, Warning, TEXT("CustomFloatData only contains %d entires.  Which is not enough for NumCustomFloat count %d * %d instances."), CustomFloatData.Num(), InNumCustomDataFloats, UpdateInstanceIds.Num());
+			return false;
+		}
+	}
+
+	const int32 NewNumInstances = UpdateInstanceIds.Num();
+	const int32 PreviousNumInstances = PerInstanceSMData.Num();
+
+	// If we didn't have any instances and there are no new instances
+	// skip doing any work.
+	if (PreviousNumInstances == 0 && NewNumInstances == 0)
+	{
+		return false;
+	}
+
+	Modify();
+
+#if (CSV_PROFILER)
+	int32 TotalSizeUpdateBytes = 0;
+#endif
+
+	// Need to empty the command buffer if it already has values.
+	// If this function is called multiple times the last set of values will take
+	// precedence.  Due to the way MarkRenderTransformDirty() works the primitive will
+	// only be processed once.
+	InstanceUpdateCmdBuffer.Reset();
+
+	// Cache the previous num custom data floats so if we have to remove floats we remove at the 
+	// old value.
+	const int32 PrevNumCustomDataFloats = NumCustomDataFloats;
+
+	InstanceUpdateCmdBuffer.NumCustomDataFloats = NumCustomDataFloats = InNumCustomDataFloats;
+
+	const bool bPreviouslyHadCustomFloatData = PrevNumCustomDataFloats > 0;
+	const bool bHasCustomFloatData = InstanceUpdateCmdBuffer.NumCustomDataFloats > 0;
+
+	// if we already have values we need to update, remove, and add.
+	TArray<int32> OldInstanceIds(PerInstanceIds);
+
+	// Apply updates
+	for (int32 i = 0; i < UpdateInstanceIds.Num(); ++i)
+	{
+		// This is an update.
+		const int32 InstanceId = UpdateInstanceIds[i];
+		int32* pInstanceIndex = InstanceIdToInstanceIndexMap.Find(InstanceId);
+		if (pInstanceIndex != nullptr)
+		{
+			const int32 InstanceIndex = *pInstanceIndex;
+
+			// Determine what data changed.
+
+			// Did the transform actually change?
+			// Explicitly check the component's previous transform for this instance because this 
+			// is the position we were previously rendered at.
+			FMatrix NewInstanceTransformMatrix = UpdateInstanceTransforms[i].ToMatrixWithScale();
+			if (Mobility == EComponentMobility::Movable && !PerInstanceSMData[InstanceIndex].Transform.Equals(NewInstanceTransformMatrix, EqualTolerance))
+			{
+				// Update the component's data in place.
+				PerInstanceSMData[InstanceIndex] = NewInstanceTransformMatrix;
+				PerInstancePrevTransform[InstanceIndex] = UpdateInstancePreviousTransforms[i].ToMatrixWithScale();
+
+				// Record in a command buffer for future use.
+				InstanceUpdateCmdBuffer.UpdateInstance(InstanceIndex, PerInstanceSMData[InstanceIndex].Transform, PerInstancePrevTransform[InstanceIndex]);
+
+#if (CSV_PROFILER)
+				// We are updating a current and previous transform.
+				TotalSizeUpdateBytes += (sizeof(FTransform) + sizeof(FTransform));
+#endif
+			}
+
+			// Did the custom data actually change?
+			if (bHasCustomFloatData && Mobility != EComponentMobility::Static)
+			{
+				// We are updating an existing instance.  They should have the same custom float data count.
+				check(NumCustomDataFloats == PrevNumCustomDataFloats);
+
+				const int32 CustomDataOffset = InstanceIndex * NumCustomDataFloats;
+				const int32 SrcCustomDataOffset = i * NumCustomDataFloats;
+				for (int32 FloatIndex = 0; FloatIndex < NumCustomDataFloats; ++FloatIndex)
+				{
+					if (FMath::Abs(CustomFloatData[SrcCustomDataOffset + FloatIndex] - PerInstanceSMCustomData[CustomDataOffset + FloatIndex]) > EqualTolerance)
+					{
+						// Update the component's data in place.
+						FMemory::Memcpy(&PerInstanceSMCustomData[CustomDataOffset], &CustomFloatData[SrcCustomDataOffset], NumCustomDataFloats * sizeof(float));
+
+						// Record in a command buffer for future use.
+						InstanceUpdateCmdBuffer.SetCustomData(InstanceIndex, MakeArrayView((const float*)&CustomFloatData[SrcCustomDataOffset], NumCustomDataFloats));
+
+#if (CSV_PROFILER)
+						TotalSizeUpdateBytes += NumCustomDataFloats * sizeof(float);
+#endif
+						break;
+					}
+				}
+			}
+
+			// Mark this index as one we've updated.
+			OldInstanceIds[InstanceIndex] = INDEX_NONE;
+		}
+		else
+		{
+			// This is an add.
+			const int32 SrcCustomDataOffset = i * NumCustomDataFloats;
+			InstanceUpdateCmdBuffer.AddInstance(InstanceId, UpdateInstanceTransforms[i].ToMatrixWithScale(), UpdateInstancePreviousTransforms[i].ToMatrixWithScale(), bHasCustomFloatData ? MakeArrayView((const float*)&CustomFloatData[SrcCustomDataOffset], NumCustomDataFloats) : TConstArrayView<float>());
+		}
+	}
+
+	// Inform the cmd buffer which instances were removed.
+	for (int32 InstanceIndex = 0; InstanceIndex < OldInstanceIds.Num(); ++InstanceIndex)
+	{
+		if (OldInstanceIds[InstanceIndex] != INDEX_NONE)
+		{
+			InstanceUpdateCmdBuffer.HideInstance(InstanceIndex);
+		}
+	}
+
+	// Remove instances to the component's data.
+	for (int32 InstanceIndex = 0; InstanceIndex < OldInstanceIds.Num(); ++InstanceIndex)
+	{
+		if (OldInstanceIds[InstanceIndex] != INDEX_NONE)
+		{
+			PerInstanceSMData.RemoveAtSwap(InstanceIndex, 1, false);
+			PerInstancePrevTransform.RemoveAtSwap(InstanceIndex, 1, false);
+			PerInstanceIds.RemoveAtSwap(InstanceIndex, 1, false);
+
+			// Only remove the custom float data from this instance if it previously had it.
+			if (bPreviouslyHadCustomFloatData)
+			{
+				PerInstanceSMCustomData.RemoveAtSwap((InstanceIndex * PrevNumCustomDataFloats), PrevNumCustomDataFloats, false);
+			}
+
+			OldInstanceIds.RemoveAtSwap(InstanceIndex, 1, false);
+			InstanceIndex--;
+		}
+	}
+
+	// Add new instances to the component's data.
+	for (const FInstanceUpdateCmdBuffer::FInstanceUpdateCommand& Cmd : InstanceUpdateCmdBuffer.Cmds)
+	{
+		if (Cmd.Type == FInstanceUpdateCmdBuffer::Add)
+		{
+			PerInstanceSMData.Add(Cmd.XForm);
+			PerInstancePrevTransform.Add(Cmd.PreviousXForm);
+			PerInstanceIds.Add(Cmd.InstanceId);
+
+			if (bHasCustomFloatData)
+			{
+				const int32 Index = PerInstanceSMCustomData.AddUninitialized(NumCustomDataFloats);
+				FMemory::Memcpy(&PerInstanceSMCustomData[Index], &Cmd.CustomDataFloats[0], NumCustomDataFloats * sizeof(float));
+			}
+		}
+	}
+
+	// Rebuild the mapping from ID to InstanceIndex.
+	InstanceIdToInstanceIndexMap.Reset();
+	for (int32 InstanceIndex = 0; InstanceIndex < PerInstanceIds.Num(); ++InstanceIndex)
+	{
+		InstanceIdToInstanceIndexMap.Add(PerInstanceIds[InstanceIndex], InstanceIndex);
+	}
+
+	// Ensure our data is in sync.
+	check(PerInstanceSMData.Num() == PerInstancePrevTransform.Num());
+	check(PerInstanceSMData.Num() == PerInstanceIds.Num());
+	check(PerInstanceSMCustomData.Num() == (NumCustomDataFloats * PerInstanceSMData.Num()));
+
+	// #todo (jnadro) InstanceIndex is ignored by this function so just pass zero.
+	PartialNavigationUpdate(0);
+
+	// #todo (jnadro) Updating the PerInstanceRenderData this way currently does not work.
+	// Updating the PerInstanceRenderData from the InstanceUpdateCmdBuffer causes
+	// the instances to be in a different order than what is in GPU scene.  This 
+	// causes all sorts of visual artifacts because custom float data doesn't match
+	// with the tranforms in GPU Scene.
+	// PerInstanceRenderData->UpdateFromCommandBuffer(InstanceUpdateCmdBuffer, false);
+
+	// if instance data was modified update it.  This pulls data directly
+	// from the component which we have updated above.
+	if (InstanceUpdateCmdBuffer.NumTotalCommands() != 0)
+	{
+		FlushInstanceUpdateCommands(false);
+	}
+
+	MarkRenderInstancesDirty();
+
+#if (CSV_PROFILER)
+	const int32 TotalSizeBytes = (UpdateInstanceTransforms.Num() * UpdateInstanceTransforms.GetTypeSize()) +
+								 (UpdateInstancePreviousTransforms.Num() * UpdateInstancePreviousTransforms.GetTypeSize()) +
+								 (CustomFloatData.Num() * CustomFloatData.GetTypeSize());
+
+	static const FName NumInstancesUpdated(TEXT("NumInstancesUpdated"));
+	static const FName NumBytesSubmitted(TEXT("NumBytesSubmitted"));
+	static const FName NumBytesUpdated(TEXT("NumBytesUpdated"));
+
+	FCsvProfiler::Get()->RecordCustomStat(NumInstancesUpdated, CSV_CATEGORY_INDEX(InstancedStaticMeshComponent), PerInstanceSMData.Num(), ECsvCustomStatOp::Accumulate);
+	FCsvProfiler::Get()->RecordCustomStat(NumBytesSubmitted, CSV_CATEGORY_INDEX(InstancedStaticMeshComponent), TotalSizeBytes, ECsvCustomStatOp::Accumulate);
+	FCsvProfiler::Get()->RecordCustomStat(NumBytesUpdated, CSV_CATEGORY_INDEX(InstancedStaticMeshComponent), TotalSizeUpdateBytes, ECsvCustomStatOp::Accumulate);
+#endif
+
+	return true;
+}
+
 bool UInstancedStaticMeshComponent::BatchUpdateInstancesTransforms(int32 StartInstanceIndex, const TArray<FTransform>& NewInstancesTransforms, bool bWorldSpace, bool bMarkRenderStateDirty, bool bTeleport)
 {
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(UInstancedStaticMeshComponent_BatchUpdateInstancesTransforms);
+	TRACE_CPUPROFILER_EVENT_SCOPE_STR("UInstancedStaticMeshComponent::BatchUpdateInstancesTransforms");
+
 	if (!PerInstanceSMData.IsValidIndex(StartInstanceIndex) || !PerInstanceSMData.IsValidIndex(StartInstanceIndex + NewInstancesTransforms.Num() - 1))
 	{
 		return false;
@@ -2869,7 +3712,7 @@ bool UInstancedStaticMeshComponent::BatchUpdateInstancesTransforms(int32 StartIn
 		FTransform LocalTransform = bWorldSpace ? NewInstanceTransform.GetRelativeTransform(GetComponentTransform()) : NewInstanceTransform;
 		InstanceData.Transform = LocalTransform.ToMatrixWithScale();
 
-		if(bPhysicsStateCreated)
+		if (bPhysicsStateCreated)
 		{
 			// Physics uses world transform of the instance
 			FTransform WorldTransform = bWorldSpace ? NewInstanceTransform : (LocalTransform * GetComponentTransform());
@@ -3034,7 +3877,7 @@ TArray<int32> UInstancedStaticMeshComponent::GetInstancesOverlappingBox(const FB
 
 bool UInstancedStaticMeshComponent::ShouldCreatePhysicsState() const
 {
-	return IsRegistered() && !IsBeingDestroyed() && GetStaticMesh() && (bAlwaysCreatePhysicsState || IsCollisionEnabled());
+	return IsRegistered() && !IsBeingDestroyed() && GetStaticMesh() && !GetStaticMesh()->IsCompiling() && (bAlwaysCreatePhysicsState || IsCollisionEnabled());
 }
 
 float UInstancedStaticMeshComponent::GetTextureStreamingTransformScale() const
@@ -3079,12 +3922,12 @@ bool UInstancedStaticMeshComponent::GetMaterialStreamingData(int32 MaterialIndex
 	return MaterialData.IsValid();
 }
 
-bool UInstancedStaticMeshComponent::BuildTextureStreamingData(ETextureStreamingBuildType BuildType, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<FGuid>& DependentResources)
+bool UInstancedStaticMeshComponent::BuildTextureStreamingDataImpl(ETextureStreamingBuildType BuildType, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<FGuid>& DependentResources, bool& bOutSupportsBuildTextureStreamingData)
 {
 #if WITH_EDITORONLY_DATA // Only rebuild the data in editor 
 	if (GetInstanceCount() > 0)
 	{
-		return Super::BuildTextureStreamingData(BuildType, QualityLevel, FeatureLevel, DependentResources);
+		return Super::BuildTextureStreamingDataImpl(BuildType, QualityLevel, FeatureLevel, DependentResources, bOutSupportsBuildTextureStreamingData);
 	}
 #endif
 	return true;
@@ -3101,6 +3944,8 @@ void UInstancedStaticMeshComponent::GetStreamingRenderAssetInfo(FStreamingTextur
 
 void UInstancedStaticMeshComponent::ClearInstances()
 {
+	const int32 PrevNumInstances = GetInstanceCount();
+
 	// Clear all the per-instance data
 	PerInstanceSMData.Empty();
 	PerInstanceSMCustomData.Empty();
@@ -3117,12 +3962,24 @@ void UInstancedStaticMeshComponent::ClearInstances()
 	InstanceUpdateCmdBuffer.Edit();
 	MarkRenderStateDirty();
 
+	// Notify that these instances have been cleared
+	if (FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.IsBound())
+	{
+		FInstancedStaticMeshDelegates::FInstanceIndexUpdateData IndexUpdate{ FInstancedStaticMeshDelegates::EInstanceIndexUpdateType::Cleared, PrevNumInstances - 1 };
+		FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.Broadcast(this, MakeArrayView(&IndexUpdate, 1));
+	}
+
 	FNavigationSystem::UpdateComponentData(*this);
 }
 
 int32 UInstancedStaticMeshComponent::GetInstanceCount() const
 {
 	return PerInstanceSMData.Num();
+}
+
+bool UInstancedStaticMeshComponent::IsValidInstance(int32 InstanceIndex) const
+{
+	return PerInstanceSMData.IsValidIndex(InstanceIndex);
 }
 
 void UInstancedStaticMeshComponent::SetCullDistances(int32 StartCullDistance, int32 EndCullDistance)
@@ -3157,20 +4014,49 @@ void UInstancedStaticMeshComponent::SetupNewInstanceData(FInstancedStaticMeshIns
 
 static bool ComponentRequestsCPUAccess(UInstancedStaticMeshComponent* InComponent, ERHIFeatureLevel::Type FeatureLevel)
 {
-	if ((FeatureLevel > ERHIFeatureLevel::ES3_1) || IsMobileDistanceFieldEnabled(GMaxRHIShaderPlatform))
+	bool bNeedsCPUAccess = false;
+
+	// Ray tracing needs instance transforms on CPU
+	bNeedsCPUAccess |= IsRayTracingEnabled();
+
+	const UStaticMesh* StaticMesh = InComponent->GetStaticMesh();
+
+	// Check mesh distance fields
+	if (StaticMesh)
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GenerateMeshDistanceFields"));
+		if ((FeatureLevel > ERHIFeatureLevel::ES3_1) || IsMobileDistanceFieldEnabled(GMaxRHIShaderPlatform))
+		{
+			// Mirror the conditions used in the FPrimitiveSceneProxy since these are used in IncludePrimitiveInDistanceFieldSceneData in RendererScene.cpp to filter the 
+			// primitives that are included in the distance field scene. If these are not in sync, the host copy may be discarded and thus crashing in the distance field update.
+			auto ShaderPlatform = GetFeatureLevelShaderPlatform(FeatureLevel);
+			bNeedsCPUAccess |= PrimitiveNeedsDistanceFieldSceneData(
+				ShouldAllPrimitivesHaveDistanceField(ShaderPlatform),
+				/* bCastsDynamicIndirectShadow */ InComponent->bCastDynamicShadow && InComponent->CastShadow && InComponent->bCastDistanceFieldIndirectShadow && InComponent->Mobility != EComponentMobility::Static,
+				InComponent->bAffectDistanceFieldLighting,
+				true, /* conservatively overestimate DrawInGame - it has complex logic in the Proxy. */
+				InComponent->bCastHiddenShadow,
+				/* bCastsDynamicShadow */ InComponent->bCastDynamicShadow && InComponent->CastShadow && !InComponent->GetShadowIndirectOnly(),
+				InComponent->bAffectDynamicIndirectLighting);
+		}
 
-		bool bNeedsCPUAccess = (InComponent->CastShadow && InComponent->bAffectDistanceFieldLighting 
-			// Distance field algorithms need access to instance data on the CPU
-			&& (CVar->GetValueOnAnyThread(true) != 0 || (InComponent->GetStaticMesh() && InComponent->GetStaticMesh()->bGenerateMeshDistanceField)));
+		// Check Nanite
+		if (FeatureLevel >= ERHIFeatureLevel::SM5)
+		{
+			// TODO: Call UseNanite(GetScene()->GetShaderPlatform())?
+			//static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Nanite"));
 
-		// Ray tracing needs instance transforms on CPU
-		bNeedsCPUAccess |= IsRayTracingEnabled();
+		#if WITH_EDITOR
+			const bool bHasNaniteData = StaticMesh->NaniteSettings.bEnabled;
+		#else
+			const FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData();
+			const bool bHasNaniteData = RenderData->NaniteResources.PageStreamingStates.Num() > 0;
+		#endif
 
-		return bNeedsCPUAccess;
+			bNeedsCPUAccess |= bHasNaniteData;
+		}
 	}
-	return false;
+
+	return bNeedsCPUAccess;
 }
 
 void UInstancedStaticMeshComponent::GetInstancesMinMaxScale(FVector& MinScale, FVector& MaxScale) const
@@ -3216,15 +4102,21 @@ void UInstancedStaticMeshComponent::InitPerInstanceRenderData(bool InitializeFro
 	UWorld* World = GetWorld();
 	ERHIFeatureLevel::Type FeatureLevel = World != nullptr ? World->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
 
-	bool KeepInstanceBufferCPUAccess = GIsEditor || InRequireCPUAccess || ComponentRequestsCPUAccess(this, FeatureLevel);
+	bool KeepInstanceBufferCPUAccess = UseGPUScene(GetFeatureLevelShaderPlatform(FeatureLevel), FeatureLevel) || GIsEditor || InRequireCPUAccess || ComponentRequestsCPUAccess(this, FeatureLevel);
 	bool bTrackBounds = IsRayTracingEnabled() && bVisibleInRayTracing;
 
 	FBox LocalBounds;
 	GetLocalBounds(LocalBounds.Min, LocalBounds.Max);
 
+	// If Nanite is used, we should defer the upload to GPU as the Nanite proxy simply will skip this step.
+	// We can't just disable the upload, because at this point we can't know whether the Nanite proxy will be created in the end
+	// this depends on the static mesh which may still be compiling/loading.
+	// TODO: Perhaps make this specific to if this ISM actually has Nanite (if this can be detected reliably at this point) 
+	const bool bDeferGPUUpload = UseNanite(GetFeatureLevelShaderPlatform(FeatureLevel));
+
 	if (InSharedInstanceBufferData != nullptr)
 	{
-		PerInstanceRenderData = MakeShareable(new FPerInstanceRenderData(*InSharedInstanceBufferData, FeatureLevel, KeepInstanceBufferCPUAccess, LocalBounds, bTrackBounds));
+		PerInstanceRenderData = MakeShareable(new FPerInstanceRenderData(*InSharedInstanceBufferData, FeatureLevel, KeepInstanceBufferCPUAccess, LocalBounds, bTrackBounds, bDeferGPUUpload));
 	}
 	else
 	{
@@ -3237,8 +4129,8 @@ void UInstancedStaticMeshComponent::InitPerInstanceRenderData(bool InitializeFro
 			InstanceUpdateCmdBuffer.Reset(); 
 			BuildRenderData(InstanceBufferData, HitProxies);
 		}
-			
-		PerInstanceRenderData = MakeShareable(new FPerInstanceRenderData(InstanceBufferData, FeatureLevel, KeepInstanceBufferCPUAccess, LocalBounds, bTrackBounds));
+		
+		PerInstanceRenderData = MakeShareable(new FPerInstanceRenderData(InstanceBufferData, FeatureLevel, KeepInstanceBufferCPUAccess, LocalBounds, bTrackBounds, bDeferGPUUpload));
 		PerInstanceRenderData->HitProxies = MoveTemp(HitProxies);
 	}
 }
@@ -3261,12 +4153,24 @@ void UInstancedStaticMeshComponent::PostLoad()
 {
 	Super::PostLoad();
 
+	// Ensure we have the proper amount of per instance custom float data.
+	// We have instances, and we have custom float data per instance, but we don't have custom float data allocated.
+	if (PerInstanceSMData.Num() > 0 && 
+		PerInstanceSMCustomData.Num() == 0 &&
+		NumCustomDataFloats > 0)
+	{
+		UE_LOG(LogStaticMesh, Warning, TEXT("%s has %d instances, and %d NumCustomDataFloats, but no PerInstanceSMCustomData.  Allocating %d custom floats."), *GetFullName(), PerInstanceSMData.Num(), NumCustomDataFloats, PerInstanceSMData.Num() * NumCustomDataFloats);
+		PerInstanceSMCustomData.AddZeroed(PerInstanceSMData.Num() * NumCustomDataFloats);
+	}
+
 	// Has different implementation in HISMC
 	OnPostLoadPerInstanceData();
 }
 
 void UInstancedStaticMeshComponent::OnPostLoadPerInstanceData()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UInstancedStaticMeshComponent::OnPostLoadPerInstanceData);
+
 	if (!HasAnyFlags(RF_ClassDefaultObject|RF_ArchetypeObject))
 	{
 		InitPerInstanceRenderData(true, InstanceDataBuffers.Get());
@@ -3281,8 +4185,9 @@ void UInstancedStaticMeshComponent::OnPostLoadPerInstanceData()
 		{
 			ULevel* OwnerLevel = Owner->GetLevel();
 			UWorld* OwnerWorld = OwnerLevel ? OwnerLevel->OwningWorld : nullptr;
+			ULevel* ActiveLightingScenario = OwnerWorld ? OwnerWorld->GetActiveLightingScenario() : nullptr;
 
-			if (OwnerWorld && OwnerWorld->GetActiveLightingScenario() != nullptr && OwnerWorld->GetActiveLightingScenario() != OwnerLevel)
+			if (ActiveLightingScenario && ActiveLightingScenario != OwnerLevel)
 			{
 				//update the instance data if the lighting scenario isn't the owner level
 				InstanceUpdateCmdBuffer.Edit();
@@ -3334,7 +4239,8 @@ bool UInstancedStaticMeshComponent::DoCustomNavigableGeometryExport(FNavigableGe
 
 void UInstancedStaticMeshComponent::GetNavigationData(FNavigationRelevantData& Data) const
 {
-	if (GetStaticMesh() && GetStaticMesh()->GetNavCollision())
+	// Navigation data will get refreshed once async compilation finishes
+	if (GetStaticMesh() && !GetStaticMesh()->IsCompiling() && GetStaticMesh()->GetNavCollision())
 	{
 		UNavCollisionBase* NavCollision = GetStaticMesh()->GetNavCollision();
 		if (NavCollision->IsDynamicObstacle())
@@ -3351,6 +4257,11 @@ void UInstancedStaticMeshComponent::GetNavigationData(FNavigationRelevantData& D
 FBox UInstancedStaticMeshComponent::GetNavigationBounds() const
 {
 	return CalcBounds(GetComponentTransform()).GetBox();
+}
+
+bool UInstancedStaticMeshComponent::IsNavigationRelevant() const
+{
+	return GetInstanceCount() > 0 && Super::IsNavigationRelevant();
 }
 
 void UInstancedStaticMeshComponent::GetNavigationPerInstanceTransforms(const FBox& AreaBox, TArray<FTransform>& InstanceData) const
@@ -3392,7 +4303,15 @@ void UInstancedStaticMeshComponent::GetResourceSizeEx(FResourceSizeEx& Cumulativ
 
 void UInstancedStaticMeshComponent::BeginDestroy()
 {
+	// Notify that these instances have been cleared due to the destroy
+	if (FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.IsBound())
+	{
+		FInstancedStaticMeshDelegates::FInstanceIndexUpdateData IndexUpdate{ FInstancedStaticMeshDelegates::EInstanceIndexUpdateType::Destroyed, GetInstanceCount() - 1 };
+		FInstancedStaticMeshDelegates::OnInstanceIndexUpdated.Broadcast(this, MakeArrayView(&IndexUpdate, 1));
+	}
+
 	ReleasePerInstanceRenderData();
+
 	Super::BeginDestroy();
 }
 
@@ -3409,7 +4328,7 @@ void UInstancedStaticMeshComponent::PostEditChangeChainProperty(FPropertyChanged
 				int32 AddedAtIndex = PropertyChangedEvent.GetArrayIndex(PropertyChangedEvent.Property->GetFName().ToString());
 				check(AddedAtIndex != INDEX_NONE);
 
-				AddInstanceInternal(AddedAtIndex, &PerInstanceSMData[AddedAtIndex], PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayAdd ? FTransform::Identity : FTransform(PerInstanceSMData[AddedAtIndex].Transform));
+				AddInstanceInternal(AddedAtIndex, &PerInstanceSMData[AddedAtIndex], PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayAdd ? FTransform::Identity : FTransform(PerInstanceSMData[AddedAtIndex].Transform), /*bWorldSpace*/false);
 
 				// added via the property editor, so we will want to interactively work with instances
 				bHasPerInstanceHitProxies = true;
@@ -3464,6 +4383,9 @@ void UInstancedStaticMeshComponent::PostEditUndo()
 	Super::PostEditUndo();
 
 	FNavigationSystem::UpdateComponentData(*this);
+
+	InstanceUpdateCmdBuffer.Edit();
+	MarkRenderStateDirty();
 }
 #endif
 
@@ -3502,7 +4424,6 @@ void UInstancedStaticMeshComponent::SelectInstance(bool bInSelected, int32 InIns
 				{
 					// Record if the instance is selected
 					FColor HitProxyColor(ForceInit);
-					bool bSelected = SelectedInstances[InstanceIndex] != 0;
 					if (PerInstanceRenderData->HitProxies.IsValidIndex(InstanceIndex))
 					{
 						HitProxyColor = PerInstanceRenderData->HitProxies[InstanceIndex]->Id.GetColor();
@@ -3511,7 +4432,7 @@ void UInstancedStaticMeshComponent::SelectInstance(bool bInSelected, int32 InIns
 					const int32 RenderIndex = GetRenderIndex(InstanceIndex);
 					if (RenderIndex != INDEX_NONE)
 					{
-						InstanceUpdateCmdBuffer.SetEditorData(RenderIndex, HitProxyColor, bSelected);
+						InstanceUpdateCmdBuffer.SetEditorData(RenderIndex, HitProxyColor, bInSelected);
 					}
 				}
 			}			
@@ -3554,6 +4475,88 @@ void UInstancedStaticMeshComponent::ClearInstanceSelection()
 #endif
 }
 
+bool UInstancedStaticMeshComponent::CanEditSMInstance(const FSMInstanceId& InstanceId) const
+{
+	check(InstanceId.ISMComponent == this);
+	return IsEditableWhenInherited();
+}
+
+bool UInstancedStaticMeshComponent::CanMoveSMInstance(const FSMInstanceId& InstanceId, const ETypedElementWorldType InWorldType) const
+{
+	check(InstanceId.ISMComponent == this);
+	return InWorldType == ETypedElementWorldType::Editor || InstanceId.ISMComponent->Mobility == EComponentMobility::Movable;
+}
+
+bool UInstancedStaticMeshComponent::GetSMInstanceTransform(const FSMInstanceId& InstanceId, FTransform& OutInstanceTransform, bool bWorldSpace) const
+{
+	check(InstanceId.ISMComponent == this);
+	return GetInstanceTransform(InstanceId.InstanceIndex, OutInstanceTransform, bWorldSpace);
+}
+
+bool UInstancedStaticMeshComponent::SetSMInstanceTransform(const FSMInstanceId& InstanceId, const FTransform& InstanceTransform, bool bWorldSpace, bool bMarkRenderStateDirty, bool bTeleport)
+{
+	check(InstanceId.ISMComponent == this);
+	return UpdateInstanceTransform(InstanceId.InstanceIndex, InstanceTransform, bWorldSpace, bMarkRenderStateDirty, bTeleport);
+}
+
+void UInstancedStaticMeshComponent::NotifySMInstanceMovementStarted(const FSMInstanceId& InstanceId)
+{
+	check(InstanceId.ISMComponent == this);
+}
+
+void UInstancedStaticMeshComponent::NotifySMInstanceMovementOngoing(const FSMInstanceId& InstanceId)
+{
+	check(InstanceId.ISMComponent == this);
+}
+
+void UInstancedStaticMeshComponent::NotifySMInstanceMovementEnded(const FSMInstanceId& InstanceId)
+{
+	check(InstanceId.ISMComponent == this);
+}
+
+void UInstancedStaticMeshComponent::NotifySMInstanceSelectionChanged(const FSMInstanceId& InstanceId, const bool bIsSelected)
+{
+	check(InstanceId.ISMComponent == this);
+	SelectInstance(bIsSelected, InstanceId.InstanceIndex);
+}
+
+bool UInstancedStaticMeshComponent::DeleteSMInstances(TArrayView<const FSMInstanceId> InstanceIds)
+{
+	TArray<int32> InstanceIndices;
+	InstanceIndices.Reserve(InstanceIds.Num());
+	for (const FSMInstanceId& InstanceId : InstanceIds)
+	{
+		check(InstanceId.ISMComponent == this);
+		InstanceIndices.Add(InstanceId.InstanceIndex);
+	}
+
+	Modify();
+	return RemoveInstances(InstanceIndices);
+}
+
+bool UInstancedStaticMeshComponent::DuplicateSMInstances(TArrayView<const FSMInstanceId> InstanceIds, TArray<FSMInstanceId>& OutNewInstanceIds)
+{
+	TArray<FTransform> NewInstanceTransforms;
+	NewInstanceTransforms.Reserve(InstanceIds.Num());
+	for (const FSMInstanceId& InstanceId : InstanceIds)
+	{
+		check(InstanceId.ISMComponent == this);
+		FTransform& NewInstanceTransform = NewInstanceTransforms.Add_GetRef(FTransform::Identity);
+		GetInstanceTransform(InstanceId.InstanceIndex, NewInstanceTransform);
+	}
+
+	Modify();
+	const TArray<int32> NewInstanceIndices = AddInstances(NewInstanceTransforms, /*bShouldReturnIndices*/true);
+
+	OutNewInstanceIds.Reset(NewInstanceIndices.Num());
+	for (int32 NewInstanceIndex : NewInstanceIndices)
+	{
+		OutNewInstanceIds.Add(FSMInstanceId{ this, NewInstanceIndex });
+	}
+
+	return true;
+}
+
 static TAutoConsoleVariable<int32> CVarCullAllInVertexShader(
 	TEXT("foliage.CullAllInVertexShader"),
 	0,
@@ -3579,29 +4582,35 @@ void FInstancedStaticMeshVertexFactoryShaderParameters::GetElementShaderBindings
 	const auto* InstancedVertexFactory = static_cast<const FInstancedStaticMeshVertexFactory*>(VertexFactory);
 	const int32 InstanceOffsetValue = BatchElement.UserIndex;
 
-	ShaderBindings.Add(Shader->GetUniformBufferParameter<FInstancedStaticMeshVertexFactoryUniformShaderParameters>(), InstancedVertexFactory->GetUniformBuffer());
 	ShaderBindings.Add(InstanceOffset, InstanceOffsetValue);
-
-	if (InstancedVertexFactory->SupportsManualVertexFetch(FeatureLevel))
+	
+	if (!UseGPUScene(GMaxRHIShaderPlatform, GMaxRHIFeatureLevel))
 	{
-		ShaderBindings.Add(VertexFetch_InstanceOriginBufferParameter, InstancedVertexFactory->GetInstanceOriginSRV());
-		ShaderBindings.Add(VertexFetch_InstanceTransformBufferParameter, InstancedVertexFactory->GetInstanceTransformSRV());
-		ShaderBindings.Add(VertexFetch_InstanceLightmapBufferParameter, InstancedVertexFactory->GetInstanceLightmapSRV());
-	}
-	if (InstanceOffsetValue > 0 && VertexStreams.Num() > 0)
-	{
-		VertexFactory->OffsetInstanceStreams(InstanceOffsetValue, InputStreamType, VertexStreams);
+		ShaderBindings.Add(Shader->GetUniformBufferParameter<FInstancedStaticMeshVertexFactoryUniformShaderParameters>(), InstancedVertexFactory->GetUniformBuffer());
+		if (InstancedVertexFactory->SupportsManualVertexFetch(FeatureLevel))
+		{
+			ShaderBindings.Add(VertexFetch_InstanceOriginBufferParameter, InstancedVertexFactory->GetInstanceOriginSRV());
+			ShaderBindings.Add(VertexFetch_InstanceTransformBufferParameter, InstancedVertexFactory->GetInstanceTransformSRV());
+			ShaderBindings.Add(VertexFetch_InstanceLightmapBufferParameter, InstancedVertexFactory->GetInstanceLightmapSRV());
+		}
+		if (InstanceOffsetValue > 0 && VertexStreams.Num() > 0)
+		{
+			// GPUCULL_TODO: This here can still work together with the instance attributes for index, but note that all instance attributes then must assume they are offset wrt the on-the-fly generate buffer
+			//          so with the new scheme there is no clear way this can work in the vanilla instancing way as there is an indirection. So either other attributes must be loaded in the shader or they
+			//          would have to be copied as the instance ID is now - not good.
+			VertexFactory->OffsetInstanceStreams(InstanceOffsetValue, InputStreamType, VertexStreams);
+		}
 	}
 
 	if( InstancingWorldViewOriginOneParameter.IsBound() )
 	{
-		FVector4 InstancingViewZCompareZero(MIN_flt, MIN_flt, MAX_flt, 1.0f);
-		FVector4 InstancingViewZCompareOne(MIN_flt, MIN_flt, MAX_flt, 0.0f);
-		FVector4 InstancingViewZConstant(ForceInit);
-		FVector4 InstancingOffset(ForceInit);
-		FVector4 InstancingWorldViewOriginZero(ForceInit);
-		FVector4 InstancingWorldViewOriginOne(ForceInit);
-		InstancingWorldViewOriginOne.W = 1.0f;
+		FVector4f InstancingViewZCompareZero(MIN_flt, MIN_flt, MAX_flt, 1.0f);
+		FVector4f InstancingViewZCompareOne(MIN_flt, MIN_flt, MAX_flt, 0.0f);
+		FVector4f InstancingViewZConstant(ForceInit);
+		FVector4f InstancingOffset(ForceInit);
+		FVector4f InstancingTranslatedWorldViewOriginZero(ForceInit);
+		FVector4f InstancingTranslatedWorldViewOriginOne(ForceInit);
+		InstancingTranslatedWorldViewOriginOne.W = 1.0f;
 		if (InstancingUserData && BatchElement.InstancedLODRange)
 		{
 			int32 FirstLOD = InstancingUserData->MinLOD;
@@ -3638,7 +4647,7 @@ void FInstancedStaticMeshVertexFactoryShaderParameters::GetElementShaderBindings
 
 			for (int32 SampleIndex = 0; SampleIndex < 2; SampleIndex++)
 			{
-				FVector4& InstancingViewZCompare(SampleIndex ? InstancingViewZCompareOne : InstancingViewZCompareZero);
+				FVector4f& InstancingViewZCompare(SampleIndex ? InstancingViewZCompareOne : InstancingViewZCompareZero);
 
 				float FinalCull = MAX_flt;
 				if (MinSize > 0.0)
@@ -3649,7 +4658,6 @@ void FInstancedStaticMeshVertexFactoryShaderParameters::GetElementShaderBindings
 				{
 					FinalCull = FMath::Min(FinalCull, InstancingUserData->EndCullDistance * MaxDrawDistanceScale);
 				}
-				FinalCull *= MaxDrawDistanceScale;
 
 				InstancingViewZCompare.Z = FinalCull;
 				if (int(BatchElement.InstancedLODIndex) < InstancingUserData->MeshRenderData->LODResources.Num() - 1)
@@ -3680,13 +4688,15 @@ void FInstancedStaticMeshVertexFactoryShaderParameters::GetElementShaderBindings
 				}
 			}
 
-			InstancingOffset = InstancingUserData->InstancingOffset;
-			InstancingWorldViewOriginZero = View->GetTemporalLODOrigin(0);
-			InstancingWorldViewOriginOne = View->GetTemporalLODOrigin(1);
+			InstancingOffset = (FVector3f)InstancingUserData->InstancingOffset; // LWC_TODO: precision loss
+
+			const FVector PreViewTranslation = View->ViewMatrices.GetPreViewTranslation();
+			InstancingTranslatedWorldViewOriginZero = (FVector3f)(View->GetTemporalLODOrigin(0) + PreViewTranslation); // LWC_TODO: precision loss
+			InstancingTranslatedWorldViewOriginOne = (FVector3f)(View->GetTemporalLODOrigin(1) + PreViewTranslation); // LWC_TODO: precision loss
 
 			float Alpha = View->GetTemporalLODTransition();
-			InstancingWorldViewOriginZero.W = 1.0f - Alpha;
-			InstancingWorldViewOriginOne.W = Alpha;
+			InstancingTranslatedWorldViewOriginZero.W = 1.0f - Alpha;
+			InstancingTranslatedWorldViewOriginOne.W = Alpha;
 
 			InstancingViewZCompareZero.W = LODRandom;
 		}
@@ -3695,13 +4705,13 @@ void FInstancedStaticMeshVertexFactoryShaderParameters::GetElementShaderBindings
 		ShaderBindings.Add(InstancingViewZCompareOneParameter, InstancingViewZCompareOne);
 		ShaderBindings.Add(InstancingViewZConstantParameter, InstancingViewZConstant);
 		ShaderBindings.Add(InstancingOffsetParameter, InstancingOffset);
-		ShaderBindings.Add(InstancingWorldViewOriginZeroParameter, InstancingWorldViewOriginZero);
-		ShaderBindings.Add(InstancingWorldViewOriginOneParameter, InstancingWorldViewOriginOne);
+		ShaderBindings.Add(InstancingWorldViewOriginZeroParameter, InstancingTranslatedWorldViewOriginZero);
+		ShaderBindings.Add(InstancingWorldViewOriginOneParameter, InstancingTranslatedWorldViewOriginOne);
 	}
 
 	if( InstancingFadeOutParamsParameter.IsBound() )
 	{
-		FVector4 InstancingFadeOutParams(MAX_flt,0.f,1.f,1.f);
+		FVector4f InstancingFadeOutParams(MAX_flt,0.f,1.f,1.f);
 		if (InstancingUserData)
 		{
 			const float MaxDrawDistanceScale = GetCachedScalabilityCVars().ViewDistanceScale;

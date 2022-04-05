@@ -14,7 +14,7 @@ goto End
 
 
 :SetUEEditor
-set UEEditorLoc="%BaseFolder:"=%\Engine\Binaries\Win64\UE4Editor.exe"
+set UEEditorLoc="%BaseFolder:"=%\Engine\Binaries\Win64\UnrealEditor.exe"
 
 if exist %UEEditorLoc:"=% goto GetGame
 

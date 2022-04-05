@@ -7,7 +7,6 @@
 #include "GameplayTagContainer.h"
 #include "Misc/FrameRate.h"
 #include "StageMessages.h"
-#include "Templates/HasGetTypeHash.h"
 
 #include "StageMonitoringSettings.generated.h"
 
@@ -148,7 +147,10 @@ public:
 	bool ShouldAutoStartOnLaunch() const;
 
 public:
-	/** If true, Monitor will only start if machine has a role contained in SupportedRoles */
+	/** 
+	 * If true, Monitor will only autostart if machine has a role contained in SupportedRoles 
+	 * Once in editor, you can always start a monitor manually independently of the roles.
+	 */
 	UPROPERTY(config, EditAnywhere, Category = "Settings", meta = (InlineEditConditionToggle))
 	bool bUseRoleFiltering = false;
 

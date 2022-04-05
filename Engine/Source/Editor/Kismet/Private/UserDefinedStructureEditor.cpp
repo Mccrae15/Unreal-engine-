@@ -20,15 +20,22 @@
 #include "PropertyEditorModule.h"
 #include "IDetailCustomNodeBuilder.h"
 #include "IDetailChildrenBuilder.h"
+#include "IDetailDragDropHandler.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Widgets/Layout/SSplitter.h"
+#include "DragAndDrop/DecoratedDragDropOp.h"
+#include "SPositiveActionButton.h"
+#include "Styling/ToolBarStyle.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
 
 #include "PropertyCustomizationHelpers.h"
 #include "SPinTypeSelector.h"
 #include "Kismet2/StructureEditorUtils.h"
 #include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Images/SLayeredImage.h"
 
 #define LOCTEXT_NAMESPACE "StructureEditor"
 
@@ -110,7 +117,6 @@ public:
 		FDetailsViewArgs ViewArgs;
 		ViewArgs.bAllowSearch = false;
 		ViewArgs.bHideSelectionTip = false;
-		ViewArgs.bShowActorLabel = false;
 		ViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 		ViewArgs.NotifyHook = this;
 
@@ -237,9 +243,14 @@ class FUserDefinedStructureDetails : public IDetailCustomization, FStructureEdit
 {
 public:
 	/** Makes a new instance of this detail layout class for a specific detail view requesting it */
-	static TSharedRef<IDetailCustomization> MakeInstance()
+	static TSharedRef<IDetailCustomization> MakeInstance(TWeakPtr<FUserDefinedStructureEditor> InStructureEditor)
 	{
-		return MakeShareable(new FUserDefinedStructureDetails);
+		return MakeShareable(new FUserDefinedStructureDetails(InStructureEditor));
+	}
+
+	FUserDefinedStructureDetails(TWeakPtr<FUserDefinedStructureEditor> InStructureEditor)
+		: StructureEditor(InStructureEditor)
+	{
 	}
 
 	~FUserDefinedStructureDetails()
@@ -260,6 +271,11 @@ public:
 		return NULL;
 	}
 
+	const TWeakPtr<FUserDefinedStructureEditor>& GetStructureEditor() const
+	{
+		return StructureEditor;
+	}
+
 	/** IDetailCustomization interface */
 	virtual void CustomizeDetails(class IDetailLayoutBuilder& DetailLayout) override;
 
@@ -270,12 +286,14 @@ public:
 private:
 	TWeakObjectPtr<UUserDefinedStruct> UserDefinedStruct;
 	TSharedPtr<class FUserDefinedStructureLayout> Layout;
+	TWeakPtr<FUserDefinedStructureEditor> StructureEditor;
 };
 
 ///////////////////////////////////////////////////////////////////////////////////////
 // FUserDefinedStructureEditor
 
 const FName FUserDefinedStructureEditor::MemberVariablesTabId( TEXT( "UserDefinedStruct_MemberVariablesEditor" ) );
+const FName FUserDefinedStructureEditor::DefaultValuesTabId(TEXT("UserDefinedStruct_DefaultValuesEditor"));
 const FName FUserDefinedStructureEditor::UserDefinedStructureEditorAppIdentifier( TEXT( "UserDefinedStructEditorApp" ) );
 
 void FUserDefinedStructureEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -285,9 +303,14 @@ void FUserDefinedStructureEditor::RegisterTabSpawners(const TSharedRef<class FTa
 	FAssetEditorToolkit::RegisterTabSpawners(InTabManager);
 
 	InTabManager->RegisterTabSpawner( MemberVariablesTabId, FOnSpawnTab::CreateSP(this, &FUserDefinedStructureEditor::SpawnStructureTab) )
-		.SetDisplayName( LOCTEXT("MemberVariablesEditor", "Structure Editor") )
+		.SetDisplayName( LOCTEXT("MemberVariablesEditor", "Structure") )
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "Kismet.Tabs.Variables"));
+		.SetIcon(FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Kismet.Tabs.Variables"));
+
+	InTabManager->RegisterTabSpawner( DefaultValuesTabId, FOnSpawnTab::CreateSP(this, &FUserDefinedStructureEditor::SpawnStructureDefaultValuesTab))
+		.SetDisplayName(LOCTEXT("DefaultValuesEditor", "Default Values"))
+		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
+		.SetIcon(FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Icons.Details"));
 }
 
 void FUserDefinedStructureEditor::UnregisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -299,26 +322,23 @@ void FUserDefinedStructureEditor::UnregisterTabSpawners(const TSharedRef<class F
 
 void FUserDefinedStructureEditor::InitEditor(const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, UUserDefinedStruct* Struct)
 {
-	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout( "Standalone_UserDefinedStructureEditor_Layout_v1" )
+	UserDefinedStruct = Struct;
+	InitialPinType = FEdGraphPinType(UEdGraphSchema_K2::PC_Boolean, NAME_None, nullptr, EPinContainerType::None, false, FEdGraphTerminalType());
+
+	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout( "Standalone_UserDefinedStructureEditor_Layout_v3" )
 	->AddArea
 	(
 		FTabManager::NewPrimaryArea() 
 		->SetOrientation(Orient_Vertical)
 		->Split
 		(
-			FTabManager::NewStack()
-			->SetSizeCoefficient(0.1f)
-			->SetHideTabWell( true )
-			->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-		)
-		->Split
-		(
 			FTabManager::NewSplitter()
 			->Split
 			(
 				FTabManager::NewStack()
-				->SetHideTabWell( true )
 				->AddTab( MemberVariablesTabId, ETabState::OpenedTab )
+				->AddTab( DefaultValuesTabId, ETabState::OpenedTab )
+				->SetForegroundTab(MemberVariablesTabId)
 			)
 		)
 	);
@@ -326,6 +346,17 @@ void FUserDefinedStructureEditor::InitEditor(const EToolkitMode::Type Mode, cons
 	const bool bCreateDefaultStandaloneMenu = true;
 	const bool bCreateDefaultToolbar = true;
 	FAssetEditorToolkit::InitAssetEditor( Mode, InitToolkitHost, UserDefinedStructureEditorAppIdentifier, StandaloneDefaultLayout, bCreateDefaultStandaloneMenu, bCreateDefaultToolbar, Struct );
+
+	TSharedPtr<FExtender> Extender = MakeShared<FExtender>();
+	Extender->AddToolBarExtension("Asset", EExtensionHook::After, GetToolkitCommands(),
+		FToolBarExtensionDelegate::CreateSP(this, &FUserDefinedStructureEditor::FillToolbar));
+	AddToolbarExtender(Extender);
+	RegenerateMenusAndToolbars();
+}
+
+void FUserDefinedStructureEditor::SetInitialPinType(FEdGraphPinType PinType)
+{
+	InitialPinType = PinType;
 }
 
 FUserDefinedStructureEditor::~FUserDefinedStructureEditor()
@@ -381,60 +412,126 @@ TSharedRef<SDockTab> FUserDefinedStructureEditor::SpawnStructureTab(const FSpawn
 		EditedStruct = Cast<UUserDefinedStruct>(EditingObjs[ 0 ]);
 	}
 
-	TSharedRef<SSplitter> Splitter = SNew(SSplitter)
-		.Orientation(Orient_Vertical)
-		.PhysicalSplitterHandleSize(2.0f)
-		.HitDetectionSplitterHandleSize(8.f)
-		.ResizeMode(ESplitterResizeMode::FixedPosition)
-		.Style(FEditorStyle::Get(), "ContentBrowser.Splitter");
-	{
-		// Create a property view
-		FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-		FDetailsViewArgs DetailsViewArgs( /*bUpdateFromSelection=*/ false, /*bLockable=*/ false, /*bAllowSearch=*/ false, FDetailsViewArgs::HideNameArea, /*bHideSelectionTip=*/ true);
-		DetailsViewArgs.bShowOptions = false;
-		PropertyView = EditModule.CreateDetailView(DetailsViewArgs);
-		FOnGetDetailCustomizationInstance LayoutStructDetails = FOnGetDetailCustomizationInstance::CreateStatic(&FUserDefinedStructureDetails::MakeInstance);
-		PropertyView->RegisterInstancedCustomPropertyLayout(UUserDefinedStruct::StaticClass(), LayoutStructDetails);
-		PropertyView->SetObject(EditedStruct);
-		Splitter->AddSlot()
-		.Value(0.25f)
-		[
-			SNew(SBox)
-			.Padding(FMargin(0.0f, 0.0f, 0.0f, 3.0f))
-			[
-				PropertyView.ToSharedRef()
-			]
-		];
-	}
-
-	DefaultValueView = NULL;
-
-	static FBoolConfigValueHelper ShowDefaultValuePropertyEditor(TEXT("UserDefinedStructure"), TEXT("bShowDefaultValuePropertyEditor"));
-	if (ShowDefaultValuePropertyEditor)
-	{
-		DefaultValueView = MakeShareable(new FStructureDefaultValueView(EditedStruct));
-		DefaultValueView->Initialize();
-		auto DefaultValueWidget = DefaultValueView->GetWidget();
-		if (DefaultValueWidget.IsValid())
-		{
-			Splitter->AddSlot()
-			[
-				SNew(SBox)
-				.Padding(FMargin(0.0f, 3.0f, 0.0f, 0.0f))
-				[
-					DefaultValueWidget.ToSharedRef()
-				]
-			];
-		}
-	}
+	// Create a property view
+	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.bAllowSearch = false;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
+	DetailsViewArgs.bShowOptions = false;
+	PropertyView = EditModule.CreateDetailView(DetailsViewArgs);
+	TWeakPtr<FUserDefinedStructureEditor> LocalWeakThis = SharedThis(this);
+	FOnGetDetailCustomizationInstance LayoutStructDetails = FOnGetDetailCustomizationInstance::CreateStatic(&FUserDefinedStructureDetails::MakeInstance, LocalWeakThis);
+	PropertyView->RegisterInstancedCustomPropertyLayout(UUserDefinedStruct::StaticClass(), LayoutStructDetails);
+	PropertyView->SetObject(EditedStruct);
 
 	return SNew(SDockTab)
-		.Icon( FEditorStyle::GetBrush("GenericEditor.Tabs.Properties") )
-		.Label( LOCTEXT("UserDefinedStructureEditor", "Structure Editor") )
+		.Label( LOCTEXT("UserDefinedStructureEditor", "Structure") )
 		.TabColorScale( GetTabColorScale() )
 		[
-			Splitter
+			PropertyView.ToSharedRef()
 		];
+}
+
+TSharedRef<SDockTab> FUserDefinedStructureEditor::SpawnStructureDefaultValuesTab(const FSpawnTabArgs& Args)
+{
+	check(Args.GetTabId() == DefaultValuesTabId);
+
+	UUserDefinedStruct* EditedStruct = NULL;
+	const TArray<UObject*>& EditingObjs = GetEditingObjects();
+	if (EditingObjs.Num())
+	{
+		EditedStruct = Cast<UUserDefinedStruct>(EditingObjs[0]);
+	}
+
+	DefaultValueView = MakeShareable(new FStructureDefaultValueView(EditedStruct));
+	DefaultValueView->Initialize();
+
+	return SNew(SDockTab)
+		.Label(LOCTEXT("UserDefinedStructureDefaultValuesEditor", "Default Values"))
+		.TabColorScale(GetTabColorScale())
+		[
+			DefaultValueView->GetWidget().ToSharedRef()
+		];
+}
+
+void FUserDefinedStructureEditor::FillToolbar(FToolBarBuilder& ToolbarBuilder)
+{
+	const FToolBarStyle& ToolBarStyle = ToolbarBuilder.GetStyleSet()->GetWidgetStyle<FToolBarStyle>(ToolbarBuilder.GetStyleName());
+
+	ToolbarBuilder.BeginSection("UserDefinedStructure");
+
+	TSharedPtr<SLayeredImage> CompileStatusImage;
+	ToolbarBuilder.AddWidget(
+		SNew(SBox)
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.Padding(ToolBarStyle.ButtonPadding)
+		[
+			SAssignNew(CompileStatusImage, SLayeredImage)
+			.Image(FAppStyle::Get().GetBrush("Blueprint.CompileStatus.Background"))
+			.ToolTipText(this, &FUserDefinedStructureEditor::OnGetStatusTooltip)
+		]);
+	CompileStatusImage->AddLayer(TAttribute<const FSlateBrush*>::CreateSP(this, &FUserDefinedStructureEditor::OnGetStructureStatus));
+
+	ToolbarBuilder.AddWidget(
+		SNew(SBox)
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Fill)
+		.Padding(ToolBarStyle.ButtonPadding)
+		[
+			SNew(SPositiveActionButton)
+			.Text(LOCTEXT("AddStructVariable", "Add Variable"))
+			.ToolTipText(LOCTEXT("AddStructVariableToolTip", "Adds a new member variable to the end of this structure"))
+			.OnClicked(this, &FUserDefinedStructureEditor::OnAddNewField)
+		]);
+
+	ToolbarBuilder.EndSection();
+}
+
+FReply FUserDefinedStructureEditor::OnAddNewField()
+{
+	if (UserDefinedStruct.IsValid())
+	{
+		FStructureEditorUtils::AddVariable(UserDefinedStruct.Get(), InitialPinType);
+
+		// Ensure the member variables tab is topmost so the user can edit the newly-added variable
+		InvokeTab(MemberVariablesTabId);
+	}
+
+	return FReply::Handled();
+}
+
+const FSlateBrush* FUserDefinedStructureEditor::OnGetStructureStatus() const
+{
+	if (UserDefinedStruct.IsValid())
+	{
+		switch (UserDefinedStruct->Status.GetValue())
+		{
+		case EUserDefinedStructureStatus::UDSS_Error:
+			return FAppStyle::Get().GetBrush("Blueprint.CompileStatus.Overlay.Error");
+		case EUserDefinedStructureStatus::UDSS_UpToDate:
+			return FAppStyle::Get().GetBrush("Blueprint.CompileStatus.Overlay.Good");
+		default:
+			return FAppStyle::Get().GetBrush("Blueprint.CompileStatus.Overlay.Unknown");
+		}
+	}
+	return nullptr;
+}
+
+FText FUserDefinedStructureEditor::OnGetStatusTooltip() const
+{
+	if (UserDefinedStruct.IsValid())
+	{
+		switch (UserDefinedStruct->Status.GetValue())
+		{
+		case EUserDefinedStructureStatus::UDSS_Error:
+			return FText::FromString(UserDefinedStruct->ErrorMessage);
+		default:
+			return LOCTEXT("GoodToGo_Status", "Good to go");
+		}
+	}
+	return FText::GetEmpty();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -446,62 +543,11 @@ class FUserDefinedStructureLayout : public IDetailCustomNodeBuilder, public TSha
 public:
 	FUserDefinedStructureLayout(TWeakPtr<class FUserDefinedStructureDetails> InStructureDetails)
 		: StructureDetails(InStructureDetails)
-		, InitialPinType(UEdGraphSchema_K2::PC_Boolean, NAME_None, nullptr, EPinContainerType::None, false, FEdGraphTerminalType())
 	{}
 
 	void OnChanged()
 	{
 		OnRegenerateChildren.ExecuteIfBound();
-	}
-
-	FReply OnAddNewField()
-	{
-		auto StructureDetailsSP = StructureDetails.Pin();
-		if(StructureDetailsSP.IsValid())
-		{
-			FStructureEditorUtils::AddVariable(StructureDetailsSP->GetUserDefinedStruct(), InitialPinType);
-		}
-
-		return FReply::Handled();
-	}
-
-	const FSlateBrush* OnGetStructureStatus() const
-	{
-		auto StructureDetailsSP = StructureDetails.Pin();
-		if(StructureDetailsSP.IsValid())
-		{
-			if(auto Struct = StructureDetailsSP->GetUserDefinedStruct())
-			{
-				switch(Struct->Status.GetValue())
-				{
-				case EUserDefinedStructureStatus::UDSS_Error:
-					return FEditorStyle::GetBrush("Kismet.Status.Error.Small");
-				case EUserDefinedStructureStatus::UDSS_UpToDate:
-					return FEditorStyle::GetBrush("Kismet.Status.Good.Small");
-				default:
-					return FEditorStyle::GetBrush("Kismet.Status.Unknown.Small");
-				}
-				
-			}
-		}
-		return NULL;
-	}
-
-	FText GetStatusTooltip() const
-	{
-		auto StructureDetailsSP = StructureDetails.Pin();
-		if (StructureDetailsSP.IsValid())
-		{
-			if (auto Struct = StructureDetailsSP->GetUserDefinedStruct())
-			{
-				switch (Struct->Status.GetValue())
-				{
-				case EUserDefinedStructureStatus::UDSS_Error:
-					return FText::FromString(Struct->ErrorMessage);
-				}
-			}
-		}
-		return FText::GetEmpty();
 	}
 
 	FText OnGetTooltipText() const
@@ -527,12 +573,6 @@ public:
 				FStructureEditorUtils::ChangeTooltip(Struct, NewText.ToString());
 			}
 		}
-	}
-
-	/** Callback when a pin type is selected to cache the value so new variables in the struct will be set to the cached type */
-	void OnPinTypeSelected(const FEdGraphPinType& InPinType)
-	{
-		InitialPinType = InPinType;
 	}
 
 	/** IDetailCustomNodeBuilder Interface*/
@@ -563,15 +603,141 @@ public:
 private:
 	TWeakPtr<class FUserDefinedStructureDetails> StructureDetails;
 	FSimpleDelegate OnRegenerateChildren;
-
-	/** Cached value of the last pin type the user selected, used as the initial value for new struct members */
-	FEdGraphPinType InitialPinType;
 };
 
-enum EMemberFieldPosition
+///////////////////////////////////////////////////////////////////////////////////////
+// FUserDefinedStructureFieldDragDropOp
+
+/** Provides information about the source row (single field) being dragged */
+class FUserDefinedStructureFieldDragDropOp : public FDecoratedDragDropOp
 {
-	MFP_First	=	0x1,
-	MFP_Last	=	0x2,
+public:
+	DRAG_DROP_OPERATOR_TYPE(FUserDefinedStructureFieldDragDropOp, FDecoratedDragDropOp);
+
+	FUserDefinedStructureFieldDragDropOp(TWeakPtr<FUserDefinedStructureDetails> InStructureDetails, const FGuid& InFieldGuid)
+		: StructureDetails(InStructureDetails)
+		, FieldGuid(InFieldGuid)
+	{
+		MouseCursor = EMouseCursor::GrabHandClosed;
+		if (TSharedPtr<FUserDefinedStructureDetails> StructureDetailsSP = InStructureDetails.Pin())
+		{
+			VariableFriendlyName = FStructureEditorUtils::GetVariableFriendlyName(StructureDetailsSP->GetUserDefinedStruct(), FieldGuid);
+		}
+	}
+
+	void Init()
+	{
+		SetValidTarget(false);
+		SetupDefaults();
+		Construct();
+	}
+
+	void SetValidTarget(bool IsValidTarget)
+	{
+		FFormatNamedArguments Args;
+		Args.Add(TEXT("StructVariableName"), FText::FromString(VariableFriendlyName));
+
+		if (IsValidTarget)
+		{
+			CurrentHoverText = FText::Format(LOCTEXT("MoveVariableHere", "Move '{StructVariableName}' Here"), Args);
+			CurrentIconBrush = FAppStyle::Get().GetBrush("Graph.ConnectorFeedback.OK");
+		}
+		else
+		{
+			CurrentHoverText = FText::Format(LOCTEXT("CannotMoveVariableHere", "Cannot Move '{StructVariableName}' Here"), Args);
+			CurrentIconBrush = FAppStyle::Get().GetBrush("Graph.ConnectorFeedback.Error");
+		}
+	}
+
+	const TWeakPtr<FUserDefinedStructureDetails>& GetStructureDetails() const
+	{
+		return StructureDetails;
+	}
+
+	const FGuid& GetFieldGuid() const
+	{
+		return FieldGuid;
+	}
+
+private:
+	TWeakPtr<FUserDefinedStructureDetails> StructureDetails;
+	FGuid FieldGuid;
+	FString VariableFriendlyName;
+};
+
+///////////////////////////////////////////////////////////////////////////////////////
+// FUserDefinedStructureFieldDragDropHandler
+
+/** Handles drag-and-drop (as both source and target) for a single field's widget row */
+class FUserDefinedStructureFieldDragDropHandler : public IDetailDragDropHandler
+{
+public:
+	FUserDefinedStructureFieldDragDropHandler(TWeakPtr<FUserDefinedStructureDetails> InStructureDetails, const FGuid& InFieldGuid)
+		: StructureDetails(InStructureDetails)
+		, FieldGuid(InFieldGuid)
+	{
+	}
+
+	virtual TSharedPtr<FDragDropOperation> CreateDragDropOperation() const override
+	{
+		TSharedPtr<FUserDefinedStructureFieldDragDropOp> DragOp = MakeShared<FUserDefinedStructureFieldDragDropOp>(StructureDetails, FieldGuid);
+		DragOp->Init();
+		return DragOp;
+	}
+
+	virtual TOptional<EItemDropZone> CanAcceptDrop(const FDragDropEvent& DragDropSource, EItemDropZone DropZone) const override
+	{
+		const TSharedPtr<FUserDefinedStructureFieldDragDropOp> DragOp = DragDropSource.GetOperationAs<FUserDefinedStructureFieldDragDropOp>();
+		if (!DragOp.IsValid())
+		{
+			return TOptional<EItemDropZone>();
+		}
+
+		// Struct must match between drag source and drop target
+		const TSharedPtr<FUserDefinedStructureDetails> OtherStructureDetailsSP = DragOp->GetStructureDetails().Pin();
+		const TSharedPtr<FUserDefinedStructureDetails> MyStructureDetailsSP = StructureDetails.Pin();
+		if (!OtherStructureDetailsSP.IsValid() || !MyStructureDetailsSP.IsValid() || OtherStructureDetailsSP->GetUserDefinedStruct() != MyStructureDetailsSP->GetUserDefinedStruct())
+		{
+			DragOp->SetValidTarget(false);
+			return TOptional<EItemDropZone>();
+		}
+
+		// Struct fields must be moved above or below, so don't allow dropping directly onto a row
+		const EItemDropZone OverrideZone = (DropZone == EItemDropZone::BelowItem) ? EItemDropZone::BelowItem : EItemDropZone::AboveItem;
+		const FStructureEditorUtils::EMovePosition MovePosition = (OverrideZone == EItemDropZone::BelowItem) ? FStructureEditorUtils::PositionBelow : FStructureEditorUtils::PositionAbove;
+		if (!FStructureEditorUtils::CanMoveVariable(MyStructureDetailsSP->GetUserDefinedStruct(), DragOp->GetFieldGuid(), FieldGuid, MovePosition))
+		{
+			DragOp->SetValidTarget(false);
+			return TOptional<EItemDropZone>();
+		}
+
+		DragOp->SetValidTarget(true);
+		return OverrideZone;
+	}
+
+	virtual bool AcceptDrop(const FDragDropEvent& DragDropSource, EItemDropZone DropZone) const override
+	{
+		const TSharedPtr<FUserDefinedStructureFieldDragDropOp> DragOp = DragDropSource.GetOperationAs<FUserDefinedStructureFieldDragDropOp>();
+		if (!DragOp.IsValid())
+		{
+			return false;
+		}
+
+		// Struct must match between drag source and drop target
+		const TSharedPtr<FUserDefinedStructureDetails> OtherStructureDetailsSP = DragOp->GetStructureDetails().Pin();
+		const TSharedPtr<FUserDefinedStructureDetails> MyStructureDetailsSP = StructureDetails.Pin();
+		if (!OtherStructureDetailsSP.IsValid() || !MyStructureDetailsSP.IsValid() || OtherStructureDetailsSP->GetUserDefinedStruct() != MyStructureDetailsSP->GetUserDefinedStruct())
+		{
+			return false;
+		}
+
+		const FStructureEditorUtils::EMovePosition MovePosition = (DropZone == EItemDropZone::BelowItem) ? FStructureEditorUtils::PositionBelow : FStructureEditorUtils::PositionAbove;
+		return FStructureEditorUtils::MoveVariable(MyStructureDetailsSP->GetUserDefinedStruct(), DragOp->GetFieldGuid(), FieldGuid, MovePosition);
+	}
+
+private:
+	TWeakPtr<FUserDefinedStructureDetails> StructureDetails;
+	FGuid FieldGuid;
 };
 
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -581,11 +747,11 @@ enum EMemberFieldPosition
 class FUserDefinedStructureFieldLayout : public IDetailCustomNodeBuilder, public TSharedFromThis<FUserDefinedStructureFieldLayout>
 {
 public:
-	FUserDefinedStructureFieldLayout(TWeakPtr<class FUserDefinedStructureDetails> InStructureDetails, TWeakPtr<class FUserDefinedStructureLayout> InStructureLayout, FGuid InFieldGuid, uint32 InPositionFlags)
+	FUserDefinedStructureFieldLayout(TWeakPtr<class FUserDefinedStructureDetails> InStructureDetails, TWeakPtr<class FUserDefinedStructureLayout> InStructureLayout, FGuid InFieldGuid)
 		: StructureDetails(InStructureDetails)
 		, StructureLayout(InStructureLayout)
 		, FieldGuid(InFieldGuid)
-		, PositionFlags(InPositionFlags) {}
+	{}
 
 	void OnChanged()
 	{
@@ -631,10 +797,9 @@ public:
 		if(StructureDetailsSP.IsValid())
 		{
 			FStructureEditorUtils::ChangeVariableType(StructureDetailsSP->GetUserDefinedStruct(), FieldGuid, PinType);
-			auto StructureLayoutPin = StructureLayout.Pin();
-			if (StructureLayoutPin.IsValid())
+			if (TSharedPtr<FUserDefinedStructureEditor> StructureEditorSP = StructureDetailsSP->GetStructureEditor().Pin())
 			{
-				StructureLayoutPin->OnPinTypeSelected(PinType);
+				StructureEditorSP->SetInitialPinType(PinType);
 			}
 		}
 	}
@@ -852,33 +1017,13 @@ public:
 		}
 	}
 
-	FReply OnMoveUp()
-	{
-		auto StructureDetailsSP = StructureDetails.Pin();
-		if (StructureDetailsSP.IsValid() && !(PositionFlags & EMemberFieldPosition::MFP_First))
-		{
-			FStructureEditorUtils::MoveVariable(StructureDetailsSP->GetUserDefinedStruct(), FieldGuid, FStructureEditorUtils::MD_Up);
-		}
-		return FReply::Handled();
-	}
-
-	FReply OnMoveDown()
-	{
-		auto StructureDetailsSP = StructureDetails.Pin();
-		if (StructureDetailsSP.IsValid() && !(PositionFlags & EMemberFieldPosition::MFP_Last))
-		{
-			FStructureEditorUtils::MoveVariable(StructureDetailsSP->GetUserDefinedStruct(), FieldGuid, FStructureEditorUtils::MD_Down);
-		}
-		return FReply::Handled();
-	}
-
 	virtual void GenerateHeaderRowContent( FDetailWidgetRow& NodeRow ) override 
 	{
 		auto K2Schema = GetDefault<UEdGraphSchema_K2>();
 
 		TSharedPtr<SImage> ErrorIcon;
 
-		const float ValueContentWidth = 250.0f;
+		const float ValueContentWidth = 200.0f;
 
 		NodeRow
 		.NameContent()
@@ -891,7 +1036,8 @@ public:
 			.VAlign(VAlign_Center)
 			[
 				SAssignNew(ErrorIcon, SImage)
-				.Image( FEditorStyle::GetBrush("Icons.Error") )
+				.Image(FAppStyle::Get().GetBrush("Icons.Error") )
+				.ToolTipText(LOCTEXT("MemberVariableErrorToolTip", "Member variable is invalid"))
 			]
 
 			+SHorizontalBox::Slot()
@@ -921,45 +1067,19 @@ public:
 				.TypeTreeFilter(ETypeTreeFilter::None)
 				.Font( IDetailLayoutBuilder::GetDetailFont() )
 			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.HAlign(HAlign_Right)
-			.VAlign(VAlign_Center)
-			[
-				SNew(SButton)
-				.ContentPadding(0)
-				.OnClicked(this, &FUserDefinedStructureFieldLayout::OnMoveUp)
-				.IsEnabled(!(EMemberFieldPosition::MFP_First & PositionFlags))
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("BlueprintEditor.Details.ArgUpButton"))
-				]
-			]
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.HAlign(HAlign_Right)
-			.VAlign(VAlign_Center)
-			[
-				SNew(SButton)
-				.ContentPadding(0)
-				.OnClicked(this, &FUserDefinedStructureFieldLayout::OnMoveDown)
-				.IsEnabled(!(EMemberFieldPosition::MFP_Last & PositionFlags))
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("BlueprintEditor.Details.ArgDownButton"))
-				]
-			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
 			.HAlign(HAlign_Right)
 			.VAlign(VAlign_Center)
 			[
-				PropertyCustomizationHelpers::MakeClearButton(
+				PropertyCustomizationHelpers::MakeEmptyButton(
 					FSimpleDelegate::CreateSP(this, &FUserDefinedStructureFieldLayout::OnRemovField),
 					LOCTEXT("RemoveVariable", "Remove member variable"),
 					TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateSP(this, &FUserDefinedStructureFieldLayout::IsRemoveButtonEnabled)))
 			]
-		];
+		]
+		.DragDropHandler(MakeShared<FUserDefinedStructureFieldDragDropHandler>(StructureDetails, FieldGuid))
+		;
 
 		if (ErrorIcon.IsValid())
 		{
@@ -1062,69 +1182,27 @@ private:
 	FGuid FieldGuid;
 
 	FSimpleDelegate OnRegenerateChildren;
-
-	uint32 PositionFlags;
 };
 
 ///////////////////////////////////////////////////////////////////////////////////////
 // FUserDefinedStructureLayout
 void FUserDefinedStructureLayout::GenerateChildContent( IDetailChildrenBuilder& ChildrenBuilder ) 
 {
-	const float NameWidth = 80.0f;
-	const float ContentWidth = 130.0f;
-
 	ChildrenBuilder.AddCustomRow(FText::GetEmpty())
-	[
-		SNew(SHorizontalBox)
-		+ SHorizontalBox::Slot()
-		.MaxWidth(NameWidth)
-		.HAlign(HAlign_Left)
-		.VAlign(VAlign_Center)
-		[
-			SNew(SImage)
-			.Image(this, &FUserDefinedStructureLayout::OnGetStructureStatus)
-			.ToolTipText(this, &FUserDefinedStructureLayout::GetStatusTooltip)
-		]
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.HAlign(HAlign_Left)
-		[
-			SNew(SBox)
-			.WidthOverride(ContentWidth)
-			[
-				SNew(SButton)
-				.HAlign(HAlign_Center)
-				.Text(LOCTEXT("NewStructureField", "New Variable"))
-				.OnClicked(this, &FUserDefinedStructureLayout::OnAddNewField)
-			]
-		]
-	];
-
-	ChildrenBuilder.AddCustomRow(FText::GetEmpty())
-	[
-		SNew(SHorizontalBox)
-		+ SHorizontalBox::Slot()
-		.MaxWidth(NameWidth)
-		.HAlign(HAlign_Left)
+		.NameContent()
 		[
 			SNew(STextBlock)
 			.Text(LOCTEXT("Tooltip", "Tooltip"))
 			.Font(IDetailLayoutBuilder::GetDetailFont())
 		]
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.HAlign(HAlign_Left)
+		.ValueContent()
+		.MinDesiredWidth(400.0f)
 		[
-			SNew(SBox)
-			.WidthOverride(ContentWidth)
-			[
-				SNew(SEditableTextBox)
-				.Text(this, &FUserDefinedStructureLayout::OnGetTooltipText)
-				.OnTextCommitted(this, &FUserDefinedStructureLayout::OnTooltipCommitted)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-			]
-		]
-	];
+			SNew(SEditableTextBox)
+			.Text(this, &FUserDefinedStructureLayout::OnGetTooltipText)
+			.OnTextCommitted(this, &FUserDefinedStructureLayout::OnTooltipCommitted)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		];
 
 	auto StructureDetailsSP = StructureDetails.Pin();
 	if(StructureDetailsSP.IsValid())
@@ -1135,10 +1213,7 @@ void FUserDefinedStructureLayout::GenerateChildContent( IDetailChildrenBuilder& 
 			for (int32 Index = 0; Index < VarDescArrayRef.Num(); ++Index)
 			{
 				auto& VarDesc = VarDescArrayRef[Index];
-				uint32 PositionFlag = 0;
-				PositionFlag |= (0 == Index) ? EMemberFieldPosition::MFP_First : 0;
-				PositionFlag |= ((VarDescArrayRef.Num() - 1) == Index) ? EMemberFieldPosition::MFP_Last : 0;
-				TSharedRef<class FUserDefinedStructureFieldLayout> VarLayout = MakeShareable(new FUserDefinedStructureFieldLayout(StructureDetails,  SharedThis(this), VarDesc.VarGuid, PositionFlag));
+				TSharedRef<class FUserDefinedStructureFieldLayout> VarLayout = MakeShareable(new FUserDefinedStructureFieldLayout(StructureDetails,  SharedThis(this), VarDesc.VarGuid));
 				ChildrenBuilder.AddCustomBuilder(VarLayout);
 			}
 		}

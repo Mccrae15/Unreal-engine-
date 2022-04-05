@@ -8,7 +8,7 @@
 
 #include "CoreTypes.h"
 
-#if defined(_WINDOWS_) && !defined(UE4_MINIMAL_WINDOWS_INCLUDE)
+#if defined(_WINDOWS_) && !defined(UE_MINIMAL_WINDOWS_INCLUDE)
 	#pragma message ( " " )
 	#pragma message ( "You have included windows.h before MinWindows.h" )
 	#pragma message ( "All useless stuff from the windows headers won't be excluded !!!" )
@@ -19,7 +19,7 @@
 #error PLATFORM_HOLOLENS not defined
 #endif
 
-#define UE4_MINIMAL_WINDOWS_INCLUDE
+#define UE_MINIMAL_WINDOWS_INCLUDE
 
 // WIN32_LEAN_AND_MEAN excludes rarely-used services from windows headers.
 #define WIN32_LEAN_AND_MEAN
@@ -88,9 +88,21 @@
 #define InterlockedDecrement _InterlockedDecrement
 #endif // !InterlockedDecrement
 
-#define InterlockedDecrement _InterlockedDecrement
+#ifndef InterlockedCompareExchangePointer
+#define InterlockedCompareExchangePointer_MinHoloLensApi_h_hidden
+#if PLATFORM_64BITS
+#define InterlockedCompareExchangePointer _InterlockedCompareExchangePointer
+#else
+#define InterlockedCompareExchangePointer __InlineInterlockedCompareExchangePointer
+#endif
+#endif // !InterlockedCompareExchangePointer
 
 #include <wrl.h>
+
+#ifdef InterlockedCompareExchangePointer_MinHoloLensApi_h_hidden
+#undef InterlockedCompareExchangePointer
+#undef InterlockedCompareExchangePointer_MinHoloLensApi_h_hidden
+#endif // InterlockedCompareExchangePointer_MinHoloLensApi_h_hidden
 
 #ifdef InterlockedIncrement_MinHoloLensApi_h_hidden
 #undef InterlockedIncrement

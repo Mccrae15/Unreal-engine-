@@ -24,11 +24,11 @@ struct ENGINE_API FGraphReference
 protected:
 	// Reference to the actual graph
 	UPROPERTY()
-	mutable class UEdGraph* MacroGraph;
+	mutable TObjectPtr<class UEdGraph> MacroGraph;
 
 	// The blueprint the graph is contained within
 	UPROPERTY()
-	class UBlueprint* GraphBlueprint;
+	TObjectPtr<class UBlueprint> GraphBlueprint;
 
 	// The graph GUID so we can refind it if it has been renamed
 	UPROPERTY()
@@ -76,7 +76,7 @@ public:
 
 	/** Set of all nodes in this graph */
 	UPROPERTY()
-	TArray<class UEdGraphNode*> Nodes;
+	TArray<TObjectPtr<class UEdGraphNode>> Nodes;
 
 	/** If true, graph can be edited by the user */
 	UPROPERTY()
@@ -97,7 +97,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Child graphs that are a part of this graph; the separation is purely visual */
 	UPROPERTY()
-	TArray<class UEdGraph*> SubGraphs;
+	TArray<TObjectPtr<class UEdGraph>> SubGraphs;
 
 	/** Guid for this graph */
 	UPROPERTY()
@@ -121,8 +121,8 @@ public:
 	void RemoveOnGraphChangedHandler( FDelegateHandle Handle );
 
 	//~ Begin UObject interface
-	virtual void BuildSubobjectMapping(UObject* OtherObject, TMap<UObject*, UObject*>& ObjectMapping) const override;
 #if WITH_EDITORONLY_DATA
+	virtual void BuildSubobjectMapping(UObject* OtherObject, TMap<UObject*, UObject*>& ObjectMapping) const override;
 	virtual void Serialize(FStructuredArchiveRecord Record) override;
 	virtual void PostInitProperties() override;
 	virtual void PostLoad() override;
@@ -130,17 +130,6 @@ public:
 #endif
 
 public:
-	/** 
-	 * Creates an empty node of the given type. 
-	 * User is fully responsible for building the node. Most nodes should be created through
-	 * a FGraphNodeCreator builder.
-	 */
-	template <typename NodeClass>
-	UE_DEPRECATED(4.17, "Use CreateIntermediateNode instead.")
-	NodeClass* CreateBlankNode()
-	{
-		return CreateIntermediateNode<NodeClass>();
-	}
 
 	template <typename NodeClass>
 	NodeClass* CreateIntermediateNode()
@@ -210,6 +199,9 @@ public:
 
 	/** Get all children graphs in the specified graph */
 	void GetAllChildrenGraphs(TArray<UEdGraph*>& Graphs) const;
+
+	/** Get parent outer graph, if it exists */
+	static UEdGraph* GetOuterGraph(UObject* Obj);
 
 	/** Util to find a good place for a new node */
 	FVector2D GetGoodPlaceForNewNode();

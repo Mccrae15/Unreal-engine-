@@ -25,6 +25,47 @@ class FRealtimeGPUProfilerFrame;
 class FRenderQueryPool;
 class FScopedGPUStatEvent;
 
+#if RHI_WANT_BREADCRUMB_EVENTS
+struct RENDERCORE_API FBreadcrumbEvent
+{
+	FRHIComputeCommandList* RHICmdList{};
+
+	FORCEINLINE FBreadcrumbEvent(FRHIComputeCommandList& InRHICmdList, const TCHAR* InText)
+		: RHICmdList(&InRHICmdList)
+	{
+		if (RHICmdList)
+		{
+			RHICmdList->PushBreadcrumb(InText);
+		}
+	}
+
+	template<typename... Types>
+	FORCEINLINE FBreadcrumbEvent(FRHIComputeCommandList& InRHICmdList, const TCHAR* Format, Types... Arguments)
+		: RHICmdList(&InRHICmdList)
+	{
+		if (RHICmdList)
+		{
+			RHICmdList->PushBreadcrumbPrintf(Format, Arguments...);
+		}
+	}
+
+	// Terminate the event based upon scope
+	FORCEINLINE ~FBreadcrumbEvent()
+	{
+		if (RHICmdList)
+		{
+			RHICmdList->PopBreadcrumb();
+		}
+	}
+};
+
+	#define BREADCRUMB_EVENT(RHICmdList, Name) FBreadcrumbEvent PREPROCESSOR_JOIN(BreadcrumbEvent_##Name,__LINE__)(RHICmdList, TEXT(#Name));
+	#define BREADCRUMB_EVENTF(RHICmdList, Name, Format, ...) FBreadcrumbEvent PREPROCESSOR_JOIN(BreadcrumbEvent_##Name,__LINE__)(RHICmdList, Format, ##__VA_ARGS__);
+#else
+	#define BREADCRUMB_EVENT(RHICmdList, Name) do { } while(0)
+	#define BREADCRUMB_EVENTF(RHICmdList, Name, Format, ...) do { } while(0)
+#endif
+
 #if WANTS_DRAW_MESH_EVENTS
 
 	/**
@@ -36,9 +77,13 @@ class FScopedGPUStatEvent;
 		/** Cmdlist to push onto. */
 		FRHIComputeCommandList* RHICmdList;
 
+		/** Indicates whether the event has actually been fired or not. */
+		bool bStarted;
+
 		/** Default constructor, initializing all member variables. */
 		FORCEINLINE FDrawEvent()
 			: RHICmdList(nullptr)
+			, bStarted(false)
 		{}
 
 		/**
@@ -46,15 +91,21 @@ class FScopedGPUStatEvent;
 		 */
 		FORCEINLINE ~FDrawEvent()
 		{
-			if (RHICmdList)
+			if (bStarted)
 			{
 				Stop();
 			}
 		}
 
 		/**
-		 * Function for logging a PIX event with var args
+		 * Functions for logging a PIX event with var args. 
+		 * - If Start is called on the rendering or RHI threads, RHICmdList must be non-null. 
+		 * - On the game thread, RHICmdList must be nullptr and a render command will be enqueued on the immediate command list
+		 * - Stop can be called on any thread but must be called on the same thread Start was called on and will either use the same 
+		 *  command list (rendering / RHI thread) or enqueue a command on the current immediate command list (game thread)
 		 */
+		void CDECL Start(FRHIComputeCommandList* RHICmdList, FColor Color, const TCHAR* Fmt, ...);
+		UE_DEPRECATED(4.27, "This function has been deprecated in favor of the other version that takes a pointer in parameter")
 		void CDECL Start(FRHIComputeCommandList& RHICmdList, FColor Color, const TCHAR* Fmt, ...);
 		void Stop();
 	};
@@ -91,39 +142,44 @@ class FScopedGPUStatEvent;
 		void Stop();
 	};
 
-	#define SCOPED_GPU_EVENT(RHICmdList, Name) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, FColor(0), TEXT(#Name));
-	#define SCOPED_GPU_EVENT_COLOR(RHICmdList, Color, Name) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, Color, TEXT(#Name));
-	#define SCOPED_GPU_EVENTF(RHICmdList, Name, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, FColor(0), Format, ##__VA_ARGS__);
-	#define SCOPED_GPU_EVENTF_COLOR(RHICmdList, Color, Name, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, Color, Format, ##__VA_ARGS__);
-	#define SCOPED_CONDITIONAL_GPU_EVENT(RHICmdList, Name, Condition) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, FColor(0), TEXT(#Name));
-	#define SCOPED_CONDITIONAL_GPU_EVENT_COLOR(RHICmdList, Name, Color, Condition) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, Color, TEXT(#Name));
-	#define SCOPED_CONDITIONAL_GPU_EVENTF(RHICmdList, Name, Condition, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, FColor(0), Format, ##__VA_ARGS__);
-	#define SCOPED_CONDITIONAL_GPU_EVENTF_COLOR(RHICmdList, Color, Name, Condition, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, Color, Format, ##__VA_ARGS__);
-	#define BEGIN_GPU_EVENTF(RHICmdList, Name, Event, Format, ...) if(GetEmitDrawEvents()) (Event).Start(RHICmdList, FColor(0), Format, ##__VA_ARGS__);
-	#define BEGIN_GPU_EVENTF_COLOR(RHICmdList, Color, Name, Event, Format, ...) if(GetEmitDrawEvents()) (Event).Start(RHICmdList, Color, Format, ##__VA_ARGS__);
-	#define STOP_GPU_EVENT(Event) (Event).Stop();
-
 	// Macros to allow for scoping of draw events outside of RHI function implementations
-	#define SCOPED_DRAW_EVENT(RHICmdList, Name) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, FColor(0), TEXT(#Name));
-	#define SCOPED_DRAW_EVENT_COLOR(RHICmdList, Color, Name) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, Color, TEXT(#Name));
-	#define SCOPED_DRAW_EVENTF(RHICmdList, Name, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, FColor(0), Format, ##__VA_ARGS__);
-	#define SCOPED_DRAW_EVENTF_COLOR(RHICmdList, Color, Name, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, Color, Format, ##__VA_ARGS__);
-	#define SCOPED_CONDITIONAL_DRAW_EVENT(RHICmdList, Name, Condition) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, FColor(0), TEXT(#Name));
-	#define SCOPED_CONDITIONAL_DRAW_EVENT_COLOR(RHICmdList, Name, Color, Condition) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, Color, TEXT(#Name));
-	#define SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, Name, Condition, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, FColor(0), Format, ##__VA_ARGS__);
-	#define SCOPED_CONDITIONAL_DRAW_EVENTF_COLOR(RHICmdList, Color, Name, Condition, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdList, Color, Format, ##__VA_ARGS__);
-	#define BEGIN_DRAW_EVENTF(RHICmdList, Name, Event, Format, ...) if(GetEmitDrawEvents()) (Event).Start(RHICmdList, FColor(0), Format, ##__VA_ARGS__);
-	#define BEGIN_DRAW_EVENTF_COLOR(RHICmdList, Color, Name, Event, Format, ...) if(GetEmitDrawEvents()) (Event).Start(RHICmdList, Color, Format, ##__VA_ARGS__);
+	// Render-thread event macros:
+	#define SCOPED_DRAW_EVENT(RHICmdList, Name) BREADCRUMB_EVENT(RHICmdList, Name); FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(&RHICmdList, FColor(0), TEXT(#Name));
+	#define SCOPED_DRAW_EVENT_COLOR(RHICmdList, Color, Name) BREADCRUMB_EVENT(RHICmdList, Name); FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(&RHICmdList, Color, TEXT(#Name));
+	#define SCOPED_DRAW_EVENTF(RHICmdList, Name, Format, ...) BREADCRUMB_EVENT(RHICmdList, Name); FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(&RHICmdList, FColor(0), Format, ##__VA_ARGS__);
+	#define SCOPED_DRAW_EVENTF_COLOR(RHICmdList, Color, Name, Format, ...) BREADCRUMB_EVENT(RHICmdList, Name); FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(&RHICmdList, Color, Format, ##__VA_ARGS__);
+	#define SCOPED_CONDITIONAL_DRAW_EVENT(RHICmdList, Name, Condition) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(&RHICmdList, FColor(0), TEXT(#Name));
+	#define SCOPED_CONDITIONAL_DRAW_EVENT_COLOR(RHICmdList, Name, Color, Condition) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(&RHICmdList, Color, TEXT(#Name));
+	#define SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, Name, Condition, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(&RHICmdList, FColor(0), Format, ##__VA_ARGS__);
+	#define SCOPED_CONDITIONAL_DRAW_EVENTF_COLOR(RHICmdList, Color, Name, Condition, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(&RHICmdList, Color, Format, ##__VA_ARGS__);
+	#define BEGIN_DRAW_EVENTF(RHICmdList, Name, Event, Format, ...) if(GetEmitDrawEvents()) (Event).Start(&RHICmdList, FColor(0), Format, ##__VA_ARGS__);
+	#define BEGIN_DRAW_EVENTF_COLOR(RHICmdList, Color, Name, Event, Format, ...) if(GetEmitDrawEvents()) (Event).Start&(RHICmdList, Color, Format, ##__VA_ARGS__);
 	#define STOP_DRAW_EVENT(Event) (Event).Stop();
+	// Non-render-thread event macros:
+	#define SCOPED_DRAW_EVENT_GAMETHREAD(Name) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(nullptr, FColor(0), TEXT(#Name));
+	#define SCOPED_DRAW_EVENT_COLOR_GAMETHREAD(Color, Name) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(nullptr, Color, TEXT(#Name));
+	#define SCOPED_DRAW_EVENTF_GAMETHREAD(Name, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(nullptr, FColor(0), Format, ##__VA_ARGS__);
+	#define SCOPED_DRAW_EVENTF_COLOR_GAMETHREAD(Color, Name, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(nullptr, Color, Format, ##__VA_ARGS__);
+	#define SCOPED_CONDITIONAL_DRAW_EVENT_GAMETHREAD(Name, Condition) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(nullptr, FColor(0), TEXT(#Name));
+	#define SCOPED_CONDITIONAL_DRAW_EVENT_COLOR_GAMETHREAD(Name, Color, Condition) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(nullptr, Color, TEXT(#Name));
+	#define SCOPED_CONDITIONAL_DRAW_EVENTF_GAMETHREAD(Name, Condition, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(nullptr, FColor(0), Format, ##__VA_ARGS__);
+	#define SCOPED_CONDITIONAL_DRAW_EVENTF_COLOR_GAMETHREAD(Color, Name, Condition, Format, ...) FDrawEvent PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents() && (Condition)) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(nullptr, Color, Format, ##__VA_ARGS__);
+	#define BEGIN_DRAW_EVENTF_GAMETHREAD(Name, Event, Format, ...) if(GetEmitDrawEvents()) (Event).Start(nullptr, FColor(0), Format, ##__VA_ARGS__);
+	#define BEGIN_DRAW_EVENTF_COLOR_GAMETHREAD(Color, Name, Event, Format, ...) if(GetEmitDrawEvents()) (Event).Start(nullptr, Color, Format, ##__VA_ARGS__);
+	#define STOP_DRAW_EVENT_GAMETHREAD(Event) (Event).Stop();
 
-	#define SCOPED_COMPUTE_EVENT SCOPED_GPU_EVENT
-	#define SCOPED_COMPUTE_EVENT_COLOR SCOPED_GPU_EVENT_COLOR
-	#define SCOPED_COMPUTE_EVENTF SCOPED_GPU_EVENTF
-	#define SCOPED_COMPUTE_EVENTF_COLOR SCOPED_GPU_EVENTF_COLOR
-	#define SCOPED_CONDITIONAL_COMPUTE_EVENT SCOPED_CONDITIONAL_GPU_EVENT
-	#define SCOPED_CONDITIONAL_COMPUTE_EVENT_COLOR SCOPED_CONDITIONAL_GPU_EVENT_COLOR
-	#define SCOPED_CONDITIONAL_COMPUTE_EVENTF SCOPED_CONDITIONAL_GPU_EVENTF
-	#define SCOPED_CONDITIONAL_COMPUTE_EVENTF_COLOR SCOPED_CONDITIONAL_GPU_EVENTF_COLOR
+	// Deprecated version : use SCOPED_DRAW_... instead:
+	#define SCOPED_GPU_EVENT(RHICmdList, Name) SCOPED_DRAW_EVENT(RHICmdList, Name)
+	#define SCOPED_GPU_EVENT_COLOR(RHICmdList, Color, Name) SCOPED_DRAW_EVENT_COLOR(RHICmdList, Color, Name)
+	#define SCOPED_GPU_EVENTF(RHICmdList, Name, Format, ...) SCOPED_DRAW_EVENTF(RHICmdList, Name, Format, ##__VA_ARGS__)
+	#define SCOPED_GPU_EVENTF_COLOR(RHICmdList, Color, Name, Format, ...) SCOPED_DRAW_EVENTF_COLOR(RHICmdList, Color, Name, Format, ##__VA_ARGS__)
+	#define SCOPED_CONDITIONAL_GPU_EVENT(RHICmdList, Name, Condition) SCOPED_CONDITIONAL_DRAW_EVENT(RHICmdList, Name, Condition)
+	#define SCOPED_CONDITIONAL_GPU_EVENT_COLOR(RHICmdList, Name, Color, Condition) SCOPED_CONDITIONAL_DRAW_EVENT_COLOR(RHICmdList, Name, Color, Condition)
+	#define SCOPED_CONDITIONAL_GPU_EVENTF(RHICmdList, Name, Condition, Format, ...) SCOPED_CONDITIONAL_DRAW_EVENTF(RHICmdList, Name, Condition, Format, ##__VA_ARGS__)
+	#define SCOPED_CONDITIONAL_GPU_EVENTF_COLOR(RHICmdList, Color, Name, Condition, Format, ...) SCOPED_CONDITIONAL_DRAW_EVENTF_COLOR(RHICmdList, Color, Name, Condition, Format, ##__VA_ARGS__)
+	#define BEGIN_GPU_EVENTF(RHICmdList, Name, Event, Format, ...) BEGIN_DRAW_EVENTF(RHICmdList, Name, Event, Format, ##__VA_ARGS__)
+	#define BEGIN_GPU_EVENTF_COLOR(RHICmdList, Color, Name, Event, Format, ...) BEGIN_DRAW_EVENTF_COLOR(RHICmdList, Color, Name, Event, Format, ##__VA_ARGS__)
+	#define STOP_GPU_EVENT(Event) STOP_DRAW_EVENT(Event)
 
 	// Macros to allow for scoping of draw events within RHI function implementations
 	#define SCOPED_RHI_DRAW_EVENT(RHICmdContext, Name) FDrawEventRHIExecute PREPROCESSOR_JOIN(Event_##Name,__LINE__); if(GetEmitDrawEvents()) PREPROCESSOR_JOIN(Event_##Name,__LINE__).Start(RHICmdContext, FColor(0), TEXT(#Name));
@@ -141,22 +197,10 @@ class FScopedGPUStatEvent;
 	{
 	};
 
-	#define SCOPED_GPU_EVENT(...)
-	#define SCOPED_GPU_EVENT_COLOR(...)
-	#define SCOPED_GPU_EVENTF(...)
-	#define SCOPED_GPU_EVENTF_COLOR(...)
-	#define SCOPED_CONDITIONAL_GPU_EVENT(...)
-	#define SCOPED_CONDITIONAL_GPU_EVENT_COLOR(...)
-	#define SCOPED_CONDITIONAL_GPU_EVENTF(...)
-	#define SCOPED_CONDITIONAL_GPU_EVENTF_COLOR(...)
-	#define BEGIN_GPU_EVENTF(...)
-	#define BEGIN_GPU_EVENTF_COLOR(...)
-	#define STOP_GPU_EVENT(...)
-
-	#define SCOPED_DRAW_EVENT(...)
-	#define SCOPED_DRAW_EVENT_COLOR(...)
-	#define SCOPED_DRAW_EVENTF(...)
-	#define SCOPED_DRAW_EVENTF_COLOR(...)
+	#define SCOPED_DRAW_EVENT(RHICmdList, Name) BREADCRUMB_EVENT(RHICmdList, Name);
+	#define SCOPED_DRAW_EVENT_COLOR(RHICmdList, Color, Name) BREADCRUMB_EVENT(RHICmdList, Name);
+	#define SCOPED_DRAW_EVENTF(RHICmdList, Name, Format, ...) BREADCRUMB_EVENT(RHICmdList, Name);
+	#define SCOPED_DRAW_EVENTF_COLOR(RHICmdList, Color, Name, Format, ...) BREADCRUMB_EVENT(RHICmdList, Name);
 	#define SCOPED_CONDITIONAL_DRAW_EVENT(...)
 	#define SCOPED_CONDITIONAL_DRAW_EVENT_COLOR(...)
 	#define SCOPED_CONDITIONAL_DRAW_EVENTF(...)
@@ -165,14 +209,29 @@ class FScopedGPUStatEvent;
 	#define BEGIN_DRAW_EVENTF_COLOR(...)
 	#define STOP_DRAW_EVENT(...)
 
-	#define SCOPED_COMPUTE_EVENT(RHICmdList, Name)
-	#define SCOPED_COMPUTE_EVENT_COLOR(RHICmdList, Name)
-	#define SCOPED_COMPUTE_EVENTF(RHICmdList, Name, Format, ...)
-	#define SCOPED_COMPUTE_EVENTF_COLOR(RHICmdList, Name)
-	#define SCOPED_CONDITIONAL_COMPUTE_EVENT(RHICmdList, Name, Condition)
-	#define SCOPED_CONDITIONAL_COMPUTE_EVENT_COLOR(RHICmdList, Name, Condition)
-	#define SCOPED_CONDITIONAL_COMPUTE_EVENTF(RHICmdList, Name, Condition, Format, ...)
-	#define SCOPED_CONDITIONAL_COMPUTE_EVENTF_COLOR(RHICmdList, Name, Condition)
+	#define SCOPED_DRAW_EVENT_GAMETHREAD(Name)
+	#define SCOPED_DRAW_EVENT_COLOR_GAMETHREAD(Color, Name)
+	#define SCOPED_DRAW_EVENTF_GAMETHREAD(Name, Format, ...)
+	#define SCOPED_DRAW_EVENTF_COLOR_GAMETHREAD(Color, Name, Format, ...)
+	#define SCOPED_CONDITIONAL_DRAW_EVENT_GAMETHREAD(Name, Condition)
+	#define SCOPED_CONDITIONAL_DRAW_EVENT_COLOR_GAMETHREAD(Name, Color, Condition)
+	#define SCOPED_CONDITIONAL_DRAW_EVENTF_GAMETHREAD(Name, Condition, Format, ...)
+	#define SCOPED_CONDITIONAL_DRAW_EVENTF_COLOR_GAMETHREAD(Color, Name, Condition, Format, ...)
+	#define BEGIN_DRAW_EVENTF_GAMETHREAD(Name, Event, Format, ...)
+	#define BEGIN_DRAW_EVENTF_COLOR_GAMETHREAD(Color, Name, Event, Format, ...)
+	#define STOP_DRAW_EVENT_GAMETHREAD(Event)
+
+	#define SCOPED_GPU_EVENT(RHICmdList, Name) BREADCRUMB_EVENT(RHICmdList, Name);
+	#define SCOPED_GPU_EVENT_COLOR(RHICmdList, Color, Name) BREADCRUMB_EVENT(RHICmdList, Name);
+	#define SCOPED_GPU_EVENTF(RHICmdList, Name, Format, ...) BREADCRUMB_EVENT(RHICmdList, Name);
+	#define SCOPED_GPU_EVENTF_COLOR(RHICmdList, Color, Name, Format, ...) BREADCRUMB_EVENT(RHICmdList, Name); 
+	#define SCOPED_CONDITIONAL_GPU_EVENT(...)
+	#define SCOPED_CONDITIONAL_GPU_EVENT_COLOR(...)
+	#define SCOPED_CONDITIONAL_GPU_EVENTF(...)
+	#define SCOPED_CONDITIONAL_GPU_EVENTF_COLOR(...)
+	#define BEGIN_GPU_EVENTF(...)
+	#define BEGIN_GPU_EVENTF_COLOR(...)
+	#define STOP_GPU_EVENT(...)
 
 	#define SCOPED_RHI_DRAW_EVENT(...)
 	#define SCOPED_RHI_DRAW_EVENT_COLOR(...)
@@ -184,6 +243,15 @@ class FScopedGPUStatEvent;
 	#define SCOPED_RHI_CONDITIONAL_DRAW_EVENTF_COLOR(...)
 
 #endif
+
+#define SCOPED_COMPUTE_EVENT SCOPED_GPU_EVENT
+#define SCOPED_COMPUTE_EVENT_COLOR SCOPED_GPU_EVENT_COLOR
+#define SCOPED_COMPUTE_EVENTF SCOPED_GPU_EVENTF
+#define SCOPED_COMPUTE_EVENTF_COLOR SCOPED_GPU_EVENTF_COLOR
+#define SCOPED_CONDITIONAL_COMPUTE_EVENT SCOPED_CONDITIONAL_GPU_EVENT
+#define SCOPED_CONDITIONAL_COMPUTE_EVENT_COLOR SCOPED_CONDITIONAL_GPU_EVENT_COLOR
+#define SCOPED_CONDITIONAL_COMPUTE_EVENTF SCOPED_CONDITIONAL_GPU_EVENTF
+#define SCOPED_CONDITIONAL_COMPUTE_EVENTF_COLOR SCOPED_CONDITIONAL_GPU_EVENTF_COLOR
 
 // GPU stats
 #ifndef HAS_GPU_STATS
@@ -208,9 +276,11 @@ class FScopedGPUStatEvent;
  #define DEFINE_GPU_STAT(StatName) DEFINE_STAT(Stat_GPU_##StatName); CSV_DEFINE_STAT(GPU,StatName); FDrawCallCategoryName DrawcallCountCategory_##StatName;
  #define DEFINE_GPU_DRAWCALL_STAT(StatName) DEFINE_STAT(Stat_GPU_##StatName); CSV_DEFINE_STAT(GPU,StatName); FDrawCallCategoryName DrawcallCountCategory_##StatName((TCHAR*)TEXT(#StatName));
 #if STATS
-  #define SCOPED_GPU_STAT(RHICmdList, StatName) FScopedGPUStatEvent PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__); PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__).Begin(RHICmdList, CSV_STAT_FNAME(StatName), GET_STATID( Stat_GPU_##StatName ).GetName(), &DrawcallCountCategory_##StatName.Counters);
- #else
-  #define SCOPED_GPU_STAT(RHICmdList, StatName) FScopedGPUStatEvent PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__); PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__).Begin(RHICmdList, CSV_STAT_FNAME(StatName), FName(), &DrawcallCountCategory_##StatName.Counters);
+  #define SCOPED_GPU_STAT(RHICmdList, StatName) FScopedGPUStatEvent PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__); PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__).Begin(RHICmdList, CSV_STAT_FNAME(StatName), GET_STATID( Stat_GPU_##StatName ).GetName(), nullptr, &DrawcallCountCategory_##StatName.Counters);
+  #define SCOPED_GPU_STAT_VERBOSE(RHICmdList, StatName, Description) FScopedGPUStatEvent PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__); PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__).Begin(RHICmdList, CSV_STAT_FNAME(StatName), GET_STATID( Stat_GPU_##StatName ).GetName(), Description, &DrawcallCountCategory_##StatName.Counters);
+#else
+  #define SCOPED_GPU_STAT(RHICmdList, StatName) FScopedGPUStatEvent PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__); PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__).Begin(RHICmdList, CSV_STAT_FNAME(StatName), FName(), nullptr, &DrawcallCountCategory_##StatName.Counters);
+  #define SCOPED_GPU_STAT_VERBOSE(RHICmdList, StatName, Description) FScopedGPUStatEvent PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__); PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__).Begin(RHICmdList, CSV_STAT_FNAME(StatName), FName(), Description, &DrawcallCountCategory_##StatName.Counters);
 #endif
  #define GPU_STATS_BEGINFRAME(RHICmdList) FRealtimeGPUProfiler::Get()->BeginFrame(RHICmdList);
  #define GPU_STATS_ENDFRAME(RHICmdList) FRealtimeGPUProfiler::Get()->EndFrame(RHICmdList);
@@ -228,13 +298,69 @@ class FScopedGPUStatEvent;
  #define GPU_STATS_ENDFRAME(RHICmdList) 
 #endif
 
-bool AreGPUStatsEnabled();
+RENDERCORE_API bool AreGPUStatsEnabled();
 
 #if HAS_GPU_STATS
 
 class FRealtimeGPUProfilerEvent;
 class FRealtimeGPUProfilerFrame;
 class FRenderQueryPool;
+
+class FRealtimeGPUProfilerQuery
+{
+public:
+	FRealtimeGPUProfilerQuery() = default;
+	FRealtimeGPUProfilerQuery(FRHIGPUMask InGPUMask, FRHIRenderQuery* InQuery)
+		: GPUMask(InGPUMask)
+		, Query(InQuery)
+	{}
+
+	void Submit(FRHICommandList& RHICmdList) const
+	{
+		if (Query)
+		{
+			SCOPED_GPU_MASK(RHICmdList, GPUMask);
+			RHICmdList.EndRenderQuery(Query);
+		}
+	}
+
+private:
+	FRHIGPUMask GPUMask;
+	FRHIRenderQuery* Query{};
+};
+
+#if GPUPROFILERTRACE_ENABLED
+struct FRealtimeGPUProfilerHistoryItem
+{
+	FRealtimeGPUProfilerHistoryItem();
+
+	static const uint64 HistoryCount = 64;
+
+	// Constructor memsets everything to zero, assuming structure is Plain Old Data.  If any dynamic structures are
+	// added, you'll need a more generalized constructor that zeroes out all the uninitialized data.
+	bool UpdatedThisFrame;
+	FRHIGPUMask LastGPUMask;
+	uint64 NextWriteIndex;
+	uint64 AccumulatedTime;				// Accumulated time could be computed, but may also be useful to inspect in the debugger
+	TStaticArray<uint64, HistoryCount> Times;
+};
+
+struct FRealtimeGPUProfilerHistoryByDescription
+{
+	TMap<FString, FRealtimeGPUProfilerHistoryItem> History;
+	mutable FRWLock Mutex;
+};
+
+struct RENDERCORE_API FRealtimeGPUProfilerDescriptionResult
+{
+	// Times are in microseconds
+	FString Description;
+	FRHIGPUMask GPUMask;
+	uint64 AverageTime;
+	uint64 MinTime;
+	uint64 MaxTime;
+};
+#endif  // GPUPROFILERTRACE_ENABLED
 
 /**
 * FRealtimeGPUProfiler class. This manages recording and reporting all for GPU stats
@@ -258,12 +384,21 @@ public:
 	RENDERCORE_API void Release();
 
 	/** Push/pop events */
-	void PushEvent(FRHICommandListImmediate& RHICmdList, const FName& Name, const FName& StatName);
-	void PopEvent(FRHICommandListImmediate& RHICmdList);
+	FRealtimeGPUProfilerQuery PushEvent(FRHIGPUMask GPUMask, const FName& Name, const FName& StatName, const TCHAR* Description);
+	FRealtimeGPUProfilerQuery PopEvent();
+
+	int32 GetCurrentEventIndex() const;
+
+	void PushEventOverride(int32 EventIndex);
+	void PopEventOverride();
 
 	/** Push/pop stats which do additional draw call tracking on top of events. */
-	void PushStat(FRHICommandListImmediate& RHICmdList, const FName& Name, const FName& StatName, int32 (*InNumDrawCallsPtr)[MAX_NUM_GPUS]);
+	void PushStat(FRHICommandListImmediate& RHICmdList, const FName& Name, const FName& StatName, const TCHAR* Description, int32 (*InNumDrawCallsPtr)[MAX_NUM_GPUS]);
 	void PopStat(FRHICommandListImmediate& RHICmdList, int32 (*InNumDrawCallsPtr)[MAX_NUM_GPUS]);
+
+#if GPUPROFILERTRACE_ENABLED
+	RENDERCORE_API void FetchPerfByDescription(TArray<FRealtimeGPUProfilerDescriptionResult> & OutResults) const;
+#endif
 
 private:
 	FRealtimeGPUProfiler();
@@ -282,6 +417,11 @@ private:
 	FRenderQueryPoolRHIRef RenderQueryPool;
 	bool bStatGatheringPaused;
 	bool bInBeginEndBlock;
+	bool bLocked = false;
+
+#if GPUPROFILERTRACE_ENABLED
+	FRealtimeGPUProfilerHistoryByDescription HistoryByDescription;
+#endif
 };
 
 /**
@@ -314,7 +454,7 @@ public:
 	/**
 	* Start/Stop functions for timer stats
 	*/
-	RENDERCORE_API void Begin(FRHICommandList& InRHICmdList, const FName& Name, const FName& StatName, int32 (*InNumDrawCallsPtr)[MAX_NUM_GPUS]);
+	RENDERCORE_API void Begin(FRHICommandList& InRHICmdList, const FName& Name, const FName& StatName, const TCHAR* Description, int32 (*InNumDrawCallsPtr)[MAX_NUM_GPUS]);
 	RENDERCORE_API void End();
 };
 #endif // HAS_GPU_STATS

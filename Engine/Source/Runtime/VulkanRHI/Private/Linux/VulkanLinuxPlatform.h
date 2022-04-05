@@ -12,8 +12,14 @@
 #define VULKAN_SIGNAL_UNIMPLEMENTED()				checkf(false, TEXT("Unimplemented vulkan functionality: %s"), __PRETTY_FUNCTION__)
 #define VULKAN_SUPPORTS_AMD_BUFFER_MARKER			1
 
+#define VULKAN_RHI_RAYTRACING 						(RHI_RAYTRACING)
+#define VULKAN_SUPPORTS_SCALAR_BLOCK_LAYOUT			(VULKAN_RHI_RAYTRACING)
 
-#define	UE_VK_API_VERSION							VK_API_VERSION_1_1
+#if VULKAN_RHI_RAYTRACING
+#	define UE_VK_API_VERSION						VK_API_VERSION_1_2
+#else
+#	define UE_VK_API_VERSION						VK_API_VERSION_1_1
+#endif // VULKAN_RHI_RAYTRACING
 
 #define ENUM_VK_ENTRYPOINTS_PLATFORM_BASE(EnumMacro)
 
@@ -28,6 +34,8 @@
     EnumMacro(PFN_vkGetImageMemoryRequirements2KHR , vkGetImageMemoryRequirements2KHR) \
     EnumMacro(PFN_vkGetBufferMemoryRequirements2KHR , vkGetBufferMemoryRequirements2KHR) \
     EnumMacro(PFN_vkGetPhysicalDeviceMemoryProperties2, vkGetPhysicalDeviceMemoryProperties2) \
+	EnumMacro(PFN_vkCreateRenderPass2KHR, vkCreateRenderPass2KHR) \
+	EnumMacro(PFN_vkCmdBeginRenderPass2KHR, vkCmdBeginRenderPass2KHR) \
 	EnumMacro(PFN_vkGetPhysicalDeviceFragmentShadingRatesKHR, vkGetPhysicalDeviceFragmentShadingRatesKHR)
 
 // and now, include the GenericPlatform class
@@ -38,33 +46,17 @@ class FVulkanLinuxPlatform : public FVulkanGenericPlatform
 public:
 	static bool IsSupported();
 
+	static void CheckDeviceDriver(uint32 DeviceIndex, EGpuVendorId VendorId, const VkPhysicalDeviceProperties& Props);
 	static bool LoadVulkanLibrary();
 	static bool LoadVulkanInstanceFunctions(VkInstance inInstance);
 	static void FreeVulkanLibrary();
 
 	static void GetInstanceExtensions(TArray<const ANSICHAR*>& OutExtensions);
+	static void GetInstanceLayers(TArray<const ANSICHAR*>& OutLayers) {}
 	static void GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions);
+	static void GetDeviceLayers(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutLayers) {}
 
 	static void CreateSurface(void* WindowHandle, VkInstance Instance, VkSurfaceKHR* OutSurface);
-
-	// Some platforms only support real or non-real UBs, so this function can optimize it out
-	static bool UseRealUBsOptimization(bool bCodeHeaderUseRealUBs)
-	{
-		// cooked builds will return the bool unchanged - relying on the compiler to optimize out the editor code path
-		if (UE_EDITOR)
-		{
-			static bool bAlwaysUseRealUBs([]()
-			{
-				static auto* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Vulkan.UseRealUBs"));
-				return (CVar && CVar->GetValueOnAnyThread() == 0);
-			}());
-			return bAlwaysUseRealUBs ? false : bCodeHeaderUseRealUBs;
-		}
-		else
-		{
-			return bCodeHeaderUseRealUBs;
-		}
-	}
 
 	static bool ForceEnableDebugMarkers();
 

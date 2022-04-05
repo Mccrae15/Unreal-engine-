@@ -13,11 +13,6 @@
 #define LOCTEXT_NAMESPACE "FMacTargetPlatformModule"
 
 
-/**
- * Holds the target platform singleton.
- */
-static ITargetPlatform* Singleton = NULL;
-
 
 /**
  * Module for Mac as a target platform
@@ -27,30 +22,17 @@ class FMacTargetPlatformModule
 {
 public:
 
-	/**
-	 * Destructor.
-	 */
-	~FMacTargetPlatformModule()
+	virtual void GetTargetPlatforms(TArray<ITargetPlatform*>& TargetPlatforms) override
 	{
-		Singleton = NULL;
+		// Game TP
+		TargetPlatforms.Add(new TGenericMacTargetPlatform<false, false, false>());
+		// Editor TP
+		TargetPlatforms.Add(new TGenericMacTargetPlatform<true, false, false>());
+		// Server TP
+		TargetPlatforms.Add(new TGenericMacTargetPlatform<false, true, false>());
+		// Client TP
+		TargetPlatforms.Add(new TGenericMacTargetPlatform<false, false, true>());
 	}
-
-
-public:
-
-	// Begin ITargetPlatformModule interface
-
-	virtual ITargetPlatform* GetTargetPlatform() override
-	{
-		if (Singleton == NULL && TGenericMacTargetPlatform<true, false, false>::IsUsable())
-		{
-			Singleton = new TGenericMacTargetPlatform<true, false, false>();
-		}
-
-		return Singleton;
-	}
-
-	// End ITargetPlatformModule interface
 
 
 public:
@@ -63,11 +45,12 @@ public:
 		
 		// We need to manually load the config properties here, as this module is loaded before the UObject system is setup to do this
         GConfig->GetArray(TEXT("/Script/MacTargetPlatform.MacTargetSettings"), TEXT("TargetedRHIs"), TargetSettings->TargetedRHIs, GEngineIni);
-		
-		int32 Value = 1;
-        GConfig->GetInt(TEXT("/Script/MacTargetPlatform.MacTargetSettings"), TEXT("MaxShaderLanguageVersion"), Value, GEngineIni);
-        TargetSettings->MaxShaderLanguageVersion = FMath::Max(Value, 4);
-		
+       
+        if (!GConfig->GetInt(TEXT("/Script/MacTargetPlatform.MacTargetSettings"), TEXT("MetalLanguageVersion"), TargetSettings->MetalLanguageVersion, GEngineIni))
+        {
+            TargetSettings->MetalLanguageVersion = 0;
+        }
+        
 		if (!GConfig->GetBool(TEXT("/Script/MacTargetPlatform.MacTargetSettings"), TEXT("UseFastIntrinsics"), TargetSettings->UseFastIntrinsics, GEngineIni))
 		{
 			TargetSettings->UseFastIntrinsics = false;

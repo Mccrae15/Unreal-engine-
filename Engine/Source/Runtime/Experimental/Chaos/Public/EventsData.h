@@ -6,18 +6,21 @@
 #include "Chaos/CollisionResolutionTypes.h"
 #include "Chaos/Framework/PhysicsProxy.h"
 
+class UPrimitiveComponent;
+
 namespace Chaos
 {
 	// base class for data that requires time of creation to be recorded
 	struct FTimeResource
 	{
-		FTimeResource() : TimeCreated(-FLT_MAX) {}
-		float TimeCreated;
+		FTimeResource() : TimeCreated(-TNumericLimits<FReal>::Max()) {}
+		FReal TimeCreated;
 	};
 
 	typedef TArray<FCollidingData> FCollisionDataArray;
 	typedef TArray<FBreakingData> FBreakingDataArray;
 	typedef TArray<FTrailingData> FTrailingDataArray;
+	typedef TArray<FRemovalData> FRemovalDataArray;
 	typedef TArray<FSleepingData> FSleepingDataArray;
 
 	/* Common */
@@ -86,6 +89,7 @@ namespace Chaos
 		FBreakingEventData() {}
 
 		FAllBreakingData BreakingData;
+		FIndicesByPhysicsProxy PhysicsProxyToBreakingIndices;
 	};
 
 	/* Trailing */
@@ -111,6 +115,33 @@ namespace Chaos
 		FTrailingEventData() {}
 
 		FAllTrailingData TrailingData;
+		FIndicesByPhysicsProxy PhysicsProxyToTrailingIndices;
+	};
+
+	/* Removal */
+
+	/*
+	 * All the removal events for one frame time stamped with the time for that frame
+	 */
+	struct FAllRemovalData : FTimeResource
+	{
+		FAllRemovalData() : AllRemovalArray(FRemovalDataArray()) {}
+
+		void Reset()
+		{
+			AllRemovalArray.Reset();
+		}
+
+		FRemovalDataArray AllRemovalArray;
+	};
+
+
+	struct FRemovalEventData
+	{
+		FRemovalEventData() {}
+
+		FAllRemovalData RemovalData;
+		FIndicesByPhysicsProxy PhysicsProxyToRemovalIndices;
 	};
 
 	struct FSleepingEventData

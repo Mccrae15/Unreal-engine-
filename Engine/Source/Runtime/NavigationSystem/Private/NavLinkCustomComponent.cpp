@@ -337,7 +337,7 @@ void UNavLinkCustomComponent::CollectNearbyAgents(TArray<UObject*>& NotifyList)
 	TArray<AController*> ControllerList;
 	for (int32 i = 0; i < OverlapsL.Num(); i++)
 	{
-		APawn* MovingPawn = Cast<APawn>(OverlapsL[i].GetActor());
+		APawn* MovingPawn = OverlapsL[i].OverlapObjectHandle.FetchActor<APawn>();
 		if (MovingPawn && MovingPawn->GetController())
 		{
 			ControllerList.Add(MovingPawn->GetController());
@@ -345,7 +345,7 @@ void UNavLinkCustomComponent::CollectNearbyAgents(TArray<UObject*>& NotifyList)
 	}
 	for (int32 i = 0; i < OverlapsR.Num(); i++)
 	{
-		APawn* MovingPawn = Cast<APawn>(OverlapsR[i].GetActor());
+		APawn* MovingPawn = OverlapsR[i].OverlapObjectHandle.FetchActor<APawn>();
 		if (MovingPawn && MovingPawn->GetController())
 		{
 			ControllerList.Add(MovingPawn->GetController());

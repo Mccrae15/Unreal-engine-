@@ -2,6 +2,7 @@
 
 
 #include "SEditorViewportToolBarMenu.h"
+#include "SEditorViewportToolBarMenuButton.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Text/STextBlock.h"
@@ -14,6 +15,8 @@ void SEditorViewportToolbarMenu::Construct( const FArguments& Declaration )
 {
 	const TAttribute<FText>& Label = Declaration._Label;
 
+	SetToolTipText(FText::GetEmpty());
+
 	const FName ImageName = Declaration._Image;
 	const FSlateBrush* ImageBrush = FEditorStyle::GetBrush( ImageName );
 
@@ -23,21 +26,18 @@ void SEditorViewportToolbarMenu::Construct( const FArguments& Declaration )
 	checkf(ParentToolBar.IsValid(), TEXT("The parent toolbar must be specified") );
 
 	TSharedPtr<SWidget> ButtonContent;
-	
-	const float MenuIconSize = 16.0f;
 
 	// Create the content for the button.  We always use an image over a label if it is valid
 	if( ImageName != NAME_None )
 	{
 		ButtonContent = 
 			SNew(SBox)
-			.HeightOverride(MenuIconSize)
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Center)
 			[
-				SNew( SImage )	
-					.Image( ImageBrush )
-					.ColorAndOpacity( FSlateColor::UseForeground() )
+				SNew(SImage)	
+				.Image(ImageBrush)
+				.ColorAndOpacity(FSlateColor::UseForeground())
 			];
 	}
 	else
@@ -45,36 +45,26 @@ void SEditorViewportToolbarMenu::Construct( const FArguments& Declaration )
 		if( LabelIconBrush.IsBound() || LabelIconBrush.Get() != NULL )
 		{
 			// Label with an icon to the left
-			
 			ButtonContent = 
-				SNew( SHorizontalBox )
+				SNew(SHorizontalBox)
 				+SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
 				.AutoWidth()
-				.Padding( 0.0f, 0.0f, 3.0f, 0.0f )
+				.Padding(4.0f, 0.0f, 4.f, 0.0f)
 				[
-					SNew( SBox )
-					.Visibility( this, &SEditorViewportToolbarMenu::GetLabelIconVisibility )
-					.WidthOverride( MenuIconSize )
-					.HeightOverride( MenuIconSize )
-					.VAlign(VAlign_Center)
-					.HAlign(HAlign_Center)
-					[
-						SNew( SImage )
-							.Image( LabelIconBrush )
-					]
+					SNew( SImage )
+					.Visibility(this, &SEditorViewportToolbarMenu::GetLabelIconVisibility)
+					.Image(LabelIconBrush)
+					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 				+SHorizontalBox::Slot()
-				.FillWidth( 1.0f )
-				.VAlign( VAlign_Center )
+				.Padding(0.0f, 0.0f, 4.f, 0.0f)
+				.AutoWidth()
+				.VAlign(VAlign_Center)
 				[
-					SNew(SBox)
-					.HeightOverride(MenuIconSize)
-					.VAlign(VAlign_Center)
-					[
-						SNew( STextBlock )
-							.Font( FEditorStyle::GetFontStyle("EditorViewportToolBar.Font") )
-							.Text( Label )
-					]
+					SNew(STextBlock)
+					.Text(Label)
 				];
 		}
 		else
@@ -82,12 +72,11 @@ void SEditorViewportToolbarMenu::Construct( const FArguments& Declaration )
 			// Just the label text, no icon
 			ButtonContent = 
 				SNew(SBox)
-				.HeightOverride(MenuIconSize)
 				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.f, 0.f))
 				[
 					SNew( STextBlock )
-						.Font( FEditorStyle::GetFontStyle("EditorViewportToolBar.Font") )
-						.Text( Label )
+					.Text(Label)
 				];
 		}
 	}
@@ -96,20 +85,34 @@ void SEditorViewportToolbarMenu::Construct( const FArguments& Declaration )
 	[
 		SAssignNew( MenuAnchor, SMenuAnchor )
 		.Placement( MenuPlacement_BelowAnchor )
-		[
-			SNew( SButton )
-			// Allows users to drag with the mouse to select options after opening the menu */
-			.ClickMethod( EButtonClickMethod::MouseDown )
-			.ContentPadding( FMargin( 5.0f, 2.0f ) )
-			.VAlign( VAlign_Center )
-			.ButtonStyle(Declaration._MenuStyle)
-			.OnClicked( this, &SEditorViewportToolbarMenu::OnMenuClicked )
-			[
-				ButtonContent.ToSharedRef()
-			]
-		]
 		.OnGetMenuContent( Declaration._OnGetMenuContent )
 	];
+
+	MenuAnchor->SetContent(
+		SNew( SEditorViewportToolBarMenuButton, MenuAnchor.ToSharedRef() )
+		.ContentPadding( FMargin(0.0f, 0.0f) )
+		.VAlign(VAlign_Center)
+		.ButtonStyle(Declaration._MenuStyle)
+		.ToolTipText(this, &SEditorViewportToolbarMenu::GetFilteredToolTipText, Declaration._ToolTipText)
+		.OnClicked( this, &SEditorViewportToolbarMenu::OnMenuClicked )
+		.ForegroundColor(Declaration._ForegroundColor)
+		[
+			ButtonContent.ToSharedRef()
+		]
+	);
+}
+
+FText SEditorViewportToolbarMenu::GetFilteredToolTipText(TAttribute<FText> ToolTipText) const
+{
+	// If we're part of a toolbar that has a currently open menu, then we suppress our tool-tip
+	// as it will just get in the way
+	TWeakPtr<SMenuAnchor> OpenedMenu = ParentToolBar.Pin()->GetOpenMenu();
+	if (OpenedMenu.IsValid() && OpenedMenu.Pin()->IsOpen())
+	{
+		return FText::GetEmpty();
+	}
+
+	return ToolTipText.Get();
 }
 
 FReply SEditorViewportToolbarMenu::OnMenuClicked()
@@ -132,6 +135,8 @@ FReply SEditorViewportToolbarMenu::OnMenuClicked()
 
 void SEditorViewportToolbarMenu::OnMouseEnter( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent )
 {
+	SCompoundWidget::OnMouseEnter(MyGeometry, MouseEvent);
+
 	// See if there is another menu on the same tool bar already open
 	TWeakPtr<SMenuAnchor> OpenedMenu = ParentToolBar.Pin()->GetOpenMenu();
 	if( OpenedMenu.IsValid() && OpenedMenu.Pin()->IsOpen() && OpenedMenu.Pin() != MenuAnchor )
@@ -151,4 +156,9 @@ EVisibility SEditorViewportToolbarMenu::GetLabelIconVisibility() const
 TWeakPtr<class SViewportToolBar> SEditorViewportToolbarMenu::GetParentToolBar() const
 {
 	return ParentToolBar;
+}
+
+bool SEditorViewportToolbarMenu::IsMenuOpen() const
+{
+	return MenuAnchor->IsOpen();
 }

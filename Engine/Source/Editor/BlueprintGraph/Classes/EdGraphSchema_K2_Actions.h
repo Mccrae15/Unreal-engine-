@@ -10,6 +10,7 @@
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
 
 #include "EdGraphSchema_K2_Actions.generated.h"
 
@@ -41,7 +42,7 @@ struct BLUEPRINTGRAPH_API FEdGraphSchemaAction_K2NewNode : public FEdGraphSchema
 
 	/** Template of node we want to create */
 	UPROPERTY()
-	class UK2Node* NodeTemplate;
+	TObjectPtr<class UK2Node> NodeTemplate;
 
 	UPROPERTY()
 	bool bGotoNode;
@@ -120,7 +121,7 @@ struct BLUEPRINTGRAPH_API FEdGraphSchemaAction_K2ViewNode : public FEdGraphSchem
 
 	/** node we want to view */
 	UPROPERTY()
-	const UK2Node* NodePtr;
+	TObjectPtr<const UK2Node> NodePtr;
 
 	FEdGraphSchemaAction_K2ViewNode() 
 		: FEdGraphSchemaAction()
@@ -181,7 +182,7 @@ struct BLUEPRINTGRAPH_API FEdGraphSchemaAction_EventFromFunction : public FEdGra
 	virtual FName GetTypeId() const override { return StaticGetTypeId(); } 
 
 	UPROPERTY()
-	class UFunction* SignatureFunction;
+	TObjectPtr<class UFunction> SignatureFunction;
 
 	FEdGraphSchemaAction_EventFromFunction() 
 		:FEdGraphSchemaAction()
@@ -220,7 +221,7 @@ struct FEdGraphSchemaAction_K2AddComponent : public FEdGraphSchemaAction_K2NewNo
 
 	/** Option asset to assign to newly created component */
 	UPROPERTY()
-	class UObject* ComponentAsset;
+	TObjectPtr<class UObject> ComponentAsset;
 
 	FEdGraphSchemaAction_K2AddComponent()
 		: FEdGraphSchemaAction_K2NewNode()
@@ -313,7 +314,7 @@ struct FEdGraphSchemaAction_K2AddCallOnActor : public FEdGraphSchemaAction_K2New
 
 	/** Pointer to actors in level we want to call function on */
 	UPROPERTY()
-	TArray<class AActor*> LevelActors;
+	TArray<TObjectPtr<class AActor>> LevelActors;
 
 	FEdGraphSchemaAction_K2AddCallOnActor()
 		: FEdGraphSchemaAction_K2NewNode()
@@ -468,23 +469,23 @@ private:
 	FName VarName;
 
 	/** The struct that owns this item */
-	TWeakObjectPtr<UStruct> VariableSource;
+	TWeakObjectPtr<UObject> VariableSource;
 
 	/** TRUE if the variable's type is boolean */
 	bool bIsVarBool;
 
 public:
-	void SetVariableInfo(const FName& InVarName, const UStruct* InOwningScope, bool bInIsVarBool)
+	void SetVariableInfo(const FName& InVarName, const UObject* InOwningScope, bool bInIsVarBool)
 	{
 		VarName = InVarName;
 		bIsVarBool = bInIsVarBool;
 
 		check(InOwningScope);
-		VariableSource = MakeWeakObjectPtr(const_cast<UStruct*>(InOwningScope));
+		VariableSource = MakeWeakObjectPtr(const_cast<UObject*>(InOwningScope));
 	}
 
 	// Simple type info
-	static FName StaticGetTypeId() {static FName Type("FEdGraphSchemaAction_K2Var"); return Type;}
+	static FName StaticGetTypeId() {static FName Type("FEdGraphSchemaAction_BlueprintVariableBase"); return Type;}
 	virtual FName GetTypeId() const override { return StaticGetTypeId(); } 
 
 	FEdGraphSchemaAction_BlueprintVariableBase()
@@ -510,21 +511,38 @@ public:
 		return Cast<UClass>(GetVariableScope());
 	}
 
-	UStruct* GetVariableScope() const
+	UObject* GetVariableScope() const
 	{
 		return VariableSource.Get();
 	}
 
-	FProperty* GetProperty() const
+	virtual FProperty* GetProperty() const
 	{
-		return FindFProperty<FProperty>(GetVariableScope(), VarName);
+		if (UStruct* Scope = Cast<UStruct>(GetVariableScope()))
+		{
+			return FindFProperty<FProperty>(Scope, VarName);
+		}
+		return nullptr;
 	}
+
+	virtual FEdGraphPinType GetPinType() const{ return FEdGraphPinType();}
+
+	virtual void ChangeVariableType(const FEdGraphPinType& NewPinType){}
+
+	virtual void RenameVariable(const FName& NewName) { VarName = NewName; }
+
+	virtual bool IsValidName(const FName& NewName, FText& OutErrorMessage) const { return true; }
+
+	virtual void DeleteVariable() {}
+
+	virtual bool IsVariableUsed() { return false; }
 	
 	// FEdGraphSchemaAction interface
 	virtual void MovePersistentItemToCategory(const FText& NewCategoryName) override;
 	virtual int32 GetReorderIndexInContainer() const override;
 	virtual bool ReorderToBeforeAction(TSharedRef<FEdGraphSchemaAction> OtherAction) override;
 	virtual FEdGraphSchemaActionDefiningObject GetPersistentItemDefiningObject() const override;
+	virtual bool IsAVariable() const { return true; }
 	// End of FEdGraphSchemaAction interface
 
 	UBlueprint* GetSourceBlueprint() const;
@@ -553,6 +571,11 @@ public:
 	FEdGraphSchemaAction_K2Var(FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping, const int32 InSectionID)
 		: FEdGraphSchemaAction_BlueprintVariableBase(MoveTemp(InNodeCategory), MoveTemp(InMenuDesc), MoveTemp(InToolTip), InGrouping, InSectionID)
 	{}
+
+	virtual bool IsA(const FName& InType) const override
+	{
+		return InType == GetTypeId() || InType == FEdGraphSchemaAction_BlueprintVariableBase::StaticGetTypeId();
+	}
 };
 
 /*******************************************************************************
@@ -578,6 +601,11 @@ public:
 	FEdGraphSchemaAction_K2LocalVar(FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping, const int32 InSectionID)
 		: FEdGraphSchemaAction_BlueprintVariableBase(MoveTemp(InNodeCategory), MoveTemp(InMenuDesc), MoveTemp(InToolTip), InGrouping, InSectionID)
 	{}
+
+	virtual bool IsA(const FName& InType) const override
+    {
+    	return InType == GetTypeId() || InType == FEdGraphSchemaAction_BlueprintVariableBase::StaticGetTypeId();
+    }
 };
 
 /*******************************************************************************
@@ -782,6 +810,11 @@ public:
 	FMulticastDelegateProperty* GetDelegateProperty() const
 	{
 		return FindFProperty<FMulticastDelegateProperty>(GetVariableClass(), GetVariableName());
+	}
+
+	virtual bool IsA(const FName& InType) const override
+	{
+		return InType == GetTypeId() || InType == FEdGraphSchemaAction_BlueprintVariableBase::StaticGetTypeId();
 	}
 };
 

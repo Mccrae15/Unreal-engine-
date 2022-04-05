@@ -169,7 +169,7 @@ struct FMovieSceneCompiledDataEntry
 {
 	FMovieSceneCompiledDataEntry();
 
-	UMovieSceneSequence* GetSequence() const;
+	MOVIESCENE_API UMovieSceneSequence* GetSequence() const;
 
 	/** 16 Bytes */
 	FGuid CompiledSignature;

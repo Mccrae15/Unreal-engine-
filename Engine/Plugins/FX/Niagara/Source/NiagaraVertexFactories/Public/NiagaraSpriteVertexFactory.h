@@ -20,19 +20,19 @@ class FMaterial;
  */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FNiagaraSpriteUniformParameters, NIAGARAVERTEXFACTORIES_API)
 	SHADER_PARAMETER( uint32, bLocalSpace)
-	SHADER_PARAMETER_EX( FVector4, TangentSelector, EShaderPrecisionModifier::Half )
-	SHADER_PARAMETER_EX( FVector4, NormalsSphereCenter, EShaderPrecisionModifier::Half )
-	SHADER_PARAMETER_EX( FVector4, NormalsCylinderUnitDirection, EShaderPrecisionModifier::Half )
-	SHADER_PARAMETER_EX( FVector4, SubImageSize, EShaderPrecisionModifier::Half )
-	SHADER_PARAMETER_EX( FVector, CameraFacingBlend, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER_EX( FVector4f, TangentSelector, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER_EX( FVector4f, NormalsSphereCenter, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER_EX( FVector4f, NormalsCylinderUnitDirection, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER_EX( FVector4f, SubImageSize, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER_EX( FVector3f, CameraFacingBlend, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER_EX( float, RemoveHMDRoll, EShaderPrecisionModifier::Half )
-	SHADER_PARAMETER( FVector4, MacroUVParameters )
+	SHADER_PARAMETER( FVector4f, MacroUVParameters )
 	SHADER_PARAMETER_EX( float, RotationScale, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER_EX( float, RotationBias, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER_EX( float, NormalsType, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER_EX( float, DeltaSeconds, EShaderPrecisionModifier::Half )
-	SHADER_PARAMETER_EX( FVector2D, DefaultPivotOffset, EShaderPrecisionModifier::Half )
-	SHADER_PARAMETER_EX( FVector2D, DefaultPrevPivotOffset, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER_EX( FVector2f, DefaultPivotOffset, EShaderPrecisionModifier::Half )
+	SHADER_PARAMETER_EX( FVector2f, DefaultPrevPivotOffset, EShaderPrecisionModifier::Half )
 	SHADER_PARAMETER(int, PositionDataOffset)
 	SHADER_PARAMETER(int, PrevPositionDataOffset)
 	SHADER_PARAMETER(int, VelocityDataOffset)
@@ -60,29 +60,32 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FNiagaraSpriteUniformParameters, NIAGARAVE
 	SHADER_PARAMETER(int, PrevPivotOffsetDataOffset)
 	SHADER_PARAMETER(int, NormalizedAgeDataOffset)
 	SHADER_PARAMETER(int, MaterialRandomDataOffset)
-	SHADER_PARAMETER(FVector4, DefaultPos)
-	SHADER_PARAMETER(FVector4, DefaultPrevPos)
-	SHADER_PARAMETER(FVector2D, DefaultSize)
-	SHADER_PARAMETER(FVector2D, DefaultPrevSize)
-	SHADER_PARAMETER(FVector2D, DefaultUVScale)
-	SHADER_PARAMETER(FVector, DefaultVelocity)
-	SHADER_PARAMETER(FVector, DefaultPrevVelocity)
+	SHADER_PARAMETER(FVector4f, DefaultPos)
+	SHADER_PARAMETER(FVector4f, DefaultPrevPos)
+	SHADER_PARAMETER(FVector2f, DefaultSize)
+	SHADER_PARAMETER(FVector2f, DefaultPrevSize)
+	SHADER_PARAMETER(FVector2f, DefaultUVScale)
+	SHADER_PARAMETER(FVector3f, DefaultVelocity)
+	SHADER_PARAMETER(FVector3f, DefaultPrevVelocity)
+	SHADER_PARAMETER(FVector3f, SystemLWCTile)
 	SHADER_PARAMETER(float, DefaultRotation)
 	SHADER_PARAMETER(float, DefaultPrevRotation)
-	SHADER_PARAMETER(FVector4, DefaultColor)
+	SHADER_PARAMETER(FVector4f, DefaultColor)
 	SHADER_PARAMETER(float, DefaultMatRandom)
 	SHADER_PARAMETER(float, DefaultCamOffset)
 	SHADER_PARAMETER(float, DefaultPrevCamOffset)
 	SHADER_PARAMETER(float, DefaultNormAge)
 	SHADER_PARAMETER(float, DefaultSubImage)
-	SHADER_PARAMETER(FVector4, DefaultFacing)
-	SHADER_PARAMETER(FVector4, DefaultPrevFacing)
-	SHADER_PARAMETER(FVector4, DefaultAlignment)
-	SHADER_PARAMETER(FVector4, DefaultPrevAlignment)
-	SHADER_PARAMETER(FVector4, DefaultDynamicMaterialParameter0)
-	SHADER_PARAMETER(FVector4, DefaultDynamicMaterialParameter1)
-	SHADER_PARAMETER(FVector4, DefaultDynamicMaterialParameter2)
-	SHADER_PARAMETER(FVector4, DefaultDynamicMaterialParameter3)
+	SHADER_PARAMETER(FVector4f, DefaultFacing)
+	SHADER_PARAMETER(FVector4f, DefaultPrevFacing)
+	SHADER_PARAMETER(FVector4f, DefaultAlignment)
+	SHADER_PARAMETER(FVector4f, DefaultPrevAlignment)
+	SHADER_PARAMETER(FVector4f, DefaultDynamicMaterialParameter0)
+	SHADER_PARAMETER(FVector4f, DefaultDynamicMaterialParameter1)
+	SHADER_PARAMETER(FVector4f, DefaultDynamicMaterialParameter2)
+	SHADER_PARAMETER(FVector4f, DefaultDynamicMaterialParameter3)
+	SHADER_PARAMETER(int, PixelCoverageEnabled)
+	SHADER_PARAMETER(FVector4f, PixelCoverageColorBlend)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 typedef TUniformBufferRef<FNiagaraSpriteUniformParameters> FNiagaraSpriteUniformBufferRef;
@@ -163,7 +166,7 @@ public:
 	/**
 	 * Retrieve the uniform buffer for this vertex factory.
 	 */
-	FORCEINLINE FRHIUniformBuffer* GetSpriteUniformBuffer()
+	FORCEINLINE FRHIUniformBuffer* GetSpriteUniformBuffer() const
 	{
 		return SpriteUniformBuffer;
 	}
@@ -183,12 +186,12 @@ public:
 		SortedIndicesOffset = InSortedIndicesOffset;
 	}
 
-	FORCEINLINE FRHIShaderResourceView* GetSortedIndicesSRV()
+	FORCEINLINE FRHIShaderResourceView* GetSortedIndicesSRV() const
 	{
 		return SortedIndicesSRV;
 	}
 
-	FORCEINLINE int32 GetSortedIndicesOffset()
+	FORCEINLINE int32 GetSortedIndicesOffset() const
 	{
 		return SortedIndicesOffset;
 	}
@@ -198,7 +201,7 @@ public:
 		FacingMode = InMode;
 	}
 
-	uint32 GetFacingMode()
+	uint32 GetFacingMode() const
 	{
 		return FacingMode;
 	}
@@ -208,7 +211,7 @@ public:
 		AlignmentMode = InMode;
 	}
 
-	uint32 GetAlignmentMode()
+	uint32 GetAlignmentMode() const
 	{
 		return AlignmentMode;
 	}
@@ -217,7 +220,6 @@ public:
 	{
 		VertexBufferOverride = InVertexBufferOverride;
 	}
-
 	FUniformBufferRHIRef LooseParameterUniformBuffer;
 
 protected:

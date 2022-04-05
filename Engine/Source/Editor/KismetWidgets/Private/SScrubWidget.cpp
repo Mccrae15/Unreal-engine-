@@ -60,6 +60,7 @@ void SScrubWidget::Construct( const SScrubWidget::FArguments& InArgs )
 	DraggableBars = InArgs._DraggableBars;
 	OnBarDrag = InArgs._OnBarDrag;
 	bDisplayDrag = InArgs._DisplayDrag;
+	bDisplayAnimScrubBarEditing = InArgs._bDisplayAnimScrubBarEditing;
 	bMouseMovedDuringPanning = false;
 	bDragging = false;
 	bPanning = false;
@@ -89,7 +90,7 @@ int32 SScrubWidget::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGe
 
 	const int32 TextLayer = BackgroundLayer + 1;
 
-	const FSlateBrush* StyleInfo = FEditorStyle::GetBrush( TEXT( "ProgressBar.Background" ) );
+	const FSlateBrush* StyleInfo = FAppStyle::Get().GetBrush("Brushes.Recessed");
 	const float GeomHeight = AllottedGeometry.GetLocalSize().Y;
 
 	const FTrackScaleInfo TimeScaleInfo(ViewInputMin.Get(), ViewInputMax.Get(), 0.f, 0.f, AllottedGeometry.GetLocalSize());
@@ -425,7 +426,9 @@ FCursorReply SScrubWidget::OnCursorQuery( const FGeometry& MyGeometry, const FPo
 
 void SScrubWidget::CreateContextMenu(float CurrentFrameTime, const FPointerEvent& MouseEvent)
 {
-	if ((OnCropAnimSequence.IsBound() || OnReZeroAnimSequence.IsBound() || OnAddAnimSequence.IsBound()) && (SequenceLength.Get() >= MINIMUM_ANIMATION_LENGTH))
+	if (bDisplayAnimScrubBarEditing && 
+		(OnCropAnimSequence.IsBound() || OnReZeroAnimSequence.IsBound() || OnAddAnimSequence.IsBound()) && 
+		(SequenceLength.Get() >= MINIMUM_ANIMATION_LENGTH))
 	{
 		const bool CloseAfterSelection = true;
 		FMenuBuilder MenuBuilder( CloseAfterSelection, NULL );

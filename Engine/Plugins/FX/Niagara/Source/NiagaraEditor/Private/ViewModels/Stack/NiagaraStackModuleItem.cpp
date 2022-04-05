@@ -149,7 +149,7 @@ void UNiagaraStackModuleItem::RefreshChildrenInternal(const TArray<UNiagaraStack
 		if (FunctionCallNode->FunctionScript)
 		{
 			UNiagaraGraph* Graph = FunctionCallNode->GetCalledGraph();
-			const TMap<FNiagaraVariable, UNiagaraScriptVariable*>& MetaDataMap = Graph->GetAllMetaData();
+			const TMap<FNiagaraVariable, TObjectPtr<UNiagaraScriptVariable>>& MetaDataMap = Graph->GetAllMetaData();
 			auto Iter = MetaDataMap.CreateConstIterator();
 			bCanRefresh = true;
 		}
@@ -179,7 +179,7 @@ void UNiagaraStackModuleItem::RefreshChildrenInternal(const TArray<UNiagaraStack
 				OutputCollection->AddChildFilter(FOnFilterChild::CreateUObject(this, &UNiagaraStackModuleItem::FilterOutputCollectionChild));
 			}
 
-			InputCollection->SetShouldShowInStack(GetStackEditorData().GetShowOutputs() || GetStackEditorData().GetShowLinkedInputs());
+			InputCollection->SetShouldDisplayLabel(GetStackEditorData().GetShowOutputs() || GetStackEditorData().GetShowLinkedInputs());
 
 			NewChildren.Add(InputCollection);
 			NewChildren.Add(LinkedInputCollection);
@@ -189,7 +189,7 @@ void UNiagaraStackModuleItem::RefreshChildrenInternal(const TArray<UNiagaraStack
 		else
 		{
 			// We do not show the expander arrow for InputCollections of NiagaraNodeAssignments as they only have this one collection
-			InputCollection->SetShouldShowInStack(false);
+			InputCollection->SetShouldDisplayLabel(false);
 
 			NewChildren.Add(InputCollection);
 
@@ -228,11 +228,11 @@ TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackModuleItem::Can
 		{
 			if (AssignmentNode->GetAssignmentTargets().Contains(ParameterAction->GetParameter()))
 			{
-				return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantDropDuplicateParameter", "Can not drop this parameter here because\nit's already set by this module."));
+				return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantDropDuplicateParameter", "Can not drop this parameter here because it's already set by this module."));
 			}
 			else if (FNiagaraStackGraphUtilities::CanWriteParameterFromUsageViaOutput(ParameterAction->GetParameter(), OutputNode) == false)
 			{
-				return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantDropParameterByUsage", "Can not drop this parameter here because\nit can't be written in this usage context."));
+				return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantDropParameterByUsage", "Can not drop this parameter here because it can't be written in this usage context."));
 			}
 			else
 			{
@@ -411,7 +411,10 @@ void AddModuleToFixDependencyIssue(
 	}
 
 	FScopedTransaction ScopedTransaction(LOCTEXT("AddDependencyFixTransaction", "Add a module to fix a dependency"));
-	FNiagaraStackGraphUtilities::AddScriptModuleToStack(DependencyProviderScript, *TargetOutputNode, TargetIndex.GetValue());
+	FNiagaraStackGraphUtilities::FAddScriptModuleToStackArgs AddScriptModuleToStackArgs(DependencyProviderScript, *TargetOutputNode);
+	AddScriptModuleToStackArgs.TargetIndex = TargetIndex.GetValue();
+	AddScriptModuleToStackArgs.bFixupTargetIndex = true;
+	FNiagaraStackGraphUtilities::AddScriptModuleToStack(AddScriptModuleToStackArgs);
 }
 
 void GenerateFixesForAddingDependencyProviders(
@@ -426,7 +429,7 @@ void GenerateFixesForAddingDependencyProviders(
 		? DependentUsage
 		: TOptional<ENiagaraScriptUsage>();
 	TArray<FAssetData> ModuleAssetsForDependency;
-	FNiagaraStackGraphUtilities::GetModuleScriptAssetsByDependencyProvided(RequiredDependency.Id, RequiredUsage, ModuleAssetsForDependency);
+	FNiagaraStackGraphUtilities::DependencyUtilities::GetModuleScriptAssetsByDependencyProvided(RequiredDependency.Id, RequiredUsage, ModuleAssetsForDependency);
 
 	// Gather duplicate module names so their fixes can be disambiguated.
 	TSet<FName> ModuleNames;
@@ -554,28 +557,6 @@ void GenerateFixesForEnablingModules(
 	}
 }
 
-bool DoesStackModuleProvideDependency(const FNiagaraStackModuleData& StackModuleData, const FNiagaraModuleDependency& SourceModuleRequiredDependency, const UNiagaraNodeOutput& SourceOutputNode)
-{
-	if (StackModuleData.ModuleNode != nullptr && StackModuleData.ModuleNode->FunctionScript != nullptr)
-	{
-		FVersionedNiagaraScriptData* ScriptData = StackModuleData.ModuleNode->FunctionScript->GetScriptData(StackModuleData.ModuleNode->SelectedScriptVersion);
-		if (ScriptData && ScriptData->ProvidedDependencies.Contains(SourceModuleRequiredDependency.Id))
-		{
-			if (SourceModuleRequiredDependency.ScriptConstraint == ENiagaraModuleDependencyScriptConstraint::AllScripts)
-			{
-				return true;
-			}
-
-			if (SourceModuleRequiredDependency.ScriptConstraint == ENiagaraModuleDependencyScriptConstraint::SameScript)
-			{
-				UNiagaraNodeOutput* OutputNode = FNiagaraStackGraphUtilities::GetEmitterOutputNodeForStackNode(*StackModuleData.ModuleNode);
-				return OutputNode != nullptr && UNiagaraScript::IsEquivalentUsage(OutputNode->GetUsage(), SourceOutputNode.GetUsage()) && OutputNode->GetUsageId() == SourceOutputNode.GetUsageId();
-			}
-		}
-	}
-	return false;
-}
-
 void GenerateDependencyIssues(
 	TSharedRef<FNiagaraSystemViewModel> SourceSystemViewModel,
 	FGuid SourceEmitterHandleId,
@@ -601,7 +582,7 @@ void GenerateDependencyIssues(
 			TArray<int32> DependencyProviderIndices;
 			for (int32 StackModuleDataIndex = 0; StackModuleDataIndex < SourceStackModuleData.Num(); StackModuleDataIndex++)
 			{
-				if (DoesStackModuleProvideDependency(SourceStackModuleData[StackModuleDataIndex], SourceRequiredDependency, SourceOutputNode))
+				if (FNiagaraStackGraphUtilities::DependencyUtilities::DoesStackModuleProvideDependency(SourceStackModuleData[StackModuleDataIndex], SourceRequiredDependency, SourceOutputNode))
 				{
 					DependencyProviderIndices.Add(StackModuleDataIndex);
 				}
@@ -1040,19 +1021,28 @@ void UNiagaraStackModuleItem::RefreshIsEnabled()
 
 void UNiagaraStackModuleItem::OnMessageManagerRefresh(const TArray<TSharedRef<const INiagaraMessage>>& NewMessages)
 {
-	MessageManagerIssues.Reset();
-	for (TSharedRef<const INiagaraMessage> Message : NewMessages)
+	if (MessageManagerIssues.Num() != 0 || NewMessages.Num() != 0)
 	{
-		// Sometimes compile errors with the same info are generated, so guard against duplicates here.
-		FStackIssue Issue = FNiagaraMessageUtilities::MessageToStackIssue(Message, GetStackEditorDataKey());
-		if (MessageManagerIssues.ContainsByPredicate([&Issue](const FStackIssue& NewIssue)
-			{ return NewIssue.GetUniqueIdentifier() == Issue.GetUniqueIdentifier(); }) == false)
+		MessageManagerIssues.Reset();
+		for (TSharedRef<const INiagaraMessage> Message : NewMessages)
 		{
-			MessageManagerIssues.Add(Issue);
+			// we skip issues that do not have relevance for the stack, such as notes that should only appear in the log despite being related to a module
+			if(Message->ShouldOnlyLog())
+			{
+				continue;
+			}
+			
+			// Sometimes compile errors with the same info are generated, so guard against duplicates here.
+			FStackIssue Issue = FNiagaraMessageUtilities::MessageToStackIssue(Message, GetStackEditorDataKey());
+			if (MessageManagerIssues.ContainsByPredicate([&Issue](const FStackIssue& NewIssue)
+				{ return NewIssue.GetUniqueIdentifier() == Issue.GetUniqueIdentifier(); }) == false)
+			{
+				MessageManagerIssues.Add(Issue);
+			}
 		}
-	}
 
-	RefreshChildren();
+		RefreshChildren();
+	}
 }
 
 bool UNiagaraStackModuleItem::CanMoveAndDelete() const
@@ -1117,20 +1107,10 @@ bool UNiagaraStackModuleItem::IsDebugDrawEnabled() const
 
 void UNiagaraStackModuleItem::SetDebugDrawEnabled(bool bInEnabled)
 {
-	FScopedTransaction ScopedTransaction(LOCTEXT("EnableDisableModule", "Enable/Disable Debug for Module"));
+	FScopedTransaction ScopedTransaction(LOCTEXT("EnableDisableDebugModule", "Enable/Disable Debug for Module"));
 	FunctionCallNode->DebugState = bInEnabled ? ENiagaraFunctionDebugState::Basic : ENiagaraFunctionDebugState::NoDebug;
 	FunctionCallNode->MarkNodeRequiresSynchronization(__FUNCTION__, true);
 	OnRequestFullRefreshDeferred().Broadcast();
-}
-
-bool UNiagaraStackModuleItem::SupportsHighlights() const
-{
-	return FunctionCallNode != nullptr && FunctionCallNode->FunctionScript != nullptr;
-}
-
-const TArray<FNiagaraScriptHighlight>& UNiagaraStackModuleItem::GetHighlights() const
-{
-	return FunctionCallNode->GetScriptData()->Highlights;
 }
 
 int32 UNiagaraStackModuleItem::GetModuleIndex() const
@@ -1275,6 +1255,16 @@ void UNiagaraStackModuleItem::ChangeScriptVersion(FGuid NewScriptVersion)
 void UNiagaraStackModuleItem::SetInputValuesFromClipboardFunctionInputs(const TArray<const UNiagaraClipboardFunctionInput*>& ClipboardFunctionInputs)
 {
 	InputCollection->SetValuesFromClipboardFunctionInputs(ClipboardFunctionInputs);
+}
+
+void UNiagaraStackModuleItem::GetParameterInputs(TArray<UNiagaraStackFunctionInput*>& OutResult) const
+{
+	return InputCollection->GetChildInputs(OutResult);
+}
+
+TArray<UNiagaraStackFunctionInput*> UNiagaraStackModuleItem::GetInlineParameterInputs() const
+{
+	return InputCollection->GetInlineParameterInputs();
 }
 
 bool UNiagaraStackModuleItem::TestCanCutWithMessage(FText& OutMessage) const
@@ -1439,6 +1429,16 @@ void UNiagaraStackModuleItem::Delete()
 		GetSystemViewModel()->NotifyDataObjectChanged(RemovedDataInterfaces, ENiagaraDataObjectChange::Removed);
 		ModifiedGroupItemsDelegate.Broadcast();
 	}
+}
+
+bool UNiagaraStackModuleItem::GetIsInherited() const
+{
+	return CanMoveAndDelete() == false;
+}
+
+FText UNiagaraStackModuleItem::GetInheritanceMessage() const
+{
+	return LOCTEXT("ModuleItemInheritanceMessage", "This module is inherited from a parent emitter.  Inherited modules\ncan only be moved, deleted, and versioned while editing the parent emitter.");
 }
 
 bool UNiagaraStackModuleItem::IsScratchModule() const

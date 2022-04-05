@@ -46,6 +46,25 @@ void FMetalRHICommandContext::RHICopyToResolveTarget(FRHITexture* SourceTextureR
 		FMetalSurface* Source = GetMetalSurfaceFromRHITexture(SourceTextureRHI);
 		FMetalSurface* Destination = GetMetalSurfaceFromRHITexture(DestTextureRHI);
 		
+		// Only valid to have nil Metal textures when they are TexCreate_Presentable
+		if(!Source->Texture)
+		{
+			// Source RHI texture is valid with no Presentable Metal texture - there is nothing to copy from
+			check(EnumHasAnyFlags(Source->Flags, TexCreate_Presentable));
+			return;
+		}
+		if(!Destination->Texture)
+		{
+			// Destination RHI texture is valid with no Presentable Metal texture - force fetch it now so we can complete the copy
+			check(EnumHasAnyFlags(Destination->Flags, TexCreate_Presentable));
+			Destination->GetDrawableTexture();
+			if(!Destination->Texture)
+			{
+				UE_LOG(LogRHI, Error, TEXT("Drawable for destination texture resolve target unavailable"));
+				return;
+			}
+		}
+
 		switch (Source->Type)
 		{
 			case RRT_Texture2D:
@@ -115,9 +134,30 @@ void FMetalRHICommandContext::RHICopyToResolveTarget(FRHITexture* SourceTextureR
 			
 			Context->CopyFromTextureToTexture(Source->MSAAResolveTexture, SrcIndex, ResolveParams.MipIndex, Origin, Size, Destination->Texture, DestIndex, ResolveParams.MipIndex, Origin);
 		}
+		else if(Source->Texture.GetPixelFormat() == Destination->Texture.GetPixelFormat())
+		{
+			// Blit Copy for matching formats
+			Context->CopyFromTextureToTexture(Source->Texture, SrcIndex, ResolveParams.MipIndex, Origin, Size, Destination->Texture, DestIndex, ResolveParams.MipIndex, Origin);
+		}
 		else
 		{
-			Context->CopyFromTextureToTexture(Source->Texture, SrcIndex, ResolveParams.MipIndex, Origin, Size, Destination->Texture, DestIndex, ResolveParams.MipIndex, Origin);
+			const FPixelFormatInfo& SourceFormatInfo = GPixelFormats[Source->PixelFormat];
+			const FPixelFormatInfo& DestFormatInfo = GPixelFormats[Destination->PixelFormat];
+			bool bUsingPixelFormatView = (Source->Texture.GetUsage() & mtlpp::TextureUsage::PixelFormatView) != 0;
+			
+			// Attempt to Resolve with a texture view - source Texture doesn't have to be created with MTLTextureUsagePixelFormatView for these cases e.g:
+			// If we are resolving to/from sRGB linear color space within the same format OR using same bit length color format
+			if	(	SourceFormatInfo.BlockBytes == DestFormatInfo.BlockBytes &&
+					(bUsingPixelFormatView || SourceFormatInfo.NumComponents == DestFormatInfo.NumComponents)
+				)
+			{
+				FMetalTexture SourceTextureView = Source->Texture.NewTextureView(Destination->Texture.GetPixelFormat(), Source->Texture.GetTextureType(), ns::Range(ResolveParams.MipIndex, 1), ns::Range(SrcIndex, 1));
+				if(SourceTextureView)
+				{
+					Context->CopyFromTextureToTexture(SourceTextureView, 0, 0, Origin, Size, Destination->Texture, DestIndex, ResolveParams.MipIndex, Origin);
+					SafeReleaseMetalTexture(SourceTextureView);
+				}
+			}
 		}
 
 #if PLATFORM_MAC
@@ -243,7 +283,7 @@ void FMetalDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect
 	mtlpp::Region Region(Rect.Min.X, Rect.Min.Y, SizeX, SizeY);
     
 	FMetalTexture Texture = Surface->Texture;
-    if(!Texture && (Surface->Flags & TexCreate_Presentable))
+    if(!Texture && EnumHasAnyFlags(Surface->Flags, TexCreate_Presentable))
     {
         Texture = Surface->GetCurrentTexture();
     }
@@ -391,7 +431,7 @@ void FMetalDynamicRHI::RHIReadSurfaceFloatData(FRHITexture* TextureRHI, FIntRect
 	FMetalSurface* Surface = GetMetalSurfaceFromRHITexture(TextureRHI);
 	
     FMetalTexture Texture = Surface->Texture;
-    if(!Texture && (Surface->Flags & TexCreate_Presentable))
+    if(!Texture && EnumHasAnyFlags(Surface->Flags, TexCreate_Presentable))
     {
 		Texture = Surface->GetCurrentTexture();
     }

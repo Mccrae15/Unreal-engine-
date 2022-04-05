@@ -15,7 +15,7 @@ class NIAGARA_API UNiagaraDataInterfaceVectorField : public UNiagaraDataInterfac
 public:
 	/** Vector field to sample from. */
 	UPROPERTY(EditAnywhere, Category = VectorField)
-	UVectorField* Field;
+	TObjectPtr<UVectorField> Field;
 
 	UPROPERTY(EditAnywhere, Category = VectorField)
 	bool bTileX;
@@ -58,10 +58,10 @@ public:
 	//~ UNiagaraDataInterface interface END
 
 	// VM functions
-	void GetFieldDimensions(FVectorVMContext& Context);
-	void GetFieldBounds(FVectorVMContext& Context); 
-	void GetFieldTilingAxes(FVectorVMContext& Context);
-	void SampleVectorField(FVectorVMContext& Context);
+	void GetFieldDimensions(FVectorVMExternalFunctionContext& Context);
+	void GetFieldBounds(FVectorVMExternalFunctionContext& Context); 
+	void GetFieldTilingAxes(FVectorVMExternalFunctionContext& Context);
+	void SampleVectorField(FVectorVMExternalFunctionContext& Context);
 	
 	//	
 	FVector GetTilingAxes() const;

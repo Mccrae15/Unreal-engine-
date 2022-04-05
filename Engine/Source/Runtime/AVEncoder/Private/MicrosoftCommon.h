@@ -3,10 +3,9 @@
 #pragma once
 
 #include "Containers/UnrealString.h"
+#include "VideoCommon.h"
 
 #if PLATFORM_WINDOWS || (PLATFORM_XBOXONE && WITH_LEGACY_XDK) || PLATFORM_HOLOLENS
-
-#include "VideoCommon.h"
 
 namespace AVEncoder
 {

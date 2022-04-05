@@ -14,7 +14,7 @@
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"
 #include "Engine/World.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/StringBuilder.h"
 
 DECLARE_LOG_CATEGORY_CLASS(LogFileInfo, Log, All);
@@ -165,8 +165,7 @@ public:
 	public: bool AddOrUpdateFileInfo(const FAssetData& InAssetData, FAssetFileInfo& OutFileInfo)
 	{
 		const FString PackageName = InAssetData.PackageName.ToString();
-		const bool bIsWorldAsset = (InAssetData.AssetClass == UWorld::StaticClass()->GetFName());
-		const FString Extension = bIsWorldAsset ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension();
+		const FString Extension = (InAssetData.PackageFlags & PKG_ContainsMap) ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension();
 
 		FString FilePath;
 		if (!FPackageName::TryConvertLongPackageNameToFilename(PackageName, FilePath, Extension))
@@ -277,6 +276,8 @@ bool FFileInfoDatabase::Open(const FString& InSessionPath)
 
 bool FFileInfoDatabase::Open(const FString& InSessionPath, const ESQLiteDatabaseOpenMode InOpenMode)
 {
+	SessionPath = InSessionPath;
+	
 	if (Database->IsValid())
 	{
 		return false;
@@ -288,19 +289,23 @@ bool FFileInfoDatabase::Open(const FString& InSessionPath, const ESQLiteDatabase
 		return false;
 	}
 
-	SessionPath = InSessionPath;
+	if (!Database->PerformQuickIntegrityCheck())
+	{
+		UE_LOG(LogFileInfo, Error, TEXT("Database failed integrity check, deleting."));
+
+		const bool bDeleteTheDatabase = true;
+		Close(bDeleteTheDatabase);
+
+		return false;
+	}
 
 	// Set the database to use exclusive WAL mode for performance (exclusive works even on platforms without a mmap implementation)
 	// Set the database "NORMAL" fsync mode to only perform a fsync when check-pointing the WAL to the main database file (fewer fsync calls are better for performance, with a very slight loss of WAL durability if the power fails)
+	Database->Execute(TEXT("PRAGMA journal_mode=WAL;"));
+	Database->Execute(TEXT("PRAGMA synchronous=FULL;"));
 	Database->Execute(TEXT("PRAGMA cache_size=1000;"));
 	Database->Execute(TEXT("PRAGMA page_size=65535;"));
 	Database->Execute(TEXT("PRAGMA locking_mode=EXCLUSIVE;"));
-
-	Database->Execute(TEXT("PRAGMA journal_mode=WAL;"));
-	Database->Execute(TEXT("PRAGMA synchronous=NORMAL;"));
-
-	/*Database->Execute(TEXT("PRAGMA journal_mode=NORMAL;"));
-	Database->Execute(TEXT("PRAGMA synchronous=OFF;"));*/
 
 	int32 LoadedDatabaseVersion = 0;
 	Database->GetUserVersion(LoadedDatabaseVersion);
@@ -350,6 +355,16 @@ bool FFileInfoDatabase::Open(const FString& InSessionPath, const ESQLiteDatabase
 	if (!ensure(Statements->CreatePreparedStatements()))
 	{
 		Close();
+		return false;
+	}
+
+	if (!Database->PerformQuickIntegrityCheck())
+	{
+		UE_LOG(LogFileInfo, Error, TEXT("Database failed integrity check, deleting."));
+
+		const bool bDeleteTheDatabase = true;
+		Close(bDeleteTheDatabase);
+
 		return false;
 	}
 

@@ -7,8 +7,11 @@
 #include "WarpBlend/IDisplayClusterWarpBlend.h"
 #include "WarpBlend/DisplayClusterWarpContext.h"
 
+class IDisplayClusterViewport;
+
 /**
  * MPCDI projection policy
+ * Supported load from 'MPCDI' and 'PFM' files
  */
 class FDisplayClusterProjectionMPCDIPolicy
 	: public FDisplayClusterProjectionPolicyBase
@@ -43,14 +46,17 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// IDisplayClusterProjectionPolicy
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual bool HandleStartScene(class IDisplayClusterViewport* InViewport) override;
-	virtual void HandleEndScene(class IDisplayClusterViewport* InViewport) override;
+	virtual bool HandleStartScene(IDisplayClusterViewport* InViewport) override;
+	virtual void HandleEndScene(IDisplayClusterViewport* InViewport) override;
 
-	virtual bool CalculateView(class IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP) override;
-	virtual bool GetProjectionMatrix(class IDisplayClusterViewport* InViewport, const uint32 InContextNum, FMatrix& OutPrjMatrix) override;
+	virtual bool CalculateView(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP) override;
+	virtual bool GetProjectionMatrix(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FMatrix& OutPrjMatrix) override;
 
 	virtual bool IsWarpBlendSupported() override;
 	virtual void ApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const class IDisplayClusterViewportProxy* InViewportProxy) override;
+
+	virtual bool GetWarpBlendInterface(TSharedPtr<class IDisplayClusterWarpBlend, ESPMode::ThreadSafe>& OutWarpBlendInterface) const override;
+	virtual bool GetWarpBlendInterface_RenderThread(TSharedPtr<class IDisplayClusterWarpBlend, ESPMode::ThreadSafe>& OutWarpBlendInterfaceProxy) const override;
 
 	virtual bool ShouldUseSourceTextureWithMips() const override
 	{
@@ -58,15 +64,13 @@ public:
 		return true;
 	}
 
-	virtual void UpdateProxyData(class IDisplayClusterViewport* InViewport) override;
+	virtual void UpdateProxyData(IDisplayClusterViewport* InViewport) override;
 
 protected:
-	bool CreateWarpBlendFromConfig();
+	bool CreateWarpBlendFromConfig(IDisplayClusterViewport* InViewport);
 	void ImplRelease();
 
 protected:
-	FString OriginCompId;
-	
 	TSharedPtr<IDisplayClusterWarpBlend, ESPMode::ThreadSafe> WarpBlendInterface;
 	TArray<FDisplayClusterWarpContext> WarpBlendContexts;
 
@@ -86,7 +90,7 @@ protected:
 	{
 		return true;
 	}
-	virtual class UMeshComponent* GetOrCreatePreviewMeshComponent(class IDisplayClusterViewport* InViewport, bool& bOutIsRootActorComponent) override;
+	virtual class UMeshComponent* GetOrCreatePreviewMeshComponent(IDisplayClusterViewport* InViewport, bool& bOutIsRootActorComponent) override;
 
 	void ReleasePreviewMeshComponent();
 

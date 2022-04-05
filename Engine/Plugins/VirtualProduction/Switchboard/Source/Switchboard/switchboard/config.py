@@ -5,6 +5,7 @@ import fnmatch
 import json
 import os
 import pathlib
+import shutil
 import socket
 import sys
 import typing
@@ -15,14 +16,25 @@ from PySide2 import QtWidgets
 
 from switchboard import switchboard_widgets as sb_widgets
 from switchboard.switchboard_logging import LOGGER
+from switchboard.switchboard_widgets import DropDownMenuComboBox
 
 ROOT_CONFIGS_PATH = pathlib.Path(__file__).parent.with_name('configs')
 CONFIG_SUFFIX = '.json'
 
-USER_SETTINGS_FILE_PATH = ROOT_CONFIGS_PATH.joinpath('user_settings.json')
+USER_SETTINGS_FILE_NAME = 'user_settings.json'
+USER_SETTINGS_FILE_PATH = ROOT_CONFIGS_PATH.joinpath(USER_SETTINGS_FILE_NAME)
+USER_SETTINGS_BACKUP_FILE_NAME = 'corrupted_user_settings_backup.json'
+USER_SETTINGS_BACKUP_FILE_PATH = ROOT_CONFIGS_PATH.joinpath(USER_SETTINGS_BACKUP_FILE_NAME)
 
 DEFAULT_MAP_TEXT = '-- Default Map --'
 
+def migrate_comma_separated_string_to_list(value) -> typing.List[str]:
+    if isinstance(value, str):
+        return value.split(",")
+    # Technically we should check whether every element is a string but we skip it here
+    if isinstance(value, list):
+        return value
+    raise NotImplementedError("Migration not handled")
 
 class Setting(QtCore.QObject):
     '''
@@ -51,7 +63,9 @@ class Setting(QtCore.QObject):
         nice_name: str,
         value,
         tool_tip: typing.Optional[str] = None,
-        show_ui: bool = True
+        show_ui: bool = True,
+        allow_reset: bool = True,
+        migrate_data: typing.Callable[[any], None] = None
     ):
         '''
         Create a new Setting object.
@@ -86,6 +100,14 @@ class Setting(QtCore.QObject):
         # want override highlighting.
         self._base_widget = None
         self._override_widgets = {}
+        self._on_setting_changed_lambdas = {}
+        
+        # Appears when override value is different from _value
+        self._allow_reset = allow_reset
+        self._base_reset_widget = None
+        self._reset_override_widgets = {}
+
+        self._migrate_data = migrate_data
 
         self.tool_tip = tool_tip
         self.show_ui = show_ui
@@ -110,7 +132,8 @@ class Setting(QtCore.QObject):
         self._value = new_value
 
         self.signal_setting_changed.emit(old_value, self._value)
-
+        self._refresh_reset_base_widget()
+    
     def override_value(self, device_name: str, override):
         override = self._filter_value(override)
 
@@ -121,11 +144,18 @@ class Setting(QtCore.QObject):
         self._overrides[device_name] = override
         self.signal_setting_overridden.emit(device_name, self._value, override)
 
+        self._refresh_reset_override_widget(device_name)
+
     def get_value(self, device_name: typing.Optional[str] = None):
-        try:
-            return self._overrides[device_name]
-        except KeyError:
-            return self._value
+        def get_value(self, device_name: typing.Optional[str] = None):
+            try:
+                return self._overrides[device_name]
+            except KeyError:
+                return self._value
+            
+        value = get_value(self, device_name)
+        return self._migrate_data(value) if self._migrate_data is not None else value
+        
 
     def on_device_name_changed(self, old_name: str, new_name: str):
         if old_name in self._overrides.keys():
@@ -173,6 +203,7 @@ class Setting(QtCore.QObject):
         '''
         if override_device_name is None:
             self.update_value(new_value)
+            self._refresh_reset_override_widgets()
             return
 
         old_value = self.get_value(override_device_name)
@@ -186,7 +217,6 @@ class Setting(QtCore.QObject):
         else:
             if widget:
                 sb_widgets.set_qt_property(widget, "override", False)
-            self.remove_override(override_device_name)
 
     def _on_setting_changed(
             self, new_value,
@@ -230,11 +260,7 @@ class Setting(QtCore.QObject):
 
         # Give the Setting's UI an opportunity to update itself when the
         # underlying value changes.
-        self.signal_setting_changed.connect(
-            lambda old_value, new_value,
-            override_device_name=override_device_name:
-                self._on_setting_changed(
-                    new_value, override_device_name=override_device_name))
+        self._register_on_setting_changed(top_level_widget, override_device_name)
 
         if top_level_widget and form_layout:
             setting_label = QtWidgets.QLabel()
@@ -242,9 +268,94 @@ class Setting(QtCore.QObject):
             if self.tool_tip:
                 setting_label.setToolTip(self.tool_tip)
 
-            form_layout.addRow(setting_label, top_level_widget)
+            form_layout.addRow(
+                setting_label,                
+                self._decorate_with_reset_widget(override_device_name, top_level_widget)
+            )
 
         return top_level_widget
+    
+    def _register_on_setting_changed(self, top_level_widget: QtWidgets.QWidget, override_device_name: str):
+        on_setting_changed_lambda = lambda old_value, new_value, override_device_name=override_device_name: \
+            self._on_setting_changed(new_value, override_device_name=override_device_name)
+        self.signal_setting_changed.connect(
+            on_setting_changed_lambda
+        )
+        
+        # Clear the widget when it is destroyed to avoid dangling references
+        top_level_widget.destroyed.connect(
+            lambda destroyed_object=None, on_setting_changed_lambda=on_setting_changed_lambda, override_device_name=override_device_name:
+                self._on_widget_destroyed(on_setting_changed_lambda, override_device_name)
+        )
+        
+    def _on_widget_destroyed(self, on_setting_changed_lambda, override_device_name: str):
+        self.signal_setting_changed.disconnect(on_setting_changed_lambda)
+        self.set_widget(widget=None, override_device_name=override_device_name)
+    
+    def _decorate_with_reset_widget(self, override_device_name: str, setting_editor_widget: QtWidgets.QWidget):
+        # Reset will still be shown on overrides
+        if not self._allow_reset and override_device_name is None:
+            return setting_editor_widget
+        
+        horizontal_box = QtWidgets.QWidget()
+        horizontal_layout = QtWidgets.QHBoxLayout(horizontal_box)
+        horizontal_layout.setContentsMargins(0, 0, 0, 0)
+        horizontal_layout.setSpacing(3)
+
+        if isinstance(setting_editor_widget, QtWidgets.QWidget):
+            horizontal_layout.addWidget(setting_editor_widget)
+        elif isinstance(setting_editor_widget, QtWidgets.QLayout):
+            horizontal_layout.addLayout(setting_editor_widget)
+
+        button = QtWidgets.QPushButton()
+        pixmap = QtGui.QPixmap(":icons/images/reset_to_default.png")
+        button.setIcon(QtGui.QIcon(pixmap))
+        button.setFlat(True)
+        button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+        button.setMaximumWidth(12)
+        button.setMaximumHeight(12)
+        button.setToolTip("Reset to default")
+        button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        button.pressed.connect(
+            lambda override_device_name=override_device_name:
+                self._on_press_reset_override(override_device_name)
+        )
+        
+        horizontal_layout.addWidget(button)
+        is_base_reset_widget = override_device_name is None
+        if is_base_reset_widget:
+            self._base_reset_widget = button
+            self._refresh_reset_base_widget()
+        else:
+            self._reset_override_widgets[override_device_name] = button
+            self._refresh_reset_override_widget(override_device_name)
+        return horizontal_box
+    
+    def _on_press_reset_override(self, override_device_name: str):
+        if override_device_name is None:
+            self.update_value(self._original_value)
+            self._base_reset_widget.setVisible(False)
+            self._refresh_reset_override_widgets()
+            return
+        
+        if self.is_overridden(override_device_name):
+            self.override_value(override_device_name, self._value)
+            # Update UI
+            self._on_widget_value_changed(self._value, override_device_name)
+            self._on_setting_changed(self._value, override_device_name=override_device_name)
+            self._reset_override_widgets[override_device_name].setVisible(False)
+            
+    def _refresh_reset_base_widget(self):
+        if self._base_reset_widget:
+            self._base_reset_widget.setVisible(self._value != self._original_value)
+
+    def _refresh_reset_override_widgets(self):
+        for device_name in self._overrides.keys():
+            self._on_press_reset_override(device_name)
+
+    def _refresh_reset_override_widget(self, device_name: str):
+        if device_name in self._reset_override_widgets:
+            self._reset_override_widgets[device_name].setVisible(self.is_overridden(device_name))
 
     def set_widget(
             self, widget: typing.Optional[QtWidgets.QWidget] = None,
@@ -279,7 +390,7 @@ class Setting(QtCore.QObject):
         '''
         return self._override_widgets.get(
             override_device_name, self._base_widget)
-
+    
 
 class BoolSetting(Setting):
     '''
@@ -358,7 +469,7 @@ class IntSetting(Setting):
 
         old_value = int(widget.text())
         if new_value != old_value:
-            widget.setText(new_value)
+            widget.setText(str(new_value))
             widget.setCursorPosition(0)
 
 
@@ -374,7 +485,9 @@ class StringSetting(Setting):
         value: str,
         placeholder_text: str = '',
         tool_tip: typing.Optional[str] = None,
-        show_ui: bool = True
+        show_ui: bool = True,
+        allow_reset: bool = True,
+        migrate_data: typing.Callable[[any], None] = None
     ):
         '''
         Create a new StringSetting object.
@@ -389,7 +502,7 @@ class StringSetting(Setting):
         '''
         super().__init__(
             attr_name, nice_name, value,
-            tool_tip=tool_tip, show_ui=show_ui)
+            tool_tip=tool_tip, show_ui=show_ui, allow_reset=allow_reset, migrate_data=migrate_data)
 
         self.placeholder_text = placeholder_text
 
@@ -457,6 +570,7 @@ class FileSystemPathSetting(StringSetting):
         edit_layout.addWidget(line_edit)
 
         browse_btn = QtWidgets.QPushButton('Browse')
+        browse_btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         edit_layout.addWidget(browse_btn)
 
         def on_browse_clicked():
@@ -566,7 +680,9 @@ class OptionSetting(Setting):
         value,
         possible_values: typing.List = None,
         tool_tip: typing.Optional[str] = None,
-        show_ui: bool = True
+        show_ui: bool = True,
+        allow_reset: bool = True,
+        migrate_data: typing.Callable[[any], None] = None
     ):
         '''
         Create a new OptionSetting object.
@@ -581,13 +697,11 @@ class OptionSetting(Setting):
         '''
         super().__init__(
             attr_name, nice_name, value,
-            tool_tip=tool_tip, show_ui=show_ui)
+            tool_tip=tool_tip, show_ui=show_ui, allow_reset=allow_reset, migrate_data=migrate_data)
 
         self.possible_values = possible_values or []
 
-    def _create_widgets(
-            self, override_device_name: typing.Optional[str] = None) \
-            -> sb_widgets.NonScrollableComboBox:
+    def _create_widgets(self, override_device_name: typing.Optional[str] = None) -> sb_widgets.NonScrollableComboBox:
         combo = sb_widgets.NonScrollableComboBox()
         if self.tool_tip:
             combo.setToolTip(self.tool_tip)
@@ -600,11 +714,10 @@ class OptionSetting(Setting):
 
         self.set_widget(
             widget=combo, override_device_name=override_device_name)
-
-        combo.currentTextChanged.connect(
-            lambda text, override_device_name=override_device_name:
+        combo.currentIndexChanged.connect(
+            lambda index, override_device_name=override_device_name, combo=combo:
                 self._on_widget_value_changed(
-                    text, override_device_name=override_device_name))
+                    combo.itemData(index), override_device_name=override_device_name))
 
         return combo
 
@@ -616,8 +729,9 @@ class OptionSetting(Setting):
             return
 
         old_value = widget.currentText()
-        if new_value != old_value:
-            widget.setCurrentIndex(widget.findText(new_value))
+        new_str_value = new_value if isinstance(new_value, str) else str(new_value)
+        if new_str_value != old_value:
+            widget.setCurrentIndex(widget.findText(new_str_value))
 
 
 class MultiOptionSetting(OptionSetting):
@@ -674,6 +788,328 @@ class MultiOptionSetting(OptionSetting):
                     item.setCheckState(QtCore.Qt.Unchecked)
 
             widget.setEditText(widget.separator.join(selected_items))
+
+
+class ListRow(QtWidgets.QWidget):
+    INSERT_TEXT = "Insert"
+    DUPLICATE_TEXT = "Duplicate"
+    DELETE_TEXT = "Delete"
+    
+    def __init__(
+        self,
+        array_index: int,
+        editor_widget: QtWidgets.QWidget,
+        insert_item_callback: typing.Callable[[], None] = None, 
+        duplicate_item_callback: typing.Callable[[], None] = None, 
+        delete_item_callback: typing.Callable[[], None] = None,
+        parent=None
+    ):
+        super().__init__(parent=parent)
+        self._editor_widget = editor_widget
+        self._insert_item_callback = insert_item_callback
+        self._duplicate_item_callback = duplicate_item_callback
+        self._delete_item_callback = delete_item_callback
+    
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setSpacing(1)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Shift the elements to the right
+        layout.addItem(
+            QtWidgets.QSpacerItem(10, 0, QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+        )
+        
+        self._index_label = QtWidgets.QLabel()
+        self._index_label.setFixedWidth(20)
+        self.update_index(array_index)
+        layout.addWidget(self._index_label)
+
+        layout.addWidget(editor_widget)
+
+        element_actions = DropDownMenuComboBox()
+        element_actions.on_select_option.connect(self._on_view_option_selected)
+        element_actions.addItem(self.INSERT_TEXT)
+        element_actions.addItem(self.DUPLICATE_TEXT)
+        element_actions.addItem(self.DELETE_TEXT)
+        layout.addWidget(element_actions)
+
+    def _on_view_option_selected(self, selected_item):
+        if selected_item == self.INSERT_TEXT:
+            self._insert_item_callback()
+        elif selected_item == self.DUPLICATE_TEXT:
+            self._duplicate_item_callback()
+        elif selected_item == self.DELETE_TEXT:
+            self._delete_item_callback()
+    
+    @property
+    def editor_widget(self):
+        return self._editor_widget
+    
+    def update_index(self, index: int):
+        self._index_label.setText(str(index))
+
+
+class ListSetting(Setting):
+    '''
+    A setting which has add and clear buttons. Each item will be displayed in a new line.
+    Functions like array properties in Unreal Editor.
+    
+    Subclasses are responsible for generating widgets for the array contents, see e.g. ArrayStringSetting.
+    '''
+
+    def __init__(
+        self,
+        attr_name: str,
+        nice_name: str,
+        value: typing.List = [],
+        tool_tip: typing.Optional[str] = None,
+        show_ui: bool = True,
+        allow_reset: bool = True,
+        migrate_data: typing.Callable[[any], None] = None
+    ):
+        '''
+        Create a new ListSetting object.
+
+        Args:
+            attr_name      : Internal name.
+            nice_name      : Display name.
+            value          : The initial value of this Setting.
+            tool_tip       : Tooltip to show in the UI for this Setting.
+            show_ui        : Whether to show this Setting in the Settings UI.
+        '''
+        super().__init__(
+            attr_name, nice_name, value,
+            tool_tip=tool_tip, show_ui=show_ui, allow_reset=allow_reset, migrate_data=migrate_data)
+        
+        self.array_count_labels = {}
+        self.element_layouts = {}
+    
+    def create_element(self, override_device_name: str, index: int) -> typing.Tuple[QtWidgets.QWidget, object]:
+        '''
+        Called when a new array element is supposed to be created.
+        @returns The widget to use for editing and the default value for the new array element
+        '''
+        raise NotImplementedError("Subclasses must override this")
+    
+    def update_element_value(self, editor_widget: QtWidgets.QWidget, list_value: typing.List, index: int):
+        '''
+        Called to update the editor_widget with the the value from list_value[index].
+        '''
+        raise NotImplementedError("Subclasses must override this")
+
+    def _create_widgets(self, override_device_name: typing.Optional[str] = None):
+        root = QtWidgets.QWidget()
+        root_layout = QtWidgets.QVBoxLayout(root)
+        root_layout.setSpacing(1)
+        root_layout.setContentsMargins(1, 1, 1, 1)
+        
+        root_layout.addWidget(
+            self._create_header(override_device_name)
+        )
+        
+        elements_root = QtWidgets.QWidget()
+        elements_layout = QtWidgets.QVBoxLayout(elements_root)
+        self.element_layouts[override_device_name] = elements_layout
+        elements_layout.setSpacing(1)
+        elements_layout.setContentsMargins(8, 5, 2, 2)
+        root_layout.addWidget(
+            elements_root
+        )
+
+        self.set_widget(
+            widget=root, override_device_name=override_device_name)
+        self._on_setting_changed(self.get_value(override_device_name), override_device_name)
+        return root
+
+    def _create_header(self, override_device_name) -> QtWidgets.QWidget:
+        header = QtWidgets.QWidget()
+        header_layout = QtWidgets.QHBoxLayout(header)
+        header_layout.setSpacing(5)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        
+        array_count_label = QtWidgets.QLabel()
+        self.array_count_labels[override_device_name] = array_count_label
+        array_count_label.setFixedWidth(100)
+        self._update_array_count_label(override_device_name)
+
+        add_button = QtWidgets.QPushButton()
+        pixmap = QtGui.QPixmap(":icons/images/PlusSymbol_12x.png")
+        add_button.setIcon(QtGui.QIcon(pixmap))
+        add_button.setFlat(True)
+        add_button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+        add_button.setMaximumWidth(12)
+        add_button.setMaximumHeight(12)
+        add_button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        add_button.pressed.connect(
+            lambda override_device_name=override_device_name:
+                self._on_press_add(override_device_name)
+        )
+
+        clear_button = QtWidgets.QPushButton()
+        pixmap = QtGui.QPixmap(":icons/images/empty_set_12x.png")
+        clear_button.setIcon(QtGui.QIcon(pixmap))
+        clear_button.setFlat(True)
+        clear_button.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Maximum)
+        clear_button.setMaximumWidth(12)
+        clear_button.setMaximumHeight(12)
+        clear_button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        clear_button.pressed.connect(
+            lambda override_device_name=override_device_name:
+            self._on_press_clear(override_device_name)
+        )
+
+        header_layout.addWidget(array_count_label)
+        header_layout.addWidget(add_button)
+        header_layout.addWidget(clear_button)
+        header_layout.addItem(QtWidgets.QSpacerItem(0, 0, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum))
+
+        return header
+        
+    def _update_array_count_label(self, override_device_name: str):
+        current_value = self.get_value(override_device_name)
+        self.array_count_labels[override_device_name].setText(f"{len(current_value)} Elements")
+        
+    def _on_press_add(self, override_device_name: str):
+        current_value = self.get_value(override_device_name)
+        row_widget, default_value = self._create_element_row(override_device_name, len(current_value))
+        self.element_layouts[override_device_name].addWidget(
+            row_widget
+        )
+
+        self._on_widget_value_changed(current_value + [default_value], override_device_name)
+        # Force update in case _on_widget_value_changed implicitly changed array settings without telling us
+        self._on_setting_changed(self.get_value(override_device_name), override_device_name)
+        
+    def _on_press_clear(self, override_device_name: str):
+        self._on_widget_value_changed([], override_device_name)
+        
+        container_layout = self.element_layouts[override_device_name]
+        for i in reversed(range(container_layout.count())):
+            container_layout.itemAt(i).widget().setParent(None)
+        
+        # Force update in case _on_widget_value_changed implicitly changed array settings without telling us
+        self._on_setting_changed(self.get_value(override_device_name), override_device_name)
+    
+    def _insert_at(self, override_device_name: str, index: int):
+        current_value = self.get_value(override_device_name)
+        row_widget, default_value = self._create_element_row(override_device_name, len(current_value))
+        self.element_layouts[override_device_name].addWidget(
+            row_widget
+        )
+
+        copied_value = current_value.copy()
+        copied_value.insert(index, default_value)
+        
+        self._on_widget_value_changed(copied_value, override_device_name)
+        # Force update in case _on_widget_value_changed implicitly changed array settings without telling us
+        self._on_setting_changed(self.get_value(override_device_name), override_device_name)
+        
+    def _duplicate_at(self, override_device_name: str, index: int):
+        current_value = self.get_value(override_device_name)
+        row_widget, _ = self._create_element_row(override_device_name, len(current_value))
+        self.element_layouts[override_device_name].addWidget(
+            row_widget
+        )
+
+        copied_value = current_value.copy()
+        copied_value.insert(index, current_value[index])
+
+        self._on_widget_value_changed(copied_value, override_device_name)
+        # Force update in case _on_widget_value_changed implicitly changed array settings without telling us
+        self._on_setting_changed(self.get_value(override_device_name), override_device_name)
+        
+    def _remove_at(self, override_device_name: str, index: int):
+        current_value = self.get_value(override_device_name)
+        copied_value = current_value.copy()
+        del copied_value[index]
+
+        self._on_widget_value_changed(copied_value, override_device_name)
+        # Force update in case _on_widget_value_changed implicitly changed array settings without telling us
+        self._on_setting_changed(self.get_value(override_device_name), override_device_name)
+
+    def _create_element_row(self, override_device_name: str, index: int) -> typing.Tuple[ListRow, object]:
+        editing_widget, default_value = self.create_element(override_device_name, index)
+        row = ListRow(
+            index,
+            editing_widget, 
+            lambda override_device_name=override_device_name, index=index:
+                self._insert_at(override_device_name, index),
+            lambda override_device_name=override_device_name, index=index:
+                self._duplicate_at(override_device_name, index),
+            lambda override_device_name=override_device_name, index=index:
+                self._remove_at(override_device_name, index)
+        )
+        return row, default_value
+
+    def _on_setting_changed(self, new_value: typing.List, override_device_name: typing.Optional[str] = None):
+        container_layout = self.element_layouts[override_device_name]
+        
+        container_len = container_layout.count()
+        new_len = len(new_value)
+        new_list_is_bigger = container_layout.count() < new_len
+        new_list_is_smaller = container_layout.count() > new_len
+        if new_list_is_bigger:
+            for missing_index in range(container_layout.count(), len(new_value), 1):
+                new_array_row, _ = self._create_element_row(override_device_name, missing_index)
+                container_layout.addWidget(new_array_row)
+        
+        if new_list_is_smaller:
+            for added_index in reversed(range(new_len, container_layout.count(), 1)):
+                container_layout.itemAt(added_index).widget().deleteLater()
+                
+        for index in range(new_len):
+            array_row: ListRow = container_layout.itemAt(index).widget()
+            self.update_element_value(array_row.editor_widget, new_value, index)
+
+        self._update_array_count_label(override_device_name)
+    
+    
+class StringListSetting(ListSetting):
+    '''
+    An array setting where the elements are strings
+    '''
+    def __init__(
+        self,
+        attr_name: str,
+        nice_name: str,
+        value: typing.List[str] = [],
+        tool_tip: typing.Optional[str] = None,
+        show_ui: bool = True,
+        allow_reset: bool = True,
+        migrate_data: typing.Callable[[any], None] = None
+    ):
+        '''
+        Create a new ArraySetting object.
+
+        Args:
+            attr_name      : Internal name.
+            nice_name      : Display name.
+            value          : The initial value of this Setting.
+            tool_tip       : Tooltip to show in the UI for this Setting.
+            show_ui        : Whether to show this Setting in the Settings UI.
+        '''
+        super().__init__(
+            attr_name, nice_name, value,
+            tool_tip=tool_tip, show_ui=show_ui, allow_reset=allow_reset, migrate_data=migrate_data)
+        pass
+
+    def create_element(self, override_device_name: str, index: int) -> typing.Tuple[QtWidgets.QWidget, object]:
+        line_edit = QtWidgets.QLineEdit()
+        line_edit.editingFinished.connect(
+            lambda line_edit=line_edit, override_device_name=override_device_name, index=index:
+                self._on_editor_widget_changed(line_edit, override_device_name, index)
+        )
+        return line_edit, ""
+    
+    def _on_editor_widget_changed(self, line_edit, override_device_name, index):
+        current_list = self.get_value(override_device_name)
+        # List needs to a different object otherwise _on_widget_value_changed will think the value has not changed
+        copied_value = current_list.copy()
+        copied_value[index] = line_edit.text()
+        self._on_widget_value_changed(copied_value, override_device_name)
+
+    def update_element_value(self, editor_widget: QtWidgets.QLineEdit, list_value: typing.List, index: int):
+        editor_widget.setText(list_value[index])
 
 
 class LoggingModel(QtGui.QStandardItemModel):
@@ -788,6 +1224,9 @@ class LoggingModel(QtGui.QStandardItemModel):
 
         return True
 
+    def category_at(self, index: QtCore.QModelIndex):
+        return self.invisibleRootItem().child(index.row(), LoggingModel.CATEGORY_COLUMN).text()
+
     @property
     def category_verbosities(self) -> collections.OrderedDict:
         '''
@@ -818,12 +1257,13 @@ class LoggingModel(QtGui.QStandardItemModel):
         '''
         value = value or collections.OrderedDict()
 
+        # sort them by name to facilitate finding them
+        value = collections.OrderedDict(sorted(value.items(), key=lambda item: str(item[0]).lower()))
+
         self.beginResetModel()
-
-        self.removeRows(0, self.rowCount())
-
+        count_before = self.rowCount()
+        
         root_item = self.invisibleRootItem()
-
         for category, verbosity_level in value.items():
             if (category not in self._categories and
                     category not in self._user_categories):
@@ -832,7 +1272,10 @@ class LoggingModel(QtGui.QStandardItemModel):
             root_item.appendRow(
                 [QtGui.QStandardItem(category),
                     QtGui.QStandardItem(verbosity_level)])
-
+            
+        # This triggers the rowsRemoved event. 
+        # Remove rows after so external observers get the right result from category_verbosities.  
+        self.removeRows(0, count_before)
         self.endResetModel()
 
     def flags(self, index: QtCore.QModelIndex) -> QtCore.Qt.ItemFlags:
@@ -861,9 +1304,11 @@ class LoggingVerbosityItemDelegate(QtWidgets.QStyledItemDelegate):
     def __init__(
             self,
             verbosity_levels: typing.List[str],
-            parent: typing.Optional[QtCore.QObject] = None):
+            parent: QtWidgets.QTreeView):
         super().__init__(parent=parent)
         self._verbosity_levels = verbosity_levels or []
+        self._parent = parent
+        self._selected_categories = []
 
     def createEditor(
             self, parent: QtWidgets.QWidget,
@@ -878,8 +1323,18 @@ class LoggingVerbosityItemDelegate(QtWidgets.QStyledItemDelegate):
             current_index = self._verbosity_levels.index(current_value)
             editor.setCurrentIndex(current_index)
 
-        editor.currentIndexChanged.connect(self.currentIndexChanged)
-
+        edited_category = self._parent.model().category_at(index)
+        editor.onHoverScrollBox.connect(
+            lambda edited_category=edited_category:
+                self.on_hover_combo_box(edited_category)
+        )
+        # For multi-selection we want to also be modified even when index has not changed
+        editor.activated.connect(
+            lambda combo_index, 
+                editor=editor:
+                self.on_current_index_changed(combo_index, editor)
+        )
+        
         return editor
 
     def setEditorData(
@@ -893,8 +1348,13 @@ class LoggingVerbosityItemDelegate(QtWidgets.QStyledItemDelegate):
             index: QtCore.QModelIndex):
         model.setData(index, editor.currentText() or None)
 
-    def currentIndexChanged(self):
-        self.commitData.emit(self.sender())
+    def on_hover_combo_box(self, edited_category: str):
+        selection = self._parent.selected_categories()
+        # Discard the selection if the user clicked a combo box outside of the selection
+        self._selected_categories = selection if edited_category in selection else [edited_category]
+
+    def on_current_index_changed(self, combo_index, editor):
+        self._parent.update_category_verbosities(self._selected_categories, editor.itemText(combo_index))
 
 
 class LoggingSettingVerbosityView(QtWidgets.QTreeView):
@@ -922,13 +1382,45 @@ class LoggingSettingVerbosityView(QtWidgets.QTreeView):
         self.setItemDelegateForColumn(
             LoggingModel.VERBOSITY_COLUMN,
             LoggingVerbosityItemDelegate(logging_model.verbosity_levels, self))
-
-        for row in range(logging_model.rowCount()):
-            verbosity_level_index = logging_model.index(
-                row, LoggingModel.VERBOSITY_COLUMN)
-            self.openPersistentEditor(verbosity_level_index)
+        
+        self._open_persistent_editors()
+        logging_model.modelAboutToBeReset.connect(self._pre_change_model)
+        logging_model.modelReset.connect(self._post_change_model)
 
         self.setSelectionBehavior(QtWidgets.QTreeView.SelectRows)
+        self.setSelectionMode(QtWidgets.QTreeView.ExtendedSelection)
+        
+    def _pre_change_model(self):
+        self.scroll_height = self.verticalScrollBar().value()
+        
+    def _post_change_model(self):
+        self.verticalScrollBar().setSliderPosition(self.scroll_height)
+        self._open_persistent_editors()
+        
+    def _open_persistent_editors(self):
+        for row in range(self.model().rowCount()):
+            verbosity_level_index = self.model().index(row, LoggingModel.VERBOSITY_COLUMN)
+            self.openPersistentEditor(verbosity_level_index)
+        
+    def selected_categories(self) -> typing.List[str]:
+        model = self.model()
+        selected_categories = []
+        for selection_range in self.selectionModel().selection():
+            rows = range(selection_range.top(), selection_range.bottom() + 1)
+            for row in rows:
+                category_index = model.index(row, 0)
+                category = model.data(category_index, QtCore.Qt.DisplayRole)
+                selected_categories.append(category)
+                
+        return selected_categories
+        
+    def update_category_verbosities(self, categories: typing.List[str], new_verbosity: str):
+        model = self.model()
+        category_verbosities = model.category_verbosities
+        for category in categories:
+            category_verbosities[category] = new_verbosity
+
+        model.category_verbosities = category_verbosities
 
 
 class LoggingSetting(Setting):
@@ -988,7 +1480,9 @@ class LoggingSetting(Setting):
         categories: typing.List[str] = None,
         verbosity_levels: typing.List[str] = None,
         tool_tip: typing.Optional[str] = None,
-        show_ui: bool = True
+        show_ui: bool = True,
+        allow_reset: bool = True,
+        migrate_data: typing.Callable[[any], None] = None
     ):
         '''
         Create a new LoggingSetting object.
@@ -1010,7 +1504,7 @@ class LoggingSetting(Setting):
 
         super().__init__(
             attr_name, nice_name, value,
-            tool_tip=tool_tip, show_ui=show_ui)
+            tool_tip=tool_tip, show_ui=show_ui, allow_reset=allow_reset, migrate_data=migrate_data)
 
         self._verbosity_levels = (
             verbosity_levels or self.DEFAULT_VERBOSITY_LEVELS)
@@ -1044,7 +1538,7 @@ class LoggingSetting(Setting):
             verbosity_levels=self._verbosity_levels)
         model.category_verbosities = self._value
         view = LoggingSettingVerbosityView(logging_model=model)
-        view.setMinimumHeight(100)
+        view.setMinimumHeight(150)
 
         self.set_widget(
             widget=view, override_device_name=override_device_name)
@@ -1053,6 +1547,7 @@ class LoggingSetting(Setting):
         edit_layout.addWidget(view)
 
         add_category_button = QtWidgets.QPushButton('Add Category')
+        add_category_button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         edit_layout.addWidget(add_category_button)
 
         def on_add_category_button_clicked():
@@ -1074,6 +1569,7 @@ class LoggingSetting(Setting):
         add_category_button.clicked.connect(on_add_category_button_clicked)
 
         remove_category_button = QtWidgets.QPushButton('Remove Category')
+        remove_category_button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         edit_layout.addWidget(remove_category_button)
 
         def on_remove_category_button_clicked():
@@ -1081,17 +1577,23 @@ class LoggingSetting(Setting):
                 LoggingModel.CATEGORY_COLUMN)
             if not category_indices:
                 return
-            category = model.itemFromIndex(category_indices[0]).text()
-
+            
+            category_list_str = ''
+            category_list = []
+            for category_index in category_indices:
+                category = model.itemFromIndex(category_index).text()
+                category_list.append(category)
+                category_list_str += f'{category}\n'
             reply = QtWidgets.QMessageBox.question(
                 remove_category_button, 'Confirm Remove Category',
-                ('Are you sure you would like to remove the logging category '
-                 f'"{category}"?'),
+                ('Are you sure you would like to remove the following categories: '
+                 f'{category_list_str}'),
                 QtWidgets.QMessageBox.Yes, QtWidgets.QMessageBox.No)
 
             if reply == QtWidgets.QMessageBox.Yes:
                 view.selectionModel().clear()
-                model.remove_user_category(category)
+                for category in category_list:
+                    model.remove_user_category(category)
 
         remove_category_button.clicked.connect(
             on_remove_category_button_clicked)
@@ -1114,15 +1616,17 @@ class LoggingSetting(Setting):
             if not category_indices:
                 return
 
-            category = model.itemFromIndex(category_indices[0]).text()
-
-            if model.is_user_category(category):
+            all_user_category = True
+            for category_index in category_indices:
+                category = model.itemFromIndex(category_index).text()
+                all_user_category &= model.is_user_category(category)
+            if all_user_category:
                 remove_category_button.setEnabled(True)
                 remove_category_button.setToolTip('')
 
         view.selectionModel().selectionChanged.connect(
             on_view_selectionChanged)
-
+        
         def on_logging_model_modified(override_device_name=None):
             category_verbosities = model.category_verbosities
             self._on_widget_value_changed(
@@ -1146,7 +1650,8 @@ class LoggingSetting(Setting):
             override_device_name=override_device_name:
                 on_logging_model_modified(
                     override_device_name=override_device_name))
-
+        
+        
         return edit_layout
 
     def _on_setting_changed(
@@ -1160,6 +1665,85 @@ class LoggingSetting(Setting):
         if new_value != old_value:
             widget.model().category_verbosities = new_value
 
+
+class IPAddressSetting(OptionSetting):
+    def __init__(
+        self,
+        attr_name,
+        nice_name,
+        value,
+        tool_tip=None,
+        show_ui=True,
+        allow_reset=True,
+        migrate_data=None
+    ):
+        from socket import getaddrinfo, AF_INET, gethostname
+        ip_addresses = [ip[4][0].__str__() for ip in getaddrinfo(host=gethostname(), port=None, family=AF_INET)]
+        ip_addresses.append("127.0.0.1")
+        super().__init__(
+            attr_name=attr_name,
+            nice_name=nice_name,
+            value=value,
+            possible_values=ip_addresses,
+            tool_tip=tool_tip,
+            show_ui=show_ui,
+            allow_reset=allow_reset,
+            migrate_data=migrate_data)#
+        
+        self._finishedEditingFired = False
+
+    def _create_widgets(self, override_device_name: typing.Optional[str] = None) -> sb_widgets.NonScrollableComboBox:
+        combo: sb_widgets.NonScrollableComboBox = super()._create_widgets(override_device_name)
+        combo.setEditable(True)
+        combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        combo.lineEdit().editingFinished.connect(
+            lambda combo=combo: self._validate_and_commit_ip(combo, override_device_name)
+        )
+        
+        return combo
+    
+    def _validate_and_commit_ip(self, combo: sb_widgets.NonScrollableComboBox, override_device_name:str):
+        def is_valid_ip(ip_str:str):
+            try:
+                import ipaddress
+                ip = ipaddress.ip_address(ip_str)
+                return True
+            except:
+                return False
+            
+        def perform_validation():
+            ip_str = combo.lineEdit().text()
+            if not is_valid_ip(ip_str):
+                answer = QtWidgets.QMessageBox.question(
+                    None,
+                    'Invalid IP',
+                    f'The IP \"{ip_str}\" seems to be invalid.\nDo you want to use this IP anyway?',
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+                )
+                if answer == QtWidgets.QMessageBox.No:
+                    combo.blockSignals(True)
+                    combo.lineEdit().blockSignals(True)
+
+                    current_value = self.get_value(override_device_name)
+                    index = combo.findData(current_value)
+                    is_combo_box_entry = index != -1
+                    if is_combo_box_entry:
+                        combo.setCurrentIndex(index)
+                    else:
+                        combo.lineEdit().setText(current_value)
+
+                    combo.lineEdit().blockSignals(False)
+                    combo.blockSignals(False)
+                    return
+
+            self._on_widget_value_changed(ip_str, override_device_name=override_device_name)
+        
+        if self._finishedEditingFired:
+            return
+        else:
+            self._finishedEditingFired = True
+            perform_validation()
+            self._finishedEditingFired = False
 
 class ConfigPathError(Exception):
     '''
@@ -1288,87 +1872,9 @@ class Config(object):
         ''' Restores saving_allowed flag from the stack
         '''
         self.saving_allowed = self.saving_allowed_fifo.pop()
-
-    def __init__(self, file_path: typing.Union[str, pathlib.Path]):
+        
+    def init(self, file_path: typing.Union[str, pathlib.Path]):
         self.init_with_file_path(file_path)
-
-    def init_new_config(self, file_path: typing.Union[str, pathlib.Path],
-                        uproject, engine_dir, p4_settings):
-        ''' Initialize new configuration
-        '''
-
-        self.file_path = get_absolute_config_path(file_path)
-        self.PROJECT_NAME = self.file_path.stem
-        self.UPROJECT_PATH = StringSetting(
-            "uproject", "uProject Path", uproject, tool_tip="Path to uProject")
-        self.SWITCHBOARD_DIR = os.path.abspath(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), '../'))
-        self.ENGINE_DIR = StringSetting(
-            "engine_dir", "Engine Directory", engine_dir,
-            tool_tip="Path to UE4 engine directory")
-        self.BUILD_ENGINE = BoolSetting(
-            "build_engine", "Build Engine", False,
-            tool_tip="Is Engine built from source?")
-        self.MAPS_PATH = StringSetting(
-            "maps_path", "Map Path", "",
-            tool_tip=(
-                "Relative path from Content folder that contains maps to "
-                "launch into."))
-        self.MAPS_FILTER = StringSetting(
-            "maps_filter", "Map Filter", "*.umap",
-            tool_tip=(
-                "Walk every file in the Map Path and run a fnmatch to filter "
-                "the file names"))
-        self.P4_ENABLED = BoolSetting(
-            "p4_enabled", "Perforce Enabled", p4_settings['p4_enabled'],
-            tool_tip="Toggle Perforce support for the entire application")
-        self.SOURCE_CONTROL_WORKSPACE = StringSetting(
-            "source_control_workspace", "Workspace Name",
-            p4_settings['p4_workspace_name'],
-            tool_tip="SourceControl Workspace/Branch")
-
-        self.P4_PROJECT_PATH = PerforcePathSetting(
-            attr_name="p4_sync_path",
-            nice_name="Perforce Project Path",
-            value=p4_settings['p4_project_path']
-        )
-
-        self.P4_ENGINE_PATH = PerforcePathSetting(
-            attr_name="p4_engine_path",
-            nice_name="Perforce Engine Path",
-            value=p4_settings['p4_engine_path']
-        )
-
-        self.CURRENT_LEVEL = DEFAULT_MAP_TEXT
-
-        self.OSC_SERVER_PORT = IntSetting(
-            "osc_server_port", "OSC Server Port", 6000)
-        self.OSC_CLIENT_PORT = IntSetting(
-            "osc_client_port", "OSC Client Port", 8000)
-
-        # MU Settings
-        self.MULTIUSER_SERVER_EXE = 'UnrealMultiUserServer'
-        self.MUSERVER_COMMAND_LINE_ARGUMENTS = ""
-        self.MUSERVER_SERVER_NAME = f'{self.PROJECT_NAME}_MU_Server'
-        self.MUSERVER_ENDPOINT = ':9030'
-        self.MUSERVER_AUTO_LAUNCH = True
-        self.MUSERVER_AUTO_JOIN = False
-        self.MUSERVER_CLEAN_HISTORY = True
-        self.MUSERVER_AUTO_BUILD = True
-        self.MUSERVER_AUTO_ENDPOINT = True
-
-        self.LISTENER_EXE = 'SwitchboardListener'
-
-        self._device_data_from_config = {}
-        self._plugin_data_from_config = {}
-        self._plugin_settings = {}
-        self._device_settings = {}
-
-        LOGGER.info(f"Creating new config saved in {self.file_path}")
-        self.save()
-
-        SETTINGS.CONFIG = self.file_path
-        SETTINGS.save()
 
     def init_with_file_path(self, file_path: typing.Union[str, pathlib.Path]):
         if file_path:
@@ -1383,106 +1889,39 @@ class Config(object):
                 LOGGER.error(f'Config: {e}')
                 self.file_path = None
                 data = {}
+            except ValueError:
+                # The original file will be overwritten
+                self._backup_corrupted_config(self.file_path.__str__())
+                data = {}
         else:
             self.file_path = None
             data = {}
 
-        project_settings = []
+        self.init_switchboard_settings()
+        self.init_project_settings(data)
+        self.init_unreal_insights(data)
+        self.init_muserver(data)
 
-        self.PROJECT_NAME = data.get('project_name', 'Default')
-        self.UPROJECT_PATH = StringSetting(
-            "uproject", "uProject Path", data.get('uproject', ''),
-            tool_tip="Path to uProject")
-        project_settings.append(self.UPROJECT_PATH)
+        # Automatically save whenever a project setting is changed or
+        # overridden by a device.
+        # TODO: switchboard_settings
+        all_settings = [setting for _, setting in self.basic_project_settings.items()] \
+            + [setting for _, setting in self.osc_settings.items()] \
+            + [setting for _, setting in self.source_control_settings.items()] \
+            + [setting for _, setting in self.unreal_insight_settings.items()] \
+            + [setting for _, setting in self.mu_settings.items()]
+            # TODO: multiuser
+        for setting in all_settings:
+            setting.signal_setting_changed.connect(lambda: self.save())
+            setting.signal_setting_overridden.connect(
+                self.on_device_override_changed)
 
         # Directory Paths
         self.SWITCHBOARD_DIR = os.path.abspath(
             os.path.join(os.path.dirname(os.path.abspath(__file__)), '../'))
-        self.ENGINE_DIR = StringSetting(
-            "engine_dir", "Engine Directory", data.get('engine_dir', ''),
-            tool_tip="Path to UE4 engine directory")
-        project_settings.append(self.ENGINE_DIR)
-        self.BUILD_ENGINE = BoolSetting(
-            "build_engine", "Build Engine", data.get('build_engine', False),
-            tool_tip="Is Engine built from source?")
-        project_settings.append(self.BUILD_ENGINE)
-        self.MAPS_PATH = StringSetting(
-            "maps_path", "Map Path", data.get('maps_path', ''),
-            placeholder_text="Maps",
-            tool_tip=(
-                "Relative path from Content folder that contains maps to "
-                "launch into."))
-        project_settings.append(self.MAPS_PATH)
-        self.MAPS_FILTER = StringSetting(
-            "maps_filter", "Map Filter", data.get('maps_filter', '*.umap'),
-            placeholder_text="*.umap",
-            tool_tip=(
-                "Walk every file in the Map Path and run a fnmatch to "
-                "filter the file names"))
-        project_settings.append(self.MAPS_FILTER)
-
-        # OSC settings
-        self.OSC_SERVER_PORT = IntSetting(
-            "osc_server_port", "OSC Server Port",
-            data.get('osc_server_port', 6000))
-        self.OSC_CLIENT_PORT = IntSetting(
-            "osc_client_port", "OSC Client Port",
-            data.get('osc_client_port', 8000))
-        project_settings.extend([self.OSC_SERVER_PORT, self.OSC_CLIENT_PORT])
-
-        # Perforce settings
-        self.P4_ENABLED = BoolSetting(
-            "p4_enabled", "Perforce Enabled", data.get("p4_enabled", False),
-            tool_tip="Toggle Perforce support for the entire application")
-        self.SOURCE_CONTROL_WORKSPACE = StringSetting(
-            "source_control_workspace", "Workspace Name",
-            data.get("source_control_workspace"),
-            tool_tip="SourceControl Workspace/Branch")
-
-        self.P4_PROJECT_PATH = PerforcePathSetting(
-            "p4_sync_path",
-            "Perforce Project Path",
-            data.get("p4_sync_path", ''),
-            placeholder_text="//UE4/Project"
-        )
-
-        self.P4_ENGINE_PATH = PerforcePathSetting(
-            "p4_engine_path",
-            "Perforce Engine Path",
-            data.get("p4_engine_path", ''),
-            placeholder_text="//UE4/Project/Engine"
-        )
-
-        project_settings.extend(
-            [self.P4_ENABLED, self.SOURCE_CONTROL_WORKSPACE,
-             self.P4_PROJECT_PATH, self.P4_ENGINE_PATH])
-
-        # EXE names
-        self.MULTIUSER_SERVER_EXE = data.get(
-            'multiuser_exe', 'UnrealMultiUserServer')
-        self.LISTENER_EXE = data.get('listener_exe', 'SwitchboardListener')
-
-        # MU Settings
-        self.MUSERVER_COMMAND_LINE_ARGUMENTS = data.get(
-            'muserver_command_line_arguments', '')
-        self.MUSERVER_SERVER_NAME = data.get(
-            'muserver_server_name', f'{self.PROJECT_NAME}_MU_Server')
-        self.MUSERVER_ENDPOINT = data.get('muserver_endpoint', ':9030')
-        self.MUSERVER_AUTO_LAUNCH = data.get('muserver_auto_launch', True)
-        self.MUSERVER_AUTO_JOIN = data.get('muserver_auto_join', False)
-        self.MUSERVER_CLEAN_HISTORY = data.get('muserver_clean_history', True)
-        self.MUSERVER_AUTO_BUILD = data.get('muserver_auto_build', True)
-        self.MUSERVER_AUTO_ENDPOINT = data.get('muserver_auto_endpoint', True)
 
         # MISC SETTINGS
         self.CURRENT_LEVEL = data.get('current_level', DEFAULT_MAP_TEXT)
-
-        # Automatically save whenever a project setting is changed or
-        # overridden by a device.
-        for setting in project_settings:
-            setting.signal_setting_changed.connect(lambda: self.save())
-            setting.signal_setting_overridden.connect(
-                self.on_device_override_changed)
 
         # Devices
         self._device_data_from_config = {}
@@ -1506,6 +1945,270 @@ class Config(object):
                         k: v for (k, v) in data.items() if k != "ip_address"}
                     self._device_data_from_config.setdefault(
                         device_type, []).append(device_data)
+
+    def _backup_corrupted_config(self, original_file_path: str):
+        directory_name = os.path.dirname(original_file_path)
+        original_file_name = os.path.basename(original_file_path)
+        new_file_name = original_file_name.replace(".", "_corrupted_backup.")
+
+        LOGGER.error(f'{original_file_name} has invalid JSON format. Creating default...')
+        answer = QtWidgets.QMessageBox.question(
+            None,
+            'Invalid project settings',
+            f'Config file { original_file_name } is invalid JSON and will be replaced by a new default JSON config.'
+            f'\n\nDo you want to save a backup named { new_file_name }?',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+        )
+        if answer == QtWidgets.QMessageBox.Yes:
+            new_file_path = os.path.join(directory_name, new_file_name)
+            if os.path.exists(new_file_path):
+                os.remove(new_file_path)
+            shutil.copy(original_file_path, new_file_path)
+
+    def init_new_config(self, file_path: typing.Union[str, pathlib.Path], uproject, engine_dir, p4_settings):
+        ''' 
+        Initialize new configuration
+        '''
+
+        self.file_path = get_absolute_config_path(file_path)
+        self.init_switchboard_settings()
+        self.init_project_settings(
+            { 
+                "project_name": self.file_path.stem, 
+                "uproject": uproject, 
+                "engine_dir": engine_dir,
+            } | p4_settings)
+        self.init_unreal_insights()
+        self.init_muserver()
+
+        self.CURRENT_LEVEL = DEFAULT_MAP_TEXT
+
+        self._device_data_from_config = {}
+        self._plugin_data_from_config = {}
+        self._plugin_settings = {}
+        self._device_settings = {}
+
+        LOGGER.info(f"Creating new config saved in {self.file_path}")
+        self.save()
+
+        SETTINGS.CONFIG = self.file_path
+        SETTINGS.save()
+        
+    def init_switchboard_settings(self, data={}):
+        self.switchboard_settings = {
+            "listener_exe": StringSetting(
+                "listener_exe",
+                "Listener Executable Name",
+                 data.get('listener_exe', 'SwitchboardListener')
+            )
+        }
+        
+        self.LISTENER_EXE = self.switchboard_settings["listener_exe"]
+
+    def init_project_settings(self, data={}):
+        self.basic_project_settings = {
+            "project_name": StringSetting(
+                "project_name",
+                "Project Name",
+                data.get('project_name', 'Default')
+            ),
+            "uproject": FilePathSetting(
+                "uproject", "uProject Path",
+                data.get('uproject', ''),
+                tool_tip="Path to uProject"
+            ),
+            "engine_dir": DirectoryPathSetting(
+                "engine_dir",
+                "Engine Directory",
+                data.get('engine_dir', ''),
+                tool_tip="Path to UE 'Engine' directory"
+            ),
+            "build_engine": BoolSetting(
+                "build_engine",
+                "Build Engine",
+                data.get('build_engine', False),
+                tool_tip="Is Engine built from source?"
+            ),
+            "maps_path": StringSetting(
+                "maps_path",
+                "Map Path",
+                data.get('maps_path', ''),
+                placeholder_text="Maps",
+                tool_tip="Relative path from Content folder that contains maps to launch into."
+            ),
+            "maps_filter": StringSetting(
+                "maps_filter",
+                "Map Filter",
+                data.get('maps_filter', '*.umap'),
+                placeholder_text="*.umap",
+                tool_tip="Walk every file in the Map Path and run a fnmatch to filter the file names"
+            )
+        }
+
+        self.PROJECT_NAME = self.basic_project_settings["project_name"]
+        self.UPROJECT_PATH = self.basic_project_settings["uproject"]
+        self.ENGINE_DIR = self.basic_project_settings["engine_dir"]
+        self.BUILD_ENGINE = self.basic_project_settings["build_engine"]
+        self.MAPS_PATH = self.basic_project_settings["maps_path"]
+        self.MAPS_FILTER = self.basic_project_settings["maps_filter"]
+
+        self.osc_settings = {
+            "osc_server_port": IntSetting(
+                "osc_server_port",
+                "OSC Server Port",
+                data.get('osc_server_port', 6000)
+            ),
+            "osc_client_port": IntSetting(
+                "osc_client_port",
+                "OSC Client Port",
+                data.get('osc_client_port', 8000)
+            )
+        }
+
+        self.OSC_SERVER_PORT = self.osc_settings["osc_server_port"]
+        self.OSC_CLIENT_PORT = self.osc_settings["osc_client_port"]
+
+        self.source_control_settings = {
+            "p4_enabled": BoolSetting(
+                "p4_enabled",
+                "Perforce Enabled",
+                data.get("p4_enabled", False),
+                tool_tip="Toggle Perforce support for the entire application"
+            ),
+            "source_control_workspace": StringSetting(
+                "source_control_workspace", "Workspace Name",
+                data.get("source_control_workspace"),
+                tool_tip="SourceControl Workspace/Branch"
+            ),
+            "p4_sync_path": PerforcePathSetting(
+                "p4_sync_path",
+                "Perforce Project Path",
+                data.get("p4_sync_path", ''),
+                placeholder_text="//UE/Project"
+            ),
+            "p4_engine_path": PerforcePathSetting(
+                "p4_engine_path",
+                "Perforce Engine Path",
+                data.get("p4_engine_path", ''),
+                placeholder_text="//UE/Project/Engine"
+            )
+        }
+
+        self.P4_ENABLED = self.source_control_settings["p4_enabled"]
+        self.SOURCE_CONTROL_WORKSPACE = self.source_control_settings["source_control_workspace"]
+        self.P4_PROJECT_PATH = self.source_control_settings["p4_sync_path"]
+        self.P4_ENGINE_PATH = self.source_control_settings["p4_engine_path"]
+
+    def init_unreal_insights(self, data={}):
+        self.unreal_insight_settings = {
+            "tracing_enabled": BoolSetting(
+                "tracing_enabled",
+                "Unreal Insights Tracing State",
+                data.get("tracing_enabled", False),
+            ),
+            "tracing_args": StringSetting(
+                "tracing_args",
+                "Unreal Insights Tracing Args",
+                data.get('tracing_args', 'log,cpu,gpu,frame,bookmark,concert,messaging')
+            ),
+            "tracing_stat_events": BoolSetting(
+                "tracing_stat_events",
+                "Unreal Insights Tracing with Stat Events",
+                data.get('tracing_stat_events', True)
+            )
+        }
+
+        self.INSIGHTS_TRACE_ENABLE = self.unreal_insight_settings["tracing_enabled"]
+        self.INSIGHTS_TRACE_ARGS = self.unreal_insight_settings["tracing_args"]
+        self.INSIGHTS_STAT_EVENTS = self.unreal_insight_settings["tracing_stat_events"]
+
+    def init_muserver(self, data={}):
+        self.mu_settings = {
+            "muserver_server_name": StringSetting(
+                "muserver_server_name",
+                "Server name",
+                data.get('muserver_server_name', f'{self.PROJECT_NAME.get_value()}_MU_Server'),
+                tool_tip="The name that will be given to the server"
+            ),
+            "muserver_command_line_arguments": StringSetting(
+                "muserver_command_line_arguments",
+                "Command Line Args",
+                data.get('muserver_command_line_arguments', ''),
+                tool_tip="Additional command line arguments to pass to multiuser"
+            ),
+            "muserver_endpoint": StringSetting(
+                "muserver_endpoint",
+                "Unicast Endpoint",
+                data.get('muserver_endpoint', ':9030')
+            ),
+            "udpmessaging_multicast_endpoint": StringSetting(
+                attr_name='udpmessaging_multicast_endpoint',
+                nice_name='Multicast Endpoint',
+                value=data.get('muserver_multicast_endpoint', '230.0.0.1:6666'),
+                tool_tip=(
+                    'Multicast group and port (-UDPMESSAGING_TRANSPORT_MULTICAST) '
+                    'in the {ip}:{port} endpoint format. The multicast group IP '
+                    'must be in the range 224.0.0.0 to 239.255.255.255.'),
+            ),
+            "multiuser_exe": StringSetting(
+                "multiuser_exe",
+                "Multiuser Executable Name",
+                data.get('multiuser_exe', 'UnrealMultiUserServer')
+            ),
+            "muserver_auto_launch": BoolSetting(
+                "muserver_auto_launch",
+                "Auto Launch",
+                data.get('muserver_auto_launch', True)
+            ),
+            "muserver_clean_history": BoolSetting(
+                "muserver_clean_history",
+                "Clean History",
+                data.get('muserver_clean_history', False)
+            ),
+            "muserver_auto_build": BoolSetting(
+                "muserver_auto_build",
+                "Auto Build",
+                data.get('muserver_auto_build', True)
+            ),
+            "muserver_auto_endpoint": BoolSetting(
+                "muserver_auto_endpoint",
+                "Auto Endpoint",
+                data.get('muserver_auto_endpoint', True)
+            ),
+            "muserver_auto_join": BoolSetting(
+                "muserver_auto_join",
+                "Unreal Multi-user Server Auto-join",
+                data.get('muserver_auto_join', True)
+            )
+        }
+        
+        self.MUSERVER_SERVER_NAME = self.mu_settings["muserver_server_name"]
+        self.MUSERVER_COMMAND_LINE_ARGUMENTS = self.mu_settings["muserver_command_line_arguments"]
+        self.MUSERVER_ENDPOINT = self.mu_settings["muserver_endpoint"]
+        self.MUSERVER_MULTICAST_ENDPOINT = self.mu_settings["udpmessaging_multicast_endpoint"]
+        self.MULTIUSER_SERVER_EXE = self.mu_settings["multiuser_exe"]
+        self.MUSERVER_AUTO_LAUNCH = self.mu_settings["muserver_auto_launch"]
+        self.MUSERVER_CLEAN_HISTORY = self.mu_settings["muserver_clean_history"]
+        self.MUSERVER_AUTO_BUILD = self.mu_settings["muserver_auto_build"]
+        self.MUSERVER_AUTO_ENDPOINT = self.mu_settings["muserver_auto_endpoint"]
+        self.MUSERVER_AUTO_JOIN = self.mu_settings["muserver_auto_join"]
+
+    def save_unreal_insights(self, data):
+        data['tracing_enabled'] = self.INSIGHTS_TRACE_ENABLE.get_value()
+        data['tracing_args'] = self.INSIGHTS_TRACE_ARGS.get_value()
+        data['tracing_stat_events'] = self.INSIGHTS_STAT_EVENTS.get_value()
+        
+    def save_muserver(self, data):
+        data["muserver_command_line_arguments"] = self.MUSERVER_COMMAND_LINE_ARGUMENTS.get_value()
+        data["muserver_server_name"] = self.MUSERVER_SERVER_NAME.get_value()
+        data["muserver_endpoint"] = self.MUSERVER_ENDPOINT.get_value()
+        data["multiuser_exe"] = self.MULTIUSER_SERVER_EXE.get_value()
+        data["muserver_auto_launch"] = self.MUSERVER_AUTO_LAUNCH.get_value()
+        data["muserver_clean_history"] = self.MUSERVER_CLEAN_HISTORY.get_value()
+        data["muserver_auto_build"] = self.MUSERVER_AUTO_BUILD.get_value()
+        data["muserver_auto_endpoint"] = self.MUSERVER_AUTO_ENDPOINT.get_value()
+        data["muserver_multicast_endpoint"] = self.MUSERVER_MULTICAST_ENDPOINT.get_value()
+        data["muserver_auto_join"] = self.MUSERVER_AUTO_JOIN.get_value()
 
     def load_plugin_settings(self, device_type, settings):
         ''' Updates plugin settings values with those read from the config file.
@@ -1567,13 +2270,15 @@ class Config(object):
         data = {}
 
         # General settings
-        data['project_name'] = self.PROJECT_NAME
+        data['project_name'] = self.PROJECT_NAME.get_value()
         data['uproject'] = self.UPROJECT_PATH.get_value()
         data['engine_dir'] = self.ENGINE_DIR.get_value()
         data['build_engine'] = self.BUILD_ENGINE.get_value()
         data["maps_path"] = self.MAPS_PATH.get_value()
         data["maps_filter"] = self.MAPS_FILTER.get_value()
-        data["listener_exe"] = self.LISTENER_EXE
+        data["listener_exe"] = self.LISTENER_EXE.get_value()
+
+        self.save_unreal_insights(data)
 
         # OSC settings
         data["osc_server_port"] = self.OSC_SERVER_PORT.get_value()
@@ -1586,17 +2291,7 @@ class Config(object):
         data["source_control_workspace"] = (
             self.SOURCE_CONTROL_WORKSPACE.get_value())
 
-        # MU Settings
-        data["multiuser_exe"] = self.MULTIUSER_SERVER_EXE
-        data["muserver_command_line_arguments"] = (
-            self.MUSERVER_COMMAND_LINE_ARGUMENTS)
-        data["muserver_server_name"] = self.MUSERVER_SERVER_NAME
-        data["muserver_endpoint"] = self.MUSERVER_ENDPOINT
-        data["muserver_auto_launch"] = self.MUSERVER_AUTO_LAUNCH
-        data["muserver_auto_join"] = self.MUSERVER_AUTO_JOIN
-        data["muserver_clean_history"] = self.MUSERVER_CLEAN_HISTORY
-        data["muserver_auto_build"] = self.MUSERVER_AUTO_BUILD
-        data["muserver_auto_endpoint"] = self.MUSERVER_AUTO_ENDPOINT
+        self.save_muserver(data)
 
         # Current Level
         data["current_level"] = self.CURRENT_LEVEL
@@ -1671,33 +2366,49 @@ class Config(object):
         self.save()
 
     def maps(self):
+        '''
+        Returns a list of ful map paths in an Unreal Engine project such as [ "/Game/Maps/MapName" ].
+        It will always start with Game and the slashes will always be "/" independent of the platform's separator.
+        '''
+        project_dir = os.path.dirname(self.UPROJECT_PATH.get_value().replace('"', ''))
         maps_path = os.path.normpath(
             os.path.join(
-                os.path.dirname(
-                    self.UPROJECT_PATH.get_value().replace('"', '')),
+                project_dir,
                 'Content',
                 self.MAPS_PATH.get_value()))
 
         maps = []
-        for _, _, files in os.walk(maps_path):
+        for path_to_map, b, files in os.walk(maps_path):
             for name in files:
                 if not fnmatch.fnmatch(name, self.MAPS_FILTER.get_value()):
                     continue
-
-                rootname, _ = os.path.splitext(name)
-                if rootname not in maps:
-                    maps.append(rootname)
+                
+                map_name, _ = os.path.splitext(name)
+                path_name = path_to_map.replace(project_dir, '', 1)
+                # Ignore the fact that maps may exist in plugins - we only search game content
+                path_name = path_name.replace('Content', 'Game', 1)
+                path_name = os.path.join(path_name, map_name)
+                path_name = path_name.replace(os.sep, '/')
+                
+                if path_name not in maps:
+                    maps.append(path_name)
 
         maps.sort()
         return maps
 
     def multiuser_server_path(self):
         return self.engine_exe_path(
-            self.ENGINE_DIR.get_value(), self.MULTIUSER_SERVER_EXE)
+            self.ENGINE_DIR.get_value(), self.MULTIUSER_SERVER_EXE.get_value())
+
+    def multiuser_server_session_directory_path(self):
+        return os.path.join(self.ENGINE_DIR.get_value(), "Programs", "UnrealMultiUserServer", "Intermediate", "MultiUser")
+        
+    def multiuser_server_log_path(self):
+        return os.path.join(self.ENGINE_DIR.get_value(), "Programs", "UnrealMultiUserServer", "Saved", "Logs", "UnrealMultiUserServer.log")
 
     def listener_path(self):
         return self.engine_exe_path(
-            self.ENGINE_DIR.get_value(), self.LISTENER_EXE)
+            self.ENGINE_DIR.get_value(), self.LISTENER_EXE.get_value())
 
     # todo-dara: find a way to do this directly in the LiveLinkFace plugin code
     def unreal_device_ip_addresses(self):
@@ -1749,16 +2460,31 @@ class Config(object):
 
 
 class UserSettings(object):
-
-    def __init__(self):
+    def init(self):
         try:
             with open(USER_SETTINGS_FILE_PATH) as f:
                 LOGGER.debug(f'Loading Settings {USER_SETTINGS_FILE_PATH}')
                 data = json.load(f)
         except FileNotFoundError:
             # Create a default user_settings
-            data = {}
             LOGGER.debug('Creating default user settings')
+            data = {}
+        except ValueError:
+            LOGGER.error(f'{USER_SETTINGS_FILE_NAME} has invalid JSON format. ')
+            
+            answer = QtWidgets.QMessageBox.question(
+                None,
+                'Invalid User Settings',
+                 f'User settings has invalid JSON format and will be replaced with a valid a new default JSON.'
+                 f'\n\nDo you want to save a backup named {USER_SETTINGS_BACKUP_FILE_NAME} (overrides existing)?',
+                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+            )
+            if answer == QtWidgets.QMessageBox.Yes:
+                if os.path.exists(USER_SETTINGS_BACKUP_FILE_PATH):
+                    os.remove(USER_SETTINGS_BACKUP_FILE_PATH)
+                shutil.copy(USER_SETTINGS_FILE_PATH, USER_SETTINGS_BACKUP_FILE_PATH)
+                
+            data = {}
 
         self.CONFIG = data.get('config')
         if self.CONFIG:
@@ -1773,14 +2499,21 @@ class UserSettings(object):
             self.CONFIG = config_paths[0] if config_paths else None
 
         # IP Address of the machine running Switchboard
-        self.IP_ADDRESS = data.get(
-            'ip_address', socket.gethostbyname(socket.gethostname()))
-
-        self.TRANSPORT_PATH = data.get('transport_path', '')
+        self.IP_ADDRESS = IPAddressSetting(
+            "ip_address",
+            "IP Address",
+            data.get("ip_address", socket.gethostbyname(socket.gethostname()))
+        )
+        self.TRANSPORT_PATH = FilePathSetting(
+                "transport_path",
+                "Transport path",
+                data.get('transport_path', '')
+            )
+        
 
         # UI Settings
         self.MUSERVER_SESSION_NAME = data.get(
-            'muserver_session_name', 'MU_Session')
+            'muserver_session_name', 'MU_Session').replace(' ','_')
         self.CURRENT_SEQUENCE = data.get('current_sequence', 'Default')
         self.CURRENT_SLATE = data.get('current_slate', 'Scene')
         self.CURRENT_TAKE = data.get('current_take', 1)
@@ -1793,8 +2526,8 @@ class UserSettings(object):
     def save(self):
         data = {
             'config': '',
-            'ip_address': self.IP_ADDRESS,
-            'transport_path': self.TRANSPORT_PATH,
+            'ip_address': self.IP_ADDRESS.get_value(),
+            'transport_path': self.TRANSPORT_PATH.get_value(),
             'muserver_session_name': self.MUSERVER_SESSION_NAME,
             'current_sequence': self.CURRENT_SEQUENCE,
             'current_slate': self.CURRENT_SLATE,
@@ -1823,11 +2556,12 @@ def list_config_paths() -> typing.List[pathlib.Path]:
     # settings file.
     config_paths = [
         path for path in ROOT_CONFIGS_PATH.rglob(f'*{CONFIG_SUFFIX}')
-        if path != USER_SETTINGS_FILE_PATH]
+        if path != USER_SETTINGS_FILE_PATH and path != USER_SETTINGS_BACKUP_FILE_PATH]
 
     return config_paths
 
 
 # Get the user settings and load their config
 SETTINGS = UserSettings()
-CONFIG = Config(SETTINGS.CONFIG)
+CONFIG = Config()
+    

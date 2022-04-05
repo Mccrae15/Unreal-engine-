@@ -2,24 +2,12 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Diagnostics;
-using System.IO;
-using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
 	class TVOSProjectSettings : IOSProjectSettings
 	{
-		/// <summary>
-		/// Which version of the iOS to allow at run time
-		/// </summary>
-		public override string RuntimeVersion
-		{
-			get { return "10.0"; }
-		}
-
 		/// <summary>
 		/// which devices the game is allowed to run on
 		/// </summary>
@@ -28,7 +16,7 @@ namespace UnrealBuildTool
 			get { return "3"; }
 		}
 
-		public TVOSProjectSettings(FileReference ProjectFile, String Bundle)
+		public TVOSProjectSettings(FileReference? ProjectFile, String? Bundle)
 			: base(ProjectFile, UnrealTargetPlatform.TVOS, Bundle)
 		{
 		}
@@ -44,7 +32,7 @@ namespace UnrealBuildTool
 
 	class TVOSPlatform : IOSPlatform
     {
-		public TVOSPlatform(IOSPlatformSDK InSDK)
+		public TVOSPlatform(UEBuildPlatformSDK InSDK)
 			: base(InSDK, UnrealTargetPlatform.TVOS)
 		{
 		}
@@ -53,7 +41,7 @@ namespace UnrealBuildTool
 		public static string TVOSArchitecture = "";
 
 		// The current architecture - affects everything about how UBT operates on IOS
-		public override string GetDefaultArchitecture(FileReference ProjectFile)
+		public override string GetDefaultArchitecture(FileReference? ProjectFile)
 		{
 			return TVOSArchitecture;
 		}
@@ -68,15 +56,16 @@ namespace UnrealBuildTool
 				Target.GlobalDefinitions.Remove("HAS_METAL=0");
 				Target.GlobalDefinitions.Add("HAS_METAL=1");
 				Target.ExtraModuleNames.Add("MetalRHI");
+				Target.ExtraModuleNames.Add("AGXRHI");
 			}
 		}
 
-		public new TVOSProjectSettings ReadProjectSettings(FileReference ProjectFile, string Bundle = "")
+		public new TVOSProjectSettings ReadProjectSettings(FileReference? ProjectFile, string Bundle = "")
 		{
 			return (TVOSProjectSettings)base.ReadProjectSettings(ProjectFile, Bundle);
 		}
 
-		protected override IOSProjectSettings CreateProjectSettings(FileReference ProjectFile, string Bundle)
+		protected override IOSProjectSettings CreateProjectSettings(FileReference? ProjectFile, string? Bundle)
 		{
 			return new TVOSProjectSettings(ProjectFile, Bundle);
 		}
@@ -96,12 +85,12 @@ namespace UnrealBuildTool
 			base.ModifyModuleRulesForOtherPlatform(ModuleName, Rules, Target);
 
 			// don't do any target platform stuff if SDK is not available
-			if (!UEBuildPlatform.IsPlatformAvailable(Platform))
+			if (!UEBuildPlatform.IsPlatformAvailableForTarget(Platform, Target))
 			{
 				return;
 			}
 
-			if ((Target.Platform == UnrealTargetPlatform.Win32) || (Target.Platform == UnrealTargetPlatform.Win64) || (Target.Platform == UnrealTargetPlatform.Mac))
+			if ((Target.Platform == UnrealTargetPlatform.Win64) || (Target.Platform == UnrealTargetPlatform.Mac))
 			{
 				// allow standalone tools to use targetplatform modules, without needing Engine
 				if (Target.bForceBuildTargetPlatforms)
@@ -157,9 +146,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		public override void RegisterBuildPlatforms()
 		{
-			IOSPlatformSDK SDK = new IOSPlatformSDK();
-			SDK.ManageAndValidateSDK();
-
+			ApplePlatformSDK SDK = new IOSPlatformSDK();
+		
 			// Register this build platform for IOS
 			UEBuildPlatform.RegisterBuildPlatform(new TVOSPlatform(SDK));
 			UEBuildPlatform.RegisterPlatformWithGroup(UnrealTargetPlatform.TVOS, UnrealPlatformGroup.Apple);

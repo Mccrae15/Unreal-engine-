@@ -81,7 +81,7 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 	FGroomAnimationInfo AnimInfo;
 	{
 		// Load the alembic file upfront to preview & report any potential issue
-		FProcessedHairDescription OutDescription;
+		FHairDescriptionGroups OutDescription;
 		{
 			FScopedSlowTask Progress((float)1, LOCTEXT("ImportHairAssetForPreview", "Importing hair asset for preview..."), true);
 			Progress.MakeDialog(true);
@@ -92,7 +92,7 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 				return nullptr;
 			}
 
-			FGroomBuilder::ProcessHairDescription(HairDescription, OutDescription);
+			FGroomBuilder::BuildHairDescriptionGroups(HairDescription, OutDescription);
 		
 			// Populate the interpolation settings based on the group count, as this is used later during the ImportHair() to define 
 			// the exact number of group to create
@@ -106,16 +106,14 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 		// Convert the process hair description into hair groups
 		UGroomHairGroupsPreview* GroupsPreview = NewObject<UGroomHairGroupsPreview>();
 		{
-			uint32 GroupIndex = 0;
-			for (TPair<int32, FProcessedHairDescription::FHairGroup> HairGroupIt : OutDescription.HairGroups)
+			for (const FHairDescriptionGroup& Group : OutDescription.HairGroups)
 			{
-				const FProcessedHairDescription::FHairGroup& Group = HairGroupIt.Value;
-				const FHairGroupInfo& GroupInfo = Group.Key;
-
 				FGroomHairGroupPreview& OutGroup = GroupsPreview->Groups.AddDefaulted_GetRef();
-				OutGroup.GroupID = GroupInfo.GroupID;
-				OutGroup.CurveCount = GroupInfo.NumCurves;
-				OutGroup.GuideCount = GroupInfo.NumGuides;
+				OutGroup.GroupName  = Group.Info.GroupName;
+				OutGroup.GroupID	= Group.Info.GroupID;
+				OutGroup.CurveCount = Group.Info.NumCurves;
+				OutGroup.GuideCount = Group.Info.NumGuides;
+				OutGroup.bHasPrecomputedWeights = Group.Strands.StrandsCurves.HasPrecomputedWeights();
 
 				if (OutGroup.GroupID < OutDescription.HairGroups.Num())
 				{				
@@ -124,8 +122,7 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 			}
 		}
 
-		// GroomCache options are only shown if there's a valid groom animation
-		GroomCacheImportOptions->ImportSettings.bImportGroomCache = GroomCacheImportOptions->ImportSettings.bImportGroomCache && AnimInfo.IsValid();
+		FGroomCacheImporter::SetupImportSettings(GroomCacheImportOptions->ImportSettings, AnimInfo);
 
 		if (!GIsRunningUnattendedScript && !IsAutomatedImport())
 		{
@@ -148,6 +145,8 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 		}
 		ImportOptions->SaveConfig();
 	}
+
+	FGroomCacheImporter::ApplyImportSettings(GroomCacheImportOptions->ImportSettings, AnimInfo);
 
 	FScopedSlowTask Progress((float) 1, LOCTEXT("ImportHairAsset", "Importing hair asset..."), true);
 	Progress.MakeDialog(true);
@@ -195,9 +194,6 @@ UObject* UHairStrandsFactory::FactoryCreateFile(UClass* InClass, UObject* InPare
 
 	if (GroomCacheImportOptions->ImportSettings.bImportGroomCache && GroomAssetForCache)
 	{
-		// Compute the duration as it is not known yet
-		AnimInfo.Duration = AnimInfo.NumFrames * AnimInfo.SecondsPerFrame;
-
 		TArray<UGroomCache*> GroomCaches = FGroomCacheImporter::ImportGroomCache(Filename, SelectedTranslator, AnimInfo, HairImportContext, GroomAssetForCache);
 
 		// Setup asset import data

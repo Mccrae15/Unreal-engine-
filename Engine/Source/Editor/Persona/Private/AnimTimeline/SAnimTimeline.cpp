@@ -33,6 +33,9 @@
 #include "Widgets/Input/SSpinBox.h"
 #include "SAnimTimelineTransportControls.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimData/AnimDataModel.h"
+#include "Runtime/Engine/Classes/Animation/AnimSequenceHelpers.h"
+#include "Widgets/Layout/SScrollBox.h"
 
 #define LOCTEXT_NAMESPACE "SAnimTimeline"
 
@@ -211,29 +214,36 @@ void SAnimTimeline::Construct(const FArguments& InArgs, const TSharedRef<FAnimMo
 							SNew(SOverlay)
 							+SOverlay::Slot()
 							[
-								SNew(SScrollBorder, Outliner.ToSharedRef())
+								SNew(SVerticalBox)
+								+ SVerticalBox::Slot()
+								.FillHeight(1.f)
 								[
-									SNew(SHorizontalBox)
-
-									// outliner tree
-									+SHorizontalBox::Slot()
-									.FillWidth(FillCoefficient_0)
+									SNew(SScrollBox)
+									.ExternalScrollbar(ScrollBar)
+									+ SScrollBox::Slot()
 									[
-										SNew(SBox)
+										SNew(SHorizontalBox)
+										
+										// outliner tree
+										+ SHorizontalBox::Slot()
+										.FillWidth(FillCoefficient_0)
 										[
-											Outliner.ToSharedRef()
+											SNew(SBox)
+											[
+												Outliner.ToSharedRef()
+											]
 										]
-									]
 
-									// track area
-									+SHorizontalBox::Slot()
-									.FillWidth(FillCoefficient_1)
-									[
-										SNew(SBox)
-										.Padding(ResizeBarPadding)
-										.Clipping(EWidgetClipping::ClipToBounds)
+										// track area
+										+ SHorizontalBox::Slot()
+										.FillWidth(FillCoefficient_1)
 										[
-											TrackArea.ToSharedRef()
+											SNew(SBox)
+											.Padding(ResizeBarPadding)
+											.Clipping(EWidgetClipping::ClipToBounds)
+											[
+												TrackArea.ToSharedRef()
+											]
 										]
 									]
 								]
@@ -392,40 +402,40 @@ FReply SAnimTimeline::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 			FFrameTime MouseTime = TimeSliderController->GetFrameTimeFromMouse(MyGeometry, MouseEvent.GetScreenSpacePosition());
 			float CurrentFrameTime = (float)((double)MouseTime.AsDecimal() / (double)Model.Pin()->GetTickResolution());
 			float SequenceLength = AnimSequence->GetPlayLength();
-			uint32 NumFrames = AnimSequence->GetNumberOfFrames();
+			const uint32 NumKeys = AnimSequence->GetNumberOfSampledKeys();
 
 			MenuBuilder.BeginSection("SequenceEditingContext", LOCTEXT("SequenceEditing", "Sequence Editing") );
 			{
 				float CurrentFrameFraction = CurrentFrameTime / SequenceLength;
-				int32 CurrentFrameNumber = CurrentFrameFraction * NumFrames;
+				int32 CurrentKeyIndex = CurrentFrameFraction * NumKeys;
 
 				FUIAction Action;
 				FText Label;
 
 				//Menu - "Remove Before"
 				//Only show this option if the selected frame is greater than frame 1 (first frame)
-				if (CurrentFrameNumber > 0)
+				if (CurrentKeyIndex > 0)
 				{
-					CurrentFrameFraction = (float)CurrentFrameNumber / (float)NumFrames;
+					CurrentFrameFraction = (float)CurrentKeyIndex / (float)NumKeys;
 
 					//Corrected frame time based on selected frame number
 					float CorrectedFrameTime = CurrentFrameFraction * SequenceLength;
 
 					Action = FUIAction(FExecuteAction::CreateSP(this, &SAnimTimeline::OnCropAnimSequence, true, CorrectedFrameTime));
-					Label = FText::Format(LOCTEXT("RemoveTillFrame", "Remove frame 0 to frame {0}"), FText::AsNumber(CurrentFrameNumber));
+					Label = FText::Format(LOCTEXT("RemoveTillFrame", "Remove frame 0 to frame {0}"), FText::AsNumber(CurrentKeyIndex));
 					MenuBuilder.AddMenuEntry(Label, LOCTEXT("RemoveBefore_ToolTip", "Remove sequence before current position"), FSlateIcon(), Action);
 				}
 
-				uint32 NextFrameNumber = CurrentFrameNumber + 1;
+				uint32 NextKeyIndex = CurrentKeyIndex + 1;
 
 				//Menu - "Remove After"
-				//Only show this option if next frame (CurrentFrameNumber + 1) is valid
-				if (NextFrameNumber < NumFrames)
+				//Only show this option if next frame (CurrentKeyIndex + 1) is valid
+				if (NextKeyIndex < NumKeys)
 				{
-					float NextFrameFraction = (float)NextFrameNumber / (float)NumFrames;
+					float NextFrameFraction = (float)NextKeyIndex / (float)NumKeys;
 					float NextFrameTime = NextFrameFraction * SequenceLength;
 					Action = FUIAction(FExecuteAction::CreateSP(this, &SAnimTimeline::OnCropAnimSequence, false, NextFrameTime));
-					Label = FText::Format(LOCTEXT("RemoveFromFrame", "Remove from frame {0} to frame {1}"), FText::AsNumber(NextFrameNumber), FText::AsNumber(NumFrames));
+					Label = FText::Format(LOCTEXT("RemoveFromFrame", "Remove from frame {0} to frame {1}"), FText::AsNumber(NextKeyIndex), FText::AsNumber(NumKeys));
 					MenuBuilder.AddMenuEntry(Label, LOCTEXT("RemoveAfter_ToolTip", "Remove sequence after current position"), FSlateIcon(), Action);
 				}
 
@@ -434,12 +444,12 @@ FReply SAnimTimeline::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 				//Corrected frame time based on selected frame number
 				float CorrectedFrameTime = CurrentFrameFraction * SequenceLength;
 
-				Action = FUIAction(FExecuteAction::CreateSP(this, &SAnimTimeline::OnInsertAnimSequence, true, CurrentFrameNumber));
-				Label = FText::Format(LOCTEXT("InsertBeforeCurrentFrame", "Insert frame before {0}"), FText::AsNumber(CurrentFrameNumber));
+				Action = FUIAction(FExecuteAction::CreateSP(this, &SAnimTimeline::OnInsertAnimSequence, true, CurrentKeyIndex));
+				Label = FText::Format(LOCTEXT("InsertBeforeCurrentFrame", "Insert frame before {0}"), FText::AsNumber(CurrentKeyIndex));
 				MenuBuilder.AddMenuEntry(Label, LOCTEXT("InsertBefore_ToolTip", "Insert a frame before current position"), FSlateIcon(), Action);
 
-				Action = FUIAction(FExecuteAction::CreateSP(this, &SAnimTimeline::OnInsertAnimSequence, false, CurrentFrameNumber));
-				Label = FText::Format(LOCTEXT("InsertAfterCurrentFrame", "Insert frame after {0}"), FText::AsNumber(CurrentFrameNumber));
+				Action = FUIAction(FExecuteAction::CreateSP(this, &SAnimTimeline::OnInsertAnimSequence, false, CurrentKeyIndex));
+				Label = FText::Format(LOCTEXT("InsertAfterCurrentFrame", "Insert frame after {0}"), FText::AsNumber(CurrentKeyIndex));
 				MenuBuilder.AddMenuEntry(Label, LOCTEXT("InsertAfter_ToolTip", "Insert a frame after current position"), FSlateIcon(), Action);
 
 				MenuBuilder.AddMenuSeparator();
@@ -453,9 +463,9 @@ FReply SAnimTimeline::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointe
 
 				MenuBuilder.AddMenuSeparator();
 				//Menu - "ReZero"
-				Action = FUIAction(FExecuteAction::CreateSP(this, &SAnimTimeline::OnReZeroAnimSequence, CurrentFrameNumber));
-				Label = FText::Format(LOCTEXT("ReZeroAtFrame", "Re-zero at frame {0}"), FText::AsNumber(CurrentFrameNumber));
-				MenuBuilder.AddMenuEntry(Label, FText::Format(LOCTEXT("ReZeroAtFrame_ToolTip", "Resets the root track to (0, 0, 0) at frame {0} and apply the difference to all root transform of the sequence. It moves whole sequence to the amount of current root transform."), FText::AsNumber(CurrentFrameNumber)), FSlateIcon(), Action);
+				Action = FUIAction(FExecuteAction::CreateSP(this, &SAnimTimeline::OnReZeroAnimSequence, CurrentKeyIndex));
+				Label = FText::Format(LOCTEXT("ReZeroAtFrame", "Re-zero at frame {0}"), FText::AsNumber(CurrentKeyIndex));
+				MenuBuilder.AddMenuEntry(Label, FText::Format(LOCTEXT("ReZeroAtFrame_ToolTip", "Resets the root track to (0, 0, 0) at frame {0} and apply the difference to all root transform of the sequence. It moves whole sequence to the amount of current root transform."), FText::AsNumber(CurrentKeyIndex)), FSlateIcon(), Action);
 
 				const int32 FrameNumberForCurrentTime = INDEX_NONE;
 				Action = FUIAction(FExecuteAction::CreateSP(this, &SAnimTimeline::OnReZeroAnimSequence, FrameNumberForCurrentTime));
@@ -491,14 +501,16 @@ void SAnimTimeline::OnCropAnimSequence( bool bFromStart, float CurrentTime )
 
 				//Call modify to restore anim sequence current state
 				AnimSequence->Modify();
+				
+				const float TrimStart = bFromStart ? 0.f : CurrentTime;
+				const float TrimEnd = bFromStart ? CurrentTime : AnimSequence->GetPlayLength();
 
-				// Crop the raw anim data.
-				AnimSequence->CropRawAnimData( CurrentTime, bFromStart );
+				// Trim off the user-selected part of the raw anim data.
+				UE::Anim::AnimationData::Trim(AnimSequence, TrimStart, TrimEnd);
+
 
 				//Resetting slider position to the first frame
 				PreviewInstance->SetPosition( 0.0f, false );
-
-				Model.Pin()->RefreshTracks();
 			}
 		}
 	}
@@ -521,12 +533,8 @@ void SAnimTimeline::OnAppendAnimSequence( bool bFromStart, int32 NumOfFrames )
 			AnimSequence->Modify();
 
 			// Crop the raw anim data.
-			int32 StartFrame = (bFromStart)? 0 : AnimSequence->GetRawNumberOfFrames() - 1;
-			int32 EndFrame = StartFrame + NumOfFrames;
-			int32 CopyFrame = StartFrame;
-			AnimSequence->InsertFramesToRawAnimData(StartFrame, EndFrame, CopyFrame);
-
-			Model.Pin()->RefreshTracks();
+			const int32 StartFrame = (bFromStart)? 0 : AnimSequence->GetDataModel()->GetNumberOfFrames() - 1;
+			UE::Anim::AnimationData::DuplicateKeys(AnimSequence, StartFrame, NumOfFrames, StartFrame);
 		}
 	}
 }
@@ -548,11 +556,8 @@ void SAnimTimeline::OnInsertAnimSequence( bool bBefore, int32 CurrentFrame )
 			AnimSequence->Modify();
 
 			// Crop the raw anim data.
-			int32 StartFrame = (bBefore)? CurrentFrame : CurrentFrame + 1;
-			int32 EndFrame = StartFrame + 1;
-			AnimSequence->InsertFramesToRawAnimData(StartFrame, EndFrame, CurrentFrame);
-
-			Model.Pin()->RefreshTracks();
+			const int32 StartFrame = (bBefore)? CurrentFrame : CurrentFrame + 1;
+			UE::Anim::AnimationData::DuplicateKeys(AnimSequence, StartFrame, 1, CurrentFrame);
 		}
 	}
 }
@@ -575,7 +580,8 @@ void SAnimTimeline::OnReZeroAnimSequence(int32 FrameIndex)
 				AnimSequence->Modify();
 
 				// As above, animations don't have any idea of hierarchy, so we don't know for sure if track 0 is the root bone's track.
-				FRawAnimSequenceTrack& RawTrack = AnimSequence->GetRawAnimationTrack(0);
+				const FBoneAnimationTrack& AnimationTrack = AnimSequence->GetDataModel()->GetBoneTrackByIndex(0);
+				FRawAnimSequenceTrack RawTrack = AnimationTrack.InternalTrackData;
 
 				// Find vector that would translate current root bone location onto origin.
 				FVector FrameTransform = FVector::ZeroVector;
@@ -587,7 +593,7 @@ void SAnimTimeline::OnReZeroAnimSequence(int32 FrameIndex)
 				else if(RawTrack.PosKeys.IsValidIndex(FrameIndex))
 				{
 					// Use transform at frame
-					FrameTransform = RawTrack.PosKeys[FrameIndex];
+					FrameTransform = (FVector)RawTrack.PosKeys[FrameIndex];
 				}
 
 				FVector ApplyTranslation = -1.f * FrameTransform;
@@ -598,16 +604,13 @@ void SAnimTimeline::OnReZeroAnimSequence(int32 FrameIndex)
 
 				for(int32 i=0; i<RawTrack.PosKeys.Num(); i++)
 				{
-					RawTrack.PosKeys[i] += ApplyTranslation;
+					RawTrack.PosKeys[i] += (FVector3f)ApplyTranslation;
 				}
 
-				// Handle Raw Data changing
-				AnimSequence->MarkRawDataAsModified();
-				AnimSequence->OnRawDataChanged();
+				IAnimationDataController& Controller = AnimSequence->GetController();
+				Controller.SetBoneTrackKeys(AnimationTrack.Name, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
 
 				AnimSequence->MarkPackageDirty();
-
-				Model.Pin()->RefreshTracks();
 			}
 		}
 	}
@@ -741,7 +744,7 @@ bool SAnimTimeline::GetGridMetrics(float PhysicalWidth, double& OutMajorInterval
 	FSlateFontInfo SmallLayoutFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
 	TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 
-	FFrameRate DisplayRate(FMath::RoundToInt(Model.Pin()->GetFrameRate()), 1);
+	FFrameRate DisplayRate(FMath::Max(FMath::RoundToInt(Model.Pin()->GetFrameRate()), 1), 1);
 	double BiggestTime = ViewRange.Get().GetUpperBoundValue();
 	FString TickString = NumericTypeInterface->ToString((BiggestTime * DisplayRate).FrameNumber.Value);
 	FVector2D MaxTextSize = FontMeasureService->Measure(TickString, SmallLayoutFont);
@@ -751,7 +754,7 @@ bool SAnimTimeline::GetGridMetrics(float PhysicalWidth, double& OutMajorInterval
 	float MinTickPx = MaxTextSize.X + 5.f;
 	float DesiredMajorTickPx = MaxTextSize.X * MajorTickMultiplier;
 
-	if (PhysicalWidth > 0)
+	if (PhysicalWidth > 0 && DisplayRate.AsDecimal() > 0)
 	{
 		return ComputeGridSpacing(
 			DisplayRate,
@@ -793,7 +796,7 @@ class UAnimSingleNodeInstance* SAnimTimeline::GetPreviewInstance() const
 	return PreviewMeshComponent && PreviewMeshComponent->IsPreviewOn()? PreviewMeshComponent->PreviewInstance : nullptr;
 }
 
-void SAnimTimeline::HandleScrubPositionChanged(FFrameTime NewScrubPosition, bool bIsScrubbing)
+void SAnimTimeline::HandleScrubPositionChanged(FFrameTime NewScrubPosition, bool bIsScrubbing, bool bEvaluate)
 {
 	if (UAnimSingleNodeInstance* PreviewInstance = GetPreviewInstance())
 	{

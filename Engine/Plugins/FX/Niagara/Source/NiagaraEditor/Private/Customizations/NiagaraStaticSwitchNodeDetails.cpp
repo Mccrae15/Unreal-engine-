@@ -43,7 +43,10 @@ FNiagaraStaticSwitchNodeDetails::FNiagaraStaticSwitchNodeDetails()
 
 void FNiagaraStaticSwitchNodeDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 {
+	 SwitchTypeDataProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UNiagaraNodeStaticSwitch, SwitchTypeData));
+
 	static const FName SwitchCategoryName = TEXT("Static Switch");
+	static const FName SwitchHiddenCategoryName = TEXT("HiddenMetaData");
 
 	TArray<TWeakObjectPtr<UObject>> ObjectsCustomized;
 	DetailBuilder.GetObjectsBeingCustomized(ObjectsCustomized);
@@ -67,12 +70,16 @@ void FNiagaraStaticSwitchNodeDetails::CustomizeDetails(IDetailLayoutBuilder& Det
 				DropdownOptions.Add(MakeShareable(new SwitchDropdownOption(TypeDefOnNode.GetEnum()->GetName(), TypeDefOnNode.GetEnum())));
 		}
 		UpdateSelectionFromNode();
-		
+	
+		DetailBuilder.EditCategory(SwitchHiddenCategoryName).SetCategoryVisibility(false);
+
 		IDetailCategoryBuilder& CategoryBuilder = DetailBuilder.EditCategory(SwitchCategoryName);		
 		FDetailWidgetRow& NameWidget = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraSwitchNodeNameFilterText", "Input parameter name"));
 		FDetailWidgetRow& DropdownWidget = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraSwitchNodeTypeFilterText", "Input parameter type"));
 		FDetailWidgetRow& DefaultValueOption = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraSwitchNodeDefaultFilterText", "Default value"));
+		FDetailWidgetRow& ExternalPinOption = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraSwitchNodeExteranPinText", "Create Pin"));
 		FDetailWidgetRow& ConstantSelection = CategoryBuilder.AddCustomRow(LOCTEXT("NiagaraSwitchNodeConstantFilterText", "Compiler constant"));
+		
 
 		NameWidget
 		.NameContent()
@@ -95,6 +102,7 @@ void FNiagaraStaticSwitchNodeDetails::CustomizeDetails(IDetailLayoutBuilder& Det
 				.IsEnabled(this, &FNiagaraStaticSwitchNodeDetails::GetDefaultOptionEnabled)
 				.ToolTipText(LOCTEXT("NiagaraSwitchNodeNameTooltip", "This is the name of the parameter that is exposed to the user calling this function graph."))
 				.OnTextCommitted(this, &FNiagaraStaticSwitchNodeDetails::OnParameterNameCommited)
+				.OnVerifyTextChanged(this, &FNiagaraStaticSwitchNodeDetails::OnVerifyParameterNameChanged)
 				.SelectAllTextWhenFocused(true)
 				.RevertTextOnEscape(true)
 			]
@@ -186,6 +194,28 @@ void FNiagaraStaticSwitchNodeDetails::CustomizeDetails(IDetailLayoutBuilder& Det
 			]
 		];
 
+		ExternalPinOption.NameContent()
+			[
+				SNew(SBox)
+				.Padding(FMargin(0.0f, 2.0f))
+				[
+					SNew(STextBlock)
+					.IsEnabled(this, &FNiagaraStaticSwitchNodeDetails::GetExposeAsPinEnabled)
+					.TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.ParameterText")
+					.Text(LOCTEXT("NiagaraSwitchNodeExposeAsPinText", "Expose As Pin"))
+				]
+			]
+		.ValueContent()
+			[
+				SNew(SBox)
+				.Padding(FMargin(0.0f, 2.0f))
+				[
+					SNew(SCheckBox)
+					.IsChecked_Lambda([this]() { return GetIsPinExposed() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+					.OnCheckStateChanged(this, &FNiagaraStaticSwitchNodeDetails::ExposeAsPinCommitted)
+				]
+			];
+
 		ConstantSelection
 		.NameContent()
 		[
@@ -260,6 +290,30 @@ void FNiagaraStaticSwitchNodeDetails::DefaultBoolValueCommitted(ECheckBoxState N
 	}
 }
 
+
+void FNiagaraStaticSwitchNodeDetails::ExposeAsPinCommitted(ECheckBoxState NewState)
+{
+	if (Node.IsValid())
+	{
+		Node->Modify();
+		Node->SwitchTypeData.bExposeAsPin = (NewState == ECheckBoxState::Checked);
+
+		if (SwitchTypeDataProperty.IsValid())
+		{
+			SwitchTypeDataProperty->NotifyPostChange(EPropertyChangeType::ValueSet);
+		}
+	}
+}
+
+bool FNiagaraStaticSwitchNodeDetails::GetIsPinExposed() const
+{
+	if (Node.IsValid())
+	{
+		return Node->SwitchTypeData.bExposeAsPin;
+	}
+	return false;
+}
+
 TSharedRef<SWidget> FNiagaraStaticSwitchNodeDetails::CreateWidgetForDropdownOption(TSharedPtr<SwitchDropdownOption> InOption)
 {
 	return SNew(STextBlock).Text(FText::FromString(*InOption->Name));
@@ -304,6 +358,10 @@ void FNiagaraStaticSwitchNodeDetails::OnSelectionChanged(TSharedPtr<DefaultEnumO
 
 	ScriptVar->SetStaticSwitchDefaultValue(SelectedDefaultValue->EnumIndex);
 	SetSwitchParameterMetadata(ScriptVar->Metadata);
+	if (SwitchTypeDataProperty.IsValid())
+	{
+		SwitchTypeDataProperty->NotifyPostChange(EPropertyChangeType::ValueSet);
+	}
 }
 
 void FNiagaraStaticSwitchNodeDetails::OnSelectionChanged(TSharedPtr<SwitchDropdownOption> NewValue, ESelectInfo::Type)
@@ -335,6 +393,10 @@ void FNiagaraStaticSwitchNodeDetails::OnSelectionChanged(TSharedPtr<SwitchDropdo
 	}
 	RefreshDropdownValues();
 	Node->OnSwitchParameterTypeChanged(OldType);
+	if (SwitchTypeDataProperty.IsValid())
+	{
+		SwitchTypeDataProperty->NotifyPostChange(EPropertyChangeType::ValueSet);
+	}
 }
 
 void FNiagaraStaticSwitchNodeDetails::OnSelectionChanged(TSharedPtr<ConstantDropdownOption> NewValue, ESelectInfo::Type)
@@ -356,6 +418,10 @@ void FNiagaraStaticSwitchNodeDetails::OnSelectionChanged(TSharedPtr<ConstantDrop
 		Node->SwitchTypeData.Enum = nullptr;
 	}
 	Node->RefreshFromExternalChanges();
+	if (SwitchTypeDataProperty.IsValid())
+	{
+		SwitchTypeDataProperty->NotifyPostChange(EPropertyChangeType::ValueSet);
+	}
 }
 
 FText FNiagaraStaticSwitchNodeDetails::GetDropdownItemLabel() const
@@ -471,6 +537,11 @@ void FNiagaraStaticSwitchNodeDetails::SetSwitchParameterMetadata(const FNiagaraV
 	}
 	Node->GetNiagaraGraph()->SetMetaData(FNiagaraVariable(Node->GetInputType(), Node->InputParameterName), MetaData);
 	Node->GetNiagaraGraph()->NotifyGraphNeedsRecompile();
+
+	if (SwitchTypeDataProperty.IsValid())
+	{
+		SwitchTypeDataProperty->NotifyPostChange(EPropertyChangeType::ValueSet);
+	}
 }
 
 void FNiagaraStaticSwitchNodeDetails::UpdateSelectionFromNode()
@@ -513,6 +584,12 @@ bool FNiagaraStaticSwitchNodeDetails::IsConstantSelection() const
 	return SelectedDropdownItem == DropdownOptions[1] || SelectedDropdownItem == DropdownOptions[3] || SelectedDropdownItem == DropdownOptions[4];
 }
 
+bool FNiagaraStaticSwitchNodeDetails::GetExposeAsPinEnabled() const
+{
+	return !IsConstantSelection();
+
+}
+
 bool FNiagaraStaticSwitchNodeDetails::GetIntOptionEnabled() const
 {
 	return Node.IsValid() && Node->SwitchTypeData.SwitchType == ENiagaraStaticSwitchType::Integer && (!IsConstantSelection() || SelectedDropdownItem == DropdownOptions[3]);
@@ -546,9 +623,42 @@ void FNiagaraStaticSwitchNodeDetails::OnParameterNameCommited(const FText& InTex
 	}
 }
 
+bool FNiagaraStaticSwitchNodeDetails::OnVerifyParameterNameChanged(const FText& InName, FText& OutErrorMessage)
+{
+	FText TrimmedName = FText::TrimPrecedingAndTrailing(InName);
+
+	if (TrimmedName.IsEmpty())
+	{
+		OutErrorMessage = LOCTEXT("RenameFailed_LeftBlank", "Static switch name cannot be left blank");
+		return false;
+	}
+
+	if (TrimmedName.ToString().Len() >= NAME_SIZE)
+	{
+		FFormatNamedArguments Arguments;
+		Arguments.Add(TEXT("CharCount"), NAME_SIZE);
+		OutErrorMessage = FText::Format(LOCTEXT("RenameFailed_TooLong", "Name must be less than {CharCount} characters long."), Arguments);
+		return false;
+	}
+
+	if (FName(*TrimmedName.ToString()) == NAME_None)
+	{
+		OutErrorMessage = LOCTEXT("RenameFailed_ReservedNameNone", "\"None\" is a reserved term and cannot be used for a static switch name");
+		return false;
+	}
+
+	if (TrimmedName.ToString().Contains("."))
+	{
+		OutErrorMessage = LOCTEXT("RenameFailed_IncludesDot", "'.' is used to separate namespaces and cannot be used in the name of a static switch");
+		return false;
+	}
+
+	return true;
+}
+
 bool FNiagaraStaticSwitchNodeDetails::GetDefaultOptionEnabled() const
 {
-	return !IsConstantSelection();
+	return !IsConstantSelection() && !Node->SwitchTypeData.bExposeAsPin;
 }
 
 #undef LOCTEXT_NAMESPACE

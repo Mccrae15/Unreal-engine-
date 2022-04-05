@@ -28,18 +28,18 @@ class USoundCueFactoryNew : public UFactory
 
 	/** Initial sound wave to place in the newly created cue */
 	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use Array InitialSoundWaves instead."))
-	USoundWave* InitialSoundWave;
+	TObjectPtr<USoundWave> InitialSoundWave;
 
 	/** Initial sound wave(s) to place in the newly created cue(s) */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Audio)
 	TArray<TWeakObjectPtr<USoundWave>> InitialSoundWaves;
 
 	/** An initial dialogue wave to place in the newly created cue */
 	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Use Array InitialDialogueWaves instead."))
-	UDialogueWave* InitialDialogueWave;
+	TObjectPtr<UDialogueWave> InitialDialogueWave;
 
 	/** Initial dialogue wave(s) to place in the newly created cue(s) */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, Category = Audio)
 	TArray<TWeakObjectPtr<UDialogueWave>> InitialDialogueWaves;
 
 protected:

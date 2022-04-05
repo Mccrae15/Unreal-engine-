@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetTypeActions/AssetTypeActions_SoundCue.h"
+#include "AudioEditorSettings.h"
 #include "Sound/SoundAttenuation.h"
 #include "Misc/PackageName.h"
 #include "Sound/SoundCue.h"
@@ -119,6 +120,20 @@ void FAssetTypeActions_SoundCue::ExecuteConsolidateAttenuation(TArray<TWeakObjec
 			ContentBrowserModule.Get().SyncBrowserToAssets(ObjectsToSync);
 		}
 	}
+}
+
+const TArray<FText>& FAssetTypeActions_SoundCue::GetSubMenus() const
+{
+	if (GetDefault<UAudioEditorSettings>()->bPinSoundCueInAssetMenu)
+	{
+		static const TArray<FText> AssetTypeActionSubMenu;
+		return AssetTypeActionSubMenu;
+	}
+	static const TArray<FText> AssetTypeActionSubMenu
+	{
+		LOCTEXT("AssetSoundCueSubMenu", "Source")
+	};
+	return AssetTypeActionSubMenu;
 }
 
 #undef LOCTEXT_NAMESPACE

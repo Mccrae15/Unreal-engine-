@@ -14,7 +14,7 @@
 #include "Engine/StaticMesh.h"
 #include "StaticMeshResources.h"
 #include "SteamAudioSettings.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "Misc/Paths.h"
 #include "Async/Async.h"
@@ -597,7 +597,7 @@ namespace SteamAudio
 	//==============================================================================================================================================
 
 	/**
-	 * Populates VertexArray with the given mesh's vertices. Converts from UE4 coords to Phonon coords. Returns the number of vertices added.
+	 * Populates VertexArray with the given mesh's vertices. Converts from UE coords to Phonon coords. Returns the number of vertices added.
 	 */
 	static uint32 GetMeshVerts(UStaticMeshComponent* StaticMeshComponent, TArray<IPLVector3>& VertexArray, bool bGetRelativeVertexPos /*= true*/)
 	{
@@ -616,10 +616,10 @@ namespace SteamAudio
 				for (auto v = 2; v > -1; v--)
 				{
 					auto i = Indices[BaseIndex + v];
-					auto vtx = bGetRelativeVertexPos ? StaticMeshComponent->GetComponentTransform().TransformPosition(LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(i))
+					auto vtx = bGetRelativeVertexPos ? FVector3f(StaticMeshComponent->GetComponentTransform().TransformPosition((FVector)LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(i)))
 						: LODModel.VertexBuffers.PositionVertexBuffer.VertexPosition(i);
 
-					VertexArray.Add(UnrealToPhononIPLVector3(vtx));
+					VertexArray.Add(UnrealToPhononIPLVector3((FVector)vtx));
 					NumVerts++;
 				}
 			}
@@ -790,7 +790,7 @@ namespace SteamAudio
 		// Gather and convert all world vertices to Phonon coords
 		for (auto& WorldVertex : World->GetModel()->Points)
 		{
-			IplVertices.Add(SteamAudio::UnrealToPhononIPLVector3(WorldVertex));
+			IplVertices.Add(SteamAudio::UnrealToPhononIPLVector3((FVector)WorldVertex));
 		}
 
 		// Gather vertex indices for all faces ("nodes" are faces)

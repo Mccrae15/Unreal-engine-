@@ -4,6 +4,7 @@
 #include "Containers/Ticker.h"
 #include "Components/ScrollBoxSlot.h"
 #include "UObject/EditorObjectVersion.h"
+#include "Styling/UMGCoreStyle.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -12,6 +13,11 @@
 
 static FScrollBoxStyle* DefaultScrollBoxStyle = nullptr;
 static FScrollBarStyle* DefaultScrollBoxBarStyle = nullptr;
+
+#if WITH_EDITOR
+static FScrollBoxStyle* EditorScrollBoxStyle = nullptr;
+static FScrollBarStyle* EditorScrollBoxBarStyle = nullptr;
+#endif 
 
 UScrollBox::UScrollBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -23,6 +29,8 @@ UScrollBox::UScrollBox(const FObjectInitializer& ObjectInitializer)
 	, AlwaysShowScrollbar(false)
 	, AlwaysShowScrollbarTrack(false)
 	, AllowOverscroll(true)
+	, BackPadScrolling(false)
+	, FrontPadScrolling(false)
 	, NavigationDestination(EDescendantScrollDestination::IntoView)
 	, NavigationScrollPadding(0.0f)
 	, ScrollWhenFocusChanges(EScrollWhenFocusChanges::NoScroll)
@@ -34,24 +42,49 @@ UScrollBox::UScrollBox(const FObjectInitializer& ObjectInitializer)
 
 	if (DefaultScrollBoxStyle == nullptr)
 	{
-		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
-		DefaultScrollBoxStyle = new FScrollBoxStyle(FCoreStyle::Get().GetWidgetStyle<FScrollBoxStyle>("ScrollBox"));
+		DefaultScrollBoxStyle = new FScrollBoxStyle(FUMGCoreStyle::Get().GetWidgetStyle<FScrollBoxStyle>("ScrollBox"));
 
-		// Unlink UMG default colors from the editor settings colors.
+		// Unlink UMG default colors.
 		DefaultScrollBoxStyle->UnlinkColors();
 	}
 
 	if (DefaultScrollBoxBarStyle == nullptr)
 	{
-		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
-		DefaultScrollBoxBarStyle = new FScrollBarStyle(FCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar"));
+		DefaultScrollBoxBarStyle = new FScrollBarStyle(FUMGCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar"));
 
-		// Unlink UMG default colors from the editor settings colors.
+		// Unlink UMG default colors.
 		DefaultScrollBoxBarStyle->UnlinkColors();
 	}
 	
 	WidgetStyle = *DefaultScrollBoxStyle;
 	WidgetBarStyle = *DefaultScrollBoxBarStyle;
+
+#if WITH_EDITOR 
+	if (EditorScrollBoxStyle == nullptr)
+	{
+		EditorScrollBoxStyle = new FScrollBoxStyle(FCoreStyle::Get().GetWidgetStyle<FScrollBoxStyle>("ScrollBox"));
+
+		// Unlink UMG Editor colors from the editor settings colors.
+		EditorScrollBoxStyle->UnlinkColors();
+	}
+
+	if (EditorScrollBoxBarStyle == nullptr)
+	{
+		EditorScrollBoxBarStyle = new FScrollBarStyle(FCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar"));
+
+		// Unlink UMG Editor colors from the editor settings colors.
+		EditorScrollBoxBarStyle->UnlinkColors();
+	}
+	
+	if (IsEditorWidget())
+	{
+		WidgetStyle = *EditorScrollBoxStyle;
+		WidgetBarStyle = *EditorScrollBoxBarStyle;
+
+		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
+		PostEditChange();
+	}
+#endif // WITH_EDITOR
 
 	bAllowRightClickDragScrolling = true;
 }
@@ -100,6 +133,8 @@ TSharedRef<SWidget> UScrollBox::RebuildWidget()
 		.NavigationDestination(NavigationDestination)
 		.NavigationScrollPadding(NavigationScrollPadding)
 		.ScrollWhenFocusChanges(ScrollWhenFocusChanges)
+		.BackPadScrolling(BackPadScrolling)
+		.FrontPadScrolling(FrontPadScrolling)
 		.AnimateWheelScrolling(bAnimateWheelScrolling)
 		.WheelScrollMultiplier(WheelScrollMultiplier)
 		.OnUserScrolled(BIND_UOBJECT_DELEGATE(FOnUserScrolled, SlateHandleUserScrolled));
@@ -232,7 +267,7 @@ void UScrollBox::PostLoad()
 {
 	Super::PostLoad();
 
-	if ( GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
+	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
 	{
 		if ( Style_DEPRECATED != nullptr )
 		{
@@ -259,6 +294,16 @@ void UScrollBox::PostLoad()
 }
 
 #endif // if WITH_EDITORONLY_DATA
+
+void UScrollBox::SetNavigationDestination(const EDescendantScrollDestination NewNavigationDestination)
+{
+	NavigationDestination = NewNavigationDestination;
+
+	if (MyScrollBox.IsValid())
+	{
+		MyScrollBox->SetNavigationDestination(NewNavigationDestination);
+	}
+}
 
 void UScrollBox::SetConsumeMouseWheel(EConsumeMouseWheel NewConsumeMouseWheel)
 {
@@ -393,7 +438,7 @@ void UScrollBox::OnDescendantSelectedByDesigner( UWidget* DescendantWidget )
 
 		if ( TickHandle.IsValid() )
 		{
-			FTicker::GetCoreTicker().RemoveTicker( TickHandle );
+			FTSTicker::GetCoreTicker().RemoveTicker( TickHandle );
 			TickHandle.Reset();
 		}
 	}
@@ -403,12 +448,12 @@ void UScrollBox::OnDescendantDeselectedByDesigner( UWidget* DescendantWidget )
 {
 	if ( TickHandle.IsValid() )
 	{
-		FTicker::GetCoreTicker().RemoveTicker( TickHandle );
+		FTSTicker::GetCoreTicker().RemoveTicker( TickHandle );
 		TickHandle.Reset();
 	}
 
 	// because we get a deselect before we get a select, we need to delay this call until we're sure we didn't scroll to another widget.
-	TickHandle = FTicker::GetCoreTicker().AddTicker( FTickerDelegate::CreateLambda( [=]( float ) -> bool
+	TickHandle = FTSTicker::GetCoreTicker().AddTicker( FTickerDelegate::CreateLambda( [=]( float ) -> bool
 	                                                                                {
                                                                                         QUICK_SCOPE_CYCLE_COUNTER(STAT_UScrollBox_ScrollToStart_LambdaTick);
 		                                                                                this->ScrollToStart();

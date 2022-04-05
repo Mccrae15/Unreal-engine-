@@ -18,6 +18,7 @@
 #include "Misc/PackageName.h"
 #include "UObject/ObjectResource.h"
 #include "UObject/LinkerLoad.h"
+#include "UObject/SavePackage.h"
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
@@ -53,6 +54,7 @@
 #include "Misc/OutputDeviceHelper.h"
 #include "Misc/OutputDeviceFile.h"
 #include "UObject/UObjectThreadContext.h"
+#include "Internationalization/GatherableTextData.h"
 
 DEFINE_LOG_CATEGORY(LogPackageHelperFunctions);
 DEFINE_LOG_CATEGORY_STATIC(LogPackageUtilities, Log, All);
@@ -109,11 +111,20 @@ bool NormalizePackageNames( TArray<FString> PackageNames, TArray<FString>& Packa
 		TArray<FString> Paths;
 		if ( GConfig->GetArray( TEXT("Core.System"), TEXT("Paths"), Paths, GEngineIni ) > 0 )
 		{
-			for ( int32 i = 0; i < Paths.Num(); i++ )
+			TStringBuilder<256> UnusedPackagePath;
+			TStringBuilder<256> UnusedFilePath;
+			TStringBuilder<256> UnusedRelPath;
+			for ( const FString& Path : Paths)
 			{
-				FString SearchWildcard = Paths[i] / PackageWildcard;
+				if (!FPackageName::TryGetMountPointForPath(Path, UnusedPackagePath, UnusedFilePath, UnusedRelPath))
+				{
+					UE_LOG(LogPackageUtilities, Warning,
+						TEXT("Engine.ini:[Core.System]:Paths entry '%s' is not mounted. Skipping it."), *Path);
+					continue;
+				}
+				FString SearchWildcard = Path / PackageWildcard;
 				UE_LOG(LogPackageUtilities, Log, TEXT("Searching using wildcard: '%s'"), *SearchWildcard);
-				SearchDirectoryRecursive( SearchWildcard, PackageNames, PackagePathNames );
+				SearchDirectoryRecursive(SearchWildcard, PackageNames, PackagePathNames);
 			}
 		}
 
@@ -121,7 +132,7 @@ bool NormalizePackageNames( TArray<FString> PackageNames, TArray<FString>& Packa
 		{
 			// Check if long package name is provided and if it exists on disk.
 			FString Filename;
-			if ( FPackageName::IsValidLongPackageName(PackageWildcard, true) && FPackageName::DoesPackageExist(PackageWildcard, NULL, &Filename) )
+			if ( FPackageName::IsValidLongPackageName(PackageWildcard, true) && FPackageName::DoesPackageExist(PackageWildcard, &Filename) )
 			{
 				PackagePathNames.Add(Filename);
 			}
@@ -262,25 +273,18 @@ bool NormalizePackageNames( TArray<FString> PackageNames, TArray<FString>& Packa
 	return true;
 }
 
-
-/** 
-* Helper function to save a package that may or may not be a map package
-*
-* @param	Package		The package to save
-* @param	Filename	The location to save the package to
-* @param	KeepObjectFlags	Objects with any these flags will be kept when saving even if unreferenced.
-* @param	ErrorDevice	the output device to use for warning and error messages
-* @param	LinkerToConformAgainst
-* @param				optional linker to use as a base when saving Package; if specified, all common names, imports and exports
-*						in Package will be sorted in the same order as the corresponding entries in the LinkerToConformAgainst
-
-* @return true if successful
-*/
 bool SavePackageHelper(UPackage* Package, FString Filename, EObjectFlags KeepObjectFlags, FOutputDevice* ErrorDevice, FLinkerNull* LinkerToConformAgainst, ESaveFlags SaveFlags)
 {
-	// look for a world object in the package (if there is one, there's a map)
-	UWorld* World = UWorld::FindWorldInPackage(Package);
-	return GEditor->SavePackage(Package, World, KeepObjectFlags, *Filename, ErrorDevice, LinkerToConformAgainst, false, true, SaveFlags);
+	return SavePackageHelper(Package, Filename, KeepObjectFlags, ErrorDevice, SaveFlags);
+}
+
+bool SavePackageHelper(UPackage* Package, FString Filename, EObjectFlags KeepObjectFlags, FOutputDevice* ErrorDevice, ESaveFlags SaveFlags)
+{
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = KeepObjectFlags;
+	SaveArgs.Error = ErrorDevice;
+	SaveArgs.SaveFlags = SaveFlags;
+	return GEditor->SavePackage(Package, nullptr, *Filename, SaveArgs);
 }
 
 /**
@@ -766,8 +770,9 @@ int32 ULoadPackageCommandlet::Main( const FString& Params )
 
 		UE_LOG(LogPackageUtilities, Display, TEXT("Loading %s"), *Filename );
 
-		FString PackageName;
-		if (FPackageName::TryConvertFilenameToLongPackageName(Filename, PackageName))
+		FPackagePath PackagePath = FPackagePath::FromLocalPath(Filename);
+		FString PackageName = PackagePath.GetPackageName();
+		if (!PackageName.IsEmpty())
 		{
 			UPackage* Package = FindObject<UPackage>(nullptr, *PackageName, true);
 			if (Package != NULL && !bLoadAllPackages)
@@ -778,12 +783,12 @@ int32 ULoadPackageCommandlet::Main( const FString& Params )
 
 		if (bCheckForLegacyPackages)
 		{
-			FLinkerLoad* Linker = LoadPackageLinker(nullptr, *Filename, LOAD_NoVerify);
-			MinVersion = FMath::Min<int32>(MinVersion, Linker->Summary.GetFileVersionUE4());
+			FLinkerLoad* Linker = LoadPackageLinker(nullptr, PackagePath, LOAD_NoVerify);
+			MinVersion = FMath::Min<int32>(MinVersion, Linker->Summary.GetFileVersionUE().ToValue());
 		}
 		else
 		{
-			UPackage* Package = LoadPackage(nullptr, *Filename, LOAD_None );
+			UPackage* Package = LoadPackage(nullptr, PackagePath, LOAD_None );
 			if(Package == nullptr)
 			{
 				UE_LOG(LogPackageUtilities, Error, TEXT("Error loading %s!"), *Filename );
@@ -797,7 +802,7 @@ int32 ULoadPackageCommandlet::Main( const FString& Params )
 	GIsEditor = GIsServer = GIsClient = true;
 	if (bCheckForLegacyPackages)
 	{
-		UE_LOG(LogPackageUtilities, Log, TEXT("%d minimum UE4 version number."), MinVersion );
+		UE_LOG(LogPackageUtilities, Log, TEXT("%d minimum UE version number."), MinVersion );
 	}
 
 	return 0;
@@ -906,7 +911,7 @@ FLinkerLoad* CreateLinkerForFilename(FUObjectSerializeContext* LoadContext, cons
 	{
 		Package = CreatePackage( *TempPackageName);
 	}
-	FLinkerLoad* Linker = FLinkerLoad::CreateLinker(LoadContext, Package, *InFilename, LOAD_NoVerify);
+	FLinkerLoad* Linker = FLinkerLoad::CreateLinker(LoadContext, Package, FPackagePath::FromLocalPath(InFilename), LOAD_NoVerify);
 	return Linker;
 }
 
@@ -942,11 +947,11 @@ void FPkgInfoReporter_Log::GeneratePackageReport( FLinkerLoad* InLinker /*=nullp
 	Out.Logf(ELogVerbosity::Display, TEXT("Package '%s' Summary"), *LinkerName.ToString() );
 	Out.Logf(ELogVerbosity::Display, TEXT("--------------------------------------------") );
 
-	Out.Logf(ELogVerbosity::Display, TEXT("\t         Filename: %s"), *Linker->Filename);
-	Out.Logf(ELogVerbosity::Display, TEXT("\t     File Version: %i"), Linker->UE4Ver() );
+	Out.Logf(ELogVerbosity::Display, TEXT("\t         Filename: %s"), *Linker->GetPackagePath().GetLocalFullPath());
+	Out.Logf(ELogVerbosity::Display, TEXT("\t     File Version: %i"), Linker->UEVer().ToValue());
 	Out.Logf(ELogVerbosity::Display, TEXT("\t   Engine Version: %s"), *Linker->Summary.SavedByEngineVersion.ToString());
 	Out.Logf(ELogVerbosity::Display, TEXT("\t   Compat Version: %s"), *Linker->Summary.CompatibleWithEngineVersion.ToString());
-	Out.Logf(ELogVerbosity::Display, TEXT("\t     PackageFlags: %X"), Linker->Summary.PackageFlags );
+	Out.Logf(ELogVerbosity::Display, TEXT("\t     PackageFlags: %X"), Linker->Summary.GetPackageFlags() );
 	Out.Logf(ELogVerbosity::Display, TEXT("\t        NameCount: %d"), Linker->Summary.NameCount );
 	Out.Logf(ELogVerbosity::Display, TEXT("\t       NameOffset: %d"), Linker->Summary.NameOffset );
 	Out.Logf(ELogVerbosity::Display, TEXT("\t      ImportCount: %d"), Linker->Summary.ImportCount );
@@ -1518,7 +1523,7 @@ int32 UPkgInfoCommandlet::Main( const FString& Params )
 				{
 					// Check if long package name is provided and if it exists on disk.
 					FString Filename;
-					if ( FPackageName::IsValidLongPackageName(PackageWildcard, true) && FPackageName::DoesPackageExist(PackageWildcard, NULL, &Filename) )
+					if ( FPackageName::IsValidLongPackageName(PackageWildcard, true) && FPackageName::DoesPackageExist(PackageWildcard, &Filename) )
 					{
 						PerTokenFilesInPath.Add(Filename);
 					}
@@ -1633,7 +1638,7 @@ int32 UPkgInfoCommandlet::Main( const FString& Params )
 				if (LoadedPackage)
 				{
 					check(LoadedPackage == Package);
-					Linker = Package->LinkerLoad;
+					Linker = Package->GetLinker();
 					check(Linker);
 				}
 				else
@@ -1759,7 +1764,7 @@ struct CompressAnimationsFunctor
 		bool bDirtyPackage = false;
 		const FName& PackageName = Package->GetFName(); 
 		FString PackageFileName;
-		FPackageName::DoesPackageExist( PackageName.ToString(), NULL, &PackageFileName );
+		FPackageName::DoesPackageExist( PackageName.ToString(), &PackageFileName );
 
 		// Ensure source control is initialized and shut down properly
 		FScopedSourceControl SourceControl;
@@ -1843,14 +1848,20 @@ struct CompressAnimationsFunctor
 				continue;
 			}
 
-			if( !bForceCompression && bSkipLongAnimations && (AnimSeq->GetRawNumberOfFrames() > 300) )
+			if( !bForceCompression && bSkipLongAnimations && (AnimSeq->GetNumberOfSampledKeys() > 300) )
 			{
-				UE_LOG(LogPackageUtilities, Warning, TEXT("Animation (%s) has more than 300 frames (%i frames) and SKIPLONGANIMS switch is set. Skipping."), *AnimSeq->GetName(), AnimSeq->GetRawNumberOfFrames());
+				UE_LOG(LogPackageUtilities, Warning, TEXT("Animation (%s) has more than 300 keys (%i keys) and SKIPLONGANIMS switch is set. Skipping."), *AnimSeq->GetName(), AnimSeq->GetNumberOfSampledKeys());
 				continue;
 			}
 
 			USkeleton* Skeleton = AnimSeq->GetSkeleton();
-			check (Skeleton);
+
+			if (Skeleton == nullptr)
+			{
+				UE_LOG(LogPackageUtilities, Warning, TEXT("Animation (%s) is missing its skeleton. Skipping."), *AnimSeq->GetName());
+				continue;
+			}
+
 			if (Skeleton->HasAnyFlags(RF_NeedLoad))
 			{
 				Skeleton->GetLinker()->Preload(Skeleton);
@@ -2248,8 +2259,8 @@ int32 UReplaceActorCommandlet::Main(const FString& Params)
 			// clean up any previous world
 			if (World != NULL)
 			{
-				World->CleanupWorld();
-				World->RemoveFromRoot();
+				const bool bBroadcastWorldDestroyedEvent = false;
+				World->DestroyWorld(bBroadcastWorldDestroyedEvent);
 			}
 
 			// load the package
@@ -2271,7 +2282,7 @@ int32 UReplaceActorCommandlet::Main(const FString& Params)
 					{
 						TMap<UClass*, UClass*> ReplaceMap;
 						ReplaceMap.Add(ClassToReplace, ReplaceWithClass);
-						FArchiveReplaceObjectRef<UClass> ReplaceAr(OldObject, ReplaceMap, false, false, false);
+						FArchiveReplaceObjectRef<UClass> ReplaceAr(OldObject, ReplaceMap);
 						if( ReplaceAr.GetCount() > 0 )
 						{
 							UE_LOG(LogPackageUtilities, Display, TEXT("Replaced %i class references in an Object: %s"), ReplaceAr.GetCount(), *OldObject->GetName() );
@@ -2288,7 +2299,10 @@ int32 UReplaceActorCommandlet::Main(const FString& Params)
 					}
 
 					UE_LOG(LogPackageUtilities, Display, TEXT("Saving %s..."), *FileName);
-					GEditor->SavePackage( Package, NULL, RF_Standalone, *FileName, GWarn );
+					FSavePackageArgs SaveArgs;
+					SaveArgs.TopLevelFlags = RF_Standalone;
+					SaveArgs.Error = GWarn;
+					GEditor->SavePackage(Package, nullptr, *FileName, SaveArgs);
 				}
 			}
 			else
@@ -2353,7 +2367,7 @@ int32 UReplaceActorCommandlet::Main(const FString& Params)
 						// check for any references to the old Actor and replace them with the new one
 						TMap<AActor*, AActor*> ReplaceMap;
 						ReplaceMap.Add(OldActor, NewActor);
-						FArchiveReplaceObjectRef<AActor> ReplaceAr(World, ReplaceMap, false, false, false);
+						FArchiveReplaceObjectRef<AActor> ReplaceAr(World, ReplaceMap);
 						if (ReplaceAr.GetCount() > 0)
 						{
 							UE_LOG(LogPackageUtilities, Display, TEXT("Replaced %i actor references in %s"), ReplaceAr.GetCount(), *It->GetName());
@@ -2365,7 +2379,7 @@ int32 UReplaceActorCommandlet::Main(const FString& Params)
 						// check for any references to the old class and replace them with the new one
 						TMap<UClass*, UClass*> ReplaceMap;
 						ReplaceMap.Add(ClassToReplace, ReplaceWithClass);
-						FArchiveReplaceObjectRef<UClass> ReplaceAr(*It, ReplaceMap, false, false, false);
+						FArchiveReplaceObjectRef<UClass> ReplaceAr(*It, ReplaceMap);
 						if (ReplaceAr.GetCount() > 0)
 						{
 							UE_LOG(LogPackageUtilities, Display, TEXT("Replaced %i class references in actor %s"), ReplaceAr.GetCount(), *It->GetName());
@@ -2388,12 +2402,15 @@ int32 UReplaceActorCommandlet::Main(const FString& Params)
 					}
 
 					UE_LOG(LogPackageUtilities, Display, TEXT("Saving %s..."), *FileName);
-					GEditor->SavePackage(Package, World, RF_NoFlags, *FileName, GWarn);
+					FSavePackageArgs SaveArgs;
+					SaveArgs.TopLevelFlags = RF_NoFlags;
+					SaveArgs.Error = GWarn;
+					GEditor->SavePackage(Package, World, *FileName, SaveArgs);
 				}
 
 				// clear GWorld by removing it from the root set and replacing it with a new one
-				World->CleanupWorld();
-				World->RemoveFromRoot();
+				const bool bBroadcastWorldDestroyedEvent = false;
+				World->DestroyWorld(bBroadcastWorldDestroyedEvent);
 				World = GWorld = NULL;
 			}
 		}

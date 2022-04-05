@@ -2,10 +2,54 @@
 
 #include "PlayerCore.h"
 #include "PlayerRuntimeGlobal.h"
+#include "Misc/CoreDelegates.h"
 
 namespace Electra
 {
-	TMap<FString, bool>	EnabledAnalyticsEvents;
+	namespace Global
+	{
+		TMap<FString, bool>								EnabledAnalyticsEvents;
+		FDelegateHandle									ApplicationSuspendedDelegate;
+		FDelegateHandle									ApplicationResumeDelegate;
+		FCriticalSection								ApplicationBGFGLock;
+		TArray<TWeakPtrTS<FFGBGNotificationHandlers>>	ApplicationBGFGHandlers;
+		volatile bool									bIsInBackground = false;
+	}
+	using namespace Global;
+
+
+	static void HandleApplicationWillEnterBackground()
+	{
+		ApplicationBGFGLock.Lock();
+		TArray<TWeakPtrTS<FFGBGNotificationHandlers>>	CurrentHandlers(ApplicationBGFGHandlers);
+		bIsInBackground = true;
+		ApplicationBGFGLock.Unlock();
+		for(auto &Handler : CurrentHandlers)
+		{
+			TSharedPtrTS<FFGBGNotificationHandlers> Hdlr = Handler.Pin();
+			if (Hdlr.IsValid())
+			{
+				Hdlr->WillEnterBackground();
+			}
+		}
+	}
+
+	static void HandleApplicationHasEnteredForeground()
+	{
+		ApplicationBGFGLock.Lock();
+		TArray<TWeakPtrTS<FFGBGNotificationHandlers>>	CurrentHandlers(ApplicationBGFGHandlers);
+		bIsInBackground = false;
+		ApplicationBGFGLock.Unlock();
+		for(auto &Handler : CurrentHandlers)
+		{
+			TSharedPtrTS<FFGBGNotificationHandlers> Hdlr = Handler.Pin();
+			if (Hdlr.IsValid())
+			{
+				Hdlr->HasEnteredForeground();
+			}
+		}
+	}
+
 
 	//-----------------------------------------------------------------------------
 	/**
@@ -17,6 +61,15 @@ namespace Electra
 	 */
 	bool Startup(const Configuration& InConfiguration)
 	{
+		if (!ApplicationSuspendedDelegate.IsValid())
+		{
+			ApplicationSuspendedDelegate = FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddStatic(&HandleApplicationWillEnterBackground);
+		}
+		if (!ApplicationResumeDelegate.IsValid())
+		{
+			ApplicationResumeDelegate = FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddStatic(&HandleApplicationHasEnteredForeground);
+		}
+
 		EnabledAnalyticsEvents = InConfiguration.EnabledAnalyticsEvents;
 		return(true);
 	}
@@ -28,7 +81,31 @@ namespace Electra
 	 */
 	void Shutdown(void)
 	{
+		if (ApplicationSuspendedDelegate.IsValid())
+		{
+			FCoreDelegates::ApplicationWillEnterBackgroundDelegate.Remove(ApplicationSuspendedDelegate);
+			ApplicationSuspendedDelegate.Reset();
+		}
+		if (ApplicationResumeDelegate.IsValid())
+		{
+			FCoreDelegates::ApplicationHasEnteredForegroundDelegate.Remove(ApplicationResumeDelegate);
+			ApplicationResumeDelegate.Reset();
+		}
 	}
+
+	bool AddBGFGNotificationHandler(TSharedPtrTS<FFGBGNotificationHandlers> InHandlers)
+	{
+		FScopeLock lock(&ApplicationBGFGLock);
+		ApplicationBGFGHandlers.Add(InHandlers);
+		return bIsInBackground;
+	}
+
+	void RemoveBGFGNotificationHandler(TSharedPtrTS<FFGBGNotificationHandlers> InHandlers)
+	{
+		FScopeLock lock(&ApplicationBGFGLock);
+		ApplicationBGFGHandlers.Remove(InHandlers);
+	}
+
 
 	/**
 	 * Check if the provided analytics event is enabled

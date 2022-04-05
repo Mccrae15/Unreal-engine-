@@ -2,10 +2,10 @@
 
 #pragma once
 
-// UE4 includes
+// UE includes
 
 #include "CoreMinimal.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 
 // Module includes
 #include "Interfaces/OnlineUserInterface.h"

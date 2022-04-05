@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Chaos/Vector.h"
+#include "ChaosCheck.h"
 
 namespace Chaos
 {
@@ -9,6 +10,17 @@ template<class T, int d>
 class TArrayND;
 template<class T, int d>
 class TArrayFaceND;
+
+template<typename T>
+struct TGridPrecisionLimit
+{
+	static_assert(sizeof(T) == 0, "Unsupported grid floating point type");
+};
+
+// Precision limits where our floating point precision breaks down to 1 (each value above this adds more than 1 to the number)
+// Note the F32 limit is actually higher than this point (should be 8.388e6) but kept at 1e7 for legacy reasons
+template<> struct TGridPrecisionLimit<FRealSingle> { static constexpr FRealSingle value = 1e7; };
+template<> struct TGridPrecisionLimit<FRealDouble> { static constexpr FRealDouble value = 4.5035e15; };
 
 template<class T, int d>
 class CHAOS_API TUniformGridBase
@@ -23,12 +35,43 @@ class CHAOS_API TUniformGridBase
 			check(MCells[Axis] != 0);
 		}
 
-		MDx = TVector<T, d>(MMaxCorner - MMinCorner) / MCells;
+
+		// Are corners valid?
+		bool bValidBounds = true;
+		if (MMaxCorner == TVector<T, d>(-TNumericLimits<T>::Max()) && MMinCorner == TVector<T, d>(TNumericLimits<T>::Max()))
+		{
+			// This is an Empty AABB
+			bValidBounds = false;
+		}
+		else
+		{
+			for (int32 i = 0; i < d; ++i)
+			{
+				// This is invalid
+				if (!CHAOS_ENSURE(MMaxCorner[i] >= MMinCorner[i])) //TODO convert back to normal ensure once we find out why we hit this.
+				{
+					bValidBounds = false;
+					break;
+				}
+			}
+		}
+
+		if(bValidBounds)
+		{
+			MDx = TVector<T, d>(MMaxCorner - MMinCorner) / MCells;
+		}
+		else
+		{
+			MDx = TVector<T,d>(0);
+			MMaxCorner = TVector<T, d>(0);
+			MMinCorner = TVector<T, d>(0);
+		}
+
 		if (GhostCells > 0)
 		{
-			MMinCorner -= MDx * GhostCells;
-			MMaxCorner += MDx * GhostCells;
-			MCells += TVector<T, d>(2 * GhostCells);
+			MMinCorner -= MDx * static_cast<T>(GhostCells);
+			MMaxCorner += MDx * static_cast<T>(GhostCells);
+			MCells += TVector<T, d>(2 * static_cast<T>(GhostCells));
 		}
 
 		if (MDx >= TVector<T, d>(SMALL_NUMBER))
@@ -36,7 +79,7 @@ class CHAOS_API TUniformGridBase
 			const TVector<T, d> MinToDXRatio = MMinCorner / MDx;
 			for (int32 Axis = 0; Axis < d; ++Axis)
 			{
-				ensure(FMath::Abs(MinToDXRatio[Axis]) < 1e7); //make sure we have the precision we need
+				ensure(FMath::Abs(MinToDXRatio[Axis]) < TGridPrecisionLimit<T>::value); //make sure we have the precision we need
 			}
 		}
 	}
@@ -87,7 +130,7 @@ class CHAOS_API TUniformGridBase
 	//		rcpps is faster but less accurate (12 bits of precision), this can causes incorrect CellIdx
 	DISABLE_FUNCTION_OPTIMIZATION 
 #endif
-	TVector<int32, d> Cell(const TVector<T, d>& X) const
+	TVector<int32, d> CellUnsafe(const TVector<T, d>& X) const
 	{
 		const TVector<T, d> Delta = X - MMinCorner;
 		TVector<int32, d> Result = Delta / MDx;
@@ -100,6 +143,25 @@ class CHAOS_API TUniformGridBase
 		}
 		return Result;
 	}
+
+#ifdef PLATFORM_COMPILER_CLANG
+	// Disable optimization (-ffast-math) since its currently causing regressions.
+	//		freciprocal-math:
+	//		x / y = x * rccps(y) 
+	//		rcpps is faster but less accurate (12 bits of precision), this can causes incorrect CellIdx
+	DISABLE_FUNCTION_OPTIMIZATION
+#endif
+	TVector<int32, d> Cell(const TVector<T, d>& X) const
+	{
+		const TVector<T, d> Delta = X - MMinCorner;
+		TVector<int32, d> Result = Delta / MDx;
+		for (int Axis = 0; Axis < d; ++Axis)
+		{
+			Result[Axis] = Result[Axis] >= MCells[Axis] ? MCells[Axis] - 1 : (Result[Axis] < 0 ? 0 : Result[Axis]);
+		}
+		return Result;
+	}
+
 	TVector<int32, d> Face(const TVector<T, d>& X, const int32 Component) const
 	{
 		return Cell(X + (MDx / 2) * TVector<T, d>::AxisVector(Component));
@@ -176,7 +238,7 @@ class CHAOS_API TUniformGrid : public TUniformGridBase<T, d>
 };
 
 template<class T>
-class CHAOS_API TUniformGrid<T, 3> : public TUniformGridBase<T, 3>
+class TUniformGrid<T, 3> : public TUniformGridBase<T, 3>
 {
 	using TUniformGridBase<T, 3>::MCells;
 	using TUniformGridBase<T, 3>::MMinCorner;
@@ -220,6 +282,6 @@ FArchive& operator<<(FArchive& Ar, TUniformGridBase<T, d>& Value)
 extern template class CHAOS_API Chaos::TUniformGridBase<Chaos::FReal, 3>;
 extern template class CHAOS_API Chaos::TUniformGrid<Chaos::FReal, 3>;
 extern template class CHAOS_API Chaos::TUniformGrid<Chaos::FReal, 2>;
-#endif // __clang__
+#endif
 
 }

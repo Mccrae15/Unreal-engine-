@@ -7,6 +7,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Templates/SubclassOf.h"
+#include "Factories/AssetFactoryInterface.h"
 #include "Engine/World.h"
 
 #include "ActorFactory.generated.h"
@@ -18,9 +19,10 @@ struct FActorSpawnParameters;
 struct FAssetData;
 class UBlueprint;
 class ULevel;
+class UInstancedPlacemenClientSettings;
 
 UCLASS(collapsecategories, hidecategories=Object, editinlinenew, config=Editor, abstract, transient)
-class UNREALED_API UActorFactory : public UObject
+class UNREALED_API UActorFactory : public UObject, public IAssetFactoryInterface
 {
 	GENERATED_UCLASS_BODY()
 
@@ -38,7 +40,7 @@ class UNREALED_API UActorFactory : public UObject
 
 	/**  AActor  subclass this ActorFactory creates. */
 	UPROPERTY()
-	TSubclassOf<class AActor>  NewActorClass;
+	TSubclassOf<AActor>  NewActorClass;
 
 	/** Whether to appear in the editor add actor quick menu */
 	UPROPERTY()
@@ -46,6 +48,9 @@ class UNREALED_API UActorFactory : public UObject
 
 	UPROPERTY()
 	uint32 bUseSurfaceOrientation:1;
+
+	UPROPERTY()
+	uint32 bUsePlacementExtent:1;
 
 	/** Translation applied to the spawn position. */
 	UPROPERTY()
@@ -57,6 +62,7 @@ class UNREALED_API UActorFactory : public UObject
 	AActor* CreateActor(UObject* InAsset, ULevel* InLevel, const FTransform& InTransform, const FActorSpawnParameters& InSpawnParams = FActorSpawnParameters());
 
 	/** Called to create a blueprint class that can be used to spawn an actor from this factory */
+	UE_DEPRECATED(5.0, "This function is no longer used. See FKismetEditorUtilities::CreateBlueprint.")
 	UBlueprint* CreateBlueprint( UObject* Instance, UObject* Outer, const FName Name, const FName CallingContext = NAME_None );
 
 	virtual bool CanCreateActorFrom( const FAssetData& AssetData, FText& OutErrorMsg );
@@ -68,13 +74,28 @@ class UNREALED_API UActorFactory : public UObject
 	virtual AActor* GetDefaultActor( const FAssetData& AssetData );
 
 	/** Initialize NewActorClass if necessary, and return that class. */
-	UClass* GetDefaultActorClass( const FAssetData& AssetData );
+	virtual UClass* GetDefaultActorClass( const FAssetData& AssetData );
 
-	/** Given an instance of an actor pertaining to this factory, find the asset that should be used to create a new actor */
+	/** Given an instance of an actor, find the wrapped asset object which can be used to create a valid FAssetData.
+	 *  Returns nullptr if the given ActorInstance is not valid for this factory.
+	 *  Override this function if the factory actor is a different class than the asset data's class which this factory operates on.
+	 *  For example, if this is the static mesh actor factory, the class of the asset data is UStaticMesh, but the actor factory's class is AStaticMeshActor
+	 */
 	virtual UObject* GetAssetFromActorInstance(AActor* ActorInstance);
 
 	/** Return a quaternion which aligns this actor type to the specified surface normal */
 	virtual FQuat AlignObjectToSurfaceNormal(const FVector& InSurfaceNormal, const FQuat& ActorRotation = FQuat::Identity) const;
+
+	// Begin IAssetFactoryInterface Interface
+	virtual bool CanPlaceElementsFromAssetData(const FAssetData& InAssetData) override;
+	virtual bool PrePlaceAsset(FAssetPlacementInfo& InPlacementInfo, const FPlacementOptions& InPlacementOptions) override;
+	virtual TArray<FTypedElementHandle> PlaceAsset(const FAssetPlacementInfo& InPlacementInfo, const FPlacementOptions& InPlacementOptions) override;
+	virtual void PostPlaceAsset(TArrayView<const FTypedElementHandle> InHandle, const FAssetPlacementInfo& InPlacementInfo, const FPlacementOptions& InPlacementOptions) override;
+	virtual FAssetData GetAssetDataFromElementHandle(const FTypedElementHandle& InHandle) override;
+	virtual void BeginPlacement(const FPlacementOptions& InPlacementOptions) override;
+	virtual void EndPlacement(TArrayView<const FTypedElementHandle> InPlacedElements, const FPlacementOptions& InPlacementOptions) override;
+	virtual UInstancedPlacemenClientSettings* FactorySettingsObjectForPlacement(const FAssetData& InAssetData, const FPlacementOptions& InPlacementOptions) override;
+	// End IAssetFactoryInterface Interface
 
 protected:
 
@@ -95,6 +116,12 @@ protected:
 	    update the blueprint's CDO properties with state from the asset for this factory.
 		IMPORTANT: If you override this, you should usually also override PostSpawnActor()! */
 	virtual void PostCreateBlueprint( UObject* Asset, AActor* CDO );
+
+	/**
+	 * Get the default label that should be used for the actor spawned by the given asset (does not include any numeric suffix).
+	 * For classes or BPs that inherit from AActor this will defer to AActor::GetDefaultActorLabel, and for everything else it will use the asset name.
+	 */
+	virtual FString GetDefaultActorLabel(UObject* Asset) const;
 };
 
-extern UNREALED_API FQuat FindActorAlignmentRotation(const FQuat& InActorRotation, const FVector& InModelAxis, const FVector& InWorldNormal);
+extern UNREALED_API FQuat FindActorAlignmentRotation(const FQuat& InActorRotation, const FVector& InModelAxis, const FVector& InWorldNormal, FQuat* OutDeltaRotation = nullptr);

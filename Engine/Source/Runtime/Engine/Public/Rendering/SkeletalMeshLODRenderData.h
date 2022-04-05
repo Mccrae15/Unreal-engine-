@@ -37,6 +37,9 @@ struct FSkelMeshRenderSection
 	/** This section will cast shadow */
 	bool bCastShadow;
 
+	/** If true, this section will be visible in ray tracing effects. Turning this off will remove it from ray traced reflections, shadows, etc. */
+	bool bVisibleInRayTracing;
+
 	/** Which channel for masking the recompute tangents */
 	ESkinVertexColorChannel RecomputeTangentsVertexMaskChannel;
 
@@ -44,13 +47,23 @@ struct FSkelMeshRenderSection
 	uint32 BaseVertexIndex;
 
 	/** The extra vertex data for mapping to an APEX clothing simulation mesh. */
-	TArray<FMeshToMeshVertData> ClothMappingData;
+	TArray<FMeshToMeshVertData> ClothMappingData_DEPRECATED;
 
+	/**
+	 * The cloth deformer mapping data to each of the required cloth LOD.
+	 * Raytracing may require a different deformer LOD to the one being simulated/rendered.
+	 * The outer array index represents the LOD bias. The inner array indexes the vertex data.
+	 * If this LODModel is LOD3, ClothMappingDataLODs[1] will point to defomer data using LOD2,
+	 * and ClothMappingDataLODs[2] will point to defomer data that are using cloth LOD1, ...etc.
+	 * ClothMappingDataLODs[0] always point to defomer data of the same cloth LOD, this is
+	 * convenient for cases where the cloth LOD bias is not known or required.
+	 */
+	TArray<TArray<FMeshToMeshVertData>> ClothMappingDataLODs;
 
 	/** The bones which are used by the vertices of this section. Indices of bones in the USkeletalMesh::RefSkeleton array */
 	TArray<FBoneIndexType> BoneMap;
 
-	/** The number of triangles in this section. */
+	/** The number of vertices in this section. */
 	uint32 NumVertices;
 
 	/** max # of bones used to skin the vertices in this section */
@@ -74,7 +87,8 @@ struct FSkelMeshRenderSection
 		, NumTriangles(0)
 		, bRecomputeTangent(false)
 		, bCastShadow(true)
-		, RecomputeTangentsVertexMaskChannel(ESkinVertexColorChannel::Green)
+		, bVisibleInRayTracing(true)
+		, RecomputeTangentsVertexMaskChannel(ESkinVertexColorChannel::None)
 		, BaseVertexIndex(0)
 		, NumVertices(0)
 		, MaxBoneInfluences(4)
@@ -84,7 +98,8 @@ struct FSkelMeshRenderSection
 
 	FORCEINLINE bool HasClothingData() const
 	{
-		return (ClothMappingData.Num() > 0);
+		constexpr int32 ClothLODBias = 0;  // Must at least have the mapping for the matching cloth LOD
+		return ClothMappingDataLODs.Num() && ClothMappingDataLODs[ClothLODBias].Num();
 	}
 
 	FORCEINLINE int32 GetVertexBufferIndex() const
@@ -110,9 +125,6 @@ public:
 	// Index Buffer (MultiSize: 16bit or 32bit)
 	FMultiSizeIndexContainer	MultiSizeIndexContainer;
 
-	/** Resources needed to render the model using PN-AEN */
-	FMultiSizeIndexContainer	AdjacencyMultiSizeIndexContainer;
-
 	/** static vertices from chunks for skinning on GPU */
 	FStaticMeshVertexBuffers	StaticVertexBuffers;
 
@@ -134,10 +146,10 @@ public:
 
 	uint32 BuffersSize;
 
-	/** Precooked raytracing data*/
-	TResourceArray<uint8> RayTracingData;
+	/** Precooked ray tracing geometry. Used as source data to build skeletal mesh instance ray tracing geometry. */
+	FRayTracingGeometry SourceRayTracingGeometry;
 
-	typename TChooseClass<USE_BULKDATA_STREAMING_TOKEN, FBulkDataStreamingToken, FByteBulkData>::Result StreamingBulkData;
+	FByteBulkData StreamingBulkData;
 
 	/** Whether buffers of this LOD is inlined (i.e. stored in .uexp instead of .ubulk) */
 	uint32 bStreamedDataInlined : 1;
@@ -269,6 +281,9 @@ public:
 	*/
 	ENGINE_API void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) const;
 
+	/** Get the estimated memory overhead of buffers marked as NeedsCPUAccess. */
+	SIZE_T GetCPUAccessMemoryOverhead() const;
+
 	// O(1)
 	// @return -1 if not found
 	uint32 FindSectionIndex(const FSkelMeshRenderSection& Section) const;
@@ -284,7 +299,7 @@ public:
 private:
 	enum EClassDataStripFlag : uint8
 	{
-		CDSF_AdjacencyData = 1,
+		CDSF_AdjacencyData_DEPRECATED = 1,
 		CDSF_MinLodData = 2
 	};
 

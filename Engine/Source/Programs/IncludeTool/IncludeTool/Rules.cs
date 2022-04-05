@@ -11,6 +11,17 @@ using System.Threading.Tasks;
 namespace IncludeTool
 {
 	/// <summary>
+	/// Class which can modify the rules object at runtime
+	/// </summary>
+	abstract class RulesMutator
+	{
+		/// <summary>
+		/// Allows a platform specific hook to modify the rules class
+		/// </summary>
+		public abstract void Run();
+	}
+
+	/// <summary>
 	/// Contains callback functions to disambiguate and provide metadata for files in this branch
 	/// </summary>
 	static class Rules
@@ -27,7 +38,6 @@ namespace IncludeTool
 			"/engine/source/thirdparty/mcpp/mcpp-2.7.2/test-c/",
 			"/engine/source/programs/unrealswarm/private/",
 			"/engine/plugins/runtime/packethandlers/compressioncomponents/oodle/source/thirdparty/notforlicensees/oodle/213/win/examples/",
-			"/engine/source/programs/ios/udkremote/"
 		};
 
 		/// <summary>
@@ -66,6 +76,8 @@ namespace IncludeTool
 		/// </summary>
 		static readonly string[] ExternalFileIncludePaths =
 		{
+			"binkplugin.h",
+			"egttypes.h",
 			"oodle.h",
 			"oodle2.h",
 			"xg.h",
@@ -141,13 +153,11 @@ namespace IncludeTool
 			"iphlpapi.h",
 			"Iphlpapi.h",
 			"IcmpAPI.h",
+			"EtwPlus.h",
 			
 			// Mac
 			"AUEffectBase.h",
 			"Security/Security.h",
-
-			// XboxOne
-			"EtwPlus.h",
 
 			// Vorbis
 			"vorbis_stream_encoder.h",
@@ -233,15 +243,8 @@ namespace IncludeTool
 		/// </summary>
 		static string[,] IgnoreIncludePatterns = new string[,]
 		{
-			{ "/engine/source/runtime/xboxone/xboxoned3d11rhi/", "/engine/source/runtime/windows/d3d11rhi/" },
-			{ "/engine/plugins/runtime/oculusrift/", "/engine/source/runtime/xboxone/" },
-			{ "/engine/source/developer/windows/shaderformatd3d/", "/engine/source/runtime/xboxone/" },
-			{ "/engine/source/developer/xboxone/xboxoneshaderformat/", "/engine/source/runtime/windows/" },
 			{ "/portal/source/layers/", "/engine/source/editor/unrealed/" },
 			{ "/portal/source/layers/", "/engine/source/runtime/online/icmp/" },
-			{ "/engine/source/runtime/xboxone/xboxoned3d12rhi/", "/engine/source/runtime/windows/d3d12rhi/" },
-			{ "/engine/source/runtime/windows/d3d12rhi/", "/engine/source/runtime/xboxone/xboxoned3d12rhi/" },
-			{ "/engine/source/runtime/windows/d3d11rhi/", "/engine/source/runtime/xboxone/xboxoned3d11rhi/" },
 			{ "/engine/source/programs/unreallightmass/", "/engine/source/runtime/engine/" },
 		};
 
@@ -341,9 +344,6 @@ namespace IncludeTool
 			"/Engine/Source/Developer/Android/AndroidTargetPlatform/Private/AndroidTargetPlatform.h",
 
 			// Platform specific
-			"/Engine/Source/Runtime/Slate/Public/Framework/Text/IOS/IOSPlatformTextField.h",
-			"/Engine/Source/Runtime/Slate/Public/Framework/Text/Android/AndroidPlatformTextField.h",
-			"/Engine/Source/Runtime/Slate/Public/Framework/Text/PS4/PS4PlatformTextField.h",
 			"/Engine/Source/Runtime/Slate/Public/Framework/Text/GenericPlatformTextField.h",
 
 			// Base definitions for OpenGL3/4
@@ -411,11 +411,15 @@ namespace IncludeTool
 		/// </summary>
 		static readonly HashSet<string> IgnoreFwdHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
 		{
+			"/Engine/Source/Developer/DerivedDataCache/Public/DerivedDataSharedStringFwd.h", // invalid forward declaration - 'namespace UE::DerivedData'
 			"/Engine/Source/Runtime/Core/Public/Internationalization/TextNamespaceFwd.h",
 			"/Engine/Source/Editor/SceneOutliner/Public/SceneOutlinerFwd.h",
+			"/Engine/Source/Editor/EditorFramework/Public/UnrealWidgetFwd.h", // error: invalid forward declaration - 'enum ECoordSystem'
 			"/Engine/Source/Runtime/SlateCore/Public/Fonts/ShapedTextFwd.h", // Typedef isn't a forward declaration
 			"/Engine/Source/Runtime/Slate/Public/Framework/Text/ShapedTextCacheFwd.h", // Typedef isn't a forward declaration
 			"/Engine/Source/Runtime/MovieScene/Public/MovieSceneFwd.h",
+			"/Engine/Source/Runtime/Core/Public/CoreFwd.h",	// invalid forward declaration - UE_DECLARE_LWC_TYPE macro (emitting typedefs and namespaces)
+			"/Engine/Source/Runtime/Core/Public/Math/MathFwd.h", // invalid forward declaration - UE_DECLARE_LWC_TYPE macro (emitting typedefs and namespaces)
 			"/Engine/Source/Runtime/Core/Public/Containers/ContainersFwd.h", // invalid forward declaration - 'template<> struct TIsContiguousContainer<Type> { static constexpr bool Value = true; };'
 			"/Engine/Source/Runtime/Core/Public/Containers/StringFwd.h", // invalid forward declaration - 'template<> struct TIsContiguousContainer<Type> { static constexpr bool Value = true; };'
 			"/Engine/Source/Runtime/Core/Public/Internationalization/StringTableCoreFwd.h", // Typedef isn't a forward declaration
@@ -423,8 +427,10 @@ namespace IncludeTool
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/ImplicitFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/ParticleHandleFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/PBDRigidsEvolutionFwd.h", // invalid forward declaration - 'namespace Chaos'
+			"/Engine/Source/Runtime/Experimental/Chaos/Public/Chaos/PBDSoftsEvolutionFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/PhysicsProxy/JointConstraintProxyFwd.h", // invalid forward declaration - 'namespace Chaos'
 			"/Engine/Source/Runtime/Experimental/Chaos/Public/PhysicsProxy/SingleParticlePhysicsProxyFwd.h", // invalid forward declaration - 'namespace Chaos'
+			"/Engine/Source/Runtime/Experimental/Interchange/Engine/Public/InterchangeEngineFwd.h", // invalid forward declaration - 'namespace UE'
 		};
 
 		/// <summary>
@@ -517,6 +523,7 @@ namespace IncludeTool
 			AddCounterpart(BranchRoot, "Engine\\Source\\Runtime\\Core\\Public\\Windows\\AllowWindowsPlatformTypes.h", "Engine\\Source\\Runtime\\Core\\Public\\Windows\\HideWindowsPlatformTypes.h");
 			AddCounterpart(BranchRoot, "Engine\\Source\\Runtime\\Core\\Public\\Windows\\AllowWindowsPlatformAtomics.h", "Engine\\Source\\Runtime\\Core\\Public\\Windows\\HideWindowsPlatformAtomics.h");
 			AddCounterpart(BranchRoot, "Engine\\Source\\Runtime\\Core\\Public\\Windows\\PreWindowsApi.h", "Engine\\Source\\Runtime\\Core\\Public\\Windows\\PostWindowsApi.h");
+			AddCounterpart(BranchRoot, "Engine\\Plugins\\Runtime\\OpenCV\\Source\\OpenCVHelper\\Public\\PreOpenCVHeaders.h", "Engine\\Plugins\\Runtime\\OpenCV\\Source\\OpenCVHelper\\Public\\PostOpenCVHeaders.h");
 		}
 
 		/// <summary>

@@ -26,13 +26,19 @@
 /** UObject pointer checks are disabled by default in shipping and test builds as they add roughly 20% overhead to GC times */
 #define ENABLE_GC_OBJECT_CHECKS (!(UE_BUILD_TEST || UE_BUILD_SHIPPING) || 0)
 
+/** Token debug info (token names) enabled in non-shipping builds */
+#define ENABLE_GC_TOKEN_DEBUG_INFO (!UE_BUILD_SHIPPING)
+
+#define ENABLE_GC_HISTORY (!UE_BUILD_SHIPPING)
+
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogGarbage, Warning, All);
 DECLARE_STATS_GROUP(TEXT("Garbage Collection"), STATGROUP_GC, STATCAT_Advanced);
 
 /**
  * Do extra checks on GC'd function references to catch uninitialized pointers?
+ * These checks are possibly producing false positives now that our memory use is going over 128Gb = 2^39.
  */
-#define DO_POINTER_CHECKS_ON_GC WITH_EDITORONLY_DATA
+#define DO_POINTER_CHECKS_ON_GC 0 
 
 /*-----------------------------------------------------------------------------
 	Realtime garbage collection helper classes.
@@ -76,6 +82,12 @@ enum EGCReferenceType
 	GCRT_ArrayMulticastDelegate,
 };
 
+enum class EGCTokenType : uint32
+{
+	Native = 0,
+	NonNative = 1	
+};
+
 /** 
  * Convenience struct containing all necessary information for a reference.
  */
@@ -87,13 +99,13 @@ struct FGCReferenceInfo
 	 * @param InType	type of reference
 	 * @param InOffset	offset into object/ struct
 	 */
-	FORCEINLINE FGCReferenceInfo( EGCReferenceType InType, uint32 InOffset )
-	:	ReturnCount( 0 )
-	,	Type( InType )
-	,	Offset( InOffset )	
+	FORCEINLINE FGCReferenceInfo(EGCReferenceType InReferenceType, uint32 InOffset)
+		: ReturnCount(0)
+		, Type(InReferenceType)
+		, Offset(InOffset)
 	{
-		check( InType != GCRT_None );
-		check( (InOffset & ~0x7FFFF) == 0 );
+		checkf(InReferenceType != GCRT_None && InReferenceType <= 0x1F, TEXT("Invalid GC Token Reference Type (%d)"), (uint32)InReferenceType);
+		checkf((InOffset & ~0x7FFFF) == 0, TEXT("Invalid GC Token Offset (%d), max is %d"), InOffset, 0x7FFFF);
 	}
 	/**
 	 * Constructor
@@ -129,6 +141,9 @@ struct FGCReferenceInfo
 		/** uint32 value of reference info, used for easy conversion to/ from uint32 for token array */
 		uint32 Value;
 	};
+
+	/** End of token stream token */
+	static const FGCReferenceInfo EndOfStreamToken;
 };
 
 /** 
@@ -176,7 +191,6 @@ struct FGCSkipInfo
 	};
 };
 
-#if ENABLE_GC_OBJECT_CHECKS
 /**
  * Stores debug info about the token.
  */
@@ -188,15 +202,13 @@ struct FTokenInfo
 	FName Name;
 };
 
-#endif // ENABLE_GC_OBJECT_CHECKS
-
 /**
  * Reference token stream class. Used for creating and parsing stream of object references.
  */
 struct COREUOBJECT_API FGCReferenceTokenStream
 {
 	/** Initialization value to ensure that we have the right skip index index */
-	enum EGCArrayInfoPlaceholder { E_GCSkipIndexPlaceholder = 0xDEADBABE }; 
+	enum EGCArrayInfoPlaceholder { E_GCSkipIndexPlaceholder = 0xDEDEDEDE }; 
 
 	/** Constructor */
 	FGCReferenceTokenStream()
@@ -210,18 +222,18 @@ struct COREUOBJECT_API FGCReferenceTokenStream
 	void Shrink()
 	{
 		Tokens.Shrink();
-#if ENABLE_GC_OBJECT_CHECKS
+#if ENABLE_GC_TOKEN_DEBUG_INFO
 		TokenDebugInfo.Shrink();
-#endif // ENABLE_GC_OBJECT_CHECKS
+#endif // ENABLE_GC_TOKEN_DEBUG_INFO
 	}
 
 	/** Empties the token stream entirely */
 	void Empty()
 	{
 		Tokens.Empty();
-#if ENABLE_GC_OBJECT_CHECKS
+#if ENABLE_GC_TOKEN_DEBUG_INFO
 		TokenDebugInfo.Empty();
-#endif // ENABLE_GC_OBJECT_CHECKS
+#endif // ENABLE_GC_TOKEN_DEBUG_INFO
 	}
 
 	/**
@@ -240,6 +252,38 @@ struct COREUOBJECT_API FGCReferenceTokenStream
 	bool IsEmpty() const
 	{
 		return Tokens.Num() == 0;
+	}
+
+	/**
+	 * Increments the stack size requirement for this stream
+	 */
+	void SetStackSize(int32 InStackSize)
+	{
+		StackSize = InStackSize;
+	}
+
+	/**
+	 * Returns the stack size required by this stream
+	 */
+	int32 GetStackSize() const
+	{
+		return StackSize;
+	}
+
+	/**
+	 * Sets token type this stream contains
+	 */
+	void SetTokenType(EGCTokenType InType)
+	{
+		TokenType = InType;
+	}
+
+	/**
+	 * Returns token type this stream contains
+	 */
+	FORCEINLINE EGCTokenType GetTokenType() const
+	{
+		return TokenType;
 	}
 
 	/**
@@ -402,9 +446,39 @@ struct COREUOBJECT_API FGCReferenceTokenStream
 		return CurrentIndex >= (uint32)Tokens.Num();
 	}
 
-#if ENABLE_GC_OBJECT_CHECKS
+	/**
+	 * Returns extended information about a token, including its name (if available)
+	 *
+	 * @param TokenIndex Index of a token to return extended information for
+	 */
 	FTokenInfo GetTokenInfo(int32 TokenIndex) const;
+
+	/** Sets the maximum stack size required by all token streams */
+	static void SetMaxStackSize(int32 InNewSize)
+	{
+		MaxStackSize = InNewSize;
+	}
+
+	/** Gets the maximum stack size required by all token streams */
+	FORCEINLINE static int32 GetMaxStackSize()
+	{
+		return MaxStackSize;
+	}
+
+	/** Gets the number of bytes allocated for tokens */
+	int64 GetTokenAllocatedSize() const
+	{
+		return Tokens.GetAllocatedSize();
+	}
+	/** Gets the number of bytes allocated for token debug info */
+	int64 GetDebugInfoAllocatedSize() const
+	{
+#if ENABLE_GC_TOKEN_DEBUG_INFO
+		return TokenDebugInfo.GetAllocatedSize();
+#else
+		return 0;
 #endif
+	}
 
 private:
 
@@ -428,13 +502,19 @@ private:
 
 	/** Token array */
 	TArray<uint32> Tokens;
-#if ENABLE_GC_OBJECT_CHECKS
+	/** Stack size required by this token stream */
+	int32 StackSize = 0;
+	/** Type of tokens in this stream (native / non-native) */
+	EGCTokenType TokenType = EGCTokenType::Native;
+	/** Maximum stack size for TFastReferenceCollector */
+	static int32 MaxStackSize;
+#if ENABLE_GC_TOKEN_DEBUG_INFO
 	/** 
 	 * Name of the proprty that emitted the associated token or token type (pointer etc).
 	 * We want to keep it in a separate array for performance reasons
 	 */
 	TArray<FName> TokenDebugInfo;
-#endif // ENABLE_GC_OBJECT_CHECKS
+#endif // ENABLE_GC_TOKEN_DEBUG_INFO
 };
 
 /** Prevent GC from running in the current scope */
@@ -446,12 +526,90 @@ public:
 };
 
 template <EFastReferenceCollectorOptions Options> class FGCReferenceProcessor;
+class FGCObject;
+
+/** Information about references to objects marked as Garbage that's gather by the Garbage Collector */
+struct FGarbageReferenceInfo
+{
+	/** Object marked as garbage */
+	UObject* GarbageObject;
+	/** Reference to the object marked as garbage */
+	UObject*& GarbageObjectRef;
+	/** Referencing object info */
+	union FReferencerUnion
+	{
+		/** Referencing UObject */
+		UObject* Object;
+		/** Referencing FGCObject */
+		FGCObject* GCObject;
+	} Referencer;
+	/** True if the referencing object is a UObject. If false the referencing object is an FGCObject */
+	bool bReferencerUObject;
+	/** Referencing property name */
+	FName PropertyName;
+
+	FGarbageReferenceInfo(UObject* InReferencingObject, UObject* InGarbageObject, UObject*& InGarbageObjectRef, FName InPropertyName)
+		: GarbageObject(InGarbageObject)
+		, GarbageObjectRef(InGarbageObjectRef)
+		, bReferencerUObject(true)
+		, PropertyName(InPropertyName)
+	{
+		Referencer.Object = InReferencingObject;
+	}
+	FGarbageReferenceInfo(FGCObject* InReferencingObject, UObject* InGarbageObject, UObject*& InGarbageObjectRef)
+		: GarbageObject(InGarbageObject)
+		, GarbageObjectRef(InGarbageObjectRef)
+		, bReferencerUObject(false)
+		, PropertyName(NAME_None)
+	{
+		Referencer.GCObject = InReferencingObject;
+	}
+
+	/** Returns a formatted string with referencing object info */
+	FString GetReferencingObjectInfo() const;
+};
+
+struct FGCDirectReference
+{
+	FGCDirectReference() = default;
+	explicit FGCDirectReference(UObject* Obj)
+		: ReferencedObject(Obj)
+	{}
+	/** Property or FGCObject name referencing this object */
+	FName ReferencerName;
+	UObject* ReferencedObject = nullptr;
+};
 
 /** Struct to hold the objects to serialize array and the list of weak references. This is allocated by ArrayPool */
 struct FGCArrayStruct
 {
+	template <typename ReferenceProcessorType, typename CollectorType, typename ArrayPoolType, EFastReferenceCollectorOptions Options>
+	friend class TFastReferenceCollector;
+	
+	// Arrays filled during Garbage Collectionmn
 	TArray<UObject*> ObjectsToSerialize;
 	TArray<UObject**> WeakReferences;
+	TArray<FGarbageReferenceInfo> GarbageReferences;
+#if ENABLE_GC_HISTORY
+	TMap<UObject*, TArray<FGCDirectReference>*> History;
+#endif
+
+	FORCEINLINE UObject* GetReferencingObject()
+	{
+		return ReferencingObject;
+	}
+
+	/** Returns the size of memory allocated by internal arrays */
+	int64 GetAllocatedSize() const
+	{
+		return ObjectsToSerialize.GetAllocatedSize() +
+			WeakReferences.GetAllocatedSize() +
+			GarbageReferences.GetAllocatedSize();
+	}
+
+private:
+	// This is set by GC when processing references from the current referencing object
+	UObject* ReferencingObject = nullptr;
 };
 
 /**
@@ -463,6 +621,7 @@ class FGCCollector : public FReferenceCollector
 	FGCReferenceProcessor<Options>& ReferenceProcessor;
 	FGCArrayStruct& ObjectArrayStruct;
 	bool bAllowEliminatingReferences;
+	bool bIsProcessingNativeReferences;
 
 	constexpr FORCEINLINE bool IsParallel() const
 	{
@@ -499,9 +658,14 @@ public:
 		ObjectArrayStruct.WeakReferences.Add(WeakReference);
 		return true;
 	}
+	virtual void SetIsProcessingNativeReferences(bool bIsNative) override 
+	{
+		bIsProcessingNativeReferences = bIsNative;
+	}
+
 private:
 
-	FORCEINLINE void InternalHandleObjectReference(UObject*& Object, const UObject* ReferencingObject, const FProperty* ReferencingProperty);
+	FORCEINLINE void InternalHandleObjectReference(UObject*& Object, const UObject* ReferencingObject, const FProperty* ReferencingProperty, const EGCTokenType InTokenType);
 };
 
 /**
@@ -513,12 +677,22 @@ class FGarbageCollectionTracer
 public:
 	virtual ~FGarbageCollectionTracer() {}
 
-	virtual void PerformReachabilityAnalysisOnObjects(FGCArrayStruct* ArrayStruct, bool bForceSingleThreaded, bool bWithClusters) = 0;
+	UE_DEPRECATED(5.0, "Use version of PerformReachabilityAnalysisOnObjects that takes EFastReferenceCollectorOptions parameter.")
+	COREUOBJECT_API virtual void PerformReachabilityAnalysisOnObjects(FGCArrayStruct* ArrayStruct, bool bForceSingleThreaded, bool bWithClusters);
+
+	virtual void PerformReachabilityAnalysisOnObjects(FGCArrayStruct* ArrayStruct, const EFastReferenceCollectorOptions InOptions) = 0;
 
 };
 
 /** True if Garbage Collection is running. Use IsGarbageCollecting() functio n instead of using this variable directly */
 extern COREUOBJECT_API FThreadSafeBool GIsGarbageCollecting;
+
+/**
+ * Gets the last time that the GC was run.
+ *
+ * @return	Returns the FPlatformTime::Seconds() for the last garbage collection, 0 if GC has never run.
+ */
+COREUOBJECT_API double GetLastGCTime();
 
 /**
 * Whether we are inside garbage collection

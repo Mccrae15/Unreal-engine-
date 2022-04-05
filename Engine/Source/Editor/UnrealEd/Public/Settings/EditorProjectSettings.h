@@ -6,7 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "Engine/DeveloperSettings.h"
 #include "Math/UnitConversion.h"
-#include "Components/ChildActorComponent.h"
+#include "LegacyScreenPercentageDriver.h"
 
 #include "EditorProjectSettings.generated.h"
 
@@ -36,6 +36,19 @@ enum class EDefaultLocationUnit : uint8
 	Miles,
 		
 	Invalid
+};
+
+UENUM()
+enum class EReferenceViewerSettingMode : uint8
+{
+	// Use the editor default setting
+	NoPreference,
+
+	// Show this kind of reference by default (it can be toggled off in the reference viewer)
+	ShowByDefault,
+
+	// Hide this kind of reference by default (it can be toggled back on in the reference viewer)
+	HideByDefault
 };
 
 /**
@@ -73,7 +86,7 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=Units, AdvancedDisplay, meta=(DisplayName="Angles", Tooltip="Choose the units in which to display angles.", ValidEnumValues="Degrees, Radians"))
 	EUnit AngleUnits;
 
-	UPROPERTY(EditAnywhere, config, Category=Units, AdvancedDisplay, meta=(DisplayName="Speed/Velocity", Tooltip="Choose the units in which to display speeds and velocities.", ValidEnumValues="MetersPerSecond, KilometersPerHour, MilesPerHour"))
+	UPROPERTY(EditAnywhere, config, Category=Units, AdvancedDisplay, meta=(DisplayName="Speed/Velocity", Tooltip="Choose the units in which to display speeds and velocities.", ValidEnumValues="CentimetersPerSecond, MetersPerSecond, KilometersPerHour, MilesPerHour"))
 	EUnit SpeedUnits;
 
 	UPROPERTY(EditAnywhere, config, Category=Units, AdvancedDisplay, meta=(DisplayName="Temperature", Tooltip="Choose the units in which to display temperatures.", ValidEnumValues="Celsius, Farenheit, Kelvin"))
@@ -81,6 +94,14 @@ public:
 
 	UPROPERTY(EditAnywhere, config, Category=Units, AdvancedDisplay, meta=(DisplayName="Force", Tooltip="Choose the units in which to display forces.", ValidEnumValues="Newtons, PoundsForce, KilogramsForce"))
 	EUnit ForceUnits;
+
+	// Should the Reference Viewer have 'Show Searchable Names' checked by default when opened in this project
+	UPROPERTY(EditAnywhere, config, Category=ReferenceViewer)
+	EReferenceViewerSettingMode ShowSearchableNames;
+
+	// The default maximum search breadth for the reference viewer when opened
+	UPROPERTY(EditAnywhere, config, Category = ReferenceViewer, meta=(DisplayName="Default Max Search Breadth", ClampMin=1, ClampMax=1000, UIMin=1, UIMax=50))
+	int32 ReferenceViewerDefaultMaxSearchBreadth = 20;
 
 public:
 	/** Deprecated properties that didn't live very long */
@@ -109,11 +130,11 @@ struct UNREALED_API FMode2DLayer
 		, Depth(InDepth)
 	{ }
 
-	/** Whether snapping to surfaces in the world is enabled */
+	/** A descriptive name for this snap layer. */
 	UPROPERTY(EditAnywhere, config, Category = Layer)
 	FString Name;
 
-	/** The amount of depth to apply when snapping to surfaces */
+	/** The position of this snap layer's plane along the Snap Axis. */
 	UPROPERTY(EditAnywhere, config, Category = Layer)
 	float Depth;
 };
@@ -135,19 +156,19 @@ class UNREALED_API ULevelEditor2DSettings : public UDeveloperSettings
 	GENERATED_UCLASS_BODY()
 
 public:
-	/** If enabled will allow 2D mode */
+	/** If enabled, shows the 2D combined translate and rotate tool in the viewport toolbar. */
 	UPROPERTY(EditAnywhere, config, Category=General, meta=(DisplayName="Enable 2D combined translate + rotate widget"))
 	bool bEnable2DWidget;
 
-	/** If enabled will allow 2D mode */
+	/** If enabled, shows the 2D layer snapping controls in the viewport toolbar. */
 	UPROPERTY(EditAnywhere, config, Category=LayerSnapping)
 	bool bEnableSnapLayers;
 
-	/** Snap axis */
+	/** Sets the world space axis for 2D snap layers. */
 	UPROPERTY(EditAnywhere, config, Category=LayerSnapping, meta=(EditCondition=bEnableSnapLayers))
 	ELevelEditor2DAxis SnapAxis;
 
-	/** Snap layers that are displayed in the viewport toolbar */
+	/** Snap layers that are displayed in the viewport toolbar. */
 	UPROPERTY(EditAnywhere, config, Category=LayerSnapping, meta=(EditCondition=bEnableSnapLayers))
 	TArray<FMode2DLayer> SnapLayers;
 
@@ -158,63 +179,50 @@ public:
 
 };
 
-
-UCLASS(config=Editor, meta=(DisplayName="Blueprint Project Settings"), defaultconfig)
-class UNREALED_API UBlueprintEditorProjectSettings : public UDeveloperSettings
+/**
+ * Configure per-project performance settings for the Editor
+ */
+UCLASS(config=Editor, meta=(DisplayName="Performance"), defaultconfig)
+class UNREALED_API UEditorPerformanceProjectSettings : public UDeveloperSettings
 {
 	GENERATED_UCLASS_BODY()
 
 public:
-	/**
-	 * Flag to disable faster compiles for individual blueprints if they have no function signature
-	 * changes. This flag is deprecated! In 4.21 there will be no way to force all dependencies to 
-	 * compile when no changes are detected. Report any issues immediately.
-	 */
-	UPROPERTY(EditAnywhere, config, Category=Blueprints, DisplayName = "Force All Dependencies To Recompile (DEPRECATED)")
-	uint8 bForceAllDependenciesToRecompile:1;
-
-	/** If enabled, the editor will load packages to look for soft references to actors when deleting/renaming them. This can be slow in large projects so disable this to improve performance but increase the chance of breaking blueprints/sequences that use soft actor references */
-	UPROPERTY(EditAnywhere, config, Category=Actors)
-	uint8 bValidateUnloadedSoftActorReferences : 1;
-
-	/**
-	 * Enable the option to expand child actor components within component tree views (experimental).
-	 */
-	UPROPERTY(EditAnywhere, config, Category = Experimental)
-	uint8 bEnableChildActorExpansionInTreeView : 1;
-
-	/** 
-	 * List of compiler messages that have been suppressed outside of full, interactive editor sessions for 
-	 * the current project - useful for silencing warnings that were added to the engine after 
-	 * project inception and are going to be addressed as they are found by content authors
-	 */
-	UPROPERTY(EditAnywhere, config, Category= Blueprints, DisplayName = "Compiler Messages Disabled Except in Editor")
-	TArray<FName> DisabledCompilerMessagesExceptEditor;
 	
-	/** 
-	 * List of compiler messages that have been suppressed completely - message suppression is only 
-	 * advisable when using blueprints that you cannot update and are raising innocuous warnings. 
-	 * If useless messages are being raised prefer to contact support rather than disabling messages
-	 */
-	UPROPERTY(EditAnywhere, config, Category= Blueprints, DisplayName = "Compiler Messages Disabled Entirely")
-	TArray<FName> DisabledCompilerMessages;
+	UPROPERTY(EditAnywhere, config, Category=ViewportResolution, meta=(
+		DisplayName="Default screen percentage mode for realtime editor viewports."))
+	EScreenPercentageMode RealtimeScreenPercentageMode;
 
-	// The list of namespaces to always expose in any Blueprint (for all users of the game/project)
-	UPROPERTY(EditAnywhere, config, Category=Experimental)
-	TArray<FString> NamespacesToAlwaysInclude;
-	
-	/**
-	 * Default view mode to use for child actor components in a Blueprint actor's component tree hierarchy (experimental).
-	 */
-	UPROPERTY(EditAnywhere, config, Category=Experimental, meta=(EditCondition="bEnableChildActorExpansionInTreeView"))
-	EChildActorComponentTreeViewVisualizationMode DefaultChildActorTreeViewMode;
+	UPROPERTY(EditAnywhere, config, Category=ViewportResolution, meta=(
+		DisplayName="Default screen percentage mode for non-realtime editor viewports."))
+	EScreenPercentageMode NonRealtimeScreenPercentageMode;
 
+	UPROPERTY(EditAnywhere, config, Category=ViewportResolution, meta=(
+		EditCondition="RealtimeScreenPercentageMode == EScreenPercentageMode::Manual || NonRealtimeScreenPercentageMode == EScreenPercentageMode::Manual",
+		DisplayName="Manual screen percentage to be set by default for editor viewports."))
+	float ManualScreenPercentage;
+
+	UPROPERTY(EditAnywhere, config, Category=ViewportResolution, meta=(
+		DisplayName="Minimum default rendering resolution to use for editor viewports."))
+	int32 MinViewportRenderingResolution;
+
+	UPROPERTY(EditAnywhere, config, Category=ViewportResolution, meta=(
+		DisplayName="Maximum default rendering resolution to use for editor viewports."))
+	int32 MaxViewportRenderingResolution;
+
+
+	static void ExportResolutionValuesToConsoleVariables();
+
+public:
 	// UObject interface
+	virtual void PostInitProperties() override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	// End of UObject interface
+
 };
 
-UCLASS(config=Editor, meta=(DisplayName="DDC"), defaultconfig)
+
+UCLASS(config=Editor, meta=(DisplayName="Derived Data"), defaultconfig)
 class UNREALED_API UDDCProjectSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
@@ -223,14 +231,38 @@ public:
 	UDDCProjectSettings() { }
 
 	/**
-	 * 
+	 *
 	 */
-	UPROPERTY(EditAnywhere, config, Category=Blueprints)
-	bool RecommendEveryoneSetupAGlobalLocalDDCPath;
+	UPROPERTY(EditAnywhere, config, Category = Warnings)
+	bool EnableWarnings = true;
 
 	/**
 	 * 
 	 */
-	UPROPERTY(EditAnywhere, config, Category=Blueprints)
-	bool RecommendEveryoneSetupAGlobalS3DDCPath;
+	UPROPERTY(EditAnywhere, config, Category= Warnings)
+	bool RecommendEveryoneSetupAGlobalLocalDDCPath=false;
+
+	/**
+	 * 
+	 */
+	UPROPERTY(EditAnywhere, config, Category= Warnings)
+	bool RecommendEveryoneSetupAGlobalSharedDDCPath=false;
+
+	/**
+	 * 
+	 */
+	UPROPERTY(EditAnywhere, config, Category= Warnings)
+	bool RecommendEveryoneSetupAGlobalS3DDCPath = false;
+
+	/**
+	 *
+	 */
+	UPROPERTY(EditAnywhere, config, Category = Warnings)
+	bool RecommendEveryoneEnableS3DDC = false;
+
+	/**
+	 *
+	 */
+	UPROPERTY(EditAnywhere, config, Category = Warnings)
+	bool RecommendEveryoneUseHordeStorage = false;
 };

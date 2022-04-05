@@ -360,7 +360,7 @@ TSharedRef<SWidget> SMoviePipelineConfigPanel::OnGeneratePresetsMenu()
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SaveAsPreset_Text", "Save As Preset"),
 		LOCTEXT("SaveAsPreset_Tip", "Save the current configuration as a new preset that can be shared between multiple jobs, or imported later as the base of a new configuration."),
-		FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset.Greyscale"),
+		FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
 		FUIAction(FExecuteAction::CreateSP(this, &SMoviePipelineConfigPanel::OnSaveAsPreset))
 	);
 
@@ -488,6 +488,7 @@ void SMoviePipelineConfigPanel::OnSaveAsPreset()
 	// Saving into a new package
 	const FString NewAssetName = FPackageName::GetLongPackageAssetName(PackageName);
 	UPackage*     NewPackage = CreatePackage(*PackageName);
+	NewPackage->MarkAsFullyLoaded();
 	UMoviePipelineConfigBase*  NewPreset = NewObject<UMoviePipelineConfigBase>(NewPackage, ConfigAssetType, *NewAssetName, RF_Public | RF_Standalone | RF_Transactional);
 	
 	if (NewPreset)

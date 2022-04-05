@@ -40,7 +40,9 @@ struct FRenderTarget2DArrayRWInstanceData_RenderThread
 	}
 
 	FIntVector Size = FIntVector(EForceInit::ForceInitToZero);
-	
+	bool bWroteThisFrame = false;
+	bool bReadThisFrame = false;
+
 	FSamplerStateRHIRef SamplerStateRHI;
 	FTexture2DArrayRHIRef TextureRHI;
 	FUnorderedAccessViewRHIRef UnorderedAccessViewRHI;
@@ -114,8 +116,8 @@ public:
 	virtual bool GetExposedVariableValue(const FNiagaraVariableBase& InVariable, void* InPerInstanceData, FNiagaraSystemInstance* InSystemInstance, void* OutData) const override;
 
 	//~ UNiagaraDataInterface interface END
-	void GetSize(FVectorVMContext& Context); 
-	void SetSize(FVectorVMContext& Context);
+	void GetSize(FVectorVMExternalFunctionContext& Context); 
+	void SetSize(FVectorVMExternalFunctionContext& Context);
 
 	static const FName SetValueFunctionName;
 	static const FName GetValueFunctionName;
@@ -159,5 +161,5 @@ protected:
 	static FNiagaraVariableBase ExposedRTVar;
 	
 	UPROPERTY(Transient, DuplicateTransient)
-	TMap<uint64, UTextureRenderTarget2DArray*> ManagedRenderTargets;
+	TMap<uint64, TObjectPtr<UTextureRenderTarget2DArray>> ManagedRenderTargets;
 };

@@ -20,6 +20,7 @@
 
 #if WITH_HOT_RELOAD
 	/** If true, we are reloading a class for HotReload */
+	UE_DEPRECATED(5.0, "GIsHotReload has been deprecated, use IsReloadActive to test to see if a reload is in progress.")
 	extern CORE_API bool GIsHotReload;
 #endif
 
@@ -77,6 +78,17 @@ enum class ECheckModuleCompatibilityFlags
 };
 
 ENUM_CLASS_FLAGS(ECheckModuleCompatibilityFlags)
+
+
+enum class ELoadModuleFlags
+{
+	None = 0x0,
+
+	// Print to the log any failure information
+	LogFailures = 1 << 0,
+};
+
+ENUM_CLASS_FLAGS(ELoadModuleFlags)
 
 
 /**
@@ -174,10 +186,11 @@ public:
 	 * Loads the specified module.
 	 *
 	 * @param InModuleName The base name of the module file.  Should not include path, extension or platform/configuration info.  This is just the "module name" part of the module file name.  Names should be globally unique.
+	 * @param InLoadModuleFlags Optional flags for module load operation.
 	 * @return The loaded module, or nullptr if the load operation failed.
 	 * @see AbandonModule, IsModuleLoaded, LoadModuleChecked, LoadModulePtr, LoadModuleWithFailureReason, UnloadModule
 	 */
-	IModuleInterface* LoadModule( const FName InModuleName );
+	IModuleInterface* LoadModule( const FName InModuleName, ELoadModuleFlags InLoadModuleFlags = ELoadModuleFlags::None );
 
 	/**
 	 * Loads the specified module, checking to ensure it exists.
@@ -203,10 +216,11 @@ public:
 	 *
 	 * @param InModuleName The base name of the module file.  Should not include path, extension or platform/configuration info.  This is just the "module name" part of the module file name.  Names should be globally unique.
 	 * @param OutFailureReason Will contain the result.
+	 * @param InLoadModuleFlags Optional flags for module load operation.
 	 * @return The loaded module (null if the load operation failed).
 	 * @see AbandonModule, IsModuleLoaded, LoadModule, LoadModuleChecked, LoadModulePtr, UnloadModule
 	 */
-	IModuleInterface* LoadModuleWithFailureReason( const FName InModuleName, EModuleLoadResult& OutFailureReason );
+	IModuleInterface* LoadModuleWithFailureReason( const FName InModuleName, EModuleLoadResult& OutFailureReason, ELoadModuleFlags InLoadModuleFlags = ELoadModuleFlags::None);
 
 	/**
 	 * Queries information about a specific module name.
@@ -945,4 +959,55 @@ class FDefaultGameModuleImpl
 		IMPLEMENT_GAME_MODULE( ModuleImplClass, ModuleName )
 #endif	//IS_MONOLITHIC
 
+#endif
+
+/**
+* Enumerates the type of reload in progress
+*/
+enum class EActiveReloadType
+{
+	None,
+	Reinstancing,
+#if WITH_HOT_RELOAD
+	HotReload,
+#endif
+#if WITH_LIVE_CODING
+	LiveCoding,
+#endif
+};
+
+class IReload;
+
+#if WITH_RELOAD
+/**
+* Return the currently active reload.  Check for None to see if reloading is not active.
+* This method respects the GIsHotReload setting.
+*/
+CORE_API EActiveReloadType GetActiveReloadType();
+/**
+* Get the currently active reload interface.
+*/
+CORE_API IReload* GetActiveReloadInterface();
+
+/**
+* Helper method to check to see if reloading is active.
+* This method respects the GIsHotReload setting.
+*/
+CORE_API bool IsReloadActive();
+
+/**
+* Begins the reload process.
+*/
+CORE_API void BeginReload(EActiveReloadType ActiveReloadType, IReload& Interface);
+
+/**
+* Ends the reload process
+*/
+CORE_API void EndReload();
+#else
+inline EActiveReloadType GetActiveReloadType() { return EActiveReloadType::None; }
+
+inline bool IsReloadActive() { return false; }
+
+inline IReload* GetActiveReloadInterface() { return nullptr; }
 #endif

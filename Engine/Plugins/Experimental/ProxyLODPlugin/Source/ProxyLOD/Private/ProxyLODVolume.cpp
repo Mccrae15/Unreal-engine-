@@ -41,22 +41,13 @@ public:
 	bool Initialize(const TArray<FMeshMergeData>& Geometry, float Accuracy)
 	{
 		FMeshDescriptionArrayAdapter SrcGeometryAdapter(Geometry);
-		OpenVDBTransform::Ptr XForm = OpenVDBTransform::createLinearTransform(Accuracy);
-		SrcGeometryAdapter.SetTransform(XForm);
+		return Initialize(SrcGeometryAdapter, Accuracy);
+	}
 
-		VoxelSize = SrcGeometryAdapter.GetTransform().voxelSize()[0];
-
-		SrcPolyIndexGrid = openvdb::Int32Grid::create();
-
-		if (!ProxyLOD::MeshArrayToSDFVolume(SrcGeometryAdapter, SDFVolume, SrcPolyIndexGrid.get()))
-		{
-			SrcPolyIndexGrid.reset();
-			return false;
-		}
-
-		Sampler.reset(new openvdb::tools::GridSampler<openvdb::FloatGrid, openvdb::tools::PointSampler>(*SDFVolume));
-
-		return true;
+	bool Initialize(const TArray<FInstancedMeshMergeData>& Geometry, float Accuracy)
+	{
+		FMeshDescriptionArrayAdapter SrcGeometryAdapter(Geometry);
+		return Initialize(SrcGeometryAdapter, Accuracy);
 	}
 
 	virtual double GetVoxelSize() const override
@@ -128,6 +119,26 @@ public:
 	}
 
 private:
+	bool Initialize(FMeshDescriptionArrayAdapter& InSrcGeometryAdapter, float Accuracy)
+	{
+		OpenVDBTransform::Ptr XForm = OpenVDBTransform::createLinearTransform(Accuracy);
+		InSrcGeometryAdapter.SetTransform(XForm);
+
+		VoxelSize = InSrcGeometryAdapter.GetTransform().voxelSize()[0];
+
+		SrcPolyIndexGrid = openvdb::Int32Grid::create();
+
+		if (!ProxyLOD::MeshArrayToSDFVolume(InSrcGeometryAdapter, SDFVolume, SrcPolyIndexGrid.get()))
+		{
+			SrcPolyIndexGrid.reset();
+			return false;
+		}
+
+		Sampler.reset(new openvdb::tools::GridSampler<openvdb::FloatGrid, openvdb::tools::PointSampler>(*SDFVolume));
+
+		return true;
+	}
+
 	openvdb::FloatGrid::Ptr SDFVolume;
 	openvdb::Int32Grid::Ptr SrcPolyIndexGrid;
 	openvdb::tools::GridSampler<openvdb::FloatGrid, openvdb::tools::PointSampler>::Ptr Sampler;
@@ -151,6 +162,17 @@ TUniquePtr<IProxyLODVolume> IProxyLODVolume::CreateSDFVolumeFromMeshArray(const 
 	return Volume;
 }
 
+TUniquePtr<IProxyLODVolume> IProxyLODVolume::CreateSDFVolumeFromMeshArray(const TArray<FInstancedMeshMergeData>& Geometry, float Step)
+{
+	TUniquePtr<FProxyLODVolumeImpl> Volume = MakeUnique<FProxyLODVolumeImpl>();
+
+	if (Volume == nullptr || !Volume->Initialize(Geometry, Step))
+	{
+		return nullptr;
+	}
+
+	return Volume;
+}
 
 class FPolygonSoup
 {
@@ -299,7 +321,7 @@ public:
 		//SDFUnionVolume->setTransform(XForm);
 		
 		// Fill the SDFUnionVolume
-		FMatrix LocalToVoxel = FMatrix::Identity;
+		FMatrix44f LocalToVoxel = FMatrix44f::Identity;
 		LocalToVoxel.M[0][0] = VoxelSize;
 		LocalToVoxel.M[1][1] = VoxelSize;
 		LocalToVoxel.M[2][2] = VoxelSize;
@@ -315,7 +337,7 @@ public:
 				// Get the transform relative to the average
 				FTransform MeshTransform = PlacedMesh.Transform;
 				MeshTransform.AddToTranslation(-AverageTranslation);
-				FMatrix TransformMatrix = MeshTransform.ToMatrixWithScale().Inverse();
+				FMatrix44f TransformMatrix = FMatrix44f(MeshTransform.ToMatrixWithScale().Inverse());		// LWC_TODO: Precision loss
 				
 
  				TransformMatrix = LocalToVoxel * TransformMatrix;
@@ -444,15 +466,13 @@ private:
 
 		auto TransformGenerator = [&LocalToVoxel, &AverageTranslation](const FPlacedMesh& PlacedMesh)->openvdb::Mat4R
 		{
-			FTransform XForm = PlacedMesh.Transform;
-			XForm.AddToTranslation(-AverageTranslation);
-			FMatrix TransformMatrix = XForm.ToMatrixWithScale().Inverse();
+			FTransform MeshXForm = PlacedMesh.Transform;
+			MeshXForm.AddToTranslation(-AverageTranslation);
+			FMatrix TransformMatrix = MeshXForm.ToMatrixWithScale().Inverse();
 
 			TransformMatrix = LocalToVoxel * TransformMatrix;
-			float* data = &TransformMatrix.M[0][0];
-			openvdb::math::Mat4<float> VDBMatFloat(data);
-
-			openvdb::Mat4R VDBMatDouble(VDBMatFloat);
+			double* data = &TransformMatrix.M[0][0];
+			openvdb::Mat4R VDBMatDouble(data);
 			// NB: rounding errors in the inverse may have resulted in error in this col.
 			// openvdb explicitly checks this matrix row to insure the transform is affine and will throw 
 			VDBMatDouble.setCol(3, openvdb::Vec4R(0, 0, 0, 1));

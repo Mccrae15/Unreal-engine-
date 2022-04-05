@@ -353,6 +353,11 @@ void FRenderAssetInstanceAsyncView::UpdateBoundSizes_Async(
 	{
 		const FRenderAssetInstanceView::FBounds4& CurrentBounds4 = View->GetBounds4(Bounds4Index);
 
+		// LWC_TODO - Origin values are loaded from doubles, the remaining values are loaded from floats
+		// Could potentially perform some of these operations with float VectorRegisters, which could potentially be more efficient
+		// (Otherwise we're paying cost to convert these values to double VectorRegisters on load)
+		// Tricky to manage precision though, as with large worlds, distance between object and view origin can potentially overflow float capacity
+
 		// Calculate distance of viewer to bounding sphere.
 		const VectorRegister OriginX = VectorLoadAligned( &CurrentBounds4.OriginX );
 		const VectorRegister OriginY = VectorLoadAligned( &CurrentBounds4.OriginY );
@@ -364,7 +369,7 @@ void FRenderAssetInstanceAsyncView::UpdateBoundSizes_Async(
 		const VectorRegister ExtentY = VectorLoadAligned( &CurrentBounds4.ExtentY );
 		const VectorRegister ExtentZ = VectorLoadAligned( &CurrentBounds4.ExtentZ );
 		const VectorRegister Radius = VectorLoadAligned( &CurrentBounds4.Radius );
-		const VectorRegister PackedRelativeBox = VectorLoadAligned( reinterpret_cast<const FVector4*>(&CurrentBounds4.PackedRelativeBox) );
+		const VectorRegister PackedRelativeBox = VectorLoadAligned( reinterpret_cast<const FVector4f*>(&CurrentBounds4.PackedRelativeBox) );
 		const VectorRegister MinDistanceSq = VectorLoadAligned( &CurrentBounds4.MinDistanceSq );
 		const VectorRegister MinRangeSq = VectorLoadAligned( &CurrentBounds4.MinRangeSq );
 		const VectorRegister MaxRangeSq = VectorLoadAligned(&CurrentBounds4.MaxRangeSq);
@@ -415,8 +420,7 @@ void FRenderAssetInstanceAsyncView::UpdateBoundSizes_Async(
 				Temp = VectorSubtract( ViewOriginZ, OriginZ );
 				DistSq = VectorMultiplyAdd( Temp, Temp, DistSq );
 
-				DistSqMinusRadiusSq = VectorMultiply( Radius, Radius );
-				DistSqMinusRadiusSq = VectorSubtract( DistSq, DistSqMinusRadiusSq );
+				DistSqMinusRadiusSq = VectorNegateMultiplyAdd( Radius, Radius, DistSq );
 				// This can be negative here!!!
 			}
 

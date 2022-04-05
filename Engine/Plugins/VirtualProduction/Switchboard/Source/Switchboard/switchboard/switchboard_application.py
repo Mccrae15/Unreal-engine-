@@ -3,6 +3,7 @@
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 import threading
 from typing import Dict, List, NamedTuple, Optional
@@ -82,6 +83,8 @@ class OscServer:
         LOGGER.warning(f'Received unhandled OSC message: {command} {args}.')
 
 
+MultiUserServerInstance = None
+
 class MultiUserApplication:
     def __init__(self):
         self.lock = threading.Lock()
@@ -95,6 +98,20 @@ class MultiUserApplication:
 
     def exe_name(self):
         return os.path.split(self.exe_path())[1]
+
+    def get_mu_server_multicast_arg(self):
+        multicast = CONFIG.MUSERVER_MULTICAST_ENDPOINT.get_value().strip()
+        if multicast:
+            return f'-UDPMESSAGING_TRANSPORT_MULTICAST={multicast}'
+        return ''
+
+    def get_mu_server_endpoint_arg(self):
+        setting_val = CONFIG.MUSERVER_ENDPOINT.get_value().strip()
+        if setting_val:
+            converted_ip = sb_utils.expand_endpoint(setting_val,
+                                                    SETTINGS.IP_ADDRESS.get_value().strip())
+            return f'-UDPMESSAGING_TRANSPORT_UNICAST="{converted_ip}"'
+        return ''
 
     def poll_process(self):
         # Aside from this task_name, PollProcess is stateless,
@@ -114,14 +131,21 @@ class MultiUserApplication:
                              f'{self.exe_path()}. Has it been built?')
                 return
 
-            cmdline = f'start "Multi User Server" "{self.exe_path()}"'
-            cmdline += f' -CONCERTSERVER={CONFIG.MUSERVER_SERVER_NAME}'
-            cmdline += f' {CONFIG.MUSERVER_COMMAND_LINE_ARGUMENTS}'
+            cmdline = ''
+            if sys.platform.startswith('win'):
+                cmdline = f'start "Multi User Server" "{self.exe_path()}"'
+            else:
+                cmdline = f'{self.exe_path()}'
+
+            cmdline += f' -CONCERTSERVER="{CONFIG.MUSERVER_SERVER_NAME.get_value()}"'
+            cmdline += f' {CONFIG.MUSERVER_COMMAND_LINE_ARGUMENTS.get_value()}'
+            cmdline += f' {self.get_mu_server_endpoint_arg()}'
+            cmdline += f' {self.get_mu_server_multicast_arg()}'
 
             if self.concert_ignore_cl:
                 cmdline += " -ConcertIgnore"
 
-            if CONFIG.MUSERVER_CLEAN_HISTORY:
+            if CONFIG.MUSERVER_CLEAN_HISTORY.get_value():
                 cmdline += " -ConcertClean"
 
             if len(args) > 0:
@@ -134,8 +158,8 @@ class MultiUserApplication:
 
             return True
 
-    def terminate(self):
-        if self.process:
+    def terminate(self, bypolling=False):
+        if not bypolling and self.process:
             self.process.terminate()
         else:
             self.poll_process().kill()
@@ -148,9 +172,14 @@ class MultiUserApplication:
 
         return False
 
+def get_multi_user_server_instance():
+    global MultiUserServerInstance
+    if not MultiUserServerInstance:
+        MultiUserServerInstance = MultiUserApplication()
+    return MultiUserServerInstance
 
 class RsyncServer:
-    DEFAULT_PORT = 873
+    DEFAULT_PORT = 8730
     INCOMING_LOGS_MODULE = 'device_logs'
     MAX_MONITOR_RECOVERIES = 5
     SOCKET_ERROR_EXIT_CODE = 10
@@ -244,7 +273,7 @@ hosts allow = {allowed_addrs}
             client.address for client in self.allowed_clients.values()}
 
         allowed_addrs.add(self.address)
-        allowed_addrs.add(SETTINGS.IP_ADDRESS)
+        allowed_addrs.add(SETTINGS.IP_ADDRESS.get_value())
         allowed_addrs.discard('0.0.0.0')
 
         config = self.CONFIG_TEMPLATE.format(
@@ -261,7 +290,7 @@ hosts allow = {allowed_addrs}
     def launch(
         self, *, address: str = '0.0.0.0', port: int = DEFAULT_PORT
     ) -> bool:
-        if self.process is not None:
+        if self.is_running():
             LOGGER.warning('RsyncServer.launch: server already running')
             return False
 
@@ -269,9 +298,12 @@ hosts allow = {allowed_addrs}
         self.port = port
         self.update_config()
 
-        rsync_path = os.path.normpath(os.path.join(
-            CONFIG.ENGINE_DIR.get_value(), 'Extras', 'ThirdPartyNotUE',
-            'SwitchboardThirdParty', 'cwrsync', 'bin', 'rsync.exe'))
+        if sys.platform.startswith('win'):
+            rsync_path = os.path.normpath(os.path.join(
+                CONFIG.ENGINE_DIR.get_value(), 'Extras', 'ThirdPartyNotUE',
+                'SwitchboardThirdParty', 'cwrsync', 'bin', 'rsync.exe'))
+        else:
+            rsync_path = 'rsync'
 
         args = [rsync_path, '--daemon', '--no-detach', f'--address={address}',
                 f'--port={port}', f'--config={self.config_file.name}',

@@ -118,22 +118,31 @@ private:
 	 */
 	static void FillMenu(FMenuBuilder& MenuBuilder, const TSharedPtr<FTabManager> TabManager);
 
-
 private:
-	void AddInfoLine(TSharedPtr<SVerticalBox> InVerticalBox, const FText& InHeader, const TAttribute<FText>& InValue) const;
+	void BeginSection(TSharedPtr<SVerticalBox> InVerticalBox, const FText& InSectionName) const;
+	void EndSection(TSharedPtr<SVerticalBox> InVerticalBox) const;
+	TSharedRef<SWidget> CreateTextBox(const TAttribute<FText>& InText, bool bMultiLine) const;
+	void AddInfoLine(TSharedPtr<SVerticalBox> InVerticalBox, const FText& InHeader, const TAttribute<FText>& InValue, bool bMultiLine = false) const;
+	void AddSimpleInfoLine(TSharedPtr<SVerticalBox> InVerticalBox, const TAttribute<FText>& InValue, bool bMultiLine = false) const;
 
 	TSharedRef<SDockTab> SpawnTab_SessionInfo(const FSpawnTabArgs& Args);
 	void OnSessionInfoTabClosed(TSharedRef<SDockTab> TabBeingClosed);
 
-	FText GetSessionNameText() const;
-	FText GetUriText() const;
-	FText GetPlatformText() const;
-	FText GetAppNameText() const;
-	FText GetBuildConfigText() const;
-	FText GetBuildTargetText() const;
-	FText GetCommandLineText() const;
+	FText GetSessionNameText() const { return SessionNameText; }
+	FText GetUriText() const { return UriText; }
+
+	FText GetPlatformText() const { return PlatformText; }
+	FText GetAppNameText() const { return AppNameText; }
+	FText GetBranchText() const { return BranchText; }
+	FText GetBuildVersionText() const { return BuildVersionText; }
+	FText GetChangelistText() const { return ChangelistText; }
+	FText GetBuildConfigText() const { return BuildConfigurationTypeText; }
+	FText GetBuildTargetText() const { return BuildTargetTypeText; }
+	FText GetCommandLineText() const { return CommandLineText; }
+
 	FText GetFileSizeText() const;
 	FText GetStatusText() const;
+
 	FText GetModulesText() const;
 
 public:
@@ -147,15 +156,18 @@ private:
 	/** Holds the tab manager that manages the front-end's tabs. */
 	TSharedPtr<FTabManager> TabManager;
 
+	FText SessionNameText;
+	FText UriText;
+
 	FText PlatformText;
 	FText AppNameText;
-	FText CommandLineText;
+	FText BranchText;
+	FText BuildVersionText;
+	FText ChangelistText;
 	FText BuildConfigurationTypeText;
 	FText BuildTargetTypeText;
-	bool bIsSessionInfoSet = false;
+	FText CommandLineText;
 
-	//FText Uri;
-	//FDateTime Timestamp;
-	//uint64 Size;
-	//bool bIsLive;
+	TSharedPtr<const TraceServices::IAnalysisSession> AnalysisSession;
+	bool bIsSessionInfoSet = false;
 };

@@ -6,31 +6,53 @@ D3D12Texture.h: Implementation of D3D12 Texture
 #pragma once
 
 /** If true, guard texture creates with SEH to log more information about a driver crash we are seeing during texture streaming. */
-#define GUARDED_TEXTURE_CREATES (PLATFORM_WINDOWS && !(UE_BUILD_SHIPPING || UE_BUILD_TEST))
+#define GUARDED_TEXTURE_CREATES (PLATFORM_WINDOWS && !(UE_BUILD_SHIPPING || UE_BUILD_TEST || PLATFORM_COMPILER_CLANG))
 
+static bool TextureCanBe4KAligned(const FD3D12ResourceDesc& Desc, EPixelFormat UEFormat)
+{
+	// 4KB alignment is only available for read only textures
+	if (!EnumHasAnyFlags(Desc.Flags, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) &&
+		!Desc.NeedsUAVAliasWorkarounds() && // UAV aliased resources are secretly writable.
+		Desc.SampleDesc.Count == 1)
+	{
+		D3D12_TILE_SHAPE Tile = {};
+		Get4KTileShape(&Tile, Desc.Format, UEFormat, Desc.Dimension, Desc.SampleDesc.Count);
+
+		uint32 TilesNeeded = GetTilesNeeded(Desc.Width, Desc.Height, Desc.DepthOrArraySize, Tile);
+
+		constexpr uint32 NUM_4K_BLOCKS_PER_64K_PAGE = 16;
+		return TilesNeeded <= NUM_4K_BLOCKS_PER_64K_PAGE;
+	}
+	else
+	{
+		return false;
+	}
+}
 
 void SafeCreateTexture2D(FD3D12Device* pDevice, 
 	FD3D12Adapter* Adapter,
-	const D3D12_RESOURCE_DESC& TextureDesc,
+	const FD3D12ResourceDesc& TextureDesc,
 	const D3D12_CLEAR_VALUE* ClearValue, 
-	FD3D12ResourceLocation* OutTexture2D, 
-	uint8 Format, 
+	FD3D12ResourceLocation* OutTexture2D,
+	FD3D12BaseShaderResource* Owner,
+	EPixelFormat Format,
 	ETextureCreateFlags Flags,
 	D3D12_RESOURCE_STATES InitialState,
 	const TCHAR* Name);
 
+void CreateUAVAliasResource(
+	FD3D12Adapter* Adapter,
+	D3D12_CLEAR_VALUE* ClearValuePtr,
+	const TCHAR* DebugName,
+	FD3D12ResourceLocation& Location);
 
 /** Texture base class. */
-class FD3D12TextureBase : public FD3D12BaseShaderResource, public FD3D12TransientResource, public FD3D12LinkedAdapterObject<FD3D12TextureBase>
+class FD3D12TextureBase : public FD3D12BaseShaderResource, public FD3D12LinkedAdapterObject<FD3D12TextureBase>
 {
 public:
 
 	FD3D12TextureBase(class FD3D12Device* InParent)
 		: FD3D12BaseShaderResource(InParent)
-		, MemorySize(0)
-		, BaseShaderResource(this)
-		, bCreatedRTVsPerSlice(false)
-		, NumDepthStencilViews(0)
 	{
 	}
 
@@ -53,7 +75,6 @@ public:
 		if (SubResourceIndex < FExclusiveDepthStencil::MaxIndex)
 		{
 			DepthStencilViews[SubResourceIndex] = View;
-			NumDepthStencilViews = FMath::Max(SubResourceIndex + 1, NumDepthStencilViews);
 		}
 		else
 		{
@@ -86,7 +107,7 @@ public:
 
 	void SetMemorySize(int64 InMemorySize)
 	{
-		check(InMemorySize > 0);
+		check(InMemorySize >= 0);
 		MemorySize = InMemorySize;
 	}
 
@@ -99,7 +120,6 @@ public:
 	FD3D12Resource* GetResource() const { return ResourceLocation.GetResource(); }
 	uint64 GetOffset() const { return ResourceLocation.GetOffsetFromBaseOfResource(); }
 	FD3D12ShaderResourceView* GetShaderResourceView() const { return ShaderResourceView; }
-	FD3D12BaseShaderResource* GetBaseShaderResource() const { return BaseShaderResource; }
 	inline const FTextureRHIRef& GetAliasingSourceTexture() const { return AliasingSourceTexture; }
 
 	void SetShaderResourceView(FD3D12ShaderResourceView* InShaderResourceView) { ShaderResourceView = InShaderResourceView; }
@@ -119,7 +139,7 @@ public:
 		return true;
 	}
 
-	void UpdateTexture(const D3D12_TEXTURE_COPY_LOCATION& DestCopyLocation, uint32 DestX, uint32 DestY, uint32 DestZ, const D3D12_TEXTURE_COPY_LOCATION& SourceCopyLocation);
+	void UpdateTexture(uint32 MipIndex, uint32 DestX, uint32 DestY, uint32 DestZ, const D3D12_TEXTURE_COPY_LOCATION& SourceCopyLocation);
 	void CopyTextureRegion(uint32 DestX, uint32 DestY, uint32 DestZ, FD3D12TextureBase* SourceTexture, const D3D12_BOX& SourceBox);
 	void InitializeTextureData(class FRHICommandListImmediate* RHICmdList, const void* InitData, uint32 InitDataSize, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 NumSlices, uint32 NumMips, EPixelFormat Format, D3D12_RESOURCE_STATES DestinationState);
 
@@ -154,13 +174,6 @@ public:
 		return DepthStencilViews[AccessType.GetIndex()];
 	}
 
-	// New Monolithic Graphics drivers have optional "fast calls" replacing various D3d functions
-	// You can't use fast version of XXSetShaderResources (called XXSetFastShaderResource) on dynamic or d/s targets
-	inline bool HasDepthStencilView() const
-	{
-		return (NumDepthStencilViews > 0);
-	}
-
 	inline bool HasRenderTargetViews() const
 	{
 		return (RenderTargetViews.Num() > 0);
@@ -170,9 +183,6 @@ public:
 	{
 		// Alias the location, will perform an addref underneath
 		FD3D12ResourceLocation::Alias(ResourceLocation, Texture->ResourceLocation);
-
-		// Do not copy the BaseShaderResource from the source texture (this is initialized correctly here, and is used for
-		// state caching logic).
 
 		ShaderResourceView = Texture->ShaderResourceView;
 
@@ -195,10 +205,7 @@ public:
 protected:
 
 	/** Amount of memory allocated by this texture, in bytes. */
-	int64 MemorySize;
-
-	/** Pointer to the base shader resource. Usually the object itself, but not for texture references. */
-	FD3D12BaseShaderResource* BaseShaderResource;
+	int64 MemorySize{};
 
 	/** A shader resource view of the texture. */
 	TRefCountPtr<FD3D12ShaderResourceView> ShaderResourceView;
@@ -206,19 +213,16 @@ protected:
 	/** A render targetable view of the texture. */
 	TArray<TRefCountPtr<FD3D12RenderTargetView>, TInlineAllocator<1>> RenderTargetViews;
 
-	bool bCreatedRTVsPerSlice;
-
-	int32 RTVArraySize;
-
 	/** A depth-stencil targetable view of the texture. */
 	TRefCountPtr<FD3D12DepthStencilView> DepthStencilViews[FExclusiveDepthStencil::MaxIndex];
-
-	/** Number of Depth Stencil Views - used for fast call tracking. */
-	uint32	NumDepthStencilViews;
 
 	TMap<uint32, FD3D12LockedResource*> LockedMap;
 
 	FTextureRHIRef AliasingSourceTexture;
+
+	int32 RTVArraySize{};
+
+	bool bCreatedRTVsPerSlice{ false };
 };
 
 #if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
@@ -234,9 +238,11 @@ public:
 	/** Flags used when the texture was created */
 	ETextureCreateFlags Flags;
 
+	TD3D12Texture2D() = delete;
+
 	/** Initialization constructor. */
 	TD3D12Texture2D(
-	class FD3D12Device* InParent,
+		class FD3D12Device* InParent,
 		uint32 InSizeX,
 		uint32 InSizeY,
 		uint32 InSizeZ,
@@ -284,6 +290,19 @@ public:
 	}
 
 	virtual ~TD3D12Texture2D();
+
+	// FRHIResource overrides
+#if RHI_ENABLE_RESOURCE_INFO
+	bool GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const override
+	{
+		OutResourceInfo = FRHIResourceInfo{};
+		OutResourceInfo.Name = this->GetName();
+		OutResourceInfo.Type = this->GetType();
+		OutResourceInfo.VRamAllocation.AllocationSize = GetMemorySize();
+		OutResourceInfo.IsTransient = this->ResourceLocation.IsTransient();
+		return true;
+	}
+#endif
 
 	/**
 	* Locks one of the texture's mip-maps.
@@ -395,7 +414,7 @@ private:
 class FD3D12Texture3D : public FRHITexture3D, public FD3D12TextureBase
 {
 public:
-
+	FD3D12Texture3D() = delete;
 	/** Initialization constructor. */
 	FD3D12Texture3D(
 	class FD3D12Device* InParent,
@@ -414,6 +433,19 @@ public:
 	}
 
 	virtual ~FD3D12Texture3D();
+
+	// FRHIResource overrides
+#if RHI_ENABLE_RESOURCE_INFO
+	bool GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const override
+	{
+		OutResourceInfo = FRHIResourceInfo{};
+		OutResourceInfo.Name = GetName();
+		OutResourceInfo.Type = GetType();
+		OutResourceInfo.VRamAllocation.AllocationSize = ResourceLocation.GetSize();
+		OutResourceInfo.IsTransient = ResourceLocation.IsTransient();
+		return true;
+	}
+#endif
 
 	/** FRHITexture override.  See FRHITexture::GetNativeResource() */
 	virtual void* GetNativeResource() const override final
@@ -496,44 +528,6 @@ typedef TD3D12Texture2D<FD3D12BaseTexture2D>      FD3D12Texture2D;
 typedef TD3D12Texture2D<FD3D12BaseTexture2DArray> FD3D12Texture2DArray;
 typedef TD3D12Texture2D<FD3D12BaseTextureCube>    FD3D12TextureCube;
 
-/** Texture reference class. */
-class FD3D12TextureReference : public FRHITextureReference, public FD3D12TextureBase
-{
-public:
-	FD3D12TextureReference(class FD3D12Device* InParent, FLastRenderTimeContainer* LastRenderTime)
-		: FRHITextureReference(LastRenderTime)
-		, FD3D12TextureBase(InParent)
-	{
-		BaseShaderResource = NULL;
-	}
-
-	void SetReferencedTexture(FRHITexture* InTexture, FD3D12BaseShaderResource* InBaseShaderResource, FD3D12ShaderResourceView* InSRV)
-	{
-		ShaderResourceView = InSRV;
-		BaseShaderResource = InBaseShaderResource;
-		FRHITextureReference::SetReferencedTexture(InTexture);
-	}
-
-	virtual void* GetTextureBaseRHI() override final
-	{
-		return static_cast<FD3D12TextureBase*>(this);
-	}
-
-	// IRefCountedObject interface.
-	virtual uint32 AddRef() const
-	{
-		return FRHIResource::AddRef();
-	}
-	virtual uint32 Release() const
-	{
-		return FRHIResource::Release();
-	}
-	virtual uint32 GetRefCount() const
-	{
-		return FRHIResource::GetRefCount();
-	}
-};
-
 class FD3D12Viewport;
 
 class FD3D12BackBufferReferenceTexture2D : public FD3D12Texture2D
@@ -573,7 +567,7 @@ FORCEINLINE FD3D12TextureBase* GetD3D12TextureFromRHITexture(FRHITexture* Textur
 	
 	// If it's the dummy backbuffer then swap with actual current RHI backbuffer right now
 	FRHITexture* RHITexture = Texture;
-	if (RHITexture && RHITexture->GetFlags() & TexCreate_Presentable)
+	if (RHITexture && EnumHasAnyFlags(RHITexture->GetFlags(), TexCreate_Presentable))
 	{
 		FD3D12BackBufferReferenceTexture2D* BufferBufferReferenceTexture = (FD3D12BackBufferReferenceTexture2D*)RHITexture;
 		RHITexture = BufferBufferReferenceTexture->GetBackBufferTexture();
@@ -603,15 +597,18 @@ class FD3D12TextureStats
 {
 public:
 
-	static bool ShouldCountAsTextureMemory(uint32 MiscFlags);
+	static bool ShouldCountAsTextureMemory(D3D12_RESOURCE_FLAGS MiscFlags);
+
 	// @param b3D true:3D, false:2D or cube map
-	static TStatId GetD3D12StatEnum(uint32 MiscFlags, bool bCubeMap, bool b3D);
+	static TStatId GetRHIStatEnum(D3D12_RESOURCE_FLAGS MiscFlags, bool bCubeMap, bool b3D);
+	static TStatId GetD3D12StatEnum(D3D12_RESOURCE_FLAGS MiscFlags);
 
 	// Note: This function can be called from many different threads
 	// @param TextureSize >0 to allocate, <0 to deallocate
 	// @param b3D true:3D, false:2D or cube map
 	// @param bStreamable true:Streamable, false:not streamable
-	static void UpdateD3D12TextureStats(const D3D12_RESOURCE_DESC& Desc, int64 TextureSize, bool b3D, bool bCubeMap, bool bStreamable);
+	template<typename TD3D12Texture>
+	static void UpdateD3D12TextureStats(TD3D12Texture& Texture, const D3D12_RESOURCE_DESC& Desc, int64 TextureSize, bool b3D, bool bCubeMap, bool bStreamable, bool bNewTexture = false);
 
 	template<typename BaseResourceType>
 	static void D3D12TextureAllocated(TD3D12Texture2D<BaseResourceType>& Texture, const D3D12_RESOURCE_DESC *Desc = nullptr);
@@ -648,12 +645,6 @@ template<>
 struct TD3D12ResourceTraits<FRHITextureCube>
 {
 	typedef FD3D12TextureCube TConcreteType;
-};
-
-template<>
-struct TD3D12ResourceTraits<FRHITextureReference>
-{
-	typedef FD3D12TextureReference TConcreteType;
 };
 
 struct FRHICommandD3D12AsyncReallocateTexture2D final : public FRHICommand<FRHICommandD3D12AsyncReallocateTexture2D>

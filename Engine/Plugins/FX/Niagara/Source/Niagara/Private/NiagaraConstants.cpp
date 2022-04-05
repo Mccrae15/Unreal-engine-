@@ -10,6 +10,7 @@
 TArray<FNiagaraVariable> FNiagaraConstants::SystemParameters;
 TArray<FNiagaraVariable> FNiagaraConstants::TranslatorParameters;
 TArray<FNiagaraVariable> FNiagaraConstants::SwitchParameters;
+TArray<FNiagaraVariable> FNiagaraConstants::OldPositionTypes;
 TMap<FName, FNiagaraVariable> FNiagaraConstants::UpdatedSystemParameters;
 TMap<FNiagaraVariable, FText> FNiagaraConstants::SystemStrMap;
 TArray<FNiagaraVariable> FNiagaraConstants::Attributes;
@@ -47,12 +48,25 @@ const FName FNiagaraConstants::EngineSystemScopeName(TEXT("EngineSystem"));
 const FName FNiagaraConstants::EngineEmitterScopeName(TEXT("EngineEmitter"));
 const FName FNiagaraConstants::CustomScopeName(TEXT("Custom"));
 
+const FString FNiagaraConstants::AssignmentNodePrefixString(TRANSLATOR_SET_VARIABLES_STR);
+const FString FNiagaraConstants::EngineNamespaceString(TEXT("Engine"));
+const FString FNiagaraConstants::EmitterNamespaceString(TEXT("Emitter"));
+const FString FNiagaraConstants::OutputNamespaceString(TEXT("Output"));
+const FString FNiagaraConstants::ModuleNamespaceString(TEXT("Module"));
+const FString FNiagaraConstants::ParameterCollectionNamespaceString(TEXT("NPC"));
+const FString FNiagaraConstants::ParticleAttributeNamespaceString(TEXT("Particles"));
+const FString FNiagaraConstants::RapidIterationParametersNamespaceString(TEXT("Constants"));
+const FString FNiagaraConstants::StackContextNamespaceString(TEXT("StackContext"));
+const FString FNiagaraConstants::SystemNamespaceString(TEXT("System"));
+const FString FNiagaraConstants::UserNamespaceString(TEXT("User"));
+
 const FName FNiagaraConstants::InputScopeName(TEXT("Input"));
 const FName FNiagaraConstants::OutputScopeName(TEXT("Output"));
 const FName FNiagaraConstants::UniqueOutputScopeName(TEXT("OutputModule"));
 const FName FNiagaraConstants::ScriptTransientScopeName(TEXT("ScriptTransient"));
 const FName FNiagaraConstants::ScriptPersistentScopeName(TEXT("ScriptPersistent"));
 
+const int32 FNiagaraConstants::MaxCategoryNameLength(128);
 const int32 FNiagaraConstants::MaxParameterLength(256);
 const int32 FNiagaraConstants::MaxScriptNameLength(256);
 
@@ -72,6 +86,7 @@ void FNiagaraConstants::Init()
 		SystemParameters.Add(SYS_PARAM_ENGINE_X_AXIS);
 		SystemParameters.Add(SYS_PARAM_ENGINE_Y_AXIS);
 		SystemParameters.Add(SYS_PARAM_ENGINE_Z_AXIS);
+		SystemParameters.Add(SYS_PARAM_ENGINE_LWC_TILE);
 
 		SystemParameters.Add(SYS_PARAM_ENGINE_ROTATION);
 
@@ -95,6 +110,7 @@ void FNiagaraConstants::Init()
 		SystemParameters.Add(SYS_PARAM_ENGINE_EMITTER_SPAWN_COUNT_SCALE);
 		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS_ALIVE);
 		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_SIGNIFICANCE_INDEX);
+		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_RANDOM_SEED);
 		SystemParameters.Add(SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS);
 		SystemParameters.Add(SYS_PARAM_ENGINE_NUM_SYSTEM_INSTANCES);
 		SystemParameters.Add(SYS_PARAM_ENGINE_GLOBAL_SPAWN_COUNT_SCALE);
@@ -122,9 +138,22 @@ void FNiagaraConstants::Init()
 		SwitchParameters.Add(SYS_PARAM_EMITTER_DETERMINISM);
 		SwitchParameters.Add(SYS_PARAM_EMITTER_OVERRIDE_GLOBAL_SPAWN_COUNT_SCALE);
 		SwitchParameters.Add(SYS_PARAM_EMITTER_SIMULATION_TARGET);
+		SwitchParameters.Add(SYS_PARAM_EMITTER_INTERP_SPAWN);
 		SwitchParameters.Add(SYS_PARAM_SCRIPT_USAGE);
 		SwitchParameters.Add(SYS_PARAM_SCRIPT_CONTEXT);
 		SwitchParameters.Add(SYS_PARAM_FUNCTION_DEBUG_STATE);
+	}
+
+	if (OldPositionTypes.Num() == 0)
+	{
+		OldPositionTypes.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(),  SYS_PARAM_PARTICLES_POSITION.GetName()));
+		OldPositionTypes.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), FName("Particles.Initial.Position")));
+		OldPositionTypes.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), FName("Particles.Previous.Position")));
+		OldPositionTypes.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), FName(StackContextNamespaceString + ".Position")));
+		OldPositionTypes.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), FName(StackContextNamespaceString + ".Initial.Position")));
+		OldPositionTypes.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), FName(StackContextNamespaceString + ".Previous.Position")));
+		OldPositionTypes.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(),  SYS_PARAM_ENGINE_POSITION.GetName()));
+		OldPositionTypes.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(),  SYS_PARAM_ENGINE_EMITTER_SIMULATION_POSITION.GetName()));
 	}
 
 	if (UpdatedSystemParameters.Num() == 0)
@@ -157,6 +186,7 @@ void FNiagaraConstants::Init()
 		UpdatedSystemParameters.Add(FName(TEXT("Emitter Random Seed")), SYS_PARAM_EMITTER_RANDOM_SEED);
 		UpdatedSystemParameters.Add(FName(TEXT("Emitter Instance Seed")), SYS_PARAM_ENGINE_EMITTER_INSTANCE_SEED);
 		UpdatedSystemParameters.Add(FName(TEXT("Emitter Determinism")), SYS_PARAM_EMITTER_DETERMINISM);
+		UpdatedSystemParameters.Add(FName(TEXT("Emitter Interpolated Spawn")), SYS_PARAM_EMITTER_INTERP_SPAWN);
 		UpdatedSystemParameters.Add(FName(TEXT("Emitter Override Global Spawn Count Scale")), SYS_PARAM_EMITTER_OVERRIDE_GLOBAL_SPAWN_COUNT_SCALE);
 		UpdatedSystemParameters.Add(FName(TEXT("Effect Position")), SYS_PARAM_ENGINE_POSITION);
 		UpdatedSystemParameters.Add(FName(TEXT("Effect Velocity")), SYS_PARAM_ENGINE_VELOCITY);
@@ -194,6 +224,7 @@ void FNiagaraConstants::Init()
 		SystemStrMap.Add(SYS_PARAM_ENGINE_Y_AXIS, LOCTEXT("YAxisDesc", "The Y-axis of the owning component."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_Z_AXIS, LOCTEXT("ZAxisDesc", "The Z-axis of the owning component."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_ROTATION, LOCTEXT("EngineRotationDesc", "The owning component's rotation in world space."));
+		SystemStrMap.Add(SYS_PARAM_ENGINE_LWC_TILE, LOCTEXT("EngineLWCTileDesc", "Due to large world coordinates, the simulation position can be shifted from the actual world position to allow for more accuracy. This is the tile the system is shifted by, so (SimulationPosition + Tile * TileSize) gives the original world position. The x,y,z components of this vector are the tile and the w component is the tile size."));
 
 		SystemStrMap.Add(SYS_PARAM_ENGINE_LOCAL_TO_WORLD, LOCTEXT("LocalToWorldDesc", "Owning component's local space to world space transform matrix."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_WORLD_TO_LOCAL, LOCTEXT("WorldToLocalDesc", "Owning component's world space to local space transform matrix."));
@@ -215,6 +246,7 @@ void FNiagaraConstants::Init()
 		SystemStrMap.Add(SYS_PARAM_ENGINE_EMITTER_INSTANCE_SEED, LOCTEXT("EmitterInstanceSeed", "A random seed that changes with every execution of the emitter instance."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS_ALIVE, LOCTEXT("SystemNumEmittersAlive", "The number of emitters still alive attached to this system. Should only be used in System scripts."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_SYSTEM_SIGNIFICANCE_INDEX, LOCTEXT("SystemSignificanceIndex", "Index denoting how significant this system instance is in relation to others of the same system in this scene. e.g. 0 is the most significanct instance."));
+		SystemStrMap.Add(SYS_PARAM_ENGINE_SYSTEM_RANDOM_SEED, LOCTEXT("SystemRandomSeed", "A random seed controlled used for generating system random numbers."));
 		
 		SystemStrMap.Add(SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS, LOCTEXT("SystemNumEmitters", "The number of emitters attached to this system. Should only be used in System scripts."));
 		SystemStrMap.Add(SYS_PARAM_ENGINE_NUM_SYSTEM_INSTANCES, LOCTEXT("SystemNumInstances", "The number of instances of the this system currently ticking. Should only be used in System scripts."));
@@ -310,12 +342,12 @@ void FNiagaraConstants::Init()
 	if (AttrDefaultsStrMap.Num() == 0)
 	{
 		FNiagaraVariable Var;
-		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_POSITION, SYS_PARAM_ENGINE_POSITION.GetName().ToString());
-		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_POSITION, SYS_PARAM_ENGINE_POSITION);
+		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_POSITION, SYS_PARAM_ENGINE_EMITTER_SIMULATION_POSITION.GetName().ToString());
+		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_POSITION, SYS_PARAM_ENGINE_EMITTER_SIMULATION_POSITION);
 		
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_VELOCITY, TEXT("0.0,0.0,0.0"));
 		Var = SYS_PARAM_PARTICLES_VELOCITY;
-		Var.SetValue<FVector>(FVector(0.0f, 0.0f, 0.0f));
+		Var.SetValue<FVector3f>(FVector3f(0.0f, 0.0f, 0.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_VELOCITY, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_COLOR, FLinearColor(1.0f, 1.0f, 1.0f, 1.0f).ToString());
@@ -335,17 +367,17 @@ void FNiagaraConstants::Init()
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_SPRITE_SIZE, TEXT("X=50.0 Y=50.0"));
 		Var = SYS_PARAM_PARTICLES_SPRITE_SIZE;
-		Var.SetValue<FVector2D>(FVector2D(50.0f, 50.0f));
+		Var.SetValue<FVector2f>(FVector2f(50.0f, 50.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_SPRITE_SIZE, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_SPRITE_FACING, TEXT("1.0,0.0,0.0"));
 		Var = SYS_PARAM_PARTICLES_SPRITE_FACING;
-		Var.SetValue<FVector>(FVector(1.0f, 0.0f, 0.0f));
+		Var.SetValue<FVector3f>(FVector3f(1.0f, 0.0f, 0.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_SPRITE_FACING, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_SPRITE_ALIGNMENT, TEXT("1.0,0.0,0.0"));
 		Var = SYS_PARAM_PARTICLES_SPRITE_ALIGNMENT;
-		Var.SetValue<FVector>(FVector(1.0f, 0.0f, 0.0f));
+		Var.SetValue<FVector3f>(FVector3f(1.0f, 0.0f, 0.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_SPRITE_ALIGNMENT, Var);
 		
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_SUB_IMAGE_INDEX, TEXT("0.0"));
@@ -355,27 +387,27 @@ void FNiagaraConstants::Init()
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM, TEXT("1.0,1.0,1.0,1.0"));
 		Var = SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM;
-		Var.SetValue<FVector4>(FVector4(1.0f, 1.0f, 1.0f, 1.0f));
+		Var.SetValue<FVector4f>(FVector4f(1.0f, 1.0f, 1.0f, 1.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM_1, TEXT("1.0,1.0,1.0,1.0"));
 		Var = SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM_1;
-		Var.SetValue<FVector4>(FVector4(1.0f, 1.0f, 1.0f, 1.0f));
+		Var.SetValue<FVector4f>(FVector4f(1.0f, 1.0f, 1.0f, 1.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM_1, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM_2, TEXT("1.0,1.0,1.0,1.0"));
 		Var = SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM_2;
-		Var.SetValue<FVector4>(FVector4(1.0f, 1.0f, 1.0f, 1.0f));
+		Var.SetValue<FVector4f>(FVector4f(1.0f, 1.0f, 1.0f, 1.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM_2, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM_3, TEXT("1.0,1.0,1.0,1.0"));
 		Var = SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM_3;
-		Var.SetValue<FVector4>(FVector4(1.0f, 1.0f, 1.0f, 1.0f));
+		Var.SetValue<FVector4f>(FVector4f(1.0f, 1.0f, 1.0f, 1.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM_3, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_SCALE, TEXT("1.0,1.0,1.0"));
 		Var = SYS_PARAM_PARTICLES_SCALE;
-		Var.SetValue<FVector>(FVector(1.0f, 1.0f, 1.0f));
+		Var.SetValue<FVector3f>(FVector3f(1.0f, 1.0f, 1.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_SCALE, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_LIFETIME, TEXT("5.0"));
@@ -385,7 +417,7 @@ void FNiagaraConstants::Init()
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_MESH_ORIENTATION, TEXT("0.0,0.0,0.0,1.0"));
 		Var = SYS_PARAM_PARTICLES_MESH_ORIENTATION;
-		Var.SetValue<FQuat>(FQuat::Identity);
+		Var.SetValue<FQuat4f>(FQuat4f::Identity);
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_MESH_ORIENTATION, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_MESH_INDEX, TEXT("0"));
@@ -400,12 +432,12 @@ void FNiagaraConstants::Init()
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_UV_SCALE, TEXT("X=1.0 Y=1.0"));
 		Var = SYS_PARAM_PARTICLES_UV_SCALE;
-		Var.SetValue<FVector2D>(FVector2D(1.0f, 1.0f));
+		Var.SetValue<FVector2f>(FVector2f(1.0f, 1.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_UV_SCALE, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_PIVOT_OFFSET, TEXT("X=0.5 Y=0.5"));
 		Var = SYS_PARAM_PARTICLES_PIVOT_OFFSET;
-		Var.SetValue<FVector2D>(FVector2D(0.5f, 0.5f));
+		Var.SetValue<FVector2f>(FVector2f(0.5f, 0.5f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_PIVOT_OFFSET, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_MATERIAL_RANDOM, TEXT("0.0"));
@@ -460,7 +492,7 @@ void FNiagaraConstants::Init()
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_RIBBONFACING, TEXT("0.0, 0.0, 1.0"));
 		Var = SYS_PARAM_PARTICLES_RIBBONFACING;
-		Var.SetValue<FVector>(FVector(0.0f, 0.0f, 1.0f));
+		Var.SetValue<FVector3f>(FVector3f(0.0f, 0.0f, 1.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_RIBBONFACING, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_RIBBONLINKORDER, TEXT("0"));
@@ -480,7 +512,7 @@ void FNiagaraConstants::Init()
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_RIBBONV0RANGEOVERRIDE, TEXT("0.0, 1.0"));
 		Var = SYS_PARAM_PARTICLES_RIBBONV0RANGEOVERRIDE;
-		Var.SetValue<FVector2D>(FVector2D(0.0f, 1.0f));
+		Var.SetValue<FVector2f>(FVector2f(0.0f, 1.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_RIBBONV0RANGEOVERRIDE, Var);
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_RIBBONU1OVERRIDE, TEXT("0"));
@@ -490,7 +522,7 @@ void FNiagaraConstants::Init()
 
 		AttrDefaultsStrMap.Add(SYS_PARAM_PARTICLES_RIBBONV1RANGEOVERRIDE, TEXT("0.0, 1.0"));
 		Var = SYS_PARAM_PARTICLES_RIBBONV1RANGEOVERRIDE;
-		Var.SetValue<FVector2D>(FVector2D(0.0f, 1.0f));
+		Var.SetValue<FVector2f>(FVector2f(0.0f, 1.0f));
 		AttrDefaultsValueMap.Add(SYS_PARAM_PARTICLES_RIBBONV1RANGEOVERRIDE, Var);
 	}
 
@@ -526,7 +558,7 @@ void FNiagaraConstants::Init()
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_VISIBILITY_TAG, LOCTEXT("VisibilityTag", "Used for selecting renderers to use when rendering this particle. Without this, the particle will render in all renderers"));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_COMPONENTS_ENABLED, LOCTEXT("ComponentRenderEnabledParamDesc", "Used to check if component rendering should be enabled on a per-particle basis. Without this, the each particle will spawn a component."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONID, LOCTEXT("RibbonIDDesc", "Sets the ribbon id for a particle. Particles with the same ribbon id will be connected into a ribbon."));
-		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONWIDTH, LOCTEXT("RibbonWidthDesc", "Sets the ribbon width for a particle, in UE4 units."));
+		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONWIDTH, LOCTEXT("RibbonWidthDesc", "Sets the ribbon width for a particle, in Unreal units."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONTWIST, LOCTEXT("RibbonTwistDesc", "Sets the ribbon twist for a particle, in degrees."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONFACING, LOCTEXT("RibbonFacingDesc", "Sets the facing vector of the ribbon at the particle position, or the side vector the ribbon's width is extended along, depending on the selected facing mode."));
 		AttrDescStrMap.Add(SYS_PARAM_PARTICLES_RIBBONLINKORDER, LOCTEXT("RibbonLinkOrderDesc", "Explicit order for linking particles within a ribbon. Particles of the same ribbon id will be connected into a ribbon in incrementing order of this attribute value."));
@@ -643,6 +675,12 @@ FText FNiagaraConstants::GetEngineConstantDescription(const FNiagaraVariable& In
 	return FText();
 }
 
+const TArray<FNiagaraVariable>& FNiagaraConstants::GetOldPositionTypeVariables()
+{
+	check(OldPositionTypes.Num() != 0);
+	return OldPositionTypes;
+}
+
 const TArray<FNiagaraVariable>& FNiagaraConstants::GetCommonParticleAttributes()
 {
 	check(Attributes.Num() != 0);
@@ -699,21 +737,47 @@ FNiagaraVariable FNiagaraConstants::GetAttributeWithDefaultValue(const FNiagaraV
 
 FNiagaraVariable FNiagaraConstants::GetAttributeAsParticleDataSetKey(const FNiagaraVariable& InVar)
 {
+	static FString ParticlesString = TEXT("Particles.");
+	static FString StackContextString = TEXT("StackContext.");
+
 	FNiagaraVariable OutVar = InVar;
-	FString DataSetName = InVar.GetName().ToString();
-	DataSetName.RemoveFromStart(TEXT("Particles."));
-	DataSetName.RemoveFromStart(TEXT("StackContext."));
-	OutVar.SetName(*DataSetName);
+
+	TStringBuilder<128> DataSetName;
+	InVar.GetName().ToString(DataSetName);
+
+	FStringView DataSetNameView(DataSetName);
+	if (DataSetNameView.StartsWith(ParticlesString))
+	{
+		DataSetNameView.RemovePrefix(ParticlesString.Len());
+	}
+	else if (DataSetNameView.StartsWith(StackContextString))
+	{
+		DataSetNameView.RemovePrefix(StackContextString.Len());
+	}
+	OutVar.SetName(FName(DataSetNameView));
 	return OutVar;
 }
 
 FNiagaraVariable FNiagaraConstants::GetAttributeAsEmitterDataSetKey(const FNiagaraVariable& InVar)
 {
+	static FString EmitterString = TEXT("Emitter.");
+	static FString StackContextString = TEXT("StackContext.");
+
 	FNiagaraVariable OutVar = InVar;
-	FString DataSetName = InVar.GetName().ToString();
-	DataSetName.RemoveFromStart(TEXT("Emitter."));
-	DataSetName.RemoveFromStart(TEXT("StackContext."));
-	OutVar.SetName(*DataSetName);
+
+	TStringBuilder<128> DataSetName;
+	InVar.GetName().ToString(DataSetName);
+
+	FStringView DataSetNameView(DataSetName);
+	if ( DataSetNameView.StartsWith(EmitterString) )
+	{
+		DataSetNameView.RemovePrefix(EmitterString.Len());
+	}
+	else if (DataSetNameView.StartsWith(StackContextString))
+	{
+		DataSetNameView.RemovePrefix(StackContextString.Len());
+	}
+	OutVar.SetName(FName(DataSetNameView));
 	return OutVar;
 }
 FNiagaraVariableAttributeBinding FNiagaraConstants::GetAttributeDefaultBinding(const FNiagaraVariable& InVar)

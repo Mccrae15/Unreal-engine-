@@ -38,6 +38,7 @@ public:
 		, _Font()
 		, _ForegroundColor()
 		, _ReadOnlyForegroundColor()
+		, _FocusedForegroundColor()
 		, _IsReadOnly( false )
 		, _IsPassword( false )
 		, _IsCaretMovedWhenGainFocus ( true )
@@ -55,6 +56,7 @@ public:
 		, _VirtualKeyboardOptions(FVirtualKeyboardOptions())
 		, _VirtualKeyboardTrigger(EVirtualKeyboardTrigger::OnFocusByPointer)
 		, _VirtualKeyboardDismissAction(EVirtualKeyboardDismissAction::TextChangeOnDismiss)
+		, _OverflowPolicy()
 		{
 		}
 
@@ -78,6 +80,9 @@ public:
 		
 		/** Text color and opacity when read-only (overrides Style) */
 		SLATE_ATTRIBUTE( FSlateColor, ReadOnlyForegroundColor )
+
+		/** Text color and opacity when this box has keyboard focus (overrides Style) */
+		SLATE_ATTRIBUTE(FSlateColor, FocusedForegroundColor)
 
 		/** Sets whether this text box can actually be modified interactively by the user */
 		SLATE_ATTRIBUTE( bool, IsReadOnly )
@@ -160,6 +165,8 @@ public:
 		/** Which text flow direction should we use? (unset to use the default returned by GetDefaultTextFlowDirection) */
 		SLATE_ARGUMENT(TOptional<ETextFlowDirection>, TextFlowDirection)
 
+		/** Determines what happens to text that is clipped and doesnt fit within the allotted area for this text box */
+		SLATE_ARGUMENT(TOptional<ETextOverflowPolicy>, OverflowPolicy)
 	SLATE_END_ARGS()
 
 	SEditableTextBox();
@@ -245,6 +252,13 @@ public:
 	void SetReadOnlyForegroundColor(const TAttribute<FSlateColor>& InReadOnlyForegroundColor);
 
 	/**
+	 * Sets the text color and opacity when this box has keyboard focus(overrides Style)
+	 *
+	 * @param  InFocusedForegroundColor 	The focused color and opacity
+	 */
+	void SetFocusedForegroundColor(const TAttribute<FSlateColor>& InFocusedForegroundColor);
+
+	/**
 	 * Sets the minimum width that a text box should be.
 	 *
 	 * @param  InMinimumDesiredWidth	The minimum width
@@ -323,6 +337,9 @@ public:
 	/** See TextFlowDirection attribute */
 	void SetTextFlowDirection(const TOptional<ETextFlowDirection>& InTextFlowDirection);
 
+	/** Sets the overflow policy for this text block */
+	void SetOverflowPolicy(TOptional<ETextOverflowPolicy> InOverflowPolicy);
+
 	/** Query to see if any text is selected within the document */
 	bool AnyTextSelected() const;
 
@@ -400,6 +417,9 @@ protected:
 
 	/** Read-only foreground color (overrides style) */
 	TAttribute<FSlateColor> ReadOnlyForegroundColorOverride;
+
+	/** Focused foreground color (overrides style) */
+	TAttribute<FSlateColor> FocusedForegroundColorOverride;
 
 	/** Allows for inserting additional widgets that extend the functionality of the text box */
 	TSharedPtr<SHorizontalBox> Box;

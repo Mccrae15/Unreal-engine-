@@ -5,8 +5,10 @@
 #include "User/ISocialUserList.h"
 #include "UObject/GCObject.h"
 #include "PartyPackage.h"
+#include "Containers/Ticker.h"
 
 enum class EMemberExitedReason : uint8;
+typedef TSharedRef<const IOnlinePartyRequestToJoinInfo> IOnlinePartyRequestToJoinInfoConstRef;
 
 class FSocialUserList : public ISocialUserList, public FGCObject, public TSharedFromThis<FSocialUserList>
 {
@@ -14,6 +16,10 @@ public:
 	static TSharedRef<FSocialUserList> CreateUserList(const USocialToolkit& InOwnerToolkit, const FSocialUserListConfig& Config);
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FSocialUserList");
+	}
 
 	FOnUserAdded& OnUserAdded() const override { return OnUserAddedEvent; }
 	FOnUserRemoved& OnUserRemoved() const override { return OnUserRemovedEvent; }
@@ -35,6 +41,7 @@ private:
 	void HandleOwnerToolkitReset();
 
 	void HandlePartyInviteReceived(USocialUser& InvitingUser);
+	void HandlePartyInviteRemoved(USocialUser& InvitingUser);
 	void HandlePartyInviteHandled(USocialUser* InvitingUser);
 
 	void HandleFriendInviteReceived(USocialUser& User, ESocialSubsystem SubsystemType);
@@ -52,6 +59,9 @@ private:
 	void HandleUserPresenceChanged(ESocialSubsystem SubsystemType, USocialUser* User);
 	void HandleUserGameSpecificStatusChanged(USocialUser* User);
 
+	void HandleRequestToJoinReceived(USocialUser& SocialUser, IOnlinePartyRequestToJoinInfoConstRef Request);
+	void HandleRequestToJoinRemoved(USocialUser& SocialUser, IOnlinePartyRequestToJoinInfoConstRef Request, EPartyRequestToJoinRemovedReason Reason);
+
 	void MarkUserAsDirty(USocialUser& User);
 
 	void TryAddUser(USocialUser& User);
@@ -67,8 +77,9 @@ private:
 	void UpdateListInternal();
 
 	void HandlePartyJoined(USocialParty& Party);
+	void HandlePartyLeft(EMemberExitedReason Reason, USocialParty* LeftParty);
 	void HandlePartyMemberCreated(UPartyMember& Member);
-	void HandlePartyMemberLeft(EMemberExitedReason Reason, UPartyMember* Member);
+	void HandlePartyMemberLeft(EMemberExitedReason Reason, UPartyMember* Member, bool bUpdateNow);
 
 	USocialUser* FindOwnersRelationshipTo(UPartyMember& TargetPartyMember) const;
 	void MarkPartyMemberAsDirty(UPartyMember& PartyMember);
@@ -93,7 +104,7 @@ private:
 	bool bNeedsSort = false;
 	int32 AutoUpdateRequests = 0;
 	float AutoUpdatePeriod = .5f;
-	FDelegateHandle UpdateTickerHandle;
+	FTSTicker::FDelegateHandle UpdateTickerHandle;
 
 	mutable FOnUserAdded OnUserAddedEvent;
 	mutable FOnUserRemoved OnUserRemovedEvent;

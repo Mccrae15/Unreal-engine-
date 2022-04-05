@@ -2,42 +2,20 @@
 
 #pragma once
 
-#include "IGeometryCacheStream.h"
+#include "GeometryCacheStreamBase.h"
 
-struct FGeometryCacheAbcStreamReadRequest;
 class UGeometryCacheTrackAbcFile;
 
-class FGeometryCacheAbcStream : public IGeometryCacheStream
+class FGeometryCacheAbcStream : public FGeometryCacheStreamBase
 {
 public:
 	FGeometryCacheAbcStream(UGeometryCacheTrackAbcFile* InAbcTrack);
-	virtual ~FGeometryCacheAbcStream();
 
+protected:
 	//~ Begin IGeometryCacheStream Interface
-	virtual void Prefetch(int32 StartFrameIndex, int32 NumFrames = 0) override;
-	virtual const TArray<int32>& GetFramesNeeded() override;
-	virtual bool RequestFrameData(int32 FrameIndex) override;
-	virtual void UpdateRequestStatus(TArray<int32>& OutFramesCompleted) override;
-	virtual bool GetFrameData(int32 FrameIndex, FGeometryCacheMeshData& OutMeshData) override;
-	virtual int32 CancelRequests() override;
+	virtual void GetMeshData(int32 FrameIndex, int32 ConcurrencyIndex, FGeometryCacheMeshData& OutMeshData) override;
 	//~ End IGeometryCacheStream Interface
 
-private:
-
-	void LoadFrameData(int32 FrameIndex);
-
 	UGeometryCacheTrackAbcFile* AbcTrack;
-
-	TArray<int32> ReadIndices;
-	TArray<FGeometryCacheAbcStreamReadRequest*> ReadRequestsPool;
-
-	TArray<int32> FramesNeeded;
-	TArray<FGeometryCacheAbcStreamReadRequest*> FramesRequested;
-
-	typedef TMap<int32, FGeometryCacheMeshData*> FFrameIndexToMeshData;
-	FFrameIndexToMeshData FramesAvailable;
-
-	FCriticalSection CriticalSection;
-
-	TAtomic<bool> bCancellationRequested;
+	FString Hash;
 };

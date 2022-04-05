@@ -20,6 +20,8 @@
 #include "HAL/MallocBinned.h"
 #include "HAL/MallocBinned2.h"
 #include "HAL/MallocBinned3.h"
+#include "HAL/MallocStomp2.h"
+#include "HAL/MallocDoubleFreeFinder.h"
 #include "Windows/WindowsHWrapper.h"
 
 #pragma warning(disable:6250)
@@ -96,15 +98,20 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Ansi;
 	}
+#if PLATFORM_64BITS
+	// Mimalloc is now the default allocator for editor and programs because it has shown
+	// both great performance and as much as half the memory usage of TBB after
+	// heavy editor workloads. See CL 15887498 description for benchmarks.
+	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && MIMALLOC_ALLOCATOR_ALLOWED) //-V517
+	{
+		AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
+	}
+#endif
 	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && TBB_ALLOCATOR_ALLOWED) //-V517
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::TBB;
 	}
 #if PLATFORM_64BITS
-	else if ((WITH_EDITORONLY_DATA || IS_PROGRAM) && MIMALLOC_ALLOCATOR_ALLOWED) //-V517
-	{
-		AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
-	}
 	else if (USE_MALLOC_BINNED3)
 	{
 		AllocatorToUse = EMemoryAllocatorToUse::Binned3;
@@ -125,6 +132,7 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 
 	if (FCString::Stristr(CommandLine, TEXT("-ansimalloc")))
 	{
+		// see FPlatformMisc::GetProcessDiagnostics()
 		AllocatorToUse = EMemoryAllocatorToUse::Ansi;
 	}
 #if TBB_ALLOCATOR_ALLOWED
@@ -156,9 +164,22 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 #if WITH_MALLOC_STOMP
 	else if (FCString::Stristr(CommandLine, TEXT("-stompmalloc")))
 	{
+		// see FPlatformMisc::GetProcessDiagnostics()
 		AllocatorToUse = EMemoryAllocatorToUse::Stomp;
 	}
 #endif // WITH_MALLOC_STOMP
+#if WITH_MALLOC_STOMP2
+	if (FCString::Stristr(CommandLine, TEXT("-stomp2malloc")))
+	{
+		GMallocStomp2Enabled = true;
+	}
+#endif // WITH_MALLOC_STOMP2
+
+	if (FCString::Stristr(CommandLine, TEXT("-doublefreefinder")))
+	{
+		GMallocDoubleFreeFinderEnabled = true;
+	}
+
 #endif // !UE_BUILD_SHIPPING
 
 	switch (AllocatorToUse)
@@ -173,7 +194,7 @@ FMalloc* FWindowsPlatformMemory::BaseAllocator()
 	case EMemoryAllocatorToUse::TBB:
 		return new FMallocTBB();
 #endif
-#if MIMALLOC_ALLOCATOR_ALLOWED && PLATFORM_SUPPORTS_MIMALLOC
+#if MIMALLOC_ALLOCATOR_ALLOWED && PLATFORM_SUPPORTS_MIMALLOC && PLATFORM_BUILDS_MIMALLOC
 	case EMemoryAllocatorToUse::Mimalloc:
 		return new FMallocMimalloc();
 #endif
@@ -229,6 +250,10 @@ FPlatformMemoryStats FWindowsPlatformMemory::GetStats()
 	MemoryStats.AvailablePhysical = MemoryStatusEx.ullAvailPhys;
 	MemoryStats.AvailableVirtual = MemoryStatusEx.ullAvailVirtual;
 
+	// On Windows, ullTotalVirtual is artificial and represent the SKU limitation (128TB on Win10Pro) instead of the commit limit of the system we're after.
+	// ullTotalPageFile represents PhysicalMemory + Disk Swap Space, which is the value we care about
+	MemoryStats.TotalVirtual = MemoryStatusEx.ullTotalPageFile;
+
 	// On Windows, Virtual Memory is limited per process to the address space (e.g. 47 bits (128Tb)), but is additionally limited by the sum of used virtual memory across all processes
 	// must be less than PhysicalMemory plus the Virtual Memory Page Size. The remaining virtual memory space given this system-wide limit is stored in ullAvailPageSize
 	MemoryStats.AvailableVirtual = FMath::Min(MemoryStats.AvailableVirtual, MemoryStatusEx.ullAvailPageFile);
@@ -270,7 +295,9 @@ const FPlatformMemoryConstants& FWindowsPlatformMemory::GetConstants()
 		::GetSystemInfo(&SystemInfo);
 
 		MemoryConstants.TotalPhysical = MemoryStatusEx.ullTotalPhys;
-		MemoryConstants.TotalVirtual = MemoryStatusEx.ullTotalVirtual;
+		// On Windows, ullTotalVirtual is artificial and represent the SKU limitation (128TB on Win10Pro) instead of the commit limit of the system we're after.
+		// ullTotalPageFile represents PhysicalMemory + Disk Swap Space, which is the value we care about
+		MemoryConstants.TotalVirtual = MemoryStatusEx.ullTotalPageFile;
 		MemoryConstants.BinnedPageSize = SystemInfo.dwAllocationGranularity;	// Use this so we get larger 64KiB pages, instead of 4KiB
 		MemoryConstants.BinnedAllocationGranularity = SystemInfo.dwPageSize; // Use 4KiB pages for more efficient use of memory - 64KiB pages don't really exist on this CPU
 		MemoryConstants.OsAllocationGranularity = SystemInfo.dwAllocationGranularity;	// VirtualAlloc cannot allocate memory less than that

@@ -10,7 +10,7 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "BlueprintSetLibrary.generated.h"
 
-UCLASS(Experimental)
+UCLASS(meta=(BlueprintThreadSafe))
 class ENGINE_API UBlueprintSetLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
@@ -45,6 +45,24 @@ public:
 	UFUNCTION(BlueprintCallable, CustomThunk, meta=(DisplayName = "Remove", CompactNodeTitle = "REMOVE", SetParam = "TargetSet|Item", AutoCreateRefTerm = "Item"), Category="Utilities|Set")
 	static bool Set_Remove(const TSet<int32>& TargetSet, const int32& Item);
 	
+	/**
+	 * Check if the set is empty
+	 *
+	 * @param	TargetSet		The set to check
+	 * @return	A boolean indicating if the array is empty
+	 */
+	UFUNCTION(BlueprintPure, CustomThunk, meta = (DisplayName = "Is Empty", CompactNodeTitle = "IS EMPTY", SetParam = "TargetSet"), Category = "Utilities|Set")
+	static bool Set_IsEmpty(const TSet<int32>& TargetSet);
+
+	/**
+	 * Check if the set has any elements
+	 *
+	 * @param	TargetSet		The set to check
+	 * @return	A boolean indicating if the array has any elements
+	 */
+	UFUNCTION(BlueprintPure, CustomThunk, meta = (DisplayName = "Is Not Empty", CompactNodeTitle = "IS NOT EMPTY", SetParam = "TargetSet"), Category = "Utilities|Set")
+	static bool Set_IsNotEmpty(const TSet<int32>& TargetSet);
+
 	/**
 	 * Removes all elements in an Array from a set.
 	 *
@@ -355,6 +373,44 @@ public:
 		ElementProp->DestroyValue(StorageSpace);
 	}
 
+	DECLARE_FUNCTION(execSet_IsEmpty)
+	{
+		Stack.MostRecentProperty = nullptr;
+		Stack.StepCompiledIn<FSetProperty>(nullptr);
+		void* SetAddr = Stack.MostRecentPropertyAddress;
+		FSetProperty* SetProperty = CastField<FSetProperty>(Stack.MostRecentProperty);
+		if (!SetProperty)
+		{
+			Stack.bArrayContextFailed = true;
+			return;
+		}
+
+		P_FINISH;
+
+		P_NATIVE_BEGIN;
+		*(bool*)RESULT_PARAM = GenericSet_IsEmpty(SetAddr, SetProperty);
+		P_NATIVE_END;
+	}
+
+	DECLARE_FUNCTION(execSet_IsNotEmpty)
+	{
+		Stack.MostRecentProperty = nullptr;
+		Stack.StepCompiledIn<FSetProperty>(nullptr);
+		void* SetAddr = Stack.MostRecentPropertyAddress;
+		FSetProperty* SetProperty = CastField<FSetProperty>(Stack.MostRecentProperty);
+		if (!SetProperty)
+		{
+			Stack.bArrayContextFailed = true;
+			return;
+		}
+
+		P_FINISH;
+
+		P_NATIVE_BEGIN;
+		*(bool*)RESULT_PARAM = GenericSet_IsNotEmpty(SetAddr, SetProperty);
+		P_NATIVE_END;
+	}
+
 	DECLARE_FUNCTION(execSet_Intersection)
 	{
 		Stack.MostRecentProperty = nullptr;
@@ -495,6 +551,8 @@ public:
 	static void GenericSet_Clear(const void* TargetSet, const FSetProperty* SetProperty);
 	static int32 GenericSet_Length(const void* TargetSet, const FSetProperty* SetProperty);
 	static bool GenericSet_Contains(const void* TargetSet, const FSetProperty* SetProperty, const void* ItemToFind);
+	static bool GenericSet_IsEmpty(const void* TargetSet, const FSetProperty* SetProperty);
+	static bool GenericSet_IsNotEmpty(const void* TargetSet, const FSetProperty* SetProperty);
 	static void GenericSet_Intersect(const void* SetA, const FSetProperty* SetPropertyA, const void* SetB, const FSetProperty* SetPropertyB, const void* SetResult, const FSetProperty* SetPropertyResult);
 	static void GenericSet_Union(const void* SetA, const FSetProperty* SetPropertyA, const void* SetB, const FSetProperty* SetPropertyB, const void* SetResult, const FSetProperty* SetPropertyResult);
 	static void GenericSet_Difference(const void* SetA, const FSetProperty* SetPropertyA, const void* SetB, const FSetProperty* SetPropertyB, const void* SetResult, const FSetProperty* SetPropertyResult);

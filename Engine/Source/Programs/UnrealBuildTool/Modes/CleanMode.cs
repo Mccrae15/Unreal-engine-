@@ -7,13 +7,16 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using OpenTracing;
+using OpenTracing.Util;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
 	/// <summary>
 	/// Cleans build products and intermediates for the target. This deletes files which are named consistently with the target being built
-	/// (e.g. UE4Editor-Foo-Win64-Debug.dll) rather than an actual record of previous build products.
+	/// (e.g. UnrealEditor-Foo-Win64-Debug.dll) rather than an actual record of previous build products.
 	/// </summary>
 	[ToolMode("Clean", ToolModeOptions.XmlConfig | ToolModeOptions.BuildPlatforms | ToolModeOptions.SingleInstance)]
 	class CleanMode : ToolMode
@@ -45,7 +48,17 @@ namespace UnrealBuildTool
 			Arguments.ApplyTo(BuildConfiguration);
 
 			// Parse all the targets being built
-			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, bSkipRulesCompile);
+			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, bSkipRulesCompile, BuildConfiguration.bForceRulesCompile);
+
+			Clean(TargetDescriptors, BuildConfiguration);
+
+			return 0;
+		}
+
+		public void Clean(List<TargetDescriptor> TargetDescriptors, BuildConfiguration BuildConfiguration)
+		{
+			using IScope Scope = GlobalTracer.Instance.BuildSpan("CleanMode.Clean()").StartActive();
+
 			if (TargetDescriptors.Count == 0)
 			{
 				throw new BuildException("No targets specified to clean");
@@ -57,7 +70,7 @@ namespace UnrealBuildTool
 				const string UnrealHeaderToolTarget = "UnrealHeaderTool";
 
 				// Get a list of project files to clean UHT for
-				List<FileReference> ProjectFiles = new List<FileReference>();
+				List<FileReference?> ProjectFiles = new List<FileReference?>();
 				foreach (TargetDescriptor TargetDesc in TargetDescriptors)
 				{
 					if (TargetDesc.Name != UnrealHeaderToolTarget && !RemoteMac.HandlesTargetPlatform(TargetDesc.Platform))
@@ -78,7 +91,7 @@ namespace UnrealBuildTool
 				{
 					UnrealTargetConfiguration Configuration = BuildConfiguration.bForceDebugUnrealHeaderTool ? UnrealTargetConfiguration.Debug : UnrealTargetConfiguration.Development;
 					string Architecture = UEBuildPlatform.GetBuildPlatform(BuildHostPlatform.Current.Platform).GetDefaultArchitecture(null);
-					foreach (FileReference ProjectFile in ProjectFiles)
+					foreach (FileReference? ProjectFile in ProjectFiles)
 					{
 						TargetDescriptors.Add(new TargetDescriptor(ProjectFile, UnrealHeaderToolTarget, BuildHostPlatform.Current.Platform, Configuration, Architecture, null));
 					}
@@ -97,7 +110,7 @@ namespace UnrealBuildTool
 				TargetDescriptor TargetDescriptor = TargetDescriptors[Idx];
 
 				// Create the rules assembly
-				RulesAssembly RulesAssembly = RulesCompiler.CreateTargetRulesAssembly(TargetDescriptor.ProjectFile, TargetDescriptor.Name, bSkipRulesCompile, BuildConfiguration.bUsePrecompiled, TargetDescriptor.ForeignPlugin);
+				RulesAssembly RulesAssembly = RulesCompiler.CreateTargetRulesAssembly(TargetDescriptor.ProjectFile, TargetDescriptor.Name, bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled, TargetDescriptor.ForeignPlugin);
 
 				// Create the rules object
 				ReadOnlyTargetRules Target = new ReadOnlyTargetRules(RulesAssembly.CreateTargetRules(TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Configuration, TargetDescriptor.Architecture, TargetDescriptor.ProjectFile, TargetDescriptor.AdditionalArguments));
@@ -116,9 +129,8 @@ namespace UnrealBuildTool
 
 				// Find the base folders that can contain binaries
 				List<DirectoryReference> BaseDirs = new List<DirectoryReference>();
-				BaseDirs.Add(UnrealBuildTool.EngineDirectory);
-				BaseDirs.Add(UnrealBuildTool.EnterpriseDirectory);
-				foreach (FileReference Plugin in Plugins.EnumeratePlugins(Target.ProjectFile))
+				BaseDirs.Add(Unreal.EngineDirectory);
+				foreach (FileReference Plugin in PluginsBase.EnumeratePlugins(Target.ProjectFile))
 				{
 					BaseDirs.Add(Plugin.Directory);
 				}
@@ -159,19 +171,21 @@ namespace UnrealBuildTool
 				{
 					foreach (string NamePrefix in NamePrefixes)
 					{
-						DirectoryReference GeneratedCodeDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architecture), NamePrefix, "Inc");
+						DirectoryReference GeneratedCodeDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architecture, false), NamePrefix, "Inc");
 						if (DirectoryReference.Exists(GeneratedCodeDir))
 						{
 							DirectoriesToDelete.Add(GeneratedCodeDir);
 						}
 
-						DirectoryReference IntermediateDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architecture), NamePrefix, Target.Configuration.ToString());
+						DirectoryReference IntermediateDir = DirectoryReference.Combine(BaseDir, UEBuildTarget.GetPlatformIntermediateFolder(Target.Platform, Target.Architecture, false), NamePrefix, Target.Configuration.ToString());
 						if (DirectoryReference.Exists(IntermediateDir))
 						{
 							DirectoriesToDelete.Add(IntermediateDir);
 						}
 					}
 				}
+
+				// todo: handle external plugin intermediates, written to the Project's Intermediate/External directory
 
 				// List of additional files and directories to clean, specified by the target platform
 				List<FileReference> AdditionalFilesToDelete = new List<FileReference>();
@@ -240,8 +254,6 @@ namespace UnrealBuildTool
 					RemoteMac.Clean(TargetDescriptor);
 				}
 			}
-
-			return 0;
 		}
 	}
 }

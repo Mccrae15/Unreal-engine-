@@ -2,7 +2,10 @@
 
 #include "StaticMeshExporterUSD.h"
 
+#include "EngineAnalytics.h"
+#include "MaterialExporterUSD.h"
 #include "StaticMeshExporterUSDOptions.h"
+#include "USDClassesModule.h"
 #include "USDConversionUtils.h"
 #include "USDGeomMeshConversion.h"
 #include "USDMemory.h"
@@ -17,6 +20,42 @@
 #include "AssetExportTask.h"
 #include "CoreMinimal.h"
 #include "Engine/StaticMesh.h"
+
+namespace UE
+{
+	namespace StaticMeshExporterUSD
+	{
+		namespace Private
+		{
+			void SendAnalytics( UObject* Asset, UStaticMeshExporterUSDOptions* Options, bool bAutomated, double ElapsedSeconds, double NumberOfFrames, const FString& Extension )
+			{
+				if ( !Asset )
+				{
+					return;
+				}
+
+				if ( FEngineAnalytics::IsAvailable() )
+				{
+					FString ClassName = Asset->GetClass()->GetName();
+
+					TArray<FAnalyticsEventAttribute> EventAttributes;
+
+					EventAttributes.Emplace( TEXT( "AssetType" ), ClassName );
+
+					if ( Options )
+					{
+						EventAttributes.Emplace( TEXT( "UsePayload" ), LexToString( Options->MeshAssetOptions.bUsePayload ) );
+						EventAttributes.Emplace( TEXT( "PayloadFormat" ), Options->MeshAssetOptions.PayloadFormat );
+						EventAttributes.Emplace( TEXT( "LowestMeshLOD" ), LexToString( Options->MeshAssetOptions.LowestMeshLOD ) );
+						EventAttributes.Emplace( TEXT( "HighestMeshLOD" ), LexToString( Options->MeshAssetOptions.HighestMeshLOD ) );
+					}
+
+					IUsdClassesModule::SendAnalytics( MoveTemp( EventAttributes ), FString::Printf( TEXT( "Export.%s" ), *ClassName ), bAutomated, ElapsedSeconds, NumberOfFrames, Extension );
+				}
+			}
+		}
+	}
+}
 
 bool UStaticMeshExporterUsd::IsUsdAvailable()
 {
@@ -39,7 +78,7 @@ UStaticMeshExporterUsd::UStaticMeshExporterUsd()
 		}
 
 		FormatExtension.Add( Extension );
-		FormatDescription.Add( TEXT( "USD file" ) );
+		FormatDescription.Add( TEXT( "Universal Scene Description file" ) );
 	}
 	SupportedClass = UStaticMesh::StaticClass();
 	bText = false;
@@ -65,6 +104,8 @@ bool UStaticMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type, F
 		Options = GetMutableDefault<UStaticMeshExporterUSDOptions>();
 		if ( Options )
 		{
+			Options->MeshAssetOptions.MaterialBakingOptions.TexturesDir.Path = FPaths::Combine( FPaths::GetPath( UExporter::CurrentFilename ), TEXT( "Textures" ) );
+
 			const bool bIsImport = false;
 			const bool bContinue = SUsdOptionsWindow::ShowOptions( *Options, bIsImport );
 			if ( !bContinue )
@@ -74,25 +115,28 @@ bool UStaticMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type, F
 		}
 	}
 
+	double StartTime = FPlatformTime::Cycles64();
+
 	// If bUsePayload is true, we'll intercept the filename so that we write the mesh data to
 	// "C:/MyFolder/file_payload.usda" and create an "asset" file "C:/MyFolder/file.usda" that uses it
 	// as a payload, pointing at the default prim
 	FString PayloadFilename = UExporter::CurrentFilename;
-	if ( Options && Options->bUsePayload )
+	if ( Options && Options->MeshAssetOptions.bUsePayload )
 	{
 		FString PathPart;
 		FString FilenamePart;
 		FString ExtensionPart;
 		FPaths::Split( PayloadFilename, PathPart, FilenamePart, ExtensionPart );
 
-		if ( FormatExtension.Contains( Options->PayloadFormat ) )
+		if ( FormatExtension.Contains( Options->MeshAssetOptions.PayloadFormat ) )
 		{
-			ExtensionPart = Options->PayloadFormat;
+			ExtensionPart = Options->MeshAssetOptions.PayloadFormat;
 		}
 
 		PayloadFilename = FPaths::Combine( PathPart, FilenamePart + TEXT( "_payload." ) + ExtensionPart );
 	}
 
+	// UsdStage is the payload stage when exporting with payloads, or just the single stage otherwise
 	UE::FUsdStage UsdStage = UnrealUSDWrapper::NewStage( *PayloadFilename );
 	if ( !UsdStage )
 	{
@@ -115,11 +159,15 @@ bool UStaticMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type, F
 
 	UsdStage.SetDefaultPrim( RootPrim );
 
+	// Asset stage always the stage where we write the material assignments
+	UE::FUsdStage AssetStage;
+
 	// Using payload: Convert mesh data through the asset stage (that references the payload) so that we can
 	// author mesh data on the payload layer and material data on the asset layer
-	if ( Options && Options->bUsePayload )
+	if ( Options && Options->MeshAssetOptions.bUsePayload )
 	{
-		if ( UE::FUsdStage AssetStage = UnrealUSDWrapper::NewStage( *UExporter::CurrentFilename ) )
+		AssetStage = UnrealUSDWrapper::NewStage( *UExporter::CurrentFilename );
+		if ( AssetStage )
 		{
 			UsdUtils::SetUsdStageMetersPerUnit( AssetStage, Options->StageOptions.MetersPerUnit );
 			UsdUtils::SetUsdStageUpAxis( AssetStage, Options->StageOptions.UpAxis );
@@ -130,19 +178,51 @@ bool UStaticMeshExporterUsd::ExportBinary( UObject* Object, const TCHAR* Type, F
 
 				UsdUtils::AddPayload( AssetRootPrim, *PayloadFilename );
 			}
-
-			UnrealToUsd::ConvertStaticMesh( StaticMesh, RootPrim, UsdUtils::GetDefaultTimeCode(), &AssetStage );
-
-			AssetStage.GetRootLayer().Save();
 		}
 	}
 	// Not using payload: Just author everything on the current edit target of the payload (== asset) layer
 	else
 	{
-		UnrealToUsd::ConvertStaticMesh( StaticMesh, RootPrim );
+		AssetStage = UsdStage;
+	}
+
+	UnrealToUsd::ConvertStaticMesh( StaticMesh, RootPrim, UsdUtils::GetDefaultTimeCode(), &AssetStage, Options->MeshAssetOptions.LowestMeshLOD, Options->MeshAssetOptions.HighestMeshLOD );
+
+	// Bake materials and replace unrealMaterials with references to the baked files.
+	if ( Options->MeshAssetOptions.bBakeMaterials )
+	{
+		TSet<UMaterialInterface*> MaterialsToBake;
+		for ( const FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials() )
+		{
+			MaterialsToBake.Add( StaticMaterial.MaterialInterface );
+		}
+
+		const bool bIsAssetLayer = true;
+		UMaterialExporterUsd::ExportMaterialsForStage(
+			MaterialsToBake.Array(),
+			Options->MeshAssetOptions.MaterialBakingOptions,
+			AssetStage,
+			bIsAssetLayer,
+			Options->MeshAssetOptions.bUsePayload,
+			Options->MeshAssetOptions.bRemoveUnrealMaterials
+		);
 	}
 
 	UsdStage.GetRootLayer().Save();
+	if ( AssetStage && UsdStage != AssetStage )
+	{
+		AssetStage.GetRootLayer().Save();
+	}
+
+	// Analytics
+	{
+		bool bAutomated = ExportTask ? ExportTask->bAutomated : false;
+		double ElapsedSeconds = FPlatformTime::ToSeconds64( FPlatformTime::Cycles64() - StartTime );
+		FString Extension = FPaths::GetExtension( UExporter::CurrentFilename );
+		double NumberOfFrames = UsdStage.GetEndTimeCode() - UsdStage.GetStartTimeCode();
+
+		UE::StaticMeshExporterUSD::Private::SendAnalytics( Object, Options, bAutomated, ElapsedSeconds, NumberOfFrames, Extension );
+	}
 
 	return true;
 #else

@@ -141,7 +141,7 @@ ANavigationData::ANavigationData(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, bEnableDrawing(false)
 	, bForceRebuildOnLoad(false)
-	, bAutoDestroyWhenNoNavigation(true)
+	, bAutoDestroyWhenNoNavigation(false)
 	, bCanBeMainNavData(true)
 	, bCanSpawnOnRebuild(true)
 	, RuntimeGeneration(ERuntimeGenerationType::LegacyGeneration) //TODO: set to a valid value once bRebuildAtRuntime_DEPRECATED is removed
@@ -166,6 +166,10 @@ ANavigationData::ANavigationData(const FObjectInitializer& ObjectInitializer)
 	USceneComponent* SceneComponent = CreateDefaultSubobject<USceneComponent>(TEXT("SceneComp"));
 	RootComponent = SceneComponent;
 	RootComponent->Mobility = EComponentMobility::Static;
+
+#if WITH_EDITORONLY_DATA
+	bIsSpatiallyLoaded = false;
+#endif
 }
 
 uint16 ANavigationData::GetNextUniqueID()
@@ -178,7 +182,7 @@ void ANavigationData::PostInitProperties()
 {
 	Super::PostInitProperties();
 
-	if (IsPendingKill() == true)
+	if (!IsValid(this))
 	{
 		return;
 	}
@@ -194,7 +198,9 @@ void ANavigationData::PostInitProperties()
 	{
 		bNetLoadOnClient = FNavigationSystem::ShouldLoadNavigationOnClient(*this);
 		RequestRegistration();
+#if UE_ENABLE_DEBUG_DRAWING
 		RenderingComp = ConstructRenderingComponent();
+#endif // UE_ENABLE_DEBUG_DRAWING
 	}
 }
 
@@ -218,12 +224,6 @@ void ANavigationData::PostInitializeComponents()
 void ANavigationData::PostLoad() 
 {
 	Super::PostLoad();
-
-	if ((GetLinkerUE4Version() < VER_UE4_ADD_MODIFIERS_RUNTIME_GENERATION) &&
-		(RuntimeGeneration == ERuntimeGenerationType::LegacyGeneration))
-	{
-		RuntimeGeneration = bRebuildAtRuntime_DEPRECATED ? ERuntimeGenerationType::Dynamic : ERuntimeGenerationType::Static;
-	}
 
 	InstantiateAndRegisterRenderingComponent();
 
@@ -388,8 +388,8 @@ void ANavigationData::OnUnregistered()
 
 void ANavigationData::InstantiateAndRegisterRenderingComponent()
 {
-#if !UE_BUILD_SHIPPING
-	if (!IsPendingKill() && (RenderingComp == NULL || RenderingComp->IsPendingKill()))
+#if UE_ENABLE_DEBUG_DRAWING
+	if (IsValid(this) && !IsValid(RenderingComp))
 	{
 		const bool bRootIsRenderComp = (RenderingComp == RootComponent);
 		if (RenderingComp)
@@ -411,7 +411,7 @@ void ANavigationData::InstantiateAndRegisterRenderingComponent()
 			RootComponent = RenderingComp;
 		}
 	}
-#endif // !UE_BUILD_SHIPPING
+#endif // UE_ENABLE_DEBUG_DRAWING
 }
 
 void ANavigationData::PurgeUnusedPaths()
@@ -504,7 +504,7 @@ void ANavigationData::CleanUpAndMarkPendingKill()
 
 	// do NOT destroy here! it can be called from PostLoad and will crash in DestroyActor()
 	GetWorld()->RemoveNetworkActor(this);
-	MarkPendingKill();
+	MarkAsGarbage();
 	MarkComponentsAsPendingKill();
 }
 
@@ -528,6 +528,13 @@ void ANavigationData::RebuildAll()
 	
 	if (NavDataGenerator.IsValid())
 	{
+#if WITH_EDITOR		
+		if (!IsBuildingOnLoad())
+		{
+			MarkPackageDirty();
+		}
+#endif // WITH_EDITOR
+
 		NavDataGenerator->RebuildAll();
 	}
 }
@@ -633,9 +640,9 @@ TArray<FBox> ANavigationData::GetNavigableBoundsInLevel(ULevel* InLevel) const
 	return Result;
 }
 
-void ANavigationData::DrawDebugPath(FNavigationPath* Path, FColor PathColor, UCanvas* Canvas, bool bPersistent, const uint32 NextPathPointIndex) const
+void ANavigationData::DrawDebugPath(FNavigationPath* Path, const FColor PathColor, UCanvas* Canvas, const bool bPersistent, const float LifeTime, const uint32 NextPathPointIndex) const
 {
-	Path->DebugDraw(this, PathColor, Canvas, bPersistent, NextPathPointIndex);
+	Path->DebugDraw(this, PathColor, Canvas, bPersistent, LifeTime, NextPathPointIndex);
 }
 
 float ANavigationData::GetWorldTimeStamp() const
@@ -836,4 +843,12 @@ uint32 ANavigationData::LogMemUsed() const
 	}
 
 	return MemUsed;
+}
+
+//------------------------------------------------------------------------//
+// deprecated functions
+//------------------------------------------------------------------------//
+void ANavigationData::DrawDebugPath(FNavigationPath* Path, FColor PathColor, UCanvas* Canvas, bool bPersistent, const uint32 NextPathPointIndex) const
+{
+	DrawDebugPath(Path, PathColor, Canvas, bPersistent, -1.f, NextPathPointIndex);
 }

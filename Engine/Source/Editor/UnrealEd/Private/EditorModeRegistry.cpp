@@ -5,7 +5,6 @@
 #include "EditorStyleSet.h"
 #include "EdMode.h"
 #include "EditorModes.h"
-#include "EditorModeInterpolation.h"
 
 #include "Editor/PlacementMode/Public/IPlacementModeModule.h"
 #include "Editor/LandscapeEditor/Public/LandscapeEditorModule.h"
@@ -41,63 +40,18 @@ TSharedRef<FEdMode> FEditorModeFactory::CreateMode() const
 	return FactoryCallback.Execute();
 }
 
-FEditorModeInfo::FEditorModeInfo()
-	: ID(NAME_None)
-	, bVisible(false)
-	, PriorityOrder(MAX_int32)
-{
-}
-
-FEditorModeInfo::FEditorModeInfo(
-	FEditorModeID InID,
-	FText InName,
-	FSlateIcon InIconBrush,
-	bool InIsVisible,
-	int32 InPriorityOrder
-	)
-	: ID(InID)
-	, ToolbarCustomizationName(*(InID.ToString()+TEXT("Toolbar")))
-	, Name(InName)
-	, IconBrush(InIconBrush)
-	, bVisible(InIsVisible)
-	, PriorityOrder(InPriorityOrder)
-{
-	if (!InIconBrush.IsSet())
-	{
-		FModuleManager::Get().LoadModule("EditorStyle"); // Need to ensure the EditorStyle module is loaded before we access static functions from one of its headers
-		IconBrush = FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.EditorModes");
-	}
-}
-
 void FEditorModeRegistry::Initialize()
 {
-	// Send notifications for any legacy modes that were registered before the asset subsytem started up
+	// Send notifications for any legacy modes that were registered before the asset subsystem started up
 	UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
 	for (const FactoryMap::ElementType& ModeEntry : ModeFactories)
 	{
 		AssetEditorSubsystem->OnEditorModeRegistered().Broadcast(ModeEntry.Key);
 	}
 
-	if(!GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI)
-	{
-		// Add default editor modes
-		RegisterMode<FEdModeDefault>(
-			FBuiltinEditorModes::EM_Default,
-			NSLOCTEXT("DefaultMode", "DisplayName", "Select"),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.SelectMode", "LevelEditor.SelectMode.Small"),
-			true, 0);
-	}
-	else
-	{
-		RegisterMode<FEdModeDefault>(FBuiltinEditorModes::EM_Default);
-	}
-
-	RegisterMode<FEdModeInterpEdit>(FBuiltinEditorModes::EM_InterpEdit);
-
-	FModuleManager::LoadModuleChecked<IPlacementModeModule>(TEXT("PlacementMode"));
+	// Add default editor modes
 	FModuleManager::LoadModuleChecked<FActorPickerModeModule>(TEXT("ActorPickerMode"));
 	FModuleManager::LoadModuleChecked<FSceneDepthPickerModeModule>(TEXT("SceneDepthPickerMode"));
-	FModuleManager::LoadModuleChecked<IMeshPaintModule>(TEXT("MeshPaintMode"));
 	FModuleManager::LoadModuleChecked<ILandscapeEditorModule>(TEXT("LandscapeEditor"));
 	FModuleManager::LoadModuleChecked<IFoliageEditModule>(TEXT("FoliageEdit"));
 	FModuleManager::LoadModuleChecked<IVirtualTexturingEditorModule>(TEXT("VirtualTexturingEditor"));

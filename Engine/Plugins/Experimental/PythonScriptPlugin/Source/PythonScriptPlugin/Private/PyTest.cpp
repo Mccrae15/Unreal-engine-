@@ -50,6 +50,21 @@ FPyTestStruct UPyTestStructLibrary::AddStr(const FPyTestStruct& InStruct, const 
 	return Result;
 }
 
+UPyTestInterface::UPyTestInterface(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+}
+
+UPyTestChildInterface::UPyTestChildInterface(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+}
+
+UPyTestOtherInterface::UPyTestOtherInterface(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+}
+
 UPyTestObject::UPyTestObject()
 {
 	StructArray.AddDefaulted();
@@ -91,6 +106,10 @@ void UPyTestObject::FuncTakingPyTestChildStruct(const FPyTestChildStruct& InStru
 void UPyTestObject::LegacyFuncTakingPyTestStruct(const FPyTestStruct& InStruct) const
 {
 	FuncTakingPyTestStruct(InStruct);
+}
+
+void UPyTestObject::FuncTakingPyTestStructDefault(const FPyTestStruct& InStruct)
+{
 }
 
 int32 UPyTestObject::FuncTakingPyTestDelegate(const FPyTestDelegate& InDelegate, const int32 InValue) const
@@ -150,6 +169,21 @@ void UPyTestObject::EmitScriptWarning()
 int32 UPyTestObject::GetConstantValue()
 {
 	return 10;
+}
+
+int32 UPyTestObject::FuncInterface(const int32 InValue) const
+{
+	return InValue;
+}
+
+int32 UPyTestObject::FuncInterfaceChild(const int32 InValue) const
+{
+	return InValue;
+}
+
+int32 UPyTestObject::FuncInterfaceOther(const int32 InValue) const
+{
+	return InValue;
 }
 
 bool UPyTestObjectLibrary::IsBoolSet(const UPyTestObject* InObj)

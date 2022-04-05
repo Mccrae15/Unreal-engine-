@@ -46,7 +46,7 @@ namespace UE
 		bool operator==( const FUsdAttribute& Other ) const;
 		bool operator!=( const FUsdAttribute& Other ) const;
 
-		operator bool() const;
+		explicit operator bool() const;
 
 	// Auto conversion from/to pxr::UsdAttribute
 	public:
@@ -85,6 +85,8 @@ namespace UE
 
 		bool Clear() const;
 		bool ClearAtTime( double Time ) const;
+
+		static bool GetUnionedTimeSamples( const TArray<UE::FUsdAttribute>& Attrs, TArray<double>& OutTimes );
 
 		FSdfPath GetPath() const;
 		FUsdPrim GetPrim() const;

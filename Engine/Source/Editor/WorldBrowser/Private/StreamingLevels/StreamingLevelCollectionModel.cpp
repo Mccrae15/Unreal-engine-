@@ -6,6 +6,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Editor/EditorEngine.h"
 #include "Settings/LevelEditorMiscSettings.h"
+#include "Settings/EditorExperimentalSettings.h"
 #include "Engine/LevelStreamingAlwaysLoaded.h"
 #include "Engine/LevelStreamingDynamic.h"
 #include "Editor.h"
@@ -24,6 +25,7 @@
 #include "StreamingLevels/StreamingLevelModel.h"
 #include "Engine/Selection.h"
 #include "Engine/LevelStreamingVolume.h"
+#include "GameFramework/WorldSettings.h"
 
 #define LOCTEXT_NAMESPACE "WorldBrowser"
 
@@ -72,7 +74,7 @@ void FStreamingLevelCollectionModel::OnLevelsCollectionChanged()
 	// Add models for each streaming level in the world
 	for (ULevelStreaming* StreamingLevel : CurrentWorld->GetStreamingLevels())
 	{
-		if (StreamingLevel)
+		if (StreamingLevel && StreamingLevel->ShowInLevelCollection())
 		{
 			TSharedPtr<FStreamingLevelModel> LevelModel = MakeShareable(new FStreamingLevelModel(*this, StreamingLevel));
 			AllLevelsList.Add(LevelModel);
@@ -348,8 +350,11 @@ void FStreamingLevelCollectionModel::BuildHierarchyMenu(FMenuBuilder& InMenuBuil
 			InMenuBuilder.AddMenuEntry( Commands.MoveFoliageToSelected );
 		}
 
-		InMenuBuilder.AddMenuEntry(Commands.ConvertLevelToExternalActors);
-		InMenuBuilder.AddMenuEntry(Commands.ConvertLevelToInternalActors);
+		if (GetDefault<UEditorExperimentalSettings>()->bEnableOneFilePerActorSupport)
+		{
+			InMenuBuilder.AddMenuEntry(Commands.ConvertLevelToExternalActors);
+			InMenuBuilder.AddMenuEntry(Commands.ConvertLevelToInternalActors);
+		}
 
 		if (AreAnyLevelsSelected() && !(IsOneLevelSelected() && SelectedLevelsList[0]->IsPersistent()))
 		{
@@ -426,9 +431,11 @@ const FLevelModelList& FStreamingLevelCollectionModel::GetInvalidSelectedLevels(
 void FStreamingLevelCollectionModel::CreateNewLevel_Executed()
 {
 	FString TemplateMapPackageName;
+	bool bOutIsPartitionedWorld = false;
+	const bool bShowPartitionedTemplates = false;
 	FNewLevelDialogModule& NewLevelDialogModule = FModuleManager::LoadModuleChecked<FNewLevelDialogModule>("NewLevelDialog");
 	IMainFrameModule& MainFrameModule = FModuleManager::LoadModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
-	if (NewLevelDialogModule.CreateAndShowNewLevelDialog(MainFrameModule.GetParentWindow(), TemplateMapPackageName))
+	if (NewLevelDialogModule.CreateAndShowNewLevelDialog(MainFrameModule.GetParentWindow(), TemplateMapPackageName, bShowPartitionedTemplates, bOutIsPartitionedWorld))
 	{
 		UPackage* TemplatePackage = TemplateMapPackageName.Len() ? LoadPackage(nullptr, *TemplateMapPackageName, LOAD_None) : nullptr;
 		UWorld* TemplateWorld = TemplatePackage ? UWorld::FindWorldInPackage(TemplatePackage) : nullptr;

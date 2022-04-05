@@ -6,6 +6,7 @@
 #include "SlateFwd.h"
 #include "Templates/SubclassOf.h"
 #include "Components/ActorComponent.h"
+#include "SubobjectData.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Views/STableViewBase.h"
@@ -14,6 +15,11 @@
 class FComponentClassComboEntry;
 class SToolTip;
 class FTextFilterExpressionEvaluator;
+class IClassViewerFilter;
+class IUnloadedBlueprintData;
+class FClassViewerFilterFuncs;
+class FClassViewerFilterOption;
+class FClassViewerInitializationOptions;
 
 typedef TSharedPtr<class FComponentClassComboEntry> FComponentClassComboEntryPtr;
 
@@ -33,9 +39,10 @@ namespace EComponentCreateAction
 }
 
 
-DECLARE_DELEGATE_OneParam(FOnComponentCreated, UActorComponent*);
+DECLARE_DELEGATE_OneParam(FOnSubobjectCreated, FSubobjectDataHandle);
 
 DECLARE_DELEGATE_RetVal_ThreeParams( UActorComponent*, FComponentClassSelected, TSubclassOf<UActorComponent>, EComponentCreateAction::Type, UObject*);
+DECLARE_DELEGATE_RetVal_ThreeParams( FSubobjectDataHandle, FSubobjectClassSelected, TSubclassOf<UActorComponent>, EComponentCreateAction::Type, UObject*);
 
 struct FComponentEntryCustomizationArgs
 {
@@ -43,8 +50,9 @@ struct FComponentEntryCustomizationArgs
 	TWeakObjectPtr<UObject> AssetOverride;
 	/** Custom name to display */
 	FString ComponentNameOverride;
-	/** Callback when a new component is created */
-	FOnComponentCreated OnComponentCreated;
+	
+	/** Callback when a new subobject is created */
+	FOnSubobjectCreated OnSubobjectCreated;
 	/** Brush icon to use instead of the class icon */
 	FName IconOverrideBrushName;
 	/** Custom sort priority to use (smaller means sorted first) */
@@ -53,7 +61,6 @@ struct FComponentEntryCustomizationArgs
 	FComponentEntryCustomizationArgs()
 		: AssetOverride( nullptr )
 		, ComponentNameOverride()
-		, OnComponentCreated()
 		, IconOverrideBrushName( NAME_None )
 		, SortPriority(0)
 	{
@@ -133,11 +140,12 @@ public:
 	{
 		return ComponentCreateAction;
 	}
-
-	FOnComponentCreated& GetOnComponentCreated()
-	{
-		return CustomizationArgs.OnComponentCreated;
-	}
+	
+	FOnSubobjectCreated& GetOnSubobjectCreated()
+    {
+    	return CustomizationArgs.OnSubobjectCreated;
+    }
+	
 	FString GetClassName() const;
 	FString GetComponentPath() const { return ComponentPath.ToString(); }
 
@@ -151,6 +159,16 @@ public:
 	int32 GetSortPriority() const { return CustomizationArgs.SortPriority; }
 
 	void AddReferencedObjects(FReferenceCollector& Collector);
+
+	// If the component type is not loaded, this stores data that can be used for class filtering.
+	TSharedPtr<IUnloadedBlueprintData> GetUnloadedBlueprintData() const { return UnloadedBlueprintData; }
+
+	// Can optionally be called to set unloaded component type data to assist with class filtering.
+	void SetUnloadedBlueprintData(TSharedPtr<IUnloadedBlueprintData> InUnloadedBlueprintData)
+	{
+		UnloadedBlueprintData = InUnloadedBlueprintData;
+	}
+
 private:
 	TSubclassOf<UActorComponent> ComponentClass;
 	const UClass* IconClass;
@@ -163,11 +181,12 @@ private:
 	bool bIncludedInFilter;
 	EComponentCreateAction::Type ComponentCreateAction;
 	FComponentEntryCustomizationArgs CustomizationArgs;
+	TSharedPtr<IUnloadedBlueprintData> UnloadedBlueprintData;
 };
 
 //////////////////////////////////////////////////////////////////////////
 
-class UNREALED_API SComponentClassCombo : public SComboButton
+class UNREALED_API SComponentClassCombo : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS( SComponentClassCombo )
@@ -175,7 +194,9 @@ public:
 	{}
 
 		SLATE_ATTRIBUTE(bool, IncludeText)
-		SLATE_EVENT( FComponentClassSelected, OnComponentClassSelected )
+		SLATE_EVENT(FComponentClassSelected, OnComponentClassSelected)
+		SLATE_EVENT(FSubobjectClassSelected, OnSubobjectClassSelected)
+		SLATE_ARGUMENT(TArray<TSharedRef<IClassViewerFilter>>, CustomClassFilters)
 
 	SLATE_END_ARGS()
 
@@ -185,11 +206,6 @@ public:
 
 	/** Clear the current combo list selection */
 	void ClearSelection();
-
-	/**
-	 * Updates the filtered list of component names.
-	 */
-	void GenerateFilteredComponentList();
 
 	FText GetCurrentSearchString() const;
 
@@ -212,14 +228,42 @@ public:
 	/** Returns a component name without the substring "Component" and sanitized for display */
 	static FString GetSanitizedComponentName(FComponentClassComboEntryPtr Entry);
 
-private:
+protected:
+	/** Internal data used to facilitate component class filtering */
+	struct FComponentClassFilterData
+	{
+		TSharedPtr<FClassViewerInitializationOptions> InitOptions;
+		TSharedPtr<IClassViewerFilter> ClassFilter;
+		TSharedPtr<FClassViewerFilterFuncs> FilterFuncs;
+	};
 
+	/**
+	 * Updates the filtered list of component names.
+	 */
+	void GenerateFilteredComponentList();
+
+private:
+	
 	FText GetFriendlyComponentName(FComponentClassComboEntryPtr Entry) const;
 
 	TSharedRef<SToolTip> GetComponentToolTip(FComponentClassComboEntryPtr Entry) const;
 
+	bool IsComponentClassAllowed(FComponentClassComboEntryPtr Entry) const;
+
+	void GetComponentClassFilterOptions(TArray<TSharedRef<FClassViewerFilterOption>>& OutFilterOptions) const;
+
+	TSharedRef<SWidget> GetFilterOptionsMenuContent();
+
+	void ToggleFilterOption(TSharedRef<FClassViewerFilterOption> FilterOption);
+
+	bool IsFilterOptionEnabled(TSharedRef<FClassViewerFilterOption> FilterOption) const;
+
+	EVisibility GetFilterOptionsButtonVisibility() const;
+	
 	FComponentClassSelected OnComponentClassSelected;
 
+	FSubobjectClassSelected OnSubobjectClassSelected;
+	
 	/** List of component class names used by combo box */
 	TArray<FComponentClassComboEntryPtr>* ComponentClassList;
 
@@ -232,8 +276,14 @@ private:
 	/** The search box control - part of the combo drop down */
 	TSharedPtr<SSearchBox> SearchBox;
 
+	/** The Add combo button. */
+	TSharedPtr<class SPositiveActionButton> AddNewButton;
+
 	/** The component list control - part of the combo drop down */
 	TSharedPtr< SListView<FComponentClassComboEntryPtr> > ComponentClassListView;
+
+	/** Internal data that facilitates custom class filtering */
+	TUniquePtr<FComponentClassFilterData> ComponentClassFilterData;
 
 	/** Cached selection index used to skip over unselectable items */
 	int32 PrevSelectedIndex;

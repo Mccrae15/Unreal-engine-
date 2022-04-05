@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
-	EngineMinimal.h: Commonly used include for developing projects with UE4
+	EngineMinimal.h: Commonly used include for developing projects with UE
 =============================================================================*/
 
 #pragma once
@@ -87,7 +87,6 @@ MONOLITHIC_HEADER_BOILERPLATE()
 #include "BatchedElements.h"
 #include "MeshBatch.h"
 #include "SceneUtils.h"
-#include "TessellationRendering.h"
 #include "SceneManagement.h"
 #include "MeshParticleVertexFactory.h"
 #include "ParticleHelper.h"

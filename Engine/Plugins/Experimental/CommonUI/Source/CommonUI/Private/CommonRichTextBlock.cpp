@@ -232,6 +232,10 @@ public:
 	{
 		IconBrush.AddReferencedObjects(Collector);
 	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SCommonInlineIcon");
+	}
 
 private:
 	TSharedRef<SWidget> CreateIconWidget(const FInlineIconEntry& Entry, const FTextBlockStyle& TextStyle, float IconScale, bool bTintIcon)
@@ -590,13 +594,11 @@ void UCommonRichTextBlock::SynchronizeProperties()
 
 void UCommonRichTextBlock::ApplyUpdatedDefaultTextStyle()
 {
+	Super::ApplyUpdatedDefaultTextStyle();
+
 	if (CommonUIUtils::ShouldDisplayMobileUISizes())
 	{
 		ApplyTextBlockScale();
-	}
-	else
-	{
-		Super::ApplyUpdatedDefaultTextStyle();
 	}
 }
 

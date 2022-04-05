@@ -15,6 +15,7 @@
 #include "Animation/AnimNode_StateMachine.h"
 #include "AnimGraphNode_StateMachineBase.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "SGraphPanel.h"
 
 #define LOCTEXT_NAMESPACE "SGraphNodeAnimState"
 
@@ -40,8 +41,6 @@ void SStateMachineOutputPin::Construct(const FArguments& InArgs, UEdGraphPin* In
 {
 	this->SetCursor( EMouseCursor::Default );
 
-	typedef SStateMachineOutputPin ThisClass;
-
 	bShowLabel = true;
 
 	GraphPinObj = InPin;
@@ -53,9 +52,9 @@ void SStateMachineOutputPin::Construct(const FArguments& InArgs, UEdGraphPin* In
 	// Set up a hover for pins that is tinted the color of the pin.
 	SBorder::Construct( SBorder::FArguments()
 		.BorderImage( this, &SStateMachineOutputPin::GetPinBorder )
-		.BorderBackgroundColor( this, &ThisClass::GetPinColor )
-		.OnMouseButtonDown( this, &ThisClass::OnPinMouseDown )
-		.Cursor( this, &ThisClass::GetPinCursor )
+		.BorderBackgroundColor( this, &SStateMachineOutputPin::GetPinColor )
+		.OnMouseButtonDown( this, &SStateMachineOutputPin::OnPinMouseDown )
+		.Cursor( this, &SStateMachineOutputPin::GetPinCursor )
 	);
 }
 
@@ -141,6 +140,11 @@ FSlateColor SGraphNodeAnimState::GetBorderBackgroundColor() const
 	FLinearColor ActiveStateColorDim(0.4f, 0.3f, 0.15f);
 	FLinearColor ActiveStateColorBright(1.f, 0.6f, 0.35f);
 
+	return GetBorderBackgroundColor_Internal(InactiveStateColor, ActiveStateColorDim, ActiveStateColorBright);
+}
+
+FSlateColor SGraphNodeAnimState::GetBorderBackgroundColor_Internal(FLinearColor InactiveStateColor, FLinearColor ActiveStateColorDim, FLinearColor ActiveStateColorBright) const
+{
 	UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(GraphNode));
 	if(AnimBlueprint)
 	{
@@ -170,6 +174,46 @@ FSlateColor SGraphNodeAnimState::GetBorderBackgroundColor() const
 	}
 
 	return InactiveStateColor;
+}
+
+void SGraphNodeAnimState::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	// Add pins to the hover set so outgoing transitions arrows remains highlighted while the mouse is over the state node
+	if (const UAnimStateNodeBase* StateNode = Cast<UAnimStateNodeBase>(GraphNode))
+	{
+		if (const UEdGraphPin* OutputPin = StateNode->GetOutputPin())
+		{
+			TSharedPtr<SGraphPanel> OwnerPanel = GetOwnerPanel();
+			check(OwnerPanel.IsValid());
+
+			for (int32 LinkIndex = 0; LinkIndex < OutputPin->LinkedTo.Num(); ++LinkIndex)
+			{
+				OwnerPanel->AddPinToHoverSet(OutputPin->LinkedTo[LinkIndex]);
+			}
+		}
+	}
+	
+	SGraphNode::OnMouseEnter(MyGeometry, MouseEvent);
+}
+
+void SGraphNodeAnimState::OnMouseLeave(const FPointerEvent& MouseEvent)
+{
+	// Remove manually added pins from the hover set
+	if (const UAnimStateNodeBase* StateNode = Cast<UAnimStateNodeBase>(GraphNode))
+	{
+		if(const UEdGraphPin* OutputPin = StateNode->GetOutputPin())
+		{
+			TSharedPtr<SGraphPanel> OwnerPanel = GetOwnerPanel();
+			check(OwnerPanel.IsValid());
+
+			for (int32 LinkIndex = 0; LinkIndex < OutputPin->LinkedTo.Num(); ++LinkIndex)
+			{
+				OwnerPanel->RemovePinFromHoverSet(OutputPin->LinkedTo[LinkIndex]);
+			}
+		}
+	}
+
+	SGraphNode::OnMouseLeave(MouseEvent);
 }
 
 void SGraphNodeAnimState::UpdateGraphNode()

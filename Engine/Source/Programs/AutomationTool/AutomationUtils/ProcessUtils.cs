@@ -9,7 +9,9 @@ using System.Diagnostics;
 using System.Management;
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildTool;
+using UnrealBuildBase;
 
 namespace AutomationTool
 {
@@ -54,7 +56,7 @@ namespace AutomationTool
 		/// Creates a new process and adds it to the tracking list.
 		/// </summary>
 		/// <returns>New Process objects</returns>
-		public static IProcessResult CreateProcess(string AppName, bool bAllowSpew, bool bCaptureSpew, Dictionary<string, string> Env = null, LogEventType SpewVerbosity = LogEventType.Console, ProcessResult.SpewFilterCallbackType SpewFilterCallback = null)
+		public static IProcessResult CreateProcess(string AppName, bool bAllowSpew, bool bCaptureSpew, Dictionary<string, string> Env = null, LogEventType SpewVerbosity = LogEventType.Console, ProcessResult.SpewFilterCallbackType SpewFilterCallback = null, string WorkingDir = null)
 		{
 			var NewProcess = HostPlatform.Current.CreateProcess(AppName);
 			if (Env != null)
@@ -71,6 +73,11 @@ namespace AutomationTool
 					}
 				}
 			}
+			if (WorkingDir != null)
+			{
+				NewProcess.StartInfo.WorkingDirectory = WorkingDir;
+			}
+
 			var Result = new ProcessResult(AppName, NewProcess, bAllowSpew, bCaptureSpew, SpewVerbosity: SpewVerbosity, InSpewFilterCallback: SpewFilterCallback);
 			AddProcess(Result);
 			return Result;
@@ -282,10 +289,9 @@ namespace AutomationTool
         /// </summary>
         /// <param name="Verbosity"></param>
         /// <param name="Message"></param>
-        [MethodImplAttribute(MethodImplOptions.NoInlining)]
 		private void LogOutput(LogEventType Verbosity, string Message)
 		{
-            Log.WriteLine(1, Verbosity, Message);
+            Log.WriteLine(Verbosity, Message);
 		}
        
 		/// <summary>
@@ -374,17 +380,6 @@ namespace AutomationTool
 			{
 				ErrorWaitHandle.Set();
 			}
-		}
-
-		/// <summary>
-		/// Convenience operator for getting the exit code value.
-		/// </summary>
-		/// <param name="Result"></param>
-		/// <returns>Process exit code.</returns>
-		[Obsolete]
-		public static implicit operator int(ProcessResult Result)
-		{
-			return Result.ExitCode;
 		}
 
 		/// <summary>
@@ -765,6 +760,11 @@ namespace AutomationTool
 				return App;
 			}
 
+			if (HostPlatform.Current.HostEditorPlatform == UnrealTargetPlatform.Win64 && !Path.HasExtension(App))
+			{
+				App += ".exe";
+			}
+
 			string ResolvedPath = null;
 
 			if (!App.Contains(Path.DirectorySeparatorChar) && !App.Contains(Path.AltDirectorySeparatorChar))
@@ -810,7 +810,7 @@ namespace AutomationTool
 		/// <param name="Env">Environment to pass to program.</param>
 		/// <param name="FilterCallback">Callback to filter log spew before output.</param>
 		/// <returns>Object containing the exit code of the program as well as it's stdout output.</returns>
-		public static IProcessResult Run(string App, string CommandLine = null, string Input = null, ERunOptions Options = ERunOptions.Default, Dictionary<string, string> Env = null, ProcessResult.SpewFilterCallbackType SpewFilterCallback = null, string Identifier = null)
+		public static IProcessResult Run(string App, string CommandLine = null, string Input = null, ERunOptions Options = ERunOptions.Default, Dictionary<string, string> Env = null, ProcessResult.SpewFilterCallbackType SpewFilterCallback = null, string Identifier = null, string WorkingDir = null)
 		{
 			App = ConvertSeparators(PathSeparator.Default, App);
 
@@ -840,21 +840,20 @@ namespace AutomationTool
                 LogWithVerbosity(SpewVerbosity,"Running: " + App + " " + (String.IsNullOrEmpty(CommandLine) ? "" : CommandLine));
             }
 
-			string PrevIndent = null;
-			if(Options.HasFlag(ERunOptions.AllowSpew))
-			{
-				PrevIndent = Tools.DotNETCommon.Log.Indent;
-				Tools.DotNETCommon.Log.Indent += "  ";
-			}
-
-			IProcessResult Result = ProcessManager.CreateProcess(App, Options.HasFlag(ERunOptions.AllowSpew), !Options.HasFlag(ERunOptions.NoStdOutCapture), Env, SpewVerbosity: SpewVerbosity, SpewFilterCallback: SpewFilterCallback);
-			try
+			IProcessResult Result = ProcessManager.CreateProcess(App, Options.HasFlag(ERunOptions.AllowSpew), !Options.HasFlag(ERunOptions.NoStdOutCapture), Env, SpewVerbosity: SpewVerbosity, SpewFilterCallback: SpewFilterCallback, WorkingDir: WorkingDir);
+			using (LogIndentScope Scope = Options.HasFlag(ERunOptions.AllowSpew) ? new LogIndentScope("  ") : null)
 			{
 				Process Proc = Result.ProcessObject;
 
 				bool bRedirectStdOut = (Options & ERunOptions.NoStdOutRedirect) != ERunOptions.NoStdOutRedirect;
 				Proc.StartInfo.FileName = App;
-				Proc.StartInfo.Arguments = String.IsNullOrEmpty(CommandLine) ? "" : CommandLine;
+
+				// Process Arguments follow windows conventions in .NET Core
+				// Which means single quotes ' are not considered quotes.
+				// see https://github.com/dotnet/runtime/issues/29857
+				// also see UE-102580
+				Proc.StartInfo.Arguments = String.IsNullOrEmpty(CommandLine) ? "" : CommandLine.Replace('\'', '\"');
+
 				Proc.StartInfo.UseShellExecute = false;
 				if (bRedirectStdOut)
 				{
@@ -890,13 +889,6 @@ namespace AutomationTool
 				else
 				{
 					Result.ExitCode = -1;
-				}
-			}
-			finally
-			{
-				if(PrevIndent != null)
-				{
-					Tools.DotNETCommon.Log.Indent = PrevIndent;
 				}
 			}
 

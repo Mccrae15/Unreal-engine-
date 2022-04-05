@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Misc/EnumClassFlags.h"
 #include "Misc/FilterCollection.h"
 #include "Misc/TextFilter.h"
 #include "SlateFwd.h"
@@ -16,11 +17,18 @@
 #include "Widgets/Views/STreeView.h"
 
 // Insights
+#include "Insights/Common/InsightsAsyncWorkUtils.h"
+#include "Insights/Common/Stopwatch.h"
+#include "Insights/Table/ViewModels/TableColumn.h"
 #include "Insights/Table/ViewModels/TableTreeNode.h"
+#include "Insights/ViewModels/Filters.h"
+
+#include <atomic>
 
 class FMenuBuilder;
+class FUICommandList;
 
-namespace Trace
+namespace TraceServices
 {
 	class IAnalysisSession;
 }
@@ -42,11 +50,26 @@ typedef TFilterCollection<const FTableTreeNodePtr&> FTableTreeNodeFilterCollecti
 typedef TTextFilter<const FTableTreeNodePtr&> FTableTreeNodeTextFilter;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+enum class EAsyncOperationType : uint32
+{
+	FilteringOp = 1,
+	SortingOp = 1 << 1,
+	GroupingOp = 1 << 2,
+};
+
+ENUM_CLASS_FLAGS(EAsyncOperationType);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 /**
  * A custom widget used to display the list of tree nodes.
  */
-class STableTreeView : public SCompoundWidget
+class STableTreeView : public SCompoundWidget, public IAsyncOperationStatusProvider
 {
+	friend class FTableTreeViewFilterAsyncTask;
+	friend class FTableTreeViewSortAsyncTask;
+	friend class FTableTreeViewGroupAsyncTask;
+
 public:
 	/** Default constructor. */
 	STableTreeView();
@@ -63,11 +86,21 @@ public:
 	 */
 	void Construct(const FArguments& InArgs, TSharedPtr<Insights::FTable> InTablePtr);
 
-	TSharedPtr<Insights::FTable> GetTable() const { return Table; }
+	TSharedPtr<Insights::FTable>& GetTable() { return Table; }
+	const TSharedPtr<Insights::FTable>& GetTable() const { return Table; }
 
 	virtual void Reset();
 
 	void RebuildColumns();
+
+	/**
+	 * Ticks this widget.  Override in derived classes, but always call the parent implementation.
+	 *
+	 * @param  AllottedGeometry The space allotted for this widget
+	 * @param  InCurrentTime  Current absolute real time
+	 * @param  InDeltaTime  Real time passed since last tick
+	 */
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
 	/**
 	 * Rebuilds the tree (if necessary).
@@ -77,9 +110,40 @@ public:
 
 	FTableTreeNodePtr GetNodeByTableRowIndex(int32 RowIndex) const;
 	void SelectNodeByTableRowIndex(int32 RowIndex);
+	bool IsRunningAsyncUpdate() { return bIsUpdateRunning;  }
+
+	void OnClose();
+
+	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+	// IAsyncOperationStatusProvider implementation
+
+	virtual bool IsRunning() const override { return bIsUpdateRunning; }
+
+	virtual double GetAllOperationsDuration() override;
+	virtual double GetCurrentOperationDuration() override { return 0.0; }
+	virtual uint32 GetOperationCount() const override { return 1; }
+	virtual FText GetCurrentOperationName() const override;
+
+	////////////////////////////////////////////////////////////////////////////////////////////////////
+	
+	/** Set a log listing name to be used for any errors or warnings. Must be preregistered by the caller with the MessageLog module. */
+	void SetLogListingName(const FName& InLogListingName) { LogListingName = InLogListingName; }
+	const FName& GetLogListingName() { return LogListingName; }
 
 protected:
+	void InitCommandList();
+
 	void ConstructWidget(TSharedPtr<FTable> InTablePtr);
+	virtual TSharedRef<SWidget> ConstructSearchBox();
+	virtual TSharedRef<SWidget> ConstructAdvancedFiltersButton();
+	virtual TSharedRef<SWidget> ConstructHierarchyBreadcrumbTrail();
+	virtual TSharedPtr<SWidget> ConstructToolbar() { return nullptr; }
+	virtual TSharedPtr<SWidget> ConstructFooter() { return nullptr; }
+	virtual void ConstructHeaderArea(TSharedRef<SVerticalBox> InWidgetContent);
+	virtual void ConstructFooterArea(TSharedRef<SVerticalBox> InWidgetContent);
+
 	void UpdateTree();
 
 	/** Called when the analysis session has changed. */
@@ -92,7 +156,7 @@ protected:
 	 * @param OutSearchStrings   - an array of strings to use in searching.
 	 *
 	 */
-	void HandleItemToStringArray(const FTableTreeNodePtr& GroupOrStatNodePtr, TArray<FString>& OutSearchStrings) const;
+	static void HandleItemToStringArray(const FTableTreeNodePtr& GroupOrStatNodePtr, TArray<FString>& OutSearchStrings);
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Tree View - Context Menu
@@ -100,6 +164,22 @@ protected:
 	TSharedPtr<SWidget> TreeView_GetMenuContent();
 	void TreeView_BuildSortByMenu(FMenuBuilder& MenuBuilder);
 	void TreeView_BuildViewColumnMenu(FMenuBuilder& MenuBuilder);
+	void TreeView_BuildExportMenu(FMenuBuilder& MenuBuilder);
+
+	bool ContextMenu_CopySelectedToClipboard_CanExecute() const;
+	void ContextMenu_CopySelectedToClipboard_Execute();
+	bool ContextMenu_CopyColumnToClipboard_CanExecute() const;
+	void ContextMenu_CopyColumnToClipboard_Execute();
+	bool ContextMenu_CopyColumnTooltipToClipboard_CanExecute() const;
+	void ContextMenu_CopyColumnTooltipToClipboard_Execute();
+	bool ContextMenu_ExpandSubtree_CanExecute() const;
+	void ContextMenu_ExpandSubtree_Execute();
+	bool ContextMenu_ExpandCriticalPath_CanExecute() const;
+	void ContextMenu_ExpandCriticalPath_Execute();
+	bool ContextMenu_CollapseSubtree_CanExecute() const;
+	void ContextMenu_CollapseSubtree_Execute();
+	bool ContextMenu_ExportToFile_CanExecute() const;
+	void ContextMenu_ExportToFile_Execute(bool bInExportCollapsed, bool InExportLeafs);
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Tree View - Columns' Header
@@ -126,7 +206,7 @@ protected:
 	void TreeView_OnSelectionChanged(FTableTreeNodePtr SelectedItem, ESelectInfo::Type SelectInfo);
 
 	/** Called by STreeView when a tree item is double clicked. */
-	void TreeView_OnMouseButtonDoubleClick(FTableTreeNodePtr TreeNode);
+	virtual void TreeView_OnMouseButtonDoubleClick(FTableTreeNodePtr TreeNode);
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Tree View - Table Row
@@ -148,23 +228,66 @@ protected:
 	/** Populates the group and stat tree with items based on the current data. */
 	void ApplyFiltering();
 
-	bool ApplyFilteringForNode(FTableTreeNodePtr NodePtr);
+	bool ApplyAdvancedFiltersForNode(FTableTreeNodePtr NodePtr);
+
+	bool ApplyHierarchicalFilterForNode(FTableTreeNodePtr NodePtr, bool bFilterIsEmpty);
+
+	/** Set all the nodes belonging to a subtree as visible. Returns true if the caller node should be expanded. */
+	bool MakeSubtreeVisible(FTableTreeNodePtr NodePtr, bool bFilterIsEmpty);
 
 	bool SearchBox_IsEnabled() const;
 	void SearchBox_OnTextChanged(const FText& InFilterText);
+
+	FText SearchBox_GetTooltipText() const;
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Grouping
 
 	void CreateGroupings();
+	virtual void InternalCreateGroupings();
 
-	void CreateGroups();
-	void GroupNodesRec(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, int32 GroupingDepth);
+	void CreateGroups(const TArray<TSharedPtr<FTreeNodeGrouping>>& Groupings);
+	void GroupNodesRec(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, int32 GroupingDepth, const TArray<TSharedPtr<FTreeNodeGrouping>>& Groupings);
 
-	void ResetAggregatedValuesRec(FTableTreeNode& GroupNode);
-	void UpdateInt64SumAggregationRec(FTableColumn& Column, FTableTreeNode& GroupNode);
-	void UpdateFloatSumAggregationRec(FTableColumn& Column, FTableTreeNode& GroupNode);
-	void UpdateDoubleSumAggregationRec(FTableColumn& Column, FTableTreeNode& GroupNode);
+	void UpdateAggregatedValues(FTableTreeNode& GroupNode);
+	
+	template<typename T>
+	static void UpdateAggregationRec(FTableColumn& Column, FTableTreeNode& GroupNode, T InitialAggregatedValue, bool bSetInitialValue, TFunctionRef<T(T, const FTableCellValue&)> ValueGetterFunc)
+	{
+		T AggregatedValue = InitialAggregatedValue;
+
+		for (FBaseTreeNodePtr NodePtr : GroupNode.GetChildren())
+		{
+			if (NodePtr->IsFiltered())
+			{
+				continue;
+			}
+			
+			if (!NodePtr->IsGroup())
+			{
+				const TOptional<FTableCellValue> NodeValue = Column.GetValue(*NodePtr);
+				if (NodeValue.IsSet())
+				{
+					AggregatedValue = ValueGetterFunc(AggregatedValue, NodeValue.GetValue());
+				}
+			}
+			else
+			{
+				FTableTreeNode& TableNode = *(FTableTreeNode*)NodePtr.Get();
+				TableNode.ResetAggregatedValues(Column.GetId());
+				UpdateAggregationRec(Column, TableNode, InitialAggregatedValue, bSetInitialValue, ValueGetterFunc);
+				if (TableNode.HasAggregatedValue(Column.GetId()))
+				{
+					AggregatedValue = ValueGetterFunc(AggregatedValue, TableNode.GetAggregatedValue(Column.GetId()));
+				}
+			}
+		}
+
+		if (bSetInitialValue || InitialAggregatedValue != AggregatedValue)
+		{
+			GroupNode.AddAggregatedValue(Column.GetId(), FTableCellValue(AggregatedValue));
+		}
+	}
 
 	void RebuildGroupingCrumbs();
 	void OnGroupingCrumbClicked(const TSharedPtr<FTreeNodeGrouping>& InEntry);
@@ -194,8 +317,8 @@ protected:
 	void CreateSortings();
 
 	void UpdateCurrentSortingByColumn();
-	void SortTreeNodes();
-	void SortTreeNodesRec(FTableTreeNode& GroupNode, const ITableCellValueSorter& Sorter);
+	void SortTreeNodes(ITableCellValueSorter* InSorter, EColumnSortMode::Type InColumnSortMode);
+	void SortTreeNodesRec(FTableTreeNode& GroupNode, const ITableCellValueSorter& Sorter, EColumnSortMode::Type InColumnSortMode);
 
 	EColumnSortMode::Type GetSortModeForColumn(const FName ColumnId) const;
 	void SetSortModeForColumn(const FName& ColumnId, EColumnSortMode::Type SortMode);
@@ -225,10 +348,12 @@ protected:
 	// ShowColumn
 	bool CanShowColumn(const FName ColumnId) const;
 	void ShowColumn(const FName ColumnId);
+	void ShowColumn(FTableColumn& Column);
 
 	// HideColumn
 	bool CanHideColumn(const FName ColumnId) const;
 	void HideColumn(const FName ColumnId);
+	void HideColumn(FTableColumn& Column);
 
 	// ToggleColumnVisibility
 	bool IsColumnVisible(const FName ColumnId);
@@ -243,14 +368,48 @@ protected:
 	bool ContextMenu_ResetColumns_CanExecute() const;
 	void ContextMenu_ResetColumns_Execute();
 
+	//Async
+	virtual void OnPreAsyncUpdate();
+	virtual void OnPostAsyncUpdate();
+
+	FGraphEventRef StartSortTreeNodesTask(FGraphEventRef Prerequisite = nullptr);
+	FGraphEventRef StartCreateGroupsTask(FGraphEventRef Prerequisite = nullptr);
+	FGraphEventRef StartApplyFiltersTask(FGraphEventRef Prerequisite = nullptr);
+
+	void AddInProgressAsyncOperation(EAsyncOperationType InType) { EnumAddFlags(InProgressAsyncOperations, InType); }
+	bool HasInProgressAsyncOperation(EAsyncOperationType InType) const { return EnumHasAnyFlags(InProgressAsyncOperations, InType); }
+	void ClearInProgressAsyncOperations() { InProgressAsyncOperations = static_cast<EAsyncOperationType>(0); }
+
+	void StartPendingAsyncOperations();
+
+	void CancelCurrentAsyncOp();
+
+	FReply OnAdvancedFiltersClicked();
+	bool AdvancedFilters_ShouldBeEnabled() const;
+	FText AdvancedFilters_GetTooltipText() const;
+	bool FilterConfigurator_HasFilters() const;
+	void OnAdvancedFiltersChangesCommited();
+	bool ApplyAdvancedFilters(const FTableTreeNodePtr& NodePtr);
+	bool virtual ApplyCustomAdvancedFilters(const FTableTreeNodePtr& NodePtr) { return true; };
+	virtual void AddCustomAdvancedFilters() {}
+
 	////////////////////////////////////////////////////////////////////////////////////////////////////
+
+	void SetExpandValueForChildGroups(FBaseTreeNode* InRoot, int32 InMaxExpandedNodes, int32 MaxDepthToExpand, bool InValue);
+	void CountNumNodesPerDepthRec(FBaseTreeNode* InRoot, TArray<int32>& InOutNumNodesPerDepth, int32 InDepth, int32 InMaxDepth, int InMaxNodes) const;
+	void SetExpandValueForChildGroupsRec(FBaseTreeNode* InRoot, int32 InDepth, int32 InMaxDepth, bool InValue);
+
+	virtual void ExtendMenu(FMenuBuilder& Menu) {}
+
+	typedef TFunctionRef<void(TArray<Insights::FBaseTreeNodePtr>& InNodes)> WriteToFileCallback;
+	void ExportToFileRec(const FBaseTreeNodePtr& InGroupNode, TArray<Insights::FBaseTreeNodePtr>& InNodes, bool bInExportCollapsed, bool InExportLeafs, WriteToFileCallback Callback);
 
 protected:
 	/** Table view model. */
 	TSharedPtr<Insights::FTable> Table;
 
-	/** A weak pointer to the profiler session used to populate this widget. */
-	TSharedPtr<const Trace::IAnalysisSession>/*Weak*/ Session;
+	/** The analysis session used to populate this widget. */
+	TSharedPtr<const TraceServices::IAnalysisSession> Session;
 
 	//////////////////////////////////////////////////
 	// Tree View, Columns
@@ -275,6 +434,8 @@ protected:
 
 	/** Name of the tree node that should be drawn as highlighted. */
 	FName HighlightedNodeName;
+
+	TSharedPtr<FUICommandList> CommandList;
 
 	//////////////////////////////////////////////////
 	// Tree Nodes
@@ -334,11 +495,153 @@ protected:
 	EColumnSortMode::Type ColumnSortMode;
 
 	//////////////////////////////////////////////////
+	// Async
+	bool bRunInAsyncMode = false;
+	bool bIsUpdateRunning = false;
+	bool bIsCloseScheduled = false;
+
+	TArray<FTableTreeNodePtr> DummyGroupNodes;
+	FGraphEventRef InProgressAsyncOperationEvent;;
+	EAsyncOperationType InProgressAsyncOperations = static_cast<EAsyncOperationType>(0);
+	TSharedPtr<class SAsyncOperationStatus> AsyncOperationStatus;
+	FStopwatch AsyncUpdateStopwatch;
+
+	TArray<TSharedPtr<FTreeNodeGrouping>> CurrentAsyncOpGroupings;
+	ITableCellValueSorter* CurrentAsyncOpSorter = nullptr;
+	EColumnSortMode::Type CurrentAsyncOpColumnSortMode;
+	TSharedPtr<FTableTreeNodeTextFilter> CurrentAsyncOpTextFilter;
+	FFilterConfigurator* CurrentAsyncOpFilterConfigurator = nullptr;
+	std::atomic<bool> bCancelCurrentAsyncOp { false };
+	FGraphEventRef DispatchEvent;
+	TArray<FTableTreeNodePtr> NodesToExpand;
+
+	//////////////////////////////////////////////////
+	TSharedPtr<FFilterConfigurator> FilterConfigurator;
+	FDelegateHandle OnFilterChangesCommitedHandle;
+	FFilterContext Context;
 
 	double StatsStartTime;
 	double StatsEndTime;
+
+	static constexpr int32 MAX_NUMBER_OF_NODES_TO_EXPAND = 1000 * 1000;
+	static constexpr int32 MAX_DEPTH_TO_EXPAND = 100;
+
+	//////////////////////////////////////////////////
+	// Logging
+
+	/** A log listing name to be used for any errors or warnings. */
+	FName LogListingName;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class FTableTreeViewFilterAsyncTask
+{
+public:
+	FTableTreeViewFilterAsyncTask(STableTreeView* InPtr)
+	{
+		TableTreeViewPtr = InPtr;
+	}
+
+	FORCEINLINE TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FTableTreeViewFilterAsyncTask, STATGROUP_TaskGraphTasks); }
+	ENamedThreads::Type GetDesiredThread() { return ENamedThreads::Type::AnyThread; }
+	static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		if (TableTreeViewPtr)
+		{
+			TableTreeViewPtr->ApplyFiltering();
+		}
+	}
+
+private:
+	STableTreeView* TableTreeViewPtr = nullptr;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class FTableTreeViewSortAsyncTask
+{
+public:
+	FTableTreeViewSortAsyncTask(STableTreeView* InPtr, ITableCellValueSorter* InSorter, EColumnSortMode::Type InColumnSortMode)
+	{
+		TableTreeViewPtr = InPtr;
+		Sorter = InSorter;
+		ColumnSortMode = InColumnSortMode;
+	}
+
+	FORCEINLINE TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FTableTreeViewSortAsyncTask, STATGROUP_TaskGraphTasks); }
+	ENamedThreads::Type GetDesiredThread() { return ENamedThreads::Type::AnyThread; }
+	static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		if (TableTreeViewPtr)
+		{
+			TableTreeViewPtr->SortTreeNodes(Sorter, ColumnSortMode);
+		}
+	}
+
+private:
+	STableTreeView* TableTreeViewPtr;
+	ITableCellValueSorter* Sorter;
+	EColumnSortMode::Type ColumnSortMode;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class FTableTreeViewGroupAsyncTask
+{
+public:
+	FTableTreeViewGroupAsyncTask(STableTreeView* InPtr, TArray<TSharedPtr<FTreeNodeGrouping>>* InGroupings)
+	{
+		TableTreeViewPtr = InPtr;
+		Groupings = InGroupings;
+	}
+
+	FORCEINLINE TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FTableTreeViewGroupAsyncTask, STATGROUP_TaskGraphTasks); }
+	ENamedThreads::Type GetDesiredThread() { return ENamedThreads::Type::AnyThread; }
+	static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		if (TableTreeViewPtr)
+		{
+			TableTreeViewPtr->CreateGroups(*Groupings);
+		}
+	}
+
+private:
+	STableTreeView* TableTreeViewPtr = nullptr;
+	TArray<TSharedPtr<FTreeNodeGrouping>>* Groupings;
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class FTableTreeViewAsyncCompleteTask
+{
+public:
+	FTableTreeViewAsyncCompleteTask(TSharedPtr<STableTreeView> InPtr)
+	{
+		TableTreeViewPtr = InPtr;
+	}
+
+	FORCEINLINE TStatId GetStatId() const { RETURN_QUICK_DECLARE_CYCLE_STAT(FTableTreeViewAsyncCompleteTask, STATGROUP_TaskGraphTasks); }
+	ENamedThreads::Type GetDesiredThread() { return ENamedThreads::Type::GameThread; }
+	static ESubsequentsMode::Type GetSubsequentsMode() { return ESubsequentsMode::TrackSubsequents; }
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		// The role of this task is to keep the STableTreeView object alive until the task and it's prerequisits are completed and to destroy it on the game thread.
+		if (TableTreeViewPtr.IsValid())
+		{
+			TableTreeViewPtr.Reset();
+		}
+	}
+
+private:
+	TSharedPtr<STableTreeView> TableTreeViewPtr;
+};
 
 } // namespace Insights

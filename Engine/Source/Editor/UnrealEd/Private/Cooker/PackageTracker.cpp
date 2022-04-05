@@ -8,9 +8,7 @@
 #include "UObject/Package.h"
 #include "UObject/UObjectIterator.h"
 
-namespace UE
-{
-namespace Cook
+namespace UE::Cook
 {
 
 #if ENABLE_COOK_STATS
@@ -76,7 +74,7 @@ namespace Cook
 		NewPackages.Reserve(LoadedPackages.Num());
 		for (UPackage* Package : LoadedPackages)
 		{
-			NewPackages.Add(Package);
+			NewPackages.Add(Package, FInstigator(EInstigator::StartupPackage));
 		}
 
 		GUObjectArray.AddUObjectDeleteListener(this);
@@ -89,7 +87,7 @@ namespace Cook
 		GUObjectArray.RemoveUObjectCreateListener(this);
 	}
 
-	TArray<UPackage*> FPackageTracker::GetNewPackages()
+	TMap<UPackage*, FInstigator> FPackageTracker::GetNewPackages()
 	{
 		return MoveTemp(NewPackages);
 	}
@@ -108,7 +106,10 @@ namespace Cook
 				}
 
 				LoadedPackages.Add(Package);
-				NewPackages.Add(Package);
+				NewPackages.Add(Package,
+						FInstigator(EInstigator::Unsolicited,
+							LoadingPackageData ? LoadingPackageData->GetPackageName() : NAME_None)
+					);
 			}
 		}
 	}
@@ -117,7 +118,7 @@ namespace Cook
 	{
 		if (Object->GetClass() == UPackage::StaticClass())
 		{
-			auto Package = const_cast<UPackage*>(static_cast<const UPackage*>(Object));
+			UPackage* Package = const_cast<UPackage*>(static_cast<const UPackage*>(Object));
 
 			LoadedPackages.Remove(Package);
 			NewPackages.Remove(Package);
@@ -137,5 +138,4 @@ namespace Cook
 	}
 
 
-}
 }

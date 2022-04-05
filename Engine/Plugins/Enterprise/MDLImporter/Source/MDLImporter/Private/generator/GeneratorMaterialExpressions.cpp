@@ -371,6 +371,22 @@ namespace Generator
 		}
 	}
 
+	void CheckedConnect(UObject* Parent, const FMaterialExpressionConnection& Connection, FExpressionInput& Input, TObjectPtr<UTexture>* OutTexturePtr)
+	{
+		if (Connection.GetConnectionType() == EConnectionType::Texture)
+		{
+			UTexture* Texture = Connection.GetTextureAndUse();
+			if (ensure(OutTexturePtr && Texture))
+			{
+				*OutTexturePtr = Texture;
+			}
+		}
+		else
+		{
+			CheckedConnect(Parent, Connection, Input);
+		}
+	}
+
 	uint32 ComponentCount(UMaterialExpression* Expression, int32 OutputIndex = 0)
 	{
 		if (Expression->IsA<UMaterialExpressionAbs>())
@@ -1246,8 +1262,7 @@ namespace Generator
 	    const FMaterialExpressionConnection& Specular, const FMaterialExpressionConnection& Roughness,
 	    const FMaterialExpressionConnection& EmissiveColor, const FMaterialExpressionConnection& Opacity,
 	    const FMaterialExpressionConnection& OpacityMask, const FMaterialExpressionConnection& Normal,
-	    const FMaterialExpressionConnection& WorldPositionOffset, const FMaterialExpressionConnection& WorldDisplacement,
-	    const FMaterialExpressionConnection& TessellationMultiplier, const FMaterialExpressionConnection& SubsurfaceColor,
+	    const FMaterialExpressionConnection& WorldPositionOffset, const FMaterialExpressionConnection& SubsurfaceColor,
 	    const FMaterialExpressionConnection& ClearCoat, const FMaterialExpressionConnection& ClearCoatRoughness,
 	    const FMaterialExpressionConnection& AmbientOcclusion, const FMaterialExpressionConnection& Refraction,
 	    const FMaterialExpressionConnection& CustomizedUVs0, const FMaterialExpressionConnection& CustomizedUVs1,
@@ -1257,7 +1272,7 @@ namespace Generator
 	    const FMaterialExpressionConnection& PixelDepthOffset)
 	{
 		check(IsScalar(Metallic) && IsScalar(Specular) && IsScalar(Roughness) && IsScalar(Opacity) && IsScalar(OpacityMask) &&
-		      IsScalar(TessellationMultiplier) && IsScalar(ClearCoat) && IsScalar(ClearCoatRoughness) && IsScalar(AmbientOcclusion) &&
+		      IsScalar(ClearCoat) && IsScalar(ClearCoatRoughness) && IsScalar(AmbientOcclusion) &&
 		      IsScalar(PixelDepthOffset));
 
 		UMaterialExpressionMakeMaterialAttributes* Expression = NewMaterialExpression<UMaterialExpressionMakeMaterialAttributes>(Parent);
@@ -1271,8 +1286,6 @@ namespace Generator
 		CheckedConnect(Parent, OpacityMask, Expression->OpacityMask);
 		CheckedConnect(Parent, Normal, Expression->Normal);
 		CheckedConnect(Parent, WorldPositionOffset, Expression->WorldPositionOffset);
-		CheckedConnect(Parent, WorldDisplacement, Expression->WorldDisplacement);
-		CheckedConnect(Parent, TessellationMultiplier, Expression->TessellationMultiplier);
 		CheckedConnect(Parent, SubsurfaceColor, Expression->SubsurfaceColor);
 		CheckedConnect(Parent, ClearCoat, Expression->ClearCoat);
 		CheckedConnect(Parent, ClearCoatRoughness, Expression->ClearCoatRoughness);

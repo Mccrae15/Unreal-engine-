@@ -27,7 +27,7 @@ void UK2Node_InputAxisKeyEvent::Serialize(FArchive& Ar)
 
 	if(Ar.IsLoading())
 	{
-		if(Ar.UE4Ver() < VER_UE4_K2NODE_EVENT_MEMBER_REFERENCE && EventSignatureName_DEPRECATED.IsNone() && EventSignatureClass_DEPRECATED == nullptr)
+		if(Ar.UEVer() < VER_UE4_K2NODE_EVENT_MEMBER_REFERENCE && EventSignatureName_DEPRECATED.IsNone() && EventSignatureClass_DEPRECATED == nullptr)
 		{
 			EventReference.SetExternalDelegateMember(FName(TEXT("InputAxisHandlerDynamicSignature__DelegateSignature")));
 		}
@@ -110,7 +110,7 @@ bool UK2Node_InputAxisKeyEvent::IsCompatibleWithGraph(const UEdGraph* TargetGrap
 	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(TargetGraph);
 	if (Blueprint != nullptr)
 	{
-		bIsCompatible = FBlueprintEditorUtils::IsActorBased(Blueprint) && Blueprint->SupportsInputEvents();
+		bIsCompatible = Blueprint && Blueprint->SupportsInputEvents();
 	}
 
 	UEdGraphSchema_K2 const* K2Schema = Cast<UEdGraphSchema_K2>(TargetGraph->GetSchema());

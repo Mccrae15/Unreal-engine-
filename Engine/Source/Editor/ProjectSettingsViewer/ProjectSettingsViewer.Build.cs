@@ -22,12 +22,13 @@ namespace UnrealBuildTool.Rules
 					"SettingsEditor",
 					"Slate",
 					"SlateCore",
+					"EditorFramework",
 					"UnrealEd",
 					"MoviePlayer",
 					"NavigationSystem",
 					"AIModule",
-					"ProjectTargetPlatformEditor",
 					"EditorStyle",
+					"DeveloperToolSettings",
 				}
 			);
 
@@ -37,6 +38,11 @@ namespace UnrealBuildTool.Rules
 					"Editor/ProjectSettingsViewer/Private",
 				}
 			);
+
+			if (Target.bBuildTargetDeveloperTools)
+			{
+				PrivateDependencyModuleNames.Add("ProjectTargetPlatformEditor");
+			}
 		}
 	}
 }

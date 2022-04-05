@@ -6,6 +6,8 @@
 
 #include "Render/Viewport/IDisplayClusterViewport.h"
 #include "Render/Viewport/RenderFrame/DisplayClusterRenderFrame.h"
+#include "Render/Viewport/Containers/DisplayClusterPreviewSettings.h"
+#include "SceneView.h"
 
 class UWorld;
 class FViewport;
@@ -13,8 +15,7 @@ class FSceneViewFamilyContext;
 class ADisplayClusterRootActor;
 class UDisplayClusterConfigurationViewport;
 class IDisplayClusterViewportManagerProxy;
-
-struct FDisplayClusterConfigurationViewportPreview;
+class FReferenceCollector;
 
 class DISPLAYCLUSTER_API IDisplayClusterViewportManager
 {
@@ -43,10 +44,11 @@ public:
 	* @param InRenderMode     - Render mode
 	* @param InClusterNodeId  - cluster node for rendering
 	* @param InRootActorPtr   - reference to RootActor with actual configuration inside
+	* @param InPreviewSettings - support preview rendering
 	*
 	* @return - true, if success
 	*/
-	virtual bool UpdateConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const FString& InClusterNodeId, class ADisplayClusterRootActor* InRootActorPtr) = 0;
+	virtual bool UpdateConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const FString& InClusterNodeId, class ADisplayClusterRootActor* InRootActorPtr, const FDisplayClusterPreviewSettings* InPreviewSettings = nullptr) = 0;
 
 	/**
 	* Initialize new frame for all viewports on game thread, and update context, render resources with viewport new settings
@@ -68,6 +70,24 @@ public:
 	virtual void FinalizeNewFrame() = 0;
 
 	/**
+	* Create constructor values for viewfamily, using rules
+	* [Game thread func]
+	*
+	* @param InFrameTarget           - frame target
+	* @param InScene                 - scene
+	* @param InEngineShowFlags       - starting showflags
+	* @param bInAdditionalViewFamily - flag indicating this is an additional view family
+	* 
+	* @return - The ConstructionValues object that was created, meant to initialize a view family context.
+	*/
+	virtual FSceneViewFamily::ConstructionValues CreateViewFamilyConstructionValues(
+		const FDisplayClusterRenderFrame::FFrameRenderTarget& InFrameTarget,
+		FSceneInterface* InScene,
+		FEngineShowFlags InEngineShowFlags,
+		const bool bInAdditionalViewFamily
+	) const = 0;
+
+	/**
 	* Initialize view family, using rules
 	* [Game thread func]
 	*
@@ -80,13 +100,26 @@ public:
 	// Send to render thread
 	virtual void RenderFrame(FViewport* InViewport) = 0;
 
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) = 0;
+
 #if WITH_EDITOR
-	virtual bool UpdatePreviewConfiguration(const FDisplayClusterConfigurationViewportPreview& PreviewConfiguration, ADisplayClusterRootActor* InRootActorPtr) = 0;
-	virtual bool RenderInEditor(class FDisplayClusterRenderFrame& InRenderFrame, FViewport* InViewport) = 0;
+	/**
+	* Render in editor (preview)
+	* [Game thread func]
+	*
+	* @param InRenderFrame - render frame setup
+	* @param InViewport
+	* @param InFirstViewportNum - begin render from this viewport in frame
+	* @param InViewportsAmount - max viewports for render
+	* @param OutViewportsAmount - total viewport rendered
+	* @param bOutFrameRendered - true, if cluster node composition pass done (additional pass after last viewport is rendered)
+	*
+	* @return - true, if render success
+	*/
+	virtual bool RenderInEditor(class FDisplayClusterRenderFrame& InRenderFrame, FViewport* InViewport, const uint32 InFirstViewportNum, const int32 InViewportsAmount, int32& OutViewportsAmount, bool& bOutFrameRendered) = 0;
 #endif
 
 	///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 	/**
 	* Find viewport object by name
 	* [Game thread func]
@@ -101,12 +134,12 @@ public:
 	* Find viewport object and context number by stereoscopic pass index
 	* [Game thread func]
 	*
-	* @param StereoPassType - stereoscopic pass index
+	* @param StereoViewIndex - stereoscopic view index
 	* @param OutContextNum - context number
 	*
 	* @return - viewport object ref
 	*/
-	virtual IDisplayClusterViewport* FindViewport(const enum EStereoscopicPass StereoPassType, uint32* OutContextNum = nullptr) const = 0;
+	virtual IDisplayClusterViewport* FindViewport(const int32 StereoViewIndex, uint32* OutContextNum = nullptr) const = 0;
 	
 	/**
 	* Return all exist viewports objects
@@ -115,5 +148,13 @@ public:
 	* @return - arrays with viewport objects refs
 	*/
 	virtual const TArrayView<IDisplayClusterViewport*> GetViewports() const = 0;
+
+	/**
+	* Mark the geometry of the referenced component(s) as dirty (ProceduralMesh, etc)
+	* [Game thread func]
+	*
+	* @param InComponentName - (optional) Unique component name
+	*/
+	virtual void MarkComponentGeometryDirty(const FName InComponentName = NAME_None) = 0;
 };
 

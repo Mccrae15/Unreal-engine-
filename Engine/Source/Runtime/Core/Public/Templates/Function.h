@@ -98,7 +98,7 @@ template <typename T> struct TIsTFunctionRef<const volatile T> { enum { Value = 
 /**
  * Private implementation details of TFunction and TFunctionRef.
  */
-namespace UE4Function_Private
+namespace UE::Core::Private::Function
 {
 	template <typename T, bool bOnHeap>
 	struct TFunction_OwnedObject;
@@ -521,7 +521,7 @@ namespace UE4Function_Private
 		template <typename T>
 		struct TDebugHelper : IDebugHelper
 		{
-			T* Ptr;
+			T* Ptr = nullptr;
 		};
 	#endif
 
@@ -665,7 +665,7 @@ namespace UE4Function_Private
 		TFunctionRefBase& operator=(const TFunctionRefBase&) = delete;
 
 		// Move all of the assert code out of line
-		FORCENOINLINE void CheckCallable() const
+		void CheckCallable() const
 		{
 			checkf(Callable, TEXT("Attempting to call an unbound TFunction!"));
 		}
@@ -692,7 +692,7 @@ namespace UE4Function_Private
 
 	private:
 		// A pointer to a function which invokes the call operator on the callable object
-		Ret (*Callable)(void*, ParamTypes&...);
+		Ret (*Callable)(void*, ParamTypes&...) = nullptr;
 
 		StorageType Storage;
 
@@ -786,7 +786,7 @@ namespace UE4Function_Private
 
 	private:
 		// A pointer to the callable object
-		void* Ptr;
+		void* Ptr = nullptr;
 	};
 }
 
@@ -842,9 +842,9 @@ namespace UE4Function_Private
  * }
  */
 template <typename FuncType>
-class TFunctionRef : public UE4Function_Private::TFunctionRefBase<UE4Function_Private::FFunctionRefStoragePolicy, FuncType>
+class TFunctionRef : public UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::FFunctionRefStoragePolicy, FuncType>
 {
-	using Super = UE4Function_Private::TFunctionRefBase<UE4Function_Private::FFunctionRefStoragePolicy, FuncType>;
+	using Super = UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::FFunctionRefStoragePolicy, FuncType>;
 
 public:
 	/**
@@ -855,7 +855,7 @@ public:
 		typename = typename TEnableIf<
 			TAnd<
 				TNot<TIsTFunctionRef<typename TDecay<FunctorType>::Type>>,
-				UE4Function_Private::TFuncCanBindToFunctor<FuncType, typename TDecay<FunctorType>::Type>
+				UE::Core::Private::Function::TFuncCanBindToFunctor<FuncType, typename TDecay<FunctorType>::Type>
 			>::Value
 		>::Type
 	>
@@ -883,7 +883,7 @@ public:
  * // A function taking a string and float and returning int32.  Parameter names are optional.
  * TFunction<int32 (const FString& Name, float Scale)>
  *
- * Unlike TFunctionRef, this object is intended to be used like a UE4 version of std::function.  That is,
+ * Unlike TFunctionRef, this object is intended to be used like a UE version of std::function.  That is,
  * it takes a copy of whatever is bound to it, meaning you can return it from functions and store them in
  * objects without caring about the lifetime of the original object being bound.
  *
@@ -912,9 +912,9 @@ public:
  * }
  */
 template <typename FuncType>
-class TFunction final : public UE4Function_Private::TFunctionRefBase<UE4Function_Private::TFunctionStorage<false>, FuncType>
+class TFunction final : public UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::TFunctionStorage<false>, FuncType>
 {
-	using Super = UE4Function_Private::TFunctionRefBase<UE4Function_Private::TFunctionStorage<false>, FuncType>;
+	using Super = UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::TFunctionStorage<false>, FuncType>;
 
 public:
 	/**
@@ -932,7 +932,7 @@ public:
 		typename = typename TEnableIf<
 			TAnd<
 				TNot<TIsTFunction<typename TDecay<FunctorType>::Type>>,
-				UE4Function_Private::TFuncCanBindToFunctor<FuncType, FunctorType>
+				UE::Core::Private::Function::TFuncCanBindToFunctor<FuncType, FunctorType>
 			>::Value
 		>::Type
 	>
@@ -976,6 +976,14 @@ public:
 	}
 
 	/**
+	 * Removes any bound callable from the TFunction, restoring it to the default 'empty' state.
+	 */
+	void Reset()
+	{
+		*this = nullptr;
+	}
+
+	/**
 	 * Tests if the TFunction is callable.
 	 */
 	FORCEINLINE explicit operator bool() const
@@ -1001,9 +1009,9 @@ public:
  * Foo(MoveTemp(MovableFunc)); // ok
  */
 template <typename FuncType>
-class TUniqueFunction final : public UE4Function_Private::TFunctionRefBase<UE4Function_Private::TFunctionStorage<true>, FuncType>
+class TUniqueFunction final : public UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::TFunctionStorage<true>, FuncType>
 {
-	using Super = UE4Function_Private::TFunctionRefBase<UE4Function_Private::TFunctionStorage<true>, FuncType>;
+	using Super = UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::TFunctionStorage<true>, FuncType>;
 
 public:
 	/**
@@ -1021,7 +1029,7 @@ public:
 		typename = typename TEnableIf<
 			TAnd<
 				TNot<TOr<TIsTUniqueFunction<typename TDecay<FunctorType>::Type>, TIsTFunction<typename TDecay<FunctorType>::Type>>>,
-				UE4Function_Private::TFuncCanBindToFunctor<FuncType, FunctorType>
+				UE::Core::Private::Function::TFuncCanBindToFunctor<FuncType, FunctorType>
 			>::Value
 		>::Type
 	>
@@ -1045,7 +1053,7 @@ public:
 	 * Constructor which takes ownership of a TFunction's functor.
 	 */
 	TUniqueFunction(TFunction<FuncType>&& Other)
-		: Super(MoveTemp(*(UE4Function_Private::TFunctionRefBase<UE4Function_Private::TFunctionStorage<false>, FuncType>*)&Other))
+		: Super(MoveTemp(*(UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::TFunctionStorage<false>, FuncType>*)&Other))
 	{
 	}
 
@@ -1053,7 +1061,7 @@ public:
 	 * Constructor which takes ownership of a TFunction's functor.
 	 */
 	TUniqueFunction(const TFunction<FuncType>& Other)
-		: Super(*(const UE4Function_Private::TFunctionRefBase<UE4Function_Private::TFunctionStorage<false>, FuncType>*)&Other)
+		: Super(*(const UE::Core::Private::Function::TFunctionRefBase<UE::Core::Private::Function::TFunctionStorage<false>, FuncType>*)&Other)
 	{
 	}
 
@@ -1070,6 +1078,14 @@ public:
 	TUniqueFunction(const TUniqueFunction& Other) = delete;
 	TUniqueFunction& operator=(const TUniqueFunction& Other) = delete;
 	~TUniqueFunction() = default;
+
+	/**
+	 * Removes any bound callable from the TFunction, restoring it to the default 'empty' state.
+	 */
+	void Reset()
+	{
+		*this = nullptr;
+	}
 
 	/**
 	 * Tests if the TUniqueFunction is callable.

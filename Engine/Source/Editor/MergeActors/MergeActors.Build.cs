@@ -19,38 +19,41 @@ public class MergeActors : ModuleRules
 				"AssetRegistry",
                 "ContentBrowser",
                 "Documentation",
-                "LevelEditor",
                 "MeshUtilities",
                 "PropertyEditor",
                 "RawMesh",
                 "WorkspaceMenuStructure",
                 "MeshReductionInterface",
                 "MeshMergeUtilities",
-            }
+				"GeometryProcessingInterfaces"
+			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(
-			new string[] {
-				"Core",
-				"CoreUObject",
-				"Engine",
+            new string[] {
+                "Core",
+                "CoreUObject",
+                "Engine",
                 "InputCore",
-				"Slate",
-				"SlateCore",
+                "MaterialUtilities",
+                "Slate",
+                "SlateCore",
                 "EditorStyle",
-				"UnrealEd"
+                "EditorFramework",
+                "UnrealEd",
+				"ToolWidgets"
             }
-		);
+        );
 
 		DynamicallyLoadedModuleNames.AddRange(
 			new string[] {
 				"AssetRegistry",
                 "ContentBrowser",
                 "Documentation",
-                "LevelEditor",
                 "MeshUtilities",
                 "MeshMergeUtilities",
                 "MeshReductionInterface",
+				"GeometryProcessingInterfaces"
             }
 		);
 	}

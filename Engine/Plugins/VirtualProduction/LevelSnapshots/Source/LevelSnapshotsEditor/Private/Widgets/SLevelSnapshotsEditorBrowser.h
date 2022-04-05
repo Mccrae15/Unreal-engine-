@@ -2,12 +2,14 @@
 
 #pragma once
 
+#include "ContentBrowserDelegates.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
+class ULevelSnapshotsEditorData;
+
 struct FAssetData;
-class UWorld;
-struct FLevelSnapshotsEditorViewBuilder;
+struct FAssetViewCustomColumn;
 
 class SLevelSnapshotsEditorBrowser : public SCompoundWidget
 {
@@ -20,15 +22,20 @@ public:
 
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, const TSharedRef<FLevelSnapshotsEditorViewBuilder>& InBuilder);
+	void Construct(const FArguments& InArgs, ULevelSnapshotsEditorData* InEditorData);
+	virtual ~SLevelSnapshotsEditorBrowser() override;
+
 	void SelectAsset(const FAssetData& InAssetData) const;
 
 private:
+	
+	TArray<FAssetViewCustomColumn> GetCustomColumns() const;
 	void OnAssetDoubleClicked(const FAssetData& InAssetData) const;
 	bool OnShouldFilterAsset(const FAssetData& InAssetData) const;
 	TSharedPtr<SWidget> OnGetAssetContextMenu(const TArray<FAssetData>& SelectedAssets);
-
+	TSharedRef<SToolTip> CreateCustomTooltip(FAssetData& AssetData);
+	
 	TAttribute<FSoftObjectPath> OwningWorldPathAttribute;
 
-	TWeakPtr<FLevelSnapshotsEditorViewBuilder> BuilderPtr;
+	TWeakObjectPtr<ULevelSnapshotsEditorData> EditorData;
 };

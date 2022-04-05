@@ -401,11 +401,11 @@ struct FAsyncPackage : public FGCObject
 	}
 
 	/**
-	 * Returns the name to load of the package.
+	 * Returns the PackagePath from which to load the package.
 	 */
-	FORCEINLINE const FName& GetPackageNameToLoad() const
+	FORCEINLINE const FPackagePath& GetPackagePath() const
 	{
-		return Desc.NameToLoad;
+		return Desc.PackagePath;
 	}
 
 	void AddCompletionCallback(TUniquePtr<FLoadPackageAsyncDelegate>&& Callback, bool bInternal);
@@ -496,8 +496,8 @@ struct FAsyncPackage : public FGCObject
 	UPackage* GetLoadedPackage();
 
 #if WITH_EDITOR
-	/** Gets all assets loaded by this async package, used in the editor */
-	void GetLoadedAssets(TArray<FWeakObjectPtr>& AssetList);
+	/** Gets all assets and packages loaded by this async package, used in the editor */
+	void GetLoadedAssetsAndPackages(TSet<FWeakObjectPtr>& AssetList, TSet<UPackage*>& PackageList);
 #endif
 
 	/** Checks if all dependencies (imported packages) of this package have been fully loaded */
@@ -545,7 +545,7 @@ private:
 	/** Call backs called when we finished loading this package											*/
 	TArray<FCompletionCallback>	CompletionCallbacks;
 	/** Pending Import packages - we wait until all of them have been fully loaded. */
-	TArray<FAsyncPackage*> PendingImportedPackages;
+	TMap<FName, FAsyncPackage*> PendingImportedPackages;
 	/** Referenced imports - list of packages we need until we finish loading this package. */
 	TArray<FAsyncPackage*> ReferencedImports;
 	/** Root package if this package was loaded as a dependency of another. NULL otherwise */

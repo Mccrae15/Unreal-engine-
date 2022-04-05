@@ -49,7 +49,7 @@ private:
 	FQuat PreviousRotation = FQuat::Identity;
 
 	FAmbisonicsSoundfieldBuffer RotatedAudio;
-	Audio::AlignedFloatBuffer DecoderOutputBuffer;
+	Audio::FAlignedFloatBuffer DecoderOutputBuffer;
 
 public:
 	virtual ~FAmbisonicsSoundfieldDecoder() {};
@@ -208,8 +208,9 @@ public:
 		check(OutAudio.NumChannels == InAudio.NumChannels);
 		check(InAudio.AudioBuffer.Num() == OutAudio.AudioBuffer.Num());
 
-		// Rotate 
-		FSoundFieldDecoder::RotateFirstOrderAmbisonicsBed(InAudio, RotatedAudio, InAudio.Rotation, InAudio.PreviousRotation);
+		const FQuat AmountToRotateBy = InAudio.Rotation.Inverse();
+		const FQuat PreviousAmountRotatedBy = InAudio.PreviousRotation.Inverse();
+		FSoundFieldDecoder::RotateFirstOrderAmbisonicsBed(InAudio, RotatedAudio, AmountToRotateBy, PreviousAmountRotatedBy);
 		Audio::MixInBufferFast(RotatedAudio.AudioBuffer, OutAudio.AudioBuffer, InputData.SendLevel);
 	}
 };

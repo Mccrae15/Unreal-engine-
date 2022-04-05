@@ -54,11 +54,11 @@ struct FSkeletalMeshSkinningDataHandle
 	FSkeletalMeshSkinningDataHandle();
 	FSkeletalMeshSkinningDataHandle(FSkeletalMeshSkinningDataUsage InUsage, const TSharedPtr<struct FSkeletalMeshSkinningData>& InSkinningData, bool bNeedsDataImmediately);
 	FSkeletalMeshSkinningDataHandle(const FSkeletalMeshSkinningDataHandle& Other) = delete;
-	FSkeletalMeshSkinningDataHandle(FSkeletalMeshSkinningDataHandle&& Other);
+	FSkeletalMeshSkinningDataHandle(FSkeletalMeshSkinningDataHandle&& Other) noexcept;
 	~FSkeletalMeshSkinningDataHandle();
 
 	FSkeletalMeshSkinningDataHandle& operator=(const FSkeletalMeshSkinningDataHandle& Other) = delete;
-	FSkeletalMeshSkinningDataHandle& operator=(FSkeletalMeshSkinningDataHandle&& Other);
+	FSkeletalMeshSkinningDataHandle& operator=(FSkeletalMeshSkinningDataHandle&& Other) noexcept;
 
 	FSkeletalMeshSkinningDataUsage Usage;
 	TSharedPtr<FSkeletalMeshSkinningData> SkinningData;
@@ -103,90 +103,90 @@ struct FSkeletalMeshSkinningData
 		return BoneCount;
 	}
 
-	FORCEINLINE FVector GetPosition(int32 LODIndex, int32 VertexIndex) const
+	FORCEINLINE FVector3f GetPosition(int32 LODIndex, int32 VertexIndex) const
 	{
-		return LODData.IsValidIndex(LODIndex) ? LODData[LODIndex].SkinnedCPUPositions[CurrIndex][VertexIndex] : FVector::ZeroVector;
+		return LODData.IsValidIndex(LODIndex) ? LODData[LODIndex].SkinnedCPUPositions[CurrIndex][VertexIndex] : FVector3f::ZeroVector;
 	}
 
-	FORCEINLINE FVector GetPreviousPosition(int32 LODIndex, int32 VertexIndex) const
+	FORCEINLINE FVector3f GetPreviousPosition(int32 LODIndex, int32 VertexIndex) const
 	{
-		return LODData.IsValidIndex(LODIndex) ? LODData[LODIndex].SkinnedCPUPositions[CurrIndex ^ 1][VertexIndex] : FVector::ZeroVector;
+		return LODData.IsValidIndex(LODIndex) ? LODData[LODIndex].SkinnedCPUPositions[CurrIndex ^ 1][VertexIndex] : FVector3f::ZeroVector;
 	}
 
-	FORCEINLINE void GetTangentBasis(int32 LODIndex, int32 VertexIndex, FVector& OutTangentX, FVector& OutTangentY, FVector& OutTangentZ)
+	FORCEINLINE void GetTangentBasis(int32 LODIndex, int32 VertexIndex, FVector3f& OutTangentX, FVector3f& OutTangentY, FVector3f& OutTangentZ)
 	{
 		const bool bValidLOD = LODData.IsValidIndex(LODIndex);
-		OutTangentX = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex][(VertexIndex * 3) + 0] : FVector(1.0f, 0.0f, 0.0f);
-		OutTangentY = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex][(VertexIndex * 3) + 1] : FVector(0.0f, 1.0f, 0.0f);
-		OutTangentZ = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex][(VertexIndex * 3) + 2] : FVector(0.0f, 0.0f, 1.0f);
+		OutTangentX = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex][(VertexIndex * 3) + 0] : FVector3f(1.0f, 0.0f, 0.0f);
+		OutTangentY = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex][(VertexIndex * 3) + 1] : FVector3f(0.0f, 1.0f, 0.0f);
+		OutTangentZ = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex][(VertexIndex * 3) + 2] : FVector3f(0.0f, 0.0f, 1.0f);
 	}
 
-	FORCEINLINE void GetPreviousTangentBasis(int32 LODIndex, int32 VertexIndex, FVector& OutTangentX, FVector& OutTangentY, FVector& OutTangentZ)
+	FORCEINLINE void GetPreviousTangentBasis(int32 LODIndex, int32 VertexIndex, FVector3f& OutTangentX, FVector3f& OutTangentY, FVector3f& OutTangentZ)
 	{
 		const bool bValidLOD = LODData.IsValidIndex(LODIndex);
-		OutTangentX = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex ^ 1][(VertexIndex * 3) + 0] : FVector(1.0f, 0.0f, 0.0f);
-		OutTangentY = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex ^ 1][(VertexIndex * 3) + 1] : FVector(0.0f, 1.0f, 0.0f);
-		OutTangentZ = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex ^ 1][(VertexIndex * 3) + 2] : FVector(0.0f, 0.0f, 1.0f);
+		OutTangentX = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex ^ 1][(VertexIndex * 3) + 0] : FVector3f(1.0f, 0.0f, 0.0f);
+		OutTangentY = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex ^ 1][(VertexIndex * 3) + 1] : FVector3f(0.0f, 1.0f, 0.0f);
+		OutTangentZ = bValidLOD ? LODData[LODIndex].SkinnedTangentBasis[CurrIndex ^ 1][(VertexIndex * 3) + 2] : FVector3f(0.0f, 0.0f, 1.0f);
 	}
 
 private:
-	FORCEINLINE TArray<FVector>& CurrSkinnedPositions(int32 LODIndex)
+	FORCEINLINE TArray<FVector3f>& CurrSkinnedPositions(int32 LODIndex)
 	{
 		return LODData[LODIndex].SkinnedCPUPositions[CurrIndex];
 	}
 
-	FORCEINLINE TArray<FVector>& PrevSkinnedPositions(int32 LODIndex)
+	FORCEINLINE TArray<FVector3f>& PrevSkinnedPositions(int32 LODIndex)
 	{
 		return LODData[LODIndex].SkinnedCPUPositions[CurrIndex ^ 1];
 	}
 
-	FORCEINLINE TArray<FVector>& CurrSkinnedTangentBasis(int32 LODIndex)
+	FORCEINLINE TArray<FVector3f>& CurrSkinnedTangentBasis(int32 LODIndex)
 	{
 		return LODData[LODIndex].SkinnedTangentBasis[CurrIndex];
 	}
 
-	FORCEINLINE TArray<FVector>& PrevSkinnedTangentBasis(int32 LODIndex)
+	FORCEINLINE TArray<FVector3f>& PrevSkinnedTangentBasis(int32 LODIndex)
 	{
 		return LODData[LODIndex].SkinnedTangentBasis[CurrIndex ^ 1];
 	}
 
 public:
-	FORCEINLINE TArray<FMatrix>& CurrBoneRefToLocals()
+	FORCEINLINE TArray<FMatrix44f>& CurrBoneRefToLocals()
 	{
 		return BoneRefToLocals[CurrIndex];
 	}
 
-	FORCEINLINE const TArray<FMatrix>& CurrBoneRefToLocals() const
+	FORCEINLINE const TArray<FMatrix44f>& CurrBoneRefToLocals() const
 	{
 		return BoneRefToLocals[CurrIndex];
 	}
 
-	FORCEINLINE TArray<FMatrix>& PrevBoneRefToLocals()
+	FORCEINLINE TArray<FMatrix44f>& PrevBoneRefToLocals()
 	{
 		return BoneRefToLocals[CurrIndex ^ 1];
 	}
 
-	FORCEINLINE const TArray<FMatrix>& PrevBoneRefToLocals() const
+	FORCEINLINE const TArray<FMatrix44f>& PrevBoneRefToLocals() const
 	{
 		return BoneRefToLocals[CurrIndex ^ 1];
 	}
 
-	FORCEINLINE TArray<FTransform>& CurrComponentTransforms()
+	FORCEINLINE TArray<FTransform3f>& CurrComponentTransforms()
 	{
 		return ComponentTransforms[CurrIndex];
 	}
 
-	FORCEINLINE const TArray<FTransform>& CurrComponentTransforms() const
+	FORCEINLINE const TArray<FTransform3f>& CurrComponentTransforms() const
 	{
 		return ComponentTransforms[CurrIndex];
 	}
 
-	FORCEINLINE TArray<FTransform>& PrevComponentTransforms()
+	FORCEINLINE TArray<FTransform3f>& PrevComponentTransforms()
 	{
 		return ComponentTransforms[CurrIndex ^ 1];
 	}
 
-	FORCEINLINE const TArray<FTransform>& PrevComponentTransforms() const
+	FORCEINLINE const TArray<FTransform3f>& PrevComponentTransforms() const
 	{
 		return ComponentTransforms[CurrIndex ^ 1];
 	}
@@ -204,7 +204,7 @@ private:
 	void UpdateBoneTransforms();
 
 	FRWLock RWGuard;
-	
+
 	TWeakObjectPtr<USkeletalMeshComponent> MeshComp;
 
 	/** Delta seconds between calculations of the previous and current skinned positions. */
@@ -219,10 +219,10 @@ private:
 	int32 TotalPreSkinnedVertsUsers;
 
 	/** Cached bone matrices. */
-	TArray<FMatrix> BoneRefToLocals[2];
+	TArray<FMatrix44f> BoneRefToLocals[2];
 
 	/** Component space transforms */
-	TArray<FTransform> ComponentTransforms[2];
+	TArray<FTransform3f> ComponentTransforms[2];
 
 	struct FLODData
 	{
@@ -231,10 +231,10 @@ private:
 		int32 PreSkinnedVertsUsers = 0;
 
 		/** CPU Skinned vertex positions. Double buffered to allow accurate velocity calculation. */
-		TArray<FVector> SkinnedCPUPositions[2];
+		TArray<FVector3f> SkinnedCPUPositions[2];
 
 		/** CPU Skinned tangent basis, where each vertex will map to TangentX + TangentZ */
-		TArray<FVector> SkinnedTangentBasis[2];
+		TArray<FVector3f> SkinnedTangentBasis[2];
 	};
 	TArray<FLODData> LODData;
 
@@ -255,26 +255,28 @@ struct FSkeletalMeshUvMappingUsage
 	bool RequiresGpuAccess = false;
 };
 
-struct FSkeletalMeshUvMappingHandle
+struct NIAGARA_API FSkeletalMeshUvMappingHandle
 {
 	FSkeletalMeshUvMappingHandle();
 	FSkeletalMeshUvMappingHandle(FSkeletalMeshUvMappingUsage InUsage, const TSharedPtr<struct FSkeletalMeshUvMapping>& InUvMappingData, bool bNeedsDataImmediately);
 	FSkeletalMeshUvMappingHandle(const FSkeletalMeshUvMappingHandle& Other) = delete;
-	FSkeletalMeshUvMappingHandle(FSkeletalMeshUvMappingHandle&& Other);
+	FSkeletalMeshUvMappingHandle(FSkeletalMeshUvMappingHandle&& Other) noexcept;
 	~FSkeletalMeshUvMappingHandle();
 
 	FSkeletalMeshUvMappingHandle& operator=(const FSkeletalMeshUvMappingHandle& Other) = delete;
-	FSkeletalMeshUvMappingHandle& operator=(FSkeletalMeshUvMappingHandle&& Other);
+	FSkeletalMeshUvMappingHandle& operator=(FSkeletalMeshUvMappingHandle&& Other) noexcept;
 	explicit operator bool() const;
 
 	FSkeletalMeshUvMappingUsage Usage;
 
 	void FindOverlappingTriangles(const FVector2D& InUv, float Tolerance, TArray<int32>& TriangleIndices) const;
-	int32 FindFirstTriangle(const FVector2D& InUv, float Tolerance, FVector& BarycentricCoord) const;
-	int32 FindFirstTriangle(const FBox2D& InUvBox, FVector& BarycentricCoord) const;
+	int32 FindFirstTriangle(const FVector2D& InUv, float Tolerance, FVector3f& BarycentricCoord) const;
+	int32 FindFirstTriangle(const FBox2D& InUvBox, FVector3f& BarycentricCoord) const;
 	const FSkeletalMeshUvMappingBufferProxy* GetQuadTreeProxy() const;
 	int32 GetUvSetIndex() const;
 	int32 GetLodIndex() const;
+
+	void PinAndInvalidateHandle();
 
 private:
 	TSharedPtr<FSkeletalMeshUvMapping> UvMappingData;
@@ -294,16 +296,16 @@ struct FSkeletalMeshConnectivityUsage
 	bool RequiresGpuAccess = false;
 };
 
-struct FSkeletalMeshConnectivityHandle
+struct NIAGARA_API FSkeletalMeshConnectivityHandle
 {
 	FSkeletalMeshConnectivityHandle();
 	FSkeletalMeshConnectivityHandle(FSkeletalMeshConnectivityUsage InUsage, const TSharedPtr<struct FSkeletalMeshConnectivity>& InConnectivityData, bool bNeedsDataImmediately);
 	FSkeletalMeshConnectivityHandle(const FSkeletalMeshConnectivityHandle& Other) = delete;
-	FSkeletalMeshConnectivityHandle(FSkeletalMeshConnectivityHandle&& Other);
+	FSkeletalMeshConnectivityHandle(FSkeletalMeshConnectivityHandle&& Other) noexcept;
 	~FSkeletalMeshConnectivityHandle();
 
 	FSkeletalMeshConnectivityHandle& operator=(const FSkeletalMeshConnectivityHandle& Other) = delete;
-	FSkeletalMeshConnectivityHandle& operator=(FSkeletalMeshConnectivityHandle&& Other);
+	FSkeletalMeshConnectivityHandle& operator=(FSkeletalMeshConnectivityHandle&& Other) noexcept;
 	explicit operator bool() const;
 
 	FSkeletalMeshConnectivityUsage Usage;
@@ -312,11 +314,13 @@ struct FSkeletalMeshConnectivityHandle
 
 	const FSkeletalMeshConnectivityProxy* GetProxy() const;
 
+	void PinAndInvalidateHandle();
+
 private:
 	TSharedPtr<FSkeletalMeshConnectivity> ConnectivityData;
 };
 
-class FNDI_SkeletalMesh_GeneratedData : public FNDI_GeneratedData
+class NIAGARA_API FNDI_SkeletalMesh_GeneratedData : public FNDI_GeneratedData
 {
 	FRWLock CachedSkinningDataGuard;
 	TMap<TWeakObjectPtr<USkeletalMeshComponent>, TSharedPtr<FSkeletalMeshSkinningData> > CachedSkinningData;
@@ -419,17 +423,17 @@ protected:
 	FNDISkeletalMesh_InstanceData* Owner;
 };
 
-/** 
+/**
  * This contains static data created once from the DI.
- * This should be in a proxy create by GT and accessible on RT. 
- * Right now we cannot follow a real Proxy pattern since Niagara does not prevent unloading of UI while RT data is still in use. 
+ * This should be in a proxy create by GT and accessible on RT.
+ * Right now we cannot follow a real Proxy pattern since Niagara does not prevent unloading of UI while RT data is still in use.
  * See https://jira.it.epicgames.net/browse/UE-69336
  */
 class FSkeletalMeshGpuSpawnStaticBuffers : public FRenderResource
 {
 public:
 
-	virtual ~FSkeletalMeshGpuSpawnStaticBuffers();
+	virtual ~FSkeletalMeshGpuSpawnStaticBuffers() override;
 
 	FORCEINLINE_DEBUGGABLE void Initialise(struct FNDISkeletalMesh_InstanceData* InstData, const FSkeletalMeshLODRenderData& SkeletalMeshLODRenderData,const FSkeletalMeshSamplingLODBuiltData& SkeletalMeshSamplingLODBuiltData, FNiagaraSystemInstance* SystemInstance);
 
@@ -451,11 +455,11 @@ public:
 	FRHIShaderResourceView* GetSampleRegionsTriangleIndicesSRV() const { return SampleRegionsTriangleIndicesSRV; }
 	FRHIShaderResourceView* GetSampleRegionsVerticesSRV() const { return SampleRegionsVerticesSRV; }
 
-	FRHIShaderResourceView* GetBufferPositionSRV() const { return MeshVertexBufferSrv; }
-	FRHIShaderResourceView* GetBufferIndexSRV() const { return MeshIndexBufferSrv; }
+	FRHIShaderResourceView* GetBufferPositionSRV() const { return MeshVertexBufferSRV; }
+	FRHIShaderResourceView* GetBufferIndexSRV() const { return MeshIndexBufferSRV; }
 	FRHIShaderResourceView* GetBufferTangentSRV() const { return MeshTangentBufferSRV; }
-	FRHIShaderResourceView* GetBufferTexCoordSRV() const { return MeshTexCoordBufferSrv; }
-	FRHIShaderResourceView* GetBufferColorSRV() const { return MeshColorBufferSrv; }
+	FRHIShaderResourceView* GetBufferTexCoordSRV() const { return MeshTexCoordBufferSRV; }
+	FRHIShaderResourceView* GetBufferColorSRV() const { return MeshColorBufferSRV; }
 
 	uint32 GetNumTexCoord() const { return NumTexCoord; }
 	uint32 GetNumWeights() const { return NumWeights; }
@@ -469,9 +473,9 @@ public:
 	int32 GetFilteredSocketBoneOffset() const { return FilteredSocketBoneOffset; }
 
 protected:
-	FVertexBufferRHIRef BufferTriangleUniformSamplerProbAliasRHI = nullptr;
+	FBufferRHIRef BufferTriangleUniformSamplerProbAliasRHI = nullptr;
 	FShaderResourceViewRHIRef BufferTriangleUniformSamplerProbAliasSRV = nullptr;
-	FVertexBufferRHIRef BufferTriangleMatricesOffsetRHI = nullptr;
+	FBufferRHIRef BufferTriangleMatricesOffsetRHI = nullptr;
 	FShaderResourceViewRHIRef BufferTriangleMatricesOffsetSRV = nullptr;
 
 	bool bSamplingRegionsAllAreaWeighted = false;
@@ -481,29 +485,29 @@ protected:
 	TResourceArray<int32> SampleRegionsTriangleIndicies;
 	TResourceArray<int32> SampleRegionsVertices;
 
-	FVertexBufferRHIRef SampleRegionsProbAliasBuffer;
+	FBufferRHIRef SampleRegionsProbAliasBuffer;
 	FShaderResourceViewRHIRef SampleRegionsProbAliasSRV;
-	FVertexBufferRHIRef SampleRegionsTriangleIndicesBuffer;
+	FBufferRHIRef SampleRegionsTriangleIndicesBuffer;
 	FShaderResourceViewRHIRef SampleRegionsTriangleIndicesSRV;
-	FVertexBufferRHIRef SampleRegionsVerticesBuffer;
+	FBufferRHIRef SampleRegionsVerticesBuffer;
 	FShaderResourceViewRHIRef SampleRegionsVerticesSRV;
 
 	int32 NumFilteredBones = 0;
 	int32 NumUnfilteredBones = 0;
 	int32 ExcludedBoneIndex = INDEX_NONE;
 	TResourceArray<uint16> FilteredAndUnfilteredBonesArray;
-	FVertexBufferRHIRef FilteredAndUnfilteredBonesBuffer;
+	FBufferRHIRef FilteredAndUnfilteredBonesBuffer;
 	FShaderResourceViewRHIRef FilteredAndUnfilteredBonesSRV;
 
 	int32 NumFilteredSockets = 0;
 	int32 FilteredSocketBoneOffset = 0;
 
 	/** Cached SRV to gpu buffers of the mesh we spawn from */
-	FRHIShaderResourceView* MeshVertexBufferSrv;
-	FRHIShaderResourceView* MeshIndexBufferSrv;
-	FRHIShaderResourceView* MeshTangentBufferSRV;
-	FRHIShaderResourceView* MeshTexCoordBufferSrv;
-	FRHIShaderResourceView* MeshColorBufferSrv;
+	FShaderResourceViewRHIRef MeshVertexBufferSRV;
+	FShaderResourceViewRHIRef MeshIndexBufferSRV;
+	FShaderResourceViewRHIRef MeshTangentBufferSRV;
+	FShaderResourceViewRHIRef MeshTexCoordBufferSRV;
+	FShaderResourceViewRHIRef MeshColorBufferSRV;
 
 	uint32 NumTexCoord = 0;
 	uint32 NumWeights = 0;
@@ -531,7 +535,7 @@ class FSkeletalMeshGpuDynamicBufferProxy : public FRenderResource
 public:
 
 	FSkeletalMeshGpuDynamicBufferProxy();
-	virtual ~FSkeletalMeshGpuDynamicBufferProxy();
+	virtual ~FSkeletalMeshGpuDynamicBufferProxy() override;
 
 	void Initialise(const FReferenceSkeleton& RefSkel, const FSkeletalMeshLODRenderData& SkeletalMeshLODRenderData, uint32 InSamplingSocketCount);
 
@@ -547,10 +551,10 @@ public:
 	/** Encapsulates a GPU read / CPU write buffer for bone data */
 	struct FSkeletalBuffer
 	{
-		FVertexBufferRHIRef SectionBuffer;
+		FBufferRHIRef SectionBuffer;
 		FShaderResourceViewRHIRef SectionSRV;
 
-		FVertexBufferRHIRef SamplingBuffer;
+		FBufferRHIRef SamplingBuffer;
 		FShaderResourceViewRHIRef SamplingSRV;
 	};
 
@@ -597,10 +601,10 @@ struct FNDISkeletalMesh_InstanceData
 
 	/** Handle to connectivity data. */
 	FSkeletalMeshConnectivityHandle Connectivity;
-	
+
 	/** Indices of all valid Sampling regions on the mesh to sample from. */
 	TArray<int32> SamplingRegionIndices;
-			
+
 	/** Additional sampler for if we need to do area weighting sampling across multiple area weighted regions. */
 	FSkeletalMeshSamplingRegionAreaWeightedSampler SamplingRegionAreaWeightedSampler;
 
@@ -629,7 +633,7 @@ struct FNDISkeletalMesh_InstanceData
 	struct FCachedSocketInfo
 	{
 		FCachedSocketInfo() : BoneIdx(INDEX_NONE){}
-		FTransform Transform;
+		FTransform3f Transform;
 		int32 BoneIdx;
 	};
 	TArray<FCachedSocketInfo> FilteredSocketInfo;
@@ -640,7 +644,7 @@ struct FNDISkeletalMesh_InstanceData
 	/** Index into which socket transforms to use.  */
 	uint32 FilteredSocketTransformsIndex = 0;
 	/** Transforms for sockets. */
-	TStaticArray<TArray<FTransform>, 2> FilteredSocketTransforms;
+	TStaticArray<TArray<FTransform3f>, 2> FilteredSocketTransforms;
 
 	uint32 ChangeId;
 
@@ -667,8 +671,6 @@ struct FNDISkeletalMesh_InstanceData
 	/** Flag to stub VM functions that rely on mesh data being accessible on the CPU */
 	bool bAllowCPUMeshDataAccess;
 
-	/** The MinLOD applicable to the skeletal mesh, based on USkeletalMesh::MinLod which is platform specific.*/
-	int32 MinLODIdx = 0;
 	/** Whether to reset the emitter if any LOD get streamed in. Used when the required LOD was not initially available. */
 	bool bResetOnLODStreamedIn = false;
 	/** The cached LODIdx used to initialize the FNDIStaticMesh_InstanceData.*/
@@ -689,15 +691,15 @@ struct FNDISkeletalMesh_InstanceData
 		USkeletalMeshComponent* SkelComp = Cast<USkeletalMeshComponent>(SceneComponent.Get());
 		if (SkelComp != nullptr && SkelComp->SkeletalMesh != nullptr)
 		{
-			return SkelComp->GetSkinWeightBuffer(CachedLODIdx);			
+			return SkelComp->GetSkinWeightBuffer(CachedLODIdx);
 		}
 		return CachedLODData ? &CachedLODData->SkinWeightVertexBuffer : nullptr;
 	}
 
 	void UpdateFilteredSocketTransforms();
-	TArray<FTransform>& GetFilteredSocketsWriteBuffer() { return FilteredSocketTransforms[FilteredSocketTransformsIndex]; }
-	const TArray<FTransform>& GetFilteredSocketsCurrBuffer() const { return FilteredSocketTransforms[FilteredSocketTransformsIndex]; }
-	const TArray<FTransform>& GetFilteredSocketsPrevBuffer() const { return FilteredSocketTransforms[(FilteredSocketTransformsIndex + 1) % FilteredSocketTransforms.Num()]; }
+	TArray<FTransform3f>& GetFilteredSocketsWriteBuffer() { return FilteredSocketTransforms[FilteredSocketTransformsIndex]; }
+	const TArray<FTransform3f>& GetFilteredSocketsCurrBuffer() const { return FilteredSocketTransforms[FilteredSocketTransformsIndex]; }
+	const TArray<FTransform3f>& GetFilteredSocketsPrevBuffer() const { return FilteredSocketTransforms[(FilteredSocketTransformsIndex + 1) % FilteredSocketTransforms.Num()]; }
 
 	bool HasColorData();
 };
@@ -715,24 +717,24 @@ public:
 	/** Controls how to retrieve the Skeletal Mesh Component to attach to. */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
 	ENDISkeletalMesh_SourceMode SourceMode;
-	
+
 #if WITH_EDITORONLY_DATA
 	/** Mesh used to sample from when not overridden by a source actor from the scene. Only available in editor for previewing. This is removed in cooked builds. */
-	UPROPERTY(EditAnywhere, Category = "Mesh")
+	UPROPERTY(EditAnywhere, Category = "Mesh", meta = (DisallowedClasses = "DestructibleMesh"))
 	TSoftObjectPtr<USkeletalMesh> PreviewMesh;
 #endif
-	
+
 	/** The source actor from which to sample. Takes precedence over the direct mesh. Note that this can only be set when used as a user variable on a component in the world.*/
 	UPROPERTY(EditAnywhere, Category = "Mesh")
-	AActor* Source;
+	TObjectPtr<AActor> Source;
 
 	/** Reference to a user parameter if we're reading one. */
 	UPROPERTY(EditAnywhere, Category = "Mesh")
 	FNiagaraUserParameterBinding MeshUserParameter;
-	
+
 	/** The source component from which to sample. Takes precedence over the direct mesh. Not exposed to the user, only indirectly accessible from blueprints. */
 	UPROPERTY(Transient)
-	USkeletalMeshComponent* SourceComponent;
+	TObjectPtr<USkeletalMeshComponent> SourceComponent;
 
 	/** Selects which skinning mode to use, for most cases Skin On The Fly will cover your requirements, see individual tooltips for more information. */
 	UPROPERTY(EditAnywhere, Category="Mesh")
@@ -776,10 +778,10 @@ public:
 	uint32 ChangeId;
 
 	//~ UObject interface
-	virtual void PostInitProperties()override; 
+	virtual void PostInitProperties()override;
 	virtual void PostLoad()override;
 #if WITH_EDITOR
-	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;	
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
 #endif
 	//~ UObject interface END
@@ -796,7 +798,7 @@ public:
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc)override;
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target)const override { return true; }
-#if WITH_EDITOR	
+#if WITH_EDITOR
 	virtual void GetFeedback(UNiagaraSystem* Asset, UNiagaraComponent* Component, TArray<FNiagaraDataInterfaceError>& OutErrors,
 		TArray<FNiagaraDataInterfaceFeedback>& Warnings, TArray<FNiagaraDataInterfaceFeedback>& Info) override;
 	virtual void ValidateFunction(const FNiagaraFunctionSignature& Function, TArray<FText>& OutValidationErrors) override;
@@ -804,18 +806,22 @@ public:
 	virtual bool HasTickGroupPrereqs() const override { return true; }
 	virtual ETickingGroup CalculateTickGroup(const void* PerInstanceData) const override;
 
-	virtual void ModifyCompilationEnvironment(struct FShaderCompilerEnvironment& OutEnvironment) const override;
+#if WITH_EDITOR
+	virtual void ModifyCompilationEnvironment(EShaderPlatform ShaderPlatform, struct FShaderCompilerEnvironment& OutEnvironment) const override;
+#endif
 #if WITH_EDITORONLY_DATA
 	virtual bool AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const override;
-	//~ UNiagaraDataInterface interface END
-
 	virtual void GetCommonHLSL(FString& OutHLSL) override;
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) override;
 #endif
+	//~ UNiagaraDataInterface interface END
 
-	USkeletalMesh* GetSkeletalMesh(FNiagaraSystemInstance* SystemInstance, TWeakObjectPtr<USceneComponent>& SceneComponent, USkeletalMeshComponent*& FoundSkelComp, FNDISkeletalMesh_InstanceData* InstData = nullptr);
+	/** This overload is for use when initializing per-instance data. It possibly uses the SystemInstance and instance data to initialize a user binding */
+	USkeletalMesh* GetSkeletalMesh(FNiagaraSystemInstance* SystemInstance, USceneComponent* AttachComponent, TWeakObjectPtr<USceneComponent>& SceneComponent, USkeletalMeshComponent*& FoundSkelComp, FNDISkeletalMesh_InstanceData* InstData);
+	/** Finds the skeletal mesh based on settings of the DI and the hierarchy of the object provided */
+	USkeletalMesh* GetSkeletalMesh(UNiagaraComponent* Component);
 
 	int32 CalculateLODIndexAndSamplingRegions(USkeletalMesh* InMesh, TArray<int32>& OutSamplingRegionIndices, bool& OutAllRegionsAreAreaWeighting) const;
 
@@ -878,45 +884,47 @@ public:
 	void BindTriangleSamplingFunction(const FVMExternalFunctionBindingInfo& BindingInfo, FNDISkeletalMesh_InstanceData* InstData, FVMExternalFunction &OutFunc);
 
 	template<typename FilterMode, typename AreaWeightingMode>
-	void GetFilteredTriangleCount(FVectorVMContext& Context);
+	void GetFilteredTriangleCount(FVectorVMExternalFunctionContext& Context);
 
 	template<typename FilterMode, typename AreaWeightingMode>
-	void GetFilteredTriangleAt(FVectorVMContext& Context);
+	void GetFilteredTriangleAt(FVectorVMExternalFunctionContext& Context);
 
 	template<typename FilterMode, typename AreaWeightingMode>
-	void RandomTriCoord(FVectorVMContext& Context);
+	void RandomTriCoord(FVectorVMExternalFunctionContext& Context);
 
 	template<typename FilterMode, typename AreaWeightingMode>
-	void IsValidTriCoord(FVectorVMContext& Context);
+	void IsValidTriCoord(FVectorVMExternalFunctionContext& Context);
+
+	void GetTriangleData(FVectorVMExternalFunctionContext& Context);
 
 	template<typename SkinningHandlerType, typename TransformHandlerType, typename VertexAccessorType, typename bInterpolated>
-	void GetTriCoordSkinnedData(FVectorVMContext& Context);
+	void GetTriCoordSkinnedData(FVectorVMExternalFunctionContext& Context);
 
 	template<typename TransformHandlerType, typename bInterpolated>
-	void GetTriCoordSkinnedDataFallback(FVectorVMContext& Context);
+	void GetTriCoordSkinnedDataFallback(FVectorVMExternalFunctionContext& Context);
 
-	void GetTriCoordColor(FVectorVMContext& Context);
+	void GetTriCoordColor(FVectorVMExternalFunctionContext& Context);
 
-	void GetTriCoordColorFallback(FVectorVMContext& Context);
+	void GetTriCoordColorFallback(FVectorVMExternalFunctionContext& Context);
 
 	template<typename VertexAccessorType>
-	void GetTriCoordUV(FVectorVMContext& Context);
+	void GetTriCoordUV(FVectorVMExternalFunctionContext& Context);
 
 	template<typename SkinningHandlerType>
-	void GetTriCoordVertices(FVectorVMContext& Context);
+	void GetTriCoordVertices(FVectorVMExternalFunctionContext& Context);
 
 	template<typename VertexAccessorType>
-	void GetTriangleCoordAtUV(FVectorVMContext& Context);
+	void GetTriangleCoordAtUV(FVectorVMExternalFunctionContext& Context);
 
 	template<typename VertexAccessorType>
-	void GetTriangleCoordInAabb(FVectorVMContext& Context);
+	void GetTriangleCoordInAabb(FVectorVMExternalFunctionContext& Context);
 
 private:
 	template<typename FilterMode, typename AreaWeightingMode>
 	FORCEINLINE int32 RandomTriIndex(FNDIRandomHelper& RandHelper, FSkeletalMeshAccessorHelper& Accessor, FNDISkeletalMesh_InstanceData* InstData, int32 InstanceIndex);
 
-	void RandomTriangle(FVectorVMContext& Context);
-	void GetTriangleCount(FVectorVMContext& Context);
+	void RandomTriangle(FVectorVMExternalFunctionContext& Context);
+	void GetTriangleCount(FVectorVMExternalFunctionContext& Context);
 
 	template<typename FilterMode, typename AreaWeightingMode>
 	FORCEINLINE int32 GetFilteredTriangleCount(FSkeletalMeshAccessorHelper& Accessor, FNDISkeletalMesh_InstanceData* InstData);
@@ -930,32 +938,35 @@ private:
 	//Vertex Sampling
 	//Vertex sampling done with direct vertex indices.
 public:
-	
+
 	void GetVertexSamplingFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions);
 	void BindVertexSamplingFunction(const FVMExternalFunctionBindingInfo& BindingInfo, FNDISkeletalMesh_InstanceData* InstData, FVMExternalFunction &OutFunc);
 
-	void IsValidVertex(FVectorVMContext& Context);
-	void RandomVertex(FVectorVMContext& Context);
-	void GetVertexCount(FVectorVMContext& Context);
+	void IsValidVertex(FVectorVMExternalFunctionContext& Context);
+	void RandomVertex(FVectorVMExternalFunctionContext& Context);
+	void GetVertexCount(FVectorVMExternalFunctionContext& Context);
 
 	template<typename FilterMode>
-	void IsValidFilteredVertex(FVectorVMContext& Context);
+	void IsValidFilteredVertex(FVectorVMExternalFunctionContext& Context);
 	template<typename FilterMode>
-	void RandomFilteredVertex(FVectorVMContext& Context);
+	void RandomFilteredVertex(FVectorVMExternalFunctionContext& Context);
 	template<typename FilterMode>
-	void GetFilteredVertexCount(FVectorVMContext& Context);
+	void GetFilteredVertexCount(FVectorVMExternalFunctionContext& Context);
 	template<typename FilterMode>
-	void GetFilteredVertexAt(FVectorVMContext& Context);
-
-	template<typename SkinningHandlerType, typename TransformHandlerType, typename VertexAccessorType>
-	void GetVertexSkinnedData(FVectorVMContext& Context);
-
-	void GetVertexColor(FVectorVMContext& Context);
-
-	void GetVertexColorFallback(FVectorVMContext& Context);
+	void GetFilteredVertexAt(FVectorVMExternalFunctionContext& Context);
 
 	template<typename VertexAccessorType>
-	void GetVertexUV(FVectorVMContext& Context);
+	void GetVertexData(FVectorVMExternalFunctionContext& Context);
+
+	template<typename SkinningHandlerType, typename TransformHandlerType, typename VertexAccessorType>
+	void GetVertexSkinnedData(FVectorVMExternalFunctionContext& Context);
+
+	void GetVertexColor(FVectorVMExternalFunctionContext& Context);
+
+	void GetVertexColorFallback(FVectorVMExternalFunctionContext& Context);
+
+	template<typename VertexAccessorType>
+	void GetVertexUV(FVectorVMExternalFunctionContext& Context);
 
 private:
 	template<typename FilterMode>
@@ -978,33 +989,35 @@ public:
 	void BindSkeletonSamplingFunction(const FVMExternalFunctionBindingInfo& BindingInfo, FNDISkeletalMesh_InstanceData* InstData, FVMExternalFunction &OutFunc);
 
 	template<typename SkinningHandlerType, typename TransformHandlerType, typename bInterpolated>
-	void GetSkinnedBoneData(FVectorVMContext& Context);	
-	
-	void IsValidBone(FVectorVMContext& Context);
-	void RandomBone(FVectorVMContext& Context);
-	void GetBoneCount(FVectorVMContext& Context);
+	void GetSkinnedBoneData(FVectorVMExternalFunctionContext& Context);
 
-	void GetFilteredBoneCount(FVectorVMContext& Context);
-	void GetFilteredBoneAt(FVectorVMContext& Context);
-	void RandomFilteredBone(FVectorVMContext& Context);
+	void IsValidBone(FVectorVMExternalFunctionContext& Context);
+	void RandomBone(FVectorVMExternalFunctionContext& Context);
+	void GetBoneCount(FVectorVMExternalFunctionContext& Context);
+	void GetParentBone(FVectorVMExternalFunctionContext& Context);
 
-	void GetUnfilteredBoneCount(FVectorVMContext& Context);
-	void GetUnfilteredBoneAt(FVectorVMContext& Context);
-	void RandomUnfilteredBone(FVectorVMContext& Context);
+	void GetFilteredBoneCount(FVectorVMExternalFunctionContext& Context);
+	void GetFilteredBoneAt(FVectorVMExternalFunctionContext& Context);
+	void RandomFilteredBone(FVectorVMExternalFunctionContext& Context);
 
-	void GetFilteredSocketCount(FVectorVMContext& Context);
-	void GetFilteredSocketBoneAt(FVectorVMContext& Context);
-	void GetFilteredSocketTransform(FVectorVMContext& Context);
-	void RandomFilteredSocket(FVectorVMContext& Context);
-		
-	void RandomFilteredSocketOrBone(FVectorVMContext& Context);
-	void GetFilteredSocketOrBoneCount(FVectorVMContext& Context);
-	void GetFilteredSocketOrBoneBoneAt(FVectorVMContext& Context);
+	void GetUnfilteredBoneCount(FVectorVMExternalFunctionContext& Context);
+	void GetUnfilteredBoneAt(FVectorVMExternalFunctionContext& Context);
+	void RandomUnfilteredBone(FVectorVMExternalFunctionContext& Context);
+
+	void GetFilteredSocketCount(FVectorVMExternalFunctionContext& Context);
+	void GetFilteredSocketBoneAt(FVectorVMExternalFunctionContext& Context);
+	void GetFilteredSocketTransform(FVectorVMExternalFunctionContext& Context);
+	void RandomFilteredSocket(FVectorVMExternalFunctionContext& Context);
+
+	void RandomFilteredSocketOrBone(FVectorVMExternalFunctionContext& Context);
+	void GetFilteredSocketOrBoneCount(FVectorVMExternalFunctionContext& Context);
+	void GetFilteredSocketOrBoneBoneAt(FVectorVMExternalFunctionContext& Context);
 	// End of Direct Bone + Socket Sampling
 	//////////////////////////////////////////////////////////////////////////
 
 	void SetSourceComponentFromBlueprints(USkeletalMeshComponent* ComponentToUse);
 	void SetSamplingRegionsFromBlueprints(const TArray<FName>& InSamplingRegions);
+	void SetWholeMeshLODFromBlueprints(int32 MeshLODLevel);
 };
 
 
@@ -1014,6 +1027,7 @@ public:
 	// Triangle Sampling
 	static const FName RandomTriCoordName;
 	static const FName IsValidTriCoordName;
+	static const FName GetTriangleDataName;
 	static const FName GetSkinnedTriangleDataName;
 	static const FName GetSkinnedTriangleDataWSName;
 	static const FName GetSkinnedTriangleDataInterpName;
@@ -1035,6 +1049,7 @@ public:
 	static const FName IsValidBoneName;
 	static const FName RandomBoneName;
 	static const FName GetBoneCountName;
+	static const FName GetParentBoneName;
 
 	static const FName RandomFilteredBoneName;
 	static const FName GetFilteredBoneCountName;
@@ -1054,6 +1069,7 @@ public:
 	static const FName GetFilteredSocketOrBoneAtName;
 
 	// Vertex Sampling
+	static const FName GetVertexDataName;
 	static const FName GetSkinnedVertexDataName;
 	static const FName GetSkinnedVertexDataWSName;
 	static const FName GetVertexColorName;
@@ -1091,8 +1107,8 @@ struct FNiagaraDISkeletalMeshPassedDataToRT
 	bool bUnlimitedBoneInfluences = false;
 	uint32 MeshWeightStrideByte = 0;
 	uint32 MeshSkinWeightIndexSizeByte = 0;
-	FMatrix Transform = FMatrix::Identity;
-	FMatrix PrevTransform = FMatrix::Identity;
+	FMatrix44f Transform = FMatrix44f::Identity;
+	FMatrix44f PrevTransform = FMatrix44f::Identity;
 	float DeltaSeconds = 0.0f;
 	uint32 UvMappingSet = 0;
 };
@@ -1101,7 +1117,7 @@ typedef FNiagaraDISkeletalMeshPassedDataToRT FNiagaraDataInterfaceProxySkeletalM
 
 struct FNiagaraDataInterfaceProxySkeletalMesh : public FNiagaraDataInterfaceProxy
 {
-	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override 
+	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override
 	{
 		return sizeof(FNiagaraDISkeletalMeshPassedDataToRT);
 	}

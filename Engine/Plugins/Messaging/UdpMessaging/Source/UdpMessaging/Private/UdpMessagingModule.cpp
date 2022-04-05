@@ -14,6 +14,8 @@
 #if WITH_EDITOR
 	#include "ISettingsModule.h"
 	#include "ISettingsSection.h"
+	#include "PropertyEditorModule.h"
+	#include "Customization/UdpSettingsDetailsCustomization.h"
 #endif
 
 #include "Features/IModularFeatures.h"
@@ -238,7 +240,6 @@ public:
 #if WITH_EDITOR
 		// register settings
 		ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
-
 		if (SettingsModule != nullptr)
 		{
 			ISettingsSectionPtr SettingsSection = SettingsModule->RegisterSettings("Project", "Plugins", "UdpMessaging",
@@ -252,6 +253,9 @@ public:
 				SettingsSection->OnModified().BindRaw(this, &FUdpMessagingModule::HandleSettingsSaved);
 			}
 		}
+
+		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		PropertyModule.RegisterCustomClassLayout(UUdpMessagingSettings::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FUdpSettingsDetailsCustomization::MakeInstance));
 #endif // WITH_EDITOR
 
 		// parse additional command line args
@@ -379,7 +383,7 @@ public:
 		{
 			FScopeLock StaticEndpointsLock(&StaticEndpointsCS);
 			FIPv4Endpoint OutEndpoint;
-			if (FIPv4Endpoint::Parse(InEndpoint, OutEndpoint) && !AdditionalStaticEndpoints.Contains(OutEndpoint))
+			if (ParseEndpoint(InEndpoint, OutEndpoint) && !AdditionalStaticEndpoints.Contains(OutEndpoint))
 			{
 				AdditionalStaticEndpoints.Add(OutEndpoint);
 				Transport->AddStaticEndpoint(OutEndpoint);
@@ -393,7 +397,7 @@ public:
 		{
 			FScopeLock StaticEndpointsLock(&StaticEndpointsCS);
 			FIPv4Endpoint OutEndpoint;
-			if (FIPv4Endpoint::Parse(InEndpoint, OutEndpoint) && AdditionalStaticEndpoints.Contains(OutEndpoint))
+			if (ParseEndpoint(InEndpoint,OutEndpoint) && AdditionalStaticEndpoints.Contains(OutEndpoint))
 			{
 				AdditionalStaticEndpoints.Remove(OutEndpoint);
 				Transport->RemoveStaticEndpoint(OutEndpoint);
@@ -402,6 +406,16 @@ public:
 	}
 
 protected:
+
+	bool ParseEndpoint(const FString& InEndpointString, FIPv4Endpoint& OutEndpoint, bool bSupportHostname = true)
+	{
+		bool bParsedAddr = FIPv4Endpoint::Parse(InEndpointString, OutEndpoint);
+		if (bSupportHostname && !bParsedAddr)
+		{
+			bParsedAddr = FIPv4Endpoint::FromHostAndPort(InEndpointString, OutEndpoint);
+		}
+		return bParsedAddr;
+	}
 
 	/** Initializes the message bridge with the current settings. */
 	void InitializeBridge()
@@ -414,7 +428,7 @@ protected:
 		FIPv4Endpoint UnicastEndpoint;
 		FIPv4Endpoint MulticastEndpoint;
 
-		if (!FIPv4Endpoint::Parse(Settings->UnicastEndpoint, UnicastEndpoint))
+		if (!ParseEndpoint(Settings->UnicastEndpoint, UnicastEndpoint))
 		{
 			if (!Settings->UnicastEndpoint.IsEmpty())
 			{
@@ -426,7 +440,7 @@ protected:
 			ResaveSettings = true;
 		}
 
-		if (!FIPv4Endpoint::Parse(Settings->MulticastEndpoint, MulticastEndpoint))
+		if (!ParseEndpoint(Settings->MulticastEndpoint, MulticastEndpoint, false))
 		{
 			if (!Settings->MulticastEndpoint.IsEmpty())
 			{
@@ -445,7 +459,7 @@ protected:
 		{
 			FIPv4Endpoint Endpoint;
 
-			if (FIPv4Endpoint::Parse(StaticEndpoint, Endpoint))
+			if (ParseEndpoint(StaticEndpoint, Endpoint))
 			{
 				StaticEndpoints.Add(Endpoint);
 			}
@@ -485,7 +499,7 @@ protected:
 		FIPv4Endpoint UnicastEndpoint;
 		FIPv4Endpoint MulticastEndpoint;
 
-		if (!FIPv4Endpoint::Parse(Settings->TunnelUnicastEndpoint, UnicastEndpoint))
+		if (!ParseEndpoint(Settings->TunnelUnicastEndpoint, UnicastEndpoint))
 		{
 			if (!Settings->TunnelUnicastEndpoint.IsEmpty())
 			{
@@ -497,7 +511,7 @@ protected:
 			ResaveSettings = true;
 		}
 
-		if (!FIPv4Endpoint::Parse(Settings->TunnelMulticastEndpoint, MulticastEndpoint))
+		if (!ParseEndpoint(Settings->TunnelMulticastEndpoint, MulticastEndpoint, false))
 		{
 			if (!Settings->TunnelMulticastEndpoint.IsEmpty())
 			{
@@ -523,7 +537,7 @@ protected:
 		{
 			FIPv4Endpoint RemoteEndpoint;
 
-			if (FIPv4Endpoint::Parse(Settings->RemoteTunnelEndpoints[EndpointIndex], RemoteEndpoint))
+			if (ParseEndpoint(Settings->RemoteTunnelEndpoints[EndpointIndex], RemoteEndpoint))
 			{
 				MessageTunnel->Connect(RemoteEndpoint);
 			}

@@ -19,6 +19,7 @@
 #include "Engine/TextureCube.h"
 #include "Engine/Texture2DArray.h"
 #include "SceneView.h"
+#include "SceneViewExtension.h"
 #include "RendererInterface.h"
 #include "EngineModule.h"
 #include "ImageUtils.h"
@@ -42,6 +43,7 @@
 #include "MaterialOptions.h"
 
 #include "StaticMeshAttributes.h"
+#include "TextureCompiler.h"
 
 #if WITH_EDITOR
 #include "DeviceProfiles/DeviceProfile.h"
@@ -52,6 +54,12 @@
 IMPLEMENT_MODULE(FMaterialUtilities, MaterialUtilities);
 
 DEFINE_LOG_CATEGORY_STATIC(LogMaterialUtilities, Log, All);
+
+static TAutoConsoleVariable<int32> CVarMaterialUtilitiesWarmupFrames(
+	TEXT("MaterialUtilities.WarmupFrames"),
+	10,
+	TEXT("Number of frames to render before each capture in order to warmup various rendering systems (VT/Nanite/etc)."));
+
 
 bool FMaterialUtilities::CurrentlyRendering = false;
 TArray<UTextureRenderTarget2D*> FMaterialUtilities::RenderTargetPool;
@@ -74,7 +82,9 @@ void FMaterialUtilities::OnPreGarbageCollect()
 
 UMaterialInterface* FMaterialUtilities::CreateProxyMaterialAndTextures(UPackage* OuterPackage, const FString& AssetName, const FBakeOutput& BakeOutput, const FMeshData& MeshData, const FMaterialData& MaterialData, UMaterialOptions* Options)
 {
-	TArray<EMaterialProperty> SRGBDisabledProperties{ MP_Opacity, MP_OpacityMask, MP_Normal, MP_EmissiveColor };
+	check(MaterialData.Material);
+
+	TArray<EMaterialProperty> SRGBEnabledProperties{ MP_BaseColor, MP_EmissiveColor, MP_SubsurfaceColor };
 
 	// Certain material properties use differen compression settings
 	TMap<EMaterialProperty, TextureCompressionSettings> SpecialCompressionSettingProperties;
@@ -83,11 +93,13 @@ UMaterialInterface* FMaterialUtilities::CreateProxyMaterialAndTextures(UPackage*
 	SpecialCompressionSettingProperties.Add(MP_OpacityMask, TC_Grayscale);
 	SpecialCompressionSettingProperties.Add(MP_AmbientOcclusion, TC_Grayscale);
 
-	UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Engine/EngineMaterials/NewBaseFlattenMaterial.NewBaseFlattenMaterial"), nullptr, LOAD_None, nullptr);
+	UMaterial* BaseMaterial = GEngine->DefaultFlattenMaterial;
 	check(BaseMaterial);
 
 	/** Create Proxy material and populate flags */
 	UMaterialInstanceConstant* Material = FMaterialUtilities::CreateInstancedMaterial(BaseMaterial, OuterPackage, AssetName, RF_Public | RF_Standalone);
+	check(Material);
+	
 	Material->BasePropertyOverrides.TwoSided = MaterialData.Material->IsTwoSided();
 	Material->BasePropertyOverrides.bOverride_TwoSided = MaterialData.Material->IsTwoSided();
 	Material->BasePropertyOverrides.DitheredLODTransition = MaterialData.Material->IsDitheredLODTransition();
@@ -117,12 +129,24 @@ UMaterialInterface* FMaterialUtilities::CreateProxyMaterialAndTextures(UPackage*
 		// If the pixel data isn't constant create a texture for it 
 		if (ColorData.Num() > 1)
 		{
-			TextureCompressionSettings CompressionSettings = SpecialCompressionSettingProperties.Contains(Property) ? SpecialCompressionSettingProperties.FindChecked(Property) : TC_Default;
-			bool bSRGBEnabled = !SRGBDisabledProperties.Contains(Property);
-			UTexture* Texture = FMaterialUtilities::CreateTexture(OuterPackage, TEXT("T_") + AssetName + TEXT("_") + TrimmedPropertyName, DataSize, ColorData, CompressionSettings, TEXTUREGROUP_HierarchicalLOD, RF_Public | RF_Standalone, bSRGBEnabled);
+			FMaterialParameterInfo ParameterInfo(*(TrimmedPropertyName + TEXT("Texture")));
+
+			FCreateTexture2DParameters CreateParams;
+			CreateParams.TextureGroup = TEXTUREGROUP_HierarchicalLOD;
+			CreateParams.CompressionSettings = SpecialCompressionSettingProperties.Contains(Property) ? SpecialCompressionSettingProperties.FindChecked(Property) : TC_Default;
+			CreateParams.bSRGB = SRGBEnabledProperties.Contains(Property);
+
+			// Make sure the texture is a VT if required by the material sampler
+			UTexture* DefaultTexture = nullptr;
+			Material->GetTextureParameterValue(ParameterInfo, DefaultTexture);
+			if (DefaultTexture)
+			{
+				CreateParams.bVirtualTexture = DefaultTexture->VirtualTextureStreaming;
+			}
+
+			UTexture* Texture = FMaterialUtilities::CreateTexture(OuterPackage, TEXT("T_") + AssetName + TEXT("_") + TrimmedPropertyName, DataSize, ColorData, CreateParams, RF_Public | RF_Standalone);
 
 			// Set texture parameter value on instance material
-			FMaterialParameterInfo ParameterInfo(*(TrimmedPropertyName + TEXT("Texture")));
 			Material->SetTextureParameterValueEditorOnly(ParameterInfo, Texture);
 
 			FStaticSwitchParameter SwitchParameter;
@@ -205,6 +229,12 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 	}
 
 	virtual FMaterialShadingModelField GetMaterialShadingModels() const override
+	{
+		// not used by Lightmass
+		return MSM_MAX;
+	}
+
+	virtual FMaterialShadingModelField GetCompiledShadingModels() const override
 	{
 		// not used by Lightmass
 		return MSM_MAX;
@@ -298,16 +328,6 @@ struct FExportMaterialCompiler : public FProxyMaterialCompiler
 	virtual int32 VertexColor() override
 	{
 		return Compiler->VertexColor(); 
-	}
-
-	virtual int32 PreSkinVertexOffset() override
-	{
-		return Compiler->PreSkinVertexOffset();
-	}
-
-	virtual int32 PostSkinVertexOffset() override
-	{
-		return Compiler->PostSkinVertexOffset();
 	}
 
 	virtual int32 PreSkinnedPosition() override
@@ -409,12 +429,14 @@ class FExportMaterialProxy : public FMaterial, public FMaterialRenderProxy
 public:
 	FExportMaterialProxy()
 		: FMaterial()
+		, FMaterialRenderProxy(TEXT("FExportMaterialProxy"))
 	{
 		SetQualityLevelProperties(GMaxRHIFeatureLevel);
 	}
 
 	FExportMaterialProxy(UMaterialInterface* InMaterialInterface, EMaterialProperty InPropertyToCompile)
 		: FMaterial()
+		, FMaterialRenderProxy(GetPathNameSafe(InMaterialInterface->GetMaterial()))
 		, MaterialInterface(InMaterialInterface)
 		, PropertyToCompile(InPropertyToCompile)
 	{
@@ -483,7 +505,7 @@ public:
 		return true;
 	}
 
-	virtual TArrayView<UObject* const> GetReferencedTextures() const override
+	virtual TArrayView<const TObjectPtr<UObject>> GetReferencedTextures() const override
 	{
 		return ReferencedTextures;
 	}
@@ -504,24 +526,9 @@ public:
 		return UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
 	}
 
-	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
+	virtual bool GetParameterValue(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, FMaterialParameterValue& OutValue, const FMaterialRenderContext& Context) const override
 	{
-		return MaterialInterface->GetRenderProxy()->GetVectorValue(ParameterInfo, OutValue, Context);
-	}
-
-	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
-	{
-		return MaterialInterface->GetRenderProxy()->GetScalarValue(ParameterInfo, OutValue, Context);
-	}
-
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const override
-	{
-		return MaterialInterface->GetRenderProxy()->GetTextureValue(ParameterInfo,OutValue,Context);
-	}
-
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const override
-	{
-		return MaterialInterface->GetRenderProxy()->GetTextureValue(ParameterInfo, OutValue, Context);
+		return MaterialInterface->GetRenderProxy()->GetParameterValue(Type, ParameterInfo, OutValue, Context);
 	}
 
 	// Material properties.
@@ -583,6 +590,8 @@ public:
 				break;
 			case MP_ShadingModel:
 				return MaterialInterface->CompileProperty(&ProxyCompiler, MP_ShadingModel);
+			case MP_FrontMaterial:
+				return MaterialInterface->CompileProperty(&ProxyCompiler, MP_FrontMaterial);
 			default:
 				return Compiler->Constant(1.0f);
 			}
@@ -602,6 +611,10 @@ public:
 		else if (Property == MP_ShadingModel)
 		{
 			return MaterialInterface->CompileProperty(Compiler, MP_ShadingModel);
+		}
+		else if (Property == MP_FrontMaterial)
+		{
+			return MaterialInterface->CompileProperty(Compiler, MP_FrontMaterial);
 		}
 		else
 		{
@@ -688,64 +701,6 @@ public:
 		return Ar << V.MaterialInterface;
 	}
 
-	/**
-	* Iterate through all textures used by the material and return the maximum texture resolution used
-	* (ideally this could be made dependent of the material property)
-	*
-	* @param MaterialInterface The material to scan for texture size
-	*
-	* @return Size (width and height)
-	*/
-	FIntPoint FindMaxTextureSize(UMaterialInterface* InMaterialInterface, FIntPoint MinimumSize = FIntPoint(1, 1)) const
-	{
-		// static lod settings so that we only initialize them once
-		UTextureLODSettings* GameTextureLODSettings = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings();
-
-		TArray<UTexture*> MaterialTextures;
-
-		InMaterialInterface->GetUsedTextures(MaterialTextures, EMaterialQualityLevel::Num, false, GMaxRHIFeatureLevel, false);
-
-		// find the largest texture in the list (applying it's LOD bias)
-		FIntPoint MaxSize = MinimumSize;
-		for (int32 TexIndex = 0; TexIndex < MaterialTextures.Num(); TexIndex++)
-		{
-			UTexture* Texture = MaterialTextures[TexIndex];
-
-			if (Texture == NULL)
-			{
-				continue;
-			}
-
-			// get the max size of the texture
-			FIntPoint LocalSize(0, 0);
-			if (Texture->IsA(UTexture2D::StaticClass()))
-			{
-				UTexture2D* Tex2D = (UTexture2D*)Texture;
-				LocalSize = FIntPoint(Tex2D->GetSizeX(), Tex2D->GetSizeY());
-			}
-			else if (Texture->IsA(UTextureCube::StaticClass()))
-			{
-				UTextureCube* TexCube = (UTextureCube*)Texture;
-				LocalSize = FIntPoint(TexCube->GetSizeX(), TexCube->GetSizeY());
-			}
-			else if (Texture->IsA(UTexture2DArray::StaticClass())) 
-			{
-				UTexture2DArray* TexArray = (UTexture2DArray*)Texture;
-				LocalSize = FIntPoint(TexArray->GetSizeX(), TexArray->GetSizeY());
-			}
-
-			int32 LocalBias = GameTextureLODSettings->CalculateLODBias(Texture);
-
-			// bias the texture size based on LOD group
-			FIntPoint BiasedLocalSize(LocalSize.X >> LocalBias, LocalSize.Y >> LocalBias);
-
-			MaxSize.X = FMath::Max(BiasedLocalSize.X, MaxSize.X);
-			MaxSize.Y = FMath::Max(BiasedLocalSize.Y, MaxSize.Y);
-		}
-
-		return MaxSize;
-	}
-
 	static bool WillFillData(EBlendMode InBlendMode, EMaterialProperty InMaterialProperty)
 	{
 		if (InMaterialProperty == MP_EmissiveColor)
@@ -791,22 +746,42 @@ private:
 	/** The material interface for this proxy */
 	UMaterialInterface* MaterialInterface;
 	UMaterial* Material;	
-	TArray<UObject*> ReferencedTextures;
+	TArray<TObjectPtr<UObject>> ReferencedTextures;
 	/** The property to compile for rendering the sample */
 	EMaterialProperty PropertyToCompile;
 	FGuid Id;
 };
 
+/**
+ * Render the scene to the provided canvas. Will potentially perform the render multiple times, depending on the value of
+ * the CVarMaterialUtilitiesWarmupFrames CVar. This is needed to ensure various rendering systems are primed properly before capturing
+ * the scene.
+ */
+static void PerformSceneRender(FCanvas& Canvas, FSceneViewFamily& ViewFamily, bool bWithWarmup)
+{
+	if (bWithWarmup)
+	{
+		for (int32 i = 0; i < CVarMaterialUtilitiesWarmupFrames.GetValueOnGameThread(); i++)
+		{
+			GetRendererModule().BeginRenderingViewFamily(&Canvas, &ViewFamily);
+		}
+	}
+
+	GetRendererModule().BeginRenderingViewFamily(&Canvas, &ViewFamily);
+}
+
 static void RenderSceneToTexture(
-		FSceneInterface* Scene,
-		const FName& VisualizationMode, 
-		const FVector& ViewOrigin,
-		const FMatrix& ViewRotationMatrix, 
-		const FMatrix& ProjectionMatrix,  
-		const TSet<FPrimitiveComponentId>& HiddenPrimitives, 
-		FIntPoint TargetSize,
-		float TargetGamma,
-		TArray<FColor>& OutSamples)
+	FSceneInterface* Scene,
+	const FName& VisualizationMode, 
+	const FVector& ViewOrigin,
+	const FMatrix& ViewRotationMatrix, 
+	const FMatrix& ProjectionMatrix,
+	const TSet<FPrimitiveComponentId>& ShowOnlyPrimitives,
+	const TSet<FPrimitiveComponentId>& HiddenPrimitives, 
+	FIntPoint TargetSize,
+	float TargetGamma,
+	bool bPerformWarmpup,
+	TArray<FColor>& OutSamples)
 {
 	auto RenderTargetTexture = NewObject<UTextureRenderTarget2D>();
 	check(RenderTargetTexture);
@@ -818,7 +793,7 @@ static void RenderSceneToTexture(
 
 	FSceneViewFamilyContext ViewFamily(
 		FSceneViewFamily::ConstructionValues(RenderTargetResource, Scene, FEngineShowFlags(ESFIM_Game))
-			.SetWorldTimes(FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime)
+			.SetTime(FGameTime::GetTimeSinceAppStart())
 		);
 
 	// To enable visualization mode
@@ -830,134 +805,142 @@ static void RenderSceneToTexture(
 	FSceneViewInitOptions ViewInitOptions;
 	ViewInitOptions.SetViewRectangle(FIntRect(0, 0, TargetSize.X, TargetSize.Y));
 	ViewInitOptions.ViewFamily = &ViewFamily;
-	ViewInitOptions.HiddenPrimitives = HiddenPrimitives;
 	ViewInitOptions.ViewOrigin = ViewOrigin;
 	ViewInitOptions.ViewRotationMatrix = ViewRotationMatrix;
 	ViewInitOptions.ProjectionMatrix = ProjectionMatrix;
+
+	// If no "show only" primitives are provided, we must pass an unset TOptional - otherwise an empty set will mean no primitive should be visible.
+	ViewInitOptions.ShowOnlyPrimitives = !ShowOnlyPrimitives.IsEmpty() ? TOptional<TSet<FPrimitiveComponentId>>(ShowOnlyPrimitives) : TOptional<TSet<FPrimitiveComponentId>>();
+	ViewInitOptions.HiddenPrimitives = HiddenPrimitives;
 		
 	FSceneView* NewView = new FSceneView(ViewInitOptions);
 	NewView->CurrentBufferVisualizationMode = VisualizationMode;
 	ViewFamily.Views.Add(NewView);
 
 	ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
-		ViewFamily, /* GlobalResolutionFraction = */ 1.0f, /* AllowPostProcessSettingsScreenPercentage = */ false));
+		ViewFamily, /* GlobalResolutionFraction = */ 1.0f));
 
-	FCanvas Canvas(RenderTargetResource, NULL, FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime, Scene->GetFeatureLevel());
+	FCanvas Canvas(RenderTargetResource, NULL, FGameTime::GetTimeSinceAppStart(), Scene->GetFeatureLevel());
 	Canvas.Clear(FLinearColor::Transparent);
-	GetRendererModule().BeginRenderingViewFamily(&Canvas, &ViewFamily);
+
+	ViewFamily.ViewExtensions = GEngine->ViewExtensions->GatherActiveExtensions(FSceneViewExtensionContext(Scene));
+	for (const FSceneViewExtensionRef& Extension : ViewFamily.ViewExtensions)
+	{
+		Extension->SetupViewFamily(ViewFamily);
+		Extension->SetupView(ViewFamily, *NewView);
+	}
+
+	PerformSceneRender(Canvas, ViewFamily, bPerformWarmpup);
 
 	// Copy the contents of the remote texture to system memory
 	OutSamples.SetNumUninitialized(TargetSize.X*TargetSize.Y);
 	FReadSurfaceDataFlags ReadSurfaceDataFlags;
 	ReadSurfaceDataFlags.SetLinearToGamma(false);
 	RenderTargetResource->ReadPixelsPtr(OutSamples.GetData(), ReadSurfaceDataFlags, FIntRect(0, 0, TargetSize.X, TargetSize.Y));
-	FlushRenderingCommands();
 					
 	RenderTargetTexture->RemoveFromRoot();
 	RenderTargetTexture = nullptr;
 }
 
 
+static void RenderSceneToTextures(
+	FSceneInterface* Scene,
+	const FVector& ViewOrigin,
+	const FMatrix& ViewRotationMatrix,
+	const FMatrix& ProjectionMatrix,
+	const TSet<FPrimitiveComponentId>& ShowOnlyPrimitives,
+	const TSet<FPrimitiveComponentId>& HiddenPrimitives,
+	FFlattenMaterial& OutFlattenMaterial)
+{
+	TMap<EFlattenMaterialProperties, TPair<FName, float>>	SupportedProperties; // Property -> VisualisationMode|Gamma
+	SupportedProperties.Add(EFlattenMaterialProperties::Diffuse) = TPair<FName, float>(FName("BaseColor"), true);	// BaseColor to gamma space
+	SupportedProperties.Add(EFlattenMaterialProperties::Normal) = TPair<FName, float>(FName("WorldNormal"), false);	// Dump normal texture in linear space
+	SupportedProperties.Add(EFlattenMaterialProperties::Metallic) = TPair<FName, float>(FName("Metallic"), false);	// Dump metallic texture in linear space
+	SupportedProperties.Add(EFlattenMaterialProperties::Roughness) = TPair<FName, float>(FName("Roughness"), true);	// Roughness material powers color by 2.2, transform it back to linear
+	SupportedProperties.Add(EFlattenMaterialProperties::Specular) = TPair<FName, float>(FName("Specular"), false);	// Dump specular texture in linear space
+
+	bool bPerformWarmpup = true;
+	for (int32 PropertyIndex = 0; PropertyIndex < (int32)EFlattenMaterialProperties::NumFlattenMaterialProperties; ++PropertyIndex)
+	{
+		const EFlattenMaterialProperties Property = (EFlattenMaterialProperties)PropertyIndex;
+		if (OutFlattenMaterial.ShouldGenerateDataForProperty(Property))
+		{
+			TPair<FName, float>* PropertyInfo = SupportedProperties.Find(Property);
+			if (PropertyInfo)
+			{
+				TArray<FColor>& Samples = OutFlattenMaterial.GetPropertySamples(Property);
+				const FIntPoint& Size = OutFlattenMaterial.GetPropertySize(Property);
+				const FName VisModeName = PropertyInfo->Key;
+				const float Gamma = PropertyInfo->Value ? 2.2f : 1.0f;
+
+				RenderSceneToTexture(Scene, VisModeName, ViewOrigin, ViewRotationMatrix, ProjectionMatrix, ShowOnlyPrimitives, HiddenPrimitives, Size, Gamma, bPerformWarmpup, Samples);
+				bPerformWarmpup = false; // Perform warmup only on first render
+			}
+			else
+			{
+				UE_LOG(LogMaterialUtilities, Error, TEXT("RenderSceneToTextures - Ignoring unsupported property"));
+			}
+		}
+	}
+}
+
+FIntPoint FMaterialUtilities::FindMaxTextureSize(UMaterialInterface* InMaterialInterface, FIntPoint MinimumSize)
+{
+	// static lod settings so that we only initialize them once
+	UTextureLODSettings* GameTextureLODSettings = UDeviceProfileManager::Get().GetActiveProfile()->GetTextureLODSettings();
+
+	TArray<UTexture*> MaterialTextures;
+
+	InMaterialInterface->GetUsedTextures(MaterialTextures, EMaterialQualityLevel::Num, false, GMaxRHIFeatureLevel, false);
+	FTextureCompilingManager::Get().FinishCompilation(MaterialTextures);
+
+	// find the largest texture in the list (applying it's LOD bias)
+	FIntPoint MaxSize = MinimumSize;
+	for (int32 TexIndex = 0; TexIndex < MaterialTextures.Num(); TexIndex++)
+	{
+		UTexture* Texture = MaterialTextures[TexIndex];
+
+		if (Texture == NULL)
+		{
+			continue;
+		}
+
+		// get the max size of the texture
+		FIntPoint LocalSize(0, 0);
+		if (Texture->IsA(UTexture2D::StaticClass()))
+		{
+			UTexture2D* Tex2D = (UTexture2D*)Texture;
+			LocalSize = FIntPoint(Tex2D->GetSizeX(), Tex2D->GetSizeY());
+		}
+		else if (Texture->IsA(UTextureCube::StaticClass()))
+		{
+			UTextureCube* TexCube = (UTextureCube*)Texture;
+			LocalSize = FIntPoint(TexCube->GetSizeX(), TexCube->GetSizeY());
+		}
+		else if (Texture->IsA(UTexture2DArray::StaticClass()))
+		{
+			UTexture2DArray* TexArray = (UTexture2DArray*)Texture;
+			LocalSize = FIntPoint(TexArray->GetSizeX(), TexArray->GetSizeY());
+		}
+
+		int32 LocalBias = GameTextureLODSettings->CalculateLODBias(Texture);
+
+		// bias the texture size based on LOD group
+		FIntPoint BiasedLocalSize(LocalSize.X >> LocalBias, LocalSize.Y >> LocalBias);
+
+		MaxSize.X = FMath::Max(BiasedLocalSize.X, MaxSize.X);
+		MaxSize.Y = FMath::Max(BiasedLocalSize.Y, MaxSize.Y);
+	}
+
+	return MaxSize;
+}
 
 bool FMaterialUtilities::SupportsExport(EBlendMode InBlendMode, EMaterialProperty InMaterialProperty)
 {
 	return FExportMaterialProxy::WillFillData(InBlendMode, InMaterialProperty);
 }
 
-bool FMaterialUtilities::ExportMaterialProperty(UWorld* InWorld, UMaterialInterface* InMaterial, EMaterialProperty InMaterialProperty, UTextureRenderTarget2D* InRenderTarget, TArray<FColor>& OutBMP)
-{
-	TUniquePtr<FExportMaterialProxy> MaterialProxy(new FExportMaterialProxy(InMaterial, InMaterialProperty));
-	if (MaterialProxy == nullptr)
-	{
-		return false;
-	}
-
-	FBox2D DummyBounds(FVector2D(0, 0), FVector2D(1, 1));
-	TArray<FVector2D> EmptyTexCoords;
-	FMaterialMergeData MaterialData(InMaterial, nullptr, nullptr, 0, DummyBounds, EmptyTexCoords);
-	const bool bForceGamma = (InMaterialProperty == MP_Normal) || (InMaterialProperty == MP_OpacityMask) || (InMaterialProperty == MP_Opacity);	
-
-	FIntPoint MaxSize = MaterialProxy->FindMaxTextureSize(InMaterial);
-	FIntPoint OutSize = MaxSize;
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return RenderMaterialPropertyToTexture(MaterialData, InMaterialProperty, bForceGamma, PF_B8G8R8A8, MaxSize, OutSize, OutBMP);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-bool FMaterialUtilities::ExportMaterialProperty(UWorld* InWorld, UMaterialInterface* InMaterial, EMaterialProperty InMaterialProperty, FIntPoint& OutSize, TArray<FColor>& OutBMP)
-{
-	TUniquePtr<FExportMaterialProxy> MaterialProxy(new FExportMaterialProxy(InMaterial, InMaterialProperty));
-	if (MaterialProxy == nullptr)
-	{
-		return false;
-	}
-
-	FBox2D DummyBounds(FVector2D(0, 0), FVector2D(1, 1));
-	TArray<FVector2D> EmptyTexCoords;
-	FMaterialMergeData MaterialData(InMaterial, nullptr, nullptr, 0, DummyBounds, EmptyTexCoords);
-	const bool bForceGamma = (InMaterialProperty == MP_Normal) || (InMaterialProperty == MP_OpacityMask) || (InMaterialProperty == MP_Opacity);
-	OutSize = MaterialProxy->FindMaxTextureSize(InMaterial);
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return RenderMaterialPropertyToTexture(MaterialData, InMaterialProperty, bForceGamma, PF_B8G8R8A8, OutSize, OutSize, OutBMP);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-bool FMaterialUtilities::ExportMaterialProperty(UMaterialInterface* InMaterial, EMaterialProperty InMaterialProperty, TArray<FColor>& OutBMP, FIntPoint& OutSize)
-{
-	TUniquePtr<FExportMaterialProxy> MaterialProxy(new FExportMaterialProxy(InMaterial, InMaterialProperty));
-	if (MaterialProxy == nullptr)
-	{
-		return false;
-	}
-
-	FBox2D DummyBounds(FVector2D(0, 0), FVector2D(1, 1));
-	TArray<FVector2D> EmptyTexCoords;
-	FMaterialMergeData MaterialData(InMaterial, nullptr, nullptr, 0, DummyBounds, EmptyTexCoords);
-	const bool bForceGamma = (InMaterialProperty == MP_Normal) || (InMaterialProperty == MP_OpacityMask) || (InMaterialProperty == MP_Opacity);
-	OutSize = MaterialProxy->FindMaxTextureSize(InMaterial);
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return RenderMaterialPropertyToTexture(MaterialData, InMaterialProperty, bForceGamma, PF_B8G8R8A8, OutSize, OutSize, OutBMP);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-bool FMaterialUtilities::ExportMaterialProperty(UMaterialInterface* InMaterial, EMaterialProperty InMaterialProperty, FIntPoint InSize, TArray<FColor>& OutBMP)
-{
-	TUniquePtr<FExportMaterialProxy> MaterialProxy(new FExportMaterialProxy(InMaterial, InMaterialProperty));
-	if (MaterialProxy == nullptr)
-	{
-		return false;
-	}
-
-	FBox2D DummyBounds(FVector2D(0, 0), FVector2D(1, 1));
-	TArray<FVector2D> EmptyTexCoords;
-	FMaterialMergeData MaterialData(InMaterial, nullptr, nullptr, 0, DummyBounds, EmptyTexCoords);
-	const bool bForceGamma = (InMaterialProperty == MP_Normal) || (InMaterialProperty == MP_OpacityMask) || (InMaterialProperty == MP_Opacity);
-	FIntPoint OutSize;
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return RenderMaterialPropertyToTexture(MaterialData, InMaterialProperty, bForceGamma, PF_B8G8R8A8, InSize, OutSize, OutBMP);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-bool FMaterialUtilities::ExportMaterial(UWorld* InWorld, UMaterialInterface* InMaterial, FFlattenMaterial& OutFlattenMaterial)
-{
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	return ExportMaterial(InMaterial, OutFlattenMaterial);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-}
-
-bool FMaterialUtilities::ExportMaterial(UMaterialInterface* InMaterial, FFlattenMaterial& OutFlattenMaterial, struct FExportMaterialProxyCache* ProxyCache)
-{
-	FBox2D DummyBounds(FVector2D(0, 0), FVector2D(1, 1));
-	TArray<FVector2D> EmptyTexCoords;
-
-	FMaterialMergeData MaterialData(InMaterial, nullptr, nullptr, 0, DummyBounds, EmptyTexCoords);
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	ExportMaterial(MaterialData, OutFlattenMaterial, ProxyCache);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	return true;
-}
-
-bool FMaterialUtilities::ExportLandscapeMaterial(ALandscapeProxy* InLandscape, const TSet<FPrimitiveComponentId>& HiddenPrimitives, FFlattenMaterial& OutFlattenMaterial)
+static bool ExportLandscapeMaterial(const ALandscapeProxy* InLandscape, const TSet<FPrimitiveComponentId>& ShowOnlyPrimitives, const TSet<FPrimitiveComponentId>& HiddenPrimitives, FFlattenMaterial& OutFlattenMaterial)
 {
 	check(InLandscape);
 
@@ -982,65 +965,31 @@ bool FMaterialUtilities::ExportLandscapeMaterial(ALandscapeProxy* InLandscape, c
 		ZOffset);
 
 	FSceneInterface* Scene = InLandscape->GetWorld()->Scene;
-						
-	// Render diffuse texture using BufferVisualizationMode=BaseColor
-	if (OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Diffuse))
-	{
-		const FIntPoint& DiffuseSize = OutFlattenMaterial.GetPropertySize(EFlattenMaterialProperties::Diffuse);
-		static const FName BaseColorName("BaseColor");
-		const float BaseColorGamma = 2.2f; // BaseColor to gamma space
-		TArray<FColor>& DiffuseSamples = OutFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Diffuse);
-		RenderSceneToTexture(Scene, BaseColorName, ViewOrigin, ViewRotationMatrix, ProjectionMatrix, HiddenPrimitives, 
-			DiffuseSize, BaseColorGamma, DiffuseSamples);
-	}
 
-	// Render normal map using BufferVisualizationMode=WorldNormal
-	// Final material should use world space instead of tangent space for normals
-	if (OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Normal))
-	{
-		static const FName WorldNormalName("WorldNormal");
-		const float NormalColorGamma = 1.0f; // Dump normal texture in linear space
-		const FIntPoint& NormalSize = OutFlattenMaterial.GetPropertySize(EFlattenMaterialProperties::Normal);
-		TArray<FColor>& NormalSamples = OutFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Normal);
-		RenderSceneToTexture(Scene, WorldNormalName, ViewOrigin, ViewRotationMatrix, ProjectionMatrix, HiddenPrimitives, 
-			NormalSize, NormalColorGamma, NormalSamples);
-	}
+	RenderSceneToTextures(Scene, ViewOrigin, ViewRotationMatrix, ProjectionMatrix, ShowOnlyPrimitives, HiddenPrimitives, OutFlattenMaterial);
 
-	// Render metallic map using BufferVisualizationMode=Metallic
-	if (OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Metallic))
-	{
-		static const FName MetallicName("Metallic");
-		const float MetallicColorGamma = 1.0f; // Dump metallic texture in linear space
-		const FIntPoint& MetallicSize = OutFlattenMaterial.GetPropertySize(EFlattenMaterialProperties::Metallic);
-		TArray<FColor>& MetallicSamples = OutFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Metallic);
-		RenderSceneToTexture(Scene, MetallicName, ViewOrigin, ViewRotationMatrix, ProjectionMatrix, HiddenPrimitives, 
-			MetallicSize, MetallicColorGamma, MetallicSamples);
-	}
-
-	// Render roughness map using BufferVisualizationMode=Roughness
-	if (OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Roughness))
-	{
-		static const FName RoughnessName("Roughness");
-		const float RoughnessColorGamma = 2.2f; // Roughness material powers color by 2.2, transform it back to linear
-		const FIntPoint& RoughnessSize = OutFlattenMaterial.GetPropertySize(EFlattenMaterialProperties::Roughness);
-		TArray<FColor>& RoughnessSamples = OutFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Roughness);
-		RenderSceneToTexture(Scene, RoughnessName, ViewOrigin, ViewRotationMatrix, ProjectionMatrix, HiddenPrimitives, 
-			RoughnessSize, RoughnessColorGamma, RoughnessSamples);
-	}
-
-	// Render specular map using BufferVisualizationMode=Specular
-	if (OutFlattenMaterial.ShouldGenerateDataForProperty(EFlattenMaterialProperties::Specular))
-	{
-		static const FName SpecularName("Specular");
-		const float SpecularColorGamma = 1.0f; // Dump specular texture in linear space
-		const FIntPoint& SpecularSize = OutFlattenMaterial.GetPropertySize(EFlattenMaterialProperties::Specular);
-		TArray<FColor>& SpecularSamples = OutFlattenMaterial.GetPropertySamples(EFlattenMaterialProperties::Specular);
-		RenderSceneToTexture(Scene, SpecularName, ViewOrigin, ViewRotationMatrix, ProjectionMatrix, HiddenPrimitives, 
-			SpecularSize, SpecularColorGamma, SpecularSamples);
-	}
-				
 	OutFlattenMaterial.MaterialId = InLandscape->GetLandscapeGuid();
 	return true;
+}
+
+bool FMaterialUtilities::ExportLandscapeMaterial(const ALandscapeProxy* InLandscape, FFlattenMaterial& OutFlattenMaterial)
+{
+	TSet<FPrimitiveComponentId> ShowOnlyPrimitives;
+
+	for (ULandscapeComponent* LandscapeComponent : InLandscape->LandscapeComponents)
+	{
+		if (ensure(LandscapeComponent->SceneProxy))
+		{
+			ShowOnlyPrimitives.Add(LandscapeComponent->SceneProxy->GetPrimitiveComponentId());
+		}
+	}
+
+	return ::ExportLandscapeMaterial(InLandscape, ShowOnlyPrimitives, {}, OutFlattenMaterial);
+}
+
+bool FMaterialUtilities::ExportLandscapeMaterial(const ALandscapeProxy* InLandscape, const TSet<FPrimitiveComponentId>& HiddenPrimitives, FFlattenMaterial& OutFlattenMaterial)
+{
+	return ::ExportLandscapeMaterial(InLandscape, {}, HiddenPrimitives, OutFlattenMaterial);
 }
 
 UMaterial* FMaterialUtilities::CreateMaterial(const FFlattenMaterial& InFlattenMaterial, UPackage* InOuter, const FString& BaseName, EObjectFlags Flags, const struct FMaterialProxySettings& MaterialProxySettings, TArray<UObject*>& OutGeneratedAssets, const TextureGroup& InTextureGroup /*= TEXTUREGROUP_World*/)
@@ -1476,10 +1425,10 @@ UMaterialInstanceConstant* FMaterialUtilities::CreateInstancedMaterial(UMaterial
 	UObject* ExistingPackage = FindObject<UMaterial>(MaterialOuter, *MaterialAssetName);
 	if (ExistingPackage && !ExistingPackage->IsA<UMaterialInstanceConstant>())
 	{
-#if WITH_EDITOR
+#if WITH_AUTOMATION_TESTS
 		FAutomationEditorCommonUtils::NullReferencesToObject(ExistingPackage);		
-#endif // WITH_EDITOR
-		ExistingPackage->MarkPendingKill();
+#endif // WITH_AUTOMATION_TESTS
+		ExistingPackage->MarkAsGarbage();
 		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS, true);
 	}
 
@@ -1498,19 +1447,21 @@ UTexture2D* FMaterialUtilities::CreateTexture(UPackage* Outer, const FString& As
 	TexParams.bDeferCompression = true;
 	TexParams.bSRGB = bSRGB;
 	TexParams.SourceGuidHash = SourceGuidHash;
+	TexParams.TextureGroup = LODGroup;
 
+	return CreateTexture(Outer, AssetLongName, Size, Samples, TexParams, Flags);
+}
+
+UTexture2D* FMaterialUtilities::CreateTexture(UPackage* Outer, const FString& AssetLongName, FIntPoint Size, const TArray<FColor>& Samples, const FCreateTexture2DParameters& CreateParams, EObjectFlags Flags)
+{
 	if (Outer == nullptr)
 	{
-		Outer = CreatePackage( *AssetLongName);
+		Outer = CreatePackage(*AssetLongName);
 		Outer->FullyLoad();
 		Outer->Modify();
 	}
 
-	UTexture2D* Texture = FImageUtils::CreateTexture2D(Size.X, Size.Y, Samples, Outer, FPackageName::GetShortName(AssetLongName), Flags, TexParams);
-	Texture->LODGroup = LODGroup;
-	Texture->PostEditChange();
-			
-	return Texture;
+	return FImageUtils::CreateTexture2D(Size.X, Size.Y, Samples, Outer, FPackageName::GetShortName(AssetLongName), Flags, CreateParams);
 }
 
 bool FMaterialUtilities::ExportBaseColor(ULandscapeComponent* LandscapeComponent, int32 TextureSize, TArray<FColor>& OutSamples)
@@ -1541,19 +1492,15 @@ bool FMaterialUtilities::ExportBaseColor(ULandscapeComponent* LandscapeComponent
 	FSceneInterface* Scene = LandscapeProxy->GetWorld()->Scene;
 
 	// Hide all but the component
+	TSet<FPrimitiveComponentId> ShowOnlyPrimitives = { LandscapeComponent->SceneProxy->GetPrimitiveComponentId() };
 	TSet<FPrimitiveComponentId> HiddenPrimitives;
-	for (auto PrimitiveComponentId : Scene->GetScenePrimitiveComponentIds())
-	{
-		HiddenPrimitives.Add(PrimitiveComponentId);
-	}
-	HiddenPrimitives.Remove(LandscapeComponent->SceneProxy->GetPrimitiveComponentId());
 				
 	FIntPoint TargetSize(TextureSize, TextureSize);
 
 	// Render diffuse texture using BufferVisualizationMode=BaseColor
 	static const FName BaseColorName("BaseColor");
 	const float BaseColorGamma = 2.2f;
-	RenderSceneToTexture(Scene, BaseColorName, ViewOrigin, ViewRotationMatrix, ProjectionMatrix, HiddenPrimitives, TargetSize, BaseColorGamma, OutSamples);
+	RenderSceneToTexture(Scene, BaseColorName, ViewOrigin, ViewRotationMatrix, ProjectionMatrix, ShowOnlyPrimitives, HiddenPrimitives, TargetSize, BaseColorGamma, true, OutSamples);
 	return true;
 }
 
@@ -1739,7 +1686,7 @@ void FMaterialUtilities::RemapUniqueMaterialIndices(const TArray<FSectionInfo>& 
 	{
 		for (int32 LODIndex = 0; LODIndex < MAX_STATIC_MESH_LODS; ++LODIndex)
 		{
-			TVertexAttributesRef<FVector> VertexPositions = InMeshData[MeshIndex].MeshLODData[LODIndex].RawMesh->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
+			TVertexAttributesRef<FVector3f> VertexPositions = InMeshData[MeshIndex].MeshLODData[LODIndex].RawMesh->GetVertexPositions();
 
 			if (InMeshData[MeshIndex].bShouldExportLOD[LODIndex])
 			{
@@ -1789,7 +1736,7 @@ void FMaterialUtilities::RemapUniqueMaterialIndices(const TArray<FSectionInfo>& 
 	{
 		for (int32 LODIndex = 0; LODIndex < MAX_STATIC_MESH_LODS; ++LODIndex)
 		{
-			TVertexAttributesRef<FVector> VertexPositions = InMeshData[MeshIndex].MeshLODData[LODIndex].RawMesh->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
+			TVertexAttributesRef<FVector3f> VertexPositions = InMeshData[MeshIndex].MeshLODData[LODIndex].RawMesh->GetVertexPositions();
 
 			if (InMeshData[MeshIndex].bShouldExportLOD[LODIndex])
 			{
@@ -2165,6 +2112,7 @@ bool FMaterialUtilities::ExportMaterialUVDensities(UMaterialInterface* InMateria
 	TArray<UTexture*> Textures;
 	TArray< TArray<int32> > Indices;
 	InMaterial->GetUsedTexturesAndIndices(Textures, Indices, QualityLevel, FeatureLevel);
+	FTextureCompilingManager::Get().FinishCompilation(Textures);
 
 	check(Textures.Num() >= Indices.Num()); // Can't have indices if no texture.
 
@@ -2300,229 +2248,6 @@ bool FMaterialUtilities::ExportMaterialUVDensities(UMaterialInterface* InMateria
 	return true;
 }
 
-bool FMaterialUtilities::ExportMaterials(TArray<FMaterialMergeData*>& MergeData, TArray<FFlattenMaterial*>& OutFlattenMaterials)
-{
-	checkf(MergeData.Num() == OutFlattenMaterials.Num(), TEXT("Mismatch in number of input structures"));
-
-	TArray<FMeshData*> MeshSettings;
-	TArray<FMaterialData*> MatSettings;
-
-	const int32 NumMaterials = MergeData.Num();
-	for ( int32 MaterialIndex = 0; MaterialIndex < NumMaterials; ++MaterialIndex )
-	{
-		FMaterialMergeData* CurrentMergeData = MergeData[MaterialIndex];
-
-		FMeshData* MeshSet = new FMeshData();
-		MeshSet->RawMeshDescription = const_cast<FMeshDescription*>(CurrentMergeData->Mesh);
-		MeshSet->TextureCoordinateBox = CurrentMergeData->TexcoordBounds;
-		MeshSet->CustomTextureCoordinates = CurrentMergeData->TexCoords;
-		MeshSettings.Add(MeshSet);
-
-		UMaterialInterface* Material = CurrentMergeData->Material;
-		UE_LOG(LogMaterialUtilities, Log, TEXT("Flattening material: %s"), *Material->GetName());
-
-		TArray<UTexture*> MaterialTextures;
-		Material->GetUsedTextures(MaterialTextures, EMaterialQualityLevel::Num, true, GMaxRHIFeatureLevel, true);		
-
-		// Precache all used textures, otherwise could get everything rendered with low-res textures.
-		for (UTexture* Texture : MaterialTextures)
-		{
-			if (Texture != NULL)
-			{
-				UTexture2D* Texture2D = Cast<UTexture2D>(Texture);
-				if (Texture2D)
-				{
-					Texture2D->SetForceMipLevelsToBeResident(30.0f, true);
-					Texture2D->WaitForStreaming();
-				}
-			}
-		}
-
-		FFlattenMaterial* FlattenMaterial = OutFlattenMaterials[MaterialIndex];
-		FlattenMaterial->MaterialId = Material->GetLightingGuid();
-
-		// Determine whether or not certain properties can be rendered
-		const bool bRenderNormal = (Material->GetMaterial()->HasNormalConnected() || Material->GetMaterial()->bUseMaterialAttributes) && FlattenMaterial->ShouldGenerateDataForProperty(EFlattenMaterialProperties::Normal);
-		const bool bRenderTangent = (Material->GetMaterial()->Tangent.IsConnected() || Material->GetMaterial()->bUseMaterialAttributes) && FlattenMaterial->ShouldGenerateDataForProperty(EFlattenMaterialProperties::Tangent);
-		const bool bRenderEmissive = (Material->GetMaterial()->EmissiveColor.IsConnected() || Material->GetMaterial()->bUseMaterialAttributes) && FlattenMaterial->ShouldGenerateDataForProperty(EFlattenMaterialProperties::Emissive);
-		const bool bRenderOpacityMask = Material->IsPropertyActive(MP_OpacityMask) && Material->GetBlendMode() == BLEND_Masked && FlattenMaterial->ShouldGenerateDataForProperty(EFlattenMaterialProperties::OpacityMask);
-		const bool bRenderOpacity = Material->IsPropertyActive(MP_Opacity) && IsTranslucentBlendMode(Material->GetBlendMode()) && FlattenMaterial->ShouldGenerateDataForProperty(EFlattenMaterialProperties::Opacity);
-		const bool bRenderSubSurface = Material->IsPropertyActive(MP_SubsurfaceColor) && FlattenMaterial->ShouldGenerateDataForProperty(EFlattenMaterialProperties::SubSurface);
-		const bool bRenderMetallic = Material->IsPropertyActive(MP_Metallic) && FlattenMaterial->ShouldGenerateDataForProperty(EFlattenMaterialProperties::Metallic);
-		const bool bRenderSpecular = Material->IsPropertyActive(MP_Specular) && FlattenMaterial->ShouldGenerateDataForProperty(EFlattenMaterialProperties::Specular);
-		const bool bRenderRoughness = Material->IsPropertyActive(MP_Roughness) && FlattenMaterial->ShouldGenerateDataForProperty(EFlattenMaterialProperties::Roughness);
-		const bool bRenderAnisotropy = Material->IsPropertyActive(MP_Anisotropy) && FlattenMaterial->ShouldGenerateDataForProperty(EFlattenMaterialProperties::Anisotropy);
-
-
-		FMaterialData* MatSet = new FMaterialData();
-		MatSet->Material = CurrentMergeData->Material;
-		
-		MatSet->PropertySizes.Add(MP_BaseColor, FlattenMaterial->RenderSize);
-		
-		if (bRenderNormal)
-		{
-			MatSet->PropertySizes.Add(MP_Normal, FlattenMaterial->RenderSize);
-		}
-
-		if (bRenderTangent)
-		{
-			MatSet->PropertySizes.Add(MP_Tangent, FlattenMaterial->RenderSize);
-		}
-
-		if (bRenderMetallic)
-		{
-			MatSet->PropertySizes.Add(MP_Metallic, FlattenMaterial->RenderSize);
-		}
-
-		if (bRenderSpecular)
-		{
-			MatSet->PropertySizes.Add(MP_Specular, FlattenMaterial->RenderSize);
-		}
-
-		if (bRenderRoughness)
-		{
-			MatSet->PropertySizes.Add(MP_Roughness, FlattenMaterial->RenderSize);
-		}
-
-		if (bRenderAnisotropy)
-		{
-			MatSet->PropertySizes.Add(MP_Anisotropy, FlattenMaterial->RenderSize);
-		}
-		
-		if (bRenderSubSurface)
-		{
-			MatSet->PropertySizes.Add(MP_SubsurfaceColor, FlattenMaterial->RenderSize);
-		}
-
-		if (bRenderOpacity)
-		{
-			MatSet->PropertySizes.Add(MP_Opacity, FlattenMaterial->RenderSize);
-		}
-
-		if (bRenderOpacityMask)
-		{			
-			MatSet->PropertySizes.Add(MP_OpacityMask, FlattenMaterial->RenderSize);
-		}
-
-		if (bRenderEmissive)
-		{
-			MatSet->PropertySizes.Add(MP_EmissiveColor, FlattenMaterial->RenderSize);
-		}
-
-		MatSettings.Add(MatSet);
-	}
-	
-	TArray<FBakeOutput> BakeOutputs;
-	IMaterialBakingModule& Module = FModuleManager::Get().LoadModuleChecked<IMaterialBakingModule>("MaterialBaking");
-	Module.BakeMaterials(MatSettings, MeshSettings, BakeOutputs);
-	
-	for (int32 MaterialIndex = 0; MaterialIndex < NumMaterials; ++MaterialIndex)
-	{
-		FFlattenMaterial* FlattenMaterial = OutFlattenMaterials[MaterialIndex];
-		const FBakeOutput& Output = BakeOutputs[MaterialIndex];
-
-		if (Output.PropertyData.Contains(MP_BaseColor))
-		{
-			const TArray<FColor>& ColorData = Output.PropertyData.FindChecked(MP_BaseColor);
-			const FIntPoint& DataSize = Output.PropertySizes.FindChecked(MP_BaseColor);
-			FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Diffuse) = ColorData;
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Diffuse, DataSize);
-		}
-
-		if (Output.PropertyData.Contains(MP_Metallic))
-		{
-			const TArray<FColor>& ColorData = Output.PropertyData.FindChecked(MP_Metallic);
-			const FIntPoint& DataSize = Output.PropertySizes.FindChecked(MP_Metallic);
-			FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Metallic) = ColorData;
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Metallic, DataSize);
-		}
-
-		if (Output.PropertyData.Contains(MP_Specular))
-		{
-			const TArray<FColor>& ColorData = Output.PropertyData.FindChecked(MP_Specular);
-			const FIntPoint& DataSize = Output.PropertySizes.FindChecked(MP_Specular);
-			FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Specular) = ColorData;
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Specular, DataSize);
-		}
-
-		if (Output.PropertyData.Contains(MP_Roughness))
-		{
-			const TArray<FColor>& ColorData = Output.PropertyData.FindChecked(MP_Roughness);
-			const FIntPoint& DataSize = Output.PropertySizes.FindChecked(MP_Roughness);
-			FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Roughness) = ColorData;
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Roughness, DataSize);
-		}
-
-		if (Output.PropertyData.Contains(MP_Anisotropy))
-		{
-			const TArray<FColor>& ColorData = Output.PropertyData.FindChecked(MP_Anisotropy);
-			const FIntPoint& DataSize = Output.PropertySizes.FindChecked(MP_Anisotropy);
-			FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Anisotropy) = ColorData;
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Anisotropy, DataSize);
-		}
-
-		if (Output.PropertyData.Contains(MP_Normal))
-		{
-			const TArray<FColor>& ColorData = Output.PropertyData.FindChecked(MP_Normal);
-			const FIntPoint& DataSize = Output.PropertySizes.FindChecked(MP_Normal);
-			FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Normal) = ColorData;
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Normal, DataSize);
-		}
-		else
-		{
-			// Make sure we output a default normal value in case the material does not generate one (to prevent issues with combining meshes with and without normal maps being atlased together)
-			TArray<FColor>& Samples = FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Normal);
-			Samples.Add(FColor(128, 128, 255));
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Normal, FIntPoint(1, 1));
-		}
-
-		if (Output.PropertyData.Contains(MP_Tangent))
-		{
-			const TArray<FColor>& ColorData = Output.PropertyData.FindChecked(MP_Tangent);
-			const FIntPoint& DataSize = Output.PropertySizes.FindChecked(MP_Tangent);
-			FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Tangent) = ColorData;
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Tangent, DataSize);
-		}
-		else
-		{
-			// Make sure we output a default tangent value in case the material does not generate one (to prevent issues with combining meshes with and without tangent maps being atlased together)
-			TArray<FColor>& Samples = FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Tangent);
-			Samples.Add(FColor(255, 128, 128));
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Tangent, FIntPoint(1, 1));
-		}
-
-		if (Output.PropertyData.Contains(MP_Opacity))
-		{
-			const TArray<FColor>& ColorData = Output.PropertyData.FindChecked(MP_Opacity);
-			const FIntPoint& DataSize = Output.PropertySizes.FindChecked(MP_Opacity);
-			FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Opacity) = ColorData;
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Opacity, DataSize);
-		}
-
-		if (Output.PropertyData.Contains(MP_OpacityMask))
-		{
-			const TArray<FColor>& ColorData = Output.PropertyData.FindChecked(MP_OpacityMask);
-			const FIntPoint& DataSize = Output.PropertySizes.FindChecked(MP_OpacityMask);
-			FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::OpacityMask) = ColorData;
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::OpacityMask, DataSize);
-		}
-
-		if (Output.PropertyData.Contains(MP_EmissiveColor))
-		{
-			const TArray<FColor>& ColorData = Output.PropertyData.FindChecked(MP_EmissiveColor);
-			const FIntPoint& DataSize = Output.PropertySizes.FindChecked(MP_EmissiveColor);
-			FlattenMaterial->GetPropertySamples(EFlattenMaterialProperties::Emissive) = ColorData;
-			FlattenMaterial->SetPropertySize(EFlattenMaterialProperties::Emissive, DataSize);
-			FlattenMaterial->EmissiveScale = Output.EmissiveScale;
-		}
-
-		UE_LOG(LogMaterialUtilities, Log, TEXT("Material flattening done. (%s)"), *MergeData[MaterialIndex]->Material->GetName());
-	}
-
-	return true;
-}
-
-
 bool FMaterialUtilities::ExportMaterial(struct FMaterialMergeData& InMaterialData, FFlattenMaterial& OutFlattenMaterial, struct FExportMaterialProxyCache* ProxyCache)
 {
 	UMaterialInterface* Material = InMaterialData.Material;
@@ -2541,6 +2266,8 @@ bool FMaterialUtilities::ExportMaterial(struct FMaterialMergeData& InMaterialDat
 	// Precache all used textures, otherwise could get everything rendered with low-res textures.
 	TArray<UTexture*> MaterialTextures;
 	Material->GetUsedTextures(MaterialTextures, EMaterialQualityLevel::Num, true, GMaxRHIFeatureLevel, true);
+
+	FTextureCompilingManager::Get().FinishCompilation(MaterialTextures);
 
 	for (UTexture* Texture : MaterialTextures)
 	{
@@ -2834,7 +2561,6 @@ void FMaterialUtilities::ClearRenderTargetPool()
 
 void FMaterialUtilities::OptimizeSampleArray(TArray<FColor>& InSamples, FIntPoint& InSampleSize)
 {
-	// QQ LOOK AT 
 	if (InSamples.Num() > 1)
 	{
 		TArray<FColor> Colors;
@@ -2852,37 +2578,6 @@ void FMaterialUtilities::OptimizeSampleArray(TArray<FColor>& InSamples, FIntPoin
 			InSamples.Empty(1);
 			InSamples.Add(Colors[0]);
 			InSampleSize = FIntPoint(1, 1);
-		}
-
-		FColor ColourValue;
-		bool bValueFound = false;
-		for (FColor& Sample : InSamples)
-		{
-			if (Sample.A != 0)
-			{
-				ColourValue = Sample;
-				bValueFound = true;
-				break;
-			}
-		}
-
-		if (bValueFound)
-		{
-			bool bConstantValue = true;
-
-			for (FColor& Sample : InSamples)
-			{
-				if (Sample.A != 0 && ((Sample.DWColor() & FColor::Black.DWColor()) != (ColourValue.DWColor() & FColor::Black.DWColor())))
-				{
-					bConstantValue = false;
-					break;
-				}
-			}
-
-			if (bConstantValue)
-			{
-
-			}
 		}
 	}	
 }
@@ -3093,4 +2788,38 @@ void FMaterialUtilities::GeneratedBinnedTextureSquares(const FVector2D Destinati
 		FBox2D& Box = OutGeneratedBoxes[Texture.TextureIndex];
 		Box = Texture.Area;
 	}
+}
+
+float FMaterialUtilities::ComputeRequiredTexelDensityFromScreenSize(const float InScreenSize, float InWorldSpaceRadius)
+{
+	static const float ScreenX = 1920;
+
+	float WorldSizeCM = InWorldSpaceRadius * 2;
+	float WorldSizeMeter = WorldSizeCM / 100;
+
+	float ScreenSizePercent = InScreenSize;
+	float ScreenSizePixel = ScreenSizePercent * ScreenX;
+
+	float TexelDensityPerMeter = ScreenSizePixel / WorldSizeMeter;
+
+	return TexelDensityPerMeter;
+}
+
+float FMaterialUtilities::ComputeRequiredTexelDensityFromDrawDistance(const float InDrawDistance, float InWorldSpaceRadius)
+{
+	// Generate a projection matrix.
+	static const float ScreenX = 1920;
+	static const float ScreenY = 1080;
+	static const float HalfFOVRad = FMath::DegreesToRadians(45.0f);
+	static const FMatrix ProjectionMatrix = FPerspectiveMatrix(HalfFOVRad, ScreenX, ScreenY, 0.01f);
+
+	float WorldSizeCM = InWorldSpaceRadius * 2;
+	float WorldSizeMeter = WorldSizeCM / 100;
+
+	float ScreenSizePercent = ComputeBoundsScreenSize(FVector::ZeroVector, InWorldSpaceRadius, FVector(0.0f, 0.0f, InDrawDistance), ProjectionMatrix);
+	float ScreenSizePixel = ScreenSizePercent * ScreenX;
+
+	float TexelDensityPerMeter = ScreenSizePixel / WorldSizeMeter;
+
+	return TexelDensityPerMeter;
 }

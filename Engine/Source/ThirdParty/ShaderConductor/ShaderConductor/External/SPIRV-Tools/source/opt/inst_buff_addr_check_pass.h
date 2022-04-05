@@ -28,11 +28,9 @@ namespace opt {
 // external design of this class may change as the layer evolves.
 class InstBuffAddrCheckPass : public InstrumentPass {
  public:
-  // Deprecated interface
-  InstBuffAddrCheckPass(uint32_t desc_set, uint32_t shader_id, uint32_t version)
-      : InstrumentPass(desc_set, shader_id, kInstValidationIdBuffAddr,
-                       version) {}
-  // Preferred interface
+  // For test harness only
+  InstBuffAddrCheckPass() : InstrumentPass(7, 23, kInstValidationIdBuffAddr) {}
+  // For all other interfaces
   InstBuffAddrCheckPass(uint32_t desc_set, uint32_t shader_id)
       : InstrumentPass(desc_set, shader_id, kInstValidationIdBuffAddr) {}
 
@@ -44,8 +42,12 @@ class InstBuffAddrCheckPass : public InstrumentPass {
   const char* name() const override { return "inst-bindless-check-pass"; }
 
  private:
-  // Return byte length of type |type_id|. Must be int, float, vector, matrix
-  // or physical pointer.
+  // Return byte alignment of type |type_id|. Must be int, float, vector,
+  // matrix, struct, array or physical pointer. Uses std430 alignment.
+  uint32_t GetTypeAlignment(uint32_t type_id);
+
+  // Return byte length of type |type_id|. Must be int, float, vector, matrix,
+  // struct, array or physical pointer. Uses std430 alignment and sizes.
   uint32_t GetTypeLength(uint32_t type_id);
 
   // Add |type_id| param to |input_func| and add id to |param_vec|.

@@ -307,12 +307,12 @@ struct FLightMapAllocation
 			{
 				// TODO: We currently only support one LOD of static lighting in foliage
 				// Need to create per-LOD instance data to fix that
-				MeshBuildData->PerInstanceLightmapData[InstanceIndex].LightmapUVBias = LightMap->GetCoordinateBias();
+				MeshBuildData->PerInstanceLightmapData[InstanceIndex].LightmapUVBias = FVector2f(LightMap->GetCoordinateBias());
 
 				const int32 RenderIndex = Component->GetRenderIndex(InstanceIndex);
 				if (RenderIndex != INDEX_NONE)
 				{
-					Component->InstanceUpdateCmdBuffer.SetLightMapData(RenderIndex, MeshBuildData->PerInstanceLightmapData[InstanceIndex].LightmapUVBias);
+					Component->InstanceUpdateCmdBuffer.SetLightMapData(RenderIndex, FVector2D(MeshBuildData->PerInstanceLightmapData[InstanceIndex].LightmapUVBias));
 					Component->MarkRenderStateDirty();
 				}
 			}
@@ -920,7 +920,7 @@ static void GenerateLightmapMipsAndDilateColor(int32 NumMips, int32 TextureSizeX
 				}
 				else if(Coverage)
 				{
-					DestColor = ( AccumulatedColor / Coverage ).Quantize();
+					DestColor = ( AccumulatedColor / Coverage ).QuantizeRound();
 					DestCoverage = Coverage / (MipFactorX * MipFactorY);
 				}
 				else
@@ -977,7 +977,7 @@ static void GenerateLightmapMipsAndDilateColor(int32 NumMips, int32 TextureSizeX
 
 					if(Coverage)
 					{
-						DestColor = (AccumulatedColor / Coverage).Quantize();
+						DestColor = (AccumulatedColor / Coverage).QuantizeRound();
 						DestCoverage = -1;
 					}
 				}
@@ -1559,7 +1559,6 @@ void FLightMapPendingTexture::EncodeCoefficientTexture(int32 CoefficientIndex, U
 	FormatSettings.SRGB = false;
 	FormatSettings.CompressionNoAlpha = CoefficientIndex >= LQ_LIGHTMAP_COEF_INDEX;
 	FormatSettings.CompressionNone = !GCompressLightmaps;
-	//FormatSettings.bForcePVRTC4 = true;
 	Texture->SetLayerFormatSettings(LayerIndex, FormatSettings);
 
 	if (bEncodeVirtualTexture)
@@ -1614,14 +1613,14 @@ void FLightMapPendingTexture::EncodeCoefficientTexture(int32 CoefficientIndex, U
 		auto& Allocation = Allocations[AllocationIndex];
 		for (int k = 0; k < 2; k++)
 		{
-			Allocation->LightMap->ScaleVectors[CoefficientIndex + k] = FVector4(
+			Allocation->LightMap->ScaleVectors[CoefficientIndex + k] = FVector4f(
 				Allocation->Scale[CoefficientIndex + k][0],
 				Allocation->Scale[CoefficientIndex + k][1],
 				Allocation->Scale[CoefficientIndex + k][2],
 				Allocation->Scale[CoefficientIndex + k][3]
 			);
 
-			Allocation->LightMap->AddVectors[CoefficientIndex + k] = FVector4(
+			Allocation->LightMap->AddVectors[CoefficientIndex + k] = FVector4f(
 				Allocation->Add[CoefficientIndex + k][0],
 				Allocation->Add[CoefficientIndex + k][1],
 				Allocation->Add[CoefficientIndex + k][2],
@@ -1822,7 +1821,6 @@ void FLightMapPendingTexture::StartEncoding(ULevel* LightingScenario, ITextureCo
 		Texture->Filter	= GUseBilinearLightmaps ? TF_Default : TF_Nearest;
 		Texture->LODGroup = TEXTUREGROUP_Lightmap;
 		Texture->LightmapFlags = ELightMapFlags( LightmapFlags );
-		Texture->bForcePVRTC4 = true;
 
 		EncodeCoefficientTexture(CoefficientIndex, Texture, 0u, TextureColor, false);
 	}
@@ -1870,6 +1868,9 @@ void FLightMapPendingTexture::StartEncoding(ULevel* LightingScenario, ITextureCo
 			VirtualTexture->CompressionNoAlpha = false;
 			VirtualTexture->CompressionNone = !GCompressLightmaps;
 			VirtualTexture->LossyCompressionAmount = CVarVTEnableLossyCompressLightmaps.GetValueOnAnyThread() ? TLCA_Default : TLCA_None;
+
+			// VirtualTexture->OodleTextureSdkVersion will be set to latest by default constructor
+			//  dynamic/generated textures use latest OodleTextureSdkVersion
 
 			FTextureFormatSettings DefaultFormatSettings;
 			VirtualTexture->GetDefaultFormatSettings(DefaultFormatSettings);
@@ -2493,7 +2494,7 @@ void FLightMap2D::EncodeTextures( UWorld* InWorld, ULevel* LightingScenario, boo
 				int32 NewTextureSizeY = PackedLightAndShadowMapTextureSizeY;
 
 				// Assumes identically-sized allocations, fit into the smallest 2x1 rectangle
-				const int32 AllocationCountX = FMath::CeilToInt(FMath::Sqrt(FMath::DivideAndRoundUp(PendingGroup.Allocations.Num() * 2 * MaxHeight, MaxWidth)));
+				const int32 AllocationCountX = FMath::CeilToInt(FMath::Sqrt(static_cast<float>(FMath::DivideAndRoundUp(PendingGroup.Allocations.Num() * 2 * MaxHeight, MaxWidth))));
 				const int32 AllocationCountY = FMath::DivideAndRoundUp(PendingGroup.Allocations.Num(), AllocationCountX);
 				const int32 AllocationSizeX = AllocationCountX * MaxWidth;
 				const int32 AllocationSizeY = AllocationCountY * MaxHeight;
@@ -2619,7 +2620,7 @@ int32 FLightMap2D::EncodeShadowTexture(ULevel* LightingScenario, struct FLightMa
 	{
 		FLightMapAllocation& Allocation = *PendingTexture.Allocations[AllocationIndex];
 		bool bChannelUsed[4] = { 0 };
-		FVector4 InvUniformPenumbraSize(0, 0, 0, 0);
+		FVector4f InvUniformPenumbraSize(0, 0, 0, 0);
 
 		for (int32 ChannelIndex = 0; ChannelIndex < 4; ChannelIndex++)
 		{
@@ -2984,7 +2985,7 @@ void FLightMap2D::Serialize(FArchive& Ar)
 
 	const bool bUsingVTLightmaps = (CVarVirtualTexturedLightMaps.GetValueOnAnyThread() != 0) && UseVirtualTexturing(GMaxRHIFeatureLevel, Ar.CookingTarget());
 
-	if( Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_LOW_QUALITY_DIRECTIONAL_LIGHTMAPS )
+	if( Ar.IsLoading() && Ar.UEVer() < VER_UE4_LOW_QUALITY_DIRECTIONAL_LIGHTMAPS )
 	{
 		for(uint32 CoefficientIndex = 0;CoefficientIndex < 3;CoefficientIndex++)
 		{
@@ -2995,7 +2996,7 @@ void FLightMap2D::Serialize(FArchive& Ar)
 			Ar << Dummy2;
 		}
 	}
-	else if( Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_COMBINED_LIGHTMAP_TEXTURES )
+	else if( Ar.IsLoading() && Ar.UEVer() < VER_UE4_COMBINED_LIGHTMAP_TEXTURES )
 	{
 		for( uint32 CoefficientIndex = 0; CoefficientIndex < 4; CoefficientIndex++ )
 		{
@@ -3025,7 +3026,7 @@ void FLightMap2D::Serialize(FArchive& Ar)
 			Ar << Textures[1];
 		}
 
-		if (Ar.UE4Ver() >= VER_UE4_SKY_LIGHT_COMPONENT)
+		if (Ar.UEVer() >= VER_UE4_SKY_LIGHT_COMPONENT)
 		{
 			if (Ar.IsCooking())
 			{
@@ -3035,7 +3036,7 @@ void FLightMap2D::Serialize(FArchive& Ar)
 				ULightMapTexture2D*& SkyTexture = bStripHQLightmaps ? Dummy : SkyOcclusionTexture;
 				Ar << SkyTexture;
 
-				if (Ar.UE4Ver() >= VER_UE4_AO_MATERIAL_MASK)
+				if (Ar.UEVer() >= VER_UE4_AO_MATERIAL_MASK)
 				{
 					ULightMapTexture2D*& MaskTexture = bStripHQLightmaps ? Dummy : AOMaterialMaskTexture;
 					Ar << MaskTexture;
@@ -3045,7 +3046,7 @@ void FLightMap2D::Serialize(FArchive& Ar)
 			{
 				Ar << SkyOcclusionTexture;
 
-				if (Ar.UE4Ver() >= VER_UE4_AO_MATERIAL_MASK)
+				if (Ar.UEVer() >= VER_UE4_AO_MATERIAL_MASK)
 				{
 					Ar << AOMaterialMaskTexture;
 				}
@@ -3197,7 +3198,7 @@ FLightMapInteraction FLightMap2D::GetInteraction(ERHIFeatureLevel::Type InFeatur
 	const bool bUseVirtualTextures = (CVarVirtualTexturedLightMaps.GetValueOnAnyThread() != 0) && UseVirtualTexturing(InFeatureLevel);
 	if (!bUseVirtualTextures)
 	{
-		bool bValidTextures = Textures[LightmapIndex] && Textures[LightmapIndex]->Resource;
+		bool bValidTextures = Textures[LightmapIndex] && Textures[LightmapIndex]->GetResource();
 
 		// When the FLightMap2D is first created, the textures aren't set, so that case needs to be handled.
 		if (bValidTextures)
@@ -3208,7 +3209,7 @@ FLightMapInteraction FLightMap2D::GetInteraction(ERHIFeatureLevel::Type InFeatur
 	else
 	{
 		// Preview lightmaps don't stream from disk, thus no FVirtualTexture2DResource
-		bool bValidVirtualTexture = VirtualTextures[LightmapIndex] && (VirtualTextures[LightmapIndex]->Resource != nullptr || VirtualTextures[LightmapIndex]->bPreviewLightmap);
+		bool bValidVirtualTexture = VirtualTextures[LightmapIndex] && (VirtualTextures[LightmapIndex]->GetResource() != nullptr || VirtualTextures[LightmapIndex]->bPreviewLightmap);
 		if (bValidVirtualTexture)
 		{
 			return FLightMapInteraction::InitVirtualTexture(VirtualTextures[LightmapIndex], ScaleVectors, AddVectors, CoordinateScale, CoordinateBias, bHighQuality);
@@ -3228,7 +3229,7 @@ FShadowMapInteraction FLightMap2D::GetShadowInteraction(ERHIFeatureLevel::Type I
 	if (bUseVirtualTextures)
 	{
 		// Preview lightmaps don't stream from disk, thus no FVirtualTexture2DResource
-		const bool bValidVirtualTexture = VirtualTextures[LightmapIndex] && (VirtualTextures[LightmapIndex]->Resource != nullptr || VirtualTextures[LightmapIndex]->bPreviewLightmap);
+		const bool bValidVirtualTexture = VirtualTextures[LightmapIndex] && (VirtualTextures[LightmapIndex]->GetResource() != nullptr || VirtualTextures[LightmapIndex]->bPreviewLightmap);
 		if (bValidVirtualTexture)
 		{
 			return FShadowMapInteraction::InitVirtualTexture(VirtualTextures[LightmapIndex], CoordinateScale, CoordinateBias, bShadowChannelValid, InvUniformPenumbraSize);
@@ -3364,7 +3365,7 @@ FArchive& operator<<(FArchive& Ar, FLightMap*& R)
 			}
 
 			// Dump old lightmaps
-			if (Ar.UE4Ver() < VER_UE4_COMBINED_LIGHTMAP_TEXTURES)
+			if (Ar.UEVer() < VER_UE4_COMBINED_LIGHTMAP_TEXTURES)
 			{
 				delete R; // safe because if we're loading we new'd this above
 				R = nullptr;
@@ -3469,10 +3470,19 @@ IAllocatedVirtualTexture* FLightmapResourceCluster::AcquireAllocatedVT() const
 	int32 LightmapIndex = bHighQuality ? 0 : 1;
 
 	const ULightMapVirtualTexture2D* VirtualTexture = Input.LightMapVirtualTextures[LightmapIndex];
-	if (!AllocatedVT && VirtualTexture && VirtualTexture->Resource)
+	
+#if WITH_EDITOR
+		// Compilation is still pending, this function will be called back once compilation finishes.
+	if (VirtualTexture && VirtualTexture->IsCompiling())
+		{
+			return nullptr;
+		}
+#endif
+
+	if (!AllocatedVT && VirtualTexture && VirtualTexture->GetResource())
 	{
 		check(VirtualTexture->VirtualTextureStreaming);
-		const FVirtualTexture2DResource* Resource = (FVirtualTexture2DResource*)VirtualTexture->Resource;
+		const FVirtualTexture2DResource* Resource = (FVirtualTexture2DResource*)VirtualTexture->GetResource();
 		const FVirtualTextureProducerHandle ProducerHandle = Resource->GetProducerHandle();
 
 		GetRendererModule().AddVirtualTextureProducerDestroyedCallback(ProducerHandle, &OnVirtualTextureDestroyed, const_cast<FLightmapResourceCluster*>(this));

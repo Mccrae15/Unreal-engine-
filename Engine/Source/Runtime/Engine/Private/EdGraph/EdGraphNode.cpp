@@ -1,10 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "EdGraph/EdGraphNode.h"
+
 #include "Serialization/PropertyLocalizationDataGathering.h"
 #include "UObject/BlueprintsObjectVersion.h"
 #include "UObject/FrameworkObjectVersion.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/ReleaseObjectVersion.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "EdGraph/EdGraphPin.h"
 #include "Textures/SlateIcon.h"
 #include "EdGraph/EdGraph.h"
@@ -36,6 +39,7 @@ FArchive& operator<<(FArchive& Ar, FEdGraphTerminalType& T)
 {
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
 	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 
 	if (Ar.CustomVer(FFrameworkObjectVersion::GUID) >= FFrameworkObjectVersion::PinsStoreFName)
 	{
@@ -47,7 +51,7 @@ FArchive& operator<<(FArchive& Ar, FEdGraphTerminalType& T)
 		FString TerminalCategoryStr;
 		Ar << TerminalCategoryStr;
 
-		if (Ar.UE4Ver() < VER_UE4_ADDED_SOFT_OBJECT_PATH)
+		if (Ar.UEVer() < VER_UE4_ADDED_SOFT_OBJECT_PATH)
 		{
 			// Handle asset->soft object rename, this is here instead of BP code because this structure is embedded
 			if (TerminalCategoryStr == TEXT("asset"))
@@ -85,6 +89,19 @@ FArchive& operator<<(FArchive& Ar, FEdGraphTerminalType& T)
 	if (Ar.CustomVer(FReleaseObjectVersion::GUID) >= FReleaseObjectVersion::PinTypeIncludesUObjectWrapperFlag)
 	{
 		Ar << T.bTerminalIsUObjectWrapper;
+	}
+
+	if (Ar.IsLoading())
+	{
+		bool bFixupPinCategories =
+			(Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::BlueprintPinsUseRealNumbers) &&
+			((T.TerminalCategory == TEXT("double")) || (T.TerminalCategory == TEXT("float")));
+
+		if (bFixupPinCategories)
+		{
+			T.TerminalCategory = TEXT("real");
+			T.TerminalSubCategory = TEXT("double");
+		}
 	}
 
 	return Ar;
@@ -167,9 +184,8 @@ UEdGraphNode::UEdGraphNode(const FObjectInitializer& ObjectInitializer)
 	, AdvancedPinDisplay(ENodeAdvancedPins::NoPins)
 	, EnabledState(ENodeEnabledState::Enabled)
 	, bUserSetEnabledState(false)
-	, bAllowSplitPins_DEPRECATED(false)
-	, bIsNodeEnabled_DEPRECATED(true)
 #if WITH_EDITORONLY_DATA
+	, bIsNodeEnabled_DEPRECATED(true)
 	, bCanResizeNode(false)
 	, bUnrelated(false)
 	, bCommentBubblePinned(false)
@@ -223,6 +239,13 @@ void UEdGraphNode::Serialize(FArchive& Ar)
 	}
 #endif
 }
+
+void UEdGraphNode::DeclareCustomVersions(FArchive& Ar)
+{
+	Super::DeclareCustomVersions(Ar);
+	UEdGraphPin::DeclareCustomVersions(Ar);
+}
+
 
 bool UEdGraphNode::GetCanRenameNode() const
 {
@@ -392,13 +415,26 @@ UEdGraphPin* UEdGraphNode::FindPinByIdChecked(const FGuid PinId) const
 	return Result;
 }
 
+UEdGraphPin* UEdGraphNode::FindPinByPredicate(TFunctionRef<bool(UEdGraphPin* InPin)> InFunction) const
+{
+	for (UEdGraphPin* Pin : Pins)
+	{
+		if (InFunction(Pin))
+		{
+			return Pin;
+		}
+	}
+
+	return nullptr;
+}
+
 bool UEdGraphNode::RemovePin(UEdGraphPin* Pin)
 {
 	check( Pin );
 	
 	Modify();
 	UEdGraphPin* RootPin = (Pin->ParentPin != nullptr) ? Pin->ParentPin : Pin;
-	RootPin->MarkPendingKill();
+	RootPin->MarkAsGarbage();
 
 	if (Pins.Remove( RootPin ))
 	{
@@ -406,7 +442,7 @@ bool UEdGraphNode::RemovePin(UEdGraphPin* Pin)
 		for (UEdGraphPin* ChildPin : RootPin->SubPins)
 		{
 			Pins.Remove(ChildPin);
-			ChildPin->MarkPendingKill();
+			ChildPin->MarkAsGarbage();
 		}
 		OnPinRemoved(Pin);
 		return true;
@@ -422,13 +458,20 @@ void UEdGraphNode::BreakAllNodeLinks()
 	NodeList.Add(this);
 
 	// Iterate over each pin and break all links
-	for(int32 PinIdx=0; PinIdx<Pins.Num(); PinIdx++)
+	for(int32 PinIdx = 0; PinIdx < Pins.Num(); ++PinIdx)
 	{
-		Pins[PinIdx]->BreakAllPinLinks();
-		NodeList.Add(Pins[PinIdx]->GetOwningNode());
+		UEdGraphPin* Pin = Pins[PinIdx];
+
+		// Save all the connected nodes to be notified below
+		for (UEdGraphPin* Connection : Pin->LinkedTo)
+		{
+			NodeList.Add(Connection->GetOwningNode());
+		}
+
+		Pin->BreakAllPinLinks();
 	}
 
-	// Send all nodes that received a new pin connection a notification
+	// Send a notification to all nodes that lost a connection
 	for (UEdGraphNode* Node : NodeList)
 	{
 		Node->NodeConnectionListChanged();
@@ -450,7 +493,7 @@ void UEdGraphNode::SnapToGrid(float GridSnapSize)
 class UEdGraph* UEdGraphNode::GetGraph() const
 {
 	UEdGraph* Graph = Cast<UEdGraph>(GetOuter());
-	if (Graph == nullptr && !IsPendingKill())
+	if (Graph == nullptr && IsValid(this))
 	{
 		ensureMsgf(false, TEXT("EdGraphNode::GetGraph : '%s' does not have a UEdGraph as an Outer."), *GetPathName());
 	}
@@ -470,25 +513,9 @@ void UEdGraphNode::RemovePinAt(const int32 PinIndex, const EEdGraphPinDirection 
 {
 	Modify();
 
-	// Map requested input to actual pin index
-	int32 ActualPinIndex = INDEX_NONE;
-	int32 MatchingPinCount = 0;
+	UEdGraphPin* OldPin = GetPinWithDirectionAt(PinIndex, PinDirection);
+	checkf(OldPin, TEXT("Tried to remove a non-existent pin."));
 
-	for (int32 Index = 0; Index < Pins.Num(); Index++)
-	{
-		if (Pins[Index]->Direction == PinDirection)
-		{
-			if (PinIndex == MatchingPinCount)
-			{
-				ActualPinIndex = Index;
-			}
-			++MatchingPinCount;
-		}
-	}
-
-	checkf(ActualPinIndex != INDEX_NONE && ActualPinIndex < Pins.Num(), TEXT("Tried to remove a non-existent pin."));
-
-	UEdGraphPin* OldPin = Pins[ActualPinIndex];
 	OldPin->BreakAllPinLinks();
 	RemovePin(OldPin);
 
@@ -534,20 +561,11 @@ FString UEdGraphNode::GetDocumentationExcerptName() const
 	return FString::Printf(TEXT("%s%s"), MyClass->GetPrefixCPP(), *MyClass->GetName());
 }
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FSlateIcon UEdGraphNode::GetIconAndTint(FLinearColor& OutColor) const
 {
-	// @todo: Remove with GetPaletteIcon
-	FName DeprecatedName = GetPaletteIcon(OutColor);
-	if (!DeprecatedName.IsNone())
-	{
-		return FSlateIcon("EditorStyle", DeprecatedName);
-	}
-	
 	static const FSlateIcon Icon = FSlateIcon("EditorStyle", "GraphEditor.Default_16x");
 	return Icon;
 }
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FString UEdGraphNode::GetDescriptiveCompiledName() const
 {
@@ -625,7 +643,14 @@ void UEdGraphNode::AddReferencedObjects(UObject* InThis, FReferenceCollector& Co
 
 void UEdGraphNode::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UEdGraphNode::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
 
 #if WITH_EDITORONLY_DATA
 	if (!NodeUpgradeMessage.IsEmpty())
@@ -650,7 +675,7 @@ void UEdGraphNode::PostLoad()
 	}
 
 	// Duplicating a Blueprint needs to have a new Node Guid generated, which was not occuring before this version
-	if(GetLinkerUE4Version() < VER_UE4_POST_DUPLICATE_NODE_GUID)
+	if(GetLinkerUEVersion() < VER_UE4_POST_DUPLICATE_NODE_GUID)
 	{
 		UE_LOG(LogBlueprint, Warning, TEXT("Node '%s' missing NodeGuid because of upgrade from old package version, this can cause deterministic cooking issues please resave package."), *GetPathName());
 
@@ -658,7 +683,7 @@ void UEdGraphNode::PostLoad()
 		CreateNewGuid();
 	}
 	// Moving to the new style comments requires conversion to preserve previous state
-	if(GetLinkerUE4Version() < VER_UE4_GRAPH_INTERACTIVE_COMMENTBUBBLES)
+	if(GetLinkerUEVersion() < VER_UE4_GRAPH_INTERACTIVE_COMMENTBUBBLES)
 	{
 		bCommentBubbleVisible = !NodeComment.IsEmpty();
 	}
@@ -669,7 +694,7 @@ void UEdGraphNode::PostLoad()
 		{
 			LegacyPin->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders|REN_NonTransactional);
 			LegacyPin->SetFlags(RF_Transient);
-			LegacyPin->MarkPendingKill();
+			LegacyPin->MarkAsGarbage();
 		}
 
 		DeprecatedPins.Empty();
@@ -730,7 +755,7 @@ void UEdGraphNode::BeginDestroy()
 {
 	for (UEdGraphPin* Pin : Pins)
 	{
-		Pin->MarkPendingKill();
+		Pin->MarkAsGarbage();
 	}
 
 	Pins.Empty();
@@ -761,7 +786,7 @@ void UEdGraphNode::FindDiffs(UEdGraphNode* OtherNode, struct FDiffResults& Resul
 
 void UEdGraphNode::DestroyPin(UEdGraphPin* Pin)
 {
-	Pin->MarkPendingKill();
+	Pin->MarkAsGarbage();
 }
 
 bool UEdGraphNode::CanDuplicateNode() const
@@ -823,6 +848,25 @@ UEdGraphPin* UEdGraphNode::GetPinAt(int32 index) const
 	{
 		return Pins[index];
 	}
+	return nullptr;
+}
+
+UEdGraphPin* UEdGraphNode::GetPinWithDirectionAt(int32 PinIndex, EEdGraphPinDirection PinDirection) const
+{
+	// Map requested input to actual pin index
+	int32 MatchingPinCount = 0;
+	for (UEdGraphPin* Pin : Pins)
+	{
+		if (Pin->Direction == PinDirection)
+		{
+			if (PinIndex == MatchingPinCount)
+			{
+				return Pin;
+			}
+			++MatchingPinCount;
+		}
+	}
+
 	return nullptr;
 }
 

@@ -34,11 +34,13 @@ public class Persona : ModuleRules
                 "SequenceRecorder",
                 "AnimationBlueprintEditor",
 			}
-        );
+		);
 
         PrivateDependencyModuleNames.AddRange(
             new string[] {
                 "AppFramework",
+                "AnimationModifiers",
+                "AnimationBlueprintLibrary",
                 "Core", 
                 "CoreUObject", 
 				"ApplicationCore",
@@ -46,8 +48,9 @@ public class Persona : ModuleRules
                 "SlateCore",
 				"ContentBrowserData",
                 "EditorStyle",
-                "Engine", 
-                "UnrealEd", 
+                "Engine",
+				"EditorFramework",
+				"UnrealEd", 
                 "GraphEditor", 
                 "InputCore",
                 "Kismet", 
@@ -63,7 +66,6 @@ public class Persona : ModuleRules
                 "ClothingSystemRuntimeInterface",
                 "ClothingSystemRuntimeCommon",
                 "AnimGraphRuntime",
-                "UnrealEd",
                 "CommonMenuExtensions",
                 "PinnedCommandList",
                 "RenderCore",
@@ -73,6 +75,8 @@ public class Persona : ModuleRules
 				"SequencerWidgets",
 				"TimeManagement",
                 "Sequencer",
+				"StatusBar",
+				"ToolWidgets",
 			}
         );
 

@@ -18,7 +18,6 @@
 class FVulkanDevice;
 class FVulkanQueue;
 class FVulkanCmdBuffer;
-class FVulkanBuffer;
 class FVulkanBufferCPU;
 struct FVulkanTextureBase;
 class FVulkanTexture2D;
@@ -28,6 +27,7 @@ class FVulkanLayout;
 class FVulkanOcclusionQuery;
 class FVulkanShaderResourceView;
 class FVulkanCommandBufferManager;
+struct FRHITransientHeapAllocation;
 
 namespace VulkanRHI
 {
@@ -84,7 +84,6 @@ public:
 		: ShaderKey(0)
 		, StageFlag(InStageFlag)
 		, Frequency(InFrequency)
-		, SpirvSize(0)
 		, Device(InDevice)
 	{
 	}
@@ -130,7 +129,7 @@ public:
 	// Name should be pointing to "main_"
 	void GetEntryPoint(ANSICHAR* Name, int32 NameLength)
 	{
-		FCStringAnsi::Snprintf(Name, NameLength, "main_%0.8x_%0.8x", SpirvSize, CodeHeader.SpirvCRC);
+		FCStringAnsi::Snprintf(Name, NameLength, "main_%0.8x_%0.8x", SpirvContainer.GetSizeBytes(), CodeHeader.SpirvCRC);
 	}
 
 	FORCEINLINE const FVulkanShaderHeader& GetCodeHeader() const
@@ -143,6 +142,22 @@ public:
 		return ShaderKey;
 	}
 
+	// This provides a view of the raw spirv bytecode.
+	// If it is stored compressed then the result of GetSpirvCode will contain the decompressed spirv.
+	class FSpirvCode
+	{
+		friend class FVulkanShader;
+		explicit FSpirvCode(TArray<uint32>&& UncompressedCodeIn) : UncompressedCode(MoveTemp(UncompressedCodeIn))
+		{
+			CodeView = UncompressedCode;
+		}
+		explicit FSpirvCode(TArrayView<uint32> UncompressedCodeView) : CodeView(UncompressedCodeView)	{	}
+		TArrayView<uint32> CodeView;
+		TArray<uint32> UncompressedCode;
+	public:
+		TArrayView<uint32> GetCodeView() {return CodeView;}
+	};
+	FSpirvCode GetSpirvCode();
 protected:
 #if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
 	FString							DebugEntryPoint;
@@ -157,9 +172,22 @@ protected:
 
 	TArray<FUniformBufferStaticSlot> StaticSlots;
 
-	TArray<uint32>					Spirv;
-	// this is size of unmodified spriv code
-	uint32							SpirvSize;
+private:
+	class FSpirvContainer
+	{
+		friend class FVulkanShader;
+		TArray<uint8>	SpirvCode;
+		int32 UncompressedSizeBytes = -1;
+	public:
+		bool IsCompressed() const {	return UncompressedSizeBytes != -1;	}
+		int32 GetSizeBytes() const { return UncompressedSizeBytes >= 0 ? UncompressedSizeBytes : SpirvCode.Num(); }
+		friend FArchive& operator<<(FArchive& Ar, class FVulkanShader::FSpirvContainer& SpirvContainer);
+	} SpirvContainer;
+
+	friend FArchive& operator<<(FArchive& Ar, class FVulkanShader::FSpirvContainer& SpirvContainer);
+	static FSpirvCode PatchSpirvInputAttachments(FSpirvCode& SpirvCode);
+
+protected:
 
 	FVulkanDevice*					Device;
 
@@ -205,10 +233,15 @@ public:
 
 typedef TVulkanBaseShader<FRHIVertexShader, SF_Vertex, VK_SHADER_STAGE_VERTEX_BIT>					FVulkanVertexShader;
 typedef TVulkanBaseShader<FRHIPixelShader, SF_Pixel, VK_SHADER_STAGE_FRAGMENT_BIT>					FVulkanPixelShader;
-typedef TVulkanBaseShader<FRHIHullShader, SF_Hull, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT>		FVulkanHullShader;
-typedef TVulkanBaseShader<FRHIDomainShader, SF_Domain, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT>	FVulkanDomainShader;
 typedef TVulkanBaseShader<FRHIComputeShader, SF_Compute, VK_SHADER_STAGE_COMPUTE_BIT>				FVulkanComputeShader;
 typedef TVulkanBaseShader<FRHIGeometryShader, SF_Geometry, VK_SHADER_STAGE_GEOMETRY_BIT>			FVulkanGeometryShader;
+
+#if VULKAN_RHI_RAYTRACING
+typedef TVulkanBaseShader<FRHIRayGenShader, SF_RayGen, VK_SHADER_STAGE_RAYGEN_BIT_KHR>					FVulkanRayGenShader;
+typedef TVulkanBaseShader<FRHIRayMissShader, SF_RayMiss, VK_SHADER_STAGE_MISS_BIT_KHR>					FVulkanRayMissShader;
+typedef TVulkanBaseShader<FRHIRayCallableShader, SF_RayCallable, VK_SHADER_STAGE_CALLABLE_BIT_KHR>		FVulkanRayCallableShader;
+typedef TVulkanBaseShader<FRHIRayHitGroupShader, SF_RayHitGroup, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR>	FVulkanRayHitGroupShader; // vkrt todo: How to handle VK_SHADER_STAGE_ANY_HIT_BIT_KHR?
+#endif // VULKAN_RHI_RAYTRACING
 
 class FVulkanShaderFactory
 {
@@ -249,8 +282,6 @@ public:
 		FRHIVertexDeclaration* InVertexDeclarationRHI,
 		FRHIVertexShader* InVertexShaderRHI,
 		FRHIPixelShader* InPixelShaderRHI,
-		FRHIHullShader* InHullShaderRHI,
-		FRHIDomainShader* InDomainShaderRHI,
 		FRHIGeometryShader* InGeometryShaderRHI
 	);
 
@@ -258,8 +289,6 @@ public:
 
 	FORCEINLINE FVulkanVertexShader*   GetVertexShader() const { return (FVulkanVertexShader*)CacheLink.GetVertexShader(); }
 	FORCEINLINE FVulkanPixelShader*    GetPixelShader() const { return (FVulkanPixelShader*)CacheLink.GetPixelShader(); }
-	FORCEINLINE FVulkanHullShader*     GetHullShader() const { return (FVulkanHullShader*)CacheLink.GetHullShader(); }
-	FORCEINLINE FVulkanDomainShader*   GetDomainShader() const { return (FVulkanDomainShader*)CacheLink.GetDomainShader(); }
 	FORCEINLINE FVulkanGeometryShader* GetGeometryShader() const { return (FVulkanGeometryShader*)CacheLink.GetGeometryShader(); }
 
 	const FVulkanShader* GetShader(ShaderStage::EStage Stage) const
@@ -267,10 +296,6 @@ public:
 		switch (Stage)
 		{
 		case ShaderStage::Vertex:		return GetVertexShader();
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		case ShaderStage::Hull:			return GetHullShader();
-		case ShaderStage::Domain:		return GetDomainShader();
-#endif
 		case ShaderStage::Pixel:		return GetPixelShader();
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
 		case ShaderStage::Geometry:	return GetGeometryShader();
@@ -290,6 +315,15 @@ struct FVulkanCpuReadbackBuffer
 	VkBuffer Buffer;
 	uint32 MipOffsets[MAX_TEXTURE_MIP_COUNT];
 	uint32 MipSize[MAX_TEXTURE_MIP_COUNT];
+};
+
+
+enum class EImageOwnerType : uint8
+{
+	None,
+	LocalOwner,
+	ExternalOwner,
+	Aliased
 };
 
 /** Texture/RT wrapper. */
@@ -329,12 +363,13 @@ public:
 
 	FVulkanSurface(FVulkanDevice& Device, FVulkanEvictable* Owner, VkImageViewType ResourceType, EPixelFormat Format,
 					uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize,
-					uint32 NumMips, uint32 NumSamples, ETextureCreateFlags UEFlags, ERHIAccess InResourceState, const FRHIResourceCreateInfo& CreateInfo);
+					uint32 NumMips, uint32 NumSamples, ETextureCreateFlags UEFlags, ERHIAccess InResourceState, 
+					const FRHIResourceCreateInfo& CreateInfo, const FRHITransientHeapAllocation* InTransientHeapAllocation = nullptr);
 
 	// Constructor for externally owned Image
 	FVulkanSurface(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format,
 					uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples,
-					VkImage InImage, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
+					VkImage InImage, ETextureCreateFlags UEFlags, EImageOwnerType InImageOwnerType, const FRHIResourceCreateInfo& CreateInfo);
 
 	virtual ~FVulkanSurface();
 
@@ -346,20 +381,6 @@ public:
 	void OnFullDefrag(FVulkanDevice& InDevice, FVulkanCommandListContext& Context, uint32 NewOffset);
 	void EvictSurface(FVulkanDevice& InDevice);
 
-
-#if 0
-	/**
-	 * Locks one of the texture's mip-maps.
-	 * @param ArrayIndex Index of the texture array/face in the form Index*6+Face
-	 * @return A pointer to the specified texture data.
-	 */
-	void* Lock(uint32 MipIndex, uint32 ArrayIndex, EResourceLockMode LockMode, uint32& DestStride);
-
-	/** Unlocks a previously locked mip-map.
-	 * @param ArrayIndex Index of the texture array/face in the form Index*6+Face
-	 */
-	void Unlock(uint32 MipIndex, uint32 ArrayIndex);
-#endif
 
 	/**
 	 * Returns how much memory is used by the surface
@@ -432,7 +453,12 @@ public:
 
 	inline bool IsImageOwner() const
 	{
-		return bIsImageOwner;
+		return (ImageOwnerType == EImageOwnerType::LocalOwner);
+	}
+
+	inline bool SupportsSampling() const
+	{
+		return EnumHasAllFlags(GPixelFormats[PixelFormat].Capabilities, EPixelFormatCapabilities::TextureSample);
 	}
 
 	VULKANRHI_API VkDeviceMemory GetAllocationHandle() const;
@@ -468,7 +494,6 @@ private:
 	VkImageTiling Tiling;
 	VkImageViewType	ViewType;
 
-	bool bIsImageOwner;
 	VulkanRHI::FVulkanAllocation Allocation;
 
 	uint32 NumMips;
@@ -479,6 +504,8 @@ private:
 
 	FVulkanCpuReadbackBuffer* CpuReadbackBuffer;
 	FVulkanTextureBase* OwningTexture = 0;
+
+	EImageOwnerType ImageOwnerType;
 
 	friend struct FVulkanTextureBase;
 };
@@ -514,9 +541,9 @@ struct FVulkanTextureBase : public FVulkanEvictable, public IRefCountedObject
 		return (FVulkanTextureBase*)Texture->GetTextureBaseRHI();
 	}
 
-	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags UEFlags, ERHIAccess InResourceState, const FRHIResourceCreateInfo& CreateInfo);
-	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage InImage, VkDeviceMemory InMem, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo = FRHIResourceCreateInfo());
-	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage InImage, VkDeviceMemory InMem, FSamplerYcbcrConversionInitializer& ConversionInitializer, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo = FRHIResourceCreateInfo());
+	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags UEFlags, ERHIAccess InResourceState, const FRHIResourceCreateInfo& CreateInfo, const FRHITransientHeapAllocation* InTransientHeapAllocation);
+	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage InImage, VkDeviceMemory InMem, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
+	FVulkanTextureBase(FVulkanDevice& Device, VkImageViewType ResourceType, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage InImage, VkDeviceMemory InMem, FSamplerYcbcrConversionInitializer& ConversionInitializer, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
 
 	// Aliasing constructor.
 	FVulkanTextureBase(FTextureRHIRef& SrcTextureRHI, const FVulkanTextureBase* SrcTexture, VkImageViewType ResourceType, uint32 SizeX, uint32 SizeY, uint32 sizeZ);
@@ -550,6 +577,8 @@ struct FVulkanTextureBase : public FVulkanEvictable, public IRefCountedObject
 	void AttachView(VulkanRHI::FVulkanViewBase* View);
 	void DetachView(VulkanRHI::FVulkanViewBase* View);
 
+	bool GetTextureResourceInfo(FRHIResourceInfo& OutResourceInfo) const;
+
 	virtual FRHITexture* GetRHITexture() = 0;
 private:
 	void InvalidateViews(FVulkanDevice& Device);
@@ -566,7 +595,7 @@ class FVulkanTexture2D : public FRHITexture2D, public FVulkanTextureBase
 	FName GetResourceFName(){ return GetName(); }
 	virtual FRHIResource* GetRHIResource() { return (FRHITexture2D*)this; }
 public:
-	FVulkanTexture2D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags UEFlags, ERHIAccess InResourceState, const FRHIResourceCreateInfo& CreateInfo);
+	FVulkanTexture2D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags UEFlags, ERHIAccess InResourceState, const FRHIResourceCreateInfo& CreateInfo, const FRHITransientHeapAllocation* InTransientHeapAllocation = nullptr);
 	FVulkanTexture2D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, VkImage Image, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
 	FVulkanTexture2D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 NumMips, uint32 NumSamples, VkImage Image, struct FSamplerYcbcrConversionInitializer& ConversionInitializer, ETextureCreateFlags UEFlags, const FRHIResourceCreateInfo& CreateInfo);
 
@@ -603,6 +632,13 @@ public:
 	{
 		return (void*)Surface.Image;
 	}
+
+#if RHI_ENABLE_RESOURCE_INFO
+	virtual bool GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const override final
+	{
+		return GetTextureResourceInfo(OutResourceInfo);
+	}
+#endif
 };
 
 class FVulkanTexture2DArray : public FRHITexture2DArray, public FVulkanTextureBase
@@ -610,8 +646,8 @@ class FVulkanTexture2DArray : public FRHITexture2DArray, public FVulkanTextureBa
 	FName GetResourceFName() { return GetName(); }
 public:
 	// Constructor, just calls base and Surface constructor
-	FVulkanTexture2DArray(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
-	FVulkanTexture2DArray(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage Image, ETextureCreateFlags Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
+	FVulkanTexture2DArray(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, const FRHIResourceCreateInfo& CreateInfo, const FRHITransientHeapAllocation* InTransientHeapAllocation = nullptr);
+	FVulkanTexture2DArray(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint32 NumMips, uint32 NumSamples, VkImage Image, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo);
 
 	// Aliasing constructor
 	FVulkanTexture2DArray(FTextureRHIRef& SrcTextureRHI, const FVulkanTexture2DArray* SrcTexture);
@@ -646,6 +682,13 @@ public:
 	{
 		return (void*)Surface.Image;
 	}
+
+#if RHI_ENABLE_RESOURCE_INFO
+	virtual bool GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const override final
+	{
+		return GetTextureResourceInfo(OutResourceInfo);
+	}
+#endif
 };
 
 class FVulkanTexture3D : public FRHITexture3D, public FVulkanTextureBase
@@ -653,8 +696,8 @@ class FVulkanTexture3D : public FRHITexture3D, public FVulkanTextureBase
 	FName GetResourceFName() { return GetName(); }
 public:
 	// Constructor, just calls base and Surface constructor
-	FVulkanTexture3D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
-	FVulkanTexture3D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 NumMips, VkImage Image, ETextureCreateFlags Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
+	FVulkanTexture3D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, const FRHIResourceCreateInfo& CreateInfo, const FRHITransientHeapAllocation* InTransientHeapAllocation = nullptr);
+	FVulkanTexture3D(FVulkanDevice& Device, EPixelFormat Format, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint32 NumMips, VkImage Image, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo);
 	virtual ~FVulkanTexture3D();
 
 
@@ -687,14 +730,21 @@ public:
 	{
 		return (void*)Surface.Image;
 	}
+
+#if RHI_ENABLE_RESOURCE_INFO
+	virtual bool GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const override final
+	{
+		return GetTextureResourceInfo(OutResourceInfo);
+	}
+#endif
 };
 
 class FVulkanTextureCube : public FRHITextureCube, public FVulkanTextureBase
 {
 	FName GetResourceFName() { return GetName(); }
 public:
-	FVulkanTextureCube(FVulkanDevice& Device, EPixelFormat Format, uint32 Size, bool bArray, uint32 ArraySize, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
-	FVulkanTextureCube(FVulkanDevice& Device, EPixelFormat Format, uint32 Size, bool bArray, uint32 ArraySize, uint32 NumMips, VkImage Image, ETextureCreateFlags Flags, FResourceBulkDataInterface* BulkData, const FClearValueBinding& InClearValue);
+	FVulkanTextureCube(FVulkanDevice& Device, EPixelFormat Format, uint32 Size, bool bArray, uint32 ArraySize, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, const FRHIResourceCreateInfo& CreateInfo, const FRHITransientHeapAllocation* InTransientHeapAllocation = nullptr);
+	FVulkanTextureCube(FVulkanDevice& Device, EPixelFormat Format, uint32 Size, bool bArray, uint32 ArraySize, uint32 NumMips, VkImage Image, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo);
 
 	// Aliasing constructor
 	FVulkanTextureCube(FTextureRHIRef& SrcTextureRHI, const FVulkanTextureCube* SrcTexture);
@@ -730,50 +780,13 @@ public:
 	{
 		return (void*)Surface.Image;
 	}
-};
 
-class FVulkanTextureReference : public FRHITextureReference, public FVulkanTextureBase
-{
-	FName GetResourceFName() { return GetName(); }
-public:
-	explicit FVulkanTextureReference(FVulkanDevice& Device, FLastRenderTimeContainer* InLastRenderTime)
-	:	FRHITextureReference(InLastRenderTime)
-	,	FVulkanTextureBase(Device, VK_IMAGE_VIEW_TYPE_MAX_ENUM, PF_Unknown, 0, 0, 0, 1, 1, 1, VK_NULL_HANDLE, VK_NULL_HANDLE, TexCreate_None)
-	{}
-
-	virtual FRHITexture* GetRHITexture()
+#if RHI_ENABLE_RESOURCE_INFO
+	virtual bool GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const override final
 	{
-		return this;
-	};
-
-
-	// IRefCountedObject interface.
-	virtual uint32 AddRef() const override final
-	{
-		return FRHIResource::AddRef();
+		return GetTextureResourceInfo(OutResourceInfo);
 	}
-
-	virtual uint32 Release() const override final
-	{
-		return FRHIResource::Release();
-	}
-
-	virtual uint32 GetRefCount() const override final
-	{
-		return FRHIResource::GetRefCount();
-	}
-
-	virtual void* GetTextureBaseRHI() override final
-	{
-		return GetReferencedTexture() ? GetReferencedTexture()->GetTextureBaseRHI() : nullptr;
-	}
-
-	virtual void* GetNativeResource() const
-	{
-		return (void*)Surface.Image;
-	}
-
-	void SetReferencedTexture(FRHITexture* InTexture);
+#endif
 };
 
 class FVulkanQueryPool : public VulkanRHI::FDeviceChild
@@ -970,12 +983,14 @@ public:
 struct FVulkanBufferView : public FRHIResource, public VulkanRHI::FDeviceChild
 {
 	FVulkanBufferView(FVulkanDevice* InDevice)
-		: VulkanRHI::FDeviceChild(InDevice)
+		: FRHIResource(RRT_None)
+		, VulkanRHI::FDeviceChild(InDevice)
 		, View(VK_NULL_HANDLE)
 		, ViewId(0)
 		, Flags(0)
 		, Offset(0)
 		, Size(0)
+		, bVolatile(false)
 	{
 	}
 
@@ -984,7 +999,6 @@ struct FVulkanBufferView : public FRHIResource, public VulkanRHI::FDeviceChild
 		Destroy();
 	}
 
-	void Create(FVulkanBuffer& Buffer, EPixelFormat Format, uint32 InOffset, uint32 InSize);
 	void Create(FVulkanResourceMultiBuffer* Buffer, EPixelFormat Format, uint32 InOffset, uint32 InSize);
 	void Create(VkFormat Format, FVulkanResourceMultiBuffer* Buffer, uint32 InOffset, uint32 InSize);
 	void Destroy();
@@ -994,36 +1008,8 @@ struct FVulkanBufferView : public FRHIResource, public VulkanRHI::FDeviceChild
 	VkFlags Flags;
 	uint32 Offset;
 	uint32 Size;
-};
-
-class FVulkanBuffer : public FRHIResource
-{
-public:
-	FVulkanBuffer(FVulkanDevice& Device, uint32 InSize, VkFlags InUsage, VkMemoryPropertyFlags InMemPropertyFlags, bool bAllowMultiLock, const char* File, int32 Line);
-	virtual ~FVulkanBuffer();
-
-	inline VkBuffer GetBufferHandle() const { return Buf; }
-
-	inline uint32 GetSize() const { return Size; }
-
-	void* Lock(uint32 InSize, uint32 InOffset = 0);
-
-	void Unlock();
-
-	inline VkFlags GetFlags() const { return Usage; }
-
-private:
-	FVulkanDevice& Device;
-	VkBuffer Buf;
-	VulkanRHI::FDeviceMemoryAllocation* Allocation;
-	uint32 Size;
-	VkFlags Usage;
-
-	void* BufferPtr;	
-	VkMappedMemoryRange MappedRange;
-
-	bool bAllowMultiLock;
-	int32 LockStack;
+	// Whether source buffer is volatile
+	bool bVolatile;
 };
 
 struct FVulkanRingBuffer : public FVulkanEvictable, public VulkanRHI::FDeviceChild
@@ -1091,14 +1077,6 @@ protected:
 struct FVulkanUniformBufferUploader : public VulkanRHI::FDeviceChild
 {
 public:
-	struct FUniformBufferPatchInfo
-	{
-		const class FVulkanUniformBuffer* SourceBuffer; // Todo replace it with a true buffer handle instead of pointer.
-		uint16 SourceOffsetInFloats;
-		uint16 SizeInFloats;
-		uint8* RESTRICT DestBufferAddress;
-	};
-
 	FVulkanUniformBufferUploader(FVulkanDevice* InDevice);
 	~FVulkanUniformBufferUploader();
 
@@ -1127,29 +1105,18 @@ public:
 		return CPUBuffer->GetBufferOffset();
 	}
 
-	inline TArray<FUniformBufferPatchInfo>& GetUniformBufferPatchInfo()
-	{
-		return BufferPatchInfos;
-	}
-
-	void ApplyUniformBufferPatching(bool bNeedAbort);
-	int32 UniformBufferPatchingFrameNumber;
-	bool bEnableUniformBufferPatching;
-	uint64 BeginPatchSubmitCounter;
-
 protected:
 	FVulkanRingBuffer* CPUBuffer;
-	TArray<FUniformBufferPatchInfo> BufferPatchInfos;
 	friend class FVulkanCommandListContext;
 };
 
-class FVulkanResourceMultiBuffer : public FVulkanEvictable, public VulkanRHI::FDeviceChild
+class FVulkanResourceMultiBuffer : public FRHIBuffer, public FVulkanEvictable, public VulkanRHI::FDeviceChild
 {
 	virtual void Evict(FVulkanDevice& Device);
 	virtual void Move(FVulkanDevice& Device, FVulkanCommandListContext& Context, VulkanRHI::FVulkanAllocation& NewAllocation);
 
 public:
-	FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, VkBufferUsageFlags InBufferUsageFlags, uint32 InSize, uint32 InUEUsage, FRHIResourceCreateInfo& CreateInfo, class FRHICommandListImmediate* InRHICmdList = nullptr);
+	FVulkanResourceMultiBuffer(FVulkanDevice* InDevice, uint32 InSize, EBufferUsageFlags InUEUsage, uint32 InStride, FRHIResourceCreateInfo& CreateInfo, class FRHICommandListImmediate* InRHICmdList = nullptr, const FRHITransientHeapAllocation* InTransientHeapAllocation = nullptr);
 	virtual ~FVulkanResourceMultiBuffer();
 
 	inline const VulkanRHI::FVulkanAllocation& GetCurrentAllocation() const
@@ -1205,17 +1172,15 @@ public:
 		return Current.Alloc.Size - (Current.Offset - Current.Alloc.Offset);
 	}
 
-
 	inline VkBufferUsageFlags GetBufferUsageFlags() const
 	{
 		return BufferUsageFlags;
 	}
 
-	inline uint32 GetUEUsage() const
+	inline VkIndexType GetIndexType() const
 	{
-		return BufferUsageFlags;
+		return (GetStride() == 4)? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
 	}
-
 
 	void* Lock(bool bFromRenderingThread, EResourceLockMode LockMode, uint32 Size, uint32 Offset);
 	void Unlock(bool bFromRenderingThread);
@@ -1229,12 +1194,28 @@ public:
 		Callback(TEXT("FVulkanResourceMultiBuffer"), FName(), this, 0, GetCurrentSize() * GetNumBuffers(), 1, 1, VK_FORMAT_UNDEFINED);
 	}
 
+#if VULKAN_RHI_RAYTRACING
+	VkDeviceAddress GetDeviceAddress() const;
+#endif
+
+	static VkBufferUsageFlags UEToVKBufferUsageFlags(FVulkanDevice* InDevice, EBufferUsageFlags InUEUsage, bool bZeroSize);
+
+	static inline int32 GetNumBuffersFromUsage(EBufferUsageFlags InUEUsage)
+	{
+		const bool bDynamic = EnumHasAnyFlags(InUEUsage, BUF_Dynamic);
+		return bDynamic ? NUM_BUFFERS : 1;
+	}
 
 protected:
-	uint32 UEUsage;
 	VkBufferUsageFlags BufferUsageFlags;
-	uint32 NumBuffers;
-	uint32 DynamicBufferIndex;
+	uint8 NumBuffers;
+	uint8 DynamicBufferIndex;
+	enum class ELockStatus : uint8
+	{
+		Unlocked,
+		Locked,
+		PersistentMapping,
+	} LockStatus;
 
 	enum
 	{
@@ -1257,67 +1238,16 @@ protected:
 	friend struct FRHICommandMultiBufferUnlock;
 };
 
-class FVulkanIndexBuffer : public FRHIIndexBuffer, public FVulkanResourceMultiBuffer
-{
-public:
-	FVulkanIndexBuffer(FVulkanDevice* InDevice, uint32 InStride, uint32 InSize, uint32 InUsage, FRHIResourceCreateInfo& CreateInfo, class FRHICommandListImmediate* InRHICmdList);
-
-	inline VkIndexType GetIndexType() const
-	{
-		return IndexType;
-	}
-
-	void Swap(FVulkanIndexBuffer& Other);
-
-private:
-	VkIndexType IndexType;
-};
-
-class FVulkanVertexBuffer : public FRHIVertexBuffer, public FVulkanResourceMultiBuffer
-{
-public:
-	FVulkanVertexBuffer(FVulkanDevice* InDevice, uint32 InSize, uint32 InUsage, FRHIResourceCreateInfo& CreateInfo, class FRHICommandListImmediate* InRHICmdList);
-
-	void Swap(FVulkanVertexBuffer& Other);
-};
-
 class FVulkanUniformBuffer : public FRHIUniformBuffer
 {
 public:
-	FVulkanUniformBuffer(const FRHIUniformBufferLayout& InLayout, const void* Contents, EUniformBufferUsage InUsage, EUniformBufferValidation Validation);
+	FVulkanUniformBuffer(FVulkanDevice& Device, const FRHIUniformBufferLayout* InLayout, const void* Contents, EUniformBufferUsage InUsage, EUniformBufferValidation Validation);
+	virtual ~FVulkanUniformBuffer();
 
 	const TArray<TRefCountPtr<FRHIResource>>& GetResourceTable() const { return ResourceTable; }
 
 	void UpdateResourceTable(const FRHIUniformBufferLayout& InLayout, const void* Contents, int32 ResourceNum);
 	void UpdateResourceTable(FRHIResource** Resources, int32 ResourceNum);
-
-protected:
-	TArray<TRefCountPtr<FRHIResource>> ResourceTable;
-};
-
-class FVulkanEmulatedUniformBuffer : public FVulkanUniformBuffer
-{
-public:
-	FVulkanEmulatedUniformBuffer(const FRHIUniformBufferLayout& InLayout, const void* Contents, EUniformBufferUsage InUsage, EUniformBufferValidation Validation);
-
-	TArray<uint8> ConstantData;
-
-	void UpdateConstantData(const void* Contents, int32 ContentsSize);
-
-	virtual int32 GetPatchingFrameNumber() const override { return PatchingFrameNumber; };
-	virtual void SetPatchingFrameNumber(int32 FrameNumber) override { PatchingFrameNumber = FrameNumber; };
-
-protected:
-	uint32 PatchingFrameNumber;
-};
-
-class FVulkanRealUniformBuffer : public FVulkanUniformBuffer
-{
-public:
-	FVulkanDevice* Device;
-	FVulkanRealUniformBuffer(FVulkanDevice& Device, const FRHIUniformBufferLayout& InLayout, const void* Contents, EUniformBufferUsage InUsage, EUniformBufferValidation Validation);
-	virtual ~FVulkanRealUniformBuffer();
-
 
 	inline uint32 GetOffset() const
 	{
@@ -1328,29 +1258,23 @@ public:
 	{
 		NewAlloc.Swap(Allocation);
 	}
-	VulkanRHI::FVulkanAllocation Allocation;
-};
-
-class FVulkanStructuredBuffer : public FRHIStructuredBuffer, public FVulkanResourceMultiBuffer
-{
+	
 public:
-	FVulkanStructuredBuffer(FVulkanDevice* InDevice, uint32 Stride, uint32 Size, FRHIResourceCreateInfo& CreateInfo, uint32 InUsage);
-
-	~FVulkanStructuredBuffer();
-
+	FVulkanDevice* Device;
+	VulkanRHI::FVulkanAllocation Allocation;
+	EUniformBufferUsage Usage;
+protected:
+	TArray<TRefCountPtr<FRHIResource>> ResourceTable;
+	
 };
-
-
 
 class FVulkanUnorderedAccessView : public FRHIUnorderedAccessView, public VulkanRHI::FVulkanViewBase
 {
 public:
 
-	FVulkanUnorderedAccessView(FVulkanDevice* Device, FVulkanStructuredBuffer* StructuredBuffer, bool bUseUAVCounter, bool bAppendBuffer);
-	FVulkanUnorderedAccessView(FVulkanDevice* Device, FRHITexture* TextureRHI, uint32 MipLevel);
-	FVulkanUnorderedAccessView(FVulkanDevice* Device, FVulkanVertexBuffer* VertexBuffer, EPixelFormat Format);
-	FVulkanUnorderedAccessView(FVulkanDevice* Device, FVulkanIndexBuffer* IndexBuffer, EPixelFormat Format);
-
+	FVulkanUnorderedAccessView(FVulkanDevice* Device, FVulkanResourceMultiBuffer* Buffer, bool bUseUAVCounter, bool bAppendBuffer);
+	FVulkanUnorderedAccessView(FVulkanDevice* Device, FRHITexture* TextureRHI, uint32 MipLevel, uint16 FirstArraySlice, uint16 NumArraySlices);
+	FVulkanUnorderedAccessView(FVulkanDevice* Device, FVulkanResourceMultiBuffer* Buffer, EPixelFormat Format);
 
 	~FVulkanUnorderedAccessView();
 
@@ -1359,16 +1283,15 @@ public:
 	void UpdateView();
 
 protected:
-	// the potential resources to refer to with the UAV object
-	TRefCountPtr<FVulkanStructuredBuffer> SourceStructuredBuffer;
 	// The texture that this UAV come from
 	TRefCountPtr<FRHITexture> SourceTexture;
 	FVulkanTextureView TextureView;
 	uint32 MipLevel;
+	uint16 FirstArraySlice;
+	uint16 NumArraySlices;
 
-	// The vertex buffer this UAV comes from (can be null)
-	TRefCountPtr<FVulkanVertexBuffer> SourceVertexBuffer;
-	TRefCountPtr<FVulkanIndexBuffer> SourceIndexBuffer;
+	// The buffer this UAV comes from (can be null)
+	TRefCountPtr<FVulkanResourceMultiBuffer> SourceBuffer;
 	TRefCountPtr<FVulkanBufferView> BufferView;
 	EPixelFormat BufferViewFormat;
 
@@ -1386,7 +1309,7 @@ class FVulkanShaderResourceView : public FRHIShaderResourceView, public VulkanRH
 public:
 	FVulkanShaderResourceView(FVulkanDevice* Device, FRHIResource* InRHIBuffer, FVulkanResourceMultiBuffer* InSourceBuffer, uint32 InSize, EPixelFormat InFormat, uint32 InOffset = 0);
 	FVulkanShaderResourceView(FVulkanDevice* Device, FRHITexture* InSourceTexture, const FRHITextureSRVCreateInfo& InCreateInfo);
-	FVulkanShaderResourceView(FVulkanDevice* Device, FVulkanStructuredBuffer* InStructuredBuffer, uint32 InOffset = 0);
+	FVulkanShaderResourceView(FVulkanDevice* Device, FVulkanResourceMultiBuffer* InSourceBuffer, uint32 InOffset = 0);
 
 	void Clear();
 
@@ -1400,13 +1323,13 @@ public:
 		return BufferViews[BufferIndex];
 	}
 
-	EPixelFormat BufferViewFormat;
+	EPixelFormat BufferViewFormat = PF_Unknown;
 	ERHITextureSRVOverrideSRGBType SRGBOverride = SRGBO_Default;
 
 	// The texture that this SRV come from
 	TRefCountPtr<FRHITexture> SourceTexture;
 	FVulkanTextureView TextureView;
-	FVulkanStructuredBuffer* SourceStructuredBuffer;
+	FVulkanResourceMultiBuffer* SourceStructuredBuffer = nullptr;
 	uint32 MipLevel = 0;
 	uint32 NumMips = MAX_uint32;
 	uint32 FirstArraySlice = 0;
@@ -1416,12 +1339,16 @@ public:
 
 	TArray<TRefCountPtr<FVulkanBufferView>> BufferViews;
 	uint32 BufferIndex = 0;
-	uint32 Size;
+	uint32 Size = 0;
 	uint32 Offset = 0;
 	// The buffer this SRV comes from (can be null)
-	FVulkanResourceMultiBuffer* SourceBuffer;
+	FVulkanResourceMultiBuffer* SourceBuffer = nullptr;
 	// To keep a reference
 	TRefCountPtr<FRHIResource> SourceRHIBuffer;
+
+#if VULKAN_RHI_RAYTRACING
+	VkAccelerationStructureKHR AccelerationStructureHandle = VK_NULL_HANDLE;
+#endif // VULKAN_RHI_RAYTRACING
 
 protected:
 	// Used to check on volatile buffers if a new BufferView is required
@@ -1479,33 +1406,6 @@ public:
 	// One buffer is a chunk of bytes
 	typedef TArray<uint8> FPackedBuffer;
 
-	void LazyInitSrcUniformPatchingResources()
-	{
-		PackedBufferSegmentIndices.AddDefaulted(PackedUniformBuffers.Num());
-		PackedBufferSegmentSources.AddDefaulted(PackedUniformBuffers.Num());
-		PackedBufferSegmentFrameIndex.AddDefaulted(PackedUniformBuffers.Num());
-		CopyInfoRemapping.AddZeroed(EmulatedUBsCopyInfo.Num());
-		for (int32 RangeIndex = 0; RangeIndex < EmulatedUBsCopyRanges.Num(); ++RangeIndex)
-		{
-			uint32 Range = EmulatedUBsCopyRanges[RangeIndex];
-			uint16 Start = (Range >> 16) & 0xffff;
-			uint16 Count = Range & 0xffff;
-			for (int32 Index = Start; Index < Start + Count; ++Index)
-			{
-				const CrossCompiler::FUniformBufferCopyInfo& CopyInfo = EmulatedUBsCopyInfo[Index];
-				int32 PackedUniformBufferIndex = (int32)CopyInfo.DestUBIndex;
-				check(CopyInfo.SourceUBIndex == RangeIndex);
-				CopyInfoRemapping[Index] = PackedBufferSegmentIndices[PackedUniformBufferIndex].Num();
-				PackedBufferSegmentIndices[PackedUniformBufferIndex].Push(Index);
-
-				// Initialize as 0
-				PackedBufferSegmentFrameIndex[PackedUniformBufferIndex].Push(-1);
-				PackedBufferSegmentSources[PackedUniformBufferIndex].Push(NULL);
-			}
-		}
-		bSrcUniformPatchingResourceInitialized = true;
-	}
-
 	void Init(const FVulkanShaderHeader& InCodeHeader, uint64& OutPackedUniformBufferStagingMask)
 	{
 		PackedUniformBuffers.AddDefaulted(InCodeHeader.PackedUBs.Num());
@@ -1517,7 +1417,6 @@ public:
 		OutPackedUniformBufferStagingMask = ((uint64)1 << (uint64)InCodeHeader.PackedUBs.Num()) - 1;
 		EmulatedUBsCopyInfo = InCodeHeader.EmulatedUBsCopyInfo;
 		EmulatedUBsCopyRanges = InCodeHeader.EmulatedUBCopyRanges;
-		bSrcUniformPatchingResourceInitialized = false;
 	}
 
 	inline void SetPackedGlobalParameter(uint32 BufferIndex, uint32 ByteOffset, uint32 NumBytes, const void* RESTRICT NewValue, uint64& InOutPackedUniformBufferStagingDirty)
@@ -1539,7 +1438,7 @@ public:
 	}
 
 	// Copies a 'real' constant buffer into the packed globals uniform buffer (only the used ranges)
-	inline void SetEmulatedUniformBufferIntoPacked(uint32 BindPoint, const TArray<uint8>& ConstantData, const FVulkanUniformBuffer* SrcBuffer, uint64& NEWPackedUniformBufferStagingDirty)
+	inline void SetEmulatedUniformBufferIntoPacked(uint32 BindPoint, const TArray<uint8>& ConstantData, uint64& NEWPackedUniformBufferStagingDirty)
 	{
 		// Emulated UBs. Assumes UniformBuffersCopyInfo table is sorted by CopyInfo.SourceUBIndex
 		if (BindPoint < (uint32)EmulatedUBsCopyRanges.Num())
@@ -1564,21 +1463,6 @@ public:
 				}
 				while (RawSrc != RawSrcEnd);
 				NEWPackedUniformBufferStagingDirty = NEWPackedUniformBufferStagingDirty | ((uint64)(bChanged ? 1 : 0) << (uint64)CopyInfo.DestUBIndex);
-
-				// For Non-LateLatching Flaged buffer, GetPatchingFrameNumber() == -1
-				int32 PatchingFrameNumber = SrcBuffer->GetPatchingFrameNumber();
-				if (PatchingFrameNumber > 0)
-				{
-					if (!bSrcUniformPatchingResourceInitialized)
-					{
-						LazyInitSrcUniformPatchingResources();
-					}
-					MaskPackedBufferCopyInfoSegmentSource(SrcBuffer, PatchingFrameNumber, Index, CopyInfo.DestUBIndex);
-				}
-				else if (bSrcUniformPatchingResourceInitialized)
-				{
-					MaskPackedBufferCopyInfoSegmentSource(NULL, -1, Index, CopyInfo.DestUBIndex);
-				}
 			}
 		}
 	}
@@ -1588,68 +1472,12 @@ public:
 		return PackedUniformBuffers[Index];
 	}
 
-	inline void RecordUniformBufferPatch(TArray<FVulkanUniformBufferUploader::FUniformBufferPatchInfo>& PostBindingPatches, int32 FrameNumber, int32 PackedBufferIndex, uint8* RESTRICT OffsetedCPUAddress) const
-	{
-		if (bSrcUniformPatchingResourceInitialized)
-		{
-			for (int i = 0; i < PackedBufferSegmentIndices[PackedBufferIndex].Num(); i++)
-			{
-				if (PackedBufferSegmentFrameIndex[PackedBufferIndex][i] == FrameNumber)
-				{
-					// ensure(PackedBufferSegmentSources[PackedBufferIndex][i] != NULL);
-					const CrossCompiler::FUniformBufferCopyInfo& CopyInfo = EmulatedUBsCopyInfo[PackedBufferSegmentIndices[PackedBufferIndex][i]];
-					FVulkanUniformBufferUploader::FUniformBufferPatchInfo PatchInfo;
-					PatchInfo.DestBufferAddress = OffsetedCPUAddress + CopyInfo.DestOffsetInFloats * sizeof(float);
-					PatchInfo.SizeInFloats = CopyInfo.SizeInFloats;
-					PatchInfo.SourceOffsetInFloats = CopyInfo.SourceOffsetInFloats;
-					PatchInfo.SourceBuffer = PackedBufferSegmentSources[PackedBufferIndex][i];
-					PostBindingPatches.Push(PatchInfo);
-				}
-			}
-		}
-	}
-
-	inline void MaskPackedBufferCopyInfoSegmentSource(const FVulkanUniformBuffer* SrcBuffer, const int32 PatchingFrameNumber, int EmulatedUBsCopyInfoIndex, int PackedBufferIndex)
-	{
-		int PackedSegIndex = CopyInfoRemapping[EmulatedUBsCopyInfoIndex];
-		PackedBufferSegmentFrameIndex[PackedBufferIndex][PackedSegIndex] = PatchingFrameNumber;
-		PackedBufferSegmentSources[PackedBufferIndex][PackedSegIndex] = SrcBuffer;
-
-		// Validation
-		// ensureMsgf(PackedSegIndex == PackedBufferSegmentIndices[PackedBufferIndex][PackedSegIndex], TEXT("Mismatch: PackedBufferSegmentIndices %d EmulatedUBsCopyInfoIndex %d"), PackedBufferSegmentIndices[PackedBufferIndex][PackedSegIndex], PackedSegIndex);
-	}
-
 protected:
 	TArray<FPackedBuffer>									PackedUniformBuffers;
 
 	// Copies to Shader Code Header (shaders may be deleted when we use this object again)
 	TArray<CrossCompiler::FUniformBufferCopyInfo>			EmulatedUBsCopyInfo;
 	TArray<uint32>											EmulatedUBsCopyRanges;
-
-	// Pre-built static structure, Only created in lazy-initialization
-	// Purpose: Translate EmulatedUBsCopyInfoIndex into PackedSegIndex, so given an EmulatedUBsCopyInfoIndex, we know where it goes in the PackedUniformBuffers
-	// It has the same dimension with EmulatedUBsCopyInfo array
-	// Example: if we have an CopyInfoIndex for EmulatedUBsCopyInfo[*], we can found it is corresponding segment postion 
-	// SegIndex = CopyInfoRemapping[CopyInfoIndex] in the packedUniformBuffer
-	// So  PackedBufferSegmentIndices[PackedBufferIndex][SegIndex] is pointing back to CopyInfoIndex
-	//     PackedBufferSegmentSources[PackedBufferIndex][SegIndex] is pointing to the src uniform buffer
-	//     PackedBufferSegmentFrameIndex[PackedBufferIndex][SegIndex] to the frameIndex last time latched
-	// Note: here PackedBufferIndex is the PackedUniformBuffers ( CopyInfo.DestUBIndex )
-	TArray<int>	CopyInfoRemapping;
-
-	// Pre-built static structure, Only created in lazy-initialization from shader compiler meta data
-	// Purpose: A representation of packedUnformBuffer segments, the returned value is used to index EmulatedUBsCopyInfo
-	// Example: for a given PackedUniformBufferIndex, we can iterate through all packed segments by 
-	// iterating PackedBufferSegmentIndices[PackedUniformBufferIndex][*], then
-	// retIndex = PackedBufferSegmentIndices[PackedUniformBufferIndex][*], retIndex can be used to read  EmulatedUBsCopyInfo[retIndex]
-	TArray<TArray<int>>	PackedBufferSegmentIndices;
-
-	// Dynamic: works like a dirty mask for updateDescriptorSet to detect if we need post binding patching
-	// Same dimension with PackedBufferSegmentIndices, they are PackedBuffer point of view data structure as well
-	TArray<TArray<const FVulkanUniformBuffer*>>					PackedBufferSegmentSources;
-	TArray<TArray<int32>>										PackedBufferSegmentFrameIndex;
-	bool bSrcUniformPatchingResourceInitialized = false;
-
 };
 
 class FVulkanStagingBuffer : public FRHIStagingBuffer
@@ -1715,16 +1543,6 @@ struct TVulkanResourceTraits<FRHIGeometryShader>
 	typedef FVulkanGeometryShader TConcreteType;
 };
 template<>
-struct TVulkanResourceTraits<FRHIHullShader>
-{
-	typedef FVulkanHullShader TConcreteType;
-};
-template<>
-struct TVulkanResourceTraits<FRHIDomainShader>
-{
-	typedef FVulkanDomainShader TConcreteType;
-};
-template<>
 struct TVulkanResourceTraits<FRHIPixelShader>
 {
 	typedef FVulkanPixelShader TConcreteType;
@@ -1770,19 +1588,9 @@ struct TVulkanResourceTraits<FRHIUniformBuffer>
 	typedef FVulkanUniformBuffer TConcreteType;
 };
 template<>
-struct TVulkanResourceTraits<FRHIIndexBuffer>
+struct TVulkanResourceTraits<FRHIBuffer>
 {
-	typedef FVulkanIndexBuffer TConcreteType;
-};
-template<>
-struct TVulkanResourceTraits<FRHIStructuredBuffer>
-{
-	typedef FVulkanStructuredBuffer TConcreteType;
-};
-template<>
-struct TVulkanResourceTraits<FRHIVertexBuffer>
-{
-	typedef FVulkanVertexBuffer TConcreteType;
+	typedef FVulkanResourceMultiBuffer TConcreteType;
 };
 template<>
 struct TVulkanResourceTraits<FRHIShaderResourceView>
@@ -1845,3 +1653,18 @@ static FORCEINLINE typename TVulkanResourceTraits<TRHIType>::TConcreteType* Reso
 {
 	return static_cast<const typename TVulkanResourceTraits<TRHIType>::TConcreteType*>(Resource);
 }
+
+#if VULKAN_RHI_RAYTRACING
+class FVulkanRayTracingScene;
+template<>
+struct TVulkanResourceTraits<FRHIRayTracingScene>
+{
+	typedef FVulkanRayTracingScene TConcreteType;
+};
+class FVulkanRayTracingGeometry;
+template<>
+struct TVulkanResourceTraits<FRHIRayTracingGeometry>
+{
+	typedef FVulkanRayTracingGeometry TConcreteType;
+};
+#endif // VULKAN_RHI_RAYTRACING

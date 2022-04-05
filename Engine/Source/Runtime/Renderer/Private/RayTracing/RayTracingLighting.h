@@ -17,10 +17,6 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FRaytracingLightDataPacked, RENDERER_API)
 	SHADER_PARAMETER(float, IESLightProfileInvCount)
 	SHADER_PARAMETER(uint32, CellCount)
 	SHADER_PARAMETER(float, CellScale)
-	SHADER_PARAMETER_TEXTURE(Texture2D, LTCMatTexture)
-	SHADER_PARAMETER_SAMPLER(SamplerState, LTCMatSampler)
-	SHADER_PARAMETER_TEXTURE(Texture2D, LTCAmpTexture)
-	SHADER_PARAMETER_SAMPLER(SamplerState, LTCAmpSampler)
 	SHADER_PARAMETER_TEXTURE(Texture2D, RectLightTexture0)
 	SHADER_PARAMETER_TEXTURE(Texture2D, RectLightTexture1)
 	SHADER_PARAMETER_TEXTURE(Texture2D, RectLightTexture2)
@@ -70,7 +66,7 @@ static_assert(sizeof(FRTLightingData) == 128, "Unexpected FRTLightingData size."
 
 FRayTracingLightData CreateRayTracingLightData(
 	FRHICommandListImmediate& RHICmdList,
-	const TSparseArray<FLightSceneInfoCompact>& Lights,
+	const TSparseArray<FLightSceneInfoCompact, TAlignedSparseArrayAllocator<alignof(FLightSceneInfoCompact)>>& Lights,
 	const FViewInfo& View, EUniformBufferUsage Usage);
 
 #endif

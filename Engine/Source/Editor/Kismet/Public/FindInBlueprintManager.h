@@ -610,6 +610,9 @@ public:
 	/** Returns TRUE if we're still inside the initial asset discovery and registration stage */
 	bool IsAssetDiscoveryInProgress() const;
 
+	/** Returns TRUE if there are one or more active asynchronous search queries */
+	bool IsAsyncSearchQueryInProgress() const;
+
 	/** Returns a weak reference to the widget that initiated the current caching operation */
 	TWeakPtr<SFindInBlueprints> GetSourceCachingWidget() const { return SourceCachingWidget; }
 
@@ -681,8 +684,8 @@ private:
 	/** Callback from Kismet when a Blueprint is unloaded */
 	void OnBlueprintUnloaded(class UBlueprint* InBlueprint);
 
-	/** Callback hook from the Hot Reload manager that indicates that a module has been hot-reloaded */
-	void OnHotReload(bool bWasTriggeredAutomatically);
+	/** Callback hook from the Reload manager that indicates that a module has been reloaded */
+	void OnReloadComplete(EReloadCompleteReason Reason);
 
 	/** Returns a copy of the search data that's cached at the given index. Will return invalid (empty) search data if the index is out of range */
 	FSearchData GetSearchDataForIndex(int32 CacheIndex);
@@ -795,7 +798,7 @@ private:
 	EFiBCacheOpType CurrentCacheOpType;
 
 	/** Mapping between a class name and its UClass instance - used for faster look up in FFindInBlueprintSearchManager::OnAssetAdded */
-	TMap<FName, const UClass*> CachedAssetClasses;
+	TMap<FName, TWeakObjectPtr<const UClass>> CachedAssetClasses;
 
 	/** The tab identifier/instance name for global find results */
 	FName GlobalFindResultsTabIDs[MAX_GLOBAL_FIND_RESULTS];

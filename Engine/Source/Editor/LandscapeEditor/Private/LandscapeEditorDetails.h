@@ -18,6 +18,7 @@ class FLandscapeEditorDetailCustomization_MiscTools;
 class FLandscapeEditorDetailCustomization_NewLandscape;
 class FLandscapeEditorDetailCustomization_ResizeLandscape;
 class FLandscapeEditorDetailCustomization_TargetLayers;
+class FLandscapeEditorDetailCustomization_ImportExport;
 class FUICommandList;
 class IDetailLayoutBuilder;
 class ULandscapeInfo;
@@ -43,8 +44,6 @@ public:
 	/** IDetailCustomization interface */
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
-	void CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder, const TSharedRef<FLandscapeToolKit> LandscapeToolkit);
-
 protected:
 	static FText GetLocalizedName(FString Name);
 
@@ -59,15 +58,21 @@ protected:
 	bool GetToolSelectorIsVisible() const;
 	EVisibility GetToolSelectorVisibility() const;
 
+	FName GetCurrentBrushFName() const;
 	FText GetCurrentBrushName() const;
 	FSlateIcon GetCurrentBrushIcon() const;
 	TSharedRef<SWidget> GetBrushSelector();
 	bool GetBrushSelectorIsVisible() const;
+	EVisibility GetBrushSelectorVisibility() const;
 
+	FName GetCurrentBrushFalloffFName() const;
 	FText GetCurrentBrushFalloffName() const;
 	FSlateIcon GetCurrentBrushFalloffIcon() const;
 	TSharedRef<SWidget> GetBrushFalloffSelector();
 	bool GetBrushFalloffSelectorIsVisible() const;
+	EVisibility GetBrushFalloffSelectorVisibility() const;
+
+	void SetBrushCommand(FName);
 
 	bool IsBrushSetEnabled() const;
 
@@ -75,6 +80,7 @@ protected:
 
 	TSharedPtr<FLandscapeEditorDetailCustomization_NewLandscape> Customization_NewLandscape;
 	TSharedPtr<FLandscapeEditorDetailCustomization_ResizeLandscape> Customization_ResizeLandscape;
+	TSharedPtr<FLandscapeEditorDetailCustomization_ImportExport> Customization_ImportExport;
 	TSharedPtr<FLandscapeEditorDetailCustomization_CopyPaste> Customization_CopyPaste;
 	TSharedPtr<FLandscapeEditorDetailCustomization_MiscTools> Customization_MiscTools;
 	TSharedPtr<FLandscapeEditorDetailCustomization_AlphaBrush> Customization_AlphaBrush;

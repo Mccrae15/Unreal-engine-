@@ -11,6 +11,7 @@
 #include "Engine/MeshMerging.h"
 #include "Engine/StaticMesh.h"
 #include "PerPlatformProperties.h"
+#include "PerQualityLevelProperties.h"
 
 struct FMeshDescription;
 class UStaticMeshSocket;
@@ -57,12 +58,13 @@ struct FExistingStaticMeshData
 	UBodySetup* ExistingBodySetup;
 
 	// A mapping of vertex positions to their color in the existing static mesh
-	TMap<FVector, FColor>		ExistingVertexColorData;
+	TMap<FVector3f, FColor>		ExistingVertexColorData;
 
 	float						LpvBiasMultiplier;
 	bool						bHasNavigationData;
 	FName						LODGroup;
 	FPerPlatformInt				MinLOD;
+	FPerQualityLevelInt			QualityLevelMinLOD;
 
 	int32						ImportVersion;
 
@@ -76,8 +78,8 @@ struct FExistingStaticMeshData
 	float						ExistingDistanceFieldSelfShadowBias;
 	bool						ExistingSupportUniformlyDistributedSampling;
 	bool						ExistingAllowCpuAccess;
-	FVector						ExistingPositiveBoundsExtension;
-	FVector						ExistingNegativeBoundsExtension;
+	FVector3f					ExistingPositiveBoundsExtension;
+	FVector3f					ExistingNegativeBoundsExtension;
 
 	UStaticMesh::FOnMeshChanged	ExistingOnMeshChanged;
 	UStaticMesh* ExistingComplexCollisionMesh = nullptr;
@@ -87,7 +89,7 @@ struct FExistingStaticMeshData
 
 namespace StaticMeshImportUtils
 {
-	UNREALED_API bool DecomposeUCXMesh(const TArray<FVector>& CollisionVertices, const TArray<int32>& CollisionFaceIdx, UBodySetup* BodySetup);
+	UNREALED_API bool DecomposeUCXMesh(const TArray<FVector3f>& CollisionVertices, const TArray<int32>& CollisionFaceIdx, UBodySetup* BodySetup);
 
 	/**
 	 *	Function for adding a box collision primitive to the supplied collision geometry based on the mesh of the box.
@@ -111,12 +113,12 @@ namespace StaticMeshImportUtils
 	 *	It checks that the AABB is square, and that all vertices are either at the
 	 *	center, or within 5% of the radius distance away.
 	 */
-	UNREALED_API bool AddSphereGeomFromVerts(const TArray<FVector>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName);
+	UNREALED_API bool AddSphereGeomFromVerts(const TArray<FVector3f>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName);
 
-	UNREALED_API bool AddCapsuleGeomFromVerts(const TArray<FVector>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName);
+	UNREALED_API bool AddCapsuleGeomFromVerts(const TArray<FVector3f>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName);
 
 	/** Utility for adding one convex hull from the given verts */
-	UNREALED_API bool AddConvexGeomFromVertices(const TArray<FVector>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName);
+	UNREALED_API bool AddConvexGeomFromVertices(const TArray<FVector3f>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName);
 
 	UNREALED_API TSharedPtr<FExistingStaticMeshData> SaveExistingStaticMeshData(UStaticMesh* ExistingMesh, UnFbx::FBXImportOptions* ImportOptions, int32 LodIndex);
 

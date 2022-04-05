@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayTagsEditorModule.h"
+
 #include "Misc/Paths.h"
 #include "PropertyEditorModule.h"
 #include "Factories/Factory.h"
@@ -28,11 +29,12 @@
 #include "ISourceControlModule.h"
 #include "SourceControlHelpers.h"
 #include "HAL/PlatformFile.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Stats/StatsMisc.h"
 #include "UObject/UObjectHash.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/FileHelper.h"
+#include "UObject/ObjectSaveContext.h"
 
 #define LOCTEXT_NAMESPACE "GameplayTagEditor"
 
@@ -90,7 +92,7 @@ public:
 			GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.AddRaw(this, &FGameplayTagsEditorModule::OnObjectReimported);
 			FEditorDelegates::OnEditAssetIdentifiers.AddRaw(this, &FGameplayTagsEditorModule::OnEditGameplayTag);
 			IGameplayTagsModule::OnTagSettingsChanged.AddRaw(this, &FGameplayTagsEditorModule::OnEditorSettingsChanged);
-			UPackage::PackageSavedEvent.AddRaw(this, &FGameplayTagsEditorModule::OnPackageSaved);
+			UPackage::PackageSavedWithContextEvent.AddRaw(this, &FGameplayTagsEditorModule::OnPackageSaved);
 		}
 	}
 
@@ -124,7 +126,7 @@ public:
 		}
 		FEditorDelegates::OnEditAssetIdentifiers.RemoveAll(this);
 		IGameplayTagsModule::OnTagSettingsChanged.RemoveAll(this);
-		UPackage::PackageSavedEvent.RemoveAll(this);
+		UPackage::PackageSavedWithContextEvent.RemoveAll(this);
 	}
 
 	void OnEditorSettingsChanged()
@@ -145,9 +147,9 @@ public:
 		}
 	}
 
-	void OnPackageSaved(const FString& PackageFileName, UObject* PackageObj)
+	void OnPackageSaved(const FString& PackageFileName, UPackage* Package, FObjectPostSaveContext ObjectSaveContext)
 	{
-		if (GIsEditor && !IsRunningCommandlet())
+		if (GIsEditor && !ObjectSaveContext.IsProceduralSave())
 		{
 			UGameplayTagsManager& Manager = UGameplayTagsManager::Get();
 
@@ -155,7 +157,7 @@ public:
 
 			TArray<UObject*> Objects;
 			const bool bIncludeNestedObjects = false;
-			GetObjectsWithPackage(Cast<UPackage>(PackageObj), Objects, bIncludeNestedObjects);
+			GetObjectsWithPackage(Package, Objects, bIncludeNestedObjects);
 			for (UObject* Entry : Objects)
 			{
 				if (UDataTable* DataTable = Cast<UDataTable>(Entry))
@@ -246,7 +248,7 @@ public:
 
 		// Write out gameplaytags.ini
 		GameplayTagsUpdateSourceControl(Settings->GetDefaultConfigFilename());
-		Settings->UpdateDefaultConfigFile();
+		Settings->TryUpdateDefaultConfigFile();
 
 		GConfig->LoadFile(Settings->GetDefaultConfigFilename());
 		
@@ -262,7 +264,7 @@ public:
 			if (TagList)
 			{
 				GameplayTagsUpdateSourceControl(TagList->ConfigFileName);
-				TagList->UpdateDefaultConfigFile(TagList->ConfigFileName);
+				TagList->TryUpdateDefaultConfigFile(TagList->ConfigFileName);
 
 				// Reload off disk
 				GConfig->LoadFile(TagList->ConfigFileName);
@@ -316,7 +318,7 @@ public:
 				Settings->GameplayTagRedirects.RemoveAt(i);
 
 				GameplayTagsUpdateSourceControl(Settings->GetDefaultConfigFilename());
-				Settings->UpdateDefaultConfigFile();
+				Settings->TryUpdateDefaultConfigFile();
 				GConfig->LoadFile(Settings->GetDefaultConfigFilename());
 
 				Manager.EditorRefreshGameplayTagTree();
@@ -484,7 +486,7 @@ public:
 
 			// Check source control before and after writing, to make sure it gets created or checked out
 
-			TagListObj->UpdateDefaultConfigFile(ConfigFileName);
+			TagListObj->TryUpdateDefaultConfigFile(ConfigFileName);
 			GameplayTagsUpdateSourceControl(ConfigFileName);
 			GConfig->LoadFile(ConfigFileName);
 		}
@@ -608,7 +610,7 @@ public:
 				if (TagSource->SourceRestrictedTagList->RestrictedGameplayTagList[i].Tag == TagName)
 				{
 					TagSource->SourceRestrictedTagList->RestrictedGameplayTagList.RemoveAt(i);
-					TagSource->SourceRestrictedTagList->UpdateDefaultConfigFile(ConfigFileName);
+					TagSource->SourceRestrictedTagList->TryUpdateDefaultConfigFile(ConfigFileName);
 					bRemoved = true;
 				}
 			}
@@ -617,7 +619,7 @@ public:
 				if (TagSource->SourceTagList->GameplayTagList[i].Tag == TagName)
 				{
 					TagSource->SourceTagList->GameplayTagList.RemoveAt(i);
-					TagSource->SourceTagList->UpdateDefaultConfigFile(ConfigFileName);
+					TagSource->SourceTagList->TryUpdateDefaultConfigFile(ConfigFileName);
 					bRemoved = true;
 				}
 			}
@@ -705,7 +707,7 @@ public:
 				{
 					// Check source control before and after writing, to make sure it gets created or checked out
 					GameplayTagsUpdateSourceControl(ConfigFileName);
-					TagListObj->UpdateDefaultConfigFile(ConfigFileName);
+					TagListObj->TryUpdateDefaultConfigFile(ConfigFileName);
 					GameplayTagsUpdateSourceControl(ConfigFileName);
 
 					GConfig->LoadFile(ConfigFileName);
@@ -760,7 +762,7 @@ public:
 					{
 						TagList->GameplayTagList.RemoveAt(i);
 
-						TagList->UpdateDefaultConfigFile(TagList->ConfigFileName);
+						TagList->TryUpdateDefaultConfigFile(TagList->ConfigFileName);
 						GameplayTagsUpdateSourceControl(TagList->ConfigFileName);
 						GConfig->LoadFile(TagList->ConfigFileName);
 
@@ -782,7 +784,7 @@ public:
 		Settings->GameplayTagRedirects.AddUnique(Redirect);
 
 		GameplayTagsUpdateSourceControl(Settings->GetDefaultConfigFilename());
-		Settings->UpdateDefaultConfigFile();
+		Settings->TryUpdateDefaultConfigFile();
 		GConfig->LoadFile(Settings->GetDefaultConfigFilename());
 
 		ShowNotification(FText::Format(LOCTEXT("AddTagRedirect", "Renamed tag {0} to {1}"), FText::FromString(TagToRename), FText::FromString(TagToRenameTo)), 3.0f);

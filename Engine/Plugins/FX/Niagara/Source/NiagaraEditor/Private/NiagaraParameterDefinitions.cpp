@@ -2,10 +2,12 @@
 
 #include "NiagaraParameterDefinitions.h"
 
+#include "ScopedTransaction.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraScriptVariable.h"
 
+#define LOCTEXT_NAMESPACE "NiagaraParameterDefinitions"
 
 UNiagaraParameterDefinitions::UNiagaraParameterDefinitions(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -31,35 +33,7 @@ void UNiagaraParameterDefinitions::PostLoad()
 	Super::PostLoad();
 	if (HasAnyFlags(RF_ClassDefaultObject) == false && GetPackage() != GetTransientPackage())
 	{
-		TArray<UNiagaraParameterDefinitions*>& ReservedDefinitions = FNiagaraEditorModule::Get().GetReservedDefinitions();
-		ReservedDefinitions.AddUnique(this);
-
-		bool bMakeUniqueId = false;
-		if (UniqueId.IsValid() == false)
-		{
-			bMakeUniqueId = true;
-		}
-		else
-		{
-			for (UNiagaraParameterDefinitions* ReservedDefinition : ReservedDefinitions)
-			{
-				if (ReservedDefinition == nullptr || ReservedDefinition == this)
-				{
-					continue;
-				}
-				if (ReservedDefinition->GetDefinitionsUniqueId() == UniqueId)
-				{
-					bMakeUniqueId = true;
-					break;
-				}
-			}
-		}
-
-		if(bMakeUniqueId)
-		{
-			UniqueId = FGuid::NewGuid();
-		}
-
+		FNiagaraEditorModule::Get().EnsureReservedDefinitionUnique(UniqueId);
 		SynchronizeWithSubscribedParameterDefinitions();
 	}
 }
@@ -72,13 +46,36 @@ void UNiagaraParameterDefinitions::PostEditChangeProperty(struct FPropertyChange
 
 void UNiagaraParameterDefinitions::AddParameter(const FNiagaraVariable& NewVariable)
 {
+	FScopedTransaction AddTransaction(LOCTEXT("AddParameter", "Add Parameter"));
 	Modify();
-	UNiagaraScriptVariable*& NewScriptVariable = ScriptVariables.Add_GetRef(NewObject<UNiagaraScriptVariable>(this, FName(), RF_Transactional));
+	TObjectPtr<UNiagaraScriptVariable>& NewScriptVariable = ScriptVariables.Add_GetRef(NewObject<UNiagaraScriptVariable>(this, FName(), RF_Transactional));
 	NewScriptVariable->Init(NewVariable, FNiagaraVariableMetaData());
 	NewScriptVariable->SetIsStaticSwitch(false);
 	NewScriptVariable->SetIsSubscribedToParameterDefinitions(true);
-	FNiagaraEditorModule::Get().GetReservedParametersManager()->AddReservedParameter(NewVariable, this);
 	NotifyParameterDefinitionsChanged();
+}
+
+bool UNiagaraParameterDefinitions::HasParameter(const FNiagaraVariable& Variable)
+{
+	TObjectPtr<UNiagaraScriptVariable>* NewScriptVariable = ScriptVariables.FindByPredicate([Variable](TObjectPtr<UNiagaraScriptVariable> ScriptVariable)
+	{
+		return ScriptVariable->Variable == Variable;
+	});
+
+	return NewScriptVariable != nullptr;
+}
+
+void UNiagaraParameterDefinitions::FindOrAddParameter(const FNiagaraVariable& Variable)
+{
+	TObjectPtr<UNiagaraScriptVariable>* NewScriptVariable = ScriptVariables.FindByPredicate([Variable](TObjectPtr<UNiagaraScriptVariable> ScriptVariable)
+	{
+		return ScriptVariable->Variable == Variable;
+	});
+
+	if(NewScriptVariable == nullptr)
+	{
+		AddParameter(Variable);
+	}
 }
 
 void UNiagaraParameterDefinitions::RemoveParameter(const FNiagaraVariable& VariableToRemove)
@@ -91,14 +88,13 @@ void UNiagaraParameterDefinitions::RemoveParameter(const FNiagaraVariable& Varia
 		// Make sure to remove any links to binding name subscriptions to external parameter libraries.
 		UnsubscribeBindingNameFromExternalParameterDefinitions(RemovedScriptVarGuid);
 		ScriptVariables.RemoveAtSwap(Idx, 1, false);
-		FNiagaraEditorModule::Get().GetReservedParametersManager()->RemoveReservedParameter(VariableToRemove, this);
 		NotifyParameterDefinitionsChanged();
 	}
 }
 
 void UNiagaraParameterDefinitions::RenameParameter(const FNiagaraVariable& VariableToRename, const FName NewName)
 {
-	if (UNiagaraScriptVariable** ScriptVariablePtr = ScriptVariables.FindByPredicate([&VariableToRename](const UNiagaraScriptVariable* ScriptVariable) { return ScriptVariable->Variable == VariableToRename; }))
+	if (TObjectPtr<UNiagaraScriptVariable>* ScriptVariablePtr = ScriptVariables.FindByPredicate([&VariableToRename](const UNiagaraScriptVariable* ScriptVariable) { return ScriptVariable->Variable == VariableToRename; }))
 	{
 		const FNiagaraVariable OldVariable = VariableToRename;
 		Modify();
@@ -106,9 +102,6 @@ void UNiagaraParameterDefinitions::RenameParameter(const FNiagaraVariable& Varia
 		ScriptVariable->Modify();
 		ScriptVariable->Variable.SetName(NewName);
 		ScriptVariable->UpdateChangeId();
-		UNiagaraReservedParametersManager* ReservedParametersManager = FNiagaraEditorModule::Get().GetReservedParametersManager();
-		ReservedParametersManager->RemoveReservedParameter(OldVariable, this);
-		ReservedParametersManager->AddReservedParameter(ScriptVariable->Variable, this);
 		NotifyParameterDefinitionsChanged();
 	}
 }
@@ -141,7 +134,7 @@ TSet<FGuid> UNiagaraParameterDefinitions::GetParameterIds() const
 
 UNiagaraScriptVariable* UNiagaraParameterDefinitions::GetScriptVariable(const FNiagaraVariable& Var)
 {
-	if (UNiagaraScriptVariable* const* ScriptVarPtr = ScriptVariables.FindByPredicate([Var](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Variable == Var; }))
+	if (TObjectPtr<UNiagaraScriptVariable> const* ScriptVarPtr = ScriptVariables.FindByPredicate([Var](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Variable == Var; }))
 	{
 		return *ScriptVarPtr;
 	}
@@ -150,7 +143,7 @@ UNiagaraScriptVariable* UNiagaraParameterDefinitions::GetScriptVariable(const FN
 
 UNiagaraScriptVariable* UNiagaraParameterDefinitions::GetScriptVariable(const FGuid& ScriptVarId)
 {
-	if (UNiagaraScriptVariable* const* ScriptVarPtr = ScriptVariables.FindByPredicate([ScriptVarId](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Metadata.GetVariableGuid() == ScriptVarId; }))
+	if (TObjectPtr<UNiagaraScriptVariable> const* ScriptVarPtr = ScriptVariables.FindByPredicate([ScriptVarId](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Metadata.GetVariableGuid() == ScriptVarId; }))
 	{
 		return *ScriptVarPtr;
 	}
@@ -213,7 +206,7 @@ void UNiagaraParameterDefinitions::SynchronizeWithSubscribedParameterDefinitions
 				const FName& ExternalScriptVarName = ExternalScriptVar->Variable.GetName();
 				for (const FGuid& InternalScriptVarId : BindingNameSubscription.InternalScriptVarIds)
 				{
-					if (UNiagaraScriptVariable* const* ScriptVarPtr = ScriptVariables.FindByPredicate([&InternalScriptVarId](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Metadata.GetVariableGuid() == InternalScriptVarId; }))
+					if (TObjectPtr<UNiagaraScriptVariable> const* ScriptVarPtr = ScriptVariables.FindByPredicate([&InternalScriptVarId](const UNiagaraScriptVariable* ScriptVar) { return ScriptVar->Metadata.GetVariableGuid() == InternalScriptVarId; }))
 					{
 						UNiagaraScriptVariable* ScriptVar = *ScriptVarPtr;
 						if (ScriptVar->GetChangeId() != ExternalScriptVarChangeId)
@@ -285,3 +278,5 @@ void UNiagaraParameterDefinitions::NotifyParameterDefinitionsChanged()
 {
 	OnParameterDefinitionsChangedDelegate.Broadcast();
 }
+
+#undef LOCTEXT_NAMESPACE

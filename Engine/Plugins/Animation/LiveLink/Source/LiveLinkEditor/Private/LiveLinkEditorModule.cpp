@@ -63,6 +63,7 @@ namespace LiveLinkEditorModuleUtils
 }
 
 #define IMAGE_PLUGIN_BRUSH( RelativePath, ... ) FSlateImageBrush( LiveLinkEditorModuleUtils::InPluginContent( RelativePath, ".png" ), __VA_ARGS__ )
+#define IMAGE_PLUGIN_BRUSH_SVG( RelativePath, ... ) FSlateVectorImageBrush( LiveLinkEditorModuleUtils::InPluginContent( RelativePath, ".svg" ), __VA_ARGS__ )
 
 
 class FLiveLinkEditorModule : public IModuleInterface
@@ -96,15 +97,15 @@ public:
 		StyleSet->SetCoreContentRoot(FPaths::EngineContentDir() / TEXT("Slate"));
 
 		StyleSet->Set("LiveLinkClient.Common.Icon", new IMAGE_PLUGIN_BRUSH(TEXT("LiveLink_40x"), Icon40x40));
-		StyleSet->Set("LiveLinkClient.Common.Icon.Small", new IMAGE_PLUGIN_BRUSH(TEXT("LiveLink_16x"), Icon16x16));
+		StyleSet->Set("LiveLinkClient.Common.Icon.Small", new IMAGE_PLUGIN_BRUSH_SVG("Starship/LiveLink", Icon16x16));
 
-		StyleSet->Set("ClassIcon.LiveLinkPreset", new IMAGE_PLUGIN_BRUSH("LiveLink_16x", Icon16x16));
-		StyleSet->Set("ClassIcon.LiveLinkFrameInterpolationProcessor", new IMAGE_PLUGIN_BRUSH("LiveLink_16x", Icon16x16));
-		StyleSet->Set("ClassIcon.LiveLinkFramePreProcessor", new IMAGE_PLUGIN_BRUSH("LiveLink_16x", Icon16x16));
-		StyleSet->Set("ClassIcon.LiveLinkFrameTranslator", new IMAGE_PLUGIN_BRUSH("LiveLink_16x", Icon16x16));
-		StyleSet->Set("ClassIcon.LiveLinkPreset", new IMAGE_PLUGIN_BRUSH("LiveLink_16x", Icon16x16));
-		StyleSet->Set("ClassIcon.LiveLinkRole", new IMAGE_PLUGIN_BRUSH("LiveLink_16x", Icon16x16));
-		StyleSet->Set("ClassIcon.LiveLinkVirtualSubject", new IMAGE_PLUGIN_BRUSH("LiveLink_16x", Icon16x16));
+		StyleSet->Set("ClassIcon.LiveLinkPreset",                      new IMAGE_PLUGIN_BRUSH_SVG("Starship/LiveLink", Icon16x16));
+		StyleSet->Set("ClassIcon.LiveLinkFrameInterpolationProcessor", new IMAGE_PLUGIN_BRUSH_SVG("Starship/LiveLink", Icon16x16));
+		StyleSet->Set("ClassIcon.LiveLinkFramePreProcessor",           new IMAGE_PLUGIN_BRUSH_SVG("Starship/LiveLink", Icon16x16));
+		StyleSet->Set("ClassIcon.LiveLinkFrameTranslator",             new IMAGE_PLUGIN_BRUSH_SVG("Starship/LiveLink", Icon16x16));
+		StyleSet->Set("ClassIcon.LiveLinkPreset",                      new IMAGE_PLUGIN_BRUSH_SVG("Starship/LiveLink", Icon16x16));
+		StyleSet->Set("ClassIcon.LiveLinkRole",                        new IMAGE_PLUGIN_BRUSH_SVG("Starship/LiveLink", Icon16x16));
+		StyleSet->Set("ClassIcon.LiveLinkVirtualSubject",              new IMAGE_PLUGIN_BRUSH_SVG("Starship/LiveLink", Icon16x16));
 
 		StyleSet->Set("ClassThumbnail.LiveLinkPreset", new IMAGE_PLUGIN_BRUSH("LiveLink_40x", Icon40x40));
 
@@ -124,6 +125,17 @@ public:
 			.SetMenuBorderBrush(FSlateBoxBrush(StyleSet->RootToCoreContentDir(TEXT("Old/Menu_Background.png")), FMargin(8.0f / 64.0f)))
 			.SetMenuBorderPadding(FMargin(0.0f));
 		StyleSet->Set("ComboButton", ComboButton);
+
+		FEditableTextBoxStyle EditableTextStyle = FEditableTextBoxStyle()
+			.SetFont(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+			.SetBackgroundImageNormal(FSlateNoResource())
+			.SetBackgroundImageHovered(FSlateNoResource())
+			.SetBackgroundImageFocused(FSlateNoResource())
+			.SetBackgroundImageReadOnly(FSlateNoResource())
+			.SetBackgroundColor(FLinearColor::Transparent)
+			.SetForegroundColor(FSlateColor::UseForeground());
+
+		StyleSet->Set("EditableTextBox", EditableTextStyle);
 
 		FSlateStyleRegistry::RegisterSlateStyle(*StyleSet.Get());
 
@@ -166,11 +178,8 @@ public:
 	{
 		FLiveLinkClient* Client = &IModularFeatures::Get().GetModularFeature<FLiveLinkClient>(FLiveLinkClient::ModularFeatureName);
 
-		const FSlateBrush* IconBrush = InStyleSet->GetBrush("LiveLinkClient.Common.Icon.Small");
-
 		const TSharedRef<SDockTab> MajorTab =
 			SNew(SDockTab)
-			.Icon(IconBrush)
 			.TabRole(ETabRole::NomadTab);
 
 		MajorTab->SetContent(SNew(SLiveLinkClientPanel, Client));
@@ -190,10 +199,8 @@ private:
 		FTabSpawnerEntry& SpawnerEntry = FGlobalTabmanager::Get()->RegisterNomadTabSpawner(LiveLinkClientTabName, FOnSpawnTab::CreateStatic(&FLiveLinkEditorModule::SpawnLiveLinkTab, StyleSet))
 			.SetDisplayName(LOCTEXT("LiveLinkTabTitle", "Live Link"))
 			.SetTooltipText(LOCTEXT("LiveLinkTabTooltipText", "Open the Live Link streaming manager tab."))
+			.SetGroup(WorkspaceMenu::GetMenuStructure().GetLevelEditorVirtualProductionCategory())
 			.SetIcon(FSlateIcon(StyleSet->GetStyleSetName(), "LiveLinkClient.Common.Icon.Small"));
-
-		const IWorkspaceMenuStructure& MenuStructure = WorkspaceMenu::GetMenuStructure();
-		SpawnerEntry.SetGroup(MenuStructure.GetLevelEditorCategory());
 
 		bHasRegisteredTabSpawners = true;
 	}

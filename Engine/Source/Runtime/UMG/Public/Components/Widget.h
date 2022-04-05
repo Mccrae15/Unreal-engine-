@@ -23,6 +23,8 @@
 
 #include "Widget.generated.h"
 
+#define UE_HAS_WIDGET_GENERATED_BY_CLASS (!UE_BUILD_SHIPPING || WITH_EDITOR)
+
 class ULocalPlayer;
 class SObjectWidget;
 class UPanelSlot;
@@ -250,7 +252,7 @@ public:
 	 * The parent slot of the UWidget.  Allows us to easily inline edit the layout controlling this widget.
 	 */
 	UPROPERTY(Instanced, TextExportTransient, EditAnywhere, BlueprintReadOnly, Category=Layout, meta=(ShowOnlyInnerProperties))
-	UPanelSlot* Slot;
+	TObjectPtr<UPanelSlot> Slot;
 
 	/** A bindable delegate for bIsEnabled */
 	UPROPERTY()
@@ -266,7 +268,7 @@ public:
 
 	/** Tooltip widget to show when the user hovers over the widget with the mouse */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Behavior", AdvancedDisplay)
-	UWidget* ToolTipWidget;
+	TObjectPtr<UWidget> ToolTipWidget;
 
 	/** A bindable delegate for ToolTipWidget */
 	UPROPERTY()
@@ -312,6 +314,10 @@ public:
 	/**  */
 	UPROPERTY(EditAnywhere, Category="Behavior", meta=(InlineEditConditionToggle))
 	uint8 bOverride_Cursor : 1;
+
+	/** Allows you to set a new flow direction */
+	UPROPERTY(EditAnywhere, Category = "Localization")
+	EFlowDirectionPreference FlowDirectionPreference;
 
 #if WITH_EDITORONLY_DATA
 	// These editor-only properties exist for two reasons:
@@ -362,7 +368,7 @@ public:
 private:
 	/** A custom set of accessibility rules for this widget. If null, default rules for the widget are used. */
 	UPROPERTY(Instanced)
-	USlateAccessibleWidgetData* AccessibleWidgetData;
+	TObjectPtr<USlateAccessibleWidgetData> AccessibleWidgetData;
 
 protected:
 
@@ -420,11 +426,7 @@ public:
 	 * can occur between widgets.
 	 */
 	UPROPERTY(Instanced, EditAnywhere, BlueprintReadOnly, Category="Navigation")
-	class UWidgetNavigation* Navigation;
-
-	/** Allows you to set a new flow direction */
-	UPROPERTY(EditAnywhere, Category = "Localization")
-	EFlowDirectionPreference FlowDirectionPreference;
+	TObjectPtr<class UWidgetNavigation> Navigation;
 
 #if WITH_EDITORONLY_DATA
 
@@ -451,7 +453,7 @@ public:
 
 #endif
 
-#if !UE_BUILD_SHIPPING
+#if UE_HAS_WIDGET_GENERATED_BY_CLASS
 	/** Stores a reference to the class responsible for this widgets construction. */
 	TWeakObjectPtr<UClass> WidgetGeneratedByClass;
 #endif
@@ -892,7 +894,11 @@ public:
 	// Begin UObject
 	virtual UWorld* GetWorld() const override;
 	virtual void FinishDestroy() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	// End UObject
 
 	FORCEINLINE bool CanSafelyRouteEvent()
@@ -932,10 +938,6 @@ public:
 	 * default setup that we don't want to be UObject Defaults.
 	 */
 	virtual void OnCreationFromPalette() { }
-
-	/** Gets the editor icon */
-	UE_DEPRECATED(4.12, "GetEditorIcon is deprecated. Please define widget icons in your style set in the form ClassIcon.MyWidget, and register your style through FClassIconFinder::(Un)RegisterIconSource")
-	virtual const FSlateBrush* GetEditorIcon();
 
 	/** Allows general fixups and connections only used at editor time. */
 	virtual void ConnectEditorData() { }
@@ -980,6 +982,8 @@ protected:
 	// This is an implementation detail that allows us to show and hide the widget in the designer
 	// regardless of the actual visibility state set by the user.
 	EVisibility GetVisibilityInDesigner() const;
+
+	bool IsEditorWidget() const;
 #endif
 
 	virtual void OnBindingChanged(const FName& Property);
@@ -993,16 +997,6 @@ protected:
 	/** Function called after the underlying SWidget is constructed. */
 	virtual void OnWidgetRebuilt();
 	
-#if WITH_EDITOR
-	/** Utility method for building a design time wrapper widget. */
-	UE_DEPRECATED(4.17, "Don't call this function in RebuildWidget any more.  Override RebuildDesignWidget, and build the wrapper there; widgets that derive from Panel already do this.  If you need to recreate the dashed outline you can use CreateDesignerOutline inside RebuildDesignWidget.")
-	TSharedRef<SWidget> BuildDesignTimeWidget(TSharedRef<SWidget> WrapWidget) { return CreateDesignerOutline(WrapWidget); }
-#else
-	/** Just returns the incoming widget in non-editor builds. */
-	UE_DEPRECATED(4.17, "Don't call this function in RebuildWidget any more.  Override RebuildDesignWidget, and build the wrapper there; widgets that derive from Panel already do this.  If you need to recreate the dashed outline you can use CreateDesignerOutline inside RebuildDesignWidget.")
-	FORCEINLINE TSharedRef<SWidget> BuildDesignTimeWidget(TSharedRef<SWidget> WrapWidget) { return WrapWidget; }
-#endif
-
 #if WITH_EDITOR
 	virtual TSharedRef<SWidget> RebuildDesignWidget(TSharedRef<SWidget> Content);
 
@@ -1052,7 +1046,7 @@ protected:
 
 	/** Native property bindings. */
 	UPROPERTY(Transient)
-	TArray<UPropertyBinding*> NativeBindings;
+	TArray<TObjectPtr<UPropertyBinding>> NativeBindings;
 
 	static TArray<TSubclassOf<UPropertyBinding>> BinderClasses;
 

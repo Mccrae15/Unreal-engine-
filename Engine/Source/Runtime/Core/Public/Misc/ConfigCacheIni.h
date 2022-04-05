@@ -18,6 +18,7 @@
 #include "Delegates/Delegate.h"
 #include "Math/Vector.h"
 #include "Math/Rotator.h"
+#include "Misc/AccessDetection.h"
 #include "Misc/Paths.h"
 #include "Serialization/StructuredArchive.h"
 
@@ -26,6 +27,41 @@ CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogConfig, Log, All);
 // Server builds should be tweakable even in Shipping
 #define ALLOW_INI_OVERRIDE_FROM_COMMANDLINE			(UE_SERVER || !(UE_BUILD_SHIPPING))
 #define CONFIG_REMEMBER_ACCESS_PATTERN (WITH_EDITOR || 0)
+
+
+///////////////////////////////////////////////////////////////////////////////
+//
+// This is the master list of known ini files that are used and processed 
+// on all platforms (specifically for runtime/binary speedups. Other, editor-
+// specific inis, or non-hierarchical ini files will still work with the 
+// old system, but they won't have any optimizations applied
+//
+// These should be listed in the order of highest to lowest use, for optimization
+//
+///////////////////////////////////////////////////////////////////////////////
+
+#define ENUMERATE_KNOWN_INI_FILES(op) \
+	op(Engine) \
+	op(Game) \
+	op(Input) \
+	op(DeviceProfiles) \
+	op(GameUserSettings) \
+	op(Scalability) \
+	op(RuntimeOptions) \
+	op(InstallBundle) \
+	op(Hardware) \
+	op(GameplayTags)
+
+
+#define KNOWN_INI_ENUM(IniName) IniName,
+enum class EKnownIniFile : uint8
+{
+	// make an enum entry for each known ini above
+	ENUMERATE_KNOWN_INI_FILES(KNOWN_INI_ENUM)
+	
+	// conventient counter for the above list
+	NumKnownFiles,
+};
 
 namespace UE
 {
@@ -37,6 +73,7 @@ struct FAccessor;
 }
 }
 }
+
 
 struct FConfigValue
 {
@@ -114,7 +151,8 @@ public:
 
 	// Returns the ini setting with any macros expanded out
 	const FString& GetValue() const 
-	{ 
+	{
+		UE::AccessDetection::ReportAccess(UE::AccessDetection::EType::Ini);
 #if CONFIG_REMEMBER_ACCESS_PATTERN 
 		bRead = true; 
 #endif
@@ -123,7 +161,8 @@ public:
 
 	// Returns the original ini setting without macro expansion
 	const FString& GetSavedValue() const 
-	{ 
+	{
+		UE::AccessDetection::ReportAccess(UE::AccessDetection::EType::Ini);
 #if CONFIG_REMEMBER_ACCESS_PATTERN 
 		bRead = true; 
 #endif
@@ -139,11 +178,6 @@ public:
 		bRead = InBRead;
 	}
 #endif
-	UE_DEPRECATED(4.12, "Please switch to explicitly doing a GetValue() or GetSavedValue()")
-	operator const FString& () const { return GetValue(); }
-
-	UE_DEPRECATED(4.12, "Please switch to explicitly doing a GetValue() or GetSavedValue()")
-	const TCHAR* operator*() const { return *GetValue(); }
 
 	bool operator==(const FConfigValue& Other) const { return (SavedValue.Compare(Other.SavedValue) == 0); }
 	bool operator!=(const FConfigValue& Other) const { return !(FConfigValue::operator==(Other)); }
@@ -367,6 +401,7 @@ class FConfigFile : public TMap<FString,FConfigSection>
 public:
 	bool Dirty;
 	bool NoSave;
+	bool bHasPlatformName = false;
 
 	/** The name of this config file */	
 	FName Name;
@@ -384,13 +419,15 @@ public:
 	/** Key to the cache to speed up ini parsing */
 	FString CacheKey;
 
+	FString PlatformName;
+
 #if ALLOW_INI_OVERRIDE_FROM_COMMANDLINE
 	/** The collection of overrides which stemmed from the commandline */
 	TArray<FConfigCommandlineOverride> CommandlineOptions;
 #endif // ALLOW_INI_OVERRIDE_FROM_COMMANDLINE
 	
 	CORE_API FConfigFile();
-	FConfigFile( int32 ) {}	// @todo UE4 DLL: Workaround for instantiated TMap template during DLLExport (TMap::FindRef)
+	FConfigFile( int32 ) {}	// @todo UE-DLL: Workaround for instantiated TMap template during DLLExport (TMap::FindRef)
 	CORE_API ~FConfigFile();
 	
 	// looks for a section by name, and creates an empty one if it can't be found
@@ -403,10 +440,22 @@ public:
 	CORE_API void CombineFromBuffer(const FString& Buffer);
 	CORE_API void Read( const FString& Filename );
 
+	/** Whether to write a temp file then move it to it's destination when saving. */
+	CORE_API static bool WriteTempFileThenMove();
+
 	/** Write this ConfigFile to the given Filename, constructed the text from the config sections in *this, prepended by the optional PrefixText */
 	CORE_API bool Write( const FString& Filename, bool bDoRemoteWrite=true, const FString& PrefixText=FString());
 
-	/** Write a ConfigFile to the ginve Filename, constructed from the given SectionTexts, in the given order, with sections in *this overriding sections in SectionTexts
+	/** Write this ConfigFile to the given string, constructed the text from the config sections in *this, prepended by the optional PrefixText 
+	 * @param SimulatedFilename - If writing a default hierarchal ini, can be used to correctly deduce position in the hierarchy
+	 */
+	CORE_API void WriteToString(FString& InOutText, const FString& SimulatedFilename = FString(), const FString& PrefixText = FString());
+
+private:
+	/** Determine if writing a default hierarchal ini, and deduce position in the hierarchy */
+	bool IsADefaultIniWrite(const FString& Filename, int32& OutIniCombineThreshold) const;
+
+	/** Write a ConfigFile to the given Filename, constructed from the given SectionTexts, in the given order, with sections in *this overriding sections in SectionTexts
 	 * @param Filename - The file to write to
 	 * @param bDoRemoteWrite - If true, also write the file to FRemoteConfig::Get()
 	 * @param InOutSectionTexts - A map from section name to existing text for that section; text does not include the name of the section.
@@ -418,13 +467,31 @@ public:
 	 *  Duplicate entries are ignored; the first found index is used.
 	 * @return TRUE if the write was successful
 	 */
-	CORE_API bool Write(const FString& Filename, bool bDoRemoteWrite, TMap<FString, FString>& InOutSectionTexts, const TArray<FString>& InSectionOrder);
+	bool WriteInternal(const FString& Filename, bool bDoRemoteWrite, TMap<FString, FString>& InOutSectionTexts, const TArray<FString>& InSectionOrder);
+
+	/** Write a ConfigFile to InOutText, constructed from the given SectionTexts, in the given order, with sections in *this overriding sections in SectionTexts
+	 * @param InOutText - The string to write to
+	 * @param bIsADefaultIniWrite - If true, force all properties to be written
+	 * @param IniCombineThreshold - Cutoff level for combining ini (to prevent applying changes from the same ini that we're writing)
+	 * @param InOutSectionTexts - A map from section name to existing text for that section; text does not include the name of the section.
+	 *  Entries in the TMap that also exist in *this will be updated.
+	 *  If the empty string is present, it will be written out first (it is interpreted as a prefix before the first section)
+	 * @param InSectionOrder - List of section names in the order in which each section should be written to disk, from e.g. the existing file.
+	 *  Any section in this array that is not found in InOutSectionTexts will be ignored.
+	 *  Any section in InOutSectionTexts that is not in this array will be appended to the end.
+	 *  Duplicate entries are ignored; the first found index is used.
+	 * @return TRUE if the write was successful
+	 */
+	void WriteToStringInternal(FString& InOutText, bool bIsADefaultIniWrite, int32 IniCombineThreshold, TMap<FString, FString>& InOutSectionTexts, const TArray<FString>& InSectionOrder);
+
+public:
 	CORE_API void Dump(FOutputDevice& Ar);
 
 	CORE_API bool GetString( const TCHAR* Section, const TCHAR* Key, FString& Value ) const;
 	CORE_API bool GetText( const TCHAR* Section, const TCHAR* Key, FText& Value ) const;
 	CORE_API bool GetInt(const TCHAR* Section, const TCHAR* Key, int32& Value) const;
 	CORE_API bool GetFloat(const TCHAR* Section, const TCHAR* Key, float& Value) const;
+	CORE_API bool GetDouble(const TCHAR* Section, const TCHAR* Key, double& Value) const;
 	CORE_API bool GetInt64( const TCHAR* Section, const TCHAR* Key, int64& Value ) const;
 	CORE_API bool GetBool( const TCHAR* Section, const TCHAR* Key, bool& Value ) const;
 	CORE_API int32 GetArray(const TCHAR* Section, const TCHAR* Key, TArray<FString>& Value) const;
@@ -446,6 +513,10 @@ public:
 	{
 		return GetFloat(Section, Key, Value);
 	}
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, double& Value) const
+	{
+		return GetDouble(Section, Key, Value);
+	}
 	bool GetValue(const TCHAR* Section, const TCHAR* Key, int64& Value) const
 	{
 		return GetInt64(Section, Key, Value);
@@ -459,9 +530,12 @@ public:
 		return GetArray(Section, Key, Value);
 	}
 
-	CORE_API void SetString( const TCHAR* Section, const TCHAR* Key, const TCHAR* Value );
-	CORE_API void SetText( const TCHAR* Section, const TCHAR* Key, const FText& Value );
-	CORE_API void SetInt64( const TCHAR* Section, const TCHAR* Key, const int64 Value );
+	CORE_API void SetString(const TCHAR* Section, const TCHAR* Key, const TCHAR* Value);
+	CORE_API void SetText(const TCHAR* Section, const TCHAR* Key, const FText& Value);
+	CORE_API void SetFloat(const TCHAR* Section, const TCHAR* Key, float Value);
+	CORE_API void SetDouble(const TCHAR* Section, const TCHAR* Key, double Value);
+	CORE_API void SetBool(const TCHAR* Section, const TCHAR* Key, bool Value);
+	CORE_API void SetInt64(const TCHAR* Section, const TCHAR* Key, const int64 Value);
 	CORE_API void SetArray(const TCHAR* Section, const TCHAR* Key, const TArray<FString>& Value);
 	
 	/**
@@ -470,7 +544,7 @@ public:
 	 * @param Filename Name of the .ini file the contents came from
 	 * @param Contents Contents of the .ini file
 	 */
-	CORE_API void ProcessInputFileContents(const FString& Contents);
+	CORE_API void ProcessInputFileContents(FStringView Contents);
 
 
 	/** Adds any properties that exist in InSourceFile that this config file is missing */
@@ -518,8 +592,11 @@ public:
 	/** Checks the command line for any overridden config file settings */
 	CORE_API static bool OverrideFileFromCommandline(FString& Filename);
 
-	/** Appends a new INI file to the SourceIniHierarchy and combines it */
-	CORE_API void AddDynamicLayerToHeirarchy(const FString& Filename);
+	/** Appends a new INI file to the SourceIniHierarchy and combines it with the current contents */
+	CORE_API void AddDynamicLayerToHierarchy(const FString& Filename);
+
+	UE_DEPRECATED(5.0, "Call AddDynamicLayerToHierarchy. You also may need to call GetConfigFilename to get the right FConfigFile")
+	CORE_API void AddDynamicLayerToHeirarchy(const FString& Filename) { AddDynamicLayerToHierarchy(Filename); }
 
 	friend FArchive& operator<<(FArchive& Ar, FConfigFile& ConfigFile);
 private:
@@ -574,9 +651,26 @@ enum class EConfigCacheType : uint8
 };
 
 // Set of all cached config files.
-class CORE_API FConfigCacheIni : public TMap<FString,FConfigFile>
+class CORE_API FConfigCacheIni : private TMap<FString,FConfigFile>
 {
 public:
+
+	static void SetIniCacheSet(const TSet<FString>* InIniCacheSet)
+	{
+		IniCacheSet = InIniCacheSet;
+	}
+
+	static const TSet<FString>* GetIniCacheSet()
+	{
+		return IniCacheSet;
+	}
+
+private:
+
+	static const TSet<FString>* IniCacheSet;
+	
+public:
+	
 	// Basic functions.
 	FConfigCacheIni(EConfigCacheType Type);
 
@@ -648,9 +742,23 @@ public:
 	*/
 	virtual void Parse1ToNSectionOfNames(const TCHAR* Section, const TCHAR* KeyOne, const TCHAR* KeyN, TMap<FName, TArray<FName> >& OutMap, const FString& Filename);
 
-	/** Finds Config file based on the final, generated ini name */
-	FConfigFile* FindConfigFile( const FString& Filename );
-	FConfigFile* Find( const FString& InFilename, bool CreateIfNotFound );
+	/**
+	 * Finds the in-memory config file for a config cache filename.
+	 *
+	 * @param A known key like GEngineIni, or the return value of GetConfigFilename
+	 *
+	 * @return The existing config file or null if it does not exist in memory
+	 */
+	FConfigFile* FindConfigFile(const FString& Filename);
+
+	/**
+	 * Finds, loads, or creates the in-memory config file for a config cache filename.
+	 * 
+	 * @param A known key like GEngineIni, or the return value of GetConfigFilename
+	 * 
+	 * @return A new or existing config file
+	 */
+	FConfigFile* Find(const FString& InFilename);
 
 	/**
 	 * Reports whether an FConfigFile* is pointing to a config file inside of this
@@ -659,8 +767,23 @@ public:
 	 */
 	bool ContainsConfigFile(const FConfigFile* ConfigFile) const;
 
+	UE_DEPRECATED(5.0, "CreateIfNotFound is deprecated, please use the overload without this parameter or FindConfigFile")
+	FConfigFile* Find(const FString& Filename, bool CreateIfNotFound);
+
 	/** Finds Config file that matches the base name such as "Engine" */
 	FConfigFile* FindConfigFileWithBaseName(FName BaseName);
+
+	using Super = TMap<FString, FConfigFile>;
+	FConfigFile& Add(const FString& Filename, const FConfigFile& File)
+	{
+		return Super::Add(Filename, File);
+	}
+	int32 Remove(const FString& Filename)
+	{
+		return Super::Remove(Filename);
+	}
+	TArray<FString> GetFilenames();
+
 
 	void Flush( bool Read, const FString& Filename=TEXT("") );
 
@@ -683,6 +806,16 @@ public:
 	bool RemoveKey( const TCHAR* Section, const TCHAR* Key, const FString& Filename );
 	bool EmptySection( const TCHAR* Section, const FString& Filename );
 	bool EmptySectionsMatchingString( const TCHAR* SectionString, const FString& Filename );
+
+	/**
+	 * For a base ini name, gets the config cache filename key that is used by other functions like Find.
+	 * This will be the base name for known configs like Engine and the destination filename for others.
+	 *
+	 * @param IniBaseName Base name of the .ini (Engine, Game, CustomSystem)
+	 *
+	 * @return Filename key used by other cache functions
+	 */
+	FString GetConfigFilename(const TCHAR* BaseIniName);
 
 	/**
 	 * Retrieve a list of all of the config files stored in the cache
@@ -832,6 +965,32 @@ public:
 		const FString&	Filename
 	);
 
+	/* Generic versions for use with templates */
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, FString& Value, const FString& Filename)
+	{
+		return GetString(Section, Key, Value, Filename);
+	}
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, FText& Value, const FString& Filename)
+	{
+		return GetText(Section, Key, Value, Filename);
+	}
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, int32& Value, const FString& Filename)
+	{
+		return GetInt(Section, Key, Value, Filename);
+	}
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, float& Value, const FString& Filename)
+	{
+		return GetFloat(Section, Key, Value, Filename);
+	}
+	bool GetValue(const TCHAR* Section, const TCHAR* Key, bool& Value, const FString& Filename)
+	{
+		return GetBool(Section, Key, Value, Filename);
+	}
+	int32 GetValue(const TCHAR* Section, const TCHAR* Key, TArray<FString>& Value, const FString& Filename)
+	{
+		return GetArray(Section, Key, Value, Filename);
+	}
+
 	void SetInt
 	(
 		const TCHAR*		Section,
@@ -923,6 +1082,13 @@ public:
 	static void InitializeConfigSystem();
 
 	/**
+	 * Returns the Custom Config string, which if set will load additional config files from Config/Custom/{CustomConfig}/DefaultX.ini to allow different types of builds.
+	 * It can be set from a game Target.cs file with CustomConfig = "Name".
+	 * Or in development, it can be overridden with a -CustomConfig=Name command line parameter.
+	 */
+	static const FString& GetCustomConfigString();
+
+	/**
 	 * Calculates the name of a dest (generated) .ini file for a given base (ie Engine, Game, etc)
 	 *
 	 * @param IniBaseName Base name of the .ini (Engine, Game)
@@ -1001,38 +1167,75 @@ public:
 	void Serialize(FArchive& Ar);
 
 
-	struct FConfigNamesForAllPlatforms
+	struct FKnownConfigFiles
 	{
-		FString EngineIni;
-		FString GameIni;
-		FString InputIni;
-		FString ScalabilityIni;
-		FString HardwareIni;
-		FString RuntimeOptionsIni;
-		FString InstallBundleIni;
-		FString DeviceProfilesIni;
-		FString GameUserSettingsIni;
-		FString GameplayTagsIni;
+		FKnownConfigFiles();
 
-		friend FArchive& operator<<(FArchive& Ar, FConfigNamesForAllPlatforms& Names)
+		// Write out this for binary config serialization
+		friend FArchive& operator<<(FArchive& Ar, FKnownConfigFiles& Names);
+
+		// setup GEngineIni based on this structure's values
+		void SetGlobalIniStringsFromMembers();
+
+		// given an name ("Engine") return the FConfigFile for it
+		const FConfigFile* GetFile(FName Name);
+		// given an name ("Engine") return the modifiable FConfigFile for it
+		FConfigFile* GetMutableFile(FName Name);
+
+		// get the disk-based filename for the given known ini name
+		const FString& GetFilename(FName Name);
+
+
+		// create the list of members for the known inis (Engine, Game, etc) See the top of this file for the list
+		struct FKnownConfigFile
 		{
-			return Ar << Names.EngineIni << Names.GameIni << Names.InputIni << Names.ScalabilityIni << Names.HardwareIni <<
-				Names.RuntimeOptionsIni << Names.InstallBundleIni << Names.DeviceProfilesIni << Names.GameUserSettingsIni <<
-				Names.GameplayTagsIni;
-		}
+			FName IniName;
+			FString IniPath;
+			FConfigFile IniFile;
+		};
+
+		// array of all known filesd
+		FKnownConfigFile Files[(uint8)EKnownIniFile::NumKnownFiles];
 	};
 
 	/**
-	 * Create a temporary Config system for a target platform, and save it to a file
+	 * Load the standard (used on all platforms) ini files, like Engine, Input, etc
+	 *
+	 * @param PlatformName Ini name of the platform this is loadenig for (or nullptr for current platform)
+	 * @param bDefaultEngineIniRequired True if the engine ini is required
+	 *
+	 * return True if the engine ini was loaded
 	 */
-	void InitializePlatformConfigSystem(const TCHAR* PlatformName, FConfigNamesForAllPlatforms& FinalConfigFilenames);
+	bool InitializeKnownConfigFiles(const TCHAR* PlatformName, bool bDefaultEngineIniRequired);
+
+	/**
+	 * Returns true if the given name is one of the known configs, where the matching G****Ini property is going to match the 
+	 * base name ("Engine" returns true, which means GEngineIni's value is just "Engine")
+	 */
+	bool IsKnownConfigName(FName ConfigName);
 
 	/**
 	 * Create GConfig from a saved file
 	 */
 	static bool CreateGConfigFromSaved(const TCHAR* Filename);
 
+	/**
+	 * Retrieve the fully processed ini system for another platform. The editor will start loading these 
+	 * in the background on startup
+	 */
+	static FConfigCacheIni* ForPlatform(FName PlatformName);
+
+	/**
+	 * Wipe all cached platform configs. Next ForPlatform call will load on-demand the platform configs
+	 */
+	static void ClearOtherPlatformConfigs();
+
 private:
+#if WITH_EDITOR
+	/** We only auto-initialize other platform configs in the editor to not slow down programs like ShaderCOmpileWorker */
+	static void AsyncInitializeConfigForPlatforms();
+#endif
+
 	/** Serialize a bootstrapping state into or from an archive */
 	void SerializeStateForBootstrap_Impl(FArchive& Ar);
 
@@ -1044,6 +1247,9 @@ private:
 	
 	/** The type of the cache (basically, do we call Flush in the destructor) */
 	EConfigCacheType Type;
+
+	/** The filenames for the known files in this config */
+	FKnownConfigFiles KnownFiles;
 };
 
 UE_DEPRECATED(4.24, "This functionality to generate Scalability@Level section string has been moved to Scalability.cpp. Explictly construct section you need manually.")
@@ -1102,3 +1308,8 @@ CORE_API void DumpRecordedConfigReadsFromIni();
  * Helper function to clean up config read history
  */
 CORE_API void DeleteRecordedConfigReadsFromIni();
+
+/**
+ * Helper function to deal with "True","False","Yes","No","On","Off"
+ */
+CORE_API const TCHAR* ConvertValueFromHumanFriendlyValue(const TCHAR* Value);

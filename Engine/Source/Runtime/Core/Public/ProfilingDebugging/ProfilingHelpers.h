@@ -21,6 +21,9 @@ enum EStreamingStatus
 	LEVEL_MakingVisible,
 	LEVEL_Visible,
 	LEVEL_Preloading,
+	LEVEL_FailedToLoad,
+	LEVEL_MakingInvisible,
+	LEVEL_StreamingStatusCount
 };
 
 

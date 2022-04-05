@@ -18,7 +18,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogEdGraph, Log, All);
 void FGraphReference::PostSerialize(const FArchive& Ar)
 {
 #if WITH_EDITORONLY_DATA
-	if (Ar.UE4Ver() >= VER_UE4_K2NODE_REFERENCEGUIDS)
+	if (Ar.UEVer() >= VER_UE4_K2NODE_REFERENCEGUIDS)
 	{
 		// Because the macro instance could have been saved with a GUID that was allocated 
 		// but the macro graph never actually saved with that value we are forced to make 
@@ -82,9 +82,9 @@ UEdGraph::UEdGraph(const FObjectInitializer& ObjectInitializer)
 	bAllowDeletion = true;
 }
 
+#if WITH_EDITORONLY_DATA
 void UEdGraph::BuildSubobjectMapping(UObject* OtherObject, TMap<UObject*, UObject*>& ObjectMapping) const
 {
-#if WITH_EDITORONLY_DATA
 	UEdGraph* OtherGraph = CastChecked<UEdGraph>(OtherObject);
 
 	auto FindMatchingNode = [](UEdGraph* InGraphToSearch, UEdGraphNode* InNodeToFind) -> UEdGraphNode*
@@ -131,12 +131,10 @@ void UEdGraph::BuildSubobjectMapping(UObject* OtherObject, TMap<UObject*, UObjec
 			ObjectMapping.Emplace(GraphNode, OtherGraphNode);
 		}
 	}
-#endif // WITH_EDITORONLY_DATA
 
 	Super::BuildSubobjectMapping(OtherObject, ObjectMapping);
 }
 
-#if WITH_EDITORONLY_DATA
 void UEdGraph::PostInitProperties()
 {
 	Super::PostInitProperties();
@@ -352,6 +350,26 @@ void UEdGraph::GetAllChildrenGraphs(TArray<UEdGraph*>& Graphs) const
 		}
 	}
 #endif // WITH_EDITORONLY_DATA
+}
+
+UEdGraph* UEdGraph::GetOuterGraph(UObject* Obj)
+{
+	if (Obj)
+	{
+		UObject* OuterObj = Obj->GetOuter();
+		if (OuterObj)
+		{
+			if (OuterObj->IsA(UEdGraph::StaticClass()))
+			{
+				return Cast<UEdGraph>(OuterObj);
+			}
+			else
+			{
+				return GetOuterGraph(OuterObj);
+			}
+		}
+	}
+	return nullptr;
 }
 
 FVector2D UEdGraph::GetGoodPlaceForNewNode()

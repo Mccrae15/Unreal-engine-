@@ -66,12 +66,9 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessDeferredShadingPath(const FM
 
 	const FVertexFactory* VertexFactory = MeshBatch.VertexFactory;
 	const bool bRenderSkylight = false;
-	const bool bRenderAtmosphericFog = false;
 
 	TMeshProcessorShaders<
 		TBasePassVertexShaderPolicyParamType<LightMapPolicyType>,
-		FBaseHS,
-		FBaseDS,
 		TBasePassPixelShaderPolicyParamType<LightMapPolicyType>> BasePassShaders;
 
 	if (!GetBasePassShaders<LightMapPolicyType>(
@@ -79,13 +76,10 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessDeferredShadingPath(const FM
 		VertexFactory->GetType(),
 		NoLightmapPolicy,
 		FeatureLevel,
-		bRenderAtmosphericFog,
 		bRenderSkylight,
 		false,
-		BasePassShaders.HullShader,
-		BasePassShaders.DomainShader,
-		BasePassShaders.VertexShader,
-		BasePassShaders.PixelShader
+		&BasePassShaders.VertexShader,
+		&BasePassShaders.PixelShader
 		))
 	{
 		return false;
@@ -136,8 +130,6 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessMobileShadingPath(const FMes
 
 	TMeshProcessorShaders<
 		TMobileBasePassVSPolicyParamType<FUniformLightMapPolicy>,
-		FBaseHS,
-		FBaseDS,
 		TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>> BasePassShaders;
 	if (!MobileBasePass::GetShaders(
 		NoLightmapPolicy.GetIndirectPolicy(),
@@ -162,7 +154,7 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessMobileShadingPath(const FMes
 	ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
 	ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
 	
-	TMobileBasePassShaderElementData<LightMapPolicyType> ShaderElementData(nullptr);
+	TMobileBasePassShaderElementData<LightMapPolicyType> ShaderElementData(nullptr, false);
 	ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId, false);
 
 	const FMeshDrawCommandSortKey SortKey = CalculateMeshStaticSortKey(BasePassShaders.VertexShader, BasePassShaders.PixelShader);

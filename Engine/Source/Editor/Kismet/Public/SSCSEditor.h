@@ -672,8 +672,8 @@ private:
 	bool bAllowRename;
 	const UClass* CachedFilterType;
 	TArray<FString> CachedFilterTerms;
-	TSharedPtr<class FSCSEditorTreeNodeSeparator> SceneComponentSeparatorNodePtr;
-	TSharedPtr<class FSCSEditorTreeNodeSeparator> NonSceneComponentSeparatorNodePtr;
+	TWeakPtr<class FSCSEditorTreeNodeSeparator> SceneComponentSeparatorNodePtr;
+	TWeakPtr<class FSCSEditorTreeNodeSeparator> NonSceneComponentSeparatorNodePtr;
 };
 
 class KISMET_API FSCSEditorTreeNodeChildActor : public FSCSEditorTreeNodeActorBase
@@ -825,12 +825,19 @@ private:
 	 */
 	FText GetComponentAddSourceToolTipText() const;
 
-	/**
+/**
 	 * Retrieves tooltip text for the specified Native Component's underlying Name
 	 *
 	 * @returns An FText object containing the Component's Name
 	 */
 	FText GetNativeComponentNameToolTipText() const;
+
+	/**
+	 * Retrieves a tooltip text describing if the component is marked Editor only or not
+	 *
+	 * @returns An FText object containing a description of if the component is marked Editor only or not
+	 */
+	FText GetComponentEditorOnlyTooltipText() const;
 
 public:
 	/** Pointer back to owning SCSEditor 2 tool */
@@ -970,6 +977,8 @@ namespace EComponentEditorMode
 	};
 };
 
+class UE_DEPRECATED(5.0, "SSCSEditor has been deprecated, use a child class of SSubobjectEditor instead.") SSCSEditor;
+
 class KISMET_API SSCSEditor : public SCompoundWidget
 {
 public:
@@ -1001,6 +1010,7 @@ public:
 		SLATE_EVENT(FOnSelectionUpdated, OnSelectionUpdated)
 		SLATE_EVENT(FOnItemDoubleClicked, OnItemDoubleClicked)
 		SLATE_EVENT(FOnHighlightPropertyInDetailsView, OnHighlightPropertyInDetailsView)
+		SLATE_EVENT(FSimpleDelegate, OnObjectReplaced)
 
 	SLATE_END_ARGS()
 
@@ -1250,6 +1260,9 @@ public:
 	/** Called at the end of each frame. */
 	void OnPostTick(float);
 
+	/** Return the button widgets that can add components or create/edit blueprints */
+	TSharedPtr<SWidget> GetToolButtonsBox();
+
 	/** Sets UI customizations of this SCSEditor. */
 	void SetUICustomization(TSharedPtr<ISCSEditorUICustomization> InUICustomization);
 
@@ -1292,10 +1305,10 @@ protected:
 	void OnObjectsReplaced(const TMap<UObject*, UObject*>& OldToNewInstanceMap);
 
 	/** Helper method to update component pointers held by the given actor node's subtree */
-	void ReplaceComponentReferencesInTree(FSCSEditorActorNodePtrType InActorNode, const TMap<UObject*, UObject*>& OldToNewInstanceMap);
+	void ReplaceComponentReferencesInTree(FSCSEditorActorNodePtrType InActorNode, const TMap<UObject*, UObject*>& OldToNewInstanceMap, bool& OutHasChanges);
 
 	/** Update component pointers held by tree nodes if components have been replaced following construction script execution */
-	void ReplaceComponentReferencesInTree(const TArray<FSCSEditorTreeNodePtrType>& Nodes, const TMap<UObject*, UObject*>& OldToNewInstanceMap);
+	void ReplaceComponentReferencesInTree(const TArray<FSCSEditorTreeNodePtrType>& Nodes, const TMap<UObject*, UObject*>& OldToNewInstanceMap, bool& OutHasChanges);
 
 	/**
 	 * Function to create events for the current selection
@@ -1463,6 +1476,9 @@ public:
 	/** Delegate to invoke when the given property should be highlighted in the details view (e.g. diff). */
 	FOnHighlightPropertyInDetailsView OnHighlightPropertyInDetailsView;
 
+	/** Delegate to invoke when objects within the SCS tree are replaced (eg, via re-instancing from a BP compile) */
+	FSimpleDelegate OnObjectReplaced;
+
 	/** Returns the Actor context for which we are viewing/editing the SCS.  Can return null.  Should not be cached as it may change from frame to frame. */
 	class AActor* GetActorContext() const;
 
@@ -1491,9 +1507,11 @@ private:
 	/** The filter box that handles filtering for the tree. */
 	TSharedPtr< SSearchBox > FilterBox;
 
+	/** The tools buttons box **/
+	TSharedPtr<SHorizontalBox> ButtonBox;
+
 	/** SCSEditor UI customizations */
 	TSharedPtr<ISCSEditorUICustomization> UICustomization;
 
 	/** SCSEditor UI extension */
-	TSharedPtr<class SExtensionPanel> ExtensionPanel;
-};
+	TSharedPtr<class SExtensionPanel> ExtensionPanel; };

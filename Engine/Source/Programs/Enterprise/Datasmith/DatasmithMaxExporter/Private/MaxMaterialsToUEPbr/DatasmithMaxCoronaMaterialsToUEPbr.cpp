@@ -50,8 +50,6 @@ namespace DatasmithMaxCoronaMaterialsToUEPbrImpl
 		// Bump
 		DatasmithMaxTexmapParser::FMapParameter BumpMap;
 
-		// Displacement
-		DatasmithMaxTexmapParser::FMapParameter DisplacementMap;
 	};
 
 	FMaxCoronaMaterial ParseCoronaMaterialProperties( Mtl& Material )
@@ -209,15 +207,6 @@ namespace DatasmithMaxCoronaMaterialsToUEPbrImpl
 					CoronaMaterialProperties.BumpMap.bEnabled = ( ParamBlock2->GetInt( ParamDefinition.ID, CurrentTime ) != 0 );
 				}
 
-				// Displacement
-				else if (FCString::Stricmp(ParamDefinition.int_name, TEXT("texmapDisplace")) == 0)
-				{
-					CoronaMaterialProperties.DisplacementMap.Map = ParamBlock2->GetTexmap( ParamDefinition.ID, CurrentTime );
-				}
-				else if (FCString::Stricmp(ParamDefinition.int_name, TEXT("texmapOnDisplacement")) == 0)
-				{
-					CoronaMaterialProperties.DisplacementMap.bEnabled = ( ParamBlock2->GetInt( ParamDefinition.ID, CurrentTime ) != 0 );
-				}
 			}
 			ParamBlock2->ReleaseDesc();
 		}
@@ -418,23 +407,6 @@ void FDatasmithMaxCoronaMaterialsToUEPbr::Convert( TSharedRef< IDatasmithScene >
 		ConvertState.bCanBake = true;
 	}
 	
-	// Displacement
-	{
-		ConvertState.DefaultTextureMode = EDatasmithTextureMode::Displace;
-
-		IDatasmithMaterialExpression* DisplacementExpression = FDatasmithMaxTexmapToUEPbrUtils::MapOrValue( this, CoronaMaterialProperties.DisplacementMap, TEXT("Displacement Map"), TOptional< FLinearColor >(), TOptional< float >() );
-
-		if ( DisplacementExpression )
-		{
-			DisplacementExpression->ConnectExpression( PbrMaterialElement->GetWorldDisplacement() );
-		}
-
-		if ( DisplacementExpression )
-		{
-			DisplacementExpression->SetName( TEXT("Displacement Map") );
-		}
-	}
-
 	ConvertState.DefaultTextureMode = EDatasmithTextureMode::Specular; // At this point, all maps are considered specular maps
 
 	// Opacity

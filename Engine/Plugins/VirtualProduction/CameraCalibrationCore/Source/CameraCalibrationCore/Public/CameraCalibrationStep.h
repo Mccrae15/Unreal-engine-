@@ -3,15 +3,18 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/EngineBaseTypes.h"
 #include "Templates/SharedPointer.h"
 #include "Widgets/SBoxPanel.h"
 
 #include "CameraCalibrationStep.generated.h"
 
 struct FGeometry;
+struct FKey;
 struct FPointerEvent;
 
 class FCameraCalibrationStepsController;
+class UMaterialInstanceDynamic;
 
 /**
  * Interface of a camera calibration step. These will appear in a Camera Calibration Toolkit tab.
@@ -35,6 +38,9 @@ public:
 	/** Callback when viewport is clicked. Returns false if the event was not handled. */
 	virtual bool OnViewportClicked(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) { return false;  };
 
+	/** Callback when key is pressed while viewport is focused. Returns false if the event was not handled. */
+	virtual bool OnViewportInputKey(const FKey& InKey, const EInputEvent& InEvent) { return false; };
+
 	/** Returns the UI of this camera calibration step. Expected to only be called once */
 	virtual TSharedRef<SWidget> BuildUI() { return SNew(SVerticalBox); };
 
@@ -43,6 +49,12 @@ public:
 
 	/** Returns true if the given calibration step is a known prerequisite for this step */
 	virtual bool DependsOnStep(UCameraCalibrationStep* Step) const { return false; };
+
+	/** Returns the overlay MID used by this step */
+	virtual UMaterialInstanceDynamic* GetOverlayMID() const { return nullptr; };
+
+	/** Returns true if this step has enabled its overlay */
+	virtual bool IsOverlayEnabled() const { return false; };
 
 	/** Called when this step is the active step in the UI */
 	virtual void Activate() {};

@@ -7,6 +7,7 @@ NiagaraSortingGPU.cpp: Niagara sorting shaders
 #include "NiagaraSortingGPU.h"
 #include "NiagaraGPUSortInfo.h"
 #include "ShaderParameterUtils.h"
+#include "ShaderCompilerCore.h"
 
 int32 GNiagaraGPUSortingUseMaxPrecision = 0;
 static FAutoConsoleVariableRef CVarNiagaraGPUSortinUseMaxPrecision(
@@ -46,5 +47,9 @@ void FNiagaraSortKeyGenCS::ModifyCompilationEnvironment(const FGlobalShaderPermu
 
 	bool bUseWaveIntrinsics = FDataDrivenShaderPlatformInfo::GetSupportsWaveOperations(Parameters.Platform);
 	OutEnvironment.SetDefine(TEXT("USE_WAVE_INTRINSICS"), bUseWaveIntrinsics);
+	if (bUseWaveIntrinsics)
+	{
+		OutEnvironment.CompilerFlags.Add(CFLAG_WaveOperations);
+	}
 }
 

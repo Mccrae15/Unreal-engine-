@@ -25,7 +25,7 @@ public:
 	TArray<FFXSystemInterface*> FXSystems;
 
 	virtual FFXSystemInterface* GetInterface(const FName& InName) override;
-	virtual void Tick(float DeltaSeconds) override;
+	virtual void Tick(UWorld* World, float DeltaSeconds) override;
 
 #if WITH_EDITOR
 	virtual void Suspend() override;
@@ -39,24 +39,22 @@ public:
 	virtual void AddVectorField(UVectorFieldComponent* VectorFieldComponent) override;
 	virtual void RemoveVectorField(UVectorFieldComponent* VectorFieldComponent) override;
 	virtual void UpdateVectorField(UVectorFieldComponent* VectorFieldComponent) override;
-	virtual void PreInitViews(FRHICommandListImmediate& RHICmdList, bool bAllowGPUParticleUpdate) override;
-	virtual void PostInitViews(FRHICommandListImmediate& RHICmdList, FRHIUniformBuffer* ViewUniformBuffer, bool bAllowGPUParticleUpdate) override;
+	virtual void PreInitViews(FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate) override;
+	virtual void PostInitViews(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate) override;
 	virtual bool UsesGlobalDistanceField() const override;
 	virtual bool UsesDepthBuffer() const override;
 	virtual bool RequiresEarlyViewUniformBuffer() const override;
-	virtual void PreRender(FRHICommandListImmediate& RHICmdList, const class FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData, bool bAllowGPUParticleSceneUpdate) override;
-	virtual void PostRenderOpaque(
-		FRHICommandListImmediate& RHICmdList, 
-		FRHIUniformBuffer* ViewUniformBuffer,
-		const class FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-		FRHIUniformBuffer* SceneTexturesUniformBuffer,
-		bool bAllowGPUParticleUpdate) override;
+	virtual bool RequiresRayTracingScene() const override;
+	virtual void PreRender(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleSceneUpdate) override;
+	virtual void PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleSceneUpdate) override;
 
 	virtual void OnDestroy() override;
 	virtual void DestroyGPUSimulation() override;
 
 	/** Get the shared SortManager, used in the rendering loop to call FGPUSortManager::OnPreRender() and FGPUSortManager::OnPostRenderOpaque() */
 	virtual FGPUSortManager* GetGPUSortManager() const override;
+
+	virtual void SetSceneTexturesUniformBuffer(FRHIUniformBuffer* InSceneTexturesUniformParams) override;
 
 protected:
 

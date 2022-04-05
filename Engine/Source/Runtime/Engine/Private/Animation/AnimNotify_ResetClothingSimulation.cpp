@@ -13,6 +13,13 @@ UAnimNotify_ResetClothingSimulation::UAnimNotify_ResetClothingSimulation()
 
 void UAnimNotify_ResetClothingSimulation::Notify(class USkeletalMeshComponent* MeshComp, class UAnimSequenceBase* Animation)
 {
+}
+
+void UAnimNotify_ResetClothingSimulation::Notify(class USkeletalMeshComponent* MeshComp, class UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+    Notify(MeshComp, Animation);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	MeshComp->ForceClothNextUpdateTeleportAndReset();
 }
 

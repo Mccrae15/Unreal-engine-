@@ -6,8 +6,9 @@
 
 #include "Platform.h"
 #include "Trace/Detail/Atomic.h"
-#include "Trace/Detail/Protocol.h"
 #include "Trace/Detail/Channel.h"
+#include "Trace/Detail/Protocol.h"
+#include "Trace/Detail/Transport.h"
 #include "Trace/Trace.inl"
 #include "WriteBufferRedirect.h"
 
@@ -25,41 +26,55 @@
 #	define TRACE_PRIVATE_STOMP 0
 #endif
 
+#ifndef TRACE_PRIVATE_BUFFER_SEND
+#	define TRACE_PRIVATE_BUFFER_SEND 0
+#endif
+
+
+namespace UE {
 namespace Trace {
 namespace Private {
 
 ////////////////////////////////////////////////////////////////////////////////
 int32			Encode(const void*, int32, void*, int32);
-uint32			Writer_SendData(uint32, uint8* __restrict, uint32);
+void			Writer_SendData(uint32, uint8* __restrict, uint32);
+void			Writer_InitializeTail(int32);
+void			Writer_ShutdownTail();
+void			Writer_TailAppend(uint32, uint8* __restrict, uint32, bool=false);
+void			Writer_TailOnConnect();
+void			Writer_InitializeSharedBuffers();
+void			Writer_ShutdownSharedBuffers();
+void			Writer_UpdateSharedBuffers();
+void			Writer_CacheOnConnect();
 void			Writer_InitializePool();
 void			Writer_ShutdownPool();
 void			Writer_DrainBuffers();
 void			Writer_EndThreadBuffer();
+uint32			Writer_GetControlPort();
 void			Writer_UpdateControl();
 void			Writer_InitializeControl();
 void			Writer_ShutdownControl();
+bool			Writer_IsTracing();
 
 
 
 ////////////////////////////////////////////////////////////////////////////////
-UE_TRACE_EVENT_BEGIN($Trace, NewTrace, NoSync)
-	UE_TRACE_EVENT_FIELD(uint32, Serial)
-	UE_TRACE_EVENT_FIELD(uint16, UserUidBias)
-	UE_TRACE_EVENT_FIELD(uint16, Endian)
-	UE_TRACE_EVENT_FIELD(uint8, PointerSize)
-UE_TRACE_EVENT_END()
-
-UE_TRACE_EVENT_BEGIN($Trace, Timing, NoSync)
+UE_TRACE_EVENT_BEGIN($Trace, NewTrace, Important|NoSync)
 	UE_TRACE_EVENT_FIELD(uint64, StartCycle)
 	UE_TRACE_EVENT_FIELD(uint64, CycleFrequency)
+	UE_TRACE_EVENT_FIELD(uint16, Endian)
+	UE_TRACE_EVENT_FIELD(uint8, PointerSize)
 UE_TRACE_EVENT_END()
 
 
 
 ////////////////////////////////////////////////////////////////////////////////
 static bool						GInitialized;		// = false;
+FStatistics						GTraceStatistics;	// = {};
 uint64							GStartCycle;		// = 0;
 TRACELOG_API uint32 volatile	GLogSerial;			// = 0;
+// Counter of calls to Writer_WorkerUpdate to enable regular flushing of output buffers 
+static uint32					GUpdateCounter;		// = 0;
 
 
 
@@ -162,8 +177,12 @@ void* Writer_MemoryAllocate(SIZE_T Size, uint32 Alignment)
 	if (TraceData.GetSize())
 	{
 		uint32 ThreadId = Writer_GetThreadId();
-		Writer_SendData(ThreadId, TraceData.GetData(), TraceData.GetSize());
+		Writer_TailAppend(ThreadId, TraceData.GetData(), TraceData.GetSize());
 	}
+
+#if TRACE_PRIVATE_STATISTICS
+	AtomicAddRelaxed(&GTraceStatistics.MemoryUsed, uint32(Size));
+#endif
 
 	return Ret;
 }
@@ -203,9 +222,13 @@ void Writer_MemoryFree(void* Address, uint32 Size)
 	if (TraceData.GetSize())
 	{
 		uint32 ThreadId = Writer_GetThreadId();
-		Writer_SendData(ThreadId, TraceData.GetData(), TraceData.GetSize());
+		Writer_TailAppend(ThreadId, TraceData.GetData(), TraceData.GetSize());
 	}
 #endif // TRACE_PRIVATE_STOMP
+
+#if TRACE_PRIVATE_STATISTICS
+	AtomicAddRelaxed(&GTraceStatistics.MemoryUsed, uint32(-int64(Size)));
+#endif
 }
 
 
@@ -215,75 +238,120 @@ static UPTRINT					GDataHandle;		// = 0
 UPTRINT							GPendingDataHandle;	// = 0
 
 ////////////////////////////////////////////////////////////////////////////////
-void Writer_SendDataRaw(const void* Data, uint32 Size)
+#if TRACE_PRIVATE_BUFFER_SEND
+static const SIZE_T GSendBufferSize = 1 << 20; // 1Mb
+uint8* GSendBuffer; // = nullptr;
+uint8* GSendBufferCursor; // = nullptr;
+static bool Writer_FlushSendBuffer()
 {
+	if( GSendBufferCursor > GSendBuffer )
+	{
+		if (!IoWrite(GDataHandle, GSendBuffer, GSendBufferCursor - GSendBuffer))
+		{
+			IoClose(GDataHandle);
+			GDataHandle = 0;
+			return false;
+		}
+		GSendBufferCursor = GSendBuffer;
+	}
+	return true;
+}
+#else
+static bool Writer_FlushSendBuffer() { return true; }
+#endif
+
+////////////////////////////////////////////////////////////////////////////////
+static void Writer_SendDataImpl(const void* Data, uint32 Size)
+{
+#if TRACE_PRIVATE_STATISTICS
+	GTraceStatistics.BytesSent += Size;
+#endif
+
+#if TRACE_PRIVATE_BUFFER_SEND
+	// If there's not enough space for this data, flush
+	if (GSendBufferCursor + Size > GSendBuffer + GSendBufferSize)
+	{
+		if (!Writer_FlushSendBuffer())
+		{
+			return;
+		}
+	}
+
+	// Should rarely happen but if we're asked to send large data send it directly
+	if (Size > GSendBufferSize)
+	{
+		if (!IoWrite(GDataHandle, Data, Size))
+		{
+			IoClose(GDataHandle);
+			GDataHandle = 0;
+		}
+	}
+	// Otherwise append to the buffer
+	else
+	{
+		memcpy(GSendBufferCursor, Data, Size);
+		GSendBufferCursor += Size;
+	}
+#else
 	if (!IoWrite(GDataHandle, Data, Size))
 	{
 		IoClose(GDataHandle);
 		GDataHandle = 0;
 	}
+#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-uint32 Writer_SendData(uint32 ThreadId, uint8* __restrict Data, uint32 Size)
+void Writer_SendDataRaw(const void* Data, uint32 Size)
 {
 	if (!GDataHandle)
 	{
-		return 0;
+		return;
 	}
 
-	struct FPacketBase
+	Writer_SendDataImpl(Data, Size);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void Writer_SendData(uint32 ThreadId, uint8* __restrict Data, uint32 Size)
+{
+	static_assert(ETransport::Active == ETransport::TidPacketSync, "Active should be set to what the compiled code uses. It is used to track places that assume transport packet format");
+
+#if TRACE_PRIVATE_STATISTICS
+	GTraceStatistics.BytesTraced += Size;
+#endif
+
+	if (!GDataHandle)
 	{
-		uint16 PacketSize;
-		uint16 ThreadId;
-	};
+		return;
+	}
 
 	// Smaller buffers usually aren't redundant enough to benefit from being
 	// compressed. They often end up being larger.
 	if (Size <= 384)
 	{
-		static_assert(sizeof(FPacketBase) == sizeof(uint32), "");
-		Data -= sizeof(FPacketBase);
-		Size += sizeof(FPacketBase);
-		auto* Packet = (FPacketBase*)Data;
-		Packet->ThreadId = uint16(ThreadId & 0x7fff);
+		Data -= sizeof(FTidPacket);
+		Size += sizeof(FTidPacket);
+		auto* Packet = (FTidPacket*)Data;
+		Packet->ThreadId = uint16(ThreadId & FTidPacketBase::ThreadIdMask);
 		Packet->PacketSize = uint16(Size);
 
-		Writer_SendDataRaw(Data, Size);
-
-		return Size;
+		Writer_SendDataImpl(Data, Size);
+		return;
 	}
 
-	struct FPacketEncoded
-		: public FPacketBase
-	{
-		uint16	DecodedSize;
-	};
+	// Buffer size is expressed as "A + B" where A is a maximum expected
+	// input size (i.e. at least GPoolBlockSize) and B is LZ4 overhead as
+	// per LZ4_COMPRESSBOUND.
+	TTidPacketEncoded<8192 + 64> Packet;
 
-	struct FPacket
-		: public FPacketEncoded
-	{
-		// Buffer size is expressed as "A + B" where A is a maximum expected
-		// input size (i.e. at least GPoolBlockSize) and B is LZ4 overhead as
-		// per LZ4_COMPRESSBOUND.
-		uint8 Data[8129 + 64];
-	};
-
-	FPacket Packet;
-	Packet.ThreadId = 0x8000 | uint16(ThreadId & 0x7fff);
+	Packet.ThreadId = FTidPacketBase::EncodedMarker;
+	Packet.ThreadId |= uint16(ThreadId & FTidPacketBase::ThreadIdMask);
 	Packet.DecodedSize = uint16(Size);
 	Packet.PacketSize = Encode(Data, Packet.DecodedSize, Packet.Data, sizeof(Packet.Data));
-	Packet.PacketSize += sizeof(FPacketEncoded);
+	Packet.PacketSize += sizeof(FTidPacketEncoded);
 
-	Writer_SendDataRaw(&Packet, Packet.PacketSize);
-
-	return Packet.PacketSize;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-uint32 Writer_SendData(uint8* __restrict Data, uint32 Size)
-{
-	return Writer_SendData(ETransportTid::Internal, Data, Size);
+	Writer_SendDataImpl(&Packet, Packet.PacketSize);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -299,14 +367,14 @@ static void Writer_DescribeEvents()
 		// Flush just in case an NewEvent event will be larger than 512 bytes.
 		if (TraceData.GetSize() >= (TraceData.GetCapacity() - 512))
 		{
-			Writer_SendData(TraceData.GetData(), TraceData.GetSize());
+			Writer_SendData(ETransportTid::Events, TraceData.GetData(), TraceData.GetSize());
 			TraceData.Reset();
 		}
 	}
 
 	if (TraceData.GetSize())
 	{
-		Writer_SendData(TraceData.GetData(), TraceData.GetSize());
+		Writer_SendData(ETransportTid::Events, TraceData.GetData(), TraceData.GetSize());
 	}
 }
 
@@ -328,28 +396,37 @@ static void Writer_DescribeAnnounce()
 		return;
 	}
 
-	Writer_DescribeEvents();
 	Writer_AnnounceChannels();
+	Writer_DescribeEvents();
 }
 
 
 
 ////////////////////////////////////////////////////////////////////////////////
-static void Writer_LogHeader()
-{
-	UE_TRACE_LOG($Trace, NewTrace, TraceLogChannel)
-		<< NewTrace.Serial(uint32(GLogSerial)) // should really atomic-load-relaxed here...
-		<< NewTrace.UserUidBias(EKnownEventUids::User)
-		<< NewTrace.Endian(0x524d)
-		<< NewTrace.PointerSize(sizeof(void*));
-}
+static int8			GSyncPacketCountdown;	// = 0
+static const int8	GNumSyncPackets			= 3;
 
 ////////////////////////////////////////////////////////////////////////////////
-static void Writer_LogTimingHeader()
+static void Writer_SendSync()
 {
-	UE_TRACE_LOG($Trace, Timing, TraceLogChannel)
-		<< Timing.StartCycle(GStartCycle)
-		<< Timing.CycleFrequency(TimeGetFrequency());
+	if (GSyncPacketCountdown <= 0)
+	{
+		return;
+	}
+
+	// It is possible that some events get collected and discarded by a previous
+	// update that are newer than events sent it the following update where IO
+	// is established. This will result in holes in serial numbering. A few sync
+	// points are sent to aid analysis in determining what are holes and what is
+	// just a requirement for more data. Holws will only occurr at the start.
+
+	// Note that Sync is alias as Important/Internal as changing Bias would
+	// break backwards compatibility.
+
+	FTidPacketBase SyncPacket = { sizeof(SyncPacket), ETransportTid::Sync };
+	Writer_SendDataImpl(&SyncPacket, sizeof(SyncPacket));
+
+	--GSyncPacketCountdown;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -358,6 +435,28 @@ static bool Writer_UpdateConnection()
 	if (!GPendingDataHandle)
 	{
 		return false;
+	}
+
+	// Is this a close request? So that we capture some of the events around
+	// the closure we will add some inertia before enacting the close.
+	static const uint32 CloseInertia = 2;
+	if (GPendingDataHandle >= (~0ull - CloseInertia))
+	{
+		--GPendingDataHandle;
+
+		if (GPendingDataHandle == (~0ull -CloseInertia))
+		{
+			if (GDataHandle)
+			{
+				Writer_FlushSendBuffer();
+				IoClose(GDataHandle);
+			}
+
+			GDataHandle = 0;
+			GPendingDataHandle = 0;
+		}
+
+		return true;
 	}
 
 	// Reject the pending connection if we've already got a connection
@@ -371,13 +470,33 @@ static bool Writer_UpdateConnection()
 	GDataHandle = GPendingDataHandle;
 	GPendingDataHandle = 0;
 
+#if TRACE_PRIVATE_BUFFER_SEND
+	if (!GSendBuffer)
+	{
+		GSendBuffer = static_cast<uint8*>(Writer_MemoryAllocate(GSendBufferSize, 16));
+	}
+	GSendBufferCursor = GSendBuffer;
+#endif
+
 	// Handshake.
-	const uint32 Magic = 'TRCE';
-	bool bOk = IoWrite(GDataHandle, &Magic, sizeof(Magic));
+	struct FHandshake
+	{
+		uint32 Magic			= 'TRC2';
+		uint16 MetadataSize		= uint16(4); //  = sizeof(MetadataField0 + ControlPort)
+		uint16 MetadataField0	= uint16(sizeof(ControlPort) | (ControlPortFieldId << 8));
+		uint16 ControlPort		= uint16(Writer_GetControlPort());
+		enum
+		{
+			Size				= 10,
+			ControlPortFieldId	= 0,
+		};
+	};
+	FHandshake Handshake;
+	bool bOk = IoWrite(GDataHandle, &Handshake, FHandshake::Size);
 
 	// Stream header
 	const struct {
-		uint8 TransportVersion	= ETransport::TidPacket;
+		uint8 TransportVersion	= ETransport::TidPacketSync;
 		uint8 ProtocolVersion	= EProtocol::Id;
 	} TransportHeader;
 	bOk &= IoWrite(GDataHandle, &TransportHeader, sizeof(TransportHeader));
@@ -389,15 +508,20 @@ static bool Writer_UpdateConnection()
 		return false;
 	}
 
-	// Send the header events
-	TWriteBufferRedirect<512> HeaderEvents;
-	Writer_LogHeader();
-	Writer_LogTimingHeader();
-	HeaderEvents.Close();
+	// Reset statistics.
+	GTraceStatistics.BytesSent = 0;
+	GTraceStatistics.BytesTraced = 0;
 
+	// The first events we will send are ones that describe the trace's events
+	FEventNode::OnConnect();
 	Writer_DescribeEvents();
 
-	Writer_SendData(HeaderEvents.GetData(), HeaderEvents.GetSize());
+	// Send cached events (i.e. importants) and the tail of recent events
+	Writer_CacheOnConnect();
+	Writer_TailOnConnect();
+
+	// See Writer_SendSync() for details.
+	GSyncPacketCountdown = GNumSyncPackets;
 
 	return true;
 }
@@ -407,38 +531,38 @@ static bool Writer_UpdateConnection()
 ////////////////////////////////////////////////////////////////////////////////
 static UPTRINT			GWorkerThread;		// = 0;
 static volatile bool	GWorkerThreadQuit;	// = false;
+static volatile unsigned int	GUpdateInProgress;	// = 0;
 
 ////////////////////////////////////////////////////////////////////////////////
 static void Writer_WorkerUpdate()
 {
+	if (!AtomicCompareExchangeAcquire(&GUpdateInProgress, 1u, 0u))
+	{
+		return;
+	}
+	
 	Writer_UpdateControl();
 	Writer_UpdateConnection();
 	Writer_DescribeAnnounce();
+	Writer_UpdateSharedBuffers();
 	Writer_DrainBuffers();
+	Writer_SendSync();
+
+#if TRACE_PRIVATE_BUFFER_SEND
+	const uint32 FlushSendBufferCadenceMask = 8-1; // Flush every 8 calls 
+	if( (++GUpdateCounter & FlushSendBufferCadenceMask) == 0)
+	{
+		Writer_FlushSendBuffer();
+	}
+#endif
+
+	AtomicExchangeRelease(&GUpdateInProgress, 0u);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 static void Writer_WorkerThread()
 {
-	Trace::ThreadRegister(TEXT("Trace"), 0, INT_MAX);
-
-	// At this point we haven't ever collected any trace events. So we'll stall
-	// for just a little bit to give the user a chance to set up sending the trace
-	// somewhere. This way they get all events since boot, otherwise they'll be
-	// unceremoniously dropped.
-	int32 PrologueMs = 2000;
-	do
-	{
-		const uint32 SleepMs = 100;
-		ThreadSleep(SleepMs);
-		PrologueMs -= SleepMs;
-
-		if (Writer_UpdateConnection())
-		{
-			break;
-		}
-	}
-	while (PrologueMs > 0);
+	ThreadRegister(TEXT("Trace"), 0, INT_MAX);
 
 	while (!GWorkerThreadQuit)
 	{
@@ -450,7 +574,7 @@ static void Writer_WorkerThread()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-static void Writer_WorkerCreate()
+void Writer_WorkerCreate()
 {
 	if (GWorkerThread)
 	{
@@ -458,6 +582,23 @@ static void Writer_WorkerCreate()
 	}
 
 	GWorkerThread = ThreadCreate("TraceWorker", Writer_WorkerThread);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+static void Writer_WorkerJoin()
+{
+	if (!GWorkerThread)
+	{
+		return;
+	}
+
+	GWorkerThreadQuit = true;
+	ThreadJoin(GWorkerThread);
+	ThreadDestroy(GWorkerThread);
+
+	Writer_WorkerUpdate();
+
+	GWorkerThread = 0;
 }
 
 
@@ -473,8 +614,15 @@ static void Writer_InternalInitializeImpl()
 	GInitialized = true;
 	GStartCycle = TimeGetTimestamp();
 
+	Writer_InitializeSharedBuffers();
 	Writer_InitializePool();
 	Writer_InitializeControl();
+
+	UE_TRACE_LOG($Trace, NewTrace, TraceLogChannel)
+		<< NewTrace.StartCycle(GStartCycle)
+		<< NewTrace.CycleFrequency(TimeGetFrequency())
+		<< NewTrace.Endian(0x524d)
+		<< NewTrace.PointerSize(sizeof(void*));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -485,25 +633,28 @@ static void Writer_InternalShutdown()
 		return;
 	}
 
-	if (GWorkerThread)
-	{
-		GWorkerThreadQuit = true;
-		ThreadJoin(GWorkerThread);
-		ThreadDestroy(GWorkerThread);
-		GWorkerThread = 0;
-	}
-
-	Writer_WorkerUpdate();
-	Writer_DrainBuffers();
+	Writer_WorkerJoin();
 
 	if (GDataHandle)
 	{
+		Writer_FlushSendBuffer();
 		IoClose(GDataHandle);
 		GDataHandle = 0;
 	}
 
 	Writer_ShutdownControl();
 	Writer_ShutdownPool();
+	Writer_ShutdownSharedBuffers();
+	Writer_ShutdownTail();
+
+#if TRACE_PRIVATE_BUFFER_SEND
+	if (GSendBuffer)
+	{
+		Writer_MemoryFree(GSendBuffer, GSendBufferSize);
+		GSendBuffer = nullptr;
+		GSendBufferCursor = nullptr;
+	}
+#endif
 
 	GInitialized = false;
 }
@@ -523,7 +674,12 @@ void Writer_InternalInitialize()
 			}
 			~FInitializer()
 			{
-				Writer_InternalShutdown();
+				/* We'll not shut anything down here so we can hopefully capture
+				 * any subsequent events. However, we will shutdown the worker
+				 * thread and leave it for something else to call update() (mem
+				 * tracing at time of writing). Windows will have already done
+				 * this implicitly in ExitProcess() anyway. */
+				Writer_WorkerJoin();
 			}
 		} Initializer;
 	}
@@ -532,6 +688,8 @@ void Writer_InternalInitialize()
 ////////////////////////////////////////////////////////////////////////////////
 void Writer_Initialize(const FInitializeDesc& Desc)
 {
+	Writer_InitializeTail(Desc.TailSizeBytes);
+
 	if (Desc.bUseWorkerThread)
 	{
 		Writer_WorkerCreate();
@@ -551,18 +709,8 @@ void Writer_Update()
 	{
 		Writer_WorkerUpdate();
 	}
-}
 
-////////////////////////////////////////////////////////////////////////////////
-static bool const bEnsureDynamicInit = [] () -> bool
-{
-	// Trace will register the thread it is initialised on as the main thread. On
-	// the off chance that no events are trace during dynamic initialisation this
-	// lambda will get called to cover that scenario. Of course, this cunning plan
-	// may not work on some platforms or if TraceLog is loaded on another thread.
-	Writer_InternalInitialize();
-	return false;
-}();
+}
 
 
 
@@ -576,7 +724,7 @@ bool Writer_SendTo(const ANSICHAR* Host, uint32 Port)
 
 	Writer_InternalInitialize();
 
-	Port = Port ? Port : 1980;
+	Port = Port ? Port : 1981;
 	UPTRINT DataHandle = TcpSocketConnect(Host, Port);
 	if (!DataHandle)
 	{
@@ -610,10 +758,23 @@ bool Writer_WriteTo(const ANSICHAR* Path)
 ////////////////////////////////////////////////////////////////////////////////
 bool Writer_IsTracing()
 {
-	return (GDataHandle != 0);
+	return GDataHandle != 0 || GPendingDataHandle != 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool Writer_Stop()
+{
+	if (GPendingDataHandle || !GDataHandle)
+	{
+		return false;
+	}
+
+	GPendingDataHandle = ~UPTRINT(0);
+	return true;
 }
 
 } // namespace Private
 } // namespace Trace
+} // namespace UE
 
 #endif // UE_TRACE_ENABLED

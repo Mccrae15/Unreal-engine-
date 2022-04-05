@@ -1,54 +1,61 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SkeletalMeshEditor.h"
-#include "Modules/ModuleManager.h"
-#include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "EditorReimportHandler.h"
+
+#include "SkeletalMeshEditorCommands.h"
+#include "SkeletalMeshEditorMode.h"
+#include "SSkeletalMeshEditorToolbox.h"
+
+
+#include "Algo/Transform.h"
+#include "Animation/DebugSkelMeshComponent.h"
 #include "AssetData.h"
+#include "ClothingAsset.h"
+#include "ClothingSystemEditorInterfaceModule.h"
+#include "ComponentReregisterContext.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "Editor/EditorEngine.h"
-#include "EngineGlobals.h"
-#include "ISkeletalMeshEditorModule.h"
-#include "IPersonaToolkit.h"
-#include "PersonaModule.h"
-#include "SkeletalMeshEditorMode.h"
-#include "IPersonaPreviewScene.h"
-#include "SkeletalMeshEditorCommands.h"
-#include "IDetailsView.h"
-#include "ISkeletonTree.h"
-#include "ISkeletonEditorModule.h"
-#include "IAssetFamily.h"
-#include "PersonaCommonCommands.h"
-#include "EngineUtils.h"
-#include "Rendering/SkeletalMeshModel.h"
-
-#include "Animation/DebugSkelMeshComponent.h"
-#include "ClothingAsset.h"
-#include "SCreateClothingSettingsPanel.h"
-#include "ClothingSystemEditorInterfaceModule.h"
-#include "Preferences/PersonaOptions.h"
-
-#include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SBorder.h"
-#include "Framework/Application/SlateApplication.h"
-#include "ToolMenus.h"
-#include "SkeletalMeshToolMenuContext.h"
-#include "EditorViewportClient.h"
-#include "Settings/EditorExperimentalSettings.h"
-#include "Algo/Transform.h"
-#include "ISkeletonTreeItem.h"
-#include "FbxMeshUtils.h"
-#include "LODUtilities.h"
-
-#include "ScopedTransaction.h"
-#include "ComponentReregisterContext.h"
 #include "EditorFramework/AssetImportData.h"
+#include "EditorModeManager.h"
+#include "EditorReimportHandler.h"
+#include "EditorViewportClient.h"
+#include "EngineGlobals.h"
+#include "EngineUtils.h"
 #include "Factories/FbxSkeletalMeshImportData.h"
-
+#include "FbxMeshUtils.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "IAssetFamily.h"
+#include "IDetailsView.h"
+#include "IPersonaPreviewScene.h"
+#include "IPersonaToolkit.h"
+#include "IPersonaViewport.h"
+#include "ISkeletalMeshEditorModule.h"
+#include "ISkeletonEditorModule.h"
+#include "ISkeletonTree.h"
+#include "ISkeletonTreeItem.h"
+#include "LODUtilities.h"
 #include "Misc/MessageDialog.h"
+#include "Modules/ModuleManager.h"
+#include "PersonaCommonCommands.h"
+#include "PersonaModule.h"
+#include "PersonaToolMenuContext.h"
+#include "Preferences/PersonaOptions.h"
+#include "Rendering/SkeletalMeshModel.h"
+#include "ScopedTransaction.h"
+#include "SCreateClothingSettingsPanel.h"
+#include "Settings/EditorExperimentalSettings.h"
+#include "SkeletalMeshToolMenuContext.h"
+#include "ToolMenus.h"
+#include "Engine/SkeletalMeshSocket.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Misc/CoreMisc.h"
+#include "Toolkits/AssetEditorToolkitMenuContext.h"
+#include "MeshMergeModule.h"
 
 const FName SkeletalMeshEditorAppIdentifier = FName(TEXT("SkeletalMeshEditorApp"));
 
@@ -61,6 +68,8 @@ const FName SkeletalMeshEditorTabs::ViewportTab(TEXT("Viewport"));
 const FName SkeletalMeshEditorTabs::AdvancedPreviewTab(TEXT("AdvancedPreviewTab"));
 const FName SkeletalMeshEditorTabs::MorphTargetsTab("MorphTargetsTab");
 const FName SkeletalMeshEditorTabs::AnimationMappingTab("AnimationMappingWindow");
+const FName SkeletalMeshEditorTabs::ToolboxDetailsTab("ToolBoxDetailsTab");
+
 
 DEFINE_LOG_CATEGORY(LogSkeletalMeshEditor);
 
@@ -81,6 +90,25 @@ FSkeletalMeshEditor::~FSkeletalMeshEditor()
 	if (Editor != nullptr)
 	{
 		Editor->UnregisterForUndo(this);
+	}
+
+	//We have to do this differently, make sure we do not have any cloth paint mode active before deleting the PersonaToolkit
+	{
+		//At this point the ClothPaintMode, if exist is deactivate but not destroy
+		//This is why we do not verify if the mode is active. Calling DestroyMode on a unexisting mode is ok
+		const FEditorModeID ClothModeID = FName("ClothPaintMode");
+		GetEditorModeManager().DestroyMode(ClothModeID);
+	}
+	
+	// Reset the preview scene mesh before closing the toolkit or destroying the preview scene so the viewports can clean up properly.
+	// This is due to the viewports directly needing to use delegates on a nested USkeletalMesh parented to a debug component the editor uses.
+	// The USkeletalMesh persists beyond the lifetime of the debug component used by the toolkit or viewports,
+	// which can cause issues for viewports with delegates for on change notifications on the skeletal mesh to track undo/redo for things like floor mesh movement,
+	// since the floor mesh position is stored on the skeletal mesh, and not the debug component.
+	if (PersonaToolkit.IsValid())
+	{
+		constexpr bool bSetPreviewMeshInAsset = false;
+		PersonaToolkit->SetPreviewMesh(nullptr, bSetPreviewMeshInAsset);
 	}
 }
 
@@ -192,6 +220,15 @@ bool FSkeletalMeshEditor::OnRequestClose()
 void FSkeletalMeshEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
 {
 	WorkspaceMenuCategory = InTabManager->AddLocalWorkspaceMenuCategory(LOCTEXT("WorkspaceMenu_SkeletalMeshEditor", "Skeletal Mesh Editor"));
+	
+	InTabManager->RegisterTabSpawner(
+		SkeletalMeshEditorTabs::ToolboxDetailsTab, 
+		FOnSpawnTab::CreateSP(this, &FSkeletalMeshEditor::SpawnToolboxTab),
+		FCanSpawnTab::CreateSP(this, &FSkeletalMeshEditor::CanSpawnToolboxTab)
+		)
+		.SetDisplayName(LOCTEXT("ToolboxTab", "Toolbox"))
+		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
+		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Modes" ));
 
 	FAssetEditorToolkit::RegisterTabSpawners(InTabManager);
 }
@@ -223,12 +260,11 @@ void FSkeletalMeshEditor::InitSkeletalMeshEditor(const EToolkitMode::Type Mode, 
 	ISkeletonEditorModule& SkeletonEditorModule = FModuleManager::GetModuleChecked<ISkeletonEditorModule>("SkeletonEditor");
 	SkeletonTree = SkeletonEditorModule.CreateSkeletonTree(PersonaToolkit->GetSkeleton(), SkeletonTreeArgs);
 
-	BindCommands();
-	RegisterToolbar();
-
 	const bool bCreateDefaultStandaloneMenu = true;
 	const bool bCreateDefaultToolbar = true;
 	FAssetEditorToolkit::InitAssetEditor(Mode, InitToolkitHost, SkeletalMeshEditorAppIdentifier, FTabManager::FLayout::NullLayout, bCreateDefaultStandaloneMenu, bCreateDefaultToolbar, InSkeletalMesh);
+
+	BindCommands();
 
 	AddApplicationMode(
 		SkeletalMeshEditorModes::SkeletalMeshEditorMode,
@@ -242,7 +278,16 @@ void FSkeletalMeshEditor::InitSkeletalMeshEditor(const EToolkitMode::Type Mode, 
 
 	// Set up mesh click selection
 	PreviewScene->RegisterOnMeshClick(FOnMeshClick::CreateSP(this, &FSkeletalMeshEditor::HandleMeshClick));
-	PreviewScene->SetAllowMeshHitProxies(GetDefault<UPersonaOptions>()->bAllowMeshSectionSelection);
+	PreviewScene->SetAllowMeshHitProxies(true);
+	if(PreviewScene->GetPreviewMeshComponent())
+	{
+		PreviewScene->GetPreviewMeshComponent()->bSelectable = PreviewScene->AllowMeshHitProxies();
+		PreviewScene->GetPreviewMeshComponent()->MarkRenderStateDirty();
+	}
+
+	// Make sure we get told when the editor mode changes so we can switch to the appropriate tab
+	// if there's a toolbox available.
+	GetEditorModeManager().OnEditorModeIDChanged().AddSP(this, &FSkeletalMeshEditor::OnEditorModeIdChanged);
 }
 
 FName FSkeletalMeshEditor::GetToolkitFName() const
@@ -280,13 +325,13 @@ void FSkeletalMeshEditor::BindCommands()
 	ToolkitCommands->MapAction(FSkeletalMeshEditorCommands::Get().ReimportAllMesh,
 		FExecuteAction::CreateSP(this, &FSkeletalMeshEditor::HandleReimportAllMesh, (int32)INDEX_NONE));
 
-	ToolkitCommands->MapAction(FSkeletalMeshEditorCommands::Get().MeshSectionSelection,
-		FExecuteAction::CreateSP(this, &FSkeletalMeshEditor::ToggleMeshSectionSelection),
-		FCanExecuteAction(), 
-		FIsActionChecked::CreateSP(this, &FSkeletalMeshEditor::IsMeshSectionSelectionChecked));
-
 	ToolkitCommands->MapAction(FPersonaCommonCommands::Get().TogglePlay,
 		FExecuteAction::CreateRaw(&GetPersonaToolkit()->GetPreviewScene().Get(), &IPersonaPreviewScene::TogglePlayback));
+
+	// Bake Materials
+	ToolkitCommands->MapAction(FSkeletalMeshEditorCommands::Get().BakeMaterials,
+		FExecuteAction::CreateSP(this, &FSkeletalMeshEditor::BakeMaterials),
+		FCanExecuteAction());
 }
 
 TSharedPtr<FSkeletalMeshEditor> FSkeletalMeshEditor::GetSkeletalMeshEditor(const FToolMenuContext& InMenuContext)
@@ -301,6 +346,67 @@ TSharedPtr<FSkeletalMeshEditor> FSkeletalMeshEditor::GetSkeletalMeshEditor(const
 
 	return TSharedPtr<FSkeletalMeshEditor>();
 }
+
+
+void FSkeletalMeshEditor::OnEditorModeIdChanged(const FEditorModeID& ModeChangedID, bool bIsEnteringMode)
+{
+	if (GetEditorModeManager().IsDefaultMode(ModeChangedID))
+	{
+		return;
+	}
+
+	if (bIsEnteringMode)
+	{
+		// FIXME: We should get the hosted toolkit from here.
+		if (GetEditorModeManager().GetActiveScriptableMode(ModeChangedID)->UsesToolkits())
+		{
+			TabManager->TryInvokeTab(SkeletalMeshEditorTabs::ToolboxDetailsTab);
+		}
+	}
+	else
+	{
+		TSharedPtr<SDockTab> ToolboxTab = TabManager->FindExistingLiveTab(SkeletalMeshEditorTabs::ToolboxDetailsTab);
+		if (ToolboxTab.IsValid())
+		{
+			ToolboxTab->RequestCloseTab();
+		}
+	}
+}
+
+
+bool FSkeletalMeshEditor::CanSpawnToolboxTab(const FSpawnTabArgs& InArgs) const
+{
+	return HostedToolkit.IsValid();
+}
+
+
+TSharedRef<SDockTab> FSkeletalMeshEditor::SpawnToolboxTab(const FSpawnTabArgs& Args)
+{
+	ToolboxWidget = SNew(SSkeletalMeshEditorToolbox, SharedThis<ISkeletalMeshEditor>(this));
+
+	TSharedRef<SDockTab> DockTab = SNew(SDockTab)
+	    .Label(LOCTEXT("ToolboxTab", "Toolbox"))
+		[
+			SNew(SBox)
+	        .AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ToolboxTab")))
+	        [
+				ToolboxWidget.ToSharedRef()
+			]
+		];
+
+	ToolboxWidget->SetOwningTab(DockTab);
+	ToolboxWidget->AttachToolkit(HostedToolkit.ToSharedRef());
+	
+	return DockTab;
+}
+
+
+void FSkeletalMeshEditor::OnToolboxTabClosed(TSharedRef<SDockTab> InClosedTab)
+{
+	// If the user closed the tab, then we want to go back to the base skel mesh editor mode.
+	GetEditorModeManager().ActivateDefaultMode();
+}
+
 
 void FSkeletalMeshEditor::RegisterReimportContextMenu(const FName InBaseMenuName)
 {
@@ -508,6 +614,38 @@ void FSkeletalMeshEditor::RegisterReimportContextMenu(const FName InBaseMenuName
 
 void FSkeletalMeshEditor::ExtendToolbar()
 {
+
+	// Add in Editor Specific functionality
+	FName ParentName;
+	static const FName MenuName = GetToolMenuToolbarName(ParentName);
+	RegisterReimportContextMenu(MenuName);
+
+	UToolMenu* ToolMenu = UToolMenus::Get()->ExtendMenu(MenuName);
+	const FToolMenuInsert SectionInsertLocation("Asset", EToolMenuInsertType::After);
+
+	{
+		ToolMenu->AddDynamicSection("Persona", FNewToolBarDelegateLegacy::CreateLambda([](FToolBarBuilder& ToolbarBuilder, UToolMenu* InMenu)
+		{
+			TSharedPtr<FSkeletalMeshEditor> SkeletalMeshEditor = GetSkeletalMeshEditor(InMenu->Context);
+			if (SkeletalMeshEditor.IsValid() && SkeletalMeshEditor->PersonaToolkit.IsValid())
+			{
+				FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
+				FPersonaModule::FCommonToolbarExtensionArgs Args;
+				Args.bPreviewMesh = false;
+				PersonaModule.AddCommonToolbarExtensions(ToolbarBuilder, SkeletalMeshEditor->PersonaToolkit.ToSharedRef(), Args);
+			}
+		}), SectionInsertLocation);
+	}
+
+	{
+		FToolMenuSection& Section = ToolMenu->AddSection("Mesh", FText(), SectionInsertLocation);
+		
+		FToolMenuEntry Entry = FToolMenuEntry::InitToolBarButton(FSkeletalMeshEditorCommands::Get().ReimportMesh);
+		Section.AddEntry(FToolMenuEntry::InitToolBarButton(FSkeletalMeshEditorCommands::Get().ReimportMesh));
+
+		Section.AddEntry(FToolMenuEntry::InitComboButton("ReimportContextMenu", FUIAction(), FNewToolMenuDelegate(), FText(), FText(), FSlateIcon(), true));
+	}
+
 	// If the ToolbarExtender is valid, remove it before rebuilding it
 	if (ToolbarExtender.IsValid())
 	{
@@ -546,44 +684,6 @@ void FSkeletalMeshEditor::ExtendToolbar()
 	));
 }
 
-void FSkeletalMeshEditor::RegisterToolbar()
-{
-	static const FName MenuName = "AssetEditor.SkeletalMeshEditor.ToolBar";
-	RegisterReimportContextMenu(MenuName);
-
-	if (!UToolMenus::Get()->IsMenuRegistered(MenuName))
-	{
-		UToolMenu* ToolMenu = UToolMenus::Get()->RegisterMenu(MenuName, "AssetEditor.DefaultToolBar", EMultiBoxType::ToolBar);
-
-		const FToolMenuInsert SectionInsertLocation("Asset", EToolMenuInsertType::After);
-
-		{
-			ToolMenu->AddDynamicSection("Persona", FNewToolBarDelegateLegacy::CreateLambda([](FToolBarBuilder& ToolbarBuilder, UToolMenu* InMenu)
-			{
-				TSharedPtr<FSkeletalMeshEditor> SkeletalMeshEditor = GetSkeletalMeshEditor(InMenu->Context);
-				if (SkeletalMeshEditor.IsValid() && SkeletalMeshEditor->PersonaToolkit.IsValid())
-				{
-					FPersonaModule& PersonaModule = FModuleManager::LoadModuleChecked<FPersonaModule>("Persona");
-					FPersonaModule::FCommonToolbarExtensionArgs Args;
-					Args.bPreviewMesh = false;
-					PersonaModule.AddCommonToolbarExtensions(ToolbarBuilder, SkeletalMeshEditor->PersonaToolkit.ToSharedRef(), Args);
-				}
-			}), SectionInsertLocation);
-		}
-
-		{
-			FToolMenuSection& Section = ToolMenu->AddSection("Mesh", FText(), SectionInsertLocation);
-			Section.AddEntry(FToolMenuEntry::InitToolBarButton(FSkeletalMeshEditorCommands::Get().ReimportMesh));
-			Section.AddEntry(FToolMenuEntry::InitComboButton("ReimportContextMenu", FUIAction(), FNewToolMenuDelegate()));
-		}
-
-		{
-			FToolMenuSection& Section = ToolMenu->AddSection("SkeletalMesh", FText(), FToolMenuInsert("Mesh", EToolMenuInsertType::After));
-			Section.AddEntry(FToolMenuEntry::InitToolBarButton(FSkeletalMeshEditorCommands::Get().MeshSectionSelection));
-		}
-	}
-}
-
 void FSkeletalMeshEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
 {
 	FAssetEditorToolkit::InitToolMenuContext(MenuContext);
@@ -591,7 +691,68 @@ void FSkeletalMeshEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
 	USkeletalMeshToolMenuContext* Context = NewObject<USkeletalMeshToolMenuContext>();
 	Context->SkeletalMeshEditor = SharedThis(this);
 	MenuContext.AddObject(Context);
+	
+	UPersonaToolMenuContext* PersonaContext = NewObject<UPersonaToolMenuContext>();
+	PersonaContext->SetToolkit(GetPersonaToolkit());
+	MenuContext.AddObject(PersonaContext);
 }
+
+
+void FSkeletalMeshEditor::OnToolkitHostingStarted(const TSharedRef<IToolkit>& Toolkit)
+{
+	if (ensure(!HostedToolkit.IsValid()))
+	{
+		HostedToolkit = Toolkit;
+
+		if (ToolboxWidget.IsValid())
+		{
+			ToolboxWidget->AttachToolkit(Toolkit);
+		}
+	}
+}
+
+
+void FSkeletalMeshEditor::OnToolkitHostingFinished(const TSharedRef<IToolkit>& Toolkit)
+{
+	if (ensure(Toolkit == HostedToolkit))
+	{
+		if (ToolboxWidget.IsValid())
+		{
+			ToolboxWidget->DetachToolkit(Toolkit);
+		}
+		
+		HostedToolkit.Reset();
+	}
+}
+
+
+void FSkeletalMeshEditor::AddViewportOverlayWidget(TSharedRef<SWidget> InOverlaidWidget)
+{
+	if (Viewport.IsValid())
+	{
+		Viewport->AddOverlayWidget(InOverlaidWidget);
+	}	
+}
+
+
+void FSkeletalMeshEditor::RemoveViewportOverlayWidget(TSharedRef<SWidget> InOverlaidWidget)
+{
+	if (Viewport.IsValid())
+	{
+		Viewport->RemoveOverlayWidget(InOverlaidWidget);
+	}	
+}
+
+bool FSkeletalMeshEditor::ProcessCommandBindings(const FKeyEvent& InKeyEvent) const
+{
+	if (HostedToolkit.IsValid() && HostedToolkit->ProcessCommandBindings(InKeyEvent))
+	{
+		return true;
+	}
+
+	return ISkeletalMeshEditor::ProcessCommandBindings(InKeyEvent);
+}
+
 
 void FSkeletalMeshEditor::FillMeshClickMenu(FMenuBuilder& MenuBuilder, HActor* HitProxy, const FViewportClick& Click)
 {
@@ -823,14 +984,25 @@ void FSkeletalMeshEditor::OnCreateClothingAssetMenuItemClicked(FSkeletalMeshClot
 
 	if(Mesh)
 	{
+		Mesh->Modify();
+
 		FScopedSuspendAlternateSkinWeightPreview ScopedSuspendAlternateSkinnWeightPreview(Mesh);
+
+		if (Params.bRemoveFromMesh)  // Remove section prior to importing, otherwise the UsedBoneIndices won't be reflecting the loss of the section in the sub LOD
+		{
+			// Force the rebuilding of the render data at the end of this scope to update the used bone array
+			FScopedSkeletalMeshPostEditChange ScopedSkeletalMeshPostEditChange(Mesh);
+	
+			// User doesn't want the section anymore as a renderable, get rid of it
+			Mesh->RemoveMeshSection(Params.LodIndex, Params.SourceSection);
+		}
+
+		// Update the skeletal mesh at the end of the scope, this time with the new clothing changes
 		FScopedSkeletalMeshPostEditChange ScopedSkeletalMeshPostEditChange(Mesh);
 
 		// Handle the creation through the clothing asset factory
 		FClothingSystemEditorInterfaceModule& ClothingEditorModule = FModuleManager::LoadModuleChecked<FClothingSystemEditorInterfaceModule>("ClothingSystemEditorInterface");
 		UClothingAssetFactoryBase* AssetFactory = ClothingEditorModule.GetClothingAssetFactory();
-
-		Mesh->Modify();
 
 		// See if we're importing a LOD or new asset
 		if(Params.TargetAsset.IsValid())
@@ -839,7 +1011,7 @@ void FSkeletalMeshEditor::OnCreateClothingAssetMenuItemClicked(FSkeletalMeshClot
 			int32 SectionIndex = -1, AssetLodIndex = -1;
 			if (Params.bRemapParameters)
 			{
-				if (TargetAssetPtr)
+				if (TargetAssetPtr && Mesh->GetImportedModel()->LODModels.IsValidIndex(Params.TargetLod))
 				{
 					//Cache the section and asset LOD this asset was bound at before unbinding
 					FSkeletalMeshLODModel& SkelLod = Mesh->GetImportedModel()->LODModels[Params.TargetLod];
@@ -1064,6 +1236,28 @@ void FSkeletalMeshEditor::ExtendMenu()
 
 	ISkeletalMeshEditorModule& SkeletalMeshEditorModule = FModuleManager::GetModuleChecked<ISkeletalMeshEditorModule>("SkeletalMeshEditor");
 	AddMenuExtender(SkeletalMeshEditorModule.GetMenuExtensibilityManager()->GetAllExtenders(GetToolkitCommands(), GetEditingObjects()));
+
+	UToolMenu* AssetMenu = UToolMenus::Get()->ExtendMenu("MainFrame.MainMenu.Asset");
+	FToolMenuSection& AssetSection = AssetMenu->FindOrAddSection("AssetEditorActions");
+	const FName SkeletalMeshToolkitName = GetToolkitFName();
+	FToolMenuEntry& Entry = AssetSection.AddDynamicEntry("AssetManagerEditorSkeletalMeshCommands", FNewToolMenuSectionDelegate::CreateLambda([SkeletalMeshToolkitName](FToolMenuSection& InSection)
+		{
+			UAssetEditorToolkitMenuContext* MenuContext = InSection.FindContext<UAssetEditorToolkitMenuContext>();
+			if (MenuContext && MenuContext->Toolkit.IsValid() && MenuContext->Toolkit.Pin()->GetToolkitFName() == SkeletalMeshToolkitName)
+			{
+				InSection.AddMenuEntry(FSkeletalMeshEditorCommands::Get().BakeMaterials);
+			}
+		}
+	));
+}
+
+void FSkeletalMeshEditor::BakeMaterials()
+{
+	if (GetPersonaToolkit()->GetPreviewMeshComponent() != nullptr)
+	{
+		const IMeshMergeModule& Module = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities");
+		Module.GetUtilities().BakeMaterialsForComponent(GetPersonaToolkit()->GetPreviewMeshComponent());
+	}
 }
 
 void FSkeletalMeshEditor::HandleObjectsSelected(const TArray<UObject*>& InObjects)
@@ -1121,6 +1315,11 @@ void FSkeletalMeshEditor::HandleMeshDetailsCreated(const TSharedRef<IDetailsView
 {
 	FPersonaModule& PersonaModule = FModuleManager::GetModuleChecked<FPersonaModule>("Persona");
 	PersonaModule.CustomizeMeshDetails(InDetailsView, GetPersonaToolkit());
+}
+
+void FSkeletalMeshEditor::HandleViewportCreated(const TSharedRef<IPersonaViewport>& InViewport)
+{
+	Viewport = InViewport;
 }
 
 UObject* FSkeletalMeshEditor::HandleGetAsset()
@@ -1241,16 +1440,6 @@ void FSkeletalMeshEditor::HandleReimportAllMeshWithNewFile(int32 SourceFileIndex
 			ReimportAllCustomLODs(SkeletalMesh, GetPersonaToolkit()->GetPreviewMeshComponent(), true);
 		}
 	}
-}
-
-
-void FSkeletalMeshEditor::ToggleMeshSectionSelection()
-{
-	TSharedRef<IPersonaPreviewScene> PreviewScene = GetPersonaToolkit()->GetPreviewScene();
-	PreviewScene->DeselectAll();
-	bool bState = !PreviewScene->AllowMeshHitProxies();
-	GetMutableDefault<UPersonaOptions>()->bAllowMeshSectionSelection = bState;
-	PreviewScene->SetAllowMeshHitProxies(bState);
 }
 
 bool FSkeletalMeshEditor::IsMeshSectionSelectionChecked() const

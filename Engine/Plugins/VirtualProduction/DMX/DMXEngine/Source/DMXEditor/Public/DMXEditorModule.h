@@ -77,11 +77,8 @@ private:
 	/** Creates the level editor toolbar extender */
 	void ExtendLevelEditorToolbar();
 
-	/** Generates the DMX level editor toolbar extension */
-	void GenerateToolbarExtension(class FToolBarBuilder& InOutBuilder);
-
 	/** Generates the level editor toolbar DMX Menu */
-	TSharedRef<class SWidget> GenerateDMXLevelEditorToolbarMenu();
+	static TSharedRef<class SWidget> GenerateDMXLevelEditorToolbarMenu();
 
 protected:
 	/** Registers asset types categories */
@@ -89,6 +86,9 @@ protected:
 
 	/** Registers asset types actions */
 	void RegisterAssetTypeActions();
+
+	/** Registers global class customizations */
+	void RegisterClassCustomizations();
 
 	/** Registers global property type customizations */
 	void RegisterPropertyTypeCustomizations();
@@ -133,23 +133,11 @@ private:
 	/** Returns true if send dmx is enabled */
 	static bool IsSendDMXEnabled();
 
-	/** Returns text for the toggle receive DMX button in the menu */
-	FText GetToggleSendDMXText() const;
-
-	/** Returns text for the toggle receive DMX tooltip in the menu */
-	FText GetToggleSendDMXTooltip() const;
-
 	/** Called when the Toggle Receive DMX menu command is selected */
 	static void OnToggleReceiveDMX();
 
 	/** Returns true if receive dmx is enabled */
 	static bool IsReceiveDMXEnabled();
-
-	/** Returns text for the toggle receive DMX button in the menu */
-	FText GetToggleReceiveDMXText() const;
-
-	/** Returns text for the toggle receive DMX tooltip in the menu */
-	FText GetToggleReceiveDMXTooltip() const;
 
 	/** Command list for the DMX level editor menu */
 	TSharedPtr<class FUICommandList> DMXLevelEditorMenuCommands;

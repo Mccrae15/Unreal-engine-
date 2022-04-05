@@ -57,10 +57,12 @@ namespace ImgMediaLoader
 
 FImgMediaLoader::FImgMediaLoader(const TSharedRef<FImgMediaScheduler, ESPMode::ThreadSafe>& InScheduler,
 	const TSharedRef<FImgMediaGlobalCache, ESPMode::ThreadSafe>& InGlobalCache,
-	const TSharedPtr<FImgMediaMipMapInfo, ESPMode::ThreadSafe>& InMipMapInfo)
+	const TSharedPtr<FImgMediaMipMapInfo, ESPMode::ThreadSafe>& InMipMapInfo,
+	bool bInFillGapsInSequence)
 	: Frames(1)
 	, ImageWrapperModule(FModuleManager::LoadModuleChecked<IImageWrapperModule>("ImageWrapper"))
 	, Initialized(false)
+	, bFillGapsInSequence(bInFillGapsInSequence)
 	, NumLoadAhead(0)
 	, NumLoadBehind(0)
 	, Scheduler(InScheduler)
@@ -70,6 +72,7 @@ FImgMediaLoader::FImgMediaLoader(const TSharedRef<FImgMediaScheduler, ESPMode::T
 	, SequenceDuration(FTimespan::Zero())
 	, SequenceFrameRate(0, 0)
 	, LastRequestedFrame(INDEX_NONE)
+	, RetryCount(0)
 	, UseGlobalCache(false)
 {
 	ResetFetchLogic();
@@ -253,7 +256,9 @@ IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTi
 	if (IsInitialized() && TimeRange.HasLowerBound() && TimeRange.HasUpperBound())
 	{
 		FTimespan StartTime = TimeRange.GetLowerBoundValue().Time;
+		int64 StartSequenceIndex = TimeRange.GetLowerBoundValue().SequenceIndex;
 		FTimespan EndTime = TimeRange.GetUpperBoundValue().Time;
+		int64 EndSequenceIndex = TimeRange.GetUpperBoundValue().SequenceIndex;
 		check(TimeRange.GetLowerBoundValue() <= TimeRange.GetUpperBoundValue());
 
 		if (bIsLoopingEnabled)
@@ -286,8 +291,24 @@ IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTi
 		int32 MaxIdx = -1;
 		if (PlayRate >= 0.0f)
 		{
+			// Is the start index the same as the end index?
+			if (StartIndex == EndIndex)
+			{
+				// Is StartTime less than the time of StartIndex?
+				FTimespan CurrentStartTime = FrameNumberToTime(StartIndex);
+				if (StartTime < CurrentStartTime)
+				{
+					// Yes. TimeToFrameNumber rounded up, but we really dont want that
+					// so adjust StartIndex.
+					if (StartIndex > 0)
+					{
+						StartIndex--;
+					}
+				}
+			}
+
 			// Forward...
-			if (StartIndex > EndIndex)
+			if ((StartIndex > EndIndex) || (EndSequenceIndex > StartSequenceIndex))
 			{
 				int32 MaxIdx1, MaxIdx2;
 				float MaxOverlap1 = FindMaxOverlapInRange(StartIndex, GetNumImages()-1, StartTime, FrameNumberToTime(GetNumImages()), MaxIdx1);
@@ -302,7 +323,7 @@ IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTi
 		else
 		{
 			// Backward...
-			if (StartIndex > EndIndex)
+			if ((StartIndex > EndIndex) || (StartSequenceIndex < EndSequenceIndex))
 			{
 				int32 MaxIdx1, MaxIdx2;
 				float MaxOverlap1 = FindMaxOverlapInRange(EndIndex, 0, FTimespan::Zero(), EndTime, MaxIdx1);
@@ -392,27 +413,62 @@ IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTi
 			// Got a potential frame?
 			if (Frame)
 			{
-				// Different from the last one we returned?
-				if (QueuedSampleFetch.LastFrameIndex != MaxIdx)
+				RetryCount = 0;
+				double Duration = Frame->Get()->Info.FrameRate.AsInterval();
+
+				// Yes. First time (after flush)?
+				int32 NewSequenceIndex = QueuedSampleFetch.CurrentSequenceIndex;
+				if (QueuedSampleFetch.LastFrameIndex != INDEX_NONE)
 				{
-					// Yes. First time (after flush)?
-					if (QueuedSampleFetch.LastFrameIndex != INDEX_NONE)
+					// No. Check if we looped and need to start a new sequence...
+					if (PlayRate >= 0.0f && QueuedSampleFetch.LastFrameIndex > MaxIdx)
 					{
-						// No. Check if we looped and need to start a new sequence...
-						if (PlayRate >= 0.0f && QueuedSampleFetch.LastFrameIndex > MaxIdx)
+						++NewSequenceIndex;
+					}
+					else if (PlayRate < 0.0f && QueuedSampleFetch.LastFrameIndex < MaxIdx)
+					{
+						--NewSequenceIndex;
+					}
+					else if (GetNumImages() == 1)
+					{
+						NewSequenceIndex = TimeRange.GetLowerBoundValue().SequenceIndex;
+					}
+				}
+				else
+				{
+					// Make sure this sample has the sequence index that matches the time range.
+					// If the time range only has one sequence index then just use that.
+					if (TimeRange.GetLowerBoundValue().SequenceIndex == TimeRange.GetUpperBoundValue().SequenceIndex)
+					{
+						NewSequenceIndex = TimeRange.GetLowerBoundValue().SequenceIndex;
+					}
+					else
+					{
+						// Try the lower bound sequence index.
+						NewSequenceIndex = TimeRange.GetLowerBoundValue().SequenceIndex;
+						FMediaTimeStamp SampleTime = FMediaTimeStamp(FrameNumberToTime(MaxIdx), NewSequenceIndex);
+						TRange<FMediaTimeStamp> SampleTimeRange(
+							SampleTime,
+							SampleTime + FTimespan::FromSeconds(Duration));
+						
+						// Does our sample time overlap the time range?
+						if (TimeRange.Overlaps(SampleTimeRange) == false)
 						{
-							++QueuedSampleFetch.CurrentSequenceIndex;
-						}
-						else if (PlayRate < 0.0f && QueuedSampleFetch.LastFrameIndex < MaxIdx)
-						{
-							--QueuedSampleFetch.CurrentSequenceIndex;
+							// No. Use the upper bound sequence index.
+							NewSequenceIndex = TimeRange.GetUpperBoundValue().SequenceIndex;
 						}
 					}
+				}
+				
+				// Different from the last one we returned?
+				if ((QueuedSampleFetch.LastFrameIndex != MaxIdx) || (QueuedSampleFetch.CurrentSequenceIndex != NewSequenceIndex) || (ImagePaths.Num() == 1))
+				{
 					QueuedSampleFetch.LastFrameIndex = MaxIdx;
+					QueuedSampleFetch.CurrentSequenceIndex = NewSequenceIndex;
 
 					// We are clear to return it as new result... Make a sample & initialize it...
 					auto Sample = MakeShared<FImgMediaTextureSample, ESPMode::ThreadSafe>();
-					auto Duration = Frame->Get()->Info.FrameRate.AsInterval();
+					
 
 					ImgMediaLoader::CheckAndUpdateImgDimensions(SequenceDim, Frame->Get()->Info.Dim);
 
@@ -420,6 +476,34 @@ IMediaSamples::EFetchBestSampleResult FImgMediaLoader::FetchBestVideoSampleForTi
 					{
 						OutSample = Sample;
 						return IMediaSamples::EFetchBestSampleResult::Ok;
+					}
+				}
+			}
+			else
+			{
+				// We did not get a frame...
+				// Could we have lost a frame that we previously loaded
+				// due to the global cache being full?
+				if (UseGlobalCache)
+				{
+					// Did we get a frame previously?
+					if (LastRequestedFrame != INDEX_NONE)
+					{
+						// Are we loading any frames?
+						if ((PendingFrameNumbers.Num() == 0) && (QueuedFrameNumbers.Num() == 0))
+						{
+							// Nope...
+							// Wait for this to happen for one more frame.
+							// If we have a 1 image sequence, we might have just missed the frame
+							// so try again next time.
+							RetryCount++;
+							if (RetryCount > 1)
+							{
+								UE_LOG(LogImgMedia, Error, TEXT("Reloading frames. The global cache may be too small."));
+								LastRequestedFrame = INDEX_NONE;
+								RetryCount = 0;
+							}
+						}
 					}
 				}
 			}
@@ -563,7 +647,7 @@ bool FImgMediaLoader::RequestFrame(FTimespan Time, float PlayRate, bool Loop)
 		// Make sure we call the reader even if we do no update - just in case it does anything
 		Reader->OnTick();
 
-		UE_LOG(LogImgMedia, VeryVerbose, TEXT("Loader %p: Skipping frame %i for time %s"), this, FrameNumber, *Time.ToString(TEXT("%h:%m:%s.%t")));
+		UE_LOG(LogImgMedia, VeryVerbose, TEXT("Loader %p: Skipping frame %i for time %s last %d"), this, FrameNumber, *Time.ToString(TEXT("%h:%m:%s.%t")), LastRequestedFrame);
 		return false;
 	}
 
@@ -723,16 +807,16 @@ void FImgMediaLoader::LoadSequence(const FString& SequencePath, const FFrameRate
 	const SIZE_T CacheSize = FMath::Clamp(DesiredCacheSize, (SIZE_T)0, (SIZE_T)Stats.AvailablePhysical);
 
 	const int32 MaxFramesToLoad = (int32)(CacheSize / UncompressedSize);
-	const int32 NumFramesToLoad = FMath::Clamp(MaxFramesToLoad, 0, GetNumImages());
+	NumFramesToLoad = FMath::Clamp(MaxFramesToLoad, 0, GetNumImages());
 	const float LoadBehindScale = FMath::Clamp(Settings->CacheBehindPercentage, 0.0f, 100.0f) / 100.0f;
 
-	NumLoadBehind = (int32)(LoadBehindScale * NumFramesToLoad);
-	NumLoadAhead = NumFramesToLoad - NumLoadBehind;
+	NumLoadBehind = (int32)(LoadBehindScale * MaxFramesToLoad);
+	NumLoadAhead = (int32)((1.0f - LoadBehindScale) * MaxFramesToLoad);
 
 	// Giving our reader a chance to handle RAM allocation.
 	// Not all readers use this, only those that need to handle large files 
 	// or need to be as efficient as possible.
-	Reader->PreAllocateMemoryPool(NumLoadAhead + NumLoadBehind, FirstFrameInfo);
+	Reader->PreAllocateMemoryPool(NumFramesToLoad, FirstFrameInfo);
 
 	Frames.Empty(NumFramesToLoad);
 
@@ -758,8 +842,29 @@ void FImgMediaLoader::FindFiles(const FString& SequencePath, TArray<FString>& Ou
 
 	FoundFiles.Sort();
 
+	int32 LastIndex = -1;
+	FString EmptyString;
 	for (const auto& File : FoundFiles)
 	{
+		// Can we fill in gaps in the sequence?
+		if (bFillGapsInSequence)
+		{
+			// Get the index of this file.
+			int32 ThisIndex = -1;
+			if (GetNumberAtEndOfString(ThisIndex, File))
+			{
+				// Fill in any gaps from the last frame.
+				if ((LastIndex != -1) && (LastIndex < ThisIndex - 1))
+				{
+					for (int32 Index = LastIndex + 1; Index < ThisIndex; ++Index)
+					{
+						OutputPaths.Add(EmptyString);
+					}
+				}
+			}
+
+			LastIndex = ThisIndex;
+		}
 		OutputPaths.Add(FPaths::Combine(SequencePath, File));
 	}
 
@@ -874,7 +979,7 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 	{
 		const int32 NumImagePaths = GetNumImages();
 
-		FramesToLoad.Empty(NumLoadAhead + NumLoadBehind);
+		FramesToLoad.Empty(NumFramesToLoad);
 
 		int32 FrameOffset = (PlayRate >= 0.0f) ? 1 : -1;
 
@@ -885,7 +990,9 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 		int32 LoadBehindIndex = PlayHeadFrame - FrameOffset;
 
 		// alternate between look ahead and look behind
-		while ((LoadAheadCount > 0) || (LoadBehindCount > 0))
+		
+		while ((FramesToLoad.Num() < NumFramesToLoad) &&
+			((LoadAheadCount > 0) || (LoadBehindCount > 0)))
 		{
 			if (LoadAheadCount > 0)
 			{
@@ -1005,7 +1112,15 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 		
 		if ((NeedFrame) && !QueuedFrameNumbers.Contains(FrameNumber))
 		{
-			PendingFrameNumbers.Add(FrameNumber);
+			// Do we actually have a frame for this?
+			if (ImagePaths[0][FrameNumber].Len() == 0)
+			{
+				AddEmptyFrame(FrameNumber);
+			}
+			else
+			{
+				PendingFrameNumbers.Add(FrameNumber);
+			}
 		}
 	}
 	Algo::Reverse(PendingFrameNumbers);
@@ -1015,6 +1130,24 @@ void FImgMediaLoader::Update(int32 PlayHeadFrame, float PlayRate, bool Loop)
 /* IImgMediaLoader interface
  *****************************************************************************/
 
+
+void FImgMediaLoader::AddEmptyFrame(int32 FrameNumber)
+{
+	FScopeLock Lock(&CriticalSection);
+
+	TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> Frame;
+	int32 NumChannels = 3;
+	int32 PixelSize = sizeof(uint16) * NumChannels;
+	Frame = MakeShareable(new FImgMediaFrame());
+	Frame->Info.Dim = SequenceDim;
+	Frame->Info.FrameRate = SequenceFrameRate;
+	Frame->Info.NumChannels = NumChannels;
+	Frame->Format = EMediaTextureSampleFormat::FloatRGB;
+	Frame->Stride = Frame ->Info.Dim.X * PixelSize;
+	Frame->MipMapsPresent = -1;
+	AddFrameToCache(FrameNumber, Frame);
+}
+
 void FImgMediaLoader::NotifyWorkComplete(FImgMediaLoaderWork& CompletedWork, int32 FrameNumber, const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>& Frame)
 {
 	FScopeLock Lock(&CriticalSection);
@@ -1022,26 +1155,31 @@ void FImgMediaLoader::NotifyWorkComplete(FImgMediaLoaderWork& CompletedWork, int
 	// if frame is still needed, add it to the cache
 	if (QueuedFrameNumbers.Remove(FrameNumber) > 0)
 	{
-		if (Frame.IsValid())
-		{
-			UE_LOG(LogImgMedia, VeryVerbose, TEXT("Loader %p: Loaded frame %i"), this, FrameNumber);
-			if (UseGlobalCache)
-			{
-				const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>* ExistingFrame;
-				ExistingFrame = GlobalCache->FindAndTouch(SequenceName, FrameNumber);
-				if (ExistingFrame == nullptr)
-				{
-					GlobalCache->AddFrame(ImagePaths[0][FrameNumber], SequenceName, FrameNumber, Frame, MipMapInfo.IsValid());
-				}
-			}
-			else
-			{
-				Frames.Add(FrameNumber, Frame);
-			}
-		}
+		AddFrameToCache(FrameNumber, Frame);
 	}
 
 	WorkPool.Push(&CompletedWork);
+}
+
+void FImgMediaLoader::AddFrameToCache(int32 FrameNumber, const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>& Frame)
+{
+	if (Frame.IsValid())
+	{
+		UE_LOG(LogImgMedia, VeryVerbose, TEXT("Loader %p: Loaded frame %i"), this, FrameNumber);
+		if (UseGlobalCache)
+		{
+			const TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe>* ExistingFrame;
+			ExistingFrame = GlobalCache->FindAndTouch(SequenceName, FrameNumber);
+			if (ExistingFrame == nullptr)
+			{
+				GlobalCache->AddFrame(ImagePaths[0][FrameNumber], SequenceName, FrameNumber, Frame, MipMapInfo.IsValid());
+			}
+		}
+		else
+		{
+			Frames.Add(FrameNumber, Frame);
+		}
+	}
 }
 
 int32 FImgMediaLoader::GetDesiredMipLevel(int32 FrameIndex, FImgMediaTileSelection& OutTileSelection)
@@ -1094,4 +1232,47 @@ float FImgMediaLoader::GetFrameOverlap(uint32 FrameIndex, FTimespan StartTime, F
 	Overlap = OverlapTimespan.GetTotalSeconds();
 
 	return Overlap;
+}
+
+bool FImgMediaLoader::GetNumberAtEndOfString(int32 &Number, const FString& String) const
+{
+	bool bFoundNumber = false;
+
+	// Find the first digit starting from the right.
+	int32 Index = String.Len() - 1;
+	for (; Index >= 0; --Index)
+	{
+		bool bIsDigit = FChar::IsDigit(String[Index]);
+		if (bIsDigit)
+		{
+			break;
+		}
+	}
+	
+	// Did we find one?
+	if (Index >= 0)
+	{
+		int32 LastNumberIndex = Index;
+		// Find the next non digit...
+		for (; Index >= 0; --Index)
+		{
+			bool bIsDigit = FChar::IsDigit(String[Index]);
+			if (bIsDigit == false)
+			{
+				break;
+			}
+		}
+
+		// Index now points to the next non digit.
+		// Extract the number.
+		Index++;
+		if (Index < String.Len())
+		{
+			bFoundNumber = true;
+			FString NumberString = String.Mid(Index, LastNumberIndex - Index + 1);
+			Number = FCString::Atoi(*NumberString);
+		}
+	}
+	
+	return bFoundNumber;
 }

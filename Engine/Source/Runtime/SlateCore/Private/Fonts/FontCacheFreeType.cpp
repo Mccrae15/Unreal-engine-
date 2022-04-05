@@ -3,13 +3,15 @@
 #include "Fonts/FontCacheFreeType.h"
 #include "SlateGlobals.h"
 #include "HAL/PlatformFile.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/FileHelper.h"
 #include "Application/SlateApplicationBase.h"
 #include "Async/Async.h"
 #include "HAL/PlatformProcess.h"
+
+#include <limits>
 
 #if WITH_FREETYPE
 
@@ -393,8 +395,9 @@ FFreeTypeFace::FFreeTypeFace(const FFreeTypeLibrary* InFTLibrary, const FString&
 	LayoutMethod = InLayoutMethod;
 
 #if WITH_FREETYPE
+	ensure(FTStreamHandler.FontSizeBytes >= 0 && FTStreamHandler.FontSizeBytes <= std::numeric_limits<uint32>::max());
 	FMemory::Memzero(FTStream);
-	FTStream.size = FTStreamHandler.FontSizeBytes;
+	FTStream.size = (uint32)FTStreamHandler.FontSizeBytes;
 	FTStream.descriptor.pointer = &FTStreamHandler;
 	FTStream.close = &FFTStreamHandler::CloseFile;
 	FTStream.read = &FFTStreamHandler::ReadData;
@@ -479,9 +482,10 @@ TArray<FString> FFreeTypeFace::GetAvailableSubFaces(const FFreeTypeLibrary* InFT
 #if WITH_FREETYPE
 	FFTStreamHandler FTStreamHandler(InFilename);
 
+	ensure(FTStreamHandler.FontSizeBytes >= 0 && FTStreamHandler.FontSizeBytes <= std::numeric_limits<uint32>::max());
 	FT_StreamRec FTStream;
 	FMemory::Memzero(FTStream);
-	FTStream.size = FTStreamHandler.FontSizeBytes;
+	FTStream.size = (uint32)FTStreamHandler.FontSizeBytes;
 	FTStream.descriptor.pointer = &FTStreamHandler;
 	FTStream.close = &FFTStreamHandler::CloseFile;
 	FTStream.read = &FFTStreamHandler::ReadData;

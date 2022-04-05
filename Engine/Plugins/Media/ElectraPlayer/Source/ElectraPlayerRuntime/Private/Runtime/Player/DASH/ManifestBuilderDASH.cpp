@@ -25,6 +25,7 @@
 #include "Utilities/Utilities.h"
 #include "Utilities/TimeUtilities.h"
 #include "Utilities/ISO639-Map.h"
+#include "Utilities/UtilsMPEGAudio.h"
 
 #include "Player/DRM/DRMManager.h"
 
@@ -94,6 +95,11 @@ namespace
 	};
 
     const TCHAR* const Scheme_urn_mpeg_dash_mp4protection_2011 = TEXT("urn:mpeg:dash:mp4protection:2011");
+
+	// Recognized subtitle mime types
+    const TCHAR* const SubtitleMimeType_SideloadedTTML = TEXT("application/ttml+xml");
+    const TCHAR* const SubtitleMimeType_SideloadedVTT = TEXT("text/vtt");
+    const TCHAR* const SubtitleMimeType_Streamed = TEXT("application/mp4");
 }
 
 
@@ -106,6 +112,15 @@ namespace DASHAttributeHelpers
 		for(int32 i=0; i<Attributes.Num(); ++i)
 		{
 			if (Attributes[i].GetName().Equals(NameWithNS) || Attributes[i].GetName().Equals(InAttribute))
+			{
+				return &Attributes[i];
+			}
+			// If not found in the desired namespace and it doesn't exist in the default namespace let's see if there is a match
+			// in a some other namespace. This sounds counter-intuitive but namespaces can be chosen arbitrarily.
+			// Since there are usually no attribute conflicts that warrant a namespace let's see if the attribute exists in some
+			// unexpected namespace.
+			NameWithNS = FString::Printf(TEXT(":%s"), InAttribute);
+			if (Attributes[i].GetName().EndsWith(NameWithNS, ESearchCase::CaseSensitive))
 			{
 				return &Attributes[i];
 			}
@@ -915,24 +930,32 @@ void FManifestDASHInternal::TransformIntoEpicEvent()
 	// For this to work the presentation must be 'static'
 	if (PresentationType == EPresentationType::Static)
 	{
-		FString Time;
-		bool bDynamic = false;
+		FString Arg;
+		bool bStaticStart = false;
+		bool bDynamicStart = false;
 		for(int32 i=0,iMax=URLFragmentComponents.Num(); i<iMax; ++i)
 		{
-			bool bStaticStart = URLFragmentComponents[i].Name.Equals(Custom_EpicStaticStart);
-			bool bDynamicStart = URLFragmentComponents[i].Name.Equals(Custom_EpicDynamicStart);
+			bStaticStart = URLFragmentComponents[i].Name.Equals(Custom_EpicStaticStart);
+			bDynamicStart = URLFragmentComponents[i].Name.Equals(Custom_EpicDynamicStart);
 			if (bStaticStart || bDynamicStart)
 			{
-				bDynamic = bDynamicStart;
-				Time = URLFragmentComponents[i].Value;
+				Arg = URLFragmentComponents[i].Value;
 				break;
 			}
 		}
-		if (!Time.IsEmpty())
+		TArray<FString> Params;
+		if (!Arg.IsEmpty())
 		{
+			const TCHAR* const Delimiter = TEXT(",");
+			Arg.ParseIntoArray(Params, Delimiter, true);
+		}
+		if (Params.Num())
+		{
+			EpicEventType = bStaticStart ? EEpicEventType::Static : EEpicEventType::Dynamic;
 			// Get the event start time. This is either a Posix time in seconds since the Epoch (1/1/1970) or the special
 			// word 'now' optionally followed by a value to be added or subtracted from now.
 			FTimeValue Start;
+			FString Time = Params[0];
 			if (Time.StartsWith(TEXT("now")))
 			{
 				Time.RightChopInline(3);
@@ -956,12 +979,26 @@ void FManifestDASHInternal::TransformIntoEpicEvent()
 			if (Start.IsValid())
 			{
 				MPDRoot->SetAvailabilityStartTime(Start);
-				if (bDynamic)
+				if (EpicEventType == EEpicEventType::Dynamic)
 				{
 					MPDRoot->SetPublishTime(Start);
 					MPDRoot->SetType(TEXT("dynamic"));
 					PresentationType = EPresentationType::Dynamic;
-					bIsEventType = true;
+					if (Params.Num() > 1)
+					{
+						FTimeValue spd = FTimeValue().SetFromTimeFraction(FTimeFraction().SetFromFloatString(Params[1]));
+						MPDRoot->SetSuggestedPresentationDelay(spd);
+					}
+					else
+					{
+						MPDRoot->SetSuggestedPresentationDelay(MPDRoot->GetMinBufferTime());
+					}
+				}
+				// Adjust period start times with the fake AST
+				for(auto &Period : GetPeriods())
+				{
+					Period->StartAST = Period->Start + Start;
+					Period->EndAST = Period->End + Start;
 				}
 			}
 		}
@@ -1035,6 +1072,8 @@ FErrorDetail FManifestDASHInternal::BuildAfterInitialRemoteElementDownload()
 	CSV_SCOPED_TIMING_STAT(ElectraPlayer, FManifestDASHInternal_Build);
 
 	FErrorDetail Error;
+
+	FTimeValue AST = GetAnchorTime();
 
 	bool bWarnedPresentationDuration = false;
 	// Go over the periods one at a time as XLINK attributes could bring in additional periods.
@@ -1170,6 +1209,10 @@ FErrorDetail FManifestDASHInternal::BuildAfterInitialRemoteElementDownload()
 			}
 		}
 
+		// Set the time range including AST
+		p->StartAST = p->Start + AST;
+		p->EndAST = p->End + AST;
+
 		if (p->Start.IsValid() && p->End.IsValid())
 		{
 			FTimeValue periodDur = p->End - p->Start;
@@ -1232,9 +1275,12 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 		SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_FManifestDASHInternal_Build);
 		CSV_SCOPED_TIMING_STAT(ElectraPlayer, FManifestDASHInternal_Build);
 
+		IPlayerStreamFilter* StreamFilter = PlayerSessionServices->GetStreamFilter();
+
 		Period->AdaptationSets.Empty();
 		const TArray<TSharedPtrTS<FDashMPD_AdaptationSetType>>& MPDAdaptationSets = MPDPeriod->GetAdaptationSets();
-		for(int32 nAdapt=0, nAdaptMax=MPDAdaptationSets.Num(); nAdapt<nAdaptMax; ++nAdapt)
+		int32 nAdapt=0, nAdaptMax=MPDAdaptationSets.Num();
+		for(; nAdapt<nAdaptMax; ++nAdapt)
 		{
 			const TSharedPtrTS<FDashMPD_AdaptationSetType>& MPDAdaptationSet = MPDAdaptationSets[nAdapt];
 			TSharedPtrTS<FAdaptationSet> AdaptationSet = MakeSharedTS<FAdaptationSet>();
@@ -1248,6 +1294,7 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 			AdaptationSet->AdaptationSet = MPDAdaptationSet;
 			AdaptationSet->PAR = MPDAdaptationSet->GetPAR();
 			AdaptationSet->Language = ISO639::RFC5646To639_1(MPDAdaptationSet->GetLanguage());
+			AdaptationSet->SelectionPriority = (int32) MPDAdaptationSet->GetSelectionPriority();
 
 			// Content components are not supported.
 			if (MPDAdaptationSet->GetContentComponents().Num())
@@ -1392,14 +1439,8 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 					// If not then there needs to be one on the AdaptationSet. However, this will specify the highest profile and level
 					// necessary to decode any and all representations and is thus potentially too restrictive.
 					MPDCodecs = MPDAdaptationSet->GetCodecs();
-					// Need to have a codec now.
-					if (MPDCodecs.Num() == 0)
-					{
-						LogMessage(PlayerSessionServices, IInfoLog::ELevel::Info, FString::Printf(TEXT("Neither @codecs found on Representation or AdaptationSet level, ignoring this Representation.")));
-						continue;
-					}
 				}
-				// Parse each of the codecs. There *should* be only one since we are not considering multiplexed streams (ContentComponent / SubRepresentation).
+				// There *should* be only one codec since we are not considering multiplexed streams (ContentComponent / SubRepresentation).
 				if (MPDCodecs.Num() > 1)
 				{
 					LogMessage(PlayerSessionServices, IInfoLog::ELevel::Info, FString::Printf(TEXT("More than one codec found for Representation, using only first codec.")));
@@ -1408,6 +1449,48 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 
 				TSharedPtrTS<FRepresentation> Representation = MakeSharedTS<FRepresentation>();
 				Representation->Representation = MPDRepresentation;
+
+				// Before checking for supported codecs we need to check if this is probably a subtitle representation.
+				// These can come in several flavors and several TTML profiles for which checking just the codec is not
+				// likely to cover all cases.
+				FString MimeType = MPDRepresentation->GetMimeType();
+				if (MimeType.IsEmpty())
+				{
+					MimeType = MPDAdaptationSet->GetMimeType();
+				}
+				// Mime type is mandatory on representation or adaptation set level. So if there is none we may ignore this representation as it's an authoring error.
+				if (MimeType.IsEmpty())
+				{
+					LogMessage(PlayerSessionServices, IInfoLog::ELevel::Info, FString::Printf(TEXT("Could not mandatory Representation@mimeType or the enclosing AdaptationSet. Ignoring this Representation.")));
+					continue;
+				}
+				// Sadly we cannot rely on either @contentType or a Role to be set.
+				if (MimeType.Equals(SubtitleMimeType_Streamed))
+				{
+					// application/mp4 needs to have @codecs set.
+				}
+				else if (MimeType.Equals(SubtitleMimeType_SideloadedTTML))
+				{
+					if (MPDCodecs.Num() == 0)
+					{
+						MPDCodecs.Emplace(TEXT("stpp"));
+					}
+					Representation->bIsSideloadedSubtitle = true;
+				}
+				else if (MimeType.Equals(SubtitleMimeType_SideloadedVTT))
+				{
+					if (MPDCodecs.Num() == 0)
+					{
+						MPDCodecs.Emplace(TEXT("wvtt"));
+					}
+					Representation->bIsSideloadedSubtitle = true;
+				}
+
+				if (MPDCodecs.Num() == 0)
+				{
+					LogMessage(PlayerSessionServices, IInfoLog::ELevel::Info, FString::Printf(TEXT("Neither @codecs found on Representation or AdaptationSet level, ignoring this Representation.")));
+					continue;
+				}
 				if (!Representation->CodecInfo.ParseFromRFC6381(MPDCodecs[0]))
 				{
 					LogMessage(PlayerSessionServices, IInfoLog::ELevel::Info, FString::Printf(TEXT("Could not parse Representation@codecs \"%s\", possibly unsupported codec. Ignoring this Representation."), *MPDCodecs[0]));
@@ -1416,6 +1499,7 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 
 				Representation->ID = MPDRepresentation->GetID();
 				Representation->Bitrate = MPDRepresentation->GetBandwidth();
+				Representation->CodecInfo.SetBitrate(Representation->Bitrate);
 
 				// Propagate the language code from the AdaptationSet into the codec info
 				Representation->CodecInfo.SetStreamLanguageCode(AdaptationSet->Language);
@@ -1454,6 +1538,13 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 						Representation->CodecInfo.SetAspectRatio(FStreamCodecInformation::FAspectRatio(MPDAdaptationSet->GetSAR().GetNumerator(), MPDAdaptationSet->GetSAR().GetDenominator()));
 					}
 
+					// Can be used?
+					if (StreamFilter && !StreamFilter->CanDecodeStream(Representation->CodecInfo))
+					{
+						LogMessage(PlayerSessionServices, IInfoLog::ELevel::Verbose, FString::Printf(TEXT("Video representation \"%s\" in Period \"%s\" rejected by application."), *MPDRepresentation->GetID(), *Period->GetID()));
+						continue;
+					}
+
 					// Update the video codec in the adaptation set with that of the highest bandwidth.
 					if (MPDRepresentation->GetBandwidth() > AdaptationSet->MaxBandwidth)
 					{
@@ -1483,20 +1574,14 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 					AudioChannelConfigurations.Append(MPDAdaptationSet->GetEssentialProperties());
 					for(int32 nACC=0, nACCMax=AudioChannelConfigurations.Num(); nACC<nACCMax; ++nACC)
 					{
-						if (AudioChannelConfigurations[nACC]->GetSchemeIdUri().Equals(AudioChannelConfigurationLegacy))		// "urn:mpeg:dash:23003:3:audio_channel_configuration:2011"
+						if (AudioChannelConfigurations[nACC]->GetSchemeIdUri().Equals(AudioChannelConfigurationLegacy) ||	// "urn:mpeg:dash:23003:3:audio_channel_configuration:2011"
+							AudioChannelConfigurations[nACC]->GetSchemeIdUri().Equals(AudioChannelConfiguration))			// "urn:mpeg:mpegB:cicp:ChannelConfiguration"
 						{
 							// Value = channel config as per 23001-8:2013 table 8
-							int32 v = 0;
+							uint32 v = 0;
 							LexFromString(v, *AudioChannelConfigurations[nACC]->GetValue());
-							Representation->CodecInfo.SetNumberOfChannels(v);
-							break;
-						}
-						else if (AudioChannelConfigurations[nACC]->GetSchemeIdUri().Equals(AudioChannelConfiguration))		// "urn:mpeg:mpegB:cicp:ChannelConfiguration"
-						{
-							// Value = channel config as per 23001-8:2013 table 8
-							int32 v = 0;
-							LexFromString(v, *AudioChannelConfigurations[nACC]->GetValue());
-							Representation->CodecInfo.SetNumberOfChannels(v);
+							Representation->CodecInfo.SetChannelConfiguration(v);
+							Representation->CodecInfo.SetNumberOfChannels(MPEG::AACUtils::GetNumberOfChannelsFromChannelConfiguration(v));
 							break;
 						}
 						else if (AudioChannelConfigurations[nACC]->GetSchemeIdUri().Equals(AudioChannelConfigurationDolby))	// "tag:dolby.com,2014:dash:audio_channel_configuration:2011"
@@ -1521,6 +1606,13 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 						}
 					}
 
+					// Can be used?
+					if (StreamFilter && !StreamFilter->CanDecodeStream(Representation->CodecInfo))
+					{
+						LogMessage(PlayerSessionServices, IInfoLog::ELevel::Verbose, FString::Printf(TEXT("Audio representation \"%s\" in Period \"%s\" rejected by application."), *MPDRepresentation->GetID(), *Period->GetID()));
+						continue;
+					}
+
 					// Update the audio codec in the adaptation set with that of the highest bandwidth.
 					if (MPDRepresentation->GetBandwidth() > AdaptationSet->MaxBandwidth)
 					{
@@ -1530,26 +1622,40 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 				}
 				else if (Representation->CodecInfo.IsSubtitleCodec())
 				{
-					// ...
+					// There is a possibility that the MPD uses "video/mp4" instead of "application/mp4".
+					if (MimeType.Equals(TEXT("video/mp4")))
+					{
+						MimeType = SubtitleMimeType_Streamed;
+					}
+					// Override the mime type. This is needed for sideloaded subtitles.
+					Representation->CodecInfo.SetMimeType(MimeType);
 
-					if (MPDRepresentation->GetBandwidth() > AdaptationSet->MaxBandwidth)
+					// Can be used?
+					// For sideloaded subtitles we only need the mime type while for regular subtitles we need the codec.
+					FString CodecMimeType, CodecName;
+					if (Representation->IsSideloadedSubtitle())
+					{
+						CodecMimeType = Representation->GetCodecInformation().GetMimeType();
+					}
+					else
+					{
+						CodecName = Representation->GetCodecInformation().GetCodecSpecifierRFC6381();
+					}
+					if (StreamFilter && !StreamFilter->CanDecodeSubtitle(CodecMimeType, CodecName))
+					{
+						LogMessage(PlayerSessionServices, IInfoLog::ELevel::Verbose, FString::Printf(TEXT("Subtitle representation \"%s\" in Period \"%s\" cannot be decoded, ignoring."), *MPDRepresentation->GetID(), *Period->GetID()));
+						continue;
+					}
+
+					if (Representation->bIsSideloadedSubtitle || MPDRepresentation->GetBandwidth() > AdaptationSet->MaxBandwidth)
 					{
 						AdaptationSet->MaxBandwidth = (int32) MPDRepresentation->GetBandwidth();
+						AdaptationSet->Codec = Representation->CodecInfo;
 					}
-					AdaptationSet->Codec = Representation->CodecInfo;
 				}
 				else
 				{
-					// ... ?
-				}
-
-				// Let the player decide if this representation can actually be used.
-				bool bCanDecodeStream = true;
-				IPlayerStreamFilter* StreamFilter = PlayerSessionServices->GetStreamFilter();
-				if (StreamFilter && !StreamFilter->CanDecodeStream(Representation->CodecInfo))
-				{
-					// Skip it then.
-					LogMessage(PlayerSessionServices, IInfoLog::ELevel::Verbose, FString::Printf(TEXT("Representation \"%s\" in Period \"%s\" rejected by application."), *MPDRepresentation->GetID(), *Period->GetID()));
+					LogMessage(PlayerSessionServices, IInfoLog::ELevel::Verbose, FString::Printf(TEXT("Unknown type of representation \"%s\" in Period \"%s\", ignoring."), *MPDRepresentation->GetID(), *Period->GetID()));
 					continue;
 				}
 
@@ -1590,6 +1696,104 @@ void FManifestDASHInternal::PreparePeriodAdaptationSets(TSharedPtrTS<FPeriod> Pe
 				Period->AdaptationSets.Emplace(AdaptationSet);
 			}
 		}
+
+		// Go over the AdaptationSets that are now remaining and check if they are set to switch between.
+		for(auto &AdaptationSet : Period->GetAdaptationSets())
+		{
+			TArray<TSharedPtrTS<FDashMPD_DescriptorType>> SwitchedSets;
+			TSharedPtrTS<FDashMPD_AdaptationSetType> MPDAdaptationSet = AdaptationSet->AdaptationSet.Pin();
+			SwitchedSets = MPDAdaptationSet->GetSupplementalProperties().FilterByPredicate([](const TSharedPtrTS<FDashMPD_DescriptorType>& d)
+				{ return d->GetSchemeIdUri().Equals(TEXT("urn:mpeg:dash:adaptation-set-switching:2016")); });
+			if (SwitchedSets.Num())
+			{
+				const TCHAR* const CommaDelimiter = TEXT(",");
+				for(auto &SwitchDesc : SwitchedSets)
+				{
+					// Get the IDs of the switched-to adaptation sets from the comma separated @value of the descriptor.
+					TArray<FString> SwitchedToIDs;
+					SwitchDesc->GetValue().ParseIntoArray(SwitchedToIDs, CommaDelimiter, true);
+					for(auto &SwitchID : SwitchedToIDs)
+					{
+						// The ID is the ID of the AdaptationSet in the MPD, not the one of the FAdaptationSet!
+						// Locate the FAdaptationSet that wraps the MPD's AdaptationSet with the given ID.
+						// This may be NULL when that AdaptationSet was not usable or flat out does not exist.
+						TSharedPtrTS<FAdaptationSet> SwitchedAS = Period->GetAdaptationSetByMPDID(SwitchID.TrimStartAndEnd());
+						if (SwitchedAS.IsValid())
+						{
+							// Check that this is not the same adaptation set we are currently handling!
+							if (SwitchedAS == AdaptationSet)
+							{
+								LogMessage(PlayerSessionServices, IInfoLog::ELevel::Warning, FString::Printf(TEXT("AdaptationSet references self in adaptation-set-switching property!")));
+								continue;
+							}
+							// Cross reference the switch-to and switching-from sets.
+							AdaptationSet->SwitchToSetIDs.AddUnique(SwitchedAS->GetUniqueIdentifier());
+							SwitchedAS->SwitchedFromSetIDs.AddUnique(AdaptationSet->GetUniqueIdentifier());
+						}
+					}
+				}
+			}
+		}
+
+		// Build special switching AdaptationSets that aggregate all representations from the referenced sets.
+		TArray<TSharedPtrTS<FAdaptationSet>> SwitchingAdaptationSets;
+		for(auto &AdaptationSet : Period->GetAdaptationSets())
+		{
+			TArray<FString> SwitchGroupIDs;
+			struct FSwitchGroupBuilder
+			{
+				static void AddSet(TArray<FString>& SwitchGroupIDs, const TSharedPtrTS<const FPeriod>& P, const TSharedPtrTS<FAdaptationSet>& AS)
+				{
+					if (AS.IsValid() && !SwitchGroupIDs.Contains(AS->GetUniqueIdentifier()))
+					{
+						SwitchGroupIDs.Add(AS->GetUniqueIdentifier());
+						for(auto &N : AS->GetSwitchToSetIDs())
+						{
+							AddSet(SwitchGroupIDs, P, P->GetAdaptationSetByUniqueID(N));
+						}
+						for(auto &N : AS->GetSwitchedFromSetIDs())
+						{
+							AddSet(SwitchGroupIDs, P, P->GetAdaptationSetByUniqueID(N));
+						}
+					}
+				}
+			};
+			// If this set is referencing others or is itself being referenced
+			if (!AdaptationSet->bIsInSwitchGroup && (AdaptationSet->GetSwitchToSetIDs().Num() || AdaptationSet->GetSwitchedFromSetIDs().Num()))
+			{
+				FSwitchGroupBuilder::AddSet(SwitchGroupIDs, Period, AdaptationSet);
+
+				TSharedPtrTS<FAdaptationSet> SwitchSet = MakeSharedTS<FAdaptationSet>();
+				SwitchSet->UniqueSequentialSetIndex = nAdapt++;
+				SwitchSet->bIsSwitchGroup = true;
+				SwitchSet->SwitchToSetIDs = MoveTemp(SwitchGroupIDs);
+				SwitchSet->bIsUsable = true;
+				SwitchSet->bIsEnabled = true;
+				for(int32 i=0; i<SwitchSet->SwitchToSetIDs.Num(); ++i)
+				{
+					TSharedPtrTS<FAdaptationSet> SwitchedAS = Period->GetAdaptationSetByUniqueID(SwitchSet->SwitchToSetIDs[i]);
+					SwitchedAS->bIsInSwitchGroup = true;
+					if (i == 0)
+					{
+						SwitchSet->Roles = SwitchedAS->Roles;
+						SwitchSet->Accessibilities = SwitchedAS->Accessibilities;
+						SwitchSet->PAR = SwitchedAS->PAR;
+						SwitchSet->Language = SwitchedAS->Language;
+					}
+					if (SwitchedAS->MaxBandwidth > SwitchSet->MaxBandwidth)
+					{
+						SwitchSet->MaxBandwidth = SwitchedAS->MaxBandwidth;
+						SwitchSet->Codec = SwitchedAS->Codec;
+					}
+
+					SwitchSet->Representations.Append(SwitchedAS->Representations);
+				}
+				// Note: We do not aggregate encryption information here. These get accessed through the original adaptation sets.
+				SwitchingAdaptationSets.Emplace(MoveTemp(SwitchSet));
+			}
+		}
+		Period->AdaptationSets.Append(MoveTemp(SwitchingAdaptationSets));
+
 		Period->SetHasBeenPrepared(true);
 	}
 }
@@ -1918,6 +2122,31 @@ FTimeValue FManifestDASHInternal::CalculateDistanceToLiveEdge() const
 	if (!Distance.IsValid())
 	{
 		Distance = MPDRoot->GetSuggestedPresentationDelay();
+
+		/*
+			FIXME:
+				This fudge is here to prevent the use of the live segment.
+				At the moment the HTTP module only allows us access to the data once the segment has been fetched in its entirety,
+				which tends to be too late, especially if the current segment is only used partially (we may have a 2s segment
+				fetched but start playback 1s into is, giving us only 1s worth of usable data).
+				For real low-latency playback chunked transfer is needed with access to the partially downloaded data.
+
+				If the @suggestedPresentationDelay is set equal to or shorter than the @minBufferTime, which we assume to indicate the duration
+				of a single segment we would need low-latency.
+				Since we cannot force the MPD@suggestedPresentationDelay to be set such that none of this will be a problem
+				we adjust that value to twice the MPD@minBufferTime until we can get chunked transfer and partial data access.
+		*/
+			FTimeValue mbt_times2 = MPDRoot->GetMinBufferTime() * 2;
+			if (Distance < mbt_times2)
+			{
+				if (!bWarnedAboutTooSmallSuggestedPresentationDelay)
+				{
+					bWarnedAboutTooSmallSuggestedPresentationDelay = true;
+					LogMessage(PlayerSessionServices, IInfoLog::ELevel::Info, FString::Printf(TEXT("Adjusting the MPD@suggestedPresentationDelay from %.3f seconds to %.3f to avoid Live edge buffering issues"), Distance.GetAsSeconds(), mbt_times2.GetAsSeconds()));
+				}
+				Distance = mbt_times2;
+			}
+
 	}
 	// If not set see if there is an MPD@maxSegmentDuration and use that.
 	if (!Distance.IsValid())
@@ -2065,7 +2294,7 @@ FTimeRange FManifestDASHInternal::GetSeekableTimeRange() const
 		// future segments already (a pre-existing presentation made available over time) we would not
 		// be able to fetch them anyway on account of their availability window not being valid yet.
 		// Typically we would want to play some distance away from the bleeding Live edge.
-		bool bIsUpdating = AreUpdatesExpected();
+		bool bIsUpdating = AreUpdatesExpected() || EpicEventType == EEpicEventType::Dynamic;
 		FTimeValue Distance = bIsUpdating ? CalculateDistanceToLiveEdge() : FixedSeekEndDistance;
 		FTimeValue Now = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
 		FTimeValue LastEnd = GetLastPeriodEndTime();
@@ -2195,6 +2424,13 @@ void FManifestDASHInternal::EndPresentationAt(const FTimeValue& EndsAt, const FS
 
 
 
+void FManifestDASHInternal::PrepareDefaultStartTime()
+{
+	FTimeRange PlaybackRange = GetPlayTimesFromURI();
+	DefaultStartTime = PlaybackRange.Start;
+}
+
+
 FTimeRange FManifestDASHInternal::GetPlayTimesFromURI() const
 {
 	FTimeRange FromTo;
@@ -2217,7 +2453,7 @@ FTimeRange FManifestDASHInternal::GetPlayTimesFromURI() const
 		return FromTo;
 	}
 
-	FTimeRange Seekable = GetSeekableTimeRange();
+	FTimeRange AvailableTimeRange = GetTotalTimeRange();
 	// Is the time specified as a POSIX time?
 	TArray<FString> TimeRange;
 	const TCHAR* const TimeDelimiter = TEXT(",");
@@ -2225,36 +2461,59 @@ FTimeRange FManifestDASHInternal::GetPlayTimesFromURI() const
 	{
 		Time.RightChopInline(6);
 		Time.ParseIntoArray(TimeRange, TimeDelimiter, false);
-		// There needs to be a start time in the range. If there is only an end time we do nothing.
+		FTimeValue Now = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
 		if (TimeRange.Num() && !TimeRange[0].IsEmpty())
 		{
 			// Is the start time the special time 'now'?
 			if (TimeRange[0].Equals(TEXT("now")))
 			{
-				FTimeValue Now = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
-				/*
-				FTimeValue LastEnd = GetLastPeriodEndTime();
-				if (LastEnd.IsValid() && Now > LastEnd)
+				// A static event will not use an updated wallclock NOW, so if 'now' is used we do an init
+				// with the current time.
+				if (EpicEventType == EEpicEventType::Static)
 				{
-					LastEnd = Now;
+					FromTo.Start = Now;
 				}
-				*/
-				FromTo.Start = Now;
+				else
+				{
+					// 'now' is dynamic. The time will continue to flow between here where we set the value and
+					// the moment playback will begin with buffered data.
+					// We do not lock 'now' with the current time but leave it unset. This results in the start
+					// time to be the 
+					FromTo.Start.SetToInvalid();
+				}
 			}
 			else
 			{
-				int64 s = 0;
-				LexFromString(s, *TimeRange[0]);
-				FromTo.Start.SetFromSeconds(s);
+				FTimeValue s;
+				if (UnixEpoch::ParseFloatString(s, *TimeRange[0]))
+				{
+					FromTo.Start = s;
+				}
+			}
+		}
+		if (TimeRange.Num() > 1 && !TimeRange[1].IsEmpty())
+		{
+			if (TimeRange[1].Equals(TEXT("now")))
+			{
+				FromTo.End = Now;
+			}
+			else
+			{
+				FTimeValue e;
+				if (UnixEpoch::ParseFloatString(e, *TimeRange[1]))
+				{
+					FromTo.End= e;
+				}
 			}
 		}
 	}
 	else
 	{
+		FTimeValue PeriodStart;
 		// If there is no period specified then the period is the one with the earliest start time
 		if (PeriodID.IsEmpty())
 		{
-			FromTo.Start = Periods[0]->GetStart();
+			PeriodStart = Periods[0]->GetStart();
 		}
 		else
 		{
@@ -2263,31 +2522,37 @@ FTimeRange FManifestDASHInternal::GetPlayTimesFromURI() const
 			{
 				if (Periods[i]->GetID().Equals(PeriodID))
 				{
-					FromTo.Start = Periods[i]->GetStart();
+					PeriodStart = Periods[i]->GetStart();
 					break;
 				}
 			}
 			// If the named period wasn't found use the first one.
 			if (!FromTo.Start.IsValid())
 			{
-				FromTo.Start = Periods[0]->GetStart();
+				PeriodStart = Periods[0]->GetStart();
 			}
 		}
 
-		FromTo.Start += GetAnchorTime();
+		PeriodStart += GetAnchorTime();
+		FromTo.Start = PeriodStart;
 		// If there is no t specified we are done, otherwise we need to parse it.
 		if (!Time.IsEmpty())
 		{
+			FTimeValue Offset;
 			// We need to parse out the 't' and add it to the period.
 			Time.ParseIntoArray(TimeRange, TimeDelimiter, false);
-			// There needs to be a start time in the range. If there is only an end time we do nothing.
 			if (TimeRange.Num() && !TimeRange[0].IsEmpty())
 			{
-				// When there is no POSIX time these values here are NPT
-				FTimeValue Offset;
 				if (RFC2326::ParseNPTTime(Offset, TimeRange[0]))
 				{
-					FromTo.Start += Offset;
+					FromTo.Start = PeriodStart + Offset;
+				}
+			}
+			if (TimeRange.Num() > 1 && !TimeRange[1].IsEmpty())
+			{
+				if (RFC2326::ParseNPTTime(Offset, TimeRange[1]))
+				{
+					FromTo.End = PeriodStart + Offset;
 				}
 			}
 		}
@@ -2295,14 +2560,14 @@ FTimeRange FManifestDASHInternal::GetPlayTimesFromURI() const
 	// Need to clamp this into the seekable range to prevent any issues.
 	if (FromTo.Start.IsValid())
 	{
-		if (Seekable.Start.IsValid() && FromTo.Start < Seekable.Start)
+		if (AvailableTimeRange.Start.IsValid() && FromTo.Start < AvailableTimeRange.Start)
 		{
-			FromTo.Start = Seekable.Start;
+			FromTo.Start = AvailableTimeRange.Start;
 		}
 		/*
-		else if (Seekable.End.IsValid() && FromTo.Start > Seekable.End)
+		else if (AvailableTimeRange.End.IsValid() && FromTo.Start > AvailableTimeRange.End)
 		{
-			FromTo.Start = Seekable.End;
+			FromTo.Start = AvailableTimeRange.End;
 		}
 		*/
 	}
@@ -2311,13 +2576,12 @@ FTimeRange FManifestDASHInternal::GetPlayTimesFromURI() const
 
 FTimeValue FManifestDASHInternal::GetDefaultStartTime() const
 {
-	FTimeRange FromTo = GetPlayTimesFromURI();
-	return FromTo.Start;
+	return DefaultStartTime;
 }
 
 void FManifestDASHInternal::ClearDefaultStartTime()
 {
-	URLFragmentComponents.Empty();
+	DefaultStartTime.SetToInvalid();
 }
 
 

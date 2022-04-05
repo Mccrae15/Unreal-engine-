@@ -3,38 +3,22 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Input/Reply.h"
-#include "Widgets/SWidget.h"
 #include "DetailTreeNode.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/DeclarativeSyntaxSupport.h"
-#include "SDetailsViewBase.h"
+#include "PropertyCustomizationHelpers.h"
 #include "SDetailTableRowBase.h"
-#include "DragAndDrop/DecoratedDragDropOp.h"
+#include "SDetailsViewBase.h"
 #include "ScopedTransaction.h"
+
+#include "DragAndDrop/DecoratedDragDropOp.h"
+#include "Framework/Commands/Commands.h"
+#include "Input/Reply.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/Views/STableViewBase.h"
 
 class IDetailKeyframeHandler;
 struct FDetailLayoutCustomization;
 class SDetailSingleItemRow;
-
-class SConstrainedBox : public SCompoundWidget
-{
-public:
-	SLATE_BEGIN_ARGS(SConstrainedBox)
-		: _MinWidth()
-		, _MaxWidth()
-	{}
-	SLATE_DEFAULT_SLOT(FArguments, Content)
-		SLATE_ATTRIBUTE(TOptional<float>, MinWidth)
-		SLATE_ATTRIBUTE(TOptional<float>, MaxWidth)
-	SLATE_END_ARGS()
-
-	void Construct(const FArguments& InArgs);
-	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
-private:
-	TAttribute< TOptional<float> > MinWidth;
-	TAttribute< TOptional<float> > MaxWidth;
-};
 
 class SArrayRowHandle : public SCompoundWidget
 {
@@ -52,15 +36,11 @@ public:
 		return FReply::Handled().DetectDrag(SharedThis(this), EKeys::LeftMouseButton);
 	};
 
-
 	FReply OnDragDetected(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
-	TSharedPtr<class FArrayRowDragDropOp> CreateDragDropOperation(TSharedPtr<SDetailSingleItemRow> InRow);
 
 private:
 	TWeakPtr<SDetailSingleItemRow> ParentRow;
 };
-
-
 
 /**
  * A widget for details that span the entire tree row and have no columns                                                              
@@ -80,41 +60,72 @@ public:
 	 */
 	void Construct( const FArguments& InArgs, FDetailLayoutCustomization* InCustomization, bool bHasMultipleColumns, TSharedRef<FDetailTreeNode> InOwnerTreeNode, const TSharedRef<STableViewBase>& InOwnerTableView );
 
-	void SetIsDragDrop(bool bInIsDragDrop);
+	// ~Begin SWidget Interface
+	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	// ~Begin End Interface
 
+	TSharedPtr<FDragDropOperation> CreateDragDropOperation();
+
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime);
 protected:
 	virtual bool OnContextMenuOpening( FMenuBuilder& MenuBuilder ) override;
 private:
-	void OnLeftColumnResized( float InNewWidth );
 	void OnCopyProperty();
+	void OnCopyPropertyDisplayName();
 	void OnPasteProperty();
 	bool CanPasteProperty() const;
-	const FSlateBrush* GetBorderImage() const;
-	TSharedRef<SWidget> CreateExtensionWidget( TSharedRef<SWidget> ValueWidget, FDetailLayoutCustomization& InCustomization, TSharedRef<FDetailTreeNode> InTreeNode );
-	TSharedRef<SWidget> CreateKeyframeButton( FDetailLayoutCustomization& InCustomization, TSharedRef<FDetailTreeNode> InTreeNode );
-	bool IsKeyframeButtonEnabled(TSharedRef<FDetailTreeNode> InTreeNode) const;
-	FReply OnAddKeyframeClicked();
+	FSlateColor GetOuterBackgroundColor() const;
+	FSlateColor GetInnerBackgroundColor() const;
+
+	void CreateGlobalExtensionWidgets(TArray<FPropertyRowExtensionButton>& ExtensionButtons) const;
+	void PopulateExtensionWidget();
+	void OnResetToDefaultClicked() const;
+	bool IsResetToDefaultEnabled() const;
+
 	bool IsHighlighted() const;
 
-	const FSlateBrush* GetFavoriteButtonBrush() const;
-	FReply OnFavoriteToggle();
+	void OnFavoriteMenuToggle();
+	bool CanFavorite() const;
+	bool IsFavorite() const;
 
-	void OnArrayDragEnter(const FDragDropEvent& DragDropEvent);
-	void OnArrayDragLeave(const FDragDropEvent& DragDropEvent);
-	FReply OnArrayDrop(const FDragDropEvent& DragDropEvent);
-	FReply OnArrayHeaderDrop(const FDragDropEvent& DragDropEvent);
+	/** UIActions to help populate the PropertyEditorPermissionList, which must first be turned on through FPropertyEditorPermissionList::Get().SetShouldShowMenuEntries */
+	void CopyRowNameText() const;
+	void OnToggleAllowList() const;
+	bool IsAllowListChecked() const;
+	void OnToggleDenyList() const;
+	bool IsDenyListChecked() const;
 
+	void OnArrayOrCustomDragLeave(const FDragDropEvent& DragDropEvent);
+	FReply OnArrayAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TSharedPtr<FDetailTreeNode> TargetItem);
+	FReply OnArrayHeaderAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TSharedPtr<FDetailTreeNode> TargetItem);
+
+	TOptional<EItemDropZone> OnArrayCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TSharedPtr< FDetailTreeNode > Type);
+
+	FReply OnCustomAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TSharedPtr<FDetailTreeNode> TargetItem);
+	TOptional<EItemDropZone> OnCustomCanAcceptDrop(const FDragDropEvent& DragDropEvent, EItemDropZone DropZone, TSharedPtr<FDetailTreeNode> Type);
+
+	/** Checks if the current drop event is being dropped into a valid location
+	 */
+	bool CheckValidDrop(const TSharedPtr<SDetailSingleItemRow> RowPtr, EItemDropZone DropZone) const;
+	
 	TSharedPtr<FPropertyNode> GetPropertyNode() const;
 	TSharedPtr<IPropertyHandle> GetPropertyHandle() const;
+
+	bool UpdateResetToDefault();
 private:
-	TWeakPtr<IDetailKeyframeHandler> KeyframeHandler;
 	/** Customization for this widget */
 	FDetailLayoutCustomization* Customization;
-	FDetailColumnSizeData ColumnSizeData;
+	FDetailWidgetRow WidgetRow;
 	bool bAllowFavoriteSystem;
-	bool bIsHoveredDragTarget;
-	bool bIsDragDropObject;
+	bool bCachedResetToDefaultEnabled;
 	TSharedPtr<FPropertyNode> SwappablePropertyNode;
+	TSharedPtr<SButton> ExpanderArrow;
+	TWeakPtr<FDragDropOperation> DragOperation; // last drag initiated by this widget
+	FUIAction CopyAction;
+	FUIAction PasteAction;
+
+	/** Animation curve for displaying pulse */
+	FCurveSequence PulseAnimation;
 };
 
 class FArrayRowDragDropOp : public FDecoratedDragDropOp
@@ -124,14 +135,11 @@ public:
 
 	FArrayRowDragDropOp(TSharedPtr<SDetailSingleItemRow> InRow);
 
-	TSharedPtr<SWidget> DecoratorWidget;
+	/** Inits the tooltip, needs to be called after constructing */
+	void Init();
 
-	virtual void OnDrop(bool bDropWasHandled, const FPointerEvent& MouseEvent) override;
+	/** Update the drag tool tip indicating whether the current drop target is valid */
+	void SetValidTarget(bool IsValidTarget);
 
-	virtual TSharedPtr<SWidget> GetDefaultDecorator() const override
-	{
-		return DecoratorWidget;
-	}
-
-	TWeakPtr<class SDetailSingleItemRow> Row;
+	TWeakPtr<SDetailSingleItemRow> Row;
 };

@@ -15,6 +15,8 @@ class UDisplayClusterConfigurationViewport;
 class SDisplayClusterConfiguratorNewClusterItemDialog;
 struct FDisplayClusterConfigurationRectangle;
 
+#define NDISPLAY_DEFAULT_CLUSTER_HOST "127.0.0.1"
+
 class FDisplayClusterConfiguratorClusterUtils
 {
 public:
@@ -26,7 +28,8 @@ public:
 	 * @param PresetHost - Optional initial host string to configure the new cluster node with in the dialog box.
 	 * @return The newly created cluster node, or null if the user cancelled out of the dialog box.
 	 */
-	static UDisplayClusterConfigurationClusterNode* CreateNewClusterNodeFromDialog(const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& Toolkit, UDisplayClusterConfigurationCluster* Cluster, const FDisplayClusterConfigurationRectangle& PresetRect, FString PresetHost = "");
+	static UDisplayClusterConfigurationClusterNode* CreateNewClusterNodeFromDialog(const TSharedRef<FDisplayClusterConfiguratorBlueprintEditor>& Toolkit, UDisplayClusterConfigurationCluster* Cluster, const FDisplayClusterConfigurationRectangle& PresetRect,
+		FString PresetHost = NDISPLAY_DEFAULT_CLUSTER_HOST);
 
 	/**
 	 * Creates a new viewport, presenting a dialog box to allow the user to customize its properties, and adds it to the user chosen cluster node.
@@ -130,11 +133,11 @@ public:
 	static FString GetClusterNodeName(UDisplayClusterConfigurationClusterNode* ClusterNode);
 
 	/**
-	 * Determines if a cluster node is the master node in its cluster.
+	 * Determines if a cluster node is the primary node in its cluster.
 	 * @param ClusterNode - The cluster node to check.
-	 * @return true if the node is the master; otherwise, false.
+	 * @return true if the node is the primary; otherwise, false.
 	 */
-	static bool IsClusterNodeMaster(UDisplayClusterConfigurationClusterNode* ClusterNode);
+	static bool IsClusterNodePrimary(UDisplayClusterConfigurationClusterNode* ClusterNode);
 
 	/**
 	 * Gets a unique name for a cluster node owned by the specified cluster.
@@ -170,11 +173,11 @@ public:
 	static bool RenameClusterNode(UDisplayClusterConfigurationClusterNode* ClusterNode, FString NewClusterNodeName);
 
 	/**
-	 * Sets the cluster node as the master node.
-	 * @param ClusterNode - The cluster node to set as the master node
-	 * @return true if the cluster node was successfully set as the master node
+	 * Sets the cluster node as the primary node.
+	 * @param ClusterNode - The cluster node to set as the primary node
+	 * @return true if the cluster node was successfully set as the primary node
 	 */
-	static bool SetClusterNodeAsMaster(UDisplayClusterConfigurationClusterNode* ClusterNode);
+	static bool SetClusterNodeAsPrimary(UDisplayClusterConfigurationClusterNode* ClusterNode);
 
 	/**
 	 * Gets the name that the viewport is stored under in its parent cluster node.
@@ -237,6 +240,17 @@ public:
 	static TArray<UObject*> PasteClusterItemsFromClipboard(const TArray<UObject*>& TargetClusterItems, TOptional<FVector2D> PasteLocation = TOptional<FVector2D>());
 
 private:
+	/**
+	 * Gets a unique name for something given a list of existing names.
+	 * @param InitialName - The initial name the object wants
+	 * @param UsedNames - The list of names that have already been used
+	 * @param Class - The class to generate a name for
+	 * @param Parent - The parent to check for in-memory objects that collide with the name
+	 * @param bAddZero - Whether to add an "_0" to the initial name if it is unique
+	 * @returns A unique name for the object
+	 */
+	static FString GetUniqueName(const FString& InitialName, const TArray<FString>& UsedNames, const UClass* Class, UObject* Parent, bool bAddZero = false);
+	
 	static const FVector2D NewClusterItemDialogSize;
 	static const FString DefaultNewHostName;
 	static const FString DefaultNewClusterNodeName;

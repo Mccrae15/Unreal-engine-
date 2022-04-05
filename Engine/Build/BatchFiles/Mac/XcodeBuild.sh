@@ -4,20 +4,22 @@
 # (and can take the same arguments) but performs some interpretation of arguments that come from Xcode
 # Values for $ACTION: "" = building, "clean" = cleaning
 
-# Setup Environment & Mono
-source Engine/Build/BatchFiles/Mac/SetupEnvironment.sh -mono Engine/Build/BatchFiles/Mac
+# Setup Environment
+source  Engine/Build/BatchFiles/Mac/SetupEnvironment.sh -dotnet Engine/Build/BatchFiles/Mac
+
+# remove environment variable passed from xcode which also has meaning to dotnet, breaking the build
+unset TARGETNAME
 
 # If this is a source drop of the engine make sure that the UnrealBuildTool is up-to-date
 if [ ! -f Engine/Build/InstalledBuild.txt ]; then
-	# When invoked from within Xcode, TARGETNAME may be set to UE4_Build, which may cause xbuild to look for a
-	# non-existent UE4_Build.dll - rather than DotNETUtilities.dll - when building UnrealBuildTool.csproj
-	# Unsetting this variable allows the build to complete correctly.
-	unset TARGETNAME
-	if ! xbuild /property:Configuration=Development /verbosity:quiet /nologo /p:NoWarn=1591 Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj; then
-		echo "Failed to build to build tool (UnrealBuildTool)"
+	dotnet build Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj -c Development -v quiet
+
+	if [ $? -ne 0 ]; then
+		echo "Failed to build the build tool (UnrealBuildTool)"
 		exit 1
 	fi
 fi
+
 
 #echo "Raw Args: $*"
 
@@ -101,15 +103,15 @@ if [ "$ACTION" == "build" ]; then
 
 	# Build SCW if this is an editor target
 	if [[ "$TARGET" == *"Editor" ]]; then
-		mono Engine/Binaries/DotNET/UnrealBuildTool.exe ShaderCompileWorker Mac Development
+		dotnet Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll ShaderCompileWorker Mac Development
 	fi
 
 elif [ $ACTION == "clean" ]; then
 	AdditionalFlags="-clean"
 fi
 
-echo Running Engine/Binaries/DotNET/UnrealBuildTool.exe $TARGET $PLATFORM $CONFIGURATION "$TRAILINGARGS" $UBT_ARCHFLAG $AdditionalFlags
-mono Engine/Binaries/DotNET/UnrealBuildTool.exe $TARGET $PLATFORM $CONFIGURATION "$TRAILINGARGS" $UBT_ARCHFLAG $AdditionalFlags
+echo Running dotnet Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll $TARGET $PLATFORM $CONFIGURATION "$TRAILINGARGS" $UBT_ARCHFLAG $AdditionalFlags
+dotnet Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll $TARGET $PLATFORM $CONFIGURATION "$TRAILINGARGS" $UBT_ARCHFLAG $AdditionalFlags
 
 ExitCode=$?
 if [ $ExitCode -eq 254 ] || [ $ExitCode -eq 255 ] || [ $ExitCode -eq 2 ]; then

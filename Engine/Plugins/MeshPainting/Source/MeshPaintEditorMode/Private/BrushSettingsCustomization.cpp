@@ -16,6 +16,7 @@
 #include "PropertyCustomizationHelpers.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBox.h"
+#include "SWarningOrErrorBox.h"
 #include "ScopedTransaction.h"
 #include "MeshPaintHelpers.h"
 #include "MeshVertexPaintingTool.h"
@@ -162,7 +163,7 @@ FReply FVertexPaintingSettingsCustomization::OnSwapColorsClicked(TSharedRef<IPro
 {
 	FScopedTransaction Transaction(NSLOCTEXT("VertexPaintSettings", "SwapColorsTransation", "Swap paint and erase colors"));
 
-	UMeshPaintModeHelpers::SwapVertexColors();
+	GEditor->GetEditorSubsystem<UMeshPaintModeSubsystem>()->SwapVertexColors();
 	UMeshVertexPaintingToolProperties* Settings = UMeshPaintMode::GetVertexToolProperties();
 	if (Settings)
 	{
@@ -289,7 +290,7 @@ void FColorPaintingSettingsCustomization::CustomizeDetails(IDetailLayoutBuilder&
 	ColorCategory.AddCustomRow(NSLOCTEXT("LODPainting", "LODPaintingLabel", "LOD Model Painting"))
 		.WholeRowContent()
 		[
-			SNew(SBorder)
+			SNew(SWarningOrErrorBox)
 			.Visibility_Lambda([this]() -> EVisibility
 			{
 				if (UMeshColorPaintingToolProperties* ColorProperties = UMeshPaintMode::GetColorToolProperties())
@@ -298,24 +299,15 @@ void FColorPaintingSettingsCustomization::CustomizeDetails(IDetailLayoutBuilder&
 				}
 				return EVisibility::Collapsed;
 			})
-		.Padding(FMargin(4.0f))
-		.BorderImage(FEditorStyle::GetBrush("SettingsEditor.CheckoutWarningBorder"))
-		.BorderBackgroundColor(FColor(166, 137, 0))
-		[
-			SNew(STextBlock)
-			.AutoWrapText(true)
-			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Message_Lambda([this]() -> FText
+			{
+				static const FText SkelMeshNotificationText = LOCTEXT("SkelMeshAssetPaintInfo", "Paint is propagated to Skeletal Mesh Asset(s)");
+				static const FText StaticMeshNotificationText = LOCTEXT("StaticMeshAssetPaintInfo", "Paint is applied to all LODs");
 
-		.Text_Lambda([this]() -> FText
-		{
-			static const FText SkelMeshNotificationText = LOCTEXT("SkelMeshAssetPaintInfo", "Paint is propagated to Skeletal Mesh Asset(s)");
-			static const FText StaticMeshNotificationText = LOCTEXT("StaticMeshAssetPaintInfo", "Paint is applied to all LODs");
-
-			const bool bSkelMeshText = UMeshPaintMode::GetMeshPaintMode()->GetSelectedComponents<USkeletalMeshComponent>().Num() > 0;
-			const bool bLODPaintText = UMeshPaintMode::GetColorToolProperties() ?  !UMeshPaintMode::GetColorToolProperties()->bPaintOnSpecificLOD : false;
-			return FText::Format(FTextFormat::FromString(TEXT("{0}{1}{2}")), bSkelMeshText ? SkelMeshNotificationText : FText::GetEmpty(), bSkelMeshText && bLODPaintText ? FText::FromString(TEXT("\n")) : FText::GetEmpty(), bLODPaintText ? StaticMeshNotificationText : FText::GetEmpty());
-		})
-		]
+				const bool bSkelMeshText = UMeshPaintMode::GetMeshPaintMode()->GetSelectedComponents<USkeletalMeshComponent>().Num() > 0;
+				const bool bLODPaintText = UMeshPaintMode::GetColorToolProperties() ?  !UMeshPaintMode::GetColorToolProperties()->bPaintOnSpecificLOD : false;
+				return FText::Format(FTextFormat::FromString(TEXT("{0}{1}{2}")), bSkelMeshText ? SkelMeshNotificationText : FText::GetEmpty(), bSkelMeshText && bLODPaintText ? FText::FromString(TEXT("\n")) : FText::GetEmpty(), bLODPaintText ? StaticMeshNotificationText : FText::GetEmpty());
+			})
 		];
 }
 
@@ -435,7 +427,7 @@ void FTexturePaintingSettingsCustomization::CustomizeDetails(IDetailLayoutBuilde
 			.AllowSpin(true)
 			.Value_Lambda([]() -> int32 { return UMeshPaintMode::GetTextureToolProperties() ? UMeshPaintMode::GetTextureToolProperties()->UVChannel : 0; })
 			.MinValue(0)
-			.MaxValue_Lambda([]() -> int32 { return Cast<UMeshToolManager>(UMeshPaintMode::GetMeshPaintMode()->GetToolManager())->GetMaxUVIndexToPaint(); })
+			.MaxValue_Lambda([]() -> int32 { return GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>()->GetMaxUVIndexToPaint(); })
 			.OnValueChanged(SNumericEntryBox<int32>::FOnValueChanged::CreateLambda([=](int32 Value) { 
 				if (UMeshPaintMode::GetTextureToolProperties())
 				{

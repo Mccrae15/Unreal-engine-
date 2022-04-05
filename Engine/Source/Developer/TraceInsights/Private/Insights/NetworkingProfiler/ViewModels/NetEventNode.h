@@ -79,7 +79,7 @@ public:
 	/**
 	 * @return a type of this NetEvent node or ENetEventNodeType::Group for group nodes.
 	 */
-	const ENetEventNodeType& GetType() const { return Type; }
+	ENetEventNodeType GetType() const { return Type; }
 
 	void SetLevel(uint32 InLevel) const { return ; }
 	uint32 GetLevel() const { return Level; }
@@ -87,10 +87,10 @@ public:
 	/**
 	 * @return the aggregated stats for this NetEvent node.
 	 */
-	const Trace::FNetProfilerAggregatedStats& GetAggregatedStats() const { return AggregatedStats; }
+	const TraceServices::FNetProfilerAggregatedStats& GetAggregatedStats() const { return AggregatedStats; }
 
 	void ResetAggregatedStats();
-	void SetAggregatedStats(const Trace::FNetProfilerAggregatedStats& AggregatedStats);
+	void SetAggregatedStats(const TraceServices::FNetProfilerAggregatedStats& AggregatedStats);
 
 private:
 	/** The NetEvent type index. */
@@ -102,7 +102,7 @@ private:
 	uint32 Level;
 
 	/** Aggregated stats. */
-	Trace::FNetProfilerAggregatedStats AggregatedStats;
+	TraceServices::FNetProfilerAggregatedStats AggregatedStats;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

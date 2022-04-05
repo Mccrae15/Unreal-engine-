@@ -6,6 +6,9 @@
 #include "Components/BillboardComponent.h"
 #include "Engine/Texture2D.h"
 #include "IMediaAudioSample.h"
+#include "IMediaClock.h"
+#include "IMediaClockSink.h"
+#include "IMediaModule.h"
 #include "IMediaPlayer.h"
 #include "MediaAudioResampler.h"
 #include "Misc/ScopeLock.h"
@@ -23,8 +26,34 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("MediaUtils MediaSoundComponent Queued"), STAT_M
 
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(MEDIA_API, MediaStreaming);
 
+/**
+ * Clock sink for UMediaSoundComponent.
+ */
+class FMediaSoundComponentClockSink
+	: public IMediaClockSink
+{
+public:
+	FMediaSoundComponentClockSink(UMediaSoundComponent& InOwner)
+		: Owner(&InOwner)
+	{ }
+	virtual ~FMediaSoundComponentClockSink() { }
+
+public:
+	virtual void TickInput(FTimespan DeltaTime, FTimespan Timecode) override
+	{
+		if (UMediaSoundComponent* OwnerPtr = Owner.Get())
+		{
+			OwnerPtr->UpdatePlayer();
+		}
+	}
+
+private:
+	TWeakObjectPtr<UMediaSoundComponent> Owner;
+};
+
 
 static const int32 MaxAudioInputSamples = 8;	// accept at most these many samples into our input queue
+
 
 /* UMediaSoundComponent structors
  *****************************************************************************/
@@ -62,6 +91,8 @@ UMediaSoundComponent::UMediaSoundComponent(const FObjectInitializer& ObjectIniti
 UMediaSoundComponent::~UMediaSoundComponent()
 {
 	delete Resampler;
+
+	RemoveClockSink();
 }
 
 
@@ -251,6 +282,7 @@ void UMediaSoundComponent::Deactivate()
 /* UObject interface
  *****************************************************************************/
 
+
 void UMediaSoundComponent::PostLoad()
 {
 	Super::PostLoad();
@@ -297,19 +329,24 @@ bool UMediaSoundComponent::Init(int32& SampleRate)
 	{
 		NumChannels = 1;
 	}
-	else //if (Channels == EMediaSoundChannels::Stereo)
+	else if (Channels == EMediaSoundChannels::Stereo)
 	{
 		NumChannels = 2;
-	}/*
+	}
 	else
 	{
 		NumChannels = 8;
-	}*/
+	}
 
 	// increase buffer callback size for media decoding. Media doesn't need fast response time so can decode more per callback.
 	//PreferredBufferLength = NumChannels * 8196;
 
 	Resampler->Initialize(NumChannels, SampleRate);
+
+	Audio::FEnvelopeFollowerInitParams EnvelopeInitParams;
+	EnvelopeInitParams.SampleRate = SampleRate;
+	EnvelopeInitParams.NumChannels = 1; //EnvelopeFollower uses mixed down mono buffer 
+	EnvelopeFollower.Init(EnvelopeInitParams);
 
 	return true;
 }
@@ -400,12 +437,17 @@ int32 UMediaSoundComponent::OnGenerateAudio(float* OutAudio, int32 NumSamples)
 						bEnvelopeFollowerSettingsChanged = false;
 					}
 
-					for (int32 FrameIndex = 0; FrameIndex < NumFrames; ++FrameIndex)
-					{
-						EnvelopeFollower.ProcessAudio(BufferToUseForAnalysis[FrameIndex]);
-					}
+					EnvelopeFollower.ProcessAudio(BufferToUseForAnalysis, NumFrames);
 
-					CurrentEnvelopeValue = EnvelopeFollower.GetCurrentValue();
+					const TArray<float>& EnvelopeValues = EnvelopeFollower.GetEnvelopeValues();
+					if (ensure(EnvelopeValues.Num() > 0))
+					{
+						CurrentEnvelopeValue = FMath::Clamp(EnvelopeValues[0], 0.f, 1.f);
+					}
+					else
+					{
+						CurrentEnvelopeValue = 0.f;
+					}
 				}
 			}
 		}
@@ -518,6 +560,35 @@ void UMediaSoundComponent::SetEnvelopeFollowingsettings(int32 AttackTimeMsec, in
 float UMediaSoundComponent::GetEnvelopeValue() const
 {
 	return CurrentEnvelopeValue;
+}
+
+void UMediaSoundComponent::AddClockSink()
+{
+	if (!ClockSink.IsValid())
+	{
+		IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>("Media");
+
+		if (MediaModule != nullptr)
+		{
+			ClockSink = MakeShared<FMediaSoundComponentClockSink, ESPMode::ThreadSafe>(*this);
+			MediaModule->GetClock().AddSink(ClockSink.ToSharedRef());
+		}
+	}
+}
+
+void UMediaSoundComponent::RemoveClockSink()
+{
+	if (ClockSink.IsValid())
+	{
+		IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>("Media");
+
+		if (MediaModule != nullptr)
+		{
+			MediaModule->GetClock().RemoveSink(ClockSink.ToSharedRef());
+		}
+
+		ClockSink.Reset();
+	}
 }
 
 /* UMediaSoundComponent implementation

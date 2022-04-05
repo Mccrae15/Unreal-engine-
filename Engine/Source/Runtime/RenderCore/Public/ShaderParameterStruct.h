@@ -25,7 +25,7 @@ void BindForLegacyShaderParameters(FShader* Shader, int32 PermutationId, const F
  *		SHADER_USE_PARAMETER_STRUCT(FMyShaderClassCS, FGlobalShader);
  *
  *		BEGIN_SHADER_PARAMETER_STRUCT(FParameters)
- *			SHADER_PARAMETER(FMatrix, ViewToClip)
+ *			SHADER_PARAMETER(FMatrix44f, ViewToClip)
  *			//...
  *		END_SHADER_PARAMETER_STRUCT()
  * };
@@ -180,11 +180,36 @@ inline void UnsetShaderUAVs(TRHICmdList& RHICmdList, const TShaderRef<TShaderCla
 }
 
 
+/** Unset compute shader SRVs. */
+template<typename TRHICmdList, typename TShaderClass>
+inline void UnsetShaderSRVs(TRHICmdList& RHICmdList, const TShaderRef<TShaderClass>& Shader, FRHIComputeShader* ShadeRHI)
+{
+	const FShaderParameterBindings& Bindings = Shader->Bindings;
+
+	checkf(Bindings.RootParameterBufferIndex == FShaderParameterBindings::kInvalidBufferIndex, TEXT("Can't use UnsetShaderSRVs() for root parameter buffer index."));
+
+	for (const FShaderParameterBindings::FResourceParameter& ParameterBinding : Bindings.ResourceParameters)
+	{
+		if (ParameterBinding.BaseType == UBMT_SRV ||
+			ParameterBinding.BaseType == UBMT_RDG_TEXTURE_SRV ||
+			ParameterBinding.BaseType == UBMT_RDG_BUFFER_SRV)
+		{
+			RHICmdList.SetShaderResourceViewParameter(ShadeRHI, ParameterBinding.BaseIndex, nullptr);
+		}
+	}
+}
+
+
 /** Set shader's parameters from its parameters struct. */
 template<typename TRHICmdList, typename TShaderClass, typename TShaderRHI>
-inline void SetShaderParameters(TRHICmdList& RHICmdList, const TShaderRef<TShaderClass>& Shader, TShaderRHI* ShadeRHI, const typename TShaderClass::FParameters& Parameters)
+inline void SetShaderParameters(
+	TRHICmdList& RHICmdList, 
+	const TShaderRef<TShaderClass>& Shader, 
+	TShaderRHI* ShadeRHI, 
+	const FShaderParametersMetadata* ParametersMetadata,
+	const typename TShaderClass::FParameters& Parameters)
 {
-	ValidateShaderParameters(Shader, Parameters);
+	ValidateShaderParameters(Shader, ParametersMetadata, &Parameters);
 
 	// TODO(RDG): Once all shader sets their parameter through this, can refactor RHI so all shader parameters get sets through a single RHI function call.
 	const FShaderParameterBindings& Bindings = Shader->Bindings;
@@ -267,21 +292,33 @@ inline void SetShaderParameters(TRHICmdList& RHICmdList, const TShaderRef<TShade
 	// Graph Uniform Buffers
 	for (const FShaderParameterBindings::FParameterStructReference& ParameterBinding : Bindings.GraphUniformBuffers)
 	{
-		auto GraphUniformBuffer = *reinterpret_cast<FRDGUniformBuffer* const*>(Base + ParameterBinding.ByteOffset);
+		const FRDGUniformBufferBinding& UniformBufferBinding = *reinterpret_cast<const FRDGUniformBufferBinding*>(Base + ParameterBinding.ByteOffset);
 
-		checkSlow(GraphUniformBuffer);
-		GraphUniformBuffer->MarkResourceAsUsed();
-		RHICmdList.SetShaderUniformBuffer(ShadeRHI, ParameterBinding.BufferIndex, GraphUniformBuffer->GetRHI());
+		if (UniformBufferBinding.IsShader())
+		{
+			UniformBufferBinding->MarkResourceAsUsed();
+			RHICmdList.SetShaderUniformBuffer(ShadeRHI, ParameterBinding.BufferIndex, UniformBufferBinding->GetRHI());
+		}
 	}
 
 	// Reference structures
 	for (const FShaderParameterBindings::FParameterStructReference& ParameterBinding : Bindings.ParameterReferences)
 	{
-		const TRefCountPtr<FRHIUniformBuffer>& ShaderParameterRef = *reinterpret_cast<const TRefCountPtr<FRHIUniformBuffer>*>(Base + ParameterBinding.ByteOffset);
-		RHICmdList.SetShaderUniformBuffer(ShadeRHI, ParameterBinding.BufferIndex, ShaderParameterRef);
+		const FUniformBufferBinding& UniformBufferBinding = *reinterpret_cast<const FUniformBufferBinding*>(Base + ParameterBinding.ByteOffset);
+
+		if (UniformBufferBinding.IsShader())
+		{
+			RHICmdList.SetShaderUniformBuffer(ShadeRHI, ParameterBinding.BufferIndex, UniformBufferBinding.GetUniformBuffer());
+		}
 	}
 }
 
+template<typename TRHICmdList, typename TShaderClass, typename TShaderRHI>
+inline void SetShaderParameters(TRHICmdList& RHICmdList, const TShaderRef<TShaderClass>& Shader, TShaderRHI* ShaderRHI, const typename TShaderClass::FParameters& Parameters)
+{
+	const FShaderParametersMetadata* ParametersMetadata = TShaderClass::FParameters::FTypeInfo::GetStructMetadata();
+	SetShaderParameters(RHICmdList, Shader, ShaderRHI, ParametersMetadata, Parameters);
+}
 
 #if RHI_RAYTRACING
 
@@ -364,18 +401,18 @@ void SetShaderParameters(FRayTracingShaderBindingsWriter& RTBindingsWriter, cons
 	// Graph Uniform Buffers
 	for (const FShaderParameterBindings::FParameterStructReference& ParameterBinding : Bindings.GraphUniformBuffers)
 	{
-		auto GraphUniformBuffer = *reinterpret_cast<FRDGUniformBuffer* const*>(Base + ParameterBinding.ByteOffset);
+		const FRDGUniformBufferBinding& UniformBufferBinding = *reinterpret_cast<const FRDGUniformBufferBinding*>(Base + ParameterBinding.ByteOffset);
 
-		checkSlow(GraphUniformBuffer);
-		GraphUniformBuffer->MarkResourceAsUsed();
-		RTBindingsWriter.SetUniformBuffer(ParameterBinding.BufferIndex, GraphUniformBuffer->GetRHI());
+		checkSlow(UniformBufferBinding);
+		UniformBufferBinding->MarkResourceAsUsed();
+		RTBindingsWriter.SetUniformBuffer(ParameterBinding.BufferIndex, UniformBufferBinding->GetRHI());
 	}
 
 	// Referenced uniform buffers
 	for (const FShaderParameterBindings::FParameterStructReference& ParameterBinding : Bindings.ParameterReferences)
 	{
-		const TRefCountPtr<FRHIUniformBuffer>& ShaderParameterRef = *reinterpret_cast<const TRefCountPtr<FRHIUniformBuffer>*>(Base + ParameterBinding.ByteOffset);
-		RTBindingsWriter.SetUniformBuffer(ParameterBinding.BufferIndex, ShaderParameterRef);
+		const FUniformBufferBinding& UniformBufferBinding = *reinterpret_cast<const FUniformBufferBinding*>(Base + ParameterBinding.ByteOffset);
+		RTBindingsWriter.SetUniformBuffer(ParameterBinding.BufferIndex, UniformBufferBinding.GetUniformBuffer());
 	}
 
 	// Root uniform buffer.

@@ -9,6 +9,7 @@ LandscapeMeshMobileUpdate.cpp: Helpers to stream in and out mobile landscape ver
 #include "LandscapeComponent.h"
 #include "LandscapeRenderMobile.h"
 #include "Streaming/RenderAssetUpdate.inl"
+#include "Misc/PackageSegment.h"
 
 template class TRenderAssetUpdate<FLandscapeMeshMobileUpdateContext>;
 
@@ -73,9 +74,9 @@ void FLandscapeMeshMobileStreamIn::ExpandResources(const FContext& Context)
 			return;
 		}
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FLandscapeMeshMobileStreamIn"));
 		IntermediateVertexBuffer = RHICreateVertexBuffer(NewSize, BUF_Static, CreateInfo);
-		uint8* Dest = (uint8*)RHILockVertexBuffer(IntermediateVertexBuffer, OldSize, NewSize - OldSize, RLM_WriteOnly);
+		uint8* Dest = (uint8*)RHILockBuffer(IntermediateVertexBuffer, OldSize, NewSize - OldSize, RLM_WriteOnly);
 		for (int32 LODIdx = CurrentFirstLODIdx - 1; LODIdx >= PendingFirstLODIdx; --LODIdx)
 		{
 			if (StagingLODDataSizes[LODIdx] > 0)
@@ -88,7 +89,7 @@ void FLandscapeMeshMobileStreamIn::ExpandResources(const FContext& Context)
 				StagingLODDataSizes[LODIdx] = 0;
 			}
 		}
-		RHIUnlockVertexBuffer(IntermediateVertexBuffer);
+		RHIUnlockBuffer(IntermediateVertexBuffer);
 
 		FRHICommandListExecutor::GetImmediateCommandList().CopyBufferRegion(IntermediateVertexBuffer, 0, RenderData->VertexBuffer->VertexBufferRHI, 0, OldSize);
 	}
@@ -162,10 +163,10 @@ void FLandscapeMeshMobileStreamOut::ShrinkResources(const FContext& Context)
 			check(SizeDelta < 0 && RenderData->VertexBuffer && RenderData->VertexBuffer->VertexBufferRHI);
 			FLandscapeVertexBufferMobile::UpdateMemoryStat(SizeDelta);
 
-			FRHIResourceCreateInfo CreateInfo;
-			FRHIVertexBuffer* LandsacpeVBRHI = RenderData->VertexBuffer->VertexBufferRHI;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FLandscapeMeshMobileStreamOut"));
+			FRHIBuffer* LandsacpeVBRHI = RenderData->VertexBuffer->VertexBufferRHI;
 			const int32 NewSize = (int32)LandsacpeVBRHI->GetSize() + SizeDelta;
-			FVertexBufferRHIRef IntermediateVertexBuffer = RHICreateVertexBuffer(NewSize, BUF_Static, CreateInfo);
+			FBufferRHIRef IntermediateVertexBuffer = RHICreateVertexBuffer(NewSize, BUF_Static, CreateInfo);
 			FRHICommandListExecutor::GetImmediateCommandList().CopyBufferRegion(IntermediateVertexBuffer, 0, LandsacpeVBRHI, 0, NewSize);
 
 			TRHIResourceUpdateBatcher<1> Batcher;
@@ -215,20 +216,6 @@ bool FLandscapeMeshMobileStreamIn_IO::HasPendingIORequests() const
 	return false;
 }
 
-FString FLandscapeMeshMobileStreamIn_IO::GetIOFilename(const FContext& Context)
-{
-	const ULandscapeLODStreamingProxy* LandscapeProxy = Context.LandscapeProxy;
-
-	if (!IsCancelled() && LandscapeProxy)
-	{
-		FString Filename;
-		verify(LandscapeProxy->GetMipDataFilename(PendingFirstLODIdx, Filename));
-		return Filename;
-	}
-	MarkAsCancelled();
-	return FString();
-}
-
 void FLandscapeMeshMobileStreamIn_IO::SetAsyncFileCallback(const FContext& Context)
 {
 	AsyncFileCallback = [this, Context](bool bWasCancelled, IBulkDataIORequest* Req)
@@ -251,7 +238,7 @@ void FLandscapeMeshMobileStreamIn_IO::SetAsyncFileCallback(const FContext& Conte
 	};
 }
 
-void FLandscapeMeshMobileStreamIn_IO::SetIORequest(const FContext& Context, const FString& IOFilename)
+void FLandscapeMeshMobileStreamIn_IO::SetIORequest(const FContext& Context)
 {
 	if (IsCancelled())
 	{
@@ -261,25 +248,20 @@ void FLandscapeMeshMobileStreamIn_IO::SetIORequest(const FContext& Context, cons
 	check(PendingFirstLODIdx < CurrentFirstLODIdx);
 
 	const ULandscapeLODStreamingProxy* LandscapeProxy = Context.LandscapeProxy;
-	if (LandscapeProxy != nullptr)
+	FLandscapeMobileRenderData* RenderData = Context.RenderData;
+	if (LandscapeProxy && RenderData)
 	{
 		SetAsyncFileCallback(Context);
 
 		for (int32 Index = PendingFirstLODIdx; Index < CurrentFirstLODIdx; ++Index)
 		{
 			FBulkDataInterface::BulkDataRangeArray BulkDataArray;
-#if !LANDSCAPE_LOD_STREAMING_USE_TOKEN && USE_BULKDATA_STREAMING_TOKEN
-			FBulkDataStreamingToken StreamingToken = LandscapeProxy->GetStreamingLODBulkData(Index).CreateStreamingToken();
-			BulkDataArray.Add(&StreamingToken);
-#else
 			BulkDataArray.Add(&LandscapeProxy->GetStreamingLODBulkData(Index));
-#endif
+
 			if (BulkDataArray[0]->GetBulkDataSize() > 0)
 			{
-				check(!IOFilename.IsEmpty());
 				TaskSynchronization.Increment();
 				IORequests[Index] = FBulkDataInterface::CreateStreamingRequestForRange(
-					STREAMINGTOKEN_PARAM(IOFilename)
 					BulkDataArray,
 					bHighPrioIORequest ? AIOP_BelowNormal : AIOP_Low,
 					&AsyncFileCallback);
@@ -368,8 +350,7 @@ void FLandscapeMeshMobileStreamIn_IO_AsyncReallocate::DoInitiateIO(const FContex
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("LSMMStreamInIOAsyncRealloc_DoInitiateIO"), STAT_LSMMStreamInIOAsyncRealloc_DoInitiateIO, STATGROUP_StreamingDetails);
 	check(Context.CurrentThread == TT_Async);
-	const FString IOFilename = GetIOFilename(Context);
-	SetIORequest(Context, IOFilename);
+	SetIORequest(Context);
 	PushTask(Context, TT_Async, SRA_UPDATE_CALLBACK(DoGetIORequestResults), TT_Async, SRA_UPDATE_CALLBACK(DoCancelIO));
 }
 
@@ -413,7 +394,7 @@ void FLandscapeMeshMobileStreamIn_GPUDataOnly::GetStagingData(const FContext& Co
 	{
 		for (int32 Idx = PendingFirstLODIdx; Idx < CurrentFirstLODIdx; ++Idx)
 		{
-			ULandscapeLODStreamingProxy::BulkDataType& BulkData = LandscapeProxy->GetStreamingLODBulkData(Idx);
+			FByteBulkData& BulkData = LandscapeProxy->GetStreamingLODBulkData(Idx);
 			if (BulkData.GetBulkDataSize() > 0)
 			{
 				StagingLODDataSizes[Idx] = BulkData.GetBulkDataSize();

@@ -17,7 +17,7 @@ IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FPointCloudVertexFactoryParameters, "Po
 class FPointCloudVertexFactoryShaderParameters :
 	public FVertexFactoryShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FPointCloudVertexFactoryShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FPointCloudVertexFactoryShaderParameters, NonVirtual);
 public:
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
@@ -61,7 +61,7 @@ public:
 	virtual void InitRHI() override
 	{
 		FVertexDeclarationElementList Elements;
-		Elements.Add(FVertexElement(0, 0, VET_Float4, 0, sizeof(FVector4)));
+		Elements.Add(FVertexElement(0, 0, VET_Float4, 0, sizeof(FVector4f)));
 		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 
@@ -84,16 +84,15 @@ public:
 
 	virtual void InitRHI() override
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		void* BufferData = nullptr;
-		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(FVector4) * 4, BUF_Static, CreateInfo, BufferData);
-		FVector4* DummyContents = (FVector4*)BufferData;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FDummyVertexBuffer"));
+		VertexBufferRHI = RHICreateBuffer(sizeof(FVector4f) * 4, BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		FVector4f* DummyContents = (FVector4f*)RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector3f) * 4, RLM_WriteOnly);
 //@todo - joeg do I need a quad's worth?
-		DummyContents[0] = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
-		DummyContents[1] = FVector4(1.0f, 0.0f, 0.0f, 0.0f);
-		DummyContents[2] = FVector4(0.0f, 1.0f, 0.0f, 0.0f);
-		DummyContents[3] = FVector4(1.0f, 1.0f, 0.0f, 0.0f);
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		DummyContents[0] = FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
+		DummyContents[1] = FVector4f(1.0f, 0.0f, 0.0f, 0.0f);
+		DummyContents[2] = FVector4f(0.0f, 1.0f, 0.0f, 0.0f);
+		DummyContents[3] = FVector4f(1.0f, 1.0f, 0.0f, 0.0f);
+		RHIUnlockBuffer(VertexBufferRHI);
 	}
 };
 TGlobalResource<FDummyVertexBuffer> GDummyPointCloudVertexBuffer;
@@ -106,7 +105,7 @@ void FPointCloudVertexFactory::InitRHI()
 	check( Streams.Num() == 0 );
 
 	Stream.VertexBuffer = &GDummyPointCloudVertexBuffer;
-	Stream.Stride = sizeof(FVector4);
+	Stream.Stride = sizeof(FVector4f);
 	Stream.Offset = 0;
 	Streams.Add(Stream);
 
@@ -134,5 +133,6 @@ void FPointCloudVertexFactory::SetParameters(const FPointCloudVertexFactoryParam
 	PointSize = InSize;
 }
 
+IMPLEMENT_TYPE_LAYOUT(FPointCloudVertexFactoryShaderParameters);
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FPointCloudVertexFactory, SF_Vertex, FPointCloudVertexFactoryShaderParameters);
-IMPLEMENT_VERTEX_FACTORY_TYPE(FPointCloudVertexFactory, "/Engine/Private/PointCloudVertexFactory.ush", true, false, false, false, false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FPointCloudVertexFactory, "/Engine/Private/PointCloudVertexFactory.ush", EVertexFactoryFlags::UsedWithMaterials);

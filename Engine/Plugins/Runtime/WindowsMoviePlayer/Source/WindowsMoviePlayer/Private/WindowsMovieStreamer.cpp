@@ -89,7 +89,7 @@ void FMediaFoundationMovieStreamer::ConvertSample()
 		if (!InputTarget.IsValid() || (InputTarget->GetSizeXY() != SourceFormat.BufferDim) || (InputTarget->GetFormat() != InputPixelFormat) || ((InputTarget->GetFlags() & InputCreateFlags) != InputCreateFlags))
 		{
 			TRefCountPtr<FRHITexture2D> DummyTexture2DRHI;
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FMediaFoundationMovieStreamer"));
 
 			RHICreateTargetableShaderResource2D(
 				SourceFormat.BufferDim.X,
@@ -146,7 +146,7 @@ void FMediaFoundationMovieStreamer::ConvertSample()
 		{
 			TShaderMapRef<FBMPConvertPS> ConvertShader(ShaderMap);
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ConvertShader.GetPixelShader();
-			SetGraphicsPipelineState(CommandList, GraphicsPSOInit);
+			SetGraphicsPipelineState(CommandList, GraphicsPSOInit, 0);
 			ConvertShader->SetParameters(CommandList, InputTarget, OutputDim, bSampleIsOutputSrgb && !SrgbOutput);
 		}
 		break;
@@ -155,8 +155,8 @@ void FMediaFoundationMovieStreamer::ConvertSample()
 		{
 			TShaderMapRef<FYUY2ConvertPS> ConvertShader(ShaderMap);
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ConvertShader.GetPixelShader();
-			SetGraphicsPipelineState(CommandList, GraphicsPSOInit);
-			ConvertShader->SetParameters(CommandList, InputTarget, OutputDim, MediaShaders::YuvToSrgbDefault, MediaShaders::YUVOffset8bits, bSampleIsOutputSrgb);
+			SetGraphicsPipelineState(CommandList, GraphicsPSOInit, 0);
+			ConvertShader->SetParameters(CommandList, InputTarget, OutputDim, MediaShaders::YuvToRgbRec709Scaled, MediaShaders::YUVOffset8bits, bSampleIsOutputSrgb);
 		}
 		break;
 
@@ -165,7 +165,7 @@ void FMediaFoundationMovieStreamer::ConvertSample()
 		}
 
 		// draw full size quad into render target
-		FVertexBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer();
+		FBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer();
 		CommandList.SetStreamSource(0, VertexBuffer, 0);
 		// set viewport to RT size
 		CommandList.SetViewport(0, 0, 0.0f, OutputDim.X, OutputDim.Y, 1.0f);

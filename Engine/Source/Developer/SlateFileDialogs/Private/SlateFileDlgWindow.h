@@ -15,6 +15,7 @@
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/SBoxPanel.h"
 #include "SlateOptMacros.h"
+#include "Widgets/Input/SComboBox.h" 
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/STableViewBase.h"
@@ -90,7 +91,7 @@ private:
 
 	FSlateFileDialogsStyle* StyleSet;
 
-	void TrimStartDirectory(FString &Path);
+	void TrimFilenameFromPath(FString &Path);
 };
 
 
@@ -188,12 +189,16 @@ private:
 	/** @return true if the extension filter contains a wildcard or not */
 	bool IsWildcardExtension(const FString& Extension);
 
+	/** @return ptr to directory if only one directory and zero files are selected, else nullptr */
+	TSharedPtr<FFileEntry> GetSoloDirectorySelected() const;
+
 	TArray< FDirNode > DirectoryNodesArray;
 	TArray<TSharedPtr<FFileEntry>> FoldersArray;
 	TArray<TSharedPtr<FFileEntry>> FilesArray;
 	TArray<TSharedPtr<FFileEntry>> LineItemArray;	
 
-	TSharedPtr<STextComboBox> FilterCombo;
+	TSharedPtr<SComboBox<TSharedPtr<FString>>> FilterCombo;
+	TSharedPtr<STextBlock> FilterComboBoxTitleBlock;
 	TSharedPtr<SHorizontalBox> FilterHBox;
 	TSharedPtr<SInlineEditableTextBlock> SaveFilenameEditBox;
 	TSharedPtr<SInlineEditableTextBlock> NewDirectoryEditBox;

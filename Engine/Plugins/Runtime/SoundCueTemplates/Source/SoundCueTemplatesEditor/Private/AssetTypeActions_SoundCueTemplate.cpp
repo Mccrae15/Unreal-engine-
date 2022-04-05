@@ -5,6 +5,7 @@
 #include "SoundCueTemplate.h"
 #include "SoundCueTemplateFactory.h"
 
+#include "AudioEditorSettings.h"
 #include "Components/AudioComponent.h"
 #include "ToolMenus.h"
 #include "ToolMenuSection.h"
@@ -12,6 +13,7 @@
 #include "ContentBrowserMenuContexts.h"
 #include "IContentBrowserSingleton.h"
 #include "ObjectEditorUtils.h"
+#include "Sound/SoundWaveProcedural.h"
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
 
@@ -59,6 +61,21 @@ void FAssetTypeActions_SoundCueTemplate::ExecuteCopyToSoundCue(TArray<TWeakObjec
 	}
 }
 
+const TArray<FText>& FAssetTypeActions_SoundCueTemplate::GetSubMenus() const
+{
+	if (GetDefault<UAudioEditorSettings>()->bPinSoundCueTemplateInAssetMenu)
+	{
+		static const TArray<FText> AssetTypeActionSubMenu;
+		return AssetTypeActionSubMenu;
+	}
+
+	static const TArray<FText> AssetTypeActionSubMenu
+	{
+		LOCTEXT("AssetSoundCueSubMenu", "Source")
+	};
+	return AssetTypeActionSubMenu;
+}
+
 void FAssetActionExtender_SoundCueTemplate::RegisterMenus()
 {
 	if (!UToolMenus::IsToolMenuUIEnabled())
@@ -73,9 +90,17 @@ void FAssetActionExtender_SoundCueTemplate::RegisterMenus()
 	Section.AddDynamicEntry("SoundCueTemplateSoundWaveAsset", FNewToolMenuSectionDelegate::CreateLambda([](FToolMenuSection& InSection)
 	{
 		UContentBrowserAssetContextMenuContext* Context = InSection.FindContext<UContentBrowserAssetContextMenuContext>();
-		if (!Context || Context->SelectedObjects.Num() == 0)
+		if (!Context || Context->SelectedObjects.IsEmpty())
 		{
 			return;
+		}
+
+		for (const TWeakObjectPtr<UObject>& Object : Context->SelectedObjects)
+		{
+			if (Object->IsA<USoundWaveProcedural>())
+			{
+				return;
+			}
 		}
 
 		const TAttribute<FText> Label = LOCTEXT("SoundWave_CreateSoundCueTemplate", "Create SoundCueTemplate");
@@ -116,4 +141,8 @@ void FAssetActionExtender_SoundCueTemplate::ExecuteCreateSoundCueTemplate(const 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
 	ContentBrowserModule.Get().CreateNewAsset(Name, FPackageName::GetLongPackagePath(PackagePath), USoundCueTemplate::StaticClass(), Factory);
 }
+
+
+
+
 #undef LOCTEXT_NAMESPACE

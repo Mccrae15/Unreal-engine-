@@ -30,11 +30,6 @@ namespace FBTNodeBPImplementationHelper
 
 		return (bGeneric ? Generic : NoImplementation) | (bAI ? AISpecific : NoImplementation);
 	}
-
-	int32 CheckEventImplementationVersion(FName GenericEventName, FName AIEventName, const UObject* Ob, const UClass* StopAtClass)
-	{
-		return (Ob && StopAtClass) ? CheckEventImplementationVersion(GenericEventName, AIEventName, *Ob, *StopAtClass) : NoImplementation;
-	}
 }
 
 //----------------------------------------------------------------------//
@@ -43,7 +38,7 @@ namespace FBTNodeBPImplementationHelper
 
 UBehaviorTreeComponent* UBTFunctionLibrary::GetOwnerComponent(UBTNode* NodeOwner)
 {
-	ensureAsRuntimeWarning((NodeOwner != nullptr) && (NodeOwner->GetClass()->HasAnyClassFlags(CLASS_CompiledFromBlueprint) || Cast<UDynamicClass>(NodeOwner->GetClass())));
+	ensureAsRuntimeWarning((NodeOwner != nullptr) && (NodeOwner->GetClass()->HasAnyClassFlags(CLASS_CompiledFromBlueprint)));
 
 	UBehaviorTreeComponent* OwnerComp = NodeOwner ? Cast<UBehaviorTreeComponent>(NodeOwner->GetOuter()) : nullptr;
 	ensureAsRuntimeWarning(OwnerComp != nullptr);

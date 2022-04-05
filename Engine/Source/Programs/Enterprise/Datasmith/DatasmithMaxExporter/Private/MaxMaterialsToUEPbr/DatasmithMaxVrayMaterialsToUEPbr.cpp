@@ -560,23 +560,6 @@ void FDatasmithMaxVRayMaterialsToUEPbr::Convert( TSharedRef< IDatasmithScene > D
 		ConvertState.bCanBake = true;
 	}
 	
-	// Displacement
-	{
-		ConvertState.DefaultTextureMode = EDatasmithTextureMode::Displace;
-
-		IDatasmithMaterialExpression* DisplacementExpression = FDatasmithMaxTexmapToUEPbrUtils::MapOrValue( this, VRayMaterialProperties.DisplacementMap, TEXT("Displacement Map"), TOptional< FLinearColor >(), TOptional< float >() );
-
-		if ( DisplacementExpression )
-		{
-			DisplacementExpression->ConnectExpression( PbrMaterialElement->GetWorldDisplacement() );
-		}
-
-		if ( DisplacementExpression )
-		{
-			DisplacementExpression->SetName( TEXT("Displacement Map") );
-		}
-	}
-
 	ConvertState.DefaultTextureMode = EDatasmithTextureMode::Specular; // At this point, all maps are considered specular maps
 
 	// Opacity

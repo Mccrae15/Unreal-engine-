@@ -18,6 +18,9 @@
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Widgets/Docking/SDockTab.h"
+
+class FNiagaraHLSLSyntaxHighlighter;
 
 class SNiagaraGeneratedCodeView : public SCompoundWidget
 {
@@ -61,6 +64,7 @@ protected:
 	TSharedPtr<SSearchBox> SearchBox;
 	TSharedPtr<STextBlock> SearchFoundMOfNText;
 	TArray<FTextLocation> ActiveFoundTextEntries;
+	TSharedPtr<FNiagaraHLSLSyntaxHighlighter> SyntaxHighlighter;
 	int32 CurrentFoundTextEntry;
 
 	void SetSearchMofN();

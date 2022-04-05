@@ -10,7 +10,7 @@
 #include "AssetData.h"
 #include "ARFilter.h"
 #include "IContentBrowserSingleton.h"
-#include "Editor/ContentBrowser/Private/SourcesData.h"
+#include "SourcesData.h"
 
 class FFrontendFilter_ShowOtherDevelopers;
 class FFrontendFilter_Text;
@@ -45,6 +45,9 @@ public:
 
 	/** Return the associated AssetView */
 	const TSharedPtr<SAssetView>& GetAssetView() const { return AssetViewPtr; }
+
+	/** Function that's called when someone wants to execute a Rename Command*/
+	void ExecuteRenameCommand();
 
 private:
 	/** Focuses the search box post-construct */

@@ -19,6 +19,7 @@ add_llvm_library(LLVMTransformUtils
   LCSSA.cpp
   Local.cpp
   LoopSimplify.cpp
+  LoopSimplifyId.cpp
   LoopUnroll.cpp
   LoopUnrollRuntime.cpp
   LoopUtils.cpp
@@ -45,3 +46,5 @@ add_llvm_library(LLVMTransformUtils
   )
 
 add_dependencies(LLVMTransformUtils intrinsics_gen)
+
+target_link_libraries(LLVMTransformUtils PUBLIC LLVMDXIL) # HLSL Change

@@ -8,7 +8,7 @@
 #include "NiagaraCommon.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "Layout/Visibility.h"
-
+#include "NiagaraTypes.h"
 #include "NiagaraTypeCustomizations.generated.h"
 
 class FDetailWidgetRow;
@@ -18,6 +18,7 @@ class IPropertyHandleArray;
 class UNiagaraGraph;
 class UNiagaraParameterDefinitions;
 class UNiagaraScriptVariable;
+class SComboButton;
 
 enum class ECheckBoxState : uint8;
 
@@ -150,7 +151,7 @@ struct FNiagaraStackAssetAction_VarBind : public FEdGraphSchemaAction
 	}
 	//~ End FEdGraphSchemaAction Interface
 
-	static TArray<FNiagaraVariableBase> FindVariables(UNiagaraEmitter* InEmitter, bool bSystem, bool bEmitter, bool bParticles, bool bUser);
+	static TArray<FNiagaraVariableBase> FindVariables(UNiagaraEmitter* InEmitter, bool bSystem, bool bEmitter, bool bParticles, bool bUser, bool bAllowStatic);
 };
 
 class FNiagaraVariableAttributeBindingCustomization : public IPropertyTypeCustomization
@@ -182,10 +183,12 @@ private:
 	void OnActionSelected(const TArray< TSharedPtr<FEdGraphSchemaAction> >& SelectedActions, ESelectInfo::Type InSelectionType);
 
 	TSharedPtr<IPropertyHandle> PropertyHandle;
-	class UNiagaraEmitter* BaseEmitter;
-	class UNiagaraRendererProperties* RenderProps;
-	struct FNiagaraVariableAttributeBinding* TargetVariableBinding;
-	const struct FNiagaraVariableAttributeBinding* DefaultVariableBinding;
+	TSharedPtr<SComboButton> ComboButton;
+	class UNiagaraEmitter* BaseEmitter = nullptr;
+	class UNiagaraRendererProperties* RenderProps = nullptr;
+	class UNiagaraSimulationStageBase* SimulationStage = nullptr;
+	struct FNiagaraVariableAttributeBinding* TargetVariableBinding = nullptr;
+	const struct FNiagaraVariableAttributeBinding* DefaultVariableBinding = nullptr;
 };
 
 class FNiagaraUserParameterBindingCustomization : public IPropertyTypeCustomization
@@ -212,8 +215,11 @@ private:
 	TSharedRef<SWidget> OnCreateWidgetForAction(struct FCreateWidgetForActionData* const InCreateData);
 	void OnActionSelected(const TArray< TSharedPtr<FEdGraphSchemaAction> >& SelectedActions, ESelectInfo::Type InSelectionType);
 
+	bool IsValid() const { return BaseSystemWeakPtr.IsValid() && ObjectCustomizingWeakPtr.IsValid(); }
+
 	TSharedPtr<IPropertyHandle> PropertyHandle;
-	class UNiagaraSystem* BaseSystem;
+	TWeakObjectPtr<UObject> ObjectCustomizingWeakPtr;
+	TWeakObjectPtr<class UNiagaraSystem> BaseSystemWeakPtr;
 	struct FNiagaraUserParameterBinding* TargetUserParameterBinding;
 
 };
@@ -259,6 +265,8 @@ private:
 	static FText MakeCurrentText(const FNiagaraVariableBase& BaseVar, const FNiagaraVariableBase& ChildVar);
 
 	TSharedPtr<IPropertyHandle> PropertyHandle;
+	TSharedPtr<SComboButton> MaterialParameterButton;
+	TSharedPtr<SComboButton> NiagaraParameterButton;
 	class UNiagaraSystem* BaseSystem;
 	class UNiagaraEmitter* BaseEmitter;
 	class UNiagaraRendererProperties* RenderProps;

@@ -20,12 +20,16 @@ class UAnimGraphNode_Base;
 class UEdGraph;
 class USkeletalMesh;
 class ISkeletonTreeItem;
+class UAnimationBlueprintEditorSettings;
+
+struct FToolMenuContext;
 
 struct FAnimationBlueprintEditorModes
 {
 	// Mode constants
 	static const FName AnimationBlueprintEditorMode;
 	static const FName AnimationBlueprintInterfaceEditorMode;
+	static const FName AnimationBlueprintTemplateEditorMode;
 
 	static FText GetLocalizedMode(const FName InMode)
 	{
@@ -35,6 +39,7 @@ struct FAnimationBlueprintEditorModes
 		{
 			LocModes.Add(AnimationBlueprintEditorMode, NSLOCTEXT("AnimationBlueprintEditorModes", "AnimationBlueprintEditorMode", "Animation Blueprint"));
 			LocModes.Add(AnimationBlueprintInterfaceEditorMode, NSLOCTEXT("AnimationBlueprintEditorModes", "AnimationBlueprintInterface EditorMode", "Animation Blueprint Interface"));
+			LocModes.Add(AnimationBlueprintTemplateEditorMode, NSLOCTEXT("AnimationBlueprintEditorModes", "AnimationBlueprintTemplate EditorMode", "Animation Blueprint Template"));
 		}
 
 		check(InMode != NAME_None);
@@ -57,6 +62,7 @@ namespace AnimationBlueprintEditorTabs
 	extern const FName AssetOverridesTab;
 	extern const FName SlotNamesTab;
 	extern const FName CurveNamesTab;
+	extern const FName PoseWatchTab;
 };
 
 /**
@@ -97,7 +103,7 @@ public:
 	/** IHasPersonaToolkit interface */
 	virtual TSharedRef<class IPersonaToolkit> GetPersonaToolkit() const { return PersonaToolkit.ToSharedRef(); }
 
-	/** FBlueprintEdi1tor interface */
+	/** FBlueprintEditor interface */
 	virtual void OnActiveTabChanged(TSharedPtr<SDockTab> PreviouslyActive, TSharedPtr<SDockTab> NewlyActivated) override;
 	virtual void OnSelectedNodesChangedImpl(const TSet<class UObject*>& NewSelection) override;
 	virtual void HandleSetObjectBeingDebugged(UObject* InObject) override;
@@ -111,8 +117,8 @@ public:
 	/** Clears the selected actor */
 	void ClearSelectedActor();
 
-	/** Clears the selected anim graph node */
-	void ClearSelectedAnimGraphNode();
+	/** Clears the selected anim graph nodes */
+	void ClearSelectedAnimGraphNodes();
 
 	/** Clears the selection (both sockets and bones). Also broadcasts this */
 	void DeselectAll();
@@ -142,6 +148,7 @@ public:
 	virtual FText GetToolkitToolTipText() const override;
 	virtual FString GetWorldCentricTabPrefix() const override;
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;	
+	virtual void InitToolMenuContext(FToolMenuContext& MenuContext) override;
 	//~ End IToolkit Interface
 
 	/** @return the documentation location for this editor */
@@ -158,6 +165,10 @@ public:
 	virtual TStatId GetStatId() const override;
 	//~ End FTickableEditorObject Interface
 
+	//~ Begin FBlueprintEditor Interface
+	virtual void JumpToHyperlink(const UObject* ObjectReference, bool bRequestRename) override;
+	//~ End FBlueprintEditor Interface
+
 	TSharedRef<SWidget> GetPreviewEditor() { return PreviewEditor.ToSharedRef(); }
 	/** Refresh Preview Instance Track Curves **/
 	void RefreshPreviewInstanceTrackCurves();
@@ -167,34 +178,24 @@ public:
 	/** Get the skeleton tree this Persona editor is hosting */
 	TSharedRef<class ISkeletonTree> GetSkeletonTree() const { return SkeletonTree.ToSharedRef(); }
 
+	/** Make this available to allow us to create title bar widgets for other container types - e.g. blendspaces */
+	using FBlueprintEditor::CreateGraphTitleBarWidget;
+
 protected:
 	//~ Begin FBlueprintEditor Interface
 	//virtual void CreateDefaultToolbar() override;
 	virtual void CreateDefaultCommands() override;
 	virtual void OnCreateGraphEditorCommands(TSharedPtr<FUICommandList> GraphEditorCommandsList);
-	virtual bool CanSelectBone() const override { return true; }
-	virtual void OnAddPosePin() override;
-	virtual bool CanAddPosePin() const override;
-	virtual void OnRemovePosePin() override;
-	virtual bool CanRemovePosePin() const override;
 	virtual void OnGraphEditorFocused(const TSharedRef<class SGraphEditor>& InGraphEditor) override;
 	virtual void OnGraphEditorBackgrounded(const TSharedRef<SGraphEditor>& InGraphEditor) override;
-	virtual void OnConvertToSequenceEvaluator() override;
-	virtual void OnConvertToSequencePlayer() override;
-	virtual void OnConvertToBlendSpaceEvaluator() override;
-	virtual void OnConvertToBlendSpacePlayer() override;
-	virtual void OnConvertToPoseBlender() override;
-	virtual void OnConvertToPoseByName() override;
-	virtual void OnConvertToAimOffsetLookAt() override;
-	virtual void OnConvertToAimOffsetSimple() override;
 	virtual bool IsInAScriptingMode() const override { return true; }
-	virtual void OnOpenRelatedAsset() override;
 	virtual void GetCustomDebugObjects(TArray<FCustomDebugObject>& DebugList) const override;
 	virtual void CreateDefaultTabContents(const TArray<UBlueprint*>& InBlueprints) override;
 	virtual FGraphAppearanceInfo GetGraphAppearance(class UEdGraph* InGraph) const override;
 	virtual bool IsEditable(UEdGraph* InGraph) const override;
 	virtual FText GetGraphDecorationString(UEdGraph* InGraph) const override;
-	virtual void OnBlueprintChangedImpl(UBlueprint* InBlueprint, bool bIsJustBeingCompiled = false) override;	
+	virtual void OnBlueprintChangedImpl(UBlueprint* InBlueprint, bool bIsJustBeingCompiled = false) override;
+	virtual void CreateEditorModeManager() override;
 	//~ End FBlueprintEditor Interface
 
 	//~ Begin FEditorUndoClient Interface
@@ -284,6 +285,12 @@ private:
 	/** Handle the preview anim blueprint being compiled */
 	void HandlePreviewAnimBlueprintCompiled(UBlueprint* InBlueprint);
 
+	/** Enable/disable pose watch on selected nodes */
+	void HandlePoseWatchSelectedNodes();
+
+	/** Removes all pose watches created by selectionfrom the current view */
+	void RemoveAllSelectionPoseWatches();
+
     /**
 	 * Load editor settings from disk (docking state, window pos/size, option state, etc).
 	 */
@@ -295,6 +302,32 @@ private:
 	virtual void SaveEditorSettings();
 
 	void HandleAnimationSequenceBrowserCreated(const TSharedRef<IAnimationSequenceBrowser>& InSequenceBrowser);
+
+	void HandleUpdateSettings(const UAnimationBlueprintEditorSettings* AnimationBlueprintEditorSettings, EPropertyChangeType::Type ChangeType);
+
+	/** Chooses a suitable pose watch colour automatically - i.e. one that isn't already in use (if possible) */
+	FColor ChoosePoseWatchColor() const;
+
+	// Pose pin UI handlers
+	void OnAddPosePin();
+	bool CanAddPosePin() const;
+	void OnRemovePosePin();
+	bool CanRemovePosePin() const;
+
+	// Node conversion functions
+	void OnConvertToSequenceEvaluator();
+	void OnConvertToSequencePlayer();
+	void OnConvertToBlendSpaceEvaluator();
+	void OnConvertToBlendSpacePlayer();
+	void OnConvertToBlendSpaceGraph();
+	void OnConvertToPoseBlender();
+	void OnConvertToPoseByName();
+	void OnConvertToAimOffsetLookAt();
+	void OnConvertToAimOffsetSimple();
+	void OnConvertToAimOffsetGraph();
+	
+	// Opens the associated asset of the selected nodes
+	void OnOpenRelatedAsset();
 
 	/** The extender to pass to the level editor to extend it's window menu */
 	TSharedPtr<FExtender> MenuExtender;
@@ -312,7 +345,7 @@ private:
 	TSharedPtr<class ISkeletonTree> SkeletonTree;
 
 	// selected anim graph node 
-	TWeakObjectPtr<class UAnimGraphNode_Base> SelectedAnimGraphNode;
+	TArray< TWeakObjectPtr< class UAnimGraphNode_Base > > SelectedAnimGraphNodes;
 
 	/** Sequence Browser **/
 	TWeakPtr<class IAnimationSequenceBrowser> SequenceBrowser;
@@ -328,4 +361,10 @@ private:
 
 	/** Cached mesh component held during compilation, used to reconnect debugger */
 	USkeletalMeshComponent* DebuggedMeshComponent;
+
+	/** Used to track wither the editor option has changed */
+	bool bPreviousPoseWatchSelectedNodes = false;
+
+	/** Delegate handle registered for when settings change */
+	FDelegateHandle AnimationBlueprintEditorSettingsChangedHandle;
 };

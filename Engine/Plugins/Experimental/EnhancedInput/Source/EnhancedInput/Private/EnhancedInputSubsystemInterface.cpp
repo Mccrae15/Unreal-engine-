@@ -11,6 +11,7 @@
 #include "InputModifiers.h"
 #include "InputTriggers.h"
 #include "UObject/UObjectIterator.h"
+#include "PlayerMappableInputConfig.h"
 
 /* Shared input subsystem functionality.
  * See EnhancedInputSubsystemInterfaceDebug.cpp for debug specific functionality.
@@ -27,16 +28,38 @@ static FAutoConsoleVariableRef GCVarGlobalAxisConfigMode(
 	TEXT("Whether or not to apply Global Axis Config settings. 0 = Default (Mouse Only), 1 = All, 2 = None")
 );
 
+void IEnhancedInputSubsystemInterface::InjectInputForAction(const UInputAction* Action, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers)
+{
+	if(UEnhancedPlayerInput* PlayerInput = GetPlayerInput())
+	{
+		PlayerInput->InjectInputForAction(Action, RawValue, Modifiers, Triggers);
+	}
+}
+
+void IEnhancedInputSubsystemInterface::InjectInputVectorForAction(const UInputAction* Action, FVector Value, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers)
+{
+	FInputActionValue RawValue((Action != nullptr) ? Action->ValueType : EInputActionValueType::Boolean, Value);
+	InjectInputForAction(Action, RawValue, Modifiers, Triggers);
+}
+
 void IEnhancedInputSubsystemInterface::ClearAllMappings()
 {
 	if (UEnhancedPlayerInput* PlayerInput = GetPlayerInput())
 	{
 		PlayerInput->AppliedInputContexts.Empty();
-		RequestRebuildControlMappings(false);
+		RequestRebuildControlMappings();
 	}
 }
 
-void IEnhancedInputSubsystemInterface::AddMappingContext(const UInputMappingContext* MappingContext, int32 Priority)
+void IEnhancedInputSubsystemInterface::AddMappingContext(const UInputMappingContext* MappingContext, int32 Priority, const bool bIgnoreAllPressedKeysUntilRelease)
+{
+	FModifyContextOptions Options {};
+	Options.bIgnoreAllPressedKeysUntilRelease = bIgnoreAllPressedKeysUntilRelease;
+	
+	AddMappingContext(MappingContext, Priority, Options);
+}
+
+void IEnhancedInputSubsystemInterface::AddMappingContext(const UInputMappingContext* MappingContext, int32 Priority, const FModifyContextOptions& Options)
 {
 	// Layer mappings on top of existing mappings
 	if (MappingContext)
@@ -44,32 +67,51 @@ void IEnhancedInputSubsystemInterface::AddMappingContext(const UInputMappingCont
 		if (UEnhancedPlayerInput* PlayerInput = GetPlayerInput())
 		{
 			PlayerInput->AppliedInputContexts.Add(MappingContext, Priority);
-			RequestRebuildControlMappings(false);
+			RequestRebuildControlMappings(Options);
 		}
 	}
 }
 
-void IEnhancedInputSubsystemInterface::RemoveMappingContext(const UInputMappingContext* MappingContext)
+void IEnhancedInputSubsystemInterface::RemoveMappingContext(const UInputMappingContext* MappingContext, const bool bIgnoreAllPressedKeysUntilRelease)
+{
+	FModifyContextOptions Options {};
+	Options.bIgnoreAllPressedKeysUntilRelease = bIgnoreAllPressedKeysUntilRelease;
+	
+	RemoveMappingContext(MappingContext, Options);
+}
+
+void IEnhancedInputSubsystemInterface::RemoveMappingContext(const UInputMappingContext* MappingContext, const FModifyContextOptions& Options)
 {
 	if (MappingContext)
 	{
 		if (UEnhancedPlayerInput* PlayerInput = GetPlayerInput())
 		{
 			PlayerInput->AppliedInputContexts.Remove(MappingContext);
-			RequestRebuildControlMappings(false);
+			RequestRebuildControlMappings(Options);
 		}
 	}
 }
 
-void IEnhancedInputSubsystemInterface::RequestRebuildControlMappings(bool bForceImmediately)
+void IEnhancedInputSubsystemInterface::RequestRebuildControlMappings(bool bForceImmediately, const bool bIgnoreAllPressedKeysUntilRelease)
+{
+	FModifyContextOptions Options;
+	Options.bForceImmediately = bForceImmediately;
+	Options.bIgnoreAllPressedKeysUntilRelease = bIgnoreAllPressedKeysUntilRelease;
+	
+	RequestRebuildControlMappings(Options);
+}
+
+void IEnhancedInputSubsystemInterface::RequestRebuildControlMappings(const FModifyContextOptions& Options, EInputMappingRebuildType MappingRebuildType)
 {
 	bMappingRebuildPending = true;
-	if (bForceImmediately)
+	bIgnoreAllPressedKeysUntilReleaseOnRebuild &= Options.bIgnoreAllPressedKeysUntilRelease;
+	MappingRebuildPending = MappingRebuildType;
+	
+	if (Options.bForceImmediately)
 	{
 		RebuildControlMappings();
 	}
 }
-
 
 EMappingQueryResult IEnhancedInputSubsystemInterface::QueryMapKeyInActiveContextSet(const UInputMappingContext* InputContext, const UInputAction* Action, FKey Key, TArray<FMappingQueryIssue>& OutIssues, EMappingQueryIssue BlockingIssues/* = DefaultMappingIssues::StandardFatal*/)
 {
@@ -341,6 +383,61 @@ TArray<FKey> IEnhancedInputSubsystemInterface::QueryKeysMappedToAction(const UIn
 	return MappedKeys;
 }
 
+int32 IEnhancedInputSubsystemInterface::AddPlayerMappedKey(const FName MappingName, const FKey NewKey, const FModifyContextOptions& Options)
+{
+	int32 NumMappingsApplied = 0;
+	if (MappingName != NAME_None)
+	{
+		if (UEnhancedPlayerInput* const PlayerInput = GetPlayerInput())
+		{
+			PlayerMappedSettings.Add(MappingName, NewKey);
+			++NumMappingsApplied;
+		}
+
+		RequestRebuildControlMappings(Options);
+	}
+	else
+	{
+		UE_LOG(LogEnhancedInput, Warning, TEXT("Attempted to AddPlayerMappedKey with an invalid MappingName! Mapping has not been applied."));
+	}
+	return NumMappingsApplied;
+}
+
+int32 IEnhancedInputSubsystemInterface::RemovePlayerMappedKey(const FName MappingName, const FModifyContextOptions& Options)
+{
+	int32 NumMappingsApplied = 0;
+	if (UEnhancedPlayerInput* const PlayerInput = GetPlayerInput())
+	{
+		NumMappingsApplied = PlayerMappedSettings.Remove(MappingName);
+	}
+
+	RequestRebuildControlMappings(Options);
+	
+	return NumMappingsApplied;
+}
+
+void IEnhancedInputSubsystemInterface::AddPlayerMappableConfig(const UPlayerMappableInputConfig* Config, const FModifyContextOptions& Options)
+{
+	if(Config)
+	{
+		for(TPair<UInputMappingContext*, int32> Pair : Config->GetMappingContexts())
+		{
+			AddMappingContext(Pair.Key, Pair.Value, Options);
+		}	
+	}
+}
+
+void IEnhancedInputSubsystemInterface::RemovePlayerMappableConfig(const UPlayerMappableInputConfig* Config, const FModifyContextOptions& Options)
+{
+	if(Config)
+	{
+		for(TPair<UInputMappingContext*, int32> Pair : Config->GetMappingContexts())
+		{
+			RemoveMappingContext(Pair.Key, Options);
+		}	
+	}
+}
+
 template<typename T>
 void DeepCopyPtrArray(const TArray<T*>& From, TArray<T*>& To)
 {
@@ -375,7 +472,12 @@ TArray<FEnhancedActionKeyMapping> ReorderMappings(const TArray<FEnhancedActionKe
 			}
 		};
 		EvaluateTriggers(Mapping.Triggers);
-		EvaluateTriggers(Mapping.Action->Triggers);
+		
+		if(ensureMsgf(Mapping.Action, TEXT("A key mapping has no associated action!")))
+		{
+			EvaluateTriggers(Mapping.Action->Triggers);			
+		}
+
 		return bFoundChordTrigger;
 	};
 
@@ -383,10 +485,19 @@ TArray<FEnhancedActionKeyMapping> ReorderMappings(const TArray<FEnhancedActionKe
 	TArray<FEnhancedActionKeyMapping> ChordedMappings;
 	TArray<FEnhancedActionKeyMapping> OtherMappings;
 	OtherMappings.Reserve(UnorderedMappings.Num());		// Mappings will most likely be Other
+	int32 NumEmptyMappings = 0;
 	for (const FEnhancedActionKeyMapping& Mapping : UnorderedMappings)
 	{
-		TArray<FEnhancedActionKeyMapping>& MappingArray = GatherChordingActions(Mapping) ? ChordedMappings : OtherMappings;
-		MappingArray.Add(Mapping);
+		if(Mapping.Action)
+		{
+			TArray<FEnhancedActionKeyMapping>& MappingArray = GatherChordingActions(Mapping) ? ChordedMappings : OtherMappings;
+			MappingArray.Add(Mapping);
+		}
+		else
+		{
+			++NumEmptyMappings;
+			UE_LOG(LogEnhancedInput, Warning, TEXT("A Key Mapping with a blank action has been added! Ignoring the key mapping to '%s'"), *Mapping.Key.ToString());
+		}
 	}
 
 	TArray<FEnhancedActionKeyMapping> OrderedMappings;
@@ -413,14 +524,14 @@ TArray<FEnhancedActionKeyMapping> ReorderMappings(const TArray<FEnhancedActionKe
 
 	OrderedMappings.Append(MoveTemp(ChordedMappings));
 	OrderedMappings.Append(MoveTemp(OtherMappings));
-	checkf(OrderedMappings.Num() == UnorderedMappings.Num(), TEXT("Number of mappings changed during reorder."));
+	checkf(OrderedMappings.Num() == UnorderedMappings.Num() - NumEmptyMappings, TEXT("Number of mappings unexpectedly changed during reorder."));
 
 	return OrderedMappings;
 }
 
 void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 {
-	if(!bMappingRebuildPending)
+	if(MappingRebuildPending == EInputMappingRebuildType::None)
 	{
 		return;
 	}
@@ -428,7 +539,7 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 	UEnhancedPlayerInput* PlayerInput = GetPlayerInput();
 	if (!PlayerInput)
 	{
-		// TODO: Prefer to reset bMappingRebuildPending here?
+		// TODO: Prefer to reset MappingRebuildPending here?
 		return;
 	}
 
@@ -450,10 +561,15 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 		TArray<FKey> ContextAppliedKeys;
 
 		const UInputMappingContext* MappingContext = ContextPair.Key;
-		TArray<FEnhancedActionKeyMapping>  OrderedMappings = ReorderMappings(MappingContext->GetMappings());
+		TArray<FEnhancedActionKeyMapping> OrderedMappings = ReorderMappings(MappingContext->GetMappings());
 
-		for (const FEnhancedActionKeyMapping& Mapping : OrderedMappings)
+		for (FEnhancedActionKeyMapping& Mapping : OrderedMappings)
 		{
+			if (FKey* PlayerKey = PlayerMappedSettings.Find(Mapping.PlayerMappableOptions.Name))
+			{
+				Mapping.Key = *PlayerKey;
+			}
+			
 			if (Mapping.Action && !AppliedKeys.Contains(Mapping.Key))
 			{
 				// TODO: Wasteful query as we've already established chord state within ReorderMappings. Store TOptional bConsumeInput per mapping, allowing override? Query override via delegate?
@@ -474,9 +590,6 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 				DeepCopyPtrArray<UInputModifier>(Mapping.Modifiers, NewMapping.Modifiers);
 
 				ApplyAxisPropertyModifiers(PlayerInput, NewMapping);
-
-				// Perform a modifier calculation pass on the default data to initialize values correctly.
-				PlayerInput->InitializeMappingActionModifiers(NewMapping);
 
 				// Re-instance triggers
 				DeepCopyPtrArray<UInputTrigger>(Mapping.Triggers, NewMapping.Triggers);
@@ -510,30 +623,68 @@ void IEnhancedInputSubsystemInterface::RebuildControlMappings()
 
 	PlayerInput->ForceRebuildingKeyMaps(false);
 
-	// Remove action instance data for actions that are not referenced in the new action mappings
-	TSet<const UInputAction*> RemovedActions;
-	for (TPair<const UInputAction*, FInputActionInstance>& ActionInstance : PlayerInput->ActionInstanceData)
+	// Clean out invalidated actions
+	if (MappingRebuildPending == EInputMappingRebuildType::RebuildWithFlush)
 	{
-		RemovedActions.Add(ActionInstance.Key);
+		PlayerInput->ActionInstanceData.Empty();
 	}
+	else
+	{
+		
+		// Remove action instance data for actions that are not referenced in the new action mappings
+		TSet<const UInputAction*> RemovedActions;
+		for (TPair<const UInputAction*, FInputActionInstance>& ActionInstance : PlayerInput->ActionInstanceData)
+		{
+			RemovedActions.Add(ActionInstance.Key);
+		}
+
+		// Return true if the given FKey was in the old Player Input mappings
+		auto WasInOldMapping = [&OldMappings](const FKey& InKey) -> bool
+		{
+			return OldMappings.ContainsByPredicate(
+				[&InKey](const FEnhancedActionKeyMapping& OldMapping){ return OldMapping.Key == InKey; }
+				);
+		};
+	
+		for (FEnhancedActionKeyMapping& Mapping : PlayerInput->EnhancedActionMappings)
+		{
+			RemovedActions.Remove(Mapping.Action);
+
+			// Was this key pressed last frame? If so, then we need to mark it to be ignored by the PlayerInput
+			// until it is released to avoid re-processing a triggered event when it. This is only a problem if
+			// the key was in the old mapping and the new one
+			if(bIgnoreAllPressedKeysUntilReleaseOnRebuild && Mapping.Key.IsDigital() && WasInOldMapping(Mapping.Key))
+			{				
+				const FKeyState* KeyState = PlayerInput->GetKeyState(Mapping.Key);
+				if(KeyState && KeyState->bDown)
+				{
+					Mapping.bShouldBeIgnored = true;
+				}
+			}
+
+			// Retain old mapping trigger/modifier state for identical key -> action mappings.
+			TArray<FEnhancedActionKeyMapping>::SizeType Idx = OldMappings.IndexOfByPredicate([&Mapping](const FEnhancedActionKeyMapping& Other) {return Mapping == Other; });
+			if (Idx != INDEX_NONE)
+			{
+				Mapping = MoveTemp(OldMappings[Idx]);
+				OldMappings.RemoveAtSwap(Idx);
+			}
+		}
+		for (const UInputAction* Action : RemovedActions)
+		{
+			PlayerInput->ActionInstanceData.Remove(Action);
+		}	
+	}
+
+	// Perform a modifier calculation pass on the default data to initialize values correctly.
+	// We do this at the end to ensure ActionInstanceData is accessible without requiring a tick for new/flushed actions.
 	for (FEnhancedActionKeyMapping& Mapping : PlayerInput->EnhancedActionMappings)
 	{
-		RemovedActions.Remove(Mapping.Action);
-
-		// Retain old mapping trigger/modifier state for identical key -> action mappings.
-		TArray<FEnhancedActionKeyMapping>::SizeType Idx = OldMappings.IndexOfByPredicate([&Mapping](const FEnhancedActionKeyMapping& Other) {return Mapping.Action == Other.Action && Mapping.Key == Other.Key; });
-		if (Idx != INDEX_NONE)
-		{
-			Mapping = MoveTemp(OldMappings[Idx]);
-			OldMappings.RemoveAtSwap(Idx);
-		}
+		PlayerInput->InitializeMappingActionModifiers(Mapping);
 	}
-	for (const UInputAction* Action : RemovedActions)
-	{
-		PlayerInput->ActionInstanceData.Remove(Action);
-	}
-
-	bMappingRebuildPending = false;
+	
+	MappingRebuildPending = EInputMappingRebuildType::None;
+	bIgnoreAllPressedKeysUntilReleaseOnRebuild = true;
 }
 
 template<typename T>
@@ -543,12 +694,12 @@ void InjectKey(T* InjectVia, FKey Key, const FInputActionValue& Value, float Del
 	// TODO: Multi axis FKey support
 	if (Key.IsAnalog())
 	{
-		InjectVia->InputAxis(Key, Value.Get<float>(), DeltaTime, 1, Key.IsGamepadKey());
+		InjectVia->InputKey(FInputKeyParams(Key, static_cast<double>(Value.Get<float>()), DeltaTime, 1, Key.IsGamepadKey()));
 	}
 	else
 	{
 		// TODO: IE_Repeat support. Ideally ticking at whatever rate the application platform is sending repeat key messages.
-		InjectVia->InputKey(Key, IE_Pressed, Value.Get<float>(), Key.IsGamepadKey());
+		InjectVia->InputKey(FInputKeyParams(Key, IE_Pressed, static_cast<double>(Value.Get<float>()), Key.IsGamepadKey()));
 	}
 }
 
@@ -609,14 +760,19 @@ void IEnhancedInputSubsystemInterface::RemoveForcedInput(FKey Key)
 
 	if (UEnhancedPlayerInput* PlayerInput = GetPlayerInput())
 	{
+		FInputKeyParams Params;
+		Params.Key = Key;
+		Params.Delta = FVector::ZeroVector;
+		Params.Event = EInputEvent::IE_Released;
+		
 		// Prefer sending the key released event via a player controller if one is available.
 		if (APlayerController* Controller = Cast<APlayerController>(PlayerInput->GetOuter()))
 		{
-			Controller->InputKey(Key, EInputEvent::IE_Released, 0.f, Key.IsGamepadKey());
+			Controller->InputKey(Params);
 		}
 		else
 		{
-			PlayerInput->InputKey(Key, EInputEvent::IE_Released, 0.f, Key.IsGamepadKey());
+			PlayerInput->InputKey(Params);
 		}
 	}
 }

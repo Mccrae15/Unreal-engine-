@@ -97,6 +97,8 @@ public:
 		Hand,
 	};
 
+	enum class EEventNavigationType { AnyLevel, SameLevel };
+
 public:
 	/** Default constructor. */
 	SPacketContentView();
@@ -137,7 +139,7 @@ public:
 	//virtual FReply OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 
 	void ResetPacket();
-	void SetPacket(uint32 InGameInstanceIndex, uint32 InConnectionIndex, Trace::ENetProfilerConnectionMode InConnectionMode, uint32 InPacketIndex, int64 InPacketBitSize);
+	void SetPacket(uint32 InGameInstanceIndex, uint32 InConnectionIndex, TraceServices::ENetProfilerConnectionMode InConnectionMode, uint32 InPacketIndex, int64 InPacketBitSize);
 
 	bool IsFilterByNetIdEnabled() const { return bFilterByNetId; }
 	uint32 GetFilterNetId() const { return FilterNetId; }
@@ -150,14 +152,16 @@ public:
 	void EnableFilterEventType(const uint32 InEventTypeIndex);
 	void DisableFilterEventType();
 
-	FReply FindFirstEvent();
-	FReply FindPreviousEvent();
-	FReply FindNextEvent();
-	FReply FindLastEvent();
+	void FindFirstEvent();
+	void FindPreviousEvent(EEventNavigationType NavigationType);
+	void FindNextEvent(EEventNavigationType NavigationType);
+	void FindLastEvent();
+	void FindPreviousLevel();
+	void FindNextLevel();
 
 private:
-	FReply FindPreviousPacket_OnClicked();
-	FReply FindNextPacket_OnClicked();
+	void FindPreviousPacket();
+	void FindNextPacket();
 
 	FText GetPacketText() const;
 	void Packet_OnTextCommitted(const FText& InNewText, ETextCommit::Type InTextCommit);
@@ -196,13 +200,15 @@ private:
 
 	uint32 GetPacketSequence(int32 PacketIndex) const;
 
-	void UpdateState();
+	void UpdateState(float FontScale);
 
 	void UpdateHoveredEvent();
 	FNetworkPacketEventRef GetEventAtMousePosition(float X, float Y);
 
 	void OnSelectedEventChanged();
 	void SelectHoveredEvent();
+
+	void AdjustForSplitContent();
 
 private:
 	TSharedPtr<SNetworkingProfilerWindow> ProfilerWindow;
@@ -211,11 +217,9 @@ private:
 	FPacketContentViewport Viewport;
 	bool bIsViewportDirty;
 
-	float NetEventsOffsetY;
-
 	uint32 GameInstanceIndex;
 	uint32 ConnectionIndex;
-	Trace::ENetProfilerConnectionMode ConnectionMode;
+	TraceServices::ENetProfilerConnectionMode ConnectionMode;
 	uint32 PacketIndex;
 	uint32 PacketSequence;
 	int64 PacketBitSize; // total number of bits; [bit]

@@ -19,11 +19,11 @@ struct FMaterialSpriteElement
 
 	/** The material that the sprite is rendered with. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=MaterialSpriteElement)
-	class UMaterialInterface* Material;
+	TObjectPtr<class UMaterialInterface> Material;
 	
 	/** A curve that maps distance on the X axis to the sprite opacity on the Y axis. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=MaterialSpriteElement)
-	UCurveFloat* DistanceToOpacityCurve;
+	TObjectPtr<UCurveFloat> DistanceToOpacityCurve;
 	
 	/** Whether the size is defined in screen-space or world-space. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=MaterialSpriteElement)
@@ -39,7 +39,7 @@ struct FMaterialSpriteElement
 
 	/** A curve that maps distance on the X axis to the sprite size on the Y axis. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=MaterialSpriteElement)
-	UCurveFloat* DistanceToSizeCurve;
+	TObjectPtr<UCurveFloat> DistanceToSizeCurve;
 
 	FMaterialSpriteElement()
 		: Material(NULL)
@@ -88,4 +88,10 @@ class ENGINE_API UMaterialBillboardComponent : public UPrimitiveComponent
 	virtual void SetMaterial(int32 ElementIndex, class UMaterialInterface* Material) override;
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials = false) const override;
 	//~ End UPrimitiveComponent Interface
+
+	//~ Begin USceneComponent Interface
+#if WITH_EDITOR
+	virtual bool GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty) override;
+#endif // WITH_EDITOR
+	//~ End USceneComponent Interface
 };

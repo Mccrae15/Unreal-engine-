@@ -10,16 +10,21 @@
 #include "Misc/CoreMisc.h"
 #include "GameProjectGenerationModule.h"
 #include "CookerSettings.h"
+#include "Settings/EditorExperimentalSettings.h"
 #include "UnrealEdMisc.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Settings/ProjectPackagingSettings.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "PlayLevel.h"
+#include "Algo/AllOf.h"
 #include "Async/Async.h"
 #include "Logging/MessageLog.h"
 #include "TargetReceipt.h"
 #include "DesktopPlatformModule.h"
 #include "PlatformInfo.h"
+#include "Framework/Docking/TabManager.h"
+#include "Editor/EditorPerProjectUserSettings.h"
+#include "ZenServerInterface.h"
 
 #define LOCTEXT_NAMESPACE "PlayLevel"
 
@@ -82,11 +87,13 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 	FString LaunchPlatformName = LastPlayUsingLauncherDeviceId.Left(LastPlayUsingLauncherDeviceId.Find(TEXT("@")));
 	FString LaunchPlatformNameFromID = LastPlayUsingLauncherDeviceId.Right(LastPlayUsingLauncherDeviceId.Find(TEXT("@")));
 	ITargetPlatform* LaunchPlatform = GetTargetPlatformManagerRef().FindTargetPlatform(LaunchPlatformName);
+	FString IniPlatformName = LaunchPlatformName;
 
 	// create a temporary device group and launcher profile
 	ILauncherDeviceGroupRef DeviceGroup = LauncherServicesModule.CreateDeviceGroup(FGuid::NewGuid(), TEXT("PlayOnDevices"));
 	if (LaunchPlatform != nullptr)
 	{
+		IniPlatformName = LaunchPlatform->IniPlatformName();
 		if (LaunchPlatformNameFromID.Equals(LaunchPlatformName))
 		{
 			// create a temporary list of devices for the target platform
@@ -130,7 +137,7 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 	}
 
 	// set the build/launch configuration 
-	EBuildConfiguration BuildConfiguration;
+	EBuildConfiguration BuildConfiguration = EBuildConfiguration::Development;
 	const ULevelEditorPlaySettings* EditorPlaySettings = PlaySessionRequest->EditorPlaySettings;
 	switch (EditorPlaySettings->LaunchConfiguration)
 	{
@@ -147,9 +154,35 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 		BuildConfiguration = EBuildConfiguration::Shipping;
 		break;
 	default:
-		// same as the running editor
-		BuildConfiguration = FApp::GetBuildConfiguration();
+	{
+		const UProjectPackagingSettings* AllPlatformPackagingSettings = GetDefault<UProjectPackagingSettings>();
+
+		EProjectPackagingBuildConfigurations BuildConfig = AllPlatformPackagingSettings->GetBuildConfigurationForPlatform(*IniPlatformName);
+		// if PPBC_MAX is set, then the project default should be used instead of the per platform build config
+		if (BuildConfig == EProjectPackagingBuildConfigurations::PPBC_MAX)
+		{
+			BuildConfig = AllPlatformPackagingSettings->BuildConfiguration;
+		}
+
+		switch (BuildConfig)
+		{
+		case EProjectPackagingBuildConfigurations::PPBC_Debug:
+		case EProjectPackagingBuildConfigurations::PPBC_DebugGame:
+			BuildConfiguration = EBuildConfiguration::Debug;
+			break;
+		case EProjectPackagingBuildConfigurations::PPBC_Development:
+			BuildConfiguration = EBuildConfiguration::Development;
+			break;
+		case EProjectPackagingBuildConfigurations::PPBC_Test:
+			BuildConfiguration = EBuildConfiguration::Test;
+			break;
+		case EProjectPackagingBuildConfigurations::PPBC_Shipping:
+			BuildConfiguration = EBuildConfiguration::Shipping;
+			break;
+		}
+
 		break;
+	}
 	}
 
 	// does the project have any code?
@@ -178,44 +211,93 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 	ILauncherProfileRef LauncherProfile = LauncherServicesModule.CreateProfile(TEXT("Launch On Device"));
 	LauncherProfile->SetBuildMode(BuildMode);
 	LauncherProfile->SetBuildConfiguration(BuildConfiguration);
+	if (InRequestParams.EditorPlaySettings && !InRequestParams.EditorPlaySettings->AdditionalLaunchParameters.IsEmpty())
+	{
+		LauncherProfile->SetAdditionalCommandLineParameters(InRequestParams.EditorPlaySettings->AdditionalLaunchParameters);
+	}
+
+	LauncherProfile->AddCookedPlatform(LaunchPlatformName);
 
 	// select the quickest cook mode based on which in editor cook mode is enabled
-	bool bIncrimentalCooking = true;
-	LauncherProfile->AddCookedPlatform(LaunchPlatformName);
+	const UCookerSettings& CookerSettings = *GetDefault<UCookerSettings>();
+	const UEditorExperimentalSettings& ExperimentalSettings = *GetDefault<UEditorExperimentalSettings>();
+
+	bool bInEditorCooking = false;
+	bool bCookOnTheFly = false;
 	ELauncherProfileCookModes::Type CurrentLauncherCookMode = ELauncherProfileCookModes::ByTheBook;
-	bool bCanCookByTheBookInEditor = true;
-	bool bCanCookOnTheFlyInEditor = true;
-	for (const FString& PlatformName : LauncherProfile->GetCookedPlatforms())
+	if (!CookerSettings.bCookOnTheFlyForLaunchOn)
 	{
-		if (CanCookByTheBookInEditor(PlatformName) == false)
+		bInEditorCooking = Algo::AllOf(LauncherProfile->GetCookedPlatforms(),
+			[this](const FString& PlatformName) { return CanCookByTheBookInEditor(PlatformName); });
+		CurrentLauncherCookMode = bInEditorCooking ? ELauncherProfileCookModes::ByTheBookInEditor: ELauncherProfileCookModes::ByTheBook;
+	}
+	else
+	{
+		bCookOnTheFly = true;
+		bInEditorCooking = Algo::AllOf(LauncherProfile->GetCookedPlatforms(),
+			[this](const FString& PlatformName) { return CanCookOnTheFlyInEditor(PlatformName); });
+		CurrentLauncherCookMode = bInEditorCooking ? ELauncherProfileCookModes::OnTheFlyInEditor : ELauncherProfileCookModes::OnTheFly;
+	}
+
+	bool bIncrementalCooking = (CookerSettings.bIterativeCookingForLaunchOn || ExperimentalSettings.bSharedCookedBuilds) && !bCookOnTheFly;
+
+	if (CurrentLauncherCookMode == ELauncherProfileCookModes::OnTheFlyInEditor ||
+		CurrentLauncherCookMode == ELauncherProfileCookModes::ByTheBookInEditor)
+	{
+		// For now World Partition doesn't support InEditor cooking because its cooking is destructive -
+		// it moves UObjects out of the generator package into the streaming packages. To allow cooking it in
+		// the editor process, we will need to make it non-destructive or restore the package afterwards.
+		FWorldContext& EditorContext = GetEditorWorldContext();
+		if (EditorContext.World()->IsPartitionedWorld())
 		{
-			bCanCookByTheBookInEditor = false;
+			FString ErrorMsg = FString::Printf(TEXT("Error launching map %s : Quick launch with WorldPartition doesn't yet support cooking in the editor process.\n")
+				TEXT("To launch this map using Quick launch, set EditorPerProjectUserSettings.ini:[/Script/UnrealEd.EditorExperimentalSettings]:bDisableCookInEditor=true and relaunch the editor."),
+				*EditorContext.World()->GetOutermost()->GetName());
+			UE_LOG(LogPlayLevel, Error, TEXT("%s"), *ErrorMsg);
+			FMessageLog("EditorErrors").Error(FText::FromString(ErrorMsg));
+			FMessageLog("EditorErrors").Open();
+			CancelRequestPlaySession();
+			return;
 		}
-		if (CanCookOnTheFlyInEditor(PlatformName) == false)
+	}
+
+	TStringBuilder<256> CookOptions;
+	CookOptions << LauncherProfile->GetCookOptions();
+	ensure(CookOptions.Len() == 0);
+	auto SetCookOption = [&CookOptions](FStringView Option, bool bOptionOn)
+	{
+		ensure(CookOptions.ToView().Find(Option) == INDEX_NONE);
+		if (bOptionOn)
 		{
-			bCanCookOnTheFlyInEditor = false;
+			CookOptions << (CookOptions.Len() > 0 ? TEXTVIEW(" ") : TEXTVIEW(""));
+			CookOptions << Option;
 		}
-	}
-	if (bCanCookByTheBookInEditor)
+	};
+
+	// content only projects won't have multiple targets to pick from, and pasing -target=UnrealGame will fail if what C++ thinks
+	// is a content only project needs a temporary target.cs file in UBT, 
+	// only set the BuildTarget in code-based projects
+	if (LauncherSessionInfo->bPlayUsingLauncherHasCode)
 	{
-		CurrentLauncherCookMode = ELauncherProfileCookModes::ByTheBookInEditor;
-	}
-	if (bCanCookOnTheFlyInEditor)
-	{
-		CurrentLauncherCookMode = ELauncherProfileCookModes::OnTheFlyInEditor;
-		bIncrimentalCooking = false;
-	}
-	if (GetDefault<UCookerSettings>()->bCookOnTheFlyForLaunchOn)
-	{
-		CurrentLauncherCookMode = ELauncherProfileCookModes::OnTheFly;
-		bIncrimentalCooking = false;
+		LauncherProfile->SetBuildTarget(GetDefault<UProjectPackagingSettings>()->GetLaunchOnTargetInfo()->Name);
 	}
 	LauncherProfile->SetCookMode(CurrentLauncherCookMode);
-	LauncherProfile->SetUnversionedCooking(!bIncrimentalCooking);
-	LauncherProfile->SetIncrementalCooking(bIncrimentalCooking);
+	LauncherProfile->SetUnversionedCooking(!bIncrementalCooking); // Unversioned cooking is not allowed with incremental cooking
+	LauncherProfile->SetIncrementalCooking(bIncrementalCooking);
+	SetCookOption(TEXTVIEW("-IgnoreIniSettingsOutOfDate"), bIncrementalCooking && CookerSettings.bIgnoreIniSettingsOutOfDateForIteration);
+	SetCookOption(TEXTVIEW("-IgnoreScriptPackagesOutOfDate"), bIncrementalCooking && CookerSettings.bIgnoreScriptPackagesOutOfDateForIteration);
+	SetCookOption(TEXTVIEW("-IterateSharedCookedbuild"), bIncrementalCooking && ExperimentalSettings.bSharedCookedBuilds);
 	LauncherProfile->SetDeployedDeviceGroup(DeviceGroup);
-	LauncherProfile->SetIncrementalDeploying(bIncrimentalCooking);
+	LauncherProfile->SetIncrementalDeploying(bIncrementalCooking);
 	LauncherProfile->SetEditorExe(FUnrealEdMisc::Get().GetExecutableForCommandlets());
+	LauncherProfile->SetShouldUpdateDeviceFlash(InRequestParams.LauncherTargetDevice->bUpdateDeviceFlash);
+	LauncherProfile->SetCookOptions(*CookOptions);
+	
+	if (LauncherProfile->IsBuildingUAT() && !GetDefault<UEditorPerProjectUserSettings>()->bAlwaysBuildUAT && bUATSuccessfullyCompiledOnce)
+	{
+		// UAT was built on a first launch and there's no need to rebuild it any more
+		LauncherProfile->SetBuildUAT(false);
+	}
 
 	const FString DummyIOSDeviceName(FString::Printf(TEXT("All_iOS_On_%s"), FPlatformProcess::ComputerName()));
 	const FString DummyTVOSDeviceName(FString::Printf(TEXT("All_tvOS_On_%s"), FPlatformProcess::ComputerName()));
@@ -226,7 +308,16 @@ void UEditorEngine::StartPlayUsingLauncherSession(FRequestPlaySessionParams& InR
 		LauncherProfile->SetLaunchMode(ELauncherProfileLaunchModes::DefaultRole);
 	}
 
-	if (LauncherProfile->GetCookMode() == ELauncherProfileCookModes::OnTheFlyInEditor || LauncherProfile->GetCookMode() == ELauncherProfileCookModes::OnTheFly)
+	const bool bUseZenStore = GetDefault<UProjectPackagingSettings>()->bUseZenStore;
+	LauncherProfile->SetUseZenStore(bUseZenStore);
+#if UE_WITH_ZEN
+	if (bUseZenStore)
+	{
+		static UE::Zen::FScopeZenService EditorStaticZenService;
+	}
+#endif
+
+	if (bUseZenStore || LauncherProfile->GetCookMode() == ELauncherProfileCookModes::OnTheFlyInEditor || LauncherProfile->GetCookMode() == ELauncherProfileCookModes::OnTheFly)
 	{
 		LauncherProfile->SetDeploymentMode(ELauncherProfileDeploymentModes::FileServer);
 	}
@@ -470,20 +561,14 @@ void UEditorEngine::HandleStageStarted(const FString& InStage, TWeakPtr<SNotific
 	if (InStage.Contains(TEXT("Cooking")) || InStage.Contains(TEXT("Cook Task")))
 	{
 		FString PlatformName = LastPlayUsingLauncherDeviceId.Left(LastPlayUsingLauncherDeviceId.Find(TEXT("@")));
-		if (PlatformName.Contains(TEXT("NoEditor")))
-		{
-			PlatformName = PlatformName.Left(PlatformName.Find(TEXT("NoEditor")));
-		}
+		PlatformName = PlatformInfo::FindPlatformInfo(*PlatformName)->VanillaInfo->Name.ToString();
 		Arguments.Add(TEXT("PlatformName"), FText::FromString(PlatformName));
 		NotificationText = FText::Format(LOCTEXT("LauncherTaskProcessingNotification", "Processing Assets for {PlatformName}..."), Arguments);
 	}
 	else if (InStage.Contains(TEXT("Build Task")))
 	{
 		FString PlatformName = LastPlayUsingLauncherDeviceId.Left(LastPlayUsingLauncherDeviceId.Find(TEXT("@")));
-		if (PlatformName.Contains(TEXT("NoEditor")))
-		{
-			PlatformName = PlatformName.Left(PlatformName.Find(TEXT("NoEditor")));
-		}
+		PlatformName = PlatformInfo::FindPlatformInfo(*PlatformName)->VanillaInfo->Name.ToString();
 		Arguments.Add(TEXT("PlatformName"), FText::FromString(PlatformName));
 		if (!LauncherSessionInfo->bPlayUsingLauncherBuild)
 		{
@@ -590,6 +675,8 @@ void UEditorEngine::HandleLaunchCompleted(bool Succeeded, double TotalTime, int3
 		FEditorAnalytics::ReportEvent(TEXT( "Editor.LaunchOn.Completed" ), LastPlayUsingLauncherDeviceId.Left(LastPlayUsingLauncherDeviceId.Find(TEXT("@"))), bHasCode, ParamArray);
 
 		UE_LOG(LogPlayLevel, Log, TEXT("Launch On Completed. Time: %f"), TotalTime);
+
+		bUATSuccessfullyCompiledOnce = true;
 	}
 	else
 	{

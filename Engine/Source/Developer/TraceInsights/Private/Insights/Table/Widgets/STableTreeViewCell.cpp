@@ -2,7 +2,6 @@
 
 #include "STableTreeViewCell.h"
 
-#include "EditorStyleSet.h"
 #include "SlateOptMacros.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
@@ -12,7 +11,9 @@
 #include "Widgets/Views/SExpanderArrow.h"
 
 // Insights
+#include "Insights/InsightsStyle.h"
 #include "Insights/Table/ViewModels/Table.h"
+#include "Insights/Table/ViewModels/TableCellValueFormatter.h"
 #include "Insights/Table/ViewModels/TableColumn.h"
 #include "Insights/Table/Widgets/STableTreeViewRow.h"
 
@@ -38,9 +39,9 @@ void STableTreeViewCell::Construct(const FArguments& InArgs, const TSharedRef<IT
 	SetHoveredCellDelegate = InArgs._OnSetHoveredCell;
 
 	ChildSlot
-		[
-			GenerateWidgetForColumn(InArgs, TableRow)
-		];
+	[
+		GenerateWidgetForColumn(InArgs, TableRow)
+	];
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -80,7 +81,7 @@ TSharedRef<SWidget> STableTreeViewCell::GenerateWidgetForNameColumn(const FArgum
 		[
 			SNew(SImage)
 			.Visibility(this, &STableTreeViewCell::GetHintIconVisibility)
-			.Image(FEditorStyle::GetBrush("Profiler.Tooltip.HintIcon10"))
+			.Image(FInsightsStyle::GetBrush("Icons.Hint.TreeItem"))
 			.ToolTip(GetRowToolTip(TableRow))
 		]
 
@@ -88,14 +89,29 @@ TSharedRef<SWidget> STableTreeViewCell::GenerateWidgetForNameColumn(const FArgum
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
-		.HAlign(ColumnPtr->GetHorizontalAlignment())
+		.HAlign(HAlign_Left)
 		.Padding(FMargin(2.0f, 0.0f))
 		[
 			SNew(STextBlock)
 			.Text(this, &STableTreeViewCell::GetDisplayName)
 			.HighlightText(InArgs._HighlightText)
-			.TextStyle(FEditorStyle::Get(), TEXT("Profiler.Tooltip"))
+			.TextStyle(FInsightsStyle::Get(), TEXT("TreeTable.Tooltip"))
 			.ColorAndOpacity(this, &STableTreeViewCell::GetColorAndOpacity)
+			.ShadowColorAndOpacity(this, &STableTreeViewCell::GetShadowColorAndOpacity)
+		]
+
+		// Name Suffix
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.HAlign(HAlign_Left)
+		.Padding(FMargin(2.0f, 0.0f))
+		[
+			SNew(STextBlock)
+			.Visibility(this, &STableTreeViewCell::HasExtraDisplayName)
+			.Text(this, &STableTreeViewCell::GetExtraDisplayName)
+			.TextStyle(FInsightsStyle::Get(), TEXT("TreeTable.Tooltip"))
+			.ColorAndOpacity(this, &STableTreeViewCell::GetExtraColorAndOpacity)
 			.ShadowColorAndOpacity(this, &STableTreeViewCell::GetShadowColorAndOpacity)
 		]
 	;
@@ -120,31 +136,43 @@ FText STableTreeViewCell::GetValueAsText() const
 
 TSharedRef<SWidget> STableTreeViewCell::GenerateWidgetForTableColumn(const FArguments& InArgs, const TSharedRef<ITableRow>& TableRow)
 {
-	// Note: For performance reason, init the cell text (value) only once.
-	//       If we'll need to update values without recreating the table row/cell widgets, bind .Text to STableTreeViewCell::GetValueAsText
-	//       or add API to explicitly update the text block.
-	const FText CellText = ColumnPtr->GetValueAsText(*TableTreeNodePtr);
+	TSharedRef<STextBlock> TextBox = SNew(STextBlock)
+		.TextStyle(FInsightsStyle::Get(), TEXT("TreeTable.Tooltip"))
+		.ColorAndOpacity(this, &STableTreeViewCell::GetStatsColorAndOpacity)
+		.ShadowColorAndOpacity(this, &STableTreeViewCell::GetShadowColorAndOpacity);
+
+	if (ColumnPtr->IsDynamic())
+	{
+		TextBox->SetText(TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateRaw(this, &STableTreeViewCell::GetValueAsText)));
+	}
+	else
+	{
+		FText CellText = ColumnPtr->GetValueAsText(*TableTreeNodePtr);
+		TextBox->SetText(CellText);
+	}
 
 	return
 		SNew(SHorizontalBox)
+		.ToolTip(GetTooltip())
 
-		// Value
 		+ SHorizontalBox::Slot()
 		.FillWidth(1.0f)
 		.VAlign(VAlign_Center)
 		.HAlign(ColumnPtr->GetHorizontalAlignment())
 		.Padding(FMargin(2.0f, 0.0f))
 		[
-			SNew(STextBlock)
-			.Text(CellText)
-			.TextStyle(FEditorStyle::Get(), TEXT("Profiler.Tooltip"))
-			.ColorAndOpacity(this, &STableTreeViewCell::GetStatsColorAndOpacity)
-			.ShadowColorAndOpacity(this, &STableTreeViewCell::GetShadowColorAndOpacity)
-		]
-	;
+			TextBox
+		];
 }
 
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+TSharedPtr<IToolTip> STableTreeViewCell::GetTooltip() const
+{
+	return ColumnPtr->GetValueFormatter()->GetCustomTooltip(*ColumnPtr, *TableTreeNodePtr);
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 

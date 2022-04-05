@@ -104,10 +104,16 @@ UCLASS(hidecategories=Object, config=EditorPerProjectUserSettings)
 class UNREALED_API UPersonaOptions : public UObject
 {
 	GENERATED_UCLASS_BODY()
-		
+
 	/** Whether or not the floor should be aligned to the Skeletal Mesh's bounds by default for the Animation Editor(s)*/
 	UPROPERTY(EditAnywhere, config, Category = "Preview Scene")
 	uint32 bAutoAlignFloorToMesh : 1;
+
+	/** Whether or not the Animation Editor opens in an additional tab when double clicking an animation asset or if it reuses an already existing Animation Editor tab.
+	  * You can also keep this disabled and hold shift pressed while double clicking the asset to open the asset inside its own tab.
+	  */
+	UPROPERTY(EditAnywhere, config, Category = "Assets")
+	uint32 bAlwaysOpenAnimationAssetsInNewTab : 1;
 
 	/** Whether or not the grid should be visible by default for the Animation Editor(s)*/
 	UPROPERTY(EditAnywhere, config, Category = "Viewport")
@@ -156,6 +162,10 @@ class UNREALED_API UPersonaOptions : public UObject
 	/** Whether to hide parent items when filtering or to display them grayed out */
 	UPROPERTY(EditAnywhere, config, Category = "Skeleton Tree")
 	bool bHideParentsWhenFiltering;
+
+	/** Whether to focus and expand an item's tree recursively based on selection */
+	UPROPERTY(EditAnywhere, config, Category = "Skeleton Tree")
+	bool bExpandTreeOnSelection;
 
 	UPROPERTY(EditAnywhere, config, Category = "Preview Scene|AdditionalMesh")
 	bool bAllowPreviewMeshCollectionsToSelectFromDifferentSkeletons;
@@ -221,4 +231,21 @@ public:
 	void SetNotifyTimingNodeColor(const FLinearColor& InColor);
 	void SetBranchingPointTimingNodeColor(const FLinearColor& InColor);
 	FAssetEditorOptions& GetAssetEditorOptions(const FName& InContext);
+
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnUpdateSettingsMulticaster, const UPersonaOptions*, EPropertyChangeType::Type);
+	FOnUpdateSettingsMulticaster OnSettingsChange;
+
+	FDelegateHandle RegisterOnUpdateSettings(const FOnUpdateSettingsMulticaster::FDelegate& Delegate)
+	{
+		return OnSettingsChange.Add(Delegate);
+	}
+
+	void UnregisterOnUpdateSettings(FDelegateHandle Object)
+	{
+		OnSettingsChange.Remove(Object);
+	}
+
+protected:
+	// UObject interface
+	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 };

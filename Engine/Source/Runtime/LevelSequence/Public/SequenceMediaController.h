@@ -17,7 +17,7 @@ class UMediaPlayer;
 /**
  * Replicated actor class that is responsible for instigating various cinematic assets (Media, Audio, Level Sequences) in a synchronized fasion
  */
-UCLASS(hideCategories=(Rendering, Physics, LOD, Activation, Input, Collision))
+UCLASS(hideCategories=(Rendering, Physics, HLOD, Activation, Input, Collision))
 class LEVELSEQUENCE_API ALevelSequenceMediaController
 	: public AActor
 	, public IMovieSceneCustomClockSource
@@ -79,11 +79,11 @@ private:
 
 	/** Pointer to the sequence actor to use for playback */
 	UPROPERTY(EditAnywhere, BlueprintGetter=GetSequence, Category="Synchronization")
-	ALevelSequenceActor* Sequence;
+	TObjectPtr<ALevelSequenceActor> Sequence;
 
 	/** Media component that contains the media player to synchronize with */
 	UPROPERTY(VisibleAnywhere, BlueprintGetter=GetMediaComponent, Category="Synchronization")
-	UMediaComponent* MediaComponent;
+	TObjectPtr<UMediaComponent> MediaComponent;
 
 	/** Replicated time at which the server started the sequence (taken from AGameStateBase::GetServerWorldTimeSeconds) */
 	UPROPERTY(BlueprintReadOnly, Category="Synchronization", replicated, ReplicatedUsing=OnRep_ServerStartTimeSeconds, meta=(AllowPrivateAccess="true"))

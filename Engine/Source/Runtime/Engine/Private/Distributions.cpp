@@ -106,7 +106,7 @@ static void BuildZeroLookupTable( FDistributionLookupTable* OutTable, int32 Valu
  * @param Distribution - The distribution for which to build a lookup table.
  */
 template <typename DistributionType>
-void BuildLookupTable( FDistributionLookupTable* OutTable, const DistributionType* Distribution )
+void BuildLookupTable( FDistributionLookupTable* OutTable, const DistributionType& Distribution )
 {
 	check(IsInGameThread() || IsInAsyncLoadingThread());
 	check(Distribution);
@@ -1210,9 +1210,9 @@ FVector FRawDistributionVector::GetValue(float F, UObject* Data, int32 Extreme, 
 	// if we get here, we better have been initialized!
 	check(!LookupTable.IsEmpty());
 
-	FVector Value;
+	FVector3f Value;
 	FRawDistribution::GetValue3(F, &Value.X, Extreme, InRandomStream);
-	return Value;
+	return (FVector)Value;
 }
 
 const FRawDistribution *FRawDistributionVector::GetFastRawDistribution()
@@ -1609,28 +1609,31 @@ void FComposableVectorDistribution::Initialize( const UDistributionVector* Vecto
 void FComposableVectorDistribution::InitializeWithConstant( const FVector& Value )
 {
 	checkDistribution( LookupTable.GetValuesPerEntry() == 3 );
-	BuildConstantLookupTable( &LookupTable, 3, (float*)&Value );
+	FVector3f AsFloat = (FVector3f)Value;
+	BuildConstantLookupTable(&LookupTable, 3, (float*)&AsFloat);
 	checkDistribution( LookupTable.GetValuesPerEntry() == 3 );
 }
 
 void FComposableVectorDistribution::ScaleByConstant( float Scale )
 {
 	checkDistribution( LookupTable.GetValuesPerEntry() == 3 );
-	ScaleLookupTableByConstant( &LookupTable, Scale );
+	ScaleLookupTableByConstant(&LookupTable, Scale);
 	checkDistribution( LookupTable.GetValuesPerEntry() == 3 );
 }
 
 void FComposableVectorDistribution::ScaleByConstantVector( const FVector& Scale )
 {
 	checkDistribution( LookupTable.GetValuesPerEntry() == 3 );
-	ScaleLookupTableByConstants( &LookupTable, (const float*)&Scale, 3 );
+	FVector3f AsFloat = (FVector3f)Scale;
+	ScaleLookupTableByConstants(&LookupTable, (const float*)&AsFloat, 3);
 	checkDistribution( LookupTable.GetValuesPerEntry() == 3 );
 }
 
 void FComposableVectorDistribution::AddConstantVector( const FVector& Value )
 {
 	checkDistribution( LookupTable.GetValuesPerEntry() == 3 );
-	AddConstantToLookupTable( &LookupTable, (const float*)&Value, 3 );
+	FVector3f AsFloat = (FVector3f)Value;
+	AddConstantToLookupTable( &LookupTable, (const float*)&AsFloat, 3 );
 	checkDistribution( LookupTable.GetValuesPerEntry() == 3 );
 }
 

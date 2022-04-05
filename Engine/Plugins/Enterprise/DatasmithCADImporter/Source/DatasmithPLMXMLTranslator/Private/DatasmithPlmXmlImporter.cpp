@@ -19,12 +19,16 @@
 
 #include "CADData.h"
 #include "CADToolsModule.h"
-#include "CoreTechParametricSurfaceExtension.h"
+#include "CADKernelSurfaceExtension.h"
+#include "CoreTechSurfaceExtension.h"
+#include "CoreTechSurfaceHelper.h"
 #include "DatasmithAdditionalData.h"
 #include "DatasmithDispatcher.h"
 #include "DatasmithMeshBuilder.h"
 #include "DatasmithSceneGraphBuilder.h"
 #include "DatasmithUtils.h"
+#include "ParametricSurfaceTranslator.h"
+
 
 
 DEFINE_LOG_CATEGORY_STATIC(LogDatasmithPlmXmlImport, Log, All);
@@ -181,7 +185,7 @@ namespace PlmXml
 
 	struct FProductInstance
 	{
-		const FXmlNode* Node;
+		const FXmlNode* Node = nullptr;
 
 		operator bool() const
 		{
@@ -191,7 +195,7 @@ namespace PlmXml
 
 	struct FProductRevisionView
 	{
-		const FXmlNode* Node;
+		const FXmlNode* Node = nullptr;
 		
 		operator bool() const
 		{
@@ -201,7 +205,7 @@ namespace PlmXml
 
 	struct FRepresentation
 	{
-		const FXmlNode* Node;
+		const FXmlNode* Node = nullptr;
 
 		operator bool() const
 		{
@@ -228,8 +232,8 @@ namespace PlmXml
 		TUniquePtr<FDatasmithMeshBuilder> MeshBuilderPtr;
 
 		CADLibrary::FImportParameters ImportParameters;
-		TMap<uint32, FString> CADFileToUnrealGeomMap;
-		TMap<uint32, FString> CADFileToUnrealFileMap;
+		TMap<uint32, FString> CADFileToUEGeomMap;
+		TMap<uint32, FString> CADFileToUEFileMap;
 
 		TArray<FString> FilePaths;
 
@@ -238,7 +242,6 @@ namespace PlmXml
 		FPlmXmlMeshLoaderWithDatasmithDispatcher(TSharedRef<IDatasmithScene> InDatasmithScene, FDatasmithTessellationOptions& InTessellationOptions)
 			: DatasmithScene(InDatasmithScene)
 			, TessellationOptions(InTessellationOptions)
-		
 		{
 			FCADToolsModule& CADToolsModule = FCADToolsModule::Get();
 			
@@ -246,20 +249,15 @@ namespace PlmXml
 			IFileManager::Get().MakeDirectory(*CacheDir);
 
 			// Setup of import parameters for DatasmithDispatcher copied from FDatasmithCADTranslator's setup
-			ImportParameters.MetricUnit = 0.001;
-			ImportParameters.ScaleFactor = 0.1;
-			ImportParameters.ChordTolerance = TessellationOptions.ChordTolerance;
-			ImportParameters.MaxEdgeLength = TessellationOptions.MaxEdgeLength;
-			ImportParameters.MaxNormalAngle = TessellationOptions.NormalTolerance;
-			ImportParameters.StitchingTechnique = (CADLibrary::EStitchingTechnique) TessellationOptions.StitchingTechnique;
+			ImportParameters.SetTesselationParameters(TessellationOptions.ChordTolerance, TessellationOptions.MaxEdgeLength, TessellationOptions.NormalTolerance, (CADLibrary::EStitchingTechnique) TessellationOptions.StitchingTechnique);
 
-			DatasmithDispatcher = MakeUnique<DatasmithDispatcher::FDatasmithDispatcher>(ImportParameters, CacheDir, FPlatformMisc::NumberOfCores(), CADFileToUnrealFileMap, CADFileToUnrealGeomMap);
+			DatasmithDispatcher = MakeUnique<DatasmithDispatcher::FDatasmithDispatcher>(ImportParameters, CacheDir, FPlatformMisc::NumberOfCores(), CADFileToUEFileMap, CADFileToUEGeomMap);
 		}
 
 		// Adds geom file to load and returns Id to use in InstantiateMesh later(after all is loaded)
 		int32 AddMeshToLoad(const FString& FullPath)
 		{
-			CADLibrary::FFileDescription FileDescription(*FullPath);
+			CADLibrary::FFileDescriptor FileDescription(*FullPath);
 			DatasmithDispatcher->AddTask(FileDescription);
 			return FilePaths.Add(FullPath);
 		}
@@ -272,10 +270,8 @@ namespace PlmXml
 			
 			if(FilePaths.IsValidIndex(Id))
 			{
-				FString Filename = FPaths::GetCleanFilename(FilePaths[Id]);
-
 				// Make sure file was loaded
-				SceneGraphBuilder->FillAnchorActor(ActorElement, Filename);
+				SceneGraphBuilder->FillAnchorActor(ActorElement, FilePaths[Id]);
 			}
 
 			return ActorElement;
@@ -284,9 +280,9 @@ namespace PlmXml
 		void Process(const FDatasmithSceneSource& Source)
 		{
 			DatasmithDispatcher->Process(true);
-			SceneGraphBuilder = MakeUnique<FDatasmithSceneGraphBuilder>(CADFileToUnrealFileMap, CacheDir, DatasmithScene, Source, ImportParameters);
+			SceneGraphBuilder = MakeUnique<FDatasmithSceneGraphBuilder>(CADFileToUEFileMap, CacheDir, DatasmithScene, Source, ImportParameters);
 			SceneGraphBuilder->LoadSceneGraphDescriptionFiles();
-			MeshBuilderPtr = MakeUnique<FDatasmithMeshBuilder>(CADFileToUnrealGeomMap, CacheDir, ImportParameters);
+			MeshBuilderPtr = MakeUnique<FDatasmithMeshBuilder>(CADFileToUEGeomMap, CacheDir, ImportParameters);
 		}
 
 		void UnloadScene()
@@ -303,8 +299,15 @@ namespace PlmXml
 			{
 				OutMeshPayload.LodMeshes.Add(MoveTemp(Mesh.GetValue()));
 
-				DatasmithCoreTechParametricSurfaceData::AddCoreTechSurfaceDataForMesh(MeshElement, ImportParameters, MeshParameters, TessellationOptions, OutMeshPayload);
-				
+				if (CADLibrary::FImportParameters::bGDisableCADKernelTessellation)
+				{
+					ParametricSurfaceUtils::AddSurfaceData(MeshElement->GetFile(), ImportParameters, MeshParameters, TessellationOptions, OutMeshPayload);
+				}
+				else
+				{
+					CADKernelSurface::AddSurfaceDataForMesh(MeshElement->GetFile(), ImportParameters, MeshParameters, TessellationOptions, OutMeshPayload);
+				}
+
 				return true;
 			}
 			return false;

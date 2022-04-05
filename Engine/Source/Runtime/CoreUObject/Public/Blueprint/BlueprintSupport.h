@@ -6,8 +6,11 @@
 #include "HAL/ThreadSingleton.h"
 #include "UObject/UObjectGlobals.h"
 
+// @todo: BP2CPP_remove
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 class UDynamicClass;
 struct FCompilerNativizationOptions;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 class ITargetPlatform;
 
 /**
@@ -30,6 +33,8 @@ struct COREUOBJECT_API FBlueprintTags
 	static const FName BlueprintDescription;
 	/** String with user-entered display name for the blueprint class (used in editor along with the description to identify the Blueprint type) */
 	static const FName BlueprintDisplayName;
+	/** String with user-entered category for the blueprint */
+	static const FName BlueprintCategory;
 	/** String set to True/False, set if this is a data only blueprint */
 	static const FName IsDataOnly;
 	/** List of implemented interfaces, must be converted to FBPInterfaceDescription */
@@ -99,6 +104,9 @@ struct FBlueprintSupport
 
 	/** Registers any object properties in this struct with the deferred dependency system */
 	COREUOBJECT_API static void RegisterDeferredDependenciesInStruct(const UStruct* Struct, void* StructData);
+
+	/** Repair function to scan for any deferred dependency placeholders and attempt to resolve them in-place with real assets */
+	COREUOBJECT_API static void RepairDeferredDependenciesInObject(UObject* Object);
 
 	/** Not a particularly fast function. Mostly intended for validation in debug builds. */
 	static bool IsInBlueprintPackage(UObject* LoadedObj);
@@ -175,7 +183,8 @@ private:
 	FScopedClassDependencyGather();
 };
 
-enum class EReplacementResult
+// @todo: BP2CPP_remove
+enum class UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") EReplacementResult
 {
 	/** Don't replace the provided package at all */
 	DontReplace,
@@ -187,11 +196,13 @@ enum class EReplacementResult
 	ReplaceCompletely
 };
 
+// @todo: BP2CPP_remove
 /**
  * Interface needed by CoreUObject to the BlueprintNativeCodeGen logic. Used by cooker to convert assets 
  * to native code.
  */
-struct IBlueprintNativeCodeGenCore
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+struct UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") IBlueprintNativeCodeGenCore
 {
 	/** Returns the current IBlueprintNativeCodeGenCore, may return nullptr */
 	COREUOBJECT_API static const IBlueprintNativeCodeGenCore* Get();
@@ -246,6 +257,7 @@ struct IBlueprintNativeCodeGenCore
 	 */
 	virtual const FCompilerNativizationOptions& GetNativizationOptionsForPlatform(const ITargetPlatform* Platform) const = 0;
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #endif // WITH_EDITOR
 
@@ -423,7 +435,8 @@ struct FDeferredObjInitializationHelper
 	static void ResolveDeferredInitsFromArchetype(UObject* Archetype);
 };
 
-struct FBlueprintDependencyType
+// @todo: BP2CPP_remove
+struct UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") FBlueprintDependencyType
 {
 	uint8 bSerializationBeforeSerializationDependency : 1;
 	uint8 bCreateBeforeSerializationDependency : 1;
@@ -447,7 +460,9 @@ struct FBlueprintDependencyType
 	{}
 };
 
-struct COREUOBJECT_API FCompactBlueprintDependencyData
+// @todo: BP2CPP_remove
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+struct COREUOBJECT_API UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") FCompactBlueprintDependencyData
 {
 	int16 ObjectRefIndex;
 	FBlueprintDependencyType StructDependency;
@@ -465,8 +480,10 @@ struct COREUOBJECT_API FCompactBlueprintDependencyData
 		, CDODependency(InCDODependency)
 	{}
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-struct COREUOBJECT_API FBlueprintDependencyObjectRef
+// @todo: BP2CPP_remove
+struct COREUOBJECT_API UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") FBlueprintDependencyObjectRef
 {
 	FName PackageName;
 	FName ObjectName;
@@ -484,7 +501,9 @@ struct COREUOBJECT_API FBlueprintDependencyObjectRef
 		, const TCHAR* InOuterName );
 };
 
-struct COREUOBJECT_API FBlueprintDependencyData
+// @todo: BP2CPP_remove
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+struct COREUOBJECT_API UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") FBlueprintDependencyData
 {
 	FBlueprintDependencyObjectRef ObjectRef;
 	// 0 - dependency type for dynamic class or UDS
@@ -507,14 +526,17 @@ struct COREUOBJECT_API FBlueprintDependencyData
 		return Other.ObjectRefIndex == ObjectRefIndex;
 	}
 
-	static bool ContainsDependencyData(TArray<FBlueprintDependencyData>& Assets, int16 ObjectRefIndex);
-	static void AppendUniquely(TArray<FBlueprintDependencyData>& Destination, const TArray<FBlueprintDependencyData>& AdditionalData);
+	static bool ContainsDependencyData(TArray<FBlueprintDependencyData>& Assets, int16 ObjectRefIndex) { return false; }
+	static void AppendUniquely(TArray<FBlueprintDependencyData>& Destination, const TArray<FBlueprintDependencyData>& AdditionalData) {}
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+// @todo: BP2CPP_remove
 /**
  *	Stores info about dependencies of native classes converted from BPs
  */
-struct COREUOBJECT_API FConvertedBlueprintsDependencies
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+struct COREUOBJECT_API UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") FConvertedBlueprintsDependencies
 {
 	typedef void(*GetDependenciesNamesFunc)(TArray<FBlueprintDependencyData>&);
 
@@ -525,11 +547,12 @@ private:
 public:
 	static FConvertedBlueprintsDependencies& Get();
 
-	void RegisterConvertedClass(FName PackageName, GetDependenciesNamesFunc GetAssets);
+	void RegisterConvertedClass(FName PackageName, GetDependenciesNamesFunc GetAssets) {}
 
 	/** Get all assets paths necessary for the class with the given class name and all converted classes that dependencies. */
-	void GetAssets(FName PackageName, TArray<FBlueprintDependencyData>& OutDependencies) const;
+	void GetAssets(FName PackageName, TArray<FBlueprintDependencyData>& OutDependencies) const {}
 
-	static void FillUsedAssetsInDynamicClass(UDynamicClass* DynamicClass, GetDependenciesNamesFunc GetUsedAssets);
-	static UObject* LoadObjectForStructConstructor(UScriptStruct* ScriptStruct, const TCHAR* ObjectPath);
+	static void FillUsedAssetsInDynamicClass(UDynamicClass* DynamicClass, GetDependenciesNamesFunc GetUsedAssets) {}
+	static UObject* LoadObjectForStructConstructor(UScriptStruct* ScriptStruct, const TCHAR* ObjectPath) { return nullptr; }
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS

@@ -6,7 +6,8 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 using UnrealBuildTool;
 
 namespace AutomationTool.Benchmark
@@ -80,11 +81,7 @@ namespace AutomationTool.Benchmark
 				{
 					StartTime = DateTime.Now;
 
-					if (PerformTask())
-					{
-						TaskTime = DateTime.Now - StartTime;
-					}
-					else
+					if (!PerformTask())
 					{
 						FailureString = "Task Failed";
 						Failed = true;
@@ -101,7 +98,12 @@ namespace AutomationTool.Benchmark
 			{
 				FailureString = string.Format("Exception: {0}", Ex.ToString());
 				Failed = true;
-			}		
+			}
+
+			if (StartTime != DateTime.MinValue)
+			{
+				TaskTime = DateTime.Now - StartTime;
+			}
 			
 			if (Failed)
 			{
@@ -129,7 +131,7 @@ namespace AutomationTool.Benchmark
 			}
 			else
 			{
-				Log.TraceInformation("Task {0}::\t\t\t\tFailed. {1}", GetFullTaskName(), FailureString);
+				Log.TraceInformation("Task {0}::\t\t\t\t{1} Failed. {2}", GetFullTaskName(), TaskTime.ToString(@"hh\:mm\:ss"), FailureString);
 			}
 		}
 
@@ -181,7 +183,7 @@ namespace AutomationTool.Benchmark
 		{
 			get
 			{
-				return ProjectFile == null ? "UE4" : ProjectFile.GetFileNameWithoutAnyExtensions();
+				return ProjectFile == null ? "UE" : ProjectFile.GetFileNameWithoutAnyExtensions();
 			}
 		}
 
@@ -244,8 +246,9 @@ namespace AutomationTool.Benchmark
 				CachePaths.Clear();
 
 				// We put our temp DDC paths in here
-				DirectoryReference BasePath = DirectoryReference.Combine(CommandUtils.EngineDirectory, "BenchmarkDDC");
+				DirectoryReference BasePath = DirectoryReference.Combine(Unreal.EngineDirectory, "BenchmarkDDC");
 
+				// For Linux and Mac the ENV vars will be UE_BootDataCachePath and UE_LocalDataCachePath
 				IEnumerable<string> DDCEnvVars = new string[] { GetXPlatformEnvironmentKey("UE-BootDataCachePath"), GetXPlatformEnvironmentKey("UE-LocalDataCachePath") };
 				
 				if (TaskOptions.HasFlag(DDCTaskOptions.KeepMemoryDDC))

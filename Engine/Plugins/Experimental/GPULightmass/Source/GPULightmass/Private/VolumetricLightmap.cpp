@@ -24,7 +24,7 @@ IMPLEMENT_GLOBAL_SHADER(FSplatVolumeCS, "/Plugin/GPULightmass/Private/BrickAlloc
 IMPLEMENT_GLOBAL_SHADER(FStitchBorderCS, "/Plugin/GPULightmass/Private/BrickAllocationManagement.usf", "StitchBorderCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FFinalizeBrickResultsCS, "/Plugin/GPULightmass/Private/BrickAllocationManagement.usf", "FinalizeBrickResultsCS", SF_Compute);
 
-IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FVLMVoxelizationParams, "VLMVoxelizationParams");
+IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FVLMVoxelizationParams, "VLMVoxelizationParams", SceneTextures);
 
 void InitializeBrickData(FIntVector BrickDataDimensions, FVolumetricLightmapBrickData& BrickData, const bool bForAccumulation)
 {
@@ -75,8 +75,6 @@ void ReleaseBrickData(FVolumetricLightmapBrickData& BrickData)
 	BrickData.DirectionalLightShadowing.UAV.SafeRelease();
 }
 
-void SetupPathTracingLightParameters(const GPULightmass::FLightSceneRenderState& LightScene, FRDGBuilder& GraphBuilder, FRDGBufferSRV** OutLightBuffer, uint32* OutLightCount);
-
 namespace GPULightmass
 {
 
@@ -94,6 +92,12 @@ FPrecomputedVolumetricLightmap* FVolumetricLightmapRenderer::GetPrecomputedVolum
 	return &VolumetricLightmap;
 }
 
+BEGIN_SHADER_PARAMETER_STRUCT(FVoxelizeMeshPassParameters, )
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FVLMVoxelizationParams, PassUniformBuffer)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FInstanceCullingGlobalUniforms, InstanceCulling)
+	RENDER_TARGET_BINDING_SLOTS()
+END_SHADER_PARAMETER_STRUCT()
+
 void FVolumetricLightmapRenderer::VoxelizeScene()
 {
 	for (int32 MipLevel = 0; MipLevel < VoxelizationVolumeMips.Num(); MipLevel++)
@@ -106,7 +110,7 @@ void FVolumetricLightmapRenderer::VoxelizeScene()
 	ReleaseBrickData(VolumetricLightmapData.BrickData);
 	ReleaseBrickData( AccumulationBrickData);
 
-	FRHICommandListExecutor::GetImmediateCommandList().ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes);
+	FRHICommandListExecutor::GetImmediateCommandList().ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 
 	VolumeMin = CombinedImportanceVolume.Min;
 
@@ -176,182 +180,205 @@ void FVolumetricLightmapRenderer::VoxelizeScene()
 	FBox CubeVolume(VolumeMin, VolumeMin + FVector(FMath::Max3(VolumeSize.X, VolumeSize.Y, VolumeSize.Z)));
 	int32 CubeMaxDim = FMath::Max3(IndirectionTextureDimensions.X, IndirectionTextureDimensions.Y, IndirectionTextureDimensions.Z);
 
-	FVLMVoxelizationParams VLMVoxelizationParams;
-	VLMVoxelizationParams.VolumeCenter = CubeVolume.GetCenter();
-	VLMVoxelizationParams.VolumeExtent = CubeVolume.GetExtent();
-	VLMVoxelizationParams.VolumeMaxDim = CubeMaxDim;
-	VLMVoxelizationParams.VoxelizeVolume = VoxelizationVolumeMips[0]->GetRenderTargetItem().UAV;
-	VLMVoxelizationParams.IndirectionTexture = IndirectionTexture->GetRenderTargetItem().UAV;
-	FVLMVoxelizationUniformBufferRef PassUniformBuffer = FVLMVoxelizationUniformBufferRef::CreateUniformBufferImmediate(VLMVoxelizationParams, UniformBuffer_SingleFrame);
-
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+
+	FMemMark MemMark(FMemStack::Get());
+
+	FRDGBuilder GraphBuilder(RHICmdList);
+
+	FVLMVoxelizationParams* VLMVoxelizationParams = GraphBuilder.AllocParameters<FVLMVoxelizationParams>();
+	VLMVoxelizationParams->VolumeCenter = (FVector3f)CubeVolume.GetCenter(); // LWC_TODO: precision loss
+	VLMVoxelizationParams->VolumeExtent = (FVector3f)CubeVolume.GetExtent(); // LWC_TODO: precision loss
+	VLMVoxelizationParams->VolumeMaxDim = CubeMaxDim;
+	VLMVoxelizationParams->VoxelizeVolume = VoxelizationVolumeMips[0]->GetRenderTargetItem().UAV;
+	VLMVoxelizationParams->IndirectionTexture = IndirectionTexture->GetRenderTargetItem().UAV;
+	TRDGUniformBufferRef<FVLMVoxelizationParams> PassUniformBuffer = GraphBuilder.CreateUniformBuffer(VLMVoxelizationParams);
 
 	for (int32 MipLevel = 0; MipLevel < VoxelizationVolumeMips.Num(); MipLevel++)
 	{
 		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 
+		FClearVolumeCS::FParameters* Parameters = GraphBuilder.AllocParameters<FClearVolumeCS::FParameters>();
+		Parameters->VolumeSize = VoxelizationVolumeMips[MipLevel]->GetDesc().GetSize();
+		Parameters->VoxelizeVolume = VoxelizationVolumeMips[MipLevel]->GetRenderTargetItem().UAV;
+
 		TShaderMapRef<FClearVolumeCS> ComputeShader(GlobalShaderMap);
-
-		FClearVolumeCS::FParameters Parameters;
-		Parameters.VolumeSize = VoxelizationVolumeMips[MipLevel]->GetDesc().GetSize();
-		Parameters.VoxelizeVolume = VoxelizationVolumeMips[MipLevel]->GetRenderTargetItem().UAV;
-
-		FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, Parameters, FComputeShaderUtils::GetGroupCount(VoxelizationVolumeMips[MipLevel]->GetDesc().GetSize(), FIntVector(4)));
-
-		RHICmdList.Transition(FRHITransitionInfo(VoxelizationVolumeMips[MipLevel]->GetRenderTargetItem().UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("ClearVolume"),
+			ComputeShader,
+			Parameters,
+			FComputeShaderUtils::GetGroupCount(VoxelizationVolumeMips[MipLevel]->GetDesc().GetSize(), FIntVector(4)));
 	}
 
+	for (FBox ImportanceVolume : ImportanceVolumes)
 	{
-		for (FBox ImportanceVolume : ImportanceVolumes)
-		{
-			FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
+		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 
-			TShaderMapRef<FVoxelizeImportanceVolumeCS> ComputeShader(GlobalShaderMap);
+		TShaderMapRef<FVoxelizeImportanceVolumeCS> ComputeShader(GlobalShaderMap);
 
-			FVoxelizeImportanceVolumeCS::FParameters Parameters;
-			Parameters.VolumeSize = VoxelizationVolumeMips[0]->GetDesc().GetSize();
-			Parameters.ImportanceVolumeMin = ImportanceVolume.Min;
-			Parameters.ImportanceVolumeMax = ImportanceVolume.Max;
-			Parameters.VLMVoxelizationParams = PassUniformBuffer;
-			Parameters.VoxelizeVolume = VoxelizationVolumeMips[0]->GetRenderTargetItem().UAV;
+		FVoxelizeImportanceVolumeCS::FParameters* Parameters = GraphBuilder.AllocParameters<FVoxelizeImportanceVolumeCS::FParameters>();
+		Parameters->VolumeSize = VoxelizationVolumeMips[0]->GetDesc().GetSize();
+		Parameters->ImportanceVolumeMin = (FVector3f)ImportanceVolume.Min;
+		Parameters->ImportanceVolumeMax = (FVector3f)ImportanceVolume.Max;
+		Parameters->VLMVoxelizationParams = PassUniformBuffer;
+		Parameters->VoxelizeVolume = VoxelizationVolumeMips[0]->GetRenderTargetItem().UAV;
 
-			FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, Parameters, FComputeShaderUtils::GetGroupCount(VoxelizationVolumeMips[0]->GetDesc().GetSize(), FIntVector(4)));
-		}
-
-		RHICmdList.Transition(FRHITransitionInfo(VoxelizationVolumeMips[0]->GetRenderTargetItem().UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVGraphics));
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("VoxelizeImportanceVolume"),
+			ComputeShader,
+			Parameters,
+			FComputeShaderUtils::GetGroupCount(VoxelizationVolumeMips[0]->GetDesc().GetSize(), FIntVector(4)));
 	}
 
 	// Setup ray tracing scene with LOD 0
-	Scene->SetupRayTracingScene();
-
-	FMemMark Mark(FMemStack::Get());
-
-	FRHIRenderPassInfo RPInfo(FRHIRenderPassInfo::NoRenderTargets);
-
-	RHICmdList.BeginRenderPass(RPInfo, TEXT("VolumetricLightmapVoxelization"));
-
-	RHICmdList.SetViewport(0, 0, 0, CubeMaxDim, CubeMaxDim, 1);
-
-	SCOPED_DRAW_EVENTF(RHICmdList, GPULightmassVoxelizeScene, TEXT("GPULightmass VoxelizeScene"));
-
-	DrawDynamicMeshPass(
-		*Scene->ReferenceView,
-		RHICmdList,
-		[&Scene = Scene, View = Scene->ReferenceView.Get(), PassUniformBuffer, ImportanceVolumes = ImportanceVolumes](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+	if (!Scene->SetupRayTracingScene())
 	{
-		FVLMVoxelizationMeshProcessor MeshProcessor(nullptr, View, DynamicMeshPassContext, PassUniformBuffer);
+		GraphBuilder.Execute();
+		return;
+	}
 
-		for (int32 InstanceIndex = 0; InstanceIndex < Scene->StaticMeshInstanceRenderStates.Elements.Num(); InstanceIndex++)
+	auto* PassParameters = GraphBuilder.AllocParameters<FVoxelizeMeshPassParameters>();
+	PassParameters->PassUniformBuffer = GraphBuilder.CreateUniformBuffer(VLMVoxelizationParams);
+	PassParameters->InstanceCulling = FInstanceCullingContext::CreateDummyInstanceCullingUniformBuffer(GraphBuilder);
+
+	GraphBuilder.AddPass(
+		RDG_EVENT_NAME("VLM Mesh Voxelization"),
+		PassParameters,
+		ERDGPassFlags::Raster | ERDGPassFlags::NeverCull,
+		[this, CubeMaxDim, PassUniformBuffer, PassParameters](FRHICommandList& RHICmdList)
+	{
+		RHICmdList.SetViewport(0, 0, 0, CubeMaxDim, CubeMaxDim, 1);
+
+		SCOPED_DRAW_EVENTF(RHICmdList, GPULightmassVoxelizeScene, TEXT("GPULightmass VoxelizeScene"));
+
+		DrawDynamicMeshPass(
+			*Scene->ReferenceView,
+			RHICmdList,
+			[&Scene = Scene, View = Scene->ReferenceView.Get(), ImportanceVolumes = ImportanceVolumes](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 		{
-			FStaticMeshInstanceRenderState& Instance = Scene->StaticMeshInstanceRenderStates.Elements[InstanceIndex];
+			FVLMVoxelizationMeshProcessor MeshProcessor(nullptr, View, DynamicMeshPassContext);
 
-			bool bIntersectsAnyImportanceVolume = false;
-
-			for (FBox ImportanceVolume : ImportanceVolumes)
+			for (int32 InstanceIndex = 0; InstanceIndex < Scene->StaticMeshInstanceRenderStates.Elements.Num(); InstanceIndex++)
 			{
-				if (Instance.WorldBounds.GetBox().Intersect(ImportanceVolume))
+				FStaticMeshInstanceRenderState& Instance = Scene->StaticMeshInstanceRenderStates.Elements[InstanceIndex];
+
+				bool bIntersectsAnyImportanceVolume = false;
+
+				for (FBox ImportanceVolume : ImportanceVolumes)
 				{
-					bIntersectsAnyImportanceVolume = true;
-					break;
+					if (Instance.WorldBounds.GetBox().Intersect(ImportanceVolume))
+					{
+						bIntersectsAnyImportanceVolume = true;
+						break;
+					}
 				}
+
+				if (!bIntersectsAnyImportanceVolume) continue;
+
+				TArray<FMeshBatch> MeshBatches = Instance.GetMeshBatchesForGBufferRendering(0);
+
+				for (auto& MeshBatch : MeshBatches)
+				{
+					MeshBatch.Elements[0].DynamicPrimitiveIndex = InstanceIndex;
+					MeshProcessor.AddMeshBatch(MeshBatch, ~0ull, nullptr);
+				};
 			}
 
-			if (!bIntersectsAnyImportanceVolume) continue;
-
-			TArray<FMeshBatch> MeshBatches = Instance.GetMeshBatchesForGBufferRendering(0);
-
-			for (auto& MeshBatch : MeshBatches)
+			for (int32 InstanceGroupIndex = 0; InstanceGroupIndex < Scene->InstanceGroupRenderStates.Elements.Num(); InstanceGroupIndex++)
 			{
-				MeshBatch.Elements[0].DynamicPrimitiveShaderDataIndex = InstanceIndex;
-				MeshProcessor.AddMeshBatch(MeshBatch, ~0ull, nullptr);
-			};
-		}
+				FInstanceGroupRenderState& InstanceGroup = Scene->InstanceGroupRenderStates.Elements[InstanceGroupIndex];
 
-		for (FInstanceGroupRenderState& InstanceGroup : Scene->InstanceGroupRenderStates.Elements)
-		{
-			bool bIntersectsAnyImportanceVolume = false;
+				bool bIntersectsAnyImportanceVolume = false;
 
-			for (FBox ImportanceVolume : ImportanceVolumes)
-			{
-				if (InstanceGroup.WorldBounds.GetBox().Intersect(ImportanceVolume))
+				for (FBox ImportanceVolume : ImportanceVolumes)
 				{
-					bIntersectsAnyImportanceVolume = true;
-					break;
+					if (InstanceGroup.WorldBounds.GetBox().Intersect(ImportanceVolume))
+					{
+						bIntersectsAnyImportanceVolume = true;
+						break;
+					}
 				}
+
+				if (!bIntersectsAnyImportanceVolume) continue;
+
+				TArray<FMeshBatch> MeshBatches = InstanceGroup.GetMeshBatchesForGBufferRendering(0, FTileVirtualCoordinates{});
+
+				for (auto& MeshBatch : MeshBatches)
+				{
+					MeshBatch.Elements[0].DynamicPrimitiveIndex = Scene->StaticMeshInstanceRenderStates.Elements.Num() + InstanceGroupIndex;
+					MeshProcessor.AddMeshBatch(MeshBatch, ~0ull, nullptr);
+				};
 			}
 
-			if (!bIntersectsAnyImportanceVolume) continue;
-
-			TArray<FMeshBatch> MeshBatches = InstanceGroup.GetMeshBatchesForGBufferRendering(0, FTileVirtualCoordinates{});
-
-			for (auto& MeshBatch : MeshBatches)
+			for (int32 LandscapeIndex = 0; LandscapeIndex < Scene->LandscapeRenderStates.Elements.Num(); LandscapeIndex++)
 			{
-				MeshProcessor.AddMeshBatch(MeshBatch, ~0ull, nullptr);
-			};
-		}
+				FLandscapeRenderState& Landscape = Scene->LandscapeRenderStates.Elements[LandscapeIndex];
 
+				bool bIntersectsAnyImportanceVolume = false;
 
-		for (FLandscapeRenderState& Landscape : Scene->LandscapeRenderStates.Elements)
-		{
-			bool bIntersectsAnyImportanceVolume = false;
-
-			for (FBox ImportanceVolume : ImportanceVolumes)
-			{
-				if (Landscape.WorldBounds.GetBox().Intersect(ImportanceVolume))
+				for (FBox ImportanceVolume : ImportanceVolumes)
 				{
-					bIntersectsAnyImportanceVolume = true;
-					break;
+					if (Landscape.WorldBounds.GetBox().Intersect(ImportanceVolume))
+					{
+						bIntersectsAnyImportanceVolume = true;
+						break;
+					}
 				}
+
+				if (!bIntersectsAnyImportanceVolume) continue;
+
+				TArray<FMeshBatch> MeshBatches = Landscape.GetMeshBatchesForGBufferRendering(0);
+
+				for (auto& MeshBatch : MeshBatches)
+				{
+					MeshBatch.Elements[0].DynamicPrimitiveIndex = Scene->StaticMeshInstanceRenderStates.Elements.Num() + Scene->InstanceGroupRenderStates.Elements.Num() + LandscapeIndex;
+					MeshProcessor.AddMeshBatch(MeshBatch, ~0ull, nullptr);
+				};
 			}
-
-			if (!bIntersectsAnyImportanceVolume) continue;
-
-			TArray<FMeshBatch> MeshBatches = Landscape.GetMeshBatchesForGBufferRendering(0);
-
-			for (auto& MeshBatch : MeshBatches)
-			{
-				MeshProcessor.AddMeshBatch(MeshBatch, ~0ull, nullptr);
-			};
-		}
+		});
 	});
-
-	RHICmdList.EndRenderPass();
-
-	RHICmdList.Transition(FRHITransitionInfo(VoxelizationVolumeMips[0]->GetRenderTargetItem().UAV, ERHIAccess::UAVGraphics, ERHIAccess::UAVCompute));
 
 	{
 		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
 
 		TShaderMapRef<FDilateVolumeCS> ComputeShader(GlobalShaderMap);
 
-		FDilateVolumeCS::FParameters Parameters;
-		Parameters.VolumeSize = VoxelizationVolumeMips[0]->GetDesc().GetSize();
-		Parameters.VoxelizeVolume = VoxelizationVolumeMips[0]->GetRenderTargetItem().UAV;
+		FDilateVolumeCS::FParameters* Parameters = GraphBuilder.AllocParameters<FDilateVolumeCS::FParameters>();
+		Parameters->VolumeSize = VoxelizationVolumeMips[0]->GetDesc().GetSize();
+		Parameters->VoxelizeVolume = VoxelizationVolumeMips[0]->GetRenderTargetItem().UAV;
 
-		FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, Parameters, FComputeShaderUtils::GetGroupCount(VoxelizationVolumeMips[0]->GetDesc().GetSize(), FIntVector(4)));
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("DilateVolume"),
+			ComputeShader,
+			Parameters,
+			FComputeShaderUtils::GetGroupCount(VoxelizationVolumeMips[0]->GetDesc().GetSize(), FIntVector(4)));
 	}
-
-	RHICmdList.Transition(FRHITransitionInfo(VoxelizationVolumeMips[0]->GetRenderTargetItem().UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 
 	for (int32 MipLevel = 1; MipLevel < VoxelizationVolumeMips.Num(); MipLevel++)
 	{
 		TShaderMapRef<FDownsampleVolumeCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 
-		FDownsampleVolumeCS::FParameters Parameters;
-		Parameters.bIsHighestMip = (MipLevel == VoxelizationVolumeMips.Num() - 1) ? 1 : 0;
-		Parameters.VoxelizeVolume = VoxelizationVolumeMips[MipLevel]->GetRenderTargetItem().UAV;
-		Parameters.VoxelizeVolumePrevMip = VoxelizationVolumeMips[MipLevel - 1]->GetRenderTargetItem().UAV;
+		FDownsampleVolumeCS::FParameters* Parameters = GraphBuilder.AllocParameters<FDownsampleVolumeCS::FParameters>();
+		Parameters->bIsHighestMip = (MipLevel == VoxelizationVolumeMips.Num() - 1) ? 1 : 0;
+		Parameters->VoxelizeVolume = VoxelizationVolumeMips[MipLevel]->GetRenderTargetItem().UAV;
+		Parameters->VoxelizeVolumePrevMip = VoxelizationVolumeMips[MipLevel - 1]->GetRenderTargetItem().UAV;
 
-		FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, Parameters, VoxelizationVolumeMips[MipLevel]->GetDesc().GetSize());
-
-		RHICmdList.Transition(FRHITransitionInfo(VoxelizationVolumeMips[MipLevel]->GetRenderTargetItem().UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("DownsampleVolume"),
+			ComputeShader,
+			Parameters,
+			VoxelizationVolumeMips[MipLevel]->GetDesc().GetSize());
 	}
 
 	{
 		TResourceArray<int32> InitialBrickAllocatorParams;
 		InitialBrickAllocatorParams.Add(0);
 		InitialBrickAllocatorParams.Add(0);
-		BrickAllocatorParameters.Initialize(4, 2, PF_R32_SINT, BUF_UnorderedAccess | BUF_SourceCopy, TEXT("VolumetricLightmapBrickAllocatorParameters"), &InitialBrickAllocatorParams);
+		BrickAllocatorParameters.Initialize(TEXT("VolumetricLightmapBrickAllocatorParameters"), 4, 2, PF_R32_SINT, BUF_UnorderedAccess | BUF_SourceCopy, &InitialBrickAllocatorParams);
 	}
 
 	for (int32 MipLevel = VoxelizationVolumeMips.Num() - 1; MipLevel >= 0; MipLevel--)
@@ -360,16 +387,20 @@ void FVolumetricLightmapRenderer::VoxelizeScene()
 
 		TShaderMapRef<FCountNumBricksCS> ComputeShader(GlobalShaderMap);
 
-		FCountNumBricksCS::FParameters Parameters;
-		Parameters.VolumeSize = VoxelizationVolumeMips[MipLevel]->GetDesc().GetSize();
-		Parameters.VoxelizeVolume = VoxelizationVolumeMips[MipLevel]->GetRenderTargetItem().UAV;
-		Parameters.BrickAllocatorParameters = BrickAllocatorParameters.UAV;
+		FCountNumBricksCS::FParameters* Parameters = GraphBuilder.AllocParameters<FCountNumBricksCS::FParameters>();
+		Parameters->VolumeSize = VoxelizationVolumeMips[MipLevel]->GetDesc().GetSize();
+		Parameters->VoxelizeVolume = VoxelizationVolumeMips[MipLevel]->GetRenderTargetItem().UAV;
+		Parameters->BrickAllocatorParameters = BrickAllocatorParameters.UAV;
 
-		FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, Parameters, FComputeShaderUtils::GetGroupCount(VoxelizationVolumeMips[MipLevel]->GetDesc().GetSize(), FIntVector(4)));
-
-		RHICmdList.Transition(FRHITransitionInfo(VoxelizationVolumeMips[MipLevel]->GetRenderTargetItem().UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
-		RHICmdList.Transition(FRHITransitionInfo(BrickAllocatorParameters.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("CountNumBricks"),
+			ComputeShader,
+			Parameters,
+			FComputeShaderUtils::GetGroupCount(VoxelizationVolumeMips[MipLevel]->GetDesc().GetSize(), FIntVector(4)));
 	}
+
+	GraphBuilder.Execute();
 
 	FRHIGPUBufferReadback NumBricksReadback(TEXT("NumBricksReadback"));
 	NumBricksReadback.EnqueueCopy(RHICmdList, BrickAllocatorParameters.Buffer);
@@ -402,7 +433,7 @@ void FVolumetricLightmapRenderer::VoxelizeScene()
 
 	InitializeBrickData(BrickLayoutDimensions * 5, VolumetricLightmapData.BrickData, false);
 	InitializeBrickData(BrickLayoutDimensions * 5, AccumulationBrickData, true);
-	BrickRequests.Initialize(16, NumTotalBricks, PF_R32G32B32A32_UINT, BUF_UnorderedAccess);
+	BrickRequests.Initialize(TEXT("BrickRequests"), 16, NumTotalBricks, PF_R32G32B32A32_UINT, BUF_UnorderedAccess);
 
 	VolumetricLightmapData.BrickDataDimensions = BrickLayoutDimensions * 5;
 
@@ -470,7 +501,10 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 
 	if (IsRayTracingEnabled())
 	{
-		Scene->SetupRayTracingScene();
+		if (!Scene->SetupRayTracingScene())
+		{
+			return;
+		}
 	}
 
 	FRDGBuilder GraphBuilder(FRHICommandListExecutor::GetImmediateCommandList());
@@ -483,7 +517,7 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 
 		// manually handle transitions since the buffers are not (yet) managed by RDG
 		GraphBuilder.AddPass(RDG_EVENT_NAME("Transition Buffers"), ERDGPassFlags::None,
-			[this](FRHICommandListImmediate& RHICmdList) {
+			[this](FRHICommandList& RHICmdList) {
 			RHICmdList.Transition({
 				FRHITransitionInfo(VolumetricLightmapData.BrickData.AmbientVector.UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
 				FRHITransitionInfo(VolumetricLightmapData.BrickData.SHCoefficients[0].UAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute),
@@ -517,10 +551,10 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 
 					FVolumetricLightmapPathTracingRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FVolumetricLightmapPathTracingRGS::FParameters>();
 					PassParameters->FrameNumber = FrameNumber / NumFramesOneRound;
-					PassParameters->VolumeMin = VolumeMin;
-					PassParameters->VolumeSize = VolumeSize;
+					PassParameters->VolumeMin = (FVector3f)VolumeMin; // LWC_TODO: precision loss
+					PassParameters->VolumeSize = (FVector3f)VolumeSize; // LWC_TODO: precision loss
 					PassParameters->IndirectionTextureDim = IndirectionTextureDimensions;
-					PassParameters->TLAS = Scene->RayTracingScene->GetShaderResourceView();
+					PassParameters->TLAS = Scene->RayTracingSceneSRV;
 					PassParameters->BrickRequests = BrickRequests.SRV;
 					PassParameters->NumTotalBricks = NumTotalBricks;
 					PassParameters->BrickBatchOffset = BrickBatchOffset;
@@ -535,12 +569,12 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 					PassParameters->ViewUniformBuffer = Scene->ReferenceView->ViewUniformBuffer;
 					PassParameters->IrradianceCachingParameters = Scene->IrradianceCache->IrradianceCachingParametersUniformBuffer;
 
-					SetupPathTracingLightParameters(Scene->LightSceneRenderState, GraphBuilder, PassParameters);
+					SetupPathTracingLightParameters(Scene->LightSceneRenderState, GraphBuilder, *Scene->ReferenceView, PassParameters);
 
 
 					PassParameters->IESTextureSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-					PassParameters->SSProfilesTexture = GetSubsufaceProfileTexture_RT(GraphBuilder.RHICmdList)->GetShaderResourceRHI();
+					PassParameters->SSProfilesTexture = GetSubsurfaceProfileTexture();
 
 					TArray<FLightShaderConstants> OptionalStationaryDirectionalLightShadowing;
 					for (FDirectionalLightRenderState& DirectionalLight : Scene->LightSceneRenderState.DirectionalLights.Elements)
@@ -566,7 +600,7 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 						RDG_EVENT_NAME("VolumetricLightmapPathTracing %d bricks %d rays", BricksToCalcThisFrame, BricksToCalcThisFrame * (BrickSize + 1) * (BrickSize + 1) * (BrickSize + 1)),
 						PassParameters,
 						ERDGPassFlags::Compute,
-						[PassParameters, RayGenShader, SceneRenderState, BricksToCalcThisFrame](FRHICommandListImmediate& RHICmdList)
+						[PassParameters, RayGenShader, SceneRenderState, BricksToCalcThisFrame](FRHIRayTracingCommandList& RHICmdList)
 					{
 						FRayTracingShaderBindingsWriter GlobalResources;
 						SetShaderParameters(GlobalResources, RayGenShader, *PassParameters);
@@ -583,7 +617,7 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 			{
 				// manually handle transitions since the buffers are not (yet) managed by RDG
 				GraphBuilder.AddPass(RDG_EVENT_NAME("Transition Buffers"), ERDGPassFlags::None,
-					[this](FRHICommandListImmediate& RHICmdList) {
+					[this](FRHICommandList& RHICmdList) {
 					RHICmdList.Transition({
 						FRHITransitionInfo(AccumulationBrickData.AmbientVector.UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
 						FRHITransitionInfo(AccumulationBrickData.SHCoefficients[0].UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
@@ -626,7 +660,7 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 
 				// manually handle transitions since the buffers are not (yet) managed by RDG
 				GraphBuilder.AddPass(RDG_EVENT_NAME("Transition Buffers"), ERDGPassFlags::None,
-					[this](FRHICommandListImmediate& RHICmdList) {
+					[this](FRHICommandList& RHICmdList) {
 					RHICmdList.Transition({
 						FRHITransitionInfo(AccumulationBrickData.AmbientVector.UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
 						FRHITransitionInfo(AccumulationBrickData.SHCoefficients[0].UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
@@ -671,7 +705,7 @@ void FVolumetricLightmapRenderer::BackgroundTick()
 
 					// manually handle transitions since the buffers are not (yet) managed by RDG
 					GraphBuilder.AddPass(RDG_EVENT_NAME("Transition Buffers"), ERDGPassFlags::None,
-						[this](FRHICommandListImmediate& RHICmdList) {
+						[this](FRHICommandList& RHICmdList) {
 						RHICmdList.Transition({
 							FRHITransitionInfo(AccumulationBrickData.AmbientVector.UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),
 							FRHITransitionInfo(AccumulationBrickData.SHCoefficients[0].UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute),

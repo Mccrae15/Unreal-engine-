@@ -16,7 +16,6 @@
 /* FOpenXRAssetDirectory
  *****************************************************************************/
 
-FSoftObjectPath FOpenXRAssetDirectory::GoogleDaydream             = FString(TEXT("/OpenXR/Devices/GoogleDaydream/GoogleDaydreamController.GoogleDaydreamController"));
 FSoftObjectPath FOpenXRAssetDirectory::HPMixedRealityLeft         = FString(TEXT("/OpenXR/Devices/HPMixedReality/Left/left_HPMixedRealityController.left_HPMixedRealityController"));
 FSoftObjectPath FOpenXRAssetDirectory::HPMixedRealityRight        = FString(TEXT("/OpenXR/Devices/HPMixedReality/Right/right_HPMixedRealityController.right_HPMixedRealityController"));
 FSoftObjectPath FOpenXRAssetDirectory::HTCVive                    = FString(TEXT("/OpenXR/Devices/HTCVive/HTCViveController.HTCViveController"));
@@ -24,7 +23,6 @@ FSoftObjectPath FOpenXRAssetDirectory::HTCViveCosmosLeft          = FString(TEXT
 FSoftObjectPath FOpenXRAssetDirectory::HTCViveCosmosRight         = FString(TEXT("/OpenXR/Devices/HTCViveCosmos/Right/right_HTCViveCosmosController.right_HTCViveCosmosController"));
 FSoftObjectPath FOpenXRAssetDirectory::HTCViveFocus               = FString(TEXT("/OpenXR/Devices/HTCViveFocus/HTCViveFocusController.HTCViveFocusController"));
 FSoftObjectPath FOpenXRAssetDirectory::HTCViveFocusPlus           = FString(TEXT("/OpenXR/Devices/HTCViveFocusPlus/HTCViveFocusPlusController.HTCViveFocusPlusController"));
-FSoftObjectPath FOpenXRAssetDirectory::MagicLeapOne               = FString(TEXT("/OpenXR/Devices/MagicLeapOne/MagicLeapOneController.MagicLeapOneController"));
 FSoftObjectPath FOpenXRAssetDirectory::MicrosoftMixedRealityLeft  = FString(TEXT("/OpenXR/Devices/MicrosoftMixedReality/Left/left_MicrosoftMixedRealityController.left_MicrosoftMixedRealityController"));
 FSoftObjectPath FOpenXRAssetDirectory::MicrosoftMixedRealityRight = FString(TEXT("/OpenXR/Devices/MicrosoftMixedReality/Right/right_MicrosoftMixedRealityController.right_MicrosoftMixedRealityController"));
 FSoftObjectPath FOpenXRAssetDirectory::OculusGo                   = FString(TEXT("/OpenXR/Devices/OculusGo/OculusGoController.OculusGoController"));
@@ -58,8 +56,6 @@ namespace OpenXRAssetManager_Impl
 
 	static TArray<FRenderableDevice> RenderableDevices =
 	{
-		{ "/user/hand/left",  "/interaction_profiles/google/daydream_controller", FOpenXRAssetDirectory::GoogleDaydream },
-		{ "/user/hand/right", "/interaction_profiles/google/daydream_controller", FOpenXRAssetDirectory::GoogleDaydream },
 		{ "/user/hand/left",  "/interaction_profiles/htc/vive_controller", FOpenXRAssetDirectory::HTCVive },
 		{ "/user/hand/right", "/interaction_profiles/htc/vive_controller", FOpenXRAssetDirectory::HTCVive },
 		{ "/user/hand/left",  "/interaction_profiles/microsoft/motion_controller", FOpenXRAssetDirectory::MicrosoftMixedRealityLeft },
@@ -99,6 +95,10 @@ public:
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override
 	{
 		Collector.AddReferencedObjects(*this);
+	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FOpenXRAssetRepo");
 	}
 };
 

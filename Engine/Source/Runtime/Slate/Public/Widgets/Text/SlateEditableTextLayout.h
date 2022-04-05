@@ -105,6 +105,9 @@ public:
 	/** Set the amount to scale each lines height by */
 	void SetLineHeightPercentage(const TAttribute<float>& InLineHeightPercentage);
 
+	/** Set the text overflow policy that should be used to determine what happens to clipped text */
+	void SetOverflowPolicy(TOptional<ETextOverflowPolicy> InOverflowPolicy);
+
 	/** Set the information used to help identify who owns this text layout in the case of an error */
 	void SetDebugSourceInfo(const TAttribute<FString>& InDebugSourceInfo);
 
@@ -275,6 +278,9 @@ public:
 
 	/** Get the runs currently that are current selected, some of which may be only partially selected */
 	TArray<TSharedRef<const IRun>> GetSelectedRuns() const;
+
+	/** Get the interaction position of the cursor (where to insert, delete, etc, text from/to) */
+	FTextLocation GetCursorLocation() const;
 
 	/**
 	 * Given a location and a Direction to offset, return a new location.
@@ -580,7 +586,7 @@ private:
 	TArray<FTextLineHighlight> ActiveLineHighlights;
 
 	/** The scroll offset (in unscaled Slate units) for this text */
-	FVector2D ScrollOffset;
+	FVector2f ScrollOffset;
 
 	/** If set, the pending data containing a position that should be scrolled into view */
 	TOptional<SlateEditableTextTypes::FScrollInfo> PositionToScrollIntoView;
@@ -627,8 +633,11 @@ private:
 	/** How the text was committed by the virtual keyboard */
 	ETextCommit::Type VirtualKeyboardTextCommitType;
 
+	/** Override for for the overflow policy. If this is not set the text style setting is used */
+	TOptional<ETextOverflowPolicy> OverflowPolicyOverride;
+
 	/** The last known size of the widget from the previous OnPaint, used to recalculate wrapping */
-	FVector2D CachedSize;
+	FVector2f CachedSize;
 
 	/** A list commands to execute if a user presses the corresponding key-binding in the text box */
 	TSharedPtr<FUICommandList> UICommandList;

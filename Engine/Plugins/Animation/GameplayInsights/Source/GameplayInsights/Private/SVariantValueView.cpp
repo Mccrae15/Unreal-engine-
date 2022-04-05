@@ -18,11 +18,13 @@
 #include "VariantTreeNode.h"
 #include "Misc/TextFilterExpressionEvaluator.h"
 #include "Framework/Commands/GenericCommands.h"
+#include "Framework/Commands/UICommandList.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Misc/StringBuilder.h"
 
 #if WITH_EDITOR
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "SourceCodeNavigation.h"
 #include "Editor.h"
 #endif
 
@@ -34,7 +36,7 @@ namespace VariantColumns
 	static const FName Value("Value");
 };
 
-static TSharedRef<SWidget> MakeVariantValueWidget(const Trace::IAnalysisSession& InAnalysisSession, const FVariantValue& InValue, const TAttribute<FText>& InHighlightText) 
+static TSharedRef<SWidget> MakeVariantValueWidget(const TraceServices::IAnalysisSession& InAnalysisSession, const FVariantValue& InValue, const TAttribute<FText>& InHighlightText) 
 { 
 	switch(InValue.Type)
 	{
@@ -149,7 +151,7 @@ static TSharedRef<SWidget> MakeVariantValueWidget(const Trace::IAnalysisSession&
 		const FGameplayProvider* GameplayProvider = InAnalysisSession.ReadProvider<FGameplayProvider>(FGameplayProvider::ProviderName);
 		if(GameplayProvider)
 		{
-			Trace::FAnalysisSessionReadScope SessionReadScope(InAnalysisSession);
+			TraceServices::FAnalysisSessionReadScope SessionReadScope(InAnalysisSession);
 
 			const FObjectInfo& ObjectInfo = GameplayProvider->GetObjectInfo(InValue.Object.Value);
 #if WITH_EDITOR
@@ -179,7 +181,7 @@ static TSharedRef<SWidget> MakeVariantValueWidget(const Trace::IAnalysisSession&
 		const FGameplayProvider* GameplayProvider = InAnalysisSession.ReadProvider<FGameplayProvider>(FGameplayProvider::ProviderName);
 		if(GameplayProvider)
 		{
-			Trace::FAnalysisSessionReadScope SessionReadScope(InAnalysisSession);
+			TraceServices::FAnalysisSessionReadScope SessionReadScope(InAnalysisSession);
 
 			const FClassInfo& ClassInfo = GameplayProvider->GetClassInfo(InValue.Class.Value);
 #if WITH_EDITOR
@@ -190,7 +192,17 @@ static TSharedRef<SWidget> MakeVariantValueWidget(const Trace::IAnalysisSession&
 				.ToolTipText(FText::Format(LOCTEXT("ClassHyperlinkTooltipFormat", "Open class '{0}'"), FText::FromString(ClassInfo.PathName)))
 				.OnNavigate_Lambda([ClassInfo]()
 				{
-					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ClassInfo.PathName);
+					if (LoadPackage(NULL, ClassInfo.PathName, LOAD_NoRedirects)) // check if it's found as an asset
+					{
+						GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ClassInfo.PathName);
+					}
+					else // it must be a native class
+					{
+						if (UClass* FoundClass = FindObject<UClass>(ANY_PACKAGE, ClassInfo.Name))
+						{
+							FSourceCodeNavigation::NavigateToClass(FoundClass);
+						}
+					}
 				});
 #else
 			return 
@@ -218,7 +230,7 @@ public:
 
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTable, TSharedRef<FVariantTreeNode> InNode, const Trace::IAnalysisSession& InAnalysisSession)
+	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTable, TSharedRef<FVariantTreeNode> InNode, const TraceServices::IAnalysisSession& InAnalysisSession)
 	{
 		Node = InNode;
 		AnalysisSession = &InAnalysisSession;
@@ -281,12 +293,12 @@ public:
 		return SNullWidget::NullWidget;
 	}
 
-	const Trace::IAnalysisSession* AnalysisSession;
+	const TraceServices::IAnalysisSession* AnalysisSession;
 	TSharedPtr<FVariantTreeNode> Node;
 	TAttribute<FText> HighlightText;
 };
 
-void SVariantValueView::Construct(const FArguments& InArgs, const Trace::IAnalysisSession& InAnalysisSession)
+void SVariantValueView::Construct(const FArguments& InArgs, const TraceServices::IAnalysisSession& InAnalysisSession)
 {
 	OnGetVariantValues = InArgs._OnGetVariantValues;
 

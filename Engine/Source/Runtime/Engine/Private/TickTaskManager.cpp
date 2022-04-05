@@ -560,6 +560,7 @@ public:
 				CA_SUPPRESS(6385);
 				if (TickCompletionEvents[Block].Num())
 				{
+					TRACE_CPUPROFILER_EVENT_SCOPE(TickCompletionEvents);
 					FTaskGraphInterface::Get().WaitUntilTasksComplete(TickCompletionEvents[Block], ENamedThreads::GameThread);
 					if (SingleThreadedMode() || Block == TG_NewlySpawned || CVarAllowAsyncTickCleanup.GetValueOnGameThread() == 0 || TickCompletionEvents[Block].Num() < 50)
 					{
@@ -668,7 +669,7 @@ private:
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_DispatchTickGroup);
 		for (int32 IndexInner = 0; IndexInner < TG_MAX; IndexInner++)
 		{
-			TArray<TGraphTask<FTickFunctionTask>*>& TickArray = HiPriTickTasks[WorldTickGroup][IndexInner];
+			TArray<TGraphTask<FTickFunctionTask>*>& TickArray = HiPriTickTasks[WorldTickGroup][IndexInner]; //-V781
 			if (IndexInner < WorldTickGroup)
 			{
 				check(TickArray.Num() == 0); // makes no sense to have and end TG before the start TG
@@ -684,7 +685,7 @@ private:
 		}
 		for (int32 IndexInner = 0; IndexInner < TG_MAX; IndexInner++)
 		{
-			TArray<TGraphTask<FTickFunctionTask>*>& TickArray = TickTasks[WorldTickGroup][IndexInner];
+			TArray<TGraphTask<FTickFunctionTask>*>& TickArray = TickTasks[WorldTickGroup][IndexInner]; //-V781
 			if (IndexInner < WorldTickGroup)
 			{
 				check(TickArray.Num() == 0); // makes no sense to have and end TG before the start TG
@@ -1006,20 +1007,25 @@ public:
 	{
 		Context.TickGroup = CurrentTickGroup;
 		int32 Num = 0;
-		FTickTaskSequencer& TTS = FTickTaskSequencer::Get();
-		for (TSet<FTickFunction*>::TIterator It(NewlySpawnedTickFunctions); It; ++It)
-		{
-			FTickFunction* TickFunction = *It;
-			TickFunction->QueueTickFunction(TTS, Context);
-			Num++;
 
-			if (TickFunction->TickInterval > 0.f)
+		// Constructing set iterators is not trivial, so avoid the following block if it will have no effect
+		if (NewlySpawnedTickFunctions.Num() != 0)
+		{
+			FTickTaskSequencer& TTS = FTickTaskSequencer::Get();
+			for (TSet<FTickFunction*>::TIterator It(NewlySpawnedTickFunctions); It; ++It)
 			{
-				AllEnabledTickFunctions.Remove(TickFunction);
-				RescheduleForInterval(TickFunction, TickFunction->TickInterval);
+				FTickFunction* TickFunction = *It;
+				TickFunction->QueueTickFunction(TTS, Context);
+				Num++;
+
+				if (TickFunction->TickInterval > 0.f)
+				{
+					AllEnabledTickFunctions.Remove(TickFunction);
+					RescheduleForInterval(TickFunction, TickFunction->TickInterval);
+				}
 			}
+			NewlySpawnedTickFunctions.Empty();
 		}
-		NewlySpawnedTickFunctions.Empty();
 		return Num;
 	}
 	/**
@@ -1458,6 +1464,7 @@ public:
 	/** Free a ticking structure for a ULevel **/
 	virtual void FreeTickTaskLevel(FTickTaskLevel* TickTaskLevel) override
 	{
+		check(!LevelList.Contains(TickTaskLevel));
 		delete TickTaskLevel;
 	}
 
@@ -2002,14 +2009,14 @@ void FTickFunction::QueueTickFunction(FTickTaskSequencer& TTS, const struct FTic
 					}
 					else
 					{
-						MaxPrerequisiteTickGroup =  FMath::Max<ETickingGroup>(MaxPrerequisiteTickGroup, Prereq->InternalData->ActualStartTickGroup);
+						MaxPrerequisiteTickGroup =  FMath::Max<ETickingGroup>(MaxPrerequisiteTickGroup, Prereq->InternalData->ActualStartTickGroup.GetValue());
 						TaskPrerequisites.Add(Prereq->GetCompletionHandle());
 					}
 				}
 			}
 
 			// tick group is the max of the prerequisites, the current tick group, and the desired tick group
-			ETickingGroup MyActualTickGroup =  FMath::Max<ETickingGroup>(MaxPrerequisiteTickGroup, FMath::Max<ETickingGroup>(TickGroup,TickContext.TickGroup));
+			ETickingGroup MyActualTickGroup =  FMath::Max<ETickingGroup>(MaxPrerequisiteTickGroup, FMath::Max<ETickingGroup>(TickGroup.GetValue(),TickContext.TickGroup));
 			if (MyActualTickGroup != TickGroup)
 			{
 				// if the tick was "demoted", make sure it ends up in an ordinary tick group.
@@ -2090,7 +2097,7 @@ void FTickFunction::QueueTickFunctionParallel(const struct FTickContext& TickCon
 						}
 						else
 						{
-							MaxPrerequisiteTickGroup = FMath::Max<ETickingGroup>(MaxPrerequisiteTickGroup, Prereq->InternalData->ActualStartTickGroup);
+							MaxPrerequisiteTickGroup = FMath::Max<ETickingGroup>(MaxPrerequisiteTickGroup, Prereq->InternalData->ActualStartTickGroup.GetValue());
 							TaskPrerequisites.Add(Prereq->GetCompletionHandle());
 						}
 					}

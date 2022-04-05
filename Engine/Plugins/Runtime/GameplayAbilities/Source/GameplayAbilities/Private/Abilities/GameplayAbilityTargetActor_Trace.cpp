@@ -45,7 +45,7 @@ void AGameplayAbilityTargetActor_Trace::LineTraceWithFilter(FHitResult& OutHitRe
 	{
 		const FHitResult& Hit = HitResults[HitIdx];
 
-		if (!Hit.Actor.IsValid() || FilterHandle.FilterPassesForActor(Hit.Actor))
+		if (!Hit.HitObjectHandle.IsValid() || FilterHandle.FilterPassesForActor(Hit.HitObjectHandle.FetchActor()))
 		{
 			OutHitResult = Hit;
 			OutHitResult.bBlockingHit = true; // treat it as a blocking hit
@@ -68,7 +68,7 @@ void AGameplayAbilityTargetActor_Trace::SweepWithFilter(FHitResult& OutHitResult
 	{
 		const FHitResult& Hit = HitResults[HitIdx];
 
-		if (!Hit.Actor.IsValid() || FilterHandle.FilterPassesForActor(Hit.Actor))
+		if (!Hit.HitObjectHandle.IsValid() || FilterHandle.FilterPassesForActor(Hit.HitObjectHandle.FetchActor()))
 		{
 			OutHitResult = Hit;
 			OutHitResult.bBlockingHit = true; // treat it as a blocking hit
@@ -176,7 +176,7 @@ void AGameplayAbilityTargetActor_Trace::StartTargeting(UGameplayAbility* InAbili
 void AGameplayAbilityTargetActor_Trace::Tick(float DeltaSeconds)
 {
 	// very temp - do a mostly hardcoded trace from the source actor
-	if (SourceActor)
+	if (SourceActor && SourceActor->GetLocalRole() != ENetRole::ROLE_SimulatedProxy)
 	{
 		FHitResult HitResult = PerformTrace(SourceActor);
 		FVector EndPoint = HitResult.Component.IsValid() ? HitResult.ImpactPoint : HitResult.TraceEnd;

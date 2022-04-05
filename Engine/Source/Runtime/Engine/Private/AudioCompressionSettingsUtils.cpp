@@ -3,10 +3,11 @@
 #include "AudioCompressionSettingsUtils.h"
 #include "AudioCompressionSettings.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
+#include "HAL/PlatformMisc.h"
 
 #define ENABLE_PLATFORM_COMPRESSION_OVERRIDES 1
 
-#if PLATFORM_ANDROID && !PLATFORM_LUMIN && ENABLE_PLATFORM_COMPRESSION_OVERRIDES
+#if PLATFORM_ANDROID && ENABLE_PLATFORM_COMPRESSION_OVERRIDES
 #include "AndroidRuntimeSettings.h"
 #endif
 
@@ -53,7 +54,7 @@ FAutoConsoleVariableRef CVarChunkSlotNumScalar(
 
 const FPlatformRuntimeAudioCompressionOverrides* FPlatformCompressionUtilities::GetRuntimeCompressionOverridesForCurrentPlatform()
 {
-#if PLATFORM_ANDROID && !PLATFORM_LUMIN && ENABLE_PLATFORM_COMPRESSION_OVERRIDES
+#if PLATFORM_ANDROID && ENABLE_PLATFORM_COMPRESSION_OVERRIDES
 	static const UAndroidRuntimeSettings* Settings = GetDefault<UAndroidRuntimeSettings>();
 	if (Settings)
 	{
@@ -76,18 +77,20 @@ const FPlatformRuntimeAudioCompressionOverrides* FPlatformCompressionUtilities::
 		return &(Settings->CompressionOverrides);
 	}
 
-#endif // PLATFORM_ANDROID && !PLATFORM_LUMIN
+#endif // PLATFORM_ANDROID
 	return nullptr;
 }
 
 void CacheAudioCookOverrides(FPlatformAudioCookOverrides& OutOverrides, const TCHAR* InPlatformName=nullptr)
 {
+	SCOPED_NAMED_EVENT(CacheAudioCookOverrides, FColor::Blue);
+
 	// if the platform was passed in, use it, otherwise, get the runtime platform's name for looking up DDPI
 	FString PlatformName = InPlatformName ? FString(InPlatformName) : FString(FPlatformProperties::IniPlatformName());
 	
 	// now use that platform name to get the ini section out of DDPI
-	const FDataDrivenPlatformInfoRegistry::FPlatformInfo& PlatformInfo = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(PlatformName);
-	const FString& CategoryName = PlatformInfo.AudioCompressionSettingsIniSectionName;
+	const FDataDrivenPlatformInfo& PlatformInfo = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(PlatformName);
+	const FString& CategoryName = PlatformInfo.TargetSettingsIniSectionName;
 
 	// if we don't support platform overrides, then return 
 	if (CategoryName.Len() == 0)
@@ -106,30 +109,33 @@ void CacheAudioCookOverrides(FPlatformAudioCookOverrides& OutOverrides, const TC
 		OutOverrides.SoundCueCookQualityIndex = SoundCueQualityIndex;
 	}
 
-	PlatformFile.GetBool(*CategoryName, TEXT("bUseAudioStreamCaching"), OutOverrides.bUseStreamCaching);
-
 	GConfig->GetBool(*CategoryName, TEXT("bInlineStreamedAudioChunks"), OutOverrides.bInlineStreamedAudioChunks, GEngineIni);
 
 	/** Memory Load On Demand Settings */
-	if (OutOverrides.bUseStreamCaching)
+	// Cache size:
+	const int32 DefaultCacheSize = 64 * 1024;
+	int32 RetrievedCacheSize = DefaultCacheSize;
+	int32 RetrievedChunkSizeOverride = INDEX_NONE;
+
+	PlatformFile.GetInt(*CategoryName, TEXT("CacheSizeKB"), RetrievedCacheSize);
+	if (!RetrievedCacheSize)
 	{
-		// Cache size:
-		int32 RetrievedCacheSize = 32 * 1024;
-		int32 RetrievedChunkSizeOverride = INDEX_NONE;
-		PlatformFile.GetInt(*CategoryName, TEXT("CacheSizeKB"), RetrievedCacheSize);
-		OutOverrides.StreamCachingSettings.CacheSizeKB = RetrievedCacheSize;
-
-		PlatformFile.GetInt(*CategoryName, TEXT("MaxChunkSizeOverrideKB"), RetrievedChunkSizeOverride);
-		OutOverrides.StreamCachingSettings.MaxChunkSizeOverrideKB = RetrievedChunkSizeOverride;
-
-		bool bForceLegacyStreamChunking = false;
-		PlatformFile.GetBool(*CategoryName, TEXT("bForceLegacyStreamChunking"), bForceLegacyStreamChunking);
-		OutOverrides.StreamCachingSettings.bForceLegacyStreamChunking = bForceLegacyStreamChunking;
-
-		int32 ZerothChunkSizeForLegacyStreamChunking = 0;
-		PlatformFile.GetInt(*CategoryName, TEXT("ZerothChunkSizeForLegacyStreamChunking"), ZerothChunkSizeForLegacyStreamChunking);
-		OutOverrides.StreamCachingSettings.ZerothChunkSizeForLegacyStreamChunkingKB = ZerothChunkSizeForLegacyStreamChunking;
+		PlatformFile.SetInt64(*CategoryName, TEXT("CacheSizeKB"), DefaultCacheSize);
+		RetrievedCacheSize = DefaultCacheSize;
 	}
+
+	OutOverrides.StreamCachingSettings.CacheSizeKB = RetrievedCacheSize;
+
+	PlatformFile.GetInt(*CategoryName, TEXT("MaxChunkSizeOverrideKB"), RetrievedChunkSizeOverride);
+	OutOverrides.StreamCachingSettings.MaxChunkSizeOverrideKB = RetrievedChunkSizeOverride;
+
+	bool bForceLegacyStreamChunking = false;
+	PlatformFile.GetBool(*CategoryName, TEXT("bForceLegacyStreamChunking"), bForceLegacyStreamChunking);
+	OutOverrides.StreamCachingSettings.bForceLegacyStreamChunking = bForceLegacyStreamChunking;
+
+	int32 ZerothChunkSizeForLegacyStreamChunking = 0;
+	PlatformFile.GetInt(*CategoryName, TEXT("ZerothChunkSizeForLegacyStreamChunking"), ZerothChunkSizeForLegacyStreamChunking);
+	OutOverrides.StreamCachingSettings.ZerothChunkSizeForLegacyStreamChunkingKB = ZerothChunkSizeForLegacyStreamChunking;
 
 	PlatformFile.GetBool(*CategoryName, TEXT("bResampleForDevice"), OutOverrides.bResampleForDevice);
 
@@ -262,7 +268,7 @@ void CacheAudioCookOverrides(FPlatformAudioCookOverrides& OutOverrides, const TC
 
 static bool PlatformSupportsCompressionOverrides(const FString& PlatformName)
 {
-	return FDataDrivenPlatformInfoRegistry::GetPlatformInfo(PlatformName).AudioCompressionSettingsIniSectionName.Len() > 0;
+	return FDataDrivenPlatformInfoRegistry::GetPlatformInfo(PlatformName).TargetSettingsIniSectionName.Len() > 0;
 }
 
 static inline FString GetCookOverridePlatformName(const TCHAR* PlatformName)
@@ -347,8 +353,7 @@ const FPlatformAudioCookOverrides* FPlatformCompressionUtilities::GetCookOverrid
 
 bool FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching()
 {
-	const FPlatformAudioCookOverrides* Settings = GetCookOverrides();
-	return Settings && Settings->bUseStreamCaching;
+	return true;
 }
 
 const FAudioStreamCachingSettings& FPlatformCompressionUtilities::GetStreamCachingSettingsForCurrentPlatform()
@@ -382,7 +387,7 @@ FCachedAudioStreamingManagerParams FPlatformCompressionUtilities::BuildCachedStr
 	// Primary cache defined here:
 	CacheDimensions.MaxChunkSize = 256 * 1024; // max possible chunk size (hard coded for legacy streaming path)
 	CacheDimensions.MaxMemoryInBytes = CacheSettings.CacheSizeKB * 1024;
-	CacheDimensions.NumElements = NumElements;
+	CacheDimensions.NumElements = FMath::Max(NumElements, 1); // force at least a single cache element to avoid crashes
 	Params.Caches.Add(CacheDimensions);
 
 	// TODO: When settings are added to support multiple sub-caches, add it here.

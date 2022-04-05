@@ -156,7 +156,7 @@ private:
 	TArray<uint8> Values;
 
 	UPROPERTY()
-	UEnum* Enum;
+	TObjectPtr<UEnum> Enum;
 
 	FMovieSceneKeyHandleMap KeyHandles;
 };

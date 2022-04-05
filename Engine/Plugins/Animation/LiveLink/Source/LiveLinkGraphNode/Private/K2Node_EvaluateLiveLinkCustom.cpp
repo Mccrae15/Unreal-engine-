@@ -36,8 +36,7 @@ void UK2Node_EvaluateLiveLinkFrameAtWorldTime::AllocateDefaultPins()
 
 	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 
-	// float pin
-	UEdGraphPin* LiveLinkWorldTimePin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Float, UK2Node_EvaluateLiveLinkFrameHelper::LiveLinkWorldTimePinName);
+	UEdGraphPin* LiveLinkWorldTimePin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Real, UEdGraphSchema_K2::PC_Double, UK2Node_EvaluateLiveLinkFrameHelper::LiveLinkWorldTimePinName);
 	LiveLinkWorldTimePin->PinFriendlyName = LOCTEXT("LiveLinkWorldTimePin", "World Time");
 	SetPinToolTip(*LiveLinkWorldTimePin, LOCTEXT("LiveLinkWorldTimePinDescription", "The World Time the subject will be evaluated to"));
 }

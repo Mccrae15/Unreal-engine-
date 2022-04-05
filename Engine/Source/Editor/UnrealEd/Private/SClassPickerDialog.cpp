@@ -23,9 +23,11 @@
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Views/SListView.h"
 #include "SClassViewer.h"
+#include "ClassViewerFilter.h"
 #include "EditorClassUtils.h"
 #include "Widgets/Layout/SExpandableArea.h"
 #include "Styling/SlateIconFinder.h"
+#include "SPrimaryButton.h"
 
 #define LOCTEXT_NAMESPACE "SClassPicker"
 
@@ -41,29 +43,55 @@ void SClassPickerDialog::Construct(const FArguments& InArgs)
 
 	ClassViewer = StaticCastSharedRef<SClassViewer>(FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer").CreateClassViewer(InArgs._Options, FOnClassPicked::CreateSP(this,&SClassPickerDialog::OnClassPicked)));
 
-	// Load in default settings
-	for (const FClassPickerDefaults& DefaultObj : GUnrealEd->GetUnrealEdOptions()->NewAssetDefaultClasses)
+	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
+	const TSharedPtr<IClassViewerFilter>& GlobalClassFilter = ClassViewerModule.GetGlobalClassViewerFilter();
+	TSharedRef<FClassViewerFilterFuncs> ClassFilterFuncs = ClassViewerModule.CreateFilterFuncs();
+
+	if (InArgs._Options.bShowDefaultClasses)
 	{
-		UClass* AssetType = LoadClass<UObject>(NULL, *DefaultObj.AssetClass, NULL, LOAD_None, NULL);
-		
-		if (InArgs._AssetType->IsChildOf(AssetType))
+		// Load in default settings
+		for (const FClassPickerDefaults& DefaultObj : GUnrealEd->GetUnrealEdOptions()->GetNewAssetDefaultClasses())
 		{
-			if (InArgs._Options.bEditorClassesOnly && !IsEditorOnlyObject(AssetType))
 			{
-				// Don't add if we are looking for editor classes only and this isn't an editor only class
-				break;
+				UClass* AssetType = LoadClass<UObject>(NULL, *DefaultObj.AssetClass, NULL, LOAD_None, NULL);
+
+				if (!InArgs._AssetType->IsChildOf(AssetType))
+				{
+					continue;
+				}
+
+				if (InArgs._Options.bEditorClassesOnly && !IsEditorOnlyObject(AssetType))
+				{
+					// Don't add if we are looking for editor classes only and this isn't an editor only class
+					continue;
+				}
 			}
+
+			{
+				UClass* Class = LoadClass<UObject>(NULL, *DefaultObj.ClassName, NULL, LOAD_None, NULL);
+
+				if (Class && GlobalClassFilter && !GlobalClassFilter->IsClassAllowed(InArgs._Options, Class, ClassFilterFuncs))
+				{
+					continue;
+				}
+			}
+
 			AssetDefaultClasses.Add(MakeShareable(new FClassPickerDefaults(DefaultObj)));
 		}
-	}
 
-	for (UClass* CommonClass : InArgs._Options.ExtraPickerCommonClasses)
-	{
-		TSharedPtr<FClassPickerDefaults> PickerDefault = MakeShareable(new FClassPickerDefaults());
-		PickerDefault->AssetClass = InArgs._AssetType->GetPathName();
-		PickerDefault->ClassName  = CommonClass->GetPathName();
+		for (UClass* CommonClass : InArgs._Options.ExtraPickerCommonClasses)
+		{
+			if (GlobalClassFilter && !GlobalClassFilter->IsClassAllowed(InArgs._Options, CommonClass, ClassFilterFuncs))
+			{
+				continue;
+			}
 
-		AssetDefaultClasses.Add(PickerDefault);
+			TSharedPtr<FClassPickerDefaults> PickerDefault = MakeShareable(new FClassPickerDefaults());
+			PickerDefault->AssetClass = InArgs._AssetType->GetPathName();
+			PickerDefault->ClassName  = CommonClass->GetPathName();
+
+			AssetDefaultClasses.Add(PickerDefault);
+		}
 	}
 
 	const bool bHasDefaultClasses = AssetDefaultClasses.Num() > 0;
@@ -80,21 +108,30 @@ void SClassPickerDialog::Construct(const FArguments& InArgs)
 	ChildSlot
 	[
 		SNew(SBorder)
-		.Visibility(EVisibility::Visible)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
+		.BorderImage(FEditorStyle::GetBrush("Brushes.Panel"))
 		[
 			SNew(SBox)
-			.Visibility(EVisibility::Visible)
-			.WidthOverride(520.0f)
+			.WidthOverride(610.0f)
 			[
 				SNew(SVerticalBox)
 				+SVerticalBox::Slot()
 				.AutoHeight()
 				[
 					SNew(SExpandableArea)
+					.BorderImage(FStyleDefaults::GetNoBrush())
+					.BodyBorderImage(FAppStyle::Get().GetBrush("Brushes.Recessed"))
+					.HeaderPadding(FMargin(5.0f, 3.0f))
+					.AllowAnimatedTransition(false)
 					.InitiallyCollapsed(!bExpandDefaultClassPicker)
-					.AreaTitle(NSLOCTEXT("SClassPickerDialog", "CommonClassesAreaTitle", "Common Classes"))
 					.OnAreaExpansionChanged(this, &SClassPickerDialog::OnDefaultAreaExpansionChanged)
+					.HeaderContent()
+					[
+						SNew(STextBlock)
+						.Text(NSLOCTEXT("SClassPickerDialog", "CommonClassesAreaTitle", "Common"))
+						.TextStyle(FAppStyle::Get(), "ButtonText")
+						.Font(FAppStyle::Get().GetFontStyle("NormalFontBold"))
+						.TransformPolicy(ETextTransformPolicy::ToUpper)
+					]
 					.BodyContent()
 					[
 						SAssignNew(DefaultClassViewer, SListView < TSharedPtr<FClassPickerDefaults> >)
@@ -110,17 +147,27 @@ void SClassPickerDialog::Construct(const FArguments& InArgs)
 				.Padding(0.0f, 10.0f, 0.0f, 0.0f)
 				[
 					SNew(SExpandableArea)
+					.BorderImage(FStyleDefaults::GetNoBrush())
+					.BodyBorderImage(FAppStyle::Get().GetBrush("Brushes.Recessed"))
+					.HeaderPadding(FMargin(5.0f, 3.0f))
+					.AllowAnimatedTransition(false)
 					.MaxHeight(320.f)
 					.InitiallyCollapsed(!bExpandCustomClassPicker)
-					.AreaTitle(NSLOCTEXT("SClassPickerDialog", "AllClassesAreaTitle", "All Classes"))
 					.OnAreaExpansionChanged(this, &SClassPickerDialog::OnCustomAreaExpansionChanged)
+					.HeaderContent()
+					[
+						SNew(STextBlock)
+						.Text(NSLOCTEXT("SClassPickerDialog", "AllClassesAreaTitle", "All Classes"))
+						.TextStyle(FAppStyle::Get(), "ButtonText")
+						.Font(FAppStyle::Get().GetFontStyle("NormalFontBold"))
+						.TransformPolicy(ETextTransformPolicy::ToUpper)
+					]
 					.BodyContent()
 					[
 						ClassViewer.ToSharedRef()
 					]
 				]
 				+SVerticalBox::Slot()
-				.AutoHeight()
 				.HAlign(HAlign_Right)
 				.VAlign(VAlign_Bottom)
 				.Padding(8)
@@ -129,24 +176,17 @@ void SClassPickerDialog::Construct(const FArguments& InArgs)
 					.SlotPadding(FEditorStyle::GetMargin("StandardDialog.SlotPadding"))
 					+SUniformGridPanel::Slot(0,0)
 					[
-						SNew(SButton)
+						SNew(SPrimaryButton)
 						.Text(NSLOCTEXT("SClassPickerDialog", "ClassPickerSelectButton", "Select"))
-						.HAlign(HAlign_Center)
 						.Visibility( this, &SClassPickerDialog::GetSelectButtonVisibility )
-						.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
 						.OnClicked(this, &SClassPickerDialog::OnClassPickerConfirmed)
-						.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
-						.TextStyle(FEditorStyle::Get(), "FlatButton.DefaultTextStyle")
 					]
 					+SUniformGridPanel::Slot(1,0)
 					[
 						SNew(SButton)
 						.Text(NSLOCTEXT("SClassPickerDialog", "ClassPickerCancelButton", "Cancel"))
 						.HAlign(HAlign_Center)
-						.ContentPadding(FEditorStyle::GetMargin("StandardDialog.ContentPadding"))
 						.OnClicked(this, &SClassPickerDialog::OnClassPickerCanceled)
-						.ButtonStyle(FEditorStyle::Get(), "FlatButton.Default")
-						.TextStyle(FEditorStyle::Get(), "FlatButton.DefaultTextStyle")
 					]
 				]
 			]
@@ -219,7 +259,7 @@ TSharedRef<ITableRow> SClassPickerDialog::GenerateListRow(TSharedPtr<FClassPicke
 		[
 			SNew(SHorizontalBox)
 			+SHorizontalBox::Slot()
-			.FillWidth(0.45f)
+			.FillWidth(0.5f)
 			[
 				SNew(SButton)
 				.OnClicked(this, &SClassPickerDialog::OnDefaultClassPicked, ItemClass)
@@ -228,9 +268,8 @@ TSharedRef<ITableRow> SClassPickerDialog::GenerateListRow(TSharedPtr<FClassPicke
 				[
 					SNew(SHorizontalBox)
 					+SHorizontalBox::Slot()
-					.HAlign(HAlign_Center)
+					.AutoWidth()
 					.VAlign(VAlign_Center)
-					.FillWidth(0.12f)
 					[
 						SNew(SImage)
 						.Image(ItemBrush)
@@ -238,27 +277,25 @@ TSharedRef<ITableRow> SClassPickerDialog::GenerateListRow(TSharedPtr<FClassPicke
 					+SHorizontalBox::Slot()
 					.VAlign(VAlign_Center)
 					.Padding(4.0f, 0.0f)
-					.FillWidth(0.8f)
 					[
 						SNew(STextBlock)
 						.Text(Obj->GetName())
 					]
-
 				]
 			]
 			+SHorizontalBox::Slot()
-			.Padding(10.0f, 0.0f)
+			.Padding(10.0f, 0.0f, 4.0f, 0.0f)
 			[
 				SNew(STextBlock)
 				.Text(Obj->GetDescription())
 				.AutoWrapText(true)
 			]
 			+SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
 			.AutoWidth()
 			[
 				SNew(SBox)
-				.WidthOverride(32)
-				.HeightOverride(32)
+				.WidthOverride(60)
 				[
 					FEditorClassUtils::GetDocumentationLinkWidget(ItemClass)
 				]

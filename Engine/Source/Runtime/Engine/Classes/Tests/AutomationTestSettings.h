@@ -327,7 +327,7 @@ struct FLaunchOnTestSettings
 	FFilePath LaunchOnTestmap;
 
 	/** Device to be used **/
-	UPROPERTY(config, EditAnywhere, Category = Automation, meta = (ToolTip = "This is the device to be used for launch on. Example: WindowsNoEditor, Android, IOS, Linux"))
+	UPROPERTY(config, EditAnywhere, Category = Automation, meta = (ToolTip = "This is the device to be used for launch on. Example: WindowsClient, Android, IOS, Linux"))
 	FString DeviceID;
 };
 
@@ -371,13 +371,19 @@ public:
 	 * Asset to test for open in automation process
 	 */
 	UPROPERTY(EditAnywhere, config, Category="Open Asset Tests")
-	TArray<FSoftObjectPath> AssetsToOpen;
+	TArray<FString> AssetsToOpen;
 
 	/**
 	 * Maps to PIE during the PIE test
 	 */
 	UPROPERTY(EditAnywhere, config, Category = "PIE Test Maps")
 	TArray<FString> MapsToPIETest;
+
+	/**
+	 * Use all Maps from project for PlayMapInPIE test
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Play all project Maps In PIE")
+	bool bUseAllProjectMapsToPlayInPIE;
 
 	/**
 	* Editor build promotion test settings

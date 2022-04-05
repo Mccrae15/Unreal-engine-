@@ -5,8 +5,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.IO;
+using System.Diagnostics.CodeAnalysis;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -70,7 +72,7 @@ namespace UnrealBuildTool
 		/// Construct a merged config section from the given per-file config sections
 		/// </summary>
 		/// <param name="FileSections">Config sections from individual files</param>
-		internal ConfigHierarchySection(IEnumerable<ConfigFileSection> FileSections)
+		public ConfigHierarchySection(IEnumerable<ConfigFileSection> FileSections)
 		{
 			foreach(ConfigFileSection FileSection in FileSections)
 			{
@@ -83,7 +85,7 @@ namespace UnrealBuildTool
                     }
 
                     // Find or create the values for this key
-                    List<string> Values;
+                    List<string>? Values;
 
 					if(KeyToValue.TryGetValue(Line.Key, out Values))
 					{
@@ -130,9 +132,9 @@ namespace UnrealBuildTool
 		/// <param name="KeyName">The key name to search for</param>
 		/// <param name="Value">On success, receives the corresponding value</param>
 		/// <returns>True if the key was found, false otherwise</returns>
-		public bool TryGetValue(string KeyName, out string Value)
+		public bool TryGetValue(string KeyName, [NotNullWhen(true)] out string? Value)
 		{
-			List<string> ValuesList;
+			List<string>? ValuesList;
 			if(KeyToValue.TryGetValue(KeyName, out ValuesList) && ValuesList.Count > 0)
 			{
 				Value = ValuesList[0];
@@ -151,9 +153,9 @@ namespace UnrealBuildTool
 		/// <param name="KeyName">The key name to search for</param>
 		/// <param name="Values">On success, receives a list of the corresponding values</param>
 		/// <returns>True if the key was found, false otherwise</returns>
-		public bool TryGetValues(string KeyName, out IReadOnlyList<string> Values)
+		public bool TryGetValues(string KeyName, [NotNullWhen(true)] out IReadOnlyList<string>? Values)
 		{
-			List<string> ValuesList;
+			List<string>? ValuesList;
 			if(KeyToValue.TryGetValue(KeyName, out ValuesList))
 			{
 				Values = ValuesList;
@@ -226,7 +228,7 @@ namespace UnrealBuildTool
 		/// <returns>The merged config section</returns>
 		public ConfigHierarchySection FindSection(string SectionName)
 		{
-            ConfigHierarchySection Section;
+            ConfigHierarchySection? Section;
             try
             {
                 // Acquire a read lock and do a quick check for the config section
@@ -243,7 +245,7 @@ namespace UnrealBuildTool
                             List<ConfigFileSection> RawSections = new List<ConfigFileSection>();
                             foreach (ConfigFile File in Files)
                             {
-                                ConfigFileSection RawSection;
+                                ConfigFileSection? RawSection;
                                 if (File.TryGetSection(SectionName, out RawSection))
                                 {
                                     RawSections.Add(RawSection);
@@ -287,9 +289,9 @@ namespace UnrealBuildTool
 		/// <param name="KeyName">Key name</param>
 		/// <param name="Values">Value associated with the specified key. If the key has more than one value, only the first one is returned</param>
 		/// <returns>True if the key exists</returns>
-		public bool GetArray(string SectionName, string KeyName, out List<string> Values)
+		public bool GetArray(string SectionName, string KeyName, [NotNullWhen(true)] out List<string>? Values)
 		{
-			IReadOnlyList<string> ValuesEnumerable;
+			IReadOnlyList<string>? ValuesEnumerable;
 			if(TryGetValues(SectionName, KeyName, out ValuesEnumerable))
 			{
 				Values = ValuesEnumerable.ToList();
@@ -311,8 +313,10 @@ namespace UnrealBuildTool
 		/// <returns>True if the key exists</returns>
 		public bool GetString(string SectionName, string KeyName, out string Value)
 		{
-			if(TryGetValue(SectionName, KeyName, out Value))
+			string? RetrievedValue;
+			if(TryGetValue(SectionName, KeyName, out RetrievedValue))
 			{
+				Value = RetrievedValue;
 				return true;
 			}
 			else
@@ -341,7 +345,7 @@ namespace UnrealBuildTool
 		/// <param name="KeyName">Key name</param>
 		/// <param name="Value">Value associated with the specified key. If the key has more than one value, only the first one is returned</param>
 		/// <returns>True if the key exists</returns>
-		public bool TryGetValue(string SectionName, string KeyName, out string Value)
+		public bool TryGetValue(string SectionName, string KeyName, [NotNullWhen(true)] out string? Value)
 		{
 			return FindSection(SectionName).TryGetValue(KeyName, out Value);
 		}
@@ -355,7 +359,7 @@ namespace UnrealBuildTool
 		/// <returns>True if the key exists</returns>
 		public bool TryGetValue(string SectionName, string KeyName, out bool Value)
 		{
-			string Text;
+			string? Text;
 			if(!TryGetValue(SectionName, KeyName, out Text))
 			{
 				Value = false;
@@ -373,7 +377,7 @@ namespace UnrealBuildTool
 		/// <returns>True if the key exists</returns>
 		public bool TryGetValue(string SectionName, string KeyName, out int Value)
 		{
-			string Text;
+			string? Text;
 			if(!TryGetValue(SectionName, KeyName, out Text))
 			{
 				Value = 0;
@@ -391,7 +395,7 @@ namespace UnrealBuildTool
 		/// <returns>True if the key exists</returns>
 		public bool TryGetValue(string SectionName, string KeyName, out Guid Value)
 		{
-			string Text;
+			string? Text;
 			if(!TryGetValue(SectionName, KeyName, out Text))
 			{
 				Value = Guid.Empty;
@@ -409,7 +413,7 @@ namespace UnrealBuildTool
 		/// <returns>True if the key exists</returns>
 		public bool TryGetValue(string SectionName, string KeyName, out float Value)
 		{
-			string Text;
+			string? Text;
 			if(!TryGetValue(SectionName, KeyName, out Text))
 			{
 				Value = 0;
@@ -427,7 +431,7 @@ namespace UnrealBuildTool
 		/// <returns>True if the key exists</returns>
 		public bool TryGetValue(string SectionName, string KeyName, out double Value)
 		{
-			string Text;
+			string? Text;
 			if(!TryGetValue(SectionName, KeyName, out Text))
 			{
 				Value = 0;
@@ -443,7 +447,7 @@ namespace UnrealBuildTool
 		/// <param name="KeyName">Key name</param>
 		/// <param name="Values">Copy of the list containing all values associated with the specified key</param>
 		/// <returns>True if the key exists</returns>
-		public bool TryGetValues(string SectionName, string KeyName, out IReadOnlyList<string> Values)
+		public bool TryGetValues(string SectionName, string KeyName, [NotNullWhen(true)] out IReadOnlyList<string>? Values)
 		{
 			return FindSection(SectionName).TryGetValues(KeyName, out Values);
 		}
@@ -553,12 +557,12 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Attempts to parse the given line as a UE4 config object (eg. (Name="Foo",Number=1234)).
+		/// Attempts to parse the given line as a UE config object (eg. (Name="Foo",Number=1234)).
 		/// </summary>
 		/// <param name="Line">Line of text to parse</param>
 		/// <param name="Properties">Receives key/value pairs for the config object</param>
 		/// <returns>True if an object was parsed, false otherwise</returns>
-		public static bool TryParse(string Line, out Dictionary<string, string> Properties)
+		public static bool TryParse(string Line, [NotNullWhen(true)] out Dictionary<string, string>? Properties)
 		{
 			// Convert the string to a zero-terminated array, to make parsing easier.
 			char[] Chars = new char[Line.Length + 1];
@@ -735,12 +739,12 @@ namespace UnrealBuildTool
 
 
 		/// <summary>
-		/// Attempts to parse the given line as a UE4 config array (eg. ("one", "two", "three") ).
+		/// Attempts to parse the given line as a UE config array (eg. ("one", "two", "three") ).
 		/// </summary>
 		/// <param name="Line">Line of text to parse</param>
 		/// <param name="Array">Receives array for the config array</param>
 		/// <returns>True if an array was parsed, false otherwise</returns>
-		public static bool TryParse(string Line, out string[] Array)
+		public static bool TryParse(string Line, out string[]? Array)
 		{
 			// Convert the string to a zero-terminated array, to make parsing easier.
 			char[] Chars = new char[Line.Length + 1];
@@ -886,10 +890,10 @@ namespace UnrealBuildTool
 		class ConfigLayerExpansion
 		{
 			// a set of replacements from the source file to possible other files
-			public string Before1 = null;
-			public string After1 = null;
-			public string Before2 = null;
-			public string After2 = null;
+			public string? Before1 = null;
+			public string? After1 = null;
+			public string? Before2 = null;
+			public string? After2 = null;
 		};
 
 		static string [] ConfigLayers =
@@ -904,18 +908,22 @@ namespace UnrealBuildTool
 			"{PROJECT}/Config/Default{TYPE}.ini",
 			// Project/Generated*.ini  this is reserved for files which are generated by buildmachine processes (i.e. should never be checked in)
 			"{PROJECT}/Config/Generated{TYPE}.ini",
+			// Project/Config/Custom/CustomConfig/Default*.ini only if CustomConfig is defined
+			"{PROJECT}/Config/Custom/{CUSTOMCONFIG}/Default{TYPE}.ini",
 			// Engine/Platform/Platform*.ini
 			"{ENGINE}/Config/{PLATFORM}/{PLATFORM}{TYPE}.ini",
 			// Project/Platform/Platform*.ini
 			"{PROJECT}/Config/{PLATFORM}/{PLATFORM}{TYPE}.ini",
 			// Project/Platform/GeneratedPlatform*.ini  this is reserved for files which are generated by buildmachine processes (i.e. should never be checked in)
 			"{PROJECT}/Config/{PLATFORM}/Generated{PLATFORM}{TYPE}.ini",
+			// Project/Platform/Custom/CustomConfig/Platform*.ini only if CustomConfig is defined
+			"{PROJECT}/Config/{PLATFORM}/Custom/{CUSTOMCONFIG}/{PLATFORM}{TYPE}.ini",
 			// UserSettings/.../User*.ini
 			"{USERSETTINGS}/Unreal Engine/Engine/Config/User{TYPE}.ini",
 			// UserDir/.../User*.ini
 			"{USER}/Unreal Engine/Engine/Config/User{TYPE}.ini",
 			// Project/User*.ini
-			"{PROJECT}/User{TYPE}.ini",
+			"{PROJECT}/Config/User{TYPE}.ini",
 		};
 
 		static ConfigLayerExpansion[] ConfigLayerExpansions =
@@ -933,15 +941,15 @@ namespace UnrealBuildTool
 		};
 
 		// Match FPlatformProcess::UserDir()
-		private static string GetUserDir()
+		private static string? GetUserDir()
 		{
 			// Some user accounts (eg. SYSTEM on Windows) don't have a home directory. Ignore them if Environment.GetFolderPath() returns an empty string.
 			string PersonalFolder = Environment.GetFolderPath(Environment.SpecialFolder.Personal);
-			string PersonalConfigFolder = null;
+			string? PersonalConfigFolder = null;
 			if (!String.IsNullOrEmpty(PersonalFolder))
 			{
 				PersonalConfigFolder = PersonalFolder;
-				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac || Environment.OSVersion.Platform == PlatformID.Unix)
+				if (RuntimePlatform.IsMac || RuntimePlatform.IsLinux)
 				{
 					PersonalConfigFolder = System.IO.Path.Combine(PersonalConfigFolder, "Documents");
 				}
@@ -951,17 +959,24 @@ namespace UnrealBuildTool
 		}
 
 
-		private static string PerformBasicReplacements(string InString, string BaseIniName)
+		private static string PerformBasicReplacements(string InString, string BaseIniName, string CustomConfig)
 		{
 			string OutString = InString.Replace("{TYPE}", BaseIniName);
-			OutString = OutString.Replace("{USERSETTINGS}", Utils.GetUserSettingDirectory().FullName);
+
+			DirectoryReference? UserSettingsDir = Utils.GetUserSettingDirectory();
+			if (UserSettingsDir != null)
+			{
+				OutString = OutString.Replace("{USERSETTINGS}", UserSettingsDir.FullName);
+			}
+
 			OutString = OutString.Replace("{USER}", GetUserDir());
+			OutString = OutString.Replace("{CUSTOMCONFIG}", CustomConfig);
 
 			return OutString;
 		}
 
 
-		private static string PerformExpansionReplacements(ConfigLayerExpansion Expansion, string InString)
+		private static string? PerformExpansionReplacements(ConfigLayerExpansion Expansion, string InString)
 		{
 			// if there's replacement to do, the output is just the output
 			if (Expansion.Before1 == null)
@@ -984,11 +999,11 @@ namespace UnrealBuildTool
 			return OutString;
 		}
 
-		private static string PerformFinalExpansions(string InString, string PlatformName, DirectoryReference ProjectDir)
+		private static string PerformFinalExpansions(string InString, string PlatformName, DirectoryReference? ProjectDir)
 		{
-			string PlatformExtensionEngineConfigDir = DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Platforms", PlatformName).FullName;
+			string PlatformExtensionEngineConfigDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Platforms", PlatformName).FullName;
 
-			string OutString = InString.Replace("{ENGINE}", UnrealBuildTool.EngineDirectory.FullName);
+			string OutString = InString.Replace("{ENGINE}", Unreal.EngineDirectory.FullName);
 			OutString = OutString.Replace("{EXTENGINE}", PlatformExtensionEngineConfigDir);
 			OutString = OutString.Replace("{PLATFORM}", PlatformName);
 
@@ -996,11 +1011,11 @@ namespace UnrealBuildTool
 			{
 				DirectoryReference NFLDir;
 				DirectoryReference NRDir;
-				if (ProjectDir.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
+				if (ProjectDir.IsUnderDirectory(Unreal.EngineDirectory))
 				{
-					string RelativeDir = ProjectDir.MakeRelativeTo(UnrealBuildTool.EngineDirectory);
-					NFLDir = DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Restricted/NotForLicensees", RelativeDir);
-					NRDir = DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Restricted/NoRedist", RelativeDir);
+					string RelativeDir = ProjectDir.MakeRelativeTo(Unreal.EngineDirectory);
+					NFLDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Restricted/NotForLicensees", RelativeDir);
+					NRDir = DirectoryReference.Combine(Unreal.EngineDirectory, "Restricted/NoRedist", RelativeDir);
 				}
 				else
 				{
@@ -1021,9 +1036,9 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Returns a list of INI filenames for the given project
 		/// </summary>
-		public static IEnumerable<FileReference> EnumerateConfigFileLocations(ConfigHierarchyType Type, DirectoryReference ProjectDir, UnrealTargetPlatform Platform)
+		public static IEnumerable<FileReference> EnumerateConfigFileLocations(ConfigHierarchyType Type, DirectoryReference? ProjectDir, UnrealTargetPlatform Platform, string CustomConfig = "")
 		{
-			string BaseIniName = Enum.GetName(typeof(ConfigHierarchyType), Type);
+			string BaseIniName = Enum.GetName(typeof(ConfigHierarchyType), Type) ?? String.Empty;
 			string PlatformName = GetIniPlatformName(Platform);
 
 			foreach (string Layer in ConfigLayers)
@@ -1031,16 +1046,18 @@ namespace UnrealBuildTool
 				bool bHasPlatformTag = Layer.Contains("{PLATFORM}");
 				bool bHasProjectTag = Layer.Contains("{PROJECT}");
 				bool bHasUserTag = Layer.Contains("{USER}");
+				bool bHasCustomConfigTag = Layer.Contains("{CUSTOMCONFIG}");
 
 				// skip certain layers if we are platform-less, project-less, or userdir-less
 				if ((bHasPlatformTag && PlatformName == "None") ||
 					(bHasProjectTag && ProjectDir == null) ||
-					(bHasUserTag && GetUserDir() == null))
+					(bHasUserTag && GetUserDir() == null) ||
+					(bHasCustomConfigTag && String.IsNullOrEmpty(CustomConfig)))
 				{
 					continue;
 				}
 
-				string LayerPath = PerformBasicReplacements(Layer, BaseIniName);
+				string LayerPath = PerformBasicReplacements(Layer, BaseIniName, CustomConfig);
 
 				// we only expand engine/project inis
 				if (Layer.Contains("{ENGINE}") || Layer.Contains("{PROJECT}"))
@@ -1048,7 +1065,7 @@ namespace UnrealBuildTool
 					foreach (ConfigLayerExpansion Expansion in ConfigLayerExpansions)
 					{
 						// expansion replacements
-						string ExpandedPath = PerformExpansionReplacements(Expansion, LayerPath);
+						string? ExpandedPath = PerformExpansionReplacements(Expansion, LayerPath);
 
 						// if nothing was replaced, then skip it, as it won't change anything
 						if (ExpandedPath == null)
@@ -1059,7 +1076,7 @@ namespace UnrealBuildTool
 						// now go up the ini parent chain
 						if (bHasPlatformTag)
 						{
-							DataDrivenPlatformInfo.ConfigDataDrivenPlatformInfo Info = DataDrivenPlatformInfo.GetDataDrivenInfoForPlatform(PlatformName);
+							DataDrivenPlatformInfo.ConfigDataDrivenPlatformInfo? Info = DataDrivenPlatformInfo.GetDataDrivenInfoForPlatform(PlatformName);
 							if (Info != null && Info.IniParentChain != null)
 							{
 								// the IniParentChain
@@ -1097,15 +1114,15 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Returns a list of INI filenames for the given project
 		/// </summary>
-		public static IEnumerable<FileReference> EnumerateGeneratedConfigFileLocations(ConfigHierarchyType Type, DirectoryReference ProjectDir, UnrealTargetPlatform Platform)
+		public static IEnumerable<FileReference> EnumerateGeneratedConfigFileLocations(ConfigHierarchyType Type, DirectoryReference? ProjectDir, UnrealTargetPlatform Platform)
 		{
-			string BaseIniName = Enum.GetName(typeof(ConfigHierarchyType), Type);
+			string BaseIniName = Enum.GetName(typeof(ConfigHierarchyType), Type)!;
 			string PlatformName = GetIniPlatformName(Platform);
 
 			// Get the generated config file too. EditorSettings overrides this from 
 			if (Type == ConfigHierarchyType.EditorSettings)
 			{
-				yield return FileReference.Combine(GetGameAgnosticSavedDir(), "Config", PlatformName, BaseIniName + ".ini");
+				yield return FileReference.Combine(GetGameAgnosticSavedDir(), "Config", PlatformName + "Editor", BaseIniName + ".ini");
 			}
 			else
 			{
@@ -1117,11 +1134,11 @@ namespace UnrealBuildTool
 		/// Determines the path to the generated config directory (same as FPaths::GeneratedConfigDir())
 		/// </summary>
 		/// <returns></returns>
-		public static DirectoryReference GetGeneratedConfigDir(DirectoryReference ProjectDir)
+		public static DirectoryReference GetGeneratedConfigDir(DirectoryReference? ProjectDir)
 		{
 			if(ProjectDir == null)
 			{
-				return DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Saved", "Config");
+				return DirectoryReference.Combine(Unreal.EngineDirectory, "Saved", "Config");
 			}
 			else
 			{
@@ -1135,14 +1152,15 @@ namespace UnrealBuildTool
 		/// <returns></returns>
 		public static DirectoryReference GetGameAgnosticSavedDir()
 		{
-			if(UnrealBuildTool.IsEngineInstalled())
+			if(Unreal.IsEngineInstalled())
 			{
-				return DirectoryReference.Combine(Utils.GetUserSettingDirectory(), "UnrealEngine", String.Format("{0}.{1}", ReadOnlyBuildVersion.Current.MajorVersion, ReadOnlyBuildVersion.Current.MinorVersion), "Saved");
+				DirectoryReference? UserSettingDir = Utils.GetUserSettingDirectory();
+				if (UserSettingDir != null)
+				{
+					return DirectoryReference.Combine(UserSettingDir, "UnrealEngine", String.Format("{0}.{1}", ReadOnlyBuildVersion.Current.MajorVersion, ReadOnlyBuildVersion.Current.MinorVersion), "Saved");
+				}
 			}
-			else
-			{
-				return DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Saved");
-			}
+			return DirectoryReference.Combine(Unreal.EngineDirectory, "Saved");
 		}
 
 		/// <summary>
@@ -1150,13 +1168,9 @@ namespace UnrealBuildTool
 		/// </summary>
 		public static string GetIniPlatformName(UnrealTargetPlatform TargetPlatform)
 		{
-			if (TargetPlatform == UnrealTargetPlatform.Win32 || TargetPlatform == UnrealTargetPlatform.Win64)
+			if (TargetPlatform == UnrealTargetPlatform.Win64)
 			{
 				return "Windows";
-			}
-			else if (TargetPlatform == UnrealTargetPlatform.HoloLens)
-			{
-				return "HoloLens";
 			}
 			else
 			{

@@ -167,19 +167,23 @@ struct HAIRSTRANDSCORE_API FHairGroupCardsTextures
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere, Category = "CardsTextures")
-	UTexture2D* DepthTexture = nullptr;
+	TObjectPtr<UTexture2D> DepthTexture = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = "CardsTextures")
-	UTexture2D* CoverageTexture = nullptr;
+	TObjectPtr<UTexture2D> CoverageTexture = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = "CardsTextures")
-	UTexture2D* TangentTexture = nullptr;
+	TObjectPtr<UTexture2D> TangentTexture = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = "CardsAttributes")
-	UTexture2D* AttributeTexture = nullptr;
+	TObjectPtr<UTexture2D> AttributeTexture = nullptr;
 
-	UPROPERTY(EditAnywhere, Category = "CardsAuxilaryData")
-	UTexture2D* AuxilaryDataTexture = nullptr;
+	UPROPERTY(EditAnywhere, Category = "CardsAttributes")
+	TObjectPtr<UTexture2D> AuxilaryDataTexture = nullptr;
+
+	/* This texture is only used by hair meshes and can be generated through the hair-textures option on Groom Asset. */
+	UPROPERTY(EditAnywhere, Category = "CardsAttributes")
+	TObjectPtr<UTexture2D> MaterialTexture = nullptr;
 
 	bool bNeedToBeSaved = false;
 };
@@ -193,7 +197,7 @@ struct HAIRSTRANDSCORE_API FHairGroupsCardsSourceDescription
 
 	/* Deprecated */
 	UPROPERTY()
-	UMaterialInterface* Material = nullptr;
+	TObjectPtr<UMaterialInterface> Material = nullptr;
 
 	UPROPERTY()
 	FName MaterialSlotName;
@@ -202,13 +206,13 @@ struct HAIRSTRANDSCORE_API FHairGroupsCardsSourceDescription
 	EHairCardsSourceType SourceType = EHairCardsSourceType::Imported;
 
 	UPROPERTY(EditAnywhere, Category = "CardsSource")
-	UStaticMesh* ProceduralMesh = nullptr;
+	TObjectPtr<UStaticMesh> ProceduralMesh = nullptr;
 
 	UPROPERTY()
 	FString ProceduralMeshKey;
 
 	UPROPERTY(EditAnywhere, Category = "CardsSource")
-	UStaticMesh* ImportedMesh = nullptr;
+	TObjectPtr<UStaticMesh> ImportedMesh = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = "CardsSource")
 	FHairGroupsProceduralCards ProceduralSettings;
@@ -232,6 +236,7 @@ struct HAIRSTRANDSCORE_API FHairGroupsCardsSourceDescription
 
 	bool operator==(const FHairGroupsCardsSourceDescription& A) const;
 
+	UStaticMesh* GetMesh() const;
 	FString GetMeshKey() const;
 	bool HasMeshChanged() const;
 	void UpdateMeshKey();

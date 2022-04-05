@@ -6,12 +6,13 @@
 #include "NiagaraStackRoot.generated.h"
 
 class FNiagaraEmitterViewModel;
-class UNiagaraStackSystemSettingsGroup;
-class UNiagaraStackEmitterSettingsGroup;
+class UNiagaraStackSystemPropertiesGroup;
+class UNiagaraStackSystemUserParametersGroup;
+class UNiagaraStackEmitterPropertiesGroup;
 class UNiagaraStackScriptItemGroup;
-class UNiagaraStackEventHandlerGroup;
-class UNiagaraStackSimulationStagesGroup;
 class UNiagaraStackRenderItemGroup;
+class UNiagaraStackEmitterSummaryGroup;
+class UNiagaraStackSummaryViewCollapseButton;
 
 UCLASS()
 class NIAGARAEDITOR_API UNiagaraStackRoot : public UNiagaraStackEntry
@@ -22,6 +23,7 @@ public:
 	UNiagaraStackRoot();
 	
 	void Initialize(FRequiredEntryData InRequiredEntryData, bool bInIncludeSystemInformation, bool bInIncludeEmitterInformation);
+	void FinalizeInternal() override;
 
 	virtual bool GetCanExpand() const override;
 	virtual bool GetShouldShowInStack() const override;
@@ -34,40 +36,44 @@ protected:
 
 private:
 	void EmitterArraysChanged();
+	void OnSummaryViewStateChanged();
 
 private:
 	UPROPERTY()
-	UNiagaraStackSystemSettingsGroup* SystemSettingsGroup;
+	TObjectPtr<UNiagaraStackSystemPropertiesGroup> SystemPropertiesGroup;
 
 	UPROPERTY()
-	UNiagaraStackScriptItemGroup* SystemSpawnGroup;
+	TObjectPtr<UNiagaraStackSystemUserParametersGroup> SystemUserParametersGroup;
 
 	UPROPERTY()
-	UNiagaraStackScriptItemGroup* SystemUpdateGroup;
+	TObjectPtr<UNiagaraStackScriptItemGroup> SystemSpawnGroup;
 
 	UPROPERTY()
-	UNiagaraStackEmitterSettingsGroup* EmitterSettingsGroup;
+	TObjectPtr<UNiagaraStackScriptItemGroup> SystemUpdateGroup;
 
 	UPROPERTY()
-	UNiagaraStackScriptItemGroup* EmitterSpawnGroup;
+	TObjectPtr<UNiagaraStackEmitterPropertiesGroup> EmitterPropertiesGroup;
 
 	UPROPERTY()
-	UNiagaraStackScriptItemGroup* EmitterUpdateGroup;
+	TObjectPtr<UNiagaraStackEmitterSummaryGroup> EmitterSummaryGroup;
 
 	UPROPERTY()
-	UNiagaraStackScriptItemGroup* ParticleSpawnGroup;
+	TObjectPtr<UNiagaraStackScriptItemGroup> EmitterSpawnGroup;
 
 	UPROPERTY()
-	UNiagaraStackScriptItemGroup* ParticleUpdateGroup;
+	TObjectPtr<UNiagaraStackScriptItemGroup> EmitterUpdateGroup;
 
 	UPROPERTY()
-	UNiagaraStackEventHandlerGroup* AddEventHandlerGroup;
+	TObjectPtr<UNiagaraStackScriptItemGroup> ParticleSpawnGroup;
 
 	UPROPERTY()
-	UNiagaraStackSimulationStagesGroup* AddSimulationStageGroup;
+	TObjectPtr<UNiagaraStackScriptItemGroup> ParticleUpdateGroup;
 
 	UPROPERTY()
-	UNiagaraStackRenderItemGroup* RenderGroup;
+	TObjectPtr<UNiagaraStackRenderItemGroup> RenderGroup;
+
+	UPROPERTY()
+	TObjectPtr<UNiagaraStackSummaryViewCollapseButton> SummaryCollapseButton;
 
 	bool bIncludeSystemInformation;
 	bool bIncludeEmitterInformation;

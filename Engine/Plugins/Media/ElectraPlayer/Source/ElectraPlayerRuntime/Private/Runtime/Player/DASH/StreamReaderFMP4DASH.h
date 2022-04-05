@@ -23,11 +23,12 @@ public:
 	virtual uint32 GetPlaybackSequenceID() const override;
 
 	virtual void SetExecutionDelay(const FTimeValue& ExecutionDelay) override;
+	virtual FTimeValue GetExecuteAtUTCTime() const override;
 
 	virtual EStreamType GetType() const override;
 
-	virtual void GetDependentStreams(TArray<FDependentStreams>& OutDependentStreams) const override;
-
+	virtual void GetDependentStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutDependentStreams) const override;
+	virtual void GetRequestedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutRequestedStreams) override;
 	virtual void GetEndedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutAlreadyEndedStreams) override;
 
 	//! Returns the first PTS value as indicated by the media timeline. This should correspond to the actual absolute PTS of the sample.
@@ -39,6 +40,7 @@ public:
 	virtual void GetDownloadStats(Metrics::FSegmentDownloadStats& OutStats) const override;
 
 	EStreamType												StreamType = EStreamType::Unsupported;				//!< Type of stream (video, audio, etc.)
+	FStreamCodecInformation									CodecInfo;											//!< Partial codec info as can be collected from the MPD.
 	TSharedPtrTS<IPlaybackAssetRepresentation>				Representation;										//!< The representation this request belongs to.
 	TSharedPtrTS<IPlaybackAssetAdaptationSet>				AdaptationSet;										//!< The adaptation set the representation belongs to.
 	TSharedPtrTS<ITimelineMediaAsset>						Period;												//!< The period the adaptation set belongs to.
@@ -50,6 +52,7 @@ public:
 	FTimeValue												AST = FTimeValue::GetZero();						//!< Value of AST to add to all time to generate wallclock time
 	FTimeValue												AdditionalAdjustmentTime = FTimeValue::GetZero();	//!< Sum of any other time corrections
 	bool													bInsertFillerData = false;							//!< true to insert empty access units into the buffer instead of reading actual data.
+	int64													TimestampSequenceIndex = 0;							//!< Sequence index to set in all timestamp values of the decoded access unit.
 
 	// UTC wallclock times during which this segment can be fetched;
 	FTimeValue												ASAST;
@@ -63,13 +66,11 @@ public:
 
 	// Internal work variables
 	TSharedPtrTS<FBufferSourceInfo>							SourceBufferInfo;
-	FPlayerLoopState										PlayerLoopState;
 	int32													NumOverallRetries = 0;								//!< Number of retries for this _segment_ across all possible quality levels and CDNs.
 	uint32													CurrentPlaybackSequenceID = ~0U;					//!< Set by the player before adding the request to the stream reader.
 
 	Metrics::FSegmentDownloadStats							DownloadStats;
 	HTTP::FConnectionInfo									ConnectionInfo;
-	FTimeValue												NextLargestExpectedTimestamp;						//!< Largest timestamp of all samples (plus its duration) across all tracks.
 
 	bool													bWarnedAboutTimescale = false;
 };
@@ -125,7 +126,9 @@ private:
 		TSharedPtrTS<FStreamSegmentRequestFMP4DASH>				CurrentRequest;
 		FMediaSemaphore											WorkSignal;
 		FMediaEvent												IsIdleSignal;
+		bool													bRunOnThreadPool = false;
 		volatile bool											bTerminate = false;
+		volatile bool											bWasStarted = false;
 		volatile bool											bRequestCanceled = false;
 		volatile bool											bSilentCancellation = false;
 		volatile bool											bHasErrored = false;
@@ -155,9 +158,11 @@ private:
 		void Cancel(bool bSilent);
 		void SignalWork();
 		void WorkerThread();
+		void RunInThreadPool();
 		void HandleRequest();
 
 		FErrorDetail GetInitSegment(TSharedPtrTS<const IParserISO14496_12>& OutMP4InitSegment, const TSharedPtrTS<FStreamSegmentRequestFMP4DASH>& InRequest);
+		FErrorDetail RetrieveSideloadedFile(TSharedPtrTS<const TArray<uint8>>& OutData, const TSharedPtrTS<FStreamSegmentRequestFMP4DASH>& InRequest);
 		void CheckForInbandDASHEvents();
 		void HandleEventMessages();
 
@@ -179,9 +184,7 @@ private:
 		virtual IParserISO14496_12::IBoxCallback::EParseContinuation OnEndOfBox(IParserISO14496_12::FBoxType Box, int64 BoxSizeInBytes, int64 FileDataOffset, int64 BoxDataOffset) override;
 	};
 
-	// Currently set to use 2 handlers, one for video and one for audio. This could become a pool of n if we need to stream
-	// multiple dependent segments, keeping a pool of available and active handlers to cycle between.
-	FStreamHandler						StreamHandlers[2];		// 0 = video (MEDIAstreamType_Video), 1 = audio (MEDIAstreamType_Audio)
+	FStreamHandler						StreamHandlers[3];		// 0 = video, 1 = audio, 2 = subtitle 
 	IPlayerSessionServices*				PlayerSessionService = nullptr;
 	bool								bIsStarted = false;
 	FErrorDetail						ErrorDetail;

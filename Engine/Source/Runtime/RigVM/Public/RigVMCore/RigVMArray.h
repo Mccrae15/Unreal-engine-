@@ -3,10 +3,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RigVMDefines.h"
 #include "RigVMTraits.h"
 
 typedef TArray<uint8> FRigVMByteArray;
 typedef TArray<FRigVMByteArray> FRigVMNestedByteArray;
+
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 
 /**
  * The FRigVMDynamicArray is used as an array wrapping a generic TArray.
@@ -322,6 +325,14 @@ public:
 	{
 	}
 
+	// constructor from a typed TArray
+	template<uint32 NumInlineElements>
+	FORCEINLINE_DEBUGGABLE FRigVMFixedArray(const TArray<T, TFixedAllocator<NumInlineElements>>& InStorage)
+		: Data((T*)InStorage.GetData())
+		, Size(NumInlineElements)
+	{
+	}
+
 	// constructor from direct memory
 	FORCEINLINE_DEBUGGABLE FRigVMFixedArray(T* InData, int32 InSize)
 	: Data(InData)
@@ -449,3 +460,4 @@ private:
 	int32 Size;
 };
 
+#endif

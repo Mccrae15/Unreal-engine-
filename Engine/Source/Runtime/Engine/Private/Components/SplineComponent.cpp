@@ -10,6 +10,7 @@
 #include "PrimitiveSceneProxy.h"
 #include "SceneManagement.h"
 #include "UnrealEngine.h"
+#include "Styling/StyleColors.h"
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorViewportSettings.h"
@@ -40,9 +41,9 @@ USplineComponent::USplineComponent(const FObjectInitializer& ObjectInitializer)
 	, bClosedLoop(false)
 	, DefaultUpVector(FVector::UpVector)
 #if WITH_EDITORONLY_DATA
-	, EditorUnselectedSplineSegmentColor(FLinearColor(1.0f, 1.0f, 1.0f))
-	, EditorSelectedSplineSegmentColor(FLinearColor(0.828f, 0.364f, 0.003f))
-	, EditorTangentColor(FLinearColor(1.0f, 1.0f, 1.0f))
+	, EditorUnselectedSplineSegmentColor(FStyleColors::White.GetSpecifiedColor())
+	, EditorSelectedSplineSegmentColor(FStyleColors::AccentOrange.GetSpecifiedColor())
+	, EditorTangentColor(FLinearColor(0.718f, 0.589f, 0.921f))
 	, bAllowDiscontinuousSpline(false)
 	, bShouldVisualizeScale(false)
 	, ScaleVisualizationWidth(30.0f)
@@ -123,8 +124,8 @@ void USplineComponent::Serialize(FArchive& Ar)
 	}
 
 	// Support old resources which don't have the rotation and scale splines present
-	const int32 ArchiveUE4Version = Ar.UE4Ver();
-	if (ArchiveUE4Version < VER_UE4_INTERPCURVE_SUPPORTS_LOOPING)
+	const FPackageFileVersion ArchiveUEVersion = Ar.UEVer();
+	if (ArchiveUEVersion < VER_UE4_INTERPCURVE_SUPPORTS_LOOPING)
 	{
 		int32 NumPoints = SplineCurves.Position.Points.Num();
 
@@ -1514,6 +1515,105 @@ FTransform USplineComponent::FindTransformClosestToWorldLocation(const FVector& 
 	return GetTransformAtSplineInputKey(Param, CoordinateSpace, bUseScale);
 }
 
+bool USplineComponent::DivideSplineIntoPolylineRecursive(float StartDistanceAlongSpline, float EndDistanceAlongSpline, ESplineCoordinateSpace::Type CoordinateSpace, const float MaxSquareDistanceFromSpline, TArray<FVector>& OutPoints) const
+{
+	double Dist = EndDistanceAlongSpline - StartDistanceAlongSpline;
+	if (Dist <= 0.0f)
+	{
+		return false;
+	}
+	double MiddlePointDistancAlongSpline = StartDistanceAlongSpline + Dist / 2.0f;
+
+	FVector Samples[3];
+	Samples[0] = GetLocationAtDistanceAlongSpline(StartDistanceAlongSpline, CoordinateSpace);
+	Samples[1] = GetLocationAtDistanceAlongSpline(MiddlePointDistancAlongSpline, CoordinateSpace);
+	Samples[2] = GetLocationAtDistanceAlongSpline(EndDistanceAlongSpline, CoordinateSpace);
+
+	if (FMath::PointDistToSegmentSquared(Samples[1], Samples[0], Samples[2]) > MaxSquareDistanceFromSpline)
+	{
+		TArray<FVector> NewPoints[2];
+		DivideSplineIntoPolylineRecursive(StartDistanceAlongSpline, MiddlePointDistancAlongSpline, CoordinateSpace, MaxSquareDistanceFromSpline, NewPoints[0]);
+		DivideSplineIntoPolylineRecursive(MiddlePointDistancAlongSpline, EndDistanceAlongSpline, CoordinateSpace, MaxSquareDistanceFromSpline, NewPoints[1]);
+		if ((NewPoints[0].Num() > 0) && (NewPoints[1].Num() > 0))
+		{
+			check(NewPoints[0].Last() == NewPoints[1][0]);
+			NewPoints[0].RemoveAt(NewPoints[0].Num() - 1);
+		}
+		NewPoints[0].Append(NewPoints[1]);
+		OutPoints.Append(NewPoints[0]);
+	}
+	else
+	{
+		// The middle point is close enough to the other 2 points, let's keep those and stop the recursion :
+		OutPoints.Add(Samples[0]);
+		OutPoints.Add(Samples[2]);
+	}
+
+	return (OutPoints.Num() > 0);
+}
+
+bool USplineComponent::ConvertSplineSegmentToPolyLine(int32 SplinePointStartIndex, ESplineCoordinateSpace::Type CoordinateSpace, const float MaxSquareDistanceFromSpline, TArray<FVector>& OutPoints) const
+{
+	OutPoints.Empty();
+
+	const double StartDist = GetDistanceAlongSplineAtSplinePoint(SplinePointStartIndex);
+	const double StopDist = GetDistanceAlongSplineAtSplinePoint(SplinePointStartIndex + 1);
+
+	const int32 NumLines = 2; // Dichotomic subdivision of the spline segment
+	double Dist = StopDist - StartDist;
+	double SubstepSize = Dist / NumLines;
+	if (SubstepSize == 0.0)
+	{
+		// Make sure there's at least 1 sub-step so that we get a single spline vertex for constant interpolation : 
+		SubstepSize = StopDist + 1.0;
+	}
+
+	double SubstepStartDist = StartDist;
+	for (int32 i = 0; i < NumLines; ++i)
+	{
+		double SubstepEndDist = SubstepStartDist + SubstepSize;
+		TArray<FVector> NewPoints;
+		// Recursively sub-divide each segment until the requested precision is reached :
+		if (DivideSplineIntoPolylineRecursive(SubstepStartDist, SubstepEndDist, CoordinateSpace, MaxSquareDistanceFromSpline, NewPoints))
+		{
+			if (OutPoints.Num() > 0)
+			{
+				check(OutPoints.Last() == NewPoints[0]); // our last point must be the same as the new segment's first
+				OutPoints.RemoveAt(OutPoints.Num() - 1);
+			}
+			OutPoints.Append(NewPoints);
+		}
+
+		SubstepStartDist = SubstepEndDist;
+	}
+
+	return (OutPoints.Num() > 0);
+}
+
+
+bool USplineComponent::ConvertSplineToPolyLine(ESplineCoordinateSpace::Type CoordinateSpace, const float MaxSquareDistanceFromSpline, TArray<FVector>& OutPoints) const
+{
+	int32 NumSegments = GetNumberOfSplineSegments();
+	OutPoints.Empty();
+	OutPoints.Reserve(NumSegments * 2); // We sub-divide each segment in at least 2 sub-segments, so let's start with this amount of points
+
+	TArray<FVector> SegmentPoints;
+	for (int32 SegmentIndex = 0; SegmentIndex < NumSegments; ++SegmentIndex)
+	{
+		if (ConvertSplineSegmentToPolyLine(SegmentIndex, CoordinateSpace, MaxSquareDistanceFromSpline, SegmentPoints))
+		{
+			if (OutPoints.Num() > 0)
+			{
+				check(OutPoints.Last() == SegmentPoints[0]); // our last point must be the same as the new segment's first
+				OutPoints.RemoveAt(OutPoints.Num() - 1);
+			}
+			OutPoints.Append(SegmentPoints);
+		}
+	}
+
+	return (OutPoints.Num() > 0);
+}
+
 template<class T>
 T GetPropertyValueAtSplinePoint(const USplineMetadata* Metadata, int32 Index, FName PropertyName)
 {
@@ -1545,7 +1645,7 @@ FVector USplineComponent::GetVectorPropertyAtSplinePoint(int32 Index, FName Prop
 	return GetPropertyValueAtSplinePoint<FVector>(GetSplinePointsMetadata(), Index, PropertyName);
 }
 
-#if !UE_BUILD_SHIPPING
+#if UE_ENABLE_DEBUG_DRAWING
 FPrimitiveSceneProxy* USplineComponent::CreateSceneProxy()
 {
 	if (!bDrawDebug)
@@ -1688,14 +1788,6 @@ void USplineComponent::Draw(FPrimitiveDrawInterface* PDI, const FSceneView* View
 	}
 }
 
-#if WITH_EDITOR
-bool USplineComponent::IgnoreBoundsForEditorFocus() const
-{
-	// Cannot compute proper bounds when there's no point so don't participate to editor focus if that's the case : 
-	return SplineCurves.Position.Points.Num() == 0;
-}
-#endif // WITH_EDITOR
-
 FBoxSphereBounds USplineComponent::CalcBounds(const FTransform& LocalToWorld) const
 {
 	if (!bDrawDebug)
@@ -1738,12 +1830,25 @@ FBoxSphereBounds USplineComponent::CalcBounds(const FTransform& LocalToWorld) co
 	{
 		Min = Max = SplineCurves.Position.Points[0].OutVal;
 	}
+	else
+	{
+		Min = FVector::ZeroVector;
+		Max = FVector::ZeroVector;
+	}
 
 	return FBoxSphereBounds(FBox(Min, Max).TransformBy(LocalToWorld));
 #endif
 }
 
 #endif
+
+#if WITH_EDITOR
+bool USplineComponent::IgnoreBoundsForEditorFocus() const
+{
+	// Cannot compute proper bounds when there's no point so don't participate to editor focus if that's the case : 
+	return SplineCurves.Position.Points.Num() == 0;
+}
+#endif // WITH_EDITOR
 
 TStructOnScope<FActorComponentInstanceData> USplineComponent::GetComponentInstanceData() const
 {

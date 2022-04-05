@@ -59,6 +59,7 @@
 #include "AssetRegistryModule.h"
 #include "DynamicResolutionProxy.h"
 #include "DynamicResolutionState.h"
+#include "MoviePlayerProxy.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "RenderTargetPool.h"
 #include "RenderGraphBuilder.h"
@@ -76,6 +77,7 @@
 #if WITH_CHAOS
 #include "ChaosSolversModule.h"
 #endif
+
 
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(CORE_API, Basic);
 
@@ -165,8 +167,9 @@ void GenerateConvenientWindowedResolutions(const struct FDisplayMetrics& InDispl
 		else
 		{
 			//Force a resolution even if its smaller then the minimum height and width to avoid a bigger window then the desktop
-			float TargetWidth = FMath::RoundToFloat(InDisplayMetrics.PrimaryDisplayWidth) * Scales[NumScales - 1];
-			float TargetHeight = FMath::RoundToFloat(InDisplayMetrics.PrimaryDisplayHeight) * Scales[NumScales - 1];
+			// LWC_TODO: revisit. Seems like the round should be done after the multiply, otherwise the int was going to float and no rounding at all occured here.
+			float TargetWidth = FMath::RoundToFloat((float)InDisplayMetrics.PrimaryDisplayWidth) * Scales[NumScales - 1];
+			float TargetHeight = FMath::RoundToFloat((float)InDisplayMetrics.PrimaryDisplayHeight) * Scales[NumScales - 1];
 			OutResolutions.Add(FIntPoint(TargetWidth, TargetHeight));
 		}
 	}
@@ -265,7 +268,7 @@ void UGameEngine::CreateGameViewport( UGameViewportClient* GameViewportClient )
 		Window->SetOnWindowMoved( FOnWindowMoved::CreateUObject( this, &UGameEngine::OnGameWindowMoved ) );
 	}
 
-	SceneViewport = MakeShareable( new FSceneViewport( GameViewportClient, GameViewportWidgetRef ) );
+	SceneViewport = MakeShareable( GameViewportClient->CreateGameViewport(GameViewportWidgetRef) );
 	GameViewportClient->Viewport = SceneViewport.Get();
 	//GameViewportClient->CreateHighresScreenshotCaptureRegionWidget(); //  Disabled until mouse based input system can be made to work correctly.
 
@@ -657,7 +660,7 @@ void UGameEngine::SwitchGameWindowToUseGameViewport()
 		TSharedPtr<SWindow> GameViewportWindowPtr = GameViewportWindow.Pin();
 		
 		GameViewportWindowPtr->SetContent(GameViewportWidgetRef);
-		GameViewportWindowPtr->SlatePrepass();
+		GameViewportWindowPtr->SlatePrepass(FSlateApplication::Get().GetApplicationScale() * GameViewportWindowPtr->GetNativeWindow()->GetDPIScaleFactor());
 		
 		if ( SceneViewport.IsValid() )
 		{
@@ -783,6 +786,12 @@ UEngine::UEngine(const FObjectInitializer& ObjectInitializer)
 		}
 	}
 	#endif
+
+	// Relay to deprecated delegates
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	PreRenderDelegateEx.AddLambda([this](FRDGBuilder&) { PreRenderDelegate.Broadcast(); });
+	PostRenderDelegateEx.AddLambda([this](FRDGBuilder&){ PostRenderDelegate.Broadcast(); });
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 
@@ -805,7 +814,7 @@ public:
 
 		FEmbeddedDelegates::GetNativeToEmbeddedParamsDelegateForSubsystem(TEXT("engine")).AddLambda([](const FEmbeddedCallParamsHelper& Message)
 		{
-			if (Message.Command == TEXT("StartUE4Live"))
+			if (Message.Command == TEXT("StartUELive"))
 			{
 				FName Requester = *Message.Parameters.FindRef(TEXT("requester"));
 				bool bTickOnly = Message.Parameters.FindRef(TEXT("tickonly")) == TEXT("true");
@@ -813,7 +822,7 @@ public:
 				FEmbeddedCommunication::KeepAwake(Requester, !bTickOnly);
 				Message.OnCompleteDelegate({}, TEXT(""));
 			}
-			else if (Message.Command == TEXT("StopUE4Live"))
+			else if (Message.Command == TEXT("StopUELive"))
 			{
 				FName Requester = *Message.Parameters.FindRef(TEXT("requester"));
 				
@@ -1468,8 +1477,7 @@ bool UGameEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 		}
 		else
 		{
-			// ignore command on xbox one and ps4 as it will cause a crash
-			// ttp:321126
+			// ignore command on remaining platforms as it will cause a crash
 			return true;
 		}
 	}
@@ -1907,6 +1915,7 @@ void UGameEngine::Tick( float DeltaSeconds, bool bIdleMode )
 		GameViewport->Tick(DeltaSeconds);
 	}
 
+	FMoviePlayerProxy::BlockingForceFinished();
 	if (FPlatformProperties::SupportsWindowedMode())
 	{
 		// Hide the splashscreen and show the game window

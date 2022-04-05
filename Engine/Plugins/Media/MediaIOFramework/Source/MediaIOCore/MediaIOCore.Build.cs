@@ -9,6 +9,7 @@ namespace UnrealBuildTool.Rules
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
+					"AudioExtensions",
 					"Core",
 					"CoreUObject",
 					"Engine",
@@ -32,11 +33,16 @@ namespace UnrealBuildTool.Rules
             PrivateDependencyModuleNames.AddRange(
                 new string[]
                 {
-                    "RenderCore"
+                    "AudioMixer",
+	                "AudioMixerCore",
+                    "RenderCore",
+                    "SignalProcessing",
+	                "SoundFieldRendering"
 				});
 
 			if (Target.bBuildEditor == true)
 			{
+				PrivateDependencyModuleNames.Add("EditorFramework");
 				PrivateDependencyModuleNames.Add("UnrealEd");
 				PrivateDependencyModuleNames.Add("LevelEditor");
 			}

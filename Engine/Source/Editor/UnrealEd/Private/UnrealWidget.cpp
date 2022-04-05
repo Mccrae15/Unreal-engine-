@@ -422,19 +422,19 @@ void FWidget::ConvertMouseMovementToAxisMovement(FSceneView* InView, FEditorView
 
 	switch (WidgetMode)
 	{
-	case WM_Translate:
+	case UE::Widget::EWidgetMode::WM_Translate:
 		ConvertMouseToAxis_Translate(DragDir, InOutDelta, OutDrag);
 		break;
-	case WM_Rotate:
+	case UE::Widget::EWidgetMode::WM_Rotate:
 		ConvertMouseToAxis_Rotate(TangentDir, DragDir, InView, InViewportClient, InOutDelta, OutRotation);
 		break;
-	case WM_Scale:
+	case UE::Widget::EWidgetMode::WM_Scale:
 		ConvertMouseToAxis_Scale(DragDir, InOutDelta, OutScale);
 		break;
-	case WM_TranslateRotateZ:
+	case UE::Widget::EWidgetMode::WM_TranslateRotateZ:
 		ConvertMouseToAxis_TranslateRotateZ(TangentDir, DragDir, InOutDelta, OutDrag, OutRotation);
 		break;
-	case WM_2D:
+	case UE::Widget::EWidgetMode::WM_2D:
 		ConvertMouseToAxis_WM_2D(TangentDir, DragDir, InOutDelta, OutDrag, OutRotation);
 		break;
 	default:
@@ -686,28 +686,28 @@ void FWidget::AbsoluteTranslationConvertMouseMovementToAxisMovement(FSceneView* 
 
 	switch (InViewportClient->GetWidgetMode())
 	{
-	case WM_Translate:
+	case UE::Widget::EWidgetMode::WM_Translate:
 		AbsoluteConvertMouseToAxis_Translate(InView, InputCoordSystem, Params, OutDrag);
 		break;
 
-	case WM_2D:
+	case UE::Widget::EWidgetMode::WM_2D:
 		AbsoluteConvertMouseToAxis_WM_2D(InputCoordSystem, Params, OutDrag, OutRotation);
 		break;
-	case WM_TranslateRotateZ:
+	case UE::Widget::EWidgetMode::WM_TranslateRotateZ:
 		AbsoluteConvertMouseToAxis_TranslateRotateZ(InputCoordSystem, Params, OutDrag, OutRotation);
 		break;
-	case WM_Rotate:
-	case WM_Scale:
-	case WM_None:
-	case WM_Max:
+	case UE::Widget::EWidgetMode::WM_Rotate:
+	case UE::Widget::EWidgetMode::WM_Scale:
+	case UE::Widget::EWidgetMode::WM_None:
+	case UE::Widget::EWidgetMode::WM_Max:
 		break;
 	}
 }
 
 /** Only some modes support Absolute Translation Movement */
-bool FWidget::AllowsAbsoluteTranslationMovement(EWidgetMode WidgetMode)
+bool FWidget::AllowsAbsoluteTranslationMovement(UE::Widget::EWidgetMode WidgetMode)
 {
-	if ((WidgetMode == WM_Translate) || (WidgetMode == WM_TranslateRotateZ) || (WidgetMode == WM_2D))
+	if ((WidgetMode == UE::Widget::EWidgetMode::WM_Translate) || (WidgetMode == UE::Widget::EWidgetMode::WM_TranslateRotateZ) || (WidgetMode == UE::Widget::EWidgetMode::WM_2D))
 	{
 		return true;
 	}
@@ -715,9 +715,9 @@ bool FWidget::AllowsAbsoluteTranslationMovement(EWidgetMode WidgetMode)
 }
 
 /** Only some modes support Absolute Rotation Movement/arcball*/
-bool FWidget::AllowsAbsoluteRotationMovement(EWidgetMode WidgetMode, EAxisList::Type InAxisType)
+bool FWidget::AllowsAbsoluteRotationMovement(UE::Widget::EWidgetMode WidgetMode, EAxisList::Type InAxisType)
 {
-	if (WidgetMode == WM_Rotate && (InAxisType == EAxisList::XYZ || InAxisType == EAxisList::Screen))
+	if (WidgetMode == UE::Widget::EWidgetMode::WM_Rotate && (InAxisType == EAxisList::XYZ || InAxisType == EAxisList::Screen))
 	{
 		return true;
 	}
@@ -781,9 +781,9 @@ FVector FWidget::GetAbsoluteTranslationDelta(const FAbsoluteMovementParams& InPa
 	{
 		//DAMPEN ABSOLUTE MOVEMENT when the camera is locked to the object
 		OutDrag *= CAMERA_LOCK_DAMPING_FACTOR;
-		OutDrag.X = FMath::Clamp(OutDrag.X, -MAX_CAMERA_MOVEMENT_SPEED, MAX_CAMERA_MOVEMENT_SPEED);
-		OutDrag.Y = FMath::Clamp(OutDrag.Y, -MAX_CAMERA_MOVEMENT_SPEED, MAX_CAMERA_MOVEMENT_SPEED);
-		OutDrag.Z = FMath::Clamp(OutDrag.Z, -MAX_CAMERA_MOVEMENT_SPEED, MAX_CAMERA_MOVEMENT_SPEED);
+		OutDrag.X = FMath::Clamp<FVector::FReal>(OutDrag.X, -MAX_CAMERA_MOVEMENT_SPEED, MAX_CAMERA_MOVEMENT_SPEED);
+		OutDrag.Y = FMath::Clamp<FVector::FReal>(OutDrag.Y, -MAX_CAMERA_MOVEMENT_SPEED, MAX_CAMERA_MOVEMENT_SPEED);
+		OutDrag.Z = FMath::Clamp<FVector::FReal>(OutDrag.Z, -MAX_CAMERA_MOVEMENT_SPEED, MAX_CAMERA_MOVEMENT_SPEED);
 	}
 
 	//the they requested position snapping and we're not moving with the camera
@@ -865,7 +865,7 @@ uint32 FWidget::GetDominantAxisIndex(const FVector& InDiff, FEditorViewportClien
 
 	switch (WidgetMode)
 	{
-	case WM_Translate:
+	case UE::Widget::EWidgetMode::WM_Translate:
 		switch (ViewportClient->ViewportType)
 		{
 		case LVT_OrthoXY:

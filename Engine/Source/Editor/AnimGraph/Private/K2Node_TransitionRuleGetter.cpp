@@ -26,7 +26,8 @@ UK2Node_TransitionRuleGetter::UK2Node_TransitionRuleGetter(const FObjectInitiali
 
 void UK2Node_TransitionRuleGetter::AllocateDefaultPins()
 {
-	UEdGraphPin* OutputPin = CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Float, TEXT("Output"));
+	UEdGraphPin* OutputPin = CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Real, UEdGraphSchema_K2::PC_Float, TEXT("Output"));
+
 	OutputPin->PinFriendlyName = GetFriendlyName(GetterType);
 
 	PreloadObject(AssociatedAnimAssetPlayerNode);

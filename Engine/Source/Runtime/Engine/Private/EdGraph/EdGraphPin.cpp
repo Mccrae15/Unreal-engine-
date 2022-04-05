@@ -5,6 +5,8 @@
 #include "UObject/BlueprintsObjectVersion.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/ReleaseObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "UObject/UnrealType.h"
 #include "UObject/TextProperty.h"
 #include "EdGraph/EdGraph.h"
@@ -141,7 +143,7 @@ TArray<TPair<UEdGraphPin*, FString>> PinAllocationTracking;
 
 void FEdGraphPinType::PostSerialize(const FArchive& Ar)
 {
-	if (Ar.UE4Ver() < VER_UE4_EDGRAPHPINTYPE_SERIALIZATION)
+	if (Ar.UEVer() < VER_UE4_EDGRAPHPINTYPE_SERIALIZATION)
 	{
 		if (bIsArray_DEPRECATED)
 		{
@@ -152,13 +154,14 @@ void FEdGraphPinType::PostSerialize(const FArchive& Ar)
 
 bool FEdGraphPinType::Serialize(FArchive& Ar)
 {
-	if (Ar.UE4Ver() < VER_UE4_EDGRAPHPINTYPE_SERIALIZATION)
+	if (Ar.UEVer() < VER_UE4_EDGRAPHPINTYPE_SERIALIZATION)
 	{
 		return false;
 	}
 
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
 	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 
 	if (Ar.CustomVer(FFrameworkObjectVersion::GUID) >= FFrameworkObjectVersion::PinsStoreFName)
 	{
@@ -176,7 +179,7 @@ bool FEdGraphPinType::Serialize(FArchive& Ar)
 		PinSubCategory = *PinSubCategoryStr;
 	}
 
-	if (Ar.UE4Ver() < VER_UE4_ADDED_SOFT_OBJECT_PATH)
+	if (Ar.UEVer() < VER_UE4_ADDED_SOFT_OBJECT_PATH)
 	{
 		// Fixup has to be here instead of in BP code because this is embedded in other structures
 		if (PinCategory == TEXT("asset"))
@@ -240,7 +243,7 @@ bool FEdGraphPinType::Serialize(FArchive& Ar)
 	Ar << bIsReferenceBool;
 	Ar << bIsWeakPointerBool;
 
-	if (Ar.UE4Ver() >= VER_UE4_MEMBERREFERENCE_IN_PINTYPE)
+	if (Ar.UEVer() >= VER_UE4_MEMBERREFERENCE_IN_PINTYPE)
 	{
 		Ar << PinSubCategoryMemberReference;
 	}
@@ -259,7 +262,7 @@ bool FEdGraphPinType::Serialize(FArchive& Ar)
 
 	bool bIsConstBool = bIsConst;
 
-	if (Ar.UE4Ver() >= VER_UE4_SERIALIZE_PINTYPE_CONST)
+	if (Ar.UEVer() >= VER_UE4_SERIALIZE_PINTYPE_CONST)
 	{
 		Ar << bIsConstBool;
 	}
@@ -270,6 +273,8 @@ bool FEdGraphPinType::Serialize(FArchive& Ar)
 	{
 		Ar << bIsUObjectWrapperBool;
 	}
+
+	FName OldPinCategory = PinCategory;
 
 	if (Ar.IsLoading())
 	{
@@ -296,13 +301,48 @@ bool FEdGraphPinType::Serialize(FArchive& Ar)
 				bIsUObjectWrapperBool = false;
 			}
 		}
+
+		bool bFixupPinCategories =
+			(Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::BlueprintPinsUseRealNumbers) &&
+			((PinCategory == TEXT("double")) || (PinCategory == TEXT("float")));
+
+		if (bFixupPinCategories)
+		{
+			PinCategory = TEXT("real");
+			PinSubCategory = TEXT("double");
+		}
 #endif
 
 		bIsUObjectWrapper = bIsUObjectWrapperBool;
 	}
 
+#if WITH_EDITOR
+	bool bSerializeAsSinglePrecisionFloatBool = bSerializeAsSinglePrecisionFloat;
+
+	if (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) >= FUE5ReleaseStreamObjectVersion::SerializeFloatPinDefaultValuesAsSinglePrecision)
+	{
+		Ar << bSerializeAsSinglePrecisionFloatBool;
+	}
+	else
+	{
+		if (OldPinCategory == TEXT("float"))
+		{
+			bSerializeAsSinglePrecisionFloatBool = true;
+		}
+	}
+
+	bSerializeAsSinglePrecisionFloat = bSerializeAsSinglePrecisionFloatBool;
+#endif
+
 	return true;
 }
+
+void FEdGraphPinType::DeclareCustomVersions(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+}
+
 
 FEdGraphPinType FEdGraphPinType::GetPinTypeForTerminalType( const FEdGraphTerminalType& TerminalType )
 {
@@ -559,6 +599,7 @@ void TransferPersistentDataFromOldPin(UEdGraphPin& DestPin, T& SourcePin, const 
 			DestPin.DefaultObject = SourcePin.DefaultObject;
 			DestPin.DefaultValue = MoveTempIfPossible(SourcePin.DefaultValue);
 			DestPin.DefaultTextValue = MoveTempIfPossible(SourcePin.DefaultTextValue);
+			DestPin.PinType.bSerializeAsSinglePrecisionFloat = SourcePin.PinType.bSerializeAsSinglePrecisionFloat;
 		}
 		else
 		{
@@ -705,9 +746,9 @@ bool UEdGraphPin::HasAnyConnections() const
 
 FString UEdGraphPin::GetDefaultAsString() const
 {
-	if(DefaultObject)
+	if(!DefaultObject.IsNullNoResolve())
 	{
-		return DefaultObject->GetPathName();
+		return DefaultObject.GetPath();
 	}
 	else if(!DefaultTextValue.IsEmpty())
 	{
@@ -1336,7 +1377,7 @@ FEdGraphTerminalType UEdGraphPin::GetPrimaryTerminalType() const
 	return FEdGraphTerminalType::FromPinType(PinType);
 }
 
-void UEdGraphPin::MarkPendingKill()
+void UEdGraphPin::MarkAsGarbage()
 {
 	if (!bWasTrashed)
 	{
@@ -1361,6 +1402,7 @@ UEdGraphPin::UEdGraphPin(UEdGraphNode* InOwningNode, const FGuid& PinIdGuid)
 	: OwningNode(InOwningNode)
 	, PinId(PinIdGuid)
 	, PinName()
+	, SourceIndex(INDEX_NONE)
 	, Direction(EGPD_Input)
 #if WITH_EDITORONLY_DATA
 	, bHidden(false)
@@ -1601,13 +1643,23 @@ void UEdGraphPin::DestroyImpl(bool bClearLinks)
 	}
 	SubPins.Reset();
 	ParentPin = nullptr;
-	ReferencePassThroughConnection = nullptr;
+
+	// ReferencePassThroughConnection should be symmetrical: the source and target pins should refer to each other.
+	// If one pin is destroyed, then we must disconnect the other so that it doesn't inadvertently reference a trashed pin.
+	if (ReferencePassThroughConnection != nullptr)
+	{
+		ensure(ReferencePassThroughConnection->ReferencePassThroughConnection == this);
+		ReferencePassThroughConnection->ReferencePassThroughConnection = nullptr;
+		ReferencePassThroughConnection = nullptr;
+	}
+
 	bWasTrashed = true;
 }
 
 bool UEdGraphPin::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 
 	// These properties are in every pin and are unlikely to be removed, so they are native serialized for speed.
 	Ar << OwningNode;
@@ -1630,6 +1682,11 @@ bool UEdGraphPin::Serialize(FArchive& Ar)
 		Ar << PinFriendlyName;
 	}
 #endif
+
+	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::EdGraphPinSourceIndex)
+	{
+		Ar << SourceIndex;
+	}
 
 	Ar << PinToolTip;
 	Ar << Direction;
@@ -1723,6 +1780,13 @@ bool UEdGraphPin::Serialize(FArchive& Ar)
 	}
 
 	return true;
+}
+
+void UEdGraphPin::DeclareCustomVersions(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FFrameworkObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+	FEdGraphPinType::DeclareCustomVersions(Ar);
 }
 
 void UEdGraphPin::ConvertConnectedGhostNodesToRealNodes(UEdGraphNode* InNode)

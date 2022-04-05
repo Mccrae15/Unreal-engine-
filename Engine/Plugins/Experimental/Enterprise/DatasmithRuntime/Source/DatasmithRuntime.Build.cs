@@ -51,9 +51,10 @@ public class DatasmithRuntime : ModuleRules
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
 					"DesktopPlatform",
+					"DeveloperToolSettings",
 					"MessageLog",
-					"UnrealEd",
-				}
+                    "UnrealEd",
+                }
 			);
 		}
 

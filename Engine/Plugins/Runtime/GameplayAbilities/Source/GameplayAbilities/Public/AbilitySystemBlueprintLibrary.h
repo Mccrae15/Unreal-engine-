@@ -18,6 +18,7 @@
 
 class UAbilitySystemComponent;
 class UGameplayEffect;
+class UGameplayEffectUIData;
 
 /** Blueprint library for ability system. Many of these functions are useful to call from native as well */
 UCLASS(meta=(ScriptName="AbilitySystemLibrary"))
@@ -25,14 +26,13 @@ class GAMEPLAYABILITIES_API UAbilitySystemBlueprintLibrary : public UBlueprintFu
 {
 	GENERATED_UCLASS_BODY()
 
-	/** Tries to find an ability system component on the actor, will use AbilitySystemInterface */
+	/** Tries to find an ability system component on the actor, will use AbilitySystemInterface or fall back to a component search */
 	UFUNCTION(BlueprintPure, Category = Ability)
 	static UAbilitySystemComponent* GetAbilitySystemComponent(AActor *Actor);
 
 	/**
 	 * This function can be used to trigger an ability on the actor in question with useful payload data.
-	 * NOTE: The Actor passed in must implement IAbilitySystemInterface! or else this function will silently fail to
-	 * send the event.  The actor needs the interface to find the UAbilitySystemComponent, and if the component isn't
+	 * NOTE: GetAbilitySystemComponent is called on the actor to find a good component, and if the component isn't
 	 * found, the event will not be sent.
 	 */
 	UFUNCTION(BlueprintCallable, Category = Ability, Meta = (Tooltip = "This function can be used to trigger an ability on the actor in question with useful payload data."))
@@ -287,7 +287,7 @@ class GAMEPLAYABILITIES_API UAbilitySystemBlueprintLibrary : public UBlueprintFu
 	static FGameplayEffectSpecHandle AssignSetByCallerMagnitude(FGameplayEffectSpecHandle SpecHandle, FName DataName, float Magnitude);
 
 	/** Sets a gameplay tag Set By Caller magnitude value */
-	UFUNCTION(BlueprintCallable, Category = "Ability|GameplayEffect")
+	UFUNCTION(BlueprintCallable, Category = "Ability|GameplayEffect", meta = (GameplayTagFilter = "SetByCaller"))
 	static FGameplayEffectSpecHandle AssignTagSetByCallerMagnitude(FGameplayEffectSpecHandle SpecHandle, FGameplayTag DataTag, float Magnitude);
 
 	/** Manually sets the duration on a specific effect */
@@ -334,6 +334,14 @@ class GAMEPLAYABILITIES_API UAbilitySystemBlueprintLibrary : public UBlueprintFu
 	UFUNCTION(BlueprintPure, Category = "Ability|GameplayEffect")
 	static TArray<FGameplayEffectSpecHandle> GetAllLinkedGameplayEffectSpecHandles(FGameplayEffectSpecHandle SpecHandle);
 
+	/** Manually adds a set of tags to a given actor, and optionally replicates them. */
+	UFUNCTION(BlueprintCallable, Category="Ability|GameplayEffect")
+	static bool AddLooseGameplayTags(AActor* Actor, const FGameplayTagContainer& GameplayTags, bool bShouldReplicate=false);
+
+	/** Manually removes a set of tags from a given actor, with optional replication. */
+	UFUNCTION(BlueprintCallable, Category="Ability|GameplayEffect")
+	static bool RemoveLooseGameplayTags(AActor* Actor, const FGameplayTagContainer& GameplayTags, bool bShouldReplicate=false);
+
 	// -------------------------------------------------------------------------------
 	//		GameplayEffectSpec
 	// -------------------------------------------------------------------------------
@@ -377,4 +385,47 @@ class GAMEPLAYABILITIES_API UAbilitySystemBlueprintLibrary : public UBlueprintFu
 	UFUNCTION(BlueprintPure, Category = "Ability|GameplayEffect", Meta = (DisplayName = "Get Active GameplayEffect Debug String "))
 	static FString GetActiveGameplayEffectDebugString(FActiveGameplayEffectHandle ActiveHandle);
 
+	/** Returns the UI data for a gameplay effect class (if any) */
+	UFUNCTION(BlueprintCallable, Category = "Ability|GameplayEffect", Meta = (DisplayName = "Get GameplayEffect UI Data", DeterminesOutputType="DataType"))
+	static const UGameplayEffectUIData* GetGameplayEffectUIData(TSubclassOf<UGameplayEffect> EffectClass, TSubclassOf<UGameplayEffectUIData> DataType);
+
+	/** Equality operator for two Active Gameplay Effect Handles */
+	UFUNCTION(BlueprintPure, Category = "Ability|GameplayEffect", meta = (DisplayName = "Equal (Active Gameplay Effect Handle)", CompactNodeTitle = "==", ScriptOperator = "=="))
+	static bool EqualEqual_ActiveGameplayEffectHandle(const FActiveGameplayEffectHandle& A, const FActiveGameplayEffectHandle& B);
+
+	/** Inequality operator for two Active Gameplay Effect Handles */
+	UFUNCTION(BlueprintPure, Category = "Ability|GameplayEffect", meta = (DisplayName = "Not Equal (Active Gameplay Effect Handle)", CompactNodeTitle = "!=", ScriptOperator = "!="))
+	static bool NotEqual_ActiveGameplayEffectHandle(const FActiveGameplayEffectHandle& A, const FActiveGameplayEffectHandle& B);
+
+	/**
+	 * Returns the Gameplay Effect CDO from an active handle.
+	 * This reference should be considered read only,
+	 * but you can use it to read additional Gameplay Effect info, such as icon, description, etc. 
+	 */
+	UFUNCTION(BlueprintPure, Category = "Ability|GameplayEffect")
+	static const UGameplayEffect* GetGameplayEffectFromActiveEffectHandle(const FActiveGameplayEffectHandle& ActiveHandle);
+
+	// -------------------------------------------------------------------------------
+	//		GameplayAbility
+	// -------------------------------------------------------------------------------
+
+	/**
+	 * Provides the Gameplay Ability object associated with an Ability Spec Handle
+	 * This can be either an instanced ability, or in the case of shared abilities, the Class Default Object
+	 * 
+	 * @param AbilitySpec The Gameplay Ability Spec you want to get the object from
+	 * @param bIsInstance Set to true if this is an instanced ability instead of a shared CDO
+	 * 
+	 * @return Pointer to the Gameplay Ability object
+	 */
+	UFUNCTION(BlueprintPure, Category = "Ability|GameplayAbility")
+	static const UGameplayAbility* GetGameplayAbilityFromSpecHandle(UAbilitySystemComponent* AbilitySystem, const FGameplayAbilitySpecHandle& AbilitySpecHandle, bool& bIsInstance);
+
+	/** Equality operator for two Gameplay Ability Spec Handles */
+	UFUNCTION(BlueprintPure, Category = "Ability|GameplayEffect", meta = (DisplayName = "Equal (Gameplay Ability Spec Handle)", CompactNodeTitle = "==", ScriptOperator = "=="))
+	static bool EqualEqual_GameplayAbilitySpecHandle(const FGameplayAbilitySpecHandle& A, const FGameplayAbilitySpecHandle& B);
+
+	/** Inequality operator for two Gameplay Ability Spec Handles */
+	UFUNCTION(BlueprintPure, Category = "Ability|GameplayEffect", meta = (DisplayName = "Not Equal (Gameplay Ability Spec Handle)", CompactNodeTitle = "!=", ScriptOperator = "!="))
+	static bool NotEqual_GameplayAbilitySpecHandle(const FGameplayAbilitySpecHandle& A, const FGameplayAbilitySpecHandle& B);
 };

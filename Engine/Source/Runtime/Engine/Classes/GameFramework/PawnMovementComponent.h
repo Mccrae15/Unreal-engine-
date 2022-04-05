@@ -86,10 +86,13 @@ protected:
 
 	/** Pawn that owns this component. */
 	UPROPERTY(Transient, DuplicateTransient)
-	class APawn* PawnOwner;
+	TObjectPtr<class APawn> PawnOwner;
+
+	/** Returns this component's associated controller, typically from the owning Pawn. May be null. May be overridden for special handling when the controller isn't paired with the Pawn that owns this component. */
+	virtual AController* GetController() const;
 
 	/**
-	 * Attempts to mark the PlayerCameraManager as dirty.
+	 * Attempts to mark the PlayerCameraManager as dirty, if the controller has one.
 	 * This will have no effect if called from the server.
 	 */
 	void MarkForClientCameraUpdate();
@@ -97,11 +100,4 @@ protected:
 public:
 
 	virtual void Serialize(FArchive& Ar) override;
-
-	// DEPRECATED FUNCTIONS
-
-	/** (Deprecated) Return the input vector in world space. */
-	UE_DEPRECATED(4.5, "GetInputVector() has been deprecated, use either GetPendingInputVector() or GetLastInputVector().")
-	UFUNCTION(BlueprintCallable, Category="Pawn|Components|PawnMovement", meta=(DeprecatedFunction, DisplayName="GetInputVector", ScriptName="GetInputVector", DeprecationMessage="GetInputVector has been deprecated, use either GetPendingInputVector or GetLastInputVector"))
-	FVector K2_GetInputVector() const;
 };

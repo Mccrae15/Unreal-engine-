@@ -10,22 +10,20 @@
 // FPaperEditorViewportClient
 
 FPaperEditorViewportClient::FPaperEditorViewportClient(const TWeakPtr<SEditorViewport>& InEditorViewportWidget)
-	: FEditorViewportClient(new FAssetEditorModeManager(), nullptr, InEditorViewportWidget)
+	: FEditorViewportClient(nullptr, nullptr, InEditorViewportWidget)
 	, CheckerboardTexture(nullptr)
 {
-	bOwnsModeTools = true;
 	ZoomPos = FVector2D::ZeroVector;
 	ZoomAmount = 1.0f;
 
 	//ModifyCheckerboardTextureColors();
-	//@TODO: ModeTools->SetToolkitHost
 
 	//@TODO: Pretty lame hardcoding
 	//@TODO: Doesn't handle negatives either (not really)
-	const bool XX = FMath::IsNearlyEqual(PaperAxisX.X, 1.0f);
-	const bool XY = FMath::IsNearlyEqual(PaperAxisX.Y, 1.0f);
-	const bool YY = FMath::IsNearlyEqual(PaperAxisY.Y, 1.0f);
-	const bool YZ = FMath::IsNearlyEqual(PaperAxisY.Z, 1.0f);
+	const bool XX = FMath::IsNearlyEqual(PaperAxisX.X, (FVector::FReal)1.0f);
+	const bool XY = FMath::IsNearlyEqual(PaperAxisX.Y, (FVector::FReal)1.0f);
+	const bool YY = FMath::IsNearlyEqual(PaperAxisY.Y, (FVector::FReal)1.0f);
+	const bool YZ = FMath::IsNearlyEqual(PaperAxisY.Z, (FVector::FReal)1.0f);
 
 	ELevelViewportType NewViewportType = LVT_OrthoXZ;
 	if (XX && YY)
@@ -137,11 +135,11 @@ void FPaperEditorViewportClient::DestroyCheckerboardTexture()
 {
 	if (CheckerboardTexture)
 	{
-		if (CheckerboardTexture->Resource)
+		if (CheckerboardTexture->GetResource())
 		{
 			CheckerboardTexture->ReleaseResource();
 		}
-		CheckerboardTexture->MarkPendingKill();
+		CheckerboardTexture->MarkAsGarbage();
 		CheckerboardTexture = nullptr;
 	}
 }

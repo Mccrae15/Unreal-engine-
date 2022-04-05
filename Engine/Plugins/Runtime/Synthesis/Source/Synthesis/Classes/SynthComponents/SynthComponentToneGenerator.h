@@ -6,14 +6,18 @@
 #include "Components/SynthComponent.h"
 #include "Sound/SoundBase.h"
 #include "DSP/SinOsc.h"
+#include "DSP/AudioBufferDistanceAttenuation.h"
 #include "Sound/SoundGenerator.h"
+
+
 #include "SynthComponentToneGenerator.generated.h"
+
 
 class FToneGenerator : public ISoundGenerator
 {
 public:
-	FToneGenerator(int32 InSampleRate, int32 InNumChannels, int32 InFrequency, float InVolume);
-	virtual ~FToneGenerator();
+	FToneGenerator(int32 InSampleRate, int32 InNumChannels, int32 InFrequency, float InVolume, const Audio::FAudioBufferDistanceAttenuationSettings& InAttenuationSettings);
+	virtual ~FToneGenerator() = default;
 
 	//~ Begin FSoundGenerator 
 	virtual int32 GetNumChannels() { return NumChannels; };
@@ -22,11 +26,16 @@ public:
 
 	void SetFrequency(float InFrequency);
 	void SetVolume(float InVolume);
+	void SetDistance(float InDistance);
 
 private:
 	int32 NumChannels = 2;
 	Audio::FSineOsc SineOsc;
-	Audio::AlignedFloatBuffer Buffer;
+	Audio::FAlignedFloatBuffer Buffer;
+
+	float CurrentDistance = 0.0f;
+	float CurrentAttenuation = 1.0f;
+	Audio::FAudioBufferDistanceAttenuationSettings DistanceAttenuationSettings;
 };
 
 UCLASS(ClassGroup = Synth, meta = (BlueprintSpawnableComponent))
@@ -46,6 +55,18 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tone Generator", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float Volume;
 
+	/* A distance attenuation curve to use to attenuate the audio. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Attenuation)
+	FRuntimeFloatCurve DistanceAttenuationCurve;
+
+	/* A distance range overwhich to apply distance attenuation using the supplied curve. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Attenuation)
+	FVector2D DistanceRange = { 400.0f, 4000.0f };
+
+	/* An attenuation, in decibels, to apply to the sound at max range. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Attenuation)
+	float AttenuationDbAtMaxRange = -60.0f;
+
 	// Sets the frequency of the tone generator
 	UFUNCTION(BlueprintCallable, Category = "Tone Generator")
 	void SetFrequency(float InFrequency);
@@ -54,10 +75,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tone Generator")
 	void SetVolume(float InVolume);
 
-	virtual ISoundGeneratorPtr CreateSoundGenerator(int32 InSampleRate, int32 InNumChannels) override;
+	// Tick this component to get the current position of the component to pass to the attenuator
+	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+
+	virtual ISoundGeneratorPtr CreateSoundGenerator(const FSoundGeneratorInitParams& InParams) override;
 
 public:
 
 private:
+	Audio::FAudioBufferDistanceAttenuationSettings DistanceAttenuationSettings;
 	ISoundGeneratorPtr ToneGenerator;
 };

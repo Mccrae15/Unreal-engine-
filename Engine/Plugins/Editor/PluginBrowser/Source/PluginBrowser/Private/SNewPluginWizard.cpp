@@ -2,7 +2,7 @@
 
 #include "SNewPluginWizard.h"
 #include "Misc/Paths.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/FileManager.h"
 #include "Misc/App.h"
@@ -44,6 +44,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "SourceCodeNavigation.h"
+#include "SPrimaryButton.h"
 
 DEFINE_LOG_CATEGORY(LogPluginWizard);
 
@@ -58,7 +59,7 @@ static bool IsContentOnlyProject()
 SNewPluginWizard::SNewPluginWizard()
 	: bIsPluginPathValid(false)
 	, bIsPluginNameValid(false)
-	, bIsEnginePlugin(false)
+	, bIsSelectedPathInEngine(false)
 {
 	AbsoluteGamePluginPath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FPaths::ProjectPluginsDir());
 	FPaths::MakePlatformFilename(AbsoluteGamePluginPath);
@@ -81,7 +82,7 @@ void SNewPluginWizard::Construct(const FArguments& Args, TSharedPtr<SDockTab> In
 		DetailsViewArgs.bShowOptions = false;
 		DetailsViewArgs.bAllowMultipleTopLevelObjects = false;
 		DetailsViewArgs.bAllowFavoriteSystem = false;
-		DetailsViewArgs.bShowActorLabel = false;
+		DetailsViewArgs.bShowObjectLabel = false;
 		DetailsViewArgs.bHideSelectionTip = true;
 	}
 	TSharedPtr<IDetailsView> DescriptorDetailView = EditModule.CreateDetailView(DetailsViewArgs);
@@ -108,14 +109,14 @@ void SNewPluginWizard::Construct(const FArguments& Args, TSharedPtr<SDockTab> In
 	PluginFolderPath = AbsoluteGamePluginPath;
 	bIsPluginPathValid = true;
 
-	const float PaddingAmount = FPluginStyle::Get()->GetFloat("PluginCreator.Padding");
-
 	// Create the list view and ensure that it exists
 	GenerateListViewWidget();
 	check(ListView.IsValid());
 
 	TSharedPtr<SWidget> HeaderWidget = PluginWizardDefinition->GetCustomHeaderWidget();
 	FText PluginNameTextHint = PluginWizardDefinition->IsMod() ? LOCTEXT("ModNameTextHint", "Mod Name") : LOCTEXT("PluginNameTextHint", "Plugin Name");
+	
+	const FMargin PaddingAmount(5.0f);
 
 	TSharedRef<SVerticalBox> MainContent = SNew(SVerticalBox)
 	+SVerticalBox::Slot()
@@ -136,7 +137,7 @@ void SNewPluginWizard::Construct(const FArguments& Args, TSharedPtr<SDockTab> In
 		+ SHorizontalBox::Slot()
 		.FillWidth(1.0f)
 		.Padding(PaddingAmount)
-		.HAlign(HAlign_Left)
+		.HAlign(HAlign_Fill)
 		[
 			SNew(SVerticalBox)
 
@@ -164,14 +165,11 @@ void SNewPluginWizard::Construct(const FArguments& Args, TSharedPtr<SDockTab> In
 	[
 		SAssignNew(FilePathBlock, SFilePathBlock)
 		.OnBrowseForFolder(this, &SNewPluginWizard::OnBrowseButtonClicked)
-		.LabelBackgroundBrush(FPluginStyle::Get()->GetBrush("PluginCreator.Background"))
-		.LabelBackgroundColor(FLinearColor::White)
 		.FolderPath(this, &SNewPluginWizard::GetPluginDestinationPath)
 		.Name(this, &SNewPluginWizard::GetCurrentPluginName)
 		.NameHint(PluginNameTextHint)
 		.OnFolderChanged(this, &SNewPluginWizard::OnFolderPathTextChanged)
 		.OnNameChanged(this, &SNewPluginWizard::OnPluginNameTextChanged)
-        .ReadOnlyFolderPath( !PluginWizardDefinition->AllowsEnginePlugins() )	// only allow the user to select the folder if they can create engine plugins
 	];
 
 	// Add the descriptor data object if it exists
@@ -187,28 +185,30 @@ void SNewPluginWizard::Construct(const FArguments& Args, TSharedPtr<SDockTab> In
 		];
 	}
 
-	if (PluginWizardDefinition->AllowsEnginePlugins())
-	{
-		MainContent->AddSlot()
-		.AutoHeight()
+	MainContent->AddSlot()
+	.AutoHeight()
+	[
+		SNew(SBox)
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Center)
 		.Padding(PaddingAmount)
 		[
-			SNew(SBox)
-			.HAlign(HAlign_Left)
-			.VAlign(VAlign_Center)
+			SNew(SCheckBox)
+			.OnCheckStateChanged(this, &SNewPluginWizard::OnEnginePluginCheckboxChanged)
+			.IsChecked(this, &SNewPluginWizard::IsEnginePlugin)
+			.Visibility_Lambda([=]()
+			{
+				FPluginTemplateDescription* Template = PluginWizardDefinition->GetSelectedTemplate().Get();
+				return ((Template != nullptr) && Template->bCanBePlacedInEngine) ? EVisibility::Visible : EVisibility::Collapsed;
+			})
+			.ToolTipText(LOCTEXT("EnginePluginButtonToolTip", "Toggles whether this plugin will be created in the current project or the engine directory."))
+			.Content()
 			[
-				SNew(SCheckBox)
-				.OnCheckStateChanged(this, &SNewPluginWizard::OnEnginePluginCheckboxChanged)
-				.IsChecked(this, &SNewPluginWizard::IsEnginePlugin)
-				.ToolTipText(LOCTEXT("EnginePluginButtonToolTip", "Toggles whether this plugin will be created in the current project or the engine directory."))
-				.Content()
-				[
-					SNew(STextBlock)
-					.Text(LOCTEXT("EnginePluginCheckbox", "Is Engine Plugin"))
-				]
+				SNew(STextBlock)
+				.Text(LOCTEXT("EnginePluginCheckbox", "Is Engine Plugin"))
 			]
-		];
-	}
+		]
+	];
 
 	if (PluginWizardDefinition->CanShowOnStartup())
 	{
@@ -244,7 +244,11 @@ void SNewPluginWizard::Construct(const FArguments& Args, TSharedPtr<SDockTab> In
 		[
 			SAssignNew(ShowPluginContentDirectoryCheckBox, SCheckBox)
 			.IsChecked(ECheckBoxState::Checked)
-			.Visibility(this, &SNewPluginWizard::GetShowPluginContentDirectoryVisibility)
+			.Visibility_Lambda([=]()
+			{
+				FPluginTemplateDescription* Template = PluginWizardDefinition->GetSelectedTemplate().Get();
+				return ((Template != nullptr) && Template->bCanContainContent) ? EVisibility::Visible : EVisibility::Collapsed;
+			})
 			.ToolTipText(LOCTEXT("ShowPluginContentDirectoryToolTip", "Shows the content directory after creation."))
 			.Content()
 			[
@@ -258,15 +262,11 @@ void SNewPluginWizard::Construct(const FArguments& Args, TSharedPtr<SDockTab> In
 
 	MainContent->AddSlot()
 	.AutoHeight()
-	.Padding(5)
+	.Padding(10)
 	.HAlign(HAlign_Right)
 	[
-		SNew(SButton)
-		.ContentPadding(5)
-		.TextStyle(FEditorStyle::Get(), "LargeText")
-		.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+		SNew(SPrimaryButton)
 		.IsEnabled(this, &SNewPluginWizard::CanCreatePlugin)
-		.HAlign(HAlign_Center)
 		.Text(CreateButtonLabel)
 		.OnClicked(this, &SNewPluginWizard::OnCreatePluginClicked)
 	];
@@ -279,44 +279,14 @@ void SNewPluginWizard::Construct(const FArguments& Args, TSharedPtr<SDockTab> In
 
 void SNewPluginWizard::GenerateListViewWidget()
 {
-	// for now, just determine what view to create based on the selection mode of the wizard definition
-	ESelectionMode::Type SelectionMode = PluginWizardDefinition->GetSelectionMode();
-
 	// Get the source of the templates to use for the list view
 	const TArray<TSharedRef<FPluginTemplateDescription>>& TemplateSource = PluginWizardDefinition->GetTemplatesSource();
 
-	switch (SelectionMode)
-	{
-		case ESelectionMode::Multi:
-		{
-			ListView = SNew(STileView<TSharedRef<FPluginTemplateDescription>>)
-				.SelectionMode(SelectionMode)
-				.ListItemsSource(&TemplateSource)
-				.OnGenerateTile(this, &SNewPluginWizard::OnGenerateTemplateTile)
-				.OnSelectionChanged(this, &SNewPluginWizard::OnTemplateSelectionChanged)
-				.ItemHeight(180.0f);
-		}
-		break;
-
-		case ESelectionMode::Single:
-		case ESelectionMode::SingleToggle:
-		{
-			ListView = SNew(SListView<TSharedRef<FPluginTemplateDescription>>)
-				.SelectionMode(SelectionMode)
-				.ListItemsSource(&TemplateSource)
-				.OnGenerateRow(this, &SNewPluginWizard::OnGenerateTemplateRow)
-				.OnSelectionChanged(this, &SNewPluginWizard::OnTemplateSelectionChanged);
-		}
-		break;
-
-		case ESelectionMode::None:
-		default:
-		{
-			// This isn't a valid selection mode for this widget
-			check(false);
-		}
-		break;
-	}		
+	ListView = SNew(SListView<TSharedRef<FPluginTemplateDescription>>)
+		.SelectionMode(ESelectionMode::Single)
+		.ListItemsSource(&TemplateSource)
+		.OnGenerateRow(this, &SNewPluginWizard::OnGenerateTemplateRow)
+		.OnSelectionChanged(this, &SNewPluginWizard::OnTemplateSelectionChanged);
 }
 
 void SNewPluginWizard::GeneratePluginTemplateDynamicBrush(TSharedRef<FPluginTemplateDescription> InItem)
@@ -461,17 +431,37 @@ TSharedRef<ITableRow> SNewPluginWizard::OnGenerateTemplateRow(TSharedRef<FPlugin
 void SNewPluginWizard::OnTemplateSelectionChanged(TSharedPtr<FPluginTemplateDescription> InItem, ESelectInfo::Type SelectInfo)
 {
 	// Forward the set of selected items to the plugin wizard definition
-	TArray<TSharedRef<FPluginTemplateDescription>> SelectedItems;
+	TSharedPtr<FPluginTemplateDescription> SelectedItem;
 
 	if (ListView.IsValid())
 	{
-		SelectedItems = ListView->GetSelectedItems();
+		if (ListView->GetSelectedItems().Num() > 0)
+		{
+			SelectedItem = ListView->GetSelectedItems()[0];
+		}
 	}
 
 	if (PluginWizardDefinition.IsValid())
 	{
-		PluginWizardDefinition->OnTemplateSelectionChanged(SelectedItems, SelectInfo);
+		TSharedPtr<FPluginTemplateDescription> OldSelectedItem = PluginWizardDefinition->GetSelectedTemplate();
+
+		if (OldSelectedItem != SelectedItem)
+		{
+			if (OldSelectedItem.IsValid())
+			{
+				OldSelectedItem->UpdatePathWhenTemplateUnselected(PluginFolderPath);
+			}
+
+			PluginWizardDefinition->OnTemplateSelectionChanged(SelectedItem, SelectInfo);
+
+			if (SelectedItem.IsValid())
+			{
+				SelectedItem->UpdatePathWhenTemplateSelected(PluginFolderPath);
+			}
+		}
 	}
+
+	ValidateFullPluginPath();
 }
 
 void SNewPluginWizard::OnFolderPathTextChanged(const FText& InText)
@@ -534,26 +524,50 @@ void SNewPluginWizard::ValidateFullPluginPath()
 
 	if (bIsNewPathValid)
 	{
-		bool bFoundValidPath = false;
+		bool bFoundKnownPath = false;
+		bool bPathIsInEngine = false;
 		FString AbsolutePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*GetPluginDestinationPath().ToString());
 		FPaths::MakePlatformFilename(AbsolutePath);
 
 		if (AbsolutePath.StartsWith(AbsoluteGamePluginPath))
 		{
-			bFoundValidPath = true;
-			bIsEnginePlugin = false;
+			bFoundKnownPath = true;
+			bPathIsInEngine = false;
 		}
-		else if (!bFoundValidPath && !FApp::IsEngineInstalled())
+		else if (AbsolutePath.StartsWith(AbsoluteEnginePluginPath))
 		{
-			if (AbsolutePath.StartsWith(AbsoluteEnginePluginPath))
-			{
-				bFoundValidPath = true;
-				bIsEnginePlugin = true;
-			}
+			bFoundKnownPath = true;
+			bPathIsInEngine = true;
 		}
 		else
 		{
-			// This path will be added to the additional plugin directories for the project when created
+			// Path is neither engine nor game, so this path will be added to the additional plugin directories for
+			// the project when the plugin is created
+		}
+
+		bIsSelectedPathInEngine = bPathIsInEngine;
+
+		// Run this path by the current template to make sure it's OK with it
+		TSharedPtr<FPluginTemplateDescription> Template = PluginWizardDefinition->GetSelectedTemplate();
+		if (Template.IsValid() && bIsNewPathValid)
+		{
+			if (bFoundKnownPath && bPathIsInEngine && !Template->bCanBePlacedInEngine)
+			{
+				bIsNewPathValid = false;
+				if (FApp::IsInstalled())
+				{
+					FolderPathError = LOCTEXT("TemplateCannotBeInEngine_InstalledBuild", "Plugins created in installed builds cannot be placed in the engine folder");
+				}
+				else
+				{
+					FolderPathError = LOCTEXT("TemplateCannotBeInEngine", "Plugins created from this template cannot be placed in the engine folder");
+				}
+			}
+		}
+
+		if (bIsNewPathValid && Template.IsValid())
+		{
+			bIsNewPathValid = Template->ValidatePathForPlugin(AbsolutePath, /*out*/ FolderPathError);
 		}
 	}
 
@@ -583,16 +597,16 @@ FText SNewPluginWizard::GetCurrentPluginName() const
 
 ECheckBoxState SNewPluginWizard::IsEnginePlugin() const
 {
-	return bIsEnginePlugin ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	return bIsSelectedPathInEngine ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
 void SNewPluginWizard::OnEnginePluginCheckboxChanged(ECheckBoxState NewCheckedState)
 {
 	bool bNewEnginePluginState = NewCheckedState == ECheckBoxState::Checked;
-	if (bIsEnginePlugin != bNewEnginePluginState)
+	if (bIsSelectedPathInEngine != bNewEnginePluginState)
 	{
-		bIsEnginePlugin = bNewEnginePluginState;
-		if (bIsEnginePlugin)
+		bIsSelectedPathInEngine = bNewEnginePluginState;
+		if (bIsSelectedPathInEngine)
 		{
 			PluginFolderPath = AbsoluteEnginePluginPath;
 		}
@@ -600,8 +614,8 @@ void SNewPluginWizard::OnEnginePluginCheckboxChanged(ECheckBoxState NewCheckedSt
 		{
 			PluginFolderPath = AbsoluteGamePluginPath;
 		}
-		bIsPluginPathValid = true;
-		FilePathBlock->SetFolderPathError(FText::GetEmpty());
+
+		ValidateFullPluginPath();
 	}
 }
 
@@ -613,37 +627,59 @@ FReply SNewPluginWizard::OnCreatePluginClicked()
 		return FReply::Unhandled();
 	}
 
-	const FString PluginName = PluginNameText.ToString();
-	const bool bHasModules = PluginWizardDefinition->HasModules();
-
-	FPluginUtils::FNewPluginParams CreationParams;
-	CreationParams.TemplateFolders = PluginWizardDefinition->GetFoldersForSelection();
-	CreationParams.bCanContainContent = PluginWizardDefinition->CanContainContent();
-	CreationParams.bHasModules = bHasModules;
-	CreationParams.ModuleDescriptorType = PluginWizardDefinition->GetPluginModuleDescriptor();
-	CreationParams.LoadingPhase = PluginWizardDefinition->GetPluginLoadingPhase();
-	PluginWizardDefinition->GetPluginIconPath(CreationParams.PluginIconPath);
-	if (DescriptorData.IsValid())
+	TSharedPtr<FPluginTemplateDescription> Template = PluginWizardDefinition->GetSelectedTemplate();
+	if (!ensure(Template.IsValid()))
 	{
-		CreationParams.CreatedBy = DescriptorData->CreatedBy;
-		CreationParams.CreatedByURL = DescriptorData->CreatedByURL;
-		CreationParams.Description = DescriptorData->Description;
-		CreationParams.bIsBetaVersion = DescriptorData->bIsBetaVersion;
+		return FReply::Unhandled();
 	}
 
-	FPluginUtils::FMountPluginParams MountParams;
-	MountParams.bEnablePluginInProject = true;
-	MountParams.bUpdateProjectPluginSearchPath = true;
-	MountParams.bSelectInContentBrowser = ShowPluginContentDirectoryCheckBox->IsChecked();
+
+	const FString PluginName = PluginNameText.ToString();
+	const bool bHasModules = PluginWizardDefinition->HasModules();
 	
+	FPluginUtils::FNewPluginParamsWithDescriptor CreationParams;
+	CreationParams.TemplateFolders = PluginWizardDefinition->GetFoldersForSelection();
+	CreationParams.Descriptor.bCanContainContent = Template->bCanContainContent;
+
+	if (bHasModules)
+	{
+		CreationParams.Descriptor.Modules.Add(FModuleDescriptor(*PluginName, PluginWizardDefinition->GetPluginModuleDescriptor(), PluginWizardDefinition->GetPluginLoadingPhase()));
+	}
+
+	CreationParams.Descriptor.FriendlyName = PluginName;
+	CreationParams.Descriptor.Version = 1;
+	CreationParams.Descriptor.VersionName = TEXT("1.0");
+	CreationParams.Descriptor.Category = TEXT("Other");
+
+	PluginWizardDefinition->GetPluginIconPath(/*out*/ CreationParams.PluginIconPath);
+	if (DescriptorData.IsValid())
+	{
+		CreationParams.Descriptor.CreatedBy = DescriptorData->CreatedBy;
+		CreationParams.Descriptor.CreatedByURL = DescriptorData->CreatedByURL;
+		CreationParams.Descriptor.Description = DescriptorData->Description;
+		CreationParams.Descriptor.bIsBetaVersion = DescriptorData->bIsBetaVersion;
+	}
+
 	FText FailReason;
-	TSharedPtr<IPlugin> NewPlugin = FPluginUtils::CreateAndMountNewPlugin(PluginName, PluginFolderPath, CreationParams, MountParams, FailReason);
+	FPluginUtils::FLoadPluginParams LoadParams;
+	LoadParams.bEnablePluginInProject = true;
+	LoadParams.bUpdateProjectPluginSearchPath = true;
+	LoadParams.bSelectInContentBrowser = ShowPluginContentDirectoryCheckBox->IsChecked();
+	LoadParams.OutFailReason = &FailReason;
+
+	Template->CustomizeDescriptorBeforeCreation(CreationParams.Descriptor);
+	
+	TSharedPtr<IPlugin> NewPlugin = FPluginUtils::CreateAndLoadNewPlugin(PluginName, PluginFolderPath, CreationParams, LoadParams);
 	const bool bSucceeded = NewPlugin.IsValid();
+
 
 	PluginWizardDefinition->PluginCreated(PluginName, bSucceeded);
 
 	if (bSucceeded)
 	{
+		// Let the template create additional assets / modify state after creation
+		Template->OnPluginCreated(NewPlugin);
+
 		// Notify that a new plugin has been created
 		FPluginBrowserModule& PluginBrowserModule = FPluginBrowserModule::Get();
 		PluginBrowserModule.BroadcastNewPluginCreated();
@@ -668,18 +704,6 @@ FReply SNewPluginWizard::OnCreatePluginClicked()
 		FMessageDialog::Open(EAppMsgType::Ok, FailReason, &Title);
 		return FReply::Unhandled();
 	}
-}
-
-EVisibility SNewPluginWizard::GetShowPluginContentDirectoryVisibility() const
-{
-	EVisibility ShowContentVisibility = EVisibility::Collapsed;
-
-	if (PluginWizardDefinition->CanContainContent())
-	{
-		ShowContentVisibility = EVisibility::Visible;
-	}
-
-	return ShowContentVisibility;
 }
 
 #undef LOCTEXT_NAMESPACE

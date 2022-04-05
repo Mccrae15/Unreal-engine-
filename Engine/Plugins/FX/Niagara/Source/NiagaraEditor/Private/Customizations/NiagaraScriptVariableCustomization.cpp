@@ -7,10 +7,11 @@
 #include "DetailWidgetRow.h"
 #include "IPropertyUtilities.h"
 #include "ScopedTransaction.h"
-#include "SEnumCombobox.h"
+#include "SEnumCombo.h"
 
 #include "EdGraphSchema_Niagara.h"
 #include "INiagaraEditorTypeUtilities.h"
+#include "NiagaraConstants.h"
 #include "NiagaraEditorCommon.h"
 #include "NiagaraEditorModule.h"
 #include "NiagaraEditorStyle.h"
@@ -32,7 +33,6 @@ TSharedRef<IDetailCustomization> FNiagaraScriptVariableDetails::MakeInstance()
  
 FNiagaraScriptVariableDetails::FNiagaraScriptVariableDetails()
 {
-	GEditor->RegisterForUndo(this);
 	bParameterValueChangedDuringOnValueChanged = false;
 	LibraryDefaultModeValue = 0;
 
@@ -42,7 +42,6 @@ FNiagaraScriptVariableDetails::FNiagaraScriptVariableDetails()
 
 FNiagaraScriptVariableDetails::~FNiagaraScriptVariableDetails()
 {
-	GEditor->UnregisterForUndo(this);
 }
 
 UEdGraphPin* FNiagaraScriptVariableDetails::GetAnyDefaultPin()
@@ -62,50 +61,6 @@ TArray<UEdGraphPin*> FNiagaraScriptVariableDetails::GetDefaultPins()
 		return Graph->FindParameterMapDefaultValuePins(Variable->Variable.GetName());
 	}
 	return TArray<UEdGraphPin*>();
-}
-
-void FNiagaraScriptVariableDetails::PostUndo(bool bSuccess)
-{
-	if (Variable == nullptr)
-	{
-		return;
-	}
-
-	if (Variable->GetIsStaticSwitch())
-	{
-		if (TypeUtilityStaticSwitchValue && ParameterEditorStaticSwitchValue)
-		{
-			TSharedPtr<FStructOnScope> ParameterValue = MakeShareable(new FStructOnScope(Variable->Variable.GetType().GetStruct()));
-			if (Variable->GetDefaultValueData() != nullptr)
-			{
-				Variable->Variable.SetData(Variable->GetDefaultValueData());
-			}
-			Variable->Variable.CopyTo(ParameterValue->GetStructMemory());
-			ParameterEditorStaticSwitchValue->UpdateInternalValueFromStruct(ParameterValue.ToSharedRef());
-		}
-	}
-	else if (Variable->GetOuter()->IsA<UNiagaraParameterDefinitions>())
-	{
-		if (TypeUtilityLibraryValue && ParameterEditorLibraryValue)
-		{
-			TSharedPtr<FStructOnScope> ParameterValue = MakeShareable(new FStructOnScope(Variable->Variable.GetType().GetStruct()));
-			Variable->CopyDefaultValueDataTo(ParameterValue->GetStructMemory());
-			ParameterEditorLibraryValue->UpdateInternalValueFromStruct(ParameterValue.ToSharedRef());
-		}
-	}
-	else
-	{
-		if (UEdGraphPin* Pin = GetAnyDefaultPin())
-		{
-			if (TypeUtilityValue && ParameterEditorValue)
-			{
-				TypeUtilityValue->SetValueFromPinDefaultString(Pin->DefaultValue, Variable->Variable);
-				TSharedPtr<FStructOnScope> ParameterValue = MakeShareable(new FStructOnScope(Variable->Variable.GetType().GetStruct()));
-				Variable->Variable.CopyTo(ParameterValue->GetStructMemory());
-				ParameterEditorValue->UpdateInternalValueFromStruct(ParameterValue.ToSharedRef());
-			}
-		}
-	}
 }
  
 void FNiagaraScriptVariableDetails::Refresh()
@@ -170,13 +125,30 @@ void FNiagaraScriptVariableDetails::CustomizeDetails(IDetailLayoutBuilder& Detai
 		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, DefaultBinding));
 	}
 
+	// Always hide the default value variant. We generate a node for this property to enable PostEditChangeProperty(...) events but do not modify it via the default generated customization.
+	DetailBuilder.HideProperty("DefaultValueVariant", UNiagaraScriptVariable::StaticClass());
+
 	if (Variable->Variable.GetType() != FNiagaraTypeDefinition::GetBoolDef())
 	{
 		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.bInlineEditConditionToggle));
-	}
+		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.InlineParameterBoolOverride));
+	}	
 
-	// Always hide the default value variant. We generate a node for this property to enable PostEditChangeProperty(...) events but do not modify it via the default generated customization.
-	DetailBuilder.HideProperty("DefaultValueVariant", UNiagaraScriptVariable::StaticClass());
+	// we hide the enum overrides if the variable type isn't an enum
+	if(!Variable->Variable.GetType().GetEnum())
+	{
+		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.InlineParameterEnumOverrides));
+	}
+	
+	// generally we want all the inline parameters only available for inputs & static switches
+	if(!Variable->Variable.IsInNameSpace(FNiagaraConstants::ModuleNamespace) && !Variable->GetIsStaticSwitch())
+	{
+		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.bDisplayInOverviewStack));
+		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.InlineParameterSortPriority));
+		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.InlineParameterColorOverride));
+		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.InlineParameterEnumOverrides));
+		DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UNiagaraScriptVariable, Metadata.InlineParameterBoolOverride));
+	}
 }
 
 void FNiagaraScriptVariableDetails::CustomizeDetailsGenericScriptVariable(IDetailLayoutBuilder& DetailBuilder)
@@ -546,7 +518,7 @@ void FNiagaraScriptVariableDetails::OnEndLibraryValueChanged()
 	if (TypeUtilityLibraryValue && ParameterEditorLibraryValue && CachedDetailBuilder.IsValid())
 	{
 		const TSharedPtr<IPropertyHandle> DefaultValueHandle = CachedDetailBuilder.Pin()->GetProperty("DefaultValueVariant", UNiagaraScriptVariable::StaticClass());
-		DefaultValueHandle->NotifyPostChange();
+		DefaultValueHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 		DefaultValueHandle->NotifyFinishedChangingProperties();
 	}
 
@@ -576,6 +548,8 @@ void FNiagaraScriptVariableDetails::OnLibraryValueChanged()
 			{
 				OuterParameterDefinitions->NotifyParameterDefinitionsChanged();
 			}
+			DefaultValueHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
+			DefaultValueHandle->NotifyFinishedChangingProperties();
 		}
 		else
 		{
@@ -660,7 +634,7 @@ void FNiagaraScriptVariableDetails::OnLibrarySourceDefaultModeChanged(int32 InVa
 			return;
 		}
 
-		DefaultModeHandle->NotifyPostChange();
+		DefaultModeHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 		DefaultModeHandle->NotifyFinishedChangingProperties();
 
 		OnComboValueChanged();
@@ -710,7 +684,7 @@ void FNiagaraScriptVariableDetails::OnLibrarySynchronizedDefaultModeChanged(int3
 			return;
 		}
 
-		DefaultModeHandle->NotifyPostChange();
+		DefaultModeHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 		DefaultModeHandle->NotifyFinishedChangingProperties();
 
 		OnComboValueChanged();

@@ -82,6 +82,7 @@ private:
 	// parameter name option function
 	FText GetParameterNameText() const;
 	void OnParameterNameCommited(const FText& InText, ETextCommit::Type InCommitType);
+	bool OnVerifyParameterNameChanged(const FText& InLabel, FText& OutErrorMessage);
 
 	// default value option functions
 	bool GetDefaultOptionEnabled() const;
@@ -103,6 +104,11 @@ private:
 	TSharedRef<SWidget> CreateWidgetForDropdownOption(TSharedPtr<ConstantDropdownOption> InOption);
 	FText GetConstantSelectionItemLabel() const;
 
+	bool GetExposeAsPinEnabled() const;
+	void ExposeAsPinCommitted(ECheckBoxState NewState);
+	bool GetIsPinExposed() const;
+	
+
 	TWeakObjectPtr<class UNiagaraNodeStaticSwitch> Node;
 	TArray<TSharedPtr<SwitchDropdownOption>> DropdownOptions;
 	TSharedPtr<SwitchDropdownOption> SelectedDropdownItem;
@@ -110,4 +116,5 @@ private:
 	TSharedPtr<DefaultEnumOption> SelectedDefaultValue;
 	TArray<TSharedPtr<ConstantDropdownOption>> ConstantOptions;
 	TSharedPtr<ConstantDropdownOption> SelectedConstantItem;
+	TSharedPtr<IPropertyHandle> SwitchTypeDataProperty;
 };

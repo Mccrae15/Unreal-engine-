@@ -15,9 +15,8 @@
 #include "MeshPassProcessor.inl"
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FVLMVoxelizationParams, )
-	SHADER_PARAMETER(FVector4, VolumeCenter)
-	SHADER_PARAMETER(FVector4, VolumeExtent)
-	SHADER_PARAMETER(FIntVector, VolumeSize)
+	SHADER_PARAMETER(FVector4f, VolumeCenter)
+	SHADER_PARAMETER(FVector4f, VolumeExtent)
 	SHADER_PARAMETER(int32, VolumeMaxDim)
 	SHADER_PARAMETER_UAV(RWTexture3D<uint>, VoxelizeVolume)
 	SHADER_PARAMETER_UAV(RWTexture3D<uint4>, IndirectionTexture)
@@ -36,7 +35,6 @@ protected:
 	FVLMVoxelizationVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FMeshMaterialShader(Initializer)
 	{
-		PassUniformBuffer.Bind(Initializer.ParameterMap, FVLMVoxelizationParams::StaticStructMetadata.GetShaderVariableName());
 	}
 
 	FVLMVoxelizationVS()
@@ -60,7 +58,6 @@ protected:
 	FVLMVoxelizationGS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FMeshMaterialShader(Initializer)
 	{
-		PassUniformBuffer.Bind(Initializer.ParameterMap, FVLMVoxelizationParams::StaticStructMetadata.GetShaderVariableName());
 	}
 
 	FVLMVoxelizationGS()
@@ -84,7 +81,6 @@ protected:
 	FVLMVoxelizationPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
 		: FMeshMaterialShader(Initializer)
 	{
-		PassUniformBuffer.Bind(Initializer.ParameterMap, FVLMVoxelizationParams::StaticStructMetadata.GetShaderVariableName());
 	}
 
 	FVLMVoxelizationPS()
@@ -102,9 +98,9 @@ protected:
 class FVLMVoxelizationMeshProcessor : public FMeshPassProcessor
 {
 public:
-	FVLMVoxelizationMeshProcessor(const FScene* InScene, const FSceneView* InView, FMeshPassDrawListContext* InDrawListContext, FRHIUniformBuffer* InPassUniformBuffer)
+	FVLMVoxelizationMeshProcessor(const FScene* InScene, const FSceneView* InView, FMeshPassDrawListContext* InDrawListContext)
 		: FMeshPassProcessor(InScene, GMaxRHIFeatureLevel, InView, InDrawListContext)
-		, DrawRenderState(*InView, InPassUniformBuffer)
+		, DrawRenderState(*InView)
 	{
 		DrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
 		DrawRenderState.SetBlendState(TStaticBlendState<>::GetRHI());
@@ -138,8 +134,6 @@ private:
 
 		TMeshProcessorShaders<
 			FVLMVoxelizationVS,
-			FMeshMaterialShader,
-			FMeshMaterialShader,
 			FVLMVoxelizationPS,
 			FVLMVoxelizationGS> Shaders;
 
@@ -213,10 +207,10 @@ class FVoxelizeImportanceVolumeCS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(FIntVector, VolumeSize)
-		SHADER_PARAMETER(FVector, ImportanceVolumeMin)
-		SHADER_PARAMETER(FVector, ImportanceVolumeMax)
+		SHADER_PARAMETER(FVector3f, ImportanceVolumeMin)
+		SHADER_PARAMETER(FVector3f, ImportanceVolumeMax)
 		SHADER_PARAMETER_UAV(RWTexture3D<uint>, VoxelizeVolume)
-		SHADER_PARAMETER_STRUCT_REF(FVLMVoxelizationParams, VLMVoxelizationParams)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FVLMVoxelizationParams, VLMVoxelizationParams)
 	END_SHADER_PARAMETER_STRUCT()
 };
 

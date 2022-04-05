@@ -33,15 +33,15 @@ namespace SResponsiveGridSize
  * The SResponsiveGridPanel is still in development and the API may change drastically in the future
  * or maybe removed entirely.
  */
-class SLATE_API SResponsiveGridPanel
-	: public SPanel
+class SLATE_API SResponsiveGridPanel : public SPanel
 {
+	SLATE_DECLARE_WIDGET(SResponsiveGridPanel, SPanel)
 public:
 
-	class FSlot : public TSlotBase<FSlot>, public TSupportsContentAlignmentMixin<FSlot>, public TSupportsContentPaddingMixin < FSlot >
+	class FSlot : public TBasicLayoutWidgetSlot< FSlot >
 	{
-	public:
-
+	private:
+		friend SResponsiveGridPanel;
 		struct FColumnLayout
 		{
 			float LayoutSize;
@@ -52,12 +52,51 @@ public:
 	public:
 		/** Default values for a slot. */
 		FSlot(int32 Row)
-			: TSlotBase<FSlot>()
-			, TSupportsContentAlignmentMixin<FSlot>(HAlign_Fill, VAlign_Fill)
+			: TBasicLayoutWidgetSlot<FSlot>(HAlign_Fill, VAlign_Fill)
 			, RowParam(FMath::Max(0, Row))
 			, ColumnLayouts()
 		{ }
 
+
+		SLATE_SLOT_BEGIN_ARGS(FSlot, TBasicLayoutWidgetSlot<FSlot>)
+			/** How many columns this slot spans over */
+			FSlot::FSlotArguments& ColumnSpan(float LayoutSize, int32 ColumnSpan, int32 ColumnOffset = 0)
+			{
+				FColumnLayout ColumnLayout;
+				ColumnLayout.LayoutSize = LayoutSize;
+				ColumnLayout.Span = FMath::Max(0, ColumnSpan);
+				ColumnLayout.Offset = ColumnOffset;
+
+				bool Inserted = false;
+				for (int32 Index = 0; Index < ColumnLayouts.Num(); Index++)
+				{
+					if (ColumnLayout.LayoutSize < ColumnLayouts[Index].LayoutSize)
+					{
+						ColumnLayouts.Insert(ColumnLayout, Index);
+						Inserted = true;
+						break;
+					}
+				}
+
+				if (!Inserted)
+				{
+					ColumnLayouts.Add(ColumnLayout);
+				}
+
+				return *this;
+			}
+		
+			/** Layout information for the column */
+			TArray<FColumnLayout> ColumnLayouts;
+		SLATE_SLOT_END_ARGS()
+
+		void Construct(const FChildren& SlotOwner, FSlotArguments&& InArgs)
+		{
+			TBasicLayoutWidgetSlot<FSlot>::Construct(SlotOwner, MoveTemp(InArgs));
+			ColumnLayouts = MoveTemp(InArgs.ColumnLayouts);
+		}
+
+	private:
 		/** The panel that contains this slot */
 		TWeakPtr<SResponsiveGridPanel> Panel;
 
@@ -66,46 +105,14 @@ public:
 
 		/** Layout information for the column */
 		TArray<FColumnLayout> ColumnLayouts;
-
-		/** How many columns this slot spans over */
-		FSlot& ColumnSpan(float LayoutSize, int32 ColumnSpan, int32 ColumnOffset = 0)
-		{
-			FColumnLayout ColumnLayout;
-			ColumnLayout.LayoutSize = LayoutSize;
-			ColumnLayout.Span = FMath::Max(0, ColumnSpan);
-			ColumnLayout.Offset = ColumnOffset;
-
-			bool Inserted = false;
-			for (int32 Index = 0; Index < ColumnLayouts.Num(); Index++)
-			{
-				if (ColumnLayout.LayoutSize < ColumnLayouts[Index].LayoutSize)
-				{
-					ColumnLayouts.Insert(ColumnLayout, Index);
-					Inserted = true;
-					break;
-				}
-			}
-
-			if (!Inserted)
-			{
-				ColumnLayouts.Add(ColumnLayout);
-			}
-
-			if (Panel.IsValid())
-			{
-				Panel.Pin()->NotifySlotChanged(this);
-			}
-
-			return *this;
-		}
 	};
 
 	/**
 	 * Used by declarative syntax to create a Slot
 	 */
-	static FSlot& Slot(int32 Row)
+	static FSlot::FSlotArguments Slot(int32 Row)
 	{
-		return *(new FSlot(Row));
+		return FSlot::FSlotArguments(MakeUnique<FSlot>(Row));
 	}
 
 	SLATE_BEGIN_ARGS(SResponsiveGridPanel)
@@ -118,7 +125,7 @@ public:
 		SLATE_ARGUMENT(float, ColumnGutter)
 		SLATE_ARGUMENT(float, RowGutter)
 
-		SLATE_SUPPORTS_SLOT(FSlot)
+		SLATE_SLOT_ARGUMENT(FSlot, Slots)
 
 		/** Specify a row to stretch instead of sizing to content. */
 		FArguments& FillRow(int32 RowId, float Coefficient)
@@ -143,7 +150,8 @@ public:
 	
 	void Construct( const FArguments& InArgs, int32 TotalColumns );
 
-	FSlot& AddSlot(int32 Row);
+	using FScopedWidgetSlotArguments = TPanelChildren<FSlot>::FScopedWidgetSlotArguments;
+	FScopedWidgetSlotArguments AddSlot(int32 Row);
 
 	bool RemoveSlot(const TSharedRef<SWidget>& SlotWidget);
 
@@ -151,7 +159,7 @@ public:
 
 public:
 
-	// SWidget interface
+	//~ SWidget interface
 
 	virtual int32 OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled ) const override;
 	virtual void OnArrangeChildren( const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren ) const override;
@@ -159,9 +167,9 @@ public:
 	virtual FChildren* GetChildren() override;
 
 protected:
-	// Begin SWidget overrides.
+	//~ Begin SWidget overrides.
 	virtual FVector2D ComputeDesiredSize(float) const override;
-	// End SWidget overrides.
+	//~ End SWidget overrides.
 
 private:
 
@@ -177,26 +185,15 @@ private:
 	static void DistributeSizeContributions( float SizeContribution, TArray<float>& DistributeOverMe, int32 StartIndex, int32 UpperBound );
 
 	/**
-	 * Inserts the given slot into the list of Slots based on its LayerParam, such that Slots are sorter by layer.
-	 *
-	 * @param The newly-allocated slot to insert.
-	 * @return A reference to the added slot
+	 * Return the location where to insert the slot. INDEX_NONE if we insert it at the end.
 	 */
-	FSlot& InsertSlot(FSlot* InSlot);
+	int32 FindInsertSlotLocation(SResponsiveGridPanel::FSlot* InSlot) const;
 
 	/** Compute the sizes of columns and rows needed to fit all the slots in this grid. */
 	void ComputeDesiredCellSizes(float AvailableWidth, TArray<float>& OutColumns, TArray<float>& OutRows, TArray<float>& OutRowToSlot) const;
 
 	/** Draw the debug grid of rows and colummns; useful for inspecting the GridPanel's logic. See OnPaint() for parameter meaning */
 	int32 LayoutDebugPaint(const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId ) const;
-
-	/** 
-	 * Callback used to resize our internal arrays if a slot (or slot span) is changed. 
-	 *
-	 * @param The slot that has just changed.
-	 */
-	void NotifySlotChanged(FSlot* InSlot);
-
 
 private:
 

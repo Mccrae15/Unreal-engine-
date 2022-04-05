@@ -16,6 +16,19 @@
 
 DECLARE_DWORD_COUNTER_STAT(TEXT("Draw Calls"), STAT_DrawCallCount, STATGROUP_LidarPointCloud)
 
+bool FLidarPointCloudProxyUpdateDataNode::BuildDataCache(bool bUseStaticBuffers)
+{
+	if(DataNode && DataNode->BuildDataCache(bUseStaticBuffers))
+	{
+		VertexFactory = DataNode->GetVertexFactory();
+		DataCache = DataNode->GetDataCache();
+		DataNode = nullptr;
+		return  true;
+	}
+	
+	return false;
+}
+
 FLidarPointCloudProxyUpdateData::FLidarPointCloudProxyUpdateData()
 	: NumElements(0)
 	, VDMultiplier(1)
@@ -97,11 +110,11 @@ private:
 	} VertexFactory;
 	class FLidarPointCloudCollisionVertexBuffer : public FVertexBuffer
 	{
-		const FVector* Data;
+		const FVector3f* Data;
 		int32 DataLength;
 
 	public:
-		void Initialize(const FVector* InData, int32 InDataLength)
+		void Initialize(const FVector3f* InData, int32 InDataLength)
 		{
 			Data = InData;
 			DataLength = InDataLength;
@@ -111,12 +124,13 @@ private:
 
 		virtual void InitRHI() override
 		{
-			FRHIResourceCreateInfo CreateInfo;
-			void* Buffer = nullptr;
-			VertexBufferRHI = RHICreateAndLockVertexBuffer(DataLength * sizeof(FVector), BUF_Static | BUF_ShaderResource, CreateInfo, Buffer);
-			FMemory::Memcpy(Buffer, Data, DataLength * sizeof(FVector));
-			RHIUnlockVertexBuffer(VertexBufferRHI);
-			Buffer = nullptr;
+			const uint32 Size = DataLength * sizeof(FVector3f);
+
+			FRHIResourceCreateInfo CreateInfo(TEXT("FLidarPointCloudCollisionVertexBuffer"));
+			VertexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
+			void* Buffer = RHILockBuffer(VertexBufferRHI, 0, Size, RLM_WriteOnly);
+			FMemory::Memcpy(Buffer, Data, Size);
+			RHIUnlockBuffer(VertexBufferRHI);
 		}
 	} VertexBuffer;
 	class FLidarPointCloudCollisionIndexBuffer : public FIndexBuffer
@@ -135,12 +149,13 @@ private:
 
 		virtual void InitRHI() override
 		{
-			FRHIResourceCreateInfo CreateInfo;
-			void* Buffer = nullptr;
-			IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint32), DataLength * sizeof(uint32), BUF_Static, CreateInfo, Buffer);
-			FMemory::Memcpy(Buffer, Data, DataLength * sizeof(uint32));
-			RHIUnlockIndexBuffer(IndexBufferRHI);
-			Buffer = nullptr;
+			const uint32 Size = DataLength * sizeof(uint32);
+
+			FRHIResourceCreateInfo CreateInfo(TEXT("FLidarPointCloudCollisionIndexBuffer"));
+			IndexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint32), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+			void* Buffer = RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
+			FMemory::Memcpy(Buffer, Data, Size);
+			RHIUnlockBuffer(IndexBufferRHI);
 		}
 	} IndexBuffer;
 
@@ -203,13 +218,13 @@ public:
 
 					for (const FLidarPointCloudProxyUpdateDataNode& Node : RenderData.SelectedNodes)
 					{
-						if (Node.DataNode && ((RenderData.bUseStaticBuffers && Node.DataNode->GetVertexFactory()) || (!RenderData.bUseStaticBuffers && Node.DataNode->GetDataCache())))
+						if ((RenderData.bUseStaticBuffers && Node.VertexFactory.IsValid() && Node.VertexFactory->IsInitialized()) || (!RenderData.bUseStaticBuffers && Node.DataCache.IsValid()))
 						{
 							FMeshBatch& MeshBatch = Collector.AllocateMesh();
 
 							MeshBatch.Type = bUsesSprites ? PT_TriangleList : PT_PointList;
 							MeshBatch.LODIndex = 0;
-							MeshBatch.VertexFactory = RenderData.bUseStaticBuffers ? Node.DataNode->GetVertexFactory() : (FVertexFactory*)&GLidarPointCloudSharedVertexFactory;
+							MeshBatch.VertexFactory = RenderData.bUseStaticBuffers ? Node.VertexFactory.Get() : (FVertexFactory*)&GLidarPointCloudSharedVertexFactory;
 							MeshBatch.bWireframe = false;
 							MeshBatch.MaterialRenderProxy = RenderData.RenderParams.Material->GetRenderProxy();
 							MeshBatch.ReverseCulling = IsLocalToWorldDeterminantNegative();
@@ -314,15 +329,15 @@ public:
 		UserDataElement.bUsePerPointScaling = RenderData.RenderParams.ScalingMethod == ELidarPointCloudScalingMethod::PerPoint;
 		UserDataElement.bUseStaticBuffers = RenderData.bUseStaticBuffers;
 		UserDataElement.RootCellSize = RenderData.RootCellSize;
-		UserDataElement.RootExtent = FVector(RenderData.RenderParams.BoundsSize.GetAbsMax() * 0.5f);
+		UserDataElement.RootExtent = FVector3f(RenderData.RenderParams.BoundsSize.GetAbsMax() * 0.5f);
 
 		UserDataElement.LocationOffset = RenderData.RenderParams.LocationOffset;
-		UserDataElement.ViewRightVector = InView->GetViewRight();
-		UserDataElement.ViewUpVector = InView->GetViewUp();
+		UserDataElement.ViewRightVector = (FVector3f)InView->GetViewRight();
+		UserDataElement.ViewUpVector = (FVector3f)InView->GetViewUp();
 		UserDataElement.bUseCameraFacing = !RenderData.RenderParams.bShouldRenderFacingNormals;
 		UserDataElement.BoundsSize = RenderData.RenderParams.BoundsSize;
-		UserDataElement.ElevationColorBottom = FVector(RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::None ? FColor::White : RenderData.RenderParams.ElevationColorBottom);
-		UserDataElement.ElevationColorTop = FVector(RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::None ? FColor::White : RenderData.RenderParams.ElevationColorTop);
+		UserDataElement.ElevationColorBottom = FVector3f(RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::None ? FColor::White : RenderData.RenderParams.ElevationColorBottom);
+		UserDataElement.ElevationColorTop = FVector3f(RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::None ? FColor::White : RenderData.RenderParams.ElevationColorTop);
 		UserDataElement.bUseCircle = bUsesSprites && RenderData.RenderParams.PointShape == ELidarPointCloudSpriteShape::Circle;
 		UserDataElement.bUseColorOverride = RenderData.RenderParams.ColorSource != ELidarPointCloudColorationMode::Data;
 		UserDataElement.bUseElevationColor = RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::Elevation || RenderData.RenderParams.ColorSource == ELidarPointCloudColorationMode::None;
@@ -342,11 +357,11 @@ public:
 		{
 			const FLidarPointCloudClippingVolumeParams& ClippingVolume = RenderData.ClippingVolumes[i];
 
-			UserDataElement.ClippingVolume[i] = ClippingVolume.PackedShaderData;
+			UserDataElement.ClippingVolume[i] = FMatrix44f(ClippingVolume.PackedShaderData);
 			UserDataElement.bStartClipped |= ClippingVolume.Mode == ELidarClippingVolumeMode::ClipOutside;
 		}
 
-		UserDataElement.DataBuffer = Node.DataNode->GetDataCache() ? Node.DataNode->GetDataCache()->SRV : nullptr;
+		UserDataElement.DataBuffer = Node.DataCache ? Node.DataCache->SRV : nullptr;
 		UserDataElement.TreeBuffer = TreeBuffer->SRV;
 
 		return UserDataElement;
@@ -355,6 +370,7 @@ public:
 	virtual bool CanBeOccluded() const override { return !MaterialRelevance.bDisableDepthTest; }
 	virtual uint32 GetMemoryFootprint() const override { return(sizeof(*this) + GetAllocatedSize()); }
 	uint32 GetAllocatedSize() const { return(FPrimitiveSceneProxy::GetAllocatedSize()); }
+	bool CanBeRendered() const { return bCompatiblePlatform; }
 
 	virtual SIZE_T GetTypeHash() const override
 	{
@@ -368,27 +384,26 @@ public:
 
 		const int32 NumTreeStructure = RenderData.TreeStructure.Num() > 0 ? RenderData.TreeStructure.Num() : 16;
 		TreeBuffer->Resize(NumTreeStructure);
-		uint8* DataPtr = (uint8*)RHILockVertexBuffer(TreeBuffer->Buffer, 0, NumTreeStructure * sizeof(uint32), RLM_WriteOnly);
+		uint8* DataPtr = (uint8*)RHILockBuffer(TreeBuffer->Buffer, 0, NumTreeStructure * sizeof(uint32), RLM_WriteOnly);
 		FMemory::Memzero(DataPtr, NumTreeStructure * sizeof(uint32));
 		if (RenderData.TreeStructure.Num() > 0)
 		{
 			FMemory::Memcpy(DataPtr, RenderData.TreeStructure.GetData(), NumTreeStructure * sizeof(uint32));
 		}
-		RHIUnlockVertexBuffer(TreeBuffer->Buffer);
+		RHIUnlockBuffer(TreeBuffer->Buffer);
 	}
-
-	bool CanBeRendered() const { return bCompatiblePlatform; }
 
 public:
 	TSharedPtr<FLidarPointCloudSceneProxyWrapper, ESPMode::ThreadSafe> ProxyWrapper;
 
 private:
-	bool bCompatiblePlatform;
-
 	FLidarPointCloudProxyUpdateData RenderData;
 
 	FLidarPointCloudRenderBuffer* TreeBuffer;
 	FMaterialRelevance MaterialRelevance;
+	
+	bool bCompatiblePlatform;
+	
 	AActor* Owner;
 
 	FLidarPointCloudCollisionRendering* CollisionRendering;

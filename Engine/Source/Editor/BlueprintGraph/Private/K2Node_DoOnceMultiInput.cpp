@@ -50,11 +50,6 @@ FText UK2Node_DoOnceMultiInput::GetNodeTitle(ENodeTitleType::Type TitleType) con
 	return LOCTEXT("DoOnceMultiInput", "DoOnce MultiInput");
 }
 
-int32 UK2Node_DoOnceMultiInput::GetMaxInputPinsNum()
-{
-	return (TCHAR('Z') - TCHAR('A'));
-}
-
 FText UK2Node_DoOnceMultiInput::GetNameForPin(int32 PinIndex, bool In)
 {
 	check(PinIndex < GetMaxInputPinsNum());
@@ -243,7 +238,7 @@ void UK2Node_DoOnceMultiInput::RemoveInputPin(UEdGraphPin* Pin)
 		if (Pins.Find(Pin, /*out*/ PinRemovalIndex))
 		{
 			Pins.RemoveAt(PinRemovalIndex);
-			Pin->MarkPendingKill();
+			Pin->MarkAsGarbage();
 			--NumAdditionalInputs;
 
 			int32 NameIndex = 0;

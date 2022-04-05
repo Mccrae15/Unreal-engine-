@@ -12,11 +12,14 @@
 #include "GameFramework/Info.h"
 #include "Sound/AudioVolume.h"
 #include "UObject/ConstructorHelpers.h"
+#include "WorldPartition/WorldPartitionEditorPerProjectUserSettings.h"
 #include "WorldSettings.generated.h"
 
+class UWorldPartition;
 class UAssetUserData;
 class UNetConnection;
 class UNavigationSystemConfig;
+class UAISystemBase;
 
 UENUM()
 enum EVisibilityAggressiveness
@@ -46,7 +49,7 @@ enum EVolumeLightingMethod
 	VLM_SparseVolumeLightingSamples UMETA(DisplayName = "Sparse Volume Lighting Samples"),
 };
 
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FLightmassWorldInfoSettings
 {
 	GENERATED_USTRUCT_BODY()
@@ -58,7 +61,7 @@ struct FLightmassWorldInfoSettings
 	 * Any levels with a different scale should use this scale to compensate. 
 	 * For large levels it can drastically reduce build times to set this to 2 or 4.
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassGeneral, AdvancedDisplay, meta=(UIMin = "1.0", UIMax = "4.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassGeneral, AdvancedDisplay, meta=(UIMin = "1.0", UIMax = "4.0"))
 	float StaticLightingLevelScale;
 
 	/** 
@@ -67,14 +70,14 @@ struct FLightmassWorldInfoSettings
 	 * Bounce 1 takes the most time to calculate and contributes the most to visual quality, followed by bounce 2.
 	 * Successive bounces don't really affect build times, but have a much lower visual impact, unless the material diffuse colors are close to 1.
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassGeneral, meta=(UIMin = "1.0", UIMax = "10.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassGeneral, meta=(UIMin = "1.0", UIMax = "10.0"))
 	int32 NumIndirectLightingBounces;
 
 	/** 
 	 * Number of skylight and emissive bounces to simulate.  
 	 * Lightmass uses a non-distributable radiosity method for skylight bounces whose cost is proportional to the number of bounces.
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassGeneral, meta=(UIMin = "1.0", UIMax = "10.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassGeneral, meta=(UIMin = "1.0", UIMax = "10.0"))
 	int32 NumSkyLightingBounces;
 
 	/** 
@@ -83,7 +86,7 @@ struct FLightmassWorldInfoSettings
 	 * It can be useful to reduce IndirectLightingSmoothness somewhat (~.75) when increasing quality to get defined indirect shadows.
 	 * Note that this can't affect compression artifacts, UV seams or other texture based artifacts.
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassGeneral, AdvancedDisplay, meta=(UIMin = "1.0", UIMax = "4.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassGeneral, AdvancedDisplay, meta=(UIMin = "1.0", UIMax = "4.0"))
 	float IndirectLightingQuality;
 
 	/** 
@@ -91,18 +94,18 @@ struct FLightmassWorldInfoSettings
 	 * 1 is default smoothness tweaked for a variety of lighting situations.
 	 * Higher values like 3 smooth out the indirect lighting more, but at the cost of indirect shadows losing detail.
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassGeneral, AdvancedDisplay, meta=(UIMin = "0.5", UIMax = "6.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassGeneral, AdvancedDisplay, meta=(UIMin = "0.5", UIMax = "6.0"))
 	float IndirectLightingSmoothness;
 
 	/** 
 	 * Represents a constant color light surrounding the upper hemisphere of the level, like a sky.
 	 * This light source currently does not get bounced as indirect lighting and causes reflection capture brightness to be incorrect.  Prefer using a Static Skylight instead.
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassGeneral)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassGeneral)
 	FColor EnvironmentColor;
 
 	/** Scales EnvironmentColor to allow independent color and brightness controls. */
-	UPROPERTY(EditAnywhere, Category=LightmassGeneral, meta=(UIMin = "0", UIMax = "10"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassGeneral, meta=(UIMin = "0", UIMax = "10"))
 	float EnvironmentIntensity;
 
 	/** Scales the emissive contribution of all materials in the scene.  Currently disabled and should be removed with mesh area lights. */
@@ -110,15 +113,15 @@ struct FLightmassWorldInfoSettings
 	float EmissiveBoost;
 
 	/** Scales the diffuse contribution of all materials in the scene. */
-	UPROPERTY(EditAnywhere, Category=LightmassGeneral, meta=(UIMin = "0.1", UIMax = "6.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassGeneral, meta=(UIMin = "0.1", UIMax = "6.0"))
 	float DiffuseBoost;
 
 	/** Technique to use for providing precomputed lighting at all positions inside the Lightmass Importance Volume */
-	UPROPERTY(EditAnywhere, Category=LightmassVolumeLighting)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassVolumeLighting)
 	TEnumAsByte<enum EVolumeLightingMethod> VolumeLightingMethod;
 
 	/** If true, AmbientOcclusion will be enabled. */
-	UPROPERTY(EditAnywhere, Category=LightmassOcclusion)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassOcclusion)
 	uint8 bUseAmbientOcclusion:1;
 
 	/** 
@@ -127,22 +130,22 @@ struct FLightmassWorldInfoSettings
 	 * Which is useful for blending between material layers on environment assets.
 	 * Be sure to set DirectIlluminationOcclusionFraction and IndirectIlluminationOcclusionFraction to 0 if you only want the PrecomputedAOMask!
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassOcclusion)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassOcclusion)
 	uint8 bGenerateAmbientOcclusionMaterialMask:1;
 
 	/** If true, override normal direct and indirect lighting with just the exported diffuse term. */
-	UPROPERTY(EditAnywhere, Category=LightmassDebug, AdvancedDisplay)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassDebug, AdvancedDisplay)
 	uint8 bVisualizeMaterialDiffuse:1;
 
 	/** If true, override normal direct and indirect lighting with just the AO term. */
-	UPROPERTY(EditAnywhere, Category=LightmassDebug, AdvancedDisplay)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassDebug, AdvancedDisplay)
 	uint8 bVisualizeAmbientOcclusion:1;
 
 	/** 
 	 * Whether to compress lightmap textures.  Disabling lightmap texture compression will reduce artifacts but increase memory and disk size by 4x.
 	 * Use caution when disabling this.
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassGeneral, AdvancedDisplay)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassGeneral, AdvancedDisplay)
 	uint8 bCompressLightmaps:1;
 
 	/** 
@@ -150,13 +153,13 @@ struct FLightmassWorldInfoSettings
 	 * This setting has a large impact on build times and memory, use with caution.  
 	 * Halving the DetailCellSize can increase memory by up to a factor of 8x.
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassVolumeLighting, meta=(UIMin = "50", UIMax = "1000"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassVolumeLighting, meta=(UIMin = "50", UIMax = "1000"))
 	float VolumetricLightmapDetailCellSize;
 
 	/** 
 	 * Maximum amount of memory to spend on Volumetric Lightmap Brick data.  High density bricks will be discarded until this limit is met, with bricks furthest from geometry discarded first.
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassVolumeLighting, meta=(UIMin = "1", UIMax = "500"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassVolumeLighting, meta=(UIMin = "1", UIMax = "500"))
 	float VolumetricLightmapMaximumBrickMemoryMb;
 
 	/** 
@@ -165,34 +168,34 @@ struct FLightmassWorldInfoSettings
 	 * Smoothing can reduce this artifact.  Smoothing is only applied when the ringing artifact is present.
 	 * 0 = no smoothing, 1 = strong smooth (little directionality in lighting).
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassVolumeLighting, meta=(UIMin = "0", UIMax = "1"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassVolumeLighting, meta=(UIMin = "0", UIMax = "1"))
 	float VolumetricLightmapSphericalHarmonicSmoothing;
 
 	/** 
 	 * Scales the distances at which volume lighting samples are placed.  Volume lighting samples are computed by Lightmass and are used for GI on movable components.
 	 * Using larger scales results in less sample memory usage and reduces Indirect Lighting Cache update times, but less accurate transitions between lighting areas.
 	 */
-	UPROPERTY(EditAnywhere, Category=LightmassVolumeLighting, AdvancedDisplay, meta=(UIMin = "0.1", UIMax = "100.0"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassVolumeLighting, AdvancedDisplay, meta=(UIMin = "0.1", UIMax = "100.0"))
 	float VolumeLightSamplePlacementScale;
 
 	/** How much of the AO to apply to direct lighting. */
-	UPROPERTY(EditAnywhere, Category=LightmassOcclusion, meta=(UIMin = "0", UIMax = "1"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassOcclusion, meta=(UIMin = "0", UIMax = "1"))
 	float DirectIlluminationOcclusionFraction;
 
 	/** How much of the AO to apply to indirect lighting. */
-	UPROPERTY(EditAnywhere, Category=LightmassOcclusion, meta=(UIMin = "0", UIMax = "1"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassOcclusion, meta=(UIMin = "0", UIMax = "1"))
 	float IndirectIlluminationOcclusionFraction;
 
 	/** Higher exponents increase contrast. */
-	UPROPERTY(EditAnywhere, Category=LightmassOcclusion, meta=(UIMin = ".5", UIMax = "8"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassOcclusion, meta=(UIMin = ".5", UIMax = "8"))
 	float OcclusionExponent;
 
 	/** Fraction of samples taken that must be occluded in order to reach full occlusion. */
-	UPROPERTY(EditAnywhere, Category=LightmassOcclusion, meta=(UIMin = "0", UIMax = "1"))
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassOcclusion, meta=(UIMin = "0", UIMax = "1"))
 	float FullyOccludedSamplesFraction;
 
 	/** Maximum distance for an object to cause occlusion on another object. */
-	UPROPERTY(EditAnywhere, Category=LightmassOcclusion)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=LightmassOcclusion)
 	float MaxOcclusionDistance;
 
 	FLightmassWorldInfoSettings()
@@ -231,15 +234,15 @@ struct ENGINE_API FNetViewer
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	UNetConnection* Connection;
+	TObjectPtr<UNetConnection> Connection;
 
 	/** The "controlling net object" associated with this view (typically player controller) */
 	UPROPERTY()
-	class AActor* InViewer;
+	TObjectPtr<class AActor> InViewer;
 
 	/** The actor that is being directly viewed, usually a pawn.  Could also be the net actor of consequence */
 	UPROPERTY()
-	class AActor* ViewTarget;
+	TObjectPtr<class AActor> ViewTarget;
 
 	/** Where the viewer is looking from */
 	UPROPERTY()
@@ -404,7 +407,7 @@ struct FBroadphaseSettings
 /**
  * Actor containing all script accessible world properties.
  */
-UCLASS(config=game, hidecategories=(Actor, Advanced, Display, Events, Object, Attachment, Info, Input, Blueprint, Layers, Tags, Replication), showcategories=(Rendering, "Input|MouseInput", "Input|TouchInput"), notplaceable)
+UCLASS(config=game, hidecategories=(Actor, Advanced, Display, Events, Object, Attachment, Info, Input, Blueprint, Layers, Tags, Replication), showcategories=(Rendering, WorldPartition, "Input|MouseInput", "Input|TouchInput"), notplaceable)
 class ENGINE_API AWorldSettings : public AInfo, public IInterface_AssetUserData
 {
 	GENERATED_UCLASS_BODY()
@@ -442,8 +445,13 @@ class ENGINE_API AWorldSettings : public AInfo, public IInterface_AssetUserData
 
 	/** DEFAULT BASIC PHYSICS SETTINGS **/
 
-	/** If true, enables CheckStillInWorld checks */
+	/** If true, configures engine for large world testing. Disables CheckStillInWorld checks and octree visibility testing.
+	 *	See UE_USE_UE4_WORLD_MAX for a more correct alternative. This setting will be removed once UE_LARGE_WORLD_MAX is considered stable. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay)
+	uint8 bEnableLargeWorlds:1;
+
+	/** If true, enables CheckStillInWorld checks. Note: Do not set this manually if experimenting with large worlds. @see bEnableLargeWorlds */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay, meta=(EditCondition = "!bEnableLargeWorlds"))
 	uint8 bEnableWorldBoundsChecks:1;
 
 protected:
@@ -455,18 +463,18 @@ protected:
 	UPROPERTY(BlueprintReadOnly, config, Category = World, meta=(DisplayName = "DEPRECATED_bEnableNavigationSystem"))
 	uint8 bEnableNavigationSystem:1;
 
-public:
 	/** if set to false AI system will not get created. Use it to disable all AI-related activity on a map */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, config, Category=AI, AdvancedDisplay)
 	uint8 bEnableAISystem:1;
 
+public:
 	/** 
 	 * Enables tools for composing a tiled world. 
 	 * Level has to be saved and all sub-levels removed before enabling this option.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, meta=(EditConditionHides, EditCondition="WorldPartition == nullptr"))
 	uint8 bEnableWorldComposition:1;
-		
+
 	/**
 	 * Enables client-side streaming volumes instead of server-side.
 	 * Expected usage scenario: server has all streaming levels always loaded, clients independently stream levels in/out based on streaming volumes.
@@ -475,7 +483,7 @@ public:
 	uint8 bUseClientSideLevelStreamingVolumes:1;
 
 	/** World origin will shift to a camera position when camera goes far away from current origin */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay, meta=(editcondition = "bEnableWorldComposition"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay, meta=(EditConditionHides, EditCondition = "bEnableWorldComposition"))
 	uint8 bEnableWorldOriginRebasing:1;
 		
 	/** if set to true, when we call GetGravityZ we assume WorldGravityZ has already been initialized and skip the lookup of DefaultGravityZ and GlobalGravityZ */
@@ -513,29 +521,79 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Broadphase)
 	uint8 bOverrideDefaultBroadphaseSettings:1;
 
+	/** If set to true, all eligible actors in this level will be added to a single cluster representing the entire level (used for small sublevels) */
+	UPROPERTY(EditAnywhere, config, Category = HLODSystem, AdvancedDisplay, meta=(EditConditionHides, EditCondition="WorldPartition == nullptr", DisplayAfter="HierarchicalLODSetup"))
+	uint8 bGenerateSingleClusterForLevel : 1;
+
+#if WITH_EDITORONLY_DATA
+	/** 
+	 * Whether Foliage actors of this world contain their grid size in their name. This should only be changed by UWorldPartitionFoliageBuilder or when creating new worlds so that older worlds are unaffected
+	 * and is used by the UActorPartitionSubsystem to find existing foliage actors by name.
+	 */
+	UPROPERTY()
+	uint8 bIncludeGridSizeInNameForFoliageActors : 1;
+
+	/**
+	 * Whether partitioned actors of this world contain their grid size in their name. This should only be changed when creating new worlds so that older worlds are unaffected
+	 * and is used by the UActorPartitionSubsystem to find existing foliage actors by name.
+	 */
+	UPROPERTY()
+	uint8 bIncludeGridSizeInNameForPartitionedActors : 1;
+#endif
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=AI, meta=(MetaClass="AISystemBase", editcondition="bEnableAISystem"), AdvancedDisplay)
+	TSoftClassPtr<UAISystemBase> AISystemClass;
+
+	/** Additional transform applied when applying LevelStreaming Transform to LevelInstance */
+	UPROPERTY()
+	FVector LevelInstancePivotOffset;
+
 protected:
 	/** Holds parameters for NavigationSystem's creation. Set to Null will result
 	 *	in NavigationSystem instance not being created for this world. Note that
 	 *	if set NavigationSystemConfigOverride will be used instead. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay, Instanced, NoClear, meta=(NoResetToDefault))
-	UNavigationSystemConfig* NavigationSystemConfig;
+	TObjectPtr<UNavigationSystemConfig> NavigationSystemConfig;
 
 	/** Overrides NavigationSystemConfig. */
 	UPROPERTY(Transient)
-	UNavigationSystemConfig* NavigationSystemConfigOverride;
+	TObjectPtr<UNavigationSystemConfig> NavigationSystemConfigOverride;
+
+	UPROPERTY(VisibleAnywhere, Category=WorldPartitionSetup, Instanced)
+	TObjectPtr<UWorldPartition> WorldPartition;
 
 public:
+#if WITH_EDITORONLY_DATA
+	/** Size of the grid for instanced foliage actors, only used for partitioned worlds */
+	UPROPERTY(EditAnywhere, Category = Foliage)
+	uint32 InstancedFoliageGridSize;
+
+	/** Size of the grid for navigation data chunk actors */
+	UPROPERTY(EditAnywhere, Category = Navigation)
+	uint32 NavigationDataChunkGridSize;
+
+	/**
+	 * Loading cell size used when building navigation data iteratively.
+	 * The actual cell size used will be rounded using the NavigationDataChunkGridSize.
+	 */
+	UPROPERTY(EditAnywhere, Category = Navigation)
+	uint32 NavigationDataBuilderLoadingCellSize;
+	
+	/** Default size of the grid for placed elements from the editor */
+	UPROPERTY()
+	uint32 DefaultPlacementGridSize;
+#endif
 
 	/** scale of 1uu to 1m in real world measurements, for HMD and other physically tracked devices (e.g. 1uu = 1cm would be 100.0) */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=VR)
 	float WorldToMeters;
 
 	// any actor falling below this level gets destroyed
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, meta=(editcondition = "bEnableWorldBoundsChecks"))
+	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category=World, meta=(editcondition = "bEnableWorldBoundsChecks && !bEnableLargeWorlds"))
 	float KillZ;
 
 	// The type of damage inflicted when a actor falls below KillZ
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay, meta=(editcondition = "bEnableWorldBoundsChecks"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=World, AdvancedDisplay, meta=(editcondition = "bEnableWorldBoundsChecks && !bEnableLargeWorlds"))
 	TSubclassOf<UDamageType> KillZDamageType;
 
 	// current gravity actually being used
@@ -600,7 +658,7 @@ public:
 	
 	/** LIGHTMASS RELATED SETTINGS **/
 	
-	UPROPERTY(EditAnywhere, Category=Lightmass)
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=Lightmass)
 	struct FLightmassWorldInfoSettings LightmassSettings;
 #endif
 
@@ -616,36 +674,28 @@ public:
 
 	/** Default Base SoundMix.																			*/
 	UPROPERTY(EditAnywhere, Category=Audio)
-	class USoundMix* DefaultBaseSoundMix;
+	TObjectPtr<class USoundMix> DefaultBaseSoundMix;
 
 #if WITH_EDITORONLY_DATA
-	/** if set to true, hierarchical LODs will be built, which will create hierarchical LODActors*/
-	UPROPERTY(EditAnywhere, config, Category=LODSystem)
-	uint32 bEnableHierarchicalLODSystem:1;
-
 	/** If set overrides the level settings and global project settings */
-	UPROPERTY(EditAnywhere, config, Category = LODSystem)
+	UPROPERTY(EditAnywhere, config, Category = HLODSystem, meta=(EditConditionHides, EditCondition = "WorldPartition == nullptr"))
 	TSoftClassPtr<class UHierarchicalLODSetup> HLODSetupAsset;
 
-	/** If set overrides the project-wide base material used for Proxy Materials*/
-	UPROPERTY(EditAnywhere, config, Category = LODSystem, meta=(editcondition = "bEnableHierarchicalLODSystem && HLODSetupAsset == nullptr"))
-	TSoftObjectPtr<class UMaterialInterface> OverrideBaseMaterial;	
+	/** If set overrides the project-wide base material used for Proxy Materials */
+	UPROPERTY(EditAnywhere, config, Category = HLODSystem, meta=(EditConditionHides, EditCondition = "WorldPartition == nullptr && HLODSetupAsset == nullptr"))
+	TSoftObjectPtr<class UMaterialInterface> OverrideBaseMaterial;
 
 protected:
 	/** Hierarchical LOD Setup */
-	UPROPERTY(EditAnywhere, Category=LODSystem, config, meta=(editcondition = "bEnableHierarchicalLODSystem && HLODSetupAsset == nullptr"))
-	TArray<struct FHierarchicalSimplification>	HierarchicalLODSetup;
+	UPROPERTY(EditAnywhere, Category = HLODSystem, config, meta=(EditConditionHides, EditCondition = "WorldPartition == nullptr && HLODSetupAsset == nullptr"))
+	TArray<struct FHierarchicalSimplification> HierarchicalLODSetup;
 
 public:
 	UPROPERTY()
 	int32 NumHLODLevels;
 
-	/** If set to true, all eligible actors in this level will be added to a single cluster representing the entire level (used for small sublevels) */
-	UPROPERTY(EditAnywhere, config, Category = LODSystem, AdvancedDisplay)
-	uint32 bGenerateSingleClusterForLevel : 1;
-
 	/** Specify the transform to apply to the source meshes when building HLODs. */
-	UPROPERTY(EditAnywhere, config, Category = LODSystem, AdvancedDisplay, meta=(DisplayName = "HLOD Baking Transform"))
+	UPROPERTY(EditAnywhere, config, Category = HLODSystem, AdvancedDisplay, meta=(EditConditionHides, EditCondition = "WorldPartition == nullptr", DisplayName = "HLOD Baking Transform"))
 	FTransform HLODBakingTransform;
 
 	/************************************/
@@ -654,7 +704,7 @@ public:
 	/** Level Bookmarks: 10 should be MAX_BOOKMARK_NUMBER @fixmeconst */
 	UE_DEPRECATED(4.21, "This member will be removed. Please use the Bookmark accessor functions instead.")
 	UPROPERTY()
-	class UBookMark* BookMarks[10];
+	TObjectPtr<class UBookMark> BookMarks[10];
 #endif
 
 	/************************************/
@@ -694,11 +744,6 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = Broadphase)
 	FBroadphaseSettings BroadphaseSettings;
 
-	// If paused, FName of person pausing the game.
-	UE_DEPRECATED(4.23, "This property is deprecated. Please use Get/SetPauserPlayerState().")
-	UPROPERTY(transient)
-	class APlayerState* Pauser;
-
 	/** valid only during replication - information about the player(s) being replicated to
 	 * (there could be more than one in the case of a splitscreen client)
 	 */
@@ -707,19 +752,20 @@ public:
 
 	// ************************************
 
-	/** Maximum number of bookmarks	*/
-	UE_DEPRECATED(4.21, "Please use GetMaxNumberOfBookmarks or NumMappedBookmarks instead.")
-	static const int32 MAX_BOOKMARK_NUMBER = 10;
-
-	protected:
+protected:
 
 	/** Array of user data stored with the asset */
 	UPROPERTY()
-	TArray<UAssetUserData*> AssetUserData;
+	TArray<TObjectPtr<UAssetUserData>> AssetUserData;
 
 	// If paused, PlayerState of person pausing the game.
 	UPROPERTY(transient, replicated)
-	class APlayerState* PauserPlayerState;
+	TObjectPtr<class APlayerState> PauserPlayerState;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	FWorldPartitionPerWorldSettings DefaultWorldPartitionSettings;
+#endif
 
 public:
 	//~ Begin UObject Interface.
@@ -742,6 +788,11 @@ public:
 	virtual void PreInitializeComponents() override;
 	virtual void PostRegisterAllComponents() override;
 	//~ End AActor Interface.
+
+	UWorldPartition* GetWorldPartition() const;
+	bool IsPartitionedWorld() const { return GetWorldPartition() != nullptr; }
+	void SetWorldPartition(UWorldPartition* InWorldPartition);
+	void ApplyWorldPartitionForcedSettings();
 
 	/**
 	 * Returns the Z component of the current world gravity and initializes it to the default
@@ -780,6 +831,12 @@ public:
 	/** @return whether given world is configured to host any NavigationSystem */
 	bool IsNavigationSystemEnabled() const;
 
+	/** @return whether given world is configured to host an AISystem */
+	bool IsAISystemEnabled() const { return bEnableAISystem; }
+
+	/** @return whether given world is restricting actors to +-HALF_WORLD_MAX bounds, destroying actors that move below KillZ */
+	bool AreWorldBoundsChecksEnabled() const { return bEnableWorldBoundsChecks && !bEnableLargeWorlds; }
+	
 	/**
 	 * Called from GameStateBase, calls BeginPlay on all actors
 	 */
@@ -794,6 +851,7 @@ public:
 	virtual void AddAssetUserData(UAssetUserData* InUserData) override;
 	virtual void RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
 	virtual UAssetUserData* GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	virtual const TArray<UAssetUserData*>* GetAssetUserDataArray() const override;
 	//~ End IInterface_AssetUserData Interface
 
 #if WITH_EDITOR
@@ -801,6 +859,11 @@ public:
 	TArray<struct FHierarchicalSimplification>& GetHierarchicalLODSetup();
 	int32 GetNumHierarchicalLODLevels() const;
 	UMaterialInterface* GetHierarchicalLODBaseMaterial() const;
+	void ResetHierarchicalLODSetup();
+
+	void SaveDefaultWorldPartitionSettings();
+	void ResetDefaultWorldPartitionSettings();
+	const FWorldPartitionPerWorldSettings* GetDefaultWorldPartitionSettings() const;
 #endif // WITH EDITOR
 
 	FORCEINLINE class APlayerState* GetPauserPlayerState() const { return PauserPlayerState; }
@@ -824,6 +887,8 @@ private:
 	void SanitizeBookmarkClasses();
 	void UpdateBookmarkClass();
 
+	void UpdateEnableLargeWorldsCVars(bool bEnable) const;
+
 	/**
 	 * Maximum number of bookmarks allowed.
 	 * Changing this will change the allocation of the bookmarks array, and when shrinking
@@ -840,7 +905,7 @@ private:
 	TSubclassOf<class UBookmarkBase> DefaultBookmarkClass;
 
 	UPROPERTY()
-	TArray<class UBookmarkBase*> BookmarkArray;
+	TArray<TObjectPtr<class UBookmarkBase>> BookmarkArray;
 
 	// Tracked so we can detect changes from Config
 	UPROPERTY()
@@ -925,5 +990,11 @@ public:
 	 * Clears all references to current bookmarks.
 	 */
 	void ClearAllBookmarks();
+
+#if WITH_EDITORONLY_DATA
+private: //DEPRECATED
+	UPROPERTY()
+	bool bEnableHierarchicalLODSystem_DEPRECATED;
+#endif
 };
 

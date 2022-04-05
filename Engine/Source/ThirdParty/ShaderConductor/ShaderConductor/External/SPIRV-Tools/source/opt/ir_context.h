@@ -29,6 +29,7 @@
 #include "source/assembly_grammar.h"
 #include "source/opt/cfg.h"
 #include "source/opt/constants.h"
+#include "source/opt/debug_info_manager.h"
 #include "source/opt/decoration_manager.h"
 #include "source/opt/def_use_manager.h"
 #include "source/opt/dominator_analysis.h"
@@ -78,7 +79,8 @@ class IRContext {
     kAnalysisIdToFuncMapping = 1 << 13,
     kAnalysisConstants = 1 << 14,
     kAnalysisTypes = 1 << 15,
-    kAnalysisEnd = 1 << 16
+    kAnalysisDebugInfo = 1 << 16,
+    kAnalysisEnd = 1 << 17
   };
 
   using ProcessFunction = std::function<bool(Function*)>;
@@ -96,6 +98,7 @@ class IRContext {
         module_(new Module()),
         consumer_(std::move(c)),
         def_use_mgr_(nullptr),
+        feature_mgr_(nullptr),
         valid_analyses_(kAnalysisNone),
         constant_mgr_(nullptr),
         type_mgr_(nullptr),
@@ -114,6 +117,7 @@ class IRContext {
         module_(std::move(m)),
         consumer_(std::move(c)),
         def_use_mgr_(nullptr),
+        feature_mgr_(nullptr),
         valid_analyses_(kAnalysisNone),
         type_mgr_(nullptr),
         id_to_name_(nullptr),
@@ -188,8 +192,8 @@ class IRContext {
   inline IteratorRange<Module::const_inst_iterator> debugs3() const;
 
   // Iterators for debug info instructions (excluding OpLine & OpNoLine)
-  // contained in this module.  These are OpExtInst for OpenCL.DebugInfo.100
-  // or DebugInfo extension placed between section 9 and 10.
+  // contained in this module.  These are OpExtInst for DebugInfo extension
+  // placed between section 9 and 10.
   inline Module::inst_iterator ext_inst_debuginfo_begin();
   inline Module::inst_iterator ext_inst_debuginfo_end();
   inline IteratorRange<Module::inst_iterator> ext_inst_debuginfo();
@@ -326,6 +330,17 @@ class IRContext {
     return type_mgr_.get();
   }
 
+  // Returns a pointer to the debug information manager.  If no debug
+  // information manager has been created yet, it creates one.
+  // NOTE: Once created, the debug information manager remains active
+  // it is never re-built.
+  analysis::DebugInfoManager* get_debug_info_mgr() {
+    if (!AreAnalysesValid(kAnalysisDebugInfo)) {
+      BuildDebugInfoManager();
+    }
+    return debug_info_mgr_.get();
+  }
+
   // Returns a pointer to the scalar evolution analysis. If it is invalid it
   // will be rebuilt first.
   ScalarEvolutionAnalysis* GetScalarEvolutionAnalysis() {
@@ -343,6 +358,13 @@ class IRContext {
   // OpMemberNames associated with the given id.
   inline IteratorRange<std::multimap<uint32_t, Instruction*>::iterator>
   GetNames(uint32_t id);
+
+  // Returns an OpMemberName instruction that targets |struct_type_id| at
+  // index |index|. Returns nullptr if no such instruction exists.
+  // While the SPIR-V spec does not prohibit having multiple OpMemberName
+  // instructions for the same structure member, it is hard to imagine a member
+  // having more than one name. This method returns the first one it finds.
+  inline Instruction* GetMemberName(uint32_t struct_type_id, uint32_t index);
 
   // Sets the message consumer to the given |consumer|. |consumer| which will be
   // invoked every time there is a message to be communicated to the outside.
@@ -383,6 +405,11 @@ class IRContext {
   // instruction exists.
   Instruction* KillInst(Instruction* inst);
 
+  // Collects the non-semantic instruction tree that uses |inst|'s result id
+  // to be killed later.
+  void CollectNonSemanticTree(Instruction* inst,
+                              std::unordered_set<Instruction*>* to_kill);
+
   // Returns true if all of the given analyses are valid.
   bool AreAnalysesValid(Analysis set) { return (set & valid_analyses_) == set; }
 
@@ -395,13 +422,13 @@ class IRContext {
   bool ReplaceAllUsesWith(uint32_t before, uint32_t after);
 
   // Replace all uses of |before| id with |after| id if those uses
-  // (instruction, operand pair) return true for |predicate|. Returns true if
+  // (instruction) return true for |predicate|. Returns true if
   // any replacement happens. This method does not kill the definition of the
   // |before| id. If |after| is the same as |before|, does nothing and return
   // false.
   bool ReplaceAllUsesWithPredicate(
       uint32_t before, uint32_t after,
-      const std::function<bool(Instruction*, uint32_t)>& predicate);
+      const std::function<bool(Instruction*)>& predicate);
 
   // Returns true if all of the analyses that are suppose to be valid are
   // actually valid.
@@ -425,6 +452,9 @@ class IRContext {
 
   // Kill all name and decorate ops targeting the result id of |inst|.
   void KillNamesAndDecorates(Instruction* inst);
+
+  // Change operands of debug instruction to DebugInfoNone.
+  void KillOperandFromDebugInstructions(Instruction* inst);
 
   // Returns the next unique id for use by an instruction.
   inline uint32_t TakeNextUniqueId() {
@@ -488,6 +518,18 @@ class IRContext {
         std::string message = "ID overflow. Try running compact-ids.";
         consumer()(SPV_MSG_ERROR, "", {0, 0, 0}, message.c_str());
       }
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+      // If TakeNextId returns 0, it is very likely that execution will
+      // subsequently fail. Such failures are false alarms from a fuzzing point
+      // of view: they are due to the fact that too many ids were used, rather
+      // than being due to an actual bug. Thus, during a fuzzing build, it is
+      // preferable to bail out when ID overflow occurs.
+      //
+      // A zero exit code is returned here because a non-zero code would cause
+      // ClusterFuzz/OSS-Fuzz to regard the termination as a crash, and spurious
+      // crash reports is what this guard aims to avoid.
+      exit(0);
+#endif
     }
     return next_id;
   }
@@ -522,6 +564,13 @@ class IRContext {
   void set_preserve_bindings(bool should_preserve_bindings) {
     preserve_bindings_ = should_preserve_bindings;
   }
+
+  // UE Change Begin: Allow preserving unused inputs in shaders, used for OpenGL to match input/outputs
+  bool preserve_storage_input() const { return preserve_storage_input_; }
+  void set_preserve_storage_input(bool preserve_storage_input) {
+    preserve_storage_input_ = preserve_storage_input;
+  }
+  // UE Change End: Allow preserving unused inputs in shaders, used for OpenGL to match input/outputs
 
   bool preserve_spec_constants() const { return preserve_spec_constants_; }
   void set_preserve_spec_constants(bool should_preserve_spec_constants) {
@@ -570,9 +619,13 @@ class IRContext {
   bool ProcessCallTreeFromRoots(ProcessFunction& pfn,
                                 std::queue<uint32_t>* roots);
 
-  // Emmits a error message to the message consumer indicating the error
+  // Emits a error message to the message consumer indicating the error
   // described by |message| occurred in |inst|.
   void EmitErrorMessage(std::string message, Instruction* inst);
+
+  // Returns true if and only if there is a path to |bb| from the entry block of
+  // the function that contains |bb|.
+  bool IsReachable(const opt::BasicBlock& bb);
 
  private:
   // Builds the def-use manager from scratch, even if it was already valid.
@@ -650,6 +703,13 @@ class IRContext {
   void BuildTypeManager() {
     type_mgr_ = MakeUnique<analysis::TypeManager>(consumer(), this);
     valid_analyses_ = valid_analyses_ | kAnalysisTypes;
+  }
+
+  // Builds the debug information manager from scratch, even if it was
+  // already valid.
+  void BuildDebugInfoManager() {
+    debug_info_mgr_ = MakeUnique<analysis::DebugInfoManager>(this);
+    valid_analyses_ = valid_analyses_ | kAnalysisDebugInfo;
   }
 
   // Removes all computed dominator and post-dominator trees. This will force
@@ -730,6 +790,8 @@ class IRContext {
 
   // The instruction decoration manager for |module_|.
   std::unique_ptr<analysis::DecorationManager> decoration_mgr_;
+
+  // The feature manager for |module_|.
   std::unique_ptr<FeatureManager> feature_mgr_;
 
   // A map from instructions to the basic block they belong to. This mapping is
@@ -774,6 +836,9 @@ class IRContext {
   // Type manager for |module_|.
   std::unique_ptr<analysis::TypeManager> type_mgr_;
 
+  // Debug information manager for |module_|.
+  std::unique_ptr<analysis::DebugInfoManager> debug_info_mgr_;
+
   // A map from an id to its corresponding OpName and OpMemberName instructions.
   std::unique_ptr<std::multimap<uint32_t, Instruction*>> id_to_name_;
 
@@ -794,6 +859,10 @@ class IRContext {
 
   // Whether all bindings within |module_| should be preserved.
   bool preserve_bindings_;
+
+  // UE Change Begin: Allow preserving unused inputs in shaders, used for OpenGL to match input/outputs
+  bool preserve_storage_input_;
+  // UE Change End: Allow preserving unused inputs in shaders, used for OpenGL to match input/outputs
 
   // Whether all specialization constants within |module_|
   // should be preserved.
@@ -1035,7 +1104,9 @@ void IRContext::AddDebug1Inst(std::unique_ptr<Instruction>&& d) {
 void IRContext::AddDebug2Inst(std::unique_ptr<Instruction>&& d) {
   if (AreAnalysesValid(kAnalysisNameMap)) {
     if (d->opcode() == SpvOpName || d->opcode() == SpvOpMemberName) {
-      id_to_name_->insert({d->result_id(), d.get()});
+      // OpName and OpMemberName do not have result-ids. The target of the
+      // instruction is at InOperand index 0.
+      id_to_name_->insert({d->GetSingleWordInOperand(0), d.get()});
     }
   }
   module()->AddDebug2Inst(std::move(d));
@@ -1107,6 +1178,21 @@ IRContext::GetNames(uint32_t id) {
   }
   auto result = id_to_name_->equal_range(id);
   return make_range(std::move(result.first), std::move(result.second));
+}
+
+Instruction* IRContext::GetMemberName(uint32_t struct_type_id, uint32_t index) {
+  if (!AreAnalysesValid(kAnalysisNameMap)) {
+    BuildIdToNameMap();
+  }
+  auto result = id_to_name_->equal_range(struct_type_id);
+  for (auto i = result.first; i != result.second; ++i) {
+    auto* name_instr = i->second;
+    if (name_instr->opcode() == SpvOpMemberName &&
+        name_instr->GetSingleWordInOperand(1) == index) {
+      return name_instr;
+    }
+  }
+  return nullptr;
 }
 
 }  // namespace opt

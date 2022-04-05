@@ -21,9 +21,8 @@ DECLARE_MEMORY_STAT(TEXT("Volumetric Lightmap"),STAT_VolumetricLightmapBuildData
 
 void FVolumetricLightmapDataLayer::CreateTexture(FIntVector Dimensions)
 {
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("VolumetricLightmap"));
 	CreateInfo.BulkData = this;
-	CreateInfo.DebugName = TEXT("VolumetricLightmap");
 
 	Texture = RHICreateTexture3D(
 		Dimensions.X, 
@@ -37,8 +36,7 @@ void FVolumetricLightmapDataLayer::CreateTexture(FIntVector Dimensions)
 
 void FVolumetricLightmapDataLayer::CreateTargetTexture(FIntVector Dimensions)
 {
-	FRHIResourceCreateInfo CreateInfo;
-	CreateInfo.DebugName = TEXT("VolumetricLightmap");
+	FRHIResourceCreateInfo CreateInfo(TEXT("VolumetricLightmap"));
 
 	Texture = RHICreateTexture3D(
 		Dimensions.X,
@@ -280,13 +278,13 @@ ENGINE_API void FPrecomputedVolumetricLightmapData::InitRHIForSubLevelResources(
 		IndirectionTextureOriginalValues.SetAllowCPUAccess(true);
 
 		{
-			FRHIResourceCreateInfo CreateInfo(&SubLevelBrickPositions);
+			FRHIResourceCreateInfo CreateInfo(TEXT("SubLevelBrickPositionsBuffer"), &SubLevelBrickPositions);
 			SubLevelBrickPositionsBuffer = RHICreateVertexBuffer(SubLevelBrickPositions.Num() * SubLevelBrickPositions.GetTypeSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 			SubLevelBrickPositionsSRV = RHICreateShaderResourceView(SubLevelBrickPositionsBuffer, sizeof(uint32), PF_R32_UINT);
 		}
 
 		{
-			FRHIResourceCreateInfo CreateInfo(&IndirectionTextureOriginalValues);
+			FRHIResourceCreateInfo CreateInfo(TEXT("IndirectionTextureOriginalValuesBuffer"), &IndirectionTextureOriginalValues);
 			IndirectionTextureOriginalValuesBuffer = RHICreateVertexBuffer(IndirectionTextureOriginalValues.Num() * IndirectionTextureOriginalValues.GetTypeSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
 			IndirectionTextureOriginalValuesSRV = RHICreateShaderResourceView(IndirectionTextureOriginalValuesBuffer, sizeof(FColor), PF_R8G8B8A8_UINT);
 		}
@@ -731,7 +729,7 @@ void FPrecomputedVolumetricLightmap::RemoveFromScene(FSceneInterface* Scene)
 		// Certain paths in the editor (namely, ReloadPackages and ForceDelete) will GC the registry before the UWorld destruction (which destructs FScene)
 		ensureMsgf(
 			SourceRegistry.IsValid() // either SourceRegistry is valid
-			|| (!Scene->GetWorld() || Scene->GetWorld()->IsPendingKillOrUnreachable()) // or the world we're in is going away (usually during shutdown)
+			|| (!Scene->GetWorld() || !IsValidChecked(Scene->GetWorld()) || Scene->GetWorld()->IsUnreachable()) // or the world we're in is going away (usually during shutdown)
 			, TEXT("UMapBuildDataRegistry is garbage collected before an FPrecomputedVolumetricLightmap is removed from the scene. Is there a missing ReleaseRenderingResources() call?"));
 
 		// While that can be explained as missing ReleaseRenderingResources() calls, this fail-safe guard is added here
@@ -852,7 +850,7 @@ FVolumetricLightmapBrickAtlas::FVolumetricLightmapBrickAtlas()
 }
 
 template<class VolumetricLightmapBrickDataType>
-void CopyDataIntoAtlas(FRHICommandList& RHICmdList, int32 SrcOffset, int32 DestOffset, int32 NumBricks, const VolumetricLightmapBrickDataType& SrcData, FVolumetricLightmapBrickTextureSet DestTextureSet)
+void CopyDataIntoAtlas(FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, int32 SrcOffset, int32 DestOffset, int32 NumBricks, const VolumetricLightmapBrickDataType& SrcData, FVolumetricLightmapBrickTextureSet DestTextureSet)
 {
 	FMemMark Mark(FMemStack::Get());
 	TArray<FRHITransitionInfo, SceneRenderingAllocator> Infos;
@@ -867,9 +865,9 @@ void CopyDataIntoAtlas(FRHICommandList& RHICmdList, int32 SrcOffset, int32 DestO
 	}
 	RHICmdList.Transition(Infos);
 
-	{
-		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(ERHIFeatureLevel::SM5);
+	FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(FeatureLevel);
 
+	{
 		FCopyResidentBricksCS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FCopyResidentBricksCS::FHasSkyBentNormal>(SrcData.SkyBentNormal.Texture.IsValid());
 
@@ -893,8 +891,6 @@ void CopyDataIntoAtlas(FRHICommandList& RHICmdList, int32 SrcOffset, int32 DestO
 
 	for (int32 i = 0; i < UE_ARRAY_COUNT(SrcData.SHCoefficients); i++)
 	{
-		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(ERHIFeatureLevel::SM5);
-
 		TShaderMapRef<FCopyResidentBrickSHCoefficientsCS> ComputeShader(GlobalShaderMap);
 
 		FCopyResidentBrickSHCoefficientsCS::FParameters Parameters;
@@ -925,7 +921,7 @@ void FVolumetricLightmapBrickAtlas::Insert(int32 Index, FPrecomputedVolumetricLi
 
 	if (!bInitialized)
 	{
-		SetFeatureLevel(ERHIFeatureLevel::SM5);
+		SetFeatureLevel(GMaxRHIFeatureLevel);
 		check(Data->BrickSize > 0);
 		PaddedBrickSize = Data->BrickSize + 1;
 		TextureSet.Initialize(Data->BrickDataDimensions, Data->BrickData);
@@ -1029,7 +1025,7 @@ void FVolumetricLightmapBrickAtlas::Insert(int32 Index, FPrecomputedVolumetricLi
 		// Copy old allocations
 		for (int32 AllocationIndex = 0; AllocationIndex < Index && AllocationIndex < Allocations.Num(); AllocationIndex++)
 		{
-			CopyDataIntoAtlas(RHICmdList, Allocations[AllocationIndex].StartOffset, BrickStartAllocation, Allocations[AllocationIndex].Size, TextureSet, NewTextureSet);
+			CopyDataIntoAtlas(RHICmdList, GetFeatureLevel(), Allocations[AllocationIndex].StartOffset, BrickStartAllocation, Allocations[AllocationIndex].Size, TextureSet, NewTextureSet);
 
 			NewAllocations.Add(Allocation{ Allocations[AllocationIndex].Data, Allocations[AllocationIndex].Size, BrickStartAllocation });
 			BrickStartAllocation += Allocations[AllocationIndex].Size;
@@ -1039,7 +1035,7 @@ void FVolumetricLightmapBrickAtlas::Insert(int32 Index, FPrecomputedVolumetricLi
 		{
 			int32 NumBricks = Data->BrickDataDimensions.X * Data->BrickDataDimensions.Y * Data->BrickDataDimensions.Z / (PaddedBrickSize * PaddedBrickSize * PaddedBrickSize);
 
-			CopyDataIntoAtlas(RHICmdList, 0, BrickStartAllocation, NumBricks, Data->BrickData, NewTextureSet);
+			CopyDataIntoAtlas(RHICmdList, GetFeatureLevel(), 0, BrickStartAllocation, NumBricks, Data->BrickData, NewTextureSet);
 
 			NewAllocations.Add(Allocation{ Data, NumBricks, BrickStartAllocation });
 			Data->BrickDataBaseOffsetInAtlas = BrickStartAllocation;
@@ -1049,7 +1045,7 @@ void FVolumetricLightmapBrickAtlas::Insert(int32 Index, FPrecomputedVolumetricLi
 		// Copy the rest of allocations
 		for (int32 AllocationIndex = Index; AllocationIndex < Allocations.Num(); AllocationIndex++)
 		{
-			CopyDataIntoAtlas(RHICmdList, Allocations[AllocationIndex].StartOffset, BrickStartAllocation, Allocations[AllocationIndex].Size, TextureSet, NewTextureSet);
+			CopyDataIntoAtlas(RHICmdList, GetFeatureLevel(), Allocations[AllocationIndex].StartOffset, BrickStartAllocation, Allocations[AllocationIndex].Size, TextureSet, NewTextureSet);
 
 			NewAllocations.Add(Allocation{ Allocations[AllocationIndex].Data, Allocations[AllocationIndex].Size, BrickStartAllocation });
 			// Handle the sub level data movements
@@ -1113,7 +1109,7 @@ void FVolumetricLightmapBrickAtlas::Remove(FPrecomputedVolumetricLightmapData* D
 			// Copy old allocations
 			for (int32 AllocationIndex = 0; AllocationIndex < Index && AllocationIndex < Allocations.Num(); AllocationIndex++)
 			{
-				CopyDataIntoAtlas(RHICmdList, Allocations[AllocationIndex].StartOffset, BrickStartAllocation, Allocations[AllocationIndex].Size, TextureSet, NewTextureSet);
+				CopyDataIntoAtlas(RHICmdList, GetFeatureLevel(), Allocations[AllocationIndex].StartOffset, BrickStartAllocation, Allocations[AllocationIndex].Size, TextureSet, NewTextureSet);
 
 				NewAllocations.Add(Allocation{ Allocations[AllocationIndex].Data, Allocations[AllocationIndex].Size, BrickStartAllocation });
 				BrickStartAllocation += Allocations[AllocationIndex].Size;
@@ -1124,7 +1120,7 @@ void FVolumetricLightmapBrickAtlas::Remove(FPrecomputedVolumetricLightmapData* D
 			// Copy the rest of allocations
 			for (int32 AllocationIndex = Index + 1; AllocationIndex < Allocations.Num(); AllocationIndex++)
 			{
-				CopyDataIntoAtlas(RHICmdList, Allocations[AllocationIndex].StartOffset, BrickStartAllocation, Allocations[AllocationIndex].Size, TextureSet, NewTextureSet);
+				CopyDataIntoAtlas(RHICmdList, GetFeatureLevel(), Allocations[AllocationIndex].StartOffset, BrickStartAllocation, Allocations[AllocationIndex].Size, TextureSet, NewTextureSet);
 
 				NewAllocations.Add(Allocation{ Allocations[AllocationIndex].Data, Allocations[AllocationIndex].Size, BrickStartAllocation });
 				Allocations[AllocationIndex].Data->HandleDataMovementInAtlas(Allocations[AllocationIndex].StartOffset, BrickStartAllocation);

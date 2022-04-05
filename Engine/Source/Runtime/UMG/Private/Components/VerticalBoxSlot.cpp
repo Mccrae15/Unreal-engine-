@@ -2,13 +2,14 @@
 
 #include "Components/VerticalBoxSlot.h"
 #include "Components/Widget.h"
+#include "Components/VerticalBox.h"
 
 /////////////////////////////////////////////////////
 // UVerticalBoxSlot
 
 UVerticalBoxSlot::UVerticalBoxSlot(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, Slot(NULL)
+	, Slot(nullptr)
 {
 	HorizontalAlignment = HAlign_Fill;
 	VerticalAlignment = VAlign_Fill;
@@ -19,20 +20,21 @@ void UVerticalBoxSlot::ReleaseSlateResources(bool bReleaseChildren)
 {
 	Super::ReleaseSlateResources(bReleaseChildren);
 
-	Slot = NULL;
+	Slot = nullptr;
 }
 
 void UVerticalBoxSlot::BuildSlot(TSharedRef<SVerticalBox> VerticalBox)
 {
-	Slot = &VerticalBox->AddSlot()
+	VerticalBox->AddSlot()
+		.Expose(Slot)
 		.Padding(Padding)
 		.HAlign(HorizontalAlignment)
 		.VAlign(VerticalAlignment)
+		.SizeParam(UWidget::ConvertSerializedSizeParamToRuntime(Size))
+		.Expose(Slot)
 		[
-			Content == NULL ? SNullWidget::NullWidget : Content->TakeWidget()
+			Content == nullptr ? SNullWidget::NullWidget : Content->TakeWidget()
 		];
-
-	Slot->SizeParam = UWidget::ConvertSerializedSizeParamToRuntime(Size);
 }
 
 void UVerticalBoxSlot::SetPadding(FMargin InPadding)
@@ -40,7 +42,7 @@ void UVerticalBoxSlot::SetPadding(FMargin InPadding)
 	Padding = InPadding;
 	if ( Slot )
 	{
-		Slot->Padding(InPadding);
+		Slot->SetPadding(InPadding);
 	}
 }
 
@@ -49,7 +51,7 @@ void UVerticalBoxSlot::SetSize(FSlateChildSize InSize)
 	Size = InSize;
 	if ( Slot )
 	{
-		Slot->SizeParam = UWidget::ConvertSerializedSizeParamToRuntime(InSize);
+		Slot->SetSizeParam(UWidget::ConvertSerializedSizeParamToRuntime(InSize));
 	}
 }
 
@@ -58,7 +60,7 @@ void UVerticalBoxSlot::SetHorizontalAlignment(EHorizontalAlignment InHorizontalA
 	HorizontalAlignment = InHorizontalAlignment;
 	if ( Slot )
 	{
-		Slot->HAlign(InHorizontalAlignment);
+		Slot->SetHorizontalAlignment(InHorizontalAlignment);
 	}
 }
 
@@ -67,7 +69,7 @@ void UVerticalBoxSlot::SetVerticalAlignment(EVerticalAlignment InVerticalAlignme
 	VerticalAlignment = InVerticalAlignment;
 	if ( Slot )
 	{
-		Slot->VAlign(InVerticalAlignment);
+		Slot->SetVerticalAlignment(InVerticalAlignment);
 	}
 }
 
@@ -78,3 +80,40 @@ void UVerticalBoxSlot::SynchronizeProperties()
 	SetHorizontalAlignment(HorizontalAlignment);
 	SetVerticalAlignment(VerticalAlignment);
 }
+
+#if WITH_EDITOR
+
+bool UVerticalBoxSlot::NudgeByDesigner(const FVector2D& NudgeDirection, const TOptional<int32>& GridSnapSize)
+{
+	if (NudgeDirection.Y == 0)
+	{
+		return false;
+	}
+	
+	const FVector2D ClampedDirection = NudgeDirection.ClampAxes(-1, 1);
+	UVerticalBox* ParentVerticalBox = CastChecked<UVerticalBox>(Parent);
+
+	const int32 CurrentIndex = ParentVerticalBox->GetChildIndex(Content);
+
+	if ((CurrentIndex == 0 && ClampedDirection.Y < 0.0f) ||
+		(CurrentIndex + 1 >= ParentVerticalBox->GetChildrenCount() && ClampedDirection.Y > 0.0f))
+	{
+		return false;
+	}
+
+	ParentVerticalBox->Modify();
+	ParentVerticalBox->ShiftChild(CurrentIndex + ClampedDirection.Y, Content);
+
+	return true;
+}
+
+void UVerticalBoxSlot::SynchronizeFromTemplate(const UPanelSlot* const TemplateSlot)
+{
+	const ThisClass* const TemplateVerticalBoxSlot = CastChecked<ThisClass>(TemplateSlot);
+	const int32 CurrentIndex = TemplateVerticalBoxSlot->Parent->GetChildIndex(TemplateVerticalBoxSlot->Content);
+
+	UVerticalBox* ParentVerticalBox = CastChecked<UVerticalBox>(Parent);
+	ParentVerticalBox->ShiftChild(CurrentIndex, Content);
+}
+
+#endif

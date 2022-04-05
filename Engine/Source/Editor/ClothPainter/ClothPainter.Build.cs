@@ -16,7 +16,8 @@ public class ClothPainter : ModuleRules
                 "Slate",
                 "SlateCore",
                 "EditorStyle",
-                "UnrealEd",
+				"EditorFramework",
+				"UnrealEd",
                 "MainFrame",
                 "PropertyEditor",
                 "Kismet",
@@ -32,7 +33,9 @@ public class ClothPainter : ModuleRules
                 "SkeletalMeshEditor",
                 "AdvancedPreviewScene",
 				"ToolMenus",
-            }
+				"EditorWidgets",
+				"ToolWidgets",
+			}
 		);
     }
 }

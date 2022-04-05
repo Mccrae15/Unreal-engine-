@@ -33,13 +33,13 @@ template <> struct TLiteral<WIDECHAR>
 template <typename CharType, const unsigned int Size>
 struct TCharBase
 {
-	static constexpr CharType LineFeed = 0xa;
-	static constexpr CharType VerticalTab = 0xb;
-	static constexpr CharType FormFeed = 0xc;
-	static constexpr CharType CarriageReturn = 0xd;
-	static constexpr CharType NextLine = 0x85;
-	static constexpr CharType LineSeparator = 0x2028;
-	static constexpr CharType ParagraphSeparator = 0x2029;
+	static constexpr CharType LineFeed           = (CharType)0xa;
+	static constexpr CharType VerticalTab        = (CharType)0xb;
+	static constexpr CharType FormFeed           = (CharType)0xc;
+	static constexpr CharType CarriageReturn     = (CharType)0xd;
+	static constexpr CharType NextLine           = (CharType)0x85;
+	static constexpr CharType LineSeparator      = (CharType)0x2028;
+	static constexpr CharType ParagraphSeparator = (CharType)0x2029;
 
 	static bool IsLinebreak(CharType Char)
 	{
@@ -52,10 +52,10 @@ struct TCharBase
 template <typename CharType>
 struct TCharBase<CharType, 1>
 {
-	static constexpr CharType LineFeed = 0xa;
-	static constexpr CharType VerticalTab = 0xb;
-	static constexpr CharType FormFeed = 0xc;
-	static constexpr CharType CarriageReturn = 0xd;
+	static constexpr CharType LineFeed       = (CharType)0xa;
+	static constexpr CharType VerticalTab    = (CharType)0xb;
+	static constexpr CharType FormFeed       = (CharType)0xc;
+	static constexpr CharType CarriageReturn = (CharType)0xd;
 
 	static bool IsLinebreak(CharType Char)
 	{
@@ -99,6 +99,7 @@ struct TChar : TCharBase<CharType, sizeof(CharType)>
 	static bool IsDigit(CharType Char);
 	static bool IsHexDigit(CharType Char);
 	static bool IsWhitespace(CharType Char);
+	static bool IsControl(CharType Char);
 
 	static bool IsOctDigit(CharType Char)
 	{
@@ -152,6 +153,8 @@ template <> inline bool TChar<WIDECHAR>::IsAlnum(WIDECHAR Char) { return ::iswal
 template <> inline bool TChar<WIDECHAR>::IsDigit(WIDECHAR Char) { return ::iswdigit(Char) != 0; }
 template <> inline bool TChar<WIDECHAR>::IsHexDigit(WIDECHAR Char) { return ::iswxdigit(Char) != 0; }
 template <> inline bool TChar<WIDECHAR>::IsWhitespace(WIDECHAR Char) { return ::iswspace(Char) != 0; }
+template <> inline bool TChar<WIDECHAR>::IsControl(WIDECHAR Char) { return ::iswcntrl(Char) != 0; }
+
 
 /*-----------------------------------------------------------------------------
 	ANSICHAR specialized functions
@@ -166,3 +169,6 @@ template <> inline bool TChar<ANSICHAR>::IsAlnum(ANSICHAR Char) { return ::isaln
 template <> inline bool TChar<ANSICHAR>::IsDigit(ANSICHAR Char) { return ::isdigit((unsigned char)Char) != 0; }
 template <> inline bool TChar<ANSICHAR>::IsHexDigit(ANSICHAR Char) { return ::isxdigit((unsigned char)Char) != 0; }
 template <> inline bool TChar<ANSICHAR>::IsWhitespace(ANSICHAR Char) { return ::isspace((unsigned char)Char) != 0; }
+template <> inline bool TChar<ANSICHAR>::IsControl(ANSICHAR Char) { return ::iscntrl((unsigned char)Char) != 0; }
+
+template <> inline bool TChar<UTF8CHAR>::IsWhitespace(UTF8CHAR Char) { return ::isspace((unsigned char)Char) != 0; }

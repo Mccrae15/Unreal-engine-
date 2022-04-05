@@ -4,7 +4,7 @@
 	"VersionName": "1.0",
 	"FriendlyName": "Gizmo Editor Mode",
 	"Description": "Editor mode to manage InteractiveToolFramework based global TRS gizmos",
-	"Category": "Assets",
+	"Category": "Experimental",
 	"CreatedBy": "Epic Games, Inc.",
 	"CreatedByURL": "http://epicgames.com",
 	"DocsURL": "",
@@ -19,6 +19,12 @@
 			"Name": "GizmoEdMode",
 			"Type": "Editor",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "LightGizmos",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+
 		}
 	]
 }

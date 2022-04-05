@@ -15,11 +15,13 @@ public class AnimationEditor : ModuleRules
 				"Slate",
 				"SlateCore",
                 "EditorStyle",
+				"EditorFramework",
                 "UnrealEd",
                 "Persona",
                 "SkeletonEditor",
                 "Kismet",
                 "AnimGraph",
+				"ToolMenus"
             }
 		);
 

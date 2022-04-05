@@ -22,6 +22,7 @@ public:
 
 public:
 	virtual FString GetId() const = 0;
+	virtual FString GetClusterNodeId() const = 0;
 
 	virtual const TSharedPtr<class IDisplayClusterProjectionPolicy, ESPMode::ThreadSafe>& GetProjectionPolicy_RenderThread() const = 0;
 
@@ -36,8 +37,12 @@ public:
 	virtual bool GetResourcesWithRects_RenderThread(const EDisplayClusterViewportResourceType InResourceType, TArray<FRHITexture2D*>& OutResources, TArray<FIntRect>& OutRects) const = 0;
 
 	// Resolve resource contexts
-	virtual bool ResolveResources(FRHICommandListImmediate& RHICmdList, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType) const = 0;
+	virtual bool ResolveResources_RenderThread(FRHICommandListImmediate& RHICmdList, const EDisplayClusterViewportResourceType InputResourceType, const EDisplayClusterViewportResourceType OutputResourceType) const = 0;
 
-	virtual const class IDisplayClusterViewportManagerProxy& GetOwner() const = 0;
-	virtual EDisplayClusterViewportResourceType   GetOutputResourceType() const = 0;
+	virtual EDisplayClusterViewportResourceType   GetOutputResourceType_RenderThread() const = 0;
+
+	virtual const class IDisplayClusterViewportManagerProxy& GetOwner_RenderThread() const = 0;
+
+	virtual void SetRenderSettings_RenderThread(const FDisplayClusterViewport_RenderSettings& InRenderSettings) const = 0;
+	virtual void SetContexts_RenderThread(const TArray<FDisplayClusterViewport_Context>& InContexts) const = 0;
 };

@@ -105,10 +105,7 @@ struct FInstanceRegistry
 		return InvalidatedObjectBindings.Num() != 0;
 	}
 
-	bool RemoveInvalidHandles();
 	void PostInstantation();
-
-	void FinalizeFrame();
 
 	void TagGarbage();
 

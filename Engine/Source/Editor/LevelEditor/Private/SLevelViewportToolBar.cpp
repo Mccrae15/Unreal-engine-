@@ -30,6 +30,9 @@
 #include "SEditorViewportViewMenu.h"
 #include "Stats/StatsData.h"
 #include "BufferVisualizationData.h"
+#include "NaniteVisualizationData.h"
+#include "LumenVisualizationData.h"
+#include "VirtualShadowMapVisualizationData.h"
 #include "FoliageType.h"
 #include "ShowFlagMenuCommands.h"
 #include "Bookmarks/BookmarkUI.h"
@@ -38,8 +41,10 @@
 #include "Editor/EditorPerformanceSettings.h"
 #include "SEditorViewportViewMenuContext.h"
 #include "Bookmarks/IBookmarkTypeTools.h"
+#include "ToolMenu.h"
 #include "CustomStaticScreenPercentage.h"
 #include "CustomEditorStaticScreenPercentage.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "LevelViewportToolBar"
 
@@ -100,6 +105,7 @@ static void FillShowMenuStatic(UToolMenu* Menu, TArray< FLevelViewportCommands::
 	}
 }
 
+#if STATS
 static void FillShowStatsSubMenus(UToolMenu* Menu, TArray< FLevelViewportCommands::FShowMenuCommand > MenuCommands, TMap< FString, TArray< FLevelViewportCommands::FShowMenuCommand > > StatCatCommands)
 {
 	FillShowMenuStatic(Menu, MenuCommands, 1);
@@ -156,53 +162,45 @@ static void FillShowStatsSubMenus(UToolMenu* Menu, TArray< FLevelViewportCommand
 			FNewToolMenuDelegate::CreateStatic(&FillShowMenuStatic, StatCommands, 0));
 	}
 }
+#endif
 
 void SLevelViewportToolBar::Construct( const FArguments& InArgs )
 {
 	Viewport = InArgs._Viewport;
 	TSharedRef<SLevelViewport> ViewportRef = Viewport.Pin().ToSharedRef();
 
-	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>( "LevelEditor");
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
 
-	const FMargin ToolbarSlotPadding( 2.0f, 2.0f );
-	const FMargin ToolbarButtonPadding( 2.0f, 0.0f );
-
-	static const FName DefaultForegroundName("DefaultForeground");
+	const FMargin ToolbarSlotPadding(4.0f, 1.0f);
 
 	ChildSlot
 	[
-		SNew( SBorder )
-		.BorderImage( FEditorStyle::GetBrush("NoBorder") )
-		// Color and opacity is changed based on whether or not the mouse cursor is hovering over the toolbar area
-		.ColorAndOpacity( this, &SViewportToolBar::OnGetColorAndOpacity )
-		.ForegroundColor( FEditorStyle::GetSlateColor(DefaultForegroundName) )
+		SNew(SBorder)
+		.BorderImage(FAppStyle::Get().GetBrush("EditorViewportToolBar.Background"))
+		.Cursor(EMouseCursor::Default)
 		[
 			SNew( SHorizontalBox )
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
-			.Padding( ToolbarSlotPadding )
+			.Padding(ToolbarSlotPadding)
 			[
 				SNew( SEditorViewportToolbarMenu )
 				.ParentToolBar( SharedThis( this ) )
 				.Visibility(Viewport.Pin().Get(), &SLevelViewport::GetToolbarVisibility)
-				.Cursor( EMouseCursor::Default )
-				.Image( "EditorViewportToolBar.MenuDropdown" )
+				.Image("EditorViewportToolBar.OptionsDropdown")
 				.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("EditorViewportToolBar.MenuDropdown")))
 				.OnGetMenuContent( this, &SLevelViewportToolBar::GenerateOptionsMenu )
 			]
-
 			+ SHorizontalBox::Slot()
 			[
 				SNew( SHorizontalBox )
 				.Visibility(Viewport.Pin().Get(), &SLevelViewport::GetFullToolbarVisibility)
-
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.Padding( ToolbarSlotPadding )
 				[
 					SNew( SEditorViewportToolbarMenu )
 					.ParentToolBar( SharedThis( this ) )
-					.Cursor( EMouseCursor::Default )
 					.Label( this, &SLevelViewportToolBar::GetCameraMenuLabel )
 					.LabelIcon( this, &SLevelViewportToolBar::GetCameraMenuLabelIcon )
 					.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("EditorViewportToolBar.CameraMenu")))
@@ -213,8 +211,7 @@ void SLevelViewportToolBar::Construct( const FArguments& InArgs )
 				.Padding( ToolbarSlotPadding )
 				[
 					SNew( SLevelEditorViewportViewMenu, ViewportRef, SharedThis(this) )
-					.Cursor( EMouseCursor::Default )
-					.MenuExtenders( GetViewMenuExtender() )
+					.MenuExtenders(GetViewMenuExtender())
 					.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ViewMenuButton")))
 				]
 				+ SHorizontalBox::Slot()
@@ -223,7 +220,6 @@ void SLevelViewportToolBar::Construct( const FArguments& InArgs )
 				[
 					SNew( SEditorViewportToolbarMenu )
 					.Label( LOCTEXT("ShowMenuTitle", "Show") )
-					.Cursor( EMouseCursor::Default )
 					.ParentToolBar( SharedThis( this ) )
 					.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("EditorViewportToolBar.ShowMenu")))
 					.OnGetMenuContent( this, &SLevelViewportToolBar::GenerateShowMenu ) 
@@ -232,10 +228,8 @@ void SLevelViewportToolBar::Construct( const FArguments& InArgs )
 				.AutoWidth()
 				.Padding( ToolbarSlotPadding )
 				[
-
 					SNew( SEditorViewportToolbarMenu )
 					.Label( this, &SLevelViewportToolBar::GetViewModeOptionsMenuLabel )
-					.Cursor( EMouseCursor::Default )
 					.ParentToolBar( SharedThis( this ) )
 					.Visibility( this, &SLevelViewportToolBar::GetViewModeOptionsVisibility )
 					.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("EditorViewportToolBar.ViewModeOptions")))
@@ -247,7 +241,6 @@ void SLevelViewportToolBar::Construct( const FArguments& InArgs )
 				[
 					SNew( SEditorViewportToolbarMenu )
 					.ParentToolBar( SharedThis( this ) )
-					.Cursor( EMouseCursor::Default )
 					.Label( this, &SLevelViewportToolBar::GetDevicePreviewMenuLabel )
 					.LabelIcon( this, &SLevelViewportToolBar::GetDevicePreviewMenuLabelIcon )
 					.OnGetMenuContent( this, &SLevelViewportToolBar::GenerateDevicePreviewMenu )
@@ -260,18 +253,16 @@ void SLevelViewportToolBar::Construct( const FArguments& InArgs )
 				[
 					// Button to show that realtime is off
 					SNew(SEditorViewportToolBarButton)	
-					.Cursor(EMouseCursor::Default)
 					.ButtonType(EUserInterfaceActionType::Button)
-					.ButtonStyle(&FEditorStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.MenuButtonWarning"))
+					.ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.WarningButton"))
 					.OnClicked(this, &SLevelViewportToolBar::OnRealtimeWarningClicked)
 					.Visibility(this, &SLevelViewportToolBar::GetRealtimeWarningVisibility)
 					.ToolTipText(LOCTEXT("RealtimeOff_ToolTip", "This viewport is not updating in realtime.  Click to turn on realtime mode."))
 					.Content()
 					[
 						SNew(STextBlock)
-						.Font(FEditorStyle::GetFontStyle("EditorViewportToolBar.Font"))
-						.Text(LOCTEXT("RealtimeOff", "Realtime: Off"))
-						.ColorAndOpacity(FLinearColor::Black)
+						.TextStyle(&FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("SmallText"))
+						.Text(LOCTEXT("RealtimeOff", "Realtime Off"))
 					]
 				]
 				+ SHorizontalBox::Slot()
@@ -281,51 +272,49 @@ void SLevelViewportToolBar::Construct( const FArguments& InArgs )
 					// Button to show scalability warnings
 					SNew(SEditorViewportToolbarMenu)
 					.ParentToolBar(SharedThis(this))
-					.Cursor(EMouseCursor::Default)
 					.Label(this, &SLevelViewportToolBar::GetScalabilityWarningLabel)
-					.MenuStyle(FEditorStyle::Get(), "EditorViewportToolBar.MenuButtonWarning")
+					.MenuStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.WarningButton"))
 					.OnGetMenuContent(this, &SLevelViewportToolBar::GetScalabilityWarningMenuContent)
 					.Visibility(this, &SLevelViewportToolBar::GetScalabilityWarningVisibility)
 					.ToolTipText(LOCTEXT("ScalabilityWarning_ToolTip", "Non-default scalability settings could be affecting what is shown in this viewport.\nFor example you may experience lower visual quality, reduced particle counts, and other artifacts that don't match what the scene would look like when running outside of the editor. Click to make changes."))
 				]
 				+ SHorizontalBox::Slot()
-				.Padding( ToolbarSlotPadding )
-				.HAlign( HAlign_Right )
+				.Padding(ToolbarSlotPadding)
+				.HAlign(HAlign_Right)
 				[
 					SNew(STransformViewportToolBar)
 					.Viewport(ViewportRef)
-					.CommandList(LevelEditorModule.GetGlobalLevelEditorActions())
+					.CommandList(ViewportRef->GetCommandList())
 					.Extenders(LevelEditorModule.GetToolBarExtensibilityManager()->GetAllExtenders())
 					.Visibility(ViewportRef, &SLevelViewport::GetTransformToolbarVisibility)
 				]
 				+ SHorizontalBox::Slot()
-				.HAlign( HAlign_Right )
+				.HAlign(HAlign_Right)
 				.AutoWidth()
-				.Padding( ToolbarButtonPadding )
+				.Padding(ToolbarSlotPadding)
 				[
 					//The Maximize/Minimize button is only displayed when not in Immersive mode.
-					SNew( SEditorViewportToolBarButton )
-					.Cursor( EMouseCursor::Default )
-					.ButtonType( EUserInterfaceActionType::ToggleButton )
-					.IsChecked( ViewportRef, &SLevelViewport::IsMaximized )
-					.OnClicked( ViewportRef, &SLevelViewport::OnToggleMaximize )
-					.Visibility( ViewportRef, &SLevelViewport::GetMaximizeToggleVisibility )
-					.Image( "LevelViewportToolBar.Maximize" )
-					.ToolTipText( LOCTEXT("Maximize_ToolTip", "Maximizes or restores this viewport") )
+					SNew(SEditorViewportToolBarButton)
+					.ButtonType(EUserInterfaceActionType::ToggleButton)
+					.CheckBoxStyle(&FAppStyle::Get().GetWidgetStyle<FCheckBoxStyle>("EditorViewportToolBar.MaximizeRestoreButton"))
+					.IsChecked(ViewportRef, &SLevelViewport::IsMaximized)
+					.OnClicked(ViewportRef, &SLevelViewport::OnToggleMaximize)
+					.Visibility(ViewportRef, &SLevelViewport::GetMaximizeToggleVisibility)
+					.Image("EditorViewportToolBar.Maximize")
+					.ToolTipText(LOCTEXT("Maximize_ToolTip", "Maximizes or restores this viewport"))
 				]
 				+ SHorizontalBox::Slot()
-				.HAlign( HAlign_Right )
+				.HAlign(HAlign_Right)
 				.AutoWidth()
-				.Padding( ToolbarButtonPadding )
+				.Padding(ToolbarSlotPadding)
 				[
 					//The Restore from Immersive' button is only displayed when the editor is in Immersive mode.
-					SNew( SEditorViewportToolBarButton )
-					.Cursor( EMouseCursor::Default )
-					.ButtonType( EUserInterfaceActionType::Button )
-					.OnClicked( ViewportRef, &SLevelViewport::OnToggleMaximize )
-					.Visibility( ViewportRef, &SLevelViewport::GetCloseImmersiveButtonVisibility )
-					.Image( "LevelViewportToolBar.RestoreFromImmersive.Normal" )
-					.ToolTipText( LOCTEXT("RestoreFromImmersive_ToolTip", "Restore from Immersive") )
+					SNew(SEditorViewportToolBarButton)
+					.ButtonType(EUserInterfaceActionType::Button)
+					.OnClicked(ViewportRef, &SLevelViewport::OnToggleMaximize)
+					.Visibility(ViewportRef, &SLevelViewport::GetCloseImmersiveButtonVisibility)
+					.Image("EditorViewportToolBar.RestoreFromImmersive.Normal")
+					.ToolTipText(LOCTEXT("RestoreFromImmersive_ToolTip", "Restore from Immersive"))
 				]
 			]
 		]
@@ -358,6 +347,17 @@ FText SLevelViewportToolBar::GetCameraMenuLabel() const
 	}
 
 	return LOCTEXT("CameraMenuTitle_Default", "Camera");
+}
+
+const FSlateBrush* SLevelViewportToolBar::GetCameraMenuLabelIcon() const
+{
+	TSharedPtr< SLevelViewport > PinnedViewport( Viewport.Pin() );
+	if( PinnedViewport.IsValid() )
+	{
+		return GetCameraMenuLabelIconFromViewportType(PinnedViewport->GetLevelViewportClient().ViewportType );
+	}
+
+	return FStyleDefaults::GetNoBrush();
 }
 
 FText SLevelViewportToolBar::GetDevicePreviewMenuLabel() const
@@ -394,18 +394,7 @@ const FSlateBrush* SLevelViewportToolBar::GetDevicePreviewMenuLabelIcon() const
 		return FEditorStyle::GetOptionalBrush( PlatformIcon );
 	}
 
-	return NULL;
-}
-
-const FSlateBrush* SLevelViewportToolBar::GetCameraMenuLabelIcon() const
-{
-	TSharedPtr< SLevelViewport > PinnedViewport( Viewport.Pin() );
-	if( PinnedViewport.IsValid() )
-	{
-		return GetCameraMenuLabelIconFromViewportType(PinnedViewport->GetLevelViewportClient().ViewportType);
-	}
-
-	return FEditorStyle::GetBrush(NAME_None);
+	return nullptr;
 }
 
 bool SLevelViewportToolBar::IsCurrentLevelViewport() const
@@ -605,7 +594,9 @@ static void OnGenerateBookmarkMenu(UToolMenu* Menu, TWeakPtr<class SLevelViewpor
 				"ClearBookmark",
 				LOCTEXT("ClearBookmarkSubMenu", "Clear Bookmark"),
 				LOCTEXT("ClearBookmarkSubMenu_ToolTip", "Clear viewport bookmarks"),
-				FNewToolMenuDelegate::CreateStatic( &OnGenerateClearBookmarkMenu, Viewport )
+				FNewToolMenuDelegate::CreateStatic( &OnGenerateClearBookmarkMenu, Viewport ),
+				false,
+				FSlateIcon(FAppStyle::Get().GetStyleSetName(), "EditorViewport.SubMenu.Bookmarks")
 				);
 
 			Section.AddMenuEntry( Actions.ClearAllBookmarks );
@@ -671,27 +662,37 @@ void SLevelViewportToolBar::FillOptionsMenu(UToolMenu* Menu)
 					
 			}
 
-			Section.AddMenuEntry(FEditorViewportCommands::Get().ToggleStats);
 			Section.AddMenuEntry(FEditorViewportCommands::Get().ToggleFPS);
-			Section.AddMenuEntry(LevelViewportActions.ToggleViewportToolbar);
 
-			FText HideAllLabel = LOCTEXT("HideAllLabel", "Hide All");
+#if STATS
 			TArray< FLevelViewportCommands::FShowMenuCommand > HideStatsMenu;
 
-			// 'Hide All' button
-			HideStatsMenu.Add(FLevelViewportCommands::FShowMenuCommand(LevelViewportActions.HideAllStats, HideAllLabel));
-
+			Section.AddMenuEntry(FEditorViewportCommands::Get().ToggleStats);
 			Section.AddSubMenu(
 				"ShowStatsMenu",
 				LOCTEXT("ShowStatsMenu", "Stat"),
 				LOCTEXT("ShowStatsMenu_ToolTip", "Show Stat commands"),
-				FNewToolMenuDelegate::CreateStatic(&FillShowStatsSubMenus, HideStatsMenu, LevelViewportActions.ShowStatCatCommands));
+				FNewToolMenuDelegate::CreateStatic(&FillShowStatsSubMenus, HideStatsMenu, LevelViewportActions.ShowStatCatCommands),
+				false,
+				FSlateIcon(FAppStyle::Get().GetStyleSetName(), "EditorViewport.SubMenu.Stats"));
 
-			if (bIsPerspective)
+
+
+
+			FText HideAllLabel = LOCTEXT("HideAllLabel", "Hide All");
+		
+			// 'Hide All' button
+			HideStatsMenu.Add(FLevelViewportCommands::FShowMenuCommand(LevelViewportActions.HideAllStats, HideAllLabel));
+#endif
+
+			Section.AddMenuEntry(LevelViewportActions.ToggleViewportToolbar);
+
+			if( bIsPerspective )
 			{
 				Section.AddEntry(FToolMenuEntry::InitWidget("FOVAngle", GenerateFOVMenu(), LOCTEXT("FOVAngle", "Field of View (H)")));
 				Section.AddEntry(FToolMenuEntry::InitWidget("FarViewPlane", GenerateFarViewPlaneMenu(), LOCTEXT("FarViewPlane", "Far View Plane")));
 			}
+
 
 			// for the TemporalUpscaler plugin to inject its UI
 
@@ -708,6 +709,7 @@ void SLevelViewportToolBar::FillOptionsMenu(UToolMenu* Menu)
 
 				bAddDefaultScreenPercentageSlider = !GCustomEditorStaticScreenPercentage->GenerateEditorViewportOptionsMenuEntry(Arguments);
 			}
+
 
 			if (bAddDefaultScreenPercentageSlider)
 			{
@@ -739,14 +741,18 @@ void SLevelViewportToolBar::FillOptionsMenu(UToolMenu* Menu)
 					"Bookmark",
 					LOCTEXT("BookmarkSubMenu", "Bookmarks"),
 					LOCTEXT("BookmarkSubMenu_ToolTip", "Viewport location bookmarking"),
-					FNewToolMenuDelegate::CreateStatic(&OnGenerateBookmarkMenu, Viewport)
+					FNewToolMenuDelegate::CreateStatic(&OnGenerateBookmarkMenu, Viewport),
+					false,
+					FSlateIcon(FAppStyle::Get().GetStyleSetName(), "EditorViewport.SubMenu.Bookmarks")
 				);
 
 				Section.AddSubMenu(
 					"Camera",
 					LOCTEXT("CameraSubMeun", "Create Camera Here"),
 					LOCTEXT("CameraSubMenu_ToolTip", "Select a camera type to create at current viewport's location"),
-					FNewToolMenuDelegate::CreateSP(this, &SLevelViewportToolBar::GenerateCameraSpawnMenu)
+					FNewToolMenuDelegate::CreateSP(this, &SLevelViewportToolBar::GenerateCameraSpawnMenu),
+					false,
+					FSlateIcon(FAppStyle::Get().GetStyleSetName(), "EditorViewport.SubMenu.CreateCamera")
 				);
 			}
 
@@ -760,7 +766,10 @@ void SLevelViewportToolBar::FillOptionsMenu(UToolMenu* Menu)
 				"Configs",
 				LOCTEXT("ConfigsSubMenu", "Layouts"),
 				FText::GetEmpty(),
-				FNewToolMenuDelegate::CreateSP(this, &SLevelViewportToolBar::GenerateViewportConfigsMenu));
+				FNewToolMenuDelegate::CreateSP(this, &SLevelViewportToolBar::GenerateViewportConfigsMenu),
+				false,
+				FSlateIcon(FAppStyle::Get().GetStyleSetName(), "EditorViewport.SubMenu.Layouts")
+			);
 		}
 
 		{
@@ -1028,7 +1037,7 @@ void SLevelViewportToolBar::GenerateViewportConfigsMenu(UToolMenu* Menu) const
 	{
 		FToolMenuSection& Section = Menu->AddSection("LevelViewportOnePaneConfigs", LOCTEXT("OnePaneConfigHeader", "One Pane"));
 
-		FToolBarBuilder OnePaneButton(CommandList, FMultiBoxCustomization::None);
+		FSlimHorizontalToolBarBuilder OnePaneButton(CommandList, FMultiBoxCustomization::None);
 		OnePaneButton.SetLabelVisibility(EVisibility::Collapsed);
 		OnePaneButton.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
 
@@ -1053,7 +1062,7 @@ void SLevelViewportToolBar::GenerateViewportConfigsMenu(UToolMenu* Menu) const
 
 	{
 		FToolMenuSection& Section = Menu->AddSection("LevelViewportTwoPaneConfigs", LOCTEXT("TwoPaneConfigHeader", "Two Panes"));
-		FToolBarBuilder TwoPaneButtons(CommandList, FMultiBoxCustomization::None);
+		FSlimHorizontalToolBarBuilder TwoPaneButtons(CommandList, FMultiBoxCustomization::None);
 		TwoPaneButtons.SetLabelVisibility(EVisibility::Collapsed);
 		TwoPaneButtons.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
 
@@ -1079,7 +1088,7 @@ void SLevelViewportToolBar::GenerateViewportConfigsMenu(UToolMenu* Menu) const
 
 	{
 		FToolMenuSection& Section = Menu->AddSection("LevelViewportThreePaneConfigs", LOCTEXT("ThreePaneConfigHeader", "Three Panes"));
-		FToolBarBuilder ThreePaneButtons(CommandList, FMultiBoxCustomization::None);
+		FSlimHorizontalToolBarBuilder ThreePaneButtons(CommandList, FMultiBoxCustomization::None);
 		ThreePaneButtons.SetLabelVisibility(EVisibility::Collapsed);
 		ThreePaneButtons.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
 
@@ -1107,7 +1116,7 @@ void SLevelViewportToolBar::GenerateViewportConfigsMenu(UToolMenu* Menu) const
 
 	{
 		FToolMenuSection& Section = Menu->AddSection("LevelViewportFourPaneConfigs", LOCTEXT("FourPaneConfigHeader", "Four Panes"));
-		FToolBarBuilder FourPaneButtons(CommandList, FMultiBoxCustomization::None);
+		FSlimHorizontalToolBarBuilder FourPaneButtons(CommandList, FMultiBoxCustomization::None);
 		FourPaneButtons.SetLabelVisibility(EVisibility::Collapsed);
 		FourPaneButtons.SetStyle(&FEditorStyle::Get(), "ViewportLayoutToolbar");
 
@@ -1177,6 +1186,9 @@ void SLevelViewportToolBar::FillShowMenu(UToolMenu* Menu) const
 		FText ShowAllLabel = LOCTEXT("ShowAllLabel", "Show All");
 		FText HideAllLabel = LOCTEXT("HideAllLabel", "Hide All");
 
+		FLevelEditorViewportClient& ViewClient = Viewport.Pin()->GetLevelViewportClient();
+		const UWorld* World = ViewClient.GetWorld();
+
 		{
 			FToolMenuSection& Section = Menu->AddSection("LevelViewportEditorShow", LOCTEXT("EditorShowHeader", "Editor"));
 			// Show Volumes sub-menu
@@ -1191,13 +1203,14 @@ void SLevelViewportToolBar::FillShowMenu(UToolMenu* Menu) const
 				ShowVolumesMenu += Actions.ShowVolumeCommands;
 
 				Section.AddSubMenu("ShowVolumes", LOCTEXT("ShowVolumesMenu", "Volumes"), LOCTEXT("ShowVolumesMenu_ToolTip", "Show volumes flags"),
-					FNewToolMenuDelegate::CreateStatic(&FillShowMenuStatic, ShowVolumesMenu, 2));
+					FNewToolMenuDelegate::CreateStatic(&FillShowMenuStatic, ShowVolumesMenu, 2), false, FSlateIcon(FAppStyle::Get().GetStyleSetName(), "ShowFlagsMenu.SubMenu.Volumes"));
 			}
 
 			// Show Layers sub-menu is dynamically generated when the user enters 'show' menu
+			if (!UWorld::HasSubsystem<UWorldPartitionSubsystem>(World))
 			{
 				Section.AddSubMenu("ShowLayers", LOCTEXT("ShowLayersMenu", "Layers"), LOCTEXT("ShowLayersMenu_ToolTip", "Show layers flags"),
-					FNewToolMenuDelegate::CreateStatic(&SLevelViewportToolBar::FillShowLayersMenu, Viewport));
+					FNewToolMenuDelegate::CreateStatic(&SLevelViewportToolBar::FillShowLayersMenu, Viewport), false, FSlateIcon(FAppStyle::Get().GetStyleSetName(), "ShowFlagsMenu.SubMenu.Layers"));
 			}
 
 			// Show Sprites sub-menu
@@ -1212,13 +1225,13 @@ void SLevelViewportToolBar::FillShowMenu(UToolMenu* Menu) const
 				ShowSpritesMenu += Actions.ShowSpriteCommands;
 
 				Section.AddSubMenu("ShowSprites", LOCTEXT("ShowSpritesMenu", "Sprites"), LOCTEXT("ShowSpritesMenu_ToolTip", "Show sprites flags"),
-					FNewToolMenuDelegate::CreateStatic(&FillShowMenuStatic, ShowSpritesMenu, 2));
+					FNewToolMenuDelegate::CreateStatic(&FillShowMenuStatic, ShowSpritesMenu, 2), false, FSlateIcon(FAppStyle::Get().GetStyleSetName(), "ShowFlagsMenu.SubMenu.Sprites"));
 			}
 
 			// Show 'Foliage types' sub-menu is dynamically generated when the user enters 'show' menu
 			{
 				Section.AddSubMenu("ShowFoliageTypes", LOCTEXT("ShowFoliageTypesMenu", "Foliage Types"), LOCTEXT("ShowFoliageTypesMenu_ToolTip", "Show/hide specific foliage types"),
-					FNewToolMenuDelegate::CreateStatic(&SLevelViewportToolBar::FillShowFoliageTypesMenu, Viewport));
+					FNewToolMenuDelegate::CreateStatic(&SLevelViewportToolBar::FillShowFoliageTypesMenu, Viewport), false, FSlateIcon(FAppStyle::Get().GetStyleSetName(), "ShowFlagsMenu.SubMenu.FoliageTypes"));
 			}
 
 		}
@@ -1267,12 +1280,18 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateFOVMenu() const
 			.Padding( FMargin(4.0f, 0.0f, 0.0f, 0.0f) )
 			.WidthOverride( 100.0f )
 			[
-				SNew(SSpinBox<float>)
-				.Font( FEditorStyle::GetFontStyle( TEXT( "MenuItem.Font" ) ) )
-				.MinValue(FOVMin)
-				.MaxValue(FOVMax)
-				.Value( this, &SLevelViewportToolBar::OnGetFOVValue )
-				.OnValueChanged( const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::OnFOVValueChanged )
+				SNew ( SBorder )
+				.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+				.Padding(FMargin(1.0f))
+				[
+					SNew(SSpinBox<float>)
+					.Style(&FAppStyle::Get(), "Menu.SpinBox")
+					.Font( FEditorStyle::GetFontStyle( TEXT( "MenuItem.Font" ) ) )
+					.MinValue(FOVMin)
+					.MaxValue(FOVMax)
+					.Value( this, &SLevelViewportToolBar::OnGetFOVValue )
+					.OnValueChanged( const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::OnFOVValueChanged )
+				]
 			]
 		];
 }
@@ -1307,8 +1326,8 @@ void SLevelViewportToolBar::OnFOVValueChanged( float NewValue )
 
 TSharedRef<SWidget> SLevelViewportToolBar::GenerateScreenPercentageMenu() const
 {
-	const int32 PreviewScreenPercentageMin = FSceneViewScreenPercentageConfig::kMinTAAUpsampleResolutionFraction * 100.0f;
-	const int32 PreviewScreenPercentageMax = FSceneViewScreenPercentageConfig::kMaxTAAUpsampleResolutionFraction * 100.0f;
+	const int32 PreviewScreenPercentageMin = ISceneViewFamilyScreenPercentage::kMinTSRResolutionFraction * 100.0f;
+	const int32 PreviewScreenPercentageMax = ISceneViewFamilyScreenPercentage::kMaxTSRResolutionFraction * 100.0f;
 
 	return
 		SNew(SBox)
@@ -1317,15 +1336,21 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateScreenPercentageMenu() const
 		[
 			SNew(SBox)
 			.Padding(FMargin(4.0f, 0.0f, 0.0f, 0.0f))
-		.WidthOverride(100.0f)
-		[
-			SNew(SSpinBox<int32>)
-			.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
-		.MinValue(PreviewScreenPercentageMin)
-		.MaxValue(PreviewScreenPercentageMax)
-		.Value(this, &SLevelViewportToolBar::OnGetScreenPercentageValue)
-		.OnValueChanged(const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::OnScreenPercentageValueChanged)
-		]
+			.WidthOverride(100.0f)
+			[
+				SNew ( SBorder )
+				.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+				.Padding(FMargin(1.0f))
+				[
+					SNew(SSpinBox<int32>)
+					.Style(&FAppStyle::Get(), "Menu.SpinBox")
+					.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
+					.MinSliderValue(PreviewScreenPercentageMin)
+					.MaxSliderValue(PreviewScreenPercentageMax)
+					.Value(this, &SLevelViewportToolBar::OnGetScreenPercentageValue)
+					.OnValueChanged(const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::OnScreenPercentageValueChanged)
+				]
+			]
 		];
 }
 
@@ -1356,13 +1381,19 @@ TSharedRef<SWidget> SLevelViewportToolBar::GenerateFarViewPlaneMenu() const
 			.Padding(FMargin(4.0f, 0.0f, 0.0f, 0.0f))
 			.WidthOverride(100.0f)
 			[
-				SNew(SSpinBox<float>)
-				.ToolTipText(LOCTEXT("FarViewPlaneTooltip", "Distance to use as the far view plane, or zero to enable an infinite far view plane"))
-				.MinValue(0.0f)
-				.MaxValue(100000.0f)
-				.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
-				.Value(this, &SLevelViewportToolBar::OnGetFarViewPlaneValue)
-				.OnValueChanged(const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::OnFarViewPlaneValueChanged)
+				SNew ( SBorder )
+				.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+				.Padding(FMargin(1.0f))
+				[
+					SNew(SSpinBox<float>)
+					.Style(&FAppStyle::Get(), "Menu.SpinBox")
+					.ToolTipText(LOCTEXT("FarViewPlaneTooltip", "Distance to use as the far view plane, or zero to enable an infinite far view plane"))
+					.MinValue(0.0f)
+					.MaxValue(100000.0f)
+					.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
+					.Value(this, &SLevelViewportToolBar::OnGetFarViewPlaneValue)
+					.OnValueChanged(const_cast<SLevelViewportToolBar*>(this), &SLevelViewportToolBar::OnFarViewPlaneValueChanged)
+				]
 			]
 		];
 }
@@ -1522,6 +1553,78 @@ void SLevelViewportToolBar::FillViewMenu(UToolMenu* Menu)
 	}
 
 	{
+		FToolMenuSection& Section = Menu->FindOrAddSection("ViewMode");
+		Section.AddSubMenu(
+			"VisualizeNaniteViewMode",
+			LOCTEXT("VisualizeNaniteViewModeDisplayName", "Nanite Visualization"),
+			LOCTEXT("NaniteVisualizationMenu_ToolTip", "Select a mode for Nanite visualization"),
+			FNewMenuDelegate::CreateStatic(&FNaniteVisualizationMenuCommands::BuildVisualisationSubMenu),
+			FUIAction(
+				FExecuteAction(),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda([this]()
+				{
+					const TSharedRef<SEditorViewport> ViewportRef = Viewport.Pin().ToSharedRef();
+					const TSharedPtr<FEditorViewportClient> ViewportClient = ViewportRef->GetViewportClient();
+					check(ViewportClient.IsValid());
+					return ViewportClient->IsViewModeEnabled(VMI_VisualizeNanite);
+				})
+			),
+			EUserInterfaceActionType::RadioButton,
+			/* bInOpenSubMenuOnClick = */ false,
+			FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorViewport.VisualizeNaniteMode")
+		);
+	}
+
+	{
+		FToolMenuSection& Section = Menu->FindOrAddSection("ViewMode");
+		Section.AddSubMenu(
+			"VisualizeLumenViewMode",
+			LOCTEXT("VisualizeLumenViewModeDisplayName", "Lumen"),
+			LOCTEXT("LumenVisualizationMenu_ToolTip", "Select a mode for Lumen visualization"),
+			FNewMenuDelegate::CreateStatic(&FLumenVisualizationMenuCommands::BuildVisualisationSubMenu),
+			FUIAction(
+				FExecuteAction(),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda([this]()
+					{
+						const TSharedRef<SEditorViewport> ViewportRef = Viewport.Pin().ToSharedRef();
+						const TSharedPtr<FEditorViewportClient> ViewportClient = ViewportRef->GetViewportClient();
+						check(ViewportClient.IsValid());
+						return ViewportClient->IsViewModeEnabled(VMI_VisualizeLumen);
+					})
+			),
+			EUserInterfaceActionType::RadioButton,
+						/* bInOpenSubMenuOnClick = */ false,
+						FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorViewport.VisualizeLumenMode")
+						);
+	}
+
+	{
+		FToolMenuSection& Section = Menu->FindOrAddSection("ViewMode");
+		Section.AddSubMenu(
+			"VisualizeVirtualShadowMapViewMode",
+			LOCTEXT("VisualizeVirtualShadowMapViewModeDisplayName", "Virtual Shadow Map"),
+			LOCTEXT("VirtualShadowMapVisualizationMenu_ToolTip", "Select a mode for virtual shadow map visualization. Select a light component in the world outliner to visualize that light."),
+			FNewMenuDelegate::CreateStatic(&FVirtualShadowMapVisualizationMenuCommands::BuildVisualisationSubMenu),
+			FUIAction(
+				FExecuteAction(),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda([this]()
+					{
+						const TSharedRef<SEditorViewport> ViewportRef = Viewport.Pin().ToSharedRef();
+						const TSharedPtr<FEditorViewportClient> ViewportClient = ViewportRef->GetViewportClient();
+						check(ViewportClient.IsValid());
+						return ViewportClient->IsViewModeEnabled(VMI_VisualizeVirtualShadowMap);
+					})
+			),
+			EUserInterfaceActionType::RadioButton,
+			/* bInOpenSubMenuOnClick = */ false,
+			FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorViewport.VisualizeVirtualShadowMapMode")
+			);
+	}
+
+	{
 		FToolMenuSection& Section = Menu->AddSection("LevelViewportLandscape", LOCTEXT("LandscapeHeader", "Landscape"), InsertPosition);
 
 		struct Local
@@ -1572,7 +1675,7 @@ void SLevelViewportToolBar::FillViewMenu(UToolMenu* Menu)
 			LOCTEXT("LandscapeLODMenu_ToolTip", "Override Landscape LOD in this viewport"),
 			FNewToolMenuDelegate::CreateStatic(&Local::BuildLandscapeLODMenu, this),
 			/*bInOpenSubMenuOnClick=*/ false,
-			FSlateIcon()
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "EditorViewport.LOD")
 		);
 	}
 }
@@ -1631,7 +1734,7 @@ EVisibility SLevelViewportToolBar::GetRealtimeWarningVisibility() const
 {
 	FLevelEditorViewportClient& ViewportClient = Viewport.Pin()->GetLevelViewportClient();
 	// If the viewport is not realtime and there is no override then realtime is off
-	return !ViewportClient.IsRealtime() && !ViewportClient.IsRealtimeOverrideSet() ? EVisibility::Visible : EVisibility::Collapsed;
+	return !ViewportClient.IsRealtime() && !ViewportClient.IsRealtimeOverrideSet() && ViewportClient.IsPerspective() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FText SLevelViewportToolBar::GetScalabilityWarningLabel() const
@@ -1648,7 +1751,7 @@ FText SLevelViewportToolBar::GetScalabilityWarningLabel() const
 EVisibility SLevelViewportToolBar::GetScalabilityWarningVisibility() const
 {
 	//This method returns magic numbers. 3 means epic
-	return GetDefault<UEditorPerformanceSettings>()->bEnableScalabilityWarningIndicator && Scalability::GetQualityLevels().GetMinQualityLevel() < 3 ? EVisibility::Visible : EVisibility::Collapsed;
+	return GetDefault<UEditorPerformanceSettings>()->bEnableScalabilityWarningIndicator && Scalability::GetQualityLevels().GetMinQualityLevel() != 3 ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 TSharedRef<SWidget> SLevelViewportToolBar::GetScalabilityWarningMenuContent() const

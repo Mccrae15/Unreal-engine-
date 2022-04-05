@@ -35,18 +35,18 @@ public:
 			const TSharedPtr<FUntypedTable> UntypedTablePtr = StaticCastSharedPtr<FUntypedTable>(TablePtr);
 			if (UntypedTablePtr.IsValid())
 			{
-				TSharedPtr<Trace::IUntypedTableReader> Reader = UntypedTablePtr->GetTableReader();
+				TSharedPtr<TraceServices::IUntypedTableReader> Reader = UntypedTablePtr->GetTableReader();
 				if (Reader.IsValid() && TableTreeNode.GetRowId().HasValidIndex())
 				{
 					Reader->SetRowIndex(TableTreeNode.GetRowId().RowIndex);
 					const int32 ColumnIndex = Column.GetIndex();
 					switch (DataType)
 					{
-						case ETableCellDataType::Bool:    return TOptional<FTableCellValue>(Reader->GetValueBool(ColumnIndex));
-						case ETableCellDataType::Int64:   return TOptional<FTableCellValue>(Reader->GetValueInt(ColumnIndex));
-						case ETableCellDataType::Float:   return TOptional<FTableCellValue>(Reader->GetValueFloat(ColumnIndex));
-						case ETableCellDataType::Double:  return TOptional<FTableCellValue>(Reader->GetValueDouble(ColumnIndex));
-						case ETableCellDataType::CString: return TOptional<FTableCellValue>(Reader->GetValueCString(ColumnIndex));
+						case ETableCellDataType::Bool:    return TOptional<FTableCellValue>(FTableCellValue(Reader->GetValueBool(ColumnIndex)));
+						case ETableCellDataType::Int64:   return TOptional<FTableCellValue>(FTableCellValue(Reader->GetValueInt(ColumnIndex)));
+						case ETableCellDataType::Float:   return TOptional<FTableCellValue>(FTableCellValue(Reader->GetValueFloat(ColumnIndex)));
+						case ETableCellDataType::Double:  return TOptional<FTableCellValue>(FTableCellValue(Reader->GetValueDouble(ColumnIndex)));
+						case ETableCellDataType::CString: return TOptional<FTableCellValue>(FTableCellValue(Reader->GetValueCString(ColumnIndex)));
 					}
 				}
 			}
@@ -100,7 +100,7 @@ void FUntypedTable::Reset()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool AreTableLayoutsEqual(const Trace::ITableLayout& TableLayoutA, const Trace::ITableLayout& TableLayoutB)
+bool AreTableLayoutsEqual(const TraceServices::ITableLayout& TableLayoutA, const TraceServices::ITableLayout& TableLayoutB)
 {
 	if (TableLayoutA.GetColumnCount() != TableLayoutB.GetColumnCount())
 	{
@@ -125,7 +125,7 @@ bool AreTableLayoutsEqual(const Trace::ITableLayout& TableLayoutA, const Trace::
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool FUntypedTable::UpdateSourceTable(TSharedPtr<Trace::IUntypedTable> InSourceTable)
+bool FUntypedTable::UpdateSourceTable(TSharedPtr<TraceServices::IUntypedTable> InSourceTable)
 {
 	bool bTableLayoutChanged;
 
@@ -156,7 +156,7 @@ bool FUntypedTable::UpdateSourceTable(TSharedPtr<Trace::IUntypedTable> InSourceT
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FUntypedTable::CreateColumns(const Trace::ITableLayout& TableLayout)
+void FUntypedTable::CreateColumns(const TraceServices::ITableLayout& TableLayout)
 {
 	ensure(GetColumnCount() == 0);
 	const int32 ColumnCount = TableLayout.GetColumnCount();
@@ -170,8 +170,8 @@ void FUntypedTable::CreateColumns(const Trace::ITableLayout& TableLayout)
 	// Look for first string column.
 	//for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
 	//{
-	//	Trace::ETableColumnType ColumnType = TableLayout.GetColumnType(ColumnIndex);
-	//	if (ColumnType == Trace::TableColumnType_CString)
+	//	TraceServices::ETableColumnType ColumnType = TableLayout.GetColumnType(ColumnIndex);
+	//	if (ColumnType == TraceServices::TableColumnType_CString)
 	//	{
 	//		HierarchyColumnIndex = ColumnIndex;
 	//		HierarchyColumnName = TableLayout.GetColumnName(ColumnIndex);
@@ -185,7 +185,8 @@ void FUntypedTable::CreateColumns(const Trace::ITableLayout& TableLayout)
 
 	for (int32 ColumnIndex = 0; ColumnIndex < ColumnCount; ++ColumnIndex)
 	{
-		Trace::ETableColumnType ColumnType = TableLayout.GetColumnType(ColumnIndex);
+		TraceServices::ETableColumnType ColumnType = TableLayout.GetColumnType(ColumnIndex);
+		uint32 ColumnDisplayHintFlags = TableLayout.GetColumnDisplayHintFlags(ColumnIndex);
 		const TCHAR* ColumnName = TableLayout.GetColumnName(ColumnIndex);
 
 		TSharedRef<FTableColumn> ColumnRef = MakeShared<FTableColumn>(FName(ColumnName));
@@ -210,7 +211,7 @@ void FUntypedTable::CreateColumns(const Trace::ITableLayout& TableLayout)
 
 		switch (ColumnType)
 		{
-		case Trace::TableColumnType_Bool:
+		case TraceServices::TableColumnType_Bool:
 			Column.SetDataType(ETableCellDataType::Bool);
 			HorizontalAlignment = HAlign_Right;
 			InitialColumnWidth = 40.0f;
@@ -220,43 +221,64 @@ void FUntypedTable::CreateColumns(const Trace::ITableLayout& TableLayout)
 			SorterPtr = MakeShared<FSorterByBoolValue>(ColumnRef);
 			break;
 
-		case Trace::TableColumnType_Int:
+		case TraceServices::TableColumnType_Int:
 			Column.SetDataType(ETableCellDataType::Int64);
-			Aggregation = ETableColumnAggregation::Sum;
+			if (ColumnDisplayHintFlags & TraceServices::TableColumnDisplayHint_Summable)
+			{
+				Aggregation = ETableColumnAggregation::Sum;
+			}
 			HorizontalAlignment = HAlign_Right;
 			InitialColumnWidth = 60.0f;
-			//TODO: if (Hint == AsMemory)
-			//{
-			//	FormatterPtr = MakeShared<FInt64ValueFormatterAsMemory>();
-			//}
-			//else // AsNumber
-			FormatterPtr = MakeShared<FInt64ValueFormatterAsNumber>();
+			if (ColumnDisplayHintFlags & TraceServices::TableColumnDisplayHint_Memory)
+			{
+				FormatterPtr = MakeShared<FInt64ValueFormatterAsMemory>();
+			}
+			else
+			{
+				FormatterPtr = MakeShared<FInt64ValueFormatterAsNumber>();
+			}
 			SorterPtr = MakeShared<FSorterByInt64Value>(ColumnRef);
 			break;
 
-		case Trace::TableColumnType_Float:
+		case TraceServices::TableColumnType_Float:
 			Column.SetDataType(ETableCellDataType::Float);
-			Aggregation = ETableColumnAggregation::Sum;
+			if (ColumnDisplayHintFlags & TraceServices::TableColumnDisplayHint_Summable)
+			{
+				Aggregation = ETableColumnAggregation::Sum;
+			}
 			HorizontalAlignment = HAlign_Right;
 			InitialColumnWidth = 60.0f;
-			//TODO: if (Hint == AsTimeMs)
-			//else // if (Hint == AsTimeAuto)
-			FormatterPtr = MakeShared<FFloatValueFormatterAsTimeAuto>();
+			if (ColumnDisplayHintFlags & TraceServices::TableColumnDisplayHint_Time)
+			{
+				FormatterPtr = MakeShared<FFloatValueFormatterAsTimeAuto>();
+			}
+			else
+			{
+				FormatterPtr = MakeShared<FFloatValueFormatterAsNumber>();
+			}
 			SorterPtr = MakeShared<FSorterByFloatValue>(ColumnRef);
 			break;
 
-		case Trace::TableColumnType_Double:
+		case TraceServices::TableColumnType_Double:
 			Column.SetDataType(ETableCellDataType::Double);
-			Aggregation = ETableColumnAggregation::Sum;
+			if (ColumnDisplayHintFlags & TraceServices::TableColumnDisplayHint_Summable)
+			{
+				Aggregation = ETableColumnAggregation::Sum;
+			}
 			HorizontalAlignment = HAlign_Right;
 			InitialColumnWidth = 80.0f;
-			//TODO: if (Hint == AsTimeMs)
-			//else // if (Hint == AsTimeAuto)
-			FormatterPtr = MakeShared<FDoubleValueFormatterAsTimeAuto>();
+			if (ColumnDisplayHintFlags & TraceServices::TableColumnDisplayHint_Time)
+			{
+				FormatterPtr = MakeShared<FDoubleValueFormatterAsTimeAuto>();
+			}
+			else
+			{
+				FormatterPtr = MakeShared<FDoubleValueFormatterAsNumber>();
+			}
 			SorterPtr = MakeShared<FSorterByDoubleValue>(ColumnRef);
 			break;
 
-		case Trace::TableColumnType_CString:
+		case TraceServices::TableColumnType_CString:
 			Column.SetDataType(ETableCellDataType::CString);
 			HorizontalAlignment = HAlign_Left;
 			InitialColumnWidth = FMath::Max(120.0f, 6.0f * ColumnNameStr.Len());

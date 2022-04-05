@@ -27,16 +27,6 @@ public class PhysXCookingLib : ModuleRules
             RuntimeDependencies.Add(FileName, StagedFileType.NonUFS);
             RuntimeDependencies.Add(Path.ChangeExtension(FileName, ".pdb"), StagedFileType.DebugNonUFS);
         }
-        else if (Target.Platform == UnrealTargetPlatform.Win32)
-        {
-            PublicAdditionalLibraries.Add(String.Format("{0}/Win32/VS{1}/PhysX3Cooking{2}_x86.lib", PhysXLibDir, Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), LibrarySuffix));
-            PublicDelayLoadDLLs.Add(String.Format("PhysX3Cooking{0}_x86.dll", LibrarySuffix));
-
-            string PhysXBinariesDir = String.Format("$(EngineDir)/Binaries/ThirdParty/PhysX3/Win32/VS{0}/", Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
-            string FileName = PhysXBinariesDir + String.Format("PhysX3Cooking{0}_x86.dll", LibrarySuffix);
-            RuntimeDependencies.Add(FileName, StagedFileType.NonUFS);
-            RuntimeDependencies.Add(Path.ChangeExtension(FileName, ".pdb"), StagedFileType.DebugNonUFS);
-        }
         else if (Target.Platform == UnrealTargetPlatform.Mac)
         {
             string PhysXBinariesDir = Target.UEThirdPartyBinariesDirectory + "PhysX3/Mac/";
@@ -48,15 +38,13 @@ public class PhysXCookingLib : ModuleRules
         else if (Target.Platform == UnrealTargetPlatform.Android)
         {
             PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Android", "ARM64", String.Format("libPhysX3Cooking{0}.a", LibrarySuffix)));
-            PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Android", "ARMv7", String.Format("libPhysX3Cooking{0}.a", LibrarySuffix)));
             PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Android", "x64", String.Format("libPhysX3Cooking{0}.a", LibrarySuffix)));
-            PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Android", "x86", String.Format("libPhysX3Cooking{0}.a", LibrarySuffix)));
         }
-        else if (Target.Platform == UnrealTargetPlatform.Linux)
+        else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
         {
             if (Target.Architecture != "arm-unknown-linux-gnueabihf")
             {
-                PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Linux", Target.Architecture, String.Format("libPhysX3Cooking{0}.a", LibrarySuffix)));
+                PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Unix", Target.Architecture, String.Format("libPhysX3Cooking{0}.a", LibrarySuffix)));
             }
         }
         else if (Target.Platform == UnrealTargetPlatform.IOS)

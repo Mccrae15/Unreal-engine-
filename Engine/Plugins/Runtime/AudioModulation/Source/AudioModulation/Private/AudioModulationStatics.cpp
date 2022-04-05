@@ -10,7 +10,7 @@
 #include "CoreGlobals.h"
 #include "Engine/Engine.h"
 #include "HAL/IConsoleManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
 #include "SoundControlBus.h"
@@ -117,7 +117,7 @@ void UAudioModulationStatics::ActivateBus(const UObject* WorldContextObject, USo
 	}
 
 	UWorld* World = GetAudioWorld(WorldContextObject);
-	if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+	if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 	{
 		ModSystem->ActivateBus(*Bus);
 	}
@@ -128,7 +128,7 @@ void UAudioModulationStatics::ActivateBusMix(const UObject* WorldContextObject, 
 	if (BusMix)
 	{
 		UWorld* World = GetAudioWorld(WorldContextObject);
-		if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 		{
 			ModSystem->ActivateBusMix(*BusMix);
 		}
@@ -138,7 +138,7 @@ void UAudioModulationStatics::ActivateBusMix(const UObject* WorldContextObject, 
 void UAudioModulationStatics::ActivateGenerator(const UObject* WorldContextObject, USoundModulationGenerator* Generator)
 {
 	UWorld* World = GetAudioWorld(WorldContextObject);
-	if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+	if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 	{
 		if (Generator)
 		{
@@ -154,7 +154,7 @@ UWorld* UAudioModulationStatics::GetAudioWorld(const UObject* WorldContextObject
 		return nullptr;
 	}
 
-	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull);
 	if (!World || !World->bAllowAudioPlayback || World->IsNetMode(NM_DedicatedServer))
 	{
 		return nullptr;
@@ -163,7 +163,7 @@ UWorld* UAudioModulationStatics::GetAudioWorld(const UObject* WorldContextObject
 	return World;
 }
 
-AudioModulation::FAudioModulation* UAudioModulationStatics::GetModulation(UWorld* World)
+AudioModulation::FAudioModulationManager* UAudioModulationStatics::GetModulation(UWorld* World)
 {
 	FAudioDeviceHandle AudioDevice;
 	if (World)
@@ -180,30 +180,30 @@ AudioModulation::FAudioModulation* UAudioModulationStatics::GetModulation(UWorld
 
 	if (AudioDevice.IsValid() && AudioDevice->IsModulationPluginEnabled())
 	{
-		if (IAudioModulation* ModulationInterface = AudioDevice->ModulationInterface.Get())
+		if (IAudioModulationManager* ModulationInterface = AudioDevice->ModulationInterface.Get())
 		{
-			return static_cast<AudioModulation::FAudioModulation*>(ModulationInterface);
+			return static_cast<AudioModulation::FAudioModulationManager*>(ModulationInterface);
 		}
 	}
 
 	return nullptr;
 }
 
-USoundControlBus* UAudioModulationStatics::CreateBus(const UObject* WorldContextObject, FName Name, USoundModulationParameter* Parameter, bool Activate)
+USoundControlBus* UAudioModulationStatics::CreateBus(UObject* WorldContextObject, FName Name, USoundModulationParameter* Parameter, bool Activate)
 {
-	UWorld* World = UAudioModulationStatics::GetAudioWorld(WorldContextObject);
+	UWorld* World = GetAudioWorld(WorldContextObject);
 	if (!World)
 	{
 		return nullptr;
 	}
 
-	USoundControlBus* NewBus = NewObject<USoundControlBus>(World, Name);
+	USoundControlBus* NewBus = NewObject<USoundControlBus>(WorldContextObject, Name);
 	NewBus->Parameter = Parameter;
 	NewBus->Address = Name.ToString();
 
 	if (Activate)
 	{
-		if (AudioModulation::FAudioModulation* ModSystem = UAudioModulationStatics::GetModulation(World))
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 		{
 			ModSystem->ActivateBus(*NewBus);
 		}
@@ -220,7 +220,7 @@ FSoundControlBusMixStage UAudioModulationStatics::CreateBusMixStage(const UObjec
 	return MixStage;
 }
 
-USoundControlBusMix* UAudioModulationStatics::CreateBusMix(const UObject* WorldContextObject, FName Name, TArray<FSoundControlBusMixStage> Stages, bool Activate)
+USoundControlBusMix* UAudioModulationStatics::CreateBusMix(UObject* WorldContextObject, FName Name, TArray<FSoundControlBusMixStage> Stages, bool Activate)
 {
 	UWorld* World = GetAudioWorld(WorldContextObject);
 	if (!World)
@@ -228,7 +228,7 @@ USoundControlBusMix* UAudioModulationStatics::CreateBusMix(const UObject* WorldC
 		return nullptr;
 	}
 
-	USoundControlBusMix* NewBusMix = NewObject<USoundControlBusMix>(World, Name);
+	USoundControlBusMix* NewBusMix = NewObject<USoundControlBusMix>(WorldContextObject, Name);
 	for (FSoundControlBusMixStage& Stage : Stages)
 	{
 		if (Stage.Bus)
@@ -245,7 +245,7 @@ USoundControlBusMix* UAudioModulationStatics::CreateBusMix(const UObject* WorldC
 
 	if (Activate)
 	{
-		if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 		{
 			ModSystem->ActivateBusMix(*NewBusMix);
 		}
@@ -259,7 +259,7 @@ void UAudioModulationStatics::DeactivateBus(const UObject* WorldContextObject, U
 	if (Bus)
 	{
 		UWorld* World = GetAudioWorld(WorldContextObject);
-		if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 		{
 			ModSystem->DeactivateBus(*Bus);
 		}
@@ -271,7 +271,7 @@ void UAudioModulationStatics::DeactivateBusMix(const UObject* WorldContextObject
 	if (BusMix)
 	{
 		UWorld* World = GetAudioWorld(WorldContextObject);
-		if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 		{
 			ModSystem->DeactivateBusMix(*BusMix);
 		}
@@ -281,7 +281,7 @@ void UAudioModulationStatics::DeactivateBusMix(const UObject* WorldContextObject
 void UAudioModulationStatics::DeactivateGenerator(const UObject* WorldContextObject, USoundModulationGenerator* Generator)
 {
 	UWorld* World = GetAudioWorld(WorldContextObject);
-	if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+	if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 	{
 		if (Generator)
 		{
@@ -293,7 +293,7 @@ void UAudioModulationStatics::DeactivateGenerator(const UObject* WorldContextObj
 void UAudioModulationStatics::SaveMixToProfile(const UObject* WorldContextObject, USoundControlBusMix* BusMix, int32 ProfileIndex)
 {
 	UWorld* World = GetAudioWorld(WorldContextObject);
-	if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+	if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 	{
 		if (BusMix)
 		{
@@ -307,7 +307,7 @@ TArray<FSoundControlBusMixStage> UAudioModulationStatics::LoadMixFromProfile(con
 	if (BusMix)
 	{
 		UWorld* World = GetAudioWorld(WorldContextObject);
-		if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 		{
 			if (bActivate)
 			{
@@ -325,12 +325,45 @@ void UAudioModulationStatics::UpdateMix(const UObject* WorldContextObject, USoun
 	if (Mix)
 	{
 		UWorld* World = GetAudioWorld(WorldContextObject);
-		if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 		{
 			// UObject representation is not updated in this form of the call as doing so from
 			// PIE can result in an unstable state where UObject is modified but not properly dirtied.
 			ModSystem->UpdateMix(Stages, *Mix, false /* bUpdateObject */, InFadeTime);
 		}
+	}
+}
+
+void UAudioModulationStatics::SetGlobalBusMixValue(const UObject* WorldContextObject, USoundControlBus* Bus, float Value, float FadeTime)
+{
+	if (Bus)
+	{
+		UWorld* World = GetAudioWorld(WorldContextObject);
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
+		{
+			ModSystem->SetGlobalBusMixValue(*Bus, Value, FadeTime);
+		}
+	}
+}
+
+void UAudioModulationStatics::ClearGlobalBusMixValue(const UObject* WorldContextObject, USoundControlBus* Bus, float FadeTime)
+{
+	if (Bus)
+	{
+		UWorld* World = GetAudioWorld(WorldContextObject);
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
+		{
+			ModSystem->ClearGlobalBusMixValue(*Bus, FadeTime);
+		}
+	}
+}
+
+void UAudioModulationStatics::ClearAllGlobalBusMixValues(const UObject* WorldContextObject, float FadeTime)
+{
+	UWorld* World = GetAudioWorld(WorldContextObject);
+	if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
+	{
+		ModSystem->ClearAllGlobalBusMixValues(FadeTime);
 	}
 }
 
@@ -346,7 +379,7 @@ void UAudioModulationStatics::UpdateMixByFilter(
 	if (Mix)
 	{
 		UWorld* World = GetAudioWorld(WorldContextObject);
-		if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 		{
 			// UObject representation is not updated in this form of the call as doing so from
 			// PIE can result in an unstable state where UObject is modified but not properly dirtied.
@@ -360,7 +393,7 @@ void UAudioModulationStatics::UpdateMixFromObject(const UObject* WorldContextObj
 	if (Mix)
 	{
 		UWorld* World = GetAudioWorld(WorldContextObject);
-		if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 		{
 			ModSystem->UpdateMix(*Mix, InFadeTime);
 		}
@@ -372,7 +405,7 @@ void UAudioModulationStatics::UpdateModulator(const UObject* WorldContextObject,
 	if (Modulator)
 	{
 		UWorld* World = GetAudioWorld(WorldContextObject);
-		if (AudioModulation::FAudioModulation* ModSystem = GetModulation(World))
+		if (AudioModulation::FAudioModulationManager* ModSystem = GetModulation(World))
 		{
 			ModSystem->UpdateModulator(*Modulator);
 		}

@@ -33,8 +33,6 @@ protected:
 	void InitializeProcessMemory();
 	void ReleaseProcessMemory();
 
-	bool ImplCheckTextureShareItem(const FString& ShareName) const;
-
 private:
 	mutable FCriticalSection DataGuard;
 	TMap<FString, TSharedPtr<ITextureShareItem>> TextureShares;

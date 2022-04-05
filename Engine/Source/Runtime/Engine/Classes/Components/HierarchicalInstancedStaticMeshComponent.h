@@ -14,6 +14,15 @@
 class FClusterBuilder;
 class FStaticLightingTextureMapping_InstancedStaticMesh;
 
+
+UENUM()
+enum class EHISMViewRelevanceType : uint8
+{
+	Grass,
+	Foliage,
+	HISM
+};
+
 // Due to BulkSerialize we can't edit the struct, so we must deprecated this one and create a new one
 USTRUCT()
 struct FClusterNode_DEPRECATED
@@ -21,11 +30,11 @@ struct FClusterNode_DEPRECATED
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	FVector BoundMin;
+	FVector3f BoundMin;
 	UPROPERTY()
 	int32 FirstChild;
 	UPROPERTY()
-	FVector BoundMax;
+	FVector3f BoundMax;
 	UPROPERTY()
 	int32 LastChild;
 	UPROPERTY()
@@ -65,11 +74,11 @@ struct FClusterNode
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	FVector BoundMin;
+	FVector3f BoundMin;
 	UPROPERTY()
 	int32 FirstChild;
 	UPROPERTY()
-	FVector BoundMax;
+	FVector3f BoundMax;
 	UPROPERTY()
 	int32 LastChild;
 	UPROPERTY()
@@ -78,9 +87,9 @@ struct FClusterNode
 	int32 LastInstance;
 
 	UPROPERTY()
-	FVector MinInstanceScale;
+	FVector3f MinInstanceScale;
 	UPROPERTY()
-	FVector MaxInstanceScale;
+	FVector3f MaxInstanceScale;
 
 	FClusterNode()
 		: BoundMin(MAX_flt, MAX_flt, MAX_flt)
@@ -128,11 +137,22 @@ class ENGINE_API UHierarchicalInstancedStaticMeshComponent : public UInstancedSt
 {
 	GENERATED_UCLASS_BODY()
 
+	friend class ALightWeightInstanceStaticMeshManager;
+
 	~UHierarchicalInstancedStaticMeshComponent();
 
 	TSharedPtr<TArray<FClusterNode>, ESPMode::ThreadSafe> ClusterTreePtr;
 
-	// Table for remaping instances from cluster tree to PerInstanceSMData order
+	// If true then we allow a translated space when building the cluster tree.
+	// This can help for impementations (foliage) where we can have instances with offsets to large for single float precision.
+	UPROPERTY()
+	uint32 bUseTranslatedInstanceSpace : 1;
+
+	// Origin of the translated space used when building the cluster tree.
+	UPROPERTY()
+	FVector TranslatedInstanceSpaceOrigin;
+
+	// Table for remapping instances from cluster tree to PerInstanceSMData order
 	UPROPERTY()
 	TArray<int32> SortedInstances;
 
@@ -200,15 +220,18 @@ public:
 	virtual void PostEditImport() override;
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	virtual FBoxSphereBounds CalcBounds(const FTransform& BoundTransform) const override;
+	
 #if WITH_EDITOR
+	virtual void PostStaticMeshCompilation() override;
 	virtual void PostEditUndo() override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
 #endif
 
 	// UInstancedStaticMesh interface
-	virtual int32 AddInstance(const FTransform& InstanceTransform) override;
-	virtual TArray<int32> AddInstances(const TArray<FTransform>& InstanceTransforms, bool bShouldReturnIndices) override;
+	virtual int32 AddInstance(const FTransform& InstanceTransform, bool bWorldSpace = false) override;
+	virtual TArray<int32> AddInstances(const TArray<FTransform>& InstanceTransforms, bool bShouldReturnIndices, bool bWorldSpace = false) override;
 	virtual bool RemoveInstance(int32 InstanceIndex) override;
+	virtual bool RemoveInstances(const TArray<int32>& InstancesToRemove) override;
 	virtual bool UpdateInstanceTransform(int32 InstanceIndex, const FTransform& NewInstanceTransform, bool bWorldSpace, bool bMarkRenderStateDirty = false, bool bTeleport = false) override;
 	virtual bool SetCustomDataValue(int32 InstanceIndex, int32 CustomDataIndex, float CustomDataValue, bool bMarkRenderStateDirty = false) override;
 	virtual bool SetCustomData(int32 InstanceIndex, const TArray<float>& InCustomData, bool bMarkRenderStateDirty = false) override;
@@ -220,10 +243,7 @@ public:
 	virtual TArray<int32> GetInstancesOverlappingSphere(const FVector& Center, float Radius, bool bSphereInWorldSpace = true) const override;
 	virtual TArray<int32> GetInstancesOverlappingBox(const FBox& Box, bool bBoxInWorldSpace = true) const override;
 	virtual void PreAllocateInstancesMemory(int32 AddedInstanceCount) override;
-
-	/** Removes all the instances with indices specified in the InstancesToRemove array. Returns true on success. */
-	UFUNCTION(BlueprintCallable, Category = "Components|InstancedStaticMesh")
-	bool RemoveInstances(const TArray<int32>& InstancesToRemove);
+	virtual bool SupportsRemoveSwap() const override { return true; }
 
 	/** Get the number of instances that overlap a given sphere */
 	int32 GetOverlappingSphereCount(const FSphere& Sphere) const;
@@ -253,14 +273,17 @@ public:
 
 	virtual void PropagateLightingScenarioChange() override;
 
+	virtual EHISMViewRelevanceType GetViewRelevanceType() const { return PerInstanceSMData.Num() ? EHISMViewRelevanceType::HISM : EHISMViewRelevanceType::Grass; }
+
 protected:
 	void BuildTree();
 	void BuildTreeAsync();
-	void ApplyBuildTree(FClusterBuilder& Builder);
+	void ApplyBuildTree(FClusterBuilder& Builder, const bool bWasAsyncBuild);
 	void ApplyEmpty();
 	void SetPerInstanceLightMapAndEditorData(FStaticMeshInstanceData& PerInstanceData, const TArray<TRefCountPtr<HHitProxy>>& HitProxies);
 
-	void GetInstanceTransforms(TArray<FMatrix>& InstanceTransforms) const;
+	FVector CalcTranslatedInstanceSpaceOrigin() const;
+	void GetInstanceTransforms(TArray<FMatrix>& InstanceTransforms, FVector const& Offset) const;
 	void InitializeInstancingRandomSeed();
 
 	/** Removes specified instances */ 
@@ -274,6 +297,8 @@ protected:
 	void PostBuildStats();
 
 	virtual void OnPostLoadPerInstanceData() override;
+
+	virtual FVector GetTranslatedInstanceSpaceOrigin() const override { return TranslatedInstanceSpaceOrigin; }
 
 	virtual void GetNavigationPerInstanceTransforms(const FBox& AreaBox, TArray<FTransform>& InstanceData) const override;
 	virtual void PartialNavigationUpdate(int32 InstanceIdx) override;

@@ -11,7 +11,8 @@
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 #include "BoneContainer.h"
 #include "Animation/AnimationPoseData.h"
-#include "Animation/CustomAttributesRuntime.h"
+#include "Animation/AttributesRuntime.h"
+#include "Misc/FrameRate.h"
 
 #define LOCTEXT_NAMESPACE "MovieSceneSkeletalAnimationSection"
 
@@ -24,6 +25,7 @@ namespace
 FMovieSceneSkeletalAnimationParams::FMovieSceneSkeletalAnimationParams()
 {
 	Animation = nullptr;
+	MirrorDataTable = nullptr; 
 	StartOffset_DEPRECATED = SkeletalDeprecatedMagicNumber;
 	EndOffset_DEPRECATED = SkeletalDeprecatedMagicNumber;
 	PlayRate = 1.f;
@@ -86,6 +88,26 @@ UMovieSceneSkeletalAnimationSection::UMovieSceneSkeletalAnimationSection( const 
 TOptional<FFrameTime> UMovieSceneSkeletalAnimationSection::GetOffsetTime() const
 {
 	return TOptional<FFrameTime>(Params.FirstLoopStartFrameOffset);
+}
+
+void UMovieSceneSkeletalAnimationSection::MigrateFrameTimes(FFrameRate SourceRate, FFrameRate DestinationRate)
+{
+	if (Params.StartFrameOffset.Value > 0)
+	{
+		FFrameNumber NewStartFrameOffset = ConvertFrameTime(FFrameTime(Params.StartFrameOffset), SourceRate, DestinationRate).FloorToFrame();
+		Params.StartFrameOffset = NewStartFrameOffset;
+	}
+
+	if (Params.EndFrameOffset.Value > 0)
+	{
+		FFrameNumber NewEndFrameOffset = ConvertFrameTime(FFrameTime(Params.EndFrameOffset), SourceRate, DestinationRate).FloorToFrame();
+		Params.EndFrameOffset = NewEndFrameOffset;
+	}
+	if (Params.FirstLoopStartFrameOffset.Value > 0)
+	{
+		FFrameNumber NewFirstLoopStartFrameOffset = ConvertFrameTime(FFrameTime(Params.FirstLoopStartFrameOffset), SourceRate, DestinationRate).FloorToFrame();
+		Params.FirstLoopStartFrameOffset = NewFirstLoopStartFrameOffset;
+	}
 }
 
 void UMovieSceneSkeletalAnimationSection::Serialize(FArchive& Ar)
@@ -291,7 +313,7 @@ void UMovieSceneSkeletalAnimationSection::GetSnapTimes(TArray<FFrameNumber>& Out
 	}
 }
 
-float UMovieSceneSkeletalAnimationSection::MapTimeToAnimation(FFrameTime InPosition, FFrameRate InFrameRate) const
+double UMovieSceneSkeletalAnimationSection::MapTimeToAnimation(FFrameTime InPosition, FFrameRate InFrameRate) const
 {
 	FMovieSceneSkeletalAnimationSectionTemplateParameters TemplateParams(Params, GetInclusiveStartFrame(), GetExclusiveEndFrame());
 	return TemplateParams.MapTimeToAnimation(InPosition, InFrameRate);
@@ -370,6 +392,7 @@ void UMovieSceneSkeletalAnimationSection::PostEditImport()
 	{
 		GetRootMotionParams()->bRootMotionsDirty = true;
 	}
+	Super::PostEditImport();
 }
 void UMovieSceneSkeletalAnimationSection::PostEditUndo()
 {
@@ -377,6 +400,7 @@ void UMovieSceneSkeletalAnimationSection::PostEditUndo()
 	{
 		GetRootMotionParams()->bRootMotionsDirty = true;
 	}
+	Super::PostEditUndo();
 }
 
 #endif
@@ -417,8 +441,8 @@ bool UMovieSceneSkeletalAnimationSection::GetRootMotionVelocity(FFrameTime Previ
 		OutWeight = ManualWeight * EvaluateEasing(CurrentTime);
 		//mz todo we should be able to cache the PreviousTimeSeconds;
 		//mz todo need to get the starting value.
-		float PreviousTimeSeconds = MapTimeToAnimation(PreviousTime, FrameRate);
-		float CurrentTimeSeconds  = MapTimeToAnimation(CurrentTime, FrameRate);
+		float PreviousTimeSeconds = static_cast<float>(MapTimeToAnimation(PreviousTime, FrameRate));
+		float CurrentTimeSeconds  = static_cast<float>(MapTimeToAnimation(CurrentTime, FrameRate));
 		OutVelocity = AnimSequence->ExtractRootMotionFromRange(PreviousTimeSeconds, CurrentTimeSeconds);
 		return true;
 	}
@@ -455,10 +479,15 @@ int32 UMovieSceneSkeletalAnimationSection::SetBoneIndexForRootMotionCalculations
 	{ 
 		//but if not first find first
 		int32 RootIndex = INDEX_NONE;
-		for (int32 TrackIndex = 0; TrackIndex < AnimSequence->GetRawAnimationData().Num(); ++TrackIndex)
+#if WITH_EDITOR
+		const UAnimDataModel* DataModel = AnimSequence->GetDataModel();
+		const TArray<FBoneAnimationTrack>& BoneAnimationTracks = DataModel->GetBoneAnimationTracks();
+		const int32 NumTracks = BoneAnimationTracks.Num();
+		for (int32 TrackIndex = 0; TrackIndex < NumTracks; ++TrackIndex)
 		{
+			const FBoneAnimationTrack& AnimationTrack = BoneAnimationTracks[TrackIndex];
 			// verify if this bone exists in skeleton
-			int32 BoneTreeIndex = AnimSequence->GetSkeletonIndexFromRawDataTrackIndex(TrackIndex);
+			const int32 BoneTreeIndex = AnimationTrack.BoneTreeIndex;
 			if (BoneTreeIndex != INDEX_NONE)
 			{
 				int32 ParentIndex = AnimSequence->GetSkeleton()->GetReferenceSkeleton().GetParentIndex(BoneTreeIndex);
@@ -473,6 +502,29 @@ int32 UMovieSceneSkeletalAnimationSection::SetBoneIndexForRootMotionCalculations
 				}
 			}
 		}
+	#else
+		const TArray<FTrackToSkeletonMap>& BoneMappings = AnimSequence->GetCompressedTrackToSkeletonMapTable();
+		const int32 NumTracks = BoneMappings.Num();
+		for (int32 TrackIndex = 0; TrackIndex < NumTracks; ++TrackIndex)
+		{
+			const FTrackToSkeletonMap& Mapping = BoneMappings[TrackIndex];
+			// verify if this bone exists in skeleton
+			const int32 BoneTreeIndex = Mapping.BoneTreeIndex;
+			if (BoneTreeIndex != INDEX_NONE)
+			{
+				int32 ParentIndex = AnimSequence->GetSkeleton()->GetReferenceSkeleton().GetParentIndex(BoneTreeIndex);
+				if (ParentIndex == INDEX_NONE)
+				{
+					RootIndex = TrackIndex;
+				}
+				else if (ParentIndex == RootIndex)
+				{
+					TempRootBoneIndex = TrackIndex;
+					break;
+				}
+			}
+		}
+	#endif
 	}
 	return TempRootBoneIndex.GetValue();
 }
@@ -488,7 +540,7 @@ bool UMovieSceneSkeletalAnimationSection::GetRootMotionTransform(FFrameTime Curr
 		Params.Weight.Evaluate(CurrentTime, ManualWeight);
 		OutWeight = ManualWeight * EvaluateEasing(CurrentTime);
 		bIsAdditive = false;
-		float CurrentTimeSeconds = MapTimeToAnimation(CurrentTime, FrameRate);
+		float CurrentTimeSeconds = static_cast<float>(MapTimeToAnimation(CurrentTime, FrameRate));
 		bIsAdditive = AnimSequence->GetAdditiveAnimType() != EAdditiveAnimationType::AAT_None;
 
 		if (TempRootBoneIndex.IsSet())

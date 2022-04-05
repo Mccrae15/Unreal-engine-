@@ -13,7 +13,6 @@ namespace UE
 namespace MovieScene
 {
 
-
 int32 FChildEntityFactory::Num() const
 {
 	return ParentEntityOffsets.Num();
@@ -28,18 +27,17 @@ int32 FChildEntityFactory::GetCurrentIndex() const
 	return INDEX_NONE;
 }
 
-void FChildEntityFactory::Apply(UMovieSceneEntitySystemLinker* Linker, const FEntityAllocation* ParentAllocation)
+void FChildEntityFactory::Apply(UMovieSceneEntitySystemLinker* Linker, FEntityAllocationProxy ParentAllocationProxy)
 {
-	FComponentMask DerivedEntityType;
-	GenerateDerivedType(DerivedEntityType);
+	const FComponentMask ParentType = ParentAllocationProxy.GetAllocationType();
 
-	FComponentMask ParentType;
-	for (const FComponentHeader& Header : ParentAllocation->GetComponentHeaders())
+	FComponentMask DerivedEntityType;
 	{
-		ParentType.Set(Header.ComponentType);
+		GenerateDerivedType(DerivedEntityType);
+
+		Linker->EntityManager.GetComponents()->Factories.ComputeChildComponents(ParentType, DerivedEntityType);
+		Linker->EntityManager.GetComponents()->Factories.ComputeMutuallyInclusiveComponents(DerivedEntityType);
 	}
-	Linker->EntityManager.GetComponents()->Factories.ComputeChildComponents(ParentType, DerivedEntityType);
-	Linker->EntityManager.GetComponents()->Factories.ComputeMutuallyInclusiveComponents(DerivedEntityType);
 
 	const bool bHasAnyType = DerivedEntityType.Find(true) != INDEX_NONE;
 	if (!bHasAnyType)
@@ -50,6 +48,7 @@ void FChildEntityFactory::Apply(UMovieSceneEntitySystemLinker* Linker, const FEn
 	const int32 NumToAdd = Num();
 
 	int32 CurrentParentOffset = 0;
+	const FEntityAllocation* ParentAllocation = ParentAllocationProxy.GetAllocation();
 
 	// We attempt to allocate all the linker entities contiguously in memory for efficient initialization,
 	// but we may reach capacity constraints within allocations so we may have to run the factories more than once
@@ -128,9 +127,15 @@ FBoundObjectTask::FBoundObjectTask(UMovieSceneEntitySystemLinker* InLinker)
 	: Linker(InLinker)
 {}
 
-void FBoundObjectTask::ForEachAllocation(const FEntityAllocation* Allocation, FReadEntityIDs EntityIDs, TRead<FInstanceHandle> Instances, TRead<FGuid> ObjectBindings)
+void FBoundObjectTask::ForEachAllocation(FEntityAllocationProxy AllocationProxy, FReadEntityIDs EntityIDs, TRead<FInstanceHandle> Instances, TRead<FGuid> ObjectBindings)
 {
-	FObjectFactoryBatch& Batch = AddBatch(Allocation);
+	const FEntityAllocation* Allocation = AllocationProxy.GetAllocation();
+	const FComponentTypeID TagHasUnresolvedBinding = FBuiltInComponentTypes::Get()->Tags.HasUnresolvedBinding;
+
+	// Check whether every binding in this allocation is currently unresolved
+	const bool bWasUnresolvedBinding = Allocation->FindComponentHeader(TagHasUnresolvedBinding) != nullptr;
+
+	FObjectFactoryBatch& Batch = AddBatch(AllocationProxy);
 	Batch.StaleEntitiesToPreserve = &StaleEntitiesToPreserve;
 
 	const int32 Num = Allocation->Num();
@@ -159,8 +164,27 @@ void FBoundObjectTask::ForEachAllocation(const FEntityAllocation* Allocation, FR
 			}
 		}
 
-		Batch.ResolveObjects(InstanceRegistry, Instances[Index], Index, ObjectBindings[Index]);
+		const FObjectFactoryBatch::EResolveError Error = Batch.ResolveObjects(InstanceRegistry, Instances[Index], Index, ObjectBindings[Index]);
+		if (Error == FObjectFactoryBatch::EResolveError::None)
+		{
+			// We have successfully resolved a binding, so remove the HasUnresolvedBinding tag
+			if (bWasUnresolvedBinding)
+			{
+				constexpr bool bAddComponent = false;
+				EntityMutations.Add(FEntityMutationData{ ParentID, TagHasUnresolvedBinding, bAddComponent });
+			}
+		}
+		else if (Error == FObjectFactoryBatch::EResolveError::UnresolvedBinding)
+		{
+			if (!bWasUnresolvedBinding)
+			{
+				// Only bother attempting to add the HasUnresolvedBindingTag if it is not already tagged in such a way
+				constexpr bool bAddComponent = true;
+				EntityMutations.Add(FEntityMutationData{ ParentID, TagHasUnresolvedBinding, bAddComponent });
+			}
+		}
 	}
+
 }
 
 void FBoundObjectTask::PostTask()
@@ -171,6 +195,18 @@ void FBoundObjectTask::PostTask()
 	for (FMovieSceneEntityID Discard : EntitiesToDiscard)
 	{
 		Linker->EntityManager.AddComponent(Discard, NeedsUnlink, EEntityRecursion::Full);
+	}
+
+	for (FEntityMutationData Mutation : EntityMutations)
+	{
+		if (Mutation.bAddComponent)
+		{
+			Linker->EntityManager.AddComponent(Mutation.EntityID, Mutation.ComponentTypeID);
+		}
+		else
+		{
+			Linker->EntityManager.RemoveComponent(Mutation.EntityID, Mutation.ComponentTypeID);
+		}
 	}
 }
 

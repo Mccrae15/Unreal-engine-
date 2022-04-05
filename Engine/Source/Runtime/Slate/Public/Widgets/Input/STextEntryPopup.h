@@ -33,7 +33,7 @@ public:
 		SLATE_EVENT( FOnTextCommitted, OnTextCommitted )
 
 		/** Whether to select all text when the user clicks to give focus on the widget */
-		SLATE_ATTRIBUTE( bool, SelectAllTextWhenFocused )
+		SLATE_ARGUMENT( bool, SelectAllTextWhenFocused )
 
 		/** Whether to clear keyboard focus when pressing enter to commit changes */
 		SLATE_ATTRIBUTE( bool, ClearKeyboardFocusOnCommit )
@@ -43,6 +43,9 @@ public:
 
 		/** The maximum width for text entry */
 		SLATE_ATTRIBUTE( float, MaxWidth )
+
+		/** Called whenever the text is changed programmatically or interactively by the user */
+		SLATE_EVENT( FOnVerifyTextChanged, OnVerifyTextChanged )
 
 		/** Provide a alternative mechanism for error reporting. */
 		SLATE_ARGUMENT( TSharedPtr<class IErrorReportingWidget>, ErrorReporting )

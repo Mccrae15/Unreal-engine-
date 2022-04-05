@@ -10,6 +10,7 @@
 #include "Framework/Commands/Commands.h"
 #include "Framework/Commands/UICommandList.h"
 
+class IAssetViewport;
 class FToolBarBuilder;
 struct FToolMenuSection;
 
@@ -108,11 +109,6 @@ public:
 	TSharedPtr<FUICommandInfo> StepOut;
 	TSharedPtr<FUICommandInfo> GetMouseControl;
 
-	/** Launch on device */
-	TSharedPtr<FUICommandInfo> RepeatLastLaunch;
-	TSharedPtr<FUICommandInfo> OpenProjectLauncher;
-	TSharedPtr<FUICommandInfo> OpenDeviceManager;
-
 protected:
 
 	/** A weak pointer to the current active widget that processes PIE actions */
@@ -124,13 +120,6 @@ protected:
 	 * @return	Menu content widget
 	 */
 	static TSharedRef< SWidget > GeneratePlayMenuContent( TSharedRef<FUICommandList> InCommandList );
-
-	/**
-	 * Generates menu content for the Play On combo button drop down menu
-	 *
-	 * @return	Menu content widget
-	 */
-	static TSharedRef< SWidget > GenerateLaunchMenuContent( TSharedRef<FUICommandList> InCommandList );
 
 	// Add mobile PIE preview device commands
 	void AddPIEPreviewDeviceCommands();
@@ -150,6 +139,7 @@ public:
 	 * Called from the context menu to start previewing the game at the clicked location                   
 	 */
 	static void StartPlayFromHere();
+	static void StartPlayFromHere(const TOptional<FVector>& Location, const TOptional<FRotator>& Rotation, const TSharedPtr<IAssetViewport>& ActiveLevelViewport);
 
 	static void ResumePlaySession_Clicked();
 	static void PausePlaySession_Clicked();

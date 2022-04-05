@@ -102,6 +102,11 @@ PyTypeObject InitializePyWrapperNameType()
 			return PyUnicode_FromString(TCHAR_TO_UTF8(*InSelf->Value.ToString()));
 		}
 
+		static PyObject* Repr(FPyWrapperName* InSelf)
+		{
+			return PyUnicode_FromString(TCHAR_TO_UTF8(*FString::Printf(TEXT("Name(\"%s\")"), *InSelf->Value.ToString())));
+		}
+
 		static PyObject* RichCmp(FPyWrapperName* InSelf, PyObject* InOther, int InOp)
 		{
 			FName Other;
@@ -167,10 +172,11 @@ PyTypeObject InitializePyWrapperNameType()
 		{ nullptr, nullptr, 0, nullptr }
 	};
 
-	PyTypeObject PyType = InitializePyWrapperBasicType<FPyWrapperName>("Name", "Type for all UE4 exposed name instances");
+	PyTypeObject PyType = InitializePyWrapperBasicType<FPyWrapperName>("Name", "Type for all Unreal exposed name instances");
 
 	PyType.tp_init = (initproc)&FFuncs::Init;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Repr;
 	PyType.tp_richcompare = (richcmpfunc)&FFuncs::RichCmp;
 	PyType.tp_hash = (hashfunc)&FFuncs::Hash;
 

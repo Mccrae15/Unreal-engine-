@@ -21,6 +21,8 @@
 #include <d3d12shader.h>
 #include "dxc/DxilContainer/DxilContainer.h"
 
+namespace refl_dump {
+
 LPCSTR ToString(D3D_CBUFFER_TYPE CBType);
 LPCSTR ToString(D3D_SHADER_INPUT_TYPE Type);
 LPCSTR ToString(D3D_RESOURCE_RETURN_TYPE ReturnType);
@@ -32,6 +34,59 @@ LPCSTR ToString(D3D_TESSELLATOR_PARTITIONING HSPartitioning);
 LPCSTR ToString(D3D_TESSELLATOR_DOMAIN TessellatorDomain);
 LPCSTR ToString(D3D_SHADER_VARIABLE_CLASS Class);
 LPCSTR ToString(D3D_SHADER_VARIABLE_TYPE Type);
+LPCSTR ToString(D3D_SHADER_VARIABLE_FLAGS Flag);
+LPCSTR ToString(D3D_SHADER_INPUT_FLAGS Flag);
+LPCSTR ToString(D3D_SHADER_CBUFFER_FLAGS Flag);
+LPCSTR ToString(D3D_PARAMETER_FLAGS Flag);
+LPCSTR ToString(D3D_NAME Name);
+LPCSTR ToString(D3D_REGISTER_COMPONENT_TYPE CompTy);
+LPCSTR ToString(D3D_MIN_PRECISION MinPrec);
+LPCSTR CompMaskToString(unsigned CompMask);
+
+template<typename _T>
+struct EnumValue {
+public:
+  EnumValue(const _T &e) : eValue(e) {}
+  _T eValue;
+};
+
+template<typename _T, typename _StoreT = uint32_t>
+struct FlagsValue {
+public:
+  FlagsValue(const _StoreT &f) : Flags(f) {}
+  _StoreT Flags;
+};
+
+template<typename _T>
+std::ostream& operator<<(std::ostream& out, const EnumValue<_T> &obj) {
+  if (LPCSTR szValue = ToString(obj.eValue))
+    return out << szValue;
+  else
+    return out << "<unknown: " << std::hex << std::showbase << (UINT)obj.eValue << ">";
+}
+
+template<typename _T, typename _StoreT>
+std::ostream& operator<<(std::ostream& out, const FlagsValue<_T, _StoreT> &obj) {
+  _StoreT Flags = obj.Flags;
+  if (!Flags) {
+    LPCSTR szValue = ToString((_T)0);
+    if (szValue)
+      return out << "0 (" << szValue << ")";
+    else
+      return out << "0";
+  }
+  uint32_t flag = 0;
+  out << "(";
+  while (Flags) {
+    if (flag)
+      out << " | ";
+    flag = (Flags & ~(Flags - 1));
+    Flags ^= flag;
+    out << EnumValue<_T>((_T)flag);
+  }
+  out << ")";
+  return out;
+}
 
 class DumperBase {
 private:
@@ -70,13 +125,22 @@ public:
       << std::resetiosflags(std::ios_base::basefield | std::ios_base::showbase);
   }
 
-  template<typename _T>
-  void DumpEnum(const char *Name, _T eValue) {
+  template <typename _T>
+  std::ostream &WriteEnumValue(_T eValue) {
     LPCSTR szValue = ToString(eValue);
     if (szValue)
-      WriteLn(Name, ": ", szValue);
+      return Write(szValue);
     else
-      WriteLn(Name, ": <unknown: ", std::hex, std::showbase, (UINT)eValue, ">");
+      return Write("<unknown: ", std::hex, std::showbase, (UINT)eValue, ">");
+  }
+
+  template<typename _T>
+  void DumpEnum(const char *Name, _T eValue) {
+    WriteLn(Name, ": ", EnumValue<_T>(eValue));
+  }
+  template<typename _T, typename _StoreT = uint32_t>
+  void DumpFlags(const char *Name, _StoreT Flags) {
+    WriteLn(Name, ": ", FlagsValue<_T, _StoreT>(Flags));
   }
 
   template<typename... Args>
@@ -103,6 +167,7 @@ public:
   void Dump(D3D12_SHADER_VARIABLE_DESC &varDesc);
   void Dump(D3D12_SHADER_BUFFER_DESC &Desc);
   void Dump(D3D12_SHADER_INPUT_BIND_DESC &resDesc);
+  void Dump(D3D12_SIGNATURE_PARAMETER_DESC &elDesc);
   void Dump(D3D12_SHADER_DESC &Desc);
   void Dump(D3D12_FUNCTION_DESC &Desc);
   void Dump(D3D12_LIBRARY_DESC &Desc);
@@ -117,3 +182,5 @@ public:
   void Dump(ID3D12LibraryReflection *pLibraryReflection);
 
 };
+
+} // namespace refl_dump

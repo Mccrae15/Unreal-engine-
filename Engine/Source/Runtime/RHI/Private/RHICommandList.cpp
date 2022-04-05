@@ -9,9 +9,11 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "RHI.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/ScopeExit.h"
 #include "PipelineStateCache.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 #include "Trace/Trace.inl"
+#include "GenericPlatform/GenericPlatformCrashContext.h"
 
 CSV_DEFINE_CATEGORY_MODULE(RHI_API, RHITStalls, false);
 CSV_DEFINE_CATEGORY_MODULE(RHI_API, RHITFlushes, false);
@@ -26,8 +28,8 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("Immed. Command count"), STAT_ImmedCmdListCount,
 
 UE_TRACE_CHANNEL_DEFINE(RHICommandsChannel);
 
-#if VALIDATE_UNIFORM_BUFFER_GLOBAL_BINDINGS
-bool FScopedUniformBufferGlobalBindings::bRecursionGuard = false;
+#if VALIDATE_UNIFORM_BUFFER_STATIC_BINDINGS
+bool FScopedUniformBufferStaticBindings::bRecursionGuard = false;
 #endif
 
 #if !PLATFORM_USES_FIXED_RHI_CLASS
@@ -69,11 +71,6 @@ TAutoConsoleVariable<int32> CVarRHICmdFlushRenderThreadTasks(
 	TEXT("r.RHICmdFlushRenderThreadTasks"),
 	0,
 	TEXT("If true, then we flush the render thread tasks every pass. For issue diagnosis. This is a master switch for more granular cvars."));
-
-TAutoConsoleVariable<int32> CVarRHICmdFlushUpdateTextureReference(
-	TEXT("r.RHICmdFlushUpdateTextureReference"),
-	0,
-	TEXT("If true, then we flush the rhi thread when we do RHIUpdateTextureReference, otherwise this is deferred. For issue diagnosis."));
 
 static TAutoConsoleVariable<int32> CVarRHICmdFlushOnQueueParallelSubmit(
 	TEXT("r.RHICmdFlushOnQueueParallelSubmit"),
@@ -131,6 +128,12 @@ static FAutoConsoleVariableRef CVarRHICmdTraceEvents(
 	GRHICmdTraceEvents,
 	TEXT("Enable tracing profiler events for every RHI command. (default = 0)")
 );
+
+static TAutoConsoleVariable<int32> CVarRHICmdMaxOutstandingMemoryBeforeFlush(
+	TEXT("r.RHICmdMaxOutstandingMemoryBeforeFlush"),
+	256,
+	TEXT("In kilobytes. The amount of outstanding memory before the RHI will force a flush. This should generally be set high enough that it doesn't happen on typical frames."));
+
 
 bool GUseRHIThread_InternalUseOnly = false;
 bool GUseRHITaskThreads_InternalUseOnly = false;
@@ -216,7 +219,7 @@ FRHICOMMAND_MACRO(FRHICommandStat)
 	}
 };
 
-void FRHICommandListImmediate::SetCurrentStat(TStatId Stat)
+void FRHICommandListBase::SetCurrentStat(TStatId Stat)
 {
 	if (!Bypass())
 	{
@@ -282,6 +285,17 @@ void FRHIAsyncComputeCommandListImmediate::ImmediateDispatch(FRHIAsyncComputeCom
 			SwapCmdList->ExchangeCmdList(RHIComputeCmdList);
 			RHIComputeCmdList.CopyContext(*SwapCmdList);
 			RHIComputeCmdList.GPUMask = SwapCmdList->GPUMask;
+		#if RHI_WANT_BREADCRUMB_EVENTS
+			FRHIBreadcrumbState BreadcrumbState;
+
+			// Once executed, the memory containing the breadcrumbs will be freed, so any open markers are popped and stored into BreadcrumbState
+			SwapCmdList->ExportBreadcrumbState(BreadcrumbState);
+			SwapCmdList->ResetBreadcrumbs();
+
+			// And then pushed into the newly opened list.
+			RHIComputeCmdList.ImportBreadcrumbState(BreadcrumbState);
+		#endif // RHI_WANT_BREADCRUMB_EVENTS
+
 			// NB: InitialGPUMask set to GPUMask since exchanging the list
 			// is equivalent to a Reset.
 			RHIComputeCmdList.InitialGPUMask = SwapCmdList->GPUMask;
@@ -304,13 +318,130 @@ DECLARE_CYCLE_STAT(TEXT("BigList"), STAT_BigList, STATGROUP_RHICMDLIST);
 DECLARE_CYCLE_STAT(TEXT("SmallList"), STAT_SmallList, STATGROUP_RHICMDLIST);
 DECLARE_CYCLE_STAT(TEXT("PTrans"), STAT_PTrans, STATGROUP_RHICMDLIST);
 
+#if WITH_ADDITIONAL_CRASH_CONTEXTS && RHI_WANT_BREADCRUMB_EVENTS
+static void WriteRenderBreadcrumbs(FCrashContextExtendedWriter& Writer, const FRHIBreadcrumb** BreadcrumbStack, uint32 BreadcrumbStackIndex, const TCHAR* ThreadName)
+{
+	enum
+	{
+		MAX_BREADCRUMBS = 64,
+		MAX_BREADCRUMB_STRING = 4096,
+		MAX_BREADCRUMB_NAME_STRING = 128,
+	};
+	static int BreadcrumbId = 0;
+
+	TCHAR StaticBreadcrumbStackString[MAX_BREADCRUMB_STRING];
+	size_t BreadcrumbStackStringSize = 0;
+
+	auto WriteBreadcrumbLine = [&](const TCHAR* InFormat, ...)
+	{
+		if (BreadcrumbStackStringSize < MAX_BREADCRUMB_STRING)
+		{
+			int32 WrittenLength = 0;
+			GET_VARARGS_RESULT(
+				&StaticBreadcrumbStackString[BreadcrumbStackStringSize],
+				MAX_BREADCRUMB_STRING - BreadcrumbStackStringSize,
+				MAX_BREADCRUMB_STRING - BreadcrumbStackStringSize - 1,
+				InFormat, InFormat, WrittenLength);
+
+			BreadcrumbStackStringSize += WrittenLength;
+		}
+	};
+
+	WriteBreadcrumbLine(TEXT("Breadcrumbs '%s'\n"), ThreadName);
+
+	const uint32 NumBreadcrumbStacks = BreadcrumbStackIndex + 1;
+
+	for (uint32 BreadcrumbIndex = 0; BreadcrumbIndex < NumBreadcrumbStacks; BreadcrumbIndex++)
+	{
+		if (const FRHIBreadcrumb* CurrentBreadcrumb = BreadcrumbStack[BreadcrumbStackIndex - BreadcrumbIndex])
+		{
+			const TCHAR* BreadcrumbNames[MAX_BREADCRUMBS];
+
+			const FRHIBreadcrumb* Breadcrumb = CurrentBreadcrumb;
+			int32 NameIndex = 0;
+			while (Breadcrumb && NameIndex < MAX_BREADCRUMBS)
+			{
+				BreadcrumbNames[NameIndex++] = Breadcrumb->Name;
+				Breadcrumb = Breadcrumb->Parent;
+			}
+
+			WriteBreadcrumbLine(TEXT("Context %d/%d\n"), BreadcrumbIndex + 1, NumBreadcrumbStacks);
+
+			uint32 StackPos = 0;
+			for (int32 i = NameIndex - 1; i >= 0; --i)
+			{
+				WriteBreadcrumbLine(TEXT("\t%02d %s\n"), StackPos++, BreadcrumbNames[i]);
+			}
+		}
+	}
+
+	TCHAR StaticBreadcrumbName[MAX_BREADCRUMB_NAME_STRING];
+	FCString::Snprintf(StaticBreadcrumbName, MAX_BREADCRUMB_NAME_STRING, TEXT("Breadcrumbs_%s_%d"), ThreadName, BreadcrumbId++);
+	Writer.AddString(StaticBreadcrumbName, StaticBreadcrumbStackString);
+	UE_LOG(LogRHI, Error, StaticBreadcrumbStackString);
+}
+#endif
+
 void FRHICommandListExecutor::ExecuteInner_DoExecute(FRHICommandListBase& CmdList)
 {
 	FScopeCycleCounter ScopeOuter(CmdList.ExecuteStat);
 
 	CmdList.bExecuting = true;
 	check(CmdList.Context || CmdList.ComputeContext);
+
 	FMemMark Mark(FMemStack::Get());
+
+#if WITH_ADDITIONAL_CRASH_CONTEXTS && RHI_WANT_BREADCRUMB_EVENTS
+	IRHIComputeContext* LocalContext = CmdList.Context ? CmdList.Context : CmdList.ComputeContext;
+
+	// Need a struct because Crash context scope only allows 1 argument
+	struct
+	{
+		const TCHAR* ThreadName;
+		const FRHIBreadcrumb** BreadcrumbStack;
+		uint32 BreadcrumbStackIndex;
+	} CrashState{};
+	CrashState.ThreadName = TEXT("Parallel");
+	if (IsInRenderingThread())
+	{
+		CrashState.ThreadName = TEXT("RenderingThread");
+	}
+	else if (IsInRHIThread())
+	{
+		CrashState.ThreadName = TEXT("RHIThread");
+	}
+
+	bool PopBreadcrumbStack = false;
+
+	if (LocalContext)
+	{
+		if (LocalContext->BreadcrumbStackIndex < IRHIComputeContext::MaxBreadcrumbStacks - 1)
+		{
+			LocalContext->BreadcrumbStackIndex++;
+			PopBreadcrumbStack = true;
+		}
+
+		// if we can't fit a next stack in, we have to stomp the top one, the show must go on.
+
+		LocalContext->RHISetBreadcrumbStackTop(CmdList.BreadcrumbStack.PopFirstUnsubmittedBreadcrumb());
+
+		CrashState.BreadcrumbStack = &LocalContext->BreadcrumbStackTop[0];
+		CrashState.BreadcrumbStackIndex = LocalContext->BreadcrumbStackIndex;
+	}
+
+	UE_ADD_CRASH_CONTEXT_SCOPE([&CrashState](FCrashContextExtendedWriter& Writer)
+	{
+		WriteRenderBreadcrumbs(Writer, CrashState.BreadcrumbStack, CrashState.BreadcrumbStackIndex, CrashState.ThreadName);
+	});
+
+	ON_SCOPE_EXIT
+	{
+		if (PopBreadcrumbStack)
+		{
+			LocalContext->BreadcrumbStackIndex--;
+		}
+	};
+#endif
 
 #if WITH_MGPU
 	// Set the initial GPU mask on the contexts before executing any commands.
@@ -385,7 +516,7 @@ static FAutoConsoleTaskPriority CPrio_RHIThreadOnTaskThreads(
 
 
 static FCriticalSection GRHIThreadOnTasksCritical;
-
+static std::atomic<int32> GRHIThreadStallRequestCount;
 
 class FExecuteRHIThreadTask
 {
@@ -413,6 +544,7 @@ public:
 
 	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
+		FTaskTagScope Scope(ETaskTag::ERhiThread);
 		SCOPE_CYCLE_COUNTER(STAT_RHIThreadExecute);
 		if (IsRunningRHIInTaskThread())
 		{
@@ -481,7 +613,22 @@ public:
 
 void FRHICommandListExecutor::ExecuteInner(FRHICommandListBase& CmdList)
 {
-	check(CmdList.HasCommands()); 
+	check(CmdList.HasCommands());
+
+	FRHIComputeCommandList& ComputeCommandList = (FRHIComputeCommandList&)CmdList;
+
+#if RHI_WANT_BREADCRUMB_EVENTS
+	FRHIBreadcrumbState BreadcrumbState;
+	// Once executed, the memory containing the breadcrumbs will be freed, so any open markers are popped and stored into BreadcrumbState
+	ComputeCommandList.ExportBreadcrumbState(BreadcrumbState);
+	ComputeCommandList.ResetBreadcrumbs();
+
+	ON_SCOPE_EXIT
+	{
+		// And then pushed into the newly opened list.
+		ComputeCommandList.ImportBreadcrumbState(BreadcrumbState);
+	};
+#endif // RHI_WANT_BREADCRUMB_EVENTS
 
 	bool bIsInRenderingThread = IsInRenderingThread();
 	bool bIsInGameThread = IsInGameThread();
@@ -665,7 +812,7 @@ static FORCEINLINE bool IsInRenderingOrRHIThread()
 
 void FRHICommandListExecutor::ExecuteList(FRHICommandListBase& CmdList)
 {
-	LLM_SCOPE(ELLMTag::RHIMisc);
+	LLM_SCOPE_BYNAME(TEXT("FRHICommandListExecutorExecuteList"));
 
 	check(&CmdList != &GetImmediateCommandList() && (GRHISupportsParallelRHIExecute || IsInRenderingOrRHIThread()));
 
@@ -747,7 +894,7 @@ void FRHICommandListExecutor::LatchBypass()
 
 		if (NewBypass && !bLatchedBypass)
 		{
-			FRHIResource::FlushPendingDeletes();
+			FRHIResource::FlushPendingDeletes(FRHICommandListExecutor::GetImmediateCommandList());
 		}
 		bLatchedBypass = NewBypass;
 	}
@@ -899,6 +1046,43 @@ void FRHICommandListExecutor::WaitOnRHIThreadFence(FGraphEventRef& Fence)
 	}
 }
 
+void FRHICommandListExecutor::Transition(TArrayView<const FRHITransitionInfo> Infos, ERHIPipeline SrcPipelines, ERHIPipeline DstPipelines)
+{
+	check(IsInRenderingThread());
+
+	FRHIAsyncComputeCommandListImmediate& RHICmdListAsyncCompute = GetImmediateAsyncComputeCommandList();
+
+	if (!GSupportsEfficientAsyncCompute)
+	{
+		checkf(SrcPipelines != ERHIPipeline::AsyncCompute, TEXT("Async compute is disabled. Cannot transition from it."));
+		checkf(DstPipelines != ERHIPipeline::AsyncCompute, TEXT("Async compute is disabled. Cannot transition to it."));
+
+		EnumRemoveFlags(SrcPipelines, ERHIPipeline::AsyncCompute);
+		EnumRemoveFlags(DstPipelines, ERHIPipeline::AsyncCompute);
+	}
+
+	TRHIPipelineArray<FRHIComputeCommandList*> CommandLists;
+	CommandLists[ERHIPipeline::Graphics]     = &GetImmediateCommandList();
+	CommandLists[ERHIPipeline::AsyncCompute] = &RHICmdListAsyncCompute;
+
+	const FRHITransition* Transition = RHICreateTransition({ SrcPipelines, DstPipelines, ERHITransitionCreateFlags::None, Infos });
+
+	EnumerateRHIPipelines(SrcPipelines, [&](ERHIPipeline Pipeline)
+	{
+		CommandLists[Pipeline]->BeginTransition(Transition);
+	});
+
+	EnumerateRHIPipelines(DstPipelines, [&](ERHIPipeline Pipeline)
+	{
+		CommandLists[Pipeline]->EndTransition(Transition);
+	});
+
+	if (EnumHasAnyFlags(SrcPipelines | DstPipelines, ERHIPipeline::AsyncCompute))
+	{
+		FRHIAsyncComputeCommandListImmediate::ImmediateDispatch(RHICmdListAsyncCompute);
+	}
+}
+
 FRHICommandListBase::FRHICommandListBase(FRHIGPUMask InGPUMask)
 	: Root(nullptr)
 	, CommandLink(nullptr)
@@ -907,7 +1091,7 @@ FRHICommandListBase::FRHICommandListBase(FRHIGPUMask InGPUMask)
 	, UID(UINT32_MAX)
 	, Context(nullptr)
 	, ComputeContext(nullptr)
-	, MemManager(0)
+	, MemManager()
 	, bAsyncPSOCompileAllowed(true)
 	, GPUMask(InGPUMask)
 	, InitialGPUMask(InGPUMask)
@@ -937,13 +1121,14 @@ void FRHICommandListBase::Reset()
 	Root = nullptr;
 	CommandLink = &Root;
 	UID = GRHICommandList.UIDCounter.Increment();
-	for (int32 Index = 0; ERenderThreadContext(Index) < ERenderThreadContext::Num; Index++)
-	{
-		RenderThreadContexts[Index] = nullptr;
-	}
 	ExecuteStat = TStatId();
 
 	InitialGPUMask = GPUMask;
+
+#if RHI_WANT_BREADCRUMB_EVENTS
+	BreadcrumbStack.ValidateEmpty();
+	BreadcrumbStack.Reset();
+#endif
 }
 
 void FRHICommandListBase::MaybeDispatchToRHIThreadInner()
@@ -1001,6 +1186,7 @@ public:
 
 	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
+		FOptionalTaskTagScope Scope(ETaskTag::EParallelRhiThread);
 		SCOPE_CYCLE_COUNTER(STAT_ParallelChainTranslate);
 		SCOPED_NAMED_EVENT(FParallelTranslateCommandList_DoTask, FColor::Magenta);
 		check(ContextContainer && RHICmdLists);
@@ -1279,7 +1465,6 @@ void FRHICommandListBase::QueueParallelAsyncCommandListSubmit(FGraphEventRef* An
 				Prereq.Add(RHIThreadBufferLockFence);
 			}
 			FRHICommandList* CmdList = new FRHICommandList(GetGPUMask());
-			CmdList->CopyRenderThreadContexts(*this);
 			FGraphEventRef TranslateSetupCompletionEvent = TGraphTask<FParallelTranslateSetupCommandList>::CreateTask(&Prereq, ENamedThreads::GetRenderThread()).ConstructAndDispatchWhenReady(CmdList, &RHICmdLists[0], Num, bIsPrepass);
 			QueueCommandListSubmit(CmdList);
 			AllOutstandingTasks.Add(TranslateSetupCompletionEvent);
@@ -1439,60 +1624,28 @@ void FRHICommandListBase::QueueAsyncCommandListSubmit(FGraphEventRef& AnyThreadC
 	}
 }
 
-DECLARE_DWORD_COUNTER_STAT(TEXT("Num RT Chains Links"), STAT_RTChainLinkCount, STATGROUP_RHICMDLIST);
-DECLARE_CYCLE_STAT(TEXT("Wait for RT CmdList"), STAT_RTChainWait, STATGROUP_RHICMDLIST);
-DECLARE_CYCLE_STAT(TEXT("RT Chain Execute"), STAT_RTChainExecute, STATGROUP_RHICMDLIST);
-
 FRHICOMMAND_MACRO(FRHICommandWaitForAndSubmitRTSubList)
 {
 	FGraphEventRef EventToWaitFor;
 	FRHICommandList* RHICmdList;
+
 	FORCEINLINE_DEBUGGABLE FRHICommandWaitForAndSubmitRTSubList(FGraphEventRef& InEventToWaitFor, FRHICommandList* InRHICmdList)
 		: EventToWaitFor(InEventToWaitFor)
 		, RHICmdList(InRHICmdList)
-	{
-	}
+	{}
+
 	void Execute(FRHICommandListBase& CmdList)
 	{
-		INC_DWORD_STAT_BY(STAT_RTChainLinkCount, 1);
-		{
-			if (EventToWaitFor.GetReference() && !EventToWaitFor->IsComplete())
-			{
-			SCOPE_CYCLE_COUNTER(STAT_RTChainWait);
-				check(!IsRunningRHIInSeparateThread() || !IsInRHIThread()); // things should not be dispatched if they can't complete without further waits
-				if (IsInRenderingThread())
-				{
-					ENamedThreads::Type RenderThread_Local = ENamedThreads::GetRenderThread_Local();
-					if (FTaskGraphInterface::Get().IsThreadProcessingTasks(RenderThread_Local))
-					{
-						// this is a deadlock. RT tasks must be done by now or they won't be done. We could add a third queue...
-						UE_LOG(LogRHI, Fatal, TEXT("Deadlock in command list processing."));
-					}
-					FTaskGraphInterface::Get().WaitUntilTaskCompletes(EventToWaitFor, RenderThread_Local);
-				}
-				else
-				{
-					FTaskGraphInterface::Get().WaitUntilTaskCompletes(EventToWaitFor);
-				}
-			}
-		}
-		{
-			SCOPE_CYCLE_COUNTER(STAT_RTChainExecute);
-			RHICmdList->CopyContext(CmdList);
-			delete RHICmdList;
-		}
+		FTaskGraphInterface::Get().WaitUntilTaskCompletes(EventToWaitFor);
+		RHICmdList->CopyContext(CmdList);
+		delete RHICmdList;
 	}
 };
 
 void FRHICommandListBase::QueueRenderThreadCommandListSubmit(FGraphEventRef& RenderThreadCompletionEvent, class FRHICommandList* CmdList)
 {
-	check(!IsInRHIThread());
+	check(IsInRenderingThread() && IsImmediate());
 
-	if (RenderThreadCompletionEvent.GetReference())
-	{
-		check(!IsInActualRenderingThread() && !IsInGameThread() && !IsImmediate());
-		RTTasks.Add(RenderThreadCompletionEvent);
-	}
 	ALLOC_COMMAND(FRHICommandWaitForAndSubmitRTSubList)(RenderThreadCompletionEvent, CmdList);
 
 #if WITH_MGPU
@@ -1791,20 +1944,25 @@ double TotalTime = 0.0;
 int32 TotalStalls = 0;
 #endif
 
-int32 StallCount = 0;
 bool FRHICommandListImmediate::IsStalled()
 {
-	return StallCount > 0;
+	return GRHIThreadStallRequestCount.load() > 0;
 }
 
 bool FRHICommandListImmediate::StallRHIThread()
 {
+	if (GRHIThreadStallRequestCount.load() > 0)
+	{
+		return false;
+	}
 	CSV_SCOPED_TIMING_STAT(RHITStalls, Total);
 
 	check(IsInRenderingThread() && IsRunningRHIInSeparateThread());
 	bool bAsyncSubmit = CVarRHICmdAsyncRHIThreadDispatch.GetValueOnRenderThread() > 0;
 	if (bAsyncSubmit)
 	{
+		SCOPED_NAMED_EVENT(StallRHIThread, FColor::Red);
+
 		if (RenderThreadSublistDispatchTask.GetReference() && RenderThreadSublistDispatchTask->IsComplete())
 		{
 #if NEEDS_DEBUG_INFO_ON_PRESENT_HANG
@@ -1825,13 +1983,31 @@ bool FRHICommandListImmediate::StallRHIThread()
 				return false;
 			}
 		}
-		FPlatformAtomics::InterlockedIncrement(&StallCount);
+		const int32 OldStallCount = GRHIThreadStallRequestCount.fetch_add(1);
+		if (OldStallCount > 0)
+		{
+			return true;
+		}
 		{
 			SCOPE_CYCLE_COUNTER(STAT_SpinWaitRHIThreadStall);
 #if TIME_RHIT_STALLS
 			double StartTime = FPlatformTime::Seconds();
 #endif
-			GRHIThreadOnTasksCritical.Lock();
+
+			{
+				SCOPED_NAMED_EVENT(RHIThreadLock_Wait, FColor::Red);
+#if PLATFORM_USES_UNFAIR_LOCKS
+				// When we have unfair locks, we're not guaranteed to get the lock between the RHI tasks if our thread goes to sleep,
+				// so we need to be more aggressive here as this is time critical.
+				while (!GRHIThreadOnTasksCritical.TryLock())
+				{
+					FPlatformProcess::YieldThread();
+				}
+#else
+				GRHIThreadOnTasksCritical.Lock();
+#endif
+			}
+
 #if TIME_RHIT_STALLS
 			TotalTime += FPlatformTime::Seconds() - StartTime;
 			TotalStalls++;
@@ -1860,8 +2036,12 @@ bool FRHICommandListImmediate::StallRHIThread()
 void FRHICommandListImmediate::UnStallRHIThread()
 {
 	check(IsInRenderingThread() && IsRunningRHIInSeparateThread());
-	GRHIThreadOnTasksCritical.Unlock();
-	FPlatformAtomics::InterlockedDecrement(&StallCount);
+	const int32 NewStallCount = GRHIThreadStallRequestCount.fetch_sub(1) - 1;
+	check(NewStallCount >= 0);
+	if (NewStallCount == 0)
+	{
+		GRHIThreadOnTasksCritical.Unlock();
+	}
 }
 
 void FRHICommandListBase::WaitForRHIThreadTasks()
@@ -1971,6 +2151,38 @@ void FRHIComputeCommandList::operator delete(void *RawMemory)
 	FMemory::Free(RawMemory);
 }
 
+#if RHI_RAYTRACING
+void FRHIComputeCommandList::BuildAccelerationStructure(FRHIRayTracingGeometry* Geometry)
+{
+	FRayTracingGeometryBuildParams Params;
+	Params.Geometry = Geometry;
+	Params.BuildMode = EAccelerationStructureBuildMode::Build;
+
+	FRHIBufferRange ScratchBufferRange{};
+	
+	FRHIResourceCreateInfo ScratchBufferCreateInfo(TEXT("RHIScratchBuffer"));
+	ScratchBufferRange.Buffer = RHICreateBuffer(Geometry->GetSizeInfo().BuildScratchSize, BUF_StructuredBuffer | BUF_RayTracingScratch, 0, ERHIAccess::UAVCompute, ScratchBufferCreateInfo);
+
+	BuildAccelerationStructures(MakeArrayView(&Params, 1), ScratchBufferRange);
+}
+
+void FRHIComputeCommandList::BuildAccelerationStructures(const TArrayView<const FRayTracingGeometryBuildParams> Params)
+{
+	uint64 TotalRequiredScratchMemorySize = 0;
+	for (const FRayTracingGeometryBuildParams& P : Params)
+	{
+		uint64 ScratchBufferRequiredSize = P.BuildMode == EAccelerationStructureBuildMode::Update ? P.Geometry->GetSizeInfo().UpdateScratchSize : P.Geometry->GetSizeInfo().BuildScratchSize;
+		TotalRequiredScratchMemorySize += ScratchBufferRequiredSize;
+	}
+
+	FRHIResourceCreateInfo ScratchBufferCreateInfo(TEXT("RHIScratchBuffer"));
+	FRHIBufferRange ScratchBufferRange{};	
+	ScratchBufferRange.Buffer = RHICreateBuffer(TotalRequiredScratchMemorySize, BUF_StructuredBuffer | BUF_RayTracingScratch, 0, ERHIAccess::UAVCompute, ScratchBufferCreateInfo);
+
+	BuildAccelerationStructures(Params, ScratchBufferRange);
+}
+#endif
+
 void* FRHICommandListBase::operator new(size_t Size)
 {
 	check(0); // you shouldn't be creating these
@@ -1980,52 +2192,21 @@ void* FRHICommandListBase::operator new(size_t Size)
 void FRHICommandListBase::operator delete(void *RawMemory)
 {
 	FMemory::Free(RawMemory);
-}	
-
-///////// Pass through functions that allow RHIs to optimize certain calls.
-
-FVertexBufferRHIRef FDynamicRHI::CreateAndLockVertexBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo, void*& OutDataBuffer)
-{
-	FVertexBufferRHIRef VertexBuffer = CreateVertexBuffer_RenderThread(RHICmdList, Size, InUsage, InResourceState, CreateInfo);
-	OutDataBuffer = RHILockVertexBuffer(RHICmdList, VertexBuffer, 0, Size, RLM_WriteOnly);
-
-	return VertexBuffer;
-}
-
-FIndexBufferRHIRef FDynamicRHI::CreateAndLockIndexBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Stride, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo, void*& OutDataBuffer)
-{
-	FIndexBufferRHIRef IndexBuffer = CreateIndexBuffer_RenderThread(RHICmdList, Stride, Size, InUsage, InResourceState, CreateInfo);
-	OutDataBuffer = RHILockIndexBuffer(RHICmdList, IndexBuffer, 0, Size, RLM_WriteOnly);
-	return IndexBuffer;
 }
 
 
-FVertexBufferRHIRef FDynamicRHI::CreateVertexBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo)
+FBufferRHIRef FDynamicRHI::CreateBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo)
 {
-	CSV_SCOPED_TIMING_STAT(RHITStalls, CreateVertexBuffer_RenderThread);
+	CSV_SCOPED_TIMING_STAT(RHITStalls, CreateBuffer_RenderThread);
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateVertexBuffer(Size, InUsage, InResourceState, CreateInfo);
+	return GDynamicRHI->RHICreateBuffer(Size, Usage, Stride, ResourceState, CreateInfo);
 }
 
-FStructuredBufferRHIRef FDynamicRHI::CreateStructuredBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Stride, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo)
-{
-	CSV_SCOPED_TIMING_STAT(RHITStalls, CreateStructuredBuffer_RenderThread);
-	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateStructuredBuffer(Stride, Size, InUsage, InResourceState, CreateInfo);
-}
-
-FIndexBufferRHIRef FDynamicRHI::CreateIndexBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Stride, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo)
-{
-	CSV_SCOPED_TIMING_STAT(RHITStalls, CreateIndexBuffer_RenderThread);
-	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateIndexBuffer(Stride, Size, InUsage, InResourceState, CreateInfo);
-}
-
-FShaderResourceViewRHIRef FDynamicRHI::CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint32 Stride, uint8 Format)
+FShaderResourceViewRHIRef FDynamicRHI::CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Stride, uint8 Format)
 {
 	CSV_SCOPED_TIMING_STAT(RHITStalls, CreateShaderResourceView_RenderThread_VB);
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateShaderResourceView(VertexBuffer, Stride, Format);
+	return GDynamicRHI->RHICreateShaderResourceView(Buffer, Stride, Format);
 }
 
 FShaderResourceViewRHIRef FDynamicRHI::CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, const FShaderResourceViewInitializer& Initializer)
@@ -2035,7 +2216,7 @@ FShaderResourceViewRHIRef FDynamicRHI::CreateShaderResourceView_RenderThread(cla
 	return GDynamicRHI->RHICreateShaderResourceView(Initializer);
 }
 
-FShaderResourceViewRHIRef FDynamicRHI::CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* Buffer)
+FShaderResourceViewRHIRef FDynamicRHI::CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer)
 {
 	CSV_SCOPED_TIMING_STAT(RHITStalls, CreateShaderResourceView_RenderThread_IB);
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
@@ -2044,9 +2225,9 @@ FShaderResourceViewRHIRef FDynamicRHI::CreateShaderResourceView_RenderThread(cla
 
 static FLockTracker GLockTracker;
 
-void* FDynamicRHI::RHILockVertexBuffer(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
+void* FDynamicRHI::RHILockBuffer(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FDynamicRHI_LockVertexBuffer);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FDynamicRHI_LockBuffer);
 
 	void* Result;
 	if (RHICmdList.IsTopOfPipe())
@@ -2054,65 +2235,70 @@ void* FDynamicRHI::RHILockVertexBuffer(class FRHICommandListImmediate& RHICmdLis
 		bool bBuffer = CVarRHICmdBufferWriteLocks.GetValueOnRenderThread() > 0;
 		if (!bBuffer || LockMode != RLM_WriteOnly)
 		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_LockVertexBuffer_FlushAndLock);
-			CSV_SCOPED_TIMING_STAT(RHITFlushes, LockVertexBuffer_BottomOfPipe);
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_LockBuffer_FlushAndLock);
+			CSV_SCOPED_TIMING_STAT(RHITFlushes, LockBuffer_BottomOfPipe);
 
 			FRHICommandListScopedFlushAndExecute Flush(RHICmdList);
-			Result = GDynamicRHI->LockVertexBuffer_BottomOfPipe(RHICmdList, VertexBuffer, Offset, SizeRHI, LockMode);
+			Result = GDynamicRHI->LockBuffer_BottomOfPipe(RHICmdList, Buffer, Offset, SizeRHI, LockMode);
 		}
 		else
 		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_LockVertexBuffer_Malloc);
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_LockBuffer_Malloc);
 			Result = FMemory::Malloc(SizeRHI, 16);
 		}
 
 		// Only use the lock tracker at the top of the pipe. There's no need to track locks
 		// at the bottom of the pipe, and doing so would require a critical section.
-		GLockTracker.Lock(VertexBuffer, Result, Offset, SizeRHI, LockMode);
+		GLockTracker.Lock(Buffer, Result, Offset, SizeRHI, LockMode);
 	}
 	else
 	{
-		Result = GDynamicRHI->LockVertexBuffer_BottomOfPipe(RHICmdList, VertexBuffer, Offset, SizeRHI, LockMode);
+		Result = GDynamicRHI->LockBuffer_BottomOfPipe(RHICmdList, Buffer, Offset, SizeRHI, LockMode);
 	}
 
 	check(Result);
 	return Result;
 }
 
-void FDynamicRHI::RHIUnlockVertexBuffer(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer)
+void FDynamicRHI::RHIUnlockBuffer(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FDynamicRHI_UnlockVertexBuffer_RenderThread);
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_FDynamicRHI_UnlockBuffer_RenderThread);
 
 	if (RHICmdList.IsTopOfPipe())
 	{
-		FLockTracker::FLockParams Params = GLockTracker.Unlock(VertexBuffer);
+		FLockTracker::FLockParams Params = GLockTracker.Unlock(Buffer);
 
 		bool bBuffer = CVarRHICmdBufferWriteLocks.GetValueOnRenderThread() > 0;
 		if (!bBuffer || Params.LockMode != RLM_WriteOnly)
 		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_UnlockVertexBuffer_FlushAndUnlock);
-			CSV_SCOPED_TIMING_STAT(RHITFlushes, UnlockVertexBuffer_BottomOfPipe);
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_UnlockBuffer_FlushAndUnlock);
+			CSV_SCOPED_TIMING_STAT(RHITFlushes, UnlockBuffer_BottomOfPipe);
 
 			FRHICommandListScopedFlushAndExecute Flush(RHICmdList);
-			GDynamicRHI->UnlockVertexBuffer_BottomOfPipe(RHICmdList, VertexBuffer);
+			GDynamicRHI->UnlockBuffer_BottomOfPipe(RHICmdList, Buffer);
 			GLockTracker.TotalMemoryOutstanding = 0;
 		}
 		else
 		{
-			RHICmdList.EnqueueLambda([VertexBuffer, Params](FRHICommandListImmediate& InRHICmdList)
+			RHICmdList.EnqueueLambda([Buffer, Params](FRHICommandListImmediate& InRHICmdList)
 			{
-				QUICK_SCOPE_CYCLE_COUNTER(STAT_FRHICommandUpdateVertexBuffer_Execute);
-				void* Data = GDynamicRHI->LockVertexBuffer_BottomOfPipe(InRHICmdList, VertexBuffer, Params.Offset, Params.BufferSize, RLM_WriteOnly);
-				FMemory::Memcpy(Data, Params.Buffer, Params.BufferSize);
+				QUICK_SCOPE_CYCLE_COUNTER(STAT_FRHICommandUpdateBuffer_Execute);
+				void* Data = GDynamicRHI->LockBuffer_BottomOfPipe(InRHICmdList, Buffer, Params.Offset, Params.BufferSize, RLM_WriteOnly);
+				{
+					// If we spend a long time doing this memcpy, it means we got freshly allocated memory from the OS that has never been
+					// initialized and is causing pagefault to bring zeroed pages into our process.
+					TRACE_CPUPROFILER_EVENT_SCOPE(RHIUnlockBuffer_Memcpy);
+					FMemory::Memcpy(Data, Params.Buffer, Params.BufferSize);
+				}
 				FMemory::Free(Params.Buffer);
-				GDynamicRHI->UnlockVertexBuffer_BottomOfPipe(InRHICmdList, VertexBuffer);
+				GDynamicRHI->UnlockBuffer_BottomOfPipe(InRHICmdList, Buffer);
 			});
 			RHICmdList.RHIThreadFence(true);
 		}
 
-		if (GLockTracker.TotalMemoryOutstanding > 256 * 1024)
+		if (GLockTracker.TotalMemoryOutstanding > uint32(CVarRHICmdMaxOutstandingMemoryBeforeFlush.GetValueOnRenderThread()) * 1024u)
 		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_UnlockVertexBuffer_FlushForMem);
+			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_UnlockBuffer_FlushForMem);
 			// we could be loading a level or something, lets get this stuff going
 			RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread); 
 			GLockTracker.TotalMemoryOutstanding = 0;
@@ -2120,167 +2306,7 @@ void FDynamicRHI::RHIUnlockVertexBuffer(class FRHICommandListImmediate& RHICmdLi
 	}
 	else
 	{
-		GDynamicRHI->UnlockVertexBuffer_BottomOfPipe(RHICmdList, VertexBuffer);
-	}
-}
-
-void* FDynamicRHI::RHILockIndexBuffer(class FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* IndexBuffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
-{
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FDynamicRHI_LockIndexBuffer);
-
-	void* Result;
-	if (RHICmdList.IsTopOfPipe())
-	{
-		bool bBuffer = CVarRHICmdBufferWriteLocks.GetValueOnRenderThread() > 0;
-		if (!bBuffer || LockMode != RLM_WriteOnly)
-		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_LockIndexBuffer_FlushAndLock);
-			CSV_SCOPED_TIMING_STAT(RHITFlushes, LockIndexBuffer_BottomOfPipe);
-
-			FRHICommandListScopedFlushAndExecute Flush(RHICmdList);
-			Result = GDynamicRHI->LockIndexBuffer_BottomOfPipe(RHICmdList, IndexBuffer, Offset, SizeRHI, LockMode);
-		}
-		else
-		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_LockIndexBuffer_Malloc);
-			Result = FMemory::Malloc(SizeRHI, 16);
-		}
-
-		// Only use the lock tracker at the top of the pipe. There's no need to track locks
-		// at the bottom of the pipe, and doing so would require a critical section.
-		GLockTracker.Lock(IndexBuffer, Result, Offset, SizeRHI, LockMode);
-	}
-	else
-	{
-		Result = GDynamicRHI->LockIndexBuffer_BottomOfPipe(RHICmdList, IndexBuffer, Offset, SizeRHI, LockMode);
-	}
-
-	check(Result);
-	return Result;
-}
-
-void FDynamicRHI::RHIUnlockIndexBuffer(class FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* IndexBuffer)
-{
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FDynamicRHI_UnlockIndexBuffer_RenderThread);
-
-	if (RHICmdList.IsTopOfPipe())
-	{
-		FLockTracker::FLockParams Params = GLockTracker.Unlock(IndexBuffer);
-
-		bool bBuffer = CVarRHICmdBufferWriteLocks.GetValueOnRenderThread() > 0;
-		if (!bBuffer || Params.LockMode != RLM_WriteOnly)
-		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_UnlockIndexBuffer_FlushAndUnlock);
-			CSV_SCOPED_TIMING_STAT(RHITFlushes, UnlockIndexBuffer_BottomOfPipe);
-
-			FRHICommandListScopedFlushAndExecute Flush(RHICmdList);
-			GDynamicRHI->UnlockIndexBuffer_BottomOfPipe(RHICmdList, IndexBuffer);
-			GLockTracker.TotalMemoryOutstanding = 0;
-		}
-		else
-		{
-			RHICmdList.EnqueueLambda([IndexBuffer, Params](FRHICommandListImmediate& InRHICmdList)
-			{
-				QUICK_SCOPE_CYCLE_COUNTER(STAT_FRHICommandUpdateIndexBuffer_Execute);
-				void* Data = GDynamicRHI->LockIndexBuffer_BottomOfPipe(InRHICmdList, IndexBuffer, Params.Offset, Params.BufferSize, RLM_WriteOnly);
-				FMemory::Memcpy(Data, Params.Buffer, Params.BufferSize);
-				FMemory::Free(Params.Buffer);
-				GDynamicRHI->UnlockIndexBuffer_BottomOfPipe(InRHICmdList, IndexBuffer);
-			});
-			RHICmdList.RHIThreadFence(true);
-		}
-
-		if (GLockTracker.TotalMemoryOutstanding > 256 * 1024)
-		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_UnlockIndexBuffer_FlushForMem);
-			// we could be loading a level or something, lets get this stuff going
-			RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread); 
-			GLockTracker.TotalMemoryOutstanding = 0;
-		}
-	}
-	else
-	{
-		GDynamicRHI->UnlockIndexBuffer_BottomOfPipe(RHICmdList, IndexBuffer);
-	}
-}
-
-void* FDynamicRHI::RHILockStructuredBuffer(class FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* StructuredBuffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
-{
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FDynamicRHI_LockStructuredBuffer);
-
-	void* Result;
-	if (RHICmdList.IsTopOfPipe())
-	{
-		bool bBuffer = CVarRHICmdBufferWriteLocks.GetValueOnRenderThread() > 0;
-		if (!bBuffer || LockMode != RLM_WriteOnly)
-		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_LockStructuredBuffer_FlushAndLock);
-			CSV_SCOPED_TIMING_STAT(RHITFlushes, LockStructuredBuffer_RenderThread);
-
-			FRHICommandListScopedFlushAndExecute Flush(RHICmdList);
-			Result = GDynamicRHI->LockStructuredBuffer_BottomOfPipe(RHICmdList, StructuredBuffer, Offset, SizeRHI, LockMode);
-		}
-		else
-		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_LockStructuredBuffer_Malloc);
-			Result = FMemory::Malloc(SizeRHI, 16);
-		}
-		
-		// Only use the lock tracker at the top of the pipe. There's no need to track locks
-		// at the bottom of the pipe, and doing so would require a critical section.
-		GLockTracker.Lock(StructuredBuffer, Result, Offset, SizeRHI, LockMode);
-	}
-	else
-	{
-		Result = GDynamicRHI->LockStructuredBuffer_BottomOfPipe(RHICmdList, StructuredBuffer, Offset, SizeRHI, LockMode);
-	}
-
-	check(Result);
-	return Result;
-}
-
-void FDynamicRHI::RHIUnlockStructuredBuffer(class FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* StructuredBuffer)
-{
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FDynamicRHI_UnlockStructuredBuffer_RenderThread);
-
-	if (RHICmdList.IsTopOfPipe())
-	{
-		FLockTracker::FLockParams Params = GLockTracker.Unlock(StructuredBuffer);
-
-		bool bBuffer = CVarRHICmdBufferWriteLocks.GetValueOnRenderThread() > 0;
-		if (!bBuffer || Params.LockMode != RLM_WriteOnly)
-		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_UnlockStructuredBuffer_FlushAndUnlock);
-			CSV_SCOPED_TIMING_STAT(RHITFlushes, UnlockStructuredBuffer_BottomOfPipe);
-
-			FRHICommandListScopedFlushAndExecute Flush(RHICmdList);
-			GDynamicRHI->UnlockStructuredBuffer_BottomOfPipe(RHICmdList, StructuredBuffer);
-			GLockTracker.TotalMemoryOutstanding = 0;
-		}
-		else
-		{
-			RHICmdList.EnqueueLambda([StructuredBuffer, Params](FRHICommandListImmediate& InRHICmdList)
-			{
-				QUICK_SCOPE_CYCLE_COUNTER(STAT_FRHICommandUpdateStructuredBuffer_Execute);
-				void* Data = GDynamicRHI->LockStructuredBuffer_BottomOfPipe(InRHICmdList, StructuredBuffer, Params.Offset, Params.BufferSize, RLM_WriteOnly);
-				FMemory::Memcpy(Data, Params.Buffer, Params.BufferSize);
-				FMemory::Free(Params.Buffer);
-				GDynamicRHI->UnlockStructuredBuffer_BottomOfPipe(InRHICmdList, StructuredBuffer);
-			});
-			RHICmdList.RHIThreadFence(true);
-		}
-
-		if (GLockTracker.TotalMemoryOutstanding > 256 * 1024)
-		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_UnlockStructuredBuffer_FlushForMem);
-			// we could be loading a level or something, lets get this stuff going
-			RHICmdList.ImmediateFlush(EImmediateFlushType::DispatchToRHIThread); 
-			GLockTracker.TotalMemoryOutstanding = 0;
-		}
-	}
-	else
-	{
-		GDynamicRHI->UnlockStructuredBuffer_BottomOfPipe(RHICmdList, StructuredBuffer);
+		GDynamicRHI->UnlockBuffer_BottomOfPipe(RHICmdList, Buffer);
 	}
 }
 
@@ -2363,6 +2389,20 @@ FVertexShaderRHIRef FDynamicRHI::CreateVertexShader_RenderThread(class FRHIComma
 	return GDynamicRHI->RHICreateVertexShader(Code, Hash);
 }
 
+FMeshShaderRHIRef FDynamicRHI::CreateMeshShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
+{
+	CSV_SCOPED_TIMING_STAT(RHITStalls, CreateMeshShader_RenderThread);
+	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
+	return GDynamicRHI->RHICreateMeshShader(Code, Hash);
+}
+
+FAmplificationShaderRHIRef FDynamicRHI::CreateAmplificationShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
+{
+	CSV_SCOPED_TIMING_STAT(RHITStalls, CreateAmplificationShader_RenderThread);
+	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
+	return GDynamicRHI->RHICreateAmplificationShader(Code, Hash);
+}
+
 FPixelShaderRHIRef FDynamicRHI::CreatePixelShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
 {
 	CSV_SCOPED_TIMING_STAT(RHITStalls, CreatePixelShader_RenderThread);
@@ -2384,20 +2424,6 @@ FComputeShaderRHIRef FDynamicRHI::CreateComputeShader_RenderThread(class FRHICom
 	return GDynamicRHI->RHICreateComputeShader(Code, Hash);
 }
 
-FHullShaderRHIRef FDynamicRHI::CreateHullShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	CSV_SCOPED_TIMING_STAT(RHITStalls, CreateHullShader_RenderThread);
-	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateHullShader(Code, Hash);
-}
-
-FDomainShaderRHIRef FDynamicRHI::CreateDomainShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	CSV_SCOPED_TIMING_STAT(RHITStalls, CreateDomainShader_RenderThread);
-	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateDomainShader(Code, Hash);
-}
-
 void FDynamicRHI::UpdateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, const uint8* SourceData)
 {
 	CSV_SCOPED_TIMING_STAT(RHITStalls, UpdateTexture2D_RenderThread);
@@ -2405,7 +2431,7 @@ void FDynamicRHI::UpdateTexture2D_RenderThread(class FRHICommandListImmediate& R
 	return GDynamicRHI->RHIUpdateTexture2D(Texture, MipIndex, UpdateRegion, SourcePitch, SourceData);
 }
 
-void FDynamicRHI::UpdateFromBufferTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, FRHIStructuredBuffer* Buffer, uint32 BufferOffset)
+void FDynamicRHI::UpdateFromBufferTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, FRHIBuffer* Buffer, uint32 BufferOffset)
 {
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
 	return GDynamicRHI->RHIUpdateFromBufferTexture2D(Texture, MipIndex, UpdateRegion, SourcePitch, Buffer, BufferOffset);
@@ -2502,12 +2528,6 @@ FRHIShaderLibraryRef FDynamicRHI::RHICreateShaderLibrary_RenderThread(class FRHI
 	return GDynamicRHI->RHICreateShaderLibrary(Platform, FilePath, Name);
 }
 
-FTextureReferenceRHIRef FDynamicRHI::RHICreateTextureReference_RenderThread(class FRHICommandListImmediate& RHICmdList, FLastRenderTimeContainer* LastRenderTime)
-{
-	// Notice no StallRHIThread needed! This function is safe on all RHIs
-	return GDynamicRHI->RHICreateTextureReference(LastRenderTime);
-}
-
 FTexture2DRHIRef FDynamicRHI::RHICreateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo)
 {
 	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateTexture2D_RenderThread);
@@ -2536,38 +2556,32 @@ FTexture3DRHIRef FDynamicRHI::RHICreateTexture3D_RenderThread(class FRHICommandL
 	return GDynamicRHI->RHICreateTexture3D(SizeX, SizeY, SizeZ, Format, NumMips, Flags, InResourceState, CreateInfo);
 }
 
-FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* StructuredBuffer, bool bUseUAVCounter, bool bAppendBuffer)
+FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, bool bUseUAVCounter, bool bAppendBuffer)
 {
 	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateUnorderedAccessView_RenderThread);
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateUnorderedAccessView(StructuredBuffer, bUseUAVCounter, bAppendBuffer);
+	return GDynamicRHI->RHICreateUnorderedAccessView(Buffer, bUseUAVCounter, bAppendBuffer);
 }
 
-FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel)
+FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel, uint16 FirstArraySlice, uint16 NumArraySlices)
 {
 	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateUnorderedAccessView_RenderThread);
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateUnorderedAccessView(Texture, MipLevel);
+	return GDynamicRHI->RHICreateUnorderedAccessView(Texture, MipLevel, FirstArraySlice, NumArraySlices);
 }
 
-FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel, uint8 Format)
+FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel, uint8 Format, uint16 FirstArraySlice, uint16 NumArraySlices)
 {
 	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateUnorderedAccessView_RenderThread);
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateUnorderedAccessView(Texture, MipLevel, Format);
+	return GDynamicRHI->RHICreateUnorderedAccessView(Texture, MipLevel, Format, FirstArraySlice, NumArraySlices);
 }
 
-FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint8 Format)
+FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint8 Format)
 {
 	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateUnorderedAccessView_RenderThread);
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateUnorderedAccessView(VertexBuffer, Format);
-}
-
-FUnorderedAccessViewRHIRef FDynamicRHI::RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* IndexBuffer, uint8 Format)
-{
-	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateUnorderedAccessView(IndexBuffer, Format);
+	return GDynamicRHI->RHICreateUnorderedAccessView(Buffer, Format);
 }
 
 FShaderResourceViewRHIRef FDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo)
@@ -2577,32 +2591,25 @@ FShaderResourceViewRHIRef FDynamicRHI::RHICreateShaderResourceView_RenderThread(
 	return GDynamicRHI->RHICreateShaderResourceView(Texture, CreateInfo);
 }
 
-FShaderResourceViewRHIRef FDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint32 Stride, uint8 Format)
+FShaderResourceViewRHIRef FDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Stride, uint8 Format)
 {
-	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateShaderResourceView_RenderThread_VB);
+	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateShaderResourceView_RenderThread);
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateShaderResourceView(VertexBuffer, Stride, Format);
+	return GDynamicRHI->RHICreateShaderResourceView(Buffer, Stride, Format);
 }
 
 FShaderResourceViewRHIRef FDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, const FShaderResourceViewInitializer& Initializer)
 {
-	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateShaderResourceView_RenderThread_VB);
+	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateShaderResourceView_RenderThread);
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
 	return GDynamicRHI->RHICreateShaderResourceView(Initializer);
 }
 
-FShaderResourceViewRHIRef FDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* Buffer)
+FShaderResourceViewRHIRef FDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer)
 {
-	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateShaderResourceView_RenderThread_IB);
+	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateShaderResourceView_RenderThread);
 	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
 	return GDynamicRHI->RHICreateShaderResourceView(Buffer);
-}
-
-FShaderResourceViewRHIRef FDynamicRHI::RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* StructuredBuffer)
-{
-	CSV_SCOPED_TIMING_STAT(RHITStalls, RHICreateShaderResourceView_RenderThread_SB);
-	FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-	return GDynamicRHI->RHICreateShaderResourceView(StructuredBuffer);
 }
 
 FShaderResourceViewRHIRef FDynamicRHI::RHICreateShaderResourceViewWriteMask_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture2DRHI)
@@ -2657,7 +2664,7 @@ void FDynamicRHI::RHIUnlockTextureCubeFace_RenderThread(class FRHICommandListImm
 }
 
 
-void FDynamicRHI::RHIMapStagingSurface_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, FRHIGPUFence* Fence, void*& OutData, int32& OutWidth, int32& OutHeight)
+void FDynamicRHI::RHIMapStagingSurface_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 GPUIndex, FRHIGPUFence* Fence, void*& OutData, int32& OutWidth, int32& OutHeight)
 {
 	if (Fence == nullptr || !Fence->Poll() || Fence->NumPendingWriteCommands.GetValue() != 0)
 	{
@@ -2668,26 +2675,26 @@ void FDynamicRHI::RHIMapStagingSurface_RenderThread(class FRHICommandListImmedia
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_MapStagingSurface_RenderThread);
 		if (GRHISupportsMultithreading)
 		{
-			GDynamicRHI->RHIMapStagingSurface(Texture, Fence, OutData, OutWidth, OutHeight, RHICmdList.GetGPUMask().ToIndex());
+			GDynamicRHI->RHIMapStagingSurface(Texture, Fence, OutData, OutWidth, OutHeight, GPUIndex != INDEX_NONE ? GPUIndex : RHICmdList.GetGPUMask().ToIndex());
 		}
 		else
 		{
 			FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-			GDynamicRHI->RHIMapStagingSurface(Texture, Fence, OutData, OutWidth, OutHeight, RHICmdList.GetGPUMask().ToIndex());
+			GDynamicRHI->RHIMapStagingSurface(Texture, Fence, OutData, OutWidth, OutHeight, GPUIndex != INDEX_NONE ? GPUIndex : RHICmdList.GetGPUMask().ToIndex());
 		}
 	}
 }
 
-void FDynamicRHI::RHIUnmapStagingSurface_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture)
+void FDynamicRHI::RHIUnmapStagingSurface_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 GPUIndex)
 {
 	if (GRHISupportsMultithreading)
 	{
-		GDynamicRHI->RHIUnmapStagingSurface(Texture, RHICmdList.GetGPUMask().ToIndex());
+		GDynamicRHI->RHIUnmapStagingSurface(Texture, GPUIndex != INDEX_NONE ? GPUIndex : RHICmdList.GetGPUMask().ToIndex());
 	}
 	else
 	{
 		FScopedRHIThreadStaller StallRHIThread(RHICmdList);
-		GDynamicRHI->RHIUnmapStagingSurface(Texture, RHICmdList.GetGPUMask().ToIndex());
+		GDynamicRHI->RHIUnmapStagingSurface(Texture, GPUIndex != INDEX_NONE ? GPUIndex : RHICmdList.GetGPUMask().ToIndex());
 	}
 }
 
@@ -2709,17 +2716,15 @@ void FDynamicRHI::RHIReadSurfaceFloatData_RenderThread(class FRHICommandListImme
 
 void FRHICommandListImmediate::UpdateTextureReference(FRHITextureReference* TextureRef, FRHITexture* NewTexture)
 {
-	if (Bypass() || !IsRunningRHIInSeparateThread() || CVarRHICmdFlushUpdateTextureReference.GetValueOnRenderThread() > 0)
+	if (TextureRef == nullptr)
 	{
-		{
-			QUICK_SCOPE_CYCLE_COUNTER(STAT_RHIMETHOD_UpdateTextureReference_FlushRHI);
-			CSV_SCOPED_TIMING_STAT(RHITFlushes, UpdateTextureReference);
-			ImmediateFlush(EImmediateFlushType::FlushRHIThread);
-		}
-		GetContext().RHIUpdateTextureReference(TextureRef, NewTexture);
 		return;
 	}
-	ALLOC_COMMAND(FRHICommandUpdateTextureReference)(TextureRef, NewTexture);
+
+	EnqueueLambda([TextureRef, NewTexture](auto&)
+	{
+		TextureRef->SetReferencedTexture(NewTexture);
+	});
 	RHIThreadFence(true);
 	if (GetUsedMemory() > 256 * 1024)
 	{

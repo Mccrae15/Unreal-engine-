@@ -44,11 +44,11 @@ FDatasmithWorkerHandler::FDatasmithWorkerHandler(FDatasmithDispatcher& InDispatc
 	, WorkerState(EWorkerState::Uninitialized)
 	, ErrorState(EWorkerErrorState::Ok)
 	, CachePath(InCachePath)
+	, ImportParametersCommand(InImportParameters)
 	, bShouldTerminate(false)
 {
 	ThreadName = FString(TEXT("DatasmithWorkerHandler_")) + FString::FromInt(Id);
 	IOThread = FThread(*ThreadName, [this]() { Run(); } );
-	ImportParametersCommand.ImportParameters = InImportParameters;
 }
 
 FDatasmithWorkerHandler::~FDatasmithWorkerHandler()
@@ -333,7 +333,7 @@ void FDatasmithWorkerHandler::ProcessCommand(FCompletedTaskCommand& CompletedTas
 		return;
 	}
 
-	for (const CADLibrary::FFileDescription& ExternalReferenceFile : CompletedTaskCommand.ExternalReferences)
+	for (const CADLibrary::FFileDescriptor& ExternalReferenceFile : CompletedTaskCommand.ExternalReferences)
 	{
 		Dispatcher.AddTask(ExternalReferenceFile);
 	}

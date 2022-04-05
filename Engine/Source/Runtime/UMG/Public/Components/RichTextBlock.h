@@ -12,6 +12,7 @@
 #include "RichTextBlock.generated.h"
 
 class SRichTextBlock;
+class UMaterialInstanceDynamic;
 class URichTextBlockDecorator;
 
 /** Simple struct for rich text styles */
@@ -95,6 +96,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Appearance")
 	void SetTextTransformPolicy(ETextTransformPolicy InTransformPolicy);
 
+	/**
+	* Set the text overflow policy for this text block.
+	* @param InOverflowPolicy the new text overflow policy.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetTextOverflowPolicy(ETextOverflowPolicy InOverflowPolicy);
+
 	/** 
 	 * Wholesale override of the currently established default text style
 	 * @param InDefaultTextStyle The new text style to apply to all default (i.e. undecorated) text in the block
@@ -105,6 +113,13 @@ public:
 	/** Remove all overrides made to the default text style and return to the style specified in the style set data table */
 	UFUNCTION()
 	void ClearAllDefaultStyleOverrides();
+
+	/**
+	 * Creates a dynamic material for the default font or returns it if it already
+	 * exists
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	UMaterialInstanceDynamic* GetDefaultDynamicMaterial();
 
 public:
 	URichTextBlock(const FObjectInitializer& ObjectInitializer);
@@ -153,6 +168,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Widget")
 	URichTextBlockDecorator* GetDecoratorByClass(TSubclassOf<URichTextBlockDecorator> DecoratorClass);
 
+	/**
+	 * Causes the text to reflow it's layout and re-evaluate any decorators
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget")
+	void RefreshTextLayout();
+
 protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
 	
@@ -172,7 +193,7 @@ protected:
 
 	/**  */
 	UPROPERTY(EditAnywhere, Category=Appearance, meta=(RequiredAssetDataTags = "RowStructure=RichTextStyleRow"))
-	class UDataTable* TextStyleSet;
+	TObjectPtr<class UDataTable> TextStyleSet;
 
 	/**  */
 	UPROPERTY(EditAnywhere, Category=Appearance)
@@ -194,11 +215,15 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Appearance, meta=(DisplayName="Transform Policy"))
 	ETextTransformPolicy TextTransformPolicy;
 
+	/** Sets what happens to text that is clipped and doesn't fit within the clip rect for this widget */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clipping, AdvancedDisplay, meta = (DisplayName = "Overflow Policy"))
+	ETextOverflowPolicy TextOverflowPolicy;
+
 	UPROPERTY(Transient)
 	FTextBlockStyle DefaultTextStyle;
 
 	UPROPERTY(Transient)
-	TArray<URichTextBlockDecorator*> InstanceDecorators;
+	TArray<TObjectPtr<URichTextBlockDecorator>> InstanceDecorators;
 	TSharedPtr<class FSlateStyleSet> StyleInstance;
 	TSharedPtr<SRichTextBlock> MyRichTextBlock;
 };

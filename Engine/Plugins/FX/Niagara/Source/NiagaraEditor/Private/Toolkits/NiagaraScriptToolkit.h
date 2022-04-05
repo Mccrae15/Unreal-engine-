@@ -58,6 +58,10 @@ public:
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FNiagaraScriptToolkit");
+	}
 
 	/**
 	* Updates list of module info used to show stats
@@ -138,7 +142,7 @@ private:
 	FSlateIcon GetRefreshStatusImage() const;
 	FText GetRefreshStatusTooltip() const;
 	FText GetVersionButtonLabel() const;
-	
+
 	bool IsEditScriptDifferentFromOriginalScript() const;
 
 	/** Command for the apply button */

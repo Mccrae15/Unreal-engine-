@@ -14,6 +14,7 @@ namespace UnrealBuildTool.Rules
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
+					"Boost",
 					"Core",
 					"CoreUObject",
 					"UnrealUSDWrapper",
@@ -28,6 +29,7 @@ namespace UnrealBuildTool.Rules
 					"Foliage",
 					"GeometryCache", // Just so that we can fetch its AssetImportData
 					"IntelTBB",
+					"Landscape", // So that GetSchemaNameForComponent knows what to do with landscape proxies
 					"MeshDescription",
 					"MovieScene",
 					"MovieSceneTracks",

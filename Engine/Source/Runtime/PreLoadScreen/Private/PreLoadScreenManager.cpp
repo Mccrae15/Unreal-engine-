@@ -241,6 +241,8 @@ void FPreLoadScreenManager::HandleEarlyStartupPlay()
 
 			FPlatformMisc::HidePlatformStartupScreen();
 
+			RegisterDelegatesForEarlyStartupPlay();			
+
 			{
 				SCOPED_BOOT_TIMING("FPreLoadScreenManager::EarlyPlayFrameTick()");
 
@@ -251,6 +253,8 @@ void FPreLoadScreenManager::HandleEarlyStartupPlay()
 				}
 			}
 
+			CleanUpDelegatesForEarlyStartupPlay();
+
 			if (bDidDisableScreensaver)
 			{
 				FPlatformApplicationMisc::ControlScreensaver(FGenericPlatformApplicationMisc::EScreenSaverAction::Enable);
@@ -259,6 +263,19 @@ void FPreLoadScreenManager::HandleEarlyStartupPlay()
 			StopPreLoadScreen();
 		}
 	}
+}
+
+void FPreLoadScreenManager::RegisterDelegatesForEarlyStartupPlay()
+{
+	//Have to register to handle FlushRenderingCommands for the length of the PreLoadScreen
+	FCoreRenderDelegates::OnFlushRenderingCommandsStart.AddRaw(this, &FPreLoadScreenManager::HandleFlushRenderingCommandsStart);
+	FCoreRenderDelegates::OnFlushRenderingCommandsEnd.AddRaw(this, &FPreLoadScreenManager::HandleFlushRenderingCommandsEnd);
+}
+
+void FPreLoadScreenManager::CleanUpDelegatesForEarlyStartupPlay()
+{
+	FCoreRenderDelegates::OnFlushRenderingCommandsStart.RemoveAll(this);
+	FCoreRenderDelegates::OnFlushRenderingCommandsEnd.RemoveAll(this);
 }
 
 void FPreLoadScreenManager::HandleEngineLoadingPlay()
@@ -273,6 +290,13 @@ void FPreLoadScreenManager::HandleEngineLoadingPlay()
 			if (PreLoadScreen->GetWidget().IsValid() && VirtualRenderWindow.IsValid())
 			{
 				VirtualRenderWindow->SetContent(PreLoadScreen->GetWidget().ToSharedRef());
+			}
+
+			//Need to update bIsResponsibleForRendering as a PreLoadScreen may not have updated it before this point
+			if (!bIsResponsibleForRendering && PreLoadScreen->ShouldRender())
+			{
+				bIsResponsibleForRendering = true;
+				IsResponsibleForRenderingDelegate.Broadcast(bIsResponsibleForRendering);
 			}
 		}
 
@@ -434,7 +458,7 @@ void FPreLoadScreenManager::GameLogicFrameTick()
 
         //We have to manually tick everything as we are looping the main thread here
 		FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
-        FTicker::GetCoreTicker().Tick(DeltaTime);
+        FTSTicker::GetCoreTicker().Tick(DeltaTime);
         FThreadManager::Get().Tick();
 
 		//Tick any platform specific things we need here
@@ -466,10 +490,6 @@ void FPreLoadScreenManager::PlatformSpecificGameLogicFrameTick()
 #if PLATFORM_IOS
 	IOS_PlatformSpecificGameLogicFrameTick();
 #endif //PLATFORM_IOS
-
-#if PLATFORM_XBOXONE
-	XboxOne_PlatformSpecificGameLogicFrameTick();
-#endif // PLATFORM_XBOXONE
 }
 
 void FPreLoadScreenManager::EnableRendering(bool bEnabled)
@@ -675,6 +695,19 @@ bool FPreLoadScreenManager::ArePreLoadScreensEnabled()
 	return bEnabled;
 }
 
+void FPreLoadScreenManager::HandleFlushRenderingCommandsStart()
+{
+	//Whenever we flush rendering commands we need to unlock this critical section or we will softlock due to our enqueued rendering command never being able to
+	//acquire this critical section as its both locked on the GT and the GT won't unlock it as it's waiting for the rendering command to finish to unlock
+	AcquireCriticalSection.Unlock();
+}
+
+void FPreLoadScreenManager::HandleFlushRenderingCommandsEnd()
+{
+	//Relock critical section after the FlushRenderCommands finishes as we are
+	AcquireCriticalSection.Lock();
+}
+
 void FPreLoadScreenManager::CleanUpResources()
 {
 	// Since we are on the game thread, the PreLoadScreen must be completed.
@@ -724,11 +757,3 @@ void FPreLoadScreenManager::IOS_PlatformSpecificGameLogicFrameTick()
 	[FIOSAsyncTask ProcessAsyncTasks];
 }
 #endif //PLATFORM_IOS
-
-#if PLATFORM_XBOXONE
-void FPreLoadScreenManager::XboxOne_PlatformSpecificGameLogicFrameTick()
-{
-	// Xbox doesn't run engine init on the main thread, so we need to flush logging periodically
-	GLog->FlushThreadedLogs();
-}
-#endif //PLATFORM_XBOXONE

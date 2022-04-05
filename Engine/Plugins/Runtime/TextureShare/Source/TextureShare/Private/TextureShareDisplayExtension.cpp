@@ -13,19 +13,14 @@ FTextureShareDisplayExtension::FTextureShareDisplayExtension(const FAutoRegister
 {
 }
 
-void FTextureShareDisplayExtension::BeginRenderViewFamily(FSceneViewFamily& InViewFamily)
-{
-	TextureShareDisplayManager.OnBeginRenderViewFamily(InViewFamily);
-}
-
 void FTextureShareDisplayExtension::PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
 {
-	TextureShareDisplayManager.OnPreRenderViewFamily_RenderThread(RHICmdList, InViewFamily);
+	TextureShareDisplayManager.PreRenderViewFamily_RenderThread(RHICmdList, InViewFamily);
 }
 
 void FTextureShareDisplayExtension::PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
 {
-	TextureShareDisplayManager.OnPostRenderViewFamily_RenderThread(RHICmdList, InViewFamily);
+	TextureShareDisplayManager.PostRenderViewFamily_RenderThread(RHICmdList, InViewFamily);
 }
 
 bool FTextureShareDisplayExtension::IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const

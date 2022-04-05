@@ -35,7 +35,7 @@ public:
 class SpirvBasicBlock {
 public:
   SpirvBasicBlock(llvm::StringRef name);
-  ~SpirvBasicBlock() = default;
+  ~SpirvBasicBlock();
 
   // Forbid copy construction and assignment
   SpirvBasicBlock(const SpirvBasicBlock &) = delete;
@@ -70,9 +70,34 @@ public:
   /// OpLoopMerge instruction. Returns nullptr otherwise.
   SpirvBasicBlock *getContinueTarget() const { return continueTarget; }
 
+  /// Get/set DebugScope for this basic block.
+  SpirvDebugScope *getDebugScope() const { return debugScope; }
+  void setDebugScope(SpirvDebugScope *scope) {
+    assert(debugScope == nullptr);
+    debugScope = scope;
+  }
+
+  /// Deletes existing debugScope and sets scope as the new debugScope.
+  void updateDebugScope(SpirvDebugScope *scope) {
+    if (debugScope != nullptr) {
+      debugScope->releaseMemory();
+      debugScope = nullptr;
+    }
+    setDebugScope(scope);
+  }
+
   /// Adds an instruction to the vector of instructions belonging to this basic
   /// block.
   void addInstruction(SpirvInstruction *inst) { instructions.push_back(inst); }
+
+  /// Adds the given instruction as the first instruction of this SPIR-V basic
+  /// block.
+  void addFirstInstruction(SpirvInstruction *inst) {
+    instructions.push_front(inst);
+  }
+
+  /// Return true if instructions is empty. Otherwise, return false.
+  bool empty() { return instructions.empty(); }
 
   /// Returns true if the last instruction in this basic block is a termination
   /// instruction.
@@ -81,7 +106,13 @@ public:
   /// Handle SPIR-V basic block visitors.
   /// If a basic block is the first basic block in a function, it must include
   /// all the variable definitions of the entire function.
+  ///
+  /// For NonSemantic.Shader.DebugInfo.100 we also pass in the function scope
+  /// and function-level debug declares, since these can't appear outside of
+  /// basic blocks.
   bool invokeVisitor(Visitor *, llvm::ArrayRef<SpirvVariable *> vars,
+                     SpirvDebugScope *functionScope,
+                     llvm::ArrayRef<SpirvDebugDeclare *> debugDeclares,
                      bool reverseOrder = false);
 
   /// \brief Adds the given basic block as a successsor to this basic block.
@@ -106,6 +137,13 @@ private:
   /// The continue merge targets if this basic block is a header block
   /// of structured control flow.
   SpirvBasicBlock *continueTarget;
+
+  /// DebugScope that groups all instructions in this basic block.
+  /// TODO: There can be multiple DebugScope instructions in a basic block.
+  ///       Currently, we do not find an actual case that DXC has to emit
+  ///       multiple DebugScope instructions in a basic block, but update it
+  ///       when we find the actual case.
+  SpirvDebugScope *debugScope;
 };
 
 } // end namespace spirv

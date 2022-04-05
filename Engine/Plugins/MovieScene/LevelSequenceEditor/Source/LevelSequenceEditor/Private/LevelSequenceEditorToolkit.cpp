@@ -117,16 +117,22 @@ FLevelSequenceEditorToolkit::~FLevelSequenceEditorToolkit()
 {
 	OpenToolkits.Remove(this);
 
-	FLevelEditorSequencerIntegration::Get().RemoveSequencer(Sequencer.ToSharedRef());
+	if (FModuleManager::Get().IsModuleLoaded(TEXT("LevelEditor")))
+	{
+		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+
+		// @todo remove when world-centric mode is added
+		LevelEditorModule.AttachSequencer(SNullWidget::NullWidget, nullptr);
+		FLevelEditorSequencerIntegration::Get().RemoveSequencer(Sequencer.ToSharedRef());
+
+		// unregister delegates
+
+		LevelEditorModule.OnMapChanged().RemoveAll(this);
+	}
 
 	Sequencer->Close();
 
-	// unregister delegates
-	if (FModuleManager::Get().IsModuleLoaded(TEXT("LevelEditor")))
-	{
-		auto& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
-		LevelEditorModule.OnMapChanged().RemoveAll(this);
-	}
+	
 
 	if (FModuleManager::Get().IsModuleLoaded(TEXT("LevelSequenceEditor")))
 	{
@@ -210,8 +216,7 @@ void FLevelSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, cons
 	// @todo remove when world-centric mode is added
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 
-	// Reopen the scene outliner so that is refreshed with the sequencer info column
-	if (Sequencer->GetSequencerSettings()->GetShowOutlinerInfoColumn())
+	// Reopen the scene outliner so that is refreshed with the sequencer columns
 	{
 		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 		if (LevelEditorTabManager->FindExistingLiveTab(FName("LevelEditorSceneOutliner")).IsValid())
@@ -279,39 +284,6 @@ FLinearColor FLevelSequenceEditorToolkit::GetWorldCentricTabColorScale() const
 FString FLevelSequenceEditorToolkit::GetWorldCentricTabPrefix() const
 {
 	return LOCTEXT("WorldCentricTabPrefix", "Sequencer ").ToString();
-}
-
-
-void FLevelSequenceEditorToolkit::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
-{
-	// For World Centric Asset Editors this isn't called until way too late in the initialization flow
-	// (ie: when you actually start to edit an asset), so the tab will be unrecognized upon restore.
-	// Because of this, the Sequencer Tab Spawner is actually registered in SLevelEditor.cpp manually
-	// which is early enough that you can restore the tab after an editor restart.
-	if (IsWorldCentricAssetEditor())
-	{
-		return;
-	}
-
-	WorkspaceMenuCategory = InTabManager->AddLocalWorkspaceMenuCategory(LOCTEXT("WorkspaceMenu_SequencerAssetEditor", "Sequencer"));
-
-	InTabManager->RegisterTabSpawner(SequencerMainTabId, FOnSpawnTab::CreateSP(this, &FLevelSequenceEditorToolkit::HandleTabManagerSpawnTab))
-		.SetDisplayName(LOCTEXT("SequencerMainTab", "Sequencer"))
-		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
-		.SetIcon(FSlateIcon(Style->GetStyleSetName(), "LevelSequenceEditor.Tabs.Sequencer"));
-}
-
-
-void FLevelSequenceEditorToolkit::UnregisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
-{
-	if (!IsWorldCentricAssetEditor())
-	{
-		InTabManager->UnregisterTabSpawner(SequencerMainTabId);
-	}
-
-	// @todo remove when world-centric mode is added
-	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-	LevelEditorModule.AttachSequencer(SNullWidget::NullWidget, nullptr);
 }
 
 
@@ -419,18 +391,18 @@ void FLevelSequenceEditorToolkit::AddDefaultTracksForActor(AActor& Actor, const 
 							Scale = ActorRelativeTransform.GetScale3D();
 						}
 
-						TArrayView<FMovieSceneFloatChannel*> FloatChannels = TransformSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
-						FloatChannels[0]->SetDefault(Location.X);
-						FloatChannels[1]->SetDefault(Location.Y);
-						FloatChannels[2]->SetDefault(Location.Z);
+						TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = TransformSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
+						DoubleChannels[0]->SetDefault(Location.X);
+						DoubleChannels[1]->SetDefault(Location.Y);
+						DoubleChannels[2]->SetDefault(Location.Z);
 
-						FloatChannels[3]->SetDefault(Rotation.Euler().X);
-						FloatChannels[4]->SetDefault(Rotation.Euler().Y);
-						FloatChannels[5]->SetDefault(Rotation.Euler().Z);
+						DoubleChannels[3]->SetDefault(Rotation.Euler().X);
+						DoubleChannels[4]->SetDefault(Rotation.Euler().Y);
+						DoubleChannels[5]->SetDefault(Rotation.Euler().Z);
 
-						FloatChannels[6]->SetDefault(Scale.X);
-						FloatChannels[7]->SetDefault(Scale.Y);
-						FloatChannels[8]->SetDefault(Scale.Z);
+						DoubleChannels[6]->SetDefault(Scale.X);
+						DoubleChannels[7]->SetDefault(Scale.Y);
+						DoubleChannels[8]->SetDefault(Scale.Z);
 					}
 
 					if (GetSequencer()->GetInfiniteKeyAreas())
@@ -734,6 +706,12 @@ void FLevelSequenceEditorToolkit::AddShot(UMovieSceneCinematicShotTrack* ShotTra
 
 void FLevelSequenceEditorToolkit::HandleMasterSequenceCreated(UObject* MasterSequenceAsset)
 {
+	UMovieSceneSequence* MasterSequence = Cast<UMovieSceneSequence>(MasterSequenceAsset);
+	if (!MasterSequence)
+	{
+		return;
+	}
+
 	const FScopedTransaction Transaction( LOCTEXT( "CreateMasterSequence", "Create Master Sequence" ) );
 	
 	const ULevelSequenceMasterSequenceSettings* MasterSequenceSettings = GetDefault<ULevelSequenceMasterSequenceSettings>();
@@ -742,7 +720,6 @@ void FLevelSequenceEditorToolkit::HandleMasterSequenceCreated(UObject* MasterSeq
 
 	const UMovieSceneToolsProjectSettings* ProjectSettings = GetDefault<UMovieSceneToolsProjectSettings>();
 
-	UMovieSceneSequence* MasterSequence = Cast<UMovieSceneSequence>(MasterSequenceAsset);
 	UMovieSceneCinematicShotTrack* ShotTrack = MasterSequence->GetMovieScene()->AddMasterTrack<UMovieSceneCinematicShotTrack>();
 
 	FFrameRate TickResolution = MasterSequence->GetMovieScene()->GetTickResolution();
@@ -847,15 +824,25 @@ void FLevelSequenceEditorToolkit::HandleTrackMenuExtensionAddTrack(FMenuBuilder&
 	{
 		AddTrackMenuBuilder.BeginSection("Components", LOCTEXT("ComponentsSection", "Components"));
 		{
+			TMap<FString, UActorComponent*> SortedComponents;
 			for (UActorComponent* Component : Actor->GetComponents())
 			{
 				if (Component)
 				{
-					FUIAction AddComponentAction(FExecuteAction::CreateSP(this, &FLevelSequenceEditorToolkit::HandleAddComponentActionExecute, Component));
-					FText AddComponentLabel = FText::FromString(Component->GetName());
-					FText AddComponentToolTip = FText::Format(LOCTEXT("ComponentToolTipFormat", "Add {0} component"), FText::FromString(Component->GetName()));
-					AddTrackMenuBuilder.AddMenuEntry(AddComponentLabel, AddComponentToolTip, FSlateIcon(), AddComponentAction);
+					SortedComponents.Add(Component->GetName(), Component);
 				}
+			}
+			SortedComponents.KeySort([](const FString& A, const FString& B) 
+			{
+				return A < B;
+			});
+			
+			for (const TPair<FString, UActorComponent*>& Component : SortedComponents)
+			{
+				FUIAction AddComponentAction(FExecuteAction::CreateSP(this, &FLevelSequenceEditorToolkit::HandleAddComponentActionExecute, Component.Value));
+				FText AddComponentLabel = FText::FromString(Component.Key);
+				FText AddComponentToolTip = FText::Format(LOCTEXT("ComponentToolTipFormat", "Add {0} component"), AddComponentLabel);
+				AddTrackMenuBuilder.AddMenuEntry(AddComponentLabel, AddComponentToolTip, FSlateIcon(), AddComponentAction);
 			}
 		}
 		AddTrackMenuBuilder.EndSection();

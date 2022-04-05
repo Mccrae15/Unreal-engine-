@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Camera/CameraAnim.h"
+
 #include "Serialization/ArchiveCountMem.h"
 #include "Camera/CameraActor.h"
 #include "Matinee/MatineeActor.h"
@@ -8,6 +9,7 @@
 #include "Matinee/InterpGroupInst.h"
 #include "Matinee/InterpGroupCamera.h"
 #include "Matinee/InterpTrackMove.h"
+#include "UObject/ObjectSaveContext.h"
 
 DEFINE_LOG_CATEGORY(LogCameraAnim);
 
@@ -45,7 +47,7 @@ bool UCameraAnim::CreateFromInterpGroup(class UInterpGroup* SrcGroup, class AMat
 	if (CameraInterpGroup != SrcGroup)
 	{
 		// copy the source interp group for use in the CameraAnim
-		// @fixme jf: fixed this potentially creating an object of UInterpGroup and raw casting it to InterpGroupCamera.  No source data in UE4 to test though.
+		// @fixme jf: fixed this potentially creating an object of UInterpGroup and raw casting it to InterpGroupCamera.  No source data to test though.
 		CameraInterpGroup = Cast<UInterpGroupCamera>(StaticDuplicateObject(SrcGroup, this, NAME_None, RF_AllFlags, UInterpGroupCamera::StaticClass()));
 
 		if (CameraInterpGroup)
@@ -53,7 +55,7 @@ bool UCameraAnim::CreateFromInterpGroup(class UInterpGroup* SrcGroup, class AMat
 			// delete the old one, if it exists
 			if (OldGroup)
 			{
-				OldGroup->MarkPendingKill();
+				OldGroup->MarkAsGarbage();
 			}
 
 			// success!
@@ -87,13 +89,19 @@ FBox UCameraAnim::GetAABB(FVector const& BaseLoc, FRotator const& BaseRot, float
 	return ScaledLocalBox.TransformBy(BaseTM);
 }
 
-
 void UCameraAnim::PreSave(const class ITargetPlatform* TargetPlatform)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UCameraAnim::PreSave(FObjectPreSaveContext ObjectSaveContext)
 {
 #if WITH_EDITORONLY_DATA
 	CalcLocalAABB();
 #endif // WITH_EDITORONLY_DATA
-	Super::PreSave(TargetPlatform);
+	Super::PreSave(ObjectSaveContext);
 }
 
 void UCameraAnim::PostLoad()

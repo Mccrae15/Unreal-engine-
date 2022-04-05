@@ -6,12 +6,14 @@
 #include "Containers/UnrealString.h"
 
 class FUnrealSourceFile;
+class FUnrealTypeDefinitionInfo;
 
 enum class EHeaderProviderSourceType
 {
 	ClassName,
+	ScriptStructName,
+	TypeDef,
 	FileName,
-	Resolved
 };
 
 class FHeaderProvider
@@ -19,8 +21,9 @@ class FHeaderProvider
 	friend bool operator==(const FHeaderProvider& A, const FHeaderProvider& B);
 public:
 	FHeaderProvider(EHeaderProviderSourceType Type, FString&& Id);
+	explicit FHeaderProvider(FUnrealTypeDefinitionInfo& InTypeDef);
 
-	FUnrealSourceFile* Resolve();
+	FUnrealSourceFile* Resolve(const FUnrealSourceFile& ParentSourceFile);
 
 	FString ToString() const;
 
@@ -29,7 +32,9 @@ public:
 private:
 	EHeaderProviderSourceType Type;
 	FString Id;
-	FUnrealSourceFile* Cache;
+	FUnrealTypeDefinitionInfo* TypeDef = nullptr;
+	FUnrealSourceFile* Cache = nullptr;
+	bool bResolved = false;
 };
 
 bool operator==(const FHeaderProvider& A, const FHeaderProvider& B);

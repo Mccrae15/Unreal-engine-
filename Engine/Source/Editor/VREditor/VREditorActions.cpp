@@ -233,95 +233,6 @@ ECheckBoxState FVREditorActionCallbacks::GetUIToggledState(UVREditorMode* InVRMo
 	return InVRMode->GetUISystem().IsShowingEditorUIPanel(PanelToCheck) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
-
-void FVREditorActionCallbacks::OnLightButtonClicked(UVREditorMode* InVRMode)
-{
-	// Always spawn the flashlight on the hand clicking on the UI
-	UVREditorInteractor* VREditorInteractor = InVRMode->GetHandInteractor(EControllerHand::Left);
-	if (!VREditorInteractor->IsHoveringOverUI())
-	{
-		VREditorInteractor = InVRMode->GetHandInteractor(EControllerHand::Right);
-
-	}
-	InVRMode->ToggleFlashlight(VREditorInteractor);
-
-}
-
-ECheckBoxState FVREditorActionCallbacks::GetFlashlightState(UVREditorMode* InVRMode)
-{
-	return InVRMode->IsFlashlightOn() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-}
-
-
-void FVREditorActionCallbacks::OnScreenshotButtonClicked(UVREditorMode* InVRMode)
-{
-	// @todo vreditor: update after direct buffer grab changes
-
-	FString GeneratedFilename = TEXT("");
-	FString Filename = TEXT("");
-	FScreenshotRequest::CreateViewportScreenShotFilename(GeneratedFilename);
-	const bool bRemovePath = false;
-	GeneratedFilename = FPaths::GetBaseFilename(GeneratedFilename, bRemovePath);
-	FFileHelper::GenerateNextBitmapFilename(GeneratedFilename, TEXT("png"), Filename);
-
-	TSharedRef<SWidget> WindowRef = InVRMode->GetLevelViewportPossessedForVR().AsWidget();
-
-
-	TArray<FColor> OutImageData;
-	FIntVector OutImageSize;
-
-	if (FSlateApplication::Get().TakeScreenshot(WindowRef, OutImageData, OutImageSize))
-	{
-		int32 Width = OutImageSize.X;
-		int32 Height = OutImageSize.Y;
-
-		TArray<FColor> ScaledBitmap;
-
-
-		ScaledBitmap = OutImageData;
-		//Clear the alpha channel before saving
-		for (int32 Index = 0; Index < Width*Height; Index++)
-		{
-			ScaledBitmap[Index].A = 255;
-		}
-
-
-		TArray<uint8> CompressedBitmap;
-		FImageUtils::CompressImageArray(Width, Height, ScaledBitmap, CompressedBitmap);
-
-
-		//Save locally
-		const bool bTree = true;
-		const FString FinalFileName = Filename;
-		IFileManager::Get().MakeDirectory(*FPaths::GetPath(FinalFileName), bTree);
-		FFileHelper::SaveArrayToFile(CompressedBitmap, *FinalFileName);
-
-	}
-}
-
-void FVREditorActionCallbacks::OnPlayButtonClicked(UVREditorMode* InVRMode)
-{
-	InVRMode->TogglePIEAndVREditor();
-}
-
-bool FVREditorActionCallbacks::CanPlay(UVREditorMode* InVRMode)
-{
-	static const FName OculusSystemName(TEXT("OculusHMD"));
-	return FLevelEditorActionCallbacks::DefaultCanExecuteAction() 
-		&& VREd::AllowPlay->GetInt() == 1 
-		&& (GEditor != nullptr && !GEditor->bIsSimulatingInEditor);
-}
-
-void FVREditorActionCallbacks::OnSimulateButtonClicked(UVREditorMode* InVRMode)
-{
-	InVRMode->ToggleSIEAndVREditor();
-}
-
-FText FVREditorActionCallbacks::GetSimulateText()
-{
-	return GEditor->bIsSimulatingInEditor ? LOCTEXT("SimulateStopButton", "Stop") : LOCTEXT("SimulateStartButton", "Simulate");
-}
-
 void FVREditorActionCallbacks::OnSnapActorsToGroundClicked(UVREditorMode* InVRMode)
 {
 	InVRMode->SnapSelectedActorsToGround();
@@ -528,7 +439,7 @@ void FVREditorActionCallbacks::SetSelectionRangeStart(UVREditorMode* InVRMode)
 	ISequencer* CurrentSequencer = InVRMode->GetCurrentSequencer();
 	if (CurrentSequencer != nullptr)
 	{
-		CurrentSequencer->SetSelectionRangeStart();
+		CurrentSequencer->SetSelectionRangeStart(CurrentSequencer->GetLocalTime().Time);
 	}
 }
 
@@ -537,7 +448,7 @@ void FVREditorActionCallbacks::SetSelectionRangeEnd(UVREditorMode* InVRMode)
 	ISequencer* CurrentSequencer = InVRMode->GetCurrentSequencer();
 	if (CurrentSequencer != nullptr)
 	{
-		CurrentSequencer->SetSelectionRangeEnd();
+		CurrentSequencer->SetSelectionRangeEnd(CurrentSequencer->GetLocalTime().Time);
 	}
 }
 
@@ -610,9 +521,6 @@ void FVREditorActionCallbacks::ChangeEditorModes(FEditorModeID InMode)
 	// *Important* - activate the mode first since FEditorModeTools::DeactivateMode will
 	// activate the default mode when the stack becomes empty, resulting in multiple active visible modes.
 	GLevelEditorModeTools().ActivateMode(InMode);
-
-	// Find and disable any other 'visible' modes since we only ever allow one of those active at a time.
-	GLevelEditorModeTools().DeactivateOtherVisibleModes(InMode);
 }
 
 ECheckBoxState FVREditorActionCallbacks::EditorModeActive(FEditorModeID InMode)

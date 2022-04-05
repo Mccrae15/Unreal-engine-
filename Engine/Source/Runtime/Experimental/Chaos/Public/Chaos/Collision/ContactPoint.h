@@ -10,24 +10,43 @@
 
 namespace Chaos
 {
-	// Data returned by the low-level collision functions
+	/**
+	 * @brief Used in FContactPoint to indicate whether the contact is vertex-plane, edge-edge, etc
+	*/
+	enum class EContactPointType : int8
+	{
+		Unknown,
+		VertexPlane,
+		PlaneVertex,
+		EdgeEdge,
+		VertexVertex,
+	};
+
+	/**
+	 * @brief Data returned by the low-level collision functions
+	*/
 	class CHAOS_API FContactPoint
 	{
 	public:
-		FVec3 ShapeContactPoints[2];	// Shape-space contact points on the two bodies, without the margin added (i.e., contact point on the core shape)
-		FVec3 ShapeContactNormal;		// Shape-space contact normal relative to the NormalOwner, but with direction that always goes from body 1 to body 0
-		FReal ShapeMargins[2];			// Margins used in collision detection
-		int32 ContactNormalOwnerIndex;	// The shape which owns the contact normal (usually the second body, but not always for manifolds)
+		// Shape-space contact points on the two bodies
+		FVec3 ShapeContactPoints[2];
 
-		// @todo(chaos): these do not need to be stored here (they can be derived from above)
-		FVec3 Location;					// World-space contact location
-		FVec3 Normal;					// World-space contact normal
-		FReal Phi;						// Contact separation (negative for overlap)
+		// Shape-space contact normal on the second shape with direction that points away from shape 1
+		FVec3 ShapeContactNormal;
+
+		// Contact separation (negative for overlap)
+		FReal Phi;
+
+		// Face index of the shape we hit. Only valid for Heightfield and Trimesh contact points, otherwise INDEX_NONE
+		int32 FaceIndex;
+
+		// Whether this is a vertex-plane contact, edge-edge contact etc.
+		EContactPointType ContactType;
 
 		FContactPoint()
-			: ContactNormalOwnerIndex(1)
-			, Normal(1, 0, 0)
-			, Phi(TNumericLimits<FReal>::Max())
+			: Phi(TNumericLimits<FReal>::Max())
+			, FaceIndex(INDEX_NONE)
+			, ContactType(EContactPointType::Unknown)
 		{
 		}
 
@@ -35,15 +54,16 @@ namespace Chaos
 		bool IsSet() const { return (Phi != TNumericLimits<FReal>::Max()); }
 
 		// Switch the shape indices. For use when calling a collision detection method which takes shape types in the opposite order to what you want.
+		// @todo(chaos): remove or fix this function
+		// WARNING: this function can no longer be used in isolation as it could when we were calculating world-space contact data. For this to
+		// work correctly, the normal must either already be in the space of the first shape, or will need to be transformed after.
+		// Alternatively we could start using EContactPointType to indicate normal ownership
 		FContactPoint& SwapShapes()
 		{
 			if (IsSet())
 			{
 				Swap(ShapeContactPoints[0], ShapeContactPoints[1]);
-				Swap(ShapeMargins[0], ShapeMargins[1]);
 				ShapeContactNormal = -ShapeContactNormal;
-				ContactNormalOwnerIndex = (ContactNormalOwnerIndex == 0) ? 1 : 0;
-				Normal = -Normal;
 			}
 			return *this;
 		}

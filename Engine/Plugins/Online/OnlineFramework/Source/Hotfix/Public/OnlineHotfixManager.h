@@ -15,6 +15,8 @@
 
 HOTFIX_API DECLARE_LOG_CATEGORY_EXTERN(LogHotfixManager, Display, All);
 
+class FAsyncLoadingFlushContext;
+
 UENUM()
 enum class EHotfixResult : uint8
 {
@@ -157,6 +159,8 @@ protected:
 	uint64 NumBytes;
 	/** Some title file interfaces aren't re-entrant so handle it ourselves */
 	bool bHotfixingInProgress;
+	/** Asynchronously flush async loading before starting the hotfixing process. */
+	TUniquePtr<FAsyncLoadingFlushContext> AsyncFlushContext;
 	/** Set to true if any PAK file contains an update to a level that is currently loaded */
 	bool bHotfixNeedsMapReload;
 #if !UE_BUILD_SHIPPING
@@ -174,7 +178,7 @@ protected:
 	virtual void Init();
 	virtual void Cleanup();
 	/** Looks at each file returned via the hotfix and processes them */
-	void ApplyHotfix();
+	EHotfixResult ApplyHotfix();
 	/** Cleans up and fires the delegate indicating it's done */
 	void TriggerHotfixComplete(EHotfixResult HotfixResult);
 	/** Checks each file listed to see if it is a hotfix file to process */
@@ -202,8 +206,8 @@ protected:
 	/** @return the config file entry for the ini file name in question */
 	FConfigFile* GetConfigFile(const FString& IniName);
 
-	/** @return the config file name with full path info */
-	FString GetConfigFileNamePath(const FString& IniName);
+	/** @return the config cache key used to associate ini file entries within the config cache */
+	FString BuildConfigCacheKey(const FString& IniName);
 	/** @return the config file name after stripping any extra info (platform, debug prefix, etc.) */
 	virtual FString GetStrippedConfigFileName(const FString& IniName);
 
@@ -218,6 +222,19 @@ protected:
 	UWorld* GetWorld() const override;
 
 protected:
+
+	/**
+	 * Is this hotfix file compatible with the current build
+	 * If the file has version information it is compared with compatibility
+	 * If the file has NO version information it is assumed compatible
+	 *
+	 * @param InFilename name of the file to check
+	 * @param OutFilename name of file with version information stripped
+	 *
+	 * @return true if file is compatible, false otherwise
+	 */
+	bool IsCompatibleHotfixFile(const FString& InFilename, FString& OutFilename);
+
 	/**
 	 * Override this method to look at the file information for any game specific hotfix processing
 	 * NOTE: Make sure to call Super to get default handling of files
@@ -295,8 +312,10 @@ protected:
 	/** Called after any hotfixes are applied to apply last-second changes to certain asset types from .ini file data */
 	virtual void PatchAssetsFromIniFiles();
 	
-	/** Used in PatchAssetsFromIniFiles to hotfix only a row in a table. */
-	void HotfixRowUpdate(UObject* Asset, const FString& AssetPath, const FString& RowName, const FString& ColumnName, const FString& NewValue, TArray<FString>& ProblemStrings);
+	/** Used in PatchAssetsFromIniFiles to hotfix only a row in a table. 
+	 *  If ChangedTables is not null then HandleDataTableChanged will not be called and the caller should call it on the data tables in ChangedTables when they're ready to
+	 */
+	void HotfixRowUpdate(UObject* Asset, const FString& AssetPath, const FString& RowName, const FString& ColumnName, const FString& NewValue, TArray<FString>& ProblemStrings, TSet<class UDataTable*>* ChangedTables = nullptr);
 	
 	/** Used in PatchAssetsFromIniFiles to hotfix an entire table. */
 	void HotfixTableUpdate(UObject* Asset, const FString& AssetPath, const FString& JsonData, TArray<FString>& ProblemStrings);
@@ -308,9 +327,14 @@ protected:
 	virtual void OnHotfixTableValueString(UObject& Asset, const FString& RowName, const FString& ColumnName, const FString& OldValue, const FString& NewValue) { }
 	virtual void OnHotfixTableValueName(UObject& Asset, const FString& RowName, const FString& ColumnName, const FName& OldValue, const FName& NewValue) { }
 	virtual void OnHotfixTableValueObject(UObject& Asset, const FString& RowName, const FString& ColumnName, const UObject* OldValue, const UObject* NewValue) { }
+	virtual void OnHotfixTableValueSoftObject(UObject& Asset, const FString& RowName, const FString& ColumnName, const FSoftObjectPtr& OldValue, const FSoftObjectPtr& NewValue) { }
+
+	virtual bool ShouldPerformHotfix();
 
 public:
 	UOnlineHotfixManager();
+	UOnlineHotfixManager(FVTableHelper& Helper);
+	virtual ~UOnlineHotfixManager();
 
 	/** Tells the hotfix manager which OSS to use. Uses the default if empty */
 	UPROPERTY(Config)

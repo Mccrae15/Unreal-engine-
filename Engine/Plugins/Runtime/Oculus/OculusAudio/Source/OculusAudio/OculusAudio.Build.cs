@@ -42,9 +42,6 @@ namespace UnrealBuildTool.Rules
 
 			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
-				PrivateIncludePathModuleNames.Add("XAudio2");
-				PrivateDependencyModuleNames.AddRange(new string[] { "XAudio2" });
-
 				// Automatically copy DLL to packaged builds
 				RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/Oculus/Audio/Win64/ovraudio64.dll");
 
@@ -58,7 +55,6 @@ namespace UnrealBuildTool.Rules
 					string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
 					AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "OculusAudio_APL.xml"));
 
-                    PublicAdditionalLibraries.Add("ThirdParty/Oculus/LibOVRAudio/LibOVRAudio/lib/armeabi-v7a/libovraudio32.so");
                     PublicAdditionalLibraries.Add("ThirdParty/Oculus/LibOVRAudio/LibOVRAudio/lib/arm64-v8a/libovraudio64.so");
                 }
 			}

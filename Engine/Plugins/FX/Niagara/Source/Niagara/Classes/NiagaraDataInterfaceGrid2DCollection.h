@@ -18,7 +18,7 @@ class FGrid2DBuffer
 public:
 	FGrid2DBuffer(int NumX, int NumY, int NumAttributes, EPixelFormat PixelFormat)
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FGrid2DBuffer"));
 		GridTexture = RHICreateTexture2DArray(NumX, NumY, NumAttributes, PixelFormat, 1, 1, TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);
 		FRHITextureSRVCreateInfo SRVCreateInfo;
 		GridSRV = RHICreateShaderResourceView(GridTexture, SRVCreateInfo);
@@ -46,7 +46,7 @@ struct FGrid2DCollectionRWInstanceData_GameThread
 	FVector2D CellSize = FVector2D::ZeroVector;
 	FVector2D WorldBBoxSize = FVector2D::ZeroVector;
 	EPixelFormat PixelFormat = EPixelFormat::PF_R32_FLOAT;
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 	bool bPreviewGrid = false;
 	FIntVector4 PreviewAttribute = FIntVector4(INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE);
 #endif
@@ -59,6 +59,12 @@ struct FGrid2DCollectionRWInstanceData_GameThread
 	TArray<uint32> Offsets;
 
 	bool NeedsRealloc = false;
+
+	// We need to essentially make this a linked list to avoid more refactoring for now
+	// eventually we can clean this logic up, but this allows us to have a subclass that
+	// overrides the render thread data, which in this case is for a grid reader
+	UNiagaraDataInterface* OtherDI = nullptr;
+	FGrid2DCollectionRWInstanceData_GameThread* OtherInstanceData = nullptr;
 
 	int32 FindAttributeIndexByName(const FName& InName, int32 NumChannels);
 
@@ -83,10 +89,15 @@ struct FGrid2DCollectionRWInstanceData_RenderThread
 	TArray<int32> VarComponents;
 	TArray<uint32> Offsets;
 
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 	bool bPreviewGrid = false;
 	FIntVector4 PreviewAttribute = FIntVector4(INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE);
 #endif
+
+	// We need to essentially make this a linked list to avoid more refactoring for now
+	// eventually we can clean this logic up, but this allows us to have a subclass that
+	// overrides the render thread data, which in this case is for a grid reader
+	FNiagaraDataInterfaceProxy* OtherProxy = nullptr;
 
 	void BeginSimulate(FRHICommandList& RHICmdList);
 	void EndSimulate(FRHICommandList& RHICmdList);
@@ -110,6 +121,31 @@ struct FNiagaraDataInterfaceProxyGrid2DCollectionProxy : public FNiagaraDataInte
 
 };
 
+struct FNiagaraDataInterfaceParametersCS_Grid2DCollection : public FNiagaraDataInterfaceParametersCS
+{
+	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_Grid2DCollection, NonVirtual);
+
+public:
+	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap);
+	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const;
+	void Unset(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const;
+
+private:
+	LAYOUT_FIELD(FShaderParameter, NumAttributesParam);
+	LAYOUT_FIELD(FShaderParameter, UnitToUVParam);
+	LAYOUT_FIELD(FShaderParameter, NumCellsParam);
+	LAYOUT_FIELD(FShaderParameter, CellSizeParam);
+	LAYOUT_FIELD(FShaderParameter, WorldBBoxSizeParam);
+
+	LAYOUT_FIELD(FShaderResourceParameter, GridParam);
+	LAYOUT_FIELD(FRWShaderParameter, OutputGridParam);
+	LAYOUT_FIELD(FShaderParameter, AttributeIndicesParam);
+
+	LAYOUT_FIELD(FShaderResourceParameter, SamplerParam);
+	LAYOUT_FIELD(TMemoryImageArray<FName>, AttributeNames);
+	LAYOUT_FIELD(TMemoryImageArray<uint32>, AttributeChannelCount);
+};
+
 UCLASS(EditInlineNew, Category = "Grid", meta = (DisplayName = "Grid2D Collection", Experimental), Blueprintable, BlueprintType)
 class NIAGARA_API UNiagaraDataInterfaceGrid2DCollection : public UNiagaraDataInterfaceGrid2D
 {
@@ -119,21 +155,21 @@ public:
 	DECLARE_NIAGARA_DI_PARAMETER();
 
 	/** Reference to a user parameter if we're reading one. */
-	UPROPERTY(EditAnywhere, Category = "Grid2DCollection")
+	UPROPERTY(EditAnywhere, Category = "Grid")
 	FNiagaraUserParameterBinding RenderTargetUserParameter;
 
 	/** When enabled overrides the format used to store data inside the grid, otherwise uses the project default setting.  Lower bit depth formats will save memory and performance at the cost of precision. */
-	UPROPERTY(EditAnywhere, Category = "Grid2DCollection", meta = (EditCondition = "bOverrideFormat"))
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "bOverrideFormat"))
 	ENiagaraGpuBufferFormat OverrideBufferFormat;
 
-	UPROPERTY(EditAnywhere, Category = "Grid2DCollection", meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverrideFormat : 1;
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY(EditAnywhere, Category = "Grid2DCollection", meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bPreviewGrid : 1;
 
-	UPROPERTY(EditAnywhere, Category = "Grid2DCollection", meta = (EditCondition = "bPreviewGrid", ToolTip = "When enabled allows you to preview the grid in a debug display") )
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "bPreviewGrid", ToolTip = "When enabled allows you to preview the grid in a debug display") )
 	FName PreviewAttribute = NAME_None;
 #endif
 
@@ -202,11 +238,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Niagara)
 	virtual void GetTextureSize(const UNiagaraComponent *Component, int &SizeX, int &SizeY);
 
-	void GetWorldBBoxSize(FVectorVMContext& Context);
-	void GetCellSize(FVectorVMContext& Context);
-	void GetNumCells(FVectorVMContext& Context);
-	void SetNumCells(FVectorVMContext& Context);
-	void GetAttributeIndex(FVectorVMContext& Context, const FName& InName, int32 NumChannels);
+	void GetWorldBBoxSize(FVectorVMExternalFunctionContext& Context);
+	void GetCellSize(FVectorVMExternalFunctionContext& Context);
+	void GetNumCells(FVectorVMExternalFunctionContext& Context);
+	void SetNumCells(FVectorVMExternalFunctionContext& Context);
+	void GetAttributeIndex(FVectorVMExternalFunctionContext& Context, const FName& InName, int32 NumChannels);
 
 	static const FString GridName;
 	static const FString OutputGridName;
@@ -267,13 +303,15 @@ public:
 	virtual bool GenerateSetupHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, TConstArrayView<FNiagaraVariable> InArguments, bool bSpawnOnly, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const;
 	virtual bool GenerateTeardownHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, TConstArrayView<FNiagaraVariable> InArguments, bool bSpawnOnly, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const;
 	virtual bool SupportsIterationSourceNamespaceAttributesHLSL() const override { return true; }
-	virtual bool GenerateIterationSourceNamespaceReadAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& IterationSourceVar, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bInSetToDefaults, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const override;
-	virtual bool GenerateIterationSourceNamespaceWriteAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& IterationSourceVar, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const override;
+	virtual bool GenerateIterationSourceNamespaceReadAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& IterationSourceVar, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bInSetToDefaults, bool bSpawnOnly, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const override;
+	virtual bool GenerateIterationSourceNamespaceWriteAttributesHLSL(FNiagaraDataInterfaceGPUParamInfo& DIInstanceInfo, const FNiagaraVariable& IterationSourceVar, TConstArrayView<FNiagaraVariable> InArguments, TConstArrayView<FNiagaraVariable> InAttributes, TConstArrayView<FString> InAttributeHLSLNames, bool bSpawnOnly, bool bPartialWrites, TArray<FText>& OutErrors, FString& OutHLSL) const override;
 #endif
 
 	static int32 GetComponentCountFromFuncName(const FName& FuncName);
 	static FNiagaraTypeDefinition GetValueTypeFromFuncName(const FName& FuncName);
 	static bool CanCreateVarFromFuncName(const FName& FuncName);
+
+	TMap<FNiagaraSystemInstanceID, FGrid2DCollectionRWInstanceData_GameThread*>& GetSystemInstancesToProxyData_GT() { return SystemInstancesToProxyData_GT; }
 protected:
 #if WITH_EDITORONLY_DATA
 	void WriteSetHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, int32 InNumChannels, FString& OutHLSL);
@@ -296,6 +334,6 @@ protected:
 	TMap<FNiagaraSystemInstanceID, FGrid2DCollectionRWInstanceData_GameThread*> SystemInstancesToProxyData_GT;
 
 	UPROPERTY(Transient)
-	TMap< uint64, UTextureRenderTarget2DArray*> ManagedRenderTargets;
+	TMap< uint64, TObjectPtr<UTextureRenderTarget2DArray>> ManagedRenderTargets;
 	
 };

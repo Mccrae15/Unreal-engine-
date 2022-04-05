@@ -12,6 +12,7 @@
 #include "Engine/Texture2D.h"
 #include "SceneManagement.h"
 #include "Engine/DirectionalLight.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 
 static float GMaxCSMRadiusToAllowPerObjectShadows = 8000;
 static FAutoConsoleVariableRef CVarMaxCSMRadiusToAllowPerObjectShadows(
@@ -89,6 +90,99 @@ static TAutoConsoleVariable<float> CVarRTDFDistanceScale(
 	TEXT("(1,10000]: larger distance.)"),
 	ECVF_RenderThreadSafe);
 
+// Computes a shadow culling volume (convex hull) based on a set of 8 vertices and a light direction
+void ComputeShadowCullingVolume(bool bReverseCulling, const FVector* CascadeFrustumVerts, const FVector& LightDirection, FConvexVolume& ConvexVolumeOut, FPlane& NearPlaneOut, FPlane& FarPlaneOut) 
+{
+	// For mobile platforms that switch vertical axis and MobileHDR == false the sense of bReverseCulling is inverted.
+	bReverseCulling = XOR(bReverseCulling, (RHINeedsToSwitchVerticalAxis(GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel]) && !IsMobileHDR()));
+
+	// Pairs of plane indices from SubFrustumPlanes whose intersections
+	// form the edges of the frustum.
+	static const int32 AdjacentPlanePairs[12][2] =
+	{
+		{0,2}, {0,4}, {0,1}, {0,3},
+		{2,3}, {4,2}, {1,4}, {3,1},
+		{2,5}, {4,5}, {1,5}, {3,5}
+	};
+	// Maps a plane pair index to the index of the two frustum corners
+	// which form the end points of the plane intersection.
+	static const int32 LineVertexIndices[12][2] =
+	{
+		{0,1}, {1,3}, {3,2}, {2,0},
+		{0,4}, {1,5}, {3,7}, {2,6},
+		{4,5}, {5,7}, {7,6}, {6,4}
+	};
+
+	TArray<FPlane, TInlineAllocator<6>> Planes;
+
+	// Find the view frustum subsection planes which face away from the light and add them to the bounding volume
+	FPlane SubFrustumPlanes[6];
+	if (!bReverseCulling)
+	{
+		SubFrustumPlanes[0] = FPlane(CascadeFrustumVerts[3], CascadeFrustumVerts[2], CascadeFrustumVerts[0]); // Near
+		SubFrustumPlanes[1] = FPlane(CascadeFrustumVerts[7], CascadeFrustumVerts[6], CascadeFrustumVerts[2]); // Left
+		SubFrustumPlanes[2] = FPlane(CascadeFrustumVerts[0], CascadeFrustumVerts[4], CascadeFrustumVerts[5]); // Right
+		SubFrustumPlanes[3] = FPlane(CascadeFrustumVerts[2], CascadeFrustumVerts[6], CascadeFrustumVerts[4]); // Top
+		SubFrustumPlanes[4] = FPlane(CascadeFrustumVerts[5], CascadeFrustumVerts[7], CascadeFrustumVerts[3]); // Bottom
+		SubFrustumPlanes[5] = FPlane(CascadeFrustumVerts[4], CascadeFrustumVerts[6], CascadeFrustumVerts[7]); // Far
+	}
+	else
+	{
+		SubFrustumPlanes[0] = FPlane(CascadeFrustumVerts[0], CascadeFrustumVerts[2], CascadeFrustumVerts[3]); // Near
+		SubFrustumPlanes[1] = FPlane(CascadeFrustumVerts[2], CascadeFrustumVerts[6], CascadeFrustumVerts[7]); // Left
+		SubFrustumPlanes[2] = FPlane(CascadeFrustumVerts[5], CascadeFrustumVerts[4], CascadeFrustumVerts[0]); // Right
+		SubFrustumPlanes[3] = FPlane(CascadeFrustumVerts[4], CascadeFrustumVerts[6], CascadeFrustumVerts[2]); // Top
+		SubFrustumPlanes[4] = FPlane(CascadeFrustumVerts[3], CascadeFrustumVerts[7], CascadeFrustumVerts[5]); // Bottom
+		SubFrustumPlanes[5] = FPlane(CascadeFrustumVerts[7], CascadeFrustumVerts[6], CascadeFrustumVerts[4]); // Far
+	}
+
+	NearPlaneOut = SubFrustumPlanes[0];
+	FarPlaneOut = SubFrustumPlanes[5];
+
+	// Add the planes from the camera's frustum which form the back face of the frustum when in light space.
+	for (int32 i = 0; i < 6; i++)
+	{
+		FVector Normal(SubFrustumPlanes[i]);
+		float d = Normal | LightDirection;
+		if (d < 0.0f)
+		{
+			Planes.Add(SubFrustumPlanes[i]);
+		}
+	}
+
+	// Now add the planes which form the silhouette edges of the camera frustum in light space.
+	for (int32 i = 0; i < 12; i++)
+	{
+		FVector NormalA(SubFrustumPlanes[AdjacentPlanePairs[i][0]]);
+		FVector NormalB(SubFrustumPlanes[AdjacentPlanePairs[i][1]]);
+
+		float DotA = NormalA | LightDirection;
+		float DotB = NormalB | LightDirection;
+
+		// If the signs of the dot product are different
+		if (DotA * DotB < 0.0f)
+		{
+			// Planes are opposing, so this is an edge. 
+			// Extrude the plane along the light direction, and add it to the array.
+
+			FVector A = CascadeFrustumVerts[LineVertexIndices[i][0]];
+			FVector B = CascadeFrustumVerts[LineVertexIndices[i][1]];
+			// Scale the 3rd vector by the length of AB for precision
+			FVector C = A + LightDirection * (A - B).Size();
+
+			// Account for winding
+			if (XOR(DotA >= 0.0f, bReverseCulling))
+			{
+				Planes.Add(FPlane(A, B, C));
+			}
+			else
+			{
+				Planes.Add(FPlane(B, A, C));
+			}
+		}
+	}
+	ConvexVolumeOut = FConvexVolume(Planes);
+}
 
 /**
  * The scene info for a directional light.
@@ -120,19 +214,20 @@ public:
 	FVector LightShaftOverrideDirection;
 
 	/**
-	 * The atmosphere transmittance to apply on the illuminance
+	 * Whether or not the light uses per pixel transmittance, driving the fact that should apply the simple transmittance computed on CPU during lighting pass. 
+	 * If per pixel transmittance is enabled, it should not be done to avoid double transmittance contribution (transmittance will be applied on GPU).
 	 */
-	FLinearColor AtmosphereTransmittanceFactor;
-	/**
-	 * Whether or not the light should apply the simple transmittance computed on CPU during lighting pass. 
-	 * If per pixel transmittance is enabled, it should not be done to avoid double transmittance contribution.
-	 */
-	bool bApplyAtmosphereTransmittanceToLightShaderParam;
+	bool bPerPixelTransmittanceEnabled;
 
 	/**
 	 * The luminance of the sun disk in space (function of the sun illuminance and solid angle)
 	 */
 	FLinearColor SunDiscOuterSpaceLuminance;
+
+	/**
+	 * The atmosphere transmittance from ground to current light direction.
+	 */
+	FLinearColor TransmittanceTowardSun;
 
 	/** 
 	 * Radius of the whole scene dynamic shadow centered on the viewer, which replaces the precomputed shadows based on distance from the camera.  
@@ -196,9 +291,9 @@ public:
 		OcclusionMaskDarkness(Component->OcclusionMaskDarkness),
 		OcclusionDepthRange(Component->OcclusionDepthRange),
 		LightShaftOverrideDirection(Component->LightShaftOverrideDirection),
-		AtmosphereTransmittanceFactor(FLinearColor::White),
-		bApplyAtmosphereTransmittanceToLightShaderParam(true),
+		bPerPixelTransmittanceEnabled(Component->bPerPixelAtmosphereTransmittance),
 		SunDiscOuterSpaceLuminance(FLinearColor::White),
+		TransmittanceTowardSun(FLinearColor::White),
 		DynamicShadowCascades(Component->DynamicShadowCascades > 0 ? Component->DynamicShadowCascades : 0),
 		CascadeDistributionExponent(Component->CascadeDistributionExponent),
 		CascadeTransitionFraction(Component->CascadeTransitionFraction),
@@ -273,19 +368,18 @@ public:
 	}
 
 	/** Accesses parameters needed for rendering the light. */
-	virtual void GetLightShaderParameters(FLightShaderParameters& LightParameters) const override
+	virtual void GetLightShaderParameters(FLightRenderParameters& LightParameters) const override
 	{
-		LightParameters.Position = FVector::ZeroVector;
+		LightParameters.WorldPosition = FVector::ZeroVector;
 		LightParameters.InvRadius = 0.0f;
 		LightParameters.FalloffExponent = 0.0f;
 
-		// We only apply transmittance in some cases. For instance if transmittance is evaluated per pixel, no apply it to the light illuminance.
-		LightParameters.Color = FVector(GetColor() * (bApplyAtmosphereTransmittanceToLightShaderParam ? AtmosphereTransmittanceFactor : FLinearColor::White));
+		LightParameters.Color = GetSunIlluminanceAccountingForSkyAtmospherePerPixelTransmittance();
 
-		LightParameters.Direction = -GetDirection();
-		LightParameters.Tangent = -GetDirection();
+		LightParameters.Direction = (FVector3f)-GetDirection();
+		LightParameters.Tangent = (FVector3f)-GetDirection();
 
-		LightParameters.SpotAngles = FVector2D(0, 0);
+		LightParameters.SpotAngles = FVector2f::ZeroVector;
 		LightParameters.SpecularScale = SpecularScale;
 		LightParameters.SourceRadius = FMath::Sin( 0.5f * FMath::DegreesToRadians( LightSourceAngle ) );
 		LightParameters.SoftSourceRadius = FMath::Sin( 0.5f * FMath::DegreesToRadians( LightSourceSoftAngle ) );
@@ -361,6 +455,8 @@ public:
 		const bool bRayTracedCascade = (InCascadeIndex == INDEX_NONE);
 
 		FSphere Bounds = FDirectionalLightSceneProxy::GetShadowSplitBounds(View, InCascadeIndex, bPrecomputedLightingIsValid, &OutInitializer.CascadeSettings);
+		// Round up to whole unit, to increase stability.
+		Bounds.W = FMath::CeilToFloat(Bounds.W);
 
 		uint32 NumNearCascades = GetNumShadowMappedCascades(View.MaxShadowCascades, bPrecomputedLightingIsValid);
 
@@ -371,8 +467,7 @@ public:
 		const FBoxSphereBounds SubjectBounds(Bounds.Center, FVector(ShadowExtent, ShadowExtent, ShadowExtent), Bounds.W);
 		OutInitializer.PreShadowTranslation = -Bounds.Center;
 		OutInitializer.WorldToLight = FInverseRotationMatrix(GetDirection().GetSafeNormal().Rotation());
-		OutInitializer.Scales = FVector(1.0f,1.0f / Bounds.W,1.0f / Bounds.W);
-		OutInitializer.FaceDirection = FVector(1,0,0);
+		OutInitializer.Scales = FVector2D(1.0f / Bounds.W,1.0f / Bounds.W);
 		OutInitializer.SubjectBounds = FBoxSphereBounds(FVector::ZeroVector,SubjectBounds.BoxExtent,SubjectBounds.SphereRadius);
 		OutInitializer.WAxis = FVector4(0,0,0,1);
 		// Use the minimum of half the world, things further away do not cast shadows,
@@ -386,51 +481,14 @@ public:
 		return true;
 	}
 
-	// reflective shadow map for Light Propagation Volume
-	virtual bool GetViewDependentRsmWholeSceneProjectedShadowInitializer(
-		const class FSceneView& View, 
-		const FBox& LightPropagationVolumeBounds,
-	    class FWholeSceneProjectedShadowInitializer& OutInitializer ) const override
-	{
-		float LpvExtent = LightPropagationVolumeBounds.GetExtent().X; // LPV is a cube, so this should be valid
-
-		OutInitializer.PreShadowTranslation = -LightPropagationVolumeBounds.GetCenter();
-		OutInitializer.WorldToLight = FInverseRotationMatrix(GetDirection().GetSafeNormal().Rotation());
-		OutInitializer.Scales = FVector(1.0f,1.0f / LpvExtent,1.0f / LpvExtent);
-		OutInitializer.FaceDirection = FVector(1,0,0);
-		OutInitializer.SubjectBounds = FBoxSphereBounds( FVector::ZeroVector, LightPropagationVolumeBounds.GetExtent(), FMath::Sqrt( LpvExtent * LpvExtent * 3.0f ) );
-		OutInitializer.WAxis = FVector4(0,0,0,1);
-		// Use the minimum of half the world, things further away do not cast shadows,
-		// However, if the cascade bounds are larger, then extend the casting distance far enough to encompass the cascade.
-		OutInitializer.MinLightW = FMath::Min<float>(-HALF_WORLD_MAX, -OutInitializer.SubjectBounds.SphereRadius);
-		// Range must extend to end of cascade bounds
-		const float MaxLightW = OutInitializer.SubjectBounds.SphereRadius;
-		OutInitializer.MaxDistanceToCastInLightW = MaxLightW - OutInitializer.MinLightW;
-
-		// Compute the RSM bounds
-		{
-			FVector Centre = LightPropagationVolumeBounds.GetCenter();
-			FVector Extent = LightPropagationVolumeBounds.GetExtent();
-			FVector CascadeFrustumVerts[8];
-			CascadeFrustumVerts[0] = Centre + Extent * FVector( -1.0f,-1.0f, 1.0f ); // 0 Near Top    Right
-			CascadeFrustumVerts[1] = Centre + Extent * FVector( -1.0f,-1.0f,-1.0f ); // 1 Near Bottom Right
-			CascadeFrustumVerts[2] = Centre + Extent * FVector(  1.0f,-1.0f, 1.0f ); // 2 Near Top    Left
-			CascadeFrustumVerts[3] = Centre + Extent * FVector(  1.0f,-1.0f,-1.0f ); // 3 Near Bottom Left
-			CascadeFrustumVerts[4] = Centre + Extent * FVector( -1.0f, 1.0f, 1.0f ); // 4 Far  Top    Right
-			CascadeFrustumVerts[5] = Centre + Extent * FVector( -1.0f, 1.0f,-1.0f ); // 5 Far  Bottom Right
-			CascadeFrustumVerts[6] = Centre + Extent * FVector(  1.0f, 1.0f, 1.0f ); // 6 Far  Top    Left
-			CascadeFrustumVerts[7] = Centre + Extent * FVector(  1.0f, 1.0f,-1.0f ); // 7 Far  Bottom Left
-
-			FPlane Far;
-			FPlane Near;
-			const FVector LightDirection = -GetDirection();
-			ComputeShadowCullingVolume(View.bReverseCulling, CascadeFrustumVerts, LightDirection, OutInitializer.CascadeSettings.ShadowBoundsAccurate, Near, Far);
-		}
-		return true;
-	}
-
 	virtual FVector2D GetDirectionalLightDistanceFadeParameters(ERHIFeatureLevel::Type InFeatureLevel, bool bPrecomputedLightingIsValid, int32 MaxNearCascades) const override
 	{
+		// Virtual shadow maps do not use cascade distance fading
+		if (UseVirtualShadowMaps())
+		{
+			return FVector2D(0, 0);
+		}
+
 		float FarDistance = GetCSMMaxDistance(bPrecomputedLightingIsValid, MaxNearCascades);
 		{
 			if (ShouldCreateRayTracedCascade(InFeatureLevel, bPrecomputedLightingIsValid, MaxNearCascades))
@@ -450,8 +508,7 @@ public:
 	{
 		OutInitializer.PreShadowTranslation = -SubjectBounds.Origin;
 		OutInitializer.WorldToLight = FInverseRotationMatrix(FVector(WorldToLight.M[0][0],WorldToLight.M[1][0],WorldToLight.M[2][0]).GetSafeNormal().Rotation());
-		OutInitializer.Scales = FVector(1.0f,1.0f / SubjectBounds.SphereRadius,1.0f / SubjectBounds.SphereRadius);
-		OutInitializer.FaceDirection = FVector(1,0,0);
+		OutInitializer.Scales = FVector2D(1.0f / SubjectBounds.SphereRadius,1.0f / SubjectBounds.SphereRadius);
 		OutInitializer.SubjectBounds = FBoxSphereBounds(FVector::ZeroVector,SubjectBounds.BoxExtent,SubjectBounds.SphereRadius);
 		OutInitializer.WAxis = FVector4(0,0,0,1);
 		OutInitializer.MinLightW = -HALF_WORLD_MAX;
@@ -480,11 +537,10 @@ public:
 		return DoesPlatformSupportDistanceFieldShadowing(GShaderPlatformForFeatureLevel[InFeatureLevel]) && (bCreateWithCSM || bCreateWithoutCSM);
 	}
 
-	virtual void SetAtmosphereRelatedProperties(FLinearColor TransmittanceFactor, FLinearColor SunOuterSpaceLuminance, bool bApplyAtmosphereTransmittanceToLightShaderParamIn) override
+	virtual void SetAtmosphereRelatedProperties(FLinearColor TransmittanceTowardSunIn, FLinearColor SunDiscOuterSpaceLuminanceIn) override
 	{
-		AtmosphereTransmittanceFactor = TransmittanceFactor;
-		SunDiscOuterSpaceLuminance = SunOuterSpaceLuminance;
-		bApplyAtmosphereTransmittanceToLightShaderParam = bApplyAtmosphereTransmittanceToLightShaderParamIn;
+		TransmittanceTowardSun = TransmittanceTowardSunIn;
+		SunDiscOuterSpaceLuminance = SunDiscOuterSpaceLuminanceIn;
 	}
 
 	virtual FLinearColor GetOuterSpaceLuminance() const override
@@ -492,9 +548,41 @@ public:
 		return SunDiscOuterSpaceLuminance;
 	}
 
-	virtual FLinearColor GetTransmittanceFactor() const override
+	virtual FLinearColor GetOuterSpaceIlluminance() const override
 	{
-		return AtmosphereTransmittanceFactor;
+		return GetColor();
+	}
+
+	virtual FLinearColor GetAtmosphereTransmittanceTowardSun() const override
+	{
+		return TransmittanceTowardSun;
+	}
+
+	virtual FLinearColor GetSunIlluminanceOnGroundPostTransmittance() const override
+	{
+		return GetOuterSpaceIlluminance() * GetAtmosphereTransmittanceTowardSun();
+	}
+
+	virtual bool GetPerPixelTransmittanceEnabled() const override
+	{
+		return bPerPixelTransmittanceEnabled;
+	}
+
+	virtual FLinearColor GetSunIlluminanceAccountingForSkyAtmospherePerPixelTransmittance() const override
+	{
+		if (IsUsedAsAtmosphereSunLight())
+		{
+			// We only apply transmittance in some cases. For instance if transmittance is evaluated per pixel, we do not apply it to the light illuminance.
+			if (bPerPixelTransmittanceEnabled)
+			{
+				return FLinearColor(FVector(GetOuterSpaceIlluminance()));
+			}
+			else
+			{
+				return FLinearColor(FVector(GetOuterSpaceIlluminance() * GetAtmosphereTransmittanceTowardSun()));
+			}
+		}
+		return GetColor();
 	}
 
 	virtual float GetSunLightHalfApexAngleRadian() const override
@@ -595,9 +683,7 @@ private:
 
 	float GetDistanceFieldShadowDistance() const
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GenerateMeshDistanceFields"));
-
-		if (CVar->GetValueOnRenderThread() == 0)
+		if (!DoesProjectSupportDistanceFields())
 		{
 			// Meshes must have distance fields generated
 			return 0;
@@ -616,100 +702,6 @@ private:
 	void UpdateLightShaftOverrideDirection_RenderThread(FVector NewLightShaftOverrideDirection)
 	{
 		LightShaftOverrideDirection = NewLightShaftOverrideDirection;
-	}
-
-	// Computes a shadow culling volume (convex hull) based on a set of 8 vertices and a light direction
-	void ComputeShadowCullingVolume(bool bReverseCulling, const FVector* CascadeFrustumVerts, const FVector& LightDirection, FConvexVolume& ConvexVolumeOut, FPlane& NearPlaneOut, FPlane& FarPlaneOut) const
-	{
-		// For mobile platforms that switch vertical axis and MobileHDR == false the sense of bReverseCulling is inverted.
-		bReverseCulling = XOR(bReverseCulling, (RHINeedsToSwitchVerticalAxis(GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel]) && !IsMobileHDR()));
-
-		// Pairs of plane indices from SubFrustumPlanes whose intersections
-		// form the edges of the frustum.
-		static const int32 AdjacentPlanePairs[12][2] =
-		{
-			{0,2}, {0,4}, {0,1}, {0,3},
-			{2,3}, {4,2}, {1,4}, {3,1},
-			{2,5}, {4,5}, {1,5}, {3,5}
-		};
-		// Maps a plane pair index to the index of the two frustum corners
-		// which form the end points of the plane intersection.
-		static const int32 LineVertexIndices[12][2] =
-		{
-			{0,1}, {1,3}, {3,2}, {2,0},
-			{0,4}, {1,5}, {3,7}, {2,6},
-			{4,5}, {5,7}, {7,6}, {6,4}
-		};
-
-		TArray<FPlane, TInlineAllocator<6>> Planes;
-
-		// Find the view frustum subsection planes which face away from the light and add them to the bounding volume
-		FPlane SubFrustumPlanes[6];
-		if (!bReverseCulling)
-		{
-			SubFrustumPlanes[0] = FPlane(CascadeFrustumVerts[3], CascadeFrustumVerts[2], CascadeFrustumVerts[0]); // Near
-			SubFrustumPlanes[1] = FPlane(CascadeFrustumVerts[7], CascadeFrustumVerts[6], CascadeFrustumVerts[2]); // Left
-			SubFrustumPlanes[2] = FPlane(CascadeFrustumVerts[0], CascadeFrustumVerts[4], CascadeFrustumVerts[5]); // Right
-			SubFrustumPlanes[3] = FPlane(CascadeFrustumVerts[2], CascadeFrustumVerts[6], CascadeFrustumVerts[4]); // Top
-			SubFrustumPlanes[4] = FPlane(CascadeFrustumVerts[5], CascadeFrustumVerts[7], CascadeFrustumVerts[3]); // Bottom
-			SubFrustumPlanes[5] = FPlane(CascadeFrustumVerts[4], CascadeFrustumVerts[6], CascadeFrustumVerts[7]); // Far
-		}
-		else
-		{
-			SubFrustumPlanes[0] = FPlane(CascadeFrustumVerts[0], CascadeFrustumVerts[2], CascadeFrustumVerts[3]); // Near
-			SubFrustumPlanes[1] = FPlane(CascadeFrustumVerts[2], CascadeFrustumVerts[6], CascadeFrustumVerts[7]); // Left
-			SubFrustumPlanes[2] = FPlane(CascadeFrustumVerts[5], CascadeFrustumVerts[4], CascadeFrustumVerts[0]); // Right
-			SubFrustumPlanes[3] = FPlane(CascadeFrustumVerts[4], CascadeFrustumVerts[6], CascadeFrustumVerts[2]); // Top
-			SubFrustumPlanes[4] = FPlane(CascadeFrustumVerts[3], CascadeFrustumVerts[7], CascadeFrustumVerts[5]); // Bottom
-			SubFrustumPlanes[5] = FPlane(CascadeFrustumVerts[7], CascadeFrustumVerts[6], CascadeFrustumVerts[4]); // Far
-		}
-
-		NearPlaneOut = SubFrustumPlanes[0];
-		FarPlaneOut = SubFrustumPlanes[5];
-
-		// Add the planes from the camera's frustum which form the back face of the frustum when in light space.
-		for (int32 i = 0; i < 6; i++)
-		{
-			FVector Normal(SubFrustumPlanes[i]);
-			float d = Normal | LightDirection;
-			if ( d < 0.0f )
-			{
-				Planes.Add(SubFrustumPlanes[i]);
-			}
-		}
-
-		// Now add the planes which form the silhouette edges of the camera frustum in light space.
-		for (int32 i = 0; i < 12; i++)
-		{
-			FVector NormalA(SubFrustumPlanes[AdjacentPlanePairs[i][0]]);
-			FVector NormalB(SubFrustumPlanes[AdjacentPlanePairs[i][1]]);
-
-			float DotA = NormalA | LightDirection;
-			float DotB = NormalB | LightDirection;
-
-			// If the signs of the dot product are different
-			if ( DotA * DotB < 0.0f )
-			{
-				// Planes are opposing, so this is an edge. 
-				// Extrude the plane along the light direction, and add it to the array.
-
-				FVector A = CascadeFrustumVerts[LineVertexIndices[i][0]];
-				FVector B = CascadeFrustumVerts[LineVertexIndices[i][1]];
-				// Scale the 3rd vector by the length of AB for precision
-				FVector C = A + LightDirection * (A - B).Size(); 
-
-				// Account for winding
-				if (XOR(DotA >= 0.0f, bReverseCulling)) 
-				{
-					Planes.Add(FPlane(A, B, C));
-				}
-				else
-				{
-					Planes.Add(FPlane(B, A, C));
-				}
-			}
-		}
-		ConvexVolumeOut = FConvexVolume(Planes);
 	}
 
 	// Useful helper function to compute shadow map cascade distribution
@@ -881,6 +873,7 @@ private:
 		// Presence of the ray traced cascade does not change depth ranges for the shadow-mapped cascades
 		float SplitNear = GetSplitDistance(View, ShadowSplitIndex, bPrecomputedLightingIsValid, bIsRayTracedCascade);
 		float SplitFar = GetSplitDistance(View, ShadowSplitIndex + 1, bPrecomputedLightingIsValid, bIsRayTracedCascade);
+
 		float FadePlane = SplitFar;
 
 		float LocalCascadeTransitionFraction = CascadeTransitionFraction * GetShadowTransitionScale();
@@ -972,17 +965,22 @@ UDirectionalLightComponent::UDirectionalLightComponent(const FObjectInitializer&
 
 	ShadowCascadeBiasDistribution = 1;
 	WholeSceneDynamicShadowRadius_DEPRECATED = 20000.0f;
-	DynamicShadowDistanceMovableLight = 20000.0f;
 	DynamicShadowDistanceStationaryLight = 0.f;
 
-	DistanceFieldShadowDistance = 30000.0f;
+	// For 5.0 double dynamic shadow distance by default & enable DF shadows.
+	// Note, we reset this to old defaults in Serialize for lights created with older versions of the engine.
+	DynamicShadowDistanceMovableLight = 40000.0f;
+	DistanceFieldShadowDistance = 51200.0f;
+	DynamicShadowCascades = 4;
+	bUseRayTracedDistanceFieldShadows = true;
+
 	TraceDistance = 10000.0f;
 	FarShadowDistance = 300000.0f;
 	LightSourceAngle = 0.5357f;		// Angle of earth's sun
 	LightSourceSoftAngle = 0.0f;
 	ShadowSourceAngleFactor = 1.0f;
 
-	DynamicShadowCascades = 3;
+
 	CascadeDistributionExponent = 3.0f;
 	CascadeTransitionFraction = 0.1f;
 	ShadowDistanceFadeoutFraction = 0.1f;
@@ -990,11 +988,13 @@ UDirectionalLightComponent::UDirectionalLightComponent(const FObjectInitializer&
 	CastTranslucentShadows = true;
 	bUseInsetShadowsForMovableObjects = true;
 	bCastVolumetricShadow = true;
+	bAffectDynamicIndirectLighting = true;
 
 	ModulatedShadowColor = FColor(128, 128, 128);
 	ShadowAmount = 1.0f;
 
-	bUsedAsAtmosphereSunLight = false;
+	bUsedAsAtmosphereSunLight_DEPRECATED = false;
+	bAtmosphereSunLight = true;
 	AtmosphereSunLightIndex = 0;
 	AtmosphereSunDiskColorScale = FLinearColor::White;
 
@@ -1109,7 +1109,7 @@ bool UDirectionalLightComponent::CanEditChange(const FProperty* InProperty) cons
 			|| PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, CloudShadowOnSurfaceStrength)
 			|| PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, CloudShadowDepthBias))
 		{
-			return bCastCloudShadows && bUsedAsAtmosphereSunLight;
+			return bCastCloudShadows && bAtmosphereSunLight;
 		}
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, bCastCloudShadows)
 			|| PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, bCastShadowsOnAtmosphere)
@@ -1118,11 +1118,11 @@ bool UDirectionalLightComponent::CanEditChange(const FProperty* InProperty) cons
 			|| PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, AtmosphereSunLightIndex)
 			|| PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, AtmosphereSunDiskColorScale))
 		{
-			return bUsedAsAtmosphereSunLight;
+			return bAtmosphereSunLight;
 		}
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(UDirectionalLightComponent, bCastShadowsOnClouds))
 		{
-			return bUsedAsAtmosphereSunLight && AtmosphereSunLightIndex == 0;	// AtmosphereLight1 has opaque shadow on cloud disabled.
+			return bAtmosphereSunLight && AtmosphereSunLightIndex == 0;	// AtmosphereLight1 has opaque shadow on cloud disabled.
 		}
 
 
@@ -1219,6 +1219,15 @@ void UDirectionalLightComponent::SetShadowDistanceFadeoutFraction(float NewValue
 	}
 }
 
+void UDirectionalLightComponent::SetShadowCascadeBiasDistribution(float NewValue)
+{
+	if (ShadowCascadeBiasDistribution != NewValue)
+	{
+		ShadowCascadeBiasDistribution = NewValue;
+		MarkRenderStateDirty();
+	}
+}
+
 void UDirectionalLightComponent::SetEnableLightShaftOcclusion(bool bNewValue)
 {
 	if (AreDynamicDataChangesAllowed()
@@ -1239,6 +1248,15 @@ void UDirectionalLightComponent::SetOcclusionMaskDarkness(float NewValue)
 	}
 }
 
+void UDirectionalLightComponent::SetOcclusionDepthRange(float NewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& OcclusionDepthRange != NewValue)
+	{
+		OcclusionDepthRange = NewValue;
+		MarkRenderStateDirty();
+	}
+}
 void UDirectionalLightComponent::SetLightShaftOverrideDirection(FVector NewValue)
 {
 	if (AreDynamicDataChangesAllowed()
@@ -1250,6 +1268,36 @@ void UDirectionalLightComponent::SetLightShaftOverrideDirection(FVector NewValue
 			FDirectionalLightSceneProxy* DirectionalLightSceneProxy = (FDirectionalLightSceneProxy*)SceneProxy;
 			DirectionalLightSceneProxy->UpdateLightShaftOverrideDirection_GameThread(this);
 		}
+	}
+}
+
+void UDirectionalLightComponent::SetLightSourceAngle(float NewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& LightSourceAngle != NewValue)
+	{
+		LightSourceAngle = NewValue;
+		MarkRenderStateDirty();
+	}
+}
+
+void UDirectionalLightComponent::SetLightSourceSoftAngle(float NewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& LightSourceSoftAngle != NewValue)
+	{
+		LightSourceSoftAngle = NewValue;
+		MarkRenderStateDirty();
+	}
+}
+
+void UDirectionalLightComponent::SetShadowSourceAngleFactor(float NewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& ShadowSourceAngleFactor != NewValue)
+	{
+		ShadowSourceAngleFactor = NewValue;
+		MarkRenderStateDirty();
 	}
 }
 
@@ -1266,9 +1314,9 @@ void UDirectionalLightComponent::SetShadowAmount(float NewValue)
 void UDirectionalLightComponent::SetAtmosphereSunLight(bool bNewValue)
 {
 	if (AreDynamicDataChangesAllowed()
-		&& bUsedAsAtmosphereSunLight != bNewValue)
+		&& bAtmosphereSunLight != bNewValue)
 	{
-		bUsedAsAtmosphereSunLight = bNewValue;
+		bAtmosphereSunLight = bNewValue;
 		MarkRenderStateDirty();
 	}
 }
@@ -1285,9 +1333,24 @@ void UDirectionalLightComponent::SetAtmosphereSunLightIndex(int32 NewValue)
 
 void UDirectionalLightComponent::Serialize(FArchive& Ar)
 {
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
+	if (Ar.IsLoading())
+	{
+		// Reset to older defaults if the light was created with a previous version of the engine.
+		if (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::UpdatedDirectionalLightShadowDefaults)
+		{
+			DynamicShadowDistanceMovableLight = 20000.0f;
+			DistanceFieldShadowDistance = 30000.0f;
+			DynamicShadowCascades = 3;
+			bUseRayTracedDistanceFieldShadows = false;
+		}
+	}
+
 	Super::Serialize(Ar);
 
-	if(Ar.UE4Ver() < VER_UE4_REMOVE_LIGHT_MOBILITY_CLASSES)
+	if(Ar.UEVer() < VER_UE4_REMOVE_LIGHT_MOBILITY_CLASSES)
 	{
 		// If outer is a DirectionalLight, we use the ADirectionalLight::LoadedFromAnotherClass path
 		if( GetOuter() != NULL && !GetOuter()->IsA(ADirectionalLight::StaticClass()) )
@@ -1301,6 +1364,11 @@ void UDirectionalLightComponent::Serialize(FArchive& Ar)
 				DynamicShadowDistanceStationaryLight = WholeSceneDynamicShadowRadius_DEPRECATED;
 			}
 		}
+	}
+
+	if ((Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::DirLightsAreAtmosphereLightsByDefault))
+	{
+		bAtmosphereSunLight = bUsedAsAtmosphereSunLight_DEPRECATED;
 	}
 }
 

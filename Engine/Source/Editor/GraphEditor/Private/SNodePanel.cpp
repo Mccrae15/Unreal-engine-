@@ -204,6 +204,30 @@ namespace NodePanelDefs
 	static const float MouseZoomScaling = 0.04f;
 };
 
+
+void SNodePanel::SNode::FNodeSlot::Construct(const FChildren& SlotOwner, FSlotArguments&& InArgs)
+{
+	TSlotBase<FNodeSlot>::Construct(SlotOwner, MoveTemp(InArgs));
+	TAlignmentWidgetSlotMixin<FNodeSlot>::ConstructMixin(SlotOwner, MoveTemp(InArgs));
+
+	if (InArgs._Padding.IsSet())
+	{
+		SlotPadding = MoveTemp(InArgs._Padding);
+	}
+	if (InArgs._SlotOffset.IsSet())
+	{
+		Offset = MoveTemp(InArgs._SlotOffset);
+	}
+	if (InArgs._SlotSize.IsSet())
+	{
+		Size = MoveTemp(InArgs._SlotSize);
+	}
+	if (InArgs._AllowScaling.IsSet())
+	{
+		AllowScale = MoveTemp(InArgs._AllowScaling);
+	}
+}
+
 SNodePanel::SNodePanel()
 	: Children(this)
 	, VisibleChildren(this)
@@ -289,7 +313,7 @@ void SNodePanel::Construct()
 {
 	if (!ZoomLevels)
 	{
-		ZoomLevels = MakeUnique<FFixedZoomLevelsContainer>();
+		SetZoomLevelsContainer<FFixedZoomLevelsContainer>();
 	}
 	ZoomLevel = ZoomLevels->GetDefaultZoomLevel();
 	PreviousZoomLevel = ZoomLevels->GetDefaultZoomLevel();
@@ -347,19 +371,19 @@ FVector2D SNodePanel::ComputeEdgePanAmount(const FGeometry& MyGeometry, const FV
 	// Start panning before we reach the edge of the graph panel.
 	static const float EdgePanForgivenessZone = 30.0f;
 
-	const FVector2D LocalCursorPos = MyGeometry.AbsoluteToLocal( TargetPosition );
+	const FVector2f LocalCursorPos = FVector2f(MyGeometry.AbsoluteToLocal( TargetPosition ));
 
 	// If the mouse is outside of the graph area, then we want to pan in that direction.
 	// The farther out the mouse is, the more we want to pan.
 
-	FVector2D EdgePanThisTick(0,0);
+	FVector2f EdgePanThisTick(0,0);
 	if ( LocalCursorPos.X <= EdgePanForgivenessZone )
 	{
 		EdgePanThisTick.X += FMath::Max( -MaxPanSpeed, EdgePanSpeedCoefficient * -FMath::Pow(EdgePanForgivenessZone - LocalCursorPos.X, EdgePanSpeedPower) );
 	}
 	else if( LocalCursorPos.X >= MyGeometry.GetLocalSize().X - EdgePanForgivenessZone )
 	{
-		EdgePanThisTick.X = FMath::Min( MaxPanSpeed, EdgePanSpeedCoefficient * FMath::Pow(LocalCursorPos.X - MyGeometry.GetLocalSize().X + EdgePanForgivenessZone, EdgePanSpeedPower) );
+		EdgePanThisTick.X = FMath::Min( MaxPanSpeed, EdgePanSpeedCoefficient * FMath::Pow(LocalCursorPos.X - float(MyGeometry.GetLocalSize().X) + EdgePanForgivenessZone, EdgePanSpeedPower) );
 	}
 
 	if ( LocalCursorPos.Y <= EdgePanForgivenessZone )
@@ -368,10 +392,10 @@ FVector2D SNodePanel::ComputeEdgePanAmount(const FGeometry& MyGeometry, const FV
 	}
 	else if( LocalCursorPos.Y >= MyGeometry.GetLocalSize().Y - EdgePanForgivenessZone )
 	{
-		EdgePanThisTick.Y = FMath::Min( MaxPanSpeed, EdgePanSpeedCoefficient * FMath::Pow(LocalCursorPos.Y - MyGeometry.GetLocalSize().Y + EdgePanForgivenessZone, EdgePanSpeedPower) );
+		EdgePanThisTick.Y = FMath::Min( MaxPanSpeed, EdgePanSpeedCoefficient * FMath::Pow(LocalCursorPos.Y - float(MyGeometry.GetLocalSize().Y) + EdgePanForgivenessZone, EdgePanSpeedPower) );
 	}
 
-	return EdgePanThisTick;
+	return FVector2D(EdgePanThisTick);
 }
 
 void SNodePanel::UpdateViewOffset (const FGeometry& MyGeometry, const FVector2D& TargetPosition)
@@ -1177,17 +1201,31 @@ void SNodePanel::RemoveAllNodes()
 
 void SNodePanel::PopulateVisibleChildren(const FGeometry& AllottedGeometry)
 {
-	VisibleChildren.Empty();
+	bool bRequiresSort = false;
 	for (int32 ChildIndex = 0; ChildIndex < Children.Num(); ++ChildIndex)
 	{
 		const TSharedRef<SNode>& SomeChild = Children[ChildIndex];
 		if ( !IsNodeCulled(SomeChild, AllottedGeometry) )
 		{
-			VisibleChildren.Add(SomeChild);
+			if(VisibleChildren.Find(SomeChild) == INDEX_NONE)
+			{
+				VisibleChildren.Add(SomeChild);
+				bRequiresSort = true;
+			}
+		}
+		else
+		{
+			if(VisibleChildren.Find(SomeChild) != INDEX_NONE)
+			{
+				VisibleChildren.Remove(SomeChild);
+				bRequiresSort = true;
+			}
+			
 		}
 	}
+	
 	// Depth Sort Nodes
-	if( VisibleChildren.Num() > 0 )
+	if( bRequiresSort && (VisibleChildren.Num() > 0) )
 	{
 		struct SNodeLessThanSort
 		{

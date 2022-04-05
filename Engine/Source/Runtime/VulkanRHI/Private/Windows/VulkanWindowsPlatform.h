@@ -13,12 +13,18 @@
 #define VULKAN_USE_CREATE_WIN32_SURFACE				1
 #define VULKAN_DYNAMICALLYLOADED					1
 #define VULKAN_SHOULD_ENABLE_DESKTOP_HMD_SUPPORT	1
-#define VULKAN_SIGNAL_UNIMPLEMENTED()				checkf(false, TEXT("Unimplemented vulkan functionality: %s"), TEXT(__FUNCTION__))
+#define VULKAN_SIGNAL_UNIMPLEMENTED()				checkf(false, TEXT("Unimplemented vulkan functionality: %s"), StringCast<TCHAR>(__FUNCTION__).Get())
 #define VULKAN_SUPPORTS_COLOR_CONVERSIONS			1
 #define VULKAN_SUPPORTS_AMD_BUFFER_MARKER			1
 
-#define	UE_VK_API_VERSION							VK_API_VERSION_1_1
+#define VULKAN_RHI_RAYTRACING 						(RHI_RAYTRACING)
+#define VULKAN_SUPPORTS_SCALAR_BLOCK_LAYOUT			(VULKAN_RHI_RAYTRACING)
 
+#if VULKAN_RHI_RAYTRACING
+#	define UE_VK_API_VERSION						VK_API_VERSION_1_2
+#else
+#	define UE_VK_API_VERSION						VK_API_VERSION_1_1
+#endif // VULKAN_RHI_RAYTRACING
 
 // 32-bit windows has warnings on custom mem mgr callbacks
 #define VULKAN_SHOULD_USE_LLM					(UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT) && !PLATFORM_32BITS
@@ -35,6 +41,8 @@
 	EnumMacro(PFN_vkGetQueueCheckpointDataNV, vkGetQueueCheckpointDataNV) \
 	EnumMacro(PFN_vkGetBufferMemoryRequirements2KHR , vkGetBufferMemoryRequirements2KHR) \
 	EnumMacro(PFN_vkGetPhysicalDeviceMemoryProperties2, vkGetPhysicalDeviceMemoryProperties2) \
+	EnumMacro(PFN_vkCreateRenderPass2KHR, vkCreateRenderPass2KHR) \
+	EnumMacro(PFN_vkCmdBeginRenderPass2KHR, vkCmdBeginRenderPass2KHR) \
 	EnumMacro(PFN_vkGetPhysicalDeviceFragmentShadingRatesKHR, vkGetPhysicalDeviceFragmentShadingRatesKHR)
 
 #define ENUM_VK_ENTRYPOINTS_OPTIONAL_PLATFORM_INSTANCE(EnumMacro) \
@@ -54,7 +62,9 @@ public:
 	static void FreeVulkanLibrary();
 
 	static void GetInstanceExtensions(TArray<const ANSICHAR*>& OutExtensions);
+	static void GetInstanceLayers(TArray<const ANSICHAR*>& OutLayers) {}
 	static void GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions);
+	static void GetDeviceLayers(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutLayers) {}
 
 	static void CreateSurface(void* WindowHandle, VkInstance Instance, VkSurfaceKHR* OutSurface);
 
@@ -62,12 +72,7 @@ public:
 
 	static void WriteCrashMarker(const FOptionalVulkanDeviceExtensions& OptionalExtensions, VkCommandBuffer CmdBuffer, VkBuffer DestBuffer, const TArrayView<uint32>& Entries, bool bAdding);
 
-	// Some platforms only support real or non-real UBs, so this function can optimize it out
-	static bool UseRealUBsOptimization(bool bCodeHeaderUseRealUBs)
-	{
-		static auto* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Vulkan.UseRealUBs"));
-		return (CVar && CVar->GetValueOnAnyThread() == 0) ? false : bCodeHeaderUseRealUBs;
-	}
+	static void EnablePhysicalDeviceFeatureExtensions(VkDeviceCreateInfo& DeviceInfo, FVulkanDevice& Device);
 };
 
 typedef FVulkanWindowsPlatform FVulkanPlatform;

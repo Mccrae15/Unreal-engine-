@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using AutomationTool;
 using UnrealBuildTool;
 
@@ -22,6 +22,7 @@ namespace AutomationUtils.Automation
 			public bool bFoundParent { get; set; }
 			public bool bContainsShaderLibrary { get; set; }
 			public int Order { get; set; }
+			public bool	UseChunkDBs { get; set; }
 			public string ExecFileName { get; set; } // TODO: We never used this.  Clean this up.
 		}
 
@@ -104,6 +105,17 @@ namespace AutomationUtils.Automation
 					}
 				}
 
+				{
+					bool bUseChunkDBs;
+					if (!BundleConfig.GetBool(SectionName, "UseChunkDBs", out bUseChunkDBs))
+					{
+						Bundle.UseChunkDBs = false;
+					}
+					else
+					{
+						Bundle.UseChunkDBs = bUseChunkDBs;
+					}
+				}
 				GetPlatformSettings(Bundle, BundleConfig, BundleDefinitionPrefix + Bundle.Name);
 
 				Results.Add(Bundle);

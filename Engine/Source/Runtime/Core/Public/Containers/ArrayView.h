@@ -3,11 +3,15 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Templates/IsConst.h"
 #include "Templates/IsSigned.h"
 #include "Templates/PointerIsConvertibleFromTo.h"
 #include "Misc/AssertionMacros.h"
+#include "Templates/Invoke.h"
 #include "Templates/UnrealTypeTraits.h"
+#include "Traits/ElementType.h"
 #include "Containers/Array.h"
+#include "Math/UnrealMathUtility.h"
 
 namespace ArrayViewPrivate
 {
@@ -33,6 +37,19 @@ namespace ArrayViewPrivate
 		return GetData(Forward<T>(Arg));
 	}
 
+	// Gets the data from the passed argument and proceeds to reinterpret the resulting elements
+	template <typename T>
+	FORCEINLINE decltype(auto) GetReinterpretedDataHelper(T&& Arg)
+	{
+		auto NaturalPtr = GetData(Forward<T>(Arg));
+		using NaturalElementType = typename TRemovePointer<decltype(NaturalPtr)>::Type;
+
+		auto EndPtr = NaturalPtr + GetNum(Arg);
+		TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretRange(NaturalPtr, EndPtr);
+
+		return reinterpret_cast<typename TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretType*>(NaturalPtr);
+	}
+
 	/**
 	 * Trait testing whether a type is compatible with the view type
 	 */
@@ -40,6 +57,34 @@ namespace ArrayViewPrivate
 	struct TIsCompatibleRangeType
 	{
 		static constexpr bool Value = TIsCompatibleElementType<typename TRemovePointer<decltype(GetData(DeclVal<RangeType&>()))>::Type, ElementType>::Value;
+
+		template <typename T>
+		static decltype(auto) GetData(T&& Arg)
+		{
+			return ArrayViewPrivate::GetDataHelper(Forward<T>(Arg));
+		}
+	};
+
+	/**
+	 * Trait testing whether a type is reinterpretable in a way that permits use with the view type
+	 */
+	template <typename RangeType, typename ElementType>
+	struct TIsReinterpretableRangeType
+	{
+	private:
+		using NaturalElementType = typename TRemovePointer<decltype(GetData(DeclVal<RangeType&>()))>::Type;
+
+	public:
+		static constexpr bool Value = 
+			!TIsSame<typename TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretType, NaturalElementType>::Value
+			&&
+			TIsCompatibleElementType<typename TContainerElementTypeCompatibility<NaturalElementType>::ReinterpretType, ElementType>::Value;
+
+		template <typename T>
+		static decltype(auto) GetData(T&& Arg)
+		{
+			return ArrayViewPrivate::GetReinterpretedDataHelper(Forward<T>(Arg));
+		}
 	};
 }
 
@@ -98,6 +143,9 @@ private:
 	template <typename T>
 	using TIsCompatibleRangeType = ArrayViewPrivate::TIsCompatibleRangeType<T, ElementType>;
 
+	template <typename T>
+	using TIsReinterpretableRangeType = ArrayViewPrivate::TIsReinterpretableRangeType<T, ElementType>;
+
 public:
 	/**
 	 * Constructor from another range
@@ -110,12 +158,19 @@ public:
 		typename = typename TEnableIf<
 			TAnd<
 				TIsContiguousContainer<CVUnqualifiedOtherRangeType>,
-				TIsCompatibleRangeType<OtherRangeType>
+				TOr<
+					TIsCompatibleRangeType<OtherRangeType>,
+					TIsReinterpretableRangeType<OtherRangeType>
+				>
 			>::Value
 		>::Type
 	>
 	FORCEINLINE TArrayView(OtherRangeType&& Other)
-		: DataPtr(ArrayViewPrivate::GetDataHelper(Forward<OtherRangeType>(Other)))
+		: DataPtr(TChooseClass<
+						TIsCompatibleRangeType<OtherRangeType>::Value,
+						TIsCompatibleRangeType<OtherRangeType>,
+						TIsReinterpretableRangeType<OtherRangeType>
+					>::Result::GetData(Forward<OtherRangeType>(Other)))
 	{
 		const auto InCount = GetNum(Forward<OtherRangeType>(Other));
 		check((InCount >= 0) && ((sizeof(InCount) < sizeof(SizeType)) || (InCount <= static_cast<decltype(InCount)>(TNumericLimits<SizeType>::Max()))));
@@ -200,6 +255,20 @@ public:
 	}
 
 	/**
+	 * Checks if a slice range [Index, Index+InNum) is in array range.
+	 * Length is 0 is allowed on empty arrays; Index must be 0 in that case.
+	 *
+	 * @param Index Starting index of the slice.
+	 * @param InNum Length of the slice.
+	 */
+	FORCEINLINE void SliceRangeCheck(SizeType Index, SizeType InNum) const
+	{
+		checkf(Index >= 0, TEXT("Invalid index (%d)"), Index);
+		checkf(InNum >= 0, TEXT("Invalid count (%d)"), InNum);
+		checkf(Index + InNum <= ArrayNum, TEXT("Range (index: %d, count: %d) lies outside the view of %d elements"), Index, InNum, ArrayNum);
+	}
+
+	/**
 	 * Tests if index is valid, i.e. than or equal to zero, and less than the number of elements in the array.
 	 *
 	 * @param Index Index to test.
@@ -209,6 +278,17 @@ public:
 	FORCEINLINE bool IsValidIndex(SizeType Index) const
 	{
 		return (Index >= 0) && (Index < ArrayNum);
+	}
+
+	/**
+	 * Returns true if the array view is empty and contains no elements. 
+	 *
+	 * @returns True if the array view is empty.
+	 * @see Num
+	 */
+	bool IsEmpty() const
+	{
+		return ArrayNum == 0;
 	}
 
 	/**
@@ -248,17 +328,95 @@ public:
 
 	/**
 	 * Returns a sliced view
+	   The is similar to Mid(), but with a narrow contract, i.e. slicing outside of the range of the view is illegal.
 	 *
 	 * @param Index starting index of the new view
 	 * @param InNum number of elements in the new view
 	 * @returns Sliced view
+	 *
+	 * @see Mid
 	 */
-	FORCEINLINE TArrayView Slice(SizeType Index, SizeType InNum) const
+	[[nodiscard]] FORCEINLINE TArrayView Slice(SizeType Index, SizeType InNum) const
 	{
-		check(InNum > 0);
-		check(IsValidIndex(Index));
-		check(IsValidIndex(Index + InNum - 1));
+		SliceRangeCheck(Index, InNum);
 		return TArrayView(DataPtr + Index, InNum);
+	}
+
+	/** Returns the left-most part of the view by taking the given number of elements from the left. */
+	[[nodiscard]] inline TArrayView Left(SizeType Count) const
+	{
+		return TArrayView(DataPtr, FMath::Clamp(Count, 0, ArrayNum));
+	}
+
+	/** Returns the left-most part of the view by chopping the given number of elements from the right. */
+	[[nodiscard]] inline TArrayView LeftChop(SizeType Count) const
+	{
+		return TArrayView(DataPtr, FMath::Clamp(ArrayNum - Count, 0, ArrayNum));
+	}
+
+	/** Returns the right-most part of the view by taking the given number of elements from the right. */
+	[[nodiscard]] inline TArrayView Right(SizeType Count) const
+	{
+		const SizeType OutLen = FMath::Clamp(Count, 0, ArrayNum);
+		return TArrayView(DataPtr + ArrayNum - OutLen, OutLen);
+	}
+
+	/** Returns the right-most part of the view by chopping the given number of elements from the left. */
+	[[nodiscard]] inline TArrayView RightChop(SizeType Count) const
+	{
+		const SizeType OutLen = FMath::Clamp(ArrayNum - Count, 0, ArrayNum);
+		return TArrayView(DataPtr + ArrayNum - OutLen, OutLen);
+	}
+
+	/** Returns the middle part of the view by taking up to the given number of elements from the given position. */
+	[[nodiscard]] inline TArrayView Mid(SizeType Index, SizeType Count = TNumericLimits<SizeType>::Max()) const
+	{
+		ElementType* const CurrentStart  = GetData();
+		const SizeType     CurrentLength = Num();
+
+		// Clamp minimum index at the start of the range, adjusting the length down if necessary
+		const SizeType NegativeIndexOffset = (Index < 0) ? Index : 0;
+		Count += NegativeIndexOffset;
+		Index -= NegativeIndexOffset;
+
+		// Clamp maximum index at the end of the range
+		Index = (Index > CurrentLength) ? CurrentLength : Index;
+
+		// Clamp count between 0 and the distance to the end of the range
+		Count = FMath::Clamp(Count, 0, (CurrentLength - Index));
+
+		TArrayView Result = TArrayView(CurrentStart + Index, Count);
+		return Result;
+	}
+
+	/** Modifies the view to be the given number of elements from the left. */
+	inline void LeftInline(SizeType CharCount)
+	{
+		*this = Left(CharCount);
+	}
+
+	/** Modifies the view by chopping the given number of elements from the right. */
+	inline void LeftChopInline(SizeType CharCount)
+	{
+		*this = LeftChop(CharCount);
+	}
+
+	/** Modifies the view to be the given number of elements from the right. */
+	inline void RightInline(SizeType CharCount)
+	{
+		*this = Right(CharCount);
+	}
+
+	/** Modifies the view by chopping the given number of elements from the left. */
+	inline void RightChopInline(SizeType CharCount)
+	{
+		*this = RightChop(CharCount);
+	}
+
+	/** Modifies the view to be the middle part by taking up to the given number of elements from the given position. */
+	inline void MidInline(SizeType Position, SizeType CharCount = TNumericLimits<SizeType>::Max())
+	{
+		*this = Mid(Position, CharCount);
 	}
 
 	/**
@@ -324,7 +482,7 @@ public:
 		for (const ElementType* RESTRICT Start = GetData(), *RESTRICT Data = Start + StartIndex; Data != Start; )
 		{
 			--Data;
-			if (Pred(*Data))
+			if (::Invoke(Pred, *Data))
 			{
 				return static_cast<SizeType>(Data - Start);
 			}
@@ -382,7 +540,7 @@ public:
 		const ElementType* RESTRICT Start = GetData();
 		for (const ElementType* RESTRICT Data = Start, *RESTRICT DataEnd = Start + ArrayNum; Data != DataEnd; ++Data)
 		{
-			if (Pred(*Data))
+			if (::Invoke(Pred, *Data))
 			{
 				return static_cast<SizeType>(Data - Start);
 			}
@@ -425,7 +583,7 @@ public:
 	{
 		for (ElementType* RESTRICT Data = GetData(), *RESTRICT DataEnd = Data + ArrayNum; Data != DataEnd; ++Data)
 		{
-			if (Pred(*Data))
+			if (::Invoke(Pred, *Data))
 			{
 				return Data;
 			}
@@ -448,7 +606,7 @@ public:
 		TArray<typename TRemoveConst<ElementType>::Type> FilterResults;
 		for (const ElementType* RESTRICT Data = GetData(), *RESTRICT DataEnd = Data + ArrayNum; Data != DataEnd; ++Data)
 		{
-			if (Pred(*Data))
+			if (::Invoke(Pred, *Data))
 			{
 				FilterResults.Add(*Data);
 			}
@@ -549,8 +707,8 @@ struct TIsZeroConstructType<TArrayView<InElementType>>
 	enum { Value = true };
 };
 
-template <typename T>
-struct TIsContiguousContainer<TArrayView<T>>
+template <typename T, typename SizeType>
+struct TIsContiguousContainer<TArrayView<T, SizeType>>
 {
 	enum { Value = true };
 };

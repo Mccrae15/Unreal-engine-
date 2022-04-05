@@ -20,6 +20,8 @@ namespace Chaos
 	using FParticles = TParticles<FReal, 3>;
 }
 
+
+
 class CHAOS_API FCollisionStructureManager
 {
 public:
@@ -81,7 +83,7 @@ public:
 		const Chaos::FParticles& MeshParticles,
 		const Chaos::FTriangleMesh& TriMesh,
 		const FBox& CollisionBounds,
-		const float Radius,
+		const Chaos::FReal Radius,
 		const int32 MinRes,
 		const int32 MaxRes,
 		const float CollisionObjectReduction,
@@ -94,9 +96,27 @@ public:
 		const ECollisionTypeEnum CollisionType);
 
 	static FImplicit* NewImplicitSphere(
-		const float Radius,
+		const Chaos::FReal Radius,
 		const float CollisionObjectReduction,
 		const ECollisionTypeEnum CollisionType);
+
+	static FImplicit* NewImplicitCapsule(
+		const Chaos::FReal Radius,
+		const Chaos::FReal Length,
+		const float CollisionObjectReduction,
+		const ECollisionTypeEnum CollisionType);
+
+	static FImplicit* NewImplicitCapsule(
+		const FBox& CollisionBounds,
+		const float CollisionObjectReduction,
+		const ECollisionTypeEnum CollisionType);
+
+	static FImplicit* NewImplicitConvex(
+		const TArray<int32>& ConvexIndices,
+		const TManagedArray<TUniquePtr<Chaos::FConvex>>* ConvexGeometry,
+		const ECollisionTypeEnum CollisionType,
+		const FTransform& MassTransform,
+		const Chaos::FReal CollisionMarginFraction);
 
 	static FImplicit* NewImplicitLevelset(
 		Chaos::FErrorReporter ErrorReporter,
@@ -119,11 +139,11 @@ public:
 
 	static FVector CalculateUnitMassInertiaTensor(
 		const FBox& BoundingBox,
-		const float Radius,
+		const Chaos::FReal Radius,
 		const EImplicitTypeEnum ImplicitType);
 
-	static float CalculateVolume(
+	static Chaos::FReal CalculateVolume(
 		const FBox& BoundingBox,
-		const float Radius,
+		const Chaos::FReal Radius,
 		const EImplicitTypeEnum ImplicitType);
 };

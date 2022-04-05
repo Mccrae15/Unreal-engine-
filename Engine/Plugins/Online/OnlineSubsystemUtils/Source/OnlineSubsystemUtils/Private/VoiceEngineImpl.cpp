@@ -5,6 +5,7 @@
 #include "VoiceModule.h"
 #include "Voice.h"
 
+#include "DSP/BufferVectorOperations.h"
 #include "Sound/SoundWaveProcedural.h"
 #include "OnlineSubsystemUtils.h"
 #include "GameFramework/GameSession.h"
@@ -12,14 +13,6 @@
 
 /** Largest size allowed to carry over into next buffer */
 #define MAX_VOICE_REMAINDER_SIZE 4 * 1024
-
-#if PLATFORM_WINDOWS
-#include "XAudio2Support.h"
-namespace NotificationClient
-{
-	TSharedPtr<FMMNotificationClient> WindowsNotificationClient;
-}
-#endif 
 
 namespace VoiceEngineUtilities
 {
@@ -129,7 +122,7 @@ void FRemoteTalkerDataImpl::Reset()
 	LastSeen = MAX_FLT;
 	NumFramesStarved = 0;
 
-	if (VoipSynthComponent)
+	if (UObjectInitialized() && VoipSynthComponent)
 	{
 		VoipSynthComponent->Stop();
 
@@ -186,10 +179,6 @@ FVoiceEngineImpl ::FVoiceEngineImpl()
 	, bPendingFinalCapture(false)
 	, bIsCapturing(false)
 	, SerializeHelper(nullptr)
-#if PLATFORM_WINDOWS
-	, bAudioDeviceChanged(false)
-	, bDeviceChangeListenerRegistered(false)
-#endif
 {
 }
 
@@ -204,9 +193,6 @@ FVoiceEngineImpl::FVoiceEngineImpl(IOnlineSubsystem* InSubsystem) :
 	bPendingFinalCapture(false),
 	bIsCapturing(false),
 	SerializeHelper(nullptr)
-#if PLATFORM_WINDOWS
-	, bAudioDeviceChanged(false)
-#endif
 {
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddRaw(this, &FVoiceEngineImpl::OnPostLoadMap);
 
@@ -230,12 +216,6 @@ FVoiceEngineImpl::~FVoiceEngineImpl()
 
 	delete SerializeHelper;
 
-#if PLATFORM_WINDOWS
-	if (bDeviceChangeListenerRegistered)
-	{
-		UnregisterDeviceChangedListener();
-	}
-#endif
 }
 
 void FVoiceEngineImpl::VoiceCaptureUpdate() const
@@ -308,9 +288,6 @@ bool FVoiceEngineImpl::Init(int32 MaxLocalTalkers, int32 MaxRemoteTalkers)
 			bSuccess = VoiceEncoder.IsValid();
 			if (bSuccess)
 			{
-#if PLATFORM_WINDOWS
-				RegisterDeviceChangedListener();
-#endif
 				CompressedVoiceBuffer.Empty(UVOIPStatics::GetMaxCompressedVoiceDataSize());
 				DecompressedVoiceBuffer.Empty(UVOIPStatics::GetMaxUncompressedVoiceDataSizePerChannel());
 
@@ -584,11 +561,11 @@ uint32 FVoiceEngineImpl::SubmitRemoteVoiceData(const FUniqueNetIdWrapper& Remote
 
 	bool bAudioComponentCreated = false;
 	// Generate a streaming wave audio component for voice playback
-	if (QueuedData.VoipSynthComponent == nullptr || QueuedData.VoipSynthComponent->IsPendingKill())
+	if (!IsValid(QueuedData.VoipSynthComponent))
 	{
 		CreateSerializeHelper();
 		
-		if (QueuedData.VoipSynthComponent && QueuedData.VoipSynthComponent->IsPendingKill())
+		if (IsValid(QueuedData.VoipSynthComponent))
 		{
 			QueuedData.VoipSynthComponent->Stop();
 			QueuedData.VoipSynthComponent->ClosePacketStream();
@@ -687,13 +664,6 @@ void FVoiceEngineImpl::Tick(float DeltaTime)
 
 	// Push any buffered audio to any connected outputs.
 	AllRemoteTalkerAudio.ProcessAudio();
-
-#if PLATFORM_WINDOWS
-	if (bAudioDeviceChanged)
-	{
-		HandleDeviceChange();
-	}
-#endif
 }
 
 void FVoiceEngineImpl::GenerateVoiceData(USoundWaveProcedural* InProceduralWave, int32 SamplesRequired, const FUniqueNetId& TalkerId)
@@ -952,57 +922,6 @@ void FVoiceEngineImpl::CreateSerializeHelper()
 	}
 }
 
-#if PLATFORM_WINDOWS
-void FVoiceEngineImpl::RegisterDeviceChangedListener()
-{
-	if (!NotificationClient::WindowsNotificationClient.IsValid())
-	{
-		NotificationClient::WindowsNotificationClient = TSharedPtr<FMMNotificationClient>(new FMMNotificationClient);
-	}
-
-	NotificationClient::WindowsNotificationClient->RegisterDeviceChangedListener(this);
-
-	bDeviceChangeListenerRegistered = true;
-}
-
-void FVoiceEngineImpl::UnregisterDeviceChangedListener()
-{
-	if (NotificationClient::WindowsNotificationClient.IsValid())
-	{
-		NotificationClient::WindowsNotificationClient->UnRegisterDeviceDeviceChangedListener(this);
-	}
-
-	bDeviceChangeListenerRegistered = false;
-}
-
-void FVoiceEngineImpl::HandleDeviceChange()
-{
-	const double TimeSince = FPlatformTime::Seconds() - TimeDeviceChaned;
-	if (TimeSince >= DeviceChangeDelay)
-	{
-		if (bIsCapturing)
-		{
-			StopLocalVoiceProcessing(OwningUserIndex);
-			StartLocalVoiceProcessing(OwningUserIndex);
-		}
-
-		for (FRemoteTalkerData::TIterator It(RemoteTalkerBuffers); It; ++It)
-		{
-			FRemoteTalkerDataImpl& RemoteData = It.Value();
-			RemoteData.Reset();
-		}
-
-		bAudioDeviceChanged = false;
-	}
-}
-
-void FVoiceEngineImpl::OnDefaultDeviceChanged()
-{
-	bAudioDeviceChanged = true;
-	TimeDeviceChaned = FPlatformTime::Seconds();
-}
-#endif
-
 IOnlineSubsystem* FVoiceEngineImpl::GetOnlineSubSystem()
 {
 	if (UWorld* World = GetWorldForOnline(OnlineInstanceName))
@@ -1074,7 +993,7 @@ void FVoiceEndpoint::PatchInOutput(Audio::FPatchOutputStrongPtr& InOutput)
 	OutputPatch = InOutput;
 }
 
-bool FVoiceEndpoint::OnProcessAudioStream(Audio::AlignedFloatBuffer& OutputBuffer)
+bool FVoiceEndpoint::OnProcessAudioStream(Audio::FAlignedFloatBuffer& OutputBuffer)
 {
 	FScopeLock ScopeLock(&OutputPatchCriticalSection);
 

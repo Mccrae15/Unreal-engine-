@@ -34,7 +34,11 @@ class UK2Node_FunctionEntry : public UK2Node_FunctionTerminator
 
 	//~ Begin UObject Interface
 	virtual void Serialize(FArchive& Ar) override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void PostLoad() override;
 	//~ End UObject Interface
 
@@ -112,6 +116,18 @@ class UK2Node_FunctionEntry : public UK2Node_FunctionTerminator
 	BLUEPRINTGRAPH_API void ClearExtraFlags(int32 InFlags)
 	{
 		ExtraFlags &= ~InFlags;
+	}
+	
+	/** Used to safely check whether the passed in flag is set. */
+	BLUEPRINTGRAPH_API bool HasAnyExtraFlags(int32 FlagsToCheck) const
+	{
+		return (ExtraFlags & FlagsToCheck) != 0 || FlagsToCheck == ~0;
+	}
+
+	/** Used to safely check whether all of the passed in flags are set. */
+	BLUEPRINTGRAPH_API bool HasAllExtraFlags(int32 FlagsToCheck) const
+	{
+		return ((ExtraFlags & FlagsToCheck) == FlagsToCheck);
 	}
 
 protected:

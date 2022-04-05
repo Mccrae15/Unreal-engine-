@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -8,8 +9,9 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
+using UnrealBuildBase;
 
 namespace BuildGraph.Tasks
 {
@@ -102,7 +104,7 @@ namespace BuildGraph.Tasks
 		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// Find the directories we're going to rebase relative to
-			HashSet<DirectoryReference> RebaseDirs = new HashSet<DirectoryReference>{ CommandUtils.RootDirectory };
+			HashSet<DirectoryReference> RebaseDirs = new HashSet<DirectoryReference>{ Unreal.RootDirectory };
 			if(Parameters.RebaseDir != null)
 			{
 				RebaseDirs.UnionWith(Parameters.RebaseDir);
@@ -123,7 +125,7 @@ namespace BuildGraph.Tasks
 				}
 
 				// Write out the response file
-				HashSet<FileReference> Files = ResolveFilespec(CommandUtils.RootDirectory, Parameters.Files, TagNameToFileSet);
+				HashSet<FileReference> Files = ResolveFilespec(Unreal.RootDirectory, Parameters.Files, TagNameToFileSet);
 				using (StreamWriter Writer = new StreamWriter(ResponseFile.FullName, false, new System.Text.UTF8Encoding(true)))
 				{
 					foreach (FileReference File in Files)
@@ -149,7 +151,7 @@ namespace BuildGraph.Tasks
 			{
 				CommandLine.AppendFormat(" -order={0}", CommandUtils.MakePathSafeToUseWithCommandLine(Parameters.Order.FullName));
 			}
-			if (CommandUtils.IsEngineInstalled())
+			if (Unreal.IsEngineInstalled())
 			{
 				CommandLine.Append(" -installed");
 			}

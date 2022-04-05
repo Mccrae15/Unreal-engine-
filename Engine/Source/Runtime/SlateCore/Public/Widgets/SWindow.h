@@ -95,9 +95,6 @@ namespace SWindowDefs
 {
 	/** Height of a Slate window title bar, in pixels */
 	static const float DefaultTitleBarSize = 24.0f;
-
-	/** Size of the corner rounding radius.  Used for regular, non-maximized windows only (not tool-tips or decorators.) */
-	static const int32 CornerRadius = 6;
 }
 
 /** Proxy structure to handle deprecated construction from bool */
@@ -123,6 +120,119 @@ private:
 	TSharedPtr<SWindow> HostWindow;
 	TSharedPtr<SOverlay> Overlay;
 };
+
+
+/**
+ * Popups, tooltips, drag and drop decorators all can be executed without creating a new window.
+ * This slot along with the SWindow::AddPopupLayerSlot() API enabled it.
+ */
+struct FPopupLayerSlot : public TSlotBase<FPopupLayerSlot>
+{
+public:
+	FPopupLayerSlot()
+		: TSlotBase<FPopupLayerSlot>()
+		, DesktopPosition_Attribute(FVector2D::ZeroVector)
+		, WidthOverride_Attribute()
+		, HeightOverride_Attribute()
+		, Scale_Attribute(1.0f)
+		, Clamp_Attribute(false)
+		, ClampBuffer_Attribute(FVector2D::ZeroVector)
+	{}
+
+	SLATE_SLOT_BEGIN_ARGS(FPopupLayerSlot, TSlotBase<FPopupLayerSlot>)
+		/** Pixel position in desktop space */
+		SLATE_ATTRIBUTE(FVector2D, DesktopPosition)
+		/** Width override in pixels */
+		SLATE_ATTRIBUTE(float, WidthOverride)
+		/** Width override in pixels */
+		SLATE_ATTRIBUTE(float, HeightOverride)
+		/** DPI scaling to be applied to the contents of this slot */
+		SLATE_ATTRIBUTE(float, Scale)
+		/** Should this slot be kept within the parent window */
+		SLATE_ATTRIBUTE(bool, ClampToWindow)
+		/** If this slot is kept within the parent window, how far from the edges should we clamp it */
+		SLATE_ATTRIBUTE(FVector2D, ClampBuffer)
+	SLATE_SLOT_END_ARGS()
+
+	void Construct(const FChildren& SlotOwner, FSlotArguments&& InArgs)
+	{
+		if (InArgs._DesktopPosition.IsSet())
+		{
+			SetDesktopPosition(MoveTemp(InArgs._DesktopPosition));
+		}
+		if (InArgs._WidthOverride.IsSet())
+		{
+			SetWidthOverride(MoveTemp(InArgs._WidthOverride));
+		}
+		if (InArgs._HeightOverride.IsSet())
+		{
+			SetHeightOverride(MoveTemp(InArgs._HeightOverride));
+		}
+		if (InArgs._Scale.IsSet())
+		{
+			SetScale(MoveTemp(InArgs._Scale));
+		}
+		if (InArgs._ClampToWindow.IsSet())
+		{
+			SetClampToWindow(MoveTemp(InArgs._ClampToWindow));
+		}
+		if (InArgs._ClampBuffer.IsSet())
+		{
+			SetClampBuffer(MoveTemp(InArgs._ClampBuffer));
+		}
+		TSlotBase<FPopupLayerSlot>::Construct(SlotOwner, MoveTemp(InArgs));
+	}
+
+	/** Pixel position in desktop space */
+	void SetDesktopPosition(TAttribute<FVector2D> InDesktopPosition)
+	{
+		DesktopPosition_Attribute = MoveTemp(InDesktopPosition);
+	}
+
+	/** Width override in pixels */
+	void SetWidthOverride(TAttribute<float> InWidthOverride)
+	{
+		WidthOverride_Attribute = MoveTemp(InWidthOverride);
+	}
+
+	/** Width override in pixels */
+	void SetHeightOverride(TAttribute<float> InHeightOverride)
+	{
+		HeightOverride_Attribute = MoveTemp(InHeightOverride);
+	}
+
+	/** DPI scaling to be applied to the contents of this slot */
+	void SetScale(TAttribute<float> InScale)
+	{
+		Scale_Attribute = MoveTemp(InScale);
+	}
+
+	/** Should this slot be kept within the parent window */
+	void SetClampToWindow(TAttribute<bool> InClamp_Attribute)
+	{
+		Clamp_Attribute = MoveTemp(InClamp_Attribute);
+	}
+
+	/** If this slot is kept within the parent window, how far from the edges should we clamp it */
+	void SetClampBuffer(TAttribute<FVector2D> InClampBuffer_Attribute)
+	{
+		ClampBuffer_Attribute = MoveTemp(InClampBuffer_Attribute);
+	}
+
+private:
+	/** SPopupLayer arranges FPopupLayerSlots, so it needs to know all about */
+	friend class SPopupLayer;
+	/** TPanelChildren need access to the Widget member */
+	friend class TPanelChildren<FPopupLayerSlot>;
+
+	TAttribute<FVector2D> DesktopPosition_Attribute;
+	TAttribute<float> WidthOverride_Attribute;
+	TAttribute<float> HeightOverride_Attribute;
+	TAttribute<float> Scale_Attribute;
+	TAttribute<bool> Clamp_Attribute;
+	TAttribute<FVector2D> ClampBuffer_Attribute;
+};
+
 
 /**
  * SWindow is a platform-agnostic representation of a top-level window.
@@ -159,7 +269,7 @@ public:
 		, _ShouldPreserveAspectRatio( false )
 		, _CreateTitleBar( true )
 		, _SaneWindowPlacement( true )
-		, _LayoutBorder(FMargin(5, 5, 5, 5))
+		, _LayoutBorder( _Style->BorderPadding )
 		, _UserResizeBorder(FMargin(5, 5, 5, 5))
 		, _bManualManageDPI( false )
 
@@ -214,14 +324,6 @@ public:
 
 		/** Should this window be focused immediately after it is shown? */
 		SLATE_ARGUMENT( bool, FocusWhenFirstShown )
-
-		UE_DEPRECATED(4.16, "ActivateWhenFirstShown(bool) is deprecated. Please use ActivationPolicy(EWindowActivationPolicy) instead")
-		FArguments& ActivateWhenFirstShown(bool bActivateWhenFirstShown)
-		{
-			// Previously ActivateWhenFirstShown was being used as always activating, so we use Always here to ensure same behavior.
-			_ActivationPolicy = bActivateWhenFirstShown ? EWindowActivationPolicy::Always : EWindowActivationPolicy::Never;
-			return Me();
-		}
 
 		/** When should this window be activated upon being shown? */
 		SLATE_ARGUMENT( EWindowActivationPolicy, ActivationPolicy )
@@ -298,6 +400,14 @@ public:
 	 * @return The new SWindow
 	 */
 	static TSharedRef<SWindow> MakeCursorDecorator();
+
+	/**
+	 * Make cursor decorator window with a non-default style
+	 *
+	 * @param InStyle The style to use for the cursor decorator
+	 * @return The new SWindow
+	 */
+	static TSharedRef<SWindow> MakeStyledCursorDecorator(const FWindowStyle& InStyle);
 
 	/**
 	 * Make a notification window
@@ -525,14 +635,15 @@ public:
 	 * @param	InZOrder	Z-order to use for this widget
 	 * @return The added overlay slot so that it can be configured and populated
 	 */
-	SOverlay::FOverlaySlot& AddOverlaySlot( const int32 ZOrder = INDEX_NONE );
+	SOverlay::FScopedWidgetSlotArguments AddOverlaySlot( const int32 ZOrder = INDEX_NONE );
 
 	/**
 	 * Removes a widget that is being drawn over the entire window
 	 *
 	 * @param	InContent	The widget to remove
+	 * @return	true if successful
 	 */
-	void RemoveOverlaySlot( const TSharedRef<SWidget>& InContent );
+	bool RemoveOverlaySlot(const TSharedRef<SWidget>& InContent);
 
 	/**
 	 * Visualize a new pop-up if possible.  If it's not possible for this widget to host the pop-up
@@ -545,8 +656,9 @@ public:
 	 */
 	virtual TSharedPtr<FPopupLayer> OnVisualizePopup(const TSharedRef<SWidget>& PopupContent) override;
 
+	using FScopedWidgetSlotArguments = TPanelChildren<FPopupLayerSlot>::FScopedWidgetSlotArguments;
 	/** Return a new slot in the popup layer. Assumes that the window has a popup layer. */
-	struct FPopupLayerSlot& AddPopupLayerSlot();
+	FScopedWidgetSlotArguments AddPopupLayerSlot();
 
 	/** Counterpart to AddPopupLayerSlot */
 	void RemovePopupLayerSlot( const TSharedRef<SWidget>& WidgetToRemove );
@@ -670,10 +782,12 @@ public:
 		WidgetToFocusOnActivate = InWidget;
 	}
 
-	UE_DEPRECATED(4.16, "ActivateWhenFirstShown() is deprecated. Please use ActivationPolicy() instead.")
-	bool ActivateWhenFirstShown() const
+	/**
+	 * Returns widget last focused on deactivate
+	 */
+	TWeakPtr<SWidget> GetWidgetFocusedOnDeactivate()
 	{
-		return ActivationPolicy() != EWindowActivationPolicy::Never;
+		return WidgetFocusedOnDeactivate;
 	}
 
 	/** @return the window activation policy used when showing the window */
@@ -774,6 +888,11 @@ public:
 	void SetTitleBar( const TSharedPtr<IWindowTitleBar> InTitleBar )
 	{
 		TitleBar = InTitleBar;
+	}
+
+	TSharedPtr<IWindowTitleBar> GetTitleBar() const
+	{
+		return TitleBar;
 	}
 
 	// Events
@@ -938,6 +1057,9 @@ public:
 
 	/** Optional constraints on min and max sizes that this window can be. */
 	FWindowSizeLimits GetSizeLimits() const;
+
+	/** Set optional constraints on min and max sizes that this window can be. */
+	void SetSizeLimits(const FWindowSizeLimits& InSizeLimits);
 
 	void SetAllowFastUpdate(bool bInAllowFastUpdate);
 public:
@@ -1225,81 +1347,6 @@ private:
 	/** The handle to the active timer */
 	TWeakPtr<FActiveTimerHandle> ActiveTimerHandle;
 };
-
-
-/**
- * Popups, tooltips, drag and drop decorators all can be executed without creating a new window.
- * This slot along with the SWindow::AddPopupLayerSlot() API enabled it.
- */
-struct FPopupLayerSlot : public TSlotBase<FPopupLayerSlot>
-{
-public:
-	FPopupLayerSlot()
-	: TSlotBase<FPopupLayerSlot>()
-	, DesktopPosition_Attribute(FVector2D::ZeroVector)
-	, WidthOverride_Attribute()
-	, HeightOverride_Attribute()
-	, Scale_Attribute(1.0f)
-	, Clamp_Attribute(false)
-	, ClampBuffer_Attribute(FVector2D::ZeroVector)
-	{}
-
-	/** Pixel position in desktop space */
-	FPopupLayerSlot& DesktopPosition( const TAttribute<FVector2D>& InDesktopPosition )
-	{
-		DesktopPosition_Attribute = InDesktopPosition;
-		return *this;
-	}
-
-	/** Width override in pixels */
-	FPopupLayerSlot& WidthOverride( const TAttribute<float>& InWidthOverride )
-	{
-		WidthOverride_Attribute = InWidthOverride;
-		return *this;
-	}
-
-	/** Width override in pixels */
-	FPopupLayerSlot& HeightOverride( const TAttribute<float>& InHeightOverride )
-	{
-		HeightOverride_Attribute = InHeightOverride;
-		return *this;
-	}
-
-	/** DPI scaling to be applied to the contents of this slot */
-	FPopupLayerSlot& Scale( const TAttribute<float>& InScale )
-	{
-		Scale_Attribute = InScale;
-		return *this;
-	}
-
-	/** Should this slot be kept within the parent window */
-	FPopupLayerSlot& ClampToWindow( const TAttribute<bool>& InClamp_Attribute)
-	{
-		Clamp_Attribute = InClamp_Attribute;
-		return *this;
-	}
-
-	/** If this slot is kept within the parent window, how far from the edges should we clamp it */
-	FPopupLayerSlot& ClampBuffer( const TAttribute<FVector2D>& InClampBuffer_Attribute )
-	{
-		ClampBuffer_Attribute = InClampBuffer_Attribute;
-		return *this;
-	}
-
-private:
-	/** SPopupLayer arranges FPopupLayerSlots, so it needs to know all about */
-	friend class SPopupLayer;
-	/** TPanelChildren need access to the Widget member */
-	friend class TPanelChildren<FPopupLayerSlot>;
-
-	TAttribute<FVector2D> DesktopPosition_Attribute;
-	TAttribute<float> WidthOverride_Attribute;
-	TAttribute<float> HeightOverride_Attribute;
-	TAttribute<float> Scale_Attribute;
-	TAttribute<bool> Clamp_Attribute;
-	TAttribute<FVector2D> ClampBuffer_Attribute;
-};
-
 
 #if WITH_EDITOR
 

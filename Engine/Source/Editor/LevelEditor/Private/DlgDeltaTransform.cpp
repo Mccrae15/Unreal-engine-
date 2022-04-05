@@ -71,7 +71,6 @@ public:
 							.Y( this, &SDlgDeltaTransform::GetDeltaY )
 							.Z( this, &SDlgDeltaTransform::GetDeltaZ )
 							.bColorAxisLabels( true )
-							.AllowResponsiveLayout( true )
 							.AllowSpin( false )
 							.OnXCommitted( this, &SDlgDeltaTransform::OnSetDelta, 0 )
 							.OnYCommitted( this, &SDlgDeltaTransform::OnSetDelta, 1 )
@@ -192,7 +191,7 @@ private:
 		if (ButtonID == FDlgDeltaTransform::OK)
 		{
 			GUnrealEd->Exec( GEditor->GetEditorWorldContext().World(), 
-				*FString::Printf(TEXT("ACTOR DELTAMOVE X=%.5f Y=%.5f Z=%.5f"), 
+				*FString::Printf(TEXT("ELEMENT DELTAMOVE X=%.5f Y=%.5f Z=%.5f"), 
 				DeltaTransform.X.GetValue(), DeltaTransform.Y.GetValue(), DeltaTransform.Z.GetValue()) );
 		}
 

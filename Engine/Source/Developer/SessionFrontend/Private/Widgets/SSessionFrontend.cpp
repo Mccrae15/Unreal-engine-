@@ -16,12 +16,15 @@
 #include "Interfaces/IScreenShotToolsModule.h"
 #include "Interfaces/IScreenShotComparisonModule.h"
 #include "ISessionServicesModule.h"
-#include "IProfilerModule.h"
 #include "Widgets/Browser/SSessionBrowser.h"
 #include "Widgets/Console/SSessionConsole.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
+
+#if STATS
+#include "IProfilerModule.h"
+#endif
 
 
 #define LOCTEXT_NAMESPACE "SSessionFrontend"
@@ -48,6 +51,8 @@ void SSessionFrontend::Construct( const FArguments& InArgs, const TSharedRef<SDo
 	TabManager = FGlobalTabmanager::Get()->NewTabManager(ConstructUnderMajorTab);
 	TSharedRef<FWorkspaceItem> AppMenuGroup = TabManager->AddLocalWorkspaceMenuCategory(LOCTEXT("SessionFrontendMenuGroupName", "Session Frontend"));
 	
+	TabManager->SetAllowWindowMenuBar(true);
+
 	TabManager->RegisterTabSpawner(AutomationTabId, FOnSpawnTab::CreateRaw(this, &SSessionFrontend::HandleTabManagerSpawnTab, AutomationTabId))
 		.SetDisplayName(LOCTEXT("AutomationTabTitle", "Automation"))
 		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "SessionFrontEnd.Tabs.Tools"))
@@ -110,25 +115,15 @@ void SSessionFrontend::Construct( const FArguments& InArgs, const TSharedRef<SDo
 		"Window"
 	);
 
+	TSharedRef<SWidget> MenuWidget = MenuBarBuilder.MakeWidget();
+
 	ChildSlot
 	[
-		SNew(SVerticalBox)
-
-		+ SVerticalBox::Slot()
-			.AutoHeight()
-			[
-				MenuBarBuilder.MakeWidget()
-			]
-	
-		+ SVerticalBox::Slot()
-			.FillHeight(1.0f)
-			[
-				TabManager->RestoreFrom(Layout, ConstructUnderWindow).ToSharedRef()
-			]
+		TabManager->RestoreFrom(Layout, ConstructUnderWindow).ToSharedRef()
 	];
 
 	// Tell tab-manager about the multi-box for platforms with a global menu bar
-	TabManager->SetMenuMultiBox(MenuBarBuilder.GetMultiBox());
+	TabManager->SetMenuMultiBox(MenuBarBuilder.GetMultiBox(), MenuWidget);
 }
 
 
@@ -201,11 +196,13 @@ TSharedRef<SDockTab> SSessionFrontend::HandleTabManagerSpawnTab( const FSpawnTab
 
 		AutomationWindowModule.OnShutdown().BindSP(const_cast<SSessionFrontend*>(this), &SSessionFrontend::HandleAutomationModuleShutdown);
 	}
+#if STATS
 	else if (TabIdentifier == ProfilerTabId)
 	{
 		IProfilerModule& ProfilerModule = FModuleManager::LoadModuleChecked<IProfilerModule>(TEXT("Profiler"));
 		TabWidget = ProfilerModule.CreateProfilerWindow(SessionManager.ToSharedRef(), DockTab);
 	}
+#endif
 	else if (TabIdentifier == SessionBrowserTabId)
 	{
 		TabWidget = SNew(SSessionBrowser, SessionManager.ToSharedRef());

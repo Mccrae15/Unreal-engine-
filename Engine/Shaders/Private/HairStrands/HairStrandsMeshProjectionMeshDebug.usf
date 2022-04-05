@@ -4,7 +4,6 @@
 
 #include "../Common.ush"
 #include "HairStrandsMeshProjectionCommon.ush"
-#include "HairStrandsDebugCommon.ush"
 
 float4x4 LocalToWorld;
 uint VertexOffset;
@@ -84,7 +83,7 @@ void MainVS(
 	else
 	{
 		P = mul(float4(P, 1), LocalToWorld).xyz;
-		OutPosition = mul(float4(P, 1), View.WorldToClip);
+		OutPosition = mul(float4(P, 1), LWCHackToFloat(PrimaryView.WorldToClip));
 	}
 
 	// Quick filter

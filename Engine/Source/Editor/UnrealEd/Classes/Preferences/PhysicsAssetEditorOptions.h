@@ -90,6 +90,10 @@ class UNREALED_API UPhysicsAssetEditorOptions : public UObject
 	UPROPERTY(EditAnywhere, config, Category=Poking)
 	float PokeStrength;
 
+	/** Raycast distance when poking or grabbing */
+	UPROPERTY(EditAnywhere, config, Category = Poking, meta = (ClampMin = 0))
+	float InteractionDistance;
+
 	/** Whether to draw constraints as points */
 	UPROPERTY(config)
 	uint32 bShowConstraintsAsPoints:1;

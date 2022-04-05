@@ -6,20 +6,12 @@
 #include "TraceServices/Model/AnalysisSession.h"
 #include "TraceServices/Containers/Timelines.h"
 
-struct FClassPropertyInfo
-{
-	int32 ParentId = 0;
-	uint32 TypeStringId = 0;
-	uint32 KeyStringId = 0;
-};
-
 struct FClassInfo
 {	
 	uint64 Id = 0;
 	uint64 SuperId = 0;
 	const TCHAR* Name = nullptr;
 	const TCHAR* PathName = nullptr;
-	TArray<FClassPropertyInfo> Properties;
 };
 
 struct FObjectInfo
@@ -40,7 +32,9 @@ struct FObjectPropertiesMessage
 struct FObjectPropertyValue
 {
 	const TCHAR* Value = nullptr;
-	int32 PropertyId;
+	int32 ParentId = 0;
+	uint32 TypeStringId = 0;
+	uint32 KeyStringId = 0;
 	float ValueAsFloat = 0.0f;
 };
 
@@ -50,6 +44,23 @@ struct FObjectEventMessage
 	const TCHAR* Name = nullptr;
 };
 
+struct FRecordingInfoMessage
+{
+	uint64 WorldId;
+	double ProfileTime;
+	double ElapsedTime;
+	uint32 FrameIndex;
+	uint32 RecordingIndex;
+};
+
+struct FViewMessage
+{
+	uint64 PlayerId;
+	FVector Position;
+	FRotator Rotation;
+	float Fov;
+	float AspectRatio;
+};
 
 struct FWorldInfo
 {
@@ -87,17 +98,20 @@ struct FWorldInfo
 // Delegate fired when an object receives an end play event
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnObjectEndPlay, uint64 /*ObjectId*/, double /*Time*/, const FObjectInfo& /*ObjectInfo*/);
 
-class IGameplayProvider : public Trace::IProvider
+class IGameplayProvider : public TraceServices::IProvider
 {
 public:
-	typedef Trace::ITimeline<FObjectEventMessage> ObjectEventsTimeline;
-	typedef Trace::ITimeline<FObjectPropertiesMessage> ObjectPropertiesTimeline;
+	typedef TraceServices::ITimeline<FObjectEventMessage> ObjectEventsTimeline;
+	typedef TraceServices::ITimeline<FObjectPropertiesMessage> ObjectPropertiesTimeline;
+	typedef TraceServices::ITimeline<FRecordingInfoMessage> RecordingInfoTimeline;
+	typedef TraceServices::ITimeline<FViewMessage> ViewTimeline;
 
 	virtual bool ReadObjectEventsTimeline(uint64 InObjectId, TFunctionRef<void(const ObjectEventsTimeline&)> Callback) const = 0;
 	virtual bool ReadObjectEvent(uint64 InObjectId, uint64 InMessageId, TFunctionRef<void(const FObjectEventMessage&)> Callback) const = 0;
 	virtual bool ReadObjectPropertiesTimeline(uint64 InObjectId, TFunctionRef<void(const ObjectPropertiesTimeline&)> Callback) const = 0;
 	virtual void EnumerateObjectPropertyValues(uint64 InObjectId, const FObjectPropertiesMessage& InMessage, TFunctionRef<void(const FObjectPropertyValue&)> Callback) const = 0;
 	virtual void EnumerateObjects(TFunctionRef<void(const FObjectInfo&)> Callback) const = 0;
+	virtual void EnumerateObjects(double StartTime, double EndTime, TFunctionRef<void(const FObjectInfo&)> Callback) const = 0;
 	virtual const FClassInfo* FindClassInfo(uint64 InClassId) const = 0;
 	virtual const FClassInfo* FindClassInfo(const TCHAR* InClassPath) const = 0;
 	virtual const FObjectInfo* FindObjectInfo(uint64 InObjectId) const = 0;
@@ -109,4 +123,8 @@ public:
 	virtual const FObjectInfo& GetObjectInfo(uint64 InObjectId) const = 0;
 	virtual FOnObjectEndPlay& OnObjectEndPlay() = 0;
 	virtual const TCHAR* GetPropertyName(uint32 InPropertyStringId) const = 0;
+	virtual const RecordingInfoTimeline* GetRecordingInfo(uint32 RecordingId) const = 0; 
+	virtual void ReadViewTimeline(TFunctionRef<void(const ViewTimeline&)> Callback) const = 0;
+	virtual uint64 FindPossessingController(uint64 Pawn, double Time) const = 0;
 };
+

@@ -60,8 +60,6 @@ FD3D12_GRAPHICS_PIPELINE_STATE_STREAM FD3D12_GRAPHICS_PIPELINE_STATE_DESC::Pipel
 	Stream.PrimitiveTopologyType = this->PrimitiveTopologyType;
 	Stream.VS = this->VS;
 	Stream.GS = this->GS;
-	Stream.HS = this->HS;
-	Stream.DS = this->DS;
 	Stream.PS = this->PS;
 	Stream.BlendState = CD3DX12_BLEND_DESC(this->BlendState);
 	Stream.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC1(this->DepthStencilState);
@@ -74,32 +72,28 @@ FD3D12_GRAPHICS_PIPELINE_STATE_STREAM FD3D12_GRAPHICS_PIPELINE_STATE_DESC::Pipel
 	return Stream;
 }
 
-D3D12_GRAPHICS_PIPELINE_STATE_DESC FD3D12_GRAPHICS_PIPELINE_STATE_DESC::GraphicsDescV0() const
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+FD3D12_MESH_PIPELINE_STATE_STREAM FD3D12_GRAPHICS_PIPELINE_STATE_DESC::MeshPipelineStateStream() const
 {
-	D3D12_GRAPHICS_PIPELINE_STATE_DESC D = {};
-	D.Flags = this->Flags;
-	D.NodeMask = this->NodeMask;
-	D.pRootSignature = this->pRootSignature;
-	D.InputLayout = this->InputLayout;
-	D.IBStripCutValue = this->IBStripCutValue;
-	D.PrimitiveTopologyType = this->PrimitiveTopologyType;
-	D.VS = this->VS;
-	D.GS = this->GS;
-	D.HS = this->HS;
-	D.DS = this->DS;
-	D.PS = this->PS;
-	D.BlendState = this->BlendState;
-	D.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC1(this->DepthStencilState);
-	D.DSVFormat = this->DSVFormat;
-	D.RasterizerState = this->RasterizerState;
-	D.NumRenderTargets = this->RTFormatArray.NumRenderTargets;
-	FMemory::Memcpy(D.RTVFormats, this->RTFormatArray.RTFormats, sizeof(D.RTVFormats));
-	FMemory::Memzero(&D.StreamOutput, sizeof(D.StreamOutput));
-	D.SampleDesc = this->SampleDesc;
-	D.SampleMask = this->SampleMask;
-	D.CachedPSO = this->CachedPSO;
-	return D;
+	FD3D12_MESH_PIPELINE_STATE_STREAM Stream{};
+	check(this->Flags == D3D12_PIPELINE_STATE_FLAG_NONE);	//Stream.Flags = this->Flags;
+	Stream.NodeMask = this->NodeMask;
+	Stream.pRootSignature = this->pRootSignature;
+	Stream.PrimitiveTopologyType = this->PrimitiveTopologyType;
+	Stream.MS = this->MS;
+	Stream.AS = this->AS;
+	Stream.PS = this->PS;
+	Stream.BlendState = CD3DX12_BLEND_DESC(this->BlendState);
+	Stream.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC1(this->DepthStencilState);
+	Stream.DSVFormat = this->DSVFormat;
+	Stream.RasterizerState = CD3DX12_RASTERIZER_DESC(this->RasterizerState);
+	Stream.RTVFormats = this->RTFormatArray;
+	Stream.SampleDesc = this->SampleDesc;
+	Stream.SampleMask = this->SampleMask;
+	Stream.CachedPSO = this->CachedPSO;
+	return Stream;
 }
+#endif // PLATFORM_SUPPORTS_MESH_SHADERS
 
 FD3D12_COMPUTE_PIPELINE_STATE_STREAM FD3D12_COMPUTE_PIPELINE_STATE_DESC::PipelineStateStream() const
 {
@@ -110,17 +104,6 @@ FD3D12_COMPUTE_PIPELINE_STATE_STREAM FD3D12_COMPUTE_PIPELINE_STATE_DESC::Pipelin
 	Stream.CS = this->CS;
 	Stream.CachedPSO = this->CachedPSO;
 	return Stream;
-}
-
-D3D12_COMPUTE_PIPELINE_STATE_DESC FD3D12_COMPUTE_PIPELINE_STATE_DESC::ComputeDescV0() const
-{
-	D3D12_COMPUTE_PIPELINE_STATE_DESC D = {};
-	D.Flags = this->Flags;
-	D.NodeMask = this->NodeMask;
-	D.pRootSignature = this->pRootSignature;
-	D.CS = this->CS;
-	D.CachedPSO = this->CachedPSO;
-	return D;
 }
 
 void SaveByteCode(D3D12_SHADER_BYTECODE& ByteCode)
@@ -141,10 +124,10 @@ void ComputePipelineCreationArgs_POD::Destroy()
 void GraphicsPipelineCreationArgs_POD::Destroy()
 {
 	FMemory::Free((void*)Desc.Desc.VS.pShaderBytecode);
+	FMemory::Free((void*)Desc.Desc.MS.pShaderBytecode);
+	FMemory::Free((void*)Desc.Desc.AS.pShaderBytecode);
 	FMemory::Free((void*)Desc.Desc.PS.pShaderBytecode);
 	FMemory::Free((void*)Desc.Desc.GS.pShaderBytecode);
-	FMemory::Free((void*)Desc.Desc.HS.pShaderBytecode);
-	FMemory::Free((void*)Desc.Desc.DS.pShaderBytecode);
 }
 
 void FD3D12PipelineStateCache::OnPSOCreated(FD3D12PipelineState* PipelineState, const FD3D12LowLevelGraphicsPipelineStateDesc& Desc)
@@ -256,17 +239,17 @@ void FD3D12PipelineStateCache::RebuildFromDiskCache(ID3D12RootSignature* Graphic
 		{
 			DiskCaches[PSO_CACHE_GRAPHICS].SetPointerAndAdvanceFilePosition((void**)&PSODesc->VS.pShaderBytecode, PSODesc->VS.BytecodeLength, bBackShadersWithSystemMemory);
 		}
+		if (PSODesc->MS.BytecodeLength)
+		{
+			DiskCaches[PSO_CACHE_GRAPHICS].SetPointerAndAdvanceFilePosition((void**)&PSODesc->MS.pShaderBytecode, PSODesc->MS.BytecodeLength, bBackShadersWithSystemMemory);
+		}
+		if (PSODesc->AS.BytecodeLength)
+		{
+			DiskCaches[PSO_CACHE_GRAPHICS].SetPointerAndAdvanceFilePosition((void**)&PSODesc->AS.pShaderBytecode, PSODesc->AS.BytecodeLength, bBackShadersWithSystemMemory);
+		}
 		if (PSODesc->PS.BytecodeLength)
 		{
 			DiskCaches[PSO_CACHE_GRAPHICS].SetPointerAndAdvanceFilePosition((void**)&PSODesc->PS.pShaderBytecode, PSODesc->PS.BytecodeLength, bBackShadersWithSystemMemory);
-		}
-		if (PSODesc->DS.BytecodeLength)
-		{
-			DiskCaches[PSO_CACHE_GRAPHICS].SetPointerAndAdvanceFilePosition((void**)&PSODesc->DS.pShaderBytecode, PSODesc->DS.BytecodeLength, bBackShadersWithSystemMemory);
-		}
-		if (PSODesc->HS.BytecodeLength)
-		{
-			DiskCaches[PSO_CACHE_GRAPHICS].SetPointerAndAdvanceFilePosition((void**)&PSODesc->HS.pShaderBytecode, PSODesc->HS.BytecodeLength, bBackShadersWithSystemMemory);
 		}
 		if (PSODesc->GS.BytecodeLength)
 		{
@@ -396,17 +379,17 @@ void FD3D12PipelineStateCache::AddToDiskCache(const FD3D12LowLevelGraphicsPipeli
 		{
 			DiskCache.AppendData((void*)PsoDesc.VS.pShaderBytecode, PsoDesc.VS.BytecodeLength);
 		}
+		if (PsoDesc.MS.BytecodeLength)
+		{
+			DiskCache.AppendData((void*)PsoDesc.MS.pShaderBytecode, PsoDesc.MS.BytecodeLength);
+		}
+		if (PsoDesc.AS.BytecodeLength)
+		{
+			DiskCache.AppendData((void*)PsoDesc.AS.pShaderBytecode, PsoDesc.AS.BytecodeLength);
+		}
 		if (PsoDesc.PS.BytecodeLength)
 		{
 			DiskCache.AppendData((void*)PsoDesc.PS.pShaderBytecode, PsoDesc.PS.BytecodeLength);
-		}
-		if (PsoDesc.DS.BytecodeLength)
-		{
-			DiskCache.AppendData((void*)PsoDesc.DS.pShaderBytecode, PsoDesc.DS.BytecodeLength);
-		}
-		if (PsoDesc.HS.BytecodeLength)
-		{
-			DiskCache.AppendData((void*)PsoDesc.HS.pShaderBytecode, PsoDesc.HS.BytecodeLength);
 		}
 		if (PsoDesc.GS.BytecodeLength)
 		{
@@ -612,11 +595,33 @@ static void DumpShaderAsm(FString& String, const D3D12_SHADER_BYTECODE& Shader)
 #if D3D12RHI_USE_D3DDISASSEMBLE
 	if (Shader.pShaderBytecode)
 	{
-		ID3DBlob* blob = nullptr;
-		if (SUCCEEDED(D3DDisassemble(Shader.pShaderBytecode, Shader.BytecodeLength, 0, "", &blob)))
+		// This function needs to load the bundled version of d3dcompiler lib explictly. Implicit linking results
+		// in picking up the system lib by both the engine and SCWs (which links to this module), which makes
+		// the shader compilation system-dependent.
+		static pD3DDisassemble D3DDisasmFunc = nullptr;
+		if (D3DDisasmFunc == nullptr)
 		{
-			String.Appendf(TEXT("%S\n"), blob->GetBufferPointer());
-			blob->Release();
+			static HMODULE CompilerDLL = NULL;	// not nullptr as the return value of LoadLibrary remains defined as NULL
+			static const TCHAR* CompilerPath = TEXT("Binaries/ThirdParty/Windows/DirectX/x64/d3dcompiler_47.dll");
+			if (CompilerDLL == NULL)
+			{
+				CompilerDLL = LoadLibrary(CompilerPath);
+			}
+
+			if (CompilerDLL != NULL)
+			{
+				D3DDisasmFunc = (pD3DDisassemble)(void*)(GetProcAddress(CompilerDLL, "D3DDisassemble"));
+			}
+		}
+
+		if (D3DDisasmFunc)
+		{
+			ID3DBlob* blob = nullptr;
+			if (SUCCEEDED(D3DDisasmFunc(Shader.pShaderBytecode, Shader.BytecodeLength, 0, "", &blob)))
+			{
+				String.Appendf(TEXT("%S\n"), blob->GetBufferPointer());
+				blob->Release();
+			}
 		}
 	}
 #endif
@@ -700,9 +705,9 @@ static void DumpGraphicsPSO(const FD3D12_GRAPHICS_PIPELINE_STATE_DESC& Desc, con
 		String.Appendf(TEXT("Flags = 0x%X\n"), Desc.Flags);
 
 		DumpShaderAsm(String, Desc.VS);
+		DumpShaderAsm(String, Desc.MS);
+		DumpShaderAsm(String, Desc.AS);
 		DumpShaderAsm(String, Desc.GS);
-		DumpShaderAsm(String, Desc.HS);
-		DumpShaderAsm(String, Desc.DS);
 		DumpShaderAsm(String, Desc.PS);
 	}
 
@@ -723,49 +728,6 @@ static void DumpComputePSO(const FD3D12_COMPUTE_PIPELINE_STATE_DESC& Desc, const
 	}
 
 	UE_LOG(LogD3D12RHI, Warning, TEXT("Failed to create Compute PSO with hash 0x%s:\n%s"), Name, *String);
-}
-
-
-// Thread-safe create graphics/compute pipeline state. Conditionally load/store the PSO using a Pipeline Library.
-static HRESULT CreatePipelineState(ID3D12PipelineState*&PSO, ID3D12Device* Device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* Desc, ID3D12PipelineLibrary* Library, const TCHAR* Name)
-{
-	HRESULT hr = S_OK;
-	if (Library == nullptr || Library->LoadGraphicsPipeline(Name, Desc, IID_PPV_ARGS(&PSO)) == E_INVALIDARG)
-	{
-		SCOPE_CYCLE_COUNTER(STAT_PSOCreateTime);
-		hr = Device->CreateGraphicsPipelineState(Desc, IID_PPV_ARGS(&PSO));
-	}
-
-	if (Library && SUCCEEDED(hr))
-	{
-		HRESULT r = Library->StorePipeline(Name, PSO);
-		check(r != E_INVALIDARG);
-	}
-
-	return hr;
-}
-
-static HRESULT CreatePipelineState(ID3D12PipelineState*&PSO, ID3D12Device* Device, const D3D12_COMPUTE_PIPELINE_STATE_DESC* Desc, ID3D12PipelineLibrary* Library, const TCHAR* Name)
-{
-	HRESULT hr = S_OK;
-	if (Library == nullptr || Library->LoadComputePipeline(Name, Desc, IID_PPV_ARGS(&PSO)) == E_INVALIDARG)
-	{
-		SCOPE_CYCLE_COUNTER(STAT_PSOCreateTime);
-		hr = Device->CreateComputePipelineState(Desc, IID_PPV_ARGS(&PSO));
-		if (FAILED(hr))
-		{
-			UE_LOG(LogD3D12RHI, Error, TEXT("Failed to create PipelineState with hash %s"), Name);
-		}
-		VERIFYD3D12RESULT(hr);
-	}
-
-	if (Library && SUCCEEDED(hr))
-	{
-		HRESULT r = Library->StorePipeline(Name, PSO);
-		check(r != E_INVALIDARG);
-	}
-
-	return hr;
 }
 
 // Thread-safe create graphics/compute pipeline state. Conditionally load/store the PSO using a Pipeline Library.
@@ -816,7 +778,7 @@ static inline void FastHashName(wchar_t Name[17], uint64 Hash)
 	Name[16] = 0;
 }
 
-static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const GraphicsPipelineCreationArgs_POD* CreationArgs, bool bUseStream)
+static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const GraphicsPipelineCreationArgs_POD* CreationArgs)
 {
 	// Get the pipeline state name, currently based on the hash.
 	wchar_t Name[17];
@@ -829,14 +791,17 @@ static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter*
 
 	// Use pipeline streams if the system supports it.
 	ID3D12Device2* const pDevice2 = Adapter->GetD3DDevice2();
-	if (pDevice2 && bUseStream)
+	check(pDevice2);
+
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	if (CreationArgs->Desc.UsesMeshShaders())
 	{
-		FD3D12_GRAPHICS_PIPELINE_STATE_STREAM Stream = CreationArgs->Desc.Desc.PipelineStateStream();
+		FD3D12_MESH_PIPELINE_STATE_STREAM Stream = CreationArgs->Desc.Desc.MeshPipelineStateStream();
 		const D3D12_PIPELINE_STATE_STREAM_DESC StreamDesc = { sizeof(Stream), &Stream };
 		HRESULT hr = CreatePipelineStateFromStream(*PSO, pDevice2, &StreamDesc, static_cast<ID3D12PipelineLibrary1*>(CreationArgs->Library), Name);	// Static cast to ID3D12PipelineLibrary1 since we already checked for ID3D12Device2.
 		if (FAILED(hr))
 		{
-			// First check if D3D device removed, hung or out of memory and handle that seperatly 
+			// First check if D3D device removed, hung or out of memory and handle that separately 
 			if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG || hr == E_OUTOFMEMORY)
 			{
 				VERIFYD3D12RESULT_EX(hr, pDevice2);
@@ -848,12 +813,14 @@ static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter*
 		}
 	}
 	else
+#endif // PLATFORM_SUPPORTS_MESH_SHADERS
 	{
-		const D3D12_GRAPHICS_PIPELINE_STATE_DESC Desc = CreationArgs->Desc.Desc.GraphicsDescV0();
-		HRESULT hr = CreatePipelineState(*PSO, Adapter->GetD3DDevice(), &Desc, CreationArgs->Library, Name);
+		FD3D12_GRAPHICS_PIPELINE_STATE_STREAM Stream = CreationArgs->Desc.Desc.PipelineStateStream();
+		const D3D12_PIPELINE_STATE_STREAM_DESC StreamDesc = { sizeof(Stream), &Stream };
+		HRESULT hr = CreatePipelineStateFromStream(*PSO, pDevice2, &StreamDesc, static_cast<ID3D12PipelineLibrary1*>(CreationArgs->Library), Name);	// Static cast to ID3D12PipelineLibrary1 since we already checked for ID3D12Device2.
 		if (FAILED(hr))
 		{
-			// First check if D3D device removed, hung or out of memory and handle that seperatly 
+			// First check if D3D device removed, hung or out of memory and handle that separately 
 			if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG || hr == E_OUTOFMEMORY)
 			{
 				VERIFYD3D12RESULT_EX(hr, pDevice2);
@@ -866,7 +833,7 @@ static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter*
 	}
 }
 
-static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const ComputePipelineCreationArgs_POD* CreationArgs, bool bUseStream)
+static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const ComputePipelineCreationArgs_POD* CreationArgs)
 {
 	// Get the pipeline state name, currently based on the hash.
 	wchar_t Name[17];
@@ -877,31 +844,28 @@ static void CreatePipelineStateWrapper(ID3D12PipelineState** PSO, FD3D12Adapter*
 	SCOPE_LOG_TIME(*CreatePipelineStateMessage, &GD3D12CreatePSOTime);
 #endif
 
-	// Use pipeline streams if the system supports it.
 	ID3D12Device2* const pDevice2 = Adapter->GetD3DDevice2();
-	if (pDevice2 && bUseStream)
+	check(pDevice2);
+
+	FD3D12_COMPUTE_PIPELINE_STATE_STREAM Stream = CreationArgs->Desc.Desc.PipelineStateStream();
+	const D3D12_PIPELINE_STATE_STREAM_DESC StreamDesc = { sizeof(Stream), &Stream };
+
+	HRESULT hr = CreatePipelineStateFromStream(*PSO, pDevice2, &StreamDesc, static_cast<ID3D12PipelineLibrary1*>(CreationArgs->Library), Name);	// Static cast to ID3D12PipelineLibrary1 since we already checked for ID3D12Device2.
+	if (FAILED(hr))
 	{
-		FD3D12_COMPUTE_PIPELINE_STATE_STREAM Stream = CreationArgs->Desc.Desc.PipelineStateStream();
-		const D3D12_PIPELINE_STATE_STREAM_DESC StreamDesc = { sizeof(Stream), &Stream };
-		HRESULT hr = CreatePipelineStateFromStream(*PSO, pDevice2, &StreamDesc, static_cast<ID3D12PipelineLibrary1*>(CreationArgs->Library), Name);	// Static cast to ID3D12PipelineLibrary1 since we already checked for ID3D12Device2.
-		if (FAILED(hr))
+		// First check if D3D device removed, hung or out of memory and handle that separately 
+		if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_HUNG || hr == E_OUTOFMEMORY)
 		{
-			DumpComputePSO(CreationArgs->Desc.Desc, Name);
+			VERIFYD3D12RESULT_EX(hr, pDevice2);
 		}
-	}
-	else
-	{
-		D3D12_COMPUTE_PIPELINE_STATE_DESC Desc = CreationArgs->Desc.Desc.ComputeDescV0();
-		HRESULT hr = CreatePipelineState(*PSO, Adapter->GetD3DDevice(), &Desc, CreationArgs->Library, Name);
-		if (FAILED(hr))
+		else
 		{
 			DumpComputePSO(CreationArgs->Desc.Desc, Name);
 		}
 	}
 }
 
-#if PLATFORM_WINDOWS
-
+#if D3D12RHI_NEEDS_VENDOR_EXTENSIONS
 static FORCEINLINE NVAPI_D3D12_PSO_SET_SHADER_EXTENSION_SLOT_DESC GetNVShaderExtensionDesc(uint32 UavSlot)
 {
 	// https://developer.nvidia.com/unlocking-gpu-intrinsics-hlsl
@@ -910,12 +874,69 @@ static FORCEINLINE NVAPI_D3D12_PSO_SET_SHADER_EXTENSION_SLOT_DESC GetNVShaderExt
 	ShdExtensionDesc.baseVersion = NV_PSO_EXTENSION_DESC_VER;
 	ShdExtensionDesc.version = NV_SET_SHADER_EXTENSION_SLOT_DESC_VER;
 	ShdExtensionDesc.uavSlot = UavSlot;
-	ShdExtensionDesc.registerSpace = 0;
+#if 0 // TEMP_RENDERDOC_WORKAROUND
+	// TODO: Temp workaround until RenderDoc fixes SM 5.0 opcode detection (need to ignore register space)
+	ShdExtensionDesc.registerSpace = 0xFFFFFFFF;
+#else
+	ShdExtensionDesc.registerSpace = 0; // TODO: Should use the same special space as AMD to avoid driver pattern matching
+#endif
 	return ShdExtensionDesc;
 }
 
+template<typename TCreationArgs>
+static void CreatePipelineStateWithExtensions(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const TCreationArgs* CreationArgs, TArrayView<const FShaderCodeVendorExtension> VendorExtensions)
+{
+	for (const FShaderCodeVendorExtension& Extension : VendorExtensions)
+	{
+		if (Extension.VendorId == 0x10DE) // NVIDIA
+		{
+			if (Extension.Parameter.Type == EShaderParameterType::UAV)
+			{
+				const NVAPI_D3D12_PSO_SET_SHADER_EXTENSION_SLOT_DESC ShdExtensionDesc = GetNVShaderExtensionDesc(Extension.Parameter.BaseIndex);
+
+				NvAPI_Status NvStatus = NvAPI_D3D12_SetNvShaderExtnSlotSpaceLocalThread(
+					Adapter->GetD3DDevice(),
+					ShdExtensionDesc.uavSlot,
+					ShdExtensionDesc.registerSpace
+				);
+				check(NvStatus == NVAPI_OK);
+
+				CreatePipelineStateWrapper(PSO, Adapter, CreationArgs);
+
+				// Reset to default configuration without vendor extensions.
+				NvStatus = NvAPI_D3D12_SetNvShaderExtnSlotSpaceLocalThread(
+					Adapter->GetD3DDevice(),
+					0xFFFFFFFF,
+					0
+				);
+				check(NvStatus == NVAPI_OK);
+
+				return;
+			}
+		}
+		else if (Extension.VendorId == 0x1002) // AMD
+		{
+			// https://github.com/GPUOpen-LibrariesAndSDKs/AGS_SDK/blob/master/ags_lib/hlsl/ags_shader_intrinsics_dx12.hlsl
+			// No special create override needed, pass through to default:
+			CreatePipelineStateWrapper(PSO, Adapter, CreationArgs);
+			return;
+		}
+		else if (Extension.VendorId == 0x8086) // INTEL
+		{
+			// https://github.com/intel/intel-graphics-compiler/blob/master/inc/IntelExtensions.hlsl
+			// No special create override needed, pass through to default:
+			CreatePipelineStateWrapper(PSO, Adapter, CreationArgs);
+			return;
+		}
+	}
+
+	check(false); // Unimplemented extension path
+}
+#endif
+
 static void CreateGraphicsPipelineState(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const GraphicsPipelineCreationArgs_POD* CreationArgs)
 {
+#if D3D12RHI_NEEDS_VENDOR_EXTENSIONS
 	if (CreationArgs->Desc.HasVendorExtensions())
 	{
 		// Need to merge extensions across all stages for a single PSO
@@ -924,112 +945,41 @@ static void CreateGraphicsPipelineState(ID3D12PipelineState** PSO, FD3D12Adapter
 	#define MERGE_EXT(Initial) \
 		if (CreationArgs->Desc.##Initial##SExtensions != nullptr) \
 		{ \
-			const TArray<FShaderCodeVendorExtension>& Extensions = *CreationArgs->Desc.##Initial##SExtensions; \
-			for (int32 ExtIndex = 0; ExtIndex < Extensions.Num(); ++ExtIndex) \
+			for (const FShaderCodeVendorExtension& Extension : *CreationArgs->Desc.##Initial##SExtensions) \
 			{ \
-				MergedExtensions.AddUnique(Extensions[ExtIndex]); \
+				MergedExtensions.AddUnique(Extension); \
 			} \
 		}
 
 		MERGE_EXT(V);
+		MERGE_EXT(M);
+		MERGE_EXT(A);
 		MERGE_EXT(P);
-		MERGE_EXT(D);
-		MERGE_EXT(H);
 		MERGE_EXT(G);
 	#undef MERGE_EXT
 
-		for (int32 ExtIndex = 0; ExtIndex < MergedExtensions.Num(); ++ExtIndex)
-		{
-			const FShaderCodeVendorExtension& Extension = MergedExtensions[ExtIndex];
-			if (Extension.VendorId == 0x10DE) // NVIDIA
-			{
-				if (Extension.Parameter.Type == EShaderParameterType::UAV)
-				{
-					D3D12_GRAPHICS_PIPELINE_STATE_DESC Desc = CreationArgs->Desc.Desc.GraphicsDescV0();
-
-					const NVAPI_D3D12_PSO_SET_SHADER_EXTENSION_SLOT_DESC ShdExtensionDesc = GetNVShaderExtensionDesc(Extension.Parameter.BaseIndex);
-					const NVAPI_D3D12_PSO_EXTENSION_DESC* NvExtensions[] = { &ShdExtensionDesc };
-					NvAPI_Status NvStatus = NvAPI_D3D12_CreateGraphicsPipelineState(Adapter->GetD3DDevice(), &Desc, ARRAYSIZE(NvExtensions), NvExtensions, PSO);
-					check(NvStatus == NVAPI_OK);
-					return;
-				}
-			}
-			else if (Extension.VendorId == 0x1002) // AMD
-			{
-				// https://github.com/GPUOpen-LibrariesAndSDKs/AGS_SDK/blob/master/ags_lib/hlsl/ags_shader_intrinsics_dx12.hlsl
-				// No special create override needed, pass through to default:
-				CreatePipelineStateWrapper(PSO, Adapter, CreationArgs, false /* use stream */);
-				return;
-			}
-			else if (Extension.VendorId == 0x8086) // INTEL
-			{
-				// TODO: https://github.com/intel/intel-graphics-compiler/blob/master/inc/IntelExtensions.hlsl
-			}
-		}
-
-		check(false); // Unimplemented extension path
+		CreatePipelineStateWithExtensions(PSO, Adapter, CreationArgs, MergedExtensions);
 	}
 	else
+#endif // D3D12RHI_NEEDS_VENDOR_EXTENSIONS
 	{
-		CreatePipelineStateWrapper(PSO, Adapter, CreationArgs, true /* use stream */);
+		CreatePipelineStateWrapper(PSO, Adapter, CreationArgs);
 	}
 }
 
 static void CreateComputePipelineState(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const ComputePipelineCreationArgs_POD* CreationArgs)
 {
+#if D3D12RHI_NEEDS_VENDOR_EXTENSIONS
 	if (CreationArgs->Desc.HasVendorExtensions())
 	{
-		const TArray<FShaderCodeVendorExtension>& Extensions = *CreationArgs->Desc.Extensions;
-		for (int32 ExtIndex = 0; ExtIndex < Extensions.Num(); ++ExtIndex)
-		{
-			const FShaderCodeVendorExtension& Extension = Extensions[ExtIndex];
-			if (Extension.VendorId == 0x10DE) // NVIDIA
-			{
-				if (Extension.Parameter.Type == EShaderParameterType::UAV)
-				{
-					D3D12_COMPUTE_PIPELINE_STATE_DESC Desc = CreationArgs->Desc.Desc.ComputeDescV0();
-
-					const NVAPI_D3D12_PSO_SET_SHADER_EXTENSION_SLOT_DESC ShdExtensionDesc = GetNVShaderExtensionDesc(Extension.Parameter.BaseIndex);
-					const NVAPI_D3D12_PSO_EXTENSION_DESC* NvExtensions[] = { &ShdExtensionDesc };
-					NvAPI_Status NvStatus = NvAPI_D3D12_CreateComputePipelineState(Adapter->GetD3DDevice(), &Desc, ARRAYSIZE(NvExtensions), NvExtensions, PSO);
-					check(NvStatus == NVAPI_OK);
-					return;
-				}
-			}
-			else if (Extension.VendorId == 0x1002) // AMD
-			{
-				// https://github.com/GPUOpen-LibrariesAndSDKs/AGS_SDK/blob/master/ags_lib/hlsl/ags_shader_intrinsics_dx12.hlsl
-				// No special create override needed, pass through to default:
-				CreatePipelineStateWrapper(PSO, Adapter, CreationArgs, false /* use stream */);
-				return;
-			}
-			else if (Extension.VendorId == 0x8086) // INTEL
-			{
-				// TODO: https://github.com/intel/intel-graphics-compiler/blob/master/inc/IntelExtensions.hlsl
-			}
-		}
-
-		check(false); // Unimplemented extension path
+		CreatePipelineStateWithExtensions(PSO, Adapter, CreationArgs, TArrayView<const FShaderCodeVendorExtension>(*CreationArgs->Desc.Extensions));
 	}
 	else
+#endif // D3D12RHI_NEEDS_VENDOR_EXTENSIONS
 	{
-		CreatePipelineStateWrapper(PSO, Adapter, CreationArgs, true /* use stream */);
+		CreatePipelineStateWrapper(PSO, Adapter, CreationArgs);
 	}
 }
-
-#else
-
-static FORCEINLINE void CreateGraphicsPipelineState(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const GraphicsPipelineCreationArgs_POD* CreationArgs)
-{
-	CreatePipelineStateWrapper(PSO, Adapter, CreationArgs, false /* use stream */);
-}
-
-static FORCEINLINE void CreateComputePipelineState(ID3D12PipelineState** PSO, FD3D12Adapter* Adapter, const ComputePipelineCreationArgs_POD* CreationArgs)
-{
-	CreatePipelineStateWrapper(PSO, Adapter, CreationArgs, false /* use stream */);
-}
-
-#endif
 
 void FD3D12PipelineState::Create(const ComputePipelineCreationArgs& InCreationArgs)
 {

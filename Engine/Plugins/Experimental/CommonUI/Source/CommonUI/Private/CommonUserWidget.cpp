@@ -82,7 +82,12 @@ FUIActionBindingHandle UCommonUserWidget::RegisterUIActionBinding(const FBindUIA
 {
 	if (UCommonUIActionRouterBase* ActionRouter = UCommonUIActionRouterBase::Get(*this))
 	{
-		FUIActionBindingHandle BindingHandle = ActionRouter->RegisterUIActionBinding(*this, BindActionArgs);
+		FBindUIActionArgs FinalBindActionArgs = BindActionArgs;
+		if (bDisplayInActionBar && !BindActionArgs.bDisplayInActionBar)
+		{
+			FinalBindActionArgs.bDisplayInActionBar = true;
+		}
+		FUIActionBindingHandle BindingHandle = ActionRouter->RegisterUIActionBinding(*this, FinalBindActionArgs);
 		ActionBindings.Add(BindingHandle);
 		return BindingHandle;
 	}
@@ -93,13 +98,19 @@ FUIActionBindingHandle UCommonUserWidget::RegisterUIActionBinding(const FBindUIA
 void UCommonUserWidget::RemoveActionBinding(FUIActionBindingHandle ActionBinding)
 {
 	ActionBindings.Remove(ActionBinding);
-	UCommonUIActionRouterBase::Get(*this)->RemoveBinding(ActionBinding);
+	if (UCommonUIActionRouterBase* ActionRouter = UCommonUIActionRouterBase::Get(*this))
+	{
+		ActionRouter->RemoveBinding(ActionBinding);
+	}
 }
 
 void UCommonUserWidget::AddActionBinding(FUIActionBindingHandle ActionBinding)
 {
 	ActionBindings.Add(ActionBinding);
-	UCommonUIActionRouterBase::Get(*this)->AddBinding(ActionBinding);
+	if (UCommonUIActionRouterBase* ActionRouter = UCommonUIActionRouterBase::Get(*this))
+	{
+		ActionRouter->AddBinding(ActionBinding);
+	}
 }
 
 void UCommonUserWidget::RegisterScrollRecipient(const UWidget& AnalogScrollRecipient)

@@ -35,7 +35,7 @@ static void DoUpdateUniformBuffer(FMetalUniformBuffer* UB, const void* Contents)
     }
 }
 
-FUniformBufferRHIRef FMetalDynamicRHI::RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout& Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation)
+FUniformBufferRHIRef FMetalDynamicRHI::RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout* Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation)
 {
     FMetalDeviceContext& DeviceContext = (FMetalDeviceContext&)GetMetalDeviceContext();
     FMetalFrameAllocator* UniformAllocator = DeviceContext.GetUniformAllocator();
@@ -82,16 +82,6 @@ void FMetalRHICommandContext::RHISetShaderUniformBuffer(FRHIGraphicsShader* Shad
 		case SF_Vertex:
 			SetUniformBufferInternal<EMetalShaderStages::Vertex, FRHIVertexShader>(Context, static_cast<FRHIVertexShader*>(Shader), BufferIndex, Buffer);
 			break;
-
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		case SF_Hull:
-			SetUniformBufferInternal<EMetalShaderStages::Hull, FRHIHullShader>(Context, static_cast<FRHIHullShader*>(Shader), BufferIndex, Buffer);
-			break;
-
-		case SF_Domain:
-			SetUniformBufferInternal<EMetalShaderStages::Domain, FRHIDomainShader>(Context, static_cast<FRHIDomainShader*>(Shader), BufferIndex, Buffer);
-			break;
-#endif // PLATFORM_SUPPORTS_TESSELLATION_SHADERS
 
 		case SF_Geometry:
 			NOT_SUPPORTED("RHISetShaderUniformBuffer-Geometry");

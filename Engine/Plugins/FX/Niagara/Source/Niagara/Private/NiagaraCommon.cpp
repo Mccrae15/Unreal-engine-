@@ -7,13 +7,13 @@
 #include "NiagaraConstants.h"
 #include "NiagaraCustomVersion.h"
 #include "NiagaraParameterCollection.h"
-#include "NiagaraParameterDefinitionsBase.h"
 #include "NiagaraScriptSourceBase.h"
 #include "NiagaraStats.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraWorldManager.h"
 #include "String/ParseTokens.h"
 #include "UObject/Class.h"
+#include "GPUSkinCache.h"
 
 DECLARE_CYCLE_STAT(TEXT("Niagara - Utilities - PrepareRapidIterationParameters"), STAT_Niagara_Utilities_PrepareRapidIterationParameters, STATGROUP_Niagara);
 
@@ -66,71 +66,6 @@ static FAutoConsoleVariableRef CVarNiagaraLogVerboseWarnings(
 	ECVF_Default
 );
 
-//////////////////////////////////////////////////////////////////////////
-
-FString FNiagaraTypeHelper::ToString(const uint8* ValueData, const UObject* StructOrEnum)
-{
-	FString Ret;
-	if (const UEnum* Enum = Cast<const UEnum>(StructOrEnum))
-	{
-		Ret = Enum->GetNameStringByValue(*(int32*)ValueData);
-	}
-	else if (const UScriptStruct* Struct = Cast<const UScriptStruct>(StructOrEnum))
-	{
-		if (Struct == FNiagaraTypeDefinition::GetFloatStruct())
-		{
-			Ret += FString::Printf(TEXT("%g "), *(float*)ValueData);
-		}
-		else if (Struct == FNiagaraTypeDefinition::GetIntStruct())
-		{
-			Ret += FString::Printf(TEXT("%d "), *(int32*)ValueData);
-		}
-		else if (Struct == FNiagaraTypeDefinition::GetBoolStruct())
-		{
-			int32 Val = *(int32*)ValueData;
-			Ret += Val == 0xFFFFFFFF ? (TEXT("True")) : (Val == 0x0 ? TEXT("False") : TEXT("Invalid"));
-		}
-		else
-		{
-			for (TFieldIterator<FProperty> PropertyIt(Struct, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
-			{
-				const FProperty* Property = *PropertyIt;
-				const uint8* PropPtr = ValueData + PropertyIt->GetOffset_ForInternal();
-				if (Property->IsA(FFloatProperty::StaticClass()))
-				{
-					Ret += FString::Printf(TEXT("%s: %g "), *Property->GetNameCPP(), *(float*)PropPtr);
-				}
-				else if (Property->IsA(FUInt16Property::StaticClass()))
-				{
-					FFloat16 Val = *(FFloat16*)PropPtr;
-					Ret += FString::Printf(TEXT("%s: %f "), *Property->GetNameCPP(), Val.GetFloat());
-				}
-				else if (Property->IsA(FIntProperty::StaticClass()))
-				{
-					Ret += FString::Printf(TEXT("%s: %d "), *Property->GetNameCPP(), *(int32*)PropPtr);
-				}
-				else if (Property->IsA(FBoolProperty::StaticClass()))
-				{
-					int32 Val = *(int32*)ValueData;
-					FString BoolStr = Val == 0xFFFFFFFF ? (TEXT("True")) : (Val == 0x0 ? TEXT("False") : TEXT("Invalid"));
-					Ret += FString::Printf(TEXT("%s: %d "), *Property->GetNameCPP(), *BoolStr);
-				}
-				else if (const FStructProperty* StructProp = CastFieldChecked<const FStructProperty>(Property))
-				{
-					Ret += FString::Printf(TEXT("%s: (%s) "), *Property->GetNameCPP(), *FNiagaraTypeHelper::ToString(PropPtr, StructProp->Struct));
-				}
-				else
-				{
-					check(false);
-					Ret += TEXT("Unknown Type");
-				}
-			}
-		}
-	}
-	return Ret;
-}
-//////////////////////////////////////////////////////////////////////////
-
 FNiagaraSystemUpdateContext::~FNiagaraSystemUpdateContext()
 {
 	CommitUpdate();
@@ -143,7 +78,7 @@ void FNiagaraSystemUpdateContext::CommitUpdate()
 		if(Sys)
 		{
 			FNiagaraWorldManager::DestroyAllSystemSimulations(Sys);
-		}		
+		}
 	}
 	SystemSimsToDestroy.Empty();
 
@@ -173,10 +108,10 @@ void FNiagaraSystemUpdateContext::CommitUpdate()
 	{
 		if (Comp)
 		{
-			if (FNiagaraSystemInstance* SystemInstance = Comp->GetSystemInstance())
+			if (FNiagaraSystemInstanceControllerPtr SystemInstanceController = Comp->GetSystemInstanceController())
 			{
-				SystemInstance->OnSimulationDestroyed();
-			}			
+				SystemInstanceController->OnSimulationDestroyed();
+			}
 			Comp->EndUpdateContextReset();
 			PostWork.ExecuteIfBound(Comp);
 		}
@@ -221,8 +156,8 @@ void FNiagaraSystemUpdateContext::Add(const UNiagaraEmitter* Emitter, bool bReIn
 	{
 		UNiagaraComponent* Comp = *It;
 		check(Comp);
-		FNiagaraSystemInstance* SystemInst = Comp->GetSystemInstance();
-		if (SystemInst && SystemInst->UsesEmitter(Emitter))
+		UNiagaraSystem* System = Comp->GetAsset();
+		if (System && System->UsesEmitter(Emitter))
 		{
 			AddInternal(Comp, bReInit);
 		}
@@ -249,8 +184,8 @@ void FNiagaraSystemUpdateContext::Add(const UNiagaraParameterCollection* Collect
 	{
 		UNiagaraComponent* Comp = *It;
 		check(Comp);
-		FNiagaraSystemInstance* SystemInst = Comp->GetSystemInstance();
-		if (SystemInst && SystemInst->UsesCollection(Collection))
+		UNiagaraSystem* System = Comp->GetAsset();
+		if (System && System->UsesCollection(Collection))
 		{
 			AddInternal(Comp, bReInit);
 		}
@@ -265,10 +200,10 @@ void FNiagaraSystemUpdateContext::AddInternal(UNiagaraComponent* Comp, bool bReI
 	Comp->BeginUpdateContextReset();
 
 	// Ensure we wait for any concurrent work to complete
-	if (FNiagaraSystemInstance* SystemInstance = Comp->GetSystemInstance())
+	if (FNiagaraSystemInstanceControllerPtr SystemInstanceController = Comp->GetSystemInstanceController())
 	{
-		SystemInstance->WaitForConcurrentTickAndFinalize();
-		if (Comp->IsPendingKill())
+		SystemInstanceController->WaitForConcurrentTickAndFinalize();
+		if (!IsValidChecked(Comp))
 		{
 			return;
 		}
@@ -281,7 +216,7 @@ void FNiagaraSystemUpdateContext::AddInternal(UNiagaraComponent* Comp, bool bReI
 	}
 
 	bool bIsActive = (Comp->IsActive() && Comp->GetRequestedExecutionState() == ENiagaraExecutionState::Active) || Comp->IsRegisteredWithScalabilityManager();
-	
+
 	if (bDestroyOnAdd)
 	{
 		Comp->DeactivateImmediate();
@@ -296,23 +231,23 @@ void FNiagaraSystemUpdateContext::AddInternal(UNiagaraComponent* Comp, bool bReI
 		else
 		{
 			ComponentsToReset.AddUnique(Comp);
-		}		
+		}
 		return;
 	}
 	else if (bReInit)
 	{
 		// Inactive components that have references to the simulations we're about to destroy need to clear them out in case they get reactivated.
 		// Otherwise, they will hold reference and bind or remain bound to a system simulation that has been abandoned by the world manager
-		if (FNiagaraSystemInstance* SystemInstance = Comp->GetSystemInstance())
+		if (FNiagaraSystemInstanceControllerConstPtr SystemInstanceController = Comp->GetSystemInstanceController())
 		{
-			if (!SystemInstance->IsSolo() && SystemInstance->GetSystemSimulation().IsValid())
+			if (!SystemInstanceController->IsSolo() && SystemInstanceController->HasValidSimulation())
 			{
 				ComponentsToNotifySimDestroy.Add(Comp);
 				return;
 			}
 		}
 	}
-	
+
 	// If we got here, we didn't add the component to any list, so end the reset immediately
 	Comp->EndUpdateContextReset();
 }
@@ -355,7 +290,7 @@ void FNiagaraStatDatabase::AddStatCapture(FStatReportKey ReportKey, TMap<TStatId
 
 	TMap<TStatIdData const*, FStatExecutionTimer>& InstanceData = StatCaptures.FindOrAdd(ReportKey);
 	for (const auto& Entry : CapturedData)
-	{		
+	{
 		InstanceData.FindOrAdd(Entry.Key).AddTiming(Entry.Value);
 	}
 }
@@ -438,7 +373,7 @@ TMap<ENiagaraScriptUsage, TSet<FName>> FNiagaraStatDatabase::GetAvailableStatNam
 	{
 		for (const auto& StatEntry : EmitterEntry.Value)
 		{
-			ENiagaraScriptUsage Usage = EmitterEntry.Key.Value; 
+			ENiagaraScriptUsage Usage = EmitterEntry.Key.Value;
 			Result.FindOrAdd(Usage).Add(MinimalNameToName(StatEntry.Key->Name));
 		}
 	}
@@ -446,16 +381,16 @@ TMap<ENiagaraScriptUsage, TSet<FName>> FNiagaraStatDatabase::GetAvailableStatNam
 }
 #endif
 
-void  FNiagaraVariableAttributeBinding::SetValue(const FName& InValue, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode)
+void FNiagaraVariableAttributeBinding::SetValue(const FName& InValue, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode)
 {
 	RootVariable.SetName(InValue);
 
-	const bool bIsRootParticleValue = RootVariable.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespace);
-	const bool bIsRootUnaliasedEmitterValue = RootVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespace);
+	const bool bIsRootParticleValue = RootVariable.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString);
+	const bool bIsRootUnaliasedEmitterValue = RootVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString);
 	const bool bIsAliasedEmitterValue = InEmitter ? RootVariable.IsInNameSpace(InEmitter->GetUniqueEmitterName()) : false;
-	const bool bIsRootSystemValue = RootVariable.IsInNameSpace(FNiagaraConstants::SystemNamespace);
-	const bool bIsRootUserValue = RootVariable.IsInNameSpace(FNiagaraConstants::UserNamespace);
-	const bool bIsStackContextValue = RootVariable.IsInNameSpace(FNiagaraConstants::StackContextNamespace);
+	const bool bIsRootSystemValue = RootVariable.IsInNameSpace(FNiagaraConstants::SystemNamespaceString);
+	const bool bIsRootUserValue = RootVariable.IsInNameSpace(FNiagaraConstants::UserNamespaceString);
+	const bool bIsStackContextValue = RootVariable.IsInNameSpace(FNiagaraConstants::StackContextNamespaceString);
 
 	// We clear out the namespace for the sourcemode so that we can keep the values up-to-date if you change the source mode.
 	if ((bIsStackContextValue || bIsRootParticleValue) && InSourceMode == ENiagaraRendererSourceDataMode::Particles)
@@ -509,7 +444,7 @@ void  FNiagaraVariableAttributeBinding::SetValue(const FName& InValue, const UNi
 		ensureMsgf(!bIsStackContextValue, TEXT("Should not get to this point! Should be covered by first two branch expresssions."));
 	}
 
-	CacheValues(InEmitter, InSourceMode);	
+	CacheValues(InEmitter, InSourceMode);
 }
 
 void FNiagaraVariableAttributeBinding::SetAsPreviousValue(const FNiagaraVariableBase& Src, const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode)
@@ -555,12 +490,14 @@ void FNiagaraVariableAttributeBinding::SetAsPreviousValue(const FNiagaraVariable
 	RootVariable = ParamMapVariable = DataSetVariable = Src.RootVariable;
 
 	// Split out the name and it's namespace
-	TArray<FString> SplitName;
-	Src.RootVariable.GetName().ToString().ParseIntoArray(SplitName, TEXT("."));
+	TStringBuilder<128> VarName;
+	TArray<FStringView, TInlineAllocator<16>> SplitName;
+	Src.RootVariable.GetName().ToString(VarName);
+	UE::String::ParseTokens(VarName, TEXT('.'), [&SplitName](FStringView Token) { SplitName.Emplace(Token); });
 
 	// If the name already contains a "Previous" in the name, just go with that
 	bool bIsPrev = false;
-	for (const FString& Split : SplitName)
+	for (const FStringView& Split : SplitName)
 	{
 		if (Split.Equals(PreviousNamespace, ESearchCase::IgnoreCase))
 		{
@@ -575,12 +512,25 @@ void FNiagaraVariableAttributeBinding::SetAsPreviousValue(const FNiagaraVariable
 	}
 	else
 	{
-		// insert "Previous" into the name, after the first namespace. Or the beginning, if it has none
-		const int32 Location = SplitName.Num() > 1 ? 1 : 0;
-		SplitName.Insert(PreviousNamespace, Location);
-
-		FString PrevName = FString::Join(SplitName, TEXT("."));
-		SetValue(*PrevName, InEmitter, InSourceMode);
+		TStringBuilder<128> PreviousVarName;
+		if ( SplitName.Num() > 1 )
+		{
+			PreviousVarName.Append(SplitName[0]);
+			PreviousVarName.Append(TEXT("."));
+			PreviousVarName.Append(PreviousNamespace);
+			for ( int i=1; i < SplitName.Num(); ++i )
+			{
+				PreviousVarName.Append(TEXT("."));
+				PreviousVarName.Append(SplitName[i]);
+			}
+		}
+		else
+		{
+			PreviousVarName.Append(PreviousNamespace);
+			PreviousVarName.Append(TEXT("."));
+			PreviousVarName.Append(SplitName[0]);
+		}
+		SetValue(PreviousVarName.ToString(), InEmitter, InSourceMode);
 	}
 }
 
@@ -645,14 +595,14 @@ void FNiagaraVariableAttributeBinding::ResetToDefault(const FNiagaraVariableAttr
 		if ((InSourceMode == ENiagaraRendererSourceDataMode::Emitter && InOther.BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource) ||
 			InOther.BindingSourceMode == ENiagaraBindingSource::ExplicitEmitter)
 		{
-			ensure(!InOther.DataSetVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespace));
-			TempVar.SetName(*(FNiagaraConstants::EmitterNamespace.ToString() + TEXT(".") + InOther.DataSetVariable.GetName().ToString()));
+			ensure(!InOther.DataSetVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString));
+			TempVar.SetNamespacedName(FNiagaraConstants::EmitterNamespaceString, InOther.DataSetVariable.GetName());
 		}
 		else if ((InSourceMode == ENiagaraRendererSourceDataMode::Particles && InOther.BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource) ||
 			InOther.BindingSourceMode == ENiagaraBindingSource::ExplicitParticles)
 		{
-			ensure(!InOther.DataSetVariable.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespace));
-			TempVar.SetName(*(FNiagaraConstants::ParticleAttributeNamespace.ToString() + TEXT(".") + InOther.DataSetVariable.GetName().ToString()));
+			ensure(!InOther.DataSetVariable.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString));
+			TempVar.SetNamespacedName(FNiagaraConstants::ParticleAttributeNamespaceString, InOther.DataSetVariable.GetName());
 		}
 
 		SetValue(TempVar.GetName(), nullptr, InSourceMode);
@@ -684,7 +634,7 @@ bool FNiagaraVariableAttributeBinding::RenameVariableIfMatching(const FNiagaraVa
 
 	// Now we need to deal with any aliased emitter namespaces for the match. If so resolve the aliases then try the match.
 	FNiagaraVariable OldVarAliased = OldVariable;
-	if (OldVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespace))
+	if (OldVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString))
 	{
 		// First, resolve any aliases
 		OldVarAliased = FNiagaraUtilities::ResolveAliases(OldVariable, FNiagaraAliasContext()
@@ -708,7 +658,7 @@ bool FNiagaraVariableAttributeBinding::Matches(const FNiagaraVariableBase& OldVa
 
 	// Now we need to deal with any aliased emitter namespaces for the match. If so resolve the aliases then try the match.
 	FNiagaraVariable OldVarAliased = OldVariable;
-	if (InEmitter && OldVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespace))
+	if (InEmitter && OldVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString))
 	{
 		// First, resolve any aliases
 		OldVarAliased = FNiagaraUtilities::ResolveAliases(OldVariable, FNiagaraAliasContext()
@@ -723,7 +673,7 @@ bool FNiagaraVariableAttributeBinding::Matches(const FNiagaraVariableBase& OldVa
 
 void FNiagaraVariableAttributeBinding::CacheValues(const UNiagaraEmitter* InEmitter, ENiagaraRendererSourceDataMode InSourceMode)
 {
-	// Some older values may have had the root with the emitter unqiue name as the namespace, fix this up
+	// Some older values may have had the root with the emitter unique name as the namespace, fix this up
 	// to meet the new assumptions.
 	if (InEmitter && RootVariable.IsInNameSpace(InEmitter->GetUniqueEmitterName()))
 	{
@@ -749,17 +699,21 @@ void FNiagaraVariableAttributeBinding::CacheValues(const UNiagaraEmitter* InEmit
 	}
 
 	// If this is one of the possible namespaces that is implicitly defined, go ahead and expand the full namespace. RootVariable should be non-namespaced at this point.
-	if ((InSourceMode == ENiagaraRendererSourceDataMode::Emitter && BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource) ||
+	if (DataSetVariable.GetName().IsNone())
+	{
+		ParamMapVariable.SetName(NAME_None);
+	}
+	else if ((InSourceMode == ENiagaraRendererSourceDataMode::Emitter && BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource) ||
 		BindingSourceMode == ENiagaraBindingSource::ExplicitEmitter)
 	{
-		ensure(!DataSetVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespace));
-		ParamMapVariable.SetName(*(FNiagaraConstants::EmitterNamespace.ToString() + TEXT(".") + DataSetVariable.GetName().ToString()));
+		ensure(!DataSetVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString));
+		ParamMapVariable.SetNamespacedName(FNiagaraConstants::EmitterNamespaceString, DataSetVariable.GetName());
 	}
 	else if ((InSourceMode == ENiagaraRendererSourceDataMode::Particles && BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource) ||
 		BindingSourceMode == ENiagaraBindingSource::ExplicitParticles)
 	{
-		ensure(!DataSetVariable.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespace));
-		ParamMapVariable.SetName(*(FNiagaraConstants::ParticleAttributeNamespace.ToString() + TEXT(".") + DataSetVariable.GetName().ToString()));
+		ensure(!DataSetVariable.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString));
+		ParamMapVariable.SetNamespacedName(FNiagaraConstants::ParticleAttributeNamespaceString, DataSetVariable.GetName());
 	}
 
 #if WITH_EDITORONLY_DATA
@@ -771,21 +725,35 @@ void FNiagaraVariableAttributeBinding::CacheValues(const UNiagaraEmitter* InEmit
 	{
 		if (BindingSourceMode == ENiagaraBindingSource::ExplicitEmitter || (InSourceMode == ENiagaraRendererSourceDataMode::Emitter && BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource))
 		{
-			// Replace  "Emitter" namespace with unaliased emitter namespace 
+			// Replace  "Emitter" namespace with unaliased emitter namespace
 			FNiagaraAliasContext ResolveAliasesContext(FNiagaraAliasContext::ERapidIterationParameterMode::EmitterOrParticleScript);
 			ResolveAliasesContext.ChangeEmitterToEmitterName(InEmitter->GetUniqueEmitterName());
 			ParamMapVariable = FNiagaraUtilities::ResolveAliases(ParamMapVariable,  ResolveAliasesContext);
 			DataSetVariable = FNiagaraUtilities::ResolveAliases(DataSetVariable, ResolveAliasesContext);
 		}
 
+		FNiagaraTypeDefinition BoundVarType = ParamMapVariable.GetType();
 		if (BindingSourceMode == ENiagaraBindingSource::ExplicitParticles || (InSourceMode == ENiagaraRendererSourceDataMode::Particles && BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource))
-			bBindingExistsOnSource = InEmitter->CanObtainParticleAttribute(DataSetVariable);
+		{
+			bBindingExistsOnSource = InEmitter->CanObtainParticleAttribute(DataSetVariable, BoundVarType);
+		}
 		else if (BindingSourceMode == ENiagaraBindingSource::ExplicitEmitter || (InSourceMode == ENiagaraRendererSourceDataMode::Emitter && BindingSourceMode == ENiagaraBindingSource::ImplicitFromSource))
-			bBindingExistsOnSource = InEmitter->CanObtainEmitterAttribute(ParamMapVariable);
+		{
+			bBindingExistsOnSource = InEmitter->CanObtainEmitterAttribute(ParamMapVariable, BoundVarType);
+		}
 		else if (BindingSourceMode == ENiagaraBindingSource::ExplicitSystem)
-			bBindingExistsOnSource = InEmitter->CanObtainSystemAttribute(ParamMapVariable);
+		{
+			bBindingExistsOnSource = InEmitter->CanObtainSystemAttribute(ParamMapVariable, BoundVarType);
+		}
 		else if (BindingSourceMode == ENiagaraBindingSource::ExplicitUser)
+		{
 			bBindingExistsOnSource = InEmitter->CanObtainUserVariable(ParamMapVariable);
+		}
+
+		if (bBindingExistsOnSource && BoundVarType != ParamMapVariable.GetType())
+		{
+			ParamMapVariable.SetType(BoundVarType);
+		}
 	}
 
 }
@@ -848,7 +816,7 @@ bool FNiagaraMaterialAttributeBinding::Matches(const FNiagaraVariableBase& OldVa
 	return false;
 }
 
-void FNiagaraMaterialAttributeBinding::CacheValues(const UNiagaraEmitter* InEmitter) 
+void FNiagaraMaterialAttributeBinding::CacheValues(const UNiagaraEmitter* InEmitter)
 {
 	if (InEmitter != nullptr)
 	{
@@ -890,6 +858,11 @@ bool FNiagaraUtilities::AllowGPUSorting(EShaderPlatform ShaderPlatform)
 bool FNiagaraUtilities::AllowGPUCulling(EShaderPlatform ShaderPlatform)
 {
 	return GNiagaraGPUCulling && AllowGPUSorting(ShaderPlatform) && AllowComputeShaders(ShaderPlatform);
+}
+
+bool FNiagaraUtilities::AreBufferSRVsAlwaysCreated(EShaderPlatform ShaderPlatform)
+{
+	return RHISupportsManualVertexFetch(ShaderPlatform) || IsGPUSkinCacheAvailable(ShaderPlatform);
 }
 
 ENiagaraCompileUsageStaticSwitch FNiagaraUtilities::ConvertScriptUsageToStaticSwitchUsage(ENiagaraScriptUsage ScriptUsage)
@@ -1017,6 +990,13 @@ void FNiagaraUtilities::CollectScriptDataInterfaceParameters(const UObject& Owne
 	}
 }
 
+bool FNiagaraScriptDataInterfaceInfo::IsUserDataInterface() const
+{
+	TStringBuilder<128> NameBuilder;
+	Name.ToString(NameBuilder);
+	return FCString::Strnicmp(NameBuilder.ToString(), TEXT("user."), 5) == 0;
+}
+
 bool FNiagaraScriptDataInterfaceCompileInfo::CanExecuteOnTarget(ENiagaraSimTarget SimTarget) const
 {
 	// Note that this can be called on non-game threads. We ensure that the data interface CDO object is already in existence at application init time.
@@ -1142,23 +1122,16 @@ FString FNiagaraUtilities::SanitizeNameForObjectsAndPackages(const FString& InNa
 	return SanitizedName;
 }
 
-const FString FNiagaraAliasContext::EmitterNamespaceString = TEXT("Emitter");
-const FString FNiagaraAliasContext::ModuleNamespaceString = TEXT("Module");
-const FString FNiagaraAliasContext::StackContextNamespaceString = TEXT("StackContext");
-const FString FNiagaraAliasContext::RapidIterationParametersNamespaceString = TEXT("Constants");
-const FString FNiagaraAliasContext::EngineNamespaceString = TEXT("Engine");
-const FString FNiagaraAliasContext::AssignmentNodePrefix = TRANSLATOR_SET_VARIABLES_STR;
-
 FNiagaraAliasContext& FNiagaraAliasContext::ChangeEmitterToEmitterName(const FString& InEmitterName)
 {
-	EmitterMapping = TPair<FString, FString>(EmitterNamespaceString, InEmitterName);
+	EmitterMapping = TPair<FString, FString>(FNiagaraConstants::EmitterNamespaceString, InEmitterName);
 	EmitterName = InEmitterName;
 	return *this;
 }
 
 FNiagaraAliasContext& FNiagaraAliasContext::ChangeEmitterNameToEmitter(const FString& InEmitterName)
 {
-	EmitterMapping = TPair<FString, FString>(InEmitterName, EmitterNamespaceString);
+	EmitterMapping = TPair<FString, FString>(InEmitterName, FNiagaraConstants::EmitterNamespaceString);
 	EmitterName = InEmitterName;
 	return *this;
 }
@@ -1172,14 +1145,14 @@ FNiagaraAliasContext& FNiagaraAliasContext::ChangeEmitterName(const FString& InO
 
 FNiagaraAliasContext& FNiagaraAliasContext::ChangeModuleToModuleName(const FString& InModuleName)
 {
-	ModuleMapping = TPair<FString, FString>(ModuleNamespaceString, InModuleName);
+	ModuleMapping = TPair<FString, FString>(FNiagaraConstants::ModuleNamespaceString, InModuleName);
 	ModuleName = InModuleName;
 	return *this;
 }
 
 FNiagaraAliasContext& FNiagaraAliasContext::ChangeModuleNameToModule(const FString& InModuleName)
 {
-	ModuleMapping = TPair<FString, FString>(InModuleName, ModuleNamespaceString);
+	ModuleMapping = TPair<FString, FString>(InModuleName, FNiagaraConstants::ModuleNamespaceString);
 	ModuleName = InModuleName;
 	return *this;
 }
@@ -1193,7 +1166,7 @@ FNiagaraAliasContext& FNiagaraAliasContext::ChangeModuleName(const FString& InOl
 
 FNiagaraAliasContext& FNiagaraAliasContext::ChangeStackContext(const FString& InStackContextName)
 {
-	StackContextMapping = TPair<FString, FString>(StackContextNamespaceString, InStackContextName);
+	StackContextMapping = TPair<FString, FString>(FNiagaraConstants::StackContextNamespaceString, InStackContextName);
 	StackContextName = InStackContextName;
 	return *this;
 }
@@ -1220,7 +1193,7 @@ void AliasRapidIterationConstant(const FNiagaraAliasContext& InContext, TArray<F
 			ModuleNameIndex = 2;
 		}
 
-		if (ensureMsgf(InOutSplitName.Num() >= MinParts, TEXT("Can not resolve malformed rapid iteration parameter")))
+		if (ensureAlwaysMsgf(InOutSplitName.Num() >= MinParts, TEXT("Can not resolve malformed rapid iteration parameter '%s' we expect %d parts"), *FString::Join(InOutSplitName, TEXT(".")), MinParts))
 		{
 			const TOptional<TPair<FString, FString>>& EmitterMapping = InContext.GetEmitterMapping();
 			const TOptional<TPair<FString, FString>>& ModuleMapping = InContext.GetModuleMapping();
@@ -1235,7 +1208,7 @@ void AliasRapidIterationConstant(const FNiagaraAliasContext& InContext, TArray<F
 				InOutSplitName[ModuleNameIndex] = ModuleMapping.GetValue().Value;
 			}
 
-			OutAssignmentNamespaceIndex = InOutSplitName[ModuleNameIndex].StartsWith(FNiagaraAliasContext::AssignmentNodePrefix) ? ModuleNameIndex + 1 : INDEX_NONE;
+			OutAssignmentNamespaceIndex = InOutSplitName[ModuleNameIndex].StartsWith(FNiagaraConstants::AssignmentNodePrefixString) ? ModuleNameIndex + 1 : INDEX_NONE;
 		}
 	}
 }
@@ -1287,7 +1260,7 @@ void AliasStandardParameter(const FNiagaraAliasContext& InContext, TArray<FStrin
 		InOutSplitName[1] = ModuleMapping.GetValue().Value;
 	}
 
-	OutAssignmentNamespaceIndex = InOutSplitName[0].StartsWith(FNiagaraAliasContext::AssignmentNodePrefix) ? 1 : INDEX_NONE;
+	OutAssignmentNamespaceIndex = InOutSplitName[0].StartsWith(FNiagaraConstants::AssignmentNodePrefixString) ? 1 : INDEX_NONE;
 }
 
 void AliasAssignmentInputNamespace(const FNiagaraAliasContext& InContext, int32& InAssignmentNamespaceIndex, TArray<FStringView, TInlineAllocator<16>>& InOutSplitName)
@@ -1321,11 +1294,11 @@ FNiagaraVariable FNiagaraUtilities::ResolveAliases(const FNiagaraVariable& InVar
 	UE::String::ParseTokens(VarName, TEXT('.'), [&SplitName](FStringView Token) { SplitName.Add(Token); });
 
 	int32 AssignmentNamespaceIndex = INDEX_NONE;
-	if (SplitName[0].Equals(FNiagaraAliasContext::RapidIterationParametersNamespaceString))
+	if (SplitName[0].Equals(FNiagaraConstants::RapidIterationParametersNamespaceString))
 	{
 		AliasRapidIterationConstant(InContext, SplitName, AssignmentNamespaceIndex);
 	}
-	else if (SplitName[0].Equals(FNiagaraAliasContext::EngineNamespaceString))
+	else if (SplitName[0].Equals(FNiagaraConstants::EngineNamespaceString))
 	{
 		AliasEngineSuppliedEmitterValue(InContext, SplitName);
 	}
@@ -1361,7 +1334,10 @@ void FNiagaraUtilities::PrepareRapidIterationParameters(const TArray<UNiagaraScr
 		checkf(ScriptToEmitterMap.Find(Script) != nullptr, TEXT("Script to emitter name map must have an entry for each script to be processed."));
 		if (const UNiagaraEmitter* const* Emitter = ScriptToEmitterMap.Find(Script))
 		{
-			Script->GetLatestSource()->CleanUpOldAndInitializeNewRapidIterationParameters(*Emitter, Script->GetUsage(), Script->GetUsageId(), ParameterStoreToPrepare);
+			if (Script->GetLatestSource())
+			{
+				Script->GetLatestSource()->CleanUpOldAndInitializeNewRapidIterationParameters(*Emitter, Script->GetUsage(), Script->GetUsageId(), ParameterStoreToPrepare);
+			}
 		}
 	}
 
@@ -1470,6 +1446,7 @@ bool FVMExternalFunctionBindingInfo::Serialize(FArchive& Ar)
 
 const FString FNiagaraCompileOptions::CpuScriptDefine = TEXT("CPUSim");
 const FString FNiagaraCompileOptions::GpuScriptDefine = TEXT("GPUComputeSim");
+const FString FNiagaraCompileOptions::EventSpawnDefine = TEXT("EventSpawn");
 
 FSynchronizeWithParameterDefinitionsArgs::FSynchronizeWithParameterDefinitionsArgs()
 	: SpecificDefinitionsUniqueIds(TArray<FGuid>())
@@ -1479,4 +1456,31 @@ FSynchronizeWithParameterDefinitionsArgs::FSynchronizeWithParameterDefinitionsAr
 	, bSubscribeAllNameMatchParameters(false)
 	, AdditionalOldToNewNames()
 {
+}
+
+
+ENCPoolMethod ToNiagaraPooling(EPSCPoolMethod PoolingMethod)
+{
+	if (PoolingMethod == EPSCPoolMethod::AutoRelease)
+	{
+		return ENCPoolMethod::AutoRelease;
+	}
+	if (PoolingMethod == EPSCPoolMethod::ManualRelease)
+	{
+		return ENCPoolMethod::ManualRelease;
+	}
+	return ENCPoolMethod::None;
+}
+
+EPSCPoolMethod ToPSCPoolMethod(ENCPoolMethod PoolingMethod)
+{
+	if (PoolingMethod == ENCPoolMethod::AutoRelease)
+	{
+		return EPSCPoolMethod::AutoRelease;
+	}
+	if (PoolingMethod == ENCPoolMethod::ManualRelease)
+	{
+		return EPSCPoolMethod::ManualRelease;
+	}
+	return EPSCPoolMethod::None;
 }

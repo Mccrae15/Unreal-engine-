@@ -3,7 +3,7 @@
 using System;
 using System.Collections.Generic;
 using AutomationTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
 
 namespace Gauntlet

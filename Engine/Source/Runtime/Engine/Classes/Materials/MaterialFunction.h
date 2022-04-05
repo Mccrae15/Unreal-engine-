@@ -27,7 +27,7 @@ class UMaterialFunction : public UMaterialFunctionInterface
 #if WITH_EDITORONLY_DATA
 	/** Used in the material editor, points to the function asset being edited, which this function is just a preview for. */
 	UPROPERTY(transient)
-	class UMaterialFunction* ParentFunction;
+	TObjectPtr<class UMaterialFunction> ParentFunction;
 
 #endif // WITH_EDITORONLY_DATA
 	/** Description of the function which will be displayed as a tooltip wherever the function is used. */
@@ -37,7 +37,7 @@ class UMaterialFunction : public UMaterialFunctionInterface
 #if WITH_EDITORONLY_DATA
 	/** Array of material expressions, excluding Comments.  Used by the material editor. */
 	UPROPERTY()
-	TArray<UMaterialExpression*> FunctionExpressions;
+	TArray<TObjectPtr<UMaterialExpression>> FunctionExpressions;
 #endif // WITH_EDITORONLY_DATA
 
 	/** Whether to list this function in the material function library, which is a window in the material editor that lists categorized functions. */
@@ -67,14 +67,17 @@ class UMaterialFunction : public UMaterialFunctionInterface
 #if WITH_EDITORONLY_DATA
 	/** Array of comments associated with this material; viewed in the material editor. */
 	UPROPERTY()
-	TArray<class UMaterialExpressionComment*> FunctionEditorComments;
+	TArray<TObjectPtr<class UMaterialExpressionComment>> FunctionEditorComments;
 
 	UPROPERTY(transient)
-	UMaterial* PreviewMaterial;
+	TObjectPtr<UMaterial> PreviewMaterial;
 
 	UPROPERTY()
-	TArray<class UMaterialExpressionMaterialFunctionCall*> DependentFunctionExpressionCandidates;
+	TArray<TObjectPtr<class UMaterialExpressionMaterialFunctionCall>> DependentFunctionExpressionCandidates;
 
+	/** Determines the blend mode when previewing a material function. */
+	UPROPERTY(EditAnywhere, Category = Preview, AssetRegistrySearchable)
+	TEnumAsByte<enum EBlendMode> PreviewBlendMode = BLEND_Opaque;
 private:
 	/** Transient flag used to track re-entrance in recursive functions like IsDependent. */
 	UPROPERTY(transient)
@@ -101,6 +104,8 @@ public:
 
 	/** Get the inputs and outputs that this function exposes, for a function call expression to use. */
 	virtual void GetInputsAndOutputs(TArray<struct FFunctionExpressionInput>& OutInputs, TArray<struct FFunctionExpressionOutput>& OutOutputs) const override;
+
+	virtual void ForceRecompileForRendering(FMaterialUpdateContext& UpdateContext, UMaterial* InPreviewMaterial) override;
 #endif
 
 	virtual bool ValidateFunctionUsage(class FMaterialCompiler* Compiler, const FFunctionExpressionOutput& Output) override;
@@ -147,7 +152,7 @@ public:
 	virtual UMaterialFunctionInterface* GetBaseFunction() override { return this; }
 	virtual const UMaterialFunctionInterface* GetBaseFunction() const override { return this; }
 #if WITH_EDITORONLY_DATA
-	virtual const TArray<UMaterialExpression*>* GetFunctionExpressions() const override { return &FunctionExpressions; }
+	virtual const TArray<TObjectPtr<UMaterialExpression>>* GetFunctionExpressions() const override { return &FunctionExpressions; }
 #endif
 	virtual const FString* GetDescription() const override { return &Description; }
 
@@ -159,6 +164,7 @@ public:
 
 
 #if WITH_EDITOR
+	ENGINE_API bool SetParameterValueEditorOnly(const FName& ParameterName, const FMaterialParameterMetadata& Meta);
 	ENGINE_API bool SetVectorParameterValueEditorOnly(FName ParameterName, FLinearColor InValue);
 	ENGINE_API bool SetScalarParameterValueEditorOnly(FName ParameterName, float InValue);
 	ENGINE_API bool SetTextureParameterValueEditorOnly(FName ParameterName, class UTexture* InValue);

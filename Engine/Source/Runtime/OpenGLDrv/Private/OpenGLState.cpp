@@ -14,6 +14,11 @@ GLint GMaxOpenGLTextureFilterAnisotropic = 1;
 // Hash of sampler states, used for caching sampler states and texture objects
 static TMap<FSamplerStateInitializerRHI, FOpenGLSamplerState*> GSamplerStateCache;
 
+namespace OpenGLConsoleVariables
+{
+	extern int32 GOpenGLForceBilinear;
+};
+
 void EmptyGLSamplerStateCache()
 {
 	for (auto Iter = GSamplerStateCache.CreateIterator(); Iter; ++Iter )
@@ -217,7 +222,7 @@ static EBlendFactor TranslateBlendFactor(GLenum BlendFactor)
 
 FOpenGLSamplerState::~FOpenGLSamplerState()
 {
-	CreationFence.WaitFence();
+	CreationFence.WaitFenceRenderThreadOnly();
 	VERIFY_GL_SCOPE();
 	FOpenGL::DeleteSamplers(1,&Resource);
 }
@@ -285,6 +290,11 @@ FSamplerStateRHIRef FOpenGLDynamicRHI::RHICreateSamplerState(const FSamplerState
 	else
 	{
 		SamplerState->Data.CompareMode = GL_NONE;
+	}
+
+	if (OpenGLConsoleVariables::GOpenGLForceBilinear && (SamplerState->Data.MinFilter == GL_LINEAR_MIPMAP_LINEAR))
+	{
+		SamplerState->Data.MinFilter = GL_LINEAR_MIPMAP_NEAREST;
 	}
 
 	SamplerState->CreationFence.Reset();
@@ -469,18 +479,9 @@ void FOpenGLRHIState::InitializeResources(int32 NumCombinedTextures, int32 NumCo
 	ShaderParameters[CrossCompiler::SHADER_STAGE_VERTEX].InitializeResources(FOpenGL::GetMaxVertexUniformComponents() * 4 * sizeof(float));
 	ShaderParameters[CrossCompiler::SHADER_STAGE_PIXEL].InitializeResources(FOpenGL::GetMaxPixelUniformComponents() * 4 * sizeof(float));
 	ShaderParameters[CrossCompiler::SHADER_STAGE_GEOMETRY].InitializeResources(FOpenGL::GetMaxGeometryUniformComponents() * 4 * sizeof(float));
-		
-	if ( FOpenGL::SupportsTessellation() )
-	{
-		ShaderParameters[CrossCompiler::SHADER_STAGE_HULL].InitializeResources(FOpenGL::GetMaxHullUniformComponents() * 4 * sizeof(float));
-		ShaderParameters[CrossCompiler::SHADER_STAGE_DOMAIN].InitializeResources(FOpenGL::GetMaxDomainUniformComponents() * 4 * sizeof(float));
-	}
 
 	LinkedProgramAndDirtyFlag = nullptr;
-	if ( FOpenGL::SupportsComputeShaders() )
-	{
-		ShaderParameters[CrossCompiler::SHADER_STAGE_COMPUTE].InitializeResources(FOpenGL::GetMaxComputeUniformComponents() * 4 * sizeof(float));
-	}
+	ShaderParameters[CrossCompiler::SHADER_STAGE_COMPUTE].InitializeResources(FOpenGL::GetMaxComputeUniformComponents() * 4 * sizeof(float));
 
 	for (int32 Frequency = 0; Frequency < SF_NumStandardFrequencies; ++Frequency)
 	{

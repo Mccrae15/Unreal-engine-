@@ -222,12 +222,12 @@ namespace ChaosTest
 	};
 
 
-	auto BuildBoxes(TUniquePtr<TBox<FReal,3>>& Box, FReal BoxSize = 100, const FVec3& BoxGridDimensions = FVec3(10,10,10))
+	auto BuildBoxes(TUniquePtr<TBox<FReal,3>>& Box, FReal BoxSize = 100, const FVec3& BoxGridDimensions = FVec3(10,10,10), const FVec3 Offset = FVec3(0, 0, 0))
 	{
 		Box = MakeUnique<TBox<FReal, 3>>(FVec3(0, 0, 0), FVec3(BoxSize, BoxSize, BoxSize));
 		auto Boxes = MakeUnique<FGeometryParticles>();
-		const int32 NumRows = BoxGridDimensions.X;
-		const int32 NumCols = BoxGridDimensions.Y;
+		const int32 NumCols = BoxGridDimensions.X;
+		const int32 NumRows = BoxGridDimensions.Y;
 		const int32 NumHeight = BoxGridDimensions.Z;
 
 		Boxes->AddParticles(NumRows * NumCols * NumHeight);
@@ -239,12 +239,9 @@ namespace ChaosTest
 			{
 				for (int32 Col = 0; Col < NumCols; ++Col)
 				{
-					Boxes->SetGeometry(Idx, MakeSerializable(Box));
-					Boxes->X(Idx) = FVec3(Col * 100, Row * 100, Height * 100);
+					Boxes->X(Idx) = FVec3(Col * 100, Row * 100, Height * 100) + Offset;
 					Boxes->R(Idx) = FRotation3::Identity;
-					Boxes->LocalBounds(Idx) = Box->BoundingBox();
-					Boxes->HasBounds(Idx) = true;
-					Boxes->SetWorldSpaceInflatedBounds(Idx, Box->BoundingBox().TransformedAABB(FRigidTransform3(Boxes->X(Idx), Boxes->R(Idx))));
+					Boxes->SetGeometry(Idx, MakeSerializable(Box));
 					++Idx;
 				}
 			}
@@ -300,6 +297,10 @@ namespace ChaosTest
 				Boxes->X(MoveIdx) -= FVec3(1000, 0, 0);
 				NewBounds = Boxes->Geometry(MoveIdx)->template GetObject<TBox<FReal, 3>>()->BoundingBox().TransformedAABB(FRigidTransform3(Boxes->X(MoveIdx), Boxes->R(MoveIdx)));
 				Spatial2->UpdateElementIn(MoveIdx, NewBounds, true, SpatialIdx);
+
+				FVisitor Visitor4(FVec3(10, 0, 0), FVec3(0, 1, 0), 0, *Boxes);
+				Spatial2->Raycast(Visitor4.Start, Visitor4.Dir, 1000, Visitor4);
+				EXPECT_EQ(Visitor4.Instances.Num(), 9);
 			}
 
 			//move other instance into view
@@ -349,9 +350,9 @@ namespace ChaosTest
 				//create a new box
 				const int32 NewIdx = Boxes->Size();
 				Boxes->AddParticles(1);
-				Boxes->SetGeometry(NewIdx, MakeSerializable(Box));
 				Boxes->X(NewIdx) = FVec3(-20, 0, 0);
 				Boxes->R(NewIdx) = FRotation3::Identity;
+				Boxes->SetGeometry(NewIdx, MakeSerializable(Box));
 				NewBounds = Boxes->Geometry(NewIdx)->template GetObject<TBox<FReal, 3>>()->BoundingBox().TransformedAABB(FRigidTransform3(Boxes->X(NewIdx), Boxes->R(NewIdx)));
 				Spatial2->UpdateElementIn(NewIdx, NewBounds, true, SpatialIdx);
 				FVisitor Visitor6(FVec3(-20, 0, 0), FVec3(0, 1, 0), 0, *Boxes);
@@ -443,7 +444,8 @@ namespace ChaosTest
 	void GridBPTest2()
 	{
 		TUniquePtr<TBox<FReal, 3>> Box = MakeUnique<TBox<FReal, 3>>(FVec3(0, 0, 0), FVec3(100, 100, 100));
-		FPBDRigidsSOAs SOAs;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs SOAs(UniqueIndices);
 		const int32 NumRows = 10;
 		const int32 NumCols = 10;
 		const int32 NumHeight = 10;
@@ -457,12 +459,9 @@ namespace ChaosTest
 			{
 				for (int32 Col = 0; Col < NumCols; ++Col)
 				{
-					Boxes.SetGeometry(Idx, MakeSerializable(Box));
 					Boxes.X(Idx) = FVec3(Col * 100, Row * 100, Height * 100);
 					Boxes.R(Idx) = FRotation3::Identity;
-					Boxes.LocalBounds(Idx) = Box->BoundingBox();
-					Boxes.HasBounds(Idx) = true;
-					Boxes.SetWorldSpaceInflatedBounds(Idx, Box->BoundingBox().TransformedAABB(FRigidTransform3(Boxes.X(Idx), Boxes.R(Idx))));
+					Boxes.SetGeometry(Idx, MakeSerializable(Box));
 					++Idx;
 				}
 			}
@@ -554,7 +553,252 @@ namespace ChaosTest
 			EXPECT_EQ(Spatial.NumDirtyElements(),Boxes->Size() - 1);
 		}
 	}
+
+
+	void AABBTreeTestDynamic()
+	{
+		using TreeType = TAABBTree<int32, TAABBTreeLeafArray<int32>, true>;
+		{
+			TUniquePtr<TBox<FReal, 3>> Box;
+			auto Boxes = BuildBoxes(Box, 100, FVec3(10,10,10));
+			TreeType Spatial(MakeParticleView(Boxes.Get()), TreeType::DefaultMaxChildrenInLeaf, TreeType::DefaultMaxTreeDepth, TreeType::DefaultMaxPayloadBounds, TreeType::DefaultMaxNumToProcess, true);
+			EXPECT_EQ(Spatial.NumDirtyElements(), 0);
+			SpatialTestHelper(Spatial, Boxes.Get(), Box);
+			EXPECT_EQ(Spatial.NumDirtyElements(), 0);
+		}
+		
+	}
+
+	void AABBTreeDirtyGridTest()
+	{
+		using TreeType = TAABBTree<int32, TBoundingVolume<int32>>;
+
+		// Save CVARS
+		int32 DirtyElementGridCellSize = FAABBTreeDirtyGridCVars::DirtyElementGridCellSize;
+		int32 DirtyElementMaxGridCellQueryCount = FAABBTreeDirtyGridCVars::DirtyElementMaxGridCellQueryCount;
+		int32 DirtyElementMaxPhysicalSizeInCells = FAABBTreeDirtyGridCVars::DirtyElementMaxPhysicalSizeInCells;
+		int32 DirtyElementMaxCellCapacity = FAABBTreeDirtyGridCVars::DirtyElementMaxCellCapacity;
+
+		// Set CVARS to known values
+		FAABBTreeDirtyGridCVars::DirtyElementGridCellSize = 100;
+		FAABBTreeDirtyGridCVars::DirtyElementMaxGridCellQueryCount = 10000;
+		FAABBTreeDirtyGridCVars::DirtyElementMaxPhysicalSizeInCells = 20;
+		FAABBTreeDirtyGridCVars::DirtyElementMaxCellCapacity = 20;
+
+
+		// Do the standard tests
+		{
+			TUniquePtr<TBox<FReal, 3>> Box;
+			auto Boxes = BuildBoxes(Box);
+			TreeType Spatial{};
+
+			int32 Idx;
+			for (Idx = 0; Idx < (int32)Boxes->Size(); ++Idx)
+			{
+				Spatial.UpdateElement(Idx, Boxes->WorldSpaceInflatedBounds(Idx), true);
+			}
+			EXPECT_EQ(Spatial.NumDirtyElements(), Boxes->Size());
+
+			SpatialTestHelper(Spatial, Boxes.Get(), Box);
+		}
+
+
+		// Repeat the standard tests with low cell capacity and different cell sizes
+		{
+			// Set CVARS to known values
+			FAABBTreeDirtyGridCVars::DirtyElementGridCellSize = 44;
+			FAABBTreeDirtyGridCVars::DirtyElementMaxCellCapacity = 2;
+
+			TUniquePtr<TBox<FReal, 3>> Box;
+			auto Boxes = BuildBoxes(Box);
+			TreeType Spatial{};
+
+			int32 Idx;
+			for (Idx = 0; Idx < (int32)Boxes->Size(); ++Idx)
+			{
+				Spatial.UpdateElement(Idx, Boxes->WorldSpaceInflatedBounds(Idx), true);
+			}
+			EXPECT_EQ(Spatial.NumDirtyElements(), Boxes->Size());
+
+			SpatialTestHelper(Spatial, Boxes.Get(), Box);
+		}
+
+
+		// Make sure we get the same results, with and without the grid for sweeps and raycasts
+		{
+			FAABBTreeDirtyGridCVars::DirtyElementMaxCellCapacity = 7;
+			TUniquePtr<TBox<FReal, 3>> Box;
+			FVec3 LargeOffset(10000000, 10000000, 10000000); // Test for floating point precision errors at large world offsets
+			auto Boxes = BuildBoxes(Box, 100, FVec3(40, 40, 1), FVec3(-2000, -2000, -50) + LargeOffset);
+
+			for (float Angle = 0.0; Angle < 2 * PI; Angle += (10.0f / 360.0f) * 2.0f * PI)
+			{
+
+				FVec3 Direction{ FMath::Cos(Angle), FMath::Sin(Angle), 0 };
+				// With the grid
+				FVisitor VisitorGrid(FVec3(53, 27, 0) + LargeOffset, Direction, 0, *Boxes);
+				VisitorGrid.HalfExtents = FVec3(102, 20, 2);
+				{
+					FAABBTreeDirtyGridCVars::DirtyElementGridCellSize = 100;
+
+					TreeType Spatial{};
+
+					int32 Idx;
+					for (Idx = 0; Idx < (int32)Boxes->Size(); ++Idx)
+					{
+						Spatial.UpdateElement(Idx, Boxes->WorldSpaceInflatedBounds(Idx), true);
+					}
+					EXPECT_EQ(Spatial.NumDirtyElements(), Boxes->Size());
+
+					Spatial.Raycast(VisitorGrid.Start, VisitorGrid.Dir, 1900, VisitorGrid);
+					Spatial.Sweep(VisitorGrid.Start, VisitorGrid.Dir, 1800, VisitorGrid.HalfExtents, VisitorGrid);
+				}
+
+				// Without the grid
+				FVisitor VisitorNoGrid(FVec3(53, 27, 0) + LargeOffset, Direction, 0, *Boxes);
+				VisitorNoGrid.HalfExtents = FVec3(102, 20, 2);
+				{
+					FAABBTreeDirtyGridCVars::DirtyElementGridCellSize = 0;
+					TreeType Spatial{};
+
+					int32 Idx;
+					for (Idx = 0; Idx < (int32)Boxes->Size(); ++Idx)
+					{
+						Spatial.UpdateElement(Idx, Boxes->WorldSpaceInflatedBounds(Idx), true);
+					}
+					EXPECT_EQ(Spatial.NumDirtyElements(), Boxes->Size());
+
+					Spatial.Raycast(VisitorNoGrid.Start, VisitorNoGrid.Dir, 1900, VisitorNoGrid);
+					Spatial.Sweep(VisitorNoGrid.Start, VisitorNoGrid.Dir, 1800, VisitorNoGrid.HalfExtents, VisitorNoGrid);
+				}
+				// These will be in the same order, but we can drop this requirement in the future
+				EXPECT_TRUE(VisitorNoGrid.Instances == VisitorGrid.Instances);  
+			}
+			
+		}
+
+		// Test a case that failed before (with an assert)
+		{
+			FAABBTreeDirtyGridCVars::DirtyElementGridCellSize = 1000;
+			FAABBTreeDirtyGridCVars::DirtyElementMaxCellCapacity = 7;
+			
+			TUniquePtr<TBox<FReal, 3>> Box;
+			auto Boxes = BuildBoxes(Box, 100, FVec3(1, 1, 1), FVec3(-3000, -1000, -50)); // Just one box
+			TreeType Spatial{};
+			Spatial.UpdateElement(0, Boxes->WorldSpaceInflatedBounds(0), true);
+
+			// Move the Box
+			Boxes = BuildBoxes(Box, 100, FVec3(1, 1, 1), FVec3(-4000, -1000, -50)); // Change position of box
+			Spatial.UpdateElement(0, Boxes->WorldSpaceInflatedBounds(0), true); // Check for no ensures
+
+			// Move the Box
+			Boxes = BuildBoxes(Box, 100, FVec3(1, 1, 1), FVec3(3000, 1000, -50)); // Change position of box
+			Spatial.UpdateElement(0, Boxes->WorldSpaceInflatedBounds(0), true);
+
+			Boxes = BuildBoxes(Box, 100, FVec3(1, 1, 1), FVec3(4000, 1000, -50)); // Change position of box
+			Spatial.UpdateElement(0, Boxes->WorldSpaceInflatedBounds(0), true); // Check for no ensures
+
+			// Move the Box
+			Boxes = BuildBoxes(Box, 100, FVec3(1, 1, 1), FVec3(-10000003000.0f, -1000, -50)); // Change position of box
+			Spatial.UpdateElement(0, Boxes->WorldSpaceInflatedBounds(0), true); // Check for no ensures
+
+			// Move the Box
+			Boxes = BuildBoxes(Box, 100, FVec3(1, 1, 1), FVec3(-10000004000.0f, -1000, -50)); // Change position of box
+			Spatial.UpdateElement(0, Boxes->WorldSpaceInflatedBounds(0), true); // Check for no ensures
+			
+		}
+		
+
+		// Restore CVARS
+		FAABBTreeDirtyGridCVars::DirtyElementGridCellSize = DirtyElementGridCellSize;
+		FAABBTreeDirtyGridCVars::DirtyElementMaxGridCellQueryCount = DirtyElementMaxGridCellQueryCount;
+		FAABBTreeDirtyGridCVars::DirtyElementMaxPhysicalSizeInCells = DirtyElementMaxPhysicalSizeInCells;
+		FAABBTreeDirtyGridCVars::DirtyElementMaxCellCapacity = DirtyElementMaxCellCapacity;
+	}
 	
+	void DoForSweepIntersectCellsImpTest()
+	{
+		{
+			int32 NumFuncCalled = 0;
+			int32  XArray[2];
+			int32  YArray[2];
+
+			DoForSweepIntersectCellsImp(1.4484817992026819, 1.4432470701435705, 1251.1886035677471, -1183.6311465697545, -866.67708504199993, -747.83750413730752, 1000.0, 0.001,
+				[&](auto X, auto Y) {
+					XArray[NumFuncCalled] = X;
+					YArray[NumFuncCalled] = Y;
+					++NumFuncCalled;
+
+				});
+
+			EXPECT_EQ(NumFuncCalled, 2);
+			EXPECT_EQ(XArray[0], 1000);
+			EXPECT_EQ(YArray[0], -2000);
+
+			EXPECT_EQ(XArray[1], 0);
+			EXPECT_EQ(YArray[1], -2000);
+		}
+
+		{
+			int32 NumFuncCalled = 0;
+			int32  XArray[2];
+			int32  YArray[2];
+
+			DoForSweepIntersectCellsImp(1.4484817992026819, 1.4432470701435705, 1251.1886035677471, -1183.6311465697545, 866.67708504199993, -747.83750413730752, 1000.0, 0.001,
+				[&](auto X, auto Y) {
+					XArray[NumFuncCalled] = X;
+					YArray[NumFuncCalled] = Y;
+					++NumFuncCalled;
+
+				});
+
+			EXPECT_EQ(NumFuncCalled, 2);
+			EXPECT_EQ(XArray[0], 1000);
+			EXPECT_EQ(YArray[0], -2000);
+
+			EXPECT_EQ(XArray[1], 2000);
+			EXPECT_EQ(YArray[1], -2000);
+		}
+
+		{
+			int32 NumFuncCalled = 0;
+			int32  XArray[3];
+			int32  YArray[3];
+
+			DoForSweepIntersectCellsImp(1.2928878353696973, 1.2928878353697257, -1013.1421764369597, 210.55865232178132, 712.84350045280678, -265.39563631071809, 1000.0, 0.001,
+				[&](auto X, auto Y) {
+					XArray[NumFuncCalled] = X;
+					YArray[NumFuncCalled] = Y;
+					++NumFuncCalled;
+
+				});
+
+			EXPECT_EQ(NumFuncCalled, 3);
+			EXPECT_EQ(XArray[0], -2000);
+			EXPECT_EQ(YArray[0], 0);
+
+			EXPECT_EQ(XArray[1], -1000);
+			EXPECT_EQ(YArray[1], 0);
+
+			EXPECT_EQ(XArray[2], -1000);
+			EXPECT_EQ(YArray[2], -1000);
+
+		}
+		{
+			int32 NumFuncCalled = 0;
+			DoForSweepIntersectCellsImp(4000, 4000, 0, 0, 7000 - 0.01, 3000 - 0.01, 1000.0, 0.001,
+				[&](auto X, auto Y) {
+					++NumFuncCalled;
+
+				});
+
+			// This was verified manually on a paper grid
+			EXPECT_EQ(NumFuncCalled, 153);
+
+		}
+
+	}
+
 
 	void AABBTreeTimesliceTest()
 	{
@@ -622,7 +866,7 @@ namespace ChaosTest
 			}
 
 			TSpatialAccelerationCollection<TreeType> AccelerationCollection;
-			AccelerationCollection.AddSubstructure(MoveTemp(Spatial), 0);
+			AccelerationCollection.AddSubstructure(MoveTemp(Spatial), 0, 0);
 			FSpatialAccelerationIdx SpatialIdx = { 0,0 };
 			SpatialTestHelper(AccelerationCollection, Boxes.Get(), Box, SpatialIdx);
 		}
@@ -645,8 +889,8 @@ namespace ChaosTest
 			}
 
 			TSpatialAccelerationCollection<TreeType, BVType> AccelerationCollection;
-			AccelerationCollection.AddSubstructure(MoveTemp(Spatial0), 0);
-			AccelerationCollection.AddSubstructure(MoveTemp(Spatial1), 1);
+			AccelerationCollection.AddSubstructure(MoveTemp(Spatial0), 0, 0);
+			AccelerationCollection.AddSubstructure(MoveTemp(Spatial1), 1, 0);
 
 			FSpatialAccelerationIdx SpatialIdx = { 0,0 };
 			SpatialTestHelper(AccelerationCollection, Boxes0.Get(), Box, SpatialIdx);
@@ -662,12 +906,38 @@ namespace ChaosTest
 			auto Spatial1 = MakeUnique<BVType>(MakeParticleView(Boxes1.Get()));
 
 			TSpatialAccelerationCollection<TreeType, BVType> AccelerationCollection;
-			AccelerationCollection.AddSubstructure(MoveTemp(Spatial0), 0);
-			AccelerationCollection.AddSubstructure(MoveTemp(Spatial1), 1);
+			AccelerationCollection.AddSubstructure(MoveTemp(Spatial0), 0, 0);
+			AccelerationCollection.AddSubstructure(MoveTemp(Spatial1), 1, 0);
 
 			FSpatialAccelerationIdx SpatialIdx = { 1,0 };
 			SpatialTestHelper(AccelerationCollection, Boxes1.Get(), Box, SpatialIdx);
 		}
+	}
+
+	// Verify we don't generate a NaN or invalid bounds if we build BoundingVolume with particles that have no bounds.
+	void BoundingVolumeNoBoundsTest()
+	{
+		TUniquePtr<TBox<FReal, 3>> Box;
+		Box = MakeUnique<TBox<FReal, 3>>(FVec3(0, 0, 0), FVec3(100));
+		auto Boxes = MakeUnique<FGeometryParticles>();
+
+		Boxes->AddParticles(1);
+
+		// Construct a particle and set HasBounds to false.
+		int32 Idx = 0;
+		Boxes->X(Idx) = FVec3(0);
+		Boxes->R(Idx) = FRotation3::Identity;
+		Boxes->SetGeometry(Idx, MakeSerializable(Box));
+
+		// Tell BV we have no bounds, this used to cause issues.
+		Boxes->HasBounds(Idx) = false;
+
+		// Make Bounding Volume with only particles that have no bounds.
+		auto Spatial1 = MakeUnique<TBoundingVolume<int32>>(MakeParticleView(Boxes.Get()));
+
+		EXPECT_EQ(Spatial1->GetBounds().Min().ContainsNaN(), false);
+		EXPECT_EQ(Spatial1->GetBounds().Max().ContainsNaN(), false);
+		EXPECT_EQ(Spatial1->GetBounds().Extents().ContainsNaN(), false);
 	}
 
 
@@ -682,7 +952,8 @@ namespace ChaosTest
 		const int32 ParticleCount = NumRows * NumCols * NumHeight;
 		const FReal BoxSize = 100;
 
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		TArray<FPBDRigidParticleHandle*> ParticleHandles = Particles.CreateDynamicParticles(ParticleCount);
 		for (auto& Handle : ParticleHandles)
 		{
@@ -709,19 +980,16 @@ namespace ChaosTest
 					FGeometryParticle* GTParticle = ParticleHandles[Idx]->GTGeometryParticle();
 					FPBDRigidParticleHandle* Handle = ParticleHandles[Idx];
 
-					Handle->SetGeometry(MakeSerializable(Box));
-					Handle->ShapesArray()[0]->SetQueryData(FilterData);
-					GTParticle->SetGeometry(Box);
-					GTParticle->ShapesArray()[0]->SetQueryData(FilterData);
 					Handle->SetX(FVec3(Col * BoxSize, Row * BoxSize, Height * BoxSize));
 					GTParticle->SetX(FVec3(Col * BoxSize, Row * BoxSize, Height * BoxSize));
 					Handle->SetR(FRotation3::Identity);
 					GTParticle->SetR(FRotation3::Identity);
+					Handle->SetGeometry(MakeSerializable(Box));
+					Handle->ShapesArray()[0]->SetQueryData(FilterData);
+					GTParticle->SetGeometry(Box);
+					GTParticle->ShapesArray()[0]->SetQueryData(FilterData);
 					Handle->SetUniqueIdx(FUniqueIdx(Idx));
 					GTParticle->SetUniqueIdx(FUniqueIdx(Idx));
-					Handle->SetLocalBounds(Box->BoundingBox());
-					Handle->SetHasBounds(true);
-					Handle->SetWorldSpaceInflatedBounds(Box->BoundingBox().TransformedAABB(FRigidTransform3(GTParticle->X(), GTParticle->R())));
 					++Idx;
 				}
 			}

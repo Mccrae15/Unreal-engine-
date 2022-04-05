@@ -36,17 +36,25 @@ void UMorphTarget::Serialize( FArchive& Ar )
 	}
 }
 
-
-void UMorphTarget::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
+void UMorphTarget::SerializeMemoryArchive(FMemoryArchive& Ar)
 {
-	Super::GetResourceSizeEx(CumulativeResourceSize);
-
-	for (const auto& LODModel : MorphLODModels)
+	int32 MorphLODModelNumber = 0;
+	if (Ar.IsLoading())
 	{
-		LODModel.GetResourceSizeEx(CumulativeResourceSize);
+		Ar << MorphLODModelNumber;
+		MorphLODModels.AddDefaulted(MorphLODModelNumber);
+	}
+	else
+	{
+		MorphLODModelNumber = MorphLODModels.Num();
+		Ar << MorphLODModelNumber;
+	}
+
+	for (int32 MorphIndex = 0; MorphIndex < MorphLODModelNumber; ++MorphIndex)
+	{
+		Ar << MorphLODModels[MorphIndex];
 	}
 }
-
 
 void UMorphTarget::PostLoad()
 {
@@ -89,9 +97,4 @@ void UMorphTarget::PostLoad()
 		}
 	}
 #endif //#if WITH_EDITOR
-}
-
-void FMorphTargetLODModel::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) const
-{
-	CumulativeResourceSize.AddUnknownMemoryBytes(Vertices.GetAllocatedSize() + sizeof(int32));
 }

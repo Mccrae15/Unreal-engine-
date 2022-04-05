@@ -5,7 +5,7 @@ using System.Text;
 using System.IO;
 using AutomationTool;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Linq;
 
 [Help("UAT command to run performance test demo using different RHIs and compare results")]
@@ -120,7 +120,7 @@ class RecordPerformance : BuildCommand
 
 	private IEnumerable<string> GetRhisForPlatform(string PlatformName)
 	{
-		if (PlatformName == "Win64" || PlatformName == "Win32")
+		if (PlatformName == "Win64")
 		{
 			return new string[] { "d3d11", "d3d12", "vulkan" };
 		}

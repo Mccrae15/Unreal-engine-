@@ -8,24 +8,38 @@
 #include "Textures/SlateIcon.h"
 #include "Widgets/SWindow.h"
 #include "Framework/Docking/WorkspaceItem.h"
+#include "Framework/Commands/UIAction.h"
 
 class FJsonObject;
 class FMenuBuilder;
-class FBlacklistNames;
+class FNamePermissionList;
 class FMultiBox;
 class FProxyTabmanager;
 class SDockingArea;
 class SDockingTabStack;
 class FLayoutExtender;
 struct FTabMatcher;
+struct FSidebarTabLists;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(
 	FOnActiveTabChanged,
-	/** Previously active tab */
-	TSharedPtr<SDockTab>,
 	/** Newly active tab */
+	TSharedPtr<SDockTab>,
+	/** Previously active tab */
 	TSharedPtr<SDockTab> );
 	
+
+enum class ESidebarLocation : uint8
+{
+	/** Tab is in a sidebar on the left side of its parent area */
+	Left,
+	/** Tab is in a sidebar on the right side of its parent area */
+	Right,
+
+	/** Tab is not in a sidebar */
+	None,
+};
+
 
 enum class ETabIdFlags : uint8
 {
@@ -34,20 +48,21 @@ enum class ETabIdFlags : uint8
 };
 
 ENUM_CLASS_FLAGS(ETabIdFlags);
+
 struct FTabId
 {
-	FTabId( )
+	FTabId()
 		: InstanceId(INDEX_NONE)
 		, Flags(ETabIdFlags::SaveLayout)
 	{ }
 
-	FTabId( const FName& InTabType, const int32 InInstanceId )
+	FTabId(const FName InTabType, const int32 InInstanceId)
 		: TabType(InTabType)
 		, InstanceId(InInstanceId)
 		, Flags(ETabIdFlags::SaveLayout)
 	{ }
 
-	FTabId( const FName& InTabType )
+	FTabId(const FName InTabType)
 		: TabType(InTabType)
 		, InstanceId(INDEX_NONE)
 		, Flags(ETabIdFlags::SaveLayout)
@@ -65,7 +80,7 @@ struct FTabId
 		return InstanceId == INDEX_NONE;
 	}
 
-	bool operator==( const FTabId& Other ) const
+	bool operator==(const FTabId& Other) const
 	{
 		return TabType == Other.TabType && (InstanceId == INDEX_NONE || Other.InstanceId == INDEX_NONE || InstanceId == Other.InstanceId) ;
 	}
@@ -146,6 +161,35 @@ DECLARE_DELEGATE_RetVal_OneParam(bool, FCanSpawnTab, const FSpawnTabArgs&);
  */
 DECLARE_DELEGATE_RetVal_OneParam( TSharedPtr<SDockTab>, FOnFindTabToReuse, const FTabId& )
 
+struct SLATE_API FMinorTabConfig
+{
+public:
+	FMinorTabConfig()
+	{
+	}
+
+	FMinorTabConfig(const FName& InTabID)
+		: TabId(InTabID)
+	{
+	}
+
+	FName TabId;
+
+	FText TabLabel;
+
+	FText TabTooltip;
+
+	FSlateIcon TabIcon;
+
+	FOnSpawnTab OnSpawnTab;
+
+	FCanSpawnTab CanSpawnTab;
+
+	FOnFindTabToReuse OnFindTabToReuse;
+
+	TSharedPtr<FWorkspaceItem> WorkspaceGroup;
+};
+
 /** An enum to describe how TabSpawnerEntries will be handled by menus. */
 namespace ETabSpawnerMenuType
 {
@@ -167,6 +211,7 @@ struct FTabSpawnerEntry : public FWorkspaceItem
 		, OnFindTabToReuse()
 		, MenuType(ETabSpawnerMenuType::Enabled)
 		, bAutoGenerateMenuEntry(true)
+		, bCanSidebarTab(true)
 		, SpawnedTabPtr()
 	{
 	}
@@ -177,15 +222,27 @@ struct FTabSpawnerEntry : public FWorkspaceItem
 		return *this;
 	}
 
+	FTabSpawnerEntry& SetDisplayNameAttribute(const TAttribute<FText>& InLegibleName)
+	{
+		DisplayNameAttribute = InLegibleName;
+		return *this;
+	}
+
+	FTabSpawnerEntry& SetTooltipTextAttribute(const TAttribute<FText>& InTooltipText)
+	{
+		TooltipTextAttribute = InTooltipText;
+		return *this;
+	}
+
 	FTabSpawnerEntry& SetDisplayName( const FText& InLegibleName )
 	{
-		DisplayName = InLegibleName;
+		DisplayNameAttribute = InLegibleName;
 		return *this;
 	}
 
 	FTabSpawnerEntry& SetTooltipText( const FText& InTooltipText )
 	{
-		TooltipText = InTooltipText;
+		TooltipTextAttribute = InTooltipText;
 		return *this;
 	}
 
@@ -213,10 +270,26 @@ struct FTabSpawnerEntry : public FWorkspaceItem
 		return *this;
 	}
 
+	FTabSpawnerEntry& SetCanSidebarTab(bool bInCanSidebarTab)
+	{
+		bCanSidebarTab = bInCanSidebarTab;
+		return *this;
+	}
+
+	bool CanSidebarTab() const
+	{
+		return bCanSidebarTab;
+	}
+
 	virtual TSharedPtr<FTabSpawnerEntry> AsSpawnerEntry() override
 	{
 		return SharedThis(this);
 	}
+
+	const FName GetTabType() const
+	{
+		return TabType;
+	};
 
 private:
 	FName TabType;
@@ -228,6 +301,8 @@ private:
 	TAttribute<ETabSpawnerMenuType::Type> MenuType;
 	/** Whether to automatically generate a menu entry for this tab spawner */
 	bool bAutoGenerateMenuEntry;
+	/** Whether or not this tab can ever be in a sidebar */
+	bool bCanSidebarTab;
 
 	TWeakPtr<SDockTab> SpawnedTabPtr;
 
@@ -247,10 +322,12 @@ namespace ETabState
 	{
 		OpenedTab = 0x1 << 0,
 		ClosedTab = 0x1 << 1,
+		SidebarTab = 0x1 << 2,
+
 		/**
 		 * InvalidTab refers to tabs that were not recognized by the Editor (e.g., LiveLink when its plugin its disabled).
 		 */
-		InvalidTab = 0x1 << 2
+		InvalidTab = 0x1 << 3
 	};
 }
 
@@ -317,19 +394,36 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 
 		struct FTab
 		{
-			FTab( const FTabId& InTabId, ETabState::Type InTabState )
-			: TabId(InTabId)
-			, TabState(InTabState)
+			FTab(const FTabId& InTabId, ETabState::Type InTabState)
+				: TabId(InTabId)
+				, TabState(InTabState)
+				, SidebarLocation(ESidebarLocation::None)
+				, SidebarSizeCoefficient(0.0f)
+				, bPinnedInSidebar(false)
 			{
+				check(InTabState != ETabState::SidebarTab);
+			}
+
+			FTab(const FTabId& InTabId, ETabState::Type InTabState, ESidebarLocation InSidebarLocation, float InSidebarSizeCoefficient, bool bInPinnedInSidebar)
+				: TabId(InTabId)
+				, TabState(InTabState)
+				, SidebarLocation(InSidebarLocation)
+				, SidebarSizeCoefficient(InSidebarSizeCoefficient)
+				, bPinnedInSidebar(bInPinnedInSidebar)
+			{
+				check(InTabState != ETabState::SidebarTab || InSidebarLocation != ESidebarLocation::None);
 			}
 
 			bool operator==( const FTab& Other ) const
 			{
-				return this->TabId == Other.TabId && this->TabState == Other.TabState;
+				return this->TabId == Other.TabId && this->TabState == Other.TabState && this->SidebarLocation == Other.SidebarLocation;
 			}
 
 			FTabId TabId;
 			ETabState::Type TabState;
+			ESidebarLocation SidebarLocation;
+			float SidebarSizeCoefficient;
+			bool bPinnedInSidebar;
 		};
 
 		class SLATE_API FStack : public FLayoutNode
@@ -339,16 +433,35 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 				friend class SDockingTabStack;
 
 			public:				
-
-				TSharedRef<FStack> AddTab( const FName& TabType, ETabState::Type TabState )
+				TSharedRef<FStack> AddTab(const FName TabType, ETabState::Type InTabState)
 				{
-					Tabs.Add( FTab( FTabId(TabType), TabState ) );
+					check(InTabState != ETabState::SidebarTab);
+					Tabs.Add(FTab( FTabId(TabType), InTabState));
 					return SharedThis(this);
 				}
 
-				TSharedRef<FStack> AddTab( const FTabId& TabId, ETabState::Type TabState )
+				TSharedRef<FStack> AddTab(const FTabId TabId, ETabState::Type InTabState)
 				{
-					Tabs.Add( FTab(TabId, TabState) );
+					check(InTabState != ETabState::SidebarTab);
+
+					Tabs.Add(FTab(TabId, InTabState));
+
+					return SharedThis(this);
+				}
+
+				TSharedRef<FStack> AddTab(const FName TabType, ETabState::Type InTabState, ESidebarLocation InSidebarLocation, float SidebarSizeCoefficient, bool bPinnedInSidebar=false)
+				{
+					check(InTabState != ETabState::SidebarTab || InSidebarLocation != ESidebarLocation::None);
+					Tabs.Add(FTab(FTabId(TabType), InTabState, InSidebarLocation, SidebarSizeCoefficient, bPinnedInSidebar));
+					return SharedThis(this);
+				}
+
+				TSharedRef<FStack> AddTab(const FTabId TabId, ETabState::Type InTabState, ESidebarLocation InSidebarLocation, float SidebarSizeCoefficient, bool bPinnedInSidebar=false)
+				{
+					check(InTabState != ETabState::SidebarTab || InSidebarLocation != ESidebarLocation::None);
+
+					Tabs.Add(FTab(TabId, InTabState, InSidebarLocation, SidebarSizeCoefficient, bPinnedInSidebar));
+
 					return SharedThis(this);
 				}
 
@@ -385,6 +498,17 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 				{
 				}
 
+				TSharedRef<FStack> SetExtensionId(FName InExtensionId)
+				{
+					ExtensionId = InExtensionId;
+					return SharedThis(this);
+				}
+
+				FName GetExtensionId() const
+				{
+					return ExtensionId;
+				}
+
 			protected:
 
 				FStack()
@@ -397,6 +521,7 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 				TArray<FTab> Tabs;
 				bool bHideTabWell;
 				FTabId ForegroundTabId;
+				FName ExtensionId;
 		};
 
 
@@ -526,7 +651,7 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 			protected:
 				FArea( const float InWidth, const float InHeight )
 				: WindowPlacement(Placement_Automatic)
-				, UnscaledWindowPosition(FVector2D(0,0))
+				, UnscaledWindowPosition(FVector2D(0.0, 0.0))
 				, UnscaledWindowSize(InWidth, InHeight)
 				, bIsMaximized( false )
 				{
@@ -561,7 +686,9 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 				
 			public:
 				static TSharedPtr<FTabManager::FLayout> NewFromString( const FString& LayoutAsText );
+				static TSharedPtr<FTabManager::FLayout> NewFromJson( const TSharedPtr<FJsonObject>& LayoutAsJson );
 				FName GetLayoutName() const;
+				TSharedRef<FJsonObject> ToJson() const;
 				FString ToString() const;
 
 				void ProcessExtensions(const FLayoutExtender& Extender);
@@ -670,7 +797,7 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 
 		static TSharedRef<FArea> NewArea( const FVector2D& WindowSize )
 		{
-			return MakeShareable( new FArea( WindowSize.X, WindowSize.Y ) );
+			return MakeShareable( new FArea( UE_REAL_TO_FLOAT(WindowSize.X), UE_REAL_TO_FLOAT(WindowSize.Y) ) );
 		}
 		
 		static TSharedRef<FStack> NewStack() 
@@ -748,6 +875,9 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 			};
 		};
 
+		/** Insert a new UnmanagedTab document tab next to an existing tab (closed or open) that has the PlaceholdId. Give the New tab NewTabId */
+		void InsertNewDocumentTab( FName PlaceholderId, FName NewTabId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab );
+
 		/** Insert a new UnmanagedTab document tab next to an existing tab (closed or open) that has the PlaceholdId. */
 		void InsertNewDocumentTab( FName PlaceholderId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab );
 		
@@ -761,21 +891,13 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 		void RestoreDocumentTab(FName PlaceholderId, ESearchPreference::Type SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab);
 
 		/**
-		 * Opens tab if it is closed at the last known location.  If it already exists, it will draw attention to the tab.
-		 * 
-		 * @param TabId The tab identifier.
-		 * @return The existing or newly spawned tab instance.
-		 */
-		UE_DEPRECATED(4.26, "FTabManager::InvokeTab is deprecated. Please use TryInvokeTab instead!")
-		virtual TSharedRef<SDockTab> InvokeTab(const FTabId& TabId);
-
-		/**
 		 * Try to open tab if it is closed at the last known location.  If it already exists, it will draw attention to the tab.
 		 *
 		 * @param TabId The tab identifier.
+		 * @param bInvokeAsInactive	Leave the tab inactive instead of drawing attention to it
 		 * @return The existing or newly spawned tab instance if successful.
 		 */
-		virtual TSharedPtr<SDockTab> TryInvokeTab(const FTabId& TabId);
+		virtual TSharedPtr<SDockTab> TryInvokeTab(const FTabId& TabId, bool bInvokeAsInactive = false);
 
 		/**
 		 * Finds the first instance of an existing tab with the given tab id.
@@ -789,17 +911,24 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 		{
 		}
 
+		/** Sets whether or not this tab manager supports a custom menu bar for the active major tab that will be shown on top of the major tab area in the window this tab manager resides in. */
+		void SetAllowWindowMenuBar(bool bInAllowWindowMenuBar);
+
+		/** Whether or not this tab manager supports a custom menu bar for the active major tab that will be shown on top of the major tab area in the window this tab manager resides in. */
+		bool AllowsWindowMenuBar() const { return bAllowPerWindowMenu; }
+
 		/**
-		 * Set the multi-box to use for generating a native, global menu bar.
+		 * Set the multi-box to use for generating a global menu bar.  The implementation is platform and setting specific
+		 * On Mac the menu bar appears globally at the top of the desktop in all cases regardless of whether or not SetAllowWindowMenuBar is called.  On other desktop platforms the menu appears at the top of the window this tab manager is a part of only if SetAllowWindowMenuBar(true) is called.
 		 * @param NewMenuMutliBox The multi-box to generate the global menu bar from.
 		 */
-		void SetMenuMultiBox(const TSharedPtr< FMultiBox >& NewMenuMutliBox);
+		void SetMenuMultiBox(const TSharedPtr<FMultiBox> NewMenuMutliBox, const TSharedPtr<SWidget> MenuWidget);
 
 		/**
 		 * Update the native, global menu bar if it is being used.
 		 * @param bForce Used to force an update even if the parent window doesn't contain the widget with keyboard focus.
 		 */
-		void UpdateMainMenu(bool const bForce);
+		void UpdateMainMenu(TSharedPtr<SDockTab> ForTab, const bool bForce);
 
 		/** Provide a tab that will be the main tab and cannot be closed. */
 		void SetMainTab(const TSharedRef<const SDockTab>& InTab);
@@ -812,6 +941,14 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 
 		/** @return if the provided tab can be closed. */
 		bool IsTabCloseable(const TSharedRef<const SDockTab>& InTab) const;
+
+		/** @return true if a tab is ever allowed in a sidebar */
+		bool IsTabAllowedInSidebar(const FTabId TabId) const;
+
+		/**
+		 * Temporarily moves all open tabs in this tab manager to a sidebar or restores them from a temporary state
+		 */
+		void ToggleSidebarOpenTabs();
 
 		/** @return The local workspace menu root */
 		const TSharedRef<FWorkspaceItem> GetLocalWorkspaceMenuRoot() const;
@@ -826,17 +963,15 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 		void ClearLocalWorkspaceMenuCategories();
 
 		/** @return true if the tab has a factory registered for it that allows it to be spawned. */
-		UE_DEPRECATED(4.23, "CanSpawnTab has been replaced by HasTabSpawner")
-		bool CanSpawnTab(FName TabId) const;
-
-		/** @return true if the tab has a factory registered for it that allows it to be spawned. */
 		bool HasTabSpawner(FName TabId) const;
 
 		/** Returns the owner tab (if it exists) */
 		TSharedPtr<SDockTab> GetOwnerTab() { return OwnerTabPtr.Pin(); }
 
 		/** Returns filter for additional control over available tabs */
-		TSharedRef<FBlacklistNames>& GetTabBlacklist();
+		TSharedRef<FNamePermissionList>& GetTabPermissionList();
+
+		FUIAction GetUIActionForTabSpawnerMenuEntry(TSharedPtr<FTabSpawnerEntry> InTabMenuEntry);
 
 	protected:
 		void InvokeTabForMenu( FName TabId );
@@ -844,6 +979,7 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 	protected:
 		
 		void InsertDocumentTab( FName PlaceholderId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab, bool bPlaySpawnAnim );
+		void InsertDocumentTab( FName PlaceholderId, FName NewTabId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab, bool bPlaySpawnAnim );
 
 		virtual void OpenUnmanagedTab(FName PlaceholderId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab);
 			
@@ -851,7 +987,7 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 
 		void MakeSpawnerMenuEntry( FMenuBuilder &PopulateMe, const TSharedPtr<FTabSpawnerEntry> &InSpawnerNode );
 
-		TSharedPtr<SDockTab> InvokeTab_Internal( const FTabId& TabId );
+		TSharedPtr<SDockTab> InvokeTab_Internal(const FTabId& TabId, bool bInvokeAsInactive = false);
 
 		/** Finds the last major or nomad tab in a particular window. */
 		TSharedPtr<SDockTab> FindLastTabInWindow(TSharedPtr<SWindow> Window) const;
@@ -870,8 +1006,7 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 		TSharedPtr<SDockingArea> RestoreArea(
 			const TSharedRef<FArea>& AreaToRestore, const TSharedPtr<SWindow>& InParentWindow, const bool bEmbedTitleAreaContent = false, const EOutputCanBeNullptr OutputCanBeNullptr = EOutputCanBeNullptr::Never);
 
-		TSharedPtr<class SDockingNode> RestoreArea_Helper(
-			const TSharedRef<FLayoutNode>& LayoutNode, const TSharedPtr<SWindow>& ParentWindow, const bool bEmbedTitleAreaContent, const EOutputCanBeNullptr OutputCanBeNullptr = EOutputCanBeNullptr::Never);
+		TSharedPtr<class SDockingNode> RestoreArea_Helper(const TSharedRef<FLayoutNode>& LayoutNode, const TSharedPtr<SWindow>& ParentWindow, const bool bEmbedTitleAreaContent, FSidebarTabLists& OutSidebarTabs, const EOutputCanBeNullptr OutputCanBeNullptr = EOutputCanBeNullptr::Never);
 
 		/**
 		 * Use CanRestoreSplitterContent + RestoreSplitterContent when the output of its internal RestoreArea_Helper can be a nullptr.
@@ -885,17 +1020,18 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 		 *			RestoreSplitterContent(DockingNodes, SplitterWidget);
 		 *		}
 		 */
-		bool CanRestoreSplitterContent(TArray<TSharedRef<class SDockingNode>>& DockingNodes, const TSharedRef<FSplitter>& SplitterNode, const TSharedPtr<SWindow>& ParentWindow, const EOutputCanBeNullptr OutputCanBeNullptr);
+		bool CanRestoreSplitterContent(TArray<TSharedRef<class SDockingNode>>& DockingNodes, const TSharedRef<FSplitter>& SplitterNode, const TSharedPtr<SWindow>& ParentWindow, FSidebarTabLists& OutSidebarTabs, const EOutputCanBeNullptr OutputCanBeNullptr);
 		void RestoreSplitterContent(const TArray<TSharedRef<class SDockingNode>>& DockingNodes, const TSharedRef<class SDockingSplitter>& SplitterWidget);
 
 		/**
 		 * Use this standalone RestoreSplitterContent when the output of its internal RestoreArea_Helper cannot be a nullptr.
 		 */
-		void RestoreSplitterContent(const TSharedRef<FSplitter>& SplitterNode, const TSharedRef<class SDockingSplitter>& SplitterWidget, const TSharedPtr<SWindow>& ParentWindow);
+		void RestoreSplitterContent(const TSharedRef<FSplitter>& SplitterNode, const TSharedRef<class SDockingSplitter>& SplitterWidget, const TSharedPtr<SWindow>& ParentWindow, FSidebarTabLists& OutSidebarTabs);
 		
 		bool IsValidTabForSpawning( const FTab& SomeTab ) const;
 		bool IsAllowedTab(const FTabId& TabId) const;
 		bool IsAllowedTabType(const FName TabType) const;
+
 		TSharedPtr<SDockTab> SpawnTab(const FTabId& TabId, const TSharedPtr<SWindow>& ParentWindow, const bool bCanOutputBeNullptr = false);
 
 		TSharedPtr<class SDockingTabStack> FindTabInLiveAreas( const FTabMatcher& TabMatcher ) const;
@@ -912,6 +1048,7 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 
 	protected:
 		bool HasValidTabs( const TSharedRef<FTabManager::FLayoutNode>& SomeNode ) const;
+
 		/**
 		 * It sets the desired (or all) tabs in the FTabManager::FLayoutNode to the desired value.
 		 * @param SomeNode The area whose tabs will be modified.
@@ -942,6 +1079,9 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 		/** Called when tab(s) have been added or windows created */
 		virtual void UpdateStats();
 		
+		/** Called at the end of RestoreFrom for tab managers to complete any work after all tabs have been restored */
+		virtual void FinishRestore() {};
+
 	private:
 		/** Checks all dock areas and adds up the number of open tabs and unique parent windows in the manager */
 		void GetRecordableStats( int32& OutTabCount, TArray<TSharedPtr<SWindow>>& OutUniqueParentWindows ) const;
@@ -950,6 +1090,8 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 		FTabSpawner TabSpawner;
 		TSharedRef<FTabSpawner> NomadTabSpawner;
 		TSharedPtr<FTabSpawnerEntry> FindTabSpawnerFor(FName TabId);
+		const TSharedPtr<const FTabSpawnerEntry> FindTabSpawnerFor(FName TabId) const;
+
 		bool HasTabSpawnerFor(FName TabId) const;
 
 		TArray< TWeakPtr<SDockingArea> > DockAreas;
@@ -971,7 +1113,8 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 		TWeakPtr<SDockTab> OwnerTabPtr;
 
 		/** The current menu multi-box for the tab, used to construct platform native main menus */
-		TSharedPtr< FMultiBox > MenuMultiBox;
+		TSharedPtr<FMultiBox> MenuMultiBox;
+		TSharedPtr<SWidget> MenuWidget;
 
 		/** Protected private API that must only be accessed by the docking framework internals */
 		TSharedRef<FPrivateApi> PrivateApi;
@@ -1014,8 +1157,14 @@ class SLATE_API FTabManager : public TSharedFromThis<FTabManager>
 		/* Prevent or allow Drag operation. */
 		bool bCanDoDragOperation;
 
+		/** Whether or not this tab manager puts any registered menus in the windows menu bar area */
+		bool bAllowPerWindowMenu = false;
+
 		/** Allow systems to dynamically hide tabs */
-		TSharedRef<FBlacklistNames> TabBlacklist;
+		TSharedRef<FNamePermissionList> TabPermissionList;
+
+		/** Tabs which have been temporarily put in the a sidebar */
+		TArray<TWeakPtr<SDockTab>> TemporarilySidebaredTabs;
 };
 
 
@@ -1077,6 +1226,12 @@ public:
 	/** Gets the major tab for the manager */
 	TSharedPtr<SDockTab> GetMajorTabForTabManager(const TSharedRef<FTabManager>& ChildManager);
 
+	/** 
+	 * Gets the tab manager that a major tab owns. The returned tab manager is the tab manager that manages the minor tabs for a major tab.
+	 * Note: this is not the same as DockTab->GetTabManager(). That function returns the tab manager the major tab is in
+	 */
+	TSharedPtr<FTabManager> GetTabManagerForMajorTab(const TSharedPtr<SDockTab> DockTab) const;
+
 	/** Draw the user's attention to a child tab manager */
 	void DrawAttentionToTabManager( const TSharedRef<FTabManager>& ChildManager );
 
@@ -1126,6 +1281,8 @@ protected:
 	virtual void UpdateStats() override;
 
 	virtual void OpenUnmanagedTab(FName PlaceholderId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab) override;
+
+	virtual void FinishRestore() override;
 
 public:
 	virtual void OnTabManagerClosing() override;

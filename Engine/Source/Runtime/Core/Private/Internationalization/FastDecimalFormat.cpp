@@ -3,7 +3,6 @@
 #include "Internationalization/FastDecimalFormat.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/StringBuilder.h"
-#include "Containers/StringFwd.h"
 #include "HAL/IConsoleManager.h"
 
 namespace FastDecimalFormat
@@ -252,7 +251,7 @@ int32 IntegralToString_UInt64ToString(
 	{
 		InBufferToFill[FinalBufferIndex] = TmpBuffer[StringLen - FinalBufferIndex - 1];
 	}
-	InBufferToFill[StringLen] = 0;
+	InBufferToFill[StringLen] = TEXT('\0');
 
 	return StringLen;
 }
@@ -399,7 +398,7 @@ void IntegralToString(const bool bIsNegative, const uint64 InVal, const FDecimal
 			FractionalPartBuffer[FractionalPartLen++] = InFormattingRules.DigitCharacters[0];
 		}
 	}
-	FractionalPartBuffer[FractionalPartLen] = 0;
+	FractionalPartBuffer[FractionalPartLen] = TEXT('\0');
 
 	BuildFinalString(bIsNegative, InFormattingOptions.AlwaysSign, InFormattingRules, IntegralPartBuffer, IntegralPartLen, FractionalPartBuffer, FractionalPartLen, OutString);
 }
@@ -415,8 +414,7 @@ FString CultureInvariantDecimalToString(const double InVal, const TCHAR*& InBuff
 	TStringBuilder<128> OutStr;
 
 	bool bUseGrouping = InFormattingOptions.UseGrouping && InFormattingRules.PrimaryGroupingSize > 0;
-	auto LogXd = [](double Base, double Value) { return log(Value) / log(Base); };
-	uint8 NumIntegralDigits = static_cast<uint8>(FMath::Abs(LogXd(10.0, InVal))) + 1;
+	uint8 NumIntegralDigits = static_cast<uint8>(FMath::Abs((FMath::LogX(10.0, InVal)))) + 1;
 	uint8 NumUntilNextGroup = NumIntegralDigits % InFormattingRules.PrimaryGroupingSize;
 	const TCHAR* InBufferEnd = InBuffer + InBufferLen;
 
@@ -464,7 +462,7 @@ FString CultureInvariantDecimalToString(const double InVal, const TCHAR*& InBuff
 
 		// 48 for raw ascii -> int
 		int32 CharacterIndex = (int32)InBuffer[0] - 48;
-		if (ensure(CharacterIndex >= 0 && CharacterIndex < sizeof(InFormattingRules.DigitCharacters) / sizeof(InFormattingRules.DigitCharacters[0])))
+		if (ensure(CharacterIndex >= 0 && CharacterIndex < UE_ARRAY_COUNT(InFormattingRules.DigitCharacters)))
 		{
 			OutStr += InFormattingRules.DigitCharacters[CharacterIndex];
 			FractionalDigitsPrinted += bParsedFractional ? 1 : 0;
@@ -535,8 +533,12 @@ void FractionalToString(const double InVal, const FDecimalNumberFormattingRules&
 	{
 		OutString = LexToSanitizedString(InVal);
 
-		const TCHAR* CultureInvariantDecimalBuffer = *OutString;
-		OutString = CultureInvariantDecimalToString(InVal, CultureInvariantDecimalBuffer, OutString.Len(), InFormattingRules, InFormattingOptions);
+		// Guard against 'inf', other non-decimal floats.
+		if (OutString.IsNumeric())
+		{
+			const TCHAR* CultureInvariantDecimalBuffer = *OutString;
+			OutString = CultureInvariantDecimalToString(InVal, CultureInvariantDecimalBuffer, OutString.Len(), InFormattingRules, InFormattingOptions);
+		}
 		return;
 	}
 

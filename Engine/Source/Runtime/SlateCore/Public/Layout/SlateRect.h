@@ -38,10 +38,10 @@ public:
 	{ }
 
 	FSlateRect( const FVector2D& InStartPos, const FVector2D& InEndPos )
-		: Left(InStartPos.X)
-		, Top(InStartPos.Y)
-		, Right(InEndPos.X)
-		, Bottom(InEndPos.Y)
+		: Left(UE_REAL_TO_FLOAT(InStartPos.X))
+		, Top(UE_REAL_TO_FLOAT(InStartPos.Y))
+		, Right(UE_REAL_TO_FLOAT(InEndPos.X))
+		, Bottom(UE_REAL_TO_FLOAT(InEndPos.Y))
 	{ }
 
 	/**
@@ -72,13 +72,21 @@ public:
 	}
 
 	/**
-	 * Returns the size of the rectangle.
+	 * Returns the size of the rectangle in each dimension.
 	 *
 	 * @return The size as a vector.
 	 */
 	FORCEINLINE FVector2D GetSize() const
 	{
 		return FVector2D( Right - Left, Bottom - Top );
+	}
+
+	/**
+	 * @return the area of the rectangle
+	 */
+	FORCEINLINE float GetArea() const
+	{
+		return (Right - Left) * (Bottom - Top);
 	}
 
 	/**

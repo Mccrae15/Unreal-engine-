@@ -17,7 +17,18 @@
 DECLARE_CYCLE_STAT(TEXT("PushModel PostGarbageCollect"), STAT_PushModel_PostGarbageCollect, STATGROUP_Net);
 DEFINE_LOG_CATEGORY_STATIC(LogPushModel, All, All);
 
-namespace UE4PushModelPrivate
+struct FNetObjectManagerPushIdHelper
+{
+	static void ResetNetPushId(const FObjectKey& InObjectKey)
+	{
+		if (UObject* Object = InObjectKey.ResolveObjectPtr())
+		{
+			FObjectNetPushIdHelper::SetNetPushIdDynamic(Object, INDEX_NONE);
+		}
+	}
+};
+
+namespace UEPushModelPrivate
 {
 	//! Originally, multiple implementations of FPushModelObjectManagers were tested.
 	//! The way this worked was by implementing the managers here, using Macros or
@@ -27,7 +38,7 @@ namespace UE4PushModelPrivate
 	//! Returns are just ignored.
 	
 	//! TODO: We should add in a way for NetDrivers to opt out of PushModel.
-	//! Things like the Beacon Net Driver, for exmaple, don't need to care about it.
+	//! Things like the Beacon Net Driver, for example, don't need to care about it.
 	//! Since most things are lazily created, this probably isn't a big deal, but
 	//! having explicit behavior preventing it is probably worthwhile.
 
@@ -168,7 +179,7 @@ namespace UE4PushModelPrivate
 	 *		for some configurable timeout, and all connections have received its most
 	 *		up to date information.
 	 *
-	 *	2. Alongisde dirty property states, Push Model could also have a bitfield that
+	 *	2. Alongside dirty property states, Push Model could also have a bitfield that
 	 *		tracks whether or not an object was dirtied in a frame. Alternatively,
 	 *		that state could be derived from FPushModelPerObjectState.
 	 *
@@ -280,7 +291,10 @@ namespace UE4PushModelPrivate
 			{
 				if (!It->HasAnyNetDriverStates())
 				{
-					ObjectKeyToInternalId.Remove(It->GetObjectKey());
+					const FObjectKey& ObjectKey = It->GetObjectKey();
+
+					FNetObjectManagerPushIdHelper::ResetNetPushId(ObjectKey);
+					ObjectKeyToInternalId.Remove(ObjectKey);
 					It.RemoveCurrent();
 				}
 				else
@@ -305,6 +319,19 @@ namespace UE4PushModelPrivate
 			}
 
 			return nullptr;
+		}
+
+		bool DoesHaveDirtyPropertiesOrRecentlyCollectedGarbage(const FPushModelPerNetDriverHandle Handle) const
+		{
+			const int32 ObjectIndex = Handle.ObjectId;
+			if (LIKELY(PerObjectStates.IsValidIndex(ObjectIndex)))
+			{
+				const FPushModelPerObjectState& ObjectState = PerObjectStates[ObjectIndex];
+				const FPushModelPerNetDriverState& NetDriverState = ObjectState.GetPerNetDriverState(Handle.NetDriverId);
+				return ObjectState.HasDirtyProperties() || NetDriverState.HasDirtyProperties() || NetDriverState.DidRecentlyCollectGarbage();
+			}
+
+			return false;
 		}
 
 		bool ValidateObjectIdReassignment(FNetPushObjectId CurrentId, FNetPushObjectId NewId)
@@ -355,12 +382,42 @@ namespace UE4PushModelPrivate
 			return false;
 		}
 
-	private:
+		uint32 CountBytes() const
+		{
+			FArchiveCountPushModelMem Ar;
 
+			ObjectKeyToInternalId.CountBytes(Ar);
+			PerObjectStates.CountBytes(Ar);
+
+			for (TSparseArray<FPushModelPerObjectState>::TConstIterator It = PerObjectStates.CreateConstIterator(); It; ++It)
+			{
+				It->CountBytes(Ar);
+			}
+
+			return sizeof(*this) + Ar.GetMem();
+		}
+
+	private:
 		int32 NewObjectLookupPosition = 0;
 		TMap<FObjectKey, FNetPushObjectId> ObjectKeyToInternalId;
 		TSparseArray<FPushModelPerObjectState> PerObjectStates;
 		FDelegateHandle PostGarbageCollectHandle;
+
+		class FArchiveCountPushModelMem : public FArchive
+		{
+		public:
+			FArchiveCountPushModelMem() : Mem(0) 
+			{ 
+				ArIsCountingMemory = true; 
+			}
+
+			virtual void CountBytes(SIZE_T InNum, SIZE_T InMax) override { Mem += InMax; }
+
+			SIZE_T GetMem() const { return Mem; }
+
+		private:
+			SIZE_T Mem;
+		};
 	};
 
 	static FPushModelObjectManager_CustomId PushObjectManager;
@@ -431,9 +488,24 @@ namespace UE4PushModelPrivate
 		return PushObjectManager.GetPerNetDriverState(Handle);
 	}
 
+	/**
+	 * @return True if the Object (or NetDriver state) have dirty properties, or have had GC 
+	 */
+	bool DoesHaveDirtyPropertiesOrRecentlyCollectedGarbage(const FPushModelPerNetDriverHandle Handle)
+	{
+		return PushObjectManager.DoesHaveDirtyPropertiesOrRecentlyCollectedGarbage(Handle);
+	}
+
 	bool ValidateObjectIdReassignment(FNetPushObjectId CurrentId, FNetPushObjectId NewId)
 	{
 		return PushObjectManager.ValidateObjectIdReassignment(CurrentId, NewId);
+	}
+
+	void LogMemory(FOutputDevice& Ar)
+	{
+		uint32 Count = PushObjectManager.CountBytes();
+
+		Ar.Logf(TEXT("  Push Model Memory: %u"), Count);
 	}
 }
 

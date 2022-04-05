@@ -97,7 +97,7 @@ public:
 		: FUObjectArray::TIterator(GUObjectArray, bOnlyGCedObjects)
 		, Class(InClass)
 		, ExclusionFlags(AdditionalExclusionFlags)
-		, InternalExclusionFlags(InInternalExclusionFlags)
+		, InternalExclusionFlags(UObjectBaseUtility::FixGarbageOrPendingKillInternalObjectFlags(InInternalExclusionFlags))
 	{
 		// We don't want to return any objects that are currently being background loaded unless we're using the object iterator during async loading.
 		InternalExclusionFlags |= EInternalObjectFlags::Unreachable | EInternalObjectFlags::PendingConstruction;
@@ -335,7 +335,7 @@ protected:
 	 */
 	FORCEINLINE bool Advance()
 	{
-		//@todo UE4 check this for LHS on Index on consoles
+		//@todo UE check this for LHS on Index on consoles
 		while(++Index < ObjectArray.Num())
 		{
 			if (GetObject())

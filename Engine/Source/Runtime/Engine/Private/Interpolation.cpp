@@ -876,11 +876,7 @@ void AMatineeActor::InitInterp()
 
 	if( MatineeData )
 	{
-		// Register myself as the active matinee if one is not active.
-		if (GEngine->ActiveMatinee.IsValid() == false)
-		{
-			GEngine->ActiveMatinee = this;
-		}
+
 
 		TMap<FName, FInterpGroupActorInfo*> InterpGroupToActorInfoMap;
 	
@@ -892,17 +888,6 @@ void AMatineeActor::InitInterp()
 
 		// Cache whether or not we want to enable extreme content within this sequence
 		bShouldShowGore = true;
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if( GetWorld() != NULL && GetWorld()->GetWorldSettings() != NULL )
-		{
-			AGameState const* const GameState = GetWorld()->GetGameState<AGameState>();
-			if( GameState != NULL )
-			{
-				bShouldShowGore = GameState->ShouldShowGore();
-			}
-		}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 		for(int32 GroupIndex=0; GroupIndex<MatineeData->InterpGroups.Num(); GroupIndex++)
 		{
@@ -976,14 +961,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 		}
 
-		// set matinee actor when initialize it, otherwise, we'll have random tick order
-		for(int32 i=0; i<GroupInst.Num(); i++)
-		{
-			if(GroupInst[i]->GroupActor)
-			{
-				GroupInst[i]->GroupActor->AddControllingMatineeActor( *this );
-			}
-		}
 
 		EnableCinematicMode(true);
 	}
@@ -1000,21 +977,11 @@ void AMatineeActor::TermInterp()
 	// Destroy each group instance.
 	for(int32 i=0; i<GroupInst.Num(); i++)
 	{
-		if(GroupInst[i]->GroupActor)
-		{
-			GroupInst[i]->GroupActor->RemoveControllingMatineeActor( *this );
-		}
 
 		GroupInst[i]->TermGroupInst(true);
 
 	}
 	GroupInst.Empty();
-
-	// Unregister myself as the active matinee if one is not active.
-	if (GEngine->ActiveMatinee.Get() == this)
-	{
-		GEngine->ActiveMatinee.Reset();
-	}
 
 	// disable cinematic mode
 	EnableCinematicMode(false);
@@ -1309,7 +1276,7 @@ void AMatineeActor::EnableRadioFilter()
 
 UInterpGroupInst* AMatineeActor::FindGroupInst(const AActor* Actor) const
 {
-	if(!Actor || Actor->IsPendingKill() )
+	if(IsValid(Actor))
 	{
 		return NULL;
 	}
@@ -1490,11 +1457,6 @@ void AMatineeActor::DeleteActorGroupInfo(class UInterpGroup * Group, AActor* Act
 			{
 				if (GroupInfo.Actors[ActorID] == ActorToDelete)
 				{
-					if (ActorToDelete)
-					{
-						ActorToDelete->RemoveControllingMatineeActor(*this);
-					}
-
 					GroupInfo.Actors.RemoveAt(ActorID);
 					return;
 				}
@@ -1512,15 +1474,6 @@ void AMatineeActor::DeleteGroupinfo(class UInterpGroup * GroupToDelete)
 
 		if(GroupToDelete->GetFName() == Info.ObjectName)
 		{
-			for (int32 ActorIndex = 0; ActorIndex<Info.Actors.Num(); ++ActorIndex)
-			{
-				if ( Info.Actors[ActorIndex] )
-				{
-					// clear Matinee Actor
-					Info.Actors[ActorIndex]->RemoveControllingMatineeActor(*this);
-				}
-			}
-
 			GroupActorInfos.RemoveAt( InfoIndex );
 			break;
 		}
@@ -1543,17 +1496,7 @@ void AMatineeActor::ReplaceActorGroupInfo(UInterpGroup * Group, AActor* OldActor
 				{
 					if (GroupInfo.Actors[ActorID] == OldActor)
 					{
-						if (OldActor)
-						{
-							OldActor->RemoveControllingMatineeActor(*this);
-						}
-
 						GroupInfo.Actors[ActorID] = NewActor;
-
-						if (NewActor)
-						{
-							NewActor->AddControllingMatineeActor(*this);
-						}
 						return;
 					}
 				}
@@ -1566,17 +1509,14 @@ void AMatineeActor::SaveActorVisibility( AActor* Actor )
 {
 	check( GIsEditor );
 
-	if( Actor != NULL )
+	if( IsValid(Actor) )
 	{
-		if ( !Actor->IsPendingKill() )
+		const uint8* SavedVisibility = SavedActorVisibilities.Find( Actor );
+		if ( !SavedVisibility )
 		{
-			const uint8* SavedVisibility = SavedActorVisibilities.Find( Actor );
-			if ( !SavedVisibility )
-			{
-				// Save both bHidden and bHiddenEdTemporary to make it work properly in the editor
-				uint8 bSaveHidden = (Actor->IsHidden() ? 1 : 0) | (Actor->IsTemporarilyHiddenInEditor() ? 2 : 0);
-				SavedActorVisibilities.Add( Actor, bSaveHidden );
-			}
+			// Save both bHidden and bHiddenEdTemporary to make it work properly in the editor
+			uint8 bSaveHidden = (Actor->IsHidden() ? 1 : 0) | (Actor->IsTemporarilyHiddenInEditor() ? 2 : 0);
+			SavedActorVisibilities.Add( Actor, bSaveHidden );
 		}
 	}
 }
@@ -1743,11 +1683,6 @@ void AMatineeActor::InitGroupActorForGroup(class UInterpGroup* InGroup, class AA
 		{
 			bFoundGroup = true;
 			Info.Actors.AddUnique( InGroupActor );
-
-			if (InGroupActor)
-			{
-				InGroupActor->AddControllingMatineeActor(*this);
-			}
 		}
 	}
 
@@ -1758,11 +1693,6 @@ void AMatineeActor::InitGroupActorForGroup(class UInterpGroup* InGroup, class AA
 		NewInfo.Actors.Add( InGroupActor );
 
 		GroupActorInfos.Add( NewInfo );
-
-		if (InGroupActor)
-		{
-			InGroupActor->AddControllingMatineeActor(*this);
-		}
 	}
 
 	PostEditChange();
@@ -2606,7 +2536,7 @@ UInterpGroupInst::UInterpGroupInst(const FObjectInitializer& ObjectInitializer)
 
 AActor* UInterpGroupInst::GetGroupActor() const
 {
-	if(!GroupActor || GroupActor->IsPendingKill())
+	if(!IsValid(GroupActor))
 	{
 		return NULL;
 	}
@@ -2665,7 +2595,7 @@ void UInterpGroupInst::InitGroupInst(UInterpGroup* InGroup, AActor* InGroupActor
 
 	// If we have an anim control track, do startup for that.
 	bool bHasAnimTrack = Group->HasAnimControlTrack();
-	if (bHasAnimTrack && GroupActor != NULL && !GroupActor->IsPendingKill())
+	if (bHasAnimTrack && IsValid(GroupActor))
 	{
 		IMatineeAnimInterface* IMAI = Cast<IMatineeAnimInterface>(GroupActor);
 		if (IMAI)
@@ -2703,7 +2633,7 @@ void UInterpGroupInst::TermGroupInst(bool bDeleteTrackInst)
 
 	// If we have an anim control track, do startup for that.
 	bool bHasAnimTrack = Group->HasAnimControlTrack();
-	if (GroupActor != NULL && !GroupActor->IsPendingKill())
+	if (IsValid(GroupActor))
 	{
 		IMatineeAnimInterface * IMAI = Cast<IMatineeAnimInterface>(GroupActor);
 		if (IMAI)
@@ -3729,7 +3659,7 @@ void UInterpTrackMove::UpdateKeyframe(int32 KeyIndex, UInterpTrackInst* TrInst)
 	UInterpTrackInstMove* MoveTrackInst = CastChecked<UInterpTrackInstMove>(TrInst);
 
 
-	/* @todo UE4 do we still need this code? 
+	/* @todo UE do we still need this code? 
 	if ( APawn * Pawn = Actor->GetAPawn() )
 	{
 		if ( Pawn->CapsuleComponent )
@@ -5754,7 +5684,7 @@ void UInterpTrackInstFloatProp::RestoreActorState(UInterpTrack* Track)
 
 	// We update components, so things like draw scale take effect.
 	// Don't force update all components unless we're in the editor.
-	Actor->ReregisterAllComponents(); // @todo UE4 insist on a property update callback, and use here?
+	Actor->ReregisterAllComponents(); // @todo UE insist on a property update callback, and use here?
 }
 
 void UInterpTrackInstFloatProp::InitTrackInst(UInterpTrack* Track)
@@ -5896,7 +5826,7 @@ void UInterpTrackInstVectorProp::RestoreActorState(UInterpTrack* Track)
 
 	// We update components, so things like draw scale take effect.
 	// Don't force update all components unless we're in the editor.
-	Actor->ReregisterAllComponents(); // @todo UE4 insist on a property update callback, and use here?
+	Actor->ReregisterAllComponents(); // @todo UE insist on a property update callback, and use here?
 }
 
 void UInterpTrackInstVectorProp::InitTrackInst(UInterpTrack* Track)
@@ -6098,7 +6028,7 @@ void UInterpTrackInstBoolProp::RestoreActorState( UInterpTrack* Track )
 
 	// We update components, so things like draw scale take effect.
 	// Don't force update all components unless we're in the editor.
-	Actor->ReregisterAllComponents(); // @todo UE4 insist on a property update callback, and use here?
+	Actor->ReregisterAllComponents(); // @todo UE insist on a property update callback, and use here?
 }
 
 /*-----------------------------------------------------------------------------
@@ -6240,7 +6170,7 @@ void UInterpTrackInstColorProp::RestoreActorState(UInterpTrack* Track)
 
 	// We update components, so things like draw scale take effect.
 	// Don't force update all components unless we're in the editor.
-	Actor->ReregisterAllComponents(); // @todo UE4 insist on a property update callback, and use here?
+	Actor->ReregisterAllComponents(); // @todo UE insist on a property update callback, and use here?
 }
 
 /** Initialize this Track instance. Called in-game before doing any interpolation. */
@@ -6389,7 +6319,7 @@ void UInterpTrackInstLinearColorProp::RestoreActorState(UInterpTrack* Track)
 
 	// We update components, so things like draw scale take effect.
 	// Don't force update all components unless we're in the editor.
-	Actor->ReregisterAllComponents(); // @todo UE4 insist on a property update callback, and use here?
+	Actor->ReregisterAllComponents(); // @todo UE insist on a property update callback, and use here?
 }
 
 void UInterpTrackInstLinearColorProp::InitTrackInst(UInterpTrack* Track)
@@ -6735,21 +6665,8 @@ void UInterpTrackDirector::UpdateTrack(float NewPosition, UInterpTrackInst* TrIn
 						// If the actor's current view target is a director track camera, then we want to store 
 						// the director track's 'old view target' in case the current Matinee sequence finishes
 						// before our's does.
-						UInterpTrackInstDirector* PreviousDirInst = PC->GetControllingDirector();
-						if( PreviousDirInst != NULL && PreviousDirInst->OldViewTarget != NULL )
-						{
-							// Store the underlying director track's old view target so we can restore this later
-							DirInst->OldViewTarget = PreviousDirInst->OldViewTarget;
-						}
-						else
-						{
-							DirInst->OldViewTarget = ViewTarget;
-						}
+						DirInst->OldViewTarget = ViewTarget;
 					}
-
-					PC->SetControllingDirector(DirInst, bSimulateCameraCutsOnClients);
-	
-					PC->NotifyDirectorControl(true, MatineeActor); 
 
 					//UE_LOG(LogMatinee, Log, TEXT("UInterpTrackDirector::UpdateTrack SetViewTarget ViewGroupInst->GroupActor Time:%f Name: %s"), PC->GetWorld()->GetTimeSeconds(), *ViewGroupInst->GroupActor->GetFName());
 					// Change view to desired view target.
@@ -6772,16 +6689,13 @@ void UInterpTrackDirector::UpdateTrack(float NewPosition, UInterpTrackInst* TrIn
 			else if (DirInst->OldViewTarget != NULL)
 			{
 				//UE_LOG(LogMatinee, Log, TEXT("UInterpTrackDirector::UpdateTrack SetViewTarget DirInst->OldViewTarget Time:%f Name: %s"), PC->GetWorld()->GetTimeSeconds(), *DirInst->OldViewTarget->GetFName());
-				if (!DirInst->OldViewTarget->IsPendingKill())
+				if (IsValid(DirInst->OldViewTarget))
 				{
 					FViewTargetTransitionParams TransitionParams;
 					TransitionParams.BlendTime = CutTransitionTime;
 					PC->SetViewTarget( DirInst->OldViewTarget, TransitionParams );
 				}
 
-				PC->NotifyDirectorControl(false, MatineeActor); 
-				PC->SetControllingDirector(NULL, false);
-				
 				DirInst->OldViewTarget = NULL;
 			}
 		}
@@ -6932,7 +6846,7 @@ void UInterpTrackInstDirector::TermTrackInst(UInterpTrack* Track)
 	if (PC != NULL)
 	{
 		AMatineeActor* MatineeActor = CastChecked<AMatineeActor>( GrInst->GetOuter() );
-		if (OldViewTarget != NULL && !OldViewTarget->IsPendingKill())
+		if (::IsValid(OldViewTarget))
 		{
 			// if we haven't already, restore original view target.
 			AActor* ViewTarget = PC->GetViewTarget();
@@ -6941,9 +6855,6 @@ void UInterpTrackInstDirector::TermTrackInst(UInterpTrack* Track)
 				PC->SetViewTarget(OldViewTarget);
 			}
 		}
-		// this may be a duplicate call if it was already called in UpdateTrack(), but that's better than not at all and leaving code thinking we stayed in matinee forever
-		PC->NotifyDirectorControl(false, MatineeActor);
-		PC->SetControllingDirector(NULL, false);
 	}
 	
 	OldViewTarget = NULL;
@@ -6998,7 +6909,7 @@ void UInterpTrackFade::UpdateTrack(float NewPosition, UInterpTrackInst* TrInst, 
 
 		// Actor for a Director group should be a PlayerController.
 		APlayerController* PC = Cast<APlayerController>(GrInst->GetGroupActor());
-		if(PC && PC->PlayerCameraManager && !PC->PlayerCameraManager->IsPendingKill())
+		if(PC && IsValid(PC->PlayerCameraManager))
 		{
 			PC->PlayerCameraManager->SetManualCameraFade(GetFadeAmountAtTime(NewPosition), FadeColor, bFadeAudio);
 		}
@@ -7027,7 +6938,7 @@ void UInterpTrackInstFade::TermTrackInst(UInterpTrack* Track)
 	{
 		UInterpGroupInst* const GrInst = CastChecked<UInterpGroupInst>(GetOuter());
 		APlayerController* const PC = Cast<APlayerController>(GrInst->GroupActor);
-		if(PC && PC->PlayerCameraManager && !PC->PlayerCameraManager->IsPendingKill())
+		if(PC && IsValid(PC->PlayerCameraManager))
 		{
 			PC->PlayerCameraManager->StopCameraFade();
 
@@ -7250,7 +7161,7 @@ bool UInterpTrackAnimControl::GetClosestSnapPosition(float InPosition, TArray<in
 			UAnimSequence* Seq = AnimSeqs[i].AnimSeq;
 			if(Seq)
 			{
-				SeqLength = FMath::Max((Seq->SequenceLength - (AnimSeqs[i].AnimStartOffset + AnimSeqs[i].AnimEndOffset)) / AnimSeqs[i].AnimPlayRate, 0.01f);
+				SeqLength = FMath::Max((Seq->GetPlayLength() - (AnimSeqs[i].AnimStartOffset + AnimSeqs[i].AnimEndOffset)) / AnimSeqs[i].AnimPlayRate, 0.01f);
 				SeqEndTime += SeqLength;
 			}
 
@@ -7308,7 +7219,7 @@ float UInterpTrackAnimControl::GetTrackEndTime() const
 		{
 			// When calculating the end time, we do not consider the AnimStartOffset since we 
 			// are not calculating the length of the anim key. We just want the time where it ends.
-			EndTime += FMath::Max( (AnimSequence->SequenceLength - AnimKey.AnimEndOffset) / AnimKey.AnimPlayRate, 0.01f );
+			EndTime += FMath::Max( (AnimSequence->GetPlayLength() - AnimKey.AnimEndOffset) / AnimKey.AnimPlayRate, 0.01f );
 		}
 
 	}
@@ -7358,7 +7269,7 @@ bool UInterpTrackAnimControl::GetAnimForTime(float InTime, UAnimSequence** OutAn
 			UAnimSequence *Seq = AnimSeqs[i].AnimSeq;
 			if(Seq)
 			{
-				float SeqLength = FMath::Max(Seq->SequenceLength - (AnimSeqs[i].AnimStartOffset + AnimSeqs[i].AnimEndOffset), 0.01f);
+				float SeqLength = FMath::Max(Seq->GetPlayLength() - (AnimSeqs[i].AnimStartOffset + AnimSeqs[i].AnimEndOffset), 0.01f);
 
 				if(AnimSeqs[i].bLooping)
 				{
@@ -7367,14 +7278,14 @@ bool UInterpTrackAnimControl::GetAnimForTime(float InTime, UAnimSequence** OutAn
 				}
 				else
 				{
-					OutPosition = FMath::Clamp(OutPosition + AnimSeqs[i].AnimStartOffset, 0.f, (Seq->SequenceLength - AnimSeqs[i].AnimEndOffset) + (float)KINDA_SMALL_NUMBER);
+					OutPosition = FMath::Clamp(OutPosition + AnimSeqs[i].AnimStartOffset, 0.f, (Seq->GetPlayLength() - AnimSeqs[i].AnimEndOffset) + (float)KINDA_SMALL_NUMBER);
 				}
 
 				// Reverse position if the key is set to be reversed.
 				if(AnimSeqs[i].bReverse)
 				{
 					OutPosition = ConditionallyReversePosition(AnimSeqs[i], Seq, OutPosition);
-					bResetTime = (OutPosition == (Seq->SequenceLength - AnimSeqs[i].AnimEndOffset));
+					bResetTime = (OutPosition == (Seq->GetPlayLength() - AnimSeqs[i].AnimEndOffset));
 				}
 				else
 				{
@@ -7411,7 +7322,7 @@ float UInterpTrackAnimControl::ConditionallyReversePosition(FAnimControlTrackKey
 		// Reverse the clip.
 		if(Seq)
 		{
-			const float RealLength = Seq->SequenceLength - (SeqKey.AnimStartOffset+SeqKey.AnimEndOffset);
+			const float RealLength = Seq->GetPlayLength() - (SeqKey.AnimStartOffset+SeqKey.AnimEndOffset);
 			Result = (RealLength - (InPosition-SeqKey.AnimStartOffset))+SeqKey.AnimStartOffset;	// Mirror the cropped clip.
 		}
 	}
@@ -7546,10 +7457,10 @@ void UInterpTrackAnimControl::UpdateTrack(float NewPosition, UInterpTrackInst* T
 					if(Seq)
 					{
 						// Find position we should not play beyond in this sequence.
-						float SeqEnd = (Seq->SequenceLength - CurrentEndOffset);
+						float SeqEnd = (Seq->GetPlayLength() - CurrentEndOffset);
 
 						// Find time this sequence will take to play
-						float SeqLength = FMath::Max(Seq->SequenceLength - (CurrentStartOffset + CurrentEndOffset), 0.01f);
+						float SeqLength = FMath::Max(Seq->GetPlayLength() - (CurrentStartOffset + CurrentEndOffset), 0.01f);
 
 						// Find the number of loops we make. 
 						// @todo: This will need to be updated if we decide to support notifies in reverse.
@@ -7588,7 +7499,7 @@ void UInterpTrackAnimControl::UpdateTrack(float NewPosition, UInterpTrackInst* T
 					UAnimSequence* Seq = CurrentAnimSequence;
 					if( Seq )
 					{
-						float SeqEnd = (Seq->SequenceLength - CurrentEndOffset);
+						float SeqEnd = (Seq->GetPlayLength() - CurrentEndOffset);
 						AnimPos = FMath::Clamp( AnimPos, 0.f, SeqEnd + (float)KINDA_SMALL_NUMBER );
 					}
 
@@ -7652,7 +7563,7 @@ int32 UInterpTrackAnimControl::SplitKeyAtPosition(float InPosition)
 
 	// Check we are over an actual chunk of sequence.
 	float SplitAnimPos = ((InPosition - SplitKey.StartTime) * SplitKey.AnimPlayRate) + SplitKey.AnimStartOffset;
-	if(SplitAnimPos <= SplitKey.AnimStartOffset || SplitAnimPos >= (Seq->SequenceLength - SplitKey.AnimEndOffset))
+	if(SplitAnimPos <= SplitKey.AnimStartOffset || SplitAnimPos >= (Seq->GetPlayLength() - SplitKey.AnimEndOffset))
 	{
 		return INDEX_NONE;
 	}
@@ -7666,7 +7577,7 @@ int32 UInterpTrackAnimControl::SplitKeyAtPosition(float InPosition)
 	NewKey.AnimStartOffset = SplitAnimPos; // Start position in the new animation wants to be the place we are currently at.
 	NewKey.AnimEndOffset = SplitKey.AnimEndOffset; // End place is the same as the one we are splitting.
 
-	SplitKey.AnimEndOffset = Seq->SequenceLength - SplitAnimPos; // New end position is where we are.
+	SplitKey.AnimEndOffset = Seq->GetPlayLength() - SplitAnimPos; // New end position is where we are.
 	SplitKey.bLooping = false; // Disable looping for section before the cut.
 
 	// Add new key to track.
@@ -7697,7 +7608,7 @@ int32 UInterpTrackAnimControl::CropKeyAtPosition(float InPosition, bool bCutArea
 
 	// Check we are over an actual chunk of sequence.
 	float SplitAnimPos = ((InPosition - SplitKey.StartTime) * SplitKey.AnimPlayRate) + SplitKey.AnimStartOffset;
-	if(SplitAnimPos <= SplitKey.AnimStartOffset || SplitAnimPos >= (Seq->SequenceLength - SplitKey.AnimEndOffset))
+	if(SplitAnimPos <= SplitKey.AnimStartOffset || SplitAnimPos >= (Seq->GetPlayLength() - SplitKey.AnimEndOffset))
 	{
 		return INDEX_NONE;
 	}
@@ -7710,7 +7621,7 @@ int32 UInterpTrackAnimControl::CropKeyAtPosition(float InPosition, bool bCutArea
 	}
 	else
 	{
-		SplitKey.AnimEndOffset = Seq->SequenceLength - SplitAnimPos; // New end position is where we are.
+		SplitKey.AnimEndOffset = Seq->GetPlayLength() - SplitAnimPos; // New end position is where we are.
 	}
 
 	return SplitSeqIndex;
@@ -8413,7 +8324,7 @@ static void GetMaterialRefsForTrackInst(
 	check(TrackInst);
 
 	AActor* Actor = TrackInst->GetGroupActor();
-	if (Actor && !Actor->IsPendingKill())
+	if (IsValid(Actor))
 	{
 		if (Actor->IsA(AMaterialInstanceActor::StaticClass()))
 		{
@@ -8941,6 +8852,7 @@ AMaterialInstanceActor::AMaterialInstanceActor(const FObjectInitializer& ObjectI
 		SpriteComponent->Sprite = ConstructorStatics.MaterialInstanceSpriteObject.Get();
 		SpriteComponent->SpriteInfo.Category = ConstructorStatics.ID_Materials;
 		SpriteComponent->SpriteInfo.DisplayName = ConstructorStatics.NAME_Materials;
+		SpriteComponent->SetRelativeScale3D(FVector(0.5f, 0.5f, 0.5f));
 		SpriteComponent->SetupAttachment(SceneComponent);
 		SpriteComponent->bIsScreenSizeScaled = true;
 	}
@@ -9077,7 +8989,7 @@ void UInterpTrackColorScale::UpdateTrack(float NewPosition, UInterpTrackInst* Tr
 
 	// Actor for a Director group should be a PlayerController.
 	APlayerController* PC = Cast<APlayerController>(GrInst->GetGroupActor());
-	if(PC && PC->PlayerCameraManager && !PC->PlayerCameraManager->IsPendingKill())
+	if(PC && IsValid(PC->PlayerCameraManager))
 	{
 		PC->PlayerCameraManager->bEnableColorScaling = true;
 		PC->PlayerCameraManager->ColorScale = GetColorScaleAtTime(NewPosition);
@@ -9113,7 +9025,7 @@ void UInterpTrackInstColorScale::TermTrackInst(UInterpTrack* Track)
 {
 	UInterpGroupInst* GrInst = CastChecked<UInterpGroupInst>( GetOuter() );
 	APlayerController* PC = Cast<APlayerController>(GrInst->GroupActor);
-	if(PC && PC->PlayerCameraManager && !PC->PlayerCameraManager->IsPendingKill())
+	if(PC && IsValid(PC->PlayerCameraManager))
 	{
 		PC->PlayerCameraManager->bEnableColorScaling = false;
 		PC->PlayerCameraManager->ColorScale = FVector(1.f,1.f,1.f);
@@ -9814,7 +9726,7 @@ UInterpTrackFloatAnimBPParam::UInterpTrackFloatAnimBPParam(const FObjectInitiali
 void UInterpTrackFloatAnimBPParam::Serialize(FArchive& Ar)
 {
 	PRAGMA_DISABLE_DEPRECATION_WARNINGS	
-	if (Ar.IsSaving() && Ar.UE4Ver() < VER_UE4_NO_ANIM_BP_CLASS_IN_GAMEPLAY_CODE)
+	if (Ar.IsSaving() && Ar.UEVer() < VER_UE4_NO_ANIM_BP_CLASS_IN_GAMEPLAY_CODE)
 	{
 		if ((nullptr != AnimBlueprintClass) && (nullptr == AnimClass))
 		{
@@ -9824,7 +9736,7 @@ void UInterpTrackFloatAnimBPParam::Serialize(FArchive& Ar)
 
 	Super::Serialize(Ar);
 
-	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_NO_ANIM_BP_CLASS_IN_GAMEPLAY_CODE)
+	if (Ar.IsLoading() && Ar.UEVer() < VER_UE4_NO_ANIM_BP_CLASS_IN_GAMEPLAY_CODE)
 	{
 		if ((nullptr != AnimBlueprintClass) && (nullptr == AnimClass))
 		{

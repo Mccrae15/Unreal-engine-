@@ -34,9 +34,7 @@ UPackage* FContentBrowserAssetFileItemDataPayload::GetPackage(const bool bTryRec
 	{
 		if (!AssetData.PackageName.IsNone())
 		{
-			TStringBuilder<FName::StringBufferSize> PackageNameStr;
-			AssetData.PackageName.ToString(PackageNameStr);
-			CachedPackagePtr = FindObjectSafe<UPackage>(nullptr, *PackageNameStr, /*bExactClass*/true);
+			CachedPackagePtr = FindObjectSafe<UPackage>(nullptr, *FNameBuilder(AssetData.PackageName), /*bExactClass*/true);
 		}
 		bHasCachedPackagePtr = true;
 	}
@@ -49,9 +47,7 @@ UPackage* FContentBrowserAssetFileItemDataPayload::LoadPackage() const
 	{
 		if (!AssetData.PackageName.IsNone())
 		{
-			TStringBuilder<FName::StringBufferSize> PackageNameStr;
-			AssetData.PackageName.ToString(PackageNameStr);
-			CachedPackagePtr = ::LoadPackage(nullptr, *PackageNameStr, LOAD_None);
+			CachedPackagePtr = ::LoadPackage(nullptr, *FNameBuilder(AssetData.PackageName), LOAD_None);
 			(void)GetAsset(/*bTryRecacheIfNull*/true); // Also re-cache the asset pointer
 		}
 		bHasCachedPackagePtr = true;
@@ -65,9 +61,7 @@ UObject* FContentBrowserAssetFileItemDataPayload::GetAsset(const bool bTryRecach
 	{
 		if (!AssetData.ObjectPath.IsNone())
 		{
-			TStringBuilder<FName::StringBufferSize> AssetPathStr;
-			AssetData.ObjectPath.ToString(AssetPathStr);
-			CachedAssetPtr = FindObjectSafe<UObject>(nullptr, *AssetPathStr);
+			CachedAssetPtr = FindObjectSafe<UObject>(nullptr, *FNameBuilder(AssetData.ObjectPath));
 		}
 		bHasCachedAssetPtr = true;
 	}
@@ -80,9 +74,7 @@ UObject* FContentBrowserAssetFileItemDataPayload::LoadAsset() const
 	{
 		if (!AssetData.ObjectPath.IsNone())
 		{
-			TStringBuilder<FName::StringBufferSize> AssetPathStr;
-			AssetData.ObjectPath.ToString(AssetPathStr);
-			CachedAssetPtr = LoadObject<UObject>(nullptr, *AssetPathStr);
+			CachedAssetPtr = LoadObject<UObject>(nullptr, *FNameBuilder(AssetData.ObjectPath));
 			(void)GetPackage(/*bTryRecacheIfNull*/true); // Also re-cache the package pointer
 		}
 		bHasCachedAssetPtr = true;
@@ -112,7 +104,7 @@ const FString& FContentBrowserAssetFileItemDataPayload::GetFilename() const
 		const FString PackageNameStr = AssetData.PackageName.ToString();
 
 		// Get the filename by finding it on disk first
-		if (!FPackageName::DoesPackageExist(PackageNameStr, nullptr, &CachedFilename))
+		if (!FPackageName::DoesPackageExist(PackageNameStr, &CachedFilename))
 		{
 			if (const UPackage* Package = GetPackage())
 			{

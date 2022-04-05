@@ -65,7 +65,7 @@ struct AIMODULE_API FAIMessage
 	static void Broadcast(UObject* WorldContextObject, const FAIMessage& Message);
 };
 
-typedef TSharedPtr<struct FAIMessageObserver, ESPMode::Fast> FAIMessageObserverHandle;
+typedef TSharedPtr<struct FAIMessageObserver> FAIMessageObserverHandle;
 
 struct AIMODULE_API FAIMessageObserver : public TSharedFromThis<FAIMessageObserver>
 {
@@ -121,10 +121,10 @@ class AIMODULE_API UBrainComponent : public UActorComponent, public IAIResourceI
 protected:
 	/** blackboard component */
 	UPROPERTY(transient)
-	UBlackboardComponent* BlackboardComp;
+	TObjectPtr<UBlackboardComponent> BlackboardComp;
 
 	UPROPERTY(transient)
-	AAIController* AIOwner;
+	TObjectPtr<AAIController> AIOwner;
 
 	// @TODO this is a temp contraption to implement delayed messages delivering
 	// until proper AI messaging is implemented

@@ -58,7 +58,7 @@ namespace Mat
 		// get under clear coat output
 		UMaterialExpressionClearCoatNormalCustomOutput* UnderClearCoat = nullptr;
 		{
-			UMaterialExpression** Found = Material.Expressions.FindByPredicate(
+			TObjectPtr<UMaterialExpression>* Found = Material.Expressions.FindByPredicate(
 			    [](const UMaterialExpression* Expr) { return Expr->IsA<UMaterialExpressionClearCoatNormalCustomOutput>(); });
 			if (Found)
 				UnderClearCoat = Cast<UMaterialExpressionClearCoatNormalCustomOutput>(*Found);
@@ -139,31 +139,6 @@ namespace Mat
 			MapConnecter.DeleteExpression(EMaterialParameter::EmissionStrength);
 		}
 
-		// displacement
-		if (Parameters.Contains(EMaterialParameter::DisplacementMap))
-		{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			check(Material.D3D11TessellationMode != EMaterialTessellationMode::MTM_NoTessellation);
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-			UMaterialExpression* UV = Generator::NewMaterialExpressionTextureCoordinate(&Material, 0);
-			UV                      = Generator::NewMaterialExpressionMultiply(&Material, {UV, Tiling});
-			UMaterialExpression* Displacement =
-			    Generator::NewMaterialExpressionTextureSample(&Material, {Parameters[EMaterialParameter::DisplacementMap]}, UV);
-			// taking third(B/Z) output for Displacement - mdl distiller bakes displacement multiplied by state::normal so that scalar value goes to Z component
-			Displacement = Generator::NewMaterialExpressionMultiply(&Material, { {Displacement, 3}, Parameters[EMaterialParameter::DisplacementStrength] });
-			UMaterialExpression* WorldNormal = Generator::NewMaterialExpression<UMaterialExpressionVertexNormalWS>(&Material);
-
-			Generator::Connect(Material.WorldDisplacement, Generator::NewMaterialExpressionMultiply(&Material, {WorldNormal, Displacement}));
-
-			UMaterialExpression* Multiplier = Generator::NewMaterialExpressionScalarParameter(&Material, TEXT("Tesselation Multiplier"), 1.f);
-			Generator::Connect(Material.TessellationMultiplier, Multiplier);
-
-			Generator::SetMaterialExpressionGroup(TEXT("Displacement"), Multiplier);
-			Generator::SetMaterialExpressionGroup(TEXT("Displacement"), Parameters[EMaterialParameter::DisplacementMap]);
-			Generator::SetMaterialExpressionGroup(TEXT("Displacement"), Parameters[EMaterialParameter::DisplacementStrength]);
-		}
-
 		// never used
 		MapConnecter.DeleteExpressionMap(EMaterialParameter::Opacity);
 		MapConnecter.DeleteExpression(EMaterialParameter::IOR);
@@ -174,7 +149,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		FString               Name;
 
-		UMaterialExpression** Found = Material.Expressions.FindByPredicate(
+		TObjectPtr<UMaterialExpression>* Found = Material.Expressions.FindByPredicate(
 			[&Name](UMaterialExpression* Expression)  //
 		{
 			if (UMaterialExpressionScalarParameter* ScalarParameter = Cast<UMaterialExpressionScalarParameter>(Expression))
@@ -191,7 +166,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			return Name.Find(TEXT("Tiling Factor")) != INDEX_NONE;
 		});
 
-		UMaterialExpression** FoundU = Material.Expressions.FindByPredicate(
+		TObjectPtr<UMaterialExpression>* FoundU = Material.Expressions.FindByPredicate(
 		    [&Name](UMaterialExpression* Expression)  //
 		    {
 			    if (UMaterialExpressionScalarParameter* ScalarParameter = Cast<UMaterialExpressionScalarParameter>(Expression))
@@ -208,7 +183,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			    return Name.Find(TEXT("U Tiling")) != INDEX_NONE;
 		    });
 
-		UMaterialExpression** FoundV = Material.Expressions.FindByPredicate(
+		TObjectPtr<UMaterialExpression>* FoundV = Material.Expressions.FindByPredicate(
 			[&Name](UMaterialExpression* Expression)  //
 		{
 			if (UMaterialExpressionScalarParameter* ScalarParameter = Cast<UMaterialExpressionScalarParameter>(Expression))

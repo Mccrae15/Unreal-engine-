@@ -17,13 +17,13 @@ bool MeshOperator::OrientMesh(FMeshDescription& MeshDescription)
 {
 	FMeshEditingWrapper MeshWrapper(MeshDescription);
 
-	TQueue<FTriangleID> Front; 
+	TQueue<FTriangleID> Front;
+	TQueue<FTriangleID> BadOrientationFront;
+
 	FTriangleID AdjacentTriangle;
-	TStaticArray<FEdgeID, 3> EdgeSet;
 	FEdgeID Edge;
 
 	TArrayView < const FVertexInstanceID> Vertices;
-	int32 NbSwappedTriangles = 0;
 
 	FVector MaxCorner;
 	FVector MinCorner;
@@ -42,12 +42,12 @@ bool MeshOperator::OrientMesh(FMeshDescription& MeshDescription)
 			continue;
 		}
 
-		HighestVertex[0] = FVertexInstanceID::Invalid;
-		HighestVertex[1] = FVertexInstanceID::Invalid;
-		HighestVertex[2] = FVertexInstanceID::Invalid;
-		LowestVertex[0] = FVertexInstanceID::Invalid;
-		LowestVertex[1] = FVertexInstanceID::Invalid;
-		LowestVertex[2] = FVertexInstanceID::Invalid;
+		HighestVertex[0] = INDEX_NONE;
+		HighestVertex[1] = INDEX_NONE;
+		HighestVertex[2] = INDEX_NONE;
+		LowestVertex[0] = INDEX_NONE;
+		LowestVertex[1] = INDEX_NONE;
+		LowestVertex[2] = INDEX_NONE;
 
 		MaxCorner[0] = -MAX_flt;
 		MaxCorner[1] = -MAX_flt;
@@ -66,47 +66,99 @@ bool MeshOperator::OrientMesh(FMeshDescription& MeshDescription)
 		int32 NbConnectedFaces = 1;
 		int32 NbBorderEdges = 0;
 		int32 NbSurfaceEdges = 0;
+		int32 NbSwappedTriangles = 0;
 		while (!Front.IsEmpty())
 		{
-			Front.Dequeue(Triangle);
-
-			MeshDescription.GetTriangleEdges(Triangle, EdgeSet);
-
-			for (int32 IEdge = 0; IEdge < 3; IEdge++)
+			while (!Front.IsEmpty())
 			{
-				Edge = EdgeSet[IEdge];
+				Front.Dequeue(Triangle);
 
-				if (!MeshWrapper.IsEdgeOfCategory(Edge, EElementCategory::ElementCategorySurface))
+				TArrayView<const FEdgeID> EdgeSet = MeshDescription.GetTriangleEdges(Triangle);
+
+				for (int32 IEdge = 0; IEdge < 3; IEdge++)
 				{
-					NbBorderEdges++;
-					continue;
-				}
-				NbSurfaceEdges++;
+					Edge = EdgeSet[IEdge];
 
-				AdjacentTriangle = MeshWrapper.GetOtherTriangleAtEdge(Edge, Triangle);
-				if (MeshWrapper.IsTriangleMarked(AdjacentTriangle))
+					if (!MeshWrapper.IsEdgeOfCategory(Edge, EElementCategory::ElementCategorySurface))
+					{
+						NbBorderEdges++;
+						continue;
+					}
+
+					AdjacentTriangle = MeshWrapper.GetOtherTriangleAtEdge(Edge, Triangle);
+					if (MeshWrapper.IsTriangleMarked(AdjacentTriangle))
+					{
+						continue;
+					}
+
+					NbSurfaceEdges++;
+					NbConnectedFaces++;
+
+					ConnectedTriangles.Add(AdjacentTriangle);
+
+					MeshWrapper.SetTriangleMarked(AdjacentTriangle);
+					MeshWrapper.GetTriangleBoundingBox(AdjacentTriangle, MinCorner, MaxCorner, HighestVertex, LowestVertex);
+
+					if (MeshWrapper.GetEdgeDirectionInTriangle(Edge, 0) == MeshWrapper.GetEdgeDirectionInTriangle(Edge, 1))
+					{
+						MeshWrapper.SwapTriangleOrientation(AdjacentTriangle);
+						NbSwappedTriangles++;
+						BadOrientationFront.Enqueue(AdjacentTriangle);
+					}
+					else
+					{
+						Front.Enqueue(AdjacentTriangle);
+					}
+				}
+			}
+
+			while (!BadOrientationFront.IsEmpty())
+			{
+				BadOrientationFront.Dequeue(Triangle);
+
+				TArrayView<const FEdgeID> EdgeSet = MeshDescription.GetTriangleEdges(Triangle);
+
+				for (int32 IEdge = 0; IEdge < 3; IEdge++)
 				{
-					continue;
-				}
-				NbConnectedFaces++;
-				ConnectedTriangles.Add(AdjacentTriangle);
+					Edge = EdgeSet[IEdge];
 
-				if(MeshWrapper.GetEdgeDirectionInTriangle(Edge, 0) == MeshWrapper.GetEdgeDirectionInTriangle(Edge, 1))
-				{
-					MeshWrapper.SwapTriangleOrientation(AdjacentTriangle);
-					NbSwappedTriangles++;
-				}
-				MeshWrapper.SetTriangleMarked(AdjacentTriangle);
-				MeshWrapper.GetTriangleBoundingBox(AdjacentTriangle, MinCorner, MaxCorner, HighestVertex, LowestVertex);
+					if (!MeshWrapper.IsEdgeOfCategory(Edge, EElementCategory::ElementCategorySurface))
+					{
+						NbBorderEdges++;
+						continue;
+					}
 
-				Front.Enqueue(AdjacentTriangle);
+					AdjacentTriangle = MeshWrapper.GetOtherTriangleAtEdge(Edge, Triangle);
+					if (MeshWrapper.IsTriangleMarked(AdjacentTriangle))
+					{
+						continue;
+					}
+
+					NbSurfaceEdges++;
+					NbConnectedFaces++;
+
+					ConnectedTriangles.Add(AdjacentTriangle);
+
+					MeshWrapper.SetTriangleMarked(AdjacentTriangle);
+					MeshWrapper.GetTriangleBoundingBox(AdjacentTriangle, MinCorner, MaxCorner, HighestVertex, LowestVertex);
+					if (MeshWrapper.GetEdgeDirectionInTriangle(Edge, 0) == MeshWrapper.GetEdgeDirectionInTriangle(Edge, 1))
+					{
+						BadOrientationFront.Enqueue(AdjacentTriangle);
+						MeshWrapper.SwapTriangleOrientation(AdjacentTriangle);
+						NbSwappedTriangles++;
+					}
+					else
+					{
+						Front.Enqueue(AdjacentTriangle);
+					}
+				}
 			}
 		}
 
 		// Check if the mesh orientation need to be swapped
 		int NbInverted = 0;
 		int NbNotInverted = 0;
-		if (NbBorderEdges == 0 || NbBorderEdges * 40 < NbSurfaceEdges)  // NbBorderEdges * 40 < nbSurfaceEdges => basic rule to define if a mesh is a surface mesh or if the mesh is a volume mesh with gaps 
+		if (NbBorderEdges == 0 || NbBorderEdges * 20 < NbSurfaceEdges)  // NbBorderEdges * 20 < nbSurfaceEdges => basic rule to define if a mesh is a surface mesh or if the mesh is a volume mesh with gaps 
 		{
 			// case of volume mesh
 			// A vertex can have many normal (one by vertex instance) e.g. the corner of a box that have 3 normal and could be the highest 
@@ -114,20 +166,21 @@ bool MeshOperator::OrientMesh(FMeshDescription& MeshDescription)
 			// The normal most parallel to the axis is preferred
 			// To avoid mistake, we check for each highest vertex and trust the majority 
 
-			if (HighestVertex[0] != FVertexInstanceID::Invalid)
+			if (HighestVertex[0] != INDEX_NONE)
 			{
-				FStaticMeshAttributes StaticMeshAttributes( MeshDescription );
+				FStaticMeshConstAttributes StaticMeshAttributes(MeshDescription);
+				TVertexInstanceAttributesConstRef<FVector3f> Normals = StaticMeshAttributes.GetVertexInstanceNormals();
 
 				for (int32 VertexIndex = 0; VertexIndex < 3; VertexIndex++)
 				{
 					if (MeshWrapper.IsVertexOfCategory(HighestVertex[VertexIndex], EElementCategory::ElementCategorySurface))
 					{
 						FVertexID VertexID = MeshDescription.GetVertexInstanceVertex(HighestVertex[VertexIndex]);
-						const TArray<FVertexInstanceID>& CoincidentVertexInstanceIdSet = MeshDescription.GetVertexVertexInstances(VertexID);
+						TArrayView<const FVertexInstanceID> CoincidentVertexInstanceIdSet = MeshDescription.GetVertexVertexInstanceIDs(VertexID);
 						float MaxComponent = 0;
-						for (const FVertexInstanceID& VertexInstanceID : CoincidentVertexInstanceIdSet)
+						for (const FVertexInstanceID VertexInstanceID : CoincidentVertexInstanceIdSet)
 						{
-							FVector Normal = StaticMeshAttributes.GetVertexInstanceNormals()[ VertexInstanceID ];
+							FVector Normal = (FVector)Normals[VertexInstanceID];
 							if (FMath::Abs(MaxComponent) < FMath::Abs(Normal[VertexIndex]))
 							{
 								MaxComponent = Normal[VertexIndex];
@@ -147,11 +200,11 @@ bool MeshOperator::OrientMesh(FMeshDescription& MeshDescription)
 					if (MeshWrapper.IsVertexOfCategory(LowestVertex[VertexIndex], EElementCategory::ElementCategorySurface))
 					{
 						FVertexID VertexID = MeshDescription.GetVertexInstanceVertex(LowestVertex[VertexIndex]);
-						const TArray<FVertexInstanceID>& CoincidentVertexInstanceIdSet = MeshDescription.GetVertexVertexInstances(VertexID);
+						TArrayView<const FVertexInstanceID> CoincidentVertexInstanceIdSet = MeshDescription.GetVertexVertexInstanceIDs(VertexID);
 						float MaxComponent = 0;
-						for (const FVertexInstanceID& VertexInstanceID : CoincidentVertexInstanceIdSet)
+						for (const FVertexInstanceID VertexInstanceID : CoincidentVertexInstanceIdSet)
 						{
-							FVector Normal = MeshDescription.VertexInstanceAttributes().GetAttribute<FVector>(VertexInstanceID, MeshAttribute::VertexInstance::Normal);
+							FVector Normal = (FVector)Normals[VertexInstanceID];
 							if (FMath::Abs(MaxComponent) < FMath::Abs(Normal[VertexIndex]))
 							{
 								MaxComponent = Normal[VertexIndex];
@@ -170,14 +223,14 @@ bool MeshOperator::OrientMesh(FMeshDescription& MeshDescription)
 				}
 			}
 		}
-		else if (NbSwappedTriangles*2 > NbConnectedFaces)
+		else if (NbSwappedTriangles * 2 > NbConnectedFaces)
 		{
 			// case of surface mesh
 			// this means that more triangles of surface shape have been swapped than no swapped, the good orientation has been reversed.
 			// The mesh need to be re swapped
 			NbInverted++;
 		}
-		
+
 		// if needed swap all the mesh
 		if (NbInverted > NbNotInverted)
 		{

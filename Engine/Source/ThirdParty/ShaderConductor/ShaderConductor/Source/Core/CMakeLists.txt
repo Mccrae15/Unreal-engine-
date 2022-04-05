@@ -25,13 +25,20 @@ add_dependencies(CopyDxcompiler dxcompiler)
 
 set_target_properties(CopyDxcompiler PROPERTIES FOLDER "Core")
 
-#UE Change Begin: Replace rpath with 'install_name_tool' after deployment
+# UE Change Begin: Replace @rpath with 'install_name_tool' after deployment.
 set(CMAKE_BUILD_WITH_INSTALL_RPATH ON)
 if (APPLE)
   set(CMAKE_INSTALL_NAME_DIR "@rpath")
   set(CMAKE_INSTALL_RPATH "RPATH_DUMMY")
 endif()
-#UE Change End: Replace rpath with 'install_name_tool' after deployment
+# UE Change End: Replace @rpath with 'install_name_tool' after deployment.
+
+# UE Change Begin: Allow explicit DllShutdown to prevent dangling mutex on Linux
+option(SC_EXPLICIT_DLLSHUTDOWN "Enable explicit DllShutdown" OFF)
+if(SC_EXPLICIT_DLLSHUTDOWN)
+  add_definitions(-DSC_EXPLICIT_DLLSHUTDOWN)
+endif()
+# UE Change End: Allow explicit DllShutdown to prevent dangling mutex on Linux
 
 set(LIB_NAME ShaderConductor)
 
@@ -51,18 +58,41 @@ add_library(${LIB_NAME} "SHARED"
 )
 
 target_include_directories(${LIB_NAME}
-    PUBLIC ${SC_ROOT_DIR}/Include
-    PRIVATE ${SC_BUILD_DIR}/External/DirectXShaderCompiler/include
-    PRIVATE ${SC_ROOT_DIR}/External/DirectXShaderCompiler/include
-    PRIVATE ${SC_ROOT_DIR}/External/SPIRV-Cross
-    PRIVATE ${SC_ROOT_DIR}/External/SPIRV-Tools/include
+    PUBLIC
+        ${SC_ROOT_DIR}/Include
+
+    PRIVATE
+        ${SC_BUILD_DIR}/External/DirectXShaderCompiler/include
+        ${SC_ROOT_DIR}/External/DirectXShaderCompiler/include
 )
-target_compile_definitions(${LIB_NAME} PRIVATE
-    -DSHADER_CONDUCTOR_SOURCE -DDBG -DSUPPORT_QUERY_GIT_COMMIT_INFO -DENABLE_SPIRV_CODEGEN
-    -D_CRT_SECURE_NO_DEPRECATE -D_CRT_SECURE_NO_WARNINGS -D_SCL_SECURE_NO_DEPRECATE -D_SCL_SECURE_NO_WARNINGS)
+target_compile_definitions(${LIB_NAME}
+    PRIVATE
+        -DSHADER_CONDUCTOR_SOURCE
+)
+if(MSVC)
+    target_compile_definitions(${LIB_NAME}
+        PRIVATE
+            -D_CRT_SECURE_NO_DEPRECATE
+            -D_CRT_SECURE_NO_WARNINGS
+            -D_SCL_SECURE_NO_DEPRECATE
+            -D_SCL_SECURE_NO_WARNINGS
+            -D_SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING
+    )
+endif()
 target_link_libraries(${LIB_NAME}
-    dxcompiler LLVMDxcSupport LLVMSupport
-    spirv-cross-core spirv-cross-glsl spirv-cross-hlsl spirv-cross-msl SPIRV-Tools
+    PRIVATE
+        dxcompiler
+        LLVMDxcSupport
+        LLVMSupport
+        spirv-cross-core
+        spirv-cross-glsl
+        spirv-cross-hlsl
+        spirv-cross-msl
+        spirv-cross-util
+        SPIRV-Tools
+		# UE Change Begin: Allow optimization after source-to-spirv conversion and before spirv-to-source cross-compilation
+        SPIRV-Tools-opt
+		# UE Change End: Allow optimization after source-to-spirv conversion and before spirv-to-source cross-compilation
 )
 
 add_dependencies(${LIB_NAME} spirv-cross-core spirv-cross-glsl spirv-cross-hlsl spirv-cross-msl)

@@ -13,8 +13,20 @@
 #include <sys/sysinfo.h>
 #include <sys/mman.h>
 
+#include "Android/AndroidPlatformCrashContext.h"
+#include "Async/TaskGraphInterfaces.h"
+#include "Async/Async.h"
+
 #define JNI_CURRENT_VERSION JNI_VERSION_1_6
 extern JavaVM* GJavaVM;
+
+static int32 GAndroidAddSwapToTotalPhysical = 1;
+static FAutoConsoleVariableRef CVarAddSwapToTotalPhysical(
+	TEXT("android.AddSwapToTotalPhysical"),
+	GAndroidAddSwapToTotalPhysical,
+	TEXT("When non zero, Total physical memory reporting will also include swap memory. (default)"),
+	ECVF_Default
+);
 
 static int64 GetNativeHeapAllocatedSize()
 {
@@ -53,6 +65,8 @@ void FAndroidPlatformMemory::Init()
 		float(MemoryConstants.PageSize/1024.0)
 		);
 }
+
+extern void (*GMemoryWarningHandler)(const FGenericMemoryWarningContext& Context);
 
 namespace AndroidPlatformMemory
 {
@@ -96,9 +110,64 @@ namespace AndroidPlatformMemory
 		// we were unable to find whitespace in front of the number
 		return 0;
 	}
+
+	static FAndroidMemoryWarningContext GAndroidMemoryWarningContext;
+	static void SendMemoryWarningContext()
+	{
+		if (FTaskGraphInterface::IsRunning())
+		{
+			// Run on game thread to avoid mem handler callback getting confused.
+			AsyncTask(ENamedThreads::GameThread, [AndroidMemoryWarningContext = GAndroidMemoryWarningContext]()
+				{
+					if (GMemoryWarningHandler)
+					{
+						// note that we may also call this when recovering from low memory conditions. (i.e. not in low memory state.)
+						GMemoryWarningHandler(AndroidMemoryWarningContext);
+					}
+				});
+		}
+		else
+		{
+			const FAndroidMemoryWarningContext& Context = GAndroidMemoryWarningContext;
+			UE_LOG(LogAndroid, Warning, TEXT("Not calling memory warning handler, received too early. Last Trim Memory State: %d"), (int)Context.LastTrimMemoryState);
+		}
+	}
 }
 
 extern int32 AndroidThunkCpp_GetMetaDataInt(const FString& Key);
+
+// useful for debugging, this triggers a traversal of smaps and can take 100s of ms.
+static bool GetPss(uint64& PSSOUT, uint64& SwapPSSOUT)
+{
+	PSSOUT = 0;
+	SwapPSSOUT = 0;
+	int FieldsSetSuccessfully = 0;
+	// again /proc "API" :/
+	if (FILE* SmapsRollup = fopen("/proc/self/smaps_rollup", "r"))
+	{
+		do
+		{
+			char LineBuffer[256] = { 0 };
+			char* Line = fgets(LineBuffer, UE_ARRAY_COUNT(LineBuffer), SmapsRollup);
+			if (Line == nullptr)
+			{
+				break;	// eof or an error
+			}
+			if (strstr(Line, "SwapPss:") == Line)
+			{
+				SwapPSSOUT = AndroidPlatformMemory::GetBytesFromStatusLine(Line);
+				++FieldsSetSuccessfully;
+			}
+			else if (strstr(Line, "Pss:") == Line)
+			{
+				PSSOUT = AndroidPlatformMemory::GetBytesFromStatusLine(Line);
+				++FieldsSetSuccessfully;
+			}
+		} while (FieldsSetSuccessfully < 2);
+		fclose(SmapsRollup);
+	}
+	return FieldsSetSuccessfully == 2;
+}
 
 FPlatformMemoryStats FAndroidPlatformMemory::GetStats()
 {
@@ -185,9 +254,19 @@ FPlatformMemoryStats FAndroidPlatformMemory::GetStats()
 				MemoryStats.UsedPhysical = AndroidPlatformMemory::GetBytesFromStatusLine(Line);
 				++FieldsSetSuccessfully;
 			}
-		} while (FieldsSetSuccessfully < 4);
+			else if (strstr(Line, "VmSwap:") == Line)
+			{
+				MemoryStats.VMSwap = AndroidPlatformMemory::GetBytesFromStatusLine(Line);
+				++FieldsSetSuccessfully;
+			}
+		} while (FieldsSetSuccessfully < 5);
 
 		fclose(ProcMemStats);
+	}
+
+	if (GAndroidAddSwapToTotalPhysical)
+	{
+		MemoryStats.UsedPhysical += MemoryStats.VMSwap;
 	}
 
 
@@ -200,11 +279,36 @@ FPlatformMemoryStats FAndroidPlatformMemory::GetStats()
 	// note: Android 10 places impractical limits on the frequency of calls to getProcessMemoryInfo, revert to VmRSS for OS10+
 	if (GJavaVM && FAndroidMisc::GetAndroidBuildVersion() < 29) 
 	{
-		MemoryStats.UsedPhysical = static_cast<uint64>(AndroidThunkCpp_GetMetaDataInt(TEXT("ue4.getUsedMemory"))) * 1024ULL;
+		MemoryStats.UsedPhysical = static_cast<uint64>(AndroidThunkCpp_GetMetaDataInt(TEXT("unreal.getUsedMemory"))) * 1024ULL;
 	}
 #endif
 
 	return MemoryStats;
+}
+
+FGenericPlatformMemoryStats::EMemoryPressureStatus FPlatformMemoryStats::GetMemoryPressureStatus()
+{
+	// convert Android's TRIM status to FGenericPlatformMemoryStats::EMemoryPressureStatus.
+	auto AndroidTRIMToMemPressureStatus = [](FAndroidPlatformMemory::ETrimValues LastTrimMemoryState)
+	{
+		switch (LastTrimMemoryState)
+		{
+		case FAndroidPlatformMemory::ETrimValues::Running_Critical:
+			return FGenericPlatformMemoryStats::EMemoryPressureStatus::Critical;
+		case FAndroidPlatformMemory::ETrimValues::Unknown:
+			return FGenericPlatformMemoryStats::EMemoryPressureStatus::Unknown;
+		case FAndroidPlatformMemory::ETrimValues::Complete:
+		case FAndroidPlatformMemory::ETrimValues::Moderate:
+		case FAndroidPlatformMemory::ETrimValues::Background:
+		case FAndroidPlatformMemory::ETrimValues::UI_Hidden:
+		case FAndroidPlatformMemory::ETrimValues::Running_Low:
+		case FAndroidPlatformMemory::ETrimValues::Running_Moderate:
+		default:
+			return FGenericPlatformMemoryStats::EMemoryPressureStatus::Nominal;
+		}
+	};
+
+	return AndroidTRIMToMemPressureStatus(AndroidPlatformMemory::GAndroidMemoryWarningContext.LastTrimMemoryState);
 }
 
 uint64 FAndroidPlatformMemory::GetMemoryUsedFast()
@@ -214,13 +318,16 @@ uint64 FAndroidPlatformMemory::GetMemoryUsedFast()
 	// note: Android 10 places impractical limits on the frequency of calls to getProcessMemoryInfo, revert to VmRSS for OS10+
 	if (GJavaVM && FAndroidMisc::GetAndroidBuildVersion() < 29) 
 	{
-		return static_cast<uint64>(AndroidThunkCpp_GetMetaDataInt(TEXT("ue4.getUsedMemory"))) * 1024ULL;
+		return static_cast<uint64>(AndroidThunkCpp_GetMetaDataInt(TEXT("unreal.getUsedMemory"))) * 1024ULL;
 	}
 #endif
 
+	uint64 VMRSS = 0;
+	uint64 VMSwap = 0;
 	// minimal code to get Used memory
 	if (FILE* ProcMemStats = fopen("/proc/self/status", "r"))
 	{
+		int LinesToFind = GAndroidAddSwapToTotalPhysical ? 2 : 1;
 		while (1)
 		{
 			char LineBuffer[256] = { 0 };
@@ -231,16 +338,40 @@ uint64 FAndroidPlatformMemory::GetMemoryUsedFast()
 			}
 			else if (strstr(Line, "VmRSS:") == Line)
 			{
-				fclose(ProcMemStats);
-				return AndroidPlatformMemory::GetBytesFromStatusLine(Line);
+				VMRSS = AndroidPlatformMemory::GetBytesFromStatusLine(Line);
+				LinesToFind--;
+			}
+			else if (GAndroidAddSwapToTotalPhysical && strstr(Line, "VmSwap:") == Line)
+			{
+				VMSwap = AndroidPlatformMemory::GetBytesFromStatusLine(Line);
+				LinesToFind--;
+			}
+
+			if (LinesToFind == 0)
+			{
+				break;
 			}
 		} 
 		fclose(ProcMemStats);
 	}
 
-	return 0;
+	return VMRSS + VMSwap;
 }
 
+// Called from JNI when trim messages are recieved.
+void FAndroidPlatformMemory::UpdateOSMemoryStatus(EOSMemoryStatusCategory OSMemoryStatusCategory, int Value)
+{
+	switch (OSMemoryStatusCategory)
+	{
+		case EOSMemoryStatusCategory::OSTrim:
+			AndroidPlatformMemory::GAndroidMemoryWarningContext.LastTrimMemoryState = (FAndroidPlatformMemory::ETrimValues)Value;
+			break;
+		default:
+			checkNoEntry();
+	}
+
+	AndroidPlatformMemory::SendMemoryWarningContext();
+}
 
 const FPlatformMemoryConstants& FAndroidPlatformMemory::GetConstants()
 {
@@ -475,7 +606,11 @@ void FAndroidPlatformMemory::FPlatformVirtualMemoryBlock::Decommit(size_t InOffs
 {
 	check(IsAligned(InOffset, GetCommitAlignment()) && IsAligned(InSize, GetCommitAlignment()));
 	check(InOffset >= 0 && InSize >= 0 && InOffset + InSize <= GetActualSize() && Ptr);
-	madvise(((uint8*)Ptr) + InOffset, InSize, MADV_DONTNEED);
+	if (madvise(((uint8*)Ptr) + InOffset, InSize, MADV_DONTNEED) != 0)
+	{
+		// we can ran out of VMAs here too!
+		FPlatformMemory::OnOutOfMemory(InSize, 0);
+	}
 }
 
 

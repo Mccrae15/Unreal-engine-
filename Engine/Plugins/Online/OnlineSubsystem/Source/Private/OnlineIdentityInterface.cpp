@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Interfaces/OnlineIdentityInterface.h"
+#include "HAL/PlatformMisc.h"
 
 FString ToDebugString(IOnlineIdentity::EPrivilegeResults PrivilegeResults)
 {
@@ -39,4 +40,31 @@ FString ToDebugString(EUserPrivileges::Type UserPrivilege)
 	case EUserPrivileges::CanUserCrossPlay: return TEXT("CanUserCrossPlay");
 	default: return TEXT("Unknown");
 	}
+}
+
+FString ToDebugString(const FControllerPairingChangedUserInfo& ControllerPairingChangedUserInfo)
+{
+	return FString::Printf(TEXT("[%s, %d devices]"), *ControllerPairingChangedUserInfo.User.ToDebugString(), ControllerPairingChangedUserInfo.ControllersRemaining);
+}
+
+FPlatformUserId IOnlineIdentity::GetPlatformUserIdFromLocalUserNum(int32 LocalUserNum) const
+{
+	if (LocalUserNum >= 0 && LocalUserNum < MAX_LOCAL_PLAYERS)
+	{
+		return FPlatformMisc::GetPlatformUserForUserIndex(LocalUserNum);
+	}
+
+	return PLATFORMUSERID_NONE;
+}
+
+int32 IOnlineIdentity::GetLocalUserNumFromPlatformUserId(FPlatformUserId PlatformUserId) const
+{
+	int32 Index = FPlatformMisc::GetUserIndexForPlatformUser(PlatformUserId);
+
+	if (Index >= 0 && Index < MAX_LOCAL_PLAYERS)
+	{
+		return Index;
+	}
+
+	return INDEX_NONE;
 }

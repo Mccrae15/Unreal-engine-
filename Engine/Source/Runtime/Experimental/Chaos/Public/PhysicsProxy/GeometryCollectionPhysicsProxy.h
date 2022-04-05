@@ -23,8 +23,9 @@ namespace Chaos
 	template <typename T> class TSerializablePtr;
 	class FErrorReporter;
 	struct FClusterCreationParameters;
+
 	struct FDirtyGeometryCollectionData;
-	
+
 	class FPBDRigidsEvolutionBase;
 }
 
@@ -58,13 +59,10 @@ class CHAOS_API FGeometryCollectionPhysicsProxy : public TPhysicsProxy<FGeometry
 public:
 	typedef TPhysicsProxy<FGeometryCollectionPhysicsProxy, FStubGeometryCollectionData> Base;
 	typedef FCollisionStructureManager::FSimplicial FSimplicial;
-	typedef Chaos::TPBDRigidParticleHandle<float, 3> FParticleHandle;
-	typedef Chaos::TPBDRigidClusteredParticleHandle<float, 3> FClusterHandle;
+	typedef Chaos::TPBDRigidParticleHandle<Chaos::FReal, 3> FParticleHandle;
+	typedef Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3> FClusterHandle;
 
 	/** Proxy publics */
-	using FInitFunc = TFunction<void(FSimulationParameters&)>;
-	using FCacheSyncFunc = TFunction<void(const FGeometryCollectionResults&)>;
-	using FFinalSyncFunc = TFunction<void(const FRecordedTransformTrack&)>;
 	using IPhysicsProxyBase::GetSolver;
 
 	FGeometryCollectionPhysicsProxy() = delete;
@@ -81,9 +79,6 @@ public:
 		const FSimulationParameters& SimulationParameters,
 		FCollisionFilterData InSimFilter,
 		FCollisionFilterData InQueryFilter,
-		FInitFunc InInitFunc, 
-		FCacheSyncFunc InCacheSyncFunc, 
-		FFinalSyncFunc InFinalSyncFunc  ,
 		const Chaos::EMultiBufferMode BufferMode=Chaos::EMultiBufferMode::TripleGuarded);
 	virtual ~FGeometryCollectionPhysicsProxy();
 
@@ -124,6 +119,12 @@ public:
 	/** Push physics state into the \c PhysToGameInterchange. */
 	void BufferPhysicsResults(Chaos::FPBDRigidsSolver* CurrentSolver, Chaos::FDirtyGeometryCollectionData& BufferData);
 
+	/** Push data from the game thread to the physics thread */
+	void PushStateOnGameThread(Chaos::FPBDRigidsSolver* InSolver);
+
+	/** apply the state changes on the physics thread */
+	void PushToPhysicsState();
+	
 	/** Does nothing as \c BufferPhysicsResults() already did this. */
 	void FlipBuffer();
 	
@@ -174,6 +175,9 @@ public:
 
 	bool IsGTCollectionDirty() const { return GameThreadCollection.IsDirty(); }
 
+	// set the world transform ( this needs to be called on the game thread ) 
+	void SetWorldTransform(const FTransform& WorldTransform);
+
 	const TArray<FClusterHandle*> GetParticles() const
 	{
 		return SolverParticleHandles;
@@ -203,7 +207,7 @@ public:
 	*  * Get all the geometry collection particle handles based on the processing resolution
 	 */
 	void GetRelevantParticleHandles(
-		TArray<Chaos::TGeometryParticleHandle<float, 3>*>& Handles,
+		TArray<Chaos::TGeometryParticleHandle<Chaos::FReal, 3>*>& Handles,
 		const Chaos::FPBDRigidsSolver* RigidSolver,
 		EFieldResolutionType ResolutionType);
 
@@ -211,12 +215,29 @@ public:
 	 * Get all the geometry collection particle handles filtered by object state
 	 */
 	void GetFilteredParticleHandles(
-		TArray<Chaos::TGeometryParticleHandle<float, 3>*>& Handles,
+		TArray<Chaos::TGeometryParticleHandle<Chaos::FReal, 3>*>& Handles,
 		const Chaos::FPBDRigidsSolver* RigidSolver,
-		const EFieldFilterType FilterType);
+		const EFieldFilterType FilterType,
+		const EFieldObjectType ObjectType);
 		
 	/* Implemented so we can construct TAccelerationStructureHandle. */
 	virtual void* GetHandleUnsafe() const override { return nullptr; }
+
+	int32 GetTransformGroupIndexFromHandle(const FParticleHandle* Handle) const
+	{
+		if (HandleToTransformGroupIndex.Contains(Handle))
+		{
+			return HandleToTransformGroupIndex[Handle];
+		}
+		else
+		{
+			return INDEX_NONE;
+		}
+	}
+
+	bool GetIsObjectDynamic() const { return IsObjectDynamic; }
+
+	void DisableParticles(TArray<int32>& TransformGroupIndices);
 
 protected:
 	/**
@@ -227,9 +248,9 @@ protected:
 	 *  \P Parameters - uh, yeah...  Other parameters.
 	 */
 
-	Chaos::TPBDRigidClusteredParticleHandle<float, 3>* BuildClusters(
+	Chaos::TPBDRigidClusteredParticleHandle<Chaos::FReal, 3>* BuildClusters(
 		const uint32 CollectionClusterIndex, 
-		TArray<Chaos::TPBDRigidParticleHandle<float, 3>*>& ChildHandles,
+		TArray<Chaos::TPBDRigidParticleHandle<Chaos::FReal, 3>*>& ChildHandles,
 		const TArray<int32>& ChildTransformGroupIndices,
 		const Chaos::FClusterCreationParameters & Parameters,
 		const Chaos::FUniqueIdx* ExistingIndex);
@@ -242,10 +263,15 @@ protected:
 
 	void InitializeRemoveOnFracture(FParticlesType& Particles, const TManagedArray<int32>& DynamicState);
 
+	void SetClusteredParticleKinematicTarget(Chaos::FPBDRigidClusteredParticleHandle* Handle, const FTransform& WorldTransform);
+
 private:
 
 	FSimulationParameters Parameters;
 	TArray<FFieldSystemCommand> Commands;
+
+	/** Field Datas stored during evaluation */
+	FFieldExecutionDatas ExecutionDatas;
 
 	//
 	//  Proxy State Information
@@ -263,6 +289,7 @@ private:
 	//
 	bool IsObjectDynamic; // Records current dynamic state
 	bool IsObjectLoading; // Indicate when loaded
+	bool IsObjectDeleting; // Indicatge when pending deletion
 
 	TManagedArray<TUniquePtr<Chaos::FGeometryParticle>> GTParticles;
 	FCollisionFilterData SimFilter;
@@ -291,12 +318,6 @@ private:
 	FRecordedTransformTrack RecordedTracks;
 #endif
 
-	// Functions to handle engine-side events
-	FInitFunc InitFunc;
-	FCacheSyncFunc CacheSyncFunc;
-	FFinalSyncFunc FinalSyncFunc;
-
-
 	// Per object collision fraction.
 	float CollisionParticlesPerObjectFraction;
 
@@ -306,6 +327,10 @@ private:
 	// is a deep copy from the GameThreadCollection. 
 	FGeometryDynamicCollection PhysicsThreadCollection;
 	FGeometryDynamicCollection& GameThreadCollection;
+
+	// this data flows from Game thread to physics thread
+	FGeometryCollectioPerFrameData GameThreadPerFrameData;
+	bool bIsPhysicsThreadWorldTransformDirty;
 
 	// Currently this is using triple buffers for game-physics and 
 	// physics-game thread communication, but not for any reason other than this 

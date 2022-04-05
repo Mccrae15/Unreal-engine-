@@ -96,6 +96,9 @@ FAdvancedPreviewScene::FAdvancedPreviewScene(ConstructionValues CVS, float InFlo
 	{
 		PreviewWorld->ChangeFeatureLevel(GEditor->DefaultWorldFeatureLevel);
 	}
+
+	PreviousRotation = Profile.LightingRigRotation;
+	UILightingRigRotationDelta = 0.0f;
 }
 
 FAdvancedPreviewScene::~FAdvancedPreviewScene()
@@ -154,10 +157,13 @@ void FAdvancedPreviewScene::UpdateScene(FPreviewSceneProfile& Profile, bool bUpd
 		{			
 			InstancedSkyMaterial->SetScalarParameterValueEditorOnly(CubeMapRotationName, Profile.LightingRigRotation * OneOver360);
 
-			// Update light direction as well
-			LightDir.Yaw = -Profile.LightingRigRotation;
+			// NOTE: this code is only executed when the UI rig rotation angle is interacted with.
+			// the l+mouse shortcut and the rig smooth rotation are handled at other places for the directional light
+			LightDir.Yaw += UILightingRigRotationDelta;
+			UILightingRigRotationDelta = 0;
 			SetLightDirection(LightDir);
 			DefaultSettings->Profiles[CurrentProfileIndex].DirectionalLightRotation = LightDir;
+
 			SkyLight->SourceCubemapAngle = Profile.LightingRigRotation;
 			bSkyChanged = true;
 		}
@@ -193,6 +199,11 @@ FLinearColor FAdvancedPreviewScene::GetBackgroundColor() const
 	return Color * DefaultSettings->Profiles[CurrentProfileIndex].EnvironmentIntensity;
 }
 
+float FAdvancedPreviewScene::GetFloorOffset() const
+{
+	return -(float)FloorMeshComponent->GetRelativeTransform().GetLocation().Z;
+}
+
 void FAdvancedPreviewScene::SetFloorOffset(const float InFloorOffset)
 {
 	FTransform FloorTransform(FRotator(0, 0, 0), FVector(0, 0, -(InFloorOffset)), FVector(4.0f, 4.0f, 1.0f));
@@ -205,6 +216,9 @@ void FAdvancedPreviewScene::SetProfileIndex(const int32 InProfileIndex)
 	CurrentProfileIndex = InProfileIndex;
 	DefaultSettings->Profiles[CurrentProfileIndex].LoadEnvironmentMap();
 	SetLightDirection(DefaultSettings->Profiles[CurrentProfileIndex].DirectionalLightRotation);
+	PreviousRotation = DefaultSettings->Profiles[CurrentProfileIndex].LightingRigRotation;
+	UILightingRigRotationDelta = 0.0f;
+
 	UpdateScene(DefaultSettings->Profiles[CurrentProfileIndex]);
 	DefaultSettings->OnAssetViewerSettingsChanged().Broadcast(NAME_None);
 }
@@ -240,6 +254,7 @@ void FAdvancedPreviewScene::Tick(float DeltaTime)
 		PreviewWorld->UpdateAllSkyCaptures();
 
 		PreviousRotation = Profile.LightingRigRotation;
+		UILightingRigRotationDelta = 0.0f;
 	}
 
 	// Update the sky every tick rather than every mouse move (UpdateScene call)
@@ -303,6 +318,15 @@ const bool FAdvancedPreviewScene::HandleInputKey(FViewport* InViewport, int32 Co
 		}
 	}
 
+	return false;
+}
+
+bool FAdvancedPreviewScene::GetFloorVisibility() const
+{
+	if(FloorMeshComponent)
+	{
+		return FloorMeshComponent->GetVisibleFlag();
+	}
 	return false;
 }
 
@@ -420,7 +444,17 @@ void FAdvancedPreviewScene::HandleTogglePostProcessing()
 
 void FAdvancedPreviewScene::OnAssetViewerSettingsRefresh(const FName& InPropertyName)
 {
-	if (DefaultSettings->Profiles.IsValidIndex(CurrentProfileIndex))
+	// If the profile was changed, update the current index and the scene.
+	if (InPropertyName == GET_MEMBER_NAME_CHECKED(FPreviewSceneProfile, ProfileName))
+	{
+		CurrentProfileIndex = GetDefault<UEditorPerProjectUserSettings>()->AssetViewerProfileIndex;
+		CurrentProfileIndex = DefaultSettings->Profiles.IsValidIndex(CurrentProfileIndex) ? CurrentProfileIndex : 0;
+		PreviousRotation = DefaultSettings->Profiles[CurrentProfileIndex].LightingRigRotation;
+		UILightingRigRotationDelta = 0.0f;
+
+		UpdateScene(DefaultSettings->Profiles[CurrentProfileIndex]);
+	}
+	else if (DefaultSettings->Profiles.IsValidIndex(CurrentProfileIndex))
 	{
 		const bool bNameNone = InPropertyName == NAME_None;
 
@@ -428,6 +462,9 @@ void FAdvancedPreviewScene::OnAssetViewerSettingsRefresh(const FName& InProperty
 		const bool bUpdateSkyLight = bUpdateEnvironment || (InPropertyName == GET_MEMBER_NAME_CHECKED(FPreviewSceneProfile, SkyLightIntensity) || InPropertyName == GET_MEMBER_NAME_CHECKED(FPreviewSceneProfile, bUseSkyLighting) || (InPropertyName == GET_MEMBER_NAME_CHECKED(UAssetViewerSettings, Profiles)));
 		const bool bUpdateDirectionalLight = (InPropertyName == GET_MEMBER_NAME_CHECKED(FPreviewSceneProfile, DirectionalLightIntensity)) || (InPropertyName == GET_MEMBER_NAME_CHECKED(FPreviewSceneProfile, DirectionalLightColor));
 		const bool bUpdatePostProcessing = (InPropertyName == GET_MEMBER_NAME_CHECKED(FPreviewSceneProfile, PostProcessingSettings)) || (InPropertyName == GET_MEMBER_NAME_CHECKED(FPreviewSceneProfile, bPostProcessingEnabled));
+
+		UILightingRigRotationDelta += PreviousRotation - DefaultSettings->Profiles[CurrentProfileIndex].LightingRigRotation;
+		PreviousRotation = DefaultSettings->Profiles[CurrentProfileIndex].LightingRigRotation;
 
 		UpdateScene(DefaultSettings->Profiles[CurrentProfileIndex], bUpdateSkyLight || bNameNone, bUpdateEnvironment || bNameNone, bUpdatePostProcessing || bNameNone, bUpdateDirectionalLight || bNameNone);
 	}

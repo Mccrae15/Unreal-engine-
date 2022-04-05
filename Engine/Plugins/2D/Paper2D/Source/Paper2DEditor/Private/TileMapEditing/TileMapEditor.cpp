@@ -16,6 +16,7 @@
 #include "TileMapEditing/STileMapEditorViewportToolbar.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "EditorModeManager.h"
 
 #define LOCTEXT_NAMESPACE "TileMapEditor"
 
@@ -245,7 +246,6 @@ TSharedRef<SDockTab> FTileMapEditor::SpawnTab_ToolboxHost(const FSpawnTabArgs& A
 
 	// Spawn the tab
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("LevelEditor.Tabs.Modes"))
 		.Label(LOCTEXT("ToolboxHost_Title", "Toolbox"))
 		[
 			ToolboxPtr.ToSharedRef()
@@ -258,7 +258,6 @@ TSharedRef<SDockTab> FTileMapEditor::SpawnTab_Details(const FSpawnTabArgs& Args)
 
 	// Spawn the tab
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("LevelEditor.Tabs.Details"))
 		.Label(LOCTEXT("DetailsTab_Title", "Details"))
 		[
 			SNew(STileMapPropertiesTabBody, TileMapEditorPtr)
@@ -312,18 +311,11 @@ void FTileMapEditor::InitTileMapEditor(const EToolkitMode::Type Mode, const TSha
 		.Padding(0.f);
 
 	// Default layout
-	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_TileMapEditor_Layout_v2")
+	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_TileMapEditor_Layout_v3")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -407,7 +399,7 @@ FString FTileMapEditor::GetWorldCentricTabPrefix() const
 
 FString FTileMapEditor::GetDocumentationLink() const
 {
-	return TEXT("Engine/Paper2D/TileMapEditor");
+	return TEXT("AnimatingObjects/Paper2D/TileMaps");
 }
 
 void FTileMapEditor::OnToolkitHostingStarted(const TSharedRef< class IToolkit >& Toolkit)
@@ -482,6 +474,16 @@ void FTileMapEditor::ExtendToolbar()
 		);
 
 	AddToolbarExtender(ToolbarExtender);
+}
+
+void FTileMapEditor::CreateEditorModeManager()
+{
+	check(ViewportPtr.IsValid());
+	TSharedPtr<FEditorViewportClient> ViewportClient = ViewportPtr->GetViewportClient();
+	check(ViewportClient.IsValid());
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	ViewportClient->TakeOwnershipOfModeManager(EditorModeManager);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 void FTileMapEditor::SetTileMapBeingEdited(UPaperTileMap* NewTileMap)

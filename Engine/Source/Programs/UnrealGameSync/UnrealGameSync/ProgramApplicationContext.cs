@@ -11,6 +11,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using UnrealGameSync.Forms;
 
 namespace UnrealGameSync
 {
@@ -47,6 +48,8 @@ namespace UnrealGameSync
 		DetectMultipleProjectSettingsTask DetectStartupProjectSettingsTask;
 		ModalTaskWindow DetectStartupProjectSettingsWindow;
 		MainWindow MainWindowInstance;
+
+		OIDCTokenManager OIDCTokenManager;
 
 		public ProgramApplicationContext(PerforceConnection DefaultConnection, UpdateMonitor UpdateMonitor, string ApiUrl, string DataFolder, EventWaitHandle ActivateEvent, bool bRestoreState, string UpdateSpawn, string ProjectFileName, bool bUnstable, TimestampLogWriter Log, string Uri)
 		{
@@ -238,8 +241,23 @@ namespace UnrealGameSync
 			// Get a list of all the valid projects to open
 			DetectProjectSettingsResult[] StartupProjects = DetectStartupProjectSettingsTask.Results.Where(x => x != null).ToArray();
 
+			OIDCTokenManager = OIDCTokenManager.CreateFromConfigFile(Settings, StartupProjects.Select(Result => Result.Task).ToList());
+			// Verify that none of the projects we are opening needs a OIDC login, if they do prompt for the login
+			if (OIDCTokenManager?.HasUnfinishedLogin() ?? false)
+			{
+				OIDCLoginWindow LoginDialog = new OIDCLoginWindow(OIDCTokenManager);
+				LoginDialog.ShowDialog();
+			}
+
+			// Get the application path
+			string OriginalExe = UpdateSpawn;
+			if (OriginalExe == null)
+			{
+				OriginalExe = Path.ChangeExtension(Assembly.GetExecutingAssembly().Location, ".exe");
+			}
+
 			// Create the main window
-			MainWindowInstance = new MainWindow(UpdateMonitor, ApiUrl, DataFolder, CacheFolder, bRestoreState, UpdateSpawn ?? Assembly.GetExecutingAssembly().Location, bUnstable, StartupProjects, DefaultConnection, Log, Settings, Uri);
+			MainWindowInstance = new MainWindow(UpdateMonitor, ApiUrl, DataFolder, CacheFolder, bRestoreState, OriginalExe, bUnstable, StartupProjects, DefaultConnection, Log, Settings, Uri, OIDCTokenManager);
 			if(bVisible)
 			{
 				MainWindowInstance.Show();
@@ -395,7 +413,12 @@ namespace UnrealGameSync
 
 		private void NotifyMenu_Exit_Click(object sender, EventArgs e)
 		{
-			if(DetectStartupProjectSettingsWindow != null)
+			if (MainWindowInstance != null && !MainWindowInstance.ConfirmClose())
+			{
+				return;
+			}
+
+			if (DetectStartupProjectSettingsWindow != null)
 			{
 				DetectStartupProjectSettingsWindow.Close();
 				DetectStartupProjectSettingsWindow = null;

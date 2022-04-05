@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 public class EOSSDK : ModuleRules
 {
@@ -58,7 +58,7 @@ public class EOSSDK : ModuleRules
 		}
 	}
 
-	public string EngineBinariesDir
+	public virtual string EngineBinariesDir
 	{
 		get
 		{
@@ -66,7 +66,7 @@ public class EOSSDK : ModuleRules
 		}
 	}
 
-	public string LibraryLinkNameBase
+	public virtual string LibraryLinkNameBase
 	{
 		get
 		{
@@ -74,7 +74,7 @@ public class EOSSDK : ModuleRules
             {
 				return "EOSSDK";
             }
-
+			
 			return String.Format("EOSSDK-{0}-Shipping", Target.Platform.ToString());
 		}
 	}
@@ -148,18 +148,27 @@ public class EOSSDK : ModuleRules
 		PublicDefinitions.Add(String.Format("EOSSDK_RUNTIME_LOAD_REQUIRED={0}", bRequiresRuntimeLoad ? 1 : 0));
 		PublicDefinitions.Add(String.Format("EOSSDK_RUNTIME_LIBRARY_NAME=\"{0}\"", RuntimeLibraryFileName));
 
+		bool bUseProjectBinary = Target.GlobalDefinitions.Contains("EOSSDK_USE_PROJECT_BINARY=1");
+
 		if (Target.Platform == UnrealTargetPlatform.Android)
 		{
 			PublicIncludePaths.Add(Path.Combine(SDKIncludesDir, "Android"));
-			PublicAdditionalLibraries.Add(Path.Combine(SDKBinariesDir, "libs", "armeabi-v7a", RuntimeLibraryFileName));
-			PublicAdditionalLibraries.Add(Path.Combine(SDKBinariesDir, "libs", "arm64-v8a", RuntimeLibraryFileName));
 
-			string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
-			AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "EOSSDK_UPL.xml"));
-		}
+			if (!bUseProjectBinary)
+			{
+				PublicAdditionalLibraries.Add(Path.Combine(SDKBinariesDir, "libs", "armeabi-v7a", RuntimeLibraryFileName));
+				PublicAdditionalLibraries.Add(Path.Combine(SDKBinariesDir, "libs", "arm64-v8a", RuntimeLibraryFileName));
+
+				string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
+				AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "EOSSDK_UPL.xml"));
+			}
+        }
 		else if (Target.Platform == UnrealTargetPlatform.IOS)
 		{
-			PublicAdditionalFrameworks.Add(new Framework("EOSSDK", SDKBinariesDir, "", true));
+			if (!bUseProjectBinary)
+			{
+				PublicAdditionalFrameworks.Add(new Framework("EOSSDK", SDKBinariesDir, "", true));
+			}
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
@@ -169,13 +178,19 @@ public class EOSSDK : ModuleRules
 		}
 		else
 		{
-			PublicAdditionalLibraries.Add(Path.Combine(SDKBinariesDir, LibraryLinkName));
-			
-			RuntimeDependencies.Add(Path.Combine("$(TargetOutputDir)", RuntimeLibraryFileName), Path.Combine(SDKBinariesDir, RuntimeLibraryFileName));
+			// Allow projects to provide their own EOSSDK binaries. We will still compile against our own headers, because EOSSDK makes guarantees about forward compat. Note this global definition is only valid for monolithic targets.
+			if(!bUseProjectBinary)
+            {
+				PublicAdditionalLibraries.Add(Path.Combine(SDKBinariesDir, LibraryLinkName));
+				RuntimeDependencies.Add(Path.Combine(EngineBinariesDir, RuntimeLibraryFileName), Path.Combine(SDKBinariesDir, RuntimeLibraryFileName));
 
-			if (bRequiresRuntimeLoad)
-			{
-				PublicDelayLoadDLLs.Add(RuntimeLibraryFileName);
+				// needed for linux to find the .so
+				PublicRuntimeLibraryPaths.Add(EngineBinariesDir);
+				
+				if (bRequiresRuntimeLoad)
+				{
+					PublicDelayLoadDLLs.Add(RuntimeLibraryFileName);
+				}
 			}
 		}
 	}

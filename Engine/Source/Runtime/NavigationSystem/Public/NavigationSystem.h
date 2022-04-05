@@ -203,11 +203,11 @@ public:
 	virtual ~UNavigationSystemV1();
 
 	UPROPERTY(Transient)
-	ANavigationData* MainNavData;
+	TObjectPtr<ANavigationData> MainNavData;
 
 	/** special navigation data for managing direct paths, not part of NavDataSet! */
 	UPROPERTY(Transient)
-	ANavigationData* AbstractNavData;
+	TObjectPtr<ANavigationData> AbstractNavData;
 
 protected:
 	/** If not None indicates which of navigation datas and supported agents are
@@ -291,6 +291,13 @@ protected:
 	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = NavigationSystem, meta = (ClampMin = "-1.0", UIMin = "-1.0"))
 	float DirtyAreaWarningSizeThreshold;
 
+	/** -1.0f by default, if set to a positive value, all calls to GetNavigationData will be timed and compared to it. 
+	*	Over the limit calls will be logged as warnings. 
+	*	In seconds. Non-shipping build only.
+	*/
+	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = NavigationSystem, meta = (ClampMin = "-1.0", UIMin = "-1.0"))
+	float GatheringNavModifiersWarningLimitTime;
+
 	/** List of agents types supported by this navigation system */
 	UPROPERTY(config, EditAnywhere, Category = Agents)
 	TArray<FNavDataConfig> SupportedAgents;
@@ -302,12 +309,15 @@ protected:
 	FNavAgentSelector SupportedAgentsMask;
 
 public:
+	/** Bounds of tiles to be built */
+	UPROPERTY(Transient)
+	FBox BuildBounds;
 
 	UPROPERTY(Transient)
-	TArray<ANavigationData*> NavDataSet;
+	TArray<TObjectPtr<ANavigationData>> NavDataSet;
 
 	UPROPERTY(Transient)
-	TArray<ANavigationData*> NavDataRegistrationQueue;
+	TArray<TObjectPtr<ANavigationData>> NavDataRegistrationQueue;
 
 	// List of pending navigation bounds update requests (add, remove, update size)
 	TArray<FNavigationBoundsUpdateRequest> PendingNavBoundsUpdates;
@@ -337,6 +347,8 @@ private:
 
 	float NextInvokersUpdateTime;
 	void UpdateInvokers();
+
+	void DirtyTilesInBuildBounds();
 
 public:
 	//----------------------------------------------------------------------//
@@ -583,6 +595,17 @@ public:
 	/** Returns the world default navigation data instance. */
 	virtual INavigationDataInterface* GetMainNavData() const override { return Cast<INavigationDataInterface>(GetDefaultNavDataInstance()); }
 	ANavigationData& GetMainNavDataChecked() const { check(MainNavData); return *MainNavData; }
+
+	/** Set limiting bounds to be used when building navigation data. */
+	virtual void SetBuildBounds(const FBox& Bounds) override;
+
+	virtual FBox GetNavigableWorldBounds() const override;
+
+	virtual bool ContainsNavData(const FBox& Bounds) const override;
+	virtual FBox ComputeNavDataBounds() const override;
+	virtual void AddNavigationDataChunk(class ANavigationDataChunkActor& DataChunkActor) override;
+	virtual void RemoveNavigationDataChunk(class ANavigationDataChunkActor& DataChunkActor) override;
+	virtual void FillNavigationDataChunkActor(const FBox& QueryBounds, class ANavigationDataChunkActor& DataChunkActor, FBox& OutTilesBounds) override;
 
 	ANavigationData* GetDefaultNavDataInstance() const { return MainNavData; }
 
@@ -886,7 +909,10 @@ public:
 	/** */
 	virtual void OnWorldInitDone(FNavigationSystemRunMode Mode);
 
+	/** Returns true if world has been initialized. */
+	FORCEINLINE virtual bool IsWorldInitDone() const override { return bWorldInitDone; }
 	FORCEINLINE bool IsInitialized() const { return bWorldInitDone; }
+
 	FORCEINLINE FNavigationSystemRunMode GetRunMode() const { return OperationMode; }
 
 	/** adds BSP collisions of currently streamed in levels to octree */
@@ -1054,12 +1080,10 @@ protected:
 	/** delegate handler called when navigation is dirtied*/
 	void OnNavigationDirtied(const FBox& Bounds);
 
-#if WITH_HOT_RELOAD
-	FDelegateHandle HotReloadDelegateHandle;
+	FDelegateHandle ReloadCompleteDelegateHandle;
 
-	/** called to notify NavigaitonSystem about finished hot reload */
-	virtual void OnHotReload(bool bWasTriggeredAutomatically);
-#endif // WITH_HOT_RELOAD
+	/** called to notify NavigaitonSystem about finished reload */
+	virtual void OnReloadComplete(EReloadCompleteReason Reason);
 
 	/** Registers given navigation data with this Navigation System.
 	 *	@return RegistrationSuccessful if registration was successful, other results mean it failed
@@ -1166,6 +1190,11 @@ protected:
 	ERuntimeGenerationType GetRuntimeGenerationType() const;
 
 	void LogNavDataRegistrationResult(ERegistrationResult);
+
+	/** Whether Navigation System is allowed to rebuild the navmesh
+	 *  Depends on runtime generation settings of each navigation data, always true in the editor
+	 */
+	bool IsAllowedToRebuild() const;
 	
 	//----------------------------------------------------------------------//
 	// new stuff

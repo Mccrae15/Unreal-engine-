@@ -47,7 +47,7 @@ void FClassViewerModule::StartupModule()
 	FGlobalTabmanager::Get()->RegisterNomadTabSpawner( ClassViewerModule::ClassViewerApp, FOnSpawnTab::CreateStatic( &CreateClassPickerTab ) )
 		.SetDisplayName( NSLOCTEXT("ClassViewerApp", "TabTitle", "Class Viewer") )
 		.SetTooltipText( NSLOCTEXT("ClassViewerApp", "TooltipText", "Displays all classes that exist within this project.") )
-		.SetGroup( WorkspaceMenu::GetMenuStructure().GetDeveloperToolsMiscCategory() )
+		.SetGroup( WorkspaceMenu::GetMenuStructure().GetToolsCategory() )
 		.SetIcon( FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassViewer.TabIcon") );
 
 	ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");
@@ -104,6 +104,16 @@ TSharedRef<IClassViewerFilter> FClassViewerModule::CreateClassFilter(const FClas
 TSharedRef<FClassViewerFilterFuncs> FClassViewerModule::CreateFilterFuncs()
 {
 	return TSharedRef<FClassViewerFilterFuncs>(new FClassViewerFilterFuncs());
+}
+
+void FClassViewerModule::RegisterGlobalClassViewerFilter(const TSharedRef<IClassViewerFilter>& Filter)
+{
+	GlobalClassViewerFilter = Filter;
+}
+
+const TSharedPtr<IClassViewerFilter>& FClassViewerModule::GetGlobalClassViewerFilter()
+{
+	return GlobalClassViewerFilter;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -9,6 +9,13 @@
 
 UIOSRuntimeSettings::UIOSRuntimeSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
+	, CacheSizeKB(65536)
+	, MaxSampleRate(48000)
+	, HighSampleRate(32000)
+	, MedSampleRate(24000)
+	, LowSampleRate(12000)
+	, MinSampleRate(8000)
+	, CompressionQualityModifier(1)
 {
 	bEnableGameCenterSupport = true;
 	bEnableCloudKitSupport = false;
@@ -16,15 +23,15 @@ UIOSRuntimeSettings::UIOSRuntimeSettings(const FObjectInitializer& ObjectInitial
 	bSupportsPortraitOrientation = true;
 	bSupportsITunesFileSharing = false;
 	bSupportsFilesApp = false;
-	BundleDisplayName = TEXT("UE4 Game");
-	BundleName = TEXT("MyUE4Game");
+	BundleDisplayName = TEXT("UnrealGame");
+	BundleName = TEXT("MyUnrealGame");
 	BundleIdentifier = TEXT("com.YourCompany.GameNameNoSpaces");
 	VersionInfo = TEXT("1.0.0");
     FrameRateLock = EPowerUsageFrameRateLock::PUFRL_30;
 	bEnableDynamicMaxFPS = false;
 	bSupportsIPad = true;
 	bSupportsIPhone = true;
-	MinimumiOSVersion = EIOSVersion::IOS_12;
+	MinimumiOSVersion = EIOSVersion::IOS_14;
     bBuildAsFramework = true;
 	bGeneratedSYMFile = false;
 	bGeneratedSYMBundle = false;
@@ -89,8 +96,14 @@ void UIOSRuntimeSettings::PostInitProperties()
 	{
 		SSHPrivateKeyLocation = TEXT("");
 
+		FString RealRemoteServerName = RemoteServerName;
+		if(RemoteServerName.Contains(TEXT(":")))
+		{
+			FString RemoteServerPort;
+			RemoteServerName.Split(TEXT(":"),&RealRemoteServerName,&RemoteServerPort);
+		}
 		const FString DefaultKeyFilename = TEXT("RemoteToolChainPrivate.key");
-		const FString RelativeFilePathLocation = FPaths::Combine(TEXT("SSHKeys"), *RemoteServerName, *RSyncUsername, *DefaultKeyFilename);
+		const FString RelativeFilePathLocation = FPaths::Combine(TEXT("SSHKeys"), *RealRemoteServerName, *RSyncUsername, *DefaultKeyFilename);
 
 		FString Path = FPlatformMisc::GetEnvironmentVariable(TEXT("APPDATA"));
 
@@ -115,9 +128,9 @@ void UIOSRuntimeSettings::PostInitProperties()
 		}
 	}
 
-	if (MinimumiOSVersion < EIOSVersion::IOS_12)
+	if (MinimumiOSVersion < EIOSVersion::IOS_14)
 	{
-		MinimumiOSVersion = EIOSVersion::IOS_12;
+		MinimumiOSVersion = EIOSVersion::IOS_14;
 		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, MinimumiOSVersion)), GetDefaultConfigFilename());
 	}
 	if (!bSupportsMetal && !bSupportsMetalMRT)

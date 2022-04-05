@@ -32,7 +32,7 @@ struct FCommonButtonStyleOptionalSlateSound
 
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Properties")
-	bool bHasSound;
+	bool bHasSound = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Properties", meta = (EditCondition = "bHasSound"))
 	FSlateSound Sound;
@@ -271,6 +271,9 @@ protected:
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FCommonSelectedStateChangedBase, class UCommonButtonBase*, Button, bool, Selected);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FCommonButtonBaseClicked, class UCommonButtonBase*, Button);
 
+/**
+ * Button that disables itself when not active. Also updates actions for CommonActionWidget if bound to display platform-specific icons.
+ */
 UCLASS(Abstract, Blueprintable, ClassGroup = UI, meta = (Category = "Common UI", DisableNativeTick))
 class COMMONUI_API UCommonButtonBase : public UCommonUserWidget
 {
@@ -421,6 +424,8 @@ public:
 	DECLARE_EVENT(UCommonButtonBase, FCommonButtonEvent);
 	FCommonButtonEvent& OnClicked() const { return OnClickedEvent; }
 	FCommonButtonEvent& OnDoubleClicked() const { return OnDoubleClickedEvent; }
+	FCommonButtonEvent& OnPressed() const { return OnPressedEvent; }
+	FCommonButtonEvent& OnReleased() const { return OnReleasedEvent; }
 	FCommonButtonEvent& OnHovered() const { return OnHoveredEvent; }
 	FCommonButtonEvent& OnUnhovered() const { return OnUnhoveredEvent; }
 	FCommonButtonEvent& OnFocusReceived() const { return OnFocusReceivedEvent; }
@@ -727,6 +732,8 @@ private:
 
 	mutable FCommonButtonEvent OnClickedEvent;
 	mutable FCommonButtonEvent OnDoubleClickedEvent;
+	mutable FCommonButtonEvent OnPressedEvent;
+	mutable FCommonButtonEvent OnReleasedEvent;
 	mutable FCommonButtonEvent OnHoveredEvent;
 	mutable FCommonButtonEvent OnUnhoveredEvent;
 	mutable FCommonButtonEvent OnFocusReceivedEvent;

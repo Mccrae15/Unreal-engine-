@@ -146,7 +146,32 @@ bool UNiagaraNodeWithDynamicPins::CanRemovePin(const UEdGraphPin* Pin) const
 
 bool UNiagaraNodeWithDynamicPins::CanMovePin(const UEdGraphPin* Pin, int32 DirectionToMove) const
 {
-	return IsAddPin(Pin) == false;
+	if(IsAddPin(Pin) || IsParameterMapPin(Pin) || Pin->bOrphanedPin)
+	{
+		return false;
+	}
+	
+	TArray<const UEdGraphPin*> PinArray;
+	if(Pin->Direction == EGPD_Output)
+	{
+		GetOutputPins(PinArray);
+	}
+	else
+	{
+		GetInputPins(PinArray);
+	}
+
+	int32 Index = PinArray.Find(Pin);
+	if(PinArray.IsValidIndex(Index + DirectionToMove))
+	{
+		const UEdGraphPin* PinToMoveTo = PinArray[Index + DirectionToMove];
+		if(IsAddPin(PinToMoveTo) || IsParameterMapPin(PinToMoveTo) || PinToMoveTo->bOrphanedPin)
+		{
+			return false;
+		}
+	}	
+	
+	return true;
 }
 
 void UNiagaraNodeWithDynamicPins::MoveDynamicPin(UEdGraphPin* Pin, int32 DirectionToMove)
@@ -269,35 +294,6 @@ void UNiagaraNodeWithDynamicPins::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 	}
 }
 
-void UNiagaraNodeWithDynamicPins::CollectAddPinActions(FGraphActionListBuilderBase& OutActions, bool& bOutCreateRemainingActions, UEdGraphPin* Pin)
-{
-	TArray<FNiagaraTypeDefinition> Types(FNiagaraTypeRegistry::GetRegisteredTypes());
-	Types.Sort([](const FNiagaraTypeDefinition& A, const FNiagaraTypeDefinition& B) { return (A.GetNameText().ToLower().ToString() < B.GetNameText().ToLower().ToString()); });
-
-	for (const FNiagaraTypeDefinition& RegisteredType : Types)
-	{
-		bool bAllowType = false;
-		bAllowType = AllowNiagaraTypeForAddPin(RegisteredType);
-
-		if (bAllowType)
-		{
-			FNiagaraVariable Var(RegisteredType, FName(*RegisteredType.GetName()));
-			FNiagaraEditorUtilities::ResetVariableToDefaultValue(Var);
-
-			FText Category = FNiagaraEditorUtilities::GetVariableTypeCategory(Var);
-			const FText DisplayName = RegisteredType.GetNameText();
-			const FText Tooltip = FText::Format(LOCTEXT("AddButtonTypeEntryToolTipFormat", "Add a new {0} pin"), RegisteredType.GetNameText());
-			TSharedPtr<FNiagaraMenuAction> Action(new FNiagaraMenuAction(
-				Category, DisplayName, Tooltip, 0, FText::GetEmpty(),
-				FNiagaraMenuAction::FOnExecuteStackAction::CreateUObject(this, &UNiagaraNodeWithDynamicPins::AddParameter, Var, (const UEdGraphPin*)Pin)));
-
-			OutActions.AddAction(Action);
-		}
-	}
-
-	bOutCreateRemainingActions = false;
-}
-
 void UNiagaraNodeWithDynamicPins::AddParameter(FNiagaraVariable Parameter, const UEdGraphPin* AddPin)
 {
 	if (this->IsA<UNiagaraNodeParameterMapBase>())
@@ -307,14 +303,11 @@ void UNiagaraNodeWithDynamicPins::AddParameter(FNiagaraVariable Parameter, const
 		
 		UNiagaraGraph* Graph = GetNiagaraGraph();
 		checkf(Graph != nullptr, TEXT("Failed to get niagara graph when adding pin!"));
-
+		
 		// Resolve the unique parameter name before adding to the graph if the current parameter name is not reserved.
 		if (FNiagaraConstants::FindEngineConstant(Parameter) == nullptr)
 		{
-			if(Graph->GetAllMetaData().Contains(Parameter) == false)
-			{
-				Parameter.SetName(Graph->MakeUniqueParameterName(Parameter.GetName()));
-			}
+			Parameter.SetName(Graph->MakeUniqueParameterName(Parameter.GetName()));
 		}
 
 		Graph->Modify();
@@ -343,6 +336,25 @@ void UNiagaraNodeWithDynamicPins::AddParameter(const UNiagaraScriptVariable* Scr
 		Graph->Modify();
 		Graph->AddParameter(ScriptVar);
 
+		Modify();
+		UEdGraphPin* Pin = this->RequestNewTypedPin(AddPin->Direction, Parameter.GetType(), Parameter.GetName());
+	}
+	else
+	{
+		RequestNewTypedPin(AddPin->Direction, Parameter.GetType(), Parameter.GetName());
+	}
+}
+
+void UNiagaraNodeWithDynamicPins::AddExistingParameter(FNiagaraVariable Parameter, const UEdGraphPin* AddPin)
+{
+	if (this->IsA<UNiagaraNodeParameterMapBase>())
+	{
+		// Parameter map type nodes create new parameters when adding pins.
+		FScopedTransaction AddNewPinTransaction(LOCTEXT("AddNewPinTransaction", "Add pin to node"));
+		
+		UNiagaraGraph* Graph = GetNiagaraGraph();
+		checkf(Graph != nullptr, TEXT("Failed to get niagara graph when adding pin!"));
+		
 		Modify();
 		UEdGraphPin* Pin = this->RequestNewTypedPin(AddPin->Direction, Parameter.GetType(), Parameter.GetName());
 	}

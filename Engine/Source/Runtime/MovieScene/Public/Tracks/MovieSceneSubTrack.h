@@ -56,11 +56,6 @@ public:
 	 */
 	bool ContainsSequence(const UMovieSceneSequence& Sequence, bool Recursively = false, const UMovieSceneSection* SectionToSkip = nullptr) const;
 
-	/**
-	 * Add a new sequence to record
-	 */
-	virtual UMovieSceneSubSection* AddSequenceToRecord();
-
 public:
 
 	// UMovieSceneTrack interface
@@ -84,5 +79,5 @@ protected:
 
 	/** All movie scene sections. */
 	UPROPERTY()
-	TArray<UMovieSceneSection*> Sections;
+	TArray<TObjectPtr<UMovieSceneSection>> Sections;
 };

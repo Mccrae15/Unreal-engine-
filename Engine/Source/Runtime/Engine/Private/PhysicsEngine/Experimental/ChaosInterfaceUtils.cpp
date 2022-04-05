@@ -201,8 +201,7 @@ namespace ChaosInterface
 
 		auto NewShapeHelper = [&InParams, &CollisionTraceType](Chaos::TSerializablePtr<Chaos::FImplicitObject> InGeom, int32 ShapeIdx, void* UserData, ECollisionEnabled::Type ShapeCollisionEnabled, bool bComplexShape = false)
 		{
-			TUniquePtr<Chaos::FPerShapeData> NewShape = Chaos::FPerShapeData::CreatePerShapeData(ShapeIdx);
-			NewShape->SetGeometry(InGeom);
+			TUniquePtr<Chaos::FPerShapeData> NewShape = Chaos::FPerShapeData::CreatePerShapeData(ShapeIdx, InGeom);
 			NewShape->SetQueryData(bComplexShape ? InParams.CollisionData.CollisionFilterData.QueryComplexFilter : InParams.CollisionData.CollisionFilterData.QuerySimpleFilter);
 			NewShape->SetSimData(InParams.CollisionData.CollisionFilterData.SimFilter);
 			NewShape->SetCollisionTraceType(ConvertCollisionTraceFlag(CollisionTraceType));
@@ -327,7 +326,7 @@ namespace ChaosInterface
 					const FVector NetScale = Scale * InParams.LocalTransform.GetScale3D();
 					FTransform ConvexTransform = FTransform(InParams.LocalTransform.GetRotation(), Scale * InParams.LocalTransform.GetLocation(), FVector(1, 1, 1));
 					const FVector ScaledSize = (NetScale.GetAbs() * CollisionBody.ElemBox.GetSize());	// Note: Scale can be negative
-					const Chaos::FReal CollisionMargin = FMath::Min(ScaledSize.GetMin() * CollisionMarginFraction, CollisionMarginMax);
+					const Chaos::FReal CollisionMargin = FMath::Min<Chaos::FReal>(ScaledSize.GetMin() * CollisionMarginFraction, CollisionMarginMax);
 
 					// Wrap the convex in a scaled or instanced wrapper depending on scale value, and add a margin
 					// NOTE: CollisionMargin is on the Instance/Scaled wrapper, not the inner convex (which is shared and should not have a margin).
@@ -344,7 +343,7 @@ namespace ChaosInterface
 					// Wrap the convex in a non-scaled transform if necessary (the scale is pulled out above)
 					if (!ConvexTransform.GetTranslation().IsNearlyZero() || !ConvexTransform.GetRotation().IsIdentity())
 					{
-						Implicit = TUniquePtr<Chaos::FImplicitObject>(new Chaos::TImplicitObjectTransformed<float, 3>(MoveTemp(Implicit), ConvexTransform));
+						Implicit = TUniquePtr<Chaos::FImplicitObject>(new Chaos::TImplicitObjectTransformed<Chaos::FReal, 3>(MoveTemp(Implicit), ConvexTransform));
 					}
 
 					TUniquePtr<Chaos::FPerShapeData> NewShape = NewShapeHelper(MakeSerializable(Implicit), Shapes.Num(), (void*)CollisionBody.GetUserData(), CollisionBody.GetCollisionEnabled());
@@ -475,8 +474,7 @@ namespace ChaosInterface
 		{
 			TotalCenterOfMass /= TotalMass;
 
-			// NOTE: CombineWorldSpace returns a world-space inertia with zero rotation, unless there's only one item
-			// in the list, in which case it returns it as-is and it's rotation may be non-zero
+			// NOTE: If multiple items in the list, rotation of mass will be zero, but if only 1 item is the list the item is returned directly and we may have a rotation of mass
 			Chaos::FMassProperties CombinedMassProperties = Chaos::CombineWorldSpace(MassPropertiesList);
 			Tensor = CombinedMassProperties.InertiaTensor;
 			RotationOfMass = CombinedMassProperties.RotationOfMass;

@@ -27,6 +27,7 @@
 
 #include "SpriteEditor/SpriteEditorSettings.h"
 #include "PaperSpriteFactory.h"
+#include "UnrealWidget.h"
 
 #define LOCTEXT_NAMESPACE "SpriteEditor"
 
@@ -73,10 +74,10 @@ FSpriteEditorViewportClient::FSpriteEditorViewportClient(TWeakPtr<FSpriteEditor>
 	check(SpriteEditorPtr.IsValid() && SpriteEditorViewportPtr.IsValid());
 
 	// The tile map editor fully supports mode tools and isn't doing any incompatible stuff with the Widget
-	Widget->SetUsesEditorModeTools(ModeTools);
+	Widget->SetUsesEditorModeTools(ModeTools.Get());
 
 	PreviewScene = &OwnedPreviewScene;
-	((FAssetEditorModeManager*)ModeTools)->SetPreviewScene(PreviewScene);
+	((FAssetEditorModeManager*)ModeTools.Get())->SetPreviewScene(PreviewScene);
 
 	SetRealtime(true);
 
@@ -126,7 +127,6 @@ FSpriteEditorViewportClient::FSpriteEditorViewportClient(TWeakPtr<FSpriteEditor>
 void FSpriteEditorViewportClient::ActivateEditMode()
 {
 	// Activate the sprite geometry edit mode
-	ModeTools->SetToolkitHost(SpriteEditorPtr.Pin()->GetToolkitHost());
 	ModeTools->SetDefaultMode(FSpriteGeometryEditMode::EM_SpriteGeometry);
 	ModeTools->ActivateDefaultMode();
 
@@ -134,7 +134,7 @@ void FSpriteEditorViewportClient::ActivateEditMode()
 	check(GeometryEditMode);
 	GeometryEditMode->SetEditorContext(this);
 	GeometryEditMode->BindCommands(SpriteEditorViewportPtr.Pin()->GetCommandList());
-	ModeTools->SetWidgetMode(FWidget::WM_Translate);
+	ModeTools->SetWidgetMode(UE::Widget::WM_Translate);
 }
 
 void FSpriteEditorViewportClient::UpdateSourceTextureSpriteFromSprite(UPaperSprite* SourceSprite)

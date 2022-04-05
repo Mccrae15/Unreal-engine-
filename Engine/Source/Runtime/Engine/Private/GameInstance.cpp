@@ -11,7 +11,7 @@
 #include "Engine/World.h"
 #include "AI/NavigationSystemBase.h"
 #include "Misc/Paths.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "GameFramework/PlayerController.h"
 #include "Engine/Engine.h"
 #include "Engine/Console.h"
@@ -33,6 +33,8 @@
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Editor/EditorEngine.h"
+#include "EngineAnalytics.h"
+#include "StudioAnalytics.h"
 #endif
 
 UGameInstance::UGameInstance(const FObjectInitializer& ObjectInitializer)
@@ -302,11 +304,11 @@ FGameInstancePIEResult UGameInstance::InitializeForPlayInEditor(int32 PIEInstanc
 	NewWorld->SetPlayInEditorInitialNetMode(GetNetModeFromPlayNetMode(Params.NetMode, Params.bRunAsDedicated));
 	NewWorld->SetGameInstance(this);
 	WorldContext->SetCurrentWorld(NewWorld);
-	WorldContext->AddRef(EditorEngine->PlayWorld);	// Tie this context to this UEngine::PlayWorld*		// @fixme, needed still?
-
-	// make sure we can clean up this world!
-	NewWorld->ClearFlags(RF_Standalone);
+	WorldContext->AddRef(static_cast<UWorld*&>(EditorEngine->PlayWorld));	// Tie this context to this UEngine::PlayWorld*		// @fixme, needed still?
 	NewWorld->bKismetScriptError = Params.bAnyBlueprintErrors;
+
+	// Initialize the world after setting world context to be consistent with normal loads
+	EditorEngine->PostCreatePIEWorld(NewWorld);
 
 	// Do a GC pass if necessary to remove any potentially unreferenced objects
 	if(bNeedsGarbageCollection)
@@ -316,27 +318,35 @@ FGameInstancePIEResult UGameInstance::InitializeForPlayInEditor(int32 PIEInstanc
 
 	Init();
 
-	// Give the deprecated method a chance to fail as well
-	FGameInstancePIEResult InitResult = FGameInstancePIEResult::Success();
-
-	if (InitResult.IsSuccess())
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		InitResult = InitializePIE(Params.bAnyBlueprintErrors, PIEInstanceIndex, Params.bRunAsDedicated) ?
-			FGameInstancePIEResult::Success() :
-			FGameInstancePIEResult::Failure(NSLOCTEXT("UnrealEd", "Error_CouldntInitInstance", "The game instance failed to Play/Simulate In Editor"));
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
-	return InitResult;
+	// Games can override this to return failure if PIE is not allowed for some reason
+	return FGameInstancePIEResult::Success();
 }
 
 
-bool UGameInstance::InitializePIE(bool bAnyBlueprintErrors, int32 PIEInstance, bool bRunAsDedicated)
+void UGameInstance::ReportPIEStartupTime()
 {
-	// DEPRECATED VERSION
-	return true;
+#if WITH_EDITOR
+	if (!bReportedPIEStartupTime)
+	{
+		static bool bHasRunPIEThisSession = false;
+
+		bool bReportFirstTime = false;
+		if (!bHasRunPIEThisSession)
+		{
+			bReportFirstTime = true;
+			bHasRunPIEThisSession = true;
+		}
+
+		bReportedPIEStartupTime = true;
+		const double TimeToStartPIE = FStudioAnalytics::GetAnalyticSeconds() - PIEStartTime;
+		FStudioAnalytics::FireEvent_Loading(TEXT("PIE.TotalStartupTime"), TimeToStartPIE, {
+			FAnalyticsEventAttribute(TEXT("MapName"), UWorld::RemovePIEPrefix(FPackageName::GetShortName(PIEMapName))),
+			FAnalyticsEventAttribute(TEXT("FirstTime"), bReportFirstTime)
+			});
+	}
+#endif
 }
+
 
 FGameInstancePIEResult UGameInstance::StartPlayInEditorGameInstance(ULocalPlayer* LocalPlayer, const FGameInstancePIEParameters& Params)
 {
@@ -421,6 +431,9 @@ FGameInstancePIEResult UGameInstance::StartPlayInEditorGameInstance(ULocalPlayer
 			URL = FURL(NULL, *EditorEngine->BuildPlayWorldURL(*PIEMapName, Params.bStartInSpectatorMode, ExtraURLOptions), TRAVEL_Absolute);
 		}
 
+		// Save our URL for later map travels
+		SetPersistentTravelURL(URL);
+
 		// If a start location is specified, spawn a temporary PlayerStartPIE actor at the start location and use it as the portal.
 		AActor* PlayerStart = NULL;
 		if (!EditorEngine->SpawnPlayFromHereStart(PlayWorld, PlayerStart))
@@ -440,7 +453,7 @@ FGameInstancePIEResult UGameInstance::StartPlayInEditorGameInstance(ULocalPlayer
 		{
 			return PostCreateGameModeResult;
 		}
-		
+
 		// Make sure "always loaded" sub-levels are fully loaded
 		PlayWorld->FlushLevelStreaming(EFlushLevelStreamingType::Visibility);
 
@@ -466,47 +479,38 @@ FGameInstancePIEResult UGameInstance::StartPlayInEditorGameInstance(ULocalPlayer
 			// Stream any levels now that need to be loaded before the game starts
 			GEngine->BlockTillLevelStreamingCompleted(PlayWorld);
 		}
-		
+
 		if (Params.NetMode == PIE_ListenServer)
 		{
 			// Add port
+			uint32 ListenPort = 0;
 			uint16 ServerPort = 0;
 			if (Params.EditorPlaySettings->GetServerPort(ServerPort))
 			{
-				URL.Port = ServerPort;
+				ListenPort = ServerPort;
 			}
 
-			// start listen server with the built URL
-			PlayWorld->Listen(URL);
+			// Start a listen server
+			ensureMsgf(EnableListenServer(true, ListenPort), TEXT("Starting Listen Server for Play in Editor failed!"));
 		}
 
 		PlayWorld->BeginPlay();
+
+#if WITH_EDITOR
+		if (PlayWorld->WorldType == EWorldType::PIE)
+		{
+			ReportPIEStartupTime();
+		}
+#endif
 	}
 
-	// Give the deprecated method a chance to fail as well
-	FGameInstancePIEResult StartResult = FGameInstancePIEResult::Success();
-
-	if (StartResult.IsSuccess())
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		StartResult = StartPIEGameInstance(LocalPlayer, Params.bSimulateInEditor, Params.bAnyBlueprintErrors, Params.bStartInSpectatorMode) ?
-			FGameInstancePIEResult::Success() :
-			FGameInstancePIEResult::Failure(NSLOCTEXT("UnrealEd", "Error_CouldntInitInstance", "The game instance failed to Play/Simulate In Editor"));
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
-	return StartResult;
+	// Games can override this to return failure if PIE is not allowed for some reason
+	return FGameInstancePIEResult::Success();
 }
 
 FGameInstancePIEResult UGameInstance::PostCreateGameModeForPIE(const FGameInstancePIEParameters& Params, AGameModeBase* GameMode)
 {
 	return FGameInstancePIEResult::Success();
-}
-
-bool UGameInstance::StartPIEGameInstance(ULocalPlayer* LocalPlayer, bool bInSimulateInEditor, bool bAnyBlueprintErrors, bool bStartInSpectatorMode)
-{
-	// DEPRECATED VERSION
-	return true;
 }
 #endif
 
@@ -901,7 +905,8 @@ ULocalPlayer* UGameInstance::GetLocalPlayerByIndex(const int32 Index) const
 
 APlayerController* UGameInstance::GetFirstLocalPlayerController(const UWorld* World) const
 {
-	if (World == nullptr)
+	// Use the consistent local players order if possible
+	if (World == nullptr || World == GetWorld())
 	{
 		for (ULocalPlayer* Player : LocalPlayers)
 		{
@@ -951,6 +956,12 @@ APlayerController* UGameInstance::GetPrimaryPlayerController(bool bRequiresValid
 
 FUniqueNetIdPtr UGameInstance::GetPrimaryPlayerUniqueId() const
 {
+	FUniqueNetIdRepl UniqueIdRepl = GetPrimaryPlayerUniqueIdRepl();
+	return UniqueIdRepl.GetV1();
+}
+
+FUniqueNetIdRepl UGameInstance::GetPrimaryPlayerUniqueIdRepl() const
+{
 	ULocalPlayer* PrimaryLP = nullptr;
 
 	TArray<ULocalPlayer*>::TConstIterator LocalPlayerIt = GetLocalPlayerIterator();
@@ -969,7 +980,7 @@ FUniqueNetIdPtr UGameInstance::GetPrimaryPlayerUniqueId() const
 		LocalUserId = PrimaryLP->GetPreferredUniqueNetId();
 	}
 
-	return LocalUserId.GetUniqueNetId();
+	return LocalUserId;
 }
 
 ULocalPlayer* UGameInstance::FindLocalPlayerFromControllerId(const int32 ControllerId) const
@@ -1017,6 +1028,16 @@ ULocalPlayer* UGameInstance::FindLocalPlayerFromUniqueNetId(FUniqueNetIdPtr Uniq
 	return FindLocalPlayerFromUniqueNetId(*UniqueNetId);
 }
 
+ULocalPlayer* UGameInstance::FindLocalPlayerFromUniqueNetId(const FUniqueNetIdRepl& UniqueNetId) const
+{
+	if (!UniqueNetId.IsValid())
+	{
+		return nullptr;
+	}
+
+	return FindLocalPlayerFromUniqueNetId(*UniqueNetId);
+}
+
 ULocalPlayer* UGameInstance::GetFirstGamePlayer() const
 {
 	return (LocalPlayers.Num() > 0) ? LocalPlayers[0] : nullptr;
@@ -1038,7 +1059,7 @@ void UGameInstance::CleanupGameViewport()
 
 TArray<class ULocalPlayer*>::TConstIterator	UGameInstance::GetLocalPlayerIterator() const
 {
-	return LocalPlayers.CreateConstIterator();
+	return ToRawPtrTArrayUnsafe(LocalPlayers).CreateConstIterator();
 }
 
 const TArray<class ULocalPlayer*>& UGameInstance::GetLocalPlayers() const
@@ -1101,6 +1122,66 @@ void UGameInstance::AddUserToReplay(const FString& UserString)
 	}
 }
 
+void UGameInstance::SetPersistentTravelURL(FURL InURL)
+{
+	check(WorldContext);
+	WorldContext->LastURL = InURL;
+}
+
+bool UGameInstance::EnableListenServer(bool bEnable, int32 PortOverride /*= 0*/)
+{
+	UWorld* World = GetWorld();
+
+	if (!World || !World->IsGameWorld())
+	{
+		return false;
+	}
+
+	ENetMode ExistingMode = World->GetNetMode();
+
+	if (ExistingMode == NM_Client || ExistingMode == NM_DedicatedServer)
+	{
+		// Clients and dedicated servers cannot change to listen!
+		return false;
+	}
+
+	int32 DefaultListenPort = FURL::UrlConfig.DefaultPort;
+	if (bEnable)
+	{
+		// Modify the persistent url
+		if (PortOverride != 0)
+		{
+			WorldContext->LastURL.Port = PortOverride;
+		}
+		WorldContext->LastURL.AddOption(TEXT("Listen"));
+
+		if (ExistingMode == NM_Standalone)
+		{
+			// This actually opens the port
+			FURL ListenURL = WorldContext->LastURL;
+			return World->Listen(ListenURL);
+		}
+		else
+		{
+			// Already listening
+			return true;
+		}
+	}
+	else
+	{
+		WorldContext->LastURL.RemoveOption(TEXT("Listen"));
+		WorldContext->LastURL.Port = FURL::UrlConfig.DefaultPort;
+
+		if (ExistingMode == NM_ListenServer)
+		{
+			// What to do in this case is very game-specific
+			UE_LOG(LogGameSession, Warning, TEXT("Disabling a listen server with active connections does not disconnect existing players by default"));
+		}
+
+		return true;
+	}
+}
+
 void UGameInstance::ReceivedNetworkEncryptionToken(const FString& EncryptionToken, const FOnEncryptionKeyResponse& Delegate)
 {
 	FEncryptionKeyResponse Response(EEncryptionResponse::Failure, TEXT("ReceivedNetworkEncryptionToken not implemented"));
@@ -1143,7 +1224,7 @@ bool UGameInstance::ClientTravelToSession(int32 ControllerId, FName InSessionNam
 	if (UOnlineEngineInterface::Get()->GetResolvedConnectString(World, InSessionName, URL))
 	{
 		ULocalPlayer* LP = GEngine->GetLocalPlayerFromControllerId(World, ControllerId);
-		APlayerController* PC = LP ? LP->PlayerController : nullptr;
+		APlayerController* PC = LP ? ToRawPtr(LP->PlayerController) : nullptr;
 		if (PC)
 		{
 			PC->ClientTravel(URL, TRAVEL_Absolute);

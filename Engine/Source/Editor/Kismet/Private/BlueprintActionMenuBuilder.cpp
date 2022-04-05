@@ -508,6 +508,8 @@ void FBlueprintActionMenuBuilder::AddMenuSection(FBlueprintActionFilter const& F
 //------------------------------------------------------------------------------
 void FBlueprintActionMenuBuilder::RebuildActionList()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FBlueprintActionMenuBuilder::RebuildActionList);
+
 	using namespace FBlueprintActionMenuBuilderImpl;
 
 	FGraphActionListBuilderBase::Empty();
@@ -520,11 +522,15 @@ void FBlueprintActionMenuBuilder::RebuildActionList()
 	
 	FBlueprintActionDatabase& ActionDatabase = FBlueprintActionDatabase::Get();
 	FBlueprintActionDatabase::FActionRegistry const& ActionRegistry = ActionDatabase.GetAllActions();
-	for (auto const& ActionEntry : ActionRegistry)
+	
+	for (auto Iterator(ActionRegistry.CreateConstIterator()); Iterator; ++Iterator)
 	{
-		if (UObject *ActionObject = ActionEntry.Key.ResolveObjectPtr())
+		const FObjectKey& ObjKey = Iterator->Key;
+		const FBlueprintActionDatabase::FActionList& ActionList = Iterator->Value;
+
+		if (UObject* ActionObject = ObjKey.ResolveObjectPtr())
 		{
-			for (UBlueprintNodeSpawner const* NodeSpawner : ActionEntry.Value)
+			for (UBlueprintNodeSpawner const* NodeSpawner : ActionList)
 			{
 				FBlueprintActionInfo BlueprintAction(ActionObject, NodeSpawner);
 
@@ -542,9 +548,9 @@ void FBlueprintActionMenuBuilder::RebuildActionList()
 		else
 		{
 			// Remove this (invalid) entry on the next tick.
-			ActionDatabase.DeferredRemoveEntry(ActionEntry.Key);
+			ActionDatabase.DeferredRemoveEntry(ObjKey);
 		}
-	}	
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

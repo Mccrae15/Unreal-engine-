@@ -3,6 +3,7 @@
 #pragma once
 
 #include "DataprepActionAsset.h"
+#include "DataprepEditorUtils.h"
 #include "DataprepAssetInterface.h"
 #include "DataprepGraph/DataprepGraph.h"
 #include "DataprepStats.h"
@@ -19,6 +20,8 @@
 #include "Toolkits/IToolkitHost.h"
 #include "UObject/GCObject.h"
 #include "UObject/SoftObjectPath.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/DeclarativeSyntaxSupport.h"
 
 class UDataprepParameterizableObject;
 
@@ -27,8 +30,7 @@ class FTabManager;
 class FUICommandList;
 class IMessageLogListing;
 class IMessageToken;
-class SDataprepGraphEditor;
-class SDockableTab;
+class SDataprepGraphEditor;;
 class SGraphEditor;
 class SGraphNodeDetailsWidget;
 class SInspectorView;
@@ -51,6 +53,25 @@ namespace AssetPreviewWidget
 {
 	class SAssetsPreviewWidget;
 }
+
+class SDataprepScenePreviewView : public SBorder
+{
+public:
+
+	FDataprepEditorUtils::FOnKeyDown& OnKeyDown() { return OnKeyDownDelegate; }
+
+	virtual FReply OnKeyDown( const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent ) override
+	{
+		if( OnKeyDownDelegate.IsBound() )
+		{
+			return OnKeyDownDelegate.Execute( MyGeometry, InKeyEvent );
+		}
+		return FReply::Unhandled();
+	}
+
+private:
+	FDataprepEditorUtils::FOnKeyDown OnKeyDownDelegate;
+};
 
 /** Tuple linking an asset package path, a unique identifier and the UClass of the asset*/
 typedef TTuple< FString, UClass*, EObjectFlags > FSnapshotDataEntry;
@@ -106,12 +127,6 @@ public:
 	/** Gets or sets the flag for context sensitivity in the graph action menu */
 	bool& GetIsContextSensitive() { return bIsActionMenuContextSensitive; }
 
-	/** Returns root package which all transient packages are created under */
-	static const FString& GetRootPackagePath();
-
-	/** Returns root directory which all transient directories and data are created under */
-	static const FString& GetRootTemporaryDir();
-
 	/** Return the selected object from the scene outliner / world preview */
 	const TSet<TWeakObjectPtr<UObject>>& GetWorldItemsSelection() const { return WorldItemsSelection; };
 
@@ -147,9 +162,16 @@ public:
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	virtual FString GetReferencerName() const override;
 	virtual bool GetReferencerPropertyName(UObject* Object, FString& OutPropertyName) const override;
+	/** Handles change to selection in SceneOutliner */
+	void OnSceneOutlinerSelectionChanged(FSceneOutlinerTreeItemPtr ItemPtr, ESelectInfo::Type SelectionMode);
 
 	/** Returns content folder under which all assets are stored after execution of all producers */
 	FString GetTransientContentFolder();
+
+	UWorld* GetWorld()
+	{
+		return PreviewWorld;
+	}
 
 private:
 	void BindCommands();
@@ -226,9 +248,6 @@ private:
 	/** Remove all temporary data remaining from previous runs of the Dataprep editor */
 	void CleanUpTemporaryDirectories();
 
-	/** Handles change to selection in SceneOutliner */
-	void OnSceneOutlinerSelectionChanged(SceneOutliner::FTreeItemPtr ItemPtr, ESelectInfo::Type SelectionMode);
-
 	bool OnCanExecuteNextStep(UDataprepActionAsset* ActionAsset);
 
 	/** Handles change to the content passed to an action */
@@ -267,12 +286,12 @@ private:
 	TWeakPtr<SDockTab> DetailsTabPtr;
 	TSharedPtr<class SDataprepEditorViewport> SceneViewportView;
 	TSharedPtr<AssetPreviewWidget::SAssetsPreviewWidget> AssetPreviewView;
-	TSharedPtr<SWidget> ScenePreviewView;
+	TSharedPtr<SDataprepScenePreviewView> ScenePreviewView;
 	TSharedPtr<SGraphNodeDetailsWidget> DetailsView;
 	TSharedPtr<class SDataprepAssetView > DataprepAssetView;
 	TSharedPtr<SDataprepGraphEditor> GraphEditor;
 
-	TSharedPtr<class ICustomSceneOutliner> SceneOutliner;
+	TSharedPtr<class ISceneOutliner> SceneOutliner;
 
 	/** Command list for the pipeline editor */
 	TSharedPtr<FUICommandList> GraphEditorCommands;

@@ -4,7 +4,7 @@
 
 #include "Templates/Function.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 enum class EEventEnumerate
@@ -55,9 +55,19 @@ public:
 	virtual double GetEndTime() const = 0;
 	virtual void EnumerateEventsDownSampled(double IntervalStart, double IntervalEnd, double Resolution, EventCallback Callback) const = 0;
 	virtual void EnumerateEventsDownSampled(double IntervalStart, double IntervalEnd, double Resolution, EventRangeCallback Callback) const = 0;
+
+	virtual void EnumerateEventsBackwardsDownSampled(double IntervalEnd, double IntervalStart, double Resolution, EventCallback Callback) const {};
+	virtual void EnumerateEventsBackwardsDownSampled(double IntervalEnd, double IntervalStart, double Resolution, EventRangeCallback Callback) const {};
+
 	virtual void EnumerateEventsDownSampledAsync(const EnumerateAsyncParams& EnumerateAsyncParams) const {};
+
 	virtual void EnumerateEvents(double IntervalStart, double IntervalEnd, EventCallback Callback) const = 0;
 	virtual void EnumerateEvents(double IntervalStart, double IntervalEnd, EventRangeCallback Callback) const = 0;
+
+	virtual void EnumerateEventsBackwards(double IntervalEnd, double IntervalStart, EventCallback Callback) const {};
+	virtual void EnumerateEventsBackwards(double IntervalEnd, double IntervalStart, EventRangeCallback Callback) const {};
+
+	virtual int32 GetDepthAt(double Time) const { return 0; };
 	
 	/**
 	 * Finds event information for the event closest to InTime from the interval [InTime - DeltaTime, InTime + DeltaTime]
@@ -69,4 +79,4 @@ public:
 	virtual bool GetEventInfo(double InTime, double DeltaTime, int32 Depth, FTimelineEventInfo& EventInfo) const = 0;
 };
 
-}
+} // namespace TraceServices

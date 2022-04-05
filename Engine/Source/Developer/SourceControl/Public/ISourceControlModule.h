@@ -5,8 +5,12 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
+#include "UObject/UObjectGlobals.h"
 
 class ISourceControlProvider;
+class ISourceControlChangelist;
+class FSourceControlAssetDataCache;
+typedef TSharedPtr<class ISourceControlChangelist, ESPMode::ThreadSafe> FSourceControlChangelistPtr;
 
 SOURCECONTROL_API DECLARE_LOG_CATEGORY_EXTERN(LogSourceControl, Log, All);
 
@@ -15,6 +19,27 @@ DECLARE_DELEGATE_OneParam( FSourceControlLoginClosed, bool );
 
 /** Delegate called when the active source control provider is changed */
 DECLARE_MULTICAST_DELEGATE_TwoParams( FSourceControlProviderChanged, ISourceControlProvider& /*OldProvider*/, ISourceControlProvider& /*NewProvider*/ );
+
+/** Delegate called on pre-submit for data validation */
+DECLARE_DELEGATE_FourParams(FSourceControlPreSubmitDataValidationDelegate, FSourceControlChangelistPtr /*Changelist*/, EDataValidationResult& /*Result*/, TArray<FText>& /*ValidationErrors*/, TArray<FText>& /*ValidationWarnings*/);
+
+/** 
+ * Delegate called once the user has confirmed that they want to submit files to source control BUT before the files are actually submitted.
+ * It is intended for last minute checks that can only run once there is no chance of the user canceling the actual submit.
+ * At this point the only way to prevent the files from being submitted is for this delegate to return errors.
+ * 
+ * @param FilesToSubmit			The absolute file paths of the files being submitted
+ * @param OutDescriptionTags	Lines of text to be appending to the submit description
+ * @param OutErrors				Errors encountered while the delegate is invoked. If the array contains entries then files will not be submitted and the user given the errors instead
+ */
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FSourceControlPreSubmitFinalizeDelegate, const TArray<FString>& /*FilesToSubmit*/, TArray<FText>& /*OutDescriptionTags*/, TArray<FText>& /*OutErrors*/);
+
+/**
+ * Delegate called after source control operations deleted files.
+ *
+ * @param DeletedFiles			The absolute file paths of the deleted files
+ */
+DECLARE_MULTICAST_DELEGATE_OneParam(FSourceControlFilesDeletedDelegate, const TArray<FString>& /*InDeletedFiles*/);
 
 /**
  * The modality of the login window.
@@ -95,6 +120,11 @@ public:
 	virtual ISourceControlProvider& GetProvider() const = 0;
 
 	/**
+	 * Get the source control AssetData information cache.
+	 */
+	virtual FSourceControlAssetDataCache& GetAssetDataCache() = 0;
+
+	/**
 	 * Set the current source control provider to the one specified here by name.
 	 * This will assert if the provider does not exist.
 	 * @param	InName	The name of the provider
@@ -130,6 +160,51 @@ public:
 	 * Unregister a delegate to be called when the source control provider changes
 	 */
 	virtual void UnregisterProviderChanged(FDelegateHandle Handle) = 0;
+
+	/**
+	 * Register a delegate to be called to validate asset changes before submitting changes
+	 */
+	virtual void RegisterPreSubmitDataValidation(const FSourceControlPreSubmitDataValidationDelegate& PreSubmitDataValidationDelegate) = 0;
+
+	/**
+	 * Unregister a delegate called before submitting changes
+	 */
+	virtual void UnregisterPreSubmitDataValidation() = 0;
+
+	/**
+	 * Gets currently registered delegates for pre-submit data validation
+	 */
+	virtual FSourceControlPreSubmitDataValidationDelegate GetRegisteredPreSubmitDataValidation() = 0;
+
+	/** 
+	 * Register a delegate that is invokes right before files are submitted to source control. @see FSourceControlPreSubmitFinalizeDelegate
+	 */
+	virtual FDelegateHandle RegisterPreSubmitFinalize(const FSourceControlPreSubmitFinalizeDelegate::FDelegate& Delegate) = 0;
+
+	/**
+	 * Unregister a previously registered delegate. @see FSourceControlPreSubmitFinalizeDelegate
+	 */
+	virtual void UnregisterPreSubmitFinalize(FDelegateHandle Handle) = 0;
+
+	/** 
+	 * Returns access to the delegate so that it can be broadcast as needed. @see FSourceControlPreSubmitFinalizeDelegate
+	 */
+	virtual const FSourceControlPreSubmitFinalizeDelegate& GetOnPreSubmitFinalize() const = 0;
+
+	/**
+	 * Registers a delegate that is invoked after source control operation deleted files.  @see FSourceControlFilesDeletedDelegate
+	 */
+	virtual FDelegateHandle RegisterFilesDeleted(const FSourceControlFilesDeletedDelegate::FDelegate& InDelegate) = 0;
+	
+	/**
+	 * Unregister a previously registered delegate. @see FSourceControlFilesDeletedDelegate
+	 */
+	virtual void UnregisterFilesDeleted(FDelegateHandle InHandle) = 0;
+
+	/**
+	 * Returns access to the delegate so that it can be broadcast as needed. @see FSourceControlFilesDeletedDelegate
+	 */
+	virtual const FSourceControlFilesDeletedDelegate& GetOnFilesDeleted() const = 0;
 
 	/**
 	 * Gets a reference to the source control module instance.

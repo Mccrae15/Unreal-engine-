@@ -17,7 +17,7 @@
 #include "UObject/UObjectGlobals.h"
 #include "ExternalTexture.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "IPlatformFilePak.h"
 
 #include "Android/AndroidJavaMediaPlayer.h"
@@ -461,7 +461,7 @@ static void DoUpdateExternalMediaSampleExecute(TWeakPtr<FJavaAndroidMediaPlayer,
 	FTextureRHIRef VideoTexture = PinnedJavaMediaPlayer->GetVideoTexture();
 	if (VideoTexture == nullptr)
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("VideoTexture"));
 		VideoTexture = GDynamicRHI->RHICreateTextureExternal2D(1, 1, PF_R8G8B8A8, 1, 1, TexCreate_None, ERHIAccess::SRVGraphics, CreateInfo);
 		PinnedJavaMediaPlayer->SetVideoTexture(VideoTexture);
 

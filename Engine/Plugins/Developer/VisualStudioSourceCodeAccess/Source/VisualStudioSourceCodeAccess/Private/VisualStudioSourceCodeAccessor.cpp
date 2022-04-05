@@ -393,19 +393,34 @@ bool FVisualStudioSourceCodeAccessor::OpenVisualStudioFilesInternalViaDTE(const 
 							TComPtr<EnvDTE::Document> Document;
 							TComPtr<IDispatch> SelectionDispatch;
 							TComPtr<EnvDTE::TextSelection> Selection;
-							if ( SUCCEEDED(DTE->get_ActiveDocument(&Document)) &&
-								 SUCCEEDED(Document->get_Selection(&SelectionDispatch)) &&
-								 SelectionDispatch && SUCCEEDED(SelectionDispatch->QueryInterface(&Selection)) &&
-								 SUCCEEDED(Selection->GotoLine(Request.LineNumber, VARIANT_TRUE)) )
+
+							int32 RetryCount = 5;
+							do
 							{
-								if ( !SUCCEEDED(Selection->MoveToLineAndOffset(Request.LineNumber, Request.ColumnNumber, false)) )
+								// Potential exception can be thrown here in the form of 'Call was rejected by callee'
+								// See https://msdn.microsoft.com/en-us/library/ms228772.aspx
+								if (!SUCCEEDED(DTE->get_ActiveDocument(&Document)) ||
+									!SUCCEEDED(Document->get_Selection(&SelectionDispatch)) ||
+									!SUCCEEDED(SelectionDispatch->QueryInterface(&Selection)))
 								{
-									UE_LOG(LogVSAccessor, Warning, TEXT("Couldn't goto column number '%i' of line '%i' in '%s'"), Request.ColumnNumber, Request.LineNumber, *Request.FullPath);
+									if (RetryCount == 0)
+									{
+										UE_LOG(LogVSAccessor, Warning, TEXT("Couldn't goto line number '%i' in '%s'."), Request.LineNumber, *Request.FullPath);
+									}
+									else
+									{
+										FPlatformProcess::Sleep(0.1f);
+									}
 								}
-							}
-							else
+
+							} while (--RetryCount >= 0);
+
+							if (Selection.IsValid() && !SUCCEEDED(Selection->MoveToLineAndOffset(Request.LineNumber, Request.ColumnNumber, false)))
 							{
-								UE_LOG(LogVSAccessor, Warning, TEXT("Couldn't goto line number '%i' in '%s'"), Request.LineNumber, *Request.FullPath);
+								if (!SUCCEEDED(Selection->GotoLine(Request.LineNumber, true)))
+								{
+									UE_LOG(LogVSAccessor, Warning, TEXT("Couldn't goto column number '%i' of line '%i' in '%s'."), Request.ColumnNumber, Request.LineNumber, *Request.FullPath);
+								}
 							}
 						}
 						else
@@ -916,13 +931,14 @@ bool FVisualStudioSourceCodeAccessor::OpenSourceFiles(const TArray<FString>& Abs
 
 bool FVisualStudioSourceCodeAccessor::AddSourceFiles(const TArray<FString>& AbsoluteSourcePaths, const TArray<FString>& AvailableModules)
 {
+	bool bSuccess = false;
+
 	// This code is temporarily disabled because it doesn't account for UBT setting per-file properties for C++ source files,
 	// adding include paths, force-included headers, and so on. Intellisense does not work correctly without these properties being set.
 #if 0
 	// This requires DTE - there is no fallback for this operation when DTE is not available
 #if WITH_VISUALSTUDIO_DTE
-	bool bSuccess = true;
-
+	bSuccess = true;
 	struct FModuleNameAndPath
 	{
 		FString ModuleBuildFilePath;
@@ -1103,12 +1119,14 @@ bool FVisualStudioSourceCodeAccessor::AddSourceFiles(const TArray<FString>& Abso
 		UE_LOG(LogVSAccessor, Verbose, TEXT("Cannot add source files as Visual Studio is either not open or not responding"));
 		bSuccess = false;
 	}
+#endif
+#else
+	// if we add new source files but do not add them directly and rely on project generation instead, if we have an opened instance, request for the files to be opened now
+	// this is because project generation will trigger a modal on our opened instance and prevent file open request to be handled.
+	OpenSourceFiles(AbsoluteSourcePaths);
+#endif
 
 	return bSuccess;
-#endif
-#endif
-
-	return false;
 }
 
 bool FVisualStudioSourceCodeAccessor::OpenFileAtLine(const FString& FullPath, int32 LineNumber, int32 ColumnNumber)
@@ -1395,7 +1413,7 @@ FString FVisualStudioSourceCodeAccessor::GetSolutionPath() const
 				FString MasterProjectName;
 				if (!FFileHelper::LoadFileToString(MasterProjectName, *(FPaths::EngineIntermediateDir() / TEXT("ProjectFiles/MasterProjectName.txt"))))
 				{
-					MasterProjectName = "UE4";
+					MasterProjectName = "UE5";
 				}
 				CachedSolutionPath = FPaths::Combine(FPaths::RootDir(), MasterProjectName + TEXT(".sln"));
 			}
@@ -1436,6 +1454,16 @@ void FVisualStudioSourceCodeAccessor::Tick(const float DeltaTime)
 		// Try and open any pending files in VS first (this will update the VS launch state appropriately)
 		OpenVisualStudioFilesInternal(TmpDeferredRequests);
 	}
+}
+
+FName FVisualStudioSourceCodeAccessor::GetOpenIconName() const
+{
+	return FName("MainFrame.OpenVisualStudio");
+}
+
+FName FVisualStudioSourceCodeAccessor::GetRefreshIconName() const
+{
+	return FName("MainFrame.RefreshVisualStudio");
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AutoReimport/AutoReimportManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/WildcardString.h"
@@ -140,6 +140,10 @@ private:
 
 	/** FGCObject interface*/
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FAutoReimportManager");
+	}
 
 private:
 

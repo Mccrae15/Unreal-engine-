@@ -5,6 +5,7 @@
 #if OBJECT_TRACE_ENABLED
 
 #include "CoreMinimal.h"
+#include "GameFramework/WorldSettings.h"
 #include "Trace/Trace.inl"
 #include "UObject/Object.h"
 #include "UObject/Class.h"
@@ -15,32 +16,51 @@
 #include "HAL/IConsoleManager.h"
 #include "Engine/World.h"
 #include "TraceFilter.h"
+#include "SceneView.h"
 #if WITH_EDITOR
 #include "Editor.h"
 #endif
 
 UE_TRACE_CHANNEL(ObjectChannel)
 
-UE_TRACE_EVENT_BEGIN(Object, Class, Important)
+UE_TRACE_EVENT_BEGIN(Object, Class)
 	UE_TRACE_EVENT_FIELD(uint64, Id)
 	UE_TRACE_EVENT_FIELD(uint64, SuperId)
-	UE_TRACE_EVENT_FIELD(int32, ClassNameStringLength)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Name)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Path)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Object, Object, Important)
+UE_TRACE_EVENT_BEGIN(Object, Object)
 	UE_TRACE_EVENT_FIELD(uint64, Id)
 	UE_TRACE_EVENT_FIELD(uint64, ClassId)
 	UE_TRACE_EVENT_FIELD(uint64, OuterId)
-	UE_TRACE_EVENT_FIELD(int32, ObjectNameStringLength)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Name)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Path)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(Object, ObjectLifetimeBegin)
+	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(uint64, Id)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(Object, ObjectLifetimeEnd)
+	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(uint64, Id)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(Object, ObjectEvent)
 	UE_TRACE_EVENT_FIELD(uint64, Cycle)
 	UE_TRACE_EVENT_FIELD(uint64, Id)
-	UE_TRACE_EVENT_FIELD(uint8, Event)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Event)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Object, World, Important)
+UE_TRACE_EVENT_BEGIN(Object, PawnPossess)
+	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(uint64, ControllerId)
+	UE_TRACE_EVENT_FIELD(uint64, PawnId)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(Object, World)
 	UE_TRACE_EVENT_FIELD(uint64, Id)
 	UE_TRACE_EVENT_FIELD(int32, PIEInstanceId)
 	UE_TRACE_EVENT_FIELD(uint8, Type)
@@ -48,16 +68,36 @@ UE_TRACE_EVENT_BEGIN(Object, World, Important)
 	UE_TRACE_EVENT_FIELD(bool, IsSimulating)
 UE_TRACE_EVENT_END()
 
+UE_TRACE_EVENT_BEGIN(Object, RecordingInfo)
+	UE_TRACE_EVENT_FIELD(uint64, WorldId)
+	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+	UE_TRACE_EVENT_FIELD(uint32, RecordingIndex)
+	UE_TRACE_EVENT_FIELD(uint32, FrameIndex)
+	UE_TRACE_EVENT_FIELD(double, ElapsedTime)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(Object, View)
+	UE_TRACE_EVENT_FIELD(uint64, PlayerId)
+	UE_TRACE_EVENT_FIELD(uint64, Cycle)
+
+	UE_TRACE_EVENT_FIELD(double, PosX)
+	UE_TRACE_EVENT_FIELD(double, PosY)
+	UE_TRACE_EVENT_FIELD(double, PosZ)
+
+	UE_TRACE_EVENT_FIELD(float, Pitch)
+	UE_TRACE_EVENT_FIELD(float, Yaw)
+	UE_TRACE_EVENT_FIELD(float, Roll)
+
+	UE_TRACE_EVENT_FIELD(float, Fov)
+	UE_TRACE_EVENT_FIELD(float, AspectRatio)
+UE_TRACE_EVENT_END()
+
 // Object annotations used for tracing
 struct FTracedObjectAnnotation
 {
 	FTracedObjectAnnotation()
-		: Id(0)
-		, bTraced(false)
+		: bTraced(false)
 	{}
-
-	// Object ID
-	uint64 Id;
 
 	// Whether this object has been traced this session
 	bool bTraced;
@@ -65,28 +105,68 @@ struct FTracedObjectAnnotation
 	/** Determine if this annotation is default - required for annotations */
 	FORCEINLINE bool IsDefault() const
 	{
-		return bTraced == false && Id == 0;
+		return bTraced == false;
 	}
 };
 
+struct FObjectIdAnnotation
+{
+	FObjectIdAnnotation()
+		: Id(0)
+	{}
+
+	// Object ID
+	uint64 Id;
+
+	/** Determine if this annotation is default - required for annotations */
+	FORCEINLINE bool IsDefault() const
+	{
+		return Id == 0;
+	}
+
+	bool operator == (const FObjectIdAnnotation& other) const
+	{
+		return Id == other.Id;
+	}
+};
+
+int32 GetTypeHash(const FObjectIdAnnotation& Annotation)
+{
+	return GetTypeHash(Annotation.Id);
+}
+
 // Object annotations used for tracing
-FUObjectAnnotationSparse<FTracedObjectAnnotation, true> GObjectTraceAnnotations;
+FUObjectAnnotationSparse<FTracedObjectAnnotation, true> GObjectTracedAnnotations;
+FUObjectAnnotationSparseSearchable<FObjectIdAnnotation, true> GObjectIdAnnotations;
 
 // Handle used to hook to world tick
 static FDelegateHandle WorldTickStartHandle;
 
-void FObjectTrace::Init()
+void TickObjectTraceWorldSubsystem(UWorld* InWorld, ELevelTick InTickType, float InDeltaSeconds)
 {
-	WorldTickStartHandle = FWorldDelegates::OnWorldTickStart.AddLambda([](UWorld* InWorld, ELevelTick InTickType, float InDeltaSeconds)
+	if(InTickType == LEVELTICK_All)
 	{
-		if(InTickType == LEVELTICK_All)
+		if (!InWorld->IsPaused())
 		{
 			if(UObjectTraceWorldSubsystem* Subsystem = UWorld::GetSubsystem<UObjectTraceWorldSubsystem>(InWorld))
 			{
 				Subsystem->FrameIndex++;
+				Subsystem->ElapsedTime += InDeltaSeconds;
+
+				UE_TRACE_LOG(Object, RecordingInfo, ObjectChannel)
+		            << RecordingInfo.WorldId(FObjectTrace::GetObjectId(InWorld))
+					<< RecordingInfo.Cycle(FPlatformTime::Cycles64())
+					<< RecordingInfo.ElapsedTime(Subsystem->ElapsedTime)
+					<< RecordingInfo.FrameIndex(Subsystem->FrameIndex)
+					<< RecordingInfo.RecordingIndex(Subsystem->RecordingIndex); 
 			}
 		}
-	});
+	}
+}
+
+void FObjectTrace::Init()
+{
+	WorldTickStartHandle = FWorldDelegates::OnWorldTickStart.AddStatic(&TickObjectTraceWorldSubsystem);
 }
 
 void FObjectTrace::Destroy()
@@ -104,11 +184,11 @@ uint64 FObjectTrace::GetObjectId(const UObject* InObject)
 	{
 		static uint64 CurrentId = 1;
 
-		FTracedObjectAnnotation Annotation = GObjectTraceAnnotations.GetAnnotation(InObjectInner);
+		FObjectIdAnnotation Annotation = GObjectIdAnnotations.GetAnnotation(InObjectInner);
 		if(Annotation.Id == 0)
 		{
 			Annotation.Id = CurrentId++;
-			GObjectTraceAnnotations.AddAnnotation(InObjectInner, MoveTemp(Annotation));
+			GObjectIdAnnotations.AddAnnotation(InObjectInner, MoveTemp(Annotation));
 		}
 
 		return Annotation.Id;
@@ -127,6 +207,80 @@ uint64 FObjectTrace::GetObjectId(const UObject* InObject)
 	}
 
 	return Id | (OuterId << 32);
+}
+
+UObject* FObjectTrace::GetObjectFromId(uint64 Id)
+{
+	FObjectIdAnnotation FindAnnotation;
+	// Id used for annotation map doesn't include the parent id in the upper bits, so zero those first
+	FindAnnotation.Id = Id & 0x00000000FFFFFFFFll;
+	return GObjectIdAnnotations.Find(FindAnnotation);
+}
+
+void FObjectTrace::ResetWorldElapsedTime(const UWorld* World)
+{
+	if(UObjectTraceWorldSubsystem* WorldSubsystem = UWorld::GetSubsystem<UObjectTraceWorldSubsystem>(World))
+	{
+		WorldSubsystem->ElapsedTime = 0;
+	}
+}
+
+double FObjectTrace::GetWorldElapsedTime(const UWorld* World)
+{
+	if(UObjectTraceWorldSubsystem* WorldSubsystem = UWorld::GetSubsystem<UObjectTraceWorldSubsystem>(World))
+	{
+		return WorldSubsystem->ElapsedTime;
+	}
+	return 0;
+}
+
+double FObjectTrace::GetObjectWorldElapsedTime(const UObject* InObject)
+{
+	if(InObject != nullptr)
+	{
+		if(UWorld* World = InObject->GetWorld())
+		{
+			if(UObjectTraceWorldSubsystem* WorldSubsystem = UWorld::GetSubsystem<UObjectTraceWorldSubsystem>(World))
+			{
+				return WorldSubsystem->ElapsedTime;
+			}
+		}
+	}
+
+	return 0;
+}
+
+void FObjectTrace::SetWorldRecordingIndex(const UWorld* World, uint16 Index)
+{
+	if(UObjectTraceWorldSubsystem* WorldSubsystem = UWorld::GetSubsystem<UObjectTraceWorldSubsystem>(World))
+	{
+		WorldSubsystem->RecordingIndex = Index;
+	}
+}
+
+uint16 FObjectTrace::GetWorldRecordingIndex(const UWorld* World)
+{
+	if(UObjectTraceWorldSubsystem* WorldSubsystem = UWorld::GetSubsystem<UObjectTraceWorldSubsystem>(World))
+	{
+		return WorldSubsystem->RecordingIndex;
+	}
+	return 0;
+}
+
+uint16 FObjectTrace::GetObjectWorldRecordingIndex(const UObject* InObject)
+{
+	if(InObject != nullptr)
+	{
+		if(UWorld* World = InObject->GetWorld())
+		{
+			if(UObjectTraceWorldSubsystem* WorldSubsystem = UWorld::GetSubsystem<UObjectTraceWorldSubsystem>(World))
+			{
+				return WorldSubsystem->RecordingIndex;
+			}
+		}
+	}
+
+	return 0;
 }
 
 uint16 FObjectTrace::GetObjectWorldTickCounter(const UObject* InObject)
@@ -153,30 +307,56 @@ void FObjectTrace::OutputClass(const UClass* InClass)
 		return;
 	}
 
-	FTracedObjectAnnotation Annotation = GObjectTraceAnnotations.GetAnnotation(InClass);
+	FTracedObjectAnnotation Annotation = GObjectTracedAnnotations.GetAnnotation(InClass);
 	if(Annotation.bTraced)
 	{
 		// Already traced, so skip
 		return;
 	}
 
+	OutputClass(InClass->GetSuperClass());
+
 	Annotation.bTraced = true;
-	GObjectTraceAnnotations.AddAnnotation(InClass, MoveTemp(Annotation));
+	GObjectTracedAnnotations.AddAnnotation(InClass, MoveTemp(Annotation));
 
-	int32 ClassNameStringLength = InClass->GetFName().GetStringLength() + 1;
-	int32 ClassFullNameStringLength = InClass->GetPathName().Len() + 1;
+	FString ClassPathName = InClass->GetPathName();
+	TCHAR ClassName[FName::StringBufferSize];
+	uint32 ClassNameLength = InClass->GetFName().ToString(ClassName);
 
-	auto StringCopyFunc = [ClassNameStringLength, ClassFullNameStringLength, InClass](uint8* Out)
-	{
-		InClass->GetFName().ToString(reinterpret_cast<TCHAR*>(Out), ClassNameStringLength);
-		FPlatformMemory::Memcpy(reinterpret_cast<TCHAR*>(Out) + ClassNameStringLength, *InClass->GetPathName(), ClassFullNameStringLength * sizeof(TCHAR));
-	};
-
-	UE_TRACE_LOG(Object, Class, ObjectChannel, (ClassNameStringLength + ClassFullNameStringLength) * sizeof(TCHAR))
-		<< Class.ClassNameStringLength(ClassNameStringLength)
+	UE_TRACE_LOG(Object, Class, ObjectChannel)
 		<< Class.Id(GetObjectId(InClass))
 		<< Class.SuperId(GetObjectId(InClass->GetSuperClass()))
-		<< Class.Attachment(StringCopyFunc);
+		<< Class.Name(ClassName, ClassNameLength)
+		<< Class.Path(*ClassPathName, ClassPathName.Len());
+}
+
+void FObjectTrace::OutputView(const UObject* InPlayer, const FSceneView* InView)
+{
+	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(ObjectChannel);
+	if (!bChannelEnabled || InPlayer == nullptr)
+	{
+		return;
+	}
+
+	if (CANNOT_TRACE_OBJECT(InPlayer->GetWorld()))
+	{
+		return;
+	}
+
+	const FIntRect& ViewRect = InView->CameraConstrainedViewRect;
+	float AspectRatio = (float)ViewRect.Width()/(float)ViewRect.Height();
+
+	UE_TRACE_LOG(Object, View, ObjectChannel)
+		<< View.Cycle(FPlatformTime::Cycles64())
+		<< View.PlayerId(GetObjectId(InPlayer))
+		<< View.PosX(InView->ViewLocation.X)
+		<< View.PosY(InView->ViewLocation.Y)
+		<< View.PosZ(InView->ViewLocation.Z)
+		<< View.Pitch(InView->ViewRotation.Pitch)
+		<< View.Yaw(InView->ViewRotation.Yaw)
+		<< View.Roll(InView->ViewRotation.Roll)
+		<< View.Fov(InView->FOV)
+		<< View.AspectRatio(AspectRatio);
 }
 
 void FObjectTrace::OutputObject(const UObject* InObject)
@@ -197,34 +377,31 @@ void FObjectTrace::OutputObject(const UObject* InObject)
 		return;
 	}
 
-	FTracedObjectAnnotation Annotation = GObjectTraceAnnotations.GetAnnotation(InObject);
+	FTracedObjectAnnotation Annotation = GObjectTracedAnnotations.GetAnnotation(InObject);
 	if(Annotation.bTraced)
 	{
 		// Already traced, so skip
 		return;
 	}
 
+	OutputObject(InObject->GetOuter());
+
 	Annotation.bTraced = true;
-	GObjectTraceAnnotations.AddAnnotation(InObject, MoveTemp(Annotation));
+	GObjectTracedAnnotations.AddAnnotation(InObject, MoveTemp(Annotation));
 
 	// Trace the object's class first
 	TRACE_CLASS(InObject->GetClass());
 
-	int32 ObjectNameStringLength = InObject->GetFName().GetStringLength() + 1;
-	int32 ObjectPathNameStringLength = InObject->GetPathName().Len() + 1;
+	TCHAR ObjectName[FName::StringBufferSize];
+	uint32 ObjectNameLength = InObject->GetFName().ToString(ObjectName);
+	FString ObjectPathName = InObject->GetPathName();
 
-	auto StringCopyFunc = [ObjectNameStringLength, ObjectPathNameStringLength, InObject](uint8* Out)
-	{
-		InObject->GetFName().ToString(reinterpret_cast<TCHAR*>(Out), ObjectNameStringLength);
-		FPlatformMemory::Memcpy(reinterpret_cast<TCHAR*>(Out) + ObjectNameStringLength, *InObject->GetPathName(), ObjectPathNameStringLength * sizeof(TCHAR));
-	};
-
-	UE_TRACE_LOG(Object, Object, ObjectChannel, (ObjectNameStringLength + ObjectPathNameStringLength) * sizeof(TCHAR))
-		<< Object.ObjectNameStringLength(ObjectNameStringLength)
+	UE_TRACE_LOG(Object, Object, ObjectChannel)
 		<< Object.Id(GetObjectId(InObject))
 		<< Object.ClassId(GetObjectId(InObject->GetClass()))
 		<< Object.OuterId(GetObjectId(InObject->GetOuter()))
-		<< Object.Attachment(StringCopyFunc);
+		<< Object.Name(ObjectName, ObjectNameLength)
+		<< Object.Path(*ObjectPathName, ObjectPathName.Len());
 }
 
 void FObjectTrace::OutputObjectEvent(const UObject* InObject, const TCHAR* InEvent)
@@ -247,12 +424,80 @@ void FObjectTrace::OutputObjectEvent(const UObject* InObject, const TCHAR* InEve
 
 	TRACE_OBJECT(InObject);
 
-	int32 StringBufferSize = (FCString::Strlen(InEvent) + 1) * sizeof(TCHAR);
-
-	UE_TRACE_LOG(Object, ObjectEvent, ObjectChannel, StringBufferSize)
+	UE_TRACE_LOG(Object, ObjectEvent, ObjectChannel)
 		<< ObjectEvent.Cycle(FPlatformTime::Cycles64())
 		<< ObjectEvent.Id(GetObjectId(InObject))
-		<< ObjectEvent.Attachment(InEvent, StringBufferSize);
+		<< ObjectEvent.Event(InEvent);
+}
+
+void FObjectTrace::OutputObjectLifetimeBegin(const UObject* InObject)
+{
+	const bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(ObjectChannel);
+	if (!bChannelEnabled || InObject == nullptr)
+	{
+		return;
+	}
+
+	if(InObject->HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return;
+	}
+
+	if (CANNOT_TRACE_OBJECT(InObject->GetWorld()))
+	{
+		return;
+	}
+
+	TRACE_OBJECT(InObject);
+
+	UE_TRACE_LOG(Object, ObjectLifetimeBegin, ObjectChannel)
+		<< ObjectLifetimeBegin.Cycle(FPlatformTime::Cycles64())
+		<< ObjectLifetimeBegin.Id(GetObjectId(InObject));
+}
+
+void FObjectTrace::OutputObjectLifetimeEnd(const UObject* InObject)
+{
+	const bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(ObjectChannel);
+	if (!bChannelEnabled || InObject == nullptr)
+	{
+		return;
+	}
+
+	if(InObject->HasAnyFlags(RF_ClassDefaultObject))
+	{
+		return;
+	}
+
+	if (CANNOT_TRACE_OBJECT(InObject->GetWorld()))
+	{
+		return;
+	}
+
+	TRACE_OBJECT(InObject);
+
+	UE_TRACE_LOG(Object, ObjectLifetimeEnd, ObjectChannel)
+		<< ObjectLifetimeEnd.Cycle(FPlatformTime::Cycles64())
+		<< ObjectLifetimeEnd.Id(GetObjectId(InObject));
+}
+
+void FObjectTrace::OutputPawnPossess(const UObject* InController, const UObject* InPawn)
+{
+	bool bChannelEnabled = UE_TRACE_CHANNELEXPR_IS_ENABLED(ObjectChannel);
+	if (!bChannelEnabled || InController == nullptr)
+	{
+		return;
+	}
+
+	TRACE_OBJECT(InController);
+	if (InPawn)
+	{
+		TRACE_OBJECT(InPawn);
+	}
+	
+	UE_TRACE_LOG(Object, PawnPossess, ObjectChannel)
+		<< PawnPossess.Cycle(FPlatformTime::Cycles64())
+		<< PawnPossess.ControllerId(GetObjectId(InController))
+		<< PawnPossess.PawnId(GetObjectId(InPawn));
 }
 
 void FObjectTrace::OutputWorld(const UWorld* InWorld)
@@ -276,7 +521,7 @@ void FObjectTrace::OutputWorld(const UWorld* InWorld)
 
 	UE_TRACE_LOG(Object, World, ObjectChannel)
 		<< World.Id(GetObjectId(InWorld))
-		<< World.PIEInstanceId(InWorld->GetOutermost()->PIEInstanceID)
+		<< World.PIEInstanceId(InWorld->GetOutermost()->GetPIEInstanceID())
 		<< World.Type((uint8)InWorld->WorldType)
 		<< World.NetMode((uint8)InWorld->GetNetMode())
 		<< World.IsSimulating(bIsSimulating);

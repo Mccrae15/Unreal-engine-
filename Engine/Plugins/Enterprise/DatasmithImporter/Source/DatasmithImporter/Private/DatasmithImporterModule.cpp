@@ -16,24 +16,32 @@
 #include "DatasmithScene.h"
 #include "DatasmithStaticMeshImporter.h"
 #include "DatasmithUtils.h"
+#include "DirectLinkExternalSource.h"
 #include "ObjectTemplates/DatasmithObjectTemplate.h"
 #include "ObjectTemplates/DatasmithStaticMeshTemplate.h"
-#include "UI/DatasmithUIManager.h"
 #include "UI/DatasmithConsumerDetails.h"
+#include "UI/DatasmithStyle.h"
 
+#include "Async/Async.h"
 #include "AssetToolsModule.h"
 #include "ContentBrowserDelegates.h"
 #include "ContentBrowserMenuContexts.h"
 #include "ContentBrowserModule.h"
+#include "DatasmithContentModule.h"
 #include "DataprepAssetInterface.h"
 #include "DataprepAssetUserData.h"
 #include "DataprepCoreUtils.h"
+#include "DirectLinkExtensionModule.h"
+#include "DirectLinkUriResolver.h"
 #include "Editor.h"
 #include "EditorFramework/AssetImportData.h"
 #include "EditorStyleSet.h"
 #include "Engine/StaticMesh.h"
+#include "ExternalSourceModule.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "IAssetTools.h"
+#include "IDirectLinkManager.h"
+#include "IUriManager.h"
 #include "LevelEditor.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
@@ -65,17 +73,13 @@ public:
 		// Disable any UI feature if running in command mode
 		if (UToolMenus::IsToolMenuUIEnabled())
 		{
-			FDatasmithUIManager::Initialize();
+			FDatasmithStyle::Initialize();
+			FDatasmithStyle::SetIcon(TEXT("Import"), TEXT("DatasmithImporter/Content/Icons/DatasmithImporterIcon40"));
 
 			SetupMenuEntry();
 			SetupContentBrowserContextMenuExtender();
 			SetupLevelEditorContextMenuExtender();
-
-			IDatasmithContentEditorModule& DatasmithContentEditorModule = FModuleManager::LoadModuleChecked< IDatasmithContentEditorModule >( TEXT("DatasmithContentEditor") );
-			FOnSpawnDatasmithSceneActors SpawnSceneActorsDelegate = FOnSpawnDatasmithSceneActors::CreateStatic( UActorFactoryDatasmithScene::SpawnRelatedActors );
-			SpawnSceneActorsDelegateHandle = SpawnSceneActorsDelegate.GetHandle();
-
-			DatasmithContentEditorModule.RegisterSpawnDatasmithSceneActorsHandler( SpawnSceneActorsDelegate );
+			SetupDatasmithContentDelegates();
 
 			// Register the details customizer
 			FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked< FPropertyEditorModule >( TEXT("PropertyEditor") );
@@ -93,17 +97,11 @@ public:
 		if (UToolMenus::IsToolMenuUIEnabled())
 		{
 			RemoveDataprepMenuEntryForDatasmithSceneAsset();
-
-			if ( SpawnSceneActorsDelegateHandle.IsValid() && FModuleManager::Get().IsModuleLoaded( TEXT("DatasmithContentEditor") ) )
-			{
-				IDatasmithContentEditorModule& DatasmithContentEditorModule = FModuleManager::GetModuleChecked< IDatasmithContentEditorModule >( TEXT("DatasmithContentEditor") );
-				DatasmithContentEditorModule.UnregisterDatasmithImporter(this);
-			}
-
+			RemoveDatasmithContentDelegates();
 			RemoveLevelEditorContextMenuExtender();
 			RemoveContentBrowserContextMenuExtender();
 
-			FDatasmithUIManager::Shutdown();
+			FDatasmithStyle::Shutdown();
 
 			// Register the details customizer
 			FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked< FPropertyEditorModule >( TEXT("PropertyEditor") );
@@ -143,7 +141,8 @@ private:
 	static void ApplyCustomActionOnAssets(TArray< FAssetData > SelectedAssets, IDatasmithCustomAction* Action);
 
 	void SetupMenuEntry();
-	void OnClickedMenuEntry();
+	void OnClickedImportFileMenuEntry();
+	void OnClickedImportDirectLinkMenuEntry();
 
 	// Add the menu entry for a datasmith asset generated from a dataprep asset
 	void AddDataprepMenuEntryForDatasmithSceneAsset();
@@ -155,34 +154,92 @@ private:
 	void SetupLevelEditorContextMenuExtender();
 	void RemoveLevelEditorContextMenuExtender();
 
+	void SetupDatasmithContentDelegates();
+	void RemoveDatasmithContentDelegates();
+
 	static TSharedPtr<IDataprepImporterInterface> CreateDatasmithImportHandler();
 
 	FDelegateHandle ContentBrowserExtenderDelegateHandle;
 	FDelegateHandle LevelEditorExtenderDelegateHandle;
 	FDelegateHandle SpawnSceneActorsDelegateHandle;
 	FDelegateHandle CreateDatasmithImportHandlerDelegateHandle;
+
+	FDelegateHandle SetAssetAutoReimportHandle;
+	FDelegateHandle IsAssetAutoReimportSupportedHandle;
+	FDelegateHandle IsAssetAutoReimportEnabledHandle;
+	FDelegateHandle BrowseExternalSourceUriHandle;
+	FDelegateHandle GetSupporedUriSchemeHandle;
 };
 
 void FDatasmithImporterModule::SetupMenuEntry()
 {
 	if (!IsRunningCommandlet())
 	{
-		FDatasmithUIManager::Get().AddMenuEntry(
-			TEXT("Import"),
-			LOCTEXT("DatasmithImport", "Datasmith"),
-			LOCTEXT("DatasmithImportTooltip", "Import Unreal Datasmith file"),
-			TEXT("DatasmithImporter/Content/Icons/DatasmithImporterIcon40"),
-			FExecuteAction::CreateRaw(this, &FDatasmithImporterModule::OnClickedMenuEntry),
-			UDatasmithImportFactory::StaticClass()
+		UToolMenu* ContentMenu = UToolMenus::Get()->ExtendMenu( "LevelEditor.LevelEditorToolBar.AddQuickMenu" );
+		check( ContentMenu );
+
+		FToolMenuSection& Section = ContentMenu->FindOrAddSection( "ImportAssets" );
+		Section.InitSection( "ImportAssets", LOCTEXT( "ImportAssets_Label", "Import Assets" ), FToolMenuInsert() );
+
+		const bool bOpenMenuOnClick = false; //default value;
+		Section.AddSubMenu(
+			TEXT( "DatasmithImport" ),
+			LOCTEXT( "DatasmithImport", "Datasmith" ), // label
+			LOCTEXT( "DatasmithImportTooltip", "Import Unreal Datasmith file" ), // description
+			FNewToolMenuDelegate::CreateLambda( [&]( UToolMenu* Menu ) {
+				FToolMenuSection& SubSection = Menu->FindOrAddSection( TEXT( "DatasmithImportMenu" ) );
+				SubSection.InitSection( TEXT( "DatasmithImportMenu" ), LOCTEXT( "DatasmithImport_Label", "Datasmith Import" ), FToolMenuInsert() );
+
+				SubSection.AddMenuEntry(
+					TEXT( "ImportFile" ),
+					LOCTEXT( "DatasmithFileImport", "File Import..." ), // label
+					LOCTEXT( "DatasmithFileImportTooltip", "Import Unreal Datasmith file" ), // description
+					FSlateIcon( FDatasmithStyle::GetStyleSetName(), TEXT("Datasmith.Import") ),
+					FUIAction( FExecuteAction::CreateRaw( this, &FDatasmithImporterModule::OnClickedImportFileMenuEntry ) )
+				);
+
+				SubSection.AddMenuEntry(
+					TEXT( "ImportDirectLink" ),
+					LOCTEXT( "DatasmithDirectLinkImport", "Direct Link Import..." ), // label
+					LOCTEXT( "DatasmithDirectLinkImportTooltip", "Import Unreal Datasmith with Direct Link" ), // description
+					FSlateIcon( FDatasmithStyle::GetStyleSetName(), TEXT( "Datasmith.Import" ) ),
+					FUIAction( FExecuteAction::CreateRaw( this, &FDatasmithImporterModule::OnClickedImportDirectLinkMenuEntry ) )
+				);
+			}),
+			bOpenMenuOnClick,
+			FSlateIcon( FDatasmithStyle::GetStyleSetName(), TEXT( "Datasmith.Import" ) )
 		);
 	}
 }
 
-void FDatasmithImporterModule::OnClickedMenuEntry()
+void FDatasmithImporterModule::OnClickedImportFileMenuEntry()
 {
-	if (!IsRunningCommandlet())
+	if ( !IsRunningCommandlet() )
 	{
-		FDatasmithImporterHelper::Import<UDatasmithImportFactory>();
+		FDatasmithImporterHelper::Import< UDatasmithImportFactory >();
+	}
+}
+
+void FDatasmithImporterModule::OnClickedImportDirectLinkMenuEntry()
+{
+	using namespace UE::DatasmithImporter;
+
+	TSharedPtr<FDirectLinkExternalSource> ExternalSource = IDirectLinkExtensionModule::Get().DisplayDirectLinkSourcesDialog();
+	if ( ExternalSource )
+	{
+		TFuture<TSharedPtr<IDatasmithScene>> DatasmithSceneFuture = ExternalSource->AsyncLoad();
+
+		// Even though DatasmithSceneFuture will be destructed when exiting this scope, its shared state will still be referenced by the TPromise.
+		// This is where the delegate set by Next() is kept, and so the callback will always be called.
+		DatasmithSceneFuture.Next([ExternalSource = MoveTemp(ExternalSource)](const TSharedPtr<IDatasmithScene>& LoadedScene) {
+			if (LoadedScene)
+			{
+				// Import can only be triggered from main thread.
+				Async(EAsyncExecution::TaskGraphMainThread, [ExternalSource]() {
+					FDatasmithImporterHelper::Import< UDatasmithImportFactory >(ExternalSource.ToSharedRef());
+				});
+			}
+		});
 	}
 }
 
@@ -407,15 +464,17 @@ TSharedRef<FExtender> FDatasmithImporterModule::OnExtendLevelEditorActorSelectio
 	if ( bShouldExtendActorActions )
 	{
 		// Add the Datasmith actions sub-menu extender
-		Extender->AddMenuExtension("ActorControl", EExtensionHook::After, nullptr, FMenuExtensionDelegate::CreateLambda(
+		Extender->AddMenuExtension("ActorTypeTools", EExtensionHook::After, nullptr, FMenuExtensionDelegate::CreateLambda(
 			[SelectedActors](FMenuBuilder& MenuBuilder)
 		{
+			MenuBuilder.BeginSection("Datasmith", LOCTEXT("DatasmithMenuSection", "Datasmith"));
 			MenuBuilder.AddSubMenu(
 				NSLOCTEXT("DatasmithActions", "ObjectContext_Datasmith", "Datasmith"),
 				NSLOCTEXT("DatasmithActions", "ObjectContext_Datasmith", "Datasmith"),
 				FNewMenuDelegate::CreateStatic( &FDatasmithImporterModule::PopulateDatasmithActorsMenu, SelectedActors ),
 				false,
 				FSlateIcon());
+			MenuBuilder.EndSection();
 		}));
 	}
 
@@ -543,7 +602,7 @@ void FDatasmithImporterModule::ExecuteReimportDatasmithMaterials( TArray<FAssetD
 
 void FDatasmithImporterModule::DiffAgainstTemplates( UObject* Outer )
 {
-	TMap< TSubclassOf< UDatasmithObjectTemplate >, UDatasmithObjectTemplate* >* ObjectTemplates = FDatasmithObjectTemplateUtils::FindOrCreateObjectTemplates( Outer );
+	TMap< TSubclassOf< UDatasmithObjectTemplate >, TObjectPtr<UDatasmithObjectTemplate> >* ObjectTemplates = FDatasmithObjectTemplateUtils::FindOrCreateObjectTemplates( Outer );
 
 	if ( !ObjectTemplates )
 	{
@@ -573,7 +632,7 @@ void FDatasmithImporterModule::DiffAgainstTemplates( UObject* Outer )
 
 void FDatasmithImporterModule::ResetFromTemplates( UObject* Outer )
 {
-	if ( TMap< TSubclassOf< UDatasmithObjectTemplate >, UDatasmithObjectTemplate* >* ObjectTemplates = FDatasmithObjectTemplateUtils::FindOrCreateObjectTemplates( Outer ) )
+	if ( TMap< TSubclassOf< UDatasmithObjectTemplate >, TObjectPtr<UDatasmithObjectTemplate> >* ObjectTemplates = FDatasmithObjectTemplateUtils::FindOrCreateObjectTemplates( Outer ) )
 	{
 		for ( auto It = ObjectTemplates->CreateConstIterator(); It; ++It )
 		{
@@ -669,6 +728,114 @@ void FDatasmithImporterModule::ApplyCustomActionOnAssets(TArray< FAssetData > Se
 TSharedPtr< IDataprepImporterInterface > FDatasmithImporterModule::CreateDatasmithImportHandler()
 {
 	return nullptr;
+}
+
+void FDatasmithImporterModule::SetupDatasmithContentDelegates()
+{
+	IDatasmithContentEditorModule& DatasmithContentEditorModule = FModuleManager::LoadModuleChecked< IDatasmithContentEditorModule >(TEXT("DatasmithContentEditor"));
+
+	FOnSpawnDatasmithSceneActors SpawnSceneActorsDelegate = FOnSpawnDatasmithSceneActors::CreateStatic(UActorFactoryDatasmithScene::SpawnRelatedActors);
+	SpawnSceneActorsDelegateHandle = SpawnSceneActorsDelegate.GetHandle();
+	DatasmithContentEditorModule.RegisterSpawnDatasmithSceneActorsHandler(SpawnSceneActorsDelegate);
+
+	{
+		FOnSetAssetAutoReimport SetAssetAutoReimport = FOnSetAssetAutoReimport::CreateLambda(
+			[](UObject* Asset, bool bEnabled)
+			{
+				using namespace UE::DatasmithImporter;
+				const FAssetData AssetData(Asset);
+				const FSourceUri SourceUri = FSourceUri::FromAssetData(AssetData);
+
+				if (bEnabled && !SourceUri.HasScheme(FDirectLinkUriResolver::GetDirectLinkScheme()))
+				{
+					return false;
+				}
+
+				return IDirectLinkExtensionModule::Get().GetManager().SetAssetAutoReimport(Asset, bEnabled);
+			});
+		SetAssetAutoReimportHandle = SetAssetAutoReimport.GetHandle();
+		DatasmithContentEditorModule.RegisterSetAssetAutoReimportHandler(MoveTemp(SetAssetAutoReimport));
+	}
+
+	{
+		FOnIsAssetAutoReimportAvailable IsAssetAutoReimportAvailable = FOnIsAssetAutoReimportAvailable::CreateLambda(
+			[](UObject* Asset)
+			{
+				using namespace UE::DatasmithImporter;
+				const FAssetData AssetData(Asset);
+				const FSourceUri SourceUri = FSourceUri::FromAssetData(AssetData);
+
+				return SourceUri.HasScheme(FDirectLinkUriResolver::GetDirectLinkScheme());
+			});
+		IsAssetAutoReimportSupportedHandle = IsAssetAutoReimportAvailable.GetHandle();
+		DatasmithContentEditorModule.RegisterIsAssetAutoReimportAvailableHandler(MoveTemp(IsAssetAutoReimportAvailable));
+	}
+
+	{
+		FOnIsAssetAutoReimportEnabled IsAssetAutoReimportEnabled = FOnIsAssetAutoReimportEnabled::CreateLambda(
+			[](UObject* Asset)
+			{
+				using namespace UE::DatasmithImporter;
+				const FAssetData AssetData(Asset);
+				const FSourceUri SourceUri = FSourceUri::FromAssetData(AssetData);
+
+				if (SourceUri.HasScheme(FDirectLinkUriResolver::GetDirectLinkScheme()))
+				{
+					return IDirectLinkExtensionModule::Get().GetManager().IsAssetAutoReimportEnabled(Asset);
+				}
+
+				return false;
+			});
+		IsAssetAutoReimportEnabledHandle = IsAssetAutoReimportEnabled.GetHandle();
+		DatasmithContentEditorModule.RegisterIsAssetAutoReimportEnabledHandler(MoveTemp(IsAssetAutoReimportEnabled));
+	}
+
+	{
+		FOnBrowseExternalSourceUri BrowseExternalSourceUri = FOnBrowseExternalSourceUri::CreateLambda(
+			[](FName UriScheme, const FString& DefaultUriString, FString& OutSourceUri, FString& OutFallbackFilepath)
+			{
+				using namespace UE::DatasmithImporter;
+				FSourceUri DefaultUri(DefaultUriString);
+
+				if (TSharedPtr<FExternalSource> ExternalSource = IExternalSourceModule::Get().GetManager().BrowseExternalSource(UriScheme, DefaultUri))
+				{
+					OutSourceUri = ExternalSource->GetSourceUri().ToString();
+					OutFallbackFilepath = ExternalSource->GetFallbackFilepath();
+					return true;
+				}
+
+				return false;
+			});
+
+		BrowseExternalSourceUriHandle = BrowseExternalSourceUri.GetHandle();
+		DatasmithContentEditorModule.RegisterBrowseExternalSourceUriHandler(MoveTemp(BrowseExternalSourceUri));
+	}
+
+	{
+		FOnGetSupportedUriSchemes GetSupporedUriScheme = FOnGetSupportedUriSchemes::CreateLambda(
+			[]() -> const TArray<FName>&
+			{
+				using namespace UE::DatasmithImporter;
+				return IExternalSourceModule::Get().GetManager().GetSupportedSchemes();
+			});
+
+		GetSupporedUriSchemeHandle = GetSupporedUriScheme.GetHandle();
+		DatasmithContentEditorModule.RegisterGetSupportedUriSchemeHandler(MoveTemp(GetSupporedUriScheme));
+	}
+}
+
+void FDatasmithImporterModule::RemoveDatasmithContentDelegates()
+{
+	if (SpawnSceneActorsDelegateHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("DatasmithContentEditor")))
+	{
+		IDatasmithContentEditorModule& DatasmithContentEditorModule = FModuleManager::GetModuleChecked< IDatasmithContentEditorModule >(TEXT("DatasmithContentEditor"));
+		DatasmithContentEditorModule.UnregisterDatasmithImporter(this);
+		DatasmithContentEditorModule.UnregisterSetAssetAutoReimportHandler(SetAssetAutoReimportHandle);
+		DatasmithContentEditorModule.UnregisterIsAssetAutoReimportAvailableHandler(IsAssetAutoReimportSupportedHandle);
+		DatasmithContentEditorModule.UnregisterIsAssetAutoReimportEnabledHandler(IsAssetAutoReimportEnabledHandle);
+		DatasmithContentEditorModule.UnregisterBrowseExternalSourceUriHandler(BrowseExternalSourceUriHandle);
+		DatasmithContentEditorModule.UnregisterGetSupportedUriSchemeHandler(GetSupporedUriSchemeHandle);
+	}
 }
 
 IMPLEMENT_MODULE(FDatasmithImporterModule, DatasmithImporter);

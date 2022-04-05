@@ -2,12 +2,14 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "Interfaces/ITargetPlatform.h"
-#include "PlatformInfo.h"
-#include "HAL/PlatformFilemanager.h"
 #include "GenericPlatform/GenericPlatformFile.h"
+#include "HAL/PlatformFile.h"
+#include "HAL/PlatformFileManager.h"
+#include "Interfaces/ITargetPlatform.h"
+#include "Misc/AssertionMacros.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
+#include "PlatformInfo.h"
 
 /**
  * Base class for target platforms.
@@ -34,10 +36,22 @@ public:
 		return PlatformInfo->DisplayName;
 	}
 
-	virtual const PlatformInfo::FPlatformInfo& GetPlatformInfo() const override
+	virtual const PlatformInfo::FTargetPlatformInfo& GetTargetPlatformInfo() const override
 	{
 		return *PlatformInfo;
 	}
+
+	virtual const FDataDrivenPlatformInfo& GetPlatformInfo() const override
+	{
+		return *PlatformInfo->DataDrivenPlatformInfo;
+	}
+
+	virtual FConfigCacheIni* GetConfigSystem() const override
+	{
+		return FConfigCacheIni::ForPlatform(*IniPlatformName());
+	}
+
+	TARGETPLATFORM_API virtual bool IsEnabledForPlugin(const IPlugin& Plugin) const override;
 
 	TARGETPLATFORM_API virtual bool UsesForwardShading() const override;
 
@@ -52,6 +66,8 @@ public:
 	TARGETPLATFORM_API virtual bool UsesDistanceFields() const override;
 
 	TARGETPLATFORM_API virtual bool UsesRayTracing() const override;
+
+	TARGETPLATFORM_API virtual EOfflineBVHMode GetStaticMeshOfflineBVHMode() const override;
 
 	TARGETPLATFORM_API virtual bool ForcesSimpleSkyDiffuse() const override;
 
@@ -79,6 +95,9 @@ public:
 	{
 		return FName();
 	}
+
+	virtual bool SupportsLQCompressionTextureFormat() const override { return true; };
+
 #endif //WITH_ENGINE
 
 	virtual bool PackageBuild( const FString& InPackgeDirectory ) override
@@ -123,7 +142,6 @@ public:
 
 	virtual bool SupportsValueForType(FName SupportedType, FName RequiredSupportedValue) const override
 	{
-#if WITH_ENGINE
 		// check if the given shader format is returned by this TargetPlatform
 		if (SupportedType == TEXT("ShaderFormat"))
 		{
@@ -131,23 +149,13 @@ public:
 			GetAllPossibleShaderFormats(AllPossibleShaderFormats);
 			return AllPossibleShaderFormats.Contains(RequiredSupportedValue);
 		}
-#endif
+
 		return false;
 	}
 
 	virtual bool SupportsVariants() const override
 	{
 		return false;
-	}
-
-	virtual FText GetVariantDisplayName() const override
-	{
-		return FText();
-	}
-
-	virtual FText GetVariantTitle() const override
-	{
-		return FText();
 	}
 
 	virtual float GetVariantPriority() const override
@@ -158,6 +166,11 @@ public:
 	virtual bool SendLowerCaseFilePaths() const override
 	{
 		return false;
+	}
+
+	virtual bool AllowsEditorObjects() const override
+	{
+		return HasEditorOnlyData();
 	}
 
 	virtual void GetBuildProjectSettingKeys(FString& OutSection, TArray<FString>& InBoolKeys, TArray<FString>& InIntKeys, TArray<FString>& InStringKeys) const override
@@ -182,12 +195,46 @@ public:
 	}
 
 #if WITH_ENGINE
+	virtual bool AllowAudioVisualData() const override
+	{
+		return !IsServerOnly();
+	}
+
+	virtual bool AllowObject(const class UObject* Object) const override
+	{
+		return true;
+	}
+
 	virtual FName GetMeshBuilderModuleName() const override
 	{
 		// MeshBuilder is the default module. Platforms may override this to provide platform specific mesh data.
 		static const FName NAME_MeshBuilder(TEXT("MeshBuilder"));
 		return NAME_MeshBuilder;
 	}
+
+	virtual void GetShaderFormatModuleHints(TArray<FName>& OutModuleNames) const override
+	{
+	}
+
+	virtual void GetTextureFormatModuleHints(TArray<FName>& OutModuleNames) const override
+	{
+		// these are the default texture format modules, since many platforms 
+		OutModuleNames.Add(TEXT("TextureFormatUncompressed"));
+		OutModuleNames.Add(TEXT("TextureFormatDXT"));
+		OutModuleNames.Add(TEXT("TextureFormatIntelISPCTexComp"));
+
+		// there is a possible optional format module name in the ini (alternate texture compressor)
+		FString TextureCompressionFormat;
+		if (GetConfigSystem()->GetString(TEXT("AlternateTextureCompression"), TEXT("TextureCompressionFormat"), TextureCompressionFormat, GEngineIni))
+		{
+			OutModuleNames.Add(*TextureCompressionFormat);
+		}
+	}
+
+	virtual void GetWaveFormatModuleHints(TArray<FName>& OutModuleNames) const override
+	{
+	}
+
 #endif
 
 	virtual bool CopyFileToTarget(const FString& TargetAddress, const FString& HostFilename, const FString& TargetFilename, const TMap<FString,FString>& CustomPlatformData) override
@@ -195,9 +242,21 @@ public:
 		return false; 
 	}
 
+	virtual void GetExtraPackagesToCook(TArray<FName>& PackageNames) const override
+	{
+
+	}
+
+	virtual bool InitializeHostPlatform()
+	{
+		// if the platform doesn't need anything, it's valid to do nothing
+		return true;
+	}
+
+
 protected:
 
-	FTargetPlatformBase(const PlatformInfo::FPlatformInfo *const InPlatformInfo)
+	FTargetPlatformBase(const PlatformInfo::FTargetPlatformInfo *const InPlatformInfo)
 		: PlatformInfo(InPlatformInfo)
 	{
 		checkf(PlatformInfo, TEXT("Null PlatformInfo was passed to FTargetPlatformBase. Check the static IsUsable function before creating this object. See FWindowsTargetPlatformModule::GetTargetPlatform()"));
@@ -206,7 +265,7 @@ protected:
 	}
 
 	/** Information about this platform */
-	const PlatformInfo::FPlatformInfo *PlatformInfo;
+	const PlatformInfo::FTargetPlatformInfo *PlatformInfo;
 	int32 PlatformOrdinal;
 
 private:
@@ -232,15 +291,34 @@ public:
 	 */
 	static bool IsUsable()
 	{
-		return PlatformInfo::FindPlatformInfo(TPlatformProperties::PlatformName()) != nullptr;
+		return true;
 	}
 	
-	/** Default constructor. */
-	TTargetPlatformBase()
-		: FTargetPlatformBase( PlatformInfo::FindPlatformInfo(TPlatformProperties::PlatformName()) )
+
+
+	/**
+	 * Constructor that already has a TPI (notably coming from TNonDesktopTargetPlatform)
+	 */
+	TTargetPlatformBase(PlatformInfo::FTargetPlatformInfo* PremadePlatformInfo)
+		: FTargetPlatformBase(PremadePlatformInfo)
 	{
 		// HasEditorOnlyData and RequiresCookedData are mutually exclusive.
 		check(TPlatformProperties::HasEditorOnlyData() != TPlatformProperties::RequiresCookedData());
+	}
+
+	/**
+	 * Constructor that makes a TPI based solely on TPlatformProperties
+	 */
+	TTargetPlatformBase()
+		: TTargetPlatformBase( new PlatformInfo::FTargetPlatformInfo(
+			TPlatformProperties::IniPlatformName(),
+			TPlatformProperties::HasEditorOnlyData() ? EBuildTargetType::Editor :
+				TPlatformProperties::IsServerOnly() ? EBuildTargetType::Server : 
+				TPlatformProperties::IsClientOnly() ? EBuildTargetType::Client : 
+				EBuildTargetType::Game,
+			TEXT(""))
+		)
+	{
 	}
 
 public:
@@ -269,12 +347,21 @@ public:
 
 	virtual FString PlatformName() const override
 	{
+		// we assume these match for DesktopPlatforms (NonDesktop doesn't return "FooClient", but Desktop does, for legacy reasons)
+		checkSlow(this->PlatformInfo->Name == TPlatformProperties::PlatformName());
+		
 		return FString(TPlatformProperties::PlatformName());
 	}
 
 	virtual FString IniPlatformName() const override
 	{
 		return FString(TPlatformProperties::IniPlatformName());
+	}
+
+	virtual FString CookingDeviceProfileName() const override
+	{
+		// default to using TargetPlatform name, like WindowsClient, when looking up the DeviceProfile to cook with
+		return PlatformName();
 	}
 
 	virtual bool RequiresCookedData() const override
@@ -302,6 +389,16 @@ public:
 	virtual bool SupportsBuildTarget( EBuildTargetType TargetType ) const override
 	{
 		return TPlatformProperties::SupportsBuildTarget(TargetType);
+	}
+
+	virtual EBuildTargetType GetRuntimePlatformType() const override
+	{
+		if (AllowsEditorObjects())
+		{
+			// Platforms that AllowsEditorObjects need the runtime type Editor to use those objects
+			return EBuildTargetType::Editor;
+		}
+		return PlatformInfo->PlatformType;
 	}
 
 	virtual bool SupportsAutoSDK() const override
@@ -337,9 +434,6 @@ public:
 		case ETargetPlatformFeatures::Packaging:
 			return false;
 
-		case ETargetPlatformFeatures::Tessellation:
-			return TPlatformProperties::SupportsTessellation();
-
 		case ETargetPlatformFeatures::TextureStreaming:
 			return TPlatformProperties::SupportsTextureStreaming();
 		case ETargetPlatformFeatures::MeshLODStreaming:
@@ -372,6 +466,12 @@ public:
 
 		case ETargetPlatformFeatures::HalfFloatVertexFormat:
 			return true;
+
+		case ETargetPlatformFeatures::LumenGI:
+			return TPlatformProperties::SupportsLumenGI();
+
+		case ETargetPlatformFeatures::HardwareLZDecompression:
+			return TPlatformProperties::SupportsHardwareLZDecompression();
 		}
 
 		return false;
@@ -394,3 +494,72 @@ public:
 	}
 #endif // WITH_ENGINE
 };
+
+
+template<typename TPlatformProperties>
+class TNonDesktopTargetPlatformBase 
+	: public TTargetPlatformBase<TPlatformProperties>
+{
+public:
+	/**
+	 * A simplified version for TPs that never will have Editor or ServerOnly versions, potentially multiple CookFlavors, as well as IN VERY RARE CASES, 
+	 * a different runtime IniPlatformName than what is passed in here (an example being TVOS and IOS, where passing in TVOS properties is very complicated)
+	 * Note that if we delayed the Info creation, we could just use this->IniPlatformName() and override that in, say TVOS, but we can't call a virtual here,
+	 * so we pass it up into the ctor
+	 */
+	TNonDesktopTargetPlatformBase(bool bInIsClientOnly, const TCHAR* CookFlavor=nullptr, const TCHAR* OverrideIniPlatformName=nullptr)
+		: TTargetPlatformBase<TPlatformProperties>(new PlatformInfo::FTargetPlatformInfo(
+			OverrideIniPlatformName ? FString(OverrideIniPlatformName) : FString(TPlatformProperties::IniPlatformName()),
+			bInIsClientOnly ? EBuildTargetType::Client : EBuildTargetType::Game,
+			CookFlavor))
+		, bIsClientOnly(bInIsClientOnly)
+	{
+
+	}
+
+	virtual FString PlatformName() const override
+	{
+		// instead of TPlatformProperties (which won't have Client for non-desktop platforms), use the Info's name, which is programmatically made
+		return this->PlatformInfo->Name.ToString();
+	}
+
+	virtual FString IniPlatformName() const override
+	{
+		// we use the Info's IniPlatformName as it may have been overridden in the constructor IN RARE CASES
+		return this->PlatformInfo->IniPlatformName.ToString();
+	}
+
+	virtual FString CookingDeviceProfileName() const override
+	{
+		// when cooking for non-desktop platforms, always use the base platform name as the DP to cook with (there aren't IOSClient DPs, there are IOS (base), IPhone7, iPad4, etc DPs)
+		return IniPlatformName();
+	}
+
+	virtual bool HasEditorOnlyData() const override
+	{
+		return false;
+	}
+
+	virtual bool IsServerOnly() const override
+	{
+		return false;
+	}
+
+	virtual bool IsClientOnly() const override
+	{
+		return bIsClientOnly;
+	}
+
+	virtual bool IsRunningPlatform() const override
+	{
+		// IsRunningPlatform is only for editor platforms
+
+		return false;
+	}
+
+protected:
+	// true if this target platform is client-only, ie strips out server stuff
+	bool bIsClientOnly;
+};
+
+

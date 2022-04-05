@@ -48,11 +48,7 @@ class FNetAnalyticsAggregator;
 #define NET_ANALYTICS_MULTITHREADING 0
 
 
-#if NET_ANALYTICS_MULTITHREADING
-	constexpr const ESPMode NetAnalyticsThreadSafety = ESPMode::ThreadSafe;
-#else
-	constexpr const ESPMode NetAnalyticsThreadSafety = ESPMode::Fast;
-#endif
+constexpr const ESPMode NetAnalyticsThreadSafety = ESPMode::ThreadSafe;
 
 
 // Forward Declarations
@@ -365,6 +361,12 @@ public:
 	const TSharedPtr<IAnalyticsProvider>& GetAnalyticsProvider()
 	{
 		return AnalyticsProvider;
+	}
+
+	/** Accessor for NetDriverName */
+	FName GetNetDriverName() const
+	{
+		return NetDriverName;
 	}
 
 

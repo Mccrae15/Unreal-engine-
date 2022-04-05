@@ -30,7 +30,7 @@ class KISMET_API SKismetInspector : public SCompoundWidget
 public:
 	SLATE_BEGIN_ARGS( SKismetInspector )
 		: _ShowPublicViewControl(false)
-		, _HideNameArea(false)
+		, _HideNameArea(true)
 		, _SetNotifyHook(true)
 		, _ShowTitleArea(false)
 		{}
@@ -208,4 +208,10 @@ protected:
 	void SetPublicViewCheckboxState(ECheckBoxState InIsChecked);
 
 	bool IsAnyParentContainerSelected(const FPropertyAndParent& PropertyAndParent) const;
+
+	/** Callback invoked after a value change on the selected object(s) */
+	void OnFinishedChangingProperties(const FPropertyChangedEvent& InPropertyChangedEvent);
+
+	/** Auto-import any namespaces associated with a property's value into the current editor context */
+	void ImportNamespacesForPropertyValue(const FProperty* InProperty) const;
 };

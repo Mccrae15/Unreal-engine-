@@ -26,10 +26,11 @@ public class AddContentDialog : ModuleRules
 				"DesktopPlatform",
 				"PakFile",
 				"ImageWrapper",
+				"EditorFramework",
 				"UnrealEd",
 				"CoreUObject",				
-				"WidgetCarousel",				
-			
+				"WidgetCarousel",
+				"ToolWidgets",
 			}
 		);
 

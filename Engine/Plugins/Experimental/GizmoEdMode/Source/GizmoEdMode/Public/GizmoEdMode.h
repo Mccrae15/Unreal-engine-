@@ -5,12 +5,12 @@
 #include "Tools/UEdMode.h"
 #include "UObject/Object.h"
 #include "UObject/Interface.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "AssetEditorGizmoFactory.h"
 
 #include "GizmoEdMode.generated.h"
 
-class UTransformGizmo;
+class UCombinedTransformGizmo;
 class UInteractiveGizmo;
 class UInteractiveGizmoManager;
 
@@ -28,15 +28,18 @@ public:
 	UGizmoEdMode();
 
 	void AddFactory(TScriptInterface<IAssetEditorGizmoFactory> GizmoFactory);
+	virtual bool UsesToolkits() const override
+	{
+		return false;
+	}
 
 private:
 	void ActorSelectionChangeNotify() override;
 	void Enter() override;
 	void Exit() override;
-	bool InputKey(FEditorViewportClient* ViewportClient, FViewport* Viewport, FKey Key, EInputEvent Event) override;
+	void ModeTick(float DeltaTime) override;
 
 	bool IsCompatibleWith(FEditorModeID OtherModeID) const override { return true; }
-	void Tick(FEditorViewportClient* ViewportClient, float DeltaTime) override;
 
 	void RecreateGizmo();
 	void DestroyGizmo();

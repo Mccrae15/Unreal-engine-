@@ -5,16 +5,17 @@ ImageUtils.cpp: Image utility functions.
 =============================================================================*/
 
 #include "ImageUtils.h"
-#include "Engine/Texture2D.h"
-#include "Misc/ObjectThumbnail.h"
-#include "Engine/TextureRenderTarget2D.h"
+
 #include "CubemapUnwrapUtils.h"
-#include "Logging/MessageLog.h"
+#include "DDSLoader.h"
+#include "Engine/Texture2D.h"
+#include "Engine/TextureCube.h"
+#include "Engine/TextureRenderTarget2D.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
+#include "Logging/MessageLog.h"
 #include "Misc/FileHelper.h"
-#include "DDSLoader.h"
-#include "HDRLoader.h"
+#include "Misc/ObjectThumbnail.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 
@@ -22,7 +23,13 @@ DEFINE_LOG_CATEGORY_STATIC(LogImageUtils, Log, All);
 
 #define LOCTEXT_NAMESPACE "ImageUtils"
 
-static bool GetRawData(UTextureRenderTarget2D* TexRT, TArray64<uint8>& RawData)
+/**
+ * Returns data containing the pixmap of the passed in rendertarget.
+ * @param TexRT - The 2D rendertarget from which to read pixmap data.
+ * @param RawData - an array to be filled with pixel data.
+ * @return true if RawData has been successfully filled.
+ */
+bool FImageUtils::GetRawData(UTextureRenderTarget2D* TexRT, TArray64<uint8>& RawData)
 {
 	FRenderTarget* RenderTarget = TexRT->GameThread_GetRenderTargetResource();
 	EPixelFormat Format = TexRT->GetFormat();
@@ -322,6 +329,8 @@ UTexture2D* FImageUtils::CreateTexture2D(int32 SrcWidth, int32 SrcHeight, const 
 		Tex2D->LODGroup = InParams.TextureGroup;
 	}
 
+	Tex2D->VirtualTextureStreaming = InParams.bVirtualTexture;
+
 	Tex2D->PostEditChange();
 	return Tex2D;
 #else
@@ -390,7 +399,7 @@ void FImageUtils::CompressImageArray( int32 ImageWidth, int32 ImageHeight, const
 {
 	TArray<FColor> MutableSrcData = SrcData;
 
-	// PNGs are saved as RGBA but FColors are stored as BGRA. An option to swap the order upon compression may be added at 
+	// Thumbnails are saved as RGBA but FColors are stored as BGRA. An option to swap the order upon compression may be added at 
 	// some point. At the moment, manually swapping Red and Blue 
 	for ( int32 Index = 0; Index < ImageWidth*ImageHeight; Index++ )
 	{
@@ -408,10 +417,33 @@ void FImageUtils::CompressImageArray( int32 ImageWidth, int32 ImageHeight, const
 	ThumbnailByteArray.AddUninitialized(MemorySize);
 	FMemory::Memcpy(ThumbnailByteArray.GetData(), MutableSrcData.GetData(), MemorySize);
 
-	// Compress data - convert into a .png
+	// Compress data - convert into thumbnail current format
 	TempThumbnail.CompressImageData();
-	TArray<uint8>& CompressedByteArray = TempThumbnail.AccessCompressedImageData();
 	DstData = TempThumbnail.AccessCompressedImageData();
+}
+
+void FImageUtils::PNGCompressImageArray(int32 ImageWidth, int32 ImageHeight, const TArrayView64<const FColor>& SrcData, TArray64<uint8>& DstData)
+{
+	const int64 PixelsNum = ImageWidth * ImageHeight;
+	check(SrcData.Num() == PixelsNum);
+
+	const uint8* SrcFirstByte = static_cast<const uint8*>(static_cast<const void*>(SrcData.GetData()));
+	const int64 MemorySize = PixelsNum * sizeof(FColor);
+
+	DstData.Reset();
+
+	if (SrcData.Num() > 0 && ImageWidth > 0 && ImageHeight > 0)
+	{
+		if (DstData.Num() == 0)
+		{
+			IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+			TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+			if (ImageWrapper.IsValid() && ImageWrapper->SetRaw(SrcFirstByte, MemorySize, ImageWidth, ImageHeight, ERGBFormat::BGRA, 8))
+			{
+				DstData = ImageWrapper->GetCompressed();
+			}
+		}
+	}
 }
 
 UTexture2D* FImageUtils::CreateCheckerboardTexture(FColor ColorOne, FColor ColorTwo, int32 CheckerSize)
@@ -423,7 +455,7 @@ UTexture2D* FImageUtils::CreateCheckerboardTexture(FColor ColorOne, FColor Color
 	UTexture2D* CheckerboardTexture = UTexture2D::CreateTransient(CheckerSize, CheckerSize, PF_B8G8R8A8);
 
 	// Lock the checkerboard texture so it can be modified
-	FColor* MipData = reinterpret_cast<FColor*>( CheckerboardTexture->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE) );
+	FColor* MipData = reinterpret_cast<FColor*>( CheckerboardTexture->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE) );
 
 	// Fill in the colors in a checkerboard pattern
 	for ( int32 RowNum = 0; RowNum < CheckerSize; ++RowNum )
@@ -444,7 +476,47 @@ UTexture2D* FImageUtils::CreateCheckerboardTexture(FColor ColorOne, FColor Color
 	}
 
 	// Unlock the texture
-	CheckerboardTexture->PlatformData->Mips[0].BulkData.Unlock();
+	CheckerboardTexture->GetPlatformData()->Mips[0].BulkData.Unlock();
+	CheckerboardTexture->UpdateResource();
+
+	return CheckerboardTexture;
+}
+
+UTextureCube* FImageUtils::CreateCheckerboardCubeTexture(FColor ColorOne, FColor ColorTwo, int32 CheckerSize)
+{
+	CheckerSize = FMath::Min<uint32>(FMath::RoundUpToPowerOfTwo(CheckerSize), 4096);
+	const int32 HalfPixelNum = CheckerSize >> 1;
+
+	// Create the texture
+	UTextureCube* CheckerboardTexture = UTextureCube::CreateTransient(CheckerSize, CheckerSize, PF_B8G8R8A8);
+
+	// Lock the checkerboard texture so it can be modified
+	FColor* MipData = reinterpret_cast<FColor*>(CheckerboardTexture->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+
+	// Fill in the colors in a checkerboard pattern
+	for (int32 Face = 0; Face < 6; ++Face)
+	{
+		for (int32 RowNum = 0; RowNum < CheckerSize; ++RowNum)
+		{
+			for (int32 ColNum = 0; ColNum < CheckerSize; ++ColNum)
+			{
+				FColor& CurColor = MipData[(ColNum + (RowNum * CheckerSize))];
+
+				if (ColNum < HalfPixelNum)
+				{
+					CurColor = (RowNum < HalfPixelNum) ? ColorOne : ColorTwo;
+				}
+				else
+				{
+					CurColor = (RowNum < HalfPixelNum) ? ColorTwo : ColorOne;
+				}
+			}
+		}
+		MipData += CheckerSize * CheckerSize;
+	}
+
+	// Unlock the texture
+	CheckerboardTexture->GetPlatformData()->Mips[0].BulkData.Unlock();
 	CheckerboardTexture->UpdateResource();
 
 	return CheckerboardTexture;
@@ -470,7 +542,7 @@ public:
 		Format = TexRT->GetFormat();
 
 		TArray64<uint8> RawData;
-		bool bReadSuccess = GetRawData(TexRT, RawData);
+		bool bReadSuccess = FImageUtils::GetRawData(TexRT, RawData);
 		if (bReadSuccess)
 		{
 			WriteHDRImage(RawData, Ar);
@@ -516,7 +588,7 @@ public:
 		Texture->GetMipData(0, (void**)RawData2.GetData());
 		const EPixelFormat NewFormat = Texture->GetPixelFormat();
 
-		if (Texture->PlatformData->Mips.Num() == 0)
+		if (Texture->GetPlatformData()->Mips.Num() == 0)
 		{
 			bReadSuccess = false;
 			FMessageLog("ImageUtils").Warning(FText::Format(LOCTEXT("ExportHDRFailedToReadMipData", "Failed to read Mip Data in: '{0}'"), FText::FromString(Texture->GetName())));
@@ -539,7 +611,7 @@ public:
 		//Put first mip data into usable array
 		if (bReadSuccess)
 		{
-			const uint32 TotalSize = Texture->PlatformData->Mips[0].BulkData.GetBulkDataSize();
+			const uint32 TotalSize = Texture->GetPlatformData()->Mips[0].BulkData.GetBulkDataSize();
 			RawData.AddZeroed(TotalSize);
 			FMemory::Memcpy(RawData.GetData(), RawData2[0], TotalSize);
 		}
@@ -665,7 +737,6 @@ private:
 	template<typename TSourceColorType>
 	void WriteHDRBits(FArchive& Ar, TSourceColorType* SourceTexels)
 	{
-		const FRandomStream RandomStream(0xA1A1);
 		const int32 NumChannels = 4;
 		const int32 SizeX = Size.X;
 		const int32 SizeY = Size.Y;
@@ -693,9 +764,8 @@ private:
 			for (int32 x = 0; x < SizeX; x++)
 			{
 				FLinearColor LinearColor(*SourceTexels);
-				FColor RGBEColor = ToRGBEDithered(LinearColor, RandomStream);
+				FColor RGBEColor = LinearColor.ToRGBE();
 
-				FLinearColor lintest = RGBEColor.FromRGBE();
 				ScanLine[0].Add(RGBEColor.R);
 				ScanLine[1].Add(RGBEColor.G);
 				ScanLine[2].Add(RGBEColor.B);
@@ -733,40 +803,6 @@ private:
 		}
 	}
 
-	/**
-	* Returns data containing the pixmap of the passed in rendertarget.
-	* @param TexRT - The 2D rendertarget from which to read pixmap data.
-	* @param RawData - an array to be filled with pixel data.
-	* @return true if RawData has been successfully filled.
-	*/
-	
-
-	static FColor ToRGBEDithered(const FLinearColor& ColorIN, const FRandomStream& Rand)
-	{
-		const float R = ColorIN.R;
-		const float G = ColorIN.G;
-		const float B = ColorIN.B;
-		const float Primary = FMath::Max3(R, G, B);
-		FColor	ReturnColor;
-
-		if (Primary < 1E-32)
-		{
-			ReturnColor = FColor(0, 0, 0, 0);
-		}
-		else
-		{
-			int32 Exponent;
-			const float Scale = frexp(Primary, &Exponent) / Primary * 255.f;
-
-			ReturnColor.R = FMath::Clamp(FMath::TruncToInt((R* Scale) + Rand.GetFraction()), 0, 255);
-			ReturnColor.G = FMath::Clamp(FMath::TruncToInt((G* Scale) + Rand.GetFraction()), 0, 255);
-			ReturnColor.B = FMath::Clamp(FMath::TruncToInt((B* Scale) + Rand.GetFraction()), 0, 255);
-			ReturnColor.A = FMath::Clamp(FMath::TruncToInt(Exponent), -128, 127) + 128;
-		}
-
-		return ReturnColor;
-	}
-
 	FIntPoint Size;
 	EPixelFormat Format;
 };
@@ -795,7 +831,7 @@ bool FImageUtils::ExportRenderTarget2DAsPNG(UTextureRenderTarget2D* TexRT, FArch
 
 		PNGImageWrapper->SetRaw(RawData.GetData(), RawData.GetAllocatedSize(), Size.X, Size.Y, ERGBFormat::BGRA, 8);
 
-		const TArray64<uint8>& PNGData = PNGImageWrapper->GetCompressed(100);
+		const TArray64<uint8> PNGData = PNGImageWrapper->GetCompressed(100);
 
 		Ar.Serialize((void*)PNGData.GetData(), PNGData.GetAllocatedSize());
 	}
@@ -816,7 +852,7 @@ ENGINE_API bool FImageUtils::ExportRenderTarget2DAsEXR(UTextureRenderTarget2D* T
 		bSuccess = GetRawData(TexRT, RawData);
 
 		int32 BitsPerPixel = TexRT->GetFormat() == PF_B8G8R8A8 ? 8 : (sizeof(FFloat16Color) / 4) * 8;
-		ERGBFormat RGBFormat = TexRT->GetFormat() == PF_B8G8R8A8 ? ERGBFormat::BGRA : ERGBFormat::RGBA;
+		ERGBFormat RGBFormat = TexRT->GetFormat() == PF_B8G8R8A8 ? ERGBFormat::BGRA : ERGBFormat::RGBAF;
 
 		IImageWrapperModule& ImageWrapperModule = FModuleManager::Get().LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
 
@@ -824,7 +860,7 @@ ENGINE_API bool FImageUtils::ExportRenderTarget2DAsEXR(UTextureRenderTarget2D* T
 
 		EXRImageWrapper->SetRaw(RawData.GetData(), RawData.GetAllocatedSize(), Size.X, Size.Y, RGBFormat, BitsPerPixel);
 
-		const TArray64<uint8>& Data = EXRImageWrapper->GetCompressed(100);
+		const TArray64<uint8> Data = EXRImageWrapper->GetCompressed();
 
 		Ar.Serialize((void*)Data.GetData(), Data.GetAllocatedSize());
 
@@ -845,7 +881,7 @@ UTexture2D* FImageUtils::ImportFileAsTexture2D(const FString& Filename)
 	IImageWrapperModule& ImageWrapperModule = FModuleManager::Get().LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
 
 	UTexture2D* NewTexture = nullptr;
-	TArray<uint8> Buffer;
+	TArray64<uint8> Buffer;
 	if (FFileHelper::LoadFileToArray(Buffer, *Filename))
 	{
 		EPixelFormat PixelFormat = PF_Unknown;
@@ -857,32 +893,41 @@ UTexture2D* FImageUtils::ImportFileAsTexture2D(const FString& Filename)
 
 		if (FPaths::GetExtension(Filename) == TEXT("HDR"))
 		{
-			FHDRLoadHelper HDRLoadHelper(Buffer.GetData(), Buffer.GetAllocatedSize());
-			if(HDRLoadHelper.IsValid())
+			TSharedPtr<IImageWrapper> HdrImageWrapper =  ImageWrapperModule.CreateImageWrapper(EImageFormat::HDR);
+	
+			if(HdrImageWrapper->SetCompressed(Buffer.GetData(), Buffer.Num()))
 			{
-				TArray<uint8> DDSFile;
-				HDRLoadHelper.ExtractDDSInRGBE(DDSFile);
-				FDDSLoadHelper HDRDDSLoadHelper(DDSFile.GetData(), DDSFile.Num());
+				PixelFormat = PF_FloatRGBA;
+				Width = HdrImageWrapper->GetWidth();
+				Height = HdrImageWrapper->GetHeight();
 
-				if (HDRDDSLoadHelper.IsValid2DTexture())
+				TArray64<uint8> BGREImage;
+				if (HdrImageWrapper->GetRaw(ERGBFormat::BGRE, 8, BGREImage))
 				{
-					PixelFormat = HDRDDSLoadHelper.ComputePixelFormat();
-					Width = HDRDDSLoadHelper.DDSHeader->dwWidth;
-					Height = HDRDDSLoadHelper.DDSHeader->dwHeight;
-
 					NewTexture = UTexture2D::CreateTransient(Width, Height, PixelFormat);
 					if (NewTexture)
 					{
-						uint8* MipData = static_cast<uint8*>(NewTexture->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+						uint8* MipData = static_cast<uint8*>(NewTexture->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+
+						TArrayView64<FColor> SourceColors(reinterpret_cast<FColor*>(BGREImage.GetData()), BGREImage.Num() / sizeof(FColor));
 
 						// Bulk data was already allocated for the correct size when we called CreateTransient above
-						FMemory::Memcpy(MipData, HDRDDSLoadHelper.GetDDSDataPointer(), NewTexture->PlatformData->Mips[0].BulkData.GetBulkDataSize());
+						TArrayView64<FFloat16> Destination(reinterpret_cast<FFloat16*>(MipData), NewTexture->GetPlatformData()->Mips[0].BulkData.GetBulkDataSize() / sizeof(FFloat16));
 
-						NewTexture->PlatformData->Mips[0].BulkData.Unlock();
+						int64 DestinationIndex = 0;
+						for (const FColor& Color: SourceColors)
+						{
+							FLinearColor LinearColor = Color.FromRGBE();
+							Destination[DestinationIndex++].Set(LinearColor.R);
+							Destination[DestinationIndex++].Set(LinearColor.G);
+							Destination[DestinationIndex++].Set(LinearColor.B);
+							Destination[DestinationIndex++].Set(LinearColor.A);
+						}
+
+						NewTexture->GetPlatformData()->Mips[0].BulkData.Unlock();
 
 						NewTexture->UpdateResource();
 					}
-
 				}
 			}
 		}
@@ -904,11 +949,11 @@ UTexture2D* FImageUtils::ImportFileAsTexture2D(const FString& Filename)
 	return NewTexture;
 }
 
-UTexture2D* FImageUtils::ImportBufferAsTexture2D(const TArray<uint8>& Buffer)
+UTexture2D* FImageUtils::ImportBufferAsTexture2D(TArrayView64<const uint8> Buffer)
 {
 	IImageWrapperModule& ImageWrapperModule = FModuleManager::Get().LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
 
-	EImageFormat Format = ImageWrapperModule.DetectImageFormat(Buffer.GetData(), Buffer.GetAllocatedSize());
+	EImageFormat Format = ImageWrapperModule.DetectImageFormat(Buffer.GetData(), Buffer.Num());
 
 	UTexture2D* NewTexture = nullptr;
 	EPixelFormat PixelFormat = PF_Unknown;
@@ -921,7 +966,7 @@ UTexture2D* FImageUtils::ImportBufferAsTexture2D(const TArray<uint8>& Buffer)
 		int32 Width = 0;
 		int32 Height = 0;
 
-		if (ImageWrapper->SetCompressed((void*)Buffer.GetData(), Buffer.GetAllocatedSize()))
+		if (ImageWrapper->SetCompressed((void*)Buffer.GetData(), Buffer.Num()))
 		{
 			PixelFormat = PF_Unknown;
 			
@@ -935,7 +980,7 @@ UTexture2D* FImageUtils::ImportBufferAsTexture2D(const TArray<uint8>& Buffer)
 			if (BitDepth == 16)
 			{
 				PixelFormat = PF_FloatRGBA;
-				RGBFormat = ERGBFormat::BGRA;
+				RGBFormat = ERGBFormat::RGBAF;
 			}
 			else if (BitDepth == 8)
 			{
@@ -955,12 +1000,12 @@ UTexture2D* FImageUtils::ImportBufferAsTexture2D(const TArray<uint8>& Buffer)
 			if (NewTexture)
 			{
 				NewTexture->bNotOfflineProcessed = true;
-				uint8* MipData = static_cast<uint8*>(NewTexture->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
+				uint8* MipData = static_cast<uint8*>(NewTexture->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE));
 				
 				// Bulk data was already allocated for the correct size when we called CreateTransient above
-				FMemory::Memcpy(MipData, UncompressedData.GetData(), NewTexture->PlatformData->Mips[0].BulkData.GetBulkDataSize());
+				FMemory::Memcpy(MipData, UncompressedData.GetData(), NewTexture->GetPlatformData()->Mips[0].BulkData.GetBulkDataSize());
 				
-				NewTexture->PlatformData->Mips[0].BulkData.Unlock();
+				NewTexture->GetPlatformData()->Mips[0].BulkData.Unlock();
 
 				NewTexture->UpdateResource();
 			}
@@ -972,6 +1017,11 @@ UTexture2D* FImageUtils::ImportBufferAsTexture2D(const TArray<uint8>& Buffer)
 	}
 
 	return NewTexture;
+}
+
+UTexture2D* FImageUtils::ImportBufferAsTexture2D(const TArray<uint8>& Buffer)
+{
+	return ImportBufferAsTexture2D(TArrayView64<const uint8>(Buffer.GetData(), Buffer.Num()));
 }
 
 bool FImageUtils::ExportRenderTargetCubeAsHDR(UTextureRenderTargetCube* TexRT, FArchive& Ar)

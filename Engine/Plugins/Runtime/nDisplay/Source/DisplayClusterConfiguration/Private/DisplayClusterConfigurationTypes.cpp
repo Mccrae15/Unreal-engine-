@@ -13,6 +13,10 @@
 
 #include "Engine/StaticMesh.h"
 
+#if WITH_EDITOR
+#include "Kismet2/CompilerResultsLog.h"
+#endif
+
 #define SAVE_MAP_TO_ARRAY(Map, DestArray) \
 	for (const auto& KeyVal : Map) \
 	{ \
@@ -39,6 +43,20 @@ FIntRect FDisplayClusterConfigurationRectangle::ToRect() const
 
 UDisplayClusterConfigurationData::UDisplayClusterConfigurationData()
 {
+}
+
+UDisplayClusterConfigurationViewport* UDisplayClusterConfigurationData::GetViewport(const FString& NodeId, const FString& ViewportId) const
+{
+	UDisplayClusterConfigurationClusterNode* Node = Cluster->GetNode(NodeId);
+	if (Node)
+	{
+		UDisplayClusterConfigurationViewport** Viewport = Node->Viewports.Find(ViewportId);
+		if (Viewport)
+		{
+			return *Viewport;
+		}
+	}
+	return nullptr;
 }
 
 bool UDisplayClusterConfigurationData::AssignPostprocess(const FString& NodeId, const FString& PostprocessId, const FString& Type, TMap<FString, FString> Parameters, int32 Order)
@@ -75,44 +93,15 @@ bool UDisplayClusterConfigurationData::RemovePostprocess(const FString& NodeId, 
 	return false;
 }
 
-UDisplayClusterConfigurationClusterNode* UDisplayClusterConfigurationData::GetClusterNodeConfiguration(const FString& NodeId) const
-{
-	return Cluster->Nodes.Contains(NodeId) ? Cluster->Nodes[NodeId] : nullptr;
-}
-
-const UDisplayClusterConfigurationClusterNode* UDisplayClusterConfigurationData::GetClusterNode(const FString& NodeId) const
-{
-	return Cluster->Nodes.Contains(NodeId) ? Cluster->Nodes[NodeId] : nullptr;
-}
-
-UDisplayClusterConfigurationViewport* UDisplayClusterConfigurationData::GetViewportConfiguration(const FString& NodeId, const FString& ViewportId)
-{
-	const UDisplayClusterConfigurationClusterNode* Node = GetClusterNode(NodeId);
-	if (Node)
-	{
-		if (Node->Viewports.Contains(ViewportId))
-		{
-			return Node->Viewports[ViewportId];
-		}
-	}
-
-	return nullptr;
-}
-
-const UDisplayClusterConfigurationViewport* UDisplayClusterConfigurationData::GetViewport(const FString& NodeId, const FString& ViewportId) const
-{
-	const UDisplayClusterConfigurationClusterNode* Node = GetClusterNode(NodeId);
-	if (Node)
-	{
-		return Node->Viewports.Contains(ViewportId) ? Node->Viewports[ViewportId] : nullptr;
-	}
-
-	return nullptr;
-}
-
 bool UDisplayClusterConfigurationData::GetPostprocess(const FString& NodeId, const FString& PostprocessId, FDisplayClusterConfigurationPostprocess& OutPostprocess) const
 {
-	const UDisplayClusterConfigurationClusterNode* Node = GetClusterNode(NodeId);
+	if (!Cluster)
+	{
+		return false;
+	}
+
+	const UDisplayClusterConfigurationClusterNode* Node = Cluster->GetNode(NodeId);
+
 	if (Node)
 	{
 		const FDisplayClusterConfigurationPostprocess* PostprocessOperation = Node->Postprocess.Find(PostprocessId);
@@ -149,7 +138,7 @@ const TSet<FString> UDisplayClusterConfigurationData::RenderSyncPolicies =
 
 const TSet<FString> UDisplayClusterConfigurationData::InputSyncPolicies =
 {
-	TEXT("ReplicateMaster"),
+	TEXT("ReplicatePrimary"),
 	TEXT("None")
 };
 
@@ -174,7 +163,7 @@ FDisplayClusterConfigurationProjection::FDisplayClusterConfigurationProjection()
 
 FDisplayClusterConfigurationPostprocess::FDisplayClusterConfigurationPostprocess()
 {
-	
+
 }
 
 const float UDisplayClusterConfigurationViewport::ViewportMinimumSize = 1.0f;
@@ -184,17 +173,83 @@ UDisplayClusterConfigurationViewport::UDisplayClusterConfigurationViewport()
 {
 #if WITH_EDITORONLY_DATA
 	bIsVisible = true;
-	bIsEnabled = true;
+	bIsUnlocked = true;
 #endif
 }
 
 #if WITH_EDITOR
+void UDisplayClusterConfigurationViewport::PreEditChange(FEditPropertyChain& PropertyAboutToChange)
+{
+	if (TDoubleLinkedList<FProperty*>::TDoubleLinkedListNode* ActiveMemberNode = PropertyAboutToChange.
+		GetActiveMemberNode())
+	{
+		if (const FStructProperty* StructProperty = CastField<FStructProperty>(ActiveMemberNode->GetValue()))
+		{
+			if (StructProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, Region))
+			{
+				if (DisablePreviewTexture())
+				{
+					bIsManagingPreviewTexture = true;
+				}
+			}
+		}
+	}
+	
+	Super::PreEditChange(PropertyAboutToChange);
+}
 
 void UDisplayClusterConfigurationViewport::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent)
 {
+	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	{
+		if (TDoubleLinkedList<FProperty*>::TDoubleLinkedListNode* ActiveMemberNode = PropertyChangedEvent.
+			PropertyChain.GetActiveMemberNode())
+		{
+			if (const FStructProperty* StructProperty = CastField<FStructProperty>(ActiveMemberNode->GetValue()))
+			{
+				if (StructProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationViewport, Region))
+				{
+					if (bIsManagingPreviewTexture)
+					{
+						EnablePreviewTexture();
+					}
+				}
+			}
+		}
+	}
+	
 	Super::PostEditChangeChainProperty(PropertyChangedEvent);
 
 	OnPostEditChangeChainProperty.Broadcast(PropertyChangedEvent);
+}
+
+void UDisplayClusterConfigurationViewport::EnablePreviewTexture()
+{
+	bAllowPreviewTexture = true;
+	bIsManagingPreviewTexture = false;
+}
+
+bool UDisplayClusterConfigurationViewport::DisablePreviewTexture()
+{
+	if (bAllowPreviewTexture)
+	{
+		bAllowPreviewTexture = false;
+		return true;
+	}
+	
+	return false;
+}
+
+void UDisplayClusterConfigurationViewport::OnPreCompile(FCompilerResultsLog& MessageLog)
+{
+	Super::OnPreCompile(MessageLog);
+
+	if (!ensure(bAllowPreviewTexture))
+	{
+		// Verify correct rendering value is applied. This branch shouldn't be hit as long as the Region
+		// struct always has a final PostEditChangeProperty called without a change type of Interactive.
+		EnablePreviewTexture();
+	}
 }
 
 void UDisplayClusterConfigurationClusterNode::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent)
@@ -216,14 +271,14 @@ UDisplayClusterConfigurationClusterNode::UDisplayClusterConfigurationClusterNode
 	: bIsSoundEnabled(false)
 #if WITH_EDITORONLY_DATA
 	, bIsVisible(true)
-	, bIsEnabled(true)
+	, bIsUnlocked(true)
 #endif
 {
 }
 
 UDisplayClusterConfigurationHostDisplayData::UDisplayClusterConfigurationHostDisplayData()
 	: bIsVisible(true)
-	, bIsEnabled(true)
+	, bIsUnlocked(true)
 {
 	SetFlags(RF_Public);
 }
@@ -286,9 +341,8 @@ void UDisplayClusterConfigurationScene::GetObjectsToExport(TArray<UObject*>& Out
 	SAVE_MAP(Cameras);
 }
 
-FDisplayClusterConfigurationMasterNodePorts::FDisplayClusterConfigurationMasterNodePorts()
+FDisplayClusterConfigurationPrimaryNodePorts::FDisplayClusterConfigurationPrimaryNodePorts()
 	: ClusterSync(41001)
-	, RenderSync (41002)
 	, ClusterEventsJson  (41003)
 	, ClusterEventsBinary(41004)
 {
@@ -298,7 +352,7 @@ FDisplayClusterConfigurationClusterSync::FDisplayClusterConfigurationClusterSync
 {
 	using namespace DisplayClusterConfigurationStrings::config;
 	RenderSyncPolicy.Type = cluster::render_sync::Ethernet;
-	InputSyncPolicy.Type = cluster::input_sync::InputSyncPolicyReplicateMaster;
+	InputSyncPolicy.Type  = cluster::input_sync::InputSyncPolicyReplicatePrimary;
 }
 
 FDisplayClusterConfigurationNetworkSettings::FDisplayClusterConfigurationNetworkSettings()
@@ -326,6 +380,17 @@ void UDisplayClusterConfigurationViewport::GetReferencedMeshNames(TArray<FString
 	}
 }
 
+void UDisplayClusterConfigurationClusterNode::GetViewportIds(TArray<FString>& OutViewportIds) const
+{
+	Viewports.GenerateKeyArray(OutViewportIds);
+}
+
+UDisplayClusterConfigurationViewport* UDisplayClusterConfigurationClusterNode::GetViewport(const FString& ViewportId) const
+{
+	UDisplayClusterConfigurationViewport* const* Viewport = Viewports.Find(ViewportId);
+	return Viewport ? *Viewport : nullptr;
+}
+
 void UDisplayClusterConfigurationClusterNode::GetReferencedMeshNames(TArray<FString>& OutMeshNames) const
 {
 	for (const TPair<FString, UDisplayClusterConfigurationViewport*>& It : Viewports)
@@ -337,6 +402,17 @@ void UDisplayClusterConfigurationClusterNode::GetReferencedMeshNames(TArray<FStr
 		}
 		It.Value->GetReferencedMeshNames(OutMeshNames);
 	}
+}
+
+void UDisplayClusterConfigurationCluster::GetNodeIds(TArray<FString>& OutNodeIds) const
+{
+	Nodes.GenerateKeyArray(OutNodeIds);
+}
+
+UDisplayClusterConfigurationClusterNode* UDisplayClusterConfigurationCluster::GetNode(const FString& NodeId) const
+{
+	UDisplayClusterConfigurationClusterNode* const* Node = Nodes.Find(NodeId);
+	return Node ? *Node : nullptr;
 }
 
 void UDisplayClusterConfigurationCluster::GetReferencedMeshNames(TArray<FString>& OutMeshNames) const
@@ -388,6 +464,11 @@ FDisplayClusterConfigurationOCIOConfiguration::FDisplayClusterConfigurationOCIOC
 FDisplayClusterConfigurationOCIOProfile::FDisplayClusterConfigurationOCIOProfile()
 {
 	OCIOConfiguration.bIsEnabled = true;
+}
+
+FDisplayClusterConfigurationICVFX_CameraCustomFrustum::FDisplayClusterConfigurationICVFX_CameraCustomFrustum():
+	EstimatedOverscanResolution(ForceInitToZero), InnerFrustumResolution(ForceInitToZero), OverscanPixelsIncrease(0.f)
+{
 }
 
 FDisplayClusterConfigurationICVFX_CameraSettings::FDisplayClusterConfigurationICVFX_CameraSettings()

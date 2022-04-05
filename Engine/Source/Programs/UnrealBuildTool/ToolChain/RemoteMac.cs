@@ -10,8 +10,9 @@ using System.Security.AccessControl;
 using System.Xml;
 using System.Text;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Security.Cryptography.X509Certificates;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -40,19 +41,19 @@ namespace UnrealBuildTool
 		/// These two variables will be loaded from the XML config file in XmlConfigLoader.Init().
 		/// </summary>
 		[XmlConfigFile]
-		private readonly string ServerName;
+		private readonly string? ServerName;
 
 		/// <summary>
 		/// The remote username.
 		/// </summary>
 		[XmlConfigFile]
-		private readonly string UserName;
+		private readonly string? UserName;
 
 		/// <summary>
 		/// If set, instead of looking for RemoteToolChainPrivate.key in the usual places (Documents/Unreal, Engine/UnrealBuildTool/SSHKeys or Engine/Build/SSHKeys), this private key will be used.
 		/// </summary>
 		[XmlConfigFile]
-		private FileReference SshPrivateKey;
+		private FileReference? SshPrivateKey;
 
 		/// <summary>
 		/// The authentication used for Rsync (for the -e rsync flag).
@@ -84,17 +85,17 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The project being built. Settings will be read from config files in this project.
 		/// </summary>
-		private readonly FileReference ProjectFile;
+		private readonly FileReference? ProjectFile;
 
 		/// <summary>
 		/// The project descriptor for the project being built.
 		/// </summary>
-		private readonly ProjectDescriptor ProjectDescriptor;
+		private readonly ProjectDescriptor? ProjectDescriptor;
 
 		/// <summary>
 		/// A set of directories containing additional paths to be built.
 		/// </summary>
-		private readonly List<DirectoryReference> AdditionalPaths;
+		private readonly List<DirectoryReference>? AdditionalPaths;
 
 		/// <summary>
 		/// The base directory on the remote machine
@@ -121,16 +122,16 @@ namespace UnrealBuildTool
 		/// </summary>
 		private List<string> CommonRsyncArguments;
 
-		private string IniBundleIdentifier = "";
+		private string? IniBundleIdentifier = "";
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="ProjectFile">Project to read settings from</param>
-		public RemoteMac(FileReference ProjectFile)
+		public RemoteMac(FileReference? ProjectFile)
 		{
-			this.RsyncExe = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Extras", "ThirdPartyNotUE", "cwrsync", "bin", "rsync.exe");
-			this.SshExe = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Extras", "ThirdPartyNotUE", "cwrsync", "bin", "ssh.exe");
+			this.RsyncExe = FileReference.Combine(Unreal.EngineDirectory, "Extras", "ThirdPartyNotUE", "cwrsync", "bin", "rsync.exe");
+			this.SshExe = FileReference.Combine(Unreal.EngineDirectory, "Extras", "ThirdPartyNotUE", "cwrsync", "bin", "ssh.exe");
 			this.ProjectFile = ProjectFile;
 			if (ProjectFile != null)
 			{
@@ -147,10 +148,10 @@ namespace UnrealBuildTool
 			XmlConfig.ApplyTo(this);
 
 			// Get the project config file path
-			DirectoryReference EngineIniPath = ProjectFile != null ? ProjectFile.Directory : null;
+			DirectoryReference? EngineIniPath = ProjectFile?.Directory;
 			if (EngineIniPath == null && UnrealBuildTool.GetRemoteIniPath() != null)
 			{
-				EngineIniPath = new DirectoryReference(UnrealBuildTool.GetRemoteIniPath());
+				EngineIniPath = new DirectoryReference(UnrealBuildTool.GetRemoteIniPath()!);
 			}
 			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, EngineIniPath, UnrealTargetPlatform.IOS);
 
@@ -216,15 +217,15 @@ namespace UnrealBuildTool
 				Log.TraceWarning("No SSH private key found for {0}@{1}. Launching SSH to generate one.", UserName, ServerName);
 
 				StringBuilder CommandLine = new StringBuilder();
-				CommandLine.AppendFormat("/C \"\"{0}\"", FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "BatchFiles", "MakeAndInstallSSHKey.bat"));
+				CommandLine.AppendFormat("/C \"\"{0}\"", FileReference.Combine(Unreal.EngineDirectory, "Build", "BatchFiles", "MakeAndInstallSSHKey.bat"));
 				CommandLine.AppendFormat(" \"{0}\"", SshExe);
 				CommandLine.AppendFormat(" \"{0}\"", ServerPort);
 				CommandLine.AppendFormat(" \"{0}\"", RsyncExe);
 				CommandLine.AppendFormat(" \"{0}\"", UserName);
 				CommandLine.AppendFormat(" \"{0}\"", ServerName);
 				CommandLine.AppendFormat(" \"{0}\"", DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.MyDocuments));
-				CommandLine.AppendFormat(" \"{0}\"", GetLocalCygwinPath(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.MyDocuments)));
-				CommandLine.AppendFormat(" \"{0}\"", UnrealBuildTool.EngineDirectory);
+				CommandLine.AppendFormat(" \"{0}\"", GetLocalCygwinPath(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.MyDocuments)!));
+				CommandLine.AppendFormat(" \"{0}\"", Unreal.EngineDirectory);
 				CommandLine.Append("\"");
 
 				using(Process ChildProcess = Process.Start(BuildHostPlatform.Current.Shell.FullName, CommandLine.ToString()))
@@ -282,15 +283,15 @@ namespace UnrealBuildTool
 				{
 					throw new BuildException("Unable to determine home directory for remote user. SSH output:\n{0}", StringUtils.Indent(Output.ToString(), "  "));
 				}
-				RemoteBaseDir = String.Format("{0}/UE4/Builds/{1}", Output.ToString().Trim().TrimEnd('/'), Environment.MachineName);
+				RemoteBaseDir = String.Format("{0}/UE5/Builds/{1}", Output.ToString().Trim().TrimEnd('/'), Environment.MachineName);
 			}
 
 			Log.TraceInformation("[Remote] Using base directory '{0}'", RemoteBaseDir);
 
 			// Build the list of directory mappings between the local and remote machines
 			Mappings = new List<RemoteMapping>();
-			Mappings.Add(new RemoteMapping(UnrealBuildTool.EngineDirectory, GetRemotePath(UnrealBuildTool.EngineDirectory)));
-			if(ProjectFile != null && !ProjectFile.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
+			Mappings.Add(new RemoteMapping(Unreal.EngineDirectory, GetRemotePath(Unreal.EngineDirectory)));
+			if(ProjectFile != null && !ProjectFile.IsUnderDirectory(Unreal.EngineDirectory))
 			{
 				Mappings.Add(new RemoteMapping(ProjectFile.Directory, GetRemotePath(ProjectFile.Directory)));
 			}
@@ -298,7 +299,7 @@ namespace UnrealBuildTool
 			{
 				foreach (DirectoryReference AdditionalPath in AdditionalPaths)
 				{
-					if (!AdditionalPath.IsUnderDirectory(UnrealBuildTool.EngineDirectory) &&
+					if (!AdditionalPath.IsUnderDirectory(Unreal.EngineDirectory) &&
 						!AdditionalPath.IsUnderDirectory(ProjectFile.Directory))
 					{
 						Mappings.Add(new RemoteMapping(AdditionalPath, GetRemotePath(AdditionalPath)));
@@ -312,26 +313,26 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="OutPrivateKey">If successful, receives the location of the private key that was found</param>
 		/// <returns>True if a private key was found, false otherwise</returns>
-		private bool TryGetSshPrivateKey(out FileReference OutPrivateKey)
+		private bool TryGetSshPrivateKey(out FileReference? OutPrivateKey)
 		{
 			// Build a list of all the places to look for a private key
 			List<DirectoryReference> Locations = new List<DirectoryReference>();
-			Locations.Add(DirectoryReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.ApplicationData), "Unreal Engine", "UnrealBuildTool"));
-			Locations.Add(DirectoryReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.Personal), "Unreal Engine", "UnrealBuildTool"));
+			Locations.Add(DirectoryReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.ApplicationData)!, "Unreal Engine", "UnrealBuildTool"));
+			Locations.Add(DirectoryReference.Combine(DirectoryReference.GetSpecialFolder(Environment.SpecialFolder.Personal)!, "Unreal Engine", "UnrealBuildTool"));
 			if (ProjectFile != null)
 			{
 				Locations.Add(DirectoryReference.Combine(ProjectFile.Directory, "Restricted", "NotForLicensees", "Build"));
 				Locations.Add(DirectoryReference.Combine(ProjectFile.Directory, "Restricted", "NoRedist", "Build"));
 				Locations.Add(DirectoryReference.Combine(ProjectFile.Directory, "Build"));
 			}
-			Locations.Add(DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Restricted", "NotForLicensees", "Build"));
-			Locations.Add(DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Restricted", "NoRedist", "Build"));
-			Locations.Add(DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Build"));
+			Locations.Add(DirectoryReference.Combine(Unreal.EngineDirectory, "Restricted", "NotForLicensees", "Build"));
+			Locations.Add(DirectoryReference.Combine(Unreal.EngineDirectory, "Restricted", "NoRedist", "Build"));
+			Locations.Add(DirectoryReference.Combine(Unreal.EngineDirectory, "Build"));
 
 			// Find the first that exists
 			foreach (DirectoryReference Location in Locations)
 			{
-				FileReference KeyFile = FileReference.Combine(Location, "SSHKeys", ServerName, UserName, "RemoteToolChainPrivate.key");
+				FileReference KeyFile = FileReference.Combine(Location, "SSHKeys", ServerName!, UserName!, "RemoteToolChainPrivate.key");
 				if (FileReference.Exists(KeyFile))
 				{
 					// MacOS Mojave includes a new version of SSH that generates keys that are incompatible with our version of SSH. Make sure the detected keys have the right signature.
@@ -357,7 +358,7 @@ namespace UnrealBuildTool
 		private string ExpandVariables(string Input)
 		{
 			string Result = Input;
-			Result = Result.Replace("${SSH_PRIVATE_KEY}", SshPrivateKey.FullName);
+			Result = Result.Replace("${SSH_PRIVATE_KEY}", SshPrivateKey!.FullName);
 			Result = Result.Replace("${CYGWIN_SSH_PRIVATE_KEY}", GetLocalCygwinPath(SshPrivateKey));
 			return Result;
 		}
@@ -405,7 +406,7 @@ namespace UnrealBuildTool
 				BuildCommandLine.AppendFormat(" {0}", EscapeShellArgument(RemoteArgument));
 			}
 
-			int Result = Execute(GetRemotePath(UnrealBuildTool.RootDirectory), BuildCommandLine.ToString());
+			int Result = Execute(GetRemotePath(Unreal.RootDirectory), BuildCommandLine.ToString());
 			return Result == 0;
 		}
 
@@ -419,7 +420,7 @@ namespace UnrealBuildTool
 		public bool Build(TargetDescriptor TargetDesc, FileReference RemoteLogFile, bool bSkipPreBuildTargets)
 		{
 			// Compile the rules assembly
-			RulesAssembly RulesAssembly = RulesCompiler.CreateTargetRulesAssembly(TargetDesc.ProjectFile, TargetDesc.Name, false, false, TargetDesc.ForeignPlugin);
+			RulesAssembly RulesAssembly = RulesCompiler.CreateTargetRulesAssembly(TargetDesc.ProjectFile, TargetDesc.Name, false, false, false, TargetDesc.ForeignPlugin);
 
 			// Create the target rules
 			TargetRules Rules = RulesAssembly.CreateTargetRules(TargetDesc.Name, TargetDesc.Platform, TargetDesc.Configuration, TargetDesc.Architecture, TargetDesc.ProjectFile, TargetDesc.AdditionalArguments);
@@ -454,13 +455,6 @@ namespace UnrealBuildTool
 			if (!bLogIsMapped)
 			{
 				Mappings.Add(new RemoteMapping(RemoteLogFile.Directory, GetRemotePath(RemoteLogFile.Directory)));
-			}
-
-			// Check if we need to enable a nativized plugin, and compile the assembly for that if we do
-			FileReference NativizedPluginFile = Rules.GetNativizedPlugin();
-			if(NativizedPluginFile != null)
-			{
-				RulesAssembly = RulesCompiler.CreatePluginRulesAssembly(NativizedPluginFile, false, RulesAssembly, false);
 			}
 
 			// Path to the local manifest file. This has to be translated from the remote format after the build is complete.
@@ -528,7 +522,7 @@ namespace UnrealBuildTool
 					}
 
 					ProcessStartInfo StartInfo = new ProcessStartInfo();
-					StartInfo.FileName = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Binaries", "DotNET", "IOS", "IPhonePackager.exe").FullName;
+					StartInfo.FileName = FileReference.Combine(Unreal.EngineDirectory, "Binaries", "DotNET", "IOS", "IPhonePackager.exe").FullName;
 					StartInfo.Arguments = Arguments.ToString();
 					if(Utils.RunLocalProcessAndLogOutput(StartInfo) != 0)
 					{
@@ -560,7 +554,7 @@ namespace UnrealBuildTool
 				BuildCommandLine.AppendFormat(" {0}", EscapeShellArgument(RemoteArgument));
 			}
 
-			int Result = Execute(GetRemotePath(UnrealBuildTool.RootDirectory), BuildCommandLine.ToString());
+			int Result = Execute(GetRemotePath(Unreal.RootDirectory), BuildCommandLine.ToString());
 			if(Result != 0)
 			{
 				if(RemoteLogFile != null)
@@ -591,7 +585,7 @@ namespace UnrealBuildTool
 			DownloadFiles(FilesToDownload);
 
 			// Copy remote FrameworkAssets directory as it could contain resource bundles that must be packaged locally.
-			DirectoryReference BaseDir = DirectoryReference.FromFile(TargetDesc.ProjectFile) ?? UnrealBuildTool.EngineDirectory;
+			DirectoryReference BaseDir = DirectoryReference.FromFile(TargetDesc.ProjectFile) ?? Unreal.EngineDirectory;
 			DirectoryReference FrameworkAssetsDir = DirectoryReference.Combine(BaseDir, "Intermediate", TargetDesc.Platform == UnrealTargetPlatform.IOS ? "IOS" : "TVOS", "FrameworkAssets");
 			if(RemoteDirectoryExists(FrameworkAssetsDir))
 			{
@@ -616,7 +610,7 @@ namespace UnrealBuildTool
 		/// <returns>Directory to use for temporary files</returns>
 		static DirectoryReference CreateTempDirectory(TargetDescriptor TargetDesc)
 		{
-			DirectoryReference BaseDir = DirectoryReference.FromFile(TargetDesc.ProjectFile) ?? UnrealBuildTool.EngineDirectory;
+			DirectoryReference BaseDir = DirectoryReference.FromFile(TargetDesc.ProjectFile) ?? Unreal.EngineDirectory;
 			DirectoryReference TempDir = DirectoryReference.Combine(BaseDir, "Intermediate", "Remote", TargetDesc.Name, TargetDesc.Platform.ToString(), TargetDesc.Configuration.ToString());
 			DirectoryReference.CreateDirectory(TempDir);
 			return TempDir;
@@ -628,16 +622,16 @@ namespace UnrealBuildTool
 		/// <param name="TargetDesc">The target descriptor</param>
 		/// <param name="LocalManifestFiles">Manifest files to be output from this target</param>
 		/// <return>List of remote arguments</return>
-		List<string> GetRemoteArgumentsForTarget(TargetDescriptor TargetDesc, List<FileReference> LocalManifestFiles)
+		List<string> GetRemoteArgumentsForTarget(TargetDescriptor TargetDesc, List<FileReference>? LocalManifestFiles)
 		{
 			List<string> RemoteArguments = new List<string>();
 			RemoteArguments.Add(TargetDesc.Name);
 			RemoteArguments.Add(TargetDesc.Platform.ToString());
 			RemoteArguments.Add(TargetDesc.Configuration.ToString());
 			RemoteArguments.Add("-SkipRulesCompile"); // Use the rules assembly built locally
-			RemoteArguments.Add(String.Format("-XmlConfigCache={0}", GetRemotePath(XmlConfig.CacheFile))); // Use the XML config cache built locally, since the remote won't have it
+			RemoteArguments.Add(String.Format("-XmlConfigCache={0}", GetRemotePath(XmlConfig.CacheFile!))); // Use the XML config cache built locally, since the remote won't have it
 
-			string RemoteIniPath = UnrealBuildTool.GetRemoteIniPath();
+			string? RemoteIniPath = UnrealBuildTool.GetRemoteIniPath();
 			if(!String.IsNullOrEmpty(RemoteIniPath))
 			{
 				RemoteArguments.Add(String.Format("-remoteini={0}", GetRemotePath(RemoteIniPath)));
@@ -701,7 +695,7 @@ namespace UnrealBuildTool
 			string RemoteOutputFile = GetRemotePath(OutputFile);
 			Execute(RemoteBaseDir, String.Format("rm -f {0}", EscapeShellArgument(RemoteOutputFile)));
 
-			string RemoteOutputDir = Path.GetDirectoryName(RemoteOutputFile).Replace(Path.DirectorySeparatorChar, '/');
+			string RemoteOutputDir = Path.GetDirectoryName(RemoteOutputFile)!.Replace(Path.DirectorySeparatorChar, '/');
 			Execute(RemoteBaseDir, String.Format("mkdir -p {0}", EscapeShellArgument(RemoteOutputDir)));
 
 			string RemoteArguments = IOSToolChain.GetAssetCatalogArgs(Platform, RemoteInputDir, RemoteOutputDir); 
@@ -746,7 +740,7 @@ namespace UnrealBuildTool
 		/// <returns>Equivalent remote path</returns>
 		private string GetRemotePath(string LocalPath)
 		{
-			return String.Format("{0}/{1}", RemoteBaseDir, LocalPath.Replace(":", "").Replace("\\", "/").Replace(" ", "_"));
+			return String.Format("{0}/{1}", RemoteBaseDir, LocalPath.Replace(":", "").Replace('\\', '/').Replace(' ', '_')).Replace('(', '_').Replace(')', '_').Replace('[', '_').Replace(']', '_');
 		}
 
 		/// <summary>
@@ -869,7 +863,7 @@ namespace UnrealBuildTool
 		void UploadWorkspace(DirectoryReference TempDir)
 		{
 			// Path to the scripts to be uploaded
-			FileReference ScriptPathsFileName = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "Rsync", "RsyncEngineScripts.txt");
+			FileReference ScriptPathsFileName = FileReference.Combine(Unreal.EngineDirectory, "Build", "Rsync", "RsyncEngineScripts.txt");
 
 			// Read the list of scripts to be uploaded
 			List<string> ScriptPaths = new List<string>();
@@ -886,13 +880,13 @@ namespace UnrealBuildTool
 			List<FileReference> TargetFiles = new List<FileReference>();
 			foreach(string ScriptPath in ScriptPaths)
 			{
-				FileReference SourceFile = FileReference.Combine(UnrealBuildTool.EngineDirectory, ScriptPath.TrimStart('/'));
+				FileReference SourceFile = FileReference.Combine(Unreal.EngineDirectory, ScriptPath.TrimStart('/'));
 				if(!FileReference.Exists(SourceFile))
 				{
 					throw new BuildException("Missing script required for remote upload: {0}", SourceFile);
 				}
 
-				FileReference TargetFile = FileReference.Combine(TempDir, SourceFile.MakeRelativeTo(UnrealBuildTool.EngineDirectory));
+				FileReference TargetFile = FileReference.Combine(TempDir, SourceFile.MakeRelativeTo(Unreal.EngineDirectory));
 				if(!FileReference.Exists(TargetFile) || FileReference.GetLastWriteTimeUtc(TargetFile) < FileReference.GetLastWriteTimeUtc(SourceFile))
 				{
 					DirectoryReference.CreateDirectory(TargetFile.Directory);
@@ -914,34 +908,34 @@ namespace UnrealBuildTool
 
 			// Upload these files to the remote
 			Log.TraceInformation("[Remote] Uploading scripts...");
-			UploadFiles(TempDir, GetRemotePath(UnrealBuildTool.EngineDirectory), ScriptPathsFileName);
+			UploadFiles(TempDir, GetRemotePath(Unreal.EngineDirectory), ScriptPathsFileName);
 
 			// Upload the config files
 			Log.TraceInformation("[Remote] Uploading config files...");
-			UploadFile(XmlConfig.CacheFile);
+			UploadFile(XmlConfig.CacheFile!);
 
 			// Upload the engine files
 			List<FileReference> EngineFilters = new List<FileReference>();
 			EngineFilters.Add(ScriptProtectList);
-			if(UnrealBuildTool.IsEngineInstalled())
+			if(Unreal.IsEngineInstalled())
 			{
-				EngineFilters.Add(FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "Rsync", "RsyncEngineInstalled.txt"));
+				EngineFilters.Add(FileReference.Combine(Unreal.EngineDirectory, "Build", "Rsync", "RsyncEngineInstalled.txt"));
 			}
-			EngineFilters.Add(FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "Rsync", "RsyncEngine.txt"));
+			EngineFilters.Add(FileReference.Combine(Unreal.EngineDirectory, "Build", "Rsync", "RsyncEngine.txt"));
 
 			Log.TraceInformation("[Remote] Uploading engine files...");
-			UploadDirectory(UnrealBuildTool.EngineDirectory, GetRemotePath(UnrealBuildTool.EngineDirectory), EngineFilters);
+			UploadDirectory(Unreal.EngineDirectory, GetRemotePath(Unreal.EngineDirectory), EngineFilters);
 
 			// Upload the project files
-			DirectoryReference ProjectDir = null;
-			if (ProjectFile != null && !ProjectFile.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
+			DirectoryReference? ProjectDir = null;
+			if (ProjectFile != null && !ProjectFile.IsUnderDirectory(Unreal.EngineDirectory))
 			{
 				ProjectDir = ProjectFile.Directory;
 			}
 			else if (!string.IsNullOrEmpty(UnrealBuildTool.GetRemoteIniPath()))
 			{
-				ProjectDir = new DirectoryReference(UnrealBuildTool.GetRemoteIniPath());
-				if (ProjectDir.IsUnderDirectory(UnrealBuildTool.EngineDirectory))
+				ProjectDir = new DirectoryReference(UnrealBuildTool.GetRemoteIniPath()!);
+				if (ProjectDir.IsUnderDirectory(Unreal.EngineDirectory))
 				{
 					ProjectDir = null;
 				}
@@ -955,7 +949,7 @@ namespace UnrealBuildTool
 				{
 					ProjectFilters.Add(CustomFilter);
 				}
-				ProjectFilters.Add(FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "Rsync", "RsyncProject.txt"));
+				ProjectFilters.Add(FileReference.Combine(Unreal.EngineDirectory, "Build", "Rsync", "RsyncProject.txt"));
 
 				Log.TraceInformation("[Remote] Uploading project files...");
 				UploadDirectory(ProjectDir, GetRemotePath(ProjectDir), ProjectFilters);
@@ -972,15 +966,15 @@ namespace UnrealBuildTool
 					{
 						CustomFilters.Add(CustomFilter);
 					}
-					CustomFilters.Add(FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "Rsync", "RsyncProject.txt"));
+					CustomFilters.Add(FileReference.Combine(Unreal.EngineDirectory, "Build", "Rsync", "RsyncProject.txt"));
 
 					Log.TraceInformation(string.Format("[Remote] Uploading additional path files [{0}]...", AdditionalPath.FullName));
 					UploadDirectory(AdditionalPath, GetRemotePath(AdditionalPath), CustomFilters);
 				}
 			}
 
-			Execute("/", String.Format("rm -rf {0}/Intermediate/IOS/*.plist", GetRemotePath(UnrealBuildTool.EngineDirectory)), true);
-			Execute("/", String.Format("rm -rf {0}/Intermediate/TVOS/*.plist", GetRemotePath(UnrealBuildTool.EngineDirectory)), true);
+			Execute("/", String.Format("rm -rf {0}/Intermediate/IOS/*.plist", GetRemotePath(Unreal.EngineDirectory)), true);
+			Execute("/", String.Format("rm -rf {0}/Intermediate/TVOS/*.plist", GetRemotePath(Unreal.EngineDirectory)), true);
 			if (ProjectFile != null)
 			{
 				Execute("/", String.Format("rm -rf {0}/Intermediate/IOS/*.plist", GetRemotePath(ProjectFile.Directory)), true);
@@ -988,10 +982,10 @@ namespace UnrealBuildTool
 			}
 
 			// Convert CRLF to LF for all shell scripts
-			Execute(RemoteBaseDir, String.Format("for i in {0}/Build/BatchFiles/Mac/*.sh; do mv $i $i.crlf; tr -d '\r' < $i.crlf > $i; done", EscapeShellArgument(GetRemotePath(UnrealBuildTool.EngineDirectory))));
+			Execute(RemoteBaseDir, String.Format("for i in {0}/Build/BatchFiles/Mac/*.sh; do mv $i $i.crlf; tr -d '\r' < $i.crlf > $i; done", EscapeShellArgument(GetRemotePath(Unreal.EngineDirectory))));
 
 			// Fixup permissions on any shell scripts
-			Execute(RemoteBaseDir, String.Format("chmod +x {0}/Build/BatchFiles/Mac/*.sh", EscapeShellArgument(GetRemotePath(UnrealBuildTool.EngineDirectory))));
+			Execute(RemoteBaseDir, String.Format("chmod +x {0}/Build/BatchFiles/Mac/*.sh", EscapeShellArgument(GetRemotePath(Unreal.EngineDirectory))));
 		}
 
 		/// <summary>
@@ -1042,7 +1036,7 @@ namespace UnrealBuildTool
 			{
 				if(FileGroups[Idx].Count > 0)
 				{
-					FileReference DownloadListLocation = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "Rsync", "Download.txt");
+					FileReference DownloadListLocation = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "Rsync", "Download.txt");
 					DirectoryReference.CreateDirectory(DownloadListLocation.Directory);
 					FileReference.WriteAllLines(DownloadListLocation, FileGroups[Idx].Select(x => x.MakeRelativeTo(Mappings[Idx].LocalDirectory).Replace('\\', '/')));
 
@@ -1068,7 +1062,7 @@ namespace UnrealBuildTool
 		private bool RemoteDirectoryExists(DirectoryReference LocalDirectory)
 		{
 			string RemoteDirectory = GetRemotePath(LocalDirectory);
-			return Execute(UnrealBuildTool.RootDirectory, String.Format("[ -d {0} ]", EscapeShellArgument(RemoteDirectory))) == 0;
+			return Execute(Unreal.RootDirectory, String.Format("[ -d {0} ]", EscapeShellArgument(RemoteDirectory))) == 0;
 		}
 
 		/// <summary>
@@ -1250,10 +1244,10 @@ namespace UnrealBuildTool
 			// Replace any remote paths with local ones
 			StringBuilder Result = new StringBuilder();
 			int StartIdx = 0;
-			foreach(Match Match in Matches)
+			foreach(Match? Match in Matches)
 			{
 				// Append the text leading up to this path
-				Result.Append(Text, StartIdx, Match.Index - StartIdx);
+				Result.Append(Text, StartIdx, Match!.Index - StartIdx);
 
 				// Try to convert the path
 				string Path = Match.Value;

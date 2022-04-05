@@ -23,16 +23,7 @@ public class nvTextureTools : ModuleRules
 			PublicDelayLoadDLLs.Add("nvtt_64.dll");
 
 			RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/nvTextureTools/Win64/nvtt_64.dll");
-		}
-		else if (Target.Platform == UnrealTargetPlatform.Win32)
-		{
-			nvttLibPath += ("/Win32/VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName() + "/");
-
-			PublicAdditionalLibraries.Add(nvttLibPath + "nvtt.lib");
-
-			PublicDelayLoadDLLs.Add("nvtt.dll");
-
-			RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/nvTextureTools/Win32/nvtt.dll");
+			RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/nvTextureTools/Win64/AVX2/nvtt_64.dll");
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{

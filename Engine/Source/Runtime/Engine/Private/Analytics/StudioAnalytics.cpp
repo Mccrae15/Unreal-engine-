@@ -18,6 +18,9 @@
 #include "Interfaces/IAnalyticsProvider.h"
 #include "Templates/SharedPointer.h"
 #include "HAL/PlatformProcess.h"
+#include "DerivedDataCacheInterface.h"
+#include "DerivedDataCacheUsageStats.h"
+#include "Virtualization/VirtualizationSystem.h"
 
 bool FStudioAnalytics::bInitialized = false;
 volatile double FStudioAnalytics::TimeEstimation = 0;
@@ -141,6 +144,8 @@ void FStudioAnalytics::RecordEvent(const FString& EventName, const TArray<FAnaly
 
 void FStudioAnalytics::FireEvent_Loading(const FString& LoadingName, double SecondsSpentLoading, const TArray<FAnalyticsEventAttribute>& InAttributes)
 {
+	using namespace UE::Virtualization;
+
 	// Ignore anything less than a 1/4th a second.
 	if (SecondsSpentLoading < 0.250)
 	{
@@ -148,7 +153,7 @@ void FStudioAnalytics::FireEvent_Loading(const FString& LoadingName, double Seco
 	}
 
 	// Throw out anything over 10 hours - 
-	if (!ensureMsgf(SecondsSpentLoading < 36000, TEXT("The loading event shouldn't be over 10 hours, perhaps an uninitialized bit of memory?")))
+	if (SecondsSpentLoading > 36000)
 	{
 		return;
 	}
@@ -156,10 +161,135 @@ void FStudioAnalytics::FireEvent_Loading(const FString& LoadingName, double Seco
 	if (FStudioAnalytics::IsAvailable())
 	{
 		TArray<FAnalyticsEventAttribute> Attributes;
+
+		
 		Attributes.Emplace(TEXT("LoadingName"), LoadingName);
 		Attributes.Emplace(TEXT("LoadingSeconds"), SecondsSpentLoading);
 		Attributes.Append(InAttributes);
 
 		FStudioAnalytics::GetProvider().RecordEvent(TEXT("Performance.Loading"), Attributes);
+
+#if ENABLE_COOK_STATS
+
+		TArray<FDerivedDataCacheResourceStat> DDCResourceStats;
+
+		// Grab the latest resource stats
+		GetDerivedDataCacheRef().GatherResourceStats(DDCResourceStats);
+
+		FDerivedDataCacheResourceStat DDCResourceStatsTotal(TEXT("Total"));
+
+		// Accumulate Totals
+		for (const FDerivedDataCacheResourceStat& Stat : DDCResourceStats)
+		{
+			DDCResourceStatsTotal += Stat;
+		}
+
+		DDCResourceStats.Emplace(DDCResourceStatsTotal);
+
+		for (const FDerivedDataCacheResourceStat& Stat : DDCResourceStats)
+		{
+			const FString BaseName = TEXT("DDC.Resource.") + Stat.AssetType;
+
+			{
+				FString AttrName = BaseName + TEXT(".BuildCount");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.BuildCount);
+			}
+			
+			{
+				FString AttrName = BaseName + TEXT(".BuildTimeSec");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.BuildTimeSec);
+			}
+
+			{
+				FString AttrName = BaseName + TEXT(".BuildSizeMB");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.BuildSizeMB);
+			}
+
+			{
+				FString AttrName = BaseName + TEXT(".LoadCount");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.LoadCount);
+			}
+
+			{
+				FString AttrName = BaseName + TEXT(".LoadTimeSec");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.LoadTimeSec);
+			}
+
+			{
+				FString AttrName = BaseName + TEXT(".LoadSizeMB");
+				Attributes.Emplace(MoveTemp(AttrName), Stat.LoadSizeMB);
+			}
+		}
+
+		// Grab the DDC summary stats
+		FDerivedDataCacheSummaryStats DDCSummaryStats;
+		GetDerivedDataCacheRef().GatherSummaryStats(DDCSummaryStats);
+		
+		for (const FDerivedDataCacheSummaryStat& Stat : DDCSummaryStats.Stats)
+		{
+			FString FormattedAttrName = "DDC.Summary." + Stat.Key;
+			Attributes.Emplace(FormattedAttrName, Stat.Value);
+		}
+
+		// Grab the Virtualization stats
+		IVirtualizationSystem& System = IVirtualizationSystem::Get();
+
+		FPayloadActivityInfo PayloadActivityInfo = System.GetAccumualtedPayloadActivityInfo();
+
+		const FString BaseName = TEXT("Virtualization");
+
+		{
+			FString AttrName = BaseName + TEXT(".Enabled");
+			Attributes.Emplace(MoveTemp(AttrName), System.IsEnabled());
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Cache.TimeSpent");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Cache.CyclesSpent * FPlatformTime::GetSecondsPerCycle());
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Cache.PayloadCount");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Cache.PayloadCount);
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Cache.TotalBytes");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Cache.TotalBytes);
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Push.TimeSpent");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Push.CyclesSpent * FPlatformTime::GetSecondsPerCycle());
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Push.PayloadCount");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Push.PayloadCount);
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Push.TotalBytes");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Push.TotalBytes);
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Pull.TimeSpent");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Pull.CyclesSpent * FPlatformTime::GetSecondsPerCycle());
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Pull.PayloadCount");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Pull.PayloadCount);
+		}
+
+		{
+			FString AttrName = BaseName + TEXT(".Pull.TotalBytes");
+			Attributes.Emplace(MoveTemp(AttrName), (double)PayloadActivityInfo.Pull.TotalBytes);
+		}
+
+		// Store it all in the loading event
+		FStudioAnalytics::GetProvider().RecordEvent(TEXT("Core.Loading"), Attributes);
+#endif
 	}
 }

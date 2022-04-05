@@ -21,7 +21,7 @@ static FAutoConsoleVariableRef CVarHairLUTSampleCount(TEXT("r.HairStrands.HairLU
 
 static bool IsHairMobilePlatform(EShaderPlatform Platform)
 {
-	return IsMobilePlatform(Platform) || Platform == SP_PCD3D_ES3_1;
+	return IsMobilePlatform(Platform);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -69,7 +69,9 @@ static FRDGTextureRef AddHairLUTPass(
 	OutputDesc.Format = PF_FloatRGBA;
 	OutputDesc.NumMips = 1;
 	OutputDesc.Flags = TexCreate_ShaderResource | TexCreate_UAV;
-	FRDGTextureRef HairLUTTexture = GraphBuilder.CreateTexture(OutputDesc, TEXT("HairLUT"));
+	FRDGTextureRef HairLUTTexture = GraphBuilder.CreateTexture(OutputDesc, 
+		 LUTType == FHairLUTType::HairLUTType_DualScattering ? TEXT("Hair.LUT(DualScattering)") : 
+		(LUTType == FHairLUTType::HairLUTType_MeanEnergy ? TEXT("Hair.LUT(MeanEnergy)") : TEXT("Hair.LUT(Coverage)")));
 
 	FHairLUTCS::FParameters* Parameters = GraphBuilder.AllocParameters<FHairLUTCS::FParameters>();
 	Parameters->OutputColor = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(HairLUTTexture, 0));
@@ -261,7 +263,7 @@ class FHairCoverageLUTCS : public FGlobalShader
 	END_SHADER_PARAMETER_STRUCT()
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FUploadParameters, )
-		SHADER_PARAMETER_RDG_BUFFER_UPLOAD(UploadBuffer)
+		RDG_BUFFER_ACCESS(UploadBuffer, ERHIAccess::CopyDest)
 	END_SHADER_PARAMETER_STRUCT()
 
 public:
@@ -295,9 +297,9 @@ static FRDGTextureRef AddHairCoverageLUTPass(FRDGBuilder& GraphBuilder, const FV
 	{
 		FHairCountToCoverageData Source;
 		
-		void* Dest = RHILockVertexBuffer(UploadParameters->UploadBuffer->GetRHIVertexBuffer(), 0, SizeInBytes, RLM_WriteOnly);
+		void* Dest = RHILockBuffer(UploadParameters->UploadBuffer->GetRHI(), 0, SizeInBytes, RLM_WriteOnly);
 		FPlatformMemory::Memcpy(Dest, Source.Data, SizeInBytes);
-		RHIUnlockVertexBuffer(UploadParameters->UploadBuffer->GetRHIVertexBuffer());
+		RHIUnlockBuffer(UploadParameters->UploadBuffer->GetRHI());
 	});
 
 
@@ -307,7 +309,7 @@ static FRDGTextureRef AddHairCoverageLUTPass(FRDGBuilder& GraphBuilder, const FV
 	OutputDesc.Format = PF_R32_FLOAT;
 	OutputDesc.NumMips = 1;
 	OutputDesc.Flags = TexCreate_UAV | TexCreate_ShaderResource;
-	FRDGTextureRef HairLUTTexture = GraphBuilder.CreateTexture(OutputDesc, TEXT("HairCoverageLUT"));
+	FRDGTextureRef HairLUTTexture = GraphBuilder.CreateTexture(OutputDesc, TEXT("Hair.CoverageLUT"));
 
 	FHairCoverageLUTCS::FParameters* Parameters = GraphBuilder.AllocParameters<FHairCoverageLUTCS::FParameters>();
 	Parameters->OutputResolution = OutputResolution;
@@ -326,97 +328,66 @@ static FRDGTextureRef AddHairCoverageLUTPass(FRDGBuilder& GraphBuilder, const FV
 	return HairLUTTexture;
 }
 
-static bool InternalHairLUT_NeedUpdateDualScatteringLUT(EShaderPlatform Platform)
+static FRDGTextureRef InternalGetHairLUT(FRDGBuilder& GraphBuilder, const FViewInfo& View, FHairLUTType Type, bool bRegister)
 {
-	const FIntVector LUT3DResolution = FIntVector(GHairLUTIncidentAngleCount, GHairLUTRoughnessCount, GHairLUTAbsorptionCount);
-	return
-		(GSystemTextures.HairLUT0.GetReference() == nullptr ||
-		 GSystemTextures.HairLUT0.GetReference()->GetRenderTargetItem().ShaderResourceTexture->GetSizeXYZ() != LUT3DResolution) &&
-		(!IsHairMobilePlatform(Platform) && (IsHairStrandsSupported(EHairStrandsShaderType::Cards, Platform) || IsHairStrandsSupported(EHairStrandsShaderType::Strands, Platform)));
-}
+	FRDGTextureRef Out = nullptr;
 
-static bool InternalHairLUT_NeedUpdateMeanEnergyLUT(EShaderPlatform Platform)
-{
-	const FIntVector LUT3DResolution = FIntVector(GHairLUTIncidentAngleCount, GHairLUTRoughnessCount, GHairLUTAbsorptionCount);
-	return 
-		(GSystemTextures.HairLUT1.GetReference() == nullptr ||
-		 GSystemTextures.HairLUT1.GetReference()->GetRenderTargetItem().ShaderResourceTexture->GetSizeXYZ() != LUT3DResolution) &&
-		IsHairStrandsSupported(EHairStrandsShaderType::Strands, Platform);
-}
-
-static bool InternalHairLUT_NeedUpdateCoverageLUT(EShaderPlatform Platform)
-{
-	const FIntVector LUT2DResolution = FIntVector(FHairCountToCoverageData::HairCount, FHairCountToCoverageData::HairRadiusCount, 1);
-	return 
-		(GSystemTextures.HairLUT2.GetReference() == nullptr || 
-		 GSystemTextures.HairLUT2.GetReference()->GetRenderTargetItem().ShaderResourceTexture->GetSizeXYZ() != LUT2DResolution) &&
-		IsHairStrandsSupported(EHairStrandsShaderType::Strands, Platform);
-}
-
-static FHairLUT InternalHairLUT_UpdateHairLUT(FRDGBuilder& GraphBuilder, const FViewInfo& View)
-{
 	const EShaderPlatform Platform = View.GetShaderPlatform();
-	FHairLUT Out;
-
-	if (InternalHairLUT_NeedUpdateDualScatteringLUT(Platform))
+	const bool bIsCompatible = !IsHairMobilePlatform(Platform) && IsHairStrandsSupported(EHairStrandsShaderType::Cards, Platform);
+	if (!bIsCompatible)
 	{
-		FRDGTextureRef HairDualScatteringLUTTexture = AddHairLUTPass(GraphBuilder, View, HairLUTType_DualScattering);
-		ConvertToUntrackedExternalTexture(GraphBuilder, HairDualScatteringLUTTexture, GSystemTextures.HairLUT0, ERHIAccess::SRVMask);
-		Out.Textures[HairLUTType_DualScattering] = HairDualScatteringLUTTexture;
-	}
-	else
-	{
-		Out.Textures[HairLUTType_DualScattering]= GraphBuilder.RegisterExternalTexture(GSystemTextures.HairLUT0, TEXT("HairLUTType_DualScattering"));
+		return Out;
 	}
 
-	if (InternalHairLUT_NeedUpdateMeanEnergyLUT(Platform))
+	if (Type == FHairLUTType::HairLUTType_DualScattering)
 	{
-		FRDGTextureRef HairMeanEnergyLUTTexture = AddHairLUTPass(GraphBuilder, View, HairLUTType_MeanEnergy);
-		ConvertToUntrackedExternalTexture(GraphBuilder, HairMeanEnergyLUTTexture, GSystemTextures.HairLUT1, ERHIAccess::SRVMask);
-		Out.Textures[HairLUTType_MeanEnergy] = HairMeanEnergyLUTTexture;
+		const bool bNeedUpdate = GSystemTextures.HairLUT0.GetReference() == nullptr || GSystemTextures.HairLUT0.GetReference()->GetRenderTargetItem().ShaderResourceTexture->GetSizeXYZ() != FIntVector(GHairLUTIncidentAngleCount, GHairLUTRoughnessCount, GHairLUTAbsorptionCount);
+		if (bNeedUpdate)
+		{
+			Out = AddHairLUTPass(GraphBuilder, View, HairLUTType_DualScattering);
+			GSystemTextures.HairLUT0 = ConvertToFinalizedExternalTexture(GraphBuilder, Out);
+		}
+		else if (bRegister)
+		{
+			Out = GraphBuilder.RegisterExternalTexture(GSystemTextures.HairLUT0, TEXT("Hair.LUT(DualScattering)"));
+		}
 	}
-	else
+	else if (Type == FHairLUTType::HairLUTType_MeanEnergy)
 	{
-		Out.Textures[HairLUTType_MeanEnergy] = GraphBuilder.RegisterExternalTexture(GSystemTextures.HairLUT1, TEXT("HairLUTType_MeanEnergy"));
+		const bool bNeedUpdate = GSystemTextures.HairLUT1.GetReference() == nullptr || GSystemTextures.HairLUT1.GetReference()->GetRenderTargetItem().ShaderResourceTexture->GetSizeXYZ() != FIntVector(GHairLUTIncidentAngleCount, GHairLUTRoughnessCount, GHairLUTAbsorptionCount);
+		if (bNeedUpdate)
+		{
+			Out = AddHairLUTPass(GraphBuilder, View, HairLUTType_MeanEnergy);
+			GSystemTextures.HairLUT1 = ConvertToFinalizedExternalTexture(GraphBuilder, Out);
+		}
+		else if (bRegister)
+		{
+			Out = GraphBuilder.RegisterExternalTexture(GSystemTextures.HairLUT1, TEXT("Hair.LUT(MeanEnergy)"));
+		}
 	}
-
-	if (InternalHairLUT_NeedUpdateCoverageLUT(Platform))
+	else if (Type == FHairLUTType::HairLUTType_Coverage)
 	{
-		FRDGTextureRef HairCoverageLUTTexture = AddHairCoverageLUTPass(GraphBuilder, View);
-		ConvertToUntrackedExternalTexture(GraphBuilder, HairCoverageLUTTexture, GSystemTextures.HairLUT2, ERHIAccess::SRVMask);
-		Out.Textures[HairLUTType_Coverage] = HairCoverageLUTTexture;
-	}
-	else
-	{
-		Out.Textures[HairLUTType_Coverage] = GraphBuilder.RegisterExternalTexture(GSystemTextures.HairLUT2, TEXT("HairLUTType_Coverage"));
+		const bool bNeedUpdate = GSystemTextures.HairLUT2.GetReference() == nullptr || GSystemTextures.HairLUT2.GetReference()->GetRenderTargetItem().ShaderResourceTexture->GetSizeXYZ() != FIntVector(FHairCountToCoverageData::HairCount, FHairCountToCoverageData::HairRadiusCount, 1);
+		if (bNeedUpdate)
+		{
+			Out = AddHairCoverageLUTPass(GraphBuilder, View);
+			GSystemTextures.HairLUT2 = ConvertToFinalizedExternalTexture(GraphBuilder, Out);
+		}
+		else if (bRegister)
+		{
+			Out = GraphBuilder.RegisterExternalTexture(GSystemTextures.HairLUT2, TEXT("Hair.LUT(Coverage)"));
+		}
 	}
 
 	return Out;
 }
 
-FHairLUT GetHairLUT(FRDGBuilder& GraphBuilder, const FViewInfo& View)
+FRDGTextureRef GetHairLUT(FRDGBuilder& GraphBuilder, const FViewInfo& View, FHairLUTType Type)
 {
-	return InternalHairLUT_UpdateHairLUT(GraphBuilder, View);
+	return InternalGetHairLUT(GraphBuilder, View, Type, true);
 }
 
-void UpdateHairLUT(const FViewInfo& View)
+void UpdateHairResources(FRDGBuilder& GraphBuilder, const FViewInfo& View)
 {
-	if (GUsingNullRHI) { return; }
-
-	const EShaderPlatform Platform = View.GetShaderPlatform();
-
-	const bool bNeedUpdateLUTs = 
-		InternalHairLUT_NeedUpdateDualScatteringLUT(Platform) ||
-		InternalHairLUT_NeedUpdateMeanEnergyLUT(Platform) ||
-		InternalHairLUT_NeedUpdateCoverageLUT(Platform);
-
-	if (bNeedUpdateLUTs)
-	{
-		FMemMark Mark(FMemStack::Get());
-		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-		FRDGBuilder GraphBuilder(RHICmdList);
-		InternalHairLUT_UpdateHairLUT(GraphBuilder, View);
-		GraphBuilder.Execute();
-	}
+	InternalGetHairLUT(GraphBuilder, View, FHairLUTType::HairLUTType_DualScattering, false);
 }
-

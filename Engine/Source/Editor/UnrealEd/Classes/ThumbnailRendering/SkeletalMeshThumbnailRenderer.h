@@ -8,6 +8,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ThumbnailHelpers.h"
 #include "UObject/ObjectMacros.h"
 #include "ThumbnailRendering/DefaultSizedThumbnailRenderer.h"
 #include "SkeletalMeshThumbnailRenderer.generated.h"
@@ -23,6 +24,7 @@ class UNREALED_API USkeletalMeshThumbnailRenderer : public UDefaultSizedThumbnai
 
 	// Begin UThumbnailRenderer Object
 	virtual void Draw(UObject* Object, int32 X, int32 Y, uint32 Width, uint32 Height, FRenderTarget*, FCanvas* Canvas, bool bAdditionalViewFamily) override;
+	virtual bool AllowsRealtimeThumbnails(UObject* Object) const override;
 	// End UThumbnailRenderer Object
 
 	// UObject implementation
@@ -31,6 +33,6 @@ class UNREALED_API USkeletalMeshThumbnailRenderer : public UDefaultSizedThumbnai
 	virtual void AddAdditionalPreviewSceneContent(UObject* Object, UWorld* PreviewWorld) {}
 
 protected:
-	class FSkeletalMeshThumbnailScene* ThumbnailScene;
+	TObjectInstanceThumbnailScene<FSkeletalMeshThumbnailScene, 128> ThumbnailSceneCache;
 };
 

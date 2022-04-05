@@ -8,7 +8,7 @@
 #include "Input/Reply.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/SViewport.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "EditorViewportClient.h"
 
 class FActiveTimerHandle;
@@ -16,6 +16,7 @@ class FSceneViewport;
 class FUICommandList;
 class SViewport;
 struct FSlateBrush;
+struct FToolMenuContext;
 
 class UNREALED_API SEditorViewport
 	: public SCompoundWidget
@@ -72,6 +73,11 @@ public:
 	 * @return true if the specified coordinate system the active one active
 	 */
 	virtual bool IsCoordSystemActive( ECoordSystem CoordSystem ) const;
+
+	/**
+	 * Cycles between world and local coordinate systems
+	 */
+	virtual void OnCycleCoordinateSystem();
 	
 	/** @return The viewport command list */
 	const TSharedPtr<FUICommandList> GetCommandList() const { return CommandList; }
@@ -90,6 +96,14 @@ public:
 
 	/** Build the exposure menu using EV100 settings */
 	TSharedRef<SWidget> BuildFixedEV100Menu()  const;
+
+	/**
+ * Called when the user wants to show the in-viewport context menu
+ */
+	virtual void ToggleInViewportContextMenu() {}
+	virtual void HideInViewportContextMenu() {}
+	virtual void UpdateInViewportMenuLocation(const FVector2D InLocation);
+	virtual bool CanToggleInViewportContextMenu() { return false; }
 
 ///////////////////////////////////////////////////////////////////////////////
 // begin feature level control functions block
@@ -140,6 +154,11 @@ protected:
 	 * @return The visibility of widgets in the viewport (e.g, menus).  Note this is not the visibility of the scene rendered in the viewport                                                              
 	 */
 	virtual EVisibility OnGetViewportContentVisibility() const;
+
+	/**
+	 * @return The visibility of the viewport focus indicator.                                                             
+	 */
+	virtual EVisibility OnGetFocusedViewportIndicatorVisibility() const { return EVisibility::Collapsed; }
 
 	/** UI Command delegate bindings */
 	void OnToggleStats();
@@ -194,7 +213,7 @@ protected:
 	/**
 	 * @return true if the specified widget mode is active
 	 */
-	virtual bool IsWidgetModeActive( FWidget::EWidgetMode Mode ) const;
+	virtual bool IsWidgetModeActive( UE::Widget::EWidgetMode Mode ) const;
 
 	/**
 	 * @return true if the translate/rotate mode widget is visible 
@@ -210,11 +229,6 @@ protected:
 	 * Moves between widget modes
 	 */
 	virtual void OnCycleWidgetMode();
-
-	/**
-	 * Cycles between world and local coordinate systems
-	 */
-	virtual void OnCycleCoordinateSystem();
 
 	/**
 	 * Called when the user wants to focus the viewport to the current selection
@@ -252,10 +266,15 @@ protected:
 	/** The last time the viewport was ticked (for visibility determination) */
 	double LastTickTime;
 
+	FVector2D InViewportContextMenuLocation;
+
 private:
 	/** Ensures a Slate tick/paint pass when the viewport is realtime or was invalidated this frame */
 	EActiveTimerReturnType EnsureTick( double InCurrentTime, float InDeltaTime );
 
+	/** Gets the visibility of the active viewport border */
+	EVisibility GetActiveBorderVisibility() const;
+private:
 	/** The handle to the active timer */
 	TWeakPtr<FActiveTimerHandle> ActiveTimerHandle;
 

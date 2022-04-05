@@ -78,6 +78,11 @@ TSharedRef<SWidget> UEditorUtilityWidgetBlueprint::CreateUtilityWidget()
 			CreatedUMGWidget->Rename(nullptr, GetTransientPackage(), REN_DoNotDirty);
 		}
 		CreatedUMGWidget = CreateWidget<UEditorUtilityWidget>(World, WidgetClass);
+		if (CreatedUMGWidget)
+		{
+			// Editor Utility is flagged as transient to prevent from dirty the World it's created in when a property added to the Utility Widget is changed
+			CreatedUMGWidget->SetFlags(RF_Transient);
+		}
 	}
 
 	if (CreatedUMGWidget)
@@ -105,14 +110,16 @@ void UEditorUtilityWidgetBlueprint::ChangeTabWorld(UWorld* World, EMapChangeType
 {
 	if (MapChangeType == EMapChangeType::TearDownWorld)
 	{
-		if (CreatedTab.IsValid())
+		// We need to Delete the UMG widget if we are tearing down the World it was built with.
+		if (CreatedUMGWidget && World == CreatedUMGWidget->GetWorld())
 		{
-			CreatedTab.Pin()->SetContent(SNullWidget::NullWidget);
-		}
-		if (CreatedUMGWidget)
-		{
+			if (CreatedTab.IsValid())
+			{
+				CreatedTab.Pin()->SetContent(SNullWidget::NullWidget);
+			}
+			
 			CreatedUMGWidget->Rename(nullptr, GetTransientPackage());
-			CreatedUMGWidget = nullptr;
+			CreatedUMGWidget = nullptr;			
 		}
 	}
 	else if (MapChangeType != EMapChangeType::SaveMap)
@@ -124,11 +131,14 @@ void UEditorUtilityWidgetBlueprint::ChangeTabWorld(UWorld* World, EMapChangeType
 
 void UEditorUtilityWidgetBlueprint::UpdateRespawnListIfNeeded(TSharedRef<SDockTab> TabBeingClosed)
 {
-	const UEditorUtilityWidget* EditorUtilityWidget = GeneratedClass->GetDefaultObject<UEditorUtilityWidget>();
-	if (EditorUtilityWidget && EditorUtilityWidget->ShouldAlwaysReregisterWithWindowsMenu() == false)
+	if (GeneratedClass)
 	{
-		IBlutilityModule* BlutilityModule = FModuleManager::GetModulePtr<IBlutilityModule>("Blutility");
-		BlutilityModule->RemoveLoadedScriptUI(this);
+		const UEditorUtilityWidget* EditorUtilityWidget = GeneratedClass->GetDefaultObject<UEditorUtilityWidget>();
+		if (EditorUtilityWidget && EditorUtilityWidget->ShouldAlwaysReregisterWithWindowsMenu() == false)
+		{
+			IBlutilityModule* BlutilityModule = FModuleManager::GetModulePtr<IBlutilityModule>("Blutility");
+			BlutilityModule->RemoveLoadedScriptUI(this);
+		}
 	}
 	CreatedUMGWidget = nullptr;
 }

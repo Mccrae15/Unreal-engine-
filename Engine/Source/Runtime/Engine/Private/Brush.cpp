@@ -158,7 +158,7 @@ void ABrush::SetIsTemporarilyHiddenInEditor( bool bIsHidden )
 		Super::SetIsTemporarilyHiddenInEditor(bIsHidden);
 		
 		ULevel* Level = GetLevel();
-		UModel* Model = Level ? Level->Model : nullptr;
+		UModel* Model = Level ? ToRawPtr(Level->Model) : nullptr;
 
 		if (Level && Model)
 		{
@@ -182,6 +182,46 @@ void ABrush::SetIsTemporarilyHiddenInEditor( bool bIsHidden )
 			}
 		}
 	}
+}
+
+bool ABrush::SetIsHiddenEdLayer(bool bIsHiddenEdLayer)
+{
+	if (Super::SetIsHiddenEdLayer(bIsHiddenEdLayer))
+	{
+		ULevel* Level = GetLevel();
+		UModel* Model = Level ? ToRawPtr(Level->Model) : nullptr;
+		if (Level && Model)
+		{
+			bool bAnySurfaceWasFound = false;
+			for (FBspSurf& Surf : Model->Surfs)
+			{
+				if (Surf.Actor == this)
+				{
+					Surf.bHiddenEdLayer = bIsHiddenEdLayer;
+					bAnySurfaceWasFound = true;
+				}
+			}
+
+			if (bAnySurfaceWasFound)
+			{
+				Level->UpdateModelComponents();
+				Model->InvalidSurfaces = true;
+			}
+		}
+		return true;
+	}
+	return false;
+}
+
+bool ABrush::SupportsLayers() const
+{
+	return !FActorEditorUtils::IsABuilderBrush(this) && Super::SupportsLayers();
+}
+
+bool ABrush::SupportsExternalPackaging() const
+{
+	// Base class ABrush actors do not support OFPA
+	return GetClass() != ABrush::StaticClass();
 }
 
 void ABrush::PostLoad()
@@ -213,7 +253,7 @@ void ABrush::PostLoad()
 		// They have not been getting fixed up after vertex editing since at least UE2!
 		for(FPoly& Poly : Brush->Polys->Element)
 		{
-			FVector Normal = Poly.Normal;
+			FVector3f Normal = Poly.Normal;
 			if(!Poly.CalcNormal())
 			{
 				if(!Poly.Normal.Equals(Normal))

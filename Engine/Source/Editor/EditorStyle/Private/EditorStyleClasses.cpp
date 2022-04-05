@@ -19,8 +19,6 @@ UEditorStyleSettings::UEditorStyleSettings( const FObjectInitializer& ObjectInit
 	bEnableUserEditorLayoutManagement = true;
 
 	SelectionColor = FLinearColor(0.828f, 0.364f, 0.003f);
-	InactiveSelectionColor = FLinearColor(0.25f, 0.25f, 0.25f);
-	PressedSelectionColor = FLinearColor(0.701f, 0.225f, 0.003f);
 
 	EditorWindowBackgroundColor = FLinearColor::White;
 
@@ -28,6 +26,8 @@ UEditorStyleSettings::UEditorStyleSettings( const FObjectInitializer& ObjectInit
 	bEnableColorizedEditorTabs = true;
 	
 	bUseGrid = true;
+
+	bCycleToOutputLogDrawer = true;
 
 	RegularColor = FLinearColor(0.035f, 0.035f, 0.035f);
 	RuleColor = FLinearColor(0.008f, 0.008f, 0.008f);
@@ -38,8 +38,6 @@ UEditorStyleSettings::UEditorStyleSettings( const FObjectInitializer& ObjectInit
 	bShowFriendlyNames = true;
 	bShowNativeComponentNames = true;
 	LogTimestampMode = ELogTimes::None;
-	
-	bEnableLegacyEditorModeUI = false;
 }
 
 void UEditorStyleSettings::Init()
@@ -63,26 +61,10 @@ FLinearColor UEditorStyleSettings::GetSubduedSelectionColor() const
 
 void UEditorStyleSettings::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
 {
-	if (bResetEditorWindowBackgroundSettings)
-	{
-		// Reset the settings
-		bResetEditorWindowBackgroundSettings = false;
-
-		EditorWindowBackgroundColor = FLinearColor::White;
-
-		FSlateBrush DummyBrush;
-		EditorMainWindowBackgroundOverride = DummyBrush;
-		EditorChildWindowBackgroundOverride = DummyBrush;
-	}
-
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	const FName PropertyName = (PropertyChangedEvent.Property != nullptr) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
 
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(UEditorStyleSettings, bEnableWindowAnimations))
-	{
-		FSlateApplication::Get().EnableMenuAnimations(bEnableWindowAnimations);
-	}
 
 	// This property is intentionally not per project so it must be manually written to the correct config file
 	if (PropertyName == GET_MEMBER_NAME_CHECKED(UEditorStyleSettings, bEnableHighDPIAwareness))

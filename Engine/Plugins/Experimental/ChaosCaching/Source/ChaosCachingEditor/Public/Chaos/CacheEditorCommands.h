@@ -20,6 +20,4 @@ public:
 	CHAOSCACHINGEDITOR_API virtual void RegisterCommands();
 
 	TSharedPtr<FUICommandInfo> CreateCacheManager;
-	TSharedPtr<FUICommandInfo> SetManagerRecordAll;
-	TSharedPtr<FUICommandInfo> SetManagerPlayAll;
 };

@@ -6,6 +6,7 @@
 #include "ViewModels/Stack/NiagaraStackModuleItem.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "Stack/SNiagaraStackItemGroupAddMenu.h"
+#include "NiagaraNodeAssignment.h"
 #include "NiagaraEditorWidgetsStyle.h"
 #include "NiagaraEditorCommon.h"
 #include "NiagaraClipboard.h"
@@ -20,9 +21,13 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
 #include "EditorFontGlyphs.h"
+#include "NiagaraEmitter.h"
+#include "NiagaraEmitterEditorData.h"
 #include "NiagaraMessages.h"
+#include "ViewModels/NiagaraEmitterViewModel.h"
 #include "ViewModels/NiagaraSystemSelectionViewModel.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
+#include "ViewModels/Stack/NiagaraStackInputCategory.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackEditorWidgetsUtilities"
 
@@ -134,7 +139,29 @@ FName FNiagaraStackEditorWidgetsUtilities::GetIconColorNameForExecutionCategory(
 	}
 }
 
-
+FName FNiagaraStackEditorWidgetsUtilities::GetAddItemButtonStyleNameForExecutionCategory(FName ExecutionCategoryName)
+{
+	if (ExecutionCategoryName == UNiagaraStackEntry::FExecutionCategoryNames::System)
+	{
+		return "NiagaraEditor.Stack.AddItemButton.System";
+	}
+	else if (ExecutionCategoryName == UNiagaraStackEntry::FExecutionCategoryNames::Emitter)
+	{
+		return "NiagaraEditor.Stack.AddItemButton.Emitter";
+	}
+	else if (ExecutionCategoryName == UNiagaraStackEntry::FExecutionCategoryNames::Particle)
+	{
+		return "NiagaraEditor.Stack.AddItemButton.Particle";
+	}
+	else if (ExecutionCategoryName == UNiagaraStackEntry::FExecutionCategoryNames::Render)
+	{
+		return "NiagaraEditor.Stack.AddItemButton.Render";
+	}
+	else
+	{
+		return NAME_None;
+	}
+}
 
 FText FNiagaraStackEditorWidgetsUtilities::GetIconTextForInputMode(UNiagaraStackFunctionInput::EValueMode InputValueMode)
 {
@@ -384,7 +411,7 @@ void ShowInsertModuleMenu(TWeakObjectPtr<UNiagaraStackModuleItem> StackModuleIte
 	TSharedPtr<SWidget> TargetWidget = TargetWidgetWeak.Pin();
 	if (StackModuleItem != nullptr && TargetWidget.IsValid())
 	{
-		TSharedRef<SNiagaraStackItemGroupAddMenu> MenuContent = SNew(SNiagaraStackItemGroupAddMenu, StackModuleItem->GetGroupAddUtilities(), StackModuleItem->GetModuleIndex() + InsertOffset);
+		TSharedRef<SNiagaraStackItemGroupAddMenu> MenuContent = SNew(SNiagaraStackItemGroupAddMenu, nullptr, StackModuleItem->GetGroupAddUtilities(), StackModuleItem->GetModuleIndex() + InsertOffset);
 		FGeometry ThisGeometry = TargetWidget->GetCachedGeometry();
 		bool bAutoAdjustForDpiScale = false; // Don't adjust for dpi scale because the push menu command is expecting an unscaled position.
 		FVector2D MenuPosition = FSlateApplication::Get().CalculatePopupWindowPosition(ThisGeometry.GetLayoutBoundingRect(), MenuContent->GetDesiredSize(), bAutoAdjustForDpiScale);
@@ -465,7 +492,7 @@ TOptional<EItemDropZone> FNiagaraStackEditorWidgetsUtilities::RequestDropForStac
 		{
 			if (DecoratedDragDropOp.IsValid() && Response.GetValue().DropMessage.IsEmptyOrWhitespace() == false)
 			{
-				DecoratedDragDropOp->CurrentHoverText = FText::Format(LOCTEXT("DropFormat", "{0} - {1}"), DecoratedDragDropOp->GetDefaultHoverText(), Response.GetValue().DropMessage);
+				DecoratedDragDropOp->CurrentHoverText = Response.GetValue().DropMessage;
 			}
 
 			if (Response.GetValue().DropZone.IsSet())
@@ -509,6 +536,63 @@ bool FNiagaraStackEditorWidgetsUtilities::HandleDropForStackEntry(const FDragDro
 FString FNiagaraStackEditorWidgetsUtilities::StackEntryToStringForListDebug(UNiagaraStackEntry* StackEntry)
 {
 	return FString::Printf(TEXT("0x%08x - %s - %s"), StackEntry, *StackEntry->GetClass()->GetName(), *StackEntry->GetDisplayName().ToString());
+}
+
+TOptional<FFunctionInputSummaryViewKey> FNiagaraStackEditorWidgetsUtilities::GetSummaryViewInputKeyForFunctionInput(UNiagaraStackFunctionInput* FunctionInput)
+{
+	const FGuid NodeGuid = FunctionInput->GetInputFunctionCallNode().NodeGuid;
+
+	const UNiagaraNodeFunctionCall& InputCallNode = FunctionInput->GetInputFunctionCallNode();
+	if (InputCallNode.IsA<UNiagaraNodeAssignment>())
+	{		
+		return FFunctionInputSummaryViewKey(NodeGuid, FunctionInput->GetInputParameterHandle().GetParameterHandleString());
+	}
+	
+	const TOptional<FGuid> VariableGuid = FunctionInput->GetMetadataGuid();
+	if (VariableGuid.IsSet() && VariableGuid.GetValue().IsValid())
+	{
+		return FFunctionInputSummaryViewKey(NodeGuid, VariableGuid.GetValue());
+	}
+	
+	return TOptional<FFunctionInputSummaryViewKey>();
+}
+
+UNiagaraStackFunctionInput* FNiagaraStackEditorWidgetsUtilities::GetParentInputForSummaryView(UNiagaraStackFunctionInput* FunctionInput)
+{
+	const UNiagaraEmitterEditorData* EditorData = (FunctionInput && FunctionInput->GetEmitterViewModel())? &FunctionInput->GetEmitterViewModel()->GetEditorData() : nullptr;
+
+	// Find outermost function input first, as this will traverse the chain of dynamic inputs to find the base input which is what needs to go to summary view
+	
+	if (EditorData)
+	{
+		while (FunctionInput->GetTypedOuter<UNiagaraStackFunctionInput>())
+		{
+			FunctionInput = FunctionInput->GetTypedOuter<UNiagaraStackFunctionInput>();
+		}
+		
+		TOptional<FFunctionInputSummaryViewKey> Key = FNiagaraStackEditorWidgetsUtilities::GetSummaryViewInputKeyForFunctionInput(FunctionInput);
+
+		TOptional<FNiagaraVariableMetaData> Metadata = FunctionInput->GetMetadata();
+		if (Metadata.IsSet() && !Metadata->ParentAttribute.IsNone())
+		{
+			UNiagaraStackInputCategory* Category = CastChecked<UNiagaraStackInputCategory>(FunctionInput->GetOuter());
+
+			TArray<UNiagaraStackEntry*> Children;
+			Category->GetFilteredChildrenOfTypes(Children, { UNiagaraStackFunctionInput::StaticClass() });
+
+			for (UNiagaraStackEntry* Entry : Children)
+			{
+				UNiagaraStackFunctionInput* Input = CastChecked<UNiagaraStackFunctionInput>(Entry);
+
+				if (Input->GetInputParameterHandle().GetName() == Metadata->ParentAttribute)
+				{
+					return Input;
+				}				
+			}
+		}
+	}
+
+	return FunctionInput;	
 }
 
 #undef LOCTEXT_NAMESPACE

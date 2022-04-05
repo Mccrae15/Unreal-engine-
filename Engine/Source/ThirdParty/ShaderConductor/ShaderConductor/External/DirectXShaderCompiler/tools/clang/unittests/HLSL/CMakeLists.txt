@@ -33,6 +33,7 @@ add_clang_library(clang-hlsl-tests SHARED
   CompilerTest.cpp
   DxilContainerTest.cpp
   DxilModuleTest.cpp
+  DxilResourceTests.cpp
   DXIsenseTest.cpp
   ExecutionTest.cpp
   ExtensionTest.cpp
@@ -42,6 +43,7 @@ add_clang_library(clang-hlsl-tests SHARED
   Objects.cpp
   OptimizerTest.cpp
   OptionsTest.cpp
+  PixTest.cpp
   RewriterTest.cpp
   ShaderOpTest.cpp
   SystemValueTest.cpp
@@ -54,6 +56,7 @@ set(HLSL_IGNORE_SOURCES
   ExecutionTest.cpp
   LinkerTest.cpp
   MSFileSysTest.cpp
+  PixTest.cpp
   RewriterTest.cpp
   ShaderOpTest.cpp
   DxilContainerTest.cpp
@@ -64,6 +67,7 @@ set(HLSL_IGNORE_SOURCES
 add_clang_unittest(clang-hlsl-tests
   AllocatorTest.cpp
   DxilModuleTest.cpp
+  DxilResourceTests.cpp
   DXIsenseTest.cpp
   ExtensionTest.cpp
   FunctionTest.cpp
@@ -84,9 +88,11 @@ if (WIN32)
 target_link_libraries(clang-hlsl-tests PRIVATE
   dxcompiler
   HLSLTestLib
+  LLVMDxilDia
   ${TAEF_LIBRARIES}
   ${DIASDK_LIBRARIES}
   ${D3D12_LIBRARIES}
+  shlwapi
   )
 else(WIN32)
 target_link_libraries(clang-hlsl-tests
@@ -100,11 +106,11 @@ if(WIN32)
 include_directories(${TAEF_INCLUDE_DIRS})
 include_directories(${DIASDK_INCLUDE_DIRS})
 include_directories(${D3D12_INCLUDE_DIRS})
-
+include_directories(${LLVM_MAIN_INCLUDE_DIR}/dxc/Test)
 endif(WIN32)
 
 # Add includes to directly reference intrinsic tables.
-include_directories(../../lib/Sema)
+include_directories(${CLANG_BINARY_DIR}/lib/Sema)
 
 add_dependencies(clang-hlsl-tests dxcompiler)
 

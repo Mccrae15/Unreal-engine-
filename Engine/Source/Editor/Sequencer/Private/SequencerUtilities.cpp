@@ -15,6 +15,9 @@
 #include "SequencerTrackNode.h"
 #include "MovieSceneTrack.h"
 #include "MovieSceneSection.h"
+#include "MovieSceneTimeHelpers.h"
+#include "MovieSceneFolder.h"
+#include "Compilation/MovieSceneCompiledDataManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "ISequencerTrackEditor.h"
 #include "ISequencer.h"
@@ -26,8 +29,10 @@
 #include "AssetRegistryModule.h"
 #include "FileHelpers.h"
 #include "LevelSequence.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
-
+PRAGMA_DISABLE_OPTIMIZATION
 
 #define LOCTEXT_NAMESPACE "FSequencerUtilities"
 
@@ -35,6 +40,19 @@ static EVisibility GetRolloverVisibility(TAttribute<bool> HoverState, TWeakPtr<S
 {
 	TSharedPtr<SComboButton> ComboButton = WeakComboButton.Pin();
 	if (HoverState.Get() || ComboButton->IsOpen())
+	{
+		return EVisibility::SelfHitTestInvisible;
+	}
+	else
+	{
+		return EVisibility::Collapsed;
+	}
+}
+
+static EVisibility GetRolloverVisibility(TAttribute<bool> HoverState, TWeakPtr<SButton> WeakButton)
+{
+	TSharedPtr<SButton> Button = WeakButton.Pin();
+	if (HoverState.Get())
 	{
 		return EVisibility::SelfHitTestInvisible;
 	}
@@ -93,6 +111,101 @@ TSharedRef<SWidget> FSequencerUtilities::MakeAddButton(FText HoverText, FOnGetCo
 	return ComboButton;
 }
 
+TSharedRef<SWidget> FSequencerUtilities::MakeAddButton(FText HoverText, FOnClicked OnClicked, const TAttribute<bool>& HoverState, TWeakPtr<ISequencer> InSequencer)
+{
+	FSlateFontInfo SmallLayoutFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+
+	TSharedRef<STextBlock> ButtonText = SNew(STextBlock)
+		.Text(HoverText)
+		.Font(SmallLayoutFont)
+		.ColorAndOpacity(FSlateColor::UseForeground());
+
+	TSharedRef<SButton> Button =
+
+		SNew(SButton)
+		.IsFocusable(true)
+		.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+		.ForegroundColor(FSlateColor::UseForeground())
+		.IsEnabled_Lambda([=]() { return InSequencer.IsValid() ? !InSequencer.Pin()->IsReadOnly() : false; })
+		.OnClicked(OnClicked)
+		.ContentPadding(FMargin(5, 2))
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		.Content()
+		[
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0, 0, 2, 0))
+			[
+				SNew(SImage)
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.Image(FEditorStyle::GetBrush("Plus"))
+			]
+
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			[
+				ButtonText
+			]
+		];
+
+	TAttribute<EVisibility> Visibility = TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateStatic(GetRolloverVisibility, HoverState, TWeakPtr<SButton>(Button)));
+	ButtonText->SetVisibility(Visibility);
+
+	return Button;
+}
+
+void FSequencerUtilities::CreateNewSection(UMovieSceneTrack* InTrack, TWeakPtr<ISequencer> InSequencer, int32 InRowIndex, EMovieSceneBlendType InBlendType)
+{
+	TSharedPtr<ISequencer> Sequencer = InSequencer.Pin();
+	if (!Sequencer.IsValid())
+	{
+		return;
+	}
+
+	FQualifiedFrameTime CurrentTime = Sequencer->GetLocalTime();
+	FFrameNumber PlaybackEnd = UE::MovieScene::DiscreteExclusiveUpper(Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene()->GetPlaybackRange());
+
+	FScopedTransaction Transaction(LOCTEXT("AddSectionTransactionText", "Add Section"));
+	if (UMovieSceneSection* NewSection = InTrack->CreateNewSection())
+	{
+		int32 OverlapPriority = 0;
+		for (UMovieSceneSection* Section : InTrack->GetAllSections())
+		{
+			OverlapPriority = FMath::Max(Section->GetOverlapPriority() + 1, OverlapPriority);
+
+			// Move existing sections on the same row or beyond so that they don't overlap with the new section
+			if (Section != NewSection && Section->GetRowIndex() >= InRowIndex)
+			{
+				Section->SetRowIndex(Section->GetRowIndex() + 1);
+			}
+		}
+
+		InTrack->Modify();
+
+		NewSection->SetRange(TRange<FFrameNumber>(CurrentTime.Time.FrameNumber, PlaybackEnd));
+		NewSection->SetOverlapPriority(OverlapPriority);
+		NewSection->SetRowIndex(InRowIndex);
+		NewSection->SetBlendType(InBlendType);
+
+		InTrack->AddSection(*NewSection);
+		InTrack->UpdateEasing();
+
+		Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemAdded);
+		Sequencer->EmptySelection();
+		Sequencer->SelectSection(NewSection);
+		Sequencer->ThrobSectionSelection();
+	}
+	else
+	{
+		Transaction.Cancel();
+	}
+}
+
 void FSequencerUtilities::PopulateMenu_CreateNewSection(FMenuBuilder& MenuBuilder, int32 RowIndex, UMovieSceneTrack* Track, TWeakPtr<ISequencer> InSequencer)
 {
 	if (!Track)
@@ -109,7 +222,7 @@ void FSequencerUtilities::PopulateMenu_CreateNewSection(FMenuBuilder& MenuBuilde
 		}
 
 		FQualifiedFrameTime CurrentTime = Sequencer->GetLocalTime();
-		TRange<double> VisibleRange = Sequencer->GetViewRange();
+		FFrameNumber PlaybackEnd = UE::MovieScene::DiscreteExclusiveUpper(Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene()->GetPlaybackRange());
 
 		FScopedTransaction Transaction(LOCTEXT("AddSectionTransactionText", "Add Section"));
 		if (UMovieSceneSection* NewSection = Track->CreateNewSection())
@@ -128,8 +241,7 @@ void FSequencerUtilities::PopulateMenu_CreateNewSection(FMenuBuilder& MenuBuilde
 
 			Track->Modify();
 
-			int32 DurationFrames = ( (VisibleRange.Size<double>() * 0.75) * CurrentTime.Rate ).FloorToFrame().Value;
-			NewSection->SetRange(TRange<FFrameNumber>(CurrentTime.Time.FrameNumber, CurrentTime.Time.FrameNumber + DurationFrames));
+			NewSection->SetRange(TRange<FFrameNumber>(CurrentTime.Time.FrameNumber, PlaybackEnd));
 			NewSection->SetOverlapPriority(OverlapPriority);
 			NewSection->SetRowIndex(RowIndex);
 			NewSection->SetBlendType(BlendType);
@@ -264,7 +376,24 @@ void FSequencerUtilities::PopulateMenu_SetBlendType(FMenuBuilder& MenuBuilder, c
 			MovieSceneBlendType->GetDisplayNameTextByIndex(NameIndex),
 			MovieSceneBlendType->GetToolTipTextByIndex(NameIndex),
 			FSlateIcon("EditorStyle", EnumValueName),
-			FUIAction(FExecuteAction::CreateLambda(Execute, BlendType))
+			FUIAction(
+				FExecuteAction::CreateLambda(Execute, BlendType),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda([InSections, BlendType]
+				{
+					int32 NumActiveBlendTypes = 0;
+					for (TWeakObjectPtr<UMovieSceneSection> WeakSection : InSections)
+					{
+						UMovieSceneSection* Section = WeakSection.Get();
+						if (Section && Section->GetBlendType() == BlendType)
+						{
+							++NumActiveBlendTypes;
+						}
+					}
+					return NumActiveBlendTypes == InSections.Num();
+				})),
+			NAME_None,
+			EUserInterfaceActionType::RadioButton
 		);
 	}
 }
@@ -325,5 +454,220 @@ TArray<FString> FSequencerUtilities::GetAssociatedMapPackages(const ULevelSequen
 	return AssociatedMaps;
 }
 
+FGuid FSequencerUtilities::DoAssignActor(ISequencer * InSequencerPtr, AActor* Actor, FGuid InObjectBinding)
+{
+	if (Actor == nullptr)
+	{
+		return FGuid();
+	}
+
+	UMovieSceneSequence* OwnerSequence = InSequencerPtr->GetFocusedMovieSceneSequence();
+	UMovieScene* OwnerMovieScene = OwnerSequence->GetMovieScene();
+
+	if (OwnerMovieScene->IsReadOnly())
+	{
+		FSequencerUtilities::ShowReadOnlyError();
+		return FGuid();
+	}
+
+	FScopedTransaction AssignActor(LOCTEXT("AssignActor", "Assign Actor"));
+
+	Actor->Modify();
+	OwnerSequence->Modify();
+	OwnerMovieScene->Modify();
+
+	TArrayView<TWeakObjectPtr<>> RuntimeObjects = InSequencerPtr->FindObjectsInCurrentSequence(InObjectBinding);
+
+	UObject* RuntimeObject = RuntimeObjects.Num() ? RuntimeObjects[0].Get() : nullptr;
+
+	// Replace the object itself
+	FMovieScenePossessable NewPossessableActor;
+	FGuid NewGuid;
+	{
+		// Get the object guid to assign, remove the binding if it already exists
+		FGuid ParentGuid = InSequencerPtr->FindObjectId(*Actor, InSequencerPtr->GetFocusedTemplateID());
+		FString NewActorLabel = Actor->GetActorLabel();
+		if (ParentGuid.IsValid())
+		{
+			OwnerMovieScene->RemovePossessable(ParentGuid);
+			OwnerSequence->UnbindPossessableObjects(ParentGuid);
+		}
+
+		// Add this object
+		NewPossessableActor = FMovieScenePossessable(NewActorLabel, Actor->GetClass());
+		NewGuid = NewPossessableActor.GetGuid();
+		if (!NewPossessableActor.BindSpawnableObject(InSequencerPtr->GetFocusedTemplateID(), Actor, InSequencerPtr))
+		{
+			OwnerSequence->BindPossessableObject(NewPossessableActor.GetGuid(), *Actor, InSequencerPtr->GetPlaybackContext());
+		}
+
+		// Defer replacing this object until the components have been updated
+	}
+
+	auto UpdateComponent = [&](FGuid OldComponentGuid, UActorComponent* NewComponent)
+	{
+		FMovieSceneSequenceIDRef FocusedGuid = InSequencerPtr->GetFocusedTemplateID();
+
+		// Get the object guid to assign, remove the binding if it already exists
+		FGuid NewComponentGuid = InSequencerPtr->FindObjectId(*NewComponent, FocusedGuid);
+		if (NewComponentGuid.IsValid())
+		{
+			OwnerMovieScene->RemovePossessable(NewComponentGuid);
+			OwnerSequence->UnbindPossessableObjects(NewComponentGuid);
+		}
+
+		// Add this object
+		FMovieScenePossessable NewPossessable(NewComponent->GetName(), NewComponent->GetClass());
+		OwnerSequence->BindPossessableObject(NewPossessable.GetGuid(), *NewComponent, Actor);
+
+		// Replace
+		OwnerMovieScene->ReplacePossessable(OldComponentGuid, NewPossessable);
+		OwnerSequence->UnbindPossessableObjects(OldComponentGuid);
+		InSequencerPtr->State.Invalidate(OldComponentGuid, FocusedGuid);
+		InSequencerPtr->State.Invalidate(NewPossessable.GetGuid(), FocusedGuid);
+
+		FMovieScenePossessable* ThisPossessable = OwnerMovieScene->FindPossessable(NewPossessable.GetGuid());
+		if (ensure(ThisPossessable))
+		{
+			ThisPossessable->SetParent(NewGuid);
+		}
+	};
+
+	// Handle components
+	AActor* ActorToReplace = Cast<AActor>(RuntimeObject);
+	if (ActorToReplace != nullptr && ActorToReplace->IsActorBeingDestroyed() == false)
+	{
+		for (UActorComponent* ComponentToReplace : ActorToReplace->GetComponents())
+		{
+			if (ComponentToReplace != nullptr)
+			{
+				FGuid ComponentGuid = InSequencerPtr->FindObjectId(*ComponentToReplace, InSequencerPtr->GetFocusedTemplateID());
+				if (ComponentGuid.IsValid())
+				{
+					bool bComponentWasUpdated = false;
+					for (UActorComponent* NewComponent : Actor->GetComponents())
+					{
+						if (NewComponent->GetFullName(Actor) == ComponentToReplace->GetFullName(ActorToReplace))
+						{
+							UpdateComponent(ComponentGuid, NewComponent);
+							bComponentWasUpdated = true;
+						}
+					}
+
+					// Clear the parent guid since this possessable component doesn't match to any component on the new actor
+					if (!bComponentWasUpdated)
+					{
+						FMovieScenePossessable* ThisPossessable = OwnerMovieScene->FindPossessable(ComponentGuid);
+						ThisPossessable->SetParent(FGuid());
+					}
+				}
+			}
+		}
+	}
+	else // If the actor didn't exist, try to find components who's parent guids were the previous actors guid.
+	{
+		TMap<FString, UActorComponent*> ComponentNameToComponent;
+		for (UActorComponent* Component : Actor->GetComponents())
+		{
+			ComponentNameToComponent.Add(Component->GetName(), Component);
+		}
+		for (int32 i = 0; i < OwnerMovieScene->GetPossessableCount(); i++)
+		{
+			FMovieScenePossessable& OldPossessable = OwnerMovieScene->GetPossessable(i);
+			if (OldPossessable.GetParent() == InObjectBinding)
+			{
+				UActorComponent** ComponentPtr = ComponentNameToComponent.Find(OldPossessable.GetName());
+				if (ComponentPtr != nullptr)
+				{
+					UpdateComponent(OldPossessable.GetGuid(), *ComponentPtr);
+				}
+			}
+		}
+	}
+
+	// Replace the actor itself after components have been updated
+	OwnerMovieScene->ReplacePossessable(InObjectBinding, NewPossessableActor);
+	OwnerSequence->UnbindPossessableObjects(InObjectBinding);
+
+	InSequencerPtr->State.Invalidate(InObjectBinding, InSequencerPtr->GetFocusedTemplateID());
+	InSequencerPtr->State.Invalidate(NewPossessableActor.GetGuid(), InSequencerPtr->GetFocusedTemplateID());
+
+	// Try to fix up folders
+	TArray<UMovieSceneFolder*> FoldersToCheck;
+	FoldersToCheck.Append(InSequencerPtr->GetFocusedMovieSceneSequence()->GetMovieScene()->GetRootFolders());
+	bool bFolderFound = false;
+	while (FoldersToCheck.Num() > 0 && bFolderFound == false)
+	{
+		UMovieSceneFolder* Folder = FoldersToCheck[0];
+		FoldersToCheck.RemoveAt(0);
+		if (Folder->GetChildObjectBindings().Contains(InObjectBinding))
+		{
+			Folder->RemoveChildObjectBinding(InObjectBinding);
+			Folder->AddChildObjectBinding(NewGuid);
+			bFolderFound = true;
+		}
+
+		for (UMovieSceneFolder* ChildFolder : Folder->GetChildFolders())
+		{
+			FoldersToCheck.Add(ChildFolder);
+		}
+	}
+
+	InSequencerPtr->RestorePreAnimatedState();
+
+	InSequencerPtr->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::MovieSceneStructureItemsChanged);
+
+	return NewGuid;
+}
+
+void FSequencerUtilities::UpdateBindingIDs(ISequencer* InSequencerPtr, UMovieSceneCompiledDataManager* InCompiledDataManagerPtr, FGuid OldGuid, FGuid NewGuid)
+{
+	FMovieSceneSequenceIDRef FocusedGuid = InSequencerPtr->GetFocusedTemplateID();
+
+	TMap<UE::MovieScene::FFixedObjectBindingID, UE::MovieScene::FFixedObjectBindingID> OldFixedToNewFixedMap;
+	OldFixedToNewFixedMap.Add(UE::MovieScene::FFixedObjectBindingID(OldGuid, FocusedGuid), UE::MovieScene::FFixedObjectBindingID(NewGuid, FocusedGuid));
+
+	const FMovieSceneSequenceHierarchy* Hierarchy = InCompiledDataManagerPtr->FindHierarchy(InSequencerPtr->GetEvaluationTemplate().GetCompiledDataID());
+
+	if (UMovieScene* MovieScene = InSequencerPtr->GetRootMovieSceneSequence()->GetMovieScene())
+	{
+		for (UMovieSceneSection* Section : MovieScene->GetAllSections())
+		{
+			if (Section)
+			{
+				Section->OnBindingIDsUpdated(OldFixedToNewFixedMap, InSequencerPtr->GetRootTemplateID(), Hierarchy, *InSequencerPtr);
+			}
+		}
+	}
+
+	if (Hierarchy)
+	{
+		for (const TTuple<FMovieSceneSequenceID, FMovieSceneSubSequenceData>& Pair : Hierarchy->AllSubSequenceData())
+		{
+			if (UMovieSceneSequence* Sequence = Pair.Value.GetSequence())
+			{
+				if (UMovieScene* MovieScene = Sequence->GetMovieScene())
+				{
+					for (UMovieSceneSection* Section : MovieScene->GetAllSections())
+					{
+						if (Section)
+						{
+							Section->OnBindingIDsUpdated(OldFixedToNewFixedMap, Pair.Key, Hierarchy, *InSequencerPtr);
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+void FSequencerUtilities::ShowReadOnlyError()
+{
+	FNotificationInfo Info(LOCTEXT("SequenceReadOnly", "Sequence is read only."));
+	Info.ExpireDuration = 5.0f;
+	FSlateNotificationManager::Get().AddNotification(Info)->SetCompletionState(SNotificationItem::CS_Fail);
+}
+
 
 #undef LOCTEXT_NAMESPACE
+PRAGMA_ENABLE_OPTIMIZATION

@@ -138,11 +138,16 @@ protected:
 public:
 	// FSerializableObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FBlueprintCompileReinstancer");
+	}
 	// End of FSerializableObject interface
 
 	static void OptionallyRefreshNodes(UBlueprint* BP);
 
 	void ListDependentBlueprintsToRefresh(const TArray<UBlueprint*>& DependentBPs);
+	UE_DEPRECATED(5.0, "This method performs no function and isn't invoked by the base class.  Remove all calls to the base class method.")
 	virtual void EnlistDependentBlueprintToRecompile(UBlueprint* BP, bool bBytecodeOnly);
 	virtual void BlueprintWasRecompiled(UBlueprint* BP, bool bBytecodeOnly);
 

@@ -35,6 +35,7 @@ public class ContentBrowser : ModuleRules
 				"SourceControl",
 				"SourceControlWindows",
 				"WorkspaceMenuStructure",
+				"EditorFramework",
 				"UnrealEd",
 				"EditorWidgets",
 				"Projects",
@@ -43,6 +44,8 @@ public class ContentBrowser : ModuleRules
 				"AssetRegistry",
 				"AssetTagsEditor",
 				"ToolMenus",
+				"StatusBar",
+				"ToolWidgets",
 			}
 		);
 

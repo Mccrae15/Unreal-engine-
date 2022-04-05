@@ -15,8 +15,7 @@
 			"Name": "RenderDocPlugin",
 			"Type": "DeveloperTool",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
-				"Win32",
+			"PlatformAllowList": [
 				"Win64"
 			]
 		}

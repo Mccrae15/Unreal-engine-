@@ -23,7 +23,6 @@
 #include "Classes/EditorStyleSettings.h"
 
 #include "FoliageEditActions.h"
-#include "IIntroTutorials.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "SFoliagePalette.h"
 #include "Widgets/Layout/SHeader.h"
@@ -33,6 +32,10 @@
 
 #include "Widgets/Input/SSpinBox.h"
 #include "Editor/PropertyEditor/Public/VariablePrecisionNumericInterface.h"
+#include "DataLayer/DataLayerEditorSubsystem.h"
+#include "DataLayer/DataLayerPropertyTypeCustomizationHelper.h"
+#include "WorldPartition/DataLayer/DataLayer.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
 
 #define LOCTEXT_NAMESPACE "FoliageEd_Mode"
 
@@ -40,8 +43,6 @@ BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SFoliageEdit::Construct(const FArguments& InArgs)
 {
 	FoliageEditMode = (FEdModeFoliage*)GLevelEditorModeTools().GetActiveMode(FBuiltinEditorModes::EM_Foliage);
-
-	IIntroTutorials& IntroTutorials = FModuleManager::LoadModuleChecked<IIntroTutorials>(TEXT("IntroTutorials"));
 
 	// Everything (or almost) uses this padding, change it to expand the padding.
 	FMargin StandardPadding(6.f, 3.f);
@@ -70,18 +71,6 @@ void SFoliageEdit::Construct(const FArguments& InArgs)
 		+ SVerticalBox::Slot()
 		.AutoHeight()
 		[
-			SNew(SHorizontalBox)
-			.Visibility_Lambda( [] () -> EVisibility { return GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI ? EVisibility::Visible : EVisibility::Collapsed; } )
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(1.f, 5.f, 0.f, 5.f)
-			[
-				BuildToolBar()
-			]
-
-			+ SHorizontalBox::Slot()
-			.Padding(0.f, 2.f, 2.f, 0.f)
-			[
 				SNew(SBorder)
 				.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
 				.Padding(StandardPadding)
@@ -101,16 +90,6 @@ void SFoliageEdit::Construct(const FArguments& InArgs)
 							SNew(STextBlock)
 							.Text(this, &SFoliageEdit::GetActiveToolName)
 							.TextStyle(FEditorStyle::Get(), "FoliageEditMode.ActiveToolName.Text")
-						]
-
-						+ SHorizontalBox::Slot()
-						.Padding(StandardRightPadding)
-						.HAlign(HAlign_Right)
-						.VAlign(VAlign_Center)
-						.AutoWidth()
-						[
-							// Tutorial link
-							IntroTutorials.CreateTutorialsWidget(TEXT("FoliageMode"))
 						]
 					]
 
@@ -234,7 +213,51 @@ void SFoliageEdit::Construct(const FArguments& InArgs)
 							.OnValueChanged(this, &SFoliageEdit::SetEraseDensity)
 							.IsEnabled(this, &SFoliageEdit::IsEnabled_EraseDensity)
 						]
-					]					
+					]
+
+					// Data Layer
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(SHorizontalBox)
+						.ToolTipText(LOCTEXT("DataLayer_Tooltip", "The Data Layer to use for the foliage actors"))
+						.Visibility(this, &SFoliageEdit::GetVisibility_DataLayer)
+
+						+ SHorizontalBox::Slot()
+						.Padding(StandardLeftPadding)
+						.FillWidth(1.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("DataLayer_Text", "Data Layer"))
+							.Font(StandardFont)
+						]
+						+ SHorizontalBox::Slot()
+						.Padding(StandardRightPadding)
+						.FillWidth(2.0f)
+						.MaxWidth(100.f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(SComboButton)
+							.OnGetMenuContent_Lambda([this]()
+								{ 
+									return FDataLayerPropertyTypeCustomizationHelper::CreateDataLayerMenu([this](const UDataLayer* DataLayer)
+									{ 
+										FoliageEditMode->SetDataLayerEditorContext(FActorDataLayer(DataLayer ? DataLayer->GetFName() : NAME_None)); 
+									});
+								})
+							.ContentPadding(2)
+							.ButtonContent()
+							[
+								SNew(STextBlock)
+								.Text_Lambda([this]()
+								{
+									const UDataLayer* DataLayer = UDataLayerEditorSubsystem::Get()->GetDataLayerFromName(FoliageEditMode->UISettings.GetDataLayer().Name);
+									return UDataLayer::GetDataLayerText(DataLayer);
+								})
+							]
+						]						
+					]
 					
 					+ SVerticalBox::Slot()
 					.Padding(StandardPadding)
@@ -435,99 +458,8 @@ void SFoliageEdit::Construct(const FArguments& InArgs)
 						]
 					]
 
-					// Actions
-					+ SVerticalBox::Slot()
-					.Padding(StandardPadding)
-					.AutoHeight()
-					[
-						SNew(SHeader)
-						.Visibility(this, &SFoliageEdit::GetVisibility_Actions)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ActionsHeader", "Actions"))
-							.Font(StandardFont)
-						]
-					]
-
-					+ SVerticalBox::Slot()
-					.Padding(StandardPadding)
-					.AutoHeight()
-					[
-						SNew(SWrapBox)
-						.UseAllottedSize(true)
-						.Visibility(this, &SFoliageEdit::GetVisibility_SelectionOptions)
-
-						// Select all instances
-						+ SWrapBox::Slot()
-						.Padding(FMargin(0.f, 0.f, 6.f, 3.f))
-						[
-							SNew(SBox)
-							.WidthOverride(100.f)
-							.HeightOverride(25.f)
-							[
-								SNew(SButton)
-								.HAlign(HAlign_Center)
-								.VAlign(VAlign_Center)
-								.OnClicked_Lambda([this] () -> FReply { OnSelectAllInstances(); return FReply::Handled(); } )
-								.Text(LOCTEXT("SelectAllInstances", "Select All"))
-								.ToolTipText(LOCTEXT("SelectAllInstances_Tooltip", "Selects all foliage instances"))
-							]
-						]
-
-						// Select all invalid instances
-						+ SWrapBox::Slot()
-						.Padding(FMargin(0.f, 0.f, 6.f, 3.f))
-						[
-							SNew(SBox)
-							.WidthOverride(100.f)
-							.HeightOverride(25.f)
-							[
-								SNew(SButton)
-								.HAlign(HAlign_Center)
-								.VAlign(VAlign_Center)
-								.OnClicked_Lambda([this] () -> FReply { OnSelectInvalidInstances(); return FReply::Handled(); } )
-								.Text(LOCTEXT("SelectInvalidInstances", "Select Invalid"))
-								.ToolTipText(LOCTEXT("SelectInvalidInstances_Tooltip", "Selects all foliage instances that are not placed in a valid location"))
-						
-							]
-						]
-
-						// Deselect all
-						+ SWrapBox::Slot()
-						.Padding(FMargin(0.f, 0.f, 6.f, 3.f))
-						[
-							SNew(SBox)
-							.WidthOverride(100.f)
-							.HeightOverride(25.f)
-							[
-								SNew(SButton)
-								.HAlign(HAlign_Center)
-								.VAlign(VAlign_Center)
-								.OnClicked_Lambda([this] () ->FReply { OnDeselectAllInstances(); return FReply::Handled(); } )
-								.Text(LOCTEXT("DeselectAllInstances", "Deselect All"))
-								.ToolTipText(LOCTEXT("DeselectAllInstances_Tooltip", "Deselects all foliage instances"))
-							]
-						]
-
-						// Move to Current Level
-						+ SWrapBox::Slot()
-						.Padding(FMargin(0.f, 0.f, 6.f, 3.f))
-						[
-							SNew(SBox)
-							.WidthOverride(150.f)
-							.HeightOverride(25.f)
-							[
-								SNew(SButton)
-								.HAlign(HAlign_Center)
-								.VAlign(VAlign_Center)
-								.OnClicked_Lambda([this] () -> FReply { OnMoveSelectedInstancesToCurrentLevel(); return FReply::Handled(); } )
-								.Text(LOCTEXT("MoveSelectedInstancesToCurrentLevel", "Move to Current Level"))
-								.ToolTipText(LOCTEXT("MoveSelectedInstancesToCurrentLevel_Tooltip", "Move selected foliage instances to current level"))
-							]
-						]
-					]
+				
 				]
-			]
 		]
 
 		// Foliage Palette
@@ -646,11 +578,6 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		EUserInterfaceActionType::ToggleButton
 	);
 
-	// Single Instance Options
-	ToolBarBuilder.AddComboButton(
-		FUIAction(),
-		FOnGetContent::CreateSP(this, &SFoliageEdit::GetSingleInstantiationModeMenuContent) );
-
 	//  Fill
 	ToolBarBuilder.AddToolBarButton(
 		FUIAction(
@@ -703,84 +630,6 @@ void SFoliageEdit::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder)
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.MoveToCurrentLevel")
 	);
 
-	ToolBarBuilder.AddSeparator();
-
-	TSharedPtr<INumericTypeInterface<float>> NumericInterface = MakeShareable(new FVariablePrecisionNumericInterface());
-	// Brush Size
-	{
-		TSharedRef<SWidget> BrushSizeWidget = SNew(SSpinBox<float>)
-			.Style(&FEditorStyle::Get().GetWidgetStyle<FSpinBoxStyle>("LandscapeEditor.SpinBox"))
-			.PreventThrottling(true)
-			.MinValue(0.0f)
-			.MaxValue(65536.0f)
-			.MaxSliderValue(8192.0f)
-			.SliderExponent(3.0f)
-			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
-			.MinDesiredWidth(40.f)
-			.TypeInterface(NumericInterface)
-			.Justification(ETextJustify::Center)
-			.IsEnabled(this, &SFoliageEdit::IsEnabled_BrushSize) 
-			.Value_Lambda( [this] { return GetRadius().GetValue(); } )
-			.OnValueChanged(this, &SFoliageEdit::SetRadius);
-
-		ToolBarBuilder.AddToolBarWidget(BrushSizeWidget, LOCTEXT("BrushSize", "Size") );
-	}
-
-	// Paint Density
-	{
-		TSharedRef<SWidget> PaintDensityWidget = SNew(SSpinBox<float>)
-			.Style(&FEditorStyle::Get().GetWidgetStyle<FSpinBoxStyle>("LandscapeEditor.SpinBox"))
-			.PreventThrottling(true)
-			.MinValue(0.0f)
-			.MaxValue(1.0f)
-			.MaxSliderValue(1.0f)
-			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
-			.MinDesiredWidth(40.f)
-			.TypeInterface(NumericInterface)
-			.Justification(ETextJustify::Center)
-			.IsEnabled(this, &SFoliageEdit::IsEnabled_PaintDensity) 
-			.Value_Lambda( [this] { return GetPaintDensity().GetValue(); } )
-			.OnValueChanged(this, &SFoliageEdit::SetPaintDensity);
-
-		ToolBarBuilder.AddToolBarWidget(PaintDensityWidget, LOCTEXT("Density", "Density") );
-	}
-
-	// Erase Density
-	{
-		TSharedRef<SWidget> EraseDensityWidget = SNew(SSpinBox<float>)
-			.Style(&FEditorStyle::Get().GetWidgetStyle<FSpinBoxStyle>("LandscapeEditor.SpinBox"))
-			.PreventThrottling(true)
-			.MinValue(0.0f)
-			.MaxValue(1.0f)
-			.MaxSliderValue(1.0f)
-			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
-			.MinDesiredWidth(40.f)
-			.TypeInterface(NumericInterface)
-			.Justification(ETextJustify::Center)
-			.IsEnabled(this, &SFoliageEdit::IsEnabled_EraseDensity) 
-			.Value_Lambda( [this] { return GetEraseDensity().GetValue(); } )
-			.OnValueChanged(this, &SFoliageEdit::SetEraseDensity);
-
-		ToolBarBuilder.AddToolBarWidget(EraseDensityWidget, LOCTEXT("EraseDensity", "Er. Dens.") );
-	}
-
-	// Filter Foliage Placement 
-	ToolBarBuilder.AddComboButton(
-		FUIAction(),
-		FOnGetContent::CreateSP(this, &SFoliageEdit::MakeFilterMenu),
-		LOCTEXT("Filter", "Filter"),
-		LOCTEXT("FilterTooltip", "Filter where foliage instances can be placed."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.Filter")
-	);
-
-	// Currently the only real setting is "Place in current Level"
-	ToolBarBuilder.AddComboButton(
-		FUIAction(),
-		FOnGetContent::CreateSP(this, &SFoliageEdit::MakeSettingsMenu),
-		LOCTEXT("Settings", "Settings"),
-		FText(),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "FoliageEditMode.Settings")
-	);
 }
 
 TSharedRef<SWidget> SFoliageEdit::MakeFilterMenu()
@@ -1055,6 +904,15 @@ FText SFoliageEdit::GetActiveToolMessage() const
 		OutText = LOCTEXT("FoliageToolMessage_Fill", "Click to cover objects with foliage.  You can filter what types of objects to populate using Filter in the Toolbar.");
 	}
 	return OutText;
+}
+
+EVisibility SFoliageEdit::GetVisibility_DataLayer() const
+{
+	if (UWorld::HasSubsystem<UWorldPartitionSubsystem>(FoliageEditMode->GetWorld()) && (IsPaintTool() || IsPlaceTool() || IsReapplySettingsTool() || IsPaintFillTool()))
+	{
+		return EVisibility::Visible;
+	}
+	return EVisibility::Collapsed;
 }
 
 void SFoliageEdit::SetRadius(float InRadius)

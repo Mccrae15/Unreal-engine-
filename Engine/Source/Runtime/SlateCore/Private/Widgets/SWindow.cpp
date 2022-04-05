@@ -50,9 +50,7 @@ public:
 		{
 			_Visibility = EVisibility::SelfHitTestInvisible;
 		}
-
-		SLATE_SUPPORTS_SLOT( FPopupLayerSlot )
-
+		SLATE_SLOT_ARGUMENT( FPopupLayerSlot, Slots )
 	SLATE_END_ARGS()
 
 	SPopupLayer()
@@ -65,33 +63,20 @@ public:
 
 		OwnerWindow = InWindow;
 
-		const int32 NumSlots = InArgs.Slots.Num();
-		for ( int32 SlotIndex = 0; SlotIndex < NumSlots; ++SlotIndex )
-		{
-			Children.Add( InArgs.Slots[SlotIndex] );
-		}
+		Children.AddSlots(MoveTemp(const_cast<TArray<FPopupLayerSlot::FSlotArguments>&>(InArgs._Slots)));
 	}
 
 	/** Make a new ListPanel::Slot  */
-	FPopupLayerSlot& Slot()
+	static FPopupLayerSlot::FSlotArguments Slot()
 	{
-		return *(new FPopupLayerSlot());
+		return FPopupLayerSlot::FSlotArguments(MakeUnique<FPopupLayerSlot>());
 	}
 
+	using FScopedWidgetSlotArguments = TPanelChildren<FPopupLayerSlot>::FScopedWidgetSlotArguments;
 	/** Add a slot to the ListPanel */
-	FPopupLayerSlot& AddSlot(int32 InsertAtIndex = INDEX_NONE)
+	FScopedWidgetSlotArguments AddSlot(int32 InsertAtIndex = INDEX_NONE)
 	{
-		FPopupLayerSlot& NewSlot = *new FPopupLayerSlot();
-		if (InsertAtIndex == INDEX_NONE)
-		{
-			this->Children.Add( &NewSlot );
-		}
-		else
-		{
-			this->Children.Insert( &NewSlot, InsertAtIndex );
-		}
-
-		return NewSlot;
+		return { MakeUnique<FPopupLayerSlot>(), Children, InsertAtIndex };
 	}
 
 	void RemoveSlot(const TSharedRef<SWidget>& WidgetToRemove)
@@ -320,11 +305,11 @@ void SWindow::Construct(const FArguments& InArgs)
 	{
 		if ( !SizeLimits.GetMaxWidth().IsSet() )
 		{
-			SizeLimits.SetMaxWidth(PrimaryDisplayRect.Right - PrimaryDisplayRect.Left);
+			SizeLimits.SetMaxWidth(static_cast<float>(PrimaryDisplayRect.Right - PrimaryDisplayRect.Left));
 		}
 		if ( !SizeLimits.GetMaxHeight().IsSet() )
 		{
-			SizeLimits.SetMaxHeight(PrimaryDisplayRect.Bottom - PrimaryDisplayRect.Top);
+			SizeLimits.SetMaxHeight(static_cast<float>(PrimaryDisplayRect.Bottom - PrimaryDisplayRect.Top));
 		}
 	}
 
@@ -383,13 +368,13 @@ void SWindow::Construct(const FArguments& InArgs)
 	{
 		if (InArgs._SaneWindowPlacement)
 		{
-			float PrimaryWidthPadding = DisplayMetrics.PrimaryDisplayWidth -
-				(PrimaryDisplayRect.Right - PrimaryDisplayRect.Left);
-			float PrimaryHeightPadding = DisplayMetrics.PrimaryDisplayHeight -
-				(PrimaryDisplayRect.Bottom - PrimaryDisplayRect.Top);
+			float PrimaryWidthPadding = static_cast<float>(DisplayMetrics.PrimaryDisplayWidth -
+				(PrimaryDisplayRect.Right - PrimaryDisplayRect.Left));
+			float PrimaryHeightPadding = static_cast<float>(DisplayMetrics.PrimaryDisplayHeight -
+				(PrimaryDisplayRect.Bottom - PrimaryDisplayRect.Top));
 
-			float VirtualWidth = (VirtualDisplayRect.Right - VirtualDisplayRect.Left);
-			float VirtualHeight = (VirtualDisplayRect.Bottom - VirtualDisplayRect.Top);
+			float VirtualWidth = static_cast<float>(VirtualDisplayRect.Right - VirtualDisplayRect.Left);
+			float VirtualHeight = static_cast<float>(VirtualDisplayRect.Bottom - VirtualDisplayRect.Top);
 
 			// Make sure that the window size is no larger than the virtual display area.
 			WindowSize.X = FMath::Clamp(WindowSize.X, 0.0f, VirtualWidth - PrimaryWidthPadding);
@@ -433,6 +418,7 @@ TSharedRef<SWindow> SWindow::MakeNotificationWindow()
 {
 	TSharedRef<SWindow> NewWindow =
 		SNew(SWindow)
+		.Style(FAppStyle::Get(), "NotificationWindow")
 		.Type( EWindowType::Notification )
 		.SupportsMaximize( false )
 		.SupportsMinimize( false )
@@ -490,6 +476,22 @@ TSharedRef<SWindow> SWindow::MakeCursorDecorator()
 	return NewWindow;
 }
 
+TSharedRef<SWindow> SWindow::MakeStyledCursorDecorator(const FWindowStyle& InStyle)
+{
+	TSharedRef<SWindow> NewWindow = SNew(SWindow)
+		.Style(&InStyle)
+		.Type(EWindowType::CursorDecorator)
+		.IsPopupWindow(true)
+		.IsTopmostWindow(true)
+		.SizingRule(ESizingRule::Autosized)
+		.SupportsTransparency(EWindowTransparency::PerWindow)
+		.FocusWhenFirstShown(false)
+		.ActivationPolicy(EWindowActivationPolicy::Never);
+	NewWindow->Opacity = 1.0f;
+
+	return NewWindow;
+}
+
 FVector2D SWindow::ComputeWindowSizeForContent( FVector2D ContentSize )
 {
 	// @todo mainframe: This code should be updated to handle the case where we're spawning a window that doesn't have
@@ -530,7 +532,7 @@ EHorizontalAlignment SWindow::GetTitleAlignment()
 
 void SWindow::ConstructWindowInternals()
 {
-	ForegroundColor = FCoreStyle::Get().GetSlateColor("DefaultForeground");
+	SetForegroundColor(FAppStyle::Get().GetSlateColor("DefaultForeground"));
 
 	// Setup widget that represents the main area of the window.  That is, everything inside the window's border.
 	TSharedRef< SVerticalBox > MainWindowArea =
@@ -561,17 +563,18 @@ void SWindow::ConstructWindowInternals()
 
 	UpdateWindowContentVisibility();
 
-	// create window content slot
-	MainWindowArea->AddSlot()
-		.FillHeight(1.0f)
-		.Expose(ContentSlot)
-		[
-			SNullWidget::NullWidget
-		];
-
 	// create window
-	if (Type != EWindowType::ToolTip && Type != EWindowType::CursorDecorator && !bIsPopupWindow && !bHasOSWindowBorder)
+	if ((Type == EWindowType::Normal || Type == EWindowType::GameWindow) && !bHasOSWindowBorder && !bVirtualWindow)
 	{
+		// create window content slot
+		MainWindowArea->AddSlot()
+			.FillHeight(1.0f)
+			.Expose(ContentSlot)
+			[
+				SNullWidget::NullWidget
+			];
+
+
 		WindowBackgroundImage =
 			FSlateApplicationBase::Get().MakeImage(
 				WindowBackground,
@@ -582,7 +585,7 @@ void SWindow::ConstructWindowInternals()
 		WindowBorder =
 			FSlateApplicationBase::Get().MakeImage(
 				&Style->BorderBrush,
-				FLinearColor::White,
+				Style->BorderColor,
 				WindowContentVisibility
 			);
 
@@ -595,7 +598,6 @@ void SWindow::ConstructWindowInternals()
 		this->ChildSlot
 		[
 			SAssignNew(WindowOverlay, SOverlay)
-			.Visibility(EVisibility::SelfHitTestInvisible)
 			// window background
 			+ SOverlay::Slot()
 			[
@@ -610,18 +612,18 @@ void SWindow::ConstructWindowInternals()
 
 			// window outline
 			+ SOverlay::Slot()
+			.Padding(2.0f)
 			[
 				WindowOutline.ToSharedRef()
 			]
 
 			// main area
 			+ SOverlay::Slot()
+			.Padding(TAttribute<FMargin>::Create(TAttribute<FMargin>::FGetter::CreateSP(this, &SWindow::GetWindowBorderSize, false)))
 			[
 				SAssignNew(ContentAreaVBox, SVerticalBox)
 				.Visibility(WindowContentVisibility)
-
-				+ SVerticalBox::Slot()
-				.Padding(TAttribute<FMargin>::Create(TAttribute<FMargin>::FGetter::CreateSP(this, &SWindow::GetWindowBorderSize, false)))
+				+ SVerticalBox::Slot()	
 				[
 					MainWindowArea
 				]
@@ -636,6 +638,15 @@ void SWindow::ConstructWindowInternals()
 	}
 	else if ( bHasOSWindowBorder || bVirtualWindow )
 	{
+		// create window content slot
+		MainWindowArea->AddSlot()
+			.FillHeight(1.0f)
+			.Expose(ContentSlot)
+			[
+				SNullWidget::NullWidget
+			];
+
+
 		this->ChildSlot
 		[
 			SAssignNew(WindowOverlay, SOverlay)
@@ -695,6 +706,11 @@ FHittestGrid& SWindow::GetHittestGrid()
 FWindowSizeLimits SWindow::GetSizeLimits() const
 {
 	return SizeLimits;
+}
+
+void SWindow::SetSizeLimits(const FWindowSizeLimits& InSizeLimits)
+{
+	SizeLimits = InSizeLimits;
 }
 
 void SWindow::SetAllowFastUpdate(bool bInAllowFastUpdate)
@@ -820,14 +836,14 @@ FVector2D SWindow::GetSizeInScreen() const
 
 FSlateRect SWindow::GetNonMaximizedRectInScreen() const
 {
-	int X = 0;
-	int Y = 0;
-	int Width = 0;
-	int Height = 0;
+	int32 X = 0;
+	int32 Y = 0;
+	int32 Width = 0;
+	int32 Height = 0;
 
 	if ( NativeWindow.IsValid() && NativeWindow->GetRestoredDimensions(X, Y, Width, Height) )
 	{
-		return FSlateRect( X, Y, X+Width, Y+Height );
+		return FSlateRect( (float)X, (float)Y, static_cast<float>(X+Width), static_cast<float>(Y+Height) );
 	}
 	else
 	{
@@ -917,7 +933,7 @@ void SWindow::MoveWindowTo( FVector2D NewPosition )
 		// This expectation is generally invalid (see UE-1308) as there may be a delay before the OS reports it back.
 		// This hack sets the position speculatively, keeping Slate happy while also giving the OS chance to report it
 		// correctly after or even during the actual call.
-		FVector2D SpeculativeScreenPosition(FMath::TruncToInt(NewPosition.X), FMath::TruncToInt(NewPosition.Y));
+		FVector2D SpeculativeScreenPosition(FMath::TruncToFloat(NewPosition.X), FMath::TruncToFloat(NewPosition.Y));
 		SetCachedScreenPosition(SpeculativeScreenPosition);
 #endif // PLATFORM_LINUX
 
@@ -934,10 +950,13 @@ void SWindow::ReshapeWindow( FVector2D NewPosition, FVector2D NewSize )
 	const FVector2D CurrentPosition = GetPositionInScreen();
 	const FVector2D CurrentSize = GetSizeInScreen();
 
+	// Ceil (Minus a tad for float precision) to ensure contents are not a sub-pixel larger than the window, which will create unnecessary scroll bars 
+	const FVector2D OldPositionTruncated = FVector2D(FMath::TruncToInt(CurrentPosition.X), FMath::TruncToInt(CurrentPosition.Y));
+	const FVector2D OldSizeRounded = FVector2D(FMath::CeilToInt(CurrentSize.X - KINDA_SMALL_NUMBER), FMath::CeilToInt(CurrentSize.Y - KINDA_SMALL_NUMBER));
 	const FVector2D NewPositionTruncated = FVector2D(FMath::TruncToInt(NewPosition.X), FMath::TruncToInt(NewPosition.Y));
-	const FVector2D NewSizeRounded = FVector2D(FMath::CeilToInt(NewSize.X), FMath::CeilToInt(NewSize.Y));
+	const FVector2D NewSizeRounded = FVector2D(FMath::CeilToInt(NewSize.X - KINDA_SMALL_NUMBER), FMath::CeilToInt(NewSize.Y - KINDA_SMALL_NUMBER));
 
-	if ( CurrentPosition != NewPositionTruncated || CurrentSize != NewSizeRounded )
+	if (OldPositionTruncated != NewPositionTruncated || OldSizeRounded != NewSizeRounded )
 	{
 		if ( NativeWindow.IsValid() )
 		{
@@ -951,11 +970,11 @@ void SWindow::ReshapeWindow( FVector2D NewPosition, FVector2D NewSize )
 		}
 		else
 		{
-			InitialDesiredScreenPosition = NewPosition;
-			InitialDesiredSize = NewSize;
+			InitialDesiredScreenPosition = NewPositionTruncated;
+			InitialDesiredSize = NewSizeRounded;
 		}
 
-		SetCachedSize(NewSize);
+		SetCachedSize(NewSizeRounded);
 	}
 }
 
@@ -979,9 +998,9 @@ void SWindow::ResizeWindowSize( FVector2D NewWindowSize )
 	NewWindowSize.Y = FMath::Max(SizeLimits.GetMinHeight().Get(NewWindowSize.Y), NewWindowSize.Y);
 	NewWindowSize.Y = FMath::Min(SizeLimits.GetMaxHeight().Get(NewWindowSize.Y), NewWindowSize.Y);
 
-	// ReshapeWindow W/H takes an int, so lets move our new W/H to int before checking if they are the same size
-	FIntPoint CurrentIntSize = FIntPoint(FMath::CeilToInt(Size.X), FMath::CeilToInt(Size.Y));
-	FIntPoint NewIntSize     = FIntPoint(FMath::CeilToInt(NewWindowSize.X), FMath::CeilToInt(NewWindowSize.Y));
+	// Ceil (Minus a tad for float precision) to ensure contents are not a sub-pixel larger than the window, which will create unnecessary scroll bars 
+	FIntPoint CurrentIntSize = FIntPoint(FMath::CeilToInt(Size.X - KINDA_SMALL_NUMBER), FMath::CeilToInt(Size.Y - KINDA_SMALL_NUMBER));
+	FIntPoint NewIntSize     = FIntPoint(FMath::CeilToInt(NewWindowSize.X - KINDA_SMALL_NUMBER), FMath::CeilToInt(NewWindowSize.Y - KINDA_SMALL_NUMBER));
 
 	if (CurrentIntSize != NewIntSize)
 	{
@@ -991,10 +1010,10 @@ void SWindow::ResizeWindowSize( FVector2D NewWindowSize )
 		}
 		else
 		{
-			InitialDesiredSize = NewWindowSize;
+			InitialDesiredSize = NewIntSize;
 		}
 	}
-	SetCachedSize(NewWindowSize);
+	SetCachedSize(NewIntSize);
 }
 
 FSlateRect SWindow::GetFullScreenInfo() const
@@ -1008,7 +1027,7 @@ FSlateRect SWindow::GetFullScreenInfo() const
 
 		if ( NativeWindow->GetFullScreenInfo( X, Y, Width, Height ) )
 		{
-			return FSlateRect( X, Y, X + Width, Y + Height );
+			return FSlateRect( (float)X, (float)Y, (float)(X + Width), (float)(Y + Height) );
 		}
 	}
 
@@ -1238,26 +1257,27 @@ void SWindow::SetNativeWindow( TSharedRef<FGenericWindow> InNativeWindow )
 
 void SWindow::SetContent( TSharedRef<SWidget> InContent )
 {
-	if ( bIsPopupWindow || Type == EWindowType::CursorDecorator )
+	if (ContentSlot)
 	{
-		this->ChildSlot.operator[]( InContent );
+		ContentSlot->operator[](InContent);
 	}
 	else
 	{
-		this->ContentSlot->operator[]( InContent );
+		ChildSlot.operator[](InContent);
 	}
+	
 	Invalidate(EInvalidateWidgetReason::ChildOrder);
 }
 
 TSharedRef<const SWidget> SWindow::GetContent() const
 {
-	if ( bIsPopupWindow || Type == EWindowType::CursorDecorator )
+	if (ContentSlot)
 	{
-		return this->ChildSlot.GetChildAt(0);
+		return ContentSlot->GetWidget();
 	}
 	else
 	{
-		return this->ContentSlot->GetWidget();
+		return ChildSlot.GetChildAt(0);
 	}
 }
 
@@ -1266,7 +1286,7 @@ bool SWindow::HasOverlay() const
 	return WindowOverlay.IsValid();
 }
 
-SOverlay::FOverlaySlot& SWindow::AddOverlaySlot( const int32 ZOrder )
+SOverlay::FScopedWidgetSlotArguments SWindow::AddOverlaySlot( const int32 ZOrder )
 {
 	if(!WindowOverlay.IsValid())
 	{
@@ -1277,12 +1297,14 @@ SOverlay::FOverlaySlot& SWindow::AddOverlaySlot( const int32 ZOrder )
 	return WindowOverlay->AddSlot(ZOrder);
 }
 
-void SWindow::RemoveOverlaySlot( const TSharedRef<SWidget>& InContent )
+bool SWindow::RemoveOverlaySlot(const TSharedRef<SWidget>& InContent)
 {
 	if(WindowOverlay.IsValid())
 	{
-		WindowOverlay->RemoveSlot( InContent );
+		return WindowOverlay->RemoveSlot(InContent);
 	}
+
+	return false;
 }
 
 TSharedPtr<FPopupLayer> SWindow::OnVisualizePopup(const TSharedRef<SWidget>& PopupContent)
@@ -1296,7 +1318,7 @@ TSharedPtr<FPopupLayer> SWindow::OnVisualizePopup(const TSharedRef<SWidget>& Pop
 }
 
 /** Return a new slot in the popup layer. Assumes that the window has a popup layer. */
-FPopupLayerSlot& SWindow::AddPopupLayerSlot()
+SWindow::FScopedWidgetSlotArguments SWindow::AddPopupLayerSlot()
 {
 	ensure( PopupLayer.IsValid() );
 	return PopupLayer->AddSlot();
@@ -1526,7 +1548,7 @@ EWindowActivationPolicy SWindow::ActivationPolicy() const
 /** @return true if the window accepts input; false if the window is non-interactive */
 bool SWindow::AcceptsInput() const
 {
-	return Type != EWindowType::CursorDecorator && Type != EWindowType::ToolTip;
+	return Type != EWindowType::CursorDecorator && (Type != EWindowType::ToolTip || !FSlateApplicationBase::Get().IsWindowHousingInteractiveTooltip(SharedThis(this)));
 }
 
 /** @return true if the user decides the size of the window; false if the content determines the size of the window */
@@ -1683,7 +1705,6 @@ bool SWindow::OnIsActiveChanged( const FWindowActivateEvent& ActivateEvent )
 	return true;
 }
 
-
 void SWindow::Maximize()
 {
 	if (NativeWindow.IsValid())
@@ -1710,7 +1731,7 @@ void SWindow::Minimize()
 
 int32 SWindow::GetCornerRadius()
 {
-	return IsRegularWindow() ? SWindowDefs::CornerRadius : 0;
+	return Style->WindowCornerRadius;
 }
 
 bool SWindow::SupportsKeyboardFocus() const
@@ -2072,7 +2093,7 @@ int32 SWindow::PaintWindow( double CurrentTime, float DeltaTime, FSlateWindowEle
 	// Always set the window geometry and visibility
 	PersistentState.AllottedGeometry = GetWindowGeometryInWindow();
 	PersistentState.CullingBounds = GetClippingRectangleInWindow();
-	if (!Visibility.IsBound())
+	if (!GetVisibilityAttribute().IsBound())
 	{
 		SetVisibility(GetWindowVisibility());
 	}
@@ -2178,7 +2199,7 @@ void SWindow::SetWindowMode( EWindowMode::Type NewWindowMode )
 		NativeWindow->SetWindowMode( NewWindowMode );
 
 		const FVector2D vp = IsMirrorWindow() ? GetSizeInScreen() : GetViewportSize();
-		FSlateApplicationBase::Get().GetRenderer()->UpdateFullscreenState(SharedThis(this), vp.X, vp.Y);
+		FSlateApplicationBase::Get().GetRenderer()->UpdateFullscreenState(SharedThis(this), (uint32)vp.X, (uint32)vp.Y);
 
 		if( TitleArea.IsValid() )
 		{

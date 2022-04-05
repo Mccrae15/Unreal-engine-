@@ -16,6 +16,7 @@ struct FVTTranscodeParams
 	IMemoryReadStreamRef Data;
 	const FVirtualTextureCodec* Codec;
 	const FVirtualTextureBuiltData* VTData;
+	FName Name;
 	uint32 ChunkIndex;
 	uint32 vAddress;
 	uint8 vLevel;
@@ -54,6 +55,15 @@ struct FVTTranscodeKey
 	uint16 Hash;
 };
 
+struct FVTTranscodeTileHandleAndStatus
+{
+	FVTTranscodeTileHandleAndStatus() : IsComplete(false) {}
+	FVTTranscodeTileHandleAndStatus(const FVTTranscodeTileHandle& InHandle, bool InComplete) : Handle(InHandle), IsComplete(InComplete) {}
+
+	FVTTranscodeTileHandle Handle;
+	bool IsComplete;
+};
+
 class FVirtualTextureTranscodeCache
 {
 public:
@@ -61,18 +71,21 @@ public:
 
 	static FVTTranscodeKey GetKey(const FVirtualTextureProducerHandle& ProducerHandle, uint8 LayerMask, uint8 vLevel, uint32 vAddress);
 
-	FVTTranscodeTileHandle FindTask(const FVTTranscodeKey& InKey) const;
+	FVTTranscodeTileHandleAndStatus FindTask(const FVTTranscodeKey& InKey) const;
 
-	FVTTranscodeTileHandle SubmitTask(FVirtualTextureUploadCache& InUploadCache,
+	FVTTranscodeTileHandle SubmitTask(
+		FVirtualTextureUploadCache& InUploadCache,
 		const FVTTranscodeKey& InKey,
+		const FVirtualTextureProducerHandle& InProducerHandle,
 		const FVTTranscodeParams& InParams,
 		const FGraphEventArray* InPrerequisites = NULL);
 
 	bool IsTaskFinished(FVTTranscodeTileHandle InHandle) const;
 	void WaitTaskFinished(FVTTranscodeTileHandle InHandle) const;
 	const FVTUploadTileHandle* AcquireTaskResult(FVTTranscodeTileHandle InHandle);
-
-	void WaitTasksFinished() const;
+	
+	FGraphEventRef GetTaskEvent(FVTTranscodeTileHandle InHandle) const;
+	void GatherProducePageDataTasks(FVirtualTextureProducerHandle const& ProducerHandle, FGraphEventArray& InOutTasks) const;
 
 	void RetireOldTasks(FVirtualTextureUploadCache& InUploadCache);
 
@@ -90,6 +103,7 @@ private:
 		uint64 Key;
 		FGraphEventRef GraphEvent;
 		FVTUploadTileHandle StageTileHandle[VIRTUALTEXTURE_SPACE_MAXLAYERS];
+		uint32 PackedProducerHandle;
 		uint32 FrameSubmitted;
 		uint16 Magic;
 		uint16 Hash;
@@ -125,4 +139,5 @@ private:
 
 	TArray<FTaskEntry> Tasks;
 	FHashTable TileIDToTaskIndex;
+	FHashTable ProducerToTaskIndex;
 };

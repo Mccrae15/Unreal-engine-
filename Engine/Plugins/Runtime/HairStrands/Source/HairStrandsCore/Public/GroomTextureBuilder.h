@@ -12,7 +12,7 @@ class UTexture2D;
 class UGroomAsset;
 class USkeletalMesh;
 class UStaticMesh;
-class FRHIIndexBuffer;
+class FRHIBuffer;
 class FRHIShaderResourceView;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -51,7 +51,8 @@ struct FStrandsTexturesOutput
 	class UTexture2D* Tangent = nullptr;
 	class UTexture2D* Coverage = nullptr;
 	class UTexture2D* Attribute = nullptr;
-	bool IsValid() const { return Depth && Tangent && Coverage && Attribute; }
+	class UTexture2D* Material = nullptr;
+	bool IsValid() const { return Depth && Tangent && Coverage && Attribute && Material; }
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -31,15 +31,15 @@ struct FElementOffset
 struct FNDIPhysicsAssetArrays
 {
 	FElementOffset ElementOffsets;
-	TStaticArray<FVector4, 3 * PHYSICS_ASSET_MAX_TRANSFORMS> WorldTransform;
-	TStaticArray<FVector4, 3 * PHYSICS_ASSET_MAX_TRANSFORMS> InverseTransform;
-	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> CurrentTransform;
-	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> CurrentInverse;
-	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> PreviousTransform;
-	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> PreviousInverse;
-	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> RestTransform;
-	TStaticArray<FVector4, PHYSICS_ASSET_MAX_TRANSFORMS> RestInverse;
-	TStaticArray<FVector4, PHYSICS_ASSET_MAX_PRIMITIVES> ElementExtent;
+	TStaticArray<FVector4f, 3 * PHYSICS_ASSET_MAX_TRANSFORMS> WorldTransform;
+	TStaticArray<FVector4f, 3 * PHYSICS_ASSET_MAX_TRANSFORMS> InverseTransform;
+	TStaticArray<FVector4f, PHYSICS_ASSET_MAX_TRANSFORMS> CurrentTransform;
+	TStaticArray<FVector4f, PHYSICS_ASSET_MAX_TRANSFORMS> CurrentInverse;
+	TStaticArray<FVector4f, PHYSICS_ASSET_MAX_TRANSFORMS> PreviousTransform;
+	TStaticArray<FVector4f, PHYSICS_ASSET_MAX_TRANSFORMS> PreviousInverse;
+	TStaticArray<FVector4f, PHYSICS_ASSET_MAX_TRANSFORMS> RestTransform;
+	TStaticArray<FVector4f, PHYSICS_ASSET_MAX_TRANSFORMS> RestInverse;
+	TStaticArray<FVector4f, PHYSICS_ASSET_MAX_PRIMITIVES> ElementExtent;
 	TStaticArray<uint32, PHYSICS_ASSET_MAX_PRIMITIVES> PhysicsType;
 };
 
@@ -108,11 +108,15 @@ public:
 
 	/** Skeletal Mesh from which the Physics Asset will be found. */
 	UPROPERTY(EditAnywhere, Category = "Source")
-		UPhysicsAsset* DefaultSource;
+		TObjectPtr<UPhysicsAsset> DefaultSource;
 
 	/** The source actor from which to sample */
 	UPROPERTY(EditAnywhere, Category = "Source")
-		AActor* SourceActor;
+	TObjectPtr<AActor> SourceActor;
+
+	/** Reference to a user parameter if we're reading one. */
+	UPROPERTY(EditAnywhere, Category = "Source")
+	FNiagaraUserParameterBinding MeshUserParameter;
 
 	/** The source component from which to sample */
 	TArray<TWeakObjectPtr<class USkeletalMeshComponent>> SourceComponents;
@@ -145,37 +149,37 @@ public:
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override;
 
 	/** Extract the source component */
-	void ExtractSourceComponent(FNiagaraSystemInstance* SystemInstance);
+	void ExtractSourceComponent(FNiagaraSystemInstance* SystemInstance, FTransform& LocalTransform);
 
 	/** Get the number of boxes*/
-	void GetNumBoxes(FVectorVMContext& Context);
+	void GetNumBoxes(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the number of spheres  */
-	void GetNumSpheres(FVectorVMContext& Context);
+	void GetNumSpheres(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the number of capsules */
-	void GetNumCapsules(FVectorVMContext& Context);
+	void GetNumCapsules(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the element point */
-	void GetElementPoint(FVectorVMContext& Context);
+	void GetElementPoint(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the element distance */
-	void GetElementDistance(FVectorVMContext& Context);
+	void GetElementDistance(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the closest element */
-	void GetClosestElement(FVectorVMContext& Context);
+	void GetClosestElement(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the closest point */
-	void GetClosestPoint(FVectorVMContext& Context);
+	void GetClosestPoint(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the closest distance */
-	void GetClosestDistance(FVectorVMContext& Context);
+	void GetClosestDistance(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the closest texture point */
-	void GetTexturePoint(FVectorVMContext& Context);
+	void GetTexturePoint(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the projection point */
-	void GetProjectionPoint(FVectorVMContext& Context);
+	void GetProjectionPoint(FVectorVMExternalFunctionContext& Context);
 
 	/** Name of element offsets */
 	static const FString ElementOffsetsName;
@@ -216,7 +220,7 @@ struct FNDIPhysicsAssetProxy : public FNiagaraDataInterfaceProxy
 	void InitializePerInstanceData(const FNiagaraSystemInstanceID& SystemInstance);
 
 	/** Destroy the proxy data if necessary */
-	void DestroyPerInstanceData(NiagaraEmitterInstanceBatcher* Batcher, const FNiagaraSystemInstanceID& SystemInstance);
+	void DestroyPerInstanceData(const FNiagaraSystemInstanceID& SystemInstance);
 
 	/** Launch all pre stage functions */
 	virtual void PreStage(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceStageArgs& Context) override;

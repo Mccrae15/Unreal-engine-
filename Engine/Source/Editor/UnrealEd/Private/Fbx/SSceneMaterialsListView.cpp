@@ -319,7 +319,7 @@ TSharedPtr<SWidget> SFbxSceneMaterialsListView::OnOpenContextMenu()
 	{
 		const FSlateIcon PlusIcon(FEditorStyle::GetStyleSetName(), "Plus");
 		MenuBuilder.AddMenuEntry(LOCTEXT("CheckForImport", "Add Selection To Import"), FText(), PlusIcon, FUIAction(FExecuteAction::CreateSP(this, &SFbxSceneMaterialsListView::AddSelectionToImport)));
-		const FSlateIcon MinusIcon(FEditorStyle::GetStyleSetName(), "PropertyWindow.Button_RemoveFromArray");
+		const FSlateIcon MinusIcon(FEditorStyle::GetStyleSetName(), "Icons.Minus");
 		MenuBuilder.AddMenuEntry(LOCTEXT("UncheckForImport", "Remove Selection From Import"), FText(), MinusIcon, FUIAction(FExecuteAction::CreateSP(this, &SFbxSceneMaterialsListView::RemoveSelectionFromImport)));
 	}
 	MenuBuilder.EndSection();
@@ -412,7 +412,7 @@ void SFbxSceneMaterialsListView::AssignMaterialAssetData(const FAssetData& Asset
 	UObject *ContentObject = AssetData.GetAsset();
 	if (ContentObject != nullptr)
 	{
-		if (!ContentObject->HasAnyFlags(RF_Transient) && !ContentObject->IsPendingKill())
+		if (!ContentObject->HasAnyFlags(RF_Transient) && IsValid(ContentObject))
 		{
 			for (FbxMaterialInfoPtr ItemPtr : SelectedFbxMaterialInfos)
 			{
@@ -448,7 +448,7 @@ void SFbxSceneMaterialsListView::AssignMaterialToExisting()
 			UObject *ContentObject = AssetData[0].GetAsset();
 			if (ContentObject != nullptr)
 			{
-				if (!ContentObject->HasAnyFlags(RF_Transient) && !ContentObject->IsPendingKill())
+				if (!ContentObject->HasAnyFlags(RF_Transient) && IsValid(ContentObject))
 				{
 					//Override the MeshInfo with the new asset path
 					ItemPtr->SetOverridePath(true);

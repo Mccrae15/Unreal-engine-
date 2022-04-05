@@ -27,14 +27,16 @@ FPropertyLocalizationDataGatherer::FPropertyLocalizationDataGatherer(TArray<FGat
 	{
 		AllObjectsInPackage.Add(Object);
 		return true;
-	}, true, RF_Transient, EInternalObjectFlags::PendingKill);
+	}, true, RF_Transient, EInternalObjectFlags::Garbage);
 
 	// Iterate over each root object in the package
-	ForEachObjectWithPackage(Package, [this](UObject* Object)
+	for (const UObject* Object : AllObjectsInPackage)
 	{
-		GatherLocalizationDataFromObjectWithCallbacks(Object, EPropertyLocalizationGathererTextFlags::None);
-		return true;
-	}, false, RF_Transient, EInternalObjectFlags::PendingKill);
+		if (Object->GetOuter() == Package)
+		{
+			GatherLocalizationDataFromObjectWithCallbacks(Object, EPropertyLocalizationGathererTextFlags::None);
+		}
+	}
 
 	// Iterate any bytecode containing objects
 	for (const FObjectAndGatherFlags& BytecodeToGather : BytecodePendingGather)
@@ -91,10 +93,16 @@ const FPropertyLocalizationDataGatherer::FGatherableFieldsForType& FPropertyLoca
 	// See if we have a custom handler for this type
 	if (const UClass* Class = Cast<UClass>(InType))
 	{
-		const FLocalizationDataGatheringCallback* CustomCallback = GetTypeSpecificLocalizationDataGatheringCallbacks().Find(Class);
-		if (CustomCallback)
+		if (const FLocalizationDataObjectGatheringCallback* CustomCallback = GetTypeSpecificLocalizationDataObjectGatheringCallbacks().Find(Class))
 		{
-			GatherableFieldsForType->CustomCallback = CustomCallback;
+			GatherableFieldsForType->CustomObjectCallback = CustomCallback;
+		}
+	}
+	if (const UScriptStruct* Struct = Cast<UScriptStruct>(InType))
+	{
+		if (const FLocalizationDataStructGatheringCallback* CustomCallback = GetTypeSpecificLocalizationDataStructGatheringCallbacks().Find(Struct))
+		{
+			GatherableFieldsForType->CustomStructCallback = CustomCallback;
 		}
 	}
 
@@ -137,11 +145,12 @@ const FPropertyLocalizationDataGatherer::FGatherableFieldsForType& FPropertyLoca
 	}
 
 	// Look for potential functions
-	for (TFieldIterator<const UField> FieldIt(InType, EFieldIteratorFlags::IncludeSuper, EFieldIteratorFlags::ExcludeDeprecated, EFieldIteratorFlags::IncludeInterfaces); FieldIt; ++FieldIt)
+	for (TFieldIterator<const UField> FieldIt(InType, EFieldIteratorFlags::ExcludeSuper, EFieldIteratorFlags::ExcludeDeprecated, EFieldIteratorFlags::IncludeInterfaces); FieldIt; ++FieldIt)
 	{
 		const UFunction* FunctionField = Cast<UFunction>(*FieldIt);
 		if (FunctionField && FunctionField->Script.Num() > 0 && IsObjectValidForGather(FunctionField))
 		{
+			checkSlow(!GatherableFieldsForType->Functions.Contains(FunctionField));
 			GatherableFieldsForType->Functions.Add(FunctionField);
 		}
 	}
@@ -160,7 +169,7 @@ bool FPropertyLocalizationDataGatherer::CanGatherFromInnerProperty(const FProper
 	if (const FStructProperty* StructInnerProp = CastField<const FStructProperty>(InInnerProperty))
 	{
 		// Call the "Get" version as we may have already cached a result for this type
-		return GetGatherableFieldsForType(StructInnerProp->Struct).HasFields();
+		return !GetGatherableFieldsForType(StructInnerProp->Struct).IsEmpty();
 	}
 
 	return false;
@@ -168,21 +177,27 @@ bool FPropertyLocalizationDataGatherer::CanGatherFromInnerProperty(const FProper
 
 void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromObjectWithCallbacks(const UObject* Object, const EPropertyLocalizationGathererTextFlags GatherTextFlags)
 {
+	EPropertyLocalizationGathererTextFlags ObjectGatherTextFlags = GatherTextFlags;
+	if (Object->GetClass()->GetPackage()->HasAnyPackageFlags(PKG_EditorOnly))
+	{
+		ObjectGatherTextFlags |= EPropertyLocalizationGathererTextFlags::ForceEditorOnlyProperties;
+	}
+
 	const FGatherableFieldsForType& GatherableFieldsForType = GetGatherableFieldsForType(Object->GetClass());
-	if (GatherableFieldsForType.CustomCallback)
+	if (GatherableFieldsForType.CustomObjectCallback)
 	{
 		checkf(IsObjectValidForGather(Object), TEXT("Cannot gather for objects outside of the current package! Package: '%s'. Object: '%s'."), *Package->GetFullName(), *Object->GetFullName());
 
-		if (ShouldProcessObject(Object, GatherTextFlags))
+		if (ShouldProcessObject(Object, ObjectGatherTextFlags))
 		{
-			MarkObjectProcessed(Object, GatherTextFlags);
-			(*GatherableFieldsForType.CustomCallback)(Object, *this, GatherTextFlags);
+			MarkObjectProcessed(Object, ObjectGatherTextFlags);
+			(*GatherableFieldsForType.CustomObjectCallback)(Object, *this, ObjectGatherTextFlags);
 		}
 	}
-	else if (ShouldProcessObject(Object, GatherTextFlags))
+	else if (ShouldProcessObject(Object, ObjectGatherTextFlags))
 	{
-		MarkObjectProcessed(Object, GatherTextFlags);
-		GatherLocalizationDataFromObject(Object, GatherTextFlags);
+		MarkObjectProcessed(Object, ObjectGatherTextFlags);
+		GatherLocalizationDataFromObject(Object, ObjectGatherTextFlags);
 	}
 }
 
@@ -194,6 +209,18 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromObject(const U
 
 	// Gather text from our fields.
 	GatherLocalizationDataFromObjectFields(Path, Object, GatherTextFlags);
+
+	// Also gather from the sparse data on UClass types.
+	if (const UClass* Class = Cast<UClass>(Object))
+	{
+		if (Class->OverridesSparseClassDataArchetype())
+		{
+			const UScriptStruct* SparseDataStruct = Class->GetSparseClassDataStruct();
+			const void* SparseData = const_cast<UClass*>(Class)->GetOrCreateSparseClassData();
+			const void* ArchetypeSparseData = Class->GetArchetypeForSparseClassData();
+			GatherLocalizationDataFromStructWithCallbacks(Path + TEXT(".SparseClassData"), SparseDataStruct, SparseData, ArchetypeSparseData, GatherTextFlags);
+		}
+	}
 
 	// Also gather from the script data on UStruct types.
 	{
@@ -214,14 +241,16 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromObject(const U
 	// Gather from anything that has us as their outer, as not all objects are reachable via a property pointer.
 	if (!(GatherTextFlags & EPropertyLocalizationGathererTextFlags::SkipSubObjects))
 	{
-		ForEachObjectWithOuter(Object, [this, GatherTextFlags](UObject* ChildObject)
+		TArray<UObject*> InnerObjects;
+		GetObjectsWithOuter(Object, InnerObjects, false, RF_Transient, EInternalObjectFlags::Garbage);
+		for (UObject* ChildObject : InnerObjects)
 		{
 			// if the child object as a package set, do not gather from it
 			if (!ChildObject->GetExternalPackage())
 			{
 				GatherLocalizationDataFromObjectWithCallbacks(ChildObject, GatherTextFlags);
 			}
-		}, false, RF_Transient, EInternalObjectFlags::PendingKill);
+		}
 	}
 }
 
@@ -247,6 +276,24 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromObjectFields(c
 			GatherLocalizationDataFromObject(FunctionField, GatherTextFlags);
 		}
 	}
+}
+
+void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromStructWithCallbacks(const FString& PathToParent, const UScriptStruct* Struct, const void* StructData, const void* DefaultStructData, const EPropertyLocalizationGathererTextFlags GatherTextFlags)
+{
+	const FGatherableFieldsForType& GatherableFieldsForType = GetGatherableFieldsForType(Struct);
+	if (GatherableFieldsForType.CustomStructCallback)
+	{
+		(*GatherableFieldsForType.CustomStructCallback)(PathToParent, Struct, StructData, DefaultStructData, *this, GatherTextFlags);
+	}
+	else
+	{
+		GatherLocalizationDataFromStruct(PathToParent, Struct, StructData, DefaultStructData, GatherTextFlags);
+	}
+}
+
+void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromStruct(const FString& PathToParent, const UScriptStruct* Struct, const void* StructData, const void* DefaultStructData, const EPropertyLocalizationGathererTextFlags GatherTextFlags)
+{
+	GatherLocalizationDataFromStructFields(PathToParent, Struct, StructData, DefaultStructData, GatherTextFlags);
 }
 
 void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromStructFields(const FString& PathToParent, const UStruct* Struct, const void* StructData, const void* DefaultStructData, const EPropertyLocalizationGathererTextFlags GatherTextFlags)
@@ -454,7 +501,7 @@ void FPropertyLocalizationDataGatherer::GatherLocalizationDataFromChildTextPrope
 		// Property is a struct property.
 		else if (StructProperty)
 		{
-			GatherLocalizationDataFromStructFields(PathToElement, StructProperty->Struct, ElementValueAddress, DefaultElementValueAddress, ElementChildPropertyGatherTextFlags);
+			GatherLocalizationDataFromStructWithCallbacks(PathToElement, StructProperty->Struct, ElementValueAddress, DefaultElementValueAddress, ElementChildPropertyGatherTextFlags);
 		}
 		// Property is an object property.
 		else if (ObjectProperty && !(GatherTextFlags & EPropertyLocalizationGathererTextFlags::SkipSubObjects))
@@ -730,10 +777,11 @@ void FPropertyLocalizationDataGatherer::MarkDefaultTextInstance(const FText& Tex
 
 bool FPropertyLocalizationDataGatherer::ExtractTextIdentity(const FText& Text, FString& OutNamespace, FString& OutKey, const bool bCleanNamespace)
 {
-	const FTextDisplayStringRef DisplayString = FTextInspector::GetSharedDisplayString(Text);
-	const bool bFoundNamespaceAndKey = FTextLocalizationManager::Get().FindNamespaceAndKeyFromDisplayString(DisplayString, OutNamespace, OutKey);
-	if (bFoundNamespaceAndKey && Text.ShouldGatherForLocalization())
+	const FTextId TextId = FTextInspector::GetTextId(Text);
+	if (!TextId.IsEmpty() && Text.ShouldGatherForLocalization())
 	{
+		OutNamespace = TextId.GetNamespace().GetChars();
+		OutKey = TextId.GetKey().GetChars();
 		if (bCleanNamespace)
 		{
 			OutNamespace = TextNamespaceUtil::StripPackageNamespace(OutNamespace);
@@ -743,8 +791,14 @@ bool FPropertyLocalizationDataGatherer::ExtractTextIdentity(const FText& Text, F
 	return false;
 }
 
-FPropertyLocalizationDataGatherer::FLocalizationDataGatheringCallbackMap& FPropertyLocalizationDataGatherer::GetTypeSpecificLocalizationDataGatheringCallbacks()
+FPropertyLocalizationDataGatherer::FLocalizationDataObjectGatheringCallbackMap& FPropertyLocalizationDataGatherer::GetTypeSpecificLocalizationDataObjectGatheringCallbacks()
 {
-	static FLocalizationDataGatheringCallbackMap TypeSpecificLocalizationDataGatheringCallbacks;
+	static FLocalizationDataObjectGatheringCallbackMap TypeSpecificLocalizationDataGatheringCallbacks;
+	return TypeSpecificLocalizationDataGatheringCallbacks;
+}
+
+FPropertyLocalizationDataGatherer::FLocalizationDataStructGatheringCallbackMap& FPropertyLocalizationDataGatherer::GetTypeSpecificLocalizationDataStructGatheringCallbacks()
+{
+	static FLocalizationDataStructGatheringCallbackMap TypeSpecificLocalizationDataGatheringCallbacks;
 	return TypeSpecificLocalizationDataGatheringCallbacks;
 }

@@ -22,6 +22,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "ToolMenus.h"
 
 extern ENGINE_API void ToggleLightmapPreview_GameThread(UWorld* InWorld);
 
@@ -38,6 +39,21 @@ void FGPULightmassEditorModule::StartupModule()
 	LevelEditorModule.OnMapChanged().AddRaw(this, &FGPULightmassEditorModule::OnMapChanged);
 	auto BuildMenuExtender = FLevelEditorModule::FLevelEditorMenuExtender::CreateRaw(this, &FGPULightmassEditorModule::OnExtendLevelEditorBuildMenu);
 	LevelEditorModule.GetAllLevelEditorToolbarBuildMenuExtenders().Add(BuildMenuExtender);
+
+	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Build");
+	FToolMenuSection& Section = Menu->FindOrAddSection("LevelEditorLighting");
+
+	FUIAction ActionOpenGPULightmassSettingsTab(FExecuteAction::CreateLambda([]() {
+		FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
+		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
+		LevelEditorTabManager->TryInvokeTab(GPULightmassSettingsTabName);
+	}), FCanExecuteAction());
+
+	FToolMenuEntry& Entry = Section.AddMenuEntry(NAME_None, LOCTEXT("GPULightmassSettingsTitle", "GPU Lightmass"),
+		LOCTEXT("OpensGPULightmassSettings", "Opens GPU Lightmass settings tab."), FSlateIcon(FEditorStyle::GetStyleSetName(), "Level.LightingScenarioIcon16x"), ActionOpenGPULightmassSettingsTab,
+		EUserInterfaceActionType::Button);
+
+
 }
 
 void FGPULightmassEditorModule::ShutdownModule()
@@ -59,8 +75,9 @@ void FGPULightmassEditorModule::RegisterTabSpawner()
 TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTabArgs& Args)
 {
 	FPropertyEditorModule& PropPlugin = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	FDetailsViewArgs DetailsViewArgs(false, false, true, FDetailsViewArgs::HideNameArea, false, GUnrealEd);
-	DetailsViewArgs.bShowActorLabel = false;
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.NotifyHook = GUnrealEd;
 
 	SettingsView = PropPlugin.CreateDetailView(DetailsViewArgs);
 
@@ -73,7 +90,6 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 	}
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("Level.LightingScenarioIcon16x"))
 		.Label(NSLOCTEXT("GPULightmass", "GPULightmassSettingsTabTitle", "GPU Lightmass"))
 		[
 			SNew(SVerticalBox)
@@ -91,7 +107,7 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 					SNew(SButton)
 					.HAlign(HAlign_Center)
 					.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
-					.IsEnabled(IsRayTracingEnabled())
+					.IsEnabled(IsRayTracingEnabled() && IsAllowStaticLightingEnabled())
 					.Visibility_Lambda([](){ return IsRunning() ? EVisibility::Collapsed : EVisibility::Visible; })
 					.OnClicked_Raw(this, &FGPULightmassEditorModule::OnStartClicked)
 					[
@@ -215,6 +231,10 @@ TSharedRef<SDockTab> FGPULightmassEditorModule::SpawnSettingsTab(const FSpawnTab
 					{
 						return LOCTEXT("GPULightmassRayTracingDisabled", "GPU Lightmass requires ray tracing support which is disabled.");
 					}
+					else if (!IsAllowStaticLightingEnabled())
+					{
+						return LOCTEXT("GPULightmassAllowStaticLightingDisabled", "GPU Lightmass requires Allow Static Lighting enabled in the project settings.");
+					}
 
 					// Ready
 					static FText ReadyMsg = FText(LOCTEXT("GPULightmassReady", "GPU Lightmass is ready."));
@@ -300,6 +320,12 @@ bool FGPULightmassEditorModule::IsRunning()
 	}
 
 	return false;
+}
+
+bool FGPULightmassEditorModule::IsAllowStaticLightingEnabled()
+{
+	static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
+	return (AllowStaticLightingVar && AllowStaticLightingVar->GetValueOnAnyThread() > 0);
 }
 
 FReply FGPULightmassEditorModule::OnStartClicked()

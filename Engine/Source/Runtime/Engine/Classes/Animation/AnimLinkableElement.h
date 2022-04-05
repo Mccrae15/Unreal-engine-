@@ -98,7 +98,7 @@ struct FAnimLinkableElement
 	ENGINE_API virtual void SetTime(float NewTime, EAnimLinkMethod::Type ReferenceFrame = EAnimLinkMethod::Absolute);
 
 	/** Gets the sequence this element is linked to */
-	ENGINE_API const UAnimSequenceBase* GetLinkedSequence() {return LinkedSequence;}
+	ENGINE_API const UAnimSequenceBase* GetLinkedSequence() const {return LinkedSequence;}
 
 	/** Gets the Montage this element is linked to, if any */
 	ENGINE_API const UAnimMontage* GetLinkedMontage() const { return LinkedMontage; }
@@ -142,7 +142,7 @@ protected:
 
 	/** The montage that this element is currently linked to */
 	UPROPERTY()
-	UAnimMontage* LinkedMontage;
+	TObjectPtr<UAnimMontage> LinkedMontage;
 
 	/** The slot index we are currently using within LinkedMontage */
 	UPROPERTY(EditAnywhere, Category=AnimLink)
@@ -177,7 +177,7 @@ protected:
 	 * in either length or rate; the element will correctly place itself in relation to the sequence
 	 */
 	UPROPERTY(VisibleAnywhere, AdvancedDisplay, Category=AnimLink)
-	UAnimSequenceBase* LinkedSequence;
+	TObjectPtr<UAnimSequenceBase> LinkedSequence;
 
 private:
 

@@ -42,7 +42,8 @@ PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 // static variables
 TArray<FString> FWindowsPlatformProcess::DllDirectoryStack;
 TArray<FString> FWindowsPlatformProcess::DllDirectories;
-
+bool IsJobObjectSet = false;
+HANDLE GhJob = NULL;
 
 void FWindowsPlatformProcess::AddDllDirectory(const TCHAR* Directory)
 {
@@ -285,7 +286,14 @@ void FWindowsPlatformProcess::LaunchURL( const TCHAR* URL, const TCHAR* Parms, F
 	}
 }
 
-FProcHandle FWindowsPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void * PipeReadChild)
+FProcHandle FWindowsPlatformProcess::CreateProc(const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild)
+{
+	// CreateProc used to only have a single "write" pipe argument that both stdout and stderr would be piped into on Windows,
+	// so for this overload we'll preserve that behaviour for compatibility with existing code
+	return CreateProc(URL, Parms, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, OutProcessID, PriorityModifier, OptionalWorkingDirectory, PipeWriteChild, PipeReadChild, PipeWriteChild);
+}
+
+FProcHandle FWindowsPlatformProcess::CreateProc(const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild, void* PipeStdErrChild)
 {
 	//UE_LOG(LogWindows, Log,  TEXT("CreateProc %s %s"), URL, Parms );
 
@@ -318,7 +326,7 @@ FProcHandle FWindowsPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* 
 		ShowWindowFlags = SW_SHOWMINNOACTIVE;
 	}
 
-	if (PipeWriteChild != nullptr || PipeReadChild != nullptr)
+	if (PipeWriteChild != nullptr || PipeReadChild != nullptr || PipeStdErrChild != nullptr)
 	{
 		dwFlags |= STARTF_USESTDHANDLES;
 	}
@@ -337,7 +345,7 @@ FProcHandle FWindowsPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* 
 		0, NULL,
 		HANDLE(PipeReadChild),
 		HANDLE(PipeWriteChild),
-		HANDLE(PipeWriteChild)
+		HANDLE(PipeStdErrChild)
 	};
 
 	bool bInheritHandles = (dwFlags & STARTF_USESTDHANDLES) != 0;
@@ -678,13 +686,7 @@ FString FWindowsPlatformProcess::GetApplicationName( uint32 ProcessId )
 		int32 InOutSize = ProcessNameBufferSize;
 		static_assert(sizeof(::DWORD) == sizeof(int32), "DWORD size doesn't match int32. Is it the future or the past?");
 
-		if(
-#if WINVER == 0x0502
-		GetProcessImageFileName(ProcessHandle, ProcessNameBuffer, InOutSize)
-#else
-		QueryFullProcessImageName(ProcessHandle, 0, ProcessNameBuffer, (PDWORD)(&InOutSize))
-#endif
-			)
+		if (QueryFullProcessImageName(ProcessHandle, 0, ProcessNameBuffer, (PDWORD)(&InOutSize)))
 		{
 			// TODO no null termination guarantee on GetProcessImageFileName?  it returns size as well, whereas QueryFullProcessImageName just returns non-zero on success
 			Output = ProcessNameBuffer;
@@ -712,8 +714,29 @@ void FWindowsPlatformProcess::ReadFromPipes(FString* OutStrings[], HANDLE InPipe
  * Executes a process, returning the return code, stdout, and stderr. This
  * call blocks until the process has returned.
  */
-bool FWindowsPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory)
+bool FWindowsPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory, bool bShouldEndWithParentProcess)
 {
+	if (bShouldEndWithParentProcess && !IsJobObjectSet)
+	{
+		GhJob = CreateJobObject(NULL, NULL);
+		if (!GhJob)
+		{
+			UE_LOG(LogWindows, Warning, TEXT("Failed to create Job Object"));
+		}
+		else
+		{
+			JOBOBJECT_EXTENDED_LIMIT_INFORMATION LimitInformation;
+			FPlatformMemory::Memzero(&LimitInformation, sizeof(LimitInformation));
+
+			LimitInformation.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+			if (0 == SetInformationJobObject(GhJob, JobObjectExtendedLimitInformation, &LimitInformation, sizeof(LimitInformation)))
+			{
+				UE_LOG(LogWindows, Warning, TEXT("Could not SetInformationJobObject"));
+			}
+		}
+		IsJobObjectSet = true;
+	}
+
 	STARTUPINFOEX StartupInfoEx;
 	ZeroMemory(&StartupInfoEx, sizeof(StartupInfoEx));
 	StartupInfoEx.StartupInfo.cb = sizeof(StartupInfoEx);
@@ -777,6 +800,14 @@ bool FWindowsPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params,
 	PROCESS_INFORMATION ProcInfo;
 	if (CreateProcess(NULL, CommandLine.GetCharArray().GetData(), NULL, NULL, TRUE, CreateFlags, NULL, OptionalWorkingDirectory, &StartupInfoEx.StartupInfo, &ProcInfo))
 	{
+		if (bShouldEndWithParentProcess && GhJob)
+		{
+			int RetVal = AssignProcessToJobObject(GhJob, ProcInfo.hProcess);
+			if (RetVal == 0)
+			{
+				UE_LOG(LogWindows, Warning, TEXT("AssignProcessToObject failed."));
+			}
+		}
 		if (hStdOutRead != NULL)
 		{
 			HANDLE ReadablePipes[2] = { hStdOutRead, hStdErrRead };
@@ -797,7 +828,7 @@ bool FWindowsPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params,
 			};
 
 			FProcHandle ProcHandle(ProcInfo.hProcess);
-			do 
+			do
 			{
 				ReadPipes();
 				FPlatformProcess::Sleep(0);
@@ -817,7 +848,7 @@ bool FWindowsPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params,
 		else
 		{
 			::WaitForSingleObject(ProcInfo.hProcess, INFINITE);
-		}		
+		}
 		if (OutReturnCode)
 		{
 			verify(::GetExitCodeProcess(ProcInfo.hProcess, (DWORD*)OutReturnCode));
@@ -900,6 +931,25 @@ bool FWindowsPlatformProcess::ExecElevatedProcess(const TCHAR* URL, const TCHAR*
 	return bSuccess;
 }
 
+FProcHandle FWindowsPlatformProcess::CreateElevatedProcess(const TCHAR* URL, const TCHAR* Params)
+{
+	SHELLEXECUTEINFO ShellExecuteInfo;
+	ZeroMemory(&ShellExecuteInfo, sizeof(ShellExecuteInfo));
+	ShellExecuteInfo.cbSize = sizeof(ShellExecuteInfo);
+	ShellExecuteInfo.fMask = SEE_MASK_UNICODE | SEE_MASK_NOCLOSEPROCESS;
+	ShellExecuteInfo.lpFile = URL;
+	ShellExecuteInfo.lpVerb = TEXT("runas");
+	ShellExecuteInfo.nShow = SW_SHOW;
+	ShellExecuteInfo.lpParameters = Params;
+
+	if (ShellExecuteEx(&ShellExecuteInfo))
+	{
+		return FProcHandle(ShellExecuteInfo.hProcess);
+	}
+
+	return FProcHandle{};
+}
+
 const TCHAR* FWindowsPlatformProcess::BaseDir()
 {
 	static TCHAR Result[512]=TEXT("");
@@ -917,7 +967,10 @@ const TCHAR* FWindowsPlatformProcess::BaseDir()
 		if (BaseArg.Len())
 		{
 			BaseArg = BaseArg.Replace(TEXT("\\"), TEXT("/"));
-			BaseArg += TEXT('/');
+			if (!BaseArg.EndsWith(TEXT("/")))
+			{
+				BaseArg += TEXT('/');
+			}
 			FCString::Strcpy(Result, *BaseArg);
 		}
 		else if (FCString::Stristr(::GetCommandLineW(), TEXT("-BaseFromWorkingDir")))
@@ -926,7 +979,10 @@ const TCHAR* FWindowsPlatformProcess::BaseDir()
 
 			FString TempResult(Result);
 			TempResult = TempResult.Replace(TEXT("\\"), TEXT("/"));
-			TempResult += TEXT('/');
+			if (!TempResult.EndsWith(TEXT("/")))
+			{
+				TempResult += TEXT('/');
+			}
 			FCString::Strcpy(Result, *TempResult);
 		}
 		else
@@ -1110,7 +1166,7 @@ FString FWindowsPlatformProcess::GetCurrentWorkingDirectory()
 	FString Buffer;
 	for (uint32 Length = 128;;)
 	{
-		TArray<TCHAR>& CharArray = Buffer.GetCharArray();
+		TArray<TCHAR, FString::AllocatorType>& CharArray = Buffer.GetCharArray();
 		CharArray.SetNumUninitialized(Length);
 
 		Length = ::GetCurrentDirectoryW(CharArray.Num(), CharArray.GetData());
@@ -1211,7 +1267,7 @@ const FString FWindowsPlatformProcess::GetModulesDirectory()
 	return Result;
 }
 
-void FWindowsPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms /*= NULL*/, ELaunchVerb::Type Verb /*= ELaunchVerb::Open*/ )
+bool FWindowsPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms /*= NULL*/, ELaunchVerb::Type Verb /*= ELaunchVerb::Open*/, bool bPromptToOpenOnFailure /*= true */ )
 {
 	const TCHAR* VerbString = Verb == ELaunchVerb::Edit ? TEXT("edit") : TEXT("open");
 
@@ -1221,14 +1277,24 @@ void FWindowsPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHA
 	
 	UE_LOG(LogWindows, Log,  TEXT("Launch application code for %s %s: %d"), FileName, Parms ? Parms : TEXT(""), (PTRINT)Code );
 
+	// Fallback to a true windows-defined default for the asset type
+	if ((PTRINT)Code == SE_ERR_NOASSOC || (PTRINT)Code == SE_ERR_ASSOCINCOMPLETE)
+	{
+		Code = ::ShellExecuteW(NULL, NULL, FileName, NULL, NULL, SW_SHOW);
+	}
+
 	// If opening the file in the default application failed, check to see if it's because the file's extension does not have
 	// a default application associated with it. If so, prompt the user with the Windows "Open With..." dialog to allow them to specify
 	// an application to use.
-	if ( (PTRINT)Code == SE_ERR_NOASSOC || (PTRINT)Code == SE_ERR_ASSOCINCOMPLETE )
+	if (bPromptToOpenOnFailure && ((PTRINT)Code == SE_ERR_NOASSOC || (PTRINT)Code == SE_ERR_ASSOCINCOMPLETE))
 	{
-		::ShellExecuteW( NULL, VerbString, TEXT("RUNDLL32.EXE"), *FString::Printf( TEXT("shell32.dll,OpenAs_RunDLL %s"), FileName ), TEXT(""), SW_SHOWNORMAL );
+		Code = ::ShellExecuteW( NULL, VerbString, TEXT("RUNDLL32.EXE"), *FString::Printf( TEXT("shell32.dll,OpenAs_RunDLL %s"), FileName ), TEXT(""), SW_SHOWNORMAL );
 	}
+
+	// If code is > 32, it's a valid handle, return true. Otherwise opening the file failed, return false.
+	return ((PTRINT)Code > 32);
 }
+
 
 void FWindowsPlatformProcess::ExploreFolder( const TCHAR* FilePath )
 {
@@ -1316,8 +1382,10 @@ void FWindowsPlatformProcess::SleepNoStats(float Seconds)
 
 void FWindowsPlatformProcess::SleepInfinite()
 {
-	check(FPlatformProcess::SupportsMultithreading());
-	::Sleep(INFINITE);
+	while (true)
+	{
+		::Sleep(INFINITE);
+	}
 }
 
 void FWindowsPlatformProcess::YieldThread()
@@ -1344,7 +1412,9 @@ FEvent* FWindowsPlatformProcess::CreateSynchEvent(bool bIsManualReset)
 		Event = new FSingleThreadEvent();
 	}
 	// If the internal create fails, delete the instance and return NULL
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	if (!Event->Create(bIsManualReset))
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	{
 		delete Event;
 		Event = NULL;
@@ -1401,7 +1471,7 @@ void FWindowsPlatformProcess::ClosePipe( void* ReadPipe, void* WritePipe )
 	}
 }
 
-bool FWindowsPlatformProcess::CreatePipe( void*& ReadPipe, void*& WritePipe )
+bool FWindowsPlatformProcess::CreatePipe( void*& ReadPipe, void*& WritePipe, bool bWritePipeLocal )
 {
 	SECURITY_ATTRIBUTES Attr = { sizeof(SECURITY_ATTRIBUTES), NULL, true };
 	
@@ -1410,7 +1480,7 @@ bool FWindowsPlatformProcess::CreatePipe( void*& ReadPipe, void*& WritePipe )
 		return false;
 	}
 
-	if (!::SetHandleInformation(ReadPipe, HANDLE_FLAG_INHERIT, 0))
+	if (!::SetHandleInformation(bWritePipeLocal ? WritePipe : ReadPipe, HANDLE_FLAG_INHERIT, 0))
 	{
 		return false;
 	}
@@ -1432,7 +1502,7 @@ FString FWindowsPlatformProcess::ReadPipe( void* ReadPipe )
 		{
 			if (BytesRead > 0)
 			{
-				Buffer[BytesRead] = '\0';
+				Buffer[BytesRead] = (UTF8CHAR)'\0';
 				Output += FUTF8ToTCHAR((const ANSICHAR*)Buffer).Get();
 			}
 		}
@@ -1480,9 +1550,9 @@ bool FWindowsPlatformProcess::WritePipe(void* WritePipe, const FString& Message,
 	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 2];
 	for (uint32 i = 0; i < BytesAvailable; i++)
 	{
-		Buffer[i] = Message[i];
+		Buffer[i] = (UTF8CHAR)Message[i];
 	}
-	Buffer[BytesAvailable] = '\n';
+	Buffer[BytesAvailable] = (UTF8CHAR)'\n';
 
 	// Write to pipe
 	uint32 BytesWritten = 0;
@@ -1491,7 +1561,7 @@ bool FWindowsPlatformProcess::WritePipe(void* WritePipe, const FString& Message,
 	// Get written message
 	if (OutWritten)
 	{
-		Buffer[BytesWritten] = '\0';
+		Buffer[BytesWritten] = (UTF8CHAR)'\0';
 		*OutWritten = FUTF8ToTCHAR((const ANSICHAR*)Buffer).Get();
 	}
 
@@ -1859,7 +1929,7 @@ void *FWindowsPlatformProcess::LoadLibraryWithSearchPaths(const FString& FileNam
 {
 	// Make sure the initial module exists. If we can't find it from the path we're given, it's probably a system dll.
 	FString FullFileName = FileName;
-	if (FPaths::FileExists(*FullFileName))
+	if (FPaths::FileExists(FullFileName))
 	{
 		// Convert it to a full path, since LoadLibrary will try to resolve it against the executable directory (which may not be the same as the working dir)
 		FullFileName = FPaths::ConvertRelativePathToFull(FullFileName);
@@ -1972,6 +2042,11 @@ FString FWindowsPlatformProcess::FProcEnumInfo::GetFullPath() const
 	return GetApplicationName(GetPID());
 }
 
+void FWindowsPlatformProcess::SetupGameThread()
+{
+	SetThreadName(TEXT("GameThread"));
+}
+
 namespace WindowsPlatformProcessImpl
 {
 	static void SetThreadName(LPCSTR ThreadName)
@@ -2039,6 +2114,6 @@ void FWindowsPlatformProcess::SetThreadName( const TCHAR* ThreadName )
 	WindowsPlatformProcessImpl::SetThreadName(TCHAR_TO_ANSI(ThreadName));
 }
 
-PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
+PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS
 
 #include "Windows/HideWindowsPlatformTypes.h"

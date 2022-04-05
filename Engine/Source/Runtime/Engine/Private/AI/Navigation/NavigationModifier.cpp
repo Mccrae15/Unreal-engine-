@@ -12,7 +12,7 @@
 // if square distance between two points is less than this the those points
 // will be considered identical when calculating convex hull
 // should be less than voxel size (recast navmesh)
-static const float CONVEX_HULL_POINTS_MIN_DISTANCE_SQ = 4.0f * 4.0f;
+static const FVector::FReal CONVEX_HULL_POINTS_MIN_DISTANCE_SQ = 4.0f * 4.0f;
 
 //----------------------------------------------------------------------//
 // FNavigationLinkBase
@@ -55,7 +55,7 @@ bool FNavigationLinkBase::HasMetaArea() const
 #if WITH_EDITORONLY_DATA
 void FNavigationLinkBase::PostSerialize(const FArchive& Ar)
 {
-	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_NAVIGATION_AGENT_SELECTOR)
+	if (Ar.IsLoading() && Ar.UEVer() < VER_UE4_NAVIGATION_AGENT_SELECTOR)
 	{
 		SupportedAgents.bSupportsAgent0 = bSupportsAgent0;
 		SupportedAgents.bSupportsAgent1 = bSupportsAgent1;
@@ -345,7 +345,7 @@ void FAreaNavModifier::InitializeConvex(const TNavStatArray<FVector>& InPoints, 
 	check(InPoints.IsValidIndex(FirstIndex) && InPoints.IsValidIndex(LastIndex-1));
 
 	Init(InAreaClass);
-	SetConvex(InPoints.GetData(), FirstIndex, LastIndex, ENavigationCoordSystem::Unreal, LocalToWorld);
+	SetConvex(LWC::ConvertArrayType<FVector>(InPoints).GetData(), FirstIndex, LastIndex, ENavigationCoordSystem::Unreal, LocalToWorld);	// LWC_TODO: Perf pessimization
 }
 
 void FAreaNavModifier::InitializePerInstanceConvex(const TNavStatArray<FVector>& InPoints, const int32 FirstIndex, const int32 LastIndex, const TSubclassOf<UNavAreaBase> InAreaClass)
@@ -353,7 +353,7 @@ void FAreaNavModifier::InitializePerInstanceConvex(const TNavStatArray<FVector>&
 	check(InPoints.IsValidIndex(FirstIndex) && InPoints.IsValidIndex(LastIndex - 1));
 
 	Init(InAreaClass);
-	SetPerInstanceConvex(InPoints.GetData(), FirstIndex, LastIndex);
+	SetPerInstanceConvex(LWC::ConvertArrayType<FVector>(InPoints).GetData(), FirstIndex, LastIndex);	// LWC_TODO: Perf pessimization
 }
 
 FAreaNavModifier::FAreaNavModifier(const UBrushComponent* BrushComponent, const TSubclassOf<UNavAreaBase> InAreaClass)
@@ -893,9 +893,15 @@ void FCompositeNavModifier::CreateAreaModifiers(const UPrimitiveComponent* PrimC
 	for (int32 Idx = 0; Idx < BodySetup->AggGeom.ConvexElems.Num(); Idx++)
 	{
 		const FKConvexElem& ConvexElem = BodySetup->AggGeom.ConvexElems[Idx];
-		
-		FAreaNavModifier AreaMod(ConvexElem.VertexData, 0, ConvexElem.VertexData.Num(), ENavigationCoordSystem::Unreal, PrimComp->GetComponentTransform(), AreaClass);
-		Add(AreaMod);
+		if (ConvexElem.VertexData.Num() > 0)
+		{
+			FAreaNavModifier AreaMod(LWC::ConvertArrayType<FVector>(ConvexElem.VertexData), 0, ConvexElem.VertexData.Num(), ENavigationCoordSystem::Unreal, PrimComp->GetComponentTransform(), AreaClass);
+			Add(AreaMod);
+		}
+		else
+		{
+			UE_LOG(LogNavigation, Warning, TEXT("CreateAreaModifiers called for component %s whose BodySetup contains ConvexElem with no vertex data at index %d. Not adding nav modifier."), *GetPathNameSafe(PrimComp), Idx);
+		}
 	}
 	
 	for (int32 Idx = 0; Idx < BodySetup->AggGeom.SphereElems.Num(); Idx++)

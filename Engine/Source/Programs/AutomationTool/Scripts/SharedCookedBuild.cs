@@ -8,8 +8,9 @@ using System.Linq;
 using System.Threading.Tasks;
 using AutomationTool;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Text.RegularExpressions;
+using UnrealBuildBase;
 
 public class SharedCookedBuild
 {
@@ -331,7 +332,7 @@ public class SharedCookedBuild
 
 			FileReference PreviousManifest = FileReference.Combine(PlatformInstallPath, ".build", "Current.manifest");
 
-			FileReference BPTI = FileReference.Combine(CommandUtils.RootDirectory, "Engine", "Restricted", "NotForLicensees", "Binaries", "Win64", "BuildPatchToolInstaller.exe");
+			FileReference BPTI = FileReference.Combine(Unreal.RootDirectory, "Engine", "Restricted", "NotForLicensees", "Binaries", "Win64", "BuildPatchToolInstaller.exe");
 			if (!FileReference.Exists(BPTI))
 			{
 				CommandUtils.LogInformation("Could not locate BuildPatchToolInstaller.exe");

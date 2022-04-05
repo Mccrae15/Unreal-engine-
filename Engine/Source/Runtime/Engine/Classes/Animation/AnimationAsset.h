@@ -19,9 +19,19 @@
 #include "Interfaces/Interface_PreviewMeshProvider.h"
 #include "AnimationAsset.generated.h"
 
+class UAnimMetaData;
 class UAssetMappingTable;
 class UAssetUserData;
 class USkeleton;
+class UAnimSequenceBase;
+class UBlendSpace;
+class UPoseAsset;
+class UMirrorDataTable;
+struct FAnimationUpdateContext;
+
+namespace UE { namespace Anim {
+class IAnimNotifyEventContextDataInterface;
+}}
 
 namespace MarkerIndexSpecialValues
 {
@@ -63,6 +73,35 @@ struct FMarkerTickRecord
 	}
 };
 
+/**
+ * Used when sampling a given animation asset, this structure will contain the previous frame's
+ * internal sample time alongside the 'effective' delta time leading into the current frame.
+ * 
+ * An 'effective' delta time represents a value that has undergone all side effects present in the
+ * corresponding asset's TickAssetPlayer call including but not limited to syncing, play rate 
+ * adjustment, looping, etc.
+ * 
+ * For montages Delta isn't always abs(CurrentPosition-PreviousPosition) because a Montage can jump or repeat or loop
+ */
+struct FDeltaTimeRecord
+{
+public:
+	void Set(float InPrevious, float InDelta)
+	{
+		Previous = InPrevious;
+		Delta = InDelta;
+		bPreviousIsValid = true;
+	}
+	void SetPrevious(float InPrevious) { Previous = InPrevious; bPreviousIsValid = true; }
+	float GetPrevious() const { return Previous; }
+	bool IsPreviousValid() const { return bPreviousIsValid; }
+
+	float Delta = 0.f;
+private:
+	float Previous = 0.f;
+	bool  bPreviousIsValid = false; // Will be set to true when Previous has been set
+};
+
 /** Transform definition */
 USTRUCT(BlueprintType)
 struct FBlendSampleData
@@ -73,10 +112,14 @@ struct FBlendSampleData
 	int32 SampleDataIndex;
 
 	UPROPERTY()
-	class UAnimSequence* Animation;
+	TObjectPtr<class UAnimSequence> Animation;
 
 	UPROPERTY()
 	float TotalWeight;
+
+	// Rate of change of the Weight - used in smoothed BlendSpace blends
+	UPROPERTY()
+	float WeightRate;
 
 	UPROPERTY()
 	float Time;
@@ -89,27 +132,40 @@ struct FBlendSampleData
 	UPROPERTY()
 	float SamplePlayRate;
 
+	FDeltaTimeRecord DeltaTimeRecord;
+
 	FMarkerTickRecord MarkerTickRecord;
 
-	// transient perbone interpolation data
+	// transient per-bone interpolation data
 	TArray<float> PerBoneBlendData;
 
+	// transient per-bone weight rate - only allocated when used
+	TArray<float> PerBoneWeightRate;
+
 	FBlendSampleData()
-		:	SampleDataIndex(0)
-		,	Animation(nullptr)
-		,	TotalWeight(0.f)
-		,	Time(0.f)
-		,	PreviousTime(0.f)
-		,	SamplePlayRate(0.0f)
-	{}
+		: SampleDataIndex(0)
+		, Animation(nullptr)
+		, TotalWeight(0.f)
+		, WeightRate(0.f)
+		, Time(0.f)
+		, PreviousTime(0.f)
+		, SamplePlayRate(0.0f)
+		, DeltaTimeRecord()
+	{
+	}
+
 	FBlendSampleData(int32 Index)
-		:	SampleDataIndex(Index)
-		,	Animation(nullptr)
-		,	TotalWeight(0.f)
-		,	Time(0.f)
-		,	PreviousTime(0.f)
-		,	SamplePlayRate(0.0f)
-	{}
+		: SampleDataIndex(Index)
+		, Animation(nullptr)
+		, TotalWeight(0.f)
+		, WeightRate(0.f)
+		, Time(0.f)
+		, PreviousTime(0.f)
+		, SamplePlayRate(0.0f)
+		, DeltaTimeRecord()
+	{
+	}
+
 	bool operator==( const FBlendSampleData& Other ) const 
 	{
 		// if same position, it's same point
@@ -119,7 +175,14 @@ struct FBlendSampleData
 	{
 		TotalWeight += Weight;
 	}
+
+	UE_DEPRECATED(5.0, "GetWeight() was renamed to GetClampedWeight()")
 	float GetWeight() const
+	{
+		return GetClampedWeight();
+	}
+
+	float GetClampedWeight() const
 	{
 		return FMath::Clamp<float>(TotalWeight, 0.f, 1.f);
 	}
@@ -132,15 +195,23 @@ struct FBlendFilter
 {
 	GENERATED_USTRUCT_BODY()
 
-	FFIRFilterTimeBased FilterPerAxis[3];
+	TArray<FFIRFilterTimeBased> FilterPerAxis;
 
 	FBlendFilter()
 	{
 	}
-
-	FVector GetFilterLastOutput()
+	
+	bool IsValid() const
 	{
-		return FVector (FilterPerAxis[0].LastOutput, FilterPerAxis[1].LastOutput, FilterPerAxis[2].LastOutput);
+		return FilterPerAxis.Num() > 0;
+	}
+	
+	FVector GetFilterLastOutput() const
+	{
+		return FVector(
+			FilterPerAxis.Num() > 0 ? FilterPerAxis[0].LastOutput : 0.0f,
+			FilterPerAxis.Num() > 1 ? FilterPerAxis[1].LastOutput : 0.0f,
+			FilterPerAxis.Num() > 2 ? FilterPerAxis[2].LastOutput : 0.0f);
 	}
 };
 
@@ -178,11 +249,17 @@ struct FPoseCurve
 /** Animation Extraction Context */
 struct FAnimExtractContext
 {
-	/** Is Root Motion being extracted? */
-	bool bExtractRootMotion;
-
 	/** Position in animation to extract pose from */
 	float CurrentTime;
+
+	/** Is root motion being extracted? */
+	bool bExtractRootMotion;
+
+	/** Delta time range required for root motion extraction **/
+	FDeltaTimeRecord DeltaTimeRecord;
+
+	/** Is the current animation asset marked as looping? **/
+	bool bLooping;
 
 	/** 
 	 * Pose Curve Values to extract pose from pose assets. 
@@ -197,21 +274,13 @@ struct FAnimExtractContext
 	 */
 	TArray<bool> BonesRequired;
 
-	FAnimExtractContext()
-		: bExtractRootMotion(false)
-		, CurrentTime(0.f)
-	{
-	}
-
-	FAnimExtractContext(float InCurrentTime)
-		: bExtractRootMotion(false)
-		, CurrentTime(InCurrentTime)
-	{
-	}
-
-	FAnimExtractContext(float InCurrentTime, bool InbExtractRootMotion)
-		: bExtractRootMotion(InbExtractRootMotion)
-		, CurrentTime(InCurrentTime)
+	FAnimExtractContext(float InCurrentTime = 0.f, bool InbExtractRootMotion = false, FDeltaTimeRecord InDeltaTimeRecord = {}, bool InbLooping = false)
+		: CurrentTime(InCurrentTime)
+		, bExtractRootMotion(InbExtractRootMotion)
+		, DeltaTimeRecord(InDeltaTimeRecord)
+		, bLooping(InbLooping)
+		, PoseCurves()
+		, BonesRequired()
 	{
 	}
 
@@ -221,6 +290,7 @@ struct FAnimExtractContext
 		{
 			return true;
 		}
+
 		return BonesRequired[BoneIndex];
 	}
 };
@@ -283,38 +353,46 @@ struct FAnimTickRecord
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	class UAnimationAsset* SourceAsset;
+	TObjectPtr<class UAnimationAsset> SourceAsset = nullptr;
 
-	float*  TimeAccumulator;
-	float PlayRateMultiplier;
-	float EffectiveBlendWeight;
-	float RootMotionWeightModifier;
+	float* TimeAccumulator = nullptr;
+	float PlayRateMultiplier = 1.0f;
+	float EffectiveBlendWeight = 0.0f;
+	float RootMotionWeightModifier = 1.0f;
 
-	bool bLooping;
+	bool bLooping = false;
+	const UMirrorDataTable* MirrorDataTable = nullptr;
+
+	TSharedPtr<TArray<TUniquePtr<const UE::Anim::IAnimNotifyEventContextDataInterface>>> ContextData;
 
 	union
 	{
 		struct
 		{
-			float  BlendSpacePositionX;
-			float  BlendSpacePositionY;
 			FBlendFilter* BlendFilter;
 			TArray<FBlendSampleData>* BlendSampleDataCache;
+			int32  TriangulationIndex;
+			float  BlendSpacePositionX;
+			float  BlendSpacePositionY;
+			bool   bTeleportToTime;
+			bool   bIsEvaluator;
 		} BlendSpace;
 
 		struct
 		{
 			float CurrentPosition;  // montage doesn't use accumulator, but this
-			float PreviousPosition;
-			float MoveDelta; // MoveDelta isn't always abs(CurrentPosition-PreviousPosition) because Montage can jump or repeat or loop
 			TArray<FPassedMarker>* MarkersPassedThisTick;
 		} Montage;
 	};
 
+	// Asset players (and other nodes) have ownership of their respective DeltaTimeRecord value/state,
+	// while an asset's tick update will forward the time-line through the tick record
+	FDeltaTimeRecord* DeltaTimeRecord = nullptr;
+
 	// marker sync related data
-	FMarkerTickRecord* MarkerTickRecord;
-	bool bCanUseMarkerSync;
-	float LeaderScore;
+	FMarkerTickRecord* MarkerTickRecord = nullptr;
+	bool bCanUseMarkerSync = false;
+	float LeaderScore = 0.0f;
 
 	// Return the root motion weight for this tick record
 	float GetRootMotionWeight() const { return EffectiveBlendWeight * RootMotionWeightModifier; }
@@ -327,12 +405,34 @@ public:
 		, EffectiveBlendWeight(0.f)
 		, RootMotionWeightModifier(1.f)
 		, bLooping(false)
+		, DeltaTimeRecord(nullptr)
 		, MarkerTickRecord(nullptr)
 		, bCanUseMarkerSync(false)
 		, LeaderScore(0.f)
 	{
 	}
 
+	// Create a tick record for an anim sequence
+	ENGINE_API FAnimTickRecord(UAnimSequenceBase* InSequence, bool bInLooping, float InPlayRate, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord);
+
+	// Create a tick record for a blendspace
+	ENGINE_API FAnimTickRecord(
+		UBlendSpace* InBlendSpace, const FVector& InBlendInput, TArray<FBlendSampleData>& InBlendSampleDataCache, FBlendFilter& InBlendFilter, bool bInLooping, 
+		float InPlayRate, bool bShouldTeleportToTime, bool bIsEvaluator, float InFinalBlendWeight, float& InCurrentTime, FMarkerTickRecord& InMarkerTickRecord);
+
+	// Create a tick record for a montage
+	UE_DEPRECATED(5.0, "Please use the montage FAnimTickRecord constructor which removes InPreviousPosition and InMoveDelta")
+	ENGINE_API FAnimTickRecord(UAnimMontage* InMontage, float InCurrentPosition, float InPreviousPosition, float InMoveDelta, float InWeight, TArray<FPassedMarker>& InMarkersPassedThisTick, FMarkerTickRecord& InMarkerTickRecord);
+
+	// Create a tick record for a montage
+	ENGINE_API FAnimTickRecord(UAnimMontage* InMontage, float InCurrentPosition, float InWeight, TArray<FPassedMarker>& InMarkersPassedThisTick, FMarkerTickRecord& InMarkerTickRecord);
+
+	// Create a tick record for a pose asset
+	ENGINE_API FAnimTickRecord(UPoseAsset* InPoseAsset, float InFinalBlendWeight);
+
+	// Gather any data from the current update context
+	ENGINE_API void GatherContextData(const FAnimationUpdateContext& InContext);
+	
 	/** This can be used with the Sort() function on a TArray of FAnimTickRecord to sort from higher leader score */
 	ENGINE_API bool operator <(const FAnimTickRecord& Other) const { return LeaderScore > Other.LeaderScore; }
 };
@@ -437,6 +537,7 @@ namespace EAnimGroupRole
 	};
 }
 
+// Deprecated - do not use
 UENUM()
 enum class EAnimSyncGroupScope : uint8
 {
@@ -445,6 +546,20 @@ enum class EAnimSyncGroupScope : uint8
 
 	// Sync with all animations in the main and linked instances of this skeletal mesh component
 	Component,
+};
+
+// How an asset will synchronize with other assets
+UENUM()
+enum class EAnimSyncMethod : uint8
+{
+	// Don't sync ever
+	DoNotSync,
+
+	// Use a named sync group
+	SyncGroup,
+
+	// Use the graph structure to provide a sync group to apply
+	Graph
 };
 
 USTRUCT()
@@ -494,10 +609,9 @@ public:
 	// Checks the last tick record in the ActivePlayers array to see if it's a better leader than the current candidate.
 	// This should be called once for each record added to ActivePlayers, after the record is setup.
 	ENGINE_API void TestTickRecordForLeadership(EAnimGroupRole::Type MembershipType);
-	// Checks the last tick record in the ActivePlayers array to see if we have a better leader for montage
-	// This is simple rule for higher weight becomes leader
-	// Only one from same sync group with highest weight will be leader
-	ENGINE_API void TestMontageTickRecordForLeadership();
+
+	UE_DEPRECATED(5.0, "Use TestTickRecordForLeadership, as it now internally supports montages")
+	ENGINE_API void TestMontageTickRecordForLeadership() { TestTickRecordForLeadership(EAnimGroupRole::CanBeLeader); }
 
 	// Called after leader has been ticked and decided
 	ENGINE_API void Finalize(const FAnimGroupInstance* PreviousGroup);
@@ -515,21 +629,6 @@ struct FRootMotionMovementParams
 private:
 	ENGINE_API static FVector RootMotionScale;
 
-	// TODO: Remove when we make RootMotionTransform private
-	FORCEINLINE FTransform& GetRootMotionTransformInternal()
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return RootMotionTransform;
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
-	FORCEINLINE const FTransform& GetRootMotionTransformInternal() const
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return RootMotionTransform;
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
-
 public:
 	
 	UPROPERTY()
@@ -538,11 +637,11 @@ public:
 	UPROPERTY()
 	float BlendWeight;
 
-	// To be made private
-	UE_DEPRECATED(4.13, "RootMotionTransform should not be accessed directly, please use GetRootMotionTransform() to read it or one of the set/accumulate functions to modify it")
+private:
 	UPROPERTY()
 	FTransform RootMotionTransform;
 
+public:
 	FRootMotionMovementParams()
 		: bHasRootMotion(false)
 		, BlendWeight(0.f)
@@ -555,29 +654,29 @@ public:
 		: bHasRootMotion(Other.bHasRootMotion)
 		, BlendWeight(Other.BlendWeight)
 	{
-		GetRootMotionTransformInternal() = Other.GetRootMotionTransformInternal();
+		RootMotionTransform = Other.RootMotionTransform;
 	}
 
 	FRootMotionMovementParams(const FRootMotionMovementParams&& Other)
 		: bHasRootMotion(Other.bHasRootMotion)
 		, BlendWeight(Other.BlendWeight)
 	{
-		GetRootMotionTransformInternal() = Other.GetRootMotionTransformInternal();
+		RootMotionTransform = Other.RootMotionTransform;
 	}
 
 	FRootMotionMovementParams& operator=(const FRootMotionMovementParams& Other)
 	{
 		bHasRootMotion = Other.bHasRootMotion;
 		BlendWeight = Other.BlendWeight;
-		GetRootMotionTransformInternal() = Other.GetRootMotionTransformInternal();
+		RootMotionTransform = Other.RootMotionTransform;
 		return *this;
 	}
 
 	void Set(const FTransform& InTransform)
 	{
 		bHasRootMotion = true;
-		GetRootMotionTransformInternal() = InTransform;
-		GetRootMotionTransformInternal().SetScale3D(RootMotionScale);
+		RootMotionTransform = InTransform;
+		RootMotionTransform.SetScale3D(RootMotionScale);
 		BlendWeight = 1.f;
 	}
 
@@ -589,8 +688,8 @@ public:
 		}
 		else
 		{
-			GetRootMotionTransformInternal() = InTransform * GetRootMotionTransformInternal();
-			GetRootMotionTransformInternal().SetScale3D(RootMotionScale);
+			RootMotionTransform = InTransform * RootMotionTransform;
+			RootMotionTransform.SetScale3D(RootMotionScale);
 		}
 	}
 
@@ -598,7 +697,7 @@ public:
 	{
 		if (MovementParams.bHasRootMotion)
 		{
-			Accumulate(MovementParams.GetRootMotionTransformInternal());
+			Accumulate(MovementParams.RootMotionTransform);
 		}
 	}
 
@@ -607,8 +706,8 @@ public:
 		const ScalarRegister VBlendWeight(InBlendWeight);
 		if (bHasRootMotion)
 		{
-			GetRootMotionTransformInternal().AccumulateWithShortestRotation(InTransform, VBlendWeight);
-			GetRootMotionTransformInternal().SetScale3D(RootMotionScale);
+			RootMotionTransform.AccumulateWithShortestRotation(InTransform, VBlendWeight);
+			RootMotionTransform.SetScale3D(RootMotionScale);
 			BlendWeight += InBlendWeight;
 		}
 		else
@@ -622,7 +721,7 @@ public:
 	{
 		if (MovementParams.bHasRootMotion)
 		{
-			AccumulateWithBlend(MovementParams.GetRootMotionTransformInternal(), InBlendWeight);
+			AccumulateWithBlend(MovementParams.RootMotionTransform, InBlendWeight);
 		}
 	}
 
@@ -639,28 +738,28 @@ public:
 		{
 			AccumulateWithBlend(FTransform(), WeightLeft);
 		}
-		GetRootMotionTransformInternal().NormalizeRotation();
+		RootMotionTransform.NormalizeRotation();
 	}
 
 	FRootMotionMovementParams ConsumeRootMotion(float Alpha)
 	{
 		const ScalarRegister VAlpha(Alpha);
-		FTransform PartialRootMotion = (GetRootMotionTransformInternal()*VAlpha);
+		FTransform PartialRootMotion = (RootMotionTransform*VAlpha);
 		PartialRootMotion.SetScale3D(RootMotionScale); // Reset scale after multiplication above
 		PartialRootMotion.NormalizeRotation();
-		GetRootMotionTransformInternal() = GetRootMotionTransformInternal().GetRelativeTransform(PartialRootMotion);
-		GetRootMotionTransformInternal().NormalizeRotation(); //Make sure we are normalized, this needs to be investigated further
+		RootMotionTransform = RootMotionTransform.GetRelativeTransform(PartialRootMotion);
+		RootMotionTransform.NormalizeRotation(); //Make sure we are normalized, this needs to be investigated further
 
 		FRootMotionMovementParams ReturnParams;
 		ReturnParams.Set(PartialRootMotion);
 
 		check(PartialRootMotion.IsRotationNormalized());
-		check(GetRootMotionTransformInternal().IsRotationNormalized());
+		check(RootMotionTransform.IsRotationNormalized());
 		return ReturnParams;
 	}
 
-	const FTransform& GetRootMotionTransform() const { return GetRootMotionTransformInternal(); }
-	void ScaleRootMotionTranslation(float TranslationScale) { GetRootMotionTransformInternal().ScaleTranslation(TranslationScale); }
+	const FTransform& GetRootMotionTransform() const { return RootMotionTransform; }
+	void ScaleRootMotionTranslation(float TranslationScale) { RootMotionTransform.ScaleTranslation(TranslationScale); }
 };
 
 // This structure is used to either advance or synchronize animation players
@@ -799,34 +898,35 @@ struct FAnimationGroupReference
 {
 	GENERATED_USTRUCT_BODY()
 	
-	// The name of the group
+	// How an asset will synchronize with other assets
 	UPROPERTY(EditAnywhere, Category=Settings)
+	EAnimSyncMethod Method;
+
+	// The name of the group
+	UPROPERTY(EditAnywhere, Category=Settings, meta = (EditCondition = "Method == EAnimSyncMethod::SyncGroup"))
 	FName GroupName;
 
 	// The type of membership in the group (potential leader, always follower, etc...)
-	UPROPERTY(EditAnywhere, Category=Settings)
+	UPROPERTY(EditAnywhere, Category=Settings, meta = (EditCondition = "Method == EAnimSyncMethod::SyncGroup"))
 	TEnumAsByte<EAnimGroupRole::Type> GroupRole;
 
-	// The scope at which marker-based sync is applied (local, component etc...)
-	UPROPERTY(EditAnywhere, Category=Settings)
-	EAnimSyncGroupScope GroupScope;
-
 	FAnimationGroupReference()
-		: GroupRole(EAnimGroupRole::CanBeLeader)
-		, GroupScope(EAnimSyncGroupScope::Local)
+		: Method(EAnimSyncMethod::DoNotSync)
+		, GroupName(NAME_None)
+		, GroupRole(EAnimGroupRole::CanBeLeader)
 	{
 	}
 };
 
-UCLASS(abstract, MinimalAPI)
-class UAnimationAsset : public UObject, public IInterface_AssetUserData, public IInterface_PreviewMeshProvider
+UCLASS(abstract)
+class ENGINE_API UAnimationAsset : public UObject, public IInterface_AssetUserData, public IInterface_PreviewMeshProvider
 {
-	GENERATED_UCLASS_BODY()
+	GENERATED_BODY()
 
 private:
 	/** Pointer to the Skeleton this asset can be played on .	*/
 	UPROPERTY(AssetRegistrySearchable, Category=Animation, VisibleAnywhere)
-	class USkeleton* Skeleton;
+	TObjectPtr<class USkeleton> Skeleton;
 
 	/** Skeleton guid. If changes, you need to remap info*/
 	FGuid SkeletonGuid;
@@ -839,7 +939,7 @@ private:
 	 * You can query by GetMetaData function
 	 */
 	UPROPERTY(Category=MetaData, instanced, EditAnywhere)
-	TArray<class UAnimMetaData*> MetaData;
+	TArray<TObjectPtr<UAnimMetaData>> MetaData;
 
 public:
 	/* 
@@ -855,7 +955,7 @@ public:
 	 * 
 	 * During cooking, this data will be used to bake out to normal asset */
 	UPROPERTY(AssetRegistrySearchable, Category=Animation, VisibleAnywhere)
-	class UAnimationAsset* ParentAsset;
+	TObjectPtr<class UAnimationAsset> ParentAsset;
 
 	/** 
 	 * @todo : comment
@@ -866,7 +966,7 @@ public:
 	 * note this is transient as they're added as they're loaded
 	 */
 	UPROPERTY(transient)
-	TArray<class UAnimationAsset*> ChildrenAssets;
+	TArray<TObjectPtr<class UAnimationAsset>> ChildrenAssets;
 
 	const UAssetMappingTable* GetAssetMappingTable() const
 	{
@@ -875,13 +975,13 @@ public:
 protected:
 	/** Asset mapping table when ParentAsset is set */
 	UPROPERTY(Category=Animation, VisibleAnywhere)
-	class UAssetMappingTable* AssetMappingTable;
+	TObjectPtr<class UAssetMappingTable> AssetMappingTable;
 #endif // WITH_EDITORONLY_DATA
 
 protected:
 	/** Array of user data stored with the asset */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = Animation)
-	TArray<UAssetUserData*> AssetUserData;
+	TArray<TObjectPtr<UAssetUserData>> AssetUserData;
 
 public:
 	/** Advances the asset player instance 
@@ -895,9 +995,13 @@ public:
 	// this is used in editor only when used for transition getter
 	// this doesn't mean max time. In Sequence, this is SequenceLength,
 	// but for BlendSpace CurrentTime is normalized [0,1], so this is 1
-	virtual float GetMaxCurrentTime() { return 0.f; }
+	UE_DEPRECATED(5.0, "Use GetPlayLength instead")
+	virtual float GetMaxCurrentTime() { return GetPlayLength(); }
 
-	ENGINE_API void SetSkeleton(USkeleton* NewSkeleton);
+	UFUNCTION(BlueprintPure, Category = "Animation", meta=(BlueprintThreadSafe))
+	virtual float GetPlayLength() const { return 0.f; };
+
+	void SetSkeleton(USkeleton* NewSkeleton);
 	void ResetSkeleton(USkeleton* NewSkeleton);
 	virtual void PostLoad() override;
 
@@ -908,11 +1012,24 @@ public:
 
 	/** Get available Metadata within the animation asset
 	 */
-	ENGINE_API const TArray<class UAnimMetaData*>& GetMetaData() const { return MetaData; }
-	ENGINE_API void AddMetaData(class UAnimMetaData* MetaDataInstance); 
-	ENGINE_API void EmptyMetaData() { MetaData.Empty(); }	
-	ENGINE_API void RemoveMetaData(class UAnimMetaData* MetaDataInstance);
-	ENGINE_API void RemoveMetaData(const TArray<class UAnimMetaData*> MetaDataInstances);
+	const TArray<UAnimMetaData*>& GetMetaData() const { return MetaData; }
+	
+	/** Returns the first metadata of the specified class */
+	UAnimMetaData* FindMetaDataByClass(const TSubclassOf<UAnimMetaData> MetaDataClass) const;
+
+	/** Templatized version of FindMetaDataByClass that handles casting for you */
+	template<class T>
+	T* FindMetaDataByClass() const
+	{
+		static_assert(TPointerIsConvertibleFromTo<T, const UAnimMetaData>::Value, "'T' template parameter to FindMetaDataByClass must be derived from UAnimMetaData");
+
+		return (T*)FindMetaDataByClass(T::StaticClass());
+	}
+	
+	void AddMetaData(UAnimMetaData* MetaDataInstance); 
+	void EmptyMetaData() { MetaData.Empty(); }	
+	void RemoveMetaData(UAnimMetaData* MetaDataInstance);
+	void RemoveMetaData(TArrayView<UAnimMetaData*> MetaDataInstances);
 
 	/** IInterface_PreviewMeshProvider interface */
 	virtual void SetPreviewMesh(USkeletalMesh* PreviewMesh, bool bMarkAsDirty = true) override;
@@ -920,37 +1037,41 @@ public:
 	virtual USkeletalMesh* GetPreviewMesh() const override;
 
 #if WITH_EDITOR
+	/** Sets or updates the preview skeletal mesh */
+	UFUNCTION(BlueprintCallable, Category=Animation)
+	void SetPreviewSkeletalMesh(USkeletalMesh* PreviewMesh) { SetPreviewMesh(PreviewMesh); }
+	
 	/** Replace Skeleton 
 	 * 
 	 * @param NewSkeleton	NewSkeleton to change to 
 	 */
-	ENGINE_API bool ReplaceSkeleton(USkeleton* NewSkeleton, bool bConvertSpaces=false);
+	bool ReplaceSkeleton(USkeleton* NewSkeleton, bool bConvertSpaces=false);
 
 	// Helper function for GetAllAnimationSequencesReferred, it adds itself first and call GetAllAnimationSEquencesReferred
-	ENGINE_API void HandleAnimReferenceCollection(TArray<UAnimationAsset*>& AnimationAssets, bool bRecursive);
+	void HandleAnimReferenceCollection(TArray<UAnimationAsset*>& AnimationAssets, bool bRecursive);
 
 protected:
 	/** Retrieve all animations that are used by this asset 
 	 * 
 	 * @param (out)		AnimationSequences 
 	 **/
-	ENGINE_API virtual bool GetAllAnimationSequencesReferred(TArray<class UAnimationAsset*>& AnimationSequences, bool bRecursive = true);
+	virtual bool GetAllAnimationSequencesReferred(TArray<class UAnimationAsset*>& AnimationSequences, bool bRecursive = true);
 
 public:
 	/** Replace this assets references to other animations based on ReplacementMap 
 	 * 
 	 * @param ReplacementMap	Mapping of original asset to new asset
 	 **/
-	ENGINE_API virtual void ReplaceReferredAnimations(const TMap<UAnimationAsset*, UAnimationAsset*>& ReplacementMap);
+	virtual void ReplaceReferredAnimations(const TMap<UAnimationAsset*, UAnimationAsset*>& ReplacementMap);
 
-	ENGINE_API virtual int32 GetMarkerUpdateCounter() const { return 0; }
+	virtual int32 GetMarkerUpdateCounter() const { return 0; }
 
 	/** 
 	 * Parent Asset related function. Used by editor
 	 */
-	ENGINE_API void SetParentAsset(UAnimationAsset* InParentAsset);
-	ENGINE_API bool HasParentAsset() { return ParentAsset != nullptr;  }
-	ENGINE_API bool RemapAsset(UAnimationAsset* SourceAsset, UAnimationAsset* TargetAsset);
+	void SetParentAsset(UAnimationAsset* InParentAsset);
+	bool HasParentAsset() { return ParentAsset != nullptr;  }
+	bool RemapAsset(UAnimationAsset* SourceAsset, UAnimationAsset* TargetAsset);
 	// we have to update whenever we have anything loaded
 	void UpdateParentAsset();
 protected:
@@ -959,18 +1080,18 @@ protected:
 
 public:
 	/** Return a list of unique marker names for blending compatibility */
-	ENGINE_API virtual TArray<FName>* GetUniqueMarkerNames() { return NULL; }
+	virtual TArray<FName>* GetUniqueMarkerNames() { return NULL; }
 
 	//~ Begin IInterface_AssetUserData Interface
-	ENGINE_API virtual void AddAssetUserData(UAssetUserData* InUserData) override;
-	ENGINE_API virtual void RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
-	ENGINE_API virtual UAssetUserData* GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
-	ENGINE_API virtual const TArray<UAssetUserData*>* GetAssetUserDataArray() const override;
+	virtual void AddAssetUserData(UAssetUserData* InUserData) override;
+	virtual void RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	virtual UAssetUserData* GetAssetUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass) override;
+	virtual const TArray<UAssetUserData*>* GetAssetUserDataArray() const override;
 	//~ End IInterface_AssetUserData Interface
 
 	//~ Begin UObject Interface.
 #if WITH_EDITOR
-	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 
 	/**
@@ -982,12 +1103,12 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Information for thumbnail rendering */
 	UPROPERTY(VisibleAnywhere, Instanced, Category = Thumbnail)
-	class UThumbnailInfo* ThumbnailInfo;
+	TObjectPtr<class UThumbnailInfo> ThumbnailInfo;
 
 	/** The default skeletal mesh to use when previewing this asset - this only applies when you open Persona using this asset*/
 	// @todo: note that this doesn't retarget right now
 	UPROPERTY(duplicatetransient, EditAnywhere, Category = Animation)
-	class UPoseAsset* PreviewPoseAsset;
+	TObjectPtr<class UPoseAsset> PreviewPoseAsset;
 
 private:
 	/** The default skeletal mesh to use when previewing this asset - this only applies when you open Persona using this asset*/

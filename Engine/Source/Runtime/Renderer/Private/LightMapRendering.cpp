@@ -211,10 +211,10 @@ void InterpolateVolumetricLightmap(
 		Swap(SHCoefficientEncoded.R, SHCoefficientEncoded.B);
 
 		const FLinearColor& DenormalizationScales = ((CoefficientIndex & 1) == 0) ? SHDenormalizationScales0 : SHDenormalizationScales1;
-		return FVector4((SHCoefficientEncoded * 2.0f - FLinearColor(1.0f, 1.0f, 1.0f, 1.0f)) * AmbientVector[CoefficientIndex / 2] * DenormalizationScales);
+		return FVector4f((SHCoefficientEncoded * 2.0f - FLinearColor(1.0f, 1.0f, 1.0f, 1.0f)) * AmbientVector[CoefficientIndex / 2] * DenormalizationScales);
 	};
 
-	auto GetSHVector3 = [](float Ambient, const FVector4& Coeffs0, const FVector4& Coeffs1 )
+	auto GetSHVector3 = [](float Ambient, const FVector4f& Coeffs0, const FVector4f& Coeffs1 )
 	{
 		FSHVector3 Result;
 		Result.V[0] = Ambient;
@@ -243,15 +243,15 @@ void InterpolateVolumetricLightmap(
 	}
 
 	// Pack the 3rd order SH as the shader expects
-	OutInterpolation.IndirectLightingSHCoefficients0[0] = FVector4(LQSH.R.V[0], LQSH.R.V[1], LQSH.R.V[2], LQSH.R.V[3]) * INV_PI;
-	OutInterpolation.IndirectLightingSHCoefficients0[1] = FVector4(LQSH.G.V[0], LQSH.G.V[1], LQSH.G.V[2], LQSH.G.V[3]) * INV_PI;
-	OutInterpolation.IndirectLightingSHCoefficients0[2] = FVector4(LQSH.B.V[0], LQSH.B.V[1], LQSH.B.V[2], LQSH.B.V[3]) * INV_PI;
-	OutInterpolation.IndirectLightingSHCoefficients1[0] = FVector4(LQSH.R.V[4], LQSH.R.V[5], LQSH.R.V[6], LQSH.R.V[7]) * INV_PI;
-	OutInterpolation.IndirectLightingSHCoefficients1[1] = FVector4(LQSH.G.V[4], LQSH.G.V[5], LQSH.G.V[6], LQSH.G.V[7]) * INV_PI;
-	OutInterpolation.IndirectLightingSHCoefficients1[2] = FVector4(LQSH.B.V[4], LQSH.B.V[5], LQSH.B.V[6], LQSH.B.V[7]) * INV_PI;
-	OutInterpolation.IndirectLightingSHCoefficients2 = FVector4(LQSH.R.V[8], LQSH.G.V[8], LQSH.B.V[8], 0.0f) * INV_PI;
+	OutInterpolation.IndirectLightingSHCoefficients0[0] = FVector4f(LQSH.R.V[0], LQSH.R.V[1], LQSH.R.V[2], LQSH.R.V[3]) * INV_PI;
+	OutInterpolation.IndirectLightingSHCoefficients0[1] = FVector4f(LQSH.G.V[0], LQSH.G.V[1], LQSH.G.V[2], LQSH.G.V[3]) * INV_PI;
+	OutInterpolation.IndirectLightingSHCoefficients0[2] = FVector4f(LQSH.B.V[0], LQSH.B.V[1], LQSH.B.V[2], LQSH.B.V[3]) * INV_PI;
+	OutInterpolation.IndirectLightingSHCoefficients1[0] = FVector4f(LQSH.R.V[4], LQSH.R.V[5], LQSH.R.V[6], LQSH.R.V[7]) * INV_PI;
+	OutInterpolation.IndirectLightingSHCoefficients1[1] = FVector4f(LQSH.G.V[4], LQSH.G.V[5], LQSH.G.V[6], LQSH.G.V[7]) * INV_PI;
+	OutInterpolation.IndirectLightingSHCoefficients1[2] = FVector4f(LQSH.B.V[4], LQSH.B.V[5], LQSH.B.V[6], LQSH.B.V[7]) * INV_PI;
+	OutInterpolation.IndirectLightingSHCoefficients2 = FVector4f(LQSH.R.V[8], LQSH.G.V[8], LQSH.B.V[8], 0.0f) * INV_PI;
 
-	OutInterpolation.IndirectLightingSHSingleCoefficient = FVector4(AmbientVector.X, AmbientVector.Y, AmbientVector.Z)
+	OutInterpolation.IndirectLightingSHSingleCoefficient = FVector4f(AmbientVector.X, AmbientVector.Y, AmbientVector.Z)
 		* FSHVector2::ConstantBasisIntegral * .5f;
 
 	if (VolumetricLightmapData.BrickData.SkyBentNormal.Data.Num() > 0)
@@ -259,13 +259,13 @@ void InterpolateVolumetricLightmap(
 		const FLinearColor SkyBentNormalUnpacked = FilteredVolumeLookup<FColor>(BrickTextureCoordinate, VolumetricLightmapData.BrickDataDimensions, (const FColor*)VolumetricLightmapData.BrickData.SkyBentNormal.Data.GetData());
 		const FVector SkyBentNormal(SkyBentNormalUnpacked.R, SkyBentNormalUnpacked.G, SkyBentNormalUnpacked.B);
 		const float BentNormalLength = SkyBentNormal.Size();
-		OutInterpolation.PointSkyBentNormal = FVector4(SkyBentNormal / FMath::Max(BentNormalLength, .0001f), BentNormalLength);
+		OutInterpolation.PointSkyBentNormal = FVector4f((FVector3f)SkyBentNormal / FMath::Max(BentNormalLength, .0001f), BentNormalLength);
 		//Swap X and Z channel because it was swapped at ImportVolumetricLightmap for changing format from BGRA to RGBA
 		Swap(OutInterpolation.PointSkyBentNormal.X, OutInterpolation.PointSkyBentNormal.Z);
 	}
 	else
 	{
-		OutInterpolation.PointSkyBentNormal = FVector4(0, 0, 1, 1);
+		OutInterpolation.PointSkyBentNormal = FVector4f(0, 0, 1, 1);
 	}
 
 	const FLinearColor DirectionalLightShadowingUnpacked = FilteredVolumeLookup<uint8>(BrickTextureCoordinate, VolumetricLightmapData.BrickDataDimensions, (const uint8*)VolumetricLightmapData.BrickData.DirectionalLightShadowing.Data.GetData());
@@ -321,17 +321,17 @@ void GetIndirectLightingCacheParameters(
 			Parameters.IndirectLightingSHSingleCoefficient = Interpolation->IndirectLightingSHSingleCoefficient;
 
 			// Unused
-			Parameters.IndirectLightingCachePrimitiveAdd = FVector(0, 0, 0);
-			Parameters.IndirectLightingCachePrimitiveScale = FVector(1, 1, 1);
-			Parameters.IndirectLightingCacheMinUV = FVector(0, 0, 0);
-			Parameters.IndirectLightingCacheMaxUV = FVector(1, 1, 1);
+			Parameters.IndirectLightingCachePrimitiveAdd = FVector3f::ZeroVector;
+			Parameters.IndirectLightingCachePrimitiveScale = FVector3f::OneVector;
+			Parameters.IndirectLightingCacheMinUV = FVector3f::ZeroVector;
+			Parameters.IndirectLightingCacheMaxUV = FVector3f::OneVector;
 		}
 		else if (LightingAllocation)
 		{
-			Parameters.IndirectLightingCachePrimitiveAdd = LightingAllocation->Add;
-			Parameters.IndirectLightingCachePrimitiveScale = LightingAllocation->Scale;
-			Parameters.IndirectLightingCacheMinUV = LightingAllocation->MinUV;
-			Parameters.IndirectLightingCacheMaxUV = LightingAllocation->MaxUV;
+			Parameters.IndirectLightingCachePrimitiveAdd = (FVector3f)LightingAllocation->Add;
+			Parameters.IndirectLightingCachePrimitiveScale = (FVector3f)LightingAllocation->Scale;
+			Parameters.IndirectLightingCacheMinUV = (FVector3f)LightingAllocation->MinUV;
+			Parameters.IndirectLightingCacheMaxUV = (FVector3f)LightingAllocation->MaxUV;
 			Parameters.PointSkyBentNormal = LightingAllocation->CurrentSkyBentNormal;
 			Parameters.DirectionalLightShadowing = LightingAllocation->CurrentDirectionalShadowing;
 
@@ -341,25 +341,25 @@ void GetIndirectLightingCacheParameters(
 				Parameters.IndirectLightingSHCoefficients1[i] = LightingAllocation->SingleSamplePacked1[i];
 			}
 			Parameters.IndirectLightingSHCoefficients2 = LightingAllocation->SingleSamplePacked2;
-			Parameters.IndirectLightingSHSingleCoefficient = FVector4(LightingAllocation->SingleSamplePacked0[0].X, LightingAllocation->SingleSamplePacked0[1].X, LightingAllocation->SingleSamplePacked0[2].X)
+			Parameters.IndirectLightingSHSingleCoefficient = FVector4f(LightingAllocation->SingleSamplePacked0[0].X, LightingAllocation->SingleSamplePacked0[1].X, LightingAllocation->SingleSamplePacked0[2].X)
 					* FSHVector2::ConstantBasisIntegral * .5f; //@todo - why is .5f needed to match directional?
 		}
 		else
 		{
-			Parameters.IndirectLightingCachePrimitiveAdd = FVector(0, 0, 0);
-			Parameters.IndirectLightingCachePrimitiveScale = FVector(1, 1, 1);
-			Parameters.IndirectLightingCacheMinUV = FVector(0, 0, 0);
-			Parameters.IndirectLightingCacheMaxUV = FVector(1, 1, 1);
-			Parameters.PointSkyBentNormal = FVector4(0, 0, 1, 1);
+			Parameters.IndirectLightingCachePrimitiveAdd = FVector3f::ZeroVector;
+			Parameters.IndirectLightingCachePrimitiveScale = FVector3f::OneVector;
+			Parameters.IndirectLightingCacheMinUV = FVector3f::ZeroVector;
+			Parameters.IndirectLightingCacheMaxUV = FVector3f::OneVector;
+			Parameters.PointSkyBentNormal = FVector4f(0, 0, 1, 1);
 			Parameters.DirectionalLightShadowing = 1;
 
 			for (uint32 i = 0; i < 3; ++i) // RGB
 			{
-				Parameters.IndirectLightingSHCoefficients0[i] = FVector4(0, 0, 0, 0);
-				Parameters.IndirectLightingSHCoefficients1[i] = FVector4(0, 0, 0, 0);
+				Parameters.IndirectLightingSHCoefficients0[i] = FVector4f(0, 0, 0, 0);
+				Parameters.IndirectLightingSHCoefficients1[i] = FVector4f(0, 0, 0, 0);
 			}
-			Parameters.IndirectLightingSHCoefficients2 = FVector4(0, 0, 0, 0);
-			Parameters.IndirectLightingSHSingleCoefficient = FVector4(0, 0, 0, 0);
+			Parameters.IndirectLightingSHCoefficients2 = FVector4f(0, 0, 0, 0);
+			Parameters.IndirectLightingSHSingleCoefficient = FVector4f(0, 0, 0, 0);
 		}
 
 		// If we are using FCachedVolumeIndirectLightingPolicy then InitViews should have updated the lighting cache which would have initialized it
@@ -376,7 +376,6 @@ void GetIndirectLightingCacheParameters(
 			Parameters.IndirectLightingCacheTextureSampler2 = TStaticSamplerState<SF_Bilinear,AM_Clamp,AM_Clamp,AM_Clamp>::GetRHI();
 		}
 		else
-		if (FeatureLevel >= ERHIFeatureLevel::ES3_1)
 		{
 			Parameters.IndirectLightingCacheTexture0 = GBlackVolumeTexture->TextureRHI;
 			Parameters.IndirectLightingCacheTexture1 = GBlackVolumeTexture->TextureRHI;
@@ -385,16 +384,6 @@ void GetIndirectLightingCacheParameters(
 			Parameters.IndirectLightingCacheTextureSampler0 = GBlackVolumeTexture->SamplerStateRHI;
 			Parameters.IndirectLightingCacheTextureSampler1 = GBlackVolumeTexture->SamplerStateRHI;
 			Parameters.IndirectLightingCacheTextureSampler2 = GBlackVolumeTexture->SamplerStateRHI;
-		}
-		else
-		{
-			Parameters.IndirectLightingCacheTexture0 = GBlackTexture->TextureRHI;
-			Parameters.IndirectLightingCacheTexture1 = GBlackTexture->TextureRHI;
-			Parameters.IndirectLightingCacheTexture2 = GBlackTexture->TextureRHI;
-
-			Parameters.IndirectLightingCacheTextureSampler0 = GBlackTexture->SamplerStateRHI;
-			Parameters.IndirectLightingCacheTextureSampler1 = GBlackTexture->SamplerStateRHI;
-			Parameters.IndirectLightingCacheTextureSampler2 = GBlackTexture->SamplerStateRHI;
 		}
 	}
 }

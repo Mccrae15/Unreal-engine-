@@ -23,6 +23,9 @@
 class CORE_API FThread final
 {
 public:
+	// indicates if the thread should be forked in case the owning process is forked
+	enum EForkable { Forkable, NonForkable };
+
 	/**
 	 * Creates new "empty" thread object that doesn't represent a system thread
 	 */
@@ -30,19 +33,34 @@ public:
 	{}
 
 	/**
-	 * Creates and immediately starts a new system thread that will execute `ThreadFunction` argument.
-	 * Can return before the thread is actually started or when it already finished execution.
-	 * @param ThreadName Name of the thread
-	 * @param ThreadFunction The function that will be executed by the newly created thread
-	 * @param StackSize The size of the stack to create. 0 means use the current thread's stack size
-	 * @param ThreadPriority Tells the thread whether it needs to adjust its priority or not. Defaults to normal priority
-	 */
+	* Creates and immediately starts a new system thread that will execute `ThreadFunction` argument.
+	* Can return before the thread is actually started or when it already finished execution.
+	* @param ThreadName Name of the thread
+	* @param ThreadFunction The function that will be executed by the newly created thread
+	* @param StackSize The size of the stack to create. 0 means use the current thread's stack size
+	* @param ThreadPriority Tells the thread whether it needs to adjust its priority or not. Defaults to normal priority
+	* @param ThreadAffinity Tells the thread whether it needs to adjust its affinity or not. Defaults to no affinity
+	* @param IsForkable Tells the thread whether it can be forked. Defaults to NonForkable
+	*/
 	FThread(
 		TCHAR const* ThreadName,
 		TUniqueFunction<void()>&& ThreadFunction,
 		uint32 StackSize = 0,
 		EThreadPriority ThreadPriority = TPri_Normal,
-		uint64 ThreadAffinityMask = FPlatformAffinity::GetNoAffinityMask()
+		FThreadAffinity ThreadAffinity = FThreadAffinity(),
+		EForkable IsForkable = NonForkable
+	);
+
+	// with SingleThreadTickFunction that will be executed every frame if running with `-nothreading
+	// (FPlatformProcess::SupportsMultithreading() == false)
+	FThread(
+		TCHAR const* ThreadName,
+		TUniqueFunction<void()>&& ThreadFunction,
+		TUniqueFunction<void()>&& SingleThreadTickFunction,
+		uint32 StackSize = 0,
+		EThreadPriority ThreadPriority = TPri_Normal,
+		FThreadAffinity ThreadAffinity = FThreadAffinity(),
+		EForkable IsForkable = NonForkable
 	);
 
 	// non-copyable

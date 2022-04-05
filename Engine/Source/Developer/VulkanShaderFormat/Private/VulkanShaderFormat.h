@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "SpirvCommon.h"
 #include "hlslcc.h"
 
 enum class EVulkanShaderVersion
@@ -30,9 +31,8 @@ struct FCompilerInfo
 };
 
 
-struct FSpirv
+struct FVulkanSpirv : FSpirv
 {
-	TArray<uint32> Data;
 	struct FEntry
 	{
 		FEntry() = default;
@@ -52,10 +52,10 @@ struct FSpirv
 		// Index into the Spirv Word containing the binding index decoration
 		uint32 WordBindingIndex = UINT32_MAX;
 	};
+
 	TArray<FEntry> ReflectionInfo;
-	uint32 OffsetToMainName = 0;
-	uint32 OffsetToEntryPoint = 0;
 	uint32 CRC = 0;
+	const ANSICHAR* EntryPointName = nullptr;
 
 	int32 FindBinding(const FString& Name, bool bOuter = false) const
 	{
@@ -135,7 +135,7 @@ struct FSpirv
 };
 
 // Updates all reflection entries in the specified SPIR-V module.
-extern bool PatchSpirvReflectionEntriesAndEntryPoint(FSpirv& OutSpirv);
+extern void PatchSpirvReflectionEntries(FVulkanSpirv& OutSpirv);
 
 // Generates SPIR-V out of the specified GLSL source code.
-extern bool GenerateSpirv(const ANSICHAR* Source, FCompilerInfo& CompilerInfo, FString& OutErrors, const FString& DumpDebugInfoPath, FSpirv& OutSpirv);
+extern bool GenerateSpirv(const ANSICHAR* Source, FCompilerInfo& CompilerInfo, FString& OutErrors, const FString& DumpDebugInfoPath, FVulkanSpirv& OutSpirv);

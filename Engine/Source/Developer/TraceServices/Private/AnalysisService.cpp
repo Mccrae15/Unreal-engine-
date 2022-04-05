@@ -20,7 +20,7 @@
 #include "Model/Channel.h"
 #include "Model/DiagnosticsPrivate.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 thread_local FAnalysisSessionLock* GThreadCurrentSessionLock;
@@ -79,11 +79,13 @@ void FAnalysisSessionLock::EndEdit()
 	}
 }
 
-FAnalysisSession::FAnalysisSession(const TCHAR* SessionName, TUniquePtr<Trace::IInDataStream>&& InDataStream)
+FAnalysisSession::FAnalysisSession(uint32 InTraceId, const TCHAR* SessionName, TUniquePtr<UE::Trace::IInDataStream>&& InDataStream)
 	: Name(SessionName)
+	, TraceId(InTraceId)
 	, DurationSeconds(0.0)
 	, Allocator(32 << 20)
 	, StringStore(Allocator)
+	, Cache(*Name)
 	, DataStream(MoveTemp(InDataStream))
 {
 }
@@ -102,8 +104,8 @@ FAnalysisSession::~FAnalysisSession()
 
 void FAnalysisSession::Start()
 {
-	FAnalysisContext Context;
-	for (Trace::IAnalyzer* Analyzer : ReadAnalyzers())
+	UE::Trace::FAnalysisContext Context;
+	for (UE::Trace::IAnalyzer* Analyzer : ReadAnalyzers())
 	{
 		Context.AddAnalyzer(*Analyzer);
 	}
@@ -113,6 +115,7 @@ void FAnalysisSession::Start()
 void FAnalysisSession::Stop(bool bAndWait) const
 {
 	DataStream->Close();
+	Processor.Stop();
 	if (bAndWait)
 	{
 		Wait();
@@ -124,7 +127,7 @@ void FAnalysisSession::Wait() const
 	Processor.Wait();
 }
 
-void FAnalysisSession::AddAnalyzer(IAnalyzer* Analyzer)
+void FAnalysisSession::AddAnalyzer(UE::Trace::IAnalyzer* Analyzer)
 {
 	Analyzers.Add(Analyzer);
 }
@@ -180,7 +183,7 @@ TSharedPtr<const IAnalysisSession> FAnalysisService::Analyze(const TCHAR* Sessio
 TSharedPtr<const IAnalysisSession> FAnalysisService::StartAnalysis(const TCHAR* SessionUri)
 {
 	struct FFileDataStream
-		: public IInDataStream
+		: public UE::Trace::IInDataStream
 	{
 		virtual int32 Read(void* Data, uint32 Size) override
 		{
@@ -209,15 +212,15 @@ TSharedPtr<const IAnalysisSession> FAnalysisService::StartAnalysis(const TCHAR* 
 	FileStream->Handle = TUniquePtr<IFileHandle>(Handle);
 	FileStream->Remaining = Handle->Size();
 
-	TUniquePtr<IInDataStream> DataStream(FileStream);
-	return StartAnalysis(SessionUri, MoveTemp(DataStream));
+	TUniquePtr<UE::Trace::IInDataStream> DataStream(FileStream);
+	return StartAnalysis(~0, SessionUri, MoveTemp(DataStream));
 }
 
-TSharedPtr<const IAnalysisSession> FAnalysisService::StartAnalysis(const TCHAR* SessionName, TUniquePtr<Trace::IInDataStream>&& DataStream)
+TSharedPtr<const IAnalysisSession> FAnalysisService::StartAnalysis(uint32 TraceId, const TCHAR* SessionName, TUniquePtr<UE::Trace::IInDataStream>&& DataStream)
 {
-	TSharedRef<FAnalysisSession> Session = MakeShared<FAnalysisSession>(SessionName, MoveTemp(DataStream));
+	TSharedRef<FAnalysisSession> Session = MakeShared<FAnalysisSession>(TraceId, SessionName, MoveTemp(DataStream));
 
-	Trace::FAnalysisSessionEditScope _(*Session);
+	FAnalysisSessionEditScope _(*Session);
 
 	FBookmarkProvider* BookmarkProvider = new FBookmarkProvider(*Session);
 	Session->AddProvider(FBookmarkProvider::ProviderName, BookmarkProvider);
@@ -234,17 +237,8 @@ TSharedPtr<const IAnalysisSession> FAnalysisService::StartAnalysis(const TCHAR* 
 	FCounterProvider* CounterProvider = new FCounterProvider(*Session, *FrameProvider);
 	Session->AddProvider(FCounterProvider::ProviderName, CounterProvider);
 
-	FNetProfilerProvider* NetProfilerProvider = new FNetProfilerProvider(*Session);
-	Session->AddProvider(FNetProfilerProvider::ProviderName, NetProfilerProvider);
-
 	FChannelProvider* ChannelProvider = new FChannelProvider();
 	Session->AddProvider(FChannelProvider::ProviderName, ChannelProvider);
-
-	FMemoryProvider* MemoryProvider = new FMemoryProvider(*Session);
-	Session->AddProvider(FMemoryProvider::ProviderName, MemoryProvider);
-
-	FDiagnosticsProvider* DiagnosticsProvider = new FDiagnosticsProvider(*Session);
-	Session->AddProvider(FDiagnosticsProvider::ProviderName, DiagnosticsProvider);
 
 	Session->AddAnalyzer(new FMiscTraceAnalyzer(*Session, *ThreadProvider, *BookmarkProvider, *LogProvider, *FrameProvider, *ChannelProvider));
 	Session->AddAnalyzer(new FLogTraceAnalyzer(*Session, *LogProvider));
@@ -255,4 +249,4 @@ TSharedPtr<const IAnalysisSession> FAnalysisService::StartAnalysis(const TCHAR* 
 	return Session;
 }
 
-}
+} // namespace TraceServices

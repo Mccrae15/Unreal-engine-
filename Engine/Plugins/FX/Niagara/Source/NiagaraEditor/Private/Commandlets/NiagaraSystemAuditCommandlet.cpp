@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Commandlets/NiagaraSystemAuditCommandlet.h"
+#include "DeviceProfiles/DeviceProfile.h"
+#include "DeviceProfiles/DeviceProfileManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
@@ -11,10 +13,13 @@
 #include "CollectionManagerTypes.h"
 #include "ICollectionManager.h"
 #include "CollectionManagerModule.h"
+#include "FileHelpers.h"
 
+#include "NiagaraSettings.h"
 #include "NiagaraSystem.h"
 #include "NiagaraRendererProperties.h"
 #include "NiagaraLightRendererProperties.h"
+#include "NiagaraRibbonRendererProperties.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogNiagaraSystemAuditCommandlet, Log, All);
 
@@ -36,6 +41,7 @@ int32 UNiagaraSystemAuditCommandlet::Main(const FString& Params)
 
 	FParse::Value(*Params, TEXT("FilterCollection="), FilterCollection);
 
+	INiagaraModule& NiagaraModule = FModuleManager::LoadModuleChecked<INiagaraModule>("Niagara");
 	// User Data Interfaces to Find
 	{
 		FString UserDataInterfacesToFindString;
@@ -57,6 +63,31 @@ int32 UNiagaraSystemAuditCommandlet::Main(const FString& Params)
 		}
 	}
 
+	// Disable on specific platforms
+	// Example: -run=NiagaraSystemAuditCommandlet -DeviceProfilesToDisableGpu=Mobile
+	{
+		FString DeviceNamesArrayString;
+		if ( FParse::Value(*Params, TEXT("DeviceProfilesToDisableGpu="), DeviceNamesArrayString, false))
+		{
+			TArray<FString> DeviceNamesArray;
+			DeviceNamesArrayString.ParseIntoArray(DeviceNamesArray, TEXT(","));
+
+			for (FString DeviceString : DeviceNamesArray)
+			{
+				FName DeviceName(DeviceString);
+				TObjectPtr<UDeviceProfile>* DeviceProfile = UDeviceProfileManager::Get().Profiles.FindByPredicate([&](UObject* Device) {return Device->GetFName() == DeviceName; });
+				if (DeviceProfile)
+				{
+					DeviceProfilesToDisableGpu.Add(*DeviceProfile);
+				}
+			}
+		}
+	}
+
+	FParse::Bool(*Params, TEXT("RendererDetailed="), bRendererDetailed);
+
+	FParse::Bool(*Params, TEXT("CaptureDataInterfaceUsage="), bCaptureDataInterfaceUsage);
+
 	// Package Paths
 	FString PackagePathsString;
 	if (FParse::Value(*Params, TEXT("PackagePaths="), PackagePathsString, false))
@@ -69,7 +100,7 @@ int32 UNiagaraSystemAuditCommandlet::Main(const FString& Params)
 		}
 	}
 
-	if (PackagePaths.Num() == 0)
+	if (PackagePaths.Num() == 0 && FParse::Param(*Params, TEXT("GameContentOnly")))
 	{
 		PackagePaths.Add(FName(TEXT("/Game")));
 	}
@@ -102,11 +133,16 @@ bool UNiagaraSystemAuditCommandlet::ProcessNiagaraSystems()
 
 	const double StartProcessNiagaraSystemsTime = FPlatformTime::Seconds();
 
+	// Get Settings
+	const UNiagaraSettings* NiagaraSettings = GetDefault<UNiagaraSettings>();
+
 	//  Iterate over all systems
 	const FString DevelopersFolder = FPackageName::FilenameToLongPackageName(FPaths::GameDevelopersDir().LeftChop(1));
 	FString LastPackageName = TEXT("");
 	int32 PackageSwitches = 0;
 	UPackage* CurrentPackage = nullptr;
+	TArray<UPackage*> PackagesToSave;
+
 	for (const FAssetData& AssetIt : AssetList)
 	{
 		const FString SystemName = AssetIt.ObjectPath.ToString();
@@ -147,6 +183,13 @@ bool UNiagaraSystemAuditCommandlet::ProcessNiagaraSystems()
 		TSet<FName> SystemUserDataInterfaces;
 		for (UNiagaraDataInterface* DataInterface : GetDataInterfaces(NiagaraSystem))
 		{
+			if (bCaptureDataInterfaceUsage)
+			{
+				FDataInterfaceUsage& DataInterfaceUsage = NiagaraDataInterfaceUsage.FindOrAdd(DataInterface->GetClass()->GetFName());
+				++DataInterfaceUsage.UsageCount;
+				DataInterfaceUsage.Systems.Add(NiagaraSystem->GetFName());
+			}
+
 			if (DataInterface->HasTickGroupPrereqs())
 			{
 				SystemDataInterfacesWihPrereqs.Add(DataInterface->GetClass()->GetFName());
@@ -158,8 +201,8 @@ bool UNiagaraSystemAuditCommandlet::ProcessNiagaraSystems()
 		}
 
 		// Iterate over all emitters
+		FString EmittersWithDynamicBounds;
 		bool bHasLights = false;
-		bool bHasGPUEmitters = false;
 		bool bHasEvents = false;
 
 		for (const FNiagaraEmitterHandle& EmitterHandle : NiagaraSystem->GetEmitterHandles())
@@ -170,16 +213,96 @@ bool UNiagaraSystemAuditCommandlet::ProcessNiagaraSystems()
 				continue;
 			}
 
-			bHasGPUEmitters |= NiagaraEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim;
+			if ( !EmitterHandle.GetIsEnabled() )
+			{
+				continue;
+			}
+
+			if (NiagaraEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim)
+			{
+				// Optionally disable GPU emitters
+				for (UDeviceProfile* DeviceProfile : DeviceProfilesToDisableGpu)
+				{
+					const int32 DeviceQualityLevelMask = NiagaraEmitter->Platforms.IsEnabledForDeviceProfile(DeviceProfile);
+					if (DeviceQualityLevelMask != 0)
+					{
+						for (int32 iQualityLevel = 0; iQualityLevel < NiagaraSettings->QualityLevels.Num(); ++iQualityLevel)
+						{
+							if ( (DeviceQualityLevelMask & (1 << iQualityLevel)) != 0 )
+							{
+								NiagaraEmitter->Platforms.SetDeviceProfileState(DeviceProfile, iQualityLevel, ENiagaraPlatformSelectionState::Disabled);
+							}
+						}
+
+						PackagesToSave.AddUnique(CurrentPackage);
+						CurrentPackage->SetDirtyFlag(true);
+
+						UE_LOG(LogNiagaraSystemAuditCommandlet, Log, TEXT("Disabling Emitter %s for System %s Device Quality Level Mask 0x%08x"), *GetNameSafe(NiagaraEmitter), *GetNameSafe(NiagaraSystem), DeviceQualityLevelMask);
+					}
+				}
+
+				// Build information to write out
+				TStringBuilder<512> GpuEmitterBuilder;
+				GpuEmitterBuilder.Append(NiagaraEmitter->GetDebugSimName());
+				for (int32 iQualityLevel=0; iQualityLevel < NiagaraSettings->QualityLevels.Num(); ++iQualityLevel)
+				{
+					const bool bEnabled = NiagaraEmitter->Platforms.IsEffectQualityEnabled(iQualityLevel);
+
+					TArray<UDeviceProfile*> EnabledProfiles;
+					TArray<UDeviceProfile*> DisabledProfiles;
+					NiagaraEmitter->Platforms.GetOverridenDeviceProfiles(iQualityLevel, EnabledProfiles, DisabledProfiles);
+
+					GpuEmitterBuilder.Append(TEXT(","));
+					GpuEmitterBuilder.Append(bEnabled ? TEXT("Enabled") : TEXT("Disabled"));
+
+					for (UDeviceProfile* EnabledProfile : EnabledProfiles)
+					{
+						GpuEmitterBuilder.Appendf(TEXT(" +%s"), *EnabledProfile->GetFName().ToString());
+					}
+					for (UDeviceProfile* DisabledProfile : DisabledProfiles)
+					{
+						GpuEmitterBuilder.Appendf(TEXT(" -%s"), *DisabledProfile->GetFName().ToString());
+					}
+				}
+
+				GpuEmitterBuilder.Append(TEXT(","));
+				for (const FNiagaraPlatformSetCVarCondition& Condition : NiagaraEmitter->Platforms.CVarConditions)
+				{
+					GpuEmitterBuilder.Appendf(TEXT(" CVarName(%s)"), *Condition.CVarName.ToString());
+				}
+
+				GpuEmitterBuilder.Append(TEXT(","));
+				GpuEmitterBuilder.Append(NiagaraSystem->GetPathName());
+				NiagaraSystemsWithGPUEmitters.Add(GpuEmitterBuilder.ToString());
+			}
 
 			bHasEvents |= NiagaraEmitter->GetEventHandlers().Num() > 0;
 
 			for (UNiagaraRendererProperties* RendererProperties : NiagaraEmitter->GetRenderers())
 			{
-				if (UNiagaraLightRendererProperties* LightRendererProperties = Cast< UNiagaraLightRendererProperties>(RendererProperties))
+				if (UNiagaraLightRendererProperties* LightRendererProperties = Cast<UNiagaraLightRendererProperties>(RendererProperties))
 				{
 					bHasLights = true;
 				}
+
+				if ( bRendererDetailed )
+				{
+					if (UNiagaraRibbonRendererProperties* RibbonRendererProperties = Cast<UNiagaraRibbonRendererProperties>(RendererProperties))
+					{
+						static UEnum* NiagaraRibbonTessellationModeEnum = StaticEnum<ENiagaraRibbonTessellationMode>();
+
+						TStringBuilder<512> RendererBuilder;
+						RendererBuilder.Append(NiagaraEmitter->GetPathName());
+						RendererBuilder.Append(TEXT(","));
+						RendererBuilder.Append(NiagaraRibbonTessellationModeEnum->GetValueAsString(RibbonRendererProperties->TessellationMode));
+						NiagaraRibbonRenderers.Add(RendererBuilder.ToString());
+					}
+				}
+			}
+
+			if ( !NiagaraEmitter->bFixedBounds && !NiagaraSystem->bFixedBounds )
+			{
+				EmittersWithDynamicBounds.Append(NiagaraEmitter->GetDebugSimName());
 			}
 		}
 
@@ -194,14 +317,11 @@ bool UNiagaraSystemAuditCommandlet::ProcessNiagaraSystems()
 			NiagaraSystemsWithLights.Add(NiagaraSystem->GetPathName());
 		}
 
-		if (bHasGPUEmitters)
-		{
-			NiagaraSystemsWithGPUEmitters.Add(NiagaraSystem->GetPathName());
-		}
 		if (bHasEvents)
 		{
 			NiagaraSystemsWithEvents.Add(NiagaraSystem->GetPathName());
 		}
+
 		if (SystemDataInterfacesWihPrereqs.Num() > 0)
 		{
 			FString DataInterfaceNames;
@@ -215,6 +335,12 @@ bool UNiagaraSystemAuditCommandlet::ProcessNiagaraSystems()
 			}
 			NiagaraSystemsWithPrerequisites.Add(FString::Printf(TEXT("%s,%s"), *NiagaraSystem->GetPathName(), *DataInterfaceNames));
 		}
+
+		if ( !EmittersWithDynamicBounds.IsEmpty() )
+		{
+			NiagaraSystemsWithDynamicBounds.Add(EmittersWithDynamicBounds);
+		}
+
 		if (SystemUserDataInterfaces.Num() > 0)
 		{
 			FString DataInterfaceNames;
@@ -228,6 +354,12 @@ bool UNiagaraSystemAuditCommandlet::ProcessNiagaraSystems()
 			}
 			NiagaraSystemsWithUserDataInterface.Add(FString::Printf(TEXT("%s,%s"), *NiagaraSystem->GetPathName(), *DataInterfaceNames));
 		}
+	}
+
+	// Anything to save do it
+	if ( PackagesToSave.Num() > 0 )
+	{
+		UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, true);
 	}
 
 	// Probably don't need to do this, but just in case we have any 'hanging' packages 
@@ -246,12 +378,50 @@ void UNiagaraSystemAuditCommandlet::DumpResults()
 	// Dump all the simple mappings...
 	DumpSimpleSet(NiagaraSystemsWithWarmup, TEXT("NiagaraSystemsWithWarmup"), TEXT("Name,WarmupTime"));
 	DumpSimpleSet(NiagaraSystemsWithLights, TEXT("NiagaraSystemsWithLights"), TEXT("Name"));
-	DumpSimpleSet(NiagaraSystemsWithGPUEmitters, TEXT("NiagaraSystemsWithGPUEmitters"), TEXT("Name"));
 	DumpSimpleSet(NiagaraSystemsWithEvents, TEXT("NiagaraSystemsWithEvents"), TEXT("Name"));
 	DumpSimpleSet(NiagaraSystemsWithPrerequisites, TEXT("NiagaraSystemsWithPrerequisites"), TEXT("Name,DataInterface"));
+	DumpSimpleSet(NiagaraSystemsWithDynamicBounds, TEXT("NiagaraSystemsWithDynamicBounds"), TEXT("Name,Emitters With Dynamic Bounds"));
 	if (UserDataInterfacesToFind.Num() > 0)
 	{
 		DumpSimpleSet(NiagaraSystemsWithUserDataInterface, TEXT("NiagaraSystemsWithUserDataInterface"), TEXT("Name,DataInterface"));
+	}
+	if (NiagaraSystemsWithGPUEmitters.Num() > 0)
+	{
+		TStringBuilder<512> HeaderString;
+		HeaderString.Append(TEXT("Emitter Name"));
+		for (const FText& QualityLevelName : GetDefault<UNiagaraSettings>()->QualityLevels)
+		{
+			HeaderString.Append(TEXT(","));
+			HeaderString.Append(QualityLevelName.ToString());
+		}
+		HeaderString.Append(TEXT(",CVar Conditions,System Path"));
+		DumpSimpleSet(NiagaraSystemsWithGPUEmitters, TEXT("NiagaraSystemsWithGPUEmitters"), HeaderString.ToString());
+	}
+
+	if (NiagaraDataInterfaceUsage.Num() > 0)
+	{
+		if ( FArchive* OutputStream = GetOutputFile(TEXT("NiagaraDataInterfaceUsage")) )
+		{
+			OutputStream->Logf(TEXT("Name,Usage Count,Systems"));
+			for ( auto UsageIt=NiagaraDataInterfaceUsage.CreateConstIterator(); UsageIt; ++UsageIt)
+			{
+				FString SystemList;
+				for ( FName SystemName : UsageIt.Value().Systems )
+				{
+					SystemList.Append(*SystemName.ToString());
+					SystemList.AppendChar(' ');
+				}
+
+				OutputStream->Logf(TEXT("%s,%d,%s"), *UsageIt.Key().ToString(), UsageIt.Value().UsageCount, *SystemList);
+			}
+			OutputStream->Close();
+			delete OutputStream;
+		}
+	}
+
+	if (bRendererDetailed)
+	{
+		DumpSimpleSet(NiagaraRibbonRenderers, TEXT("NiagaraRibbonRenderers"), TEXT("Name,TessellationMode"));
 	}
 }
 

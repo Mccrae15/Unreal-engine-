@@ -7,6 +7,11 @@
 #include "ScreenPass.h"
 #include "OverridePassSequence.h"
 
+namespace Nanite
+{
+	struct FRasterResults;
+}
+
 struct FSelectionOutlineInputs
 {
 	// [Optional] Render to the specified output. If invalid, a new texture is created and returned.
@@ -22,6 +27,6 @@ struct FSelectionOutlineInputs
 	FSceneTextureShaderParameters SceneTextures;
 };
 
-FScreenPassTexture AddSelectionOutlinePass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FSelectionOutlineInputs& Inputs);
+FScreenPassTexture AddSelectionOutlinePass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FSelectionOutlineInputs& Inputs, const Nanite::FRasterResults *NaniteRasterResults);
 
 #endif

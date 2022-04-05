@@ -3,31 +3,29 @@
 #include "TidPacketTransport.h"
 #include "Algo/BinarySearch.h"
 #include "HAL/UnrealMemory.h"
-#include "Trace/Detail/Protocol.h"
-
-namespace Trace
-{
 
 ////////////////////////////////////////////////////////////////////////////////
-namespace Private
-{
+namespace UE {
+namespace Trace {
+namespace Private {
 
 TRACELOG_API int32 Decode(const void*, int32, void*, int32);
 
 } // namespace Private
+} // namespace Trace
+} // namespace UE
 
 
+
+namespace UE {
+namespace Trace {
 
 ////////////////////////////////////////////////////////////////////////////////
 bool FTidPacketTransport::ReadPacket()
 {
-	struct FPacketBase
-	{
-		uint16	PacketSize;
-		uint16	ThreadId;
-	};
+	using namespace UE::Trace::Private;
 
-	const auto* PacketBase = GetPointer<FPacketBase>();
+	const auto* PacketBase = GetPointer<FTidPacketBase>();
 	if (PacketBase == nullptr)
 	{
 		return false;
@@ -40,51 +38,63 @@ bool FTidPacketTransport::ReadPacket()
 
 	FTransport::Advance(PacketBase->PacketSize);
 
-	uint32 ThreadId = PacketBase->ThreadId & ~0x8000;
-	FThreadStream& Thread = FindOrAddThread(ThreadId);
+	uint32 ThreadId = PacketBase->ThreadId & FTidPacketBase::ThreadIdMask;
 
-	uint32 DataSize = PacketBase->PacketSize - sizeof(FPacketBase);
-	if (PacketBase->ThreadId != ThreadId)
+	if (ThreadId == ETransportTid::Sync)
 	{
-		uint16* DecodedSize = (uint16*)(PacketBase + 1);
-		uint8* Dest = Thread.Buffer.Append(*DecodedSize);
-		DataSize -= sizeof(*DecodedSize);
-		int32 ResultSize = Private::Decode(DecodedSize + 1, DataSize, Dest, *DecodedSize);
-		check(int32(*DecodedSize) == ResultSize);
+		++Synced;
+		return false;	// Do not read any more packets. Gives consumers a
+						// chance to sample the world at each known sync point.
+	}
+
+	bool bIsPartial = !!(PacketBase->ThreadId & FTidPacketBase::PartialMarker);
+	FThreadStream* Thread = FindOrAddThread(ThreadId, !bIsPartial);
+	if (Thread == nullptr)
+	{
+		return true;
+	}
+
+	uint32 DataSize = PacketBase->PacketSize - sizeof(FTidPacketBase);
+	if (PacketBase->ThreadId & FTidPacketBase::EncodedMarker)
+	{
+		const auto* Packet = (const FTidPacketEncoded*)PacketBase;
+		uint16 DecodedSize = Packet->DecodedSize;
+		uint8* Dest = Thread->Buffer.Append(DecodedSize);
+		DataSize -= sizeof(DecodedSize);
+		int32 ResultSize = UE::Trace::Private::Decode(Packet->Data, DataSize, Dest, DecodedSize);
+		check(int32(DecodedSize) == ResultSize);
 	}
 	else
 	{
-		Thread.Buffer.Append((uint8*)(PacketBase + 1), DataSize);
+		Thread->Buffer.Append((uint8*)(PacketBase + 1), DataSize);
 	}
 
 	return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-FTidPacketTransport::FThreadStream& FTidPacketTransport::FindOrAddThread(uint32 ThreadId)
+FTidPacketTransport::FThreadStream* FTidPacketTransport::FindOrAddThread(
+	uint32	ThreadId,
+	bool	bAddIfNotFound)
 {
 	uint32 ThreadCount = Threads.Num();
 	for (uint32 i = 0; i < ThreadCount; ++i)
 	{
 		if (Threads[i].ThreadId == ThreadId)
 		{
-			return Threads[i];
+			return &(Threads[i]);
 		}
+	}
+	
+	if (!bAddIfNotFound)
+	{
+		return nullptr;
 	}
 
 	FThreadStream Thread;
 	Thread.ThreadId = ThreadId;
-
-	// Internal events are sent over tid 0 and they should be processed first. We
-	// don't care about the order otherwise.
-	if (Thread.ThreadId == ETransportTid::Internal)
-	{
-		Threads.Insert(Thread, 0);
-		return Threads[0];
-	}
-
 	Threads.Add(Thread);
-	return Threads[ThreadCount];
+	return &(Threads[ThreadCount]);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -94,7 +104,7 @@ void FTidPacketTransport::Update()
 
 	Threads.RemoveAll([] (const FThreadStream& Thread)
 	{
-		return Thread.Buffer.IsEmpty();
+		return (Thread.ThreadId <= ETransportTid::Importants) ? false : Thread.Buffer.IsEmpty();
 	});
 }
 
@@ -111,9 +121,10 @@ FStreamReader* FTidPacketTransport::GetThreadStream(uint32 Index)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-int32 FTidPacketTransport::GetThreadId(uint32 Index) const
+uint32 FTidPacketTransport::GetThreadId(uint32 Index) const
 {
 	return Threads[Index].ThreadId;
 }
 
 } // namespace Trace
+} // namespace UE

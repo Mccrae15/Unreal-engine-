@@ -9,7 +9,7 @@ struct FStaticMeshBuildVertex;
 /** A vertex that stores just position. */
 struct FPositionVertex
 {
-	FVector	Position;
+	FVector3f	Position;
 
 	friend FArchive& operator<<(FArchive& Ar, FPositionVertex& V)
 	{
@@ -46,7 +46,7 @@ public:
 	*/
 	void Init(const FPositionVertexBuffer& InVertexBuffer, bool bInNeedsCPUAccess = true);
 
-	ENGINE_API void Init(const TArray<FVector>& InPositions, bool bInNeedsCPUAccess = true);
+	ENGINE_API void Init(const TArray<FVector3f>& InPositions, bool bInNeedsCPUAccess = true);
 
 	/**
 	 * Appends the specified vertices to the end of the buffer
@@ -74,12 +74,12 @@ public:
 	ENGINE_API void operator=(const FPositionVertexBuffer &Other);
 
 	// Vertex data accessors.
-	FORCEINLINE FVector& VertexPosition(uint32 VertexIndex)
+	FORCEINLINE FVector3f& VertexPosition(uint32 VertexIndex)
 	{
 		checkSlow(VertexIndex < GetNumVertices());
 		return ((FPositionVertex*)(Data + VertexIndex * Stride))->Position;
 	}
-	FORCEINLINE const FVector& VertexPosition(uint32 VertexIndex) const
+	FORCEINLINE const FVector3f& VertexPosition(uint32 VertexIndex) const
 	{
 		checkSlow(VertexIndex < GetNumVertices());
 		return ((FPositionVertex*)(Data + VertexIndex * Stride))->Position;
@@ -93,17 +93,18 @@ public:
 	{
 		return NumVertices;
 	}
+	ENGINE_API bool GetAllowCPUAccess() const;
 
 	/** Create an RHI vertex buffer with CPU data. CPU data may be discarded after creation (see TResourceArray::Discard) */
-	FVertexBufferRHIRef CreateRHIBuffer_RenderThread();
-	FVertexBufferRHIRef CreateRHIBuffer_Async();
+	FBufferRHIRef CreateRHIBuffer_RenderThread();
+	FBufferRHIRef CreateRHIBuffer_Async();
 
 	/** Copy everything, keeping reference to the same RHI resources. */
 	void CopyRHIForStreaming(const FPositionVertexBuffer& Other, bool InAllowCPUAccess);
 
 	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
 	template <uint32 MaxNumUpdates>
-	void InitRHIForStreaming(FRHIVertexBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
 	{
 		check(VertexBufferRHI);
 		if (IntermediateBuffer)
@@ -161,6 +162,6 @@ private:
 	void AllocateData(bool bInNeedsCPUAccess = true);
 
 	template <bool bRenderThread>
-	FVertexBufferRHIRef CreateRHIBuffer_Internal();
+	FBufferRHIRef CreateRHIBuffer_Internal();
 };
 

@@ -42,13 +42,14 @@ inline uint64 GetShaderKeyForGfxStage(const FBoundShaderStateInput& BSI, ShaderS
 		return GetShaderKey<FVulkanPixelShader>(BSI.PixelShaderRHI);
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
 	case ShaderStage::Geometry:
-		return GetShaderKey<FVulkanGeometryShader>(BSI.GeometryShaderRHI);
+		return GetShaderKey<FVulkanGeometryShader>(BSI.GetGeometryShader());
 #endif
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	case ShaderStage::Hull:
-		return GetShaderKey<FVulkanHullShader>(BSI.HullShaderRHI);
-	case ShaderStage::Domain:
-		return GetShaderKey<FVulkanDomainShader>(BSI.DomainShaderRHI);
+#if RHI_RAYTRACING
+	case ShaderStage::RayGen:
+	case ShaderStage::RayHitGroup:
+	case ShaderStage::RayMiss:
+	case ShaderStage::RayCallable:
+		return 0; // VKRT todo
 #endif
 	default:
 		check(0);
@@ -366,6 +367,9 @@ struct FGfxPipelineDesc
 
 	uint8 UseAlphaToCoverage;
 
+	EVRSShadingRate ShadingRate = EVRSShadingRate::VRSSR_1x1;
+	EVRSRateCombiner Combiner = EVRSRateCombiner::VRSRB_Passthrough;
+
 	bool operator==(const FGfxPipelineDesc& In) const
 	{
 		if (VertexInputKey != In.VertexInputKey)
@@ -449,6 +453,18 @@ struct FGfxPipelineDesc
 			return false;
 		}
 
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+		if (ShadingRate != In.ShadingRate)
+		{
+			return false;
+		}
+		
+		if (Combiner != In.Combiner)
+		{
+			return false;
+		}
+#endif
+
 		return true;
 	}
 };
@@ -469,29 +485,8 @@ public:
 
 	void RebuildCache();
 
-
-	// Shader microcode is shared between pipeline entries so keep a cache around to prevent duplicated storage
-	struct FShaderUCodeCache
-	{
-		using TDataMap = TMap<FSHAHash, TArray<uint32>>;
-		TDataMap Data;
-
-		TArray<uint32>* Add(const FSHAHash& Hash, const FVulkanShader* Shader)
-		{
-			check(Shader->Spirv.Num() != 0);
-
-			TArray<uint32>& Code = Data.Add(Hash);
-			Code = Shader->Spirv;
-
-			return &Data[Hash];
-		}
-
-		TArray<uint32>* Get(const FSHAHash& Hash)
-		{
-			return Data.Find(Hash);
-		}
-	};
 	FVulkanComputePipeline* GetOrCreateComputePipeline(FVulkanComputeShader* ComputeShader);
+	void NotifyDeletedComputePipeline(FVulkanComputePipeline* Pipeline);
 
 private:
 	/** Delegate handlers to track the ShaderPipelineCache precompile. */
@@ -503,6 +498,7 @@ private:
 	void DestroyCache();
 
 	FVulkanRHIGraphicsPipelineState* RHICreateGraphicsPipelineState(const FGraphicsPipelineStateInitializer& Initializer);
+	FVulkanComputePipeline* RHICreateComputePipelineState(FRHIComputeShader* ComputeShaderRHI);
 	void NotifyDeletedGraphicsPSO(FRHIGraphicsPipelineState* PSO);
 	bool CreateGfxPipelineFromEntry(FVulkanRHIGraphicsPipelineState* PSO, FVulkanShader* Shaders[ShaderStage::NumStages], VkPipeline* Pipeline);
 
@@ -511,6 +507,7 @@ private:
 	FVulkanComputePipeline* CreateComputePipelineFromShader(FVulkanComputeShader* Shader);
 
 	/** LRU Related functions */
+	void TickLRU();
 	bool LRUEvictImmediately();
 	void LRUTrim(uint32 nSpaceNeeded);
 	void LRUAdd(FVulkanRHIGraphicsPipelineState* PSO);
@@ -538,7 +535,7 @@ private:
 	TMap<uint64, FVulkanComputePipeline*> ComputePipelineEntries;
 
 	VkPipelineCache PipelineCache;
-	FShaderUCodeCache ShaderCache;
+
 	FCriticalSection LayoutMapCS;
 	TMap<FVulkanDescriptorSetsLayoutInfo, FVulkanLayout*> LayoutMap;
 	FVulkanDescriptorSetLayoutMap DSetLayoutMap;
@@ -716,8 +713,8 @@ public:
 
 
 	FVulkanRHIGraphicsPipelineStateLRUNode* LRUNode = nullptr;
-	uint32 LRUFrame;
-	uint32 PipelineCacheSize;
+	uint32 LRUFrame = UINT32_MAX;
+	uint32 PipelineCacheSize = UINT32_MAX;
 	FVulkanPSOKey							VulkanKey;
 
 
@@ -726,10 +723,6 @@ public:
 	FVertexShaderRHIRef					VertexShaderRHI;
 	FVertexDeclarationRHIRef			VertexDeclarationRHI;
 
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	FDomainShaderRHIRef					DomainShaderRHI;
-	FHullShaderRHIRef					HullShaderRHI;
-#endif 
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	FGeometryShaderRHIRef				GeometryShaderRHI;
 #endif

@@ -13,7 +13,7 @@
 #include "Layout/Visibility.h"
 #include "Types/SlateEnums.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SSpinBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
 
 class SDisplayClusterConfigurationSearchableComboBox;
 class FDisplayClusterConfiguratorBlueprintEditor;
@@ -217,6 +217,7 @@ public:
 				SNew(STextBlock)
 				.Font(IDetailLayoutBuilder::GetDetailFont())
 				.Text(GetParameterDisplayName())
+				.ToolTipText(this, &FPolicyParameterInfo::GetParameterTooltip)
 			]
 			.ValueContent()
 			[

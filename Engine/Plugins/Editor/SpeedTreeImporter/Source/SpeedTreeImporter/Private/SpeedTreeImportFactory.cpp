@@ -3,10 +3,12 @@
 #include "SpeedTreeImportFactory.h"
 
 #include "AssetImportTask.h"
+#include "CoreGlobals.h"
 #include "Editor.h"
 #include "EditorFramework/AssetImportData.h"
 #include "EditorReimportHandler.h"
 #include "EditorStyleSet.h"
+#include "Engine/Engine.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
 #include "Engine/Texture2D.h"
@@ -151,8 +153,14 @@ public:
 		bImport(false)
 	{
 		DetailsView = nullptr;
-		SpeedTreeImportData = NewObject<USpeedTreeImportData>(GetTransientPackage(), NAME_None);
-		SpeedTreeImportData->LoadConfig();
+		
+		// The name options is important for the config storage
+		FName SpeedTreeImportDataName = TEXT("SpeedTreeImportData");
+		if (UObject* ObjectToMove = FindObjectFast<UObject>(GetTransientPackage(), SpeedTreeImportDataName))
+		{
+			ObjectToMove->Rename();
+		}
+		SpeedTreeImportData = NewObject<USpeedTreeImportData>(GetTransientPackage(), SpeedTreeImportDataName);
 	}
 
 	void Construct(const FArguments& InArgs)
@@ -169,7 +177,7 @@ public:
 		else
 		{
 			//When simply importing we load the local config file of the user so he rerieve the last import options
-			SpeedTreeImportData->LoadOptions();
+			SpeedTreeImportData->LoadConfig();
 		}
 
 		// set the filename now so the dialog can tell if it is SpeedTree 7 or 8
@@ -252,12 +260,14 @@ public:
 		return bImport;
 	}
 
+private:
+
 	/** Called when 'OK' button is pressed */
 	FReply OnImport()
 	{
 		bImport = true;
 		WidgetWindow->RequestDestroyWindow();
-		SpeedTreeImportData->SaveConfig();
+		SpeedTreeImportData->SaveConfig(CPF_Config, nullptr, GConfig, false);
 		return FReply::Handled();
 	}
 
@@ -265,7 +275,22 @@ public:
 	{
 		if (DetailsView.IsValid())
 		{
-			SpeedTreeImportData->LoadConfig();
+			// Reset values from the CDO 
+			UClass* Class = SpeedTreeImportData->GetClass();
+			UObject* CDO = Class->GetDefaultObject();
+
+			for (FProperty* Property = Class->PropertyLink; Property; Property = Property->PropertyLinkNext)
+			{
+				// Only reset the property that would have been store in the config
+				if (Property->HasAnyPropertyFlags(CPF_Config))
+				{
+					void* Dest = Property->ContainerPtrToValuePtr<void>(SpeedTreeImportData);
+					const void* Source = Property->ContainerPtrToValuePtr<void>(CDO);
+					Property->CopyCompleteValue(Dest, Source);
+				}
+			}
+
+
 			DetailsView->SetObject(SpeedTreeImportData, true);
 		}
 		return FReply::Handled();
@@ -304,6 +329,10 @@ struct FSpeedTreeImportContext : public FGCObject
 		TArray<UTexture*> Textures;
 		ImportedTextures.GenerateValueArray(Textures);
 		Collector.AddReferencedObjects(ImportedTextures);
+	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FSpeedTreeImportContext");
 	}
 };
 
@@ -493,12 +522,17 @@ UTexture* CreateSpeedTreeMaterialTexture(UObject* Parent,const FString& Filename
 
 	const uint8* PtrTexture = TextureData.GetData();
 	UTexture* Texture = (UTexture*)TextureFact->FactoryCreateBinary(UTexture2D::StaticClass(), Package, *TextureName, RF_Standalone|RF_Public, NULL, *Extension, PtrTexture, PtrTexture + TextureData.Num(), GWarn);
-	if (Texture != NULL)
+	if (Texture != nullptr)
 	{
 		if (bMasks)
 		{
-			Texture->SRGB = false;
-			Texture->CompressionSettings = TC_Masks;
+			if (Texture->SRGB != false || Texture->CompressionSettings != TC_Masks)
+			{
+				Texture->PreEditChange(nullptr);
+				Texture->SRGB = false;
+				Texture->CompressionSettings = TC_Masks;
+				Texture->PostEditChange();
+			}
 		}
 		Texture->AssetImportData->Update(FilenamePath);
 
@@ -899,7 +933,7 @@ UMaterialInterface* CreateSpeedTreeMaterial7(UObject* Parent, FString MaterialFu
 		UnrealMaterial->AmbientOcclusion.MaskA = 0;
 	}
 
-	// UE4 flips normals for two-sided materials. SpeedTrees don't need that
+	// Unreal flips normals for two-sided materials. SpeedTrees don't need that
 	if (UnrealMaterial->TwoSided)
 	{
 		UMaterialExpressionTwoSidedSign* TwoSidedSign = NewObject<UMaterialExpressionTwoSidedSign>(UnrealMaterial);
@@ -1068,7 +1102,12 @@ UMaterialInterface* CreateSpeedTreeMaterial8(UObject* Parent, FString MaterialFu
 			if (DiffuseTexture)
 			{
 				// this helps prevent mipmapping from eating away tiny leaves
-				DiffuseTexture->AdjustMinAlpha = 0.1f;
+				if (!FMath::IsNearlyEqual(DiffuseTexture->AdjustMinAlpha, 0.1f))
+				{
+					DiffuseTexture->PreEditChange(nullptr);
+					DiffuseTexture->AdjustMinAlpha = 0.1f;
+					DiffuseTexture->PostEditChange();
+				}
 
 				// make texture sampler
 				UMaterialExpressionTextureSample* TextureExpression = NewObject<UMaterialExpressionTextureSample>(UnrealMaterial);
@@ -1141,7 +1180,12 @@ UMaterialInterface* CreateSpeedTreeMaterial8(UObject* Parent, FString MaterialFu
 			UTexture* NormalTexture = CreateSpeedTreeMaterialTexture(Parent, ANSI_TO_TCHAR(SpeedTreeMaterial.Maps()[1].Path().Data()), false, false, LoadedPackages, ImportContext);
 			if (NormalTexture)
 			{
-				NormalTexture->SRGB = false;
+				if (NormalTexture->SRGB != false)
+				{
+					NormalTexture->PreEditChange(nullptr);
+					NormalTexture->SRGB = false;
+					NormalTexture->PostEditChange();
+				}
 
 				// make texture sampler
 				UMaterialExpressionTextureSample* TextureExpression = NewObject<UMaterialExpressionTextureSample>(UnrealMaterial);
@@ -1434,7 +1478,12 @@ UMaterialInterface* CreateSpeedTreeMaterial9(UObject* Parent, FString MaterialFu
 		if (Texture)
 		{
 			// this helps prevent mipmapping from eating away tiny leaves
-			Texture->AdjustMinAlpha = 0.05f;
+			if (!FMath::IsNearlyEqual(Texture->AdjustMinAlpha, 0.05f))
+			{
+				Texture->PreEditChange(nullptr);
+				Texture->AdjustMinAlpha = 0.05f;
+				Texture->PostEditChange();
+			}
 
 			UnrealMaterialInstance->SetTextureParameterValueEditorOnly(FMaterialParameterInfo("ColorOpacity"), Texture);
 		}
@@ -1445,7 +1494,12 @@ UMaterialInterface* CreateSpeedTreeMaterial9(UObject* Parent, FString MaterialFu
 		UTexture* Texture = CreateSpeedTreeMaterialTexture(Parent, ANSI_TO_TCHAR(SpeedTreeMaterial.Maps()[1].Path().Data()), false, false, LoadedPackages, ImportContext);
 		if (Texture)
 		{
-			Texture->SRGB = false;
+			if (Texture->SRGB != false)
+			{
+				Texture->PreEditChange(nullptr);
+				Texture->SRGB = false;
+				Texture->PostEditChange();
+			}
 
 			UnrealMaterialInstance->SetTextureParameterValueEditorOnly(FMaterialParameterInfo("NormalRoughness"), Texture);
 		}
@@ -1757,14 +1811,14 @@ FVertexInstanceID ProcessTriangleCorner(
 	const int32 IndexOffset,
 	const int32 NumUVs,
 	const SpeedTree::SRenderState* RenderState,
-	TVertexInstanceAttributesRef<FVector> VertexInstanceNormals,
-	TVertexInstanceAttributesRef<FVector> VertexInstanceTangents,
+	TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals,
+	TVertexInstanceAttributesRef<FVector3f> VertexInstanceTangents,
 	TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns,
-	TVertexInstanceAttributesRef<FVector4> VertexInstanceColors,
-	TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs)
+	TVertexInstanceAttributesRef<FVector4f> VertexInstanceColors,
+	TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs)
 {
 	//Speedtree uses 7 or 8 UVs to store is data
-	check(VertexInstanceUVs.GetNumIndices() >= 7);
+	check(VertexInstanceUVs.GetNumChannels() >= 7);
 
 	SpeedTree::st_float32 Data[ 4 ];
 
@@ -1780,19 +1834,19 @@ FVertexInstanceID ProcessTriangleCorner(
 	FVector Normal( -Data[ 0 ], Data[ 1 ], Data[ 2 ] );
 	DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_TANGENT, VertexIndex, Data );
 	FVector Tangent( -Data[ 0 ], Data[ 1 ], Data[ 2 ] );
-	VertexInstanceTangents[VertexInstanceID] = Tangent;
-	VertexInstanceNormals[VertexInstanceID] = Normal;
+	VertexInstanceTangents[VertexInstanceID] = (FVector3f)Tangent;
+	VertexInstanceNormals[VertexInstanceID] = (FVector3f)Normal;
 	VertexInstanceBinormalSigns[VertexInstanceID] = GetBasisDeterminantSign(Tangent.GetSafeNormal(), (Normal ^ Tangent).GetSafeNormal(), Normal.GetSafeNormal());
 
 	// ao
 	DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_AMBIENT_OCCLUSION, VertexIndex, Data );
 	uint8 AO = Data[ 0 ] * 255.0f;
-	VertexInstanceColors[VertexInstanceID] = FVector4(FLinearColor(FColor(AO, AO, AO, 255)));
+	VertexInstanceColors[VertexInstanceID] = FLinearColor(FColor(AO, AO, AO, 255));
 
 	// keep texcoords padded to align indices
 	for( int32 PadIndex = 0; PadIndex < NumUVs; ++PadIndex )
 	{
-		VertexInstanceUVs.Set(VertexInstanceID, PadIndex, FVector2D(0.0f, 0.0f));
+		VertexInstanceUVs.Set(VertexInstanceID, PadIndex, FVector2f::ZeroVector);
 	}
 
 	// All texcoords are packed into 4 float4 vertex attributes
@@ -1812,28 +1866,28 @@ FVertexInstanceID ProcessTriangleCorner(
 
 	// diffuse
 	DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_DIFFUSE_TEXCOORDS, VertexIndex, Data );
-	VertexInstanceUVs.Set( VertexInstanceID, 0, FVector2D( Data[ 0 ], Data[ 1 ] ) );
+	VertexInstanceUVs.Set( VertexInstanceID, 0, FVector2f( Data[ 0 ], Data[ 1 ] ) );
 
 	// lightmap
 	DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_LIGHTMAP_TEXCOORDS, VertexIndex, Data );
-	VertexInstanceUVs.Set( VertexInstanceID, 1, FVector2D( Data[ 0 ], Data[ 1 ] ) );
+	VertexInstanceUVs.Set( VertexInstanceID, 1, FVector2f( Data[ 0 ], Data[ 1 ] ) );
 
 	// branch wind
 	DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_WIND_BRANCH_DATA, VertexIndex, Data );
-	VertexInstanceUVs.Set( VertexInstanceID, 2, FVector2D( Data[ 0 ], Data[ 1 ] ) );
+	VertexInstanceUVs.Set( VertexInstanceID, 2, FVector2f( Data[ 0 ], Data[ 1 ] ) );
 
 	// lod
 	if( RenderState->m_bFacingLeavesPresent )
 	{
 		DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_LEAF_CARD_LOD_SCALAR, VertexIndex, Data );
-		VertexInstanceUVs.Set( VertexInstanceID, 3, FVector2D( Data[ 0 ], 0.0f ) );
-		VertexInstanceUVs.Set( VertexInstanceID, 4, FVector2D( 0.0f, 0.0f ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 3, FVector2f( Data[ 0 ], 0.0f ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 4, FVector2f( 0.0f, 0.0f ) );
 	}
 	else
 	{
 		DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_LOD_POSITION, VertexIndex, Data );
-		VertexInstanceUVs.Set( VertexInstanceID, 3, FVector2D( -Data[ 0 ], Data[ 1 ] ) );
-		VertexInstanceUVs.Set( VertexInstanceID, 4, FVector2D( Data[ 2 ], 0.0f ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 3, FVector2f( -Data[ 0 ], Data[ 1 ] ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 4, FVector2f( Data[ 2 ], 0.0f ) );
 	}
 
 	// other
@@ -1841,23 +1895,23 @@ FVertexInstanceID ProcessTriangleCorner(
 	{
 		// detail
 		DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_DETAIL_TEXCOORDS, VertexIndex, Data );
-		VertexInstanceUVs.Set( VertexInstanceID, 5, FVector2D( Data[ 0 ], Data[ 1 ] ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 5, FVector2f( Data[ 0 ], Data[ 1 ] ) );
 
 		// branch seam
 		DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_BRANCH_SEAM_DIFFUSE, VertexIndex, Data );
-		VertexInstanceUVs.Set( VertexInstanceID, 6, FVector2D( Data[ 0 ], Data[ 1 ] ) );
-		VertexInstanceUVs.Set( VertexInstanceID, 4, FVector2D( VertexInstanceUVs.Get( VertexInstanceID, 4 ).X, Data[ 2 ] ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 6, FVector2f( Data[ 0 ], Data[ 1 ] ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 4, FVector2f( VertexInstanceUVs.Get( VertexInstanceID, 4 ).X, Data[ 2 ] ) );
 	}
 	else if( RenderState->m_bFrondsPresent )
 	{
 		// frond wind
 		DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_WIND_EXTRA_DATA, VertexIndex, Data );
-		VertexInstanceUVs.Set( VertexInstanceID, 5, FVector2D( Data[ 0 ], Data[ 1 ] ) );
-		VertexInstanceUVs.Set( VertexInstanceID, 6, FVector2D( Data[ 2 ], 0.0f ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 5, FVector2f( Data[ 0 ], Data[ 1 ] ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 6, FVector2f( Data[ 2 ], 0.0f ) );
 	}
 	else if( RenderState->m_bLeavesPresent || RenderState->m_bFacingLeavesPresent )
 	{
-		check(VertexInstanceUVs.GetNumIndices() == 8);
+		check(VertexInstanceUVs.GetNumChannels() == 8);
 
 		// anchor
 		if( RenderState->m_bFacingLeavesPresent )
@@ -1868,15 +1922,15 @@ FVertexInstanceID ProcessTriangleCorner(
 		{
 			DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_LEAF_ANCHOR_POINT, VertexIndex, Data );
 		}
-		VertexInstanceUVs.Set( VertexInstanceID, 4, FVector2D( VertexInstanceUVs.Get( VertexInstanceID, 4 ).X, -Data[ 0 ] ) );
-		VertexInstanceUVs.Set( VertexInstanceID, 5, FVector2D( Data[ 1 ], Data[ 2 ] ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 4, FVector2f( VertexInstanceUVs.Get( VertexInstanceID, 4 ).X, -Data[ 0 ] ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 5, FVector2f( Data[ 1 ], Data[ 2 ] ) );
 
 		// leaf wind
 		DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_WIND_EXTRA_DATA, VertexIndex, Data );
-		VertexInstanceUVs.Set( VertexInstanceID, 6, FVector2D( Data[ 0 ], Data[ 1 ] ) );
-		VertexInstanceUVs.Set( VertexInstanceID, 7, FVector2D( Data[ 2 ], 0 ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 6, FVector2f( Data[ 0 ], Data[ 1 ] ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 7, FVector2f( Data[ 2 ], 0 ) );
 		DrawCall->GetProperty( SpeedTree::VERTEX_PROPERTY_WIND_FLAGS, VertexIndex, Data );
-		VertexInstanceUVs.Set( VertexInstanceID, 7, FVector2D( VertexInstanceUVs.Get( VertexInstanceID, 7 ).X, Data[ 0 ] ) );
+		VertexInstanceUVs.Set( VertexInstanceID, 7, FVector2f( VertexInstanceUVs.Get( VertexInstanceID, 7 ).X, Data[ 0 ] ) );
 	}
 	return VertexInstanceID;
 }
@@ -2059,15 +2113,14 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 						FMeshDescription* MeshDescription = StaticMesh->CreateMeshDescription(LODIndex);
 						FStaticMeshAttributes Attributes(*MeshDescription);
 						
-						TVertexAttributesRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+						TVertexAttributesRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
 						TEdgeAttributesRef<bool> EdgeHardnesses = Attributes.GetEdgeHardnesses();
-						TEdgeAttributesRef<float> EdgeCreaseSharpnesses = Attributes.GetEdgeCreaseSharpnesses();
 						TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
-						TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
-						TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
+						TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+						TVertexInstanceAttributesRef<FVector3f> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
 						TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
-						TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = Attributes.GetVertexInstanceColors();
-						TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
+						TVertexInstanceAttributesRef<FVector4f> VertexInstanceColors = Attributes.GetVertexInstanceColors();
+						TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
 						// compute the number of texcoords we need so we can pad when necessary
 						int32 NumUVs = 7; // static meshes have fewer, but they are so rare, we shouldn't complicate things for them
@@ -2081,7 +2134,7 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 							}
 						}
 						//Speedtree use UVs to store is data
-						VertexInstanceUVs.SetNumIndices(NumUVs);
+						VertexInstanceUVs.SetNumChannels(NumUVs);
 
 						TMap<int32, FPolygonGroupID> MaterialToPolygonGroup;
 						MaterialToPolygonGroup.Reserve(TreeLOD->m_nNumDrawCalls);
@@ -2177,7 +2230,7 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 									Data[2] += Data2[2];                                    
 								}
 								FVertexID VertexID = MeshDescription->CreateVertex();
-								VertexPositions[VertexID] = FVector(-Data[0], Data[1], Data[2]);
+								VertexPositions[VertexID] = FVector3f(-Data[0], Data[1], Data[2]);
 							}
 
 							const SpeedTree::st_byte* pIndexData = &*DrawCall->m_pIndexData;
@@ -2233,18 +2286,17 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 					FMeshDescription* MeshDescription = StaticMesh->CreateMeshDescription(LODIndex);
 					FStaticMeshAttributes Attributes(*MeshDescription);
 
-					TVertexAttributesRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+					TVertexAttributesRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
 					TEdgeAttributesRef<bool> EdgeHardnesses = Attributes.GetEdgeHardnesses();
-					TEdgeAttributesRef<float> EdgeCreaseSharpnesses = Attributes.GetEdgeCreaseSharpnesses();
 					TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
-					TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
-					TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
+					TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+					TVertexInstanceAttributesRef<FVector3f> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
 					TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
-					TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = Attributes.GetVertexInstanceColors();
-					TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
+					TVertexInstanceAttributesRef<FVector4f> VertexInstanceColors = Attributes.GetVertexInstanceColors();
+					TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
 					//Speedtree use UVs to store is data
-					VertexInstanceUVs.SetNumIndices(2);
+					VertexInstanceUVs.SetNumChannels(2);
 
 					FString MaterialName = MeshName + "_Billboard";
 					UMaterialInterface* Material = CreateSpeedTreeMaterial7(InParent, MaterialName, &SpeedTreeGeometry->m_aBillboardRenderStates[SpeedTree::RENDER_PASS_MAIN], SpeedTreeImportData, WindType, SpeedTreeGeometry->m_sVertBBs.m_nNumBillboards, LoadedPackages, ImportContext);
@@ -2304,7 +2356,7 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 							FVector Position = BillboardRotate.TransformVector(FVector(Vertex[0] * BillboardWidth - BillboardWidth * 0.5f, 0.0f, Vertex[1] * BillboardHeight + BillboardBottom));
 							
 							FVertexID VertexID = MeshDescription->CreateVertex();
-							VertexPositions[VertexID] = FVector(Position);
+							VertexPositions[VertexID] = FVector3f(Position);
 						}
 
 						// other data
@@ -2322,16 +2374,16 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary7(UClass* InClass, UObject*
 								FVertexID VertexID(IndexOffset + Index);
 								const FVertexInstanceID& VertexInstanceID = MeshDescription->CreateVertexInstance(VertexID);
 
-								VertexInstanceTangents[VertexInstanceID] = TangentX;
-								VertexInstanceNormals[VertexInstanceID] = TangentZ;
+								VertexInstanceTangents[VertexInstanceID] = (FVector3f)TangentX;
+								VertexInstanceNormals[VertexInstanceID] = (FVector3f)TangentZ;
 								VertexInstanceBinormalSigns[VertexInstanceID] = GetBasisDeterminantSign(TangentX.GetSafeNormal(), TangentY.GetSafeNormal(), TangentZ.GetSafeNormal());
 								if (bRotated)
 								{
-									VertexInstanceUVs.Set(VertexInstanceID, 0, FVector2D(TexCoords[0] + Vertex[1] * TexCoords[2], TexCoords[1] + Vertex[0] * TexCoords[3]));
+									VertexInstanceUVs.Set(VertexInstanceID, 0, FVector2f(TexCoords[0] + Vertex[1] * TexCoords[2], TexCoords[1] + Vertex[0] * TexCoords[3]));
 								}
 								else
 								{
-									VertexInstanceUVs.Set(VertexInstanceID, 0, FVector2D(TexCoords[0] + Vertex[0] * TexCoords[2], TexCoords[1] + Vertex[1] * TexCoords[3]));
+									VertexInstanceUVs.Set(VertexInstanceID, 0, FVector2f(TexCoords[0] + Vertex[0] * TexCoords[2], TexCoords[1] + Vertex[1] * TexCoords[3]));
 								}
 
 								// lightmap coord
@@ -2557,25 +2609,24 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary8(UClass* InClass, UObject*
 			FMeshDescription* MeshDescription = StaticMesh->CreateMeshDescription(LODIndex);
 			FStaticMeshAttributes Attributes(*MeshDescription);
 
-			TVertexAttributesRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+			TVertexAttributesRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
 			TEdgeAttributesRef<bool> EdgeHardnesses = Attributes.GetEdgeHardnesses();
-			TEdgeAttributesRef<float> EdgeCreaseSharpnesses = Attributes.GetEdgeCreaseSharpnesses();
 			TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
-			TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
-			TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
+			TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+			TVertexInstanceAttributesRef<FVector3f> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
 			TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
-			TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = Attributes.GetVertexInstanceColors();
-			TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
+			TVertexInstanceAttributesRef<FVector4f> VertexInstanceColors = Attributes.GetVertexInstanceColors();
+			TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
 			//Speedtree use 8 UVs to store is data
-			VertexInstanceUVs.SetNumIndices(8);
+			VertexInstanceUVs.SetNumChannels(8);
 
 			for (uint32 VertexIndex = 0; VertexIndex < LOD.Vertices().Count(); ++VertexIndex)
 			{
 				const GameEngine8::SVertex& Vertex = LOD.Vertices()[VertexIndex]; //-V758
 				FVector vPosition = FVector(Vertex.m_vAnchor.x, Vertex.m_vAnchor.y, Vertex.m_vAnchor.z) + FVector(Vertex.m_vOffset.x, Vertex.m_vOffset.y, Vertex.m_vOffset.z);
 				FVertexID VertexID = MeshDescription->CreateVertex();
-				VertexPositions[VertexID] = FVector(vPosition);
+				VertexPositions[VertexID] = FVector3f(vPosition);
 			}
 
 			// Per-LOD material -> polygon group mapping
@@ -2647,15 +2698,15 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary8(UClass* InClass, UObject*
 						FVector TangentY(-Vertex.m_vBinormal.x, -Vertex.m_vBinormal.y, -Vertex.m_vBinormal.z);
 						FVector TangentZ(Vertex.m_vNormal.x, Vertex.m_vNormal.y, Vertex.m_vNormal.z);
 
-						VertexInstanceTangents[VertexInstanceID] = TangentX;
-						VertexInstanceNormals[VertexInstanceID] = TangentZ;
+						VertexInstanceTangents[VertexInstanceID] = (FVector3f)TangentX;
+						VertexInstanceNormals[VertexInstanceID] = (FVector3f)TangentZ;
 						VertexInstanceBinormalSigns[VertexInstanceID] = GetBasisDeterminantSign(TangentX.GetSafeNormal(), TangentY.GetSafeNormal(), TangentZ.GetSafeNormal());
 						
 						// ao and branch blend in vertex color
 						if (DrawCall.m_eWindGeometryType != GameEngine8::Billboard)
 						{
 							uint8 AO = Vertex.m_fAmbientOcclusion * 255.0f;
-							VertexInstanceColors[VertexInstanceID] = FVector4(FLinearColor(FColor(AO, AO, AO, Vertex.m_fBlendWeight * 255)));
+							VertexInstanceColors[VertexInstanceID] = FLinearColor(FColor(AO, AO, AO, Vertex.m_fBlendWeight * 255));
 						}
 
 						// All texcoords are packed into 4 float4 vertex attributes
@@ -2673,57 +2724,57 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary8(UClass* InClass, UObject*
 						// 7	0					0					Leaf Wind Z, Leaf Group
 
 						// diffuse
-						VertexInstanceUVs.Set(VertexInstanceID, 0, FVector2D(Vertex.m_vTexCoord.x, Vertex.m_vTexCoord.y));
+						VertexInstanceUVs.Set(VertexInstanceID, 0, FVector2f(Vertex.m_vTexCoord.x, Vertex.m_vTexCoord.y));
 
 						// lightmap
-						VertexInstanceUVs.Set(VertexInstanceID, 1, FVector2D(Vertex.m_vLightmapTexCoord.x, Vertex.m_vLightmapTexCoord.y));
+						VertexInstanceUVs.Set(VertexInstanceID, 1, FVector2f(Vertex.m_vLightmapTexCoord.x, Vertex.m_vLightmapTexCoord.y));
 
 						if (DrawCall.m_eWindGeometryType == GameEngine8::Billboard)
 						{
-							VertexInstanceUVs.Set(VertexInstanceID, 2, FVector2D((Vertex.m_vNormal.z > 0.5f) ? 1.0f : 0.0f, 0.0f));
+							VertexInstanceUVs.Set(VertexInstanceID, 2, FVector2f((Vertex.m_vNormal.z > 0.5f) ? 1.0f : 0.0f, 0.0f));
 						}
 						else
 						{
 							// branch wind
-							VertexInstanceUVs.Set(VertexInstanceID, 2, FVector2D(Vertex.m_vWindBranch.x, Vertex.m_vWindBranch.y));
+							VertexInstanceUVs.Set(VertexInstanceID, 2, FVector2f(Vertex.m_vWindBranch.x, Vertex.m_vWindBranch.y));
 
 							// lod
 							FVector vLodPosition = FVector(Vertex.m_vAnchor.x, Vertex.m_vAnchor.y, Vertex.m_vAnchor.z) +
 								FVector(Vertex.m_vLodOffset.x, Vertex.m_vLodOffset.y, Vertex.m_vLodOffset.z);
-							VertexInstanceUVs.Set(VertexInstanceID, 3, FVector2D(vLodPosition[0], vLodPosition[1]));
-							VertexInstanceUVs.Set(VertexInstanceID, 4, FVector2D(vLodPosition[2], 0.0f));
+							VertexInstanceUVs.Set(VertexInstanceID, 3, FVector2f(vLodPosition[0], vLodPosition[1]));
+							VertexInstanceUVs.Set(VertexInstanceID, 4, FVector2f(vLodPosition[2], 0.0f));
 
 							// other
 							if (DrawCall.m_eWindGeometryType == GameEngine8::Branch)
 							{
 								// detail (not used in v8)
-								VertexInstanceUVs.Set(VertexInstanceID, 5, FVector2D(0.0f, 0.0f));
+								VertexInstanceUVs.Set(VertexInstanceID, 5, FVector2f(0.0f, 0.0f));
 
 								// branch seam
-								VertexInstanceUVs.Set(VertexInstanceID, 6, FVector2D(0.0f, 0.0f));
-								VertexInstanceUVs.Set(VertexInstanceID, 4, FVector2D(VertexInstanceUVs.Get(VertexInstanceID, 4).X, Vertex.m_fBlendWeight));
+								VertexInstanceUVs.Set(VertexInstanceID, 6, FVector2f(0.0f, 0.0f));
+								VertexInstanceUVs.Set(VertexInstanceID, 4, FVector2f(VertexInstanceUVs.Get(VertexInstanceID, 4).X, Vertex.m_fBlendWeight));
 
 								// keep alignment
-								VertexInstanceUVs.Set(VertexInstanceID, 7, FVector2D(0.0f, 0.0f));
+								VertexInstanceUVs.Set(VertexInstanceID, 7, FVector2f(0.0f, 0.0f));
 							}
 							else if (DrawCall.m_eWindGeometryType == GameEngine8::Frond)
 							{
 								// frond wind
-								VertexInstanceUVs.Set(VertexInstanceID, 5, FVector2D(Vertex.m_vWindNonBranch.x, Vertex.m_vWindNonBranch.y));
-								VertexInstanceUVs.Set(VertexInstanceID, 6, FVector2D(Vertex.m_vWindNonBranch.z, 0.0f));
+								VertexInstanceUVs.Set(VertexInstanceID, 5, FVector2f(Vertex.m_vWindNonBranch.x, Vertex.m_vWindNonBranch.y));
+								VertexInstanceUVs.Set(VertexInstanceID, 6, FVector2f(Vertex.m_vWindNonBranch.z, 0.0f));
 
 								// keep alignment
-								VertexInstanceUVs.Set(VertexInstanceID, 7, FVector2D(0.0f, 0.0f));
+								VertexInstanceUVs.Set(VertexInstanceID, 7, FVector2f(0.0f, 0.0f));
 							}
 							else if (DrawCall.m_eWindGeometryType == GameEngine8::Leaf || DrawCall.m_eWindGeometryType == GameEngine8::FacingLeaf)
 							{
 								// anchor
-								VertexInstanceUVs.Set(VertexInstanceID, 4, FVector2D(VertexInstanceUVs.Get(VertexInstanceID, 4).X, Vertex.m_vAnchor.x));
-								VertexInstanceUVs.Set(VertexInstanceID, 5, FVector2D(Vertex.m_vAnchor.y, Vertex.m_vAnchor.z));
+								VertexInstanceUVs.Set(VertexInstanceID, 4, FVector2f(VertexInstanceUVs.Get(VertexInstanceID, 4).X, Vertex.m_vAnchor.x));
+								VertexInstanceUVs.Set(VertexInstanceID, 5, FVector2f(Vertex.m_vAnchor.y, Vertex.m_vAnchor.z));
 
 								// leaf wind
-								VertexInstanceUVs.Set(VertexInstanceID, 6, FVector2D(Vertex.m_vWindNonBranch.x, Vertex.m_vWindNonBranch.y));
-								VertexInstanceUVs.Set(VertexInstanceID, 7, FVector2D(Vertex.m_vWindNonBranch.z, (Vertex.m_bWindLeaf2Flag ? 1.0f : 0.0f)));
+								VertexInstanceUVs.Set(VertexInstanceID, 6, FVector2f(Vertex.m_vWindNonBranch.x, Vertex.m_vWindNonBranch.y));
+								VertexInstanceUVs.Set(VertexInstanceID, 7, FVector2f(Vertex.m_vWindNonBranch.z, (Vertex.m_bWindLeaf2Flag ? 1.0f : 0.0f)));
 							}
 						}
 						CornerVertexInstanceIDs[Corner] = VertexInstanceID;
@@ -2912,17 +2963,16 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary9(UClass* InClass, UObject*
 			FMeshDescription* MeshDescription = StaticMesh->CreateMeshDescription(LODIndex);
 			FStaticMeshAttributes Attributes(*MeshDescription);
 
-			TVertexAttributesRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+			TVertexAttributesRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
 			TEdgeAttributesRef<bool> EdgeHardnesses = Attributes.GetEdgeHardnesses();
-			TEdgeAttributesRef<float> EdgeCreaseSharpnesses = Attributes.GetEdgeCreaseSharpnesses();
 			TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
-			TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
-			TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
+			TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+			TVertexInstanceAttributesRef<FVector3f> VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
 			TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
-			TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = Attributes.GetVertexInstanceColors();
-			TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
+			TVertexInstanceAttributesRef<FVector4f> VertexInstanceColors = Attributes.GetVertexInstanceColors();
+			TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
-			VertexInstanceUVs.SetNumIndices(NumUVs);
+			VertexInstanceUVs.SetNumChannels(NumUVs);
 
 			for (int32 MatIndex = 0; MatIndex < StaticMesh->GetStaticMaterials().Num(); ++MatIndex)
 			{
@@ -2935,7 +2985,7 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary9(UClass* InClass, UObject*
 				const GameEngine9::SVertex& Vertex = LOD.Vertices()[VertexIndex]; //-V758
 				FVector vPosition = FVector(Vertex.m_vAnchor.x, Vertex.m_vAnchor.y, Vertex.m_vAnchor.z) + FVector(Vertex.m_vOffset.x, Vertex.m_vOffset.y, Vertex.m_vOffset.z);
 				FVertexID VertexID = MeshDescription->CreateVertex();
-				VertexPositions[VertexID] = FVector(vPosition);
+				VertexPositions[VertexID] = FVector3f(vPosition);
 			}
 
 			for (uint32 DrawCallIndex = 0; DrawCallIndex < LOD.DrawCalls().Count(); ++DrawCallIndex)
@@ -2985,12 +3035,12 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary9(UClass* InClass, UObject*
 						FVector TangentY(-Vertex.m_vBinormal.x, -Vertex.m_vBinormal.y, -Vertex.m_vBinormal.z);
 						FVector TangentZ(Vertex.m_vNormal.x, Vertex.m_vNormal.y, Vertex.m_vNormal.z);
 
-						VertexInstanceTangents[VertexInstanceID] = TangentX;
-						VertexInstanceNormals[VertexInstanceID] = TangentZ;
+						VertexInstanceTangents[VertexInstanceID] = (FVector3f)TangentX;
+						VertexInstanceNormals[VertexInstanceID] = (FVector3f)TangentZ;
 						VertexInstanceBinormalSigns[VertexInstanceID] = GetBasisDeterminantSign(TangentX.GetSafeNormal(), TangentY.GetSafeNormal(), TangentZ.GetSafeNormal());
 
 						// color and branch blend in vertex color
-						VertexInstanceColors[VertexInstanceID] = FVector4(FLinearColor(FColor(Vertex.m_vColor.x * 255, Vertex.m_vColor.y * 255, Vertex.m_vColor.z * 255, Vertex.m_fBlendWeight * 255)));
+						VertexInstanceColors[VertexInstanceID] = FVector4f(FLinearColor(FColor(Vertex.m_vColor.x * 255, Vertex.m_vColor.y * 255, Vertex.m_vColor.z * 255, Vertex.m_fBlendWeight * 255)));
 
 						// Texcoord setup:
 						// 0		Diffuse UV
@@ -3008,27 +3058,27 @@ UObject* USpeedTreeImportFactory::FactoryCreateBinary9(UClass* InClass, UObject*
 
 						// diffuse
 						int32 CurrentUV = 0;
-						VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2D(Vertex.m_vTexCoord.x, Vertex.m_vTexCoord.y));
+						VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2f(Vertex.m_vTexCoord.x, Vertex.m_vTexCoord.y));
 
 						// branch1 / ripple
-						VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2D(Vertex.m_vBranchWind1.x, Vertex.m_vBranchWind1.y));
-						VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2D(Vertex.m_vBranchWind1.z, Vertex.m_fRippleWeight));
+						VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2f(Vertex.m_vBranchWind1.x, Vertex.m_vBranchWind1.y));
+						VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2f(Vertex.m_vBranchWind1.z, Vertex.m_fRippleWeight));
 
 						// lightmap (lightmass can only access 4 uvs)
-						VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2D(Vertex.m_vLightmapTexCoord.x, Vertex.m_vLightmapTexCoord.y));
+						VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2f(Vertex.m_vLightmapTexCoord.x, Vertex.m_vLightmapTexCoord.y));
 
 						// branch 2
 						if (bHasBranch2Data)
 						{
-							VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2D(Vertex.m_vBranchWind2.x, Vertex.m_vBranchWind2.y));
-							VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2D(Vertex.m_vBranchWind2.z, 0.0f));
+							VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2f(Vertex.m_vBranchWind2.x, Vertex.m_vBranchWind2.y));
+							VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2f(Vertex.m_vBranchWind2.z, 0.0f));
 						}
 
 						// camera-facing
 						if (bHasFacingData)
 						{
-							VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2D(Vertex.m_vAnchor.x, Vertex.m_vAnchor.y));
-							VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2D(Vertex.m_vAnchor.z, Vertex.m_bCameraFacing ? 1.0f : 0.0f));
+							VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2f(Vertex.m_vAnchor.x, Vertex.m_vAnchor.y));
+							VertexInstanceUVs.Set(VertexInstanceID, CurrentUV++, FVector2f(Vertex.m_vAnchor.z, Vertex.m_bCameraFacing ? 1.0f : 0.0f));
 						}
 					}
 

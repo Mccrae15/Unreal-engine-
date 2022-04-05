@@ -44,8 +44,6 @@ public:
 
 	bool TableHasCustomColumns() const;
 
-	virtual bool CloseWindow() override;
-
 	virtual bool IsPrimaryEditor() const override{ return false; };
 
 public:
@@ -53,8 +51,6 @@ public:
 	static TSharedRef<FPropertyEditorToolkit> CreateEditor( const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, UObject* ObjectToEdit );
 
 	static TSharedRef<FPropertyEditorToolkit> CreateEditor( const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray<UObject*>& ObjectsToEdit );
-
-
 private:
 	static TSharedPtr<FPropertyEditorToolkit> FindExistingEditor( UObject* Object );
 
@@ -66,9 +62,13 @@ private:
 
 	void CreateGridView();
 
+	void CreateDetailsPanel();
+
 	TSharedRef<SDockTab> SpawnTab_PropertyTree( const FSpawnTabArgs& Args );
 
 	TSharedRef<SDockTab> SpawnTab_PropertyTable( const FSpawnTabArgs& Args ) ;
+
+	TSharedRef<SDockTab> SpawnTab_DetailsPanel(const FSpawnTabArgs& Args);
 
 	void GridSelectionChanged();
 
@@ -84,14 +84,9 @@ private:
 
 	EVisibility GetToggleColumnButtonVisibility( const TSharedRef< class IPropertyTreeRow > Row ) const;
 
-	void TickPinColorAndOpacity();
-
-	FSlateColor GetPinColorAndOpacity( const TWeakPtr< IPropertyTreeRow > Row ) const;
-
 	void TableColumnsChanged();
 
 	EVisibility GetAddColumnInstructionsOverlayVisibility() const;
-
 
 private:
 
@@ -100,12 +95,11 @@ private:
 
 	TSharedPtr< FPropertyPath > PathToRoot;
 
+	/** Details panel */
+	TSharedPtr<class IDetailsView> DetailsView;
+
 	TArray< TSharedRef< FPropertyPath > > PropertyPathsAddedAsColumns;
 
-	/** Animation sequence to pulse the pin image */
-	FCurveSequence PinSequence;
-	FTimerHandle TimerHandle_TickPinColor;
-	FSlateColor PinColor;
 	TArray< TWeakPtr<IPropertyTreeRow> > PinRows;
 
 	static const FName ToolkitFName;
@@ -113,6 +107,7 @@ private:
 	static const FName ApplicationId;
 	static const FName TreeTabId;
 	static const FName GridTabId;
-
+	static const FName DetailsTabId;
 	static const FName TreePinAsColumnHeaderId;
+
 };

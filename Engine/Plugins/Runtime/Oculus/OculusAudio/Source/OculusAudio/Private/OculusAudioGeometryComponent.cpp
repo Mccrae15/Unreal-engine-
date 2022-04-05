@@ -61,7 +61,7 @@ void UOculusAudioGeometryComponent::TickComponent(float DeltaTime, enum ELevelTi
 	FTransform Transform = GetOwner()->GetTransform();
 	if (!Transform.Equals(PreviousTransform))
 	{
-		// UE4:	 x:forward, y:right, z:up
+		// UE:		x:forward, y:right, z:up
 		// Oculus:  x:right,   y:up,	z:backward
 		FVector Right = Transform.GetScaledAxis(EAxis::Y);
 		FVector Up = Transform.GetScaledAxis(EAxis::Z);
@@ -70,10 +70,10 @@ void UOculusAudioGeometryComponent::TickComponent(float DeltaTime, enum ELevelTi
 		
 		float TransformMatrix[16] =
 		{
-			Right.Y,	Right.Z,	-Right.X,	0.0f,
-			Up.Y,	   Up.Z,	   -Up.X,	   0.0f,
-			Backward.Y, Backward.Z, -Backward.X, 0.0f,
-			Position.Y, Position.Z, -Position.X, 0.0f,
+			(float)Right.Y,	(float)Right.Z,	(float)-Right.X,	0.0f,
+			(float)Up.Y,	   (float)Up.Z,	   (float)-Up.X,	   0.0f,
+			(float)Backward.Y, (float)Backward.Z, (float)-Backward.X, 0.0f,
+			(float)Position.Y, (float)Position.Z, (float)-Position.X, 0.0f,
 		};
 		
 		ovrResult Result = OVRA_CALL(ovrAudio_AudioGeometrySetTransform)(ovrGeometry, TransformMatrix);
@@ -131,7 +131,7 @@ bool UOculusAudioGeometryComponent::UploadGeometry()
 
 #if 0 // TODO: map acoustic materials to visual/phyiscal materials
 	// The goal here is to build a hash table with unique graphic materials used by the acoustic geometry and automatically mapping them with
-	// our corresponding audio materials. A possible alternative is to do the mapping manually by adding a user data field in the UE4 material
+	// our corresponding audio materials. A possible alternative is to do the mapping manually by adding a user data field in the UE material
 	// definition and manually tagging each graphic material with an audio material in the editor. 
 	UStaticMeshComponent* StaticMeshComponent = SMActor->GetStaticMeshComponent();
 	for (int x = 0; x < StaticMeshComponent->GetNumMaterials(); ++x) {
@@ -205,7 +205,7 @@ void UOculusAudioGeometryComponent::AppendStaticMesh(UStaticMesh* Mesh,
 
 	// append this mesh's vertices to the merged array after coordinate system conversion
 	for (int32 Index = 0; Index < VertexCount; Index++) {
-		const FVector Vertex = Transform.TransformPosition(VertexBuffer.VertexPosition(Index));
+		const FVector Vertex = Transform.TransformPosition((FVector)VertexBuffer.VertexPosition(Index));
 		MergedVertices.Add(OculusAudioSpatializationAudioMixer::ToOVRVector(Vertex));
 	}
 
@@ -322,7 +322,7 @@ ovrAudioContext UOculusAudioGeometryComponent::GetContext(UWorld* World)
 				FAudioDevice* AudioDevice = World->GetAudioDevice().GetAudioDevice();
 				if (AudioDevice == nullptr)
 				{
-					// This happens when cooking for native UE4 AudioMixer integration
+					// This happens when cooking for native UE AudioMixer integration
 					CachedContext = FOculusAudioContextManager::GetOrCreateSerializationContext(this);
 				}
 				else

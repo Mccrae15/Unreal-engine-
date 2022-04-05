@@ -22,7 +22,7 @@ class ENGINE_API UPhysicsConstraintComponent : public USceneComponent
 
 	/** Pointer to first Actor to constrain.  */
 	UPROPERTY(EditInstanceOnly, Category=Constraint)
-	AActor* ConstraintActor1;
+	TObjectPtr<AActor> ConstraintActor1;
 
 	/** 
 	 *	Name of first component property to constrain. If Actor1 is NULL, will look within Owner.
@@ -34,7 +34,7 @@ class ENGINE_API UPhysicsConstraintComponent : public USceneComponent
 
 	/** Pointer to second Actor to constrain. */
 	UPROPERTY(EditInstanceOnly, Category=Constraint)
-	AActor* ConstraintActor2;
+	TObjectPtr<AActor> ConstraintActor2;
 
 	/** 
 	 *	Name of second component property to constrain. If Actor2 is NULL, will look within Owner. 
@@ -52,11 +52,15 @@ class ENGINE_API UPhysicsConstraintComponent : public USceneComponent
 
 
 	UPROPERTY(instanced)
-	class UPhysicsConstraintTemplate* ConstraintSetup_DEPRECATED;
+	TObjectPtr<class UPhysicsConstraintTemplate> ConstraintSetup_DEPRECATED;
 
 	/** Notification when constraint is broken. */
 	UPROPERTY(BlueprintAssignable)
 	FConstraintBrokenSignature OnConstraintBroken;
+
+	/** Notification when constraint plasticity drive target changes. */
+	UPROPERTY(BlueprintAssignable)
+	FPlasticDeformationEventSignature OnPlasticDeformation;
 
 public:
 	/** All constraint settings */
@@ -102,6 +106,10 @@ public:
 	/** Directly specify component to connect. Will update frames based on current position. */
 	UFUNCTION(BlueprintCallable, Category="Physics|Components|PhysicsConstraint")
 	void SetConstrainedComponents(UPrimitiveComponent* Component1, FName BoneName1, UPrimitiveComponent* Component2, FName BoneName2);
+
+	/** Get connected components and potential related attachement bones */
+	UFUNCTION(BlueprintCallable, Category = "Physics|Components|PhysicsConstraint")
+	void GetConstrainedComponents(UPrimitiveComponent*& OutComponent1, FName& OutBoneName1, UPrimitiveComponent*& OutComponent2, FName& OutBoneName2);
 
 	/** Break this constraint */
 	UFUNCTION(BlueprintCallable, Category="Physics|Components|PhysicsConstraint")
@@ -274,7 +282,7 @@ public:
 	*	@param LinearPlasticityThreshold	Percent deformation needed to reset the rest length of the joint
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Physics|Components|PhysicsConstraint")
-	void SetLinearPlasticity(bool bLinearPlasticity, float LinearPlasticityThreshold);
+	void SetLinearPlasticity(bool bLinearPlasticity, float LinearPlasticityThreshold, EConstraintPlasticityType PlasticityType);
 
 	/** Sets the Angular Breakable properties
 	*	@param bAngularBreakable		Whether it is possible to break the joint with angular force
@@ -289,6 +297,12 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Physics|Components|PhysicsConstraint")
 	void SetAngularPlasticity(bool bAngularPlasticity, float AngularPlasticityThreshold);
+
+	/** Sets the contact transfer scale properties
+	*	@param ContactTransferScale		   Set the contact transfer scale for the parent of the joint
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Physics|Components|PhysicsConstraint")
+	void SetContactTransferScale(float ContactTransferScale);
 
 	/** Gets the current Angular Twist of the constraint */
 	UFUNCTION(BlueprintCallable, Category = "Physics|Components|PhysicsConstraint")
@@ -333,6 +347,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Physics|Components|PhysicsConstraint")
 	bool IsBroken();
 
+	/** Gets the constraint object */
+	UFUNCTION(BlueprintCallable, Category = "Physics|Components|PhysicsConstraint")
+	FConstraintInstanceAccessor GetConstraint();
+
 #if WITH_EDITOR
 	void UpdateSpriteTexture();
 #endif
@@ -354,11 +372,17 @@ protected:
 	/** Routes the FConstraint callback to the dynamic delegate */
 	void OnConstraintBrokenHandler(FConstraintInstance* BrokenConstraint);
 
+	/** Routes the FConstraint callback to the dynamic delegate */
+	void OnPlasticDeformationHandler(FConstraintInstance* Constraint);
+
 	/** Returns the scale of the constraint as it will be passed into the ConstraintInstance*/
 	float GetConstraintScale() const;
 
 private:
 	/** Wrapper that calls our constraint broken delegate */
 	void OnConstraintBrokenWrapper(int32 ConstraintIndex);
+
+	/** Wrapper that calls our constraint plasticity delegate */
+	void OnPlasticDeformationWrapper(int32 ConstraintIndex);
 };
 

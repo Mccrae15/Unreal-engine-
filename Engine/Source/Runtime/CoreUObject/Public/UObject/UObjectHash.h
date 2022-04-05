@@ -55,7 +55,20 @@ UObject* StaticFindObjectFastExplicit(const UClass* ObjectClass, FName ObjectNam
 COREUOBJECT_API void GetObjectsWithOuter(const class UObjectBase* Outer, TArray<UObject *>& Results, bool bIncludeNestedObjects = true, EObjectFlags ExclusionFlags = RF_NoFlags, EInternalObjectFlags ExclusionInternalFlags = EInternalObjectFlags::None);
 
 /**
+ * Performs an operation on objects with a given outer, with the possibility to break iteration
+ * Note that the operation must not modify the UObject hash maps so it can not create, rename or destroy UObjects.
+ *
+ * @param	Outer						Outer to search for
+ * @param	Operation					Function to be called for each object, returning if we want to continue iteration or not
+ * @param	bIncludeNestedObjects		If true, then things whose outers directly or indirectly have Outer as an outer are included, these are the nested objects.
+ * @param	ExclusionFlags				Specifies flags to use as a filter for which objects to return
+ * @param	ExclusiveInternalFlags	Specifies internal flags to use as a filter for which objects to return
+ */
+COREUOBJECT_API void ForEachObjectWithOuterBreakable(const class UObjectBase* Outer, TFunctionRef<bool(UObject*)> Operation, bool bIncludeNestedObjects = true, EObjectFlags ExclusionFlags = RF_NoFlags, EInternalObjectFlags ExclusionInternalFlags = EInternalObjectFlags::None);
+
+/**
  * Performs an operation on all objects with a given outer
+ * Note that the operation must not modify UObject hash maps so it can not create, rename or destroy UObjects.
  *
  * @param	Outer						Outer to search for
  * @param	Operation					Function to be called for each object
@@ -63,7 +76,10 @@ COREUOBJECT_API void GetObjectsWithOuter(const class UObjectBase* Outer, TArray<
  * @param	ExclusionFlags				Specifies flags to use as a filter for which objects to return
  * @param	ExclusiveInternalFlags	Specifies internal flags to use as a filter for which objects to return
  */
-COREUOBJECT_API void ForEachObjectWithOuter(const class UObjectBase* Outer, TFunctionRef<void(UObject*)> Operation, bool bIncludeNestedObjects = true, EObjectFlags ExclusionFlags = RF_NoFlags, EInternalObjectFlags ExclusionInternalFlags = EInternalObjectFlags::None);
+inline void ForEachObjectWithOuter(const class UObjectBase* Outer, TFunctionRef<void(UObject*)> Operation, bool bIncludeNestedObjects = true, EObjectFlags ExclusionFlags = RF_NoFlags, EInternalObjectFlags ExclusionInternalFlags = EInternalObjectFlags::None)
+{
+	ForEachObjectWithOuterBreakable(Outer, [Operation](UObject* Object) { Operation(Object); return true; }, bIncludeNestedObjects, ExclusionFlags, ExclusionInternalFlags);
+}
 
 /**
  * Find an objects with a given name and or class within an outer
@@ -87,6 +103,7 @@ COREUOBJECT_API void GetObjectsWithPackage(const class UPackage* Outer, TArray<U
 
 /**
  * Performs an operation on all objects found within a given package
+ * Note that the operation must not modify UObject hash maps so it can not create, rename or destroy UObjects.
  *
  * @param	Package						Package to iterate into
  * @param	Operation					Function to be called for each object, return false to break out of the iteration
@@ -109,6 +126,7 @@ COREUOBJECT_API void GetObjectsOfClass(const UClass* ClassToLookFor, TArray<UObj
 
 /**
  * Performs an operation on all objects of the provided class
+ * Note that the operation must not modify UObject hash maps so it can not create, rename or destroy UObjects.
  *
  * @param	Outer						UObject class to loop over instances of
  * @param	Operation					Function to be called for each object
@@ -119,6 +137,7 @@ COREUOBJECT_API void ForEachObjectOfClass(const UClass* ClassToLookFor, TFunctio
 
 /**
  * Performs an operation on all objects of the provided classes
+ * Note that the operation must not modify UObject hash maps so it can not create, rename or destroy UObjects.
  *
  * @param	Classes						UObject Classes to loop over instances of
  * @param	Operation					Function to be called for each object
@@ -135,6 +154,9 @@ COREUOBJECT_API void ForEachObjectOfClasses(TArrayView<const UClass*> ClassesToL
  * @param	bRecursive					If true, the results will include children of the children classes, recursively. Otherwise, only direct decedents will be included.
  */
 COREUOBJECT_API void GetDerivedClasses(const UClass* ClassToLookFor, TArray<UClass *>& Results, bool bRecursive = true);
+
+/** Get all base classes and their direct subclasses */
+COREUOBJECT_API TMap<UClass*, TSet<UClass*>> GetAllDerivedClasses();
 
 /**
  * Returns true if any instances of the class in question are currently being async loaded.

@@ -25,14 +25,14 @@ struct FIrradianceCache
 		// When used as a cache entry, 
 		// WorldPosition.w == FrameLastTouched
 		// WorldNormal.w == NumAccumulatedSamples
-		FVector4 WorldPosition;
-		FVector4 WorldNormal;
-		FVector4 Irradiance;
+		FVector4f WorldPosition;
+		FVector4f WorldNormal;
+		FVector4f Irradiance;
 	};
 
 	const int32 IrradianceCacheMaxSize = 1048576;
 
-	FStructuredBufferRHIRef IrradianceCacheRecords;
+	FBufferRHIRef IrradianceCacheRecords;
 	FUnorderedAccessViewRHIRef IrradianceCacheRecordsUAV;
 
 	TUniformBufferRef<FIrradianceCachingParameters> IrradianceCachingParametersUniformBuffer;
@@ -55,7 +55,7 @@ public:
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
-		SHADER_PARAMETER_STRUCT_REF(FSceneTextureUniformParameters, SceneTextures)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneTextureUniformParameters, SceneTextures)
 		SHADER_PARAMETER_STRUCT_REF(FIrradianceCachingParameters, IrradianceCachingParameters)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()

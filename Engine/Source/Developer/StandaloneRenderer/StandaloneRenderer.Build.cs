@@ -21,15 +21,14 @@ public class StandaloneRenderer : ModuleRules
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenGL");
 
-		if ((Target.Platform == UnrealTargetPlatform.Win64) ||
-			(Target.Platform == UnrealTargetPlatform.Win32))
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			// @todo: This should be private? Not sure!!
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11");
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
-			PublicFrameworks.Add("QuartzCore");
+			PublicFrameworks.AddRange(new string[] { "QuartzCore", "IOSurface" });
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
 		{

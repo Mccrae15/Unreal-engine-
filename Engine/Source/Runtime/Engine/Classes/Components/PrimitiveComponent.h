@@ -21,6 +21,8 @@
 #include "AI/Navigation/NavRelevantInterface.h"
 #include "VT/RuntimeVirtualTextureEnum.h"
 #include "HitProxies.h"
+#include "Interfaces/Interface_AsyncCompilation.h"
+#include "HLOD/HLODBatchingPolicy.h"
 #include "PrimitiveComponent.generated.h"
 
 class AController;
@@ -28,10 +30,17 @@ class FPrimitiveSceneProxy;
 class UMaterialInterface;
 class UPrimitiveComponent;
 class UTexture;
+class URuntimeVirtualTexture;
 struct FCollisionShape;
 struct FConvexVolume;
 struct FEngineShowFlags;
 struct FNavigableGeometryExport;
+
+namespace PrimitiveComponentCVars
+{
+	extern float HitDistanceToleranceCVar;
+	extern float InitialOverlapToleranceCVar;
+}
 
 /** Determines whether a Character can attempt to step up onto a component when they walk in to it. */
 UENUM()
@@ -104,6 +113,21 @@ enum class ERendererStencilMask : uint8
 	ERSM_128 UMETA(DisplayName = "Eighth bit (128), ignore depth")
 };
 
+/** How quickly component should be culled. */
+UENUM()
+enum class ERayTracingGroupCullingPriority : uint8
+{
+	CP_0_NEVER_CULL UMETA(DisplayName = "0 - Never cull"),
+	CP_1 UMETA(DisplayName = "1"),
+	CP_2 UMETA(DisplayName = "2"),
+	CP_3 UMETA(DisplayName = "3"),
+	CP_4_DEFAULT UMETA(DisplayName = "4 - Default"),
+	CP_5 UMETA(DisplayName = "5"),
+	CP_6 UMETA(DisplayName = "6"),
+	CP_7 UMETA(DisplayName = "7"),
+	CP_8_QUICKLY_CULL UMETA(DisplayName = "8 - Quickly cull")
+};
+
 /** Converts a stencil mask from the editor's USTRUCT version to the version the renderer uses. */
 struct FRendererStencilMaskEvaluation
 {
@@ -139,6 +163,34 @@ struct FRendererStencilMaskEvaluation
 	}
 };
 
+/*
+ * Predicate for comparing FOverlapInfos when exact weak object pointer index/serial numbers should match, assuming one is not null and not invalid.
+ * Compare to operator== for WeakObjectPtr which does both HasSameIndexAndSerialNumber *and* IsValid() checks on both pointers.
+ */
+struct FFastOverlapInfoCompare
+{
+	FFastOverlapInfoCompare(const FOverlapInfo& BaseInfo)
+		: MyBaseInfo(BaseInfo)
+	{
+	}
+
+	bool operator() (const FOverlapInfo& Info)
+	{
+		return MyBaseInfo.OverlapInfo.Component.HasSameIndexAndSerialNumber(Info.OverlapInfo.Component)
+			&& MyBaseInfo.GetBodyIndex() == Info.GetBodyIndex();
+	}
+
+	bool operator() (const FOverlapInfo* Info)
+	{
+		return MyBaseInfo.OverlapInfo.Component.HasSameIndexAndSerialNumber(Info->OverlapInfo.Component)
+			&& MyBaseInfo.GetBodyIndex() == Info->GetBodyIndex();
+	}
+
+private:
+	const FOverlapInfo& MyBaseInfo;
+
+};
+
 
 /**
  * Delegate for notification of blocking collision against a specific component.  
@@ -171,7 +223,7 @@ DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_TwoParams( FComponentEndTouchOverSigna
  * ShapeComponents generate geometry that is used for collision detection but are not rendered, while StaticMeshComponents and SkeletalMeshComponents contain pre-built geometry that is rendered, but can also be used for collision detection.
  */
 UCLASS(abstract, HideCategories=(Mobility, VirtualTexture), ShowCategories=(PhysicsVolume))
-class ENGINE_API UPrimitiveComponent : public USceneComponent, public INavRelevantInterface
+class ENGINE_API UPrimitiveComponent : public USceneComponent, public INavRelevantInterface, public IInterface_AsyncCompilation
 {
 	GENERATED_BODY()
 
@@ -218,22 +270,27 @@ public:
 	ELightmapType LightmapType;
 
 #if WITH_EDITORONLY_DATA
+	/** Whether to include this component in HLODs or not. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=HLOD, meta=(DisplayName="Include Component in HLOD"))
+	uint8 bEnableAutoLODGeneration : 1;
+
 	/** Which specific HLOD levels this component should be excluded from */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = HLOD)
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category=HLOD, meta=(DisplayName="Exclude from HLOD Levels", EditConditionHides, EditCondition="bEnableAutoLODGeneration"))
 	TArray<int32> ExcludeForSpecificHLODLevels;
 
-	/** If true, and if World setting has bEnableHierarchicalLOD equal to true, then this component will be included when generating a Proxy mesh for the parent Actor */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = HLOD, meta = (DisplayName = "Include Component for HLOD Mesh generation"))
-	uint8 bEnableAutoLODGeneration : 1;
+	/** Determines how the geometry of a component will be incorporated in proxy (simplified) HLODs. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category=HLOD, meta=(DisplayName="HLOD Batching Policy", EditConditionHides, EditCondition="bEnableAutoLODGeneration"))
+	EHLODBatchingPolicy HLODBatchingPolicy;
+
+
+	/** Indicates that the texture streaming built data is local to the Actor (see UActorTextureStreamingBuildDataComponent). */
+	UPROPERTY()
+	uint8 bIsActorTextureStreamingBuiltData : 1;
 #endif 
 
-	/** Use the Maximum LOD Mesh (imposter) instead of including Mesh data from this component in the Proxy Generation process */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = HLOD)
-	uint8 bUseMaxLODAsImposter : 1;
-
-	/** If true, the proxy generation process will use instancing to render this imposter */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = HLOD, meta = (EditCondition = "bUseMaxLODAsImposter"))
-	uint8 bBatchImpostersAsInstances : 1;
+	/** Indicates to the texture streaming wether it can use the pre-built texture streaming data (even if empty). */
+	UPROPERTY()
+	uint8 bIsValidTextureStreamingBuiltData : 1;
 
 	/**
 	 * When enabled this object will not be culled by distance. This is ignored if a child of a HLOD.
@@ -250,6 +307,9 @@ public:
 	/** When true, texture streaming manager won't update the component state. Used to perform early exits when updating component. */
 	mutable uint8 bIgnoreStreamingManagerUpdate : 1;
 
+	/** Whether this primitive is referenced by a Nanite::FCoarseMeshStreamingManager  */
+	mutable uint8 bAttachedToCoarseMeshStreamingManager : 1;
+
 	/** Whether this primitive is referenced by the streaming manager and should sent callbacks when detached or destroyed */
 	FORCEINLINE bool IsAttachedToStreamingManager() const { return !!(bAttachedToStreamingManagerAsStatic | bAttachedToStreamingManagerAsDynamic); }
 
@@ -265,7 +325,7 @@ public:
 	 * If true, this component will generate overlap events when it is overlapping other components (eg Begin Overlap).
 	 * Both components (this and the other) must have this enabled for overlap events to occur.
 	 *
-	 * @see [Overlap Events](https://docs.unrealengine.com/latest/INT/Engine/Physics/Collision/index.html#overlapandgenerateoverlapevents)
+	 * @see [Overlap Events](https://docs.unrealengine.com/InteractiveExperiences/Physics/Collision/Overview#overlapandgenerateoverlapevents)
 	 * @see UpdateOverlaps(), BeginComponentOverlap(), EndComponentOverlap()
 	 */
 	UFUNCTION(BlueprintGetter)
@@ -366,6 +426,12 @@ public:
 	UPROPERTY()
 	uint8 bSelectable:1;
 
+#if WITH_EDITORONLY_DATA
+	/** If true, this component will be considered for placement when dragging and placing items in the editor even if it is not visible, such as in the case of hidden collision meshes */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Collision)
+	uint8 bConsiderForActorPlacementWhenHidden:1;
+#endif //WITH_EDITORONLY_DATA
+
 	/** If true, forces mips for textures used by this component to be resident when this component's level is loaded. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=TextureStreaming)
 	uint8 bForceMipStreaming:1;
@@ -380,12 +446,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting)
 	uint8 CastShadow:1;
 
+	/** Whether the primitive will be used as an emissive light source. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay)
+	uint8 bEmissiveLightSource:1;
+
 	/** Controls whether the primitive should inject light into the Light Propagation Volume.  This flag is only used if CastShadow is true. **/
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay, meta=(EditCondition="CastShadow"))
 	uint8 bAffectDynamicIndirectLighting:1;
 
 	/** Controls whether the primitive should affect dynamic distance field lighting methods.  This flag is only used if CastShadow is true. **/
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay, meta=(EditCondition="CastShadow"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Lighting, AdvancedDisplay)
 	uint8 bAffectDistanceFieldLighting:1;
 
 	/** Controls whether the primitive should cast shadows in the case of non precomputed shadowing.  This flag is only used if CastShadow is true. **/
@@ -522,6 +592,10 @@ public:
 	UPROPERTY()
 	uint8 bUseEditorCompositing:1;
 
+	/** Set to true while the editor is moving the component, which notifies the Renderer to track velocities even if the component is Static. */
+	UPROPERTY(Transient, DuplicateTransient)
+	uint8 bIsBeingMovedByEditor:1;
+
 	/** If true, this component will be rendered in the CustomDepth pass (usually used for outlines) */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Rendering, meta=(DisplayName = "Render CustomDepth Pass"))
 	uint8 bRenderCustomDepth:1;
@@ -532,9 +606,16 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Rendering, meta = (DisplayName = "Hidden In Scene Capture", ToolTip = "When true, will not be captured by Scene Capture"))
 	uint8 bHiddenInSceneCapture : 1;
 
+	/** If true, this component will be available to ray trace as a far field primitive even if hidden. */
+	UPROPERTY()
+	uint8 bRayTracingFarField : 1;
+
 protected:
 	/** Result of last call to AreAllCollideableDescendantsRelative(). */
 	uint8 bCachedAllCollideableDescendantsRelative : 1;
+
+	UPROPERTY()
+	uint8 bHasNoStreamableTextures : 1;
 
 public:
 	/** If true then DoCustomNavigableGeometryExport will be called to collect navigable geometry of this component. */
@@ -543,8 +624,8 @@ public:
 
 public:
 #if WITH_EDITORONLY_DATA
-		UPROPERTY()
-			TEnumAsByte<enum EHitProxyPriority> HitProxyPriority;
+	UPROPERTY()
+	TEnumAsByte<enum EHitProxyPriority> HitProxyPriority;
 #endif
 
 private:
@@ -552,6 +633,13 @@ private:
 	UPROPERTY()
 	TEnumAsByte<enum ECanBeCharacterBase> CanBeCharacterBase_DEPRECATED;
 
+	/** Deprecated - represented by HLODBatchingPolicy == EHLODBatchingPolicy::MeshSection */
+	UPROPERTY()
+	uint8 bUseMaxLODAsImposter_DEPRECATED : 1;
+
+	/** Deprecated - represented by HLODBatchingPolicy == EHLODBatchingPolicy::Instancing */
+	UPROPERTY()
+	uint8 bBatchImpostersAsInstances_DEPRECATED : 1;
 #endif
 
 	FMaskFilter MoveIgnoreMask;
@@ -572,9 +660,16 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Lighting)
 	FLightingChannels LightingChannels;
 
-	/** Mask used for stencil buffer writes. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = "Rendering", meta = (editcondition = "bRenderCustomDepth"))
-	ERendererStencilMask CustomDepthStencilWriteMask;
+	/**
+	 * Defines run-time groups of components. For example allows to assemble multiple parts of a building at runtime.
+	 * -1 means that component doesn't belong to any group.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = RayTracing)
+	int32 RayTracingGroupId;
+
+	/** Used for precomputed visibility */
+	UPROPERTY()
+	int32 VisibilityId=0;
 
 	/** Optionally write this 0-255 value to the stencil buffer in CustomDepth pass (Requires project setting or r.CustomDepth == 3) */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Rendering,  meta=(UIMin = "0", UIMax = "255", editcondition = "bRenderCustomDepth", DisplayName = "CustomDepth Stencil Value"))
@@ -582,7 +677,7 @@ public:
 
 private:
 	/** Optional user defined default values for the custom primitive data of this primitive */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Rendering, meta = (DisplayName = "Custom Primitive Data Defaults"))
+	UPROPERTY(EditAnywhere, Category=Rendering, meta = (DisplayName = "Custom Primitive Data Defaults"))
 	FCustomPrimitiveData CustomPrimitiveData;
 
 	/** Custom data that can be read by a material through a material parameter expression. Set data using SetCustomPrimitiveData* functions */
@@ -615,16 +710,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = Rendering)
 	float TranslucencySortDistanceOffset = 0.0f;
 
-	/** Used for precomputed visibility */
-	UPROPERTY()
-	int32 VisibilityId=0;
-
 	/** 
 	 * Array of runtime virtual textures into which we draw the mesh for this actor. 
 	 * The material also needs to be set up to output to a virtual texture. 
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = VirtualTexture, meta = (DisplayName = "Draw in Virtual Textures"))
-	TArray<URuntimeVirtualTexture*> RuntimeVirtualTextures;
+	TArray<TObjectPtr<URuntimeVirtualTexture>> RuntimeVirtualTextures;
 
 	/** Bias to the LOD selected for rendering to runtime virtual textures. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = VirtualTexture, meta = (DisplayName = "Virtual Texture LOD Bias", UIMin = "-7", UIMax = "8"))
@@ -660,12 +751,10 @@ public:
 	FPrimitiveComponentId ComponentId;
 
 	/**
-	 * Multiplier used to scale the Light Propagation Volume light injection bias, to reduce light bleeding. 
-	 * Set to 0 for no bias, 1 for default or higher for increased biasing (e.g. for 
-	 * thin geometry such as walls)
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category=Rendering, meta=(UIMin = "0.0", UIMax = "3.0"))
-	float LpvBiasMultiplier;
+	* Identifier used to track the time that this component was registered with the world / renderer.
+	* Updated to unique incremental value each time OnRegister() is called. The value of 0 is unused.
+	* */
+	int32 RegistrationSerialNumber = -1;
 
 	/**
 	* Incremented by the main thread before being attached to the scene, decremented
@@ -702,6 +791,9 @@ protected:
 	/** Next id to be used by a component. */
 	static FThreadSafeCounter NextComponentId;
 
+	/** Next registration serial number to be assigned to a component when it is registered. */
+	static FThreadSafeCounter NextRegistrationSerialNumber;
+
 public:
 	/** 
 	 * Scales the bounds of the object.
@@ -726,9 +818,12 @@ private:
 	/** Same as LastRenderTime but only updated if the component is on screen. Used by the texture streamer. */
 	mutable float LastRenderTimeOnScreen;
 
+	float OcclusionBoundsSlack;
+
 	friend class FPrimitiveSceneInfo;
 
 public:
+	int32 GetRayTracingGroupId() const;
 
 	/**
 	 * Returns true if this component has been rendered "recently", with a tolerance in seconds to define what "recent" means.
@@ -737,7 +832,7 @@ public:
 	 * @param Tolerance  How many seconds ago the actor last render time can be and still count as having been "recently" rendered.
 	 * @return Whether this actor was recently rendered.
 	 */
-	UFUNCTION(Category = "Rendering", BlueprintCallable, meta=(DisplayName="WasComponentRecentlyRendered", Keywords="scene visible"))
+	UFUNCTION(Category = "Rendering", BlueprintCallable, meta=(DisplayName="Was Component Recently Rendered", Keywords="scene visible"))
 	bool WasRecentlyRendered(float Tolerance = 0.2) const;
 
 	void SetLastRenderTime(float InLastRenderTime);
@@ -752,7 +847,7 @@ public:
 	 * @see IgnoreActorWhenMoving()
 	 */
 	UPROPERTY(Transient, DuplicateTransient)
-	TArray<AActor*> MoveIgnoreActors;
+	TArray<TObjectPtr<AActor>> MoveIgnoreActors;
 
 	/**
 	 * Tells this component whether to ignore collision with all components of a specific Actor when this component is moved.
@@ -765,7 +860,7 @@ public:
 	/**
 	 * Returns the list of actors we currently ignore when moving.
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName="GetMoveIgnoreActors", UnsafeDuringActorConstruction="true"), Category = "Collision")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName="Get Move Ignore Actors", UnsafeDuringActorConstruction="true"), Category = "Collision")
 	TArray<AActor*> CopyArrayOfMoveIgnoreActors();
 
 	/**
@@ -787,7 +882,7 @@ public:
 	* @see IgnoreComponentWhenMoving()
 	*/
 	UPROPERTY(Transient, DuplicateTransient)
-	TArray<UPrimitiveComponent*> MoveIgnoreComponents;
+	TArray<TObjectPtr<UPrimitiveComponent>> MoveIgnoreComponents;
 
 	/**
 	* Tells this component whether to ignore collision with another component when this component is moved.
@@ -800,7 +895,7 @@ public:
 	/**
 	* Returns the list of actors we currently ignore when moving.
 	*/
-	UFUNCTION(BlueprintCallable, meta=(DisplayName="GetMoveIgnoreComponents", UnsafeDuringActorConstruction="true"), Category = "Collision")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName="Get Move Ignore Components", UnsafeDuringActorConstruction="true"), Category = "Collision")
 	TArray<UPrimitiveComponent*> CopyArrayOfMoveIgnoreComponents();
 
 	/**
@@ -826,6 +921,38 @@ public:
 	/** Get the mask filter checked when others move into us. */
 	FMaskFilter GetMaskFilterOnBodyInstance(FMaskFilter InMaskFilter) const { return BodyInstance.GetMaskFilter(); }
 
+	/**
+	 * Gets the index of the scalar parameter for the custom primitive data array
+	 * @param	ParameterName	The parameter name of the custom primitive
+	 * @return	The index of the custom primitive, INDEX_NONE (-1) if not found
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
+	int32 GetCustomPrimitiveDataIndexForScalarParameter(FName ParameterName) const;
+
+	/**
+	 * Gets the index of the vector parameter for the custom primitive data array
+	 * @param	ParameterName	The parameter name of the custom primitive
+	 * @return	The index of the custom primitive, INDEX_NONE (-1) if not found
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
+	int32 GetCustomPrimitiveDataIndexForVectorParameter(FName ParameterName) const;
+
+	/**
+	 * Set a scalar parameter for custom primitive data. This sets the run-time data only, so it doesn't serialize.
+	 * @param	ParameterName	The parameter name of the custom primitive
+	 * @param	Value			The new value of the custom primitive
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
+	void SetScalarParameterForCustomPrimitiveData(FName ParameterName, float Value);
+
+	/**
+	 * Set a vector parameter for custom primitive data. This sets the run-time data only, so it doesn't serialize.
+	 * @param	ParameterName	The parameter name of the custom primitive
+	 * @param	Value			The new value of the custom primitive
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
+	void SetVectorParameterForCustomPrimitiveData(FName ParameterName, FVector4 Value);
+
 	/** Set custom primitive data at index DataIndex. This sets the run-time data only, so it doesn't serialize. */
 	UFUNCTION(BlueprintCallable, Category="Rendering|Material")
 	void SetCustomPrimitiveDataFloat(int32 DataIndex, float Value);
@@ -847,6 +974,22 @@ public:
 	 * @return The payload of custom data that will be set on the primitive and accessible in the material through a material expression.
 	 */
 	const FCustomPrimitiveData& GetCustomPrimitiveData() const { return CustomPrimitiveDataInternal; }
+
+	/**
+	 * Set a scalar parameter for default custom primitive data. This will be serialized and is useful in construction scripts.
+	 * @param	ParameterName	The parameter name of the custom primitive
+	 * @param	Value			The new value of the custom primitive
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
+	void SetScalarParameterForDefaultCustomPrimitiveData(FName ParameterName, float Value);
+
+	/**
+	 * Set a vector parameter for default custom primitive data. This will be serialized and is useful in construction scripts.
+	 * @param	ParameterName	The parameter name of the custom primitive
+	 * @param	Value			The new value of the custom primitive
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
+	void SetVectorParameterForDefaultCustomPrimitiveData(FName ParameterName, FVector4 Value);
 
 	/** Set default custom primitive data at index DataIndex, and marks the render state dirty */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Material")
@@ -910,7 +1053,7 @@ public:
 	 * Begin tracking an overlap interaction with the component specified.
 	 * @param OtherComp - The component of the other actor that this component is now overlapping
 	 * @param bDoNotifies - True to dispatch appropriate begin/end overlap notifications when these events occur.
-	 * @see [Overlap Events](https://docs.unrealengine.com/latest/INT/Engine/Physics/Collision/index.html#overlapandgenerateoverlapevents)
+	 * @see [Overlap Events](https://docs.unrealengine.com/InteractiveExperiences/Physics/Collision/Overview#overlapandgenerateoverlapevents)
 	 */
 	void BeginComponentOverlap(const FOverlapInfo& OtherOverlap, bool bDoNotifies);
 	
@@ -919,7 +1062,7 @@ public:
 	 * @param OtherComp The component of the other actor to stop overlapping
 	 * @param bDoNotifies True to dispatch appropriate begin/end overlap notifications when these events occur.
 	 * @param bSkipNotifySelf True to skip end overlap notifications to this component's.  Does not affect notifications to OtherComp's actor.
-	 * @see [Overlap Events](https://docs.unrealengine.com/latest/INT/Engine/Physics/Collision/index.html#overlapandgenerateoverlapevents)
+	 * @see [Overlap Events](https://docs.unrealengine.com/InteractiveExperiences/Physics/Collision/Overview#overlapandgenerateoverlapevents)
 	 */
 	void EndComponentOverlap(const FOverlapInfo& OtherOverlap, bool bDoNotifies=true, bool bSkipNotifySelf=false);
 
@@ -1103,6 +1246,16 @@ public:
 	UPROPERTY(BlueprintAssignable, Category="Input|Touch Input")
 	FComponentEndTouchOverSignature OnInputTouchLeave;
 
+	/**
+	 * Defines how quickly it should be culled. For example buildings should have a low priority, but small dressing should have a high priority.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = RayTracing)
+	ERayTracingGroupCullingPriority RayTracingGroupCullingPriority;
+
+	/** Mask used for stencil buffer writes. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = "Rendering", meta = (editcondition = "bRenderCustomDepth"))
+	ERendererStencilMask CustomDepthStencilWriteMask;
+
 	/** Scale the bounds of this object, used for frustum culling. Useful for features like WorldPositionOffset. */
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	void SetBoundsScale(float NewBoundsScale=1.f);
@@ -1158,7 +1311,7 @@ public:
 	 *	@param	SectionIndex	Section of the mesh that the face belongs to
 	 *	@return					Material applied to section that the hit face belongs to
 	 */
-	UFUNCTION(BlueprintPure, Category = "Components|Mesh")
+	UFUNCTION(BlueprintPure, Category = "Rendering|Material")
 	virtual UMaterialInterface* GetMaterialFromCollisionFaceIndex(int32 FaceIndex, int32& SectionIndex) const;
 
 	/** Returns the slope override struct for this component. */
@@ -1207,20 +1360,6 @@ public:
 	*	@param	BoneName	If a SkeletalMeshComponent, name of body to apply angular impulse to. 'None' indicates root body.
 	*	@param	bVelChange	If true, the Strength is taken as a change in angular velocity instead of an impulse (ie. mass will have no effect).
 	*/
-	UE_DEPRECATED(4.18, "Use AddAngularImpulseInRadians instead.")
-	UFUNCTION(BlueprintCallable, Category = "Physics", meta=(UnsafeDuringActorConstruction="true", DeprecatedFunction, DeprecationMessage="Use AddAngularImpulseInRadians instead"))
-	virtual void AddAngularImpulse(FVector Impulse, FName BoneName = NAME_None, bool bVelChange = false)
-	{
-		AddAngularImpulseInRadians(Impulse, BoneName, bVelChange);
-	}
-
-	/**
-	*	Add an angular impulse to a single rigid body. Good for one time instant burst.
-	*
-	*	@param	AngularImpulse	Magnitude and direction of impulse to apply. Direction is axis of rotation.
-	*	@param	BoneName	If a SkeletalMeshComponent, name of body to apply angular impulse to. 'None' indicates root body.
-	*	@param	bVelChange	If true, the Strength is taken as a change in angular velocity instead of an impulse (ie. mass will have no effect).
-	*/
 	UFUNCTION(BlueprintCallable, Category = "Physics", meta=(UnsafeDuringActorConstruction="true"))
 	virtual void AddAngularImpulseInRadians(FVector Impulse, FName BoneName = NAME_None, bool bVelChange = false);
 
@@ -1246,6 +1385,17 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true"))
 	virtual void AddImpulseAtLocation(FVector Impulse, FVector Location, FName BoneName = NAME_None);
+
+	/**
+	 *	Add an impulse to a single rigid body at a specific location. The Strength is taken as a change in angular velocity instead of an impulse (ie. mass will have no effect).
+	 *
+	 *	@param	Impulse		Magnitude and direction of impulse to apply.
+	 *	@param	Location	Point in world space to apply impulse at.
+	 *	@param	BoneName	If a SkeletalMeshComponent, name of bone to apply impulse to. 'None' indicates root body.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Physics", meta = (UnsafeDuringActorConstruction = "true"))
+	virtual void AddVelocityChangeImpulseAtLocation(FVector Impulse, FVector Location, FName BoneName = NAME_None);
+
 
 	/**
 	 * Add an impulse to all rigid bodies in this component, radiating out from the specified position.
@@ -1310,19 +1460,6 @@ public:
 	 *	@param BoneName		If a SkeletalMeshComponent, name of body to apply torque to. 'None' indicates root body.
 	 *  @param bAccelChange If true, Torque is taken as a change in angular acceleration instead of a physical torque (i.e. mass will have no effect).
 	 */
-	UE_DEPRECATED(4.18, "Use AddTorqueInRadians instead.")
-	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true", DeprecatedFunction, DeprecationMessage="Use AddTorqueInRadians instead"))
-	void AddTorque(FVector Torque, FName BoneName = NAME_None, bool bAccelChange = false)
-	{
-		AddTorqueInRadians(Torque, BoneName, bAccelChange);
-	}
-
-	/**
-	 *	Add a torque to a single rigid body.
-	 *	@param Torque		Torque to apply. Direction is axis of rotation and magnitude is strength of torque.
-	 *	@param BoneName		If a SkeletalMeshComponent, name of body to apply torque to. 'None' indicates root body.
-	 *  @param bAccelChange If true, Torque is taken as a change in angular acceleration instead of a physical torque (i.e. mass will have no effect).
-	 */
 	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true"))
 	virtual void AddTorqueInRadians(FVector Torque, FName BoneName = NAME_None, bool bAccelChange = false);
 
@@ -1377,21 +1514,6 @@ public:
 	 *	Set the angular velocity of a single body.
 	 *	This should be used cautiously - it may be better to use AddTorque or AddImpulse.
 	 *
-	 *	@param NewAngVel		New angular velocity to apply to body, in degrees per second.
-	 *	@param bAddToCurrent	If true, NewAngVel is added to the existing angular velocity of the body.
-	 *	@param BoneName			If a SkeletalMeshComponent, name of body to modify angular velocity of. 'None' indicates root body.
-	 */
-	UE_DEPRECATED(4.18, "Use SetPhysicsAngularVelocityInDegrees instead.")
-	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true", DeprecatedFunction, DeprecationMessage="Use SetPhysicsAngularVelocityInDegrees instead"))
-	void SetPhysicsAngularVelocity(FVector NewAngVel, bool bAddToCurrent = false, FName BoneName = NAME_None)
-	{
-		SetPhysicsAngularVelocityInDegrees(NewAngVel, bAddToCurrent, BoneName);
-	}
-
-	/**
-	 *	Set the angular velocity of a single body.
-	 *	This should be used cautiously - it may be better to use AddTorque or AddImpulse.
-	 *
 	 *	@param NewAngVel		New angular velocity to apply to body, in radians per second.
 	 *	@param bAddToCurrent	If true, NewAngVel is added to the existing angular velocity of the body.
 	 *	@param BoneName			If a SkeletalMeshComponent, name of body to modify angular velocity of. 'None' indicates root body.
@@ -1420,20 +1542,6 @@ public:
 	*	@param bAddToCurrent	If true, NewMaxAngVel is added to the existing maximum angular velocity of the body.
 	*	@param BoneName			If a SkeletalMeshComponent, name of body to modify maximum angular velocity of. 'None' indicates root body.
 	*/
-	UE_DEPRECATED(4.18, "Use SetPhysicsMaxAngularVelocityInDegrees instead.")
-	UFUNCTION(BlueprintCallable, Category = "Physics", meta=(UnsafeDuringActorConstruction="true", DeprecatedFunction, DeprecationMessage="Use SetPhysicsMaxAngularVelocityInDegrees instead"))
-	void SetPhysicsMaxAngularVelocity(float NewMaxAngVel, bool bAddToCurrent = false, FName BoneName = NAME_None)
-	{
-		SetPhysicsMaxAngularVelocityInDegrees(NewMaxAngVel, bAddToCurrent, BoneName);
-	}
-
-	/**
-	*	Set the maximum angular velocity of a single body.
-	*
-	*	@param NewMaxAngVel		New maximum angular velocity to apply to body, in degrees per second.
-	*	@param bAddToCurrent	If true, NewMaxAngVel is added to the existing maximum angular velocity of the body.
-	*	@param BoneName			If a SkeletalMeshComponent, name of body to modify maximum angular velocity of. 'None' indicates root body.
-	*/
 	UFUNCTION(BlueprintCallable, Category = "Physics", meta=(UnsafeDuringActorConstruction="true"))
 	void SetPhysicsMaxAngularVelocityInDegrees(float NewMaxAngVel, bool bAddToCurrent = false, FName BoneName = NAME_None)
 	{
@@ -1449,17 +1557,6 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Physics", meta=(UnsafeDuringActorConstruction="true"))
 	void SetPhysicsMaxAngularVelocityInRadians(float NewMaxAngVel, bool bAddToCurrent = false, FName BoneName = NAME_None);
-
-	/** 
-	 *	Get the angular velocity of a single body, in degrees per second. 
-	 *	@param BoneName			If a SkeletalMeshComponent, name of body to get velocity of. 'None' indicates root body.
-	 */
-	UE_DEPRECATED(4.18, "Use GetPhysicsAngularVelocityInDegrees instead.")
-	UFUNCTION(BlueprintCallable, Category="Physics", meta=(UnsafeDuringActorConstruction="true", DeprecatedFunction, DeprecationMessage="Use GetPhysicsAngularVelocityInDegrees instead"))	
-	FVector GetPhysicsAngularVelocity(FName BoneName = NAME_None) const
-	{
-		return GetPhysicsAngularVelocityInDegrees(BoneName);
-	}
 
 	/** 
 	 *	Get the angular velocity of a single body, in degrees per second. 
@@ -1521,9 +1618,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Rendering")
 	void SetOnlyOwnerSee(bool bNewOnlyOwnerSee);
 
+	/** Changes the value of bIsVisibleInRayTracing. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetVisibleInRayTracing(bool bNewVisibleInRayTracing);
+
 	/** Changes the value of CastShadow. */
 	UFUNCTION(BlueprintCallable, Category="Rendering")
 	void SetCastShadow(bool NewCastShadow);
+
+	/** Changes the value of EmissiveLightSource. */
+	UFUNCTION(BlueprintCallable, Category="Rendering")
+	void SetEmissiveLightSource(bool NewEmissiveLightSource);
 
 	/** Changes the value of CastHiddenShadow. */
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
@@ -1532,6 +1637,10 @@ public:
 	/** Changes the value of CastInsetShadow. */
 	UFUNCTION(BlueprintCallable, Category="Rendering")
 	void SetCastInsetShadow(UPARAM(DisplayName="CastInsetShadow") bool bInCastInsetShadow);
+
+	/** Changes the value of bCastContactShadow. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetCastContactShadow(UPARAM(DisplayName = "CastContactShadow") bool bInCastContactShadow);
 
 	/** Changes the value of LightAttachmentsAsGroup. */
 	UFUNCTION(BlueprintCallable, Category="Rendering")
@@ -1638,6 +1747,10 @@ public:
 	/** Sets bRenderInMainPass property and marks the render state dirty. */
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	void SetRenderInMainPass(bool bValue);
+	
+	/** Sets bRenderInDepthPass property and marks the render state dirty. */
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
+	void SetRenderInDepthPass(bool bValue);
 
 	/** Sets bVisibleInSceneCaptureOnly property and marks the render state dirty. */
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
@@ -1663,10 +1776,11 @@ public:
 private:
 	/** LOD parent primitive to draw instead of this one (multiple UPrim's will point to the same LODParent ) */
 	UPROPERTY(NonPIEDuplicateTransient)
-	class UPrimitiveComponent* LODParentPrimitive;
+	TObjectPtr<class UPrimitiveComponent> LODParentPrimitive;
 
 public:
-	/** Set LOD Parent component, normally associated with an ALODActor */
+
+	/** Set the LOD parent component */
 	void SetLODParentPrimitive(UPrimitiveComponent* InLODParentPrimitive);
 
 	/** Gets the LOD Parent, which is used to compute visibility when hierarchical LOD is enabled */
@@ -1679,11 +1793,17 @@ public:
 	/** Return true if the owner is selected and this component is selectable */
 	virtual bool ShouldRenderSelected() const;
 
+	/** Returns true if the owning actor is part of a level instance which is being edited. */
+	bool GetLevelInstanceEditingState() const;
+
 	/** Component is directly selected in the editor separate from its parent actor */
 	bool IsComponentIndividuallySelected() const;
 
 	/** Return True if a primitive's parameters as well as its position is static during gameplay, and can thus use static lighting. */
 	bool HasStaticLighting() const;
+
+	/** Return true if primitive can skip getting texture streaming render asset info. */
+	bool CanSkipGetTextureStreamingRenderAssetInfo() const;
 
 	/** Returns true if the component is static and has the right static mesh setup to support lightmaps. */
 	virtual bool HasValidSettingsForStaticLighting(bool bOverlookInvalidComponents) const 
@@ -1733,6 +1853,15 @@ public:
 
 	/** Add the used GUIDs from UMapBuildDataRegistry::MeshBuildData. Used to preserve hidden level data in lighting scenario. */
 	virtual void AddMapBuildDataGUIDs(TSet<FGuid>& InGUIDs) const {}
+
+	/**
+	 *	Remaps the texture streaming built data that was built for the actor back to the level.
+	 *	
+	 */
+	virtual bool RemapActorTextureStreamingBuiltDataToLevel(const class UActorTextureStreamingBuildDataComponent* InActorTextureBuildData) { return false; }
+
+	/** Computes a hash of component's texture streaming built data. */
+	virtual uint32 ComputeHashTextureStreamingBuiltData() const { return 0; }
 #endif // WITH_EDITOR
 
 	/**
@@ -1764,14 +1893,25 @@ public:
 	 *	@param	DependentResources [out]	The resource the build depends on.
 	 *	@return								Returns false if some data needs rebuild but couldn't be rebuilt (because of the build type).
 	 */
-	virtual bool BuildTextureStreamingData(ETextureStreamingBuildType BuildType, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<FGuid>& DependentResources) { return true; }
+	bool BuildTextureStreamingData(ETextureStreamingBuildType BuildType, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<FGuid>& DependentResources);
+
+	/**
+	 *	Component type implementation of updating the streaming data of this component.
+	 *
+	 *	@param	BuildType		[in]		The type of build. Affects what the build is allowed to do.
+	 *	@param	QualityLevel	[in]		The quality level being used in the texture streaming build.
+	 *	@param	FeatureLevel	[in]		The feature level being used in the texture streaming build.
+	 *	@param	DependentResources [out]	The resource the build depends on.
+	 *	@return								Returns false if some data needs rebuild but couldn't be rebuilt (because of the build type).
+	 */
+	virtual bool BuildTextureStreamingDataImpl(ETextureStreamingBuildType BuildType, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<FGuid>& DependentResources, bool& bOutSupportsBuildTextureStreamingData);
 
 	/**
 	 * Determines the DPG the primitive's primary elements are drawn in.
 	 * Even if the primitive's elements are drawn in multiple DPGs, a primary DPG is needed for occlusion culling and shadow projection.
 	 * @return The DPG the primitive's primary elements will be drawn in.
 	 */
-	virtual uint8 GetStaticDepthPriorityGroup() const { return DepthPriorityGroup; }
+	virtual ESceneDepthPriorityGroup GetStaticDepthPriorityGroup() const { return DepthPriorityGroup; }
 
 	/** 
 	 * Retrieves the materials used in this component 
@@ -1795,8 +1935,10 @@ public:
 	void SyncComponentToRBPhysics();
 	
 	/** 
-	 *	Returns the matrix that should be used to render this component. 
-	 *	Allows component class to perform graphical distortion to the component not supported by an FTransform 
+	 * Returns the matrix that should be used to render this component. 
+	 * Allows component class to perform graphical distortion to the component not supported by an FTransform 
+	 * NOTE: When overriding this method to alter the transform used for rendering it is typically neccessary to also implement USceneComponent::UpdateBounds.
+	 *       Otherwise the Local bounds will not match the world space bounds, causing incorrect culling.
 	 */
 	virtual FMatrix GetRenderMatrix() const;
 
@@ -1809,10 +1951,11 @@ public:
 	*
 	* @param BoneName				Used to get body associated with specific bone. NAME_None automatically gets the root most body
 	* @param bGetWelded				If the component has been welded to another component and bGetWelded is true we return the single welded BodyInstance that is used in the simulation
+	* @param Index					Index used in Components with multiple body instances
 	*
 	* @return		Returns the BodyInstance based on various states (does component have multiple bodies? Is the body welded to another body?)
 	*/
-	virtual FBodyInstance* GetBodyInstance(FName BoneName = NAME_None, bool bGetWelded = true) const;
+	virtual FBodyInstance* GetBodyInstance(FName BoneName = NAME_None, bool bGetWelded = true, int32 Index = INDEX_NONE) const;
 
 	/** 
 	 * Returns The square of the distance to closest Body Instance surface. 
@@ -1967,7 +2110,7 @@ protected:
 	}
 
 public:
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if UE_ENABLE_DEBUG_DRAWING
 	/** Updates the renderer with the center of mass data */
 	virtual void SendRenderDebugPhysics(FPrimitiveSceneProxy* OverrideSceneProxy = nullptr);
 #endif
@@ -2023,6 +2166,11 @@ public:
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
 	virtual void UpdateCollisionProfile();
 	virtual void PostEditImport() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
+	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 #endif // WITH_EDITOR
 	//~ End UObject Interface.
 
@@ -2065,6 +2213,8 @@ public:
 #endif
 	//~ End USceneComponentInterface
 
+	void UpdateOcclusionBoundsSlack(float NewSlack);
+
 	/**
 	 * Dispatch notifications for the given HitResult.
 	 *
@@ -2102,6 +2252,11 @@ public:
 	void PushSelectionToProxy();
 
 	/**
+	 * Pushes new LevelInstance editing state to the render thread primitive proxy.
+	 */
+	void PushLevelInstanceEditingStateToProxy(bool bInEditingState);
+
+	/**
 	 * Pushes new hover state to the render thread primitive proxy
 	 * @param bInHovered - true if the proxy should display as if hovered
 	 */
@@ -2118,10 +2273,16 @@ public:
 	
 	/** Disable dynamic shadow casting if the primitive only casts indirect shadows, since dynamic shadows are always shadowing direct lighting */
 	virtual bool GetShadowIndirectOnly() const { return false; }
+	
+	/** Returns whether this component is still being compiled or dependent on other objects being compiled. */
+	virtual bool IsCompiling() const { return false; }
 
 #if WITH_EDITOR
 	/** Returns mask that represents in which views this primitive is hidden */
 	virtual uint64 GetHiddenEditorViews() const;
+
+	/** Sets whether this component is being moved by the editor so the renderer can render velocities for it, even when Static. */
+	void SetIsBeingMovedByEditor(bool bNewIsBeingMoved);
 #endif// WITH_EDITOR
 
 	/**
@@ -2399,7 +2560,13 @@ public:
 	 *  @param  CollisionShape 	Shape of collision of PrimComp geometry
 	 *  @return true if PrimComp overlaps this component at the specified location/rotation
 	 */
-	virtual bool OverlapComponent(const FVector& Pos, const FQuat& Rot, const FCollisionShape& CollisionShape);
+
+    //UE_DEPRECATED(5.0, "Use the const version of OverlapComponent. This deprecation cannot be uncommented as it would produce false positives." )
+	virtual bool OverlapComponent(const FVector& Pos, const FQuat& Rot, const FCollisionShape& CollisionShape) final 
+	{
+		return const_cast<const UPrimitiveComponent*>(this)->OverlapComponent(Pos, Rot, CollisionShape);
+	}
+	virtual bool OverlapComponent(const FVector& Pos, const FQuat& Rot, const FCollisionShape& CollisionShape) const;
 
 	/**
 	 * Computes the minimum translation direction (MTD) when an overlap exists between the component and the given shape.
@@ -2473,7 +2640,7 @@ private:
 	int32 VisibilityId = INDEX_NONE;
 
 	UPROPERTY()
-	UPrimitiveComponent* LODParent = nullptr;
+	TObjectPtr<UPrimitiveComponent> LODParent = nullptr;
 };
 
 

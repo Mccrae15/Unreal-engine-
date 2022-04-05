@@ -37,11 +37,46 @@
 
 const FString SGameplayTagWidget::SettingsIniSection = TEXT("GameplayTagWidget");
 
+bool SGameplayTagWidget::EnumerateEditableTagContainersFromPropertyHandle(const TSharedRef<IPropertyHandle>& PropHandle, TFunctionRef<bool(const FEditableGameplayTagContainerDatum&)> Callback)
+{
+	FStructProperty* StructProperty = CastField<FStructProperty>(PropHandle->GetProperty());
+	if (StructProperty && StructProperty->Struct->IsChildOf(FGameplayTagContainer::StaticStruct()))
+	{
+		PropHandle->EnumerateRawData([&Callback](void* RawData, const int32 /*DataIndex*/, const int32 /*NumDatas*/)
+		{
+			return Callback(FEditableGameplayTagContainerDatum(nullptr, static_cast<FGameplayTagContainer*>(RawData)));
+		});
+		return true;
+	}
+	return false;
+}
+
+bool SGameplayTagWidget::GetEditableTagContainersFromPropertyHandle(const TSharedRef<IPropertyHandle>& PropHandle, TArray<FEditableGameplayTagContainerDatum>& OutEditableTagContainers)
+{
+	FStructProperty* StructProperty = CastField<FStructProperty>(PropHandle->GetProperty());
+	if (StructProperty && StructProperty->Struct->IsChildOf(FGameplayTagContainer::StaticStruct()))
+	{
+		OutEditableTagContainers.Reset();
+		return EnumerateEditableTagContainersFromPropertyHandle(PropHandle, [&OutEditableTagContainers](const FEditableGameplayTagContainerDatum& EditableTagContainer)
+		{
+			OutEditableTagContainers.Add(EditableTagContainer);
+			return true;
+		});
+	}
+	return false;
+}
+
 void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEditableGameplayTagContainerDatum>& EditableTagContainers)
 {
-	// If we're in management mode, we don't need to have editable tag containers.
-	ensure(EditableTagContainers.Num() > 0 || InArgs._GameplayTagUIMode == EGameplayTagUIMode::ManagementMode);
 	TagContainers = EditableTagContainers;
+	if (InArgs._PropertyHandle.IsValid())
+	{
+		// If we're backed by a property handle then try and get the tag containers from the property handle
+		GetEditableTagContainersFromPropertyHandle(InArgs._PropertyHandle.ToSharedRef(), TagContainers);
+	}
+
+	// If we're in management mode, we don't need to have editable tag containers.
+	ensure(TagContainers.Num() > 0 || InArgs._GameplayTagUIMode == EGameplayTagUIMode::ManagementMode);
 
 	OnTagChanged = InArgs._OnTagChanged;
 	bReadOnly = InArgs._ReadOnly;
@@ -210,20 +245,6 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 				.Visibility(this, &SGameplayTagWidget::DetermineAddNewSourceWidgetVisibility)
 			]
 
-			+SVerticalBox::Slot()
-			.AutoHeight()
-			.VAlign(VAlign_Top)
-			[
-				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryMiddle"))
-				.Padding(FMargin(0.0f, 3.0f, 0.0f, 0.0f))
-				.Visibility(this, &SGameplayTagWidget::DetermineAddNewTagWidgetVisibility)
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("DetailsView.AdvancedDropdownBorder.Open"))
-				]
-			]
-
 			// Gameplay Tag Tree controls
 			+SVerticalBox::Slot()
 			.AutoHeight()
@@ -292,25 +313,32 @@ void SGameplayTagWidget::Construct(const FArguments& InArgs, const TArray<FEdita
 
 	// Force the entire tree collapsed to start
 	SetTagTreeItemExpansion(false);
-	 
+
 	LoadSettings();
 
 	VerifyAssetTagValidity();
 }
 
 void SGameplayTagWidget::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
-	{
+{
 	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 
-	if (bDelayRefresh)
-{
-		RefreshTags();
-		bDelayRefresh = false;
-}
+	if (PropertyHandle.IsValid())
+	{
+		// If we're backed by a property handle then try and refresh the tag containers, 
+		// as they may have changed under us (eg, from object re-instancing)
+		GetEditableTagContainersFromPropertyHandle(PropertyHandle.ToSharedRef(), TagContainers);
 	}
 
-FVector2D SGameplayTagWidget::ComputeDesiredSize(float LayoutScaleMultiplier) const
+	if (bDelayRefresh)
 	{
+		RefreshTags();
+		bDelayRefresh = false;
+	}
+}
+
+FVector2D SGameplayTagWidget::ComputeDesiredSize(float LayoutScaleMultiplier) const
+{
 	FVector2D WidgetSize = SCompoundWidget::ComputeDesiredSize(LayoutScaleMultiplier);
 
 	FVector2D TagTreeContainerSize = TagTreeContainerWidget->GetDesiredSize();
@@ -531,7 +559,7 @@ TSharedRef<ITableRow> SGameplayTagWidget::OnGenerateRow(TSharedPtr<FGameplayTagN
 				.IsFocusable( false )
 				[
 					SNew( SImage )
-					.Image(FEditorStyle::GetBrush("PropertyWindow.Button_AddToArray"))
+					.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
 					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]
@@ -925,15 +953,20 @@ TSharedRef<SWidget> SGameplayTagWidget::MakeTagActionsMenu(TSharedPtr<FGameplayT
 		MenuBuilder.AddMenuEntry(LOCTEXT("GameplayTagWidget_DeleteTag", "Delete"), LOCTEXT("GameplayTagWidget_DeleteTagTooltip", "Delete this tag"), FSlateIcon(), FUIAction(DeleteAction));
 	}
 
-	if (IsExactTagInCollection(InTagNode))
+	// Only include these menu items if we have tag containers to modify
+	if (TagContainers.Num() > 0)
 	{
-		FExecuteAction RemoveAction = FExecuteAction::CreateSP(this, &SGameplayTagWidget::OnRemoveTag, InTagNode);
-		MenuBuilder.AddMenuEntry(LOCTEXT("GameplayTagWidget_RemoveTag", "Remove Exact Tag"), LOCTEXT("GameplayTagWidget_RemoveTagTooltip", "Remove this exact tag, Parent and Child Tags will not be effected."), FSlateIcon(), FUIAction(RemoveAction));
-	}
-	else
-	{
-		FExecuteAction AddAction = FExecuteAction::CreateSP(this, &SGameplayTagWidget::OnAddTag, InTagNode);
-		MenuBuilder.AddMenuEntry(LOCTEXT("GameplayTagWidget_AddTag", "Add Exact Tag"), LOCTEXT("GameplayTagWidget_AddTagTooltip", "Add this exact tag, Parent and Child Child Tags will not be effected."), FSlateIcon(), FUIAction(AddAction));
+		// Either Remove or Add Exact Tag depending on if we have the exact tag or not
+		if (IsExactTagInCollection(InTagNode))
+		{
+			FExecuteAction RemoveAction = FExecuteAction::CreateSP(this, &SGameplayTagWidget::OnRemoveTag, InTagNode);
+			MenuBuilder.AddMenuEntry(LOCTEXT("GameplayTagWidget_RemoveTag", "Remove Exact Tag"), LOCTEXT("GameplayTagWidget_RemoveTagTooltip", "Remove this exact tag, Parent and Child Tags will not be effected."), FSlateIcon(), FUIAction(RemoveAction));
+		}
+		else
+		{
+			FExecuteAction AddAction = FExecuteAction::CreateSP(this, &SGameplayTagWidget::OnAddTag, InTagNode);
+			MenuBuilder.AddMenuEntry(LOCTEXT("GameplayTagWidget_AddTag", "Add Exact Tag"), LOCTEXT("GameplayTagWidget_AddTagTooltip", "Add this exact tag, Parent and Child Child Tags will not be effected."), FSlateIcon(), FUIAction(AddAction));
+		}
 	}
 
 	// Search for References

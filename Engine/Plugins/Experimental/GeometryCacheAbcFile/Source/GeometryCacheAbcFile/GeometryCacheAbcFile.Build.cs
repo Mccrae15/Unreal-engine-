@@ -20,6 +20,7 @@ public class GeometryCacheAbcFile : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"EditorFramework",
 				"GeometryCacheStreamer",
 				"PropertyEditor",
 				"Slate",
@@ -27,5 +28,7 @@ public class GeometryCacheAbcFile : ModuleRules
                 "UnrealEd"
             }
         );
+
+		PrivateIncludePathModuleNames.Add("DerivedDataCache");
 	}
 }

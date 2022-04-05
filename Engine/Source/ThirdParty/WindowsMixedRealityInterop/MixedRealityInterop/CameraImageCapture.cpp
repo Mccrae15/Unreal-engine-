@@ -110,7 +110,7 @@ DirectX::XMFLOAT2 CameraImageCapture::UnprojectPVCamPointAtUnitDepth(DirectX::XM
 	point.X = pixelCoordinate.x;
 	point.Y = pixelCoordinate.y;
 	float2 unprojected = CameraIntrinsics.UnprojectAtUnitDepth(point);
-	
+
 	return DirectX::XMFLOAT2(unprojected.x, unprojected.y);
 }
 
@@ -120,7 +120,7 @@ T convert_from_abi(::IUnknown* from)
 	T to{ nullptr }; // `T` is a projected type.
 
 	winrt::check_hresult(from->QueryInterface(winrt::guid_of<T>(),
-		winrt::put_abi(to)));
+											  winrt::put_abi(to)));
 
 	return to;
 }
@@ -243,7 +243,7 @@ bool CameraImageCapture::StartCameraCapture(void(*FunctionPointer)(void*, Direct
 		return false;
 	}
 
-	MediaFrameSourceGroup::FindAllAsync().Completed([this, DesiredWidth, DesiredHeight, DesiredFPS](auto&& asyncInfo, auto&&  asyncStatus)
+	MediaFrameSourceGroup::FindAllAsync().Completed([this, DesiredWidth, DesiredHeight, DesiredFPS](auto&& asyncInfo, auto&& asyncStatus)
 	{
 		auto DiscoveredGroups = asyncInfo.GetResults();
 		MediaFrameSourceGroup ChosenSourceGroup = nullptr;
@@ -351,7 +351,7 @@ bool CameraImageCapture::StartCameraCapture(void(*FunctionPointer)(void*, Direct
 				Log(L"Failed to open camera, please check Webcam capability");
 				return;
 			}
-			
+
 			// Get the frame source from the source info we got earlier
 			MediaFrameSource FrameSource = Capture.get().FrameSources().Lookup(ChosenSourceInfo.Id());
 
@@ -394,7 +394,7 @@ bool CameraImageCapture::StopCameraCapture()
 {
 	if (CameraFrameReader)
 	{
-		CameraFrameReader.StopAsync().Completed([=](auto&& asyncInfo, auto&&  asyncStatus)
+		CameraFrameReader.StopAsync().Completed([=](auto&& asyncInfo, auto&& asyncStatus)
 		{
 			std::lock_guard<std::mutex> lock(RefsLock);
 			CameraCapture = nullptr;

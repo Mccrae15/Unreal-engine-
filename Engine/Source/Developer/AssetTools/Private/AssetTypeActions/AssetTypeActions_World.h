@@ -12,7 +12,7 @@ class FAssetTypeActions_World : public FAssetTypeActions_Base
 public:
 	// IAssetTypeActions Implementation
 	virtual FText GetName() const override { return NSLOCTEXT("AssetTypeActions", "AssetTypeActions_World", "Level"); }
-	virtual FColor GetTypeColor() const override { return FColor(255, 156, 0); }
+	virtual FColor GetTypeColor() const override { return FAppStyle::Get().GetColor("LevelEditor.AssetColor").ToFColor(true); }
 	virtual UClass* GetSupportedClass() const override { return UWorld::StaticClass(); }
 	virtual bool HasActions ( const TArray<UObject*>& InObjects ) const override { return false; }
 	virtual void OpenAssetEditor( const TArray<UObject*>& InObjects, TSharedPtr<class IToolkitHost> EditWithinLevelEditor = TSharedPtr<IToolkitHost>() ) override;
@@ -20,4 +20,6 @@ public:
 	virtual bool CanLocalize() const override { return false; }
 	virtual class UThumbnailInfo* GetThumbnailInfo(UObject* Asset) const override;
 	virtual TArray<FAssetData> GetValidAssetsForPreviewOrEdit(TArrayView<const FAssetData> InAssetDatas, bool bIsPreview) override;
+	virtual bool CanRename(const FAssetData& InAsset, FText* OutErrorMsg) const override;
+	virtual bool CanDuplicate(const FAssetData& InAsset, FText* OutErrorMsg) const override;
 };

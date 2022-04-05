@@ -15,7 +15,7 @@ public class BlueprintGraph : ModuleRules
 		);
 
 		OverridePackageType = PackageOverrideType.EngineDeveloper;
-
+		 
 		PublicDependencyModuleNames.AddRange(
 			new string[] { 
 				"Core", 
@@ -25,6 +25,7 @@ public class BlueprintGraph : ModuleRules
 				"Slate",
                 "EditorStyle",
 				"EditorSubsystem",
+				"DeveloperSettings"
 			}
 		);
 
@@ -32,6 +33,7 @@ public class BlueprintGraph : ModuleRules
 			new string[] {
 				"EditorStyle",
                 "KismetCompiler",
+				"EditorFramework",
 				"UnrealEd",
                 "GraphEditor",
 				"SlateCore",

@@ -17,25 +17,30 @@ public class LibJpegTurbo : ModuleRules
 		{
 			string LibPath = Path.Combine(ModuleDirectory, "lib/Win64");
 			PublicAdditionalLibraries.Add(Path.Combine(LibPath, "turbojpeg-static.lib"));
+			PublicSystemIncludePaths.Add(Path.Combine(IncPath, Target.Platform.ToString()));
 		}
-
-		// **** NOTE - Only Win64 has been tested - other platforms are usable at your own risk, but have not been tested
-
-/*		else if (Target.Platform == UnrealTargetPlatform.Win32)
+		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			string LibPath = Path.Combine(ModuleDirectory, "lib/Win32");
-			PublicAdditionalLibraries.Add(Path.Combine(LibPath, "turbojpeg-static.lib"));
+			string LibPath = Path.Combine(ModuleDirectory, "lib/Unix", Target.Architecture);
+
+			if (Target.Configuration == UnrealTargetConfiguration.Debug)
+			{
+				PublicAdditionalLibraries.Add(Path.Combine(LibPath, "libturbojpegd.a"));
+			}
+			else
+			{
+				PublicAdditionalLibraries.Add(Path.Combine(LibPath, "libturbojpeg.a"));
+			}
+
+			PublicSystemIncludePaths.Add(Path.Combine(IncPath, "Unix", Target.Architecture));
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
-			string LibPath = Path.Combine(ModuleDirectory, "lib/Mac");
-			PublicAdditionalLibraries.Add(Path.Combine(LibPath, "libturbojpeg.dylib"));
+			string LibPathMac = Path.Combine(ModuleDirectory, "lib", Target.Platform.ToString(), "libturbojpeg.a");
+			string IncPathMac = Path.Combine(IncPath,                Target.Platform.ToString());
+
+			PublicAdditionalLibraries.Add(LibPathMac);
+			PublicSystemIncludePaths.Add(IncPathMac);
 		}
-		else if ((Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) && Target.Architecture.StartsWith("x86_64")))
-		{
-			string LibPath = Path.Combine(ModuleDirectory, "lib/Linux");
-			PublicAdditionalLibraries.Add(Path.Combine(LibPath, "libturbojpeg.so"));
-		}
-*/
 	}
 }

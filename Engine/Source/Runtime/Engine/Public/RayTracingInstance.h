@@ -6,7 +6,24 @@
 #include "MeshBatch.h"
 
 #if RHI_RAYTRACING
-#include "RayTracingDefinitions.h"
+
+struct FRayTracingMaskAndFlags
+{
+	/** Instance mask that can be used to exclude the instance from specific effects (eg. ray traced shadows). */
+	uint8 Mask = 0xFF;
+
+	/** Whether the instance is forced opaque, i.e. anyhit shaders are disabled on this instance */
+	bool bForceOpaque = false;
+
+	/** Whether ray hits should be registered for front and back faces. */
+	bool bDoubleSided = false;
+};
+
+enum class ERayTracingInstanceLayer : uint8
+{
+	NearField,
+	FarField,
+};
 
 struct FRayTracingInstance
 {
@@ -19,11 +36,36 @@ struct FRayTracingInstance
 	 */
 	TArray<FMeshBatch> Materials;
 
+	/** Similar to Materials, but memory is owned by someone else (i.g. FPrimitiveSceneProxy). */
+	TArrayView<const FMeshBatch> MaterialsView;
+
+	bool OwnsMaterials() const
+	{
+		return Materials.Num() != 0;
+	}
+
+	TArrayView<const FMeshBatch> GetMaterials() const
+	{
+		if (OwnsMaterials())
+		{
+			check(MaterialsView.Num() == 0);
+			return TArrayView<const FMeshBatch>(Materials);
+		}
+		else
+		{
+			check(Materials.Num() == 0);
+			return MaterialsView;
+		}
+	}
+
 	/** Whether the instance is forced opaque, i.e. anyhit shaders are disabled on this instance */
-	bool bForceOpaque : 1;
+	bool bForceOpaque = false;
+
+	/** Whether ray hits should be registered for front and back faces. */
+	bool bDoubleSided = false;
 
 	/** Instance mask that can be used to exclude the instance from specific effects (eg. ray traced shadows). */
-	uint8 Mask = RAY_TRACING_MASK_ALL;
+	uint8 Mask = 0xFF;
 
 	/** 
 	* Transforms count. When NumTransforms == 1 we create a single instance. 
@@ -35,12 +77,36 @@ struct FRayTracingInstance
 	/** Instance transforms. */
 	TArray<FMatrix> InstanceTransforms;
 
+	/** Similar to InstanceTransforms, but memory is owned by someone else (i.g. FPrimitiveSceneProxy). */
+	TArrayView<const FMatrix> InstanceTransformsView;
+
+	bool OwnsTransforms() const
+	{
+		return InstanceTransforms.Num() != 0;
+	}
+
+	TArrayView<const FMatrix> GetTransforms() const
+	{
+		if (OwnsTransforms())
+		{
+			check(InstanceTransformsView.Num() == 0);
+			return TArrayView<const FMatrix>(InstanceTransforms);
+		}
+		else
+		{
+			check(InstanceTransforms.Num() == 0);
+			return InstanceTransformsView;
+		}
+	}
+
 	/** When instance transforms are only available in GPU, this SRV holds them. */
 	FShaderResourceViewRHIRef InstanceGPUTransformsSRV;
 
 	/** Build mask and flags based on materials specified in Materials. You can still override Mask after calling this function. */
-	ENGINE_API void BuildInstanceMaskAndFlags();
+	ENGINE_API void BuildInstanceMaskAndFlags(ERHIFeatureLevel::Type FeatureLevel, ERayTracingInstanceLayer InstanceLayer = ERayTracingInstanceLayer::NearField, uint8 ExtraMask = 0);
 };
 
+/** Build mask and flags based on materials specified in Materials. You can still override Mask after calling this function. */
+ENGINE_API FRayTracingMaskAndFlags BuildRayTracingInstanceMaskAndFlags(TArrayView<const FMeshBatch> MeshBatches, ERHIFeatureLevel::Type FeatureLevel, ERayTracingInstanceLayer InstanceLayer = ERayTracingInstanceLayer::NearField, uint8 ExtraMask = 0);
 ENGINE_API uint8 ComputeBlendModeMask(const EBlendMode BlendMode);
 #endif

@@ -5,7 +5,6 @@
 #include "VisualLogger/VisualLoggerTypes.h"
 #include "Input/Reply.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
-#include "Engine/GameViewportClient.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/Docking/TabManager.h"
@@ -43,7 +42,6 @@ public:
 	* @param InArgs The Slate argument list.
 	* @param ConstructUnderMajorTab The major tab which will contain the session front-end.
 	* @param ConstructUnderWindow The window in which this widget is being constructed.
-	* @param InStyleSet The style set to use.
 	*/
 	void Construct(const FArguments& InArgs, const TSharedRef<SDockTab>& ConstructUnderMajorTab, const TSharedPtr<SWindow>& ConstructUnderWindow);
 
@@ -94,6 +92,9 @@ public:
 
 	void HandleSaveCommand(bool bSaveAllData);
 
+	bool HandleRefreshCommandCanExecute() const;
+	void HandleRefreshCommandExecute();
+
 	bool HandleCameraCommandCanExecute() const;
 	void HandleCameraCommandExecute();
 	bool HandleCameraCommandIsChecked() const;
@@ -102,9 +103,19 @@ public:
 	void HandleTabManagerPersistLayout(const TSharedRef<FTabManager::FLayout>& LayoutToSave);
 
 	void OnNewWorld(UWorld* NewWorld);
+	
+	void OnLevelActorAdded(AActor* Actor);
+	void OnLevelActorDeleted(AActor* Actor);
+	void OnActorMoved(AActor* Actor);
+
+	void OnSettingsChanged(FName PropertyName);
+
 	void ResetData();
 
 protected:
+	void CollectFilterVolumes();
+	void ProcessFilterVolumes();
+
 	// Holds the list of UI commands.
 	TSharedRef<FUICommandList> CommandList;
 
@@ -127,6 +138,13 @@ protected:
 
 	bool bGotHistogramData;
 
+#if WITH_EDITOR
+	FDelegateHandle PostPIEStartedHandle;
+#endif
+
 	FDelegateHandle DrawOnCanvasDelegateHandle;
 	TWeakObjectPtr<class UWorld> LastUsedWorld;
+
+	TArray<TWeakObjectPtr<const class AVisualLoggerFilterVolume>> FilterVolumesInLastUsedWorld;
+	TArray<FBox> FilterBoxes;
 };

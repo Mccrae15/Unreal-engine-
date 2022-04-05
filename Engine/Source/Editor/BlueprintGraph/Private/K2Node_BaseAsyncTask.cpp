@@ -1,6 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-
 #include "K2Node_BaseAsyncTask.h"
 #include "EdGraph/EdGraphPin.h"
 #include "UObject/UnrealType.h"
@@ -143,7 +142,7 @@ void UK2Node_BaseAsyncTask::AllocateDefaultPins()
 				UEdGraphPin* Pin = CreatePin(EGPD_Output, NAME_None, Param->GetFName());
 				K2Schema->ConvertPropertyToPinType(Param, /*out*/ Pin->PinType);
 
-				Pin->PinToolTip = Param->GetToolTipText().ToString();
+				UK2Node_CallFunction::GeneratePinTooltipFromFunction(*Pin, DelegateSignatureFunction);
 			}
 		}
 	}
@@ -318,8 +317,38 @@ bool UK2Node_BaseAsyncTask::FBaseAsyncTaskHelper::HandleDelegateImplementation(
 	return bIsErrorFree;
 }
 
+bool UK2Node_BaseAsyncTask::ExpandDefaultToSelfPin(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph, UK2Node_CallFunction* IntermediateProxyNode)
+{
+	if(SourceGraph && IntermediateProxyNode)
+	{
+		// Connect a self reference pin if there is a TScriptInterface default to self
+		if (const UFunction* TargetFunc = IntermediateProxyNode->GetTargetFunction())
+		{
+			const FString& MetaData = TargetFunc->GetMetaData(FBlueprintMetadata::MD_DefaultToSelf);
+			if (!MetaData.IsEmpty())
+			{
+				// Find the default to self value pin
+				if (UEdGraphPin* DefaultToSelfPin = IntermediateProxyNode->FindPinChecked(MetaData, EGPD_Input))
+				{
+					// If it has no links then spawn a new self node here
+					if (DefaultToSelfPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Interface && DefaultToSelfPin->LinkedTo.Num() == 0)
+					{
+						const UEdGraphSchema_K2* Schema = CompilerContext.GetSchema();
 
-void UK2Node_BaseAsyncTask::ExpandNode(class FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph)
+						UK2Node_Self* SelfNode = CompilerContext.SpawnIntermediateNode<UK2Node_Self>(this, SourceGraph);
+						SelfNode->AllocateDefaultPins();
+						UEdGraphPin* SelfPin = SelfNode->FindPinChecked(UEdGraphSchema_K2::PSC_Self);
+						// Make a connection from this intermediate self pin to here
+						return Schema->TryCreateConnection(DefaultToSelfPin, SelfPin);
+					}
+				}
+			}
+		}	
+	}
+	return true;
+}
+
+void UK2Node_BaseAsyncTask::ExpandNode(FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph)
 {
     Super::ExpandNode(CompilerContext, SourceGraph);
 
@@ -359,6 +388,8 @@ void UK2Node_BaseAsyncTask::ExpandNode(class FKismetCompilerContext& CompilerCon
 	check(ProxyObjectPin);
 	UEdGraphPin* OutputAsyncTaskProxy = FindPin(FBaseAsyncTaskHelper::GetAsyncTaskProxyName());
 	bIsErrorFree &= !OutputAsyncTaskProxy || CompilerContext.MovePinLinksToIntermediate(*OutputAsyncTaskProxy, *ProxyObjectPin).CanSafeConnect();
+
+	bIsErrorFree &= ExpandDefaultToSelfPin(CompilerContext, SourceGraph, CallCreateProxyObjectNode);		
 
 	// GATHER OUTPUT PARAMETERS AND PAIR THEM WITH LOCAL VARIABLES
 	TArray<FBaseAsyncTaskHelper::FOutputPinAndLocalVariable> VariableOutputs;
@@ -689,6 +720,37 @@ void UK2Node_BaseAsyncTask::GetPinHoverText(const UEdGraphPin& Pin, FString& Hov
 	}
 
 	return UK2Node::GetPinHoverText(Pin, HoverTextOut);
+}
+
+FString UK2Node_BaseAsyncTask::GetPinMetaData(FName InPinName, FName InKey)
+{
+	FString MetaData = Super::GetPinMetaData(InPinName, InKey);
+
+	// If there's no metadata directly on the pin then check for metadata on the function
+	if (MetaData.IsEmpty())
+	{
+		if (UFunction* Function = GetFactoryFunction())
+		{
+			// Find the corresponding property for the pin and search that first
+			if (FProperty* Property = Function->FindPropertyByName(InPinName))
+			{
+				MetaData = Property->GetMetaData(InKey);
+			}
+
+			// Also look for metadata like DefaultToSelf on the function itself
+			if (MetaData.IsEmpty())
+			{
+				MetaData = Function->GetMetaData(InKey);
+				if (MetaData != InPinName.ToString())
+				{
+					// Only return if the value matches the pin name as we don't want general function metadata
+					MetaData.Empty();
+				}
+			}
+		}
+	}
+
+	return MetaData;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -88,6 +88,8 @@ class ENGINE_API UWorldComposition : public UObject
 	 *  @returns Whether streaming levels state was updated by this call
 	 */
 	bool UpdateEditorStreamingState(const FVector& InLocation);
+
+	TArray<FWorldTileLayer> GetDistanceDependentLayers() const;
 #endif// WITH_EDITOR
 
 	/**
@@ -221,7 +223,7 @@ private:
 public:
 	// Streaming level objects for each tile
 	UPROPERTY(transient)
-	TArray<ULevelStreaming*>	TilesStreaming;
+	TArray<TObjectPtr<ULevelStreaming>>	TilesStreaming;
 
 	// Time threshold between tile streaming state changes
 	UPROPERTY(config)

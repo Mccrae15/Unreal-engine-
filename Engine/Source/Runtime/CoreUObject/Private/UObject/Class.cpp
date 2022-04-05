@@ -1,9 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	UnClass.cpp: Object class implementation.
-=============================================================================*/
-
 #include "UObject/Class.h"
 #include "HAL/ThreadSafeBool.h"
 #include "HAL/LowLevelMemTracker.h"
@@ -28,12 +24,12 @@
 #include "UObject/PropertyTag.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UnrealTypePrivate.h"
+#include "UObject/Reload.h"
 #include "UObject/Stack.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectResource.h"
 #include "UObject/LinkerSave.h"
 #include "UObject/Interface.h"
-#include "Misc/HotReloadInterface.h"
 #include "UObject/LinkerPlaceholderClass.h"
 #include "UObject/LinkerPlaceholderFunction.h"
 #include "UObject/StructScriptLoader.h"
@@ -53,7 +49,8 @@
 #include "UObject/PropertyProxyArchive.h"
 #include "UObject/FieldPath.h"
 #include "HAL/ThreadSafeCounter.h"
-
+#include "Math/InterpCurvePoint.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 
 // WARNING: This should always be the last include in any file that needs it (except .generated.h)
 #include "UObject/UndefineUPropertyMacros.h"
@@ -113,16 +110,11 @@ COREUOBJECT_API void InitializePrivateStaticClass(
 
 	// Register the class's dependencies, then itself.
 	TClass_PrivateStaticClass->RegisterDependencies();
-	if (!TClass_PrivateStaticClass->HasAnyFlags(RF_Dynamic))
 	{
 		// Defer
 		TClass_PrivateStaticClass->Register(PackageName, Name);
 	}
-	else
-	{
-		// Register immediately (don't let the function name mistake you!)
-		TClass_PrivateStaticClass->DeferredRegister(UDynamicClass::StaticClass(), PackageName, Name);
-	}
+	
 	NotifyRegistrationEvent(PackageName, Name, ENotifyRegistrationType::NRT_Class, ENotifyRegistrationPhase::NRP_Finished);
 }
 
@@ -592,35 +584,6 @@ IMPLEMENT_CORE_INTRINSIC_CLASS(UField, UObject,
 	UStruct implementation.
 -----------------------------------------------------------------------------*/
 
-/** Simple reference processor and collector for collecting all UObjects referenced by FProperties */
-class FPropertyReferenceCollector : public FReferenceCollector
-{
-	/** The owner object for properties we collect references for */
-	UObject* Owner;
-public:
-	FPropertyReferenceCollector(UObject* InOwner)
-		: Owner(InOwner)
-	{
-	}
-
-	TSet<UObject*> UniqueReferences;
-
-	virtual bool IsIgnoringArchetypeRef() const override { return false; }
-	virtual bool IsIgnoringTransient() const override { return false;  }
-	virtual void HandleObjectReference(UObject*& InObject, const UObject* InReferencingObject, const FProperty* InReferencingProperty) override
-	{
-		// Skip nulls and the owner object
-		if (InObject && InObject != Owner)
-		{
-			// Don't collect objects that will never be GC'd anyway
-			if (!InObject->HasAnyInternalFlags(EInternalObjectFlags::Native) && !GUObjectArray.IsDisregardForGC(InObject))
-			{
-				UniqueReferences.Add(InObject);
-			}
-		}
-	}
-};
-
 #if WITH_EDITORONLY_DATA
 static int32 GetNextFieldPathSerialNumber()
 {
@@ -748,12 +711,11 @@ void UStruct::CollectBytecodeReferencedObjects(TArray<UObject*>& OutReferencedOb
 
 void UStruct::CollectPropertyReferencedObjects(TArray<UObject*>& OutReferencedObjects)
 {
-	FPropertyReferenceCollector PropertyReferenceCollector(this);
+	FPropertyReferenceCollector PropertyReferenceCollector(this, OutReferencedObjects);
 	for (FField* CurrentField = ChildProperties; CurrentField; CurrentField = CurrentField->Next)
 	{
 		CurrentField->AddReferencedObjects(PropertyReferenceCollector);
 	}
-	OutReferencedObjects.Append(PropertyReferenceCollector.UniqueReferences.Array());
 }
 
 void UStruct::CollectBytecodeAndPropertyReferencedObjects()
@@ -761,6 +723,33 @@ void UStruct::CollectBytecodeAndPropertyReferencedObjects()
 	ScriptAndPropertyObjectReferences.Empty();
 	CollectBytecodeReferencedObjects(ScriptAndPropertyObjectReferences);
 	CollectPropertyReferencedObjects(ScriptAndPropertyObjectReferences);
+}
+
+void UStruct::CollectBytecodeAndPropertyReferencedObjectsRecursively()
+{
+	CollectBytecodeAndPropertyReferencedObjects();
+
+	for (UField* Field = Children; Field; Field = Field->Next)
+	{
+		if (UStruct* ChildStruct = Cast<UStruct>(Field))
+		{
+			ChildStruct->CollectBytecodeAndPropertyReferencedObjectsRecursively();
+		}
+	}
+}
+
+void UStruct::PreloadChildren(FArchive& Ar)
+{
+	for (UField* Field = Children; Field; Field = Field->Next)
+	{
+		// We don't want to preload functions with EDL enabled because they may pull too many dependencies
+		// which could result in going down the FLinkerLoad::VerifyImportInner path which is not allowed with EDL.
+		// EDL will resolve all dependencies eventually but in a different order
+		if (!GEventDrivenLoaderEnabled || !Cast<UFunction>(Field))
+		{
+			Ar.Preload(Field);
+		}
+	}
 }
 
 void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
@@ -776,13 +765,7 @@ void UStruct::Link(FArchive& Ar, bool bRelinkExistingProperties)
 				Ar.Preload(InheritanceSuper);
 			}
 
-			for (UField* Field = Children; Field; Field = Field->Next)
-			{
-				if (!GEventDrivenLoaderEnabled || !Cast<UFunction>(Field))
-				{
-					Ar.Preload(Field);
-				}
-			}
+			PreloadChildren(Ar);
 
 #if WITH_EDITORONLY_DATA
 			ConvertUFieldsToFFields();
@@ -1033,7 +1016,7 @@ void UStruct::InitializeStruct(void* InDest, int32 ArrayDim/* = 1*/) const
 
 	int32 Stride = GetStructureSize();
 
-	//@todo UE4 optimize
+	//@todo UE optimize
 	FMemory::Memzero(Dest, 1 * Stride);
 
 	for (FProperty* Property = PropertyLink; Property; Property = Property->PropertyLinkNext)
@@ -1086,8 +1069,8 @@ void UStruct::SerializeBin( FStructuredArchive::FSlot Slot, void* Data ) const
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 
 	FStructuredArchive::FStream PropertyStream = Slot.EnterStream();
-
-	if( UnderlyingArchive.IsObjectReferenceCollector() )
+	
+	if (UnderlyingArchive.IsObjectReferenceCollector() && !UnderlyingArchive.IsModifyingWeakAndStrongReferences())
 	{
 		for( FProperty* RefLinkProperty=RefLink; RefLinkProperty!=NULL; RefLinkProperty=RefLinkProperty->NextRef )
 		{
@@ -1216,6 +1199,7 @@ void UStruct::LoadTaggedPropertiesFromText(FStructuredArchive::FSlot Slot, uint8
 
 				FPropertyTag Tag;
 				ItemSlot.GetValue() << Tag;
+				Tag.Prop = Property;
 				Tag.ArrayIndex = ItemIndex;
 				Tag.Name = PropertyName;
 
@@ -1286,14 +1270,21 @@ void UStruct::SerializeTaggedProperties(FStructuredArchive::FSlot Slot, uint8* D
 	}
 }
 
+#if WITH_EDITORONLY_DATA
+const FBlake3Hash& UStruct::GetSchemaHash(bool bSkipEditorOnly) const
+{
+	return ::GetSchemaHash(this, bSkipEditorOnly);
+}
+#endif
+
 void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad) const
 {
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 	//SCOPED_LOADTIMER(SerializeTaggedPropertiesTime);
 
 	// Determine if this struct supports optional property guid's (UBlueprintGeneratedClasses Only)
-	const bool bArePropertyGuidsAvailable = (UnderlyingArchive.UE4Ver() >= VER_UE4_PROPERTY_GUID_IN_PROPERTY_TAG) && !FPlatformProperties::RequiresCookedData() && ArePropertyGuidsAvailable();
-	const bool bUseRedirects = (!FPlatformProperties::RequiresCookedData() || UnderlyingArchive.IsSaveGame()) && !UnderlyingArchive.IsUsingEventDrivenLoader();
+	const bool bArePropertyGuidsAvailable = (UnderlyingArchive.UEVer() >= VER_UE4_PROPERTY_GUID_IN_PROPERTY_TAG) && !FPlatformProperties::RequiresCookedData() && ArePropertyGuidsAvailable();
+	const bool bUseRedirects = (!FPlatformProperties::RequiresCookedData() || UnderlyingArchive.IsSaveGame()) && !UnderlyingArchive.IsLoadingFromCookedPackage();
 
 	if (UnderlyingArchive.IsLoading())
 	{
@@ -1407,6 +1398,8 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 
 				if (Property)
 				{
+					Tag.Prop = Property;
+
 					FName PropID = Property->GetID();
 
 					// Check if this is a struct property and we have a redirector
@@ -1440,7 +1433,7 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 	#endif // WITH_EDITOR
 					// editoronly properties should be skipped if we are NOT the editor, or we are 
 					// the editor but are cooking for console (editoronly implies notforconsole)
-					if ((Property->PropertyFlags & CPF_EditorOnly) && ((!FPlatformProperties::HasEditorOnlyData() && !GForceLoadEditorOnly) || UnderlyingArchive.IsUsingEventDrivenLoader()))
+					if ((Property->PropertyFlags & CPF_EditorOnly) && ((!FPlatformProperties::HasEditorOnlyData() && !GForceLoadEditorOnly) || UnderlyingArchive.IsLoadingFromCookedPackage()))
 					{
 					}
 					// check for valid array index
@@ -1507,8 +1500,8 @@ void UStruct::SerializeVersionedTaggedProperties(FStructuredArchive::FSlot Slot,
 
 		FStructuredArchive::FRecord PropertiesRecord = Slot.EnterRecord();
 
-		check(UnderlyingArchive.IsSaving() || UnderlyingArchive.IsCountingMemory());
-		checkf(!UnderlyingArchive.ArUseCustomPropertyList, 
+		check(UnderlyingArchive.IsSaving() || UnderlyingArchive.IsCountingMemory() || UnderlyingArchive.IsObjectReferenceCollector());
+		checkf(!UnderlyingArchive.ArUseCustomPropertyList,
 				TEXT("Custom property lists only work with binary serialization, not tagged property serialization. "
 					 "Attempted for struct '%s' and archive '%s'. "), *GetFName().ToString(), *UnderlyingArchive.GetArchiveName());
 
@@ -1648,6 +1641,7 @@ void UStruct::DestroyChildPropertiesAndResetPropertyLinks()
 #if WITH_EDITORONLY_DATA
 	FieldPathSerialNumber = GetNextFieldPathSerialNumber();
 #endif // WITH_EDITORONLY_DATA
+	DestroyUnversionedSchema(this);
 }
 
 UStruct::~UStruct()
@@ -1891,8 +1885,6 @@ void UStruct::Serialize(FArchive& Ar)
 
 		if (Ar.IsSaving())
 		{
-			FArchive::FScopeSetDebugSerializationFlags S(Ar, DSF_IgnoreDiff);
-
 			Ar << ScriptBytecodeSize;
 
 			int32 ScriptStorageSize = 0;
@@ -1956,8 +1948,6 @@ void UStruct::Serialize(FArchive& Ar)
 
 			if (Ar.IsSaving())
 			{
-				FArchive::FScopeSetDebugSerializationFlags S(Ar, DSF_IgnoreDiff);
-
 				int64 const BytecodeEndOffset = Ar.Tell();
 
 				// go back and write on-disk size
@@ -1969,6 +1959,12 @@ void UStruct::Serialize(FArchive& Ar)
 				Ar.Seek(BytecodeEndOffset);
 			}
 		} // if !GIsDuplicatingClassForReinstancing
+	}
+
+	// For consistency between serialization and TFastReferenceCollector based reference collection
+	if (Ar.IsObjectReferenceCollector() && !Ar.IsPersistent())
+	{
+		Ar << ScriptAndPropertyObjectReferences;
 	}
 }
 
@@ -2512,16 +2508,28 @@ void UScriptStruct::DeferCppStructOps(FName Target, ICppStructOps* InCppStructOp
 
 	if (UScriptStruct::ICppStructOps* ExistingOps = DeferredStructOps.FindRef(Target))
 	{
-#if WITH_HOT_RELOAD
-		if (!GIsHotReload) // in hot reload, we will just leak these...they may be in use.
-#endif
+		IReload* Reload = GetActiveReloadInterface();
+		if (Reload == nullptr)
 		{
 			check(ExistingOps != InCppStructOps); // if it was equal, then we would be re-adding a now stale pointer to the map
 			delete ExistingOps;
 		}
+		else if (!Reload->GetEnableReinstancing(false))
+		{
+			delete InCppStructOps;
+			return;
+		}
+		// in reload, we will just leak these...they may be in use.
 	}
 	DeferredStructOps.Add(Target,InCppStructOps);
 }
+
+#if HACK_HEADER_GENERATOR
+UScriptStruct::ICppStructOps* UScriptStruct::FindDeferredCppStructOps(FName StructName)
+{
+	return GetDeferredCppStructOps().FindRef(StructName);
+}
+#endif
 
 /** Look for the CppStructOps if we don't already have it and set the property size **/
 void UScriptStruct::PrepareCppStructOps()
@@ -2549,11 +2557,7 @@ void UScriptStruct::PrepareCppStructOps()
 		
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		// test that the constructor is initializing everything
-		if (!CppStructOps->HasZeroConstructor()
-#if WITH_HOT_RELOAD
-			&& !GIsHotReload // in hot reload, these produce bogus warnings
-#endif
-			)
+		if (!CppStructOps->HasZeroConstructor() && !IsReloadActive()) // when reloading, we get bogus warnings
 		{
 			int32 Size = CppStructOps->GetSize();
 			uint8* TestData00 = (uint8*)FMemory::Malloc(Size);
@@ -3085,7 +3089,7 @@ void UScriptStruct::InitializeStruct(void* InDest, int32 ArrayDim) const
 
 	int32 Stride = GetStructureSize();
 
-	//@todo UE4 optimize
+	//@todo UE optimize
 	FMemory::Memzero(Dest, ArrayDim * Stride);
 
 	int32 InitializedSize = 0;
@@ -3211,7 +3215,8 @@ void UScriptStruct::DestroyStruct(void* Dest, int32 ArrayDim) const
 		}
 		ClearedSize = TheCppStructOps->GetSize();
 		// here we want to make sure C++ and the property system agree on the size
-		check(Stride == ClearedSize && PropertiesSize == ClearedSize);
+		checkf(Stride == ClearedSize && PropertiesSize == ClearedSize, TEXT("C++ and the property system struct size mismatch for %s (C++ Size: %d, Property Size: %d)"),
+			*GetPathName(), ClearedSize, Stride);
 	}
 
 	if (PropertiesSize > ClearedSize)
@@ -3294,7 +3299,18 @@ public:
 			else
 			{
 				// Allocate space for the struct
-				const int32 RequiredAllocSize = ScriptStruct->GetStructureSize();
+				int32 RequiredAllocSize = ScriptStruct->GetStructureSize();
+				if (StructOps)
+				{
+					const int32 CppAllocSize = Align(StructOps->GetSize(), ScriptStruct->GetMinAlignment());
+					if (!ensure(RequiredAllocSize >= CppAllocSize))
+					{
+						UE_LOG(LogClass, Warning, TEXT("Struct %s%s has Cpp alloc size = %d > ScriptStruct->GetStructureSize() = %d, this could result in allocations that are too small to fit the structure."),
+							InStruct->GetPrefixCPP(), *InStruct->GetName(), CppAllocSize, RequiredAllocSize);
+						// We'd probably crash below, so use a larger allocated size.
+						RequiredAllocSize = StructOps->GetSize();
+					}
+				}
 				TempBuffer = (uint8*)FMemory::Malloc(RequiredAllocSize, ScriptStruct->GetMinAlignment());
 
 				// The following section is a partial duplication of ScriptStruct->InitializeStruct, except we initialize with 0xFD instead of 0x00
@@ -3362,12 +3378,12 @@ private:
 
 static void FindUninitializedScriptStructMembers(UScriptStruct* ScriptStruct, EScriptStructTestCtorSyntax ConstructorSyntax, TSet<const FProperty*>& OutUninitializedProperties)
 {
-	FScriptStructTestWrapper WrapperFF(ScriptStruct, 0xFF, ConstructorSyntax);
+	FScriptStructTestWrapper WrapperFE(ScriptStruct, 0xFE, ConstructorSyntax);
 	FScriptStructTestWrapper Wrapper00(ScriptStruct, 0x00, ConstructorSyntax);
 	FScriptStructTestWrapper WrapperAA(ScriptStruct, 0xAA, ConstructorSyntax);
 	FScriptStructTestWrapper Wrapper55(ScriptStruct, 0x55, ConstructorSyntax);
 
-	const void* BadPointer = (void*)0xFFFFFFFFFFFFFFFFull;
+	const void* BadPointer = (void*)0xFEFEFEFEFEFEFEFEull;
 
 	for (const FProperty* Property : TFieldRange<FProperty>(ScriptStruct, EFieldIteratorFlags::ExcludeSuper))
 	{
@@ -3382,7 +3398,7 @@ static void FindUninitializedScriptStructMembers(UScriptStruct* ScriptStruct, ES
 		if (const FObjectPropertyBase* ObjectProperty = CastField<const FObjectPropertyBase>(Property))
 		{
 			// Check any reflected pointer properties to make sure they got initialized
-			const UObject* PropValue = ObjectProperty->GetObjectPropertyValue_InContainer(WrapperFF.GetData());
+			const UObject* PropValue = ObjectProperty->GetObjectPropertyValue_InContainer(WrapperFE.GetData());
 			if (PropValue == BadPointer)
 			{
 				OutUninitializedProperties.Add(Property);
@@ -3392,7 +3408,7 @@ static void FindUninitializedScriptStructMembers(UScriptStruct* ScriptStruct, ES
 		{
 			// Check for uninitialized boolean properties (done separately to deal with byte-wide booleans that would evaluate to true with either 0x55 or 0xAA)
 			const bool bValue0 = BoolProperty->GetPropertyValue_InContainer(Wrapper00.GetData());
-			const bool bValue1 = BoolProperty->GetPropertyValue_InContainer(WrapperFF.GetData());
+			const bool bValue1 = BoolProperty->GetPropertyValue_InContainer(WrapperFE.GetData());
 
 			if (bValue0 != bValue1)
 			{
@@ -3447,26 +3463,81 @@ int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 		return StructLocation;
 	};
 
+	auto DetermineIfModuleIsEngine = [](const UScriptStruct* ScriptStruct) -> bool
+	{
+		UPackage* ScriptPackage = ScriptStruct->GetOutermost();
+		const FName ScriptModuleName = FPackageName::GetShortFName(ScriptPackage->GetName());
+
+		FModuleStatus ScriptModuleStatus;
+		if (FModuleManager::Get().QueryModule(ScriptModuleName, /*out*/ ScriptModuleStatus))
+		{
+			const bool bIsProjectModule = ScriptModuleStatus.FilePath.StartsWith(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()));
+			return !bIsProjectModule;
+		}
+		else
+		{
+			// Default to project if we can't determine it (shouldn't ever happen tho)
+			return false;
+		}
+	};
+
+	struct FScriptStructSettings
+	{
+		ELogVerbosity::Type ProjectVerbosity = ELogVerbosity::Display;
+		ELogVerbosity::Type EngineVerbosity = ELogVerbosity::Display;
+		ELogVerbosity::Type PointerVerbosity = ELogVerbosity::Warning;
+
+		FScriptStructSettings()
+		{
+			{
+				FString ProjectSettingString;
+				if (GConfig->GetString(TEXT("CoreUObject.UninitializedScriptStructMembersCheck"), TEXT("ProjectModuleReflectedUninitializedPropertyVerbosity"), ProjectSettingString, GEngineIni))
+				{
+					ProjectVerbosity = ParseLogVerbosityFromString(ProjectSettingString);
+				}
+			}
+
+			{
+				FString EngineSettingString;
+				if (GConfig->GetString(TEXT("CoreUObject.UninitializedScriptStructMembersCheck"), TEXT("EngineModuleReflectedUninitializedPropertyVerbosity"), EngineSettingString, GEngineIni))
+				{
+					EngineVerbosity = ParseLogVerbosityFromString(EngineSettingString);
+				}
+			}
+
+			//@TODO: Remove this eventually and change the default to Error (or maybe even Fatal)
+			{
+				FString PointerSettingString;
+				if (GConfig->GetString(TEXT("CoreUObject.UninitializedScriptStructMembersCheck"), TEXT("ObjectReferenceReflectedUninitializedPropertyVerbosity"), PointerSettingString, GEngineIni))
+				{
+					PointerVerbosity = ParseLogVerbosityFromString(PointerSettingString);
+				}
+			}
+		}
+	};
+
+	static FScriptStructSettings Settings;
+
 	int32 UninitializedScriptStructMemberCount = 0;
 	int32 UninitializedObjectPropertyCount = 0;
 	UScriptStruct* TestUninitializedScriptStructMembersTestStruct = TBaseStructure<FTestUninitializedScriptStructMembersTest>::Get();
 	check(TestUninitializedScriptStructMembersTestStruct != nullptr);
 	
 	{
-		const void* BadPointer = (void*)0xFFFFFFFFFFFFFFFFull;
+		const void* BadPointer = (void*)0xFEFEFEFEFEFEFEFEull;
 
 		// First test if the tests aren't broken
-		FScriptStructTestWrapper WrapperFF(TestUninitializedScriptStructMembersTestStruct, 0xFF);
+		FScriptStructTestWrapper WrapperFE(TestUninitializedScriptStructMembersTestStruct, 0xFE);
 		const FObjectPropertyBase* UninitializedProperty = CastFieldChecked<const FObjectPropertyBase>(TestUninitializedScriptStructMembersTestStruct->FindPropertyByName(TEXT("UninitializedObjectReference")));
 		const FObjectPropertyBase* InitializedProperty = CastFieldChecked<const FObjectPropertyBase>(TestUninitializedScriptStructMembersTestStruct->FindPropertyByName(TEXT("InitializedObjectReference")));
 		
-		const UObject* UninitializedPropValue = UninitializedProperty->GetObjectPropertyValue_InContainer(WrapperFF.GetData());
+		const UObject* UninitializedPropValue = UninitializedProperty->GetObjectPropertyValue_InContainer(WrapperFE.GetData());
 		if (UninitializedPropValue != BadPointer)
 		{
 			UE_LOG(LogClass, Warning, TEXT("ObjectProperty %s%s::%s seems to be initialized properly but it shouldn't be. Verify that AttemptToFindUninitializedScriptStructMembers() is working properly"), 
 				TestUninitializedScriptStructMembersTestStruct->GetPrefixCPP(), *TestUninitializedScriptStructMembersTestStruct->GetName(), *UninitializedProperty->GetNameCPP());
 		}
-		const UObject* InitializedPropValue = InitializedProperty->GetObjectPropertyValue_InContainer(WrapperFF.GetData());
+		const UObject* InitializedPropValue = InitializedProperty->GetObjectPropertyValue_InContainer(WrapperFE.GetData());
 		if (InitializedPropValue != nullptr)
 		{
 			UE_LOG(LogClass, Warning, TEXT("ObjectProperty %s%s::%s seems to be not initialized properly but it should be. Verify that AttemptToFindUninitializedScriptStructMembers() is working properly"),
@@ -3505,15 +3576,18 @@ int32 FStructUtils::AttemptToFindUninitializedScriptStructMembers()
 				if (!UninitializedPropertiesZeroed.Contains(Property))
 				{
 					++UninitializedScriptStructMemberCount;
+
+					ELogVerbosity::Type Verbosity = DetermineIfModuleIsEngine(ScriptStruct) ? Settings.EngineVerbosity : Settings.ProjectVerbosity;
+
 					if (Property->IsA<FObjectPropertyBase>())
 					{
 						++UninitializedObjectPropertyCount;
-						UE_LOG(LogClass, Warning, TEXT("%s %s%s::%s is not initialized properly.%s"), *Property->GetClass()->GetName(), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
+						Verbosity = FMath::Min(Verbosity, Settings.PointerVerbosity);
 					}
-					else
-					{
-						UE_LOG(LogClass, Display, TEXT("%s %s%s::%s is not initialized properly.%s"), *Property->GetClass()->GetName(), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
-					}
+
+#if !NO_LOGGING
+					FMsg::Logf(__FILE__, __LINE__, LogClass.GetCategoryName(), Verbosity, TEXT("%s %s%s::%s is not initialized properly.%s"), *Property->GetClass()->GetName(), ScriptStruct->GetPrefixCPP(), *ScriptStruct->GetName(), *Property->GetNameCPP(), *GetStructLocation(ScriptStruct));
+#endif
 				}
 			}
 		}
@@ -3541,7 +3615,17 @@ FAutoConsoleCommandWithWorldAndArgs GCmdListBadScriptStructs(
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutomationTestAttemptToFindUninitializedScriptStructMembers, "UObject.Class AttemptToFindUninitializedScriptStructMembers", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::ServerContext | EAutomationTestFlags::SmokeFilter)
 bool FAutomationTestAttemptToFindUninitializedScriptStructMembers::RunTest(const FString& Parameters)
 {
-	return FStructUtils::AttemptToFindUninitializedScriptStructMembers() == 0;
+	// This test fails when running tests under UHT because there is no TestUninitializedScriptStructMembersTest, so just skip it in that config.
+#if !HACK_HEADER_GENERATOR
+	if (UObjectInitialized())
+	{
+		return FStructUtils::AttemptToFindUninitializedScriptStructMembers() == 0;
+	}
+	else
+#endif
+	{
+		return true;
+	}
 }
 
 #endif
@@ -3604,18 +3688,17 @@ void UClass::GetDefaultObjectSubobjects(TArray<UObject*>& OutDefaultSubobjects)
 void UClass::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
 {
 	UClass* This = CastChecked<UClass>(InThis);
-	for( auto& Inter : This->Interfaces )
+	for (FImplementedInterface& Inter : This->Interfaces)
 	{
 		Collector.AddReferencedObject( Inter.Class, This );
 	}
 
-	for( auto& Func : This->FuncMap )
-	{
-		Collector.AddReferencedObject( Func.Value, This );
-	}
-
+	Collector.AddReferencedObjects( This->FuncMap, This );
 	Collector.AddReferencedObject( This->ClassWithin, This );
+
+#if WITH_EDITORONLY_DATA
 	Collector.AddReferencedObject( This->ClassGeneratedBy, This );
+#endif
 
 	if ( !Collector.IsIgnoringArchetypeRef() )
 	{
@@ -3627,6 +3710,26 @@ void UClass::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collecto
 		This->CallAddReferencedObjects(This->ClassDefaultObject, Collector);
 	}
 
+	Collector.AddReferencedObject( This->SparseClassDataStruct, This );
+
+	// Add sparse class data
+	if (This->SparseClassDataStruct && This->SparseClassData)
+	{
+		if (This->SparseClassDataStruct->StructFlags & STRUCT_AddStructReferencedObjects)
+		{
+			This->SparseClassDataStruct->GetCppStructOps()->AddStructReferencedObjects()(This->SparseClassData, Collector);
+		}
+		else
+		{
+			// The iterator will recursively loop through all structs in structs too.
+			for (TPropertyValueIterator<FObjectProperty> It(This->SparseClassDataStruct, This->SparseClassData); It; ++It)
+			{
+				UObject** ObjectPtr = static_cast<UObject**>(const_cast<void*>(It.Value()));
+				Collector.AddReferencedObject(*ObjectPtr);
+			}
+		}
+	}
+	
 	Super::AddReferencedObjects( This, Collector );
 }
 
@@ -3639,8 +3742,10 @@ class FRestoreClassInfo: public FRestoreForUObjectOverwrite
 	UClass*			Target;
 	/** Saved ClassWithin **/
 	UClass*			Within;
+#if WITH_EDITORONLY_DATA
 	/** Saved ClassGeneratedBy */
 	UObject*		GeneratedBy;
+#endif
 	/** Saved ClassDefaultObject **/
 	UObject*		DefaultObject;
 	/** Saved ClassFlags **/
@@ -3665,7 +3770,9 @@ public:
 	FRestoreClassInfo(UClass *Save) :
 		Target(Save),
 		Within(Save->ClassWithin),
+#if WITH_EDITORONLY_DATA
 		GeneratedBy(Save->ClassGeneratedBy),
+#endif
 		DefaultObject(Save->GetDefaultsCount() ? Save->GetDefaultObject() : NULL),
 		Flags(Save->ClassFlags & CLASS_Abstract),
 		CastFlags(Save->ClassCastFlags),
@@ -3680,7 +3787,9 @@ public:
 	virtual void Restore() const
 	{
 		Target->ClassWithin = Within;
+#if WITH_EDITORONLY_DATA
 		Target->ClassGeneratedBy = GeneratedBy;
+#endif
 		Target->ClassDefaultObject = DefaultObject;
 		Target->ClassFlags |= Flags;
 		Target->ClassCastFlags |= CastFlags;
@@ -3710,7 +3819,7 @@ UObject* UClass::CreateDefaultObject()
 {
 	if ( ClassDefaultObject == NULL )
 	{
-		ensureMsgf(!HasAnyClassFlags(CLASS_LayoutChanging), TEXT("Class named %s creating its CDO while changing its layout"), *GetName());
+		ensureMsgf(!bLayoutChanging, TEXT("Class named %s creating its CDO while changing its layout"), *GetName());
 
 		UClass* ParentClass = GetSuperClass();
 		UObject* ParentDefaultObject = NULL;
@@ -3731,7 +3840,7 @@ UObject* UClass::CreateDefaultObject()
 			if( HasAnyClassFlags(CLASS_CompiledFromBlueprint) && (PropertyLink == NULL) && !GIsDuplicatingClassForReinstancing)
 			{
 				auto ClassLinker = GetLinker();
-				if (ClassLinker && !ClassLinker->bDynamicClassLinker)
+				if (ClassLinker)
 				{
 					if (!GEventDrivenLoaderEnabled)
 					{
@@ -3772,8 +3881,6 @@ UObject* UClass::CreateDefaultObject()
 				// the CDO as RF_ArchetypeObject in order to propagate that flag to any default sub objects.
 				ClassDefaultObject = StaticAllocateObject(this, GetOuter(), NAME_None, EObjectFlags(RF_Public|RF_ClassDefaultObject|RF_ArchetypeObject));
 				check(ClassDefaultObject);
-				// Blueprint CDOs have their properties always initialized.
-				const bool bShouldInitializeProperties = !HasAnyClassFlags(CLASS_Native | CLASS_Intrinsic);
 				// Register the offsets of any sparse delegates this class introduces with the sparse delegate storage
 				for (TFieldIterator<FMulticastSparseDelegateProperty> SparseDelegateIt(this, EFieldIteratorFlags::ExcludeSuper, EFieldIteratorFlags::ExcludeDeprecated); SparseDelegateIt; ++SparseDelegateIt)
 				{
@@ -3781,14 +3888,13 @@ UObject* UClass::CreateDefaultObject()
 					USparseDelegateFunction* SparseDelegateFunction = CastChecked<USparseDelegateFunction>(SparseDelegateIt->SignatureFunction);
 					FSparseDelegateStorage::RegisterDelegateOffset(ClassDefaultObject, SparseDelegateFunction->DelegateName, (size_t)&SparseDelegate - (size_t)ClassDefaultObject);
 				}
-				if (HasAnyClassFlags(CLASS_CompiledFromBlueprint))
+				EObjectInitializerOptions InitOptions = EObjectInitializerOptions::None;
+				if (!HasAnyClassFlags(CLASS_Native | CLASS_Intrinsic))
 				{
-					if (UDynamicClass* DynamicClass = Cast<UDynamicClass>(this))
-					{
-						(*(DynamicClass->DynamicClassInitializer))(DynamicClass);
-					}
+					// Blueprint CDOs have their properties always initialized.
+					InitOptions |= EObjectInitializerOptions::InitializeProperties;
 				}
-				(*ClassConstructor)(FObjectInitializer(ClassDefaultObject, ParentDefaultObject, false, bShouldInitializeProperties));
+				(*ClassConstructor)(FObjectInitializer(ClassDefaultObject, ParentDefaultObject, InitOptions));
 				if (bDoNotify)
 				{
 					NotifyRegistrationEvent(*PackageName, *CDOName, ENotifyRegistrationType::NRT_ClassCDO, ENotifyRegistrationPhase::NRP_Finished);
@@ -4053,6 +4159,9 @@ void UClass::FinishDestroy()
 
 	ClassDefaultObject = nullptr;
 
+	CleanupSparseClassData();
+	SparseClassDataStruct = nullptr;
+
 #if WITH_EDITORONLY_DATA
 	// If for whatever reason there's still properties that have not been destroyed in PurgeClass, destroy them now
 	DestroyPropertiesPendingDestruction();
@@ -4102,6 +4211,32 @@ void UClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 #endif
 }
 
+void UClass::GetPreloadDependencies(TArray<UObject*>& OutDeps)
+{
+	Super::GetPreloadDependencies(OutDeps);
+
+	if (SparseClassDataStruct)
+	{
+		OutDeps.Add(SparseClassDataStruct);
+
+		const void* SparseClassDataToUse = GetSparseClassData(EGetSparseClassDataMethod::ArchetypeIfNull);
+		if (UScriptStruct::ICppStructOps* CppStructOps = SparseClassDataStruct->GetCppStructOps())
+		{
+			CppStructOps->GetPreloadDependencies(const_cast<void*>(SparseClassDataToUse), OutDeps);
+		}
+		// The iterator will recursively loop through all structs in structs/containers too.
+		for (TPropertyValueIterator<FStructProperty> It(SparseClassDataStruct, SparseClassDataToUse); It; ++It)
+		{
+			const UScriptStruct* StructType = It.Key()->Struct;
+			if (UScriptStruct::ICppStructOps* CppStructOps = StructType->GetCppStructOps())
+			{
+				void* StructDataPtr = const_cast<void*>(It.Value());
+				CppStructOps->GetPreloadDependencies(StructDataPtr, OutDeps);
+			}
+		}
+	}
+}
+
 void UClass::Link(FArchive& Ar, bool bRelinkExistingProperties)
 {
 	check(!bRelinkExistingProperties || !(ClassFlags & CLASS_Intrinsic));
@@ -4137,10 +4272,11 @@ void UClass::SetUpUhtReplicationData()
 		{
 			if (It->PropertyFlags & CPF_Net)
 			{
-				It->RepIndex = ClassReps.Num();
+				It->RepIndex = (uint16)ClassReps.Num();
 				new (ClassReps) FRepRecord(*It, 0);
 			}
 		}
+		check(ClassReps.Num() <= 65535);
 
 		ClassFlags |= CLASS_ReplicationDataIsSetUp;
 		ClassReps.Shrink();
@@ -4219,12 +4355,13 @@ void UClass::SetUpRuntimeReplicationData()
 		ClassReps.Reserve(ClassReps.Num() + NetProperties.Num());
 		for (int32 i = 0; i < NetProperties.Num(); i++)
 		{
-			NetProperties[i]->RepIndex = ClassReps.Num();
+			NetProperties[i]->RepIndex = (uint16)ClassReps.Num();
 			for (int32 j = 0; j < NetProperties[i]->ArrayDim; j++)
 			{
 				new(ClassReps)FRepRecord(NetProperties[i], j);
 			}
 		}
+		check(ClassReps.Num() <= 65535);
 
 		if (bIsNativeClass && GValidateReplicatedProperties)
 		{
@@ -4255,7 +4392,7 @@ void UClass::ValidateRuntimeReplicationData()
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("Class ValidateRuntimeReplicationData"), STAT_Class_ValidateRuntimeReplicationData, STATGROUP_Game);
 
-	if (HasAnyClassFlags(CLASS_CompiledFromBlueprint|CLASS_LayoutChanging))
+	if (HasAnyClassFlags(CLASS_CompiledFromBlueprint) || bLayoutChanging)
 	{
 		// Blueprint classes don't always generate a GetLifetimeReplicatedProps function. 
 		// Assume the Blueprint compiler was ok to do this.
@@ -4428,7 +4565,7 @@ void UClass::Serialize( FArchive& Ar )
 	{
 		Ar << (uint32&)ClassFlags;
 	}
-	if (Ar.UE4Ver() < VER_UE4_CLASS_NOTPLACEABLE_ADDED)
+	if (Ar.UEVer() < VER_UE4_CLASS_NOTPLACEABLE_ADDED)
 	{
 		// We need to invert the CLASS_NotPlaceable flag here because it used to mean CLASS_Placeable
 		ClassFlags ^= CLASS_NotPlaceable;
@@ -4457,7 +4594,7 @@ void UClass::Serialize( FArchive& Ar )
 		Interfaces.Empty();
 
 		// In older versions, interface classes were serialized before linking. In case of cyclic dependencies, we need to skip over the serialized array and defer the load until after Link() is called below.
-		if(Ar.UE4Ver() < VER_UE4_UCLASS_SERIALIZE_INTERFACES_AFTER_LINKING && !GIsDuplicatingClassForReinstancing)
+		if(Ar.UEVer() < VER_UE4_UCLASS_SERIALIZE_INTERFACES_AFTER_LINKING && !GIsDuplicatingClassForReinstancing)
 		{
 			// Get our current position
 			InterfacesStart = Ar.Tell();
@@ -4478,6 +4615,10 @@ void UClass::Serialize( FArchive& Ar )
 
 	if (!Ar.IsIgnoringClassGeneratedByRef())
 	{
+#if !WITH_EDITORONLY_DATA
+		// Dummy variable to keep archive consistency
+		UObject* ClassGeneratedBy = nullptr;
+#endif
 		Ar << ClassGeneratedBy;
 	}
 
@@ -4498,7 +4639,7 @@ void UClass::Serialize( FArchive& Ar )
 		int64 CurrentOffset = Ar.Tell();
 
 		// In older versions, we need to seek backwards to the start of the interfaces array
-		if(Ar.UE4Ver() < VER_UE4_UCLASS_SERIALIZE_INTERFACES_AFTER_LINKING && !GIsDuplicatingClassForReinstancing)
+		if(Ar.UEVer() < VER_UE4_UCLASS_SERIALIZE_INTERFACES_AFTER_LINKING && !GIsDuplicatingClassForReinstancing)
 		{
 			Ar.Seek(InterfacesStart);
 		}
@@ -4514,7 +4655,7 @@ void UClass::Serialize( FArchive& Ar )
 		}
 
 		// In older versions, seek back to our current position after linking
-		if(Ar.UE4Ver() < VER_UE4_UCLASS_SERIALIZE_INTERFACES_AFTER_LINKING && !GIsDuplicatingClassForReinstancing)
+		if(Ar.UEVer() < VER_UE4_UCLASS_SERIALIZE_INTERFACES_AFTER_LINKING && !GIsDuplicatingClassForReinstancing)
 		{
 			Ar.Seek(CurrentOffset);
 		}
@@ -4530,7 +4671,7 @@ void UClass::Serialize( FArchive& Ar )
 	FName Dummy = NAME_None;
 	Ar << Dummy;
 
-	if (Ar.UE4Ver() >= VER_UE4_ADD_COOKED_TO_UCLASS)
+	if (Ar.UEVer() >= VER_UE4_ADD_COOKED_TO_UCLASS)
 	{
 		if (Ar.IsSaving())
 		{
@@ -4615,7 +4756,9 @@ void UClass::Serialize( FArchive& Ar )
 
 	if (!Ar.IsLoading() && !Ar.IsSaving())
 	{
-		if (GetSparseClassDataStruct() != nullptr)
+		Ar << SparseClassDataStruct;
+
+		if (SparseClassDataStruct && SparseClassData)
 		{
 			SerializeSparseClassData(FStructuredArchiveFromArchive(Ar).GetSlot());
 		}
@@ -4629,7 +4772,7 @@ void UClass::Serialize( FArchive& Ar )
 		if (ClassDefaultObject == NULL)
 		{
 			check(GConfig);
-			if (GEventDrivenLoaderEnabled || Ar.IsUsingEventDrivenLoader())
+			if (GEventDrivenLoaderEnabled || Ar.IsLoadingFromCookedPackage())
 			{
 				ClassDefaultObject = GetDefaultObject();
 				// we do this later anyway, once we find it and set it in the export table. 
@@ -4700,12 +4843,19 @@ void UClass::SerializeSparseClassData(FStructuredArchive::FSlot Slot)
 {
 	if (!SparseClassDataStruct)
 	{
+		Slot.EnterRecord();
 		return;
 	}
 
 	// tell the archive that it's allowed to load data for transient properties
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 
+	// Preload sparse class data struct if required
+	if(SparseClassDataStruct->HasAnyFlags(RF_NeedLoad))
+	{
+		UnderlyingArchive.Preload(SparseClassDataStruct);
+	}
+	
 	// make sure we always have sparse class a sparse class data struct to read from/write to
 	GetOrCreateSparseClassData();
 
@@ -4718,11 +4868,11 @@ void UClass::SerializeSparseClassData(FStructuredArchive::FSlot Slot)
 	}
 	else if (UnderlyingArchive.GetPortFlags() != 0)
 	{
-		SparseClassDataStruct->SerializeBinEx(Slot, (uint8*)SparseClassData, SparseClassDataStruct, GetSparseClassDataArchetypeStruct());
+		SparseClassDataStruct->SerializeBinEx(Slot, SparseClassData, GetArchetypeForSparseClassData(), GetSparseClassDataArchetypeStruct());
 	}
 	else
 	{
-		SparseClassDataStruct->SerializeBin(Slot, (uint8*)SparseClassData);
+		SparseClassDataStruct->SerializeBin(Slot, SparseClassData);
 	}
 }
 
@@ -4736,16 +4886,26 @@ FArchive& operator<<(FArchive& Ar, FImplementedInterface& A)
 	return Ar;
 }
 
-void* UClass::GetArchetypeForSparseClassData() const
+const void* UClass::GetArchetypeForSparseClassData() const
 {
 	UClass* SuperClass = GetSuperClass();
-	return SuperClass ? SuperClass->GetOrCreateSparseClassData() : nullptr;
+	return SuperClass ? SuperClass->GetSparseClassData(EGetSparseClassDataMethod::ArchetypeIfNull) : nullptr;
 }
 
 UScriptStruct* UClass::GetSparseClassDataArchetypeStruct() const
 {
 	UClass* SuperClass = GetSuperClass();
 	return SuperClass ? SuperClass->GetSparseClassDataStruct() : nullptr;
+}
+
+bool UClass::OverridesSparseClassDataArchetype() const
+{
+	if (SparseClassDataStruct && SparseClassData)
+	{
+		return SparseClassDataStruct != GetSparseClassDataArchetypeStruct()
+			|| SparseClassDataStruct->CompareScriptStruct(SparseClassData, GetArchetypeForSparseClassData(), 0) == false;
+	}
+	return false;
 }
 
 UObject* UClass::GetArchetypeForCDO() const
@@ -4773,6 +4933,7 @@ void UClass::PurgeClass(bool bRecompilingOnLoad)
 		RemoveMetaData("HideFunctions");
 		RemoveMetaData("AutoExpandCategories");
 		RemoveMetaData("AutoCollapseCategories");
+		RemoveMetaData("PrioritizeCategories");
 		RemoveMetaData("ClassGroupNames");
 	}
 #endif
@@ -4900,11 +5061,12 @@ UClass::UClass(const FObjectInitializer& ObjectInitializer)
 :	UStruct( ObjectInitializer )
 ,	ClassUnique(0)
 ,	bCooked(false)
+,	bLayoutChanging(false)
 ,	ClassFlags(CLASS_None)
 ,	ClassCastFlags(CASTCLASS_None)
 ,	ClassWithin( UObject::StaticClass() )
-,	ClassGeneratedBy(nullptr)
 #if WITH_EDITORONLY_DATA
+,	ClassGeneratedBy(nullptr)
 ,	PropertiesPendingDestruction(nullptr)
 #endif
 ,	ClassDefaultObject(nullptr)
@@ -4924,11 +5086,12 @@ UClass::UClass(const FObjectInitializer& ObjectInitializer, UClass* InBaseClass)
 :	UStruct(ObjectInitializer, InBaseClass)
 ,	ClassUnique(0)
 ,	bCooked(false)
+,	bLayoutChanging(false)
 ,	ClassFlags(CLASS_None)
 ,	ClassCastFlags(CASTCLASS_None)
 ,	ClassWithin(UObject::StaticClass())
-,	ClassGeneratedBy(nullptr)
 #if WITH_EDITORONLY_DATA
+,	ClassGeneratedBy(nullptr)
 ,	PropertiesPendingDestruction(nullptr)
 #endif
 ,	ClassDefaultObject(nullptr)
@@ -4982,11 +5145,12 @@ UClass::UClass
 ,	ClassAddReferencedObjects( InClassAddReferencedObjects )
 ,	ClassUnique				( 0 )
 ,	bCooked					( false )
+,	bLayoutChanging			( false )
 ,	ClassFlags				( InClassFlags | CLASS_Native )
 ,	ClassCastFlags			( InClassCastFlags )
 ,	ClassWithin				( nullptr )
-,	ClassGeneratedBy		( nullptr )
 #if WITH_EDITORONLY_DATA
+,	ClassGeneratedBy		( nullptr )
 ,	PropertiesPendingDestruction( nullptr )
 #endif
 ,	ClassConfigName			()
@@ -5013,20 +5177,17 @@ void* UClass::CreateSparseClassData()
 	if (SparseClassDataStruct)
 	{
 		SparseClassData = FMemory::Malloc(SparseClassDataStruct->GetStructureSize(), SparseClassDataStruct->GetMinAlignment());
-		SparseClassDataStruct->GetCppStructOps()->Construct(SparseClassData);
+		SparseClassDataStruct->InitializeStruct(SparseClassData);
 	}
 	if (SparseClassData)
 	{
 		// initialize per class data from the archetype if we have one
-		void* SparseArchetypeData = GetArchetypeForSparseClassData();
-		UStruct* SparseClassDataArchetypeStruct = GetSparseClassDataArchetypeStruct();
+		const void* SparseArchetypeData = GetArchetypeForSparseClassData();
+		UScriptStruct* SparseClassDataArchetypeStruct = GetSparseClassDataArchetypeStruct();
 
-		if (SparseArchetypeData)
+		if (SparseArchetypeData && SparseClassDataStruct->IsChildOf(SparseClassDataArchetypeStruct))
 		{
-			for (FProperty* P = SparseClassDataArchetypeStruct->PropertyLink; P; P = P->PropertyLinkNext)
-			{
-				P->CopyCompleteValue_InContainer(SparseClassData, SparseArchetypeData);
-			}
+			SparseClassDataArchetypeStruct->CopyScriptStruct(SparseClassData, SparseArchetypeData);
 		}
 	}
 
@@ -5037,10 +5198,35 @@ void UClass::CleanupSparseClassData()
 {
 	if (SparseClassData)
 	{
-		SparseClassDataStruct->GetCppStructOps()->Destruct(SparseClassData);
+		SparseClassDataStruct->DestroyStruct(SparseClassData);
 		FMemory::Free(SparseClassData);
 		SparseClassData = nullptr;
 	}
+}
+
+const void* UClass::GetSparseClassData(const EGetSparseClassDataMethod GetMethod)
+{
+	if (SparseClassData)
+	{
+		return SparseClassData;
+	}
+
+	switch (GetMethod)
+	{
+	case EGetSparseClassDataMethod::CreateIfNull:
+		return CreateSparseClassData();
+
+	case EGetSparseClassDataMethod::ArchetypeIfNull:
+		// Use the archetype data only when it's the expected type, otherwise the result may be cast to an incorrect type by the caller
+		return SparseClassDataStruct == GetSparseClassDataArchetypeStruct()
+			? GetArchetypeForSparseClassData()
+			: CreateSparseClassData();
+
+	default:
+		break;
+	}
+
+	return nullptr;
 }
 
 UScriptStruct* UClass::GetSparseClassDataStruct() const
@@ -5053,14 +5239,74 @@ void UClass::SetSparseClassDataStruct(UScriptStruct* InSparseClassDataStruct)
 { 
 	if (SparseClassDataStruct != InSparseClassDataStruct)
 	{
-		SparseClassDataStruct = InSparseClassDataStruct;
-
-		// the old type and new type may not match when we do a hot reload so get rid of the old data
+		// Passing nullptr as InSparseClassDataStruct is a valid way to clear sparse class data
+		if (SparseClassDataStruct)
+		{
+			// Find all subclasses and point the SuperClass of their SparseClassDataStruct to point to this new SparseClassDataStruct.
+			// We have to do this when compilation creates a new SparseClassDataStruct that has already loaded subclasses.
+			// Most class-owned subobjects are regenerated at compile time (properties,functions,etc) or mirrored in the UBlueprint
+			// (see FKismetCompilerContext::SaveSubObjectsFromCleanAndSanitizeClass) and copied over to the new class inside of
+			// FKismetCompilerContext::FinishCompilingClass (SimpleConstructionScript,etc). But SparseClassDataStruct is not covered
+			// by either of those cases, so we instead fixup subclasses' SparseClassDataStructs' superclass pointers here.
+			TArray<UClass*> SubClasses;
+			GetDerivedClasses(this, SubClasses, true /* bRecursive */);
+			for (UClass* SubClass : SubClasses)
+			{
+				UScriptStruct* SubClassSparseClassDataStruct = SubClass->GetSparseClassDataStruct();
+				if (SubClassSparseClassDataStruct && SubClassSparseClassDataStruct->GetSuperStruct() == SparseClassDataStruct)
+				{
+					// As we are potentialy completely changing the struct layout, we need to cleanup any data we have 
+					// before the superstruct link gets set
+					SubClass->CleanupSparseClassData();
+					SubClassSparseClassDataStruct->SetSuperStruct(InSparseClassDataStruct);
+				}
+			}
+		}
+		// the old type and new type may not match when we do a reload so get rid of the old data
 		CleanupSparseClassData();
+
+		SparseClassDataStruct = InSparseClassDataStruct;
 	}
 }
 
-#if WITH_HOT_RELOAD
+void UClass::ClearSparseClassDataStruct(bool bInRecomplingOnLoad)
+{ 
+	if (SparseClassDataStruct != nullptr)
+	{
+		// Find all subclasses and clear their sparse class data struct as well.
+		TArray<UClass*> SubClasses;
+		TArray<UClass*> SubClassesToClear;
+		GetDerivedClasses(this, SubClasses, true /* bRecursive */);
+		for (UClass* SubClass : SubClasses)
+		{
+			UScriptStruct* SubClassSparseClassDataStruct = SubClass->GetSparseClassDataStruct();
+			if (SubClassSparseClassDataStruct && SubClassSparseClassDataStruct->IsChildOf(SparseClassDataStruct))
+			{
+				SubClassesToClear.Add(SubClass);
+			}
+		}
+
+		auto ClearSparseClassDataStructInner = [bInRecomplingOnLoad](UClass* InClassToClear)
+		{
+			UScriptStruct* CurrentSparseClassDataStruct = InClassToClear->GetSparseClassDataStruct();
+			InClassToClear->CleanupSparseClassData();
+			InClassToClear->SparseClassDataStruct = nullptr;
+			CurrentSparseClassDataStruct->SetSuperStruct(nullptr);
+			const ERenameFlags RenameFlags = REN_DontCreateRedirectors | ((bInRecomplingOnLoad) ? REN_ForceNoResetLoaders : 0) | REN_NonTransactional | REN_DoNotDirty;
+			CurrentSparseClassDataStruct->Rename(nullptr, GetTransientPackage(), RenameFlags);
+		};
+
+		for(UClass* SubClassToClear : SubClassesToClear)
+		{
+			ClearSparseClassDataStructInner(SubClassToClear);
+		}
+
+		ClearSparseClassDataStructInner(this);
+	}
+}
+
+
+#if WITH_RELOAD
 
 bool UClass::HotReloadPrivateStaticClass(
 	uint32			InSize,
@@ -5128,11 +5374,11 @@ bool UClass::HotReloadPrivateStaticClass(
 
 	if( !TempObjectForVTable->IsRooted() )
 	{
-		TempObjectForVTable->MarkPendingKill();
+		TempObjectForVTable->MarkAsGarbage();
 	}
 	else
 	{
-		UE_LOG(LogClass, Warning, TEXT("Hot Reload:  Was not expecting temporary object '%s' for class '%s' to become rooted during construction.  This object cannot be marked pending kill." ), *TempObjectForVTable->GetFName().ToString(), *this->GetName() );
+		UE_LOG(LogClass, Warning, TEXT("Reload:  Was not expecting temporary object '%s' for class '%s' to become rooted during construction.  This object cannot be marked pending kill." ), *TempObjectForVTable->GetFName().ToString(), *this->GetName() );
 	}
 
 	ClassWithin = TClass_WithinClass_StaticClass;
@@ -5174,13 +5420,6 @@ bool UClass::HotReloadPrivateStaticClass(
 
 bool UClass::ReplaceNativeFunction(FName InFName, FNativeFuncPtr InPointer, bool bAddToFunctionRemapTable)
 {
-	IHotReloadInterface* HotReloadSupport = nullptr;
-
-	if(bAddToFunctionRemapTable)
-	{
-		HotReloadSupport = &FModuleManager::LoadModuleChecked<IHotReloadInterface>("HotReload");
-	}
-
 	// Find the function in the class's native function lookup table.
 	for (int32 FunctionIndex = 0; FunctionIndex < NativeFunctionLookupTable.Num(); ++FunctionIndex)
 	{
@@ -5189,7 +5428,7 @@ bool UClass::ReplaceNativeFunction(FName InFName, FNativeFuncPtr InPointer, bool
 		{
 			if (bAddToFunctionRemapTable)
 			{
-				HotReloadSupport->AddHotReloadFunctionRemap(InPointer, NativeFunctionLookup.Pointer);
+				ReloadNotifyFunctionRemap(InPointer, NativeFunctionLookup.Pointer);
 			}
 			NativeFunctionLookup.Pointer = InPointer;
 			return true;
@@ -5202,8 +5441,8 @@ bool UClass::ReplaceNativeFunction(FName InFName, FNativeFuncPtr InPointer, bool
 
 UClass* UClass::GetAuthoritativeClass()
 {
-#if WITH_HOT_RELOAD && WITH_ENGINE
-	if (GIsHotReload)
+#if WITH_RELOAD && WITH_ENGINE
+	if (IsReloadActive())
 	{
 		const TMap<UClass*, UClass*>& ReinstancedClasses = GetClassesToReinstanceForHotReload();
 		if (UClass* const* FoundMapping = ReinstancedClasses.Find(this))
@@ -5219,8 +5458,8 @@ UClass* UClass::GetAuthoritativeClass()
 void UClass::AddNativeFunction(const ANSICHAR* InName, FNativeFuncPtr InPointer)
 {
 	FName InFName(InName);
-#if WITH_HOT_RELOAD
-	if (GIsHotReload)
+#if WITH_RELOAD
+	if (IsReloadActive())
 	{
 		// Find the function in the class's native function lookup table.
 		if (ReplaceNativeFunction(InFName, InPointer, true))
@@ -5230,7 +5469,7 @@ void UClass::AddNativeFunction(const ANSICHAR* InName, FNativeFuncPtr InPointer)
 		else
 		{
 			// function was not found, so it's new
-			UE_LOG(LogClass, Log, TEXT("Function %s is new."), *InFName.ToString());
+			UE_LOG(LogClass, Log, TEXT("Function %s is new or belongs to a modified class."), *InFName.ToString());
 		}
 	}
 #endif
@@ -5240,8 +5479,8 @@ void UClass::AddNativeFunction(const ANSICHAR* InName, FNativeFuncPtr InPointer)
 void UClass::AddNativeFunction(const WIDECHAR* InName, FNativeFuncPtr InPointer)
 {
 	FName InFName(InName);
-#if WITH_HOT_RELOAD
-	if (GIsHotReload)
+#if WITH_RELOAD
+	if (IsReloadActive())
 	{
 		// Find the function in the class's native function lookup table.
 		if (ReplaceNativeFunction(InFName, InPointer, true))
@@ -5251,7 +5490,7 @@ void UClass::AddNativeFunction(const WIDECHAR* InName, FNativeFuncPtr InPointer)
 		else
 		{
 			// function was not found, so it's new
-			UE_LOG(LogClass, Log, TEXT("Function %s is new."), *InFName.ToString());
+			UE_LOG(LogClass, Log, TEXT("Function %s is new or belongs to a modified class."), *InFName.ToString());
 		}
 	}
 #endif
@@ -5352,23 +5591,14 @@ void UClass::AssembleReferenceTokenStreams()
 
 const FString UClass::GetConfigName() const
 {
-	static FName NAME_GameplayTags("GameplayTags");
-
-	if (ClassConfigName == NAME_Engine)
+	// Look up in the known configs
+	if (GConfig->IsKnownConfigName(ClassConfigName))
 	{
-		return GEngineIni;
+		return ClassConfigName.ToString();
 	}
 	else if( ClassConfigName == NAME_Editor )
 	{
 		return GEditorIni;
-	}
-	else if( ClassConfigName == NAME_Input )
-	{
-		return GInputIni;
-	}
-	else if( ClassConfigName == NAME_Game )
-	{
-		return GGameIni;
 	}
 	else if ( ClassConfigName == NAME_EditorSettings )
 	{
@@ -5386,14 +5616,6 @@ const FString UClass::GetConfigName() const
 	{
 		UE_LOG(LogClass, Fatal,TEXT("UObject::GetConfigName() called on class with config name 'None'. Class flags = 0x%08X"), (uint32)ClassFlags );
 		return TEXT("");
-	}
-	else if (ClassConfigName == NAME_GameUserSettings)
-	{
-		return GGameUserSettingsIni;
-	}
-	else if (ClassConfigName == NAME_GameplayTags)
-	{
-		return GGameplayTagsIni;
 	}
 	else
 	{
@@ -5443,6 +5665,25 @@ bool UClass::IsAutoExpandCategory(const TCHAR* InCategory) const
 	return false;
 }
 
+void UClass::GetPrioritizeCategories(TArray<FString>& OutPrioritizedCategories) const
+{
+	static const FName NAME_PrioritizeCategories(TEXT("PrioritizeCategories"));
+	if (const FString* PrioritizeCategories = FindMetaData(NAME_PrioritizeCategories))
+	{
+		PrioritizeCategories->ParseIntoArray(OutPrioritizedCategories, TEXT(" "), true);
+	}
+}
+
+bool UClass::IsPrioritizeCategory(const TCHAR* InCategory) const
+{
+	static const FName NAME_PrioritizeCategories(TEXT("PrioritizeCategories"));
+	if (const FString* PrioritizeCategories = FindMetaData(NAME_PrioritizeCategories))
+	{
+		return !!FCString::StrfindDelim(**PrioritizeCategories, InCategory, TEXT(" "));
+	}
+	return false;
+}
+
 void UClass::GetAutoCollapseCategories(TArray<FString>& OutAutoCollapseCategories) const
 {
 	static const FName NAME_AutoCollapseCategories(TEXT("AutoCollapseCategories"));
@@ -5484,6 +5725,7 @@ bool UClass::IsClassGroupName(const TCHAR* InGroupName) const
 #endif // WITH_EDITOR || HACK_HEADER_GENERATOR
 
 
+#if WITH_EDITORONLY_DATA
 IMPLEMENT_CORE_INTRINSIC_CLASS(UClass, UStruct,
 	{
 		Class->ClassAddReferencedObjects = &UClass::AddReferencedObjects;
@@ -5494,6 +5736,17 @@ IMPLEMENT_CORE_INTRINSIC_CLASS(UClass, UStruct,
 		Class->EmitObjectArrayReference(STRUCT_OFFSET(UClass, NetFields), TEXT("NetFields"));
 	}
 );
+#else
+IMPLEMENT_CORE_INTRINSIC_CLASS(UClass, UStruct,
+	{
+		Class->ClassAddReferencedObjects = &UClass::AddReferencedObjects;
+
+		Class->EmitObjectReference(STRUCT_OFFSET(UClass, ClassDefaultObject), TEXT("ClassDefaultObject"));
+		Class->EmitObjectReference(STRUCT_OFFSET(UClass, ClassWithin), TEXT("ClassWithin"));
+		Class->EmitObjectArrayReference(STRUCT_OFFSET(UClass, NetFields), TEXT("NetFields"));
+	}
+);
+#endif
 
 void GetPrivateStaticClassBody(
 	const TCHAR* PackageName,
@@ -5509,15 +5762,12 @@ void GetPrivateStaticClassBody(
 	UClass::ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
 	UClass::ClassAddReferencedObjectsType InClassAddReferencedObjects,
 	UClass::StaticClassFunctionType InSuperClassFn,
-	UClass::StaticClassFunctionType InWithinClassFn,
-	bool bIsDynamic /*= false*/,
-	UDynamicClass::DynamicClassInitializerType InDynamicClassInitializerFn /*= nullptr*/
+	UClass::StaticClassFunctionType InWithinClassFn
 	)
 {
-#if WITH_HOT_RELOAD
-	if (GIsHotReload)
+#if WITH_RELOAD
+	if (IsReloadActive() && GetActiveReloadType() != EActiveReloadType::Reinstancing)
 	{
-		check(!bIsDynamic);
 		UPackage* Package = FindPackage(NULL, PackageName);
 		if (Package)
 		{
@@ -5543,57 +5793,34 @@ void GetPrivateStaticClassBody(
 			}
 			else
 			{
-				UE_LOG(LogClass, Log, TEXT("Could not find existing class %s in package %s for HotReload, assuming new class"), Name, PackageName);
+				UE_LOG(LogClass, Log, TEXT("Could not find existing class %s in package %s for reload, assuming new or modified class"), Name, PackageName);
 			}
 		}
 		else
 		{
-			UE_LOG(LogClass, Log, TEXT("Could not find existing package %s for HotReload of class %s, assuming a new package."), PackageName, Name);
+			UE_LOG(LogClass, Log, TEXT("Could not find existing package %s for reload of class %s, assuming a new package."), PackageName, Name);
 		}
 	}
 #endif
 
-	if (!bIsDynamic)
-	{
-		ReturnClass = (UClass*)GUObjectAllocator.AllocateUObject(sizeof(UClass), alignof(UClass), true);
-		ReturnClass = ::new (ReturnClass)
-			UClass
-			(
-			EC_StaticConstructor,
-			Name,
-			InSize,
-			InAlignment,
-			InClassFlags,
-			InClassCastFlags,
-			InConfigName,
-			EObjectFlags(RF_Public | RF_Standalone | RF_Transient | RF_MarkAsNative | RF_MarkAsRootSet),
-			InClassConstructor,
-			InClassVTableHelperCtorCaller,
-			InClassAddReferencedObjects
-			);
-		check(ReturnClass);
-	}
-	else
-	{
-		ReturnClass = (UClass*)GUObjectAllocator.AllocateUObject(sizeof(UDynamicClass), alignof(UDynamicClass), GIsInitialLoad);
-		ReturnClass = ::new (ReturnClass)
-			UDynamicClass
-			(
-			EC_StaticConstructor,
-			Name,
-			InSize,
-			InAlignment,
-			InClassFlags|CLASS_CompiledFromBlueprint,
-			InClassCastFlags,
-			InConfigName,
-			EObjectFlags(RF_Public | RF_Standalone | RF_Transient | RF_Dynamic | (GIsInitialLoad ? RF_MarkAsRootSet : RF_NoFlags)),
-			InClassConstructor,
-			InClassVTableHelperCtorCaller,
-			InClassAddReferencedObjects,
-			InDynamicClassInitializerFn
-			);
-		check(ReturnClass);
-	}
+	ReturnClass = (UClass*)GUObjectAllocator.AllocateUObject(sizeof(UClass), alignof(UClass), true);
+	ReturnClass = ::new (ReturnClass)
+		UClass
+		(
+		EC_StaticConstructor,
+		Name,
+		InSize,
+		InAlignment,
+		InClassFlags,
+		InClassCastFlags,
+		InConfigName,
+		EObjectFlags(RF_Public | RF_Standalone | RF_Transient | RF_MarkAsNative | RF_MarkAsRootSet),
+		InClassConstructor,
+		InClassVTableHelperCtorCaller,
+		InClassAddReferencedObjects
+		);
+	check(ReturnClass);
+	
 	InitializePrivateStaticClass(
 		InSuperClassFn(),
 		ReturnClass,
@@ -5620,6 +5847,9 @@ UFunction::UFunction(const FObjectInitializer& ObjectInitializer, UFunction* InS
 , EventGraphFunction(nullptr)
 , EventGraphCallOffset(0)
 #endif
+#if WITH_LIVE_CODING
+, SingletonPtr(nullptr)
+#endif
 {
 }
 
@@ -5629,6 +5859,9 @@ UFunction::UFunction(UFunction* InSuperFunction, EFunctionFlags InFunctionFlags,
 	, RPCId(0)
 	, RPCResponseId(0)
 	, FirstPropertyToInit(NULL)
+#if WITH_LIVE_CODING
+	, SingletonPtr(nullptr)
+#endif
 {
 }
 
@@ -5707,7 +5940,7 @@ void UFunction::Serialize( FArchive& Ar )
 	int32 EventGraphCallOffset = 0;
 #endif
 
-	if (Ar.UE4Ver() >= VER_UE4_SERIALIZE_BLUEPRINT_EVENTGRAPH_FASTCALLS_IN_UFUNCTION)
+	if (Ar.UEVer() >= VER_UE4_SERIALIZE_BLUEPRINT_EVENTGRAPH_FASTCALLS_IN_UFUNCTION)
 	{
 		Ar << EventGraphFunction;
 		Ar << EventGraphCallOffset;
@@ -5738,6 +5971,13 @@ void UFunction::PostLoad()
 	if (OwningClass && HasAnyFunctionFlags(FUNC_Net))
 	{
 		OwningClass->ClassFlags &= ~CLASS_ReplicationDataIsSetUp;
+	}
+	
+	// fix deprecated state. 
+	if (HasAllFunctionFlags(FUNC_Const | FUNC_Static))
+	{
+		// static functions can't be marked const
+		FunctionFlags &= ~FUNC_Const;
 	}
 }
 
@@ -5849,6 +6089,17 @@ bool FStructUtils::TheSameLayout(const UStruct* StructA, const UStruct* StructB,
 			PropertyA = PropertyA ? PropertyA->PropertyLinkNext : NULL;
 			PropertyB = PropertyB ? PropertyB->PropertyLinkNext : NULL;
 		}
+
+		if(bResult)
+		{
+			// If structs are actually classes, their 'layout' is affected by their sparse class data too 
+			const UClass* ClassA = Cast<UClass>(StructA);
+			const UClass* ClassB = Cast<UClass>(StructB);
+			if(ClassA && ClassB)
+			{
+				bResult = TheSameLayout(ClassA->GetSparseClassDataStruct(), ClassB->GetSparseClassDataStruct(), bCheckPropertiesNames);
+			}
+		}
 	}
 	return bResult;
 }
@@ -5937,24 +6188,6 @@ static UScriptStruct* StaticGetBaseStructureInternal(FName Name)
 	return Result;
 }
 
-UScriptStruct* TBaseStructure<FRotator>::Get()
-{
-	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("Rotator"));
-	return ScriptStruct;
-}
-
-UScriptStruct* TBaseStructure<FQuat>::Get()
-{
-	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("Quat"));
-	return ScriptStruct;
-}
-
-UScriptStruct* TBaseStructure<FTransform>::Get()
-{
-	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("Transform"));
-	return ScriptStruct;
-}
-
 UScriptStruct* TBaseStructure<FLinearColor>::Get()
 {
 	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("LinearColor"));
@@ -5964,30 +6197,6 @@ UScriptStruct* TBaseStructure<FLinearColor>::Get()
 UScriptStruct* TBaseStructure<FColor>::Get()
 {
 	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("Color"));
-	return ScriptStruct;
-}
-
-UScriptStruct* TBaseStructure<FPlane>::Get()
-{
-	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("Plane"));
-	return ScriptStruct;
-}
-
-UScriptStruct* TBaseStructure<FVector>::Get()
-{
-	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("Vector"));
-	return ScriptStruct;
-}
-
-UScriptStruct* TBaseStructure<FVector2D>::Get()
-{
-	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("Vector2D"));
-	return ScriptStruct;
-}
-
-UScriptStruct* TBaseStructure<FVector4>::Get()
-{
-	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("Vector4"));
 	return ScriptStruct;
 }
 
@@ -6003,15 +6212,45 @@ UScriptStruct* TBaseStructure<FGuid>::Get()
 	return ScriptStruct;
 }
 
-UScriptStruct* TBaseStructure<FBox2D>::Get()
-{
-	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("Box2D"));
-	return ScriptStruct;
-}
-
 UScriptStruct* TBaseStructure<FFallbackStruct>::Get()
 {
 	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("FallbackStruct"));
+	return ScriptStruct;
+}
+
+UScriptStruct* TBaseStructure<FInterpCurvePointFloat>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("InterpCurvePointFloat"));
+	return ScriptStruct;
+}
+
+UScriptStruct* TBaseStructure<FInterpCurvePointVector2D>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("InterpCurvePointVector2D"));
+	return ScriptStruct;
+}
+
+UScriptStruct* TBaseStructure<FInterpCurvePointVector>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("InterpCurvePointVector"));
+	return ScriptStruct;
+}
+
+UScriptStruct* TBaseStructure<FInterpCurvePointQuat>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("InterpCurvePointQuat"));
+	return ScriptStruct;
+}
+
+UScriptStruct* TBaseStructure<FInterpCurvePointTwoVectors>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("InterpCurvePointTwoVectors"));
+	return ScriptStruct;
+}
+
+UScriptStruct* TBaseStructure<FInterpCurvePointLinearColor>::Get()
+{
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(TEXT("InterpCurvePointLinearColor"));
 	return ScriptStruct;
 }
 
@@ -6111,6 +6350,37 @@ UScriptStruct* TBaseStructure<FTestUninitializedScriptStructMembersTest>::Get()
 	return ScriptStruct;
 }
 
+
+
+#define UE_DEFINE_CORE_VARIANT_TYPE(VARIANT, CORE)												\
+UScriptStruct* TBaseStructure<F##CORE>::Get()												\
+{																								\
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(NAME_##CORE);			\
+	return ScriptStruct;																		\
+}																								\
+UScriptStruct* TVariantStructure<F##VARIANT##f>::Get()											\
+{																								\
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(NAME_##VARIANT##f);		\
+	return ScriptStruct;																		\
+}																								\
+UScriptStruct* TVariantStructure<F##VARIANT##d>::Get()											\
+{																								\
+	static UScriptStruct* ScriptStruct = StaticGetBaseStructureInternal(NAME_##VARIANT##d);		\
+	return ScriptStruct;																		\
+}
+
+UE_DEFINE_CORE_VARIANT_TYPE(Vector2,	Vector2D);
+UE_DEFINE_CORE_VARIANT_TYPE(Vector3,	Vector);
+UE_DEFINE_CORE_VARIANT_TYPE(Vector4,	Vector4);
+UE_DEFINE_CORE_VARIANT_TYPE(Plane4,		Plane);
+UE_DEFINE_CORE_VARIANT_TYPE(Quat4,		Quat);
+UE_DEFINE_CORE_VARIANT_TYPE(Rotator3,	Rotator);
+UE_DEFINE_CORE_VARIANT_TYPE(Transform3,	Transform);
+UE_DEFINE_CORE_VARIANT_TYPE(Matrix44,	Matrix);
+UE_DEFINE_CORE_VARIANT_TYPE(Box2,		Box2D);
+
+#undef UE_DEFINE_CORE_VARIANT_TYPE
+
 IMPLEMENT_CORE_INTRINSIC_CLASS(UFunction, UStruct,
 	{
 	}
@@ -6158,159 +6428,25 @@ IMPLEMENT_CORE_INTRINSIC_CLASS(USparseDelegateFunction, UDelegateFunction,
 	}
 );
 
-/*-----------------------------------------------------------------------------
-UDynamicClass constructors.
------------------------------------------------------------------------------*/
-
-/**
-* Internal constructor.
-*/
-UDynamicClass::UDynamicClass(const FObjectInitializer& ObjectInitializer)
-: UClass(ObjectInitializer)
-, AnimClassImplementation(nullptr)
-{
-	// If you add properties here, please update the other constructors and PurgeClass()
-}
-
-/**
-* Create a new UDynamicClass given its superclass.
-*/
-UDynamicClass::UDynamicClass(const FObjectInitializer& ObjectInitializer, UClass* InBaseClass)
-: UClass(ObjectInitializer, InBaseClass)
-, AnimClassImplementation(nullptr)
-{
-}
-
-/**
-* Called when dynamically linked.
-*/
-UDynamicClass::UDynamicClass(
-	EStaticConstructor,
-	FName			InName,
-	uint32			InSize,
-	uint32			InAlignment,
-	EClassFlags		InClassFlags,
-	EClassCastFlags	InClassCastFlags,
-	const TCHAR*    InConfigName,
-	EObjectFlags	InFlags,
-	ClassConstructorType InClassConstructor,
-	ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
-	ClassAddReferencedObjectsType InClassAddReferencedObjects,
-	DynamicClassInitializerType InDynamicClassInitializer)
-: UClass(
-  EC_StaticConstructor
-, InName
-, InSize
-, InAlignment
-, InClassFlags
-, InClassCastFlags
-, InConfigName
-, InFlags
-, InClassConstructor
-, InClassVTableHelperCtorCaller
-, InClassAddReferencedObjects)
-, AnimClassImplementation(nullptr)
-, DynamicClassInitializer(InDynamicClassInitializer)
-{
-}
-
-void UDynamicClass::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
-{
-	UDynamicClass* This = CastChecked<UDynamicClass>(InThis);
-
-	Collector.AddReferencedObjects(This->MiscConvertedSubobjects, This);
-	Collector.AddReferencedObjects(This->ReferencedConvertedFields, This);
-	Collector.AddReferencedObjects(This->UsedAssets, This);
-	Collector.AddReferencedObjects(This->DynamicBindingObjects, This);
-	Collector.AddReferencedObjects(This->ComponentTemplates, This);
-	Collector.AddReferencedObjects(This->Timelines, This);
-
-	for (TPair<FName, UClass*>& Override : This->ComponentClassOverrides)
-	{
-		Collector.AddReferencedObject(Override.Value);
-	}
-
-	Collector.AddReferencedObject(This->AnimClassImplementation, This);
-
-	Super::AddReferencedObjects(This, Collector);
-}
-
-UObject* UDynamicClass::CreateDefaultObject()
-{
-#if DO_CHECK
-	if (!HasAnyFlags(RF_ClassDefaultObject) && (0 == (ClassFlags & CLASS_Constructed)))
-	{
-		UE_LOG(LogClass, Error, TEXT("CDO is created for a dynamic class, before the class was constructed. %s"), *GetPathName());
-	}
-#endif
-	return Super::CreateDefaultObject();
-}
-
-void UDynamicClass::PurgeClass(bool bRecompilingOnLoad)
-{
-	Super::PurgeClass(bRecompilingOnLoad);
-
-	MiscConvertedSubobjects.Empty();
-	ReferencedConvertedFields.Empty();
-	UsedAssets.Empty();
-
-	DynamicBindingObjects.Empty();
-	ComponentTemplates.Empty();
-	Timelines.Empty();
-	ComponentClassOverrides.Empty();
-
-	AnimClassImplementation = nullptr;
-}
-
-UObject* UDynamicClass::FindArchetype(const UClass* ArchetypeClass, const FName ArchetypeName) const
-{
-	UObject* Archetype = static_cast<UObject*>(FindObjectWithOuter(this, ArchetypeClass, ArchetypeName));
-	if (!Archetype)
-	{
-		// See UBlueprintGeneratedClass::FindArchetype, UE-35259, UE-37480
-		const FName ArchetypeBaseName = FName(ArchetypeName, 0);
-		if (ArchetypeBaseName != ArchetypeName)
-		{
-			UObject* const* FountComponentTemplate = ComponentTemplates.FindByPredicate([&](UObject* InObj) -> bool
-			{ 
-				return InObj && (InObj->GetFName() == ArchetypeBaseName) && InObj->IsA(ArchetypeClass);
-			});
-			Archetype = FountComponentTemplate ? *FountComponentTemplate : nullptr;
-		}
-	}
-	const UClass* SuperClass = GetSuperClass();
-	return Archetype ? Archetype :
-		(SuperClass ? SuperClass->FindArchetype(ArchetypeClass, ArchetypeName) : nullptr);
-}
-
-void UDynamicClass::SetupObjectInitializer(FObjectInitializer& ObjectInitializer) const
-{
-	for (const TPair<FName, UClass*>& Override : ComponentClassOverrides)
-	{
-		ObjectInitializer.SetDefaultSubobjectClass(Override.Key, Override.Value);
-	}
-
-	GetSuperClass()->SetupObjectInitializer(ObjectInitializer);
-}
-
-
-FStructProperty* UDynamicClass::FindStructPropertyChecked(const TCHAR* PropertyName) const
-{
-	return FindFieldChecked<FStructProperty>(this, PropertyName);
-}
-
+// @todo: BP2CPP_remove
+// [DEPRECATED] - No longer in use; will be removed later.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 const FString& UDynamicClass::GetTempPackagePrefix()
 {
 	static const FString PackagePrefix(TEXT("/Temp/__TEMP_BP__"));
 	return PackagePrefix;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+// @todo: BP2CPP_remove
+// [DEPRECATED] - No longer in use; will be removed later.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 IMPLEMENT_CORE_INTRINSIC_CLASS(UDynamicClass, UClass,
 {
 	Class->ClassAddReferencedObjects = &UDynamicClass::AddReferencedObjects;
 }
 );
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #if defined(_MSC_VER) && _MSC_VER == 1900
 	#ifdef PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS
 		PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS

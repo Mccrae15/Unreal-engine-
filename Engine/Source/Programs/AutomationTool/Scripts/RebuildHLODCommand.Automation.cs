@@ -8,7 +8,8 @@ using System.Linq;
 using System.Net.Mail;
 using AutomationTool;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 /// <summary>
 /// Helper command used for rebuilding a projects Hierarchical LODs.
@@ -85,16 +86,16 @@ namespace AutomationScripts.Automation
 		private void BuildNecessaryTargets()
 		{
 			LogInformation("Running Step:- RebuildHLOD::BuildNecessaryTargets");
-			UE4Build.BuildAgenda Agenda = new UE4Build.BuildAgenda();
+			UnrealBuild.BuildAgenda Agenda = new UnrealBuild.BuildAgenda();
             Agenda.AddTarget("UnrealHeaderTool", UnrealBuildTool.UnrealTargetPlatform.Win64, UnrealBuildTool.UnrealTargetConfiguration.Development);
 			Agenda.AddTarget("ShaderCompileWorker", UnrealBuildTool.UnrealTargetPlatform.Win64, UnrealBuildTool.UnrealTargetConfiguration.Development);			
 			Agenda.AddTarget(CommandletTargetName, UnrealBuildTool.UnrealTargetPlatform.Win64, UnrealBuildTool.UnrealTargetConfiguration.Development);
 
 			try
 			{
-				UE4Build Builder = new UE4Build(this);
+				UnrealBuild Builder = new UnrealBuild(this);
 				Builder.Build(Agenda, InDeleteBuildProducts: true, InUpdateVersionFiles: true, InForceNoXGE: false, InChangelistNumberOverride: GetLatestCodeChange());
-				UE4Build.CheckBuildProducts(Builder.BuildProductFiles);
+				UnrealBuild.CheckBuildProducts(Builder.BuildProductFiles);
 			}
 			catch (AutomationException)
 			{
@@ -127,11 +128,11 @@ namespace AutomationScripts.Automation
 			LogInformation("Running Step:- RebuildHLOD::RunRebuildHLODCommandlet");
 
 			// Find the commandlet binary
-			string UE4EditorExe = HostPlatform.Current.GetUE4ExePath(Params.UE4Exe);
-			if (!FileExists(UE4EditorExe))
+			string UEEditorExe = HostPlatform.Current.GetUnrealExePath(Params.UnrealExe);
+			if (!FileExists(UEEditorExe))
 			{
-				LogError("Missing " + UE4EditorExe + " executable. Needs to be built first.");
-				throw new AutomationException("Missing " + UE4EditorExe + " executable. Needs to be built first.");
+				LogError("Missing " + UEEditorExe + " executable. Needs to be built first.");
+				throw new AutomationException("Missing " + UEEditorExe + " executable. Needs to be built first.");
 			}
 
             // Now let's rebuild HLODs for the project
@@ -153,7 +154,7 @@ namespace AutomationScripts.Automation
                 {
                     CommandletParams += String.Format(" -SCCProvider={0} -P4Port={1} -P4User={2} -P4Client={3} -P4Changelist={4} -P4Passwd={5}", "Perforce", P4Env.ServerAndPort, P4Env.User, P4Env.Client, WorkingCL.ToString(), P4.GetAuthenticationToken());
                 }
-                RebuildHLODCommandlet(Params.RawProjectPath, Params.UE4Exe, Params.MapsToRebuildHLODMaps.ToArray(), CommandletParams);
+                RebuildHLODCommandlet(Params.RawProjectPath, Params.UnrealExe, Params.MapsToRebuildHLODMaps.ToArray(), CommandletParams);
 			}
 			catch (Exception Ex)
 			{
@@ -162,11 +163,11 @@ namespace AutomationScripts.Automation
                 if ( AEx != null )
                 {
                     string LogFile = AEx.LogFileName;
-                    Tools.DotNETCommon.Log.TraceWarning("Attempting to load file {0}", LogFile);
+                    EpicGames.Core.Log.TraceWarning("Attempting to load file {0}", LogFile);
                     if ( LogFile != "")
                     {
                         
-                        Tools.DotNETCommon.Log.TraceWarning("Attempting to read file {0}", LogFile);
+                        EpicGames.Core.Log.TraceWarning("Attempting to read file {0}", LogFile);
                         try
                         {
                             string[] AllLogFile = ReadAllLines(LogFile);
@@ -318,10 +319,8 @@ namespace AutomationScripts.Automation
                 Message.Attachments.Add()*/
 			    try
 			    {
-				    #pragma warning disable CS0618 // Mono 4.6.x obsoletes this class
 				    SmtpClient MailClient = new SmtpClient("smtp.epicgames.net");
 				    MailClient.Send(Message);
-				    #pragma warning restore CS0618
 			    }
 			    catch (Exception Ex)
 			    {

@@ -40,23 +40,23 @@ namespace ENavCostDisplay
 	};
 }
 
-UCLASS(hidecategories=(Object, Actor, Input, Rendering, Replication, LOD, Cooking), showcategories=("Input|MouseInput", "Input|TouchInput"), Blueprintable)
+UCLASS(hidecategories=(Object, Actor, Input, Rendering, Replication, HLOD, Cooking), showcategories=("Input|MouseInput", "Input|TouchInput"), Blueprintable)
 class NAVIGATIONSYSTEM_API ANavigationTestingActor : public AActor, public INavAgentInterface, public INavPathObserverInterface
 {
 	GENERATED_UCLASS_BODY()
 
 private:
 	UPROPERTY()
-	class UCapsuleComponent* CapsuleComponent;
+	TObjectPtr<class UCapsuleComponent> CapsuleComponent;
 
 #if WITH_EDITORONLY_DATA
 	/** Editor Preview */
 	UPROPERTY()
-	class UNavTestRenderingComponent* EdRenderComp;
+	TObjectPtr<class UNavTestRenderingComponent> EdRenderComp;
 #endif // WITH_EDITORONLY_DATA
 
 	UPROPERTY(EditAnywhere, Category = Navigation, meta=(EditCondition="bActAsNavigationInvoker"))
-	UNavigationInvokerComponent* InvokerComponent;
+	TObjectPtr<UNavigationInvokerComponent> InvokerComponent;
 
 	UPROPERTY(EditAnywhere, Category = Navigation, meta=(InlineEditConditionToggle))
 	uint32 bActAsNavigationInvoker : 1;
@@ -71,7 +71,7 @@ public:
 	FVector QueryingExtent;
 
 	UPROPERTY(transient)
-	ANavigationData* MyNavData;
+	TObjectPtr<ANavigationData> MyNavData;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category=AgentStatus)
 	FVector ProjectedLocation;
@@ -153,7 +153,7 @@ public:
 	int32 PathfindingSteps;
 
 	UPROPERTY(EditAnywhere, Category=Pathfinding)
-	ANavigationTestingActor* OtherActor;
+	TObjectPtr<ANavigationTestingActor> OtherActor;
 
 	/** "None" will result in default filter being used */
 	UPROPERTY(EditAnywhere, Category=Pathfinding)
@@ -206,7 +206,7 @@ public:
 	void UpdateNavData();
 	void UpdatePathfinding();
 	void GatherDetailedData(ANavigationTestingActor* Goal);
-	void SearchPathTo(ANavigationTestingActor* Goal);
+	virtual void SearchPathTo(ANavigationTestingActor* Goal);
 
 	/*	Called when given path becomes invalid (via @see PathObserverDelegate)
 	 *	NOTE: InvalidatedPath doesn't have to be instance's current Path

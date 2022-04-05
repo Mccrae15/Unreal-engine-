@@ -10,9 +10,6 @@ IMPLEMENT_MODULE(IChaosCachingPlugin, ChaosCaching)
 
 DEFINE_LOG_CATEGORY(LogChaosCache)
 
-static TUniquePtr<Chaos::FGeometryCollectionCacheAdapter> GeometryCollectionAdapter;
-static TUniquePtr<Chaos::FStaticMeshCacheAdapter> StaticMeshAdapter;
-
 void IChaosCachingPlugin::StartupModule()
 {
 	GeometryCollectionAdapter = MakeUnique<Chaos::FGeometryCollectionCacheAdapter>();
@@ -22,7 +19,7 @@ void IChaosCachingPlugin::StartupModule()
 	RegisterAdapter(StaticMeshAdapter.Get());
 }
 
-void IChaosCachingPlugin::ShutdownModule()
+void IChaosCachingPlugin::ShutdownModule() 
 {
 	UnregisterAdapter(StaticMeshAdapter.Get());
 	UnregisterAdapter(GeometryCollectionAdapter.Get());

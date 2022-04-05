@@ -9,30 +9,24 @@
 #include "RenderResource.h"
 #include "RHIDefinitions.h"
 
-class FTextureWithRDG;
+class FBufferWithRDG;
+class FRDGBuffer;
+class FRDGPooledBuffer;
 class FRDGTexture;
 class FRDGBuilder;
 struct IPooledRenderTarget;
 
-/** An FTexture variant that includes more efficient support for registering with RDG. */
-class RENDERCORE_API FTextureWithRDG : public FTexture
+class RENDERCORE_API FBufferWithRDG : public FRenderResource
 {
 public:
-	FTextureWithRDG();
-	FTextureWithRDG(const FTextureWithRDG& Other);
-	FTextureWithRDG& operator=(const FTextureWithRDG& Other);
-	~FTextureWithRDG() override;
-
-	FRDGTexture* GetRDG(FRDGBuilder& GraphBuilder) const;
-	FRDGTexture* GetPassthroughRDG() const;
+	FBufferWithRDG();
+	FBufferWithRDG(const FBufferWithRDG& Other);
+	FBufferWithRDG& operator=(const FBufferWithRDG& Other);
+	~FBufferWithRDG() override;
 
 	void ReleaseRHI() override;
 
-protected:
-	void InitRDG(const TCHAR* Name);
-
-private:
-	TRefCountPtr<IPooledRenderTarget> RenderTarget;
+	TRefCountPtr<FRDGPooledBuffer> Buffer;
 };
 
 extern RENDERCORE_API void RenderUtilsInit();
@@ -129,7 +123,6 @@ extern RENDERCORE_API class FTextureWithSRV* GWhiteTextureWithSRV;
 /** A global black texture. */
 extern RENDERCORE_API class FTexture* GBlackTexture;
 extern RENDERCORE_API class FTextureWithSRV* GBlackTextureWithSRV;
-extern RENDERCORE_API class FTextureWithSRV* GBlackTextureWithUAV;
 
 extern RENDERCORE_API class FTexture* GTransparentBlackTexture;
 extern RENDERCORE_API class FTextureWithSRV* GTransparentBlackTextureWithSRV;
@@ -138,20 +131,22 @@ extern RENDERCORE_API class FVertexBufferWithSRV* GEmptyVertexBufferWithUAV;
 
 extern RENDERCORE_API class FVertexBufferWithSRV* GWhiteVertexBufferWithSRV;
 
+extern RENDERCORE_API class FBufferWithRDG* GWhiteVertexBufferWithRDG;
+
 /** A global black array texture. */
 extern RENDERCORE_API class FTexture* GBlackArrayTexture;
 
 /** A global black volume texture. */
-extern RENDERCORE_API class FTextureWithRDG* GBlackVolumeTexture;
+extern RENDERCORE_API class FTexture* GBlackVolumeTexture;
 
 /** A global black volume texture, with alpha=1. */
-extern RENDERCORE_API class FTextureWithRDG* GBlackAlpha1VolumeTexture;
+extern RENDERCORE_API class FTexture* GBlackAlpha1VolumeTexture;
 
 /** A global black texture<uint> */
 extern RENDERCORE_API class FTexture* GBlackUintTexture;
 
 /** A global black volume texture<uint>  */
-extern RENDERCORE_API class FTextureWithRDG* GBlackUintVolumeTexture;
+extern RENDERCORE_API class FTexture* GBlackUintVolumeTexture;
 
 /** A global white cube texture. */
 extern RENDERCORE_API class FTexture* GWhiteTextureCube;
@@ -187,11 +182,11 @@ public:
 	virtual void InitRHI() override
 	{
 		// create a static vertex buffer
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FCubeIndexBuffer"));
 		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), sizeof(uint16) * NUM_CUBE_VERTICES, BUF_Static, CreateInfo);
-		void* VoidPtr = RHILockIndexBuffer(IndexBufferRHI, 0, sizeof(uint16) * NUM_CUBE_VERTICES, RLM_WriteOnly);
+		void* VoidPtr = RHILockBuffer(IndexBufferRHI, 0, sizeof(uint16) * NUM_CUBE_VERTICES, RLM_WriteOnly);
 		FMemory::Memcpy(VoidPtr, GCubeIndices, NUM_CUBE_VERTICES * sizeof(uint16));
-		RHIUnlockIndexBuffer(IndexBufferRHI);
+		RHIUnlockBuffer(IndexBufferRHI);
 	}
 };
 extern RENDERCORE_API TGlobalResource<FCubeIndexBuffer> GCubeIndexBuffer;
@@ -205,12 +200,12 @@ public:
 	virtual void InitRHI() override
 	{
 		// create a static vertex buffer
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FTwoTrianglesIndexBuffer"));
 		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), sizeof(uint16) * 6, BUF_Static, CreateInfo);
-		void* VoidPtr = RHILockIndexBuffer(IndexBufferRHI, 0, sizeof(uint16) * 6, RLM_WriteOnly);
+		void* VoidPtr = RHILockBuffer(IndexBufferRHI, 0, sizeof(uint16) * 6, RLM_WriteOnly);
 		static const uint16 Indices[] = { 0, 1, 3, 0, 3, 2 };
 		FMemory::Memcpy(VoidPtr, Indices, 6 * sizeof(uint16));
-		RHIUnlockIndexBuffer(IndexBufferRHI);
+		RHIUnlockBuffer(IndexBufferRHI);
 	}
 };
 extern RENDERCORE_API TGlobalResource<FTwoTrianglesIndexBuffer> GTwoTrianglesIndexBuffer;
@@ -224,18 +219,18 @@ public:
 	virtual void InitRHI() override
 	{
 		// create a static vertex buffer
-		FRHIResourceCreateInfo CreateInfo;
-		VertexBufferRHI = RHICreateVertexBuffer(sizeof(FVector2D) * 4, BUF_Static, CreateInfo);
-		void* VoidPtr = RHILockVertexBuffer(VertexBufferRHI, 0, sizeof(FVector2D) * 4, RLM_WriteOnly);
-		static const FVector2D Vertices[4] =
+		FRHIResourceCreateInfo CreateInfo(TEXT("FScreenSpaceVertexBuffer"));
+		VertexBufferRHI = RHICreateVertexBuffer(sizeof(FVector2f) * 4, BUF_Static, CreateInfo);
+		void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector2f) * 4, RLM_WriteOnly);
+		static const FVector2f Vertices[4] =
 		{
-			FVector2D(-1,-1),
-			FVector2D(-1,+1),
-			FVector2D(+1,-1),
-			FVector2D(+1,+1),
+			FVector2f(-1,-1),
+			FVector2f(-1,+1),
+			FVector2f(+1,-1),
+			FVector2f(+1,+1),
 		};
-		FMemory::Memcpy(VoidPtr, Vertices, sizeof(FVector2D) * 4);
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		FMemory::Memcpy(VoidPtr, Vertices, sizeof(FVector2f) * 4);
+		RHIUnlockBuffer(VertexBufferRHI);
 	}
 };
 
@@ -252,7 +247,7 @@ public:
 	virtual void InitRHI()
 	{
 		FVertexDeclarationElementList Elements;
-		uint32 Stride = sizeof(FVector2D);
+		uint16 Stride = sizeof(FVector2f);
 		Elements.Add(FVertexElement(0, 0, VET_Float2, 0, Stride, false));
 		VertexDeclarationRHI = RHICreateVertexDeclaration(Elements);
 	}
@@ -268,7 +263,7 @@ extern RENDERCORE_API TGlobalResource<FTileVertexDeclaration> GTileVertexDeclara
 /**
  * Maps from an X,Y,Z cube vertex coordinate to the corresponding vertex index.
  */
-inline uint16 GetCubeVertexIndex(uint32 X,uint32 Y,uint32 Z) { return X * 4 + Y * 2 + Z; }
+inline uint16 GetCubeVertexIndex(uint32 X,uint32 Y,uint32 Z) { return (uint16)(X * 4 + Y * 2 + Z); }
 
 /**
 * A 3x1 of xyz(11:11:10) format.
@@ -295,23 +290,33 @@ struct FPackedPosition
 
 	// Constructors.
 	FPackedPosition() : Packed(0) {}
-	FPackedPosition(const FVector& Other) : Packed(0) 
+	FPackedPosition(const FVector3f& Other) : Packed(0) 
+	{
+		Set(Other);
+	}
+	FPackedPosition(const FVector3d& Other) : Packed(0) 
 	{
 		Set(Other);
 	}
 	
 	// Conversion operators.
-	FPackedPosition& operator=( FVector Other )
+	FPackedPosition& operator=( FVector3f Other )
+	{
+		Set( Other );
+		return *this;
+	}
+	FPackedPosition& operator=( FVector3d Other )
 	{
 		Set( Other );
 		return *this;
 	}
 
-	operator FVector() const;
+	operator FVector3f() const;
 	VectorRegister GetVectorRegister() const;
 
 	// Set functions.
-	void Set( const FVector& InVector );
+	void Set(const FVector3f& InVector);
+	void Set(const FVector3d& InVector);
 
 	// Serializer.
 	friend FArchive& operator<<(FArchive& Ar,FPackedPosition& N);
@@ -449,6 +454,14 @@ RENDERCORE_API const TCHAR* GetPixelFormatString(EPixelFormat InPixelFormat);
 RENDERCORE_API EPixelFormat GetPixelFormatFromString(const TCHAR* InPixelFormatStr);
 
 /**
+ *  Returns the valid channels for this pixel format
+ * 
+ * @return e.g. EPixelFormatChannelFlags::G for PF_G8
+ */
+RENDERCORE_API EPixelFormatChannelFlags GetPixelFormatValidChannels(EPixelFormat InPixelFormat);
+
+
+/**
  * Convert from ECubeFace to text string
  * @param Face - ECubeFace type to convert
  * @return text string for cube face enum value
@@ -472,7 +485,7 @@ RENDERCORE_API bool PlatformSupportsSimpleForwardShading(const FStaticShaderPlat
 
 RENDERCORE_API bool IsSimpleForwardShadingEnabled(const FStaticShaderPlatform Platform);
 
-RENDERCORE_API bool MobileSupportsGPUScene(const FStaticShaderPlatform Platform);
+RENDERCORE_API bool MobileSupportsGPUScene();
 
 RENDERCORE_API bool IsMobileDeferredShadingEnabled(const FStaticShaderPlatform Platform);
 
@@ -480,44 +493,89 @@ RENDERCORE_API bool MobileRequiresSceneDepthAux(const FStaticShaderPlatform Plat
 
 RENDERCORE_API bool SupportsTextureCubeArray(ERHIFeatureLevel::Type FeatureLevel);
 
-RENDERCORE_API bool GPUSceneUseTexture2D(const FStaticShaderPlatform Platform);
-
 RENDERCORE_API bool MaskedInEarlyPass(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool AllowPixelDepthOffset(const FStaticShaderPlatform Platform);
 
-RENDERCORE_API bool IsMobileDistanceFieldEnabled(const FStaticShaderPlatform Platform);
-
-RENDERCORE_API bool IsMobileDistanceFieldShadowingEnabled(const FStaticShaderPlatform Platform);
+RENDERCORE_API bool AllowPerPixelShadingModels(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool UseMobileAmbientOcclusion(const FStaticShaderPlatform Platform);
 
+RENDERCORE_API bool IsMobileDistanceFieldEnabled(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool MobileBasePassAlwaysUsesCSM(const FStaticShaderPlatform Platform);
+
 RENDERCORE_API bool SupportsGen4TAA(const FStaticShaderPlatform Platform);
+
+RENDERCORE_API bool SupportsTSR(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool PlatformSupportsVelocityRendering(const FStaticShaderPlatform Platform);
 
 RENDERCORE_API bool IsUsingDBuffers(const FStaticShaderPlatform Platform);
 
-
-/* Simple cache for RendererSettings ini lookup per shader platform. */
 template<typename Type>
 struct RENDERCORE_API FShaderPlatformCachedIniValue
 {
-	FShaderPlatformCachedIniValue(const TCHAR* InSection, const TCHAR* InKey)
-		: Section(InSection)
-		, Key(InKey)
-		, bTestedIni(false)
+	FShaderPlatformCachedIniValue(const TCHAR* InCVarName)
+		: CVarName(InCVarName)
 		, CVar(nullptr)
-	{}
+	{
+	}
 
-	Type Get(EShaderPlatform ShaderPlatform);
+	FShaderPlatformCachedIniValue(IConsoleVariable* InCVar)
+		: CVar(InCVar)
+	{
+	}
+
+	Type Get(EShaderPlatform ShaderPlatform)
+	{
+		Type Value{};
+
+		FName IniPlatformName = ShaderPlatformToPlatformName(ShaderPlatform);
+		// find the cvar if needed
+		if (CVar == nullptr)
+		{
+			CVar = IConsoleManager::Get().FindConsoleVariable(*CVarName);
+		}
+
+		// if we are looking up our own platform, just use the current value
+		if (IniPlatformName == FPlatformProperties::IniPlatformName())
+		{
+			checkf(CVar != nullptr, TEXT("Failed to find CVar %s when getting current value for FShaderPlatformCachedIniValue"));
+
+			CVar->GetValue(Value);
+			return Value;
+		}
+
+#if ALLOW_OTHER_PLATFORM_CONFIG
+		// create a dummy cvar if needed
+		if (CVar == nullptr)
+		{
+			// this could be a cvar that only exists on the target platform so create a dummy one
+			CVar = IConsoleManager::Get().RegisterConsoleVariable(*CVarName, Type(), TEXT(""), ECVF_ReadOnly);
+		}
+
+		// now get the value from the platform that makes sense for this shader platform
+		TSharedPtr<IConsoleVariable> OtherPlatformVar = CVar->GetPlatformValueVariable(IniPlatformName);
+		ensureMsgf(OtherPlatformVar.IsValid(), TEXT("Failed to get another platform's version of a cvar (possible name: '%s'). It is probably an esoteric subclass that needs to implement GetPlatformValueVariable."), *CVarName);
+		if (OtherPlatformVar.IsValid())
+		{
+			OtherPlatformVar->GetValue(Value);
+		}
+		else
+		{
+			// get this platform's value, even tho it could be wrong
+			CVar->GetValue(Value);
+		}
+#else
+		checkf(IniPlatformName == FName(FPlatformProperties::IniPlatformName()), TEXT("FShaderPlatformCachedIniValue can only look up the current platform when ALLOW_OTHER_PLATFORM_CONFIG is false"));
+#endif
+		return Value;
+	}
 
 private:
-	const TCHAR* Section;
-	const TCHAR* Key;
-	bool bTestedIni;
+	FString CVarName;
 	IConsoleVariable* CVar;
-	TMap<EShaderPlatform, Type> CachedValues;
 };
 
 /** Returns if ForwardShading is enabled. Only valid for the current platform (otherwise call ITargetPlatform::UsesForwardShading()). */
@@ -573,7 +631,7 @@ inline bool UseGPUScene(const FStaticShaderPlatform Platform, const FStaticFeatu
 {
 	if (FeatureLevel == ERHIFeatureLevel::ES3_1)
 	{
-		return MobileSupportsGPUScene(Platform);
+		return MobileSupportsGPUScene();
 	}
 	
 	// GPU Scene management uses compute shaders
@@ -581,8 +639,15 @@ inline bool UseGPUScene(const FStaticShaderPlatform Platform, const FStaticFeatu
 		//@todo - support GPU Scene management compute shaders on these platforms to get dynamic instancing speedups on the Rendering Thread and RHI Thread
 		&& !IsOpenGLPlatform(Platform)
 		&& !IsVulkanMobileSM5Platform(Platform)
+        && !IsMetalMobileSM5Platform(Platform)
 		// we only check DDSPI for platforms that have been read in - IsValid() can go away once ALL platforms are converted over to this system
 		&& (!FDataDrivenShaderPlatformInfo::IsValid(Platform) || FDataDrivenShaderPlatformInfo::GetSupportsGPUScene(Platform));
+}
+
+
+inline bool UseGPUScene(const FStaticShaderPlatform Platform)
+{
+	return UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform));
 }
 
 inline bool ForceSimpleSkyDiffuse(const FStaticShaderPlatform Platform)
@@ -598,10 +663,10 @@ inline bool VelocityEncodeDepth(const FStaticShaderPlatform Platform)
 }
 
 /** Unit cube vertex buffer (VertexDeclarationFVector4) */
-RENDERCORE_API FVertexBufferRHIRef& GetUnitCubeVertexBuffer();
+RENDERCORE_API FBufferRHIRef& GetUnitCubeVertexBuffer();
 
 /** Unit cube index buffer */
-RENDERCORE_API FIndexBufferRHIRef& GetUnitCubeIndexBuffer();
+RENDERCORE_API FBufferRHIRef& GetUnitCubeIndexBuffer();
 
 /**
 * Takes the requested buffer size and quantizes it to an appropriate size for the rest of the
@@ -615,7 +680,100 @@ RENDERCORE_API void QuantizeSceneBufferSize(const FIntPoint& InBufferSize, FIntP
 */
 RENDERCORE_API bool UseVirtualTexturing(const FStaticFeatureLevel InFeatureLevel, const class ITargetPlatform* TargetPlatform = nullptr);
 
+
+RENDERCORE_API bool DoesPlatformSupportNanite(EShaderPlatform Platform, bool bCheckForProjectSetting = true);
+
+inline bool NaniteAtomicsSupported()
+{
+	// Are 64bit image atomics supported by the GPU/Driver/OS/API?
+	bool bAtomicsSupported = GRHISupportsAtomicUInt64;
+
+#if PLATFORM_WINDOWS
+	static const bool bIsDx11 = FCString::Stristr(GDynamicRHI->GetName(), TEXT("D3D11")) != nullptr; // Also covers -rhivalidation => D3D11_Validation
+	static const bool bIsDx12 = FCString::Stristr(GDynamicRHI->GetName(), TEXT("D3D12")) != nullptr; // Also covers -rhivalidation => D3D12_Validation
+	
+	static const auto NaniteRequireDX12CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite.RequireDX12"));
+	static const uint32 NaniteRequireDX12 = (NaniteRequireDX12CVar != nullptr) ? NaniteRequireDX12CVar->GetInt() : 1;
+	
+	if (bAtomicsSupported && NaniteRequireDX12 != 0)
+	{
+		// Only allow Vulkan or D3D12
+		bAtomicsSupported = !bIsDx11;
+
+		// Disable DX12 vendor extensions unless DX12 SM6.6 is supported
+		if (NaniteRequireDX12 == 1 && bIsDx12 && !GRHISupportsDX12AtomicUInt64)
+		{
+			// Vendor extensions currently support atomic64, but SM 6.6 and the DX12 Agility SDK are reporting that atomics are not supported.
+			// Likely due to a pre-1909 Windows 10 version, or outdated drivers without SM 6.6 support.
+			// See: https://devblogs.microsoft.com/directx/gettingstarted-dx12agility/
+			bAtomicsSupported = false;
+		}
+	}
+#endif
+
+	return bAtomicsSupported;
+}
+
+inline bool DoesRuntimeSupportNanite(EShaderPlatform ShaderPlatform, bool bCheckForAtomicSupport, bool bCheckForProjectSetting)
+{
+	// Does the platform support Nanite?
+	const bool bSupportedPlatform = DoesPlatformSupportNanite(ShaderPlatform, bCheckForProjectSetting);
+
+	// Nanite is not supported with forward shading at this time.
+	const bool bForwardShadingEnabled = IsForwardShadingEnabled(ShaderPlatform);
+
+	return bSupportedPlatform && (!bCheckForAtomicSupport || NaniteAtomicsSupported()) && !bForwardShadingEnabled;
+}
+
+/**
+ * Returns true if Nanite rendering should be used for the given shader platform.
+ */
+inline bool UseNanite(EShaderPlatform ShaderPlatform, bool bCheckForAtomicSupport = true, bool bCheckForProjectSetting = true)
+{
+	static const auto EnableNaniteCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Nanite"));
+	const bool bNaniteEnabled   = (EnableNaniteCVar != nullptr) ? (EnableNaniteCVar->GetInt() != 0) : true;
+	return bNaniteEnabled && DoesRuntimeSupportNanite(ShaderPlatform, bCheckForAtomicSupport, bCheckForProjectSetting);
+}
+
+/**
+ * Returns true if Virtual Shadow Maps should be used for the given shader platform.
+ * Note: Virtual Shadow Maps require Nanite support.
+ */
+inline bool UseVirtualShadowMaps(EShaderPlatform ShaderPlatform, const FStaticFeatureLevel FeatureLevel)
+{
+	static const auto EnableVirtualSMCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.Enable"));
+	const bool bVirtualShadowMapsEnabled = EnableVirtualSMCVar ? (EnableVirtualSMCVar->GetInt() != 0) : false;
+	return bVirtualShadowMapsEnabled && DoesRuntimeSupportNanite(ShaderPlatform, true /* check for atomics */, true /* check project setting */);
+}
+
+/**
+* Returns true if non-Nanite virtual shadow maps are enabled by CVar r.Shadow.Virtual.NonNaniteVSM 
+* and UseVirtualShadowMaps is true for the given platform and feature level.
+*/
+inline bool UseNonNaniteVirtualShadowMaps(EShaderPlatform ShaderPlatform, const FStaticFeatureLevel FeatureLevel)
+{
+	static const auto EnableCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.Virtual.NonNaniteVSM"));
+	return EnableCVar->GetInt() != 0 && UseVirtualShadowMaps(ShaderPlatform, FeatureLevel);
+}
+
 /**
 *	Checks if virtual texturing lightmap enabled and supported
 */
 RENDERCORE_API bool UseVirtualTextureLightmap(const FStaticFeatureLevel InFeatureLevel, const class ITargetPlatform* TargetPlatform = nullptr);
+
+/**
+ *  Checks if the non-pipeline shaders will not be compild and ones from FShaderPipeline used instead.
+ */
+RENDERCORE_API bool ExcludeNonPipelinedShaderTypes(EShaderPlatform ShaderPlatform);
+
+/**
+ *   Checks if skin cache shaders are enabled for the platform (via r.SkinCache.CompileShaders)
+ */
+RENDERCORE_API bool AreSkinCacheShadersEnabled(EShaderPlatform Platform);
+
+
+/*
+ * Detect (at runtime) if the runtime supports rendering one-pass point light shadows (i.e., cube maps)
+ */
+RENDERCORE_API bool DoesRuntimeSupportOnePassPointLightShadows(EShaderPlatform Platform);
+

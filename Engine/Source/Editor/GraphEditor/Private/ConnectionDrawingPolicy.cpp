@@ -28,13 +28,13 @@ FVector2D FGeometryHelper::VerticalMiddleRightOf(const FGeometry& SomeGeometry)
 FVector2D FGeometryHelper::CenterOf(const FGeometry& SomeGeometry)
 {
 	const FVector2D GeometryDrawSize = SomeGeometry.GetDrawSize();
-	return SomeGeometry.AbsolutePosition + (GeometryDrawSize * 0.5f);
+	return FVector2D(SomeGeometry.AbsolutePosition) + (GeometryDrawSize * 0.5f);
 }
 
 void FGeometryHelper::ConvertToPoints(const FGeometry& Geom, TArray<FVector2D>& Points)
 {
 	const FVector2D Size = Geom.GetDrawSize();
-	const FVector2D Location = Geom.AbsolutePosition;
+	const FVector2D Location = FVector2D(Geom.AbsolutePosition);
 
 	int32 Index = Points.AddUninitialized(4);
 	Points[Index++] = Location;
@@ -245,8 +245,9 @@ void FConnectionDrawingPolicy::DrawConnection(int32 LayerId, const FVector2D& St
 		// Distance to consider as an overlap
 		const float QueryDistanceTriggerThresholdSquared = FMath::Square(Settings->SplineHoverTolerance + Params.WireThickness * 0.5f);
 
-		// Distance to pass the bounding box cull test (may want to expand this later on if we want to do 'closest pin' actions that don't require an exact hit)
-		const float QueryDistanceToBoundingBoxSquared = QueryDistanceTriggerThresholdSquared;
+		// Distance to pass the bounding box cull test. This is used for the bCloseToSpline output that can be used as a
+		// dead zone to avoid mistakes caused by missing a double-click on a connection.
+		const float QueryDistanceForCloseSquared = FMath::Square(FMath::Sqrt(QueryDistanceTriggerThresholdSquared) + Settings->SplineCloseTolerance);
 
 		bool bCloseToSpline = false;
 		{
@@ -260,7 +261,7 @@ void FConnectionDrawingPolicy::DrawConnection(int32 LayerId, const FVector2D& St
 			Bounds += FVector2D(P1);
 			Bounds += FVector2D(P1 - MaximumTangentContribution * P1Tangent);
 
-			bCloseToSpline = Bounds.ComputeSquaredDistanceToPoint(LocalMousePosition) < QueryDistanceToBoundingBoxSquared;
+			bCloseToSpline = Bounds.ComputeSquaredDistanceToPoint(LocalMousePosition) < QueryDistanceForCloseSquared;
 
 			// Draw the bounding box for debugging
 #if 0
@@ -316,8 +317,12 @@ void FConnectionDrawingPolicy::DrawConnection(int32 LayerId, const FVector2D& St
 					const float SquaredDistToPin1 = (Params.AssociatedPin1 != nullptr) ? (P0 - ClosestPoint).SizeSquared() : FLT_MAX;
 					const float SquaredDistToPin2 = (Params.AssociatedPin2 != nullptr) ? (P1 - ClosestPoint).SizeSquared() : FLT_MAX;
 
-					SplineOverlapResult = FGraphSplineOverlapResult(Params.AssociatedPin1, Params.AssociatedPin2, ClosestDistanceSquared, SquaredDistToPin1, SquaredDistToPin2);
+					SplineOverlapResult = FGraphSplineOverlapResult(Params.AssociatedPin1, Params.AssociatedPin2, ClosestDistanceSquared, SquaredDistToPin1, SquaredDistToPin2, true);
 				}
+			}
+			else if (ClosestDistanceSquared < QueryDistanceForCloseSquared)
+			{
+				SplineOverlapResult.SetCloseToSpline(true);
 			}
 		}
 	}

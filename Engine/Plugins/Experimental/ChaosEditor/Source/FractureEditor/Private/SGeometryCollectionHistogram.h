@@ -15,7 +15,6 @@
 
 
 struct FLinearColor;
-struct FVector2D;
 class FGeometryCollectionHistogramItem;
 class ITableRow;
 class STableViewBase;
@@ -29,7 +28,8 @@ enum class EInspectedAttributeEnum : uint8
 {
 	Volume = 0					UMETA(DisplayName = "Volume"),
 	Level = 1					UMETA(DisplayName = "Level"),
-	InitialDynamicState = 3		UMETA(DisplayName = "InitialDynamicState")
+	InitialDynamicState = 3		UMETA(DisplayName = "InitialDynamicState"),
+	Size = 4					UMETA(DisplayName = "RelativeSize")
 };
 
 /** Settings for Histogram configuration. **/
@@ -43,11 +43,23 @@ public:
 
 	/** What attribute are we inspecting? */
 	UPROPERTY(EditAnywhere, Category = HistogramSettings, meta = (DisplayName = "Inspected Attribute"))
-		EInspectedAttributeEnum InspectedAttribute;
+	EInspectedAttributeEnum InspectedAttribute;
 
 	/** Sort the values? */
 	UPROPERTY(EditAnywhere, Category = HistogramSettings, meta = (DisplayName = "Sort Values"))
-		bool bSorted;
+	bool bSorted;
+
+	/** Show clusters? */
+	UPROPERTY(EditAnywhere, Category = HistogramSettings, meta = (DisplayName = "Show Clusters"))
+	bool bShowClusters=true;
+
+	/** Show rigids? */
+	UPROPERTY(EditAnywhere, Category = HistogramSettings, meta = (DisplayName = "Show Rigids"))
+	bool bShowRigids=true;
+
+	/** Show embedded geometry? */
+	UPROPERTY(EditAnywhere, Category = HistogramSettings, meta = (DisplayName = "Show Embedded Geometry"))
+	bool bShowEmbedded=true;
 
 };
 

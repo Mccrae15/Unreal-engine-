@@ -1,7 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraEmitterEditorData.h"
+
 #include "NiagaraStackEditorData.h"
+#include "ScopedTransaction.h"
+
+const FName UNiagaraEmitterEditorData::PrivateMemberNames::SummarySections = GET_MEMBER_NAME_CHECKED(UNiagaraEmitterEditorData, SummarySections);
 
 UNiagaraEmitterEditorData::UNiagaraEmitterEditorData(const FObjectInitializer& ObjectInitializer)
 {
@@ -48,4 +52,62 @@ void UNiagaraEmitterEditorData::SetPlaybackRange(TRange<float> InPlaybackRange)
 void UNiagaraEmitterEditorData::StackEditorDataChanged()
 {
 	OnPersistentDataChanged().Broadcast();
+}
+
+
+
+const TMap<FFunctionInputSummaryViewKey, FFunctionInputSummaryViewMetadata>& UNiagaraEmitterEditorData::GetSummaryViewMetaDataMap() const
+{
+	return SummaryViewFunctionInputMetadata;
+}
+
+TOptional<FFunctionInputSummaryViewMetadata> UNiagaraEmitterEditorData::GetSummaryViewMetaData(const FFunctionInputSummaryViewKey& Key) const
+{
+	return SummaryViewFunctionInputMetadata.Contains(Key)? SummaryViewFunctionInputMetadata[Key] : TOptional<FFunctionInputSummaryViewMetadata>();
+}
+
+void UNiagaraEmitterEditorData::SetSummaryViewMetaData(const FFunctionInputSummaryViewKey& Key, TOptional<FFunctionInputSummaryViewMetadata> NewMetadata)
+{	
+	if (NewMetadata.IsSet() == false)
+	{
+		SummaryViewFunctionInputMetadata.Remove(Key);
+	}
+	else
+	{
+		SummaryViewFunctionInputMetadata.FindOrAdd(Key) = NewMetadata.GetValue();
+	}
+	
+	OnPersistentDataChanged().Broadcast();
+	OnSummaryViewStateChangedDelegate.Broadcast();
+}
+
+void UNiagaraEmitterEditorData::SetShowSummaryView(bool bInShouldShowSummaryView)
+{
+	bShowSummaryView = bInShouldShowSummaryView;
+	
+	OnPersistentDataChanged().Broadcast();
+	OnSummaryViewStateChangedDelegate.Broadcast();
+}
+
+void UNiagaraEmitterEditorData::ToggleShowSummaryView()
+{
+	FScopedTransaction ScopedTransaction(NSLOCTEXT("NiagaraEmitter", "EmitterModuleShowSummaryChanged", "Emitter summary view enabled/disabled."));
+	Modify();
+
+	SetShowSummaryView(!bShowSummaryView);
+}
+
+FSimpleMulticastDelegate& UNiagaraEmitterEditorData::OnSummaryViewStateChanged()
+{
+	return OnSummaryViewStateChangedDelegate;
+}
+
+const TArray<FNiagaraStackSection>& UNiagaraEmitterEditorData::GetSummarySections() const
+{
+	return SummarySections;
+}
+
+void UNiagaraEmitterEditorData::SetSummarySections(const TArray<FNiagaraStackSection>& InSummarySections)
+{
+	SummarySections = InSummarySections;
 }

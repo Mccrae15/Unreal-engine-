@@ -41,7 +41,7 @@
 #include "StaticMeshOperations.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
-#include "ImathMatrixAlgo.h"
+#include "Imath/ImathMatrixAlgo.h"
 
 DECLARE_CYCLE_STAT(TEXT("C4DImporter - Load File"), STAT_C4DImporter_LoadFile, STATGROUP_C4DImporter);
 
@@ -331,7 +331,7 @@ FTransform CalculateCraneCameraTransform(const FCraneCameraAttributes& Params)
 	// More specifically, convert them so that that ConvertDirectionLeftHandedYup and
 	// the conversion for Ocamera rotations gets them back into UE4's coordinate system
 	// Note: Remember that FRotator's constructor is Pitch, Yaw and Roll (i.e. Y, Z, X)
-	return FTransform(FRotator(EulerUE4.Y, EulerUE4.X, -EulerUE4.Z - 90),
+	return FTransform(FRotator((float)EulerUE4.Y, (float)EulerUE4.X, (float)(-EulerUE4.Z - 90)),
 		FVector(TranslationUE4.X, TranslationUE4.Z, -TranslationUE4.Y));
 }
 
@@ -1010,7 +1010,7 @@ TSharedPtr<IDatasmithLightActorElement> FDatasmithC4DDynamicImporter::ImportLigh
 	}
 
 	// Color
-	FLinearColor Color = MelangeGetColor(InC4DLightPtr, LIGHT_COLOR);
+	FLinearColor Color = FLinearColor(MelangeGetColor(InC4DLightPtr, LIGHT_COLOR));
 
 	// Temperature
 	bool bUseTemperature = MelangeGetBool(InC4DLightPtr, LIGHT_TEMPERATURE);
@@ -1634,7 +1634,7 @@ TSharedPtr<IDatasmithMasterMaterialElement> FDatasmithC4DDynamicImporter::Import
 	AddBoolToMaterial(MaterialPtr, TEXT("Use_Color"), bUseColor);
 	if (bUseColor)
 	{
-		FVector Color = MelangeGetLayerColor(InC4DMaterialPtr, MATERIAL_COLOR_COLOR, MATERIAL_COLOR_BRIGHTNESS);
+		FLinearColor Color = FLinearColor(MelangeGetLayerColor(InC4DMaterialPtr, MATERIAL_COLOR_COLOR, MATERIAL_COLOR_BRIGHTNESS));
 		AddColorToMaterial(MaterialPtr, TEXT("Color"), Color);
 
 		cineware::BaseList2D* MaterialShader = MelangeGetLink(InC4DMaterialPtr, MATERIAL_COLOR_SHADER);
@@ -1649,7 +1649,7 @@ TSharedPtr<IDatasmithMasterMaterialElement> FDatasmithC4DDynamicImporter::Import
 		float EmissiveGlowStrength = MelangeGetFloat(InC4DMaterialPtr, MATERIAL_LUMINANCE_BRIGHTNESS);
 		AddFloatToMaterial(MaterialPtr, TEXT("Emissive_Glow_Strength"), EmissiveGlowStrength);
 
-		FLinearColor EmissiveColor = MelangeGetColor(InC4DMaterialPtr, MATERIAL_LUMINANCE_COLOR);
+		FLinearColor EmissiveColor = FLinearColor(MelangeGetColor(InC4DMaterialPtr, MATERIAL_LUMINANCE_COLOR));
 		AddColorToMaterial(MaterialPtr, TEXT("Emissive_Color"), EmissiveColor);
 
 		cineware::BaseList2D* LuminanceShader = MelangeGetLink(InC4DMaterialPtr, MATERIAL_LUMINANCE_SHADER);
@@ -1691,7 +1691,7 @@ TSharedPtr<IDatasmithMasterMaterialElement> FDatasmithC4DDynamicImporter::Import
 			FVector TransparencyColor = MelangeGetVector(InC4DMaterialPtr, MATERIAL_TRANSPARENCY_COLOR);
 
 			// In Cinema4D Transparency Color seems to be used just as another multiplier for the opacity, not as an actual color
-			AddFloatToMaterial(MaterialPtr, TEXT("Transparency_Amount"), BrightnessValue * TransparencyColor.X * TransparencyColor.Y * TransparencyColor.Z);
+			AddFloatToMaterial(MaterialPtr, TEXT("Transparency_Amount"), BrightnessValue * (float)TransparencyColor.X * (float)TransparencyColor.Y * (float)TransparencyColor.Z);
 		}
 
 		float TransparencyRefraction = MelangeGetFloat(InC4DMaterialPtr, MATERIAL_TRANSPARENCY_REFRACTION);
@@ -1786,7 +1786,7 @@ TSharedPtr<IDatasmithMasterMaterialElement> FDatasmithC4DDynamicImporter::Import
 				// temp solution until we get proper material graphs
 				float ReflectionChannelColorWeight = (GlobalReflection * 0.75f + GlobalSpecular * 0.25f);
 				AddFloatToMaterial(MaterialPtr, TEXT("ReflectionColor_Strength"), ReflectionChannelColorWeight);
-				AddColorToMaterial(MaterialPtr, TEXT("ReflectionColor"), ReflectionColor);
+				AddColorToMaterial(MaterialPtr, TEXT("ReflectionColor"), FLinearColor(ReflectionColor));
 			}
 
 			// Only set those one for the last Layer of reflection
@@ -1944,7 +1944,7 @@ TSharedPtr<IDatasmithMasterMaterialElement> FDatasmithC4DDynamicImporter::Import
 	Material->SetMaterialType(EDatasmithMasterMaterialType::Opaque);
 
 	// Color
-	AddColorToMaterial(Material, TEXT("Color"), DisplayColor);
+	AddColorToMaterial(Material, TEXT("Color"), FLinearColor(DisplayColor));
 	AddBoolToMaterial(Material, TEXT("Use_Color"), true);
 	AddBoolToMaterial(Material, TEXT("Use_ColorMap"), false);
 
@@ -2225,7 +2225,7 @@ namespace
 				}
 				else
 				{
-					Value /= InitialSize[TransformVectorIndex];
+					Value /= (float)InitialSize[TransformVectorIndex];
 				}
 			}
 		}
@@ -2792,9 +2792,9 @@ void FDatasmithC4DDynamicImporter::ImportAnimations(TSharedPtr<IDatasmithActorEl
 
 				// TransformValue represents, in radians, the rotations around the C4D axes
 				// XRot, YRot, ZRot are rotations around UE4 axes, in the UE4 CS, with the sign given by Quaternion rotations (NOT Rotators)
-				FQuat XRot = FQuat(FVector(1, 0, 0), -TransformValueCopy.X);
-				FQuat YRot = FQuat(FVector(0, 1, 0), TransformValueCopy.Z);
-				FQuat ZRot = FQuat(FVector(0, 0, 1), -TransformValueCopy.Y);
+				FQuat XRot = FQuat(FVector(1, 0, 0), (float)(-TransformValueCopy.X));
+				FQuat YRot = FQuat(FVector(0, 1, 0), (float)(TransformValueCopy.Z));
+				FQuat ZRot = FQuat(FVector(0, 0, 1), (float)(-TransformValueCopy.Y));
 
 				// Swap YRot and ZRot in the composition order, as an XYZ order in the C4D CS really means a XZY order in the UE4 CS
 				// This effectively converts the rotation order from the C4D CS to the UE4 CS, the sign of the rotations being handled when
@@ -3055,9 +3055,9 @@ void FDatasmithC4DDynamicImporter::ImportDrivenAnimations(TSharedPtr<IDatasmithA
 
 				// TransformValue represents, in radians, the rotations around the C4D axes
 				// XRot, YRot, ZRot are rotations around UE4 axes, in the UE4 CS, with the sign given by Quaternion rotations (NOT Rotators)
-				FQuat XRot = FQuat(FVector(1, 0, 0), -TransformValueCopy.X);
-				FQuat YRot = FQuat(FVector(0, 1, 0), TransformValueCopy.Z);
-				FQuat ZRot = FQuat(FVector(0, 0, 1), -TransformValueCopy.Y);
+				FQuat XRot = FQuat(FVector(1, 0, 0), (float)(-TransformValueCopy.X));
+				FQuat YRot = FQuat(FVector(0, 1, 0), (float)(TransformValueCopy.Z));
+				FQuat ZRot = FQuat(FVector(0, 0, 1), (float)(-TransformValueCopy.Y));
 
 				// Swap YRot and ZRot in the composition order, as an XYZ order in the C4D CS really means a XZY order in the UE4 CS
 				// This effectively converts the rotation order from the C4D CS to the UE4 CS, the sign of the rotations being handled when
@@ -3654,9 +3654,9 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DDynamicImporter::ImportMesh(cinew
 	MeshDescription.Empty();
 
 	FStaticMeshAttributes StaticMeshAttributes(MeshDescription);
-	TVertexAttributesRef<FVector> VertexPositions = StaticMeshAttributes.GetVertexPositions();
-	TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = StaticMeshAttributes.GetVertexInstanceNormals();
-	TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
+	TVertexAttributesRef<FVector3f> VertexPositions = StaticMeshAttributes.GetVertexPositions();
+	TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = StaticMeshAttributes.GetVertexInstanceNormals();
+	TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
 	TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
 
 	// Reserve space for attributes. These might not be enough as some of these polygons might be quads or n-gons, but its better than nothing
@@ -3668,7 +3668,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DDynamicImporter::ImportMesh(cinew
 
 	// At least one UV set must exist.
 	int32 UVChannelCount = UVWTagsData.Num();
-	VertexInstanceUVs.SetNumIndices(FMath::Max(1, UVChannelCount));
+	VertexInstanceUVs.SetNumChannels(FMath::Max(1, UVChannelCount));
 
 	// Vertices
 	for (int32 PointIndex = 0; PointIndex < PointCount; ++PointIndex)
@@ -3677,7 +3677,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DDynamicImporter::ImportMesh(cinew
 		// We count on this check when creating polygons
 		check(NewVertexID.GetValue() == PointIndex);
 
-		VertexPositions[NewVertexID] = ConvertMelangePosition(Points[PointIndex]);
+		VertexPositions[NewVertexID] = FVector3f(ConvertMelangePosition(Points[PointIndex]));
 	}
 
 	// Create one material slot per polygon selection tag (including the "unselected" group)
@@ -3737,7 +3737,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DDynamicImporter::ImportMesh(cinew
 				FVertexID VertID = VerticesForPolygon[TriangleIndex * 3 + VertexIndex];
 
 				TriangleVertices[VertexIndex] = VertID;
-				TriangleVertexPositions[VertexIndex] = VertexPositions[VertID];
+				TriangleVertexPositions[VertexIndex] = FVector(VertexPositions[VertID]);
 			}
 
 			// Check if those vertices lead to degenerate triangles first, to prevent us from ever adding unused data to the MeshDescription
@@ -3767,7 +3767,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DDynamicImporter::ImportMesh(cinew
 				FVertexInstanceID& VertInstanceID = VertexInstances[VertexCount];
 				int32 VertexIDInQuad = (*IndexOffsets)[VertexCount];
 
-				VertexInstanceNormals.Set(VertInstanceID, QuadNormals[VertexIDInQuad]);
+				VertexInstanceNormals.Set(VertInstanceID, FVector3f(QuadNormals[VertexIDInQuad]));
 			}
 		}
 
@@ -3807,7 +3807,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DDynamicImporter::ImportMesh(cinew
 				FVertexInstanceID& VertInstanceID = VertexInstances[VertexCount];
 				int32 VertexIDInQuad = (*IndexOffsets)[VertexCount];
 
-				VertexInstanceUVs.Set(VertInstanceID, ChannelIndex, QuadUVs[VertexIDInQuad]);
+				VertexInstanceUVs.Set(VertInstanceID, ChannelIndex, FVector2f(QuadUVs[VertexIDInQuad]));
 			}
 		}
 

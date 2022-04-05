@@ -25,6 +25,9 @@
 #include <unordered_set>
 #include <vector>
 
+// We need to keep & fix these warnings to integrate smoothly with HLK
+#pragma warning(error: 4100 4146 4242 4244 4267 4701 4389)
+
 ///////////////////////////////////////////////////////////////////////////////
 // Forward declarations.
 namespace dxc {
@@ -167,6 +170,13 @@ public:
   UINT    Index;      // Explicit index in root table.
 };
 
+// Use this class to represent a render target and its viewport.
+class ShaderOpRenderTarget {
+public:
+  LPCSTR             Name;        // Render target name
+  D3D12_VIEWPORT     Viewport;    // Viewport to use; if Width == 0 use the full render target
+};
+
 // Use this class to hold all information needed for a Draw/Dispatch call.
 class ShaderOp {
 public:
@@ -176,13 +186,14 @@ public:
   std::vector<ShaderOpDescriptorHeap> DescriptorHeaps;
   std::vector<ShaderOpShader> Shaders;
   std::vector<ShaderOpRootValue> RootValues;
-  std::vector<LPCSTR> RenderTargets;
+  std::vector<ShaderOpRenderTarget> RenderTargets;
   LPCSTR Name = nullptr;
   LPCSTR RootSignature = nullptr;
   bool UseWarpDevice = true;
   LPCWSTR AdapterName = nullptr;
   LPCSTR CS = nullptr, VS = nullptr, PS = nullptr;
   LPCSTR GS = nullptr, DS = nullptr, HS = nullptr;
+  LPCSTR AS = nullptr, MS = nullptr;
   UINT DispatchX = 1, DispatchY = 1, DispatchZ = 1;
   D3D12_PRIMITIVE_TOPOLOGY_TYPE PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 

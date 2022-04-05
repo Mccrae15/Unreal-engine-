@@ -117,26 +117,18 @@ namespace Gauntlet
 			// These platforms can be built as either game, server or client
 			if (IsDesktop)
 			{
-				Platform = (TargetPlatform == UnrealTargetPlatform.Win32 || TargetPlatform == UnrealTargetPlatform.Win64) ? "Windows" : TargetPlatform.ToString();
+				Platform = (TargetPlatform == UnrealTargetPlatform.Win64) ? "Windows" : TargetPlatform.ToString();
 
 				if (ProcessType == UnrealTargetRole.Client)
 				{
-					if (UsesSharedBuildType)
-					{
-						Platform += "NoEditor";
-					}
-					else
+					if (!UsesSharedBuildType)
 					{
 						Platform += "Client";
 					}
 				}
 				else if (ProcessType == UnrealTargetRole.Server)
 				{
-					if (UsesSharedBuildType)
-					{
-						Platform += "NoEditor";
-					}
-					else
+					if (!UsesSharedBuildType)
 					{
 						Platform += "Server";
 					}
@@ -164,6 +156,33 @@ namespace Gauntlet
 		}
 
 		/// <summary>
+		/// Fallback to use when GetHostEntry throws an exception.
+		/// </summary>
+		/// <returns>
+		/// An array of IP addresses associated with the network interface Type.
+		/// </returns>
+		public static System.Net.IPAddress[] GetAllLocalIPv4(NetworkInterfaceType Type)
+		{
+			List<System.Net.IPAddress> IpAddrList = new List<System.Net.IPAddress>();
+
+			foreach (NetworkInterface Item in NetworkInterface.GetAllNetworkInterfaces())
+			{
+				if (Item.NetworkInterfaceType == Type && Item.OperationalStatus == OperationalStatus.Up)
+				{
+					foreach (UnicastIPAddressInformation IpAddr in Item.GetIPProperties().UnicastAddresses)
+					{
+						if (IpAddr.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+						{
+							IpAddrList.Add(IpAddr.Address);
+						}
+					}
+				}
+			}
+
+			return IpAddrList.ToArray();
+		}
+
+		/// <summary>
 		/// Gets the filehost IP to provide to devkits by examining our local adapters and
 		/// returning the one that's active and on the local LAN (based on DNS assignment)
 		/// AG-TODO: PreferredDomain should be in the master config
@@ -171,11 +190,29 @@ namespace Gauntlet
 		/// <returns></returns>
 		public static string GetHostIpAddress(string PreferredDomain="epicgames.net")
 		{
-			// Default to the first address with a valid prefix
-			var LocalAddress = Dns.GetHostEntry(Dns.GetHostName()).AddressList
-				.Where(o => o.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
-					&& o.GetAddressBytes()[0] != 169)
-				.FirstOrDefault();
+			System.Net.IPAddress LocalAddress;
+
+			try
+			{
+				// Default to the first address with a valid prefix
+				LocalAddress = Dns.GetHostEntry(Dns.GetHostName()).AddressList
+					.Where(o => o.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+						&& o.GetAddressBytes()[0] != 169)
+					.FirstOrDefault();
+			}
+			catch
+			{
+				//
+				// When the above fails, attempt to extract the eth IP manually.
+				//
+				// TODO: Fallback to the wireless adapter if/when no eth device is
+				//       available/active.
+				//
+				LocalAddress = GetAllLocalIPv4(NetworkInterfaceType.Ethernet)
+					.Where(o => o.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+						&& o.GetAddressBytes()[0] != 169)
+					.FirstOrDefault();
+			}
 
 			var ActiveInterfaces = NetworkInterface.GetAllNetworkInterfaces()
 				.Where(I => I.OperationalStatus == OperationalStatus.Up);
@@ -260,9 +297,9 @@ namespace Gauntlet
 
 			string ShortName = Regex.Replace(InProjectName, "Game", "", RegexOptions.IgnoreCase);
 
-			if (InName.StartsWith("UE4Game", StringComparison.OrdinalIgnoreCase))
+			if (InName.StartsWith("UnrealGame", StringComparison.OrdinalIgnoreCase))
 			{
-				ShortName = "UE4";
+				ShortName = "Unreal";
 			}
 
 			string AppName = Path.GetFileNameWithoutExtension(InName);
@@ -273,7 +310,9 @@ namespace Gauntlet
 			// FortniteGame, FortniteClient, FortniteServer
 			// Or EngineTest-WIn64-Shipping, FortniteClient-Win64-Shipping etc
 			// So we need to search for the project name minus 'Game', with the form, build-type, and platform all optional :(
-			string RegExMatch = string.Format(@"{0}(Game|Client|Server|)(?:-(.+?)-(Debug|Test|Shipping))?", ShortName);
+			// FortniteClient and EngineTest should match
+			// FortniteCustomName should not match.
+			string RegExMatch = string.Format(@"(({0}(Game|Client|Server))|{1})(?:-(.+?)-(Debug|Test|Shipping))?", ShortName, InProjectName);
 
 			// Format should be something like
 			// FortniteClient
@@ -283,9 +322,9 @@ namespace Gauntlet
 
 			if (NameMatch.Success)
 			{
-				string ModuleType = NameMatch.Groups[1].ToString().ToLower();
-				string PlatformName = NameMatch.Groups[2].ToString();
-				string ConfigType = NameMatch.Groups[3].ToString();
+				string ModuleType = NameMatch.Groups[3].ToString().ToLower();
+				string PlatformName = NameMatch.Groups[4].ToString();
+				string ConfigType = NameMatch.Groups[5].ToString();
 
 				if (ModuleType.Length == 0 || ModuleType == "game")
 				{

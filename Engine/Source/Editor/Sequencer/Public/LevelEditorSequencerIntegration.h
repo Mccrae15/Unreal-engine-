@@ -14,6 +14,8 @@ class AActor;
 class FExtender;
 class FMenuBuilder;
 class FSequencer;
+class FObjectPostSaveContext;
+class FObjectPreSaveContext;
 class FUICommandList;
 class IAssetViewport;
 class ISequencer;
@@ -88,10 +90,16 @@ public:
 private:
 
 	/** Called before the world is going to be saved. The sequencer puts everything back to its initial state. */
-	void OnPreSaveWorld(uint32 SaveFlags, UWorld* World);
+	void OnPreSaveWorld(UWorld* World, FObjectPreSaveContext ObjectSaveContext);
 
 	/** Called after the world has been saved. The sequencer updates to the animated state. */
-	void OnPostSaveWorld(uint32 SaveFlags, UWorld* World, bool bSuccess);
+	void OnPostSaveWorld(UWorld* World, FObjectPostSaveContext ObjectSaveContext);
+
+	/** Called before any number of external actors are going to be saved. The sequencer puts everything back to its initial state. */
+	void OnPreSaveExternalActors(UWorld* World);
+
+	/** Called after any number of external actors has been saved. The sequencer puts everything back to its initial state. */
+	void OnPostSaveExternalActors(UWorld* World);
 
 	/** Called after a level has been added */
 	void OnLevelAdded(ULevel* InLevel, UWorld* InWorld);
@@ -170,6 +178,8 @@ private:
 	void DetachOutlinerColumn();
 	void ActivateRealtimeViewports();
 	void RestoreRealtimeViewports();
+	void RestoreToSavedState(UWorld* World);
+	void ResetToAnimatedState(UWorld* World);
 
 	struct FSequencerAndOptions
 	{
@@ -181,6 +191,7 @@ private:
 	TArray<FSequencerAndOptions> BoundSequencers;
 
 	TSharedRef< ISceneOutlinerColumn > CreateSequencerInfoColumn( ISceneOutliner& SceneOutliner ) const;
+	TSharedRef< ISceneOutlinerColumn > CreateSequencerSpawnableColumn( ISceneOutliner& SceneOutliner ) const;
 
 private:
 

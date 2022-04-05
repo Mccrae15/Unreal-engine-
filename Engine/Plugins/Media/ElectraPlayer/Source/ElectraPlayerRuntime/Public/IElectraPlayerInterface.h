@@ -14,6 +14,8 @@ class IAudioDecoderOutput;
 using IAudioDecoderOutputPtr = TSharedPtr<IAudioDecoderOutput, ESPMode::ThreadSafe>;
 class IMetaDataDecoderOutput;
 using IMetaDataDecoderOutputPtr = TSharedPtr<IMetaDataDecoderOutput, ESPMode::ThreadSafe>;
+class ISubtitleDecoderOutput;
+using ISubtitleDecoderOutputPtr = TSharedPtr<ISubtitleDecoderOutput, ESPMode::ThreadSafe>;
 
 // ---------------------------------------------------------------------------------------------
 
@@ -66,8 +68,10 @@ public:
 	virtual void SendMediaEvent(EPlayerEvent Event) = 0;
 	virtual void OnVideoFlush() = 0;
 	virtual void OnAudioFlush() = 0;
+	virtual void OnSubtitleFlush() = 0;
 	virtual void PresentVideoFrame(const FVideoDecoderOutputPtr& InVideoFrame) = 0;
 	virtual void PresentAudioFrame(const IAudioDecoderOutputPtr& InAudioFrame) = 0;
+	virtual void PresentSubtitleSample(const ISubtitleDecoderOutputPtr& InSubtitleSample) = 0;
 	virtual void PresentMetadataSample(const IMetaDataDecoderOutputPtr& InMetadataSample) = 0;
 	virtual bool CanReceiveVideoSamples(int32 NumFrames) = 0;
 	virtual bool CanReceiveAudioSamples(int32 NumFrames) = 0;
@@ -101,6 +105,7 @@ public:
 	{
 		TOptional<FString> Kind;
 		TOptional<FString> Language_ISO639;
+		TOptional<FString> Codec;
 		TOptional<int32> TrackIndexOverride;
 		void Reset()
 		{
@@ -114,6 +119,7 @@ public:
 	{
 		TOptional<FTimespan>		TimeOffset;
 		FStreamSelectionAttributes	InitialAudioTrackAttributes;
+		FStreamSelectionAttributes	InitialSubtitleTrackAttributes;
 		TOptional<int32>			MaxVerticalStreamResolution;
 		TOptional<int32>			MaxBandwidthForStreaming;
 		bool						bDoNotPreload = false;
@@ -148,6 +154,7 @@ public:
 
 	virtual bool IsLooping() const = 0;
 	virtual bool SetLooping(bool bLooping) = 0;
+	virtual int32 GetLoopCount() const = 0;
 
 	virtual FTimespan GetTime() const = 0;
 	virtual FTimespan GetDuration() const = 0;
@@ -155,10 +162,19 @@ public:
 	virtual bool IsLive() const = 0;
 	virtual FTimespan GetSeekableDuration() const = 0;
 
+	struct FPlaybackRange
+	{
+		TOptional<FTimespan> Start;
+		TOptional<FTimespan> End;
+	};
+	virtual void SetPlaybackRange(const FPlaybackRange& InPlaybackRange) = 0;
+	virtual void GetPlaybackRange(FPlaybackRange& OutPlaybackRange) const = 0;
+
 	virtual float GetRate() const = 0;
 	virtual bool SetRate(float Rate) = 0;
 
 	virtual bool Seek(const FTimespan& Time) = 0;
+	virtual void SetFrameAccurateSeekMode(bool bEnableFrameAccuracy) = 0;
 
 	struct FAudioTrackFormat
 	{
@@ -196,9 +212,23 @@ public:
 	virtual FString GetTrackName(EPlayerTrackType TrackType, int32 TrackIndex) const = 0;
 	virtual bool SelectTrack(EPlayerTrackType TrackType, int32 TrackIndex) = 0;
 
+	struct FVideoStreamFormat
+	{
+		FIntPoint Resolution;
+		double FrameRate;
+		int32 Bitrate;
+	};
+	virtual int32 GetNumVideoStreams(int32 TrackIndex) const = 0;
+	virtual bool GetVideoStreamFormat(FVideoStreamFormat& OutFormat, int32 InTrackIndex, int32 InStreamIndex) const = 0;
+	virtual bool GetActiveVideoStreamFormat(FVideoStreamFormat& OutFormat) const = 0;
+
 	virtual void NotifyOfOptionChange() = 0;
 
-	enum {
+	// Suspends or resumes decoder instances. Not supported on all platforms.
+	virtual void SuspendOrResumeDecoders(bool bSuspend) = 0;
+
+	enum
+	{
 		ResourceFlags_Decoder = 1 << 0,
 		ResourceFlags_OutputBuffers = 1 << 1,
 

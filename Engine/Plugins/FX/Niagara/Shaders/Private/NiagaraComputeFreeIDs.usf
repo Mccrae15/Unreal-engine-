@@ -2,9 +2,6 @@
 
 #include "/Engine/Private/Common.ush"
 
-//-TODO: This should come from shader platform info
-#define USE_WAVE_INTRISICS (PS4_PROFILE || XBOXONE_PROFILE)
-
 // ID mapping table produced by the simulate step.
 Buffer<int> IDToIndexTable;
 
@@ -18,14 +15,13 @@ RWBuffer<int> RWFreeIDListSizes;
 // list is at RWFreeIDListSizes[FreeIDListIndex].
 uint FreeIDListIndex;
 
-#if USE_WAVE_INTRISICS
+#if USE_WAVE_INTRINSICS
 
-// Note: The C++ is responsible for ensuring THREAD_COUNT is the size of a wave
-
+// This happens to be fixed on PS4 and XB1, but we'll need to configure it externally
 [numthreads(THREAD_COUNT, 1, 1)]
 void ComputeFreeIDs(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadID, uint3 DispatchThreadId : SV_DispatchThreadID)
 {
-	uint InputStart = GroupId.x * THREAD_COUNT;
+	uint InputStart = GroupId.x * WaveGetLaneCount();
 	uint Thread = GroupThreadId.x;
 
 	uint ParticleID = InputStart + Thread;
@@ -42,7 +38,7 @@ void ComputeFreeIDs(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupTh
 	if(NumGroupFreeIDs > 0)
 	{
 		uint GroupWriteStart;
-		if(WaveIsFirstLane())
+		if (WaveIsFirstLane())
 		{
 			// Add to the global write offset. The previous offset is where we start writing in the output buffer.
 			// We can reduce the number of atomic adds by processing multiple sub-groups in the shader, such that each lane
@@ -52,9 +48,7 @@ void ComputeFreeIDs(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupTh
 		}
 
 		// Broadcast the global write offset to all lanes.
-		// TODO: WaveReadFirstLane is actually called WaveReadLaneFirst in HLSL, despite what the docs say, so we need to change our defines for
-		// other platforms to use the HLSL name or we'll run into trouble when we'll compile for SM6.
-		GroupWriteStart = WaveReadFirstLane(GroupWriteStart);
+		GroupWriteStart = WaveReadLaneFirst(GroupWriteStart);
 
 		if(IsFree)
 		{

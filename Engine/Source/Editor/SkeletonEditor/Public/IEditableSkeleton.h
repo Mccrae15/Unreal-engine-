@@ -6,6 +6,7 @@
 #include "BoneContainer.h"
 #include "Animation/Skeleton.h"
 
+enum class EBlendProfileMode : uint8;
 class UBlendProfile;
 class USkeletalMesh;
 
@@ -26,6 +27,9 @@ public:
 	/** Get the skeleton. Const - to modify the skeleton you should use the wrapper methods below */
 	virtual const class USkeleton& GetSkeleton() const = 0;
 
+	/** Checks to see if the editable skeleton is valid. It is possible to force-delete the USkeleton. */
+	virtual bool IsSkeletonValid() const = 0;
+	
 	/** Get the blend profiles that this skeleton currently contains */
 	virtual const TArray<class UBlendProfile*>& GetBlendProfiles() const  = 0;
 
@@ -40,6 +44,9 @@ public:
 
 	/** Set the blend profile scale for the specified bone */
 	virtual void SetBlendProfileScale(const FName& InBlendProfileName, const FName& InBoneName, float InNewScale, bool bInRecurse) = 0;
+
+	/** Change an existing blend profile's mode (See EBlendProfileMode for details) */
+	virtual void SetBlendProfileMode(FName InBlendProfileName, EBlendProfileMode ProfileMode) = 0;
 
 	/** Creates a new socket on the skeleton */
 	virtual USkeletalMeshSocket* AddSocket(const FName& InBoneName) = 0;

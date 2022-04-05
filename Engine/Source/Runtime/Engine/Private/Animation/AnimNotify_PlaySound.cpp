@@ -4,6 +4,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundBase.h"
+#include "Sound/SoundWaveProcedural.h"
 #include "Animation/AnimSequenceBase.h"
 
 #if WITH_EDITOR
@@ -26,14 +27,21 @@ UAnimNotify_PlaySound::UAnimNotify_PlaySound()
 #endif // WITH_EDITORONLY_DATA
 }
 
-void UAnimNotify_PlaySound::Notify(class USkeletalMeshComponent* MeshComp, class UAnimSequenceBase* Animation)
+void UAnimNotify_PlaySound::Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation)
 {
+}
+
+void UAnimNotify_PlaySound::Notify(class USkeletalMeshComponent* MeshComp, class UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+    Notify(MeshComp, Animation);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	// Don't call super to avoid call back in to blueprints
 	if (Sound && MeshComp)
 	{
-		if (Sound->IsLooping())
+		if (!Sound->IsOneShot())
 		{
-			UE_LOG(LogAudio, Warning, TEXT("PlaySound notify: Anim %s tried to spawn infinitely looping sound asset %s. Spawning suppressed."), *GetNameSafe(Animation), *GetNameSafe(Sound));
+			UE_LOG(LogAudio, Warning, TEXT("PlaySound notify: Anim %s tried to play a sound asset which is not a one-shot: '%s'. Spawning suppressed."), *GetNameSafe(Animation), *GetNameSafe(Sound));
 			return;
 		}
 
@@ -75,7 +83,7 @@ void UAnimNotify_PlaySound::ValidateAssociatedAssets()
 {
 	static const FName NAME_AssetCheck("AssetCheck");
 
-	if ((Sound != nullptr) && (Sound->IsLooping()))
+	if (Sound != nullptr && !Sound->IsOneShot())
 	{
 		UObject* ContainingAsset = GetContainingAsset();
 

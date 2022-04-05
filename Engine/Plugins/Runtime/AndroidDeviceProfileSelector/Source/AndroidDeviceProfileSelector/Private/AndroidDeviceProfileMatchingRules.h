@@ -23,6 +23,7 @@ enum ESourceType
 	SRC_Hardware,
 	SRC_Chipset,
 	SRC_ConfigRuleVar,
+	SRC_HMDSystemName,
 	SRC_MAX,
 };
 
@@ -52,10 +53,10 @@ struct FProfileMatchItem
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	TEnumAsByte<ESourceType> SourceType;
+	TEnumAsByte<ESourceType> SourceType=ESourceType::SRC_MAX;
 
 	UPROPERTY()
-	TEnumAsByte<ECompareType> CompareType;
+	TEnumAsByte<ECompareType> CompareType=ECompareType::CMP_MAX;
 
 	UPROPERTY()
 	FString MatchString;

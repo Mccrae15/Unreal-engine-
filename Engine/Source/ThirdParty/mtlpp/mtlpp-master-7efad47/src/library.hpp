@@ -14,7 +14,7 @@
 
 MTLPP_BEGIN
 
-namespace ue4
+namespace UE
 {
 	template<>
 	struct MTLPP_EXPORT ITable<id<MTLLibrary>, void> : public IMPTable<id<MTLLibrary>, void>, public ITableCacheRef
@@ -143,7 +143,7 @@ namespace mtlpp
     {
     public:
 		Function(ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<ns::Protocol<id<MTLFunction>>::type>(retain) { }
-		Function(ns::Protocol<id<MTLFunction>>::type handle, ue4::ITableCache* cache = nullptr, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<ns::Protocol<id<MTLFunction>>::type>(handle, retain, ue4::ITableCacheRef(cache).GetFunction(handle)) { }
+		Function(ns::Protocol<id<MTLFunction>>::type handle, UE::ITableCache* cache = nullptr, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<ns::Protocol<id<MTLFunction>>::type>(handle, retain, UE::ITableCacheRef(cache).GetFunction(handle)) { }
 
         ns::AutoReleased<ns::String>                                   GetLabel() const MTLPP_AVAILABLE(10_12, 10_0);
         ns::AutoReleased<Device>                                       GetDevice() const;
@@ -167,8 +167,12 @@ namespace mtlpp
         Version1_0 MTLPP_AVAILABLE(NA, 9_0)     = (1 << 16),
         Version1_1 MTLPP_AVAILABLE(10_11, 9_0)  = (1 << 16) + 1,
         Version1_2 MTLPP_AVAILABLE(10_12, 10_0) = (1 << 16) + 2,
-		Version2_0 MTLPP_AVAILABLE(10_13, 11_0) = (2 << 16),
-		Version2_1 MTLPP_AVAILABLE(10_14, 12_0) = (2 << 16) + 1,
+        Version2_0 MTLPP_AVAILABLE(10_13, 11_0) = (2 << 16),
+        Version2_1 MTLPP_AVAILABLE(10_14, 12_0) = (2 << 16) + 1,
+        Version2_2 MTLPP_AVAILABLE(10_15, 13_0) = (2 << 16) + 2,
+		Version2_3 MTLPP_AVAILABLE(11_0, 14_0) = (2 << 16) + 3,
+     	Version2_4 MTLPP_AVAILABLE(12_0, 15_0) = (2 << 16) + 4
+
     }
     MTLPP_AVAILABLE(10_11, 9_0);
 
@@ -213,7 +217,7 @@ namespace mtlpp
     {
     public:
         Library() { }
-		Library(ns::Protocol<id<MTLLibrary>>::type handle, ue4::ITableCache* cache = nullptr, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<ns::Protocol<id<MTLLibrary>>::type>(handle, retain, ue4::ITableCacheRef(cache).GetLibrary(handle)) { }
+		Library(ns::Protocol<id<MTLLibrary>>::type handle, UE::ITableCache* cache = nullptr, ns::Ownership const retain = ns::Ownership::Retain) : ns::Object<ns::Protocol<id<MTLLibrary>>::type>(handle, retain, UE::ITableCacheRef(cache).GetLibrary(handle)) { }
 
         ns::AutoReleased<ns::String>            GetLabel() const;
         ns::AutoReleased<Device>                GetDevice() const;

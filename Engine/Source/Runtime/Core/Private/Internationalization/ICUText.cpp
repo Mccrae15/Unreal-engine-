@@ -12,7 +12,6 @@
 
 #if UE_ENABLE_ICU
 #include "Internationalization/TextHistory.h"
-#include "Internationalization/TextData.h"
 
 THIRD_PARTY_INCLUDES_START
 	#include <unicode/utypes.h>
@@ -66,6 +65,19 @@ FString FTextChronoFormatter::AsDateTime(const FDateTime& DateTime, const EDateT
 	return ICUUtilities::ConvertString(FormattedString);
 }
 
+FString FTextChronoFormatter::AsDateTime(const FDateTime& DateTime, const FString& CustomPattern, const FString& TimeZone, const FCulture& TargetCulture)
+{
+	FInternationalization& I18N = FInternationalization::Get();
+	checkf(I18N.IsInitialized() == true, TEXT("FInternationalization is not initialized. An FText formatting method was likely used in static object initialization - this is not supported."));
+	const UDate ICUDate = I18N.Implementation->UEDateTimeToICUDate(DateTime);
+
+	const TSharedRef<const icu::DateFormat, ESPMode::ThreadSafe> ICUDateFormat(TargetCulture.Implementation->GetDateTimeFormatter(CustomPattern, TimeZone));
+	icu::UnicodeString FormattedString;
+	ICUDateFormat->format(ICUDate, FormattedString);
+
+	return ICUUtilities::ConvertString(FormattedString);
+}
+
 FString FTextTransformer::ToLower(const FString& InStr)
 {
 	return ICUUtilities::ConvertString(ICUUtilities::ConvertString(InStr).toLower());
@@ -90,12 +102,12 @@ int32 FText::CompareTo( const FText& Other, const ETextComparisonLevel::Type Com
 
 	// Create an iterator for 'this' so that we can interface with ICU
 	UCharIterator DisplayStringICUIterator;
-	FICUTextCharacterIterator DisplayStringIterator(FStringView(TextData->GetDisplayString()));
+	FICUTextCharacterIterator DisplayStringIterator(FStringView(this->ToString()));
 	uiter_setCharacterIterator(&DisplayStringICUIterator, &DisplayStringIterator);
 
 	// Create an iterator for 'Other' so that we can interface with ICU
 	UCharIterator OtherDisplayStringICUIterator;
-	FICUTextCharacterIterator OtherDisplayStringIterator(FStringView(Other.TextData->GetDisplayString()));
+	FICUTextCharacterIterator OtherDisplayStringIterator(FStringView(Other.ToString()));
 	uiter_setCharacterIterator(&OtherDisplayStringICUIterator, &OtherDisplayStringIterator);
 
 	UErrorCode ICUStatus = U_ZERO_ERROR;
@@ -123,8 +135,7 @@ class FText::FSortPredicate::FSortPredicateImplementation
 {
 public:
 	FSortPredicateImplementation(const ETextComparisonLevel::Type InComparisonLevel)
-		: ComparisonLevel(InComparisonLevel)
-		, ICUCollator(FInternationalization::Get().GetCurrentLanguage()->Implementation->GetCollator(InComparisonLevel))
+		: ICUCollator(FInternationalization::Get().GetCurrentLanguage()->Implementation->GetCollator(InComparisonLevel))
 	{
 	}
 
@@ -132,12 +143,12 @@ public:
 	{
 		// Create an iterator for 'A' so that we can interface with ICU
 		UCharIterator ADisplayStringICUIterator;
-		FICUTextCharacterIterator ADisplayStringIterator(FStringView(A.TextData->GetDisplayString()));
+		FICUTextCharacterIterator ADisplayStringIterator(FStringView(A.ToString()));
 		uiter_setCharacterIterator(&ADisplayStringICUIterator, &ADisplayStringIterator);
 
 		// Create an iterator for 'B' so that we can interface with ICU
 		UCharIterator BDisplayStringICUIterator;
-		FICUTextCharacterIterator BDisplayStringIterator(FStringView(B.TextData->GetDisplayString()));
+		FICUTextCharacterIterator BDisplayStringIterator(FStringView(B.ToString()));
 		uiter_setCharacterIterator(&BDisplayStringICUIterator, &BDisplayStringIterator);
 
 		UErrorCode ICUStatus = U_ZERO_ERROR;
@@ -147,7 +158,6 @@ public:
 	}
 
 private:
-	const ETextComparisonLevel::Type ComparisonLevel;
 	const TSharedRef<const icu::Collator, ESPMode::ThreadSafe> ICUCollator;
 };
 

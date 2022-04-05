@@ -92,10 +92,10 @@ TSharedRef< SWidget > SNiagaraSpreadsheetRow::GenerateWidgetForColumn(const FNam
 
 	if (FieldInfo != nullptr && (UseGlobalOffsets ? ParameterStore != nullptr : DataSet != nullptr) && !EntryWidget.IsValid())
 	{
-		
+
 		if (FieldInfo->bFloat)
 		{
-			
+
 			float Value = 0.0f;
 
 			if (FieldInfo->bHalf)
@@ -132,7 +132,7 @@ TSharedRef< SWidget > SNiagaraSpreadsheetRow::GenerateWidgetForColumn(const FNam
 					uint32 CompBufferOffset = FieldInfo->FloatStartOffset;
 					Src = DataSet->GetCurrentData()->GetInstancePtrFloat(CompBufferOffset, RealRowIdx);
 				}
-	
+
 				if (Src != nullptr)
 				{
 					Value = Src[0];
@@ -246,7 +246,7 @@ void SNiagaraSpreadsheetView::Construct(const FArguments& InArgs, TSharedRef<FNi
 	ScriptEnum = StaticEnum<ENiagaraScriptUsage>();
 	TargetComponent = InSystemViewModel->GetPreviewComponent();
 	ensure(ScriptEnum);
-	
+
 	CaptureData.SetNum(UIMax);
 
 	SystemViewModel = InSystemViewModel;
@@ -683,7 +683,8 @@ TSharedRef<SWidget> SNiagaraSpreadsheetView::OnGetTargetMenuContent() const
 	for (TObjectIterator<UNiagaraComponent> It; It; ++It)
 	{
 		// Ignore dying or CDO versions of data..
-		if (It->IsPendingKillOrUnreachable() || It->HasAnyFlags(EObjectFlags::RF_ClassDefaultObject))
+		// No need to check the unreachable flag here as TObjectIterator already does that
+		if (!IsValidChecked(*It) || It->HasAnyFlags(EObjectFlags::RF_ClassDefaultObject))
 		{
 			continue;
 		}
@@ -700,7 +701,7 @@ TSharedRef<SWidget> SNiagaraSpreadsheetView::OnGetTargetMenuContent() const
 
 		if (World && World->IsPlayInEditor())
 		{
-			if (It->GetForceSolo() == true || (It->GetSystemInstance() && It->GetSystemInstance()->IsSolo()))
+			if (It->GetForceSolo() == true || (It->GetSystemInstanceController().IsValid() && It->GetSystemInstanceController()->IsSolo()))
 			{
 				bAdd = true;
 			}
@@ -934,7 +935,7 @@ void SNiagaraSpreadsheetView::SystemSelectionChanged()
 		CaptureData[i].OutputsListView->RequestTreeRefresh();
 		CaptureData[i].InputsListView->RequestTreeRefresh();
 	}
-	
+
 }
 
 FReply SNiagaraSpreadsheetView::OnCSVOutputPressed()
@@ -984,7 +985,7 @@ FReply SNiagaraSpreadsheetView::OnCSVOutputPressed()
 					CSVOutput += DelimiterString;
 				}
 				const SNiagaraSpreadsheetView::FieldInfo* FieldInfo = FieldInfos[i];
-				
+
 				if (FieldInfo != nullptr && CaptureData[(int32)TabState].DataSet.GetCurrentDataChecked().GetNumInstances() != 0)
 				{
 					if (FieldInfo->bFloat)
@@ -1032,9 +1033,11 @@ void SNiagaraSpreadsheetView::Tick(float DeltaTime)
 
 void SNiagaraSpreadsheetView::HandleTimeChange()
 {
-	if (TargetComponent.IsValid() && TargetRequestId.IsValid() && TargetComponent->GetSystemInstance() != nullptr)
+	FNiagaraSystemInstanceControllerPtr SystemInstanceController = TargetComponent.IsValid() ? TargetComponent->GetSystemInstanceController() : nullptr;
+	FNiagaraSystemInstance* SystemInstance = SystemInstanceController.IsValid() ? SystemInstanceController->GetSoloSystemInstance() : nullptr;
+	if (TargetRequestId.IsValid() && SystemInstance)
 	{
-		if (TargetComponent->GetSystemInstance()->QueryCaptureResults(TargetRequestId, TargetCaptureData))
+		if (SystemInstance->QueryCaptureResults(TargetRequestId, TargetCaptureData))
 		{
 			for (int32 i = 0; i < (int32)UIMax; i++)
 			{
@@ -1045,7 +1048,7 @@ void SNiagaraSpreadsheetView::HandleTimeChange()
 					FName EntryName = NAME_None;
 					if (i != UISystemUpdate)
 					{
-						auto EmitterInstances = TargetComponent->GetSystemInstance()->GetEmitters();
+						auto EmitterInstances = SystemInstance->GetEmitters();
 						for (auto EmitterInstance : EmitterInstances)
 						{
 							if (SelectedEmitterHandle->GetEmitterHandle()->GetInstance() == EmitterInstance->GetCachedEmitter())
@@ -1068,7 +1071,7 @@ void SNiagaraSpreadsheetView::HandleTimeChange()
 					{
 						return Entry->HandleName == EntryName && UNiagaraScript::IsEquivalentUsage(Entry->Usage, CaptureData[i].TargetUsage) && Entry->UsageId == CaptureData[i].TargetUsageId;
 					});
-						
+
 					if (FoundEntry != nullptr)
 					{
 						CaptureData[i].CaptureData = *FoundEntry;
@@ -1152,7 +1155,7 @@ void SNiagaraSpreadsheetView::ResetEntries(EUITab Tab)
 
 			CaptureData[(int32)Tab].OutputsListView->RequestTreeRefresh();
 		}
-	
+
 		{
 			int32 NumInstances = CaptureData[(int32)Tab].InputParams.ReadParameterVariables().Num();
 			if (!CaptureData[(int32)Tab].bInputColumnsAreAttributes && CaptureData[(int32)Tab].SupportedInputFields.IsValid())
@@ -1180,7 +1183,7 @@ void SNiagaraSpreadsheetView::GenerateLayoutInfo(FNiagaraTypeLayoutInfo& Layout,
 	{
 		NumProperties++;
 	}
-	
+
 	for (TFieldIterator<FProperty> PropertyIt(Struct, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 	{
 		FProperty* Property = *PropertyIt;
@@ -1196,7 +1199,7 @@ void SNiagaraSpreadsheetView::GenerateLayoutInfo(FNiagaraTypeLayoutInfo& Layout,
 			Info.GlobalStartOffset = sizeof(float) * Layout.FloatComponentRegisterOffsets.Num() + sizeof(int32) * Layout.Int32ComponentByteOffsets.Num();
 			Info.Enum = nullptr;
 			FieldInfo.Add(Info);
-				
+
 			Layout.FloatComponentRegisterOffsets.Add(Layout.FloatComponentByteOffsets.Num());
 			Layout.FloatComponentByteOffsets.Add(Property->GetOffset_ForInternal());
 			PropertyNames.Add(PropertyName);
@@ -1241,7 +1244,7 @@ void SNiagaraSpreadsheetView::GenerateLayoutInfo(FNiagaraTypeLayoutInfo& Layout,
 		else if (Property->IsA(FStructProperty::StaticClass()))
 		{
 			FStructProperty* StructProp = CastFieldChecked<FStructProperty>(Property);
-			GenerateLayoutInfo(Layout, StructProp->Struct, nullptr, PropertyName, PropertyNames, FieldInfo);
+			GenerateLayoutInfo(Layout, FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(StructProp->Struct, ENiagaraStructConversion::Simulation), nullptr, PropertyName, PropertyNames, FieldInfo);
 		}
 		else
 		{
@@ -1325,14 +1328,14 @@ void SNiagaraSpreadsheetView::ResetColumns(EUITab Tab)
 
 					CaptureData[i].SupportedOutputFields->Add(PropertyName);
 					CaptureData[i].OutputFieldInfoMap->Add(PropertyName, FieldInfos[VarIdx]);
-					
+
 					// Show new attributes
 					if (!bInitialColumns && PreviousSupportedFields.Find(PropertyName) == INDEX_NONE)
 					{
 						CaptureData[(int32)Tab].FilteredOutputFields.AddUnique(PropertyName);
 					}
 
-					if (CaptureData[i].bOutputColumnsAreAttributes 
+					if (CaptureData[i].bOutputColumnsAreAttributes
 						&& (bInitialColumns || IsOutputAttributeEnabled(Tab, PropertyName)))
 					{
 						ColumnNames.Add(PropertyName);
@@ -1420,7 +1423,7 @@ void SNiagaraSpreadsheetView::ResetColumns(EUITab Tab)
 				{
 
 					{
-						
+
 						FieldInfos[VarIdx].GlobalStartOffset += ByteOffset;
 
 						CaptureData[(int32)i].SupportedInputFields->Add(PropertyNames[VarIdx]);
@@ -1472,10 +1475,10 @@ FReply SNiagaraSpreadsheetView::OnCaptureRequestPressed()
 {
 	FFrameRate TickResolution = SystemViewModel->GetSequencer()->GetFocusedTickResolution();
 	float LocalTime = SystemViewModel->GetSequencer()->GetLocalTime().AsSeconds();
-	
+
 	// The preview component in the editor is using the 'DesiredAge' update mode so each frame it determines if the difference
 	// between the current age and the desired age is greater then the seek delta and if so it advanced the simulation the correct
-	// number of times.  We want to ensure that we simulate a single step so we get the seek delta from the component and add that 
+	// number of times.  We want to ensure that we simulate a single step so we get the seek delta from the component and add that
 	// to the current time.
 	float SimulationStep = SystemViewModel->GetPreviewComponent()->GetSeekDelta();
 	float TargetCaptureTime = LocalTime + SimulationStep;
@@ -1483,15 +1486,16 @@ FReply SNiagaraSpreadsheetView::OnCaptureRequestPressed()
 	TArray<FGuid> SelectedEmitterHandleIds = SystemViewModel->GetSelectionViewModel()->GetSelectedEmitterHandleIds();
 	ensure(SelectedEmitterHandleIds.Num() == 1);
 
-
-	if (TargetComponent.IsValid() && TargetComponent->GetSystemInstance() && SelectedEmitterHandleIds.Num() == 1)
+	FNiagaraSystemInstanceControllerPtr SystemInstanceController = TargetComponent.IsValid() ? TargetComponent->GetSystemInstanceController() : nullptr;
+	FNiagaraSystemInstance* SystemInstance = SystemInstanceController.IsValid() ? SystemInstanceController->GetSoloSystemInstance() : nullptr;
+	if (SystemInstance && SelectedEmitterHandleIds.Num() == 1)
 	{
 		TargetRequestId = FGuid::NewGuid();
-		TargetComponent->GetSystemInstance()->RequestCapture(TargetRequestId);
+		SystemInstance->RequestCapture(TargetRequestId);
 
 		TSharedPtr<FNiagaraEmitterHandleViewModel> SelectedEmitterHandle = SystemViewModel->GetEmitterHandleViewModelById(SelectedEmitterHandleIds[0]);
 		UNiagaraEmitter* Emitter = SelectedEmitterHandle->GetEmitterHandle()->GetInstance();
-		
+
 		for (int32 i = 0; i < CaptureData.Num(); i++)
 		{
 			CaptureData[(int32)i].DataSource = Emitter;
@@ -1506,7 +1510,7 @@ FReply SNiagaraSpreadsheetView::OnCaptureRequestPressed()
 					CaptureData[i].TargetUsageId = FGuid();
 					break;
 				case UIPerParticleEvent0:
-					CaptureData[i].TargetUsage = ENiagaraScriptUsage::ParticleEventScript;		
+					CaptureData[i].TargetUsage = ENiagaraScriptUsage::ParticleEventScript;
 					CaptureData[i].TargetUsageId = Emitter->GetEventHandlers().Num() >= 1 ? Emitter->GetEventHandlers() [0].Script->GetUsageId() : FGuid();
 					break;
 				case UIPerParticleEvent1:
@@ -1514,7 +1518,7 @@ FReply SNiagaraSpreadsheetView::OnCaptureRequestPressed()
 					CaptureData[i].TargetUsageId = Emitter->GetEventHandlers().Num() >= 2 ? Emitter->GetEventHandlers()[1].Script->GetUsageId() : FGuid();
 					break;
 				case UIPerParticleEvent2:
-					CaptureData[i].TargetUsage = ENiagaraScriptUsage::ParticleEventScript;					
+					CaptureData[i].TargetUsage = ENiagaraScriptUsage::ParticleEventScript;
 					CaptureData[i].TargetUsageId = Emitter->GetEventHandlers().Num() >= 3 ? Emitter->GetEventHandlers()[2].Script->GetUsageId() : FGuid();
 					break;
 				case UISystemUpdate:

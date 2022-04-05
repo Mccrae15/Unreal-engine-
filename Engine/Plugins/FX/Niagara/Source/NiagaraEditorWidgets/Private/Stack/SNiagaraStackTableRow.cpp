@@ -8,16 +8,22 @@
 #include "ViewModels/Stack/NiagaraStackItemGroup.h"
 #include "ViewModels/Stack/NiagaraStackEntry.h"
 #include "NiagaraEditorWidgetsUtilities.h"
+#include "NiagaraEmitter.h"
+#include "NiagaraNodeFunctionCall.h"
 #include "NiagaraStackCommandContext.h"
+#include "Stack/SNiagaraStackIndent.h"
 #include "Stack/SNiagaraStackIssueIcon.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/SOverlay.h"
 #include "Framework/Application/SlateApplication.h"
+#include "ViewModels/NiagaraEmitterViewModel.h"
+#include "Styling/StyleColors.h"
+#include "ScopedTransaction.h"
+#include "NiagaraEmitterEditorData.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraStackTableRow"
-
-const float IndentSize = 12;
 
 void SNiagaraStackTableRow::Construct(const FArguments& InArgs, UNiagaraStackViewModel* InStackViewModel, UNiagaraStackEntry* InStackEntry, TSharedRef<FNiagaraStackCommandContext> InStackCommandContext, const TSharedRef<STreeView<UNiagaraStackEntry*>>& InOwnerTree)
 {
@@ -29,26 +35,26 @@ void SNiagaraStackTableRow::Construct(const FArguments& InArgs, UNiagaraStackVie
 	NameColumnWidthChanged = InArgs._OnNameColumnWidthChanged;
 	ValueColumnWidthChanged = InArgs._OnValueColumnWidthChanged;
 	IssueIconVisibility = InArgs._IssueIconVisibility;
-	RowPadding = InArgs._RowPadding;
 	StackViewModel = InStackViewModel;
 	StackEntry = InStackEntry;
 	StackCommandContext = InStackCommandContext;
 	OwnerTree = InOwnerTree;
 
+	NameVerticalAlignment = VAlign_Center;
+	NameHorizontalAlignment = HAlign_Fill;
+
 	ExpandedImage = FCoreStyle::Get().GetBrush("TreeArrow_Expanded");
 	CollapsedImage = FCoreStyle::Get().GetBrush("TreeArrow_Collapsed");
 
-	ItemBackgroundColor = InArgs._ItemBackgroundColor;
-	DisabledItemBackgroundColor = ItemBackgroundColor + FLinearColor(.02f, .02f, .02f, 0.0f);
-	ForegroundColor = InArgs._ItemForegroundColor;
+	IndicatorColor = InArgs._IndicatorColor;
 
-	ExecutionCategoryToolTipText = InStackEntry->GetExecutionSubcategoryName() != NAME_None
+	ExecutionCategoryToolTipText = (InStackEntry->GetExecutionSubcategoryName() != NAME_None)
 		? FText::Format(LOCTEXT("ExecutionCategoryToolTipFormat", "{0} - {1}"), FText::FromName(InStackEntry->GetExecutionCategoryName()), FText::FromName(InStackEntry->GetExecutionSubcategoryName()))
 		: FText::FromName(InStackEntry->GetExecutionCategoryName());
 
 	ConstructInternal(
 		STableRow<UNiagaraStackEntry*>::FArguments()
-			.Style(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.TableViewRow")
+			.Style(InArgs._Style)
 			.OnDragDetected(InArgs._OnDragDetected)
 			.OnDragLeave(InArgs._OnDragLeave)
 			.OnCanAcceptDrop(InArgs._OnCanAcceptDrop)
@@ -90,46 +96,6 @@ void SNiagaraStackTableRow::SetContentPadding(FMargin InContentPadding)
 	ContentPadding = InContentPadding;
 }
 
-// searches for the first parent stack entry without a front divider
-UNiagaraStackEntry* GetParentEntryNoDivider(UNiagaraStackEntry* Entry)
-{
-	UNiagaraStackEntry* Outer = Cast<UNiagaraStackEntry>(Entry->GetOuter());
-	if (Outer == nullptr || !Outer->HasFrontDivider())
-	{
-		return Outer;
-	}
-	return GetParentEntryNoDivider(Outer);
-}
-
-UNiagaraStackEntry* GetEntryAbove(UNiagaraStackEntry* Entry)
-{
-	UNiagaraStackEntry* Outer = Cast<UNiagaraStackEntry>(Entry->GetOuter());
-	if (Outer)
-	{
-		TArray<UNiagaraStackEntry*> FilteredChildren;
-		Outer->GetFilteredChildren(FilteredChildren);
-		for (int32 Index = 1; Index < FilteredChildren.Num(); Index++)
-		{
-			if (FilteredChildren[Index] == Entry)
-			{
-				return FilteredChildren[Index - 1];
-			}
-		}
-	}
-	return nullptr;
-}
-
-bool HasVisibleChildren(UNiagaraStackEntry* Entry)
-{
-	if (!Entry)
-	{
-		return false;
-	}
-	TArray<UNiagaraStackEntry*> Children;
-	Entry->GetFilteredChildren(Children);
-	return Children.Num() > 0;
-}
-
 void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWidget, TSharedPtr<SWidget> InValueWidget)
 {
 	FSlateColor IconColor = FNiagaraEditorWidgetsStyle::Get().GetColor(FNiagaraStackEditorWidgetsUtilities::GetColorNameForExecutionCategory(StackEntry->GetExecutionCategoryName()));
@@ -137,36 +103,40 @@ void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWid
 	{
 		IconColor = FNiagaraEditorWidgetsStyle::Get().GetColor(FNiagaraStackEditorWidgetsUtilities::GetIconColorNameForExecutionCategory(StackEntry->GetExecutionCategoryName()));
 	}
+
+	FName IconName = FNiagaraStackEditorWidgetsUtilities::GetIconNameForExecutionSubcategory(StackEntry->GetExecutionSubcategoryName(), bIsCategoryIconHighlighted);
+	const FSlateBrush* IconBrush = nullptr;
+
+	if(IconName != NAME_None)
+	{
+		IconBrush = FNiagaraEditorWidgetsStyle::Get().GetBrush(IconName);
+	}
+	
 	TSharedRef<SHorizontalBox> NameContent = SNew(SHorizontalBox)
 	.Clipping(EWidgetClipping::OnDemand)
 	// Indent
 	+ SHorizontalBox::Slot()
 	.AutoWidth()
+	.Padding(0)
 	[
-		SNew(SBox)
-		.WidthOverride(this, &SNiagaraStackTableRow::GetIndentSize)
+		SNew(SNiagaraStackIndent, StackEntry, ENiagaraStackIndentMode::Name)
 	]
 	// Expand button
 	+ SHorizontalBox::Slot()
 	.AutoWidth()
 	.VAlign(VAlign_Center)
-	.Padding(0, 0, 1, 0)
+	.Padding(0)
 	[
-		SNew(SBox)
-		.WidthOverride(14)
+		SNew(SButton)
+		.ButtonStyle(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.SimpleButton")
+		.Visibility(this, &SNiagaraStackTableRow::GetExpanderVisibility)
+		.OnClicked(this, &SNiagaraStackTableRow::ExpandButtonClicked)
+		.ContentPadding(FMargin(1, 2, 1, 2))
+		.HAlign(HAlign_Center)
 		[
-			SNew(SButton)
-			.ButtonStyle(FCoreStyle::Get(), "NoBorder")
-			.Visibility(this, &SNiagaraStackTableRow::GetExpanderVisibility)
-			.OnClicked(this, &SNiagaraStackTableRow::ExpandButtonClicked)
-			.ForegroundColor(FSlateColor::UseForeground())
-			.ContentPadding(2)
-			.HAlign(HAlign_Center)
-			[
-				SNew(SImage)
-				.Image(this, &SNiagaraStackTableRow::GetExpandButtonImage)
-				.ColorAndOpacity(FSlateColor::UseForeground())
-			]
+			SNew(SImage)
+			.Image(this, &SNiagaraStackTableRow::GetExpandButtonImage)
+			.ColorAndOpacity(FSlateColor::UseForeground())
 		]
 	]
 	// Execution sub-category icon
@@ -186,34 +156,24 @@ void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWid
 		[
 			SNew(SImage)
 			.Visibility(this, &SNiagaraStackTableRow::GetExecutionCategoryIconVisibility)
-			.Image(FNiagaraEditorWidgetsStyle::Get().GetBrush(FNiagaraStackEditorWidgetsUtilities::GetIconNameForExecutionSubcategory(StackEntry->GetExecutionSubcategoryName(), bIsCategoryIconHighlighted)))
+			.Image(IconBrush ? IconBrush : FCoreStyle::Get().GetDefaultBrush())
 			.ColorAndOpacity(IconColor)
 		]
 	]
 	// Name content
 	+ SHorizontalBox::Slot()
+	.HAlign(NameHorizontalAlignment)
+	.VAlign(NameVerticalAlignment)
+	.Padding(FMargin(0, ContentPadding.Top, 0, ContentPadding.Bottom))
 	[
 		InNameWidget
 	];
-
-	UNiagaraStackEntry* ParentEntry = GetParentEntryNoDivider(StackEntry);
-	bool bIsDisplayedInCategory = StackEntry->HasFrontDivider() && ParentEntry && ParentEntry->GetShouldShowInStack();
-	UNiagaraStackEntry* AboveEntry = GetEntryAbove(StackEntry);
-	if (!StackEntry->HasFrontDivider() && AboveEntry && AboveEntry->HasFrontDivider())
-	{
-		ContentPadding.Top += 6;
-	}
-	if (StackEntry->HasFrontDivider())
-	{
-		ContentPadding.Left += IndentSize * (bIsDisplayedInCategory ? 3 : 2) - 4;
-	}
-	bool bInsertDivAbove = StackEntry->GetStackRowStyle() == UNiagaraStackEntry::EStackRowStyle::ItemCategory && HasVisibleChildren(AboveEntry);
 
 	TSharedPtr<SWidget> ChildContent;
 	if (InValueWidget.IsValid())
 	{
 		ChildContent = SNew(SSplitter)
-		.Style(FNiagaraEditorWidgetsStyle::Get(), "NiagaraEditor.Stack.Splitter")
+		.Style(FAppStyle::Get(), "DetailsView.Splitter")
 		.PhysicalSplitterHandleSize(1.0f)
 		.HitDetectionSplitterHandleSize(5.0f)
 
@@ -221,31 +181,12 @@ void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWid
 		.Value(NameColumnWidth)
 		.OnSlotResized(SSplitter::FOnSlotResized::CreateSP(this, &SNiagaraStackTableRow::OnNameColumnWidthChanged))
 		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.Padding(FMargin(ContentPadding.Left, 0, 0, 0))
-		    .AutoWidth()
-		    [
-				 SNew(SBorder)
-		        .BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
-		        .BorderBackgroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.DividerColor"))
-		        .Padding(0)
-		        [
-		            SNew(SBox)
-		            .WidthOverride(StackEntry->HasFrontDivider() ? 1 : 0)
-		        ]
-		    ]
-		    + SHorizontalBox::Slot()
-            [
-				SNew(SBox)
-				.Padding(FMargin(0, ContentPadding.Top, 5, ContentPadding.Bottom))
-				.HAlign(NameHorizontalAlignment)
-				.VAlign(NameVerticalAlignment)
-				.MinDesiredWidth(NameMinWidth.IsSet() ? NameMinWidth.GetValue() : FOptionalSize())
-				.MaxDesiredWidth(NameMaxWidth.IsSet() ? NameMaxWidth.GetValue() : FOptionalSize())
-				[
-                    NameContent
-                ]
+			SNew(SBox)
+			.Padding(FMargin(ContentPadding.Left, 0, 5, 0))
+			.MinDesiredWidth(NameMinWidth.IsSet() ? NameMinWidth.GetValue() : FOptionalSize())
+			.MaxDesiredWidth(NameMaxWidth.IsSet() ? NameMaxWidth.GetValue() : FOptionalSize())
+			[
+				NameContent
 			]
 		]
 
@@ -268,9 +209,7 @@ void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWid
 	else
 	{
 		ChildContent = SNew(SBox)
-		.Padding(ContentPadding)
-		.HAlign(NameHorizontalAlignment)
-		.VAlign(NameVerticalAlignment)
+		.Padding(FMargin(ContentPadding.Left, 0, ContentPadding.Right, 0))
 		.MinDesiredWidth(NameMinWidth.IsSet() ? NameMinWidth.GetValue() : FOptionalSize())
 		.MaxDesiredWidth(NameMaxWidth.IsSet() ? NameMaxWidth.GetValue() : FOptionalSize())
 		[
@@ -278,79 +217,79 @@ void SNiagaraStackTableRow::SetNameAndValueContent(TSharedRef<SWidget> InNameWid
 		];
 	}
 
-	FName AccentColorName = FNiagaraStackEditorWidgetsUtilities::GetIconColorNameForExecutionCategory(StackEntry->GetExecutionCategoryName());
-	FLinearColor AccentColor = AccentColorName != NAME_None ? FNiagaraEditorWidgetsStyle::Get().GetColor(AccentColorName) : FLinearColor::Transparent;
-	ChildSlot
-	[
-		SNew(SHorizontalBox)
+	FName AccentColorName = FNiagaraStackEditorWidgetsUtilities::GetColorNameForExecutionCategory(StackEntry->GetExecutionCategoryName());
+	TOptional<FSlateColor> AccentColor = (AccentColorName != NAME_None) ? FNiagaraEditorWidgetsStyle::Get().GetColor(AccentColorName) : FStyleColors::Transparent;
+
+	TSharedRef<SOverlay> RowOverlay = SNew(SOverlay)
 		.Visibility(this, &SNiagaraStackTableRow::GetRowVisibility)
-		// Accent color.
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.Padding(1, 0, 6, 0)
+		+ SOverlay::Slot()
+		[
+			// Row content
+			SNew(SBorder)
+			.BorderImage(FNiagaraEditorWidgetsStyle::Get().GetBrush("Niagara.TableViewRowBorder"))
+			.ToolTipText_UObject(StackEntry, &UNiagaraStackEntry::GetTooltipText)
+			.Padding(FMargin(5, 0, 0, 1))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.Padding(0.0f)
+				[
+					ChildContent.ToSharedRef()
+				]
+				// Issue Icon
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(3, 0)
+				[
+					SNew(SNiagaraStackIssueIcon, StackViewModel, StackEntry)
+					.Visibility(IssueIconVisibility)
+				]
+			]
+		];
+
+	if (AccentColor.IsSet())
+	{
+		RowOverlay->AddSlot()
+		.HAlign(HAlign_Left)
 		[
 			SNew(SBorder)
 			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
-			.BorderBackgroundColor(AccentColor)
+			.BorderBackgroundColor(AccentColor.GetValue())
 			.Padding(0)
 			[
 				SNew(SBox)
 				.WidthOverride(4)
 			]
-		]
-		// Content
-		+ SHorizontalBox::Slot()
+		];
+	}
+
+	if (IndicatorColor.IsSet())
+	{
+		RowOverlay->AddSlot()
+		.HAlign(HAlign_Right)
 		[
-			// Row content
-			SNew(SBox)
-			.Padding(RowPadding)
+			SNew(SBorder)
+			.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
+			.BorderBackgroundColor(IndicatorColor.GetValue())
+			.Padding(0)
 			[
-				SNew(SBorder)
-				.BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
-				.BorderBackgroundColor(this, &SNiagaraStackTableRow::GetItemBackgroundColor)
-				.ForegroundColor(ForegroundColor)
-				.Padding(0)
-				[
-					SNew(SVerticalBox)
-					+SVerticalBox::Slot()
-					.Padding(bInsertDivAbove ? FMargin(8, 8, 8, 4) : 0)
-					.AutoHeight()
-                    [
-	                    SNew(SBorder)
-			            .BorderImage(FEditorStyle::GetBrush("WhiteBrush"))
-			            .BorderBackgroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.DividerColor"))
-			            .Visibility(bInsertDivAbove ? EVisibility::Visible : EVisibility::Collapsed)
-			            .Padding(0)
-			            [
-			                SNew(SBox)
-			                .HeightOverride(1)
-			            ]
-                    ]
-					+SVerticalBox::Slot()
-					[
-						SNew(SBorder)
-						.BorderImage(this, &SNiagaraStackTableRow::GetSearchResultBorderBrush)
-						.BorderBackgroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.SearchHighlightColor"))
-						.Padding(0)
-						[
-							SNew(SBorder)
-							.BorderImage(this, &SNiagaraStackTableRow::GetSelectionBorderBrush)
-							.Padding(0)
-							[
-								ChildContent.ToSharedRef()
-							]
-						]
-					]
-				]
+				SNew(SBox)
+				.WidthOverride(2)
 			]
-		]
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.Padding(3, 0, 0, 0)
-		[
-			SNew(SNiagaraStackIssueIcon, StackViewModel, StackEntry)
-			.Visibility(IssueIconVisibility)
-		]
+		];
+	}
+
+	// Search result indicator.
+	RowOverlay->AddSlot()
+	[
+		SNew(SBorder)
+		.BorderImage(FNiagaraEditorWidgetsStyle::Get().GetBrush("NiagaraEditor.Stack.SearchResult"))
+		.Visibility(this, &SNiagaraStackTableRow::GetSearchResultBorderVisibility)
+	];
+
+	ChildSlot
+	[
+		RowOverlay
 	];
 }
 
@@ -433,17 +372,29 @@ FReply SNiagaraStackTableRow::OnMouseButtonUp(const FGeometry& MyGeometry, const
 			FUIAction(FExecuteAction::CreateSP(this, &SNiagaraStackTableRow::CollapseChildren)));
 		MenuBuilder.EndSection();
 
+
+		if (IsValidForSummaryView())
+		{
+			FUIAction ShowHideSummaryViewAction(
+			FExecuteAction::CreateSP(this, &SNiagaraStackTableRow::ToggleShowInSummaryView),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateSP(this, &SNiagaraStackTableRow::ShouldShowInSummaryView));
+		
+			MenuBuilder.BeginSection("SummaryViewActions", LOCTEXT("SummaryViewActions", "Emitter Summary"));
+			MenuBuilder.AddMenuEntry(
+				LOCTEXT("SummaryViewShow", "Show in Emitter Summary"),
+				LOCTEXT("SummaryViewShowTooltip", "Should this parameter be visible in the emitter summary?"),
+				FSlateIcon(),
+				ShowHideSummaryViewAction,
+				NAME_None, EUserInterfaceActionType::ToggleButton);
+			MenuBuilder.EndSection();
+		}
+
 		FWidgetPath WidgetPath = MouseEvent.GetEventPath() != nullptr ? *MouseEvent.GetEventPath() : FWidgetPath();
 		FSlateApplication::Get().PushMenu(AsShared(), WidgetPath, MenuBuilder.MakeWidget(), MouseEvent.GetScreenSpacePosition(), FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
 		return FReply::Handled();
 	}
 	return STableRow<UNiagaraStackEntry*>::OnMouseButtonUp(MyGeometry, MouseEvent);
-}
-
-const FSlateBrush* SNiagaraStackTableRow::GetBorder() const
-{
-	// Return no brush here so that the background doesn't change.  The border color changing will be handled by an internal border.
-	return FEditorStyle::GetBrush("NoBrush");
 }
 
 void SetExpansionStateRecursive(UNiagaraStackEntry* StackEntry, bool bIsExpanded)
@@ -482,26 +433,15 @@ EVisibility SNiagaraStackTableRow::GetRowVisibility() const
 
 EVisibility SNiagaraStackTableRow::GetExecutionCategoryIconVisibility() const
 {
-	return bShowExecutionCategoryIcon && StackEntry->GetExecutionSubcategoryName() != NAME_None
+	return bShowExecutionCategoryIcon && (StackEntry->GetExecutionSubcategoryName() != NAME_None)
 		? EVisibility::Visible
 		: EVisibility::Collapsed;
-}
-
-FOptionalSize SNiagaraStackTableRow::GetIndentSize() const
-{
-	if (StackEntry->HasFrontDivider())
-	{
-		UNiagaraStackEntry* ParentEntry = GetParentEntryNoDivider(StackEntry);
-		return (StackEntry->GetIndentLevel() - (ParentEntry && ParentEntry->GetShouldShowInStack() ? 1 : 0)) * IndentSize;
-	}
-	return StackEntry->GetIndentLevel() * IndentSize;
 }
 
 EVisibility SNiagaraStackTableRow::GetExpanderVisibility() const
 {
 	if (StackEntry->GetCanExpand())
 	{
-		// TODO Cache this and refresh the cache when the entries structure changes.
 		TArray<UNiagaraStackEntry*> Children;
 		StackEntry->GetFilteredChildren(Children);
 		return Children.Num() > 0
@@ -545,28 +485,92 @@ void SNiagaraStackTableRow::OnValueColumnWidthChanged(float Width)
 	ValueColumnWidthChanged.ExecuteIfBound(Width);
 }
 
-FSlateColor SNiagaraStackTableRow::GetItemBackgroundColor() const
+EVisibility SNiagaraStackTableRow::GetSearchResultBorderVisibility() const
 {
-	return StackEntry->GetIsEnabledAndOwnerIsEnabled() 
-		? ItemBackgroundColor 
-		: DisabledItemBackgroundColor;
-}
-
-const FSlateBrush* SNiagaraStackTableRow::GetSelectionBorderBrush() const
-{
-	return STableRow<UNiagaraStackEntry*>::GetBorder();
-}
-
-const FSlateBrush* SNiagaraStackTableRow::GetSearchResultBorderBrush() const
-{
-	return StackViewModel->GetCurrentFocusedEntry() == StackEntry
-		? FNiagaraEditorWidgetsStyle::Get().GetBrush("NiagaraEditor.Stack.SearchResult")
-		: FEditorStyle::GetBrush("NoBrush");
+	return StackViewModel->GetCurrentFocusedEntry() == StackEntry ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
 }
 
 void SNiagaraStackTableRow::NavigateTo(UNiagaraStackEntry* Item)
 {
 	OwnerTree->RequestNavigateToItem(Item, 0);
+}
+
+bool SNiagaraStackTableRow::IsValidForSummaryView() const
+{
+	UNiagaraStackFunctionInput* FunctionInput = Cast<UNiagaraStackFunctionInput>(StackEntry);
+	const UNiagaraEmitterEditorData* EditorData = (FunctionInput && FunctionInput->GetEmitterViewModel())? &FunctionInput->GetEmitterViewModel()->GetEditorData() : nullptr;
+
+	if (EditorData)
+	{
+		UNiagaraStackFunctionInput* ParentInput = FNiagaraStackEditorWidgetsUtilities::GetParentInputForSummaryView(FunctionInput);
+		return FNiagaraStackEditorWidgetsUtilities::GetSummaryViewInputKeyForFunctionInput(ParentInput).IsSet();
+	}
+	return false;
+}
+
+void SNiagaraStackTableRow::ToggleShowInSummaryView()
+{
+	UNiagaraStackFunctionInput* FunctionInput = Cast<UNiagaraStackFunctionInput>(StackEntry);
+	UNiagaraEmitterEditorData* EditorData = (FunctionInput && FunctionInput->GetEmitterViewModel())? &FunctionInput->GetEmitterViewModel()->GetOrCreateEditorData() : nullptr;
+	
+	if (EditorData)
+	{
+		UNiagaraStackFunctionInput* ParentInput = FNiagaraStackEditorWidgetsUtilities::GetParentInputForSummaryView(FunctionInput);
+		TOptional<FFunctionInputSummaryViewKey> Key = FNiagaraStackEditorWidgetsUtilities::GetSummaryViewInputKeyForFunctionInput(ParentInput);
+	
+		if (Key.IsSet())
+		{
+			// TODO: Move this parent handling to the UNiagaraStackFunctionInput and merge manager.
+			bool bHasParentSummaryData = false;;
+			UNiagaraEmitter* ParentEmitter = FunctionInput->GetEmitterViewModel()->GetEmitter()->GetParent();
+			if (ParentEmitter != nullptr)
+			{
+				UNiagaraEmitterEditorData* ParentEmitterEditorData = Cast<UNiagaraEmitterEditorData>(ParentEmitter->GetEditorData());
+				if (ParentEmitterEditorData != nullptr)
+				{
+					bHasParentSummaryData = ParentEmitterEditorData->GetSummaryViewMetaData(Key.GetValue()).IsSet();
+				}
+			}
+
+			TOptional<FFunctionInputSummaryViewMetadata> SummaryViewMetaData = EditorData->GetSummaryViewMetaData(Key.GetValue());
+			if (SummaryViewMetaData.IsSet() == false)
+			{
+				SummaryViewMetaData = FFunctionInputSummaryViewMetadata();
+			}
+
+			FScopedTransaction ScopedTransaction(FText::Format(LOCTEXT("SummaryViewChangedInputVisibility", "Changed summary view visibility for {0}"), FunctionInput->GetDisplayName()));
+			EditorData->Modify();
+			
+			SummaryViewMetaData->bVisible = !SummaryViewMetaData->bVisible;
+			if (bHasParentSummaryData == false && SummaryViewMetaData->bVisible == false)
+			{
+				// If there is no parent summary data, and the input is no longer visible, reset the optional value
+				// to remove the input from the summary.
+				SummaryViewMetaData.Reset();
+			}
+			EditorData->SetSummaryViewMetaData(Key.GetValue(), SummaryViewMetaData);
+		}
+	}	
+}
+
+bool SNiagaraStackTableRow::ShouldShowInSummaryView() const
+{
+	UNiagaraStackFunctionInput* FunctionInput = Cast<UNiagaraStackFunctionInput>(StackEntry);
+	const UNiagaraEmitterEditorData* EditorData = (FunctionInput && FunctionInput->GetEmitterViewModel())? &FunctionInput->GetEmitterViewModel()->GetEditorData() : nullptr;
+	
+	if (EditorData)
+	{
+		UNiagaraStackFunctionInput* ParentInput = FNiagaraStackEditorWidgetsUtilities::GetParentInputForSummaryView(FunctionInput);
+		TOptional<FFunctionInputSummaryViewKey> Key = FNiagaraStackEditorWidgetsUtilities::GetSummaryViewInputKeyForFunctionInput(ParentInput);
+	
+		if (Key.IsSet())
+		{
+			TOptional<FFunctionInputSummaryViewMetadata> Metadata = EditorData->GetSummaryViewMetaData(Key.GetValue());
+			return Metadata.IsSet() && Metadata->bVisible;
+		}			
+	}
+
+	return false;
 }
 
 #undef LOCTEXT_NAMESPACE

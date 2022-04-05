@@ -73,16 +73,15 @@ protected:
 	/** Correspond to the buffers in FStaticMeshLODResources */
 	struct FIntermediateBuffers
 	{
-		FVertexBufferRHIRef TangentsVertexBuffer;
-		FVertexBufferRHIRef TexCoordVertexBuffer;
-		FVertexBufferRHIRef PositionVertexBuffer;
-		FVertexBufferRHIRef ColorVertexBuffer;
-		FIndexBufferRHIRef IndexBuffer;
-		FIndexBufferRHIRef ReversedIndexBuffer;
-		FIndexBufferRHIRef DepthOnlyIndexBuffer;
-		FIndexBufferRHIRef ReversedDepthOnlyIndexBuffer;
-		FIndexBufferRHIRef WireframeIndexBuffer;
-		FIndexBufferRHIRef AdjacencyIndexBuffer;
+		FBufferRHIRef TangentsVertexBuffer;
+		FBufferRHIRef TexCoordVertexBuffer;
+		FBufferRHIRef PositionVertexBuffer;
+		FBufferRHIRef ColorVertexBuffer;
+		FBufferRHIRef IndexBuffer;
+		FBufferRHIRef ReversedIndexBuffer;
+		FBufferRHIRef DepthOnlyIndexBuffer;
+		FBufferRHIRef ReversedDepthOnlyIndexBuffer;
+		FBufferRHIRef WireframeIndexBuffer;
 
 		void CreateFromCPUData_RenderThread(FStaticMeshLODResources& LODResource);
 		void CreateFromCPUData_Async(FStaticMeshLODResources& LODResource);
@@ -111,6 +110,10 @@ protected:
 
 	/** The intermediate buffers created in the update process. */
 	FIntermediateBuffers IntermediateBuffersArray[MAX_MESH_LOD_COUNT];
+	
+#if RHI_RAYTRACING
+	FRayTracingGeometry IntermediateRayTracingGeometry[MAX_MESH_LOD_COUNT];
+#endif
 
 private:
 	template <bool bRenderThread>

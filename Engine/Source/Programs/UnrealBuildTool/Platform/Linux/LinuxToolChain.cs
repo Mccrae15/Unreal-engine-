@@ -7,7 +7,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using Microsoft.Win32;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -57,15 +58,17 @@ namespace UnrealBuildTool
 		/// When we support larger the 4GB files with objcopy.exe this can be removed!
 		/// </summary>
 		DisableSplitDebugInfoWithObjCopy = 0x40,
+
+		/// <summary>
+		/// Enable tuning of debug info for LLDB
+		/// </summary>
+		TuneDebugInfoForLLDB = 0x80,
 	}
 
 	class LinuxToolChain : ISPCToolChain
 	{
 		/** Flavor of the current build (target triplet)*/
 		string Architecture;
-
-		/** Cache to avoid making multiple checks for lld availability/usability */
-		bool bUseLld = false;
 
 		/** Whether the compiler is set up to produce PIE executables by default */
 		bool bSuppressPIE = false;
@@ -84,7 +87,7 @@ namespace UnrealBuildTool
 		protected LinuxPlatformSDK PlatformSDK;
 
 		/** Toolchain information to print during the build. */
-		protected string ToolchainInfo;
+		protected string? ToolchainInfo;
 
 		/// <summary>
 		/// Whether to compile with ASan enabled
@@ -101,8 +104,8 @@ namespace UnrealBuildTool
 			bool bHasValidCompiler = false;
 
 			// these are supplied by the engine and do not change depending on the circumstances
-			DumpSymsPath = Path.Combine(UnrealBuildTool.EngineDirectory.FullName, "Binaries", "Linux", "dump_syms");
-			BreakpadEncoderPath = Path.Combine(UnrealBuildTool.EngineDirectory.FullName, "Binaries", "Linux", "BreakpadSymbolEncoder");
+			DumpSymsPath = Path.Combine(Unreal.EngineDirectory.FullName, "Binaries", "Linux", "dump_syms");
+			BreakpadEncoderPath = Path.Combine(Unreal.EngineDirectory.FullName, "Binaries", "Linux", "BreakpadSymbolEncoder");
 
 			if (bForceUseSystemCompiler)
 			{
@@ -114,18 +117,11 @@ namespace UnrealBuildTool
 
 				// use native linux toolchain
 				ClangPath = LinuxCommon.WhichClang();
-				GCCPath = LinuxCommon.WhichGcc();
 				ArPath = LinuxCommon.Which("ar");
 				LlvmArPath = LinuxCommon.Which("llvm-ar");
 				RanlibPath = LinuxCommon.Which("ranlib");
 				StripPath = LinuxCommon.Which("strip");
 				ObjcopyPath = LinuxCommon.Which("objcopy");
-
-				// if clang is available, zero out gcc (@todo: support runtime switching?)
-				if (!String.IsNullOrEmpty(ClangPath))
-				{
-					GCCPath = null;
-				}
 
 				// When compiling on Linux, use a faster way to relink circularly dependent libraries.
 				// Race condition between actions linking to the .so and action overwriting it is avoided thanks to inodes
@@ -151,7 +147,6 @@ namespace UnrealBuildTool
 				ToolchainInfo = String.Format("toolchain located at '{0}'", BaseLinuxPath);
 
 				// set up the path to our toolchain
-				GCCPath = "";
 				ClangPath   = Path.Combine(BaseLinuxPath, @"bin", "clang++" + GetHostPlatformBinarySuffix());
 				ArPath      = Path.Combine(Path.Combine(BaseLinuxPath, String.Format("bin/{0}-{1}", Architecture, "ar" + GetHostPlatformBinarySuffix())));
 				LlvmArPath  = Path.Combine(Path.Combine(BaseLinuxPath, String.Format("bin/{0}", "llvm-ar" + GetHostPlatformBinarySuffix())));
@@ -160,7 +155,7 @@ namespace UnrealBuildTool
 				StripPath   = ObjcopyPath;
 
 				// When cross-compiling on Windows, use old FixDeps. It is slow, but it does not have timing issues
-				bUseFixdeps = (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win32);
+				bUseFixdeps = BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64;
 
 				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Linux)
 				{
@@ -180,26 +175,15 @@ namespace UnrealBuildTool
 			CheckDefaultCompilerSettings();
 
 			// refuse to use compilers that we know won't work
-			// disable that only if you are a dev and you know what you are doing
-			if (!UsingClang())
-			{
-				throw new BuildException("Unable to build: no compatible clang version found. Please run Setup.sh");
-			}
+
 			// prevent unknown clangs since the build is likely to fail on too old or too new compilers
-			else if ((CompilerVersionMajor * 10 + CompilerVersionMinor) > 110 || (CompilerVersionMajor * 10 + CompilerVersionMinor) < 60)
+			if ((CompilerVersionMajor * 10 + CompilerVersionMinor) > 110 || (CompilerVersionMajor * 10 + CompilerVersionMinor) < 100)
 			{
 				throw new BuildException(
-					string.Format("This version of the Unreal Engine can only be compiled with clang 11.0, 10.0, 9.0, 8.0, 7.0 and 6.0. clang {0} may not build it - please use a different version.",
+					string.Format("This version of the Unreal Engine can only be compiled with clang 11.0, and 10.0. clang {0} may not build it - please use a different version.",
 						CompilerVersionString)
 					);
 			}
-
-			// trust lld only for clang 5.x and above (FIXME: also find if present on the system?)
-			// NOTE: with early version you can run into errors like "failed to compute relocation:" and others
-			bUseLld = (CompilerVersionMajor >= 5);
-
-			// Add --gdb-index for Clang 9.0 and higher
-			bGdbIndexSection = (CompilerVersionMajor >= 9);
 		}
 
 		public LinuxToolChain(UnrealTargetPlatform InPlatform, string InArchitecture, LinuxPlatformSDK InSDK, bool InPreservePSYM = false, LinuxToolChainOptions InOptions = LinuxToolChainOptions.None)
@@ -213,7 +197,7 @@ namespace UnrealBuildTool
 
 		private string GetHostPlatformBinarySuffix()
 		{
-			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win32)
+			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 			{
 				return ".exe";
 			}
@@ -227,17 +211,12 @@ namespace UnrealBuildTool
 		}
 
 
-		protected virtual bool UsingClang()
-		{
-			return !String.IsNullOrEmpty(ClangPath);
-		}
-
 		/// <summary>
 		/// Splits compiler version string into numerical components, leaving unchanged if not known
 		/// </summary>
 		private void DetermineCompilerMajMinPatchFromVersionString()
 		{
-			string[] Parts = CompilerVersionString.Split('.');
+			string[] Parts = CompilerVersionString!.Split('.');
 			if (Parts.Length >= 1)
 			{
 				CompilerVersionMajor = Convert.ToInt32(Parts[0]);
@@ -252,12 +231,12 @@ namespace UnrealBuildTool
 			}
 		}
 
-		internal string GetDumpEncodeDebugCommand(LinkEnvironment LinkEnvironment, FileItem OutputFile)
+		protected internal virtual string GetDumpEncodeDebugCommand(LinkEnvironment LinkEnvironment, FileItem OutputFile)
 		{
-			bool bUseCmdExe = BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win32;
+			bool bUseCmdExe = BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64;
 			string DumpCommand = bUseCmdExe ? "\"{0}\" \"{1}\" \"{2}\" 2>NUL" : "\"{0}\" -c -o \"{2}\" \"{1}\"";
-			FileItem EncodedBinarySymbolsFile = FileItem.GetItemByPath(Path.Combine(LinkEnvironment.OutputDirectory.FullName, OutputFile.Location.GetFileNameWithoutExtension() + ".sym"));
-			FileItem SymbolsFile  = FileItem.GetItemByPath(Path.Combine(LinkEnvironment.LocalShadowDirectory.FullName, OutputFile.Location.GetFileName() + ".psym"));
+			FileItem EncodedBinarySymbolsFile = FileItem.GetItemByPath(Path.Combine(LinkEnvironment.OutputDirectory!.FullName, OutputFile.Location.GetFileNameWithoutExtension() + ".sym"));
+			FileItem SymbolsFile  = FileItem.GetItemByPath(Path.Combine(LinkEnvironment.LocalShadowDirectory!.FullName, OutputFile.Location.GetFileName() + ".psym"));
 			FileItem StrippedFile = FileItem.GetItemByPath(Path.Combine(LinkEnvironment.LocalShadowDirectory.FullName, OutputFile.Location.GetFileName() + "_nodebug"));
 			FileItem DebugFile = FileItem.GetItemByPath(Path.Combine(LinkEnvironment.OutputDirectory.FullName, OutputFile.Location.GetFileNameWithoutExtension() + ".debug"));
 
@@ -374,22 +353,7 @@ namespace UnrealBuildTool
 				Proc.StartInfo.RedirectStandardOutput = true;
 				Proc.StartInfo.RedirectStandardError = true;
 
-				if (!String.IsNullOrEmpty(GCCPath))
-				{
-					Proc.StartInfo.FileName = GCCPath;
-					Proc.StartInfo.Arguments = " -dumpversion";
-
-					Proc.Start();
-					Proc.WaitForExit();
-
-					if (Proc.ExitCode == 0)
-					{
-						// read just the first string
-						CompilerVersionString = Proc.StandardOutput.ReadLine();
-						DetermineCompilerMajMinPatchFromVersionString();
-					}
-				}
-				else if (!String.IsNullOrEmpty(ClangPath))
+				if (!String.IsNullOrEmpty(ClangPath))
 				{
 					Proc.StartInfo.FileName = ClangPath;
 					Proc.StartInfo.Arguments = " --version";
@@ -400,7 +364,7 @@ namespace UnrealBuildTool
 					if (Proc.ExitCode == 0)
 					{
 						// read just the first string
-						string VersionString = Proc.StandardOutput.ReadLine();
+						string? VersionString = Proc.StandardOutput.ReadLine();
 
 						Regex VersionPattern = new Regex("version \\d+(\\.\\d+)+");
 						Match VersionMatch = VersionPattern.Match(VersionString);
@@ -446,7 +410,7 @@ namespace UnrealBuildTool
 
 					for (; ; )
 					{
-						string CompilerDefine = Proc.StandardOutput.ReadLine();
+						string? CompilerDefine = Proc.StandardOutput.ReadLine();
 						if (string.IsNullOrEmpty(CompilerDefine))
 						{
 							Proc.WaitForExit();
@@ -508,7 +472,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		protected virtual string GetArPath(string Architecture)
 		{
-			return ArPath;
+			return ArPath!;
 		}
 
 		/// <summary>
@@ -516,7 +480,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		protected virtual string GetRanlibPath(string Architecture)
 		{
-			return RanlibPath;
+			return RanlibPath!;
 		}
 
 		/// <summary>
@@ -524,7 +488,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		protected virtual string GetStripPath(string Architecture)
 		{
-			return StripPath;
+			return StripPath!;
 		}
 
 		/// <summary>
@@ -532,17 +496,17 @@ namespace UnrealBuildTool
 		/// </summary>
 		protected virtual string GetObjcopyPath(string Architecture)
 		{
-			return ObjcopyPath;
+			return ObjcopyPath!;
 		}
 
 		private static bool ShouldUseLibcxx(string Architecture)
 		{
-			// set UE4_LINUX_USE_LIBCXX to either 0 or 1. If unset, defaults to 1.
-			string UseLibcxxEnvVarOverride = Environment.GetEnvironmentVariable("UE4_LINUX_USE_LIBCXX");
+			// set UE_LINUX_USE_LIBCXX to either 0 or 1. If unset, defaults to 1.
+			string? UseLibcxxEnvVarOverride = Environment.GetEnvironmentVariable("UE_LINUX_USE_LIBCXX");
 			if (string.IsNullOrEmpty(UseLibcxxEnvVarOverride) || UseLibcxxEnvVarOverride == "1")
 			{
 				// at the moment ARM32 libc++ remains missing
-				return Architecture.StartsWith("x86_64") || Architecture.StartsWith("aarch64") || Architecture.StartsWith("i686");
+				return Architecture.StartsWith("x86_64") || Architecture.StartsWith("aarch64");
 			}
 			return false;
 		}
@@ -558,8 +522,8 @@ namespace UnrealBuildTool
 			if (ShouldUseLibcxx(CompileEnvironment.Architecture))
 			{
 				Result += " -nostdinc++";
-				Result += " -I" + "ThirdParty/Linux/LibCxx/include/";
-				Result += " -I" + "ThirdParty/Linux/LibCxx/include/c++/v1";
+				Result += " -I" + "ThirdParty/Unix/LibCxx/include/";
+				Result += " -I" + "ThirdParty/Unix/LibCxx/include/c++/v1";
 			}
 
 			// ASan
@@ -593,7 +557,12 @@ namespace UnrealBuildTool
 
 			Result += " -Wall -Werror";
 
-			if (!CompileEnvironment.Architecture.StartsWith("x86_64") && !CompileEnvironment.Architecture.StartsWith("i686"))
+			if (CompilerVersionGreaterOrEqual(12, 0, 0))
+			{
+				Result += " -fbinutils-version=2.36";
+			}
+
+			if (!CompileEnvironment.Architecture.StartsWith("x86_64"))
 			{
 				Result += " -funwind-tables";               // generate unwind tables as they are needed for backtrace (on x86(64) they are generated implicitly)
 			}
@@ -620,76 +589,49 @@ namespace UnrealBuildTool
 				Result += " -fvisibility-inlines-hidden";
 			}
 
-			if (String.IsNullOrEmpty(ClangPath))
+			// Clang only options
+			if (CrossCompiling())
 			{
-				// GCC only option
-				Result += " -fno-strict-aliasing";
-				Result += " -Wno-sign-compare"; // needed to suppress: comparison between signed and unsigned integer expressions
-				Result += " -Wno-enum-compare"; // Stats2.h triggers this (alignof(int64) <= DATA_ALIGN)
-				Result += " -Wno-return-type"; // Variant.h triggers this
-				Result += " -Wno-unused-local-typedefs";
-				Result += " -Wno-multichar";
-				Result += " -Wno-unused-but-set-variable";
-				Result += " -Wno-strict-overflow"; // Array.h:518
-			}
-			else
-			{
-				// Clang only options
-				if (CrossCompiling())
+				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 				{
-					if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win32)
-					{
-						Result += " -fdiagnostics-format=msvc";     // make diagnostics compatible with MSVC when cross-compiling
-					}
-					else if (Log.ColorConsoleOutput)
-					{
-						Result += " -fcolor-diagnostics";
-					}
+					Result += " -fdiagnostics-format=msvc";     // make diagnostics compatible with MSVC when cross-compiling
 				}
-
-				// output full paths to the files when the build fails, required 4.0+ of clang
-				if (CompilerVersionGreaterOrEqual(4, 0, 0))
+				else if (Log.ColorConsoleOutput)
 				{
-					Result += " -fdiagnostics-absolute-paths";
-				}
-
-				Result += " -Wno-unused-private-field";     // MultichannelTcpSocket.h triggers this, possibly more
-				// this hides the "warning : comparison of unsigned expression < 0 is always false" type warnings due to constant comparisons, which are possible with template arguments
-				Result += " -Wno-tautological-compare";
-
-				// this switch is understood by clang 3.5.0, but not clang-3.5 as packaged by Ubuntu 14.04 atm
-				if (CompilerVersionGreaterOrEqual(3, 5, 0))
-				{
-					Result += " -Wno-undefined-bool-conversion";	// hides checking if 'this' pointer is null
-				}
-
-				if (CompilerVersionGreaterOrEqual(3, 6, 0))
-				{
-					Result += " -Wno-unused-local-typedef";	// clang is being overly strict here? PhysX headers trigger this.
-					Result += " -Wno-inconsistent-missing-override";	// these have to be suppressed for UE 4.8, should be fixed later.
-				}
-
-				if (CompilerVersionGreaterOrEqual(3, 9, 0))
-				{
-					Result += " -Wno-undefined-var-template"; // not really a good warning to disable
-				}
-
-				if (CompilerVersionGreaterOrEqual(5, 0, 0))
-				{
-					Result += " -Wno-unused-lambda-capture";  // suppressed because capturing of compile-time constants is seemingly inconsistent. And MSVC doesn't do that.
+					Result += " -fcolor-diagnostics";
 				}
 			}
 
+			Result += " -fdiagnostics-absolute-paths"; // output full paths to the files when the build fails
+
+			Result += " -Wno-unused-private-field"; // MultichannelTcpSocket.h triggers this, possibly more
+			Result += " -Wno-tautological-compare"; // this hides the "warning : comparison of unsigned expression < 0 is always false" type warnings due to constant comparisons, which are possible with template arguments
+
+			Result += " -Wno-undefined-bool-conversion"; // hides checking if 'this' pointer is null
+			if (CompilerVersionGreaterOrEqual(12, 0, 0))
+			{
+				// The 'this' vs nullptr comparisons get optimized away for newer versions of Clang, which is undesirable until we refactor these checks.
+				Result += " -fno-delete-null-pointer-checks"; 
+			}
+
+			Result += " -Wno-unused-local-typedef";	// clang is being overly strict here? PhysX headers trigger this.
+			Result += " -Wno-inconsistent-missing-override";	// these have to be suppressed for UE 4.8, should be fixed later.
+			Result += " -Wno-undefined-var-template"; // not really a good warning to disable
+			Result += " -Wno-unused-lambda-capture";  // suppressed because capturing of compile-time constants is seemingly inconsistent. And MSVC doesn't do that.
 			Result += " -Wno-unused-variable";
-			// this will hide the warnings about static functions in headers that aren't used in every single .cpp file
-			Result += " -Wno-unused-function";
-			// this hides the "enumeration value 'XXXXX' not handled in switch [-Wswitch]" warnings - we should maybe remove this at some point and add UE_LOG(, Fatal, ) to default cases
-			Result += " -Wno-switch";
+
+			if (CompilerVersionGreaterOrEqual(13, 0, 0))
+			{
+				Result += " -Wno-unused-but-set-variable";
+				Result += " -Wno-unused-but-set-parameter";
+				Result += " -Wno-ordered-compare-function-pointers";
+			}
+
+			Result += " -Wno-unused-function"; // this will hide the warnings about static functions in headers that aren't used in every single .cpp file
+			Result += " -Wno-switch"; // this hides the "enumeration value 'XXXXX' not handled in switch [-Wswitch]" warnings - we should maybe remove this at some point and add UE_LOG(, Fatal, ) to default cases
 			Result += " -Wno-unknown-pragmas";			// Slate triggers this (with its optimize on/off pragmas)
-			// needed to suppress warnings about using offsetof on non-POD types.
-			Result += " -Wno-invalid-offsetof";
-			// we use this feature to allow static FNames.
-			Result += " -Wno-gnu-string-literal-operator-template";
+			Result += " -Wno-invalid-offsetof"; // needed to suppress warnings about using offsetof on non-POD types.
+			Result += " -Wno-gnu-string-literal-operator-template"; // we use this feature to allow static FNames.
 
 			// Profile Guided Optimization (PGO) and Link Time Optimization (LTO)
 			// Whether we actually can enable that is checked in CanUseAdvancedLinkerFeatures() earlier
@@ -704,7 +646,7 @@ namespace UnrealBuildTool
 				Result += " -Wno-backend-plugin";
 
 				Log.TraceInformationOnce("Enabling Profile Guided Optimization (PGO). Linking will take a while.");
-				Result += string.Format(" -fprofile-instr-use=\"{0}\"", Path.Combine(CompileEnvironment.PGODirectory, CompileEnvironment.PGOFilenamePrefix));
+				Result += string.Format(" -fprofile-instr-use=\"{0}\"", Path.Combine(CompileEnvironment.PGODirectory!, CompileEnvironment.PGOFilenamePrefix!));
 			}
 			else if (CompileEnvironment.bPGOProfile)
 			{
@@ -765,6 +707,11 @@ namespace UnrealBuildTool
 					// GDB index. This option is only useful with a linker that can produce GDB index version 7.
 					Result += " -ggnu-pubnames";
 				}
+
+				if (Options.HasFlag(LinuxToolChainOptions.TuneDebugInfoForLLDB))
+				{
+					Result += " -glldb";
+				}
 			}
 
 			// optimization level
@@ -785,7 +732,7 @@ namespace UnrealBuildTool
 				}
 				else
 				{
-					Result += " -O2";	// warning: as of now (2014-09-28), clang 3.5.0 miscompiles PlatformerGame with -O3 (bitfields?)
+					Result += " -O3";
 				}
 			}
 
@@ -831,7 +778,7 @@ namespace UnrealBuildTool
 			Result += ArchitectureSpecificDefines(CompileEnvironment.Architecture);
 			if (CrossCompiling())
 			{
-				if (UsingClang() && !string.IsNullOrEmpty(CompileEnvironment.Architecture))
+				if (!String.IsNullOrEmpty(CompileEnvironment.Architecture))
 				{
 					Result += String.Format(" -target {0}", CompileEnvironment.Architecture);        // Set target triple
 				}
@@ -872,21 +819,33 @@ namespace UnrealBuildTool
 
 		static string GetCompilerStandardVersion_CPP(CppCompileEnvironment CompileEnvironment)
 		{
-			if (CompileEnvironment.CppStandard == CppStandardVersion.Cpp14 || CompileEnvironment.CppStandard == CppStandardVersion.Default)
+			string Result;
+			switch (CompileEnvironment.CppStandard)
 			{
-				return " -std=c++14";
-			}
-			else if (CompileEnvironment.CppStandard == CppStandardVersion.Cpp17)
-			{
-				return " -std=c++17";
-			}
-			else if (CompileEnvironment.CppStandard == CppStandardVersion.Latest)
-			{
-				return " -std=c++17";
+				case CppStandardVersion.Cpp14:
+					Result = " -std=c++14";
+					break;
+				case CppStandardVersion.Latest:
+				case CppStandardVersion.Cpp17:
+					Result = " -std=c++17";
+					break;
+				case CppStandardVersion.Cpp20:
+					Result = " -std=c++20";
+					break;
+				default:
+					throw new BuildException($"Unsupported C++ standard type set: {CompileEnvironment.CppStandard}");
 			}
 
-			throw new BuildException(
-			string.Format("Unknown C++ standard type set: {0}", CompileEnvironment.CppStandard));
+			if (CompileEnvironment.bEnableCoroutines)
+			{
+				Result += " -fcoroutines-ts";
+				if (!CompileEnvironment.bEnableExceptions)
+				{
+					Result += " -Wno-coroutine-missing-unhandled-exception";
+				}
+			}
+
+			return Result;
 		}
 
 		static string GetCompileArguments_CPP(CppCompileEnvironment CompileEnvironment)
@@ -1030,13 +989,14 @@ namespace UnrealBuildTool
 			else
 			{
 				// x86_64 is now using updated ICU that doesn't need extra .so
-				Result += " -Wl,-rpath=${ORIGIN}/../../../Engine/Binaries/ThirdParty/ICU/icu4c-53_1/Linux/" + LinkEnvironment.Architecture;
+				Result += " -Wl,-rpath=${ORIGIN}/../../../Engine/Binaries/ThirdParty/ICU/icu4c-53_1/Unix/" + LinkEnvironment.Architecture;
 			}
 
 			Result += " -Wl,-rpath=${ORIGIN}/../../../Engine/Binaries/ThirdParty/OpenVR/OpenVRv1_5_17/linux64";
 
 			// @FIXME: Workaround for generating RPATHs for launching on devices UE-54136
-			Result += " -Wl,-rpath=${ORIGIN}/../../../Engine/Binaries/ThirdParty/PhysX3/Linux/x86_64-unknown-linux-gnu";
+			Result += " -Wl,-rpath=${ORIGIN}/../../../Engine/Binaries/ThirdParty/PhysX3/Unix/x86_64-unknown-linux-gnu";
+			Result += " -Wl,-rpath=${ORIGIN}/../../../Engine/Binaries/ThirdParty/Intel/Embree/Embree2140/Linux/x86_64-unknown-linux-gnu/lib";
 
 			// Some OS ship ld with new ELF dynamic tags, which use DT_RUNPATH vs DT_RPATH. Since DT_RUNPATH do not propagate to dlopen()ed DSOs,
 			// this breaks the editor on such systems. See https://kenai.com/projects/maxine/lists/users/archive/2011-01/message/12 for details
@@ -1056,23 +1016,7 @@ namespace UnrealBuildTool
 
 				if (bSuppressPIE)
 				{
-					if (CompilerVersionGreaterOrEqual(7, 0, 0))
-					{
-						Result += " -Wl,-no-pie";
-					}
-					else
-					{
-						Result += " -Wl,-nopie";
-					}
-				}
-			}
-
-			if (LinkEnvironment.Configuration == CppConfiguration.Shipping)
-			{
-				Result += " -Wl,--icf=safe"; // Enables ICF (Identical Code Folding). [all, safe] safe == fold functions that can be proven not to have their address taken.
-				if (!UsingLld(LinkEnvironment.Architecture))
-				{
-					Result += " -Wl,--icf-iterations=3";
+					Result += " -Wl,-no-pie";
 				}
 			}
 
@@ -1089,7 +1033,7 @@ namespace UnrealBuildTool
 				Result += " -Wno-backend-plugin";
 
 				Log.TraceInformationOnce("Enabling Profile Guided Optimization (PGO). Linking will take a while.");
-				Result += string.Format(" -fprofile-instr-use=\"{0}\"", Path.Combine(LinkEnvironment.PGODirectory, LinkEnvironment.PGOFilenamePrefix));
+				Result += string.Format(" -fprofile-instr-use=\"{0}\"", Path.Combine(LinkEnvironment.PGODirectory!, LinkEnvironment.PGOFilenamePrefix!));
 			}
 			else if (LinkEnvironment.bPGOProfile)
 			{
@@ -1112,11 +1056,8 @@ namespace UnrealBuildTool
 
 			if (CrossCompiling())
 			{
-				if (UsingClang())
-				{
-					Result += String.Format(" -target {0}", LinkEnvironment.Architecture);        // Set target triple
-				}
-				string SysRootPath = BaseLinuxPath.TrimEnd(new char[] { '\\', '/' });
+				Result += String.Format(" -target {0}", LinkEnvironment.Architecture);        // Set target triple
+				string SysRootPath = BaseLinuxPath!.TrimEnd(new char[] { '\\', '/' });
 				Result += String.Format(" \"--sysroot={0}\"", SysRootPath);
 
 				// Linking with the toolchain on linux appears to not search usr/
@@ -1139,22 +1080,21 @@ namespace UnrealBuildTool
 
 		// cache the location of NDK tools
 		protected bool bIsCrossCompiling;
-		protected string BaseLinuxPath;
-		protected string ClangPath;
-		protected string GCCPath;
-		protected string ArPath;
-		protected string LlvmArPath;
-		protected string RanlibPath;
-		protected string StripPath;
-		protected string ObjcopyPath;
-		protected string DumpSymsPath;
-		protected string BreakpadEncoderPath;
-		protected string MultiArchRoot;
+		protected string? BaseLinuxPath;
+		protected string? ClangPath;
+		protected string? ArPath;
+		protected string? LlvmArPath;
+		protected string? RanlibPath;
+		protected string? StripPath;
+		protected string? ObjcopyPath;
+		protected string? DumpSymsPath;
+		protected string? BreakpadEncoderPath;
+		protected string? MultiArchRoot;
 
 		/// <summary>
 		/// Version string of the current compiler, whether clang or gcc or whatever
 		/// </summary>
-		static string CompilerVersionString;
+		static string? CompilerVersionString;
 		/// <summary>
 		/// Major version of the current compiler, whether clang or gcc or whatever
 		/// </summary>
@@ -1183,11 +1123,6 @@ namespace UnrealBuildTool
 		/// Holds all the binaries for a particular target (except maybe the executable itself).
 		/// </summary>
 		private static List<FileItem> AllBinaries = new List<FileItem>();
-
-		/// <summary>
-		/// Tracks that information about used C++ library is only printed once
-		/// </summary>
-		private bool bHasPrintedBuildDetails = false;
 
 		/// <summary>
 		/// Checks if we actually can use LTO/PGO with this set of tools
@@ -1224,18 +1159,13 @@ namespace UnrealBuildTool
 		{
 			Log.TraceInformation("------- Build details --------");
 			Log.TraceInformation("Using {0}.", ToolchainInfo);
-			Log.TraceInformation("Using {0} ({1}) version '{2}' (string), {3} (major), {4} (minor), {5} (patch)",
-				String.IsNullOrEmpty(ClangPath) ? "gcc" : "clang",
-				String.IsNullOrEmpty(ClangPath) ? GCCPath : ClangPath,
-				CompilerVersionString, CompilerVersionMajor, CompilerVersionMinor, CompilerVersionPatch);
+			Log.TraceInformation("Using clang ({0}) version '{1}' (string), {2} (major), {3} (minor), {4} (patch)",
+				ClangPath, CompilerVersionString, CompilerVersionMajor, CompilerVersionMinor, CompilerVersionPatch);
 
-			if (UsingClang())
-			{
-				// inform the user which C++ library the engine is going to be compiled against - important for compatibility with third party code that uses STL
-				Log.TraceInformation("Using {0} standard C++ library.", ShouldUseLibcxx(CompileEnvironment.Architecture) ? "bundled libc++" : "compiler default (most likely libstdc++)");
-				Log.TraceInformation("Using {0}", UsingLld(CompileEnvironment.Architecture) ? "lld linker" : "default linker (ld)");
-				Log.TraceInformation("Using {0}", !String.IsNullOrEmpty(LlvmArPath) ? String.Format("llvm-ar : {0}", LlvmArPath) : String.Format("ar and ranlib: {0}, {1}", GetArPath(CompileEnvironment.Architecture), GetRanlibPath(CompileEnvironment.Architecture)));
-			}
+			// inform the user which C++ library the engine is going to be compiled against - important for compatibility with third party code that uses STL
+			Log.TraceInformation("Using {0} standard C++ library.", ShouldUseLibcxx(CompileEnvironment.Architecture) ? "bundled libc++" : "compiler default (most likely libstdc++)");
+			Log.TraceInformation("Using {0}", UsingLld(CompileEnvironment.Architecture) ? "lld linker" : "default linker (ld)");
+			Log.TraceInformation("Using {0}", !String.IsNullOrEmpty(LlvmArPath) ? String.Format("llvm-ar : {0}", LlvmArPath) : String.Format("ar and ranlib: {0}, {1}", GetArPath(CompileEnvironment.Architecture), GetRanlibPath(CompileEnvironment.Architecture)));
 
 			if (Options.HasFlag(LinuxToolChainOptions.EnableAddressSanitizer) ||
 				Options.HasFlag(LinuxToolChainOptions.EnableThreadSanitizer) ||
@@ -1287,52 +1217,12 @@ namespace UnrealBuildTool
 			Log.TraceInformation("------------------------------");
 		}
 
-		protected bool CheckSDKVersionFromFile(string VersionPath, out string ErrorMessage)
-		{
-			if (File.Exists(VersionPath))
-			{
-				StreamReader SDKVersionFile = new StreamReader(VersionPath);
-				string SDKVersionString = SDKVersionFile.ReadLine();
-				SDKVersionFile.Close();
-
-				if (SDKVersionString != null)
-				{
-					return PlatformSDK.CheckSDKCompatible(SDKVersionString, out ErrorMessage);
-				}
-			}
-
-			ErrorMessage = "Cannot use an old toolchain (missing " + PlatformSDK.SDKVersionFileName() + " file, assuming version earlier than v11)";
-			return false;
-		}
-
 		public override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
 		{
 			string Arguments = GetCLArguments_Global(CompileEnvironment);
 			string PCHArguments = "";
 
 			//var BuildPlatform = UEBuildPlatform.GetBuildPlatform(CompileEnvironment.Platform);
-
-			if (!bHasPrintedBuildDetails)
-			{
-				PrintBuildDetails(CompileEnvironment);
-
-				string LinuxDependenciesPath = Path.Combine(UnrealBuildTool.EngineDirectory.FullName, "Source/ThirdParty/Linux", PlatformSDK.HaveLinuxDependenciesFile());
-				if (!File.Exists(LinuxDependenciesPath))
-				{
-					throw new BuildException("Please make sure that Engine/Source/ThirdParty/Linux is complete (re - run Setup script if using a github build)");
-				}
-
-				if (!String.IsNullOrEmpty(MultiArchRoot))
-				{
-					string ErrorMessage;
-					if (!CheckSDKVersionFromFile(Path.Combine(MultiArchRoot, PlatformSDK.SDKVersionFileName()), out ErrorMessage))
-					{
-						throw new BuildException(ErrorMessage);
-					}
-				}
-
-				bHasPrintedBuildDetails = true;
-			}
 
 			if ((CompileEnvironment.bAllowLTCG || CompileEnvironment.bPGOOptimize || CompileEnvironment.bPGOProfile) && !CanUseAdvancedLinkerFeatures(CompileEnvironment.Architecture))
 			{
@@ -1341,14 +1231,14 @@ namespace UnrealBuildTool
 
 			if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Include)
 			{
-				PCHArguments += string.Format(" -include \"{0}\"", CompileEnvironment.PrecompiledHeaderIncludeFilename.FullName.Replace('\\', '/'));
+				PCHArguments += string.Format(" -include \"{0}\"", CompileEnvironment.PrecompiledHeaderIncludeFilename!.FullName.Replace('\\', '/'));
 			}
 
 			// Add include paths to the argument list.
 			foreach (DirectoryReference IncludePath in CompileEnvironment.UserIncludePaths)
 			{
 				string IncludePathString;
-				if (IncludePath.IsUnderDirectory(UnrealBuildTool.RootDirectory))
+				if (IncludePath.IsUnderDirectory(Unreal.RootDirectory))
 				{
 					IncludePathString = IncludePath.MakeRelativeTo(UnrealBuildTool.EngineSourceDirectory);
 				}
@@ -1432,7 +1322,7 @@ namespace UnrealBuildTool
 				{
 					if (CompileEnvironment.PrecompiledHeaderAction == PrecompiledHeaderAction.Include)
 					{
-						CompileAction.PrerequisiteItems.Add(CompileEnvironment.PrecompiledHeaderFile);
+						CompileAction.PrerequisiteItems.Add(CompileEnvironment.PrecompiledHeaderFile!);
 					}
 
 					// Add the object file to the produced item list.
@@ -1456,14 +1346,7 @@ namespace UnrealBuildTool
 				}
 
 				CompileAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
-				if (!UsingClang())
-				{
-					CompileAction.CommandPath = new FileReference(GCCPath);
-				}
-				else
-				{
-					CompileAction.CommandPath = new FileReference(ClangPath);
-				}
+				CompileAction.CommandPath = new FileReference(ClangPath!);
 
 				string AllArguments = (Arguments + FileArguments + CompileEnvironment.AdditionalArguments);
 				// all response lines should have / instead of \, but we cannot just bulk-replace it here since some \ are used to escape quotes, e.g. Definitions.Add("FOO=TEXT(\"Bar\")");
@@ -1476,7 +1359,7 @@ namespace UnrealBuildTool
 				CompileAction.CommandArguments = string.Format(" @\"{0}\"", CompilerResponseFileName);
 				CompileAction.PrerequisiteItems.Add(CompilerResponseFileItem);
 				CompileAction.CommandDescription = "Compile";
-				CompileAction.CommandVersion = CompilerVersionString;
+				CompileAction.CommandVersion = CompilerVersionString!;
 				CompileAction.StatusDescription = Path.GetFileName(SourceFile.AbsolutePath);
 				CompileAction.bIsGCCCompiler = true;
 
@@ -1491,7 +1374,7 @@ namespace UnrealBuildTool
 
 		protected virtual bool UsingLld(string Architecture)
 		{
-			return bUseLld && (Architecture.StartsWith("x86_64") || (CompilerVersionMajor >= 9));
+			return true;
 		}
 
 		/// <summary>
@@ -1566,7 +1449,7 @@ namespace UnrealBuildTool
 			return OutputFile;
 		}
 
-		public FileItem FixDependencies(LinkEnvironment LinkEnvironment, FileItem Executable, IActionGraphBuilder Graph)
+		public FileItem? FixDependencies(LinkEnvironment LinkEnvironment, FileItem Executable, IActionGraphBuilder Graph)
 		{
 			if (bUseFixdeps)
 			{
@@ -1582,7 +1465,7 @@ namespace UnrealBuildTool
 				string ExecuteSwitch = bUseCmdExe ? " /C" : ""; // avoid -c so scripts don't need +x
 				string ScriptName = bUseCmdExe ? "FixDependencies.bat" : "FixDependencies.sh";
 
-				FileItem FixDepsScript = FileItem.GetItemByFileReference(FileReference.Combine(LinkEnvironment.LocalShadowDirectory, ScriptName));
+				FileItem FixDepsScript = FileItem.GetItemByFileReference(FileReference.Combine(LinkEnvironment.LocalShadowDirectory!, ScriptName));
 
 				Action PostLinkAction = Graph.CreateAction(ActionType.Link);
 				PostLinkAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
@@ -1594,7 +1477,7 @@ namespace UnrealBuildTool
 
 				PostLinkAction.CommandArguments += bUseCmdExe ? " \"" : " -c '";
 
-				FileItem OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(LinkEnvironment.LocalShadowDirectory, Path.GetFileNameWithoutExtension(Executable.AbsolutePath) + ".link"));
+				FileItem OutputFile = FileItem.GetItemByFileReference(FileReference.Combine(LinkEnvironment.LocalShadowDirectory!, Path.GetFileNameWithoutExtension(Executable.AbsolutePath) + ".link"));
 
 				// Make sure we don't run this script until the all executables and shared libraries
 				// have been built.
@@ -1651,14 +1534,7 @@ namespace UnrealBuildTool
 			LinkAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
 
 			string LinkCommandString;
-			if (String.IsNullOrEmpty(ClangPath))
-			{
-				LinkCommandString = "\"" + GCCPath + "\"";
-			}
-			else
-			{
-				LinkCommandString = "\"" + ClangPath + "\"";
-			}
+			LinkCommandString = "\"" + ClangPath + "\"";
 
 			// Get link arguments.
 			LinkCommandString += GetLinkArguments(LinkEnvironment);
@@ -1689,7 +1565,7 @@ namespace UnrealBuildTool
 			}
 			// because the logic choosing between lld and ld is somewhat messy atm (lld fails to link .DSO due to bugs), make the name of the linker clear
 			LinkAction.CommandDescription += (LinkCommandString.Contains("-fuse-ld=lld")) ? " (lld)" : " (ld)";
-			LinkAction.CommandVersion = CompilerVersionString;
+			LinkAction.CommandVersion = CompilerVersionString!;
 			LinkAction.StatusDescription = Path.GetFileName(OutputFile.AbsolutePath);
 
 			// Add the output file to the command-line.
@@ -1715,7 +1591,7 @@ namespace UnrealBuildTool
 			IEnumerable<string> AdditionalLibraries = Enumerable.Concat(LinkEnvironment.SystemLibraries, LinkEnvironment.Libraries.Select(x => x.FullName));
 			foreach (string AdditionalLibrary in AdditionalLibraries)
 			{
-				string PathToLib = Path.GetDirectoryName(AdditionalLibrary);
+				string PathToLib = Path.GetDirectoryName(AdditionalLibrary)!;
 				if (!String.IsNullOrEmpty(PathToLib))
 				{
 					// make path absolute, because FixDependencies script may be executed in a different directory
@@ -1732,21 +1608,21 @@ namespace UnrealBuildTool
 
 					if (LinkEnvironment.bIsBuildingDLL)
 					{
-						// Remove the root UnrealBuildTool.RootDirectory from the RuntimeLibaryPath
-						string AdditionalLibraryRootPath = new FileReference(AdditionalLibrary).Directory.MakeRelativeTo(UnrealBuildTool.RootDirectory);
+						// Remove the root Unreal.RootDirectory from the RuntimeLibaryPath
+						string AdditionalLibraryRootPath = new FileReference(AdditionalLibrary).Directory.MakeRelativeTo(Unreal.RootDirectory);
 
 						// Figure out how many dirs we need to go back
-						string RelativeRootPath = UnrealBuildTool.RootDirectory.MakeRelativeTo(OutputFile.Location.Directory);
+						string RelativeRootPath = Unreal.RootDirectory.MakeRelativeTo(OutputFile.Location.Directory);
 
 						// Combine the two together ie. number of ../ + the path after the root
 						RelativePath = Path.Combine(RelativeRootPath, AdditionalLibraryRootPath);
 					}
 
 					// On Windows, MakeRelativeTo can silently fail if the engine and the project are located on different drives
-					if (CrossCompiling() && RelativePath.StartsWith(UnrealBuildTool.RootDirectory.FullName))
+					if (CrossCompiling() && RelativePath.StartsWith(Unreal.RootDirectory.FullName))
 					{
 						// do not replace directly, but take care to avoid potential double slashes or missed slashes
-						string PathFromRootDir = RelativePath.Replace(UnrealBuildTool.RootDirectory.FullName, "");
+						string PathFromRootDir = RelativePath.Replace(Unreal.RootDirectory.FullName, "");
 						// Path.Combine doesn't combine these properly
 						RelativePath = ((PathFromRootDir.StartsWith("\\") || PathFromRootDir.StartsWith("/")) ? "..\\..\\.." : "..\\..\\..\\") + PathFromRootDir;
 					}
@@ -1767,18 +1643,18 @@ namespace UnrealBuildTool
 				{
 					if (LinkEnvironment.bIsBuildingDLL)
 					{
-						// Remove the root UnrealBuildTool.RootDirectory from the RuntimeLibaryPath
-						string RuntimeLibraryRootPath = new DirectoryReference(RuntimeLibaryPath).MakeRelativeTo(UnrealBuildTool.RootDirectory);
+						// Remove the root Unreal.RootDirectory from the RuntimeLibaryPath
+						string RuntimeLibraryRootPath = new DirectoryReference(RuntimeLibaryPath).MakeRelativeTo(Unreal.RootDirectory);
 
 						// Figure out how many dirs we need to go back
-						string RelativeRootPath = UnrealBuildTool.RootDirectory.MakeRelativeTo(OutputFile.Location.Directory);
+						string RelativeRootPath = Unreal.RootDirectory.MakeRelativeTo(OutputFile.Location.Directory);
 
 						// Combine the two together ie. number of ../ + the path after the root
 						RelativePath = Path.Combine(RelativeRootPath, RuntimeLibraryRootPath);
 					}
 					else
 					{
-						string RelativeRootPath = new DirectoryReference(RuntimeLibaryPath).MakeRelativeTo(UnrealBuildTool.RootDirectory);
+						string RelativeRootPath = new DirectoryReference(RuntimeLibaryPath).MakeRelativeTo(Unreal.RootDirectory);
 
 						// We're assuming that the binary will be placed according to our ProjectName/Binaries/Platform scheme
 						RelativePath = Path.Combine("..", "..", "..", RelativeRootPath);
@@ -1786,10 +1662,10 @@ namespace UnrealBuildTool
 				}
 
 				// On Windows, MakeRelativeTo can silently fail if the engine and the project are located on different drives
-				if (CrossCompiling() && RelativePath.StartsWith(UnrealBuildTool.RootDirectory.FullName))
+				if (CrossCompiling() && RelativePath.StartsWith(Unreal.RootDirectory.FullName))
 				{
 					// do not replace directly, but take care to avoid potential double slashes or missed slashes
-					string PathFromRootDir = RelativePath.Replace(UnrealBuildTool.RootDirectory.FullName, "");
+					string PathFromRootDir = RelativePath.Replace(Unreal.RootDirectory.FullName, "");
 					// Path.Combine doesn't combine these properly
 					RelativePath = ((PathFromRootDir.StartsWith("\\") || PathFromRootDir.StartsWith("/")) ? "..\\..\\.." : "..\\..\\..\\") + PathFromRootDir;
 				}
@@ -1912,9 +1788,9 @@ namespace UnrealBuildTool
 			{
 				// libc++ and its abi lib
 				LinkCommandString += " -nodefaultlibs";
-				LinkCommandString += " -L" + "ThirdParty/Linux/LibCxx/lib/Linux/" + LinkEnvironment.Architecture + "/";
-				LinkCommandString += " " + "ThirdParty/Linux/LibCxx/lib/Linux/" + LinkEnvironment.Architecture + "/libc++.a";
-				LinkCommandString += " " + "ThirdParty/Linux/LibCxx/lib/Linux/" + LinkEnvironment.Architecture + "/libc++abi.a";
+				LinkCommandString += " -L" + "ThirdParty/Unix/LibCxx/lib/Unix/" + LinkEnvironment.Architecture + "/";
+				LinkCommandString += " " + "ThirdParty/Unix/LibCxx/lib/Unix/" + LinkEnvironment.Architecture + "/libc++.a";
+				LinkCommandString += " " + "ThirdParty/Unix/LibCxx/lib/Unix/" + LinkEnvironment.Architecture + "/libc++abi.a";
 				LinkCommandString += " -lm";
 				LinkCommandString += " -lc";
 				LinkCommandString += " -lpthread"; // pthread_mutex_trylock is missing from libc stubs
@@ -1948,7 +1824,7 @@ namespace UnrealBuildTool
 			}
 
 			string LinkScriptName = string.Format((bUseCmdExe ? "Link-{0}.link.bat" : "Link-{0}.link.sh"), OutputFile.Location.GetFileName());
-			string LinkScriptFullPath = Path.Combine(LinkEnvironment.LocalShadowDirectory.FullName, LinkScriptName);
+			string LinkScriptFullPath = Path.Combine(LinkEnvironment.LocalShadowDirectory!.FullName, LinkScriptName);
 			Log.TraceVerbose("Creating link script: {0}", LinkScriptFullPath);
 			Directory.CreateDirectory(Path.GetDirectoryName(LinkScriptFullPath));
 			using (StreamWriter LinkWriter = File.CreateText(LinkScriptFullPath))
@@ -2197,7 +2073,7 @@ namespace UnrealBuildTool
 					return OutputFiles;
 				}
 
-				FileItem FixDepsOutputFile = FixDependencies(BinaryLinkEnvironment, Executable, Graph);
+				FileItem? FixDepsOutputFile = FixDependencies(BinaryLinkEnvironment, Executable, Graph);
 				if (FixDepsOutputFile != null)
 				{
 					OutputFiles.Add(FixDepsOutputFile);
@@ -2208,7 +2084,7 @@ namespace UnrealBuildTool
 				// make build product of cross-referenced DSOs to be *.relinked_action_ran, so the relinking steps are executed
 				if (BinaryLinkEnvironment.bIsBuildingDLL && BinaryLinkEnvironment.bIsCrossReferenced)
 				{
-					FileReference RelinkedMapRef = FileReference.Combine(BinaryLinkEnvironment.LocalShadowDirectory, BinaryLinkEnvironment.OutputFilePath.GetFileNameWithoutExtension() + ".relinked_action_ran");
+					FileReference RelinkedMapRef = FileReference.Combine(BinaryLinkEnvironment.LocalShadowDirectory!, BinaryLinkEnvironment.OutputFilePath.GetFileNameWithoutExtension() + ".relinked_action_ran");
 					OutputFiles.Add(FileItem.GetItemByFileReference(RelinkedMapRef));
 				}
 			}

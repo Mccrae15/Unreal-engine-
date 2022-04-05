@@ -13,11 +13,22 @@
 	"Plugins": [
 		{
 			"Name": "PhysXVehicles",
+			"Enabled": false
+		},
+		{
+			"Name": "ChaosVehiclesPlugin",
 			"Enabled": true
 		},
 		{
 			"Name": "RawInput",
 			"Enabled": true
-		}
+		},
+		{
+			"Name": "ModelingToolsEditorMode",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		}		
 	]
 }

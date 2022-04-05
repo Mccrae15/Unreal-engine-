@@ -19,6 +19,7 @@
 #include "Logging/LogMacros.h"
 
 class IElectraPlayerRuntimeModule;
+class IElectraSafeMediaOptionInterface;
 class FElectraPlayerResourceDelegate;
 
 
@@ -101,11 +102,11 @@ public:
 	void SetLastAudioRenderedSampleTime(FTimespan SampleTime) override;
 	bool FlushOnSeekStarted() const override
 	{
-		return true;
+		return false;
 	}
 	bool FlushOnSeekCompleted() const override
 	{
-		return true;
+		return false;
 	}
 
 	bool GetPlayerFeatureFlag(EFeatureFlag flag) const override;
@@ -162,8 +163,10 @@ private:
 		void SendMediaEvent(EPlayerEvent Event) override;
 		void OnVideoFlush() override;
 		void OnAudioFlush() override;
+		void OnSubtitleFlush() override;
 		void PresentVideoFrame(const FVideoDecoderOutputPtr& InVideoFrame) override;
 		void PresentAudioFrame(const IAudioDecoderOutputPtr& InAudioFrame) override;
+		void PresentSubtitleSample(const ISubtitleDecoderOutputPtr& InSubtitleSample) override;
 		void PresentMetadataSample(const IMetaDataDecoderOutputPtr& InMetadataSample) override;
 		bool CanReceiveVideoSamples(int32 NumFrames) override;
 		bool CanReceiveAudioSamples(int32 NumFrames) override;
@@ -186,7 +189,7 @@ private:
 	FCriticalSection CallbackPointerLock;
 
 	/** Option interface */
-	const IMediaOptions* OptionInterface = nullptr;
+	TWeakPtr<IElectraSafeMediaOptionInterface, ESPMode::ThreadSafe> OptionInterface;
 
 	/** The media event handler */
 	IMediaEventSink* EventSink = nullptr;

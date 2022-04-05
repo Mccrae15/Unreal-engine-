@@ -39,8 +39,6 @@ void FUserInterfaceCommand::Run(  )
 	FConfigCacheIni::InitializeConfigSystem();
 	GetTargetPlatformManager();
 
-	FCoreStyle::ResetToDefault();
-
 	// load required modules
 	FModuleManager::Get().LoadModuleChecked("EditorStyle");
 	FModuleManager::Get().LoadModuleChecked("Messaging");
@@ -89,7 +87,7 @@ void FUserInterfaceCommand::Run(  )
 
 		FSlateApplication::Get().PumpMessages();
 		FSlateApplication::Get().Tick();
-		FTicker::GetCoreTicker().Tick(DeltaTime);
+		FTSTicker::GetCoreTicker().Tick(DeltaTime);
 		AutomationControllerModule.Tick();
 
 		// throttle frame rate

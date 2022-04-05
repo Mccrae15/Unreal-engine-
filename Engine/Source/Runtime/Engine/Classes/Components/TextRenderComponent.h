@@ -51,11 +51,11 @@ class ENGINE_API UTextRenderComponent : public UPrimitiveComponent
 
 	/** Text material */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Text)
-	class UMaterialInterface* TextMaterial;
+	TObjectPtr<class UMaterialInterface> TextMaterial;
 	
 	/** Text font */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Text)
-	class UFont* Font;
+	TObjectPtr<class UFont> Font;
 
 	/** Horizontal text alignment */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Text, meta=(DisplayName = "Horizontal Alignment"))
@@ -99,14 +99,6 @@ class ENGINE_API UTextRenderComponent : public UPrimitiveComponent
 
 	// -----------------------------
 	
-	/**
-	 * Change the text value and signal the primitives to be rebuilt 
-	 * The FString variant is deprecated in favor of the FText variant
-	 */
-	UE_DEPRECATED(4.8, "Passing text as FString is deprecated, please use FText instead (likely via a LOCTEXT).")
-	UFUNCTION(BlueprintCallable, Category="Rendering|Components|TextRender", meta=(DisplayName="Set Text (String)", ScriptNoExport, DeprecatedFunction, DeprecationMessage="Use the SetText function taking an FText instead."))
-	void SetText(const FString& Value);
-
 	/** Change the text value and signal the primitives to be rebuilt */
 	void SetText(const FText& Value);
 
@@ -175,7 +167,12 @@ class ENGINE_API UTextRenderComponent : public UPrimitiveComponent
 	//~ End UPrimitiveComponent Interface.
 
 	//~ Begin USceneComponent Interface.
+#if WITH_EDITOR
+	virtual bool GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty) override;
+#endif // WITH_EDITOR
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
+	// Note: this is required because GetRenderMatrix is overridden, and therefore the updated world-space bounds must be based on that (not the component transform)
+	virtual void UpdateBounds() override;
 	//~ End USceneComponent Interface.
 
 	//~ Begin UActorComponent Interface.

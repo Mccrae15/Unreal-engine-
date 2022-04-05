@@ -23,6 +23,12 @@ float3 DecodeVelocityFromTexture(float4 In);
 #include "/Engine/Generated/Material.ush"
 #include "/Engine/Generated/VertexFactory.ush" 
 
+#include "HairStrandsVertexFactoryCommon.ush"
+
+#ifndef USE_HAIR_TRIANGLE_STRIP
+	#error Hair triangle geometry type needs to be defined
+#endif
+
 #define SUPPORT_MATERIAL_PROPERTY 1
 uint MaterialPass_MacroGroupId;
 uint MaterialPass_MaterialId;  
@@ -48,14 +54,23 @@ struct FHairVertexData
 	bool   bIsValid;
 };
 
+// GPUCULL_TODO: this should be switched over to use Instance ID instead of Primitive ID.
 FVertexFactoryInterpolantsVSToPS GetInterpolants(uint PrimitiveId, uint HairPrimitiveId, inout FHairVertexData OutHairVertex)
 {
 	FMaterialVertexParameters Empty = (FMaterialVertexParameters)0;
 
 	FVertexFactoryInput Input;
-	Input.PrimitiveId = PrimitiveId;
+#if VF_USE_PRIMITIVE_SCENE_DATA
+	// GPUCULL_TODO: Making use of dynamic draw workaround, assumes no actual instancing used for these draws.
+	//               Will load the first instance data.
+	Input.InstanceIdOffset = PrimitiveId | (1U << 31U);
+	Input.DrawInstanceId = 0;
+#endif // VF_USE_PRIMITIVE_SCENE_DATA 
+#if USE_HAIR_TRIANGLE_STRIP
+	Input.VertexId = HairPrimitiveId * 2; // 6: the vertex factory expect triangles strip index. A quad is made of two triangles with indices: 0,1.
+#else
 	Input.VertexId = HairPrimitiveId * 6; // 6: the vertex factory expect triangles list index. A quad is made of two triangles with indices: 0,1,2,3,4,5.
-
+#endif
 	FVertexFactoryIntermediates	Intermediates = GetVertexFactoryIntermediates(Input);
 	FVertexFactoryInterpolantsVSToPS Interpolants = VertexFactoryGetInterpolantsVSToPS(Input, Intermediates, Empty);
 
@@ -127,8 +142,9 @@ FEvaluateOutput Evaluate(
 
 		Interpolants.TangentToWorld0 = normalize(Interpolants.TangentToWorld0);
 		Interpolants.TangentToWorld2 = normalize(Interpolants.TangentToWorld2);
-
+#if VF_USE_PRIMITIVE_SCENE_DATA
 		Interpolants.PrimitiveId	 = PrimitiveId;
+#endif // VF_USE_PRIMITIVE_SCENE_DATA
 		Interpolants.HairPrimitiveId = HairPrimitiveId0;
 		Interpolants.HairPrimitiveUV = float2(SegmentU, SegmentV);
 	}
@@ -186,27 +202,56 @@ FEvaluateOutput Evaluate(
 		float3 TranslatedWorldPosition = SvPositionToResolvedTranslatedWorld(SvPosition);
 		CalcMaterialParametersEx(MaterialParameters, PixelMaterialInputs, SvPosition, LocalScreenPosition, bIsFrontFace, TranslatedWorldPosition, TranslatedWorldPosition);
 
+#if PROJECT_STRATA && MATERIAL_IS_STRATA && MATERIAL_SHADINGMODEL_HAIR
+		FStrataBSDF HairBSDF = PixelMaterialInputs.FrontMaterial.Layers[0].BSDFs[0];
+
+		OutSample.BaseColor = HAIR_BASECOLOR(HairBSDF);
+		OutSample.Roughness = HAIR_ROUGHNESS(HairBSDF);
+		OutSample.Specular	= HAIR_SPECULAR(HairBSDF);
+		OutSample.Backlit	= HAIR_BACKLIT(HairBSDF);
+		OutSample.Emissive	= BSDF_GETEMISSIVE(HairBSDF);
+		float3 Tangent		= normalize(MaterialParameters.SharedLocalBases.Normals[BSDF_GETSHAREDLOCALBASISID(HairBSDF)]);
+		
+	#if HAIRSTRANDS_HAS_NORMAL_CONNECTED
+	  #if MATERIAL_TANGENTSPACENORMAL 
+		// Convert the tangent space input tangent 
+		// * from a frame with Z/(0,0,1) being up and Y/(0,1,0) being the main tangent direction (called green)
+		// * to   a frame with Y/(0,1,0) being up and Z/(0,0,1) being the main tangent direction (called blue)
+		const float3 TangentSpaceGreen = Tangent;
+		const float3 TangentSpaceBlue = float3(-TangentSpaceGreen.x, TangentSpaceGreen.z, TangentSpaceGreen.y);
+		OutSample.Tangent = mul(TangentSpaceBlue, MaterialParameters.TangentToWorld);
+		OutSample.Tangent = normalize(OutSample.Tangent);
+	  #else // Tangent in World space (likely provided by the HairAttributes node)
+		OutSample.Tangent = Tangent;
+	  #endif
+	#else
+		OutSample.Tangent = normalize(Interpolants.TangentToWorld2.xyz);
+	#endif
+#else
+
 		OutSample.BaseColor = GetMaterialBaseColor(PixelMaterialInputs);
 		OutSample.Roughness = GetMaterialRoughness(PixelMaterialInputs);
-		OutSample.Specular = GetMaterialSpecular(PixelMaterialInputs);
-		OutSample.Backlit = saturate(GetMaterialCustomData0(MaterialParameters));
-		OutSample.Emissive = GetMaterialEmissive(PixelMaterialInputs);
+		OutSample.Specular	= GetMaterialSpecular(PixelMaterialInputs);
+		OutSample.Backlit	= saturate(GetMaterialCustomData0(MaterialParameters));
+		OutSample.Emissive	= GetMaterialEmissive(PixelMaterialInputs);
+		float3 Tangent		= normalize(GetMaterialNormalRaw(PixelMaterialInputs));
 
 	#if HAIRSTRANDS_HAS_NORMAL_CONNECTED
 	  #if MATERIAL_TANGENTSPACENORMAL 
 		// Convert the tangent space input tangent 
 		// * from a frame with Z/(0,0,1) being up and Y/(0,1,0) being the main tangent direction (called green)
 		// * to   a frame with Y/(0,1,0) being up and Z/(0,0,1) being the main tangent direction (called blue)
-		const float3 TangentSpaceGreen = normalize(GetMaterialNormalRaw(PixelMaterialInputs));
+		const float3 TangentSpaceGreen = Tangent;
 		const float3 TangentSpaceBlue = float3(-TangentSpaceGreen.x, TangentSpaceGreen.z, TangentSpaceGreen.y);
 		OutSample.Tangent = mul(TangentSpaceBlue, MaterialParameters.TangentToWorld);
 		OutSample.Tangent = normalize(OutSample.Tangent);
 	  #else // Tangent in World space (likely provided by the HairAttributes node)
-		OutSample.Tangent = normalize(GetMaterialNormalRaw(PixelMaterialInputs));
+		OutSample.Tangent = Tangent;
 	  #endif
 	#else
 		OutSample.Tangent = normalize(Interpolants.TangentToWorld2.xyz);
 	#endif
+#endif
 
 		// this feature is only needed for development/editor - we can compile it out for a shipping build (see r.CompileShadersForDevelopment cvar help)
 	#if USE_DEVELOPMENT_SHADERS

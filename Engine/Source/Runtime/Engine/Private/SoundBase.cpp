@@ -2,12 +2,14 @@
 #include "Sound/SoundBase.h"
 
 #include "AudioDevice.h"
+#include "AudioParameter.h"
+#include "Engine/AssetUserData.h"
 #include "EngineDefines.h"
-#include "IAudioExtensionPlugin.h"
+#include "IAudioParameterInterfaceRegistry.h"
+#include "IAudioParameterTransmitter.h"
 #include "Sound/AudioSettings.h"
 #include "Sound/SoundClass.h"
 #include "Sound/SoundSubmix.h"
-#include "Engine/AssetUserData.h"
 
 
 USoundBase::USoundBase(const FObjectInitializer& ObjectInitializer)
@@ -64,7 +66,7 @@ float USoundBase::GetMaxDistance() const
 	return WORLD_MAX;
 }
 
-float USoundBase::GetDuration()
+float USoundBase::GetDuration() const
 {
 	return Duration;
 }
@@ -94,7 +96,12 @@ float USoundBase::GetPitchMultiplier()
 	return 1.f;
 }
 
-bool USoundBase::IsLooping()
+bool USoundBase::IsOneShot() const
+{
+	return !IsLooping();
+}
+
+bool USoundBase::IsLooping() const
 {
 	return (GetDuration() >= INDEFINITELY_LOOPING_DURATION);
 }
@@ -155,7 +162,7 @@ void USoundBase::GetConcurrencyHandles(TArray<FConcurrencyHandle>& OutConcurrenc
 	{
 		OutConcurrencyHandles.Add(ConcurrencyOverrides);
 	}
-	else if (ConcurrencySet.Num() > 0)
+	else if (!ConcurrencySet.IsEmpty())
 	{
 		for (const USoundConcurrency* Concurrency : ConcurrencySet)
 		{
@@ -170,7 +177,7 @@ void USoundBase::GetConcurrencyHandles(TArray<FConcurrencyHandle>& OutConcurrenc
 		if (const USoundConcurrency* DefaultConcurrency = AudioSettings->GetDefaultSoundConcurrency())
 		{
 			OutConcurrencyHandles.Emplace(*DefaultConcurrency);
-		}
+		}	
 	}
 }
 
@@ -197,9 +204,9 @@ void USoundBase::PostLoad()
 		bOutputToBusOnly_DEPRECATED = false;
 	}
 
-	const int32 LinkerUE4Version = GetLinkerUE4Version();
+	const FPackageFileVersion LinkerUEVersion = GetLinkerUEVersion();
 
-	if (LinkerUE4Version < VER_UE4_SOUND_CONCURRENCY_PACKAGE)
+	if (LinkerUEVersion < VER_UE4_SOUND_CONCURRENCY_PACKAGE)
 	{
 		bOverrideConcurrency = true;
 		ConcurrencyOverrides.bLimitToOwner = false;
@@ -276,5 +283,129 @@ void USoundBase::RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataCla
 
 const TArray<UAssetUserData*>* USoundBase::GetAssetUserDataArray() const
 {
-	return &AssetUserData;
+	return &ToRawPtrTArrayUnsafe(AssetUserData);
+}
+
+TUniquePtr<Audio::IParameterTransmitter> USoundBase::CreateParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams) const
+{
+	class FDefaultParameterTransmitter : public Audio::IParameterTransmitter
+	{
+		uint64 InstanceID = INDEX_NONE;
+		TArray<FAudioParameter> AudioParameters;
+
+	public:
+		FDefaultParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams)
+			: InstanceID(MoveTemp(InParams.InstanceID))
+			, AudioParameters(MoveTemp(InParams.DefaultParams))
+		{
+		}
+
+		virtual ~FDefaultParameterTransmitter() = default;
+
+		bool Reset() override
+		{
+			AudioParameters.Reset();
+			return true;
+		}
+
+		bool SetParameters(TArray<FAudioParameter>&& InParameters) override
+		{
+			FAudioParameter::Merge(MoveTemp(InParameters), AudioParameters);
+			return true;
+		}
+
+		uint64 GetInstanceID() const override
+		{
+			return InstanceID;
+		}
+
+		bool GetParameter(FName InName, FAudioParameter& OutValue) const override
+		{
+			if (const FAudioParameter* Param = FAudioParameter::FindParam(AudioParameters, InName))
+			{
+				OutValue = *Param;
+				return true;
+			}
+
+			return false;
+		}
+
+		TArray<UObject*> GetReferencedObjects() const override
+		{
+			TArray<UObject*> Objects;
+			for (const FAudioParameter& Param : AudioParameters)
+			{
+				if (Param.ObjectParam)
+				{
+					Objects.Add(Param.ObjectParam);
+				}
+
+				for (UObject* Object : Param.ArrayObjectParam)
+				{
+					if (Object)
+					{
+						Objects.Add(Object);
+					}
+				}
+			}
+
+			return Objects;
+		}
+
+		TUniquePtr<Audio::IParameterTransmitter> Clone() const override
+		{
+			return MakeUnique<FDefaultParameterTransmitter>(*this);
+		}
+	};
+
+	return MakeUnique<FDefaultParameterTransmitter>(MoveTemp(InParams));
+}
+
+void USoundBase::InitParameters(TArray<FAudioParameter>& InParametersToInit, FName InFeatureName)
+{
+	for (int32 i = InParametersToInit.Num() - 1; i >= 0; --i)
+	{
+		if (!IsParameterValid(InParametersToInit[i]))
+		{
+			InParametersToInit.RemoveAtSwap(i, 1, false /* bAllowShrinking */);
+		}
+	}
+}
+
+bool USoundBase::IsParameterValid(const FAudioParameter& InParameter) const
+{
+	if (InParameter.ParamName.IsNone())
+	{
+		return false;
+	}
+
+	switch (InParameter.ParamType)
+	{
+		case EAudioParameterType::BooleanArray:
+		case EAudioParameterType::FloatArray:
+		case EAudioParameterType::IntegerArray:
+		case EAudioParameterType::NoneArray:
+		case EAudioParameterType::ObjectArray:
+		case EAudioParameterType::StringArray:
+		case EAudioParameterType::String:
+		{
+			return false;
+		}
+
+		case EAudioParameterType::Object:
+		case EAudioParameterType::None:
+		{
+			if (InParameter.ObjectParam)
+			{
+				return InParameter.ObjectParam->GetClass()->IsChildOf(USoundWave::StaticClass());
+			}
+		}
+
+		default:
+		{
+			break;
+		}
+	}
+
+	return true;
 }

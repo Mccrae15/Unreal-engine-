@@ -8,9 +8,10 @@
 // Insights
 #include "Insights/MemoryProfiler/ViewModels/MemorySharedState.h"
 #include "Insights/MemoryProfiler/ViewModels/MemoryTag.h"
+#include "Insights/MemoryProfiler/ViewModels/MemoryTracker.h"
 #include "Insights/Table/ViewModels/BaseTreeNode.h"
 
-namespace Trace
+namespace TraceServices
 {
 	struct FMemoryProfilerAggregatedStats
 	{
@@ -65,7 +66,7 @@ public:
 public:
 	/** Initialization constructor for the MemTag node. */
 	explicit FMemTagNode(Insights::FMemoryTag* InMemTag)
-		: FBaseTreeNode(FName(*InMemTag->GetStatName()), false)
+		: FBaseTreeNode(FName(InMemTag->GetStatFullName(), 0), false)
 		, Type(EMemTagNodeType::MemTag)
 		, MemTag(InMemTag)
 	{
@@ -86,38 +87,36 @@ public:
 	/**
 	 * @return a type of this MemTag node or EMemTagNodeType::Group for group nodes.
 	 */
-	const EMemTagNodeType& GetType() const { return Type; }
+	EMemTagNodeType GetType() const { return Type; }
 
 	bool IsValidStat() const { return MemTag != nullptr; }
 	Insights::FMemoryTag* GetMemTag() const { return MemTag; }
 
 	Insights::FMemoryTagId GetMemTagId() const { return MemTag ? MemTag->GetId() : Insights::FMemoryTag::InvalidTagId; }
 
-	uint64 GetTrackers() const { return MemTag ? MemTag->GetTrackers() : 0; }
+	Insights::FMemoryTrackerId GetMemTrackerId() const { return MemTag ? MemTag->GetTrackerId() : Insights::FMemoryTracker::InvalidTrackerId; }
 	FText GetTrackerText() const;
 
 	FLinearColor GetColor() const { return MemTag ? MemTag->GetColor() : FLinearColor(0.5f, 0.5f, 0.5f, 1.0f); }
 	bool IsAddedToGraph() const { return MemTag ? MemTag->IsAddedToGraph() : false; }
 
 	FMemTagNodePtr GetParentTagNode() const { return ParentTagNode; }
+	Insights::FMemoryTag* GetParentMemTag() const { return ParentTagNode.IsValid() ? ParentTagNode->GetMemTag() : nullptr; }
 	void SetParentTagNode(FMemTagNodePtr NodePtr) { ParentTagNode = NodePtr; }
 
 	/**
 	 * @return the aggregated stats for this MemTag node.
 	 */
-	const Trace::FMemoryProfilerAggregatedStats& GetAggregatedStats() const { return AggregatedStats; }
+	const TraceServices::FMemoryProfilerAggregatedStats& GetAggregatedStats() const { return AggregatedStats; }
 
 	void ResetAggregatedStats();
-	void SetAggregatedStats(const Trace::FMemoryProfilerAggregatedStats& AggregatedStats);
-
-private:
-	void UpdateFullStatName();
+	//TODO: void SetAggregatedStats(const TraceServices::FMemoryProfilerAggregatedStats& AggregatedStats);
 
 private:
 	const EMemTagNodeType Type;
 	Insights::FMemoryTag* MemTag;
 	FMemTagNodePtr ParentTagNode;
-	Trace::FMemoryProfilerAggregatedStats AggregatedStats;
+	TraceServices::FMemoryProfilerAggregatedStats AggregatedStats;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

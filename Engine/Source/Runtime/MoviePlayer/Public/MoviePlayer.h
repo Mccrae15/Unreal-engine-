@@ -28,14 +28,14 @@ enum EMoviePlaybackType
 class FMovieViewport : public ISlateViewport, public TSharedFromThis<FMovieViewport>
 {
 public:
-	FMovieViewport() {}
+	FMovieViewport() : DefaultSize(ForceInitToZero) {}
 	~FMovieViewport() {}
 
 	/* ISlateViewport interface. */
 	virtual FIntPoint GetSize() const override
 	{
 		TSharedPtr<FSlateTexture2DRHIRef, ESPMode::ThreadSafe> SlateTextureSharedPtr = SlateTexture.Pin();
-		return SlateTextureSharedPtr.IsValid() ? FIntPoint(SlateTextureSharedPtr->GetWidth(), SlateTextureSharedPtr->GetHeight()) : FIntPoint();
+		return SlateTextureSharedPtr.IsValid() ? FIntPoint(SlateTextureSharedPtr->GetWidth(), SlateTextureSharedPtr->GetHeight()) : DefaultSize;
 	}
 
 	virtual class FSlateShaderResource* GetViewportRenderTargetTexture() const override
@@ -53,8 +53,17 @@ public:
 		SlateTexture = InTexture;
 	}
 
+	/** Sets the size to use when there is no texture. */
+	void SetDefaultSize(FIntPoint InSize)
+	{
+		DefaultSize = InSize;
+	}
+
 private:
 	TWeakPtr<FSlateTexture2DRHIRef, ESPMode::ThreadSafe> SlateTexture;
+
+	/** Size to use when we don't have a texture. */
+	FIntPoint DefaultSize;
 };
 
 
@@ -69,6 +78,9 @@ public:
 
 	virtual bool Init(const TArray<FString>& MoviePaths, TEnumAsByte<EMoviePlaybackType> inPlaybackType) = 0;
 	
+	/** Tells the movie streamer about the viewport interface that was active before us. */
+	virtual void PreviousViewportInterface(const TSharedPtr<ISlateViewport>& PreviousViewportInterface) {};
+
 	/** Forces the movie streamer to cancel what it's streaming and close. */
 	virtual void ForceCompletion() = 0;
 
@@ -196,6 +208,11 @@ public:
 	 */
 	virtual bool PlayEarlyStartupMovies() = 0;
 
+	/**
+	 * @return true if Initialize was called
+	 */
+	virtual bool IsInitialized() const = 0;
+
 	/** 
 	 * Starts playing the movie given the last FLoadingScreenAttributes passed in
 	 * @return true of a movie started playing.
@@ -232,6 +249,10 @@ public:
 	DECLARE_EVENT(IGameMoviePlayer, FOnMoviePlaybackStarted)
 	virtual FOnMoviePlaybackStarted& OnMoviePlaybackStarted() = 0;
 
+	/** Callback for when the game thread is blocked but you want to do some ticking. */
+	DECLARE_EVENT_OneParam(IGameMoviePlayer, FOnMoviePlaybackTick, float DeltaTime)
+	virtual FOnMoviePlaybackTick& OnMoviePlaybackTick() = 0;
+
 	DECLARE_EVENT(IGameMoviePlayer, FOnMoviePlaybackFinished)
 	virtual FOnMoviePlaybackFinished& OnMoviePlaybackFinished() = 0;
 
@@ -240,6 +261,8 @@ public:
 
 	/** Allows for a slate overlay widget to be set after playback. */
 	virtual void SetSlateOverlayWidget(TSharedPtr<SWidget> NewOverlayWidget) = 0;
+	/** Allows for a DPI scale to be set. */
+	virtual void SetViewportDPIScale(float InViewportDPIScale) {}
 
 	void BroadcastMoviePlaybackFinished() { OnMoviePlaybackFinished().Broadcast(); }
 	void BroadcastMovieClipFinished(const FString& MovieClipThatFinished) { OnMovieClipFinished().Broadcast(MovieClipThatFinished); }
@@ -254,6 +277,9 @@ public:
 	virtual void ForceCompletion() {};
 	virtual void Suspend() {};
 	virtual void Resume() {};
+
+	/** Call this to have the MoviePlayer play in blocking sections and not loadmap. */
+	virtual void SetIsPlayOnBlockingEnabled(bool bIsEnabled) {}
 };
 
 /** Creates the movie player */
@@ -269,4 +295,3 @@ MOVIEPLAYER_API IGameMoviePlayer& GetMoviePlayerRef();
 
 /** Returns true if the movie player is enabled. */
 bool MOVIEPLAYER_API IsMoviePlayerEnabled();
-

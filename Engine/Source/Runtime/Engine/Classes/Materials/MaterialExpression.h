@@ -16,8 +16,23 @@ class UEdGraphNode;
 class UMaterial;
 class UTexture;
 struct FPropertyChangedEvent;
+struct FMaterialShadingModelField;
 
-//@warning: FExpressionInput is mirrored in MaterialExpressionIO.h and manually "subclassed" in Material.h (FMaterialInput)
+class FMaterialHLSLGenerator;
+enum class EMaterialNewScopeFlag : uint8;
+
+namespace UE
+{
+namespace HLSLTree
+{
+class FScope;
+class FStatement;
+class FExpression;
+class FTextureParameterDeclaration;
+}
+}
+
+//@warning: FExpressionInput is mirrored in MaterialShared.h and manually "subclassed" in Material.h (FMaterialInput)
 #if !CPP      //noexport struct
 USTRUCT(noexport)
 struct FExpressionInput
@@ -25,7 +40,7 @@ struct FExpressionInput
 #if WITH_EDITORONLY_DATA
 	/** UMaterial expression that this input is connected to, or NULL if not connected. */
 	UPROPERTY()
-	class UMaterialExpression* Expression;
+	TObjectPtr<class UMaterialExpression> Expression;
 #endif
 
 	/** Index into Expression's outputs array that this input is connected to. */
@@ -40,6 +55,7 @@ struct FExpressionInput
 	FName InputName;
 
 #if WITH_EDITORONLY_DATA
+
 	UPROPERTY()
 	int32 Mask;
 
@@ -97,10 +113,61 @@ struct FExpressionOutput
 };
 #endif
 
+USTRUCT()
+struct FExpressionExecOutput
+{
+	GENERATED_BODY()
+public:
+#if WITH_EDITOR
+	ENGINE_API int32 Compile(class FMaterialCompiler* Compiler) const;
+
+	ENGINE_API void Connect(class UMaterialExpression* InExpression);
+
+	inline class UMaterialExpression* GetExpression() const { return Expression; }
+
+	/** Returns the statement for the expression connected to this input */ 
+	ENGINE_API bool GenerateHLSLStatements(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope) const;
+
+	/** Creates a new scope, and populates it with the expression connected to this input */
+	ENGINE_API UE::HLSLTree::FScope* NewScopeWithStatements(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope) const;
+	ENGINE_API UE::HLSLTree::FScope* NewScopeWithStatements(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, EMaterialNewScopeFlag Flags) const;
+#endif // WITH_EDITOR
+private:
+	UPROPERTY()
+	TObjectPtr<class UMaterialExpression> Expression = nullptr;
+};
+
+struct FExpressionExecOutputEntry
+{
+	FName Name;
+	FExpressionExecOutput* Output = nullptr;
+};
+
+enum class EMaterialGenerateHLSLStatus : uint8
+{
+	Success,
+	Error,
+};
+
+enum class EMaterialExpressionSetParameterValueFlags : uint32
+{
+	None = 0u,
+	SendPostEditChangeProperty = (1u << 0), // Send PostEditChangeProperty events for all properties that are modified
+	NoUpdateExpressionGuid = (1u << 1), // By default ExpressionGUI will be updated for static parameters
+	AssignGroupAndSortPriority  = (1u << 2), //  Update the Group and SortPriority along with parameter value
+};
+ENUM_CLASS_FLAGS(EMaterialExpressionSetParameterValueFlags);
+
 UCLASS(abstract, BlueprintType, hidecategories=Object)
 class ENGINE_API UMaterialExpression : public UObject
 {
 	GENERATED_UCLASS_BODY()
+
+	static constexpr int32 CompileExecutionOutputIndex = -2;
+
+#if WITH_EDITOR
+	static void InitializeNumExecutionInputs(TArrayView<UMaterialExpression*> Expressions);
+#endif
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
@@ -111,7 +178,11 @@ class ENGINE_API UMaterialExpression : public UObject
 
 	/** Expression's Graph representation */
 	UPROPERTY(transient)
-	UEdGraphNode*	GraphNode;
+	TObjectPtr<UEdGraphNode>	GraphNode;
+
+	/** If exists, expresssion containing this expression within its subgraph. */
+	UPROPERTY()
+	TObjectPtr<UMaterialExpression> SubgraphExpression;
 
 	/** Text of last error for this expression */
 	FString LastErrorText;
@@ -126,19 +197,22 @@ class ENGINE_API UMaterialExpression : public UObject
 	 * This is not necessarily the object which owns this expression, for example a preview material compiling a material function's expressions.
 	 */
 	UPROPERTY()
-	class UMaterial* Material;
+	TObjectPtr<class UMaterial> Material;
 
 	/** 
 	 * The material function that this expression is being used with, if any.
 	 * This will be NULL if the expression belongs to a function that is currently being edited, 
 	 */
 	UPROPERTY()
-	class UMaterialFunction* Function;
+	TObjectPtr<class UMaterialFunction> Function;
 
 #if WITH_EDITORONLY_DATA
 	/** A description that level designers can add (shows in the material editor UI). */
 	UPROPERTY(EditAnywhere, Category=MaterialExpression, meta=(MultiLine=true, DisplayAfter = "SortPriority"))
 	FString Desc;
+
+	/** Number of expressions connected to this expression's execution input */
+	int32 NumExecutionInputs;
 
 	/** Set to true by RecursiveUpdateRealtimePreview() if the expression's preview needs to be updated in realtime in the material editor. */
 	UPROPERTY()
@@ -229,7 +303,18 @@ class ENGINE_API UMaterialExpression : public UObject
 	 */	
 	virtual int32 Compile(class FMaterialCompiler* Compiler, int32 OutputIndex) { return INDEX_NONE; }
 	virtual int32 CompilePreview(class FMaterialCompiler* Compiler, int32 OutputIndex) { return Compile(Compiler, OutputIndex); }
-#endif
+
+	/**
+	 * A given UMaterial implementation should implement at least one of these methods in order to generate HLSL code
+	 * It's valid to implement more than one, if the expression can be used in multiple ways.
+	 * For example, a for-loop expression might generate a statement for the execution input, but also generate an expression to access the loop index
+	 * These methods replace the Compile() method; once we switch over to the new system, Compile() will be removed
+	 */
+	virtual EMaterialGenerateHLSLStatus GenerateHLSLStatements(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope);
+	virtual EMaterialGenerateHLSLStatus GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression* &OutExpression);
+	virtual EMaterialGenerateHLSLStatus GenerateHLSLTexture(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FTextureParameterDeclaration*& OutTexture);
+
+#endif // WITH_EDITOR
 
 	/**
 	* Fill the array with all textures dependence that should trig a recompile of the material.
@@ -263,6 +348,10 @@ class ENGINE_API UMaterialExpression : public UObject
 
 	virtual uint32 GetInputType(int32 InputIndex);
 	virtual uint32 GetOutputType(int32 OutputIndex);
+
+	virtual void GetExecOutputs(TArray<FExpressionExecOutputEntry>& Outputs);
+
+	virtual bool HasExecInput();
 
 	virtual FText GetCreationDescription() const;
 	virtual FText GetCreationName() const;
@@ -330,6 +419,16 @@ class ENGINE_API UMaterialExpression : public UObject
 	virtual bool IsResultMaterialAttributes(int32 OutputIndex) { return false; }
 
 	/**
+	 * Marks certain expression types as outputting Strata material. Allows the material functions to directly return a Strata material as output pin.
+	 */
+	virtual bool IsResultStrataMaterial(int32 OutputIndex) { return false; }
+
+	/**
+	 * Recursively parse nodes outputing strata material in order to gather all the possible shading models used in a material graph output a Strata material.
+	 */
+	virtual void GatherStrataMaterialInfo(FStrataMaterialInfo& StrataMaterialInfo, int32 OutputIndex) { }
+
+	/**
 	 * If true, discards the output index when caching this expression which allows more cases to re-use the output instead of adding a separate instruction
 	 */
 	virtual bool CanIgnoreOutputIndex() { return false; }
@@ -342,9 +441,14 @@ class ENGINE_API UMaterialExpression : public UObject
 
 #if WITH_EDITOR
 	/**
+	 * Check if input exppresion is directly connected to the material.
+	 */
+	virtual bool IsExpressionConnected(FExpressionInput* Input, int32 OutputIndex);
+
+	/**
 	 * Connects the specified input expression to the specified output of this expression.
 	 */
-	void ConnectExpression(FExpressionInput* Input, int32 OutputIndex);
+	virtual void ConnectExpression(FExpressionInput* Input, int32 OutputIndex);
 #endif // WITH_EDITOR
 
 	/** 
@@ -420,10 +524,15 @@ class ENGINE_API UMaterialExpression : public UObject
 	virtual bool HasAParameterName() const { return false; }
 	virtual void ValidateParameterName(const bool bAllowDuplicateName = true);
 	virtual bool HasClassAndNameCollision(UMaterialExpression* OtherExpression) const;
-	virtual void SetValueToMatchingExpression(UMaterialExpression* OtherExpression) {};
+
+	EMaterialParameterType GetParameterType() const;
 
 	virtual FName GetParameterName() const { return NAME_None; }
 	virtual void SetParameterName(const FName& Name) {}
+	virtual bool GetParameterValue(FMaterialParameterMetadata& OutMeta) const { return false; }
+	virtual bool SetParameterValue(const FName& Name, const FMaterialParameterMetadata& Meta, EMaterialExpressionSetParameterValueFlags Flags = EMaterialExpressionSetParameterValueFlags::None) { return false; }
+
+	virtual void GetLandscapeLayerNames(TArray<FName>& OutLayers) const {}
 
 	/**
 	 * Called after a node copy, once the Material and Function properties are set correctly and that all new expressions are added to Material->Expressions

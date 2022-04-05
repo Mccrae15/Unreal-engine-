@@ -51,9 +51,32 @@ public:
 	*/
 	bool IsValueEnabled(TWeakPtr<IPropertyHandle> WeakHandlePtr) const;
 	
+	// Argument struct for ExtractNumericMetadata, to make it easier to add new metadata to extract.
+	template <typename NumericType>
+	struct FNumericMetadata
+	{
+		TOptional<NumericType> MinValue;
+		TOptional<NumericType> MaxValue;
+		TOptional<NumericType> SliderMinValue;
+		TOptional<NumericType> SliderMaxValue;
+		NumericType SliderExponent;
+		NumericType Delta;
+		int32 LinearDeltaSensitivity;
+		int32 ShiftMouseMovePixelPerDelta;
+		bool bSupportDynamicSliderMaxValue;
+		bool bSupportDynamicSliderMinValue;
+	};
+
 	/** Utility function that will extract common Math related numeric metadata */	
 	template <typename NumericType>
-	DETAILCUSTOMIZATIONS_API static void ExtractNumericMetadata(TSharedRef<IPropertyHandle>& PropertyHandle, TOptional<NumericType>& MinValue, TOptional<NumericType>& MaxValue, TOptional<NumericType>& SliderMinValue, TOptional<NumericType>& SliderMaxValue, NumericType& SliderExponent, NumericType& Delta, int32 &ShiftMouseMovePixelPerDelta, bool& SupportDynamicSliderMaxValue, bool& SupportDynamicSliderMinValue);
+	DETAILCUSTOMIZATIONS_API static void ExtractNumericMetadata(TSharedRef<IPropertyHandle>& PropertyHandle, FNumericMetadata<NumericType>& MetadataOut);
+
+	template <typename NumericType>
+	UE_DEPRECATED(5.0, "Use ExtractNumericMetadata overload with struct argument instead.")
+	DETAILCUSTOMIZATIONS_API static void ExtractNumericMetadata(TSharedRef<IPropertyHandle>& PropertyHandle, TOptional<NumericType>& MinValue, 
+		TOptional<NumericType>& MaxValue, TOptional<NumericType>& SliderMinValue, TOptional<NumericType>& SliderMaxValue,
+		NumericType& SliderExponent, NumericType& Delta, int32& ShiftMouseMovePixelPerDelta, 
+		bool& bSupportDynamicSliderMaxValue, bool& bSupportDynamicSliderMinValue);
 
 protected:
 
@@ -122,6 +145,13 @@ protected:
 	template<typename NumericType>
 	void SetValue(NumericType NewValue, EPropertyValueSetFlags::Type Flags, TWeakPtr<IPropertyHandle> WeakHandlePtr);
 
+	/**
+	 * Gets the tooltip for the value. Displays the property name and the current value
+	 * 
+	 * @praram WeakHandlePtr Handle to the property to get the value from
+	 */
+	template <typename NumericType>
+	FText OnGetValueToolTip(TWeakPtr<IPropertyHandle> WeakHandlePtr) const;
 private:
 
 	/** Gets the brush to use for the lock icon. */

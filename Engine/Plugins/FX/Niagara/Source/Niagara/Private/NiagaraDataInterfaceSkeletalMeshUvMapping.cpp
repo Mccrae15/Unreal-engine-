@@ -6,6 +6,8 @@
 #include "NiagaraResourceArrayWriter.h"
 #include "NiagaraStats.h"
 
+DECLARE_CYCLE_STAT(TEXT("Niagara - SkelMesh - UvQuadTree Cpu"), STAT_NiagaraSkel_UvMapping_Cpu, STATGROUP_Niagara);
+DECLARE_CYCLE_STAT(TEXT("Niagara - SkelMesh - UvQuadTree Gpu"), STAT_NiagaraSkel_UvMapping_Gpu, STATGROUP_Niagara);
 
 template<bool UseFullPrecisionUv>
 struct FQuadTreeQueryHelper
@@ -98,7 +100,7 @@ struct FQuadTreeQueryHelper
 			float TriangleSegmentMin = FMath::Min3(FVector2D::DotProduct(A, SeparatingAxis), FVector2D::DotProduct(B, SeparatingAxis), FVector2D::DotProduct(C, SeparatingAxis));
 			float TriangleSegmentMax = FMath::Max3(FVector2D::DotProduct(A, SeparatingAxis), FVector2D::DotProduct(B, SeparatingAxis), FVector2D::DotProduct(C, SeparatingAxis));
 
-			if (AabbSegmentMin > TriangleSegmentMax || AabbSegmentMax < TriangleSegmentMax)
+			if (AabbSegmentMin > TriangleSegmentMax || AabbSegmentMax < TriangleSegmentMin)
 			{
 				return false;
 			}
@@ -158,14 +160,14 @@ FSkeletalMeshUvMappingHandle::~FSkeletalMeshUvMappingHandle()
 	}
 }
 
-FSkeletalMeshUvMappingHandle::FSkeletalMeshUvMappingHandle(FSkeletalMeshUvMappingHandle&& Other)
+FSkeletalMeshUvMappingHandle::FSkeletalMeshUvMappingHandle(FSkeletalMeshUvMappingHandle&& Other) noexcept
 {
 	Usage = Other.Usage;
 	UvMappingData = Other.UvMappingData;
 	Other.UvMappingData = nullptr;
 }
 
-FSkeletalMeshUvMappingHandle& FSkeletalMeshUvMappingHandle::operator=(FSkeletalMeshUvMappingHandle&& Other)
+FSkeletalMeshUvMappingHandle& FSkeletalMeshUvMappingHandle::operator=(FSkeletalMeshUvMappingHandle&& Other) noexcept
 {
 	if (this != &Other)
 	{
@@ -181,7 +183,7 @@ FSkeletalMeshUvMappingHandle::operator bool() const
 	return UvMappingData.IsValid();
 }
 
-bool FSkeletalMeshUvMapping::IsValidMeshObject(TWeakObjectPtr<USkeletalMesh>& MeshObject, int32 InLodIndex, int32 InUvSetIndex)
+bool FSkeletalMeshUvMapping::IsValidMeshObject(const TWeakObjectPtr<USkeletalMesh>& MeshObject, int32 InLodIndex, int32 InUvSetIndex)
 {
 	USkeletalMesh* Mesh = MeshObject.Get();
 
@@ -221,21 +223,27 @@ void FSkeletalMeshUvMappingHandle::FindOverlappingTriangles(const FVector2D& InU
 	}
 }
 
-int32 FSkeletalMeshUvMappingHandle::FindFirstTriangle(const FVector2D& InUv, float Tolerance, FVector& BarycentricCoord) const
+int32 FSkeletalMeshUvMappingHandle::FindFirstTriangle(const FVector2D& InUv, float Tolerance, FVector3f& BarycentricCoord) const
 {
 	if (UvMappingData)
 	{
-		return UvMappingData->FindFirstTriangle(InUv, Tolerance, BarycentricCoord);
+		FVector BarycentricCoord3d = FVector::ZeroVector;
+		int32 Tri = UvMappingData->FindFirstTriangle(InUv, Tolerance, BarycentricCoord3d);
+		BarycentricCoord = (FVector3f)BarycentricCoord3d;
+		return Tri;
 	}
 
 	return INDEX_NONE;
 }
 
-int32 FSkeletalMeshUvMappingHandle::FindFirstTriangle(const FBox2D& InUvBox, FVector& BarycentricCoord) const
+int32 FSkeletalMeshUvMappingHandle::FindFirstTriangle(const FBox2D& InUvBox, FVector3f& BarycentricCoord) const
 {
 	if (UvMappingData)
 	{
-		return UvMappingData->FindFirstTriangle(InUvBox, BarycentricCoord);
+		FVector BarycentricCoord3d = FVector::ZeroVector;
+		int32 Tri = UvMappingData->FindFirstTriangle(InUvBox, BarycentricCoord3d);
+		BarycentricCoord = (FVector3f)BarycentricCoord3d;
+		return Tri;
 	}
 	return INDEX_NONE;
 }
@@ -271,6 +279,10 @@ int32 FSkeletalMeshUvMappingHandle::GetLodIndex() const
 	return 0;
 }
 
+void FSkeletalMeshUvMappingHandle::PinAndInvalidateHandle()
+{
+	UvMappingData.Reset();
+}
 
 FSkeletalMeshUvMapping::FSkeletalMeshUvMapping(TWeakObjectPtr<USkeletalMesh> InMeshObject, int32 InLodIndex, int32 InUvSetIndex)
 	: LodIndex(InLodIndex)
@@ -279,9 +291,13 @@ FSkeletalMeshUvMapping::FSkeletalMeshUvMapping(TWeakObjectPtr<USkeletalMesh> InM
 	, TriangleIndexQuadTree(8 /* Internal node capacity */, 8 /* Maximum tree depth */)
 	, CpuQuadTreeUserCount(0)
 	, GpuQuadTreeUserCount(0)
-	, ReleasedByRT(false)
-	, QueuedForRelease(false)
 {
+}
+
+FSkeletalMeshUvMapping::~FSkeletalMeshUvMapping()
+{
+	ReleaseQuadTree();
+	ReleaseGpuQuadTree();
 }
 
 template<bool UseFullPrecisionUv>
@@ -314,6 +330,7 @@ void FSkeletalMeshUvMapping::BuildQuadTree()
 {
 	if (const FSkeletalMeshLODRenderData* LodRenderData = GetLodRenderData())
 	{
+		SCOPE_CYCLE_COUNTER(STAT_NiagaraSkel_UvMapping_Cpu);
 		if (LodRenderData->StaticVertexBuffers.StaticMeshVertexBuffer.GetUseFullPrecisionUVs())
 		{
 			BuildQuadTreeHelper<true>(TriangleIndexQuadTree, LodRenderData, UvSetIndex);
@@ -338,23 +355,24 @@ void FSkeletalMeshUvMapping::ReleaseQuadTree()
 
 void FSkeletalMeshUvMapping::BuildGpuQuadTree()
 {
-	FrozenQuadTreeProxy.Initialize(*this);
-	BeginInitResource(&FrozenQuadTreeProxy);
+	SCOPE_CYCLE_COUNTER(STAT_NiagaraSkel_UvMapping_Gpu);
+
+	check(FrozenQuadTreeProxy == nullptr);
+	FrozenQuadTreeProxy.Reset(new FSkeletalMeshUvMappingBufferProxy());
+	FrozenQuadTreeProxy->Initialize(*this);
+	BeginInitResource(FrozenQuadTreeProxy.Get());
 }
 
 void FSkeletalMeshUvMapping::ReleaseGpuQuadTree()
 {
-	QueuedForRelease = true;
-	ReleasedByRT = false;
-	FThreadSafeBool* Released = &ReleasedByRT;
-
-	BeginReleaseResource(&FrozenQuadTreeProxy);
-
-	ENQUEUE_RENDER_COMMAND(BeginDestroyCommand)(
-		[Released](FRHICommandListImmediate& RHICmdList)
+	if (FSkeletalMeshUvMappingBufferProxy* ProxyPtr = FrozenQuadTreeProxy.Release())
+	{
+		ENQUEUE_RENDER_COMMAND(BeginDestroyCommand)([RT_Proxy=ProxyPtr](FRHICommandListImmediate& RHICmdList)
 		{
-			*Released = true;
+			RT_Proxy->ReleaseResource();
+			delete RT_Proxy;
 		});
+	}
 }
 
 bool FSkeletalMeshUvMapping::IsUsed() const
@@ -365,7 +383,7 @@ bool FSkeletalMeshUvMapping::IsUsed() const
 
 bool FSkeletalMeshUvMapping::CanBeDestroyed() const
 {
-	return !IsUsed() && (!QueuedForRelease || ReleasedByRT);
+	return !IsUsed();
 }
 
 void FSkeletalMeshUvMapping::RegisterUser(FSkeletalMeshUvMappingUsage Usage, bool bNeedsDataImmediately)
@@ -498,7 +516,7 @@ const FSkeletalMeshLODRenderData* FSkeletalMeshUvMapping::GetLodRenderData() con
 
 const FSkeletalMeshUvMappingBufferProxy* FSkeletalMeshUvMapping::GetQuadTreeProxy() const
 {
-	return &FrozenQuadTreeProxy;
+	return FrozenQuadTreeProxy.Get();
 }
 
 void
@@ -510,7 +528,7 @@ FSkeletalMeshUvMappingBufferProxy::Initialize(const FSkeletalMeshUvMapping& UvMa
 void
 FSkeletalMeshUvMappingBufferProxy::InitRHI()
 {
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("UvMappingBuffer"));
 	CreateInfo.ResourceArray = &FrozenQuadTree;
 
 	const int32 BufferSize = FrozenQuadTree.Num();

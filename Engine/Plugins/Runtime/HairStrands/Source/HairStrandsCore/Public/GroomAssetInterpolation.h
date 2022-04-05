@@ -25,19 +25,28 @@ enum class EHairInterpolationWeight : uint8
 	Unknown		UMETA(Hidden),
 };
 
-UENUM()
-enum class EHairLODSelectionType : uint8
-{
-	Cpu		UMETA(DisplayName = "CPU", ToolTip = "Use CPU information for computing the LOD selection. This used the CPU object bounds, which is not always accurate, especially when the groom is bound to a skeletal mesh."),
-	Gpu		UMETA(DisplayName = "GPU", ToolTip = "Use GPU information for computing the LOD selection. This use GPU hair clusters information which are more precise, but also more expensive to compute"),
-};
-
 UENUM(BlueprintType)
 enum class EGroomGeometryType : uint8
 {
 	Strands,
 	Cards,
 	Meshes
+};
+
+UENUM(BlueprintType)
+enum class EGroomBindingType : uint8
+{
+	NoneBinding	UMETA(Hidden),
+	Rigid		UMETA(DisplayName = "Rigid",    ToolTip = "When attached to a skeltal mesh, the hair follow the provided attachement name"),
+	Skinning	UMETA(DisplayName = "Skinning", ToolTip = "When attached to a skeltal mesh, the hair follow the skin surface"),
+};
+
+UENUM(BlueprintType)
+enum class EGroomOverrideType : uint8
+{
+	Auto	UMETA(DisplayName = "Auto", ToolTip = "Use the asset value"),
+	Enable	UMETA(DisplayName = "Enable", ToolTip = "Override the asset value, and force enabled"),
+	Disable UMETA(DisplayName = "Disable", ToolTip = "Override the asset value, and force disabled")
 };
 
 USTRUCT(BlueprintType)
@@ -73,6 +82,15 @@ struct HAIRSTRANDSCORE_API FHairLODSettings
 	UPROPERTY(EditAnywhere, Category = "DecimationSettings", meta = (ToolTip = "If enable this LOD version will use cards representation"))
 	EGroomGeometryType GeometryType = EGroomGeometryType::Strands;
 
+	UPROPERTY(EditAnywhere, Category = "DecimationSettings", AdvancedDisplay, meta = (ToolTip = "If enable this LOD version will use the provided attachment points"))
+	EGroomBindingType BindingType = EGroomBindingType::Skinning;
+	
+	UPROPERTY(EditAnywhere, Category = "DecimationSettings", AdvancedDisplay, meta = (ToolTip = "Groom simulation"))
+	EGroomOverrideType Simulation = EGroomOverrideType::Auto;
+
+	UPROPERTY(EditAnywhere, Category = "DecimationSettings", AdvancedDisplay, meta = (DisplayName = "RBF Interpolation", ToolTip = "Global interpolation"))
+	EGroomOverrideType GlobalInterpolation = EGroomOverrideType::Auto;
+
 	bool operator==(const FHairLODSettings& A) const;
 };
 
@@ -105,8 +123,8 @@ struct HAIRSTRANDSCORE_API FHairInterpolationSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InterpolationSettings", meta = (ToolTip = "If checked, override imported guides with generated ones."))
 	bool bOverrideGuides;
 
-	/** Density factor for converting hair into guide curve if no guides are provided. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InterpolationSettings", meta = (ClampMin = "0", UIMin = "0", UIMax = "1.0"))
+	/** Density factor for converting hair into guide curve if no guides are provided. The value should be between 0 and 1, and can be thought as a ratio/percentage of strands used as guides.*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InterpolationSettings", meta = (ClampMin = "0", ClampMax = "1.0", UIMin = "0", UIMax = "1.0"))
 	float HairToGuideDensity;
 
 	/** Interpolation data quality. */

@@ -57,7 +57,7 @@ struct FWindowsPlatformProperties
 		
 		if (HAS_EDITOR_DATA)
 		{
-			return "Windows";
+			return "WindowsEditor";
 		}
 		
 		if (IS_CLIENT_ONLY)
@@ -65,7 +65,7 @@ struct FWindowsPlatformProperties
 			return "WindowsClient";
 		}
 
-		return "WindowsNoEditor";
+		return "Windows";
 	}
 
 	static FORCEINLINE bool RequiresCookedData()
@@ -96,11 +96,6 @@ struct FWindowsPlatformProperties
 	static FORCEINLINE bool SupportsMultipleGameInstances()
 	{
 		return true;
-	}
-
-	static FORCEINLINE bool SupportsTessellation()
-	{
-		return true; // DX11 compatible
 	}
 
 	static FORCEINLINE bool SupportsWindowedMode()
@@ -146,5 +141,5 @@ struct FWindowsPlatformProperties
 };
 
 #ifdef PROPERTY_HEADER_SHOULD_DEFINE_TYPE
-typedef FWindowsPlatformProperties<WITH_EDITORONLY_DATA, UE_SERVER, !WITH_SERVER_CODE> FPlatformProperties;
+typedef FWindowsPlatformProperties<WITH_EDITORONLY_DATA, UE_SERVER, !WITH_SERVER_CODE && !WITH_EDITOR> FPlatformProperties;
 #endif

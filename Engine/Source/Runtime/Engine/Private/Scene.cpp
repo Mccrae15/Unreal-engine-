@@ -4,6 +4,7 @@
 #include "HAL/IConsoleManager.h"
 #include "UObject/RenderingObjectVersion.h"
 #include "UObject/ReleaseObjectVersion.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
 
 void FColorGradingSettings::ExportToPostProcessSettings(FPostProcessSettings* OutPostProcessSettings) const
 {
@@ -33,6 +34,7 @@ void FColorGradingSettings::ExportToPostProcessSettings(FPostProcessSettings* Ou
 
 	OutPostProcessSettings->bOverride_ColorCorrectionShadowsMax = true;
 	OutPostProcessSettings->bOverride_ColorCorrectionHighlightsMin = true;
+	OutPostProcessSettings->bOverride_ColorCorrectionHighlightsMax = true;
 
 	OutPostProcessSettings->ColorSaturation = Global.Saturation;
 	OutPostProcessSettings->ColorContrast = Global.Contrast;
@@ -60,6 +62,7 @@ void FColorGradingSettings::ExportToPostProcessSettings(FPostProcessSettings* Ou
 
 	OutPostProcessSettings->ColorCorrectionShadowsMax = ShadowsMax;
 	OutPostProcessSettings->ColorCorrectionHighlightsMin = HighlightsMin;
+	OutPostProcessSettings->ColorCorrectionHighlightsMax = HighlightsMax;
 }
 
 void FFilmStockSettings::ExportToPostProcessSettings(FPostProcessSettings* OutPostProcessSettings) const
@@ -116,6 +119,7 @@ void FConvolutionBloomSettings::ExportToPostProcessSettings(FPostProcessSettings
 {
 	OutPostProcessSettings->bOverride_BloomConvolutionTexture = true;
 	OutPostProcessSettings->bOverride_BloomConvolutionSize = true;
+	OutPostProcessSettings->bOverride_BloomConvolutionScatterDispersion = true;
 	OutPostProcessSettings->bOverride_BloomConvolutionCenterUV = true;
 	OutPostProcessSettings->bOverride_BloomConvolutionPreFilterMin = true;
 	OutPostProcessSettings->bOverride_BloomConvolutionPreFilterMax = true;
@@ -124,6 +128,7 @@ void FConvolutionBloomSettings::ExportToPostProcessSettings(FPostProcessSettings
 
 	OutPostProcessSettings->BloomConvolutionTexture = Texture;
 	OutPostProcessSettings->BloomConvolutionSize = Size;
+	OutPostProcessSettings->BloomConvolutionScatterDispersion = ScatterDispersion;
 	OutPostProcessSettings->BloomConvolutionCenterUV = CenterUV;
 	OutPostProcessSettings->BloomConvolutionPreFilterMin = PreFilterMin;
 	OutPostProcessSettings->BloomConvolutionPreFilterMax = PreFilterMax;
@@ -304,6 +309,7 @@ static void DoPostProcessSettingsSanityCheck()
 
 		RenameMap.Add(TEXT("BloomConvolutionTexture"), TEXT(""));
 		RenameMap.Add(TEXT("BloomConvolutionSize"), TEXT(""));
+		RenameMap.Add(TEXT("BloomConvolutionScatterDispersion"), TEXT(""));
 		RenameMap.Add(TEXT("BloomConvolutionCenterUV"), TEXT(""));
 		RenameMap.Add(TEXT("BloomConvolutionPreFilterMin"), TEXT(""));
 		RenameMap.Add(TEXT("BloomConvolutionPreFilterMax"), TEXT(""));
@@ -335,19 +341,16 @@ static void DoPostProcessSettingsSanityCheck()
 
 	{
 		TMap<FString, FString> RenameMap;
-		// Old tonemapper parameters are ignored.
-		RenameMap.Add(TEXT("FilmWhitePoint"), TEXT(""));
-		RenameMap.Add(TEXT("FilmSaturation"), TEXT(""));
-		RenameMap.Add(TEXT("FilmChannelMixerRed"), TEXT(""));
-		RenameMap.Add(TEXT("FilmChannelMixerGreen"), TEXT(""));
-		RenameMap.Add(TEXT("FilmChannelMixerBlue"), TEXT(""));
-		RenameMap.Add(TEXT("FilmContrast"), TEXT(""));
-		RenameMap.Add(TEXT("FilmDynamicRange"), TEXT(""));
-		RenameMap.Add(TEXT("FilmHealAmount"), TEXT(""));
-		RenameMap.Add(TEXT("FilmToeAmount"), TEXT(""));
-		RenameMap.Add(TEXT("FilmShadowTint"), TEXT(""));
-		RenameMap.Add(TEXT("FilmShadowTintBlend"), TEXT(""));
-		RenameMap.Add(TEXT("FilmShadowTintAmount"), TEXT(""));
+		// Film Grain are ignored
+		RenameMap.Add(TEXT("FilmGrainIntensity"), TEXT(""));
+		RenameMap.Add(TEXT("FilmGrainIntensityShadows"), TEXT(""));
+		RenameMap.Add(TEXT("FilmGrainIntensityMidtones"), TEXT(""));
+		RenameMap.Add(TEXT("FilmGrainIntensityHighlights"), TEXT(""));
+		RenameMap.Add(TEXT("FilmGrainShadowsMax"), TEXT(""));
+		RenameMap.Add(TEXT("FilmGrainHighlightsMin"), TEXT(""));
+		RenameMap.Add(TEXT("FilmGrainHighlightsMax"), TEXT(""));
+		RenameMap.Add(TEXT("FilmGrainTexelSize"), TEXT(""));
+		RenameMap.Add(TEXT("FilmGrainTexture"), TEXT(""));
 		VerifyPostProcessingProperties(TEXT("Film"),
 			TArray<const UStruct*>({FFilmStockSettings::StaticStruct()}),
 			RenameMap);
@@ -392,24 +395,13 @@ FPostProcessSettings::FPostProcessSettings()
 
 	ColorCorrectionShadowsMax = 0.09f;
 	ColorCorrectionHighlightsMin = 0.5f;
+	ColorCorrectionHighlightsMax = 1.0f;
 
 	BlueCorrection = 0.6f;
 	ExpandGamut = 1.0f;
 	ToneCurveAmount = 1.0;
 
 	// default values:
-	FilmWhitePoint = FLinearColor(1.0f, 1.0f, 1.0f);
-	FilmSaturation = 1.0f;
-	FilmChannelMixerRed = FLinearColor(1.0f, 0.0f, 0.0f);
-	FilmChannelMixerGreen = FLinearColor(0.0f, 1.0f, 0.0f);
-	FilmChannelMixerBlue = FLinearColor(0.0f, 0.0f, 1.0f);
-	FilmContrast = 0.03f;
-	FilmDynamicRange = 4.0f;
-	FilmHealAmount = 1.0f;
-	FilmToeAmount = 1.0f;
-	FilmShadowTint = FLinearColor(1.0f, 1.0f, 1.0f);
-	FilmShadowTintBlend = 0.5;
-	FilmShadowTintAmount = 0.0;
 
 	// ACES settings
 	FilmSlope = 0.88f;
@@ -438,10 +430,11 @@ FPostProcessSettings::FPostProcessSettings()
 	Bloom5Size = 30.0f;
 	Bloom6Tint = FLinearColor(0.061f, 0.061f, 0.061f);
 	Bloom6Size = 64.0f;
+	BloomConvolutionScatterDispersion = 1.f;
 	BloomConvolutionSize = 1.f;
 	BloomConvolutionCenterUV = FVector2D(0.5f, 0.5f);
 #if WITH_EDITORONLY_DATA
-	BloomConvolutionPreFilter_DEPRECATED = FVector(-1.f, -1.f, -1.f);
+	BloomConvolutionPreFilter_DEPRECATED = FVector3f(-1.f, -1.f, -1.f);
 	DepthOfFieldMethod_DEPRECATED = EDepthOfFieldMethod::DOFM_MAX;
 #endif
 	BloomConvolutionPreFilterMin = 7.f;
@@ -452,13 +445,6 @@ FPostProcessSettings::FPostProcessSettings()
 	BloomDirtMaskTint = FLinearColor(0.5f, 0.5f, 0.5f);
 	AmbientCubemapIntensity = 1.0f;
 	AmbientCubemapTint = FLinearColor(1, 1, 1);
-	LPVIntensity = 1.0f;
-	LPVSize = 5312.0f;
-	LPVSecondaryOcclusionIntensity = 0.0f;
-	LPVSecondaryBounceIntensity = 0.0f;
-	LPVVplInjectionBias = 0.64f;
-	LPVGeometryVolumeBias = 0.384f;
-	LPVEmissiveInjectionIntensity = 1.0f;
 	CameraShutterSpeed = 60.f;
 	CameraISO = 100.f;
 	AutoExposureCalibrationConstant_DEPRECATED = 16.f;
@@ -494,14 +480,11 @@ FPostProcessSettings::FPostProcessSettings()
 
 	AutoExposureApplyPhysicalCameraExposure = 1;
 
-	LPVDirectionalOcclusionIntensity = 0.0f;
-	LPVDirectionalOcclusionRadius = 8.0f;
-	LPVDiffuseOcclusionExponent = 1.0f;
-	LPVSpecularOcclusionExponent = 7.0f;
-	LPVDiffuseOcclusionIntensity = 1.0f;
-	LPVSpecularOcclusionIntensity = 1.0f;
-	LPVFadeRange = 0.0f;
-	LPVDirectionalOcclusionFadeRange = 0.0f;
+	LocalExposureContrastScale = 1.0f;
+	LocalExposureDetailStrength = 1.0f;
+	LocalExposureBlurredLuminanceBlend = 0.6f;
+	LocalExposureBlurredLuminanceKernelSizePercent = 50.0f;
+	LocalExposureMiddleGreyBias = 0.0f;
 
 	// next value might get overwritten by r.DefaultFeature.LensFlare
 	LensFlareIntensity = 1.0f;
@@ -509,8 +492,19 @@ FPostProcessSettings::FPostProcessSettings()
 	LensFlareBokehSize = 3.0f;
 	LensFlareThreshold = 8.0f;
 	VignetteIntensity = 0.4f;
-	GrainIntensity = 0.0f;
-	GrainJitter = 0.0f;
+	GrainIntensity_DEPRECATED = 0.0f;
+	GrainJitter_DEPRECATED = 0.0f;
+
+	// Film Grain
+	FilmGrainIntensity = 0.0f;
+	FilmGrainIntensityShadows = 1.0f;
+	FilmGrainIntensityMidtones = 1.0f;
+	FilmGrainIntensityHighlights = 1.0f;
+	FilmGrainShadowsMax = 0.09f;
+	FilmGrainHighlightsMin = 0.5f;
+	FilmGrainHighlightsMax = 1.0f;
+	FilmGrainTexelSize = 1.0f;
+
 	// next value might get overwritten by r.DefaultFeature.AmbientOcclusion
 	AmbientOcclusionIntensity = .5f;
 	// next value might get overwritten by r.DefaultFeature.AmbientOcclusionStaticFraction
@@ -527,12 +521,21 @@ FPostProcessSettings::FPostProcessSettings()
 	AmbientOcclusionMipThreshold = 0.01f;
 	AmbientOcclusionRadiusInWS = false;
 	AmbientOcclusionTemporalBlendWeight = 0.1f;
-	RayTracingAO = 1;
+	RayTracingAO = 0;
 	RayTracingAOSamplesPerPixel = 1;
 	RayTracingAOIntensity = 1.0;
 	RayTracingAORadius = 200.0f;
+	DynamicGlobalIlluminationMethod = EDynamicGlobalIlluminationMethod::Lumen;
 	IndirectLightingColor = FLinearColor(1.0f, 1.0f, 1.0f);
 	IndirectLightingIntensity = 1.0f;
+	LumenSceneLightingQuality = 1;
+	LumenSceneDetail = 1.0f;
+	LumenSceneViewDistance = 20000.0f;
+	LumenSceneLightingUpdateSpeed = 1;
+	LumenFinalGatherQuality = 1;
+	LumenFinalGatherLightingUpdateSpeed = 1;
+	LumenMaxTraceDistance = 20000.0f;
+
 	ColorGradingIntensity = 1.0f;
 	RayTracingGIType = ERayTracingGlobalIlluminationType::Disabled;
 	RayTracingGIMaxBounces = 1;
@@ -567,9 +570,12 @@ FPostProcessSettings::FPostProcessSettings()
 	MotionBlurAmount = 0.5f;
 	MotionBlurMax = 5.0f;
 	MotionBlurTargetFPS = 30;
-	MotionBlurPerObjectSize = 0.5f;
-	ScreenPercentage = 100.0f;
-	ReflectionsType = EReflectionsType::RayTracing;
+	MotionBlurPerObjectSize = 0.f;
+	ScreenPercentage_DEPRECATED = 100.0f;
+	ReflectionsType_DEPRECATED = EReflectionsType::RayTracing;
+	ReflectionMethod = EReflectionMethod::Lumen;
+	LumenReflectionQuality = 1;
+	LumenRayLightingMode = ELumenRayLightingModeOverride::Default;
 	ScreenSpaceReflectionIntensity = 100.0f;
 	ScreenSpaceReflectionQuality = 50.0f;
 	ScreenSpaceReflectionMaxRoughness = 0.6f;
@@ -591,6 +597,7 @@ FPostProcessSettings::FPostProcessSettings()
 	PathTracingFilterWidth = 3.0f;
 	PathTracingEnableEmissive = 1;
 	PathTracingMaxPathExposure = 30.0f;
+	PathTracingEnableReferenceDOF = 0;
 	PathTracingEnableDenoiser = 1;
 	
 	bMobileHQGaussian = false;
@@ -631,21 +638,10 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_ColorOffsetHighlights(Settings.bOverride_ColorOffsetHighlights)
 	, bOverride_ColorCorrectionShadowsMax(Settings.bOverride_ColorCorrectionShadowsMax)
 	, bOverride_ColorCorrectionHighlightsMin(Settings.bOverride_ColorCorrectionHighlightsMin)
+	, bOverride_ColorCorrectionHighlightsMax(Settings.bOverride_ColorCorrectionHighlightsMax)
 	, bOverride_BlueCorrection(Settings.bOverride_BlueCorrection)
 	, bOverride_ExpandGamut(Settings.bOverride_ExpandGamut)
 	, bOverride_ToneCurveAmount(Settings.bOverride_ToneCurveAmount)
-	, bOverride_FilmWhitePoint(Settings.bOverride_FilmWhitePoint)
-	, bOverride_FilmSaturation(Settings.bOverride_FilmSaturation)
-	, bOverride_FilmChannelMixerRed(Settings.bOverride_FilmChannelMixerRed)
-	, bOverride_FilmChannelMixerGreen(Settings.bOverride_FilmChannelMixerGreen)
-	, bOverride_FilmChannelMixerBlue(Settings.bOverride_FilmChannelMixerBlue)
-	, bOverride_FilmContrast(Settings.bOverride_FilmContrast)
-	, bOverride_FilmDynamicRange(Settings.bOverride_FilmDynamicRange)
-	, bOverride_FilmHealAmount(Settings.bOverride_FilmHealAmount)
-	, bOverride_FilmToeAmount(Settings.bOverride_FilmToeAmount)
-	, bOverride_FilmShadowTint(Settings.bOverride_FilmShadowTint)
-	, bOverride_FilmShadowTintBlend(Settings.bOverride_FilmShadowTintBlend)
-	, bOverride_FilmShadowTintAmount(Settings.bOverride_FilmShadowTintAmount)
 	, bOverride_FilmSlope(Settings.bOverride_FilmSlope)
 	, bOverride_FilmToe(Settings.bOverride_FilmToe)
 	, bOverride_FilmShoulder(Settings.bOverride_FilmShoulder)
@@ -673,6 +669,7 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_Bloom6Size(Settings.bOverride_Bloom6Size)
 	, bOverride_BloomSizeScale(Settings.bOverride_BloomSizeScale)
 	, bOverride_BloomConvolutionTexture(Settings.bOverride_BloomConvolutionTexture)
+	, bOverride_BloomConvolutionScatterDispersion(Settings.bOverride_BloomConvolutionScatterDispersion)
 	, bOverride_BloomConvolutionSize(Settings.bOverride_BloomConvolutionSize)
 	, bOverride_BloomConvolutionCenterUV(Settings.bOverride_BloomConvolutionCenterUV)
 	//, bOverride_BloomConvolutionPreFilter_DEPRECATED(Settings.bOverride_BloomConvolutionPreFilter_DEPRECATED)
@@ -699,6 +696,11 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_AutoExposureApplyPhysicalCameraExposure(Settings.bOverride_AutoExposureApplyPhysicalCameraExposure)
 	, bOverride_HistogramLogMin(Settings.bOverride_HistogramLogMin)
 	, bOverride_HistogramLogMax(Settings.bOverride_HistogramLogMax)
+	, bOverride_LocalExposureContrastScale(Settings.bOverride_LocalExposureContrastScale)
+	, bOverride_LocalExposureDetailStrength(Settings.bOverride_LocalExposureDetailStrength)
+	, bOverride_LocalExposureBlurredLuminanceBlend(Settings.bOverride_LocalExposureBlurredLuminanceBlend)
+	, bOverride_LocalExposureBlurredLuminanceKernelSizePercent(Settings.bOverride_LocalExposureBlurredLuminanceKernelSizePercent)
+	, bOverride_LocalExposureMiddleGreyBias(Settings.bOverride_LocalExposureMiddleGreyBias)
 	, bOverride_LensFlareIntensity(Settings.bOverride_LensFlareIntensity)
 	, bOverride_LensFlareTint(Settings.bOverride_LensFlareTint)
 	, bOverride_LensFlareTints(Settings.bOverride_LensFlareTints)
@@ -706,8 +708,17 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_LensFlareBokehShape(Settings.bOverride_LensFlareBokehShape)
 	, bOverride_LensFlareThreshold(Settings.bOverride_LensFlareThreshold)
 	, bOverride_VignetteIntensity(Settings.bOverride_VignetteIntensity)
-	, bOverride_GrainIntensity(Settings.bOverride_GrainIntensity)
-	, bOverride_GrainJitter(Settings.bOverride_GrainJitter)
+	, bOverride_GrainIntensity_DEPRECATED(Settings.bOverride_GrainIntensity_DEPRECATED)
+	, bOverride_GrainJitter_DEPRECATED(Settings.bOverride_GrainJitter_DEPRECATED)
+	, bOverride_FilmGrainIntensity(Settings.bOverride_FilmGrainIntensity)
+	, bOverride_FilmGrainIntensityShadows(Settings.bOverride_FilmGrainIntensityShadows)
+	, bOverride_FilmGrainIntensityMidtones(Settings.bOverride_FilmGrainIntensityMidtones)
+	, bOverride_FilmGrainIntensityHighlights(Settings.bOverride_FilmGrainIntensityHighlights)
+	, bOverride_FilmGrainShadowsMax(Settings.bOverride_FilmGrainShadowsMax)
+	, bOverride_FilmGrainHighlightsMin(Settings.bOverride_FilmGrainHighlightsMin)
+	, bOverride_FilmGrainHighlightsMax(Settings.bOverride_FilmGrainHighlightsMax)
+	, bOverride_FilmGrainTexelSize(Settings.bOverride_FilmGrainTexelSize)
+	, bOverride_FilmGrainTexture(Settings.bOverride_FilmGrainTexture)
 	, bOverride_AmbientOcclusionIntensity(Settings.bOverride_AmbientOcclusionIntensity)
 	, bOverride_AmbientOcclusionStaticFraction(Settings.bOverride_AmbientOcclusionStaticFraction)
 	, bOverride_AmbientOcclusionRadius(Settings.bOverride_AmbientOcclusionRadius)
@@ -726,21 +737,6 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_RayTracingAOSamplesPerPixel(Settings.bOverride_RayTracingAOSamplesPerPixel)
 	, bOverride_RayTracingAOIntensity(Settings.bOverride_RayTracingAOIntensity)
 	, bOverride_RayTracingAORadius(Settings.bOverride_RayTracingAORadius)
-	, bOverride_LPVIntensity(Settings.bOverride_LPVIntensity)
-	, bOverride_LPVDirectionalOcclusionIntensity(Settings.bOverride_LPVDirectionalOcclusionIntensity)
-	, bOverride_LPVDirectionalOcclusionRadius(Settings.bOverride_LPVDirectionalOcclusionRadius)
-	, bOverride_LPVDiffuseOcclusionExponent(Settings.bOverride_WhiteTemp)
-	, bOverride_LPVSpecularOcclusionExponent(Settings.bOverride_LPVSpecularOcclusionExponent)
-	, bOverride_LPVDiffuseOcclusionIntensity(Settings.bOverride_LPVDiffuseOcclusionIntensity)
-	, bOverride_LPVSpecularOcclusionIntensity(Settings.bOverride_LPVSpecularOcclusionIntensity)
-	, bOverride_LPVSize(Settings.bOverride_LPVSize)
-	, bOverride_LPVSecondaryOcclusionIntensity(Settings.bOverride_LPVSecondaryOcclusionIntensity)
-	, bOverride_LPVSecondaryBounceIntensity(Settings.bOverride_LPVSecondaryBounceIntensity)
-	, bOverride_LPVGeometryVolumeBias(Settings.bOverride_LPVGeometryVolumeBias)
-	, bOverride_LPVVplInjectionBias(Settings.bOverride_LPVVplInjectionBias)
-	, bOverride_LPVEmissiveInjectionIntensity(Settings.bOverride_LPVEmissiveInjectionIntensity)
-	, bOverride_LPVFadeRange(Settings.bOverride_LPVFadeRange)
-	, bOverride_LPVDirectionalOcclusionFadeRange(Settings.bOverride_LPVDirectionalOcclusionFadeRange)
 	, bOverride_IndirectLightingColor(Settings.bOverride_IndirectLightingColor)
 	, bOverride_IndirectLightingIntensity(Settings.bOverride_IndirectLightingIntensity)
 	, bOverride_ColorGradingIntensity(Settings.bOverride_ColorGradingIntensity)
@@ -765,12 +761,13 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_MotionBlurAmount(Settings.bOverride_MotionBlurAmount)
 	, bOverride_MotionBlurMax(Settings.bOverride_MotionBlurMax)
 	, bOverride_MotionBlurPerObjectSize(Settings.bOverride_MotionBlurPerObjectSize)
-	, bOverride_ScreenPercentage(Settings.bOverride_ScreenPercentage)
+	, bOverride_ScreenPercentage_DEPRECATED(Settings.bOverride_ScreenPercentage_DEPRECATED)
+	, bOverride_ReflectionMethod(Settings.bOverride_ReflectionMethod)
+	, bOverride_LumenReflectionQuality(Settings.bOverride_LumenReflectionQuality)
 	, bOverride_ScreenSpaceReflectionIntensity(Settings.bOverride_ScreenSpaceReflectionIntensity)
 	, bOverride_ScreenSpaceReflectionQuality(Settings.bOverride_ScreenSpaceReflectionQuality)
 	, bOverride_ScreenSpaceReflectionMaxRoughness(Settings.bOverride_ScreenSpaceReflectionMaxRoughness)
 	, bOverride_ScreenSpaceReflectionRoughnessScale(Settings.bOverride_ScreenSpaceReflectionRoughnessScale)
-	, bOverride_ReflectionsType(Settings.bOverride_ReflectionsType)
 	, bOverride_RayTracingReflectionsMaxRoughness(Settings.bOverride_RayTracingReflectionsMaxRoughness)
 	, bOverride_RayTracingReflectionsMaxBounces(Settings.bOverride_RayTracingReflectionsMaxBounces)
 	, bOverride_RayTracingReflectionsSamplesPerPixel(Settings.bOverride_RayTracingReflectionsSamplesPerPixel)
@@ -782,6 +779,15 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_RayTracingTranslucencySamplesPerPixel(Settings.bOverride_RayTracingTranslucencySamplesPerPixel)
 	, bOverride_RayTracingTranslucencyShadows(Settings.bOverride_RayTracingTranslucencyShadows)
 	, bOverride_RayTracingTranslucencyRefraction(Settings.bOverride_RayTracingTranslucencyRefraction)
+	, bOverride_DynamicGlobalIlluminationMethod(Settings.bOverride_DynamicGlobalIlluminationMethod)
+    , bOverride_LumenSceneLightingQuality(Settings.bOverride_LumenSceneLightingQuality)
+    , bOverride_LumenSceneDetail(Settings.bOverride_LumenSceneDetail)
+	, bOverride_LumenSceneViewDistance(Settings.bOverride_LumenSceneViewDistance)
+	, bOverride_LumenSceneLightingUpdateSpeed(Settings.bOverride_LumenSceneLightingUpdateSpeed)
+    , bOverride_LumenFinalGatherQuality(Settings.bOverride_LumenFinalGatherQuality)
+    , bOverride_LumenFinalGatherLightingUpdateSpeed(Settings.bOverride_LumenFinalGatherLightingUpdateSpeed)
+    , bOverride_LumenMaxTraceDistance(Settings.bOverride_LumenMaxTraceDistance)
+	, bOverride_LumenRayLightingMode(Settings.bOverride_LumenRayLightingMode)
 	, bOverride_RayTracingGI(Settings.bOverride_RayTracingGI)
 	, bOverride_RayTracingGIMaxBounces(Settings.bOverride_RayTracingGIMaxBounces)
 	, bOverride_RayTracingGISamplesPerPixel(Settings.bOverride_RayTracingGISamplesPerPixel)
@@ -790,6 +796,7 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, bOverride_PathTracingFilterWidth(Settings.bOverride_PathTracingFilterWidth)
 	, bOverride_PathTracingEnableEmissive(Settings.bOverride_PathTracingEnableEmissive)
 	, bOverride_PathTracingMaxPathExposure(Settings.bOverride_PathTracingMaxPathExposure)
+	, bOverride_PathTracingEnableReferenceDOF(Settings.bOverride_PathTracingEnableReferenceDOF)
 	, bOverride_PathTracingEnableDenoiser(Settings.bOverride_PathTracingEnableDenoiser)
 
 	, bMobileHQGaussian(Settings.bMobileHQGaussian)
@@ -819,6 +826,7 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, ColorGainHighlights(Settings.ColorGainHighlights)
 	, ColorOffsetHighlights(Settings.ColorOffsetHighlights)
 	, ColorCorrectionHighlightsMin(Settings.ColorCorrectionHighlightsMin)
+	, ColorCorrectionHighlightsMax(Settings.ColorCorrectionHighlightsMax)
 	, ColorCorrectionShadowsMax(Settings.ColorCorrectionShadowsMax)
 	, BlueCorrection(Settings.BlueCorrection)
 	, ExpandGamut(Settings.ExpandGamut)
@@ -828,18 +836,6 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, FilmShoulder(Settings.FilmShoulder)
 	, FilmBlackClip(Settings.FilmBlackClip)
 	, FilmWhiteClip(Settings.FilmWhiteClip)
-	, FilmWhitePoint(Settings.FilmWhitePoint)
-	, FilmShadowTint(Settings.FilmShadowTint)
-	, FilmShadowTintBlend(Settings.FilmShadowTintBlend)
-	, FilmShadowTintAmount(Settings.FilmShadowTintAmount)
-	, FilmSaturation(Settings.FilmSaturation)
-	, FilmChannelMixerRed(Settings.FilmChannelMixerRed)
-	, FilmChannelMixerGreen(Settings.FilmChannelMixerGreen)
-	, FilmChannelMixerBlue(Settings.FilmChannelMixerBlue)
-	, FilmContrast(Settings.FilmContrast)
-	, FilmToeAmount(Settings.FilmToeAmount)
-	, FilmHealAmount(Settings.FilmHealAmount)
-	, FilmDynamicRange(Settings.FilmDynamicRange)
 	, SceneColorTint(Settings.SceneColorTint)
 	, SceneFringeIntensity(Settings.SceneFringeIntensity)
 	, ChromaticAberrationStartOffset(Settings.ChromaticAberrationStartOffset)
@@ -858,6 +854,7 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, Bloom4Tint(Settings.Bloom4Tint)
 	, Bloom5Tint(Settings.Bloom5Tint)
 	, Bloom6Tint(Settings.Bloom6Tint)
+	, BloomConvolutionScatterDispersion(Settings.BloomConvolutionScatterDispersion)
 	, BloomConvolutionSize(Settings.BloomConvolutionSize)
 	, BloomConvolutionTexture(Settings.BloomConvolutionTexture)
 	, BloomConvolutionCenterUV(Settings.BloomConvolutionCenterUV)
@@ -869,6 +866,30 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, BloomDirtMask(Settings.BloomDirtMask)
 	, BloomDirtMaskIntensity(Settings.BloomDirtMaskIntensity)
 	, BloomDirtMaskTint(Settings.BloomDirtMaskTint)
+	, DynamicGlobalIlluminationMethod(Settings.DynamicGlobalIlluminationMethod)
+	, IndirectLightingColor(Settings.IndirectLightingColor)
+	, IndirectLightingIntensity(Settings.IndirectLightingIntensity)
+	, LumenSceneLightingQuality(Settings.LumenSceneLightingQuality)
+	, LumenSceneDetail(Settings.LumenSceneDetail)
+	, LumenSceneViewDistance(Settings.LumenSceneViewDistance)
+	, LumenSceneLightingUpdateSpeed(Settings.LumenSceneLightingUpdateSpeed)
+	, LumenFinalGatherQuality(Settings.LumenFinalGatherQuality)
+	, LumenFinalGatherLightingUpdateSpeed(Settings.LumenFinalGatherLightingUpdateSpeed)
+	, LumenMaxTraceDistance(Settings.LumenMaxTraceDistance)
+	, RayTracingGIType(Settings.RayTracingGIType)
+	, RayTracingGIMaxBounces(Settings.RayTracingGIMaxBounces)
+	, RayTracingGISamplesPerPixel(Settings.RayTracingGISamplesPerPixel)
+	, ReflectionMethod(Settings.ReflectionMethod)
+	, LumenReflectionQuality(Settings.LumenReflectionQuality)
+	, LumenRayLightingMode(Settings.LumenRayLightingMode)
+	, ScreenSpaceReflectionIntensity(Settings.ScreenSpaceReflectionIntensity)
+	, ScreenSpaceReflectionQuality(Settings.ScreenSpaceReflectionQuality)
+	, ScreenSpaceReflectionMaxRoughness(Settings.ScreenSpaceReflectionMaxRoughness)
+	, RayTracingReflectionsMaxRoughness(Settings.RayTracingReflectionsMaxRoughness)
+	, RayTracingReflectionsMaxBounces(Settings.RayTracingReflectionsMaxBounces)
+	, RayTracingReflectionsSamplesPerPixel(Settings.RayTracingReflectionsSamplesPerPixel)
+	, RayTracingReflectionsShadows(Settings.RayTracingReflectionsShadows)
+	, RayTracingReflectionsTranslucency(Settings.RayTracingReflectionsTranslucency)
 	, AmbientCubemapTint(Settings.AmbientCubemapTint)
 	, AmbientCubemapIntensity(Settings.AmbientCubemapIntensity)
 	, AmbientCubemap(Settings.AmbientCubemap)
@@ -890,14 +911,28 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, HistogramLogMin(Settings.HistogramLogMin)
 	, HistogramLogMax(Settings.HistogramLogMax)
 	, AutoExposureCalibrationConstant_DEPRECATED(Settings.AutoExposureCalibrationConstant_DEPRECATED)
+	, LocalExposureContrastScale(Settings.LocalExposureContrastScale)
+	, LocalExposureDetailStrength(Settings.LocalExposureDetailStrength)
+	, LocalExposureBlurredLuminanceBlend(Settings.LocalExposureBlurredLuminanceBlend)
+	, LocalExposureBlurredLuminanceKernelSizePercent(Settings.LocalExposureBlurredLuminanceKernelSizePercent)
+	, LocalExposureMiddleGreyBias(Settings.LocalExposureMiddleGreyBias)
 	, LensFlareIntensity(Settings.LensFlareIntensity)
 	, LensFlareTint(Settings.LensFlareTint)
 	, LensFlareBokehSize(Settings.LensFlareBokehSize)
 	, LensFlareThreshold(Settings.LensFlareThreshold)
 	, LensFlareBokehShape(Settings.LensFlareBokehShape)
 	, VignetteIntensity(Settings.VignetteIntensity)
-	, GrainJitter(Settings.GrainJitter)
-	, GrainIntensity(Settings.GrainIntensity)
+	, GrainJitter_DEPRECATED(Settings.GrainJitter_DEPRECATED)
+	, GrainIntensity_DEPRECATED(Settings.GrainIntensity_DEPRECATED)
+	, FilmGrainIntensity(Settings.FilmGrainIntensity)
+	, FilmGrainIntensityShadows(Settings.FilmGrainIntensityShadows)
+	, FilmGrainIntensityMidtones(Settings.FilmGrainIntensityMidtones)
+	, FilmGrainIntensityHighlights(Settings.FilmGrainIntensityHighlights)
+	, FilmGrainShadowsMax(Settings.FilmGrainShadowsMax)
+	, FilmGrainHighlightsMin(Settings.FilmGrainHighlightsMin)
+	, FilmGrainHighlightsMax(Settings.FilmGrainHighlightsMax)
+	, FilmGrainTexelSize(Settings.FilmGrainTexelSize)
+	, FilmGrainTexture(Settings.FilmGrainTexture)
 	, AmbientOcclusionIntensity(Settings.AmbientOcclusionIntensity)
 	, AmbientOcclusionStaticFraction(Settings.AmbientOcclusionStaticFraction)
 	, AmbientOcclusionRadius(Settings.AmbientOcclusionRadius)
@@ -916,11 +951,6 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, RayTracingAOSamplesPerPixel(Settings.RayTracingAOSamplesPerPixel)
 	, RayTracingAOIntensity(Settings.RayTracingAOIntensity)
 	, RayTracingAORadius(Settings.RayTracingAORadius)
-	, IndirectLightingColor(Settings.IndirectLightingColor)
-	, IndirectLightingIntensity(Settings.IndirectLightingIntensity)
-	, RayTracingGIType(Settings.RayTracingGIType)
-	, RayTracingGIMaxBounces(Settings.RayTracingGIMaxBounces)
-	, RayTracingGISamplesPerPixel(Settings.RayTracingGISamplesPerPixel)
 	, ColorGradingIntensity(Settings.ColorGradingIntensity)
 	, ColorGradingLUT(Settings.ColorGradingLUT)
 	, DepthOfFieldSensorWidth(Settings.DepthOfFieldSensorWidth)
@@ -940,31 +970,6 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, MotionBlurMax(Settings.MotionBlurMax)
 	, MotionBlurTargetFPS(Settings.MotionBlurTargetFPS)
 	, MotionBlurPerObjectSize(Settings.MotionBlurPerObjectSize)
-	, LPVIntensity(Settings.LPVIntensity)
-	, LPVVplInjectionBias(Settings.LPVVplInjectionBias)
-	, LPVSize(Settings.LPVSize)
-	, LPVSecondaryOcclusionIntensity(Settings.LPVSecondaryOcclusionIntensity)
-	, LPVSecondaryBounceIntensity(Settings.LPVSecondaryBounceIntensity)
-	, LPVGeometryVolumeBias(Settings.LPVGeometryVolumeBias)
-	, LPVEmissiveInjectionIntensity(Settings.LPVEmissiveInjectionIntensity)
-	, LPVDirectionalOcclusionIntensity(Settings.LPVDirectionalOcclusionIntensity)
-	, LPVDirectionalOcclusionRadius(Settings.LPVDirectionalOcclusionRadius)
-	, LPVDiffuseOcclusionExponent(Settings.WhiteTemp)
-	, LPVSpecularOcclusionExponent(Settings.LPVSpecularOcclusionExponent)
-	, LPVDiffuseOcclusionIntensity(Settings.LPVDiffuseOcclusionIntensity)
-	, LPVSpecularOcclusionIntensity(Settings.LPVSpecularOcclusionIntensity)
-
-	, ReflectionsType(Settings.ReflectionsType)
-	, ScreenSpaceReflectionIntensity(Settings.ScreenSpaceReflectionIntensity)
-	, ScreenSpaceReflectionQuality(Settings.ScreenSpaceReflectionQuality)
-	, ScreenSpaceReflectionMaxRoughness(Settings.ScreenSpaceReflectionMaxRoughness)
-
-	, RayTracingReflectionsMaxRoughness(Settings.RayTracingReflectionsMaxRoughness)
-	, RayTracingReflectionsMaxBounces(Settings.RayTracingReflectionsMaxBounces)
-	, RayTracingReflectionsSamplesPerPixel(Settings.RayTracingReflectionsSamplesPerPixel)
-	, RayTracingReflectionsShadows(Settings.RayTracingReflectionsShadows)
-	, RayTracingReflectionsTranslucency(Settings.RayTracingReflectionsTranslucency)
-
 	, TranslucencyType(Settings.TranslucencyType)
 	, RayTracingTranslucencyMaxRoughness(Settings.RayTracingTranslucencyMaxRoughness)
 	, RayTracingTranslucencyRefractionRays(Settings.RayTracingTranslucencyRefractionRays)
@@ -977,12 +982,10 @@ FPostProcessSettings::FPostProcessSettings(const FPostProcessSettings& Settings)
 	, PathTracingFilterWidth(Settings.PathTracingFilterWidth)
 	, PathTracingEnableEmissive(Settings.PathTracingEnableEmissive)
 	, PathTracingMaxPathExposure(Settings.PathTracingMaxPathExposure)
+	, PathTracingEnableReferenceDOF(Settings.PathTracingEnableReferenceDOF)
 	, PathTracingEnableDenoiser(Settings.PathTracingEnableDenoiser)
 
-	, LPVFadeRange(Settings.LPVFadeRange)
-	, LPVDirectionalOcclusionFadeRange(Settings.LPVDirectionalOcclusionFadeRange)
-
-	, ScreenPercentage(Settings.ScreenPercentage)
+	, ScreenPercentage_DEPRECATED(Settings.ScreenPercentage_DEPRECATED)
 
 	, WeightedBlendables(Settings.WeightedBlendables)
 	//, Blendables_DEPRECATED(Settings.Blendables_DEPRECATED)
@@ -996,6 +999,7 @@ bool FPostProcessSettings::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FRenderingObjectVersion::GUID);
 	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 
 	// Don't actually serialize, just write the custom version for PostSerialize
 	return false;
@@ -1224,6 +1228,39 @@ void FPostProcessSettings::PostSerialize(const FArchive& Ar)
 					// Assume previous exposure was 0.0, so ignore AutoExposureBiasBackup and only add the extra bias.
 					AutoExposureBias = ExtraAutoExposureBias;
 				}
+			}
+		}
+
+		if (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::ReflectionMethodEnum)
+		{
+			if (bOverride_RayTracingGI && RayTracingGIType != ERayTracingGlobalIlluminationType::Disabled)
+			{
+				bOverride_DynamicGlobalIlluminationMethod = true;
+				DynamicGlobalIlluminationMethod = EDynamicGlobalIlluminationMethod::RayTraced;
+			}
+
+			if (bOverride_ReflectionsType_DEPRECATED)
+			{
+				bOverride_ReflectionMethod = true;
+
+				if (ReflectionsType_DEPRECATED == EReflectionsType::ScreenSpace)
+				{
+					ReflectionMethod = EReflectionMethod::ScreenSpace;
+				}
+				else if (ReflectionsType_DEPRECATED == EReflectionsType::RayTracing)
+				{
+					ReflectionMethod = EReflectionMethod::RayTraced;
+				}
+			}
+		}
+
+		// Before, the convolution bloom would ignore the bloom intensity, but activate when BloomIntensity > 0.0. UE 5.0 changed so that the 
+		// BloomIntensity also controls the scatter dispersion of the convolution bloom.
+		if (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::ConvolutionBloomIntensity)
+		{
+			if (BloomMethod == BM_FFT && BloomIntensity > 0.0)
+			{
+				BloomIntensity = 1.0f;
 			}
 		}
 	}

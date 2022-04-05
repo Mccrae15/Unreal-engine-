@@ -17,12 +17,13 @@ class FLauncherUATTask
 {
 public:
 
-	FLauncherUATTask( const FString& InCommandLine, const FString& InName, const FString& InDesc, void* InReadPipe, void* InWritePipe, const FString& InEditorExe, FProcHandle& InProcessHandle, ILauncherWorker* InWorker, const FString& InCommandEnd)
+	FLauncherUATTask( const FString& InCommandLine, const FString& InName, const FString& InDesc, void* InReadPipe, void* InWritePipe, const FString& InEditorExe, FProcHandle& InProcessHandle, ILauncherWorker* InWorker, const FString& InCommandEnd, const FString& InBuildCookRunPreCommand)
 		: FLauncherTask(InName, InDesc, InReadPipe, InWritePipe)
 		, CommandLine(InCommandLine)
 		, EditorExe(InEditorExe)
 		, ProcessHandle(InProcessHandle)
 		, CommandText(InCommandEnd)
+		, PreCommand(InBuildCookRunPreCommand)
 	{
 		EndTextFound = false;
 		InWorker->OnOutputReceived().AddRaw(this, &FLauncherUATTask::HandleOutputReceived);
@@ -55,8 +56,9 @@ protected:
 		FString UATCommandLine;
 		FString ProjectPath = *ChainState.Profile->GetProjectPath();
 		ProjectPath = FPaths::ConvertRelativePathToFull(ProjectPath);
-		UATCommandLine = FString::Printf(TEXT("-ScriptsForProject=\"%s\" BuildCookRun -project=\"%s\" -noP4 -clientconfig=%s -serverconfig=%s"),
+		UATCommandLine = FString::Printf(TEXT("-ScriptsForProject=\"%s\" %s BuildCookRun -project=\"%s\" -noP4 -clientconfig=%s -serverconfig=%s"),
 			*ProjectPath,
+			*PreCommand,
 			*ProjectPath,
 			LexToString(ChainState.Profile->GetBuildConfiguration()),
 			LexToString(ChainState.Profile->GetBuildConfiguration()));
@@ -72,14 +74,14 @@ protected:
 		// specify the path to the editor exe if necessary
 		if(EditorExe.Len() > 0)
 		{
-			UATCommandLine += FString::Printf(TEXT(" -ue4exe=\"%s\""), *EditorExe);
+			UATCommandLine += FString::Printf(TEXT(" -unrealexe=\"%s\""), *EditorExe);
 		}
 
 		// specialized command arguments for this particular task
 		UATCommandLine += CommandLine;
 
 		// launch UAT and monitor its progress
-		ProcessHandle = FPlatformProcess::CreateProc(*(ExecutablePath / Executable), *UATCommandLine, false, true, true, NULL, 0, *ExecutablePath, WritePipe);
+		ProcessHandle = FPlatformProcess::CreateProc(*(ExecutablePath / Executable), *UATCommandLine, false, true, true, NULL, 0, *ExecutablePath, WritePipe, ReadPipe);
 
 		while (FPlatformProcess::IsProcRunning(ProcessHandle) && !EndTextFound)
 		{
@@ -128,6 +130,9 @@ private:
 
 	// The editor executable that UAT should use
 	FString CommandText;
+
+	// a UAT command to run before BuildCookRun (in the same instance as the BuildCookRun)
+	FString PreCommand;
 
 	bool EndTextFound;
 };

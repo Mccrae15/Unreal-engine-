@@ -44,7 +44,7 @@ TArray<UTakeRecorderSource*> UTakeRecorderNearbySpawnedActorSource::PreRecording
 	return TArray<UTakeRecorderSource*>();
 }
 
-TArray<UTakeRecorderSource*> UTakeRecorderNearbySpawnedActorSource::PostRecording(class ULevelSequence* InSequence, class ULevelSequence* InMasterSequence)
+TArray<UTakeRecorderSource*> UTakeRecorderNearbySpawnedActorSource::PostRecording(class ULevelSequence* InSequence, class ULevelSequence* InMasterSequence, const bool bCancelled)
 {
 	// Remove spawn delegates
 	for (auto It = ActorSpawningDelegateHandles.CreateConstIterator(); It; ++It)
@@ -176,7 +176,7 @@ void UTakeRecorderNearbySpawnedActorSource::HandleActorSpawned(AActor* Actor, cl
 		return;
 	}
 
-	UE_LOG(LogTakesCore, Log, TEXT("Actor: %s PendingKill: %d PendingKillOrUnreachable: %d PendingKillPending: %d"), *Actor->GetName(), Actor->IsPendingKill(), Actor->IsPendingKillOrUnreachable(), Actor->IsPendingKillPending());
+	UE_LOG(LogTakesCore, Log, TEXT("Actor: %s IsValid: %d Unreachable: %d PendingKillPending: %d"), *Actor->GetName(), ::IsValid(Actor), Actor->IsUnreachable(), Actor->IsPendingKillPending());
 
 	UTakeRecorderSources* Sources = InSequence->FindOrAddMetaData<UTakeRecorderSources>();
 

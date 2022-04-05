@@ -63,9 +63,17 @@ static VkAccessFlags GetVkAccessMaskForLayout(VkImageLayout Layout)
 			Flags = 0;
 			break;
 
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
 		case VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT:
 			Flags = VK_ACCESS_FRAGMENT_DENSITY_MAP_READ_BIT_EXT;
 			break;
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+		case VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR:
+			Flags = VK_ACCESS_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR;
+			break;
+#endif
 
 		case VK_IMAGE_LAYOUT_GENERAL:
 		case VK_IMAGE_LAYOUT_UNDEFINED:
@@ -126,10 +134,18 @@ static VkPipelineStageFlags GetVkStageFlagsForLayout(VkImageLayout Layout)
 			Flags = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
 			break;
 
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
 		case VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT:
 			Flags = VK_PIPELINE_STAGE_FRAGMENT_DENSITY_PROCESS_BIT_EXT;
 			break;
+#endif
 
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+		case VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR:
+			Flags = VK_PIPELINE_STAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+			break;
+#endif
+			
 		case VK_IMAGE_LAYOUT_GENERAL:
 		case VK_IMAGE_LAYOUT_UNDEFINED:
 			Flags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
@@ -146,7 +162,7 @@ static VkPipelineStageFlags GetVkStageFlagsForLayout(VkImageLayout Layout)
 //
 // Get the Vulkan stage flags, access flags and image layout (if relevant) corresponding to an ERHIAccess value from the public API.
 //
-static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::EType ResourceType, bool bIsDepthStencil, VkPipelineStageFlags& StageFlags, VkAccessFlags& AccessFlags, VkImageLayout& Layout, bool bIsSourceState)
+static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::EType ResourceType, uint32 UsageFlags, bool bIsDepthStencil, bool bSupportsReadOnlyOptimal, VkPipelineStageFlags& StageFlags, VkAccessFlags& AccessFlags, VkImageLayout& Layout, bool bIsSourceState)
 {
 	// From Vulkan's point of view, when performing a multisample resolve via a render pass attachment, resolve targets are the same as render targets .
 	// The caller signals this situation by setting both the RTV and ResolveDst flags, and we simply remove ResolveDst in that case,
@@ -161,11 +177,20 @@ static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::E
 
 	// The layout to use if SRV access is requested. In case of depth/stencil buffers, we don't need to worry about different states for the separate aspects, since that's handled explicitly elsewhere,
 	// and this function is never called for depth-only or stencil-only transitions.
-	const VkImageLayout SRVLayout = bIsDepthStencil ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	const VkImageLayout SRVLayout = 
+		bIsDepthStencil ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : 
+		bSupportsReadOnlyOptimal ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
 
 	// States which cannot be combined.
 	switch (RHIAccess)
 	{
+		case ERHIAccess::Discard:
+			// FIXME: Align with Unknown for now, this could perhaps be less brutal
+			StageFlags = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+			AccessFlags = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+			Layout = bIsSourceState ? VK_IMAGE_LAYOUT_UNDEFINED : SRVLayout;
+			return;
+
 		case ERHIAccess::Unknown:
 			// We don't know where this is coming from, so we'll stall everything.
 			StageFlags = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -204,36 +229,18 @@ static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::E
 			Layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 			return;
 
-		case ERHIAccess::EReadable:
-			// All the stages which could possibly read from the resource, so basically the same as SRVGraphics + SRVCompute + DSVRead.
-			StageFlags = GVulkanDeviceShaderStageBits | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-			AccessFlags = VK_ACCESS_MEMORY_READ_BIT;
-			// For the source state, this doesn't give us enough information to know the current layout, so we'll leave it as undefined and the layout manager will fill it in when the transition is executed.
-			// For the destination state, we assume this will be an SRV.
-			if (!bIsSourceState)
-			{
-				Layout = SRVLayout;
-			}
+#if VULKAN_RHI_RAYTRACING
+		// vkrt todo: Finer grain stage flags would be ideal here.
+		case ERHIAccess::BVHRead:
+			StageFlags = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			AccessFlags = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
 			return;
 
-		case ERHIAccess::EWritable:
-			// The engine no longer uses this state, but there may be licensee code which does.
-			// All the stages which could possibly write to the resource, so UAVGraphics + UAVCompute + DSVWrite + RTV.
-			StageFlags = GVulkanDeviceShaderStageBits | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			AccessFlags = VK_ACCESS_MEMORY_WRITE_BIT;
-			// For the source state, this has the same problem as EReadable. For the destination state we assume the caller means UAV.
-			if (!bIsSourceState)
-			{
-				Layout = VK_IMAGE_LAYOUT_GENERAL;
-			}
+		case ERHIAccess::BVHWrite:
+			StageFlags = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			AccessFlags = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
 			return;
-
-		case ERHIAccess::ERWBarrier:
-			// This is used for UAVs, so it's UAVGraphics + UAVCompute.
-			StageFlags = GVulkanDeviceShaderStageBits;
-			AccessFlags = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-			Layout = VK_IMAGE_LAYOUT_GENERAL;
-			return;
+#endif // VULKAN_RHI_RAYTRACING
 	}
 
 	// If DSVWrite is set, we ignore everything else because it decides the layout.
@@ -266,11 +273,15 @@ static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::E
 		StageFlags |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
 		switch (ResourceType)
 		{
-			case FRHITransitionInfo::EType::IndexBuffer:
+			case FRHITransitionInfo::EType::Buffer:
+				if ((UsageFlags & VK_BUFFER_USAGE_INDEX_BUFFER_BIT) != 0)
+				{
 					AccessFlags |= VK_ACCESS_INDEX_READ_BIT;
-				break;
-			case FRHITransitionInfo::EType::VertexBuffer:
+				}
+				if ((UsageFlags & VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) != 0)
+				{
 					AccessFlags |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+				}
 				break;
 			default:
 				checkNoEntry();
@@ -348,6 +359,31 @@ static void GetVkStageAndAccessFlags(ERHIAccess RHIAccess, FRHITransitionInfo::E
 		ProcessedRHIFlags |= (uint32)(ERHIAccess::CopySrc | ERHIAccess::ResolveSrc);
 	}
 
+	if (EnumHasAnyFlags(RHIAccess, ERHIAccess::ShadingRateSource) && ValidateShadingRateDataType())
+	{
+		checkf(ResourceType == FRHITransitionInfo::EType::Texture, TEXT("A non-texture resource was tagged as a shading rate source; only textures (Texture2D and Texture2DArray) can be used for this purpose."));
+		
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+		if (GRHIVariableRateShadingImageDataType == VRSImage_Palette)
+		{
+			StageFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+			AccessFlags = VK_ACCESS_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR;
+			Layout = VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR;
+		}
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
+		if (GRHIVariableRateShadingImageDataType == VRSImage_Fractional)
+		{
+			StageFlags = VK_PIPELINE_STAGE_FRAGMENT_DENSITY_PROCESS_BIT_EXT;
+			AccessFlags = VK_ACCESS_FRAGMENT_DENSITY_MAP_READ_BIT_EXT;
+			Layout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+		}
+#endif
+
+		ProcessedRHIFlags |= (uint32)ERHIAccess::ShadingRateSource;
+	}
+
 	uint32 RemainingFlags = (uint32)RHIAccess & (~ProcessedRHIFlags);
 	ensureMsgf(RemainingFlags == 0, TEXT("Some access flags were not processed. RHIAccess=%x, ProcessedRHIFlags=%x, RemainingFlags=%x"), RHIAccess, ProcessedRHIFlags, RemainingFlags);
 }
@@ -365,6 +401,7 @@ struct FDepthStencilSubresTransition
 	ERHIAccess DestStencilAccess;
 	int bDepthAccessSet : 1;
 	int bStencilAccessSet : 1;
+	int bAliasingBarrier : 1;
 };
 
 static void GetDepthStencilStageAndAccessFlags(ERHIAccess DepthAccess, ERHIAccess StencilAccess, VkPipelineStageFlags& StageFlags, VkAccessFlags& AccessFlags, VkImageLayout& Layout, bool bIsSourceState)
@@ -374,6 +411,14 @@ static void GetDepthStencilStageAndAccessFlags(ERHIAccess DepthAccess, ERHIAcces
 		StageFlags = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
 		AccessFlags = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
 		Layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		return;
+	}
+
+	if (DepthAccess == ERHIAccess::Discard && StencilAccess == ERHIAccess::Discard)
+	{
+		StageFlags = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+		AccessFlags = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		Layout = bIsSourceState ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 		return;
 	}
 
@@ -526,25 +571,12 @@ static void SetupSubresourceRange(VkImageSubresourceRange& SubresRange, const FR
 	}
 }
 
-static void AddMemoryBarrier(VkMemoryBarrier& MemoryBarrier, VkAccessFlags SrcAccessFlags, VkAccessFlags DstAccessFlags)
+void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, const FRHITransitionCreateInfo& CreateInfo)
 {
-	const VkAccessFlags ReadMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT |
-		VK_ACCESS_INPUT_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-		VK_ACCESS_TRANSFER_READ_BIT;
+	const ERHIPipeline SrcPipelines = CreateInfo.SrcPipelines;
+	const ERHIPipeline DstPipelines = CreateInfo.DstPipelines;
 
-	// We only need a memory barrier if the previous commands wrote to the buffer. In case of a transition from read, an execution barrier is enough.
-	const bool SrcAccessIsRead = ((SrcAccessFlags & (~ReadMask)) == 0);
-
-	if (!SrcAccessIsRead)
-	{
-		MemoryBarrier.srcAccessMask |= SrcAccessFlags;
-		MemoryBarrier.dstAccessMask |= DstAccessFlags;
-	}
-}
-
-void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipeline SrcPipelines, ERHIPipeline DstPipelines, ERHICreateTransitionFlags CreateFlags, TArrayView<const FRHITransitionInfo> Infos)
-{
-	checkf(FMath::IsPowerOfTwo((uint32)SrcPipelines) && FMath::IsPowerOfTwo((uint32)DstPipelines), TEXT("Support for multi-pipe resources is not yet implemented."));
+	//checkf(FMath::IsPowerOfTwo((uint32)SrcPipelines) && FMath::IsPowerOfTwo((uint32)DstPipelines), TEXT("Support for multi-pipe resources is not yet implemented."));
 
 	FVulkanPipelineBarrier* Data = new (Transition->GetPrivateData<FVulkanPipelineBarrier>()) FVulkanPipelineBarrier;
 	Data->SrcPipelines = SrcPipelines;
@@ -555,8 +587,8 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 	{
 		Data->Semaphore = new VulkanRHI::FSemaphore(*Device);
 
-		uint32 GfxQueueIndex = Device->GetGraphicsQueue()->GetFamilyIndex();
-		uint32 ComputeQueueIndex = Device->GetComputeQueue()->GetFamilyIndex();
+		const uint32 GfxQueueIndex = Device->GetGraphicsQueue()->GetFamilyIndex();
+		const uint32 ComputeQueueIndex = Device->GetComputeQueue()->GetFamilyIndex();
 
 		if (SrcPipelines == ERHIPipeline::Graphics)
 		{
@@ -577,10 +609,16 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 
 	// Count the images and buffers to be able to pre-allocate the arrays.
 	int32 NumTextures = 0, NumBuffers = 0;
-	for (const FRHITransitionInfo& Info : Infos)
+	for (const FRHITransitionInfo& Info : CreateInfo.TransitionInfos)
 	{
 		if (!Info.Resource)
 		{
+			continue;
+		}
+
+		if (Info.AccessAfter == ERHIAccess::Discard)
+		{
+			// Discard as a destination is a no-op
 			continue;
 		}
 
@@ -609,7 +647,7 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 	}
 
 	Data->ImageBarriers.Reserve(NumTextures);
-	Data->Textures.Reserve(NumTextures);
+	Data->ImageBarrierExtras.Reserve(NumTextures);
 	if (SrcPipelines != DstPipelines)
 	{
 		Data->BufferBarriers.Reserve(NumBuffers);
@@ -619,10 +657,16 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 
 	TArray<FDepthStencilSubresTransition, TInlineAllocator<4>> DSSubresTransitions;
 
-	for (const FRHITransitionInfo& Info : Infos)
+	for (const FRHITransitionInfo& Info : CreateInfo.TransitionInfos)
 	{
 		if (!Info.Resource)
 		{
+			continue;
+		}
+
+		if (Info.AccessAfter == ERHIAccess::Discard)
+		{
+			// Discard as a destination is a no-op
 			continue;
 		}
 
@@ -631,6 +675,8 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 		FVulkanResourceMultiBuffer* Buffer = nullptr;
 		FVulkanTextureBase* Texture = nullptr;
 		FRHITransitionInfo::EType UnderlyingType = Info.Type;
+		uint32 UsageFlags = 0;
+
 		switch (Info.Type)
 		{
 		case FRHITransitionInfo::EType::Texture:
@@ -643,16 +689,9 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 			break;
 		}
 
-		case FRHITransitionInfo::EType::VertexBuffer:
-			Buffer = ResourceCast(Info.VertexBuffer);
-			break;
-
-		case FRHITransitionInfo::EType::IndexBuffer:
-			Buffer = ResourceCast(Info.IndexBuffer);
-			break;
-
-		case FRHITransitionInfo::EType::StructuredBuffer:
-			Buffer = ResourceCast(Info.StructuredBuffer);
+		case FRHITransitionInfo::EType::Buffer:
+			Buffer = ResourceCast(Info.Buffer);
+			UsageFlags = Buffer->GetBufferUsageFlags();
 			break;
 
 		case FRHITransitionInfo::EType::UAV:
@@ -663,26 +702,23 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 				Texture = FVulkanTextureBase::Cast(UAV->SourceTexture);
 				UnderlyingType = FRHITransitionInfo::EType::Texture;
 			}
-			else if (UAV->SourceIndexBuffer)
+			else if (UAV->SourceBuffer)
 			{
-				Buffer = UAV->SourceIndexBuffer;
-				UnderlyingType = FRHITransitionInfo::EType::IndexBuffer;
-			}
-			else if (UAV->SourceVertexBuffer)
-			{
-				Buffer = UAV->SourceVertexBuffer;
-				UnderlyingType = FRHITransitionInfo::EType::VertexBuffer;
-			}
-			else if (UAV->SourceStructuredBuffer)
-			{
-				Buffer = UAV->SourceStructuredBuffer;
-				UnderlyingType = FRHITransitionInfo::EType::StructuredBuffer;
+				Buffer = UAV->SourceBuffer;
+				UnderlyingType = FRHITransitionInfo::EType::Buffer;
+				UsageFlags = Buffer->GetBufferUsageFlags();
 			}
 			else
 			{
 				checkNoEntry();
 				continue;
 			}
+			break;
+		}
+
+		case FRHITransitionInfo::EType::BVH:
+		{
+			// Requires memory barrier
 			break;
 		}
 
@@ -733,6 +769,8 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 				PendingTransition->bStencilAccessSet = true;
 			}
 
+			PendingTransition->bAliasingBarrier = (Info.AccessBefore == ERHIAccess::Discard);
+
 			if (Index == INDEX_NONE)
 			{
 				// Wait until we find the other aspect of the resource.
@@ -748,8 +786,11 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 		}
 		else
 		{
-			GetVkStageAndAccessFlags(Info.AccessBefore, UnderlyingType, bIsDepthStencil, SrcStageMask, SrcAccessFlags, SrcLayout, true);
-			GetVkStageAndAccessFlags(Info.AccessAfter, UnderlyingType, bIsDepthStencil, DstStageMask, DstAccessFlags, DstLayout, false);
+			
+			const bool bSupportsReadOnlyOptimal = (Texture == nullptr) || Texture->Surface.SupportsSampling();
+
+			GetVkStageAndAccessFlags(Info.AccessBefore, UnderlyingType, UsageFlags, bIsDepthStencil, bSupportsReadOnlyOptimal, SrcStageMask, SrcAccessFlags, SrcLayout, true);
+			GetVkStageAndAccessFlags(Info.AccessAfter, UnderlyingType, UsageFlags, bIsDepthStencil, bSupportsReadOnlyOptimal, DstStageMask, DstAccessFlags, DstLayout, false);
 
 			// If not compute, remove vertex pipeline bits as only compute updates vertex buffers
 			if (!(SrcStageMask & VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT))
@@ -758,29 +799,30 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 			}
 		}
 
-		// In case of async compute, override the stage and access flags computed above, since only the compute shader stage is relevant.
+		// In case of async compute, override the stage and access flags computed above, since only a subset of stages is relevant.
 		if (SrcPipelines == ERHIPipeline::AsyncCompute)
 		{
-			SrcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+			SrcStageMask = SrcStageMask & Device->GetComputeQueue()->GetSupportedStageBits();
 			SrcAccessFlags = SrcAccessFlags & (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 		}
 
 		if (DstPipelines == ERHIPipeline::AsyncCompute)
 		{
-			DstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-			DstAccessFlags = SrcAccessFlags & (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+			DstStageMask = DstStageMask & Device->GetComputeQueue()->GetSupportedStageBits();
+			DstAccessFlags = DstAccessFlags & (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+		}
+
+
+		// If we're not transitioning across pipes and we don't need to perform layout transitions, we can express memory dependencies through a global memory barrier.
+		if ((SrcPipelines == DstPipelines) && (Texture == nullptr || SrcLayout == DstLayout))
+		{
+			Data->AddMemoryBarrier(SrcAccessFlags, DstAccessFlags, SrcStageMask, DstStageMask);
+			continue;
 		}
 
 		// Add the stages affected by this transition.
 		Data->SrcStageMask |= SrcStageMask;
 		Data->DstStageMask |= DstStageMask;
-
-		// If we're not transitioning across pipes and we don't need to perform layout transitions, we can express memory dependencies through a global memory barrier.
-		if ( (SrcPipelines == DstPipelines) && (Texture == nullptr || SrcLayout == DstLayout) )
-		{
-			AddMemoryBarrier(Data->MemoryBarrier, SrcAccessFlags, DstAccessFlags);
-			continue;
-		}
 
 		if (Buffer != nullptr)
 		{
@@ -812,7 +854,9 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 		ImgBarrier.srcQueueFamilyIndex = SrcQueueFamilyIndex;
 		ImgBarrier.dstQueueFamilyIndex = DstQueueFamilyIndex;
 
-		Data->Textures.Add(Texture);
+		FVulkanPipelineBarrier::ImageBarrierExtraData& ExtraData = Data->ImageBarrierExtras.AddDefaulted_GetRef();
+		ExtraData.BaseTexture = Texture;
+		ExtraData.IsAliasingBarrier = (Info.AccessBefore == ERHIAccess::Discard);
 	}
 
 	// Process any depth-stencil transitions which specify a single sub-resource.
@@ -862,7 +906,9 @@ void FVulkanDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipe
 		ImgBarrier.srcQueueFamilyIndex = SrcQueueFamilyIndex;
 		ImgBarrier.dstQueueFamilyIndex = DstQueueFamilyIndex;
 
-		Data->Textures.Add(PendingTransition.Texture);
+		FVulkanPipelineBarrier::ImageBarrierExtraData& ExtraData = Data->ImageBarrierExtras.AddDefaulted_GetRef();
+		ExtraData.BaseTexture = PendingTransition.Texture;
+		ExtraData.IsAliasingBarrier = PendingTransition.bAliasingBarrier;
 	}
 }
 
@@ -991,7 +1037,7 @@ void FVulkanCommandListContext::RHIBeginTransitions(TArrayView<const FRHITransit
 			RealBarrier.dstAccessMask = 0; // Release resource from current queue.
 		}
 
-		check(Data->ImageBarriers.Num() == Data->Textures.Num());
+		check(Data->ImageBarriers.Num() == Data->ImageBarrierExtras.Num());
 		RealImageBarriers.Reset();
 		RealImageBarriers.Reserve(Data->ImageBarriers.Num());
 
@@ -1001,7 +1047,8 @@ void FVulkanCommandListContext::RHIBeginTransitions(TArrayView<const FRHITransit
 		for (int32 ImgBarrierIdx = 0; ImgBarrierIdx < Data->ImageBarriers.Num(); ++ImgBarrierIdx)
 		{
 			const VkImageMemoryBarrier& ImageBarrier = Data->ImageBarriers[ImgBarrierIdx];
-			FVulkanTextureBase* Texture = Data->Textures[ImgBarrierIdx];
+			const FVulkanPipelineBarrier::ImageBarrierExtraData& ExtraData = Data->ImageBarrierExtras[ImgBarrierIdx];
+			FVulkanTextureBase* Texture = ExtraData.BaseTexture;
 			check(Texture->Surface.Image != VK_NULL_HANDLE);
 
 			FVulkanImageLayout& Layout = LayoutManager.GetOrAddFullLayout(Texture->Surface, VK_IMAGE_LAYOUT_UNDEFINED);
@@ -1012,7 +1059,7 @@ void FVulkanCommandListContext::RHIBeginTransitions(TArrayView<const FRHITransit
 			check(ImageBarrier.newLayout != VK_IMAGE_LAYOUT_UNDEFINED);
 			DstLayout = ImageBarrier.newLayout;
 
-			if (ImageBarrier.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+			if ((ImageBarrier.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) && (!ExtraData.IsAliasingBarrier))
 			{
 				check(Layout.AreAllSubresourcesSameLayout());
 				SrcLayout = Layout.MainLayout;
@@ -1038,6 +1085,11 @@ void FVulkanCommandListContext::RHIBeginTransitions(TArrayView<const FRHITransit
 			AdjustDepthStencilLayout(RealBarrier, Texture->Surface.GetFullAspectMask());
 
 			// We don't update the image layout here. That will be done in RHIEndTransitions.
+		}
+
+		if (EnumHasAnyFlags(Data->SrcPipelines, ERHIPipeline::AsyncCompute))
+		{
+			RealSrcStageMask = RealSrcStageMask & Queue->GetSupportedStageBits();
 		}
 
 		VulkanRHI::vkCmdPipelineBarrier(CmdBuffer->GetHandle(), RealSrcStageMask, RealDstStageMask, 0, 0, nullptr, RealBufferBarriers.Num(), RealBufferBarriers.GetData(), RealImageBarriers.Num(), RealImageBarriers.GetData());
@@ -1110,11 +1162,19 @@ void FVulkanCommandListContext::RHIEndTransitions(TArrayView<const FRHITransitio
 
 	FVulkanCmdBuffer* CmdBuffer = CommandBufferManager->GetActiveCmdBuffer();
 
+	const ERHIPipeline CurrentPipeline = Device->IsRealAsyncComputeContext(this) ? ERHIPipeline::AsyncCompute : ERHIPipeline::Graphics;
+
 	bool bSeenWaitSemaphore = false;
 	for (const FRHITransition* Transition : Transitions)
 	{
 		const FVulkanPipelineBarrier* Data = Transition->GetPrivateData<FVulkanPipelineBarrier>();
 		if (Data->Semaphore == nullptr)
+		{
+			continue;
+		}
+
+		// If the source matches our current queue, we don't need a semaphore (avoid unnecessary semaphores when DstPipelines is ERHIPipeline::All)
+		if (EnumHasAllFlags(Data->DstPipelines, Data->SrcPipelines) && (Data->SrcPipelines == CurrentPipeline))
 		{
 			continue;
 		}
@@ -1135,6 +1195,7 @@ void FVulkanCommandListContext::RHIEndTransitions(TArrayView<const FRHITransitio
 
 	TArray<VkBufferMemoryBarrier, TInlineAllocator<8>> RealBufferBarriers;
 	TArray<VkImageMemoryBarrier, TInlineAllocator<8>> RealImageBarriers;
+	FVulkanPipelineBarrier RealMemoryBarrier;
 
 	for (const FRHITransition* Transition : Transitions)
 	{
@@ -1162,7 +1223,8 @@ void FVulkanCommandListContext::RHIEndTransitions(TArrayView<const FRHITransitio
 		}
 #endif
 
-		VkMemoryBarrier RealMemoryBarrier = Data->MemoryBarrier;
+		RealMemoryBarrier.MemoryBarrier = Data->MemoryBarrier;
+		RealMemoryBarrier.bHasMemoryBarrier = Data->bHasMemoryBarrier;
 
 		check(Data->SrcPipelines != Data->DstPipelines || Data->BufferBarriers.Num() == 0);
 		RealBufferBarriers.Reset();
@@ -1174,7 +1236,7 @@ void FVulkanCommandListContext::RHIEndTransitions(TArrayView<const FRHITransitio
 			RealBarrier.srcAccessMask = 0; // Acquire resource on current queue.
 		}
 
-		check(Data->ImageBarriers.Num() == Data->Textures.Num());
+		check(Data->ImageBarriers.Num() == Data->ImageBarrierExtras.Num());
 		RealImageBarriers.Reset();
 		RealImageBarriers.Reserve(Data->ImageBarriers.Num());
 
@@ -1184,7 +1246,8 @@ void FVulkanCommandListContext::RHIEndTransitions(TArrayView<const FRHITransitio
 		for (int32 ImgBarrierIdx = 0; ImgBarrierIdx < Data->ImageBarriers.Num(); ++ImgBarrierIdx)
 		{
 			const VkImageMemoryBarrier& ImageBarrier = Data->ImageBarriers[ImgBarrierIdx];
-			FVulkanTextureBase* Texture = Data->Textures[ImgBarrierIdx];
+			const FVulkanPipelineBarrier::ImageBarrierExtraData& ExtraData = Data->ImageBarrierExtras[ImgBarrierIdx];
+			FVulkanTextureBase* Texture = ExtraData.BaseTexture;
 			check(Texture->Surface.GetCpuReadbackBuffer() == nullptr);
 
 			Texture->OnLayoutTransition(*this, ImageBarrier.newLayout);
@@ -1200,7 +1263,7 @@ void FVulkanCommandListContext::RHIEndTransitions(TArrayView<const FRHITransitio
 			check(ImageBarrier.newLayout != VK_IMAGE_LAYOUT_UNDEFINED);
 			DstLayout = ImageBarrier.newLayout;
 
-			if (ImageBarrier.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+			if ((ImageBarrier.oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) && (!ExtraData.IsAliasingBarrier))
 			{
 				if (Layout.AreAllSubresourcesSameLayout())
 				{
@@ -1218,7 +1281,7 @@ void FVulkanCommandListContext::RHIEndTransitions(TArrayView<const FRHITransitio
 			}
 			else
 			{
-				checkSlow(Layout.AreSubresourcesSameLayout(ImageBarrier.oldLayout, ImageBarrier.subresourceRange));
+				checkSlow(ExtraData.IsAliasingBarrier || Layout.AreSubresourcesSameLayout(ImageBarrier.oldLayout, ImageBarrier.subresourceRange));
 				SrcLayout = ImageBarrier.oldLayout;
 				SrcAccessFlags = ImageBarrier.srcAccessMask;
 			}
@@ -1238,7 +1301,7 @@ void FVulkanCommandListContext::RHIEndTransitions(TArrayView<const FRHITransitio
 				{
 					// It turns out that we don't need a layout transition afterall. We may still need a memory barrier if the
 					// previous access was writable.
-					AddMemoryBarrier(RealMemoryBarrier, RealBarrier.srcAccessMask, RealBarrier.dstAccessMask);
+					RealMemoryBarrier.AddMemoryBarrier(RealBarrier.srcAccessMask, RealBarrier.dstAccessMask, 0, 0);
 					continue;
 				}
 			}
@@ -1253,15 +1316,40 @@ void FVulkanCommandListContext::RHIEndTransitions(TArrayView<const FRHITransitio
 			Layout.Set(RealBarrier.newLayout, RealBarrier.subresourceRange);
 		}
 
-		int NumMemoryBarriers = (RealMemoryBarrier.srcAccessMask != 0) || (RealMemoryBarrier.dstAccessMask != 0) ? 1 : 0;
-		if (NumMemoryBarriers == 0 && RealBufferBarriers.Num() == 0 && RealImageBarriers.Num() == 0)
+		if ((!RealMemoryBarrier.bHasMemoryBarrier) && (RealBufferBarriers.Num() == 0) && (RealImageBarriers.Num() == 0))
 		{
 			continue;
 		}
 
-		VulkanRHI::vkCmdPipelineBarrier(CmdBuffer->GetHandle(), RealSrcStageMask, RealDstStageMask, 0, NumMemoryBarriers, &RealMemoryBarrier, RealBufferBarriers.Num(), RealBufferBarriers.GetData(), RealImageBarriers.Num(), RealImageBarriers.GetData());
+		if (EnumHasAnyFlags(Data->DstPipelines, ERHIPipeline::AsyncCompute))
+		{
+			RealDstStageMask = RealDstStageMask & Queue->GetSupportedStageBits();
+		}
+
+		VulkanRHI::vkCmdPipelineBarrier(CmdBuffer->GetHandle(), RealSrcStageMask, RealDstStageMask, 0, RealMemoryBarrier.bHasMemoryBarrier ? 1 : 0, &RealMemoryBarrier.MemoryBarrier, RealBufferBarriers.Num(), RealBufferBarriers.GetData(), RealImageBarriers.Num(), RealImageBarriers.GetData());
 	}
 }
+
+
+void FVulkanPipelineBarrier::AddMemoryBarrier(VkAccessFlags InSrcAccessFlags, VkAccessFlags InDstAccessFlags, VkPipelineStageFlags InSrcStageMask, VkPipelineStageFlags InDstStageMask)
+{
+	const VkAccessFlags ReadMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT |
+		VK_ACCESS_INPUT_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+		VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_MEMORY_READ_BIT;
+
+	// We only need a memory barrier if the previous commands wrote to the buffer. In case of a transition from read, an execution barrier is enough.
+	const bool SrcAccessIsRead = ((InSrcAccessFlags & (~ReadMask)) == 0);
+	if (!SrcAccessIsRead)
+	{
+		MemoryBarrier.srcAccessMask |= InSrcAccessFlags;
+		MemoryBarrier.dstAccessMask |= InDstAccessFlags;
+	}
+
+	SrcStageMask |= InSrcStageMask;
+	DstStageMask |= InDstStageMask;
+	bHasMemoryBarrier = true;
+}
+
 
 //
 // Methods used when the RHI itself needs to perform a layout transition. The public API functions do not call these,
@@ -1293,7 +1381,7 @@ void FVulkanPipelineBarrier::AddImageLayoutTransition(VkImage Image, VkImageAspe
 	VkImageSubresourceRange SubresourceRange = MakeSubresourceRange(AspectMask, 0, 1, 0, 1);
 	for (; SubresourceRange.baseArrayLayer < SrcLayout.NumLayers; ++SubresourceRange.baseArrayLayer)
 	{
-		for (SubresourceRange.baseMipLevel=0; SubresourceRange.baseMipLevel < SrcLayout.NumMips; ++SubresourceRange.baseMipLevel)
+		for (SubresourceRange.baseMipLevel = 0; SubresourceRange.baseMipLevel < SrcLayout.NumMips; ++SubresourceRange.baseMipLevel)
 		{
 			const VkImageLayout SubresourceLayout = SrcLayout.GetSubresLayout(SubresourceRange.baseArrayLayer, SubresourceRange.baseMipLevel);
 			if (SubresourceLayout != DstLayout)
@@ -1322,7 +1410,7 @@ void FVulkanPipelineBarrier::AddImageLayoutTransition(VkImage Image, VkImageAspe
 	VkImageSubresourceRange SubresourceRange = MakeSubresourceRange(AspectMask, 0, 1, 0, 1);
 	for (; SubresourceRange.baseArrayLayer < DstLayout.NumLayers; ++SubresourceRange.baseArrayLayer)
 	{
-		for (SubresourceRange.baseMipLevel=0; SubresourceRange.baseMipLevel < DstLayout.NumMips; ++SubresourceRange.baseMipLevel)
+		for (SubresourceRange.baseMipLevel = 0; SubresourceRange.baseMipLevel < DstLayout.NumMips; ++SubresourceRange.baseMipLevel)
 		{
 			const VkImageLayout SubresourceLayout = DstLayout.GetSubresLayout(SubresourceRange.baseArrayLayer, SubresourceRange.baseMipLevel);
 			if (SubresourceLayout != SrcLayout)
@@ -1380,12 +1468,13 @@ void FVulkanPipelineBarrier::AddImageAccessTransition(const FVulkanSurface& Surf
 	// This function should only be used for known states.
 	check(DstAccess != ERHIAccess::Unknown);
 	const bool bIsDepthStencil = Surface.IsDepthOrStencilAspect();
+	const bool bSupportsReadOnlyOptimal = Surface.SupportsSampling();
 
 	VkPipelineStageFlags ImgSrcStage, ImgDstStage;
 	VkAccessFlags SrcAccessFlags, DstAccessFlags;
 	VkImageLayout SrcLayout, DstLayout;
-	GetVkStageAndAccessFlags(SrcAccess, FRHITransitionInfo::EType::Texture, bIsDepthStencil, ImgSrcStage, SrcAccessFlags, SrcLayout, true);
-	GetVkStageAndAccessFlags(DstAccess, FRHITransitionInfo::EType::Texture, bIsDepthStencil, ImgDstStage, DstAccessFlags, DstLayout, false);
+	GetVkStageAndAccessFlags(SrcAccess, FRHITransitionInfo::EType::Texture, 0, bIsDepthStencil, bSupportsReadOnlyOptimal, ImgSrcStage, SrcAccessFlags, SrcLayout, true);
+	GetVkStageAndAccessFlags(DstAccess, FRHITransitionInfo::EType::Texture, 0, bIsDepthStencil, bSupportsReadOnlyOptimal, ImgDstStage, DstAccessFlags, DstLayout, false);
 
 	// If not compute, remove vertex pipeline bits as only compute updates vertex buffers
 	if (!(ImgSrcStage & VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT))
@@ -1419,10 +1508,9 @@ void FVulkanPipelineBarrier::AddImageAccessTransition(const FVulkanSurface& Surf
 
 void FVulkanPipelineBarrier::Execute(VkCommandBuffer CmdBuffer)
 {
-	int NumMemoryBarriers = (MemoryBarrier.srcAccessMask != 0) || (MemoryBarrier.dstAccessMask != 0) ? 1 : 0;
-	if (NumMemoryBarriers != 0 || ImageBarriers.Num() != 0)
+	if (bHasMemoryBarrier || ImageBarriers.Num() != 0)
 	{
-		VulkanRHI::vkCmdPipelineBarrier(CmdBuffer, SrcStageMask, DstStageMask, 0, NumMemoryBarriers, &MemoryBarrier, 0, nullptr, ImageBarriers.Num(), ImageBarriers.GetData());
+		VulkanRHI::vkCmdPipelineBarrier(CmdBuffer, SrcStageMask, DstStageMask, 0, bHasMemoryBarrier ? 1 : 0, &MemoryBarrier, 0, nullptr, ImageBarriers.Num(), ImageBarriers.GetData());
 	}
 }
 
@@ -1438,7 +1526,7 @@ VkImageSubresourceRange FVulkanPipelineBarrier::MakeSubresourceRange(VkImageAspe
 }
 
 //
-// Used when we need to change the layout of a single image. Some plug-ins call this function from outside the RHI (Magic Leap and Steam VR, at the time of writing this).
+// Used when we need to change the layout of a single image. Some plug-ins call this function from outside the RHI (Steam VR, at the time of writing this).
 //
 void VulkanSetImageLayout(VkCommandBuffer CmdBuffer, VkImage Image, VkImageLayout OldLayout, VkImageLayout NewLayout, const VkImageSubresourceRange& SubresourceRange)
 {
@@ -1512,8 +1600,9 @@ void FVulkanImageLayout::Set(VkImageLayout Layout, const VkImageSubresourceRange
 
 	if (SubresLayouts.Num() == 0)
 	{
-		SubresLayouts.SetNum(NumLayers * NumMips);
-		for (uint32 i = 0; i < NumLayers * NumMips; ++i)
+		uint32 SubresLayoutCount = (NumLayers + FirstLayer) * NumMips;
+		SubresLayouts.SetNum(SubresLayoutCount);
+		for (uint32 i = 0; i < SubresLayoutCount; ++i)
 		{
 			SubresLayouts[i] = MainLayout;
 		}
@@ -1583,7 +1672,11 @@ FVulkanFramebuffer* FVulkanLayoutManager::GetOrCreateFramebuffer(FVulkanDevice& 
 
 		for (int32 Index = 0; Index < FramebufferList->Framebuffer.Num(); ++Index)
 		{
-			if (FramebufferList->Framebuffer[Index]->Matches(RenderTargetsInfo))
+			const VkRect2D RenderArea = FramebufferList->Framebuffer[Index]->GetRenderArea();
+
+			if (FramebufferList->Framebuffer[Index]->Matches(RenderTargetsInfo) &&
+				((RTLayout.GetExtent2D().width == RenderArea.extent.width) && (RTLayout.GetExtent2D().height == RenderArea.extent.height) &&
+				(RTLayout.GetOffset2D().x == RenderArea.offset.x) && (RTLayout.GetOffset2D().y == RenderArea.offset.y)))
 			{
 				return FramebufferList->Framebuffer[Index];
 			}
@@ -1664,10 +1757,9 @@ void FVulkanLayoutManager::BeginRenderPass(FVulkanCommandListContext& Context, F
 		{
 			// Insert a barrier if we're loading from any color targets, to make sure the passes aren't reordered and we end up running before
 			// the pass we're supposed to read from.
-			Barrier.SrcStageMask |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			Barrier.DstStageMask |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-			Barrier.MemoryBarrier.srcAccessMask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			Barrier.MemoryBarrier.dstAccessMask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			const VkAccessFlags AccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			const VkPipelineStageFlags StageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			Barrier.AddMemoryBarrier(AccessMask, AccessMask, StageMask, StageMask);
 		}
 
 		if (bNeedsClearValues)
@@ -1693,10 +1785,9 @@ void FVulkanLayoutManager::BeginRenderPass(FVulkanCommandListContext& Context, F
 		{
 			// If the depth-stencil state doesn't change between passes, the high level code won't perform any transitions.
 			// Make sure we have a barrier in case we're loading depth or stencil, to prevent rearranging passes.
-			Barrier.SrcStageMask |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-			Barrier.DstStageMask |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-			Barrier.MemoryBarrier.srcAccessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-			Barrier.MemoryBarrier.dstAccessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			const VkAccessFlags AccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			const VkPipelineStageFlags StageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+			Barrier.AddMemoryBarrier(AccessMask, AccessMask, StageMask, StageMask);
 		}
 
 		if (DSTexture->HasClearValue() && bNeedsClearValues)
@@ -1711,11 +1802,26 @@ void FVulkanLayoutManager::BeginRenderPass(FVulkanCommandListContext& Context, F
 	}
 
 	FRHITexture* ShadingRateTexture = RPInfo.ShadingRateTexture;
-	if (ShadingRateTexture)
+	if (ShadingRateTexture && ValidateShadingRateDataType())
 	{
 		FVulkanSurface& Surface = FVulkanTextureBase::Cast(ShadingRateTexture)->Surface;
 		VkImageLayout& DSLayout = FindOrAddLayoutRW(Surface, VK_IMAGE_LAYOUT_UNDEFINED);
-		VkImageLayout ExpectedLayout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+		
+		VkImageLayout ExpectedLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+		if (GRHIVariableRateShadingImageDataType == VRSImage_Palette)
+		{
+			ExpectedLayout = VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR;
+		}
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
+		if (GRHIVariableRateShadingImageDataType == VRSImage_Fractional)
+		{
+			ExpectedLayout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+		}
+#endif
 
 		// transition shading rate textures to the fragment density map layout for rendering
 		if (DSLayout != ExpectedLayout)

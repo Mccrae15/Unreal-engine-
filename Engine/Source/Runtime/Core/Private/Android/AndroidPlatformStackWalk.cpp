@@ -11,6 +11,8 @@
 #include <dlfcn.h>
 #include <cxxabi.h>
 #include <stdio.h>
+#include <signal.h>
+#include <setjmp.h>
 #include <android/log.h>
 #include "Android/AndroidSignals.h"
 
@@ -19,7 +21,7 @@
 #include "Misc/OutputDevice.h"
 #include "Logging/LogMacros.h"
 
-#define HAS_LIBUNWIND PLATFORM_ANDROID_ARM64 && !PLATFORM_LUMIN
+#define HAS_LIBUNWIND PLATFORM_ANDROID_ARM64
 
 #if HAS_LIBUNWIND
 #define UNW_LOCAL_ONLY
@@ -32,18 +34,64 @@
 #include "HAL/PlatformProcess.h"
 #include "Misc/ScopeExit.h"
 
-void FAndroidPlatformStackWalk::NotifyPlatformVersionInit()
+// Some devices with Android 10 have XOM security feature and walking stack might crash
+// We need to verify first that it's safe to read callstack in a call toInitStackWalking
+// Otherwise stack walking will be disabled
+static sigjmp_buf XomJmp;
+static bool DisableStackBacktracing = true;
+static bool StackWalkingInitialized = false;
+static void XomSignalHandler(int Sig)
 {
+	siglongjmp(XomJmp, Sig);
+}
+
+bool FAndroidPlatformStackWalk::InitStackWalking()
+{
+	if (StackWalkingInitialized)
+	{
+		return true;
+	}
+
 #if HAS_LIBUNWIND
 	// Without this stack walk might touch executable memory and ASan will terminate the app on that.
-	// Xom protection presents the same issue and is enabled on android 10 devices when the targetsdk is 29 or higher.
+	// Xom protection presents the same issue and is enabled on android 10 devices
 	// see https://source.android.com/devices/tech/debug/execute-only-memory
-	if (RUNNING_WITH_ASAN || (FAndroidMisc::GetTargetSDKVersion() >= 29 && FAndroidMisc::GetAndroidMajorVersion() == 10))
+	// Please note that XOM is enabled on some devices even when building with TargetSDK < 29 (Oculus Quest 2)
+	// and not enabled on some other devices at all, like Pixel 4
+	sigset_t SignalSet;
+	sigemptyset(&SignalSet);
+	sigaddset(&SignalSet, SIGSEGV);
+
+	struct sigaction SigAction;
+	struct sigaction OldSigAction;
+	sigset_t OldSignalSet;
+	memset(&SigAction, 0, sizeof(SigAction));
+	SigAction.sa_handler = XomSignalHandler;
+	SigAction.sa_mask = SignalSet;
+
+	sigprocmask(SIG_SETMASK, &SigAction.sa_mask, &OldSignalSet);
+	sigaction(SIGSEGV, &SigAction, &OldSigAction);
+
+	if (sigsetjmp(XomJmp, 1) == 0)
 	{
-		// prevent libunwind attempting to deref IP during signal frame test. (this will make backtrace called from a signal less useful.)
-		unw_disable_signal_frame_test(1);
+		// first call to unw_backtrace will trigger some initial large allocations and if it happens during stack capturing on an exception we might get another out of memory exception
+		const uint32 Depth = 16;
+		void* Stack[Depth];
+		unw_backtrace((void**)Stack, Depth);
+		DisableStackBacktracing = false;
 	}
+	else
+	{
+		unw_disable_signal_frame_test(1);
+		__android_log_print(ANDROID_LOG_DEBUG, "UE", "XOM has been detected");
+	}
+
+	sigaction(SIGSEGV, &OldSigAction, nullptr);
+	sigprocmask(SIG_SETMASK, &OldSignalSet, nullptr);
+
+	StackWalkingInitialized = true;
 #endif
+	return true;
 }
 
 void FAndroidPlatformStackWalk::ProgramCounterToSymbolInfo(uint64 ProgramCounter, FProgramCounterSymbolInfo& out_SymbolInfo)
@@ -83,11 +131,11 @@ void FAndroidPlatformStackWalk::ProgramCounterToSymbolInfo(uint64 ProgramCounter
 	}
 
 	// No line number available.
-	// TODO open libUE4.so from the apk and get the DWARF-2 data.
+	// TODO open libUnreal.so from the apk and get the DWARF-2 data.
 	FCStringAnsi::Strcat(out_SymbolInfo.Filename, "Unknown");
 	out_SymbolInfo.LineNumber = 0;
 
-	// Offset of the symbol in the module, eg offset into libUE4.so needed for offline addr2line use.
+	// Offset of the symbol in the module, eg offset into libUnreal.so needed for offline addr2line use.
 	out_SymbolInfo.OffsetInModule = ProgramCounter - (uint64)DylibInfo.dli_fbase;
 
 	// Write out Module information.
@@ -165,20 +213,10 @@ extern int32 unwind_backtrace_signal(void* sigcontext, uint64* Backtrace, int32 
 
 uint32 FAndroidPlatformStackWalk::CaptureStackBackTrace(uint64* BackTrace, uint32 MaxDepth, void* Context)
 {
-#if PLATFORM_ANDROID_ARM64
-	if (FAndroidMisc::GetTargetSDKVersion() >= 29 && FAndroidMisc::GetAndroidMajorVersion() == 10)
+	if (DisableStackBacktracing)
 	{
-		// UE-103382
-		// due to execute-only memory (xom) we cannot currently walk the stack on Android 10 devices when targeting Android 29 or greater.
-		static int32 OnceOnly = 0;
-		if (Context == nullptr && OnceOnly == 0)
-		{
-			__android_log_print(ANDROID_LOG_DEBUG, "UE4", "FAndroidPlatformStackWalk::CaptureStackBackTrace disabled on Android 10 with TargetSDK >= 29 due to XOM.");
-			OnceOnly = 1;
-		}
 		return 0;
 	}
-#endif
 
 	// Make sure we have place to store the information
 	if (BackTrace == NULL || MaxDepth == 0)
@@ -198,7 +236,7 @@ uint32 FAndroidPlatformStackWalk::CaptureStackBackTrace(uint64* BackTrace, uint3
 		// Code taken from https://android.googlesource.com/platform/system/core/+/jb-dev/libcorkscrew/arch-arm/backtrace-arm.c
 		return unwind_backtrace_signal(Context, BackTrace, MaxDepth);
 	}
-#elif HAS_LIBUNWIND 
+#elif HAS_LIBUNWIND
 	if (Context)
 	{
 		// Android signal handlers always catch signals before user handlers and passes it down to user later
@@ -336,7 +374,7 @@ void FAndroidPlatformStackWalk::HandleBackTraceSignal(siginfo* Info, void* Conte
 // Sends a signal to ThreadId, wait AndroidPlatformThreadStackWalk.RequestMaxWait seconds for result or time out and return 0.
 // if callstack capture begins, but takes > AndroidPlatformThreadStackWalk.MaxWait the process will be killed.
 // Is not thread safe, returns 0 if a CaptureThreadStackBackTrace is occurring on another thread.
-uint32 FAndroidPlatformStackWalk::CaptureThreadStackBackTrace(uint64 ThreadId, uint64* BackTrace, uint32 MaxDepth)
+uint32 FAndroidPlatformStackWalk::CaptureThreadStackBackTrace(uint64 ThreadId, uint64* BackTrace, uint32 MaxDepth, void* Context)
 {
 	static TAtomic<bool> bHasReentered(false);
 	bool bExpected = false;
@@ -413,7 +451,7 @@ uint32 FAndroidPlatformStackWalk::CaptureThreadStackBackTrace(uint64 ThreadId, u
 	return GatherCallstackFromThread(ThreadId);
 }
 #else
-uint32 FAndroidPlatformStackWalk::CaptureThreadStackBackTrace(uint64 ThreadId, uint64* BackTrace, uint32 MaxDepth)
+uint32 FAndroidPlatformStackWalk::CaptureThreadStackBackTrace(uint64 ThreadId, uint64* BackTrace, uint32 MaxDepth, void* Context)
 {
 	return 0;
 }

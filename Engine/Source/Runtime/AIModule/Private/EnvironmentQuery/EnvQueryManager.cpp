@@ -13,6 +13,10 @@
 #include "EnvironmentQuery/EnvQueryOption.h"
 #include "EnvironmentQuery/EQSTestingPawn.h"
 #include "EnvironmentQuery/EnvQueryDebugHelpers.h"
+#include "BehaviorTree/BlackboardComponent.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Float.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Int.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
 #include "Engine/Engine.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/Package.h"
@@ -64,6 +68,68 @@ FEnvQueryRequest& FEnvQueryRequest::SetNamedParams(const TArray<FEnvNamedValue>&
 	for (int32 ParamIndex = 0; ParamIndex < Params.Num(); ParamIndex++)
 	{
 		NamedParams.Add(Params[ParamIndex].ParamName, Params[ParamIndex].Value);
+	}
+
+	return *this;
+}
+
+FEnvQueryRequest& FEnvQueryRequest::SetDynamicParam(const FAIDynamicParam& Param, const UBlackboardComponent* BlackboardComponent)
+{
+	checkf(BlackboardComponent || (Param.BBKey.IsSet() == false), TEXT("BBKey.IsSet but no BlackboardComponent provided"));
+
+	// check if given param requires runtime resolve, like reading from BB
+	if (Param.BBKey.IsSet() && BlackboardComponent)
+	{
+		// grab info from BB
+		switch (Param.ParamType)
+		{
+		case EAIParamType::Float:
+		{
+			const float Value = BlackboardComponent->GetValue<UBlackboardKeyType_Float>(Param.BBKey.GetSelectedKeyID());
+			SetFloatParam(Param.ParamName, Value);
+		}
+		break;
+		case EAIParamType::Int:
+		{
+			const int32 Value = BlackboardComponent->GetValue<UBlackboardKeyType_Int>(Param.BBKey.GetSelectedKeyID());
+			SetIntParam(Param.ParamName, Value);
+		}
+		break;
+		case EAIParamType::Bool:
+		{
+			const bool Value = BlackboardComponent->GetValue<UBlackboardKeyType_Bool>(Param.BBKey.GetSelectedKeyID());
+			SetBoolParam(Param.ParamName, Value);
+		}
+		break;
+		default:
+			checkNoEntry();
+			break;
+		}
+	}
+	else
+	{
+		switch (Param.ParamType)
+		{
+		case EAIParamType::Float:
+		{
+			SetFloatParam(Param.ParamName, Param.Value);
+		}
+		break;
+		case EAIParamType::Int:
+		{
+			SetIntParam(Param.ParamName, Param.Value);
+		}
+		break;
+		case EAIParamType::Bool:
+		{
+			bool Result = Param.Value > 0;
+			SetBoolParam(Param.ParamName, Result);
+		}
+		break;
+		default:
+			checkNoEntry();
+			break;
+		}
 	}
 
 	return *this;
@@ -131,7 +197,7 @@ UEnvQueryManager::UEnvQueryManager(const FObjectInitializer& ObjectInitializer) 
 void UEnvQueryManager::PostLoad()
 {
 	Super::PostLoad();
-	MarkPendingKill();
+	MarkAsGarbage();
 }
 
 void UEnvQueryManager::PostInitProperties()
@@ -308,6 +374,9 @@ TSharedPtr<FEnvQueryInstance> UEnvQueryManager::PrepareQueryInstance(const FEnvQ
 	QueryInstance->World = GetWorldFast();
 	QueryInstance->Owner = Request.Owner;
 	QueryInstance->StartTime = FPlatformTime::Seconds();
+#if !UE_BUILD_SHIPPING
+	QueryInstance->GenerationTimeWarningSeconds = GenerationTimeWarningSeconds;
+#endif // UE_BUILD_SHIPPING
 
 	DEC_MEMORY_STAT_BY(STAT_AI_EQS_InstanceMemory, QueryInstance->NamedParams.GetAllocatedSize());
 
@@ -356,8 +425,6 @@ void UEnvQueryManager::Tick(float DeltaTime)
 	CheckQueryCount();
 #endif
 
-	const float ExecutionTimeWarningSeconds = 0.025f;
-
 	float TimeLeft = MaxAllowedTestingTime;
 	int32 QueriesFinishedDuringUpdate = 0;
 
@@ -397,7 +464,11 @@ void UEnvQueryManager::Tick(float DeltaTime)
 					// Always log that we executed total execution time at the end of the query.
 					if (QueryInstancePtr->TotalExecutionTime > ExecutionTimeWarningSeconds)
 					{
-						UE_LOG(LogEQS, Warning, TEXT("Finished query %s over execution time warning. %s"), *QueryInstancePtr->QueryName, *QueryInstancePtr->GetExecutionTimeDescription());
+						UE_LOG(LogEQS, Warning, TEXT("Query %s (Owner: %s) has finished in %.2f ms, exceeding the configured limit of %.2f ms. Execution details: %s"), 
+							*QueryInstancePtr->QueryName, *GetNameSafe(QueryInstancePtr->Owner.Get()), 
+							1000.f * QueryInstancePtr->TotalExecutionTime, 1000.f * ExecutionTimeWarningSeconds, 
+							*QueryInstancePtr->GetExecutionTimeDescription());
+
 						QueryInstancePtr->bHasLoggedTimeLimitWarning = true;
 					}
 
@@ -419,6 +490,16 @@ void UEnvQueryManager::Tick(float DeltaTime)
 						QueryInstancePtr->FinishDelegate.ExecuteIfBound(QueryInstance);
 
 						ResultHandlingDuration = FPlatformTime::Seconds() - ResultHandlingStartTime;
+
+						// Always log if FinishDelegate took too long to handle the result
+						if (ResultHandlingDuration > HandlingResultTimeWarningSeconds)
+						{
+							FName FunctionName(TEXT("Unavailable"));
+	#if USE_DELEGATE_TRYGETBOUNDFUNCTIONNAME
+							FunctionName = QueryInstancePtr->FinishDelegate.TryGetBoundFunctionName();
+	#endif // USE_DELEGATE_TRYGETBOUNDFUNCTIONNAME
+							UE_LOG(LogEQS, Warning, TEXT("FinishDelegate for EQS query %s took %f seconds and is over handling time limit warning of %f. Delegate info: object = %s method = %s"), *QueryInstancePtr->QueryName, ResultHandlingDuration, HandlingResultTimeWarningSeconds , *GetNameSafe(QueryInstancePtr->FinishDelegate.GetUObject()), *FunctionName.ToString());
+						}
 					}
 
 					++QueriesFinishedDuringUpdate;
@@ -433,7 +514,11 @@ void UEnvQueryManager::Tick(float DeltaTime)
 
 				if (QueryInstancePtr->TotalExecutionTime > ExecutionTimeWarningSeconds && !QueryInstancePtr->bHasLoggedTimeLimitWarning)
 				{
-					UE_LOG(LogEQS, Warning, TEXT("Query %s over execution time warning. %s"), *QueryInstancePtr->QueryName, *QueryInstancePtr->GetExecutionTimeDescription());
+					UE_LOG(LogEQS, Warning, TEXT("Query %s (Owner: %s) has taken %.2f ms so far, exceeding the configured limit of %.2f ms. Execution details: %s"), 
+						*QueryInstancePtr->QueryName, *GetNameSafe(QueryInstancePtr->Owner.Get()), 
+						1000.f * QueryInstancePtr->TotalExecutionTime, 1000.f * ExecutionTimeWarningSeconds, 
+						*QueryInstancePtr->GetExecutionTimeDescription());
+
 					QueryInstancePtr->bHasLoggedTimeLimitWarning = true;
 				}
 			}
@@ -654,11 +739,13 @@ TSharedPtr<FEnvQueryInstance> UEnvQueryManager::CreateQueryInstance(const UEnvQu
 		return nullptr;
 	}
 
+	const FName TemplateFullName = FName(Template->GetFullName());
+	
 	// try to find entry in cache
 	FEnvQueryInstance* InstanceTemplate = NULL;
 	for (int32 InstanceIndex = 0; InstanceIndex < InstanceCache.Num(); InstanceIndex++)
 	{
-		if (InstanceCache[InstanceIndex].AssetName == Template->GetFName() &&
+		if (InstanceCache[InstanceIndex].AssetName == TemplateFullName &&
 			InstanceCache[InstanceIndex].Instance.Mode == RunMode)
 		{
 			InstanceTemplate = &InstanceCache[InstanceIndex].Instance;
@@ -681,7 +768,7 @@ TSharedPtr<FEnvQueryInstance> UEnvQueryManager::CreateQueryInstance(const UEnvQu
 		{
 			// memory stat tracking: temporary variable will exist only inside this section
 			FEnvQueryInstanceCache NewCacheEntry;
-			NewCacheEntry.AssetName = Template->GetFName();
+			NewCacheEntry.AssetName = TemplateFullName;
 			NewCacheEntry.Template = LocalTemplate;
 			NewCacheEntry.Instance.UniqueName = LocalTemplate->GetFName();
 			NewCacheEntry.Instance.QueryName = LocalTemplate->GetQueryName().ToString();
@@ -1000,7 +1087,7 @@ bool UEnvQueryManager::Exec(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar
 #if USE_EQS_DEBUGGER
 	if (FParse::Command(&Cmd, TEXT("DumpEnvQueryStats")))
 	{
-		const FString FileName = FPaths::CreateTempFilename(*FPaths::ProjectLogDir(), TEXT("EnvQueryStats"), TEXT(".ue4eqs"));
+		const FString FileName = FPaths::CreateTempFilename(*FPaths::ProjectLogDir(), TEXT("EnvQueryStats"), TEXT(".ue_eqs"));
 
 		FEQSDebugger::SaveStats(FileName);
 		return true;
@@ -1010,6 +1097,19 @@ bool UEnvQueryManager::Exec(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar
 	return false;
 }
 
+
+void UEnvQueryManager::Configure(const FEnvQueryManagerConfig& NewConfig)
+{
+	UE_LOG(LogEQS, Log, TEXT("Applying new FEnvQueryManagerConfig: %s"), *NewConfig.ToString());
+
+	MaxAllowedTestingTime = NewConfig.MaxAllowedTestingTime;
+	bTestQueriesUsingBreadth = NewConfig.bTestQueriesUsingBreadth;
+	QueryCountWarningThreshold = NewConfig.QueryCountWarningThreshold;
+	QueryCountWarningInterval = NewConfig.QueryCountWarningInterval;
+	ExecutionTimeWarningSeconds = NewConfig.ExecutionTimeWarningSeconds;
+	HandlingResultTimeWarningSeconds = NewConfig.HandlingResultTimeWarningSeconds;
+	GenerationTimeWarningSeconds = NewConfig.GenerationTimeWarningSeconds;	
+}
 
 //----------------------------------------------------------------------//
 // FEQSDebugger
@@ -1179,3 +1279,11 @@ void FEQSDebugger::LoadStats(const FString& FileName)
 }
 
 #endif // USE_EQS_DEBUGGER
+
+//----------------------------------------------------------------------//
+// FEnvQueryManagerConfig
+//----------------------------------------------------------------------//
+FString FEnvQueryManagerConfig::ToString() const
+{
+	return FString::Printf(TEXT("MaxAllowedTestingTime=%f bTestQueriesUsingBreadth=%d QueryCountWarningThreshold=%d QueryCountWarningInterval=%f ExecutionTimeWarningSeconds=%f HandlingResultTimeWarningSeconds=%f GenerationTimeWarningSeconds=%f"), MaxAllowedTestingTime, bTestQueriesUsingBreadth, QueryCountWarningThreshold, QueryCountWarningInterval, ExecutionTimeWarningSeconds, HandlingResultTimeWarningSeconds, GenerationTimeWarningSeconds);
+}

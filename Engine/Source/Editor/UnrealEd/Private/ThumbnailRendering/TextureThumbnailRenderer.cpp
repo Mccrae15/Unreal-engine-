@@ -10,6 +10,7 @@
 #include "EngineGlobals.h"
 #include "Engine/TextureCube.h"
 #include "Engine/Texture2DArray.h"
+#include "Engine/TextureCubeArray.h"
 #include "Texture2DPreview.h"
 #include "Engine/TextureRenderTargetCube.h"
 
@@ -49,7 +50,7 @@ void UTextureThumbnailRenderer::GetThumbnailSize(UObject* Object, float Zoom, ui
 void UTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 Width, uint32 Height, FRenderTarget*, FCanvas* Canvas, bool bAdditionalViewFamily)
 {
 	UTexture* Texture = Cast<UTexture>(Object);
-	if (Texture != nullptr && Texture->Resource != nullptr) 
+	if (Texture != nullptr && Texture->GetResource() != nullptr)
 	{
 		UTexture2D* Texture2D = Cast<UTexture2D>(Texture);
 
@@ -61,13 +62,14 @@ void UTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 W
 
 		UTextureCube* TextureCube = Cast<UTextureCube>(Texture);
 		UTexture2DArray* Texture2DArray = Cast<UTexture2DArray>(Texture);
+		UTextureCubeArray* TextureCubeArray = Cast<UTextureCubeArray>(Texture);
 		UTextureRenderTargetCube* RTTextureCube = Cast<UTextureRenderTargetCube>(Texture);
 		UTextureLightProfile* TextureLightProfile = Cast<UTextureLightProfile>(Texture);
 		const bool bIsVirtualTexture = Texture->IsCurrentlyVirtualTextured();
 
 		TRefCountPtr<FBatchedElementParameters> BatchedElementParameters;
 
-		if(TextureCube || RTTextureCube)
+		if(TextureCube || TextureCubeArray || RTTextureCube)
 		{
 			// is released by the render thread when it was rendered
 			BatchedElementParameters = new FMipLevelBatchedElementParameters((float)0);
@@ -98,20 +100,20 @@ void UTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 W
 		{
 			// If using alpha, draw a checkerboard underneath first.
 			const int32 CheckerDensity = 8;
-			auto* Checker = UThumbnailManager::Get().CheckerboardTexture;
+			auto Checker = UThumbnailManager::Get().CheckerboardTexture;
 			Canvas->DrawTile(
 				0.0f, 0.0f, Width, Height,							// Dimensions
 				0.0f, 0.0f, CheckerDensity, CheckerDensity,			// UVs
-				FLinearColor::White, Checker->Resource);			// Tint & Texture
+				FLinearColor::White, Checker->GetResource());			// Tint & Texture
 		}
 
 		// Use A canvas tile item to draw
-		FCanvasTileItem CanvasTile( FVector2D( X, Y ), Texture->Resource, FVector2D( Width,Height ), FLinearColor::White );
+		FCanvasTileItem CanvasTile( FVector2D( X, Y ), Texture->GetResource(), FVector2D( Width,Height ), FLinearColor::White );
 		CanvasTile.BlendMode = bUseTranslucentBlend ? SE_BLEND_Translucent : SE_BLEND_Opaque;
 		CanvasTile.BatchedElementParameters = BatchedElementParameters;
 		if (bIsVirtualTexture && Texture->Source.GetNumBlocks() > 1)
 		{
-			// Adjust UVs to display entire UDIM range, acounting for UE4 inverted V-axis
+			// Adjust UVs to display entire UDIM range, acounting for UE inverted V-axis
 			// We're not actually rendering a VT here, but the editor-only texture we're using is still using the UDIM tile layout
 			// So we use inverted Y-axis, but then normalize back to [0,1)
 			const FIntPoint BlockSize = Texture->Source.GetSizeInBlocks();

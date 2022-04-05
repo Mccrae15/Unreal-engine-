@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "OnlineSubsystemTypes.h"
 #include "Interfaces/OnlineIdentityInterface.h"
 #include "OnlineSubsystemNullTypes.h"
@@ -35,7 +35,7 @@ public:
 	// FUserOnlineAccountNull
 
 	FUserOnlineAccountNull(const FString& InUserId=TEXT("")) 
-		: UserIdPtr(new FUniqueNetIdNull(InUserId))
+		: UserIdPtr(FUniqueNetIdNull::Create(InUserId))
 	{ }
 
 	virtual ~FUserOnlineAccountNull()
@@ -92,6 +92,9 @@ public:
 	 */
 	virtual ~FOnlineIdentityNull();
 
+	/** Creates a unique id for a user, may be stable based on config/command line */
+	FString GenerateRandomUserId(int32 LocalUserNum);
+
 private:
 
 	/**
@@ -106,7 +109,22 @@ private:
 	TMap<int32, FUniqueNetIdPtr> UserIds;
 
 	/** Ids mapped to locally registered users */
-	TMap<FUniqueNetIdNull, TSharedRef<FUserOnlineAccountNull>> UserAccounts;
+	TUniqueNetIdMap<TSharedRef<FUserOnlineAccountNull>> UserAccounts;
+
+	/** True if it should login the first user at startup like single-user platforms, false to only login when requested */
+	bool bAutoLoginAtStartup = true;
+
+	/** True if login should require a user/pass to act like an external service, false to match most platforms and use the default */
+	bool bRequireLoginCredentials = false;
+
+	/** True if login name should include the local user number, which allows different stable IDs per user num */
+	bool bAddUserNumToNullId = false;
+
+	/** True if it should use a system-stable null Id for login, same as -StableNullID on command line */
+	bool bForceStableNullId = false;
+
+	/** True if it should fail faked network queries and act like an offline system */
+	bool bForceOfflineMode = false;
 };
 
 typedef TSharedPtr<FOnlineIdentityNull, ESPMode::ThreadSafe> FOnlineIdentityNullPtr;

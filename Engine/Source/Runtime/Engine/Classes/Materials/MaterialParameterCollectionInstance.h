@@ -36,6 +36,8 @@ class ENGINE_API UMaterialParameterCollectionInstance : public UObject
 	/** Sets parameter value overrides, returns false if the parameter was not found. */
 	bool SetScalarParameterValue(FName ParameterName, float ParameterValue);
 	bool SetVectorParameterValue(FName ParameterName, const FLinearColor& ParameterValue);
+	bool SetVectorParameterValue(FName ParameterName, const FVector& ParameterValue) { return SetVectorParameterValue(ParameterName, FLinearColor(ParameterValue)); }
+	bool SetVectorParameterValue(FName ParameterName, const FVector4& ParameterValue) { return SetVectorParameterValue(ParameterName, FLinearColor(ParameterValue)); }
 
 	/** Gets parameter values, returns false if the parameter was not found. */
 	bool GetScalarParameterValue(FName ParameterName, float& OutParameterValue) const;
@@ -80,7 +82,7 @@ protected:
 
 	/** Collection resource this instance is based off of. */
 	UPROPERTY()
-	UMaterialParameterCollection* Collection;
+	TObjectPtr<UMaterialParameterCollection> Collection;
 
 	/** World that owns this instance. */
 	TWeakObjectPtr<UWorld> World;
@@ -101,7 +103,7 @@ protected:
 	FOnVectorParameterUpdated VectorParameterUpdatedDelegate;
 
 	/** Boils down the instance overrides and default values into data to be set on the uniform buffer. */
-	void GetParameterData(TArray<FVector4>& ParameterData) const;
+	void GetParameterData(TArray<FVector4f>& ParameterData) const;
 	
 	/** Tracks whether this instance needs to update the render state from the game thread */
 	bool bNeedsRenderStateUpdate;

@@ -8,19 +8,20 @@
 
 #include "CoreMinimal.h"
 #include "RendererInterface.h"
+#include "Shader.h"
 
-class FCanvas;
 class FHitProxyId;
 class FLightCacheInterface;
 class FMaterial;
 class FPrimitiveSceneInfo;
 class FSceneInterface;
-class FSceneRenderTargets;
 class FSceneView;
 class FSceneViewFamily;
 class FSceneViewStateInterface;
+class FViewInfo;
 struct FMeshBatch;
 struct FSynthBenchmarkResults;
+struct FSceneTextures;
 
 template<class ResourceType> class TGlobalResource;
 
@@ -42,13 +43,11 @@ public:
 	virtual void RemoveScene(FSceneInterface* Scene) override;
 	virtual void UpdateStaticDrawLists() override;
 	virtual void UpdateStaticDrawListsForMaterials(const TArray<const FMaterial*>& Materials) override;
-	virtual FSceneViewStateInterface* AllocateViewState() override;
+	virtual FSceneViewStateInterface* AllocateViewState(ERHIFeatureLevel::Type FeatureLevel) override;
 	virtual uint32 GetNumDynamicLightsAffectingPrimitive(const FPrimitiveSceneInfo* PrimitiveSceneInfo,const FLightCacheInterface* LCI) override;
-	virtual void ReallocateSceneRenderTargets() override;
 	virtual void OnWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources, bool bWorldChanged) override;
-	virtual void SceneRenderTargetsSetBufferSize(uint32 SizeX, uint32 SizeY) override;
 	virtual void InitializeSystemTextures(FRHICommandListImmediate& RHICmdList);
-	virtual void DrawTileMesh(FRHICommandListImmediate& RHICmdList, FMeshPassProcessorRenderState& DrawRenderState, const FSceneView& View, FMeshBatch& Mesh, bool bIsHitTesting, const FHitProxyId& HitProxyId, bool bUse128bitRT = false) override;
+	virtual void DrawTileMesh(FCanvasRenderContext& RenderContext, FMeshPassProcessorRenderState& DrawRenderState, const FSceneView& View, FMeshBatch& Mesh, bool bIsHitTesting, const FHitProxyId& HitProxyId, bool bUse128bitRT = false) override;
 	virtual void DebugLogOnCrash() override;
 	virtual void GPUBenchmark(FSynthBenchmarkResults& InOut, float WorkScale) override;
 	virtual void ExecVisualizeTextureCmd(const FString& Cmd) override;
@@ -100,22 +99,44 @@ public:
 	virtual void AddVirtualTextureProducerDestroyedCallback(const FVirtualTextureProducerHandle& Handle, FVTProducerDestroyedFunction* Function, void* Baton) override;
 	virtual uint32 RemoveAllVirtualTextureProducerDestroyedCallbacks(const void* Baton) override;
 	virtual void ReleaseVirtualTexturePendingResources() override;
+	virtual void RequestVirtualTextureTiles(TArray<uint64>&& InPageRequests) override;
 	virtual void RequestVirtualTextureTiles(const FVector2D& InScreenSpaceSize, int32 InMipLevel) override;
-	virtual void RequestVirtualTextureTilesForRegion(IAllocatedVirtualTexture* AllocatedVT, const FVector2D& InScreenSpaceSize, const FIntRect& InTextureRegion, int32 InMipLevel) override;
+	virtual void RequestVirtualTextureTiles(const FMaterialRenderProxy* InMaterialRenderProxy, const FVector2D& InScreenSpaceSize, ERHIFeatureLevel::Type InFeatureLevel) override;
+	virtual void RequestVirtualTextureTilesForRegion(IAllocatedVirtualTexture* AllocatedVT, const FVector2D& InScreenSpaceSize, const FVector2D& InViewportPosition, const FVector2D& InViewportSize, const FVector2D& InUV0, const FVector2D& InUV1, int32 InMipLevel) override;
 	virtual void LoadPendingVirtualTextureTiles(FRHICommandListImmediate& RHICmdList, ERHIFeatureLevel::Type FeatureLevel) override;
+	virtual void SetVirtualTextureRequestRecordBuffer(uint64 Handle) override;
+	virtual uint64 GetVirtualTextureRequestRecordBuffer(TSet<uint64>& OutPageRequests) override;
 	virtual void FlushVirtualTextureCache() override;
+
+	virtual void SetNaniteRequestRecordBuffer(uint64 Handle) override;
+	virtual uint64 GetNaniteRequestRecordBuffer(TArray<uint32>& OutPageRequests) override; 	
+	virtual void RequestNanitePages(TArrayView<uint32> InRequestData) override;
+	virtual void PrefetchNaniteResource(const Nanite::FResources* Resource, uint32 NumFramesUntilRender) override;
 	
 	virtual void RegisterPersistentViewUniformBufferExtension(IPersistentViewUniformBufferExtension* Extension) override;
 
-	void RenderPostOpaqueExtensions(FRDGBuilder& GraphBuilder, TArrayView<const FViewInfo> Views, FSceneRenderTargets& SceneContext);
-	void RenderOverlayExtensions(FRDGBuilder& GraphBuilder, TArrayView<const FViewInfo> Views, FSceneRenderTargets& SceneContext);
-	void RenderPostResolvedSceneColorExtension(FRDGBuilder& GraphBuilder, class FSceneRenderTargets& SceneContext);
+	void RenderPostOpaqueExtensions(
+		FRDGBuilder& GraphBuilder,
+		TArrayView<const FViewInfo> Views,
+		const FSceneTextures& SceneTextures);
+
+	void RenderOverlayExtensions(
+		FRDGBuilder& GraphBuilder,
+		TArrayView<const FViewInfo> Views,
+		const FSceneTextures& SceneTextures);
+
+	void RenderPostResolvedSceneColorExtension(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures);
+
+	virtual IScenePrimitiveRenderingContext* BeginScenePrimitiveRendering(FRDGBuilder& GraphBuilder, FSceneViewFamily* ViewFamily) override;
+
+	virtual void InvalidatePathTracedOutput() override;
 
 private:
 	TSet<FSceneInterface*> AllocatedScenes;
 	FOnPostOpaqueRender PostOpaqueRenderDelegate;
 	FOnPostOpaqueRender OverlayRenderDelegate;
 	FOnResolvedSceneColor PostResolvedSceneColorCallbacks;
+	FDelegateHandle StopRenderingThreadDelegate;
 };
 
 extern ICustomCulling* GCustomCullingImpl;

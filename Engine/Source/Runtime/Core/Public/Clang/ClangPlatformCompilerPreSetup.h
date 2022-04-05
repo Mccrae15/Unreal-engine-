@@ -79,10 +79,22 @@
 #define DISABLE_IMPLICIT_FLOAT_CONVERSION_FRAGMENT
 #endif
 
+#if __has_warning("-Wimplicit-float-conversion")
+#define FORCE_IMPLICIT_FLOAT_CONVERSION_FRAGMENT _Pragma("clang diagnostic warning \"-Wimplicit-float-conversion\"")
+#else
+#define FORCE_IMPLICIT_FLOAT_CONVERSION_FRAGMENT
+#endif
+
 #if __has_warning("-Wimplicit-int-conversion")
 #define DISABLE_IMPLICIT_INT_CONVERSION_FRAGMENT _Pragma("clang diagnostic ignored \"-Wimplicit-int-conversion\"")
 #else
 #define DISABLE_IMPLICIT_INT_CONVERSION_FRAGMENT
+#endif
+
+#if __has_warning("-Wimplicit-int-conversion")
+#define FORCE_IMPLICIT_INT_CONVERSION_FRAGMENT _Pragma("clang diagnostic warning \"-Wimplicit-int-conversion\"")
+#else
+#define FORCE_IMPLICIT_INT_CONVERSION_FRAGMENT
 #endif
 
 #ifndef PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
@@ -96,8 +108,39 @@
 
 #ifndef PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
 	#define PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS \
-		_Pragma("clang diagnostic pop")
+		DEPRECATED_MACRO(5.0, "The PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS macro has been deprecated in favor of PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS. To force enable warnings use PRAGMA_FORCE_UNSAFE_TYPECAST_WARNINGS.")
 #endif // PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
+
+#ifndef PRAGMA_FORCE_UNSAFE_TYPECAST_WARNINGS
+	#define PRAGMA_FORCE_UNSAFE_TYPECAST_WARNINGS \
+		_Pragma("clang diagnostic push") \
+		_Pragma("clang diagnostic warning \"-Wfloat-conversion\"") \
+		FORCE_IMPLICIT_FLOAT_CONVERSION_FRAGMENT \
+		FORCE_IMPLICIT_INT_CONVERSION_FRAGMENT \
+		_Pragma("clang diagnostic warning \"-Wc++11-narrowing\"")
+#endif // PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
+
+#ifndef PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS
+	#define PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS \
+	_Pragma("clang diagnostic pop")
+#endif // PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS
+
+#if __has_warning("-Wordered-compare-function-pointers")
+#define DISABLE_ORDERED_COMPARE_FUNCTION_POINTERS _Pragma("clang diagnostic ignored \"-Wordered-compare-function-pointers\"")
+#else
+#define DISABLE_ORDERED_COMPARE_FUNCTION_POINTERS
+#endif
+
+#ifndef PRAGMA_DISABLE_ORDERED_COMPARE_FUNCTION_POINTERS
+	#define PRAGMA_DISABLE_ORDERED_COMPARE_FUNCTION_POINTERS \
+		_Pragma("clang diagnostic push") \
+		DISABLE_ORDERED_COMPARE_FUNCTION_POINTERS
+#endif // PRAGMA_DISABLE_ORDERED_COMPARE_FUNCTION_POINTERS
+
+#ifndef PRAGMA_ENABLE_ORDERED_COMPARE_FUNCTION_POINTERS
+	#define PRAGMA_ENABLE_ORDERED_COMPARE_FUNCTION_POINTERS \
+	_Pragma("clang diagnostic pop")
+#endif // PRAGMA_ENABLE_ORDERED_COMPARE_FUNCTION_POINTERS
 
 #ifndef PRAGMA_DISABLE_UNDEFINED_IDENTIFIER_WARNINGS
 	#define PRAGMA_DISABLE_UNDEFINED_IDENTIFIER_WARNINGS \
@@ -148,6 +191,17 @@
 		_Pragma("clang diagnostic push") \
 		_Pragma("clang diagnostic ignored \"-Wmacro-redefined\"")
 #endif // PRAGMA_DISABLE_MACRO_REDEFINED_WARNINGS
+
+#ifndef PRAGMA_DISABLE_UNUSED_PRIVATE_FIELDS_WARNINGS
+#define PRAGMA_DISABLE_UNUSED_PRIVATE_FIELDS_WARNINGS \
+		_Pragma("clang diagnostic push") \
+		_Pragma("clang diagnostic ignored \"-Wunused-private-field\"")
+#endif // PRAGMA_DISABLE_UNUSED_PRIVATE_FIELDS_WARNINGS
+
+#ifndef PRAGMA_ENABLE_UNUSED_PRIVATE_FIELDS_WARNINGS
+#define PRAGMA_ENABLE_UNUSED_PRIVATE_FIELDS_WARNINGS \
+		_Pragma("clang diagnostic pop")
+#endif // PRAGMA_ENABLE_UNUSED_PRIVATE_FIELDS_WARNINGS
 
 #ifndef PRAGMA_ENABLE_MACRO_REDEFINED_WARNINGS
 	#define PRAGMA_ENABLE_MACRO_REDEFINED_WARNINGS \

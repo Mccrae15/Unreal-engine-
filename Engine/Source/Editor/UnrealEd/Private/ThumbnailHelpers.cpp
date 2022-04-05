@@ -67,7 +67,14 @@ FThumbnailPreviewScene::FThumbnailPreviewScene()
 	FPreviewScene::AddComponent(FloorPlaneComponent, FloorPlaneTransform);
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void FThumbnailPreviewScene::GetView(FSceneViewFamily* ViewFamily, int32 X, int32 Y, uint32 SizeX, uint32 SizeY) const
+{
+	CreateView(ViewFamily, X, Y, SizeX, SizeY);
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+FSceneView* FThumbnailPreviewScene::CreateView(FSceneViewFamily * ViewFamily, int32 X, int32 Y, uint32 SizeX, uint32 SizeY) const
 {
 	check(ViewFamily);
 
@@ -77,65 +84,69 @@ void FThumbnailPreviewScene::GetView(FSceneViewFamily* ViewFamily, int32 X, int3
 		FMath::Max<int32>(X+SizeX,0),
 		FMath::Max<int32>(Y+SizeY,0));
 
-	if (ViewRect.Width() > 0 && ViewRect.Height() > 0)
+	if (ViewRect.Area() <= 0)
 	{
-		const float FOVDegrees = 30.f;
-		const float HalfFOVRadians = FMath::DegreesToRadians<float>(FOVDegrees) * 0.5f;
-		static_assert((int32)ERHIZBuffer::IsInverted != 0, "Check NearPlane and Projection Matrix");
-		const float NearPlane = 1.0f;
-		FMatrix ProjectionMatrix = FReversedZPerspectiveMatrix(
-			HalfFOVRadians,
-			1.0f,
-			1.0f,
-			NearPlane
-			);
-
-		FVector Origin(0);
-		float OrbitPitch = 0;
-		float OrbitYaw = 0;
-		float OrbitZoom = 0;
-		GetViewMatrixParameters(FOVDegrees, Origin, OrbitPitch, OrbitYaw, OrbitZoom);
-
-		// Ensure a minimum camera distance to prevent problems with really small objects
-		const float MinCameraDistance = 48;
-		OrbitZoom = FMath::Max<float>(MinCameraDistance, OrbitZoom);
-
-		const FRotator RotationOffsetToViewCenter(0.f, 90.f, 0.f);
-		FMatrix ViewRotationMatrix = FRotationMatrix( FRotator(0, OrbitYaw, 0) ) * 
-			FRotationMatrix( FRotator(0, 0, OrbitPitch) ) *
-			FTranslationMatrix( FVector(0, OrbitZoom, 0) ) *
-			FInverseRotationMatrix( RotationOffsetToViewCenter );
-
-		ViewRotationMatrix = ViewRotationMatrix * FMatrix(
-			FPlane(0,	0,	1,	0),
-			FPlane(1,	0,	0,	0),
-			FPlane(0,	1,	0,	0),
-			FPlane(0,	0,	0,	1));
-
-		Origin -= ViewRotationMatrix.InverseTransformPosition( FVector::ZeroVector );
-		ViewRotationMatrix = ViewRotationMatrix.RemoveTranslation();
-
-		FSceneViewInitOptions ViewInitOptions;
-		ViewInitOptions.ViewFamily = ViewFamily;
-		ViewInitOptions.SetViewRectangle(ViewRect);
-		ViewInitOptions.ViewOrigin = -Origin;
-		ViewInitOptions.ViewRotationMatrix = ViewRotationMatrix;
-		ViewInitOptions.ProjectionMatrix = ProjectionMatrix;
-		ViewInitOptions.BackgroundColor = FLinearColor::Black;
-
-		FSceneView* NewView = new FSceneView(ViewInitOptions);
-
-		ViewFamily->Views.Add(NewView);
-
-		NewView->StartFinalPostprocessSettings( ViewInitOptions.ViewOrigin );
-		NewView->EndFinalPostprocessSettings(ViewInitOptions);
-		
-		// Tell the texture streaming system about this thumbnail view, so the textures will stream in as needed
-		// NOTE: Sizes may not actually be in screen space depending on how the thumbnail ends up stretched by the UI.  Not a big deal though.
-		// NOTE: Textures still take a little time to stream if the view has not been re-rendered recently, so they may briefly appear blurry while mips are prepared
-		// NOTE: Content Browser only renders thumbnails for loaded assets, and only when the mouse is over the panel. They'll be frozen in their last state while the mouse cursor is not over the panel.  This is for performance reasons
-		IStreamingManager::Get().AddViewInformation( Origin, SizeX, SizeX / FMath::Tan( FOVDegrees ) );
+		return nullptr;
 	}
+		
+	const float FOVDegrees = 30.f;
+	const float HalfFOVRadians = FMath::DegreesToRadians<float>(FOVDegrees) * 0.5f;
+	static_assert((int32)ERHIZBuffer::IsInverted != 0, "Check NearPlane and Projection Matrix");
+	const float NearPlane = 1.0f;
+	FMatrix ProjectionMatrix = FReversedZPerspectiveMatrix(
+		HalfFOVRadians,
+		1.0f,
+		1.0f,
+		NearPlane
+		);
+
+	FVector Origin(0);
+	float OrbitPitch = 0;
+	float OrbitYaw = 0;
+	float OrbitZoom = 0;
+	GetViewMatrixParameters(FOVDegrees, Origin, OrbitPitch, OrbitYaw, OrbitZoom);
+
+	// Ensure a minimum camera distance to prevent problems with really small objects
+	const float MinCameraDistance = 48;
+	OrbitZoom = FMath::Max<float>(MinCameraDistance, OrbitZoom);
+
+	const FRotator RotationOffsetToViewCenter(0.f, 90.f, 0.f);
+	FMatrix ViewRotationMatrix = FRotationMatrix( FRotator(0, OrbitYaw, 0) ) * 
+		FRotationMatrix( FRotator(0, 0, OrbitPitch) ) *
+		FTranslationMatrix( FVector(0, OrbitZoom, 0) ) *
+		FInverseRotationMatrix( RotationOffsetToViewCenter );
+
+	ViewRotationMatrix = ViewRotationMatrix * FMatrix(
+		FPlane(0,	0,	1,	0),
+		FPlane(1,	0,	0,	0),
+		FPlane(0,	1,	0,	0),
+		FPlane(0,	0,	0,	1));
+
+	Origin -= ViewRotationMatrix.InverseTransformPosition( FVector::ZeroVector );
+	ViewRotationMatrix = ViewRotationMatrix.RemoveTranslation();
+
+	FSceneViewInitOptions ViewInitOptions;
+	ViewInitOptions.ViewFamily = ViewFamily;
+	ViewInitOptions.SetViewRectangle(ViewRect);
+	ViewInitOptions.ViewOrigin = -Origin;
+	ViewInitOptions.ViewRotationMatrix = ViewRotationMatrix;
+	ViewInitOptions.ProjectionMatrix = ProjectionMatrix;
+	ViewInitOptions.BackgroundColor = FLinearColor::Black;
+
+	FSceneView* NewView = new FSceneView(ViewInitOptions);
+
+	ViewFamily->Views.Add(NewView);
+
+	NewView->StartFinalPostprocessSettings( ViewInitOptions.ViewOrigin );
+	NewView->EndFinalPostprocessSettings(ViewInitOptions);
+		
+	// Tell the texture streaming system about this thumbnail view, so the textures will stream in as needed
+	// NOTE: Sizes may not actually be in screen space depending on how the thumbnail ends up stretched by the UI.  Not a big deal though.
+	// NOTE: Textures still take a little time to stream if the view has not been re-rendered recently, so they may briefly appear blurry while mips are prepared
+	// NOTE: Content Browser only renders thumbnails for loaded assets, and only when the mouse is over the panel. They'll be frozen in their last state while the mouse cursor is not over the panel.  This is for performance reasons
+	IStreamingManager::Get().AddViewInformation( Origin, SizeX, SizeX / FMath::Tan( FOVDegrees ) );
+
+	return NewView;
 }
 
 void FThumbnailPreviewScene::Tick(float DeltaTime)
@@ -166,7 +177,7 @@ FParticleSystemThumbnailScene::FParticleSystemThumbnailScene()
 	bForceAllUsedMipsResident = false;
 	PartComponent = NULL;
 
-	ThumbnailFXSystem = FFXSystemInterface::Create(GetScene()->GetFeatureLevel(), GetScene()->GetShaderPlatform());
+	ThumbnailFXSystem = FFXSystemInterface::Create(GetScene()->GetFeatureLevel(), GetScene());
 	GetScene()->SetFXSystem( ThumbnailFXSystem );
 }
 
@@ -221,7 +232,7 @@ void FParticleSystemThumbnailScene::SetParticleSystem(UParticleSystem* ParticleS
 				{
 					ParticleSystem->PreviewComponent->TickComponent(WarmupTimestep, LEVELTICK_All, NULL);
 					WarmupElapsed += WarmupTimestep;
-					ThumbnailFXSystem->Tick(WarmupTimestep);
+					ThumbnailFXSystem->Tick(ParticleSystem->PreviewComponent->GetWorld(), WarmupTimestep);
 				}
 			}
 		}
@@ -424,7 +435,9 @@ FSkeletalMeshThumbnailScene::FSkeletalMeshThumbnailScene()
 void FSkeletalMeshThumbnailScene::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
 {
 	PreviewActor->GetSkeletalMeshComponent()->OverrideMaterials.Empty();
-	PreviewActor->GetSkeletalMeshComponent()->SetSkeletalMesh(InSkeletalMesh);
+	PreviewActor->GetSkeletalMeshComponent()->SetSkeletalMesh(InSkeletalMesh, false);
+	PreviewActor->GetSkeletalMeshComponent()->SetDrawDebugSkeleton(bDrawDebugSkeleton);
+	PreviewActor->GetSkeletalMeshComponent()->SetDebugDrawColor(DrawDebugColor);
 
 	if ( InSkeletalMesh )
 	{
@@ -440,10 +453,18 @@ void FSkeletalMeshThumbnailScene::SetSkeletalMesh(USkeletalMesh* InSkeletalMesh)
 	}
 }
 
+void FSkeletalMeshThumbnailScene::SetDrawDebugSkeleton(bool bInDrawDebugSkeleton, const FLinearColor& InSkeletonColor)
+{
+ 	bDrawDebugSkeleton = bInDrawDebugSkeleton;
+	DrawDebugColor = InSkeletonColor;
+	PreviewActor->GetSkeletalMeshComponent()->SetDrawDebugSkeleton(bDrawDebugSkeleton);
+	PreviewActor->GetSkeletalMeshComponent()->SetDebugDrawColor(DrawDebugColor);
+	PreviewActor->GetSkeletalMeshComponent()->RecreateRenderState_Concurrent();
+}
+
 void FSkeletalMeshThumbnailScene::GetViewMatrixParameters(const float InFOVDegrees, FVector& OutOrigin, float& OutOrbitPitch, float& OutOrbitYaw, float& OutOrbitZoom) const
 {
 	check(PreviewActor->GetSkeletalMeshComponent());
-	check(PreviewActor->GetSkeletalMeshComponent()->SkeletalMesh);
 
 	const float HalfFOVRadians = FMath::DegreesToRadians<float>(InFOVDegrees) * 0.5f;
 	// No need to add extra size to view slightly outside of the sphere to compensate for perspective since skeletal meshes already buffer bounds.
@@ -451,7 +472,12 @@ void FSkeletalMeshThumbnailScene::GetViewMatrixParameters(const float InFOVDegre
 	const float BoundsZOffset = GetBoundsZOffset(PreviewActor->GetSkeletalMeshComponent()->Bounds);
 	const float TargetDistance = HalfMeshSize / FMath::Tan(HalfFOVRadians);
 
-	USceneThumbnailInfo* ThumbnailInfo = Cast<USceneThumbnailInfo>(PreviewActor->GetSkeletalMeshComponent()->SkeletalMesh->GetThumbnailInfo());
+	USceneThumbnailInfo* ThumbnailInfo = nullptr;
+	if(PreviewActor->GetSkeletalMeshComponent()->SkeletalMesh)
+	{
+		ThumbnailInfo = Cast<USceneThumbnailInfo>(PreviewActor->GetSkeletalMeshComponent()->SkeletalMesh->GetThumbnailInfo());
+	}
+	
 	if ( ThumbnailInfo )
 	{
 		if ( TargetDistance + ThumbnailInfo->OrbitZoom < 0 )
@@ -605,7 +631,7 @@ bool FAnimationSequenceThumbnailScene::SetAnimation(UAnimSequenceBase* InAnimati
 				if (InAnimation->IsValidToPlay())
 				{
 					// Handle posing the mesh at the middle of the animation
-					const float AnimPosition = InAnimation->SequenceLength / 2.f;
+					const float AnimPosition = InAnimation->GetPlayLength() / 2.f;
 
 					UDebugSkelMeshComponent* MeshComponent = CastChecked<UDebugSkelMeshComponent>(PreviewActor->GetSkeletalMeshComponent());
 
@@ -709,7 +735,7 @@ FBlendSpaceThumbnailScene::FBlendSpaceThumbnailScene()
 	PreviewActor->SetActorEnableCollision(false);
 }
 
-bool FBlendSpaceThumbnailScene::SetBlendSpace(class UBlendSpaceBase* InBlendSpace)
+bool FBlendSpaceThumbnailScene::SetBlendSpace(class UBlendSpace* InBlendSpace)
 {
 	PreviewActor->GetSkeletalMeshComponent()->OverrideMaterials.Empty();
 
@@ -873,7 +899,7 @@ bool FAnimBlueprintThumbnailScene::SetAnimBlueprint(class UAnimBlueprint* InBlue
 				if (PreviousInstance && PreviousInstance != PreviewActor->GetSkeletalMeshComponent()->GetAnimInstance())
 				{
 					//Mark this as gone!
-					PreviousInstance->MarkPendingKill();
+					PreviousInstance->MarkAsGarbage();
 				}
 
 				FTransform MeshTransform = FTransform::Identity;

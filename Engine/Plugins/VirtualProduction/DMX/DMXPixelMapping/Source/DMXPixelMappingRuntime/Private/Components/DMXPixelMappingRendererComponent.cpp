@@ -5,8 +5,11 @@
 #include "DMXPixelMappingRuntimeObjectVersion.h"
 #include "DMXPixelMappingTypes.h"
 #include "IDMXPixelMappingRendererModule.h"
+#include "Components/DMXPixelMappingFixtureGroupComponent.h"
+#include "Components/DMXPixelMappingFixtureGroupItemComponent.h"
 #include "Components/DMXPixelMappingOutputComponent.h"
 #include "Components/DMXPixelMappingOutputDMXComponent.h"
+#include "Components/DMXPixelMappingMatrixComponent.h"
 #include "Components/DMXPixelMappingRootComponent.h"
 #include "Components/DMXPixelMappingScreenComponent.h"
 #include "Library/DMXEntityFixtureType.h"
@@ -180,7 +183,7 @@ void UDMXPixelMappingRendererComponent::PostEditChangeChainProperty(FPropertyCha
 #if WITH_EDITOR
 void UDMXPixelMappingRendererComponent::RenderEditorPreviewTexture()
 {
-	if (DownsampleBufferTarget == nullptr || DownsamplePixelCount == 0)
+	if (!DownsampleBufferTarget)
 	{
 		return;
 	}
@@ -223,7 +226,7 @@ void UDMXPixelMappingRendererComponent::RenderEditorPreviewTexture()
 		}
 	}, true);
 
-	Renderer->RenderPreview(GetPreviewRenderTarget()->Resource, DownsampleBufferTarget->Resource, MoveTemp(PixelPreviewParams));
+	Renderer->RenderPreview(GetPreviewRenderTarget()->GetResource(), DownsampleBufferTarget->GetResource(), MoveTemp(PixelPreviewParams));
 }
 #endif // WITH_EDITOR
 
@@ -238,6 +241,37 @@ UTextureRenderTarget2D* UDMXPixelMappingRendererComponent::GetPreviewRenderTarge
 	return PreviewRenderTarget;
 }
 #endif // WITH_EDITOR
+
+bool UDMXPixelMappingRendererComponent::GetPixelMappingComponentModulators(FDMXEntityFixturePatchRef FixturePatchRef, TArray<UDMXModulator*>& DMXModulators)
+{
+	for (const UDMXPixelMappingBaseComponent* Child : Children)
+	{
+		if (const UDMXPixelMappingFixtureGroupComponent* GroupComponent = Cast<UDMXPixelMappingFixtureGroupComponent>(Child))
+		{
+			for (const UDMXPixelMappingBaseComponent* ChildOfGroupComponent : GroupComponent->Children)
+			{
+				if (const UDMXPixelMappingFixtureGroupItemComponent* GroupItemComponent = Cast<UDMXPixelMappingFixtureGroupItemComponent>(ChildOfGroupComponent))
+				{
+					if (GroupItemComponent->FixturePatchRef.GetFixturePatch() == FixturePatchRef.GetFixturePatch())
+					{
+						DMXModulators = GroupItemComponent->Modulators;
+						return true;
+					}
+				}
+				else if (const UDMXPixelMappingMatrixComponent* MatrixComponent = Cast<UDMXPixelMappingMatrixComponent>(ChildOfGroupComponent))
+				{
+					if (MatrixComponent->FixturePatchRef.GetFixturePatch() == FixturePatchRef.GetFixturePatch())
+					{
+						DMXModulators = MatrixComponent->Modulators;
+						return true;
+					}
+				}
+			}
+		}
+	}
+
+	return false;
+}
 
 #if WITH_EDITOR
 TSharedRef<SWidget> UDMXPixelMappingRendererComponent::TakeWidget()
@@ -265,7 +299,6 @@ void UDMXPixelMappingRendererComponent::OnMapChanged(UWorld* InWorld, EMapChange
 {
 	if (UserWidget != nullptr)
 	{
-		UserWidget->MarkPendingKill();
 		UserWidget = nullptr;
 	}
 }
@@ -341,8 +374,8 @@ void UDMXPixelMappingRendererComponent::Render()
 
 	// 7. Downsample all pixels
 	GetRenderer()->DownsampleRender(
-		DownsampleInputTexture->Resource,
-		DownsampleBufferTarget->Resource,
+		DownsampleInputTexture->GetResource(),
+		DownsampleBufferTarget->GetResource(),
 		DownsampleBufferTarget->GameThread_GetRenderTargetResource(),
 		DownsamplePixelParams, // Copy Set to GPU thread, no empty function call needed
 		[this](TArray<FLinearColor>&& InDownsampleBuffer, FIntRect InRect) { SetDownsampleBuffer(MoveTemp(InDownsampleBuffer), InRect); }
@@ -404,7 +437,7 @@ void UDMXPixelMappingRendererComponent::UpdateInputWidget(TSubclassOf<UUserWidge
 {
 	if (InInputWidget != nullptr && UserWidget != nullptr)
 	{
-		UserWidget->MarkPendingKill();
+		UserWidget->MarkAsGarbage();
 		UserWidget = nullptr;
 	}
 	else
@@ -455,7 +488,7 @@ void UDMXPixelMappingRendererComponent::Initialize()
 				SetSize(NewSize);
 			}
 		}
-	}
+}
 	else
 	{
 		bLockInDesigner = false;
@@ -498,9 +531,9 @@ void UDMXPixelMappingRendererComponent::RendererInputTexture()
 #if WITH_EDITOR
 	if (RendererType == EDMXPixelMappingRendererType::Texture)
 	{
-		if (InputTexture != nullptr && InputTexture->Resource != nullptr)
+		if (InputTexture != nullptr && InputTexture->GetResource())
 		{
-			ResizePreviewRenderTarget(InputTexture->Resource->GetSizeX(), InputTexture->Resource->GetSizeY());
+			ResizePreviewRenderTarget(InputTexture->GetResource()->GetSizeX(), InputTexture->GetResource()->GetSizeY());
 		}
 	}
 	else

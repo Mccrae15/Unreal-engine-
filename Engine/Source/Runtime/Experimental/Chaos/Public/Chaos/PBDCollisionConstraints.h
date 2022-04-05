@@ -3,7 +3,9 @@
 
 #include "Chaos/CollisionResolutionTypes.h"
 #include "Chaos/Collision/CollisionApplyType.h"
+#include "Chaos/Collision/CollisionConstraintAllocator.h"
 #include "Chaos/Collision/PBDCollisionConstraintHandle.h"
+#include "Chaos/Collision/SolverCollisionContainer.h"
 #include "Chaos/PBDConstraintContainer.h"
 #include "Framework/BufferedData.h"
 
@@ -13,16 +15,13 @@
 #include "BoundingVolume.h"
 #include "AABBTree.h"
 
-// @todo(chaos): optimize and re-enable persistent constraints if we want it
-#define CHAOS_COLLISION_PERSISTENCE_ENABLED 0
-
 namespace Chaos
 {
-class FCollisionConstraintBase;
 class FImplicitObject;
 class FPBDCollisionConstraints;
-class FRigidBodyPointContactConstraint;
 class FPBDRigidsSOAs;
+class FPBDCollisionConstraint;
+class FPBDIslandSolverData;
 
 using FRigidBodyContactConstraintsPostComputeCallback = TFunction<void()>;
 using FRigidBodyContactConstraintsPostApplyCallback = TFunction<void(const FReal Dt, const TArray<FPBDCollisionConstraintHandle*>&)>;
@@ -36,31 +35,35 @@ namespace Collisions
 
 /**
  * A container and solver for collision constraints.
+ * 
+ * @todo(chaos): remove handles array
  */
 class CHAOS_API FPBDCollisionConstraints : public FPBDConstraintContainer
 {
 public:
 	friend class FPBDCollisionConstraintHandle;
 
-	using Base = FPBDConstraintContainer;
-	using FHandles = TArray<FPBDCollisionConstraintHandle*>;
-	using FConstraintHandleAllocator = TConstraintHandleAllocator<FPBDCollisionConstraints>;
-	using FConstraintContainerHandleKey = typename FPBDCollisionConstraintHandle::FHandleKey;
+	using Base = FPBDIndexedConstraintContainer;
+
+	// Collision constraints have intrusive pointers. An array of constraint pointers can be uased as an array of handle pointers
+	using FHandles = TArrayView<FPBDCollisionConstraint* const>;
+	using FConstHandles = TArrayView<const FPBDCollisionConstraint* const>;
 
 	// For use by dependent types
-	using FPointContactConstraint = FRigidBodyPointContactConstraint;
-	using FConstraintContainerHandle = FPBDCollisionConstraintHandle;
-
+	using FConstraintContainerHandle = FPBDCollisionConstraintHandle;		// Used by constraint rules
+	using FConstraintSolverContainerType = FPBDCollisionSolverContainer;	// Used by constraint rules
+	using FParticleHandle = TGeometryParticleHandle<FReal, 3>;
 
 	FPBDCollisionConstraints(const FPBDRigidsSOAs& InParticles, 
 		TArrayCollectionArray<bool>& Collided, 
 		const TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>>& PhysicsMaterials, 
-		const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& PerParticlePhysicsMaterials, 
+		const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& PerParticlePhysicsMaterials,
+		const THandleArray<FChaosPhysicsMaterial>* const SimMaterials,
 		const int32 ApplyPairIterations = 1, 
 		const int32 ApplyPushOutPairIterations = 1, 
 		const FReal RestitutionThreshold = 2000.0f);
 
-	virtual ~FPBDCollisionConstraints() {}
+	virtual ~FPBDCollisionConstraints();
 
 	/**
 	 * Whether this container provides constraint handles (simple solvers do not need them)
@@ -73,7 +76,7 @@ public:
 	void DisableHandles();
 
 	/**
-	 * Set the solver method to use in the Apply step
+	 * Set the solver method to use
 	 */
 	void SetSolverType(EConstraintSolverType InSolverType)
 	{
@@ -81,115 +84,58 @@ public:
 	}
 
 	/**
-	 * Helper object for efficiently appending constraints into the constraint container
-	 * in a scope. The encapsulates the separation of appending the constraints into the
-	 * owning container and building the handles required for them. Previously this was
-	 * done one at a time, this helper lets us batch the operation to make it faster
-	 *
-	 * It's important not to mutate the owning container while this helper is alive
-	 * otherwise it will not be able to append correctly to it.
-	 */
-	struct FConstraintAppendScope
-	{
-		FConstraintAppendScope() = delete;
-		FConstraintAppendScope(const FConstraintAppendScope&) = delete;
-		FConstraintAppendScope& operator=(const FConstraintAppendScope&) = delete;
-
-		FConstraintAppendScope(FConstraintAppendScope&&) = default;
-		FConstraintAppendScope& operator=(FConstraintAppendScope&&) = default;
-
-		FConstraintAppendScope(FPBDCollisionConstraints* InOwner);
-		~FConstraintAppendScope();
-
-		// Reserves space for NumToAdd constraints in the internal container
-		void ReserveSingle(int32 NumToAdd);
-		void ReserveSingleSwept(int32 NumToAdd);
-
-		// Append constraint lists to the internal container.
-		// note this will move the container, it will no longer be valid after a call to Append.
-		void Append(TArray<FRigidBodyPointContactConstraint>&& InConstraints);
-		void Append(TArray<FRigidBodySweptPointContactConstraint>&& InConstraints);
-
-	private:
-		FPBDCollisionConstraints* Owner = nullptr;
-		FCollisionConstraintsArray* Constraints = nullptr;
-
-		// Tracking for how many constraints the container began with and how many
-		// the helper added so we can build the new handles on scope exit
-		int32 NumBeginSingle = 0;
-		int32 NumBeginSingleSwept = 0;
-		int32 NumAddedSingle = 0;
-		int32 NumAddedSingleSwept = 0;
-	};
-	
-	/** Begin an append operation, recieving a helper object for bulk operations on the constraint container */
-	FConstraintAppendScope BeginAppendScope();
-
-private:
-
-	// Set whenever an append scope is constructed, and unset when destructed
-	// and used to assert the container isn't mutated during appending.
-	bool bInAppendOperation;
-
-public:
-
-	/**
-	*  Add the constraint to the container. 
-	*
-	*  @todo(chaos) : Collision Constraints 
-	*  Update to use a custom allocator. 
-	*  The InConstraint should be a point to unmanaged, raw memory. 
-	*  This function will make a deep copy of the constraint and 
-	*  then delete the InConstraint. 
+	 * @brief Enable or disable determinism.
+	 * Support for determinism requires that we sort active constraints each tick, so there is additional cost.
 	*/
-	void AddConstraint(const FRigidBodyPointContactConstraint& InConstraint);
-	void AddConstraint(const FRigidBodySweptPointContactConstraint& InConstraint);
+	void SetIsDeterministic(const bool bInIsDeterministic)
+	{
+		bIsDeterministic = bInIsDeterministic;
+	}
 
 	/**
-	*  Reset the constraint frame. 
+	 *  Clears the list of active constraints.
+	 * @todo(chaos): This is only required because of the way events work (see AdvanceOneTimeStepTask::DoWork)
+	*/
+	void BeginFrame();
+
+	/**
+	*  Destroy all constraints 
 	*/
 	void Reset();
+
+
+	/**
+	 * @brief Called before collision detection to reset contacts
+	*/
+	void BeginDetectCollisions();
+
+	/**
+	 * @brief Called after collision detection to finalize the contacts
+	*/
+	void EndDetectCollisions();
 
 	/**
 	 * Apply modifiers to the constraints and specify which constraints should be disabled.
 	 * You would probably call this in the PostComputeCallback. Prefer this to calling RemoveConstraints in a loop,
 	 * so you don't have to worry about constraint iterator/indices changing.
 	 */
-	void ApplyCollisionModifier(const TArray<ISimCallbackObject*>& CollisionModifiers);
+	void ApplyCollisionModifier(const TArray<ISimCallbackObject*>& CollisionModifiers, FReal Dt);
 
 
 	/**
 	* Remove the constraints associated with the ParticleHandle.
 	*/
-	void RemoveConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>&  ParticleHandle);
+	void RemoveConstraints(const TSet<FGeometryParticleHandle*>&  ParticleHandle);
 
+	/**
+	 * @brief Remove all constraints associated with the particles - called when particles are destroyed
+	*/
+	virtual void DisconnectConstraints(const TSet<FGeometryParticleHandle*>& ParticleHandles) override;
 
 	/**
 	* Disable the constraints associated with the ParticleHandle.
 	*/
-	void DisableConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& ParticleHandle) {}
-
-
-	/**
-	* Remove the constraint, update the handle, and any maps. 
-	*/
-	void RemoveConstraint(FPBDCollisionConstraintHandle* ConstraintHandle);
-
-
-	/**
-	 * Update all constraint values within the set
-	 */
-	void UpdateConstraints(FReal Dt, const TSet<TGeometryParticleHandle<FReal, 3>*>& AddedParticles);
-
-	/**
-	 * Update all constraint values
-	 */
-
-	 /**
-	 * Update all constraint values
-	 */
-	void UpdateConstraints(FReal Dt);
-
+	void DisableConstraints(const TSet<FGeometryParticleHandle*>& ParticleHandle) {}
 
 	//
 	// General Rule API
@@ -198,10 +144,6 @@ public:
 	void PrepareTick() {}
 
 	void UnprepareTick() {}
-
-	void PrepareIteration(FReal Dt);
-
-	void UnprepareIteration(FReal Dt) {}
 
 	/**
 	 * Generate all contact constraints.
@@ -212,46 +154,40 @@ public:
 	// Simple Rule API
 	//
 
-	bool Apply(const FReal Dt, const int32 It, const int32 NumIts);
-	bool ApplyPushOut(const FReal Dt, const int32 It, const int32 NumIts);
+	void PreGatherInput(const FReal Dt, FPBDIslandSolverData& SolverData);
+	void GatherInput(const FReal Dt, FPBDIslandSolverData& SolverData);
+	void ScatterOutput(const FReal Dt, FPBDIslandSolverData& SolverData);
+
+	bool ApplyPhase1(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
+	bool ApplyPhase2(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
+	bool ApplyPhase3(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData) { return false; }
 
 	//
 	// Island Rule API
 	//
-	// @todo(ccaulfield): this runs wide. The serial/parallel decision should be in the ConstraintRule
 
-	bool Apply(const FReal Dt, const TArray<FPBDCollisionConstraintHandle*>& InConstraintHandles, const int32 It, const int32 NumIts);
-	bool ApplyPushOut(const FReal Dt, const TArray<FPBDCollisionConstraintHandle*>& InConstraintHandles, 
-		const TSet<const TGeometryParticleHandle<FReal, 3>*>& IsTemporarilyStatic, int32 Iteration, int32 NumIterations);
+	void SetNumIslandConstraints(const int32 NumIslandConstraints, FPBDIslandSolverData& SolverData);
+	void PreGatherInput(FPBDCollisionConstraint& Constraint, FPBDIslandSolverData& SolverData);
+	void GatherInput(const FReal Dt, FPBDCollisionConstraint& Constraint, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData);
 
+	bool ApplyPhase1Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
+	bool ApplyPhase2Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
 
-	/**
-	 *  Callbacks
-	 */
-	void SetPostApplyCallback(const FRigidBodyContactConstraintsPostApplyCallback& Callback);
-	void ClearPostApplyCallback();
+	//
+	// Color Rule API
+	//
 
-	void SetPostApplyPushOutCallback(const FRigidBodyContactConstraintsPostApplyPushOutCallback& Callback);
-	void ClearPostApplyPushOutCallback();
+	void ScatterOutput(const FReal Dt, const int32 BeginIndex, const int32 EndIndex, FPBDIslandSolverData& SolverData);
 
+	bool ApplyPhase1Serial(const FReal Dt, const int32 It, const int32 NumIts, const int32 BeginIndex, const int32 EndIndex, FPBDIslandSolverData& SolverData);
+	bool ApplyPhase1Parallel(const FReal Dt, const int32 It, const int32 NumIts, const int32 BeginIndex, const int32 EndIndex, FPBDIslandSolverData& SolverData);
+	
+	bool ApplyPhase2Serial(const FReal Dt, const int32 It, const int32 NumIts, const int32 BeginIndex, const int32 EndIndex, FPBDIslandSolverData& SolverData);
+	bool ApplyPhase2Parallel(const FReal Dt, const int32 It, const int32 NumIts, const int32 BeginIndex, const int32 EndIndex, FPBDIslandSolverData& SolverData);
 
 	//
 	// Member Access
 	//
-
-	const TArray<FPBDCollisionConstraintHandle*>& GetAllConstraintHandles() const 
-	{ 
-		return Handles; 
-	}
-
-	bool Contains(const FCollisionConstraintBase* Base) const
-	{
-#if CHAOS_COLLISION_PERSISTENCE_ENABLED
-		return Manifolds.Contains(FPBDCollisionConstraintHandle::MakeKey(Base));
-#else
-		return false;
-#endif
-	}
 
 	void SetCanDisableContacts(bool bInCanDisableContacts)
 	{
@@ -315,79 +251,118 @@ public:
 
 	void SetGravity(const FVec3& InGravity)
 	{
-		GravityDir = InGravity.GetSafeNormal();
+		GravityDirection = InGravity;
+		GravitySize = GravityDirection.SafeNormalize();
+	}
+
+	FVec3 GetGravityDirection() const
+	{
+		return GravityDirection;
+	}
+
+	FReal GetGravitySize() const
+	{
+		return GravitySize;
+	}
+
+	void SetMaxPushOutVelocity(const FReal InMaxPushOutVelocity)
+	{
+		SolverSettings.MaxPushOutVelocity = InMaxPushOutVelocity;
+	}
+
+	void SetPositionFrictionIterations(const int32 InNumIterations)
+	{
+		SolverSettings.NumPositionFrictionIterations = InNumIterations;
+	}
+
+	void SetVelocityFrictionIterations(const int32 InNumIterations)
+	{
+		SolverSettings.NumVelocityFrictionIterations = InNumIterations;
+	}
+
+	void SetPositionShockPropagationIterations(const int32 InNumIterations)
+	{
+		SolverSettings.NumPositionShockPropagationIterations = InNumIterations;
+	}
+
+	void SetVelocityShockPropagationIterations(const int32 InNumIterations)
+	{
+		SolverSettings.NumVelocityShockPropagationIterations = InNumIterations;
 	}
 
 	int32 NumConstraints() const
 	{
-		return Constraints.SinglePointConstraints.Num() + Constraints.SinglePointSweptConstraints.Num();
+		return GetConstraints().Num();
 	}
 
-	FHandles& GetConstraintHandles()
+	TArrayView<FPBDCollisionConstraint* const> GetConstraints() const
 	{
-		return Handles;
+		return ConstraintAllocator.GetConstraints();
 	}
 
-	const FHandles& GetConstConstraintHandles() const
-	{
-		return Handles;
-	}
+	FHandles GetConstraintHandles() const;
+	FConstHandles GetConstConstraintHandles() const;
 
-	const FCollisionConstraintBase& GetConstraint(int32 Index) const;
+	const FPBDCollisionConstraint& GetConstraint(int32 Index) const;
 
-	FCollisionConstraintsArray& GetConstraintsArray() { return Constraints; }
-
-	//Sort constraints based on particle indices so that we have a deterministic solve order
-	void SortConstraints();
+	FCollisionConstraintAllocator& GetConstraintAllocator() { return ConstraintAllocator; }
 
 protected:
-	using Base::GetConstraintIndex;
-	using Base::SetConstraintIndex;
+	FPBDCollisionConstraint& GetConstraint(int32 Index);
+	FPBDCollisionSolverContainer& GetConstraintSolverContainer(FPBDIslandSolverData& SolverData);
 
-	void UpdateConstraintMaterialProperties(FCollisionConstraintBase& Contact);
+	void UpdateConstraintMaterialProperties(FPBDCollisionConstraint& Contact);
 
 	Collisions::FContactParticleParameters GetContactParticleParameters(const FReal Dt);
 	Collisions::FContactIterationParameters GetContactIterationParameters(const FReal Dt, const int32 Iteration, const int32 NumIterations, const int32 NumPairIterations, bool& bNeedsAnotherIteration);
 
+	// Call PruneParticleEdgeCollisions on all particles with ECollisionConstraintFlags::CCF_SmoothEdgeCollisions set in CollisionFlags
+	void PruneEdgeCollisions();
+
+	// Remove all edge collision on a particle that cannot be hit because a plane contact would prevent it
+	void PruneParticleEdgeCollisions(FGeometryParticleHandle* Particle);
+
+	// The "Legacy" functions handle the older solver types (GbfPbd and StandardPbd)
+	// @todo(chaos): remove legacy methods when the new solver is fully operational and used everywhere (RBAN)
+	void LegacyGatherInput(const FReal Dt, FPBDCollisionConstraint& Constraint, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData);
+	void LegacyScatterOutput(const FReal Dt, const int32 BeginIndex, const int32 EndIndex, FPBDIslandSolverData& SolverData);
+	bool LegacyApplyPhase1Serial(const FReal Dt, const int32 Iterations, const int32 NumIterations, const int32 BeginIndex, const int32 EndIndex, FPBDIslandSolverData& SolverData);
+	bool LegacyApplyPhase1Parallel(const FReal Dt, const int32 Iterations, const int32 NumIterations, const int32 BeginIndex, const int32 EndIndex, FPBDIslandSolverData& SolverData);
+	bool LegacyApplyPhase2Serial(const FReal Dt, const int32 Iterations, const int32 NumIterations, const int32 BeginIndex, const int32 EndIndex, FPBDIslandSolverData& SolverData);
+	bool LegacyApplyPhase2Parallel(const FReal Dt, const int32 Iterations, const int32 NumIterations, const int32 BeginIndex, const int32 EndIndex, FPBDIslandSolverData& SolverData);
+
 private:
 
-	friend FConstraintAppendScope;
 	const FPBDRigidsSOAs& Particles;
 
-	FCollisionConstraintsArray Constraints;
+	FCollisionConstraintAllocator ConstraintAllocator;
 	int32 NumActivePointConstraints;
-	int32 NumActiveSweptPointConstraints;
-
-#if CHAOS_COLLISION_PERSISTENCE_ENABLED
-	TMap< FConstraintContainerHandleKey, FPBDCollisionConstraintHandle* > Manifolds;
-#endif
-	TArray<FPBDCollisionConstraintHandle*> Handles;
-	FConstraintHandleAllocator HandleAllocator;
 
 	TArrayCollectionArray<bool>& MCollided;
 	const TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>>& MPhysicsMaterials;
 	const TArrayCollectionArray<TUniquePtr<FChaosPhysicsMaterial>>& MPerParticlePhysicsMaterials;
+	const THandleArray<FChaosPhysicsMaterial>* const SimMaterials;
 	int32 MApplyPairIterations;
 	int32 MApplyPushOutPairIterations;
 	FReal RestitutionThreshold;
-	bool bUseCCD;
 	bool bEnableCollisions;
 	bool bEnableRestitution;
 	bool bHandlesEnabled;
+	bool bEnableEdgePruning;
+	bool bIsDeterministic;
 
 	// This is passed to IterationParameters. If true, then an iteration can cull a contact
 	// permanently (ie, for the remaining iterations) if it is ignored due to culldistance.
 	// This improves performance, but can decrease stability if contacts are culled prematurely.
 	bool bCanDisableContacts;
 
-	// Used by PushOut to decide on priority when two bodies are at same shock propagation level
-	FVec3 GravityDir;
+	// Used to determine constraint directions
+	FVec3 GravityDirection;
+	FReal GravitySize;
+
+	// Settings for the low-level collision solvers
+	FPBDCollisionSolverSettings SolverSettings;
 
 	EConstraintSolverType SolverType;
-
-	int32 LifespanCounter;
-
-	FRigidBodyContactConstraintsPostApplyCallback PostApplyCallback;
-	FRigidBodyContactConstraintsPostApplyPushOutCallback PostApplyPushOutCallback;
 };
 }

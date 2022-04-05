@@ -29,9 +29,9 @@ class IPIEPreviewDeviceModule : public IDeviceProfileSelectorModule
 		//~ Begin IPIEPreviewDeviceModule Interface
 
 		/**
-		 * Gives the PIEPreviewDeviceModule a chance to modify the command line based on the target device json
+		 * Used to set the scalability preview platform
 		 */
-		virtual void ApplyCommandLineOverrides() = 0;
+		virtual FName GetPreviewPlatformName() = 0;
 
 		/**
 		* Create PieWindow Ref
@@ -53,5 +53,6 @@ class IPIEPreviewDeviceModule : public IDeviceProfileSelectorModule
 		{
 		}
 
+		virtual void SetPreviewDevice(const FString& DeviceName) = 0;
 		//~ End IDeviceProfileSelectorModule Interface
 };

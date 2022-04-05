@@ -54,7 +54,7 @@ static bool AddConvexPrim(FKAggregateGeom* OutGeom, TArray<FPlane> &Planes, UMod
 			continue;
 		}
 
-		SnapVerts.Add(InModel->Points[PointIx]);
+		SnapVerts.Add((FVector)InModel->Points[PointIx]);
 	}
 
 	// Create a hull from a set of planes
@@ -84,7 +84,7 @@ static bool ModelToHullsWorker(FKAggregateGeom* outGeom,
 	// BACK
 	if (node.iBack != INDEX_NONE) // If there is a child, recurse into it.
 	{
-		planes.Add(node.Plane);
+		planes.Add(FPlane(node.Plane));
 		if (!ModelToHullsWorker(outGeom, inModel, node.iBack, node.ChildOutside(0, bOutside), planes))
 		{
 			return false;
@@ -93,7 +93,7 @@ static bool ModelToHullsWorker(FKAggregateGeom* outGeom,
 	}
 	else if (!node.ChildOutside(0, bOutside)) // If its a leaf, and solid (inside)
 	{
-		planes.Add(node.Plane);
+		planes.Add(FPlane(node.Plane));
 		if (!AddConvexPrim(outGeom, planes, inModel))
 		{
 			return false;
@@ -104,7 +104,7 @@ static bool ModelToHullsWorker(FKAggregateGeom* outGeom,
 	// FRONT
 	if (node.iFront != INDEX_NONE)
 	{
-		planes.Add(node.Plane.Flip());
+		planes.Add(FPlane(node.Plane.Flip()));
 		if (!ModelToHullsWorker(outGeom, inModel, node.iFront, node.ChildOutside(1, bOutside), planes))
 		{
 			return false;
@@ -113,7 +113,7 @@ static bool ModelToHullsWorker(FKAggregateGeom* outGeom,
 	}
 	else if (!node.ChildOutside(1, bOutside))
 	{
-		planes.Add(node.Plane.Flip());
+		planes.Add(FPlane(node.Plane.Flip()));
 		if (!AddConvexPrim(outGeom, planes, inModel))
 		{
 			return false;
@@ -282,6 +282,64 @@ FCollisionResponseContainer::FCollisionResponseContainer()
 FCollisionResponseContainer::FCollisionResponseContainer(ECollisionResponse DefaultResponse)
 {
 	SetAllChannels(DefaultResponse);
+}
+
+FCollisionEnabledMask::FCollisionEnabledMask(int8 InBits)
+	: Bits(InBits)
+{ }
+
+FCollisionEnabledMask::FCollisionEnabledMask(ECollisionEnabled::Type CollisionEnabled)
+	: Bits(1 << CollisionEnabled)
+{ }
+
+FCollisionEnabledMask::operator int8() const
+{
+	return Bits;
+}
+
+FCollisionEnabledMask::operator bool() const
+{
+	return Bits != 0;
+}
+
+FCollisionEnabledMask FCollisionEnabledMask::operator&(const FCollisionEnabledMask Other) const
+{
+	return Bits & Other.Bits;
+}
+
+FCollisionEnabledMask FCollisionEnabledMask::operator&(const ECollisionEnabled::Type Other) const
+{
+	return Bits & FCollisionEnabledMask(Other).Bits;
+}
+
+FCollisionEnabledMask FCollisionEnabledMask::operator|(const FCollisionEnabledMask Other) const
+{
+	return Bits | Other.Bits;
+}
+
+FCollisionEnabledMask FCollisionEnabledMask::operator|(const ECollisionEnabled::Type Other) const
+{
+	return Bits | FCollisionEnabledMask(Other).Bits;
+}
+
+FCollisionEnabledMask operator&(const ECollisionEnabled::Type A, const ECollisionEnabled::Type B)
+{
+	return FCollisionEnabledMask(A) & FCollisionEnabledMask(B);
+}
+
+FCollisionEnabledMask operator&(const ECollisionEnabled::Type A, const FCollisionEnabledMask B)
+{
+	return FCollisionEnabledMask(A) & B;
+}
+
+FCollisionEnabledMask operator|(const ECollisionEnabled::Type A, const ECollisionEnabled::Type B)
+{
+	return FCollisionEnabledMask(A) | FCollisionEnabledMask(B);
+}
+
+FCollisionEnabledMask operator|(const ECollisionEnabled::Type A, const FCollisionEnabledMask B)
+{
+	return FCollisionEnabledMask(A) | B;
 }
 
 #if WITH_CHAOS

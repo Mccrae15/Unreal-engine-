@@ -301,7 +301,7 @@ TSharedRef<SWidget> SCompElementColorPickerDialog::GeneratePreviewContent()
 			[
 				SNew(SColorBlock)
 					.Color(this, &SCompElementColorPickerDialog::GetPickedColor)
-					.IgnoreAlpha(true)
+					.AlphaDisplayMode(EColorBlockAlphaDisplayMode::Ignore)
 					.Size(FVector2D(16.0f, 16.0f))
 					.Visibility(this, &SCompElementColorPickerDialog::GetAcceptButtonVisibility)
 			]
@@ -380,7 +380,7 @@ void SCompElementColorPickerDialog::OnPixelPicked(const FVector2D& UVCoord, EPic
 			if (PickingMode == EPickingState::Averaging && bAverageColorOnDrag)
 			{
 				// use a FVector4 to prevent FLinearColorfrom clamping values
-				FVector4 ColorVec = PickedColor;
+				FVector4f ColorVec = PickedColor;
 				ColorVec *= PickedSamples;
 				ColorVec += NewSample;
 				ColorVec *= 1.f / ++PickedSamples;

@@ -22,21 +22,37 @@ FSkyPassMeshProcessor::FSkyPassMeshProcessor(const FScene* Scene, const FSceneVi
 
 void FSkyPassMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch, uint64 BatchElementMask, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, int32 StaticMeshId)
 {
-	// Determine the mesh's material and blend mode.
-	const FMaterialRenderProxy* FallbackMaterialRenderProxyPtr = nullptr;
-	const FMaterial& Material = MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, FallbackMaterialRenderProxyPtr);
-
-	if (Material.IsSky())
+	const FMaterialRenderProxy* MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
+	while (MaterialRenderProxy)
 	{
-		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
-		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
-		const FMaterialRenderProxy& MaterialRenderProxy = FallbackMaterialRenderProxyPtr ? *FallbackMaterialRenderProxyPtr : *MeshBatch.MaterialRenderProxy;
-		Process(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, MaterialRenderProxy, Material, MeshFillMode, MeshCullMode);
+		const FMaterial* Material = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+		if (Material && Material->IsSky())
+		{
+			if (TryAddMeshBatch(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, *MaterialRenderProxy, *Material))
+			{
+				break;
+			}
+		}
+
+		MaterialRenderProxy = MaterialRenderProxy->GetFallback(FeatureLevel);
 	}
 }
 
-void FSkyPassMeshProcessor::Process(
+bool FSkyPassMeshProcessor::TryAddMeshBatch(
+	const FMeshBatch& RESTRICT MeshBatch,
+	uint64 BatchElementMask,
+	const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
+	int32 StaticMeshId,
+	const FMaterialRenderProxy& MaterialRenderProxy,
+	const FMaterial& Material)
+{
+	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
+	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
+	return Process(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, MaterialRenderProxy, Material, MeshFillMode, MeshCullMode);
+}
+
+bool FSkyPassMeshProcessor::Process(
 	const FMeshBatch& MeshBatch,
 	uint64 BatchElementMask,
 	const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
@@ -54,25 +70,22 @@ void FSkyPassMeshProcessor::Process(
 	{
 		TMeshProcessorShaders<
 			TBasePassVertexShaderPolicyParamType<LightMapPolicyType>,
-			FBaseHS,
-			FBaseDS,
 			TBasePassPixelShaderPolicyParamType<LightMapPolicyType>> SkyPassShaders;
 
 		const bool bRenderSkylight = false;
-		const bool bRenderAtmosphericFog = false;
-		GetBasePassShaders<LightMapPolicyType>(
+		if (!GetBasePassShaders<LightMapPolicyType>(
 			MaterialResource,
 			VertexFactory->GetType(),
 			NoLightmapPolicy,
 			FeatureLevel,
-			bRenderAtmosphericFog,
 			bRenderSkylight,
 			false,
-			SkyPassShaders.HullShader,
-			SkyPassShaders.DomainShader,
-			SkyPassShaders.VertexShader,
-			SkyPassShaders.PixelShader
-			);
+			&SkyPassShaders.VertexShader,
+			&SkyPassShaders.PixelShader
+			))
+		{
+			return false;
+		}
 
 		TBasePassShaderElementData<LightMapPolicyType> ShaderElementData(nullptr);
 		ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId, false);
@@ -97,11 +110,9 @@ void FSkyPassMeshProcessor::Process(
 	{
 		TMeshProcessorShaders<
 			TMobileBasePassVSPolicyParamType<LightMapPolicyType>,
-			FBaseHS,
-			FBaseDS,
 			TMobileBasePassPSPolicyParamType<LightMapPolicyType>> SkyPassShaders;
 
-		MobileBasePass::GetShaders(
+		if (!MobileBasePass::GetShaders(
 			LMP_NO_LIGHTMAP,
 			0,
 			MaterialResource,
@@ -109,9 +120,21 @@ void FSkyPassMeshProcessor::Process(
 			false,
 			SkyPassShaders.VertexShader,
 			SkyPassShaders.PixelShader
-		);
+		))
+		{
+			return false;
+		}
 
-		TMobileBasePassShaderElementData<LightMapPolicyType> ShaderElementData(nullptr);
+		// Mask sky pixels so we can skip them when rendering per-pixel fog
+		PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<
+			false, CF_DepthNearOrEqual,
+			true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
+			false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+			0x00, STENCIL_MOBILE_SKY_MASK>::GetRHI());
+		
+		PassDrawRenderState.SetStencilRef(1); 
+		
+		TMobileBasePassShaderElementData<LightMapPolicyType> ShaderElementData(nullptr, false);
 		ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId, false);
 
 		const FMeshDrawCommandSortKey SortKey = CalculateMeshStaticSortKey(SkyPassShaders.VertexShader, SkyPassShaders.PixelShader);
@@ -130,18 +153,13 @@ void FSkyPassMeshProcessor::Process(
 			EMeshPassFeatures::Default,
 			ShaderElementData);
 	}
+
+	return true;
 }
 
 FMeshPassProcessor* CreateSkyPassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
-	FMeshPassProcessorRenderState DrawRenderState(Scene->UniformBuffers.ViewUniformBuffer);
-	DrawRenderState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
-
-	if (Scene->GetShadingPath() == EShadingPath::Mobile)
-	{
-		DrawRenderState.SetPassUniformBuffer(Scene->UniformBuffers.MobileOpaqueBasePassUniformBuffer);
-	}
-
+	FMeshPassProcessorRenderState DrawRenderState;
 	FExclusiveDepthStencil::Type BasePassDepthStencilAccess_NoDepthWrite = FExclusiveDepthStencil::Type(Scene->DefaultBasePassDepthStencilAccess & ~FExclusiveDepthStencil::DepthWrite);
 	SetupBasePassState(BasePassDepthStencilAccess_NoDepthWrite, false, DrawRenderState);
 
@@ -149,5 +167,4 @@ FMeshPassProcessor* CreateSkyPassProcessor(const FScene* Scene, const FSceneView
 }
 
 FRegisterPassProcessorCreateFunction RegisterSkyPass(&CreateSkyPassProcessor, EShadingPath::Deferred, EMeshPass::SkyPass, EMeshPassFlags::MainView);
-// Mobile skypass is only active if mobile has a full depth pass
 FRegisterPassProcessorCreateFunction RegisterMobileSkyPass(&CreateSkyPassProcessor, EShadingPath::Mobile, EMeshPass::SkyPass, EMeshPassFlags::MainView);

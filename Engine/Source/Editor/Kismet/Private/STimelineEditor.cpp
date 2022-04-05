@@ -13,6 +13,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SSlider.h"
 #include "Widgets/Input/STextComboBox.h"
+#include "SPositiveActionButton.h"
 #include "Styling/CoreStyle.h"
 #include "EditorStyleSet.h"
 #include "Curves/CurveFloat.h"
@@ -35,6 +36,7 @@
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Engine/Selection.h"
 #include "AssetData.h"
+#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE "STimelineEditor"
 
@@ -233,6 +235,7 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 					[
 						SNew(STextBlock)
 						.Text(LOCTEXT("ExternalCurveLabel", "External Curve"))
+						.ColorAndOpacity(FStyleColors::Foreground)
 					]
 
 					// External Curve Controls
@@ -240,8 +243,9 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 					.AutoHeight()
 					.Padding(2, 0, 0, 4)
 					[
-						SNew(SBox)
-						.WidthOverride(170)
+						SNew(SBorder)
+						.BorderImage(FEditorStyle::GetBrush("NoBrush"))
+						.ForegroundColor(FStyleColors::Foreground)
 						[
 							SNew(SHorizontalBox)
 							+SHorizontalBox::Slot()
@@ -265,7 +269,8 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 								.ToolTipText(NSLOCTEXT("TimelineEdTrack", "TimelineEdTrack_Clear", "Convert to Internal Curve"))
 								[
 									SNew(SImage)
-									.Image( FEditorStyle::GetBrush(TEXT("PropertyWindow.Button_Clear")) )
+									.Image( FEditorStyle::GetBrush(TEXT("PropertyWindow.Button_Clear")))
+									.ColorAndOpacity(FStyleColors::Foreground)
 								]
 							]
 						]
@@ -283,6 +288,7 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 						[
 							SNew(STextBlock)
 							.Text(LOCTEXT("SynchronizeViewLabel", "Synchronize View"))
+							.ColorAndOpacity(FStyleColors::Foreground)
 						]
 					]
 
@@ -305,6 +311,7 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 								[
 									SNew(SImage)
 									.Image( FEditorStyle::GetBrush(TEXT("ArrowUp")) )
+									.ColorAndOpacity(FStyleColors::Foreground)
 								]
 							]
 
@@ -322,6 +329,7 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 								[
 									SNew(SImage)
 									.Image( FEditorStyle::GetBrush(TEXT("ArrowDown")) )
+									.ColorAndOpacity(FStyleColors::Foreground)
 								]
 							]
 							+SHorizontalBox::Slot()
@@ -331,6 +339,7 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 							[
 								SNew(STextBlock)
 								.Text(LOCTEXT("ReorderLabel", "Reorder"))
+								.ColorAndOpacity(FStyleColors::Foreground)
 							]
 						]
 				]
@@ -372,6 +381,14 @@ void STimelineEdTrack::Construct(const FArguments& InArgs, TSharedPtr<FTimelineE
 		//Inform track widget about the curve and whether it is editable or not.
 		TrackWidget->SetZoomToFit(bZoomToFit, bZoomToFit);
 		TrackWidget->SetCurveOwner(CurveBasePtr, !TrackBase->bIsExternalCurve);
+
+		// In case the user has disabled auto frame in their settings, make sure to still adjust the zoom if we don't have an input
+		// range yet.
+		if (!TrackWidget->GetAutoFrame() && bZoomToFit)
+		{
+			TrackWidget->ZoomToFitVertical();
+			TrackWidget->ZoomToFitHorizontal();
+		}
 	}
 
 	InTrack->OnRenameRequest.BindSP(InlineTextBlock.Get(), &SInlineEditableTextBlock::EnterEditingMode);
@@ -1029,79 +1046,13 @@ void STimelineEditor::Construct(const FArguments& InArgs, TSharedPtr<FBlueprintE
 			SNew(SHorizontalBox)
 			+SHorizontalBox::Slot()
 			.AutoWidth()
-			.Padding(2.f)
+			.VAlign(VAlign_Center)
+			.Padding(6.f)
 			[
-				// Add float track button
-				SNew(SButton)
-				.ContentPadding(FMargin(2,0))
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("TimelineEditor.AddFloatTrack"))
-				]
-				.ToolTipText( LOCTEXT( "AddFloatTrack", "Add Float Track" ) )
-				.OnClicked( this, &STimelineEditor::CreateNewTrack, FTTTrackBase::TT_FloatInterp )
-				.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.AddFloatTrack"))
-			]
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2.f)
-			[
-				// Add vector track button
-				SNew(SButton)
-				.ContentPadding(FMargin(2,0))
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("TimelineEditor.AddVectorTrack"))
-				]
-				.ToolTipText( LOCTEXT( "AddVectorTrack", "Add Vector Track" ) )
-				.OnClicked( this, &STimelineEditor::CreateNewTrack, FTTTrackBase::TT_VectorInterp )
-				.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.AddVectorTrack"))
-			]
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2.f)
-			[
-				// Add event track button
-				SNew(SButton)
-				.ContentPadding(FMargin(2,0))
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("TimelineEditor.AddEventTrack"))
-				]
-				.ToolTipText( LOCTEXT( "AddEventTrack", "Add Event Track" ) )
-				.OnClicked( this, &STimelineEditor::CreateNewTrack, FTTTrackBase::TT_Event )
-				.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.AddEventTrack"))
-			]
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2.f)
-			[
-				// Add color track button
-				SNew(SButton)
-				.ContentPadding(FMargin(2,0))
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("TimelineEditor.AddColorTrack"))
-				]
-				.ToolTipText( LOCTEXT( "AddColorTrack", "Add Color Track" ) )
-				.OnClicked( this, &STimelineEditor::CreateNewTrack, FTTTrackBase::TT_LinearColorInterp )
-				.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.AddColorTrack"))
-			]
-			+SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2.f)
-			[
-				// Add external curve asset button
-				SNew(SButton)
-				.ContentPadding(FMargin(2,0))
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("TimelineEditor.AddCurveAssetTrack"))
-				]
-				.ToolTipText( LOCTEXT( "AddExternalAsset", "Add Selected Curve Asset" ) )
-				.IsEnabled( this, &STimelineEditor::IsCurveAssetSelected )
-				.OnClicked( this, &STimelineEditor::CreateNewTrackFromAsset )
-				.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.AddCurveAssetTrack"))
+				SNew(SPositiveActionButton)
+				.OnGetMenuContent(this, &STimelineEditor::MakeAddButton)
+				.Icon(FAppStyle::Get().GetBrush("Icons.Plus"))
+				.Text(LOCTEXT("Track", "Track"))
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
@@ -1114,7 +1065,8 @@ void STimelineEditor::Construct(const FArguments& InArgs, TSharedPtr<FBlueprintE
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
-			.Padding(6.f)
+			.Padding(FMargin(6.0f, 2.0f, 2.0f, 2.0f))
+			.VAlign(VAlign_Center)
 			[
 				// Length edit box
 				SAssignNew(TimelineLengthEdit, SEditableTextBox)
@@ -1127,79 +1079,96 @@ void STimelineEditor::Construct(const FArguments& InArgs, TSharedPtr<FBlueprintE
 			+SHorizontalBox::Slot()
 			.AutoWidth()
 			.Padding(2.f)
+			.VAlign(VAlign_Center)
 			[
 				// Use last keyframe as length check box
 				SAssignNew(UseLastKeyframeCheckBox, SCheckBox)
 				.IsChecked( this, &STimelineEditor::IsUseLastKeyframeChecked )
 				.OnCheckStateChanged( this, &STimelineEditor::OnUseLastKeyframeChanged )
+				.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+				.ToolTipText(LOCTEXT("UseLastKeyframe", "Use Last Keyframe"))
 				[
-					SNew(STextBlock) .Text( LOCTEXT( "UseLastKeyframe", "Use Last Keyframe?" ) )
+					SNew(SImage)
+					.ColorAndOpacity(FSlateColor::UseForeground())
+					.Image(FAppStyle::Get().GetBrush("TimelineEditor.UseLastKeyframe"))
 					.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.UseLastKeyframe"))
 				]
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
 			.Padding(2.f)
+			.VAlign(VAlign_Center)
 			[
 				// Play check box
 				SAssignNew(PlayCheckBox, SCheckBox)
 				.IsChecked( this, &STimelineEditor::IsAutoPlayChecked )
 				.OnCheckStateChanged( this, &STimelineEditor::OnAutoPlayChanged )
+				.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+				.ToolTipText(LOCTEXT("AutoPlay", "AutoPlay"))
 				[
-					SNew(STextBlock) .Text( LOCTEXT( "AutoPlay", "AutoPlay" ) )
+					SNew(SImage)
+					.ColorAndOpacity(FSlateColor::UseForeground())
+					.Image(FAppStyle::Get().GetBrush("TimelineEditor.AutoPlay"))
 					.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.AutoPlay"))
 				]
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
 			.Padding(2.f)
+			.VAlign(VAlign_Center)
 			[
 				// Loop check box
 				SAssignNew(LoopCheckBox, SCheckBox)
 				.IsChecked( this, &STimelineEditor::IsLoopChecked )
 				.OnCheckStateChanged( this, &STimelineEditor::OnLoopChanged )
+				.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+				.ToolTipText(LOCTEXT("Loop", "Loop"))
 				[
-					SNew(STextBlock) .Text( LOCTEXT( "Loop", "Loop" ) )
+					SNew(SImage)
+					.ColorAndOpacity(FSlateColor::UseForeground())
+					.Image(FAppStyle::Get().GetBrush("TimelineEditor.Loop"))
 					.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.Loop"))
 				]
+				
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
 			.Padding(2.f)
+			.VAlign(VAlign_Center)
 			[
 				// Replicated check box
 				SAssignNew(ReplicatedCheckBox, SCheckBox)
 				.IsChecked( this, &STimelineEditor::IsReplicatedChecked )
 				.OnCheckStateChanged( this, &STimelineEditor::OnReplicatedChanged )
+				.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+				.ToolTipText(LOCTEXT("Replicated", "Replicated"))
 				[
-					SNew(STextBlock) .Text( LOCTEXT( "Replicated", "Replicated" ) )
+					SNew(SImage)
+					.ColorAndOpacity(FSlateColor::UseForeground())
+					.Image(FAppStyle::Get().GetBrush("TimelineEditor.Replicated"))
 					.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.Replicated"))
 				]
+			
 			]
 			+SHorizontalBox::Slot()
 			.AutoWidth()
 			.Padding(2.f)
+			.VAlign(VAlign_Center)
 			[
 				// Ignore Time Dilation check box
 				SAssignNew(IgnoreTimeDilationCheckBox, SCheckBox)
 				.IsChecked( this, &STimelineEditor::IsIgnoreTimeDilationChecked )
 				.OnCheckStateChanged( this, &STimelineEditor::OnIgnoreTimeDilationChanged )
+				.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+				.ToolTipText(LOCTEXT("IgnoreTimeDilation", "Ignore Time Dilation"))
 				[
-					SNew(STextBlock) .Text( LOCTEXT( "IgnoreTimeDilation", "Ignore Time Dilation" ) )
+					SNew(SImage)
+					.ColorAndOpacity(FSlateColor::UseForeground())
+					.Image(FAppStyle::Get().GetBrush("TimelineEditor.IgnoreTimeDilation"))
 					.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.IgnoreTimeDilation"))
 				]
 			]
 			// Tick Group Controls
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(2.f)
-			[
-				SNew(STextComboBox)
-				.OptionsSource(&TickGroupNameStrings)
-				.InitiallySelectedItem(TickGroupNameStrings[CurrentTickGroupNameStringIndex])
-				.OnSelectionChanged(this, &STimelineEditor::OnTimelineTickGroupChanged)
-				.ToolTipText(LOCTEXT("TimelineTickGroupDropdownTooltip", "Select the TickGroup you want this timeline to run in.\nTo assign options use context menu on timelines."))
-			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			.Padding(2.f)
@@ -1208,6 +1177,17 @@ void STimelineEditor::Construct(const FArguments& InArgs, TSharedPtr<FBlueprintE
 				SNew(STextBlock)
 				.Text(LOCTEXT("TickGroupLabel", "Tick Group"))
 				.AddMetaData<FTagMetaData>(TEXT("TimelineEditor.TickGroup"))
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(6.f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextComboBox)
+				.OptionsSource(&TickGroupNameStrings)
+				.InitiallySelectedItem(TickGroupNameStrings[CurrentTickGroupNameStringIndex])
+				.OnSelectionChanged(this, &STimelineEditor::OnTimelineTickGroupChanged)
+				.ToolTipText(LOCTEXT("TimelineTickGroupDropdownTooltip", "Select the TickGroup you want this timeline to run in.\nTo assign options use context menu on timelines."))
 			]
 		]
 		+SVerticalBox::Slot()
@@ -1310,13 +1290,14 @@ TSharedRef<ITableRow> STimelineEditor::MakeTrackWidget( TSharedPtr<FTimelineEdTr
 
 	return
 	SNew(STableRow< TSharedPtr<FTimelineEdTrack> >, OwnerTable )
+	.Style(&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("TimelineEditor.TrackRowSubtleHighlight"))
 	.Padding(FMargin(0, 0, 0, 2))
 	[
 		SNew(STimelineEdTrack, Track, SharedThis(this))
 	];
 }
 
-FReply STimelineEditor::CreateNewTrack(FTTTrackBase::ETrackType Type)
+void STimelineEditor::CreateNewTrack(FTTTrackBase::ETrackType Type)
 {
 	FName TrackName;
 	do
@@ -1415,8 +1396,6 @@ FReply STimelineEditor::CreateNewTrack(FTTTrackBase::ETrackType Type)
 			Notification->SetCompletionState( SNotificationItem::CS_Fail );
 		}
 	}
-
-	return FReply::Handled();
 }
 
 UCurveBase* STimelineEditor::CreateNewCurve(FTTTrackBase::ETrackType Type )
@@ -1831,7 +1810,7 @@ bool STimelineEditor::IsCurveAssetSelected() const
 }
 
 
-FReply STimelineEditor::CreateNewTrackFromAsset()
+void STimelineEditor::CreateNewTrackFromAsset()
 {
 	FEditorDelegates::LoadSelectedAssetsIfNeeded.Broadcast();
 	UCurveBase* SelectedObj = GEditor->GetSelectedObjects()->GetTop<UCurveBase>();
@@ -1892,7 +1871,6 @@ FReply STimelineEditor::CreateNewTrackFromAsset()
 		TimelineNode->ReconstructNode();
 		Kismet2->RefreshEditors();
 	}
-	return FReply::Handled();
 }
 
 bool STimelineEditor::CanRenameSelectedTrack() const
@@ -1932,6 +1910,46 @@ TSharedPtr< SWidget > STimelineEditor::MakeContextMenu() const
 
 		MenuBuilder.AddWidget(SizeSlider, LOCTEXT("TimelineEditorVerticalSize", "Height"));
 	}
+
+	return MenuBuilder.MakeWidget();
+}
+
+
+TSharedRef<SWidget> STimelineEditor::MakeAddButton()
+{
+	FMenuBuilder MenuBuilder(true, nullptr);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("AddFloatTrack", "Add Float Track"),
+		LOCTEXT("AddFloatTrackToolTip", "Adds a Float Track."),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "TimelineEditor.AddFloatTrack"),
+		FUIAction(FExecuteAction::CreateRaw(this, &STimelineEditor::CreateNewTrack, FTTTrackBase::TT_FloatInterp)));
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("AddVectorTrack", "Add Vector Track"),
+		LOCTEXT("AddVectorTrackToolTip", "Adds a Vector Track."),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "TimelineEditor.AddVectorTrack"),
+		FUIAction(FExecuteAction::CreateRaw(this, &STimelineEditor::CreateNewTrack, FTTTrackBase::TT_VectorInterp)));
+	
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("AddEventTrack", "Add Event Track"),
+		LOCTEXT("AddEventTrackToolTip", "Adds an Event Track."),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "TimelineEditor.AddEventTrack"),
+		FUIAction(FExecuteAction::CreateRaw(this, &STimelineEditor::CreateNewTrack, FTTTrackBase::TT_Event)));
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("AddColorTrack", "Add Color Track"),
+		LOCTEXT("AddColorTrackToolTip", "Adds a Color Track."),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "TimelineEditor.AddColorTrack"),
+		FUIAction(FExecuteAction::CreateRaw(this, &STimelineEditor::CreateNewTrack, FTTTrackBase::TT_LinearColorInterp)));
+
+	FUIAction AddCurveAssetAction(FExecuteAction::CreateRaw(this, &STimelineEditor::CreateNewTrackFromAsset), FCanExecuteAction::CreateRaw(this, &STimelineEditor::IsCurveAssetSelected));
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("AddExternalAsset", "Add Selected Curve Asset"),
+		LOCTEXT("AddExternalAssetToolTip", "Add the currently selected curve asset."),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "TimelineEditor.AddCurveAssetTrack"),
+		AddCurveAssetAction);
 
 	return MenuBuilder.MakeWidget();
 }

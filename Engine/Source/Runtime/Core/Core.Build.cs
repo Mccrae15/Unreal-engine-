@@ -19,16 +19,18 @@ public class Core : ModuleRules
 			PrivateDependencyModuleNames.Add("heapprofd");		// Exposes custom allocators to Google's Memory Profiler
 		}
 
+		PrivateDependencyModuleNames.Add("BLAKE3");
+		PrivateDependencyModuleNames.Add("OodleDataCompression");
+
 		PublicDependencyModuleNames.Add("TraceLog");
 		PublicIncludePaths.Add("Runtime/TraceLog/Public");
 
 		PrivateIncludePaths.AddRange(
 			new string[] {
-				"Developer/DerivedDataCache/Public",
 				"Runtime/SynthBenchmark/Public",
 				"Runtime/Core/Private",
 				"Runtime/Core/Private/Misc",
-                "Runtime/Core/Private/Internationalization",
+				"Runtime/Core/Private/Internationalization",
 				"Runtime/Core/Private/Internationalization/Cultures",
 				"Runtime/Engine/Public",
 			}
@@ -38,8 +40,8 @@ public class Core : ModuleRules
 			new string[] {
 				"TargetPlatform",
 				"DerivedDataCache",
-                "InputDevice",
-                "Analytics",
+				"InputDevice",
+				"Analytics",
 				"RHI"
 			}
 			);
@@ -62,10 +64,14 @@ public class Core : ModuleRules
 				"IntelVTune"
 				);
 
-			AddEngineThirdPartyPrivateStaticDependencies(Target,
-				"mimalloc");
+			// We do not want the static analyzer to run on thirdparty code
+			if (Target.WindowsPlatform.StaticAnalyzer == WindowsStaticAnalyzer.None) 
+			{
+				PublicSystemIncludePaths.Add(Path.Combine(Target.UEThirdPartySourceDirectory, "mimalloc/include"));
+				PrivateDefinitions.Add("PLATFORM_BUILDS_MIMALLOC=1");
+			}
 
-			if(Target.Platform != UnrealTargetPlatform.Win32 && Target.WindowsPlatform.bUseBundledDbgHelp)
+			if (Target.WindowsPlatform.bUseBundledDbgHelp)
 			{
 				PublicDelayLoadDLLs.Add("DBGHELP.DLL");
 				PrivateDefinitions.Add("USE_BUNDLED_DBGHELP=1");
@@ -76,6 +82,16 @@ public class Core : ModuleRules
 				PrivateDefinitions.Add("USE_BUNDLED_DBGHELP=0");
 			}
 			PrivateDefinitions.Add("YIELD_BETWEEN_TASKS=1");
+
+			if (Target.WindowsPlatform.bPixProfilingEnabled && Target.Configuration != UnrealTargetConfiguration.Shipping)
+			{
+				PrivateDependencyModuleNames.Add("WinPixEventRuntime");
+			}
+
+			if (Target.Configuration != UnrealTargetConfiguration.Shipping && Target.Type != TargetType.Program)
+			{
+				PublicDefinitions.Add("UE_MEMORY_TAGS_TRACE_ENABLED=1");
+			}
 		}
 		else if ((Target.Platform == UnrealTargetPlatform.HoloLens))
 		{
@@ -93,11 +109,13 @@ public class Core : ModuleRules
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
 				"IntelTBB",
 				"zlib",
-				"PLCrashReporter",
-				"rd_route"
+				"PLCrashReporter"
 				);
 			PublicFrameworks.AddRange(new string[] { "Cocoa", "Carbon", "IOKit", "Security" });
-			
+
+			PublicSystemIncludePaths.Add(Path.Combine(Target.UEThirdPartySourceDirectory, "mimalloc/include"));
+			PrivateDefinitions.Add("PLATFORM_BUILDS_MIMALLOC=1");
+
 			if (Target.bBuildEditor == true)
 			{
 				string SDKROOT = Utils.RunLocalProcessAndReturnStdOut("/usr/bin/xcrun", "--sdk macosx --show-sdk-path");
@@ -113,9 +131,9 @@ public class Core : ModuleRules
 			if (Target.Platform == UnrealTargetPlatform.IOS)
 			{
 				PublicFrameworks.AddRange(new string[] { "CoreMotion", "AdSupport", "WebKit" });
-                AddEngineThirdPartyPrivateStaticDependencies(Target,
-                    "PLCrashReporter"
-                    );
+				AddEngineThirdPartyPrivateStaticDependencies(Target,
+					"PLCrashReporter"
+					);
 			}
 
 			PrivateIncludePathModuleNames.Add("ApplicationCore");
@@ -138,67 +156,136 @@ public class Core : ModuleRules
 				);
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
-        {
+		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
 				"zlib",
 				"jemalloc"
-                );
+				);
 
 			// Core uses dlopen()
 			PublicSystemLibraries.Add("dl");
-        }
 
-		if ( Target.bCompileICU == true )
-        {
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "ICU");
-        }
-        PublicDefinitions.Add("UE_ENABLE_ICU=" + (Target.bCompileICU ? "1" : "0")); // Enable/disable (=1/=0) ICU usage in the codebase. NOTE: This flag is for use while integrating ICU and will be removed afterward.
-
-        // If we're compiling with the engine, then add Core's engine dependencies
-		if (Target.bCompileAgainstEngine == true)
-		{
-			if (!Target.bBuildRequiresCookedData)
-			{
-				DynamicallyLoadedModuleNames.AddRange(new string[] { "DerivedDataCache" });
-			}
+			PublicSystemIncludePaths.Add(Path.Combine(Target.UEThirdPartySourceDirectory, "mimalloc/include"));
+			PrivateDefinitions.Add("PLATFORM_BUILDS_MIMALLOC=1");
 		}
 
+		if (Target.bCompileICU == true)
+		{
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "ICU");
+		}
+		PublicDefinitions.Add("UE_ENABLE_ICU=" + (Target.bCompileICU ? "1" : "0")); // Enable/disable (=1/=0) ICU usage in the codebase. NOTE: This flag is for use while integrating ICU and will be removed afterward.
+
+		// If we're compiling with the engine, then add Core's engine dependencies
+		if (Target.bCompileAgainstEngine && !Target.bBuildRequiresCookedData)
+		{
+			DynamicallyLoadedModuleNames.AddRange(new string[] { "DerivedDataCache" });
+			DynamicallyLoadedModuleNames.AddRange(new string[] { "Virtualization" });
+		}
+
+		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Desktop))
+        {
+			// Enabling more crash information on Desktop platforms.
+			PublicDefinitions.Add("WITH_ADDITIONAL_CRASH_CONTEXTS=1");
+		}
 		
 		// On Windows platform, VSPerfExternalProfiler.cpp needs access to "VSPerf.h".  This header is included with Visual Studio, but it's not in a standard include path.
-		if(Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
+		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
 		{
-			var VisualStudioVersionNumber = "11.0";
-			var SubFolderName = ( Target.Platform == UnrealTargetPlatform.Win32 ) ? "PerfSDK" : "x64/PerfSDK";
-
-			string PerfIncludeDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), String.Format("Microsoft Visual Studio {0}/Team Tools/Performance Tools/{1}", VisualStudioVersionNumber, SubFolderName));
-
-			if (File.Exists(Path.Combine(PerfIncludeDirectory, "VSPerf.h")))
+			bool VSPerfDefined = false;
+			string VisualStudioInstallation = Target.WindowsPlatform.IDEDir;
+			if (VisualStudioInstallation != null && VisualStudioInstallation != string.Empty && Directory.Exists(VisualStudioInstallation))
 			{
-				PrivateIncludePaths.Add(PerfIncludeDirectory);
-				PublicDefinitions.Add("WITH_VS_PERF_PROFILER=1");
+				string SubFolderName = "x64/PerfSDK/";
+				string PerfIncludeDirectory = Path.Combine(VisualStudioInstallation, String.Format("Team Tools/Performance Tools/{0}", SubFolderName));
+
+				if (File.Exists(Path.Combine(PerfIncludeDirectory, "VSPerf.h"))
+					&& Target.Configuration != UnrealTargetConfiguration.Shipping)
+				{
+					PrivateIncludePaths.Add(PerfIncludeDirectory);
+					PublicDefinitions.Add("WITH_VS_PERF_PROFILER=1");
+					VSPerfDefined = true;
+				}
 			}
-			else
+
+			if (!VSPerfDefined)
 			{
 				PublicDefinitions.Add("WITH_VS_PERF_PROFILER=0");
 			}
 		}
 
-		if( Target.Platform == UnrealTargetPlatform.HoloLens)
+		if (Target.Platform == UnrealTargetPlatform.HoloLens)
 		{
 			PublicDefinitions.Add("WITH_VS_PERF_PROFILER=0");
 		}
 
-        if (Target.bWithDirectXMath && (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32))
-        {
-            PublicDefinitions.Add("WITH_DIRECTXMATH=1");
-        }
-        else
-        {
-            PublicDefinitions.Add("WITH_DIRECTXMATH=0");
-        }
+		// Superluminal instrumentation support, if one has it installed
+		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
+		{
+			string SuperluminalInstallDir = Microsoft.Win32.Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Superluminal\Performance", "InstallDir", null) as string;
+			if (String.IsNullOrEmpty(SuperluminalInstallDir))
+			{
+				SuperluminalInstallDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Superluminal/Performance");
+			}
+
+			string SuperluminalApiDir = Path.Combine(SuperluminalInstallDir, "API/");
+			string SubFolderName = "lib/x64/";
+			string SuperluminalLibDir = Path.Combine(SuperluminalApiDir, SubFolderName);
+
+			if (Target.Configuration != UnrealTargetConfiguration.Shipping &&
+				File.Exists(Path.Combine(SuperluminalApiDir, "include/Superluminal/PerformanceAPI_capi.h")))
+			{
+				PublicSystemIncludePaths.Add(Path.Combine(SuperluminalApiDir, "include/"));
+				PublicAdditionalLibraries.Add(Path.Combine(SuperluminalLibDir, "PerformanceAPI_MD.lib"));
+				PublicDefinitions.Add("WITH_SUPERLUMINAL_PROFILER=1");
+			}
+			else
+			{
+				PublicDefinitions.Add("WITH_SUPERLUMINAL_PROFILER=0");
+			}
+		}
+
+		// Detect if the Concurrency Viewer Extension is installed
+		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
+		{
+			bool VSCVDefined = false;
+			string VisualStudioInstallation = Target.WindowsPlatform.IDEDir;
+			if (VisualStudioInstallation != null && VisualStudioInstallation != string.Empty && Directory.Exists(VisualStudioInstallation))
+			{
+				string SubFolderName = @"Common7\IDE\Extensions\jcn3iwfw.vp2\SDK\Native\Inc";
+				string IncludeDirectory = Path.Combine(VisualStudioInstallation, SubFolderName);
+
+				if (File.Exists(Path.Combine(IncludeDirectory, "cvmarkers.h"))
+					&& Target.Configuration != UnrealTargetConfiguration.Shipping)
+				{
+					PrivateIncludePaths.Add(IncludeDirectory);
+					PublicDefinitions.Add("WITH_CONCURRENCYVIEWER_PROFILER=1");
+					VSCVDefined = true;
+				}
+			}
+
+			if (!VSCVDefined)
+			{
+				PublicDefinitions.Add("WITH_CONCURRENCYVIEWER_PROFILER=0");
+			}
+		}
+
+		if (Target.bWithDirectXMath && Target.Platform == UnrealTargetPlatform.Win64)
+		{
+			PublicDefinitions.Add("WITH_DIRECTXMATH=1");
+		}
+		else
+		{
+			PublicDefinitions.Add("WITH_DIRECTXMATH=0");
+		}
+
+		if ((Target.Platform == UnrealTargetPlatform.Mac) || (Target.Platform == UnrealTargetPlatform.IOS) || (Target.Platform == UnrealTargetPlatform.TVOS) 
+			|| (Target.Platform == UnrealTargetPlatform.HoloLens) || (Target.Platform == UnrealTargetPlatform.Android))
+		{
+			PublicDefinitions.Add("IS_RUNNING_GAMETHREAD_ON_EXTERNAL_THREAD=1");
+		}
 
 		// Set a macro to allow FApp::GetBuildTargetType() to detect client targts
-		if(Target.Type == TargetRules.TargetType.Client)
+		if (Target.Type == TargetRules.TargetType.Client)
 		{
 			PrivateDefinitions.Add("IS_CLIENT_TARGET=1");
 		}
@@ -207,28 +294,20 @@ public class Core : ModuleRules
 			PrivateDefinitions.Add("IS_CLIENT_TARGET=0");
 		}
 
-		// Decide if validating memory allocator (aka MallocStomp) can be used on the current platform.
-		// Run-time validation must be enabled through '-stompmalloc' command line argument.
-
-		bool bWithMallocStomp = false;
-        if (Target.Configuration != UnrealTargetConfiguration.Shipping)
-        {
-			if (Target.Platform == UnrealTargetPlatform.Mac
-				|| Target.Platform == UnrealTargetPlatform.Linux
-				|| Target.Platform == UnrealTargetPlatform.LinuxAArch64
-				|| Target.Platform == UnrealTargetPlatform.Win64
-				// || Target.Platform == UnrealTargetPlatform.Win32				// 32-bit windows can technically be supported, but will likely run out of virtual memory space quickly
-				|| Target.Platform.IsInGroup(UnrealPlatformGroup.XboxCommon)	// Base Xbox will run out of virtual memory very quickly but it can be utilized on some hardware configs
-				)
-			{
-				bWithMallocStomp = true;
-			}
-        }
+		if (Target.Platform == UnrealTargetPlatform.Win64
+			&& Target.Configuration != UnrealTargetConfiguration.Shipping)
+		{
+			PublicDefinitions.Add("PLATFORM_SUPPORTS_PLATFORM_EVENTS=1");
+			PublicDefinitions.Add("PLATFORM_SUPPORTS_TRACE_WIN32_VIRTUAL_MEMORY_HOOKS=1");
+			PublicDefinitions.Add("PLATFORM_SUPPORTS_TRACE_WIN32_MODULE_DIAGNOSTICS=1");
+			PublicDefinitions.Add("PLATFORM_SUPPORTS_TRACE_WIN32_CALLSTACK=1");
+			PublicDefinitions.Add("UE_MEMORY_TRACE_AVAILABLE=1");
+		}
 
 		// temporary thing.
 		PrivateDefinitions.Add("PLATFORM_SUPPORTS_BINARYCONFIG=" + (SupportsBinaryConfig(Target) ? "1" : "0"));
 
-        PublicDefinitions.Add("WITH_MALLOC_STOMP=" + (bWithMallocStomp ? "1" : "0"));
+		PublicDefinitions.Add("WITH_MALLOC_STOMP=" + (bWithMallocStomp ? "1" : "0"));
 
 		PrivateDefinitions.Add("PLATFORM_COMPILER_OPTIMIZATION_LTCG=" + (Target.bAllowLTCG ? "1" : "0"));
 		PrivateDefinitions.Add("PLATFORM_COMPILER_OPTIMIZATION_PG=" + (Target.bPGOOptimize ? "1" : "0"));
@@ -240,5 +319,17 @@ public class Core : ModuleRules
 	protected virtual bool SupportsBinaryConfig(ReadOnlyTargetRules Target)
 	{
 		return Target.Platform != UnrealTargetPlatform.Android;
+	}
+
+	// Decide if validating memory allocator (aka MallocStomp) can be used on the current plVatform.
+	// Run-time validation must be enabled through '-stompmalloc' command line argument.
+	protected virtual bool bWithMallocStomp
+	{
+		get => 
+			Target.Configuration != UnrealTargetConfiguration.Shipping &&
+			(Target.Platform == UnrealTargetPlatform.Mac ||
+			 Target.Platform == UnrealTargetPlatform.Linux ||
+			 Target.Platform == UnrealTargetPlatform.LinuxArm64 ||
+			 Target.Platform == UnrealTargetPlatform.Win64);
 	}
 }

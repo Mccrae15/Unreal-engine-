@@ -6,11 +6,10 @@
 #include "HAL/RunnableThread.h"
 #include "StreamReader.h"
 #include "Templates/UnrealTemplate.h"
-#include "Trace/Analysis.h"
 #include "Trace/DataStream.h"
 
-namespace Trace
-{
+namespace UE {
+namespace Trace {
 
 ////////////////////////////////////////////////////////////////////////////////
 FAnalysisProcessor::FImpl::FImpl(IInDataStream& InDataStream, TArray<IAnalyzer*>&& InAnalyzers)
@@ -34,8 +33,9 @@ FAnalysisProcessor::FImpl::~FImpl()
 ////////////////////////////////////////////////////////////////////////////////
 uint32 FAnalysisProcessor::FImpl::Run()
 {
-	FStreamBuffer Buffer;
+	AnalysisEngine.Begin();
 
+	FStreamBuffer Buffer;
 	while (!StopEvent->Wait(0, true))
 	{
 		UnpausedEvent->Wait();
@@ -125,3 +125,4 @@ FAnalysisProcessor::~FAnalysisProcessor()
 }
 
 } // namespace Trace
+} // namespace UE

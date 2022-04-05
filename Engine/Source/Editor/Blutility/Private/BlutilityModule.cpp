@@ -101,7 +101,7 @@ public:
 		for (const FSoftObjectPath& BlueprintPath : EditorUtilitySubsystem->LoadedUIs)
 		{
 			UObject* BlueprintObject = BlueprintPath.TryLoad();
-			if (BlueprintObject && !BlueprintObject->IsPendingKillOrUnreachable())
+			if (BlueprintObject && IsValidChecked(BlueprintObject) && !BlueprintObject->IsUnreachable())
 			{
 				UEditorUtilityWidgetBlueprint* Blueprint = Cast<UEditorUtilityWidgetBlueprint>(BlueprintObject);
 				if (Blueprint)
@@ -236,6 +236,10 @@ protected:
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override
 	{
+	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FBlutilityModule");
 	}
 
 	void OnPrepareToCleanseEditorObject(UObject* InObject)

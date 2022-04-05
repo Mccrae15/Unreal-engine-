@@ -220,7 +220,7 @@ void FComponentMaterialCategory::OnGetMaterialsForView( IMaterialListBuilder& Ma
 			// Add the material if we allow null materials to be added or we have a valid material
 			if( bAllowNullEntries || Material )
 			{
-				MaterialList.AddMaterial( MaterialIndex, Material, bCanBeReplaced );
+				MaterialList.AddMaterial( MaterialIndex, Material, bCanBeReplaced, CurrentComponent );
 				bAnyMaterialsToDisplay = true;
 			}
 		}
@@ -317,7 +317,13 @@ void FComponentMaterialCategory::OnMaterialChanged( UMaterialInterface* NewMater
 					NavUpdateLock = MakeShareable( new FNavigationLockContext(World, ENavigationLockReason::MaterialUpdate) );
 				}
 
-				EditChangeObject->PreEditChange( MaterialProperty );
+				{
+					FEditPropertyChain EditPropertyChain;
+					EditPropertyChain.AddHead(MaterialProperty);
+					EditPropertyChain.SetActivePropertyNode(MaterialProperty);
+					// Use a property chain so that FCoreUObjectDelegates::OnPreObjectPropertyChanged is emitted
+					EditChangeObject->PreEditChange(EditPropertyChain);
+				}
 
 				if( NotifyHook && MaterialProperty )
 				{

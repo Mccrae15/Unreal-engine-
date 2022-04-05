@@ -23,6 +23,7 @@
 
 #include "MediaBundle.h"
 #include "MediaSource.h"
+#include "ThumbnailRendering/ThumbnailManager.h"
 
 
 #define LOCTEXT_NAMESPACE "MediaFrameworkEditor"
@@ -98,9 +99,6 @@ public:
 			.OnDragDetected(this, &SMediaPlacementPalette::OnDraggingListViewWidget);
 
 		// Get the MediaSource thumbnail or the MediaBundle is not loaded
-		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-		TSharedPtr<FAssetThumbnailPool> ThumbnailPool = LevelEditorModule.GetFirstLevelEditor()->GetThumbnailPool();
-
 		FAssetData ThumbnailAssetData = MediaPlacement->MediaBundle;
 		if (MediaPlacement->MediaBundle.IsAssetLoaded())
 		{
@@ -110,7 +108,7 @@ public:
 				ThumbnailAssetData = FAssetData(MediaBundle->MediaSource);
 			}
 		}
-		TSharedPtr< FAssetThumbnail > Thumbnail = MakeShareable(new FAssetThumbnail(ThumbnailAssetData, 32, 32, ThumbnailPool));
+		TSharedPtr<FAssetThumbnail> Thumbnail = MakeShareable(new FAssetThumbnail(ThumbnailAssetData, 32, 32, UThumbnailManager::Get().GetSharedThumbnailPool()));
 
 		// Create the TableRow content
 		TSharedRef<SWidget> Content =
@@ -212,7 +210,7 @@ void FMediaFrameworkUtilitiesPlacement::RegisterPlacement()
 {
 	IPlacementModeModule& PlacementModeModule = IPlacementModeModule::Get();
 	FName CategoryName = "Media";
-	FPlacementCategoryInfo CategoryInfo(LOCTEXT("PlacementMode_Media", "Media"), CategoryName, TEXT("PMMedia"), 35);
+	FPlacementCategoryInfo CategoryInfo(LOCTEXT("PlacementMode_Media", "Media"), FSlateIcon(FAppStyle::Get().GetStyleSetName(), TEXT("SequenceRecorder.TabIcon")), CategoryName, TEXT("PMMedia"), 35);
 	CategoryInfo.CustomGenerator = []() -> TSharedRef<SWidget> { return SNew(SMediaPlacementPalette); };
 	PlacementModeModule.RegisterPlacementCategory(CategoryInfo);
 }

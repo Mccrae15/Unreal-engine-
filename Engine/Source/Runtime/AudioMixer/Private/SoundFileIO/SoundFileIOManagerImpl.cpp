@@ -6,7 +6,7 @@
 
 #include "AudioMixer.h"
 #include "HAL/PlatformProcess.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
@@ -383,7 +383,7 @@ namespace Audio
 	/************************************************************************/
 	/* FSoundFileReader														*/
 	/************************************************************************/
-	class FSoundFileReader : public ISoundFileParser, public ISoundFileReader
+	class FSoundFileReader final : public ISoundFileParser, public ISoundFileReader
 	{
 	public:
 		FSoundFileReader()
@@ -1009,7 +1009,7 @@ namespace Audio
 			return ESoundFileError::Type::NONE;
 		}
 
-		ESoundFileError::Type Release() override
+		ESoundFileError::Type Release() override final
 		{
 			SoundData = nullptr;
 

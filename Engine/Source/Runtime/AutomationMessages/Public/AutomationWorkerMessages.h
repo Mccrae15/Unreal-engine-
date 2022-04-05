@@ -6,6 +6,7 @@
 #include "Containers/UnrealString.h"
 #include "Misc/Guid.h"
 #include "Misc/AutomationTest.h"
+#include "AutomationState.h"
 #include "UObject/ObjectMacros.h"
 
 #include "AutomationWorkerMessages.generated.h"
@@ -98,6 +99,10 @@ struct FAutomationWorkerFindWorkersResponse
 	/** Holds the worker's application session identifier. */
 	UPROPERTY(EditAnywhere, Category="Message")
 	FGuid SessionId;
+
+	/** Holds the name of the current RHI. */
+	UPROPERTY(EditAnywhere, Category = "Message")
+	FString RHIName;
 
 	/** Default constructor. */
 	FAutomationWorkerFindWorkersResponse() : RAMInGB(0) { }
@@ -287,6 +292,10 @@ struct FAutomationWorkerRunTests
 	UPROPERTY()
 	FString BeautifiedTestName;
 
+	/** Holds the full test path of the test to run. */
+	UPROPERTY()
+	FString FullTestPath;
+
 	/** If true, send results to analytics when complete */
 	UPROPERTY()
 	bool bSendAnalytics;
@@ -295,11 +304,12 @@ struct FAutomationWorkerRunTests
 	FAutomationWorkerRunTests( ) :ExecutionCount(0), RoleIndex(0), bSendAnalytics(false) { }
 
 	/** Creates and initializes a new instance. */
-	FAutomationWorkerRunTests( uint32 InExecutionCount, int32 InRoleIndex, FString InTestName, FString InBeautifiedTestName, bool InSendAnalytics)
+	FAutomationWorkerRunTests( uint32 InExecutionCount, int32 InRoleIndex, FString InTestName, FString InBeautifiedTestName, FString InFullTestPath, bool InSendAnalytics)
 		: ExecutionCount(InExecutionCount)
 		, RoleIndex(InRoleIndex)
 		, TestName(InTestName)
 		, BeautifiedTestName(InBeautifiedTestName)
+		, FullTestPath(InFullTestPath)
 		, bSendAnalytics(InSendAnalytics)
 	{ }
 };
@@ -339,7 +349,7 @@ public:
 
 	/** */
 	UPROPERTY(EditAnywhere, Category="Message")
-	bool Success = false;
+	EAutomationState State = EAutomationState::NotRun;
 };
 
 
@@ -434,6 +444,10 @@ public:
 	UPROPERTY(EditAnywhere, Category="Message")
 	int32 ShadowQuality;
 	UPROPERTY(EditAnywhere, Category="Message")
+	int32 GlobalIlluminationQuality;
+	UPROPERTY(EditAnywhere, Category="Message")
+	int32 ReflectionQuality;
+	UPROPERTY(EditAnywhere, Category="Message")
 	int32 PostProcessQuality;
 	UPROPERTY(EditAnywhere, Category="Message")
 	int32 TextureQuality;
@@ -478,6 +492,8 @@ public:
 		, ViewDistanceQuality(0)
 		, AntiAliasingQuality(0)
 		, ShadowQuality(0)
+		, GlobalIlluminationQuality(0)
+		, ReflectionQuality(0)
 		, PostProcessQuality(0)
 		, TextureQuality(0)
 		, EffectsQuality(0)
@@ -533,6 +549,8 @@ public:
 		ViewDistanceQuality = Data.ViewDistanceQuality;
 		AntiAliasingQuality = Data.AntiAliasingQuality;
 		ShadowQuality = Data.ShadowQuality;
+		GlobalIlluminationQuality = Data.GlobalIlluminationQuality;
+		ReflectionQuality = Data.ReflectionQuality;
 		PostProcessQuality = Data.PostProcessQuality;
 		TextureQuality = Data.TextureQuality;
 		EffectsQuality = Data.EffectsQuality;
@@ -627,6 +645,16 @@ public:
 		}
 
 		if (ShadowQuality == OtherMetadata.ShadowQuality)
+		{
+			Score += 10;
+		}
+
+		if (GlobalIlluminationQuality == OtherMetadata.GlobalIlluminationQuality)
+		{
+			Score += 10;
+		}
+
+		if (ReflectionQuality == OtherMetadata.ReflectionQuality)
 		{
 			Score += 10;
 		}
@@ -819,4 +847,70 @@ struct FAutomationWorkerPerformanceDataResponse
 	/**  */
 	UPROPERTY(EditAnywhere, Category="Message")
 	FString ErrorMessage;
+};
+
+/**
+ * Implements a message that contains telemetry data point.
+ */
+USTRUCT()
+struct FAutomationWorkerTelemetryItem
+{
+	GENERATED_USTRUCT_BODY()
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category = "Message")
+	FString DataPoint;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category = "Message")
+	double Measurement;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category = "Message")
+	FString Context;
+
+	FAutomationWorkerTelemetryItem() : Measurement(0.0) {}
+
+	FAutomationWorkerTelemetryItem(FString& InDataPoint, double InMeasurement, FString& InContext)
+		: DataPoint(InDataPoint)
+		, Measurement(InMeasurement)
+		, Context(InContext)
+	{
+	}
+
+	FAutomationWorkerTelemetryItem(const FAutomationTelemetryData& InItem)
+		: DataPoint(InItem.DataPoint)
+		, Measurement(InItem.Measurement)
+		, Context(InItem.Context)
+	{
+	}
+};
+
+/**
+ * Implements a message that contains telemetry data.
+ */
+USTRUCT()
+struct FAutomationWorkerTelemetryData
+{
+	GENERATED_USTRUCT_BODY()
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category = "Message")
+	FString Storage;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category = "Message")
+	FString Configuration;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category = "Message")
+	FString Platform;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category = "Message")
+	FString TestName;
+
+	/**  */
+	UPROPERTY(EditAnywhere, Category = "Message")
+	TArray<FAutomationWorkerTelemetryItem> Items;
 };

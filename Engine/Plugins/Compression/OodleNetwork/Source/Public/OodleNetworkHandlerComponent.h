@@ -10,6 +10,7 @@
 #include "UObject/CoreNet.h"
 #include "OodleNetworkAnalytics.h"
 #include "OodleNetworkArchives.h"
+#include "OodleNetworkFaultHandler.h"
 
 #include "oodle2net.h"
 
@@ -25,7 +26,7 @@ DECLARE_LOG_CATEGORY_EXTERN(OodleNetworkHandlerComponentLog, Log, All);
  * Specifies when compression is enabled. Used to make compression optional, for some platforms/clients
  */
 UENUM()
-enum class EOodleEnableMode : uint8
+enum class EOodleNetworkEnableMode : uint8
 {
 	AlwaysEnabled,					// Oodle compression is always enabled - forces compression to be enabled remotely
 	WhenCompressedPacketReceived	// Oodle compression is only enabled if remotely requested
@@ -352,15 +353,11 @@ public:
 	bool IsCompressionActive() const;
 
 	virtual void Initialize() override;
-
+	virtual void InitFaultRecovery(UE::Net::FNetConnectionFaultRecoveryBase* InFaultRecovery) override;
 	virtual bool IsValid() const override;
-
-	virtual void Incoming(FBitReader& Packet) override;
-
+	virtual void Incoming(FIncomingPacketRef PacketRef) override;
 	virtual void Outgoing(FBitWriter& Packet, FOutPacketTraits& Traits) override;
-	
 	virtual int32 GetReservedPacketBits() const override;
-
 	virtual void NotifyAnalyticsProvider() override;
 
 
@@ -369,10 +366,10 @@ protected:
 	bool bEnableOodle;
 
 	/** When to enable compression on the server */
-	EOodleEnableMode ServerEnableMode;
+	EOodleNetworkEnableMode ServerEnableMode;
 
 	/** When to enable compression on the client */
-	EOodleEnableMode ClientEnableMode;
+	EOodleNetworkEnableMode ClientEnableMode;
 
 #if !UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING
 	/** File to log input packets to */
@@ -409,6 +406,11 @@ public:
 
 	/** Whether or not InitializeDictionaries was ever called */
 	bool bInitializedDictionaries;
+
+
+private:
+	/** Fault handler for Oodle-Network-specific errors, that may trigger NetConnection Close */
+	FOodleNetworkFaultHandler OodleNetworkFaultHandler;
 };
 
 

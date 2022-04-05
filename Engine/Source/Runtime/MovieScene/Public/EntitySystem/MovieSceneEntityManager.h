@@ -387,6 +387,11 @@ public:
 	 */
 	void AddMutualComponents();
 
+	/**
+	 * Run through all entities in this entity manager, ensuring that all mutual components exist for any component types that match the specified filter
+	 */
+	void AddMutualComponents(const FEntityComponentFilter& InFilter);
+
 public:
 
 
@@ -857,8 +862,8 @@ private:
 
 	void CheckInvariants();
 
+	friend struct FEntityAllocationProxy;
 	friend struct FEntityAllocationIterator;
-	friend struct FEntityAllocationIteratorItem;
 	friend struct FEntityAllocationIteratorProxy;
 
 	friend FFreeEntityOperation;
@@ -879,8 +884,8 @@ private:
 		void Set(int32 InAllocationIndex, int32 InEntryIndexWithinAllocation)
 		{
 			check((InAllocationIndex & 0xFFFF0000) == 0 && (InEntryIndexWithinAllocation & 0xFFFF0000) == 0);
-			AllocationIndex = InAllocationIndex;
-			EntryIndexWithinAllocation = InEntryIndexWithinAllocation;
+			AllocationIndex = (uint16)InAllocationIndex;
+			EntryIndexWithinAllocation = (uint16)InEntryIndexWithinAllocation;
 		}
 
 		int32 GetAllocationIndex() const

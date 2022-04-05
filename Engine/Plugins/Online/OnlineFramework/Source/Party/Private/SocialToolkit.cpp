@@ -285,13 +285,9 @@ void USocialToolkit::SetLocalUserOnlineState(EOnlinePresenceState::Type OnlineSt
 			 TSharedPtr<FOnlineUserPresence> CurrentPresence;
 			 PresenceInterface->GetCachedPresence(*LocalUserId, CurrentPresence);
 
-			 FOnlineUserPresenceStatus NewStatus;
-			 if (CurrentPresence.IsValid())
-			 {
-				 NewStatus = CurrentPresence->Status;
-			 }
+			 FOnlinePresenceSetPresenceParameters NewStatus;
 			 NewStatus.State = OnlineState;
-			 PresenceInterface->SetPresence(*LocalUserId, NewStatus);
+			 PresenceInterface->SetPresence(*LocalUserId, MoveTemp(NewStatus));
 		 }
 	}
 }
@@ -307,18 +303,14 @@ void USocialToolkit::AddLocalUserOnlineProperties(FPresenceProperties OnlineProp
 			TSharedPtr<FOnlineUserPresence> CurrentPresence;
 			PresenceInterface->GetCachedPresence(*LocalUserId, CurrentPresence);
 
-			FOnlineUserPresenceStatus NewStatus;
-			if (CurrentPresence.IsValid())
-			{
-				NewStatus = CurrentPresence->Status;
-			}
-			
+			FOnlinePresenceSetPresenceParameters NewStatus;
+			NewStatus.Properties.Emplace(CurrentPresence.IsValid() ? CurrentPresence->Status.Properties : FPresenceProperties());
 			for (TPair<FPresenceKey, FVariantData>& Pair : OnlineProperties)
 			{
-				NewStatus.Properties.Emplace(MoveTemp(Pair.Key), MoveTemp(Pair.Value));
+				NewStatus.Properties->Emplace(MoveTemp(Pair.Key), MoveTemp(Pair.Value));
 			}
 
-			PresenceInterface->SetPresence(*LocalUserId, NewStatus);
+			PresenceInterface->SetPresence(*LocalUserId, MoveTemp(NewStatus));
 		}
 	}
 }
@@ -381,6 +373,16 @@ void USocialToolkit::NotifyPSNFriendsListRebuilt()
 	ProcessUserList(PSNFriendsList, ESocialSubsystem::Platform, GarbageRelationshipEstablishedFiller);
 }
 #endif
+
+void USocialToolkit::NotifyPartyInviteReceived(USocialUser& SocialUser, const IOnlinePartyJoinInfo& Invite)
+{
+	OnPartyInviteReceived().Broadcast(SocialUser);
+}
+
+void USocialToolkit::NotifyPartyInviteRemoved(USocialUser& SocialUser, const IOnlinePartyJoinInfo& Invite)
+{
+	OnPartyInviteRemoved().Broadcast(SocialUser);
+}
 
 void USocialToolkit::QueueUserDependentAction(const FUniqueNetIdRepl& UserId, TFunction<void(USocialUser&)>&& UserActionFunc, bool bExecutePostInit)
 {
@@ -580,6 +582,8 @@ void USocialToolkit::OnOwnerLoggedIn()
 			{
 				PartyInterface->AddOnPartyInviteReceivedExDelegate_Handle(FOnPartyInviteReceivedExDelegate::CreateUObject(this, &USocialToolkit::HandlePartyInviteReceived));
 				PartyInterface->AddOnPartyInviteRemovedExDelegate_Handle(FOnPartyInviteRemovedExDelegate::CreateUObject(this, &USocialToolkit::HandlePartyInviteRemoved));
+				PartyInterface->AddOnPartyRequestToJoinReceivedDelegate_Handle(FOnPartyRequestToJoinReceivedDelegate::CreateUObject(this, &USocialToolkit::HandlePartyRequestToJoinReceived));
+				PartyInterface->AddOnPartyRequestToJoinRemovedDelegate_Handle(FOnPartyRequestToJoinRemovedDelegate::CreateUObject(this, &USocialToolkit::HandlePartyRequestToJoinRemoved));
 			}
 
 			if (IOnlinePresencePtr PresenceInterface = OSS->GetPresenceInterface())
@@ -637,6 +641,8 @@ void USocialToolkit::OnOwnerLoggedOut()
 			if (PartyInterface.IsValid())
 			{
 				PartyInterface->ClearOnPartyInviteReceivedDelegates(this);
+				PartyInterface->ClearOnPartyRequestToJoinReceivedDelegates(this);
+				PartyInterface->ClearOnPartyRequestToJoinRemovedDelegates(this);
 			}
 
 			IOnlineUserPtr UserInterface = OSS->GetUserInterface();
@@ -870,6 +876,15 @@ void USocialToolkit::HandlePresenceReceived(const FUniqueNetId& UserId, const TS
 	if (USocialUser* UpdatedUser = FindUser(UserId.AsShared()))
 	{
 		UpdatedUser->NotifyPresenceChanged(SubsystemType);
+
+		if (UpdatedUser->IsFriend())
+		{
+			QueueUserDependentActionInternal(UserId.AsShared(), ESocialSubsystem::Primary,
+				[this, NewPresence](USocialUser& SocialUser)
+				{
+					OnFriendPresenceDidChange(SocialUser, NewPresence, ESocialSubsystem::Primary);
+				});
+		}
 	}
 	else if (SubsystemType == ESocialSubsystem::Platform)
 	{
@@ -1017,6 +1032,8 @@ void USocialToolkit::HandlePartyInviteReceived(const FUniqueNetId& LocalUserId, 
 {
 	if (LocalUserId == GetLocalUserNetId(ESocialSubsystem::Primary))
 	{
+		PartyInvitations.Add(Invite.AsShared());
+
 		// We really should know about the sender of the invite already, but queue it up in case we receive it during initial setup
 		QueueUserDependentActionInternal(Invite.GetSourceUserId(), ESocialSubsystem::Primary,
 			[this, Invite = Invite.AsShared()] (USocialUser& User)
@@ -1026,6 +1043,14 @@ void USocialToolkit::HandlePartyInviteReceived(const FUniqueNetId& LocalUserId, 
 #if PARTY_PLATFORM_INVITE_PERMISSIONS
 					CanReceiveInviteFrom(User, Invite, [this, Invite, UserId = User.GetUserId(ESocialSubsystem::Primary)](const bool bResult)
 					{
+						// Check whether the invitation was removed while the async check was completing.
+						if (PartyInvitations.Find(Invite) == nullptr)
+						{
+							UE_LOG(LogParty, Log, TEXT("USocialToolkit::HandlePartyInviteReceived Invitation is no longer valid. LocalUser=[%s] Inviter=[%s]"),
+								*GetLocalUserNetId(ESocialSubsystem::Primary).ToDebugString(), *UserId.ToDebugString());
+							return;
+						}
+
 						UE_LOG(LogParty, Log, TEXT("USocialToolkit::HandlePartyInviteReceived LocalUser=[%s] Inviter=[%s] CanReceiveInviteFrom=[%s]"),
 							*GetLocalUserNetId(ESocialSubsystem::Primary).ToDebugString(), *UserId.ToDebugString(), *LexToString(bResult));
 
@@ -1047,6 +1072,8 @@ void USocialToolkit::HandlePartyInviteRemoved(const FUniqueNetId& LocalUserId, c
 {
 	if (LocalUserId == GetLocalUserNetId(ESocialSubsystem::Primary))
 	{
+		PartyInvitations.Remove(Invite.AsShared());
+
 		if (USocialUser* User = FindUser(Invite.GetSourceUserId()))
 		{
 			User->HandlePartyInviteRemoved(Invite, Reason);
@@ -1139,6 +1166,55 @@ void USocialToolkit::HandleExistingPartyInvites(ESocialSubsystem SubsystemType)
 	}
 }
 
+void USocialToolkit::RequestToJoinParty(USocialUser& SocialUser)
+{
+	IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
+	PartyInterface->RequestToJoinParty(*GetLocalUserNetId(ESocialSubsystem::Primary), IOnlinePartySystem::GetPrimaryPartyTypeId(), *SocialUser.GetUserId(ESocialSubsystem::Primary), FOnRequestToJoinPartyComplete::CreateUObject(this, &USocialToolkit::HandlePartyRequestToJoinSent));
+}
+
+void USocialToolkit::HandlePartyRequestToJoinSent(const FUniqueNetId& LocalUserId, const FUniqueNetId& PartyLeaderId, const FDateTime& ExpiresAt, const ERequestToJoinPartyCompletionResult Result)
+{
+	UE_LOG(LogParty, VeryVerbose, TEXT("%s - User [%s] sent a join request to [%s] with result[%s]"), ANSI_TO_TCHAR(__FUNCTION__), *LocalUserId.ToDebugString(), *PartyLeaderId.ToDebugString(), ToString(Result));
+
+	if (Result == ERequestToJoinPartyCompletionResult::Succeeded)
+	{
+		QueueUserDependentActionInternal(PartyLeaderId.AsShared(), ESocialSubsystem::Primary,
+			[this, ExpiresAt](USocialUser& SocialUser)
+			{
+				SocialUser.HandleRequestToJoinSent(ExpiresAt);
+				OnPartyRequestToJoinSent().Broadcast(SocialUser);
+			});
+	}
+
+	OnRequestToJoinPartyComplete(PartyLeaderId, Result);
+}
+
+void USocialToolkit::HandlePartyRequestToJoinReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RequesterId, const IOnlinePartyRequestToJoinInfo& Request)
+{
+	if (LocalUserId == GetLocalUserNetId(ESocialSubsystem::Primary))
+	{
+		QueueUserDependentActionInternal(RequesterId.AsShared(), ESocialSubsystem::Primary,
+			[this, RequestRef = Request.AsShared()](USocialUser& User)
+			{
+				User.HandleRequestToJoinReceived(*RequestRef);
+				OnPartyRequestToJoinReceived().Broadcast(User, RequestRef);
+			});
+	}
+}
+
+void USocialToolkit::HandlePartyRequestToJoinRemoved(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RequesterId, const IOnlinePartyRequestToJoinInfo& Request, EPartyRequestToJoinRemovedReason Reason)
+{
+	if (LocalUserId == GetLocalUserNetId(ESocialSubsystem::Primary))
+	{
+		QueueUserDependentActionInternal(RequesterId.AsShared(), ESocialSubsystem::Primary,
+			[this, RequestRef = Request.AsShared(), Reason](USocialUser& User)
+			{
+				User.HandleRequestToJoinRemoved(*RequestRef, Reason);
+				OnPartyRequestToJoinRemoved().Broadcast(User, RequestRef, Reason);
+			});
+	}
+}
+
 bool USocialToolkit::Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Out)
 {
 	return false;
@@ -1149,14 +1225,14 @@ void USocialToolkit::Debug_OnStartRandomizeUserPresence(uint8 NumRandomUser, flo
 {
 	if (Debug_PresenceTickerHandle.IsValid())
 	{
-		FTicker::GetCoreTicker().RemoveTicker(Debug_PresenceTickerHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(Debug_PresenceTickerHandle);
 		Debug_PresenceTickerHandle.Reset();
 	}
 
 	if (ensure(TickerTimer > 0.f))
 	{
 		bDebug_IsRandomlyChangingUserPresence = true;
-		Debug_PresenceTickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &USocialToolkit::Debug_HandleRandomizeUserPresenceTick, NumRandomUser), TickerTimer);
+		Debug_PresenceTickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &USocialToolkit::Debug_HandleRandomizeUserPresenceTick, NumRandomUser), TickerTimer);
 	}
 }
 
@@ -1165,7 +1241,7 @@ void USocialToolkit::Debug_OnStopRandomizeUserPresence(bool bClearGeneratedPrese
 	bDebug_IsRandomlyChangingUserPresence = false;
 	if (Debug_PresenceTickerHandle.IsValid())
 	{
-		FTicker::GetCoreTicker().RemoveTicker(Debug_PresenceTickerHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(Debug_PresenceTickerHandle);
 		Debug_PresenceTickerHandle.Reset();
 	}
 

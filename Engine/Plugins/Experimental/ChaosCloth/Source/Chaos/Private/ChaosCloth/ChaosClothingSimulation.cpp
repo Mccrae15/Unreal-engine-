@@ -14,6 +14,9 @@
 
 #include "PhysicsField/PhysicsFieldComponent.h"
 #include "PhysicsProxy/PerSolverFieldSystem.h"
+#include "DynamicMeshBuilder.h"
+
+#include "HAL/IConsoleManager.h"
 
 #if WITH_EDITOR || CHAOS_DEBUG_DRAW
 #include "Chaos/Sphere.h"
@@ -38,7 +41,6 @@
 
 #if CHAOS_DEBUG_DRAW
 #include "Chaos/DebugDrawQueue.h"
-#include "HAL/IConsoleManager.h"
 #endif  // #if CHAOS_DEBUG_DRAW
 
 #if !UE_BUILD_SHIPPING
@@ -51,8 +53,9 @@
 #include "ChaosClothingSimulation.ispc.generated.h"
 #endif
 
-#if INTEL_ISPC && !UE_BUILD_SHIPPING
+#if INTEL_ISPC && !(UE_BUILD_SHIPPING || UE_BUILD_TEST)  // Include only used for the Ispc command
 #include "Chaos/PBDCollisionConstraints.h"
+#include "Chaos/PBDEvolution.h"
 #include "Chaos/PBDSpringConstraints.h"
 #include "Chaos/PBDAxialSpringConstraints.h"
 #include "Chaos/PerParticleDampVelocity.h"
@@ -60,28 +63,34 @@
 #include "Chaos/PBDSphericalConstraint.h"
 #include "Chaos/PBDLongRangeConstraints.h"
 #include "Chaos/VelocityField.h"
-#include "HAL/IConsoleManager.h"
+#endif
+
+#if INTEL_ISPC && !UE_BUILD_SHIPPING
+static_assert(sizeof(ispc::FVector3f) == sizeof(FVector3f), "sizeof(ispc::FVector3f) != sizeof(FVector3f)");
+static_assert(sizeof(ispc::FVector) == sizeof(Chaos::FVec3), "sizeof(ispc::FVector) != sizeof(Chaos::FVec3)");
+static_assert(sizeof(ispc::FTransform) == sizeof(Chaos::FRigidTransform3), "sizeof(ispc::FTransform) != sizeof(Chaos::FRigidTransform3)");
 
 bool bChaos_GetSimData_ISPC_Enabled = true;
 FAutoConsoleVariableRef CVarChaosGetSimDataISPCEnabled(TEXT("p.Chaos.GetSimData.ISPC"), bChaos_GetSimData_ISPC_Enabled, TEXT("Whether to use ISPC optimizations when getting simulation data"));
 #endif
 
-using namespace Chaos;
-
 DECLARE_CYCLE_STAT(TEXT("Chaos Cloth Simulate"), STAT_ChaosClothSimulate, STATGROUP_ChaosCloth);
 DECLARE_CYCLE_STAT(TEXT("Chaos Cloth Create Actor"), STAT_ChaosClothCreateActor, STATGROUP_ChaosCloth);
 DECLARE_CYCLE_STAT(TEXT("Chaos Cloth Get Simulation Data"), STAT_ChaosClothGetSimulationData, STATGROUP_ChaosCloth);
 
+namespace Chaos
+{
+
 #if CHAOS_DEBUG_DRAW
-namespace ChaosClothingSimulationCVar
+namespace ClothingSimulationCVar
 {
 	TAutoConsoleVariable<bool> DebugDrawLocalSpace          (TEXT("p.ChaosCloth.DebugDrawLocalSpace"          ), false, TEXT("Whether to debug draw the Chaos Cloth local space"), ECVF_Cheat);
 	TAutoConsoleVariable<bool> DebugDrawBounds              (TEXT("p.ChaosCloth.DebugDrawBounds"              ), false, TEXT("Whether to debug draw the Chaos Cloth bounds"), ECVF_Cheat);
 	TAutoConsoleVariable<bool> DebugDrawGravity             (TEXT("p.ChaosCloth.DebugDrawGravity"             ), false, TEXT("Whether to debug draw the Chaos Cloth gravity acceleration vector"), ECVF_Cheat);
 	TAutoConsoleVariable<bool> DebugDrawPhysMeshWired       (TEXT("p.ChaosCloth.DebugDrawPhysMeshWired"       ), false, TEXT("Whether to debug draw the Chaos Cloth wireframe meshes"), ECVF_Cheat);
 	TAutoConsoleVariable<bool> DebugDrawAnimMeshWired       (TEXT("p.ChaosCloth.DebugDrawAnimMeshWired"       ), false, TEXT("Whether to debug draw the animated/kinematic Cloth wireframe meshes"), ECVF_Cheat);
+	TAutoConsoleVariable<bool> DebugDrawAnimNormals         (TEXT("p.ChaosCloth.DebugDrawAmimNormals"         ), false, TEXT("Whether to debug draw the animated/kinematic Cloth normals"), ECVF_Cheat);
 	TAutoConsoleVariable<bool> DebugDrawPointNormals        (TEXT("p.ChaosCloth.DebugDrawPointNormals"        ), false, TEXT("Whether to debug draw the Chaos Cloth point normals"), ECVF_Cheat);
-	TAutoConsoleVariable<bool> DebugDrawInversedPointNormals(TEXT("p.ChaosCloth.DebugDrawInversedPointNormals"), false, TEXT("Whether to debug draw the Chaos Cloth inversed point normals"), ECVF_Cheat);
 	TAutoConsoleVariable<bool> DebugDrawFaceNormals         (TEXT("p.ChaosCloth.DebugDrawFaceNormals"         ), false, TEXT("Whether to debug draw the Chaos Cloth face normals"), ECVF_Cheat);
 	TAutoConsoleVariable<bool> DebugDrawInversedFaceNormals (TEXT("p.ChaosCloth.DebugDrawInversedFaceNormals" ), false, TEXT("Whether to debug draw the Chaos Cloth inversed face normals"), ECVF_Cheat);
 	TAutoConsoleVariable<bool> DebugDrawCollision           (TEXT("p.ChaosCloth.DebugDrawCollision"           ), false, TEXT("Whether to debug draw the Chaos Cloth collisions"), ECVF_Cheat);
@@ -97,9 +106,7 @@ namespace ChaosClothingSimulationCVar
 #endif  // #if CHAOS_DEBUG_DRAW
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-#include "HAL/IConsoleManager.h"
-
-namespace ChaosClothingSimulationConsole
+namespace ClothingSimulationConsole
 {
 	class FCommand final
 	{
@@ -185,6 +192,10 @@ namespace ChaosClothingSimulationConsole
 				bChaos_PerParticleCollision_ISPC_Enabled =
 				bChaos_VelocityField_ISPC_Enabled =
 				bChaos_GetSimData_ISPC_Enabled =
+				bChaos_SkinPhysicsMesh_ISPC_Enabled =
+				bChaos_PreSimulationTransforms_ISPC_Enabled =
+				bChaos_CalculateBounds_ISPC_Enabled =
+				bChaos_PostIterationUpdates_ISPC_Enabled =
 					bEnableISPC;
 				return;
 			}
@@ -272,15 +283,16 @@ FClothingSimulation::FClothingSimulation()
 	, StepCount(0)
 	, ResetCount(0)
 #endif
+	, bHasInvalidReferenceBoneTransforms(false)
 {
 #if WITH_EDITOR
 	DebugClothMaterial = LoadObject<UMaterial>(nullptr, TEXT("/Engine/EditorMaterials/Cloth/CameraLitDoubleSided.CameraLitDoubleSided"), nullptr, LOAD_None, nullptr);  // LOAD_EditorOnly
 	DebugClothMaterialVertex = LoadObject<UMaterial>(nullptr, TEXT("/Engine/EditorMaterials/WidgetVertexColorMaterial"), nullptr, LOAD_None, nullptr);  // LOAD_EditorOnly
 #endif  // #if WITH_EDITOR
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	if (!ChaosClothingSimulationConsole::Command)
+	if (!ClothingSimulationConsole::Command)
 	{
-		ChaosClothingSimulationConsole::Command = MakeUnique<ChaosClothingSimulationConsole::FCommand>();
+		ClothingSimulationConsole::Command = MakeUnique<ClothingSimulationConsole::FCommand>();
 	}
 #endif
 }
@@ -318,6 +330,7 @@ IClothingSimulationContext* FClothingSimulation::CreateContext()
 
 void FClothingSimulation::CreateActor(USkeletalMeshComponent* InOwnerComponent, UClothingAssetBase* InAsset, int32 InSimDataIndex)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FClothingSimulation_CreateActor);
 	SCOPE_CYCLE_COUNTER(STAT_ChaosClothCreateActor);
 
 	check(InOwnerComponent);
@@ -340,7 +353,8 @@ void FClothingSimulation::CreateActor(USkeletalMeshComponent* InOwnerComponent, 
 		const FClothingSimulationContext* const Context = static_cast<const FClothingSimulationContext*>(InOwnerComponent->GetClothingSimulationContext());
 		check(Context);
 		static const bool bReset = true;
-		Solver->SetLocalSpaceLocation(bUseLocalSpaceSimulation ? Context->ComponentToWorld.GetLocation() : FVec3(0), bReset);
+		Solver->SetLocalSpaceLocation(bUseLocalSpaceSimulation ? (FVec3)Context->ComponentToWorld.GetLocation() : FVec3(0.), bReset);
+		Solver->SetLocalSpaceRotation(bUseLocalSpaceSimulation ? (FQuat)Context->ComponentToWorld.GetRotation() : FQuat::Identity);
 	}
 	else
 	{
@@ -378,18 +392,18 @@ void FClothingSimulation::CreateActor(USkeletalMeshComponent* InOwnerComponent, 
 		(FClothingSimulationCloth::EMassMode)ClothConfig->MassMode,
 		ClothConfig->GetMassValue(),
 		ClothConfig->MinPerParticleMass,
-		ClothConfig->EdgeStiffness,
-		ClothConfig->BendingStiffness,
+		TVec2<FRealSingle>(ClothConfig->EdgeStiffnessWeighted.Low, ClothConfig->EdgeStiffnessWeighted.High),
+		TVec2<FRealSingle>(ClothConfig->BendingStiffnessWeighted.Low, ClothConfig->BendingStiffnessWeighted.High),
 		ClothConfig->bUseBendingElements,
-		ClothConfig->AreaStiffness,
+		TVec2<FRealSingle>(ClothConfig->AreaStiffnessWeighted.Low, ClothConfig->AreaStiffnessWeighted.High),
 		ClothConfig->VolumeStiffness,
 		ClothConfig->bUseThinShellVolumeConstraints,
-		TVector<float, 2>(ClothConfig->TetherStiffness.Low, ClothConfig->TetherStiffness.High),  // Animatable
-		ClothConfig->LimitScale,
+		TVec2<FRealSingle>(ClothConfig->TetherStiffness.Low, ClothConfig->TetherStiffness.High),  // Animatable
+		TVec2<FRealSingle>(ClothConfig->TetherScale.Low, ClothConfig->TetherScale.High),  // Animatable
 		ClothConfig->bUseGeodesicDistance ? FClothingSimulationCloth::ETetherMode::Geodesic : FClothingSimulationCloth::ETetherMode::Euclidean,
 		/*MaxDistancesMultiplier =*/ 1.f,  // Animatable
-		FVec2(ClothConfig->AnimDriveStiffness.Low, ClothConfig->AnimDriveStiffness.High),  // Animatable
-		FVec2(ClothConfig->AnimDriveDamping.Low, ClothConfig->AnimDriveDamping.High),  // Animatable
+		TVec2<FRealSingle>(ClothConfig->AnimDriveStiffness.Low, ClothConfig->AnimDriveStiffness.High),  // Animatable
+		TVec2<FRealSingle>(ClothConfig->AnimDriveDamping.Low, ClothConfig->AnimDriveDamping.High),  // Animatable
 		ClothConfig->ShapeTargetStiffness,  // TODO: This is now deprecated
 		/*bUseXPBDConstraints =*/ false,  // Experimental
 		ClothConfig->GravityScale,
@@ -398,10 +412,11 @@ void FClothingSimulation::CreateActor(USkeletalMeshComponent* InOwnerComponent, 
 		ClothConfig->LinearVelocityScale,
 		ClothConfig->AngularVelocityScale,
 		ClothConfig->FictitiousAngularScale,
-		ClothConfig->DragCoefficient,
-		ClothConfig->LiftCoefficient,
+		TVec2<FRealSingle>(ClothConfig->Drag.Low, ClothConfig->Drag.High),  // Animatable
+		TVec2<FRealSingle>(ClothConfig->Lift.Low, ClothConfig->Lift.High),  // Animatable
 		ClothConfig->bUsePointBasedWindModel,
 		ClothConfig->DampingCoefficient,
+		ClothConfig->LocalDampingCoefficient,
 		ClothConfig->CollisionThickness,
 		ClothConfig->FrictionCoefficient,
 		ClothConfig->bUseCCD,
@@ -444,6 +459,7 @@ void FClothingSimulation::ResetStats()
 	SimulationTime = 0.f;
 	NumSubsteps = Solver->GetNumSubsteps();
 	NumIterations = Solver->GetNumIterations();
+	bHasInvalidReferenceBoneTransforms = false;
 }
 
 void FClothingSimulation::UpdateStats(const FClothingSimulationCloth* Cloth)
@@ -464,12 +480,18 @@ void FClothingSimulation::UpdateSimulationFromSharedSimConfig()
 		// Set common simulation parameters
 		Solver->SetNumSubsteps(ClothSharedSimConfig->SubdivisionCount);
 		Solver->SetNumIterations(ClothSharedSimConfig->IterationCount);
+		Solver->SetMaxNumIterations(ClothSharedSimConfig->MaxIterationCount);
 	}
 }
 
 void FClothingSimulation::SetNumIterations(int32 InNumIterations)
 {
 	Solver->SetNumIterations(InNumIterations);
+}
+
+void FClothingSimulation::SetMaxNumIterations(int32 MaxNumIterations)
+{
+	Solver->SetMaxNumIterations(MaxNumIterations);
 }
 
 void FClothingSimulation::SetNumSubsteps(int32 InNumSubsteps)
@@ -491,8 +513,9 @@ bool FClothingSimulation::ShouldSimulate() const
 
 void FClothingSimulation::Simulate(IClothingSimulationContext* InContext)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FClothingSimulation_Simulate);
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-	if (ChaosClothingSimulationConsole::Command && ChaosClothingSimulationConsole::Command->MustStep(StepCount))
+	if (ClothingSimulationConsole::Command && ClothingSimulationConsole::Command->MustStep(StepCount))
 #endif
 	{
 		SCOPE_CYCLE_COUNTER(STAT_ChaosClothSimulate);
@@ -503,18 +526,20 @@ void FClothingSimulation::Simulate(IClothingSimulationContext* InContext)
 		}
 
 		const double StartTime = FPlatformTime::Seconds();
+		const float PrevSimulationTime = SimulationTime;  // Copy the atomic to prevent a re-read
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-		const bool bNeedsReset = (ChaosClothingSimulationConsole::Command && ChaosClothingSimulationConsole::Command->MustReset(ResetCount)) ||
-			(Context->TeleportMode == EClothingTeleportMode::TeleportAndReset);
+		const bool bNeedsReset = (ClothingSimulationConsole::Command && ClothingSimulationConsole::Command->MustReset(ResetCount)) ||
+			Context->TeleportMode == EClothingTeleportMode::TeleportAndReset || PrevSimulationTime == 0.f;
 #else
-		const bool bNeedsReset = (Context->TeleportMode == EClothingTeleportMode::TeleportAndReset);
+		const bool bNeedsReset = Context->TeleportMode == EClothingTeleportMode::TeleportAndReset || PrevSimulationTime == 0.f;
 #endif
 		const bool bNeedsTeleport = (Context->TeleportMode > EClothingTeleportMode::None);
 		bIsTeleported = bNeedsTeleport;
 
 		// Update Solver animatable parameters
-		Solver->SetLocalSpaceLocation(bUseLocalSpaceSimulation ? Context->ComponentToWorld.GetLocation() : FVec3(0), bNeedsReset);
+		Solver->SetLocalSpaceLocation(bUseLocalSpaceSimulation ? (FVec3)Context->ComponentToWorld.GetLocation() : FVec3(0), bNeedsReset);
+		Solver->SetLocalSpaceRotation(bUseLocalSpaceSimulation ? (FQuat)Context->ComponentToWorld.GetRotation() : FQuat::Identity);
 		Solver->SetWindVelocity(Context->WindVelocity, Context->WindAdaption);
 		Solver->SetGravity(bUseGravityOverride ? GravityOverride : Context->WorldGravity);
 		Solver->EnableClothGravityOverride(!bUseGravityOverride);  // Disable all cloth gravity overrides when the interactor takes over
@@ -536,12 +561,14 @@ void FClothingSimulation::Simulate(IClothingSimulationContext* InContext)
 		}
 
 		// Step the simulation
-		Solver->Update(Context->DeltaSeconds);
+		Solver->Update((Softs::FSolverReal)Context->DeltaSeconds);
+
+		// Keep the actual used number of iterations for the stats
+		NumIterations = Solver->GetNumUsedIterations();
 
 		// Update simulation time in ms (and provide an instant average instead of the value in real-time)
-		const FReal PrevSimulationTime = SimulationTime;  // Copy the atomic to prevent a re-read
-		const FReal CurrSimulationTime = (FReal)((FPlatformTime::Seconds() - StartTime) * 1000.);
-		static const FReal SimulationTimeDecay = 0.03f; // 0.03 seems to provide a good rate of update for the instant average
+		const float CurrSimulationTime = (float)((FPlatformTime::Seconds() - StartTime) * 1000.);
+		static const float SimulationTimeDecay = 0.03f; // 0.03 seems to provide a good rate of update for the instant average
 		SimulationTime = PrevSimulationTime ? PrevSimulationTime + (CurrSimulationTime - PrevSimulationTime) * SimulationTimeDecay : CurrSimulationTime;
 
 #if FRAMEPRO_ENABLED
@@ -553,22 +580,22 @@ void FClothingSimulation::Simulate(IClothingSimulationContext* InContext)
 
 	// Debug draw
 #if CHAOS_DEBUG_DRAW
-	if (ChaosClothingSimulationCVar::DebugDrawLocalSpace          .GetValueOnAnyThread()) { DebugDrawLocalSpace          (); }
-	if (ChaosClothingSimulationCVar::DebugDrawBounds              .GetValueOnAnyThread()) { DebugDrawBounds              (); }
-	if (ChaosClothingSimulationCVar::DebugDrawGravity             .GetValueOnAnyThread()) { DebugDrawGravity             (); }
-	if (ChaosClothingSimulationCVar::DebugDrawPhysMeshWired       .GetValueOnAnyThread()) { DebugDrawPhysMeshWired       (); }
-	if (ChaosClothingSimulationCVar::DebugDrawAnimMeshWired       .GetValueOnAnyThread()) { DebugDrawAnimMeshWired       (); }
-	if (ChaosClothingSimulationCVar::DebugDrawPointNormals        .GetValueOnAnyThread()) { DebugDrawPointNormals        (); }
-	if (ChaosClothingSimulationCVar::DebugDrawInversedPointNormals.GetValueOnAnyThread()) { DebugDrawInversedPointNormals(); }
-	if (ChaosClothingSimulationCVar::DebugDrawCollision           .GetValueOnAnyThread()) { DebugDrawCollision           (); }
-	if (ChaosClothingSimulationCVar::DebugDrawBackstops           .GetValueOnAnyThread()) { DebugDrawBackstops           (); }
-	if (ChaosClothingSimulationCVar::DebugDrawBackstopDistances   .GetValueOnAnyThread()) { DebugDrawBackstopDistances   (); }
-	if (ChaosClothingSimulationCVar::DebugDrawMaxDistances        .GetValueOnAnyThread()) { DebugDrawMaxDistances        (); }
-	if (ChaosClothingSimulationCVar::DebugDrawAnimDrive           .GetValueOnAnyThread()) { DebugDrawAnimDrive           (); }
-	if (ChaosClothingSimulationCVar::DebugDrawBendingConstraint   .GetValueOnAnyThread()) { DebugDrawBendingConstraint   (); }
-	if (ChaosClothingSimulationCVar::DebugDrawLongRangeConstraint .GetValueOnAnyThread()) { DebugDrawLongRangeConstraint (); }
-	if (ChaosClothingSimulationCVar::DebugDrawWindForces          .GetValueOnAnyThread()) { DebugDrawWindForces          (); }
-	if (ChaosClothingSimulationCVar::DebugDrawSelfCollision       .GetValueOnAnyThread()) { DebugDrawSelfCollision       (); }
+	if (ClothingSimulationCVar::DebugDrawLocalSpace          .GetValueOnAnyThread()) { DebugDrawLocalSpace          (); }
+	if (ClothingSimulationCVar::DebugDrawBounds              .GetValueOnAnyThread()) { DebugDrawBounds              (); }
+	if (ClothingSimulationCVar::DebugDrawGravity             .GetValueOnAnyThread()) { DebugDrawGravity             (); }
+	if (ClothingSimulationCVar::DebugDrawPhysMeshWired       .GetValueOnAnyThread()) { DebugDrawPhysMeshWired       (); }
+	if (ClothingSimulationCVar::DebugDrawAnimMeshWired       .GetValueOnAnyThread()) { DebugDrawAnimMeshWired       (); }
+	if (ClothingSimulationCVar::DebugDrawAnimNormals         .GetValueOnAnyThread()) { DebugDrawAnimNormals         (); }
+	if (ClothingSimulationCVar::DebugDrawPointNormals        .GetValueOnAnyThread()) { DebugDrawPointNormals        (); }
+	if (ClothingSimulationCVar::DebugDrawCollision           .GetValueOnAnyThread()) { DebugDrawCollision           (); }
+	if (ClothingSimulationCVar::DebugDrawBackstops           .GetValueOnAnyThread()) { DebugDrawBackstops           (); }
+	if (ClothingSimulationCVar::DebugDrawBackstopDistances   .GetValueOnAnyThread()) { DebugDrawBackstopDistances   (); }
+	if (ClothingSimulationCVar::DebugDrawMaxDistances        .GetValueOnAnyThread()) { DebugDrawMaxDistances        (); }
+	if (ClothingSimulationCVar::DebugDrawAnimDrive           .GetValueOnAnyThread()) { DebugDrawAnimDrive           (); }
+	if (ClothingSimulationCVar::DebugDrawBendingConstraint   .GetValueOnAnyThread()) { DebugDrawBendingConstraint   (); }
+	if (ClothingSimulationCVar::DebugDrawLongRangeConstraint .GetValueOnAnyThread()) { DebugDrawLongRangeConstraint (); }
+	if (ClothingSimulationCVar::DebugDrawWindForces          .GetValueOnAnyThread()) { DebugDrawWindForces          (); }
+	if (ClothingSimulationCVar::DebugDrawSelfCollision       .GetValueOnAnyThread()) { DebugDrawSelfCollision       (); }
 #endif  // #if CHAOS_DEBUG_DRAW
 }
 
@@ -577,6 +604,7 @@ void FClothingSimulation::GetSimulationData(
 	USkeletalMeshComponent* InOwnerComponent,
 	USkinnedMeshComponent* InOverrideComponent) const
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FClothingSimulation_GetSimulationData);
 	SCOPE_CYCLE_COUNTER(STAT_ChaosClothGetSimulationData);
 
 	if (!Cloths.Num() || !InOwnerComponent)
@@ -592,28 +620,46 @@ void FClothingSimulation::GetSimulationData(
 	}
 
 	// Get the solver's local space
-	const FVec3& LocalSpaceLocation = Solver->GetLocalSpaceLocation();
+	const FVec3& LocalSpaceLocation = Solver->GetLocalSpaceLocation(); // Note: Since the ReferenceSpaceTransform can be suspended with the simulation, it is important that the suspended local space location is used too in order to get the simulation data back into reference space
 
 	// Retrieve the component transforms
-	const FTransform& OwnerTransform = InOwnerComponent->GetComponentTransform();
+	const FClothingSimulationContext* const Context = static_cast<const FClothingSimulationContext*>(InOwnerComponent->GetClothingSimulationContext());
+	check(Context);  // A simulation can't be created without context
+	const FTransform& OwnerTransform = Context->ComponentToWorld;
+
 	const TArray<FTransform>& ComponentSpaceTransforms = InOverrideComponent ? InOverrideComponent->GetComponentSpaceTransforms() : InOwnerComponent->GetComponentSpaceTransforms();
 
 	// Set the simulation data for each of the cloths
 	for (const TUniquePtr<FClothingSimulationCloth>& Cloth : Cloths)
 	{
 		const int32 AssetIndex = Cloth->GetGroupId();
-		FClothSimulData& Data = OutData.FindOrAdd(AssetIndex);
 
-		if (Cloth->GetLODIndex(Solver.Get()) == INDEX_NONE || Cloth->GetOffset(Solver.Get()) == INDEX_NONE)
+		if (!Cloth->GetMesh())
 		{
-			continue;
+			OutData.Remove(AssetIndex);  // Ensures that the cloth vertex factory won't run unnecessarily
+			continue;  // Invalid or empty cloth
+		}
+
+		// If the LOD has changed while the simulation is suspended, the cloth still needs to be updated with the correct LOD data
+		const int32 LODIndex = Cloth->GetMesh()->GetLODIndex();
+		if (LODIndex != Cloth->GetLODIndex(Solver.Get()))
+		{
+			Cloth->PreUpdate(Solver.Get());  // Currently doing colliders' update, not really required here, but this could later change (technically PreUpdates are for any non parallel cloth updates)
+			Cloth->Update(Solver.Get());  // LOD switching
+		}
+
+		if (Cloth->GetOffset(Solver.Get()) == INDEX_NONE || Cloth->GetLODIndex(Solver.Get()) == INDEX_NONE)
+		{
+			OutData.Remove(AssetIndex);  // Ensures that the cloth vertex factory won't run unnecessarily
+			continue;  // No valid LOD, there's nothing to write out
 		}
 
 		// Get the reference bone index for this cloth
 		const int32 ReferenceBoneIndex = InOverrideComponent ? InOwnerComponent->GetMasterBoneMap()[Cloth->GetReferenceBoneIndex()] : Cloth->GetReferenceBoneIndex();
 		if (!ComponentSpaceTransforms.IsValidIndex(ReferenceBoneIndex))
 		{
-			UE_LOG(LogSkeletalMesh, Warning, TEXT("Failed to write back clothing simulation data for component % as bone transforms are invalid."), *InOwnerComponent->GetName());
+			UE_CLOG(!bHasInvalidReferenceBoneTransforms, LogSkeletalMesh, Warning, TEXT("Failed to write back clothing simulation data for component %s as bone transforms are invalid."), *InOwnerComponent->GetName());
+			bHasInvalidReferenceBoneTransforms = true;
 			OutData.Reset();
 			return;
 		}
@@ -624,6 +670,7 @@ void FClothingSimulation::GetSimulationData(
 		ReferenceBoneTransform.SetScale3D(FVector(1.0f));  // Scale is already baked in the cloth mesh
 
 		// Set the world space transform to be this cloth's reference bone
+		FClothSimulData& Data = OutData.FindOrAdd(AssetIndex);
 		Data.Transform = ReferenceBoneTransform;
 		Data.ComponentRelativeTransform = ReferenceBoneTransform.GetRelativeTransform(OwnerTransform);
 
@@ -637,24 +684,40 @@ void FClothingSimulation::GetSimulationData(
 		Data.Normals = Cloth->GetParticleNormals(Solver.Get());
 
 		// Transform into the cloth reference simulation space used at the time of simulation
-		if (bRealTypeCompatibleWithISPC && bChaos_GetSimData_ISPC_Enabled)
-		{
 #if INTEL_ISPC
+		if (bChaos_GetSimData_ISPC_Enabled)
+		{
+			// ISPC is assuming float input here
+			check(sizeof(ispc::FVector3f) == Data.Positions.GetTypeSize());
+			check(sizeof(ispc::FVector3f) == Data.Normals.GetTypeSize());
+
 			ispc::GetClothingSimulationData(
-				(ispc::FVector*)Data.Positions.GetData(),
-				(ispc::FVector*)Data.Normals.GetData(),
+				(ispc::FVector3f*)Data.Positions.GetData(),
+				(ispc::FVector3f*)Data.Normals.GetData(),
 				(ispc::FTransform&)ReferenceSpaceTransform,
 				(ispc::FVector&)LocalSpaceLocation,
 				Data.Positions.Num());
-#endif
 		}
 		else
+#endif
 		{
 			for (int32 Index = 0; Index < Data.Positions.Num(); ++Index)
 			{
-				Data.Positions[Index] = ReferenceSpaceTransform.InverseTransformPosition(Data.Positions[Index] + LocalSpaceLocation);  // Move into world space first
-				Data.Normals[Index] = ReferenceSpaceTransform.InverseTransformVector(-Data.Normals[Index]);  // Normals are inverted due to how barycentric coordinates are calculated (see GetPointBaryAndDist in ClothingMeshUtils.cpp)
+				using FPositionsType = decltype(Data.Positions)::ElementType;
+				using FNormalsType = decltype(Data.Normals)::ElementType;
+				Data.Positions[Index] = FPositionsType(ReferenceSpaceTransform.InverseTransformPosition(FVec3(Data.Positions[Index]) + LocalSpaceLocation));  // Move into world space first
+				Data.Normals[Index] = FNormalsType(ReferenceSpaceTransform.InverseTransformVector(FVec3(-Data.Normals[Index])));  // Normals are inverted due to how barycentric coordinates are calculated (see GetPointBaryAndDist in ClothingMeshUtils.cpp)
 			}
+		}
+
+		// Set the current LOD these data apply to, so that the correct deformer mappings can be applied
+		if (const UClothingAssetCommon* const ClothingAsset = Cloth->GetMesh()->GetAsset())
+		{
+			Data.LODIndex = ClothingAsset->LodMap.Find(LODIndex);  // Store the mesh LOD index, which is different to the cloth asset's LOD index
+		}
+		else
+		{
+			Data.LODIndex = 0;
 		}
 	}
 }
@@ -662,13 +725,23 @@ void FClothingSimulation::GetSimulationData(
 FBoxSphereBounds FClothingSimulation::GetBounds(const USkeletalMeshComponent* InOwnerComponent) const
 {
 	check(Solver);
-	const FBoxSphereBounds Bounds = Solver->CalculateBounds();
+	FBoxSphereBounds Bounds = Solver->CalculateBounds();
 
-	if (InOwnerComponent)
+	if (bUseLocalSpaceSimulation)
 	{
-		// Return local bounds
-		return Bounds.TransformBy(InOwnerComponent->GetComponentTransform().Inverse());
+		// The component could be moving while the simulation is suspended so getting the bounds
+		// in world space isn't good enough and the bounds origin needs to be continuously updated
+		Bounds = Bounds.TransformBy(FTransform((FQuat)Solver->GetLocalSpaceRotation(), (FVector)Solver->GetLocalSpaceLocation()).Inverse());
 	}
+	else if (InOwnerComponent)
+	{
+		const FClothingSimulationContext* const Context = static_cast<const FClothingSimulationContext*>(InOwnerComponent->GetClothingSimulationContext());
+		check(Context);  // A simulation can't be created without context
+		const FTransform& OwnerTransform = Context->ComponentToWorld;
+		// Return local bounds
+		Bounds = Bounds.TransformBy(OwnerTransform.Inverse());
+	}
+	// Else return bounds in world space
 	return Bounds;
 }
 
@@ -716,7 +789,8 @@ void FClothingSimulation::RefreshClothConfig(const IClothingSimulationContext* I
 	// Update new space location
 	const FClothingSimulationContext* const Context = static_cast<const FClothingSimulationContext*>(InContext);
 	static const bool bReset = true;
-	Solver->SetLocalSpaceLocation(bUseLocalSpaceSimulation ? Context->ComponentToWorld.GetLocation() : FVec3(0), bReset);
+	Solver->SetLocalSpaceLocation(bUseLocalSpaceSimulation ? (FVec3)Context->ComponentToWorld.GetLocation() : FVec3(0), bReset);
+	Solver->SetLocalSpaceRotation(bUseLocalSpaceSimulation ? (FQuat)Context->ComponentToWorld.GetRotation() : FQuat::Identity);
 
 	// Reset stats
 	ResetStats();
@@ -739,18 +813,18 @@ void FClothingSimulation::RefreshClothConfig(const IClothingSimulationContext* I
 			(FClothingSimulationCloth::EMassMode)ClothConfig->MassMode,
 			ClothConfig->GetMassValue(),
 			ClothConfig->MinPerParticleMass,
-			ClothConfig->EdgeStiffness,
-			ClothConfig->BendingStiffness,
+			TVec2<FRealSingle>(ClothConfig->EdgeStiffnessWeighted.Low, ClothConfig->EdgeStiffnessWeighted.High),
+			TVec2<FRealSingle>(ClothConfig->BendingStiffnessWeighted.Low, ClothConfig->BendingStiffnessWeighted.High),
 			ClothConfig->bUseBendingElements,
-			ClothConfig->AreaStiffness,
+			TVec2<FRealSingle>(ClothConfig->AreaStiffnessWeighted.Low, ClothConfig->AreaStiffnessWeighted.High),
 			ClothConfig->VolumeStiffness,
 			ClothConfig->bUseThinShellVolumeConstraints,
-			TVector<float, 2>(ClothConfig->TetherStiffness.Low, ClothConfig->TetherStiffness.High),  // Animatable
-			ClothConfig->LimitScale,
+			TVec2<FRealSingle>(ClothConfig->TetherStiffness.Low, ClothConfig->TetherStiffness.High),  // Animatable
+			TVec2<FRealSingle>(ClothConfig->TetherScale.Low, ClothConfig->TetherScale.High),  // Animatable
 			ClothConfig->bUseGeodesicDistance ? FClothingSimulationCloth::ETetherMode::Geodesic : FClothingSimulationCloth::ETetherMode::Euclidean,
 			/*MaxDistancesMultiplier =*/ 1.f,  // Animatable
-			TVector<float, 2>(ClothConfig->AnimDriveStiffness.Low, ClothConfig->AnimDriveStiffness.High),  // Animatable
-			TVector<float, 2>(ClothConfig->AnimDriveDamping.Low, ClothConfig->AnimDriveDamping.High),  // Animatable
+			TVec2<FRealSingle>(ClothConfig->AnimDriveStiffness.Low, ClothConfig->AnimDriveStiffness.High),  // Animatable
+			TVec2<FRealSingle>(ClothConfig->AnimDriveDamping.Low, ClothConfig->AnimDriveDamping.High),  // Animatable
 			ClothConfig->ShapeTargetStiffness,
 			/*bUseXPBDConstraints =*/ false,  // Experimental
 			ClothConfig->GravityScale,
@@ -759,10 +833,11 @@ void FClothingSimulation::RefreshClothConfig(const IClothingSimulationContext* I
 			ClothConfig->LinearVelocityScale,
 			ClothConfig->AngularVelocityScale,
 			ClothConfig->FictitiousAngularScale,
-			ClothConfig->DragCoefficient,
-			ClothConfig->LiftCoefficient,
+			TVec2<FRealSingle>(ClothConfig->Drag.Low, ClothConfig->Drag.High),  // Animatable
+			TVec2<FRealSingle>(ClothConfig->Lift.Low, ClothConfig->Lift.High),  // Animatable
 			ClothConfig->bUsePointBasedWindModel,
 			ClothConfig->DampingCoefficient,
+			ClothConfig->LocalDampingCoefficient,
 			ClothConfig->CollisionThickness,
 			ClothConfig->FrictionCoefficient,
 			ClothConfig->bUseCCD,
@@ -836,28 +911,28 @@ void FClothingSimulation::DebugDrawPhysMeshShaded(FPrimitiveDrawInterface* PDI) 
 		}
 
 		const TConstArrayView<TVec3<int32>> Elements = Cloth->GetTriangleMesh(Solver.Get()).GetElements();
-		const TConstArrayView<FVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
-		const TConstArrayView<FReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
 		check(InvMasses.Num() == Positions.Num());
 
 		for (int32 ElementIndex = 0; ElementIndex < Elements.Num(); ++ElementIndex, VertexIndex += 3)
 		{
 			const TVec3<int32>& Element = Elements[ElementIndex];
 
-			const FVector Pos0 = Positions[Element.X - Offset]; // TODO: Triangle Mesh shouldn't really be solver dependent (ie not use an offset)
-			const FVector Pos1 = Positions[Element.Y - Offset];
-			const FVector Pos2 = Positions[Element.Z - Offset];
+			const FVector3f Pos0(Positions[Element.X - Offset]); // TODO: Triangle Mesh shouldn't really be solver dependent (ie not use an offset)
+			const FVector3f Pos1(Positions[Element.Y - Offset]);
+			const FVector3f Pos2(Positions[Element.Z - Offset]);
 
-			const FVector Normal = FVector::CrossProduct(Pos2 - Pos0, Pos1 - Pos0).GetSafeNormal();
-			const FVector Tangent = ((Pos1 + Pos2) * 0.5f - Pos0).GetSafeNormal();
+			const FVector3f Normal = FVector3f::CrossProduct(Pos2 - Pos0, Pos1 - Pos0).GetSafeNormal();
+			const FVector3f Tangent = ((Pos1 + Pos2) * 0.5f - Pos0).GetSafeNormal();
 
-			const bool bIsKinematic0 = (InvMasses[Element.X - Offset] == 0.f);
-			const bool bIsKinematic1 = (InvMasses[Element.Y - Offset] == 0.f);
-			const bool bIsKinematic2 = (InvMasses[Element.Z - Offset] == 0.f);
+			const bool bIsKinematic0 = (InvMasses[Element.X - Offset] == (Softs::FSolverReal)0.);
+			const bool bIsKinematic1 = (InvMasses[Element.Y - Offset] == (Softs::FSolverReal)0.);
+			const bool bIsKinematic2 = (InvMasses[Element.Z - Offset] == (Softs::FSolverReal)0.);
 
-			MeshBuilder.AddVertex(FDynamicMeshVertex(Pos0, Tangent, Normal, FVector2D(0.f, 0.f), bIsKinematic0 ? FColor::Purple : FColor::White));
-			MeshBuilder.AddVertex(FDynamicMeshVertex(Pos1, Tangent, Normal, FVector2D(0.f, 1.f), bIsKinematic1 ? FColor::Purple : FColor::White));
-			MeshBuilder.AddVertex(FDynamicMeshVertex(Pos2, Tangent, Normal, FVector2D(1.f, 1.f), bIsKinematic2 ? FColor::Purple : FColor::White));
+			MeshBuilder.AddVertex(FDynamicMeshVertex(Pos0, Tangent, Normal, FVector2f(0.f, 0.f), bIsKinematic0 ? FColor::Purple : FColor::White));
+			MeshBuilder.AddVertex(FDynamicMeshVertex(Pos1, Tangent, Normal, FVector2f(0.f, 1.f), bIsKinematic1 ? FColor::Purple : FColor::White));
+			MeshBuilder.AddVertex(FDynamicMeshVertex(Pos2, Tangent, Normal, FVector2f(1.f, 1.f), bIsKinematic2 ? FColor::Purple : FColor::White));
 			MeshBuilder.AddTriangle(VertexIndex, VertexIndex + 1, VertexIndex + 2);
 		}
 	}
@@ -894,16 +969,16 @@ void FClothingSimulation::DebugDrawParticleIndices(FCanvas* Canvas, const FScene
 			continue;
 		}
 
-		const TConstArrayView<FVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
-		const TConstArrayView<FReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
 		check(InvMasses.Num() == Positions.Num());
 
 		for (int32 Index = 0; Index < Positions.Num(); ++Index)
 		{
-			const FVector Position = LocalSpaceLocation + Positions[Index];
+			const FVector Position = LocalSpaceLocation + FVector(Positions[Index]);
 
 			const FText Text = FText::AsNumber(Offset + Index);
-			DrawText(Canvas, SceneView, Position, Text, InvMasses[Index] == 0.f ? KinematicColor : DynamicColor);
+			DrawText(Canvas, SceneView, Position, Text, InvMasses[Index] == (Softs::FSolverReal)0. ? KinematicColor : DynamicColor);
 		}
 	}
 }
@@ -924,16 +999,19 @@ void FClothingSimulation::DebugDrawElementIndices(FCanvas* Canvas, const FSceneV
 		}
 
 		const TArray<TVec3<int32>>& Elements = Cloth->GetTriangleMesh(Solver.Get()).GetElements();
-		const TConstArrayView<FVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
-		const TConstArrayView<FReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
 		check(InvMasses.Num() == Positions.Num());
 
 		for (int32 Index = 0; Index < Elements.Num(); ++Index)
 		{
 			const TVec3<int32>& Element = Elements[Index];
-			const FVector Position = LocalSpaceLocation + (Positions[Element[0]] + Positions[Element[1]] + Positions[Element[2]]) / 3.f;
+			const FVector Position = LocalSpaceLocation + FVector(Positions[Element[0]] + Positions[Element[1]] + Positions[Element[2]]) / (FReal)3.;
 
-			const FLinearColor& Color = (InvMasses[Element[0]] == 0.f && InvMasses[Element[1]] == 0.f && InvMasses[Element[2]] == 0.f) ? KinematicColor : DynamicColor;
+			const bool bIsKinematic0 = (InvMasses[Element.X - Offset] == (Softs::FSolverReal)0.);
+			const bool bIsKinematic1 = (InvMasses[Element.Y - Offset] == (Softs::FSolverReal)0.);
+			const bool bIsKinematic2 = (InvMasses[Element.Z - Offset] == (Softs::FSolverReal)0.);
+			const FLinearColor& Color = (bIsKinematic0 && bIsKinematic1 && bIsKinematic2) ? KinematicColor : DynamicColor;
 			const FText Text = FText::AsNumber(Index);
 			DrawText(Canvas, SceneView, Position, Text, Color);
 		}
@@ -970,18 +1048,18 @@ void FClothingSimulation::DebugDrawMaxDistanceValues(FCanvas* Canvas, const FSce
 			continue;
 		}
 
-		const TConstArrayView<FVec3> Positions = Cloth->GetAnimationPositions(Solver.Get());
-		const TConstArrayView<FReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetAnimationPositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
 		check(MaxDistances.Num() == Positions.Num());
 		check(MaxDistances.Num() == InvMasses.Num());
 
 		for (int32 Index = 0; Index < MaxDistances.Num(); ++Index)
 		{
 			const FReal MaxDistance = MaxDistances[Index];
-			const FVector Position = LocalSpaceLocation + Positions[Index];
+			const FVector Position = LocalSpaceLocation + FVector(Positions[Index]);
 
 			const FText Text = FText::AsNumber(MaxDistance, &NumberFormattingOptions);
-			DrawText(Canvas, SceneView, Position, Text, InvMasses[Index] == 0.f ? KinematicColor : DynamicColor);
+			DrawText(Canvas, SceneView, Position, Text, InvMasses[Index] == (Softs::FSolverReal)0. ? KinematicColor : DynamicColor);
 		}
 	}
 }
@@ -1003,7 +1081,7 @@ static void DrawPoint(FPrimitiveDrawInterface* PDI, const FVector& Pos, const FL
 		const FMatrix& ViewMatrix = PDI->View->ViewMatrices.GetViewMatrix();
 		const FVector XAxis = ViewMatrix.GetColumn(0); // Just using transpose here (orthogonal transform assumed)
 		const FVector YAxis = ViewMatrix.GetColumn(1);
-		DrawDisc(PDI, Pos, XAxis, YAxis, Color.ToFColor(true), 0.2f, 10, DebugClothMaterialVertex->GetRenderProxy(), SDPG_World);
+		DrawDisc(PDI, Pos, XAxis, YAxis, Color.ToFColor(true), 0.5f, 10, DebugClothMaterialVertex->GetRenderProxy(), SDPG_World);
 	}
 #endif
 }
@@ -1129,31 +1207,32 @@ static void DrawTaperedCylinder(FPrimitiveDrawInterface* PDI, const FTaperedCyli
 
 static void DrawConvex(FPrimitiveDrawInterface* PDI, const FConvex& Convex, const FQuat& Rotation, const FVector& Position, const FLinearColor& Color)
 {
-	const TArray<TPlaneConcrete<FReal, 3>>& Planes = Convex.GetFaces();
+	const TArray<FConvex::FPlaneType>& Planes = Convex.GetFaces();
 	for (int32 PlaneIndex1 = 0; PlaneIndex1 < Planes.Num(); ++PlaneIndex1)
 	{
-		const TPlaneConcrete<FReal, 3>& Plane1 = Planes[PlaneIndex1];
+		const FConvex::FPlaneType& Plane1 = Planes[PlaneIndex1];
 
 		for (int32 PlaneIndex2 = PlaneIndex1 + 1; PlaneIndex2 < Planes.Num(); ++PlaneIndex2)
 		{
-			const TPlaneConcrete<FReal, 3>& Plane2 = Planes[PlaneIndex2];
+			const FConvex::FPlaneType& Plane2 = Planes[PlaneIndex2];
 
 			// Find the two surface points that belong to both Plane1 and Plane2
 			uint32 ParticleIndex1 = INDEX_NONE;
 
-			const TArray<FVec3>& Vertices = Convex.GetVertices();
+			const TArray<FConvex::FVec3Type>& Vertices = Convex.GetVertices();
 			for (int32 ParticleIndex = 0; ParticleIndex < Vertices.Num(); ++ParticleIndex)
 			{
-				const FVec3& X = Vertices[ParticleIndex];
+				const FConvex::FVec3Type& X = Vertices[ParticleIndex];
 
 				if (FMath::Square(Plane1.SignedDistance(X)) < KINDA_SMALL_NUMBER && 
 					FMath::Square(Plane2.SignedDistance(X)) < KINDA_SMALL_NUMBER)
 				{
 					if (ParticleIndex1 != INDEX_NONE)
 					{
-						const FVec3& X1 = Vertices[ParticleIndex1];
+						const FVector X1(Vertices[ParticleIndex1]);
+						const FVector X2(X);
 						const FVector Position1 = Position + Rotation.RotateVector(X1);
-						const FVector Position2 = Position + Rotation.RotateVector(X);
+						const FVector Position2 = Position + Rotation.RotateVector(X2);
 						DrawLine(PDI, Position1, Position2, Color);
 						break;
 					}
@@ -1197,7 +1276,7 @@ void FClothingSimulation::DebugDrawBounds() const
 		}
 
 		const FAABB3 BoundingBox = Cloth->CalculateBoundingBox(Solver.Get());
-		DrawBox(nullptr, BoundingBox, FQuat::Identity, Bounds.Origin, Color);
+		DrawBox(nullptr, BoundingBox, FQuat::Identity, FVector::ZeroVector, Color);  // TODO: Express bounds in local coordinates for LWC
 	}
 }
 
@@ -1216,7 +1295,7 @@ void FClothingSimulation::DebugDrawGravity() const
 		const FAABB3 Bounds = Cloth->CalculateBoundingBox(Solver.Get());
 
 		const FVector Pos0 = Bounds.Center();
-		const FVector Pos1 = Pos0 + Cloth->GetGravity(Solver.Get());
+		const FVector Pos1 = Pos0 + FVector(Cloth->GetGravity(Solver.Get()));
 		DrawLine(nullptr, Pos0, Pos1, FLinearColor::Red);
 	}
 }
@@ -1224,6 +1303,8 @@ void FClothingSimulation::DebugDrawGravity() const
 
 void FClothingSimulation::DebugDrawPhysMeshWired(FPrimitiveDrawInterface* PDI) const
 {
+	check(Solver);
+
 	static const FLinearColor DynamicColor = FColor::White;
 	static const FLinearColor KinematicColor = FColor::Purple;
 
@@ -1238,21 +1319,21 @@ void FClothingSimulation::DebugDrawPhysMeshWired(FPrimitiveDrawInterface* PDI) c
 		}
 
 		const TConstArrayView<TVec3<int32>> Elements = Cloth->GetTriangleMesh(Solver.Get()).GetElements();
-		const TConstArrayView<FVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
-		const TConstArrayView<FReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
 		check(InvMasses.Num() == Positions.Num());
 
 		for (int32 ElementIndex = 0; ElementIndex < Elements.Num(); ++ElementIndex)
 		{
 			const auto& Element = Elements[ElementIndex];
 
-			const FVector Pos0 = LocalSpaceLocation + Positions[Element.X - Offset]; // TODO: Triangle Mesh shouldn't really be solver dependent (ie not use an offset)
-			const FVector Pos1 = LocalSpaceLocation + Positions[Element.Y - Offset];
-			const FVector Pos2 = LocalSpaceLocation + Positions[Element.Z - Offset];
+			const FVector Pos0 = LocalSpaceLocation + FVector(Positions[Element.X - Offset]); // TODO: Triangle Mesh shouldn't really be solver dependent (ie not use an offset)
+			const FVector Pos1 = LocalSpaceLocation + FVector(Positions[Element.Y - Offset]);
+			const FVector Pos2 = LocalSpaceLocation + FVector(Positions[Element.Z - Offset]);
 
-			const bool bIsKinematic0 = (InvMasses[Element.X - Offset] == 0.f);
-			const bool bIsKinematic1 = (InvMasses[Element.Y - Offset] == 0.f);
-			const bool bIsKinematic2 = (InvMasses[Element.Z - Offset] == 0.f);
+			const bool bIsKinematic0 = (InvMasses[Element.X - Offset] == (Softs::FSolverReal)0.);
+			const bool bIsKinematic1 = (InvMasses[Element.Y - Offset] == (Softs::FSolverReal)0.);
+			const bool bIsKinematic2 = (InvMasses[Element.Z - Offset] == (Softs::FSolverReal)0.);
 
 			DrawLine(PDI, Pos0, Pos1, bIsKinematic0 && bIsKinematic1 ? KinematicColor : DynamicColor);
 			DrawLine(PDI, Pos1, Pos2, bIsKinematic1 && bIsKinematic2 ? KinematicColor : DynamicColor);
@@ -1263,7 +1344,8 @@ void FClothingSimulation::DebugDrawPhysMeshWired(FPrimitiveDrawInterface* PDI) c
 
 void FClothingSimulation::DebugDrawAnimMeshWired(FPrimitiveDrawInterface* PDI) const
 {
-	static const FLinearColor DynamicColor = FColor::White;
+	check(Solver);
+
 	static const FLinearColor KinematicColor = FColor::Purple;
 
 	const FVec3& LocalSpaceLocation = Solver->GetLocalSpaceLocation();
@@ -1277,25 +1359,50 @@ void FClothingSimulation::DebugDrawAnimMeshWired(FPrimitiveDrawInterface* PDI) c
 		}
 
 		const TConstArrayView<TVec3<int32>> Elements = Cloth->GetTriangleMesh(Solver.Get()).GetElements();
-		const TConstArrayView<FVec3> Positions = Cloth->GetAnimationPositions(Solver.Get());
-		const TConstArrayView<FReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
-		check(InvMasses.Num() == Positions.Num());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetAnimationPositions(Solver.Get());
 
 		for (int32 ElementIndex = 0; ElementIndex < Elements.Num(); ++ElementIndex)
 		{
 			const auto& Element = Elements[ElementIndex];
 
-			const FVector Pos0 = LocalSpaceLocation + Positions[Element.X - Offset]; // TODO: Triangle Mesh shouldn't really be solver dependent (ie not use an offset)
-			const FVector Pos1 = LocalSpaceLocation + Positions[Element.Y - Offset];
-			const FVector Pos2 = LocalSpaceLocation + Positions[Element.Z - Offset];
+			const FVector Pos0 = LocalSpaceLocation + FVector(Positions[Element.X - Offset]); // TODO: Triangle Mesh shouldn't really be solver dependent (ie not use an offset)
+			const FVector Pos1 = LocalSpaceLocation + FVector(Positions[Element.Y - Offset]);
+			const FVector Pos2 = LocalSpaceLocation + FVector(Positions[Element.Z - Offset]);
 
-			const bool bIsKinematic0 = (InvMasses[Element.X - Offset] == 0.f);
-			const bool bIsKinematic1 = (InvMasses[Element.Y - Offset] == 0.f);
-			const bool bIsKinematic2 = (InvMasses[Element.Z - Offset] == 0.f);
+			DrawLine(PDI, Pos0, Pos1, KinematicColor);
+			DrawLine(PDI, Pos1, Pos2, KinematicColor);
+			DrawLine(PDI, Pos2, Pos0, KinematicColor);
+		}
+	}
+}
 
-			DrawLine(PDI, Pos0, Pos1, bIsKinematic0 && bIsKinematic1 ? KinematicColor : DynamicColor);
-			DrawLine(PDI, Pos1, Pos2, bIsKinematic1 && bIsKinematic2 ? KinematicColor : DynamicColor);
-			DrawLine(PDI, Pos2, Pos0, bIsKinematic2 && bIsKinematic0 ? KinematicColor : DynamicColor);
+void FClothingSimulation::DebugDrawAnimNormals(FPrimitiveDrawInterface* PDI) const
+{
+	check(Solver);
+
+	static const FLinearColor KinematicColor = FColor::Magenta;
+	constexpr FReal NormalLength = (FReal)20.;
+
+	const FVec3& LocalSpaceLocation = Solver->GetLocalSpaceLocation();
+
+	for (const FClothingSimulationCloth* const Cloth : Solver->GetCloths())
+	{
+		const int32 Offset = Cloth->GetOffset(Solver.Get());
+		if (Offset == INDEX_NONE)
+		{
+			continue;
+		}
+
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetAnimationPositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Normals = Cloth->GetAnimationNormals(Solver.Get());
+		check(Normals.Num() == Positions.Num());
+
+		for (int32 Index = 0; Index < Positions.Num(); ++Index)
+		{
+			const FVector Pos0 = LocalSpaceLocation + FVector(Positions[Index]);
+			const FVector Pos1 = Pos0 + FVector(Normals[Index]) * NormalLength;
+
+			DrawLine(PDI, Pos0, Pos1, KinematicColor);
 		}
 	}
 }
@@ -1303,6 +1410,10 @@ void FClothingSimulation::DebugDrawAnimMeshWired(FPrimitiveDrawInterface* PDI) c
 void FClothingSimulation::DebugDrawPointNormals(FPrimitiveDrawInterface* PDI) const
 {
 	check(Solver);
+	static const FLinearColor DynamicColor = FColor::White;
+	static const FLinearColor KinematicColor = FColor::Purple;
+	constexpr FReal NormalLength = (FReal)20.;
+
 	const FVec3& LocalSpaceLocation = Solver->GetLocalSpaceLocation();
 
 	for (const FClothingSimulationCloth* const Cloth : Solver->GetCloths())
@@ -1313,16 +1424,19 @@ void FClothingSimulation::DebugDrawPointNormals(FPrimitiveDrawInterface* PDI) co
 			continue;
 		}
 
-		const TConstArrayView<FVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
-		const TConstArrayView<FVec3> Normals = Cloth->GetParticleNormals(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Normals = Cloth->GetParticleNormals(Solver.Get());
+		const TConstArrayView<Softs::FSolverReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
 		check(Normals.Num() == Positions.Num());
+		check(InvMasses.Num() == Positions.Num());
 
 		for (int32 Index = 0; Index < Positions.Num(); ++Index)
 		{
-			const FVector Pos0 = LocalSpaceLocation + Positions[Index];
-			const FVector Pos1 = Pos0 + Normals[Index] * 20.f;
+			const bool bIsKinematic = (InvMasses[Index] == (Softs::FSolverReal)0.);
+			const FVector Pos0 = LocalSpaceLocation + FVector(Positions[Index]);
+			const FVector Pos1 = Pos0 + FVector(Normals[Index]) * NormalLength;
 
-			DrawLine(PDI, Pos0, Pos1, FLinearColor::White);
+			DrawLine(PDI, Pos0, Pos1, bIsKinematic ? KinematicColor : DynamicColor);
 		}
 	}
 }
@@ -1330,6 +1444,10 @@ void FClothingSimulation::DebugDrawPointNormals(FPrimitiveDrawInterface* PDI) co
 void FClothingSimulation::DebugDrawInversedPointNormals(FPrimitiveDrawInterface* PDI) const
 {
 	check(Solver);
+	static const FLinearColor DynamicColor = FColor::White;
+	static const FLinearColor KinematicColor = FColor::Purple;
+	constexpr FReal NormalLength = (FReal)20.;
+
 	const FVec3& LocalSpaceLocation = Solver->GetLocalSpaceLocation();
 
 	for (const FClothingSimulationCloth* const Cloth : Solver->GetCloths())
@@ -1340,15 +1458,19 @@ void FClothingSimulation::DebugDrawInversedPointNormals(FPrimitiveDrawInterface*
 			continue;
 		}
 
-		const TConstArrayView<FVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
-		const TConstArrayView<FVec3> Normals = Cloth->GetParticleNormals(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Normals = Cloth->GetParticleNormals(Solver.Get());
+		const TConstArrayView<Softs::FSolverReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
+		check(Normals.Num() == Positions.Num());
+		check(InvMasses.Num() == Positions.Num());
 
 		for (int32 Index = 0; Index < Positions.Num(); ++Index)
 		{
-			const FVector Pos0 = LocalSpaceLocation + Positions[Index];
-			const FVector Pos1 = Pos0 - Normals[Index] * 20.f;
+			const bool bIsKinematic = (InvMasses[Index] == (Softs::FSolverReal)0.);
+			const FVector Pos0 = LocalSpaceLocation + FVector(Positions[Index]);
+			const FVector Pos1 = Pos0 - FVector(Normals[Index]) * NormalLength;
 
-			DrawLine(PDI, Pos0, Pos1, FLinearColor::White);
+			DrawLine(PDI, Pos0, Pos1, bIsKinematic ? KinematicColor : DynamicColor);
 		}
 	}
 }
@@ -1371,8 +1493,8 @@ void FClothingSimulation::DebugDrawCollision(FPrimitiveDrawInterface* PDI) const
 			const FVec3& LocalSpaceLocation = Solver->GetLocalSpaceLocation();
 
 			const TConstArrayView<TUniquePtr<FImplicitObject>> CollisionGeometries = Collider->GetCollisionGeometries(Solver.Get(), Cloth, CollisionDataType);
-			const TConstArrayView<FVec3> Translations = Collider->GetCollisionTranslations(Solver.Get(), Cloth, CollisionDataType);
-			const TConstArrayView<FRotation3> Rotations = Collider->GetCollisionRotations(Solver.Get(), Cloth, CollisionDataType);
+			const TConstArrayView<Softs::FSolverVec3> Translations = Collider->GetCollisionTranslations(Solver.Get(), Cloth, CollisionDataType);
+			const TConstArrayView<Softs::FSolverRotation3> Rotations = Collider->GetCollisionRotations(Solver.Get(), Cloth, CollisionDataType);
 			const TConstArrayView<bool> CollisionStatus = Collider->GetCollisionStatus(Solver.Get(), Cloth, CollisionDataType);
 			check(CollisionGeometries.Num() == Translations.Num());
 			check(CollisionGeometries.Num() == Rotations.Num());
@@ -1382,8 +1504,8 @@ void FClothingSimulation::DebugDrawCollision(FPrimitiveDrawInterface* PDI) const
 				if (const FImplicitObject* const Object = CollisionGeometries[Index].Get())
 				{
 					const FLinearColor Color = CollisionStatus[Index] ? CollidedColor : TypeColor;
-					const FVec3 Position = LocalSpaceLocation + Translations[Index];
-					const FRotation3 & Rotation = Rotations[Index];
+					const FVec3 Position = LocalSpaceLocation + FVec3(Translations[Index]);
+					const FRotation3 Rotation(Rotations[Index]);
 
 					switch (Object->GetType())
 					{
@@ -1459,11 +1581,13 @@ void FClothingSimulation::DebugDrawCollision(FPrimitiveDrawInterface* PDI) const
 
 	// Draw contacts
 	check(Solver->GetCollisionContacts().Num() == Solver->GetCollisionNormals().Num());
+	constexpr FReal NormalLength = (FReal)10.;
+
 	const FVec3& LocalSpaceLocation = Solver->GetLocalSpaceLocation();
 	for (int32 i = 0; i < Solver->GetCollisionContacts().Num(); ++i)
 	{
-		const FVec3& Pos0 = LocalSpaceLocation + Solver->GetCollisionContacts()[i];
-		const FVec3& Normal = Solver->GetCollisionNormals()[i];
+		const FVec3 Pos0 = LocalSpaceLocation + FVec3(Solver->GetCollisionContacts()[i]);
+		const FVec3 Normal = FVec3(Solver->GetCollisionNormals()[i]);
 
 		// Draw contact
 		FVec3 TangentU, TangentV;
@@ -1476,7 +1600,7 @@ void FClothingSimulation::DebugDrawCollision(FPrimitiveDrawInterface* PDI) const
 
 		// Draw normal
 		static const FLinearColor Brown(0.1f, 0.05f, 0.f);
-		const FVec3 Pos1 = Pos0 + 10.f * Normal;
+		const FVec3 Pos1 = Pos0 + NormalLength * Normal;
 		DrawLine(PDI, Pos0, Pos1, Brown);
 	}
 }
@@ -1507,14 +1631,14 @@ void FClothingSimulation::DebugDrawBackstops(FPrimitiveDrawInterface* PDI) const
 		}
 
 		const FClothConstraints& ClothConstraints = Solver->GetClothConstraints(Offset);
-		if (const FPBDSphericalBackstopConstraint* const BackstopConstraint = ClothConstraints.GetBackstopConstraints().Get())
+		if (const Softs::FPBDSphericalBackstopConstraint* const BackstopConstraint = ClothConstraints.GetBackstopConstraints().Get())
 		{
 			const bool bUseLegacyBackstop = BackstopConstraint->UseLegacyBackstop();
 			const TConstArrayView<FRealSingle>& BackstopDistances = Cloth->GetWeightMaps(Solver.Get())[(int32)EChaosWeightMapTarget::BackstopDistance];
 			const TConstArrayView<FRealSingle>& BackstopRadiuses = Cloth->GetWeightMaps(Solver.Get())[(int32)EChaosWeightMapTarget::BackstopRadius];
-			const TConstArrayView<FVec3> AnimationPositions = Cloth->GetAnimationPositions(Solver.Get());
-			const TConstArrayView<FVec3> AnimationNormals = Cloth->GetAnimationNormals(Solver.Get());
-			const TConstArrayView<FVec3> ParticlePositions = Cloth->GetParticlePositions(Solver.Get());
+			const TConstArrayView<Softs::FSolverVec3> AnimationPositions = Cloth->GetAnimationPositions(Solver.Get());
+			const TConstArrayView<Softs::FSolverVec3> AnimationNormals = Cloth->GetAnimationNormals(Solver.Get());
+			const TConstArrayView<Softs::FSolverVec3> ParticlePositions = Cloth->GetParticlePositions(Solver.Get());
 
 			for (int32 Index = 0; Index < AnimationPositions.Num(); ++Index)
 			{
@@ -1525,13 +1649,12 @@ void FClothingSimulation::DebugDrawBackstops(FPrimitiveDrawInterface* PDI) const
 				const FReal BackstopRadius = BackstopRadiuses[Index] * BackstopConstraint->GetSphereRadiiMultiplier();
 				const FReal BackstopDistance = BackstopDistances[Index];
 
-				const FVector AnimationPosition = LocalSpaceLocation + AnimationPositions[Index];
-				const FVector& AnimationNormal = AnimationNormals[Index];
+				const FVector AnimationNormal(AnimationNormals[Index]);
 
 				// Draw a line to show the current distance to the sphere
-				const FVector Pos0 = LocalSpaceLocation + AnimationPositions[Index];
+				const FVector Pos0 = LocalSpaceLocation + FVector(AnimationPositions[Index]);
 				const FVector Pos1 = Pos0 - (bUseLegacyBackstop ? BackstopDistance - BackstopRadius : BackstopDistance) * AnimationNormal;
-				const FVector Pos2 = LocalSpaceLocation + ParticlePositions[Index];
+				const FVector Pos2 = LocalSpaceLocation + FVector(ParticlePositions[Index]);
 				DrawLine(PDI, Pos1, Pos2, ColorLight);
 
 				// Draw the sphere
@@ -1562,13 +1685,13 @@ void FClothingSimulation::DebugDrawBackstopDistances(FPrimitiveDrawInterface* PD
 		}
 
 		const FClothConstraints& ClothConstraints = Solver->GetClothConstraints(Offset);
-		if (const FPBDSphericalBackstopConstraint* const BackstopConstraint = ClothConstraints.GetBackstopConstraints().Get())
+		if (const Softs::FPBDSphericalBackstopConstraint* const BackstopConstraint = ClothConstraints.GetBackstopConstraints().Get())
 		{
 			const bool bUseLegacyBackstop = BackstopConstraint->UseLegacyBackstop();
 			const TConstArrayView<FRealSingle>& BackstopDistances = Cloth->GetWeightMaps(Solver.Get())[(int32)EChaosWeightMapTarget::BackstopDistance];
 			const TConstArrayView<FRealSingle>& BackstopRadiuses = Cloth->GetWeightMaps(Solver.Get())[(int32)EChaosWeightMapTarget::BackstopRadius];
-			const TConstArrayView<FVec3> AnimationPositions = Cloth->GetAnimationPositions(Solver.Get());
-			const TConstArrayView<FVec3> AnimationNormals = Cloth->GetAnimationNormals(Solver.Get());
+			const TConstArrayView<Softs::FSolverVec3> AnimationPositions = Cloth->GetAnimationPositions(Solver.Get());
+			const TConstArrayView<Softs::FSolverVec3> AnimationNormals = Cloth->GetAnimationNormals(Solver.Get());
 
 			for (int32 Index = 0; Index < AnimationPositions.Num(); ++Index)
 			{
@@ -1579,11 +1702,10 @@ void FClothingSimulation::DebugDrawBackstopDistances(FPrimitiveDrawInterface* PD
 				const FReal BackstopRadius = BackstopRadiuses[Index] * BackstopConstraint->GetSphereRadiiMultiplier();
 				const FReal BackstopDistance = BackstopDistances[Index];
 
-				const FVector AnimationPosition = LocalSpaceLocation + AnimationPositions[Index];
-				const FVector& AnimationNormal = AnimationNormals[Index];
+				const FVector AnimationNormal(AnimationNormals[Index]);
 
 				// Draw a line to the sphere boundary
-				const FVector Pos0 = LocalSpaceLocation + AnimationPositions[Index];
+				const FVector Pos0 = LocalSpaceLocation + FVector(AnimationPositions[Index]);
 				const FVector Pos1 = Pos0 - (bUseLegacyBackstop ? BackstopDistance - BackstopRadius : BackstopDistance) * AnimationNormal;
 				DrawLine(PDI, Pos0, Pos1, ColorDark);
 			}
@@ -1612,18 +1734,18 @@ void FClothingSimulation::DebugDrawMaxDistances(FPrimitiveDrawInterface* PDI) co
 			continue;
 		}
 
-		const TConstArrayView<FReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
-		const TConstArrayView<FVec3> Positions = Cloth->GetAnimationPositions(Solver.Get());
-		const TConstArrayView<FVec3> Normals = Cloth->GetAnimationNormals(Solver.Get());
+		const TConstArrayView<Softs::FSolverReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetAnimationPositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Normals = Cloth->GetAnimationNormals(Solver.Get());
 		check(Normals.Num() == Positions.Num());
 		check(MaxDistances.Num() == Positions.Num());
 		check(InvMasses.Num() == Positions.Num());
 
 		for (int32 Index = 0; Index < MaxDistances.Num(); ++Index)
 		{
-			const FReal MaxDistance = MaxDistances[Index];
-			const FVector Position = LocalSpaceLocation + Positions[Index];
-			if (InvMasses[Index] == 0.f)
+			const FReal MaxDistance = (FReal)MaxDistances[Index];
+			const FVector Position = LocalSpaceLocation + FVector(Positions[Index]);
+			if (InvMasses[Index] == (Softs::FSolverReal)0.)
 			{
 #if WITH_EDITOR
 				DrawPoint(PDI, Position, FLinearColor::Red, DebugClothMaterialVertex);
@@ -1633,7 +1755,7 @@ void FClothingSimulation::DebugDrawMaxDistances(FPrimitiveDrawInterface* PDI) co
 			}
 			else
 			{
-				DrawLine(PDI, Position, Position + Normals[Index] * MaxDistance, FLinearColor::White);
+				DrawLine(PDI, Position, Position + FVector(Normals[Index]) * MaxDistance, FLinearColor::White);
 			}
 		}
 	}
@@ -1654,26 +1776,25 @@ void FClothingSimulation::DebugDrawAnimDrive(FPrimitiveDrawInterface* PDI) const
 		}
 
 		const FClothConstraints& ClothConstraints = Solver->GetClothConstraints(Offset);
-		if (const FPBDAnimDriveConstraint* const AnimDriveConstraint = ClothConstraints.GetAnimDriveConstraints().Get())
+		if (const Softs::FPBDAnimDriveConstraint* const AnimDriveConstraint = ClothConstraints.GetAnimDriveConstraints().Get())
 		{
 			const TConstArrayView<FRealSingle>& AnimDriveStiffnessMultipliers = Cloth->GetWeightMaps(Solver.Get())[(int32)EChaosWeightMapTarget::AnimDriveStiffness];
-			const TConstArrayView<FVec3> AnimationPositions = Cloth->GetAnimationPositions(Solver.Get());
-			const TConstArrayView<FVec3> ParticlePositions = Cloth->GetParticlePositions(Solver.Get());
+			const TConstArrayView<Softs::FSolverVec3> AnimationPositions = Cloth->GetAnimationPositions(Solver.Get());
+			const TConstArrayView<Softs::FSolverVec3> ParticlePositions = Cloth->GetParticlePositions(Solver.Get());
+			check(ParticlePositions.Num() == AnimationPositions.Num());
 
 			const FVec2 AnimDriveStiffness = AnimDriveConstraint->GetStiffness();
-			const float StiffnessOffset = AnimDriveStiffness[0];
-			const float StiffnessRange = AnimDriveStiffness[1] - AnimDriveStiffness[0];
-
-			check(ParticlePositions.Num() == AnimationPositions.Num());
+			const FRealSingle StiffnessOffset = AnimDriveStiffness[0];
+			const FRealSingle StiffnessRange = AnimDriveStiffness[1] - AnimDriveStiffness[0];
 
 			for (int32 Index = 0; Index < ParticlePositions.Num(); ++Index)
 			{
-				const FReal Stiffness = AnimDriveStiffnessMultipliers.IsValidIndex(Index) ?
+				const FRealSingle Stiffness = AnimDriveStiffnessMultipliers.IsValidIndex(Index) ?
 					StiffnessOffset + AnimDriveStiffnessMultipliers[Index] * StiffnessRange :
 					StiffnessOffset;
 
-				const FVector AnimationPosition = LocalSpaceLocation + AnimationPositions[Index];
-				const FVector ParticlePosition = LocalSpaceLocation + ParticlePositions[Index];
+				const FVector AnimationPosition = LocalSpaceLocation + FVector(AnimationPositions[Index]);
+				const FVector ParticlePosition = LocalSpaceLocation + FVector(ParticlePositions[Index]);
 				DrawLine(PDI, AnimationPosition, ParticlePosition, FLinearColor(FColor::Cyan) * Stiffness);
 			}
 		}
@@ -1695,16 +1816,16 @@ void FClothingSimulation::DebugDrawBendingConstraint(FPrimitiveDrawInterface* PD
 		// Draw constraints
 		const FClothConstraints& ClothConstraints = Solver->GetClothConstraints(Offset);
 
-		const TConstArrayView<FVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
 
-		if (const FPBDSpringConstraints* const BendingConstraints = ClothConstraints.GetBendingConstraints().Get())
+		if (const Softs::FPBDSpringConstraints* const BendingConstraints = ClothConstraints.GetBendingConstraints().Get())
 		{
 			const TArray<TVec2<int32>>& Constraints = BendingConstraints->GetConstraints();
 			for (const TVec2<int32>& Constraint : Constraints)
 			{
 				// Draw line
-				const FVec3 Pos0 = Positions[Constraint[0]] + LocalSpaceLocation;
-				const FVec3 Pos1 = Positions[Constraint[1]] + LocalSpaceLocation;
+				const FVec3 Pos0 = FVec3(Positions[Constraint[0]]) + LocalSpaceLocation;
+				const FVec3 Pos1 = FVec3(Positions[Constraint[1]]) + LocalSpaceLocation;
 
 				DrawLine(PDI, Pos0, Pos1, FLinearColor::Black);
 			}
@@ -1728,6 +1849,14 @@ void FClothingSimulation::DebugDrawLongRangeConstraint(FPrimitiveDrawInterface* 
 			return FLinearColor::MakeFromHSV8(Seed, 160, 128);
 		};
 
+	auto Darken =
+		[](const FLinearColor& Color) -> FLinearColor
+		{
+			FLinearColor ColorHSV = Color.LinearRGBToHSV();
+			ColorHSV.B *= .5f;
+			return ColorHSV.HSVToLinearRGB();
+		};
+
 	int32 ColorOffset = 0;
 
 	for (const FClothingSimulationCloth* const Cloth : Solver->GetCloths())
@@ -1738,113 +1867,50 @@ void FClothingSimulation::DebugDrawLongRangeConstraint(FPrimitiveDrawInterface* 
 			continue;
 		}
 
-		// Recompute islands
-		const FTriangleMesh& TriangleMesh = Cloth->GetTriangleMesh(Solver.Get());
-		const TConstArrayView<FReal> InvMasses = Cloth->GetParticleInvMasses(Solver.Get());
-
-		const TMap<int32, TSet<int32>>& PointToNeighborsMap = TriangleMesh.GetPointToNeighborsMap();
-
-		static TArray<int32> KinematicIndices;  // Make static to prevent constant allocations
-		KinematicIndices.Reset();
-		for (const TPair<int32, TSet<int32>>& PointNeighbors : PointToNeighborsMap)
-		{
-			const int32 Index = PointNeighbors.Key;
-			if (InvMasses[Index - Offset] == 0.f)  // TODO: Triangle indices should ideally be starting at 0 to avoid these mix-ups
-			{
-				KinematicIndices.Add(Index);
-			}
-		}
-
-		const TArray<TArray<int32>> IslandElements = FPBDLongRangeConstraints::ComputeIslands(PointToNeighborsMap, KinematicIndices);
-
 		// Draw constraints
 		const FClothConstraints& ClothConstraints = Solver->GetClothConstraints(Offset);
-		
-		const TConstArrayView<FVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
 
-		if (const FPBDLongRangeConstraints* const LongRangeConstraints = ClothConstraints.GetLongRangeConstraints().Get())
+		if (const Softs::FPBDLongRangeConstraints* const LongRangeConstraints = ClothConstraints.GetLongRangeConstraints().Get())
 		{
-			for (const FPBDLongRangeConstraints::FTether& Tether : LongRangeConstraints->GetTethers())
+			const TArray<TConstArrayView<Softs::FPBDLongRangeConstraints::FTether>>& Tethers = LongRangeConstraints->GetTethers();
+
+			for (int32 BatchIndex = 0; BatchIndex < Tethers.Num(); ++BatchIndex)
 			{
-				const int32 KinematicIndex = Tether.Start;
-				const int32 DynamicIndex = Tether.End;
-				const FReal RefLength = Tether.RefLength;
-				// Find Island
-				int32 ColorIndex = 0;
-				for (int32 IslandIndex = 0; IslandIndex < IslandElements.Num(); ++IslandIndex)
+				const FLinearColor Color = PseudoRandomColor(ColorOffset + BatchIndex);
+				const FLinearColor DarkenedColor = Darken(Color);
+
+				const TConstArrayView<Softs::FPBDLongRangeConstraints::FTether>& TetherBatch = Tethers[BatchIndex];
+
+				// Draw tethers
+				for (const Softs::FPBDLongRangeConstraints::FTether& Tether : TetherBatch)
 				{
-					if (IslandElements[IslandIndex].Find(KinematicIndex) != INDEX_NONE)  // TODO: This is O(n^2), it'll be nice to make this faster, even if it is only debug viz. Maybe binary search if the kinematic indices are ordered?
+					const int32 KinematicIndex = LongRangeConstraints->GetStartIndex(Tether);
+					const int32 DynamicIndex = LongRangeConstraints->GetEndIndex(Tether);
+					const FReal TargetLength = LongRangeConstraints->GetTargetLength(Tether);
+
+					const FVec3 Pos0 = FVec3(Positions[KinematicIndex]) + LocalSpaceLocation;
+					const FVec3 Pos1 = FVec3(Positions[DynamicIndex]) + LocalSpaceLocation;
+
+					DrawLine(PDI, Pos0, Pos1, Color);
+#if WITH_EDITOR
+					DrawPoint(PDI, Pos1, Color, DebugClothMaterialVertex);
+#else
+					DrawPoint(nullptr, Pos1, Color, nullptr);
+#endif
+					FVec3 Direction = Pos1 - Pos0;
+					const float Length = Direction.SafeNormalize();
+					if (Length > SMALL_NUMBER)
 					{
-						ColorIndex = ColorOffset + IslandIndex;
-						break;
+						const FVec3 Pos2 = Pos1 + Direction * (TargetLength - Length);
+						DrawLine(PDI, Pos1, Pos2, DarkenedColor);
 					}
 				}
-				const FLinearColor Color = PseudoRandomColor(ColorIndex);
-				const FVec3 Pos0 = Positions[KinematicIndex - Offset] + LocalSpaceLocation;
-				const FVec3 Pos1 = Positions[DynamicIndex - Offset] + LocalSpaceLocation;
-
-				DrawLine(PDI, Pos0, Pos1, Color);
-
-				FVec3 Direction = Pos1 - Pos0;
-				const float Length = Direction.SafeNormalize();
-				if (Length > SMALL_NUMBER)
-				{
-					const FVec3 Pos2 = Pos1 + Direction * (Tether.RefLength - Length);
-					DrawLine(PDI, Pos1, Pos2, FLinearColor::Black);  // Color.Desaturate(1.f));
-				}
 			}
+
+			// Rotate the colors for each cloth
+			ColorOffset += Tethers.Num();
 		}
-
-		// Draw islands
-		const TConstArrayView<TVec3<int32>> Elements = Cloth->GetTriangleMesh(Solver.Get()).GetElements();
-
-		for (int32 ElementIndex = 0; ElementIndex < Elements.Num(); ++ElementIndex)
-		{
-			const auto& Element = Elements[ElementIndex];
-
-			const bool bIsKinematic0 = (InvMasses[Element.X - Offset] == 0.f);
-			const bool bIsKinematic1 = (InvMasses[Element.Y - Offset] == 0.f);
-			const bool bIsKinematic2 = (InvMasses[Element.Z - Offset] == 0.f);
-
-			// Lookup for any kinematic point on the triangle element to use for finding the island (it doesn't matter which one, if two kinematic points are on the same triangle they have to be on the same island)
-			const int32 KinematicIndex = bIsKinematic0 ? Element.X : bIsKinematic1 ? Element.Y : bIsKinematic2 ? Element.Z : INDEX_NONE;
-			if (KinematicIndex == INDEX_NONE)
-			{
-				continue;
-			}
-
-			// Find island Color
-			int32 ColorIndex = 0;
-			for (int32 IslandIndex = 0; IslandIndex < IslandElements.Num(); ++IslandIndex)
-			{
-				if (IslandElements[IslandIndex].Find(KinematicIndex) != INDEX_NONE)  // TODO: This is O(n^2), it'll be nice to make this faster, even if it is only debug viz. Maybe binary search if the kinematic indices are ordered?
-				{
-					ColorIndex = ColorOffset + IslandIndex;
-					break;
-				}
-			}
-			const FLinearColor Color = PseudoRandomColor(ColorIndex);
-
-			const FVector Pos0 = LocalSpaceLocation + Positions[Element.X - Offset];
-			const FVector Pos1 = LocalSpaceLocation + Positions[Element.Y - Offset];
-			const FVector Pos2 = LocalSpaceLocation + Positions[Element.Z - Offset];
-
-			if (bIsKinematic0 && bIsKinematic1)
-			{
-				DrawLine(PDI, Pos0, Pos1, Color);
-			}
-			if (bIsKinematic1 && bIsKinematic2)
-			{
-				DrawLine(PDI, Pos1, Pos2, Color);
-			}
-			if (bIsKinematic2 && bIsKinematic0)
-			{
-				DrawLine(PDI, Pos2, Pos0, Color);
-			}
-		}
-
-		// Rotate the colors for each cloth
-		ColorOffset += IslandElements.Num();
 	}
 }
 
@@ -1852,6 +1918,7 @@ void FClothingSimulation::DebugDrawWindForces(FPrimitiveDrawInterface* PDI) cons
 {
 	check(Solver);
 
+	constexpr FReal ForceLength = (FReal)10.;
 	const FVec3& LocalSpaceLocation = Solver->GetLocalSpaceLocation();
 
 	for (const FClothingSimulationCloth* const Cloth : Solver->GetCloths())
@@ -1862,21 +1929,20 @@ void FClothingSimulation::DebugDrawWindForces(FPrimitiveDrawInterface* PDI) cons
 			continue;
 		}
 
-		const FVelocityField& VelocityField = Solver->GetWindVelocityField(Cloth->GetGroupId());
+		const Softs::FVelocityField& VelocityField = Solver->GetWindVelocityField(Cloth->GetGroupId());
 
 		const TConstArrayView<TVec3<int32>>& Elements = VelocityField.GetElements();
-		const TConstArrayView<FVec3> Forces = VelocityField.GetForces();
-
-		const TConstArrayView<FVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
+		const TConstArrayView<Softs::FSolverVec3> Forces = VelocityField.GetForces();
+		const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
 
 		for (int32 ElementIndex = 0; ElementIndex < Elements.Num(); ++ElementIndex)
 		{
 			const TVec3<int32>& Element = Elements[ElementIndex];
 			const FVec3 Position = LocalSpaceLocation + (
-				Positions[Element.X - Offset] +
-				Positions[Element.Y - Offset] +
-				Positions[Element.Z - Offset]) / 3.f;
-			const FVec3& Force = Forces[ElementIndex] * 10.f;
+				FVec3(Positions[Element.X - Offset]) +
+				FVec3(Positions[Element.Y - Offset]) +
+				FVec3(Positions[Element.Z - Offset])) / (FReal)3.;
+			const FVec3 Force = FVec3(Forces[ElementIndex]) * ForceLength;
 			DrawLine(PDI, Position, Position + Force, FColor::Green);
 		}
 	}
@@ -1916,51 +1982,37 @@ void FClothingSimulation::DebugDrawSelfCollision(FPrimitiveDrawInterface* PDI) c
 		// Draw constraints
 		const FClothConstraints& ClothConstraints = Solver->GetClothConstraints(Offset);
 
-		if (const FPBDCollisionSpringConstraints* const SelfCollisionConstraints = ClothConstraints.GetSelfCollisionConstraints().Get())
+		if (const Softs::FPBDCollisionSpringConstraints* const SelfCollisionConstraints = ClothConstraints.GetSelfCollisionConstraints().Get())
 		{
-			const TConstArrayView<FVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
-			const TConstArrayView<FVec3> ParticleNormals = Cloth->GetParticleNormals(Solver.Get());
+			const TConstArrayView<Softs::FSolverVec3> Positions = Cloth->GetParticlePositions(Solver.Get());
 			const TArray<TVec4<int32>>& Constraints = SelfCollisionConstraints->GetConstraints();
-			const TArray<FVec3>& Barys = SelfCollisionConstraints->GetBarys();
-			const TArray<FVec3>& Normals = SelfCollisionConstraints->GetNormals();
-			const FReal Thickness = SelfCollisionConstraints->GetThickness();
+			const TArray<Softs::FSolverVec3>& Barys = SelfCollisionConstraints->GetBarys();
+			const FReal Thickness = (FReal)SelfCollisionConstraints->GetThickness();
 			const FReal Height = Thickness + Thickness;
 
 			for (int32 Index = 0; Index < Constraints.Num(); ++Index)
 			{
 				const TVec4<int32>& Constraint = Constraints[Index];
-				const FVec3& Bary = Barys[Index];
-				const FVec3& Normal = Normals[Index];
+				const FVec3 Bary(Barys[Index]);
 
-				const FVector P = LocalSpaceLocation + Positions[Constraint[0]];
-				const FVector P0 = LocalSpaceLocation + Positions[Constraint[1]];
-				const FVector P1 = LocalSpaceLocation + Positions[Constraint[2]];
-				const FVector P2 = LocalSpaceLocation + Positions[Constraint[3]];
+				// Constraint index includes Offset, but so does Positions.
+				const FVector P = LocalSpaceLocation + FVector(Positions[Constraint[0] - Offset]);
+				const FVector P0 = LocalSpaceLocation + FVector(Positions[Constraint[1] - Offset]);
+				const FVector P1 = LocalSpaceLocation + FVector(Positions[Constraint[2] - Offset]);
+				const FVector P2 = LocalSpaceLocation + FVector(Positions[Constraint[3] - Offset]);
 
 				const FVector Pos0 = P0 * Bary[0] + P1 * Bary[1] + P2 * Bary[2];
-				const FVector Pos1 = Pos0 + Height * Normal;
 
-				// Draw point to surface line (=normal)
 				static const FLinearColor Brown(0.1f, 0.05f, 0.f);
-				DrawLine(PDI, Pos0, Pos1, Brown);
 
 				// Draw barycentric coordinate
 				DrawLine(PDI, Pos0, P0, Brown);
 				DrawLine(PDI, Pos0, P1, Brown);
 				DrawLine(PDI, Pos0, P2, Brown);
 
-				// Draw pushup to point
+				// Draw connection to point
 				static const FLinearColor Orange(0.3f, 0.15f, 0.f);
-				DrawLine(PDI, Pos1, P, Orange);
-
-				// Draw contact
-				FVec3 TangentU, TangentV;
-				Normal.FindBestAxisVectors(TangentU, TangentV);
-
-				DrawLine(PDI, Pos0 + TangentU, Pos0 + TangentV, Brown);
-				DrawLine(PDI, Pos0 + TangentU, Pos0 - TangentV, Brown);
-				DrawLine(PDI, Pos0 - TangentU, Pos0 - TangentV, Brown);
-				DrawLine(PDI, Pos0 - TangentU, Pos0 + TangentV, Brown);
+				DrawLine(PDI, Pos0, P, Orange);
 
 				// Draw hit triangle (with thickness and added colliding particle's thickness)
 				static const FLinearColor Red(0.3f, 0.f, 0.f);
@@ -1972,4 +2024,5 @@ void FClothingSimulation::DebugDrawSelfCollision(FPrimitiveDrawInterface* PDI) c
 	}
 }
 
-#endif  // #if WITH_EDITOR || CHAOS_DEBUG_DRAW
+#endif  // #if WITH_EDITOR || CHAOS_DEBUG_DRAW?
+}  // End namespace Chaos

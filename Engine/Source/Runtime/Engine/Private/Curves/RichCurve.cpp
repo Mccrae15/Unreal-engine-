@@ -2,6 +2,7 @@
 
 #include "Curves/RichCurve.h"
 #include "Templates/Function.h"
+#include "Containers/ArrayView.h"
 
 // Broken - do not turn on! 
 #define MIXEDKEY_STRIPS_TANGENTS 0
@@ -159,7 +160,7 @@ FRichCurveKey::FRichCurveKey(const FInterpCurvePoint<FTwoVectors>& InPoint, int3
 
 bool FRichCurveKey::Serialize(FArchive& Ar)
 {
-	if (Ar.UE4Ver() < VER_UE4_SERIALIZE_RICH_CURVE_KEY)
+	if (Ar.UEVer() < VER_UE4_SERIALIZE_RICH_CURVE_KEY)
 	{
 		return false;
 	}
@@ -641,14 +642,6 @@ void FRichCurve::AutoSetTangents(float Tension)
 			if (KeyIndex < (Keys.Num() - 1) && Key.TangentMode == RCTM_Auto)
 			{
 				LeaveTangent = 0.0f;
-
-				if (Key.InterpMode == RCIM_Cubic)
-				{
-					// Since we are the first key and ComputeCurveTangent() only compute the arriving tangent, we use the Arriving tangent of the next key as our leaving key.
-					NextKey = &Keys[KeyIndex + 1];
-					CurrentKey = NextKey; 
-					bNeedsComputeTangent = true;
-				}
 			}
 		}
 		else
@@ -679,11 +672,6 @@ void FRichCurve::AutoSetTangents(float Tension)
 				if (Key.InterpMode == RCIM_Cubic && Key.TangentMode == RCTM_Auto)
 				{
 					ArriveTangent = 0.0f;
-					if (Keys.Num() > 1)
-					{
-						PrevKey = &Keys[KeyIndex - 1];
-						bNeedsComputeTangent = true;
-					}
 				}
 			}
 		}
@@ -773,10 +761,10 @@ void FRichCurve::ReadjustTimeRange(float NewMinTimeRange, float NewMaxTimeRange,
 		{
 			for (int32 KeyIndex = KeysToDelete.Num()-1; KeyIndex >= 0; --KeyIndex)
 			{
-				const FKeyHandle* KeyHandle = KeyHandlesToIndices.FindKey(KeysToDelete[KeyIndex]);
-				if(KeyHandle && IsKeyHandleValid(*KeyHandle))
+				const FKeyHandle KeyHandle = GetKeyHandle(KeysToDelete[KeyIndex]);
+				if(IsKeyHandleValid(KeyHandle))
 				{
-					DeleteKey(*KeyHandle);
+					DeleteKey(KeyHandle);
 				}
 			}
 
@@ -784,14 +772,7 @@ void FRichCurve::ReadjustTimeRange(float NewMinTimeRange, float NewMaxTimeRange,
 		}
 	}
 
-	// now remove all redundant key
-	TArray<FRichCurveKey> NewKeys;
-	Exchange(NewKeys, Keys);
-
-	for(int32 KeyIndex=0; KeyIndex<NewKeys.Num(); ++KeyIndex)
-	{
-		UpdateOrAddKey(NewKeys[KeyIndex].Time, NewKeys[KeyIndex].Value);
-	}
+	RemoveRedundantKeys(0.f);
 
 	// now cull out all out of range 
 	float MinTime, MaxTime;
@@ -1249,11 +1230,9 @@ void FRichCurve::RemoveRedundantKeysInternal(float Tolerance, int32 InStartKeepK
 	AutoSetTangents();
 
 	// Rebuild KeyHandlesToIndices
-	KeyHandlesToIndices.Empty();
-	for (int32 KeyIndex = 0; KeyIndex < Keys.Num(); ++KeyIndex)
-	{
-		KeyHandlesToIndices.Add(KeepHandles[KeyIndex], KeyIndex);
-	}
+
+	check(Keys.Num() == KeepHandles.Num());
+	KeyHandlesToIndices.Initialize(KeepHandles);
 }
 
 void FRichCurve::RemapTimeValue(float& InTime, float& CycleValueOffset) const
@@ -2021,7 +2000,7 @@ struct WeightedKeyDataAdapter
 
 	KeyDataHandle GetKeyDataHandle(int32 KeyIndexToQuery) const
 	{
-		return KeyIndexToQuery * 3;
+		return KeyIndexToQuery * 5;
 	};
 
 	constexpr float GetKeyValue(KeyDataHandle Handle) const

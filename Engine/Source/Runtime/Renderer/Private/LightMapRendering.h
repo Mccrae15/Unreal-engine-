@@ -17,16 +17,16 @@
 class FPrimitiveSceneProxy;
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FIndirectLightingCacheUniformParameters, )
-	SHADER_PARAMETER(FVector, IndirectLightingCachePrimitiveAdd) // FCachedVolumeIndirectLightingPolicy
-	SHADER_PARAMETER(FVector, IndirectLightingCachePrimitiveScale) // FCachedVolumeIndirectLightingPolicy
-	SHADER_PARAMETER(FVector, IndirectLightingCacheMinUV) // FCachedVolumeIndirectLightingPolicy
-	SHADER_PARAMETER(FVector, IndirectLightingCacheMaxUV) // FCachedVolumeIndirectLightingPolicy
-	SHADER_PARAMETER(FVector4, PointSkyBentNormal) // FCachedPointIndirectLightingPolicy
+	SHADER_PARAMETER(FVector3f, IndirectLightingCachePrimitiveAdd) // FCachedVolumeIndirectLightingPolicy
+	SHADER_PARAMETER(FVector3f, IndirectLightingCachePrimitiveScale) // FCachedVolumeIndirectLightingPolicy
+	SHADER_PARAMETER(FVector3f, IndirectLightingCacheMinUV) // FCachedVolumeIndirectLightingPolicy
+	SHADER_PARAMETER(FVector3f, IndirectLightingCacheMaxUV) // FCachedVolumeIndirectLightingPolicy
+	SHADER_PARAMETER(FVector4f, PointSkyBentNormal) // FCachedPointIndirectLightingPolicy
 	SHADER_PARAMETER_EX(float, DirectionalLightShadowing, EShaderPrecisionModifier::Half) // FCachedPointIndirectLightingPolicy
-	SHADER_PARAMETER_ARRAY(FVector4, IndirectLightingSHCoefficients0, [3]) // FCachedPointIndirectLightingPolicy
-	SHADER_PARAMETER_ARRAY(FVector4, IndirectLightingSHCoefficients1, [3]) // FCachedPointIndirectLightingPolicy
-	SHADER_PARAMETER(FVector4,	IndirectLightingSHCoefficients2) // FCachedPointIndirectLightingPolicy
-	SHADER_PARAMETER_EX(FVector4, IndirectLightingSHSingleCoefficient, EShaderPrecisionModifier::Half) // FCachedPointIndirectLightingPolicy used in forward Translucent
+	SHADER_PARAMETER_ARRAY(FVector4f, IndirectLightingSHCoefficients0, [3]) // FCachedPointIndirectLightingPolicy
+	SHADER_PARAMETER_ARRAY(FVector4f, IndirectLightingSHCoefficients1, [3]) // FCachedPointIndirectLightingPolicy
+	SHADER_PARAMETER(FVector4f,	IndirectLightingSHCoefficients2) // FCachedPointIndirectLightingPolicy
+	SHADER_PARAMETER_EX(FVector4f, IndirectLightingSHSingleCoefficient, EShaderPrecisionModifier::Half) // FCachedPointIndirectLightingPolicy used in forward Translucent
 	SHADER_PARAMETER_TEXTURE(Texture3D, IndirectLightingCacheTexture0) // FCachedVolumeIndirectLightingPolicy
 	SHADER_PARAMETER_TEXTURE(Texture3D, IndirectLightingCacheTexture1) // FCachedVolumeIndirectLightingPolicy
 	SHADER_PARAMETER_TEXTURE(Texture3D, IndirectLightingCacheTexture2) // FCachedVolumeIndirectLightingPolicy
@@ -70,14 +70,19 @@ public:
 /** Global uniform buffer containing the default precomputed lighting data. */
 extern TGlobalResource< FEmptyIndirectLightingCacheUniformBuffer > GEmptyIndirectLightingCacheUniformBuffer;
 
+RENDERER_API bool MobileUsesNoLightMapPermutation(const FMeshMaterialShaderPermutationParameters& Parameters);
 
 /**
- * A policy for shaders without a light-map.
+ * A policy for shaders without a lightmap.
  */
 struct FNoLightMapPolicy
 {
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
+		if (IsMobilePlatform(Parameters.Platform))
+		{
+			return MobileUsesNoLightMapPermutation(Parameters);
+		}
 		return true;
 	}
 
@@ -143,7 +148,7 @@ struct TLightMapPolicy
 	}
 };
 
-// A light map policy for computing up to 4 signed distance field shadow factors in the base pass.
+// A lightmap policy for computing up to 4 signed distance field shadow factors in the base pass.
 template< ELightmapQuality LightmapQuality >
 struct TDistanceFieldShadowsAndLightMapPolicy : public TLightMapPolicy< LightmapQuality >
 {
@@ -158,7 +163,7 @@ struct TDistanceFieldShadowsAndLightMapPolicy : public TLightMapPolicy< Lightmap
 };
 
 /**
- * Policy for 'fake' texture lightmaps, such as the LightMap density rendering mode
+ * Policy for 'fake' texture lightmaps, such as the lightmap density rendering mode
  */
 struct FDummyLightMapPolicy : public TLightMapPolicy< HQ_LIGHTMAP >
 {
@@ -487,8 +492,11 @@ struct FMobileDirectionalLightAndCSMPolicy
 		}
 		
 		static auto* CVarAllowStaticLighting = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
+		static auto* CVarEnableNoPrecomputedLightingCSMShader = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableNoPrecomputedLightingCSMShader"));
 		const bool bAllowStaticLighting = CVarAllowStaticLighting->GetValueOnAnyThread() != 0;
-		return !bAllowStaticLighting && 
+		const bool bEnableNoPrecomputedLightingCSMShader = CVarEnableNoPrecomputedLightingCSMShader && CVarEnableNoPrecomputedLightingCSMShader->GetValueOnAnyThread() != 0;
+
+		return (!bAllowStaticLighting || bEnableNoPrecomputedLightingCSMShader) &&
 			Parameters.MaterialParameters.ShadingModels.IsLit() && 
 			!IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode);
 	}

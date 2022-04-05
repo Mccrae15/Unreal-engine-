@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -27,7 +27,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Recursive
 		/// </summary>
-		public HashSet<UEBuildPlugin> Dependencies;
+		public HashSet<UEBuildPlugin>? Dependencies;
 
 		/// <summary>
 		/// Whether the descriptor for this plugin is needed at runtime; because it has modules or content which is used, or because it references another module that does.
@@ -40,12 +40,19 @@ namespace UnrealBuildTool
 		public bool bDescriptorReferencedExplicitly;
 
 		/// <summary>
+		/// Chain of references to this plugin
+		/// </summary>
+		public string ReferenceChain;
+
+		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="Info">The static plugin information</param>
-		public UEBuildPlugin(PluginInfo Info)
+		/// <param name="ReferenceChain">Chain of references to this plugin</param>
+		public UEBuildPlugin(PluginInfo Info, string ReferenceChain)
 		{
 			this.Info = Info;
+			this.ReferenceChain = ReferenceChain;
 		}
 
 		/// <summary>

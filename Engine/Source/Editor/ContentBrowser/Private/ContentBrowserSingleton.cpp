@@ -18,6 +18,8 @@
 #include "SCollectionPicker.h"
 #include "SContentBrowser.h"
 #include "ContentBrowserModule.h"
+#include "IContentBrowserDataModule.h"
+#include "ContentBrowserDataSubsystem.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "IDocumentation.h"
@@ -28,8 +30,15 @@
 #include "CollectionAssetRegistryBridge.h"
 #include "ContentBrowserCommands.h"
 #include "CoreGlobals.h"
+#include "AssetToolsModule.h"
+#include "EditorDirectories.h"
+#include "Misc/NamePermissionList.h"
+#include "StatusBarSubsystem.h"
+#include "ToolMenus.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
+
+static const FName ContentBrowserDrawerInstanceName("ContentBrowserDrawer");
 
 FContentBrowserSingleton::FContentBrowserSingleton()
 	: CollectionAssetRegistryBridge(MakeShared<FCollectionAssetRegistryBridge>())
@@ -38,32 +47,37 @@ FContentBrowserSingleton::FContentBrowserSingleton()
 	// We're going to call a static function in the editor style module, so we need to make sure the module has actually been loaded
 	FModuleManager::Get().LoadModuleChecked("EditorStyle");
 
-	// Register the tab spawners for all content browsers
-	const FSlateIcon ContentBrowserIcon(FEditorStyle::GetStyleSetName(), "ContentBrowser.TabIcon");
+	const FSlateIcon ContentBrowserIcon(FAppStyle::Get().GetStyleSetName(), "ContentBrowser.TabIcon");
 	const IWorkspaceMenuStructure& MenuStructure = WorkspaceMenu::GetMenuStructure();
-	TSharedRef<FWorkspaceItem> ContentBrowserGroup = MenuStructure.GetToolsCategory()->AddGroup(
-		LOCTEXT( "WorkspaceMenu_ContentBrowserCategory", "Content Browser" ),
-		LOCTEXT( "ContentBrowserMenuTooltipText", "Open a Content Browser tab." ),
+	TSharedRef<FWorkspaceItem> ContentBrowserGroup = MenuStructure.GetLevelEditorCategory()->AddGroup(
+		LOCTEXT("WorkspaceMenu_ContentBrowserCategory", "Content Browser"),
+		LOCTEXT("ContentBrowserMenuTooltipText", "Open a Content Browser tab."),
 		ContentBrowserIcon,
 		true);
 
-	for ( int32 BrowserIdx = 0; BrowserIdx < UE_ARRAY_COUNT(ContentBrowserTabIDs); BrowserIdx++ )
+	for (int32 BrowserIdx = 0; BrowserIdx < UE_ARRAY_COUNT(ContentBrowserTabIDs); BrowserIdx++)
 	{
 		const FName TabID = FName(*FString::Printf(TEXT("ContentBrowserTab%d"), BrowserIdx + 1));
 		ContentBrowserTabIDs[BrowserIdx] = TabID;
 
-		const FText DefaultDisplayName = GetContentBrowserLabelWithIndex( BrowserIdx );
+		const FText DefaultDisplayName = GetContentBrowserLabelWithIndex(BrowserIdx);
 
-		FGlobalTabmanager::Get()->RegisterNomadTabSpawner( TabID, FOnSpawnTab::CreateRaw(this, &FContentBrowserSingleton::SpawnContentBrowserTab, BrowserIdx) )
+		FTabSpawnerEntry& ContentBrowserTabSpawner = FGlobalTabmanager::Get()->RegisterNomadTabSpawner(TabID, FOnSpawnTab::CreateRaw(this, &FContentBrowserSingleton::SpawnContentBrowserTab, BrowserIdx))
 			.SetDisplayName(DefaultDisplayName)
-			.SetTooltipText( LOCTEXT( "ContentBrowserMenuTooltipText", "Open a Content Browser tab." ) )
-			.SetGroup( ContentBrowserGroup )
+			.SetTooltipText(LOCTEXT("ContentBrowserMenuTooltipText", "Open a Content Browser tab."))
+			.SetGroup(ContentBrowserGroup)
 			.SetIcon(ContentBrowserIcon);
+
+		ContentBrowserTabs.Add(ContentBrowserTabSpawner.AsSpawnerEntry());
 	}
 
-	// Register a couple legacy tab ids
-	FGlobalTabmanager::Get()->AddLegacyTabType( "LevelEditorContentBrowser", "ContentBrowserTab1" );
-	FGlobalTabmanager::Get()->AddLegacyTabType( "MajorContentBrowserTab", "ContentBrowserTab2" );
+	UToolMenu* ContentMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.LevelEditorToolBar.AddQuickMenu");
+	FToolMenuSection& Section = ContentMenu->FindOrAddSection("Content");
+
+	Section.AddSubMenu("ContentBrowser", LOCTEXT("ContentBrowserMenu", "Content Browser"), LOCTEXT("ContentBrowserTooltip", "Actions related to the Content Browser"),
+						FNewToolMenuDelegate::CreateRaw(this, &FContentBrowserSingleton::GetContentBrowserSubMenu, ContentBrowserGroup), false, 
+						FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.OpenContentBrowser"))
+						.InsertPosition = FToolMenuInsert("OpenMarketplace", EToolMenuInsertType::After);
 
 	// Register to be notified when properties are edited
 	FEditorDelegates::LoadSelectedAssetsIfNeeded.AddRaw(this, &FContentBrowserSingleton::OnEditorLoadSelectedAssetsIfNeeded);
@@ -105,6 +119,27 @@ TSharedRef<class SWidget> FContentBrowserSingleton::CreateCollectionPicker(const
 	return SNew( SCollectionPicker )
 		.IsEnabled( FSlateApplication::Get().GetNormalExecutionAttribute() )
 		.CollectionPickerConfig(CollectionPickerConfig);
+}
+
+TSharedRef<class SWidget> FContentBrowserSingleton::CreateContentBrowserDrawer(const FContentBrowserConfig& ContentBrowserConfig, TFunction<TSharedPtr<SDockTab>()> InOnGetTabForDrawer)
+{
+	TSharedPtr<SContentBrowser> ContentBrowserDrawerPinned;
+	if(!ContentBrowserDrawer.IsValid())
+	{
+		ContentBrowserDrawerPinned =
+			SNew(SContentBrowser, ContentBrowserDrawerInstanceName, &ContentBrowserConfig)
+			.IsEnabled(FSlateApplication::Get().GetNormalExecutionAttribute())
+			.IsDrawer(true);
+
+		OnGetTabForDrawer = InOnGetTabForDrawer;
+		ContentBrowserDrawer = ContentBrowserDrawerPinned;
+	}
+	else
+	{
+		ContentBrowserDrawerPinned = ContentBrowserDrawer.Pin();
+	}
+
+	return ContentBrowserDrawerPinned.ToSharedRef();
 }
 
 void FContentBrowserSingleton::CreateOpenAssetDialog(const FOpenAssetDialogConfig& InConfig,
@@ -223,13 +258,49 @@ void FContentBrowserSingleton::FocusPrimaryContentBrowser(bool bFocusSearch)
 	}
 }
 
+void FContentBrowserSingleton::FocusContentBrowserSearchField(TSharedPtr<SWidget> ContentBrowserWidget)
+{
+	TSharedPtr<SContentBrowser> BrowserToFocus;
+
+	if (ContentBrowserWidget.IsValid() )
+	{
+		for (TWeakPtr<SContentBrowser>& Browser : AllContentBrowsers)
+		{
+			if (Browser == ContentBrowserWidget)
+			{
+				BrowserToFocus = Browser.Pin();
+			}
+		}
+	}
+
+	if (!BrowserToFocus.IsValid() && ContentBrowserDrawer == ContentBrowserWidget)
+	{
+		BrowserToFocus = ContentBrowserDrawer.Pin();
+	}
+
+	if (BrowserToFocus.IsValid())
+	{
+		BrowserToFocus->SetKeyboardFocusOnSearch();
+	}
+}
+
 void FContentBrowserSingleton::CreateNewAsset(const FString& DefaultAssetName, const FString& PackagePath, UClass* AssetClass, UFactory* Factory)
 {
-	FocusPrimaryContentBrowser(false);
+	const bool bAllowLockedBrowsers = true;
+	const FName ContentBrowserInstanceName = NAME_None;
+	const bool bCreateNewContentBrowser = false;
 
-	if ( PrimaryContentBrowser.IsValid() )
+	TSharedPtr<SContentBrowser> ContentBrowserToSync = FindContentBrowserToSync(bAllowLockedBrowsers, ContentBrowserInstanceName, bCreateNewContentBrowser);
+
+	if (!ContentBrowserToSync.IsValid())
 	{
-		PrimaryContentBrowser.Pin()->CreateNewAsset(DefaultAssetName, PackagePath, AssetClass, Factory);
+		FocusPrimaryContentBrowser(false);
+		ContentBrowserToSync = PrimaryContentBrowser.Pin();
+	}
+
+	if (ContentBrowserToSync.IsValid())
+	{
+		ContentBrowserToSync->CreateNewAsset(DefaultAssetName, PackagePath, AssetClass, Factory);
 	}
 }
 
@@ -255,7 +326,25 @@ TSharedPtr<SContentBrowser> FContentBrowserSingleton::FindContentBrowserToSync(b
 		ChooseNewPrimaryBrowser();
 	}
 
-	if ( PrimaryContentBrowser.IsValid() && (bAllowLockedBrowsers || !PrimaryContentBrowser.Pin()->IsLocked()) )
+	auto CanContentBrowserBeSynced =
+		[ this, bAllowLockedBrowsers ]( const TWeakPtr< SContentBrowser >& ContentBrowser ) -> bool
+		{
+			// Content browser can be synced if:
+			// - It's valid.
+			// - It's not locked or we allow locked browsers (bAllowLockedBrowsers).
+			// - If it's the drawer, the active window needs to have a status bar so that it can show the drawer.
+
+			bool bCanBeSynced = ContentBrowser.IsValid() && ( bAllowLockedBrowsers || !PrimaryContentBrowser.Pin()->IsLocked() );
+
+			if ( ContentBrowser == ContentBrowserDrawer )
+			{
+				bCanBeSynced = bCanBeSynced && GEditor->GetEditorSubsystem<UStatusBarSubsystem>()->ActiveWindowHasStatusBar();
+			}
+
+			return bCanBeSynced;
+		};
+
+	if ( CanContentBrowserBeSynced( PrimaryContentBrowser ) )
 	{
 		// If wanting to spawn a new browser window, don't set the BrowserToSync in order to summon a new browser
 		if (!bNewSpawnBrowser)
@@ -266,13 +355,22 @@ TSharedPtr<SContentBrowser> FContentBrowserSingleton::FindContentBrowserToSync(b
 	}
 	else
 	{
-		// If there is no primary or it is locked, find the first non-locked valid browser
-		for (int32 BrowserIdx = 0; BrowserIdx < AllContentBrowsers.Num(); ++BrowserIdx)
+
+		// If there is no primary or it is locked, sync the content browser drawer if it's available
+		if ( CanContentBrowserBeSynced( ContentBrowserDrawer ) )
 		{
-			if ( AllContentBrowsers[BrowserIdx].IsValid() && (bAllowLockedBrowsers || !AllContentBrowsers[BrowserIdx].Pin()->IsLocked()) )
+			ContentBrowserToSync = ContentBrowserDrawer.Pin();
+		}
+		else
+		{
+			// if the drawer isn't available, find the first non-locked valid browser
+			for ( const TWeakPtr< SContentBrowser >& ContentBrowser : AllContentBrowsers )
 			{
-				ContentBrowserToSync = AllContentBrowsers[BrowserIdx].Pin();
-				break;
+				if ( CanContentBrowserBeSynced( ContentBrowser ) )
+				{
+					ContentBrowserToSync = ContentBrowser.Pin();
+					break;
+				}
 			}
 		}
 	}
@@ -400,13 +498,23 @@ void FContentBrowserSingleton::GetSelectedPathViewFolders(TArray<FString>& Selec
 	}
 }
 
-FString FContentBrowserSingleton::GetCurrentPath()
+FString FContentBrowserSingleton::GetCurrentPath(const EContentBrowserPathType PathType)
 {
 	if (PrimaryContentBrowser.IsValid())
 	{
-		return PrimaryContentBrowser.Pin()->GetCurrentPath();
+		return PrimaryContentBrowser.Pin()->GetCurrentPath(PathType);
 	}
 	return FString();
+}
+
+FContentBrowserItemPath FContentBrowserSingleton::GetCurrentPath()
+{
+	if (PrimaryContentBrowser.IsValid())
+	{
+		return FContentBrowserItemPath(PrimaryContentBrowser.Pin()->GetCurrentPath(EContentBrowserPathType::Virtual), EContentBrowserPathType::Virtual);
+	}
+
+	return FContentBrowserItemPath();
 }
 
 void FContentBrowserSingleton::CaptureThumbnailFromViewport(FViewport* InViewport, TArray<FAssetData>& SelectedAssets)
@@ -525,12 +633,13 @@ void FContentBrowserSingleton::SharedCreateAssetDialogWindow(const TSharedRef<SA
 
 void FContentBrowserSingleton::ChooseNewPrimaryBrowser()
 {
+	// The drawer is the lowest priority. If a docked content browser can become the primary browser choose it first
 	// Find the first valid browser and trim any invalid browsers along the way
 	for (int32 BrowserIdx = 0; BrowserIdx < AllContentBrowsers.Num(); ++BrowserIdx)
 	{
-		if ( AllContentBrowsers[BrowserIdx].IsValid() )
+		if (TSharedPtr<SContentBrowser> TestBrowser = AllContentBrowsers[BrowserIdx].Pin())
 		{
-			if (AllContentBrowsers[BrowserIdx].Pin()->CanSetAsPrimaryContentBrowser())
+			if (TestBrowser->CanSetAsPrimaryContentBrowser() && TestBrowser != ContentBrowserDrawer)
 			{
 				SetPrimaryContentBrowser(AllContentBrowsers[BrowserIdx].Pin().ToSharedRef());
 				break;
@@ -543,22 +652,84 @@ void FContentBrowserSingleton::ChooseNewPrimaryBrowser()
 			BrowserIdx--;
 		}
 	}
+
+	// Set the content browser drawer as the primary browser
+	if (!PrimaryContentBrowser.IsValid())
+	{
+		PrimaryContentBrowser = ContentBrowserDrawer;
+	}
 }
 
 void FContentBrowserSingleton::FocusContentBrowser(const TSharedPtr<SContentBrowser>& BrowserToFocus)
 {
 	if ( BrowserToFocus.IsValid() )
 	{
-		TSharedRef<SContentBrowser> Browser = BrowserToFocus.ToSharedRef();
-		TSharedPtr<FTabManager> TabManager = Browser->GetTabManager();
-		if ( TabManager.IsValid() )
+		if (BrowserToFocus == ContentBrowserDrawer)
 		{
-			TabManager->TryInvokeTab(Browser->GetInstanceName());
+			GEditor->GetEditorSubsystem<UStatusBarSubsystem>()->OpenContentBrowserDrawer();
+		}
+		else
+		{
+			TSharedRef<SContentBrowser> Browser = BrowserToFocus.ToSharedRef();
+			TSharedPtr<FTabManager> TabManager = Browser->GetTabManager();
+			if (TabManager.IsValid())
+			{
+				TabManager->TryInvokeTab(Browser->GetInstanceName());
+			}
 		}
 	}
 }
 
-FName FContentBrowserSingleton::SummonNewBrowser(bool bAllowLockedBrowsers)
+void FContentBrowserSingleton::DockContentBrowserDrawer()
+{
+	TSharedPtr<FTabManager> ForTabManager;
+	TSharedPtr<SDockTab> Tab = OnGetTabForDrawer();
+	if (Tab)
+	{
+		ForTabManager = FGlobalTabmanager::Get()->GetTabManagerForMajorTab(Tab.ToSharedRef());
+	}
+
+	
+	// Dont summon a content browser if a content browser already exists in the tab manager
+	bool bExistingTab = false;
+	if(ForTabManager)
+	{
+		for (int32 BrowserIdx = 0; BrowserIdx < UE_ARRAY_COUNT(ContentBrowserTabIDs); BrowserIdx++)
+		{
+			if (TSharedPtr<SDockTab> ExistingTab = ForTabManager->FindExistingLiveTab(ContentBrowserTabIDs[BrowserIdx]))
+			{
+				GEditor->GetEditorSubsystem<UStatusBarSubsystem>()->ForceDismissDrawer();
+				ExistingTab->ActivateInParent(ETabActivationCause::SetDirectly);
+				bExistingTab = true;
+				break;
+			}
+		}
+	}
+
+	if(!bExistingTab)
+	{
+		TSharedPtr<SContentBrowser> ContentBrowserDrawerPinned = ContentBrowserDrawer.Pin();
+
+		// Make sure current content browser drawer settings are saved so we can copy them to the new browser
+		ContentBrowserDrawerPinned->SaveSettings();
+
+		FName InstanceName = SummonNewBrowser(false, ForTabManager);
+		for (int32 AllBrowsersIdx = AllContentBrowsers.Num() - 1; AllBrowsersIdx >= 0; --AllBrowsersIdx)
+		{
+			if (TSharedPtr<SContentBrowser> Browser = AllContentBrowsers[AllBrowsersIdx].Pin())
+			{
+				if (Browser->GetInstanceName() == InstanceName)
+				{
+					Browser->CopySettingsFromBrowser(ContentBrowserDrawerPinned);
+					break;
+				}
+			}
+		}
+	}
+
+}
+
+FName FContentBrowserSingleton::SummonNewBrowser(bool bAllowLockedBrowsers, TSharedPtr<FTabManager> SpecificTabManager)
 {
 	TSet<FName> OpenBrowserIDs;
 
@@ -586,7 +757,7 @@ FName FContentBrowserSingleton::SummonNewBrowser(bool bAllowLockedBrowsers)
 
 	if ( NewTabName != NAME_None )
 	{
-		const TWeakPtr<FTabManager>& TabManagerToInvoke = BrowserToLastKnownTabManagerMap.FindRef(NewTabName);
+		const TWeakPtr<FTabManager>& TabManagerToInvoke = SpecificTabManager.IsValid() ? SpecificTabManager : BrowserToLastKnownTabManagerMap.FindRef(NewTabName);
 		if ( TabManagerToInvoke.IsValid() )
 		{
 			TabManagerToInvoke.Pin()->TryInvokeTab(NewTabName);
@@ -613,7 +784,8 @@ TSharedRef<SWidget> FContentBrowserSingleton::CreateContentBrowser( const FName 
 
 	AllContentBrowsers.Add( NewBrowser );
 
-	if( !PrimaryContentBrowser.IsValid() )
+	// The drawer is the lowest priority. If a new content browser is being added see if it is capable of becoming the primary browser
+	if( !PrimaryContentBrowser.IsValid() || PrimaryContentBrowser == ContentBrowserDrawer)
 	{
 		ChooseNewPrimaryBrowser();
 	}
@@ -632,11 +804,6 @@ TSharedRef<SDockTab> FContentBrowserSingleton::SpawnContentBrowserTab( const FSp
 		.ToolTip( IDocumentation::Get()->CreateToolTip( Label, nullptr, "Shared/ContentBrowser", "Tab" ) );
 
 	TSharedRef<SWidget> NewBrowser = CreateContentBrowser( SpawnTabArgs.GetTabId().TabType, NewTab, nullptr );
-
-	if ( !PrimaryContentBrowser.IsValid() )
-	{
-		ChooseNewPrimaryBrowser();
-	}
 
 	// Add wrapper for tutorial highlighting
 	TSharedRef<SBox> Wrapper =
@@ -700,7 +867,7 @@ FText FContentBrowserSingleton::GetContentBrowserTabLabel(int32 BrowserIdx)
 	}
 }
 
-void FContentBrowserSingleton::SetSelectedPaths(const TArray<FString>& FolderPaths, bool bNeedsRefresh/* = false*/)
+void FContentBrowserSingleton::SetSelectedPaths(const TArray<FString>& FolderPaths, bool bNeedsRefresh/* = false*/, bool bPathsAreVirtual/* = false*/)
 {
 	// Make sure we have a valid browser
 	if (!PrimaryContentBrowser.IsValid())
@@ -715,7 +882,17 @@ void FContentBrowserSingleton::SetSelectedPaths(const TArray<FString>& FolderPat
 
 	if (PrimaryContentBrowser.IsValid())
 	{
-		PrimaryContentBrowser.Pin()->SetSelectedPaths(FolderPaths, bNeedsRefresh);
+		if (bPathsAreVirtual)
+		{
+			PrimaryContentBrowser.Pin()->SetSelectedPaths(FolderPaths, bNeedsRefresh);
+		}
+		else
+		{
+			if (UContentBrowserDataSubsystem* ContentBrowserDataSubsystem = IContentBrowserDataModule::Get().GetSubsystem())
+			{
+				PrimaryContentBrowser.Pin()->SetSelectedPaths(ContentBrowserDataSubsystem->ConvertInternalPathsToVirtual(FolderPaths), bNeedsRefresh);
+			}
+		}
 	}
 }
 
@@ -734,6 +911,75 @@ void FContentBrowserSingleton::ForceShowPluginContent(bool bEnginePlugin)
 	if (PrimaryContentBrowser.IsValid())
 	{
 		PrimaryContentBrowser.Pin()->ForceShowPluginContent(bEnginePlugin);
+	}
+}
+
+void FContentBrowserSingleton::SaveContentBrowserSettings(TSharedPtr<SWidget> ContentBrowserWidget)
+{
+	TSharedPtr<SContentBrowser> BrowserToSave;
+
+	if (ContentBrowserWidget.IsValid())
+	{
+		for (TWeakPtr<SContentBrowser>& Browser : AllContentBrowsers)
+		{
+			if (Browser == ContentBrowserWidget)
+			{
+				BrowserToSave = Browser.Pin();
+			}
+		}
+	}
+
+	if (!BrowserToSave.IsValid() && ContentBrowserDrawer == ContentBrowserWidget)
+	{
+		BrowserToSave = ContentBrowserDrawer.Pin();
+	}
+
+	if (BrowserToSave.IsValid())
+	{
+		BrowserToSave->SaveSettings();
+	}
+}
+
+
+void FContentBrowserSingleton::ExecuteRename(TSharedPtr<SWidget> PickerWidget)
+{
+	if (PickerWidget.IsValid())
+	{
+		if (PickerWidget->GetType() == FName(TEXT("SAssetPicker")))
+		{
+			TSharedPtr<SAssetPicker> AssetPicker = StaticCastSharedPtr<SAssetPicker>(PickerWidget);
+			AssetPicker->ExecuteRenameCommand();
+		}
+		else if (PickerWidget->GetType() == FName(TEXT("SPathPicker")))
+		{
+			TSharedPtr<SPathPicker> PathPicker = StaticCastSharedPtr<SPathPicker>(PickerWidget);
+			PathPicker->ExecuteRenameFolder();
+		}
+	}
+}
+
+
+void FContentBrowserSingleton::ExecuteAddFolder(TSharedPtr<SWidget> Widget)
+{
+	if (Widget.IsValid())
+	{
+		if (Widget->GetType() == FName(TEXT("SPathPicker")))
+		{
+			TSharedPtr<SPathPicker> PathPicker = StaticCastSharedPtr<SPathPicker>(Widget);
+			PathPicker->ExecuteAddFolder();
+		}
+	}
+}
+
+void FContentBrowserSingleton::RefreshPathView(TSharedPtr<SWidget> Widget)
+{
+	if (Widget.IsValid())
+	{
+		if (Widget->GetType() == FName(TEXT("SPathPicker")))
+		{
+			TSharedPtr<SPathPicker> PathPicker = StaticCastSharedPtr<SPathPicker>(Widget);
+			PathPicker->RefreshPathView();
+		}
 	}
 }
 
@@ -756,6 +1002,111 @@ void FContentBrowserSingleton::PopulateConfigValues()
 			}
 		}
 	}
+}
+
+void FContentBrowserSingleton::GetContentBrowserSubMenu(UToolMenu* Menu, TSharedRef<FWorkspaceItem> ContentBrowserGroup)
+{
+	// Register the tab spawners for all content browsers
+	const FSlateIcon ContentBrowserIcon(FAppStyle::Get().GetStyleSetName(), "ContentBrowser.TabIcon");
+
+	FToolMenuSection& Section = Menu->AddSection("ContentBrowser");
+
+	Section.AddMenuEntry("FocusContentBrowser",
+		LOCTEXT("FocusContentBrowser_Label", "Focus Content Browser"),
+		LOCTEXT("FocusContentBrowser_Desc", "Focuses the most recently active content browser tab."),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateRaw(this, &FContentBrowserSingleton::FocusPrimaryContentBrowser, true), FCanExecuteAction())
+	);
+
+	auto AddSpawnerEntryToMenuSection = [](FToolMenuSection& InSection, TSharedPtr<FTabSpawnerEntry> InSpawnerNode, FName InTabID)
+	{
+		InSection.AddMenuEntry(
+			InTabID,
+			InSpawnerNode->GetDisplayName().IsEmpty() ? FText::FromName(InTabID) : InSpawnerNode->GetDisplayName(),
+			InSpawnerNode->GetTooltipText(),
+			FSlateIcon(),
+			FGlobalTabmanager::Get()->GetUIActionForTabSpawnerMenuEntry(InSpawnerNode),
+			EUserInterfaceActionType::Check
+		);
+	};
+
+	for (int32 BrowserIdx = 0; BrowserIdx < UE_ARRAY_COUNT(ContentBrowserTabIDs); BrowserIdx++)
+	{
+		const FName TabID = ContentBrowserTabIDs[BrowserIdx];
+		AddSpawnerEntryToMenuSection(Section, ContentBrowserTabs[BrowserIdx], TabID);
+	}
+
+}
+
+FContentBrowserItemPath FContentBrowserSingleton::GetInitialPathToSaveAsset(const FContentBrowserItemPath& InPath)
+{
+	FAssetToolsModule& AssetToolsModule = FModuleManager::Get().LoadModuleChecked<FAssetToolsModule>("AssetTools");
+
+	bool bPathIsWritable = true;
+	if (InPath.GetVirtualPathName().IsNone() || !InPath.HasInternalPath())
+	{
+		bPathIsWritable = false;
+	}
+	else
+	{
+		bPathIsWritable = AssetToolsModule.Get().GetWritableFolderPermissionList()->PassesStartsWithFilter(InPath.GetInternalPathName(), /*bAllowParentPaths*/true);
+	}
+
+	FString AssetPath;
+	if (bPathIsWritable)
+	{
+		AssetPath = InPath.GetInternalPathString();
+	}
+	else
+	{
+		// Try last path
+		const FString DefaultFilesystemDirectory = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::NEW_ASSET);
+		if (!DefaultFilesystemDirectory.IsEmpty() && FPackageName::TryConvertFilenameToLongPackageName(DefaultFilesystemDirectory, AssetPath))
+		{
+			if (AssetToolsModule.Get().GetWritableFolderPermissionList()->PassesStartsWithFilter(AssetPath, /*bAllowParentPaths*/true))
+			{
+				bPathIsWritable = true;
+			}
+		}
+
+		if (!bPathIsWritable)
+		{
+			AssetPath.Reset();
+
+			// Request default virtual paths, use first path that passes
+			FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().GetModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+			TArray<FName> VirtualPaths;
+			if (ContentBrowserModule.GetDefaultSelectedPathsDelegate().ExecuteIfBound(VirtualPaths) && VirtualPaths.Num() > 0)
+			{
+				for (const FName VirtualPath : VirtualPaths)
+				{
+					if (IContentBrowserDataModule::Get().GetSubsystem()->TryConvertVirtualPath(FNameBuilder(VirtualPath), AssetPath) == EContentBrowserPathType::Internal)
+					{
+						if (AssetToolsModule.Get().GetWritableFolderPermissionList()->PassesStartsWithFilter(AssetPath, /*bAllowParentPaths*/true))
+						{
+							break;
+						}
+					}
+				
+					AssetPath.Reset();
+				}
+			}
+		}
+
+		if (AssetPath.IsEmpty())
+		{
+			// No saved path, just use the game content root
+			AssetPath = TEXT("/Game");
+		}
+	}
+
+	// Remove trailing slash
+	if (AssetPath.EndsWith(TEXT("/")) || AssetPath.EndsWith(TEXT("\\")))
+	{
+		AssetPath.LeftChopInline(1, false);
+	}
+
+	return FContentBrowserItemPath(AssetPath, EContentBrowserPathType::Internal);
 }
 
 #undef LOCTEXT_NAMESPACE

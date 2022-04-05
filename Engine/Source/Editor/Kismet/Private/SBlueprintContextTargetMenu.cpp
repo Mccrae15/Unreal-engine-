@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SBlueprintContextTargetMenu.h"
 #include "Engine/Blueprint.h"
@@ -7,6 +7,7 @@
 #include "Styling/SlateTypes.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "EditorStyleSet.h"
 #include "Components/ActorComponent.h"
@@ -372,6 +373,12 @@ FContextMenuTargetProfile::FContextMenuTargetProfile(const FBlueprintActionConte
 		SavedTargetFlags = 0;
 	}
 
+	if (BpSettings->bEnableNamespaceFilteringFeatures)
+	{
+		// Filter out non-imported types by default, but do so only if namespace filtering features are also enabled.
+		SavedTargetFlags &= ~EContextTargetFlags::TARGET_NonImportedTypes;
+	}
+
 	if (!LoadProfile())
 	{
 		// maybe they were originally using the shared context profile? so let's default to that
@@ -489,6 +496,27 @@ void SBlueprintContextTargetMenu::Construct(const FArguments& InArgs, const FBlu
 
 	FText const MenuToolTip = LOCTEXT("MenuToolTip", "Select whose functions/variables you want to see.\nNOTE: Unchecking everything is akin to 'SHOW EVERYTHING' (you're choosing to have NO target context and to not limit the scope)");
 
+	TSharedRef<SWidget> CustomContentWidget = InArgs._CustomTargetContent.Widget;
+	if (CustomContentWidget != SNullWidget::NullWidget)
+	{
+		SAssignNew(CustomContentWidget, SBox)
+		[
+			SNew(SVerticalBox)
+			+SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(0.f, 4.f, 0.f, 0.f)
+			[
+				SNew(SSeparator)
+			]
+			+SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(4.f)
+			[
+				CustomContentWidget
+			]
+		];
+	}
+
 	TSharedPtr<SHorizontalBox> MenuBody;
 	SBorder::Construct(SBorder::FArguments()
 		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
@@ -521,6 +549,11 @@ void SBlueprintContextTargetMenu::Construct(const FArguments& InArgs, const FBlu
 					SAssignNew(MenuBody, SHorizontalBox)
 						.ToolTipText(MenuToolTip)
 				]
+				+SVerticalBox::Slot()
+					.AutoHeight()
+				[
+					CustomContentWidget
+				]
 			]
 		]
 	);
@@ -547,6 +580,12 @@ void SBlueprintContextTargetMenu::Construct(const FArguments& InArgs, const FBlu
 		EContextTargetFlags::Type ContextTarget = (EContextTargetFlags::Type)(1 << BitMaskOffset);
 
 		if (TargetEnum && TargetEnum->HasMetaData(TEXT("Hidden"), ContextTarget))
+		{
+			continue;
+		}
+
+		// Keep this target hidden for now unless namespace filtering features are turned on.
+		if (ContextTarget == EContextTargetFlags::TARGET_NonImportedTypes && !GetDefault<UBlueprintEditorSettings>()->bEnableNamespaceFilteringFeatures)
 		{
 			continue;
 		}

@@ -149,9 +149,14 @@ void FStaticMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particles)
 						ErrorReporter,
 						MeshParticles, *TriangleMesh,
 						Bounds,
-						FVector::Distance(FVector(0.f, 0.f, 0.f), Bounds.GetExtent())*0.5,
-						Parameters.MinRes, Parameters.MaxRes, 0.f,
-						CollisionType, Parameters.ShapeType)));
+						FVector::Distance(FVector(0.f, 0.f, 0.f), 
+						Bounds.GetExtent()) * 0.5f,
+						Parameters.MinRes, 
+						Parameters.MaxRes, 
+						0.f,
+						CollisionType, 
+						Parameters.ShapeType)));
+
 			if (!ensure(Parameters.MeshVertexPositions.Size()))
 			{
 				Parameters.MeshVertexPositions.AddParticles(1);
@@ -185,7 +190,7 @@ void FStaticMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particles)
 		}
 		else if (Parameters.ShapeType == EImplicitTypeEnum::Chaos_Implicit_Box)
 		{
-			Chaos::FVec3 HalfExtents = Parameters.ShapeParams.BoxExtents / 2;
+			Chaos::FVec3 HalfExtents = Parameters.ShapeParams.BoxExtents / static_cast<Chaos::FReal>(2);
 			Chaos::TBox<Chaos::FReal,3>* Box = new Chaos::TBox<Chaos::FReal, 3>(-HalfExtents, HalfExtents);
 			Bounds.Min = Box->Min();
 			Bounds.Max = Box->Max();
@@ -217,8 +222,8 @@ void FStaticMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particles)
 			Particles.SetDynamicGeometry(RigidBodyId, TUniquePtr<Chaos::FImplicitObject>(Capsule));
 			if (!Parameters.MeshVertexPositions.Size())
 			{
-				float HalfHeight = Parameters.ShapeParams.CapsuleHalfHeightAndRadius.X;
-				float Radius = Parameters.ShapeParams.CapsuleHalfHeightAndRadius.Y;
+				FVector2D::FReal HalfHeight = Parameters.ShapeParams.CapsuleHalfHeightAndRadius.X;
+				FVector2D::FReal Radius = Parameters.ShapeParams.CapsuleHalfHeightAndRadius.Y;
 
 				Parameters.MeshVertexPositions.AddParticles(14);
 				Parameters.MeshVertexPositions.X(0) = Chaos::FVec3(HalfHeight + Radius, 0, 0);
@@ -273,9 +278,9 @@ void FStaticMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particles)
 		Particles.Q(RigidBodyId) = Particles.R(RigidBodyId);
 
 		const FVector SideSquared(Bounds.GetSize()[0] * Bounds.GetSize()[0], Bounds.GetSize()[1] * Bounds.GetSize()[1], Bounds.GetSize()[2] * Bounds.GetSize()[2]);
-		const FVector Inertia(Parameters.Mass * (SideSquared.Y + SideSquared.Z) / 12.f, Parameters.Mass * (SideSquared.X + SideSquared.Z) / 12.f, Parameters.Mass * (SideSquared.X + SideSquared.Y) / 12.f);
-		Particles.I(RigidBodyId) = Chaos::PMatrix<float, 3, 3>(Inertia.X, 0.f, 0.f, 0.f, Inertia.Y, 0.f, 0.f, 0.f, Inertia.Z);
-		Particles.InvI(RigidBodyId) = Chaos::PMatrix<float, 3, 3>(1.f / Inertia.X, 0.f, 0.f, 0.f, 1.f / Inertia.Y, 0.f, 0.f, 0.f, 1.f / Inertia.Z);
+		const FVector3f Inertia((Chaos::FRealSingle)(Parameters.Mass * (SideSquared.Y + SideSquared.Z) / 12.f), (Chaos::FRealSingle)(Parameters.Mass * (SideSquared.X + SideSquared.Z) / 12.f), (Chaos::FRealSingle)(Parameters.Mass * (SideSquared.X + SideSquared.Y) / 12.f));
+		Particles.I(RigidBodyId) = Inertia;
+		Particles.InvI(RigidBodyId) = Chaos::TVec3<Chaos::FRealSingle>(1.f / Inertia.X, 1.f / Inertia.Y, 1.f / Inertia.Z);
 
 		if(Parameters.ObjectType == EObjectStateTypeEnum::Chaos_Object_Sleeping)
 		{
@@ -285,7 +290,7 @@ void FStaticMeshPhysicsProxy::CreateRigidBodyCallback(FParticlesType& Particles)
 		else if(Parameters.ObjectType != EObjectStateTypeEnum::Chaos_Object_Dynamic)
 		{
 			Particles.InvM(RigidBodyId) = 0.f;
-			Particles.InvI(RigidBodyId) = Chaos::PMatrix<float, 3, 3>(0);
+			Particles.InvI(RigidBodyId) = Chaos::TVec3<Chaos::FRealSingle>(0);
 			Particles.SetObjectState(RigidBodyId, Chaos::EObjectStateType::Kinematic);
 		}
 		else

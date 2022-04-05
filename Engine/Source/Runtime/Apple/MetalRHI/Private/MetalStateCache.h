@@ -55,7 +55,6 @@ public:
 	void SetViewports(const mtlpp::Viewport InViewport[], uint32 Count);
 	void SetVertexStream(uint32 const Index, FMetalBuffer* Buffer, FMetalBufferData* Bytes, uint32 const Offset, uint32 const Length);
 	void SetGraphicsPipelineState(FMetalGraphicsPipelineState* State);
-	void SetIndexType(EMetalIndexType IndexType);
 	void BindUniformBuffer(EMetalShaderStages const Freq, uint32 const BufferIndex, FRHIUniformBuffer* BufferRHI);
 	void SetDirtyUniformBuffers(EMetalShaderStages const Freq, uint32 const Dirty);
 	
@@ -78,7 +77,7 @@ public:
 	 * @param Usage The resource usage flags.
 	 * @param Format The UAV pixel format.
 	 */
-	void SetShaderBuffer(EMetalShaderStages const Frequency, FMetalBuffer const& Buffer, FMetalBufferData* const Bytes, NSUInteger const Offset, NSUInteger const Length, NSUInteger const Index, mtlpp::ResourceUsage const Usage, EPixelFormat const Format = PF_Unknown);
+	void SetShaderBuffer(EMetalShaderStages const Frequency, FMetalBuffer const& Buffer, FMetalBufferData* const Bytes, NSUInteger const Offset, NSUInteger const Length, NSUInteger const Index, mtlpp::ResourceUsage const Usage, EPixelFormat const Format = PF_Unknown, NSUInteger const ElementRowPitch = 0);
 	
 	/*
 	 * Set a global texture for the specified shader frequency at the given bind point index.
@@ -111,13 +110,6 @@ public:
 
 	void CommitRenderResources(FMetalCommandEncoder* Raster);
 
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	void CommitTessellationResources(FMetalCommandEncoder* Raster, FMetalCommandEncoder* Compute);
-	
-	void CommitVertexStreamResources(FMetalCommandEncoder* Raster);
-	void CommitSeparateTessellationResources(FMetalCommandEncoder* Raster, FMetalCommandEncoder* Compute);
-#endif
-
 	void CommitComputeResources(FMetalCommandEncoder* Compute);
 	
 	void CommitResourceTable(EMetalShaderStages const Frequency, mtlpp::FunctionType const Type, FMetalCommandEncoder& CommandEncoder);
@@ -146,10 +138,6 @@ public:
 	bool GetScissorRectEnabled() const { return bScissorRectEnabled; }
 	bool NeedsToSetRenderTarget(const FRHIRenderPassInfo& RenderPassInfo);
 	bool HasValidDepthStencilSurface() const { return IsValidRef(DepthStencilSurface); }
-	EMetalIndexType GetIndexType() const { return IndexType; }
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	bool GetUsingTessellation() const { return bUsingTessellation; }
-#endif
     bool CanRestartRenderPass() const { return bCanRestartRenderPass; }
 	mtlpp::RenderPassDescriptor GetRenderPassDescriptor(void) const { return RenderPassDesc; }
 	uint32 GetSampleCount(void) const { return SampleCount; }
@@ -163,10 +151,6 @@ public:
 	bool GetFallbackDepthStencilBound(void) const { return bFallbackDepthStencilBound; }
 	
 	void SetRenderPipelineState(FMetalCommandEncoder& CommandEncoder, FMetalCommandEncoder* PrologueEncoder);
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	void SetTessellationPipelineState(FMetalCommandEncoder& CommandEncoder, FMetalCommandEncoder* PrologueEncoder);
-	void SetStreamOutPipelineState(FMetalCommandEncoder& CommandEncoder);
-#endif
     void SetComputePipelineState(FMetalCommandEncoder& CommandEncoder);
 	void FlushVisibilityResults(FMetalCommandEncoder& CommandEncoder);
 
@@ -211,6 +195,8 @@ private:
 		NSUInteger Offset;
 		/** The bound buffer lengths or 0. */
 		NSUInteger Length;
+		/** The bound buffer element row pitch or 0 */
+		NSUInteger ElementRowPitch;
 		/** The bound buffer usage or 0 */
 		mtlpp::ResourceUsage Usage;
 	};
@@ -252,7 +238,6 @@ private:
 private:
 	FMetalShaderParameterCache ShaderParameters[EMetalShaderStages::Num];
 
-	EMetalIndexType IndexType;
 	uint32 SampleCount;
 
 	TSet<TRefCountPtr<FRHIUniformBuffer>> ActiveUniformBuffers;
@@ -310,9 +295,6 @@ private:
 	bool bHasValidRenderTarget;
 	bool bHasValidColorTarget;
 	bool bScissorRectEnabled;
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-    bool bUsingTessellation;
-#endif
     bool bCanRestartRenderPass;
     bool bImmediate;
 	bool bFallbackDepthStencilBound;

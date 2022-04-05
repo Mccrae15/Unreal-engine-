@@ -3,10 +3,10 @@
 #include "EnhancedPlayerInput.h"
 #include "EnhancedInputComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "InputAction.h"
 #include "InputModifiers.h"
 #include "InputTriggers.h"
-
-
+#include "Engine/World.h"
 // NOTE: Enum order represents firing priority(lowest to highest) and is important as multiple keys bound to the same action may generate differing trigger event states.
 enum class ETriggerEventInternal : uint8
 {
@@ -110,11 +110,12 @@ void UEnhancedPlayerInput::ProcessActionMappingEvent(const UInputAction* Action,
 	FInputActionInstance& ActionData = FindOrAddActionEventData(Action);
 
 	// Update values and triggers for all actionable mappings each frame
-	ETriggerState TriggerState = ETriggerState::None;
+	FTriggerStateTracker TriggerStateTracker;
 
 	// Reset action data on the first event processed for the action this tick.
 	bool bResetActionData = !ActionsWithEventsThisTick.Contains(Action);
-
+	bool bMappingTriggersApplied = false;
+	
 	// If the key state is changing or the key is actuated and being held (and not coming back up this tick) recalculate its value and resulting trigger state.
 	if (KeyEvent != EKeyEvent::None)
 	{
@@ -129,10 +130,11 @@ void UEnhancedPlayerInput::ProcessActionMappingEvent(const UInputAction* Action,
 		FInputActionValue ModifiedValue = ApplyModifiers(Modifiers, FInputActionValue(ValueType, RawKeyValue.Get<FVector>()), DeltaTime);
 		//UE_CLOG(RawKeyValue.GetMagnitudeSq(), LogTemp, Warning, TEXT("Modified %s -> %s"), *RawKeyValue.ToString(), *ModifiedValue.ToString());
 
-		// Derive a trigger state for this mapping using all applicable triggers
-		TriggerState = CalcTriggerState(Triggers, ModifiedValue, DeltaTime);
-		ActionData.bMappingTriggerApplied |= Triggers.Num() > 0;
-
+		// Derive an initial trigger state for this mapping using all applicable triggers
+		ETriggerState CalcedState = TriggerStateTracker.EvaluateTriggers(this, Triggers, ModifiedValue, DeltaTime);
+		// Do this only for no triggers?
+		TriggerStateTracker.SetStateForNoTriggers(ModifiedValue.IsNonZero() ? ETriggerState::Triggered : ETriggerState::None);	
+		bMappingTriggersApplied = Triggers.Num() > 0;
 		// Combine values for active events only, selecting the input with the greatest magnitude for each component in each tick.
 		if(ModifiedValue.GetMagnitudeSq())
 		{
@@ -150,7 +152,9 @@ void UEnhancedPlayerInput::ProcessActionMappingEvent(const UInputAction* Action,
 		}
 	}
 
-	ActionData.MappingTriggerState = FMath::Max(ActionData.MappingTriggerState, TriggerState);
+	// Retain the most interesting/triggered tracker.
+	ActionData.TriggerStateTracker = FMath::Max(ActionData.TriggerStateTracker, TriggerStateTracker);
+	ActionData.TriggerStateTracker.SetMappingTriggerApplied(bMappingTriggersApplied);
 }
 
 void UEnhancedPlayerInput::InjectInputForAction(const UInputAction* Action, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers)
@@ -161,6 +165,18 @@ void UEnhancedPlayerInput::InjectInputForAction(const UInputAction* Action, FInp
 	Input.Triggers = Triggers;
 
 	InputsInjectedThisTick.FindOrAdd(Action).Injected.Emplace(MoveTemp(Input));
+}
+
+bool UEnhancedPlayerInput::InputKey(const FInputKeyParams& Params)
+{
+	const bool bResult = Super::InputKey(Params);
+
+	if (Params.Key.IsButtonAxis() && Params.Event == IE_Pressed)
+	{
+		KeysPressedThisTick.FindOrAdd(Params.Key, Params.Delta);
+	}
+	
+	return bResult;
 }
 
 void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& InputComponentStack, const float DeltaTime, const bool bGamePaused)
@@ -188,10 +204,18 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 	// Process Action bindings
 	ActionsWithEventsThisTick.Reset();
 
+	// Calculate the current delta time as a fallback in case the Time Dilation is set to 0.0
+	// This will ensure that Timed Triggers are calculated in real time
+	const UWorld* World = GetWorld();
+	// If there is no world, then add 1/60 to the last frame time to try and recover at least some
+	// semblance of real time passing. 
+	float CurrentTime = World ? World->GetRealTimeSeconds() : LastFrameTime + (1.0f / 60.0f);
+	RealTimeDeltaSeconds = CurrentTime - LastFrameTime;
+	
 	// Use non-dilated delta time for processing
 	check(GetOuterAPlayerController());
 	const float Dilation = GetOuterAPlayerController()->GetActorTimeDilation();
-	const float NonDilatedDeltaTime = DeltaTime / Dilation;
+	const float NonDilatedDeltaTime = Dilation != 0.0f ? DeltaTime / Dilation : RealTimeDeltaSeconds;
 
 	// Handle input devices, applying modifiers and triggers
 	for (FEnhancedActionKeyMapping& Mapping : EnhancedActionMappings)
@@ -207,6 +231,20 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 		FVector RawKeyValue = KeyState ? KeyState->RawValue : FVector::ZeroVector;
 		//UE_CLOG(RawKeyValue.SizeSquared(), LogTemp, Warning, TEXT("Key %s - state %s"), *Mapping.Key.GetDisplayName().ToString(), *RawKeyValue.ToString());
 
+		// Should this key be ignored because it was down during a context switch?
+		// If so, check if it is back up, otherwise ignore it.
+		if(Mapping.bShouldBeIgnored && KeyState)
+		{
+			if(KeyState->bDown)
+			{
+				continue;				
+			}
+			else
+			{
+				Mapping.bShouldBeIgnored = false;	
+			}
+		}
+		
 		// Establish update type.
 		bool bDownLastTick = KeyDownPrevious.FindRef(Mapping.Key);
 		// TODO: Can't just use bDown as paired axis event edges may not fire due to axial deadzoning/missing axis properties. Need to change how this is detected in PlayerInput.cpp.
@@ -218,6 +256,15 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 		bool bKeyIsHeld = bKeyIsDown && bDownLastTick;
 
 		EKeyEvent KeyEvent = bKeyIsHeld ? EKeyEvent::Held : ((bKeyIsDown || bKeyIsReleased) ? EKeyEvent::Actuated : EKeyEvent::None);
+
+		FVector* PressedThisTickValue = KeysPressedThisTick.Find(Mapping.Key);
+		
+		// For keys that were pressed and released within the same frame, set their RawValue so that
+		// InputTriggers are aware that they have been pressed
+		if(PressedThisTickValue && bKeyIsDown && KeyState->EventCounts[IE_Pressed].Num() && KeyState->EventCounts[IE_Released].Num() && RawKeyValue.IsZero())
+		{
+			RawKeyValue = *PressedThisTickValue;
+		}
 
 		// Perform update
 		ProcessActionMappingEvent(Mapping.Action, NonDilatedDeltaTime, bGamePaused, RawKeyValue, KeyEvent, Mapping.Modifiers, Mapping.Triggers);
@@ -277,16 +324,23 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 
 		if (ActionsWithEventsThisTick.Contains(Action))
 		{
-			// Apply modifiers
+			// Apply action modifiers
+			FInputActionValue RawValue = ActionData.Value; 
 			ActionData.Value = ApplyModifiers(ActionData.Modifiers, ActionData.Value, NonDilatedDeltaTime);
 
-			// Evaluate triggers
-			TriggerState = CalcTriggerState(ActionData.Triggers, ActionData.Value, NonDilatedDeltaTime);
+			// Update what state to use for this data in the case of there being no triggers, otherwise we can get incorrect triggered
+			// states even if the modified value is Zero
+			if(ActionData.Value.Get<FVector>() != RawValue.Get<FVector>())
+			{
+				ActionData.TriggerStateTracker.SetStateForNoTriggers(ActionData.Value.IsNonZero() ? ETriggerState::Triggered : ETriggerState::None);	
+			}
 
-			// Any mapping triggers applied should limit the final state.
-			TriggerState = ActionData.bMappingTriggerApplied ? FMath::Min(TriggerState, ActionData.MappingTriggerState) : TriggerState;
-
-			// However, if the game is paused invalidate trigger unless the action allows it. We must always call CalcTriggerState to update any internal state, even when paused.
+			ETriggerState PrevState = ActionData.TriggerStateTracker.GetState();
+			// Evaluate action triggers. We must always call EvaluateTriggers to update any internal state, even when paused.
+			TriggerState = ActionData.TriggerStateTracker.EvaluateTriggers(this, ActionData.Triggers, ActionData.Value, NonDilatedDeltaTime);
+			TriggerState = ActionData.TriggerStateTracker.GetMappingTriggerApplied() ? FMath::Min(TriggerState, PrevState) : TriggerState;
+			
+			// However, if the game is paused invalidate trigger unless the action allows it.
 			// TODO: Potential issues with e.g. hold event that's canceled due to pausing, but jumps straight back to its "triggered" state on unpause if the user continues to hold the key.
 			if (bGamePaused && !Action->bTriggerWhenPaused)
 			{
@@ -301,6 +355,11 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 		// Evaluate time per action after establishing the internal trigger state across all mappings
 		ActionData.ElapsedProcessedTime += TriggerState != ETriggerState::None ? NonDilatedDeltaTime : 0.f;
 		ActionData.ElapsedTriggeredTime += (ActionData.TriggerEvent == ETriggerEvent::Triggered) ? NonDilatedDeltaTime : 0.f;
+		// Track the time that this trigger was last used
+		if(TriggerState == ETriggerState::Triggered)
+		{
+			ActionData.LastTriggeredWorldTime = CurrentTime;
+		}
 	}
 
 
@@ -384,7 +443,8 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 				if (!bGamePaused || KeyBinding->bExecuteWhenPaused)
 				{
 					FKeyState* KeyState = KeyStateMap.Find(KeyBinding->Chord.Key);
-					if (KeyState && KeyState->EventCounts[KeyBinding->KeyEvent].Num() > 0)
+					// We always want to update any analog debug events, like Gamepad axis 
+					if ((KeyState && KeyState->EventCounts[KeyBinding->KeyEvent].Num() > 0) || KeyBinding->Chord.Key.IsAnalog())
 					{
 						// Record intent to trigger
 						TriggeredDebugDelegates.Add(KeyBinding->Clone());
@@ -396,7 +456,11 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 		// Action all debug delegates that triggered this tick, in the order in which they triggered.
 		for (TUniquePtr<FInputDebugKeyBinding>& Delegate : TriggeredDebugDelegates)
 		{
-			Delegate->Execute();
+			const FKeyState* KeyState = GetKeyState(Delegate->Chord.Key);
+			
+			FInputActionValue ActionValue(KeyState ? KeyState->RawValue : FVector::ZeroVector);
+			
+			Delegate->Execute(ActionValue);
 		}
 		TriggeredDebugDelegates.Reset();
 #endif
@@ -441,9 +505,11 @@ void UEnhancedPlayerInput::ProcessInputStack(const TArray<UInputComponent*>& Inp
 		}
 
 		// Delay MappingTriggerState reset until here to allow dependent triggers (e.g. chords) access to this tick's values.
-		ActionData.MappingTriggerState = ETriggerState::None;
-		ActionData.bMappingTriggerApplied = false;
+		ActionData.TriggerStateTracker = FTriggerStateTracker();
 	}
+
+	LastFrameTime = CurrentTime;
+	KeysPressedThisTick.Reset();
 }
 
 FInputActionValue UEnhancedPlayerInput::GetActionValue(const UInputAction* ForAction) const
@@ -520,70 +586,6 @@ FInputActionValue UEnhancedPlayerInput::ApplyModifiers(const TArray<UInputModifi
 		}
 	}
 	return ModifiedValue;
-}
-
-// Calculate a collective representation of trigger state from all key mapping trigger states
-ETriggerState UEnhancedPlayerInput::CalcTriggerState(const TArray<UInputTrigger*>& Triggers, FInputActionValue ModifiedValue, float DeltaTime) const
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(EnhPIS_Triggers);
-
-	// Trigger rules by implicit/explicit count:
-	// Implicits == 0, Explicits == 0	- Always fire, unless value is 0.
-	// Implicits == 0, Explicits  > 0	- At least one explict has fired.
-	// Implicits  > 0, Explicits == 0	- All implicits have fired. NOTE: Some implicits firing
-	// Implicits  > 0, Explicits  > 0	- All implicits and at least one explicit have fired.
-	// Blockers							- Override all other triggers to force trigger failure.
-
-	if (Triggers.Num() == 0)
-	{
-		// With no triggers the trigger state is represented directly by ModifiedValue.
-		return ModifiedValue.IsNonZero() ? ETriggerState::Triggered : ETriggerState::None;
-	}
-
-	bool bFoundActiveTrigger = false;	// If any trigger is in an ongoing or triggered state the final state must be at least ongoing (with the exception of blocking triggers!)
-	bool bAnyExplictTriggered = false;
-	bool bFoundExplicit = false;		// If no explicits are found the trigger may fire through implicit testing only. If explicits exist at least one must be met.
-	bool bAllImplicitsTriggered = true;
-	bool bBlocking = false;				// If any trigger is blocking, we can't fire.
-
-	// TODO: Make this more efficient. Split implicit/explicit to allow us to early out on implicit fail/explicit pass?
-	for (UInputTrigger* Trigger : Triggers)
-	{
-		if (!Trigger)
-		{
-			continue;
-		}
-
-		ETriggerState CurrentState = Trigger->UpdateState(this, ModifiedValue, DeltaTime);
-
-		// Automatically update the last value, avoiding the trigger having to track it.
-		Trigger->LastValue = ModifiedValue;
-
-		switch (Trigger->GetTriggerType())
-		{
-		case ETriggerType::Explicit:
-			bFoundExplicit = true;
-			bAnyExplictTriggered |= (CurrentState == ETriggerState::Triggered);
-			bFoundActiveTrigger |= (CurrentState != ETriggerState::None);
-			break;
-		case ETriggerType::Implicit:
-			bAllImplicitsTriggered &= (CurrentState == ETriggerState::Triggered);
-			bFoundActiveTrigger |= (CurrentState != ETriggerState::None);
-			break;
-		case ETriggerType::Blocker:
-			bBlocking |= (CurrentState == ETriggerState::Triggered);
-			// Ongoing blockers don't count as active triggers
-			break;
-		}
-	}
-
-	if (bBlocking)
-	{
-		return ETriggerState::None;
-	}
-
-	bool bTriggered = ((!bFoundExplicit || bAnyExplictTriggered) && bAllImplicitsTriggered);
-	return bTriggered ? ETriggerState::Triggered : (bFoundActiveTrigger ? ETriggerState::Ongoing : ETriggerState::None);
 }
 
 bool UEnhancedPlayerInput::IsKeyHandledByAction(FKey Key) const

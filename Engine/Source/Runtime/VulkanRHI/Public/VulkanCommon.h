@@ -9,7 +9,7 @@
 #include "RHIDefinitions.h"
 
 #ifndef VULKAN_SUPPORTS_GEOMETRY_SHADERS
-	#define VULKAN_SUPPORTS_GEOMETRY_SHADERS					(!PLATFORM_ANDROID || PLATFORM_LUMIN) && PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+	#define VULKAN_SUPPORTS_GEOMETRY_SHADERS					(!PLATFORM_ANDROID) && PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 #endif
 
 // This defines controls shader generation (so will cause a format rebuild)
@@ -23,28 +23,44 @@ namespace ShaderStage
 	{
 		// Adjusting these requires a full shader rebuild (ie modify the guid on VulkanCommon.usf)
 		// Keep the values in sync with EShaderFrequency
-		Vertex			= 0,
-		Pixel			= 1,
+		Vertex = 0,
+		Pixel = 1,
 
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
-		Geometry		= 2,
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		Hull			= 3,
-		Domain			= 4,
+		Geometry = 2,
 #endif
-		NumStages,
 
-		MaxNumSets		= 8,
+#if RHI_RAYTRACING
+		RayGen = 3,
+		RayMiss = 4,
+		RayHitGroup = 5,
+		RayCallable = 6,
+#endif
+
+#if VULKAN_SUPPORTS_GEOMETRY_SHADERS
+		NumGeometryStages = 1,
 #else
-		NumStages		= 2,
-
-		MaxNumSets		= 4,
+		NumGeometryStages = 0,
 #endif
+
+#if RHI_RAYTRACING
+		NumRayTracingStages = 4,
+#else
+		NumRayTracingStages = 0,
+#endif
+
+		NumStages = (2 + NumGeometryStages + NumRayTracingStages),
 
 		// Compute is its own pipeline, so it can all live as set 0
-		Compute			= 0,
+		Compute = 0,
 
-		Invalid			= -1,
+#if VULKAN_SUPPORTS_GEOMETRY_SHADERS || RHI_RAYTRACING
+		MaxNumSets = 8,
+#else
+		MaxNumSets = 4,
+#endif
+
+		Invalid = -1,
 	};
 
 	inline EStage GetStageForFrequency(EShaderFrequency Stage)
@@ -52,14 +68,16 @@ namespace ShaderStage
 		switch (Stage)
 		{
 		case SF_Vertex:		return Vertex;
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		case SF_Hull:		return Hull;
-		case SF_Domain:		return Domain;
-#endif
 		case SF_Pixel:		return Pixel;
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
 		case SF_Geometry:	return Geometry;
 #endif
+#if RHI_RAYTRACING
+		case SF_RayGen:			return RayGen;
+		case SF_RayMiss:		return RayMiss;
+		case SF_RayHitGroup:	return RayHitGroup;
+		case SF_RayCallable:	return RayCallable;
+#endif // RHI_RAYTRACING
 		case SF_Compute:	return Compute;
 		default:
 			checkf(0, TEXT("Invalid shader Stage %d"), (int32)Stage);
@@ -74,14 +92,16 @@ namespace ShaderStage
 		switch (Stage)
 		{
 		case EStage::Vertex:	return SF_Vertex;
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		case EStage::Hull:		return SF_Hull;
-		case EStage::Domain:	return SF_Domain;
-#endif
 		case EStage::Pixel:		return SF_Pixel;
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
 		case EStage::Geometry:	return SF_Geometry;
 #endif
+#if RHI_RAYTRACING
+		case EStage::RayGen:		return SF_RayGen;
+		case EStage::RayMiss:		return SF_RayMiss;
+		case EStage::RayHitGroup:	return SF_RayHitGroup;
+		case EStage::RayCallable:	return SF_RayCallable;
+#endif //	RHI_RAYTRACING
 		default:
 			checkf(0, TEXT("Invalid shader Stage %d"), (int32)Stage);
 			break;
@@ -117,6 +137,8 @@ namespace EVulkanBindingType
 
 		InputAttachment,
 
+		AccelerationStructure,	//VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR
+
 		Count,
 	};
 
@@ -134,6 +156,7 @@ namespace EVulkanBindingType
 		case StorageTexelBuffer:	return 'z';
 		case StorageBuffer:			return 'v';
 		case InputAttachment:		return 'a';
+		case AccelerationStructure:	return 'r';
 		default:
 			check(0);
 			break;

@@ -77,6 +77,9 @@ const FString CustomPresenceDataKey = TEXT("CustomData");
 /** Name of the client that sent the presence update */
 const FString DefaultAppIdKey = TEXT("AppId");
 
+/** User friendly name of the client that sent the presence update */
+const FString DefaultProductNameKey = TEXT("ProductName");
+
 /** Platform of the client that sent the presence update */
 const FString DefaultPlatformKey = TEXT("Platform");
 
@@ -221,7 +224,7 @@ bool IsPlayerInSessionImpl(IOnlineSession* SessionInt, FName SessionName, const 
 	FNamedOnlineSession* Session = SessionInt->GetNamedSession(SessionName);
 	if (Session != NULL)
 	{
-		const bool bIsSessionOwner = *Session->OwningUserId == UniqueId;
+		const bool bIsSessionOwner = Session->OwningUserId.IsValid()  && *Session->OwningUserId == UniqueId;
 
 		FUniqueNetIdMatcher PlayerMatch(UniqueId);
 		if (bIsSessionOwner || 

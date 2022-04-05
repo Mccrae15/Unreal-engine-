@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPluginTile.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/App.h"
 #include "Modules/ModuleManager.h"
@@ -29,7 +29,9 @@
 #include "PropertyEditorModule.h"
 #include "IUATHelperModule.h"
 #include "DesktopPlatformModule.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Widgets/Layout/SSpacer.h"
+#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE "PluginListTile"
 
@@ -51,6 +53,8 @@ void SPluginTile::RecreateWidgets()
 {
 	const float PaddingAmount = FPluginStyle::Get()->GetFloat( "PluginTile.Padding" );
 	const float ThumbnailImageSize = FPluginStyle::Get()->GetFloat( "PluginTile.ThumbnailImageSize" );
+	const float HorizontalTilePadding = FPluginStyle::Get()->GetFloat("PluginTile.HorizontalTilePadding");
+	const float VerticalTilePadding = FPluginStyle::Get()->GetFloat("PluginTile.VerticalTilePadding");
 
 	// @todo plugedit: Also display whether plugin is editor-only, runtime-only, developer or a combination?
 	//		-> Maybe a filter for this too?  (show only editor plugins, etc.)
@@ -74,6 +78,8 @@ void SPluginTile::RecreateWidgets()
 		PluginIconDynamicImageBrush = MakeShareable(new FSlateDynamicImageBrush(BrushName, FVector2D(Size.X, Size.Y)));
 	}
 
+	const bool bIsNewPlugin = FPluginBrowserModule::Get().IsNewlyInstalledPlugin(Plugin->GetName());
+
 	// create support link
 	TSharedPtr<SWidget> SupportWidget;
 	{
@@ -92,18 +98,19 @@ void SPluginTile::RecreateWidgets()
 				[
 					SNew(SImage)
 					.ColorAndOpacity(FSlateColor::UseForeground())
-					.Image(FEditorStyle::GetBrush("Icons.Contact"))
+					.Image(FAppStyle::Get().GetBrush("Icons.Comment"))
 				]
 
 			+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
-				.Padding(2.0f, 0.0f, 0.0f, 0.0f)
+				.Padding(4.0f, 0.0f, 0.0f, 0.0f)
 				[
 					SNew(SHyperlink)
 					.Text(LOCTEXT("SupportLink", "Support"))
 					.ToolTipText(FText::Format(LOCTEXT("NavigateToSupportURL", "Open the plug-in's online support ({0})"), FText::FromString(SupportURL)))
 					.OnNavigate_Lambda([=]() { FPlatformProcess::LaunchURL(*SupportURL, nullptr, nullptr); })
+					.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
 				];
 		}
 	}
@@ -126,18 +133,19 @@ void SPluginTile::RecreateWidgets()
 				[
 					SNew(SImage)
 						.ColorAndOpacity(FSlateColor::UseForeground())
-						.Image(FEditorStyle::GetBrush("MessageLog.Docs"))
+						.Image(FAppStyle::Get().GetBrush("Icons.Documentation"))
 				]
 
 			+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
-				.Padding(2.0f, 0.0f, 0.0f, 0.0f)
+				.Padding(4.0f, 0.0f, 0.0f, 0.0f)
 				[
 					SNew(SHyperlink)
 						.Text(LOCTEXT("DocumentationLink", "Documentation"))
 						.ToolTipText(FText::Format(LOCTEXT("NavigateToDocumentation", "Open the plug-in's online documentation ({0})"), FText::FromString(DocsURL)))
 						.OnNavigate_Lambda([=]() { FPlatformProcess::LaunchURL(*DocsURL, nullptr, nullptr); })
+						.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
 				];
 		}
 	}
@@ -165,7 +173,7 @@ void SPluginTile::RecreateWidgets()
 			+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
-				.Padding(2.0f, 0.0f, 0.0f, 0.0f)
+				.Padding(4.0f, 0.0f, 0.0f, 0.0f)
 				[
 					SNew(STextBlock)
 						.Text(FText::FromString(PluginDescriptor.CreatedBy))
@@ -175,16 +183,6 @@ void SPluginTile::RecreateWidgets()
 		{
 			FString CreatedByURL = PluginDescriptor.CreatedByURL;
 			CreatedByWidget = SNew(SHorizontalBox)
-
-			+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(SImage)
-						.ColorAndOpacity(FSlateColor::UseForeground())
-						.Image(FEditorStyle::GetBrush("MessageLog.Url"))
-				]
-
 			+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
@@ -194,35 +192,160 @@ void SPluginTile::RecreateWidgets()
 						.Text(FText::FromString(PluginDescriptor.CreatedBy))
 						.ToolTipText(FText::Format(LOCTEXT("NavigateToCreatedByURL", "Visit the vendor's web site ({0})"), FText::FromString(CreatedByURL)))
 						.OnNavigate_Lambda([=]() { FPlatformProcess::LaunchURL(*CreatedByURL, nullptr, nullptr); })
+						.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
 				];
 		}
 	}
 
+	TSharedRef<SWidget> RestrictedPluginWidget = SNullWidget::NullWidget;
+	if (FPaths::IsRestrictedPath(Plugin->GetDescriptorFileName()))
+	{
+		RestrictedPluginWidget = SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Bottom)
+				.Padding(0.0f, 0.0f, 8.0f, 0.f)
+				[
+					SNew(SBorder)
+					.BorderImage(FPluginStyle::Get()->GetBrush("PluginTile.RestrictedBorderImage"))
+					.Padding(FMargin(8.f, 1.f, 8.f, 2.f))
+					[
+						SNew(STextBlock)
+						.TextStyle(FPluginStyle::Get(), "PluginTile.BetaText")
+						.Text(LOCTEXT("PluginRestrictedText", "Restricted"))
+						.ToolTipText(FText::AsCultureInvariant(Plugin->GetDescriptorFileName()))
+					]
+					
+				];
+	}
+	
+	TSharedRef<SHorizontalBox> MiscLinks = SNew(SHorizontalBox);
+	
+	// support link
+	MiscLinks->AddSlot()
+		.Padding(PaddingAmount, PaddingAmount, PaddingAmount + 14.f, PaddingAmount)
+		.HAlign(HAlign_Left)
+		.AutoWidth()
+		[
+			SNew(SHorizontalBox)
+			.Visibility(this, &SPluginTile::GetAuthoringButtonsVisibility)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SImage)
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.Image(FAppStyle::Get().GetBrush("Icons.Edit"))
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SHyperlink)
+				.OnNavigate(this, &SPluginTile::OnEditPlugin)
+				.Text(LOCTEXT("EditPlugin", "Edit"))
+				.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
+			]
+			
+		];
+
+	MiscLinks->AddSlot()
+		.AutoWidth()
+		.Padding(PaddingAmount, PaddingAmount, PaddingAmount + 14.f, PaddingAmount)
+		.HAlign(HAlign_Left)
+		[
+			SNew(SHorizontalBox)
+			.Visibility(this, &SPluginTile::GetAuthoringButtonsVisibility)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SImage)
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.Image(FAppStyle::Get().GetBrush("Icons.Package"))
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(4.0f, 0.0f, 0.0f, 0.0f)
+			[
+				SNew(SHyperlink)
+				.OnNavigate(this, &SPluginTile::OnPackagePlugin)
+				.Text(LOCTEXT("PackagePlugin", "Package"))
+				.Style(FAppStyle::Get(), "HoverOnlyHyperlink")
+			]
+		];
+
+	if (DocumentationWidget != SNullWidget::NullWidget)
+	{
+		MiscLinks->AddSlot()
+			.AutoWidth()
+			.Padding(PaddingAmount, PaddingAmount, PaddingAmount + 14.f, PaddingAmount)
+			.HAlign(HAlign_Left)
+			[
+				DocumentationWidget.ToSharedRef()
+			];
+
+	}
+
+	if (SupportWidget != SNullWidget::NullWidget)
+	{
+		MiscLinks->AddSlot()
+			.AutoWidth()
+			.Padding(PaddingAmount, PaddingAmount, PaddingAmount + 14.f, PaddingAmount)
+			.HAlign(HAlign_Left)
+			[
+				SupportWidget.ToSharedRef()
+			];
+	}
+	
 	ChildSlot
 	[
 		SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-			.Padding(PaddingAmount)
+			.BorderImage(FAppStyle::Get().GetBrush("Brushes.Panel"))
+			.Padding(FMargin(HorizontalTilePadding, VerticalTilePadding))
 			[
 				SNew(SBorder)
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+					.BorderImage(FPluginStyle::Get()->GetBrush("PluginTile.BorderImage"))
 					.Padding(PaddingAmount)
 					[
 						SNew(SHorizontalBox)
 
+						// Enable checkbox
+						+ SHorizontalBox::Slot()
+							.Padding(FMargin(18, 0, 17, 0))
+							.HAlign(HAlign_Left)
+							.AutoWidth()
+							[
+								SNew(SCheckBox)
+									.OnCheckStateChanged(this, &SPluginTile::OnEnablePluginCheckboxChanged)
+									.IsChecked(this, &SPluginTile::IsPluginEnabled)
+									.IsEnabled(this, &SPluginTile::CanModifyPlugins)
+									.ToolTipText(CanModifyPlugins() ?
+										LOCTEXT("EnableDisableButtonToolTip", "Toggles whether this plugin is enabled for your current project.  You may need to restart the program for this change to take effect.")
+										: LOCTEXT("NonEditableButtonToolTip", "Editing plugin enabled/disabled state from the Plugin Browser has been disabled for this project."))
+							]
 						// Thumbnail image
 						+ SHorizontalBox::Slot()
-							.Padding(PaddingAmount)
+							.Padding(PaddingAmount, PaddingAmount + 4.f, PaddingAmount + 10.f, PaddingAmount)
+							.VAlign(VAlign_Top)
 							.AutoWidth()
 							[
 								SNew(SBox)
-									.VAlign(VAlign_Top)
-									.WidthOverride(ThumbnailImageSize)
-									.HeightOverride(ThumbnailImageSize)
+								.WidthOverride(ThumbnailImageSize)
+								.HeightOverride(ThumbnailImageSize)
+								[
+									SNew(SBorder)
+									.BorderImage(FPluginStyle::Get()->GetBrush("PluginTile.ThumbnailBorderImage"))
 									[
 										SNew(SImage)
-											.Image(PluginIconDynamicImageBrush.IsValid() ? PluginIconDynamicImageBrush.Get() : nullptr)
+										.Image(PluginIconDynamicImageBrush.Get())
 									]
+								]
+								
 							]
 
 						+SHorizontalBox::Slot()
@@ -238,7 +361,7 @@ void SPluginTile::RecreateWidgets()
 										+SHorizontalBox::Slot()
 											.AutoWidth()
 											.VAlign(VAlign_Center)
-											.Padding(PaddingAmount)
+											.Padding(PaddingAmount, PaddingAmount + 3.f, PaddingAmount + 8.f, 0.f)
 											[
 												SNew(STextBlock)
 													.Text(GetPluginNameText())
@@ -249,20 +372,46 @@ void SPluginTile::RecreateWidgets()
 										// "NEW!" label
 										+ SHorizontalBox::Slot()
 											.AutoWidth()
-											.Padding(10.0f, 0.0f, 0.0f, 0.0f)
+											.Padding(0, PaddingAmount, bIsNewPlugin ? 8.f : 0.f, 0) // Extra Padding to the right if new label is visible
 											.HAlign(HAlign_Left)
 											.VAlign(VAlign_Center)
 											[
 												SNew(SBorder)
-													.Padding(FMargin(5.0f, 3.0f))
-													.BorderImage(FPluginStyle::Get()->GetBrush("PluginTile.NewLabelBackground"))
+													.Padding(FMargin(8.f, 1.f, 8.f, 2.f))
+													.BorderImage(FPluginStyle::Get()->GetBrush("PluginTile.NewLabelBorderImage"))
 													[
 														SNew(STextBlock)
-															.Visibility(FPluginBrowserModule::Get().IsNewlyInstalledPlugin(Plugin->GetName())? EVisibility::Visible : EVisibility::Collapsed)
-															.Font(FPluginStyle::Get()->GetFontStyle(TEXT("PluginTile.NewLabelFont")))
-															.Text(LOCTEXT("PluginNewLabel", "NEW!"))
-															.TextStyle(FPluginStyle::Get(), "PluginTile.NewLabelText")
+															.Visibility(bIsNewPlugin ? EVisibility::Visible : EVisibility::Collapsed)
+															.Text(LOCTEXT("PluginNewLabel", "New"))
+															.TextStyle(FPluginStyle::Get(), "PluginTile.BetaText")
 													]
+											]
+										// noredist/restricted label
+										+ SHorizontalBox::Slot()
+											.AutoWidth()
+											.Padding(0, PaddingAmount, 0, 0)
+											.VAlign(VAlign_Center)
+											[
+												RestrictedPluginWidget
+											]
+
+										// beta version label
+										+ SHorizontalBox::Slot()
+											.AutoWidth()
+											.Padding(0, PaddingAmount, 0, 0)
+											.VAlign(VAlign_Center)
+											[
+
+												SNew(SBorder)
+												.BorderImage(FPluginStyle::Get()->GetBrush(PluginDescriptor.bIsBetaVersion ? "PluginTile.BetaBorderImage" : "PluginTile.ExperimentalBorderImage"))
+												.Visibility((PluginDescriptor.bIsBetaVersion || PluginDescriptor.bIsExperimentalVersion) ? EVisibility::Visible : EVisibility::Collapsed)
+												.Padding(FMargin(8.f, 1.f, 8.f, 2.f))
+												[
+													SNew(STextBlock)
+													.TextStyle(FPluginStyle::Get(), "PluginTile.BetaText")
+													.Text(PluginDescriptor.bIsBetaVersion ? LOCTEXT("PluginBetaVersionText", "Beta") : LOCTEXT("PluginExperimentalVersionText", "Experimental"))
+													.ToolTipText(this, &SPluginTile::GetBetaOrExperimentalHelpText)
+												]
 											]
 
 										// Gap
@@ -274,51 +423,26 @@ void SPluginTile::RecreateWidgets()
 										// Version
 										+ SHorizontalBox::Slot()
 											.HAlign(HAlign_Right)
-											.Padding(PaddingAmount)
+											.Padding(PaddingAmount, PaddingAmount, PaddingAmount, 0)
 											.AutoWidth()
 											[
 												SNew(SHorizontalBox)
-
-												// beta version label
-												+ SHorizontalBox::Slot()
-													.AutoWidth()
-													.VAlign(VAlign_Bottom)
-													[
-														SNew(SHorizontalBox)
-														.Visibility((PluginDescriptor.bIsBetaVersion || PluginDescriptor.bIsExperimentalVersion) ? EVisibility::Visible : EVisibility::Collapsed)
-														+ SHorizontalBox::Slot()
-															.AutoWidth()
-															.VAlign(VAlign_Bottom)
-															.Padding(0.0f, 0.0f, 0.0f, 2.0f)
-															[
-																SNew(SImage)
-																	.Image(FPluginStyle::Get()->GetBrush("PluginTile.BetaWarning"))
-															]
-														+ SHorizontalBox::Slot()
-															.AutoWidth()
-															.VAlign(VAlign_Bottom)
-															.Padding(2.0f, 0.0f, 8.0f, 1.0f)
-															[
-																SNew(STextBlock)
-																	.TextStyle(FPluginStyle::Get(), "PluginTile.BetaText")
-																	.Text(PluginDescriptor.bIsBetaVersion ? LOCTEXT("PluginBetaVersionText", "BETA") : LOCTEXT("PluginExperimentalVersionText", "EXPERIMENTAL"))
-															]
-													]
-
+																								
 												// version number
 												+ SHorizontalBox::Slot()
 													.AutoWidth()
 													.VAlign( VAlign_Bottom )
-													.Padding(0.0f, 0.0f, 0.0f, 1.0f) // Lower padding to align font with version number base
+													.Padding(0.0f, 6.0f, 0.0f, 1.0f) // Lower padding to align font with version number base
 													[
 														SNew(STextBlock)
 															.Text(LOCTEXT("PluginVersionLabel", "Version "))
+															.TextStyle(FPluginStyle::Get(), "PluginTile.VersionNumberText")
 													]
 
 												+ SHorizontalBox::Slot()
 													.AutoWidth()
 													.VAlign( VAlign_Bottom )
-													.Padding( 0.0f, 0.0f, 2.0f, 0.0f )	// Extra padding from the right edge
+													.Padding( 0.0f, 3.0f, 16.0f, 1.0f )	// Extra padding from the right edge
 													[
 														SNew(STextBlock)
 															.Text(FText::FromString(PluginDescriptor.VersionName))
@@ -333,90 +457,32 @@ void SPluginTile::RecreateWidgets()
 				
 										// Description
 										+ SVerticalBox::Slot()
-											.Padding( PaddingAmount )
-											[
-												SNew(STextBlock)
-													.Text(FText::FromString(PluginDescriptor.Description))
-													.HighlightText_Raw(&OwnerWeak.Pin()->GetOwner().GetPluginTextFilter(), &FPluginTextFilter::GetRawFilterText)
-													.AutoWrapText(true)
-											]
-
-										+ SVerticalBox::Slot()
-											.Padding(PaddingAmount)
-											.AutoHeight()
+											.Padding( PaddingAmount, 0, PaddingAmount, PaddingAmount)
 											[
 												SNew(SHorizontalBox)
 
-												// Enable checkbox
-												+ SHorizontalBox::Slot()
-													.Padding(PaddingAmount)
-													.HAlign(HAlign_Left)
-													[
-														SNew(SCheckBox)
-															.OnCheckStateChanged(this, &SPluginTile::OnEnablePluginCheckboxChanged)
-															.IsChecked(this, &SPluginTile::IsPluginEnabled)
-															.ToolTipText(LOCTEXT("EnableDisableButtonToolTip", "Toggles whether this plugin is enabled for your current project.  You may need to restart the program for this change to take effect."))
-															.Content()
-															[
-																SNew(STextBlock)
-																	.Text(LOCTEXT("EnablePluginCheckbox", "Enabled"))
-															]
-													]
-
-												// edit link
-												+ SHorizontalBox::Slot()
-													.HAlign(HAlign_Center)
-													.AutoWidth()
-													.Padding(2.0f, 0.0f, 0.0f, 0.0f)
-													[
-														SNew(SHorizontalBox)
-
-														+ SHorizontalBox::Slot()
-														.AutoWidth()
-														.Padding(PaddingAmount)
-														[
-															SNew(SHyperlink)
-															.Visibility(this, &SPluginTile::GetAuthoringButtonsVisibility)	
-															.OnNavigate(this, &SPluginTile::OnEditPlugin)
-															.Text(LOCTEXT("EditPlugin", "Edit..."))
-														]
-
-														+ SHorizontalBox::Slot()
-														.AutoWidth()
-														.Padding(PaddingAmount)
-														[
-															SNew(SHyperlink)
-															.Visibility(this, &SPluginTile::GetAuthoringButtonsVisibility)
-															.OnNavigate(this, &SPluginTile::OnPackagePlugin)
-															.Text(LOCTEXT("PackagePlugin", "Package..."))
-														]
-													]
-
-												// support link
 												+SHorizontalBox::Slot()
-													.Padding(PaddingAmount)
-													.HAlign(HAlign_Right)
-													[
-														SupportWidget.ToSharedRef()
-													]
+												[
+													SNew(STextBlock)
+													.Text(FText::FromString(PluginDescriptor.Description))
+													.HighlightText_Raw(&OwnerWeak.Pin()->GetOwner().GetPluginTextFilter(), &FPluginTextFilter::GetRawFilterText)
+													.AutoWrapText(true)
+												]
+												+SHorizontalBox::Slot()
+												.AutoWidth()
+												.HAlign(HAlign_Right)
+												.VAlign(VAlign_Top)
+												.Padding(0.f, 0.f, PaddingAmount + 14.f, 0.f)
+												[
+													CreatedByWidget.ToSharedRef()
+												]
+											]
 
-												// docs link
-												+ SHorizontalBox::Slot()
-													.AutoWidth()
-													.Padding(12.0f, PaddingAmount, PaddingAmount, PaddingAmount)
-													.HAlign(HAlign_Right)
-													[
-														DocumentationWidget.ToSharedRef()
-													]
-
-												// vendor link
-												+ SHorizontalBox::Slot()
-													.AutoWidth()
-													.Padding(12.0f, PaddingAmount, PaddingAmount, PaddingAmount)
-													.HAlign(HAlign_Right)
-													[
-														CreatedByWidget.ToSharedRef()
-													]
+										+ SVerticalBox::Slot()
+											.Padding(PaddingAmount, PaddingAmount + 5.f, PaddingAmount, PaddingAmount + 4.f)
+											.AutoHeight()
+											[
+												MiscLinks
 											]
 									]
 							]
@@ -425,6 +491,12 @@ void SPluginTile::RecreateWidgets()
 	];
 }
 
+bool SPluginTile::CanModifyPlugins() const
+{
+	bool bValue = true;
+	GConfig->GetBool(TEXT("EditorSettings"), TEXT("bCanModifyPluginsFromBrowser"), bValue, GEditorIni);
+	return bValue;
+}
 
 ECheckBoxState SPluginTile::IsPluginEnabled() const
 {
@@ -457,6 +529,11 @@ void FindPluginDependencies(const FString& Name, TSet<FString>& Dependencies, TM
 
 void SPluginTile::OnEnablePluginCheckboxChanged(ECheckBoxState NewCheckedState)
 {
+	if (!CanModifyPlugins())
+	{
+		return;
+	}
+
 	const bool bNewEnabledState = NewCheckedState == ECheckBoxState::Checked;
 
 	const FPluginDescriptor& PluginDescriptor = Plugin->GetDescriptor();
@@ -466,7 +543,15 @@ void SPluginTile::OnEnablePluginCheckboxChanged(ECheckBoxState NewCheckedState)
 		// If this is plugin is marked as beta, make sure the user is aware before enabling it.
 		if (PluginDescriptor.bIsBetaVersion)
 		{
-			FText WarningMessage = FText::Format(LOCTEXT("Warning_EnablingBetaPlugin", "Plugin '{0}' is a beta version and might be unstable or removed without notice. Please use with caution. Are you sure you want to enable the plugin?"), GetPluginNameText());
+			FText WarningMessage = FText::Format(LOCTEXT("Warning_EnablingBetaPlugin", "Plugin '{0}' is a beta version. {1} Are you sure you want to enable the plugin?"), GetPluginNameText(), GetBetaOrExperimentalHelpText());
+			if (EAppReturnType::No == FMessageDialog::Open(EAppMsgType::YesNo, WarningMessage))
+			{
+				return;
+			}
+		}
+		else if (PluginDescriptor.bIsExperimentalVersion)
+		{
+			FText WarningMessage = FText::Format(LOCTEXT("Warning_EnablingExperimentalPlugin", "Plugin '{0}' is an experimental version. {1} Are you sure you want to enable the plugin?"), GetPluginNameText(), GetBetaOrExperimentalHelpText());
 			if (EAppReturnType::No == FMessageDialog::Open(EAppMsgType::YesNo, WarningMessage))
 			{
 				return;
@@ -547,123 +632,30 @@ EVisibility SPluginTile::GetAuthoringButtonsVisibility() const
 {
 	if (FApp::IsEngineInstalled() && Plugin->GetLoadedFrom() == EPluginLoadedFrom::Engine)
 	{
-		return EVisibility::Hidden;
+		return EVisibility::Collapsed;
 	}
 	if (FApp::IsInstalled() && Plugin->GetType() != EPluginType::Mod)
 	{
-		return EVisibility::Hidden;
+		return EVisibility::Collapsed;
 	}
 	return EVisibility::Visible;
 }
 
 void SPluginTile::OnEditPlugin()
 {
-	// Construct the plugin metadata object using the descriptor for this plugin
-	UPluginMetadataObject* MetadataObject = NewObject<UPluginMetadataObject>();
-	MetadataObject->TargetIconPath = Plugin->GetBaseDir() / TEXT("Resources/Icon128.png");
-	MetadataObject->PopulateFromDescriptor(Plugin->GetDescriptor());
-	MetadataObject->AddToRoot();
-
-	// Create a property view
-	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	TSharedRef<IDetailsView> PropertyView = EditModule.CreateDetailView(FDetailsViewArgs(false, false, false, FDetailsViewArgs::ActorsUseNameArea, true));
-	PropertyView->SetObject(MetadataObject, true);
-
-	// Create the window
-	PropertiesWindow = SNew(SWindow)
-		.SupportsMaximize(false)
-		.SupportsMinimize(false)
-		.SizingRule(ESizingRule::UserSized)
-		.ClientSize(FVector2D(700.0f, 700.0f))
-		.Title(LOCTEXT("PluginMetadata", "Plugin Properties"))
-		.Content()
-		[
-			SNew(SBorder)
-			.Padding(FMargin(8.0f, 8.0f))
-			[
-				SNew(SVerticalBox)
-
-				+SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(FMargin(5.0f, 10.0f, 5.0f, 5.0f))
-				[
-					SNew(STextBlock)
-					.Font(FPluginStyle::Get()->GetFontStyle(TEXT("PluginMetadataNameFont")))
-					.Text(FText::FromString(Plugin->GetName()))
-				]
-
-				+ SVerticalBox::Slot()
-				.Padding(5)
-				[
-					PropertyView
-				]
-
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				.Padding(5)
-				.HAlign(HAlign_Right)
-				[
-					SNew(SButton)
-					.ContentPadding(FMargin(20.0f, 2.0f))
-					.Text(LOCTEXT("OkButtonLabel", "Ok"))
-					.OnClicked(this, &SPluginTile::OnEditPluginFinished, MetadataObject)
-				]
-			]
-		];
-
-	FSlateApplication::Get().AddModalWindow(PropertiesWindow.ToSharedRef(), OwnerWeak.Pin());//Args.ParentWidget);
+	FPluginBrowserModule::Get().OpenPluginEditor(Plugin.ToSharedRef(), OwnerWeak.Pin(), FSimpleDelegate::CreateRaw(this, &SPluginTile::OnEditPluginFinished));
 }
 
-FReply SPluginTile::OnEditPluginFinished(UPluginMetadataObject* MetadataObject)
+void SPluginTile::OnEditPluginFinished()
 {
-	FPluginDescriptor OldDescriptor = Plugin->GetDescriptor();
+	// Recreate the widgets on this tile
+	RecreateWidgets();
 
-	// Update the descriptor with the new metadata
-	FPluginDescriptor NewDescriptor = OldDescriptor;
-	MetadataObject->CopyIntoDescriptor(NewDescriptor);
-	MetadataObject->RemoveFromRoot();
-
-	// Close the properties window
-	PropertiesWindow->RequestDestroyWindow();
-
-	// Write both to strings
-	FString OldText;
-	OldDescriptor.Write(OldText);
-	FString NewText;
-	NewDescriptor.Write(NewText);
-	if(OldText.Compare(NewText, ESearchCase::CaseSensitive) != 0)
+	// Refresh the parent too
+	if(OwnerWeak.IsValid())
 	{
-		FString DescriptorFileName = Plugin->GetDescriptorFileName();
-
-		// First attempt to check out the file if SCC is enabled
-		ISourceControlModule& SourceControlModule = ISourceControlModule::Get();
-		if(SourceControlModule.IsEnabled())
-		{
-			ISourceControlProvider& SourceControlProvider = SourceControlModule.GetProvider();
-			TSharedPtr<ISourceControlState, ESPMode::ThreadSafe> SourceControlState = SourceControlProvider.GetState(DescriptorFileName, EStateCacheUsage::ForceUpdate);
-			if(SourceControlState.IsValid() && SourceControlState->CanCheckout())
-			{
-				SourceControlProvider.Execute(ISourceControlOperation::Create<FCheckOut>(), DescriptorFileName);
-			}
-		}
-
-		// Write to the file and update the in-memory metadata
-		FText FailReason;
-		if(!Plugin->UpdateDescriptor(NewDescriptor, FailReason))
-		{
-			FMessageDialog::Open(EAppMsgType::Ok, FailReason);
-		}
-
-		// Recreate the widgets on this tile
-		RecreateWidgets();
-
-		// Refresh the parent too
-		if(OwnerWeak.IsValid())
-		{
-			OwnerWeak.Pin()->GetOwner().SetNeedsRefresh();
-		}
+		OwnerWeak.Pin()->GetOwner().SetNeedsRefresh();
 	}
-	return FReply::Handled();
 }
 
 void SPluginTile::OnPackagePlugin()
@@ -694,6 +686,26 @@ void SPluginTile::OnPackagePlugin()
 
 	IUATHelperModule::Get().CreateUatTask(CommandLine, PlatformName, LOCTEXT("PackagePluginTaskName", "Packaging Plugin"),
 		LOCTEXT("PackagePluginTaskShortName", "Package Plugin Task"), FEditorStyle::GetBrush(TEXT("MainFrame.CookContent")));
+}
+
+FText SPluginTile::GetBetaOrExperimentalHelpText() const
+{
+	if (!Plugin)
+	{
+		return FText();
+	}
+
+	const FPluginDescriptor& PluginDescriptor = Plugin->GetDescriptor();
+	if (PluginDescriptor.bIsBetaVersion)
+	{
+		return LOCTEXT("Description_BetaPlugin", "Epic recommends using caution when shipping projects with beta plugins. Beta plugins support backwards compatibility for assets and APIs, but performance, stability, and platform support may not be shipping quality.");
+	}
+	if (PluginDescriptor.bIsExperimentalVersion)
+	{
+		return LOCTEXT("Description_ExperimentalPlugin", "Epic does not recommend shipping projects with experimental plugins. APIs, features, and the plugin itself are subject to change or be removed without notice.");
+	}
+
+	return FText();
 }
 
 #undef LOCTEXT_NAMESPACE

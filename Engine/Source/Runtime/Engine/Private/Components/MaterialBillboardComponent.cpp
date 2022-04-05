@@ -22,11 +22,11 @@
 /** A material sprite vertex. */
 struct FMaterialSpriteVertex
 {
-	FVector Position;
+	FVector3f Position;
 	FPackedNormal TangentX;
 	FPackedNormal TangentZ;
 	FColor Color;
-	FVector2D TexCoords;
+	FVector2f TexCoords;
 };
 
 /** A dummy vertex buffer used to give the FMaterialSpriteVertexFactory something to reference as a stream source. */
@@ -36,7 +36,7 @@ public:
 
 	virtual void InitRHI() override
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FMaterialSpriteVertexBuffer"));
 		VertexBufferRHI = RHICreateVertexBuffer(sizeof(FMaterialSpriteVertex),BUF_Static,CreateInfo);
 	}
 };
@@ -194,20 +194,20 @@ public:
 							{
 								const int WriteIndex = WriteOffset + VertexIndex;
 								// correct TBN of billboard by ViewToLocal, notice that we use -TangentX
-								StaticMeshVertexBuffers.StaticMeshVertexBuffer.SetVertexTangents(WriteIndex, -TangentX, TangentY, TangentZ);
+								StaticMeshVertexBuffers.StaticMeshVertexBuffer.SetVertexTangents(WriteIndex, (FVector3f)-TangentX, (FVector3f)TangentY, (FVector3f)TangentZ);
 								StaticMeshVertexBuffers.ColorVertexBuffer.VertexColor(WriteIndex) = Color.ToFColor(true);
 							}
 
 							// Set up the sprite vertex positions and texture coordinates.
-							StaticMeshVertexBuffers.PositionVertexBuffer.VertexPosition(WriteOffset + 0) = -WorldSizeX * TangentY + +WorldSizeY * TangentX;
-							StaticMeshVertexBuffers.PositionVertexBuffer.VertexPosition(WriteOffset + 1) = +WorldSizeX * TangentY + +WorldSizeY * TangentX;
-							StaticMeshVertexBuffers.PositionVertexBuffer.VertexPosition(WriteOffset + 2) = -WorldSizeX * TangentY + -WorldSizeY * TangentX;
-							StaticMeshVertexBuffers.PositionVertexBuffer.VertexPosition(WriteOffset + 3) = +WorldSizeX * TangentY + -WorldSizeY * TangentX;
+							StaticMeshVertexBuffers.PositionVertexBuffer.VertexPosition(WriteOffset + 0) = FVector3f(-WorldSizeX * TangentY + +WorldSizeY * TangentX);
+							StaticMeshVertexBuffers.PositionVertexBuffer.VertexPosition(WriteOffset + 1) = FVector3f(+WorldSizeX * TangentY + +WorldSizeY * TangentX);
+							StaticMeshVertexBuffers.PositionVertexBuffer.VertexPosition(WriteOffset + 2) = FVector3f(-WorldSizeX * TangentY + -WorldSizeY * TangentX);
+							StaticMeshVertexBuffers.PositionVertexBuffer.VertexPosition(WriteOffset + 3) = FVector3f(+WorldSizeX * TangentY + -WorldSizeY * TangentX);
 
-							StaticMeshVertexBuffers.StaticMeshVertexBuffer.SetVertexUV(WriteOffset + 0, 0, FVector2D(0, 0));
-							StaticMeshVertexBuffers.StaticMeshVertexBuffer.SetVertexUV(WriteOffset + 1, 0, FVector2D(0, 1));
-							StaticMeshVertexBuffers.StaticMeshVertexBuffer.SetVertexUV(WriteOffset + 2, 0, FVector2D(1, 0));
-							StaticMeshVertexBuffers.StaticMeshVertexBuffer.SetVertexUV(WriteOffset + 3, 0, FVector2D(1, 1));
+							StaticMeshVertexBuffers.StaticMeshVertexBuffer.SetVertexUV(WriteOffset + 0, 0, FVector2f(0, 0));
+							StaticMeshVertexBuffers.StaticMeshVertexBuffer.SetVertexUV(WriteOffset + 1, 0, FVector2f(0, 1));
+							StaticMeshVertexBuffers.StaticMeshVertexBuffer.SetVertexUV(WriteOffset + 2, 0, FVector2f(1, 0));
+							StaticMeshVertexBuffers.StaticMeshVertexBuffer.SetVertexUV(WriteOffset + 3, 0, FVector2f(1, 1));
 
 							// Set up the FMeshElement.
 							FMeshBatch& Mesh = Collector.AllocateMesh();
@@ -317,6 +317,22 @@ FBoxSphereBounds UMaterialBillboardComponent::CalcBounds(const FTransform& Local
 
 	return FBoxSphereBounds(LocalToWorld.GetLocation(),FVector(BoundsSize,BoundsSize,BoundsSize),FMath::Sqrt(3.0f * FMath::Square(BoundsSize)));
 }
+
+#if WITH_EDITOR
+bool UMaterialBillboardComponent::GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty)
+{
+	if (Elements.IsValidIndex(ElementIndex))
+	{
+		OutOwner = this;
+		OutPropertyPath = FString::Printf(TEXT("%s[%d].%s"), GET_MEMBER_NAME_STRING_CHECKED(UMaterialBillboardComponent, Elements), ElementIndex, GET_MEMBER_NAME_STRING_CHECKED(FMaterialSpriteElement, Material));
+		OutProperty = FMaterialSpriteElement::StaticStruct()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(FMaterialSpriteElement, Material));
+
+		return true;
+	}
+
+	return false;
+}
+#endif // WITH_EDITOR
 
 void UMaterialBillboardComponent::AddElement(
 	class UMaterialInterface* Material,

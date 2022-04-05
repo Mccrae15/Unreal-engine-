@@ -15,9 +15,7 @@
 #include "HAL/PlatformProcess.h"
 
 #include "Windows/AllowWindowsPlatformTypes.h"
-#if WINVER > 0x502	// Windows Vista or better required for DWM
-	#include <dwmapi.h>
-#endif
+#include <dwmapi.h>
 #include <ShlObj.h>
 #include "Windows/HideWindowsPlatformTypes.h"
 
@@ -218,14 +216,11 @@ void FWindowsWindow::Initialize( FWindowsApplication* const Application, const T
 		return;
 	}
 
-
-#if WINVER >= 0x0601
 	if ( RegisterTouchWindow( HWnd, 0 ) == false )
 	{
 		uint32 Error = GetLastError();
 		UE_LOG(LogWindows, Warning, TEXT("Register touch input failed!"));
 	}
-#endif
 
 	bool bDisableTouchFeedback;
 	GConfig->GetBool(TEXT("WindowsApplication.Accessibility"), TEXT("DisableTouchFeedback"), bDisableTouchFeedback, GEngineIni);
@@ -249,7 +244,6 @@ void FWindowsWindow::Initialize( FWindowsApplication* const Application, const T
 		SetOpacity( Definition->Opacity );
 	}
 
-#if WINVER > 0x502	// Windows Vista or better required for DWM
 	// Disable DWM Rendering and Nonclient Area painting if not showing the os window border
 	// This prevents the standard windows frame from ever being drawn
 	if( !Definition->HasOSWindowBorder )
@@ -268,8 +262,6 @@ void FWindowsWindow::Initialize( FWindowsApplication* const Application, const T
 		}
 	#endif
 	}
-
-#endif	// WINVER
 
 	// No region for non regular windows or windows displaying the os window border
 	if ( IsRegularWindow() && !Definition->HasOSWindowBorder )
@@ -298,6 +290,10 @@ void FWindowsWindow::Initialize( FWindowsApplication* const Application, const T
 		}
 
 		::SetWindowPos(HWnd, nullptr, 0, 0, 0, 0, SetWindowPositionFlags);
+		
+		// For regular non-game windows delete the close menu from the default system menu. This prevents accidental closing of win32 apps by double clicking by accident on the application icon
+		// The overwhelming majority of feedback is that is confusing behavior and we want to prevent this.
+		::DeleteMenu(GetSystemMenu(HWnd, false), SC_CLOSE, MF_BYCOMMAND);
 
 		AdjustWindowRegion( ClientWidth, ClientHeight );
 	}
@@ -432,18 +428,18 @@ void FWindowsWindow::DisableTouchFeedback()
 	{
 		typedef enum tagWINVER602FEEDBACK_TYPE
 		{
-			FEEDBACK_TOUCH_CONTACTVISUALIZATION = 1,
-			FEEDBACK_PEN_BARRELVISUALIZATION = 2,
-			FEEDBACK_PEN_TAP = 3,
-			FEEDBACK_PEN_DOUBLETAP = 4,
-			FEEDBACK_PEN_PRESSANDHOLD = 5,
-			FEEDBACK_PEN_RIGHTTAP = 6,
-			FEEDBACK_TOUCH_TAP = 7,
-			FEEDBACK_TOUCH_DOUBLETAP = 8,
-			FEEDBACK_TOUCH_PRESSANDHOLD = 9,
-			FEEDBACK_TOUCH_RIGHTTAP = 10,
-			FEEDBACK_GESTURE_PRESSANDTAP = 11,
-			FEEDBACK_MAX = 0xFFFFFFFF
+			WINVER602_FEEDBACK_TOUCH_CONTACTVISUALIZATION = 1,
+			WINVER602_FEEDBACK_PEN_BARRELVISUALIZATION = 2,
+			WINVER602_FEEDBACK_PEN_TAP = 3,
+			WINVER602_FEEDBACK_PEN_DOUBLETAP = 4,
+			WINVER602_FEEDBACK_PEN_PRESSANDHOLD = 5,
+			WINVER602_FEEDBACK_PEN_RIGHTTAP = 6,
+			WINVER602_FEEDBACK_TOUCH_TAP = 7,
+			WINVER602_FEEDBACK_TOUCH_DOUBLETAP = 8,
+			WINVER602_FEEDBACK_TOUCH_PRESSANDHOLD = 9,
+			WINVER602_FEEDBACK_TOUCH_RIGHTTAP = 10,
+			WINVER602_FEEDBACK_GESTURE_PRESSANDTAP = 11,
+			WINVER602_FEEDBACK_MAX = 0xFFFFFFFF
 		} WINVER602FEEDBACK_TYPE;
 
 		typedef BOOL(*SetWindowFeedbackSettingProc)(_In_ HWND hwnd,
@@ -457,9 +453,9 @@ void FWindowsWindow::DisableTouchFeedback()
 		if (SetWindowFeedbackSetting)
 		{
 			BOOL enabled = 0;
-			SetWindowFeedbackSetting(HWnd, FEEDBACK_TOUCH_CONTACTVISUALIZATION, 0, sizeof(enabled), &enabled);
-			SetWindowFeedbackSetting(HWnd, FEEDBACK_TOUCH_TAP, 0, sizeof(enabled), &enabled);
-			SetWindowFeedbackSetting(HWnd, FEEDBACK_TOUCH_PRESSANDHOLD, 0, sizeof(enabled), &enabled);
+			SetWindowFeedbackSetting(HWnd, WINVER602_FEEDBACK_TOUCH_CONTACTVISUALIZATION, 0, sizeof(enabled), &enabled);
+			SetWindowFeedbackSetting(HWnd, WINVER602_FEEDBACK_TOUCH_TAP, 0, sizeof(enabled), &enabled);
+			SetWindowFeedbackSetting(HWnd, WINVER602_FEEDBACK_TOUCH_PRESSANDHOLD, 0, sizeof(enabled), &enabled);
 		}
 	}
 }
@@ -544,8 +540,11 @@ void FWindowsWindow::ReshapeWindow( int32 NewX, int32 NewY, int32 NewWidth, int3
 	// We use SWP_NOSENDCHANGING when in fullscreen mode to prevent Windows limiting our window size to the current resolution, as that 
 	// prevents us being able to change to a higher resolution while in fullscreen mode
 	::SetWindowPos( HWnd, nullptr, WindowX, WindowY, NewWidth, NewHeight, SWP_NOZORDER | SWP_NOACTIVATE | ((WindowMode == EWindowMode::Fullscreen) ? SWP_NOSENDCHANGING : 0) );
+	
+	bool bAdjustSizeChange = Definition->SizeWillChangeOften || bVirtualSizeChanged;
+	bool bAdjustCorners = Definition->Type != EWindowType::Menu && Definition->CornerRadius > 0;
 
-	if( Definition->SizeWillChangeOften && bVirtualSizeChanged )
+	if (!Definition->HasOSWindowBorder && (bAdjustSizeChange || bAdjustCorners))
 	{
 		AdjustWindowRegion( VirtualWidth, VirtualHeight );
 	}

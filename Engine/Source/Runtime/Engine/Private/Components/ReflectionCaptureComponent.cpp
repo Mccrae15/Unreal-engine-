@@ -43,6 +43,7 @@
 
 #if WITH_EDITOR
 #include "Factories/TextureFactory.h"
+#include "TextureCompiler.h"
 #endif
 
 // ES3.0+ devices support seamless cubemap filtering, averaging edges will produce artifacts on those devices
@@ -108,6 +109,13 @@ FReflectionCaptureMapBuildData* UReflectionCaptureComponent::GetMapBuildData() c
 			else if (OwnerLevel->MapBuildData)
 			{
 				MapBuildData = OwnerLevel->MapBuildData;
+			}			
+			else if (OwnerLevel->OwningWorld->IsPartitionedWorld())
+			{
+				// Fallback to PersistentLevel in case of missing data in OwnerLevel
+				// This is quite likely for WP maps in PIE/engine until the ReflectionsCaptures
+				// are updated to distribute themselves in the cells (planned for 5.1)
+				MapBuildData = OwnerLevel->OwningWorld->PersistentLevel->MapBuildData;
 			}
 			 
 			if (MapBuildData)
@@ -258,11 +266,29 @@ ABoxReflectionCapture::ABoxReflectionCapture(const FObjectInitializer& ObjectIni
 	if (GetSpriteComponent())
 	{
 		GetSpriteComponent()->SetupAttachment(BoxComponent);
+
+
+		// Structure to hold one-time initialization
+		struct FConstructorStatics
+		{
+			FName NAME_ReflectionCapture;
+			ConstructorHelpers::FObjectFinderOptional<UTexture2D> Texture;
+			FConstructorStatics()
+				: NAME_ReflectionCapture(TEXT("ReflectionCapture"))
+				, Texture(TEXT("/Engine/EditorResources/S_BoxReflectionCapture"))
+			{
+			}
+		};
+		static FConstructorStatics ConstructorStatics;
+
+		GetSpriteComponent()->Sprite = ConstructorStatics.Texture.Get();
 	}
+
 	if (GetCaptureOffsetComponent())
 	{
 		GetCaptureOffsetComponent()->SetupAttachment(BoxComponent);
 	}
+
 #endif	//WITH_EDITORONLY_DATA
 	UBoxComponent* DrawInfluenceBox = CreateDefaultSubobject<UBoxComponent>(TEXT("DrawBox0"));
 	DrawInfluenceBox->SetupAttachment(GetCaptureComponent());
@@ -486,7 +512,7 @@ static void EdgeWalkSetup( bool ReverseDirection, int32 Edge, int32 MipSize, int
 	}
 }
 
-float GetMaxValueRGBM(const TArray<uint8>& FullHDRData, int32 CubemapSize, float Brightness)
+float GetMaxValueRGBM(const TArray<uint8>& FullHDRData, int32 CubemapSize)
 {
 	const int32 NumMips = FMath::CeilLogTwo(CubemapSize) + 1;
 	// get MaxValue from Mip0
@@ -505,7 +531,7 @@ float GetMaxValueRGBM(const TArray<uint8>& FullHDRData, int32 CubemapSize, float
 			for (int32 x = 0; x < MipSize; x++)
 			{
 				int32 TexelIndex = x + y * MipSize;
-				const FLinearColor LinearColor = FLinearColor(FaceSourceData[TexelIndex]) * Brightness;
+				const FLinearColor LinearColor = FLinearColor(FaceSourceData[TexelIndex]);
 				float MaxValueTexel = FMath::Max(FMath::Max(LinearColor.R, LinearColor.G), FMath::Max(LinearColor.B, DELTA));
 				if (MaxValue < MaxValueTexel)
 				{
@@ -519,7 +545,7 @@ float GetMaxValueRGBM(const TArray<uint8>& FullHDRData, int32 CubemapSize, float
 	return MaxValue;
 }
 
-void GenerateEncodedHDRData(const TArray<uint8>& FullHDRData, int32 CubemapSize, float Brightness, float MaxValueRGBM, TArray<uint8>& OutEncodedHDRData)
+void GenerateEncodedHDRData(const TArray<uint8>& FullHDRData, int32 CubemapSize, float MaxValueRGBM, TArray<uint8>& OutEncodedHDRData)
 {
 	check(FullHDRData.Num() > 0);
 	const int32 NumMips = FMath::CeilLogTwo(CubemapSize) + 1;
@@ -574,7 +600,7 @@ void GenerateEncodedHDRData(const TArray<uint8>& FullHDRData, int32 CubemapSize,
 			for( int32 Corner = 0; Corner < 4; Corner++ )
 			{
 				const FLinearColor LinearColor = AvgCornerColors[ CubeCornerList[Face][Corner] ] / 3.0f;
-				FaceDstData[ CornerTable[Corner] ] = RGBMEncode( LinearColor * Brightness, MaxValueRGBM);
+				FaceDstData[ CornerTable[Corner] ] = RGBMEncode( LinearColor, MaxValueRGBM);
 			}
 		}
 
@@ -615,7 +641,7 @@ void GenerateEncodedHDRData(const TArray<uint8>& FullHDRData, int32 CubemapSize,
 				const FLinearColor EdgeColorB = FLinearColor( FaceSrcDataB[ EdgeTexelB ] );
 				const FLinearColor AvgColor = 0.5f * ( EdgeColorA + EdgeColorB );
 				
-				FaceDstDataA[ EdgeTexelA ] = FaceDstDataB[ EdgeTexelB ] = RGBMEncode( AvgColor * Brightness, MaxValueRGBM);
+				FaceDstDataA[ EdgeTexelA ] = FaceDstDataB[ EdgeTexelB ] = RGBMEncode( AvgColor, MaxValueRGBM);
 			}
 		}
 #endif // MOBILE_AVERAGE_CUBEMAP_EDGES
@@ -629,7 +655,6 @@ void GenerateEncodedHDRData(const TArray<uint8>& FullHDRData, int32 CubemapSize,
 			FColor* FaceDestData = (FColor*)&OutEncodedHDRData[FaceDestIndex];
 
 			// Convert each texel from linear space FP16 to RGBM FColor
-			// Note: Brightness on the capture is baked into the encoded HDR data
 			// Skip edges
 			const int32 SkipEdges = MOBILE_AVERAGE_CUBEMAP_EDGES ? 1 : 0;
 
@@ -639,7 +664,7 @@ void GenerateEncodedHDRData(const TArray<uint8>& FullHDRData, int32 CubemapSize,
 				for (int32 x = SkipEdges; x < MipSize - SkipEdges; x++)
 				{
 					int32 TexelIndex = x + y * MipSize;
-					const FLinearColor LinearColor = FLinearColor(FaceSourceData[TexelIndex]) * Brightness;
+					const FLinearColor LinearColor = FLinearColor(FaceSourceData[TexelIndex]);
 					FaceDestData[ TexelIndex ] = RGBMEncode( LinearColor, MaxValueRGBM);
 				}
 			}
@@ -657,13 +682,15 @@ void GenerateEncodedHDRTextureCube(UMapBuildDataRegistry* Registry, FReflectionC
 	UTextureFactory* TextureFactory = NewObject<UTextureFactory>();
 
 	TextureFactory->CompressionSettings = TC_EncodedReflectionCapture;
-	UTextureCube* TextureCube = TextureFactory->CreateTextureCube(Registry, FName(TextureName), RF_Public);
+	UTextureCube* TextureCube = ReflectionCaptureData.EncodedCaptureData != nullptr ? ReflectionCaptureData.EncodedCaptureData : TextureFactory->CreateTextureCube(Registry, FName(TextureName), RF_Public);
 
 	if (TextureCube)
 	{
+		TextureCube->PreEditChange(nullptr);
+
 		TArray<uint8> TemporaryEncodedHDRCapturedData;
 
-		GenerateEncodedHDRData(ReflectionCaptureData.FullHDRCapturedData, ReflectionCaptureData.CubemapSize, ReflectionCaptureData.Brightness, MaxValueRGBM, TemporaryEncodedHDRCapturedData);
+		GenerateEncodedHDRData(ReflectionCaptureData.FullHDRCapturedData, ReflectionCaptureData.CubemapSize, MaxValueRGBM, TemporaryEncodedHDRCapturedData);
 		const int32 NumMips = FMath::CeilLogTwo(ReflectionCaptureData.CubemapSize) + 1;
 		TextureCube->Source.Init(
 			ReflectionCaptureData.CubemapSize,
@@ -673,6 +700,7 @@ void GenerateEncodedHDRTextureCube(UMapBuildDataRegistry* Registry, FReflectionC
 			TSF_BGRA8,
 			TemporaryEncodedHDRCapturedData.GetData()
 		);
+		TextureCube->Source.UseHashAsGuid();
 		// the loader can suggest a compression setting
 		TextureCube->LODGroup = TEXTUREGROUP_World;
 
@@ -693,8 +721,11 @@ void GenerateEncodedHDRTextureCube(UMapBuildDataRegistry* Registry, FReflectionC
 
 		TextureCube->UpdateResource();
 		TextureCube->MarkPackageDirty();
+
+		TextureCube->PostEditChange();
 	}
 	ReflectionCaptureData.EncodedCaptureData = TextureCube;
+	ReflectionCaptureData.bBrightnessBakedInEncodedHDRCubemap = false;
 #endif
 }
 
@@ -747,7 +778,7 @@ void UReflectionCaptureComponent::SendRenderTransform_Concurrent()
 void UReflectionCaptureComponent::OnRegister()
 {
 	const ERHIFeatureLevel::Type FeatureLevel = GetWorld()->FeatureLevel;
-	const bool bEncodedDataRequired = (FeatureLevel == ERHIFeatureLevel::ES3_1) && !IsMobileDeferredShadingEnabled(GMaxRHIShaderPlatform);
+	const bool bEncodedDataRequired = (FeatureLevel == ERHIFeatureLevel::ES3_1);
 
 	if (bEncodedDataRequired)
 	{
@@ -810,16 +841,17 @@ void UReflectionCaptureComponent::SerializeLegacyData(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FRenderingObjectVersion::GUID);
 	Ar.UsingCustomVersion(FReflectionCaptureObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 
 	if (Ar.CustomVer(FReflectionCaptureObjectVersion::GUID) < FReflectionCaptureObjectVersion::MoveReflectionCaptureDataToMapBuildData)
 	{
-		if (Ar.UE4Ver() >= VER_UE4_REFLECTION_CAPTURE_COOKING)
+		if (Ar.UEVer() >= VER_UE4_REFLECTION_CAPTURE_COOKING)
 		{
 			bool bLegacy = false;
 			Ar << bLegacy;
 		}
 
-		if (Ar.UE4Ver() >= VER_UE4_REFLECTION_DATA_IN_PACKAGES)
+		if (Ar.UEVer() >= VER_UE4_REFLECTION_DATA_IN_PACKAGES)
 		{
 			FGuid SavedVersion;
 			Ar << SavedVersion;
@@ -881,7 +913,6 @@ void UReflectionCaptureComponent::SerializeLegacyData(FArchive& Ar)
 					}
 
 					LegacyMapBuildData->AverageBrightness = AverageBrightness;
-					LegacyMapBuildData->Brightness = Brightness;
 
 					FReflectionCaptureMapBuildLegacyData LegacyComponentData;
 					LegacyComponentData.Id = MapBuildDataId;
@@ -929,6 +960,14 @@ void UReflectionCaptureComponent::UpdatePreviewShape()
 	if (CaptureOffsetComponent)
 	{
 		CaptureOffsetComponent->SetRelativeLocation_Direct(CaptureOffset / GetComponentTransform().GetScale3D());
+		if (CaptureOffset.IsNearlyZero())
+		{
+			CaptureOffsetComponent->SetVisibility(false);
+		}
+		else
+		{
+			CaptureOffsetComponent->SetVisibility(true);
+		}
 	}
 }
 
@@ -1025,7 +1064,12 @@ void UReflectionCaptureComponent::UpdateReflectionCaptureContents(UWorld* WorldT
 		// Don't capture and read back capture contents if we are currently doing async shader compiling
 		// This will keep the update requests in the queue until compiling finishes
 		// Note: this will also prevent uploads of cubemaps from DDC, which is unintentional
-		&& (GShaderCompilingManager == NULL || !GShaderCompilingManager->IsCompiling()))
+		&& (GShaderCompilingManager == NULL || !GShaderCompilingManager->IsCompiling())
+#if WITH_EDITOR
+		// Prevent any reflection capture if textures are still compiling
+		&& FTextureCompilingManager::Get().GetNumRemainingTextures() == 0
+#endif
+		)
 	{
 		//guarantee that all render proxies are up to date before kicking off this render
 		WorldToUpdate->SendAllEndOfFrameUpdates();
@@ -1135,7 +1179,7 @@ void UBoxReflectionCaptureComponent::UpdatePreviewShape()
 
 float UBoxReflectionCaptureComponent::GetInfluenceBoundingRadius() const
 {
-	return (GetComponentTransform().GetScale3D() + FVector(BoxTransitionDistance)).Size();
+	return GetComponentTransform().GetScale3D().Size();
 }
 
 #if WITH_EDITOR
@@ -1176,7 +1220,7 @@ FReflectionCaptureProxy::FReflectionCaptureProxy(const UReflectionCaptureCompone
 {
 	PackedIndex = INDEX_NONE;
 	SortedCaptureIndex = INDEX_NONE;
-	CaptureOffset = InComponent->CaptureOffset;
+	CaptureOffset = FVector3f(InComponent->CaptureOffset);
 
 	const USphereReflectionCaptureComponent* SphereComponent = Cast<const USphereReflectionCaptureComponent>(InComponent);
 	const UBoxReflectionCaptureComponent* BoxComponent = Cast<const UBoxReflectionCaptureComponent>(InComponent);
@@ -1208,10 +1252,7 @@ FReflectionCaptureProxy::FReflectionCaptureProxy(const UReflectionCaptureCompone
 	Component = InComponent;
 	const FReflectionCaptureMapBuildData* MapBuildData = InComponent->GetMapBuildData();
 
-	EncodedHDRCubemap = Component->CachedEncodedHDRCubemap != nullptr ? Component->CachedEncodedHDRCubemap->Resource: nullptr;
-
-
-	
+	EncodedHDRCubemap = Component->CachedEncodedHDRCubemap;
 	EncodedHDRAverageBrightness = Component->CachedAverageBrightness;
 	MaxValueRGBM = Component->MaxValueRGBM;
 	SetTransform(InComponent->GetComponentTransform().ToMatrixWithScale());
@@ -1224,20 +1265,25 @@ FReflectionCaptureProxy::FReflectionCaptureProxy(const UReflectionCaptureCompone
 
 void FReflectionCaptureProxy::SetTransform(const FMatrix& InTransform)
 {
-	Position = InTransform.GetOrigin();
-	BoxTransform = InTransform.Inverse();
+	const FLargeWorldRenderPosition AbsolutePosition(InTransform.GetOrigin());
 
-	FVector ForwardVector(1.0f,0.0f,0.0f);
-	FVector RightVector(0.0f,-1.0f,0.0f);
-	const FVector4 PlaneNormal = InTransform.TransformVector(ForwardVector);
+	RelativePosition = AbsolutePosition.GetOffset();
+	TilePosition = AbsolutePosition.GetTile();
+
+	const FMatrix44f LocalToRelativeWorld = FMatrix44f(InTransform.RemoveTranslation());
+	BoxTransform = LocalToRelativeWorld.Inverse();
+
+	FVector3f ForwardVector(1.0f,0.0f,0.0f);
+	FVector3f RightVector(0.0f,-1.0f,0.0f);
+	const FVector4f PlaneNormal = LocalToRelativeWorld.TransformVector(ForwardVector);
 
 	// Normalize the plane
-	ReflectionPlane = FPlane(Position, FVector(PlaneNormal).GetSafeNormal());
-	const FVector ReflectionXAxis = InTransform.TransformVector(RightVector);
-	const FVector ScaleVector = InTransform.GetScaleVector();
+	LocalReflectionPlane = FPlane4f(FVector3f::ZeroVector, FVector3f(PlaneNormal).GetSafeNormal());
+	const FVector3f ReflectionXAxis = LocalToRelativeWorld.TransformVector(RightVector);
+	const FVector3f ScaleVector = LocalToRelativeWorld.GetScaleVector();
 	BoxScales = ScaleVector;
 	// Include the owner's draw scale in the axes
-	ReflectionXAxisAndYScale = ReflectionXAxis.GetSafeNormal() * ScaleVector.Y;
+	ReflectionXAxisAndYScale = FVector4(FVector4f(ReflectionXAxis.GetSafeNormal() * ScaleVector.Y));
 	ReflectionXAxisAndYScale.W = ScaleVector.Y / ScaleVector.Z;
 }
 
@@ -1246,13 +1292,12 @@ void FReflectionCaptureProxy::UpdateMobileUniformBuffer()
 	FTexture* CaptureTexture = GBlackTextureCube;
 	if (EncodedHDRCubemap)
 	{
-		check(EncodedHDRCubemap->IsInitialized());
-		CaptureTexture = EncodedHDRCubemap;
+		CaptureTexture = EncodedHDRCubemap->GetResource();
 	}
 		
 	FMobileReflectionCaptureShaderParameters Parameters;
 	//To keep ImageBasedReflectionLighting coherence with PC, use AverageBrightness instead of InvAverageBrightness to calculate the IBL contribution
-	Parameters.Params = FVector4(EncodedHDRAverageBrightness, 0.f, MaxValueRGBM <= 0.0f ? 16.0f: MaxValueRGBM, 0.f);
+	Parameters.Params = FVector4f(EncodedHDRAverageBrightness, 0.f, MaxValueRGBM <= 0.0f ? 16.0f: MaxValueRGBM, Brightness);
 	Parameters.Texture = CaptureTexture->TextureRHI;
 	Parameters.TextureSampler = CaptureTexture->SamplerStateRHI;
 

@@ -67,6 +67,10 @@ public:
 	DECLARE_EVENT_ThreeParams(ULayersSubsystem, FOnLayersChanged, const ELayersAction::Type /*Action*/, const TWeakObjectPtr< ULayer >& /*ChangedLayer*/, const FName& /*ChangedProperty*/);
 	virtual FOnLayersChanged& OnLayersChanged() final { return LayersChanged; }
 
+	/** Broadcasts whenever one or more Actors changed layers*/
+	DECLARE_EVENT_OneParam(ULayersSubsystem, FOnActorsLayersChanged, const TWeakObjectPtr< AActor >& /*ChangedActor*/);
+	virtual FOnActorsLayersChanged& OnActorsLayersChanged() final { return ActorsLayersChanged; }
+
 	///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Operations on Levels
 
@@ -187,6 +191,14 @@ public:
 	 */
 	virtual bool AddActorsToLayers(const TArray< TWeakObjectPtr< AActor > >& Actors, const TArray< FName >& LayerNames) final;
 
+	/**
+	*	Disassociates actors from the layer system, generally used before deleting the Actors
+	*
+	*	@param	Actors	The actors to disassociate from the layer system
+	*/
+	UFUNCTION(BlueprintCallable, Category = Layers)
+	virtual bool DisassociateActorsFromLayers(const TArray< AActor* >& Actors) final;
+	
 	/**
 	 * Removes the actors from the specified layer.
 	 *
@@ -602,6 +614,10 @@ public:
 	 **/
 	UFUNCTION(BlueprintCallable, Category = Layers)
 	void EditorRefreshLayerBrowser();
+	/**
+	 * Delegate handler for FEditorDelegates::PostUndoRedo. It internally calls LayersChanged.Broadcast and UpdateAllActorsVisibility to refresh the actors of each layer.
+	 **/
+	void PostUndoRedo();
 
 private:
 	void AddActorToStats(ULayer* Layer, AActor* Actor);
@@ -617,6 +633,9 @@ private:
 
 	/**	Fires whenever one or more layer changes */
 	FOnLayersChanged LayersChanged;
+
+	/**	Fires whenever one or more actor layer changes */
+	FOnActorsLayersChanged ActorsLayersChanged;
 
 	/**
 	 * Auxiliary class that sets the callback function to FEditorDelegates::MapChange.Broadcast() and FEditorDelegates::RefreshLayerBrowser.Broadcast().

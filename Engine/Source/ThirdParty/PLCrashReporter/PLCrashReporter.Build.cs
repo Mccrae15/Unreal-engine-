@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 using UnrealBuildTool;
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 public class PLCrashReporter : ModuleRules
 {

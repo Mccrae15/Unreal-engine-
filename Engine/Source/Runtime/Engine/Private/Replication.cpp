@@ -164,9 +164,8 @@ void AMatineeActor::PostNetReceive()
 			{
 				AActor* Actor = ControlledActors[ActorIndex];
 				UInterpGroupInst * GrInst = FindGroupInst(Actor);
-				if (Actor != NULL && !Actor->IsPendingKill() && GrInst != NULL) 
+				if (IsValid(Actor) && GrInst != NULL) 
 				{
-					Actor->AddControllingMatineeActor(*this);
 					// fire an event if we're really playing (and not just starting it up to do a position update)
 					if (bIsPlaying)
 					{
@@ -222,7 +221,6 @@ void AMatineeActor::PostNetReceive()
 				AActor* Actor = ControlledActors[ ActorIndex ];
 				if (Actor != NULL)
 				{
-					Actor->RemoveControllingMatineeActor(*this);
 
 					// fire an event if we were really playing (and not just starting it up to do a position update)
 					if (SavedbIsPlaying)

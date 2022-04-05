@@ -35,6 +35,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
+#include "SPrimaryButton.h"
 
 /* LevelSequenceEditorHelpers
  *****************************************************************************/
@@ -79,6 +80,7 @@ class SMasterSequenceSettings : public SCompoundWidget, public FGCObject
 		Details2View = PropertyEditor.CreateDetailView(Details2ViewArgs);
 
 		ChildSlot
+		.Padding(8.f)
 		[
 			SNew(SVerticalBox)
 
@@ -121,8 +123,7 @@ class SMasterSequenceSettings : public SCompoundWidget, public FGCObject
 			.HAlign(HAlign_Right)
 			.Padding(5.f)
 			[
-				SNew(SButton)
-				.ContentPadding(FMargin(10, 5))
+				SNew(SPrimaryButton)
 				.Text(LOCTEXT("CreateMasterSequence", "Create Master Sequence"))
 				.OnClicked(this, &SMasterSequenceSettings::OnCreateMasterSequence)
 			]
@@ -156,6 +157,10 @@ class SMasterSequenceSettings : public SCompoundWidget, public FGCObject
 	{
 		Collector.AddReferencedObject(MasterSequenceSettings);
 		Collector.AddReferencedObject(ToolsProjectSettings);
+	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SMasterSequenceSettings");
 	}
 
 private:

@@ -8,6 +8,7 @@
 #include "NiagaraCommon.h"
 #include "EdGraph/EdGraphSchema.h"
 #include "Layout/Visibility.h"
+#include "NiagaraDebuggerCommon.h"
 
 class FDetailWidgetRow;
 class IPropertyHandle;
@@ -15,6 +16,8 @@ class IPropertyHandleArray;
 enum class ECheckBoxState : uint8;
 class FNiagaraDebugger;
 class UNiagaraDebugHUDSettings;
+
+#if WITH_NIAGARA_DEBUGGER
 
 class FNiagaraDebugHUDVariableCustomization : public IPropertyTypeCustomization
 {
@@ -62,3 +65,4 @@ private:
 };
 
 //////////////////////////////////////////////////////////////////////////
+#endif

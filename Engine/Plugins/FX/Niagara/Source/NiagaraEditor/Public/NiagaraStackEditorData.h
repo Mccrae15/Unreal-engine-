@@ -32,7 +32,7 @@ public:
 	 * @param bIsExpandedDefault The default value to return if the expanded state hasn't been set for the stack entry.
 	 * @param StackItemKey A unique key for the entry.
 	 */
-	bool GetStackEntryIsExpanded(const FString& StackEntryKey, bool bIsExpandedDefault) const;
+	NIAGARAEDITOR_API bool GetStackEntryIsExpanded(const FString& StackEntryKey, bool bIsExpandedDefault) const;
 
 	/*
 	 * Sets whether or not a stack entry is Expanded.
@@ -40,6 +40,20 @@ public:
 	 * @param bIsExpanded Whether or not the entry is expanded.
 	 */
 	void SetStackEntryIsExpanded(const FString& StackEntryKey, bool bIsExpanded);
+
+	/*
+	* Gets whether or not a stack entry is Expanded.
+	* @param bIsExpandedDefault The default value to return if the expanded state hasn't been set for the stack entry.
+	* @param StackItemKey A unique key for the entry.
+	*/
+	NIAGARAEDITOR_API bool GetStackEntryIsExpandedInOverview(const FString& StackEntryKey, bool bIsExpandedDefault) const;
+
+	/*
+	* Sets whether or not a stack entry is Expanded.
+	* @param StackEntryKey A unique key for the entry.
+	* @param bIsExpanded Whether or not the entry is expanded.
+	*/
+	void SetStackEntryIsExpandedInOverview(const FString& StackEntryKey, bool bIsExpanded);
 
 	/*
 	 * Gets whether or not a stack entry was Expanded before triggering a stack search.
@@ -68,6 +82,20 @@ public:
 	* @param bIsExpanded Whether or not the entry is expanded.
 	*/
 	void SetStackItemShowAdvanced(const FString& StackEntryKey, bool bShowAdanced);
+
+	/*
+	* Gets the active section for a stack entry.
+	* @param StackItemKey A unique key for the entry.
+	* @param ActiveSectionDefault The default value to return if an active section has not been set before.
+	*/
+	FText GetStackEntryActiveSection(const FString& StackEntryKey, FText ActiveSectionDefault) const;
+
+	/*
+	* Sets the active section for a stack entry.
+	* @param StackItemKey A unique key for the entry.
+	* @param SelectedSection The selected section for the entry.
+	*/
+	void SetStackEntryActiveSection(const FString& StackEntryKey, FText ActiveSection);
 
 	/*
 	* Gets a stack entry's display name. Returns null if none is found.
@@ -131,6 +159,7 @@ public:
 private:
 	TMap<FString, bool> StackEntryKeyToRenamePendingMap;
 
+	UPROPERTY()
 	TMap<FString, bool> StackEntryKeyToExpandedMap;
 
 	TMap<FString, bool> StackEntryKeyToPreSearchExpandedMap;
@@ -138,8 +167,19 @@ private:
 	TMap<FString, bool> StackItemKeyToShowAdvancedMap;
 
 	UPROPERTY()
-	TMap<FString, FText> StackEntryKeyToDisplayName;
+	TMap<FString, bool> StackEntryKeyToExpandedOverviewMap;
 
+	TMap<FString, FText> StackEntryKeyToActiveSectionMap;
+
+	/* Marking those FTexts explicitly as editoronly_data will make localization not pick these up.
+	 * This is a workaround. EditorDataBase in system & emitter is already flagged as editor only, but it doesn't propagate properly */
+#if WITH_EDITORONLY_DATA
+	
+	UPROPERTY()
+	TMap<FString, FText> StackEntryKeyToDisplayName;
+	
+#endif
+	
 	bool bShowAllAdvanced;
 
 	bool bShowOutputs;

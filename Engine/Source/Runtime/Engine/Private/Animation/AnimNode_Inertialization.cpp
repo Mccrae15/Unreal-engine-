@@ -3,9 +3,17 @@
 #include "Animation/AnimNode_Inertialization.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "AnimationRuntime.h"
+#include "Animation/AnimNodeMessages.h"
+#include "Animation/AnimNode_SaveCachedPose.h"
+#include "HAL/LowLevelMemTracker.h"
+
+LLM_DEFINE_TAG(Animation_Inertialization);
 
 #define LOCTEXT_NAMESPACE "AnimNode_Inertialization"
 
+IMPLEMENT_ANIMGRAPH_MESSAGE(UE::Anim::IInertializationRequester);
+
+const FName UE::Anim::IInertializationRequester::Attribute("InertialBlending");
 
 TAutoConsoleVariable<int32> CVarAnimInertializationEnable(TEXT("a.AnimNode.Inertialization.Enable"), 1, TEXT("Enable / Disable Inertialization"));
 TAutoConsoleVariable<int32> CVarAnimInertializationIgnoreVelocity(TEXT("a.AnimNode.Inertialization.IgnoreVelocity"), 0, TEXT("Ignore velocity information during Inertialization (effectively reverting to a quintic diff blend)"));
@@ -15,6 +23,44 @@ TAutoConsoleVariable<int32> CVarAnimInertializationIgnoreDeficit(TEXT("a.AnimNod
 static constexpr int32 INERTIALIZATION_MAX_POSE_SNAPSHOTS = 2;
 static constexpr float INERTIALIZATION_TIME_EPSILON = 1.0e-7f;
 
+namespace UE { namespace Anim {
+
+// Inertialization request event bound to a node
+class FInertializationRequester : public IInertializationRequester
+{
+public:
+	FInertializationRequester(const FAnimationBaseContext& InContext, FAnimNode_Inertialization* InNode)
+		: Node(*InNode)
+		, NodeId(InContext.GetCurrentNodeId())
+		, Proxy(*InContext.AnimInstanceProxy)
+	{}
+
+private:
+	// IInertializationRequester interface
+	virtual void RequestInertialization(float InRequestedDuration) override
+	{ 
+		Node.RequestInertialization(InRequestedDuration); 
+	}
+
+	virtual void AddDebugRecord(const FAnimInstanceProxy& InSourceProxy, int32 InSourceNodeId)
+	{
+#if WITH_EDITORONLY_DATA
+		Proxy.RecordNodeAttribute(InSourceProxy, NodeId, InSourceNodeId, IInertializationRequester::Attribute);
+#endif
+		TRACE_ANIM_NODE_ATTRIBUTE(Proxy, InSourceProxy, NodeId, InSourceNodeId, IInertializationRequester::Attribute);
+	}
+
+	// Node to target
+	FAnimNode_Inertialization& Node;
+
+	// Node index
+	int32 NodeId;
+
+	// Proxy currently executing
+	FAnimInstanceProxy& Proxy;
+};
+
+}}	// namespace UE::Anim
 
 FAnimNode_Inertialization::FAnimNode_Inertialization()
 	: DeltaTime(0.0f)
@@ -51,6 +97,7 @@ void FAnimNode_Inertialization::RequestInertialization(float Duration)
 
 void FAnimNode_Inertialization::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
+	LLM_SCOPE_BYNAME(TEXT("Animation/Inertialization"));
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Initialize_AnyThread);
 
 	FAnimNode_Base::Initialize_AnyThread(Context);
@@ -65,6 +112,19 @@ void FAnimNode_Inertialization::Initialize_AnyThread(const FAnimationInitializeC
 	Deactivate();
 
 	InertializationPoseDiff.Reset();
+	CachedFilteredCurvesUIDs.Reset();
+
+	const USkeleton* Skeleton = Context.AnimInstanceProxy->GetSkeleton();
+	check(Skeleton);
+	for (const FName& CurveName : FilteredCurves)
+	{
+		SmartName::UID_Type NameUID = Skeleton->GetUIDByName(USkeleton::AnimCurveMappingName, CurveName);
+		if (NameUID != SmartName::MaxUID)
+		{
+			// Grab UIDs of filtered curves to avoid lookup later
+			CachedFilteredCurvesUIDs.Add(NameUID);
+		}
+	}
 }
 
 
@@ -79,9 +139,37 @@ void FAnimNode_Inertialization::CacheBones_AnyThread(const FAnimationCacheBonesC
 
 void FAnimNode_Inertialization::Update_AnyThread(const FAnimationUpdateContext& Context)
 {
+	LLM_SCOPE_BYNAME(TEXT("Animation/Inertialization"));
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Update_AnyThread);
 
-	FScopedAnimNodeTracker Tracked = Context.TrackAncestor(this);
+	const int32 NodeId = Context.GetCurrentNodeId();
+	const FAnimInstanceProxy& Proxy = *Context.AnimInstanceProxy;
+
+	// Allow nodes further towards the leaves to inertialize using this node
+	UE::Anim::TScopedGraphMessage<UE::Anim::FInertializationRequester> Inertialization(Context, Context, this);
+
+	// Handle skipped updates for cached poses by forwarding to inertialization nodes in those residual stacks
+	UE::Anim::TScopedGraphMessage<UE::Anim::FCachedPoseSkippedUpdateHandler> CachedPoseSkippedUpdate(Context, [this, NodeId, &Proxy](TArrayView<const UE::Anim::FMessageStack> InSkippedUpdates)
+	{
+		// If we have a pending request forward the request to other Inertialization nodes
+		// that were skipped due to pose caching.
+		if(RequestedDuration >= 0.0f)
+		{
+			// Cached poses have their Update function called once even though there may be multiple UseCachedPose nodes for the same pose.
+			// Because of this, there may be Inertialization ancestors of the UseCachedPose nodes that missed out on requests.
+			// So here we forward 'this' node's requests to the ancestors of those skipped UseCachedPose nodes.
+			for (const UE::Anim::FMessageStack& Stack : InSkippedUpdates)
+			{
+				Stack.ForEachMessage<UE::Anim::IInertializationRequester>([this, NodeId, &Proxy](UE::Anim::IInertializationRequester& InMessage)
+				{
+					InMessage.RequestInertialization(RequestedDuration);
+ 					InMessage.AddDebugRecord(Proxy, NodeId);
+
+					return UE::Anim::FMessageStack::EEnumerate::Stop;
+				});
+			}
+		}
+	});
 
 	Source.Update(Context);
 
@@ -92,6 +180,7 @@ void FAnimNode_Inertialization::Update_AnyThread(const FAnimationUpdateContext& 
 
 void FAnimNode_Inertialization::Evaluate_AnyThread(FPoseContext& Output)
 {
+	LLM_SCOPE_BYNAME(TEXT("Animation/Inertialization"));
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(Evaluate_AnyThread);
 
 	Source.Evaluate(Output);
@@ -292,30 +381,6 @@ void FAnimNode_Inertialization::ResetDynamics(ETeleportType InTeleportType)
 }
 
 
-bool FAnimNode_Inertialization::WantsSkippedUpdates() const
-{
-	// We want to receive an OnUpdatesSkipped callback if we have a pending request.
-	// This will give us a chance to forward the request to other Inertialization nodes
-	// that were skipped due to pose caching.
-	return RequestedDuration >= 0.0f;
-}
-
-
-void FAnimNode_Inertialization::OnUpdatesSkipped(TArrayView<const FAnimationUpdateContext*> SkippedUpdateContexts)
-{
-	// Cached poses have their Update function called once even though there may be multiple UseCachedPose nodes for the same pose.
-	// Because of this, there may be Inertialization ancestors of the UseCachedPose nodes that missed out on requests.
-	// So here we forward 'this' node's requests to the ancestors of those skipped UseCachedPose nodes.
-	for (const FAnimationUpdateContext* Update : SkippedUpdateContexts)
-	{
-		if (FAnimNode_Inertialization* OtherIneritalizationNode = Update->GetAncestor<FAnimNode_Inertialization>())
-		{
-			OtherIneritalizationNode->RequestInertialization(RequestedDuration);
-		}
-	}
-}
-
-
 float FAnimNode_Inertialization::ConsumeInertializationRequest(FPoseContext& Context)
 {
 	const float Duration = RequestedDuration;
@@ -336,7 +401,7 @@ void FAnimNode_Inertialization::StartInertialization(FPoseContext& Context, FIne
 		}
 	}
 
-	OutPoseDiff.InitFrom(Context.Pose, Context.Curve, Context.AnimInstanceProxy->GetComponentTransform(), AttachParentName, PreviousPose1, PreviousPose2);
+	OutPoseDiff.InitFrom(Context.Pose, Context.Curve, Context.AnimInstanceProxy->GetComponentTransform(), AttachParentName, PreviousPose1, PreviousPose2, CachedFilteredCurvesUIDs);
 }
 
 
@@ -388,7 +453,7 @@ void FInertializationPose::InitFrom(const FCompactPose& Pose, const FBlendedCurv
 // Prev2		the pose and curves from two frames before
 // DeltaTime	the time elapsed between Prev1 and Pose
 //
-void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlendedCurve& Curves, const FTransform& ComponentTransform, const FName& AttachParentName, const FInertializationPose& Prev1, const FInertializationPose& Prev2)
+void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlendedCurve& Curves, const FTransform& ComponentTransform, const FName& AttachParentName, const FInertializationPose& Prev1, const FInertializationPose& Prev2, const TSet<SmartName::UID_Type>& FilteredCurvesUIDs)
 {
 	const FBoneContainer& BoneContainer = Pose.GetBoneContainer();
 
@@ -568,6 +633,12 @@ void FInertializationPoseDiff::InitFrom(const FCompactPose& Pose, const FBlended
 		if (CurrIdx == INDEX_NONE || Prev1Idx == INDEX_NONE)
 		{
 			// CurveDiff is zeroed
+			continue;
+		}
+
+		// Check if the curve is in our filter set. Leave CurveDiff zeroed if it is.
+		if (FilteredCurvesUIDs.Contains((SmartName::UID_Type)CurveUID))
+		{
 			continue;
 		}
 

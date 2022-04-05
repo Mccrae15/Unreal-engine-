@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "Interfaces/OnlineStatsInterface.h"
 #include "Interfaces/OnlineEventsInterface.h"
 #include "OnlineUserEOSPlus.h"

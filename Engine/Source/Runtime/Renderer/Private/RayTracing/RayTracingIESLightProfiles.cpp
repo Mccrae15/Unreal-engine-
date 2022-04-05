@@ -39,20 +39,18 @@ void FIESLightProfileResource::BuildIESLightProfilesTexture(FRHICommandListImmed
 
 	if (!DefaultTexture)
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		CreateInfo.DebugName = TEXT("RTDefaultIESProfile");
+		FRHIResourceCreateInfo CreateInfo(TEXT("RTDefaultIESProfile"));
 		DefaultTexture = RHICreateTexture2D(AllowedIESProfileWidth, 1, AllowedIESProfileFormat, 1, 1, TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);
 		FUnorderedAccessViewRHIRef UAV = RHICreateUnorderedAccessView(DefaultTexture, 0);
 
 		RHICmdList.Transition(FRHITransitionInfo(DefaultTexture, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-		RHICmdList.ClearUAVFloat(UAV, FVector4(1.0f, 1.0f, 1.0f, 1.0f));
+		RHICmdList.ClearUAVFloat(UAV, FVector4f(1.0f, 1.0f, 1.0f, 1.0f));
 		RHICmdList.Transition(FRHITransitionInfo(DefaultTexture, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
 	}
 
 	if (!AtlasTexture || AtlasTexture->GetSizeY() != NewArraySize)
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		CreateInfo.DebugName = TEXT("RTIESProfileAtlas");
+		FRHIResourceCreateInfo CreateInfo(TEXT("RTIESProfileAtlas"));
 		AtlasTexture = RHICreateTexture2D(AllowedIESProfileWidth, NewArraySize, AllowedIESProfileFormat, 1, 1, TexCreate_ShaderResource | TexCreate_UAV, CreateInfo);
 		AtlasUAV = RHICreateUnorderedAccessView(AtlasTexture, 0);
 	}
@@ -77,7 +75,7 @@ void FIESLightProfileResource::BuildIESLightProfilesTexture(FRHICommandListImmed
 		FTextureRHIRef ProfileTexture; 
 		if (IsIESTextureFormatValid(LightProfileTexture))
 		{
-			ProfileTexture = LightProfileTexture->Resource->TextureRHI;
+			ProfileTexture = LightProfileTexture->GetResource()->TextureRHI;
 		}
 		else
 		{
@@ -97,14 +95,14 @@ void FIESLightProfileResource::BuildIESLightProfilesTexture(FRHICommandListImmed
 bool FIESLightProfileResource::IsIESTextureFormatValid(const UTextureLightProfile* Texture) const
 {
 	if (Texture
-		&& Texture->Resource
-		&& Texture->Resource->TextureRHI
-		&& Texture->PlatformData
-		&& Texture->PlatformData->PixelFormat == AllowedIESProfileFormat
-		&& Texture->PlatformData->Mips.Num() == 1
-		&& Texture->PlatformData->Mips[0].SizeX == AllowedIESProfileWidth
+		&& Texture->GetResource()
+		&& Texture->GetResource()->TextureRHI
+		&& Texture->GetPlatformData()
+		&& Texture->GetPlatformData()->PixelFormat == AllowedIESProfileFormat
+		&& Texture->GetPlatformData()->Mips.Num() == 1
+		&& Texture->GetPlatformData()->Mips[0].SizeX == AllowedIESProfileWidth
 		//#dxr_todo: UE-70840 anisotropy in IES files is ignored so far (to support that, we should not store one IES profile per row but use more than one row per profile in that case)
-		&& Texture->PlatformData->Mips[0].SizeY == 1
+		&& Texture->GetPlatformData()->Mips[0].SizeY == 1
 		)
 	{
 		return true;

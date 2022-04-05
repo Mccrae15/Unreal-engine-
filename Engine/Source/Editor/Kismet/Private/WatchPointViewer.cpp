@@ -18,6 +18,7 @@
 #include "AssetRegistryModule.h"
 
 #include "Editor.h"
+#include "ToolMenus.h"
 
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Images/SImage.h"
@@ -29,6 +30,7 @@
 
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
+#include "Kismet2/DebuggerCommands.h"
 
 #include "KismetNodes/KismetNodeInfoContext.h"
 #include "Stats/Stats.h"
@@ -76,7 +78,7 @@ namespace
 			FText InBlueprintName,
 			FText InGraphName,
 			FText InNodeName,
-			FDebugInfo Info
+			const FPropertyInstanceInfo& Info
 		)
 			: BP(InBP)
 			, Node(InNode)
@@ -85,18 +87,18 @@ namespace
 			, BlueprintName(MoveTemp(InBlueprintName))
 			, GraphName(MoveTemp(InGraphName))
 			, NodeName(MoveTemp(InNodeName))
-			, DisplayName(MoveTemp(Info.DisplayName))
-			, Value(MoveTemp(Info.Value))
-			, Type(MoveTemp(Info.Type))
+			, DisplayName(Info.DisplayName)
+			, Value(Info.Value)
+			, Type(Info.Type)
 		{
 			SetObjectBeingDebuggedName();
 
 			UPackage* Package = Cast<UPackage>(BP.IsValid() ? BP->GetOuter() : nullptr);
 			BlueprintPackageName = Package ? Package->GetFName() : FName();
 
-			for (FDebugInfo& ChildInfo : Info.Children)
+			for (const TSharedPtr<FPropertyInstanceInfo>& ChildInfo : Info.Children)
 			{
-				Children.Add(MakeShared<FWatchRow>(InBP, InNode, InPin, InObjectBeingDebugged, BlueprintName, GraphName, NodeName, MoveTemp(ChildInfo)));
+				Children.Add(MakeShared<FWatchRow>(InBP, InNode, InPin, InObjectBeingDebugged, BlueprintName, GraphName, NodeName, MoveTemp(*ChildInfo)));
 			}
 		}
 
@@ -181,19 +183,19 @@ namespace
 			}
 			FText BlueprintName = FText::FromString(BlueprintObj->GetName());
 
-			for (const FEdGraphPinReference& PinRef : BlueprintObj->WatchedPins)
-			{
-				if (UEdGraphPin* Pin = PinRef.Get())
+			FKismetDebugUtilities::ForeachPinWatch(
+				BlueprintObj.Get(),
+				[BlueprintObj, BlueprintName](UEdGraphPin* Pin)
 				{
 					FText GraphName = FText::FromString(Pin->GetOwningNode()->GetGraph()->GetName());
 					FText NodeName = Pin->GetOwningNode()->GetNodeTitle(ENodeTitleType::ListView);
 
 					const UEdGraphSchema* Schema = Pin->GetOwningNode()->GetSchema();
 
-					FDebugInfo DebugInfo;
-					DebugInfo.DisplayName = Schema->GetPinDisplayName(Pin);
-					DebugInfo.Type = UEdGraphSchema_K2::TypeToText(Pin->PinType);
-					DebugInfo.Value = LOCTEXT("ExecutionNotPaused", "(execution not paused)");
+					TSharedPtr<FPropertyInstanceInfo> DebugInfo;
+					DebugInfo->DisplayName = Schema->GetPinDisplayName(Pin);
+					DebugInfo->Type = UEdGraphSchema_K2::TypeToText(Pin->PinType);
+					DebugInfo->Value = LOCTEXT("ExecutionNotPaused", "(execution not paused)");
 
 					Private_WatchSource.Add(
 						MakeShared<FWatchRow>(
@@ -204,11 +206,11 @@ namespace
 							BlueprintName,
 							MoveTemp(GraphName),
 							MoveTemp(NodeName),
-							MoveTemp(DebugInfo)
+							MoveTemp(*DebugInfo)
 						)
 					);
 				}
-			}
+			);
 		}
 	}
 
@@ -255,7 +257,9 @@ namespace
 
 		if (IsPaused())
 		{
+#ifndef WATCH_VIEWER_DEPRECATED
 			WatchViewer::UpdateInstancedWatchDisplay();
+#endif
 		}
 
 		// Notify subscribers:
@@ -581,29 +585,39 @@ void SWatchViewer::HandleGetChildren(TSharedRef<FWatchRow> InWatchRow, TArray<TS
 
 void SWatchViewer::HandleWatchedPinsChanged(UBlueprint* BlueprintObj)
 {
+#ifndef WATCH_VIEWER_DEPRECATED
 	WatchViewer::UpdateWatchListFromBlueprint(BlueprintObj);
+#endif
 }
 
 void SWatchViewer::HandleResumePIE(bool)
 {
+#ifndef WATCH_VIEWER_DEPRECATED
 	// swap to displaying the unpaused watches
 	WatchViewer::ContinueExecution();
+#endif
 }
 
 void SWatchViewer::HandleEndPIE(bool)
 {
+#ifndef WATCH_VIEWER_DEPRECATED
 	// show the unpaused watches in case we stopped PIE while at a breakpoint
 	WatchViewer::ContinueExecution();
+#endif
 }
 
 void SWatchViewer::HandleAssetRemoved(const FAssetData& InAssetData)
 {
+#ifndef WATCH_VIEWER_DEPRECATED
 	WatchViewer::RemoveWatchesForAsset(InAssetData);
+#endif
 }
 
 void SWatchViewer::HandleAssetRenamed(const FAssetData& InAssetData, const FString& InOldName)
 {
+#ifndef WATCH_VIEWER_DEPRECATED
 	WatchViewer::OnRenameAsset(InAssetData, InOldName);
+#endif
 }
 
 void SWatchViewer::UpdateWatches(TArray<TSharedRef<FWatchRow>>* Watches)
@@ -796,7 +810,7 @@ void WatchViewer::UpdateInstancedWatchDisplay()
 			}
 
 			// Don't show info if this instance is pending kill
-			if (BlueprintInstance->IsPendingKill())
+			if (!IsValid(BlueprintInstance))
 			{
 				continue;
 			}
@@ -828,55 +842,56 @@ void WatchViewer::UpdateInstancedWatchDisplay()
 			}
 
 			// We have a valid instance, iterate over all the watched pins and create rows for them
-			for (const FEdGraphPinReference& PinRef : BlueprintObj->WatchedPins)
-			{
-				UEdGraphPin* Pin = PinRef.Get();
-
-				FText GraphName = FText::FromString(Pin->GetOwningNode()->GetGraph()->GetName());
-				FText NodeName = Pin->GetOwningNode()->GetNodeTitle(ENodeTitleType::ListView);
-
-				FDebugInfo DebugInfo;
-				const FKismetDebugUtilities::EWatchTextResult WatchStatus = FKismetDebugUtilities::GetDebugInfo(DebugInfo, BlueprintObj, BlueprintInstance, Pin);
-
-				if (WatchStatus != FKismetDebugUtilities::EWTR_Valid)
+			FKismetDebugUtilities::ForeachPinWatch(
+				BlueprintObj,
+				[BlueprintObj, BlueprintInstance, BlueprintName](UEdGraphPin* Pin)
 				{
-					const UEdGraphSchema* Schema = Pin->GetOwningNode()->GetSchema();
-					DebugInfo.DisplayName = Schema->GetPinDisplayName(Pin);
-					DebugInfo.Type = UEdGraphSchema_K2::TypeToText(Pin->PinType);
+					FText GraphName = FText::FromString(Pin->GetOwningNode()->GetGraph()->GetName());
+					FText NodeName = Pin->GetOwningNode()->GetNodeTitle(ENodeTitleType::ListView);
 
-					switch (WatchStatus)
+					TSharedPtr<FPropertyInstanceInfo> DebugInfo;
+					const FKismetDebugUtilities::EWatchTextResult WatchStatus = FKismetDebugUtilities::GetDebugInfo(DebugInfo, BlueprintObj, BlueprintInstance, Pin);
+
+					if (WatchStatus != FKismetDebugUtilities::EWTR_Valid)
 					{
-					case FKismetDebugUtilities::EWTR_NotInScope:
-						DebugInfo.Value = LOCTEXT("NotInScope", "(not in scope)");
-						break;
+						const UEdGraphSchema* Schema = Pin->GetOwningNode()->GetSchema();
+						DebugInfo->DisplayName = Schema->GetPinDisplayName(Pin);
+						DebugInfo->Type = UEdGraphSchema_K2::TypeToText(Pin->PinType);
 
-					case FKismetDebugUtilities::EWTR_NoProperty:
-						DebugInfo.Value = LOCTEXT("NoDebugData", "(no debug data)");
-						break;
+						switch (WatchStatus)
+						{
+						case FKismetDebugUtilities::EWTR_NotInScope:
+							DebugInfo->Value = LOCTEXT("NotInScope", "(not in scope)");
+							break;
 
-					case FKismetDebugUtilities::EWTR_NoDebugObject:
-						DebugInfo.Value = LOCTEXT("NoDebugObject", "(no debug object)");
-						break;
+						case FKismetDebugUtilities::EWTR_NoProperty:
+							DebugInfo->Value = LOCTEXT("NoDebugData", "(no debug data)");
+							break;
 
-					default:
-						// do nothing
-						break;
+						case FKismetDebugUtilities::EWTR_NoDebugObject:
+							DebugInfo->Value = LOCTEXT("NoDebugObject", "(no debug object)");
+							break;
+
+						default:
+							// do nothing
+							break;
+						}
 					}
-				}
 
-				Private_InstanceWatchSource.Add(
-					MakeShared<FWatchRow>(
-						BlueprintObj,
-						Pin->GetOwningNode(),
-						Pin,
-						BlueprintInstance,
-						BlueprintName,
-						GraphName,
-						NodeName,
-						DebugInfo
-						)
-				);
-			}
+					Private_InstanceWatchSource.Add(
+						MakeShared<FWatchRow>(
+							BlueprintObj,
+							Pin->GetOwningNode(),
+							Pin,
+							BlueprintInstance,
+							BlueprintName,
+							GraphName,
+							NodeName,
+							*DebugInfo
+							)
+					);
+				}
+			);
 		}
 
 		// Notify subscribers:
@@ -990,15 +1005,33 @@ void WatchViewer::RegisterTabSpawner(FTabManager& TabManager)
 		{
 			Source = &Private_InstanceWatchSource;
 		}
+		
+		static const FName ToolbarName = TEXT("Kismet.DebuggingViewToolBar");
+		FToolMenuContext MenuContext(FPlayWorldCommands::GlobalPlayWorldActions);
+		TSharedRef<SWidget> ToolbarWidget = UToolMenus::Get()->GenerateWidget(ToolbarName, MenuContext);
 
 		return SNew(SDockTab)
 			.TabRole( ETabRole::PanelTab )
 			.Label( LOCTEXT("TabTitle", "Watches") )
 			[
-				SNew(SBorder)
-				.BorderImage( FEditorStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
 				[
-					SNew(SWatchViewer, Source)
+					SNew(SBorder)
+					.BorderImage( FEditorStyle::GetBrush( TEXT("NoBorder") ) )
+					[
+						ToolbarWidget
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SBorder)
+					.BorderImage( FEditorStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
+					[
+						SNew(SWatchViewer, Source)
+					]
 				]
 			];
 	};

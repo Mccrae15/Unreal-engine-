@@ -314,7 +314,7 @@ void SAndroidWebBrowserWidget::Tick(const FGeometry& AllottedGeometry, const dou
 					FTextureRHIRef VideoTexture = PinnedJavaWebBrowser->GetVideoTexture();
 					if (VideoTexture == nullptr)
 					{
-						FRHIResourceCreateInfo CreateInfo;
+						FRHIResourceCreateInfo CreateInfo(TEXT("VideoTexture"));
 						FIntPoint LocalSize = Params.Size;
 
 						VideoTexture = RHICreateTextureExternal2D(LocalSize.X, LocalSize.Y, PF_R8G8B8A8, 1, 1, TexCreate_None, CreateInfo);
@@ -678,7 +678,7 @@ void SAndroidWebBrowserWidget::HandleReceivedError(jint ErrorCode, jstring /* ig
 
 // Native method implementations:
 
-JNI_METHOD jbyteArray Java_com_epicgames_ue4_WebViewControl_00024ViewClient_shouldInterceptRequestImpl(JNIEnv* JEnv, jobject Client, jstring JUrl)
+JNI_METHOD jbyteArray Java_com_epicgames_unreal_WebViewControl_00024ViewClient_shouldInterceptRequestImpl(JNIEnv* JEnv, jobject Client, jstring JUrl)
 {
 	TSharedPtr<SAndroidWebBrowserWidget> Widget = SAndroidWebBrowserWidget::GetWidgetPtr(JEnv, Client);
 	if (Widget.IsValid())
@@ -691,7 +691,7 @@ JNI_METHOD jbyteArray Java_com_epicgames_ue4_WebViewControl_00024ViewClient_shou
 	}
 }
 
-JNI_METHOD jboolean Java_com_epicgames_ue4_WebViewControl_00024ViewClient_shouldOverrideUrlLoading(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring JUrl)
+JNI_METHOD jboolean Java_com_epicgames_unreal_WebViewControl_00024ViewClient_shouldOverrideUrlLoading(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring JUrl)
 {
 	TSharedPtr<SAndroidWebBrowserWidget> Widget = SAndroidWebBrowserWidget::GetWidgetPtr(JEnv, Client);
 	if (Widget.IsValid())
@@ -704,7 +704,7 @@ JNI_METHOD jboolean Java_com_epicgames_ue4_WebViewControl_00024ViewClient_should
 	}
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_WebViewControl_00024ViewClient_onPageLoad(JNIEnv* JEnv, jobject Client, jstring JUrl, jboolean bIsLoading, jint HistorySize, jint HistoryPosition)
+JNI_METHOD void Java_com_epicgames_unreal_WebViewControl_00024ViewClient_onPageLoad(JNIEnv* JEnv, jobject Client, jstring JUrl, jboolean bIsLoading, jint HistorySize, jint HistoryPosition)
 {
 	TSharedPtr<SAndroidWebBrowserWidget> Widget = SAndroidWebBrowserWidget::GetWidgetPtr(JEnv, Client);
 	if (Widget.IsValid())
@@ -713,7 +713,7 @@ JNI_METHOD void Java_com_epicgames_ue4_WebViewControl_00024ViewClient_onPageLoad
 	}
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_WebViewControl_00024ViewClient_onReceivedError(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jint ErrorCode, jstring Description, jstring JUrl)
+JNI_METHOD void Java_com_epicgames_unreal_WebViewControl_00024ViewClient_onReceivedError(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jint ErrorCode, jstring Description, jstring JUrl)
 {
 	TSharedPtr<SAndroidWebBrowserWidget> Widget = SAndroidWebBrowserWidget::GetWidgetPtr(JEnv, Client);
 	if (Widget.IsValid())
@@ -722,7 +722,7 @@ JNI_METHOD void Java_com_epicgames_ue4_WebViewControl_00024ViewClient_onReceived
 	}
 }
 
-JNI_METHOD jboolean Java_com_epicgames_ue4_WebViewControl_00024ChromeClient_onJsAlert(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring JUrl, jstring Message, jobject Result)
+JNI_METHOD jboolean Java_com_epicgames_unreal_WebViewControl_00024ChromeClient_onJsAlert(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring JUrl, jstring Message, jobject Result)
 {
 	TSharedPtr<SAndroidWebBrowserWidget> Widget = SAndroidWebBrowserWidget::GetWidgetPtr(JEnv, Client);
 	if (Widget.IsValid())
@@ -735,7 +735,7 @@ JNI_METHOD jboolean Java_com_epicgames_ue4_WebViewControl_00024ChromeClient_onJs
 	}
 }
 
-JNI_METHOD jboolean Java_com_epicgames_ue4_WebViewControl_00024ChromeClient_onJsBeforeUnload(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring JUrl, jstring Message, jobject Result)
+JNI_METHOD jboolean Java_com_epicgames_unreal_WebViewControl_00024ChromeClient_onJsBeforeUnload(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring JUrl, jstring Message, jobject Result)
 {
 	TSharedPtr<SAndroidWebBrowserWidget> Widget = SAndroidWebBrowserWidget::GetWidgetPtr(JEnv, Client);
 	if (Widget.IsValid())
@@ -748,7 +748,7 @@ JNI_METHOD jboolean Java_com_epicgames_ue4_WebViewControl_00024ChromeClient_onJs
 	}
 }
 
-JNI_METHOD jboolean Java_com_epicgames_ue4_WebViewControl_00024ChromeClient_onJsConfirm(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring JUrl, jstring Message, jobject Result)
+JNI_METHOD jboolean Java_com_epicgames_unreal_WebViewControl_00024ChromeClient_onJsConfirm(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring JUrl, jstring Message, jobject Result)
 {
 	TSharedPtr<SAndroidWebBrowserWidget> Widget = SAndroidWebBrowserWidget::GetWidgetPtr(JEnv, Client);
 	if (Widget.IsValid())
@@ -761,7 +761,7 @@ JNI_METHOD jboolean Java_com_epicgames_ue4_WebViewControl_00024ChromeClient_onJs
 	}
 }
 
-JNI_METHOD jboolean Java_com_epicgames_ue4_WebViewControl_00024ChromeClient_onJsPrompt(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring JUrl, jstring Message, jstring DefaultValue, jobject Result)
+JNI_METHOD jboolean Java_com_epicgames_unreal_WebViewControl_00024ChromeClient_onJsPrompt(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring JUrl, jstring Message, jstring DefaultValue, jobject Result)
 {
 	TSharedPtr<SAndroidWebBrowserWidget> Widget = SAndroidWebBrowserWidget::GetWidgetPtr(JEnv, Client);
 	if (Widget.IsValid())
@@ -774,7 +774,7 @@ JNI_METHOD jboolean Java_com_epicgames_ue4_WebViewControl_00024ChromeClient_onJs
 	}
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_WebViewControl_00024ChromeClient_onReceivedTitle(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring Title)
+JNI_METHOD void Java_com_epicgames_unreal_WebViewControl_00024ChromeClient_onReceivedTitle(JNIEnv* JEnv, jobject Client, jobject /* ignore */, jstring Title)
 {
 	TSharedPtr<SAndroidWebBrowserWidget> Widget = SAndroidWebBrowserWidget::GetWidgetPtr(JEnv, Client);
 	if (Widget.IsValid())

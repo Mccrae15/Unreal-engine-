@@ -29,6 +29,7 @@ namespace UnrealBuildTool.Rules
 				"TimeManagement",
 				"DesktopWidgets",
 				"EditorStyle",
+				"EditorFramework",
 				"UnrealEd"
 			});
 		}

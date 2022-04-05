@@ -198,4 +198,41 @@ public:
 	}
 };
 
+/**
+ * Utility class for logging the duration of a scoped action (the user 
+ * doesn't have to call Start() and Stop() manually) using a custom
+ * output function.
+ */
+template<class F>
+class FScopedDurationTimeCustomLogger
+{
+public:
+	explicit FScopedDurationTimeCustomLogger(const TCHAR* InTitle, F InFunc)
+		: Title(InTitle)
+		, Func(InFunc)
+		, Accumulator(0.0)
+		, Timer(Accumulator)
+	{
+		Func(*FString::Printf(TEXT("%s started..."), InTitle));
+		Timer.Start();
+	}
 
+	~FScopedDurationTimeCustomLogger()
+	{
+		Timer.Stop();
+		Func(*FString::Printf(TEXT("%s took %s"), *Title, *FPlatformTime::PrettyTime(Accumulator)));
+	}
+
+private:
+	FString Title;
+	F Func;
+	double Accumulator;
+	FDurationTimer Timer;
+};
+
+#if NO_LOGGING
+#define UE_SCOPED_TIMER(Title, Category, Verbosity)
+#else
+#define UE_SCOPED_TIMER(Title, Category, Verbosity) \
+	FScopedDurationTimeCustomLogger BODY_MACRO_COMBINE(Scoped,Timer,_,__LINE__)(Title, [](const TCHAR* Msg) { UE_LOG(Category, Verbosity, TEXT("%s"), Msg); })
+#endif

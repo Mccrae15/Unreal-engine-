@@ -52,6 +52,7 @@ THIRD_PARTY_INCLUDES_START
 	#include <ShlObj.h>
 	#include <IntShCut.h>
 	#include <shellapi.h>
+	#include <shlwapi.h>
 	#include <IPHlpApi.h>
 	#include <VersionHelpers.h>
 THIRD_PARTY_INCLUDES_END
@@ -128,82 +129,9 @@ int32 GetOSVersionsHelper( TCHAR* OutOSVersionLabel, int32 OSVersionLabelLength,
 
 		switch (OsVersionInfo.dwMajorVersion)
 		{
-		case 5:
-			switch (OsVersionInfo.dwMinorVersion)
-			{
-			case 0:
-				OSVersionLabel = TEXT("Windows 2000");
-				if (OsVersionInfo.wProductType == VER_NT_WORKSTATION)
-				{
-					OSSubVersionLabel = TEXT("Professional");
-				}
-				else
-				{
-					if (OsVersionInfo.wSuiteMask & VER_SUITE_DATACENTER)
-					{
-						OSSubVersionLabel = TEXT("Datacenter Server");
-					}
-					else if (OsVersionInfo.wSuiteMask & VER_SUITE_ENTERPRISE)
-					{
-						OSSubVersionLabel = TEXT("Advanced Server");
-					}
-					else
-					{
-						OSSubVersionLabel = TEXT("Server");
-					}
-				}
-				break;
-			case 1:
-				OSVersionLabel = TEXT("Windows XP");
-				if (OsVersionInfo.wSuiteMask & VER_SUITE_PERSONAL)
-				{
-					OSSubVersionLabel = TEXT("Home Edition");
-				}
-				else
-				{
-					OSSubVersionLabel = TEXT("Professional");
-				}
-				break;
-			case 2:
-				if (GetSystemMetrics(SM_SERVERR2))
-				{
-					OSVersionLabel = TEXT("Windows Server 2003 R2");
-				}
-				else if (OsVersionInfo.wSuiteMask & VER_SUITE_STORAGE_SERVER)
-				{
-					OSVersionLabel = TEXT("Windows Storage Server 2003");
-				}
-				else if (OsVersionInfo.wSuiteMask & VER_SUITE_WH_SERVER)
-				{
-					OSVersionLabel = TEXT("Windows Home Server");
-				}
-				else if (OsVersionInfo.wProductType == VER_NT_WORKSTATION && SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64)
-				{
-					OSVersionLabel = TEXT("Windows XP");
-					OSSubVersionLabel = TEXT("Professional x64 Edition");
-				}
-				else
-				{
-					OSVersionLabel = TEXT("Windows Server 2003");
-				}
-				break;
-			default:
-				ErrorCode |= (int32)FWindowsOSVersionHelper::ERROR_UNKNOWNVERSION;
-			}
-			break;
 		case 6:
 			switch (OsVersionInfo.dwMinorVersion)
 			{
-			case 0:
-				if (OsVersionInfo.wProductType == VER_NT_WORKSTATION)
-				{
-					OSVersionLabel = TEXT("Windows Vista");
-				}
-				else
-				{
-					OSVersionLabel = TEXT("Windows Server 2008");
-				}
-				break;
 			case 1:
 				if (OsVersionInfo.wProductType == VER_NT_WORKSTATION)
 				{
@@ -245,23 +173,41 @@ int32 GetOSVersionsHelper( TCHAR* OutOSVersionLabel, int32 OSVersionLabelLength,
 			case 0:
 				if (OsVersionInfo.wProductType == VER_NT_WORKSTATION)
 				{
-					OSVersionLabel = TEXT("Windows 10");
+					// Windows 11 still reports a major version of 10 and minor of 0, so it looks
+					// like we need to use the build number as the discriminator
+					if (OsVersionInfo.dwBuildNumber >= 22000)
+					{
+						OSVersionLabel = TEXT("Windows 11");
+					}
+					else
+					{
+						OSVersionLabel = TEXT("Windows 10");
+					}
 				}
 				else
 				{
 					OSVersionLabel = TEXT("Windows Server 2019");
 				}
 
-				// For Windows 10, get the release number and append that to the string too (eg. 1709 = Fall Creators Update). There doesn't seem to be any good way to get
-				// this other than grabbing an entry from the registry.
+				// For Windows 10, get the release number and append that to the string too (eg. 1709 = Fall Creators Update). 
+				// There doesn't seem to be any good way to get this other than grabbing an entry from the registry.
+				// 
+				// The new semi-annual release scheme 20H1/20H2 etc appears to use a different key so we query that first.
 				{
-					FString ReleaseId;
-					if(FWindowsPlatformMisc::QueryRegKey(HKEY_LOCAL_MACHINE, TEXT("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"), TEXT("ReleaseId"), ReleaseId))
+					FString DisplayVersion;
+					if (FWindowsPlatformMisc::QueryRegKey(HKEY_LOCAL_MACHINE, TEXT("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"), TEXT("DisplayVersion"), DisplayVersion))
 					{
-						OSVersionLabel += FString::Printf(TEXT(" (Release %s)"), *ReleaseId);
+						OSVersionLabel += FString::Printf(TEXT(" (%s)"), *DisplayVersion);
+					}
+					else
+					{
+						FString ReleaseId;
+						if (FWindowsPlatformMisc::QueryRegKey(HKEY_LOCAL_MACHINE, TEXT("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"), TEXT("ReleaseId"), ReleaseId))
+						{
+							OSVersionLabel += FString::Printf(TEXT(" (Release %s)"), *ReleaseId);
+						}
 					}
 				}
-
 				break;
 			default:
 				ErrorCode |= (int32)FWindowsOSVersionHelper::ERROR_UNKNOWNVERSION;
@@ -373,6 +319,7 @@ int32 GetOSVersionsHelper( TCHAR* OutOSVersionLabel, int32 OSVersionLabelLength,
 	return ErrorCode;
 }
 
+#if WINDOWS_USE_DEFAULT_OSVERSIONHELPER
 int32 FWindowsOSVersionHelper::GetOSVersions( FString& OutOSVersionLabel, FString& OutOSSubVersionLabel )
 {
 	TCHAR OSVersionLabel[128];
@@ -388,6 +335,7 @@ int32 FWindowsOSVersionHelper::GetOSVersions( FString& OutOSVersionLabel, FStrin
 
 	return Result;
 }
+#endif //WINDOWS_USE_DEFAULT_OSVERSIONHELPER
 
 namespace
 {
@@ -582,6 +530,8 @@ void FWindowsPlatformMisc::PlatformPreInit()
 
 void FWindowsPlatformMisc::PlatformInit()
 {
+	FGenericPlatformMisc::LogNameEventStatsInit();
+
 #if defined(_MSC_VER) && _MSC_VER == 1800 && PLATFORM_64BITS
 	// Work around bug in the VS 2013 math libraries in 64bit on certain windows versions. http://connect.microsoft.com/VisualStudio/feedback/details/811093 has details, remove this when runtime libraries are fixed
 	_set_FMA3_enable(0);
@@ -754,7 +704,7 @@ FString FWindowsPlatformMisc::GetEnvironmentVariable(const TCHAR* VariableName)
 	FString Buffer;
 	for(uint32 Length = 128;;)
 	{
-		TArray<TCHAR>& CharArray = Buffer.GetCharArray();
+		TArray<TCHAR, FString::AllocatorType>& CharArray = Buffer.GetCharArray();
 		CharArray.SetNumUninitialized(Length);
 
 		Length = ::GetEnvironmentVariableW(VariableName, CharArray.GetData(), CharArray.Num());
@@ -844,6 +794,41 @@ bool FWindowsPlatformMisc::IsDebuggerPresent()
 {
 	return !GIgnoreDebugger && !!::IsDebuggerPresent();
 }
+
+EProcessDiagnosticFlags FWindowsPlatformMisc::GetProcessDiagnostics()
+{
+	static EProcessDiagnosticFlags FoundDiagnostics = []() -> EProcessDiagnosticFlags
+	{
+		EProcessDiagnosticFlags Result = FGenericPlatformMisc::GetProcessDiagnostics();
+
+		TCHAR* ImageFileName = PathFindFileName(FPlatformProcess::ExecutablePath());
+		FString ImageFileSubkey = FString::Printf(TEXT("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\%s"), ImageFileName);
+
+		// via https://docs.microsoft.com/en-us/windows-hardware/drivers/debugger/gflags-flag-table
+		constexpr uint32 MemorySanitizerMask =
+			0x00000010| // FLG_HEAP_ENABLE_TAIL_CHECK
+			0x00000020| // FLG_HEAP_ENABLE_FREE_CHECK
+			0x00000080| // FLG_HEAP_VALIDATE_ALL
+			0x00000100| // FLG_APPLICATION_VERIFIER
+			0x00000800| // FLG_HEAP_ENABLE_TAGGING
+			0x00008000| // FLG_HEAP_ENABLE_TAG_BY_DLL
+			0x00200000| // FLG_HEAP_DISABLE_COALESCING
+			0x02000000; // FLG_HEAP_PAGE_ALLOCS
+
+		DWORD Data, DataCount = sizeof(Data);
+		if (ERROR_SUCCESS == RegGetValue(HKEY_LOCAL_MACHINE, *ImageFileSubkey, TEXT("GlobalFlag"), RRF_RT_REG_DWORD, nullptr, &Data, &DataCount))
+		{
+			if (MemorySanitizerMask & Data)
+			{
+				Result |= EProcessDiagnosticFlags::MemorySanitizer;
+			}
+		}
+
+		return Result;
+	}();
+
+	return FoundDiagnostics;
+}
 #endif //!UE_BUILD_SHIPPING
 
 #if STATS || ENABLE_STATNAMEDEVENTS
@@ -859,6 +844,8 @@ void FWindowsPlatformMisc::CustomNamedStat(const ANSICHAR* Text, float Value, co
 
 void FWindowsPlatformMisc::BeginNamedEventFrame()
 {
+	FGenericPlatformMisc::TickStatNamedEvents();
+
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::FrameStart();
 #endif
@@ -866,27 +853,23 @@ void FWindowsPlatformMisc::BeginNamedEventFrame()
 
 void FWindowsPlatformMisc::BeginNamedEvent(const struct FColor& Color, const TCHAR* Text)
 {
+	FGenericPlatformMisc::StatNamedEvent(Text);
+
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PushEvent(Text);
 #elif UE_EXTERNAL_PROFILING_ENABLED
-	FExternalProfiler* Profiler = FActiveExternalProfilerBase::GetActiveProfiler();
-	if (Profiler)
-	{
-		Profiler->StartScopedEvent(Text);
-	}
+	FExternalProfilerTrace::StartScopedEvent(Color, Text);
 #endif
 }
 
 void FWindowsPlatformMisc::BeginNamedEvent(const struct FColor& Color, const ANSICHAR* Text)
 {
+	FGenericPlatformMisc::StatNamedEvent(Text);
+
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PushEvent(Text);
 #elif UE_EXTERNAL_PROFILING_ENABLED
-	FExternalProfiler* Profiler = FActiveExternalProfilerBase::GetActiveProfiler();
-	if (Profiler)
-	{
-		Profiler->StartScopedEvent(ANSI_TO_TCHAR(Text));
-	}
+	FExternalProfilerTrace::StartScopedEvent(Color, Text);
 #endif
 }
 
@@ -895,11 +878,7 @@ void FWindowsPlatformMisc::EndNamedEvent()
 #if FRAMEPRO_ENABLED
 	FFrameProProfiler::PopEvent();
 #elif UE_EXTERNAL_PROFILING_ENABLED
-	FExternalProfiler* Profiler = FActiveExternalProfilerBase::GetActiveProfiler();
-	if (Profiler)
-	{
-		Profiler->EndScopedEvent();
-	}
+	FExternalProfilerTrace::EndScopedEvent();
 #endif
 }
 #endif // STATS || ENABLE_STATNAMEDEVENTS
@@ -917,7 +896,9 @@ void FWindowsPlatformMisc::SetUTF8Output()
 
 void FWindowsPlatformMisc::LocalPrint( const TCHAR *Message )
 {
+#if USE_DEBUG_LOGGING
 	OutputDebugString(Message);
+#endif
 }
 
 void FWindowsPlatformMisc::RequestExit( bool Force )
@@ -1657,7 +1638,7 @@ bool FWindowsPlatformMisc::IsValidAbsolutePathFormat(const FString& Path)
 	return bIsValid;
 }
 
-static void QueryCpuInformation(uint32& OutGroupCount, uint32& OutNumaNodeCount, uint32& OutCoreCount, uint32& OutLogicalProcessorCount, bool bForceSingleNumaNode = false)
+static void QueryCpuInformation(FProcessorGroupDesc& OutGroupDesc, uint32& OutNumaNodeCount, uint32& OutCoreCount, uint32& OutLogicalProcessorCount, bool bForceSingleNumaNode = false)
 {
 	GROUP_AFFINITY FilterGroupAffinity = {};
 
@@ -1671,7 +1652,7 @@ static void QueryCpuInformation(uint32& OutGroupCount, uint32& OutNumaNodeCount,
 		GetNumaNodeProcessorMaskEx(NodeNumber, &FilterGroupAffinity);
 	}
 
-	OutGroupCount = OutNumaNodeCount = OutCoreCount = OutLogicalProcessorCount = 0;
+	OutNumaNodeCount = OutCoreCount = OutLogicalProcessorCount = 0;
 	uint8* BufferPtr = nullptr;
 	DWORD BufferBytes = 0;
 
@@ -1730,7 +1711,11 @@ static void QueryCpuInformation(uint32& OutGroupCount, uint32& OutNumaNodeCount,
 
 					if (ProcessorInfo->Relationship == RelationGroup)
 					{
-						OutGroupCount = ProcessorInfo->Group.ActiveGroupCount;
+						OutGroupDesc.NumProcessorGroups = FMath::Min<uint16>(FProcessorGroupDesc::MaxNumProcessorGroups, ProcessorInfo->Group.ActiveGroupCount);
+						for(int32 GroupIndex = 0; GroupIndex < OutGroupDesc.NumProcessorGroups; GroupIndex++)
+						{
+							OutGroupDesc.ThreadAffinities[GroupIndex] = ProcessorInfo->Group.GroupInfo[GroupIndex].ActiveProcessorMask;
+						}
 					}
 
 					InfoPtr += ProcessorInfo->Size;
@@ -1747,11 +1732,11 @@ int32 FWindowsPlatformMisc::NumberOfCores()
 	static int32 CoreCount = 0;
 	if (CoreCount == 0)
 	{
-		uint32 NumGroups = 0;
+		FProcessorGroupDesc GroupDesc;
 		uint32 NumaNodeCount = 0;
 		uint32 NumCores = 0;
 		uint32 LogicalProcessorCount = 0;
-		QueryCpuInformation(NumGroups, NumaNodeCount, NumCores, LogicalProcessorCount);
+		QueryCpuInformation(GroupDesc, NumaNodeCount, NumCores, LogicalProcessorCount);
 
 		if (FCommandLine::IsInitialized() && FParse::Param(FCommandLine::Get(), TEXT("usehyperthreading")))
 		{
@@ -1774,16 +1759,32 @@ int32 FWindowsPlatformMisc::NumberOfCores()
 	return CoreCount;
 }
 
+FProcessorGroupDesc NumberOfProcessorGroupsInternal()
+{
+	FProcessorGroupDesc GroupDesc;
+	uint32 NumaNodeCount = 0;
+	uint32 NumCores = 0;
+	uint32 LogicalProcessorCount = 0;
+	QueryCpuInformation(GroupDesc, NumaNodeCount, NumCores, LogicalProcessorCount);
+	return GroupDesc;
+}
+
+const FProcessorGroupDesc& FWindowsPlatformMisc::GetProcessorGroupDesc()
+{
+	static FProcessorGroupDesc GroupDesc(NumberOfProcessorGroupsInternal());
+	return GroupDesc;
+}
+
 int32 FWindowsPlatformMisc::NumberOfCoresIncludingHyperthreads()
 {
 	static int32 CoreCount = 0;
 	if (CoreCount == 0)
 	{
-		uint32 NumGroups = 0;
+		FProcessorGroupDesc GroupDesc;
 		uint32 NumaNodeCount = 0;
 		uint32 NumCores = 0;
 		uint32 LogicalProcessorCount = 0;
-		QueryCpuInformation(NumGroups, NumaNodeCount, NumCores, LogicalProcessorCount);
+		QueryCpuInformation(GroupDesc, NumaNodeCount, NumCores, LogicalProcessorCount);
 
 		CoreCount = LogicalProcessorCount;
 
@@ -1816,9 +1817,11 @@ const TCHAR* FWindowsPlatformMisc::GetPlatformFeaturesModuleName()
 }
 
 int32 FWindowsPlatformMisc::NumberOfWorkerThreadsToSpawn()
-{
+{	
 	static int32 MaxServerWorkerThreads = 4;
-	static int32 MaxWorkerThreads = 26;
+
+	extern CORE_API int32 GUseNewTaskBackend;
+	int32 MaxWorkerThreads = GUseNewTaskBackend ? INT32_MAX : 26;
 
 	int32 NumberOfCores = FWindowsPlatformMisc::NumberOfCores();
 	int32 NumberOfCoresIncludingHyperthreads = FWindowsPlatformMisc::NumberOfCoresIncludingHyperthreads();
@@ -2076,9 +2079,9 @@ void FWindowsPlatformMisc::PromptForRemoteDebugging(bool bIsEnsure)
 			TEXT("Have a programmer remote debug this crash?\n")
 			TEXT("Hit NO to exit and submit error report as normal.\n")
 			TEXT("Otherwise, contact a programmer for remote debugging,\n")
-			TEXT("giving him the changelist number below.\n")
-			TEXT("Once he confirms he is connected to the machine,\n")
-			TEXT("hit YES to allow him to debug the crash.\n")
+			TEXT("giving them the changelist number below.\n")
+			TEXT("Once they have confirmed they are connected to the machine,\n")
+			TEXT("hit YES to allow them to debug the crash.\n")
 			TEXT("[Changelist = %d]"),
 			FEngineVersion::Current().GetChangelist());
 		FSlowHeartBeatScope SuspendHeartBeat;
@@ -2324,6 +2327,53 @@ FString FWindowsPlatformMisc::GetCPUBrand()
 	return FCPUIDQueriedData::GetBrand();
 }
 
+bool FWindowsPlatformMisc::HasAVX2InstructionSupport()
+{
+	if (!HasCPUIDInstruction())
+	{
+		return false;
+	}
+
+	int flags[4];
+	/* CPUID.(EAX=01H, ECX=0H):ECX.FMA[bit 12]==1   &&
+	   CPUID.(EAX=01H, ECX=0H):ECX.MOVBE[bit 22]==1 &&
+	   CPUID.(EAX=01H, ECX=0H):ECX.XSAVE[bit 26]==1 &&
+	   CPUID.(EAX=01H, ECX=0H):ECX.OSXSAVE[bit 27]==1 &&
+	   CPUID.(EAX=01H, ECX=0H):ECX.AVX[bit 28]==1 */
+	const int FMA_MOVBE_XSAVE_OSXSAVE_AVX_BITS = (1 << 12) | (1 << 22) | (1 << 26) | (1 << 27) | (1 << 28);
+	__cpuidex(flags, 1, 0);
+	if ((flags[2] & FMA_MOVBE_XSAVE_OSXSAVE_AVX_BITS) != FMA_MOVBE_XSAVE_OSXSAVE_AVX_BITS)
+	{
+		return false;
+	}
+
+	/*  CPUID.(EAX=07H, ECX=0H):EBX.AVX2[bit 5]==1  &&
+		CPUID.(EAX=07H, ECX=0H):EBX.BMI1[bit 3]==1  &&
+		CPUID.(EAX=07H, ECX=0H):EBX.BMI2[bit 8]==1  */
+	const int AVX2_BMI1_BMI2_BITS = (1 << 5) | (1 << 3) | (1 << 8);
+	__cpuidex(flags, 7, 0);
+	if ((flags[1] & AVX2_BMI1_BMI2_BITS) != AVX2_BMI1_BMI2_BITS)
+	{
+		return false;
+	}
+
+	/* CPUID.(EAX=80000001H):ECX.LZCNT[bit 5]==1 */
+	const int LZCNT_BITS = (1 << 5);
+	__cpuidex(flags, 0x80000001, 0);
+	if ((flags[2] & LZCNT_BITS) != LZCNT_BITS)
+	{
+		return false;
+	}
+
+	// OS must save YMM registers between context switch
+	if ((_xgetbv(0) & 6) != 6)
+	{
+		return false;
+	}
+
+	return true;
+}
+
 #include "Windows/AllowWindowsPlatformTypes.h"
 FString FWindowsPlatformMisc::GetPrimaryGPUBrand()
 {
@@ -2413,7 +2463,7 @@ static void GetVideoDriverDetails(const FString& Key, FGPUDriverInfo& Out)
 
 	if(Out.IsNVIDIA())
 	{
-		Out.UserDriverVersion = Out.GetUnifiedDriverVersion();
+		Out.UserDriverVersion = Out.TrimNVIDIAInternalVersion(Out.InternalDriverVersion);
 	}
 	else if(Out.IsAMD())
 	{
@@ -2689,6 +2739,49 @@ bool FWindowsPlatformMisc::GetDiskTotalAndFreeSpace( const FString& InPath, uint
 	return bSuccess;
 }
 
+bool FWindowsPlatformMisc::GetPageFaultStats(FPageFaultStats& OutStats, EPageFaultFlags Flags/*=EPageFaultFlags::All*/)
+{
+	bool bSuccess = false;
+
+	if (EnumHasAnyFlags(Flags, EPageFaultFlags::TotalPageFaults))
+	{
+		PROCESS_MEMORY_COUNTERS ProcessMemoryCounters;
+
+		FPlatformMemory::Memzero(&ProcessMemoryCounters, sizeof(ProcessMemoryCounters));
+		::GetProcessMemoryInfo(::GetCurrentProcess(), &ProcessMemoryCounters, sizeof(ProcessMemoryCounters));
+
+		OutStats.TotalPageFaults = ProcessMemoryCounters.PageFaultCount;
+
+		bSuccess = true;
+	}
+
+	return bSuccess;
+}
+
+bool FWindowsPlatformMisc::GetBlockingIOStats(FProcessIOStats& OutStats, EInputOutputFlags Flags/*=EInputOutputFlags::All*/)
+{
+	bool bSuccess = false;
+	IO_COUNTERS Counters;
+
+	FPlatformMemory::Memzero(&Counters, sizeof(Counters));
+
+	// Ignore flags as all values are grabbed at once
+	if (::GetProcessIoCounters(::GetCurrentProcess(), &Counters) != 0)
+	{
+		OutStats.BlockingInput = Counters.ReadOperationCount;
+		OutStats.BlockingOutput = Counters.WriteOperationCount;
+		OutStats.BlockingOther = Counters.OtherOperationCount;
+		OutStats.InputBytes = Counters.ReadTransferCount;
+		OutStats.OutputBytes = Counters.WriteTransferCount;
+		OutStats.OtherBytes = Counters.OtherTransferCount;
+
+		bSuccess = true;
+	}
+
+	return bSuccess;
+}
+
+
 
 uint32 FWindowsPlatformMisc::GetCPUInfo()
 {
@@ -2885,4 +2978,25 @@ uint64 FWindowsPlatformMisc::GetFileVersion(const FString &FileName)
 		}
 	}
 	return 0;
+}
+
+int32 FWindowsPlatformMisc::GetMaxRefreshRate()
+{
+	int32 Result = FGenericPlatformMisc::GetMaxRefreshRate();
+
+#if !UE_SERVER
+	DEVMODE DeviceMode;
+	FMemory::Memzero(DeviceMode);
+	DeviceMode.dmSize = sizeof(DEVMODE);
+
+	if (EnumDisplaySettings(NULL, ENUM_CURRENT_SETTINGS, &DeviceMode) != 0)
+	{
+		// dmDisplayFrequency isn't always useful, the Windows docs say it can
+		// return 0 or 1 to indicate 'default refresh rate', so always assume we
+		// can do at least the generic platform default of 60 Hz
+		Result = FMath::Max(Result, (int32)DeviceMode.dmDisplayFrequency);
+	}
+#endif
+
+	return Result;
 }

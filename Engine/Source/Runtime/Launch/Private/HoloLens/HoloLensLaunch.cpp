@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformAffinity.h"
 #include "Misc/LocalTimestampDirectoryVisitor.h"
 
@@ -628,13 +628,13 @@ void ViewProvider::Initialize(Windows::ApplicationModel::Core::CoreApplicationVi
 
 static void InitCommandLine(Platform::String^ args)
 {
-	// check for a ue4commandline.txt.
+	// check for a uecommandline.txt.
 	FCommandLine::Set(L"");
 
 	// FPaths should be good at this point (FPaths::EngineDir() is used during static init for instance)
 	// so be specific about the location we want, otherwise working directory changes can mess this up.
 	// Also this means the regular file interface is in place, so let's use that.
-	FString FileName = FString(FPaths::RootDir()) / TEXT("UE4CommandLine.txt");
+	FString FileName = FString(FPaths::RootDir()) / TEXT("UECommandLine.txt");
 
 	IFileHandle* CmdLineFileHandle = IPlatformFile::GetPlatformPhysical().OpenRead(*FileName);
 	if (CmdLineFileHandle != nullptr)
@@ -1058,6 +1058,8 @@ void ViewProvider::InitOptionalPackages()
 // this method is called after Load
 void ViewProvider::Run()
 {
+	FTaskTagScope Scope(ETaskTag::EGameThread);
+
 	// Wait for activation to complete
 	while (!ActivationComplete)
 	{

@@ -156,14 +156,14 @@ namespace MoviePipeline
 	struct FFrameTimeStepCache
 	{
 		FFrameTimeStepCache()
-			: DeltaTime(0.0)
+			: UndilatedDeltaTime(0.0)
 		{}
 
 		FFrameTimeStepCache(double InDeltaTime)
-			: DeltaTime(InDeltaTime)
+			: UndilatedDeltaTime(InDeltaTime)
 		{}
 
-		double DeltaTime;
+		double UndilatedDeltaTime;
 	};
 
 	struct FOutputFrameData
@@ -244,8 +244,10 @@ namespace MoviePipeline
 
 	struct FFrameConstantMetrics
 	{
-		/** What is the tick resolution fo the sequence */
+		/** What is the tick resolution of the master sequence */
 		FFrameRate TickResolution;
+		/** What is the tick resolution of the current shot */
+		FFrameRate ShotTickResolution;
 		/** What is the effective frame rate of the output */
 		FFrameRate FrameRate;
 		/** How many ticks per output frame. */
@@ -503,6 +505,8 @@ public:
 	/** Cached Tick Resolution our numbers are in. Simplifies some APIs. */
 	FFrameRate CachedTickResolution;
 	
+	/** Cached Tick Resolution the movie scene this range was generated for is in. Can be different than the master due to mixed tick resolutions. */
+	FFrameRate CachedShotTickResolution;
 public:
 	/** The current state of processing this Shot is in. Not all states will be passed through. */
 	EMovieRenderShotState State;
@@ -936,9 +940,6 @@ public:
 
 	FVector2D OverlappedSubpixelShift;
 
-	MoviePipeline::FTileWeight1D WeightFunctionX;
-	MoviePipeline::FTileWeight1D WeightFunctionY;
-
 	MoviePipeline::FMoviePipelineFrameInfo FrameInfo;
 
 	FOpenColorIODisplayConfiguration* OCIOConfiguration;
@@ -949,18 +950,27 @@ namespace MoviePipeline
 	struct FMoviePipelineRenderPassInitSettings
 	{
 	public:
+		UE_DEPRECATED(5.0, "FMoviePipelineRenderPassInitSettings must be constructed with arguments")
 		FMoviePipelineRenderPassInitSettings()
-			: BackbufferResolution(0, 0)
-			, TileCount(0, 0)
+		{
+			FeatureLevel = GMaxRHIFeatureLevel;
+		}
+
+		FMoviePipelineRenderPassInitSettings(ERHIFeatureLevel::Type InFeatureLevel, const FIntPoint& InBackbufferResolution, const FIntPoint& InTileCount)
+			:	BackbufferResolution(InBackbufferResolution)
+			,	TileCount(InTileCount)
+			,	FeatureLevel(InFeatureLevel)
 		{
 		}
 
 	public:
 		/** This takes into account any padding needed for tiled rendering overlap. Different than the output resolution of the final image. */
-		FIntPoint BackbufferResolution;
+		FIntPoint BackbufferResolution = FIntPoint(0, 0);
 
 		/** How many tiles (in each direction) are we rendering with. */
-		FIntPoint TileCount;
+		FIntPoint TileCount = FIntPoint(0, 0);
+
+		ERHIFeatureLevel::Type FeatureLevel;
 	};
 
 }
@@ -977,11 +987,53 @@ struct FImagePixelDataPayload : IImagePixelDataPayload, public TSharedFromThis<F
 	int32 SortingOrder;
 	bool bCompositeToFinalImage;
 
+	/** If specified, use this as the output filename (not including output directory) when using debug write samples to disk */
+	FString Debug_OverrideFilename;
+
 	FImagePixelDataPayload()
 		: bRequireTransparentOutput(false)
 		, SortingOrder(TNumericLimits<int32>::Max())
 		, bCompositeToFinalImage(false)
 	{}
+
+	virtual TSharedRef<FImagePixelDataPayload> Copy() const
+	{
+		return MakeShared<FImagePixelDataPayload>(*this);
+	}
+
+	virtual FIntPoint GetAccumulatorSize() const
+	{
+		return FIntPoint(SampleState.TileSize.X * SampleState.TileCounts.X, SampleState.TileSize.Y * SampleState.TileCounts.Y);
+	}
+
+	virtual FIntPoint GetOverlappedOffset() const
+	{
+		return SampleState.OverlappedOffset;
+	}
+
+	virtual FVector2D GetOverlappedSubpixelShift() const
+	{
+		return SampleState.OverlappedSubpixelShift;
+	}
+
+	virtual void GetWeightFunctionParams(MoviePipeline::FTileWeight1D& WeightFunctionX, MoviePipeline::FTileWeight1D& WeightFunctionY) const
+	{
+		WeightFunctionX.InitHelper(SampleState.OverlappedPad.X, SampleState.TileSize.X, SampleState.OverlappedPad.X);
+		WeightFunctionY.InitHelper(SampleState.OverlappedPad.Y, SampleState.TileSize.Y, SampleState.OverlappedPad.Y);
+	}
+
+	virtual FIntPoint GetOverlapPaddedSize() const
+	{
+		return FIntPoint(
+			(SampleState.TileSize.X + 2 * SampleState.OverlappedPad.X),
+			(SampleState.TileSize.Y + 2 * SampleState.OverlappedPad.Y));
+	}
+
+	virtual bool GetOverlapPaddedSizeIsValid(const FIntPoint InRawSize) const
+	{
+		return (SampleState.TileSize.X + 2 * SampleState.OverlappedPad.X == InRawSize.X)
+			&& (SampleState.TileSize.Y + 2 * SampleState.OverlappedPad.Y == InRawSize.Y);
+	}
 
 	/** Is this the first tile of an image and we should start accumulating? */
 	FORCEINLINE bool IsFirstTile() const
@@ -1047,6 +1099,19 @@ namespace MoviePipeline
 {
 	struct MOVIERENDERPIPELINECORE_API IMoviePipelineOverlappedAccumulator : public TSharedFromThis<IMoviePipelineOverlappedAccumulator>
 	{
+	};
+
+	struct IMoviePipelineOutputMerger : public TSharedFromThis<IMoviePipelineOutputMerger>
+	{
+		virtual FMoviePipelineMergerOutputFrame& QueueOutputFrame_GameThread(const FMoviePipelineFrameOutputState& CachedOutputState) = 0;
+		virtual void OnCompleteRenderPassDataAvailable_AnyThread(TUniquePtr<FImagePixelData>&& InData) = 0;
+		virtual void OnSingleSampleDataAvailable_AnyThread(TUniquePtr<FImagePixelData>&& InData) = 0;
+		virtual void AbandonOutstandingWork() = 0;
+		virtual int32 GetNumOutstandingFrames() const = 0;
+
+		virtual ~IMoviePipelineOutputMerger()
+		{
+		}
 	};
 
 	struct FAudioState

@@ -15,10 +15,12 @@
 #include "IHierarchicalLODUtilities.h"
 #include "HierarchicalLODUtilitiesModule.h"
 #include "GameFramework/WorldSettings.h"
+#include "UObject/ObjectSaveContext.h"
 
 void UHLODEngineSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	bDisableHLODCleanupOnLoad = false;
+	bDisableHLODSpawningOnLoad = false;
 
 	Super::Initialize(Collection);
 	RegisterRecreateLODActorsDelegates();
@@ -35,6 +37,14 @@ void UHLODEngineSubsystem::DisableHLODCleanupOnLoad(bool bInDisableHLODCleanup)
 	bDisableHLODCleanupOnLoad = bInDisableHLODCleanup;
 }
 
+void UHLODEngineSubsystem::DisableHLODSpawningOnLoad(bool bInDisableHLODSpawning)
+{
+	bDisableHLODSpawningOnLoad = bInDisableHLODSpawning;
+
+	UnregisterRecreateLODActorsDelegates();
+	RegisterRecreateLODActorsDelegates();
+}
+
 void UHLODEngineSubsystem::OnSaveLODActorsToHLODPackagesChanged()
 {
 	UnregisterRecreateLODActorsDelegates();
@@ -49,11 +59,11 @@ void UHLODEngineSubsystem::UnregisterRecreateLODActorsDelegates()
 
 void UHLODEngineSubsystem::RegisterRecreateLODActorsDelegates()
 {
-	if (GetDefault<UHierarchicalLODSettings>()->bSaveLODActorsToHLODPackages)
+	if (GetDefault<UHierarchicalLODSettings>()->bSaveLODActorsToHLODPackages && !bDisableHLODSpawningOnLoad)
 	{
 		OnPostWorldInitializationDelegateHandle = FWorldDelegates::OnPostWorldInitialization.AddUObject(this, &UHLODEngineSubsystem::RecreateLODActorsForWorld);
 		OnLevelAddedToWorldDelegateHandle = FWorldDelegates::LevelAddedToWorld.AddUObject(this, &UHLODEngineSubsystem::RecreateLODActorsForLevel);
-		OnPreSaveWorlDelegateHandle = FEditorDelegates::PreSaveWorld.AddUObject(this, &UHLODEngineSubsystem::OnPreSaveWorld);
+		OnPreSaveWorlDelegateHandle = FEditorDelegates::PreSaveWorldWithContext.AddUObject(this, &UHLODEngineSubsystem::OnPreSaveWorld);
 	}	
 }
 
@@ -84,7 +94,7 @@ void UHLODEngineSubsystem::RecreateLODActorsForLevel(ULevel* InLevel, UWorld* In
 	}
 
 	// Look for HLODProxy packages associated with this level
-	int32 NumLODLevels = InLevel->GetWorldSettings()->bEnableHierarchicalLODSystem ? InLevel->GetWorldSettings()->GetHierarchicalLODSetup().Num() : 0;
+	int32 NumLODLevels = InLevel->GetWorldSettings()->GetHierarchicalLODSetup().Num();
 	for (int32 LODIndex = 0; LODIndex < NumLODLevels; ++LODIndex)
 	{
 		// Obtain HLOD package for the current HLOD level
@@ -128,7 +138,7 @@ bool UHLODEngineSubsystem::CleanupHLOD(ALODActor* InLODActor)
 {
 	bool bShouldDestroyActor = false;
 
-	if (!InLODActor->GetLevel()->GetWorldSettings()->bEnableHierarchicalLODSystem || InLODActor->GetLevel()->GetWorldSettings()->GetHierarchicalLODSetup().Num() == 0)
+	if (InLODActor->GetLevel()->GetWorldSettings()->GetHierarchicalLODSetup().Num() == 0)
 	{
 		UE_LOG(LogEngine, Warning, TEXT("Deleting LODActor %s found in map with no HLOD setup or disabled HLOD system. Resave %s to silence warning."), *InLODActor->GetName(), *InLODActor->GetOutermost()->GetPathName());
 		bShouldDestroyActor = true;
@@ -156,10 +166,10 @@ bool UHLODEngineSubsystem::CleanupHLOD(ALODActor* InLODActor)
 	return bShouldDestroyActor;
 }
 
-void UHLODEngineSubsystem::OnPreSaveWorld(uint32 InSaveFlags, UWorld* InWorld)
+void UHLODEngineSubsystem::OnPreSaveWorld(UWorld* InWorld, FObjectPreSaveContext ObjectSaveContext)
 {
 	// When cooking, make sure that the LODActors are not transient
-	if (InWorld && InWorld->PersistentLevel && GIsCookerLoadingPackage)
+	if (InWorld && InWorld->PersistentLevel && ObjectSaveContext.IsCooking())
 	{
 		for (AActor* Actor : InWorld->PersistentLevel->Actors)
 		{

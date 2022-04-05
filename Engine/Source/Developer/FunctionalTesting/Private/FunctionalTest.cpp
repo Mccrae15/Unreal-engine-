@@ -108,6 +108,7 @@ FString LexToString(const EFunctionalTestResult TestResult)
 
 AFunctionalTest::AFunctionalTest( const FObjectInitializer& ObjectInitializer )
 	: Super(ObjectInitializer)
+	, TestLabel(GetName())
 	, bIsEnabled(true)
 	, LogErrorHandling(EFunctionalTestLogHandling::ProjectDefault)
 	, LogWarningHandling(EFunctionalTestLogHandling::ProjectDefault)
@@ -194,6 +195,8 @@ void AFunctionalTest::OnConstruction(const FTransform& Transform)
 	Super::OnConstruction(Transform);
 
 #if WITH_EDITOR
+	TestLabel = GetActorLabel();
+
 	if ( TestName )
 	{
 		if ( bIsEnabled )
@@ -238,7 +241,7 @@ bool AFunctionalTest::RunTest(const TArray<FString>& Params)
 	if (FunctionalTest)
 	{
 		FunctionalTest->SetLogErrorAndWarningHandling(bSuppressErrors, bSuppressWarnings, bWarningsAreErrors);
-		FunctionalTest->SetFunctionalTestRunning(GetName());
+		FunctionalTest->SetFunctionalTestRunning(TestLabel);
 	}
 
 	FailureMessage = TEXT("");
@@ -377,7 +380,7 @@ void AFunctionalTest::FinishTest(EFunctionalTestResult TestResult, const FString
 	FFunctionalTestBase* FunctionalTest = static_cast<FFunctionalTestBase*>(FAutomationTestFramework::Get().GetCurrentTest());
 	if (FunctionalTest)
 	{
-		FunctionalTest->SetFunctionalTestComplete(GetName());
+		FunctionalTest->SetFunctionalTestComplete(TestLabel);
 	}
 
 	bIsRunning = false;
@@ -385,7 +388,7 @@ void AFunctionalTest::FinishTest(EFunctionalTestResult TestResult, const FString
 
 	OnTestFinished.Broadcast();
 
-	AActor** ActorToDestroy = AutoDestroyActors.GetData();
+	TObjectPtr<AActor>* ActorToDestroy = AutoDestroyActors.GetData();
 
 	for (int32 ActorIndex = 0; ActorIndex < AutoDestroyActors.Num(); ++ActorIndex, ++ActorToDestroy)
 	{
@@ -655,6 +658,20 @@ bool AFunctionalTest::AssertValue_Float(float Actual, EComparisonMethod ShouldBe
 	}
 }
 
+bool AFunctionalTest::AssertValue_Double(double Actual, EComparisonMethod ShouldBe, double Expected, const FString& What, const UObject* ContextObject)
+{
+	if ( !PerformComparison(Actual, Expected, ShouldBe) )
+	{
+		LogStep(ELogVerbosity::Error, FString::Printf(TEXT("%s: expected {%lf} to be %s {%lf} for context '%s'"), *What, Actual, *GetComparisonAsString(ShouldBe), Expected, ContextObject ? *ContextObject->GetName() : TEXT("")));
+		return false;
+	}
+	else
+	{
+		LogStep(ELogVerbosity::Log, FString::Printf(TEXT("%s: expected {%lf} to be %s {%lf} for context '%s'"), *What, Actual, *GetComparisonAsString(ShouldBe), Expected, ContextObject ? *ContextObject->GetName() : TEXT("")));
+		return true;
+	}
+}
+
 bool AFunctionalTest::AssertValue_DateTime(FDateTime Actual, EComparisonMethod ShouldBe, FDateTime Expected, const FString& What, const UObject* ContextObject)
 {
 	if ( !PerformComparison(Actual, Expected, ShouldBe) )
@@ -679,6 +696,20 @@ bool AFunctionalTest::AssertEqual_Float(const float Actual, const float Expected
 	else
 	{
 		LogStep(ELogVerbosity::Log, FString::Printf(TEXT("Float assertion passed (%s)"), *What));
+		return true;
+	}
+}
+
+bool AFunctionalTest::AssertEqual_Double(const double Actual, const double Expected, const FString& What, const double Tolerance, const UObject* ContextObject)
+{
+	if ( !FMath::IsNearlyEqual(Actual, Expected, Tolerance) )
+	{
+		LogStep(ELogVerbosity::Error, FString::Printf(TEXT("Expected '%s' to be {%lf}, but it was {%lf} within tolerance {%lf} for context '%s'"), *What, Expected, Actual, Tolerance, ContextObject ? *ContextObject->GetName() : TEXT("")));
+		return false;
+	}
+	else
+	{
+		LogStep(ELogVerbosity::Log, FString::Printf(TEXT("Double assertion passed (%s)"), *What));
 		return true;
 	}
 }
@@ -877,7 +908,7 @@ void AFunctionalTest::LogStep(ELogVerbosity::Type Verbosity, const FString& Mess
 	if ( IsInStep() )
 	{
 		FullMessage.Append(TEXT(" in step: "));
-		FString StepName = TEXT("");
+		FString StepName = GetCurrentStepName();
 		if ( StepName.IsEmpty() )
 		{
 			StepName = TEXT("<UN-NAMED STEP>");
@@ -1409,7 +1440,7 @@ void UAutomationPerformaceHelper::BeginStatsFile(const FString& RecordName)
 	if (UWorld* World = GetWorld())
 	{
 		FString MapName = World->GetMapName();
-		FString Cmd = FString::Printf(TEXT("Stat StartFile %s-%s/%s.ue4stats"), *MapName, *StartOfTestingTime, *RecordName);
+		FString Cmd = FString::Printf(TEXT("Stat StartFile %s-%s/%s.uestats"), *MapName, *StartOfTestingTime, *RecordName);
 		GEngine->Exec(World, *Cmd);
 	}
 }

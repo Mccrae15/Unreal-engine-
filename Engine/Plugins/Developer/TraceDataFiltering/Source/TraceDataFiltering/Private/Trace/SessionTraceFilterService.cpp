@@ -13,7 +13,7 @@
 #include <IPAddress.h>
 #include <SocketSubsystem.h>
 
-FSessionTraceFilterService::FSessionTraceFilterService(Trace::FSessionHandle InHandle, TSharedPtr<const Trace::IAnalysisSession> InSession) : FBaseSessionFilterService(InHandle, InSession)
+FSessionTraceFilterService::FSessionTraceFilterService(TraceServices::FSessionHandle InHandle, TSharedPtr<const TraceServices::IAnalysisSession> InSession) : FBaseSessionFilterService(InHandle, InSession)
 {
 
 }
@@ -36,14 +36,14 @@ void FSessionTraceFilterService::OnApplyChannelChanges()
 	}
 
 	IUnrealInsightsModule& InsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
-	Trace::FStoreClient* StoreClient = InsightsModule.GetStoreClient();
+	UE::Trace::FStoreClient* StoreClient = InsightsModule.GetStoreClient();
 
 	if (!StoreClient)
 	{
 		return;
 	}
 
-	const Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfoByTraceId(Handle);
+	const UE::Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfoByTraceId(Handle);
 
 	if (!SessionInfo)
 	{
@@ -53,11 +53,15 @@ void FSessionTraceFilterService::OnApplyChannelChanges()
 	ISocketSubsystem* Sockets = ISocketSubsystem::Get();
 	TSharedRef<FInternetAddr> ClientAddr(Sockets->CreateInternetAddr());
 	ClientAddr->SetIp(SessionInfo->GetIpAddress());
-	ClientAddr->SetPort(1985);
+	ClientAddr->SetPort(SessionInfo->GetControlPort());
 
-	Trace::FControlClient ControlClient;
+	
+	UE_LOG(LogTemp, Display, TEXT("CONNECTING TO %u:%u (handle: %llu"), SessionInfo->GetIpAddress(), SessionInfo->GetControlPort(), Handle);
+
+	UE::Trace::FControlClient ControlClient;
 	if (!ControlClient.Connect(ClientAddr.Get()))
 	{
+		UE_LOG(LogTemp, Warning, TEXT("FAILED TO CONNECT TO %u:%u"), SessionInfo->GetIpAddress(), SessionInfo->GetControlPort());
 		return;
 	}
 

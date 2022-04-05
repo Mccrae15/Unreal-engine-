@@ -10,7 +10,11 @@
 // Each event type will be displayed using the defined color
 #pragma once
 
+#include "UObject/ObjectMacros.h"
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
+#include "RHIDefinitions.h"
+
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogSceneUtils, Log, All);
 
 enum class EShadingPath
 {
@@ -26,12 +30,38 @@ enum class EMobileHDRMode
 	EnabledFloat16,
 };
 
+/** Used by rendering project settings. */
+UENUM()
+enum EAntiAliasingMethod
+{
+	AAM_None UMETA(DisplayName = "None"),
+	AAM_FXAA UMETA(DisplayName = "Fast Approximate Anti-Aliasing (FXAA)"),
+	AAM_TemporalAA UMETA(DisplayName = "Temporal Anti-Aliasing (TAA)"),
+	/** Only supported with forward shading.  MSAA sample count is controlled by r.MSAACount. */
+	AAM_MSAA UMETA(DisplayName = "Multisample Anti-Aliasing (MSAA)"),
+	AAM_TSR UMETA(DisplayName = "Temporal Super-Resolution (TSR)"),
+	AAM_MAX,
+};
+
+/** Returns whether the anti-aliasing method use a temporal accumulation */
+inline bool IsTemporalAccumulationBasedMethod(EAntiAliasingMethod AntiAliasingMethod)
+{
+	return AntiAliasingMethod == AAM_TemporalAA || AntiAliasingMethod == AAM_TSR;
+}
+
 /** True if HDR is enabled for the mobile renderer. */
 ENGINE_API bool IsMobileHDR();
+
+/** True if Alpha Propagate is enabled for the mobile renderer. */
+ENGINE_API bool IsMobilePropagateAlphaEnabled(EShaderPlatform Platform);
 
 ENGINE_API EMobileHDRMode GetMobileHDRMode();
 
 ENGINE_API bool IsMobileColorsRGB();
+
+ENGINE_API EAntiAliasingMethod GetDefaultAntiAliasingMethod(const FStaticFeatureLevel InFeatureLevel);
+
+ENGINE_API uint32 GetDefaultMSAACount(const FStaticFeatureLevel InFeatureLevel, uint32 PlatformMaxSampleCount = 8);
 
 // Callback for calling one action (typical use case: delay a clear until it's actually needed)
 class FDelayedRendererAction

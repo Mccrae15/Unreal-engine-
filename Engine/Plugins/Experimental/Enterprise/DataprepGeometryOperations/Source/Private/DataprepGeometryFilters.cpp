@@ -2,7 +2,7 @@
 
 #include "DataprepGeometryFilters.h"
 #include "SelectionSystem/DataprepSelectionSystemStructs.h"
-#include "MeshProcessingLibrary.h"
+#include "JacketingProcess.h"
 #include "GameFramework/Actor.h"
 
 void UDataprepJacketingFilter::ExecuteJacketing(const TArrayView<UObject*>& InputObjects, TArray<UObject*>& FilteredObjects, const TArrayView<bool>* OutFilterResults) const
@@ -23,12 +23,12 @@ void UDataprepJacketingFilter::ExecuteJacketing(const TArrayView<UObject*>& Inpu
 	{
 		TArray<AActor*> OccludedActors;
 
-		UJacketingOptions* JacketingOptions = NewObject< UJacketingOptions >();
-		JacketingOptions->Accuracy = GetAccuracy();
-		JacketingOptions->MergeDistance = GetMergeDistance();
-		JacketingOptions->Target = EJacketingTarget::Level;
+		FJacketingOptions JacketingOptions;
+		JacketingOptions.Accuracy = GetAccuracy();
+		JacketingOptions.MergeDistance = GetMergeDistance();
+		JacketingOptions.Target = EJacketingTarget::Level;
 
-		UMeshProcessingLibrary::ApplyJacketingOnMeshActors(InputActors, JacketingOptions, OccludedActors, true);
+		FJacketingProcess::ApplyJacketingOnMeshActors(InputActors, &JacketingOptions, OccludedActors, true);
 
 		FilteredObjects.Append(OccludedActors);
 	}
@@ -52,29 +52,29 @@ void UDataprepJacketingFilter::ExecuteJacketing(const TArrayView<UObject*>& Inpu
 
 float UDataprepJacketingFilter::GetAccuracy() const
 {
-	return Accuracy;
+	return VoxelPrecision;
 }
 
 float UDataprepJacketingFilter::GetMergeDistance() const
 {
-	return MergeDistance;
+	return GapMaxDiameter;
 }
 
 void UDataprepJacketingFilter::SetAccuracy(float NewAccuracy)
 {
-	if (Accuracy != NewAccuracy)
+	if (VoxelPrecision != NewAccuracy)
 	{
 		Modify();
-		Accuracy = NewAccuracy;
+		VoxelPrecision = NewAccuracy;
 	}
 }
 
 void UDataprepJacketingFilter::SetMergeDistance(float NewMergeDistance)
 {
-	if (MergeDistance != NewMergeDistance)
+	if (GapMaxDiameter != NewMergeDistance)
 	{
 		Modify();
-		MergeDistance = NewMergeDistance;
+		GapMaxDiameter = NewMergeDistance;
 	}
 }
 

@@ -21,9 +21,13 @@ class UUserDefinedStruct;
 class IDetailCustomization;
 class FKismetCompilerContext;
 struct FBlueprintDebugger;
+class FSubobjectEditorTreeNode;
 
 /** Delegate used to customize variable display */
 DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IDetailCustomization>, FOnGetVariableCustomizationInstance, TSharedPtr<IBlueprintEditor> /*BlueprintEditor*/);
+
+/** Delegate used to customize local variable display */
+DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IDetailCustomization>, FOnGetLocalVariableCustomizationInstance, TSharedPtr<IBlueprintEditor> /*BlueprintEditor*/);
 
 /** Delegate used to customize graph display */
 DECLARE_DELEGATE_RetVal_OneParam(TSharedPtr<IDetailCustomization>, FOnGetGraphCustomizationInstance, TSharedPtr<IBlueprintEditor> /*BlueprintEditor*/);
@@ -34,6 +38,7 @@ namespace ERefreshBlueprintEditorReason
 	enum Type
 	{
 		BlueprintCompiled,
+		PostUndo,
 		UnknownReason
 	};
 }
@@ -84,18 +89,31 @@ public:
 
 	virtual bool GetBoundsForSelectedNodes(class FSlateRect& Rect, float Padding ) = 0;
 
-	/** Util to get the currently selected SCS editor tree Nodes */
-	virtual TArray<TSharedPtr<class FSCSEditorTreeNode> >  GetSelectedSCSEditorTreeNodes() const = 0;
+	/** Util to get the currently selected Subobject editor tree Nodes */
+	virtual TArray<TSharedPtr<FSubobjectEditorTreeNode>> GetSelectedSubobjectEditorTreeNodes() const = 0;
 
 	/** Get number of currently selected nodes in the SCS editor tree */
 	virtual int32 GetNumberOfSelectedNodes() const = 0;
 
 	/** Find and select a specific SCS editor tree node associated with the given component */
-	virtual TSharedPtr<class FSCSEditorTreeNode> FindAndSelectSCSEditorTreeNode(const class UActorComponent* InComponent, bool IsCntrlDown) = 0;
+	virtual TSharedPtr<FSubobjectEditorTreeNode> FindAndSelectSubobjectEditorTreeNode(const class UActorComponent* InComponent, bool IsCntrlDown) = 0;
 
 	/** Used to track node create/delete events for Analytics */
 	virtual void AnalyticsTrackNodeEvent( UBlueprint* Blueprint, UEdGraphNode *GraphNode, bool bNodeDelete = false ) const = 0;
 
+	/** Return the class viewer filter associated with the current set of imported namespaces within this editor context. Default is NULL (no filter). */
+	virtual TSharedPtr<class IClassViewerFilter> GetImportedClassViewerFilter() const { return nullptr; }
+
+	/** Return the pin type selector filter associated with the current set of imported namespaces within this editor context. Default is NULL (no filter). */
+	virtual TSharedPtr<class IPinTypeSelectorFilter> GetImportedPinTypeSelectorFilter() const { return nullptr; }
+
+	/** Return whether the given object falls outside the scope of the current set of imported namespaces within this editor context. Default is FALSE (imported). */
+	virtual bool IsNonImportedObject(const UObject* InObject) const { return false; }
+
+	UE_DEPRECATED(5.0, "GetSelectedSCSEditorTreeNodes has been deprecated. Use GetSelectedSubobjectEditorTreeNodes instead.")
+	virtual TArray<TSharedPtr<class FSCSEditorTreeNode> >  GetSelectedSCSEditorTreeNodes() const = 0;
+	UE_DEPRECATED(5.0, "FindAndSelectSCSEditorTreeNode has been deprecated. Use FindAndSelectSubobjectEditorTreeNode instead.")
+	virtual TSharedPtr<class FSCSEditorTreeNode> FindAndSelectSCSEditorTreeNode(const class UActorComponent* InComponent, bool IsCntrlDown) = 0;
 };
 
 DECLARE_DELEGATE_RetVal_OneParam(TSharedRef<class ISCSEditorCustomization>, FSCSEditorCustomizationBuilder, TSharedRef< IBlueprintEditor > /* InBlueprintEditor */);
@@ -171,7 +189,7 @@ public:
 	virtual void SetDetailsCustomization(TSharedPtr<class FDetailsViewObjectFilter> InDetailsObjectFilter, TSharedPtr<class IDetailRootObjectCustomization> InDetailsRootCustomization);
 
 	/** Sets SCS editor UI customization */
-	virtual void SetSCSEditorUICustomization(TSharedPtr<class ISCSEditorUICustomization> InSCSEditorUICustomization);
+	virtual void SetSubobjectEditorUICustomization(TSharedPtr<class ISCSEditorUICustomization> InSCSEditorUICustomization);
 
 	/**
 	 * Register a customization for interacting with the SCS editor 
@@ -198,6 +216,19 @@ public:
 	 * @param	InStruct				The type to create the customization for
 	 */
 	virtual void UnregisterVariableCustomization(FFieldClass* InFieldClass);
+
+	/** 
+	* Register a customization for for Blueprint local variables
+	* @param	InFieldClass				The type of the variable to create the customization for
+	* @param	InOnGetLocalVariableCustomization	The delegate used to create customization instances
+	*/
+	virtual void RegisterLocalVariableCustomization(FFieldClass* InFieldClass, FOnGetLocalVariableCustomizationInstance InOnGetLocalVariableCustomization);
+
+	/** 
+	* Unregister a previously registered customization for BP local variables
+	* @param	InFieldClass				The type to create the customization for
+	*/
+	virtual void UnregisterLocalVariableCustomization(FFieldClass* InFieldClass);
 
 	/** 
 	 * Register a customization for for Blueprint graphs
@@ -238,6 +269,9 @@ public:
 	 */
 	virtual const TSharedRef<FUICommandList> GetsSharedBlueprintEditorCommands() const { return SharedBlueprintEditorCommands.ToSharedRef(); }
 
+	/** Returns a reference to the Blueprint Debugger state object */
+	const TUniquePtr<FBlueprintDebugger>& GetBlueprintDebugger() const { return BlueprintDebugger; }
+
 private:
 	/** Loads from ini a list of all events that should be auto created for Blueprints of a specific class */
 	void PrepareAutoGeneratedDefaultEvents();
@@ -263,6 +297,9 @@ private:
 
 	/** Customizations for Blueprint variables */
 	TMap<FFieldClass*, FOnGetVariableCustomizationInstance> VariableCustomizations;
+
+	/** Customizations for Blueprint local variables */
+	TMap<FFieldClass*, FOnGetLocalVariableCustomizationInstance> LocalVariableCustomizations;
 
 	/** Customizations for Blueprint graphs */
 	TMap<const UEdGraphSchema*, FOnGetGraphCustomizationInstance> GraphCustomizations;

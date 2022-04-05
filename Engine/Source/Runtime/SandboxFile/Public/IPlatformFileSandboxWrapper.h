@@ -45,6 +45,22 @@ class SANDBOXFILE_API FSandboxPlatformFile : public IPlatformFile
 	bool				bSandboxEnabled;
 
 	/**
+	 * For an injection sandbox, we insert the contents of one directory into the contents of another directory (InjectedSource)
+	 * in the eyes of the engine (InjectedTarget). So you could inject C:\MyPlugins\Foo into ../../../MyProject/Plugins/Foo
+	 * and as far as the engine knows, Foo is underneath your MyProject directory
+	 */
+	FString				InjectedSourceDirectory;
+	FString				InjectedSourceDirectoryParent;
+	FString				InjectedTargetDirectory;
+	FString				InjectedTargetDirectoryParent;
+
+	/**
+	 *	Whether access is restricted to the sandbox or not.
+	 *	Defaults to false.
+	 */
+	bool				bSandboxOnly;
+
+	/**
 	 * Clears the contents of the specified folder
 	 *
 	 * @param AbsolutePath Absolute path to the folder to wipe
@@ -162,6 +178,10 @@ public:
 	 * @Caution, these have a performance cost
 	*/
 	void AddExclusion(const TCHAR* Wildcard, bool bIsDirectory = false);
+	void RemoveExclusion(const TCHAR* Wildcard, bool bIsDirectory = false);
+
+	/** Whether access is restricted the the sandbox or not. */
+	void SetSandboxOnly(bool bInSandboxOnly);
 
 	// IPlatformFile Interface
 

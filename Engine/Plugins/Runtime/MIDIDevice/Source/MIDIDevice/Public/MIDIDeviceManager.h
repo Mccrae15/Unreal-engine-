@@ -16,7 +16,7 @@ struct MIDIDEVICE_API FFoundMIDIDevice
 
 	/** The unique ID of this MIDI device */
 	UPROPERTY(BlueprintReadOnly, Category="MIDI Device Manager")
-	int32 DeviceID = 1;
+	int32 DeviceID = 0;
 
 	/** The name of this device.  This name comes from the MIDI hardware, and might not be unique */
 	UPROPERTY(BlueprintReadOnly, Category="MIDI Device Manager")
@@ -32,7 +32,7 @@ struct MIDIDEVICE_API FFoundMIDIDevice
 
 	/** Whether the device is already in use.  You might not want to create a controller for devices that are busy.  Someone else could be using it. */
 	UPROPERTY(BlueprintReadOnly, Category="MIDI Device Manager")
-	bool bIsAlreadyInUse = true;
+	bool bIsAlreadyInUse = false;
 
 	/** True if this is the default MIDI device for input on this system */
 	UPROPERTY(BlueprintReadOnly, Category="MIDI Device Manager")
@@ -51,15 +51,15 @@ struct MIDIDEVICE_API FMIDIDeviceInfo
 
 	/** The unique ID of this MIDI device */
 	UPROPERTY(BlueprintReadOnly, Category = "MIDI Device Manager")
-	int32 DeviceID = 1;
+	int32 DeviceID = 0;
 
-	/** The name of this device.  This name comes from the MIDI hardware, and might not be unique */
+	/** The name of this device.  This name comes from the MIDI hardware, any might not be unique */
 	UPROPERTY(BlueprintReadOnly, Category = "MIDI Device Manager")
 	FString DeviceName;
 
 	/** Whether the device is already in use.  You might not want to create a controller for devices that are busy.  Someone else could be using it. */
 	UPROPERTY(BlueprintReadOnly, Category = "MIDI Device Manager")
-	bool bIsAlreadyInUse = true;
+	bool bIsAlreadyInUse = false;
 
 	/** True if this is the default MIDI device for input on this system */
 	UPROPERTY(BlueprintReadOnly, Category = "MIDI Device Manager")

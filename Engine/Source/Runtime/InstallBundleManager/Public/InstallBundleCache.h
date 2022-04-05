@@ -18,6 +18,7 @@ struct FInstallBundleCacheBundleInfo
 	uint64 FullInstallSize = 0; // Total disk footprint when this bundle is fully installed
 	uint64 CurrentInstallSize = 0; // Disk footprint of the bundle in it's current state
 	FDateTime TimeStamp = FDateTime::MinValue(); // Last access time for the bundle.  Used for eviction order
+	double AgeScalar = 1.0; // Allow some bundles to "age" slower than others
 };
 
 enum class EInstallBundleCacheReserveResult : int8
@@ -34,13 +35,9 @@ struct FInstallBundleCacheReserveResult
 	EInstallBundleCacheReserveResult Result = EInstallBundleCacheReserveResult::Success;
 };
 
-struct FInstallBundleCacheStats
+struct FInstallBundleCacheFlushResult
 {
-	FName CacheName;
-	uint64 MaxSize = 0;
-	uint64 UsedSize = 0;
-	uint64 ReservedSize = 0;
-	uint64 FreeSize = 0;
+	TMap<FName, TArray<EInstallBundleSourceType>> BundlesToEvict;
 };
 
 class INSTALLBUNDLEMANAGER_API FInstallBundleCache : public TSharedFromThis<FInstallBundleCache>
@@ -50,12 +47,14 @@ public:
 
 	void Init(FInstallBundleCacheInitInfo InitInfo);
 
+	FName GetName() { return CacheName; }
+
 	// Add a bundle to the cache.  
 	void AddOrUpdateBundle(EInstallBundleSourceType Source, const FInstallBundleCacheBundleInfo& AddInfo);
 
 	void RemoveBundle(EInstallBundleSourceType Source, FName BundleName);
 
-	TOptional<FInstallBundleCacheBundleInfo> GetBundleInfo(EInstallBundleSourceType Source, FName BundleName);
+	TOptional<FInstallBundleCacheBundleInfo> GetBundleInfo(EInstallBundleSourceType Source, FName BundleName) const;
 
 	// Return the total size of the cache
 	uint64 GetSize() const;
@@ -68,15 +67,20 @@ public:
 	// Called from bundle manager
 	FInstallBundleCacheReserveResult Reserve(FName BundleName);
 
+	// Called from bundle manager, returns all bundles that can be evicted
+	FInstallBundleCacheFlushResult Flush(EInstallBundleSourceType* Source = nullptr);
+
 	// Called from bundle manager to make the files for this bundle eligible for eviction
 	bool Release(FName BundleName);
 
 	bool SetPendingEvict(FName BundleName);
 
+	bool ClearPendingEvict(FName BundleName);
+
 	// Hint to the cache that this bundle is requested, and we should prefer to evict non-requested bundles if possible
 	void HintRequested(FName BundleName, bool bRequested);
 
-	FInstallBundleCacheStats GetStats(bool bDumpToLog = false) const;
+	FInstallBundleCacheStats GetStats(bool bDumpToLog = false, bool bVerbose = false) const;
 
 private:
 	uint64 GetFreeSpaceInternal(uint64 UsedSize) const;
@@ -91,6 +95,7 @@ private:
 		uint64 FullInstallSize = 0;
 		uint64 CurrentInstallSize = 0;
 		FDateTime TimeStamp = FDateTime::MinValue();
+		double AgeScalar = 1.0;
 	};
 
 	enum class ECacheState : uint8
@@ -105,8 +110,11 @@ private:
 		uint64 FullInstallSize = 0;
 		uint64 CurrentInstallSize = 0;
 		FDateTime TimeStamp = FDateTime::MinValue();
+		double AgeScalar = 1.0;
 		ECacheState State = ECacheState::Released;
-		bool bHintReqeusted = false; // Hint to the cache that this bundle is requested, and we should prefer to evict non-requested bundles if possible
+		int32 HintReqeustedCount = 0; // Hint to the cache that this bundle is requested, and we should prefer to evict non-requested bundles if possible
+
+		bool IsHintRequested() const { return HintReqeustedCount > 0; }
 
 		uint64 GetSize() const
 		{
@@ -125,11 +133,31 @@ private:
 		}
 	};
 
+	struct FCacheSortPredicate
+	{
+		bool operator()(const FBundleCacheInfo& A, const FBundleCacheInfo& B) const
+		{
+			if (A.IsHintRequested() == B.IsHintRequested())
+			{
+				FTimespan AgeA = (Now > A.TimeStamp) ? Now - A.TimeStamp : FTimespan(0);
+				FTimespan AgeB = (Now > B.TimeStamp) ? Now - B.TimeStamp : FTimespan(0);
+
+				return AgeA * A.AgeScalar > AgeB * B.AgeScalar;
+			}
+
+			return !A.IsHintRequested() && B.IsHintRequested();
+		};
+
+	private:
+		FDateTime Now = FDateTime::UtcNow();
+	};
+
 private:
 
 	TMap<FName, TMap<EInstallBundleSourceType, FPerSourceBundleCacheInfo>> PerSourceCacheInfo;
 
-	TMap<FName, FBundleCacheInfo> CacheInfo;
+	// mutable to allow sorting in const contexts
+	mutable TMap<FName, FBundleCacheInfo> CacheInfo;
 
 	uint64 TotalSize = 0;
 

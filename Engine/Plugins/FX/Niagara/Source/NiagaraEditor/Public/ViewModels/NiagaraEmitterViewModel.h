@@ -7,13 +7,13 @@
 #include "ViewModels/NiagaraParameterDefinitionsSubscriberViewModel.h"
 #include "UObject/ObjectKey.h"
 #include "IAssetTypeActions.h"
+#include "NiagaraEmitterEditorData.h"
 
 class UNiagaraEmitter;
 class UNiagaraScript;
 class FNiagaraSystemViewModel;
 class FNiagaraScriptViewModel;
 class FNiagaraScriptGraphViewModel;
-class UNiagaraEmitterEditorData;
 class FNiagaraEmitterInstance;
 struct FNiagaraVariable;
 struct FNiagaraParameterStore;
@@ -112,13 +112,16 @@ public:
 	FOnScriptParameterStoreChanged& OnScriptParameterStoreChanged();
 
 	/** Gets editor specific data which can be stored per emitter.  If this data hasn't been created the default version will be returned. */
-	const UNiagaraEmitterEditorData& GetEditorData() const;
+	NIAGARAEDITOR_API const UNiagaraEmitterEditorData& GetEditorData() const;
 
 	/** Gets editor specific data which is stored per emitter.  If this data hasn't been created then it will be created. */
-	UNiagaraEmitterEditorData& GetOrCreateEditorData();
+	NIAGARAEDITOR_API UNiagaraEmitterEditorData& GetOrCreateEditorData();
 
 	/** Add an event script to the owned emitter. Sets the Usage, UsageID and Source of the EventScriptProperties. */
 	NIAGARAEDITOR_API void AddEventHandler(FNiagaraEventScriptProperties& EventScriptProperties, bool bResetGraphForOutput = false);
+
+	bool GetSummaryIsInEditMode() const { return bSummaryIsInEditMode; }
+	void SetSummaryIsInEditMode(bool bInSummaryIsInEditMode) { bSummaryIsInEditMode = bInSummaryIsInEditMode; }
 
 	void Cleanup();
 
@@ -188,4 +191,6 @@ private:
 	TMap<FObjectKey, FDelegateHandle> ScriptToOnParameterStoreChangedHandleMap;
 
 	TSharedPtr<SWindow> NewParentWindow;
+
+	bool bSummaryIsInEditMode;
 };

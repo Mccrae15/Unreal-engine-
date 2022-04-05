@@ -80,13 +80,6 @@ namespace DatasmithRevitExporter
 
 			Debug.Assert(FDirectLink.Get() != null);
 
-			// Holding ctrl will force full sync. 
-			if (FDirectLink.Get().SyncCount > 0 && (System.Windows.Forms.Control.ModifierKeys & Keys.Control) == Keys.Control)
-			{
-				FDirectLink.DestroyInstance(FDirectLink.Get(), InCommandData.Application.Application);
-				FDirectLink.ActivateInstance(Doc);
-			}
-
 			FDatasmithRevitExportContext ExportContext = new FDatasmithRevitExportContext(
 				InCommandData.Application.Application,
 				Doc,
@@ -133,6 +126,21 @@ namespace DatasmithRevitExporter
 		}
 	}
 
+#if false // AutoSync is temporary disabled
+	[Transaction(TransactionMode.Manual)]
+	public class DatasmithAutoSyncRevitCommand : DatasmithRevitCommand
+	{
+		public override Result OnExecute(ExternalCommandData InCommandData, ref string OutCommandMessage, ElementSet OutElements)
+		{
+			FDirectLink.bAutoSync = !FDirectLink.bAutoSync;
+
+			DatasmithRevitApplication.Instance.SetAutoSyncButtonToggled(FDirectLink.bAutoSync);
+
+			return Result.Succeeded;
+		}
+	}
+#endif
+
 	// Add-in external command Export to Unreal Datasmith. 
 	[Transaction(TransactionMode.Manual)]
 	public class DatasmithExportRevitCommand : DatasmithRevitCommand
@@ -165,14 +173,6 @@ namespace DatasmithRevitExporter
 
 			// Retrieve the Unreal Datasmith export options.
 			DatasmithRevitExportOptions ExportOptions = new DatasmithRevitExportOptions(Doc);
-			if ((System.Windows.Forms.Control.ModifierKeys & Keys.Control) == Keys.Control)
-			{
-				if (ExportOptions.ShowDialog() != DialogResult.OK)
-				{
-					return Result.Cancelled;
-				}
-				ExportActiveViewOnly = false;
-			}
 
 			// Generate file path for each view.
 			Dictionary<ElementId, string> FilePaths = new Dictionary<ElementId, string>();
@@ -415,6 +415,17 @@ namespace DatasmithRevitExporter
 		public Result Execute(ExternalCommandData InCommandData, ref string OutCommandMessage, ElementSet OutElements)
 		{
 			DatasmithRevitApplication.ShowExportMessages();
+			return Result.Succeeded;
+		}
+	}
+
+	[Transaction(TransactionMode.Manual)]
+	public class DatasmithShowSettingsRevitCommand : IExternalCommand
+	{
+		public Result Execute(ExternalCommandData InCommandData, ref string OutCommandMessage, ElementSet OutElements)
+		{
+			DatasmithRevitSettingsDialog ExportOptions = new DatasmithRevitSettingsDialog(InCommandData.Application.ActiveUIDocument.Document);
+			ExportOptions.ShowDialog();
 			return Result.Succeeded;
 		}
 	}

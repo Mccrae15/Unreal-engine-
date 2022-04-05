@@ -12,6 +12,22 @@
 class UMovieSceneEntitySystemLinker;
 class UUserWidget;
 
+USTRUCT()
+struct FSequenceTickManagerWidgetData
+{
+	GENERATED_BODY()
+
+	/** The widget was ticked. */
+	bool bIsTicking = true;
+
+	/** The widget was ticked last update. */
+	bool bLastKnownTickState = true;
+
+	/** The widget's animation was ticked this frame. */
+	bool bActionsAndAnimationTicked = false;
+};
+
+
 /**
  * An automatically created global object that will manage all widget animations.
  */
@@ -37,6 +53,8 @@ public:
 	void AddWidget(UUserWidget* InWidget);
 	void RemoveWidget(UUserWidget* InWidget);
 
+	void OnWidgetTicked(UUserWidget* InWidget);
+
 private:
 	virtual void BeginDestroy() override;
 
@@ -46,10 +64,10 @@ private:
 private:
 
 	UPROPERTY(transient)
-	TSet<TWeakObjectPtr<UUserWidget>> WeakUserWidgets;
+	TMap<TWeakObjectPtr<UUserWidget>, FSequenceTickManagerWidgetData> WeakUserWidgetData;
 
 	UPROPERTY(transient)
-	UMovieSceneEntitySystemLinker* Linker;
+	TObjectPtr<UMovieSceneEntitySystemLinker> Linker;
 
 	FMovieSceneEntitySystemRunner Runner;
 

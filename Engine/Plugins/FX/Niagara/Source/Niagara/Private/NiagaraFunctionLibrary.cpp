@@ -10,8 +10,9 @@
 #include "ContentStreaming.h"
 #include "Internationalization/Internationalization.h"
 
+#include "NiagaraAsyncGpuTraceHelper.h"
 #include "NiagaraWorldManager.h"
-#include "NiagaraDataInterfaceStaticMesh.h"
+#include "DataInterface/NiagaraDataInterfaceStaticMesh.h"
 #include "NiagaraStats.h"
 #include "NiagaraDataInterfaceTexture.h"
 #include "NiagaraDataInterface2DArrayTexture.h"
@@ -20,6 +21,7 @@
 #include "Engine/VolumeTexture.h"
 #include "Engine/Texture2DArray.h"
 #include "Engine/TextureCube.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraFunctionLibrary"
 
@@ -63,8 +65,11 @@ UNiagaraComponent* CreateNiagaraSystem(UNiagaraSystem* SystemTemplate, UWorld* W
 		{
 			if (UNiagaraComponentSettings::ShouldForceAutoPooling(SystemTemplate))
 			{
-				UNiagaraComponentPool* ComponentPool = FNiagaraWorldManager::Get(World)->GetComponentPool();
-				NiagaraComponent = ComponentPool->CreateWorldParticleSystem(SystemTemplate, World, ENCPoolMethod::AutoRelease);
+				if (FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World))
+				{
+					UNiagaraComponentPool* ComponentPool = WorldManager->GetComponentPool();
+					NiagaraComponent = ComponentPool->CreateWorldParticleSystem(SystemTemplate, World, ENCPoolMethod::AutoRelease);
+				}
 			}
 			else
 			{
@@ -73,11 +78,12 @@ UNiagaraComponent* CreateNiagaraSystem(UNiagaraSystem* SystemTemplate, UWorld* W
 				NiagaraComponent->bAutoActivate = false;
 				NiagaraComponent->SetAutoDestroy(bAutoDestroy);
 				NiagaraComponent->bAllowAnyoneToDestroyMe = true;
+				NiagaraComponent->SetVisibleInRayTracing(false);
 			}
 		}
-		else
+		else if (FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World))
 		{
-			UNiagaraComponentPool* ComponentPool = FNiagaraWorldManager::Get(World)->GetComponentPool();
+			UNiagaraComponentPool* ComponentPool = WorldManager->GetComponentPool();
 			NiagaraComponent = ComponentPool->CreateWorldParticleSystem(SystemTemplate, World, PoolingMethod);
 		}
 	}
@@ -85,30 +91,55 @@ UNiagaraComponent* CreateNiagaraSystem(UNiagaraSystem* SystemTemplate, UWorld* W
 }
 
 
+UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAtLocation(const UObject* WorldContextObject, UNiagaraSystem* SystemTemplate, FVector SpawnLocation, FRotator SpawnRotation, FVector Scale, bool bAutoDestroy, bool bAutoActivate, ENCPoolMethod PoolingMethod, bool bPreCullCheck)
+{
+	FFXSystemSpawnParameters SpawnParams;
+	SpawnParams.WorldContextObject = WorldContextObject;
+	SpawnParams.SystemTemplate = SystemTemplate;
+	SpawnParams.Location = SpawnLocation;
+	SpawnParams.Rotation = SpawnRotation;
+	SpawnParams.Scale = Scale;
+	SpawnParams.bAutoDestroy = bAutoDestroy;
+	SpawnParams.bAutoActivate = bAutoActivate;
+	SpawnParams.PoolingMethod = ToPSCPoolMethod(PoolingMethod);
+	SpawnParams.bPreCullCheck = bPreCullCheck;
+	return SpawnSystemAtLocationWithParams(SpawnParams);
+}
+
 /**
 * Spawns a Niagara System at the specified world location/rotation
 * @return			The spawned UNiagaraComponent
 */
-UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAtLocation(const UObject* WorldContextObject, UNiagaraSystem* SystemTemplate, FVector SpawnLocation, FRotator SpawnRotation, FVector Scale, bool bAutoDestroy, bool bAutoActivate, ENCPoolMethod PoolingMethod, bool bPreCullCheck)
+UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAtLocationWithParams(FFXSystemSpawnParameters& SpawnParams)
 {
 	UNiagaraComponent* PSC = NULL;
-	if (SystemTemplate)
+	UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(SpawnParams.SystemTemplate);
+	if (NiagaraSystem)
 	{
-		UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+		UWorld* World = GEngine->GetWorldFromContextObject(SpawnParams.WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
 		if (World != nullptr)
 		{
 			bool bShouldCull = false;
-			if (bPreCullCheck)
+			if (SpawnParams.bPreCullCheck)
 			{
-				FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World);
-				bShouldCull = WorldManager->ShouldPreCull(SystemTemplate, SpawnLocation);
+				bool bIsPlayerEffect = SpawnParams.bIsPlayerEffect;
+				if (NiagaraSystem->AllowCullingForLocalPlayers() || bIsPlayerEffect == false)
+				{
+					FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World);
+					bShouldCull = WorldManager->ShouldPreCull(NiagaraSystem, SpawnParams.Location);
+				}
 			}
 
 			if (!bShouldCull)
 			{
-				PSC = CreateNiagaraSystem(SystemTemplate, World, World->GetWorldSettings(), bAutoDestroy, PoolingMethod);
+				PSC = CreateNiagaraSystem(NiagaraSystem, World, World->GetWorldSettings(), SpawnParams.bAutoDestroy, ToNiagaraPooling(SpawnParams.PoolingMethod));
 				if(PSC)
 				{
+					if (SpawnParams.bIsPlayerEffect)
+					{
+						PSC->SetForceLocalPlayerEffect(true);
+					}
+
 #if WITH_EDITORONLY_DATA
 					PSC->bWaitForCompilationOnActivate = GIsAutomationTesting;
 #endif
@@ -119,9 +150,9 @@ UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAtLocation(const UObject*
 					}
 
 					PSC->SetAbsolute(true, true, true);
-					PSC->SetWorldLocationAndRotation(SpawnLocation, SpawnRotation);
-					PSC->SetRelativeScale3D(Scale);
-					if (bAutoActivate)
+					PSC->SetWorldLocationAndRotation(SpawnParams.Location, SpawnParams.Rotation);
+					PSC->SetRelativeScale3D(SpawnParams.Scale);
+					if (SpawnParams.bAutoActivate)
 					{
 						PSC->Activate(true);
 					}
@@ -133,74 +164,14 @@ UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAtLocation(const UObject*
 }
 
 
-
-
-
 /**
 * Spawns a Niagara System attached to a component
 * @return			The spawned UNiagaraComponent
 */
 UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAttached(UNiagaraSystem* SystemTemplate, USceneComponent* AttachToComponent, FName AttachPointName, FVector Location, FRotator Rotation, EAttachLocation::Type LocationType, bool bAutoDestroy, bool bAutoActivate, ENCPoolMethod PoolingMethod, bool bPreCullCheck)
 {
-	UNiagaraComponent* PSC = nullptr;
-	if (SystemTemplate)
-	{
-		if (AttachToComponent == NULL)
-		{
-			UE_LOG(LogScript, Warning, TEXT("UNiagaraFunctionLibrary::SpawnSystemAttached: NULL AttachComponent specified!"));
-		}
-		else
-		{
-			bool bShouldCull = false;
-			if (bPreCullCheck)
-			{
-				FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(AttachToComponent->GetWorld());
-				//TODO: For now using the attach parent location and ignoring the emitters relative location which is clearly going to be a bit wrong in some cases.
-				bShouldCull = WorldManager->ShouldPreCull(SystemTemplate, AttachToComponent->GetComponentLocation());
-			}
-
-			if (!bShouldCull)
-			{
-				PSC = CreateNiagaraSystem(SystemTemplate, AttachToComponent->GetWorld(), AttachToComponent->GetOwner(), bAutoDestroy, PoolingMethod);
-				if(PSC)
-				{
-#if WITH_EDITOR
-					if (GForceNiagaraSpawnAttachedSolo > 0)
-					{
-						PSC->SetForceSolo(true);
-					}
-#endif
-					if(!PSC->IsRegistered())
-					{
-						PSC->RegisterComponentWithWorld(AttachToComponent->GetWorld());
-					}
-
-					PSC->AttachToComponent(AttachToComponent, FAttachmentTransformRules::KeepRelativeTransform, AttachPointName);
-					if (LocationType == EAttachLocation::KeepWorldPosition)
-					{
-						PSC->SetWorldLocationAndRotation(Location, Rotation);
-					}
-					else
-					{
-						PSC->SetRelativeLocationAndRotation(Location, Rotation);
-					}
-					PSC->SetRelativeScale3D(FVector(1.f));
-
-					if (bAutoActivate)
-					{
-						PSC->Activate();
-					}
-				}
-			}
-		}
-	}
-	return PSC;
+	return SpawnSystemAttached(SystemTemplate, AttachToComponent, AttachPointName, Location, Rotation, FVector(1, 1, 1), LocationType, bAutoDestroy, PoolingMethod, bAutoActivate, bPreCullCheck);
 }
-
-/**
-* Spawns a Niagara System attached to a component
-* @return			The spawned UNiagaraComponent
-*/
 
 UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAttached(
 	UNiagaraSystem* SystemTemplate,
@@ -216,31 +187,66 @@ UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAttached(
 	bool bPreCullCheck
 )
 {
+	FFXSystemSpawnParameters SpawnParams;
+	SpawnParams.SystemTemplate = SystemTemplate;
+	SpawnParams.AttachToComponent = AttachToComponent;
+	SpawnParams.AttachPointName = AttachPointName;
+	SpawnParams.Location = Location;
+	SpawnParams.Rotation = Rotation;
+	SpawnParams.Scale = Scale;
+	SpawnParams.LocationType = LocationType;
+	SpawnParams.bAutoDestroy = bAutoDestroy;
+	SpawnParams.bAutoActivate = bAutoActivate;
+	SpawnParams.PoolingMethod = ToPSCPoolMethod(PoolingMethod);
+	SpawnParams.bPreCullCheck = bPreCullCheck;
+	return SpawnSystemAttachedWithParams(SpawnParams);
+}
+
+/**
+* Spawns a Niagara System attached to a component
+* @return			The spawned UNiagaraComponent
+*/
+
+UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAttachedWithParams(FFXSystemSpawnParameters& SpawnParams)
+{
+	LLM_SCOPE(ELLMTag::Niagara);
+	
 	UNiagaraComponent* PSC = nullptr;
-	if (SystemTemplate)
+	UNiagaraSystem* NiagaraSystem = Cast<UNiagaraSystem>(SpawnParams.SystemTemplate);
+	if (NiagaraSystem)
 	{
-		if (!AttachToComponent)
+		if (!SpawnParams.AttachToComponent)
 		{
 			UE_LOG(LogScript, Warning, TEXT("UGameplayStatics::SpawnNiagaraEmitterAttached: NULL AttachComponent specified!"));
 		}
 		else
 		{
-			UWorld* const World = AttachToComponent->GetWorld();
+			UWorld* const World = SpawnParams.AttachToComponent->GetWorld();
 			if (World && !World->IsNetMode(NM_DedicatedServer))
 			{
 				bool bShouldCull = false;
-				if (bPreCullCheck)
+				if (SpawnParams.bPreCullCheck)
 				{
-					FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World);
-					//TODO: For now using the attach parent location and ignoring the emitters relative location which is clearly going to be a bit wrong in some cases.
-					bShouldCull = WorldManager->ShouldPreCull(SystemTemplate, AttachToComponent->GetComponentLocation());
+					//Don't precull if this is a local player linked effect and the system doesn't allow us to cull those.
+					bool bIsPlayerEffect = SpawnParams.bIsPlayerEffect || FNiagaraWorldManager::IsComponentLocalPlayerLinked(SpawnParams.AttachToComponent);
+					if (NiagaraSystem->AllowCullingForLocalPlayers() || bIsPlayerEffect == false)
+					{
+						FNiagaraWorldManager* WorldManager = FNiagaraWorldManager::Get(World);
+						//TODO: For now using the attach parent location and ignoring the emitters relative location which is clearly going to be a bit wrong in some cases.
+						bShouldCull = WorldManager->ShouldPreCull(NiagaraSystem, SpawnParams.AttachToComponent->GetComponentLocation());
+					}
 				}
 
 				if (!bShouldCull)
 				{
-					PSC = CreateNiagaraSystem(SystemTemplate, World, AttachToComponent->GetOwner(), bAutoDestroy, PoolingMethod);
+					PSC = CreateNiagaraSystem(NiagaraSystem, World, SpawnParams.AttachToComponent->GetOwner(), SpawnParams.bAutoDestroy, ToNiagaraPooling(SpawnParams.PoolingMethod));
 					if (PSC)
 					{
+						if (SpawnParams.bIsPlayerEffect)
+						{
+							PSC->SetForceLocalPlayerEffect(true);
+						}
+						
 #if WITH_EDITOR
 						if (GForceNiagaraSpawnAttachedSolo > 0)
 						{
@@ -249,10 +255,10 @@ UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAttached(
 #endif
 						auto SetupRelativeTransforms = [&]()
 						{
-							if (LocationType == EAttachLocation::KeepWorldPosition)
+							if (SpawnParams.LocationType == EAttachLocation::KeepWorldPosition)
 							{
-								const FTransform ParentToWorld = AttachToComponent->GetSocketTransform(AttachPointName);
-								const FTransform ComponentToWorld(Rotation, Location, Scale);
+								const FTransform ParentToWorld = SpawnParams.AttachToComponent->GetSocketTransform(SpawnParams.AttachPointName);
+								const FTransform ComponentToWorld(SpawnParams.Rotation, SpawnParams.Location, SpawnParams.Scale);
 								const FTransform RelativeTM = ComponentToWorld.GetRelativeTransform(ParentToWorld);
 								PSC->SetRelativeLocation_Direct(RelativeTM.GetLocation());
 								PSC->SetRelativeRotation_Direct(RelativeTM.GetRotation().Rotator());
@@ -260,19 +266,19 @@ UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAttached(
 							}
 							else
 							{
-								PSC->SetRelativeLocation_Direct(Location);
-								PSC->SetRelativeRotation_Direct(Rotation);
+								PSC->SetRelativeLocation_Direct(SpawnParams.Location);
+								PSC->SetRelativeRotation_Direct(SpawnParams.Rotation);
 
-								if (LocationType == EAttachLocation::SnapToTarget)
+								if (SpawnParams.LocationType == EAttachLocation::SnapToTarget)
 								{
 									// SnapToTarget indicates we "keep world scale", this indicates we we want the inverse of the parent-to-world scale 
 									// to calculate world scale at Scale 1, and then apply the passed in Scale
-									const FTransform ParentToWorld = AttachToComponent->GetSocketTransform(AttachPointName);
-									PSC->SetRelativeScale3D_Direct(Scale * ParentToWorld.GetSafeScaleReciprocal(ParentToWorld.GetScale3D()));
+									const FTransform ParentToWorld = SpawnParams.AttachToComponent->GetSocketTransform(SpawnParams.AttachPointName);
+									PSC->SetRelativeScale3D_Direct(SpawnParams.Scale * ParentToWorld.GetSafeScaleReciprocal(ParentToWorld.GetScale3D()));
 								}
 								else
 								{
-									PSC->SetRelativeScale3D_Direct(Scale);
+									PSC->SetRelativeScale3D_Direct(SpawnParams.Scale);
 								}
 							}
 						};
@@ -281,16 +287,16 @@ UNiagaraComponent* UNiagaraFunctionLibrary::SpawnSystemAttached(
 						{
 							//It is now possible for us to be already regisetered so we must use AttachToComponent() instead.
 							SetupRelativeTransforms();
-							PSC->AttachToComponent(AttachToComponent, FAttachmentTransformRules::KeepRelativeTransform);
+							PSC->AttachToComponent(SpawnParams.AttachToComponent, FAttachmentTransformRules::KeepRelativeTransform, SpawnParams.AttachPointName);
 						}
 						else
 						{
-							PSC->SetupAttachment(AttachToComponent, AttachPointName);
+							PSC->SetupAttachment(SpawnParams.AttachToComponent, SpawnParams.AttachPointName);
 							SetupRelativeTransforms();
 							PSC->RegisterComponentWithWorld(World);
 						}
 
-						if (bAutoActivate)
+						if (SpawnParams.bAutoActivate)
 						{
 							PSC->Activate(true);
 						}
@@ -330,7 +336,10 @@ void UNiagaraFunctionLibrary::OverrideSystemUserVariableStaticMeshComponent(UNia
 {
 	if (!NiagaraSystem)
 	{
-		UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem in \"Set Niagara Static Mesh Component\" is NULL, OverrideName \"%s\" and StaticMeshComponent \"%s\", skipping."), *OverrideName, *GetFullNameSafe(StaticMeshComponent));
+		if (FNiagaraUtilities::LogVerboseWarnings())
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem in \"Set Niagara Static Mesh Component\" is NULL, OverrideName \"%s\" and StaticMeshComponent \"%s\", skipping."), *OverrideName, *GetFullNameSafe(StaticMeshComponent));
+		}
 		return;
 	}
 
@@ -365,7 +374,10 @@ void UNiagaraFunctionLibrary::OverrideSystemUserVariableStaticMesh(UNiagaraCompo
 {
 	if (!NiagaraSystem)
 	{
-		UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem in \"Set Niagara Static Mesh Component\" is NULL, OverrideName \"%s\" and StaticMesh \"%s\", skipping."), *OverrideName, *GetFullNameSafe(StaticMesh));
+		if (FNiagaraUtilities::LogVerboseWarnings())
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem in \"Set Niagara Static Mesh Component\" is NULL, OverrideName \"%s\" and StaticMesh \"%s\", skipping."), *OverrideName, *GetFullNameSafe(StaticMesh));
+		}
 		return;
 	}
 
@@ -414,7 +426,10 @@ void UNiagaraFunctionLibrary::OverrideSystemUserVariableSkeletalMeshComponent(UN
 {
 	if (!NiagaraSystem)
 	{
-		UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem in \"Set Niagara Skeletal Mesh Component\" is NULL, OverrideName \"%s\" and SkeletalMeshComponent \"%s\", skipping."), *OverrideName, *GetFullNameSafe(SkeletalMeshComponent));
+		if (FNiagaraUtilities::LogVerboseWarnings())
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem in \"Set Niagara Skeletal Mesh Component\" is NULL, OverrideName \"%s\" and SkeletalMeshComponent \"%s\" SkeletalMesh \"%s\", skipping."), *OverrideName, *GetFullNameSafe(SkeletalMeshComponent), *GetFullNameSafe(SkeletalMeshComponent ? SkeletalMeshComponent->SkeletalMesh : nullptr));
+		}
 		return;
 	}
 
@@ -438,7 +453,10 @@ void UNiagaraFunctionLibrary::SetSkeletalMeshDataInterfaceSamplingRegions(UNiaga
 {
 	if (!NiagaraSystem)
 	{
-		UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem in \"Set Skeletal Mesh Data Interface Sampling Regions\" is NULL, OverrideName \"%s\", skipping."), *OverrideName);
+		if (FNiagaraUtilities::LogVerboseWarnings())
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem in \"Set Skeletal Mesh Data Interface Sampling Regions\" is NULL, OverrideName \"%s\", skipping."), *OverrideName);
+		}
 		return;
 	}
 
@@ -456,7 +474,10 @@ void UNiagaraFunctionLibrary::SetTextureObject(UNiagaraComponent* NiagaraSystem,
 {
 	if (!NiagaraSystem)
 	{
-		UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem in \"SetTextureObject\" is NULL, OverrideName \"%s\" and Texture \"%s\", skipping."), *OverrideName, *GetFullNameSafe(Texture));
+		if (FNiagaraUtilities::LogVerboseWarnings())
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem in \"SetTextureObject\" is NULL, OverrideName \"%s\" and Texture \"%s\", skipping."), *OverrideName, *GetFullNameSafe(Texture));
+		}
 		return;
 	}
 
@@ -486,9 +507,6 @@ void UNiagaraFunctionLibrary::SetTextureObject(UNiagaraComponent* NiagaraSystem,
 		}
 
 		TextureDI->SetTexture(Texture);
-#if WITH_EDITOR
-		NiagaraSystem->SetParameterOverride(Variable, FNiagaraVariant(TextureDI));
-#endif
 	}
 	else if (UTexture2DArray* Texture2DArray = Cast<UTexture2DArray>(Texture))
 	{
@@ -508,9 +526,6 @@ void UNiagaraFunctionLibrary::SetTextureObject(UNiagaraComponent* NiagaraSystem,
 		}
 
 		TextureDI->SetTexture(Texture2DArray);
-#if WITH_EDITOR
-		NiagaraSystem->SetParameterOverride(Variable, FNiagaraVariant(TextureDI));
-#endif
 	}
 	else if (UVolumeTexture* TextureVolume = Cast<UVolumeTexture>(Texture))
 	{
@@ -530,9 +545,6 @@ void UNiagaraFunctionLibrary::SetTextureObject(UNiagaraComponent* NiagaraSystem,
 		}
 
 		TextureDI->SetTexture(TextureVolume);
-#if WITH_EDITOR
-		NiagaraSystem->SetParameterOverride(Variable, FNiagaraVariant(TextureDI));
-#endif
 	}
 	else if (UTextureCube* TextureCube = Cast<UTextureCube>(Texture))
 	{
@@ -552,9 +564,6 @@ void UNiagaraFunctionLibrary::SetTextureObject(UNiagaraComponent* NiagaraSystem,
 		}
 
 		TextureDI->SetTexture(TextureCube);
-#if WITH_EDITOR
-		NiagaraSystem->SetParameterOverride(Variable, FNiagaraVariant(TextureDI));
-#endif
 	}
 	else
 	{
@@ -564,9 +573,9 @@ void UNiagaraFunctionLibrary::SetTextureObject(UNiagaraComponent* NiagaraSystem,
 }
 
 void UNiagaraFunctionLibrary::SetTexture2DArrayObject(UNiagaraComponent* NiagaraSystem, const FString& OverrideName, UTexture2DArray* Texture)
-{
+	{
 	SetTextureObject(NiagaraSystem, OverrideName, Texture);
-}
+	}
 
 void UNiagaraFunctionLibrary::SetVolumeTextureObject(UNiagaraComponent* NiagaraSystem, const FString& OverrideName, UVolumeTexture* Texture)
 {
@@ -577,7 +586,10 @@ UNiagaraDataInterface* UNiagaraFunctionLibrary::GetDataInterface(UClass* DIClass
 {
 	if (NiagaraSystem == nullptr)
 	{
-		UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem was nullptr for OverrideName \"%s\"."), *OverrideName.ToString());
+		if (FNiagaraUtilities::LogVerboseWarnings())
+		{
+			UE_LOG(LogNiagara, Warning, TEXT("NiagaraSystem was nullptr for OverrideName \"%s\"."), *OverrideName.ToString());
+		}
 		return nullptr;
 	}
 
@@ -666,7 +678,7 @@ struct FVectorKernelFastDot4
 		return FString();
 	}
 
-	static void Exec(FVectorVMContext& Context)
+	static void Exec(FVectorVMExternalFunctionContext& Context)
 	{
 		//SCOPE_CYCLE_COUNTER(STAT_NiagaraFastDot4);
 
@@ -689,29 +701,29 @@ struct FVectorKernelFastDot4
 
 		VectorVM::FExternalFuncRegisterHandler<float> OutValue(Context);
 
-		VectorRegister* RESTRICT AX = (VectorRegister *)InVecA[0].GetDest();
-		VectorRegister* RESTRICT AY = (VectorRegister *)InVecA[1].GetDest();
-		VectorRegister* RESTRICT AZ = (VectorRegister *)InVecA[2].GetDest();
-		VectorRegister* RESTRICT AW = (VectorRegister *)InVecA[3].GetDest();
+		VectorRegister4Float* RESTRICT AX = (VectorRegister4Float *)InVecA[0].GetDest();
+		VectorRegister4Float* RESTRICT AY = (VectorRegister4Float *)InVecA[1].GetDest();
+		VectorRegister4Float* RESTRICT AZ = (VectorRegister4Float *)InVecA[2].GetDest();
+		VectorRegister4Float* RESTRICT AW = (VectorRegister4Float *)InVecA[3].GetDest();
 
-		VectorRegister* RESTRICT BX = (VectorRegister *)InVecB[0].GetDest();
-		VectorRegister* RESTRICT BY = (VectorRegister *)InVecB[1].GetDest();
-		VectorRegister* RESTRICT BZ = (VectorRegister *)InVecB[2].GetDest();
-		VectorRegister* RESTRICT BW = (VectorRegister *)InVecB[3].GetDest();
-		VectorRegister* RESTRICT Out = (VectorRegister *)OutValue.GetDest();
+		VectorRegister4Float* RESTRICT BX = (VectorRegister4Float *)InVecB[0].GetDest();
+		VectorRegister4Float* RESTRICT BY = (VectorRegister4Float *)InVecB[1].GetDest();
+		VectorRegister4Float* RESTRICT BZ = (VectorRegister4Float *)InVecB[2].GetDest();
+		VectorRegister4Float* RESTRICT BW = (VectorRegister4Float *)InVecB[3].GetDest();
+		VectorRegister4Float* RESTRICT Out = (VectorRegister4Float *)OutValue.GetDest();
 
 		const int32 Loops = Context.GetNumLoops<4>();
 		for (int32 i = 0; i < Loops; ++i)
 		{
 
-			VectorRegister AVX0= VectorLoadAligned(&AX[i]);
-			VectorRegister AVY0= VectorLoadAligned(&AY[i]);
-			VectorRegister AVZ0= VectorLoadAligned(&AZ[i]);
-			VectorRegister AVW0= VectorLoadAligned(&AW[i]);
-			VectorRegister BVX0= VectorLoadAligned(&BX[i]);
-			VectorRegister BVY0= VectorLoadAligned(&BY[i]);
-			VectorRegister BVZ0= VectorLoadAligned(&BZ[i]);
-			VectorRegister BVW0= VectorLoadAligned(&BW[i]);
+			VectorRegister4Float AVX0= VectorLoadAligned(&AX[i]);
+			VectorRegister4Float AVY0= VectorLoadAligned(&AY[i]);
+			VectorRegister4Float AVZ0= VectorLoadAligned(&AZ[i]);
+			VectorRegister4Float AVW0= VectorLoadAligned(&AW[i]);
+			VectorRegister4Float BVX0= VectorLoadAligned(&BX[i]);
+			VectorRegister4Float BVY0= VectorLoadAligned(&BY[i]);
+			VectorRegister4Float BVZ0= VectorLoadAligned(&BZ[i]);
+			VectorRegister4Float BVW0= VectorLoadAligned(&BW[i]);
 
 			/*
 				 R[19] = :mul(R[21], R[25]);
@@ -719,10 +731,10 @@ struct FVectorKernelFastDot4
 				 R[19] = :mad(R[22], R[26], R[21]);
 				 R[20] = :mad(R[23], R[27], R[19]);
 			*/
-			VectorRegister AMBX0	= VectorMultiply(AVX0, BVX0);
-			VectorRegister AMBXY0= VectorMultiplyAdd(AVY0, BVY0, AMBX0);
-			VectorRegister AMBXYZ0= VectorMultiplyAdd(AVZ0, BVZ0, AMBXY0);
-			VectorRegister AMBXYZW0= VectorMultiplyAdd(AVW0, BVW0, AMBXYZ0);
+			VectorRegister4Float AMBX0	= VectorMultiply(AVX0, BVX0);
+			VectorRegister4Float AMBXY0= VectorMultiplyAdd(AVY0, BVY0, AMBX0);
+			VectorRegister4Float AMBXYZ0= VectorMultiplyAdd(AVZ0, BVZ0, AMBXY0);
+			VectorRegister4Float AMBXYZW0= VectorMultiplyAdd(AVW0, BVW0, AMBXYZ0);
 			VectorStoreAligned(AMBXYZW0, &Out[i]) ;
 
 			/*
@@ -759,7 +771,7 @@ struct FVectorKernelFastTransformPosition
 		return FString();
 	}
 
-	static void Exec(FVectorVMContext& Context)
+	static void Exec(FVectorVMExternalFunctionContext& Context)
 	{
 #if 0
 		TArray<VectorVM::FExternalFuncInputHandler<float>, TInlineAllocator<16>> InMatrix;
@@ -939,7 +951,7 @@ struct FVectorKernelFastMatrixToQuaternion
 		return FunctionHLSL;
 	}
 
-	static void Exec(FVectorVMContext& Context)
+	static void Exec(FVectorVMExternalFunctionContext& Context)
 	{
 		TArray<VectorVM::FExternalFuncInputHandler<float>, TInlineAllocator<16>> InMatrix;
 		for (int i=0; i < 16; i++)
@@ -1070,7 +1082,7 @@ struct FVectorKernel_EmitterLifeCycle
 		return FString();
 	}
 
-	static void Exec(FVectorVMContext& Context)
+	static void Exec(FVectorVMExternalFunctionContext& Context)
 	{
 		VectorVM::FExternalFuncInputHandler<float> InEngineDeltaTime(Context);
 		VectorVM::FExternalFuncInputHandler<int>   InEngineNumParticles(Context);
@@ -1236,7 +1248,7 @@ struct FVectorKernel_SpawnRate
 		return FString();
 	}
 
-	static void Exec(FVectorVMContext& Context)
+	static void Exec(FVectorVMExternalFunctionContext& Context)
 	{
 		VectorVM::FExternalFuncInputHandler<float> InEngineDeltaTime(Context);
 		VectorVM::FExternalFuncInputHandler<float> InModuleSpawnRate(Context);
@@ -1324,7 +1336,7 @@ struct FVectorKernel_SpawnBurstInstantaneous
 		return FString();
 	}
 
-	static void Exec(FVectorVMContext& Context)
+	static void Exec(FVectorVMExternalFunctionContext& Context)
 	{
 		VectorVM::FExternalFuncInputHandler<float> InEngineDeltaTime(Context);
 		VectorVM::FExternalFuncInputHandler<float> InScalabilityEmitterSpawnCountScale(Context);
@@ -1398,7 +1410,7 @@ struct FVectorKernel_SolveVelocitiesAndForces
 		return FString();
 	}
 
-	static void Exec(FVectorVMContext& Context)
+	static void Exec(FVectorVMExternalFunctionContext& Context)
 	{
 		VectorVM::FExternalFuncInputHandler<float> InEngineDeltaTime(Context);
 		VectorVM::FExternalFuncInputHandler<float> InPhysicsForceX(Context);
@@ -1467,37 +1479,37 @@ struct FVectorKernel_SolveVelocitiesAndForces
 			*OutParticlesVelocityZ.GetDestAndAdvance() = ParticleVelocity.Z;
 		}
 #else
-		const VectorRegister EngineDeltaTime = VectorSetFloat1(InEngineDeltaTime.Get());
-		const VectorRegister MassMin = VectorSetFloat1(0.0001f);
+		const VectorRegister4Float EngineDeltaTime = VectorSetFloat1(InEngineDeltaTime.Get());
+		const VectorRegister4Float MassMin = VectorSetFloat1(0.0001f);
 
 		for (int i=0; i < Context.GetNumLoops<4>(); ++i)
 		{
 			// Gather values
-			VectorRegister PhysicsForceX		= VectorLoad(InPhysicsForceX.GetDestAndAdvance());
-			VectorRegister PhysicsForceY		= VectorLoad(InPhysicsForceY.GetDestAndAdvance());
-			VectorRegister PhysicsForceZ		= VectorLoad(InPhysicsForceZ.GetDestAndAdvance());
-			VectorRegister PhysicsDrag			= VectorLoad(InPhysicsDrag.GetDestAndAdvance());
+			VectorRegister4Float PhysicsForceX		= VectorLoad(InPhysicsForceX.GetDestAndAdvance());
+			VectorRegister4Float PhysicsForceY		= VectorLoad(InPhysicsForceY.GetDestAndAdvance());
+			VectorRegister4Float PhysicsForceZ		= VectorLoad(InPhysicsForceZ.GetDestAndAdvance());
+			VectorRegister4Float PhysicsDrag			= VectorLoad(InPhysicsDrag.GetDestAndAdvance());
 
-			VectorRegister ParticlesMass		= VectorLoad(InParticlesMass.GetDestAndAdvance());
-			VectorRegister ParticlesPositionX	= VectorLoad(InParticlesPositionX.GetDestAndAdvance());
-			VectorRegister ParticlesPositionY	= VectorLoad(InParticlesPositionY.GetDestAndAdvance());
-			VectorRegister ParticlesPositionZ	= VectorLoad(InParticlesPositionZ.GetDestAndAdvance());
-			VectorRegister ParticlesVelocityX	= VectorLoad(InParticlesVelocityX.GetDestAndAdvance());
-			VectorRegister ParticlesVelocityY	= VectorLoad(InParticlesVelocityY.GetDestAndAdvance());
-			VectorRegister ParticlesVelocityZ	= VectorLoad(InParticlesVelocityZ.GetDestAndAdvance());
+			VectorRegister4Float ParticlesMass		= VectorLoad(InParticlesMass.GetDestAndAdvance());
+			VectorRegister4Float ParticlesPositionX	= VectorLoad(InParticlesPositionX.GetDestAndAdvance());
+			VectorRegister4Float ParticlesPositionY	= VectorLoad(InParticlesPositionY.GetDestAndAdvance());
+			VectorRegister4Float ParticlesPositionZ	= VectorLoad(InParticlesPositionZ.GetDestAndAdvance());
+			VectorRegister4Float ParticlesVelocityX	= VectorLoad(InParticlesVelocityX.GetDestAndAdvance());
+			VectorRegister4Float ParticlesVelocityY	= VectorLoad(InParticlesVelocityY.GetDestAndAdvance());
+			VectorRegister4Float ParticlesVelocityZ	= VectorLoad(InParticlesVelocityZ.GetDestAndAdvance());
 
 			VectorStore(ParticlesVelocityX, OutParticlesPreviousVelocityX.GetDestAndAdvance());
 			VectorStore(ParticlesVelocityY, OutParticlesPreviousVelocityY.GetDestAndAdvance());
 			VectorStore(ParticlesVelocityZ, OutParticlesPreviousVelocityZ.GetDestAndAdvance());
 
 			// Apply velocity
-			const VectorRegister OOParticleMassDT = VectorMultiply(VectorReciprocal(VectorMax(ParticlesMass, MassMin)), EngineDeltaTime);
+			const VectorRegister4Float OOParticleMassDT = VectorMultiply(VectorReciprocal(VectorMax(ParticlesMass, MassMin)), EngineDeltaTime);
 			ParticlesVelocityX = VectorMultiplyAdd(PhysicsForceX, OOParticleMassDT, ParticlesVelocityX);
 			ParticlesVelocityY = VectorMultiplyAdd(PhysicsForceY, OOParticleMassDT, ParticlesVelocityY);
 			ParticlesVelocityZ = VectorMultiplyAdd(PhysicsForceZ, OOParticleMassDT, ParticlesVelocityZ);
 
 			// Apply Drag
-			VectorRegister ClampedDrag = VectorMultiply(PhysicsDrag, EngineDeltaTime);
+			VectorRegister4Float ClampedDrag = VectorMultiply(PhysicsDrag, EngineDeltaTime);
 			ClampedDrag = VectorMax(VectorMin(ClampedDrag, VectorOne()), VectorZero());
 			ClampedDrag = VectorNegate(ClampedDrag);
 
@@ -1529,48 +1541,48 @@ struct FVectorKernel_SolveVelocitiesAndForces
 	}
 
 	template<bool bForceConstant, bool bDragConstant, bool bMassConstant>
-	FORCEINLINE static void ExecOptimized(FVectorVMContext& Context)
+	FORCEINLINE static void ExecOptimized(FVectorVMExternalFunctionContext& Context)
 	{
 #if 0
-		const VectorRegister MassMin = VectorSetFloat1(0.0001f);
-		const VectorRegister EngineDeltaTime = VectorSetFloat1(VectorVM::FExternalFuncInputHandler<float>(Context).Get());
-		VectorRegister PhysicsForceX = VectorLoadFloat1(VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest());
-		VectorRegister PhysicsForceY = VectorLoadFloat1(VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest());
-		VectorRegister PhysicsForceZ = VectorLoadFloat1(VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest());
-		VectorRegister PhysicsDrag = VectorLoadFloat1(VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest());
-		VectorRegister ParticlesMass = VectorLoadFloat1(VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest());
-		const VectorRegister* RESTRICT InParticlesPositionX = VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest();
-		const VectorRegister* RESTRICT InParticlesPositionY = VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest();
-		const VectorRegister* RESTRICT InParticlesPositionZ = VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest();
-		const VectorRegister* RESTRICT InParticlesVelocityX = VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest();
-		const VectorRegister* RESTRICT InParticlesVelocityY = VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest();
-		const VectorRegister* RESTRICT InParticlesVelocityZ = VectorVM::FExternalFuncInputHandler<VectorRegister>(Context).GetDest();
+		const VectorRegister4Float MassMin = VectorSetFloat1(0.0001f);
+		const VectorRegister4Float EngineDeltaTime = VectorSetFloat1(VectorVM::FExternalFuncInputHandler<float>(Context).Get());
+		VectorRegister4Float PhysicsForceX = VectorLoadFloat1(VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest());
+		VectorRegister4Float PhysicsForceY = VectorLoadFloat1(VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest());
+		VectorRegister4Float PhysicsForceZ = VectorLoadFloat1(VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest());
+		VectorRegister4Float PhysicsDrag = VectorLoadFloat1(VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest());
+		VectorRegister4Float ParticlesMass = VectorLoadFloat1(VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest());
+		const VectorRegister4Float* RESTRICT InParticlesPositionX = VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesPositionY = VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesPositionZ = VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesVelocityX = VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesVelocityY = VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesVelocityZ = VectorVM::FExternalFuncInputHandler<VectorRegister4Float>(Context).GetDest();
 
-		VectorRegister* RESTRICT OutParticlesPositionX = VectorVM::FExternalFuncRegisterHandler<VectorRegister>(Context).GetDest();
-		VectorRegister* RESTRICT OutParticlesPositionY = VectorVM::FExternalFuncRegisterHandler<VectorRegister>(Context).GetDest();
-		VectorRegister* RESTRICT OutParticlesPositionZ = VectorVM::FExternalFuncRegisterHandler<VectorRegister>(Context).GetDest();
-		VectorRegister* RESTRICT OutParticlesVelocityX = VectorVM::FExternalFuncRegisterHandler<VectorRegister>(Context).GetDest();
-		VectorRegister* RESTRICT OutParticlesVelocityY = VectorVM::FExternalFuncRegisterHandler<VectorRegister>(Context).GetDest();
-		VectorRegister* RESTRICT OutParticlesVelocityZ = VectorVM::FExternalFuncRegisterHandler<VectorRegister>(Context).GetDest();
-		VectorRegister* RESTRICT OutParticlesPreviousVelocityX = VectorVM::FExternalFuncRegisterHandler<VectorRegister>(Context).GetDest();
-		VectorRegister* RESTRICT OutParticlesPreviousVelocityY = VectorVM::FExternalFuncRegisterHandler<VectorRegister>(Context).GetDest();
-		VectorRegister* RESTRICT OutParticlesPreviousVelocityZ = VectorVM::FExternalFuncRegisterHandler<VectorRegister>(Context).GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPositionX = VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float>(Context).GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPositionY = VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float>(Context).GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPositionZ = VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float>(Context).GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesVelocityX = VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float>(Context).GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesVelocityY = VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float>(Context).GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesVelocityZ = VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float>(Context).GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPreviousVelocityX = VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float>(Context).GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPreviousVelocityY = VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float>(Context).GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPreviousVelocityZ = VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float>(Context).GetDest();
 
-		const VectorRegister OOParticleMassDT = VectorMultiply(VectorReciprocal(VectorMax(ParticlesMass, MassMin)), EngineDeltaTime);
+		const VectorRegister4Float OOParticleMassDT = VectorMultiply(VectorReciprocal(VectorMax(ParticlesMass, MassMin)), EngineDeltaTime);
 
-		VectorRegister ClampedDrag = VectorMultiply(PhysicsDrag, EngineDeltaTime);
+		VectorRegister4Float ClampedDrag = VectorMultiply(PhysicsDrag, EngineDeltaTime);
 		ClampedDrag = VectorMax(VectorMin(ClampedDrag, VectorOne()), VectorZero());
 		ClampedDrag = VectorNegate(ClampedDrag);
 
 		for (int i = 0; i < Context.GetNumLoops<4>(); ++i)
 		{
 			// Gather values
-			VectorRegister ParticlesPositionX = VectorLoad(InParticlesPositionX + i);
-			VectorRegister ParticlesPositionY = VectorLoad(InParticlesPositionY + i);
-			VectorRegister ParticlesPositionZ = VectorLoad(InParticlesPositionZ + i);
-			VectorRegister ParticlesVelocityX = VectorLoad(InParticlesVelocityX + i);
-			VectorRegister ParticlesVelocityY = VectorLoad(InParticlesVelocityY + i);
-			VectorRegister ParticlesVelocityZ = VectorLoad(InParticlesVelocityZ + i);
+			VectorRegister4Float ParticlesPositionX = VectorLoad(InParticlesPositionX + i);
+			VectorRegister4Float ParticlesPositionY = VectorLoad(InParticlesPositionY + i);
+			VectorRegister4Float ParticlesPositionZ = VectorLoad(InParticlesPositionZ + i);
+			VectorRegister4Float ParticlesVelocityX = VectorLoad(InParticlesVelocityX + i);
+			VectorRegister4Float ParticlesVelocityY = VectorLoad(InParticlesVelocityY + i);
+			VectorRegister4Float ParticlesVelocityZ = VectorLoad(InParticlesVelocityZ + i);
 
 			VectorStore(ParticlesVelocityX, OutParticlesPreviousVelocityX + i);
 			VectorStore(ParticlesVelocityY, OutParticlesPreviousVelocityY + i);
@@ -1608,87 +1620,87 @@ struct FVectorKernel_SolveVelocitiesAndForces
 		}
 #else
 		VectorVM::FExternalFuncInputHandler<float> InEngineDeltaTime(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InPhysicsForceXHandler(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InPhysicsForceYHandler(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InPhysicsForceZHandler(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InPhysicsDragHandler(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InParticlesMassHandler(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InParticlesPositionXHandler(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InParticlesPositionYHandler(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InParticlesPositionZHandler(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InParticlesVelocityXHandler(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InParticlesVelocityYHandler(Context);
-		VectorVM::FExternalFuncInputHandler<VectorRegister> InParticlesVelocityZHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InPhysicsForceXHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InPhysicsForceYHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InPhysicsForceZHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InPhysicsDragHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InParticlesMassHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InParticlesPositionXHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InParticlesPositionYHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InParticlesPositionZHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InParticlesVelocityXHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InParticlesVelocityYHandler(Context);
+		VectorVM::FExternalFuncInputHandler<VectorRegister4Float> InParticlesVelocityZHandler(Context);
 
-		VectorVM::FExternalFuncRegisterHandler<VectorRegister> OutParticlesPositionXHandler(Context);
-		VectorVM::FExternalFuncRegisterHandler<VectorRegister> OutParticlesPositionYHandler(Context);
-		VectorVM::FExternalFuncRegisterHandler<VectorRegister> OutParticlesPositionZHandler(Context);
-		VectorVM::FExternalFuncRegisterHandler<VectorRegister> OutParticlesVelocityXHandler(Context);
-		VectorVM::FExternalFuncRegisterHandler<VectorRegister> OutParticlesVelocityYHandler(Context);
-		VectorVM::FExternalFuncRegisterHandler<VectorRegister> OutParticlesVelocityZHandler(Context);
-		VectorVM::FExternalFuncRegisterHandler<VectorRegister> OutParticlesPreviousVelocityXHandler(Context);
-		VectorVM::FExternalFuncRegisterHandler<VectorRegister> OutParticlesPreviousVelocityYHandler(Context);
-		VectorVM::FExternalFuncRegisterHandler<VectorRegister> OutParticlesPreviousVelocityZHandler(Context);
+		VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float> OutParticlesPositionXHandler(Context);
+		VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float> OutParticlesPositionYHandler(Context);
+		VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float> OutParticlesPositionZHandler(Context);
+		VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float> OutParticlesVelocityXHandler(Context);
+		VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float> OutParticlesVelocityYHandler(Context);
+		VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float> OutParticlesVelocityZHandler(Context);
+		VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float> OutParticlesPreviousVelocityXHandler(Context);
+		VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float> OutParticlesPreviousVelocityYHandler(Context);
+		VectorVM::FExternalFuncRegisterHandler<VectorRegister4Float> OutParticlesPreviousVelocityZHandler(Context);
 
-		const VectorRegister EngineDeltaTime = VectorSetFloat1(InEngineDeltaTime.Get());
-		const VectorRegister* RESTRICT InPhysicsForceX = InPhysicsForceXHandler.GetDest();
-		const VectorRegister* RESTRICT InPhysicsForceY = InPhysicsForceYHandler.GetDest();
-		const VectorRegister* RESTRICT InPhysicsForceZ = InPhysicsForceZHandler.GetDest();
-		const VectorRegister* RESTRICT InPhysicsDrag = InPhysicsDragHandler.GetDest();
-		const VectorRegister* RESTRICT InParticlesMass = InParticlesMassHandler.GetDest();
-		const VectorRegister* RESTRICT InParticlesPositionX = InParticlesPositionXHandler.GetDest();
-		const VectorRegister* RESTRICT InParticlesPositionY = InParticlesPositionYHandler.GetDest();
-		const VectorRegister* RESTRICT InParticlesPositionZ = InParticlesPositionZHandler.GetDest();
-		const VectorRegister* RESTRICT InParticlesVelocityX = InParticlesVelocityXHandler.GetDest();
-		const VectorRegister* RESTRICT InParticlesVelocityY = InParticlesVelocityYHandler.GetDest();
-		const VectorRegister* RESTRICT InParticlesVelocityZ = InParticlesVelocityZHandler.GetDest();
+		const VectorRegister4Float EngineDeltaTime = VectorSetFloat1(InEngineDeltaTime.Get());
+		const VectorRegister4Float* RESTRICT InPhysicsForceX = InPhysicsForceXHandler.GetDest();
+		const VectorRegister4Float* RESTRICT InPhysicsForceY = InPhysicsForceYHandler.GetDest();
+		const VectorRegister4Float* RESTRICT InPhysicsForceZ = InPhysicsForceZHandler.GetDest();
+		const VectorRegister4Float* RESTRICT InPhysicsDrag = InPhysicsDragHandler.GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesMass = InParticlesMassHandler.GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesPositionX = InParticlesPositionXHandler.GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesPositionY = InParticlesPositionYHandler.GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesPositionZ = InParticlesPositionZHandler.GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesVelocityX = InParticlesVelocityXHandler.GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesVelocityY = InParticlesVelocityYHandler.GetDest();
+		const VectorRegister4Float* RESTRICT InParticlesVelocityZ = InParticlesVelocityZHandler.GetDest();
 
-		VectorRegister* RESTRICT OutParticlesPositionX = OutParticlesPositionXHandler.GetDest();
-		VectorRegister* RESTRICT OutParticlesPositionY = OutParticlesPositionYHandler.GetDest();
-		VectorRegister* RESTRICT OutParticlesPositionZ = OutParticlesPositionZHandler.GetDest();
-		VectorRegister* RESTRICT OutParticlesVelocityX = OutParticlesVelocityXHandler.GetDest();
-		VectorRegister* RESTRICT OutParticlesVelocityY = OutParticlesVelocityYHandler.GetDest();
-		VectorRegister* RESTRICT OutParticlesVelocityZ = OutParticlesVelocityZHandler.GetDest();
-		VectorRegister* RESTRICT OutParticlesPreviousVelocityX = OutParticlesPreviousVelocityXHandler.GetDest();
-		VectorRegister* RESTRICT OutParticlesPreviousVelocityY = OutParticlesPreviousVelocityYHandler.GetDest();
-		VectorRegister* RESTRICT OutParticlesPreviousVelocityZ = OutParticlesPreviousVelocityZHandler.GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPositionX = OutParticlesPositionXHandler.GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPositionY = OutParticlesPositionYHandler.GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPositionZ = OutParticlesPositionZHandler.GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesVelocityX = OutParticlesVelocityXHandler.GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesVelocityY = OutParticlesVelocityYHandler.GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesVelocityZ = OutParticlesVelocityZHandler.GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPreviousVelocityX = OutParticlesPreviousVelocityXHandler.GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPreviousVelocityY = OutParticlesPreviousVelocityYHandler.GetDest();
+		VectorRegister4Float* RESTRICT OutParticlesPreviousVelocityZ = OutParticlesPreviousVelocityZHandler.GetDest();
 
-		const VectorRegister MassMin = VectorSetFloat1(0.0001f);
+		const VectorRegister4Float MassMin = VectorSetFloat1(0.0001f);
 
-		const VectorRegister ConstantPhysicsForceX = bForceConstant ? VectorLoadFloat1(InPhysicsForceX) : VectorZero();
-		const VectorRegister ConstantPhysicsForceY = bForceConstant ? VectorLoadFloat1(InPhysicsForceY) : VectorZero();
-		const VectorRegister ConstantPhysicsForceZ = bForceConstant ? VectorLoadFloat1(InPhysicsForceZ) : VectorZero();
-		const VectorRegister ConstantPhysicsDrag = bDragConstant ? VectorLoadFloat1(InPhysicsDrag) : VectorZero();
-		const VectorRegister ConstantParticlesMass = bMassConstant ? VectorLoadFloat1(InParticlesMass) : VectorZero();
+		const VectorRegister4Float ConstantPhysicsForceX = bForceConstant ? VectorLoadFloat1(InPhysicsForceX) : VectorZero();
+		const VectorRegister4Float ConstantPhysicsForceY = bForceConstant ? VectorLoadFloat1(InPhysicsForceY) : VectorZero();
+		const VectorRegister4Float ConstantPhysicsForceZ = bForceConstant ? VectorLoadFloat1(InPhysicsForceZ) : VectorZero();
+		const VectorRegister4Float ConstantPhysicsDrag = bDragConstant ? VectorLoadFloat1(InPhysicsDrag) : VectorZero();
+		const VectorRegister4Float ConstantParticlesMass = bMassConstant ? VectorLoadFloat1(InParticlesMass) : VectorZero();
 
 		for (int i = 0; i < Context.GetNumLoops<4>(); ++i)
 		{
 			// Gather values
-			VectorRegister PhysicsForceX = bForceConstant ? ConstantPhysicsForceX : VectorLoad(InPhysicsForceX + i);
-			VectorRegister PhysicsForceY = bForceConstant ? ConstantPhysicsForceY : VectorLoad(InPhysicsForceY + i);
-			VectorRegister PhysicsForceZ = bForceConstant ? ConstantPhysicsForceZ : VectorLoad(InPhysicsForceZ + i);
-			VectorRegister PhysicsDrag = bDragConstant ? ConstantPhysicsDrag : VectorLoad(InPhysicsDrag + i);
+			VectorRegister4Float PhysicsForceX = bForceConstant ? ConstantPhysicsForceX : VectorLoad(InPhysicsForceX + i);
+			VectorRegister4Float PhysicsForceY = bForceConstant ? ConstantPhysicsForceY : VectorLoad(InPhysicsForceY + i);
+			VectorRegister4Float PhysicsForceZ = bForceConstant ? ConstantPhysicsForceZ : VectorLoad(InPhysicsForceZ + i);
+			VectorRegister4Float PhysicsDrag = bDragConstant ? ConstantPhysicsDrag : VectorLoad(InPhysicsDrag + i);
 
-			VectorRegister ParticlesMass = bMassConstant ? ConstantParticlesMass : VectorLoad(InParticlesMass + i);
-			VectorRegister ParticlesPositionX = VectorLoad(InParticlesPositionX + i);
-			VectorRegister ParticlesPositionY = VectorLoad(InParticlesPositionY + i);
-			VectorRegister ParticlesPositionZ = VectorLoad(InParticlesPositionZ + i);
-			VectorRegister ParticlesVelocityX = VectorLoad(InParticlesVelocityX + i);
-			VectorRegister ParticlesVelocityY = VectorLoad(InParticlesVelocityY + i);
-			VectorRegister ParticlesVelocityZ = VectorLoad(InParticlesVelocityZ + i);
+			VectorRegister4Float ParticlesMass = bMassConstant ? ConstantParticlesMass : VectorLoad(InParticlesMass + i);
+			VectorRegister4Float ParticlesPositionX = VectorLoad(InParticlesPositionX + i);
+			VectorRegister4Float ParticlesPositionY = VectorLoad(InParticlesPositionY + i);
+			VectorRegister4Float ParticlesPositionZ = VectorLoad(InParticlesPositionZ + i);
+			VectorRegister4Float ParticlesVelocityX = VectorLoad(InParticlesVelocityX + i);
+			VectorRegister4Float ParticlesVelocityY = VectorLoad(InParticlesVelocityY + i);
+			VectorRegister4Float ParticlesVelocityZ = VectorLoad(InParticlesVelocityZ + i);
 
 			VectorStore(ParticlesVelocityX, OutParticlesPreviousVelocityX + i);
 			VectorStore(ParticlesVelocityY, OutParticlesPreviousVelocityY + i);
 			VectorStore(ParticlesVelocityZ, OutParticlesPreviousVelocityZ + i);
 
 			// Apply velocity
-			const VectorRegister OOParticleMassDT = VectorMultiply(VectorReciprocal(VectorMax(ParticlesMass, MassMin)), EngineDeltaTime);
+			const VectorRegister4Float OOParticleMassDT = VectorMultiply(VectorReciprocal(VectorMax(ParticlesMass, MassMin)), EngineDeltaTime);
 			ParticlesVelocityX = VectorMultiplyAdd(PhysicsForceX, OOParticleMassDT, ParticlesVelocityX);
 			ParticlesVelocityY = VectorMultiplyAdd(PhysicsForceY, OOParticleMassDT, ParticlesVelocityY);
 			ParticlesVelocityZ = VectorMultiplyAdd(PhysicsForceZ, OOParticleMassDT, ParticlesVelocityZ);
 
 			// Apply Drag
-			VectorRegister ClampedDrag = VectorMultiply(PhysicsDrag, EngineDeltaTime);
+			VectorRegister4Float ClampedDrag = VectorMultiply(PhysicsDrag, EngineDeltaTime);
 			ClampedDrag = VectorMax(VectorMin(ClampedDrag, VectorOne()), VectorZero());
 			ClampedDrag = VectorNegate(ClampedDrag);
 
@@ -1827,4 +1839,72 @@ void UNiagaraFunctionLibrary::InitVectorVMFastPathOps()
 	check(VectorVMOps.Num() == VectorVMOpsHLSL.Num());
 }
 
+
+//////////////////////////////////////////////////////////////////////////
+//GPU Ray Traced Collision Functions
+
+void UNiagaraFunctionLibrary::SetComponentNiagaraGPURayTracedCollisionGroup(UObject* WorldContextObject, UPrimitiveComponent* Primitive, int32 CollisionGroup)
+{
+#if NIAGARA_ASYNC_GPU_TRACE_COLLISION_GROUPS
+	if ( UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) )
+	{
+		if ( FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface = FNiagaraGpuComputeDispatchInterface::Get(World) )
+		{
+			ComputeDispatchInterface->GetAsyncGpuTraceHelper().SetPrimitiveRayTracingCollisionGroup_GT(Primitive, CollisionGroup);
+		}
+	}
+#endif
+}
+
+void UNiagaraFunctionLibrary::SetActorNiagaraGPURayTracedCollisionGroup(UObject* WorldContextObject, AActor* Actor, int32 CollisionGroup)
+{
+#if NIAGARA_ASYNC_GPU_TRACE_COLLISION_GROUPS
+	if (Actor == nullptr)
+	{
+		return;
+	}
+
+	if ( UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) )
+	{
+		if (FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface = FNiagaraGpuComputeDispatchInterface::Get(World))
+		{
+			FNiagaraAsyncGpuTraceHelper& Helper = ComputeDispatchInterface->GetAsyncGpuTraceHelper();
+
+			Actor->ForEachComponent<UPrimitiveComponent>(
+				/*bIncludeFromChildActors*/true,
+				[&Helper, &CollisionGroup](UPrimitiveComponent* PrimitiveComponent)
+				{
+					Helper.SetPrimitiveRayTracingCollisionGroup_GT(PrimitiveComponent, CollisionGroup);
+				});
+			}
+	}
+#endif
+}
+
+int32 UNiagaraFunctionLibrary::AcquireNiagaraGPURayTracedCollisionGroup(UObject* WorldContextObject)
+{
+#if NIAGARA_ASYNC_GPU_TRACE_COLLISION_GROUPS
+	if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+	{
+		if (FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface = FNiagaraGpuComputeDispatchInterface::Get(World))
+		{
+			return ComputeDispatchInterface->GetAsyncGpuTraceHelper().AcquireGPURayTracedCollisionGroup_GT();
+		}
+	}
+#endif
+	return INDEX_NONE;
+}
+
+void UNiagaraFunctionLibrary::ReleaseNiagaraGPURayTracedCollisionGroup(UObject* WorldContextObject, int32 CollisionGroup)
+{
+#if NIAGARA_ASYNC_GPU_TRACE_COLLISION_GROUPS
+	if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+	{
+		if (FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface = FNiagaraGpuComputeDispatchInterface::Get(World))
+		{
+			ComputeDispatchInterface->GetAsyncGpuTraceHelper().ReleaseGPURayTracedCollisionGroup_GT(CollisionGroup);
+		}
+	}
+#endif
+}
 #undef LOCTEXT_NAMESPACE

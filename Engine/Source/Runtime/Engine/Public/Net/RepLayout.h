@@ -20,11 +20,10 @@
 #include "Engine/EngineTypes.h"
 #include "UObject/GCObject.h"
 #include "Containers/StaticBitArray.h"
-#include "Net/GuidReferences.h"
+#include "Net/Core/Misc/GuidReferences.h"
 #include "Net/Core/PushModel/PushModel.h"
 #include "Templates/CopyQualifiersFromTo.h"
 
-class FGuidReferences;
 class FNetFieldExportGroup;
 class FRepLayout;
 class UActorChannel;
@@ -49,13 +48,19 @@ enum class EReceivePropertiesFlags : uint32
 
 ENUM_CLASS_FLAGS(EReceivePropertiesFlags);
 
+enum class ESerializePropertyType : uint8
+{
+	Handle,	// Properties are seralized using handles in SendProperties_r
+	Name	// Properties are seralized using their names in SendProperties_r
+};
+
 enum class ERepDataBufferType
 {
 	ObjectBuffer,	//! Indicates this buffer is a full object's memory.
 	ShadowBuffer	//! Indicates this buffer is a packed shadow buffer.
 };
 
-namespace UE4_RepLayout_Private
+namespace UE_RepLayout_Private
 {
 	/**
 	 * TRepDataBuffer and TConstRepDataBuffer act as wrapper around internal data
@@ -105,8 +110,8 @@ namespace UE4_RepLayout_Private
 	}
 }
 
-template<ERepDataBufferType DataType> using TRepDataBuffer = UE4_RepLayout_Private::TRepDataBufferBase<DataType, uint8>;
-template<ERepDataBufferType DataType> using TConstRepDataBuffer = UE4_RepLayout_Private::TRepDataBufferBase<DataType, const uint8>;
+template<ERepDataBufferType DataType> using TRepDataBuffer = UE_RepLayout_Private::TRepDataBufferBase<DataType, uint8>;
+template<ERepDataBufferType DataType> using TConstRepDataBuffer = UE_RepLayout_Private::TRepDataBufferBase<DataType, const uint8>;
 
 typedef TRepDataBuffer<ERepDataBufferType::ObjectBuffer> FRepObjectDataBuffer;
 typedef TRepDataBuffer<ERepDataBufferType::ShadowBuffer> FRepShadowDataBuffer;
@@ -114,7 +119,7 @@ typedef TConstRepDataBuffer<ERepDataBufferType::ObjectBuffer> FConstRepObjectDat
 typedef TConstRepDataBuffer<ERepDataBufferType::ShadowBuffer> FConstRepShadowDataBuffer;
 
 /** Stores meta data about a given Replicated property. */
-class FRepChangedParent
+class UE_DEPRECATED(5.0, "No longer used") FRepChangedParent
 {
 public:
 	FRepChangedParent():
@@ -144,13 +149,15 @@ public:
  * TODO: This class (and arguably IRepChangedPropertyTracker) should be renamed to reflect
  *			what they actually do now.
  */
-PRAGMA_DISABLE_DEPRECATION_WARNINGS	// IsReplay()
 class FRepChangedPropertyTracker : public IRepChangedPropertyTracker
 {
 public:
+	FRepChangedPropertyTracker() = delete;
 	FRepChangedPropertyTracker(const bool InbIsReplay, const bool InbIsClientReplayRecording);
 
-	virtual ~FRepChangedPropertyTracker();
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	virtual ~FRepChangedPropertyTracker() = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	//~ Begin IRepChangedPropertyTracker Interface.
 	/**
@@ -176,29 +183,41 @@ public:
 	 * @param Src		Memory containing the external data.
 	 * @param NumBits	Size of the memory, in bits.
 	 */
+	UE_DEPRECATED(5.0, "Please use UReplaySubsystem::SetExternalDataForObject instead.")
 	virtual void SetExternalData(const uint8* Src, const int32 NumBits) override;
-
-	/** Whether or not this is being used for a replay (may be recording or playback). */
-	virtual bool IsReplay() const override { return bIsReplay; }
 
 	virtual void CountBytes(FArchive& Ar) const override;
 	//~ End IRepChangedPropertyTracker Interface
 
-	/** Activation data for top level Properties on the given Actor / Object. */
-	TArray<FRepChangedParent>	Parents;
+	void InitActiveParents(int32 ParentCount)
+	{
+		ActiveParents.Init(true, ParentCount);
+	}
 
-	/** Whether or not this is being used for a replay (may be recording or playback). */
-	UE_DEPRECATED(4.26, "Will be removed in a future release.")
-	bool bIsReplay;
+	bool IsParentActive(int32 ParentIndex) const 
+	{ 
+		return ActiveParents[ParentIndex]; 
+	}
 
+	int32 GetParentCount() const
+	{
+		return ActiveParents.Num();
+	}
+
+private:
 	/** Whether or not this is being used for a client replay recording. */
-	UE_DEPRECATED(4.26, "Will be removed in a future release.")
 	bool bIsClientReplayRecording;
 
+	/** Activation data for top level Properties on the given Actor / Object. */
+	TBitArray<> ActiveParents;
+
+public:
+	UE_DEPRECATED(5.0, "No longer used, see UReplaySubsystem::SetExternalDataForObject")
 	TArray<uint8> ExternalData;
+
+	UE_DEPRECATED(5.0, "No longer used, see UReplaySubsystem::SetExternalDataForObject")
 	uint32 ExternalDataNumBits;
 };
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 class FRepLayout;
 class FRepLayoutCmd;
@@ -509,13 +528,15 @@ public:
 
 #if WITH_PUSH_MODEL
 
-	const UE4PushModelPrivate::FPushModelPerNetDriverHandle& GetPushModelObjectHandle() const
+	const UEPushModelPrivate::FPushModelPerNetDriverHandle& GetPushModelObjectHandle() const
 	{
 		return PushModelObjectHandle;
 	}
 
+	bool HasAnyDirtyProperties() const;
+
 private:
-	const UE4PushModelPrivate::FPushModelPerNetDriverHandle PushModelObjectHandle;
+	const UEPushModelPrivate::FPushModelPerNetDriverHandle PushModelObjectHandle;
 #endif
 };
 
@@ -770,7 +791,8 @@ enum class ERepLayoutCmdType : uint8
 	PropertyNativeBool		= 21,
 	PropertySoftObject		= 22,
 	PropertyWeakObject		= 23,
-	NetSerializeStructWithObjectReferences = 24,
+	PropertyInterface		= 24,
+	NetSerializeStructWithObjectReferences = 25,
 };
 
 /** Various flags that describe how a Top Level Property should be handled. */
@@ -862,7 +884,8 @@ enum class ERepLayoutCmdFlags : uint8
 {
 	None					= 0,		//! No flags.
 	IsSharedSerialization	= (1 << 0),	//! Indicates the property is eligible for shared serialization.
-	IsStruct				= (1 << 1)	//! This is a struct property.
+	IsStruct				= (1 << 1),	//! This is a struct property.
+	IsEmptyArrayStruct		= (1 << 2),	//! This is an ArrayProperty whose InnerProperty has no replicated properties.
 };
 
 ENUM_CLASS_FLAGS(ERepLayoutCmdFlags)
@@ -1083,10 +1106,14 @@ enum class ERepLayoutFlags : uint8
 	None								= 0,
 	IsActor 							= (1 << 0),	//! This RepLayout is for AActor or a subclass of AActor.
 	PartialPushSupport					= (1 << 1),	//! This RepLayout has some properties that use Push Model and some that don't.
-	FullPushSupport						= (1 << 2),	//! All properties in this RepLayout use Push Model.
+	FullPushSupport						= (1 << 2),	//! All properties and fast arrays in this RepLayout use Push Model.
 	HasObjectOrNetSerializeProperties	= (1 << 3),	//! Will be set for any RepLayout that contains Object or Net Serialize property commands.
+	NoReplicatedProperties				= (1 << 4), //! Will be set if the RepLayout has no lifetime properties, or they are all disabled.
+	FullPushProperties					= (1 << 5), //! All properties in this RepLayout use Push Model.
 };
 ENUM_CLASS_FLAGS(ERepLayoutFlags);
+
+const TCHAR* LexToString(ERepLayoutFlags Flag);
 
 enum class ERepLayoutResult
 {
@@ -1513,13 +1540,42 @@ public:
 
 	const bool IsEmpty() const
 	{
-		return 0 == Parents.Num();
+		return EnumHasAnyFlags(Flags, ERepLayoutFlags::NoReplicatedProperties) || (0 == Parents.Num());
 	}
 
 	const int32 GetNumParents() const
 	{
 		return Parents.Num();
 	}
+
+	const FProperty* GetParentProperty(int32 Index) const
+	{ 
+		return Parents.IsValidIndex(Index) ? Parents[Index].Property : nullptr;
+	}
+
+	const int32 GetParentArrayIndex(int32 Index) const
+	{
+		return Parents.IsValidIndex(Index) ? Parents[Index].ArrayIndex : 0;
+	}
+
+	const int32 GetParentCondition(int32 Index) const
+	{
+		return Parents.IsValidIndex(Index) ? Parents[Index].Condition : COND_None;
+	}
+
+	const bool IsCustomDeltaProperty(int32 Index) const
+	{
+		return Parents.IsValidIndex(Index) ? EnumHasAnyFlags(Parents[Index].Flags, ERepParentFlags::IsCustomDelta) : false;
+	}
+
+#if WITH_PUSH_MODEL
+	const bool IsPushModelProperty(int32 Index) const
+	{
+		return PushModelProperties.IsValidIndex(Index) ? PushModelProperties[Index] : false;
+	}
+#endif
+
+	const uint16 GetCustomDeltaIndexFromPropertyRepIndex(const uint16 PropertyRepIndex) const;
 
 	void CountBytes(FArchive& Ar) const;
 
@@ -1569,7 +1625,8 @@ private:
 		UClass* ObjectClass,
 		FNetBitWriter& Writer,
 		TArray<uint16>& Changed,
-		const FRepSerializationSharedInfo& SharedInfo) const;
+		const FRepSerializationSharedInfo& SharedInfo,
+		const ESerializePropertyType SerializePropertyType) const;
 
 	/**
 	 * Clamps a changelist so that it conforms to the current size of either an array, or arrays within structs/arrays.
@@ -1627,7 +1684,8 @@ private:
 		FRepHandleIterator& HandleIterator,
 		const FConstRepObjectDataBuffer SourceData,
 		const int32	 ArrayDepth,
-		const FRepSerializationSharedInfo* const RESTRICT SharedInfo) const;
+		const FRepSerializationSharedInfo* const RESTRICT SharedInfo,
+		const ESerializePropertyType SerializePropertyType) const;
 
 	void BuildSharedSerialization(
 		const FConstRepObjectDataBuffer Data,
@@ -1692,7 +1750,7 @@ private:
 		FReceivingRepState* RESTRICT RepState, 
 		FGuidReferencesMap* GuidReferencesMap,
 		UObject* OriginalObject,
-		UPackageMap* PackageMap, 
+		UNetConnection* Connection,
 		FRepShadowDataBuffer ShadowData, 
 		FRepObjectDataBuffer Data, 
 		const int32 MaxAbsOffset,
@@ -1834,6 +1892,7 @@ private:
 		UObject* Object,
 		UNetConnection* Connection,
 		FReplicationChangelistMgr& ChangelistMgr,
+		uint32 ReplicationFrame,
 		TArray<TSharedPtr<INetDeltaBaseState>>& CustomDeltaStates) const;
 
 	void PostSendCustomDeltaProperties(

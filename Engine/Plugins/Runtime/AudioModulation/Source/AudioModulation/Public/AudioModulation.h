@@ -10,6 +10,7 @@
 #include "SoundControlBus.h"
 #include "SoundControlBusMix.h"
 #include "SoundModulationGenerator.h"
+#include "SoundModulationParameter.h"
 #include "Stats/Stats.h"
 
 
@@ -18,25 +19,46 @@ DECLARE_STATS_GROUP(TEXT("AudioModulation"), STATGROUP_AudioModulation, STATCAT_
 
 // Tracks the time for the full render block 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Process Modulators"), STAT_AudioModulationProcessModulators, STATGROUP_AudioModulation, AUDIOMODULATION_API);
-DECLARE_CYCLE_STAT_EXTERN(TEXT("Process Controls"), STAT_AudioModulationProcessControls, STATGROUP_AudioModulation, AUDIOMODULATION_API);
 
 namespace AudioModulation
 {
 	// Forward Declarations
 	class FAudioModulationSystem;
 
-	class AUDIOMODULATION_API FAudioModulation : public IAudioModulation
+	class AUDIOMODULATION_API FAudioModulationManager : public IAudioModulationManager
 	{
 	public:
-		FAudioModulation();
-		virtual ~FAudioModulation();
+		FAudioModulationManager();
+		virtual ~FAudioModulationManager();
 
-		//~ Begin IAudioModulation implementation
-		virtual Audio::FModulationParameter GetParameter(FName InParamName) override;
+		//~ Begin IAudioModulationManager implementation
 		virtual void Initialize(const FAudioPluginInitializationParams& InitializationParams) override;
-
 		virtual void OnAuditionEnd() override;
 
+#if !UE_BUILD_SHIPPING
+		virtual void SetDebugBusFilter(const FString* InFilter);
+		virtual void SetDebugMixFilter(const FString* InFilter);
+		virtual void SetDebugMatrixEnabled(bool bInIsEnabled);
+		virtual void SetDebugGeneratorsEnabled(bool bInIsEnabled);
+		virtual void SetDebugGeneratorFilter(const FString* InFilter);
+		virtual void SetDebugGeneratorTypeFilter(const FString* InFilter, bool bInIsEnabled);
+
+		virtual bool OnPostHelp(FCommonViewportClient* ViewportClient, const TCHAR* Stream) override;
+		virtual int32 OnRenderStat(FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const UFont& Font, const FVector* ViewLocation, const FRotator* ViewRotation) override;
+		virtual bool OnToggleStat(FCommonViewportClient* ViewportClient, const TCHAR* Stream) override;
+#endif // !UE_BUILD_SHIPPING
+
+		virtual void ProcessModulators(const double InElapsed) override;
+		virtual void UpdateModulator(const USoundModulatorBase& InModulator) override;
+
+	protected:
+		virtual void RegisterModulator(Audio::FModulatorHandleId InHandleId, Audio::FModulatorId InModulatorId) override;
+		virtual bool GetModulatorValue(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const override;
+		virtual bool GetModulatorValueThreadSafe(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const override;
+		virtual void UnregisterModulator(const Audio::FModulatorHandle& InHandle) override;
+	//~ End IAudioModulationManager implementation
+
+	public:
 		void ActivateBus(const USoundControlBus& InBus);
 		void ActivateBusMix(const USoundControlBusMix& InBusMix);
 		void ActivateGenerator(const USoundModulationGenerator& InGenerator);
@@ -55,49 +77,19 @@ namespace AudioModulation
 
 		void SoloBusMix(const USoundControlBusMix& InBusMix);
 
-#if !UE_BUILD_SHIPPING
-		virtual void SetDebugBusFilter(const FString* InFilter);
-		virtual void SetDebugMixFilter(const FString* InFilter);
-		virtual void SetDebugMatrixEnabled(bool bInIsEnabled);
-		virtual void SetDebugGeneratorsEnabled(bool bInIsEnabled);
-		virtual void SetDebugGeneratorFilter(const FString* InFilter);
-		virtual void SetDebugGeneratorTypeFilter(const FString* InFilter, bool bInIsEnabled);
+		void SetGlobalBusMixValue(USoundControlBus& InBus, float InValue, float InFadeTime);
+		void ClearGlobalBusMixValue(const USoundControlBus& InBus, float InFadeTime);
+		void ClearAllGlobalBusMixValues(float InFadeTime);
 
-		virtual bool OnPostHelp(FCommonViewportClient* ViewportClient, const TCHAR* Stream) override;
-		virtual int32 OnRenderStat(FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const UFont& Font, const FVector* ViewLocation, const FRotator* ViewRotation) override;
-		virtual bool OnToggleStat(FCommonViewportClient* ViewportClient, const TCHAR* Stream) override;
-#endif // !UE_BUILD_SHIPPING
-
-		virtual void ProcessModulators(const double InElapsed) override;
-
-		virtual void UpdateModulator(const USoundModulatorBase& InModulator) override;
-		//~ End IAudioModulation implementation
-
-	protected:
-		virtual Audio::FModulatorTypeId RegisterModulator(Audio::FModulatorHandleId InHandleId, const USoundModulatorBase* InModulatorBase, Audio::FModulationParameter& OutParameter) override;
-		virtual void RegisterModulator(Audio::FModulatorHandleId InHandleId, Audio::FModulatorId InModulatorId) override;
-		virtual bool GetModulatorValue(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const override;
-		virtual void UnregisterModulator(const Audio::FModulatorHandle& InHandle) override;
+		FAudioModulationSystem& GetSystem();
 
 	private:
 		FAudioModulationSystem* ModSystem = nullptr;
 	};
 
-	static void IterateModulationImpl(TUniqueFunction<void(FAudioModulation&)> InFunction)
-	{
-		if (FAudioDeviceManager* DeviceManager = FAudioDeviceManager::Get())
-		{
-			TArray<FAudioDevice*> Devices = DeviceManager->GetAudioDevices();
-			DeviceManager->IterateOverAllDevices([ModFunction = MoveTemp(InFunction)](Audio::FDeviceId DeviceId, FAudioDevice* AudioDevice)
-			{
-				if (AudioDevice && AudioDevice->IsModulationPluginEnabled() && AudioDevice->ModulationInterface.IsValid())
-				{
-					auto ModulationInterface = static_cast<AudioModulation::FAudioModulation*>(AudioDevice->ModulationInterface.Get());
-					ModFunction(*ModulationInterface);
-				}
-			});
-		}
-	}
+	AUDIOMODULATION_API FAudioModulationManager* GetDeviceModulationManager(Audio::FDeviceId InDeviceId);
+
+	AUDIOMODULATION_API void IterateModulationManagers(TFunctionRef<void(FAudioModulationManager&)> InFunction);
 } // namespace AudioModulation
 
 class FAudioModulationPluginFactory : public IAudioModulationFactory

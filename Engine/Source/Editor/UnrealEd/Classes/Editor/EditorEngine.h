@@ -34,9 +34,9 @@
 
 #include "EditorEngine.generated.h"
 
-class AMatineeActor;
 class APlayerStart;
 class Error;
+class AMatineeActor;
 class FEditorViewportClient;
 class FEditorWorldManager;
 class FMessageLog;
@@ -65,9 +65,12 @@ class USkeleton;
 class USoundBase;
 class USoundNode;
 class UTextureRenderTarget2D;
+struct FTypedElementHandle;
 struct FAnalyticsEventAttribute;
 class UEditorWorldExtensionManager;
 class ITargetDevice;
+class ULevelEditorDragDropHandler;
+class UTypedElementSelectionSet;
 
 //
 // Things to set in mapSetBrush.
@@ -180,82 +183,6 @@ private:
 	TSet<FString> ActorLabels;
 };
 
-/** 
- * Represents an actor or a component for use in editor functionality such as snapping which can operate on either type
- */
-struct FActorOrComponent
-{
-	AActor* Actor;
-	USceneComponent* Component;
-
-	FActorOrComponent()
-		: Actor( nullptr )
-		, Component( nullptr )
-	{}
-
-	FActorOrComponent( AActor* InActor )
-		: Actor( InActor )
-		, Component( nullptr )
-	{}
-
-	FActorOrComponent( USceneComponent* InComponent )
-		: Actor( nullptr )
-		, Component( InComponent )
-	{}
-
-	UWorld* GetWorld() const
-	{
-		return Actor ? Actor->GetWorld() : Component->GetWorld();
-	}
-
-	bool operator==( const FActorOrComponent& Other ) const
-	{
-		return Actor == Other.Actor && Component == Other.Component;
-	}
-
-	const FBoxSphereBounds& GetBounds() const
-	{
-		return Actor ? Actor->GetRootComponent()->Bounds : Component->Bounds;
-	}
-
-	FVector GetWorldLocation() const
-	{
-		return Actor ? Actor->GetActorLocation() : Component->GetComponentLocation();
-	}
-
-	FRotator GetWorldRotation() const
-	{
-		return Actor ? Actor->GetActorRotation() : Component->GetComponentRotation();
-	}
-
-	void SetWorldLocation( const FVector& NewLocation )
-	{
-		if( Actor )
-		{
-			Actor->SetActorLocation( NewLocation );
-		}
-		else
-		{
-			Component->SetWorldLocation( NewLocation );
-		}
-	}
-
-	void SetWorldRotation( const FRotator& NewRotation )
-	{
-		if(Actor)
-		{
-			Actor->SetActorRotation(NewRotation);
-		}
-		else
-		{
-			Component->SetWorldRotation(NewRotation);
-		}
-	}
-
-	/** @return true if this is a valid actor or component but not both */
-	bool IsValid() const { return (Actor != nullptr) ^ (Component != nullptr);}
-};
-
 /**
  * Represents the current selection state of a level (its selected actors and components) from a given point in a time, in a way that can be safely restored later even if the level is reloaded
  */
@@ -357,41 +284,41 @@ public:
 
 	// Objects.
 	UPROPERTY()
-	class UModel* TempModel;
+	TObjectPtr<class UModel> TempModel;
 
 	UPROPERTY()
-	class UModel* ConversionTempModel;
+	TObjectPtr<class UModel> ConversionTempModel;
 
 	UPROPERTY()
-	class UTransactor* Trans;
+	TObjectPtr<class UTransactor> Trans;
 
 	// Textures.
 	UPROPERTY()
-	class UTexture2D* Bad;
+	TObjectPtr<class UTexture2D> Bad;
 
 	// Font used by Canvas-based editors
 	UPROPERTY()
-	class UFont* EditorFont;
+	TObjectPtr<class UFont> EditorFont;
 
 	// Audio
 	UPROPERTY(transient)
-	class USoundCue* PreviewSoundCue;
+	TObjectPtr<class USoundCue> PreviewSoundCue;
 
 	UPROPERTY(transient)
-	class UAudioComponent* PreviewAudioComponent;
+	TObjectPtr<class UAudioComponent> PreviewAudioComponent;
 
 	// Used in UnrealEd for showing materials
 	UPROPERTY()
-	class UStaticMesh* EditorCube;
+	TObjectPtr<class UStaticMesh> EditorCube;
 
 	UPROPERTY()
-	class UStaticMesh* EditorSphere;
+	TObjectPtr<class UStaticMesh> EditorSphere;
 
 	UPROPERTY()
-	class UStaticMesh* EditorPlane;
+	TObjectPtr<class UStaticMesh> EditorPlane;
 
 	UPROPERTY()
-	class UStaticMesh* EditorCylinder;
+	TObjectPtr<class UStaticMesh> EditorCylinder;
 
 	// Toggles.
 	UPROPERTY()
@@ -405,7 +332,7 @@ public:
 	uint32 ClickFlags;
 
 	UPROPERTY()
-	class UPackage* ParentContext;
+	TObjectPtr<class UPackage> ParentContext;
 
 	UPROPERTY()
 	FVector UnsnappedClickLocation;
@@ -449,16 +376,12 @@ public:
 	UPROPERTY()
 	uint32 bEnableLODLocking:1;
 
-	/** If true, actors can be grouped and grouping rules will be maintained. When deactivated, any currently existing groups will still be preserved.*/
-	UE_DEPRECATED(4.17, "bGroupingActive has been deprecated.  Use UActorGroupingUtils::IsGroupingActive instead")
-	uint32 bGroupingActive:1;
-
 	UPROPERTY(config)
 	FString HeightMapExportClassName;
 
 	/** Array of actor factories created at editor startup and used by context menu etc. */
 	UPROPERTY()
-	TArray<class UActorFactory*> ActorFactories;
+	TArray<TObjectPtr<class UActorFactory>> ActorFactories;
 
 	/** The name of the file currently being opened in the editor. "" if no file is being opened. */
 	UPROPERTY()
@@ -473,7 +396,7 @@ public:
 
 	/** A pointer to a UWorld that is the duplicated/saved-loaded to be played in with "Play From Here" 								*/
 	UPROPERTY()
-	class UWorld* PlayWorld;
+	TObjectPtr<class UWorld> PlayWorld;
 
 
 
@@ -481,7 +404,7 @@ public:
 	UPROPERTY()
 	uint32 bIsToggleBetweenPIEandSIEQueued:1;
 
-	/** Allows multiple PIE worlds under a single instance. If false, you can only do multiple UE4 processes for pie networking */
+	/** Allows multiple PIE worlds under a single instance. If false, you can only do multiple UE processes for pie networking */
 	UPROPERTY(globalconfig)
 	uint32 bAllowMultiplePIEWorlds:1;
 
@@ -503,7 +426,7 @@ public:
 
 	/** When Simulating In Editor, a pointer to the original (non-simulating) editor world */
 	UPROPERTY()
-	class UWorld* EditorWorld;
+	TObjectPtr<class UWorld> EditorWorld;
 	
 	/** When Simulating In Editor, an array of all actors that were selected when it began*/
 	UPROPERTY()
@@ -535,20 +458,20 @@ public:
 
 	/** Temporary render target that can be used by the editor. */
 	UPROPERTY(transient)
-	class UTextureRenderTarget2D* ScratchRenderTarget2048;
+	TObjectPtr<class UTextureRenderTarget2D> ScratchRenderTarget2048;
 
 	UPROPERTY(transient)
-	class UTextureRenderTarget2D* ScratchRenderTarget1024;
+	TObjectPtr<class UTextureRenderTarget2D> ScratchRenderTarget1024;
 
 	UPROPERTY(transient)
-	class UTextureRenderTarget2D* ScratchRenderTarget512;
+	TObjectPtr<class UTextureRenderTarget2D> ScratchRenderTarget512;
 
 	UPROPERTY(transient)
-	class UTextureRenderTarget2D* ScratchRenderTarget256;
+	TObjectPtr<class UTextureRenderTarget2D> ScratchRenderTarget256;
 
 	/** A mesh component used to preview in editor without spawning a static mesh actor. */
 	UPROPERTY(transient)
-	class UStaticMeshComponent* PreviewMeshComp;
+	TObjectPtr<class UStaticMeshComponent> PreviewMeshComp;
 
 	/** The index of the mesh to use from the list of preview meshes. */
 	UPROPERTY()
@@ -576,7 +499,7 @@ public:
 
 	/** Brush builders that have been created in the editor */
 	UPROPERTY(transient)
-	TArray<class UBrushBuilder*> BrushBuilders;	
+	TArray<TObjectPtr<class UBrushBuilder>> BrushBuilders;	
 
 	/** Whether or not to recheck the current actor selection for lock actors the next time HasLockActors is called */
 	bool bCheckForLockActors;
@@ -604,6 +527,10 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FPreviewPlatformChanged);
 	FPreviewPlatformChanged PreviewPlatformChanged;
 
+	/** A delegate that is called when the bugitgo command is used. */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FPostBugItGoCalled, const FVector& Loc, const FRotator& Rot);
+	FPostBugItGoCalled PostBugItGoCalled;
+
 	/** Whether or not the editor is currently compiling */
 	bool bIsCompiling;
 
@@ -611,7 +538,7 @@ private:
 
 	/** Manager that holds all extensions paired with a world */
 	UPROPERTY()
-	UEditorWorldExtensionManager* EditorWorldExtensionsManager;
+	TObjectPtr<UEditorWorldExtensionManager> EditorWorldExtensionsManager;
 
 public:
 
@@ -672,13 +599,10 @@ public:
 	/**	Broadcasts that a blueprint just finished being reinstanced. THIS SHOULD NOT BE PUBLIC */
 	void BroadcastBlueprintReinstanced() { BlueprintReinstanced.Broadcast(); }
 
-	/** Called when uobjects have been replaced to allow others a chance to fix their references. */
-	typedef TMap<UObject*, UObject*> ReplacementObjectMap;
-	DECLARE_EVENT_OneParam( UEditorEngine, FObjectsReplacedEvent, const ReplacementObjectMap& );
-	FObjectsReplacedEvent& OnObjectsReplaced() { return ObjectsReplacedEvent; }
-
-	/**	Broadcasts that objects have been replaced*/
-	void BroadcastBlueprintCompiled(const TMap<UObject*, UObject*>& ReplacementMap) { ObjectsReplacedEvent.Broadcast(ReplacementMap); }
+	/** Called when UObjects have been replaced to allow others a chance to fix their references. */
+	using FObjectsReplacedEvent = FCoreUObjectDelegates::FOnObjectsReplaced;
+	UE_DEPRECATED(5.0, "Use FCoreUObjectDelegates::OnObjectsReplaced instead.")
+	FObjectsReplacedEvent& OnObjectsReplaced() { return FCoreUObjectDelegates::OnObjectsReplaced; }
 
 	/** Called when a package with data-driven classes becomes loaded or unloaded */
 	DECLARE_EVENT( UEditorEngine, FClassPackageLoadedOrUnloadedEvent );
@@ -699,6 +623,10 @@ public:
 	/** Editor-only event triggered after actor or component has moved, rotated or scaled by an editor system */
 	DECLARE_EVENT_OneParam( UEditorEngine, FOnEndTransformObject, UObject& );
 	FOnEndTransformObject& OnEndObjectMovement() { return OnEndObjectTransformEvent; }
+
+	/** Editor-only event triggered after actors are moved, rotated or scaled by an editor system */
+	DECLARE_EVENT_OneParam(UEditorEngine, FOnActorsMoved, TArray<AActor*>&);
+	FOnActorsMoved& OnActorsMoved() { return OnActorsMovedEvent; }
 
 	/** Editor-only event triggered before the camera viewed through the viewport is moved by an editor system */
 	DECLARE_EVENT_OneParam( UEditorEngine, FOnBeginTransformCamera, UObject& );
@@ -761,6 +689,13 @@ public:
 	/** Called when the editor has been asked to perform an exec command on particle systems. */
 	DECLARE_EVENT_OneParam(UEditorEngine, FExecParticleInvoked, const TCHAR*);
 	FExecParticleInvoked& OnExecParticleInvoked() { return ExecParticleInvokedEvent; }
+
+	/** Called to allow selection of unloaded actors */
+	DECLARE_EVENT_OneParam(UEditorEngine, FSelectUnloadedActorsEvent, const TArray<FGuid>&);
+	FSelectUnloadedActorsEvent& OnSelectUnloadedActorsEvent() { return SelectUnloadedActorsEvent; }
+
+	void BroadcastSelectUnloadedActors(const TArray<FGuid>& ActorGuids) const { SelectUnloadedActorsEvent.Broadcast(ActorGuids); }
+
 	/**
 	 * Called before an actor or component is about to be translated, rotated, or scaled by the editor
 	 *
@@ -774,6 +709,13 @@ public:
 	 * @param Object	The actor or component that moved
 	 */
 	void BroadcastEndObjectMovement(UObject& Object) const { OnEndObjectTransformEvent.Broadcast(Object); }
+
+	/**
+	 * Called when actors have been translated, rotated, or scaled by the editor
+	 *
+	 * @param Object	The actor or component that moved
+	 */
+	void BroadcastActorsMoved(TArray<AActor*>& Actors) const { OnActorsMovedEvent.Broadcast(Actors); }
 
 	/**
 	 * Called before the camera viewed through the viewport is moved by the editor
@@ -793,6 +735,7 @@ public:
 	void BroadcastObjectReimported(UObject* InObject);
 
 	//~ Begin UObject Interface.
+	virtual void BeginDestroy() override;
 	virtual void FinishDestroy() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
@@ -806,17 +749,19 @@ public:
 	virtual bool ShouldDrawBrushWireframe(AActor* InActor) override;
 	virtual void NotifyToolsOfObjectReplacement(const TMap<UObject*, UObject*>& OldToNewInstanceMap) override;
 	virtual bool ShouldThrottleCPUUsage() const override;
+	virtual bool IsPropertyColorationColorFeatureActivated() const override;
 	virtual bool GetPropertyColorationColor(class UObject* Object, FColor& OutColor) override;
 	virtual bool WorldIsPIEInNewViewport(UWorld* InWorld) override;
 	virtual void FocusNextPIEWorld(UWorld* CurrentPieWorld, bool previous = false) override;
 	virtual void ResetPIEAudioSetting(UWorld *CurrentPieWorld) override;
 	virtual class UGameViewportClient* GetNextPIEViewport(UGameViewportClient* CurrentViewport) override;
 	virtual UWorld* CreatePIEWorldByDuplication(FWorldContext &WorldContext, UWorld* InWorld, FString &PlayWorldMapName) override;
+	virtual void PostCreatePIEWorld(UWorld* InWorld) override;
 	virtual bool GetMapBuildCancelled() const override { return false; }
 	virtual void SetMapBuildCancelled(bool InCancelled) override { /* Intentionally empty. */ }
 	virtual void HandleNetworkFailure(UWorld *World, UNetDriver *NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString) override;
 	virtual ERHIFeatureLevel::Type GetDefaultWorldFeatureLevel() const override { return DefaultWorldFeatureLevel; }
-	virtual bool GetPreviewPlatformName(FName& PlatformGroupName, FName& VanillaPlatformName) const override;
+	virtual bool GetPreviewPlatformName(FName& PlatformName) const override;
 
 protected:
 	virtual void InitializeObjectReferences() override;
@@ -870,7 +815,6 @@ public:
 	bool	HandleLightmassPaddingCommand( const TCHAR* Str, FOutputDevice& Ar );
 	bool	HandleLightmassDebugPaddingCommand( const TCHAR* Str, FOutputDevice& Ar );
 	bool	HandleLightmassProfileCommand( const TCHAR* Str, FOutputDevice& Ar );
-	bool	HandleSetReplacementCommand( const TCHAR* Str, FOutputDevice& Ar, UWorld* InWorld );
 	bool	HandleSelectNameCommand( const TCHAR* Str, FOutputDevice& Ar, UWorld* InWorld  );
 	bool	HandleDumpPublicCommand( const TCHAR* Str, FOutputDevice& Ar );
 	bool	HandleJumpToCommand( const TCHAR* Str, FOutputDevice& Ar );
@@ -960,6 +904,7 @@ public:
 	//~ Begin Transaction Interfaces.
 	virtual int32 BeginTransaction(const TCHAR* TransactionContext, const FText& Description, UObject* PrimaryObject) override;
 	int32 BeginTransaction(const FText& Description);
+	virtual bool CanTransact() override;
 	virtual int32 EndTransaction() override;
 	virtual void CancelTransaction(int32 Index) override;
 	void ResetTransaction(const FText& Reason);
@@ -1065,7 +1010,14 @@ public:
 	* @param	Component				Target component
 	* @param	bActiveViewportOnly		If true, move/reorient only the active viewport.
 	*/
-	void MoveViewportCamerasToComponent(USceneComponent* Component, bool bActiveViewportOnly);
+	void MoveViewportCamerasToComponent(const USceneComponent* Component, bool bActiveViewportOnly);
+
+	/**
+	* Moves all viewport cameras to focus on the provided set of elements.
+	* @param	SelectionSet			Target elements
+	* @param	bActiveViewportOnly		If true, move/reorient only the active viewport.
+	*/
+	void MoveViewportCamerasToElement(const UTypedElementSelectionSet* SelectionSet, bool bActiveViewportOnly) const;
 
 	/**
 	 * Moves all viewport cameras to focus on the provided bounding box.
@@ -1075,23 +1027,23 @@ public:
 	void MoveViewportCamerasToBox(const FBox& BoundingBox, bool bActiveViewportOnly) const;
 
 	/** 
-	 * Snaps an actor in a direction.  Optionally will align with the trace normal.
-	 * @param InActor			Actor to move to the floor.
+	 * Snaps an element in a direction.  Optionally will align with the trace normal.
+	 * @param InElementHandle	Element to move to the floor.
 	 * @param InAlign			Whether or not to rotate the actor to align with the trace normal.
 	 * @param InUseLineTrace	Whether or not to only trace with a line through the world.
 	 * @param InUseBounds		Whether or not to base the line trace off of the bounds.
 	 * @param InUsePivot		Whether or not to use the pivot position.
-	 * @param InDestination		The destination actor we want to move this actor to, NULL assumes we just want to go towards the floor
+	 * @param InDestination		The destination element we want to move this actor to, unset assumes we just want to go towards the floor
 	 * @return					Whether or not the actor was moved.
 	 */
-	bool SnapObjectTo( FActorOrComponent Object, const bool InAlign, const bool InUseLineTrace, const bool InUseBounds, const bool InUsePivot, FActorOrComponent InDestination = FActorOrComponent(), TArray<FActorOrComponent> ObjectsToIgnore = TArray<FActorOrComponent>() );
+	bool SnapElementTo(const FTypedElementHandle& InElementHandle, const bool InAlign, const bool InUseLineTrace, const bool InUseBounds, const bool InUsePivot, const FTypedElementHandle& InDestination = FTypedElementHandle(), TArrayView<const FTypedElementHandle> InElementsToIgnore = TArrayView<const FTypedElementHandle>());
 
 	/**
-	 * Snaps the view of the camera to that of the provided actor.
+	 * Snaps the view of the camera to that of the provided element.
 	 *
-	 * @param	Actor	The actor the camera is going to be snapped to.
+	 * @param InElementHandle	The element the camera is going to be snapped to.
 	 */
-	void SnapViewTo(const FActorOrComponent& Object);
+	void SnapViewTo(const FTypedElementHandle& InElementHandle);
 
 	/**
 	 * Remove the roll, pitch and/or yaw from the perspective viewports' cameras.
@@ -1128,7 +1080,7 @@ public:
 	 * @param	Redraw			Whether to redraw viewports
 	 * @param	TransReset		Human readable reason for resetting the transaction system
 	 */
-	virtual void Cleanse( bool ClearSelection, bool Redraw, const FText& TransReset );
+	virtual void Cleanse( bool ClearSelection, bool Redraw, const FText& TransReset, bool bTransReset = true );
 	virtual void FinishAllSnaps() { }
 
 	/**
@@ -1154,9 +1106,10 @@ public:
 	 * @param	Transform		The world-space transform to spawn the actor with.
 	 * @param	bSilent			If true, suppress logging (optional, defaults to false).
 	 * @param	ObjectFlags		The object flags to place on the spawned actor.
+	 * @param	bSelectActor	Whether or not to select the spawned actor.
 	 * @return					A pointer to the newly added actor, or NULL if add failed.
 	 */
-	virtual AActor* AddActor(ULevel* InLevel, UClass* Class, const FTransform& Transform, bool bSilent = false, EObjectFlags ObjectFlags = RF_Transactional);
+	virtual AActor* AddActor(ULevel* InLevel, UClass* Class, const FTransform& Transform, bool bSilent = false, EObjectFlags ObjectFlags = RF_Transactional, bool bSelectActor = true);
 
 	/**
 	 * Adds actors to the world at the specified location using export text.
@@ -1194,7 +1147,7 @@ public:
 	 * @param	Sound		A sound to attach to the audio component
 	 * @param	SoundNode	A sound node that is attached to the audio component when the sound is NULL
 	 */
-	UAudioComponent* ResetPreviewAudioComponent( class USoundBase* Sound = NULL, class USoundNode* SoundNode = NULL );
+	UAudioComponent* ResetPreviewAudioComponent(USoundBase* Sound = nullptr, USoundNode* SoundNode = nullptr);
 
 	/**
 	 * Plays a preview of a specified sound or node
@@ -1202,7 +1155,7 @@ public:
 	 * @param	Sound		A sound to attach to the audio component
 	 * @param	SoundNode	A sound node that is attached to the audio component when the sound is NULL
 	 */
-	void PlayPreviewSound(USoundBase* Sound, USoundNode* SoundNode = NULL);
+	UAudioComponent* PlayPreviewSound(USoundBase* Sound, USoundNode* SoundNode = nullptr);
 
 	/**
 	 * Clean up any world specific editor components so they can be GC correctly
@@ -1363,9 +1316,9 @@ public:
 	 * Copy selected actors to the clipboard.
 	 *
 	 * @param	InWorld					World context
-	 * @param	DestinationData			If != NULL, additionally copy data to string
+	 * @param	DestinationData			If != NULL, fill instead of clipboard data
 	 */
-	virtual void edactCopySelected(UWorld* InWorld, FString* DestinationData = NULL) {}
+	virtual void edactCopySelected(UWorld* InWorld, FString* DestinationData = nullptr) {}
 
 	/**
 	 * Paste selected actors from the clipboard.
@@ -1376,13 +1329,13 @@ public:
 	 * @param	bWarnIfHidden		If true displays a warning if the destination level is hidden
 	 * @param	SourceData			If != NULL, use instead of clipboard data
 	 */
-	virtual void edactPasteSelected(UWorld* InWorld, bool bDuplicate, bool bOffsetLocations, bool bWarnIfHidden, FString* SourceData = NULL) {}
+	virtual void edactPasteSelected(UWorld* InWorld, bool bDuplicate, bool bOffsetLocations, bool bWarnIfHidden, const FString* SourceData = nullptr) {}
 
 	/**
 	 * Duplicates selected actors.
 	 *
-	 * @param	InLevel			Level to place duplicate
-	 * @param	bUseOffset		Should the actor locations be offset after they are created?
+	 * @param	InLevel				Level to place duplicate
+	 * @param	bOffsetLocations	Should the actor locations be offset after they are created?
 	 */
 	virtual void edactDuplicateSelected( ULevel* InLevel, bool bOffsetLocations ) {}
 
@@ -1463,15 +1416,6 @@ public:
 	virtual bool CanSelectActor(AActor* Actor, bool bInSelected, bool bSelectEvenIfHidden=false, bool bWarnIfLevelLocked=false) const { return true; }
 	virtual void SelectGroup(class AGroupActor* InGroupActor, bool bForceSelection=false, bool bInSelected=true, bool bNotify=true) {}
 	virtual void SelectComponent(class UActorComponent* Component, bool bInSelected, bool bNotify, bool bSelectEvenIfHidden = false) {}
-
-	/**
-	 * Replaces the components in ActorsToReplace with an primitive component in Replacement
-	 *
-	 * @param ActorsToReplace Primitive components in the actors in this array will have their ReplacementPrimitive set to a component in Replacement
-	 * @param Replacement The first usable component in Replacement will be the ReplacementPrimitive for the actors
-	 * @param ClassToReplace If this is set, only components will of this class will be used/replaced
-	 */
-	virtual void AssignReplacementComponentsByActors(TArray<AActor*>& ActorsToReplace, AActor* Replacement, UClass* ClassToReplace=NULL);
 
 	/**
 	 * Selects or deselects a BSP surface in the persistent level's UModel.  Does nothing if GEdSelectionLock is true.
@@ -1735,7 +1679,8 @@ public:
 	/** Cancel request to start a play session */
 	void CancelRequestPlaySession();
 
-
+	/** Pause or unpause all PIE worlds. Returns true if successful */
+	bool SetPIEWorldsPaused(bool Paused);
 
 	/** Makes a request to start a play from a Slate editor session */
 	void RequestToggleBetweenPIEandSIE() { bIsToggleBetweenPIEandSIEQueued = true; }
@@ -1801,6 +1746,7 @@ public:
 
 	/**
 	 * Request to create a new PIE window and join the currently running PIE session.
+	 * Deferred until the next tick.
 	 */
 	void RequestLateJoin();
 
@@ -1990,9 +1936,11 @@ public:
 	/**
 	 * Clears out the current map, if any, and creates a new blank map.
 	 *
+	 * @param   bIsPartitionedWorld	If true, new map is partitioned.
+	 * 
 	 * @return	Pointer to the map that was created.
 	 */
-	UWorld* NewMap();
+	UWorld* NewMap(bool bIsPartitionedWorld = false);
 
 	/**
 	 * Exports the current map to the specified filename.
@@ -2001,14 +1949,6 @@ public:
 	 * @param	bExportSelectedActorsOnly	If true, export only the selected actors.
 	 */
 	void ExportMap(UWorld* InWorld, const TCHAR* InFilename, bool bExportSelectedActorsOnly);
-
-	/**
-	 * Moves selected actors to the current level.
-	 *
-	 * @param	InLevel		The destination level.
-	 */
-	UE_DEPRECATED(4.17, "MoveSelectedActorsToLevel has been deprecated.  Use UEditorLevelUtils::MoveSelectedActorsToLevel instead")
-	void MoveSelectedActorsToLevel( ULevel* InLevel );
 
 	/**
 	 *	Returns list of all foliage types used in the world
@@ -2035,8 +1975,9 @@ public:
 	 * @param bShouldCut			If true, deletes the selected actors after copying them to the clipboard
 	 * @param bIsMove				If true, this cut is part of a move and the actors will be immediately pasted
 	 * @param bWarnAboutReferences	Whether or not to show a modal warning about referenced actors that may no longer function after being moved
+	 * @param DestinationData		Data that was copied to clipboard 
 	 */
-	void CopySelectedActorsToClipboard( UWorld* InWorld, const bool bShouldCut, const bool bIsMove = false, bool bWarnAboutReferences = true);
+	void CopySelectedActorsToClipboard( UWorld* InWorld, const bool bShouldCut, const bool bIsMove = false, bool bWarnAboutReferences = true, FString* DestinationData = nullptr);
 
 	/**
 	 * Checks to see whether it's possible to perform a paste operation.
@@ -2102,6 +2043,11 @@ public:
 	 * @param bDisable True if modification should be disabled; false otherwise.
 	 */
 	void DisableDeltaModification(bool bDisable) { bDisableDeltaModification = bDisable; }
+
+	/**
+	 * Test whether actor/component modification during delta movement is currently enabled?
+	 */
+	bool IsDeltaModificationEnabled() const { return !bDisableDeltaModification; }
 
 	/**
 	 *	Game-specific function called by Map_Check BEFORE iterating over all actors.
@@ -2217,7 +2163,8 @@ public:
 	/**
 	 * Selects all actors controlled by currently selected MatineeActor
 	 */
-	void SelectAllActorsControlledByMatinee();
+	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
+	void SelectAllActorsControlledByMatinee() {}
 
 	/**
 	 * Selects all actors with the same class as the current selection
@@ -2258,25 +2205,39 @@ public:
 	virtual bool IsPackageOKToSave(UPackage* InPackage, const FString& InFilename, FOutputDevice* Error);
 
 	/** The editor wrapper for UPackage::SavePackage. Auto-adds files to source control when necessary */
-	bool SavePackage( UPackage* InOuter, UObject* Base, EObjectFlags TopLevelFlags, const TCHAR* Filename, 
-		FOutputDevice* Error=GError, FLinkerNull* Conform=NULL, bool bForceByteSwapping=false, bool bWarnOfLongFilename=true, 
-		uint32 SaveFlags=SAVE_None, const class ITargetPlatform* TargetPlatform = NULL, const FDateTime& FinalTimeStamp = FDateTime::MinValue(), bool bSlowTask = true );
+	bool SavePackage(UPackage* InOuter, UObject* InAsset, const TCHAR* Filename, const FSavePackageArgs& SaveArgs);
+
+	UE_DEPRECATED(5.0, "Pack the arguments into FSavePackageArgs and call the function overload that takes FSavePackageArgs. Note that Conform is no longer implemented.")
+	bool SavePackage(UPackage* InOuter, UObject* Base, EObjectFlags TopLevelFlags, const TCHAR* Filename,
+		FOutputDevice* Error = GError, FLinkerNull* Conform = nullptr, bool bForceByteSwapping = false,
+		bool bWarnOfLongFilename = true, uint32 SaveFlags = SAVE_None, const ITargetPlatform* TargetPlatform = nullptr,
+		const FDateTime& FinalTimeStamp = FDateTime::MinValue(), bool bSlowTask = true);
 
 	/** The editor wrapper for UPackage::Save. Auto-adds files to source control when necessary */
+	FSavePackageResultStruct Save(UPackage* InOuter, UObject* InAsset, const TCHAR* Filename,
+		const FSavePackageArgs& SaveArgs);
+
+	UE_DEPRECATED(5.0, "Pack the arguments into FSavePackageArgs and call the function overload that takes FSavePackageArgs. Note that Conform and InOutDiffMap are no longer implemented.")
 	FSavePackageResultStruct Save(UPackage* InOuter, UObject* Base, EObjectFlags TopLevelFlags, const TCHAR* Filename,
-		FOutputDevice* Error = GError, FLinkerNull* Conform = NULL, bool bForceByteSwapping = false, bool bWarnOfLongFilename = true,
-		uint32 SaveFlags = SAVE_None, const class ITargetPlatform* TargetPlatform = NULL, const FDateTime& FinalTimeStamp = FDateTime::MinValue(), 
+		FOutputDevice* Error = GError, FLinkerNull* Conform = nullptr, bool bForceByteSwapping = false,
+		bool bWarnOfLongFilename = true, uint32 SaveFlags = SAVE_None,
+		const ITargetPlatform* TargetPlatform = nullptr, const FDateTime& FinalTimeStamp = FDateTime::MinValue(),
 		bool bSlowTask = true, class FArchiveDiffMap* InOutDiffMap = nullptr,
 		FSavePackageContext* SavePackageContext = nullptr);
 
 	virtual bool InitializePhysicsSceneForSaveIfNecessary(UWorld* World, bool &bOutForceInitialized);
 	void CleanupPhysicsSceneThatWasInitializedForSave(UWorld* World, bool bForceInitialized);
 
-	/** Invoked before a UWorld is saved to update editor systems */
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void OnPreSaveWorld(uint32 SaveFlags, UWorld* World);
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPostSaveContext instead.")
+	virtual void OnPostSaveWorld(uint32 SaveFlags, UWorld* World, uint32 OriginalPackageFlags, bool bSuccess);
+
+	/** Invoked before a UWorld is saved to update editor systems */
+	virtual void OnPreSaveWorld(UWorld* World, FObjectPreSaveContext ObjectSaveContext);
 
 	/** Invoked after a UWorld is saved to update editor systems */
-	virtual void OnPostSaveWorld(uint32 SaveFlags, UWorld* World, uint32 OriginalPackageFlags, bool bSuccess);
+	virtual void OnPostSaveWorld(UWorld* World, FObjectPostSaveContext ObjectSaveContext);
 
 	/**
 	 * Adds provided package to a default changelist
@@ -2286,15 +2247,15 @@ public:
 	void AddPackagesToDefaultChangelist(TArray<FString>& InPackageNames);
 
 	/**
-	 * Delegate used when a source control connection dialog has been closed.
-	 * @param	bEnabled	Whether source control was enabled or not
+	 * Will run a batch mark for add source control operation for files recently saved if source control is enabled
+	 * @param	bool	Unused param to for the function to be used as a delegate when source control dialog is closed.
 	 */
-	void OnSourceControlDialogClosed(bool bEnabled);
+	void RunDeferredMarkForAddFiles(bool = false);
 
 	/** 
 	 * @return - returns the currently selected positional snap grid setting
 	 */
-	float GetGridSize();
+	float GetGridSize() const;
 
 	/** 
 	 * @return - if the grid size is part of the 1,2,4,8,16,.. list or not
@@ -2357,6 +2318,11 @@ public:
 	float GetGridInterval();
 
 	/**
+	 * Get the location offset applied by the grid based on the grid size and active viewport.
+	 */
+	FVector GetGridLocationOffset(bool bUniformOffset) const;
+
+	/**
 	 * Access the array of grid interval options
 	 */
 	const TArray<float>& GetCurrentIntervalGridArray() const;
@@ -2383,6 +2349,7 @@ public:
 	 *
 	 * @return The event delegate.
 	 */
+	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FShouldOpenMatineeCallback, AMatineeActor*)
 	FShouldOpenMatineeCallback& OnShouldOpenMatinee() { return ShouldOpenMatineeCallback; }
 
@@ -2392,7 +2359,8 @@ public:
 	 * @param MatineeActor	The actor we wish to check (can be null)
 	 * @returns true if the user wishes to proceed
 	 */
-	bool ShouldOpenMatinee(AMatineeActor* MatineeActor) const;
+	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
+	bool ShouldOpenMatinee(AMatineeActor* MatineeActor) const { return false; }
 
 	/** 
 	 * Open the Matinee tool to edit the supplied MatineeActor. Will check that MatineeActor has an InterpData attached.
@@ -2400,7 +2368,8 @@ public:
 	 * @param MatineeActor	The actor we wish to edit
 	 * @param bWarnUser		If true, calls ShouldOpenMatinee as part of the open process
 	 */
-	void OpenMatinee(class AMatineeActor* MatineeActor, bool bWarnUser=true);
+	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
+	void OpenMatinee(class AMatineeActor* MatineeActor, bool bWarnUser = true) {}
 
 	/**
 	* Update any outstanding reflection captures
@@ -2481,10 +2450,16 @@ public:
 	FOnMakeAssetReferenceFilter& OnMakeAssetReferenceFilter() { return OnMakeAssetReferenceFilterDelegate; }
 	TSharedPtr<IAssetReferenceFilter> MakeAssetReferenceFilter(const FAssetReferenceFilterContext& Context) { return OnMakeAssetReferenceFilterDelegate.IsBound() ? OnMakeAssetReferenceFilterDelegate.Execute(Context) : nullptr; }
 
-protected:
+	DECLARE_DELEGATE_RetVal(ULevelEditorDragDropHandler*, FOnCreateLevelEditorDragDropHandler);
+	FOnCreateLevelEditorDragDropHandler& OnCreateLevelEditorDragDropHandler() { return OnCreateLevelEditorDragDropHandlerDelegate; }
+	ULevelEditorDragDropHandler* GetLevelEditorDragDropHandler() const;
 
-	/** Returns a filter to restruct what assets show up in asset pickers based on what the selection is used for (i.e. what will reference the assets) */
+private:
+	UPROPERTY()
+	mutable TObjectPtr<ULevelEditorDragDropHandler> DragDropHandler;
+
 	FOnMakeAssetReferenceFilter OnMakeAssetReferenceFilterDelegate;
+	FOnCreateLevelEditorDragDropHandler OnCreateLevelEditorDragDropHandlerDelegate;
 
 public:
 
@@ -2533,7 +2508,7 @@ public:
 	/**
 	 * Prompts the user to save the current map if necessary, then creates a new (blank) map.
 	 */
-	void CreateNewMapForEditing(bool bPromptUserToSave = true);
+	void CreateNewMapForEditing(bool bPromptUserToSave = true, bool bIsPartitionedWorld = false);
 
 	/**
 	 * If a PIE world exists, give the user the option to terminate it.
@@ -2667,6 +2642,9 @@ public:
 	UE_DEPRECATED(4.25, "This is now handled as part of OnLoginPIEComplete_Deferred.")
 	bool CreatePIEWorldFromLogin(FWorldContext& PieWorldContext, EPlayNetMode PlayNetMode, FPieLoginStruct& DataStruct);
 
+	/** Called before creating PIE instance(s). */
+	virtual FGameInstancePIEResult PreCreatePIEInstances(const bool bAnyBlueprintErrors, const bool bStartInSpectatorMode, const float PIEStartTime, const bool bSupportsOnlinePIE, int32& InNumOnlinePIEInstances);
+
 	/** Called before creating a PIE server instance. */
 	virtual FGameInstancePIEResult PreCreatePIEServerInstance(const bool bAnyBlueprintErrors, const bool bStartInSpectatorMode, const float PIEStartTime, const bool bSupportsOnlinePIE, int32& InNumOnlinePIEInstances);
 
@@ -2764,9 +2742,6 @@ private:
 	/** Helper function to show undo/redo notifications */
 	void ShowUndoRedoNotification(const FText& NotificationText, bool bSuccess);
 
-	/**	Broadcasts that the supplied objects have been replaced (map of old object to new object */
-	void BroadcastObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap) { ObjectsReplacedEvent.Broadcast(ReplacementMap); }
-
 	/** Internal helper functions */
 	virtual void PostUndo (bool bSuccess);
 
@@ -2845,9 +2820,6 @@ private:
 	/** Delegate broadcast when blueprint is reinstanced */
 	FBlueprintReinstanced BlueprintReinstanced;
 
-	/** Delegate broadcast when objects have been replaced (e.g on blueprint compile) */
-	FObjectsReplacedEvent ObjectsReplacedEvent;
-
 	/** Delegate broadcast when a package has been loaded or unloaded */
 	FClassPackageLoadedOrUnloadedEvent ClassPackageLoadedOrUnloadedEvent;
 
@@ -2859,6 +2831,9 @@ private:
 
 	/** Delegate broadcast when an actor or component has been moved, rotated, or scaled */
 	FOnEndTransformObject OnEndObjectTransformEvent;
+
+	/** Delegate broadcast when aactors have been moved, rotated, or scaled */
+	FOnActorsMoved OnActorsMovedEvent;
 
 	/** Delegate broadcast when the camera viewed through the viewport is about to be moved */
 	FOnBeginTransformCamera OnBeginCameraTransformEvent;
@@ -2890,8 +2865,11 @@ private:
 	/** Broadcasts after an Exec event on particles has been invoked.*/
 	FExecParticleInvoked ExecParticleInvokedEvent; 
 
+	/** Broadcasts to allow selection of unloaded actors */
+	FSelectUnloadedActorsEvent SelectUnloadedActorsEvent;
+
 	/** Delegate to be called when a matinee is requested to be opened */
-	FShouldOpenMatineeCallback ShouldOpenMatineeCallback;
+	FShouldOpenMatineeCallback ShouldOpenMatineeCallback;	
 
 	/** Reference to owner of the current popup */
 	TWeakPtr<class SWindow> PopupWindow;
@@ -2951,6 +2929,9 @@ protected:
 
 	/** Start a Play in New Process session with the given parameters. Called by StartQueuedPlaySessionRequestImpl based on request settings. */
 	virtual void StartPlayInNewProcessSession(FRequestPlaySessionParams& InRequestParams);
+
+	/** Does the actual late join process. Don't call this directly, use RequestLateJoin() which will defer it to the next frame. */
+	void AddPendingLateJoinClient();
 	
 	// This chunk is used for Play Via Launcher settings.
 public:
@@ -3006,6 +2987,9 @@ protected:
 	/** Start a Launcher session with the given parameters. Called by StartQueuedPlaySessionRequestImpl based on request settings. */
 	virtual void StartPlayUsingLauncherSession(FRequestPlaySessionParams& InRequestParams);
 
+	/** This flag is used to skip UAT\UBT compilation on every launch if it was successfully compiled once. */
+	bool bUATSuccessfullyCompiledOnce;
+
 	// This chunk is for Play in Editor
 public:
 	/** @return true if the editor is able to launch PIE with online platform support */
@@ -3036,9 +3020,6 @@ protected:
 
 	/** Gets the scene viewport for a viewport client */
 	FSceneViewport* GetGameSceneViewport(UGameViewportClient* ViewportClient) const;
-
-	/** Common init shared by CreatePIEWorldByDuplication and CreatePIEWorldBySavingToTemp */
-	void PostCreatePIEWorld(UWorld *InWorld);
 
 	/**
 	 * Toggles PIE to SIE or vice-versa
@@ -3154,6 +3135,7 @@ private:
 protected:
 
 	/** Called when Matinee is opened */
+	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
 	virtual void OnOpenMatinee(){};
 
 	/**
@@ -3175,10 +3157,6 @@ protected:
 
 	// Handle requests from slate application to open assets.
 	bool HandleOpenAsset(UObject* Asset);
-
-public:
-	UE_DEPRECATED(4.17, "IsUsingWorldAssets is now always true, remove any code that assumes it could be false")
-	static bool IsUsingWorldAssets() { return true; }
 
 private:
 	/** Handler for when any asset is loaded in the editor */
@@ -3203,7 +3181,7 @@ public:
 
 	virtual void HandleTravelFailure(UWorld* InWorld, ETravelFailure::Type FailureType, const FString& ErrorString);
 
-	void AutomationLoadMap(const FString& MapName, FString* OutError);
+	void AutomationLoadMap(const FString& MapName, bool bForceReload, FString* OutError);
 
 	/** This function should be called to notify the editor that new materials were added to our scene or some materials were modified */
 	void OnSceneMaterialsModified();
@@ -3232,6 +3210,9 @@ public:
 	/** Return the delegate that is called when the preview platform changes */
 	FPreviewPlatformChanged& OnPreviewPlatformChanged() { return PreviewPlatformChanged; }
 
+	/** Return the delegate that is called when the bugitgo command is called */
+	FPostBugItGoCalled& OnPostBugItGoCalled() { return PostBugItGoCalled; }
+
 protected:
 
 	/** Function pair used to save and restore the global feature level */
@@ -3250,7 +3231,7 @@ protected:
 	FSoftClassPath ActorGroupingUtilsClassName;
 
 	UPROPERTY()
-	class UActorGroupingUtils* ActorGroupingUtils;
+	TObjectPtr<class UActorGroupingUtils> ActorGroupingUtils;
 private:
 	FTimerHandle CleanupPIEOnlineSessionsTimerHandle;
 

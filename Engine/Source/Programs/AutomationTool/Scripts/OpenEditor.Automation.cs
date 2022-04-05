@@ -5,14 +5,15 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 using UnrealBuildTool;
 
 namespace AutomationTool
 {
 
 	[Help("Opens the specified project.")]
-	[Help("project=<QAGame>", "Project to open. Will search current path and paths in ueprojectdirs. If omitted will open vanilla UE4Editor")]
+	[Help("project=<QAGame>", "Project to open. Will search current path and paths in ueprojectdirs. If omitted will open vanilla UnrealEditor")]
 	class OpenEditor: BuildCommand
 	{
 		// exposed as a property so projects can derive and set this directly
@@ -24,7 +25,7 @@ namespace AutomationTool
 		
 		public override ExitCode Execute()
 		{
-			string EditorPath = HostPlatform.Current.GetUE4ExePath("UE4Editor");
+			string EditorPath = HostPlatform.Current.GetUnrealExePath("UnrealEditor");
 
 			string EditorArgs = "";
 

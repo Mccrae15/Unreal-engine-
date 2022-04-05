@@ -15,40 +15,44 @@
 #include "EditorClassUtils.h"
 #include "SortHelper.h"
 
+#include "ActorTreeItem.h"
+
 #define LOCTEXT_NAMESPACE "SequencerInfoColumn"
 
 namespace Sequencer
 {
 
-struct FGetInfo : SceneOutliner::TTreeItemGetter<FString>
+/** Functor which retrieves actor string information for sorting */
+struct FGetActorInfo
 {
-	FGetInfo(const FSequencerInfoColumn& InColumn)
+	FGetActorInfo(const FSequencerInfoColumn& InColumn)
 		: WeakColumn(StaticCastSharedRef<const FSequencerInfoColumn>(InColumn.AsShared()))
 	{}
 
-	virtual FString Get(const SceneOutliner::FActorTreeItem& ActorItem) const override
+	FString operator()(const ISceneOutlinerTreeItem& Item) const
 	{
 		if (!WeakColumn.IsValid())
 		{
 			return FString();
 		}
-
-		AActor* Actor = ActorItem.Actor.Get();
-		if (!Actor)
+		if (const FActorTreeItem* ActorItem = Item.CastTo<FActorTreeItem>())
 		{
-			return FString();
+			AActor* Actor = ActorItem->Actor.Get();
+			if (Actor)
+			{
+				const FSequencerInfoColumn& Column = *WeakColumn.Pin();
+
+				return Column.GetTextForActor(Actor);
+			}
 		}
-
-		const FSequencerInfoColumn& Column = *WeakColumn.Pin();
-
-		return Column.GetTextForActor(Actor);
+		
+		return FString();
 	}
 
 
 	/** Weak reference to the sequencer info column */
 	TWeakPtr< const FSequencerInfoColumn > WeakColumn;
 };
-
 
 FSequencerInfoColumn::FSequencerInfoColumn(ISceneOutliner& InSceneOutliner, FSequencer& InSequencer, const FLevelEditorSequencerBindingData& InBindingData)
 	: WeakSceneOutliner(StaticCastSharedRef<ISceneOutliner>(InSceneOutliner.AsShared())) 
@@ -86,7 +90,7 @@ SHeaderRow::FColumn::FArguments FSequencerInfoColumn::ConstructHeaderRowColumn()
 		.FillWidth( 5.0f );
 }
 
-const TSharedRef< SWidget > FSequencerInfoColumn::ConstructRowWidget( SceneOutliner::FTreeItemRef TreeItem, const STableRow<SceneOutliner::FTreeItemPtr>& Row )
+const TSharedRef< SWidget > FSequencerInfoColumn::ConstructRowWidget(FSceneOutlinerTreeItemRef TreeItem, const STableRow<FSceneOutlinerTreeItemPtr>& Row)
 {
 	auto SceneOutliner = WeakSceneOutliner.Pin();
 	check(SceneOutliner.IsValid());
@@ -94,7 +98,7 @@ const TSharedRef< SWidget > FSequencerInfoColumn::ConstructRowWidget( SceneOutli
 	TSharedRef<SHorizontalBox> HorizontalBox = SNew(SHorizontalBox);
 
 	TSharedRef<STextBlock> MainText = SNew( STextBlock )
-		.Text( this, &FSequencerInfoColumn::GetTextForItem, TWeakPtr<SceneOutliner::ITreeItem>(TreeItem) )
+		.Text( this, &FSequencerInfoColumn::GetTextForItem, TWeakPtr<ISceneOutlinerTreeItem>(TreeItem) )
 		.HighlightText( SceneOutliner->GetFilterHighlightText() )
 		.ColorAndOpacity( FSlateColor::UseSubduedForeground() );
 
@@ -109,18 +113,18 @@ const TSharedRef< SWidget > FSequencerInfoColumn::ConstructRowWidget( SceneOutli
 }
 
 
-void FSequencerInfoColumn::PopulateSearchStrings( const SceneOutliner::ITreeItem& Item, TArray< FString >& OutSearchStrings ) const
+void FSequencerInfoColumn::PopulateSearchStrings( const ISceneOutlinerTreeItem& Item, TArray< FString >& OutSearchStrings ) const
 {
 	OutSearchStrings.Add(Item.GetDisplayString());
 }
 
 
-void FSequencerInfoColumn::SortItems(TArray<SceneOutliner::FTreeItemPtr>& OutItems, const EColumnSortMode::Type SortMode) const
+void FSequencerInfoColumn::SortItems(TArray<FSceneOutlinerTreeItemPtr>& OutItems, const EColumnSortMode::Type SortMode) const
 {
 	if (WeakBindingData.IsValid())
 	{
-		SceneOutliner::FSortHelper<FString>()
-			.Primary(FGetInfo(*this), SortMode)
+		FSceneOutlinerSortHelper<FString>()
+			.Primary(FGetActorInfo(*this), SortMode)
 			.Sort(OutItems);
 	}
 }
@@ -135,10 +139,10 @@ FString FSequencerInfoColumn::GetTextForActor(AActor* InActor) const
 	return FString();
 }
 
-FText FSequencerInfoColumn::GetTextForItem( TWeakPtr<SceneOutliner::ITreeItem> TreeItem ) const
+FText FSequencerInfoColumn::GetTextForItem( TWeakPtr<ISceneOutlinerTreeItem> TreeItem ) const
 {
 	auto Item = TreeItem.Pin();
-	return Item.IsValid() && WeakBindingData.IsValid() ? FText::FromString(Item->Get(FGetInfo(*this))) : FText::GetEmpty();
+	return Item.IsValid() && WeakBindingData.IsValid() ? FText::FromString(FGetActorInfo(*this)(*Item)) : FText::GetEmpty();
 }
 
 }

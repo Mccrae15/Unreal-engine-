@@ -26,13 +26,11 @@ public:
 	struct FDataType
 	{
 		FHairGroupInstance* Instance = nullptr;
-		uint32 GroupIndex = 0;
 		uint32 LODIndex = 0;
-		uint32 BufferIndex = 0;// If the RHI does not support manual fetch, we create two vertex factory to have two declarations: 1) for position0:current & position1:previous 2) for position0:previous & position1:current
 		EHairGeometryType GeometryType = EHairGeometryType::NoneGeometry;
 	};
 
-	FHairCardsVertexFactory(FHairGroupInstance* Instance, uint32 GroupIndex, uint32 LODIndex, uint32 BufferIndex, EHairGeometryType GeometryType, EShaderPlatform InShaderPlatform, ERHIFeatureLevel::Type InFeatureLevel, const char* InDebugName);
+	FHairCardsVertexFactory(FHairGroupInstance* Instance, uint32 LODIndex, EHairGeometryType GeometryType, EShaderPlatform InShaderPlatform, ERHIFeatureLevel::Type InFeatureLevel, const char* InDebugName);
 	
 	/**
 	 * Should we cache the material's shadertype on this platform with this vertex factory? 
@@ -52,14 +50,16 @@ public:
 	*/
 	void Copy(const FHairCardsVertexFactory& Other);
 
+	void InitResources();
+
 	// FRenderResource interface.
 	virtual void InitRHI() override;
 	virtual void ReleaseRHI() override;
-	static bool SupportsTessellationShaders() { return false; }
 	const FDataType& GetData() const { return Data; }
 	FDataType Data;
 protected:
 
+	bool bIsInitialized = false;
 
 	struct FDebugName
 	{

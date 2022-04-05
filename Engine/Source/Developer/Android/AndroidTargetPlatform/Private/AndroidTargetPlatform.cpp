@@ -20,7 +20,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/SecureHash.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "Interfaces/IAndroidDeviceDetectionModule.h"
 #include "Interfaces/IAndroidDeviceDetection.h"
@@ -42,7 +42,7 @@ class FModuleManager;
 class FScopeLock;
 class FStaticMeshLODSettings;
 class FTargetDeviceId;
-class FTicker;
+class FTSTicker;
 class IAndroidDeviceDetectionModule;
 class UTexture;
 class UTextureLODSettings;
@@ -58,7 +58,7 @@ static FString GetLicensePath()
 	IAndroidDeviceDetection* DeviceDetection = AndroidDeviceDetection.GetAndroidDeviceDetection();
 	FString ADBPath = DeviceDetection->GetADBPath();
 
-	if (!FPaths::FileExists(*ADBPath))
+	if (!FPaths::FileExists(ADBPath))
 	{
 		return TEXT("");
 	}
@@ -190,27 +190,26 @@ static bool HasLicense()
 	return false;
 }
 
-FAndroidTargetPlatform::FAndroidTargetPlatform(bool bInIsClient )
-	: bIsClient(bInIsClient)
+FAndroidTargetPlatform::FAndroidTargetPlatform(bool bInIsClient, const TCHAR* FlavorName, const TCHAR* OverrideIniPlatformName)
+	: TNonDesktopTargetPlatformBase(bInIsClient, FlavorName, OverrideIniPlatformName)
 	, DeviceDetection(nullptr)
 	, bDistanceField(false)
 
 {
-	#if WITH_ENGINE
-		FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *IniPlatformName());
-			TextureLODSettings = nullptr; // These are registered by the device profile system.
-		StaticMeshLODSettings.Initialize(EngineSettings);
-		EngineSettings.GetBool(TEXT("/Script/Engine.RendererSettings"), TEXT("r.DistanceFields"), bDistanceField);
-	#endif
+#if WITH_ENGINE
+	TextureLODSettings = nullptr; // These are registered by the device profile system.
+	StaticMeshLODSettings.Initialize(this);
+	GetConfigSystem()->GetBool(TEXT("/Script/Engine.RendererSettings"), TEXT("r.DistanceFields"), bDistanceField, GEngineIni);
+#endif
 
 	TickDelegate = FTickerDelegate::CreateRaw(this, &FAndroidTargetPlatform::HandleTicker);
-	TickDelegateHandle = FTicker::GetCoreTicker().AddTicker(TickDelegate, 4.0f);
+	TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(TickDelegate, 4.0f);
 }
 
 
 FAndroidTargetPlatform::~FAndroidTargetPlatform()
 {
-	 FTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
+	 FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
 }
 
 FAndroidTargetDevicePtr FAndroidTargetPlatform::CreateTargetDevice(const ITargetPlatform& InTargetPlatform, const FString& InSerialNumber, const FString& InAndroidVariant) const
@@ -252,12 +251,6 @@ bool FAndroidTargetPlatform::SupportsVulkanSM5() const
 	GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bSupportsVulkanSM5"), bSupportsMobileVulkanSM5, GEngineIni);
 #endif
 	return bSupportsMobileVulkanSM5;
-}
-
-bool FAndroidTargetPlatform::SupportsSoftwareOcclusion() const
-{
-	static auto* CVarMobileAllowSoftwareOcclusion = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.AllowSoftwareOcclusion"));
-	return CVarMobileAllowSoftwareOcclusion->GetValueOnAnyThread() != 0;
 }
 
 bool FAndroidTargetPlatform::SupportsLandscapeMeshLODStreaming() const
@@ -305,11 +298,6 @@ ITargetDevicePtr FAndroidTargetPlatform::GetDevice( const FTargetDeviceId& Devic
 	}
 
 	return nullptr;
-}
-
-bool FAndroidTargetPlatform::IsRunningPlatform( ) const
-{
-	return false; // This platform never runs the target platform framework
 }
 
 
@@ -362,12 +350,6 @@ bool FAndroidTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) 
 		case ETargetPlatformFeatures::DeferredRendering:
 			return SupportsVulkanSM5();
 
-		case ETargetPlatformFeatures::Tessellation:
-			return false;
-
-		case ETargetPlatformFeatures::SoftwareOcclusion:
-			return SupportsSoftwareOcclusion();
-
 		case ETargetPlatformFeatures::VirtualTextureStreaming:
 			return UsesVirtualTextures();
 
@@ -384,8 +366,6 @@ bool FAndroidTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) 
 	return TTargetPlatformBase<FAndroidPlatformProperties>::SupportsFeature(Feature);
 }
 
-
-#if WITH_ENGINE
 
 void FAndroidTargetPlatform::GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const
 {
@@ -415,11 +395,18 @@ void FAndroidTargetPlatform::GetAllTargetedShaderFormats( TArray<FName>& OutForm
 }
 
 
+#if WITH_ENGINE
+
 const FStaticMeshLODSettings& FAndroidTargetPlatform::GetStaticMeshLODSettings( ) const
 {
 	return StaticMeshLODSettings;
 }
 
+static bool FormatSupportsCompressedVolumeTexture(EAndroidTextureFormatCategory FormatCategory)
+{
+	// Supported in ES3.2 with ASTC
+	return FormatCategory == EAndroidTextureFormatCategory::ASTC;
+}
 
 void FAndroidTargetPlatform::GetTextureFormats( const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const
 {
@@ -438,6 +425,8 @@ void FAndroidTargetPlatform::GetTextureFormats( const UTexture* InTexture, TArra
 			continue;
 		}
 
+		const bool bSupportCompressedVolumeTexture = FormatSupportsCompressedVolumeTexture(FormatCategory);
+
 		TArray<FName> FormatPerLayer;
 		FormatPerLayer.SetNum(NumLayers);
 
@@ -454,7 +443,8 @@ void FAndroidTargetPlatform::GetTextureFormats( const UTexture* InTexture, TArra
 				|| (InTexture->Source.GetSizeX() < 4)						// Don't compress textures smaller than the DXT block size.
 				|| (InTexture->Source.GetSizeY() < 4)
 				|| (InTexture->Source.GetSizeX() % 4 != 0)
-				|| (InTexture->Source.GetSizeY() % 4 != 0);
+				|| (InTexture->Source.GetSizeY() % 4 != 0)
+				|| (InTexture->GetMaterialType() == MCT_VolumeTexture && !bSupportCompressedVolumeTexture);
 
 			// Determine the pixel format of the compressed texture.
 			if (InTexture->LODGroup == TEXTUREGROUP_Shadowmap)
@@ -469,6 +459,10 @@ void FAndroidTargetPlatform::GetTextureFormats( const UTexture* InTexture, TArra
 			else if (bNoCompression)
 			{
 				FormatPerLayer[LayerIndex] = AndroidTexFormat::NameBGRA8;
+			}
+			else if (LayerFormatSettings.CompressionSettings == TC_LQ)
+			{
+				FormatPerLayer[LayerIndex] = LayerFormatSettings.CompressionNoAlpha ? AndroidTexFormat::NameR5G6B5 : AndroidTexFormat::NameRGB555A1;
 			}
 			else if (LayerFormatSettings.CompressionSettings == TC_EncodedReflectionCapture && !LayerFormatSettings.CompressionNone)
 			{
@@ -605,7 +599,7 @@ void FAndroidTargetPlatform::GetReflectionCaptureFormats( TArray<FName>& OutForm
 	static auto* MobileShadingPathCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.ShadingPath"));
 	const bool bMobileDeferredShading = (MobileShadingPathCvar->GetValueOnAnyThread() == 1);
 	
-	if (SupportsVulkanSM5() || (SupportsVulkan() && bMobileDeferredShading))
+	if (SupportsVulkanSM5() || bMobileDeferredShading)
 	{
 		// use Full HDR with SM5 and Mobile Deferred
 		OutFormats.Add(FName(TEXT("FullHDR")));
@@ -622,60 +616,24 @@ const UTextureLODSettings& FAndroidTargetPlatform::GetTextureLODSettings() const
 }
 
 
-FName FAndroidTargetPlatform::GetWaveFormat( const class USoundWave* Wave ) const
+FName FAndroidTargetPlatform::GetWaveFormat(const class USoundWave* Wave) const
 {
-	static const FName NAME_ADPCM(TEXT("ADPCM"));
-	static const FName NAME_OGG(TEXT("OGG"));
-
-	static bool bFormatRead = false;
-	static FName NAME_FORMAT;
-	if (!bFormatRead)
+	FName FormatName = Audio::ToName(Wave->GetSoundAssetCompressionType());
+	if (FormatName == Audio::NAME_PLATFORM_SPECIFIC)
 	{
-		bFormatRead = true;
-
-		FName AudioSetting;
-		{
-			FString AudioSettingStr;
-			if (!GConfig->GetString(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("AndroidAudio"), AudioSettingStr, GEngineIni))
-			{
-				AudioSetting = *AudioSettingStr;
-			}
-		}
-
-#if WITH_OGGVORBIS
-		if (AudioSetting == NAME_OGG || AudioSetting == NAME_None)
-		{
-			NAME_FORMAT = NAME_OGG;
-		}
-#else
-		if (AudioSetting == NAME_OGG)
-		{
-			UE_LOG(LogAudio, Error, TEXT("Attemped to select Ogg Vorbis encoding when the cooker is built without Ogg Vorbis support."));
-		}
-#endif
-		else
-		{
-			// Otherwise return ADPCM as it'll either be option '2' or 'default' depending on WITH_OGGVORBIS config
-			NAME_FORMAT = NAME_ADPCM;
-		}
+		FormatName = Audio::NAME_OGG;
 	}
-
-	if (Wave->IsSeekableStreaming())
-	{
-		return NAME_ADPCM;
-	}
-
-	return NAME_FORMAT;
+	return FormatName;
 }
 
 
 void FAndroidTargetPlatform::GetAllWaveFormats(TArray<FName>& OutFormats) const
 {
-	static FName NAME_OGG(TEXT("OGG"));
-	static FName NAME_ADPCM(TEXT("ADPCM"));
 
-	OutFormats.Add(NAME_OGG);
-	OutFormats.Add(NAME_ADPCM);
+	OutFormats.Add(Audio::NAME_BINKA);
+	OutFormats.Add(Audio::NAME_OGG);
+	OutFormats.Add(Audio::NAME_PCM);
+	OutFormats.Add(Audio::NAME_ADPCM);
 }
 
 #endif //WITH_ENGINE
@@ -685,10 +643,6 @@ bool FAndroidTargetPlatform::SupportsVariants() const
 	return true;
 }
 
-FText FAndroidTargetPlatform::GetVariantTitle() const
-{
-	return LOCTEXT("AndroidVariantTitle", "Texture Format");
-}
 
 /* FAndroidTargetPlatform implementation
  *****************************************************************************/
@@ -782,7 +736,7 @@ bool FAndroidTargetPlatform::HandleTicker( float DeltaTime )
 				TestDevice->SetConnected(false);
 				Devices.Remove(DeviceIt.Key());
 
-				DeviceLostEvent.Broadcast(TestDevice.ToSharedRef());
+				OnDeviceLost().Broadcast(TestDevice.ToSharedRef());
 			}
 
 			// check if this platform is supported by the extensions and version
@@ -802,7 +756,7 @@ bool FAndroidTargetPlatform::HandleTicker( float DeltaTime )
 			Device->SetAuthorized(DeviceInfo.bAuthorizedDevice);
 			Device->SetVersions(DeviceInfo.SDKVersion, DeviceInfo.HumanAndroidVersion);
 
-			DeviceDiscoveredEvent.Broadcast(Device.ToSharedRef());
+			OnDeviceDiscovered().Broadcast(Device.ToSharedRef());
 		}
 	}
 
@@ -816,7 +770,7 @@ bool FAndroidTargetPlatform::HandleTicker( float DeltaTime )
 
 			Iter.RemoveCurrent();
 
-			DeviceLostEvent.Broadcast(RemovedDevice.ToSharedRef());
+			OnDeviceLost().Broadcast(RemovedDevice.ToSharedRef());
 		}
 	}
 

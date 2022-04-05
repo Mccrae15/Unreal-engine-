@@ -95,6 +95,11 @@ public:
 	virtual void SetRootObjectCustomizationInstance(TSharedPtr<IDetailRootObjectCustomization> InRootObjectCustomization) override {}
 	virtual TSharedPtr<class IDetailRootObjectCustomization> GetRootObjectCustomization() const override { return nullptr; }
 	virtual void SetObjectFilter(TSharedPtr<FDetailsViewObjectFilter> InFilter) override {}
+	virtual void SetClassViewerFilters(const TArray<TSharedRef<class IClassViewerFilter>>& InFilters) override {}
+	virtual bool IsGroupFavorite(FStringView GroupPath) const { return false; }
+	virtual void SetGroupFavorite(FStringView GroupPath, bool IsFavorite) {}
+	virtual bool IsCustomBuilderFavorite(FStringView Path) const { return false; }
+	virtual void SetCustomBuilderFavorite(FStringView Path, bool IsFavorite) {}
 
 	/* This is required by the base class but there is only ever one root node in a structure details view */
 	virtual FRootPropertyNodeList& GetRootNodes() override;

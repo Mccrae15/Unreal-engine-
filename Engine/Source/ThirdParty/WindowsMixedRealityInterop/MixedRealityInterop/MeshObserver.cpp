@@ -280,7 +280,7 @@ bool MeshUpdateObserver::StartMeshObserver(
 	{
 		//auto RequestTask = concurrency::create_task(SpatialSurfaceObserver::RequestAccessAsync());
 		//RequestTask.then([this](SpatialPerceptionAccessStatus AccessStatus)
-		SpatialSurfaceObserver::RequestAccessAsync().Completed([=](auto&& asyncInfo, auto&&  asyncStatus)
+		SpatialSurfaceObserver::RequestAccessAsync().Completed([=](auto&& asyncInfo, auto&& asyncStatus)
 		{
 			if (asyncInfo.GetResults() == SpatialPerceptionAccessStatus::Allowed)
 			{

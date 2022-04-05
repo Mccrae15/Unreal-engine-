@@ -61,7 +61,9 @@ namespace ESequencerNode
 		/* Symbolic root node */
 		Root,
 		/* Folder node */
-		Folder
+		Folder,
+		/* Spacer node */
+		Spacer
 	};
 }
 
@@ -184,7 +186,7 @@ public:
 	/**
 	* @return the color used to draw the display name.
 	*/
-	virtual FLinearColor GetDisplayNameColor() const;
+	virtual FSlateColor GetDisplayNameColor() const;
 
 	/**
 	*@return The font used to draw the display name.
@@ -574,14 +576,6 @@ public:
 	{
 		bHasBeenInitialized = false;
 	}
-
-private:
-
-	/** Callback for executing a "Rename Node" context menu action. */
-	void HandleContextMenuRenameNodeExecute();
-
-	/** Callback for determining whether a "Rename Node" context menu action can execute. */
-	bool HandleContextMenuRenameNodeCanExecute() const;
 
 protected:
 

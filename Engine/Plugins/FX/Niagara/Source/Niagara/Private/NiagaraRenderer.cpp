@@ -6,10 +6,13 @@
 #include "NiagaraDataSet.h"
 #include "NiagaraStats.h"
 #include "NiagaraVertexFactory.h"
+#include "NiagaraComponent.h"
 #include "Engine/Engine.h"
 #include "DynamicBufferAllocator.h"
-#include "NiagaraEmitterInstanceBatcher.h"
+#include "NiagaraComputeExecutionContext.h"
 #include "NiagaraGPUSortInfo.h"
+#include "NiagaraEmitterInstance.h"
+#include "NiagaraSystemInstanceController.h"
 #include "Materials/MaterialInstanceDynamic.h"
 
 DECLARE_CYCLE_STAT(TEXT("Sort Particles"), STAT_NiagaraSortParticles, STATGROUP_Niagara);
@@ -42,7 +45,7 @@ public:
 	FNiagaraEmptyBufferSRV(EPixelFormat InPixelFormat, const FString& InDebugName, uint32 InDefaultValue = 0) : PixelFormat(InPixelFormat), DebugName(InDebugName), DefaultValue(InDefaultValue) {}
 	EPixelFormat PixelFormat;
 	FString DebugName;
-	FVertexBufferRHIRef Buffer;
+	FBufferRHIRef Buffer;
 	FShaderResourceViewRHIRef SRV;
 	uint32 DefaultValue = 0;
 
@@ -51,12 +54,11 @@ public:
 	{
 		// Create a buffer with one element.
 		uint32 NumBytes = GPixelFormats[PixelFormat].BlockBytes;
-		FRHIResourceCreateInfo CreateInfo;
-		CreateInfo.DebugName = *DebugName;
+		FRHIResourceCreateInfo CreateInfo(*DebugName);
 		Buffer = RHICreateVertexBuffer(NumBytes, BUF_ShaderResource | BUF_Static, CreateInfo);
 
 		// Zero the buffer memory.
-		void* Data = RHILockVertexBuffer(Buffer, 0, NumBytes, RLM_WriteOnly);
+		void* Data = RHILockBuffer(Buffer, 0, NumBytes, RLM_WriteOnly);
 		FMemory::Memset(Data, 0, NumBytes);
 
 		if (PixelFormat == PF_R8G8B8A8)
@@ -64,7 +66,7 @@ public:
 			*reinterpret_cast<uint32*>(Data) = DefaultValue;
 		}
 
-		RHIUnlockVertexBuffer(Buffer);
+		RHIUnlockBuffer(Buffer);
 
 		SRV = RHICreateShaderResourceView(Buffer, NumBytes, PixelFormat);
 	}
@@ -96,8 +98,7 @@ public:
 	virtual void InitRHI() override
 	{
 		// Create a 1x1 texture.
-		FRHIResourceCreateInfo CreateInfo;
-		CreateInfo.DebugName = *DebugName;
+		FRHIResourceCreateInfo CreateInfo(*DebugName);
 
 		uint32 Stride;
 		switch (Type)
@@ -184,6 +185,13 @@ FRHIShaderResourceView* FNiagaraRenderer::GetDummyUIntBuffer()
 	check(IsInRenderingThread());
 	static TGlobalResource<FNiagaraEmptyBufferSRV> DummyUIntBuffer(PF_R32_UINT, TEXT("NiagaraRenderer::DummyUInt"));
 	return DummyUIntBuffer.SRV;
+}
+
+FRHIShaderResourceView* FNiagaraRenderer::GetDummyUInt2Buffer()
+{
+	check(IsInRenderingThread());
+	static TGlobalResource<FNiagaraEmptyBufferSRV> DummyUInt2Buffer(PF_R32G32_UINT, TEXT("NiagaraRenderer::DummyUInt2"));
+	return DummyUInt2Buffer.SRV;
 }
 
 FRHIShaderResourceView* FNiagaraRenderer::GetDummyUInt4Buffer()
@@ -285,6 +293,7 @@ FNiagaraDynamicDataBase::FNiagaraDynamicDataBase(const FNiagaraEmitterInstance* 
 
 	FNiagaraDataSet& DataSet = InEmitter->GetData();
 	SimTarget = DataSet.GetSimTarget();
+	SystemInstanceID = InEmitter->GetParentSystemInstance()->GetId();
 
 	if (SimTarget == ENiagaraSimTarget::CPUSim)
 	{
@@ -313,6 +322,18 @@ FNiagaraDynamicDataBase::~FNiagaraDynamicDataBase()
 	}
 }
 
+bool FNiagaraDynamicDataBase::IsGpuLowLatencyTranslucencyEnabled() const
+{
+	if (SimTarget == ENiagaraSimTarget::CPUSim)
+	{
+		return false;
+	}
+	else
+	{
+		return Data.GPUExecContext ? Data.GPUExecContext->HasTranslucentDataToRender() : false;
+	}
+}
+
 FNiagaraDataBuffer* FNiagaraDynamicDataBase::GetParticleDataToRender(bool bIsLowLatencyTranslucent)const
 {
 	FNiagaraDataBuffer* Ret = nullptr;
@@ -328,6 +349,10 @@ FNiagaraDataBuffer* FNiagaraDynamicDataBase::GetParticleDataToRender(bool bIsLow
 
 	checkSlow(Ret == nullptr || Ret->IsBeingRead());
 	return Ret;
+}
+
+void FNiagaraDynamicDataBase::SetVertexFactoryData(class FNiagaraVertexFactoryBase& VertexFactory)
+{
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -346,9 +371,10 @@ FNiagaraRenderer::FNiagaraRenderer(ERHIFeatureLevel::Type InFeatureLevel, const 
 #endif
 }
 
-void FNiagaraRenderer::Initialize(const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent)
+void FNiagaraRenderer::Initialize(const UNiagaraRendererProperties* InProps, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController)
 {
 	//Get our list of valid base materials. Fall back to default material if they're not valid.
+	BaseMaterials_GT.Empty();
 	InProps->GetUsedMaterials(Emitter, BaseMaterials_GT);
 	bool bCreateMidsForUsedMaterials = InProps->NeedsMIDsForMaterials();
 
@@ -361,17 +387,9 @@ void FNiagaraRenderer::Initialize(const UNiagaraRendererProperties *InProps, con
 		}
 		else if (Mat && bCreateMidsForUsedMaterials && !Mat->IsA<UMaterialInstanceDynamic>())
 		{
-			const UNiagaraComponent* Comp = InComponent;
-			for (const FNiagaraMaterialOverride& Override : Comp->EmitterMaterials)
+			if (UMaterialInterface* Override = InController.GetMaterialOverride(InProps, Index))
 			{
-				if (Override.EmitterRendererProperty == InProps)
-				{
-					if (Index == Override.MaterialSubIndex)
-					{
-						Mat = Override.Material;
-						continue;
-					}
-				}
+				Mat = Override;
 			}
 		}
 
@@ -437,7 +455,7 @@ struct FParticleOrderAsUint
 	{
 		const uint32 SortKeySignBit = 0x8000;
 		uint32 InOrderAsUint = InOrder.Encoded;
-		InOrderAsUint = (bStrictlyPositive || InOrder.Components.Sign != 0) ? (InOrderAsUint | SortKeySignBit) : ~InOrderAsUint;
+		InOrderAsUint = (bStrictlyPositive || InOrder.IsNegative()) ? (InOrderAsUint | SortKeySignBit) : ~InOrderAsUint;
 		OrderAsUint = bAscending ? InOrderAsUint : ~InOrderAsUint;
 		OrderAsUint &= 0xFFFF;
 		Index = InIndex;
@@ -445,6 +463,29 @@ struct FParticleOrderAsUint
 
 	FORCEINLINE operator uint32() const { return OrderAsUint; }
 };
+
+bool FNiagaraRenderer::IsRendererEnabled(const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitter) const
+{
+	if (InProperties->RendererEnabledBinding.GetParamMapBindableVariable().IsValid())
+	{
+		const FNiagaraParameterStore& BoundParamStore = Emitter->GetRendererBoundVariables();
+		if (const uint8* ParameterData = BoundParamStore.GetParameterData(InProperties->RendererEnabledBinding.GetParamMapBindableVariable()))
+		{
+			const FNiagaraBool RendererEnabled = *reinterpret_cast<const FNiagaraBool*>(ParameterData);
+			if (RendererEnabled.GetValue() == false)
+			{
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool FNiagaraRenderer::UseLocalSpace(const FNiagaraSceneProxy* Proxy)const
+{
+	//Force local space if we're using a cull proxy. Cull proxies are simulated at the origin so their world space particles can be transformed to this system as though they were local space.
+	return bLocalSpace || Proxy->GetProxyDynamicData().bUseCullProxy;
+}
 
 void FNiagaraRenderer::ProcessMaterialParameterBindings(TConstArrayView< FNiagaraMaterialAttributeBinding > InMaterialParameterBindings, const FNiagaraEmitterInstance* InEmitter, TConstArrayView<UMaterialInterface*> InMaterials) const
 {
@@ -513,7 +554,7 @@ void FNiagaraRenderer::ProcessMaterialParameterBindings(TConstArrayView< FNiagar
 							if (Var)
 							{
 								UTexture* Tex = Cast<UTexture>(Var);
-								if (Tex && Tex->Resource != nullptr)
+								if (Tex && Tex->GetResource() != nullptr)
 								{
 									MatDyn->SetTextureParameterValue(Binding.MaterialParameterName, Tex);
 								}
@@ -842,3 +883,33 @@ int32 FNiagaraRenderer::SortAndCullIndices(const FNiagaraGPUSortInfo& SortInfo, 
 	}
 	return OutNumInstances;
 }
+
+FVector4f FNiagaraRenderer::CalcMacroUVParameters(const FSceneView& View, FVector MacroUVPosition, float MacroUVRadius)
+{
+	FVector4f MacroUVParameters = FVector4f(0.0f, 0.0f, 1.0f, 1.0f);
+	if (MacroUVRadius > 0.0f)
+	{
+		const FMatrix& ViewProjMatrix = View.ViewMatrices.GetViewProjectionMatrix();
+		const FMatrix& ViewMatrix = View.ViewMatrices.GetTranslatedViewMatrix();
+
+		const FVector4 ObjectPostProjectionPositionWithW = ViewProjMatrix.TransformPosition(MacroUVPosition);
+		const FVector2D ObjectNDCPosition = FVector2D(ObjectPostProjectionPositionWithW / FMath::Max(ObjectPostProjectionPositionWithW.W, 0.00001f));
+		const FVector4 RightPostProjectionPosition = ViewProjMatrix.TransformPosition(MacroUVPosition + MacroUVRadius * ViewMatrix.GetColumn(0));
+		const FVector4 UpPostProjectionPosition = ViewProjMatrix.TransformPosition(MacroUVPosition + MacroUVRadius * ViewMatrix.GetColumn(1));
+
+		const float RightNDCPosX = RightPostProjectionPosition.X / FMath::Max(RightPostProjectionPosition.W, 0.0001f);
+		const float UpNDCPosY = UpPostProjectionPosition.Y / FMath::Max(UpPostProjectionPosition.W, 0.0001f);
+		const float DX = FMath::Min<float>(RightNDCPosX - ObjectNDCPosition.X, WORLD_MAX);
+		const float DY = FMath::Min<float>(UpNDCPosY - ObjectNDCPosition.Y, WORLD_MAX);
+
+		MacroUVParameters.X = float(ObjectNDCPosition.X);
+		MacroUVParameters.Y = float(ObjectNDCPosition.Y);
+		if (DX != 0.0f && DY != 0.0f && !FMath::IsNaN(DX) && FMath::IsFinite(DX) && !FMath::IsNaN(DY) && FMath::IsFinite(DY))
+		{
+			MacroUVParameters.Z = 1.0f / float(DX);
+			MacroUVParameters.W = -1.0f / float(DY);
+		}
+	}
+	return MacroUVParameters;
+}
+

@@ -2,7 +2,7 @@
 
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "Misc/AssertionMacros.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/CriticalSection.h"
 #include "Misc/ScopeRWLock.h"
 #include "Math/UnrealMathUtility.h"
@@ -33,9 +33,10 @@
 #include "Templates/Function.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/LazySingleton.h"
-
+#include <atomic>
 #include "Misc/UProjectInfo.h"
 #include "Internationalization/Culture.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 
 #if UE_ENABLE_ICU
 	THIRD_PARTY_INCLUDES_START
@@ -43,7 +44,212 @@
 	THIRD_PARTY_INCLUDES_END
 #endif
 
+#if !defined(PLATFORM_PROJECT_DIR_RELATIVE_TO_EXECUTABLE)
+	#define PLATFORM_PROJECT_DIR_RELATIVE_TO_EXECUTABLE PLATFORM_DESKTOP
+#endif
+
 DEFINE_LOG_CATEGORY_STATIC(LogGenericPlatformMisc, Log, All);
+
+
+#if (CSV_PROFILER && !UE_BUILD_SHIPPING)
+bool GTrackCsvNamedEvents = false;
+static FAutoConsoleVariableRef CVarTrackCsvNamedEvents(
+	TEXT("r.TrackCsvNamedEvents"),
+	GTrackCsvNamedEvents,
+	TEXT("Whether to record named events in the csv profiler"),
+	ECVF_Default
+);
+static std::atomic<uint32> GNamedEventMarkers(0L);
+#endif
+
+
+#define LOG_NAMED_EVENTS 0
+#if LOG_NAMED_EVENTS
+struct FNameEventEntry
+{
+	FNameEventEntry()
+		: FrameCount(0)
+		, MaxFrameCount(0)
+		, Total(0) {}
+
+	uint64 FrameCount;
+	uint64 MaxFrameCount;
+	uint64 Total;
+};
+
+struct FLogNameEventStats
+{
+	enum class EOutputSort : uint8
+	{
+		SORTTYPE_Spike,
+		SORTTYPE_Average,
+		SORTTYPE_Total,
+	};
+
+	FLogNameEventStats()
+	{
+		MaxOutput = 100;
+		SortingType = EOutputSort::SORTTYPE_Spike;
+		StartFrame = 0;
+	}
+
+	void Init()
+	{
+		GConfig->GetArray(TEXT("SystemSettings"), TEXT("LogNamedEventFilters"), NamedEventExclusions, GEngineIni);
+	}
+
+	void Dump()
+	{
+		FScopeLock Lock(&NamedEventsCriticalSection);
+
+		int32 LogCount = (MaxOutput < 0) ? NamedEventsMap.Num() : MaxOutput;
+		float CurrentFrameCount = (float)GFrameCounter;
+		
+		UE_LOG(LogGenericPlatformMisc, Log, TEXT("*********Log Named Events *********"));
+		UE_LOG(LogGenericPlatformMisc, Log, TEXT("******* Top %i NamedEvents"), LogCount);
+		
+		if (SortingType == EOutputSort::SORTTYPE_Total)
+		{
+			NamedEventsMap.ValueSort([&](const FNameEventEntry& A, const FNameEventEntry& B) { return A.Total > B.Total; });
+		}
+		else if (SortingType == EOutputSort::SORTTYPE_Average)
+		{
+			NamedEventsMap.ValueSort([&](const FNameEventEntry& A, const FNameEventEntry& B) { return (float)A.Total / (CurrentFrameCount - (float)StartFrame) > (float)B.Total / (CurrentFrameCount - (float)StartFrame); });
+		}
+		else 
+		{
+			NamedEventsMap.ValueSort([&](const FNameEventEntry& A, const FNameEventEntry& B) { return A.MaxFrameCount > B.MaxFrameCount; });
+		}
+
+		uint64 Total = 0;
+		int32 Index = 0;
+
+		for (const TPair<FName, FNameEventEntry>& Pair : NamedEventsMap)
+		{
+			if (Index <= LogCount)
+			{
+				UE_LOG(LogGenericPlatformMisc, Log, TEXT("%s : Max: %lu Total: %lu Avg: %f"), *(Pair.Key.ToString()), Pair.Value.MaxFrameCount, Pair.Value.Total, (float)Pair.Value.Total / (CurrentFrameCount - (float)StartFrame));
+			}
+			Total += Pair.Value.Total;
+			Index++;
+		}
+		UE_LOG(LogGenericPlatformMisc, Log, TEXT("***********************************"));
+		UE_LOG(LogGenericPlatformMisc, Log, TEXT("Total Unique NamedEvents: %i"), NamedEventsMap.Num());
+		UE_LOG(LogGenericPlatformMisc, Log, TEXT("Average NamedEvents per frame: %f"), (float)Total / (CurrentFrameCount - (float)StartFrame));
+		UE_LOG(LogGenericPlatformMisc, Log, TEXT("*********Log Named Events *********"));
+	}
+
+	void Reset()
+	{
+		FScopeLock Lock(&NamedEventsCriticalSection);
+		NamedEventsMap.Empty();
+		StartFrame = GFrameCounter;
+	}
+
+	void ParseSortType(const FString& Arg)
+	{
+		if (Arg.Equals(TEXT("Avg"), ESearchCase::IgnoreCase))
+		{
+			SortingType = EOutputSort::SORTTYPE_Average;
+		}
+		else if (Arg.Equals(TEXT("Spike"), ESearchCase::IgnoreCase))
+		{
+			SortingType = EOutputSort::SORTTYPE_Spike;
+		}
+		else if(Arg.Equals(TEXT("Total"), ESearchCase::IgnoreCase))
+		{
+			SortingType = EOutputSort::SORTTYPE_Total;
+		}
+		else
+		{
+			UE_LOG(LogGenericPlatformMisc, Log, TEXT("LogNamadEvent: Bad Sort argument. Option: Avg, Spike or Total"));
+		}
+	}
+
+	void LogEntry(const FString& Text)
+	{
+		// check for exclusion markers that we dont want to track each frames 
+	    // Ex: Frame 1, Frame 2, Frame 3
+		// You can specify +LogNamedEventFilters="Frame *" in the DefaultEngine.ini to exlude them 
+		for (FString& Exclusion : NamedEventExclusions)
+		{
+			if (Text.MatchesWildcard(Exclusion))
+			{
+				return;
+			}
+		}
+		FScopeLock Lock(&NamedEventsCriticalSection);
+		FNameEventEntry& StatNameEvent = NamedEventsMap.FindOrAdd(FName(Text));
+		StatNameEvent.FrameCount++;
+	}
+
+	void BeginFrame()
+	{
+		uint64 FrameCount = 0;
+		FScopeLock Lock(&NamedEventsCriticalSection);
+		for (TPair<FName, FNameEventEntry>& Pair : NamedEventsMap)
+		{
+			FNameEventEntry& Data = Pair.Value;
+			if (Data.FrameCount > Data.MaxFrameCount)
+			{
+				Data.MaxFrameCount = Data.FrameCount;
+			}
+			Data.Total += Data.FrameCount;
+			Data.FrameCount = 0;
+		}
+	}
+
+	int32 MaxOutput;
+	uint64 StartFrame;
+	EOutputSort SortingType;
+
+	TMap<FName, FNameEventEntry> NamedEventsMap;
+	TArray<FString> NamedEventExclusions;
+	FCriticalSection NamedEventsCriticalSection;
+};
+static FLogNameEventStats LogNameEventStats;
+
+static FAutoConsoleCommand GLogNamedEventsCmd(
+	TEXT("LogNamedEvents"),
+	TEXT("Log named events Commands. LogNamedEvents Dump, Reset, Sort [Avg|Spike|Total], MaxOutput [int value]"),
+		FConsoleCommandWithArgsDelegate::CreateStatic([](const TArray<FString>& Args)
+		{
+			bool bDumpNamedEvent = false;
+
+			if (Args.Num() >= 1)
+			{
+				if (Args[0].Compare(FString(TEXT("Reset")), ESearchCase::IgnoreCase) == 0)
+				{
+					LogNameEventStats.StartFrame = GFrameCounter;
+					LogNameEventStats.Reset();
+				}
+				else if (Args[0].Compare(FString(TEXT("Dump")), ESearchCase::IgnoreCase) == 0)
+				{
+					LogNameEventStats.Dump();
+				}
+				else if (Args[0].Compare(FString(TEXT("Sort")), ESearchCase::IgnoreCase) == 0)
+				{
+					if (Args.Num() == 2)
+					{
+						LogNameEventStats.ParseSortType(Args[1]);
+					}
+				}
+				else if (Args[0].Compare(FString(TEXT("MaxOutput")), ESearchCase::IgnoreCase) == 0)
+				{
+					if (Args.Num() == 2)
+					{
+						LogNameEventStats.MaxOutput = FCString::Atoi(*Args[1]);
+					}
+				}
+				else
+				{
+					UE_LOG(LogGenericPlatformMisc, Log, TEXT("LogNamadEvent: Bad argument. Option: Reset, Dump, Sort [Avg,Sort,Total] or MaxOutput [int]"));
+				}
+			}
+		}
+	)
+);
+#endif//LOG_NAMED_EVENTS
 
 /** Holds an override path if a program has special needs */
 FString OverrideProjectDir;
@@ -369,6 +575,28 @@ void FGenericPlatformMisc::SubmitErrorReport( const TCHAR* InErrorHist, EErrorRe
 	}
 }
 
+EProcessDiagnosticFlags FGenericPlatformMisc::GetProcessDiagnostics()
+{
+	static EProcessDiagnosticFlags FoundDiagnostics = []() -> EProcessDiagnosticFlags
+	{
+		EProcessDiagnosticFlags Result = EProcessDiagnosticFlags::None;
+		const TCHAR* CommandLine = FCommandLine::Get();
+
+		if (FCString::Stristr(CommandLine, TEXT("-ansimalloc")))
+		{
+			Result |= EProcessDiagnosticFlags::AnsiMalloc;
+		}
+
+		if (FCString::Stristr(CommandLine, TEXT("-stompmalloc")))
+		{
+			Result |= EProcessDiagnosticFlags::StompMalloc;
+		}
+
+		return Result;
+	}();
+
+	return FoundDiagnostics;
+}
 
 FString FGenericPlatformMisc::GetCPUVendor()
 {
@@ -473,41 +701,63 @@ void FGenericPlatformMisc::RaiseException(uint32 ExceptionCode)
 #endif
 }
 
+template<typename CharType>
+void FGenericPlatformMisc::StatNamedEvent(const CharType* Text)
+{
+#if (CSV_PROFILER && !UE_BUILD_SHIPPING)
+	if (GTrackCsvNamedEvents)
+	{
+		++GNamedEventMarkers;
+	}
+#endif
+#if LOG_NAMED_EVENTS
+	FString NamedEvent(Text);
+	LogNameEventStats.LogEntry(NamedEvent);
+#endif
+}
+
+template CORE_API void FGenericPlatformMisc::StatNamedEvent<ANSICHAR>(const ANSICHAR* Text);
+template CORE_API void FGenericPlatformMisc::StatNamedEvent<TCHAR>(const TCHAR* Text);
+
+void FGenericPlatformMisc::TickStatNamedEvents()
+{
+#if (CSV_PROFILER && !UE_BUILD_SHIPPING)
+	if (GTrackCsvNamedEvents)
+	{
+		int32 NamedEventCount = GNamedEventMarkers.exchange(0);
+		CSV_CUSTOM_STAT_GLOBAL(NamedEventMarkers, NamedEventCount, ECsvCustomStatOp::Set);
+	}
+#endif
+#if LOG_NAMED_EVENTS
+	LogNameEventStats.BeginFrame();
+#endif 
+}
+
+void FGenericPlatformMisc::LogNameEventStatsInit()
+{
+#if LOG_NAMED_EVENTS
+	LogNameEventStats.Init();
+#endif
+}
+
 void FGenericPlatformMisc::BeginNamedEvent(const struct FColor& Color, const ANSICHAR* Text)
 {
 #if UE_EXTERNAL_PROFILING_ENABLED
-	//If there's an external profiler attached, trigger its scoped event.
-	FExternalProfiler* CurrentProfiler = FActiveExternalProfilerBase::GetActiveProfiler();
-	if (CurrentProfiler != NULL)
-	{
-		CurrentProfiler->StartScopedEvent(ANSI_TO_TCHAR(Text));
-	}
+	FExternalProfilerTrace::StartScopedEvent(Color, Text);
 #endif
 }
 
 void FGenericPlatformMisc::BeginNamedEvent(const struct FColor& Color, const TCHAR* Text)
 {
 #if UE_EXTERNAL_PROFILING_ENABLED
-	//If there's an external profiler attached, trigger its scoped event.
-	FExternalProfiler* CurrentProfiler = FActiveExternalProfilerBase::GetActiveProfiler();
-
-	if (CurrentProfiler != NULL)
-	{
-		CurrentProfiler->StartScopedEvent(Text);
-	}
+	FExternalProfilerTrace::StartScopedEvent(Color, Text);
 #endif
 }
 
 void FGenericPlatformMisc::EndNamedEvent()
 {
 #if UE_EXTERNAL_PROFILING_ENABLED
-	//If there's an external profiler attached, trigger its scoped event.
-	FExternalProfiler* CurrentProfiler = FActiveExternalProfilerBase::GetActiveProfiler();
-
-	if (CurrentProfiler != NULL)
-	{
-		CurrentProfiler->EndScopedEvent();
-	}
+	FExternalProfilerTrace::EndScopedEvent();
 #endif
 }
 
@@ -665,6 +915,12 @@ void FGenericPlatformMisc::RequestExit( bool Force )
 	}
 }
 
+bool FGenericPlatformMisc::RestartApplicationWithCmdLine(const char* CmdLine)
+{
+	UE_LOG(LogInit, Display, TEXT("Restart application (with cmdnline) is not supported or implemented in current platform"));
+	return false;
+}
+
 bool FGenericPlatformMisc::RestartApplication()
 {
 	UE_LOG(LogInit, Display, TEXT("Restart application is not supported or implemented in current platform"));
@@ -774,10 +1030,9 @@ const TCHAR* LexToString( EAppReturnType::Type Value )
 
 EAppReturnType::Type FGenericPlatformMisc::MessageBoxExt( EAppMsgType::Type MsgType, const TCHAR* Text, const TCHAR* Caption )
 {
-	if (GWarn)
-	{
-		UE_LOG(LogGenericPlatformMisc, Warning, TEXT("MessageBox: %s : %s"), Caption, Text);
-	}
+	// a message box typically conveys important information, so try to make sure at least one message reaches the user
+	UE_LOG(LogGenericPlatformMisc, Warning, TEXT("MessageBox: %s : %s"), Caption, Text);
+	FPlatformMisc::LowLevelOutputDebugStringf(TEXT("MessageBox: %s : %s\n"), Caption, Text);
 
 	switch(MsgType)
 	{
@@ -1031,7 +1286,7 @@ const TCHAR* FGenericPlatformMisc::ProjectDir()
 				}
 				else
 				{
-#if !PLATFORM_DESKTOP
+#if !PLATFORM_PROJECT_DIR_RELATIVE_TO_EXECUTABLE
 					ProjectDir = FString::Printf(TEXT("../../../%s/"), FApp::GetProjectName());
 #else
 					// This assumes the game executable is in <GAME>/Binaries/<PLATFORM>
@@ -1113,7 +1368,7 @@ const TCHAR* FGenericPlatformMisc::GetUBTTarget()
 
 /** The name of the UBT target that the current executable was built from. Defaults to the UE4 default target for this type to make content only projects work, 
 	but will be overridden by the primary game module if it exists */
-TCHAR GUBTTargetName[128] = TEXT("UE4" PREPROCESSOR_TO_STRING(UBT_COMPILED_TARGET));
+TCHAR GUBTTargetName[128] = TEXT("Unreal" PREPROCESSOR_TO_STRING(UBT_COMPILED_TARGET));
 
 void FGenericPlatformMisc::SetUBTTargetName(const TCHAR* InTargetName)
 {
@@ -1191,10 +1446,26 @@ int32 FGenericPlatformMisc::NumberOfCoresIncludingHyperthreads()
 	return FPlatformMisc::NumberOfCores();
 }
 
+FProcessorGroupDesc InternalGetProcessorGroupDesc()
+{
+	FProcessorGroupDesc Desc;
+	Desc.NumProcessorGroups = 1;
+	memset(Desc.ThreadAffinities, 0xFF, sizeof(Desc.ThreadAffinities));
+	return Desc;
+}
+
+const FProcessorGroupDesc& FGenericPlatformMisc::GetProcessorGroupDesc()
+{
+	static FProcessorGroupDesc Desc = InternalGetProcessorGroupDesc();
+	return Desc;
+}
+
 int32 FGenericPlatformMisc::NumberOfWorkerThreadsToSpawn()
 {
 	static int32 MaxGameThreads = 4;
-	static int32 MaxThreads = 16;
+
+	extern CORE_API int32 GUseNewTaskBackend;
+	int32 MaxThreads = GUseNewTaskBackend ? INT32_MAX : 16;
 
 	int32 NumberOfCores = FPlatformMisc::NumberOfCores();
 	int32 MaxWorkerThreadsWanted = (IsRunningGame() || IsRunningDedicatedServer() || IsRunningClientOnly()) ? MaxGameThreads : MaxThreads;
@@ -1211,6 +1482,17 @@ void FGenericPlatformMisc::GetValidTargetPlatforms(class TArray<class FString>& 
 {
 	// by default, just return the running PlatformName as the only TargetPlatform we support
 	TargetPlatformNames.Add(FPlatformProperties::PlatformName());
+}
+
+FPlatformUserId FGenericPlatformMisc::GetPlatformUserForUserIndex(int32 LocalUserIndex)
+{
+	// These currently map 1:1 but that could change with the input system rework
+	return FPlatformUserId::CreateFromInternalId(LocalUserIndex);
+}
+
+int32 FGenericPlatformMisc::GetUserIndexForPlatformUser(FPlatformUserId PlatformUser)
+{
+	return PlatformUser.GetInternalId();
 }
 
 TArray<uint8> FGenericPlatformMisc::GetSystemFontBytes()
@@ -1371,12 +1653,6 @@ FString FGenericPlatformMisc::GetEpicAccountId()
 	FString AccountId;
 	FPlatformMisc::GetStoredValue( TEXT( "Epic Games" ), TEXT( "Unreal Engine/Identifiers" ), TEXT( "AccountId" ), AccountId );
 	return AccountId;
-}
-
-bool FGenericPlatformMisc::SetEpicAccountId( const FString& AccountId )
-{
-	checkf(false, TEXT("FPlatformMisc::SetEpicAccountId should not be called"));
-	return false;
 }
 
 EConvertibleLaptopMode FGenericPlatformMisc::GetConvertibleLaptopMode()
@@ -1555,4 +1831,21 @@ int32 FGenericPlatformMisc::GetPakchunkIndexFromPakFile(const FString& InFilenam
 bool FGenericPlatformMisc::IsPGOEnabled()
 {
 	return PLATFORM_COMPILER_OPTIMIZATION_PG;
+}
+
+int FGenericPlatformMisc::GetMobilePropagateAlphaSetting()
+{
+	static int PropagateAlpha = -1;
+	if (PropagateAlpha < 0)
+	{
+		GConfig->GetInt(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.PropagateAlpha"), PropagateAlpha, GEngineIni);
+	}
+	return PropagateAlpha;
+}
+
+void FGenericPlatformMisc::ShowConsoleWindow()
+{
+#if !UE_BUILD_SHIPPING
+	UE_LOG(LogGenericPlatformMisc, Log, TEXT("Show console is not supported or implemented in current platform"));
+#endif
 }

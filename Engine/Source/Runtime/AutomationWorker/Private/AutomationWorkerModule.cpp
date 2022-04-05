@@ -4,6 +4,7 @@
 
 #include "AutomationAnalytics.h"
 #include "AutomationWorkerMessages.h"
+#include "AutomationTestExcludelist.h"
 #include "HAL/FileManager.h"
 #include "MessageEndpoint.h"
 #include "MessageEndpointBuilder.h"
@@ -42,8 +43,6 @@ void FAutomationWorkerModule::StartupModule()
 
 	FAutomationTestFramework::Get().PreTestingEvent.AddRaw(this, &FAutomationWorkerModule::HandlePreTestingEvent);
 	FAutomationTestFramework::Get().PostTestingEvent.AddRaw(this, &FAutomationWorkerModule::HandlePostTestingEvent);
-
-	FAutomationTestFramework::Get().BuildTestBlacklistFromConfig();
 }
 
 void FAutomationWorkerModule::ShutdownModule()
@@ -167,7 +166,7 @@ void FAutomationWorkerModule::ReportNetworkCommandComplete()
 {
 	if (GIsAutomationTesting)
 	{
-		MessageEndpoint->Send(new FAutomationWorkerRequestNextNetworkCommand(ExecutionCount), TestRequesterAddress);
+		MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FAutomationWorkerRequestNextNetworkCommand>(ExecutionCount), TestRequesterAddress);
 		if (StopTestEvent.IsBound())
 		{
 			// this is a local test; the message to continue will never arrive, so lets not wait for it
@@ -219,6 +218,8 @@ void FAutomationWorkerModule::ReportTestComplete()
 		//see if there are any more network commands left to execute
 		bool bAllLatentCommandsComplete = FAutomationTestFramework::Get().ExecuteLatentCommands();
 
+		FString TestFullName = FAutomationTestFramework::Get().GetCurrentTest()->GetTestFullName();
+
 		//structure to track error/warning/log messages
 		FAutomationTestExecutionInfo ExecutionInfo;
 
@@ -231,11 +232,11 @@ void FAutomationWorkerModule::ReportTestComplete()
 		else
 		{
 			// send the results to the controller
-			FAutomationWorkerRunTestsReply* Message = new FAutomationWorkerRunTestsReply();
+			FAutomationWorkerRunTestsReply* Message = FMessageEndpoint::MakeMessage<FAutomationWorkerRunTestsReply>();
 
 			Message->TestName = TestName;
 			Message->ExecutionCount = ExecutionCount;
-			Message->Success = bSuccess;
+			Message->State = bSuccess ? EAutomationState::Success : EAutomationState::Fail;
 			Message->Duration = ExecutionInfo.Duration;
 			Message->Entries = ExecutionInfo.GetEntries();
 			Message->WarningTotal = ExecutionInfo.GetWarningTotal();
@@ -250,6 +251,11 @@ void FAutomationWorkerModule::ReportTestComplete()
 				}
 				FAutomationAnalytics::FireEvent_AutomationTestResults(Message, BeautifiedTestName);
 				SendAnalyticsEvents(ExecutionInfo.AnalyticsItems);
+			}
+
+			if (ExecutionInfo.TelemetryItems.Num() > 0)
+			{
+				HandleTelemetryData(ExecutionInfo.TelemetryStorage, TestFullName, ExecutionInfo.TelemetryItems);
 			}
 
 			MessageEndpoint->Send(Message, TestRequesterAddress);
@@ -267,7 +273,7 @@ void FAutomationWorkerModule::ReportTestComplete()
 
 void FAutomationWorkerModule::SendTests( const FMessageAddress& ControllerAddress )
 {
-	FAutomationWorkerRequestTestsReplyComplete* Reply = new FAutomationWorkerRequestTestsReplyComplete();
+	FAutomationWorkerRequestTestsReplyComplete* Reply = FMessageEndpoint::MakeMessage<FAutomationWorkerRequestTestsReplyComplete>();
 	for( int32 TestIndex = 0; TestIndex < TestInfo.Num(); TestIndex++ )
 	{
 		Reply->Tests.Emplace(FAutomationWorkerSingleTestReply(TestInfo[TestIndex]));
@@ -315,7 +321,7 @@ void FAutomationWorkerModule::HandleFindWorkersMessage(const FAutomationWorkerFi
 
 void FAutomationWorkerModule::SendWorkerFound(const FMessageAddress& ControllerAddress)
 {
-	FAutomationWorkerFindWorkersResponse* Response = new FAutomationWorkerFindWorkersResponse();
+	FAutomationWorkerFindWorkersResponse* Response = FMessageEndpoint::MakeMessage<FAutomationWorkerFindWorkersResponse>();
 
 	FString OSMajorVersionString, OSSubVersionString;
 	FPlatformMisc::GetOSVersions(OSMajorVersionString, OSSubVersionString);
@@ -332,7 +338,8 @@ void FAutomationWorkerModule::SendWorkerFound(const FMessageAddress& ControllerA
 	Response->GPUName = FPlatformMisc::GetPrimaryGPUBrand();
 	Response->CPUModelName = CPUModelString;
 	Response->RAMInGB = FPlatformMemory::GetPhysicalGBRam();
-#if WITH_ENGINE
+	Response->RHIName = FApp::GetGraphicsRHI();
+#if WITH_ENGINE && WITH_AUTOMATION_TESTS
 	Response->RenderModeName = AutomationCommon::GetRenderDetailsString();
 #else
 	Response->RenderModeName = TEXT("Unknown");
@@ -356,7 +363,7 @@ void FAutomationWorkerModule::HandleNextNetworkCommandReplyMessage( const FAutom
 
 void FAutomationWorkerModule::HandlePingMessage( const FAutomationWorkerPing& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context )
 {
-	MessageEndpoint->Send(new FAutomationWorkerPong(), Context->GetSender());
+	MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FAutomationWorkerPong>(), Context->GetSender());
 }
 
 
@@ -441,15 +448,15 @@ void FAutomationWorkerModule::HandleScreenShotAndTraceCapturedWithName(const TAr
 	int32 NewHeight = Data.Height;
 	int32 NewWidth = Data.Width;
 
-	TArray<uint8> CompressedBitmap;
-	FImageUtils::CompressImageArray(NewWidth, NewHeight, RawImageData, CompressedBitmap);
+	TArray64<uint8> CompressedBitmap;
+	FImageUtils::PNGCompressImageArray(NewWidth, NewHeight, TArrayView64<const FColor>(RawImageData.GetData(), RawImageData.Num()), CompressedBitmap);
 
 	FAutomationScreenshotMetadata Metadata(Data);
 		
 	// Send the screen shot if we have a target
 	if (TestRequesterAddress.IsValid())
 	{
-		FAutomationWorkerScreenImage* Message = new FAutomationWorkerScreenImage();
+		FAutomationWorkerScreenImage* Message = FMessageEndpoint::MakeMessage<FAutomationWorkerScreenImage>();
 
 		Message->ScreenShotName = Data.ScreenshotName;
 		Message->ScreenImage = CompressedBitmap;
@@ -526,12 +533,39 @@ void FAutomationWorkerModule::HandleRunTestsMessage( const FAutomationWorkerRunT
 		UE_LOG(LogAutomationWorker, Warning, TEXT("%s"), *LogMessage);
 
 		// Let the sender know it won't happen
-		FAutomationWorkerRunTestsReply* OutMessage = new FAutomationWorkerRunTestsReply();
+		FAutomationWorkerRunTestsReply* OutMessage = FMessageEndpoint::MakeMessage<FAutomationWorkerRunTestsReply>();
 		OutMessage->TestName = Message.TestName;
 		OutMessage->ExecutionCount = Message.ExecutionCount;
-		OutMessage->Success = false;
+		OutMessage->State = EAutomationState::Skipped;
 		OutMessage->Entries.Add(FAutomationExecutionEntry(FAutomationEvent(EAutomationEventType::Error, LogMessage)));
 		OutMessage->ErrorTotal = 1;
+		MessageEndpoint->Send(OutMessage, Context->GetSender());
+
+		return;
+	}
+
+	// Do we need to skip the test
+	FName SkipReason;
+	bool bWarn(false);
+	UAutomationTestExcludelist* Excludelist = UAutomationTestExcludelist::Get();
+	if (Excludelist->IsTestExcluded(Message.FullTestPath, FApp::GetGraphicsRHI(), &SkipReason, &bWarn))
+	{
+		FString SkippingMessage = FString::Format(TEXT("Test Skipped. Name={{0}} Reason={{1}} Path={{2}}"),
+			{ *Message.BeautifiedTestName, *SkipReason.ToString(), *Message.FullTestPath });
+		if (bWarn)
+		{
+			UE_LOG(LogAutomationWorker, Warning, TEXT("%s"), *SkippingMessage);
+		}
+		else
+		{
+			UE_LOG(LogAutomationWorker, Display, TEXT("%s"), *SkippingMessage);
+		}
+
+		FAutomationWorkerRunTestsReply* OutMessage = FMessageEndpoint::MakeMessage<FAutomationWorkerRunTestsReply>();
+		OutMessage->TestName = Message.TestName;
+		OutMessage->ExecutionCount = Message.ExecutionCount;
+		OutMessage->State = EAutomationState::Skipped;
+		OutMessage->Entries.Add(FAutomationExecutionEntry(FAutomationEvent(EAutomationEventType::Info, FString::Printf(TEXT("Skipping test because of exclude list: %s"), *SkipReason.ToString()))));
 		MessageEndpoint->Send(OutMessage, Context->GetSender());
 
 		return;
@@ -582,6 +616,24 @@ void FAutomationWorkerModule::SendAnalyticsEvents(TArray<FString>& InAnalyticsIt
 			RecordPerformanceAnalytics( PerfSnapshot );
 		}
 	}
+}
+
+void FAutomationWorkerModule::HandleTelemetryData(const FString& StorageName, const FString& InTestName, const TArray<FAutomationTelemetryData>& InItems)
+{
+	FAutomationWorkerTelemetryData* Message = FMessageEndpoint::MakeMessage<FAutomationWorkerTelemetryData>();
+
+	Message->Storage = StorageName;
+	Message->Platform = FPlatformProperties::PlatformName();
+	Message->Configuration = LexToString(FApp::GetBuildConfiguration());
+	Message->TestName = InTestName;
+	for (const FAutomationTelemetryData& Item : InItems)
+	{
+		Message->Items.Add(FAutomationWorkerTelemetryItem(Item));
+	}
+
+	UE_LOG(LogAutomationWorker, Log, TEXT("Sending Telemetry Data for %s"), *Message->TestName);
+
+	MessageEndpoint->Send(Message, TestRequesterAddress);
 }
 
 void FAutomationWorkerModule::RecordPerformanceAnalytics( const FAutomationPerformanceSnapshot& PerfSnapshot )

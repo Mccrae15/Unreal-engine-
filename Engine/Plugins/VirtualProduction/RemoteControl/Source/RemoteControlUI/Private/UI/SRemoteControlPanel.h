@@ -1,8 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Engine/EngineTypes.h"
 #include "EditorUndoClient.h"
+#include "Engine/EngineTypes.h"
 #include "IDetailTreeNode.h"
+#include "RemoteControlUIModule.h"
 #include "Styling/SlateTypes.h"
 #include "RemoteControlFieldPath.h"
 #include "UObject/StrongObjectPtr.h"
@@ -63,16 +66,24 @@ public:
 	const URemoteControlPreset* GetPreset() const { return Preset.Get(); }
 
 	/**
-	 * @param Handle The handle representing the property to check.
+	 * @param InArgs extension arguments
 	 * @return Whether a property is exposed or not.
 	 */
-	bool IsExposed(const TSharedPtr<IPropertyHandle>& PropertyHandle);
+	bool IsExposed(const FRCExposesPropertyArgs& InArgs);
+
+	/**
+	 * @param InOuterObjects outer objects to check
+	 * @param InPropertyPath full property path
+	 * @param bUsingDuplicatesInPath whether duplications like property.property[1] should be exists or just property[1]
+	 * @return Whether objects is exposed or not.
+	 */
+	bool IsAllObjectsExposed(TArray<UObject*> InOuterObjects, const FString& InPropertyPath, bool bUsingDuplicatesInPath);
 
 	/**
 	 * Exposes or unexposes a property.
-	 * @param Handle The handle of the property to toggle.
+	 * @param InArgs The extension arguments of the property to toggle.
 	 */
-	void ToggleProperty(const TSharedPtr<IPropertyHandle>& PropertyHandle);
+	void ToggleProperty(const FRCExposesPropertyArgs& InArgs);
 
 	/**
 	 * @return Whether or not the panel is in edit mode.
@@ -88,24 +99,28 @@ public:
 	 * Set the edit mode of the panel.
 	 * @param bEditMode The desired mode.
 	 */
-	void SetEditMode(bool bEditMode) { bIsInEditMode = bEditMode; }
+	void SetEditMode(bool bEditMode)
+	{
+		bIsInEditMode = bEditMode;
+	}
 
 	/**
 	 * Get the exposed entity list.
 	 */
 	TSharedPtr<SRCPanelExposedEntitiesList> GetEntityList() { return EntityList; }
 
+	/** Re-create the sections of the panel. */
+	void Refresh();
+
 private:
+
 	/** Register editor events needed to handle reloading objects and blueprint libraries. */
 	void RegisterEvents();
 	/** Unregister editor events */
 	void UnregisterEvents();
 
-	/** Re-create the sections of the panel. */
-	void Refresh();
-
 	/** Unexpose a field from the preset. */
-	void Unexpose(const TSharedPtr<IPropertyHandle>& Handle);
+	void Unexpose(const FRCExposesPropertyArgs& InArgs);
 
 	/** Handle the using toggling the edit mode check box. */
 	void OnEditModeCheckboxToggle(ECheckBoxState State);
@@ -135,7 +150,7 @@ private:
 	FReply OnClickDisableUseLessCPU() const;
 
 	/** Creates a widget that warns the user when CPU throttling is enabled.  */
-	TSharedRef<SWidget> CreateCPUThrottleButton() const;
+	TSharedRef<SWidget> CreateCPUThrottleWarning() const;
 
 	/** Create expose button, allowing to expose blueprints and actor functions. */
 	TSharedRef<SWidget> CreateExposeButton();
@@ -185,6 +200,9 @@ private:
 	/** Handle clicking on the setting button. */
 	FReply OnClickSettingsButton();
 
+	/** Handle triggers each time when any material has been recompiled */
+	void OnMaterialCompiled(class UMaterialInterface* MaterialInterface);
+
 private:
 	/** Holds the preset asset. */
 	TStrongObjectPtr<URemoteControlPreset> Preset;
@@ -212,20 +230,16 @@ private:
 	TSharedPtr<class IStructureDetailsView> EntityDetailsView;
 	/** Holds the field's protocol details. */
 	TSharedPtr<SBox> EntityProtocolDetails;
-	/**
-	 * Pointer to the currently selected node.
-	 * Used in order to ensure that the generated details view keeps a valid pointer to the selected entity.
-	 */
-	TSharedPtr<FRemoteControlEntity> SelectedEntity;
 	/** Whether to show the rebind all button. */
 	bool bShowRebindButton = false;
-	/** Cache of exposed properties. */
-	TSet<TWeakPtr<IPropertyHandle>> CachedExposedProperties;
+	/** Cache of exposed property arguments. */
+	TSet<FRCExposesPropertyArgs> CachedExposedPropertyArgs;
 	/** Preset name widget. */
 	TSharedPtr<STextBlock> PresetNameTextBlock;
 	/** Holds a cache of widgets. */
 	TSharedPtr<FRCPanelWidgetRegistry> WidgetRegistry;
-	
+	/** Holds the handle to a timer set for next tick. Used to not schedule more than once event per frame */
+	FTimerHandle NextTickTimerHandle;
 	/** The toolkit that hosts this panel. */
-	TSharedPtr<IToolkitHost> ToolkitHost;
+	TWeakPtr<IToolkitHost> ToolkitHost;
 };

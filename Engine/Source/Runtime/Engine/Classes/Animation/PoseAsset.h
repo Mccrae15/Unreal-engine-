@@ -48,14 +48,31 @@ struct ENGINE_API FPoseData
 	UPROPERTY()
 	TArray<FTransform>		LocalSpacePose;
 
-	// this is PoseContainer.Tracks to Buffer Index of LocalSpacePose
-	UPROPERTY()
-	TMap<int32, int32>		TrackToBufferIndex;
-
 	// # of array match with # of Curves in PoseDataContainer
 	// curve data is not compressed
  	UPROPERTY()
  	TArray<float>			CurveData;
+};
+
+USTRUCT()
+struct FPoseAssetInfluence
+{
+	GENERATED_USTRUCT_BODY()
+
+	UPROPERTY()
+	int32 PoseIndex = INDEX_NONE;
+
+	UPROPERTY()
+	int32 BoneTransformIndex = INDEX_NONE;
+};
+
+USTRUCT()
+struct FPoseAssetInfluences
+{
+	GENERATED_USTRUCT_BODY()
+
+    UPROPERTY()
+	TArray<FPoseAssetInfluence> Influences;
 };
 
 /**
@@ -77,9 +94,12 @@ private:
 	UPROPERTY()
 	TArray<FName>							Tracks;
 
-	// cache for the track names to skeleton index 
+	// cache containting the skeleton indices for FName in Tracks array
 	UPROPERTY(transient)
-	TMap<FName, int32>						TrackMap;
+	TArray<int32>						TrackBoneIndices;
+
+	UPROPERTY()
+	TArray<FPoseAssetInfluences>		TrackPoseInfluenceIndices;
 	
 	// this is list of poses
 	UPROPERTY()
@@ -98,7 +118,7 @@ private:
 	int32 GetNumPoses() const { return Poses.Num();  }
 	bool Contains(FSmartName PoseName) const { return PoseNames.Contains(PoseName); }
 
-	bool IsValid() const { return PoseNames.Num() == Poses.Num() && Tracks.Num() == TrackMap.Num(); }
+	bool IsValid() const { return PoseNames.Num() == Poses.Num() && Tracks.Num() == TrackBoneIndices.Num(); }
 	void GetPoseCurve(const FPoseData* PoseData, FBlendedCurve& OutCurve) const;
 	void BlendPoseCurve(const FPoseData* PoseData, FBlendedCurve& OutCurve, float Weight) const;
 
@@ -155,7 +175,7 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	/** If RetargetSource is set to Default (None), this is asset for the base pose to use when retargeting. Transform data will be saved in RetargetSourceAssetReferencePose. */
-	UPROPERTY(EditAnywhere, AssetRegistrySearchable, Category=Animation)
+	UPROPERTY(EditAnywhere, AssetRegistrySearchable, Category=Animation, meta = (DisallowedClasses = "DestructibleMesh"))
 	TSoftObjectPtr<USkeletalMesh> RetargetSourceAsset;
 #endif
 
@@ -165,7 +185,11 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(Category=Source, EditAnywhere)
-	UAnimSequence* SourceAnimation;
+	TObjectPtr<UAnimSequence> SourceAnimation;
+
+	/** GUID cached when the contained poses were last updated according to SourceAnimation - used to keep track of out-of-date/sync data*/ 
+	UPROPERTY()	
+	FGuid SourceAnimationRawDataGUID;
 #endif // WITH_EDITORONLY_DATA
 
 	/**
@@ -196,7 +220,11 @@ public:
 	virtual void PostLoad() override;
 	virtual bool IsPostLoadThreadSafe() const override;
 	virtual void Serialize(FArchive& Ar) override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	//End UObject Interface
 
@@ -223,9 +251,20 @@ public:
 	ENGINE_API bool ContainsPose(const FName& InPoseName) const;
 
 #if WITH_EDITOR
+	/** Renames a specific pose */
+	UFUNCTION(BlueprintCallable, Category=PoseAsset)
+	void RenamePose(const FName& OriginalPoseName, const FName& NewPoseName);
+	
+	/** Returns the name of all contained poses */
+	UFUNCTION(BlueprintPure, Category=PoseAsset)
+	void GetPoseNames(TArray<FName>& PoseNames) const;
+	
 	ENGINE_API bool AddOrUpdatePoseWithUniqueName(USkeletalMeshComponent* MeshComponent, FSmartName* OutPoseName = nullptr);
-
+	ENGINE_API void AddOrUpdatePose(const FSmartName& PoseName, USkeletalMeshComponent* MeshComponent, bool bUpdateCurves = true);
 	ENGINE_API void CreatePoseFromAnimation(class UAnimSequence* AnimSequence, const TArray<FSmartName>* InPoseNames = nullptr);
+
+	/** Contained poses are re-generated from the provided Animation Sequence*/
+	UFUNCTION(BlueprintCallable, Category=PoseAsset)
 	ENGINE_API void UpdatePoseFromAnimation(class UAnimSequence* AnimSequence);
 
 	// Begin AnimationAsset interface
@@ -288,13 +327,13 @@ private:
 	void Reinitialize();
 
 	// After any update to SourceLocalPoses, this does update runtime data
-	void AddOrUpdatePose(const FSmartName& PoseName, USkeletalMeshComponent* MeshComponent);
 	void AddOrUpdatePose(const FSmartName& PoseName, const TArray<FName>& TrackNames, const TArray<FTransform>& LocalTransform, const TArray<float>& CurveValues);
 	void PostProcessData();
 #endif // WITH_EDITOR	
 
 private:
-	void RecacheTrackmap();
+	void UpdateTrackBoneIndices();
+	bool RemoveInvalidTracks();
 
 #if WITH_EDITORONLY_DATA
 	void UpdateRetargetSourceAsset();

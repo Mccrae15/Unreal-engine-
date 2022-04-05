@@ -3,9 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Chaos/Core.h"
 
 // Disable Optimizations in non debug build configurations
-#define VEHICLE_DEBUGGING_ENABLED 1
+#define VEHICLE_DEBUGGING_ENABLED 0
 
 namespace Chaos
 {
@@ -69,6 +70,34 @@ namespace Chaos
 		TArray<float> Graph;
 	};
 
+	class CHAOSVEHICLESCORE_API FGraph
+	{
+	public:
+		FGraph()
+		{
+			Empty();
+		}
+
+		void Empty()
+		{
+			Graph.Empty();
+			BoundsX.X = TNumericLimits<FReal>::Max();
+			BoundsX.Y = -TNumericLimits<FReal>::Max();
+			BoundsY.X = TNumericLimits<FReal>::Max();
+			BoundsY.Y = -TNumericLimits<FReal>::Max();
+		}
+
+		void Add(const FVec2& Value);
+
+		float EvaluateY(float InX) const;
+
+		bool IsEmpty() const { return Graph.IsEmpty(); }
+	private:
+		TArray<FVec2> Graph;
+		FVector2D BoundsX;
+		FVector2D BoundsY;
+	};
+
 	class CHAOSVEHICLESCORE_API FVehicleUtility
 	{
 	public:
@@ -98,6 +127,23 @@ namespace Chaos
 
 		/** Calculate turn radius from three points. Note: this function is quite inaccurate for large radii. Return 0 if there is no answer, i.e. points lie on a line */
 		static float TurnRadiusFromThreePoints(const FVector& PtA, const FVector& PtB, const FVector& PtC);
+
+		static float CalculateSlipAngle(float Y, float X)
+		{
+			float Value = 0.0f;
+
+			float LateralSpeedThreshold = 0.05f;
+			if (FMath::Abs(Y) > LateralSpeedThreshold)
+			{
+				Value = FMath::Abs(FMath::Atan2(Y, X));
+				if (Value > HALF_PI)
+				{
+					Value = PI - Value;
+				}
+			}
+
+			return Value;
+		}
 	};
 
 	FORCEINLINE float MToCmScaling()
@@ -216,6 +262,11 @@ namespace Chaos
 		return Val * Val;
 	}
 
+	FORCEINLINE float TorqueMToCm(float TorqueIn)
+	{
+		return TorqueIn * 10000.0f;
+	}
+
 	class CHAOSVEHICLESCORE_API FTimeAndDistanceMeasure
 	{
 	public:
@@ -309,4 +360,3 @@ namespace Chaos
 	};
 
 } // namespace Chaos
-

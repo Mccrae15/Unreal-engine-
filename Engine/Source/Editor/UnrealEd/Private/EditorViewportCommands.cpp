@@ -91,6 +91,7 @@ void FEditorViewportCommands::RegisterCommands()
 	UI_COMMAND( TexStreamAccMaterialTextureScaleMode, "Material Texture Scales Accuracy View Mode", "Visualize the accuracy of the material texture scales used for texture streaming", EUserInterfaceActionType::RadioButton, FInputChord() );
 	UI_COMMAND( TexStreamAccMaterialTextureScaleAll, "All Textures", "Visualize the scales accuracy of all textures", EUserInterfaceActionType::RadioButton, FInputChord() );
 	UI_COMMAND( RequiredTextureResolutionMode, "Required Texture Resolution View Mode", "Visualize the ratio between the currently streamed texture resolution and the resolution wanted by the GPU", EUserInterfaceActionType::RadioButton, FInputChord() );
+	UI_COMMAND( VirtualTexturePendingMipsMode, "Virtual Texture Pending Mips View Mode", "Visualize the difference between the currently streamed virtual texture level and the level wanted by the GPU", EUserInterfaceActionType::RadioButton, FInputChord() );
 
 	for (int32 TextureIndex = 0; TextureIndex < TEXSTREAM_MAX_NUM_TEXTURES_PER_MATERIAL; ++TextureIndex)
 	{
@@ -114,6 +115,10 @@ void FEditorViewportCommands::RegisterCommands()
 	UI_COMMAND( HLODColorationMode, "HLOD Coloration View Mode", "Renders the scene using HLOD color visualization", EUserInterfaceActionType::RadioButton, FInputChord());
 
 	UI_COMMAND( VisualizeBufferMode, "Buffer Visualization View Mode", "Renders a set of selected post process materials, which visualize various intermediate render buffers (material attributes)", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND( VisualizeNaniteMode, "Nanite Visualization View Mode", "Visualizes various rendering aspects of Nanite.", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND( VisualizeLumenMode, "Lumen Visualization View Mode", "Visualizes Lumen debug views.", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND( VisualizeVirtualShadowMapMode, "Virtual Shadow Map Visualization View Mode", "Visualizes various rendering aspects of virtual shadow maps.", EUserInterfaceActionType::RadioButton, FInputChord());
+
 	UI_COMMAND( ReflectionOverrideMode, "Reflections View Mode", "Renders the scene with reflections only", EUserInterfaceActionType::RadioButton, FInputChord() );
 	UI_COMMAND( CollisionPawn, "Player Collision", "Renders player collision visualization", EUserInterfaceActionType::RadioButton, FInputChord() );
 	UI_COMMAND( CollisionVisibility, "Visibility Collision", "Renders visibility collision visualization", EUserInterfaceActionType::RadioButton, FInputChord() );
@@ -131,6 +136,7 @@ void FEditorViewportCommands::RegisterCommands()
 	UI_COMMAND( DecrementRotationGridSize, "Grid Size (Rotation): Decrement", "Decreases the rotation grid size setting by one", EUserInterfaceActionType::Button, FInputChord( EModifierKey::Shift, EKeys::LeftBracket ) );
 
 	
+	UI_COMMAND(SelectMode, "Select Mode", "Select objects", EUserInterfaceActionType::ToggleButton, FInputChord(EKeys::Q));
 	UI_COMMAND( TranslateMode, "Translate Mode", "Select and translate objects", EUserInterfaceActionType::ToggleButton, FInputChord(EKeys::W) );
 	UI_COMMAND( RotateMode, "Rotate Mode", "Select and rotate objects", EUserInterfaceActionType::ToggleButton, FInputChord(EKeys::E) );
 	UI_COMMAND( ScaleMode, "Scale Mode", "Select and scale objects", EUserInterfaceActionType::ToggleButton, FInputChord(EKeys::R) );
@@ -150,6 +156,7 @@ void FEditorViewportCommands::RegisterCommands()
 #endif
 	UI_COMMAND( CycleTransformGizmos, "Cycle Between Translate, Rotate, and Scale", "Cycles the transform gizmos between translate, rotate, and scale", EUserInterfaceActionType::Button, FInputChord(EKeys::SpaceBar) );
 	
+	UI_COMMAND( FocusAllViewportsToSelection, "Focus Selected Actors in All Viewports", "Moves the camera in front of the selected actors in all open viewports", EUserInterfaceActionType::Button, FInputChord(EKeys::F, EModifierKey::Shift) );
 	UI_COMMAND( FocusViewportToSelection, "Focus Selected", "Moves the camera in front of the selection", EUserInterfaceActionType::Button, FInputChord( EKeys::F ) );
 
 	UI_COMMAND( LocationGridSnap, "Grid Snap", "Enables or disables snapping to the grid when dragging objects around", EUserInterfaceActionType::ToggleButton, FInputChord() );
@@ -160,6 +167,8 @@ void FEditorViewportCommands::RegisterCommands()
 
 	UI_COMMAND( ToggleAutoExposure, "Auto", "If enabled, enables automatic exposure", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	UI_COMMAND( ToggleInGameExposure, "Game Settings", "If enabled, uses game settings", EUserInterfaceActionType::ToggleButton, FInputChord() );
+
+	UI_COMMAND(ToggleInViewportContextMenu, "In-Viewport Context Menu", "Shows a contextual menu of key properties and actions for the selected items in the viewport.", EUserInterfaceActionType::ToggleButton, FInputChord(EKeys::Tab));
 }
 
 #undef LOCTEXT_NAMESPACE
@@ -295,7 +304,7 @@ static void GetSelectedMaterials(TArray<const UMaterialInterface*>& SelectedMate
 	}
 }
 
-static void AppendTextureStreamingInfoToMenu(const UMaterialInterface* MaterialInterface, bool bSingleMaterial, TMap<int32, TArray<FString> >& DataPerTextureIndex)
+static void AppendTextureStreamingInfoToMenu(const UMaterialInterface* MaterialInterface, bool bSingleMaterial, TMap<int32, TArray<FString>>& DataPerTextureIndex)
 {
 	check(MaterialInterface);
 	for (const FMaterialTextureInfo& TextureData : MaterialInterface->GetTextureStreamingData())
@@ -326,24 +335,47 @@ static void AppendTextureStreamingInfoToMenu(const UMaterialInterface* MaterialI
 	}
 }
 
-static void AppendMaterialInfoToMenu(const UMaterialInterface* MaterialInterface, ERHIFeatureLevel::Type FeatureLevel, const FString& MenuName, TMap<int32, TArray<FString> >& DataPerTextureIndex, TMap<FName, TArray<FString> >& DataPerTextureName)
+struct FMenuDataPerTexture
+{
+	// Menu display name.
+	FString DisplayName;
+	// Menu tool tip lines.
+	TArray<FString> ToolTips;
+};
+
+static void AppendMaterialInfoToMenu(const UMaterialInterface* MaterialInterface, ERHIFeatureLevel::Type FeatureLevel, const FString& MenuName, TMap<int32, TArray<FString> >& DataPerTextureIndex, TMap<FName, FMenuDataPerTexture>& DataPerTextureName)
 {
 	check(MaterialInterface);
 	const FMaterialResource* Material = MaterialInterface->GetMaterialResource(FeatureLevel);
 	if (Material)
 	{
 		const FUniformExpressionSet& UniformExpressions = Material->GetUniformExpressions();
-		for (int32 i = 0; i < UniformExpressions.GetNumTextures(EMaterialTextureParameterType::Standard2D); ++i)
+		EMaterialTextureParameterType TextureTypes[] = { EMaterialTextureParameterType::Standard2D, EMaterialTextureParameterType::Virtual };
+		for (EMaterialTextureParameterType TextureType : TextureTypes)
 		{
-			UTexture* Texture = nullptr;
-			UniformExpressions.GetGameThreadTextureValue(EMaterialTextureParameterType::Standard2D, i, MaterialInterface, *Material, Texture, true);
-
-			const UTexture2D* Texture2D = Cast<UTexture2D>(Texture);
-			if (Texture2D)
+			for (int32 i = 0; i < UniformExpressions.GetNumTextures(TextureType); ++i)
 			{
-				const FMaterialTextureParameterInfo& Parameter = UniformExpressions.GetTextureParameter(EMaterialTextureParameterType::Standard2D, i);
-				DataPerTextureIndex.FindOrAdd(Parameter.TextureIndex).AddUnique(FString::Printf(TEXT("%s.%s"), *MaterialInterface->GetName(), *Texture2D->GetName()));
-				DataPerTextureName.FindOrAdd(*Texture2D->GetName()).AddUnique(FString::Printf(TEXT("%s %d : %s"), *MenuName, Parameter.TextureIndex, *MaterialInterface->GetName()));
+				UTexture* Texture = nullptr;
+				UniformExpressions.GetGameThreadTextureValue(TextureType, i, MaterialInterface, *Material, Texture, true);
+
+				const UTexture2D* Texture2D = Cast<UTexture2D>(Texture);
+				if (Texture2D)
+				{
+					const FMaterialTextureParameterInfo& Parameter = UniformExpressions.GetTextureParameter(TextureType, i);
+					
+					DataPerTextureIndex.FindOrAdd(Parameter.TextureIndex).AddUnique(FString::Printf(TEXT("%s.%s"), *MaterialInterface->GetName(), *Texture2D->GetName()));
+					
+					FMenuDataPerTexture& MenuData = DataPerTextureName.FindOrAdd(*Texture2D->GetName());
+					if (MenuData.DisplayName.IsEmpty())
+					{
+						MenuData.DisplayName = *Texture2D->GetName();
+						if (TextureType == EMaterialTextureParameterType::Virtual)
+						{
+							MenuData.DisplayName += TEXT(" [VT]");
+						}
+					}
+					MenuData.ToolTips.AddUnique(FString::Printf(TEXT("%s %d : %s"), *MenuName, Parameter.TextureIndex, *MaterialInterface->GetName()));
+				}
 			}
 		}
 	}
@@ -372,7 +404,7 @@ TSharedRef<SWidget> BuildViewModeOptionsMenu(TSharedPtr<FUICommandList> CommandL
 		GetSelectedMaterials(SelectedMaterials);
 
 		TMap<int32, TArray<FString> > DataPerTextureIndex;
-		TMap<FName, TArray<FString> > DataPerTextureName;
+		TMap<FName, FMenuDataPerTexture> DataPerTextureName;
 
 		if (ViewModeIndex == VMI_MaterialTextureScaleAccuracy)
 		{
@@ -406,13 +438,15 @@ TSharedRef<SWidget> BuildViewModeOptionsMenu(TSharedPtr<FUICommandList> CommandL
 			int32 CommandIndex = 0;
 			for (auto Ite = SortedFNames.CreateConstIterator(); Ite; ++Ite)
 			{ 
-				const TArray<FString>& MaterialInfos = DataPerTextureName.FindOrAdd(Ite.Value());
-				FString ToolTipOverride = MaterialInfos[0];
-				for (int32 MaterialIndex = 1; MaterialIndex < MaterialInfos.Num(); ++MaterialIndex)
+				const FMenuDataPerTexture& MaterialInfos = DataPerTextureName.FindOrAdd(Ite.Value());
+				FString ToolTipOverride = MaterialInfos.ToolTips[0];
+				for (int32 MaterialIndex = 1; MaterialIndex < MaterialInfos.ToolTips.Num(); ++MaterialIndex)
 				{
-					ToolTipOverride = FString::Printf(TEXT("%s\n%s"), *ToolTipOverride, *MaterialInfos[MaterialIndex]);
+					ToolTipOverride = FString::Printf(TEXT("%s\n%s"), *ToolTipOverride, *MaterialInfos.ToolTips[MaterialIndex]);
 				}
-				MenuBuilder.AddMenuEntry(PerTextureCommands[CommandIndex], NAME_None, FText::FromString(Ite.Key()), FText::FromString(ToolTipOverride));
+				
+				MenuBuilder.AddMenuEntry(PerTextureCommands[CommandIndex], NAME_None, FText::FromString(MaterialInfos.DisplayName), FText::FromString(ToolTipOverride));
+				
 				ParamNameMap.Add(CommandIndex, Ite.Value());
 				++CommandIndex;
 			}

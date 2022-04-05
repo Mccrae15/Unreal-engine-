@@ -131,7 +131,7 @@ void FSkinWeightLookupVertexBuffer::InitRHI()
 
 	if (VertexBufferRHI)
 	{
-		bool bSRV = GSupportsResourceView && GPixelFormats[PixelFormat].Supported;
+		bool bSRV = GPixelFormats[PixelFormat].Supported;
 		// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
 		// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
 		// This also avoid setting lots of states on all the members of all the different buffers used by meshes. Follow up: https://jira.it.epicgames.net/browse/UE-69376.
@@ -151,12 +151,12 @@ void FSkinWeightLookupVertexBuffer::ReleaseRHI()
 	FVertexBuffer::ReleaseRHI();
 }
 
-FVertexBufferRHIRef FSkinWeightLookupVertexBuffer::CreateRHIBuffer_RenderThread()
+FBufferRHIRef FSkinWeightLookupVertexBuffer::CreateRHIBuffer_RenderThread()
 {
 	return CreateRHIBuffer_Internal<true>();
 }
 
-FVertexBufferRHIRef FSkinWeightLookupVertexBuffer::CreateRHIBuffer_Async()
+FBufferRHIRef FSkinWeightLookupVertexBuffer::CreateRHIBuffer_Async()
 {
 	return CreateRHIBuffer_Internal<false>();
 }
@@ -177,24 +177,24 @@ void FSkinWeightLookupVertexBuffer::SetWeightOffsetAndInfluenceCount(uint32 Vert
 }
 
 template <bool bRenderThread>
-FVertexBufferRHIRef FSkinWeightLookupVertexBuffer::CreateRHIBuffer_Internal()
+FBufferRHIRef FSkinWeightLookupVertexBuffer::CreateRHIBuffer_Internal()
 {
 	if (NumVertices)
 	{
 		// Create the vertex buffer.
 		FResourceArrayInterface* ResourceArray = LookupData ? LookupData->GetResourceArray() : nullptr;
 		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
-		const uint32 BuffFlags = BUF_Static | BUF_ShaderResource | BUF_SourceCopy;
-		FRHIResourceCreateInfo CreateInfo(ResourceArray);
+		const EBufferUsageFlags BufferFlags = BUF_Static | BUF_ShaderResource | BUF_SourceCopy;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FSkinWeightLookupVertexBuffer"), ResourceArray);
 		CreateInfo.bWithoutNativeResource = !LookupData;
 
 		if (bRenderThread)
 		{
-			return RHICreateVertexBuffer(SizeInBytes, BuffFlags, CreateInfo);
+			return RHICreateVertexBuffer(SizeInBytes, BufferFlags, CreateInfo);
 		}
 		else
 		{
-			return RHIAsyncCreateVertexBuffer(SizeInBytes, BuffFlags, CreateInfo);
+			return RHIAsyncCreateVertexBuffer(SizeInBytes, BufferFlags, CreateInfo);
 		}
 	}
 	return nullptr;
@@ -387,36 +387,36 @@ void FSkinWeightDataVertexBuffer::CopyMetaData(const FSkinWeightDataVertexBuffer
 }
 
 template <bool bRenderThread>
-FVertexBufferRHIRef FSkinWeightDataVertexBuffer::CreateRHIBuffer_Internal()
+FBufferRHIRef FSkinWeightDataVertexBuffer::CreateRHIBuffer_Internal()
 {
 	if (NumBones)
 	{
 		// Create the vertex buffer.
 		FResourceArrayInterface* ResourceArray = WeightData ? WeightData->GetResourceArray() : nullptr;
 		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
-		const uint32 BuffFlags = BUF_Static | BUF_ShaderResource | BUF_SourceCopy;
-		FRHIResourceCreateInfo CreateInfo(ResourceArray);
+		const EBufferUsageFlags BufferFlags = BUF_Static | BUF_ShaderResource | BUF_SourceCopy;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FSkinWeightDataVertexBuffer"), ResourceArray);
 		CreateInfo.bWithoutNativeResource = !WeightData;
 
 		// BUF_ShaderResource is needed for support of the SkinCache (we could make is dependent on GEnableGPUSkinCacheShaders or are there other users?)
 		if (bRenderThread)
 		{
-			return RHICreateVertexBuffer(SizeInBytes, BuffFlags, CreateInfo);
+			return RHICreateVertexBuffer(SizeInBytes, BufferFlags, CreateInfo);
 		}
 		else
 		{
-			return RHIAsyncCreateVertexBuffer(SizeInBytes, BuffFlags, CreateInfo);
+			return RHIAsyncCreateVertexBuffer(SizeInBytes, BufferFlags, CreateInfo);
 		}
 	}
 	return nullptr;
 }
 
-FVertexBufferRHIRef FSkinWeightDataVertexBuffer::CreateRHIBuffer_RenderThread()
+FBufferRHIRef FSkinWeightDataVertexBuffer::CreateRHIBuffer_RenderThread()
 {
 	return CreateRHIBuffer_Internal<true>();
 }
 
-FVertexBufferRHIRef FSkinWeightDataVertexBuffer::CreateRHIBuffer_Async()
+FBufferRHIRef FSkinWeightDataVertexBuffer::CreateRHIBuffer_Async()
 {
 	return CreateRHIBuffer_Internal<false>();
 }
@@ -432,8 +432,8 @@ void FSkinWeightDataVertexBuffer::InitRHI()
 
 	// BUF_ShaderResource is needed for support of the SkinCache (we could make is dependent on GEnableGPUSkinCacheShaders or are there other users?)
 	VertexBufferRHI = CreateRHIBuffer_RenderThread();
-
-	bool bSRV = VertexBufferRHI && GSupportsResourceView && GPixelFormats[GetPixelFormat()].Supported;
+	
+	bool bSRV = VertexBufferRHI && GPixelFormats[GetPixelFormat()].Supported;
 	// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
 	// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
 	// This also avoid setting lots of states on all the members of all the different buffers used by meshes. Follow up: https://jira.it.epicgames.net/browse/UE-69376.

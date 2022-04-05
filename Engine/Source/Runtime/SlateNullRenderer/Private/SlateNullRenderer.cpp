@@ -62,7 +62,7 @@ bool FSlateNullRenderer::GenerateDynamicImageResource( FName ResourceName, uint3
 	return false;
 }
 
-FSlateResourceHandle FSlateNullRenderer::GetResourceHandle( const FSlateBrush& Brush )
+FSlateResourceHandle FSlateNullRenderer::GetResourceHandle(const FSlateBrush& Brush, FVector2D LocalSize, float DrawScale)
 {
 	return ResourceManager.IsValid() ? ResourceManager->GetResourceHandle(Brush) : FSlateResourceHandle();
 }
@@ -86,6 +86,11 @@ void FSlateNullRenderer::PrepareToTakeScreenshot(const FIntRect& Rect, TArray<FC
 }
 
 FSlateUpdatableTexture* FSlateNullRenderer::CreateUpdatableTexture(uint32 Width, uint32 Height)
+{
+	return nullptr;
+}
+
+FSlateUpdatableTexture* FSlateNullRenderer::CreateSharedHandleTexture(void* SharedHandle)
 {
 	return nullptr;
 }

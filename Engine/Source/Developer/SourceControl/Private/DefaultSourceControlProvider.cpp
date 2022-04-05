@@ -45,6 +45,11 @@ ECommandResult::Type FDefaultSourceControlProvider::GetState( const TArray<FStri
 	return ECommandResult::Failed;
 }
 
+ECommandResult::Type FDefaultSourceControlProvider::GetState(const TArray<FSourceControlChangelistRef>& InChangelists, TArray<FSourceControlChangelistStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage)
+{
+	return ECommandResult::Failed;
+}
+
 TArray<FSourceControlStateRef> FDefaultSourceControlProvider::GetCachedStateByPredicate(TFunctionRef<bool(const FSourceControlStateRef&)> Predicate) const
 {
 	return TArray<FSourceControlStateRef>();
@@ -60,17 +65,17 @@ void FDefaultSourceControlProvider::UnregisterSourceControlStateChanged_Handle( 
 
 }
 
-ECommandResult::Type FDefaultSourceControlProvider::Execute( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate )
+ECommandResult::Type FDefaultSourceControlProvider::Execute( const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate )
 {
 	return ECommandResult::Failed;
 }
 
-bool FDefaultSourceControlProvider::CanCancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation ) const
+bool FDefaultSourceControlProvider::CanCancelOperation( const FSourceControlOperationRef& InOperation ) const
 {
 	return false;
 }
 
-void FDefaultSourceControlProvider::CancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation )
+void FDefaultSourceControlProvider::CancelOperation( const FSourceControlOperationRef& InOperation )
 {
 }
 
@@ -97,6 +102,11 @@ void FDefaultSourceControlProvider::Tick()
 TArray< TSharedRef<ISourceControlLabel> > FDefaultSourceControlProvider::GetLabels( const FString& InMatchingSpec ) const
 {
 	return TArray< TSharedRef<ISourceControlLabel> >();
+}
+
+TArray<FSourceControlChangelistRef> FDefaultSourceControlProvider::GetChangelists( EStateCacheUsage::Type InStateCacheUsage )
+{
+	return TArray<FSourceControlChangelistRef>();
 }
 
 #if SOURCE_CONTROL_WITH_SLATE

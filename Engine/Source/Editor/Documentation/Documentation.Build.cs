@@ -36,12 +36,14 @@ namespace UnrealBuildTool.Rules
                     "Slate",
 					"SlateCore",
                     "EditorStyle",
+					"EditorFramework",
                     "UnrealEd",
 					"Analytics",
 					"SourceCodeAccess",
 					"SourceControl",
                     "ContentBrowser",
-					"DesktopPlatform"
+					"DesktopPlatform",
+					"ToolWidgets",
 				}
 			);
 

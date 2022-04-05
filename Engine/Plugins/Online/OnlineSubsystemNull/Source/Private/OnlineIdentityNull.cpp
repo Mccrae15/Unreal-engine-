@@ -2,6 +2,7 @@
 
 #include "OnlineIdentityNull.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/Guid.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "OnlineSubsystemNull.h"
@@ -42,7 +43,7 @@ bool FUserOnlineAccountNull::SetUserAttribute(const FString& AttrName, const FSt
 	return false;
 }
 
-inline FString GenerateRandomUserId(int32 LocalUserNum)
+FString FOnlineIdentityNull::GenerateRandomUserId(int32 LocalUserNum)
 {
 	FString HostName;
 	if (!ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetHostName(HostName))
@@ -53,16 +54,30 @@ inline FString GenerateRandomUserId(int32 LocalUserNum)
 		HostName = Addr->ToString(false);
 	}
 
-	const bool bForceUniqueId = FParse::Param( FCommandLine::Get(), TEXT( "StableNullID" ) );
-	
-	if ( ( GIsFirstInstance || bForceUniqueId ) && !GIsEditor )
+	bool bUseStableNullId = bForceStableNullId;
+	FString UserSuffix;
+
+	if (bAddUserNumToNullId)
 	{
-		// When possible, return a stable user id
-		return FString::Printf( TEXT( "%s-%s" ), *HostName, *FPlatformMisc::GetLoginId().ToUpper() );
+		UserSuffix = FString::Printf(TEXT("-%d"), LocalUserNum);
+	}
+
+#if !(UE_BUILD_SHIPPING && WITH_EDITOR)
+	if (GIsFirstInstance && !GIsEditor)
+	{
+		// If we're outside the editor and know this is the first instance, use the system login id
+		bUseStableNullId = true;
+	}
+#endif
+
+	if (bUseStableNullId)
+	{
+		// Use a stable id possibly with a user num suffix
+		return FString::Printf(TEXT( "%s-%s%s" ), *HostName, *FPlatformMisc::GetLoginId().ToUpper(), *UserSuffix);
 	}
 
 	// If we're not the first instance (or in the editor), return truly random id
-	return FString::Printf( TEXT( "%s-%s" ), *HostName, *FGuid::NewGuid().ToString() );
+	return FString::Printf(TEXT( "%s-%s%s" ), *HostName, *FGuid::NewGuid().ToString(), *UserSuffix);
 }
 
 bool FOnlineIdentityNull::Login(int32 LocalUserNum, const FOnlineAccountCredentials& AccountCredentials)
@@ -75,7 +90,7 @@ bool FOnlineIdentityNull::Login(int32 LocalUserNum, const FOnlineAccountCredenti
 	{
 		ErrorStr = FString::Printf(TEXT("Invalid LocalUserNum=%d"), LocalUserNum);
 	}
-	else if (AccountCredentials.Id.IsEmpty())
+	else if (AccountCredentials.Id.IsEmpty() && bRequireLoginCredentials)
 	{
 		ErrorStr = TEXT("Invalid account id, string empty");
 	}
@@ -86,7 +101,7 @@ bool FOnlineIdentityNull::Login(int32 LocalUserNum, const FOnlineAccountCredenti
 		{
 			FString RandomUserId = GenerateRandomUserId(LocalUserNum);
 
-			FUniqueNetIdNull NewUserId(RandomUserId);
+			const FUniqueNetIdRef NewUserId = FUniqueNetIdNull::Create(RandomUserId);
 			UserAccountPtr = MakeShareable(new FUserOnlineAccountNull(RandomUserId));
 			UserAccountPtr->UserAttributes.Add(USER_ATTR_ID, RandomUserId);
 
@@ -98,17 +113,14 @@ bool FOnlineIdentityNull::Login(int32 LocalUserNum, const FOnlineAccountCredenti
 		}
 		else
 		{
-			const FUniqueNetIdNull* UniqueIdStr = (FUniqueNetIdNull*)(UserId->Get());
-			TSharedRef<FUserOnlineAccountNull>* TempPtr = UserAccounts.Find(*UniqueIdStr);
-			check(TempPtr);
-			UserAccountPtr = *TempPtr;
+			UserAccountPtr = UserAccounts.FindChecked(UserId->ToSharedRef());
 		}
 	}
 
 	if (!ErrorStr.IsEmpty())
 	{
 		UE_LOG_ONLINE_IDENTITY(Warning, TEXT("Login request failed. %s"), *ErrorStr);
-		TriggerOnLoginCompleteDelegates(LocalUserNum, false, FUniqueNetIdNull(), ErrorStr);
+		TriggerOnLoginCompleteDelegates(LocalUserNum, false, *FUniqueNetIdNull::EmptyId(), ErrorStr);
 		return false;
 	}
 
@@ -122,7 +134,7 @@ bool FOnlineIdentityNull::Logout(int32 LocalUserNum)
 	if (UserId.IsValid())
 	{
 		// remove cached user account
-		UserAccounts.Remove(FUniqueNetIdNull(*UserId));
+		UserAccounts.Remove(UserId.ToSharedRef());
 		// remove cached user id
 		UserIds.Remove(LocalUserNum);
 		// not async but should call completion delegate anyway
@@ -157,7 +169,7 @@ bool FOnlineIdentityNull::AutoLogin(int32 LocalUserNum)
 		{
 			if (!TypeStr.IsEmpty())
 			{
-				return Login(0, FOnlineAccountCredentials(TypeStr, LoginStr, PasswordStr));
+				return Login(LocalUserNum, FOnlineAccountCredentials(TypeStr, LoginStr, PasswordStr));
 			}
 			else if (bEnableWarning)
 			{
@@ -168,6 +180,11 @@ bool FOnlineIdentityNull::AutoLogin(int32 LocalUserNum)
 		{
 			UE_LOG_ONLINE_IDENTITY(Warning, TEXT("AutoLogin missing AUTH_PASSWORD=<password>."));
 		}
+	}
+	else if (!bRequireLoginCredentials)
+	{
+		// Act like a console and login with empty auth
+		return Login(LocalUserNum, FOnlineAccountCredentials());
 	}
 	else if (bEnableWarning)
 	{
@@ -181,9 +198,7 @@ TSharedPtr<FUserOnlineAccount> FOnlineIdentityNull::GetUserAccount(const FUnique
 {
 	TSharedPtr<FUserOnlineAccount> Result;
 
-	FUniqueNetIdNull StringUserId(UserId);
-	const TSharedRef<FUserOnlineAccountNull>* FoundUserAccount = UserAccounts.Find(StringUserId);
-	if (FoundUserAccount != NULL)
+	if (const TSharedRef<FUserOnlineAccountNull>* FoundUserAccount = UserAccounts.Find(UserId.AsShared()))
 	{
 		Result = *FoundUserAccount;
 	}
@@ -195,7 +210,7 @@ TArray<TSharedPtr<FUserOnlineAccount> > FOnlineIdentityNull::GetAllUserAccounts(
 {
 	TArray<TSharedPtr<FUserOnlineAccount> > Result;
 	
-	for (TMap<FUniqueNetIdNull, TSharedRef<FUserOnlineAccountNull>>::TConstIterator It(UserAccounts); It; ++It)
+	for (TUniqueNetIdMap<TSharedRef<FUserOnlineAccountNull>>::TConstIterator It(UserAccounts); It; ++It)
 	{
 		Result.Add(It.Value());
 	}
@@ -244,6 +259,10 @@ ELoginStatus::Type FOnlineIdentityNull::GetLoginStatus(const FUniqueNetId& UserI
 	if (UserAccount.IsValid() &&
 		UserAccount->GetUserId()->IsValid())
 	{
+		if (bForceOfflineMode)
+		{
+			return ELoginStatus::UsingLocalProfile;
+		}
 		return ELoginStatus::LoggedIn;
 	}
 	return ELoginStatus::NotLoggedIn;
@@ -292,8 +311,23 @@ void FOnlineIdentityNull::RevokeAuthToken(const FUniqueNetId& UserId, const FOnR
 FOnlineIdentityNull::FOnlineIdentityNull(FOnlineSubsystemNull* InSubsystem)
 	: NullSubsystem(InSubsystem)
 {
-	// autologin the 0-th player
-	Login(0, FOnlineAccountCredentials(TEXT("DummyType"), TEXT("DummyUser"), TEXT("DummyId")) );
+	// Read configuration variables for emulating other login systems
+	GConfig->GetBool(TEXT("OnlineSubsystemNull"), TEXT("bAutoLoginAtStartup"), bAutoLoginAtStartup, GEngineIni);
+	GConfig->GetBool(TEXT("OnlineSubsystemNull"), TEXT("bRequireLoginCredentials"), bRequireLoginCredentials, GEngineIni);
+	GConfig->GetBool(TEXT("OnlineSubsystemNull"), TEXT("bAddUserNumToNullId"), bAddUserNumToNullId, GEngineIni);
+	GConfig->GetBool(TEXT("OnlineSubsystemNull"), TEXT("bForceStableNullId"), bForceStableNullId, GEngineIni);
+	GConfig->GetBool(TEXT("OnlineSubsystemNull"), TEXT("bForceOfflineMode"), bForceOfflineMode, GEngineIni);
+	
+	if (FParse::Param(FCommandLine::Get(), TEXT("StableNullID")))
+	{
+		bForceStableNullId = true;
+	}
+
+	if (bAutoLoginAtStartup)
+	{
+		// autologin the 0-th player
+		Login(0, FOnlineAccountCredentials(TEXT("DummyType"), TEXT("DummyUser"), TEXT("DummyId")) );
+	}
 }
 
 FOnlineIdentityNull::~FOnlineIdentityNull()
@@ -302,6 +336,10 @@ FOnlineIdentityNull::~FOnlineIdentityNull()
 
 void FOnlineIdentityNull::GetUserPrivilege(const FUniqueNetId& UserId, EUserPrivileges::Type Privilege, const FOnGetUserPrivilegeCompleteDelegate& Delegate)
 {
+	if (bForceOfflineMode && Privilege == EUserPrivileges::CanPlayOnline)
+	{
+		Delegate.ExecuteIfBound(UserId, Privilege, (uint32)EPrivilegeResults::NetworkConnectionUnavailable);
+	}
 	Delegate.ExecuteIfBound(UserId, Privilege, (uint32)EPrivilegeResults::NoFailures);
 }
 
@@ -312,7 +350,7 @@ FPlatformUserId FOnlineIdentityNull::GetPlatformUserIdFromUniqueNetId(const FUni
 		auto CurrentUniqueId = GetUniquePlayerId(i);
 		if (CurrentUniqueId.IsValid() && (*CurrentUniqueId == UniqueNetId))
 		{
-			return i;
+			return GetPlatformUserIdFromLocalUserNum(i);
 		}
 	}
 

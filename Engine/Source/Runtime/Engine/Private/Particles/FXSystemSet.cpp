@@ -26,12 +26,12 @@ FFXSystemInterface* FFXSystemSet::GetInterface(const FName& InName)
 	return nullptr;
 }
 
-void FFXSystemSet::Tick(float DeltaSeconds)
+void FFXSystemSet::Tick(UWorld* World, float DeltaSeconds)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FXSystem->Tick(DeltaSeconds);
+		FXSystem->Tick(World, DeltaSeconds);
 	}
 }
 
@@ -124,21 +124,21 @@ void FFXSystemSet::UpdateVectorField(UVectorFieldComponent* VectorFieldComponent
 	}
 }
 
-void FFXSystemSet::PreInitViews(FRHICommandListImmediate& RHICmdList, bool bAllowGPUParticleUpdate)
+void FFXSystemSet::PreInitViews(class FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FXSystem->PreInitViews(RHICmdList, bAllowGPUParticleUpdate);
+		FXSystem->PreInitViews(GraphBuilder, bAllowGPUParticleUpdate);
 	}
 }
 
-void FFXSystemSet::PostInitViews(FRHICommandListImmediate& RHICmdList, FRHIUniformBuffer* ViewUniformBuffer, bool bAllowGPUParticleUpdate)
+void FFXSystemSet::PostInitViews(class FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FXSystem->PostInitViews(RHICmdList, ViewUniformBuffer, bAllowGPUParticleUpdate);
+		FXSystem->PostInitViews(GraphBuilder, Views, bAllowGPUParticleUpdate);
 	}
 }
 
@@ -181,32 +181,43 @@ bool FFXSystemSet::RequiresEarlyViewUniformBuffer() const
 	return false;
 }
 
-void FFXSystemSet::PreRender(FRHICommandListImmediate& RHICmdList, const class FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData, bool bAllowGPUParticleSceneUpdate)
+bool FFXSystemSet::RequiresRayTracingScene() const
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FXSystem->PreRender(RHICmdList, GlobalDistanceFieldParameterData, bAllowGPUParticleSceneUpdate);
+		if (FXSystem->RequiresRayTracingScene())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void FFXSystemSet::PreRender(class FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleSceneUpdate)
+{
+	for (FFXSystemInterface* FXSystem : FXSystems)
+	{
+		check(FXSystem);
+		FXSystem->PreRender(GraphBuilder, Views, bAllowGPUParticleSceneUpdate);
 	}
 }
 
-void FFXSystemSet::PostRenderOpaque(
-	FRHICommandListImmediate& RHICmdList,
-	FRHIUniformBuffer* ViewUniformBuffer,
-	const class FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-	FRHIUniformBuffer* SceneTexturesUniformBuffer,
-	bool bAllowGPUParticleUpdate)
+void FFXSystemSet::SetSceneTexturesUniformBuffer(FRHIUniformBuffer* InSceneTexturesUniformParams)
 {
 	for (FFXSystemInterface* FXSystem : FXSystems)
 	{
 		check(FXSystem);
-		FXSystem->PostRenderOpaque(
-			RHICmdList,
-			ViewUniformBuffer,
-			SceneTexturesUniformBufferStruct,
-			SceneTexturesUniformBuffer,
-			bAllowGPUParticleUpdate
-		);
+		FXSystem->SetSceneTexturesUniformBuffer(InSceneTexturesUniformParams);
+	}
+}
+
+void FFXSystemSet::PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstArrayView<const class FViewInfo> Views, bool bAllowGPUParticleSceneUpdate)
+{
+	for (FFXSystemInterface* FXSystem : FXSystems)
+	{
+		check(FXSystem);
+		FXSystem->PostRenderOpaque(GraphBuilder, Views, bAllowGPUParticleSceneUpdate);
 	}
 }
 

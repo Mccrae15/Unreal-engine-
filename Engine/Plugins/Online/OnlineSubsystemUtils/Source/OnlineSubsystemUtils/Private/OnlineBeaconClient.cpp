@@ -62,7 +62,7 @@ class UNetConnection* AOnlineBeaconClient::GetNetConnection() const
 
 bool AOnlineBeaconClient::DestroyNetworkActorHandled()
 {
-	if (BeaconConnection && BeaconConnection->State != USOCK_Closed)
+	if (BeaconConnection && BeaconConnection->GetConnectionState() != USOCK_Closed)
 	{
 		// This will be cleaned up in ~2 sec by UNetConnection Tick
 		BeaconConnection->bPendingDestroy = true;
@@ -204,7 +204,7 @@ void AOnlineBeaconClient::Tick(float DeltaTime)
 		// Monitor for close bunches sent by the server which close down the connection in UChannel::Cleanup
 		// See similar code in UWorld::TickNetClient
 		if (((ConnectionState == EBeaconConnectionState::Pending) || (ConnectionState == EBeaconConnectionState::Open)) &&
-			(NetDriver->ServerConnection->State == USOCK_Closed))
+			(NetDriver->ServerConnection->GetConnectionState() == USOCK_Closed))
 		{
 			UE_LOG(LogBeacon, Verbose, TEXT("Client beacon (%s) socket has closed, triggering failure."), *GetName());
 			OnFailure();
@@ -268,7 +268,7 @@ void AOnlineBeaconClient::OnFailure()
 void AOnlineBeaconClient::ClientOnConnected_Implementation()
 {
 	SetConnectionState(EBeaconConnectionState::Open);
-	BeaconConnection->State = USOCK_Open;
+	BeaconConnection->SetConnectionState(USOCK_Open);
 
 	SetRole(ROLE_Authority);
 	SetReplicates(true);
@@ -345,6 +345,51 @@ void AOnlineBeaconClient::NotifyControlMessage(UNetConnection* Connection, uint8
 				}
 				break;
 			}
+		case NMT_Challenge:
+		{
+			// Challenged by server.
+			if (FNetControlMessage<NMT_Challenge>::Receive(Bunch, Connection->Challenge))
+			{
+				// build a URL
+				FURL URL(nullptr, TEXT(""), TRAVEL_Absolute);
+				FString URLString;
+
+				// Append authentication token to URL options
+				IOnlineIdentityPtr IdentityPtr = Online::GetIdentityInterface(GetWorld());
+				if (IdentityPtr.IsValid())
+				{
+					TSharedPtr<FUserOnlineAccount> UserAcct = IdentityPtr->GetUserAccount(*Connection->PlayerId);
+					if (UserAcct.IsValid())
+					{
+						URL.AddOption(*FString::Printf(TEXT("AuthTicket=%s"), *UserAcct->GetAccessToken()));
+					}
+				}
+				URLString = URL.ToString();
+
+				// compute the player's online platform name
+				FName OnlinePlatformName = NAME_None;
+				if (const FWorldContext* const WorldContext = GEngine->GetWorldContextFromWorld(GetWorld()))
+				{
+					if (WorldContext->OwningGameInstance)
+					{
+						OnlinePlatformName = WorldContext->OwningGameInstance->GetOnlinePlatformName();
+					}
+				}
+				FString OnlinePlatformNameString = OnlinePlatformName.ToString();
+
+				// send NMT_Login
+				Connection->ClientResponse = TEXT("0");
+				FNetControlMessage<NMT_Login>::Send(Connection, Connection->ClientResponse, URLString, Connection->PlayerId, OnlinePlatformNameString);
+				NetDriver->ServerConnection->FlushNet();
+			}
+			else
+			{
+				// Force close the session
+				UE_LOG(LogBeacon, Warning, TEXT("%s: Unable to parse challenge request message."), *Connection->GetName());
+				OnFailure();
+			}
+			break;
+		}
 		case NMT_BeaconWelcome:
 			{
 				Connection->ClientResponse = TEXT("0");
@@ -444,7 +489,7 @@ void AOnlineBeaconClient::FinalizeEncryptedConnection(const FEncryptionKeyRespon
 	UNetConnection* Connection = WeakConnection.Get();
 	if (Connection)
 	{
-		if (Connection->State != USOCK_Invalid && Connection->State != USOCK_Closed && Connection->Driver)
+		if (Connection->GetConnectionState() != USOCK_Invalid && Connection->GetConnectionState() != USOCK_Closed && Connection->Driver)
 		{
 			if (Response.Response == EEncryptionResponse::Success)
 			{

@@ -15,8 +15,6 @@
 #include "EntitySystem/MovieSceneInstanceRegistry.h"
 #include "EntitySystem/IMovieSceneEntityProvider.h"
 
-TWeakObjectPtr<UMovieSceneSubSection> UMovieSceneSubSection::TheRecordingSection;
-
 float DeprecatedMagicNumber = TNumericLimits<float>::Lowest();
 
 /* UMovieSceneSubSection structors
@@ -195,62 +193,7 @@ void UMovieSceneSubSection::SetSequence(UMovieSceneSequence* Sequence)
 
 UMovieSceneSequence* UMovieSceneSubSection::GetSequence() const
 {
-	// when recording we need to act as if we have no sequence
-	// the sequence is patched at the end of recording
-	if(GetRecordingSection() == this)
-	{
-		return nullptr;
-	}
-	else
-	{
-		return SubSequence;
-	}
-}
-
-UMovieSceneSubSection* UMovieSceneSubSection::GetRecordingSection()
-{
-	// check if the section is still valid and part of a track (i.e. it has not been deleted or GCed)
-	if(TheRecordingSection.IsValid())
-	{
-		UMovieSceneTrack* TrackOuter = Cast<UMovieSceneTrack>(TheRecordingSection->GetOuter());
-		if(TrackOuter)
-		{
-			if(TrackOuter->HasSection(*TheRecordingSection.Get()))
-			{
-				return TheRecordingSection.Get();
-			}
-		}
-	}
-
-	return nullptr;
-}
-
-void UMovieSceneSubSection::SetAsRecording(bool bRecord)
-{
-	if(bRecord)
-	{
-		TheRecordingSection = this;
-	}
-	else
-	{
-		TheRecordingSection = nullptr;
-	}
-}
-
-bool UMovieSceneSubSection::IsSetAsRecording()
-{
-	return GetRecordingSection() != nullptr;
-}
-
-AActor* UMovieSceneSubSection::GetActorToRecord()
-{
-	UMovieSceneSubSection* RecordingSection = GetRecordingSection();
-	if(RecordingSection)
-	{
-		return RecordingSection->ActorToRecord.Get();
-	}
-
-	return nullptr;
+	return SubSequence;
 }
 
 #if WITH_EDITOR
@@ -278,18 +221,36 @@ void UMovieSceneSubSection::PostEditChangeProperty(FPropertyChangedEvent& Proper
 		{
 			if (UMovieSceneSequence* CurrentSequence = TrackOuter->GetTypedOuter<UMovieSceneSequence>())
 			{
+				TArray<UMovieSceneSubTrack*> SubTracks;
+
 				for (UMovieSceneTrack* MasterTrack : SubSequenceMovieScene->GetMasterTracks())
 				{
 					if (UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(MasterTrack))
 					{
-						if ( SubTrack->ContainsSequence(*CurrentSequence, true))
-						{
-							UE_LOG(LogMovieScene, Error, TEXT("Invalid level sequence %s. It is already contained by: %s."), *SubSequence->GetDisplayName().ToString(), *CurrentSequence->GetDisplayName().ToString());
+						SubTracks.Add(SubTrack);
+					}
+				}
 
-							// Restore to the previous sub sequence because there was a circular dependency
-							SubSequence = PreviousSubSequence;
-							break;
+				for (const FMovieSceneBinding& Binding : SubSequenceMovieScene->GetBindings())
+				{
+					for (UMovieSceneTrack* Track : SubSequenceMovieScene->FindTracks(UMovieSceneSubTrack::StaticClass(), Binding.GetObjectGuid()))
+					{
+						if (UMovieSceneSubTrack* SubTrack = Cast<UMovieSceneSubTrack>(Track))
+						{
+							SubTracks.Add(SubTrack);
 						}
+					}
+				}
+
+				for (UMovieSceneSubTrack* SubTrack : SubTracks)
+				{
+					if ( SubTrack->ContainsSequence(*CurrentSequence, true))
+					{
+						UE_LOG(LogMovieScene, Error, TEXT("Invalid level sequence %s. It is already contained by: %s."), *SubSequence->GetDisplayName().ToString(), *CurrentSequence->GetDisplayName().ToString());
+
+						// Restore to the previous sub sequence because there was a circular dependency
+						SubSequence = PreviousSubSequence;
+						break;
 					}
 				}
 			}
@@ -463,6 +424,25 @@ void UMovieSceneSubSection::GetSnapTimes(TArray<FFrameNumber>& OutSnapTimes, boo
 		{
 			OutSnapTimes.Add(PlaybackEnd);
 		}
+	}
+}
+
+void UMovieSceneSubSection::MigrateFrameTimes(FFrameRate SourceRate, FFrameRate DestinationRate)
+{
+	if (Parameters.StartFrameOffset.Value > 0)
+	{
+		FFrameNumber NewStartFrameOffset = ConvertFrameTime(FFrameTime(Parameters.StartFrameOffset), SourceRate, DestinationRate).FloorToFrame();
+		Parameters.StartFrameOffset = NewStartFrameOffset;
+	}
+	if (Parameters.EndFrameOffset.Value > 0)
+	{
+		FFrameNumber NewEndFrameOffset = ConvertFrameTime(FFrameTime(Parameters.EndFrameOffset), SourceRate, DestinationRate).FloorToFrame();
+		Parameters.EndFrameOffset = NewEndFrameOffset;
+	}
+	if (Parameters.FirstLoopStartFrameOffset.Value > 0)
+	{
+		FFrameNumber NewFirstLoopStartFrameOffset = ConvertFrameTime(FFrameTime(Parameters.FirstLoopStartFrameOffset), SourceRate, DestinationRate).FloorToFrame();
+		Parameters.FirstLoopStartFrameOffset = NewFirstLoopStartFrameOffset;
 	}
 }
 

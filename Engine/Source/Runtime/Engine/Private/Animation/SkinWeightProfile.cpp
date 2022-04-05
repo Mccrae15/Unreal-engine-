@@ -138,7 +138,7 @@ FAutoConsoleVariableRef CVarSkinWeightProfilesAllowedFromLOD(
 FArchive& operator<<(FArchive& Ar, FRuntimeSkinWeightProfileData& OverrideData)
 {
 #if WITH_EDITOR
-	if (Ar.UE4Ver() < VER_UE4_SKINWEIGHT_PROFILE_DATA_LAYOUT_CHANGES)
+	if (Ar.UEVer() < VER_UE4_SKINWEIGHT_PROFILE_DATA_LAYOUT_CHANGES)
 	{
 		Ar << OverrideData.OverridesInfo_DEPRECATED;
 		Ar << OverrideData.Weights_DEPRECATED;
@@ -549,6 +549,16 @@ SIZE_T FSkinWeightProfilesData::GetResourcesSize() const
 	return SummedSize;
 }
 
+SIZE_T FSkinWeightProfilesData::GetCPUAccessMemoryOverhead() const
+{
+	SIZE_T Result = 0;
+	for (typename TMap<FName, FSkinWeightVertexBuffer*>::TConstIterator It(ProfileNameToBuffer); It; ++It)
+	{
+		Result += It->Value->GetNeedsCPUAccess() ? It->Value->GetVertexDataSize() : 0;
+	}
+	return Result;
+}
+
 void FSkinWeightProfilesData::SerializeMetaData(FArchive& Ar)
 {
 	TArray<FName, TInlineAllocator<8>> ProfileNames;
@@ -707,6 +717,8 @@ void FSkinWeightProfilesData::InitialiseProfileBuffer(const FName& ProfileName)
 			OverrideBuffer->SetMaxBoneInfluences(NumInfluences);
 			const bool bUse16BitBoneIndex = BaseBuffer->Use16BitBoneIndex();
 			OverrideBuffer->SetUse16BitBoneIndex(bUse16BitBoneIndex);
+			const bool bNeedsCPUAccess = BaseBuffer->GetNeedsCPUAccess();
+			OverrideBuffer->SetNeedsCPUAccess(bNeedsCPUAccess);
 			
 			const FRuntimeSkinWeightProfileData* ProfilePtr = OverrideData.Find(ProfileName);
 			if (ProfilePtr)

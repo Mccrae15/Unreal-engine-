@@ -19,7 +19,6 @@ static FText GetFriendlyShaderPlatformName(const EShaderPlatform InShaderPlatfor
 	}
 	break;
 
-	case SP_METAL_SM5_NOTESS:
 	case SP_METAL_MRT_MAC:
 	case SP_METAL_MRT:
 	{
@@ -31,6 +30,7 @@ static FText GetFriendlyShaderPlatformName(const EShaderPlatform InShaderPlatfor
 	case SP_PCD3D_ES3_1:
 	case SP_VULKAN_PCES3_1:
 	case SP_OPENGL_PCES3_1:
+	case SP_D3D_ES3_1_HOLOLENS:
 	{
 		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "Generic_ES31_loc", "ES31");
 		return Description;
@@ -51,24 +51,10 @@ static FText GetFriendlyShaderPlatformName(const EShaderPlatform InShaderPlatfor
 	}
 	break;
 
-	case SP_VULKAN_ES3_1_LUMIN:
-	{
-		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "Lumin_Vulkan_ES31_loc", "Lumin Vulkan ES31");
-		return Description;
-	}
-	break;
-
 	case SP_METAL:
 	case SP_METAL_MACES3_1:
 	{
 		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "iOS_Metal_Mace_31_loc", "Metal ES31");
-		return Description;
-	}
-	break;
-
-	case SP_VULKAN_SM5_LUMIN:
-	{
-		static const FText Description = NSLOCTEXT("FriendlyShaderPlatformNames", "Lumin_Vulkan_SM5_loc", "Lumin Vulkan SM5");
 		return Description;
 	}
 	break;
@@ -81,7 +67,7 @@ static FText GetFriendlyShaderPlatformName(const EShaderPlatform InShaderPlatfor
 	break;
 
 	default:
-		if (FStaticShaderPlatformNames::IsStaticPlatform(InShaderPlatform))
+		if (FDataDrivenShaderPlatformInfo::IsValid(InShaderPlatform))
 		{
 			return FDataDrivenShaderPlatformInfo::GetFriendlyName(InShaderPlatform);
 		}

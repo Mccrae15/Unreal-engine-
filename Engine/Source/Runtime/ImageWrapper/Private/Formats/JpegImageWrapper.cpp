@@ -16,20 +16,21 @@
 	#endif
 #endif
 
-PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS
-#include "jpgd.h"
-#include "jpgd.cpp"
-#include "jpge.h"
-#include "jpge.cpp"
-PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS
 
 #if WITH_LIBJPEGTURBO
-THIRD_PARTY_INCLUDES_START
-#pragma push_macro("DLLEXPORT")
-#undef DLLEXPORT // libjpeg-turbo defines DLLEXPORT as well
-#include "turbojpeg.h"
-#pragma pop_macro("DLLEXPORT")
-THIRD_PARTY_INCLUDES_END
+	THIRD_PARTY_INCLUDES_START
+	#pragma push_macro("DLLEXPORT")
+	#undef DLLEXPORT // libjpeg-turbo defines DLLEXPORT as well
+	#include "turbojpeg.h"
+	#pragma pop_macro("DLLEXPORT")
+	THIRD_PARTY_INCLUDES_END
+#else
+	PRAGMA_DISABLE_SHADOW_VARIABLE_WARNINGS
+	#include "jpgd.h"
+	#include "jpgd.cpp"
+	#include "jpge.h"
+	#include "jpge.cpp"
+	PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS
 #endif	// WITH_LIBJPEGTURBO
 
 #ifdef __clang__
@@ -132,11 +133,11 @@ bool FJpegImageWrapper::SetCompressed(const void* InCompressedData, int64 InComp
 }
 
 
-bool FJpegImageWrapper::SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth)
+bool FJpegImageWrapper::SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth, const int32 InBytesPerRow)
 {
 	check((InFormat == ERGBFormat::RGBA || InFormat == ERGBFormat::BGRA || InFormat == ERGBFormat::Gray) && InBitDepth == 8);
 
-	bool bResult = FImageWrapperBase::SetRaw(InRawData, InRawSize, InWidth, InHeight, InFormat, InBitDepth);
+	bool bResult = FImageWrapperBase::SetRaw(InRawData, InRawSize, InWidth, InHeight, InFormat, InBitDepth, InBytesPerRow);
 
 	return bResult;
 }
@@ -144,6 +145,25 @@ bool FJpegImageWrapper::SetRaw(const void* InRawData, int64 InRawSize, const int
 
 void FJpegImageWrapper::Compress(int32 Quality)
 {
+	if (Quality == 0)
+	{
+		//default 
+		Quality = 85;
+	}
+	else if (Quality == (int32)EImageCompressionQuality::Uncompressed)
+	{
+		// fix = 1 (Uncompressed) was previously treated as max-compress
+		Quality = 100;
+	}
+	else
+	{
+		ensure(Quality >= 1 && Quality <= 100);
+
+		#define JPEG_QUALITY_MIN 30
+		// JPEG should not be used below quality JPEG_QUALITY_MIN
+		Quality = FMath::Clamp(Quality, JPEG_QUALITY_MIN, 100);
+	}
+
 #if WITH_LIBJPEGTURBO
 	CompressTurbo(Quality);
 #else
@@ -151,10 +171,6 @@ void FJpegImageWrapper::Compress(int32 Quality)
 	{
 		FScopeLock JPEGLock(&GJPEGSection);
 		
-		if (Quality == 0) {Quality = 85;}
-		ensure(Quality >= 1 && Quality <= 100);
-		Quality = FMath::Clamp(Quality, 1, 100);
-
 		check(RawData.Num());
 		check(Width > 0);
 		check(Height > 0);
@@ -176,7 +192,7 @@ void FJpegImageWrapper::Compress(int32 Quality)
 		CompressedData.AddUninitialized(RawData.Num());
 
 		// Note: OutBufferSize intentionally uses int64_t type as that's what jpge::compress_image_to_jpeg_file_in_memory expects.
-		// UE4 int64 type is not compatible with int64_t on all compilers (int64_t may be `long`, while int64 is `long long`).
+		// UE int64 type is not compatible with int64_t on all compilers (int64_t may be `long`, while int64 is `long long`).
 		int64_t OutBufferSize = CompressedData.Num();
 
 		jpge::params Parameters;
@@ -270,28 +286,26 @@ void FJpegImageWrapper::CompressTurbo(int32 Quality)
 	{
 		FScopeLock JPEGLock(&GJPEGSection);
 
+		// Quality mapping should have already been done
+		check( Quality >= JPEG_QUALITY_MIN && Quality <= 100 );
+
 		check(Compressor);
-
-		if (Quality == 0) { Quality = 85; }
-		ensure(Quality >= 1 && Quality <= 100);
-		Quality = FMath::Clamp(Quality, 1, 100);
-
 		check(RawData.Num());
 		check(Width > 0);
 		check(Height > 0);
 
-		CompressedData.Reset(RawData.Num());
-		CompressedData.AddUninitialized(RawData.Num());
-
 		const int PixelFormat = ConvertTJpegPixelFormat(RawFormat);
-		unsigned char* OutBuffer = CompressedData.GetData();
-		unsigned long OutBufferSize = static_cast<unsigned long>(CompressedData.Num());
+		const int Subsampling = TJSAMP_420;
 		const int Flags = TJFLAG_NOREALLOC | TJFLAG_FASTDCT;
 
-		const bool bSuccess = tjCompress2(Compressor, RawData.GetData(), Width, 0, Height, PixelFormat, &OutBuffer, &OutBufferSize, TJSAMP_420, Quality, Flags) == 0;
+		unsigned long OutBufferSize = tjBufSize(Width, Height, Subsampling);
+		CompressedData.SetNum(OutBufferSize);
+		unsigned char* OutBuffer = CompressedData.GetData();
+
+		const bool bSuccess = tjCompress2(Compressor, RawData.GetData(), Width, RawBytesPerRow, Height, PixelFormat, &OutBuffer, &OutBufferSize, Subsampling, Quality, Flags) == 0;
 		check(bSuccess);
 
-		CompressedData.RemoveAt((int64)OutBufferSize, CompressedData.Num() - (int64)OutBufferSize);
+		CompressedData.SetNum(OutBufferSize);
 	}
 }
 

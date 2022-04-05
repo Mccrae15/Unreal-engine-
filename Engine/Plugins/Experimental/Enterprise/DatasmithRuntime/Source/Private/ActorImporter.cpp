@@ -43,7 +43,7 @@ namespace DatasmithRuntime
 		}
 
 		ActorData.ParentId = ParentId;
-		ActorData.WorldTransform = FTransform( ActorElement->GetRotation(), ActorElement->GetTranslation(), ActorElement->GetScale() );
+		ActorData.WorldTransform = FTransform(ActorElement->GetRotation(), ActorElement->GetTranslation(), ActorElement->GetScale()) * RootComponent->GetComponentTransform();
 
 		bool bProcessSuccessful = false;
 
@@ -259,12 +259,6 @@ namespace DatasmithRuntime
 				{
 					PostProcessSettings.bOverride_VignetteIntensity = true;
 					PostProcessSettings.VignetteIntensity = PostProcess->GetVignette();
-				}
-
-				if (PostProcess->GetColorFilter() != FLinearColor::Black && PostProcess->GetColorFilter() != FLinearColor::White )
-				{
-					PostProcessSettings.bOverride_FilmWhitePoint = true;
-					PostProcessSettings.FilmWhitePoint = PostProcess->GetColorFilter();
 				}
 
 				if ( !FMath::IsNearlyEqual( PostProcess->GetSaturation(), 1.f ) )
@@ -573,7 +567,7 @@ namespace DatasmithRuntime
 		SceneComponent->ClearFlags(RF_AllFlags);
 		SceneComponent->SetFlags(RF_Transient);
 		//SceneComponent->Rename(nullptr, nullptr, REN_NonTransactional | REN_DontCreateRedirectors);
-		SceneComponent->MarkPendingKill();
+		SceneComponent->MarkAsGarbage();
 	}
 
 	void RenameObject(UObject* Object, const TCHAR* DesiredName, UObject* NewOwner)

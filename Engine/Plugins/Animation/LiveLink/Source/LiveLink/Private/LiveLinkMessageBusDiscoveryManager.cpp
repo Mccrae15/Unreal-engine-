@@ -63,7 +63,8 @@ uint32 FLiveLinkMessageBusDiscoveryManager::Run()
 			{
 				LastProviderPoolResults.Reset();
 				LastPingRequest = FGuid::NewGuid();
-				MessageEndpoint->Publish(new FLiveLinkPingMessage(LastPingRequest, ILiveLinkClient::LIVELINK_VERSION));
+				const int32 Version = ILiveLinkClient::LIVELINK_VERSION;
+				MessageEndpoint->Publish(FMessageEndpoint::MakeMessage<FLiveLinkPingMessage>(LastPingRequest, Version));
 			}
 		}
 
@@ -109,7 +110,9 @@ void FLiveLinkMessageBusDiscoveryManager::HandlePongMessage(const FLiveLinkPongM
 
 	if (Message.PollRequest == LastPingRequest)
 	{
+		// Verify Message.LiveLinkVersion to consider validity of discovered provider. Older UE always sends 1
+		constexpr bool bIsValidProvider = true;
 		const double MachineTimeOffset = LiveLinkMessageBusHelper::CalculateProviderMachineOffset(Message.CreationPlatformTime, Context);
-		LastProviderPoolResults.Emplace(MakeShared<FProviderPollResult, ESPMode::ThreadSafe>(Context->GetSender(), Message.ProviderName, Message.MachineName, MachineTimeOffset));
+		LastProviderPoolResults.Emplace(MakeShared<FProviderPollResult, ESPMode::ThreadSafe>(Context->GetSender(), Message.ProviderName, Message.MachineName, MachineTimeOffset, bIsValidProvider));
 	}
 }

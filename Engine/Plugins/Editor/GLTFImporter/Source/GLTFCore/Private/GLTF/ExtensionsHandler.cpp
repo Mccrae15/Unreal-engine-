@@ -11,8 +11,8 @@ namespace GLTF
 	namespace
 	{
 		static const TArray<FString> LightExtensions = {TEXT("KHR_lights_punctual"), TEXT("KHR_lights")};
-		static const TArray<FString> BaseExtensions  = LightExtensions;
-
+		static const TArray<FString> MaterialsExtensions = {TEXT("KHR_materials_variants")};
+	
 		TSharedPtr<FJsonObject> GetLightExtension(const TSharedPtr<FJsonObject>& Object)
 		{
 			if (!Object)
@@ -51,6 +51,11 @@ namespace GLTF
 	{
 		const TSharedPtr<FJsonObject>& ExtensionsObj = GetExtensions(Object);
 
+		if (!ExtensionsObj.IsValid())
+		{
+			return;
+		}
+
 		// lights
 
 		if (TSharedPtr<FJsonObject> LightsObj = GetLightExtension(ExtensionsObj))
@@ -68,7 +73,31 @@ namespace GLTF
 			}
 		}
 
-		CheckExtensions(Object, BaseExtensions);
+		// variants
+
+		if (ExtensionsObj->HasTypedField<EJson::Object>(TEXT("KHR_materials_variants")))
+		{
+			Asset->ExtensionsUsed.Add(EExtension::KHR_MaterialsVariants);
+
+			TSharedPtr<FJsonObject> VariantsObj = ExtensionsObj->GetObjectField(TEXT("KHR_materials_variants"));
+			uint32 VariantsCount = ArraySize(*VariantsObj, TEXT("variants"));
+			if (VariantsCount > 0)
+			{
+				Asset->Variants.Reserve(VariantsCount);
+				for (const TSharedPtr<FJsonValue>& Value : VariantsObj->GetArrayField(TEXT("variants")))
+				{
+					const TSharedPtr<FJsonObject>& NameObj = Value->AsObject();
+					const FString Name = NameObj->GetStringField(TEXT("name"));
+					Asset->Variants.Add(Name);
+				}
+			}
+		}
+		
+		TArray<FString> SupportedExtensions;
+		SupportedExtensions.Append(LightExtensions);
+		SupportedExtensions.Append(MaterialsExtensions);
+
+		CheckExtensions(Object, SupportedExtensions);
 	}
 
 	void FExtensionsHandler::SetupMaterialExtensions(const FJsonObject& Object, FMaterial& Material) const
@@ -82,10 +111,16 @@ namespace GLTF
 		{
 			KHR_materials_pbrSpecularGlossiness = 0,
 			KHR_materials_unlit,
+			KHR_materials_clearcoat,
+			KHR_materials_transmission,
+			KHR_materials_sheen,
+			KHR_materials_ior,
+			KHR_materials_specular,
 			MSFT_packing_occlusionRoughnessMetallic,
 			MSFT_packing_normalRoughnessMetallic,
 		};
-		static const TArray<FString> Extensions = {TEXT("KHR_materials_pbrSpecularGlossiness"), TEXT("KHR_materials_unlit"),
+		static const TArray<FString> Extensions = {TEXT("KHR_materials_pbrSpecularGlossiness"), TEXT("KHR_materials_unlit"), TEXT("KHR_materials_clearcoat"),
+												   TEXT("KHR_materials_transmission"), TEXT("KHR_materials_sheen"), TEXT("KHR_materials_ior"), TEXT("KHR_materials_specular"),
 		                                           TEXT("MSFT_packing_occlusionRoughnessMetallic"), TEXT("MSFT_packing_normalRoughnessMetallic")};
 
 		const FJsonObject& ExtensionsObj = *Object.GetObjectField(TEXT("extensions"));
@@ -102,7 +137,7 @@ namespace GLTF
 				{
 					const FJsonObject& PBR = ExtObj;
 					GLTF::SetTextureMap(PBR, TEXT("diffuseTexture"), nullptr, Asset->Textures, Material.BaseColor);
-					Material.BaseColorFactor = GetVec4(PBR, TEXT("diffuseFactor"), FVector4(1.0f, 1.0f, 1.0f, 1.0f));
+					Material.BaseColorFactor = FVector4f(GetVec4(PBR, TEXT("diffuseFactor"), FVector4(1.0f, 1.0f, 1.0f, 1.0f)));
 
 					GLTF::SetTextureMap(PBR, TEXT("specularGlossinessTexture"), nullptr, Asset->Textures, Material.SpecularGlossiness.Map);
 					Material.SpecularGlossiness.SpecularFactor   = GetVec3(PBR, TEXT("specularFactor"), FVector(1.0f));
@@ -117,6 +152,68 @@ namespace GLTF
 				{
 					Material.bIsUnlitShadingModel = true;
 					Asset->ExtensionsUsed.Add(EExtension::KHR_MaterialsUnlit);
+				}
+				break;
+				case KHR_materials_clearcoat:
+				{
+					const FJsonObject& ClearCoat = ExtObj;
+
+					Material.bHasClearCoat = true;
+
+					Material.ClearCoat.ClearCoatFactor = GetScalar(ClearCoat, TEXT("clearcoatFactor"), 1.0f);
+					GLTF::SetTextureMap(ClearCoat, TEXT("clearcoatTexture"), nullptr, Asset->Textures, Material.ClearCoat.ClearCoatMap);
+
+					Material.ClearCoat.Roughness = GetScalar(ClearCoat, TEXT("clearcoatRoughnessFactor"), 0.0f);
+					GLTF::SetTextureMap(ClearCoat, TEXT("clearcoatRoughnessTexture"), nullptr, Asset->Textures, Material.ClearCoat.RoughnessMap);
+
+					Material.ClearCoat.NormalMapUVScale = GLTF::SetTextureMap(ClearCoat, TEXT("clearcoatNormalTexture"), TEXT("scale"), Asset->Textures, Material.ClearCoat.NormalMap);
+
+					Asset->ExtensionsUsed.Add(EExtension::KHR_MaterialsClearCoat);
+				}
+				break;
+				case KHR_materials_transmission:
+				{
+					const FJsonObject& Transm = ExtObj;
+
+					Material.bHasTransmission = true;
+
+					Material.Transmission.TransmissionFactor = GetScalar(Transm, TEXT("transmissionFactor"), 0.0f);
+					GLTF::SetTextureMap(Transm, TEXT("transmissionTexture"), nullptr, Asset->Textures, Material.Transmission.TransmissionMap);
+
+					Asset->ExtensionsUsed.Add(EExtension::KHR_MaterialsTransmission);
+				}
+				break;
+				case KHR_materials_sheen:
+				{
+					const FJsonObject& Sheen = ExtObj;
+
+					Material.bHasSheen = true;
+					Material.Sheen.SheenColorFactor = GetVec3(Sheen, TEXT("sheenColorFactor"));
+
+					Asset->ExtensionsUsed.Add(EExtension::KHR_MaterialsSheen);
+				}
+				break;
+				case KHR_materials_ior:
+				{
+					const FJsonObject& IOR = ExtObj;
+
+					Material.bHasIOR = true;
+					Material.IOR = GetScalar(IOR, TEXT("ior"), 1.0f);
+
+					Asset->ExtensionsUsed.Add(EExtension::KHR_MaterialsIOR);
+				}
+				break;
+				case KHR_materials_specular:
+				{
+					const FJsonObject& Specular = ExtObj;
+
+					Material.bHasSpecular = true;
+					Material.Specular.SpecularFactor = GetScalar(Specular, TEXT("specularFactor"), 1.0f);
+					Material.Specular.SpecularColorFactor = GetVec3(Specular, TEXT("specularColorFactor"));
+					GLTF::SetTextureMap(Specular, TEXT("specularTexture"), nullptr, Asset->Textures, Material.Specular.SpecularMap);
+					GLTF::SetTextureMap(Specular, TEXT("specularColorTexture"), nullptr, Asset->Textures, Material.Specular.SpecularColorMap);
+
+					Asset->ExtensionsUsed.Add(EExtension::KHR_MaterialsSpecular);
 				}
 				break;
 				case MSFT_packing_occlusionRoughnessMetallic:
@@ -180,7 +277,56 @@ namespace GLTF
 
 	void FExtensionsHandler::SetupPrimitiveExtensions(const FJsonObject& Object, FPrimitive& Primitive) const
 	{
-		static const TArray<FString> Extensions;
+		if (!Object.HasTypedField<EJson::Object>(TEXT("extensions")))
+		{
+			return;
+		}
+
+		enum
+		{
+			KHR_materials_variants = 0
+		};
+		static const TArray<FString> Extensions = { TEXT("KHR_materials_variants") };
+
+		const FJsonObject& ExtensionsObj = *Object.GetObjectField(TEXT("extensions"));
+		for (int32 Index = 0; Index < Extensions.Num(); ++Index)
+		{
+			const FString ExtensionName = Extensions[Index];
+			if (!ExtensionsObj.HasTypedField<EJson::Object>(ExtensionName))
+				continue;
+
+			const FJsonObject& ExtObj = *ExtensionsObj.GetObjectField(ExtensionName);
+			switch (Index)
+			{
+				case KHR_materials_variants:
+				{
+					const TArray<TSharedPtr<FJsonValue>>& Mappings = ExtObj.GetArrayField(TEXT("mappings"));
+
+					for (const TSharedPtr<FJsonValue>& Mapping : Mappings)
+					{
+						FVariantMapping& VariantMapping = Primitive.VariantMappings.Emplace_GetRef();
+
+						const TSharedPtr<FJsonObject> MappingObj = Mapping->AsObject();
+						VariantMapping.MaterialIndex = MappingObj->GetIntegerField(TEXT("material"));
+						const TArray<TSharedPtr<FJsonValue>>& Variants = MappingObj->GetArrayField(TEXT("variants"));
+
+						VariantMapping.VariantIndices.Reserve(Variants.Num());
+						for (const TSharedPtr<FJsonValue>& Variant : Variants)
+						{
+							const int32 VariantIndex = static_cast<int32>(Variant->AsNumber());
+							VariantMapping.VariantIndices.Add(VariantIndex);
+						}
+					}
+
+					Asset->ExtensionsUsed.Add(EExtension::KHR_MaterialsVariants);
+				}
+				break;
+				default:
+					check(false);
+					break;
+			}
+		}
+
 		CheckExtensions(Object, Extensions);
 	}
 

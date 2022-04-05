@@ -24,7 +24,7 @@ public:
 	SLATE_BEGIN_ARGS(SSequencerPlayRateCombo)
 		: _StyleSet(&FEditorStyle::Get())
 		, _BlockLocation(EMultiBlockLocation::None)
-		, _StyleName("Toolbar")
+		, _StyleName("SlimToolBar")
 	{}
 
 		SLATE_ARGUMENT(const ISlateStyle*, StyleSet)
@@ -68,6 +68,8 @@ private:
 
 	EVisibility GetClockSourceVisibility() const;
 	const FSlateBrush* GetClockSourceImage() const;
+
+	bool GetIsSequenceReadOnly() const;
 
 	/** Sequencer pointer */
 	TWeakPtr<FSequencer> WeakSequencer;

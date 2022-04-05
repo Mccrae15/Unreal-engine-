@@ -8,15 +8,20 @@
 
 IMPLEMENT_GLOBAL_SHADER(FScreenPassVS, "/Engine/Private/ScreenPass.usf", "ScreenPassVS", SF_Vertex);
 
+
+RENDERER_API const FScreenTransform FScreenTransform::Identity(FVector2f(1.0f, 1.0f), FVector2f(0.0f, 0.0f));
+RENDERER_API const FScreenTransform FScreenTransform::ScreenPosToViewportUV(FVector2f(0.5f, -0.5f), FVector2f(0.5f, 0.5f));
+RENDERER_API const FScreenTransform FScreenTransform::ViewportUVToScreenPos(FVector2f(2.0f, -2.0f), FVector2f(-1.0f, 1.0f));
+
 const FTextureRHIRef& GetMiniFontTexture()
 {
-	if (GEngine->MiniFontTexture)
+	if (GSystemTextures.AsciiTexture)
 	{
-		return GEngine->MiniFontTexture->Resource->TextureRHI;
+		return GSystemTextures.AsciiTexture->GetRenderTargetItem().ShaderResourceTexture;
 	}
 	else
 	{
-		return GSystemTextures.WhiteDummy->GetRenderTargetItem().TargetableTexture;
+		return GSystemTextures.WhiteDummy->GetRenderTargetItem().ShaderResourceTexture;
 	}
 }
 
@@ -26,7 +31,7 @@ FRDGTextureRef TryCreateViewFamilyTexture(FRDGBuilder& GraphBuilder, const FScen
 	FRDGTextureRef Texture = nullptr;
 	if (TextureRHI)
 	{
-		Texture = GraphBuilder.RegisterExternalTexture(CreateRenderTarget(TextureRHI, TEXT("ViewFamilyTexture")));
+		Texture = RegisterExternalTexture(GraphBuilder, TextureRHI, TEXT("ViewFamilyTexture"));
 		GraphBuilder.SetTextureAccessFinal(Texture, ERHIAccess::RTV);
 	}
 	return Texture;
@@ -34,38 +39,60 @@ FRDGTextureRef TryCreateViewFamilyTexture(FRDGBuilder& GraphBuilder, const FScen
 
 FScreenPassTextureViewportParameters GetScreenPassTextureViewportParameters(const FScreenPassTextureViewport& InViewport)
 {
-	const FVector2D Extent(InViewport.Extent);
-	const FVector2D ViewportMin(InViewport.Rect.Min.X, InViewport.Rect.Min.Y);
-	const FVector2D ViewportMax(InViewport.Rect.Max.X, InViewport.Rect.Max.Y);
-	const FVector2D ViewportSize = ViewportMax - ViewportMin;
+	const FVector2f Extent(InViewport.Extent);
+	const FVector2f ViewportMin(InViewport.Rect.Min.X, InViewport.Rect.Min.Y);
+	const FVector2f ViewportMax(InViewport.Rect.Max.X, InViewport.Rect.Max.Y);
+	const FVector2f ViewportSize = ViewportMax - ViewportMin;
 
 	FScreenPassTextureViewportParameters Parameters;
 
 	if (!InViewport.IsEmpty())
 	{
 		Parameters.Extent = Extent;
-		Parameters.ExtentInverse = FVector2D(1.0f / Extent.X, 1.0f / Extent.Y);
+		Parameters.ExtentInverse = FVector2f(1.0f / Extent.X, 1.0f / Extent.Y);
 
-		Parameters.ScreenPosToViewportScale = FVector2D(0.5f, -0.5f) * ViewportSize;
+		Parameters.ScreenPosToViewportScale = FVector2f(0.5f, -0.5f) * ViewportSize;
 		Parameters.ScreenPosToViewportBias = (0.5f * ViewportSize) + ViewportMin;
 
 		Parameters.ViewportMin = InViewport.Rect.Min;
 		Parameters.ViewportMax = InViewport.Rect.Max;
 
 		Parameters.ViewportSize = ViewportSize;
-		Parameters.ViewportSizeInverse = FVector2D(1.0f / Parameters.ViewportSize.X, 1.0f / Parameters.ViewportSize.Y);
+		Parameters.ViewportSizeInverse = FVector2f(1.0f / Parameters.ViewportSize.X, 1.0f / Parameters.ViewportSize.Y);
 
 		Parameters.UVViewportMin = ViewportMin * Parameters.ExtentInverse;
 		Parameters.UVViewportMax = ViewportMax * Parameters.ExtentInverse;
 
 		Parameters.UVViewportSize = Parameters.UVViewportMax - Parameters.UVViewportMin;
-		Parameters.UVViewportSizeInverse = FVector2D(1.0f / Parameters.UVViewportSize.X, 1.0f / Parameters.UVViewportSize.Y);
+		Parameters.UVViewportSizeInverse = FVector2f(1.0f / Parameters.UVViewportSize.X, 1.0f / Parameters.UVViewportSize.Y);
 
 		Parameters.UVViewportBilinearMin = Parameters.UVViewportMin + 0.5f * Parameters.ExtentInverse;
 		Parameters.UVViewportBilinearMax = Parameters.UVViewportMax - 0.5f * Parameters.ExtentInverse;
 	}
 
 	return Parameters;
+}
+
+// static
+FScreenTransform FScreenTransform::ChangeTextureUVCoordinateFromTo(
+	const FScreenPassTextureViewport& SrcViewport,
+	const FScreenPassTextureViewport& DestViewport)
+{
+	return (
+		ChangeTextureBasisFromTo(SrcViewport, ETextureBasis::TextureUV, ETextureBasis::ViewportUV) *
+		ChangeTextureBasisFromTo(DestViewport, ETextureBasis::ViewportUV, ETextureBasis::TextureUV));
+}
+
+// static
+FScreenTransform FScreenTransform::SvPositionToViewportUV(const FIntRect& SrcViewport)
+{
+	return (FScreenTransform::Identity - SrcViewport.Min) / SrcViewport.Size();
+}
+
+// static
+FScreenTransform FScreenTransform::DispatchThreadIdToViewportUV(const FIntRect& SrcViewport)
+{
+	return (FScreenTransform::Identity + 0.5f) / SrcViewport.Size();
 }
 
 void SetScreenPassPipelineState(FRHICommandList& RHICmdList, const FScreenPassPipelineState& ScreenPassDraw)
@@ -80,7 +107,7 @@ void SetScreenPassPipelineState(FRHICommandList& RHICmdList, const FScreenPassPi
 	GraphicsPSOInit.BoundShaderState.PixelShaderRHI = ScreenPassDraw.PixelShader.GetPixelShader();
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, ScreenPassDraw.StencilRef);
 }
 
 void AddDrawTexturePass(
@@ -153,10 +180,10 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DepthTexture)
-		SHADER_PARAMETER(FVector4, SourceTexelOffsets01)
-		SHADER_PARAMETER(FVector4, SourceTexelOffsets23)
-		SHADER_PARAMETER(FVector2D, SourceMaxUV)
-		SHADER_PARAMETER(FVector2D, DestinationResolution)
+		SHADER_PARAMETER(FVector4f, SourceTexelOffsets01)
+		SHADER_PARAMETER(FVector4f, SourceTexelOffsets23)
+		SHADER_PARAMETER(FVector2f, SourceMaxUV)
+		SHADER_PARAMETER(FVector2f, DestinationResolution)
 		SHADER_PARAMETER(uint32, DownsampleDepthFilter)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
@@ -185,29 +212,36 @@ void AddDownsampleDepthPass(
 	FDownsampleDepthPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FDownsampleDepthPS::FParameters>();
 	PassParameters->View = View.ViewUniformBuffer;
 	PassParameters->DepthTexture = Input.Texture;
-	PassParameters->SourceTexelOffsets01 = FVector4(0.0f, 0.0f, 1.0f / OutputViewport.Extent.X, 0.0f);
-	PassParameters->SourceTexelOffsets23 = FVector4(0.0f, 1.0f / OutputViewport.Extent.Y, 1.0f / OutputViewport.Extent.X, 1.0f / OutputViewport.Extent.Y);
-	PassParameters->SourceMaxUV = FVector2D((View.ViewRect.Max.X - 0.5f) / InputViewport.Extent.X, (View.ViewRect.Max.Y - 0.5f) / InputViewport.Extent.Y);
+	PassParameters->SourceTexelOffsets01 = FVector4f(0.0f, 0.0f, 1.0f / OutputViewport.Extent.X, 0.0f);
+	PassParameters->SourceTexelOffsets23 = FVector4f(0.0f, 1.0f / OutputViewport.Extent.Y, 1.0f / OutputViewport.Extent.X, 1.0f / OutputViewport.Extent.Y);
+	PassParameters->SourceMaxUV = FVector2f((View.ViewRect.Max.X - 0.5f) / InputViewport.Extent.X, (View.ViewRect.Max.Y - 0.5f) / InputViewport.Extent.Y);
 	PassParameters->DownsampleDepthFilter = (uint32)DownsampleDepthFilter;
 
 	const int32 DownsampledSizeX = OutputViewport.Rect.Width();
 	const int32 DownsampledSizeY = OutputViewport.Rect.Height();
-	PassParameters->DestinationResolution = FVector2D(DownsampledSizeX, DownsampledSizeY);
+	PassParameters->DestinationResolution = FVector2f(DownsampledSizeX, DownsampledSizeY);
 
 	PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(Output.Texture, Output.LoadAction, Output.LoadAction, FExclusiveDepthStencil::DepthWrite_StencilWrite);
 
 	FRHIDepthStencilState* DepthStencilState = TStaticDepthStencilState<true, CF_Always>::GetRHI();
 
-	auto GetDownsampleDepthPassName = [](EDownsampleDepthFilter DownsampleDepthFilter)
-	{
-		switch (DownsampleDepthFilter)
-		{
-		case EDownsampleDepthFilter::Point:						return RDG_EVENT_NAME("DownsampleDepth-Point");
-		case EDownsampleDepthFilter::Max:						return RDG_EVENT_NAME("DownsampleDepth-Max");
-		case EDownsampleDepthFilter::Checkerboard:				return RDG_EVENT_NAME("DownsampleDepth-CheckerMinMax");
-		default:												return RDG_EVENT_NAME("MissingName");
-		}
+	static const TCHAR* kFilterNames[] = {
+		TEXT("Point"),
+		TEXT("Max"),
+		TEXT("CheckerMinMax"),
 	};
 
-	AddDrawScreenPass(GraphBuilder, GetDownsampleDepthPassName(DownsampleDepthFilter), View, OutputViewport, InputViewport, VertexShader, PixelShader, DepthStencilState, PassParameters);
+	AddDrawScreenPass(
+		GraphBuilder,
+		RDG_EVENT_NAME("DownsampleDepth(%s) %dx%dx -> %dx%d",
+			kFilterNames[int32(DownsampleDepthFilter)],
+			InputViewport.Rect.Width(),
+			InputViewport.Rect.Height(),
+			OutputViewport.Rect.Width(),
+			OutputViewport.Rect.Height()),
+		View,
+		OutputViewport, InputViewport,
+		VertexShader, PixelShader,
+		DepthStencilState,
+		PassParameters);
 }

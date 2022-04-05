@@ -351,6 +351,7 @@ class FPhysXCPUDispatcherSingleThread : public PxCpuDispatcher
 	{
 		SCOPE_CYCLE_COUNTER(STAT_PhysXSingleThread);
 		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Physics);
+		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver);
 
 		TaskStack.Push(&Task);
 		if (TaskStack.Num() > 1)
@@ -906,6 +907,15 @@ void GatherPhysXStats_AssumesLocked(PxScene* PSyncScene)
 		SET_DWORD_STAT(STAT_NumStaticBodies, SimStats.nbStaticBodies);
 		SET_DWORD_STAT(STAT_NumMobileBodies, SimStats.nbDynamicBodies);
 
+		
+		CSV_CUSTOM_STAT(PhysicsCounters, NumPotentialContacts, (int32)SimStats.nbDiscreteContactPairsTotal, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(PhysicsCounters, NumContacts, (int32)SimStats.nbDiscreteContactPairsWithContacts, ECsvCustomStatOp::Set);
+		//CSV_CUSTOM_STAT(PhysicsVerbose, NumActiveConstraints, (int32)SimStats.nbActiveConstraints, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(PhysicsCounters, NumActiveDynamicBodies, (int32)SimStats.nbActiveDynamicBodies, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(PhysicsCounters, NumActiveKinematicBodies, (int32)SimStats.nbActiveKinematicBodies, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(PhysicsCounters, NumStaticBodies, (int32)SimStats.nbStaticBodies, ECsvCustomStatOp::Set);
+		CSV_CUSTOM_STAT(PhysicsCounters, NumDynamicBodies, (int32)SimStats.nbDynamicBodies, ECsvCustomStatOp::Set);
+
 		//SET_DWORD_STAT(STAT_NumBroadphaseAdds, SimStats.getNbBroadPhaseAdds(PxSimulationStatistics::VolumeType::eRIGID_BODY));	//TODO: These do not seem to work
 		//SET_DWORD_STAT(STAT_NumBroadphaseRemoves, SimStats.getNbBroadPhaseRemoves(PxSimulationStatistics::VolumeType::eRIGID_BODY));
 
@@ -916,6 +926,7 @@ void GatherPhysXStats_AssumesLocked(PxScene* PSyncScene)
 		}
 
 		SET_DWORD_STAT(STAT_NumShapes, NumShapes);
+		CSV_CUSTOM_STAT(PhysicsCounters, NumShapes, (int32)NumShapes, ECsvCustomStatOp::Set);
 
 	}
 }
@@ -960,7 +971,7 @@ void GatherClothingStats(const UWorld* World)
 bool FPhysScene_PhysX::MarkForPreSimKinematicUpdate(USkeletalMeshComponent* InSkelComp, ETeleportType InTeleport, bool bNeedsSkinning)
 {
 	// If null, or pending kill, do nothing
-	if (InSkelComp != nullptr && !InSkelComp->IsPendingKill())
+	if (IsValid(InSkelComp))
 	{
 		// If we are already flagged, just need to update info
 		if (InSkelComp->bDeferredKinematicUpdate)
@@ -1383,7 +1394,7 @@ void FPhysScene_PhysX::SyncComponentsToBodies_AssumesLocked()
 			}
 
 			// Check if we didn't fall out of the world
-			if (Owner != NULL && !Owner->IsPendingKill())
+			if (IsValid(Owner))
 			{
 				Owner->CheckStillInWorld();
 			}
@@ -1461,7 +1472,7 @@ void FPhysScene_PhysX::DispatchPhysNotifications_AssumesLocked()
 
 }
 
-void FPhysScene_PhysX::SetUpForFrame(const FVector* NewGrav, float InDeltaSeconds, float InMaxPhysicsDeltaTime, float InMaxSubstepDeltaTime, int32 InMaxSubsteps, bool bUnused)
+void FPhysScene_PhysX::SetUpForFrame(const FVector* NewGrav, float InDeltaSeconds, float UnusedMinPhysicsDeltaTime, float InMaxPhysicsDeltaTime, float InMaxSubstepDeltaTime, int32 InMaxSubsteps, bool bUnused)
 {
 	DeltaSeconds = InDeltaSeconds;
 	MaxPhysicsDeltaTime = InMaxPhysicsDeltaTime;
@@ -1569,6 +1580,8 @@ void FPhysScene_PhysX::EndFrame(ULineBatchComponent* InLineBatcher)
 
 	// Perform any collision notification events
 	DispatchPhysNotifications_AssumesLocked();
+	
+	GatherPhysXStats_AssumesLocked(GetPxScene());
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	// Handle debug rendering

@@ -100,7 +100,7 @@ void FInstanceRegistry::DestroyInstance(FInstanceHandle InstanceHandle)
 		const bool bHasFinished = (GExitPurge || Instance.HasFinished());
 		if (!bHasFinished)
 		{
-			UE_LOG(LogMovieScene, Verbose, TEXT("Instance being destroyed without finishing evaluation."));
+			UE_LOG(LogMovieSceneECS, Verbose, TEXT("Instance being destroyed without finishing evaluation."));
 		}
 		Instance.DestroyImmediately(Linker);
 		Instances.RemoveAt(InstanceHandle.InstanceID);
@@ -144,17 +144,6 @@ void FInstanceRegistry::CleanupLinkerEntities(const TSet<FMovieSceneEntityID>& E
 		for (FSequenceInstance& Instance : Instances)
 		{
 			Instance.Ledger.CleanupLinkerEntities(ExpiredBoundObjects);
-		}
-	}
-}
-
-void FInstanceRegistry::FinalizeFrame()
-{
-	for (FSequenceInstance& SequenceInstance : Instances)
-	{
-		if (SequenceInstance.IsRootSequence())
-		{
-			SequenceInstance.RunLegacyTrackTemplates();
 		}
 	}
 }

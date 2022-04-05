@@ -25,6 +25,36 @@ namespace Chaos
 		Automatic
 	};
 
+	enum EDifferentialType : uint8
+	{
+		UndefinedDrive,
+		AllWheelDrive,
+		FrontWheelDrive,
+		RearWheelDrive,
+	};
+
+	struct CHAOSVEHICLESCORE_API FSimpleDifferentialConfig
+	{
+		FSimpleDifferentialConfig()
+			: DifferentialType(EDifferentialType::RearWheelDrive)
+			, FrontRearSplit(0.5f)
+		{
+		}
+
+		EDifferentialType DifferentialType;
+		float FrontRearSplit;
+	};
+
+	class CHAOSVEHICLESCORE_API FSimpleDifferentialSim : public TVehicleSystem<FSimpleDifferentialConfig>
+	{
+	public:
+		FSimpleDifferentialSim(const FSimpleDifferentialConfig* SetupIn) 
+			: TVehicleSystem<FSimpleDifferentialConfig>(SetupIn)
+			, FrontRearSplit(Setup().FrontRearSplit) {}
+
+		float FrontRearSplit;
+	};
+
 	struct CHAOSVEHICLESCORE_API FSimpleTransmissionConfig
 	{
 		FSimpleTransmissionConfig()
@@ -49,6 +79,7 @@ namespace Chaos
 		float TransmissionEfficiency;	// Loss from friction in the system mean we might run at around 0.94 Efficiency
 
 		ETransmissionType TransmissionType;	// Specify Automatic or Manual transmission
+
 		bool AutoReverse;					// Arcade handling - holding Brake switches into reverse after vehicle has stopped
 	};
 
@@ -69,7 +100,7 @@ namespace Chaos
 		/** set the target gear to one higher than current target, will clamp gear index within rage */
 		void ChangeUp()
 		{
-			SetGear(TargetGear + 1);
+			SetGear(TargetGear + 1);		
 		}
 
 		/** set the target gear to one lower than current target, will clamp gear index within rage */
@@ -121,6 +152,11 @@ namespace Chaos
 		/** Get the transmission RPM, from the specified engine RPM and gear selection */
 		float GetTransmissionRPM(float InEngineRPM, int InGear)
 		{
+			if (InGear == 0) // neutral, don't want to divide by zero
+			{
+				return 0.0f;
+			}
+
 			return InEngineRPM / GetGearRatio(InGear);
 		}
 

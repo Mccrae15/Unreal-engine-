@@ -28,6 +28,10 @@ struct FParticleTransformTrack
 	UPROPERTY()
 	float BeginOffset;
 
+	/** If this flag is set true, the particle represented by this track deactives on the final keyframe. */
+	UPROPERTY()
+	bool bDeactivateOnEnd;
+
 	/**
 	 * The above raw track is just the key data and doesn't know at which time those keys are placed, this is
 	 * a list of the timestamps for each entry in TransformTrack
@@ -70,11 +74,20 @@ struct FCacheSpawnableTemplate
 {
 	GENERATED_BODY()
 
+	FCacheSpawnableTemplate()
+		: DuplicatedTemplate(nullptr)
+		, InitialTransform(FTransform::Identity)
+		, ComponentTransform(FTransform::Identity)
+	{}
+
 	UPROPERTY(VisibleAnywhere, Category = "Caching")
 	UObject* DuplicatedTemplate;
 
 	UPROPERTY(VisibleAnywhere, Category = "Caching")
 	FTransform InitialTransform;
+
+	UPROPERTY(VisibleAnywhere, Category = "Caching")
+	FTransform ComponentTransform;
 };
 
 struct FPlaybackTickRecord
@@ -90,6 +103,11 @@ struct FPlaybackTickRecord
 	{
 		LastTime = 0.0f;
 		LastEventPerTrack.Reset();
+	}
+
+	void SetLastTime(float InTime)
+	{
+		LastTime = InTime;
 	}
 
 	float GetTime() const
@@ -152,6 +170,7 @@ struct FPendingParticleWrite
 {
 	int32                       ParticleIndex;
 	FTransform                  PendingTransform;
+	bool						bPendingDeactivate = false;
 	TArray<TPair<FName, float>> PendingCurveData;
 };
 
@@ -233,6 +252,11 @@ public:
 
 	UChaosCache();
 
+	//~ UObject interface
+	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostLoad() override;
+	//~ UObject interface END
+
 	/**
 	 * As we record post-simulate of physics, we're almost always taking data from a non-main thread (physics thread).
 	 * Because of this we can't directly write into the cache, but instead into a pending frame queue that needs to be
@@ -244,7 +268,7 @@ public:
 	 * Reset and initialize a cache to make it ready to record the specified component
 	 * @param InComponent Component to prepare the cache for
 	 */
-	FCacheUserToken BeginRecord(UPrimitiveComponent* InComponent, FGuid InAdapterId);
+	FCacheUserToken BeginRecord(UPrimitiveComponent* InComponent, FGuid InAdapterId, const FTransform& SpaceTransform);
 
 	/**
 	 * End the recording session for the cache. At this point the cache is deemed to now contain
@@ -291,7 +315,7 @@ public:
 	 * when a cache is dragged into the scene.
 	 * @param InComponent Component to build the spawnable template from
 	 */
-	void BuildSpawnableFromComponent(UPrimitiveComponent* InComponent);
+	void BuildSpawnableFromComponent(UPrimitiveComponent* InComponent, const FTransform& SpaceTransform);
 
 	/**
 	 * Read access to the spawnable template stored in the cache
@@ -355,10 +379,21 @@ private:
 	UPROPERTY()
 	FGuid AdapterGuid;
 
+	/** Version for controlling conditioning of older caches to work with current system. Newly created caches should always be saved as CurrentVersion. */
+	UPROPERTY()
+	int32 Version;
+
+	// Version 0 : Pre versioning.
+	// Version 1 : Introduction of actor space transforms & removal of baked MassTOLocal transform in GeometryCollections.
+	static constexpr int32 CurrentVersion = 1;
+
 	/** Pending writes from all threads to be consumed on the game thread, triggered by the recording cache manager */
 	TQueue<FPendingFrameWrite, EQueueMode::Mpsc> PendingWrites;
 
 	/** Counts for current number of users, should only ever have one recorder, and if we do no playbacks */
 	std::atomic<int32> CurrentRecordCount;
 	std::atomic<int32> CurrentPlaybackCount;
+
+	/** Indicates that we need to strip MassToLocal before playing the cache. */
+	bool bStripMassToLocal;
 };

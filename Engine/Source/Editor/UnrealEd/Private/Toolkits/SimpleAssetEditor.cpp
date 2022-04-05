@@ -40,37 +40,26 @@ const FName FSimpleAssetEditor::SimpleEditorAppIdentifier( TEXT( "GenericEditorA
 FSimpleAssetEditor::~FSimpleAssetEditor()
 {
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.RemoveAll(this);
-	GEditor->OnObjectsReplaced().RemoveAll(this);
+	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
 
 	DetailsView.Reset();
-	PropertiesTab.Reset();
 }
 
 
 void FSimpleAssetEditor::InitEditor( const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, const TArray<UObject*>& ObjectsToEdit, FGetDetailsViewObjects GetDetailsViewObjects )
 {
-	const bool bIsUpdatable = false;
-	const bool bAllowFavorites = true;
-	const bool bIsLockable = false;
-
 	EditingObjects = ObjectsToEdit;
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.AddSP(this, &FSimpleAssetEditor::HandleAssetPostImport);
-	GEditor->OnObjectsReplaced().AddSP(this, &FSimpleAssetEditor::OnObjectsReplaced);
+	FCoreUObjectDelegates::OnObjectsReplaced.AddSP(this, &FSimpleAssetEditor::OnObjectsReplaced);
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>( "PropertyEditor" );
-	const FDetailsViewArgs DetailsViewArgs( bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false );
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 	DetailsView = PropertyEditorModule.CreateDetailView( DetailsViewArgs );
-	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout( "Standalone_SimpleAssetEditor_Layout_v3" )
+	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout( "Standalone_SimpleAssetEditor_Layout_v4" )
 	->AddArea
 	(
 		FTabManager::NewPrimaryArea() ->SetOrientation(Orient_Vertical)
-		->Split
-		(
-			FTabManager::NewStack()
-			->SetSizeCoefficient(0.1f)
-			->SetHideTabWell( true )
-			->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-		)
 		->Split
 		(
 			FTabManager::NewSplitter()
@@ -246,9 +235,9 @@ TSharedRef<SDockTab> FSimpleAssetEditor::SpawnPropertiesTab( const FSpawnTabArgs
 	check( Args.GetTabId() == PropertiesTabId );
 
 	return SNew(SDockTab)
-		.Icon( FEditorStyle::GetBrush("GenericEditor.Tabs.Properties") )
 		.Label( LOCTEXT("GenericDetailsTitle", "Details") )
 		.TabColorScale( GetTabColorScale() )
+		.OnCanCloseTab_Lambda([]() { return false; })
 		[
 			DetailsView.ToSharedRef()
 		];

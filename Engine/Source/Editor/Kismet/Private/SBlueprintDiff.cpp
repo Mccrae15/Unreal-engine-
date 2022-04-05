@@ -24,6 +24,7 @@
 #include "WidgetBlueprint.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Algo/Transform.h"
 
 #include "Subsystems/AssetEditorSubsystem.h"
 
@@ -259,6 +260,24 @@ public:
 		, NewDetails(InNewObject, FDetailsDiff::FOnDisplayedPropertiesChanged())
 	{
 		OldDetails.DiffAgainst(NewDetails, DifferingProperties, true);
+
+		TSet<FPropertyPath> PropertyPaths;
+		Algo::Transform(DifferingProperties, PropertyPaths,
+			[&InOldObject](const FSingleObjectDiffEntry& DiffEntry)
+			{
+				return DiffEntry.Identifier.ResolvePath(InOldObject);
+			});
+
+		OldDetails.DetailsWidget()->UpdatePropertyAllowList(PropertyPaths);
+
+		PropertyPaths.Reset();
+		Algo::Transform(DifferingProperties, PropertyPaths,
+			[&InNewObject](const FSingleObjectDiffEntry& DiffEntry)
+			{
+				return DiffEntry.Identifier.ResolvePath(InNewObject);
+			});
+
+		NewDetails.DetailsWidget()->UpdatePropertyAllowList(PropertyPaths);
 	}
 
 	virtual void GenerateTreeEntries(TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutTreeEntries, TArray< TSharedPtr<FBlueprintDifferenceTreeEntry> >& OutRealDifferences) override
@@ -375,18 +394,6 @@ public:
 			if (OldInterfaces != NewInterfaces)
 			{
 				FText DiffText = FText::Format(LOCTEXT("InterfacesChanged", "Interfaces changed from '{0}' to '{1}'"), FText::FromString(OldInterfaces), FText::FromString(NewInterfaces));
-
-				TSharedPtr<FBlueprintDifferenceTreeEntry> Entry = MakeShared<FBlueprintDifferenceTreeEntry>(
-					SelectionCallback,
-					FGenerateDiffEntryWidget::CreateStatic(&GenerateSimpleDiffWidget, DiffText));
-
-				Children.Push(Entry);
-				OutRealDifferences.Push(Entry);
-			}
-
-			if (OldBlueprint->SupportsNativization() != NewBlueprint->SupportsNativization())
-			{
-				FText DiffText = FText::Format(LOCTEXT("NativizationChanged", "Nativization changed from {0} to {1}"), FText::AsNumber(OldBlueprint->SupportsNativization()), FText::AsNumber(NewBlueprint->SupportsNativization()));
 
 				TSharedPtr<FBlueprintDifferenceTreeEntry> Entry = MakeShared<FBlueprintDifferenceTreeEntry>(
 					SelectionCallback,
@@ -1282,7 +1289,7 @@ void SBlueprintDiff::OnToggleSplitViewMode()
 
 FSlateIcon SBlueprintDiff::GetLockViewImage() const
 {
-	return FSlateIcon(FEditorStyle::GetStyleSetName(), bLockViews ? "GenericLock" : "GenericUnlock");
+	return FSlateIcon(FEditorStyle::GetStyleSetName(), bLockViews ? "Icons.Lock" : "Icons.Unlock");
 }
 
 FSlateIcon SBlueprintDiff::GetSplitViewModeImage() const

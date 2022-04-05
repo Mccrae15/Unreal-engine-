@@ -3,7 +3,7 @@
 	"Version": 1,
 	"VersionName": "0.1",
 	"FriendlyName": "Game Features",
-	"Description": "Game Features",
+	"Description": "Support for modular Game Feature Plugins",
 	"Category": "Gameplay",
 	"CreatedBy": "Epic Games, Inc.",
 	"CreatedByURL": "http://epicgames.com",
@@ -19,6 +19,11 @@
 			"Name": "GameFeatures",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "GameFeaturesEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [
@@ -28,7 +33,11 @@
 		},
 		{
 			"Name": "DataRegistry",
-			"Enabled":  true
+			"Enabled": true
+		},
+		{
+			"Name": "AssetReferenceRestrictions",
+			"Enabled": true
 		}
 	]
 }

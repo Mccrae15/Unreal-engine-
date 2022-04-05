@@ -38,6 +38,11 @@ namespace Chaos
 
 	void RecordToCacheInternal(FSingleParticlePhysicsProxy* InProxy, const FTransform& InRootTransform, FPendingFrameWrite& OutFrame, Chaos::FReal InTime)
 	{
+		if (!InProxy)
+		{
+			return;
+		}
+
 		if(TGeometryParticleHandle<FReal,3>* Handle = InProxy->GetHandle_LowLevel())
 		{
 			if(FPBDRigidParticleHandle* AsRigid = Handle->CastToRigidParticle())
@@ -64,9 +69,9 @@ namespace Chaos
 #endif // WITH_CHAOS
 	}
 
-	void PlayFromCacheInternal(FSingleParticlePhysicsProxy* InProxy, UChaosCache* InCache, FPlaybackTickRecord& TickRecord, TArray<TPBDRigidParticleHandle<Chaos::FReal, 3>*>& OutUpdatedRigids)
+	void PlayFromCacheInternal(FSingleParticlePhysicsProxy* InProxy, UChaosCache* InCache, FPlaybackTickRecord& TickRecord, TArray<TPBDRigidParticleHandle<Chaos::FReal, 3>*>& OutUpdatedRigids) 
 	{
-		if(!InCache || InCache->GetDuration() == 0.0f)
+		if(!InCache || InCache->GetDuration() == 0.0f || !InProxy)
 		{
 			return;
 		}
@@ -140,16 +145,44 @@ namespace Chaos
 		return nullptr;
 	}
 
-	bool FStaticMeshCacheAdapter::InitializeForRecord(UPrimitiveComponent* InComponent, UChaosCache* InCache) const
+	void FStaticMeshCacheAdapter::SetRestState(UPrimitiveComponent* InComponent, UChaosCache* InCache, const FTransform& InRootTransform, Chaos::FReal InTime) const
+	{
+		if (!InCache || InCache->GetDuration() == 0.0f)
+		{
+			return;
+		}
+
+		if (InCache->ParticleTracks.Num() == 1)
+		{
+
+			FPlaybackTickRecord TickRecord;
+			TickRecord.SetLastTime(InTime);
+			FCacheEvaluationContext Context(TickRecord);
+			Context.bEvaluateTransform = true;
+			Context.bEvaluateCurves = false;
+			Context.bEvaluateEvents = false;
+
+			FTransform RestTransform;
+			InCache->EvaluateSingle(0, TickRecord, &RestTransform, nullptr);
+
+			// Evaluated transform is in CacheManager space.
+			InComponent->SetWorldTransform(RestTransform * InRootTransform, false);
+		}
+	}
+	
+	bool FStaticMeshCacheAdapter::InitializeForRecord(UPrimitiveComponent* InComponent, UChaosCache* InCache)
 	{
 		return true;
 	}
 
-	bool FStaticMeshCacheAdapter::InitializeForPlayback(UPrimitiveComponent* InComponent, UChaosCache* InCache) const
+	bool FStaticMeshCacheAdapter::InitializeForPlayback(UPrimitiveComponent* InComponent, UChaosCache* InCache, float InTime)
 	{
+		EnsureIsInGameThreadContext();
+
+
 #if WITH_CHAOS
 
-		if(Cast<UStaticMeshComponent>(InComponent))
+		if(Cast<UStaticMeshComponent>(InComponent) && InComponent->GetBodyInstance() && InComponent->GetBodyInstance()->ActorHandle)
 		{
 			FPhysInterface_Chaos::SetIsKinematic_AssumesLocked(InComponent->GetBodyInstance()->ActorHandle, true);
 		}
@@ -159,4 +192,3 @@ namespace Chaos
 	}
 
 }    // namespace Chaos
-

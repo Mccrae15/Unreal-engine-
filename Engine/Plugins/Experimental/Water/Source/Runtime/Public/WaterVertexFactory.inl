@@ -12,11 +12,10 @@
 // ----------------------------------------------------------------------------------
 
 template <bool bWithWaterSelectionSupport>
-TWaterVertexFactory<bWithWaterSelectionSupport>::TWaterVertexFactory(ERHIFeatureLevel::Type InFeatureLevel, int32 InNumQuadsPerSide, float InLODScale, FVector2D InMorphOrigin)
+TWaterVertexFactory<bWithWaterSelectionSupport>::TWaterVertexFactory(ERHIFeatureLevel::Type InFeatureLevel, int32 InNumQuadsPerSide, float InLODScale)
 	: FVertexFactory(InFeatureLevel)
 	, NumQuadsPerSide(InNumQuadsPerSide)
 	, LODScale(InLODScale)
-	, MorphOrigin(InMorphOrigin)
 {
 	VertexBuffer = new FWaterMeshVertexBuffer(NumQuadsPerSide);
 	IndexBuffer = new FWaterMeshIndexBuffer(NumQuadsPerSide);
@@ -51,14 +50,14 @@ void TWaterVertexFactory<bWithWaterSelectionSupport>::InitRHI()
 	// Position stream for per vertex local position 
 	FVertexStream PositionVertexStream;
 	PositionVertexStream.VertexBuffer = VertexBuffer;
-	PositionVertexStream.Stride = sizeof(FVector4);
+	PositionVertexStream.Stride = sizeof(FVector4f);
 	PositionVertexStream.Offset = 0;
 	PositionVertexStream.VertexStreamUsage = EVertexStreamUsage::Default;
 
 	// Simple instancing vertex stream with nullptr vertex buffer to be set at binding time
 	FVertexStream InstanceDataVertexStream;
 	InstanceDataVertexStream.VertexBuffer = nullptr;
-	InstanceDataVertexStream.Stride = sizeof(FVector4);
+	InstanceDataVertexStream.Stride = sizeof(FVector4f);
 	InstanceDataVertexStream.Offset = 0;
 	InstanceDataVertexStream.VertexStreamUsage = EVertexStreamUsage::Instancing;
 
@@ -119,7 +118,6 @@ void TWaterVertexFactory<bWithWaterSelectionSupport>::SetupUniformDataForGroup(E
 	FWaterVertexFactoryParameters UniformParams;
 	UniformParams.NumQuadsPerTileSide = NumQuadsPerSide;
 	UniformParams.LODScale = LODScale;
-	UniformParams.MorphOrigin = MorphOrigin;
 	UniformParams.bRenderSelected = true;
 	UniformParams.bRenderUnselected = true;
 
@@ -148,7 +146,13 @@ void TWaterVertexFactory<bWithWaterSelectionSupport>::ModifyCompilationEnvironme
 {
 	OutEnvironment.SetDefine(TEXT("WATER_MESH_FACTORY"), 1);
 #if 0
-	OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), Type->SupportsPrimitiveIdStream() && UseGPUScene(Parameters.Platform, GetMaxSupportedFeatureLevel(Parameters.Platform)));
+	const bool bUseGPUSceneAndPrimitiveIdStream = 
+		Type->SupportsPrimitiveIdStream() 
+		&& UseGPUScene(Parameters.Platform, GetMaxSupportedFeatureLevel(Parameters.Platform))
+		// TODO: support GPUScene on mobile
+		&& !IsMobilePlatform(Parameters.Platform);
+
+	OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), bUseGPUSceneAndPrimitiveIdStream);
 #endif
 
 	if (bWithWaterSelectionSupport)
@@ -166,7 +170,7 @@ void TWaterVertexFactory<bWithWaterSelectionSupport>::ValidateCompiledResult(con
 		&& UseGPUScene(Platform, GetMaxSupportedFeatureLevel(Platform))
 		&& ParameterMap.ContainsParameterAllocation(FPrimitiveUniformShaderParameters::StaticStructMetadata.GetShaderVariableName()))
 	{
-		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(Parameters.PrimitiveId).Member instead of Primitive.Member."), Type->GetName()));
+		OutErrors.AddUnique(*FString::Printf(TEXT("Shader attempted to bind the Primitive uniform buffer even though Vertex Factory %s computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(Parameters).Member instead of Primitive.Member."), Type->GetName()));
 	}
 #endif
 }

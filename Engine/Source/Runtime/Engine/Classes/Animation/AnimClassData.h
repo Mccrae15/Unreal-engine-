@@ -17,9 +17,10 @@
 
 class USkeleton;
 
+// @todo: BP2CPP_remove
 /** Serialized anim BP function data */
 USTRUCT()
-struct FAnimBlueprintFunctionData
+struct UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") FAnimBlueprintFunctionData
 {
 	GENERATED_BODY()
 
@@ -35,6 +36,8 @@ struct FAnimBlueprintFunctionData
 	TArray<TFieldPath<FProperty>> InputProperties;
 };
 
+// @todo: BP2CPP_remove
+class UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") UAnimClassData;
 UCLASS()
 class ENGINE_API UAnimClassData : public UObject, public IAnimClassInterface
 {
@@ -46,7 +49,7 @@ public:
 
 	/** Target skeleton for this blueprint class */
 	UPROPERTY()
-	class USkeleton* TargetSkeleton;
+	TObjectPtr<class USkeleton> TargetSkeleton;
 
 	/** A list of anim notifies that state machines (or anything else) may reference */
 	UPROPERTY()
@@ -59,11 +62,11 @@ public:
 	// All of the functions that this anim class provides
 	UPROPERTY()
 	TArray<FAnimBlueprintFunction> AnimBlueprintFunctions;
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// Serialized function data, used to patch up transient data in AnimBlueprintFunctions
 	UPROPERTY()
 	TArray<FAnimBlueprintFunctionData> AnimBlueprintFunctionData;
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	// The array of anim nodes
 	UPROPERTY()
 	TArray< TFieldPath<FStructProperty> > AnimNodeProperties;
@@ -107,17 +110,9 @@ public:
 	UPROPERTY()
 	TArray<FName> SyncGroupNames;
 
-	// The default handler for graph-exposed inputs
-	UPROPERTY()
-	TArray<FExposedValueHandler> EvaluateGraphExposedInputs;
-
 	// Per layer graph blending options
 	UPROPERTY()
 	TMap<FName, FAnimGraphBlendOptions> GraphBlendOptions;
-
-	// Property access library
-	UPROPERTY()
-	FPropertyAccessLibrary PropertyAccessLibrary;
 
 public:
 	// IAnimClassInterface interface
@@ -135,10 +130,8 @@ public:
 	virtual const TArray<FStructProperty*>& GetInitializationNodeProperties() const override { return ResolvedInitializationNodeProperties; }
 	virtual const TArray<FName>& GetSyncGroupNames() const override { return SyncGroupNames; }
 	virtual int32 GetSyncGroupIndex(FName SyncGroupName) const override { return SyncGroupNames.IndexOfByKey(SyncGroupName); }
-	virtual const TArray<FExposedValueHandler>& GetExposedValueHandlers() const override { return EvaluateGraphExposedInputs; }
 	virtual const TMap<FName, FGraphAssetPlayerInformation>& GetGraphAssetPlayerInformation() const override { return GraphNameAssetPlayers; }
 	virtual const TMap<FName, FAnimGraphBlendOptions>& GetGraphBlendOptions() const override { return GraphBlendOptions; }
-	virtual const FPropertyAccessLibrary& GetPropertyAccessLibrary() const override { return PropertyAccessLibrary; }
 
 private:
 	virtual const TArray<FBakedAnimationStateMachine>& GetBakedStateMachines_Direct() const override { return BakedStateMachines; }
@@ -147,12 +140,26 @@ private:
 	virtual const TMap<FName, FCachedPoseIndices>& GetOrderedSavedPoseNodeIndicesMap_Direct() const override { return OrderedSavedPoseIndicesMap; }
 	virtual const TMap<FName, FGraphAssetPlayerInformation>& GetGraphAssetPlayerInformation_Direct() const override { return GraphNameAssetPlayers; }
 	virtual const TMap<FName, FAnimGraphBlendOptions>& GetGraphBlendOptions_Direct() const override { return GraphBlendOptions; }
-	virtual const FPropertyAccessLibrary& GetPropertyAccessLibrary_Direct() const override { return PropertyAccessLibrary; }
+	
+private:
+	virtual const void* GetConstantNodeValueRaw(int32 InIndex) const override { return nullptr; }
+	virtual const void* GetMutableNodeValueRaw(int32 InIndex, const UObject* InObject) const override { return nullptr; }
+	virtual const FAnimBlueprintMutableData* GetMutableNodeData(const UObject* InObject) const override { return nullptr; }
+	virtual FAnimBlueprintMutableData* GetMutableNodeData(UObject* InObject) const override { return nullptr; }
+	virtual const void* GetConstantNodeData() const override { return nullptr; }
+	virtual TArrayView<const FAnimNodeData> GetNodeData() const override;
+	virtual int32 GetAnimNodePropertyIndex(const UScriptStruct* InNodeType, FName InPropertyName) const override { return INDEX_NONE; }
+	virtual int32 GetAnimNodePropertyCount(const UScriptStruct* InNodeType) const override { return 0; }
+	
+	virtual void ForEachSubsystem(TFunctionRef<EAnimSubsystemEnumeration(const FAnimSubsystemContext&)> InFunction) const override {}
+	virtual void ForEachSubsystem(UObject* InObject, TFunctionRef<EAnimSubsystemEnumeration(const FAnimSubsystemInstanceContext&)> InFunction) const override {}
+	virtual const FAnimSubsystem* FindSubsystem(UScriptStruct* InStruct) const override { return nullptr; }
 
+#if WITH_EDITORONLY_DATA
+	virtual bool IsDataLayoutValid() const override { return false; };
+#endif
+	
 public:
-	// Resolve TFieldPaths to FStructPropertys, init value handlers
-	void DynamicClassInitialization(UDynamicClass* InDynamicClass);
-
 #if WITH_EDITOR
 	// Copy data from an existing BP generated class to this class data
 	void CopyFrom(UAnimBlueprintGeneratedClass* AnimClass);

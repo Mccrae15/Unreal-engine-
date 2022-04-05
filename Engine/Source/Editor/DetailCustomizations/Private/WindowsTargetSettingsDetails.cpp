@@ -52,13 +52,21 @@ namespace WindowsTargetSettingsDetailsConstants
 static FText GetFriendlyNameFromWindowsRHIName(const FString& InRHIName)
 {
 	FText FriendlyRHIName;
-	if (InRHIName == TEXT("PCD3D_SM5"))
+	if (InRHIName == TEXT("PCD3D_SM6"))
+	{
+		FriendlyRHIName = LOCTEXT("DirectX12", "DirectX 12 (SM6, Experimental)");
+	}
+	else if (InRHIName == TEXT("PCD3D_SM5"))
 	{
 		FriendlyRHIName = LOCTEXT("DirectX11", "DirectX 11 & 12 (SM5)");
 	}
 	else if (InRHIName == TEXT("PCD3D_ES31"))
 	{
 		FriendlyRHIName = LOCTEXT("DirectXES31", "DirectX Mobile Emulation (ES3.1)");
+	}
+	else if (InRHIName == TEXT("D3D_ES3_1_HOLOLENS"))
+	{
+		FriendlyRHIName = LOCTEXT("DirectXES31HL", "DirectX Hololens (ES3.1)");
 	}
 	else if (InRHIName == TEXT("SF_VULKAN_SM5"))
 	{
@@ -154,15 +162,6 @@ void FWindowsTargetSettingsDetails::CustomizeDetails( IDetailLayoutBuilder& Deta
 	ITargetPlatform* TargetPlatform = FModuleManager::GetModuleChecked<ITargetPlatformModule>("WindowsTargetPlatform").GetTargetPlatforms()[0];
 	TargetShaderFormatsDetails = MakeShareable(new FShaderFormatsPropertyDetails(&DetailBuilder));
 	TargetShaderFormatsDetails->CreateTargetShaderFormatsPropertyView(TargetPlatform, GetFriendlyNameFromWindowsRHIName);
-
-	TSharedRef<IPropertyHandle> MinOSProperty = DetailBuilder.GetProperty("MinimumOSVersion");
-	IDetailCategoryBuilder& OSInfoCategory = DetailBuilder.EditCategory(TEXT("OS Info"));
-	
-	// Setup edit condition and tool tip of Min OS property. Determined by whether the engine is installed or not.
-	bool bIsMinOSSelectionAvailable = FApp::IsEngineInstalled() == false;
-	IDetailPropertyRow& MinOSRow = OSInfoCategory.AddProperty(MinOSProperty);
-	MinOSRow.IsEnabled(bIsMinOSSelectionAvailable);
-	MinOSRow.ToolTip(bIsMinOSSelectionAvailable ? MinOSProperty->GetToolTipText() : WindowsTargetSettingsDetailsConstants::DisabledTip);
 
 	// Next add the splash image customization
 	const FText EditorSplashDesc(LOCTEXT("EditorSplashLabel", "Editor Splash"));
@@ -283,29 +282,29 @@ void FWindowsTargetSettingsDetails::CustomizeDetails( IDetailLayoutBuilder& Deta
 	IDetailCategoryBuilder& AudioCategory = DetailBuilder.EditCategory("Audio");
 
 	// Here we add a callback when the 
-	TSharedPtr<IPropertyHandle> AudioStreamCachingPropertyHandle = DetailBuilder.GetProperty("bUseAudioStreamCaching");
-	IDetailCategoryBuilder& AudioStreamCachingCategory = DetailBuilder.EditCategory("Audio");
-	IDetailPropertyRow& AudioStreamCachingPropertyRow = AudioCategory.AddProperty(AudioStreamCachingPropertyHandle);
-	AudioStreamCachingPropertyRow.CustomWidget()
-		.NameContent()
-		[
-			AudioStreamCachingPropertyHandle->CreatePropertyNameWidget()
-		]
-		.ValueContent()
-		.MaxDesiredWidth(500.0f)
-		.MinDesiredWidth(100.0f)
-		[
-			SNew(SHorizontalBox)
-
-			+ SHorizontalBox::Slot()
-			.FillWidth(1.0f)
-			[
-				SNew(SCheckBox)
-				.OnCheckStateChanged(this, &FWindowsTargetSettingsDetails::HandleAudioStreamCachingToggled, AudioStreamCachingPropertyHandle)
-				.IsChecked(this, &FWindowsTargetSettingsDetails::GetAudioStreamCachingToggled, AudioStreamCachingPropertyHandle)
-				.ToolTipText(AudioStreamCachingPropertyHandle->GetToolTipText())
-			]
-		];
+// 	TSharedPtr<IPropertyHandle> AudioStreamCachingPropertyHandle = DetailBuilder.GetProperty("bUseAudioStreamCaching");
+// 	IDetailCategoryBuilder& AudioStreamCachingCategory = DetailBuilder.EditCategory("Audio");
+// 	IDetailPropertyRow& AudioStreamCachingPropertyRow = AudioCategory.AddProperty(AudioStreamCachingPropertyHandle);
+// 	AudioStreamCachingPropertyRow.CustomWidget()
+// 		.NameContent()
+// 		[
+// 			AudioStreamCachingPropertyHandle->CreatePropertyNameWidget()
+// 		]
+// 		.ValueContent()
+// 		.MaxDesiredWidth(500.0f)
+// 		.MinDesiredWidth(100.0f)
+// 		[
+// 			SNew(SHorizontalBox)
+// 
+// 			+ SHorizontalBox::Slot()
+// 			.FillWidth(1.0f)
+// 			[
+// 				SNew(SCheckBox)
+// 				.OnCheckStateChanged(this, &FWindowsTargetSettingsDetails::HandleAudioStreamCachingToggled, AudioStreamCachingPropertyHandle)
+// 				.IsChecked(this, &FWindowsTargetSettingsDetails::GetAudioStreamCachingToggled, AudioStreamCachingPropertyHandle)
+// 				.ToolTipText(AudioStreamCachingPropertyHandle->GetToolTipText())
+// 			]
+// 		];
 }
 
 bool FWindowsTargetSettingsDetails::HandlePreExternalIconCopy(const FString& InChosenImage)

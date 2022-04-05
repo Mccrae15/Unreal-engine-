@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelEditorSequencerIntegration.h"
+
 #include "SequencerEdMode.h"
 #include "Styling/SlateIconFinder.h"
 #include "PropertyHandle.h"
 #include "IDetailKeyframeHandler.h"
+#include "IDetailTreeNode.h"
 #include "GameDelegates.h"
 #include "Settings/LevelEditorPlaySettings.h"
 #include "Editor/PropertyEditor/Public/PropertyEditorModule.h"
@@ -14,6 +16,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "IDetailsView.h"
 #include "ISequencer.h"
+#include "ISequencerTrackEditor.h"
 #include "KeyPropertyParams.h"
 #include "Engine/Selection.h"
 #include "Sequencer.h"
@@ -28,6 +31,7 @@
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "SequencerSettings.h"
 #include "SequencerInfoColumn.h"
+#include "SequencerSpawnableColumn.h"
 #include "LevelEditorViewport.h"
 #include "Modules/ModuleManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -42,6 +46,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "UObject/ObjectKey.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UnrealEdGlobals.h"
 #include "UnrealEdMisc.h"
 #include "Editor/UnrealEdEngine.h"
@@ -63,7 +68,7 @@ public:
 		Sequencers.Remove(InSequencer);
 	}
 
-	virtual bool IsPropertyKeyable(UClass* InObjectClass, const IPropertyHandle& InPropertyHandle) const
+	virtual bool IsPropertyKeyable(const UClass* InObjectClass, const IPropertyHandle& InPropertyHandle) const
 	{
 		FCanKeyPropertyParams CanKeyPropertyParams(InObjectClass, InPropertyHandle);
 
@@ -168,12 +173,20 @@ void FLevelEditorSequencerIntegration::Initialize(const FLevelEditorSequencerInt
 
 	// Register for saving the level so that the state of the scene can be restored before saving and updated after saving.
 	{
-		FDelegateHandle Handle = FEditorDelegates::PreSaveWorld.AddRaw(this, &FLevelEditorSequencerIntegration::OnPreSaveWorld);
-		AcquiredResources.Add([=]{ FEditorDelegates::PreSaveWorld.Remove(Handle); });
+		FDelegateHandle Handle = FEditorDelegates::PreSaveWorldWithContext.AddRaw(this, &FLevelEditorSequencerIntegration::OnPreSaveWorld);
+		AcquiredResources.Add([=]{ FEditorDelegates::PreSaveWorldWithContext.Remove(Handle); });
 	}
 	{
-		FDelegateHandle Handle = FEditorDelegates::PostSaveWorld.AddRaw(this, &FLevelEditorSequencerIntegration::OnPostSaveWorld);
-		AcquiredResources.Add([=]{ FEditorDelegates::PostSaveWorld.Remove(Handle); });
+		FDelegateHandle Handle = FEditorDelegates::PostSaveWorldWithContext.AddRaw(this, &FLevelEditorSequencerIntegration::OnPostSaveWorld);
+		AcquiredResources.Add([=]{ FEditorDelegates::PostSaveWorldWithContext.Remove(Handle); });
+	}
+	{
+		FDelegateHandle Handle = FEditorDelegates::PreSaveExternalActors.AddRaw(this, &FLevelEditorSequencerIntegration::OnPreSaveExternalActors);
+		AcquiredResources.Add([=]{ FEditorDelegates::PreSaveExternalActors.Remove(Handle); });
+	}
+	{
+		FDelegateHandle Handle = FEditorDelegates::PostSaveExternalActors.AddRaw(this, &FLevelEditorSequencerIntegration::OnPostSaveExternalActors);
+		AcquiredResources.Add([=]{ FEditorDelegates::PostSaveExternalActors.Remove(Handle); });
 	}
 	{
 		FDelegateHandle Handle = FEditorDelegates::PreBeginPIE.AddRaw(this, &FLevelEditorSequencerIntegration::OnPreBeginPIE);
@@ -222,21 +235,6 @@ void FLevelEditorSequencerIntegration::Initialize(const FLevelEditorSequencerInt
 	ActivateSequencerEditorMode();
 
 	{
-		FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-
-		FDelegateHandle Handle = EditModule.OnPropertyEditorOpened().AddRaw(this, &FLevelEditorSequencerIntegration::OnPropertyEditorOpened);
-		AcquiredResources.Add(
-			[=]{
-				FPropertyEditorModule* EditModulePtr = FModuleManager::Get().GetModulePtr<FPropertyEditorModule>("PropertyEditor");
-				if (EditModulePtr)
-				{
-					EditModulePtr->OnPropertyEditorOpened().Remove(Handle);
-				}
-			}
-		);
-	}
-
-	{
 		FLevelEditorModule& LevelEditorModule = FModuleManager::Get().GetModuleChecked<FLevelEditorModule>("LevelEditor");
 
 		FDelegateHandle TabContentChanged = LevelEditorModule.OnTabContentChanged().AddRaw(this, &FLevelEditorSequencerIntegration::OnTabContentChanged);
@@ -257,7 +255,7 @@ void FLevelEditorSequencerIntegration::Initialize(const FLevelEditorSequencerInt
 	UpdateDetails(bForceRefresh);
 }
 
-void RenameSpawnableRecursive(FSequencer* Sequencer, UMovieScene* MovieScene, FMovieSceneSequenceIDRef SequenceID, const FMovieSceneSequenceHierarchy* Hierarchy, AActor* ChangedActor)
+void RenameBindingRecursive(FSequencer* Sequencer, UMovieScene* MovieScene, FMovieSceneSequenceIDRef SequenceID, const FMovieSceneSequenceHierarchy* Hierarchy, AActor* ChangedActor)
 {
 	check(MovieScene);
 
@@ -273,6 +271,22 @@ void RenameSpawnableRecursive(FSequencer* Sequencer, UMovieScene* MovieScene, FM
 			{
 				MovieScene->Modify();
 				MovieScene->GetSpawnable(Index).SetName(ChangedActor->GetActorLabel());
+			}
+		}
+	}
+	for (int32 Index = 0; Index < MovieScene->GetPossessableCount(); ++Index)
+	{
+		FGuid ThisGuid = MovieScene->GetPossessable(Index).GetGuid();
+
+		// If there is only one binding, set the name of the possessable
+		TArrayView<TWeakObjectPtr<>> BoundObjects = Sequencer->FindBoundObjects(ThisGuid, SequenceID);
+		if (BoundObjects.Num() == 1)
+		{
+			AActor* Actor = Cast<AActor>(BoundObjects[0].Get());
+			if (Actor && Actor == ChangedActor)
+			{
+				MovieScene->Modify();
+				MovieScene->GetPossessable(Index).SetName(ChangedActor->GetActorLabel());
 			}
 		}
 	}
@@ -292,7 +306,7 @@ void RenameSpawnableRecursive(FSequencer* Sequencer, UMovieScene* MovieScene, FM
 
 					if (SubMovieScene)
 					{
-						RenameSpawnableRecursive(Sequencer, SubMovieScene, ChildID, Hierarchy, ChangedActor);
+						RenameBindingRecursive(Sequencer, SubMovieScene, ChildID, Hierarchy, ChangedActor);
 					}
 				}
 			}
@@ -315,39 +329,30 @@ void FLevelEditorSequencerIntegration::OnActorLabelChanged(AActor* ChangedActor)
 
 			if (MovieScene)
 			{
-				RenameSpawnableRecursive(Pinned.Get(), MovieScene, MovieSceneSequenceID::Root, Hierarchy, ChangedActor);
+				RenameBindingRecursive(Pinned.Get(), MovieScene, MovieSceneSequenceID::Root, Hierarchy, ChangedActor);
 			}
 		}
 	}
 }
 
-void FLevelEditorSequencerIntegration::OnPreSaveWorld(uint32 SaveFlags, class UWorld* World)
+void FLevelEditorSequencerIntegration::OnPreSaveWorld(class UWorld* World, FObjectPreSaveContext ObjectSaveContext)
 {
-	// Restore the saved state so that the level save can save that instead of the animated state.
-	IterateAllSequencers(
-		[](FSequencer& In, const FLevelEditorSequencerIntegrationOptions& Options)
-		{
-			if (Options.bRequiresLevelEvents)
-			{
-				In.RestorePreAnimatedState();
-			}
-		}
-	);
+	RestoreToSavedState(World);
 }
 
-void FLevelEditorSequencerIntegration::OnPostSaveWorld(uint32 SaveFlags, class UWorld* World, bool bSuccess)
+void FLevelEditorSequencerIntegration::OnPostSaveWorld(class UWorld* World, FObjectPostSaveContext ObjectSaveContext)
 {
-	// Reset the time after saving so that an update will be triggered to put objects back to their animated state.
-	IterateAllSequencers(
-		[](FSequencer& In, const FLevelEditorSequencerIntegrationOptions& Options)
-		{
-			if (Options.bRequiresLevelEvents)
-			{
-				In.InvalidateCachedData();
-				In.ForceEvaluate();
-			}
-		}
-	);
+	ResetToAnimatedState(World);
+}
+
+void FLevelEditorSequencerIntegration::OnPreSaveExternalActors(UWorld* World)
+{
+	RestoreToSavedState(World);
+}
+
+void FLevelEditorSequencerIntegration::OnPostSaveExternalActors(UWorld* World)
+{
+	ResetToAnimatedState(World);
 }
 
 void FLevelEditorSequencerIntegration::OnNewCurrentLevel()
@@ -559,9 +564,17 @@ void FLevelEditorSequencerIntegration::UpdateDetails(bool bForceRefresh)
 
 void FLevelEditorSequencerIntegration::ActivateSequencerEditorMode()
 {
+
 	// Release the sequencer mode if we already enabled it
 	FName ResourceName("SequencerMode");
 	AcquiredResources.Release(ResourceName);
+
+	// Activate the default mode in case FEditorModeTools::Tick isn't run before here. 
+	// This can be removed once a general fix for UE-143791 has been implemented.
+	GLevelEditorModeTools().ActivateDefaultMode();
+
+	FEditorModeID ModeID = TEXT("SequencerToolsEditMode");
+	GLevelEditorModeTools().ActivateMode(ModeID);
 
 	GLevelEditorModeTools().ActivateMode( FSequencerEdMode::EM_SequencerMode );
 	FSequencerEdMode* SequencerEdMode = (FSequencerEdMode*)GLevelEditorModeTools().GetActiveMode(FSequencerEdMode::EM_SequencerMode);
@@ -579,6 +592,13 @@ void FLevelEditorSequencerIntegration::ActivateSequencerEditorMode()
 	AcquiredResources.Add(
 		ResourceName,
 		[] {
+
+			FEditorModeID ModeID = TEXT("SequencerToolsEditMode");
+
+			if (GLevelEditorModeTools().IsModeActive(ModeID))
+			{
+				GLevelEditorModeTools().DeactivateMode(ModeID);
+			}
 			if (GLevelEditorModeTools().IsModeActive(FSequencerEdMode::EM_SequencerMode))
 			{
 				GLevelEditorModeTools().DeactivateMode(FSequencerEdMode::EM_SequencerMode);
@@ -747,22 +767,19 @@ TSharedRef<FExtender> FLevelEditorSequencerIntegration::GetLevelViewportExtender
 	});
 
 	TSharedRef<FUICommandList> LevelEditorCommandBindings  = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor")).GetGlobalLevelEditorActions();
-	Extender->AddMenuExtension("ActorControl", EExtensionHook::After, LevelEditorCommandBindings, FMenuExtensionDelegate::CreateLambda(
+	Extender->AddMenuExtension("ActorUETools", EExtensionHook::After, LevelEditorCommandBindings, FMenuExtensionDelegate::CreateLambda(
 		[this, ActorName, Actor = InActors[0], FoundInSequences](FMenuBuilder& MenuBuilder) {
-		MenuBuilder.BeginSection("Sequencer", LOCTEXT("Sequencer", "Sequencer"));
-
-		if (FoundInSequences.Num() > 0)
-		{
-			MenuBuilder.AddSubMenu(
-				LOCTEXT("BrowseToActorInSequencer", "Browse to Actor in Sequencer"),
-				FText(),
-				FNewMenuDelegate::CreateRaw(this, &FLevelEditorSequencerIntegration::MakeBrowseToSelectedActorSubMenu, Actor, FoundInSequences),
-				false,
-				FSlateIcon()
-			);
-		}
-
-		MenuBuilder.EndSection();
+		bool bCanBrowse = FoundInSequences.Num() > 0;
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("BrowseToActorInSequencer", "Browse to Actor in Sequencer"),
+			FText(),
+			FNewMenuDelegate::CreateRaw(this, &FLevelEditorSequencerIntegration::MakeBrowseToSelectedActorSubMenu, Actor, FoundInSequences),
+			FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([bCanBrowse]() { return bCanBrowse; })),
+			NAME_None,
+			EUserInterfaceActionType::Button,
+			false,
+			FSlateIcon()
+		);
 	}
 	));
 
@@ -795,7 +812,7 @@ void FLevelEditorSequencerIntegration::MakeBrowseToSelectedActorSubMenu(FMenuBui
 
 void FLevelEditorSequencerIntegration::ActivateDetailHandler(const FLevelEditorSequencerIntegrationOptions& Options)
 {
-	FName DetailHandlerName("DetailHandler");
+	static FName DetailHandlerName("DetailHandler");
 
 	AcquiredResources.Release(DetailHandlerName);
 
@@ -815,7 +832,7 @@ void FLevelEditorSequencerIntegration::ActivateDetailHandler(const FLevelEditorS
 	FDelegateHandle OnPropertyEditorOpenedHandle = EditModule.OnPropertyEditorOpened().AddRaw(this, &FLevelEditorSequencerIntegration::OnPropertyEditorOpened);
 
 	auto DeactivateDetailKeyframeHandler =
-		[this, OnPropertyEditorOpenedHandle]
+		[this, OnPropertyEditorOpenedHandle]()
 		{
 			FPropertyEditorModule* EditModulePtr = FModuleManager::Get().GetModulePtr<FPropertyEditorModule>("PropertyEditor");
 			if (!EditModulePtr)
@@ -840,9 +857,11 @@ void FLevelEditorSequencerIntegration::ActivateDetailHandler(const FLevelEditorS
 			}
 		};
 
+	AcquiredResources.Add(DetailHandlerName, DeactivateDetailKeyframeHandler);
+
 	FName DetailHandlerRefreshName("DetailHandlerRefresh");
 	auto RefreshDetailHandler =
-		[]
+		[]()
 		{
 			FPropertyEditorModule* EditModulePtr = FModuleManager::Get().GetModulePtr<FPropertyEditorModule>("PropertyEditor");
 			if (!EditModulePtr)
@@ -860,7 +879,6 @@ void FLevelEditorSequencerIntegration::ActivateDetailHandler(const FLevelEditorS
 			}
 		};
 
-	AcquiredResources.Add(DetailHandlerName, DeactivateDetailKeyframeHandler);
 
 	if (Options.bForceRefreshDetails)
 	{
@@ -914,6 +932,8 @@ public:
 		FadeOutSequence = FCurveSequence(0.0f, FaderConstants::FadeTime);
 		FadeOutSequence.JumpToEnd();
 
+		SetHover(false);
+
 		SBorder::Construct(SBorder::FArguments()
 			.BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
 			.Padding(0.0f)
@@ -929,7 +949,7 @@ public:
 	{
 		FLinearColor Color = FLinearColor::White;
 	
-		if(FadeOutSequence.IsPlaying() || !bIsHovered)
+		if(FadeOutSequence.IsPlaying() || !IsHovered())
 		{
 			Color.A = FMath::Lerp(FaderConstants::HoveredOpacity, FaderConstants::NonHoveredOpacity, FadeOutSequence.GetLerp());
 		}
@@ -945,7 +965,7 @@ public:
 	{
 		if(!FSlateApplication::Get().IsUsingHighPrecisionMouseMovment())
 		{
-			bIsHovered = true;
+			SetHover(true);
 			if(FadeOutSequence.IsPlaying())
 			{
 				// Fade out is already playing so just force the fade in curve to the end so we don't have a "pop" 
@@ -963,7 +983,7 @@ public:
 	{
 		if(!FSlateApplication::Get().IsUsingHighPrecisionMouseMovment())
 		{
-			bIsHovered = false;
+			SetHover(false);
 			FadeOutSequence.Play(AsShared());
 		}
 	}
@@ -984,35 +1004,38 @@ TSharedRef< ISceneOutlinerColumn > FLevelEditorSequencerIntegration::CreateSeque
 	return MakeShareable( new Sequencer::FSequencerInfoColumn( SceneOutliner, *BoundSequencers[0].Sequencer.Pin(), BoundSequencers[0].BindingData.Get() ) );
 }
 
+TSharedRef< ISceneOutlinerColumn > FLevelEditorSequencerIntegration::CreateSequencerSpawnableColumn( ISceneOutliner& SceneOutliner ) const
+{
+	//@todo only supports the first bound sequencer
+	check(BoundSequencers.Num() > 0);
+	check(BoundSequencers[0].Sequencer.IsValid());
+
+	return MakeShareable( new Sequencer::FSequencerSpawnableColumn() );
+}
 
 void FLevelEditorSequencerIntegration::AttachOutlinerColumn()
 {
-	for (const FSequencerAndOptions& SequencerAndOptions : BoundSequencers)
-	{
-		TSharedPtr<FSequencer> Pinned = SequencerAndOptions.Sequencer.Pin();
-		if (Pinned.IsValid())
-		{
-			if (!Pinned.Get()->GetSequencerSettings()->GetShowOutlinerInfoColumn())
-			{
-				return;
-			}
-		}
-	}
-
+	// Register Spawnable Column 
 	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::LoadModuleChecked< FSceneOutlinerModule >("SceneOutliner");
 
-	SceneOutliner::FColumnInfo ColumnInfo(SceneOutliner::EColumnVisibility::Visible, 15, 
+	FSceneOutlinerColumnInfo SpawnColumnInfo(ESceneOutlinerColumnVisibility::Visible, 11, 
+		FCreateSceneOutlinerColumn::CreateRaw( this, &FLevelEditorSequencerIntegration::CreateSequencerSpawnableColumn));
+
+	SceneOutlinerModule.RegisterDefaultColumnType< Sequencer::FSequencerSpawnableColumn >(SpawnColumnInfo);
+	AcquiredResources.Add([=]{ this->DetachOutlinerColumn(); });
+
+	FSceneOutlinerColumnInfo ColumnInfo(ESceneOutlinerColumnVisibility::Visible, 15, 
 		FCreateSceneOutlinerColumn::CreateRaw( this, &FLevelEditorSequencerIntegration::CreateSequencerInfoColumn));
 
-	SceneOutlinerModule.RegisterDefaultColumnType< Sequencer::FSequencerInfoColumn >(SceneOutliner::FDefaultColumnInfo(ColumnInfo));
+	SceneOutlinerModule.RegisterDefaultColumnType< Sequencer::FSequencerInfoColumn >(ColumnInfo);
 
-	AcquiredResources.Add([=]{ this->DetachOutlinerColumn(); });
 }
 
 void FLevelEditorSequencerIntegration::DetachOutlinerColumn()
 {
 	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::LoadModuleChecked< FSceneOutlinerModule >("SceneOutliner");
 
+	SceneOutlinerModule.UnRegisterColumnType< Sequencer::FSequencerSpawnableColumn >();
 	SceneOutlinerModule.UnRegisterColumnType< Sequencer::FSequencerInfoColumn >();
 
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
@@ -1095,6 +1118,44 @@ void FLevelEditorSequencerIntegration::RestoreRealtimeViewports()
 			}
 		}
 	}
+}
+
+void FLevelEditorSequencerIntegration::RestoreToSavedState(UWorld* World)
+{
+	// Restore the saved state so that the level save can save that instead of the animated state.
+	IterateAllSequencers(
+		[World](FSequencer& In, const FLevelEditorSequencerIntegrationOptions& Options)
+		{
+			if (Options.bRequiresLevelEvents)
+			{
+				for (const TSharedPtr<ISequencerTrackEditor>& TrackEditor : In.GetTrackEditors())
+				{
+					TrackEditor->OnPreSaveWorld(World);
+				}
+				In.RestorePreAnimatedState();
+			}
+		}
+	);
+}
+
+void FLevelEditorSequencerIntegration::ResetToAnimatedState(UWorld* World)
+{
+	// Reset the time after saving so that an update will be triggered to put objects back to their animated state.
+	IterateAllSequencers(
+		[World](FSequencer& In, const FLevelEditorSequencerIntegrationOptions& Options)
+		{
+			if (Options.bRequiresLevelEvents)
+			{
+				In.InvalidateCachedData();
+				In.ForceEvaluate();
+
+				for (const TSharedPtr<ISequencerTrackEditor>& TrackEditor : In.GetTrackEditors())
+				{
+					TrackEditor->OnPostSaveWorld(World);
+				}
+			}
+		}
+	);
 }
 
 TSharedRef<FExtender> FLevelEditorSequencerIntegration::OnExtendLevelEditorViewMenu(const TSharedRef<FUICommandList> CommandList)

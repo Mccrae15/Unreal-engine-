@@ -3,9 +3,24 @@
 #pragma once
 
 #include "FractureTool.h"
-#include "AutoClusterFracture.h"
 
 #include "FractureToolAutoCluster.generated.h"
+
+// Note: Only Voronoi-based auto-clustering is currently supported
+UENUM()
+enum class EFractureAutoClusterMode : uint8
+{
+	/** Overlapping bounding box*/
+	BoundingBox UMETA(DisplayName = "Bounding Box"),
+
+	/** GC connectivity */
+	Proximity UMETA(DisplayName = "Proximity"),
+
+	/** Distance */
+	Distance UMETA(DisplayName = "Distance"),
+
+	Voronoi UMETA(DisplayName = "Voronoi"),
+};
 
 
 UCLASS(DisplayName = "Auto Cluster", Category = "FractureTools")
@@ -16,23 +31,24 @@ public:
 
 	UFractureAutoClusterSettings(const FObjectInitializer& ObjInit)
 		: Super(ObjInit)
-		, AutoClusterMode(EFractureAutoClusterMode::BoundingBox)
 		, SiteCount(10)
 	{}
 
-	UPROPERTY(EditAnywhere, Category = AutoCluster, meta = (DisplayName = "Mode"))
-		EFractureAutoClusterMode AutoClusterMode;
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "Simplified interface now only supports Voronoi clustering."))
+	EFractureAutoClusterMode AutoClusterMode_DEPRECATED;
 
+	/** Use a Voronoi diagram with this many Voronoi sites as a guide for deciding cluster boundaries */
 	UPROPERTY(EditAnywhere, Category = AutoCluster, meta = (DisplayName = "Cluster Sites", UIMin = "1", UIMax = "5000", ClampMin = "1"))
-		uint32 SiteCount = 1;
+	uint32 SiteCount=10;
 
+	/** If true, bones will only be added to the same cluster if they are physically connected (either directly, or via other bones in the same cluster) */
 	UPROPERTY(EditAnywhere, Category = AutoCluster, meta = (DisplayName = "Enforce Cluster Connectivity"))
-		bool bEnforceConnectivity = true;
+	bool bEnforceConnectivity=true;
 };
 
 
-UCLASS(DisplayName = "AutoCluster", Category = "FractureTools")
-class UFractureToolAutoCluster : public UFractureModalTool
+UCLASS(DisplayName="AutoCluster", Category="FractureTools")
+class UFractureToolAutoCluster: public UFractureModalTool
 {
 public:
 	GENERATED_BODY()
@@ -42,15 +58,15 @@ public:
 	// UFractureTool Interface
 	virtual FText GetDisplayText() const override;
 	virtual FText GetTooltipText() const override;
-	virtual FText GetApplyText() const override;
+	virtual FText GetApplyText() const override; 
 	virtual FSlateIcon GetToolIcon() const override;
 	virtual TArray<UObject*> GetSettingsObjects() const override;
-	virtual void RegisterUICommand(FFractureEditorCommands* BindingContext);
+	virtual void RegisterUICommand( FFractureEditorCommands* BindingContext );
 
 	virtual void Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit) override;
 
 	UPROPERTY(EditAnywhere, Category = AutoCluster)
-	UFractureAutoClusterSettings* AutoClusterSettings;
+	TObjectPtr<UFractureAutoClusterSettings> AutoClusterSettings;
 };
 
 

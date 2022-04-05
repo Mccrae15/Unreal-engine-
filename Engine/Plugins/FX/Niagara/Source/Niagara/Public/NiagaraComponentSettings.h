@@ -2,7 +2,11 @@
 
 #pragma once
 
+#include "NiagaraScript.h"
 #include "NiagaraSystem.h"
+#include "NiagaraSystemInstance.h"
+#include "NiagaraEmitter.h"
+#include "NiagaraEmitterInstance.h"
 
 #include "NiagaraComponentSettings.generated.h"
 
@@ -10,12 +14,12 @@ USTRUCT(meta = (DisplayName = "Emitter Name Settings Reference"))
 struct FNiagaraEmitterNameSettingsRef
 {
 	GENERATED_USTRUCT_BODY()
-public:
-	UPROPERTY(EditAnywhere, Category = Parameters)
-		FName SystemName;
 
 	UPROPERTY(EditAnywhere, Category = Parameters)
-		FString EmitterName;
+	FName SystemName;
+
+	UPROPERTY(EditAnywhere, Category = Parameters)
+	FString EmitterName;
 
 	FORCEINLINE bool operator==(const FNiagaraEmitterNameSettingsRef& Other)const
 	{
@@ -71,24 +75,71 @@ public:
 		return false;
 	}
 
+	FORCEINLINE static bool ShouldSuppressEmitterActivation(const FNiagaraEmitterInstance* EmitterInstance)
+	{
+		if ( bUseSuppressEmitterList || bUseGpuEmitterAllowList || bUseGpuDataInterfaceDenyList)
+		{
+			const UNiagaraComponentSettings* ComponentSettings = GetDefault<UNiagaraComponentSettings>();
+
+			FNiagaraEmitterNameSettingsRef EmitterRef;
+			if (const UNiagaraSystem* ParentSystem = EmitterInstance->GetParentSystemInstance()->GetSystem())
+			{
+				EmitterRef.SystemName = ParentSystem->GetFName();
+			}
+			const UNiagaraEmitter* CachedEmitter = EmitterInstance->GetCachedEmitter();
+			EmitterRef.EmitterName = CachedEmitter->GetUniqueEmitterName();
+
+			if (bUseSuppressEmitterList && ComponentSettings->SuppressEmitterList.Contains(EmitterRef))
+			{
+				return true;
+			}
+
+			if (bUseGpuEmitterAllowList && (CachedEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim) && !ComponentSettings->GPUEmitterAllowList.Contains(EmitterRef))
+			{
+				return true;
+			}
+
+			if ( bUseGpuDataInterfaceDenyList && (CachedEmitter->SimTarget == ENiagaraSimTarget::GPUComputeSim) )
+			{
+				if (const UNiagaraScript* GPUComputeScript = CachedEmitter->GetGPUComputeScript())
+				{
+					for (const FNiagaraScriptDataInterfaceInfo& DefaultDIInfo : GPUComputeScript->GetCachedDefaultDataInterfaces())
+					{
+						if (ComponentSettings->GpuDataInterfaceDenyList.Contains(DefaultDIInfo.Type.GetFName()))
+						{
+							return true;
+						}
+					}
+				}
+			}
+		}
+		return false;
+	}
+
 	UPROPERTY(config)
 	TSet<FName> SuppressActivationList;
 
 	UPROPERTY(config)
 	TSet<FName> ForceAutoPooolingList;
 
-	//UPROPERTY(config)
-	//TSet<FName> ForceLatencyList;
-
-	static int32 bAllowSuppressActivation;
-	static int32 bAllowForceAutoPooling;
-
-
 	/** 
 		Config file to tweak individual emitters being disabled. Syntax is as follows for the config file:
 		[/Script/Niagara.NiagaraComponentSettings]
 		SuppressEmitterList=((SystemName="BasicSpriteSystem",EmitterName="BasicSprite001"))
+		+GpuDataInterfaceDenyList=("NiagaraDataInterfaceCollisionQuery")
 	*/
 	UPROPERTY(config)
 	TSet<FNiagaraEmitterNameSettingsRef> SuppressEmitterList;
+
+	UPROPERTY(config)
+	TSet<FNiagaraEmitterNameSettingsRef> GPUEmitterAllowList;
+
+	UPROPERTY(config)
+	TSet<FName> GpuDataInterfaceDenyList;
+
+	static int32 bAllowSuppressActivation;
+	static int32 bAllowForceAutoPooling;
+	static int32 bUseSuppressEmitterList;
+	static int32 bUseGpuEmitterAllowList;
+	static int32 bUseGpuDataInterfaceDenyList;
 };

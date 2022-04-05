@@ -19,8 +19,11 @@
 #include "Channels/MovieSceneChannelProxy.h"
 #include "Evaluation/MovieSceneEvalTemplate.h"
 #include "Evaluation/MovieSceneEvaluation.h"
+#include "Channels/MovieSceneDoubleChannel.h"
 #include "Channels/MovieSceneFloatChannel.h"
 #include "Channels/MovieSceneIntegerChannel.h"
+#include "Channels/MovieSceneBoolChannel.h"
+
 
 struct IImpl
 {
@@ -95,7 +98,143 @@ struct TAddKeyImpl : IImpl
 
 };
 
+//bool specialization
+template<>
+struct TAddKeyImpl<FMovieSceneBoolChannel, bool> : IImpl
+{
+	int32 ChannelIndex;
+	bool bAddKey;
+	bool ValueToSet;
+
+	TAddKeyImpl(int32 InChannelIndex, bool bInAddKey, const bool& InValue)
+		: ChannelIndex(InChannelIndex), bAddKey(bInAddKey), ValueToSet(InValue)
+	{}
+
+	virtual bool Apply(UMovieSceneSection* Section, FMovieSceneChannelProxy& Proxy, FFrameNumber InTime, EMovieSceneKeyInterpolation InterpolationMode, bool bKeyEvenIfUnchanged, bool bKeyEvenIfEmpty) const override
+	{
+		bool bKeyCreated = false;
+		using namespace UE::MovieScene;
+
+		FMovieSceneBoolChannel* Channel = Proxy.GetChannel<FMovieSceneBoolChannel>(ChannelIndex);
+		if (bAddKey && Channel)
+		{
+			bool bShouldKeyChannel = bKeyEvenIfUnchanged;
+			if (!bShouldKeyChannel)
+			{
+				bShouldKeyChannel = !ValueExistsAtTime(Channel, InTime, ValueToSet);
+			}
+
+			if (bShouldKeyChannel)
+			{
+				if (Channel->GetNumKeys() != 0 || bKeyEvenIfEmpty)
+				{
+					if (Section->TryModify())
+					{
+						AddKeyToChannel(Channel, InTime, ValueToSet, InterpolationMode);
+						bKeyCreated = true;
+					}
+				}
+			}
+		}
+
+		return bKeyCreated;
+	}
+
+	virtual void ApplyDefault(UMovieSceneSection* Section, FMovieSceneChannelProxy& Proxy) const override
+	{
+		using namespace UE::MovieScene;
+
+		FMovieSceneBoolChannel* Channel = Proxy.GetChannel<FMovieSceneBoolChannel>(ChannelIndex);
+		if (Channel && Channel->GetData().GetTimes().Num() == 0 && Channel->GetDefault() != ValueToSet)
+		{
+			if (Section->TryModify())
+			{
+				using namespace UE::MovieScene;
+				SetChannelDefault(Channel, ValueToSet);
+			}
+		}
+	}
+	virtual bool ModifyByCurrentAndWeight(FMovieSceneChannelProxy& Proxy, FFrameNumber InTime, void* VCurrentValue, float Weight) { return false; }
+
+};
 //Specializations for channels that SUPPORT Blending
+template<>
+struct TAddKeyImpl<FMovieSceneDoubleChannel, double> : IImpl
+{
+	int32 ChannelIndex;
+	bool bAddKey;
+	double ValueToSet;
+
+	TAddKeyImpl(int32 InChannelIndex, bool bInAddKey,  const double& InValue)
+		: ChannelIndex(InChannelIndex), bAddKey(bInAddKey), ValueToSet(InValue)
+	{}
+
+	virtual bool Apply(UMovieSceneSection* Section, FMovieSceneChannelProxy& Proxy, FFrameNumber InTime, EMovieSceneKeyInterpolation InterpolationMode, bool bKeyEvenIfUnchanged, bool bKeyEvenIfEmpty) const override
+	{
+		bool bKeyCreated = false;
+		using namespace UE::MovieScene;
+
+		FMovieSceneDoubleChannel* Channel = Proxy.GetChannel<FMovieSceneDoubleChannel>(ChannelIndex);
+		if (bAddKey && Channel)
+		{
+			bool bShouldKeyChannel = bKeyEvenIfUnchanged;
+			if (!bShouldKeyChannel)
+			{
+				bShouldKeyChannel = !ValueExistsAtTime(Channel, InTime, ValueToSet);
+			}
+
+			if (bShouldKeyChannel)
+			{
+				if (Channel->GetNumKeys() != 0 || bKeyEvenIfEmpty)
+				{
+					if (Section->TryModify())
+					{
+						AddKeyToChannel(Channel, InTime, ValueToSet, InterpolationMode);
+						bKeyCreated = true;
+					}
+				}
+			}
+		}
+
+		return bKeyCreated;
+	}
+
+	virtual void ApplyDefault(UMovieSceneSection* Section, FMovieSceneChannelProxy& Proxy) const override
+	{
+		using namespace UE::MovieScene;
+
+		FMovieSceneDoubleChannel* Channel = Proxy.GetChannel<FMovieSceneDoubleChannel>(ChannelIndex);
+		if (Channel && Channel->GetData().GetTimes().Num() == 0  && Channel->GetDefault() != ValueToSet)
+		{
+			if (Section->TryModify())
+			{
+				using namespace UE::MovieScene;
+				SetChannelDefault(Channel, ValueToSet);
+			}
+		}
+	}
+
+	virtual bool ModifyByCurrentAndWeight(FMovieSceneChannelProxy& Proxy, FFrameNumber InTime, void* VCurrentValue, float Weight) override
+	{
+		using namespace UE::MovieScene;
+		double CurrentValue = *(double*)(VCurrentValue);
+		FMovieSceneDoubleChannel* Channel = Proxy.GetChannel<FMovieSceneDoubleChannel>(ChannelIndex);
+		if (Channel)
+		{
+			double LocalValue;
+			using namespace UE::MovieScene;
+			if (!EvaluateChannel(Channel, InTime, LocalValue))
+			{
+				TOptional<double> OptDouble = Channel->GetDefault();
+				LocalValue = OptDouble.IsSet() ? OptDouble.GetValue() : 0.0f;
+			}
+			ValueToSet = (ValueToSet - CurrentValue) * Weight + LocalValue;
+			return true;
+		}
+
+		return false;
+	}
+};
 template<>
 struct TAddKeyImpl<FMovieSceneFloatChannel, float> : IImpl
 {
@@ -172,7 +311,6 @@ struct TAddKeyImpl<FMovieSceneFloatChannel, float> : IImpl
 
 		return false;
 	}
-
 };
 template<>
 struct TAddKeyImpl<FMovieSceneIntegerChannel, int32> : IImpl
@@ -220,7 +358,7 @@ struct TAddKeyImpl<FMovieSceneIntegerChannel, int32> : IImpl
 		using namespace UE::MovieScene;
 
 		FMovieSceneIntegerChannel* Channel = Proxy.GetChannel<FMovieSceneIntegerChannel>(ChannelIndex);
-		if (Channel && Channel->GetData().GetTimes().Num() == 0)
+		if (Channel && Channel->GetData().GetTimes().Num() == 0 && Channel->GetDefault() != ValueToSet)
 		{
 			if (Section->TryModify())
 			{
@@ -250,7 +388,6 @@ struct TAddKeyImpl<FMovieSceneIntegerChannel, int32> : IImpl
 
 		return false;
 	}
-
 };
 struct FMovieSceneChannelValueSetter
 {

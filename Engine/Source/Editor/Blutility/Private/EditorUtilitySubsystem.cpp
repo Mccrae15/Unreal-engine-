@@ -49,7 +49,10 @@ void UEditorUtilitySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		MainFrameModule.OnMainFrameCreationFinished().AddUObject(this, &UEditorUtilitySubsystem::MainFrameCreationFinished);
 	}
 
-	TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UEditorUtilitySubsystem::Tick), 0);
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UEditorUtilitySubsystem::Tick), 0);
+
+	FEditorDelegates::BeginPIE.AddUObject(this, &UEditorUtilitySubsystem::HandleOnBeginPIE);
+	FEditorDelegates::EndPIE.AddUObject(this, &UEditorUtilitySubsystem::HandleOnEndPIE);
 }
 
 void UEditorUtilitySubsystem::Deinitialize()
@@ -59,9 +62,21 @@ void UEditorUtilitySubsystem::Deinitialize()
 		IMainFrameModule::Get().OnMainFrameCreationFinished().RemoveAll(this);
 	}
 
-	FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 
 	IConsoleManager::Get().UnregisterConsoleObject(RunTaskCommandObject);
+
+	FEditorDelegates::BeginPIE.RemoveAll(this);
+	FEditorDelegates::EndPIE.RemoveAll(this);
+}
+
+void UEditorUtilitySubsystem::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	UEditorUtilitySubsystem* This = static_cast<UEditorUtilitySubsystem*>(InThis);
+	for (auto& KVP : This->PendingTasks)
+	{
+		Collector.AddReferencedObjects(KVP.Value);
+	}
 }
 
 void UEditorUtilitySubsystem::MainFrameCreationFinished(TSharedPtr<SWindow> InRootWindow, bool bIsNewProjectWindow)
@@ -73,8 +88,8 @@ void UEditorUtilitySubsystem::HandleStartup()
 {
 	for (const FSoftObjectPath& ObjectPath : StartupObjects)
 	{
-		UObject* Object = ObjectPath.TryLoad();
-		if (!Object || Object->IsPendingKillOrUnreachable())
+		UObject* Object = GetValid(ObjectPath.TryLoad());
+		if (!Object || Object->IsUnreachable())
 		{
 			UE_LOG(LogEditorUtilityBlueprint, Warning, TEXT("Could not load: %s"), *ObjectPath.ToString());
 			continue;
@@ -86,7 +101,7 @@ void UEditorUtilitySubsystem::HandleStartup()
 
 bool UEditorUtilitySubsystem::TryRun(UObject* Asset)
 {
-	if (!Asset || Asset->IsPendingKillOrUnreachable())
+	if (!Asset || !IsValidChecked(Asset) || Asset->IsUnreachable())
 	{
 		UE_LOG(LogEditorUtilityBlueprint, Warning, TEXT("Could not run: %s"), Asset ? *Asset->GetPathName() : TEXT("None"));
 		return false;
@@ -248,24 +263,40 @@ UEditorUtilityWidget* UEditorUtilitySubsystem::FindUtilityWidgetFromBlueprint(cl
 
 bool UEditorUtilitySubsystem::Tick(float DeltaTime)
 {
-	// Will run until we have a task that doesn't immediately complete upon calling StartExecutingTask().
-	while (ActiveTask == nullptr && PendingTasks.Num() > 0)
+	UEditorUtilityTask* CurrentOrParentTask = GetActiveTask();
+	TArray<TObjectPtr<UEditorUtilityTask>>* PendingChildTasks = PendingTasks.Find(CurrentOrParentTask);
+	if (PendingChildTasks && PendingChildTasks->Num())
 	{
-		ActiveTask = PendingTasks[0];
-		PendingTasks.RemoveAt(0);
+		UEditorUtilityTask* PendingChildTask = (*PendingChildTasks)[0];
+		PendingChildTasks->RemoveAt(0);
 
-		UE_LOG(LogEditorUtilityBlueprint, Log, TEXT("Running task %s"), *GetPathNameSafe(ActiveTask));
-
-		// And start executing it
-		ActiveTask->StartExecutingTask();
+		StartTask(PendingChildTask);
 	}
 
-	if (ActiveTask && ActiveTask->WasCancelRequested())
+	// Canceling happens without an event in the notification it's based on checking it during tick,
+	// so as we evaluate it, we check if cancel was requested, and if so, we manually trigger
+	// RequestCancel, to ensure an event is fired letting the task know we want to stop.
+	if (GetActiveTask() && GetActiveTask()->WasCancelRequested())
 	{
-		ActiveTask->FinishExecutingTask();
+		GetActiveTask()->RequestCancel();
 	}
 
 	return true;
+}
+
+void UEditorUtilitySubsystem::StartTask(UEditorUtilityTask* Task)
+{
+	if (!Task)
+	{
+		return;
+	}
+
+	ActiveTaskStack.Add(Task);
+
+	UE_LOG(LogEditorUtilityBlueprint, Log, TEXT("Running task %s"), *GetPathNameSafe(Task));
+
+	// And start executing it
+	Task->StartExecutingTask();
 }
 
 void UEditorUtilitySubsystem::RunTaskCommand(const TArray<FString>& Params, UWorld* InWorld, FOutputDevice& Ar)
@@ -305,15 +336,13 @@ void UEditorUtilitySubsystem::CancelAllTasksCommand(const TArray<FString>& Param
 {
 	PendingTasks.Reset();
 
-	if (ActiveTask)
+	for (UEditorUtilityTask* ActiveTask : ActiveTaskStack)
 	{
 		ActiveTask->RequestCancel();
-		ActiveTask->FinishExecutingTask();
-		ActiveTask = nullptr;
 	}
 }
 
-void UEditorUtilitySubsystem::RegisterAndExecuteTask(UEditorUtilityTask* NewTask)
+void UEditorUtilitySubsystem::RegisterAndExecuteTask(UEditorUtilityTask* NewTask, UEditorUtilityTask* OptionalParentTask)
 {
 	if (NewTask != nullptr)
 	{
@@ -325,9 +354,13 @@ void UEditorUtilitySubsystem::RegisterAndExecuteTask(UEditorUtilityTask* NewTask
 		}
 
 		// Register it
-		check(!(PendingTasks.Contains(NewTask) || ActiveTask == NewTask));
-		PendingTasks.Add(NewTask);
+		check(!(PendingTasks.Contains(NewTask) || ActiveTaskStack.Contains(NewTask)));
 		NewTask->MyTaskManager = this;
+		NewTask->MyParentTask = OptionalParentTask;
+
+		// Always append the task to the set array of tasks associated with the parent - which may be null.
+		TArray<UEditorUtilityTask*>& PendingChildTasks = PendingTasks.FindOrAdd(OptionalParentTask);
+		PendingChildTasks.Add(NewTask);
 	}
 }
 
@@ -337,17 +370,19 @@ void UEditorUtilitySubsystem::RemoveTaskFromActiveList(UEditorUtilityTask* Task)
 	{
 		if (ensure(Task->MyTaskManager == this))
 		{
-			check(PendingTasks.Contains(Task) || ActiveTask == Task);
+			check(PendingTasks.Contains(Task) || ActiveTaskStack.Contains(Task));
 			PendingTasks.Remove(Task);
+			ActiveTaskStack.Remove(Task);
 
-			if (ActiveTask == Task)
+			// Remove from any child set.
+			for (auto& KVP : PendingTasks)
 			{
-				ActiveTask = nullptr;
+				KVP.Value.Remove(Task);
 			}
 
 			Task->MyTaskManager = nullptr;
 
-			UE_LOG(LogEditorUtilityBlueprint, Log, TEXT("Task %s completed"), *GetPathNameSafe(Task));
+			UE_LOG(LogEditorUtilityBlueprint, Log, TEXT("Task %s removed"), *GetPathNameSafe(Task));
 		}
 	}
 }
@@ -452,6 +487,16 @@ UClass* UEditorUtilitySubsystem::FindBlueprintClass(const FString& TargetNameRaw
 	});
 
 	return FoundClass;
+}
+
+void UEditorUtilitySubsystem::HandleOnBeginPIE(const bool bIsSimulating)
+{
+	OnBeginPIE.Broadcast(bIsSimulating);
+}
+
+void UEditorUtilitySubsystem::HandleOnEndPIE(const bool bIsSimulating)
+{
+	OnEndPIE.Broadcast(bIsSimulating);
 }
 
 #undef LOCTEXT_NAMESPACE

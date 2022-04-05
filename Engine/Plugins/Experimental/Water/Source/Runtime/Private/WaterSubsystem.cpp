@@ -5,7 +5,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
-#include "WaterMeshActor.h"
+#include "WaterZoneActor.h"
 #include "WaterMeshComponent.h"
 #include "Engine/Engine.h"
 #include "EngineUtils.h"
@@ -16,6 +16,7 @@
 #include "WaterBodyIslandActor.h"
 #include "WaterBodyExclusionVolume.h"
 #include "WaterSplineComponent.h"
+#include "WaterUtils.h"
 #include "CollisionShape.h"
 #include "Interfaces/Interface_PostProcessVolume.h"
 #include "SceneView.h"
@@ -36,7 +37,7 @@ DECLARE_CYCLE_STAT(TEXT("IsUnderwater Test"), STAT_WaterIsUnderwater, STATGROUP_
 // ----------------------------------------------------------------------------------
 
 // General purpose CVars:
-static TAutoConsoleVariable<int32> CVarWaterEnabled(
+TAutoConsoleVariable<int32> CVarWaterEnabled(
 	TEXT("r.Water.Enabled"),
 	1,
 	TEXT("If all water rendering is enabled or disabled"),
@@ -51,7 +52,7 @@ static FAutoConsoleVariableRef CVarFreezeWaves(
 	ECVF_Cheat
 );
 
-static TAutoConsoleVariable<int32> CVarOverrideWavesTime(
+static TAutoConsoleVariable<float> CVarOverrideWavesTime(
 	TEXT("r.Water.OverrideWavesTime"),
 	-1.0f,
 	TEXT("Forces the time used for waves if >= 0.0"),
@@ -108,12 +109,8 @@ static FAutoConsoleVariableRef CVarShallowWaterSimulationRenderTargetSize(
 	ECVF_Scalability
 );
 
-// ----------------------------------------------------------------------------------
-
-bool IsWaterEnabled(bool bIsRenderThread)
-{
-	return !!(bIsRenderThread ? CVarWaterEnabled.GetValueOnRenderThread() : CVarWaterEnabled.GetValueOnGameThread());
-}
+extern TAutoConsoleVariable<int32> CVarWaterMeshEnabled;
+extern TAutoConsoleVariable<int32> CVarWaterMeshEnableRendering;
 
 
 // ----------------------------------------------------------------------------------
@@ -122,8 +119,8 @@ bool IsWaterEnabled(bool bIsRenderThread)
 /** Debug-only struct for displaying some information about which post process material is being used : */
 struct FUnderwaterPostProcessDebugInfo
 {
-	TArray<TWeakObjectPtr<AWaterBody>> OverlappedWaterBodies;
-	TWeakObjectPtr<AWaterBody> ActiveWaterBody;
+	TArray<TWeakObjectPtr<UWaterBodyComponent>> OverlappedWaterBodyComponents;
+	TWeakObjectPtr<UWaterBodyComponent> ActiveWaterBodyComponent;
 	FWaterBodyQueryResult ActiveWaterBodyQueryResult;
 };
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -183,6 +180,14 @@ FWaterBodyManager* UWaterSubsystem::GetWaterBodyManager(UWorld* InWorld)
 	return nullptr;
 }
 
+void UWaterSubsystem::ForEachWaterBodyComponent(const UWorld* World, TFunctionRef<bool(UWaterBodyComponent*)> Predicate)
+{
+	if (UWaterSubsystem* Subsystem = GetWaterSubsystem(World))
+	{
+		Subsystem->WaterBodyManager.ForEachWaterBodyComponent(Predicate);
+	}
+}
+
 void UWaterSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
@@ -197,12 +202,10 @@ void UWaterSubsystem::Tick(float DeltaTime)
 	SetMPCTime(MPCTime, PrevWorldTimeSeconds);
 	PrevWorldTimeSeconds = MPCTime;
 
-	if (WaterMeshActor)
+	if (WaterZoneActor)
 	{
-		WaterMeshActor->Update();
+		WaterZoneActor->Update();
 	}
-
-	WaterBodyManager.Update();
 
 	if (!bUnderWaterForAudio && CachedDepthUnderwater > 0.0f)
 	{
@@ -248,8 +251,10 @@ void UWaterSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	CVarShallowWaterSim->SetOnChangedCallback(NotifyWaterScalabilityChanged);
 	CVarShallowWaterSimulationRenderTargetSize->SetOnChangedCallback(NotifyWaterScalabilityChanged);
 
-	FConsoleVariableDelegate NotifyWaterEnabledChanged = FConsoleVariableDelegate::CreateUObject(this, &UWaterSubsystem::NotifyWaterEnabledChangedInternal);
-	CVarWaterEnabled->SetOnChangedCallback(NotifyWaterEnabledChanged);
+	FConsoleVariableDelegate NotifyWaterVisibilityChanged = FConsoleVariableDelegate::CreateUObject(this, &UWaterSubsystem::NotifyWaterVisibilityChangedInternal);
+	CVarWaterEnabled->SetOnChangedCallback(NotifyWaterVisibilityChanged);
+	CVarWaterMeshEnabled->SetOnChangedCallback(NotifyWaterVisibilityChanged);
+	CVarWaterMeshEnableRendering->SetOnChangedCallback(NotifyWaterVisibilityChanged);
 
 #if WITH_EDITOR
 	GetDefault<UWaterRuntimeSettings>()->OnSettingsChange.AddUObject(this, &UWaterSubsystem::ApplyRuntimeSettings);
@@ -286,6 +291,8 @@ void UWaterSubsystem::Deinitialize()
 	CVarShallowWaterSimulationRenderTargetSize->SetOnChangedCallback(NullCallback);
 	CVarShallowWaterSim->SetOnChangedCallback(NullCallback);
 	CVarWaterEnabled->SetOnChangedCallback(NullCallback);
+	CVarWaterMeshEnabled->SetOnChangedCallback(NullCallback);
+	CVarWaterMeshEnableRendering->SetOnChangedCallback(NullCallback);
 
 	World->OnBeginPostProcessSettings.RemoveAll(this);
 	World->RemovePostProcessVolume(&UnderwaterPostProcessVolume);
@@ -383,7 +390,7 @@ int32 UWaterSubsystem::GetShallowWaterSimulationRenderTargetSize()
 
 bool UWaterSubsystem::IsWaterRenderingEnabled() const
 {
-	return IsWaterEnabled(/*bIsRenderThread = */ false);
+	return FWaterUtils::IsWaterEnabled(/*bIsRenderThread = */ false);
 }
 
 float UWaterSubsystem::GetWaterTimeSeconds() const
@@ -458,40 +465,38 @@ void UWaterSubsystem::SetOceanFloodHeight(float InFloodHeight)
 		MarkAllWaterMeshesForRebuild();
 
 		// the ocean body is dynamic and needs to be readjusted when the flood height changes : 
-		if (OceanActor.IsValid())
+			if (OceanBodyComponent.IsValid())
 		{
-			OceanActor->SetHeightOffset(InFloodHeight);
+				OceanBodyComponent->SetHeightOffset(InFloodHeight);
 		}
 
-		// All water body actors need to update their underwater post process MID as it depends on the ocean global height : 
-			for (TActorIterator<AWaterBody> ActorItr(World); ActorItr; ++ActorItr)
+			WaterBodyManager.ForEachWaterBodyComponent([this](UWaterBodyComponent* WaterBodyComponent)
 		{
-			AWaterBody* WaterBody = *ActorItr;
-			WaterBody->UpdateMaterialInstances();
+				WaterBodyComponent->UpdateMaterialInstances();
+				return true;
+			});
 		}
 	}
 }
-}
 
-AWaterMeshActor* UWaterSubsystem::GetWaterMeshActor() const
+AWaterZone* UWaterSubsystem::GetWaterZoneActor() const
 {
 	if (UWorld* World = GetWorld())
 	{
-	// @todo water: this assumes only one water mesh actor right now.  In the future we may need to associate a water mesh actor with a water body more directly
-		TActorIterator<AWaterMeshActor> It(World);
-	WaterMeshActor = It ? *It : nullptr;
-
-	return WaterMeshActor;
-}
+		// #todo_water: this assumes only one water zone actor right now.  In the future we may need to associate a water mesh actor with a water body more directly
+		TActorIterator<AWaterZone> It(World);
+		WaterZoneActor = It ? *It : nullptr;
+		return WaterZoneActor;
+	}
 
 	return nullptr;
 }
 
 float UWaterSubsystem::GetOceanBaseHeight() const
 {
-	if (OceanActor.IsValid())
+	if (OceanBodyComponent.IsValid())
 	{
-		return OceanActor->GetActorLocation().Z;
+		return OceanBodyComponent->GetComponentLocation().Z;
 	}
 
 	return TNumericLimits<float>::Lowest();
@@ -501,7 +506,7 @@ void UWaterSubsystem::MarkAllWaterMeshesForRebuild()
 {
 	if (UWorld* World = GetWorld())
 	{
-		for (AWaterMeshActor* WaterMesh : TActorRange<AWaterMeshActor>(World))
+		for (AWaterZone* WaterMesh : TActorRange<AWaterZone>(World))
 	{
 		WaterMesh->MarkWaterMeshComponentForRebuild();
 	}
@@ -513,27 +518,25 @@ void UWaterSubsystem::NotifyWaterScalabilityChangedInternal(IConsoleVariable* CV
 	OnWaterScalabilityChanged.Broadcast();
 }
 
-void UWaterSubsystem::NotifyWaterEnabledChangedInternal(IConsoleVariable* CVar)
+void UWaterSubsystem::NotifyWaterVisibilityChangedInternal(IConsoleVariable* CVar)
 {
-	if (UWorld* World = GetWorld())
+	// Water body visibility depends on various CVars. All need to update the visibility in water body components : 
+	WaterBodyManager.ForEachWaterBodyComponent([](UWaterBodyComponent* WaterBodyComponent)
 	{
-	// Water body visibility depends on CVarWaterEnabled
-		for (AWaterBody* WaterBody : TActorRange<AWaterBody>(World))
-	{
-		WaterBody->UpdateWaterComponentVisibility();
-	}
-}
+		WaterBodyComponent->UpdateComponentVisibility(/* bAllowWaterMeshRebuild = */true);
+		return true;
+	});
 }
 
 struct FWaterBodyPostProcessQuery
 {
-	FWaterBodyPostProcessQuery(AWaterBody& InWaterBody, const FVector& InWorldLocation, const FWaterBodyQueryResult& InQueryResult)
-		: WaterBody(InWaterBody)
+	FWaterBodyPostProcessQuery(UWaterBodyComponent& InWaterBodyComponent, const FVector& InWorldLocation, const FWaterBodyQueryResult& InQueryResult)
+		: WaterBodyComponent(InWaterBodyComponent)
 		, WorldLocation(InWorldLocation)
 		, QueryResult(InQueryResult)
 	{}
 
-	AWaterBody& WaterBody;
+	UWaterBodyComponent& WaterBodyComponent;
 	FVector WorldLocation;
 	FWaterBodyQueryResult QueryResult;
 };
@@ -584,19 +587,19 @@ void UWaterSubsystem::ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneV
 
 	TArray<FHitResult> Hits;
 	TArray<FWaterBodyPostProcessQuery, TInlineAllocator<4>> WaterBodyQueriesToProcess;
-	const AWaterMeshActor* LocalWaterMeshActor = GetWaterMeshActor();
-	if ((LocalWaterMeshActor != nullptr) && World->SweepMultiByChannel(Hits, ViewLocation, ViewLocation + FVector(0, 0, TraceDistance), FQuat::Identity, UnderwaterTraceChannel, FCollisionShape::MakeSphere(TraceDistance), TraceSimple))
+	const AWaterZone* LocalWaterZoneActor = GetWaterZoneActor();
+	if ((LocalWaterZoneActor != nullptr) && World->SweepMultiByChannel(Hits, ViewLocation, ViewLocation + FVector(0, 0, TraceDistance), FQuat::Identity, UnderwaterTraceChannel, FCollisionShape::MakeSphere(TraceDistance), TraceSimple))
 	{
 		if (Hits.Num() > 1)
 		{
 			// Sort hits based on their water priority for rendering since we should prioritize evaluating waves in the order those waves will be considered for rendering. 
 			Hits.Sort([](const FHitResult& A, const FHitResult& B)
 			{
-				const AWaterBody* ABody = Cast<AWaterBody>(A.Actor);
-				const AWaterBody* BBody = Cast<AWaterBody>(B.Actor);
+				const AWaterBody* ABody = A.HitObjectHandle.FetchActor<AWaterBody>();
+				const AWaterBody* BBody = B.HitObjectHandle.FetchActor<AWaterBody>();
 
-				const int32 APriority = ABody ? ABody->GetOverlapMaterialPriority() : -1;
-				const int32 BPriority = BBody ? BBody->GetOverlapMaterialPriority() : -1;
+				const int32 APriority = ABody ? ABody->GetWaterBodyComponent()->GetOverlapMaterialPriority() : -1;
+				const int32 BPriority = BBody ? BBody->GetWaterBodyComponent()->GetOverlapMaterialPriority() : -1;
 
 				return APriority > BPriority;
 			});
@@ -605,10 +608,13 @@ void UWaterSubsystem::ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneV
 		float MaxWaterLevel = TNumericLimits<float>::Lowest();
 		for (const FHitResult& Result : Hits)
 		{
-			if (AWaterBody* WaterBody = Cast<AWaterBody>(Result.Actor))
+			if (AWaterBody* WaterBodyActor = Result.HitObjectHandle.FetchActor<AWaterBody>())
 			{
+				UWaterBodyComponent* WaterBodyComponent = WaterBodyActor->GetWaterBodyComponent();
+				check(WaterBodyComponent);
+				
 				// Don't consider water bodies with no post process material : 
-				if (WaterBody->UnderwaterPostProcessMaterial != nullptr)
+				if (WaterBodyComponent->ShouldRender() && (WaterBodyComponent->UnderwaterPostProcessMaterial != nullptr))
 				{
 					// Base water body info needed : 
 					EWaterBodyQueryFlags QueryFlags = EWaterBodyQueryFlags::ComputeImmersionDepth
@@ -616,7 +622,7 @@ void UWaterSubsystem::ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneV
 						| EWaterBodyQueryFlags::IncludeWaves;
 					AdjustUnderwaterWaterInfoQueryFlags(QueryFlags);
 
-					FWaterBodyQueryResult QueryResult = WaterBody->QueryWaterInfoClosestToWorldLocation(ViewLocation, QueryFlags);
+					FWaterBodyQueryResult QueryResult = WaterBodyComponent->QueryWaterInfoClosestToWorldLocation(ViewLocation, QueryFlags);
 					if (!QueryResult.IsInExclusionVolume())
 					{
 						// Calculate the surface max Z at the view XY location
@@ -627,13 +633,13 @@ void UWaterSubsystem::ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneV
 						if (WaterSurfaceZ > MaxWaterLevel)
 						{
 							MaxWaterLevel = WaterSurfaceZ;
-							WaterBodyQueriesToProcess.Add(FWaterBodyPostProcessQuery(*WaterBody, ViewLocation, QueryResult));
+							WaterBodyQueriesToProcess.Add(FWaterBodyPostProcessQuery(*WaterBodyComponent, ViewLocation, QueryResult));
 						}
 					}
 				}
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-				UnderwaterPostProcessDebugInfo.OverlappedWaterBodies.AddUnique(WaterBody);
+				UnderwaterPostProcessDebugInfo.OverlappedWaterBodyComponents.AddUnique(WaterBodyComponent);
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 			}
 		}
@@ -648,10 +654,10 @@ void UWaterSubsystem::ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneV
 			if (bUnderwaterForPostProcess)
 			{
 				CachedDepthUnderwater = FMath::Max(LocalDepthUnderwater, CachedDepthUnderwater);
-				UnderwaterPostProcessVolume.PostProcessProperties = Query.WaterBody.GetPostProcessProperties();
+				UnderwaterPostProcessVolume.PostProcessProperties = Query.WaterBodyComponent.GetPostProcessProperties();
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-				UnderwaterPostProcessDebugInfo.ActiveWaterBody = &Query.WaterBody;
+				UnderwaterPostProcessDebugInfo.ActiveWaterBodyComponent = &Query.WaterBodyComponent;
 				UnderwaterPostProcessDebugInfo.ActiveWaterBodyQueryResult = Query.QueryResult;
 #endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)					
 				break;
@@ -712,12 +718,12 @@ void UWaterSubsystem::ShowOnScreenDebugInfo(const FVector& InViewLocation, const
 
 	OutputStrings.Add(FText::Format(LOCTEXT("VisualizeActiveUnderwaterPostProcess_ViewLocationDetails", "Underwater post process debug : view location : {0}"), FText::FromString(InViewLocation.ToCompactString())));
 
-	if (InDebugInfo.ActiveWaterBody.IsValid())
+	if (InDebugInfo.ActiveWaterBodyComponent.IsValid())
 	{
-		UMaterialInstanceDynamic* MID = InDebugInfo.ActiveWaterBody->GetUnderwaterPostProcessMaterialInstance();
+		UMaterialInstanceDynamic* MID = InDebugInfo.ActiveWaterBodyComponent->GetUnderwaterPostProcessMaterialInstance();
 		FString MaterialName = MID ? MID->GetMaterial()->GetName() : TEXT("No material");
 		OutputStrings.Add(FText::Format(LOCTEXT("VisualizeActiveUnderwaterPostProcess_ActivePostprocess", "Active underwater post process water body {0} (material: {1})"),
-			FText::FromString(InDebugInfo.ActiveWaterBody->GetName()),
+			FText::FromString(InDebugInfo.ActiveWaterBodyComponent->GetOwner()->GetName()),
 			FText::FromString(MaterialName)));
 	}
 	else
@@ -729,14 +735,14 @@ void UWaterSubsystem::ShowOnScreenDebugInfo(const FVector& InViewLocation, const
 	if (VisualizeActiveUnderwaterPostProcess > 1)
 	{
 		// Display details about the water query that resulted in this underwater post process to picked :
-		if (InDebugInfo.ActiveWaterBody.IsValid())
+		if (InDebugInfo.ActiveWaterBodyComponent.IsValid())
 		{
 			FText WaveDetails(LOCTEXT("VisualizeActiveUnderwaterPostProcess_WavelessDetails", "No waves"));
-			if (InDebugInfo.ActiveWaterBody->HasWaves())
+			if (InDebugInfo.ActiveWaterBodyComponent->HasWaves())
 			{
 				WaveDetails = FText::Format(LOCTEXT("VisualizeActiveUnderwaterPostProcess_WaveDetails", "- Wave Height : {0} (Max : {1}, Max here: {2}, Attenuation Factor : {3})"),
 					InDebugInfo.ActiveWaterBodyQueryResult.GetWaveInfo().Height,
-					InDebugInfo.ActiveWaterBody->GetMaxWaveHeight(),
+					InDebugInfo.ActiveWaterBodyComponent->GetMaxWaveHeight(),
 					InDebugInfo.ActiveWaterBodyQueryResult.GetWaveInfo().MaxHeight,
 					InDebugInfo.ActiveWaterBodyQueryResult.GetWaveInfo().AttenuationFactor);
 			}
@@ -748,16 +754,16 @@ void UWaterSubsystem::ShowOnScreenDebugInfo(const FVector& InViewLocation, const
 		}
 
 		// Display each water body returned by the overlap query : 
-		if (InDebugInfo.OverlappedWaterBodies.Num() > 0)
+		if (InDebugInfo.OverlappedWaterBodyComponents.Num() > 0)
 		{
 			OutputStrings.Add(FText::Format(LOCTEXT("VisualizeActiveUnderwaterPostProcess_OverlappedWaterBodyDetailsHeader", "{0} overlapping water bodies :"),
-				InDebugInfo.OverlappedWaterBodies.Num()));
-			for (TWeakObjectPtr<AWaterBody> WaterBody : InDebugInfo.OverlappedWaterBodies)
+				InDebugInfo.OverlappedWaterBodyComponents.Num()));
+			for (TWeakObjectPtr<UWaterBodyComponent> WaterBody : InDebugInfo.OverlappedWaterBodyComponents)
 			{
-				if (WaterBody.IsValid())
+				if (WaterBody.IsValid() && WaterBody->GetOwner())
 				{
 					OutputStrings.Add(FText::Format(LOCTEXT("VisualizeActiveUnderwaterPostProcess_OverlappedWaterBodyDetails", "- {0} (overlap material priority: {1})"),
-						FText::FromString(WaterBody->GetName()),
+						FText::FromString(WaterBody->GetOwner()->GetName()),
 						FText::AsNumber(WaterBody->GetOverlapMaterialPriority())));
 				}
 			}

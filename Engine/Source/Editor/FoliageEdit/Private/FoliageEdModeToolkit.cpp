@@ -18,16 +18,6 @@ namespace
 	const TArray<FName> FoliagePaletteNames = { FoliageName };
 }
 
-void FFoliageEdModeToolkit::RegisterTabSpawners(const TSharedRef<class FTabManager>& TabManager)
-{
-
-}
-
-void FFoliageEdModeToolkit::UnregisterTabSpawners(const TSharedRef<class FTabManager>& TabManager)
-{
-
-}
-
 void FFoliageEdModeToolkit::Init(const TSharedPtr< class IToolkitHost >& InitToolkitHost)
 {
 	FoliageEdWidget = SNew(SFoliageEdit);
@@ -67,10 +57,7 @@ void FFoliageEdModeToolkit::NotifyFoliageTypeMeshChanged(class UFoliageType* Fol
 
 void FFoliageEdModeToolkit::GetToolPaletteNames(TArray<FName>& InPaletteName) const
 {
-	if (!GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI)
-	{
-		InPaletteName = FoliagePaletteNames;
-	}
+	InPaletteName = FoliagePaletteNames;
 }
 
 FText FFoliageEdModeToolkit::GetToolPaletteDisplayName(FName PaletteName) const

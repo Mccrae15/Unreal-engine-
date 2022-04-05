@@ -8,7 +8,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -160,7 +160,7 @@ namespace UnrealBuildTool
 				for (; OuterEvents.Count > 1; OuterEvents.RemoveAt(OuterEvents.Count - 1))
 				{
 					Event OuterEvent = OuterEvents.Last();
-					if (Event.StartTime < OuterEvent.FinishTime.Value)
+					if (Event.StartTime < OuterEvent.FinishTime!.Value)
 					{
 						break;
 					}
@@ -190,7 +190,7 @@ namespace UnrealBuildTool
 			// Remove everything from the stack
 			for(; OuterEvents.Count > 0; OuterEvents.RemoveAt(OuterEvents.Count - 1))
 			{
-				UpdateLastEventTime(ref LastTime, OuterEvents.Last().FinishTime.Value, MaxUnknownTime, OuterEvents, Verbosity);
+				UpdateLastEventTime(ref LastTime, OuterEvents.Last().FinishTime!.Value, MaxUnknownTime, OuterEvents, Verbosity);
 			}
 
 			// Print the finish time

@@ -63,9 +63,10 @@ class nDisplayMonitor(QAbstractTableModel):
                 'Whether nDisplay instance window is in focus. It is '
                 'recommended to be in focus.',
             'ExeFlags':
-                'It is recommended to disable fullscreen optimizations on the '
-                'unreal executable. Only available once the render node '
-                'process is running. Expects "DISABLEDXMAXIMIZEDWINDOWEDMODE"',
+                'It is recommended to disable fullscreen optimizations in the\n'
+                'unreal executable because it has been associated with tearing.\n'
+                'Only available once the render node process is running. \n'
+                '(Expected value is "DISABLEDXMAXIMIZEDWINDOWEDMODE")',
             'OsVer': 'Operating system version',
             'CpuUtilization':
                 'CPU utilization average. The number of overloaded cores (>'
@@ -594,7 +595,7 @@ class nDisplayMonitor(QAbstractTableModel):
 
     @QtCore.Slot()
     def on_fix_exe_flags_clicked(self):
-        ''' Tries to force the correct UE4Editor.exe flags '''
+        ''' Tries to force the correct UnrealEditor.exe flags '''
         for devicedata in self.devicedatas.values():
             device = devicedata['device']
             data = devicedata['data']
@@ -606,7 +607,7 @@ class nDisplayMonitor(QAbstractTableModel):
 
     @QtCore.Slot()
     def on_soft_kill_clicked(self):
-        ''' Kills the cluster by sending a message to the master. '''
+        ''' Kills the cluster by sending a message to the primary. '''
         devices = [devicedata['device']
                    for devicedata in self.devicedatas.values()]
 

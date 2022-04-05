@@ -54,16 +54,24 @@ UFXSystemComponent* UAnimNotifyState_TimedNiagaraEffect::GetSpawnedEffect(UMeshC
 
 void UAnimNotifyState_TimedNiagaraEffect::NotifyBegin(USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation, float TotalDuration)
 {
+}
+
+void UAnimNotifyState_TimedNiagaraEffect::NotifyBegin(USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation, float TotalDuration, const FAnimNotifyEventReference& EventReference)
+{
 	if (UFXSystemComponent* Component = SpawnEffect(MeshComp, Animation))
 	{
 		// tag the component with the AnimNotify that is triggering the animation so that we can properly clean it up
 		Component->ComponentTags.AddUnique(GetSpawnedComponentTag());
 	}
 
-	Super::NotifyBegin(MeshComp, Animation, TotalDuration);
+	Super::NotifyBegin(MeshComp, Animation, TotalDuration, EventReference);
 }
 
 void UAnimNotifyState_TimedNiagaraEffect::NotifyEnd(USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation)
+{
+}
+
+void UAnimNotifyState_TimedNiagaraEffect::NotifyEnd(USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation, const FAnimNotifyEventReference& EventReference)
 {
 	if (UFXSystemComponent* FXComponent = GetSpawnedEffect(MeshComp))
 	{
@@ -82,7 +90,7 @@ void UAnimNotifyState_TimedNiagaraEffect::NotifyEnd(USkeletalMeshComponent * Mes
 		}
 	}
 
-	Super::NotifyEnd(MeshComp, Animation);
+	Super::NotifyEnd(MeshComp, Animation, EventReference);
 }
 
 bool UAnimNotifyState_TimedNiagaraEffect::ValidateParameters(USkeletalMeshComponent* MeshComp) const
@@ -116,11 +124,16 @@ FString UAnimNotifyState_TimedNiagaraEffect::GetNotifyName_Implementation() cons
 UAnimNotifyState_TimedNiagaraEffectAdvanced::UAnimNotifyState_TimedNiagaraEffectAdvanced(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	NotifyProgressUserParameter = FName("NormalizedNotifyProgress");
 }
 
 void UAnimNotifyState_TimedNiagaraEffectAdvanced::NotifyBegin(USkeletalMeshComponent* MeshComp, class UAnimSequenceBase* Animation, float TotalDuration)
 {
-	Super::NotifyBegin(MeshComp, Animation, TotalDuration);
+}
+
+void UAnimNotifyState_TimedNiagaraEffectAdvanced::NotifyBegin(USkeletalMeshComponent* MeshComp, class UAnimSequenceBase* Animation, float TotalDuration, const FAnimNotifyEventReference& EventReference)
+{
+	Super::NotifyBegin(MeshComp, Animation, TotalDuration, EventReference);
 
 	FInstanceProgressInfo& NewInfo = ProgressInfoMap.Add(MeshComp);
 	NewInfo.Duration = TotalDuration;
@@ -129,19 +142,56 @@ void UAnimNotifyState_TimedNiagaraEffectAdvanced::NotifyBegin(USkeletalMeshCompo
 
 void UAnimNotifyState_TimedNiagaraEffectAdvanced::NotifyEnd(USkeletalMeshComponent* MeshComp, class UAnimSequenceBase* Animation)
 {
-	Super::NotifyEnd(MeshComp, Animation);
+}
+
+void UAnimNotifyState_TimedNiagaraEffectAdvanced::NotifyEnd(USkeletalMeshComponent* MeshComp, class UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference)
+{
+	Super::NotifyEnd(MeshComp, Animation, EventReference);
 	ProgressInfoMap.Remove(MeshComp);
 }
 
 void UAnimNotifyState_TimedNiagaraEffectAdvanced::NotifyTick(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, float FrameDeltaTime)
 {
-	Super::NotifyTick(MeshComp, Animation, FrameDeltaTime);
+}
+
+void UAnimNotifyState_TimedNiagaraEffectAdvanced::NotifyTick(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, float FrameDeltaTime, const FAnimNotifyEventReference& EventReference)
+{
+	Super::NotifyTick(MeshComp, Animation, FrameDeltaTime, EventReference);
 
 	//Advance the progress.
 	//TODO: There must be some way to avoid this map and lookup. The information about the current elapsed time and a mapping onto the notify range should be available somewhere in the mesh comp and notify.
 	if (FInstanceProgressInfo* ProgressInfo = ProgressInfoMap.Find(MeshComp))
 	{
 		ProgressInfo->Elapsed += FrameDeltaTime;
+	}
+
+	if (UFXSystemComponent* FXComponent = GetSpawnedEffect(MeshComp))
+	{
+		//send the notify progress to the FX Component
+		if (bEnableNormalizedNotifyProgress && !NotifyProgressUserParameter.IsNone())
+		{
+			FXComponent->SetFloatParameter(NotifyProgressUserParameter, GetNotifyProgress(MeshComp));
+		}
+		//Send anim curve data to the FX Component
+		if (AnimCurves.Num() != 0)
+		{
+			if (UAnimInstance* AnimInst = MeshComp->GetAnimInstance())
+			{
+				for (int32 Index = 0; Index != AnimCurves.Num(); ++Index)
+				{
+					FName CurveName = AnimCurves[Index].AnimCurveName;
+					FName NiagaraUserVariableName = AnimCurves[Index].UserVariableName;
+					if ((!CurveName.IsNone()) && (!NiagaraUserVariableName.IsNone()))
+					{
+						float CurveValue = 0.0f;
+						if (AnimInst->GetCurveValue(CurveName, CurveValue))
+						{
+							FXComponent->SetFloatParameter(NiagaraUserVariableName, CurveValue);
+						}
+					}
+				}
+			}
+		}
 	}
 }
 

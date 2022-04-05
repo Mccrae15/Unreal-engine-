@@ -11,7 +11,7 @@
 
 class FMeshParticleVertexFactoryShaderParameters : public FVertexFactoryShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FMeshParticleVertexFactoryShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FMeshParticleVertexFactoryShaderParameters, NonVirtual);
 public:
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
@@ -43,6 +43,8 @@ private:
 	LAYOUT_FIELD(FShaderResourceParameter, PrevTransformBuffer);
 };
 
+IMPLEMENT_TYPE_LAYOUT(FMeshParticleVertexFactoryShaderParameters);
+
 class FDummyPrevTransformBuffer : public FRenderResource
 {
 public:
@@ -50,9 +52,9 @@ public:
 
 	virtual void InitRHI()
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		VB = RHICreateVertexBuffer(sizeof(FVector4) * 3, BUF_Static | BUF_ShaderResource, CreateInfo);
-		SRV = RHICreateShaderResourceView(VB, sizeof(FVector4), PF_A32B32G32R32F);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FDummyPrevTransformBuffer"));
+		VB = RHICreateVertexBuffer(sizeof(FVector4f) * 3, BUF_Static | BUF_ShaderResource, CreateInfo);
+		SRV = RHICreateShaderResourceView(VB, sizeof(FVector4f), PF_A32B32G32R32F);
 	}
 
 	virtual void ReleaseRHI()
@@ -66,7 +68,7 @@ public:
 		return TEXT("FDummyPrevTransformBuffer");
 	}
 
-	inline FRHIVertexBuffer* GetVB() const
+	inline FRHIBuffer* GetVB() const
 	{
 		return VB;
 	}
@@ -77,7 +79,7 @@ public:
 	}
 
 private:
-	FVertexBufferRHIRef VB;
+	FBufferRHIRef VB;
 	FShaderResourceViewRHIRef SRV;
 };
 
@@ -221,7 +223,7 @@ void FMeshParticleVertexFactory::SetDynamicParameterBuffer(const FVertexBuffer* 
 
 uint8* FMeshParticleVertexFactory::LockPreviousTransformBuffer(uint32 ParticleCount)
 {
-	const static uint32 ElementSize = sizeof(FVector4);
+	const static uint32 ElementSize = sizeof(FVector4f);
 	const static uint32 ParticleSize = ElementSize * 3;
 	const uint32 AllocationRequest = ParticleCount * ParticleSize;
 
@@ -230,7 +232,7 @@ uint8* FMeshParticleVertexFactory::LockPreviousTransformBuffer(uint32 ParticleCo
 	if (AllocationRequest > PrevTransformBuffer.NumBytes)
 	{
 		PrevTransformBuffer.Release();
-		PrevTransformBuffer.Initialize(ElementSize, ParticleCount * 3, PF_A32B32G32R32F, BUF_Dynamic);
+		PrevTransformBuffer.Initialize(TEXT("PrevTransformBuffer"), ElementSize, ParticleCount * 3, PF_A32B32G32R32F, BUF_Dynamic);
 	}
 
 	PrevTransformBuffer.Lock();
@@ -279,5 +281,8 @@ void FMeshParticleVertexFactory::SetData(const FDataType& InData)
 
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FMeshParticleVertexFactory, SF_Vertex, FMeshParticleVertexFactoryShaderParameters);
 
-IMPLEMENT_VERTEX_FACTORY_TYPE(FMeshParticleVertexFactory,"/Engine/Private/MeshParticleVertexFactory.ush",true,false,true,false,false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FMeshParticleVertexFactory,"/Engine/Private/MeshParticleVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsDynamicLighting
+);
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FMeshParticleUniformParameters,"MeshParticleVF");

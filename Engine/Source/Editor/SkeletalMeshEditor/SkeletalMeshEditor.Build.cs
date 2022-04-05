@@ -21,6 +21,7 @@ public class SkeletalMeshEditor : ModuleRules
 				"Slate",
 				"SlateCore",
                 "EditorStyle",
+				"EditorFramework",
                 "UnrealEd",
                 "SkeletonEditor",
                 "Kismet",
@@ -36,7 +37,10 @@ public class SkeletalMeshEditor : ModuleRules
 				"ClothingSystemRuntimeInterface",
 				"SkeletalMeshUtilitiesCommon",
 				"ToolMenus",
-            }
+				"EditorSubsystem",
+				"StatusBar",
+				"PhysicsUtilities",
+			}
 		);
 
         PrivateIncludePathModuleNames.AddRange(

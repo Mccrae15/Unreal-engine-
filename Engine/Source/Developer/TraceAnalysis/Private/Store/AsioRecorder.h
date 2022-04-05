@@ -7,8 +7,8 @@
 #include "AsioTickable.h"
 #include "Containers/Array.h"
 
-namespace Trace
-{
+namespace UE {
+namespace Trace {
 
 class FAsioStore;
 class FAsioRecorderRelay;
@@ -25,6 +25,7 @@ public:
 		uint32					GetId() const;
 		uint32					GetTraceId() const;
 		uint32					GetIpAddress() const;
+		uint32					GetControlPort() const;
 
 	private:
 		friend					FAsioRecorder;
@@ -47,3 +48,4 @@ private:
 };
 
 } // namespace Trace
+} // namespace UE

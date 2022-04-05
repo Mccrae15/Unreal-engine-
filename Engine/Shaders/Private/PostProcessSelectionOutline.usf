@@ -20,7 +20,7 @@ SamplerState DepthSampler;
 
 SCREEN_PASS_TEXTURE_VIEWPORT(Color)
 SCREEN_PASS_TEXTURE_VIEWPORT(Depth)
-SCREEN_PASS_TEXTURE_VIEWPORT_TRANSFORM(ColorToDepth)
+FScreenTransform ColorToDepth;
 
 float3 OutlineColor;
 float3 SubduedOutlineColor;
@@ -59,7 +59,7 @@ FPixelInfo GetPixelInfo(int2 PixelPos, int SampleID, int OffsetX, int OffsetY, f
 	float DeviceZ = EditorPrimitivesDepth.Load(PixelPos, SampleID).r;
 	int Stencil = EditorPrimitivesStencil.Load(PixelPos, SampleID) STENCIL_COMPONENT_SWIZZLE;
 
-#if !COMPILER_GLSL && !PS4_PROFILE && !COMPILER_METAL && !COMPILER_HLSLCC
+#if !COMPILER_GLSL && !COMPILER_PSSL && !COMPILER_METAL && !COMPILER_HLSLCC
 	// not yet supported on OpenGL, slightly better quality
 	ReconstructionOffset += EditorPrimitivesDepth.GetSamplePosition(SampleID);
 #endif
@@ -231,7 +231,7 @@ void MainPS(
 	// If this sum is zero, none of our neighbors are selected pixels and we can skip all the heavy processing.
 	if (ScoutSum > 0)
 	{
-		const float2 DepthUV = ColorUV * ColorToDepth_Scale + ColorToDepth_Bias;
+		const float2 DepthUV = ApplyScreenTransform(ColorUV, ColorToDepth);
 
 		float Center = Texture2DSampleLevel(DepthTexture, DepthSampler, DepthUV, 0).r;
 		float Left   = Texture2DSampleLevel(DepthTexture, DepthSampler, DepthUV + float2(-1,  0) * Depth_ExtentInverse, 0).r;

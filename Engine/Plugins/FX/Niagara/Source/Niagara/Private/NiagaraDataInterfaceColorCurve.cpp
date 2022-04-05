@@ -210,8 +210,8 @@ void UNiagaraDataInterfaceColorCurve::GetVMExternalFunction(const FVMExternalFun
 	}
 	else
 	{
-		UE_LOG(LogNiagara, Error, TEXT("Could not find data interface external function.\n\tExpected Name: SampleColorCurve  Actual Name: %s\n\tExpected Inputs: 1  Actual Inputs: %i\n\tExpected Outputs: 4  Actual Outputs: %i"),
-			*BindingInfo.Name.ToString(), BindingInfo.GetNumInputs(), BindingInfo.GetNumOutputs());
+		UE_LOG(LogNiagara, Display, TEXT("Could not find data interface external function in %s.\n\tExpected Name: SampleColorCurve  Actual Name: %s\n\tExpected Inputs: 1  Actual Inputs: %i\n\tExpected Outputs: 4  Actual Outputs: %i"),
+			*GetPathNameSafe(this), *BindingInfo.Name.ToString(), BindingInfo.GetNumInputs(), BindingInfo.GetNumOutputs());
 		OutFunc = FVMExternalFunction();
 	}
 }
@@ -238,7 +238,7 @@ FORCEINLINE_DEBUGGABLE FLinearColor UNiagaraDataInterfaceColorCurve::SampleCurve
 }
 
 template<typename UseLUT>
-void UNiagaraDataInterfaceColorCurve::SampleCurve(FVectorVMContext& Context)
+void UNiagaraDataInterfaceColorCurve::SampleCurve(FVectorVMExternalFunctionContext& Context)
 {
 	//TODO: Create some SIMDable optimized representation of the curve to do this faster.
 	VectorVM::FExternalFuncInputHandler<float> XParam(Context);
@@ -247,7 +247,7 @@ void UNiagaraDataInterfaceColorCurve::SampleCurve(FVectorVMContext& Context)
 	VectorVM::FExternalFuncRegisterHandler<float> SamplePtrB(Context);
 	VectorVM::FExternalFuncRegisterHandler<float> SamplePtrA(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		float X = XParam.GetAndAdvance();
 		FLinearColor C = SampleCurveInternal<UseLUT>(X);

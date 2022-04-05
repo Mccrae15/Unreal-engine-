@@ -18,6 +18,9 @@ class FLidarPointCloudOctree;
 struct FLidarPointCloudTraversalOctree;
 struct FLidarPointCloudTraversalOctreeNode;
 
+class FLidarPointCloudRenderBuffer;
+class FLidarPointCloudVertexFactory;
+
 /**
  * WARNING: Exercise caution when modifying the contents of the Octree, as it may be in use by the Rendering Thread via FPointCloudSceneProxy
  * Use the FLidarPointCloudOctree::DataLock prior to such attempt
@@ -51,7 +54,7 @@ private:
 	uint8 LocationInParent;
 
 	/** Center point of this node. */
-	FVector Center;
+	FVector3f Center;
 
 	/** Stores the children array */
 	// #todo: Change to TIndirectArray<> - investigate increased memory consumption, ~130 bytes / Node
@@ -92,8 +95,8 @@ private:
 	uint32 BulkDataSize;
 
 	/** Holds render data for this node */
-	class FLidarPointCloudRenderBuffer* DataCache;
-	class FLidarPointCloudVertexFactory* VertexFactory;
+	TSharedPtr<FLidarPointCloudRenderBuffer> DataCache;
+	TSharedPtr<FLidarPointCloudVertexFactory> VertexFactory;
 
 	bool bRenderDataDirty;
 
@@ -104,8 +107,8 @@ private:
 	TAtomic<bool> bCanReleaseData;
 
 public:
-	FORCEINLINE FLidarPointCloudOctreeNode(FLidarPointCloudOctree* Tree, const uint8& Depth) : FLidarPointCloudOctreeNode(Tree, Depth, 0, FVector::ZeroVector) {}
-	FLidarPointCloudOctreeNode(FLidarPointCloudOctree* Tree, const uint8& Depth, const uint8& LocationInParent, const FVector& Center);
+	FORCEINLINE FLidarPointCloudOctreeNode(FLidarPointCloudOctree* Tree, const uint8& Depth) : FLidarPointCloudOctreeNode(Tree, Depth, 0, FVector3f::ZeroVector) {}
+	FLidarPointCloudOctreeNode(FLidarPointCloudOctree* Tree, const uint8& Depth, const uint8& LocationInParent, const FVector3f& Center);
 	~FLidarPointCloudOctreeNode();
 	FLidarPointCloudOctreeNode(const FLidarPointCloudOctreeNode&) = delete;
 	FLidarPointCloudOctreeNode(FLidarPointCloudOctreeNode&&) = delete;
@@ -119,10 +122,10 @@ public:
 	FLidarPointCloudPoint* GetPersistentData() const;
 
 	/** Returns a pointer to the point data */
-	FORCEINLINE FLidarPointCloudRenderBuffer* GetDataCache() { return DataCache; }
+	FORCEINLINE TSharedPtr<FLidarPointCloudRenderBuffer> GetDataCache() { return DataCache; }
 
 	/** Return a pointer to the vertex factory containing pre-cached geometry */
-	FORCEINLINE FLidarPointCloudVertexFactory* GetVertexFactory() { return VertexFactory; }
+	FORCEINLINE TSharedPtr<FLidarPointCloudVertexFactory> GetVertexFactory() { return VertexFactory; }
 
 	/**
 	 * Builds and updates the necessary render data buffers
@@ -150,8 +153,8 @@ public:
 	void UpdateNumVisiblePoints();
 
 	/** Attempts to insert given points to this node or passes it to the children, otherwise. */
-	void InsertPoints(const FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
-	void InsertPoints(FLidarPointCloudPoint** Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
+	void InsertPoints(const FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector3f& Translation);
+	void InsertPoints(FLidarPointCloudPoint** Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector3f& Translation);
 
 	/** Removes all points. */
 	void Empty(bool bRecursive = true);
@@ -166,7 +169,7 @@ public:
 	bool HasData() const { return bHasData; }
 
 	/** Returns true, if the node has its data loaded */
-	bool HasRenderData() const { return DataCache || VertexFactory; }
+	bool HasRenderData() const { return DataCache.IsValid() || VertexFactory.IsValid(); }
 
 	/**
 	 * Releases the BulkData
@@ -185,11 +188,11 @@ public:
 
 private:
 	template <typename T>
-	void InsertPoints_Internal(T Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
-	void InsertPoints_Dynamic(const FLidarPointCloudPoint* Points, const int64& Count, const FVector& Translation);
-	void InsertPoints_Static(const FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
-	void InsertPoints_Dynamic(FLidarPointCloudPoint** Points, const int64& Count, const FVector& Translation);
-	void InsertPoints_Static(FLidarPointCloudPoint** Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector& Translation);
+	void InsertPoints_Internal(T Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector3f& Translation);
+	void InsertPoints_Dynamic(const FLidarPointCloudPoint* Points, const int64& Count, const FVector3f& Translation);
+	void InsertPoints_Static(const FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector3f& Translation);
+	void InsertPoints_Dynamic(FLidarPointCloudPoint** Points, const int64& Count, const FVector3f& Translation);
+	void InsertPoints_Static(FLidarPointCloudPoint** Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, const FVector3f& Translation);
 
 	friend FLidarPointCloudOctree;
 	friend FLidarPointCloudTraversalOctree;
@@ -209,13 +212,13 @@ public:
 		float Radius;
 		float RadiusSq;
 		float GridSize;
-		FVector GridSize3D;
+		FVector3f GridSize3D;
 		float Size;
 		float NormalizationMultiplier;
-		FVector Extent;
+		FVector3f Extent;
 
 		FSharedLODData() {}
-		FSharedLODData(const FVector& InExtent);
+		FSharedLODData(const FVector3f& InExtent);
 	};
 
 public:
@@ -235,7 +238,7 @@ public:
 	FCriticalSection DataReleaseLock;
 
 private:
-	FLidarPointCloudOctreeNode Root;
+	FLidarPointCloudOctreeNode* Root;
 	
 	/** Stores shared per-LOD node data. */
 	TArray<FSharedLODData> SharedData;
@@ -247,7 +250,7 @@ private:
 	TArray<FThreadSafeCounter> NodeCount;
 
 	/** Extent of this Cloud. */
-	FVector Extent;
+	FVector3f Extent;
 
 	/** Used to cache the Allocated Size. */
 	mutable int32 PreviousNodeCount;
@@ -264,25 +267,24 @@ private:
 	/** Pointer to the owner of this Octree */
 	ULidarPointCloud* Owner;
 
-	struct FLidarPointCloudBulkData : public FUntypedBulkData
+	IAsyncReadFileHandle* ReadHandle;
+
+	FByteBulkData BulkData;
+
+#if WITH_EDITOR
+	struct FLidarPointCloudBulkData : public FByteBulkData
 	{
-	private:
 		FLidarPointCloudOctree* Octree;
-		IAsyncReadFileHandle* ReadHandle;
-
-	public:
+		int32 ElementSize = 1;
+		
 		FLidarPointCloudBulkData(FLidarPointCloudOctree* Octree);
-		virtual ~FLidarPointCloudBulkData();
-		virtual int32 GetElementSize() const override { return 1; }
-		bool ReadRequest(int64 Offset, int64 BytesToRead, uint8* UserSuppliedMemory);
-		FORCEINLINE void CloseReadHandle();
-
-	protected:
-		virtual void SerializeElements(FArchive& Ar, void* Data) override;
-		virtual void SerializeElement(FArchive& Ar, void* Data, int64 ElementIndex) override { };
+		virtual int32 GetElementSize() const override { return ElementSize; }
+		virtual void SerializeElements(FArchive& Ar, void* Data) override { Octree->SerializeBulkData(Ar); }
 		virtual bool RequiresSingleElementSerialization(FArchive& Ar) override { return true; }
-	} BulkData;
-
+		void Serialize(FArchive& Ar);
+	} SavingBulkData;
+#endif
+	
 	TQueue<FLidarPointCloudOctreeNode*> QueuedNodes;
 	TArray<FLidarPointCloudOctreeNode*> NodesInUse;
 
@@ -301,7 +303,7 @@ public:
 	FLidarPointCloudOctree& operator=(FLidarPointCloudOctree&&) = delete;
 
 	/** Returns true if the Root node exists and has any data assigned. */
-	bool HasData() const { return Root.GetNumPoints() > 0; }
+	bool HasData() const { return Root->GetNumPoints() > 0; }
 
 	/** Returns the number of different LODs. */
 	int32 GetNumLODs() const;
@@ -310,7 +312,7 @@ public:
 	FBox GetBounds() const { return FBox(-Extent, Extent); }
 
 	/** Returns the extent of the Cloud's bounds. */
-	FORCEINLINE FVector GetExtent() const { return Extent; }
+	FORCEINLINE FVector3f GetExtent() const { return Extent; }
 
 	/** Recalculates and updates points bounds. */
 	void RefreshBounds();
@@ -471,15 +473,15 @@ public:
 	void MarkRenderDataInConvexVolumeDirty(const FConvexVolume& ConvexVolume);
 
 	/** Initializes the Octree properties. */
-	void Initialize(const FVector& InExtent);
+	void Initialize(const FVector3f& InExtent);
 
 	/** Inserts the given point into the Octree structure, internally thread-safe. */
-	void InsertPoint(const FLidarPointCloudPoint* Point, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation);
+	void InsertPoint(const FLidarPointCloudPoint* Point, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector3f& Translation);
 
 	/** Inserts group of points into the Octree structure, internally thread-safe. */
-	void InsertPoints(FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation);
-	void InsertPoints(const FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation);
-	void InsertPoints(FLidarPointCloudPoint** Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation);
+	void InsertPoints(FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector3f& Translation);
+	void InsertPoints(const FLidarPointCloudPoint* Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector3f& Translation);
+	void InsertPoints(FLidarPointCloudPoint** Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector3f& Translation);
 
 	/** Attempts to remove the given point.  */
 	void RemovePoint(const FLidarPointCloudPoint* Point);
@@ -552,6 +554,9 @@ public:
 
 	void OptimizeForStaticData();
 
+	IAsyncReadFileHandle* GetReadHandle();
+	void CloseReadHandle();
+
 	//~ Begin Deprecated
 	UE_DEPRECATED(4.27, "Use GetPointsInConvexVolume instead.")
 	void GetPointsInFrustum(TArray<FLidarPointCloudPoint*>& SelectedPoints, const FConvexVolume& Frustum, const bool& bVisibleOnly);
@@ -565,7 +570,7 @@ private:
 	void RefreshAllocatedSize();
 
 	template <typename T>
-	void InsertPoints_Internal(T Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector& Translation);
+	void InsertPoints_Internal(T Points, const int64& Count, ELidarPointCloudDuplicateHandling DuplicateHandling, bool bRefreshPointsBounds, const FVector3f& Translation);
 
 	template <typename T>
 	void GetPoints_Internal(TArray<FLidarPointCloudPoint*, T>& Points, int64 StartIndex = 0, int64 Count = -1);
@@ -617,7 +622,7 @@ struct FLidarPointCloudTraversalOctreeNode
 	FLidarPointCloudOctreeNode* DataNode;
 
 	/** Stores the center of the target node in World space. */
-	FVector Center;
+	FVector3f Center;
 
 	/** Depth of this node */
 	uint8 Depth;
@@ -640,7 +645,7 @@ struct FLidarPointCloudTraversalOctreeNode
 	FLidarPointCloudTraversalOctreeNode();
 
 	/** Builds the traversal version of the given node. */
-	void Build(FLidarPointCloudTraversalOctree* TraversalOctree, FLidarPointCloudOctreeNode* Node, const FTransform& LocalToWorld, const FVector& LocationOffset);
+	void Build(FLidarPointCloudTraversalOctree* TraversalOctree, FLidarPointCloudOctreeNode* Node, const FTransform& LocalToWorld, const FVector3f& LocationOffset);
 
 	/** Calculates virtual depth of this node, to be used to estimate the best sprite size */
 	void CalculateVirtualDepth(const TArray<float>& LevelWeights, const float& PointSizeBias);
@@ -679,7 +684,7 @@ struct FLidarPointCloudTraversalOctree
 
 	/** Stores per-LOD bounds in World space. */
 	TArray<float> RadiiSq;
-	TArray<FVector> Extents;
+	TArray<FVector3f> Extents;
 
 	/** Stores the number of LODs. */
 	uint8 NumLODs;
@@ -714,6 +719,6 @@ struct FLidarPointCloudTraversalOctree
 
 	void CalculateLevelWeightsForSelectedNodes(TArray<float>& OutLevelWeights);
 
-	FVector GetCenter() const { return Root.Center; }
-	FVector GetExtent() const { return Extents[0]; }
+	FVector GetCenter() const { return (FVector)Root.Center; }
+	FVector GetExtent() const { return (FVector)Extents[0]; }
 };

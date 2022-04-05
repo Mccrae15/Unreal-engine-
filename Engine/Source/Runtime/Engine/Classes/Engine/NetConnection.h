@@ -10,6 +10,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "Serialization/BitWriter.h"
+#include "Misc/EngineVersion.h"
 #include "Misc/NetworkGuid.h"
 #include "GameFramework/OnlineReplStructs.h"
 #include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
@@ -27,6 +28,9 @@
 #include "Net/Common/Packets/PacketTraits.h"
 #include "Net/Core/Misc/ResizableCircularQueue.h"
 #include "Net/NetAnalyticsTypes.h"
+#include "Net/RPCDoSDetection.h"
+#include "Net/Core/Connection/NetCloseResult.h"
+#include "Net/NetConnectionFaultRecovery.h"
 #include "Net/TrafficControl.h"
 
 #include "NetConnection.generated.h"
@@ -38,6 +42,7 @@ class FObjectReplicator;
 class StatelessConnectHandlerComponent;
 class UActorChannel;
 class UChildConnection;
+struct FEncryptionKeyResponse;
 
 typedef TMap<TWeakObjectPtr<AActor>, UActorChannel*, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<TWeakObjectPtr<AActor>, UActorChannel*>> FActorChannelMap;
 
@@ -71,40 +76,8 @@ enum EConnectionState
 	USOCK_Pending	= 2, // Connection is awaiting connection.
 	USOCK_Open      = 3, // Connection is open.
 };
+ENGINE_API const TCHAR* LexToString(const EConnectionState Value);
 
-// 
-// Security event types used for UE_SECURITY_LOG
-//
-namespace ESecurityEvent
-{ 
-	enum Type
-	{
-		Malformed_Packet = 0, // The packet didn't follow protocol
-		Invalid_Data = 1,     // The packet contained invalid data
-		Closed = 2            // The connection had issues (potentially malicious) and was closed
-	};
-	
-	/** @return the stringified version of the enum passed in */
-	inline const TCHAR* ToString(const ESecurityEvent::Type EnumVal)
-	{
-		switch (EnumVal)
-		{
-			case Malformed_Packet:
-			{
-				return TEXT("Malformed_Packet");
-			}
-			case Invalid_Data:
-			{
-				return TEXT("Invalid_Data");
-			}
-			case Closed:
-			{
-				return TEXT("Closed");
-			}
-		}
-		return TEXT("");
-	}
-}
 
 /** If this connection is from a client, this is the current login state of this connection/login attempt */
 namespace EClientLoginState
@@ -269,16 +242,19 @@ public:
 UCLASS(customConstructor, Abstract, MinimalAPI, transient, config=Engine)
 class UNetConnection : public UPlayer
 {
+	using FNetResult = UE::Net::FNetResult;
+	using FNetCloseResult = UE::Net::FNetCloseResult;
+
 	GENERATED_BODY()
 
 public:
 	/** child connections for secondary viewports */
 	UPROPERTY(transient)
-	TArray<class UChildConnection*> Children;
+	TArray<TObjectPtr<class UChildConnection>> Children;
 
 	/** Owning net driver */
 	UPROPERTY()
-	class UNetDriver* Driver;	
+	TObjectPtr<class UNetDriver> Driver;	
 
 	/** The class name for the PackageMap to be loaded */
 	UPROPERTY()
@@ -286,23 +262,23 @@ public:
 
 	UPROPERTY()
 	/** Package map between local and remote. (negotiates net serialization) */
-	class UPackageMap* PackageMap;
+	TObjectPtr<class UPackageMap> PackageMap;
 
 	/** @todo document */
 	UPROPERTY()
-	TArray<class UChannel*> OpenChannels;
+	TArray<TObjectPtr<class UChannel>> OpenChannels;
 	 
 	/** This actor is bNetTemporary, which means it should never be replicated after it's initial packet is complete */
 	UPROPERTY()
-	TArray<class AActor*> SentTemporaries;
+	TArray<TObjectPtr<class AActor>> SentTemporaries;
 
 	/** The actor that is currently being viewed/controlled by the owning controller */
 	UPROPERTY()
-	class AActor* ViewTarget;
+	TObjectPtr<class AActor> ViewTarget;
 
 	/** Reference to controlling actor (usually PlayerController) */
 	UPROPERTY()
-	class AActor* OwningActor;
+	TObjectPtr<class AActor> OwningActor;
 
 	UPROPERTY()
 	int32	MaxPacket;						// Maximum packet size.
@@ -328,9 +304,19 @@ public:
 
 	virtual bool IsReplayReady() const { return false; }
 
+	bool IsForceInitialDirty() const { return bForceInitialDirty; }
+	void SetForceInitialDirty(bool bValue)
+	{
+		bForceInitialDirty = bValue;
+	}
+
+	/** Destructor */
+	ENGINE_API virtual ~UNetConnection() {};
+
 private:
 	uint32 bInternalAck : 1;	// Internally ack all packets, for 100% reliable connections.
 	uint32 bReplay : 1;			// Flag to indicate a replay connection, independent of reliability
+	uint32 bForceInitialDirty : 1;	// Force all properties dirty on initial replication
 
 public:
 	struct FURL			URL;				// URL of the other side.
@@ -375,7 +361,11 @@ public:
 public:
 	// Connection information.
 
+	UE_DEPRECATED(5.0, "EConnectionState State will be made private. Use GetConnectionState and SetConnectionState to access State instead.")
 	EConnectionState	State;					// State this connection is in.
+
+	ENGINE_API const EConnectionState GetConnectionState() const;
+	ENGINE_API void SetConnectionState(EConnectionState ConnectionState);
 	
 	uint32 bPendingDestroy:1;    // when true, playercontroller or beaconclient is being destroyed
 
@@ -507,6 +497,16 @@ public:
 	int32 InTotalPacketsLost, OutTotalPacketsLost;
 	/** total acks sent on this connection */
 	int32 OutTotalAcks;
+
+private:
+	/** total packets received on this connection, including PacketHandler */
+	int32 InTotalHandlerPackets;
+
+public:
+	int32 GetInTotalHandlerPackets() const
+	{
+		return InTotalHandlerPackets;
+	}
 
 	/** Percentage of packets lost during the last StatPeriod */
 	using FNetConnectionPacketLoss = TPacketLossData<3>;
@@ -659,8 +659,27 @@ private:
 
 	UReplicationConnectionDriver* ReplicationConnectionDriver;
 
+	/** Engine package version for compatibility */
+	FPackageFileVersion PackageVersionUE;
+
+	/** Licensee package version for compatibility */
+	int32 PackageVersionLicenseeUE;
+
+	/** Engine version information for compatibility */
+	FEngineVersion EngineVersion;
 
 public:
+	/** Sets the UE package version for compatibility purposes */
+	void SetPackageVersionUE(FPackageFileVersion InPackageVersionUE) { PackageVersionUE = InPackageVersionUE; }
+	
+	/** Sets the licensee package version for compatibility purposes */
+	void SetPackageVersionLicenseeUE(int32 InPackageVersionLicenseeUE) { PackageVersionLicenseeUE = InPackageVersionLicenseeUE; }
+
+	/** Sets engine version information for compatibility purposes */
+	void SetEngineVersion(const FEngineVersion& InEngineVersion) { EngineVersion = InEngineVersion; }
+
+	/** Set version information on an archive that can be used for compatibility checks */
+	void SetNetVersionsOnArchive(FArchive& Ar) const;
 
 	void AddDestructionInfo(FActorDestructionInfo* DestructionInfo)
 	{
@@ -877,7 +896,7 @@ public:
 	ENGINE_API virtual void Tick(float DeltaSeconds);
 
 	/** Return whether this channel is ready for sending. */
-	ENGINE_API virtual int32 IsNetReady(bool Saturate);
+	ENGINE_API virtual int32 IsNetReady( bool Saturate );
 
 	/** 
 	 * Handle the player controller client
@@ -905,8 +924,32 @@ public:
 	 */
 	virtual TSharedPtr<const FInternetAddr> GetRemoteAddr() { return RemoteAddr; }
 
-	/** closes the connection (including sending a close notify across the network) */
-	ENGINE_API void Close();
+	/**
+	 * Closes the connection (including sending a close notify across the network)
+	 * NOTE: To be deprecated in the near future.
+	 */
+	void Close()
+	{
+		Close(FNetCloseResult());
+	}
+
+	/**
+	 * Closes the connection (including sending a close notify across the network)
+	 *
+	 * @param CloseReason	Specifies the reason for the Close
+	 */
+	void Close(FNetCloseResult&& CloseReason)
+	{
+		Close(static_cast<FNetResult&&>(MoveTemp(CloseReason)));
+	}
+
+	/**
+	 * Closes the connection (including sending a close notify across the network)
+	 *
+	 * @param CloseReason	Specifies the reason for the Close
+	 */
+	ENGINE_API void Close(FNetResult&& CloseReason);
+
 
 	/** closes the control channel, cleans up structures, and prepares for deletion */
 	ENGINE_API virtual void CleanUp();
@@ -1179,7 +1222,7 @@ public:
 	 * Sets the PlayerOnlinePlatformName member.
 	 * Called by the engine during the login process with the NMT_Login message parameter.
 	 */
-	void SetPlayerOnlinePlatformName(const FName InPlayerOnlinePlatformName);
+	ENGINE_API void SetPlayerOnlinePlatformName(const FName InPlayerOnlinePlatformName);
 
 	/** Returns the online platform name for the player on this connection. Only valid for client connections on servers. */
 	ENGINE_API FName GetPlayerOnlinePlatformName() const { return PlayerOnlinePlatformName; }
@@ -1193,6 +1236,11 @@ public:
 
 	/** Sets whether we handle opening channels with an index that already exists, used by replays to fast forward the packet stream */
 	void SetAllowExistingChannelIndex(bool bAllow);
+
+private:
+	void RestoreRemappedChannel(const int32 ChIndex);
+
+public:
 
 	/**
 	 * Sets whether or not we should ignore bunches for a specific set of NetGUIDs.
@@ -1225,6 +1273,10 @@ public:
 	/** Removes stale entries from DormantReplicatorMap. */
 	void CleanupStaleDormantReplicators();
 
+	/** Called before Driver.TickDispatch processes received packets */
+	void PreTickDispatch();
+
+	/** Called after Driver.TickDispatch has processed received packets */
 	void PostTickDispatch();
 
 	/**
@@ -1233,6 +1285,46 @@ public:
 	 * @param bFlushWholeCache	Whether or not the whole cache should be flushed, or only flush up to the next missing packet
 	 */
 	void FlushPacketOrderCache(bool bFlushWholeCache=false);
+
+	/**
+	 * Get the total number of out of order packets on this connection.
+	 *
+	 * @return The total number of out of order packets.
+	 */
+	int32 GetTotalOutOfOrderPackets() const
+	{
+		return TotalOutOfOrderPacketsLost + TotalOutOfOrderPacketsRecovered + TotalOutOfOrderPacketsDuplicate;
+	}
+
+	/**
+	 * Get the total number of out of order packets lost on this connection.
+	 *
+	 * @return The total number of out of order packets lost.
+	 */
+	int32 GetTotalOutOfOrderPacketsLost() const
+	{
+		return TotalOutOfOrderPacketsLost;
+	}
+
+	/**
+	 * Get the total number of out of order packets recovered on this connection.
+	 *
+	 * @return The total number of out of order packets recovered.
+	 */
+	int32 GetTotalOutOfOrderPacketsRecovered() const
+	{
+		return TotalOutOfOrderPacketsRecovered;
+	}
+
+	/**
+	 * Get the total number of out of order packets that were duplicates on this connection.
+	 *
+	 * @return The total number of out of order packets that were duplicates.
+	 */
+	int32 GetTotalOutOfOrderPacketsDuplicate() const
+	{
+		return TotalOutOfOrderPacketsDuplicate;
+	}
 
 	/**
 	 * Sets the OS/NIC level timestamp, for the last packet that was received
@@ -1302,7 +1394,7 @@ public:
 	ENGINE_API uint32 GetOutTotalNotifiedPackets() const { return OutTotalNotifiedPackets; }
 
 	/** Sends the NMT_Challenge message */
-	void SendChallengeControlMessage();
+	ENGINE_API void SendChallengeControlMessage();
 
 	/** Sends the NMT_Challenge message based on encryption response */
 	void SendChallengeControlMessage(const FEncryptionKeyResponse& Response);
@@ -1339,6 +1431,11 @@ protected:
 	/** This is called whenever a connection has passed the relative time to be considered timed out. */
 	ENGINE_API virtual void HandleConnectionTimeout(const FString& Error);
 
+	/**
+	 * Notification that information about this connection may have been updated
+	 */
+	ENGINE_API void NotifyConnectionUpdated();
+
 private:
 	/**
 	 * The channels that need ticking. This will be a subset of OpenChannels, only including
@@ -1347,7 +1444,7 @@ private:
 	 * OpenChannels every frame.
 	 */
 	UPROPERTY()
-	TArray<UChannel*> ChannelsToTick;
+	TArray<TObjectPtr<UChannel>> ChannelsToTick;
 
 	/** Histogram of the received packet time */
 	FHistogram NetConnectionHistogram;
@@ -1478,7 +1575,17 @@ private:
 	/** Out of order packet tracking/correction */
 
 	/** Stat tracking for the total number of out of order packets, for this connection */
-	int32 TotalOutOfOrderPackets;
+	UE_DEPRECATED(5.0, "Use GetTotalOutOfOrderPackets instead.")
+	int32 TotalOutOfOrderPackets = 0;
+
+	/** Stat tracking for the total number of out of order packets lost */
+	int32 TotalOutOfOrderPacketsLost = 0;
+
+	/** Stat tracking for the total number of out of order packets recovered */
+	int32 TotalOutOfOrderPacketsRecovered = 0;
+
+	/** Stat tracking for the total number of out of order packets that were duplicates */
+	int32 TotalOutOfOrderPacketsDuplicate = 0;
 
 	/** Buffer of partially read (post-PacketHandler) sequenced packets, which are waiting for a missing packet/sequence */
 	TOptional<TCircularBuffer<TUniquePtr<FBitReader>>> PacketOrderCache;
@@ -1518,6 +1625,19 @@ private:
 
 	bool bAutoFlush;
 
+	/** Used to limit logging when we detect QueuedBits overflow */
+	bool bLoggedFlushNetQueuedBitsOverflow = false;
+
+	/** RPC/Replication code DoS detection */
+	FRPCDoSDetection RPCDoS;
+
+	/** NetConnection specific Fault Recovery for attempting to recover from connection faults, before triggering Close */
+	UE::Net::FNetConnectionFaultRecovery FaultRecovery;
+
+	/** Whether or not this NetConnection has already received an NMT_CloseReason message */
+	bool bReceivedCloseReason = false;
+
+
 	int32 GetFreeChannelIndex(const FName& ChName) const;
 
 public:
@@ -1526,6 +1646,31 @@ public:
 
 	bool GetAutoFlush() const { return bAutoFlush; }
 	void SetAutoFlush(bool bValue) { bAutoFlush = bValue; }
+
+	FRPCDoSDetection& GetRPCDoS()
+	{
+		return RPCDoS;
+	}
+
+	UE::Net::FNetConnectionFaultRecovery* GetFaultRecovery()
+	{
+		return &FaultRecovery;
+	}
+
+	/**
+	 * Handles parsing/validation and logging of NMT_CloseReason messages
+	 *
+	 * @param CloseReasonList	Delimited list of close reasons
+	 */
+	ENGINE_API void HandleReceiveCloseReason(const FString& CloseReasonList);
+
+private:
+	/**
+	 * Attempts to recover from a NetConnection error, and closes the connection if that fails
+	 *
+	 * @param InResult		The type of error result being handled
+	 */
+	void HandleNetResultOrClose(ENetCloseResult InResult);
 
 protected:
 	TOptional<FNetworkCongestionControl> NetworkCongestionControl;

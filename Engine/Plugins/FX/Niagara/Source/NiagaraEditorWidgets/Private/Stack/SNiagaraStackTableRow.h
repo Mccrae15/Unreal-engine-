@@ -23,20 +23,17 @@ public:
 public:
 	SLATE_BEGIN_ARGS(SNiagaraStackTableRow)
 		: _ContentPadding(FMargin(2, 0, 2, 0))
-		, _ItemBackgroundColor(FLinearColor::Transparent)
 		, _IsCategoryIconHighlighted(false)
 		, _ShowExecutionCategoryIcon(false)
-		, _RowPadding(FMargin(0, 0, 0, 0))
 	{}
-	SLATE_ARGUMENT(FMargin, ContentPadding)
-		SLATE_ARGUMENT(FLinearColor, ItemBackgroundColor)
-		SLATE_ARGUMENT(FLinearColor, ItemForegroundColor)
+		SLATE_STYLE_ARGUMENT(FTableRowStyle, Style)
+		SLATE_ARGUMENT(FMargin, ContentPadding)
+		SLATE_ARGUMENT(TOptional<FSlateColor>, IndicatorColor)
 		SLATE_ARGUMENT(bool, IsCategoryIconHighlighted)
 		SLATE_ARGUMENT(bool, ShowExecutionCategoryIcon)
 		SLATE_ATTRIBUTE(float, NameColumnWidth)
 		SLATE_ATTRIBUTE(float, ValueColumnWidth)
 		SLATE_ATTRIBUTE(EVisibility, IssueIconVisibility)
-		SLATE_ATTRIBUTE(FMargin, RowPadding)
 		SLATE_EVENT(FOnColumnWidthChanged, OnNameColumnWidthChanged)
 		SLATE_EVENT(FOnColumnWidthChanged, OnValueColumnWidthChanged)
 		SLATE_EVENT(FOnDragDetected, OnDragDetected)
@@ -67,8 +64,6 @@ public:
 
 	FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent);
 
-	virtual const FSlateBrush* GetBorder() const override;
-
 private:
 	void CollapseChildren();
 
@@ -77,8 +72,6 @@ private:
 	EVisibility GetRowVisibility() const;
 
 	EVisibility GetExecutionCategoryIconVisibility() const;
-
-	FOptionalSize GetIndentSize() const;
 
 	EVisibility GetExpanderVisibility() const;
 
@@ -90,13 +83,13 @@ private:
 
 	void OnValueColumnWidthChanged(float Width);
 
-	FSlateColor GetItemBackgroundColor() const;
-
-	const FSlateBrush* GetSelectionBorderBrush() const;
-
-	const FSlateBrush* GetSearchResultBorderBrush() const;
+	EVisibility GetSearchResultBorderVisibility() const;
 
 	void NavigateTo(UNiagaraStackEntry* Item);
+
+	bool IsValidForSummaryView() const;
+	void ToggleShowInSummaryView();
+	bool ShouldShowInSummaryView() const;
 
 private:
 	UNiagaraStackViewModel* StackViewModel;
@@ -109,14 +102,11 @@ private:
 	FOnColumnWidthChanged ValueColumnWidthChanged;
 
 	TAttribute<EVisibility> IssueIconVisibility;
-	TAttribute<FMargin> RowPadding;
 
 	const FSlateBrush* ExpandedImage;
 	const FSlateBrush* CollapsedImage;
 
-	FLinearColor ItemBackgroundColor;
-	FLinearColor DisabledItemBackgroundColor;
-	FLinearColor ForegroundColor;
+	TOptional<FSlateColor> IndicatorColor;
 
 	FText ExecutionCategoryToolTipText;
 

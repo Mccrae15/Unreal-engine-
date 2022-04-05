@@ -22,9 +22,10 @@ class FSkeletalMeshLODModel;
 
 struct FExistingMeshLodSectionData
 {
-	FExistingMeshLodSectionData(FName InImportedMaterialSlotName, bool InbCastShadow, bool InbRecomputeTangents, ESkinVertexColorChannel InRecomputeTangentsVertexMaskChannel, int32 InGenerateUpTo, bool InbDisabled)
+	FExistingMeshLodSectionData(FName InImportedMaterialSlotName, bool InbCastShadow, bool InbVisibleInRayTracing, bool InbRecomputeTangents, ESkinVertexColorChannel InRecomputeTangentsVertexMaskChannel, int32 InGenerateUpTo, bool InbDisabled)
 	: ImportedMaterialSlotName(InImportedMaterialSlotName)
 	, bCastShadow(InbCastShadow)
+	, bVisibleInRayTracing(InbVisibleInRayTracing)
 	, bRecomputeTangents(InbRecomputeTangents)
 	, RecomputeTangentsVertexMaskChannel(InRecomputeTangentsVertexMaskChannel)
 	, GenerateUpTo(InGenerateUpTo)
@@ -32,17 +33,26 @@ struct FExistingMeshLodSectionData
 	{}
 	FName ImportedMaterialSlotName;
 	bool bCastShadow;
+	bool bVisibleInRayTracing;
 	bool bRecomputeTangents;
 	ESkinVertexColorChannel RecomputeTangentsVertexMaskChannel;
 	int32 GenerateUpTo;
 	bool bDisabled;
 };
 
+struct FSkeletalMeshLodImportDataBackup
+{
+	FSkeletalMeshImportData MeshImportData;
+	ESkeletalMeshGeoImportVersions MeshGeoImportVersion = ESkeletalMeshGeoImportVersions::Before_Versionning;
+	ESkeletalMeshSkinningImportVersions MeshSkinningImportVersion = ESkeletalMeshSkinningImportVersions::Before_Versionning;
+};
+
 struct FExistingSkelMeshData
 {
 	TArray<USkeletalMeshSocket*>			ExistingSockets;
-	TArray<TSharedPtr<FReductionBaseSkeletalMeshBulkData>> ExistingOriginalReductionSourceMeshData;
+	TArray<FInlineReductionCacheData>		ExistingInlineReductionCacheDatas;
 	TIndirectArray<FSkeletalMeshLODModel>	ExistingLODModels;
+	TArray<FSkeletalMeshLodImportDataBackup>	ExistingLODImportDatas;
 	TArray<FSkeletalMeshLODInfo>			ExistingLODInfo;
 	FReferenceSkeleton						ExistingRefSkeleton;
 	TArray<FSkeletalMaterial>				ExistingMaterials;
@@ -60,7 +70,10 @@ struct FExistingSkelMeshData
 	bool									bExistingUseFullPrecisionUVs;
 	bool									bExistingUseHighPrecisionTangentBasis;
 
+	UE_DEPRECATED(5.0, "Please use UMirrorDataTable for mirroring ")
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	TArray<FBoneMirrorExport>				ExistingMirrorTable;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	TWeakObjectPtr<UAssetImportData>		ExistingAssetImportData;
 	TWeakObjectPtr<UThumbnailInfo>			ExistingThumbnailInfo;
@@ -91,6 +104,10 @@ struct FExistingSkelMeshData
 
 	FVector PositiveBoundsExtension;
 	FVector NegativeBoundsExtension;
+
+	bool bExistingSupportRayTracing;
+	int32 ExistingRayTracingMinLOD;
+	EClothLODBiasMode ExistingClothLODBiasMode;
 };
 
 /** 

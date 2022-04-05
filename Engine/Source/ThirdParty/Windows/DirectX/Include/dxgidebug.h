@@ -970,7 +970,7 @@ EXTERN_C const IID IID_IDXGIDebug1;
 /* interface __MIDL_itf_dxgidebug_0000_0003 */
 /* [local] */ 
 
-#endif /* WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP | WINAPI_PARTITION_GAMES) */
+#endif /* WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP) */
 #pragma endregion
 #pragma region Desktop Family
 #if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)

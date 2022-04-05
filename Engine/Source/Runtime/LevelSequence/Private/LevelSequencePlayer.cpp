@@ -61,7 +61,7 @@ ULevelSequencePlayer* ULevelSequencePlayer::CreateLevelSequencePlayer(UObject* W
 	ALevelSequenceActor* Actor = World->SpawnActor<ALevelSequenceActor>(SpawnParams);
 
 	Actor->PlaybackSettings = Settings;
-	Actor->LevelSequence = InLevelSequence;
+	Actor->SetSequence(InLevelSequence);
 
 	Actor->InitializePlayer();
 	OutActor = Actor;
@@ -89,7 +89,7 @@ void ULevelSequencePlayer::Initialize(ULevelSequence* InLevelSequence, ULevel* I
 	if (LevelStreaming)
 	{
 		// StreamedLevelPackage is a package name of the form /Game/Folder/MapName, not a full asset path
-		FString StreamedLevelPackage = (LevelStreaming->PackageNameToLoad == NAME_None ? LevelStreaming->GetWorldAssetPackageFName() : LevelStreaming->PackageNameToLoad).ToString();
+		FString StreamedLevelPackage = ((LevelStreaming->PackageNameToLoad == NAME_None) ? LevelStreaming->GetWorldAssetPackageFName() : LevelStreaming->PackageNameToLoad).ToString();
 
 		int32 SlashPos = 0;
 		if (StreamedLevelPackage.FindLastChar('/', SlashPos) && SlashPos < StreamedLevelPackage.Len()-1)
@@ -445,8 +445,6 @@ void ULevelSequencePlayer::TakeFrameSnapshot(FLevelSequencePlayerSnapshot& OutSn
 	// In Playback Resolution
 	const FFrameTime CurrentSequenceTime		  = ConvertFrameTime(CurrentPlayTime, PlayPosition.GetInputRate(), PlayPosition.GetOutputRate());
 
-	OutSnapshot.Settings = SnapshotSettings;
-
 	OutSnapshot.MasterTime = FQualifiedFrameTime(CurrentPlayTime, PlayPosition.GetInputRate());
 	OutSnapshot.MasterName = Sequence->GetName();
 
@@ -460,7 +458,7 @@ void ULevelSequencePlayer::TakeFrameSnapshot(FLevelSequencePlayerSnapshot& OutSn
 	UMovieScene* MovieScene = Sequence->GetMovieScene();
 
 #if WITH_EDITORONLY_DATA
-	OutSnapshot.SourceTimecode = MovieScene->TimecodeSource.Timecode.ToString();
+	OutSnapshot.SourceTimecode = MovieScene->GetEarliestTimecodeSource().Timecode.ToString();
 #endif
 
 	UMovieSceneCinematicShotTrack* ShotTrack = MovieScene->FindMasterTrack<UMovieSceneCinematicShotTrack>();

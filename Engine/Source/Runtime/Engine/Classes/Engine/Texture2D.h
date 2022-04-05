@@ -8,6 +8,7 @@
 #include "UObject/ScriptMacros.h"
 #include "Engine/Texture.h"
 #include "TextureResource.h"
+#include "Misc/FieldAccessor.h"
 #include "Serialization/BulkData2.h"
 #include "Texture2D.generated.h"
 
@@ -20,17 +21,6 @@ class UTexture2D : public UTexture
 	GENERATED_UCLASS_BODY()
 
 public:
-
-	/*
-	 * Level scope index of this texture. It is used to reduce the amount of lookup to map a texture to its level index.
-	 * Useful when building texture streaming data, as well as when filling the texture streamer with precomputed data.
-     * It relates to FStreamingTextureBuildInfo::TextureLevelIndex and also the index in ULevel::StreamingTextureGuids. 
-	 * Default value of -1, indicates that the texture has an unknown index (not yet processed). At level load time, 
-	 * -2 is also used to indicate that the texture has been processed but no entry were found in the level table.
-	 * After any of these processes, the LevelIndex is reset to INDEX_NONE. Making it ready for the next level task.
-	 */
-	UPROPERTY(transient, duplicatetransient, NonTransactional)
-	int32 LevelIndex;
 
 	/** keep track of first mip level used for ResourceMem creation */
 	UPROPERTY()
@@ -78,9 +68,22 @@ private:
 	UPROPERTY()
 	FIntPoint ImportedSize;
 
-public:
 	/** The derived data for this texture on this platform. */
-	FTexturePlatformData *PlatformData;
+	FTexturePlatformData* PrivatePlatformData;
+
+public:
+#if WITH_TEXTURE_PLATFORMDATA_DEPRECATIONS
+	UE_DEPRECATED(5.00, "Use GetPlatformData() / SetPlatformData() accessors instead.")
+	TFieldPtrAccessor<FTexturePlatformData> PlatformData;
+#endif
+
+	/** Set the derived data for this texture on this platform. */
+	ENGINE_API void SetPlatformData(FTexturePlatformData* PlatformData);
+	/** Get the derived data for this texture on this platform. */
+	ENGINE_API FTexturePlatformData* GetPlatformData();
+	/** Get the const derived data for this texture on this platform. */
+	ENGINE_API const FTexturePlatformData* GetPlatformData() const;
+
 #if WITH_EDITOR
 	/* cooked platform data for this texture */
 	TMap<FString, FTexturePlatformData*> CookedPlatformData;
@@ -101,23 +104,32 @@ public:
 #if WITH_EDITOR
 	virtual void PostLinkerChange() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual bool IsDefaultTexture() const override;
 #endif // WITH_EDITOR
 	virtual void BeginDestroy() override;
 	virtual bool IsReadyForAsyncPostLoad() const override;
 	virtual void PostLoad() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	virtual FString GetDesc() override;
 	//~ End UObject Interface.
 
 	//~ Begin UTexture Interface.
-	virtual float GetSurfaceWidth() const override { return GetSizeX(); }
-	virtual float GetSurfaceHeight() const override { return GetSizeY(); }
+	virtual float GetSurfaceWidth() const override { return static_cast<float>(GetSizeX()); }
+	virtual float GetSurfaceHeight() const override { return static_cast<float>(GetSizeY()); }
+	virtual float GetSurfaceDepth() const override { return 0.0f; }
+	virtual uint32 GetSurfaceArraySize() const override { return 0; }
+	virtual TextureAddress GetTextureAddressX() const override { return AddressX; }
+	virtual TextureAddress GetTextureAddressY() const override { return AddressY; }
 	virtual FTextureResource* CreateResource() override;
 	virtual EMaterialValueType GetMaterialType() const override;
 	virtual void UpdateResource() override;
 	virtual float GetAverageBrightness(bool bIgnoreTrueBlack, bool bUseGrayscale) override;
-	virtual FTexturePlatformData** GetRunningPlatformData() final override { return &PlatformData; }
+	virtual FTexturePlatformData** GetRunningPlatformData() final override;
 #if WITH_EDITOR
 	virtual TMap<FString,FTexturePlatformData*>* GetCookedPlatformData() override { return &CookedPlatformData; }
 #endif
@@ -131,58 +143,15 @@ public:
 	//~ End UStreamableRenderAsset Interface
 
 	/** Trivial accessors. */
-	FORCEINLINE int32 GetSizeX() const
-	{
-		if (PlatformData)
-		{
-			return PlatformData->SizeX;
-		}
-		return 0;
-	}
-	FORCEINLINE int32 GetSizeY() const
-	{
-		if (PlatformData)
-		{
-			return PlatformData->SizeY;
-		}
-		return 0;
-	}
-	FORCEINLINE int32 GetNumMips() const
-	{
-		if (PlatformData)
-		{
-			if (IsCurrentlyVirtualTextured())
-			{
-				return PlatformData->GetNumVTMips();
-			}
-			return PlatformData->Mips.Num();
-		}
-		return 0;
-	}
+	ENGINE_API int32 GetSizeX() const;
+	ENGINE_API int32 GetSizeY() const;
+	ENGINE_API int32 GetNumMips() const;
+	ENGINE_API EPixelFormat GetPixelFormat(uint32 LayerIndex = 0u) const;
+	ENGINE_API int32 GetMipTailBaseIndex() const;
+	ENGINE_API const TIndirectArray<FTexture2DMipMap>& GetPlatformMips() const;
+	ENGINE_API int32 GetExtData() const;
 
-	FORCEINLINE EPixelFormat GetPixelFormat(uint32 LayerIndex = 0u) const
-	{
-		if (PlatformData)
-		{
-			return PlatformData->GetLayerPixelFormat(LayerIndex);
-		}
-		return PF_Unknown;
-	}
 
-	FORCEINLINE const TIndirectArray<FTexture2DMipMap>& GetPlatformMips() const
-	{
-		check(PlatformData);
-		return PlatformData->Mips;
-	}
-
-	FORCEINLINE int32 GetExtData() const
-	{
-		if (PlatformData)
-		{
-			return PlatformData->GetExtData();
-		}
-		return 0;
-	}
 
 	/**
 	 * Calculates the maximum number of mips the engine allows to be loaded for this texture. 
@@ -199,7 +168,7 @@ public:
 	/** Returns the minimum number of mips that must be resident in memory (cannot be streamed). */
 	FORCEINLINE int32 GetMinTextureResidentMipCount() const
 	{
-		return FMath::Max(GMinTextureResidentMipCount, PlatformData ? (int32)PlatformData->GetNumMipsInTail() : 0);
+		return FMath::Max(GMinTextureResidentMipCount, GetPlatformData() ? (int32)GetPlatformData()->GetNumMipsInTail() : 0);
 	}
 
 	/**
@@ -256,13 +225,6 @@ public:
 	 * @return size of resource as to be displayed to artists/ LDs in the Editor.
 	 */
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
-
-	/**
-	 * Cancels any pending texture streaming actions if possible.
-	 * Returns when no more async loading requests are in flight.
-	 */
-	ENGINE_API static void CancelPendingTextureStreaming();
-
 
 	/**
 	 * Returns the global mip map bias applied as an offset for 2d textures.
@@ -336,14 +298,7 @@ public:
 	 * this reflects the actual current state on the renderer depending on the platform, VT
 	 * data being built, project settings, ....
 	 */
-	virtual bool IsCurrentlyVirtualTextured() const override
-	{
-		if (VirtualTextureStreaming && PlatformData && PlatformData->VTData)
-		{
-			return true;
-		}
-		return false;
-	}
+	virtual bool IsCurrentlyVirtualTextured() const override;
 
 	/**
 	 * Returns true if this virtual texture requests round-robin updates of the virtual texture pages. 
@@ -355,4 +310,10 @@ public:
 	 * This can reduce page table overhead but potentially increase the number of physical pools allocated.
 	 */
 	virtual bool IsVirtualTexturedWithSinglePhysicalSpace() const { return false;  }
+
+protected:
+
+#if WITH_EDITOR
+	virtual bool GetStreamableRenderResourceState(FTexturePlatformData* InPlatformData, FStreamableRenderResourceState& OutState) const override;
+#endif
 };

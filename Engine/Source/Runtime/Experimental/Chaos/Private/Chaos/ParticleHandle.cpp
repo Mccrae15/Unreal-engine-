@@ -26,64 +26,6 @@ namespace Chaos
 		}
 	}
 
-	template <typename T, int d>
-	void Chaos::TGeometryParticle<T, d>::MapImplicitShapes()
-	{
-		ImplicitShapeMap.Reset();
-
-		for (int32 ShapeIndex = 0; ShapeIndex < MShapesArray.Num(); ++ ShapeIndex)
-		{
-			const FImplicitObject* ImplicitObject = MShapesArray[ShapeIndex]->GetGeometry().Get();
-			ImplicitShapeMap.Add(ImplicitObject, ShapeIndex);
-
-			const FImplicitObject* ImplicitChildObject = Utilities::ImplicitChildHelper(ImplicitObject);
-			if (ImplicitChildObject != ImplicitObject)
-			{
-				ImplicitShapeMap.Add(ImplicitChildObject, ShapeIndex);
-			}
-		}
-
-		auto& Geometry = MNonFrequentData.Read().Geometry();
-		if (Geometry)
-		{
-			int32 CurrentShapeIndex = INDEX_NONE;
-			if (const auto* Union = Geometry->template GetObject<FImplicitObjectUnion>())
-			{
-				for (const TUniquePtr<FImplicitObject>& ImplicitObject : Union->GetObjects())
-				{
-					if (ImplicitObject.Get())
-					{
-						if (const FImplicitObject* ImplicitChildObject = Utilities::ImplicitChildHelper(ImplicitObject.Get()))
-						{
-							if (ImplicitShapeMap.Contains(ImplicitObject.Get()))
-							{
-								ImplicitShapeMap.Add(ImplicitChildObject, CopyTemp(ImplicitShapeMap[ImplicitObject.Get()]));
-							}
-							else if (ImplicitShapeMap.Contains(ImplicitChildObject))
-							{
-								ImplicitShapeMap.Add(ImplicitObject.Get(), CopyTemp(ImplicitShapeMap[ImplicitChildObject]));
-							}
-						}
-					}
-				}
-			}
-			else 
-			{
-				if (const FImplicitObject* ImplicitChildObject = Utilities::ImplicitChildHelper(Geometry.Get()))
-				{
-					if (ImplicitShapeMap.Contains(Geometry.Get()))
-					{
-						ImplicitShapeMap.Add(ImplicitChildObject, CopyTemp(ImplicitShapeMap[Geometry.Get()]));
-					}
-					else if (ImplicitShapeMap.Contains(ImplicitChildObject))
-					{
-						ImplicitShapeMap.Add(Geometry.Get(), CopyTemp(ImplicitShapeMap[ImplicitChildObject]));
-					}
-				}
-			}
-		}
-	}
-
 	inline FImplicitObject* GetInstancedImplicitHelper(FImplicitObject* Implicit0)
 	{
 		EImplicitObjectType Implicit0OuterType = Implicit0->GetType();
@@ -112,7 +54,6 @@ namespace Chaos
 		return nullptr;
 	}
 
-
 	template <typename T, int d>
 	void Chaos::TGeometryParticle<T, d>::MergeGeometry(TArray<TUniquePtr<FImplicitObject>>&& Objects)
 	{
@@ -123,19 +64,13 @@ namespace Chaos
 
 		if (MNonFrequentData.Read().Geometry()->GetType() == FImplicitObjectUnion::StaticType())
 		{
-			// if we are currently a union then add the new geometry to this union
-			MNonFrequentData.Modify(true, MDirtyFlags, Proxy, [&Objects](auto& Data)
+			ModifyGeometry([&Objects, this](FImplicitObject& GeomToModify)
+			{
+				if (FImplicitObjectUnion* Union = GeomToModify.template GetObject<FImplicitObjectUnion>())
 				{
-					if (Data.AccessGeometry())
-					{
-						if (FImplicitObjectUnion* Union = Data.AccessGeometry()->template GetObject<FImplicitObjectUnion>())
-						{
-							Union->Combine(Objects);
-						}
-					}
-				});
-
-			UpdateShapesArray();
+					Union->Combine(Objects);
+				}
+			});
 		}
 	}
 
@@ -159,19 +94,15 @@ namespace Chaos
 		if (MNonFrequentData.Read().Geometry()->GetType() == FImplicitObjectUnion::StaticType())
 		{
 			// if we are currently a union then remove geometry from this union
-			MNonFrequentData.Modify(true, MDirtyFlags, Proxy, [FoundIndex](auto& Data)
+			ModifyGeometry([FoundIndex](FImplicitObject& GeomToModify)
+			{
+				if (FImplicitObjectUnion* Union = GeomToModify.template GetObject<FImplicitObjectUnion>())
 				{
-					if (Data.AccessGeometry())
-					{
-						if (FImplicitObjectUnion* Union = Data.AccessGeometry()->template GetObject<FImplicitObjectUnion>())
-						{
-							Union->RemoveAt(FoundIndex);
-						}
-					}
-				});
+					Union->RemoveAt(FoundIndex);
+				}
+			});
 		}
 
-		UpdateShapesArray();
 	}
 
 
@@ -198,11 +129,17 @@ namespace Chaos
 		}
 		else
 		{
-			if (const auto* PerShapeData = GetImplicitShape(Implicit))
+
+			// Find our shape and see if sim is enabled.
+			for (const TUniquePtr<FPerShapeData>& Shape : ShapesArray())
 			{
-				if (!PerShapeData->GetSimEnabled())
+				if (Shape->GetGeometry().Get() == Implicit)
 				{
-					return;
+					if (!Shape->GetSimEnabled())
+					{
+						return;
+					}
+					break;
 				}
 			}
 			if (bIgnoreAnalyticCollisions)
@@ -218,14 +155,53 @@ namespace Chaos
 		}
 	}
 
-	template class CHAOS_API TGeometryParticle<FReal, 3>;
+	template <typename T, int d>
+	void TGeometryParticle<T,d>::SetIgnoreAnalyticCollisions(bool bIgnoreAnalyticCollisions)
+	{
+		ModifyGeometry([this, bIgnoreAnalyticCollisions](FImplicitObject& GeomToModify)
+		{
+			SetIgnoreAnalyticCollisionsImp(&GeomToModify, bIgnoreAnalyticCollisions);
+		});
+	}
 
-	template class CHAOS_API TKinematicGeometryParticle<FReal, 3>;
+	template <typename T, int d, bool bPersistent>
+	void TPBDRigidParticleHandleImp<T, d, bPersistent>::AddTorque(const TVector<T, d>& InTorque, bool bInvalidate)
+	{
+		const FRotation3 RCoM = FParticleUtilitiesPQ::GetCoMWorldRotation(this);
+		const FMatrix33 WorldInvI = Utilities::ComputeWorldSpaceInertia(RCoM, InvI());
+		SetAngularAcceleration(AngularAcceleration() + WorldInvI * InTorque);
+	}
 
-	template class CHAOS_API TPBDRigidParticle<FReal, 3>;
+
+	template <typename T, int d, bool bPersistent>
+	void TPBDRigidParticleHandleImp<T, d, bPersistent>::SetTorque(const TVector<T, d>& InTorque, bool bInvalidate)
+	{
+		const FRotation3 RCoM = FParticleUtilitiesPQ::GetCoMWorldRotation(this);
+		const FMatrix33 WorldInvI = Utilities::ComputeWorldSpaceInertia(RCoM, InvI());
+		SetAngularAcceleration(WorldInvI * InTorque);
+	}
+
+	template <typename T, int d>
+	void TPBDRigidParticle<T, d>::AddTorque(const TVector<T, d>& InTorque, bool bInvalidate)
+	{
+		const FRotation3 RCoM = FParticleUtilitiesGT::GetCoMWorldRotation(this);
+		const FMatrix33 WorldInvI = Utilities::ComputeWorldSpaceInertia(RCoM, InvI());
+		SetAngularAcceleration(AngularAcceleration() + WorldInvI * InTorque);
+	}
+
+	template class TGeometryParticle<FReal, 3>;
+
+	template class TKinematicGeometryParticle<FReal, 3>;
+
+	template class TPBDRigidParticle<FReal, 3>;
+
+	template class TParticleHandleBase<FReal, 3>;
+	template class TGeometryParticleHandleImp<FReal, 3, true>;
+	template class TKinematicGeometryParticleHandleImp<FReal, 3, true>;
+	template class TPBDRigidParticleHandleImp<FReal, 3, true>;
 
 	template <>
-	void Chaos::TGeometryParticle<FReal, 3>::MarkDirty(const EParticleFlags DirtyBits, bool bInvalidate )
+	void Chaos::TGeometryParticle<FReal, 3>::MarkDirty(const EChaosPropertyFlags DirtyBits, bool bInvalidate )
 	{
 		if (bInvalidate)
 		{
@@ -241,10 +217,11 @@ namespace Chaos
 		}
 	}
 
-	const FVec3 FGenericParticleHandleHandleImp::ZeroVector = FVec3(0);
-	const FRotation3 FGenericParticleHandleHandleImp::IdentityRotation = FRotation3(FQuat::Identity);
-	const FMatrix33 FGenericParticleHandleHandleImp::ZeroMatrix = FMatrix33(0);
-	const TUniquePtr<FBVHParticles> FGenericParticleHandleHandleImp::NullBVHParticles = TUniquePtr<FBVHParticles>();
+	const FVec3 FGenericParticleHandleImp::ZeroVector = FVec3(0);
+	const FRotation3 FGenericParticleHandleImp::IdentityRotation = FRotation3(FQuat::Identity);
+	const FMatrix33 FGenericParticleHandleImp::ZeroMatrix = FMatrix33(0);
+	const TUniquePtr<FBVHParticles> FGenericParticleHandleImp::NullBVHParticles = TUniquePtr<FBVHParticles>();
+	const FKinematicTarget FGenericParticleHandleImp::EmptyKinematicTarget;
 
 	template <>
 	template <>
@@ -258,6 +235,37 @@ namespace Chaos
 	int32 TGeometryParticleHandleImp<FReal, 3, false>::GetPayload<int32>(int32 Idx)
 	{
 		return Idx;
+	}
+
+	template <>
+	void TPBDRigidParticleHandleImp<FReal, 3, true>::SetDynamicMisc(const FParticleDynamicMisc& DynamicMisc, FPBDRigidsEvolutionBase& Evolution)
+	{
+	
+		if (Disabled() != DynamicMisc.Disabled())
+		{
+			if (DynamicMisc.Disabled())
+			{
+				Evolution.DisableParticle(this);
+			}
+			else
+			{
+				Evolution.EnableParticle(this, nullptr);
+			}
+		}		
+
+		SetLinearEtherDrag(DynamicMisc.LinearEtherDrag());
+		SetAngularEtherDrag(DynamicMisc.AngularEtherDrag());
+		SetMaxLinearSpeedSq(DynamicMisc.MaxLinearSpeedSq());
+		SetMaxAngularSpeedSq(DynamicMisc.MaxAngularSpeedSq());
+		SetCollisionGroup(DynamicMisc.CollisionGroup());
+		SetGravityEnabled(DynamicMisc.GravityEnabled());
+		SetCCDEnabled(DynamicMisc.CCDEnabled());
+		SetDisabled(DynamicMisc.Disabled());
+		SetOneWayInteraction(DynamicMisc.OneWayInteraction());
+		SetCollisionConstraintFlags(DynamicMisc.CollisionConstraintFlags());
+
+		Evolution.SetParticleObjectState(this, DynamicMisc.ObjectState());
+		Evolution.SetParticleSleepType(this, DynamicMisc.SleepType());
 	}
 
 }

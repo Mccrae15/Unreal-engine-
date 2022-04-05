@@ -11,6 +11,8 @@
 
 #if WITH_EDITOR
 
+enum class ESoftObjectPathCollectType : uint8;
+
 class COREUOBJECT_API FRedirectCollector
 {
 private:
@@ -71,6 +73,14 @@ public:
 	void OnSoftObjectPathLoaded(const struct FSoftObjectPath& InPath, FArchive* InArchive);
 
 	/**
+	 * Called at the end of Package Save to record soft package references that might have been created by save transformations
+	 * @param ReferencingPackage The package on which we are recording the references
+	 * @param PackageNames List of of soft package references needed by the referencing package
+	 * @param bEditorOnlyReferences if the PackageNames list are references made by editor only properties
+	 */
+	void CollectSavedSoftPackageReferences(FName ReferencingPackage, const TSet<FName>& PackageNames, bool bEditorOnlyReferences);
+
+	/**
 	 * Load all soft object paths to resolve them, add that to the remap table, and empty the array
 	 * @param FilterPackage If set, only load references that were created by FilterPackage. If empty, resolve  all of them
 	 */
@@ -102,30 +112,46 @@ public:
 		return SoftObjectPathMap.Num() > 0;
 	}
 
-	UE_DEPRECATED(4.17, "OnStringAssetReferenceSaved is deprecated, call GetAssetPathRedirection")
-	FString OnStringAssetReferenceSaved(const FString& InString);
+	/**
+	 * Removes and copies the value of the list of package dependencies of the given package that were
+	 * marked as excluded by FSoftObjectPathSerializationScopes during the load of the package.
+	 * This is only used on startup packages during the cook commandlet; for all other packages and
+	 * modes it will find an empty list and return false.
+	 * @param OutExcludedReferences Out set that is reset and then appended with any discovered values
+	 * @return Whether any references were found
+	 */
+	bool RemoveAndCopySoftObjectPathExclusions(FName PackageName, TSet<FName>& OutExcludedReferences);
 
-	UE_DEPRECATED(4.18, "OnStringAssetReferenceLoaded is deprecated, call OnSoftObjectPathLoaded")
-	void OnStringAssetReferenceLoaded(const FString& InString);
-
-	UE_DEPRECATED(4.18, "ResolveStringAssetReference is deprecated, call ResolveAllSoftObjectPaths")
-	void ResolveStringAssetReference(FName FilterPackage = NAME_None, bool bProcessAlreadyResolvedPackages = true)
-	{
-		ResolveAllSoftObjectPaths(FilterPackage);
-	}
+	/** Called from the cooker to stop the tracking of exclusions. */
+	void OnStartupPackageLoadComplete();
 
 private:
 
 	/** A map of assets referenced by soft object paths, with the key being the package with the reference */
 	typedef TSet<FSoftObjectPathProperty> FSoftObjectPathPropertySet;
 	typedef TMap<FName, FSoftObjectPathPropertySet> FSoftObjectPathMap;
+
+	/** Return whether SoftObjectPathExclusions are currently being tracked, based on commandline and cook phase. */
+	bool ShouldTrackPackageReferenceTypes();
+
+	/** The discovered references that should be followed during cook */
 	FSoftObjectPathMap SoftObjectPathMap;
+	/** The discovered references to packages and the collect type for whether they should be followed during cook. */
+	TMap<FName, TMap<FName, ESoftObjectPathCollectType>> PackageReferenceTypes;
 
 	/** When saving, apply this remapping to all soft object paths */
 	TMap<FName, FName> AssetPathRedirectionMap;
 
 	/** For SoftObjectPackageMap map */
 	FCriticalSection CriticalSection;
+
+	enum class ETrackingReferenceTypesState : uint8
+	{
+		Uninitialized,
+		Disabled,
+		Enabled,
+	};
+	ETrackingReferenceTypesState TrackingReferenceTypesState;
 };
 
 // global redirect collector callback structure

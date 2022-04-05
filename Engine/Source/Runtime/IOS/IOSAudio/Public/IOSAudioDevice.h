@@ -195,7 +195,7 @@ public:
 	FIOSAudioDevice();
 	virtual ~FIOSAudioDevice() { }
 	
-	virtual FName GetRuntimeFormat(USoundWave* SoundWave) override
+	virtual FName GetRuntimeFormat(const USoundWave* SoundWave) const override
 	{
 		static FName NAME_ADPCM(TEXT("ADPCM"));
 		return NAME_ADPCM;
@@ -249,9 +249,7 @@ private:
 	// Used to support adpcm streaming
 	virtual bool HasCompressedAudioInfoClass(USoundWave* SoundWave) override { return true; }
 
-	virtual bool SupportsRealtimeDecompression() const override { return true; }
-	
-	virtual class ICompressedAudioInfo* CreateCompressedAudioInfo(USoundWave* SoundWave) override;
+	virtual bool SupportsRealtimeDecompression() const override { return true; }	
 
 	void HandleError(const TCHAR* InLogOutput, bool bTeardown = false);
 

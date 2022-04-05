@@ -43,6 +43,9 @@
 #include "Sound/SoundWave.h"
 #include "HighResScreenshot.h"
 #include "BufferVisualizationData.h"
+#include "NaniteVisualizationData.h"
+#include "LumenVisualizationData.h"
+#include "VirtualShadowMapVisualizationData.h"
 #include "GameFramework/InputSettings.h"
 #include "Components/LineBatchComponent.h"
 #include "Debug/DebugDrawService.h"
@@ -62,6 +65,7 @@
 #include "IImageWrapperModule.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "CustomStaticScreenPercentage.h"
+#include "ObjectTrace.h"
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
@@ -225,7 +229,10 @@ UGameViewportClient::UGameViewportClient(const FObjectInitializer& ObjectInitial
 	: Super(ObjectInitializer)
 	, EngineShowFlags(ESFIM_Game)
 	, CurrentBufferVisualizationMode(NAME_None)
-	, HighResScreenshotDialog(NULL)
+	, CurrentNaniteVisualizationMode(NAME_None)
+	, CurrentLumenVisualizationMode(NAME_None)
+	, CurrentVirtualShadowMapVisualizationMode(NAME_None)
+	, HighResScreenshotDialog(nullptr)
 	, bUseSoftwareCursorWidgets(true)
 	, bIgnoreInput(false)
 	, MouseCaptureMode(EMouseCaptureMode::CapturePermanently)
@@ -316,7 +323,10 @@ UGameViewportClient::UGameViewportClient(FVTableHelper& Helper)
 	: Super(Helper)
 	, EngineShowFlags(ESFIM_Game)
 	, CurrentBufferVisualizationMode(NAME_None)
-	, HighResScreenshotDialog(NULL)
+	, CurrentNaniteVisualizationMode(NAME_None)
+	, CurrentLumenVisualizationMode(NAME_None)
+	, CurrentVirtualShadowMapVisualizationMode(NAME_None)
+	, HighResScreenshotDialog(nullptr)
 	, bIgnoreInput(false)
 	, MouseCaptureMode(EMouseCaptureMode::CapturePermanently)
 	, bHideCursorDuringCapture(false)
@@ -329,6 +339,9 @@ UGameViewportClient::~UGameViewportClient()
 {
 	if (EngineShowFlags.Collision)
 	{
+		// Clear ref to world as it may be GC'd & we don't want to use it in toggle below.
+		World = nullptr;
+
 		EngineShowFlags.SetCollision(false);
 		ToggleShowCollision();
 	}
@@ -383,6 +396,11 @@ void UGameViewportClient::DetachViewportClient()
 	ResetHardwareCursorStates();
 	RemoveAllViewportWidgets();
 	RemoveFromRoot();
+}
+
+FSceneViewport* UGameViewportClient::CreateGameViewport(TSharedPtr<SViewport> InViewportWidget)
+{
+	return new FSceneViewport(this, InViewportWidget);
 }
 
 FSceneViewport* UGameViewportClient::GetGameViewport()
@@ -455,7 +473,7 @@ void UGameViewportClient::SetEnabledStats(const TArray<FString>& InEnabledStats)
 void UGameViewportClient::Init(struct FWorldContext& WorldContext, UGameInstance* OwningGameInstance, bool bCreateNewAudioDevice)
 {
 	// set reference to world context
-	WorldContext.AddRef(World);
+	WorldContext.AddRef(static_cast<UWorld*&>(World));
 
 	// remember our game instance
 	GameInstance = OwningGameInstance;
@@ -581,9 +599,23 @@ bool UGameViewportClient::TryToggleFullscreenOnInputKey(FKey Key, EInputEvent Ev
 	return false;
 }
 
-bool UGameViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
+void UGameViewportClient::RemapControllerInput(FInputKeyEventArgs& InOutEventArgs)
 {
-	int32 ControllerId = EventArgs.ControllerId;
+	const int32 NumLocalPlayers = World ? World->GetGameInstance()->GetNumLocalPlayers() : 0;
+
+	if (NumLocalPlayers > 1 && InOutEventArgs.Key.IsGamepadKey() && GetDefault<UGameMapsSettings>()->bOffsetPlayerGamepadIds)
+	{
+		InOutEventArgs.ControllerId++;
+	}
+	else if (InOutEventArgs.Viewport->IsPlayInEditorViewport() && InOutEventArgs.Key.IsGamepadKey())
+	{
+		GEngine->RemapGamepadControllerIdForPIE(this, InOutEventArgs.ControllerId);
+	}
+}
+
+bool UGameViewportClient::InputKey(const FInputKeyEventArgs& InEventArgs)
+{
+	FInputKeyEventArgs EventArgs = InEventArgs;
 
 	if (TryToggleFullscreenOnInputKey(EventArgs.Key, EventArgs.Event))
 	{
@@ -595,20 +627,11 @@ bool UGameViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 		GEngine->SetFlashIndicatorLatencyMarker(GFrameCounter);
 	}
 
+	RemapControllerInput(EventArgs);
+
 	if (IgnoreInput())
 	{
-		return ViewportConsole ? ViewportConsole->InputKey(ControllerId, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad()) : false;
-	}
-
-	const int32 NumLocalPlayers = World ? World->GetGameInstance()->GetNumLocalPlayers() : 0;
-
-	if (NumLocalPlayers > 1 && EventArgs.Key.IsGamepadKey() && GetDefault<UGameMapsSettings>()->bOffsetPlayerGamepadIds)
-	{
-		++ControllerId;
-	}
-	else if (EventArgs.Viewport->IsPlayInEditorViewport() && EventArgs.Key.IsGamepadKey())
-	{
-		GEngine->RemapGamepadControllerIdForPIE(this, ControllerId);
+		return ViewportConsole ? ViewportConsole->InputKey(EventArgs.ControllerId, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad()) : false;
 	}
 
 	OnInputKeyEvent.Broadcast(EventArgs);
@@ -625,14 +648,20 @@ bool UGameViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 #endif
 
 	// route to subsystems that care
-	bool bResult = ( ViewportConsole ? ViewportConsole->InputKey(ControllerId, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad()) : false );
+	bool bResult = ( ViewportConsole ? ViewportConsole->InputKey(EventArgs.ControllerId, EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad()) : false );
+
+	// Try the override callback, this may modify event args
+	if (!bResult && OnOverrideInputKeyEvent.IsBound())
+	{
+		bResult = OnOverrideInputKeyEvent.Execute(EventArgs);
+	}
 
 	if (!bResult)
 	{
-		ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromControllerId(this, ControllerId);
+		ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromControllerId(this, EventArgs.ControllerId);
 		if (TargetPlayer && TargetPlayer->PlayerController)
 		{
-			bResult = TargetPlayer->PlayerController->InputKey(EventArgs.Key, EventArgs.Event, EventArgs.AmountDepressed, EventArgs.IsGamepad());
+			bResult = TargetPlayer->PlayerController->InputKey(FInputKeyParams(EventArgs.Key, EventArgs.Event, static_cast<double>(EventArgs.AmountDepressed), EventArgs.IsGamepad()));
 		}
 
 		// A gameviewport is always considered to have responded to a mouse buttons to avoid throttling
@@ -645,13 +674,14 @@ bool UGameViewportClient::InputKey(const FInputKeyEventArgs& EventArgs)
 #if WITH_EDITOR
 	// For PIE, let the next PIE window handle the input if none of our players did
 	// (this allows people to use multiple controllers to control each window)
-	if (!bResult && ControllerId > NumLocalPlayers - 1 && EventArgs.Viewport->IsPlayInEditorViewport())
+	const int32 NumLocalPlayers = World ? World->GetGameInstance()->GetNumLocalPlayers() : 0;
+	if (!bResult && EventArgs.ControllerId > NumLocalPlayers - 1 && EventArgs.Viewport->IsPlayInEditorViewport())
 	{
 		UGameViewportClient* NextViewport = GEngine->GetNextPIEViewport(this);
 		if (NextViewport)
 		{
 			FInputKeyEventArgs NextViewportEventArgs = EventArgs;
-			NextViewportEventArgs.ControllerId = ControllerId - NumLocalPlayers;
+			NextViewportEventArgs.ControllerId = EventArgs.ControllerId - NumLocalPlayers;
 			bResult = NextViewport->InputKey(NextViewportEventArgs);
 		}
 	}
@@ -668,18 +698,11 @@ bool UGameViewportClient::InputAxis(FViewport* InViewport, int32 ControllerId, F
 		return false;
 	}
 
-	const int32 NumLocalPlayers = World ? World->GetGameInstance()->GetNumLocalPlayers() : 0;
+	// Handle mapping controller id and key if needed
+	FInputKeyEventArgs EventArgs(InViewport, ControllerId, Key, IE_Axis);
+	RemapControllerInput(EventArgs);
 
-	if (NumLocalPlayers > 1 && Key.IsGamepadKey() && GetDefault<UGameMapsSettings>()->bOffsetPlayerGamepadIds)
-	{
-		++ControllerId;
-	}
-	else if (InViewport->IsPlayInEditorViewport() && Key.IsGamepadKey())
-	{
-		GEngine->RemapGamepadControllerIdForPIE(this, ControllerId);
-	}
-
-	OnInputAxisEvent.Broadcast(InViewport, ControllerId, Key, Delta, DeltaTime, NumSamples, bGamepad);
+	OnInputAxisEvent.Broadcast(InViewport, EventArgs.ControllerId, EventArgs.Key, Delta, DeltaTime, NumSamples, EventArgs.IsGamepad());
 	
 	bool bResult = false;
 
@@ -691,27 +714,37 @@ bool UGameViewportClient::InputAxis(FViewport* InViewport, int32 ControllerId, F
 		// route to subsystems that care
 		if (ViewportConsole != NULL)
 		{
-			bResult = ViewportConsole->InputAxis(ControllerId, Key, Delta, DeltaTime, NumSamples, bGamepad);
+			bResult = ViewportConsole->InputAxis(EventArgs.ControllerId, EventArgs.Key, Delta, DeltaTime, NumSamples, EventArgs.IsGamepad());
 		}
+		
+		// Try the override callback, this may modify event args
+		if (!bResult && OnOverrideInputAxisEvent.IsBound())
+		{
+			bResult = OnOverrideInputAxisEvent.Execute(EventArgs, Delta, DeltaTime, NumSamples);
+		}
+
 		if (!bResult)
 		{
-			ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromControllerId(this, ControllerId);
+			ULocalPlayer* const TargetPlayer = GEngine->GetLocalPlayerFromControllerId(this, EventArgs.ControllerId);
 			if (TargetPlayer && TargetPlayer->PlayerController)
 			{
-				bResult = TargetPlayer->PlayerController->InputAxis(Key, Delta, DeltaTime, NumSamples, bGamepad);
+				bResult = TargetPlayer->PlayerController->InputKey(FInputKeyParams(EventArgs.Key, (double)Delta, DeltaTime, NumSamples, EventArgs.IsGamepad()));
 			}
 		}
 
+#if WITH_EDITOR
+		const int32 NumLocalPlayers = World && World->GetGameInstance() ? World->GetGameInstance()->GetNumLocalPlayers() : 0;
 		// For PIE, let the next PIE window handle the input if none of our players did
 		// (this allows people to use multiple controllers to control each window)
-		if (!bResult && ControllerId > NumLocalPlayers - 1 && InViewport->IsPlayInEditorViewport())
+		if (!bResult && EventArgs.ControllerId > NumLocalPlayers - 1 && InViewport->IsPlayInEditorViewport())
 		{
 			UGameViewportClient *NextViewport = GEngine->GetNextPIEViewport(this);
 			if (NextViewport)
 			{
-				bResult = NextViewport->InputAxis(InViewport, ControllerId - NumLocalPlayers, Key, Delta, DeltaTime, NumSamples, bGamepad);
+				bResult = NextViewport->InputAxis(InViewport, EventArgs.ControllerId - NumLocalPlayers, EventArgs.Key, Delta, DeltaTime, NumSamples, EventArgs.IsGamepad());
 			}
 		}
+#endif
 
 		if( InViewport->IsSlateViewport() && InViewport->IsPlayInEditorViewport() )
 		{
@@ -1251,20 +1284,14 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 		return;
 	}
 
-	// Force path tracing view mode, and extern code set path tracer show flags
-	const bool bForcePathTracing = InViewport->GetClient()->GetEngineShowFlags()->PathTracing;
-	if (bForcePathTracing)
-	{
-		EngineShowFlags.SetPathTracing(true);
-		ViewModeIndex = VMI_PathTracing;
-	}
-
 	// create the view family for rendering the world scene to the viewport's render target
 	FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
 		InViewport,
 		MyWorld->Scene,
 		EngineShowFlags)
 		.SetRealtimeUpdate(true));
+
+	ViewFamily.DebugDPIScale = GetDPIScale();
 
 #if WITH_EDITOR
 	if (GIsEditor)
@@ -1307,7 +1334,7 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 			}
 			else
 			{
-				if (GetBufferVisualizationData().GetMaterial(ModeName) == NULL)
+				if (GetBufferVisualizationData().GetMaterial(ModeName) == nullptr)
 				{
 					// Mode is out of range, so display a message to the user, and reset the mode back to the previous valid one
 					UE_LOG(LogConsoleResponse, Warning, TEXT("Buffer visualization mode '%s' does not exist"), *ModeNameString);
@@ -1382,7 +1409,6 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 				ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
 					ViewFamily,
 					DynamicResolutionStateInfos.ResolutionFractionApproximation,
-					/* AllowPostProcessSettingsScreenPercentage = */ false,
 					DynamicResolutionStateInfos.ResolutionFractionUpperBound));
 
 				bUsesDynamicResolution = true;
@@ -1397,31 +1423,10 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 		}
 		#endif
 
-		if (GCustomStaticScreenPercentage && ViewFamily.ViewMode == EViewModeIndex::VMI_Lit)
+		if (GCustomStaticScreenPercentage && ViewFamily.ViewMode == EViewModeIndex::VMI_Lit && ViewFamily.Scene->GetShadingPath() == EShadingPath::Deferred && ViewFamily.bRealtimeUpdate)
 		{
 			GCustomStaticScreenPercentage->SetupMainGameViewFamily(ViewFamily);
 		}
-
-		// If a screen percentage interface was not set by dynamic resolution, then create one matching legacy behavior.
-		if (ViewFamily.GetScreenPercentageInterface() == nullptr)
-		{
-			bool AllowPostProcessSettingsScreenPercentage = false;
-			float GlobalResolutionFraction = 1.0f;
-
-			if (ViewFamily.EngineShowFlags.ScreenPercentage)
-			{
-				// Allow FPostProcessSettings::ScreenPercentage.
-				AllowPostProcessSettingsScreenPercentage = true;
-
-				// Get global view fraction set by r.ScreenPercentage.
-				GlobalResolutionFraction = FLegacyScreenPercentageDriver::GetCVarResolutionFraction();
-			}
-
-			ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
-				ViewFamily, GlobalResolutionFraction, AllowPostProcessSettingsScreenPercentage));
-		}
-
-		check(ViewFamily.GetScreenPercentageInterface() != nullptr);
 
 		bFinalScreenPercentageShowFlag = ViewFamily.EngineShowFlags.ScreenPercentage;
 	}
@@ -1439,15 +1444,13 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 			const bool bEnableStereo = GEngine->IsStereoscopic3D(InViewport);
 			const int32 NumViews = bStereoRendering ? GEngine->StereoRenderingDevice->GetDesiredNumberOfViews(bStereoRendering) : 1;
 
-			for (int32 i = 0; i < NumViews; ++i)
+			for (int32 ViewIndex = 0; ViewIndex < NumViews; ++ViewIndex)
 			{
 				// Calculate the player's view information.
 				FVector		ViewLocation;
 				FRotator	ViewRotation;
 
-				EStereoscopicPass PassType = bStereoRendering ? GEngine->StereoRenderingDevice->GetViewPassForIndex(bStereoRendering, i) : eSSP_FULL;
-
-				FSceneView* View = LocalPlayer->CalcSceneView(&ViewFamily, ViewLocation, ViewRotation, InViewport, nullptr, PassType);
+				FSceneView* View = LocalPlayer->CalcSceneView(&ViewFamily, ViewLocation, ViewRotation, InViewport, nullptr, bStereoRendering ? ViewIndex : INDEX_NONE);
 
 				if (View)
 				{
@@ -1456,43 +1459,46 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 					if (View->Family->EngineShowFlags.Wireframe)
 					{
 						// Wireframe color is emissive-only, and mesh-modifying materials do not use material substitution, hence...
-						View->DiffuseOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
-						View->SpecularOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
+						View->DiffuseOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
+						View->SpecularOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
 					}
 					else if (View->Family->EngineShowFlags.OverrideDiffuseAndSpecular)
 					{
-						View->DiffuseOverrideParameter = FVector4(GEngine->LightingOnlyBrightness.R, GEngine->LightingOnlyBrightness.G, GEngine->LightingOnlyBrightness.B, 0.0f);
-						View->SpecularOverrideParameter = FVector4(.1f, .1f, .1f, 0.0f);
+						View->DiffuseOverrideParameter = FVector4f(GEngine->LightingOnlyBrightness.R, GEngine->LightingOnlyBrightness.G, GEngine->LightingOnlyBrightness.B, 0.0f);
+						View->SpecularOverrideParameter = FVector4f(.1f, .1f, .1f, 0.0f);
 					}
 					else if (View->Family->EngineShowFlags.LightingOnlyOverride)
 					{
-						View->DiffuseOverrideParameter = FVector4(GEngine->LightingOnlyBrightness.R, GEngine->LightingOnlyBrightness.G, GEngine->LightingOnlyBrightness.B, 0.0f);
-						View->SpecularOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
+						View->DiffuseOverrideParameter = FVector4f(GEngine->LightingOnlyBrightness.R, GEngine->LightingOnlyBrightness.G, GEngine->LightingOnlyBrightness.B, 0.0f);
+						View->SpecularOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
 					}
 					else if (View->Family->EngineShowFlags.ReflectionOverride)
 					{
-						View->DiffuseOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
-						View->SpecularOverrideParameter = FVector4(1, 1, 1, 0.0f);
-						View->NormalOverrideParameter = FVector4(0, 0, 1, 0.0f);
+						View->DiffuseOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
+						View->SpecularOverrideParameter = FVector4f(1, 1, 1, 0.0f);
+						View->NormalOverrideParameter = FVector4f(0, 0, 1, 0.0f);
 						View->RoughnessOverrideParameter = FVector2D(0.0f, 0.0f);
 					}
 
 					if (!View->Family->EngineShowFlags.Diffuse)
 					{
-						View->DiffuseOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
+						View->DiffuseOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
 					}
 
 					if (!View->Family->EngineShowFlags.Specular)
 					{
-						View->SpecularOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
+						View->SpecularOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
 					}
 
 					View->CurrentBufferVisualizationMode = CurrentBufferVisualizationMode;
+					View->CurrentNaniteVisualizationMode = CurrentNaniteVisualizationMode;
+					View->CurrentLumenVisualizationMode = CurrentLumenVisualizationMode;
+					View->CurrentVirtualShadowMapVisualizationMode = CurrentVirtualShadowMapVisualizationMode;
 
 					View->CameraConstrainedViewRect = View->UnscaledViewRect;
 
 					// If this is the primary drawing pass, update things that depend on the view location
-					if (i == 0)
+					if (ViewIndex == 0)
 					{
 						// Save the location of the view.
 						LocalPlayer->LastViewLocation = ViewLocation;
@@ -1554,10 +1560,6 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 								}
 							}
 						}
-
-					#if RHI_RAYTRACING
-						View->SetupRayTracedRendering();
-					#endif
 					}
 
 					// Add view information for resource streaming. Allow up to 5X boost for small FOV.
@@ -1571,6 +1573,15 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 
 #if CSV_PROFILER
 	UpdateCsvCameraStats(PlayerViewMap);
+#endif
+
+#if OBJECT_TRACE_ENABLED 
+	for (TMap<ULocalPlayer*, FSceneView*>::TConstIterator It(PlayerViewMap); It; ++It)
+	{
+		ULocalPlayer* LocalPlayer = It.Key();
+		FSceneView* SceneView = It.Value();
+		TRACE_VIEW(LocalPlayer, SceneView);	
+	}
 #endif
 
 	FinalizeViews(&ViewFamily, PlayerViewMap);
@@ -1592,7 +1603,7 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 			MinY = FMath::Min<uint32>(UpscaledViewRect.Min.Y, MinY);
 			MaxX = FMath::Max<uint32>(UpscaledViewRect.Max.X, MaxX);
 			MaxY = FMath::Max<uint32>(UpscaledViewRect.Max.Y, MaxY);
-			TotalArea += FMath::TruncToInt(UpscaledViewRect.Width()) * FMath::TruncToInt(UpscaledViewRect.Height());
+			TotalArea += UpscaledViewRect.Width() * UpscaledViewRect.Height();
 		}
 
 		// To draw black borders around the rendered image (prevents artifacts from post processing passes that read outside of the image e.g. PostProcessAA)
@@ -1624,6 +1635,39 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 	}
 
 	{
+		// If a screen percentage interface was not set by dynamic resolution, then create one matching legacy behavior.
+		if (ViewFamily.GetScreenPercentageInterface() == nullptr)
+		{
+			float GlobalResolutionFraction = 1.0f;
+
+			if (ViewFamily.EngineShowFlags.ScreenPercentage && !bDisableWorldRendering && ViewFamily.Views.Num() > 0)
+			{
+				// Get global view fraction.
+				FStaticResolutionFractionHeuristic StaticHeuristic;
+
+#if WITH_EDITOR
+				if (FStaticResolutionFractionHeuristic::FUserSettings::EditorOverridePIESettings())
+				{
+					StaticHeuristic.Settings.PullEditorRenderingSettings(/* bIsRealTime = */ true);
+				}
+				else
+#endif
+				{
+					StaticHeuristic.Settings.PullRunTimeRenderingSettings();
+				}
+
+				StaticHeuristic.PullViewFamilyRenderingSettings(ViewFamily);
+				StaticHeuristic.DPIScale = GetDPIScale();
+
+				GlobalResolutionFraction = StaticHeuristic.ResolveResolutionFraction();
+			}
+
+			ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
+				ViewFamily, GlobalResolutionFraction));
+		}
+
+		check(ViewFamily.GetScreenPercentageInterface() != nullptr);
+
 		// Make sure the engine show flag for screen percentage is still what it was when setting up the screen percentage interface
 		ViewFamily.EngineShowFlags.ScreenPercentage = bFinalScreenPercentageShowFlag;
 
@@ -1645,7 +1689,16 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 	// Draw the player views.
 	if (!bDisableWorldRendering && PlayerViewMap.Num() > 0 && FSlateApplication::Get().GetPlatformApplication()->IsAllowedToRender()) //-V560
 	{
-		GetRendererModule().BeginRenderingViewFamily(SceneCanvas,&ViewFamily);
+		// Views 
+		for (auto ViewExt : ViewFamily.ViewExtensions)
+		{
+			for (FSceneView* View : Views)
+			{
+				ViewExt->SetupView(ViewFamily, *View);
+			}
+		}
+
+		GetRendererModule().BeginRenderingViewFamily(SceneCanvas, &ViewFamily);
 	}
 	else
 	{
@@ -1724,7 +1777,7 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 					if (View != NULL)
 					{
 						// rendering to directly to viewport target
-						FVector CanvasOrigin(FMath::TruncToFloat(View->UnscaledViewRect.Min.X), FMath::TruncToInt(View->UnscaledViewRect.Min.Y), 0.f);
+						FVector CanvasOrigin(FMath::TruncToFloat((float)View->UnscaledViewRect.Min.X), FMath::TruncToFloat((float)View->UnscaledViewRect.Min.Y), 0.f);
 
 						CanvasObject->Init(View->UnscaledViewRect.Width(), View->UnscaledViewRect.Height(), View, SceneCanvas);
 
@@ -1749,7 +1802,7 @@ void UGameViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCanvas)
 							DebugCanvasObject->Canvas = DebugCanvas;
 
 							// A side effect of PostRender is that the playercontroller could be destroyed
-							if (!PlayerController->IsPendingKill())
+							if (IsValid(PlayerController))
 							{
 								PlayerController->MyHUD->SetCanvas(NULL, NULL);
 							}
@@ -1897,7 +1950,7 @@ bool UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 				// global variables associated with the screenshot feature, as the application may be taking its own screenshots.
 				if (!bIsUI)
 				{
-					GetHighResScreenshotConfig().MergeMaskIntoAlpha(Bitmap);
+					GetHighResScreenshotConfig().MergeMaskIntoAlpha(Bitmap, FIntRect(0,0,0,0));
 				}
 
 				FIntRect SourceRect(0, 0, GScreenshotResolutionX, GScreenshotResolutionY);
@@ -1933,8 +1986,8 @@ bool UGameViewportClient::ProcessScreenShots(FViewport* InViewport)
 				}
 
 				// Save the contents of the array to a png file.
-				TArray<uint8> CompressedBitmap;
-				FImageUtils::CompressImageArray(Size.X, Size.Y, Bitmap, CompressedBitmap);
+				TArray64<uint8> CompressedBitmap;
+				FImageUtils::PNGCompressImageArray(Size.X, Size.Y, Bitmap, CompressedBitmap);
 				bIsScreenshotSaved = FFileHelper::SaveArrayToFile(CompressedBitmap, *ScreenShotName);
 
 			}
@@ -2715,7 +2768,6 @@ void UGameViewportClient::AddViewportWidgetContent( TSharedRef<SWidget> Viewport
 	TSharedPtr< SOverlay > PinnedViewportOverlayWidget( ViewportOverlayWidget.Pin() );
 	if( ensure( PinnedViewportOverlayWidget.IsValid() ) )
 	{
-		// NOTE: Returns FSimpleSlot but we're ignoring here.  Could be used for alignment though.
 		PinnedViewportOverlayWidget->AddSlot( ZOrder )
 			[
 				ViewportContent
@@ -3370,7 +3422,7 @@ bool UGameViewportClient::HandleViewModeCommand( const TCHAR* Cmd, FOutputDevice
 	}
 
 #if RHI_RAYTRACING
-	if (!GRHISupportsRayTracing)
+	if (!GRHISupportsRayTracing || !GRHISupportsRayTracingShaders)
 	{
 		if (ViewModeIndex == VMI_PathTracing)
 		{
@@ -3854,7 +3906,7 @@ bool UGameViewportClient::HandleGetAllLocationCommand(const TCHAR* Cmd, FOutputD
 		int32 cnt = 0;
 		for (TObjectIterator<AActor> It; It; ++It)
 		{
-			if ((bShowPendingKills || !It->IsPendingKill()) && It->IsA(Class))
+			if ((bShowPendingKills || IsValid(*It)) && It->IsA(Class))
 			{
 				FVector ActorLocation = It->GetActorLocation();
 				Ar.Logf(TEXT("%i) %s (%f, %f, %f)"), cnt++, *It->GetFullName(), ActorLocation.X, ActorLocation.Y, ActorLocation.Z);
@@ -3882,7 +3934,7 @@ bool UGameViewportClient::HandleGetAllRotationCommand(const TCHAR* Cmd, FOutputD
 		int32 cnt = 0;
 		for (TObjectIterator<AActor> It; It; ++It)
 		{
-			if ((bShowPendingKills || !It->IsPendingKill()) && It->IsA(Class))
+			if ((bShowPendingKills || IsValid(*It)) && It->IsA(Class))
 			{
 				FRotator ActorRotation = It->GetActorRotation();
 				Ar.Logf(TEXT("%i) %s (%f, %f, %f)"), cnt++, *It->GetFullName(), ActorRotation.Yaw, ActorRotation.Pitch, ActorRotation.Roll);

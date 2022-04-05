@@ -4,6 +4,7 @@
 
 #include "CoreTypes.h"
 #include "Misc/Char.h"
+#include "Misc/AssertionMacros.h"
 #include "GenericPlatform/GenericPlatformStricmp.h"
 #include "GenericPlatform/GenericPlatformString.h"
 #include "HAL/PlatformCrt.h"
@@ -178,8 +179,9 @@ public:
 		return Last;
 	}
 
-	CORE_API static int32 Strtoi( const WIDECHAR* Start, WIDECHAR** End, int32 Base );
-	CORE_API static int64 Strtoi64( const WIDECHAR* Start, WIDECHAR** End, int32 Base );
+	CORE_API static int32 Strtoi(const WIDECHAR* Start, WIDECHAR** End, int32 Base);
+	CORE_API static int64 Strtoi64(const WIDECHAR* Start, WIDECHAR** End, int32 Base);
+
 	CORE_API static uint64 Strtoui64( const WIDECHAR* Start, WIDECHAR** End, int32 Base );
 	CORE_API static float Atof(const WIDECHAR* String);
 	CORE_API static double Atod(const WIDECHAR* String);
@@ -196,34 +198,37 @@ public:
 
 	
 	
-	static CORE_API WIDECHAR* Strtok( WIDECHAR* StrToken, const WIDECHAR* Delim, WIDECHAR** Context );
+	CORE_API static WIDECHAR* Strtok( WIDECHAR* StrToken, const WIDECHAR* Delim, WIDECHAR** Context );
 
-	UE_DEPRECATED(4.22, "GetVarArgs with DestSize and Count arguments has been deprecated - only DestSize should be passed")
-	static 	CORE_API int32 GetVarArgs( WIDECHAR* Dest, SIZE_T DestSize, int32 Count, const WIDECHAR*& Fmt, va_list ArgPtr )
-	{
-		return GetVarArgs(Dest, DestSize, Fmt, ArgPtr);
-	}
-
-	static CORE_API int32 GetVarArgs( WIDECHAR* Dest, SIZE_T DestSize, const WIDECHAR*& Fmt, va_list ArgPtr );
+	CORE_API static int32 GetVarArgs(WIDECHAR* Dest, SIZE_T DestSize, const WIDECHAR*& Fmt, va_list ArgPtr);
 
 	/**
 	 * Ansi implementation
 	 **/
 	CORE_API static FORCEINLINE ANSICHAR* Strcpy(ANSICHAR* Dest, SIZE_T DestCount, const ANSICHAR* Src)
 	{
+// Skip suggestions about using strcpy_s instead.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return strcpy( Dest, Src );
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
-	CORE_API static FORCEINLINE ANSICHAR* Strncpy(ANSICHAR* Dest, const ANSICHAR* Src, int32 MaxLen)
+	CORE_API static FORCEINLINE ANSICHAR* Strncpy(ANSICHAR* Dest, const ANSICHAR* Src, SIZE_T MaxLen)
 	{
+// Skip suggestions about using strncpy_s instead.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		::strncpy(Dest, Src, MaxLen);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		Dest[MaxLen-1]=0;
 		return Dest;
 	}
 
 	CORE_API static FORCEINLINE ANSICHAR* Strcat(ANSICHAR* Dest, SIZE_T DestCount, const ANSICHAR* Src)
 	{
+// Skip suggestions about using strcat_s instead.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return strcat( Dest, Src );
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	CORE_API static FORCEINLINE int32 Strcmp( const ANSICHAR* String1, const ANSICHAR* String2 )
@@ -298,13 +303,10 @@ public:
 
 	CORE_API static FORCEINLINE ANSICHAR* Strtok(ANSICHAR* StrToken, const ANSICHAR* Delim, ANSICHAR** Context)
 	{
+// Skip suggestions about using strtok_s instead.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return strtok(StrToken, Delim);
-	}
-
-	UE_DEPRECATED(4.22, "GetVarArgs with DestSize and Count arguments has been deprecated - only DestSize should be passed")
-	static CORE_API int32 GetVarArgs( ANSICHAR* Dest, SIZE_T DestSize, int32 Count, const ANSICHAR*& Fmt, va_list ArgPtr )
-	{
-		return GetVarArgs(Dest, DestSize, Fmt, ArgPtr);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	static CORE_API int32 GetVarArgs( ANSICHAR* Dest, SIZE_T DestSize, const ANSICHAR*& Fmt, va_list ArgPtr )
@@ -312,6 +314,104 @@ public:
 		int32 Result = vsnprintf(Dest, DestSize, Fmt, ArgPtr);
 		va_end( ArgPtr );
 		return (Result != -1 && Result < (int32)DestSize) ? Result : -1;
+	}
+
+	/**
+	 * UTF8CHAR implementation.
+	 */
+	static FORCEINLINE UTF8CHAR* Strcpy(UTF8CHAR* Dest, SIZE_T DestCount, const UTF8CHAR* Src)
+	{
+		return (UTF8CHAR*)Strcpy((ANSICHAR*)Dest, DestCount, (const ANSICHAR*)Src);
+	}
+
+	static FORCEINLINE UTF8CHAR* Strncpy(UTF8CHAR* Dest, const UTF8CHAR* Src, SIZE_T MaxLen)
+	{
+		return (UTF8CHAR*)Strncpy((ANSICHAR*)Dest, (const ANSICHAR*)Src, MaxLen);
+	}
+
+	static FORCEINLINE UTF8CHAR* Strcat(UTF8CHAR* Dest, SIZE_T DestCount, const UTF8CHAR* Src)
+	{
+		return (UTF8CHAR*)Strcat((ANSICHAR*)Dest, DestCount, (const ANSICHAR*)Src);
+	}
+
+	static FORCEINLINE int32 Strcmp(const UTF8CHAR* String1, const UTF8CHAR* String2)
+	{
+		return Strcmp((const ANSICHAR*)String1, (const ANSICHAR*)String2);
+	}
+
+	static FORCEINLINE int32 Strncmp(const UTF8CHAR* String1, const UTF8CHAR* String2, SIZE_T Count)
+	{
+		return Strncmp((const ANSICHAR*)String1, (const ANSICHAR*)String2, Count);
+	}
+
+	static FORCEINLINE int32 Strlen(const UTF8CHAR* String)
+	{
+		return Strlen((const ANSICHAR*)String);
+	}
+
+	static FORCEINLINE int32 Strnlen(const UTF8CHAR* String, SIZE_T StringSize)
+	{
+		return Strnlen((const ANSICHAR*)String, StringSize);
+	}
+
+	static FORCEINLINE const UTF8CHAR* Strstr(const UTF8CHAR* String, const UTF8CHAR* Find)
+	{
+		return (const UTF8CHAR*)Strstr((const ANSICHAR*)String, (const ANSICHAR*)Find);
+	}
+
+	static FORCEINLINE const UTF8CHAR* Strchr(const UTF8CHAR* String, UTF8CHAR C)
+	{
+		return (const UTF8CHAR*)Strchr((const ANSICHAR*)String, (ANSICHAR)C);
+	}
+
+	static FORCEINLINE const UTF8CHAR* Strrchr(const UTF8CHAR* String, UTF8CHAR C)
+	{
+		return (const UTF8CHAR*)Strrchr((const ANSICHAR*)String, (ANSICHAR)C);
+	}
+
+	static FORCEINLINE int32 Atoi(const UTF8CHAR* String)
+	{
+		return Atoi((const ANSICHAR*)String);
+	}
+
+	static FORCEINLINE int64 Atoi64(const UTF8CHAR* String)
+	{
+		return Atoi64((const ANSICHAR*)String);
+	}
+
+	static FORCEINLINE float Atof(const UTF8CHAR* String)
+	{
+		return Atof((const ANSICHAR*)String);
+	}
+
+	static FORCEINLINE double Atod(const UTF8CHAR* String)
+	{
+		return Atod((const ANSICHAR*)String);
+	}
+
+	static FORCEINLINE int32 Strtoi(const UTF8CHAR* Start, UTF8CHAR** End, int32 Base)
+	{
+		return Strtoi((const ANSICHAR*)Start, (ANSICHAR**)End, Base);
+	}
+
+	static FORCEINLINE int64 Strtoi64(const UTF8CHAR* Start, UTF8CHAR** End, int32 Base)
+	{
+		return Strtoi64((const ANSICHAR*)Start, (ANSICHAR**)End, Base);
+	}
+
+	static FORCEINLINE uint64 Strtoui64(const UTF8CHAR* Start, UTF8CHAR** End, int32 Base)
+	{
+		return Strtoui64((const ANSICHAR*)Start, (ANSICHAR**)End, Base);
+	}
+
+	static FORCEINLINE UTF8CHAR* Strtok(UTF8CHAR* StrToken, const UTF8CHAR* Delim, UTF8CHAR** Context)
+	{
+		return (UTF8CHAR*)Strtok((ANSICHAR*)StrToken, (const ANSICHAR*)Delim, (ANSICHAR**)Context);
+	}
+
+	static FORCEINLINE int32 GetVarArgs(UTF8CHAR* Dest, SIZE_T DestSize, const UTF8CHAR*& Fmt, va_list ArgPtr)
+	{
+		return GetVarArgs((ANSICHAR*)Dest, DestSize, *(const ANSICHAR**)&Fmt, ArgPtr);
 	}
 
 	/**

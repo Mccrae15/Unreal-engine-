@@ -104,7 +104,7 @@ enum class ENiagaraRibbonUVEdgeMode
 UENUM()
 enum class ENiagaraRibbonUVDistributionMode
 {
-	/** Ribbon UVs will stretch the length of the ribbon, without repeating, but distributed by segment, so can be uneven with unequal length segments. */	
+	/** Ribbon UVs will stretch the length of the ribbon, without repeating, but distributed by segment, so can be uneven with unequal length segments. */
 	ScaledUniformly UMETA(DisplayName = "Uniform Scale (By Segment)"),
 	/** Ribbon UVs will stretch the length of the ribbon, without repeating, but account for segment length to make an even distribution the entire length of the ribbon. */
 	ScaledUsingRibbonSegmentLength UMETA(DisplayName = "Non-Uniform Scale (By Total Length)"),
@@ -177,6 +177,10 @@ namespace ENiagaraRibbonVFLayout
 		V0RangeOverride,
 		U1Override,
 		V1RangeOverride,
+		PrevPosition,
+		PrevRibbonWidth,
+		PrevRibbonFacing,
+		PrevRibbonTwist,
 		Num,
 	};
 };
@@ -203,7 +207,7 @@ public:
 	static void InitCDOPropertiesAfterModuleStartup();
 
 	//UNiagaraRendererProperties Interface
-	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent) override;
+	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
 	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override;
 	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override;
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return (InSimTarget == ENiagaraSimTarget::CPUSim); };
@@ -213,6 +217,8 @@ public:
 	virtual bool IsMaterialValidForRenderer(UMaterial* Material, FText& InvalidMessage) override;
 	virtual void FixMaterial(UMaterial* Material);
 	virtual const TArray<FNiagaraVariable>& GetOptionalAttributes() override;
+	virtual void GetAdditionalVariables(TArray<FNiagaraVariableBase>& OutArray) const override;
+	virtual FNiagaraVariable GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const override;
 	virtual void GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
 	virtual void GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const override;
 	virtual void GetRendererFeedback(const UNiagaraEmitter* InEmitter, TArray<FText>& OutErrors, TArray<FText>& OutWarnings, TArray<FText>& OutInfo) const override;
@@ -225,7 +231,7 @@ public:
 	//UNiagaraRendererProperties Interface END
 
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")
-	UMaterialInterface* Material;
+	TObjectPtr<UMaterialInterface> Material;
 
 	/** Use the UMaterialInterface bound to this user variable if it is set to a valid value. If this is bound to a valid value and Material is also set, UserParamBinding wins.*/
 	UPROPERTY(EditAnywhere, Category = "Ribbon Rendering")
@@ -277,10 +283,11 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Ribbon Shape")
 	ENiagaraRibbonShapeMode Shape;
 
-	/** Double geometry count, to allow for correct geometry on both sides of MultiPlane. With this off, 
-	  * MultiPlane will switch normals based on view direction, but this could potentially cause issues in some materials 
+	/** Disables two-sided forced rendering (Will still respect material settings)
+	  * MultiPlane will double geometry count to have triangles facing both sides. With this off MultiPlane will switch normal direction to face view.
+	  * 3D Ribbons will render like normal meshes with backface culling enabled.
 	  */
-	UPROPERTY(EditAnywhere, Category = "Ribbon Shape", meta = (EditCondition = "Shape == ENiagaraRibbonShapeMode::MultiPlane"))
+	UPROPERTY(EditAnywhere, Category = "Ribbon Shape", meta = (EditCondition = "Shape != ENiagaraRibbonShapeMode::Plane"))
 	bool bEnableAccurateGeometry;
 
 	/** Tessellation factor to apply to the width of the ribbon.
@@ -360,7 +367,7 @@ public:
 	/** Which attribute should we use for ribbon facing when generating ribbons?*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding RibbonFacingBinding;
-	
+
 	/** Which attribute should we use for ribbon id when generating ribbons?*/
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	FNiagaraVariableAttributeBinding RibbonIdBinding;
@@ -413,17 +420,34 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Bindings")
 	TArray<FNiagaraMaterialAttributeBinding> MaterialParameterBindings;
 
+	/** Implicit binding for previous position */
+	UPROPERTY(Transient)
+	FNiagaraVariableAttributeBinding PrevPositionBinding;
+
+	/** Implicit binding for previous ribbon width */
+	UPROPERTY(Transient)
+	FNiagaraVariableAttributeBinding PrevRibbonWidthBinding;
+
+	/** Implicit binding for previous ribbon facing */
+	UPROPERTY(Transient)
+	FNiagaraVariableAttributeBinding PrevRibbonFacingBinding;
+
+	/** Implicit binding for previous ribbon twist */
+	UPROPERTY(Transient)
+	FNiagaraVariableAttributeBinding PrevRibbonTwistBinding;
+
+
 	bool								bSortKeyDataSetAccessorIsAge = false;
 	FNiagaraDataSetAccessor<float>		SortKeyDataSetAccessor;
-	FNiagaraDataSetAccessor<FVector>	PositionDataSetAccessor;
+	FNiagaraDataSetAccessor<FNiagaraPosition>	PositionDataSetAccessor;
 	FNiagaraDataSetAccessor<float>		NormalizedAgeAccessor;
 	FNiagaraDataSetAccessor<float>		SizeDataSetAccessor;
 	FNiagaraDataSetAccessor<float>		TwistDataSetAccessor;
-	FNiagaraDataSetAccessor<FVector>	FacingDataSetAccessor;
-	FNiagaraDataSetAccessor<FVector4>	MaterialParam0DataSetAccessor;
-	FNiagaraDataSetAccessor<FVector4>	MaterialParam1DataSetAccessor;
-	FNiagaraDataSetAccessor<FVector4>	MaterialParam2DataSetAccessor;
-	FNiagaraDataSetAccessor<FVector4>	MaterialParam3DataSetAccessor;
+	FNiagaraDataSetAccessor<FVector3f>	FacingDataSetAccessor;
+	FNiagaraDataSetAccessor<FVector4f>	MaterialParam0DataSetAccessor;
+	FNiagaraDataSetAccessor<FVector4f>	MaterialParam1DataSetAccessor;
+	FNiagaraDataSetAccessor<FVector4f>	MaterialParam2DataSetAccessor;
+	FNiagaraDataSetAccessor<FVector4f>	MaterialParam3DataSetAccessor;
 	bool								DistanceFromStartIsBound;
 	bool								U0OverrideIsBound;
 	bool								U1OverrideIsBound;
@@ -436,6 +460,7 @@ public:
 
 protected:
 	void InitBindings();
+	void SetPreviousBindings(const UNiagaraEmitter* SrcEmitter);
 
 	void UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode InSourceMode, bool bFromPropertyEdit);
 

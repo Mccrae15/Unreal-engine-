@@ -171,7 +171,7 @@ TSharedRef<SWidget> SPropertyEditorEditInline::GenerateClassPicker()
 	Options.NameTypeToDisplay = EClassViewerNameTypeToDisplay::DisplayName;
 
 	TSharedPtr<FPropertyEditorInlineClassFilter> ClassFilter = MakeShareable( new FPropertyEditorInlineClassFilter );
-	Options.ClassFilter = ClassFilter;
+	Options.ClassFilters.Add(ClassFilter.ToSharedRef());
 	ClassFilter->bAllowAbstract = false;
 
 	const TSharedRef< FPropertyNode > PropertyNode = PropertyEditor->GetPropertyNode();
@@ -195,20 +195,6 @@ TSharedRef<SWidget> SPropertyEditorEditInline::GenerateClassPicker()
 	FOnClassPicked OnPicked( FOnClassPicked::CreateRaw( this, &SPropertyEditorEditInline::OnClassPicked ) );
 
 	return FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer").CreateClassViewer(Options, OnPicked);
-}
-
-UObject* GetTransientOuterForRename(UClass* ForClass)
-{
-	// if someone has tautologically placed themself within their own hierarchy then we'll
-	// just assume they're ok with eventually being outered to a upackage, similar UPackage
-	// is a UObject, so if someone demands that they be outered to 'a uobject' we'll 
-	// just leave them directly parented to the transient package:
-	if (ForClass->ClassWithin && ForClass->ClassWithin != ForClass && ForClass->ClassWithin != UObject::StaticClass())
-	{
-		FScopedAllowAbstractClassAllocation AllowAbstract;
-		return NewObject<UObject>(GetTransientOuterForRename(ForClass->ClassWithin), ForClass->ClassWithin, NAME_None, RF_Transient);
-	}
-	return GetTransientPackage();
 }
 
 void SPropertyEditorEditInline::OnClassPicked(UClass* InClass)
@@ -280,7 +266,7 @@ void SPropertyEditorEditInline::OnClassPicked(UClass* InClass)
 			if (InClass)
 			{
 				FStringView CurClassName, CurObjectName;
-				if (PrevPerObjectValues[NewValues.Num()] != FName(NAME_None).ToString())
+				if (PrevPerObjectValues.IsValidIndex(NewValues.Num()) && PrevPerObjectValues[NewValues.Num()] != FName(NAME_None).ToString())
 				{
 					ExtractClassAndObjectNames(PrevPerObjectValues[NewValues.Num()], CurClassName, CurObjectName);
 				}
@@ -307,7 +293,10 @@ void SPropertyEditorEditInline::OnClassPicked(UClass* InClass)
 							SubObject->Rename(*MakeUniqueObjectName(GetTransientPackage(), SubObject->GetClass()).ToString(), GetTransientPackage(), REN_DontCreateRedirectors);
 
 							// If we've renamed the object out of the way here, we don't need to do it again below
-							PrevPerObjectValues[NewValues.Num()].Reset();
+							if (PrevPerObjectValues.IsValidIndex(NewValues.Num()))
+							{
+								PrevPerObjectValues[NewValues.Num()].Reset();
+							}
 						}
 					}
 

@@ -15,6 +15,7 @@
 #include "AssetThumbnail.h"
 #include "ILevelEditor.h"
 #include "LevelViewportTabContent.h"
+#include "SLevelEditorToolBox.h"
 
 class IAssetEditorInstance;
 class IDetailsView;
@@ -22,6 +23,7 @@ class SActorDetails;
 class SBorder;
 class SLevelEditorModeContent;
 class SLevelEditorToolBox;
+class UTypedElementSelectionSet;
 
 /**
  * Unreal editor level editor Slate widget
@@ -64,12 +66,17 @@ public:
 	TSharedPtr<class SLevelViewport> GetActiveViewport();
 
 	/** ILevelEditor interface */
-	virtual void SummonLevelViewportContextMenu() override;
+	virtual const UTypedElementSelectionSet* GetElementSelectionSet() const override;
+	virtual UTypedElementSelectionSet* GetMutableElementSelectionSet() override;
+	virtual void SummonLevelViewportContextMenu(const FTypedElementHandle& HitProxyElement = FTypedElementHandle()) override;
+	virtual FText GetLevelViewportContextMenuTitle() const override;
 	virtual void SummonLevelViewportViewOptionMenu(const ELevelViewportType ViewOption) override;
 	virtual const TArray< TSharedPtr< class IToolkit > >& GetHostedToolkits() const override;
-	virtual TArray< TSharedPtr< IAssetViewport > > GetViewports() const override;
-	virtual TSharedPtr<IAssetViewport> GetActiveViewportInterface() override;
+	virtual TArray< TSharedPtr< SLevelViewport > > GetViewports() const override;
+	virtual TSharedPtr<SLevelViewport> GetActiveViewportInterface() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	virtual TSharedPtr< class FAssetThumbnailPool > GetThumbnailPool() const override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void AppendCommands( const TSharedRef<FUICommandList>& InCommandsToAppend ) override;
 	virtual void AddStandaloneLevelViewport( const TSharedRef<SLevelViewport>& LevelViewport ) override;
 
@@ -115,7 +122,6 @@ public:
 	/** IToolKitHost interface */
 	virtual TSharedRef< class SWidget > GetParentWidget() override;
 	virtual void BringToFront() override;
-	virtual TSharedRef< class SDockTabStack > GetTabSpot( const EToolkitTabSpot::Type TabSpot ) override;
 	virtual TSharedPtr<FTabManager> GetTabManager() const override;
 	virtual void OnToolkitHostingStarted( const TSharedRef< class IToolkit >& Toolkit ) override;
 	virtual void OnToolkitHostingFinished( const TSharedRef< class IToolkit >& Toolkit ) override;
@@ -123,7 +129,17 @@ public:
 	virtual TSharedRef<SWidget> CreateActorDetails( const FName TabIdentifier ) override;
 	virtual void SetActorDetailsRootCustomization(TSharedPtr<FDetailsViewObjectFilter> InActorDetailsObjectFilter, TSharedPtr<IDetailRootObjectCustomization> InActorDetailsRootCustomization) override;
 	virtual void SetActorDetailsSCSEditorUICustomization(TSharedPtr<ISCSEditorUICustomization> InActorDetailsSCSEditorUICustomization) override;
-	virtual TSharedRef<SWidget> CreateToolBox() override;
+	virtual FEditorModeTools& GetEditorModeManager() const override;
+	virtual UTypedElementCommonActions* GetCommonActions() const override;
+	virtual FName GetStatusBarName() const override;
+	virtual FOnActiveViewportChanged& OnActiveViewportChanged() { return OnActiveViewportChangedDelegate; }
+	virtual void AddViewportOverlayWidget(TSharedRef<SWidget>, TSharedPtr<IAssetViewport> InViewport = nullptr) override;
+	virtual void RemoveViewportOverlayWidget(TSharedRef<SWidget>, TSharedPtr<IAssetViewport> InViewport = nullptr) override; 
+
+
+	virtual FVector2D GetActiveViewportSize() override;
+	/* Tick to check the ActiveViewport */
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
 	/** SWidget overrides */
 	virtual bool SupportsKeyboardFocus() const override
@@ -137,13 +153,11 @@ public:
 	/** Returns current scene outliner associated with level editor's scene outliner tab, if it exists */
 	virtual TSharedPtr<ISceneOutliner> GetSceneOutliner() const override { return SceneOutlinerPtr.Pin();  }
 
+	TSharedRef<SWidget> GetTitleBarMessageWidget() const { return TtileBarMessageBox.ToSharedRef(); }
 private:
 	
 	TSharedRef<SDockTab> SpawnLevelEditorTab(const FSpawnTabArgs& Args, FName TabIdentifier, FString InitializationPayload);
-	bool CanSpawnEditorModeToolbarTab(const FSpawnTabArgs& Args) const;
-	bool CanSpawnEditorModeToolboxTab(const FSpawnTabArgs& Args) const;
-	bool HasAnyHostedEditorModeToolkit() const;
-
+	bool CanSpawnLevelEditorTab(const FSpawnTabArgs& Args, FName TabIdentifier);
 	//TSharedRef<SDockTab> SpawnLevelEditorModeTab(const FSpawnTabArgs& Args, FEdMode* EditorMode);
 	TSharedRef<SDockTab> SummonDetailsPanel( FName Identifier );
 
@@ -170,17 +184,17 @@ private:
 	/** Editor mode has been added or removed, clears cached command list so it will be rebuilt */
 	void EditorModeCommandsChanged();
 
-	/** Called when a level editor mode is toggled */
-	void OnEditorModeIdChanged(const FEditorModeID& ModeChangedID, bool bIsEnteringMode);
-
 	/** Gets the tabId mapping to an editor mode */
 	static FName GetEditorModeTabId( FEditorModeID ModeID );
 
 	/** Toggles the editor mode on and off, this is what the auto generated editor mode commands are mapped to. */
-	static void ToggleEditorMode( FEditorModeID ModeID );
+	void ToggleEditorMode( FEditorModeID ModeID );
 
 	/** Checks if the editor mode is active for the auto-generated editor mode command. */
-	static bool IsModeActive( FEditorModeID ModeID );
+	bool IsModeActive(FEditorModeID ModeID);
+
+	/** Checks if the editor mode is visible for the auto-generated editor mode command. */
+	bool ShouldShowModeInToolbar(FEditorModeID ModeID);
 
 	/**
 	 * Processes keybindings on the level editor
@@ -196,8 +210,8 @@ private:
 	/** Callback for when the level editor layout has changed */
 	void OnLayoutHasChanged();
 	
-	/** Constructs the NotificationBar widgets */
-	void ConstructNotificationBar();
+	/** Constructs the title bar message widget */
+	void ConstructTitleBarMessages();
 
 	/** Builds a viewport tab. */
 	TSharedRef<SDockTab> BuildViewportTab( const FText& Label, const FString LayoutId, const FString& InitializationPayload );
@@ -223,11 +237,23 @@ private:
 	/** Handles deletion of assets */
 	void HandleAssetsDeleted(const TArray<UClass*>& DeletedClasses);
 
-	/** Called when actors are selected or unselected */
-	void OnActorSelectionChanged(const TArray<UObject*>& NewSelection, bool bForceRefresh = false);
+	/** Called when element selection changes */
+	void OnElementSelectionChanged(const UTypedElementSelectionSet* SelectionSet, bool bForceRefresh = false);
+
+	/** Called when actor selection changes */
+	void OnActorSelectionChanged(const TArray<UObject*>& NewSelection, bool bForceRefresh);
+
+	/** Called to set property editors to show the given actors, even if those actors aren't in the current selection set */
+	void OnOverridePropertyEditorSelection(const TArray<AActor*>& NewSelection, bool bForceRefresh = false);
+
+	/** Called when an actor is destroyed */
+	void OnLevelActorDeleted(AActor* InActor);
 
 	/** Called when an actor changes outer */
 	void OnLevelActorOuterChanged(AActor* InActor = nullptr, UObject* InOldOuter = nullptr);
+
+	/** Registers toolbar options for the level editor status bar */
+	void RegisterStatusBarTools();
 
 	/** @return All valid actor details panels */
 	TArray<TSharedRef<SActorDetails>> GetAllActorDetails() const;
@@ -240,6 +266,9 @@ private:
 	// A list of any standalone editor viewports that aren't in tabs
 	TArray< TWeakPtr<SLevelViewport> > StandaloneViewports;
 
+	// The last known active viewport
+	TWeakPtr<class SLevelViewport> CachedActiveViewport;
+
 	// Border that hosts the document content for the level editor.
 	TSharedPtr< SBorder > DocumentsAreaBorder;
 	
@@ -249,22 +278,23 @@ private:
 	// Weak reference to all toolbox panels this level editor has spawned.  May contain invalid entries for tabs that were closed.
 	TArray< TWeakPtr< class SLevelEditorToolBox > > ToolBoxTabs;
 
-	TArray< TWeakPtr< class SLevelEditorModeContent > > ModesTabs;
-
 	// List of all of the toolkits we're currently hosting.
 	TArray< TSharedPtr< class IToolkit > > HostedToolkits;
 
 	// The UWorld that this level editor is viewing and allowing the user to interact with through.
 	UWorld* World;
 
-	// The box that holds the notification bar.
-	TSharedPtr< SHorizontalBox > NotificationBarBox;
+	// The list of selected elements (also set on the global USelection for actors and components).
+	UTypedElementSelectionSet* SelectedElements = nullptr;
+
+	// The common actions implementation for the level editor
+	UTypedElementCommonActions* CommonActions = nullptr;
+
+	// The box that holds the title bar messages.
+	TSharedPtr<SHorizontalBox> TtileBarMessageBox;
 
 	// Holds the world settings details view.
 	TSharedPtr<IDetailsView> WorldSettingsView;
-
-	// The thumbnail pool used to display asset thumbnails
-	TSharedPtr<FAssetThumbnailPool> ThumbnailPool;
 
 	/** Transient editor viewport states - one for each view type. Key is "LayoutId[ELevelViewportType]", eg) "Viewport 1[0]" */
 	TMap<FString, FLevelViewportInfo> TransientEditorViews;
@@ -284,6 +314,9 @@ private:
 	/** Handle to the registered OnPreviewFeatureLevelChanged delegate. */
 	FDelegateHandle PreviewFeatureLevelChangedHandle;
 
+	/** Handle to the registered OnLevelActorDeleted delegate */
+	FDelegateHandle LevelActorDeletedHandle;
+
 	/** Handle to the registered OnLevelActorOuterChanged delegate */
 	FDelegateHandle LevelActorOuterChangedHandle;
 
@@ -296,6 +329,14 @@ private:
 	/** Actor details SCS editor customization */
 	TSharedPtr<ISCSEditorUICustomization> ActorDetailsSCSEditorUICustomization;
 		
+	/** A delegate which is called any time the LevelEditor's active viewport changes. */
+	FOnActiveViewportChanged OnActiveViewportChangedDelegate;
+
 	/** If this flag is raised we will force refresh on next selection update. */
 	bool bNeedsRefresh : 1;
+
+	TMap<FName, TSharedPtr<FLevelEditorModeUILayer>> ModeUILayers;
+
+	/** Viewport context menu title, cached each time the element selection set changes */
+	FText CachedViewportContextMenuTitle;
 };

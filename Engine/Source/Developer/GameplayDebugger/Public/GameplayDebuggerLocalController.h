@@ -15,6 +15,8 @@ class FGameplayDebuggerCanvasContext;
 class FGameplayDebuggerCategory;
 class UInputComponent;
 struct FKey;
+class UFont;
+
 
 UCLASS(NotBlueprintable, NotBlueprintType, noteditinlinenew, hidedropdown, Transient)
 class UGameplayDebuggerLocalController : public UObject
@@ -42,13 +44,16 @@ protected:
 	friend struct FGameplayDebuggerConsoleCommands;
 
 	UPROPERTY()
-	AGameplayDebuggerCategoryReplicator* CachedReplicator;
+	TObjectPtr<AGameplayDebuggerCategoryReplicator> CachedReplicator;
 
 	UPROPERTY()
-	AGameplayDebuggerPlayerManager* CachedPlayerManager;
+	TObjectPtr<AGameplayDebuggerPlayerManager> CachedPlayerManager;
 
 	UPROPERTY()
-	AActor* DebugActorCandidate;
+	TObjectPtr<AActor> DebugActorCandidate;
+
+	UPROPERTY()
+	TObjectPtr<UFont> HUDFont;
 
 	TArray<TArray<int32> > DataPackMap;
 	TArray<TArray<int32> > SlotCategoryIds;
@@ -62,6 +67,9 @@ protected:
 	uint32 bIsLocallyEnabled : 1;
 	uint32 bPrevLocallyEnabled : 1;
 	uint32 bEnableTextShadow : 1;
+#if WITH_EDITOR
+	uint32 bActivateOnPIEEnd : 1;
+#endif // WITH_EDITOR
 
 	FString ActivationKeyDesc;
 	FString RowUpKeyDesc;
@@ -98,6 +106,9 @@ protected:
 	void OnCategoryBindingEvent(int32 CategoryId, int32 HandlerId);
 	void OnExtensionBindingEvent(int32 ExtensionId, int32 HandlerId);
 
+	/** sets the local player as the new debug actor */
+	void OnSelectLocalPlayer();
+
 	/** called short time after activation key was pressed and hold */
 	void OnStartSelectingActor();
 
@@ -116,12 +127,13 @@ protected:
 	/** draw header for category */
 	void DrawCategoryHeader(int32 CategoryId, TSharedRef<FGameplayDebuggerCategory> Category, FGameplayDebuggerCanvasContext& CanvasContext);
 
-	/** sets the local player as the new debug actor */
-	void OnSelectLocalPlayer();
-
+#if WITH_EDITOR
 	/** event for simulate in editor mode */
 	void OnSelectionChanged(UObject* Object);
 	void OnSelectedObject(UObject* Object);
+	void OnBeginPIE(const bool bIsSimulating);
+	void OnEndPIE(const bool bIsSimulating);
+#endif
 
 	FString GetKeyDescriptionShort(const FKey& KeyBind) const;
 	FString GetKeyDescriptionLong(const FKey& KeyBind) const;

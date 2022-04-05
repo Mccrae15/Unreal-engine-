@@ -15,6 +15,7 @@
 #include "TickableEditorObject.h"
 
 class FCanvas;
+class FObjectPreSaveContext;
 class UToolMenu;
 class UMaterialEditorInstanceConstant;
 class UMaterialInterface;
@@ -54,6 +55,10 @@ public:
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FMaterialInstanceEditor");
+	}
 
 	/** IToolkit interface */
 	virtual FName GetToolkitFName() const override;
@@ -75,7 +80,7 @@ public:
 	/** Post edit change notify for properties. */
 	virtual void NotifyPostChange( const FPropertyChangedEvent& PropertyChangedEvent, FProperty* PropertyThatChanged ) override;
 
-	void PreSavePackage(UPackage* Obj);
+	void PreSavePackage(UPackage* Obj, FObjectPreSaveContext ObjectSaveContext);
 
 	/** Rebuilds the inheritance list for this material instance. */
 	void RebuildInheritanceList();
@@ -194,12 +199,22 @@ private:
 	/** Refreshes the preview asset */
 	void RefreshPreviewAsset();
 
+	void RefreshOnScreenMessages();
+
 	//~ Begin FEditorUndoClient Interface
 	virtual void PostUndo( bool bSuccess ) override;
 	virtual void PostRedo( bool bSuccess ) override;
 	// End of FEditorUndoClient
 
 private:
+	struct FOnScreenMessage
+	{
+		FOnScreenMessage() = default;
+		FOnScreenMessage(const FLinearColor& InColor, const FString& InMessage) : Message(InMessage), Color(InColor) {}
+
+		FString Message;
+		FLinearColor Color;
+	};
 
 	/** List of open tool panels; used to ensure only one exists at any one time */
 	TMap< FName, TWeakPtr<class SDockTab> > SpawnedToolPanels;
@@ -227,6 +242,9 @@ private:
 
 	/** List of children used to populate the inheritance list chain. */
 	TArray< FAssetData > FunctionChildList;
+	
+	/** List of all current on-screen messages to display */
+	TArray<FOnScreenMessage> OnScreenMessages;
 
 	/** Object that stores all of the possible parameters we can edit. */
 	UMaterialEditorInstanceConstant* MaterialEditorInstance;

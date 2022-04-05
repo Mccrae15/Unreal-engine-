@@ -4,8 +4,10 @@
 
 #include "CoreTypes.h"
 #include "CoreFwd.h"
+#include "Containers/StringFwd.h"
 #include "HAL/PlatformCrt.h"
 #include "Misc/CompressionFlags.h"
+#include "Misc/EnumClassFlags.h"
 #include "Math/NumericLimits.h"
 
 class Error;
@@ -73,22 +75,22 @@ namespace EBuildConfigurations
 	typedef EBuildConfiguration Type;
 
 	UE_DEPRECATED(4.24, "EBuildConfigurations::Unknown is deprecated. Use EBuildConfiguration::Unknown instead.")
-	static const EBuildConfiguration Unknown = EBuildConfiguration::Unknown;
+	static constexpr EBuildConfiguration Unknown = EBuildConfiguration::Unknown;
 
 	UE_DEPRECATED(4.24, "EBuildConfigurations::Debug is deprecated. Use EBuildConfiguration::Debug instead.")
-	static const EBuildConfiguration Debug = EBuildConfiguration::Debug;
+	static constexpr EBuildConfiguration Debug = EBuildConfiguration::Debug;
 
 	UE_DEPRECATED(4.24, "EBuildConfigurations::DebugGame is deprecated. Use EBuildConfiguration::DebugGame instead.")
-	static const EBuildConfiguration DebugGame = EBuildConfiguration::DebugGame;
+	static constexpr EBuildConfiguration DebugGame = EBuildConfiguration::DebugGame;
 
 	UE_DEPRECATED(4.24, "EBuildConfigurations::Development is deprecated. Use EBuildConfiguration::Development instead.")
-	static const EBuildConfiguration Development = EBuildConfiguration::Development;
+	static constexpr EBuildConfiguration Development = EBuildConfiguration::Development;
 
 	UE_DEPRECATED(4.24, "EBuildConfigurations::Test is deprecated. Use EBuildConfiguration::Test instead.")
-	static const EBuildConfiguration Test = EBuildConfiguration::Test;
+	static constexpr EBuildConfiguration Test = EBuildConfiguration::Test;
 
 	UE_DEPRECATED(4.24, "EBuildConfigurations::Shipping is deprecated. Use EBuildConfiguration::Shipping instead.")
-	static const EBuildConfiguration Shipping = EBuildConfiguration::Shipping;
+	static constexpr EBuildConfiguration Shipping = EBuildConfiguration::Shipping;
 
 	/**
 	 * Returns the string representation of the specified EBuildConfiguration value.
@@ -164,16 +166,16 @@ namespace EBuildTargets
 	typedef EBuildTargetType Type;
 
 	UE_DEPRECATED(4.24, "EBuildTargets::Unknown is deprecated. Use EBuildTargetType::Unknown instead.")
-	static const EBuildTargetType Unknown = EBuildTargetType::Unknown;
+	static constexpr EBuildTargetType Unknown = EBuildTargetType::Unknown;
 
 	UE_DEPRECATED(4.24, "EBuildTargets::Editor is deprecated. Use EBuildTargetType::Unknown instead.")
-	static const EBuildTargetType Editor = EBuildTargetType::Editor;
+	static constexpr EBuildTargetType Editor = EBuildTargetType::Editor;
 
 	UE_DEPRECATED(4.24, "EBuildTargets::Game is deprecated. Use EBuildTargetType::Unknown instead.")
-	static const EBuildTargetType Game = EBuildTargetType::Game;
+	static constexpr EBuildTargetType Game = EBuildTargetType::Game;
 
 	UE_DEPRECATED(4.24, "EBuildTargets::Server is deprecated. Use EBuildTargetType::Unknown instead.")
-	static const EBuildTargetType Server = EBuildTargetType::Server;
+	static constexpr EBuildTargetType Server = EBuildTargetType::Server;
 
 	UE_DEPRECATED(4.24, "EBuildTargets::FromString is deprecated. Use LexFromString() instead.")
 	CORE_API EBuildTargetType FromString( const FString& Target );
@@ -331,6 +333,16 @@ enum class ENetworkConnectionType : uint8
 	Ethernet,
 };
 
+enum class EProcessDiagnosticFlags : uint32
+{
+	None            = 0,
+	MemorySanitizer = 1 << 0,
+	AnsiMalloc      = 1 << 1,
+	StompMalloc     = 1 << 2,
+};
+
+ENUM_CLASS_FLAGS(EProcessDiagnosticFlags);
+
 /**
  * Returns the string representation of the specified ENetworkConnection value.
  *
@@ -338,6 +350,114 @@ enum class ENetworkConnectionType : uint8
  * @return The string representation.
  */
 CORE_API const TCHAR* LexToString( ENetworkConnectionType Target );
+
+struct FProcessorGroupDesc 
+{
+	static constexpr uint16 MaxNumProcessorGroups = 16;
+	uint64 ThreadAffinities[MaxNumProcessorGroups] = {}; 
+	uint16 NumProcessorGroups = 0;
+};
+
+/**
+ * Different types of Page Fault stats
+ */
+struct FPageFaultStats
+{
+	/** Page faults for data already in memory (platform dependent) */
+	uint64 SoftPageFaults	= 0;
+
+	/** Page faults for data on disk (platform dependent) */
+	uint64 HardPageFaults	= 0;
+
+	/** All page fault types */
+	uint64 TotalPageFaults	= 0;
+};
+
+/**
+ * Flags for page fault stats to retrieve
+ */
+enum class EPageFaultFlags : uint8
+{
+	SoftPageFaults		= 0x01,
+	HardPageFaults		= 0x02,
+	TotalPageFaults		= 0x04,
+
+	All					= 0xFF
+};
+
+ENUM_CLASS_FLAGS(EPageFaultFlags);
+
+
+/**
+ * Different types of Input/Output stats
+ */
+struct FProcessIOStats
+{
+	/** Blocking Input operations */
+	uint64 BlockingInput	= 0;
+
+	/** Blocking Output operations */
+	uint64 BlockingOutput	= 0;
+
+	/** Blocking operations that were neither Input or Output operations (platform dependent) */
+	uint64 BlockingOther	= 0;
+
+	/** Input bytes transferred */
+	uint64 InputBytes		= 0;
+
+	/** Output bytes transferred */
+	uint64 OutputBytes		= 0;
+
+	/** Bytes transferred that were not from either Input or Output operations */
+	uint64 OtherBytes		= 0;
+};
+
+/**
+ * Flags for Input/Output stats to retrieve
+ */
+enum class EInputOutputFlags : uint8
+{
+	BlockingInput		= 0x01,
+	BlockingOutput		= 0x02,
+	BlockingOther		= 0x04,
+	InputBytes			= 0x08,
+	OutputBytes			= 0x10,
+	OtherBytes			= 0x20,
+
+	All					= 0xFF
+};
+
+ENUM_CLASS_FLAGS(EInputOutputFlags);
+
+
+/**
+ * Different types of Context Switch stats
+ */
+struct FContextSwitchStats
+{
+	/** Context switches that occurred voluntarily (e.g. yield - platform dependent) */
+	uint64 VoluntaryContextSwitches		= 0;
+
+	/** Context switches that were involuntary (e.g. quantum reached/exceeded - platform dependent) */
+	uint64 InvoluntaryContextSwitches	= 0;
+
+	/** All context switch types */
+	uint64 TotalContextSwitches			= 0;
+};
+
+/**
+ * Flags for Context Switch stats to retrieve
+ */
+enum class EContextSwitchFlags : uint8
+{
+	VoluntaryContextSwitches		= 0x01,
+	InvoluntaryContextSwitches		= 0x02,
+	TotalContextSwitches			= 0x04,
+
+	All								= 0xFF
+};
+
+ENUM_CLASS_FLAGS(EContextSwitchFlags);
 
 /**
  * Generic implementation for most platforms
@@ -368,19 +488,6 @@ struct CORE_API FGenericPlatformMisc
 	 * including, but not limited to, crashes.
 	 */
 	static void SetCrashHandler(void (* CrashHandler)(const FGenericCrashContext& Context)) { }
-
-	/**
-	 * Retrieve a environment variable from the system
-	 *
-	 * @param VariableName The name of the variable (ie "Path")
-	 * @param Result The string to copy the value of the variable into
-	 * @param ResultLength The size of the Result string
-	 */
-	UE_DEPRECATED(4.21, "void FPlatformMisc::GetEnvironmentVariable(Name, Result, Length) is deprecated. Use FString FPlatformMisc::GetEnvironmentVariable(Name) instead.")
-	static void GetEnvironmentVariable(const TCHAR* VariableName, TCHAR* Result, int32 ResultLength)
-	{
-		*Result = 0;
-	}
 
 	/**
 	 * Retrieve a environment variable from the system
@@ -473,11 +580,14 @@ struct CORE_API FGenericPlatformMisc
 	FORCEINLINE static bool IsDebuggerPresent()
 	{
 #if UE_BUILD_SHIPPING
-		return 0;
+		return false;
 #else
-		return 1; // unknown platforms return true so that they can crash into a debugger
+		return true; // unknown platforms return true so that they can crash into a debugger
 #endif
 	}
+
+	/** Returns non-zero if a performance-sensitive diagnostic, like a memory sanitizer, is detected for this process */
+	static EProcessDiagnosticFlags GetProcessDiagnostics();
 
 	/** Break into the debugger, if IsDebuggerPresent returns true, otherwise do nothing  */
 	UE_DEPRECATED(4.19, "FPlatformMisc::DebugBreak is deprecated. Use the UE_DEBUG_BREAK() macro instead.")
@@ -558,6 +668,42 @@ struct CORE_API FGenericPlatformMisc
 	/** Retrieves information about the total number of bytes and number of free bytes for the specified disk path. */
 	static bool GetDiskTotalAndFreeSpace( const FString& InPath, uint64& TotalNumberOfBytes, uint64& NumberOfFreeBytes );
 
+	/**
+	 * Gets Page Fault stats covering the lifetime of the process
+	 *
+	 * @param OutStats	Outputs the page fault stats
+	 * @param Flags		The type of page fault stats to retrieve
+	 * @return			Whether or not stats were successfully retrieved
+	 */
+	static bool GetPageFaultStats(FPageFaultStats& OutStats, EPageFaultFlags Flags=EPageFaultFlags::All)
+	{
+		return false;
+	}
+
+	/**
+	 * Gets Blocking Input/Output stats covering the lifetime of the process
+	 *
+	 * @param OutStats	Outputs the IO stats
+	 * @param Flags		The type of IO stats to retrieve
+	 * @return			Whether or not stats were successfully retrieved
+	 */
+	static bool GetBlockingIOStats(FProcessIOStats& OutStats, EInputOutputFlags Flags=EInputOutputFlags::All)
+	{
+		return false;
+	}
+
+	/**
+	 * Gets Context Switch stats covering the lifetime of the process
+	 *
+	 * @param OutStats	Outputs the Context Switch stats
+	 * @param Flags		The type of Context Switch stats to retrieve
+	 * @return			Whether or not stats were successfully retrieved
+	 */
+	static bool GetContextSwitchStats(FContextSwitchStats& OutStats, EContextSwitchFlags Flags=EContextSwitchFlags::All)
+	{
+		return false;
+	}
+
 	static bool SupportsMessaging()
 	{
 		return true;
@@ -623,6 +769,14 @@ public:
 	static void BeginNamedEvent(const struct FColor& Color, const ANSICHAR* Text);
 
 	/**
+	 * Stats logging for named event 
+	 */
+	template<typename CharType>
+	static void StatNamedEvent(const CharType* Text);
+	static void TickStatNamedEvents();
+	static void LogNameEventStatsInit();
+
+	/**
 	 * Platform specific function for closing a named event that can be viewed in external tool
 	 */
 	static void EndNamedEvent();
@@ -636,6 +790,12 @@ public:
 	 */
 	static void BeginProfilerColor(const struct FColor& Color) {}
 	static void EndProfilerColor() {}
+
+	/**
+	 * Profiler enter background events. These are for timing backgrounding. Some platforms have a timeout for this
+	 */
+	static void BeginEnterBackgroundEvent(const TCHAR* Text) {}
+	static void EndEnterBackgroundEvent() {}
 
 
 	/** Indicates the start of a frame for named events */
@@ -762,6 +922,11 @@ public:
 	 */
 	static bool RestartApplication();
 
+    /**
+	 * Requests application to restart appending the passed in CmdLine to the restart
+	 */
+	static bool RestartApplicationWithCmdLine(const char* CmdLine);
+
 	/**
 	 * Returns the last system error code in string form.  NOTE: Only one return value is valid at a time!
 	 *
@@ -829,6 +994,14 @@ public:
 	}
 
 	/**
+	 * Platform-specific normalization of path
+	 * E.g. on Linux/Unix platforms, replaces ~ with user home directory, so ~/.config becomes /home/joe/.config (or /Users/Joe/.config)
+	 */
+	static void NormalizePath(FStringBuilderBase& InPath)
+	{
+	}
+
+	/**
 	 * @return platform specific path separator.
 	 */
 	static const TCHAR* GetDefaultPathSeparator();
@@ -865,6 +1038,11 @@ public:
 	{
 		return 1;
 	}
+
+	/**
+	* @return a description of all the groups in the current system and their affinities
+	*/
+	static const FProcessorGroupDesc& GetProcessorGroupDesc();
 
 	/**
 	 * return the number of logical CPU cores
@@ -932,6 +1110,12 @@ public:
 	{
 		return true;
 	}
+
+	/** Ensure that there enough space in the persistent download dir. Returns true if there is sufficient space.
+	 *  If there is insufficient space and bAttemptToUseUI is true, the function will return false and the user may be prompted to clear space
+	 */
+	static bool CheckPersistentDownloadStorageSpaceAvailable( uint64 BytesRequired, bool bAttemptToUseUI );
+
 
 	/**
 	 *	Return the GamePersistentDownloadDir.
@@ -1123,7 +1307,6 @@ public:
 
 	FORCEINLINE static void SetBrightness(float bBright) { }
 	FORCEINLINE static float GetBrightness() { return 1.0f; }
-	FORCEINLINE static void ResetBrightness() { } // resets brightness to brightness application started with
 	FORCEINLINE static bool SupportsBrightness() { return false; }
 
 	FORCEINLINE static bool IsInLowPowerMode() { return false;}
@@ -1148,6 +1331,22 @@ public:
 	 * would mean that it prefers Android_DXT, but can use Android as well)
 	 */
 	static void GetValidTargetPlatforms(TArray<FString>& TargetPlatformNames);
+
+	/*
+	 * Converts from a local user index to a FPlatformUserId
+	 *
+	 * @param LocalUserIndex	A logical index where 0 should always be a valid user
+	 * @returns					A platform-allocated opaque user id, or PLATFORMUSERID_NONE
+	 */
+	static FPlatformUserId GetPlatformUserForUserIndex(int32 LocalUserIndex);
+
+	/*
+	 * Converts from a FPlatformUserId to local user index
+	 *
+	 * @param LocalUserIndex	A platform-allocated opaque user id
+	 * @returns					A valid logical index, or INDEX_NONE
+	 */
+	static int32 GetUserIndexForPlatformUser(FPlatformUserId PlatformUser);
 
 	/**
 	 * Returns whether the platform wants to use a touch screen for virtual joysticks.
@@ -1294,15 +1493,6 @@ public:
 	 * @return an empty string if the account ID was not present or it failed to read it for any reason.
 	 */
 	static FString GetEpicAccountId();
-
-	/**
-	 * Set the Epic account ID for the user who last used the Launcher
-	 *
-	 * Note: This function is obsolete and should not be called under any circumstances.
-	 *
-	 * @return true if the account ID was set successfully, false if something failed and it was not set.
-	 */
-	static bool SetEpicAccountId( const FString& AccountId );
 
 	/**
 	 * Gets a globally unique ID the represents a particular operating system install.
@@ -1496,6 +1686,13 @@ public:
 	 * Returns true if PGO is currently enabled
 	 */
 	static bool IsPGOEnabled();
+
+	static void ShowConsoleWindow();
+
+	/*
+	 * For mobile devices, this function will return true if we wish to propagate the alpha to the backbuffer
+	 */
+	static int GetMobilePropagateAlphaSetting();
 
 #if !UE_BUILD_SHIPPING
 	/**

@@ -9,6 +9,7 @@
 #include "DataprepContentProducer.h"
 #include "DataprepEditor.h"
 #include "DataprepWidgets.h"
+#include "PropertyCustomizationHelpers.h"
 #include "SDataprepProducersWidget.h"
 
 #include "Delegates/IDelegateInstance.h"
@@ -22,6 +23,8 @@
 class IDetailsView;
 class SDataprepAssetView;
 class SDataprepConsumerWidget;
+class SSubobjectEditor;
+class FSubobjectEditorTreeNode;
 
 class SDataprepAssetView : public SCompoundWidget
 {
@@ -40,10 +43,6 @@ private:
 
 	/** Handles changes in the Dataprep asset */
 	void OnDataprepAssetChanged(FDataprepAssetChangeType ChangeType);
-
-	float OnGetLeftColumnWidth() const { return 1.0f - ColumnWidth; }
-	float OnGetRightColumnWidth() const { return ColumnWidth; }
-	void OnSetColumnWidth(float InWidth) { ColumnWidth = InWidth; }
 
 	TSharedRef<ITableRow> OnGenerateRowForCategoryTree( TSharedRef<EDataprepCategory> InTreeNode, const TSharedRef<STableViewBase>& InOwnerTable );
 	void OnGetChildrenForCategoryTree( TSharedRef<EDataprepCategory> InTreeNode, TArray< TSharedRef<EDataprepCategory> >& OutChildren ) {}
@@ -64,10 +63,7 @@ private:
 	FDataprepImportProducersEnabled DataprepImportProducersEnabledDelegate;
 
 	/** Container used by all splitters in the details view, so that they move in sync */
-	TSharedPtr< FDataprepDetailsViewColumnSizeData > ColumnSizeData;
-
-	/** Relative width to control splitters */
-	float ColumnWidth;
+	TSharedPtr< FDetailColumnSizeData > ColumnSizeData;
 
 	FDelegateHandle OnParameterizationWasEdited;
 };
@@ -99,7 +95,7 @@ private:
 	/** Add this property and all its child properties to SelectedObjectProperties */
 	void AddPropertiesRecursive(FProperty* Property);
 
-	void OnSCSEditorTreeViewSelectionChanged(const TArray<TSharedPtr<class FSCSEditorTreeNode> >& SelectedNodes);
+	void OnSCSEditorTreeViewSelectionChanged(const TArray<TSharedPtr<FSubobjectEditorTreeNode>>& SelectedNodes);
 
 private:
 	/** Property viewing widget */
@@ -118,10 +114,10 @@ private:
 	TSharedPtr<SSplitter> DetailsSplitter;
 
 	/** Component tree */
-	TSharedPtr<class SSCSEditor> SCSEditor;
+	TSharedPtr<SSubobjectEditor> SubobjectEditor;
 
 	/** Customize how the component tree looks like */
-	TSharedPtr<class FDataprepSCSEditorUICustomization> SCSEditorUICustomization;
+	TSharedPtr<class FDataprepSCSEditorUICustomization> SubobjectEditorUICustomization;
 
 	/** The first actor in the currently selected objects */
 	AActor* SelectedActor;

@@ -55,16 +55,20 @@ namespace Electra
 
 		virtual void SetExecutionDelay(const FTimeValue& ExecutionDelay) = 0;
 
+		virtual FTimeValue GetExecuteAtUTCTime() const = 0;
+
 		virtual EStreamType GetType() const = 0;
 
-		struct FDependentStreams
-		{
-			EStreamType		StreamType;
-		};
 		/**
-		 * Returns a list of dependent stream types.
+		 * Returns a list of dependent streams.
 		 */
-		virtual void GetDependentStreams(TArray<FDependentStreams>& OutDependentStreams) const = 0;
+		virtual void GetDependentStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutDependentStreams) const = 0;
+
+		/**
+		 * Returns a list of requested streams. This must be the initial request that has a list of
+		 * all the segments of the streams selected for playback.
+		 */
+		virtual void GetRequestedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutRequestedStreams) = 0;
 
 		/**
 		 * Returns a list of streams, primary or dependent, that are already at EOS in this request.
@@ -215,6 +219,16 @@ namespace Electra
 		virtual FTimeRange GetSeekableTimeRange() const = 0;
 
 		/**
+		 * Returns the playback range on the timeline, which is a subset of the total
+		 * time range. This may be set through manifest internal means or by URL fragment
+		 * parameters where permissable (eg. example.mp4#t=22,50).
+		 * If start or end are not specified they will be set to invalid.
+		 * 
+		 * @return Optionally set time range to which playback is restricted.
+		 */
+		virtual FTimeRange GetPlaybackRange() const = 0;
+
+		/**
 		 * Returns the timestamps of the segments from the video or audio track (if no video is present).
 		 * Segments are required to start with a keyframe and can thus be used to start playback with.
 		 */
@@ -333,33 +347,34 @@ namespace Electra
 			 * The streams selected through SelectStream() will be used.
 			 *
 			 * @param OutSegment
+			 * @param InSequenceState
 			 * @param StartPosition
 			 * @param SearchType
 			 *
 			 * @return
 			 */
-			virtual FResult GetStartingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
+			virtual FResult GetStartingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& InSequenceState, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
 
 
 			/**
 			 * Same as GetStartingSegment() except this is for a specific stream (video, audio, ...) only.
 			 * To be used when a track (language) change is made and a new segment is needed at the current playback position.
 			 */
-			virtual FResult GetContinuationSegment(TSharedPtrTS<IStreamSegment>& OutSegment, EStreamType StreamType, const FPlayerLoopState& LoopState, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
+			virtual FResult GetContinuationSegment(TSharedPtrTS<IStreamSegment>& OutSegment, EStreamType StreamType, const FPlayerSequenceState& SequenceState, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
 
 			/**
 			 * Sets up a starting segment request to loop playback to.
 			 * The streams selected through SelectStream() will be used.
 			 *
 			 * @param OutSegment
-			 * @param InOutLoopState
+			 * @param InSequenceState
 			 * @param InFinishedSegments
 			 * @param StartPosition
 			 * @param SearchType
 			 *
 			 * @return
 			 */
-			virtual FResult GetLoopingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, FPlayerLoopState& InOutLoopState, const TMultiMap<EStreamType, TSharedPtrTS<IStreamSegment>>& InFinishedSegments, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
+			virtual FResult GetLoopingSegment(TSharedPtrTS<IStreamSegment>& OutSegment, const FPlayerSequenceState& InSequenceState, const TMultiMap<EStreamType, TSharedPtrTS<IStreamSegment>>& InFinishedSegments, const FPlayStartPosition& StartPosition, ESearchType SearchType) = 0;
 
 			/**
 			 * Gets the segment request for the segment following the specified earlier request.

@@ -216,7 +216,8 @@ namespace EEnvQueryTrace
 	{
 		None,
 		Navigation,
-		Geometry,
+		GeometryByChannel,
+		GeometryByProfile,
 		NavigationOverLedges
 	};
 }
@@ -324,7 +325,7 @@ struct AIMODULE_API FEnvTraceData
 	FEnvTraceData() :
 		VersionNum(0), 
 		ProjectDown(1024.0f), ProjectUp(1024.0f), ExtentX(10.0f), ExtentY(10.0f), ExtentZ(10.0f),
-		PostProjectionVerticalOffset(0.0f),	TraceChannel(TraceTypeQuery1), SerializedChannel(ECC_WorldStatic),
+		PostProjectionVerticalOffset(0.0f),	TraceChannel(TraceTypeQuery1), SerializedChannel(ECC_WorldStatic), TraceProfileName(NAME_None),
 		TraceShape(EEnvTraceShape::Line), TraceMode(EEnvQueryTrace::None),
 		bTraceComplex(false), bOnlyBlockingHits(true),
 		bCanTraceOnNavMesh(true), bCanTraceOnGeometry(true), bCanDisableTrace(true), bCanProjectDown(false)
@@ -373,6 +374,10 @@ struct AIMODULE_API FEnvTraceData
 	/** geometry trace channel for serialization purposes */
 	UPROPERTY(EditDefaultsOnly, Category=Trace)
 	TEnumAsByte<enum ECollisionChannel> SerializedChannel;
+
+	/** geometry trace profile */
+	UPROPERTY(EditDefaultsOnly, Category = Trace)
+	FName TraceProfileName;
 
 	/** shape used for geometry tracing */
 	UPROPERTY(EditDefaultsOnly, Category=Trace)
@@ -550,7 +555,7 @@ public:
 
 	FORCEINLINE bool IsFinished() const { return Status != EEnvQueryStatus::Processing; }
 	FORCEINLINE bool IsAborted() const { return Status == EEnvQueryStatus::Aborted; }
-	FORCEINLINE bool IsSuccsessful() const { return Status == EEnvQueryStatus::Success; }
+	FORCEINLINE bool IsSuccessful() const { return Status == EEnvQueryStatus::Success; }
 	FORCEINLINE void MarkAsMissingParam() { Status = EEnvQueryStatus::MissingParam; }
 	FORCEINLINE void MarkAsAborted() { Status = EEnvQueryStatus::Aborted; }
 	FORCEINLINE void MarkAsFailed() { Status = EEnvQueryStatus::Failed; }
@@ -558,6 +563,9 @@ public:
 	FORCEINLINE void MarkAsOwnerLost() { Status = EEnvQueryStatus::OwnerLost; }
 
 	FORCEINLINE EEnvQueryStatus::Type GetRawStatus() const { return Status; }
+
+	UE_DEPRECATED(5.0, "FEnvQueryResult::IsSuccsessful is deprecated. Use FEnvQueryResult::IsSuccessful instead.")
+	FORCEINLINE bool IsSuccsessful() const { return IsSuccessful(); }
 };
 
 
@@ -800,6 +808,11 @@ struct AIMODULE_API FEnvQueryInstance : public FEnvQueryResult
 
 	/** if > 0 then it's how much time query has for performing current step */
 	float CurrentStepTimeLimit;
+
+#if !UE_BUILD_SHIPPING
+	/** Maximum EQS Generator duration (in seconds) before a warning is reported in non-shipping build. */
+	double GenerationTimeWarningSeconds = 0.01f;
+#endif // UE_BUILD_SHIPPING
 
 	/** run mode */
 	EEnvQueryRunMode::Type Mode;
@@ -1292,7 +1305,7 @@ struct AIMODULE_API FEQSParametrizedQueryExecutionRequest
 	FEQSParametrizedQueryExecutionRequest();
 
 	UPROPERTY(Category = Node, EditAnywhere, meta = (EditCondition = "!bUseBBKeyForQueryTemplate"))
-	UEnvQuery* QueryTemplate;
+	TObjectPtr<UEnvQuery> QueryTemplate;
 
 	UPROPERTY(Category = Node, EditAnywhere)
 	TArray<FAIDynamicParam> QueryConfig;
@@ -1314,7 +1327,7 @@ struct AIMODULE_API FEQSParametrizedQueryExecutionRequest
 
 	bool IsValid() const { return bInitialized; }
 
-	int32 Execute(AActor& QueryOwner, const UBlackboardComponent* BlackboardComponent, FQueryFinishedSignature& QueryFinishedDelegate);
+	int32 Execute(UObject& QueryOwner, const UBlackboardComponent* BlackboardComponent, FQueryFinishedSignature& QueryFinishedDelegate);
 
 #if WITH_EDITOR
 	void PostEditChangeProperty(UObject& Owner, struct FPropertyChangedEvent& PropertyChangedEvent);

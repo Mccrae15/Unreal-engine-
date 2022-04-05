@@ -23,12 +23,17 @@
 #include "UObject/CoreObjectVersion.h"
 #include "Net/Core/PushModel/PushModel.h"
 #include "UObject/CoreObjectVersion.h"
+#include "UObject/FortniteMainBranchObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+#include "GenericPlatform/GenericPlatformCrashContext.h"
 
 #if WITH_EDITOR
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "BlueprintCompilationManager.h"
 #include "Engine/LevelScriptBlueprint.h"
+#include "Editor/EditorEngine.h"
+extern UNREALED_API UEditorEngine* GEditor;
 #endif //WITH_EDITOR
 
 DEFINE_STAT(STAT_PersistentUberGraphFrameMemory);
@@ -50,6 +55,58 @@ static FAutoConsoleVariableRef CVarBlueprintComponentInstancingFastPathDisabled(
 	ECVF_Default
 );
 
+#if WITH_ADDITIONAL_CRASH_CONTEXTS
+struct BPGCBreadcrumbsParams
+{
+	UObject& Object;
+	UBlueprintGeneratedClass& BPGC;
+	FArchive& Ar;
+	uint32 ThreadId;
+};
+
+// Called during a crash: dynamic memory allocations may not be reliable here.
+void WriteBPGCBreadcrumbs(FCrashContextExtendedWriter& Writer, const BPGCBreadcrumbsParams& Params)
+{
+	constexpr int32 MAX_DATA_SIZE = 1024;
+	constexpr int32 MAX_FILENAME_SIZE = 64;
+	constexpr int32 MAX_THREADS_TO_LOG = 16;
+
+	static int32 ThreadCount = 0;
+
+	// In the unlikely case that there are too many threads that reported a BPGC-related crash, we'll just ignore the excess.
+	// Theoretically, there should be enough information written by the remaining threads.
+	if (ThreadCount < MAX_THREADS_TO_LOG)
+	{
+		// Note: TStringBuilder *can* potentially allocate dynamic memory if its inline storage is exceeded.
+		// In practice, we stay under the current threshold by only recording the minimum amount data that we need.
+		TStringBuilder<MAX_DATA_SIZE> Builder;
+
+		Params.Object.GetPathName(nullptr, Builder);
+		Builder.AppendChar(TEXT('\n'));
+		Params.BPGC.GetPathName(nullptr, Builder);
+		Builder.AppendChar(TEXT('\n'));
+
+		if (Params.Ar.GetSerializedProperty() != nullptr)
+		{
+			Params.Ar.GetSerializedProperty()->GetPathName(nullptr, Builder);
+		}
+		else
+		{
+			Builder.Append(TEXT("Serialized property was null!"));
+		}
+
+		TStringBuilder<MAX_FILENAME_SIZE> Filename;
+
+		Filename.Appendf(TEXT("BPGCBreadcrumb_%u"), Params.ThreadId);
+
+		Writer.AddString(Filename.ToString(), Builder.ToString());
+	}
+
+	++ThreadCount;
+}
+#endif // WITH_ADDITIONAL_CRASH_CONTEXTS
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 UBlueprintGeneratedClass::UBlueprintGeneratedClass(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 #if VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
@@ -57,13 +114,15 @@ UBlueprintGeneratedClass::UBlueprintGeneratedClass(const FObjectInitializer& Obj
 #endif//VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
 {
 	NumReplicatedProperties = 0;
-	bHasNativizedParent = false;
+	// @todo: BP2CPP_remove
+	bHasNativizedParent_DEPRECATED = false;
 	bHasCookedComponentInstancingData = false;
 	bCustomPropertyListForPostConstructionInitialized = false;
 #if WITH_EDITORONLY_DATA
 	bIsSparseClassDataSerializable = false;
 #endif
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UBlueprintGeneratedClass::PostInitProperties()
 {
@@ -77,10 +136,19 @@ void UBlueprintGeneratedClass::PostInitProperties()
 
 void UBlueprintGeneratedClass::PostLoad()
 {
-	Super::PostLoad();	
+	Super::PostLoad();
 
 #if WITH_EDITORONLY_DATA
 	UPackage* Package = GetOutermost();
+
+#if WITH_EDITOR
+	// Make BPGC from a cooked package standalone so it doesn't get GCed
+	if (GEditor && Package && Package->HasAnyPackageFlags(PKG_FilterEditorOnly))
+	{
+		SetFlags(RF_Standalone);
+	}
+#endif //if WITH_EDITOR
+
 	if (Package == nullptr || !Package->bIsCookedForEditor)
 	{
 		if (GetAuthoritativeClass() != this)
@@ -108,12 +176,12 @@ void UBlueprintGeneratedClass::PostLoad()
 				const bool bComponentChild = FCheckIfComponentChildHelper::IsComponentChild(CurrObj, ClassCDO);
 				if (!CurrObj->IsDefaultSubobject() && !CurrObj->IsRooted() && !bComponentChild)
 				{
-					CurrObj->MarkPendingKill();
+					CurrObj->MarkAsGarbage();
 				}
 			});
 		}
 
-		if (GetLinkerUE4Version() < VER_UE4_CLASS_NOTPLACEABLE_ADDED)
+		if (GetLinkerUEVersion() < VER_UE4_CLASS_NOTPLACEABLE_ADDED)
 		{
 			// Make sure the placeable flag is correct for all blueprints
 			UBlueprint* Blueprint = Cast<UBlueprint>(ClassGeneratedBy);
@@ -135,7 +203,7 @@ void UBlueprintGeneratedClass::PostLoad()
 #endif // WITH_EDITORONLY_DATA
 
 	// Update any component names that have been redirected
-	if (!FPlatformProperties::RequiresCookedData())
+	if (!FPlatformProperties::RequiresCookedData() && GetAllowNativeComponentClassOverrides())
 	{
 		for (FBPComponentClassOverride& Override : ComponentClassOverrides)
 		{
@@ -185,6 +253,23 @@ void UBlueprintGeneratedClass::GetAssetRegistryTags(TArray<FAssetRegistryTag>& O
 
 	OutTags.Add(FAssetRegistryTag(FBlueprintTags::ParentClassPath, ParentClassName, FAssetRegistryTag::TT_Alphabetical));
 	OutTags.Add(FAssetRegistryTag(FBlueprintTags::NativeParentClassPath, NativeParentClassName, FAssetRegistryTag::TT_Alphabetical));
+	OutTags.Add(FAssetRegistryTag(FBlueprintTags::ClassFlags, FString::FromInt((uint32)GetClassFlags()), FAssetRegistryTag::TT_Hidden));
+
+#if WITH_EDITORONLY_DATA
+	// Get editor-only tags; on a cooked BPGC, those tags are deserialized into CookedEditorTags, otherwise generate them for the BP
+	const FEditorTags* EditorTagsToAdd = &CookedEditorTags;
+	FEditorTags EditorTags;
+	if (CookedEditorTags.Num() == 0)
+	{
+		GetEditorTags(EditorTags);
+		EditorTagsToAdd = &EditorTags;
+	}
+
+	for (const auto& EditorTag : *EditorTagsToAdd)
+	{
+		OutTags.Add(FAssetRegistryTag(EditorTag.Key, EditorTag.Value, FAssetRegistryTag::TT_Hidden));
+	}
+#endif //#if WITH_EDITORONLY_DATA
 }
 
 FPrimaryAssetId UBlueprintGeneratedClass::GetPrimaryAssetId() const
@@ -353,9 +438,8 @@ void UBlueprintGeneratedClass::SerializeDefaultObject(UObject* Object, FStructur
 #else
 		const bool bShouldUseCookedComponentInstancingData = bHasCookedComponentInstancingData;
 #endif
-		// Generate "fast path" instancing data for inherited SCS node templates. This data may also be used to support inherited SCS component default value overrides
-		// in a nativized, cooked build, in which this Blueprint class inherits from a nativized Blueprint parent. See CheckAndApplyComponentTemplateOverrides() below.
-		if (InheritableComponentHandler && (bShouldUseCookedComponentInstancingData || bHasNativizedParent))
+		// Generate "fast path" instancing data for inherited SCS node templates.
+		if (InheritableComponentHandler && bShouldUseCookedComponentInstancingData)
 		{
 			for (auto RecordIt = InheritableComponentHandler->CreateRecordIterator(); RecordIt; ++RecordIt)
 			{
@@ -391,23 +475,78 @@ void UBlueprintGeneratedClass::SerializeDefaultObject(UObject* Object, FStructur
 				}
 			}
 		}
+	}
 
-		// We may need to manually apply default value overrides to some inherited components in a cooked build
-		// scenario. This can occur if we have a nativized Blueprint class somewhere in the parent class ancestry.
-		// Note: This must occur AFTER component templates are loaded, but BEFORE component instances are serialized.
-		if (bHasNativizedParent)
+	UnderlyingArchive.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
+	bool bSkipSparseClassDataSerialization = false;
+	if(UnderlyingArchive.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::SparseClassDataStructSerialization)
+	{
+		if (UnderlyingArchive.IsSaving())
 		{
-			CheckAndApplyComponentTemplateOverrides(ClassDefaultObject);
+			UScriptStruct* SerializedSparseClassDataStruct = SparseClassDataStruct;
+			if (!OverridesSparseClassDataArchetype())
+			{
+				// If this class doesn't override the sparse class data of its archetype, then we can skip saving it 
+				// since it can be lazily regenerated from the archetype data on load
+				SerializedSparseClassDataStruct = nullptr;
+				bSkipSparseClassDataSerialization = true;
+			}
+			UnderlyingArchive << SerializedSparseClassDataStruct;
+		}
+		else if (UnderlyingArchive.IsLoading())
+		{
+			UScriptStruct* SerializedSparseClassDataStruct = nullptr;
+			UnderlyingArchive << SerializedSparseClassDataStruct;
+			if (SparseClassDataStruct != SerializedSparseClassDataStruct)
+			{
+				CleanupSparseClassData();
+				SparseClassDataStruct = SerializedSparseClassDataStruct;
+			}
+			if (!SparseClassDataStruct)
+			{
+				// Missing or failed to load sparse class data struct - possible that the parent class was deleted, or regenerated on load
+				// so seek past where this CDO was serialized as we cannot read the serialized sparse class data any more.
+				// Note this happens in majority of cases with classes that have no sparse class data attached too. In that case 
+				// this 'skip' over the remaining part of the archive should have no ill effects as the seek should effectively be zero
+				bSkipSparseClassDataSerialization = true;
+			}
 		}
 	}
 
 #if WITH_EDITORONLY_DATA
-	if (bIsSparseClassDataSerializable)
+	if (bIsSparseClassDataSerializable || GetOutermost()->bIsCookedForEditor)
 #endif
 	{
-		if (Object->GetSparseClassDataStruct())
+		if(bSkipSparseClassDataSerialization)
+		{
+			// Seek to after sparse class data rather than load it.
+			if (UnderlyingArchive.IsLoading())
+			{
+				if (const FLinkerLoad* Linker = Object->GetLinker())
+				{
+					const int32 LinkerIndex = Object->GetLinkerIndex();
+					const FObjectExport& Export = Linker->ExportMap[LinkerIndex];
+					UnderlyingArchive.Seek(Export.SerialOffset + Export.SerialSize);
+				}
+			}
+		}
+		else if (SparseClassDataStruct)
 		{
 			SerializeSparseClassData(FStructuredArchiveFromArchive(UnderlyingArchive).GetSlot());
+		}
+	}
+
+	if (UnderlyingArchive.IsLoading())
+	{
+		if (SparseClassDataStruct)
+		{
+			// TODO: We should make sure that this instance conforms to its archetype (keeping data where possible, potentially via 
+			// an explicit upgrade path for sparse data), as it may have changed since this BPGC was saved (UE-127121)
+		}
+		else
+		{
+			SparseClassDataStruct = GetSparseClassDataArchetypeStruct();
 		}
 	}
 }
@@ -607,7 +746,7 @@ bool UBlueprintGeneratedClass::BuildCustomArrayPropertyListForPostConstruction(F
 			// Create a temp default array as a placeholder to compare against the remaining elements in the value.
 			FScriptArray TempDefaultArray;
 			const int32 Count = ArrayValueHelper.Num() - DefaultArrayValueHelper.Num();
-			TempDefaultArray.Add(Count, ArrayProperty->Inner->ElementSize);
+			TempDefaultArray.Add(Count, ArrayProperty->Inner->ElementSize, ArrayProperty->Inner->GetMinAlignment());
 			uint8 *Dest = (uint8*)TempDefaultArray.GetData();
 			if (ArrayProperty->Inner->PropertyFlags & CPF_ZeroConstructor)
 			{
@@ -821,7 +960,7 @@ UObject* UBlueprintGeneratedClass::FindArchetype(const UClass* ArchetypeClass, c
 		// node in a function graph, which can occur when the AddComponent node is wired to a flow-control node such as a ForEach loop, for example. Thus,
 		// we still look for the archetype by name, but we must first ensure that the instance name is converted to its "base" name by removing the index.
 #if WITH_EDITORONLY_DATA
-		const FName ArchetypeBaseName = NewArchetypeName != NAME_None ? NewArchetypeName : FName(ArchetypeName, 0);
+		const FName ArchetypeBaseName = (NewArchetypeName != NAME_None) ? NewArchetypeName : FName(ArchetypeName, 0);
 #else
 		const FName ArchetypeBaseName = FName(ArchetypeName, 0);
 #endif
@@ -855,7 +994,7 @@ UObject* UBlueprintGeneratedClass::FindArchetype(const UClass* ArchetypeClass, c
 					Archetype = SCSNode->ComponentTemplate;
 				}
 			}
-			else if(UInheritableComponentHandler* ICH = Class->GetInheritableComponentHandler())
+			else if (UInheritableComponentHandler* ICH = Class->GetInheritableComponentHandler())
 			{
 				if (GEventDrivenLoaderEnabled && EVENT_DRIVEN_ASYNC_LOAD_ACTIVE_AT_RUNTIME)
 				{
@@ -919,7 +1058,7 @@ UObject* UBlueprintGeneratedClass::FindArchetype(const UClass* ArchetypeClass, c
 			}
 		}
 	}
-	
+
 	return Archetype;
 }
 
@@ -938,18 +1077,7 @@ UDynamicBlueprintBinding* UBlueprintGeneratedClass::GetDynamicBindingObject(cons
 			}
 		}
 	}
-	else if (const UDynamicClass* DynamicClass = Cast<UDynamicClass>(ThisClass))
-	{
-		for (UObject* MiscObj : DynamicClass->DynamicBindingObjects)
-		{
-			UDynamicBlueprintBinding* DynamicBindingObject = Cast<UDynamicBlueprintBinding>(MiscObj);
-			if (DynamicBindingObject && (DynamicBindingObject->GetClass() == BindingClass))
-			{
-				DynamicBlueprintBinding = DynamicBindingObject;
-				break;
-			}
-		}
-	}
+
 	return DynamicBlueprintBinding;
 }
 
@@ -967,17 +1095,6 @@ void UBlueprintGeneratedClass::BindDynamicDelegates(const UClass* ThisClass, UOb
 		for (UDynamicBlueprintBinding* DynamicBindingObject : BPGC->DynamicBindingObjects)
 		{
 			if (ensure(DynamicBindingObject))
-			{
-				DynamicBindingObject->BindDynamicDelegates(InInstance);
-			}
-		}
-	}
-	else if (const UDynamicClass* DynamicClass = Cast<UDynamicClass>(ThisClass))
-	{
-		for (UObject* MiscObj : DynamicClass->DynamicBindingObjects)
-		{
-			UDynamicBlueprintBinding* DynamicBindingObject = Cast<UDynamicBlueprintBinding>(MiscObj);
-			if (DynamicBindingObject)
 			{
 				DynamicBindingObject->BindDynamicDelegates(InInstance);
 			}
@@ -1005,17 +1122,6 @@ void UBlueprintGeneratedClass::UnbindDynamicDelegates(const UClass* ThisClass, U
 		for (UDynamicBlueprintBinding* DynamicBindingObject : BPGC->DynamicBindingObjects)
 		{
 			if (ensure(DynamicBindingObject))
-			{
-				DynamicBindingObject->UnbindDynamicDelegates(InInstance);
-			}
-		}
-	}
-	else if (const UDynamicClass* DynamicClass = Cast<UDynamicClass>(ThisClass))
-	{
-		for (UObject* MiscObj : DynamicClass->DynamicBindingObjects)
-		{
-			UDynamicBlueprintBinding* DynamicBindingObject = Cast<UDynamicBlueprintBinding>(MiscObj);
-			if (DynamicBindingObject)
 			{
 				DynamicBindingObject->UnbindDynamicDelegates(InInstance);
 			}
@@ -1076,10 +1182,9 @@ UActorComponent* UBlueprintGeneratedClass::FindComponentTemplateByName(const FNa
 
 void UBlueprintGeneratedClass::CreateTimelineComponent(AActor* Actor, const UTimelineTemplate* TimelineTemplate)
 {
-	if (!Actor
+	if (!IsValid(Actor)
 		|| !TimelineTemplate
-		|| Actor->IsTemplate()
-		|| Actor->IsPendingKill())
+		|| Actor->IsTemplate())
 	{
 		return;
 	}
@@ -1197,7 +1302,7 @@ void UBlueprintGeneratedClass::CreateTimelineComponent(AActor* Actor, const UTim
 void UBlueprintGeneratedClass::CreateComponentsForActor(const UClass* ThisClass, AActor* Actor)
 {
 	check(ThisClass && Actor);
-	if (Actor->IsTemplate() || Actor->IsPendingKill())
+	if (Actor->IsTemplate() || !IsValid(Actor))
 	{
 		return;
 	}
@@ -1213,100 +1318,11 @@ void UBlueprintGeneratedClass::CreateComponentsForActor(const UClass* ThisClass,
 			}
 		}
 	}
-	else if (const UDynamicClass* DynamicClass = Cast<UDynamicClass>(ThisClass))
-	{
-		for (UObject* MiscObj : DynamicClass->Timelines)
-		{
-			const UTimelineTemplate* TimelineTemplate = Cast<const UTimelineTemplate>(MiscObj);
-			// Not fatal if NULL, but shouldn't happen and ignored if not wired up in graph
-			if (TimelineTemplate)
-			{
-				CreateTimelineComponent(Actor, TimelineTemplate);
-			}
-		}
-	}
 }
 
 bool UBlueprintGeneratedClass::UseFastPathComponentInstancing()
 {
 	return bHasCookedComponentInstancingData && FPlatformProperties::RequiresCookedData() && !GBlueprintComponentInstancingFastPathDisabled;
-}
-
-void UBlueprintGeneratedClass::CheckAndApplyComponentTemplateOverrides(UObject* InClassDefaultObject)
-{
-	// Get the Blueprint class hierarchy (if valid).
-	TArray<const UBlueprintGeneratedClass*> ParentBPClassStack;
-	GetGeneratedClassesHierarchy(InClassDefaultObject->GetClass(), ParentBPClassStack);
-	if (ParentBPClassStack.Num() > 0)
-	{
-		// If the nearest native antecedent is also a nativized BP class, we may have an override
-		// in an ICH for some part of the non-native BP class hierarchy that also inherits from it.
-		if (UDynamicClass* ParentDynamicClass = Cast<UDynamicClass>(ParentBPClassStack[ParentBPClassStack.Num() - 1]->GetSuperClass()))
-		{
-			// Get all default subobjects owned by the nativized antecedent's CDO.
-			// Note: This will also include all other inherited default subobjects.
-			TArray<UObject*> DefaultSubobjects;
-			ParentDynamicClass->GetDefaultObjectSubobjects(DefaultSubobjects);
-
-			// Pick out only the UActorComponent-based subobjects and cache them to use for checking below.
-			TArray<UActorComponent*> NativizedParentClassComponentSubobjects;
-			for (UObject* DefaultSubobject : DefaultSubobjects)
-			{
-				if (UActorComponent* ComponentSubobject = Cast<UActorComponent>(DefaultSubobject))
-				{
-					NativizedParentClassComponentSubobjects.Add(ComponentSubobject);
-				}
-			}
-
-			// Now check each non-native BP class (on up to the given Actor) for any inherited component template overrides, and manually apply default value overrides as we go.
-			for (int32 i = ParentBPClassStack.Num() - 1; i >= 0; i--)
-			{
-				const UBlueprintGeneratedClass* CurrentBPGClass = ParentBPClassStack[i];
-				check(CurrentBPGClass);
-
-				UInheritableComponentHandler* ICH = const_cast<UBlueprintGeneratedClass*>(CurrentBPGClass)->GetInheritableComponentHandler();
-				if (ICH && NativizedParentClassComponentSubobjects.Num() > 0)
-				{
-					// Check each default subobject that we've inherited from the antecedent class
-					for (UActorComponent* NativizedComponentSubobject : NativizedParentClassComponentSubobjects)
-					{
-						const FName NativizedComponentSubobjectName = NativizedComponentSubobject->GetFName();
-						FComponentKey ComponentKey = ICH->FindKey(NativizedComponentSubobjectName);
-						if (ComponentKey.IsValid() && ComponentKey.IsSCSKey())
-						{
-							const FBlueprintCookedComponentInstancingData* OverrideData = ICH->GetOverridenComponentTemplateData(ComponentKey);
-							if (OverrideData != nullptr && OverrideData->bHasValidCookedData)
-							{
-								// This is the instance of the inherited component subobject that's owned by the given class default object
-								if (UObject* NativizedComponentSubobjectInstance = InClassDefaultObject->GetDefaultSubobjectByName(NativizedComponentSubobjectName))
-								{
-									// Nativized component override data loader implementation.
-									class FNativizedComponentOverrideDataLoader : public FObjectReader
-									{
-									public:
-										FNativizedComponentOverrideDataLoader(const TArray<uint8>& InSrcBytes, const FCustomPropertyListNode* InPropertyList)
-											:FObjectReader(const_cast<TArray<uint8>&>(InSrcBytes))
-										{
-											ArCustomPropertyList = InPropertyList;
-											ArUseCustomPropertyList = true;
-											this->SetWantBinaryPropertySerialization(true);
-
-											// Set this flag to emulate things that would happen in the SDO case when this flag is set (e.g. - not setting 'bHasBeenCreated').
-											ArPortFlags |= PPF_Duplicate;
-										}
-									};
-
-									// Serialize cached override data to the instanced subobject that's based on the default subobject from the nativized parent class and owned by the non-nativized child class default object.
-									FNativizedComponentOverrideDataLoader OverrideDataLoader(OverrideData->GetCachedPropertyData(), OverrideData->GetCachedPropertyList());
-									NativizedComponentSubobjectInstance->Serialize(OverrideDataLoader);
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
 }
 
 uint8* UBlueprintGeneratedClass::GetPersistentUberGraphFrame(UObject* Obj, UFunction* FuncToCheck) const
@@ -1329,12 +1345,14 @@ uint8* UBlueprintGeneratedClass::GetPersistentUberGraphFrame(UObject* Obj, UFunc
 void UBlueprintGeneratedClass::CreatePersistentUberGraphFrame(UObject* Obj, bool bCreateOnlyIfEmpty, bool bSkipSuperClass, UClass* OldClass) const
 {
 #if USE_UBER_GRAPH_PERSISTENT_FRAME
+#if WITH_EDITORONLY_DATA
 	/** Macros should not create uber graph frames as they have no uber graph. If UBlueprints are cooked out the macro class probably does not exist as well */
 	UBlueprint* Blueprint = Cast<UBlueprint>(ClassGeneratedBy);
 	if (Blueprint && Blueprint->BlueprintType == BPTYPE_MacroLibrary)
 	{
 		return;
 	}
+#endif
 
 	ensure(!UberGraphFramePointerProperty == !UberGraphFunction);
 	if (Obj && UsePersistentUberGraphFrame() && UberGraphFramePointerProperty && UberGraphFunction)
@@ -1359,7 +1377,7 @@ void UBlueprintGeneratedClass::CreatePersistentUberGraphFrame(UObject* Obj, bool
 			if (bUberGraphFunctionIsReady)
 			{
 				INC_MEMORY_STAT_BY(STAT_PersistentUberGraphFrameMemory, UberGraphFunction->GetStructureSize());
-				FrameMemory = (uint8*)FMemory::Malloc(UberGraphFunction->GetStructureSize());
+				FrameMemory = (uint8*)FMemory::Malloc(UberGraphFunction->GetStructureSize(), UberGraphFunction->GetMinAlignment());
 
 				FMemory::Memzero(FrameMemory, UberGraphFunction->GetStructureSize());
 				for (FProperty* Property = UberGraphFunction->PropertyLink; Property; Property = Property->PropertyLinkNext)
@@ -1509,12 +1527,15 @@ void UBlueprintGeneratedClass::GetDefaultObjectPreloadDependencies(TArray<UObjec
 		}
 	}
 
-	// Add the classes that will be used for overriding components defined in base classes
-	for (const FBPComponentClassOverride& Override : ComponentClassOverrides)
+	if (GetAllowNativeComponentClassOverrides())
 	{
-		if (Override.ComponentClass)
+		// Add the classes that will be used for overriding components defined in base classes
+		for (const FBPComponentClassOverride& Override : ComponentClassOverrides)
 		{
-			OutDeps.Add(Override.ComponentClass);
+			if (Override.ComponentClass)
+			{
+				OutDeps.Add(const_cast<UClass*>(Override.ComponentClass.Get()));
+			}
 		}
 	}
 }
@@ -1703,14 +1724,32 @@ void UBlueprintGeneratedClass::AddReferencedObjectsInUbergraphFrame(UObject* InT
 					);
 #endif//VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
 
-					checkSlow(BPGC->UberGraphFunction);
-					FVerySlowReferenceCollectorArchiveScope CollectorScope(
-						Collector.GetInternalPersistentFrameReferenceCollectorArchive(),
-						BPGC->UberGraphFunction,
-						BPGC->UberGraphFramePointerProperty,
-						InThis,
-						PointerToUberGraphFrame->RawPointer);
-					BPGC->UberGraphFunction->SerializeBin(CollectorScope.GetArchive(), PointerToUberGraphFrame->RawPointer);
+					{
+						checkSlow(BPGC->UberGraphFunction);
+						FVerySlowReferenceCollectorArchiveScope CollectorScope(
+							Collector.GetInternalPersistentFrameReferenceCollectorArchive(),
+							BPGC->UberGraphFunction,
+							BPGC->UberGraphFramePointerProperty,
+							InThis,
+							PointerToUberGraphFrame->RawPointer);
+
+#if WITH_ADDITIONAL_CRASH_CONTEXTS
+						BPGCBreadcrumbsParams Params =
+						{
+							*InThis,
+							*BPGC,
+							CollectorScope.GetArchive(),
+							FPlatformTLS::GetCurrentThreadId()
+						};
+
+						UE_ADD_CRASH_CONTEXT_SCOPE([&](FCrashContextExtendedWriter& Writer) { WriteBPGCBreadcrumbs(Writer, Params); });
+#endif // WITH_ADDITIONAL_CRASH_CONTEXTS
+						// All encountered references should be treated as non-native by GC
+						Collector.SetIsProcessingNativeReferences(false);
+						BPGC->UberGraphFunction->SerializeBin(CollectorScope.GetArchive(), PointerToUberGraphFrame->RawPointer);
+						Collector.SetIsProcessingNativeReferences(true);
+					}
+
 				}
 			}
 #endif // USE_UBER_GRAPH_PERSISTENT_FRAME
@@ -1762,6 +1801,22 @@ void UBlueprintGeneratedClass::Serialize(FArchive& Ar)
 #endif//VALIDATE_UBER_GRAPH_PERSISTENT_FRAME
 
 	Super::Serialize(Ar);
+
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+	if ((Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) >= FFortniteMainBranchObjectVersion::BPGCCookedEditorTags) &&
+		Ar.IsFilterEditorOnly())
+	{
+#if !WITH_EDITORONLY_DATA
+		FEditorTags CookedEditorTags; // Unused at runtime
+#else
+		CookedEditorTags.Reset();
+		if (Ar.IsSaving())
+		{
+			GetEditorTags(CookedEditorTags);
+		}
+#endif
+		Ar << CookedEditorTags;
+	}
 
 	if (Ar.IsLoading() && 0 == (Ar.GetPortFlags() & PPF_Duplicate))
 	{
@@ -2009,3 +2064,38 @@ FGuid UBlueprintGeneratedClass::FindPropertyGuidFromName(const FName InName) con
 #endif // WITH_EDITORONLY_DATA
 	return PropertyGuid;
 }
+
+#if WITH_EDITORONLY_DATA
+void UBlueprintGeneratedClass::GetEditorTags(FEditorTags& Tags) const
+{
+	if (UBlueprint* BP = Cast<UBlueprint>(ClassGeneratedBy))
+	{
+		auto AddEditorTag = [BP, &Tags](FName TagName, FName PropertyName, const uint8* PropertyValueOverride = nullptr)
+		{
+			const FProperty* Property = FindFieldChecked<FProperty>(UBlueprint::StaticClass(), PropertyName);
+			const uint8* PropertyAddr = PropertyValueOverride ? PropertyValueOverride : Property->ContainerPtrToValuePtr<uint8>(BP);
+			FString PropertyValueAsText;
+			Property->ExportTextItem(PropertyValueAsText, PropertyAddr, PropertyAddr, nullptr, PPF_None);
+			if (!PropertyValueAsText.IsEmpty())
+			{
+				Tags.Add(TagName, MoveTemp(PropertyValueAsText));
+			}
+		};
+
+		AddEditorTag(FBlueprintTags::BlueprintType, GET_MEMBER_NAME_CHECKED(UBlueprint, BlueprintType));
+
+		{
+			// Clear the FBPInterfaceDescription Graphs because they are irrelevant to the BPGC
+			TArray<FBPInterfaceDescription> GraphlessImplementedInterfaces;
+			GraphlessImplementedInterfaces.Reserve(BP->ImplementedInterfaces.Num());
+			for (const FBPInterfaceDescription& ImplementedInterface : BP->ImplementedInterfaces)
+			{
+				FBPInterfaceDescription& GraphlessImplementedInterface = GraphlessImplementedInterfaces.Emplace_GetRef(ImplementedInterface);
+				GraphlessImplementedInterface.Graphs.Empty();
+			}
+
+			AddEditorTag(FBlueprintTags::ImplementedInterfaces, GET_MEMBER_NAME_CHECKED(UBlueprint, ImplementedInterfaces), (const uint8*)&GraphlessImplementedInterfaces);
+		}
+	}
+}
+#endif //if WITH_EDITORONLY_DATA

@@ -18,10 +18,6 @@ public class coremod: ModuleRules
 		{
 			PublicAdditionalLibraries.Add(LibraryPath + "/lib/Win64/VS2013/" + "coremod.lib");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Win32)
-		{
-			PublicAdditionalLibraries.Add(LibraryPath + "/lib/Win32/VS2013/" + "coremod.lib");
-		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
 			PublicAdditionalLibraries.Add(LibraryPath + "/lib/Mac/libcoremodMac.a");
@@ -37,9 +33,7 @@ public class coremod: ModuleRules
         }
 		else if (Target.Platform == UnrealTargetPlatform.Android)
 		{
-			PublicAdditionalLibraries.Add(LibraryPath + "/lib/Android/x86/libxmp-coremod.a");
 			PublicAdditionalLibraries.Add(LibraryPath + "/lib/Android/x64/libxmp-coremod.a");
-			PublicAdditionalLibraries.Add(LibraryPath + "/lib/Android/armeabi-v7a/libxmp-coremod.a");
 		}
 	}
 }

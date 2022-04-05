@@ -145,18 +145,11 @@ void FSoundSubmixEditor::Init(const EToolkitMode::Type Mode, const TSharedPtr<IT
 
 	CreateInternalWidgets(SoundSubmix);
 
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_SoundSubmixEditor_Layout_v3")
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_SoundSubmixEditor_Layout_v4")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -234,7 +227,6 @@ TSharedRef<SDockTab> FSoundSubmixEditor::SpawnTab_Properties(const FSpawnTabArgs
 	check(Args.GetTabId() == PropertiesTabId);
 
 	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("LevelEditor.Tabs.Details"))
 		.Label(LOCTEXT("SoundSubmixPropertiesTitle", "Details"))
 		[
 			DetailsView.ToSharedRef()
@@ -273,7 +265,8 @@ void FSoundSubmixEditor::CreateInternalWidgets(USoundSubmixBase* InSoundSubmix)
 	GraphEditor = CreateGraphEditorWidget(InSoundSubmix);
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	const FDetailsViewArgs DetailsViewArgs(false, false, true, FDetailsViewArgs::HideNameArea, false);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 	DetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 	DetailsView->SetObject(InSoundSubmix);
 }

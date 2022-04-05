@@ -44,6 +44,7 @@ struct CORE_API FToBoolHelper
 {
 	static bool FromCStringAnsi( const ANSICHAR* String );
 	static bool FromCStringWide( const WIDECHAR* String );
+	static bool FromCStringUtf8( const UTF8CHAR* String );
 };
 
 /**
@@ -399,22 +400,6 @@ public:
 	 *
 	 * @param Dest - destination string buffer
 	 * @param DestSize - size of destination buffer
-	 * @param Count - number of characters to write (not including null terminating character)
-	 * @param Fmt - string to print
-	 * @param Args - argument list
-	 * @return number of characters written or -1 if truncated
-	 */
-	UE_DEPRECATED(4.22, "GetVarArgs with DestSize and Count arguments has been deprecated - only DestSize should be passed")
-	static FORCEINLINE int32 GetVarArgs(CharType* Dest, SIZE_T DestSize, int32 Count, const CharType*& Fmt, va_list ArgPtr)
-	{
-		return GetVarArgs(Dest, DestSize, Fmt, ArgPtr);
-	}
-
-	/**
-	 * Helper function to write formatted output using an argument list
-	 *
-	 * @param Dest - destination string buffer
-	 * @param DestSize - size of destination buffer
 	 * @param Fmt - string to print
 	 * @param Args - argument list
 	 * @return number of characters written or -1 if truncated
@@ -425,6 +410,7 @@ public:
 typedef TCString<TCHAR>    FCString;
 typedef TCString<ANSICHAR> FCStringAnsi;
 typedef TCString<WIDECHAR> FCStringWide;
+typedef TCString<UTF8CHAR> FCStringUtf8;
 
 /*-----------------------------------------------------------------------------
 	generic TCString implementations
@@ -434,10 +420,10 @@ template <typename CharType = TCHAR>
 struct TCStringSpcHelper
 {
 	/** Number of characters to be stored in string. */
-	static const int32 MAX_SPACES = 255;
+	static constexpr int32 MAX_SPACES = 255;
 
 	/** Number of tabs to be stored in string. */
-	static const int32 MAX_TABS = 255;
+	static constexpr int32 MAX_TABS = 255;
 
 	static CORE_API const CharType SpcArray[MAX_SPACES + 1];
 	static CORE_API const CharType TabArray[MAX_TABS + 1];
@@ -520,7 +506,7 @@ const typename TCString<T>::CharType* TCString<T>::Strifind( const CharType* Str
 	}
 	
 	bool Alnum  = 0;
-	CharType f = ( *Find < LITERAL(CharType, 'a') || *Find > LITERAL(CharType, 'z') ) ? (*Find) : (*Find + LITERAL(CharType,'A') - LITERAL(CharType,'a'));
+	CharType f = ( *Find < LITERAL(CharType, 'a') || *Find > LITERAL(CharType, 'z') ) ? (*Find) : (CharType)(*Find + LITERAL(CharType,'A') - LITERAL(CharType,'a'));
 	int32 Length = Strlen(Find++)-1;
 	CharType c = *Str++;
 	
@@ -925,7 +911,7 @@ inline int32 TCString<WIDECHAR>::SnprintfImpl(CharType* Dest, int32 DestSize, co
 }
 
 template <> 
-FORCEINLINE bool TCString<TCHAR>::ToBool(const WIDECHAR* Str)
+FORCEINLINE bool TCString<WIDECHAR>::ToBool(const WIDECHAR* Str)
 {
 	return FToBoolHelper::FromCStringWide(Str);
 }
@@ -965,4 +951,10 @@ template <>
 FORCEINLINE bool TCString<ANSICHAR>::ToBool(const ANSICHAR* Str)
 {
 	return FToBoolHelper::FromCStringAnsi(Str);
+}
+
+template <> 
+FORCEINLINE bool TCString<UTF8CHAR>::ToBool(const UTF8CHAR* Str)
+{
+	return FToBoolHelper::FromCStringUtf8(Str);
 }

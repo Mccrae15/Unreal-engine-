@@ -9,14 +9,14 @@ namespace Chaos
 {
 
 	/** Specifies the type of work we should do*/
-	enum class CHAOS_API ECollisionUpdateType
+	enum class ECollisionUpdateType
 	{
 		Any,	//stop if we have at least one deep penetration. Does not compute location or normal
 		Deepest	//find the deepest penetration. Compute location and normal
 	};
 
 	/** Return value of the collision modification callback */
-	enum class CHAOS_API ECollisionModifierResult
+	enum class ECollisionModifierResult
 	{
 		Unchanged,	/** No change to the collision */
 		Modified,	/** Modified the collision, but want it to remain enabled */
@@ -24,7 +24,7 @@ namespace Chaos
 	};
 
 	/** The shape types involved in a contact constraint. Used to look up the collision detection function */
-	enum class CHAOS_API EContactShapesType
+	enum class EContactShapesType
 	{
 		Unknown,
 		SphereSphere,
@@ -53,7 +53,7 @@ namespace Chaos
 		NumShapesTypes
 	};
 
-	enum class CHAOS_API EContactManifoldType
+	enum class EContactManifoldType
 	{
 		None,			// No manifold - run collision detection whenever we need latest contact
 		OneShot,		// A manifold is created once and reused. The manifold consists of a plane attached to one shape and a set of points on the other
@@ -79,33 +79,4 @@ namespace Chaos
 	//TODO: move into a better forward declare location
 	class FPBDCollisionConstraintHandle;
 
-	/** Used to modify collision constraints via callback */
-	class CHAOS_API FPBDCollisionConstraintHandleModification
-	{
-	public:
-		FPBDCollisionConstraintHandleModification(FPBDCollisionConstraintHandle* InHandle)
-			: Handle(InHandle)
-			, Result(ECollisionModifierResult::Unchanged)
-		{
-		}
-
-		void DisableConstraint() { Result = ECollisionModifierResult::Disabled; }
-
-		//TODO: a better API would be to only return a mutable handle when this is set.
-		//The problem is the current callback logic makes this cumbersome
-		void ModifyConstraint()
-		{
-			Result = ECollisionModifierResult::Modified;
-		}
-
-		FPBDCollisionConstraintHandle* GetHandle() const { return Handle; }
-
-		ECollisionModifierResult GetResult() const { return Result; }
-
-	private:
-		FPBDCollisionConstraintHandle* Handle;
-		ECollisionModifierResult Result;
-	};
-
-	using FCollisionModifierCallback = TFunction<void(const TArrayView<FPBDCollisionConstraintHandleModification>& Handle)>;
 }

@@ -5,6 +5,7 @@
 
 #include "AssetToolsModule.h"
 #include "CoreMinimal.h"
+#include "LevelEditor.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
@@ -16,15 +17,16 @@
 #include "GeometryCollection/GeometryCollectionConversion.h"
 #include "GeometryCollection/GeometryCollectionThumbnailRenderer.h"
 #include "GeometryCollection/GeometryCollectionSelectRigidBodyEdMode.h"
+#include "GeometryCollection/GeometryCollectionSelectionCommands.h"
 #include "HAL/ConsoleManager.h"
 #include "Features/IModularFeatures.h"
 #include "GeometryCollection/DetailCustomizations/GeomComponentCacheCustomization.h"
-#include "GeometryCollection/DetailCustomizations/SelectedRigidBodyCustomization.h"
 #include "GeometryCollection/DetailCustomizations/WarningMessageCustomization.h"
 #include "GeometryCollection/DetailCustomizations/GeometryCollectionCustomization.h"
 #include "Styling/SlateStyle.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/CoreStyle.h"
+#include "ToolMenus.h"
 
 IMPLEMENT_MODULE( IGeometryCollectionEditorPlugin, GeometryCollectionEditor )
 
@@ -34,6 +36,8 @@ IMPLEMENT_MODULE( IGeometryCollectionEditorPlugin, GeometryCollectionEditor )
 void IGeometryCollectionEditorPlugin::StartupModule()
 {
 	FGeometryCollectionEditorStyle::Get();
+
+	FGeometryCollectionSelectionCommands::Register();
 
 	FAssetToolsModule& AssetToolsModule = FAssetToolsModule::GetModule();
 	IAssetTools& AssetTools = AssetToolsModule.Get();
@@ -187,6 +191,28 @@ void IGeometryCollectionEditorPlugin::StartupModule()
 		));
 	}
 
+	// Map global level editor commands
+	FLevelEditorModule& LevelEditorModule = FModuleManager::Get().LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedRef<FUICommandList> CommandList = LevelEditorModule.GetGlobalLevelEditorActions();
+	CommandList->MapAction(
+		FGeometryCollectionSelectionCommands::Get().SelectAllGeometry,
+		FExecuteAction::CreateLambda([]()
+		{
+			FGeometryCollectionCommands::SelectAllGeometry(TArray<FString>(), nullptr);
+		}));
+	CommandList->MapAction(
+		FGeometryCollectionSelectionCommands::Get().SelectNone,
+		FExecuteAction::CreateLambda([]()
+		{
+			FGeometryCollectionCommands::SelectNone(TArray<FString>(), nullptr);
+		}));
+	CommandList->MapAction(
+		FGeometryCollectionSelectionCommands::Get().SelectInverseGeometry,
+		FExecuteAction::CreateLambda([]()
+		{
+			FGeometryCollectionCommands::SelectInverseGeometry(TArray<FString>(), nullptr);
+		}));
+
 	// Bind our scene outliner provider to the editor
 	IModularFeatures& ModularFeatures = IModularFeatures::Get();
 	ModularFeatures.RegisterModularFeature(ITargetCacheProvider::GetFeatureName(), &TargetCacheProvider);
@@ -196,7 +222,6 @@ void IGeometryCollectionEditorPlugin::StartupModule()
 	if(PropertyModule)
 	{
 		PropertyModule->RegisterCustomPropertyTypeLayout("GeomComponentCacheParameters", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FGeomComponentCacheParametersCustomization::MakeInstance));
-		PropertyModule->RegisterCustomPropertyTypeLayout("GeometryCollectionDebugDrawActorSelectedRigidBody", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FSelectedRigidBodyCustomization::MakeInstance));
 		PropertyModule->RegisterCustomPropertyTypeLayout("GeometryCollectionDebugDrawWarningMessage", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWarningMessageCustomization::MakeInstance));
 
 		const FName GeometryCollectionName = UGeometryCollection::StaticClass()->GetFName();
@@ -229,6 +254,9 @@ void IGeometryCollectionEditorPlugin::StartupModule()
 
 	UThumbnailManager::Get().RegisterCustomRenderer(UGeometryCollection::StaticClass(), UGeometryCollectionThumbnailRenderer::StaticClass());
 
+	// Register tool menus - delayed until ToolMenus module is loaded
+	UToolMenus::RegisterStartupCallback(
+		FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &IGeometryCollectionEditorPlugin::RegisterMenus));
 }
 
 
@@ -263,6 +291,20 @@ void IGeometryCollectionEditorPlugin::ShutdownModule()
 
 		// Unregister rigid body selection editor mode
 		FEditorModeRegistry::Get().UnregisterMode(FGeometryCollectionSelectRigidBodyEdMode::EditorModeID);
+		
+		// Unregister tool menu callback and remove any entries we added
+		UToolMenus::UnRegisterStartupCallback(this);
+		UToolMenus::UnregisterOwner(this);
+
+		// Unmap global level editor commands
+		FLevelEditorModule& LevelEditorModule = FModuleManager::Get().LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+		TSharedRef<FUICommandList> CommandList = LevelEditorModule.GetGlobalLevelEditorActions();
+		CommandList->UnmapAction(FGeometryCollectionSelectionCommands::Get().SelectAllGeometry);
+		CommandList->UnmapAction(FGeometryCollectionSelectionCommands::Get().SelectNone);
+		CommandList->UnmapAction(FGeometryCollectionSelectionCommands::Get().SelectInverseGeometry);
+
+		// Unregister commands
+		FGeometryCollectionSelectionCommands::Unregister();
 	}
 }
 
@@ -274,4 +316,17 @@ FName IGeometryCollectionEditorPlugin::GetEditorStyleName()
 const ISlateStyle* IGeometryCollectionEditorPlugin::GetEditorStyle()
 {
 	return FSlateStyleRegistry::FindSlateStyle(GetEditorStyleName());
+}
+
+void IGeometryCollectionEditorPlugin::RegisterMenus()
+{
+	FToolMenuOwnerScoped OwnerScoped(this);
+
+	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Select");
+	FToolMenuSection& Section = Menu->AddSection("SelectBones", NSLOCTEXT("LevelViewportContextMenu", "GeometryCollectionHeading", "Geometry Collection"));
+	{
+		Section.AddMenuEntry(FGeometryCollectionSelectionCommands::Get().SelectAllGeometry);
+		Section.AddMenuEntry(FGeometryCollectionSelectionCommands::Get().SelectNone);
+		Section.AddMenuEntry(FGeometryCollectionSelectionCommands::Get().SelectInverseGeometry);
+	}
 }

@@ -29,12 +29,14 @@ public class DeviceProfileEditor : ModuleRules
 				"SlateCore",
                 "EditorStyle",
 				"LevelEditor",
+				"EditorFramework",
 				"UnrealEd",
 				"WorkspaceMenuStructure",
 				"PropertyEditor",
 				"SourceControl",
                 "TargetPlatform",
 				"DesktopPlatform",
+				"SharedSettingsWidgets",
 			}
 		);
 

@@ -28,6 +28,9 @@ class UMaterialInstanceConstant : public UMaterialInstance
 	FGuid ParameterStateId;
 #endif
 
+	virtual ENGINE_API void PostLoad() override;
+	virtual ENGINE_API void FinishDestroy() override;
+
 #if WITH_EDITOR
 	/** For constructing new MICs. */
 	friend class UMaterialInstanceConstantFactoryNew;
@@ -35,26 +38,27 @@ class UMaterialInstanceConstant : public UMaterialInstance
 	friend class UMaterialEditorInstanceConstant;
 
 	virtual ENGINE_API void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual ENGINE_API void UpdateCachedData() override final;
 #endif
 
 	/** Physical material mask to use for this graphics material. Used for sounds, effects etc.*/
 	UPROPERTY(EditAnywhere, Category = PhysicalMaterial)
-	class UPhysicalMaterialMask* PhysMaterialMask;
+	TObjectPtr<class UPhysicalMaterialMask> PhysMaterialMask;
 
 	// Begin UMaterialInterface interface.
 	ENGINE_API virtual UPhysicalMaterialMask* GetPhysicalMaterialMask() const override;
 	// End UMaterialInterface interface.
 
 	/** Get the scalar (float) parameter value from an MIC */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetScalarParameterValue", ScriptName = "GetScalarParameterValue", Keywords = "GetFloatParameterValue"), Category="Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get Scalar Parameter Value", ScriptName = "GetScalarParameterValue", Keywords = "GetFloatParameterValue"), Category="Rendering|Material")
 	float K2_GetScalarParameterValue(FName ParameterName);
 
 	/** Get the MIC texture parameter value */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetTextureParameterValue", ScriptName = "GetTextureParameterValue"), Category="Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get Texture Parameter Value", ScriptName = "GetTextureParameterValue"), Category="Rendering|Material")
 	class UTexture* K2_GetTextureParameterValue(FName ParameterName);
 
 	/** Get the MIC vector parameter value */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetVectorParameterValue", ScriptName = "GetVectorParameterValue", Keywords = "GetColorParameterValue"), Category="Rendering|Material")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get Vector Parameter Value", ScriptName = "GetVectorParameterValue", Keywords = "GetColorParameterValue"), Category="Rendering|Material")
 	FLinearColor K2_GetVectorParameterValue(FName ParameterName);
 
 #if WITH_EDITOR
@@ -93,7 +97,5 @@ class UMaterialInstanceConstant : public UMaterialInstance
 	 */
 	ENGINE_API void ClearParameterValuesEditorOnly();
 #endif // #if WITH_EDITOR
-
-	ENGINE_API void PostLoad();
 };
 

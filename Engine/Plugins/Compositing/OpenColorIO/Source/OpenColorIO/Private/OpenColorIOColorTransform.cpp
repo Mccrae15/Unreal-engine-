@@ -163,11 +163,10 @@ void UOpenColorIOColorTransform::SerializeLuts(FArchive& Ar)
 
 	if (Ar.IsSaving())
 	{
-		UVolumeTexture* Lut3dTexturePtr = Lut3dTexture.Get();
 		int32 Num3dLutsToSave = 0;
 		if (Ar.IsCooking())
 		{
-			if (Lut3dTexturePtr != nullptr)
+			if (Lut3dTexture != nullptr)
 			{
 				Num3dLutsToSave = 1;
 			}
@@ -177,7 +176,7 @@ void UOpenColorIOColorTransform::SerializeLuts(FArchive& Ar)
 
 		if (Num3dLutsToSave > 0)
 		{
-			Ar << Lut3dTexturePtr;
+			Ar << Lut3dTexture;
 		}
 	}
 	else if (Ar.IsLoading())
@@ -188,16 +187,14 @@ void UOpenColorIOColorTransform::SerializeLuts(FArchive& Ar)
 		if (NumLoaded3dLuts > 0)
 		{
 			//Will only happen on cooked data
-			UVolumeTexture* TempTexture = nullptr;
-			Ar << TempTexture;
-			Lut3dTexture.Reset(TempTexture);
+			Ar << Lut3dTexture;
 		}
 	}
 }
 
 void UOpenColorIOColorTransform::CacheResourceTextures()
 {
-	if (!Lut3dTexture.IsValid())
+	if (Lut3dTexture == nullptr)
 	{
 #if WITH_EDITOR && WITH_OCIO
 		OCIO_NAMESPACE::ConstConfigRcPtr CurrentConfig = ConfigurationOwner->GetLoadedConfigurationFile();
@@ -210,23 +207,31 @@ void UOpenColorIOColorTransform::CacheResourceTextures()
 				OCIO_NAMESPACE::ConstProcessorRcPtr TransformProcessor = CurrentConfig->getProcessor(StringCast<ANSICHAR>(*SourceColorSpace).Get(), StringCast<ANSICHAR>(*DestinationColorSpace).Get());
 				if (TransformProcessor)
 				{
-					OCIO_NAMESPACE::GpuShaderDesc ShaderDescription;
-					ShaderDescription.setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_CG);
-					ShaderDescription.setFunctionName(StringCast<ANSICHAR>(OpenColorIOShader::OpenColorIOShaderFunctionName).Get());
-					ShaderDescription.setLut3DEdgeLen(OpenColorIOShader::Lut3dEdgeLength);
+					OCIO_NAMESPACE::GpuShaderDescRcPtr ShaderDescription = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+					ShaderDescription->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_HLSL_DX11);
+					ShaderDescription->setFunctionName(StringCast<ANSICHAR>(OpenColorIOShader::OpenColorIOShaderFunctionName).Get());
+					ShaderDescription->setResourcePrefix("Ocio");
 
-					FString Lut3dIdentifier = StringCast<TCHAR>(TransformProcessor->getGpuLut3DCacheID(ShaderDescription)).Get();
-					if (Lut3dIdentifier != TEXT("<NULL>"))
+					OCIO_NAMESPACE::ConstGPUProcessorRcPtr GPUProcessor = TransformProcessor->getOptimizedLegacyGPUProcessor(OCIO_NAMESPACE::OptimizationFlags::OPTIMIZATION_DEFAULT, OpenColorIOShader::Lut3dEdgeLength);
+					GPUProcessor->extractGpuShaderInfo(ShaderDescription);
+
+					FString Lut3dIdentifier = StringCast<TCHAR>(GPUProcessor->getCacheID()).Get();
+					if (Lut3dIdentifier != TEXT("<NULL>") && ShaderDescription->getNum3DTextures() > 0 )
 					{
-						std::vector<float> Lut3dData;
-						const uint32 LutLength = OpenColorIOShader::Lut3dEdgeLength;
-						const uint32 TotalItemCount = LutLength * LutLength * LutLength;
-						Lut3dData.resize(3 * TotalItemCount);
-						TransformProcessor->getGpuLut3D(&Lut3dData[0], ShaderDescription);
+						const char* TextureName = nullptr;
+						const char* SamplerName = nullptr;
+						unsigned int EdgeLength = static_cast<unsigned int>(OpenColorIOShader::Lut3dEdgeLength);
+						OCIO_NAMESPACE::Interpolation Interpolation = OCIO_NAMESPACE::INTERP_BEST;
+						ShaderDescription->get3DTexture(0, TextureName, SamplerName, EdgeLength, Interpolation);
+						checkf(TextureName && *TextureName && SamplerName && *SamplerName && EdgeLength > 0, TEXT("Invalid OCIO texture or sampler."));
+
+						const float* Lut3dData = 0x0;
+						ShaderDescription->get3DTextureValues(0, Lut3dData);
+						checkf(Lut3dData, TEXT("Failed to read OCIO 3d LUT data."));
 
 						//In editor, it will use what's on DDC if there's something corresponding to the actual data or use that raw data
 						//that OCIO library has on board. The texture will be serialized only when cooking.
-						Update3dLutTexture(Lut3dIdentifier, &Lut3dData[0]);
+						Update3dLutTexture(Lut3dIdentifier, Lut3dData);
 					}
 				}
 				else
@@ -324,10 +329,9 @@ bool UOpenColorIOColorTransform::GetShaderAndLUTResouces(ERHIFeatureLevel::Type 
 	if (OutShaderResource)
 	{
 		//Some color transform will only require shader code with no LUT involved.
-		UVolumeTexture* Lut3dTexturePtr = Lut3dTexture.Get();
-		if (Lut3dTexturePtr != nullptr)
+		if (Lut3dTexture != nullptr)
 		{
-			OutLUT3dResource = Lut3dTexturePtr->Resource;
+			OutLUT3dResource = Lut3dTexture->GetResource();
 		}
 
 		return true;
@@ -392,21 +396,19 @@ bool UOpenColorIOColorTransform::UpdateShaderInfo(FString& OutShaderCodeHash, FS
 			OCIO_NAMESPACE::ConstProcessorRcPtr TransformProcessor = CurrentConfig->getProcessor(StringCast<ANSICHAR>(*SourceColorSpace).Get(), StringCast<ANSICHAR>(*DestinationColorSpace).Get());
 			if (TransformProcessor)
 			{
-				OCIO_NAMESPACE::GpuShaderDesc ShaderDescription;
-				ShaderDescription.setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_CG);
-				ShaderDescription.setFunctionName(StringCast<ANSICHAR>(OpenColorIOShader::OpenColorIOShaderFunctionName).Get());
-				ShaderDescription.setLut3DEdgeLen(OpenColorIOShader::Lut3dEdgeLength);
+				OCIO_NAMESPACE::GpuShaderDescRcPtr ShaderDescription = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+				ShaderDescription->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_HLSL_DX11);
+				ShaderDescription->setFunctionName(StringCast<ANSICHAR>(OpenColorIOShader::OpenColorIOShaderFunctionName).Get());
+				ShaderDescription->setResourcePrefix("Ocio");
 
-				OutShaderCodeHash = StringCast<TCHAR>(TransformProcessor->getGpuShaderTextCacheID(ShaderDescription)).Get();
-				FString GLSLShaderCode = StringCast<TCHAR>(TransformProcessor->getGpuShaderText(ShaderDescription)).Get();
+				OCIO_NAMESPACE::ConstGPUProcessorRcPtr GPUProcessor = TransformProcessor->getOptimizedLegacyGPUProcessor(OCIO_NAMESPACE::OptimizationFlags::OPTIMIZATION_DEFAULT, OpenColorIOShader::Lut3dEdgeLength);
+				GPUProcessor->extractGpuShaderInfo(ShaderDescription);
+
+				FString GLSLShaderCode = StringCast<TCHAR>(ShaderDescription->getShaderText()).Get();
+
+				OutShaderCodeHash = StringCast<TCHAR>(ShaderDescription->getCacheID()).Get();
+				OutShaderCode = StringCast<TCHAR>(ShaderDescription->getShaderText()).Get();
 				OutRawConfigHash = StringCast<TCHAR>(CurrentConfig->getCacheID()).Get();
-
-				//CG language works with HLSL. Just update texture sampling to work with newest method
-				const FString SamplerString = FString::Printf(TEXT("%s.Sample"), OpenColorIOShader::OCIOLut3dName);
-				GLSLShaderCode = GLSLShaderCode.Replace(TEXT("tex3D"), *SamplerString, ESearchCase::CaseSensitive);
-				GLSLShaderCode = GLSLShaderCode.Replace(TEXT("sampler3D"), TEXT("SamplerState"), ESearchCase::CaseSensitive);
-
-				OutShaderCode = GLSLShaderCode;
 				return true;
 			}
 			else
@@ -447,16 +449,15 @@ void UOpenColorIOColorTransform::Update3dLutTexture(const FString& InLutIdentifi
 #if WITH_EDITOR && WITH_OCIO
 	check(InSourceData);
 
-	Lut3dTexture.Reset(NewObject<UVolumeTexture>(this, NAME_None, RF_NoFlags));
-	UVolumeTexture* Lut3dTexturePtr = Lut3dTexture.Get();
+	Lut3dTexture = NewObject<UVolumeTexture>(this, NAME_None, RF_NoFlags);
 
 	//Initializes source data with the raw LUT. If it's found in DDC, the resulting platform data will be fetched from there. 
 	//If not, the source data will be used to generate the platform data.
-	Lut3dTexturePtr->MipGenSettings = TMGS_NoMipmaps;
-	Lut3dTexturePtr->CompressionNone = true;
-	Lut3dTexturePtr->Source.Init(OpenColorIOShader::Lut3dEdgeLength, OpenColorIOShader::Lut3dEdgeLength, OpenColorIOShader::Lut3dEdgeLength, /*NumMips=*/ 1, TSF_RGBA16F, nullptr);
+	Lut3dTexture->MipGenSettings = TMGS_NoMipmaps;
+	Lut3dTexture->CompressionNone = true;
+	Lut3dTexture->Source.Init(OpenColorIOShader::Lut3dEdgeLength, OpenColorIOShader::Lut3dEdgeLength, OpenColorIOShader::Lut3dEdgeLength, /*NumMips=*/ 1, TSF_RGBA16F, nullptr);
 
-	FFloat16Color* MipData = reinterpret_cast<FFloat16Color*>(Lut3dTexturePtr->Source.LockMip(0));
+	FFloat16Color* MipData = reinterpret_cast<FFloat16Color*>(Lut3dTexture->Source.LockMip(0));
 	const uint32 LutLength = OpenColorIOShader::Lut3dEdgeLength;
 	for (uint32 Z = 0; Z < LutLength; ++Z)
 	{
@@ -470,15 +471,15 @@ void UOpenColorIOColorTransform::Update3dLutTexture(const FString& InLutIdentifi
 			}
 		}
 	}
-	Lut3dTexturePtr->Source.UnlockMip(0);
+	Lut3dTexture->Source.UnlockMip(0);
 
 	//Generate a Guid from the identifier received from the library and our DDC version.
 	FGuid LutGuid;
 	GetOpenColorIOLUTKeyGuid(InLutIdentifier, LutGuid);
-	Lut3dTexturePtr->Source.SetId(LutGuid, true);
+	Lut3dTexture->Source.SetId(LutGuid, true);
 
 	//Process our new texture to be usable in rendering pipeline.
-	Lut3dTexturePtr->UpdateResource();
+	Lut3dTexture->UpdateResource();
 #endif
 }
 

@@ -15,8 +15,6 @@
 
 IMPLEMENT_TYPE_LAYOUT(FMaterialShader);
 IMPLEMENT_TYPE_LAYOUT(FMeshMaterialShader);
-IMPLEMENT_TYPE_LAYOUT(FBaseHS);
-IMPLEMENT_TYPE_LAYOUT(FBaseDS);
 IMPLEMENT_TYPE_LAYOUT(FDebugUniformExpressionSet);
 
 /** If true, cached uniform expressions are allowed. */
@@ -74,7 +72,7 @@ FMaterialShader::FMaterialShader(const FMaterialShaderType::CompiledShaderInitia
 {
 #if WITH_EDITORONLY_DATA
 	check(!DebugDescription.IsEmpty());
-	DebugUniformExpressionUBLayout.CopyFrom(Initializer.UniformExpressionSet.GetUniformBufferLayout());
+	DebugUniformExpressionUBLayout.CopyFrom(Initializer.UniformExpressionSet.GetUniformBufferLayoutInitializer());
 #endif // WITH_EDITORONLY_DATA
 
 	// Bind the material uniform buffer parameter.
@@ -106,25 +104,33 @@ FRHIUniformBuffer* FMaterialShader::GetParameterCollectionBuffer(const FGuid& Id
 }
 
 #if !(UE_BUILD_TEST || UE_BUILD_SHIPPING || !WITH_EDITOR)
+template<typename TLayout>
+static void DumpUB(const TLayout& Layout)
+{
+	UE_LOG(LogShaders, Warning, TEXT("Layout %s, Hash %08x"), *Layout.GetDebugName(), Layout.GetHash());
+	FString ResourcesString;
+	for (int32 Index = 0; Index < Layout.Resources.Num(); ++Index)
+	{
+		ResourcesString += FString::Printf(TEXT("%d "), (uint8)Layout.Resources[Index].MemberType);
+	}
+	UE_LOG(LogShaders, Warning, TEXT("Layout CB Size %d %d Resources: %s"), Layout.ConstantBufferSize, Layout.Resources.Num(), *ResourcesString);
+};
+
 void FMaterialShader::VerifyExpressionAndShaderMaps(const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial& Material, const FUniformExpressionCache* UniformExpressionCache) const
 {
 	// Validate that the shader is being used for a material that matches the uniform expression set the shader was compiled for.
 	FMaterialShaderMap* ShaderMap = Material.GetRenderingThreadShaderMap();
+	if (ShaderMap->GetShaderMapId().IsCookedId())
+	{
+		// If this is a cooked shadermap, the debug uniform expression set won't be properly initialized...so skip the verification
+		return;
+	}
+
 	const FUniformExpressionSet& MaterialUniformExpressionSet = ShaderMap->GetUniformExpressionSet();
 	bool bUniformExpressionSetMismatch = !DebugUniformExpressionSet.Matches(MaterialUniformExpressionSet)
 		|| UniformExpressionCache->CachedUniformExpressionShaderMap != ShaderMap;
 	if (!bUniformExpressionSetMismatch)
 	{
-		auto DumpUB = [](const FRHIUniformBufferLayout& Layout)
-		{
-			UE_LOG(LogShaders, Warning, TEXT("Layout %s, Hash %08x"), *Layout.GetDebugName(), Layout.GetHash());
-			FString ResourcesString;
-			for (int32 Index = 0; Index < Layout.Resources.Num(); ++Index)
-			{
-				ResourcesString += FString::Printf(TEXT("%d "), (uint8)Layout.Resources[Index].MemberType);
-			}
-			UE_LOG(LogShaders, Warning, TEXT("Layout CB Size %d %d Resources: %s"), Layout.ConstantBufferSize, Layout.Resources.Num(), *ResourcesString);
-		};
 		if (UniformExpressionCache->LocalUniformBuffer.IsValid())
 		{
 			if (UniformExpressionCache->LocalUniformBuffer.BypassUniform)
@@ -171,23 +177,21 @@ void FMaterialShader::VerifyExpressionAndShaderMaps(const FMaterialRenderProxy* 
 			TEXT("%s shader uniform expression set mismatch for material %s/%s.\n")
 			TEXT("Shader compilation info:                %s\n")
 			TEXT("Material render proxy compilation info: %s\n")
-			TEXT("Shader uniform expression set:   %u vectors, %u scalars, %u 2D textures, %u cube textures, %u array textures, %u 3D textures, %u virtual textures, shader map %p\n")
-			TEXT("Material uniform expression set: %u vectors, %u scalars, %u 2D textures, %u cube textures, %u array textures, %u 3D textures, %u virtual textures, shader map %p\n"),
+			TEXT("Shader uniform expression set:   %u preshaders, %u 2D textures, %u cube textures, %u array textures, %u 3D textures, %u virtual textures, shader map %p\n")
+			TEXT("Material uniform expression set: %u preshaders, %u 2D textures, %u cube textures, %u array textures, %u 3D textures, %u virtual textures, shader map %p\n"),
 			ShaderType->GetName(),
 			*ProxyName,
 			*MaterialName,
 			*DebugDescription,
 			ShaderMapDesc,
-			DebugUniformExpressionSet.NumVectorExpressions,
-			DebugUniformExpressionSet.NumScalarExpressions,
+			DebugUniformExpressionSet.NumPreshaders,
 			DebugUniformExpressionSet.NumTextureExpressions[(uint32)EMaterialTextureParameterType::Standard2D],
 			DebugUniformExpressionSet.NumTextureExpressions[(uint32)EMaterialTextureParameterType::Cube],
 			DebugUniformExpressionSet.NumTextureExpressions[(uint32)EMaterialTextureParameterType::Array2D],
 			DebugUniformExpressionSet.NumTextureExpressions[(uint32)EMaterialTextureParameterType::Volume],
 			DebugUniformExpressionSet.NumTextureExpressions[(uint32)EMaterialTextureParameterType::Virtual],
 			UniformExpressionCache->CachedUniformExpressionShaderMap,
-			MaterialUniformExpressionSet.UniformVectorPreshaders.Num(),
-			MaterialUniformExpressionSet.UniformScalarPreshaders.Num(),
+			MaterialUniformExpressionSet.UniformPreshaders.Num(),
 			MaterialUniformExpressionSet.UniformTextureParameters[(uint32)EMaterialTextureParameterType::Standard2D].Num(),
 			MaterialUniformExpressionSet.UniformTextureParameters[(uint32)EMaterialTextureParameterType::Cube].Num(),
 			MaterialUniformExpressionSet.UniformTextureParameters[(uint32)EMaterialTextureParameterType::Array2D].Num(),
@@ -328,11 +332,10 @@ void FMaterialShader::SetParameters(
 	);
 
 IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIVertexShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIHullShader);
-IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIDomainShader);
 IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIGeometryShader);
 IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIPixelShader);
 IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIComputeShader);
+IMPLEMENT_MATERIAL_SHADER_SetParameters(FRHIMeshShader);
 
 #endif
 
@@ -439,7 +442,7 @@ bool FMaterialShader::Serialize(FArchive& Ar)
 		DebugUniformExpressionUBLayout.Resources.Reserve(ResourceOffsets.Num());
 		for (int32 i = 0; i < ResourceOffsets.Num(); i++)
 		{
-			DebugUniformExpressionUBLayout.Resources.Emplace(FRHIUniformBufferLayout::FResourceParameter{ ResourceOffsets[i], EUniformBufferBaseType(ResourceTypes[i]) });
+			DebugUniformExpressionUBLayout.Resources.Emplace(FRHIUniformBufferResource{ ResourceOffsets[i], EUniformBufferBaseType(ResourceTypes[i]) });
 		}
 		DebugUniformExpressionUBLayout.ComputeHash();
 #endif
@@ -487,18 +490,13 @@ void FMeshMaterialShader::GetShaderBindings(
 	FMeshDrawSingleShaderBindings& ShaderBindings) const
 {
 	FMaterialShader::GetShaderBindings(Scene, FeatureLevel, MaterialRenderProxy, Material, ShaderBindings);
-	if (PassUniformBuffer.IsInitialized())
+	if (DrawRenderState.GetViewUniformBuffer())
 	{
-		ShaderBindings.Add(PassUniformBuffer, DrawRenderState.GetPassUniformBuffer());
+		ShaderBindings.Add(GetUniformBufferParameter<FViewUniformShaderParameters>(), DrawRenderState.GetViewUniformBuffer());
 	}
-	else
-	{
-		checkf(!DrawRenderState.GetPassUniformBuffer(), TEXT("Shader is missing the pass uniform buffer binding in the parameter map and the mesh pass draw render state requires it."));
-	}
-	ShaderBindings.Add(GetUniformBufferParameter<FViewUniformShaderParameters>(), DrawRenderState.GetViewUniformBuffer());
 	ShaderBindings.Add(GetUniformBufferParameter<FDistanceCullFadeUniformShaderParameters>(), ShaderElementData.FadeUniformBuffer);
 	ShaderBindings.Add(GetUniformBufferParameter<FDitherUniformShaderParameters>(), ShaderElementData.DitherUniformBuffer);
-	ShaderBindings.Add(GetUniformBufferParameter<FInstancedViewUniformShaderParameters>(), DrawRenderState.GetInstancedViewUniformBuffer());
+	ShaderBindings.Add(GetUniformBufferParameter<FNaniteUniformParameters>(), DrawRenderState.GetNaniteUniformBuffer());
 }
 
 void FMeshMaterialShader::GetElementShaderBindings(
@@ -525,11 +523,12 @@ void FMeshMaterialShader::GetElementShaderBindings(
 		}
 	}
 		
-	if (UseGPUScene(GMaxRHIShaderPlatform, FeatureLevel) && VertexFactory->GetPrimitiveIdStreamIndex(InputStreamType) >= 0)
+	if (UseGPUScene(GMaxRHIShaderPlatform, FeatureLevel) && VertexFactory->GetPrimitiveIdStreamIndex(FeatureLevel, InputStreamType) >= 0 
+		&& !(FeatureLevel == ERHIFeatureLevel::ES3_1 && GetFrequency() == SF_Vertex)) // Allow Primitive UB for VS on mobile
 	{
 		const FShaderType* ShaderType = GetType(PointerTable);
 		ensureMsgf(!GetUniformBufferParameter<FPrimitiveUniformShaderParameters>().IsBound(), TEXT("Shader %s attempted to bind the Primitive uniform buffer even though Vertex Factory computes a PrimitiveId per-instance.  This will break auto-instancing.  Shaders should use GetPrimitiveData(PrimitiveId).Member instead of Primitive.Member."), ShaderType->GetName());
-		ensureMsgf(!BatchElement.PrimitiveUniformBuffer, TEXT("FMeshBatchElement was assigned a PrimitiveUniformBuffer even though Vertex Factory %s fetches primitive shader data through a Scene buffer.  The assigned PrimitiveUniformBuffer cannot be respected.  Use PrimitiveUniformBufferResource instead for dynamic primitive data."), ShaderType->GetName());
+		ensureMsgf(!BatchElement.PrimitiveUniformBuffer || (FeatureLevel == ERHIFeatureLevel::ES3_1), TEXT("FMeshBatchElement was assigned a PrimitiveUniformBuffer even though Vertex Factory %s fetches primitive shader data through a Scene buffer.  The assigned PrimitiveUniformBuffer cannot be respected.  Use PrimitiveUniformBufferResource instead for dynamic primitive data."), ShaderType->GetName());
 	}
 	else
 	{
@@ -545,14 +544,6 @@ void FMeshMaterialShader::GetElementShaderBindings(
 		}
 	}
 }
-
-/*bool FMeshMaterialShader::Serialize(FArchive& Ar)
-{
-	bool bShaderHasOutdatedParameters = FMaterialShader::Serialize(Ar);
-	Ar << PassUniformBuffer;
-	bShaderHasOutdatedParameters |= Ar << VertexFactoryParameters;
-	return bShaderHasOutdatedParameters;
-}*/
 
 void FMeshMaterialShader::WriteFrozenVertexFactoryParameters(FMemoryImageWriter& Writer, const TMemoryImagePtr<FVertexFactoryShaderParameters>& InVertexFactoryParameters) const
 {

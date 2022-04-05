@@ -12,6 +12,9 @@
 #include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
+#include "WorldPartition/DataLayer/WorldDataLayers.h"
+#include "WorldPartition/DataLayer/DataLayer.h"
 #include "EditorSupportDelegates.h"
 #include "Logging/TokenizedMessage.h"
 #include "Logging/MessageLog.h"
@@ -21,11 +24,15 @@
 #include "ActorEditorUtils.h"
 #include "EngineGlobals.h"
 
-#include "AssetRegistryModule.h"
-
 #if WITH_EDITOR
 
 #include "Editor.h"
+#include "Engine/LevelStreaming.h"
+#include "WorldPartition/WorldPartitionActorDesc.h"
+#include "LevelInstance/LevelInstanceSubsystem.h"
+#include "Folder.h"
+#include "ActorFolder.h"
+#include "WorldPersistentFolders.h"
 
 #define LOCTEXT_NAMESPACE "ErrorChecking"
 
@@ -45,6 +52,55 @@ void AActor::PreEditChange(FProperty* PropertyThatWillChange)
 	{
 		UnregisterAllComponents();
 	}
+
+	PreEditChangeDataLayers.Reset();
+	if (PropertyThatWillChange != nullptr &&
+		(PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, DataLayers) ||
+		 PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(FActorDataLayer, Name)))
+	{
+		PreEditChangeDataLayers = DataLayers;
+	}
+}
+
+bool AActor::CanEditChange(const FProperty* PropertyThatWillChange) const
+{
+	if ((PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, Layers)) ||
+		(PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, ActorGuid)))
+	{
+		return false;
+	}
+
+	const bool bIsSpatiallyLoadedProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, bIsSpatiallyLoaded);
+	const bool bIsRuntimeGridProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, RuntimeGrid);
+	const bool bIsDataLayersProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, DataLayers);
+	const bool bIsHLODLayerProperty = PropertyThatWillChange->GetFName() == GET_MEMBER_NAME_CHECKED(AActor, HLODLayer);
+
+	if (bIsSpatiallyLoadedProperty || bIsRuntimeGridProperty || bIsDataLayersProperty || bIsHLODLayerProperty)
+	{
+		if (!IsTemplate())
+		{
+			if (UWorld* World = GetTypedOuter<UWorld>())
+			{
+				const bool bIsPartitionedWorld = UWorld::HasSubsystem<UWorldPartitionSubsystem>(World);
+				if (!bIsPartitionedWorld)
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	if (bIsSpatiallyLoadedProperty && !CanChangeIsSpatiallyLoadedFlag())
+	{
+		return false;
+	}
+
+	if (bIsDataLayersProperty && !SupportsDataLayer())
+	{
+		return false;
+	}
+
+	return Super::CanEditChange(PropertyThatWillChange);
 }
 
 static FName Name_RelativeLocation = USceneComponent::GetRelativeLocationPropertyName();
@@ -55,6 +111,11 @@ void AActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	FProperty* MemberPropertyThatChanged = PropertyChangedEvent.MemberProperty;
 	const FName MemberPropertyName = MemberPropertyThatChanged != NULL ? MemberPropertyThatChanged->GetFName() : NAME_None;
+
+	if (IsPropertyChangedAffectingDataLayers(PropertyChangedEvent))
+	{
+		FixupDataLayers(/*bRevertChangesOnLockedDataLayer*/true);
+	}
 
 	const bool bTransformationChanged = (MemberPropertyName == Name_RelativeLocation || MemberPropertyName == Name_RelativeRotation || MemberPropertyName == Name_RelativeScale3D);
 
@@ -119,6 +180,10 @@ void AActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 			{
 				ReregisterAllComponents();
 			}
+			else
+			{
+				PostRegisterAllComponents();
+			}
 		}
 		else
 		{
@@ -179,13 +244,6 @@ void AActor::PostEditMove(bool bFinished)
 	if (bFinished)
 	{
 		FNavigationSystem::OnPostEditActorMove(*this);
-	}
-
-	if (!bFinished)
-	{
-		// Snapshot the transaction buffer for this actor if we've not finished moving yet
-		// This allows listeners to be notified of intermediate changes of state
-		SnapshotTransactionBuffer(this);
 	}
 }
 
@@ -287,74 +345,6 @@ void AActor::DebugShowOneComponentHierarchy( USceneComponent* SceneComp, int32& 
 	}
 }
 
-FArchive& operator<<(FArchive& Ar, AActor::FActorRootComponentReconstructionData::FAttachedActorInfo& ActorInfo)
-{
-	enum class EVersion : uint8
-	{
-		InitialVersion = 0,
-		// -----<new versions can be added above this line>-------------------------------------------------
-		VersionPlusOne,
-		LatestVersion = VersionPlusOne - 1
-	};
-
-	EVersion Version = EVersion::LatestVersion;
-	Ar << Version;
-
-	if (Version > EVersion::LatestVersion)
-	{
-		Ar.SetError();
-		return Ar;
-	}
-
-	Ar << ActorInfo.Actor;
-	Ar << ActorInfo.AttachParent;
-	Ar << ActorInfo.AttachParentName;
-	Ar << ActorInfo.SocketName;
-	Ar << ActorInfo.RelativeTransform;
-
-	return Ar;
-}
-
-FArchive& operator<<(FArchive& Ar, AActor::FActorRootComponentReconstructionData& RootComponentData)
-{
-	enum class EVersion : uint8
-	{
-		InitialVersion = 0,
-		// -----<new versions can be added above this line>-------------------------------------------------
-		VersionPlusOne,
-		LatestVersion = VersionPlusOne - 1
-	};
-
-	EVersion Version = EVersion::LatestVersion;
-	Ar << Version;
-
-	if (Version > EVersion::LatestVersion)
-	{
-		Ar.SetError();
-		return Ar;
-	}
-
-	Ar << RootComponentData.Transform;
-
-	if (Ar.IsSaving())
-	{
-		FQuat TransformRotationQuat = RootComponentData.TransformRotationCache.GetCachedQuat();
-		Ar << TransformRotationQuat;
-	}
-	else if (Ar.IsLoading())
-	{
-		FQuat TransformRotationQuat;
-		Ar << TransformRotationQuat;
-		RootComponentData.TransformRotationCache.NormalizedQuatToRotator(TransformRotationQuat);
-	}
-	
-	Ar << RootComponentData.AttachedParentInfo;
-	
-	Ar << RootComponentData.AttachedToInfo;
-
-	return Ar;
-}
-
 TSharedRef<AActor::FActorTransactionAnnotation> AActor::FActorTransactionAnnotation::Create()
 {
 	return MakeShareable(new FActorTransactionAnnotation());
@@ -382,19 +372,20 @@ TSharedPtr<AActor::FActorTransactionAnnotation> AActor::FActorTransactionAnnotat
 }
 
 AActor::FActorTransactionAnnotation::FActorTransactionAnnotation()
-	: bRootComponentDataCached(false)
 {
+	ActorTransactionAnnotationData.bRootComponentDataCached = false;
 }
 
 AActor::FActorTransactionAnnotation::FActorTransactionAnnotation(const AActor* InActor, FComponentInstanceDataCache&& InComponentInstanceData, const bool InCacheRootComponentData)
-	: ComponentInstanceData(MoveTemp(InComponentInstanceData))
 {
-	Actor = InActor;
+	ActorTransactionAnnotationData.ComponentInstanceData = MoveTemp(InComponentInstanceData);
+	ActorTransactionAnnotationData.Actor = InActor;
 
 	USceneComponent* ActorRootComponent = InActor->GetRootComponent();
 	if (InCacheRootComponentData && ActorRootComponent && ActorRootComponent->IsCreatedByConstructionScript())
 	{
-		bRootComponentDataCached = true;
+		ActorTransactionAnnotationData.bRootComponentDataCached = true;
+		FActorRootComponentReconstructionData& RootComponentData = ActorTransactionAnnotationData.RootComponentData;
 		RootComponentData.Transform = ActorRootComponent->GetComponentTransform();
 		RootComponentData.Transform.SetTranslation(ActorRootComponent->GetComponentLocation()); // take into account any custom location
 		RootComponentData.TransformRotationCache = ActorRootComponent->GetRelativeRotationCache();
@@ -424,56 +415,23 @@ AActor::FActorTransactionAnnotation::FActorTransactionAnnotation(const AActor* I
 	}
 	else
 	{
-		bRootComponentDataCached = false;
+		ActorTransactionAnnotationData.bRootComponentDataCached = false;
 	}
 }
 
 void AActor::FActorTransactionAnnotation::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	ComponentInstanceData.AddReferencedObjects(Collector);
+	ActorTransactionAnnotationData.ComponentInstanceData.AddReferencedObjects(Collector);
 }
 
 void AActor::FActorTransactionAnnotation::Serialize(FArchive& Ar)
 {
-	enum class EVersion : uint8
-	{
-		InitialVersion = 0,
-		WithInstanceCache,
-		// -----<new versions can be added above this line>-------------------------------------------------
-		VersionPlusOne,
-		LatestVersion = VersionPlusOne - 1
-	};
-
-	EVersion Version = EVersion::LatestVersion;
-	Ar << Version;
-
-	if (Version > EVersion::LatestVersion)
-	{
-		Ar.SetError();
-		return;
-	}
-
-	// InitialVersion
-	Ar << Actor;
-	Ar << bRootComponentDataCached;
-	if (bRootComponentDataCached)
-	{
-		Ar << RootComponentData;
-	}
-	// WithInstanceCache
-	if (Ar.IsLoading())
-	{
-		ComponentInstanceData = FComponentInstanceDataCache(Actor.Get());
-	}
-	if (Version >= EVersion::WithInstanceCache)
-	{
-		ComponentInstanceData.Serialize(Ar);
-	}
+	Ar << ActorTransactionAnnotationData;
 }
 
 bool AActor::FActorTransactionAnnotation::HasInstanceData() const
 {
-	return (bRootComponentDataCached || ComponentInstanceData.HasInstanceData());
+	return (ActorTransactionAnnotationData.bRootComponentDataCached || ActorTransactionAnnotationData.ComponentInstanceData.HasInstanceData());
 }
 
 TSharedPtr<ITransactionObjectAnnotation> AActor::FactoryTransactionAnnotation(const ETransactionAnnotationCreationMode InCreationMode) const
@@ -555,7 +513,7 @@ bool AActor::InternalPostEditUndo()
 	}
 
 	// Restore OwnedComponents array
-	if (!IsPendingKill())
+	if (IsValid(this))
 	{
 		ResetOwnedComponents();
 
@@ -590,8 +548,12 @@ void AActor::PostEditUndo()
 		Super::PostEditUndo();
 	}
 
+	// Do not immediately update all primitive scene infos for brush actor
+	// undo/redo transactions since they require the render thread to wait until
+	// after the transactions are processed to guarantee that the model data
+	// is safe to access.
 	UWorld* World = GetWorld();
-	if (World && World->Scene)
+	if (World && World->Scene && !FActorEditorUtils::IsABrush(this))
 	{
 		ENQUEUE_RENDER_COMMAND(UpdateAllPrimitiveSceneInfosCmd)([Scene = World->Scene](FRHICommandListImmediate& RHICmdList) {
 			Scene->UpdateAllPrimitiveSceneInfos(RHICmdList);
@@ -742,6 +704,27 @@ void AActor::EditorApplyMirror(const FVector& MirrorScale, const FVector& PivotL
 	}
 }
 
+void AActor::EditorGetUnderlyingActors(TSet<AActor*>& OutUnderlyingActors) const
+{
+	TInlineComponentArray<UChildActorComponent*> ChildActorComponents;
+	GetComponents(ChildActorComponents);
+
+	OutUnderlyingActors.Reserve(OutUnderlyingActors.Num() + ChildActorComponents.Num());
+	
+	for (UChildActorComponent* ChildActorComponent : ChildActorComponents)
+	{
+		if (AActor* ChildActor = ChildActorComponent->GetChildActor())
+		{
+			bool bAlreadySet = false;
+			OutUnderlyingActors.Add(ChildActor, &bAlreadySet);
+			if (!bAlreadySet)
+			{
+				ChildActor->EditorGetUnderlyingActors(OutUnderlyingActors);
+			}
+		}
+	}
+}
+
 bool AActor::IsHiddenEd() const
 {
 	// If any of the standard hide flags are set, return true
@@ -762,9 +745,47 @@ void AActor::SetIsTemporarilyHiddenInEditor( bool bIsHidden )
 	}
 }
 
+bool AActor::SetIsHiddenEdLayer(bool bIsHiddenEdLayer)
+{
+	if (bHiddenEdLayer != bIsHiddenEdLayer)
+	{
+		bHiddenEdLayer = bIsHiddenEdLayer;
+		MarkComponentsRenderStateDirty();
+		return true;
+	}
+	return false;
+}
+
+bool AActor::SupportsLayers() const
+{
+	const bool bIsHidden = (GetClass()->GetDefaultObject<AActor>()->bHiddenEd == true);
+	const bool bIsInEditorWorld = (GetWorld()->WorldType == EWorldType::Editor);
+	const bool bIsPartitionedActor = GetLevel()->bIsPartitioned;
+	const bool bIsValid = !bIsHidden && bIsInEditorWorld && !bIsPartitionedActor;
+
+	if (bIsValid)
+	{
+		// Actors part of Level Instance are not valid for layers
+		if (ULevelInstanceSubsystem* LevelInstanceSubsystem = GetWorld()->GetSubsystem<ULevelInstanceSubsystem>())
+		{
+			if (ALevelInstance* LevelInstance = LevelInstanceSubsystem->GetParentLevelInstance(this))
+			{
+				return false;
+			}
+		}
+	}
+
+	return bIsValid;
+}
+
 bool AActor::IsEditable() const
 {
 	return bEditable;
+}
+
+bool AActor::IsSelectable() const
+{
+	return true;
 }
 
 bool AActor::IsListedInSceneOutliner() const
@@ -777,8 +798,25 @@ bool AActor::EditorCanAttachTo(const AActor* InParent, FText& OutReason) const
 	return true;
 }
 
+AActor* AActor::GetSceneOutlinerParent() const
+{
+	return GetAttachParentActor();
+}
+
+class UHLODLayer* AActor::GetHLODLayer() const
+{
+	return HLODLayer;
+}
+
+void AActor::SetHLODLayer(class UHLODLayer* InHLODLayer)
+{
+	HLODLayer = InHLODLayer;
+}
+
 void AActor::SetPackageExternal(bool bExternal, bool bShouldDirty)
 {
+	// @todo_ow: Call FExternalPackageHelper::SetPackagingMode and keep calling the actor specific code here (components). 
+	//           The only missing part is GetExternalObjectsPath defaulting to a different folder than the one used by external actors.
 	if (bExternal == IsPackageExternal())
 	{
 		return;
@@ -787,21 +825,17 @@ void AActor::SetPackageExternal(bool bExternal, bool bShouldDirty)
     // Mark the current actor & package as dirty
 	Modify(bShouldDirty);
 
-	UPackage* LevelPackage = GetLevel()->GetPackage();
+	UPackage* LevelPackage = GetLevel()->GetPackage(); 
 	if (bExternal)
 	{
-		ActorGuid = ActorGuid.IsValid() ? ActorGuid : FGuid::NewGuid();
-		UPackage* NewActorPackage = ULevel::CreateActorPackage(LevelPackage,  ActorGuid);
+		UPackage* NewActorPackage = ULevel::CreateActorPackage(LevelPackage, GetLevel()->GetActorPackagingScheme(), GetPathName());
 		SetExternalPackage(NewActorPackage);
-		// should be removed but needed for now so the package creation is visible to Multi-User
-		FAssetRegistryModule::AssetCreated(this);
 	}
-	// if the actor package is different, embed the actor back in the level
 	else 
 	{
 		UPackage* ActorPackage = GetExternalPackage();
-		// Detach the linker from the actor package so that the actor won't keep references to it if we wanted to delete the package
-		ResetLoaders(ActorPackage);
+		// Detach the linker exports so it doesn't resolve to this actor anymore
+		ResetLinkerExports(ActorPackage);
 		SetExternalPackage(nullptr);
 	}
 
@@ -812,12 +846,55 @@ void AActor::SetPackageExternal(bool bExternal, bool bShouldDirty)
 			ActorComponent->SetPackageExternal(bExternal, bShouldDirty);
 		}
 	}
+
+	OnPackagingModeChanged.Broadcast(this, bExternal);
 	
 	// Mark the new actor package dirty
 	MarkPackageDirty();
 }
 
-const FString& AActor::GetActorLabel() const
+void AActor::OnPlayFromHere()
+{
+	check(bCanPlayFromHere);
+}
+
+TUniquePtr<FWorldPartitionActorDesc> AActor::CreateClassActorDesc() const
+{
+	return TUniquePtr<FWorldPartitionActorDesc>(new FWorldPartitionActorDesc());
+}
+
+TUniquePtr<FWorldPartitionActorDesc> AActor::CreateActorDesc() const
+{
+	check(!HasAnyFlags(RF_ArchetypeObject | RF_ClassDefaultObject));
+	
+	TUniquePtr<FWorldPartitionActorDesc> ActorDesc(CreateClassActorDesc());
+		
+	ActorDesc->Init(this);
+	
+	return ActorDesc;
+}
+
+TUniquePtr<class FWorldPartitionActorDesc> AActor::StaticCreateClassActorDesc(const TSubclassOf<AActor>& ActorClass)
+{
+	return CastChecked<AActor>(ActorClass->GetDefaultObject())->CreateClassActorDesc();
+}
+
+FString AActor::GetDefaultActorLabel() const
+{
+	UClass* ActorClass = GetClass();
+
+	FString DefaultActorLabel = ActorClass->GetName();
+
+	// Strip off the ugly "_C" suffix for Blueprint class actor instances
+	if (Cast<UBlueprint>(ActorClass->ClassGeneratedBy))
+	{
+		DefaultActorLabel.RemoveFromEnd(TEXT("_C"), ESearchCase::CaseSensitive);
+	}
+
+	return DefaultActorLabel;
+}
+
+const FString& AActor::GetActorLabel(bool bCreateIfNone) const
 {
 	// If the label string is empty then we'll use the default actor label (usually the actor's class name.)
 	// We actually cache the default name into our ActorLabel property.  This will be saved out with the
@@ -829,23 +906,15 @@ const FString& AActor::GetActorLabel() const
 	//
 	// Remember, ActorLabel is currently an editor-only property.
 
-	if( ActorLabel.IsEmpty() )
+	if( ActorLabel.IsEmpty() && bCreateIfNone )
 	{
-		// Get the class
-		UClass* ActorClass = GetClass();
-
-		FString DefaultActorLabel = ActorClass->GetName();
-
-		// Strip off the ugly "_C" suffix for Blueprint class actor instances
-		if (Cast<UBlueprint>(ActorClass->ClassGeneratedBy))
-		{
-			DefaultActorLabel.RemoveFromEnd(TEXT("_C"), ESearchCase::CaseSensitive);
-		}
+		FString DefaultActorLabel = GetDefaultActorLabel();
 
 		// We want the actor's label to be initially unique, if possible, so we'll use the number of the
 		// actor's FName when creating the initially.  It doesn't actually *need* to be unique, this is just
 		// an easy way to tell actors apart when observing them in a list.  The user can always go and rename
 		// these labels such that they're no longer unique.
+		if (!FActorSpawnUtils::IsGloballyUniqueName(GetFName()))
 		{
 			// Don't bother adding a suffix for number '0'
 			const int32 NameNumber = NAME_INTERNAL_TO_EXTERNAL( GetFName().GetNumber() );
@@ -864,13 +933,7 @@ const FString& AActor::GetActorLabel() const
 	return ActorLabel;
 }
 
-void AActor::SetActorLabel( const FString& NewActorLabelDirty, bool bMarkDirty )
-{
-	const bool bMakeGloballyUniqueFName = false;
-	SetActorLabelInternal(NewActorLabelDirty, bMakeGloballyUniqueFName, bMarkDirty );
-}
-
-void AActor::SetActorLabelInternal(const FString& NewActorLabelDirty, bool bMakeGloballyUniqueFName, bool bMarkDirty)
+void AActor::SetActorLabel(const FString& NewActorLabelDirty, bool bMarkDirty)
 {
 	// Clean up the incoming string a bit
 	FString NewActorLabel = NewActorLabelDirty.TrimStartAndEnd();
@@ -894,44 +957,6 @@ void AActor::SetActorLabelInternal(const FString& NewActorLabelDirty, bool bMake
 				ActorLabel = MoveTemp(NewActorLabel);
 			}
 		}
-
-
-		// Next, update the actor's name
-		{
-			// Generate an object name for the actor's label
-			const FName OldActorName = GetFName();
-			FName NewActorName = MakeObjectNameFromDisplayLabel(GetActorLabel(), OldActorName);
-
-			// Has anything changed?
-			if (OldActorName != NewActorName)
-			{
-				// Try to rename the object
-				UObject* NewOuter = NULL;		// Outer won't be changing
-				ERenameFlags RenFlags = bMakeGloballyUniqueFName ? (REN_DontCreateRedirectors | REN_ForceGlobalUnique) : REN_DontCreateRedirectors;
-				bool bCanRename = Rename(*NewActorName.ToString(), NewOuter, REN_Test | REN_DoNotDirty | REN_NonTransactional | RenFlags);
-				if (bCanRename)
-				{
-					// NOTE: Will assert internally if rename fails
-					const bool bWasRenamed = Rename(*NewActorName.ToString(), NewOuter, RenFlags);
-				}
-				else
-				{
-					// Unable to rename the object.  Use a unique object name variant.
-					NewActorName = MakeUniqueObjectName(bMakeGloballyUniqueFName ? ANY_PACKAGE : GetOuter(), GetClass(), NewActorName);
-
-					bCanRename = Rename(*NewActorName.ToString(), NewOuter, REN_Test | REN_DoNotDirty | REN_NonTransactional | RenFlags);
-					if (bCanRename)
-					{
-						// NOTE: Will assert internally if rename fails
-						const bool bWasRenamed = Rename(*NewActorName.ToString(), NewOuter, RenFlags);
-					}
-					else
-					{
-						// Unable to rename the object.  Oh well, not a big deal.
-					}
-				}
-			}
-		}
 	}
 
 	FPropertyChangedEvent PropertyEvent( FindFProperty<FProperty>( AActor::StaticClass(), "ActorLabel" ) );
@@ -948,26 +973,216 @@ bool AActor::IsActorLabelEditable() const
 void AActor::ClearActorLabel()
 {
 	ActorLabel.Reset();
+	FCoreDelegates::OnActorLabelChanged.Broadcast(this);
 }
 
-const FName& AActor::GetFolderPath() const
+FFolder AActor::GetFolder() const
 {
+	return FFolder(GetFolderPath(), GetFolderRootObject());
+}
+
+FFolder::FRootObject AActor::GetFolderRootObject() const
+{
+	return FFolder::GetOptionalFolderRootObject(GetLevel()).Get(FFolder::GetDefaultRootObject());
+}
+
+static bool IsUsingActorFolders(const AActor* InActor)
+{
+	return InActor && InActor->GetLevel() && InActor->GetLevel()->IsUsingActorFolders();
+}
+
+bool AActor::IsActorFolderValid() const
+{
+	return !IsUsingActorFolders(this) || (FolderPath.IsNone() && !FolderGuid.IsValid()) || GetActorFolder();
+}
+
+bool AActor::CreateOrUpdateActorFolder()
+{
+	check(GetLevel());
+	check(IsUsingActorFolders(this));
+
+	// First time this function is called, FolderPath can be valid and FolderGuid is invalid.
+	if (FolderPath.IsNone() && !FolderGuid.IsValid())
+	{
+		// Nothing to do
+		return true;
+	}
+
+	// Remap deleted folder or fixup invalid guid
+	UActorFolder* ActorFolder = nullptr;
+	if (FolderGuid.IsValid())
+	{
+		check(FolderPath.IsNone());
+		ActorFolder = GetActorFolder(/*bSkipDeleted*/false);
+		if (!ActorFolder || ActorFolder->IsMarkedAsDeleted())
+		{
+			FixupActorFolder();
+			check(IsActorFolderValid());
+			return true;
+		}
+	}
+
+	// If not found, create actor folder using FolderPath
+	if (!ActorFolder)
+	{
+		check(!FolderPath.IsNone());
+		ActorFolder = FWorldPersistentFolders::GetActorFolder(FFolder(FolderPath, GetFolderRootObject()), GetWorld(), /*bAllowCreate*/ true);
+	}
+
+	// At this point, actor folder should always be valid
+	if (ensure(ActorFolder))
+	{
+		SetFolderGuidInternal(ActorFolder ? ActorFolder->GetGuid() : FGuid());
+
+		// Make sure actor folder is in the correct packaging mode
+		ActorFolder->SetPackageExternal(GetLevel()->IsUsingExternalObjects());
+	}
+	return IsActorFolderValid();
+}
+
+UActorFolder* AActor::GetActorFolder(bool bSkipDeleted) const
+{
+	UActorFolder* ActorFolder = nullptr;
+	if (ULevel* Level = GetLevel())
+	{
+		if (FolderGuid.IsValid())
+		{
+			ActorFolder = Level->GetActorFolder(FolderGuid, bSkipDeleted);
+		}
+		else if (!FolderPath.IsNone())
+		{
+			ActorFolder = Level->GetActorFolder(FolderPath, bSkipDeleted);
+		}
+	}
+	return ActorFolder;
+}
+
+void AActor::FixupActorFolder()
+{
+	check(GetLevel());
+
+	if (!IsUsingActorFolders(this))
+	{
+		if (FolderGuid.IsValid())
+		{
+			UE_LOG(LogLevel, Warning, TEXT("Actor folder %s for actor %s encountered when not using actor folders"), *FolderGuid.ToString(), *GetName());
+			FolderGuid = FGuid();
+		}
+	}
+	else
+	{
+		// First detect and fixup reference to deleted actor folders
+		UActorFolder* ActorFolder = GetActorFolder(/*bSkipDeleted*/ false);
+		if (ActorFolder)
+		{
+			// Remap to skip deleted actor folder
+			if (ActorFolder->IsMarkedAsDeleted())
+			{
+				ActorFolder = ActorFolder->GetParent();
+				SetFolderGuidInternal(ActorFolder ? ActorFolder->GetGuid() : FGuid(), /*bBroadcastChange*/ false);
+			}
+			// We found actor folder using its path, update actor folder guid
+			else if (!FolderPath.IsNone())
+			{
+				SetFolderGuidInternal(ActorFolder ? ActorFolder->GetGuid() : FGuid(), /*bBroadcastChange*/ false);
+			}
+		}
+
+		// If still invalid, warn and fallback to root
+		if (!IsActorFolderValid())
+		{
+			UE_LOG(LogLevel, Warning, TEXT("Missing actor folder for actor %s"), *GetName());
+			SetFolderGuidInternal(FGuid(), /*bBroadcastChange*/ false);
+		}
+
+		if (!FolderPath.IsNone())
+		{
+			UE_LOG(LogLevel, Warning, TEXT("Actor folder path %s for actor %s encountered when using actor folders"), *FolderPath.ToString(), *GetName());
+			FolderPath = NAME_None;
+		}
+	}
+}
+
+FGuid AActor::GetFolderGuid() const
+{
+	return IsUsingActorFolders(this) ? FolderGuid : FGuid();
+}
+
+FName AActor::GetFolderPath() const
+{
+	static const FName RootPath = FFolder::GetEmptyPath();
+	if (!FFolder::GetOptionalFolderRootObject(GetLevel()))
+	{
+		return RootPath;
+	}
+	if (IsUsingActorFolders(this))
+	{
+		if (UActorFolder* ActorFolder = GetActorFolder())
+		{
+			return ActorFolder->GetPath();
+		}
+		return RootPath;
+	}
 	return FolderPath;
 }
 
-void AActor::SetFolderPath(const FName& NewFolderPath)
+void AActor::SetFolderPath(const FName& InNewFolderPath)
 {
-	if (!NewFolderPath.IsEqual(FolderPath, ENameCase::CaseSensitive))
+	if (IsUsingActorFolders(this))
 	{
-		Modify();
-
-		FName OldPath = FolderPath;
-		FolderPath = NewFolderPath;
-
-		if (GEngine)
+		UActorFolder* ActorFolder = nullptr;
+		UWorld* World = GetWorld();
+		if (!InNewFolderPath.IsNone() && World)
 		{
-			GEngine->BroadcastLevelActorFolderChanged(this, OldPath);
+			FFolder NewFolder(InNewFolderPath, GetFolderRootObject());
+			ActorFolder = FWorldPersistentFolders::GetActorFolder(NewFolder, World);
+			if (!ActorFolder)
+			{
+				ActorFolder = FWorldPersistentFolders::GetActorFolder(NewFolder, World, /*bAllowCreate*/ true);
+			}
 		}
+		SetFolderGuidInternal(ActorFolder ? ActorFolder->GetGuid() : FGuid());
+	}
+	else
+	{
+		SetFolderPathInternal(InNewFolderPath);
+	}
+}
+
+void AActor::SetFolderGuidInternal(const FGuid& InFolderGuid, bool bInBroadcastChange)
+{
+	if ((FolderGuid == InFolderGuid) && FolderPath.IsNone())
+	{
+		return;
+	}
+
+	FName OldPath = !FolderPath.IsNone() ? FolderPath : GetFolderPath();
+	
+	Modify();
+	FolderPath = NAME_None;
+	FolderGuid = InFolderGuid;
+
+	if (GEngine && bInBroadcastChange)
+	{
+		GEngine->BroadcastLevelActorFolderChanged(this, OldPath);
+	}
+}
+
+void AActor::SetFolderPathInternal(const FName& InNewFolderPath, bool bInBroadcastChange)
+{
+	FName OldPath = FolderPath;
+	if (InNewFolderPath.IsEqual(OldPath, ENameCase::CaseSensitive))
+	{
+		return;
+	}
+
+	Modify();
+	FolderPath = InNewFolderPath;
+	FolderGuid.Invalidate();
+
+	if (GEngine && bInBroadcastChange)
+	{
+		GEngine->BroadcastLevelActorFolderChanged(this, OldPath);
 	}
 }
 
@@ -1102,6 +1317,234 @@ EDataValidationResult AActor::IsDataValid(TArray<FText>& ValidationErrors)
 
 	return Result;
 }
+
+//---------------------------------------------------------------------------
+// DataLayers (begin)
+
+bool AActor::AddDataLayer(const UDataLayer* DataLayer)
+{
+	bool bActorWasModified = false;
+	if (SupportsDataLayer() && DataLayer && !ContainsDataLayer(DataLayer))
+	{
+		if (!bActorWasModified)
+		{
+			Modify();
+			bActorWasModified = true;
+		}
+
+		DataLayers.Emplace(DataLayer->GetFName());
+	}
+	return bActorWasModified;
+}
+
+bool AActor::RemoveDataLayer(const UDataLayer* DataLayer)
+{
+	bool bActorWasModified = false;
+	if (ContainsDataLayer(DataLayer))
+	{
+		if (!bActorWasModified)
+		{
+			Modify();
+			bActorWasModified = true;
+		}
+
+		DataLayers.Remove(FActorDataLayer(DataLayer->GetFName()));
+	}
+	return bActorWasModified;
+}
+
+bool AActor::RemoveAllDataLayers()
+{
+	if (HasDataLayers())
+	{
+		Modify();
+		DataLayers.Empty();
+		return true;
+	}
+	return false;
+}
+
+bool AActor::ContainsDataLayer(const UDataLayer* DataLayer) const
+{
+	return DataLayer && DataLayers.Contains(FActorDataLayer(DataLayer->GetFName()));
+}
+
+bool AActor::HasDataLayers() const
+{
+	return DataLayers.Num() > 0;
+}
+
+bool AActor::HasValidDataLayers() const
+{
+	if (const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers())
+	{
+		for (const FActorDataLayer& DataLayer : DataLayers)
+		{
+			if (const UDataLayer* DataLayerObject = WorldDataLayers->GetDataLayerFromName(DataLayer.Name))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool AActor::HasAllDataLayers(const TArray<const UDataLayer*>& InDataLayers) const
+{
+	if (DataLayers.Num() < InDataLayers.Num())
+	{
+		return false;
+	}
+
+	for (const UDataLayer* DataLayer : InDataLayers)
+	{
+		if (!ContainsDataLayer(DataLayer))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+TArray<FName> AActor::GetDataLayerNames() const
+{
+	const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers();
+	return WorldDataLayers ? WorldDataLayers->GetDataLayerNames(DataLayers) : TArray<FName>();
+}
+
+TArray<const UDataLayer*> AActor::GetDataLayerObjects() const
+{
+	return GetWorld() ? GetDataLayerObjects(GetWorld()->GetWorldDataLayers()) : TArray<const UDataLayer*>();
+}
+
+TArray<const UDataLayer*> AActor::GetDataLayerObjects(const AWorldDataLayers* WorldDataLayers) const
+{
+	return WorldDataLayers ? WorldDataLayers->GetDataLayerObjects(DataLayers) : TArray<const UDataLayer*>();
+}
+
+bool AActor::HasAnyOfDataLayers(const TArray<FName>& DataLayerNames) const
+{
+	for (const FActorDataLayer& DataLayer : DataLayers)
+	{
+		if (DataLayerNames.Contains(DataLayer.Name))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void AActor::FixupDataLayers(bool bRevertChangesOnLockedDataLayer /*= false*/)
+{
+	if (!GetPackage()->HasAnyPackageFlags(PKG_PlayInEditor))
+	{
+		if (!SupportsDataLayer())
+		{
+			DataLayers.Empty();
+			return;
+		}
+
+		if (GetWorld())
+		{
+			if (const AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers())
+			{
+				if (bRevertChangesOnLockedDataLayer)
+				{
+					// Since it's not possible to prevent changes of particular elements of an array, rollback change on locked DataLayers.
+					TSet<FActorDataLayer> PreEdit(PreEditChangeDataLayers);
+					TSet<FActorDataLayer> PostEdit(DataLayers);
+
+					auto DifferenceContainsLockedDataLayers = [WorldDataLayers](const TSet<FActorDataLayer>& A, const TSet<FActorDataLayer>& B)
+					{
+						TSet<FActorDataLayer> Diff = A.Difference(B);
+						for (const FActorDataLayer& ActorDataLayer : Diff)
+						{
+							const UDataLayer* DataLayer = WorldDataLayers->GetDataLayerFromName(ActorDataLayer);
+							if (DataLayer && DataLayer->IsLocked())
+							{
+								return true;
+							}
+						}
+						return false;
+					};
+					
+					if (DifferenceContainsLockedDataLayers(PreEdit, PostEdit) || 
+						DifferenceContainsLockedDataLayers(PostEdit, PreEdit))
+					{
+						DataLayers = PreEditChangeDataLayers;
+					}
+				}
+
+				TSet<FName> ExistingDataLayers;
+				for (int32 Index = 0; Index < DataLayers.Num();)
+				{
+					const FName& DataLayer = DataLayers[Index].Name;
+					if (!WorldDataLayers->GetDataLayerFromName(DataLayer) || ExistingDataLayers.Contains(DataLayer))
+					{
+						DataLayers.RemoveAtSwap(Index);
+					}
+					else
+					{
+						ExistingDataLayers.Add(DataLayer);
+						++Index;
+					}
+				}
+			}
+		}
+	}
+}
+
+bool AActor::IsPropertyChangedAffectingDataLayers(FPropertyChangedEvent& PropertyChangedEvent) const
+{
+	if (PropertyChangedEvent.Property != nullptr)
+	{
+		FProperty* MemberPropertyThatChanged = PropertyChangedEvent.MemberProperty;
+		const FName MemberPropertyName = MemberPropertyThatChanged != NULL ? MemberPropertyThatChanged->GetFName() : NAME_None;
+
+		static const FName NAME_DataLayers = GET_MEMBER_NAME_CHECKED(AActor, DataLayers);
+		static const FName NAME_FActorDataLayerName = GET_MEMBER_NAME_CHECKED(FActorDataLayer, Name);
+
+		if (MemberPropertyName == NAME_DataLayers &&
+			PropertyChangedEvent.ChangeType == EPropertyChangeType::ValueSet &&
+			PropertyChangedEvent.Property->GetFName() == NAME_FActorDataLayerName)
+		{
+			return true;
+		}
+		else
+		{
+			const FName PropertyName = PropertyChangedEvent.GetPropertyName();
+			if (PropertyName == NAME_DataLayers && 
+				((PropertyChangedEvent.ChangeType == EPropertyChangeType::ValueSet) || 
+				 (PropertyChangedEvent.ChangeType == EPropertyChangeType::ArrayClear) ||
+				 (PropertyChangedEvent.ChangeType == EPropertyChangeType::Duplicate)))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool AActor::IsValidForDataLayer() const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	const bool bIsPartitionedActor = UWorld::HasSubsystem<UWorldPartitionSubsystem>(World);
+	const bool bIsInEditorWorld = World->WorldType == EWorldType::Editor;
+	const bool bIsBuilderBrush = FActorEditorUtils::IsABuilderBrush(this);
+	const bool bIsHidden = GetClass()->GetDefaultObject<AActor>()->bHiddenEd;
+	const bool bIsValid = !bIsHidden && !bIsBuilderBrush && bIsInEditorWorld && bIsPartitionedActor;
+
+	return bIsValid;
+}
+
+// DataLayers (end)
+//---------------------------------------------------------------------------
+
 #undef LOCTEXT_NAMESPACE
 
 #endif // WITH_EDITOR

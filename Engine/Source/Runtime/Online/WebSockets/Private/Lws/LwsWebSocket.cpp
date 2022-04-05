@@ -72,7 +72,7 @@ const TCHAR* FLwsWebSocket::ToString(const EState InState)
 	return TEXT("Unknown");
 }
 
-FLwsWebSocket::FLwsWebSocket(const FString& InUrl, const TArray<FString>& InProtocols, const FString& InUpgradeHeader)
+FLwsWebSocket::FLwsWebSocket(FPrivateToken, const FString& InUrl, const TArray<FString>& InProtocols, const FString& InUpgradeHeader)
 	: State(EState::None)
 	, LastGameThreadState(EState::None)
 	, bWasSendQueueEmpty(true)
@@ -100,22 +100,20 @@ void FLwsWebSocket::Connect()
 		return;
 	}
 
-	bool bDisableDomainWhitelist = false;
-	GConfig->GetBool(TEXT("LwsWebSocket"), TEXT("bDisableDomainWhitelist"), bDisableDomainWhitelist, GEngineIni);
-	if (!bDisableDomainWhitelist)
+	if (!FLwsWebSocketsManager::Get().bDisableDomainAllowlist)
 	{
 		FHttpManager& HttpManager = FHttpModule::Get().GetHttpManager();
 		if (!HttpManager.IsDomainAllowed(Url))
 		{
 			State = EState::Error;
-			UE_LOG(LogWebSockets, Warning, TEXT("FLwsWebSocket[%d]::Connect: %s is not whitelisted. Refusing to connect."), Identifier, *Url);
+			UE_LOG(LogWebSockets, Warning, TEXT("FLwsWebSocket[%d]::Connect: %s is not allowlisted. Refusing to connect."), Identifier, *Url);
 			OnConnectionError().Broadcast(TEXT("Invalid Domain"));
 			return;
 		}
 	}
 	else
 	{
-		UE_LOG(LogWebSockets, Log, TEXT("FLwsWebSocket[%d]::Connect: Domain whitelisting has been disabled by config."), Identifier);
+		UE_LOG(LogWebSockets, Log, TEXT("FLwsWebSocket[%d]::Connect: Domain allowlisting has been disabled by config."), Identifier);
 	}
 
 	// No lock, we are not being processed on the websockets thread yet
@@ -145,7 +143,7 @@ void FLwsWebSocket::Close(int32 Code, const FString& Reason)
 	// We are doing this conversion here so we don't have to do it on the ws thread
 	FTCHARToUTF8 Convert(*Reason);
 	ANSICHAR* ANSIReason = static_cast<ANSICHAR*>(FMemory::Malloc(Convert.Length() + 1));
-	FCStringAnsi::Strcpy(ANSIReason, Convert.Length(), Convert.Get());
+	FCStringAnsi::Strcpy(ANSIReason, Convert.Length(), (const ANSICHAR*)Convert.Get());
 	ANSIReason[Convert.Length()] = 0;
 
 	UE_LOG(LogWebSockets, Verbose, TEXT("FLwsWebSocket[%d]::Close: Close queued with code=%d reason=%s"), Identifier, Code, *Reason);
@@ -498,9 +496,7 @@ int FLwsWebSocket::LwsCallback(lws* Instance, lws_callback_reasons Reason, void*
 		// in FLwsWebSocketsManager::CallbackWrapper, we copied UserData to Data, so Data is the X509_STORE_CTX* instead of the SSL*
 		X509_STORE_CTX* Context = static_cast<X509_STORE_CTX*>(Data);
 		int PreverifyOk = 1;
-		bool bDisableCertValidation = false;
-		GConfig->GetBool(TEXT("LwsWebSocket"), TEXT("bDisableCertValidation"), bDisableCertValidation, GEngineIni);
-		if (!bDisableCertValidation)
+		if (!FLwsWebSocketsManager::Get().bDisableCertValidation)
 		{
 			PreverifyOk = Length;
 			if (PreverifyOk == 1)
@@ -713,7 +709,7 @@ void FLwsWebSocket::ConnectInternal(struct lws_context &LwsContext)
 		OptionalCombinedProtocolsUTF8.Emplace(*CombinedProtocols);
 	}
 
-	const char* const CombinedProtocolsUTF8 = OptionalCombinedProtocolsUTF8.IsSet() ? OptionalCombinedProtocolsUTF8.GetValue().Get() : nullptr;
+	const char* const CombinedProtocolsUTF8 = OptionalCombinedProtocolsUTF8.IsSet() ? (const char*)OptionalCombinedProtocolsUTF8.GetValue().Get() : nullptr;
 
 	struct lws_client_connect_info ConnectInfo = {};
 	ConnectInfo.context = &LwsContext;

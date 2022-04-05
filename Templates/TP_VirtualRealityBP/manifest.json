@@ -59,17 +59,21 @@
 	"AdditionalFeaturePacks": 
 	[
 		{
-			"MountName": "Geometry",
+			"MountName": "LevelPrototyping",
 			"DetailLevels": 
 			[
-				"Standard",
 				"High"
 			]
 		},
 		{
 			"MountName": "FPWeapon",
-			"DetailLevels": 
-			[
+			"DetailLevels": [
+				"Standard"
+			]
+		},
+		{
+			"MountName": "VRSpectator",
+			"DetailLevels": [
 				"Standard"
 			]
 		}

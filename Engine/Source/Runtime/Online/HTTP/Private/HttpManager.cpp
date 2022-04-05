@@ -21,10 +21,11 @@
 FCriticalSection FHttpManager::RequestLock;
 
 FHttpManager::FHttpManager()
-	: FTickerObjectBase(0.0f, FBackgroundableTicker::GetCoreTicker())
+	: FTSTickerObjectBase(0.0f, FTSBackgroundableTicker::GetCoreTicker())
 	, Thread(nullptr)
 	, CorrelationIdMethod(FHttpManager::GetDefaultCorrelationIdMethod())
 {
+	bFlushing = false;
 }
 
 FHttpManager::~FHttpManager()
@@ -43,6 +44,64 @@ void FHttpManager::Initialize()
 		Thread = CreateHttpThread();
 		Thread->StartThread();
 	}
+
+	UpdateConfigs();
+}
+
+void FHttpManager::ReloadFlushTimeLimits()
+{
+	FlushTimeLimitsMap.Reset();
+
+	//Save int values of Default and FullFlush?
+	for (EHttpFlushReason Reason : TEnumRange<EHttpFlushReason>())
+	{
+		double SoftLimitSeconds = 2.0;
+		double HardLimitSeconds = 4.0;
+
+		// We default the time limits to generous values, keeping the Hard limits always greater than the soft ones, and -1 for the unlimited
+		switch (Reason)
+		{
+		case EHttpFlushReason::Default:
+			GConfig->GetDouble(TEXT("HTTP"), TEXT("FlushSoftTimeLimitDefault"), SoftLimitSeconds, GEngineIni);
+			GConfig->GetDouble(TEXT("HTTP"), TEXT("FlushHardTimeLimitDefault"), HardLimitSeconds, GEngineIni);
+			break;
+		case EHttpFlushReason::Background:
+			GConfig->GetDouble(TEXT("HTTP"), TEXT("FlushSoftTimeLimitBackground"), SoftLimitSeconds, GEngineIni);
+			GConfig->GetDouble(TEXT("HTTP"), TEXT("FlushHardTimeLimitBackground"), HardLimitSeconds, GEngineIni);
+			break;
+		case EHttpFlushReason::Shutdown:
+			GConfig->GetDouble(TEXT("HTTP"), TEXT("FlushSoftTimeLimitShutdown"), SoftLimitSeconds, GEngineIni);
+			GConfig->GetDouble(TEXT("HTTP"), TEXT("FlushHardTimeLimitShutdown"), HardLimitSeconds, GEngineIni);
+			
+			if ((HardLimitSeconds >= 0) && ((SoftLimitSeconds < 0) || (SoftLimitSeconds >= HardLimitSeconds)))
+			{
+				UE_CLOG(!IsRunningCommandlet(), LogHttp, Warning, TEXT("Soft limit[%.02f] is higher than the hard limit set[%.02f] in file [%s]. Please change the soft limit to a value lower than the hard limit for Flush to work correctly. - 1 is unlimited and therefore the highest possible value."), static_cast<float>(SoftLimitSeconds), static_cast<float>(HardLimitSeconds), *GEngineIni);
+				// we need to be absolutely sure that SoftLimitSeconds is always strictly less than HardLimitSeconds so remaining requests (if any) can be canceled before exiting
+				if (HardLimitSeconds > 0.0)
+				{
+					SoftLimitSeconds = HardLimitSeconds / 2.0;	// clamping SoftLimitSeconds to a reasonable value
+				}
+				else
+				{
+					// HardLimitSeconds should never be 0.0 while shutting down otherwise we can't cancel the remaining requests
+					HardLimitSeconds = 0.05;	// using a non zero value 
+					SoftLimitSeconds = 0.0;		// cancelling request immediately
+				}
+			}
+
+			break;
+		case EHttpFlushReason::FullFlush:
+			SoftLimitSeconds = -1.0;
+			HardLimitSeconds = -1.0;
+			GConfig->GetDouble(TEXT("HTTP"), TEXT("FlushSoftTimeLimitFullFlush"), SoftLimitSeconds, GEngineIni);
+			GConfig->GetDouble(TEXT("HTTP"), TEXT("FlushHardTimeLimitFullFlush"), HardLimitSeconds, GEngineIni);
+			break;
+		}
+
+		FHttpFlushTimeLimit TimeLimit(SoftLimitSeconds, HardLimitSeconds);
+
+		FlushTimeLimitsMap.Add(Reason, TimeLimit);
+	}
 }
 
 void FHttpManager::SetCorrelationIdMethod(TFunction<FString()> InCorrelationIdMethod)
@@ -60,23 +119,23 @@ bool FHttpManager::IsDomainAllowed(const FString& Url) const
 {
 #if !UE_BUILD_SHIPPING
 #if !(UE_GAME || UE_SERVER)
-	// Whitelist is opt-in in non-shipping non-game/server builds
-	static const bool bEnableWhitelist = FParse::Param(FCommandLine::Get(), TEXT("EnableHttpWhitelist"));
-	if (!bEnableWhitelist)
+	// Allowed domain filtering is opt-in in non-shipping non-game/server builds
+	static const bool bForceUseAllowList = FParse::Param(FCommandLine::Get(), TEXT("EnableHttpDomainRestrictions"));
+	if (!bForceUseAllowList)
 	{
 		return true;
 	}
 #else
-	// Allow non-shipping game/server builds to disable the whitelist check
-	static const bool bDisableWhitelist = FParse::Param(FCommandLine::Get(), TEXT("DisableHttpWhitelist"));
-	if (bDisableWhitelist)
+	// The check is on by default but allow non-shipping game/server builds to disable the filtering
+	static const bool bIgnoreAllowList = FParse::Param(FCommandLine::Get(), TEXT("DisableHttpDomainRestrictions"));
+	if (bIgnoreAllowList)
 	{
 		return true;
 	}
 #endif
 #endif // !UE_BUILD_SHIPPING
 
-	// check to see if the Domain is white-listed (or no white-list specified)
+	// check to see if the Domain is allowed (either on the list or the list was empty)
 	const TArray<FString>& AllowedDomains = FHttpModule::Get().GetAllowedDomains();
 	if (AllowedDomains.Num() > 0)
 	{
@@ -101,7 +160,7 @@ TFunction<FString()> FHttpManager::GetDefaultCorrelationIdMethod()
 
 void FHttpManager::OnBeforeFork()
 {
-	Flush(false);
+	Flush(EHttpFlushReason::Default);
 }
 
 void FHttpManager::OnAfterFork()
@@ -117,7 +176,12 @@ void FHttpManager::OnEndFramePostFork()
 
 void FHttpManager::UpdateConfigs()
 {
-	// empty
+	ReloadFlushTimeLimits();
+
+	if (Thread)
+	{
+		Thread->UpdateConfigs();
+	}
 }
 
 void FHttpManager::AddGameThreadTask(TFunction<void()>&& Task)
@@ -135,66 +199,86 @@ FHttpThread* FHttpManager::CreateHttpThread()
 
 void FHttpManager::Flush(bool bShutdown)
 {
+	Flush(bShutdown ? EHttpFlushReason::Shutdown : EHttpFlushReason::Default);
+}
+
+void FHttpManager::Flush(EHttpFlushReason FlushReason)
+{
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FHttpManager_Flush);
 
 	FScopeLock ScopeLock(&RequestLock);
-	double MaxFlushTimeSeconds = -1.0; // default to no limit
-	GConfig->GetDouble(TEXT("HTTP"), TEXT("MaxFlushTimeSeconds"), MaxFlushTimeSeconds, GEngineIni);
+	
+	// This variable is set to indicate that flush is happening.
+	// While flushing is in progress, the RequestLock is held and threads are blocked when trying to submit new requests.
+	bFlushing = true;
 
-	bool bAlwaysCancelRequestsOnFlush = false; // Default to not immediately cancelling
-	GConfig->GetBool(TEXT("HTTP"), TEXT("bAlwaysCancelRequestsOnFlush"), bAlwaysCancelRequestsOnFlush, GEngineIni);
+	double FlushTimeSoftLimitSeconds = FlushTimeLimitsMap[FlushReason].SoftLimitSeconds;
+	double FlushTimeHardLimitSeconds = FlushTimeLimitsMap[FlushReason].HardLimitSeconds;
 
-	float SecondsToSleepForOutstandingRequests = 0.5f;
-	GConfig->GetFloat(TEXT("HTTP"), TEXT("RequestCleanupDelaySec"), SecondsToSleepForOutstandingRequests, GEngineIni);
-	if (bShutdown)
+	// this specifies how long to sleep between calls to tick.
+	// The smaller the value, the more quickly we may find out that all requests have completed, but the more work may be done in the meantime.
+	float SecondsToSleepForOutstandingThreadedRequests = 0.5f;
+	GConfig->GetFloat(TEXT("HTTP"), TEXT("RequestCleanupDelaySec"), SecondsToSleepForOutstandingThreadedRequests, GEngineIni);
+
+	// Clear all delegates bound to ongoing Http requests
+	if (FlushReason == EHttpFlushReason::Shutdown)
 	{
 		if (Requests.Num())
 		{
-			UE_LOG(LogHttp, Display, TEXT("Http module shutting down, but needs to wait on %d outstanding Http requests:"), Requests.Num());
+			// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
+			UE_CLOG(!IsRunningCommandlet(), LogHttp, Warning, TEXT("Http module shutting down, but needs to wait on %d outstanding Http requests:"), Requests.Num());
 		}
+
 		// Clear delegates since they may point to deleted instances
-		for (TArray<TSharedRef<IHttpRequest, ESPMode::ThreadSafe>>::TIterator It(Requests); It; ++It)
+		for (TArray<FHttpRequestRef>::TIterator It(Requests); It; ++It)
 		{
-			TSharedRef<IHttpRequest, ESPMode::ThreadSafe>& Request = *It;
+			FHttpRequestRef& Request = *It;
 			Request->OnProcessRequestComplete().Unbind();
 			Request->OnRequestProgress().Unbind();
 			Request->OnHeaderReceived().Unbind();
-			UE_LOG(LogHttp, Display, TEXT("	verb=[%s] url=[%s] refs=[%d] status=%s"), *Request->GetVerb(), *Request->GetURL(), Request.GetSharedReferenceCount(), EHttpRequestStatus::ToString(Request->GetStatus()));
+
+			// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
+			UE_CLOG(!IsRunningCommandlet(), LogHttp, Warning, TEXT("	verb=[%s] url=[%s] refs=[%d] status=%s"), *Request->GetVerb(), *Request->GetURL(), Request.GetSharedReferenceCount(), EHttpRequestStatus::ToString(Request->GetStatus()));
 		}
 	}
 
-	// block until all active requests have completed
-	double BeginWaitTime = FPlatformTime::Seconds();
-	double LastTime = BeginWaitTime;
-	double StallWarnTime = BeginWaitTime + 0.5;
-	UE_LOG(LogHttp, Display, TEXT("cleaning up %d outstanding Http requests."), Requests.Num());
-	while (Requests.Num() > 0)
-	{
-		const double AppTime = FPlatformTime::Seconds();
-		//UE_LOG(LogHttp, Display, TEXT("Waiting for %0.2f seconds. Limit:%0.2f seconds"), (AppTime - BeginWaitTime), MaxFlushTimeSeconds);
-		if (bAlwaysCancelRequestsOnFlush || (bShutdown && MaxFlushTimeSeconds > 0 && (AppTime - BeginWaitTime > MaxFlushTimeSeconds)))
-		{
-			if (bAlwaysCancelRequestsOnFlush)
-			{
-				UE_LOG(LogHttp, Display, TEXT("Immediately cancelling active HTTP requests"));
-			}
-			else
-			{
-				UE_LOG(LogHttp, Display, TEXT("Canceling remaining HTTP requests after waiting %0.2f seconds"), (AppTime - BeginWaitTime));
-			}
+	// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
+	UE_CLOG(!IsRunningCommandlet(), LogHttp, Warning, TEXT("Cleaning up %d outstanding Http requests."), Requests.Num());
 
-			for (TArray<TSharedRef<IHttpRequest, ESPMode::ThreadSafe>>::TIterator It(Requests); It; ++It)
+	double BeginWaitTime = FPlatformTime::Seconds();
+	double LastFlushTickTime = BeginWaitTime;
+	double StallWarnTime = BeginWaitTime + 0.5;
+	double AppTime = FPlatformTime::Seconds();
+
+	// For a duration equal to FlushTimeHardLimitSeconds, we wait for ongoing http requests to complete
+	while (Requests.Num() > 0 && (FlushTimeHardLimitSeconds < 0 || (AppTime - BeginWaitTime < FlushTimeHardLimitSeconds)))
+	{
+		SCOPED_ENTER_BACKGROUND_EVENT(STAT_FHttpManager_Flush_Iteration);
+
+		// If time equal to FlushTimeSoftLimitSeconds has passed and there's still ongoing http requests, we cancel them (setting FlushTimeSoftLimitSeconds to 0 does this immediately)
+		if (FlushTimeSoftLimitSeconds >= 0 && (AppTime - BeginWaitTime >= FlushTimeSoftLimitSeconds))
+		{
+			// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
+			UE_CLOG(!IsRunningCommandlet(), LogHttp, Warning, TEXT("Canceling remaining %d HTTP requests"), Requests.Num());
+
+			for (TArray<FHttpRequestRef>::TIterator It(Requests); It; ++It)
 			{
-				TSharedRef<IHttpRequest, ESPMode::ThreadSafe>& Request = *It;
-				if (IsEngineExitRequested())
-				{
-					ensureMsgf(Request.IsUnique(), TEXT("Dangling HTTP request! This may cause undefined behaviour or crash during module shutdown!"));
-				}
+				FHttpRequestRef& Request = *It;
+
+				// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
+				UE_CLOG(!IsRunningCommandlet(), LogHttp, Warning, TEXT("	verb=[%s] url=[%s] refs=[%d] status=%s"), *Request->GetVerb(), *Request->GetURL(), Request.GetSharedReferenceCount(), EHttpRequestStatus::ToString(Request->GetStatus()));
+
+				FScopedEnterBackgroundEvent(*Request->GetURL());
+
 				Request->CancelRequest();
 			}
 		}
-		FlushTick(AppTime - LastTime);
-		LastTime = AppTime;
+
+		// Process ongoing Http Requests
+		FlushTick(AppTime - LastFlushTickTime);
+		LastFlushTickTime = AppTime;
+
+		// Process threaded Http Requests
 		if (Requests.Num() > 0)
 		{
 			if (Thread)
@@ -203,15 +287,17 @@ void FHttpManager::Flush(bool bShutdown)
 				{
 					if (AppTime >= StallWarnTime)
 					{
-						UE_LOG(LogHttp, Display, TEXT("Ticking HTTPThread for %d outstanding Http requests."), Requests.Num());
+						// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
+						UE_CLOG(!IsRunningCommandlet(), LogHttp, Warning, TEXT("Ticking HTTPThread for %d outstanding Http requests."), Requests.Num());
 						StallWarnTime = AppTime + 0.5;
 					}
 					Thread->Tick();
 				}
 				else
 				{
-					UE_LOG(LogHttp, Display, TEXT("Sleeping %.3fs to wait for %d outstanding Http requests."), SecondsToSleepForOutstandingRequests, Requests.Num());
-					FPlatformProcess::Sleep(SecondsToSleepForOutstandingRequests);
+					// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
+					UE_CLOG(!IsRunningCommandlet(), LogHttp, Warning, TEXT("Sleeping %.3fs to wait for %d outstanding Http requests."), SecondsToSleepForOutstandingThreadedRequests, Requests.Num());
+					FPlatformProcess::Sleep(SecondsToSleepForOutstandingThreadedRequests);
 				}
 			}
 			else
@@ -219,7 +305,23 @@ void FHttpManager::Flush(bool bShutdown)
 				check(!FPlatformHttp::UsesThreadedHttp());
 			}
 		}
+
+		AppTime = FPlatformTime::Seconds();
 	}
+
+	// Don't emit these tracking logs in commandlet runs. Build system traps warnings during cook, and these are not truly fatal, but useful for tracking down shutdown issues.
+	if (Requests.Num() > 0 && (FlushTimeHardLimitSeconds > 0 && (AppTime - BeginWaitTime > FlushTimeHardLimitSeconds)) && !IsRunningCommandlet())
+	{
+		UE_LOG(LogHttp, Warning, TEXT("HTTTManager::Flush exceeded hard limit time %.3fs. Current time is %.3fs. These requests are being abandoned without being flushed:"), FlushTimeHardLimitSeconds, AppTime - BeginWaitTime);
+		for (TArray<FHttpRequestRef>::TIterator It(Requests); It; ++It)
+		{
+			FHttpRequestRef& Request = *It;
+			//List the outstanding requests that are being abandoned without being canceled.
+			UE_LOG(LogHttp, Warning, TEXT("	verb=[%s] url=[%s] refs=[%d] status=%s"), *Request->GetVerb(), *Request->GetURL(), Request.GetSharedReferenceCount(), EHttpRequestStatus::ToString(Request->GetStatus()));
+		}
+	}
+
+	bFlushing = false;
 }
 
 bool FHttpManager::Tick(float DeltaSeconds)
@@ -237,9 +339,9 @@ bool FHttpManager::Tick(float DeltaSeconds)
 	FScopeLock ScopeLock(&RequestLock);
 
 	// Tick each active request
-	for (TArray<TSharedRef<IHttpRequest, ESPMode::ThreadSafe>>::TIterator It(Requests); It; ++It)
+	for (TArray<FHttpRequestRef>::TIterator It(Requests); It; ++It)
 	{
-		TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = *It;
+		FHttpRequestRef Request = *It;
 		Request->Tick(DeltaSeconds);
 	}
 
@@ -251,8 +353,9 @@ bool FHttpManager::Tick(float DeltaSeconds)
 		// Finish and remove any completed requests
 		for (IHttpThreadedRequest* CompletedRequest : CompletedThreadedRequests)
 		{
+			FHttpRequestRef CompletedRequestRef = CompletedRequest->AsShared();
+			Requests.Remove(CompletedRequestRef);
 			CompletedRequest->FinishRequest();
-			Requests.Remove(CompletedRequest->AsShared());
 		}
 	}
 	// keep ticking
@@ -264,14 +367,14 @@ void FHttpManager::FlushTick(float DeltaSeconds)
 	Tick(DeltaSeconds);
 }
 
-void FHttpManager::AddRequest(const TSharedRef<IHttpRequest, ESPMode::ThreadSafe>& Request)
+void FHttpManager::AddRequest(const FHttpRequestRef& Request)
 {
 	FScopeLock ScopeLock(&RequestLock);
-
+	check(!bFlushing);
 	Requests.Add(Request);
 }
 
-void FHttpManager::RemoveRequest(const TSharedRef<IHttpRequest, ESPMode::ThreadSafe>& Request)
+void FHttpManager::RemoveRequest(const FHttpRequestRef& Request)
 {
 	FScopeLock ScopeLock(&RequestLock);
 
@@ -283,6 +386,7 @@ void FHttpManager::AddThreadedRequest(const TSharedRef<IHttpThreadedRequest, ESP
 	check(Thread);
 	{
 		FScopeLock ScopeLock(&RequestLock);
+		check(!bFlushing);
 		Requests.Add(Request);
 	}
 	Thread->AddRequest(&Request.Get());
@@ -299,7 +403,7 @@ bool FHttpManager::IsValidRequest(const IHttpRequest* RequestPtr) const
 	FScopeLock ScopeLock(&RequestLock);
 
 	bool bResult = false;
-	for (const TSharedRef<IHttpRequest, ESPMode::ThreadSafe>& Request : Requests)
+	for (const FHttpRequestRef& Request : Requests)
 	{
 		if (&Request.Get() == RequestPtr)
 		{
@@ -316,7 +420,7 @@ void FHttpManager::DumpRequests(FOutputDevice& Ar) const
 	FScopeLock ScopeLock(&RequestLock);
 
 	Ar.Logf(TEXT("------- (%d) Http Requests"), Requests.Num());
-	for (const TSharedRef<IHttpRequest, ESPMode::ThreadSafe>& Request : Requests)
+	for (const FHttpRequestRef& Request : Requests)
 	{
 		Ar.Logf(TEXT("	verb=[%s] url=[%s] status=%s"),
 			*Request->GetVerb(), *Request->GetURL(), EHttpRequestStatus::ToString(Request->GetStatus()));

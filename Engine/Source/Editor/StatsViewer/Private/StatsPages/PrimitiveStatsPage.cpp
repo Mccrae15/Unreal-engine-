@@ -45,12 +45,12 @@ struct PrimitiveStatsGenerator
 		check( InObject );
 		check( InWorld );
 
-		UObject* ObjectPackage = InObject->GetOutermost();
+		UObject* ObjectTopMostPackage = InObject->GetOutermostObject()->GetPackage();
 
 		for( int32 LevelIndex=0; LevelIndex<InWorld->GetNumLevels(); LevelIndex++ )
 		{
 			ULevel* Level = InWorld->GetLevel(LevelIndex);
-			if( Level && Level->GetOutermost() == ObjectPackage )
+			if( Level && Level->GetPackage() == ObjectTopMostPackage )
 			{
 				return true;
 			}
@@ -193,7 +193,7 @@ struct PrimitiveStatsGenerator
 			// Only list primitives in visible levels
 			&&	IsInVisibleLevel( InPrimitiveComponent, World ) 
 			// Don't list pending kill components.
-			&&	!InPrimitiveComponent->IsPendingKill() )
+			&&	IsValid(InPrimitiveComponent) )
 		{
 			// Retrieve relevant lights.
 			TArray<const ULightComponent*> RelevantLights;
@@ -210,7 +210,7 @@ struct PrimitiveStatsGenerator
 			int32 LightMapWidth			= 0;
 			int32 LightMapHeight		= 0;
 			InPrimitiveComponent->GetLightMapResolution( LightMapWidth, LightMapHeight );
-			int32 LMSMResolution		= FMath::Sqrt( LightMapHeight * LightMapWidth );
+			int32 LMSMResolution		= FMath::Sqrt( static_cast<float>(LightMapHeight * LightMapWidth) );
 			int32 LightMapData			= 0;
 			int32 LegacyShadowMapData	= 0;
 			InPrimitiveComponent->GetLightAndShadowMapMemoryUsage( LightMapData, LegacyShadowMapData );

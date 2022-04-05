@@ -40,19 +40,7 @@ UNiagaraNodeParameterMapBase::UNiagaraNodeParameterMapBase()
 
 }
 
-TArray<FNiagaraParameterMapHistory> UNiagaraNodeParameterMapBase::GetParameterMaps(UNiagaraScriptSourceBase* InSource, FString EmitterNameOverride, const TArray<FNiagaraVariable>& EncounterableVariables)
-{
-	TArray<FNiagaraParameterMapHistory> OutputParameterMapHistories;
-	UNiagaraScriptSource* Base = Cast<UNiagaraScriptSource>(InSource);
-	if (Base != nullptr)
-	{
-		OutputParameterMapHistories = GetParameterMaps(Base->NodeGraph, EmitterNameOverride, EncounterableVariables);
-	}
-	return OutputParameterMapHistories;
-
-}
-
-TArray<FNiagaraParameterMapHistory> UNiagaraNodeParameterMapBase::GetParameterMaps(const UNiagaraGraph* InGraph, FString EmitterNameOverride, const TArray<FNiagaraVariable>& EncounterableVariables)
+TArray<FNiagaraParameterMapHistory> UNiagaraNodeParameterMapBase::GetParameterMaps(const UNiagaraGraph* InGraph)
 {
 	TArray<UNiagaraNodeOutput*> OutputNodes;
 	InGraph->FindOutputNodes(OutputNodes);
@@ -60,38 +48,14 @@ TArray<FNiagaraParameterMapHistory> UNiagaraNodeParameterMapBase::GetParameterMa
 
 	for (UNiagaraNodeOutput* FoundOutputNode : OutputNodes)
 	{
-		OutputParameterMapHistories.Append(GetParameterMaps(FoundOutputNode, false, EmitterNameOverride,EncounterableVariables));
+		FNiagaraParameterMapHistoryBuilder Builder;
+		Builder.BuildParameterMaps(FoundOutputNode);
+
+		OutputParameterMapHistories.Append(Builder.Histories);
 	}
 
 	return OutputParameterMapHistories;
 }
-
-TArray<FNiagaraParameterMapHistory> UNiagaraNodeParameterMapBase::GetParameterMaps(const UNiagaraNodeOutput* InGraphEnd, bool bLimitToOutputScriptType, FString EmitterNameOverride, const TArray<FNiagaraVariable>& EncounterableVariables)
-{
-	const UEdGraphSchema_Niagara* Schema = Cast<UEdGraphSchema_Niagara>(InGraphEnd->GetSchema());
-
-	FNiagaraParameterMapHistoryBuilder Builder;
-	Builder.RegisterEncounterableVariables(EncounterableVariables);
-	if (!EmitterNameOverride.IsEmpty())
-	{
-		Builder.EnterEmitter(EmitterNameOverride, InGraphEnd->GetNiagaraGraph(), nullptr);
-	}
-
-	if (bLimitToOutputScriptType)
-	{
-		Builder.EnableScriptWhitelist(true, InGraphEnd->GetUsage());
-	}
-	
-	Builder.BuildParameterMaps(InGraphEnd);
-	
-	if (!EmitterNameOverride.IsEmpty())
-	{
-		Builder.ExitEmitter(EmitterNameOverride, nullptr);
-	}
-	
-	return Builder.Histories;
-}
-
 
 bool UNiagaraNodeParameterMapBase::AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType) const
 {
@@ -135,11 +99,6 @@ void UNiagaraNodeParameterMapBase::PinDescriptionTextCommitted(const FText& Text
 	NewMetaData.Description = Text;
 	Graph->Modify();
 	Graph->SetMetaData(Var, NewMetaData);
-}
-
-void UNiagaraNodeParameterMapBase::CollectAddPinActions(FGraphActionListBuilderBase& OutActions, bool& bOutCreateRemainingActions, UEdGraphPin* Pin)
-{
-	bOutCreateRemainingActions = true;
 }
 
 void UNiagaraNodeParameterMapBase::GetPinHoverText(const UEdGraphPin& Pin, FString& HoverTextOut) const
@@ -242,7 +201,21 @@ bool UNiagaraNodeParameterMapBase::CanHandleDropOperation(TSharedPtr<FDragDropOp
 	{
 		if (StaticCastSharedPtr<FNiagaraParameterGraphDragOperation>(DragDropOperation)->IsCurrentlyHoveringNode(this))
 		{
-			// The FNiagaraParameterGraphDragOperation handles the drop action itself so just return true here and let it handle it when it's executed.
+			TSharedPtr<FNiagaraParameterGraphDragOperation> ParameterDragDropOperation = StaticCastSharedPtr<FNiagaraParameterGraphDragOperation>(DragDropOperation);
+			
+			if(ParameterDragDropOperation->GetSourceAction().IsValid())
+			{
+				if(TSharedPtr<FNiagaraParameterAction> ParameterAction = StaticCastSharedPtr<FNiagaraParameterAction>(ParameterDragDropOperation->GetSourceAction()))
+				{
+					FNiagaraVariable Parameter = ParameterAction->GetParameter();
+					// if the parameter already exists on a node, we won't allow a drop
+					if(DoesParameterExistOnNode(Parameter))
+					{
+						return false;
+					}
+				}				
+			}
+			
 			return true;
 		}
 	}
@@ -403,13 +376,31 @@ void UNiagaraNodeParameterMapBase::SelectParameterFromPin(const UEdGraphPin* InP
 
 			FNiagaraTypeDefinition TypeDef = Schema->PinToTypeDefinition(InPin);
 			FNiagaraVariable PinVariable = FNiagaraVariable(TypeDef, InPin->PinName);
-			UNiagaraScriptVariable** PinAssociatedScriptVariable = NiagaraGraph->GetAllMetaData().Find(PinVariable);
+			TObjectPtr<UNiagaraScriptVariable>* PinAssociatedScriptVariable = NiagaraGraph->GetAllMetaData().Find(PinVariable);
 			if (PinAssociatedScriptVariable != nullptr)
 			{
 				NiagaraGraph->OnSubObjectSelectionChanged().Broadcast(*PinAssociatedScriptVariable);
 			}
 		}
 	}
+}
+
+bool UNiagaraNodeParameterMapBase::DoesParameterExistOnNode(FNiagaraVariable Parameter)
+{
+	for(UEdGraphPin* Pin : Pins)
+	{
+		if(Pin->PinType.PinSubCategory == ParameterPinSubCategory)
+		{
+			FNiagaraVariable CandidateVariable = UEdGraphSchema_Niagara::PinToNiagaraVariable(Pin);
+
+			if(CandidateVariable == Parameter)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 void UNiagaraNodeParameterMapBase::GetChangeNamespaceModifierSubMenuForPin(UToolMenu* Menu, UEdGraphPin* InPin)

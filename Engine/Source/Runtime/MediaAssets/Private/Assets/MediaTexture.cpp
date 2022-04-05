@@ -40,15 +40,29 @@ public:
 
 	virtual void TickRender(FTimespan DeltaTime, FTimespan Timecode) override
 	{
+		FScopeLock Lock(&CriticalSection);
+
 		if (UMediaTexture* OwnerPtr = Owner.Get())
 		{
 			OwnerPtr->TickResource(Timecode);
 		}
 	}
 
+	/**
+	 * Call this when the owner is destroyed.
+	 */
+	void OwnerDestroyed()
+	{
+		FScopeLock Lock(&CriticalSection);
+		Owner.Reset();
+	}
+
 private:
 
 	TWeakObjectPtr<UMediaTexture> Owner;
+
+	/** Used to prevent owner destruction happening during tick. */
+	FCriticalSection CriticalSection;
 };
 
 
@@ -69,6 +83,7 @@ UMediaTexture::UMediaTexture(const FObjectInitializer& ObjectInitializer)
 	, CurrentOrientation(MTORI_Original)
 	, DefaultGuid(FGuid::NewGuid())
 	, Dimensions(FIntPoint::ZeroValue)
+	, bIsCleared(false)
 	, Size(0)
 	, CachedNextSampleTime(FTimespan::MinValue())
 	, TextureNumMips(1)
@@ -153,7 +168,7 @@ FTextureResource* UMediaTexture::CreateResource()
 		}
 	}
 
-	Filter = (EnableGenMips && (TextureNumMips > 1)) ? TF_Trilinear : TF_Bilinear;
+	Filter = (TextureNumMips > 1) ? TF_Trilinear : TF_Bilinear;
 
 	return new FMediaTextureResource(*this, Dimensions, Size, ClearColor, CurrentGuid.IsValid() ? CurrentGuid : DefaultGuid, EnableGenMips, NumMips);
 }
@@ -206,6 +221,9 @@ void UMediaTexture::BeginDestroy()
 {
 	if (ClockSink.IsValid())
 	{
+		// Tell sink we are done.
+		ClockSink->OwnerDestroyed(); 
+
 		IMediaModule* MediaModule = FModuleManager::LoadModulePtr<IMediaModule>("Media");
 
 		if (MediaModule != nullptr)
@@ -311,7 +329,7 @@ void UMediaTexture::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 
 void UMediaTexture::TickResource(FTimespan Timecode)
 {
-	if (Resource == nullptr)
+	if (GetResource() == nullptr)
 	{
 		return;
 	}
@@ -323,7 +341,7 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 
 	if (!CurrentPlayer.IsValid())
 	{
-		if ((LastClearColor == ClearColor) && (LastSrgb == SRGB))
+		if ((LastClearColor == ClearColor) && (LastSrgb == SRGB) && (bIsCleared))
 		{
 			return; // nothing to render
 		}
@@ -335,6 +353,7 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 	// set up render parameters
 	FMediaTextureResource::FRenderParams RenderParams;
 
+	bool bIsSampleValid = false;
 	if (UMediaPlayer* CurrentPlayerPtr = CurrentPlayer.Get())
 	{
 		const bool PlayerActive = CurrentPlayerPtr->IsPaused() || CurrentPlayerPtr->IsPlaying() || CurrentPlayerPtr->IsPreparing();
@@ -374,6 +393,7 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 				LastSrgb = SRGB;
 
 				TextureNumMips = (Sample->GetNumMips() > 1) ? Sample->GetNumMips() : NumMips;
+				bIsSampleValid = true;
 			}
 			else
 			{
@@ -390,6 +410,7 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 					LastSrgb = SRGB;
 
 					TextureNumMips = (Sample->GetNumMips() > 1) ? Sample->GetNumMips() : NumMips;
+					bIsSampleValid = true;
 				}
 
 				RenderParams.SampleSource = SampleQueue;
@@ -415,7 +436,7 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 	}
 
 	// update filter state, responding to mips setting
-	Filter = (EnableGenMips && (TextureNumMips > 1)) ? TF_Trilinear : TF_Bilinear;
+	Filter = (TextureNumMips > 1) ? TF_Trilinear : TF_Bilinear;
 
 	// setup render parameters
 	RenderParams.CanClear = AutoClear;
@@ -425,12 +446,16 @@ void UMediaTexture::TickResource(FTimespan Timecode)
 	RenderParams.NumMips = NumMips;
 	
 	// redraw texture resource on render thread
-	FMediaTextureResource* ResourceParam = (FMediaTextureResource*)Resource;
+	FMediaTextureResource* ResourceParam = (FMediaTextureResource*)GetResource();
 	ENQUEUE_RENDER_COMMAND(MediaTextureResourceRender)(
 		[ResourceParam, RenderParams](FRHICommandListImmediate& RHICmdList)
 		{
 			ResourceParam->Render(RenderParams);
 		});
+
+	
+	// The texture is cleared if we have auto clear enabled, and we do not have a valid sample.
+	bIsCleared = ((AutoClear) && (bIsSampleValid == false));
 }
 
 void UMediaTexture::UpdateSampleInfo(const TSharedPtr<IMediaTextureSample, ESPMode::ThreadSafe> & Sample)
@@ -455,7 +480,7 @@ void UMediaTexture::UpdatePlayerAndQueue()
 		// Player changed?
 		if (CurrentGuid != PlayerGuid)
 		{
-			if (FMediaTextureResource* MediaResource = static_cast<FMediaTextureResource*>(Resource))
+			if (FMediaTextureResource* MediaResource = static_cast<FMediaTextureResource*>(GetResource()))
 			{
 				MediaResource->FlushPendingData();
 			}
@@ -474,7 +499,7 @@ void UMediaTexture::UpdatePlayerAndQueue()
 			SampleQueue.Reset();
 			CurrentGuid = DefaultGuid;
 
-			if (FMediaTextureResource* MediaResource = static_cast<FMediaTextureResource*>(Resource))
+			if (FMediaTextureResource* MediaResource = static_cast<FMediaTextureResource*>(GetResource()))
 			{
 				MediaResource->FlushPendingData();
 			}

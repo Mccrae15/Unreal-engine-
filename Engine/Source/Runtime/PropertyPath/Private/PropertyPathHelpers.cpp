@@ -476,9 +476,9 @@ namespace PropertyPathHelpersInternal
 	{
 		if (InContainer)
 		{
-		FCachedPropertyPath InternalPropertyPath(InPropertyPath);
-		return IteratePropertyPathRecursive<UObject>(InContainer->GetClass(), InContainer, 0, InternalPropertyPath, InResolver);
-	}
+			FCachedPropertyPath InternalPropertyPath(InPropertyPath);
+			return IteratePropertyPathRecursive<UObject>(InContainer->GetClass(), InContainer, 0, InternalPropertyPath, InResolver);
+		}
 
 		return false;
 	}
@@ -487,8 +487,8 @@ namespace PropertyPathHelpersInternal
 	{
 		if (InContainer)
 		{
-		return IteratePropertyPathRecursive<UObject>(InContainer->GetClass(), InContainer, 0, InPropertyPath, InResolver);
-	}
+			return IteratePropertyPathRecursive<UObject>(InContainer->GetClass(), InContainer, 0, InPropertyPath, InResolver);
+		}
 
 		return false;
 	}
@@ -815,7 +815,7 @@ bool FCachedPropertyPath::Equals(const FString& Other) const
 	return ToString() == Other;
 }
 
-#if DO_CHECK
+#if DO_CHECK || USING_CODE_ANALYSIS
 void* FCachedPropertyPath::GetCachedContainer() const
 {
 	return CachedContainer;

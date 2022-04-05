@@ -74,7 +74,7 @@ public:
 	{
 		const float InvVolumeResolutionX = 1.0f / VolumeResolution.X;
 		const float InvVolumeResolutionY = 1.0f / VolumeResolution.Y;
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), UVScaleBias, FVector4(
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), UVScaleBias, FVector4f(
 			(VolumeBounds.MaxX - VolumeBounds.MinX) * InvVolumeResolutionX,
 			(VolumeBounds.MaxY - VolumeBounds.MinY) * InvVolumeResolutionY,
 			VolumeBounds.MinX * InvVolumeResolutionX,
@@ -127,23 +127,22 @@ public:
 	{
 		// Used as a non-indexed triangle strip, so 4 vertices per quad
 		const uint32 Size = 4 * sizeof(FScreenVertex);
-		FRHIResourceCreateInfo CreateInfo;
-		void* Buffer = nullptr;
-		VertexBufferRHI = RHICreateAndLockVertexBuffer(Size, BUF_Static, CreateInfo, Buffer);		
-		FScreenVertex* DestVertex = (FScreenVertex*)Buffer;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FVolumeRasterizeVertexBuffer"));
+		VertexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		FScreenVertex* DestVertex = (FScreenVertex*)RHILockBuffer(VertexBufferRHI, 0, Size, RLM_WriteOnly);
 
 		// Setup a full - render target quad
 		// A viewport and UVScaleBias will be used to implement rendering to a sub region
-		DestVertex[0].Position = FVector2D(1, -GProjectionSignY);
-		DestVertex[0].UV = FVector2D(1, 1);
-		DestVertex[1].Position = FVector2D(1, GProjectionSignY);
-		DestVertex[1].UV = FVector2D(1, 0);
-		DestVertex[2].Position = FVector2D(-1, -GProjectionSignY);
-		DestVertex[2].UV = FVector2D(0, 1);
-		DestVertex[3].Position = FVector2D(-1, GProjectionSignY);
-		DestVertex[3].UV = FVector2D(0, 0);
+		DestVertex[0].Position = FVector2f(1, -GProjectionSignY);
+		DestVertex[0].UV = FVector2f(1, 1);
+		DestVertex[1].Position = FVector2f(1, GProjectionSignY);
+		DestVertex[1].UV = FVector2f(1, 0);
+		DestVertex[2].Position = FVector2f(-1, -GProjectionSignY);
+		DestVertex[2].UV = FVector2f(0, 1);
+		DestVertex[3].Position = FVector2f(-1, GProjectionSignY);
+		DestVertex[3].UV = FVector2f(0, 0);
 
-		RHIUnlockVertexBuffer(VertexBufferRHI);      
+		RHIUnlockBuffer(VertexBufferRHI);      
 	}
 };
 

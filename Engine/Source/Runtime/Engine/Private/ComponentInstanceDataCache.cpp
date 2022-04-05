@@ -80,7 +80,7 @@ public:
 			FDuplicatedObject DupObjectInfo = DuplicatedObjectAnnotation.GetAnnotation( Object );
 			if( !DupObjectInfo.IsDefault() )
 			{
-				Result = DupObjectInfo.DuplicatedObject;
+				Result = DupObjectInfo.DuplicatedObject.GetEvenIfUnreachable();
 			}
 			else if (Object->GetOuter() == Component)
 			{
@@ -150,6 +150,11 @@ public:
 		return *this;
 	}
 
+	virtual FArchive& operator<<(FObjectPtr& ObjectPtr) override
+	{
+		return FArchiveUObject::SerializeObjectPtr(*this, ObjectPtr);
+	}
+
 private:
 	const UActorComponent* Component;
 	FActorComponentInstanceData& ActorInstanceData;
@@ -192,7 +197,7 @@ public:
 		// UObject pointer are serialized as Index in ActorInstanceData
 		int32 ReferenceIndex = INDEX_NONE;
 		*this << ReferenceIndex;
-		Object = ActorInstanceData.ReferencedObjects.IsValidIndex(ReferenceIndex) ? ActorInstanceData.ReferencedObjects[ReferenceIndex] : nullptr;
+		Object = ActorInstanceData.ReferencedObjects.IsValidIndex(ReferenceIndex) ? ToRawPtr(ActorInstanceData.ReferencedObjects[ReferenceIndex]) : nullptr;
 		return *this;
 	}
 
@@ -201,6 +206,11 @@ public:
 		UObject* Obj = LazyObjectPtr.Get();
 		*this << Obj;
 		return *this;
+	}
+
+	virtual FArchive& operator<<(FObjectPtr& ObjectPtr) override
+	{
+		return FArchiveUObject::SerializeObjectPtr(*this, ObjectPtr);
 	}
 
 	FActorComponentInstanceData& ActorInstanceData;
@@ -367,9 +377,17 @@ void FActorComponentInstanceData::ApplyToComponent(UActorComponent* Component, c
 {
 	// After the user construction script has run we will re-apply all the cached changes that do not conflict
 	// with a change that the user construction script made.
-	if (CacheApplyPhase == ECacheApplyPhase::PostUserConstructionScript && SavedProperties.Num() > 0)
+	if ((CacheApplyPhase == ECacheApplyPhase::PostUserConstructionScript || CacheApplyPhase == ECacheApplyPhase::NonConstructionScript) && SavedProperties.Num() > 0)
 	{
-		Component->DetermineUCSModifiedProperties();
+		if (CacheApplyPhase == ECacheApplyPhase::PostUserConstructionScript)
+		{
+			Component->DetermineUCSModifiedProperties();
+		}
+		else if (CacheApplyPhase == ECacheApplyPhase::NonConstructionScript)
+		{
+			// When this case is used, we want to apply all properties, even UCS modified ones
+			Component->UCSModifiedProperties.Reset();
+		}
 
 		for (const FActorComponentDuplicatedObjectData& DuplicatedObjectData : DuplicatedObjects)
 		{
@@ -385,10 +403,7 @@ void FActorComponentInstanceData::ApplyToComponent(UActorComponent* Component, c
 
 		FComponentPropertyReader ComponentPropertyReader(Component, *this);
 
-		if (Component->IsRegistered())
-		{
-			Component->ReregisterComponent();
-		}
+		Component->PostApplyToComponent();
 	}
 }
 
@@ -621,7 +636,7 @@ void FComponentInstanceDataCache::ApplyToActor(AActor* Actor, const ECacheApplyP
 			check(Actor->GetRootComponent());
 
 			USceneComponent* SceneComponent = InstanceTransformPair.Key;
-			if (SceneComponent && (SceneComponent->GetAttachParent() == nullptr || SceneComponent->GetAttachParent()->IsPendingKill()))
+			if (SceneComponent && !IsValid(SceneComponent))
 			{
 				SceneComponent->AttachToComponent(Actor->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
 				SceneComponent->SetRelativeTransform(InstanceTransformPair.Value);

@@ -21,9 +21,6 @@
 #include "UnrealEngine.h"
 #include "EngineUtils.h"
 
-#include "Matinee/MatineeActor.h"
-#include "Matinee/InterpData.h"
-#include "Matinee/InterpGroupInst.h"
 #include "Net/OnlineEngineInterface.h"
 #include "SceneManagement.h"
 #include "Physics/PhysicsInterfaceCore.h"
@@ -50,7 +47,7 @@ DEFINE_LOG_CATEGORY(LogPlayerManagement);
 static TAutoConsoleVariable<int32> CVarViewportTest(
 	TEXT("r.Test.ConstrainedView"),
 	0,
-	TEXT("Allows to test different viewport rectangle configuations (in game only) as they can happen when using Matinee/Editor.\n")
+	TEXT("Allows to test different viewport rectangle configuations (in game only) as they can happen when using cinematics/Editor.\n")
 	TEXT("0: off(default)\n")
 	TEXT("1..7: Various Configuations"),
 	ECVF_RenderThreadSafe);
@@ -105,7 +102,7 @@ bool FLocalPlayerContext::IsValid() const
 	{
 		if (UWorld* WorldPtr = GetWorld())
 		{
-			if (APlayerController* PC = (WorldPtr ? LocalPlayerPtr->GetPlayerController(WorldPtr) : LocalPlayerPtr->PlayerController))
+			if (APlayerController* PC = (WorldPtr ? LocalPlayerPtr->GetPlayerController(WorldPtr) : ToRawPtr(LocalPlayerPtr->PlayerController)))
 			{
 				return (PC->Player != nullptr);
 			}
@@ -152,7 +149,7 @@ APlayerController* FLocalPlayerContext::GetPlayerController() const
 {
 	ULocalPlayer* LocalPlayerPtr = GetLocalPlayer();
 	UWorld* WorldPtr = World.Get();
-	return (WorldPtr ? LocalPlayerPtr->GetPlayerController(WorldPtr) : LocalPlayerPtr->PlayerController);
+	return (WorldPtr ? LocalPlayerPtr->GetPlayerController(WorldPtr) : ToRawPtr(LocalPlayerPtr->PlayerController));
 }
 
 class AGameStateBase* FLocalPlayerContext::GetGameState() const
@@ -213,7 +210,7 @@ bool FLocalPlayerContext::IsFromLocalPlayer(const AActor* ActorToTest) const
 		{
 			if (UWorld* WorldPtr = GetWorld())
 			{
-				if (APlayerController* PC = (WorldPtr ? LocalPlayerPtr->GetPlayerController(WorldPtr) : LocalPlayerPtr->PlayerController))
+				if (APlayerController* PC = (WorldPtr ? LocalPlayerPtr->GetPlayerController(WorldPtr) : ToRawPtr(LocalPlayerPtr->PlayerController)))
 				{
 					if (   ActorToTest == PC
 					    || ActorToTest == PC->GetPawn()
@@ -251,11 +248,14 @@ void ULocalPlayer::PostInitProperties()
 			NumViews = GEngine->StereoRenderingDevice->GetDesiredNumberOfViews(true);
 			check(NumViews > 0);			
 		}
-				
+
+		const UWorld* CurrentWorld = GetWorld();
+		const ERHIFeatureLevel::Type FeatureLevel = CurrentWorld ? CurrentWorld->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
+
 		ViewStates.SetNum(NumViews);
 		for (auto& State : ViewStates)
 		{
-			State.Allocate();
+			State.Allocate(FeatureLevel);
 		}		
 	}
 }
@@ -281,7 +281,7 @@ void ULocalPlayer::PlayerRemoved()
 bool ULocalPlayer::SpawnPlayActor(const FString& URL,FString& OutError, UWorld* InWorld)
 {
 	check(InWorld);
-	if ( InWorld->IsServer() )
+	if (!InWorld->IsNetMode(NM_Client))
 	{
 		FURL PlayerURL(NULL, *URL, TRAVEL_Absolute);
 
@@ -336,7 +336,7 @@ void ULocalPlayer::SendSplitJoin(TArray<FString>& Options)
 		NetDriver = World->GetNetDriver();
 	}
 
-	if (World == NULL || NetDriver == NULL || NetDriver->ServerConnection == NULL || NetDriver->ServerConnection->State != USOCK_Open)
+	if (World == NULL || NetDriver == NULL || NetDriver->ServerConnection == NULL || NetDriver->ServerConnection->GetConnectionState() != USOCK_Open)
 	{
 		UE_LOG(LogPlayerManagement, Warning, TEXT("SendSplitJoin(): Not connected to a server"));
 	}
@@ -485,7 +485,7 @@ public:
 			else
 			{
 				FMinimalViewInfo MinViewInfo;
-				Player->GetViewPoint(MinViewInfo, eSSP_FULL);
+				Player->GetViewPoint(MinViewInfo);
 				PlayerState.ViewPoint.Location = MinViewInfo.Location;
 				PlayerState.ViewPoint.Rotation = MinViewInfo.Rotation;
 				PlayerState.ViewPoint.FOV = MinViewInfo.FOV;
@@ -503,7 +503,7 @@ public:
 			else
 			{
 				FMinimalViewInfo MinViewInfo;
-				Player->GetViewPoint(MinViewInfo, eSSP_FULL);
+				Player->GetViewPoint(MinViewInfo);
 				PlayerState.ViewPoint.Location = MinViewInfo.Location;
 				PlayerState.ViewPoint.Rotation = MinViewInfo.Rotation;
 				PlayerState.ViewPoint.FOV = MinViewInfo.FOV;
@@ -517,7 +517,7 @@ public:
 			bool bAnyEmpty = false;
 			for (int32 i = 0; i < Args.Num(); ++i)
 			{
-				bAnyEmpty |= Args[0].Len() == 0;
+				bAnyEmpty |= Args[i].Len() == 0;
 			}
 			if (bAnyEmpty)
 			{
@@ -535,7 +535,7 @@ public:
 			bool bAnyEmpty = false;
 			for (int32 i = 0; i < Args.Num(); ++i)
 			{
-				bAnyEmpty |= Args[0].Len() == 0;
+				bAnyEmpty |= Args[i].Len() == 0;
 			}
 			if (bAnyEmpty)
 			{
@@ -700,7 +700,7 @@ FAutoConsoleCommand FLockedViewState::CmdCopyLockedViews(
 	FConsoleCommandDelegate::CreateStatic(FLockedViewState::CopyLockedViews)
 	);
 
-void ULocalPlayer::GetViewPoint(FMinimalViewInfo& OutViewInfo, EStereoscopicPass StereoPass) const
+void ULocalPlayer::GetViewPoint(FMinimalViewInfo& OutViewInfo) const
 {
 	if (FLockedViewState::Get().GetViewPoint(this, OutViewInfo.Location, OutViewInfo.Rotation, OutViewInfo.FOV) == false
 		&& PlayerController != NULL)
@@ -717,10 +717,13 @@ void ULocalPlayer::GetViewPoint(FMinimalViewInfo& OutViewInfo, EStereoscopicPass
 		}
 	}
 
-	for (auto& ViewExt : GEngine->ViewExtensions->GatherActiveExtensions(FSceneViewExtensionContext(ViewportClient->Viewport)))
+	if (ViewportClient != nullptr)
 	{
-		ViewExt->SetupViewPoint(PlayerController, OutViewInfo);
-	};
+		for (auto& ViewExt : GEngine->ViewExtensions->GatherActiveExtensions(FSceneViewExtensionContext(ViewportClient->Viewport)))
+		{
+			ViewExt->SetupViewPoint(PlayerController, OutViewInfo);
+		};
+	}
 
 	// We store the originally desired FOV as other classes may adjust to account for ultra-wide aspect ratios
 	OutViewInfo.DesiredFOV = OutViewInfo.FOV;
@@ -730,7 +733,7 @@ bool ULocalPlayer::CalcSceneViewInitOptions(
 	struct FSceneViewInitOptions& ViewInitOptions,
 	FViewport* Viewport,
 	class FViewElementDrawer* ViewDrawer,
-	EStereoscopicPass StereoPass)
+	int32 StereoViewIndex)
 {
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_CalcSceneViewInitOptions);
 	if ((PlayerController == NULL) || (Size.X <= 0.f) || (Size.Y <= 0.f) || (Viewport == NULL))
@@ -738,7 +741,7 @@ bool ULocalPlayer::CalcSceneViewInitOptions(
 		return false;
 	}
 	// get the projection data
-	if (GetProjectionData(Viewport, StereoPass, /*inout*/ ViewInitOptions) == false)
+	if (GetProjectionData(Viewport, /*inout*/ ViewInitOptions, StereoViewIndex) == false)
 	{
 		// Return NULL if this we didn't get back the info we needed
 		return false;
@@ -773,27 +776,43 @@ bool ULocalPlayer::CalcSceneViewInitOptions(
 		ViewInitOptions.bInCameraCut = PlayerController->PlayerCameraManager->bGameCameraCutThisFrame;
 	}
 
-	check(PlayerController && PlayerController->GetWorld());
-
-	uint32 ViewIndex = 0;
 	if (GEngine->StereoRenderingDevice.IsValid())
 	{
-		ViewIndex = GEngine->StereoRenderingDevice->GetViewIndexForPass(StereoPass);
+		ViewInitOptions.StereoPass = GEngine->StereoRenderingDevice->GetViewPassForIndex(StereoViewIndex != INDEX_NONE, StereoViewIndex);
 	}
 
-	if (!ViewStates.IsValidIndex(ViewIndex))
+	check(PlayerController && PlayerController->GetWorld());
+
+	const uint32 ViewIndex = StereoViewIndex != INDEX_NONE ? StereoViewIndex : 0;
+
+	// Make sure the ViewStates array has enough elements for the given ViewIndex.
 	{
-		ViewStates.EmplaceAt(ViewIndex);
-		ViewStates[ViewIndex].Allocate();
+		const int32 RequiredViewStates = (ViewIndex + 1) - ViewStates.Num();
+		
+		if (RequiredViewStates > 0)
+		{
+			ViewStates.AddDefaulted(RequiredViewStates);		
+		}
+	}
+
+	// Allocate the current ViewState if necessary
+	if (ViewStates[ViewIndex].GetReference() == nullptr)
+	{
+		const UWorld* CurrentWorld = GetWorld();
+		const ERHIFeatureLevel::Type FeatureLevel = CurrentWorld ? CurrentWorld->FeatureLevel.GetValue() : GMaxRHIFeatureLevel;
+
+		ViewStates[ViewIndex].Allocate(FeatureLevel);
 	}
 
 	ViewInitOptions.SceneViewStateInterface = ViewStates[ViewIndex].GetReference();
 	ViewInitOptions.ViewActor = PlayerController->GetViewTarget();
+
+	// TODO: Switch to GetLocalPlayerIndex during GetControllerId deprecation, this is only used by MotionControllerComponent
 	ViewInitOptions.PlayerIndex = GetControllerId();
 	ViewInitOptions.ViewElementDrawer = ViewDrawer;
 	ViewInitOptions.BackgroundColor = FLinearColor::Black;
 	ViewInitOptions.LODDistanceFactor = PlayerController->LocalPlayerCachedLODDistanceFactor;
-	ViewInitOptions.StereoPass = StereoPass;
+	ViewInitOptions.StereoViewIndex = StereoViewIndex;
 	ViewInitOptions.WorldToMetersScale = PlayerController->GetWorldSettings()->WorldToMeters;
 	ViewInitOptions.CursorPos = Viewport->HasMouseCapture() ? FIntPoint(-1, -1) : FIntPoint(Viewport->GetMouseX(), Viewport->GetMouseY());
 	ViewInitOptions.OriginOffsetThisFrame = PlayerController->GetWorld()->OriginOffsetThisFrame;
@@ -806,13 +825,13 @@ FSceneView* ULocalPlayer::CalcSceneView( class FSceneViewFamily* ViewFamily,
 	FRotator& OutViewRotation,
 	FViewport* Viewport,
 	class FViewElementDrawer* ViewDrawer,
-	EStereoscopicPass StereoPass)
+	int32 StereoViewIndex)
 {
 	SCOPE_CYCLE_COUNTER(STAT_CalcSceneView);
 
 	FSceneViewInitOptions ViewInitOptions;
 
-	if (!CalcSceneViewInitOptions(ViewInitOptions, Viewport, ViewDrawer, StereoPass))
+	if (!CalcSceneViewInitOptions(ViewInitOptions, Viewport, ViewDrawer, StereoViewIndex))
 	{
 		return nullptr;
 	}
@@ -820,9 +839,9 @@ FSceneView* ULocalPlayer::CalcSceneView( class FSceneViewFamily* ViewFamily,
 	// Get the viewpoint...technically doing this twice
 	// but it makes GetProjectionData better
 	FMinimalViewInfo ViewInfo;
-	GetViewPoint(ViewInfo, StereoPass);
-	OutViewLocation = ViewInfo.Location;
-	OutViewRotation = ViewInfo.Rotation;
+	GetViewPoint(ViewInfo);
+	ViewInitOptions.ViewLocation = ViewInfo.Location;
+	ViewInitOptions.ViewRotation = ViewInfo.Rotation;
 	ViewInitOptions.bUseFieldOfViewForLOD = ViewInfo.bUseFieldOfViewForLOD;
 	ViewInitOptions.FOV = ViewInfo.FOV;
 	ViewInitOptions.DesiredFOV = ViewInfo.DesiredFOV;
@@ -838,7 +857,7 @@ FSceneView* ULocalPlayer::CalcSceneView( class FSceneViewFamily* ViewFamily,
 	else
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_BuildHiddenComponentList);
-		PlayerController->BuildHiddenComponentList(OutViewLocation, /*out*/ ViewInitOptions.HiddenPrimitives);
+		PlayerController->BuildHiddenComponentList(ViewInfo.Location, /*out*/ ViewInitOptions.HiddenPrimitives);
 	}
 
 	//@TODO: SPLITSCREEN: This call will have an issue with splitscreen, as the show flags are shared across the view family
@@ -846,15 +865,15 @@ FSceneView* ULocalPlayer::CalcSceneView( class FSceneViewFamily* ViewFamily,
 
 	FSceneView* const View = new FSceneView(ViewInitOptions);
 
-	View->ViewLocation = OutViewLocation;
-	View->ViewRotation = OutViewRotation;
+	OutViewLocation = View->ViewLocation;
+	OutViewRotation = View->ViewRotation;
 	// Pass on the previous view transform from the view info (probably provided by the camera if set)
 	View->PreviousViewTransform = ViewInfo.PreviousViewTransform;
 
 	ViewFamily->Views.Add(View);
 
 	{
-		View->StartFinalPostprocessSettings(OutViewLocation);
+		View->StartFinalPostprocessSettings(ViewInfo.Location);
 
 		// CameraAnim override
 		if (PlayerController->PlayerCameraManager)
@@ -870,7 +889,6 @@ FSceneView* ULocalPlayer::CalcSceneView( class FSceneViewFamily* ViewFamily,
 		}
 
 		//	CAMERA OVERRIDE
-		//	NOTE: Matinee works through this channel
 		View->OverridePostProcessSettings(ViewInfo.PostProcessSettings, ViewInfo.PostProcessBlendWeight);
 
 		if (PlayerController->PlayerCameraManager)
@@ -882,7 +900,7 @@ FSceneView* ULocalPlayer::CalcSceneView( class FSceneViewFamily* ViewFamily,
 		{
 			FPostProcessSettings StereoDeviceOverridePostProcessinSettings;
 			float BlendWeight = 1.0f;
-			bool StereoSettingsAvailable = GEngine->StereoRenderingDevice->OverrideFinalPostprocessSettings(&StereoDeviceOverridePostProcessinSettings, StereoPass, BlendWeight);
+			bool StereoSettingsAvailable = GEngine->StereoRenderingDevice->OverrideFinalPostprocessSettings(&StereoDeviceOverridePostProcessinSettings, View->StereoPass, View->StereoViewIndex, BlendWeight);
 			if (StereoSettingsAvailable)
 			{
 				View->OverridePostProcessSettings(StereoDeviceOverridePostProcessinSettings, BlendWeight);
@@ -915,7 +933,7 @@ bool ULocalPlayer::GetPixelBoundingBox(const FBox& ActorBox, FVector2D& OutLower
 	{
 		// get the projection data
 		FSceneViewProjectionData ProjectionData;
-		if (GetProjectionData(ViewportClient->Viewport, eSSP_FULL, /*out*/ ProjectionData) == false)
+		if (GetProjectionData(ViewportClient->Viewport, /*out*/ ProjectionData) == false)
 		{
 			return false;
 		}
@@ -993,7 +1011,7 @@ bool ULocalPlayer::GetPixelPoint(const FVector& InPoint, FVector2D& OutPoint, co
 	{
 		// get the projection data
 		FSceneViewProjectionData ProjectionData;
-		if (GetProjectionData(ViewportClient->Viewport, eSSP_FULL, /*inout*/ ProjectionData) == false)
+		if (GetProjectionData(ViewportClient->Viewport, /*inout*/ ProjectionData) == false)
 		{
 			return false;
 		}
@@ -1038,7 +1056,7 @@ bool ULocalPlayer::GetPixelPoint(const FSceneViewProjectionData& ProjectionData,
 	return bInFrontOfCamera;
 }
 
-bool ULocalPlayer::GetProjectionData(FViewport* Viewport, EStereoscopicPass StereoPass, FSceneViewProjectionData& ProjectionData) const
+bool ULocalPlayer::GetProjectionData(FViewport* Viewport, FSceneViewProjectionData& ProjectionData, int32 StereoViewIndex) const
 {
 	// If the actor
 	if ((Viewport == NULL) || (PlayerController == NULL) || (Viewport->GetSizeXY().X == 0) || (Viewport->GetSizeXY().Y == 0) || (Size.X == 0) || (Size.Y == 0))
@@ -1088,16 +1106,16 @@ bool ULocalPlayer::GetProjectionData(FViewport* Viewport, EStereoscopicPass Ster
 
 	// Get the viewpoint.
 	FMinimalViewInfo ViewInfo;
-	GetViewPoint(/*out*/ ViewInfo, StereoPass);
+	GetViewPoint(/*out*/ ViewInfo);
 
 	// If stereo rendering is enabled, update the size and offset appropriately for this pass
-	const bool bNeedStereo = IStereoRendering::IsStereoEyePass(StereoPass) && GEngine->IsStereoscopic3D();
+	const bool bNeedStereo = StereoViewIndex != INDEX_NONE && GEngine->IsStereoscopic3D();
 	const bool bIsHeadTrackingAllowed =
 		GEngine->XRSystem.IsValid() &&
 		(GetWorld() != nullptr ? GEngine->XRSystem->IsHeadTrackingAllowedForWorld(*GetWorld()) : GEngine->XRSystem->IsHeadTrackingAllowed());
 	if (bNeedStereo)
 	{
-		GEngine->StereoRenderingDevice->AdjustViewRect(StereoPass, X, Y, SizeX, SizeY);
+		GEngine->StereoRenderingDevice->AdjustViewRect(StereoViewIndex, X, Y, SizeX, SizeY);
 	}
 
 	// scale distances for cull distance purposes by the ratio of our current FOV to the default FOV
@@ -1123,7 +1141,7 @@ bool ULocalPlayer::GetProjectionData(FViewport* Viewport, EStereoscopicPass Ster
 
 		if (GEngine->StereoRenderingDevice.IsValid())
 		{
-			GEngine->StereoRenderingDevice->CalculateStereoViewOffset(StereoPass, ViewInfo.Rotation, GetWorld()->GetWorldSettings()->WorldToMeters, StereoViewLocation);
+			GEngine->StereoRenderingDevice->CalculateStereoViewOffset(StereoViewIndex, ViewInfo.Rotation, GetWorld()->GetWorldSettings()->WorldToMeters, StereoViewLocation);
 		}
     }
 
@@ -1149,7 +1167,7 @@ bool ULocalPlayer::GetProjectionData(FViewport* Viewport, EStereoscopicPass Ster
 	else
 	{
 		// Let the stereoscopic rendering device handle creating its own projection matrix, as needed
-		ProjectionData.ProjectionMatrix = GEngine->StereoRenderingDevice->GetStereoProjectionMatrix(StereoPass);
+		ProjectionData.ProjectionMatrix = GEngine->StereoRenderingDevice->GetStereoProjectionMatrix(StereoViewIndex);
 
 		// calculate the out rect
 		ProjectionData.SetViewRectangle(FIntRect(X, Y, X + SizeX, Y + SizeY));
@@ -1324,7 +1342,8 @@ bool ULocalPlayer::HandleExecCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 
 bool ULocalPlayer::HandleToggleDrawEventsCommand( const TCHAR* Cmd, FOutputDevice& Ar )
 {
-#if WITH_PROFILEGPU
+//Added ability to toggle this on during a test build if needed
+#if WITH_PROFILEGPU || UE_BUILD_TEST
 	if( GetEmitDrawEvents() )
 	{
 		SetEmitDrawEvents(false);
@@ -1362,52 +1381,6 @@ bool ULocalPlayer::HandleToggleStreamingVolumesCommand( const TCHAR* Cmd, FOutpu
 	}
 	return true;
 }
-
-bool ULocalPlayer::HandleCancelMatineeCommand( const TCHAR* Cmd, FOutputDevice& Ar )
-{
-	// allow optional parameter for initial time in the matinee that this won't work (ie,
-	// 'cancelmatinee 5' won't do anything in the first 5 seconds of the matinee)
-	float InitialNoSkipTime = FCString::Atof(Cmd);
-
-	// is the player in cinematic mode?
-	if (PlayerController->bCinematicMode)
-	{
-		bool bFoundMatinee = false;
-		// if so, look for all active matinees that has this Player in a director group
-		for (TActorIterator<AMatineeActor> It(GetWorld()); It; ++It)
-		{
-			AMatineeActor* MatineeActor = *It;
-
-			// is it currently playing (and skippable)?
-			if (MatineeActor->bIsPlaying && MatineeActor->bIsSkippable && (MatineeActor->bClientSideOnly || MatineeActor->GetWorld()->IsServer()))
-			{
-				for (int32 GroupIndex = 0; GroupIndex < MatineeActor->GroupInst.Num(); GroupIndex++)
-				{
-					// is the PC the group actor?
-					if (MatineeActor->GroupInst[GroupIndex]->GetGroupActor() == PlayerController)
-					{
-						const float RightBeforeEndTime = 0.1f;
-						// make sure we aren';t already at the end (or before the allowed skip time)
-						if ((MatineeActor->InterpPosition < MatineeActor->MatineeData->InterpLength - RightBeforeEndTime) &&
-							(MatineeActor->InterpPosition >= InitialNoSkipTime))
-						{
-							// skip to end
-							MatineeActor->SetPosition(MatineeActor->MatineeData->InterpLength - RightBeforeEndTime, true);
-							bFoundMatinee = true;
-						}
-					}
-				}
-			}
-		}
-
-		if (bFoundMatinee)
-		{
-			FGameDelegates::Get().GetMatineeCancelledDelegate().Broadcast();
-		}
-	}
-	return true;
-}
-
 
 bool ULocalPlayer::Exec(UWorld* InWorld, const TCHAR* Cmd,FOutputDevice& Ar)
 {
@@ -1477,8 +1450,10 @@ bool ULocalPlayer::Exec(UWorld* InWorld, const TCHAR* Cmd,FOutputDevice& Ar)
 		// Reset states (e.g. TemporalAA index) to make rendering more deterministic (for automated screenshot verification)
 		for (auto& State : ViewStates)
 		{
-			FSceneViewStateInterface* Ref = State.GetReference();
-			Ref->ResetViewState();
+			if (FSceneViewStateInterface* Ref = State.GetReference())
+			{
+				Ref->ResetViewState();
+			}
 		}
 
 		return true;
@@ -1520,12 +1495,6 @@ bool ULocalPlayer::Exec(UWorld* InWorld, const TCHAR* Cmd,FOutputDevice& Ar)
 	else if( FParse::Command(&Cmd,TEXT("TOGGLESTREAMINGVOLUMES")) )
 	{
 		return HandleToggleStreamingVolumesCommand( Cmd, Ar );
-	}
-	// @hack: This is a test matinee skipping function, quick and dirty to see if it's good enough for
-	// gameplay. Will fix up better when we have some testing done!
-	else if (FParse::Command(&Cmd, TEXT("CANCELMATINEE")))
-	{
-		return HandleCancelMatineeCommand( Cmd, Ar );
 	}
 	else if(ViewportClient && ViewportClient->Exec( InWorld, Cmd,Ar))
 	{
@@ -1581,11 +1550,40 @@ void ULocalPlayer::SetControllerId( int32 NewControllerId )
 		ControllerId = -1;
 
 		// see if another player is already using this ControllerId; if so, swap controllerIds with them
+		// TODO: Re-evaluate if this swap logic makes sense during controller id deprecation
 		GEngine->SwapControllerId(this, CurrentControllerId, NewControllerId);
 		ControllerId = NewControllerId;
 
 		OnControllerIdChanged().Broadcast(NewControllerId, CurrentControllerId);
+
+		if (GEngine->IsControllerIdUsingPlatformUserId())
+		{
+			// This won't recurse back because we've already modified ControllerId
+			SetPlatformUserId(FPlatformMisc::GetPlatformUserForUserIndex(NewControllerId));
+		}
 	}
+}
+
+void ULocalPlayer::SetPlatformUserId(FPlatformUserId InPlatformUserId)
+{
+	if (InPlatformUserId != PlatformUserId)
+	{
+		const FPlatformUserId CurrentPlatformUserId = PlatformUserId;
+
+		PlatformUserId = InPlatformUserId;
+		OnPlatformUserIdChanged().Broadcast(InPlatformUserId, CurrentPlatformUserId);
+
+		if (GEngine->IsControllerIdUsingPlatformUserId())
+		{
+			SetControllerId(FPlatformMisc::GetUserIndexForPlatformUser(PlatformUserId));
+		}
+	}
+}
+
+int32 ULocalPlayer::GetLocalPlayerIndex() const
+{
+	// TODO: Add caching
+	return GetIndexInGameInstance();
 }
 
 FString ULocalPlayer::GetNickname() const
@@ -1595,15 +1593,15 @@ FString ULocalPlayer::GetNickname() const
 	{
 		// Try to get platform identity first
 		FString PlatformNickname;
-		if (UOnlineEngineInterface::Get()->GetPlayerPlatformNickname(World, ControllerId, PlatformNickname))
+		if (UOnlineEngineInterface::Get()->GetPlayerPlatformNickname(World, PlatformUserId, PlatformNickname))
 		{
 			return PlatformNickname;
 		}
 
-		auto UniqueId = GetPreferredUniqueNetId();
+		FUniqueNetIdRepl UniqueId = GetPreferredUniqueNetId();
 		if (UniqueId.IsValid())
 		{
-			return UOnlineEngineInterface::Get()->GetPlayerNickname(World, *UniqueId);
+			return UOnlineEngineInterface::Get()->GetPlayerNickname(World, UniqueId);
 		}
 	}
 
@@ -1615,7 +1613,18 @@ FUniqueNetIdRepl ULocalPlayer::GetUniqueNetIdFromCachedControllerId() const
 	UWorld* World = GetWorld();
 	if (World != nullptr)
 	{
-		return FUniqueNetIdRepl(UOnlineEngineInterface::Get()->GetUniquePlayerId(World, ControllerId));
+		return FUniqueNetIdRepl(UOnlineEngineInterface::Get()->GetUniquePlayerIdWrapper(World, ControllerId));
+	}
+
+	return FUniqueNetIdRepl();
+}
+
+FUniqueNetIdRepl ULocalPlayer::GetUniqueNetIdForPlatformUser() const
+{
+	UWorld* World = GetWorld();
+	if (World != nullptr)
+	{
+		return FUniqueNetIdRepl(UOnlineEngineInterface::Get()->GetUniquePlayerIdWrapper(World, PlatformUserId));
 	}
 
 	return FUniqueNetIdRepl();
@@ -1631,6 +1640,16 @@ void ULocalPlayer::SetCachedUniqueNetId(FUniqueNetIdPtr NewUniqueNetId)
 	CachedUniqueNetId = NewUniqueNetId;
 }
 
+void ULocalPlayer::SetCachedUniqueNetId(TYPE_OF_NULLPTR)
+{
+	CachedUniqueNetId = FUniqueNetIdRepl(nullptr);
+}
+
+void ULocalPlayer::SetCachedUniqueNetId(const FUniqueNetIdRepl& NewUniqueNetId)
+{
+	CachedUniqueNetId = NewUniqueNetId;
+}
+
 FUniqueNetIdRepl ULocalPlayer::GetPreferredUniqueNetId() const
 {
 	// Prefer the cached unique net id (only if it's valid)
@@ -1640,8 +1659,8 @@ FUniqueNetIdRepl ULocalPlayer::GetPreferredUniqueNetId() const
 		return GetCachedUniqueNetId();
 	}
 
-	// If the cached unique net id is not valid, then get the one paired with the controller
-	return GetUniqueNetIdFromCachedControllerId();
+	// If the cached unique net id is not valid, then use the platfomr user
+	return GetUniqueNetIdForPlatformUser();
 }
 
 bool ULocalPlayer::IsCachedUniqueNetIdPairedWithControllerId() const
@@ -1669,6 +1688,19 @@ UWorld* ULocalPlayer::GetWorld() const
 UGameInstance* ULocalPlayer::GetGameInstance() const
 {
 	return ViewportClient ? ViewportClient->GetGameInstance() : nullptr;
+}
+
+int32 ULocalPlayer::GetIndexInGameInstance() const
+{
+	int32 FoundIndex = INDEX_NONE;
+	UGameInstance* GameInstance = GetGameInstance();
+	if (GameInstance)
+	{
+		const TArray<ULocalPlayer*>& LocalPlayers = GameInstance->GetLocalPlayers();
+		LocalPlayers.Find(const_cast<ULocalPlayer*>(this), FoundIndex);
+	}
+
+	return FoundIndex;
 }
 
 void ULocalPlayer::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)

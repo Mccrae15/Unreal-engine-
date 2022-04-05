@@ -15,6 +15,7 @@
 
 #include "EdGraphUtilities.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "KismetCastingUtils.h"
 #include "KismetCompiler.h"
 #include "Net/Core/PushModel/PushModelMacros.h"
 #include "PushModelHelpers.h"
@@ -147,8 +148,22 @@ void FKCHandler_CallFunction::CreateFunctionCallStatement(FKismetFunctionContext
 
 		// Grab the special case structs that use their own literal path
 		UScriptStruct* VectorStruct = TBaseStructure<FVector>::Get();
+		UScriptStruct* Vector3fStruct = TVariantStructure<FVector3f>::Get();
 		UScriptStruct* RotatorStruct = TBaseStructure<FRotator>::Get();
 		UScriptStruct* TransformStruct = TBaseStructure<FTransform>::Get();
+
+		// If a function parameter needs an implicit double<->float cast *and* it's a non-const reference,
+		// then we need to copy the value of the casted temporary *back* to its source.
+		// 
+		// Just to illustrate the scenario, take the following example in pseudocode:
+		// 
+		//     double Input = 2.0
+		//     float CastedInput = (float)Input					; Narrowing conversion needed for function input
+		//     NativeFunctionWithReferenceParam(CastedInput)	; CastedInput has possibly changed since this function takes a float&
+		//     Input = (double)CastedInput						; Now we need to propagate that change back to Input
+		//
+		using CastEntry = TTuple<FBPTerminal*, FBPTerminal*, EKismetCompiledStatementType>;
+		TArray<CastEntry> ModifiedCastInputs;
 
 		// Check each property
 		bool bMatchedAllParams = true;
@@ -178,6 +193,7 @@ void FKCHandler_CallFunction::CreateFunctionCallStatement(FKismetFunctionContext
 								{
 									UScriptStruct* Struct = StructProperty->Struct;
 									if( Struct != VectorStruct
+										&& Struct != Vector3fStruct
 										&& Struct != RotatorStruct
 										&& Struct != TransformStruct )
 									{
@@ -235,6 +251,34 @@ void FKCHandler_CallFunction::CreateFunctionCallStatement(FKismetFunctionContext
 									CastStatement.RHS.Add(*Term);
 
 									RHSTerm = *InterfaceTerm;
+								}
+
+								{
+									using namespace UE::KismetCompiler;
+
+									TOptional<TPair<FBPTerminal*, EKismetCompiledStatementType>> ImplicitCastEntry =
+										CastingUtils::InsertImplicitCastStatement(Context, PinMatch, RHSTerm);
+
+									if (ImplicitCastEntry)
+									{
+										FBPTerminal* CastTerm = ImplicitCastEntry->Get<0>();
+
+										bool bIsNonConstReference =
+											Property->HasAllPropertyFlags(CPF_OutParm | CPF_ReferenceParm) &&
+											!Property->HasAllPropertyFlags(CPF_ConstParm);
+
+										if (bIsNonConstReference)
+										{
+											TOptional<EKismetCompiledStatementType> CastType = 
+												CastingUtils::GetInverseCastStatement(ImplicitCastEntry->Get<1>());
+
+											check(CastType.IsSet());
+
+											ModifiedCastInputs.Add(CastEntry{RHSTerm, CastTerm, *CastType});
+										}
+
+										RHSTerm = CastTerm;
+									}
 								}
 
 								int32 ParameterIndex = RHSTerms.Add(RHSTerm);
@@ -410,10 +454,6 @@ void FKCHandler_CallFunction::CreateFunctionCallStatement(FKismetFunctionContext
 				pSrcEventNode = CompilerContext.CallsIntoUbergraph.Find(Node);
 			}
 
-			bool bInlineEventCall = false;
-			bool bEmitInstrumentPushState = false;
-			FName EventName = NAME_None;
-
 			// Iterate over all the contexts this functions needs to be called on, and emit a call function statement for each
 			FBlueprintCompiledStatement* LatentStatement = nullptr;
 			for (FBPTerminal* Target : ContextTerms)
@@ -461,6 +501,25 @@ void FKCHandler_CallFunction::CreateFunctionCallStatement(FKismetFunctionContext
 					// to run AdditionalCompiledStatementHandling to satisify the DelegateNodeHandler
 					// implementation:
 					Statement.Type = KCST_CallDelegate;
+				}
+			}
+
+			{
+				using namespace UE::KismetCompiler;
+
+				for (const auto& It : ModifiedCastInputs)
+				{
+					FBPTerminal* LocalLHSTerm = It.Get<0>();
+					FBPTerminal* LocalRHSTerm = It.Get<1>();
+					EKismetCompiledStatementType LocalCastType = It.Get<2>();
+
+					check(LocalLHSTerm);
+					check(LocalRHSTerm);
+
+					FBlueprintCompiledStatement& CastStatement = Context.AppendStatementForNode(Node);
+					CastStatement.LHS = LocalLHSTerm;
+					CastStatement.Type = LocalCastType;
+					CastStatement.RHS.Add(LocalRHSTerm);
 				}
 			}
 
@@ -546,6 +605,8 @@ UClass* FKCHandler_CallFunction::GetTrueCallingClass(FKismetFunctionContext& Con
 
 void FKCHandler_CallFunction::RegisterNets(FKismetFunctionContext& Context, UEdGraphNode* Node)
 {
+	check(Node);
+
 	if (UFunction* Function = FindFunction(Context, Node))
 	{
 		TArray<FName> DefaultToSelfParamNames;
@@ -600,6 +661,8 @@ void FKCHandler_CallFunction::RegisterNets(FKismetFunctionContext& Context, UEdG
 
 	for (UEdGraphPin* Pin : Node->Pins)
 	{
+		check(Pin);
+
 		if ((Pin->Direction != EGPD_Input) || (Pin->LinkedTo.Num() == 0))
 		{
 			continue;
@@ -635,9 +698,13 @@ UFunction* FKCHandler_CallFunction::FindFunction(FKismetFunctionContext& Context
 
 	if (CallingContext)
 	{
+		const UBlueprint* BlueprintContext = UBlueprint::GetBlueprintFromClass(CallingContext);
+
+		// Redirect the calling context to the most up-to-date class (when not up-to-date,
+		// this will redirect to the Blueprint's skeleton class)
 		// It may be advisable to always do this branch in GetMostUpToDateClass, but
 		// being conservative:
-		if (!FBlueprintCompilationManager::IsGeneratedClassLayoutReady())
+		if (!BlueprintContext || (BlueprintContext->bBeingCompiled && !FBlueprintCompilationManager::IsGeneratedClassLayoutReady()) || (!BlueprintContext->bBeingCompiled && !BlueprintContext->IsUpToDate()))
 		{
 			CallingContext = FBlueprintEditorUtils::GetMostUpToDateClass(CallingContext);
 		}

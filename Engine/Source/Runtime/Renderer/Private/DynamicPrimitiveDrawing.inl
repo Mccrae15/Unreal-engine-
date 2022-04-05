@@ -27,11 +27,11 @@ struct FMeshBatchElement;
 struct TStatId;
 template<typename TTask> class TGraphTask;
 
-inline FViewElementPDI::FViewElementPDI(FViewInfo* InViewInfo,FHitProxyConsumer* InHitProxyConsumer,TArray<FPrimitiveUniformShaderParameters>* InDynamicPrimitiveShaderData):
+inline FViewElementPDI::FViewElementPDI(FViewInfo* InViewInfo,FHitProxyConsumer* InHitProxyConsumer, FGPUScenePrimitiveCollector* InDynamicPrimitiveCollector):
 	FPrimitiveDrawInterface(InViewInfo),
 	ViewInfo(InViewInfo),
 	HitProxyConsumer(InHitProxyConsumer),
-	DynamicPrimitiveShaderData(InDynamicPrimitiveShaderData)
+	DynamicPrimitiveCollector(InDynamicPrimitiveCollector)
 {}
 
 inline bool FViewElementPDI::IsHitTesting()
@@ -86,7 +86,8 @@ inline void FViewElementPDI::DrawSprite(
 	float UL,
 	float V,
 	float VL,
-	uint8 BlendMode
+	uint8 BlendMode,
+	float OpacityMaskRefVal
 	)
 {
 	FBatchedElements &Elements = GetElements(DepthPriorityGroup);
@@ -98,8 +99,9 @@ inline void FViewElementPDI::DrawSprite(
 		Sprite,
 		Color,
 		CurrentHitProxy ? CurrentHitProxy->Id : FHitProxyId(),
-		U,UL,V,VL,
-		BlendMode
+		U, UL, V, VL,
+		BlendMode,
+		OpacityMaskRefVal
 	);
 }
 
@@ -123,6 +125,29 @@ inline void FViewElementPDI::DrawLine(
 	FBatchedElements &Elements = GetElements(DepthPriorityGroup);
 
 	Elements.AddLine(
+		Start,
+		End,
+		Color,
+		CurrentHitProxy ? CurrentHitProxy->Id : FHitProxyId(),
+		Thickness,
+		DepthBias,
+		bScreenSpace
+	);
+}
+
+inline void FViewElementPDI::DrawTranslucentLine(
+	const FVector& Start,
+	const FVector& End,
+	const FLinearColor& Color,
+	uint8 DepthPriorityGroup,
+	float Thickness,
+	float DepthBias,
+	bool bScreenSpace
+)
+{
+	FBatchedElements& Elements = GetElements(DepthPriorityGroup);
+
+	Elements.AddTranslucentLine(
 		Start,
 		End,
 		Color,
@@ -193,13 +218,12 @@ inline int32 FViewElementPDI::DrawMesh(const FMeshBatch& Mesh)
 		}
 
 		{
-			TArray<FPrimitiveUniformShaderParameters>* DynamicPrimitiveShaderDataForRT = DynamicPrimitiveShaderData;
 			ERHIFeatureLevel::Type FeatureLevel = ViewInfo->GetFeatureLevel();
 
 			ENQUEUE_RENDER_COMMAND(FCopyDynamicPrimitiveShaderData)(
-				[NewMesh, DynamicPrimitiveShaderDataForRT, FeatureLevel](FRHICommandListImmediate& RHICmdList)
+				[NewMesh, DynamicPrimitiveCollectorForRT = DynamicPrimitiveCollector, FeatureLevel](FRHICommandListImmediate& RHICmdList)
 				{
-					const bool bPrimitiveShaderDataComesFromSceneBuffer = NewMesh->VertexFactory->GetPrimitiveIdStreamIndex(EVertexInputStreamType::Default) >= 0;
+					const bool bPrimitiveShaderDataComesFromSceneBuffer = NewMesh->VertexFactory->GetPrimitiveIdStreamIndex(FeatureLevel, EVertexInputStreamType::Default) >= 0;
 
 					for (int32 ElementIndex = 0; ElementIndex < NewMesh->Elements.Num(); ElementIndex++)
 					{
@@ -220,14 +244,18 @@ inline int32 FViewElementPDI::DrawMesh(const FMeshBatch& Mesh)
 					{
 						for (int32 Index = 0; Index < NewMesh->Elements.Num(); ++Index)
 						{
-							const TUniformBuffer<FPrimitiveUniformShaderParameters>* PrimitiveUniformBufferResource = NewMesh->Elements[Index].PrimitiveUniformBufferResource;
+							FMeshBatchElement& Element = NewMesh->Elements[Index];
+							const TUniformBuffer<FPrimitiveUniformShaderParameters>* PrimitiveUniformBufferResource = Element.PrimitiveUniformBufferResource;
 
 							if (PrimitiveUniformBufferResource)
 							{
-								const int32 DataIndex = DynamicPrimitiveShaderDataForRT->AddUninitialized(1);
-								NewMesh->Elements[Index].PrimitiveIdMode = PrimID_DynamicPrimitiveShaderData;
-								NewMesh->Elements[Index].DynamicPrimitiveShaderDataIndex = DataIndex;
-								FPlatformMemory::Memcpy(&(*DynamicPrimitiveShaderDataForRT)[DataIndex], PrimitiveUniformBufferResource->GetContents(), sizeof(FPrimitiveUniformShaderParameters));
+								Element.PrimitiveIdMode = PrimID_DynamicPrimitiveShaderData;
+								DynamicPrimitiveCollectorForRT->Add(
+									Element.DynamicPrimitiveData,
+									*reinterpret_cast<const FPrimitiveUniformShaderParameters*>(PrimitiveUniformBufferResource->GetContents()),
+									Element.NumInstances,
+									Element.DynamicPrimitiveIndex,
+									Element.DynamicPrimitiveInstanceSceneDataOffset);
 							}
 						}
 					}

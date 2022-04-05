@@ -28,7 +28,7 @@ public:
 
 	/** Media sources per platform. */
 	UPROPERTY(transient, EditAnywhere, Category=Sources, Meta=(DisplayName="Media Sources"))
-	TMap<FString, UMediaSource*> PlatformMediaSources;
+	TMap<FString, TObjectPtr<UMediaSource>> PlatformMediaSources;
 
 private:
 	/** Blind data encountered at load that could not be mapped to a known platform */
@@ -38,7 +38,11 @@ private:
 
 public:
 	//~ UObject interface
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext);
 	virtual void Serialize(FArchive& Ar) override;
 
 	//~ UMediaSource interface
@@ -50,6 +54,7 @@ public:
 
 	//~ IMediaOptions interface
 
+	virtual FName GetDesiredPlayerName() const override;
 	virtual bool GetMediaOption(const FName& Key, bool DefaultValue) const override;
 	virtual double GetMediaOption(const FName& Key, double DefaultValue) const override;
 	virtual int64 GetMediaOption(const FName& Key, int64 DefaultValue) const override;
@@ -74,5 +79,5 @@ private:
 	 * This media source will be used if no source was specified for a target platform.
 	 */
 	UPROPERTY()
-	UMediaSource* MediaSource;
+	TObjectPtr<UMediaSource> MediaSource;
 };

@@ -57,6 +57,10 @@
 #include "UObject/WeakFieldPtr.h"
 #include "BlueprintNodeSpawner.h"
 #include "Dialogs/Dialogs.h"
+#include "BlendSpaceGraph.h"
+#include "AnimationBlendSpaceSampleGraph.h"
+#include "BlueprintNamespaceHelper.h"
+#include "BlueprintNamespaceUtilities.h"
 
 #define LOCTEXT_NAMESPACE "BlueprintPalette"
 
@@ -204,6 +208,16 @@ static void GetSubGraphIcon(FEdGraphSchemaAction_K2Graph const* const ActionIn, 
 					IconOut = FEditorStyle::GetBrush(TEXT("GraphEditor.Rule_16x"));
 					ToolTipOut = LOCTEXT("AnimationTransitionGraph_ToolTip", "Animation Transition Rule");
 				}
+			}
+			else if (Cast<UBlendSpaceGraph>(ActionIn->EdGraph))
+			{
+				IconOut = FEditorStyle::GetBrush(TEXT("BlendSpace.Graph") );
+				ToolTipOut = LOCTEXT("BlendSpace_ToolTip", "BlendSpace");
+			}
+			else if (Cast<UAnimationBlendSpaceSampleGraph>(ActionIn->EdGraph))
+			{
+				IconOut = FEditorStyle::GetBrush(TEXT("BlendSpace.SampleGraph") );
+				ToolTipOut = LOCTEXT("BlendSpaceSample_ToolTip", "BlendSpace Sample");
 			}
 			else
 			{
@@ -371,12 +385,23 @@ static void GetPaletteItemIcon(TSharedPtr<FEdGraphSchemaAction> ActionIn, UBluep
 	{
 		FEdGraphSchemaAction_K2LocalVar* LocalVarAction = (FEdGraphSchemaAction_K2LocalVar*)ActionIn.Get();
 
-		UStruct* VarScope = LocalVarAction->GetVariableScope();
+		UStruct* VarScope = CastChecked<UStruct>(LocalVarAction->GetVariableScope());
 		BrushOut = FBlueprintEditor::GetVarIconAndColor(VarScope, LocalVarAction->GetVariableName(), ColorOut, SecondaryBrushOut, SecondaryColorOut);
 		ToolTipOut = FText::FromString(GetVarType(VarScope, LocalVarAction->GetVariableName(), true));
 
 		DocLinkOut = TEXT("Shared/Editor/Blueprint/VariableTypes");
 		DocExcerptOut = GetVarType(VarScope, LocalVarAction->GetVariableName(), false);
+	}
+	else if (ActionIn->IsA(FEdGraphSchemaAction_BlueprintVariableBase::StaticGetTypeId()))
+	{
+		FEdGraphSchemaAction_BlueprintVariableBase* BPVarAction = (FEdGraphSchemaAction_BlueprintVariableBase*)(ActionIn.Get());
+		const FEdGraphPinType PinType = BPVarAction->GetPinType();
+		
+		BrushOut = FBlueprintEditor::GetVarIconAndColorFromPinType(PinType, ColorOut, SecondaryBrushOut, SecondaryColorOut);
+		ToolTipOut = FText::FromString(UEdGraphSchema_K2::TypeToText(PinType).ToString());
+
+		DocLinkOut = TEXT("Shared/Editor/Blueprint/VariableTypes");
+		DocExcerptOut = UEdGraphSchema_K2::TypeToText(PinType).ToString();
 	}
 	else if (ActionIn->GetTypeId() == FEdGraphSchemaAction_K2Enum::StaticGetTypeId())
 	{
@@ -690,40 +715,71 @@ public:
 /*******************************************************************************
 * SPinTypeSelectorHelper
 *******************************************************************************/
+DECLARE_DELEGATE_OneParam(FOnPinTypeChanged, const FEdGraphPinType&)
 
 class SPinTypeSelectorHelper : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS( SPinTypeSelectorHelper ) {}
+		SLATE_ATTRIBUTE(bool, ReadOnly)
+		SLATE_EVENT(FOnPinTypeChanged, OnTypeChanged)
 	SLATE_END_ARGS()
 
-	/**
-	 * Constructs a PinTypeSelector widget (for variable actions only, so that 
-	 * the user can modify the variable's type without going to the details panel).
-	 * 
-	 * @param  InArgs					A set of slate arguments, defined above.
-	 * @param  InVariableProperty		The variable property to select
-	 * @param  InBlueprintEditor			A pointer to the blueprint editor that the palette belongs to.
-	 */
-	void Construct(const FArguments& InArgs, FProperty* InVariableProperty, UBlueprint* InBlueprint, TWeakPtr<FBlueprintEditor> InBlueprintEditor)
+	void Construct(const FArguments& InArgs, TWeakPtr<FEdGraphSchemaAction_BlueprintVariableBase> InAction, UBlueprint* InBlueprint, TWeakPtr<FBlueprintEditor> InBlueprintEditor)
 	{
 		BlueprintObj = InBlueprint;
 		BlueprintEditorPtr = InBlueprintEditor;
-		VariableProperty = InVariableProperty;
+		ActionPtr = InAction;
+		VariableProperty = nullptr;
+		if (ActionPtr.IsValid())
+		{
+			VariableProperty = ActionPtr.Pin()->GetProperty();
+		}
 
-		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
-		this->ChildSlot
-		[
-			SNew(SPinTypeSelector, FGetPinTypeTree::CreateUObject(Schema, &UEdGraphSchema_K2::GetVariableTypeTree))
-			.Schema(Schema)
-			.TargetPinType(this, &SPinTypeSelectorHelper::OnGetVarType)
-			.OnPinTypeChanged(this, &SPinTypeSelectorHelper::OnVarTypeChanged)
-			.TypeTreeFilter(ETypeTreeFilter::None)
-			.SelectorType(BlueprintEditorPtr.IsValid() ? SPinTypeSelector::ESelectorType::Compact : SPinTypeSelector::ESelectorType::None)
-		];
+		ConstructInternal(InArgs);
 	}
 
 private:
+
+	void ConstructInternal(const FArguments& InArgs)
+	{
+		OnTypeChanged = InArgs._OnTypeChanged;
+		
+		TSharedPtr<IPinTypeSelectorFilter> CustomPinTypeFilter;
+		if (BlueprintEditorPtr.IsValid())
+		{
+			CustomPinTypeFilter = BlueprintEditorPtr.Pin()->GetImportedPinTypeSelectorFilter();
+		}
+
+		const UEdGraphSchema* Schema = GetDefault<UEdGraphSchema_K2>();
+		if (BlueprintEditorPtr.IsValid())
+		{
+			if (BlueprintEditorPtr.Pin()->GetFocusedGraph())
+			{
+				Schema = BlueprintEditorPtr.Pin()->GetFocusedGraph()->GetSchema();
+			}
+		}
+		
+		const bool bIsDelegate = ActionPtr.IsValid() && ActionPtr.Pin()->GetTypeId() == FEdGraphSchemaAction_K2Delegate::StaticGetTypeId();
+
+		// You cannot change the type of multicast delegates in blueprints
+		if(!bIsDelegate)
+		{
+			this->ChildSlot
+			[
+				SNew(SPinTypeSelector, FGetPinTypeTree::CreateUObject(GetDefault<UEdGraphSchema_K2>(), &UEdGraphSchema_K2::GetVariableTypeTree))
+				.ReadOnly(InArgs._ReadOnly)
+				.Schema(Schema)
+				.SchemaAction(ActionPtr)
+				.TargetPinType(this, &SPinTypeSelectorHelper::OnGetVarType)
+				.OnPinTypeChanged(this, &SPinTypeSelectorHelper::OnVarTypeChanged)
+				.TypeTreeFilter(ETypeTreeFilter::None)
+				.SelectorType(BlueprintEditorPtr.IsValid() && !bIsDelegate ? SPinTypeSelector::ESelectorType::Partial : SPinTypeSelector::ESelectorType::None)
+				.CustomFilter(CustomPinTypeFilter)
+			];	
+		}
+	}
+	
 	FEdGraphPinType OnGetVarType() const
 	{
 		if (FProperty* VarProp = const_cast<FProperty*>(VariableProperty.Get()))
@@ -733,6 +789,10 @@ private:
 			K2Schema->ConvertPropertyToPinType(VarProp, Type);
 			return Type;
 		}
+		else if(ActionPtr.IsValid())
+		{
+			return ActionPtr.Pin()->GetPinType();
+		}
 		return FEdGraphPinType();
 	}
 
@@ -740,14 +800,19 @@ private:
 	{
 		if (FBlueprintEditorUtils::IsPinTypeValid(InNewPinType))
 		{
+			TSharedPtr<FBlueprintEditor> BlueprintEditor = BlueprintEditorPtr.Pin();
+
 			if (FProperty* VarProp = VariableProperty.Get())
 			{
 				FName VarName = VarProp->GetFName();
 
 				if (VarName != NAME_None)
 				{
-					// Set the MyBP tab's last pin type used as this, for adding lots of variables of the same type
-					BlueprintEditorPtr.Pin()->GetMyBlueprintWidget()->GetLastPinTypeUsed() = InNewPinType;
+					if (BlueprintEditor.IsValid())
+					{
+						// Set the MyBP tab's last pin type used as this, for adding lots of variables of the same type
+						BlueprintEditor->GetMyBlueprintWidget()->GetLastPinTypeUsed() = InNewPinType;
+					}
 
 					if (UFunction* LocalVariableScope = VarProp->GetOwner<UFunction>())
 					{
@@ -759,12 +824,41 @@ private:
 					}
 				}
 			}
+			else if(ActionPtr.IsValid())
+			{
+				if (BlueprintEditor.IsValid())
+				{
+					// Set the MyBP tab's last pin type used as this, for adding lots of variables of the same type
+					BlueprintEditor->GetMyBlueprintWidget()->GetLastPinTypeUsed() = InNewPinType;
+				}
+				
+				ActionPtr.Pin()->ChangeVariableType(InNewPinType);
+			}
+
+			if (GetDefault<UBlueprintEditorSettings>()->bEnableNamespaceImportingFeatures)
+			{
+				// If the underlying type object's namespace is not imported, auto-import it now into the current editor context.
+				const UObject* PinSubCategoryObject = InNewPinType.PinSubCategoryObject.Get();
+				if (PinSubCategoryObject && BlueprintEditor.IsValid() && BlueprintEditor->IsNonImportedObject(PinSubCategoryObject))
+				{
+					FString Namespace = FBlueprintNamespaceUtilities::GetObjectNamespace(PinSubCategoryObject);
+					if (!Namespace.IsEmpty())
+					{
+						BlueprintEditor->ImportNamespace(Namespace);
+					}
+				}
+			}
+		}
+
+		if (OnTypeChanged.IsBound())
+		{
+			OnTypeChanged.Execute(InNewPinType);
 		}
 	}
 
 private:
 	/** The action that the owning palette entry represents */
-	TWeakPtr<FEdGraphSchemaAction_K2Var> ActionPtr;
+	TWeakPtr<FEdGraphSchemaAction_BlueprintVariableBase> ActionPtr;
 
 	/** Pointer back to the blueprint that is being displayed: */
 	UBlueprint* BlueprintObj;
@@ -774,6 +868,9 @@ private:
 
 	/** Variable Property to change the type of */
 	TWeakFieldPtr<FProperty> VariableProperty;
+
+	/** Event when type has changed */
+	FOnPinTypeChanged OnTypeChanged;
 };
 
 /*******************************************************************************
@@ -813,30 +910,23 @@ public:
 			bShouldHaveAVisibilityToggle = bIsBlueprintVariable && (!bIsComponentVar || FBlueprintEditorUtils::IsVariableCreatedByBlueprint(BlueprintObj, VariableObjProp));
 		}
 
-		this->ChildSlot[
+		this->ChildSlot
+		[
 			SNew(SBorder)
-				.Padding( 0.0f )
-				.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-				.ColorAndOpacity(this, &SPaletteItemVisibilityToggle::GetVisibilityToggleColor)
+			.Padding(0.0f)
+			.BorderImage(FStyleDefaults::GetNoBrush())
+			.Visibility(bShouldHaveAVisibilityToggle ? EVisibility::Visible : EVisibility::Collapsed)
+			//.ForegroundColor(this, &SPaletteItemVisibilityToggle::GetVisibilityToggleColor)
 			[
-				SNew( SCheckBox )
-					.ToolTipText(this, &SPaletteItemVisibilityToggle::GetVisibilityToggleToolTip)
-					.Visibility(bShouldHaveAVisibilityToggle ? EVisibility::Visible : EVisibility::Collapsed)
-					.OnCheckStateChanged(this, &SPaletteItemVisibilityToggle::OnVisibilityToggleFlipped)
-					.IsChecked(this, &SPaletteItemVisibilityToggle::GetVisibilityToggleState)
-					// a style using the normal checkbox images but with the toggle button layout
-					.Style( FEditorStyle::Get(), "CheckboxLookToggleButtonCheckbox")	
+				SNew(SCheckBox)
+				.ToolTipText(this, &SPaletteItemVisibilityToggle::GetVisibilityToggleToolTip)
+				.OnCheckStateChanged(this, &SPaletteItemVisibilityToggle::OnVisibilityToggleFlipped)
+				.IsChecked(this, &SPaletteItemVisibilityToggle::GetVisibilityToggleState)
+				.Style(FAppStyle::Get(), "TransparentCheckBox")
 				[
-					SNew( SVerticalBox )
-					+SVerticalBox::Slot()
-						.AutoHeight()
-						.VAlign( VAlign_Center )
-						.HAlign( HAlign_Center )
-					[
-						SNew( SImage )
-							.Image( this, &SPaletteItemVisibilityToggle::GetVisibilityIcon )
-							.ColorAndOpacity( FLinearColor::Black )
-					]
+					SNew(SImage)
+					.Image(this, &SPaletteItemVisibilityToggle::GetVisibilityIcon)
+					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]
 		];
@@ -910,11 +1000,11 @@ private:
 	 * 
 	 * @return A color denoting the item's visibility and tootip status.
 	 */
-	FLinearColor GetVisibilityToggleColor() const 
+	FSlateColor GetVisibilityToggleColor() const 
 	{
 		if ( GetVisibilityToggleState() != ECheckBoxState::Checked )
 		{
-			return FColor(64, 64, 64).ReinterpretAsLinear();
+			return FSlateColor::UseForeground();
 		}
 		else
 		{
@@ -925,11 +1015,13 @@ private:
 
 			if ( !Result.IsEmpty() )
 			{
-				return FColor(130, 219, 119).ReinterpretAsLinear(); //pastel green when tooltip exists
+				static const FName TooltipExistsColor("Colors.AccentGreen");
+				return FAppStyle::Get().GetSlateColor(TooltipExistsColor);
 			}
 			else
 			{
-				return FColor(215, 219, 119).ReinterpretAsLinear(); //pastel yellow if no tooltip to alert designer 
+				static const FName TooltipDoesntExistColor("Colors.AccentYellow");
+				return FAppStyle::Get().GetSlateColor(TooltipDoesntExistColor);
 			}
 		}
 	}
@@ -1058,12 +1150,16 @@ void SBlueprintPaletteItem::Construct(const FArguments& InArgs, FCreateWidgetFor
 		TagMeta.FriendlyName = GraphAction->GetMenuDescription().ToString();
 	}
 	// construct the text widget
-	FSlateFontInfo NameFont = FCoreStyle::GetDefaultFontStyle("Regular", 10);
-	TSharedRef<SWidget> NameSlotWidget = CreateTextSlotWidget( NameFont, InCreateData, bIsReadOnly );
+	TSharedRef<SWidget> NameSlotWidget = CreateTextSlotWidget(InCreateData, bIsReadOnly );
 	
 	// Will set the icon of this property to be a Pin Type selector. 
-	auto GenerateVariableSettings = [&](FProperty* VariableProp)
+	auto GenerateVariableSettings = [&](TSharedPtr<FEdGraphSchemaAction_BlueprintVariableBase> Action)
 	{
+		FProperty* VariableProp = nullptr;
+		if (Action.IsValid())
+		{
+			VariableProp = Action->GetProperty();
+		}
 		if (VariableProp)
 		{
 			if (bShouldCheckForAccessSpec)
@@ -1085,8 +1181,9 @@ void SBlueprintPaletteItem::Construct(const FArguments& InArgs, FCreateWidgetFor
 			if (FBlueprintEditorUtils::IsVariableCreatedByBlueprint(Blueprint, VariableProp) || VariableProp->GetOwner<UFunction>())
 			{
 				const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
-				IconWidget = SNew(SPinTypeSelectorHelper, VariableProp, Blueprint, BlueprintEditorPtr)
-					.IsEnabled(bIsEditingEnabled);
+				IconWidget = SNew(SPinTypeSelectorHelper, Action, Blueprint, BlueprintEditorPtr)
+					.IsEnabled(bIsEditingEnabled)
+					.ReadOnly_Lambda([this]() {return !IsHovered(); });
 			}
 		}
 	};
@@ -1094,12 +1191,22 @@ void SBlueprintPaletteItem::Construct(const FArguments& InArgs, FCreateWidgetFor
 	// For Variables and Local Variables, we will convert the icon widget into a pin type selector.
 	if (GraphAction->GetTypeId() == FEdGraphSchemaAction_K2Var::StaticGetTypeId())
 	{	
-		GenerateVariableSettings(StaticCastSharedPtr<FEdGraphSchemaAction_K2Var>(GraphAction)->GetProperty());
+		GenerateVariableSettings(StaticCastSharedPtr<FEdGraphSchemaAction_K2Var>(GraphAction));
 	}
 	else if (GraphAction->GetTypeId() == FEdGraphSchemaAction_K2LocalVar::StaticGetTypeId())
 	{
-		GenerateVariableSettings(StaticCastSharedPtr<FEdGraphSchemaAction_K2LocalVar>(GraphAction)->GetProperty());
+		GenerateVariableSettings(StaticCastSharedPtr<FEdGraphSchemaAction_K2LocalVar>(GraphAction));
 	}
+	else if (GraphAction->IsA(FEdGraphSchemaAction_BlueprintVariableBase::StaticGetTypeId()))
+	{
+		ActionAccessSpecifier = EAccessSpecifier::Private;
+		const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
+		IconWidget = SNew(SPinTypeSelectorHelper, StaticCastSharedPtr<FEdGraphSchemaAction_BlueprintVariableBase>(GraphAction), Blueprint, BlueprintEditorPtr)
+			.IsEnabled(bIsEditingEnabled)
+			.ReadOnly_Lambda([this]() {return !IsHovered(); })
+			.OnTypeChanged_Lambda([this](const FEdGraphPinType& NewPinType) { BlueprintEditorPtr.Pin()->GetMyBlueprintWidget()->Refresh(); });
+	}
+	
 	// Determine the access level of this action if it is a function graph or for interface events
 	else if (bShouldCheckForAccessSpec && GraphAction->GetTypeId() == FEdGraphSchemaAction_K2Graph::StaticGetTypeId())
 	{
@@ -1161,49 +1268,83 @@ void SBlueprintPaletteItem::Construct(const FArguments& InArgs, FCreateWidgetFor
 	// Create the widget with an icon
 	TSharedRef<SHorizontalBox> ActionBox = SNew(SHorizontalBox)		
 		.AddMetaData<FTutorialMetaData>(TagMeta);
-
-	ActionBox.Get().AddSlot()
-		.AutoWidth()
-		[
-			IconWidget
-		];
-
-	// Only add an access specifier if we have one
-	if (ActionAccessSpecifier != EAccessSpecifier::None)
+	
+	if (GraphAction->IsA(FEdGraphSchemaAction_BlueprintVariableBase::StaticGetTypeId()))
 	{
 		ActionBox.Get().AddSlot()
-			.MaxWidth(50.f)
-			.FillWidth(AccessSpecifierEnabled ? 0.4f : 0.0f)
-			.Padding(FMargin(/* horizontal */ AccessSpecifierEnabled ? 6.0f : 0.0f, /* vertical */ 0.0f))
+			.FillWidth(0.6f)
 			.VAlign(VAlign_Center)
-			.HAlign(HAlign_Right)
+			.Padding(3.0f, 0.0f)
 			[
-				SNew(STextBlock)
-				// Will only display text if we have a modifier level
+				NameSlotWidget
+			];
+
+		ActionBox.Get().AddSlot()
+			.FillWidth(0.4f)
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Center)
+			[
+				IconWidget
+			];
+
+		ActionBox.Get().AddSlot()
+			.AutoWidth()
+			.Padding(FMargin(6.0f, 0.0f, 3.0f, 0.0f))
+			.HAlign(HAlign_Right)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SPaletteItemVisibilityToggle, ActionPtr, InBlueprintEditor, InBlueprint)
+				.IsEnabled(bIsEditingEnabled)
+			];
+	}
+	else
+	{
+		ActionBox.Get().AddSlot()
+			.AutoWidth()
+			.Padding(FMargin(0.0f, 0.0f, 3.0f, 0.0f))
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SPaletteItemVisibilityToggle, ActionPtr, InBlueprintEditor, InBlueprint)
+				.IsEnabled(bIsEditingEnabled)
+			];
+
+
+		ActionBox.Get().AddSlot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				IconWidget
+			];
+
+		// Only add an access specifier if we have one
+		if (ActionAccessSpecifier != EAccessSpecifier::None)
+		{
+			ActionBox.Get().AddSlot()
+				.MaxWidth(50.f)
+				.FillWidth(AccessSpecifierEnabled ? 0.4f : 0.0f)
+				.Padding(FMargin(/* horizontal */ AccessSpecifierEnabled ? 6.0f : 0.0f, /* vertical */ 0.0f))
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Right)
+				[
+					SNew(STextBlock)
+					// Will only display text if we have a modifier level
 					.IsEnabled(AccessSpecifierEnabled)
 					.Text(AccessModifierText)
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 					// Bold if public
 					.TextStyle(FEditorStyle::Get(), ActionAccessSpecifier == EAccessSpecifier::Public ? "BlueprintEditor.AccessModifier.Public" : "BlueprintEditor.AccessModifier.Default")
+				];
+		}
+
+		ActionBox.Get().AddSlot()
+			.FillWidth(1.f)
+			.VAlign(VAlign_Center)
+			.Padding(/* horizontal */ 3.0f, /* vertical */ 3.0f)
+			[
+				NameSlotWidget
 			];
 	}
-
-	ActionBox.Get().AddSlot()
-		.FillWidth(1.f)
-		.VAlign(VAlign_Center)
-		.Padding(/* horizontal */ 3.0f, /* vertical */ 0.0f)
-		[
-			NameSlotWidget
-		];
-
-	ActionBox.Get().AddSlot()
-		.AutoWidth()
-		.Padding(FMargin(3.0f, 0.0f))
-		.VAlign(VAlign_Center)
-		[
-			SNew(SPaletteItemVisibilityToggle, ActionPtr, InBlueprintEditor, InBlueprint)
-			.IsEnabled(bIsEditingEnabled)
-		];
 
 	// Now, create the actual widget
 	ChildSlot
@@ -1227,7 +1368,7 @@ void SBlueprintPaletteItem::OnDragEnter(const FGeometry& MyGeometry, const FDrag
 *******************************************************************************/
 
 //------------------------------------------------------------------------------
-TSharedRef<SWidget> SBlueprintPaletteItem::CreateTextSlotWidget(const FSlateFontInfo& NameFont, FCreateWidgetForActionData* const InCreateData, TAttribute<bool> bIsReadOnlyIn)
+TSharedRef<SWidget> SBlueprintPaletteItem::CreateTextSlotWidget(FCreateWidgetForActionData* const InCreateData, TAttribute<bool> bIsReadOnlyIn)
 {
 	FName const ActionTypeId = InCreateData->Action->GetTypeId();
 
@@ -1277,7 +1418,6 @@ TSharedRef<SWidget> SBlueprintPaletteItem::CreateTextSlotWidget(const FSlateFont
 		[
 			SAssignNew(EditableTextElement, SInlineEditableTextBlock)
 				.Text(this, &SBlueprintPaletteItem::GetDisplayText)
-				.Font(NameFont)
 				.HighlightText(InCreateData->HighlightText)
 				.ToolTip(ToolTipWidget)
 				.OnVerifyTextChanged(OnVerifyTextChanged)
@@ -1342,18 +1482,44 @@ bool SBlueprintPaletteItem::OnNameTextVerifyChanged(const FText& InNewText, FTex
 
 	UStruct* ValidationScope = nullptr;
 
+	const UEdGraphSchema* Schema = nullptr;
+
 	// Check if certain action names are unchanged.
 	if (ActionPtr.Pin()->GetTypeId() == FEdGraphSchemaAction_K2Var::StaticGetTypeId())
 	{
 		FEdGraphSchemaAction_K2Var* VarAction = (FEdGraphSchemaAction_K2Var*)ActionPtr.Pin().Get();
 		OriginalName = (VarAction->GetVariableName());
+
+		UClass* VarClass = VarAction->GetVariableClass();
+		if (VarClass)
+		{
+			UBlueprint* BlueprintObj = UBlueprint::GetBlueprintFromClass(VarClass);
+			TArray<UEdGraph*> Graphs;
+			BlueprintObj->GetAllGraphs(Graphs);
+			if (Graphs.Num() > 0)
+			{
+				Schema = Graphs[0]->GetSchema();
+			}
+		}
 	}
 	else if (ActionPtr.Pin()->GetTypeId() == FEdGraphSchemaAction_K2LocalVar::StaticGetTypeId())
 	{
 		FEdGraphSchemaAction_K2LocalVar* LocalVarAction = (FEdGraphSchemaAction_K2LocalVar*)ActionPtr.Pin().Get();
 		OriginalName = (LocalVarAction->GetVariableName());
 		
-		ValidationScope = LocalVarAction->GetVariableScope();
+		ValidationScope = CastChecked<UStruct>(LocalVarAction->GetVariableScope());
+
+		UClass* VarClass = LocalVarAction->GetVariableClass();
+		if (VarClass)
+		{
+			UBlueprint* BlueprintObj = UBlueprint::GetBlueprintFromClass(VarClass);
+			TArray<UEdGraph*> Graphs;
+			BlueprintObj->GetAllGraphs(Graphs);
+			if (Graphs.Num() > 0)
+			{
+				Schema = Graphs[0]->GetSchema();
+			}
+		}
 	}
 	else
 	{
@@ -1373,6 +1539,7 @@ bool SBlueprintPaletteItem::OnNameTextVerifyChanged(const FText& InNewText, FTex
 		if (Graph)
 		{
 			OriginalName = Graph->GetFName();
+			Schema = Graph->GetSchema();
 		}
 	}
 
@@ -1391,20 +1558,35 @@ bool SBlueprintPaletteItem::OnNameTextVerifyChanged(const FText& InNewText, FTex
 		}
 	}
 
-	TSharedPtr<INameValidatorInterface> NameValidator = MakeShareable(new FKismetNameValidator(BlueprintObj, OriginalName, ValidationScope));
-
-	EValidatorResult ValidatorResult = NameValidator->IsValid(TextAsString);
-	switch (ValidatorResult)
+	if (OriginalName.IsNone() && ActionPtr.Pin()->IsA(FEdGraphSchemaAction_BlueprintVariableBase::StaticGetTypeId()))
 	{
-	case EValidatorResult::Ok:
-	case EValidatorResult::ExistingName:
-		// These are fine, don't need to surface to the user, the rename can 'proceed' even if the name is the existing one
-		break;
-	default:
-		OutErrorMessage = INameValidatorInterface::GetErrorText(TextAsString, ValidatorResult);
-		break;
+		FEdGraphSchemaAction_BlueprintVariableBase* BPVar = (FEdGraphSchemaAction_BlueprintVariableBase*)ActionPtr.Pin().Get();
+		return BPVar->IsValidName(FName(TextAsString), OutErrorMessage);
 	}
-
+	else
+	{
+		TSharedPtr<INameValidatorInterface> NameValidator = nullptr;
+		if (Schema)
+		{
+			NameValidator = Schema->GetNameValidator(BlueprintObj, OriginalName, ValidationScope, ActionPtr.Pin()->GetTypeId());	
+		}
+		
+		if (NameValidator.IsValid())
+		{
+			EValidatorResult ValidatorResult = NameValidator->IsValid(TextAsString);
+			switch (ValidatorResult)
+			{
+			case EValidatorResult::Ok:
+			case EValidatorResult::ExistingName:
+				// These are fine, don't need to surface to the user, the rename can 'proceed' even if the name is the existing one
+				break;
+			default:
+				OutErrorMessage = INameValidatorInterface::GetErrorText(TextAsString, ValidatorResult);
+				break;
+			}
+		}
+	}
+	
 	return OutErrorMessage.IsEmpty();
 }
 
@@ -1430,6 +1612,11 @@ void SBlueprintPaletteItem::OnNameTextCommitted(const FText& NewText, ETextCommi
 
 					// Check if the name is unchanged
 					if (NewText.EqualTo(DisplayInfo.PlainName))
+					{
+						return;
+					}
+
+					if (GraphSchema->TryRenameGraph(Graph, *NewText.ToString()))
 					{
 						return;
 					}
@@ -1565,7 +1752,23 @@ void SBlueprintPaletteItem::OnNameTextCommitted(const FText& NewText, ETextCommi
 
 		BlueprintEditorPtr.Pin()->GetBlueprintObj()->Modify();
 
-		FBlueprintEditorUtils::RenameLocalVariable(BlueprintEditorPtr.Pin()->GetBlueprintObj(), LocalVarAction->GetVariableScope(), LocalVarAction->GetVariableName(), NewName);
+		FBlueprintEditorUtils::RenameLocalVariable(BlueprintEditorPtr.Pin()->GetBlueprintObj(), CastChecked<UStruct>(LocalVarAction->GetVariableScope()), LocalVarAction->GetVariableName(), NewName);
+	}
+	else if (ActionPtr.Pin()->IsA(FEdGraphSchemaAction_BlueprintVariableBase::StaticGetTypeId()))
+	{
+		FEdGraphSchemaAction_BlueprintVariableBase* BPVarAction = (FEdGraphSchemaAction_BlueprintVariableBase*)ActionPtr.Pin().Get();
+
+		// Check if the name is unchanged
+		if (NewName.IsEqual(BPVarAction->GetVariableName(), ENameCase::CaseSensitive))
+		{
+			return;
+		}
+
+		const FScopedTransaction Transaction( LOCTEXT( "RenameVariable", "Rename Variable" ) );
+		BlueprintEditorPtr.Pin()->GetBlueprintObj()->Modify();
+
+		BPVarAction->RenameVariable(NewName);
+		BlueprintEditorPtr.Pin()->GetMyBlueprintWidget()->Refresh();
 	}
 	BlueprintEditorPtr.Pin()->GetMyBlueprintWidget()->SelectItemByName(NewName, ESelectInfo::OnMouseClick);
 }
@@ -1642,16 +1845,26 @@ FText SBlueprintPaletteItem::GetToolTipText() const
 			}
 			else
 			{
-				FString Result = GetVarTooltip(Blueprint, VarClass, VarAction->GetVariableName());
-				// Only use the variable tooltip if it has been filled out.
-				ToolTipText = FText::FromString( !Result.IsEmpty() ? Result : GetVarType(VarClass, VarAction->GetVariableName(), true, true) );
+				// Use the native display name metadata if we can
+				const FProperty* Property = FindFProperty<FProperty>(VarClass, VarAction->GetVariableName());
+				if (Property && Property->IsNative())
+				{
+					ToolTipText = Property->GetDisplayNameText();
+				}
+				else
+				{	
+					FString Result = GetVarTooltip(Blueprint, VarClass, VarAction->GetVariableName());
+					// Only use the variable tooltip if it has been filled out.
+					ToolTipText = FText::FromString( !Result.IsEmpty() ? Result : GetVarType(VarClass, VarAction->GetVariableName(), true, true) );	
+				}
 			}
 		}
 		else if (PaletteAction->GetTypeId() == FEdGraphSchemaAction_K2LocalVar::StaticGetTypeId())
 		{
 			FEdGraphSchemaAction_K2LocalVar* LocalVarAction = (FEdGraphSchemaAction_K2LocalVar*)PaletteAction.Get();
 			// The variable scope can not be found in intermediate graphs
-			if(LocalVarAction->GetVariableScope())
+			UStruct* LocalVarScope = Cast<UStruct>(LocalVarAction->GetVariableScope());
+			if(LocalVarScope)
 			{
 				UClass* VarClass = CastChecked<UClass>(LocalVarAction->GetVariableScope()->GetOuter());
 				if (bShowClassInTooltip && (VarClass != nullptr))
@@ -1662,9 +1875,9 @@ FText SBlueprintPaletteItem::GetToolTipText() const
 				else
 				{
 					FString Result;
-					FBlueprintEditorUtils::GetBlueprintVariableMetaData(Blueprint, LocalVarAction->GetVariableName(), LocalVarAction->GetVariableScope(), TEXT("tooltip"), Result);
+					FBlueprintEditorUtils::GetBlueprintVariableMetaData(Blueprint, LocalVarAction->GetVariableName(), LocalVarScope, TEXT("tooltip"), Result);
 					// Only use the variable tooltip if it has been filled out.
-					ToolTipText = FText::FromString( !Result.IsEmpty() ? Result : GetVarType(LocalVarAction->GetVariableScope(), LocalVarAction->GetVariableName(), true, true) );
+					ToolTipText = FText::FromString( !Result.IsEmpty() ? Result : GetVarType(LocalVarScope, LocalVarAction->GetVariableName(), true, true) );
 				}
 			}
 		}
@@ -1948,11 +2161,11 @@ void SBlueprintPalette::OnSplitterResized() const
 
 		if (SplitterSlot.GetWidget() == FavoritesWrapper)
 		{
-			GConfig->SetFloat(*BlueprintPalette::ConfigSection, *BlueprintPalette::FavoritesHeightConfigKey, SplitterSlot.SizeValue.Get(), GEditorPerProjectIni);
+			GConfig->SetFloat(*BlueprintPalette::ConfigSection, *BlueprintPalette::FavoritesHeightConfigKey, SplitterSlot.GetSizeValue(), GEditorPerProjectIni);
 		}
 		else if (SplitterSlot.GetWidget() == LibraryWrapper)
 		{
-			GConfig->SetFloat(*BlueprintPalette::ConfigSection, *BlueprintPalette::LibraryHeightConfigKey, SplitterSlot.SizeValue.Get(), GEditorPerProjectIni);
+			GConfig->SetFloat(*BlueprintPalette::ConfigSection, *BlueprintPalette::LibraryHeightConfigKey, SplitterSlot.GetSizeValue(), GEditorPerProjectIni);
 		}
 
 	}

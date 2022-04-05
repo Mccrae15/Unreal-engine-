@@ -86,7 +86,7 @@ bool FMeshPaintGeometryAdapterForStaticMeshes::InitializeVertexData()
 	MeshVertices.AddDefaulted(NumVertices);
 	for (int32 Index = 0; Index < NumVertices; Index++)
 	{
-		const FVector& Position = LODModel->VertexBuffers.PositionVertexBuffer.VertexPosition(Index);
+		const FVector& Position = (FVector)LODModel->VertexBuffers.PositionVertexBuffer.VertexPosition(Index);
 		MeshVertices[Index] = Position;
 	}
 
@@ -375,7 +375,7 @@ FMatrix FMeshPaintGeometryAdapterForStaticMeshes::GetComponentToWorldMatrix() co
 
 void FMeshPaintGeometryAdapterForStaticMeshes::GetTextureCoordinate(int32 VertexIndex, int32 ChannelIndex, FVector2D& OutTextureCoordinate) const
 {
-	OutTextureCoordinate = LODModel->VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, ChannelIndex);
+	OutTextureCoordinate = FVector2D(LODModel->VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, ChannelIndex));
 }
 
 void FMeshPaintGeometryAdapterForStaticMeshes::PreEdit()

@@ -13,10 +13,11 @@
 #include "UObject/ScriptMacros.h"
 #include "EdGraph/EdGraphPin.h"
 #include "Interfaces/Interface_AssetUserData.h"
-#include "UObject/UObjectAnnotation.h"
 #include "UObject/StructOnScope.h"
 #include "ComponentInstanceDataCache.h"
 #include "ActorComponent.generated.h"
+
+struct FTypedElementHandle;
 
 class AActor;
 class UActorComponent;
@@ -41,6 +42,7 @@ public:
 		AddPrimitiveBatches.Add(PrimitiveComponent);
 	}
 
+	int32 Count() const { return AddPrimitiveBatches.Num(); }
 	void Process();
 
 private:
@@ -51,9 +53,6 @@ private:
 #if WITH_EDITOR
 class SWidget;
 struct FMinimalViewInfo;
-
-/** Annotation for component selection.  This must be in engine instead of editor for ::IsSelected to work */
-extern ENGINE_API FUObjectAnnotationSparseBool GSelectedComponentAnnotation;
 #endif
 
 /** Information about how to update transform when something is moved */
@@ -139,7 +138,7 @@ public:
 protected:
 	/** Array of user data stored with the component */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = AssetUserData)
-	TArray<UAssetUserData*> AssetUserData;
+	TArray<TObjectPtr<UAssetUserData>> AssetUserData;
 
 private:
 	/** Used for fast removal of end of frame update */
@@ -178,6 +177,9 @@ private:
 
 	/** Is this component's dynamic data in need of sending to the renderer? */
 	uint8 bRenderDynamicDataDirty:1;
+
+	/** Is this component's instanced data in need of sending to the renderer? */
+	uint8 bRenderInstancesDirty:1;
 
 	/** Used to ensure that any subclass of UActorComponent that overrides PostRename calls up to the Super to make OwnedComponents arrays get updated correctly */
 	uint8 bRoutedPostRename:1;
@@ -436,7 +438,7 @@ public:
 	virtual void SetAutoActivate(bool bNewAutoActivate);
 
 	/** Sets whether this component can tick when paused. */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Components|Tick")
 	void SetTickableWhenPaused(bool bTickableWhenPaused);
 
 	/** Create any physics engine information for this component */
@@ -590,6 +592,9 @@ protected:
 	/** Called to send dynamic data for this component to the rendering thread */
 	virtual void SendRenderDynamicData_Concurrent();
 
+	/** Called to send instance data for this component to the rendering thread */
+	virtual void SendRenderInstanceData_Concurrent();
+
 	/** 
 	 * Used to shut down any rendering thread structure for this component
 	 * @warning This is called concurrently on multiple threads (but never the same component concurrently)
@@ -685,7 +690,7 @@ public:
 	 * 
 	 * @param	bEnabled - Whether it should be enabled or not
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Components|Tick")
 	virtual void SetComponentTickEnabled(bool bEnabled);
 
 	/** 
@@ -697,25 +702,25 @@ public:
 	/** 
 	 * Returns whether this component has tick enabled or not
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Components|Tick")
 	virtual bool IsComponentTickEnabled() const;
 
 	/** 
 	* Sets the tick interval for this component's primary tick function. Does not enable the tick interval. Takes effect on next tick.
 	* @param TickInterval	The duration between ticks for this component's primary tick function
 	*/
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Components|Tick")
 	void SetComponentTickInterval(float TickInterval);
 
 	/**
 	* Sets the tick interval for this component's primary tick function. Does not enable the tick interval. Takes effect imediately.
 	* @param TickInterval	The duration between ticks for this component's primary tick function
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Utilities")
+	UFUNCTION(BlueprintCallable, Category="Components|Tick")
 	void SetComponentTickIntervalAndCooldown(float TickInterval);
 
 	/** Returns the tick interval for this component's primary tick function, which is the frequency in seconds at which it will be executed */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Components|Tick")
 	float GetComponentTickInterval() const;
 
 	/**
@@ -732,6 +737,9 @@ public:
 
 	/** Is this component's transform in need of sending to the renderer? */
 	inline bool IsRenderTransformDirty() const { return bRenderTransformDirty; }
+
+	/** Is this component's instance data in need of sending to the renderer? */
+	inline bool IsRenderInstancesDirty() const { return bRenderInstancesDirty; }
 
 	/** Is this component in need of its whole state being sent to the renderer? */
 	inline bool IsRenderStateDirty() const { return bRenderStateDirty; }
@@ -769,11 +777,20 @@ public:
 	 * data from GetEditorPreviewInfo().
 	 */
 	virtual TSharedPtr<SWidget> GetCustomEditorPreviewWidget() { return TSharedPtr<SWidget>(); }
+
+	/**
+	 * Return the custom HLODBuilder class that should be used to generate HLODs for components of this type.
+	 * Allows the HLOD system to include whatever is needed to represent a component at a distance.
+	 * For example, this is currently used to build custom HLODs for landscape streaming proxies. 
+	 * This could be used to generate fake lights, represent custom FX at a distance, or even to insert
+	 * externally generated HLODs.
+	 */
+	virtual TSubclassOf<class UHLODBuilder> GetCustomHLODBuilderClass() const { return nullptr; }
 #endif // WITH_EDITOR
 
 	/**
-	 * Uses the bRenderStateDirty/bRenderTransformDirty to perform any necessary work on this component.
-	 * Do not call this directly, call MarkRenderStateDirty, MarkRenderDynamicDataDirty, 
+	 * Uses the bRenderStateDirty/bRenderTransformDirty/bRenderInstancesDirty to perform any necessary work on this component.
+	 * Do not call this directly, call MarkRenderStateDirty, MarkRenderDynamicDataDirty,  MarkRenderInstancesDataDirty,
 	 *
 	 * @warning This is called concurrently on multiple threads (but never the same component concurrently)
 	 */
@@ -790,6 +807,9 @@ public:
 
 	/** Marks the transform as dirty - will be sent to the render thread at the end of the frame*/
 	void MarkRenderTransformDirty();
+
+	/** Marks the instances as dirty - changes to instance transforms/custom data will be sent to the render thread at the end of the frame*/
+	void MarkRenderInstancesDirty();
 
 	/** If we belong to a world, mark this for a deferred update, otherwise do it now. */
 	void MarkForNeededEndOfFrameUpdate();
@@ -860,6 +880,15 @@ public:
 	/** Called before we throw away components during RerunConstructionScripts, to cache any data we wish to persist across that operation */
 	virtual TStructOnScope<FActorComponentInstanceData> GetComponentInstanceData() const;
 
+	/** Called after ApplyToComponent has run. */
+	virtual void PostApplyToComponent();
+
+	/**
+	 * Get the logical child elements of this component, if any.
+	 * @see UTypedElementHierarchyInterface.
+	 */
+	virtual void GetComponentChildElements(TArray<FTypedElementHandle>& OutElementHandles, const bool bAllowCreate = true) {}
+
 	//~ Begin UObject Interface.
 	virtual void BeginDestroy() override;
 	virtual bool NeedsLoadForClient() const override;
@@ -885,6 +914,7 @@ public:
 	virtual void PostEditUndo() override;
 	virtual bool IsSelectedInEditor() const override;
 	virtual void SetPackageExternal(bool bExternal, bool bShouldDirty) {}
+	virtual FBox GetStreamingBounds() const { return FBox(ForceInit); }
 #endif // WITH_EDITOR
 	//~ End UObject Interface.
 
@@ -931,30 +961,30 @@ public:
 	/**
 	 * Unregister and mark for pending kill a component.  This may not be used to destroy a component that is owned by an actor unless the owning actor is calling the function.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Components", meta=(Keywords = "Delete", HidePin="Object", DefaultToSelf="Object", DisplayName = "DestroyComponent", ScriptName = "DestroyComponent"))
+	UFUNCTION(BlueprintCallable, Category="Components", meta=(Keywords = "Delete", HidePin="Object", DefaultToSelf="Object", DisplayName = "Destroy Component", ScriptName = "DestroyComponent"))
 	void K2_DestroyComponent(UObject* Object);
 
 	/** Unregisters and immediately re-registers component. */
 	void ReregisterComponent();
 
 	/** Changes the ticking group for this component */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "dependency"))
+	UFUNCTION(BlueprintCallable, Category="Components|Tick", meta=(Keywords = "dependency"))
 	void SetTickGroup(ETickingGroup NewTickGroup);
 
 	/** Make this component tick after PrerequisiteActor */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "dependency"))
+	UFUNCTION(BlueprintCallable, Category="Components|Tick", meta=(Keywords = "dependency"))
 	virtual void AddTickPrerequisiteActor(AActor* PrerequisiteActor);
 
 	/** Make this component tick after PrerequisiteComponent. */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "dependency"))
+	UFUNCTION(BlueprintCallable, Category="Components|Tick", meta=(Keywords = "dependency"))
 	virtual void AddTickPrerequisiteComponent(UActorComponent* PrerequisiteComponent);
 
 	/** Remove tick dependency on PrerequisiteActor. */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "dependency"))
+	UFUNCTION(BlueprintCallable, Category="Components|Tick", meta=(Keywords = "dependency"))
 	virtual void RemoveTickPrerequisiteActor(AActor* PrerequisiteActor);
 
 	/** Remove tick dependency on PrerequisiteComponent. */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "dependency"))
+	UFUNCTION(BlueprintCallable, Category="Components|Tick", meta=(Keywords = "dependency"))
 	virtual void RemoveTickPrerequisiteComponent(UActorComponent* PrerequisiteComponent);
 
 	/** Event called every frame if tick is enabled */
@@ -978,6 +1008,9 @@ public:
 
 	/** Override to specify that a component is relevant to the navigation system */
 	virtual bool IsNavigationRelevant() const { return false; }
+
+	/** Override to specify that a component is relevant to the HLOD generation. */
+	virtual bool IsHLODRelevant() const { return false; }
 
 	/** Prefix used to identify template component instances */
 	static const FString ComponentTemplateNameSuffix;
@@ -1121,3 +1154,8 @@ FORCEINLINE_DEBUGGABLE AActor* UActorComponent::GetOwner() const
 	return OwnerPrivate;
 #endif
 }
+
+#if WITH_EDITOR
+/** Callback for editor component selection. This must be in engine instead of editor for UActorComponent::IsSelectedInEditor to work */
+extern ENGINE_API TFunction<bool(const UActorComponent*)> GIsComponentSelectedInEditor;
+#endif

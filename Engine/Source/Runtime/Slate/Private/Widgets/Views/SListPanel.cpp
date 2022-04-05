@@ -4,8 +4,6 @@
 #include "Layout/ArrangedChildren.h"
 
 
-FNoChildren SListPanel::NoChildren = FNoChildren();
-
 // Used to subtract a tiny amount from the available dimension to avoid floating point precision problems when arranging children
 static const float FloatingPointPrecisionOffset = 0.001f;
 
@@ -21,26 +19,17 @@ void SListPanel::Construct( const FArguments& InArgs )
 	NumDesiredItems = InArgs._NumDesiredItems;
 	ItemAlignment = InArgs._ItemAlignment;
 	Orientation = InArgs._ListOrientation;
+	Children.AddSlots(MoveTemp(const_cast<TArray<FSlot::FSlotArguments>&>(InArgs._Slots)));
 }
 
-SListPanel::FSlot& SListPanel::Slot()
+SListPanel::FSlot::FSlotArguments SListPanel::Slot()
 {
-	return *(new FSlot());
+	return FSlot::FSlotArguments(MakeUnique<FSlot>());
 }
 	
-SListPanel::FSlot& SListPanel::AddSlot(int32 InsertAtIndex)
+SListPanel::FScopedWidgetSlotArguments SListPanel::AddSlot(int32 InsertAtIndex)
 {
-	FSlot& NewSlot = SListPanel::Slot();
-	if (InsertAtIndex == INDEX_NONE)
-	{
-		this->Children.Add( &NewSlot );
-	}
-	else
-	{
-		this->Children.Insert( &NewSlot, InsertAtIndex );
-	}
-	
-	return NewSlot;
+	return FScopedWidgetSlotArguments{ MakeUnique<FSlot>(), Children, InsertAtIndex };
 }
 
 void SListPanel::OnArrangeChildren( const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren ) const
@@ -55,7 +44,7 @@ void SListPanel::OnArrangeChildren( const FGeometry& AllottedGeometry, FArranged
 			// This is a tile view list - arrange items side by side along the line axis until there is no more room, then create a new line along the scroll axis.
 			const EListItemAlignment ListItemAlignment = ItemAlignment.Get();
 			const float ItemPadding = GetItemPadding(AllottedGeometry, ListItemAlignment);
-			const float HalfItemPadding = ItemPadding * 0.5;
+			const float HalfItemPadding = ItemPadding * 0.5f;
 
 			const FTableViewDimensions LocalItemSize = GetItemSize(AllottedGeometry, ListItemAlignment);
 			DimensionsSoFar.ScrollAxis = -FMath::FloorToInt(FirstLineScrollOffset * LocalItemSize.ScrollAxis) - OverscrollAmount;
@@ -75,7 +64,7 @@ void SListPanel::OnArrangeChildren( const FGeometry& AllottedGeometry, FArranged
 						}
 						else
 						{
-							const float HalfLinePadding = LinePadding * 0.5;
+							const float HalfLinePadding = LinePadding * 0.5f;
 							DimensionsSoFar.LineAxis += IsVisible ? HalfLinePadding : 0;
 						}
 					}
@@ -191,7 +180,7 @@ FChildren* SListPanel::GetChildren()
 		// When a refresh is pending it is unsafe to cache the desired sizes of our children because
 		// they may be representing unsound data structures. Any delegates/attributes accessing unsound
 		// data will cause a crash.
-		return &NoChildren;
+		return &FNoChildren::NoChildrenInstance;
 	}
 	else
 	{

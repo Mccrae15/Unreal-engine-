@@ -5,9 +5,14 @@
 #include "CoreTypes.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 
+#if !defined(WINDOWS_CRASHCONTEXT_WITH_CUSTOM_HANDLERS)
+	#define WINDOWS_CRASHCONTEXT_WITH_CUSTOM_HANDLERS 0
+#endif
+
+
 struct CORE_API FWindowsPlatformCrashContext : public FGenericCrashContext
 {
-	static const TCHAR* const UE4GPUAftermathMinidumpName;
+	static const TCHAR* const UEGPUAftermathMinidumpName;
 	
 	FWindowsPlatformCrashContext(ECrashContextType InType, const TCHAR* InErrorMessage)
 		: FGenericCrashContext(InType, InErrorMessage)

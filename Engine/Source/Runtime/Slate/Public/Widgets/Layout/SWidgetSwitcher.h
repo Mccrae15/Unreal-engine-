@@ -23,18 +23,7 @@ class SLATE_API SWidgetSwitcher
 {
 public:
 
-	class FSlot
-		: public TSlotBase<FSlot>
-		, public TSupportsContentAlignmentMixin<FSlot>
-		, public TSupportsContentPaddingMixin<FSlot>
-	{
-	public:
-
-		FSlot()
-			: TSlotBase<FSlot>()
-			,TSupportsContentAlignmentMixin<FSlot>( HAlign_Fill, VAlign_Fill )
-		{ }
-	};
+	using FSlot = FBasicLayoutWidgetSlot;
 
 	SLATE_BEGIN_ARGS(SWidgetSwitcher)
 		: _WidgetIndex(0)
@@ -42,7 +31,7 @@ public:
 			_Visibility = EVisibility::SelfHitTestInvisible;
 		}
 
-		SLATE_SUPPORTS_SLOT(FSlot)
+		SLATE_SLOT_ARGUMENT(FSlot, Slots)
 
 		/** Holds the index of the initial widget to be displayed (INDEX_NONE = default). */
 		SLATE_ATTRIBUTE(int32, WidgetIndex)
@@ -53,12 +42,13 @@ public:
 
 public:
 
+	using FScopedWidgetSlotArguments = TPanelChildren<FSlot>::FScopedWidgetSlotArguments;
 	/**
 	 * Adds a slot to the widget switcher at the specified location.
 	 *
 	 * @param SlotIndex The index at which to insert the slot, or INDEX_NONE to append.
 	 */
-	FSlot& AddSlot( int32 SlotIndex = INDEX_NONE );
+	FScopedWidgetSlotArguments AddSlot( int32 SlotIndex = INDEX_NONE );
 
 	/**
 	 * Constructs the widget.
@@ -141,10 +131,7 @@ public:
 	 *
 	 * @return A new slot.
 	 */
-	static FSlot& Slot( )
-	{
-		return *(new FSlot());
-	}
+	static FSlot::FSlotArguments Slot();
 
 protected:
 

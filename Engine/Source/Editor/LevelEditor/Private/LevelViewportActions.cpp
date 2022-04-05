@@ -9,7 +9,11 @@
 #include "EditorShowFlags.h"
 #include "Stats/StatsData.h"
 #include "BufferVisualizationData.h"
+#include "NaniteVisualizationData.h"
+#include "LumenVisualizationData.h"
+#include "VirtualShadowMapVisualizationData.h"
 #include "Bookmarks/BookmarkUI.h"
+#include "UnrealEdGlobals.h"
 
 #define LOCTEXT_NAMESPACE "LevelViewportActions"
 
@@ -32,6 +36,7 @@ void FLevelViewportCommands::RegisterCommands()
 	UI_COMMAND( ToggleMaximize, "Maximize Viewport", "Toggles the Maximize state of the current viewport", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	UI_COMMAND( ToggleGameView, "Game View", "Toggles game view.  Game view shows the scene as it appears in game", EUserInterfaceActionType::ToggleButton, FInputChord( EKeys::G ) );
 	UI_COMMAND( ToggleImmersive, "Immersive Mode", "Switches this viewport between immersive mode and regular mode", EUserInterfaceActionType::ToggleButton, PLATFORM_MAC ? FInputChord( EModifierKey::Control, EKeys::F11 ) : FInputChord( EKeys::F11 ) );
+	UI_COMMAND(ToggleSidebarAllTabs, "Sidebar All Tabs", "Moves all tabs except the level editor to a sidebar or restores any previous state before if all tabs are already sidebared", EUserInterfaceActionType::ToggleButton, FInputChord(EKeys::F10));
 
 	UI_COMMAND( HighResScreenshot, "High Resolution Screenshot...", "Opens the control panel for high resolution screenshots", EUserInterfaceActionType::Button, FInputChord() );
 	
@@ -60,7 +65,7 @@ void FLevelViewportCommands::RegisterCommands()
 
 	UI_COMMAND( ApplyMaterialToActor, "Apply Material", "Attempts to apply a dropped material to this object", EUserInterfaceActionType::Button, FInputChord() );
 
-	UI_COMMAND( ToggleCinematicPreview, "Allow Cinematic Control", "If enabled, allows Matinee or Sequencer previews to play in this viewport", EUserInterfaceActionType::ToggleButton, FInputChord() );
+	UI_COMMAND( ToggleCinematicPreview, "Allow Cinematic Control", "If enabled, allows cinematic (Sequencer) previews to play in this viewport", EUserInterfaceActionType::ToggleButton, FInputChord() );
 
 	UI_COMMAND( FindInLevelScriptBlueprint, "Find In Level Script", "Finds references of a selected actor in the level script blueprint", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::K) );
 	UI_COMMAND( AdvancedSettings, "Advanced Settings...", "Opens the advanced viewport settings", EUserInterfaceActionType::Button, FInputChord());
@@ -83,16 +88,16 @@ void FLevelViewportCommands::RegisterCommands()
 		UI_COMMAND( HideAllSprites, "Hide All Sprites", "Hides all sprites", EUserInterfaceActionType::Button, FInputChord() );
 	}
 
+#if STATS
 	// Generate a command for each Stat category
 	{
 		UI_COMMAND(HideAllStats, "Hide All Stats", "Hides all Stats", EUserInterfaceActionType::Button, FInputChord());
 
 		// Bind a listener here for any additional stat commands that get registered later.
 		UEngine::NewStatDelegate.AddRaw(this, &FLevelViewportCommands::HandleNewStat);
-#if STATS
 		FStatGroupGameThreadNotifier::Get().NewStatGroupDelegate.BindRaw(this, &FLevelViewportCommands::HandleNewStatGroup);
-#endif
 	}
+#endif
 
 	// Map the bookmark index to default key.
 	TArray< FKey > NumberKeyNames;
@@ -155,6 +160,7 @@ void FLevelViewportCommands::RegisterCommands()
 
 }
 
+#if STATS
 void FLevelViewportCommands::HandleNewStatGroup(const TArray<FStatNameAndInfo>& NameAndInfos)
 {
 	// #Stats: FStatNameAndInfo should be private and visible only to stats2 system
@@ -184,7 +190,7 @@ void FLevelViewportCommands::HandleNewStat(const FName& InStatName, const FName&
 		if (!FInputBindingManager::Get().FindCommandInContext(this->GetContextName(), InStatName).IsValid() && !GroupCategory.IsEmpty())
 		{
 			// Find or Add the category
-			TArray< FShowMenuCommand >* ShowStatCommands = ShowStatCatCommands.Find(GroupCategory);
+			TArray<FShowMenuCommand>* ShowStatCommands = ShowStatCatCommands.Find(GroupCategory);
 			if (!ShowStatCommands)
 			{
 				// New category means we'll need to resort
@@ -207,7 +213,7 @@ void FLevelViewportCommands::HandleNewStat(const FName& InStatName, const FName&
 				}
 
 				TSharedPtr<FUICommandInfo> StatCommand
-					= FUICommandInfoDecl(this->AsShared(), InStatName, FText::GetEmpty(), DescriptionName)
+					= FUICommandInfoDecl(this->AsShared(), InStatName, DisplayName, DescriptionName)
 					.UserInterfaceType(EUserInterfaceActionType::ToggleButton);
 
 				FLevelViewportCommands::FShowMenuCommand ShowStatCommand(StatCommand, DisplayName);
@@ -236,6 +242,8 @@ int32 FLevelViewportCommands::FindStatIndex(const TArray< FShowMenuCommand >* Sh
 	}
 	return ShowStatCommands->Num();
 }
+#endif
+
 
 void FLevelViewportCommands::RegisterShowVolumeCommands()
 {
@@ -294,7 +302,13 @@ void FLevelViewportCommands::RegisterShowSpriteCommands()
 				= FUICommandInfoDecl(this->AsShared(), CommandName, LocalizedName, SpriteInfo.Description)
 				.UserInterfaceType(EUserInterfaceActionType::ToggleButton);
 
-			ShowSpriteCommands.Add(FLevelViewportCommands::FShowMenuCommand(ShowSpriteCommand, SpriteInfo.DisplayName));
+			const int32 ShowSpriteCommandIndex = ShowSpriteCommands.Add(FLevelViewportCommands::FShowMenuCommand(ShowSpriteCommand, SpriteInfo.DisplayName));
+
+			// Update the global table that maps each sprite category to its corresponding visibility command.
+			if (GUnrealEd)
+			{
+				GUnrealEd->SpriteIDToIndexMap.Add(SpriteInfo.Category, ShowSpriteCommandIndex);
+			}
 		}
 	}
 }

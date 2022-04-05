@@ -97,6 +97,10 @@ public:
 	FString Hardware;
 	UPROPERTY()
 	FString Chipset;
+	UPROPERTY()
+	FString TotalPhysicalGB;
+	UPROPERTY()
+	FString HMDSystemName;
 
 	UPROPERTY()
 	FPIERHIOverrideState GLES31RHIState;

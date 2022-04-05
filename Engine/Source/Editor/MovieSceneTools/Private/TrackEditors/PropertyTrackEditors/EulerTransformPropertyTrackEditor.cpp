@@ -138,11 +138,11 @@ void FEulerTransformPropertyTrackEditor::ProcessKeyOperation(UObject* ObjectToKe
 			for (TSharedPtr<IKeyArea> KeyArea : SectionsToKey[Index].KeyAreas)
 			{
 				FMovieSceneChannelHandle Handle  = KeyArea->GetChannel();
-				if (Handle.GetChannelTypeName() == FMovieSceneFloatChannel::StaticStruct()->GetFName() && Handle.GetChannelIndex() < 9)
+				if (Handle.GetChannelTypeName() == FMovieSceneDoubleChannel::StaticStruct()->GetFName() && Handle.GetChannelIndex() < 9)
 				{
-					FMovieSceneFloatChannel* Channel = static_cast<FMovieSceneFloatChannel*>(Handle.Get());
+					FMovieSceneDoubleChannel* Channel = static_cast<FMovieSceneDoubleChannel*>(Handle.Get());
 
-					float Value = RecomposedTransform[Handle.GetChannelIndex()];
+					double Value = RecomposedTransform[Handle.GetChannelIndex()];
 					AddKeyToChannel(Channel, KeyTime, Value, InSequencer.GetKeyInterpolation());
 				}
 				else
@@ -204,19 +204,19 @@ void FEulerTransformPropertyTrackEditor::GenerateKeysFromPropertyChanged( const 
 	FEulerTransform RecomposedTransform = RecomposeTransform(Transform, PropertyChangedParams.ObjectsThatChanged[0], SectionToKey);
 
 	FVector Translation = RecomposedTransform.Location;
-	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(0, Translation.X, bKeyChannels[0]));
-	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(1, Translation.Y, bKeyChannels[1]));
-	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(2, Translation.Z, bKeyChannels[2]));
+	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneDoubleChannel>(0, (double)Translation.X, bKeyChannels[0]));
+	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneDoubleChannel>(1, (double)Translation.Y, bKeyChannels[1]));
+	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneDoubleChannel>(2, (double)Translation.Z, bKeyChannels[2]));
 
 	FRotator Rotator = RecomposedTransform.Rotation;
-	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(3, Rotator.Roll,  bKeyChannels[3]));
-	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(4, Rotator.Pitch, bKeyChannels[4]));
-	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(5, Rotator.Yaw,   bKeyChannels[5]));
+	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneDoubleChannel>(3, (double)Rotator.Roll,  bKeyChannels[3]));
+	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneDoubleChannel>(4, (double)Rotator.Pitch, bKeyChannels[4]));
+	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneDoubleChannel>(5, (double)Rotator.Yaw,   bKeyChannels[5]));
 
 	FVector Scale = RecomposedTransform.Scale;
-	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(6, Scale.X, bKeyChannels[6]));
-	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(7, Scale.Y, bKeyChannels[7]));
-	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneFloatChannel>(8, Scale.Z, bKeyChannels[8]));
+	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneDoubleChannel>(6, (double)Scale.X, bKeyChannels[6]));
+	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneDoubleChannel>(7, (double)Scale.Y, bKeyChannels[7]));
+	OutGeneratedKeys.Add(FMovieSceneChannelValueSetter::Create<FMovieSceneDoubleChannel>(8, (double)Scale.Z, bKeyChannels[8]));
 }
 
 

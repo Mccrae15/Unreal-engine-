@@ -132,12 +132,18 @@ private:
 FEditableSkeleton::FEditableSkeleton(USkeleton* InSkeleton)
 	: Skeleton(InSkeleton)
 {
+	Skeleton->SetFlags(RF_Transactional);
 	Skeleton->CollectAnimationNotifies();
 }
 
 const USkeleton& FEditableSkeleton::GetSkeleton() const
 {
 	return *Skeleton;
+}
+
+bool FEditableSkeleton::IsSkeletonValid() const
+{
+	return Skeleton != nullptr;
 }
 
 const TArray<class UBlendProfile*>& FEditableSkeleton::GetBlendProfiles() const
@@ -165,7 +171,7 @@ void FEditableSkeleton::RemoveBlendProfile(UBlendProfile* InBlendProfile)
 
 		Skeleton->Modify();
 		Skeleton->BlendProfiles.Remove(InBlendProfile);
-		InBlendProfile->MarkPendingKill();
+		InBlendProfile->MarkAsGarbage();
 	}
 }
 
@@ -180,6 +186,30 @@ void FEditableSkeleton::SetBlendProfileScale(const FName& InBlendProfileName, co
 		BlendProfile->Modify();
 		const int32 BoneIndex = Skeleton->GetReferenceSkeleton().FindBoneIndex(InBoneName);
 		BlendProfile->SetBoneBlendScale(BoneIndex, InNewScale, bInRecurse, true);
+	}
+}
+
+void FEditableSkeleton::SetBlendProfileMode(FName InBlendProfileName, EBlendProfileMode ProfileMode)
+{
+	UBlendProfile* BlendProfile = GetBlendProfile(InBlendProfileName);
+	if (BlendProfile)
+	{
+		FScopedTransaction Transaction(LOCTEXT("SetBlendProfileMode", "Set Blend Profile Mode"));
+
+		const bool bWasBlendMask = BlendProfile->IsBlendMask();
+		BlendProfile->SetFlags(RF_Transactional);
+		BlendProfile->Modify();
+		BlendProfile->Mode = ProfileMode;
+		const bool bIsBlendMask = BlendProfile->IsBlendMask();
+		// Re-set entry indices from the end to properly handle different default values when changing from/to blend mask
+		if (bWasBlendMask != bIsBlendMask)
+		{
+			for (int32 EntryIndex = BlendProfile->GetNumBlendEntries() - 1; EntryIndex >= 0; --EntryIndex)
+			{
+				const FBlendProfileBoneEntry& Entry = BlendProfile->ProfileEntries[EntryIndex];
+				BlendProfile->SetBoneBlendScale(Entry.BoneReference.BoneName, Entry.BlendScale);
+			}
+		}
 	}
 }
 
@@ -218,7 +248,7 @@ bool FEditableSkeleton::DoesSocketAlreadyExist(const USkeletalMeshSocket* InSock
 	}
 	else if(SocketParentType == ESocketParentType::Skeleton)
 	{
-		SocketArrayPtr = &Skeleton->Sockets;
+		SocketArrayPtr = &ToRawPtrTArrayUnsafe(Skeleton->Sockets);
 	}
 
 	if (SocketArrayPtr != nullptr)
@@ -241,7 +271,9 @@ bool FEditableSkeleton::AddSmartname(const FName& InContainerName, const FName& 
 {
 	if (const FSmartNameMapping* NameMapping = Skeleton->GetSmartNameContainer(InContainerName))
 	{
-		return Skeleton->AddSmartNameAndModify(InContainerName, InNewName, OutSmartName);
+		const bool bResult = Skeleton->AddSmartNameAndModify(InContainerName, InNewName, OutSmartName);
+		OnSmartNameChanged.Broadcast(OutSmartName.DisplayName);
+		return bResult;
 	}
 
 	return false;
@@ -281,6 +313,8 @@ void FEditableSkeleton::RenameSmartname(const FName InContainerName, SmartName::
 			GWarn->BeginSlowTask(FText::Format(LOCTEXT("RenameCurvesTaskDesc", "Renaming curve for skeleton {0}"), FText::FromString(Skeleton->GetName())), true);
 			FScopedTransaction Transaction(LOCTEXT("RenameCurvesTransactionName", "Rename skeleton curve"));
 
+			FAnimationCurveIdentifier CurveId(CurveToRename, ERawCurveTrackTypes::RCT_Float);
+
 			// Remove curves from animation assets
 			for (FAssetData& Data : AnimationAssets)
 			{
@@ -290,15 +324,15 @@ void FEditableSkeleton::RenameSmartname(const FName InContainerName, SmartName::
 				{
 					SequenceBase->Modify();
 
-					if (FAnimCurveBase* CurrentCurveData = SequenceBase->RawCurveData.GetCurveData(CurveToRename.UID))
+					if (SequenceBase->GetDataModel()->FindFloatCurve(CurveId))
 					{
-						CurrentCurveData->Name.DisplayName = InNewName;
-						SequenceBase->MarkRawDataAsModified();
+						IAnimationDataController& Controller = SequenceBase->GetController();
+
+						FAnimationCurveIdentifier NewCurveId(FSmartName(InNewName, InNameUid), ERawCurveTrackTypes::RCT_Float);
+						Controller.RenameCurve(CurveId, NewCurveId);
 						if (UAnimSequence* Seq = Cast<UAnimSequence>(SequenceBase))
 						{
 							SequencesToRecompress.Add(Seq);
-
-							Seq->ClearCompressedCurveData();
 						}
 					}
 				}
@@ -314,7 +348,6 @@ void FEditableSkeleton::RenameSmartname(const FName InContainerName, SmartName::
 			GWarn->BeginSlowTask(LOCTEXT("RebuildingAnimations", "Rebaking/compressing modified animations"), true);
 
 			//Make sure skeleton is correct before compression 
-
 			Skeleton->RenameSmartnameAndModify(InContainerName, InNameUid, InNewName);
 
 			// Rebake/compress the animations
@@ -452,33 +485,24 @@ void FEditableSkeleton::RemoveSmartnamesAndFixupAnimations(const FName& InContai
 				{
 					USkeleton* MySkeleton = Sequence->GetSkeleton();
 					Sequence->Modify(true);
+
+					IAnimationDataController& Controller = Sequence->GetController();
+					IAnimationDataController::FScopedBracket ScopedBracket(Controller, LOCTEXT("DeleteCurvesNotOnSkeletonBracket", "Deleting curves that no longer exist on Skeleton"));
 					for (FName Name : InNames)
 					{
 						FSmartName CurveToDelete;
 						if (MySkeleton->GetSmartNameByName(USkeleton::AnimCurveMappingName, Name, CurveToDelete))
 						{
-							Sequence->RawCurveData.DeleteCurveData(CurveToDelete);
+							const FAnimationCurveIdentifier CurveId(CurveToDelete, ERawCurveTrackTypes::RCT_Float);
+							Controller.RemoveCurve(CurveId);
 						}
 					}
-					Sequence->MarkRawDataAsModified();
 				}
 				else if (UPoseAsset* PoseAsset = Cast<UPoseAsset>(Asset))
 				{
 					PoseAsset->Modify();
 					PoseAsset->RemoveSmartNames(InNames);
 				}
-			}
-			GWarn->EndSlowTask();
-
-			GWarn->BeginSlowTask(LOCTEXT("RebuildingAnimations", "Rebaking/compressing modified animations"), true);
-
-			// Rebake/compress the animations
-			for (TObjectIterator<UAnimSequence> It; It; ++It)
-			{
-				UAnimSequence* Seq = *It;
-
-				GWarn->StatusUpdate(1, 2, FText::Format(LOCTEXT("RebuildingAnimationsStatus", "Rebuilding {0}"), FText::FromString(Seq->GetName())));
-				Seq->RequestSyncAnimRecompression();
 			}
 			GWarn->EndSlowTask();
 
@@ -643,6 +667,14 @@ void FEditableSkeleton::SetSocketParent(const FName& SocketName, const FName& Ne
 		Socket->Modify();
 
 		Socket->BoneName = NewParentName;
+
+		for (TWeakPtr<SSkeletonTree> SkeletonTree : SkeletonTrees)
+		{
+			if (SkeletonTree.IsValid())
+			{
+				SkeletonTree.Pin()->PostSetSocketParent();
+			}
+		}
 
 		OnTreeRefresh.Broadcast();
 	}
@@ -1062,7 +1094,9 @@ TSharedRef<SWidget> FEditableSkeleton::CreateBlendProfilePicker(const FBlendProf
 		.OnBlendProfileSelected(InArgs.OnBlendProfileSelected)
 		.AllowNew(InArgs.bAllowNew)
 		.AllowClear(InArgs.bAllowClear)
-		.AllowRemove(InArgs.bAllowRemove);
+		.AllowModify(InArgs.bAllowModify)
+		.SupportedBlendProfileModes(InArgs.SupportedBlendProfileModes)
+		.PropertyHandle(InArgs.PropertyHandle);
 
 	BlendProfilePickers.Add(BlendProfilePicker);
 	return BlendProfilePicker;

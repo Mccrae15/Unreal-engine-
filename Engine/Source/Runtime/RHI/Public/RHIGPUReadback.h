@@ -22,6 +22,7 @@ public:
 	FRHIGPUMemoryReadback(FName RequestName)
 	{
 		Fence = RHICreateGPUFence(RequestName);
+		LastLockGPUIndex = 0;
 	}
 
 	virtual ~FRHIGPUMemoryReadback() {}
@@ -44,7 +45,7 @@ public:
 	 * @param SourceBuffer The buffer holding the source data.
 	 * @param NumBytes The number of bytes to copy. If 0, this will copy the entire buffer.
 	 */
-	virtual void EnqueueCopy(FRHICommandList& RHICmdList, FRHIVertexBuffer* SourceBuffer, uint32 NumBytes = 0)
+	virtual void EnqueueCopy(FRHICommandList& RHICmdList, FRHIBuffer* SourceBuffer, uint32 NumBytes = 0)
 	{
 		unimplemented();
 	}
@@ -72,6 +73,13 @@ protected:
 
 	FGPUFenceRHIRef Fence;
 	FRHIGPUMask LastCopyGPUMask;
+
+	// We need to separately track which GPU buffer was last locked.  It's possible for a new copy operation to
+	// be enqueued (writing to LastCopyGPUMask) while the buffer is technically locked, with the unlock and enqueued
+	// copy on the GPU itself happening later, during pass execution in FRDGBuilder::Execute (for example, this
+	// happens with Nanite streaming).  It's not unsafe, because the operations are occurring in order on both the
+	// render thread and later pass Execute, but our locking logic needs to handle that scenario.
+	uint32 LastLockGPUIndex;
 };
 
 /** Buffer readback implementation. */
@@ -81,13 +89,18 @@ public:
 
 	FRHIGPUBufferReadback(FName RequestName);
 	 
-	void EnqueueCopy(FRHICommandList& RHICmdList, FRHIVertexBuffer* SourceBuffer, uint32 NumBytes = 0) override;
+	void EnqueueCopy(FRHICommandList& RHICmdList, FRHIBuffer* SourceBuffer, uint32 NumBytes = 0) override;
 	void* Lock(uint32 NumBytes) override;
 	void Unlock() override;
 
 private:
 
-	FStagingBufferRHIRef DestinationStagingBuffer;
+	// RHI staging buffers are single GPU -- need to be branched when using multiple GPUs
+#if WITH_MGPU
+	FStagingBufferRHIRef DestinationStagingBuffers[MAX_NUM_GPUS];
+#else
+	FStagingBufferRHIRef DestinationStagingBuffers[1];
+#endif
 };
 
 
@@ -100,9 +113,14 @@ public:
 	void EnqueueCopyRDG(FRHICommandList& RHICmdList, FRHITexture* SourceTexture, FResolveRect Rect = FResolveRect());
 	void EnqueueCopy(FRHICommandList& RHICmdList, FRHITexture* SourceTexture, FResolveRect Rect = FResolveRect()) override;
 
+
+	UE_DEPRECATED(5.0, "Use FRHIGPUTextureReadback::Lock( int32& OutRowPitchInPixels) instead.")
 	void* Lock(uint32 NumBytes) override;
+
+	void* Lock(int32& OutRowPitchInPixels, int32* OutBufferHeight = nullptr);
 	void Unlock() override;
 
+	UE_DEPRECATED(5.0, "Use FRHIGPUTextureReadback::Lock( int32& OutRowPitchInPixels) instead.")
 	void LockTexture(FRHICommandListImmediate& RHICmdList, void*& OutBufferPtr, int32& OutRowPitchInPixels);
 
 private:

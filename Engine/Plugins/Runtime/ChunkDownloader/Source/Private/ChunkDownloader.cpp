@@ -180,30 +180,24 @@ public:
 	void DoWork()
 	{
 		// try to mount the pak file
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		if (FCoreDelegates::OnMountPak.IsBound())
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		if (FCoreDelegates::MountPak.IsBound())
 		{
 			uint32 PakReadOrder = PakFiles.Num();
 			for (const TSharedRef<FPakFile>& PakFile : PakFiles)
 			{
 				FString FullPathOnDisk = (PakFile->bIsEmbedded ? EmbeddedFolder : CacheFolder) / PakFile->Entry.FileName;
-				PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				bool bMountOk = FCoreDelegates::OnMountPak.Execute(FullPathOnDisk, PakReadOrder, nullptr);
-				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+				IPakFile* MountedPak = FCoreDelegates::MountPak.Execute(FullPathOnDisk, PakReadOrder);
 
 #if !UE_BUILD_SHIPPING
-				if (!bMountOk)
+				if (!MountedPak)
 				{
 					// This can fail because of the sandbox system - which the pak system doesn't understand.
 					FString SandboxedPath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*FullPathOnDisk);
-					PRAGMA_DISABLE_DEPRECATION_WARNINGS
-					bMountOk = FCoreDelegates::OnMountPak.Execute(SandboxedPath, PakReadOrder, nullptr);
-					PRAGMA_ENABLE_DEPRECATION_WARNINGS
+					MountedPak = FCoreDelegates::MountPak.Execute(SandboxedPath, PakReadOrder);
 				}
 #endif
 
-				if (bMountOk)
+				if (MountedPak)
 				{
 					// record that we successfully mounted this pak file
 					MountedPakFiles.Add(PakFile);
@@ -1020,7 +1014,7 @@ void FChunkDownloader::BeginLoadingMode(const FCallback& Callback)
 
 	// compute again next frame (if nothing's queued by then, we'll fire the callback
 	TWeakPtr<FChunkDownloader> WeakThisPtr = AsShared();
-	FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakThisPtr](float dts) {
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakThisPtr](float dts) {
 		TSharedPtr<FChunkDownloader> SharedThis = WeakThisPtr.Pin();
 		if (!SharedThis.IsValid() || SharedThis->PostLoadCallbacks.Num() <= 0)
 		{
@@ -1109,7 +1103,7 @@ void FChunkDownloader::ExecuteNextTick(const FCallback& Callback, bool bSuccess)
 {
 	if (Callback)
 	{
-		FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Callback, bSuccess](float dts) {
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Callback, bSuccess](float dts) {
 			Callback(bSuccess);
 			return false;
 		}));
@@ -1155,7 +1149,7 @@ void FChunkDownloader::TryLoadBuildManifest(int TryNumber)
 		// set a ticker to delay
 		UE_LOG(LogChunkDownloader, Log, TEXT("Will re-attempt manifest download in %f seconds"), SecondsToDelay);
 		TWeakPtr<FChunkDownloader> WeakThisPtr = AsShared();
-		FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakThisPtr, TryNumber](float Unused) {
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakThisPtr, TryNumber](float Unused) {
 			TSharedPtr<FChunkDownloader> SharedThis = WeakThisPtr.Pin();
 			if (SharedThis.IsValid())
 			{
@@ -1179,12 +1173,7 @@ void FChunkDownloader::TryDownloadBuildManifest(int TryNumber)
 	check(BuildBaseUrls.Num() > 0);
 
 	// download the manifest from CDN, then load it
-#if PLATFORM_PS4 || PLATFORM_SWITCH || PLATFORM_XBOXONE
-	// TODO: Remove when the other platforms' build manifests exist in the CDN
-	FString ManifestFileName = FString::Printf(TEXT("BuildManifest-Windows.txt"));
-#else
 	FString ManifestFileName = FString::Printf(TEXT("BuildManifest-%s.txt"), *PlatformName);
-#endif
 	FString Url = BuildBaseUrls[TryNumber % BuildBaseUrls.Num()] / ManifestFileName;
 	UE_LOG(LogChunkDownloader, Log, TEXT("Downloading build manifest (attempt #%d) from %s"), TryNumber+1, *Url);
 
@@ -1520,7 +1509,7 @@ void FChunkDownloader::MountChunkInternal(FChunk& Chunk, const FCallback& Callba
 		// start a per-frame ticker until mounts are finished
 		if (!MountTicker.IsValid())
 		{
-			MountTicker = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FChunkDownloader::UpdateMountTasks));
+			MountTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FChunkDownloader::UpdateMountTasks));
 		}
 	}
 	else
@@ -1755,6 +1744,7 @@ void FChunkDownloader::DownloadChunks(const TArray<int32>& ChunkIds, const FCall
 	}
 
 	// if there's no callback for some reason, avoid a bunch of boilerplate
+#ifndef PVS_STUDIO // Build machine refuses to disable this warning
 	if (Callback)
 	{
 		// loop over chunks and issue individual callback
@@ -1764,7 +1754,7 @@ void FChunkDownloader::DownloadChunks(const TArray<int32>& ChunkIds, const FCall
 			DownloadChunkInternal(*Chunk, MultiCallback->AddPending(), Priority);
 		}
 		check(MultiCallback->GetNumPending() > 0);
-	}  //-V773
+	} //-V773
 	else
 	{
 		// no need to manage callbacks
@@ -1773,6 +1763,7 @@ void FChunkDownloader::DownloadChunks(const TArray<int32>& ChunkIds, const FCall
 			DownloadChunkInternal(*Chunk, FCallback(), Priority);
 		}
 	}
+#endif
 
 	// resave manifest if needed
 	SaveLocalManifest(false);
@@ -1840,6 +1831,7 @@ void FChunkDownloader::MountChunks(const TArray<int32>& ChunkIds, const FCallbac
 	}
 
 	// if there's no callback for some reason, avoid a bunch of boilerplate
+#ifndef PVS_STUDIO // Build machine refuses to disable this warning
 	if (Callback)
 	{
 		// loop over chunks and issue individual callback
@@ -1858,6 +1850,7 @@ void FChunkDownloader::MountChunks(const TArray<int32>& ChunkIds, const FCallbac
 			MountChunkInternal(*Chunk, FCallback());
 		}
 	}
+#endif
 
 	// resave manifest if needed
 	SaveLocalManifest(false);

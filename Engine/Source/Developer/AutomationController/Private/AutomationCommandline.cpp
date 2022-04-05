@@ -15,6 +15,7 @@
 #include "Misc/FileHelper.h"
 #include "AssetRegistryModule.h"
 #include "AutomationControllerSettings.h"
+#include "Containers/Ticker.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAutomationCommandLine, Log, All);
 
@@ -75,7 +76,7 @@ public:
 			TestsRefreshedHandle = AutomationController->OnTestsRefreshed().AddRaw(this, &FAutomationExecCmd::HandleRefreshTestCallback);
 		}
 
-		TickHandler = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FAutomationExecCmd::Tick));
+		TickHandler = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FAutomationExecCmd::Tick));
 
 		int32 NumTestLoops = 1;
 		FParse::Value(FCommandLine::Get(), TEXT("TestLoops="), NumTestLoops);
@@ -92,6 +93,7 @@ public:
 		FilterMaps.Add("Stress", EAutomationTestFlags::StressFilter);
 		FilterMaps.Add("Perf", EAutomationTestFlags::PerfFilter);
 		FilterMaps.Add("Product", EAutomationTestFlags::ProductFilter);
+		FilterMaps.Add("All", EAutomationTestFlags::FilterMask);
 	}
 	
 	void Shutdown()
@@ -103,7 +105,7 @@ public:
 			AutomationController->OnTestsRefreshed().RemoveAll(this);
 		}
 
-		FTicker::GetCoreTicker().RemoveTicker(TickHandler);
+		FTSTicker::GetCoreTicker().RemoveTicker(TickHandler);
 	}
 
 	bool IsTestingComplete()
@@ -146,12 +148,12 @@ public:
 			const FString GroupPrefix = TEXT("Group:");
 			const FString FilterPrefix = TEXT("Filter:");
 
-			FString ArgumentName = ArgumentNames[ArgumentIndex];
+			FString ArgumentName = ArgumentNames[ArgumentIndex].TrimStartAndEnd();
 
 			// if the argument is a filter (e.g. Filter:System) then create a filter that matches from the start
 			if (ArgumentName.StartsWith(FilterPrefix))
 			{
-				FString FilterName = ArgumentName.RightChop(FilterPrefix.Len());
+				FString FilterName = ArgumentName.RightChop(FilterPrefix.Len()).TrimStart();
 
 				if (FilterName.EndsWith(TEXT(".")) == false)
 				{
@@ -163,7 +165,7 @@ public:
 			else if (ArgumentName.StartsWith(GroupPrefix))
 			{
 				// if the argument is a group (e.g. Group:Rendering) then seach our groups for one that matches
-				FString GroupName = ArgumentName.RightChop(GroupPrefix.Len());
+				FString GroupName = ArgumentName.RightChop(GroupPrefix.Len()).TrimStart();
 
 				bool FoundGroup = false;
 
@@ -195,73 +197,61 @@ public:
 			}			
 			else
 			{
-				// old behavior of just string searching
-				ArgumentName = ArgumentName.TrimStart().Replace(TEXT(" "), TEXT(""));
-
 				bool bMatchFromStart = false;
-				//bool bMatchFromEnd = false;
+				bool bMatchFromEnd = false;
 
 				if (ArgumentName.StartsWith("^"))
 				{
 					bMatchFromStart = true;
 					ArgumentName.RightChopInline(1);
 				}
-
-				/*if (ArgumentName.EndsWith("$"))
+				if (ArgumentName.EndsWith("$"))
 				{
 					bMatchFromEnd = true;
 					ArgumentName.LeftChopInline(1);
-				}*/
+				}
 
-				// #agrant todo: restore in 4.26 when headers can be changed
-				Filters.Add(FAutomatedTestFilter(ArgumentName, bMatchFromStart/*, bMatchFromEnd*/));
+				Filters.Add(FAutomatedTestFilter(ArgumentName, bMatchFromStart, bMatchFromEnd));
 			}
 		}
 		
 		for (int32 TestIndex = 0; TestIndex < AllTestNames.Num(); ++TestIndex)
 		{
-			FString TestNamesNoWhiteSpaces = AllTestNames[TestIndex].Replace(TEXT(" "), TEXT(""));
+			FString TestName = AllTestNames[TestIndex];
 
 			for (const FAutomatedTestFilter& Filter : Filters)
 			{
-				// #agrant todo: remove in 4.26 when headers can be changed and we store this during parsing
-				bool bMatchFromEnd = false;
 				FString FilterString = Filter.Contains;
-				if (FilterString.EndsWith("$"))
+
+				bool bNeedStartMatch = Filter.MatchFromStart;
+				bool bNeedEndMatch = Filter.MatchFromEnd;
+				bool bMeetsMatch = true;	// assume true
+
+				// If we need to match at the start or end, 
+				if (bNeedStartMatch || bNeedEndMatch)
 				{
-					bMatchFromEnd = true;
-					FilterString.LeftChopInline(1);
+					if (bNeedStartMatch)
+					{
+						bMeetsMatch = TestName.StartsWith(FilterString);
+					}
+
+					if (bNeedEndMatch && bMeetsMatch)
+					{
+						bMeetsMatch = TestName.EndsWith(FilterString);
+					}
+				}
+				else
+				{
+					// match anywhere
+					bMeetsMatch = TestName.Contains(FilterString);
 				}
 
-bool bNeedStartMatch = Filter.MatchFromStart;
-bool bNeedEndMatch = bMatchFromEnd;
-bool bMeetsMatch = true;	// assume true
-
-// If we need to match at the start or end, 
-if (bNeedStartMatch || bNeedEndMatch)
-{
-	if (bNeedStartMatch)
-	{
-		bMeetsMatch = TestNamesNoWhiteSpaces.StartsWith(FilterString);
-	}
-
-	if (bNeedEndMatch && bMeetsMatch)
-	{
-		bMeetsMatch = TestNamesNoWhiteSpaces.EndsWith(FilterString);
-	}
-}
-else
-{
-	// match anywhere
-	bMeetsMatch = TestNamesNoWhiteSpaces.Contains(FilterString);
-}
-
-if (bMeetsMatch)
-{
-	OutTestNames.Add(AllTestNames[TestIndex]);
-	TestCount++;
-	break;
-}
+				if (bMeetsMatch)
+				{
+					OutTestNames.Add(TestName);
+					TestCount++;
+					break;
+				}
 			}
 		}
 
@@ -635,6 +625,16 @@ if (bMeetsMatch)
 					}
 					AutomationCommandQueue.Add(EAutomationCommand::RunFilter);
 				}
+				else if (FParse::Command(&TempCmd, TEXT("SetFilter")))
+				{
+					FlagToUse = TempCmd;
+					StringCommand = TempCmd;
+					if (FilterMaps.Contains(FlagToUse))
+					{
+						AutomationController->SetRequestedTestFlags(FilterMaps[FlagToUse]);
+						Ar.Logf(TEXT("Setting test filter: %s"), *FlagToUse);
+					}
+				}
 				else if (FParse::Command(&TempCmd, TEXT("RunAll")))
 				{
 					AutomationCommandQueue.Add(EAutomationCommand::RunAll);
@@ -653,6 +653,7 @@ if (bMeetsMatch)
 					Ar.Logf(TEXT("\tAutomation RunTests <test string>"));
 					Ar.Logf(TEXT("\tAutomation RunAll "));
 					Ar.Logf(TEXT("\tAutomation RunFilter <filter name>"));
+					Ar.Logf(TEXT("\tAutomation SetFilter <filter name>"));
 					Ar.Logf(TEXT("\tAutomation Quit"));
 					bHandled = false;
 				}
@@ -678,9 +679,6 @@ private:
 	/** The current state of the automation process */
 	EAutomationTestState AutomationTestState;
 
-	/** The priority flags we would like to run */
-	EAutomationTestFlags::Type AutomationPriority;
-
 	/** What work was requested */
 	TArray<EAutomationCommand> AutomationCommandQueue;
 
@@ -703,7 +701,7 @@ private:
 	FGuid SessionID;
 
 	//so we can release control of the app and just get ticked like all other systems
-	FDelegateHandle TickHandler;
+	FTSTicker::FDelegateHandle TickHandler;
 
 	//Extra commandline params
 	FString StringCommand;

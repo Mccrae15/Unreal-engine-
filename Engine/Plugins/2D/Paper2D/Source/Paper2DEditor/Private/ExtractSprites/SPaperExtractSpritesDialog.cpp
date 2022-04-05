@@ -26,6 +26,7 @@
 #include "CanvasTypes.h"
 #include "PaperSprite.h"
 #include "PaperSpriteFactory.h"
+#include "TextureCompiler.h"
 
 #define LOCTEXT_NAMESPACE "PaperEditor"
 
@@ -63,6 +64,8 @@ void FPaperExtractSpritesViewportClient::Draw(FViewport* InViewport, FCanvas* Ca
 
 	if (UTexture2D* Texture = TextureBeingExtracted.Get())
 	{
+		FTextureCompilingManager::Get().FinishCompilation({Texture});
+
 		const bool bUseTranslucentBlend = Texture->HasAlphaChannel();
 
 		// Fully stream in the texture before drawing it.
@@ -78,7 +81,7 @@ void FPaperExtractSpritesViewportClient::Draw(FViewport* InViewport, FCanvas* Ca
 		const float Width = Texture->GetSurfaceWidth() * ZoomAmount;
 		const float Height = Texture->GetSurfaceHeight() * ZoomAmount;
 
-		Canvas->DrawTile(XPos, YPos, Width, Height, 0.0f, 0.0f, 1.0f, 1.0f, TextureDrawColor, Texture->Resource, bUseTranslucentBlend);
+		Canvas->DrawTile(XPos, YPos, Width, Height, 0.0f, 0.0f, 1.0f, 1.0f, TextureDrawColor, Texture->GetResource(), bUseTranslucentBlend);
 
 		for (FPaperExtractedSprite Sprite : ExtractedSprites)
 		{
@@ -168,7 +171,10 @@ void SPaperExtractSpritesDialog::Construct(const FArguments& InArgs, UTexture2D*
 	PreviewExtractedSprites();
 
 	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	FDetailsViewArgs DetailsViewArgs(/*bUpdateFromSelection=*/ false, /*bLockable=*/ false, /*bAllowSearch=*/ false, /*InNameAreaSettings=*/ FDetailsViewArgs::HideNameArea, /*bHideSelectionTip=*/ true);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.bAllowSearch = false;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
 	MainPropertyView = EditModule.CreateDetailView(DetailsViewArgs);
 	MainPropertyView->SetObject(ExtractSpriteSettings);
 	MainPropertyView->OnFinishedChangingProperties().AddSP(this, &SPaperExtractSpritesDialog::OnFinishedChangingProperties);

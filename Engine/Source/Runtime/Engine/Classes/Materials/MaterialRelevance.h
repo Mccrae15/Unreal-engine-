@@ -23,6 +23,7 @@ struct ENGINE_API FMaterialRelevance
 			uint8 bHairStrands : 1;
 			uint8 bSeparateTranslucency : 1; // Translucency After DOF
 			uint8 bSeparateTranslucencyModulate : 1;
+			uint8 bPostMotionBlurTranslucency : 1;
 			uint8 bNormalTranslucency : 1;
 			uint8 bUsesSceneColorCopy : 1;
 			uint8 bOutputsTranslucentVelocity : 1;
@@ -35,7 +36,6 @@ struct ENGINE_API FMaterialRelevance
 			uint8 bUsesSingleLayerWaterMaterial : 1;
 			uint8 bHasVolumeMaterialDomain : 1;
 			uint8 bUsesCustomDepthStencil : 1;
-			uint8 bShouldRenderDepthToTranslucency : 1;
 			uint8 bUsesDistanceCullFade : 1;
 			uint8 bDisableDepthTest : 1;
 			uint8 bUsesAnisotropy : 1;

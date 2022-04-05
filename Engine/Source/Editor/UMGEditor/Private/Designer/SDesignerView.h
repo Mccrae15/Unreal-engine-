@@ -96,6 +96,10 @@ public:
 
 	// FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SDesignerView");
+	}
 	// End of FGCObject interface
 
 public:
@@ -137,8 +141,6 @@ private:
 	EVisibility GetAreaResizeHandleVisibility() const;
 
 	const FSlateBrush* GetPreviewBackground() const;
-
-	void GetPreviewAreaAndSize(FVector2D& Area, FVector2D& Size) const;
 
 	/** Gets the DPI scale that would be applied given the current preview width and height */
 	float GetPreviewDPIScale() const;

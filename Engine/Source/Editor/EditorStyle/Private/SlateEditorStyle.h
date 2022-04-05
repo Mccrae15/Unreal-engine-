@@ -72,6 +72,7 @@ public:
 		void SetupGeneralStyles();
 		void SetupLevelGeneralStyles();
 		void SetupWorldBrowserStyles();
+		void SetupWorldPartitionStyles();
 		void SetupSequencerStyles();
 		void SetupViewportStyles();
 		void SetupNotificationBarStyles();
@@ -93,7 +94,6 @@ public:
 		void SetupContentBrowserStyle();
 		void SetupLandscapeEditorStyle();
 		void SetupToolkitStyles();
-		void SetupMatineeStyle();
 		void SetupSourceControlStyles();
 		void SetupAutomationStyles();
 		void SetupUMGEditorStyles();
@@ -167,6 +167,9 @@ public:
 		FButtonStyle HoverHintOnly;
 
 		TWeakObjectPtr< UEditorStyleSettings > Settings;
+
+		static bool IncludeEditorSpecificStyles();
+
 	};
 
 	static TSharedRef< class FSlateEditorStyle::FStyle > Create( const TWeakObjectPtr< UEditorStyleSettings >& InCustomization )

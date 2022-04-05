@@ -31,6 +31,7 @@ namespace UnrealBuildTool.Rules
 					"Slate",
 					"SlateCore",
 					"SourceControl",
+					"ToolMenus"
 				}
 			);
 
@@ -39,8 +40,10 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.AddRange(
 					new string[]
 					{
+						"EditorFramework",
 						"UnrealEd",
 						"Sequencer",
+						"ToolMenus",
 						"WorkspaceMenuStructure",
 					}
 				);

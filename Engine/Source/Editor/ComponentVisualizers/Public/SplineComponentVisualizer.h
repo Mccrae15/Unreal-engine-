@@ -278,7 +278,7 @@ protected:
 	virtual float FindNearest(const FVector& InLocalPos, int32 InSegmentStartIndex, FVector& OutSplinePos, FVector& OutSplineTangent) const;
 
 	/** Split segment using given world position */
-	virtual void SplitSegment(const FVector& InWorldPos, int32 InSegmentIndex);
+	virtual void SplitSegment(const FVector& InWorldPos, int32 InSegmentIndex, bool bCopyFromSegmentBeginIndex = true);
 
 	/** Update split segment based on drag offset */
 	virtual void UpdateSplitSegment(const FVector& InDrag);
@@ -385,6 +385,10 @@ protected:
 
 	// FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector);
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FSplineComponentVisualizer");
+	}
 	// End of FGCObject interface
 
 	/** Output log commands */

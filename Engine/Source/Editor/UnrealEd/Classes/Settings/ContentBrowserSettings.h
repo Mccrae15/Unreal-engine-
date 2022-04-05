@@ -48,19 +48,23 @@ public:
 
 	/** Whether to group root folders under a common folder in the path view */
 	UPROPERTY(config)
-	bool ShowAllFolder = false;
+	bool bShowAllFolder = true;
 
 	/** Whether to organize folders in the content browser */
 	UPROPERTY(config)
-	bool OrganizeFolders = false;
+	bool bOrganizeFolders = true;
+
+	/** Whether to append 'Content' text to displayed folder names */
+	UPROPERTY(EditAnywhere, config, Category = ContentBrowser)
+	bool bDisplayContentFolderSuffix = true;
+
+	/** Whether display friendly name as plugin folder names */
+	UPROPERTY(EditAnywhere, config, Category = ContentBrowser)
+	bool bDisplayFriendlyNameForPluginFolders = true;
 
 	/** The number of objects to keep in the Content Browser Recently Opened filter */
 	UPROPERTY(EditAnywhere, config, Category = ContentBrowser, meta = (DisplayName = "Number of Assets to Keep in the Recently Opened Filter", ClampMin = "1", ClampMax = "30"))
 	int32 NumObjectsInRecentList;
-
-	/** Whether the Content Browser should open the Sources Panel by default */
-	UPROPERTY(EditAnywhere, config, Category = ContentBrowser)
-	bool bShowFullCollectionNameInToolTip;
 
 	/** Enables the rendering of Material Instance thumbnail previews */
 	UPROPERTY(EditAnywhere, config, Category = ContentBrowser)

@@ -209,18 +209,11 @@ FPhysicsAssetEditorMode::FPhysicsAssetEditorMode(TSharedRef<FWorkflowCentricAppl
 
 	TabFactories.RegisterFactory(MakeShared<FPhysicsAssetEditorToolsSummoner>(InHostingApp));
 
-	TabLayout = FTabManager::NewLayout("Standalone_PhysicsAssetEditor_Layout_v5.2")
+	TabLayout = FTabManager::NewLayout("Standalone_PhysicsAssetEditor_Layout_v5.3")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(InHostingApp->GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()

@@ -13,23 +13,9 @@
 #include "HAL/PlatformAtomics.h"
 #include "Engine/RendererSettings.h"
 
-struct FRHICommandProcessDeferredDeletionQueue final : public FRHICommand<FRHICommandProcessDeferredDeletionQueue>
-{
-	FVulkanDevice* Device;
-	FORCEINLINE_DEBUGGABLE FRHICommandProcessDeferredDeletionQueue(FVulkanDevice* InDevice)
-		: Device(InDevice)
-	{
-	}
-
-	void Execute(FRHICommandListBase& CmdList)
-	{
-		Device->GetDeferredDeletionQueue().ReleaseResources();
-	}
-};
-
 
 FVulkanBackBuffer::FVulkanBackBuffer(FVulkanDevice& Device, FVulkanViewport* InViewport, EPixelFormat Format, uint32 SizeX, uint32 SizeY, ETextureCreateFlags UEFlags)
-	: FVulkanTexture2D(Device, Format, SizeX, SizeY, 1, 1, VK_NULL_HANDLE, UEFlags, FRHIResourceCreateInfo())
+	: FVulkanTexture2D(Device, Format, SizeX, SizeY, 1, 1, VK_NULL_HANDLE, UEFlags, FRHIResourceCreateInfo(TEXT("FVulkanBackBuffer")))
 	, Viewport(InViewport)
 {
 }
@@ -65,7 +51,7 @@ void FVulkanBackBuffer::OnAdvanceBackBufferFrame(FRHICommandListImmediate& RHICm
 
 void FVulkanBackBuffer::OnLayoutTransition(FVulkanCommandListContext& Context, VkImageLayout NewLayout)
 {
-	if (NewLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL && GVulkanDelayAcquireImage == EDelayAcquireImageType::LazyAcquire)
+	if (GVulkanDelayAcquireImage == EDelayAcquireImageType::LazyAcquire)
 	{
 		AcquireBackBufferImage(Context);
 	}
@@ -434,7 +420,7 @@ FVulkanFramebuffer::FVulkanFramebuffer(FVulkanDevice& Device, const FRHISetRende
 		}
 	}
 
-	if (RTLayout.GetHasFragmentDensityAttachment() && Device.GetOptionalExtensions().HasEXTFragmentDensityMap)
+	if (GRHISupportsAttachmentVariableRateShading && GRHIVariableRateShadingEnabled && GRHIAttachmentVariableRateShadingEnabled && RTLayout.GetHasFragmentDensityAttachment())
 	{
 		FVulkanTextureBase* Texture = FVulkanTextureBase::Cast(InRTInfo.ShadingRateTexture);
 		FragmentDensityImage = Texture->Surface.Image;
@@ -472,8 +458,10 @@ FVulkanFramebuffer::FVulkanFramebuffer(FVulkanDevice& Device, const FRHISetRende
 
 	VERIFYVULKANRESULT_EXPANDED(VulkanRHI::vkCreateFramebuffer(Device.GetInstanceHandle(), &CreateInfo, VULKAN_CPU_ALLOCATOR, &Framebuffer));
 
-	Extents.width = RTExtents.width;
-	Extents.height = RTExtents.height;
+	RenderArea.offset.x = 0;
+	RenderArea.offset.y = 0;
+	RenderArea.extent.width = RTExtents.width;
+	RenderArea.extent.height = RTExtents.height;
 
 	INC_DWORD_STAT(STAT_VulkanNumFrameBuffers);
 }
@@ -693,7 +681,7 @@ void FVulkanViewport::CreateSwapchain(FVulkanSwapChainRecreateInfo* RecreateInfo
 		uint32 BackBufferSizeX = RequiresRenderingBackBuffer() ? SizeX : 1;
 		uint32 BackBufferSizeY = RequiresRenderingBackBuffer() ? SizeY : 1;
 
-		RenderingBackBuffer = new FVulkanTexture2D(*Device, PixelFormat, BackBufferSizeX, BackBufferSizeY, 1, 1, TexCreate_RenderTargetable | TexCreate_ShaderResource, ERHIAccess::Present, FRHIResourceCreateInfo());
+		RenderingBackBuffer = new FVulkanTexture2D(*Device, PixelFormat, BackBufferSizeX, BackBufferSizeY, 1, 1, TexCreate_RenderTargetable | TexCreate_ShaderResource, ERHIAccess::Present, FRHIResourceCreateInfo(TEXT("RenderingBackBuffer")));
 #if VULKAN_ENABLE_DRAW_MARKERS
 		if (Device->GetDebugMarkerSetObjectName())
 		{
@@ -1103,17 +1091,6 @@ void FVulkanDynamicRHI::RHIAdvanceFrameForGetViewportBackBuffer(FRHIViewport* Vi
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 
 	Viewport->AdvanceBackBufferFrame(RHICmdList);
-
-	if (RHICmdList.Bypass() || !IsRunningRHIInSeparateThread())
-	{
-		FRHICommandProcessDeferredDeletionQueue Cmd(Device);
-		Cmd.Execute(RHICmdList);
-	}
-	else
-	{
-		check(IsInRenderingThread());
-		ALLOC_COMMAND_CL(RHICmdList, FRHICommandProcessDeferredDeletionQueue)(Device);
-	}
 }
 
 void FVulkanCommandListContext::RHISetViewport(float MinX, float MinY, float MinZ, float MaxX, float MaxY, float MaxZ)

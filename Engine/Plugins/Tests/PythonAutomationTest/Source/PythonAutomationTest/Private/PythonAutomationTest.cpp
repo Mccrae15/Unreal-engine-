@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PythonAutomationTest.h"
+#include "Interfaces/IPluginManager.h"
 #include "IPythonScriptPlugin.h"
+#include "Misc/App.h"
 #include "Misc/AutomationTest.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
@@ -11,7 +13,7 @@
 DEFINE_LOG_CATEGORY_STATIC(PyAutomationTest, Log, Log)
 
 bool UPyAutomationTestLibrary::IsRunningPyLatentCommand = false;
-float UPyAutomationTestLibrary::PyLatentCommandTimeout = 120.0f;
+float UPyAutomationTestLibrary::PyLatentCommandTimeout = 300.0f;
 
 void UPyAutomationTestLibrary::SetIsRunningPyLatentCommand(bool isRunning)
 {
@@ -36,7 +38,7 @@ float UPyAutomationTestLibrary::GetPyLatentCommandTimeout()
 void UPyAutomationTestLibrary::ResetPyLatentCommand()
 {
 	IsRunningPyLatentCommand = false;
-	PyLatentCommandTimeout = 120.0f;
+	PyLatentCommandTimeout = 300.0f;
 }
 
 
@@ -58,7 +60,8 @@ bool FIsRunningPyLatentCommand::Update()
 
 	UPyAutomationTestLibrary::SetIsRunningPyLatentCommand(false);
 	FAutomationTestBase* CurrentTest = FAutomationTestFramework::Get().GetCurrentTest();
-	CurrentTest->AddError(TEXT("Timeout reached waiting for Python Latent Command."));
+	const FString ErrMessage = FString::Printf(TEXT("Timeout reached waiting for Python Latent Command after %.2f sec."), Timeout);
+	CurrentTest->AddError(ErrMessage);
 
 	CleanUpPythonScheduler();
 
@@ -90,7 +93,7 @@ public:
 	}
 
 protected:
-	FString BeautifyPath(FString Path) const
+	static FString BeautifyPath(FString Path)
 	{
 		int Position = Path.Find(TEXT("/Python/"), ESearchCase::CaseSensitive, ESearchDir::FromEnd);
 		if (Position > 0) Position += 8;
@@ -103,9 +106,27 @@ protected:
 		TestParameterContext = BeautifyPath(Context);
 	}
 
+	/**
+	 * Searches for python tests recursively based upon the given search path.
+	 * The results are then placed in the OutBeatifiedNames and the python file name in OutFileNames
+	 * This function is used to create additional UE automation tests by searching for python tests under the given directory in the given module
+	 */
+	static void SearchForPythonTests(const FString& ModuleName, const FString& ModuleSearchPath, TArray<FString>& OutBeautifiedNames, TArray<FString>& OutFileNames)
+	{
+		TArray<FString> FilesInDirectory;
+		// only python files that start with 'test_' are considered a python test file.
+		IFileManager::Get().FindFilesRecursive(FilesInDirectory, *ModuleSearchPath, TEXT("test_*.py"), true, false);
+
+		// Scan all the found files, use only test_*.py file
+		for (const FString& Filename : FilesInDirectory)
+		{
+			OutBeautifiedNames.Add(ModuleName + TEXT(".") + BeautifyPath(Filename));
+			OutFileNames.Add(Filename);
+		}
+	}
+
 private:
 	FString PyTestName;
-
 };
 
 IMPLEMENT_CUSTOM_COMPLEX_AUTOMATION_TEST(
@@ -116,34 +137,26 @@ IMPLEMENT_CUSTOM_COMPLEX_AUTOMATION_TEST(
 
 void FPythonAutomationTest::GetTests(TArray<FString>& OutBeautifiedNames, TArray<FString>& OutTestCommands) const
 {
-
-	FString PythonTestsDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir());
-	PythonTestsDir += TEXT("Python");
-	// TO DO - Scan also User folder Documents/UnrealEngine/Python or something define in Engine.ini (see FBX test builder)
-
-	// Find all files in the /Content/Python directory
-	TArray<FString> FilesInDirectory;
-	IFileManager::Get().FindFilesRecursive(FilesInDirectory, *PythonTestsDir, TEXT("*.*"), true, false);
-
-	// Scan all the found files, use only test_*.py file
-	for (const FString& Filename:FilesInDirectory)
+	// TODO - Scan also User folder Documents/UnrealEngine/Python or something define in Engine.ini (see FBX test builder)
 	{
-		FString Ext = FPaths::GetExtension(Filename, true);
-		if (Ext.Compare(TEXT(".py"), ESearchCase::IgnoreCase) == 0)
-		{
-			FString FileBaseName = FPaths::GetBaseFilename(Filename);
-			if (FileBaseName.Len() < 9 || !FileBaseName.StartsWith(TEXT("test_")))
-			{
-				// test script files must start with 'test_'
-				continue;
-			}
-
-			OutBeautifiedNames.Add(BeautifyPath(Filename));
-			OutTestCommands.Add(Filename);
-
-		}
+		// Find all files in the project dir under /Content/Python
+		const FString PythonTestsDir = FPaths::Combine(
+			FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir()),
+			TEXT("Python"));
+		
+		SearchForPythonTests(FApp::GetProjectName(), PythonTestsDir, OutBeautifiedNames, OutTestCommands);
 	}
 
+	// Find all files under each plugin dir under /Content/Python
+	TArray<TSharedRef<IPlugin>> EnabledPlugins = IPluginManager::Get().GetEnabledPlugins();
+	for (const TSharedRef<IPlugin>& Plugin : EnabledPlugins)
+	{
+		const FString PluginContentDir = FPaths::Combine(
+			FPaths::ConvertRelativePathToFull(Plugin->GetContentDir()),
+			TEXT("Python"));
+
+		SearchForPythonTests(Plugin->GetName(), PluginContentDir, OutBeautifiedNames, OutTestCommands);
+	}
 }
 
 bool FPythonAutomationTest::RunTest(const FString& Parameters)
@@ -170,6 +183,5 @@ bool FPythonAutomationTest::RunTest(const FString& Parameters)
 
 	return Result;
 }
-
 
 #undef LOCTEXT_NAMESPACE

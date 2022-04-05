@@ -23,13 +23,16 @@
 #include "Interfaces/IAnalyticsProvider.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/ConfigCacheIni.h"
-#include "Misc/BlacklistNames.h"
+#include "Misc/NamePermissionList.h"
 #include "StudioAnalytics.h"
 #include "EditorModeRegistry.h"
 #include "Tools/UEdMode.h"
 #include "AssetEditorMessages.h"
 #include "EditorModeManager.h"
 #include "Tools/LegacyEdMode.h"
+#include "ProfilingDebugging/StallDetector.h"
+
+#include "Elements/SMInstance/SMInstanceElementData.h" // For SMInstanceElementDataUtil::SMInstanceElementsEnabled
 
 
 #define LOCTEXT_NAMESPACE "AssetEditorSubsystem"
@@ -47,21 +50,24 @@ UAssetEditorSubsystem::UAssetEditorSubsystem()
 void UAssetEditorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	TickDelegate = FTickerDelegate::CreateUObject(this, &UAssetEditorSubsystem::HandleTicker);
-	FTicker::GetCoreTicker().AddTicker(TickDelegate, 1.f);
+	FTSTicker::GetCoreTicker().AddTicker(TickDelegate, 1.f);
 
 	FCoreUObjectDelegates::OnPackageReloaded.AddUObject(this, &UAssetEditorSubsystem::HandlePackageReloaded);
 
 	GEditor->OnEditorClose().AddUObject(this, &UAssetEditorSubsystem::OnEditorClose);
-
+	FCoreDelegates::OnEnginePreExit.AddUObject(this, &UAssetEditorSubsystem::UnregisterEditorModes);
 	FCoreDelegates::OnPostEngineInit.AddUObject(this, &UAssetEditorSubsystem::RegisterEditorModes);
+
+	SMInstanceElementDataUtil::OnSMInstanceElementsEnabledChanged().AddUObject(this, &UAssetEditorSubsystem::OnSMInstanceElementsEnabled);
 }
 
 void UAssetEditorSubsystem::Deinitialize()
 {
-	UnregisterEditorModes();
-
 	FCoreUObjectDelegates::OnPackageReloaded.RemoveAll(this);
 	GEditor->OnEditorClose().RemoveAll(this);
+	FCoreDelegates::OnEnginePreExit.RemoveAll(this);
+	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+	SMInstanceElementDataUtil::OnSMInstanceElementsEnabledChanged().RemoveAll(this);
 
 	// Don't attempt to report usage stats if analytics isn't available
 	if (FEngineAnalytics::IsAvailable())
@@ -191,6 +197,12 @@ TArray<UObject*> UAssetEditorSubsystem::GetAllEditedAssets()
 }
 
 
+void UAssetEditorSubsystem::NotifyEditorOpeningPreWidgets(const TArray< UObject* >& Assets, IAssetEditorInstance* InInstance)
+{
+	EditorOpeningPreWidgetsEvent.Broadcast(Assets, InInstance);
+}
+
+
 void UAssetEditorSubsystem::NotifyAssetOpened(UObject* Asset, IAssetEditorInstance* InInstance)
 {
 	if (!OpenedEditors.Contains(InInstance))
@@ -275,6 +287,8 @@ bool UAssetEditorSubsystem::CloseAllAssetEditors()
 
 bool UAssetEditorSubsystem::OpenEditorForAsset(UObject* Asset, const EToolkitMode::Type ToolkitMode, TSharedPtr< IToolkitHost > OpenedFromLevelEditor, const bool bShowProgressWindow)
 {
+	SCOPE_STALL_REPORTER(UAssetEditorSubsystem::OpenEditorForAsset, 2.0);
+
 	const double OpenAssetStartTime = FStudioAnalytics::GetAnalyticSeconds();
 
 	if (!Asset)
@@ -299,7 +313,7 @@ bool UAssetEditorSubsystem::OpenEditorForAsset(UObject* Asset, const EToolkitMod
 			return false;
 		}
 
-		if (!AssetToolsModule.Get().GetWritableFolderBlacklist()->PassesStartsWithFilter(Package->GetName()))
+		if (!AssetToolsModule.Get().GetWritableFolderPermissionList()->PassesStartsWithFilter(Package->GetName()))
 		{
 			AssetToolsModule.Get().NotifyBlockedByWritableFolderFilter();
 			return false;
@@ -544,7 +558,7 @@ bool UAssetEditorSubsystem::OpenEditorForAssets_Advanced(const TArray <UObject* 
 		}
 	}
 
-	return true;
+	return NumNullAssets == 0;
 }
 
 bool UAssetEditorSubsystem::OpenEditorForAssets(const TArray<UObject*>& Assets)
@@ -693,7 +707,7 @@ void UAssetEditorSubsystem::RestorePreviouslyOpenAssets()
 	TArray<FString> OpenAssets;
 	GConfig->GetArray(TEXT("AssetEditorSubsystem"), TEXT("OpenAssetsAtExit"), OpenAssets, GEditorPerProjectIni);
 
-	bool bCleanShutdown = false;
+	bool bCleanShutdown = true;
 	GConfig->GetBool(TEXT("AssetEditorSubsystem"), TEXT("CleanShutdown"), bCleanShutdown, GEditorPerProjectIni);
 
 	SaveOpenAssetEditors(false);
@@ -741,7 +755,7 @@ void UAssetEditorSubsystem::SetAutoRestoreAndDisableSaving(const bool bInAutoRes
 
 void UAssetEditorSubsystem::SpawnRestorePreviouslyOpenAssetsNotification(const bool bCleanShutdown, const TArray<FString>& AssetsToOpen)
 {
-	/** Utility functions for the notification which don't rely on the state from FAssetEditorManager */
+	/** Utility functions for notifications */
 	struct Local
 	{
 		static ECheckBoxState GetDontAskAgainCheckBoxState()
@@ -780,8 +794,8 @@ void UAssetEditorSubsystem::SpawnRestorePreviouslyOpenAssetsNotification(const b
 	));
 
 	// We will let the notification expire automatically after 10 seconds
-	Info.bFireAndForget = false;
-	Info.ExpireDuration = 10.0f;
+	Info.bFireAndForget = true;
+	Info.ExpireDuration = 20.0f;
 
 	// We want the auto-save to be subtle
 	Info.bUseLargeFont = false;
@@ -842,14 +856,12 @@ void UAssetEditorSubsystem::OnCancelRestorePreviouslyOpenAssets()
 	}
 }
 
-void UAssetEditorSubsystem::SaveOpenAssetEditors(const bool bOnShutdown, const bool bCancelIfDebugger)
+void UAssetEditorSubsystem::SaveOpenAssetEditors(const bool bOnShutdown)
 {
 	if (!bSavingOnShutdown && !bAutoRestoreAndDisableSaving)
 	{
 		TArray<FString> OpenAssets;
-
-		// If bCancelIfDebugger = true, don't save a list of assets to restore if we are running under a debugger
-		if (!bCancelIfDebugger || !FPlatformMisc::IsDebuggerPresent())
+		if (bOnShutdown || !FPlatformMisc::IsDebuggerPresent())
 		{
 			for (const TPair<IAssetEditorInstance*, UObject*>& EditorPair : OpenedEditors)
 			{
@@ -869,11 +881,15 @@ void UAssetEditorSubsystem::SaveOpenAssetEditors(const bool bOnShutdown, const b
 				}
 			}
 		}
-
 		GConfig->SetArray(TEXT("AssetEditorSubsystem"), TEXT("OpenAssetsAtExit"), OpenAssets, GEditorPerProjectIni);
 		GConfig->SetBool(TEXT("AssetEditorSubsystem"), TEXT("CleanShutdown"), bOnShutdown, GEditorPerProjectIni);
 		GConfig->Flush(false, GEditorPerProjectIni);
 	}
+}
+
+void UAssetEditorSubsystem::SaveOpenAssetEditors(const bool bOnShutdown, const bool bCancelIfDebugger)
+{
+	SaveOpenAssetEditors(bOnShutdown);
 }
 
 void UAssetEditorSubsystem::HandlePackageReloaded(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent)
@@ -1002,5 +1018,10 @@ void UAssetEditorSubsystem::UnregisterEditorModes()
 	EditorModes.Empty();
 }
 
-#undef LOCTEXT_NAMESPACE
+void UAssetEditorSubsystem::OnSMInstanceElementsEnabled()
+{
+	// Let the modes know that SM instance elements may have been enabled or disabled and update state accordingly
+	OnEditorModesChanged().Broadcast();
+}
 
+#undef LOCTEXT_NAMESPACE

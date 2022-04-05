@@ -96,7 +96,7 @@ public:
 	virtual void PrepareForReplication() { };
 
 	/** Debugging only function to return a normal TArray of actor rep list (for logging, debug UIs, etc) */
-	virtual void GetAllActorsInNode_Debugging(TArray<FActorRepListType>& OutArray) const { }
+	virtual void GetAllActorsInNode_Debugging(TArray<FActorRepListType>& OutArray) const;
 
 	// -----------------------------------------------------
 
@@ -145,7 +145,7 @@ protected:
 protected:
 
 	UPROPERTY()
-	TArray< UReplicationGraphNode* > AllChildNodes;
+	TArray< TObjectPtr<UReplicationGraphNode> > AllChildNodes;
 
 	TSharedPtr<FReplicationGraphGlobalData>	GraphGlobals;
 
@@ -495,7 +495,7 @@ public:
 
 	void OnActorDormancyFlush(FActorRepListType Actor, FGlobalActorReplicationInfo& GlobalInfo);
 
-	void ConditionalGatherDormantDynamicActors(FActorRepListRefView& RepList, const FConnectionGatherActorListParameters& Params, FActorRepListRefView* RemovedList, bool bEnforceReplistUniqueness=false);
+	void ConditionalGatherDormantDynamicActors(FActorRepListRefView& RepList, const FConnectionGatherActorListParameters& Params, FActorRepListRefView* RemovedList, bool bEnforceReplistUniqueness = false, FActorRepListRefView* RemoveFromList = nullptr);
 
 	UReplicationGraphNode_ConnectionDormancyNode* GetExistingConnectionNode(const FConnectionGatherActorListParameters& Params);
 
@@ -546,10 +546,10 @@ public:
 private:
 
 	UPROPERTY()
-	UReplicationGraphNode* DynamicNode = nullptr;
+	TObjectPtr<UReplicationGraphNode> DynamicNode = nullptr;
 
 	UPROPERTY()
-	UReplicationGraphNode_DormancyNode* DormancyNode = nullptr;
+	TObjectPtr<UReplicationGraphNode_DormancyNode> DormancyNode = nullptr;
 
 	UReplicationGraphNode* GetDynamicNode();
 
@@ -586,7 +586,7 @@ public:
 	
 
 	// Called if cull distance changes. Note the caller must update Global/Connection actor rep infos. This just changes cached state within this node
-	void NotifyActorCullDistChange(AActor* Actor, FGlobalActorReplicationInfo& GlobalInfo, float OldDist);
+	virtual void NotifyActorCullDistChange(AActor* Actor, FGlobalActorReplicationInfo& GlobalInfo, float OldDist);
 	
 	float		CellSize;
 	FVector2D	SpatialBias;
@@ -603,7 +603,11 @@ public:
 
 	void ForceRebuild() { bNeedsRebuild = true; }
 
-	void AddSpatialRebuildBlacklistClass(UClass* Class) { RebuildSpatialBlacklistMap.Set(Class, true); }
+	// Marks a class as preventing spatial rebuilds when an instance leaves the grid
+	void AddToClassRebuildDenyList(UClass* Class) { ClassRebuildDenyList.Set(Class, true); }
+
+	UE_DEPRECATED(5.0, "Use AddToClassRebuildDenyList instead")
+	void AddSpatialRebuildBlacklistClass(UClass* Class) { AddToClassRebuildDenyList(Class); }
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	TArray<FString> DebugActorNames;
@@ -633,7 +637,7 @@ private:
 	FBox GridBounds;
 
 	// Classmap of actor classes which CANNOT force a rebuild of the spatialization tree. They will be clamped instead. E.g, projectiles.
-	TClassMap<bool> RebuildSpatialBlacklistMap;
+	TClassMap<bool> ClassRebuildDenyList;
 	
 	struct FActorCellInfo
 	{
@@ -757,7 +761,7 @@ public:
 protected:
 
 	UPROPERTY()
-	UReplicationGraphNode* ChildNode = nullptr;
+	TObjectPtr<UReplicationGraphNode> ChildNode = nullptr;
 
 	// Explicit list of classes that are always relevant. This 
 	TArray<UClass*>	AlwaysRelevantClasses;
@@ -771,13 +775,13 @@ struct FAlwaysRelevantActorInfo
 	GENERATED_BODY()
 
 	UPROPERTY()
-	const UNetConnection* Connection = nullptr;
+	TObjectPtr<const UNetConnection> Connection = nullptr;
 
 	UPROPERTY()
-	AActor* LastViewer = nullptr;
+	TObjectPtr<AActor> LastViewer = nullptr;
 
 	UPROPERTY()
-	AActor* LastViewTarget = nullptr;
+	TObjectPtr<AActor> LastViewTarget = nullptr;
 
 	bool operator==(UNetConnection* Other) const
 	{
@@ -823,7 +827,7 @@ struct FTearOffActorInfo
 	uint32 TearOffFrameNum;
 
 	UPROPERTY()
-	AActor* Actor;
+	TObjectPtr<AActor> Actor;
 
 	bool bHasReppedOnce;
 };
@@ -872,15 +876,15 @@ public:
 	TSubclassOf<UNetReplicationGraphConnection> ReplicationConnectionManagerClass;
 
 	UPROPERTY()
-	UNetDriver*	NetDriver;
+	TObjectPtr<UNetDriver>	NetDriver;
 
 	/** List of connection managers. This list is not sorted and not stable. */
 	UPROPERTY()
-	TArray<UNetReplicationGraphConnection*> Connections;
+	TArray<TObjectPtr<UNetReplicationGraphConnection>> Connections;
 
 	/** ConnectionManagers that we have created but haven't officially been added to the net driver's ClientConnection list. This is a  hack for silly order of initialization issues. */
 	UPROPERTY()
-	TArray<UNetReplicationGraphConnection*> PendingConnections;
+	TArray<TObjectPtr<UNetReplicationGraphConnection>> PendingConnections;
 
 	/** The max distance between an FActorDestructionInfo and a connection that we will replicate. */
 	float DestructInfoMaxDistanceSquared = 15000.f * 15000.f;
@@ -896,6 +900,7 @@ public:
 	virtual void InitForNetDriver(UNetDriver* InNetDriver) override;
 	virtual void InitializeActorsInWorld(UWorld* InWorld) override;
 	virtual void ResetGameWorldState() override { }
+	virtual void TearDown() override;
 
 	/** Called by the NetDriver when the client connection is ready/added to the NetDriver's client connection list */
 	virtual void AddClientConnection(UNetConnection* NetConnection) override;
@@ -938,6 +943,7 @@ public:
 
 	/** Add a global node to the root that will have a chance to emit actor rep lists for all connections */
 	void AddGlobalGraphNode(UReplicationGraphNode* GraphNode);
+	void RemoveGlobalGraphNode(UReplicationGraphNode* GraphNode);
 	
 	/** Associate a node to a specific connection. When this connection replicates, this GraphNode will get a chance to add. */
 	void AddConnectionGraphNode(UReplicationGraphNode* GraphNode, UNetReplicationGraphConnection* ConnectionManager);
@@ -989,6 +995,8 @@ public:
 
 	// --------------------------------------------------------------
 
+	virtual void ReplicateActorsForConnection(UNetConnection* NetConnection, FPerConnectionActorInfoMap& ConnectionActorInfoMap, UNetReplicationGraphConnection* ConnectionManager, const uint32 FrameNum);
+
 	int64 ReplicateSingleActor(AActor* Actor, FConnectionReplicationActorInfo& ActorInfo, FGlobalActorReplicationInfo& GlobalActorInfo, FPerConnectionActorInfoMap& ConnectionActorInfoMap, UNetReplicationGraphConnection& ConnectionManager, const uint32 FrameNum);
 	int64 ReplicateSingleActor_FastShared(AActor* Actor, FConnectionReplicationActorInfo& ConnectionData, FGlobalActorReplicationInfo& GlobalActorInfo, UNetReplicationGraphConnection& ConnectionManager, const uint32 FrameNum);
 
@@ -1039,11 +1047,11 @@ protected:
 	
 	/** A list of nodes that can add actors to all connections. They don't necessarily *have to* add actors to each connection, but they will get a chance to. These are added via ::AddGlobalGraphNode  */
 	UPROPERTY()
-	TArray<UReplicationGraphNode*> GlobalGraphNodes;
+	TArray<TObjectPtr<UReplicationGraphNode>> GlobalGraphNodes;
 
 	/** A list of nodes that want PrepareForReplication() to be called on them at the top of the replication frame. */
 	UPROPERTY()
-	TArray<UReplicationGraphNode*> PrepareForReplicationNodes;
+	TArray<TObjectPtr<UReplicationGraphNode>> PrepareForReplicationNodes;
 	
 	FGlobalActorReplicationInfoMap GlobalActorReplicationInfoMap;
 
@@ -1097,7 +1105,7 @@ protected:
 	};
 	
 	/** Event called after ServerReplicateActors to dispatch the replication stats from this frame */
-	virtual void PostServerReplicateStats(const FFrameReplicationStats& Stats) {};
+	virtual void PostServerReplicateStats(const FFrameReplicationStats& Stats);
 
 private:
 
@@ -1138,7 +1146,7 @@ struct FLastLocationGatherInfo
 	FLastLocationGatherInfo(const UNetConnection* InConnection, FVector InLastLocation) : Connection(InConnection), LastLocation(InLastLocation), LastOutOfRangeLocationCheck(InLastLocation)  {}
 
 	UPROPERTY()
-	const UNetConnection* Connection;
+	TObjectPtr<const UNetConnection> Connection;
 
 	UPROPERTY()
 	FVector LastLocation;
@@ -1163,7 +1171,7 @@ public:
 	UNetReplicationGraphConnection();
 
 	UPROPERTY()
-	UNetConnection* NetConnection;
+	TObjectPtr<UNetConnection> NetConnection;
 
 	/** A map of all of our per-actor data */
 	FPerConnectionActorInfoMap ActorInfoMap;
@@ -1178,13 +1186,17 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnClientVisibleLevelNamesRemove, FName);
 	FOnClientVisibleLevelNamesRemove OnClientVisibleLevelNameRemove;
 
+	// Stored list of dormant actors in a previous cell when it's been left - this is for
+	// the dormant dynamic actor destruction feature.
+	// This property doesn't support multiple spatialization grids and has been switched to use PrevDormantActorListPerNode.
+	//FActorRepListRefView PrevDormantActorList;
 
 #if REPGRAPH_DETAILS
 	bool bEnableFullActorPrioritizationDetails = false;
 #endif
 
 	UPROPERTY()
-	class AReplicationGraphDebugActor* DebugActor = nullptr;
+	TObjectPtr<class AReplicationGraphDebugActor> DebugActor = nullptr;
 
 	bool bEnableDebugging;
 
@@ -1235,7 +1247,15 @@ public:
 	/** Generates a set of all the visible level names for this connection and its subconnections (if any) */
 	virtual void GetClientVisibleLevelNames(TSet<FName>& OutLevelNames) const;
 
+	FActorRepListRefView& GetPrevDormantActorListForNode(const UReplicationGraphNode* GridNode);
+
+	void RemoveActorFromAllPrevDormantActorLists(AActor* InActor);
+
 private:
+
+	// Stored list of dormant actors in a previous cell when it's been left - this is for
+	// the dormant dynamic actor destruction feature.
+	TMap<TObjectKey<UReplicationGraphNode>, FActorRepListRefView> PrevDormantActorListPerNode;
 
 	friend UReplicationGraph;
 
@@ -1265,11 +1285,13 @@ private:
     /** Update the location info of a specific viewer */
 	void OnUpdateViewerLocation(FLastLocationGatherInfo* LocationInfo, const FNetViewer& Viewer, const FReplicationGraphDestructionSettings& DestructionSettings);
 
-	UPROPERTY()
-	TArray<UReplicationGraphNode*> ConnectionGraphNodes;
+	void SetActorNotDormantOnConnection(AActor* InActor);
 
 	UPROPERTY()
-	UReplicationGraphNode_TearOff_ForConnection* TearOffNode;
+	TArray<TObjectPtr<UReplicationGraphNode>> ConnectionGraphNodes;
+
+	UPROPERTY()
+	TObjectPtr<UReplicationGraphNode_TearOff_ForConnection> TearOffNode;
 	
 	/** DestructionInfo handling. This is how we send "delete this actor" to clients when the actor is deleted on the server (placed in map actors) */
 	struct FCachedDestructInfo
@@ -1313,6 +1335,9 @@ private:
 
 	/** List of dormant actors that should be removed from the client */
 	TArray<FCachedDormantDestructInfo> PendingDormantDestructList;
+
+	/** Set used to guard against double adds into PendingDormantDestructList */
+	TSet<FNetworkGUID> TrackedDormantDestructionInfos;
 };
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -1338,7 +1363,7 @@ public:
 	virtual bool IsReplayRelevantFor(const AActor* RealViewer, const AActor* ViewTarget, const FVector& SrcLocation, const float CullDistanceSquared) const override { return false; }
 
 	UPROPERTY()
-	UReplicationGraph* ReplicationGraph;
+	TObjectPtr<UReplicationGraph> ReplicationGraph;
 
 	UFUNCTION(Server, Reliable)
 	void ServerStartDebugging();
@@ -1373,7 +1398,7 @@ public:
 
 
 	UPROPERTY()
-	UNetReplicationGraphConnection* ConnectionManager;
+	TObjectPtr<UNetReplicationGraphConnection> ConnectionManager;
 
 	virtual UNetConnection* GetNetConnection() const override;
 };

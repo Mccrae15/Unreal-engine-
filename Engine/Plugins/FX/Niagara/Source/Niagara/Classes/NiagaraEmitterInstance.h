@@ -16,7 +16,7 @@ class FNiagaraSystemInstance;
 struct FNiagaraEmitterHandle;
 class UNiagaraParameterCollection;
 class UNiagaraParameterCollectionInstance;
-class NiagaraEmitterInstanceBatcher;
+class FNiagaraGpuComputeDispatchInterface;
 struct FNiagaraEmitterCompiledData;
 
 /**
@@ -124,7 +124,7 @@ public:
 	ENiagaraExecutionState NIAGARA_API GetExecutionState() { return ExecutionState; }
 	void NIAGARA_API SetExecutionState(ENiagaraExecutionState InState);
 
-	FBox GetBounds();
+	FBox GetBounds() const;
 
 	FNiagaraScriptExecutionContext& GetSpawnExecutionContext() { return SpawnExecContext; }
 	FNiagaraScriptExecutionContext& GetUpdateExecutionContext() { return UpdateExecContext; }
@@ -147,9 +147,15 @@ public:
 	}
 
 	void SetSystemFixedBoundsOverride(FBox SystemFixedBounds);
+	FORCEINLINE void SetFixedBounds(const FBox& InLocalBounds)
+	{
+		FRWScopeLock ScopeLock(FixedBoundsGuard, SLT_Write);
+		FixedBounds = InLocalBounds;
+	}
+	FBox GetFixedBounds() const;
 
-	bool FindBinding(const FNiagaraUserParameterBinding& InBinding, UMaterialInterface*& OutMaterial) const;
-
+	UObject* FindBinding(const FNiagaraVariable& InVariable) const;
+	UNiagaraDataInterface* FindDataInterface(const FNiagaraVariable& InVariable) const;
 
 	bool HasTicked() const { return TickCount > 0;  }
 
@@ -198,13 +204,17 @@ private:
 	/* Emitter bounds */
 	FBox CachedBounds;
 
+	/** Optional user or VM specified bounds. */
+	mutable FRWLock FixedBoundsGuard;
+	FBox FixedBounds;
+
 	/** Cached fixed bounds of the parent system which override this Emitter Instances bounds if set. Whenever we initialize the owning SystemInstance we will reconstruct this
 	 ** EmitterInstance and the cached bounds will be unset. */
-	TOptional<FBox> CachedSystemFixedBounds;
+	FBox CachedSystemFixedBounds;
 
 	FNiagaraSystemInstanceID OwnerSystemInstanceID;
 
-	NiagaraEmitterInstanceBatcher* Batcher = nullptr;
+	FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface = nullptr;
 
 	/** particle simulation data. Must be a shared ref as various things on the RT can have direct ref to it. */
 	FNiagaraDataSet* ParticleDataSet = nullptr;

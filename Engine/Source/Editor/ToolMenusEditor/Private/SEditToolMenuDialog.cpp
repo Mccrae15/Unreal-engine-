@@ -89,15 +89,15 @@ private:
 	{
 		if (IsVisible())
 		{
-			static const FName NAME_VisibleHoveredBrush("MultiBox.VisibleHighlightIcon16x");
-			static const FName NAME_VisibleNotHoveredBrush("MultiBox.VisibleIcon16x");
+			static const FName NAME_VisibleHoveredBrush("Level.VisibleHighlightIcon16x");
+			static const FName NAME_VisibleNotHoveredBrush("Level.VisibleIcon16x");
 			return IsHovered() ? FEditorStyle::GetBrush(NAME_VisibleHoveredBrush) :
 				FEditorStyle::GetBrush(NAME_VisibleNotHoveredBrush);
 		}
 		else
 		{
-			static const FName NAME_NotVisibleHoveredBrush("MultiBox.NotVisibleHighlightIcon16x");
-			static const FName NAME_NotVisibleNotHoveredBrush("MultiBox.NotVisibleIcon16x");
+			static const FName NAME_NotVisibleHoveredBrush("Level.NotVisibleHighlightIcon16x");
+			static const FName NAME_NotVisibleNotHoveredBrush("Level.NotVisibleIcon16x");
 			return IsHovered() ? FEditorStyle::GetBrush(NAME_NotVisibleHoveredBrush) :
 				FEditorStyle::GetBrush(NAME_NotVisibleNotHoveredBrush);
 		}
@@ -266,7 +266,7 @@ FReply SMultiBlockDragHandle::OnDragDetected( const FGeometry& MyGeometry, const
 {
 	TSharedPtr<SWidget> CustomDecorator;
 
-	TSharedRef<SWidget> BlockWidget = Block->MakeWidget(BaseWidget.Pin().ToSharedRef(), EMultiBlockLocation::None, false)->AsWidget();
+	TSharedRef<SWidget> BlockWidget = Block->MakeWidget(BaseWidget.Pin().ToSharedRef(), EMultiBlockLocation::None, false, nullptr)->AsWidget();
 
 	if (Block->IsSeparator())
 	{
@@ -334,7 +334,7 @@ FReply SMultiBlockDragHandle::OnDragDetected( const FGeometry& MyGeometry, const
 			Block->IsPartOfHeading(),
 			NAME_None, 
 			CustomDecorator,
-			MyGeometry.AbsolutePosition-MouseEvent.GetScreenSpacePosition()
+		FVector2D(MyGeometry.AbsolutePosition)-MouseEvent.GetScreenSpacePosition()
 		);
 
 	NewOp->SetOnDropNotification( FSimpleDelegate::CreateSP( BaseWidget.Pin().ToSharedRef(), &SMultiBoxWidget::OnDropExternal ) );
@@ -674,7 +674,7 @@ void SEditToolMenuDialog::BuildWidget()
 	[
 		SNew(SBorder)
 		.Padding(20)
-		.BorderImage( FEditorStyle::GetBrush("Docking.Tab.Normal") )
+		.BorderImage( FEditorStyle::GetBrush("Docking.Tab.ContentAreaBrush") )
 		[
 			SNew(SVerticalBox)
 
@@ -768,8 +768,8 @@ void SEditToolMenuDialog::OnMenuNamesSelectionChanged(TSharedPtr<FName> InEntry,
 	}
 	
 	FToolMenuContext NewMenuContext = SourceMenu->Context;
-	NewMenuContext.bIsEditing = true;
-		
+	NewMenuContext.SetIsEditing(true);
+	
 	TArray<const UToolMenu*> SubMenuChain = SourceMenu->GetSubMenuChain();
 	if (!SourceMenu->SubMenuParent)
 	{

@@ -22,25 +22,26 @@ FORCEINLINE_DEBUGGABLE void FRHICommandListBase::Flush()
 	}
 }
 
-FORCEINLINE_DEBUGGABLE bool FRHICommandListBase::IsImmediate()
+FORCEINLINE_DEBUGGABLE bool FRHICommandListBase::IsImmediate() const
 {
 	return this == &FRHICommandListExecutor::GetImmediateCommandList();
 }
 
-FORCEINLINE_DEBUGGABLE bool FRHICommandListBase::IsImmediateAsyncCompute()
+FORCEINLINE_DEBUGGABLE bool FRHICommandListBase::IsImmediateAsyncCompute() const
 {
 	return this == &FRHICommandListExecutor::GetImmediateAsyncComputeCommandList();
 }
 
 FORCEINLINE_DEBUGGABLE bool FRHICommandListBase::Bypass() const
 {
+	check(!IsImmediate() || IsInRenderingThread() || IsInRHIThread());
 	return GRHICommandList.Bypass();
 }
 
-FORCEINLINE_DEBUGGABLE FScopedRHIThreadStaller::FScopedRHIThreadStaller(class FRHICommandListImmediate& InImmed)
+FORCEINLINE_DEBUGGABLE FScopedRHIThreadStaller::FScopedRHIThreadStaller(class FRHICommandListImmediate& InImmed, bool bDoStall)
 	: Immed(nullptr)
 {
-	if (IsRunningRHIInSeparateThread())
+	if (bDoStall && IsRunningRHIInSeparateThread())
 	{
 		check(IsInRenderingThread());
 		if (InImmed.StallRHIThread())
@@ -73,6 +74,7 @@ FORCEINLINE_DEBUGGABLE void FRHICommandListImmediate::ImmediateFlush(EImmediateF
 			WaitForTasks();
 		}
 		break;
+
 	case EImmediateFlushType::DispatchToRHIThread:
 		{
 			if (HasCommands())
@@ -81,6 +83,7 @@ FORCEINLINE_DEBUGGABLE void FRHICommandListImmediate::ImmediateFlush(EImmediateF
 			}
 		}
 		break;
+
 	case EImmediateFlushType::WaitForDispatchToRHIThread:
 		{
 			if (HasCommands())
@@ -90,6 +93,7 @@ FORCEINLINE_DEBUGGABLE void FRHICommandListImmediate::ImmediateFlush(EImmediateF
 			WaitForDispatch();
 		}
 		break;
+
 	case EImmediateFlushType::FlushRHIThread:
 		{
 			CSV_SCOPED_TIMING_STAT(RHITFlushes, FlushRHIThreadTotal);
@@ -105,8 +109,8 @@ FORCEINLINE_DEBUGGABLE void FRHICommandListImmediate::ImmediateFlush(EImmediateF
 			WaitForTasks(true); // these are already done, but this resets the outstanding array
 		}
 		break;
+
 	case EImmediateFlushType::FlushRHIThreadFlushResources:
-	case EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes:
 		{
 			CSV_SCOPED_TIMING_STAT(RHITFlushes, FlushRHIThreadFlushResourcesTotal);
 			if (HasCommands())
@@ -116,10 +120,12 @@ FORCEINLINE_DEBUGGABLE void FRHICommandListImmediate::ImmediateFlush(EImmediateF
 			WaitForDispatch();
 			WaitForRHIThreadTasks();
 			WaitForTasks(true); // these are already done, but this resets the outstanding array
+
 			PipelineStateCache::FlushResources();
-			FRHIResource::FlushPendingDeletes(FlushType == EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes);
+			FRHIResource::FlushPendingDeletes(FRHICommandListExecutor::GetImmediateCommandList());
 		}
 		break;
+
 	default:
 		check(0);
 	}

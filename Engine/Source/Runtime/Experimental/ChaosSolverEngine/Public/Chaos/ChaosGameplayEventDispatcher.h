@@ -14,6 +14,7 @@ namespace Chaos
 	struct FCollisionEventData;
 	struct FBreakingEventData;
 	struct FSleepingEventData;
+	struct FRemovalEventData;
 }
 
 USTRUCT(BlueprintType)
@@ -26,7 +27,7 @@ public:
 	FChaosBreakEvent();
 
 	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
-	UPrimitiveComponent* Component = nullptr;
+	TObjectPtr<UPrimitiveComponent> Component = nullptr;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
 	FVector Location;
@@ -38,6 +39,25 @@ public:
 	FVector AngularVelocity;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Break Event")
+	float Mass;
+};
+
+USTRUCT(BlueprintType)
+struct CHAOSSOLVERENGINE_API FChaosRemovalEvent
+{
+	GENERATED_BODY()
+
+public:
+
+	FChaosRemovalEvent();
+
+	UPROPERTY(BlueprintReadOnly, Category = "Removal Event")
+	TObjectPtr<UPrimitiveComponent> Component = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Removal Event")
+	FVector Location;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Removal Event")
 	float Mass;
 };
 
@@ -54,6 +74,18 @@ public:
 	FOnBreakEventCallback BreakEventCallback;
 };
 
+typedef TFunction<void(const FChaosRemovalEvent&)> FOnRemovalEventCallback;
+
+/** UStruct wrapper so we can store the TFunction in a TMap */
+USTRUCT()
+struct CHAOSSOLVERENGINE_API FRemovalEventCallbackWrapper
+{
+	GENERATED_BODY()
+
+public:
+	FOnRemovalEventCallback RemovalEventCallback;
+};
+
 /** UStruct wrapper so we can store the TSet in a TMap */
 USTRUCT()
 struct FChaosHandlerSet
@@ -64,13 +96,13 @@ struct FChaosHandlerSet
 		
 	/** These should be IChaosNotifyHandlerInterface refs, but we can't store those here */
 	UPROPERTY()
-	TSet<UObject*> ChaosHandlers;
+	TSet<TObjectPtr<UObject>> ChaosHandlers;
 };
 
 struct FChaosPendingCollisionNotify
 {
 	FChaosPhysicsCollisionInfo CollisionInfo;
-	TSet<UObject*> NotifyRecipients;
+	TSet<TObjectPtr<UObject>> NotifyRecipients;
 };
 
 
@@ -133,16 +165,23 @@ public:
 	void RegisterForBreakEvents(UPrimitiveComponent* Component, FOnBreakEventCallback InFunc);
 	void UnRegisterForBreakEvents(UPrimitiveComponent* Component);
 
+	void RegisterForRemovalEvents(UPrimitiveComponent* Component, FOnRemovalEventCallback InFunc);
+	void UnRegisterForRemovalEvents(UPrimitiveComponent* Component);
+
 private:
 
  	UPROPERTY()
- 	TMap<UPrimitiveComponent*, FChaosHandlerSet> CollisionEventRegistrations;
+ 	TMap<TObjectPtr<UPrimitiveComponent>, FChaosHandlerSet> CollisionEventRegistrations;
 
 	UPROPERTY()
-	TMap<UPrimitiveComponent*, FBreakEventCallbackWrapper> BreakEventRegistrations;
+	TMap<TObjectPtr<UPrimitiveComponent>, FBreakEventCallbackWrapper> BreakEventRegistrations;
+
+	UPROPERTY()
+	TMap<TObjectPtr<UPrimitiveComponent>, FRemovalEventCallbackWrapper> RemovalEventRegistrations;
 
 	float LastCollisionDataTime = -1.f;
 	float LastBreakingDataTime = -1.f;
+	float LastRemovalDataTime = -1.f;
 
 	void DispatchPendingCollisionNotifies();
 	void DispatchPendingWakeNotifies();
@@ -155,6 +194,7 @@ private:
 	void HandleBreakingEvents(const Chaos::FBreakingEventData& BreakingData);
 	void HandleSleepingEvents(const Chaos::FSleepingEventData& SleepingData);
 	void AddPendingSleepingNotify(FBodyInstance* BodyInstance, ESleepEvent SleepEventType);
+	void HandleRemovalEvents(const Chaos::FRemovalEventData& RemovalData);
 
 };
 

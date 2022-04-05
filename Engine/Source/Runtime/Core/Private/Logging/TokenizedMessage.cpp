@@ -81,19 +81,19 @@ FName FTokenizedMessage::GetSeverityIconName(EMessageSeverity::Type InSeverity)
 	switch (InSeverity)
 	{
 	case EMessageSeverity::CriticalError:		
-		SeverityIconName = "MessageLog.Error";		
+		SeverityIconName = "Icons.ErrorWithColor";		
 		break;
 	case EMessageSeverity::Error:				
-		SeverityIconName = "MessageLog.Error";		
+		SeverityIconName = "Icons.ErrorWithColor";		
 		break;
 	case EMessageSeverity::PerformanceWarning:	
-		SeverityIconName = "MessageLog.Warning";	
+		SeverityIconName = "Icons.WarningWithColor";	
 		break;
 	case EMessageSeverity::Warning:				
-		SeverityIconName = "MessageLog.Warning";	
+		SeverityIconName = "Icons.WarningWithColor";	
 		break;
 	case EMessageSeverity::Info:				
-		SeverityIconName = "MessageLog.Note";		
+		SeverityIconName = "Icons.BulletPoint";		
 		break;
 	default:		
 		/* No icon for this type */						
@@ -144,8 +144,6 @@ TSharedPtr<IMessageToken> FTokenizedMessage::GetMessageLink() const
 	return MessageLink;
 }
 
-FURLToken::FGenerateURL FURLToken::GenerateURL;
-
 void FURLToken::VisitURL(const TSharedRef<IMessageToken>& Token, FString InURL)
 {	
 	FPlatformProcess::LaunchURL(*InURL, NULL, NULL);
@@ -153,15 +151,8 @@ void FURLToken::VisitURL(const TSharedRef<IMessageToken>& Token, FString InURL)
 
 FURLToken::FURLToken( const FString& InURL, const FText& InMessage )
 {
-	if(GenerateURL.IsBound())
-	{
-		URL = GenerateURL.Execute(InURL);
-	}
-	else
-	{
-		URL = InURL;
-	}
-	
+	URL = InURL;
+
 	if ( !InMessage.IsEmpty() )
 	{
 		CachedText = InMessage;
@@ -208,11 +199,48 @@ FDocumentationToken::FDocumentationToken( FString InDocumentationLink, FString I
 	: DocumentationLink(MoveTemp(InDocumentationLink))
 	, PreviewExcerptLink(MoveTemp(InPreviewExcerptLink))
 	, PreviewExcerptName(MoveTemp(InPreviewExcerptName))
-{ }
+{
+	if (!PreviewExcerptName.IsEmpty())
+	{
+		DocumentationLink = DocumentationLink + "#" + PreviewExcerptName.ToLower();
+	}
+}
 
 TSharedRef<FDocumentationToken> FDocumentationToken::Create(const FString& InDocumentationLink, const FString& InPreviewExcerptLink, const FString& InPreviewExcerptName)
 {
 	return MakeShareable(new FDocumentationToken(InDocumentationLink, InPreviewExcerptLink, InPreviewExcerptName));
+}
+
+FOnMessageTokenActivated FActorToken::DefaultMessageTokenActivated;
+
+TSharedRef<FActorToken> FActorToken::Create(const FString& InActorPath, const FGuid& InActorGuid, const FText& InMessage)
+{
+	return MakeShareable(new FActorToken(InActorPath, InActorGuid, InMessage));
+}
+
+FActorToken::FActorToken(const FString& InActorPath, const FGuid& InActorGuid, const FText& InMessage)
+	: ActorPath(InActorPath), ActorGuid(InActorGuid)
+{
+	if (!InMessage.IsEmpty())
+	{
+		CachedText = InMessage;
+	}
+	else
+	{
+		CachedText = FText::FromString(ActorPath);
+	}
+}
+
+const FOnMessageTokenActivated& FActorToken::GetOnMessageTokenActivated() const
+{
+	if (MessageTokenActivated.IsBound())
+	{
+		return MessageTokenActivated;
+	}
+	else
+	{
+		return DefaultMessageTokenActivated;
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

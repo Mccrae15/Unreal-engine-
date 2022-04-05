@@ -52,7 +52,7 @@ struct FSequencerDragDropParams
 	{}
 
 	/** The track that is receiving this drop event */
-	UMovieSceneTrack* Track;
+	TWeakObjectPtr<UMovieSceneTrack> Track;
 	 
 	/** The row index to drop onto */
 	int32 RowIndex;
@@ -284,6 +284,21 @@ public:
 	* Handle this object being implicitly added
 	*/
 	virtual void ObjectImplicitlyAdded(UObject* InObject)  {}
+
+	/**
+	* Handle this object being implicitly removed
+	*/
+	virtual void ObjectImplicitlyRemoved(UObject* InObject) {}
+
+	/**
+	 * Called before the sequencer restores pre-animated state on all objects before saving the level.
+	 */
+	virtual void OnPreSaveWorld(UWorld* World) {}
+
+	/**
+	 * Called after the sequencer has re-evaluated all objects after saving the level.
+	 */
+	virtual void OnPostSaveWorld(UWorld* World) {}
 
 public:
 

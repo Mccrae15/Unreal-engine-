@@ -153,37 +153,47 @@ struct PROJECTS_API FModuleDescriptor
 	ELoadingPhase::Type LoadingPhase;
 
 	/** List of allowed platforms */
-	TArray<FString> WhitelistPlatforms;
+	TArray<FString> PlatformAllowList;
 
 	/** List of disallowed platforms */
-	TArray<FString> BlacklistPlatforms;
+	TArray<FString> PlatformDenyList;
 
 	/** List of allowed targets */
-	TArray<EBuildTargetType> WhitelistTargets;
+	TArray<EBuildTargetType> TargetAllowList;
 
 	/** List of disallowed targets */
-	TArray<EBuildTargetType> BlacklistTargets;
+	TArray<EBuildTargetType> TargetDenyList;
 
 	/** List of allowed target configurations */
-	TArray<EBuildConfiguration> WhitelistTargetConfigurations;
+	TArray<EBuildConfiguration> TargetConfigurationAllowList;
 
 	/** List of disallowed target configurations */
-	TArray<EBuildConfiguration> BlacklistTargetConfigurations;
+	TArray<EBuildConfiguration> TargetConfigurationDenyList;
 
 	/** List of allowed programs */
-	TArray<FString> WhitelistPrograms;
+	TArray<FString> ProgramAllowList;
 
 	/** List of disallowed programs */
-	TArray<FString> BlacklistPrograms;
+	TArray<FString> ProgramDenyList;
 
 	/** List of additional dependencies for building this module. */
 	TArray<FString> AdditionalDependencies;
+
+	/** When true, an empty PlatformAllowList is interpeted as 'no platforms' with the expectation that explict platforms will be added in plugin extensions */
+	bool bHasExplicitPlatforms;
+
 
 	/** Normal constructor */
 	FModuleDescriptor(const FName InName = NAME_None, EHostType::Type InType = EHostType::Runtime, ELoadingPhase::Type InLoadingPhase = ELoadingPhase::Default);
 
 	/** Reads a descriptor from the given JSON object */
+	bool Read(const FJsonObject& Object, FText* OutFailReason = nullptr);
+
+	/** Reads a descriptor from the given JSON object */
 	bool Read(const FJsonObject& Object, FText& OutFailReason);
+
+	/** Reads an array of modules from the given JSON object */
+	static bool ReadArray(const FJsonObject& Object, const TCHAR* Name, TArray<FModuleDescriptor>& OutModules, FText* OutFailReason = nullptr);
 
 	/** Reads an array of modules from the given JSON object */
 	static bool ReadArray(const FJsonObject& Object, const TCHAR* Name, TArray<FModuleDescriptor>& OutModules, FText& OutFailReason);

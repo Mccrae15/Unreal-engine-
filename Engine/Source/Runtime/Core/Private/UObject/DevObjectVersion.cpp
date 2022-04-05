@@ -29,6 +29,11 @@
 #include "UObject/ExternalPhysicsMaterialCustomObjectVersion.h"
 #include "UObject/CineCameraObjectVersion.h"
 #include "UObject/VirtualProductionObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "UObject/UE5PrivateFrostyStreamObjectVersion.h"
+#include "UObject/UE5CookerObjectVersion.h"
+#include "UObject/UE5LWCRenderingStreamObjectVersion.h"
 #include "UObject/MediaFrameWorkObjectVersion.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDevObjectVersion, Log, All);
@@ -196,9 +201,31 @@ const FGuid FVirtualProductionObjectVersion::GUID(0x64F58936, 0xFD1B42BA, 0xBA96
 // Register VirtualProduction custom version with Core
 FDevVersionRegistration GRegisterVirtualProductionObjectVersion(FVirtualProductionObjectVersion::GUID, FVirtualProductionObjectVersion::LatestVersion, TEXT("Dev-VirtualProduction"));
 
+// Unique UE5 version id
+const FGuid FUE5MainStreamObjectVersion::GUID(0x697DD581, 0xE64f41AB, 0xAA4A51EC, 0xBEB7B628);
+// Register UE5 main stream custom version with Core
+FDevVersionRegistration GRegisterUE5MainStreamObjectVersion(FUE5MainStreamObjectVersion::GUID, FUE5MainStreamObjectVersion::LatestVersion, TEXT("UE5-Main"));
+
+// Unique UE5 release version id
+const FGuid FUE5ReleaseStreamObjectVersion::GUID(0xD89B5E42, 0x24BD4D46, 0x8412ACA8, 0xDF641779);
+// Register UE5 release stream custom version with Core
+FDevVersionRegistration GRegisterUE5ReleaseStreamObjectVersion(FUE5ReleaseStreamObjectVersion::GUID, FUE5ReleaseStreamObjectVersion::LatestVersion, TEXT("UE5-Release"));
+
+// Unique UE5 private frosty version id
+const FGuid FUE5PrivateFrostyStreamObjectVersion::GUID(0x59DA5D52, 0x12324948, 0xB8785978, 0x70B8E98B);
+// Register UE5 private frosty stream custom version with Core
+FDevVersionRegistration GRegisterUE5PrivateFrostyStreamObjectVersion(FUE5PrivateFrostyStreamObjectVersion::GUID, FUE5PrivateFrostyStreamObjectVersion::LatestVersion, TEXT("UE5-PrivateFrosty"));
+
+// Unique Cooker version id
+const FGuid FUE5CookerObjectVersion::GUID(0x26075A32, 0x730F4708, 0x88E98C32, 0xF1599D05);
+// Register Cooker custom version with Core
+FDevVersionRegistration GRegisterCookerObjectVersion(FUE5CookerObjectVersion::GUID, FUE5CookerObjectVersion::LatestVersion, TEXT("UE5-Dev-Cooker"));
+
 // Unique MediaFramework Object version id
 const FGuid FMediaFrameworkObjectVersion::GUID(0x6f0ed827, 0xa6094895, 0x9c91998d, 0x90180ea4);
 // Register MediaFramework custom version with Core
 FDevVersionRegistration GRegisterMediaFrameworkObjectVersion(FMediaFrameworkObjectVersion::GUID, FMediaFrameworkObjectVersion::LatestVersion, TEXT("Dev-MediaFramework"));
 
-
+const FGuid FUE5LWCRenderingStreamObjectVersion::GUID(0x30D58BE3, 0x95EA4282, 0xA6E3B159, 0xD8EBB06A);
+// Register MediaFramework custom version with Core
+FDevVersionRegistration GRegisterLWCRenderingStreamObjectVersion(FUE5LWCRenderingStreamObjectVersion::GUID, FUE5LWCRenderingStreamObjectVersion::LatestVersion, TEXT("UE5-Dev-LWCRendering"));

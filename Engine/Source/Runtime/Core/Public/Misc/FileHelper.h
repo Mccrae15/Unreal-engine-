@@ -33,13 +33,13 @@ struct CORE_API FFileHelper
 		ForceUTF8WithoutBOM
 	};
 
-	enum class EChannelMask
+	enum class EColorChannel
 	{
-		R = STRUCT_OFFSET(FColor, R),
-		G = STRUCT_OFFSET(FColor, G),
-		B = STRUCT_OFFSET(FColor, B),
-		A = STRUCT_OFFSET(FColor, A),
-		All = R|G|B|A
+		R,
+		G,
+		B,
+		A,
+		All
 	};
 
 	/**
@@ -92,7 +92,7 @@ struct CORE_API FFileHelper
 	 * @param Filename     Name of the file to load
 	 * @param VerifyFlags  Flags controlling the hash verification behavior ( see EHashOptions )
 	 */
-	static bool LoadFileToString(FString& Result, IPlatformFile* PlatformFile, const TCHAR* Filename, EHashOptions VerifyFlags = EHashOptions::None);
+	static bool LoadFileToString(FString& Result, IPlatformFile* PlatformFile, const TCHAR* Filename, EHashOptions VerifyFlags = EHashOptions::None, uint32 ReadFlags = 0);
 
 	/**
 	 * Load a text file to an array of strings. Supports all combination of ANSI/Unicode files and platforms.
@@ -116,6 +116,14 @@ struct CORE_API FFileHelper
 
 	UE_DEPRECATED(4.26, "LoadFileToStringArrayWithPredicate no longer supports VerifyFlags. You can use UE::String::ParseLines to split up a string loaded with LoadFileToString")
 	static bool LoadFileToStringArrayWithPredicate(TArray<FString>& Result, const TCHAR* Filename, TFunctionRef<bool(const FString&)> Predicate, EHashOptions VerifyFlags);
+
+	/**
+	 * Load a text file and invoke a visitor for each line. Supports all combination of ANSI/Unicode files and platforms.
+	 *
+	 * @param Filename     Name of the file to load
+	 * @param Visitor      Visitor to invoke for each non-empty line in the file
+	 */
+	static bool LoadFileToStringWithLineVisitor(const TCHAR* Filename, TFunctionRef<void(FStringView Line)> Visitor);
 
 	/**
 	 * Save a binary array to a file.
@@ -150,11 +158,11 @@ struct CORE_API FFileHelper
 	 * @param FileManager must not be 0
 	 * @param OutFilename optional, if specified filename will be output
 	 * @param bInWriteAlpha optional, specifies whether to write out the alpha channel. Will force BMP V4 format.
-	 * @param ChannelMask optional, specifies a specific channel to write out (will be written out to all channels gray scale).
+	 * @param ColorChannel optional, specifies a specific channel to write out (will be written out to all channels gray scale).
 	 *
 	 * @return true if success
 	 */
-	static bool CreateBitmap( const TCHAR* Pattern, int32 DataWidth, int32 DataHeight, const struct FColor* Data, struct FIntRect* SubRectangle = NULL, IFileManager* FileManager = &IFileManager::Get(), FString* OutFilename = NULL, bool bInWriteAlpha = false, EChannelMask ChannelMask = EChannelMask::All );
+	static bool CreateBitmap( const TCHAR* Pattern, int32 DataWidth, int32 DataHeight, const struct FColor* Data, struct FIntRect* SubRectangle = NULL, IFileManager* FileManager = &IFileManager::Get(), FString* OutFilename = NULL, bool bInWriteAlpha = false, EColorChannel ColorChannel = EColorChannel::All);
 
 	/**
 	 * Generates the next unique bitmap filename with a specified extension
@@ -199,6 +207,20 @@ struct CORE_API FFileHelper
 	* @param OutError	If an error occurs, this is the reason why
 	*/
 	static bool IsFilenameValidForSaving(const FString& Filename, FText& OutError);
+
+	enum class UE_DEPRECATED(5.0, "EChannelMask has been deprecated in favor of EColorChannel") EChannelMask
+	{
+		R = STRUCT_OFFSET(FColor, R),
+		G = STRUCT_OFFSET(FColor, G),
+		B = STRUCT_OFFSET(FColor, B),
+		A = STRUCT_OFFSET(FColor, A),
+		All = R | G | B | A
+	};
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.0, "EChannelMask has been deprecated in favor of EColorChannel, please use the other CreateBitmap() method.")
+	static bool CreateBitmap(const TCHAR* Pattern, int32 DataWidth, int32 DataHeight, const struct FColor* Data, struct FIntRect* SubRectangle, IFileManager* FileManager, FString* OutFilename, bool bInWriteAlpha, EChannelMask ChannelMask);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 };
 
 ENUM_CLASS_FLAGS(FFileHelper::EHashOptions)

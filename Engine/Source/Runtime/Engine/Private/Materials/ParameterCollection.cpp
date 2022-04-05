@@ -161,6 +161,60 @@ void SanitizeParameters(TArray<ParameterType>& Parameters)
 	}
 }
 
+bool UMaterialParameterCollection::SetScalarParameterDefaultValueByInfo(FCollectionScalarParameter ScalarParameter)
+{
+	if(GetScalarParameterByName(ScalarParameter.ParameterName))
+	{
+		// if the input parameter exists, pass the name and value down to SetScalarParameterDefaultValue
+		// since we want to preserve the Guid of the parameter that's already on the asset
+		return SetScalarParameterDefaultValue(ScalarParameter.ParameterName, ScalarParameter.DefaultValue);
+	}
+	// otherwise, return false
+	return false;
+}
+
+bool UMaterialParameterCollection::SetScalarParameterDefaultValue(FName ParameterName, const float Value)
+{
+	// make sure the input parameter name exists in the array
+	const int32 ParameterIndex = GetScalarParameterIndexByName(ParameterName);
+	if(ParameterIndex == -1)
+	{
+		return false;
+	}
+	// if so, change the value on the parameter in the array itself to maintain its GUID
+	ScalarParameters[ParameterIndex].DefaultValue = Value;
+
+	// and return a positive result
+	return true;
+}
+
+bool UMaterialParameterCollection::SetVectorParameterDefaultValueByInfo(FCollectionVectorParameter VectorParameter)
+{
+	if(GetScalarParameterByName(VectorParameter.ParameterName))
+    {
+    	// if the input parameter exists, pass the name and value down to SetVectorParameterDefaultValue
+    	// since we want to preserve the Guid of the parameter that's already on the asset
+    	return SetVectorParameterDefaultValue(VectorParameter.ParameterName, VectorParameter.DefaultValue);
+    }
+	// otherwise, return false
+    return false;
+}
+
+bool UMaterialParameterCollection::SetVectorParameterDefaultValue(FName ParameterName, const FLinearColor& Value)
+{
+	// make sure the input parameter name exists in the array
+	const int32 ParameterIndex = GetVectorParameterIndexByName(ParameterName);
+	if(ParameterIndex == -1)
+	{
+		return false;
+	}
+	// if so, change the value on the parameter in the array itself to maintain its GUID
+	VectorParameters[ParameterIndex].DefaultValue = Value;
+
+	// and return a positive result
+	return true;
+}
+
 int32 PreviousNumScalarParameters = 0;
 int32 PreviousNumVectorParameters = 0;
 
@@ -269,6 +323,75 @@ void UMaterialParameterCollection::PostEditChangeProperty(FPropertyChangedEvent&
 }
 
 #endif // WITH_EDITOR
+
+int32 UMaterialParameterCollection::GetScalarParameterIndexByName(FName ParameterName)
+{
+	// loop over all the available scalar parameters and look for a name match
+	for (int32 ParameterIndex = 0; ParameterIndex < ScalarParameters.Num(); ParameterIndex++)
+	{
+		if(ScalarParameters[ParameterIndex].ParameterName == ParameterName)
+		{
+			return ParameterIndex;
+		}
+	}
+	// if not found, return -1
+	return -1;
+}
+
+int32 UMaterialParameterCollection::GetVectorParameterIndexByName(FName ParameterName)
+{
+	// loop over all the available vector parameters and look for a name match
+	for (int32 ParameterIndex = 0; ParameterIndex < VectorParameters.Num(); ParameterIndex++)
+	{
+		if(VectorParameters[ParameterIndex].ParameterName == ParameterName)
+		{
+			return ParameterIndex;
+		}
+	}
+	// if not found, return -1
+	return -1;
+}
+
+TArray<FName> UMaterialParameterCollection::GetScalarParameterNames()
+{
+	TArray<FName> Names;
+	GetParameterNames(Names, false);
+	return Names;
+}
+
+TArray<FName> UMaterialParameterCollection::GetVectorParameterNames()
+{
+	TArray<FName> Names;
+	GetParameterNames(Names, true);
+	return Names;
+}
+
+float UMaterialParameterCollection::GetScalarParameterDefaultValue(FName ParameterName, bool& bParameterFound)
+{
+	const int32 ParameterIndex = GetScalarParameterIndexByName(ParameterName);
+	bParameterFound = true;
+	if(ParameterIndex == -1)
+	{
+		bParameterFound = false;
+		return 0.0;
+	}
+	
+	return ScalarParameters[ParameterIndex].DefaultValue;
+}
+
+FLinearColor UMaterialParameterCollection::GetVectorParameterDefaultValue(FName ParameterName, bool& bParameterFound)
+{
+	const int32 ParameterIndex = GetVectorParameterIndexByName(ParameterName);
+	bParameterFound = true;
+	if(ParameterIndex == -1)
+	{
+		bParameterFound = false;
+		return FLinearColor::Black;
+	}
+	
+	return VectorParameters[ParameterIndex].DefaultValue;
+}
+
 
 FName UMaterialParameterCollection::GetParameterName(const FGuid& Id) const
 {
@@ -410,8 +533,8 @@ void UMaterialParameterCollection::CreateBufferStruct()
 	uint32 NextMemberOffset = 0;
 
 	const uint32 NumVectors = FMath::DivideAndRoundUp(ScalarParameters.Num(), 4) + VectorParameters.Num();
-	new(Members) FShaderParametersMetadata::FMember(TEXT("Vectors"),TEXT(""),NextMemberOffset,UBMT_FLOAT32,EShaderPrecisionModifier::Half,1,4,NumVectors, nullptr);
-	const uint32 VectorArraySize = NumVectors * sizeof(FVector4);
+	new(Members) FShaderParametersMetadata::FMember(TEXT("Vectors"),TEXT(""),__LINE__,NextMemberOffset,UBMT_FLOAT32,EShaderPrecisionModifier::Half,1,4,NumVectors, nullptr);
+	const uint32 VectorArraySize = NumVectors * sizeof(FVector4f);
 	NextMemberOffset += VectorArraySize;
 	const uint32 StructSize = Align(NextMemberOffset, SHADER_PARAMETER_STRUCT_ALIGNMENT);
 
@@ -420,16 +543,19 @@ void UMaterialParameterCollection::CreateBufferStruct()
 	// (and the hlsl cbuffers are named MaterialCollection0, etc, so the names don't match the layout)
 	UniformBufferStruct = MakeUnique<FShaderParametersMetadata>(
 		FShaderParametersMetadata::EUseCase::DataDrivenUniformBuffer,
+		EUniformBufferBindingFlags::Shader,
 		TEXT("MaterialCollection"),
 		TEXT("MaterialCollection"),
 		TEXT("MaterialCollection"),
 		nullptr,
+		__FILE__,
+		__LINE__,
 		StructSize,
 		Members
 		);
 }
 
-void UMaterialParameterCollection::GetDefaultParameterData(TArray<FVector4>& ParameterData) const
+void UMaterialParameterCollection::GetDefaultParameterData(TArray<FVector4f>& ParameterData) const
 {
 	// The memory layout created here must match the index assignment in UMaterialParameterCollection::GetParameterIndex
 
@@ -442,10 +568,10 @@ void UMaterialParameterCollection::GetDefaultParameterData(TArray<FVector4>& Par
 		// Add a new vector for each packed vector
 		if (ParameterIndex % 4 == 0)
 		{
-			ParameterData.Add(FVector4(0, 0, 0, 0));
+			ParameterData.Add(FVector4f(0, 0, 0, 0));
 		}
 
-		FVector4& CurrentVector = ParameterData.Last();
+		FVector4f& CurrentVector = ParameterData.Last();
 		// Pack into the appropriate component of this packed vector
 		CurrentVector[ParameterIndex % 4] = Parameter.DefaultValue;
 	}
@@ -453,14 +579,14 @@ void UMaterialParameterCollection::GetDefaultParameterData(TArray<FVector4>& Par
 	for (int32 ParameterIndex = 0; ParameterIndex < VectorParameters.Num(); ParameterIndex++)
 	{
 		const FCollectionVectorParameter& Parameter = VectorParameters[ParameterIndex];
-		ParameterData.Add(Parameter.DefaultValue);
+		ParameterData.Add(FVector4f(Parameter.DefaultValue));
 	}
 }
 
 void UMaterialParameterCollection::UpdateDefaultResource(bool bRecreateUniformBuffer)
 {
 	// Propagate the new values to the rendering thread
-	TArray<FVector4> ParameterData;
+	TArray<FVector4f> ParameterData;
 	GetDefaultParameterData(ParameterData);
 	DefaultResource->GameThread_UpdateContents(StateId, ParameterData, GetFName(), bRecreateUniformBuffer);
 
@@ -623,7 +749,7 @@ void UMaterialParameterCollectionInstance::DeferredUpdateRenderState(bool bRecre
 	if (bNeedsRenderStateUpdate && World.IsValid())
 	{
 		// Propagate the new values to the rendering thread
-		TArray<FVector4> ParameterData;
+		TArray<FVector4f> ParameterData;
 		GetParameterData(ParameterData);
 		Resource->GameThread_UpdateContents(Collection ? Collection->StateId : FGuid(), ParameterData, GetFName(), bRecreateUniformBuffer);
 	}
@@ -631,7 +757,7 @@ void UMaterialParameterCollectionInstance::DeferredUpdateRenderState(bool bRecre
 	bNeedsRenderStateUpdate = false;
 }
 
-void UMaterialParameterCollectionInstance::GetParameterData(TArray<FVector4>& ParameterData) const
+void UMaterialParameterCollectionInstance::GetParameterData(TArray<FVector4f>& ParameterData) const
 {
 	// The memory layout created here must match the index assignment in UMaterialParameterCollection::GetParameterIndex
 
@@ -646,10 +772,10 @@ void UMaterialParameterCollectionInstance::GetParameterData(TArray<FVector4>& Pa
 			// Add a new vector for each packed vector
 			if (ParameterIndex % 4 == 0)
 			{
-				ParameterData.Add(FVector4(0, 0, 0, 0));
+				ParameterData.Add(FVector4f(0, 0, 0, 0));
 			}
 
-			FVector4& CurrentVector = ParameterData.Last();
+			FVector4f& CurrentVector = ParameterData.Last();
 			const float* InstanceData = ScalarParameterValues.Find(Parameter.ParameterName);
 			// Pack into the appropriate component of this packed vector
 			CurrentVector[ParameterIndex % 4] = InstanceData ? *InstanceData : Parameter.DefaultValue;
@@ -659,7 +785,7 @@ void UMaterialParameterCollectionInstance::GetParameterData(TArray<FVector4>& Pa
 		{
 			const FCollectionVectorParameter& Parameter = Collection->VectorParameters[ParameterIndex];
 			const FLinearColor* InstanceData = VectorParameterValues.Find(Parameter.ParameterName);
-			ParameterData.Add(InstanceData ? *InstanceData : Parameter.DefaultValue);
+			ParameterData.Add(InstanceData ? FVector4f(*InstanceData) : FVector4f(Parameter.DefaultValue));
 		}
 	}
 }
@@ -675,7 +801,7 @@ void UMaterialParameterCollectionInstance::FinishDestroy()
 	Super::FinishDestroy();
 }
 
-void FMaterialParameterCollectionInstanceResource::GameThread_UpdateContents(const FGuid& InGuid, const TArray<FVector4>& Data, const FName& InOwnerName, bool bRecreateUniformBuffer)
+void FMaterialParameterCollectionInstanceResource::GameThread_UpdateContents(const FGuid& InGuid, const TArray<FVector4f>& Data, const FName& InOwnerName, bool bRecreateUniformBuffer)
 {
 	FMaterialParameterCollectionInstanceResource* Resource = this;
 	ENQUEUE_RENDER_COMMAND(UpdateCollectionCommand)(
@@ -705,17 +831,14 @@ void FMaterialParameterCollectionInstanceResource::GameThread_Destroy()
 	);
 }
 
-FMaterialParameterCollectionInstanceResource::FMaterialParameterCollectionInstanceResource() :
-	UniformBufferLayout(TEXT("MaterialParameterCollectionInstanceResource"))
-{
-}
+FMaterialParameterCollectionInstanceResource::FMaterialParameterCollectionInstanceResource() = default;
 
 FMaterialParameterCollectionInstanceResource::~FMaterialParameterCollectionInstanceResource()
 {
 	check(!UniformBuffer.IsValid());
 }
 
-void FMaterialParameterCollectionInstanceResource::UpdateContents(const FGuid& InId, const TArray<FVector4>& Data, const FName& InOwnerName, bool bRecreateUniformBuffer)
+void FMaterialParameterCollectionInstanceResource::UpdateContents(const FGuid& InId, const TArray<FVector4f>& Data, const FName& InOwnerName, bool bRecreateUniformBuffer)
 {
 	Id = InId;
 	OwnerName = InOwnerName;
@@ -723,18 +846,22 @@ void FMaterialParameterCollectionInstanceResource::UpdateContents(const FGuid& I
 	if (InId != FGuid() && Data.Num() > 0)
 	{
 		const uint32 NewSize = Data.GetTypeSize() * Data.Num();
-		check(UniformBufferLayout.Resources.Num() == 0);
+		check(UniformBufferLayout == nullptr || UniformBufferLayout->Resources.Num() == 0);
 
 		if (!bRecreateUniformBuffer && IsValidRef(UniformBuffer))
 		{
-			check(NewSize == UniformBufferLayout.ConstantBufferSize);
-			check(UniformBuffer->GetLayout() == UniformBufferLayout);
+			check(NewSize == UniformBufferLayout->ConstantBufferSize);
+			check(UniformBuffer->GetLayoutPtr() == UniformBufferLayout);
 			RHIUpdateUniformBuffer(UniformBuffer, Data.GetData());
 		}
 		else
 		{
-			UniformBufferLayout.ConstantBufferSize = NewSize;
-			UniformBufferLayout.ComputeHash();
+			FRHIUniformBufferLayoutInitializer UniformBufferLayoutInitializer(TEXT("MaterialParameterCollectionInstanceResource"));
+			UniformBufferLayoutInitializer.ConstantBufferSize = NewSize;
+			UniformBufferLayoutInitializer.ComputeHash();
+
+			UniformBufferLayout = RHICreateUniformBufferLayout(UniformBufferLayoutInitializer);
+
 			UniformBuffer = RHICreateUniformBuffer(Data.GetData(), UniformBufferLayout, UniformBuffer_MultiFrame);
 		}
 	}

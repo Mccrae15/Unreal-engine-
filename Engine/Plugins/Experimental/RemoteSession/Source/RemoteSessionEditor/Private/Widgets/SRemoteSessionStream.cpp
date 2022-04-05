@@ -23,7 +23,6 @@
 #include "EditorSupportDelegates.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "IDetailsView.h"
-#include "ILevelViewport.h"
 #include "LevelEditor.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorModule.h"
@@ -80,8 +79,8 @@ void SRemoteSessionStream::RegisterNomadTabSpawner()
 		LevelEditorTabManager->RegisterTabSpawner(RemoteSessionStream::RemoteSessionStreamApp, FOnSpawnTab::CreateStatic(&RemoteSessionStream::CreateMediaFrameworkCaptureCameraViewportTab))
 			.SetDisplayName(LOCTEXT("TabTitle", "Remote Session Stream"))
 			.SetTooltipText(LOCTEXT("TooltipText", "Stream a particular UMG to a Remote Session app."))
-			.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsMiscCategory())
-			.SetIcon(FSlateIcon(FRemoteSessionEditorStyle::GetStyleSetName(), "TabIcons.RemoteSession.Small"));
+			.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
+			.SetIcon(FSlateIcon(FRemoteSessionEditorStyle::GetStyleSetName(), "RemoteSessionStream"));
 	};
 
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));

@@ -9,6 +9,7 @@
 #include "Misc/CoreStats.h"
 #include "Misc/Compression.h"
 #include "Misc/LazySingleton.h"
+#include "Misc/CommandLine.h"
 #include "ProfilingDebugging/MiscTrace.h"
 #include "GenericPlatform/GenericPlatformCrashContext.h"
 
@@ -103,12 +104,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /** If true, this executable is able to run all games (which are loaded as DLL's) **/
 #if UE_GAME || UE_SERVER
-	// In monolithic builds, implemented by the IMPLEMENT_GAME_MODULE macro or by UE4Game module.
+	// In monolithic builds, implemented by the IMPLEMENT_GAME_MODULE macro or by UnrealGame module.
 	#if !IS_MONOLITHIC
 		bool GIsGameAgnosticExe = true;
 	#endif
 #else
-	// In monolithic Editor builds, implemented by the IMPLEMENT_GAME_MODULE macro or by UE4Game module.
+	// In monolithic Editor builds, implemented by the IMPLEMENT_GAME_MODULE macro or by UnrealGame module.
 	#if !IS_MONOLITHIC || !UE_EDITOR
 		// Otherwise only modular editors are game agnostic.
 		#if IS_PROGRAM || IS_MONOLITHIC
@@ -162,8 +163,13 @@ FUELibraryOverrideSettings GUELibraryOverrideSettings;
  */
 bool GIsRunningUnattendedScript = false;
 
+#if WITH_EDITOR
+bool					PRIVATE_GIsRunningCookCommandlet	= false;				/** Whether this executable is running the cook commandlet */
+#endif
+
 #if WITH_ENGINE
 bool					PRIVATE_GIsRunningCommandlet		= false;				/** Whether this executable is running a commandlet (custom command-line processing code) */
+UClass*					PRIVATE_GRunningCommandletClass		= nullptr;				/** Class of running cook commandlet */
 bool					PRIVATE_GAllowCommandletRendering	= false;				/** If true, initialise RHI and set up scene for rendering even when running a commandlet. */
 bool					PRIVATE_GAllowCommandletAudio 		= false;				/** If true, allow audio even when running a commandlet. */
 #endif	// WITH_ENGINE
@@ -234,9 +240,15 @@ float					GNearClippingPlane				= 10.0f;				/* Near clipping plane */
 bool					GExitPurge						= false;
 
 FChunkedFixedUObjectArray* GCoreObjectArrayForDebugVisualizers = nullptr;
+template class CORE_API TArray<FMinimalName, TInlineAllocator<3>>;
+
+TArray<FMinimalName, TInlineAllocator<3>>* GCoreComplexObjectPathDebug = nullptr;
+FObjectHandlePackageDebugData* GCoreObjectHandlePackageDebug = nullptr;
 #if PLATFORM_UNIX
 uint8** CORE_API GNameBlocksDebug = FNameDebugVisualizer::GetBlocks();
 FChunkedFixedUObjectArray*& CORE_API GObjectArrayForDebugVisualizers = GCoreObjectArrayForDebugVisualizers;
+TArray<FMinimalName, TInlineAllocator<3>>*& GComplexObjectPathDebug = GCoreComplexObjectPathDebug;
+FObjectHandlePackageDebugData*& CORE_API GObjectHandlePackageDebug = GCoreObjectHandlePackageDebug;
 #endif
 
 /** Game name, used for base game directory and ini among other things										*/
@@ -277,6 +289,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 void CORE_API RequestEngineExit(const TCHAR* ReasonString)
 {
 	ensureMsgf(ReasonString && FCString::Strlen(ReasonString) > 4, TEXT("RequestEngineExit must be given a valid reason (reason \"%s\""), ReasonString);
+
+	TRACE_BOOKMARK(TEXT("Engine exit requested (reason: %s)"), ReasonString);
 
 	FGenericCrashContext::SetEngineExit(true);
 
@@ -334,9 +348,9 @@ bool					GIsInitialLoad					= true;
 bool					GEventDrivenLoaderEnabled = false;
 
 /** Steadily increasing frame counter.																		*/
-TSAN_ATOMIC(uint64)		GFrameCounter(0);
+uint64					GFrameCounter					= 0;
+uint64					GFrameCounterRenderThread		= 0;
 
-uint64					GFrameCounterRenderThread(0);
 uint64					GLastGCFrame					= 0;
 /** The time input was sampled, in cycles. */
 uint64					GInputTime					= 0;
@@ -367,8 +381,6 @@ bool					GIsGameThreadIdInitialized		= false;
 void					(*GFlushStreamingFunc)(void)	  = &appNoop;
 /** Whether to emit begin/ end draw events.																	*/
 bool					GEmitDrawEvents					= false;
-/** Whether forward DrawEvents to the RHI or keep them only on the Commandlist. */
-bool					GCommandListOnlyDrawEvents		= false;
 /** Whether we want the rendering thread to be suspended, used e.g. for tracing.							*/
 bool					GShouldSuspendRenderingThread	= false;
 /** Determines what kind of trace should occur, NAME_None for none.											*/
@@ -381,11 +393,18 @@ bool					GPrintLogCategory = true;
 bool					GPrintLogVerbosity = true;
 
 #if USE_HITCH_DETECTION
-bool				GHitchDetected = false;
+TSAN_ATOMIC(bool)				GHitchDetected(false);
 #endif
 
 /** Whether stats should emit named events for e.g. PIX.													*/
 int32					GCycleStatsShouldEmitNamedEvents = 0;
+
+/** Whether verbose stats should be also generate external profiler named events.
+* Thread sleep/wait stats or extremely high frequency cycle counting stats are disabled by default.
+* Has no effect if GCycleStatsShouldEmitNamedEvents is 0.
+*/
+bool					GShouldEmitVerboseNamedEvents = false;
+
 /** Disables some warnings and minor features that would interrupt a demo presentation						*/
 bool					GIsDemoMode						= false;
 /** Whether or not a unit test is currently being run														*/
@@ -405,21 +424,9 @@ bool GetEmitDrawEvents()
 	return GEmitDrawEvents;
 }
 
-bool CORE_API GetEmitDrawEventsOnlyOnCommandlist()
-{
-	return GCommandListOnlyDrawEvents;
-}
-
 void CORE_API SetEmitDrawEvents(bool EmitDrawEvents)
 {
 	GEmitDrawEvents = EmitDrawEvents;
-	GCommandListOnlyDrawEvents = !GEmitDrawEvents;
-}
-
-void CORE_API EnableEmitDrawEventsOnlyOnCommandlist()
-{
-	GCommandListOnlyDrawEvents = !GEmitDrawEvents;
-	GEmitDrawEvents = true;
 }
 
 void ToggleGDebugPUCrashedFlag(const TArray<FString>& Args)
@@ -682,6 +689,7 @@ DEFINE_LOG_CATEGORY(LogNetSerialization);
 DEFINE_LOG_CATEGORY(LogMemory);
 DEFINE_LOG_CATEGORY(LogProfilingDebugging);
 DEFINE_LOG_CATEGORY(LogTemp);
+DEFINE_LOG_CATEGORY(LogVirtualization);
 
 // need another layer of macro to help using a define in a define
 #define DEFINE_LOG_CATEGORY_HELPER(A) DEFINE_LOG_CATEGORY(A)
@@ -693,3 +701,26 @@ DEFINE_LOG_CATEGORY(LogTemp);
 #endif
 
 #undef LOCTEXT_NAMESPACE
+
+bool IsRunningCookOnTheFly()
+{
+#if WITH_COTF
+	static struct FCookOnTheFlyCommandline
+	{
+		bool bParsed;
+		FCookOnTheFlyCommandline(const TCHAR* CmdLine)
+		{
+			FString Host;
+			bParsed = FParse::Param(CmdLine, TEXT("CookOnTheFly")) && FParse::Value(CmdLine, TEXT("-ZenStoreHost="), Host);
+			if (!bParsed)	
+			{
+				bParsed = FParse::Value(CmdLine, TEXT("-FileHostIP="), Host);
+			}
+		}
+	} CookOnTheFlyCommandline(FCommandLine::Get());
+	
+	return CookOnTheFlyCommandline.bParsed;
+#else
+	return false;
+#endif
+}

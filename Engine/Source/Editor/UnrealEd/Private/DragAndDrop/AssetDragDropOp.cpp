@@ -8,6 +8,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "AssetThumbnail.h"
 #include "ClassIconFinder.h"
+#include "ThumbnailRendering/ThumbnailManager.h"
 
 TSharedRef<FAssetDragDropOp> FAssetDragDropOp::New(const FAssetData& InAssetData, UActorFactory* ActorFactory)
 {
@@ -45,7 +46,6 @@ TSharedRef<FAssetDragDropOp> FAssetDragDropOp::New(TArray<FAssetData> InAssetDat
 
 FAssetDragDropOp::~FAssetDragDropOp()
 {
-	ThumbnailPool.Reset();
 }
 
 TSharedPtr<SWidget> FAssetDragDropOp::GetDefaultDecorator() const
@@ -210,6 +210,7 @@ void FAssetDragDropOp::Init(TArray<FAssetData> InAssetData, TArray<FString> InAs
 	// Can cause unsafe frame reentry 
 	for (FAssetData& Data : AssetData)
 	{
+		FScopedLoadAllExternalObjects Scope(Data.PackageName);
 		Data.GetAsset();
 	}
 
@@ -221,14 +222,13 @@ void FAssetDragDropOp::InitThumbnail()
 	if (AssetData.Num() > 0 && ThumbnailSize > 0)
 	{
 		// Create a thumbnail pool to hold the single thumbnail rendered
-		ThumbnailPool = MakeShared<FAssetThumbnailPool>(1, /*InAreRealTileThumbnailsAllowed=*/false);
+		//ThumbnailPool = MakeShared<FAssetThumbnailPool>(1, /*InAreRealTileThumbnailsAllowed=*/false);
 
 		// Create the thumbnail handle
-		AssetThumbnail = MakeShared<FAssetThumbnail>(AssetData[0], ThumbnailSize, ThumbnailSize, ThumbnailPool);
+		AssetThumbnail = MakeShared<FAssetThumbnail>(AssetData[0], ThumbnailSize, ThumbnailSize, UThumbnailManager::Get().GetSharedThumbnailPool());
 
 		// Request the texture then tick the pool once to render the thumbnail
 		AssetThumbnail->GetViewportRenderTargetTexture();
-		ThumbnailPool->Tick(0);
 	}
 }
 

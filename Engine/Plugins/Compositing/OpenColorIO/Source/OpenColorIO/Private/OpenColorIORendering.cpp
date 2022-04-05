@@ -49,7 +49,7 @@ namespace {
 			OutputResolution,
 			OutputResolution,
 			PipelineState.VertexShader,
-			EStereoscopicPass::eSSP_FULL,
+			INDEX_NONE,
 			false,
 			DrawRectangleFlags);
 	}
@@ -125,8 +125,8 @@ bool FOpenColorIORendering::ApplyColorTransform(UWorld* InWorld, const FOpenColo
 	}
 
 
-	FTextureResource* InputResource = InTexture->Resource;
-	FTextureResource* OutputResource = OutRenderTarget->Resource;
+	FTextureResource* InputResource = InTexture->GetResource();
+	FTextureResource* OutputResource = OutRenderTarget->GetResource();
 	if (InputResource == nullptr)
 	{
 		UE_LOG(LogOpenColorIO, Warning, TEXT("Can't apply color transform - Invalid Input Texture resource"));

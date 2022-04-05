@@ -11,7 +11,7 @@
 
 void SetGBufferForShadingModel(
 	in out FGBufferData GBuffer, 
-	in const FMaterialPixelParameters MaterialParameters,
+	in out FMaterialPixelParameters MaterialParameters,
 	const float Opacity,
 	const half3 BaseColor,
 	const half  Metallic,
@@ -65,7 +65,7 @@ void SetGBufferForShadingModel(
 
 			// Average roughness for dual specular.
 			uint SubsurfaceProfileUInt = uint(SubsurfaceProfile * 255.0f + 0.5f);
-			float MaterialRoughnessToAverage = ActualSSProfilesTexture.Load(int3(SSSS_DUAL_SPECULAR_OFFSET, SubsurfaceProfileUInt, 0)).w * SSSS_MAX_DUAL_SPECULAR_ROUGHNESS;
+			float MaterialRoughnessToAverage = GetSubsurfaceProfileTexture(SSSS_DUAL_SPECULAR_OFFSET, SubsurfaceProfileUInt).w * SSSS_MAX_DUAL_SPECULAR_ROUGHNESS;
 
 			// Smooth blend out dual specular when opacity is low, we have the extra SSSS_OPACITY_THRESHOLD_EPS so that we fade out by the time we
 			// get to 0.01, as opposed to 0.0.
@@ -141,17 +141,13 @@ void SetGBufferForShadingModel(
 #if MATERIAL_SHADINGMODEL_EYE
 	else if (ShadingModel == SHADINGMODELID_EYE)
 	{
+		const float IrisMask     = saturate(GetMaterialCustomData0(MaterialParameters));
+		const float IrisDistance = saturate(GetMaterialCustomData1(MaterialParameters));
+
 		GBuffer.CustomData.x = EncodeSubsurfaceProfile(SubsurfaceProfile).x;
-		GBuffer.CustomData.w = 1.0f - saturate(GetMaterialCustomData0(MaterialParameters));	// Opacity = 1.0 - Iris Mask
-		GBuffer.Metallic = saturate(GetMaterialCustomData1(MaterialParameters));			// Iris Distance
+		GBuffer.CustomData.w = 1.0f - IrisMask;	// Opacity
 
 	#if IRIS_NORMAL
-		float IrisMask		= saturate( GetMaterialCustomData0(MaterialParameters) );
-		float IrisDistance	= saturate( GetMaterialCustomData1(MaterialParameters) );
-
-		GBuffer.CustomData.x = EncodeSubsurfaceProfile(SubsurfaceProfile).x;
-		GBuffer.CustomData.w = 1.0 - IrisMask;	// Opacity
-
 		float2 WorldNormalOct = UnitVectorToOctahedron( GBuffer.WorldNormal );
 
 		// CausticNormal stored as octahedron
@@ -186,7 +182,7 @@ void SetGBufferForShadingModel(
 		float2 IrisNormalDelta = ( IrisNormalOct - WorldNormalOct ) * 0.5 + (128.0/255.0);
 		GBuffer.CustomData.yz = IrisNormalDelta;
 	#else
-		GBuffer.Metallic = saturate(GetMaterialCustomData1(MaterialParameters));			// Iris Distance
+		GBuffer.Metallic = IrisDistance;
 
 		#if NUM_MATERIAL_OUTPUTS_GETTANGENTOUTPUT > 0
 			float3 Tangent = GetTangentOutput0(MaterialParameters);

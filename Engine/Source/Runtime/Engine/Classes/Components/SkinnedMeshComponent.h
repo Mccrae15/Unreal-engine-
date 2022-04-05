@@ -9,10 +9,12 @@
 #include "UObject/Object.h"
 #include "Engine/EngineTypes.h"
 #include "Components/SceneComponent.h"
+#include "Interfaces/Interface_AsyncCompilation.h"
 #include "Engine/TextureStreamingTypes.h"
 #include "Components/MeshComponent.h"
 #include "Containers/SortedMap.h"
 #include "LODSyncInterface.h"
+#include "BoneContainer.h"
 #include "SkinnedMeshComponent.generated.h"
 
 enum class ESkinCacheUsage : uint8;
@@ -24,8 +26,11 @@ class FSkeletalMeshRenderData;
 class FSkeletalMeshLODRenderData;
 struct FSkelMeshRenderSection;
 class FPositionVertexBuffer;
+class UMeshDeformer;
+class UMeshDeformerInstance;
 
 DECLARE_DELEGATE_OneParam(FOnAnimUpdateRateParamsCreated, FAnimUpdateRateParameters*)
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnTickPose, USkinnedMeshComponent* /*SkinnedMeshComponent*/, float /*DeltaTime*/, bool /*bNeedsValidRootMotion*/)
 
 //
 // Bone Visibility.
@@ -103,15 +108,6 @@ namespace EBoneSpaces
 	};
 }
 
-UENUM(BlueprintType, meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
-enum class EVertexOffsetUsageType : uint8
-{
-	None = 0,
-	PreSkinningOffset = (1 << 0),
-	PostSkinningOffset = (1 << 1),
-};
-ENUM_CLASS_FLAGS(EVertexOffsetUsageType);
-
 /** Struct used to indicate one active morph target that should be applied to this USkeletalMesh when rendered. */
 struct FActiveMorphTarget
 {
@@ -175,9 +171,6 @@ struct ENGINE_API FSkelMeshComponentLODInfo
 	/** Vertex buffer used to override skin weights from one of the profiles */
 	FSkinWeightVertexBuffer* OverrideProfileSkinWeights;
 
-	TArray<FVector> PreSkinningOffsets;
-	TArray<FVector> PostSkinningOffsets;
-
 	FSkelMeshComponentLODInfo();
 	~FSkelMeshComponentLODInfo();
 
@@ -193,14 +186,6 @@ private:
 	void CleanUpOverrideSkinWeights();
 };
 
-/** Struct used to store per-component ref pose override */
-struct FSkelMeshRefPoseOverride
-{
-	/** Inverse of (component space) ref pose matrices  */
-	TArray<FMatrix> RefBasesInvMatrix;
-	/** Per bone transforms (local space) for new ref pose */
-	TArray<FTransform> RefBonePoses;
-};
 
 USTRUCT(BlueprintType)
 struct FVertexOffsetUsage
@@ -228,8 +213,8 @@ class ENGINE_API USkinnedMeshComponent : public UMeshComponent, public ILODSyncI
 	friend class FSkinnedMeshComponentRecreateRenderStateContext;
 
 	/** The skeletal mesh used by this component. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Mesh")
-	class USkeletalMesh* SkeletalMesh;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Mesh", meta = (DisallowedClasses = "DestructibleMesh"))
+	TObjectPtr<class USkeletalMesh> SkeletalMesh;
 
 	//
 	// MasterPoseComponent.
@@ -249,8 +234,13 @@ class ENGINE_API USkinnedMeshComponent : public UMeshComponent, public ILODSyncI
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mesh")
 	TArray<ESkinCacheUsage> SkinCacheUsage;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mesh", meta=(DisplayName="Pre/Post Skin Deltas Usage"))
-	TArray<FVertexOffsetUsage> VertexOffsetUsage;
+	/** If set then the MeshDeformer will be used instead of the fixed animation pipeline. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Deformer")
+	TObjectPtr<UMeshDeformer> MeshDeformer;
+
+	/** Object containing state for the bound MeshDeformer. */
+	UPROPERTY(Transient)
+	TObjectPtr<UMeshDeformerInstance> MeshDeformerInstance;
 
 	/** const getters for previous transform idea */
 	const TArray<uint8>& GetPreviousBoneVisibilityStates() const
@@ -356,14 +346,14 @@ public:
 	FColor WireframeColor_DEPRECATED;
 #endif
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if UE_ENABLE_DEBUG_DRAWING
 	/** Debug draw color */
 	TOptional<FLinearColor> DebugDrawColor;
 #endif
 
 protected:
 	/** Information for current ref pose override, if present */
-	FSkelMeshRefPoseOverride* RefPoseOverride;
+	TSharedPtr<FSkelMeshRefPoseOverride> RefPoseOverride;
 
 public:
 
@@ -375,9 +365,11 @@ public:
 	 * @param	OutVertices		The skinned vertices
 	 * @param	InLODIndex		The LOD we want to export
 	 */
-	void GetCPUSkinnedVertices(TArray<struct FFinalSkinVertex>& OutVertices, int32 InLODIndex);
+	void GetCPUSkinnedVertices(TArray<struct FFinalSkinVertex>& OutVertices, int32 InLODIndex) const;
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	void GetCPUSkinnedCachedFinalVertices(TArray<FFinalSkinVertex>& OutVertices) const;
+
+#if UE_ENABLE_DEBUG_DRAWING
 	/** Get whether to draw this mesh's debug skeleton */
 	bool ShouldDrawDebugSkeleton() const { return bDrawDebugSkeleton; }
 
@@ -421,7 +413,7 @@ public:
 	 *	PhysicsAsset is set in SkeletalMesh by default, but you can override with this value
 	 */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category=Physics)
-	class UPhysicsAsset* PhysicsAssetOverride;
+	TObjectPtr<class UPhysicsAsset> PhysicsAssetOverride;
 
 	//
 	// Level of detail.
@@ -617,9 +609,14 @@ protected:
 	/** true when CachedLocalBounds is up to date. */
 	UPROPERTY(Transient)
 	mutable uint8 bCachedLocalBoundsUpToDate:1;
+	UPROPERTY(Transient)
+	mutable uint8 bCachedWorldSpaceBoundsUpToDate:1;
 
 	/** Whether we have updated bone visibility this tick */
 	uint8 bBoneVisibilityDirty:1;
+
+	/** Whether mesh deformer state is dirty and will need updating at the next tick. */
+	uint8 bUpdateDeformerAtNextTick : 1;
 
 private:
 	/** If true, UpdateTransform will always result in a call to MeshObject->Update. */
@@ -639,7 +636,10 @@ protected:
 	/** External flag indicating that we may not be evaluated every frame */
 	uint8 bExternalEvaluationRateLimited:1;
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	/** Whether mip callbacks have been registered and need to be removed on destroy */
+	uint8 bMipLevelCallbackRegistered:1;
+
+#if UE_ENABLE_DEBUG_DRAWING
 private:
 	/** Whether to draw this mesh's debug skeleton (regardless of showflags) */
 	uint8 bDrawDebugSkeleton:1;
@@ -684,6 +684,12 @@ public:
 
 	/** Object responsible for sending bone transforms, morph target state etc. to render thread. */
 	class FSkeletalMeshObject*	MeshObject;
+
+	/** Supports user-defined FSkeletalMeshObjects */
+	class FSkeletalMeshObject* (*MeshObjectFactory)(void* UserData, USkinnedMeshComponent* InMeshComponent, FSkeletalMeshRenderData* InSkelMeshRenderData, ERHIFeatureLevel::Type InFeatureLevel);
+
+	/** Passed into MeshObjectFactory */
+	void* MeshObjectFactoryUserData;
 
 	/** Gets the skeletal mesh resource used for rendering the component. */
 	FSkeletalMeshRenderData* GetSkeletalMeshRenderData() const;
@@ -786,6 +792,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Components|SkinnedMesh")
 	virtual void SetSkeletalMesh(class USkeletalMesh* NewMesh, bool bReinitPose = true);
 
+	/**
+	 * Change the MeshDeformer that is used for this Component.
+	 *
+	 * @param InMeshDeformer New mesh deformer to set for this component
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
+	void SetMeshDeformer(UMeshDeformer* InMeshDeformer);
+
 	/** 
 	 * Get Parent Bone of the input bone
 	 * 
@@ -824,6 +838,9 @@ public:
 	bool GetTwistAndSwingAngleOfDeltaRotationFromRefPose(FName BoneName, float& OutTwistAngle, float& OutSwingAngle) const;
 
 	bool IsSkinCacheAllowed(int32 LodIdx) const;
+
+	bool HasMeshDeformer() const { return MeshDeformer != nullptr; }
+
 	/**
 	 *	Compute SkeletalMesh MinLOD that will be used by this component
 	 */
@@ -854,6 +871,9 @@ protected:
 
 public:
 	//~ Begin USceneComponent Interface
+#if WITH_EDITOR
+	virtual bool GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty) override;
+#endif // WITH_EDITOR
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	virtual FTransform GetSocketTransform(FName InSocketName, ERelativeTransformSpace TransformSpace = RTS_World) const override;
 	virtual bool DoesSocketExist(FName InSocketName) const override;
@@ -949,7 +969,7 @@ public:
 	* @param SkinWeightBuffer The SkinWeightBuffer to use.
 	* @param CachedRefToLocals Cached RefToLocal matrices.
 	*/
-	static FVector GetSkinnedVertexPosition(USkinnedMeshComponent* Component, int32 VertexIndex, const FSkeletalMeshLODRenderData& LODDatal, FSkinWeightVertexBuffer& SkinWeightBuffer);
+	static FVector3f GetSkinnedVertexPosition(USkinnedMeshComponent* Component, int32 VertexIndex, const FSkeletalMeshLODRenderData& LODDatal, FSkinWeightVertexBuffer& SkinWeightBuffer);
 
 	/**
 	 * Simple, CPU evaluation of a vertex's skinned position (returned in component space)
@@ -959,7 +979,7 @@ public:
 	 * @param SkinWeightBuffer The SkinWeightBuffer to use.
 	 * @param CachedRefToLocals Cached RefToLocal matrices.
 	*/
-	static FVector GetSkinnedVertexPosition(USkinnedMeshComponent* Component, int32 VertexIndex, const FSkeletalMeshLODRenderData& LODData, FSkinWeightVertexBuffer& SkinWeightBuffer, TArray<FMatrix>& CachedRefToLocals);
+	static FVector3f GetSkinnedVertexPosition(USkinnedMeshComponent* Component, int32 VertexIndex, const FSkeletalMeshLODRenderData& LODData, FSkinWeightVertexBuffer& SkinWeightBuffer, TArray<FMatrix44f>& CachedRefToLocals);
 
 	/**
 	* CPU evaluation of the positions of all vertices (returned in component space)
@@ -969,10 +989,10 @@ public:
 	* @param Model The Model to use.
 	* @param SkinWeightBuffer The SkinWeightBuffer to use.
 	*/
-	static void ComputeSkinnedPositions(USkinnedMeshComponent* Component, TArray<FVector> & OutPositions, TArray<FMatrix>& CachedRefToLocals, const FSkeletalMeshLODRenderData& LODData, const FSkinWeightVertexBuffer& SkinWeightBuffer);
+	static void ComputeSkinnedPositions(USkinnedMeshComponent* Component, TArray<FVector3f> & OutPositions, TArray<FMatrix44f>& CachedRefToLocals, const FSkeletalMeshLODRenderData& LODData, const FSkinWeightVertexBuffer& SkinWeightBuffer);
 
 	/** Caches the RefToLocal matrices. */
-	void CacheRefToLocalMatrices(TArray<FMatrix>& OutRefToLocal) const;
+	void CacheRefToLocalMatrices(TArray<FMatrix44f>& OutRefToLocal) const;
 
 	FORCEINLINE	const USkinnedMeshComponent* GetBaseComponent()const
 	{
@@ -1034,19 +1054,19 @@ public:
 
 	UE_DEPRECATED(4.26, "GetVertexOffsetUsage() has been deprecated. Support will be dropped in the future.")
 	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
-	int32 GetVertexOffsetUsage(int32 LODIndex) const;
+	int32 GetVertexOffsetUsage(int32 LODIndex) const { return 0; }
 
 	UE_DEPRECATED(4.26, "SetVertexOffsetUsage() has been deprecated. Support will be dropped in the future.")
 	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
-	void SetVertexOffsetUsage(int32 LODIndex, int32 Usage);
+	void SetVertexOffsetUsage(int32 LODIndex, int32 Usage) {}
 
 	UE_DEPRECATED(4.26, "SetPreSkinningOffsets() has been deprecated. Support will be dropped in the future.")
 	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
-	void SetPreSkinningOffsets(int32 LODIndex, TArray<FVector> Offsets);
+	void SetPreSkinningOffsets(int32 LODIndex, TArray<FVector> Offsets) {}
 
 	UE_DEPRECATED(4.26, "SetPostSkinningOffsets() has been deprecated. Support will be dropped in the future.")
 	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
-	void SetPostSkinningOffsets(int32 LODIndex, TArray<FVector> Offsets);
+	void SetPostSkinningOffsets(int32 LODIndex, TArray<FVector> Offsets) {}
 
 	/** Check whether or not a Skin Weight Profile is currently pending load / create */
 	bool IsSkinWeightProfilePending() const { return bSkinWeightProfilePending == 1; }
@@ -1065,7 +1085,7 @@ public:
 	virtual void SetRefPoseOverride(const TArray<FTransform>& NewRefPoseTransforms);
 
 	/** Accessor for RefPoseOverride */
-	virtual const FSkelMeshRefPoseOverride* GetRefPoseOverride() const { return RefPoseOverride; }
+	virtual const TSharedPtr<FSkelMeshRefPoseOverride>& GetRefPoseOverride() const { return RefPoseOverride; }
 
 	/** Clear any applied ref pose override */
 	virtual void ClearRefPoseOverride();
@@ -1096,7 +1116,7 @@ protected:
 	virtual void DispatchParallelTickPose(FActorComponentTickFunction* TickFunction) {}
 
 	/** Helper function for UpdateLODStatus, called with a valid index for InMasterPoseComponentPredictedLODLevel when updating LOD status for slave components */
-	bool UpdateLODStatus_Internal(int32 InMasterPoseComponentPredictedLODLevel);
+	bool UpdateLODStatus_Internal(int32 InMasterPoseComponentPredictedLODLevel, bool bRequestedByMasterPoseComponent = false);
 
 public:
 	/**
@@ -1107,7 +1127,12 @@ public:
 	 * @return	Return true if anything modified. Return false otherwise
 	 * @param bNeedsValidRootMotion - Networked games care more about this, but if false we can do less calculations
 	 */
-	virtual void TickPose(float DeltaTime, bool bNeedsValidRootMotion) { TickUpdateRate(DeltaTime, bNeedsValidRootMotion); }
+	virtual void TickPose(float DeltaTime, bool bNeedsValidRootMotion);
+
+	/**
+	 * Invoked at the beginning of TickPose before doing the bulk of the tick work
+	 */
+	FOnTickPose OnTickPose;
 
 	/** 
 	 * Update Slave Component. This gets called when MasterPoseComponent!=NULL
@@ -1207,8 +1232,15 @@ public:
 
 	FBoxSphereBounds GetCachedLocalBounds()  const
 	{ 
-		ensure(bCachedLocalBoundsUpToDate);
-		return CachedWorldSpaceBounds.TransformBy(CachedWorldToLocalTransform);
+		ensure(bCachedLocalBoundsUpToDate || bCachedWorldSpaceBoundsUpToDate);
+		if (bCachedWorldSpaceBoundsUpToDate)
+		{
+			return CachedWorldOrLocalSpaceBounds.TransformBy(CachedWorldToLocalTransform);
+		}
+		else
+		{
+			return CachedWorldOrLocalSpaceBounds;
+		}
 	} 
 
 	/**
@@ -1239,13 +1271,18 @@ protected:
 	virtual bool AllocateTransformData();
 	virtual void DeallocateTransformData();
 
-	/** Bounds cached, so they're computed just once. */
+	/** Bounds cached, so they're computed just once, either in local or worldspace depending on cvar 'a.CacheLocalSpaceBounds'. */
 	UPROPERTY(Transient)
-	mutable FBoxSphereBounds CachedWorldSpaceBounds;
+	mutable FBoxSphereBounds CachedWorldOrLocalSpaceBounds;
 	UPROPERTY(Transient)
 	mutable FMatrix CachedWorldToLocalTransform;
 
 public:
+#if WITH_EDITOR
+	//~ Begin IInterface_AsyncCompilation Interface.
+	virtual bool IsCompiling() const override;
+	//~ End IInterface_AsyncCompilation Interface.
+#endif
 
 	/** Invalidate Cached Bounds, when Mesh Component has been updated. */
 	void InvalidateCachedBounds();
@@ -1258,7 +1295,7 @@ protected:
 	 *						  If MasterPoseComponent exists, it will applied to MasterPoseComponent's bound
 	 * @param UsePhysicsAsset	: Whether or not to use PhysicsAsset for calculating bound of mesh
 	 */
-	FBoxSphereBounds CalcMeshBound(const FVector& RootOffset, bool UsePhysicsAsset, const FTransform& Transform) const;
+	FBoxSphereBounds CalcMeshBound(const FVector3f& RootOffset, bool UsePhysicsAsset, const FTransform& Transform) const;
 
 	/**
 	 * return true if it needs update. Return false if not
@@ -1396,8 +1433,18 @@ public:
 	 *
 	 * @return Local space reference position 
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh")
-	FVector GetRefPosePosition(int32 BoneIndex);
+	UFUNCTION(BlueprintPure, Category = "Components|SkinnedMesh")
+	FVector GetRefPosePosition(int32 BoneIndex) const;
+
+	/** 
+	 * Gets the local-space transform of a bone in the reference pose. 
+	 *
+	 * @param BoneIndex Index of the bone
+	 *
+	 * @return Local space reference transform 
+	 */
+	UFUNCTION(BlueprintPure, Category = "Components|SkinnedMesh")
+	FTransform GetRefPoseTransform(int32 BoneIndex) const;
 
 	/** finds a vector pointing along the given axis of the given bone
 	 *
@@ -1453,7 +1500,7 @@ public:
 	*
 	* @return the name of the bone that was found, or 'None' if no bone was found
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh", meta=(DisplayName="FindClosestBone", AdvancedDisplay="bRequirePhysicsAsset"))
+	UFUNCTION(BlueprintCallable, Category = "Components|SkinnedMesh", meta=(DisplayName="Find Closest Bone", AdvancedDisplay="bRequirePhysicsAsset"))
 	FName FindClosestBone_K2(FVector TestLocation, FVector& BoneLocation, float IgnoreScale = 0.f, bool bRequirePhysicsAsset = false) const;
 
 	/**
@@ -1647,19 +1694,19 @@ void GetTypedSkinnedTangentBasis(
 	const FStaticMeshVertexBuffers& StaticVertexBuffers,
 	const FSkinWeightVertexBuffer& SkinWeightVertexBuffer,
 	const int32 VertIndex,
-	const TArray<FMatrix> & RefToLocals,
-	FVector& OutTangentX,
-	FVector& OutTangentY,
-	FVector& OutTangentZ
+	const TArray<FMatrix44f> & RefToLocals,
+	FVector3f& OutTangentX,
+	FVector3f& OutTangentY,
+	FVector3f& OutTangentZ
 );
 
 /** Simple, CPU evaluation of a vertex's skinned position helper function */
 template <bool bCachedMatrices>
-FVector GetTypedSkinnedVertexPosition(
+FVector3f GetTypedSkinnedVertexPosition(
 	const USkinnedMeshComponent* SkinnedComp,
 	const FSkelMeshRenderSection& Section,
 	const FPositionVertexBuffer& PositionVertexBuffer,
 	const FSkinWeightVertexBuffer& SkinWeightVertexBuffer,
 	const int32 VertIndex,
-	const TArray<FMatrix> & RefToLocals = TArray<FMatrix>()
+	const TArray<FMatrix44f> & RefToLocals = TArray<FMatrix44f>()
 );

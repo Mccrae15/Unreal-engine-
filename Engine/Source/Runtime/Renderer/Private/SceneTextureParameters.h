@@ -1,12 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-/*=============================================================================
-	DeferredShadingRenderer.h: Scene rendering definitions.
-=============================================================================*/
-
 #pragma once
 
 #include "SceneRenderTargetParameters.h"
+
+struct FSceneTextures;
 
 /** Contains reference to scene GBuffer textures. */
 BEGIN_SHADER_PARAMETER_STRUCT(FSceneTextureParameters, )
@@ -23,6 +21,9 @@ END_SHADER_PARAMETER_STRUCT()
 
 /** Constructs scene texture parameters from the scene context. */
 FSceneTextureParameters GetSceneTextureParameters(FRDGBuilder& GraphBuilder);
+
+/** Constructs scene texture parameters from the scene texture blackboard struct. */
+FSceneTextureParameters GetSceneTextureParameters(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures);
 
 /** Constructs scene texture parameters from the scene texture uniform buffer. Useful if you prefer to use loose parameters. */
 FSceneTextureParameters GetSceneTextureParameters(FRDGBuilder& GraphBuilder, TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTextureUniformBuffer);
@@ -41,4 +42,4 @@ FSceneLightingChannelParameters GetSceneLightingChannelParameters(FRDGBuilder& G
 RENDERER_API FRDGTextureRef GetEyeAdaptationTexture(FRDGBuilder& GraphBuilder, const FSceneView& View);
 
 /** Returns a render graph buffer resource reference onto the eye adaptation or fallback. */
-RENDERER_API FRHIShaderResourceView* GetEyeAdaptationBuffer(const FSceneView& View);
+RENDERER_API FRDGBufferRef GetEyeAdaptationBuffer(FRDGBuilder& GraphBuilder, const FSceneView& View);

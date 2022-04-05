@@ -98,6 +98,7 @@ public:
 	virtual int32 GetAuxiliaryLayer(const TSet<UObject*>& SelectionSet) const;
 	virtual bool IsNodeVisible() const { return true; }
 	virtual bool IsNodeEnabled() const { return true; }
+	virtual bool IsNodeUnlocked() const { return true; }
 	virtual bool IsNodeAutoPositioned() const { return false; }
 	virtual bool IsNodeAutosized() const { return false; }
 	virtual bool CanNodeOverlapSiblings() const { return true; }
@@ -150,6 +151,10 @@ protected:
 
 	virtual float GetViewScale() const;
 
+	/** Remove invalid nodes. */
+	void CleanupChildrenNodes();
+	
+public:
 	template<class TObjectType>
 	TObjectType* GetObjectChecked() const
 	{
@@ -171,6 +176,8 @@ protected:
 	TWeakPtr<FDisplayClusterConfiguratorBlueprintEditor> ToolkitPtr;
 
 	TWeakObjectPtr<UDisplayClusterConfiguratorBaseNode> Parent;
+
+	UPROPERTY(Transient, NonTransactional)
 	TArray<UDisplayClusterConfiguratorBaseNode*> Children;
 
 	FString NodeName;

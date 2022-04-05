@@ -7,6 +7,10 @@
 #include "Misc/Paths.h"
 #include "Serialization/MemoryWriter.h"
 #include "ShaderFormatOpenGL.h"
+#include "HlslccHeaderWriter.h"
+#include "SpirvReflectCommon.h"
+#include <algorithm>
+#include <regex>
 
 #if PLATFORM_WINDOWS
 #include "Windows/AllowWindowsPlatformTypes.h"
@@ -470,8 +474,8 @@ static void PlatformReleaseOpenGL(void* ContextPtr, void* PrevContextPtr)
 GLenum GLFrequencyTable[] =
 {
 	GL_VERTEX_SHADER,	// SF_Vertex
-	GL_TESS_CONTROL_SHADER,	 // SF_Hull
-	GL_TESS_EVALUATION_SHADER, // SF_Domain
+	GLenum(0), // SF_Mesh
+	GLenum(0), // SF_Amplification
 	GL_FRAGMENT_SHADER, // SF_Pixel
 	GL_GEOMETRY_SHADER,	// SF_Geometry
 	GL_COMPUTE_SHADER,  // SF_Compute
@@ -560,8 +564,6 @@ static ANSICHAR TranslateFrequencyToCrossCompilerPrefix(int32 Frequency)
 	{
 		case SF_Vertex: return 'v';
 		case SF_Pixel: return 'p';
-		case SF_Hull: return 'h';
-		case SF_Domain: return 'd';
 		case SF_Geometry: return 'g';
 		case SF_Compute: return 'c';
 	}
@@ -630,12 +632,6 @@ void FOpenGLFrontend::BuildShaderOutput(
 	case SF_Geometry:
 		Header.FrequencyMarker = 0x4753;
 		break;
-	case SF_Hull:
-		Header.FrequencyMarker = 0x4853;
-		break;
-	case SF_Domain:
-		Header.FrequencyMarker = 0x4453;
-		break;
 	case SF_Compute:
 		Header.FrequencyMarker = 0x4353;
 		break;
@@ -652,12 +648,12 @@ void FOpenGLFrontend::BuildShaderOutput(
 		if (Frequency == SF_Vertex && Input.Name.StartsWith(AttributePrefix))
 		{
 			int32 AttributeIndex = ParseNumber(*Input.Name + AttributePrefix.Len());
-			Header.Bindings.InOutMask |= (1 << AttributeIndex);
+			Header.Bindings.InOutMask.EnableField(AttributeIndex);
 		}
 		else if (Frequency == SF_Vertex && Input.Name.StartsWith(AttributeVarPrefix))
 		{
 			int32 AttributeIndex = ParseNumber(*Input.Name + AttributeVarPrefix.Len());
-			Header.Bindings.InOutMask |= (1 << AttributeIndex);
+			Header.Bindings.InOutMask.EnableField(AttributeIndex);
 		}
 		// Record user-defined input varyings
 		else if (!Input.Name.StartsWith(GL_Prefix))
@@ -677,12 +673,12 @@ void FOpenGLFrontend::BuildShaderOutput(
 		if (Frequency == SF_Pixel && Output.Name.StartsWith(TargetPrefix))
 		{
 			uint8 TargetIndex = ParseNumber(*Output.Name + TargetPrefix.Len());
-			Header.Bindings.InOutMask |= (1 << TargetIndex);
+			Header.Bindings.InOutMask.EnableField(TargetIndex);
 		}
 		// Only depth writes for pixel shaders must be tracked.
 		else if (Frequency == SF_Pixel && Output.Name.Equals(GL_FragDepth))
 		{
-			Header.Bindings.InOutMask |= 0x8000;
+			Header.Bindings.InOutMask.EnableField(CrossCompiler::FShaderBindingInOutMask::DepthStencilMaskIndex);
 		}
 		// Record user-defined output varyings
 		else if (!Output.Name.StartsWith(GL_Prefix))
@@ -704,8 +700,9 @@ void FOpenGLFrontend::BuildShaderOutput(
 	for (auto& UniformBlock : CCHeader.UniformBlocks)
 	{
 		uint16 UBIndex = UniformBlock.Index;
-		check(UBIndex == Header.Bindings.NumUniformBuffers);
+
 		UsedUniformBufferSlots[UBIndex] = true;
+		
 		if (OutputTrueParameterNames())
 		{
 			// make the final name this will be in the shader
@@ -715,17 +712,37 @@ void FOpenGLFrontend::BuildShaderOutput(
 		}
 		else
 		{
-			ParameterMap.AddParameterAllocation(*UniformBlock.Name, Header.Bindings.NumUniformBuffers, 0, 0, EShaderParameterType::UniformBuffer);
+			ParameterMap.AddParameterAllocation(*UniformBlock.Name, UBIndex, 0, 0, EShaderParameterType::UniformBuffer);
 		}
 		Header.Bindings.NumUniformBuffers++;
 	}
 
 	const uint16 BytesPerComponent = 4;
 
+
+	FString GlobalIgnoreStrings[] =
+	{
+		TEXT("gl_LastFragDepthARM"),
+		TEXT("ARM_shader_framebuffer_fetch_depth_stencil"),
+	};
+
 	// Packed global uniforms
 	TMap<ANSICHAR, uint16> PackedGlobalArraySize;
 	for (auto& PackedGlobal : CCHeader.PackedGlobals)
 	{
+		bool bIgnore = false;
+		for (uint32_t i = 0; i < UE_ARRAY_COUNT(GlobalIgnoreStrings); ++i)
+		{
+			if (PackedGlobal.Name.StartsWith(GlobalIgnoreStrings[i]))
+			{
+				bIgnore = true;
+				break;
+			}
+		}
+
+		if (bIgnore)
+			continue;
+
 		ParameterMap.AddParameterAllocation(
 			*PackedGlobal.Name,
 			PackedGlobal.PackedType,
@@ -744,7 +761,6 @@ void FOpenGLFrontend::BuildShaderOutput(
 	{
 		checkf(OutputTrueParameterNames() == false, TEXT("Unexpected Packed UBs used with a shader format that needs true parameter names - If this is hit, we need to figure out how to handle them"));
 
-		check(PackedUB.Attribute.Index == Header.Bindings.NumUniformBuffers);
 		UsedUniformBufferSlots[PackedUB.Attribute.Index] = true;
 		if (OutputTrueParameterNames())
 		{
@@ -753,7 +769,7 @@ void FOpenGLFrontend::BuildShaderOutput(
 		}
 		else
 		{
-			ParameterMap.AddParameterAllocation(*PackedUB.Attribute.Name, Header.Bindings.NumUniformBuffers, 0, 0, EShaderParameterType::UniformBuffer);
+			ParameterMap.AddParameterAllocation(*PackedUB.Attribute.Name, PackedUB.Attribute.Index, 0, 0, EShaderParameterType::UniformBuffer);
 		}
 		Header.Bindings.NumUniformBuffers++;
 
@@ -938,8 +954,8 @@ void FOpenGLFrontend::BuildShaderOutput(
 	{
 		// Build the generic SRT for this shader.
 		FShaderCompilerResourceTable GenericSRT;
-		BuildResourceTableMapping(ShaderInput.Environment.ResourceTableMap, ShaderInput.Environment.ResourceTableLayoutHashes, UsedUniformBufferSlots, ShaderOutput.ParameterMap, GenericSRT);
-		CullGlobalUniformBuffers(ShaderInput.Environment.ResourceTableLayoutSlots, ShaderOutput.ParameterMap);
+		BuildResourceTableMapping(ShaderInput.Environment.ResourceTableMap, ShaderInput.Environment.UniformBufferMap, UsedUniformBufferSlots, ShaderOutput.ParameterMap, GenericSRT);
+		CullGlobalUniformBuffers(ShaderInput.Environment.UniformBufferMap, ShaderOutput.ParameterMap);
 
 		// Copy over the bits indicating which resource tables are active.
 		Header.Bindings.ShaderResourceTable.ResourceTableBits = GenericSRT.ResourceTableBits;
@@ -975,17 +991,17 @@ void FOpenGLFrontend::BuildShaderOutput(
 			ShaderOutput.bSucceeded = true;
 		}
 
-		// store data we can pickup later with ShaderCode.FindOptionalData('n'), could be removed for shipping
-		// Daniel L: This GenerateShaderName does not generate a deterministic output among shaders as the shader code can be shared.
-		//			uncommenting this will cause the project to have non deterministic materials and will hurt patch sizes
-		//ShaderOutput.ShaderCode.AddOptionalData('n', TCHAR_TO_UTF8(*ShaderInput.GenerateShaderName()));
-
 		// extract final source code as requested by the Material Editor
 		if (ShaderInput.ExtraSettings.bExtractShaderSource)
 		{
 			TArray<ANSICHAR> GlslCodeOriginal;
 			GlslCodeOriginal.Append(USFSource, FCStringAnsi::Strlen(USFSource) + 1);
 			ShaderOutput.OptionalFinalShaderSource = FString(GlslCodeOriginal.GetData());
+		}
+
+		if (ShaderInput.Environment.CompilerFlags.Contains(CFLAG_ExtraShaderData))
+		{
+			ShaderOutput.ShaderCode.AddOptionalData(FShaderCodeName::Key, TCHAR_TO_UTF8(*ShaderInput.GenerateShaderName()));
 		}
 
 		// if available, attempt run an offline compilation and extract statistics
@@ -1148,11 +1164,11 @@ uint32 FOpenGLFrontend::GetMaxSamplers(GLSLVersion Version)
 	return 16;
 }
 
-uint32 FOpenGLFrontend::CalculateCrossCompilerFlags(GLSLVersion Version, const TArray<uint32>& CompilerFlags)
+uint32 FOpenGLFrontend::CalculateCrossCompilerFlags(GLSLVersion Version, const bool bFullPrecisionInPS, const FShaderCompilerFlags& CompilerFlags)
 {
 	uint32  CCFlags = HLSLCC_NoPreprocess | HLSLCC_PackUniforms | HLSLCC_DX11ClipSpace | HLSLCC_RetainSizes;
 
-	if (CompilerFlags.Contains(CFLAG_UseFullPrecisionInPS))
+	if (bFullPrecisionInPS)
 	{
 		CCFlags |= HLSLCC_UseFullPrecisionInPS;
 	}
@@ -1199,32 +1215,1598 @@ FGlslLanguageSpec* FOpenGLFrontend::CreateLanguageSpec(GLSLVersion Version, bool
 
 #if DXC_SUPPORTED
 
-static const ANSICHAR* GetFrequencyPrefix(EHlslShaderFrequency Frequency)
+static const ANSICHAR* GetFrequencyPrefix(EShaderFrequency Frequency)
 {
 	switch (Frequency)
 	{
-	case HSF_VertexShader:		return "v";
-	case HSF_PixelShader:		return "p";
-	case HSF_GeometryShader:	return "g";
-	case HSF_HullShader:		return "h";
-	case HSF_DomainShader:		return "d";
-	case HSF_ComputeShader:		return "c";
-	default:					return "";
+	case SF_Vertex:		return "v";
+	case SF_Pixel:		return "p";
+	case SF_Geometry:	return "g";
+	case SF_Compute:	return "c";
+	default:			return "";
 	}
 }
 
-static const TCHAR* GetFrequencyFileExt(EHlslShaderFrequency Frequency)
+struct PackedUBMemberInfo
 {
-	switch (Frequency)
+	std::string Name;
+	std::string SanitizedName;
+	std::string TypeQualifier;
+	uint32_t SrcOffset;
+	uint32_t DestOffset;
+	uint32_t SrcSizeInFloats;
+	uint32_t DestSizeInFloats;
+};
+
+void WritePackedUBHeader(CrossCompiler::FHlslccHeaderWriter& CCHeaderWriter, const TMap<uint32_t, TArray<PackedUBMemberInfo>>& UBMemberInfo, const TMap<uint32, std::string>& UBNames)
+{
+	bool bFirst = true;
+
+	bool bNeedsHeader = true;
+
+	for (const auto & Pair : UBNames)
 	{
-	case HSF_VertexShader:		return TEXT("vert");
-	case HSF_PixelShader:		return TEXT("frag");
-	case HSF_GeometryShader:	return TEXT("geom");
-	case HSF_HullShader:		return TEXT("tesc");
-	case HSF_DomainShader:		return TEXT("tese");
-	case HSF_ComputeShader:		return TEXT("comp");
-	default:					return TEXT("glsl");
+		FString Name(Pair.Value.c_str());
+		CCHeaderWriter.WritePackedUB(Name, Pair.Key);
 	}
+
+	for (const auto & Pair : UBMemberInfo)
+	{
+		FString UBName(UBNames[Pair.Key].c_str());
+		
+		for (const PackedUBMemberInfo& MemberInfo : UBMemberInfo[Pair.Key])
+		{
+			CCHeaderWriter.WritePackedUBField(UBName, UTF8_TO_TCHAR(MemberInfo.SanitizedName.c_str()), MemberInfo.SrcOffset, MemberInfo.DestSizeInFloats * sizeof(float));
+			CCHeaderWriter.WritePackedUBCopy(Pair.Key, MemberInfo.SrcOffset / sizeof(float), Pair.Key, MemberInfo.TypeQualifier[0], MemberInfo.DestOffset / sizeof(float), MemberInfo.DestSizeInFloats, true);
+		}
+	}
+}
+
+void GetSpvVarQualifier(const SpvReflectBlockVariable& Member, FString & Out)
+{
+	auto const type = *Member.type_description;
+	const uint32 MbrSize = Member.size / sizeof(float);
+
+	FString TypeQualifier;
+
+	uint32_t masked_type = type.type_flags & 0xF;
+
+	switch (masked_type)
+	{
+	default: checkf(false, TEXT("unsupported component type %d"), masked_type); break;
+	case SPV_REFLECT_TYPE_FLAG_BOOL:
+	case SPV_REFLECT_TYPE_FLAG_INT: 
+		Out = (type.traits.numeric.scalar.signedness ? TEXT("i") : TEXT("u"));
+		break;
+	case SPV_REFLECT_TYPE_FLAG_FLOAT: 
+		if (Member.decoration_flags & SPV_REFLECT_DECORATION_RELAXED_PRECISION)
+		{
+			Out = TEXT("m");
+		}
+		else
+		{
+			Out = TEXT("h");
+		}
+		break;
+	}
+}
+
+// Adds a member to ne included in the PackedUB structures and generates the #define for readability in glsl
+void AddMemberToPackedUB(const std::string& FrequencyPrefix,
+	const SpvReflectBlockVariable& Member,
+	const std::string& UBName,
+	int32_t Index,
+	TMap<FString, uint32>& Offsets,
+	TArray<PackedUBMemberInfo>& MemberInfos,
+	TArray<std::string>& Remap,
+	TArray<std::string>& Arrays)
+{
+	std::string ArrayName;
+	const uint32 MbrSize = Member.size / sizeof(float);
+
+	FString TypeQualifier;
+
+	GetSpvVarQualifier(Member, TypeQualifier);
+
+	std::string SanitizedName = Member.name;
+	std::replace(SanitizedName.begin(), SanitizedName.end(), '.', '_');
+
+	uint32& Offset = Offsets.FindOrAdd(TypeQualifier);
+
+	auto const type = *Member.type_description;
+
+	bool const bArray = type.traits.array.dims_count > 0;
+	bool const bGlobals = Index == -1;
+
+	std::string Name = "#define ";
+
+	if (bGlobals)
+	{
+		Name += "_Globals_";
+	}
+
+	std::string OffsetString = std::to_string(Offset);
+	Name += SanitizedName;
+
+	PackedUBMemberInfo& MemberInfo = MemberInfos.AddDefaulted_GetRef();
+	MemberInfo.Name = Member.name;
+	MemberInfo.SanitizedName = SanitizedName;
+	MemberInfo.TypeQualifier = TCHAR_TO_UTF8(*TypeQualifier);
+	MemberInfo.SrcOffset = Member.offset;
+	MemberInfo.DestOffset = Offset * 4 * sizeof(float);
+	MemberInfo.SrcSizeInFloats = Member.size / sizeof(float);
+	MemberInfo.DestSizeInFloats = Member.size / sizeof(float);
+
+	if (bArray)
+	{
+		if (bGlobals)
+		{
+			ArrayName = UBName + SanitizedName;
+		}
+		else
+		{
+			ArrayName = SanitizedName;
+		}
+
+		Name += "(Offset)";
+		if (type.op == SpvOpTypeMatrix || (type.traits.numeric.matrix.column_count == 4 && type.traits.numeric.matrix.row_count == 4))
+		{
+			OffsetString += " + (int(Offset) * 4)";
+		}
+		else
+		{
+			OffsetString += " + int(Offset)";
+		}
+	}
+
+	Name += " (";
+
+	std::string UniformPrefix = FrequencyPrefix;
+	if (!bGlobals)
+	{
+		UniformPrefix += std::string("c") + std::to_string(Index);
+	}
+	else
+	{
+		UniformPrefix += "u";
+	}
+
+	if (type.op == SpvOpTypeMatrix || (type.traits.numeric.matrix.column_count == 4 && type.traits.numeric.matrix.row_count == 4))
+	{
+		if ((type.traits.numeric.matrix.column_count == 4 && type.traits.numeric.matrix.row_count == 4))
+		{
+			Name += "mat4(";
+		}
+		else
+		{
+			std::string Buff = "mat" + std::to_string(type.traits.numeric.matrix.column_count) + "x" + std::to_string(type.traits.numeric.matrix.row_count) + "(";
+			Name += Buff;
+		}
+
+		for (uint32_t i = 0; i < type.traits.numeric.matrix.row_count; ++i)
+		{
+			if (i > 0)
+			{
+				Name += ",";
+			}
+
+			Name += UniformPrefix;
+			Name += "_";
+			Name += TCHAR_TO_UTF8(*TypeQualifier);
+
+			std::string Buff = "[" + OffsetString + " + " + std::to_string(i) + "]";
+			Name += Buff;
+
+			switch (type.traits.numeric.matrix.column_count)
+			{
+			case 0:
+			case 1:
+				Name += ".x";
+				break;
+			case 2:
+				Name += ".xy";
+				break;
+			case 3:
+				Name += ".xyz";
+				break;
+			case 4:
+			default:
+				Name += ".xyzw";
+				break;
+			}
+		}
+
+		Name += ")";
+	}
+	else
+	{
+		Name += UniformPrefix;
+		Name += "_";
+		Name += TCHAR_TO_UTF8(*TypeQualifier);
+		Name += "[";
+		Name += OffsetString;
+		Name += "]";
+		switch (type.traits.numeric.vector.component_count)
+		{
+		case 0:
+		case 1:
+			Name += ".x";
+			break;
+		case 2:
+			Name += ".xy";
+			break;
+		case 3:
+			Name += ".xyz";
+			break;
+		case 4:
+		default:
+			break;
+		}
+	}
+	Name += ")\n";
+
+	if (bArray)
+	{
+		Arrays.Add(ArrayName);
+	}
+
+	Remap.Add(Name);
+
+	Offset += Align(MbrSize, 4) / 4;
+}
+
+void GetPackedUniformString(std::string& OutputString, const std::string& UniformPrefix, const FString& Key, uint32_t Index)
+{
+	if (Key == TEXT("u"))
+	{
+		OutputString = "uniform uvec4 ";
+		OutputString += UniformPrefix;
+		OutputString += "_u[";
+		OutputString += std::to_string(Index);
+		OutputString += "];\n";
+	}
+	else if (Key == TEXT("i"))
+	{
+		OutputString = "uniform ivec4 ";
+		OutputString += UniformPrefix;
+		OutputString += "_i[";
+		OutputString += std::to_string(Index);
+		OutputString += "];\n";
+	}
+	else if (Key == TEXT("h"))
+	{
+		OutputString = "uniform highp vec4 ";
+		OutputString += UniformPrefix;
+		OutputString += "_h[";
+		OutputString += std::to_string(Index);
+		OutputString += "];\n";
+	}
+	else if (Key == TEXT("m"))
+	{
+		OutputString = "uniform mediump vec4 ";
+		OutputString += UniformPrefix;
+		OutputString += "_m[";
+		OutputString += std::to_string(Index);
+		OutputString += "];\n";
+	}
+}
+
+struct ReflectionData
+{
+	TArray<FString> Textures;
+	TArray<FString> Samplers;
+	TArray<std::string> UAVs;
+	TArray<std::string> StructuredBuffers;
+	
+	std::map<std::string, std::string> UniformVarNames;
+	std::map<std::string, std::vector<std::string>> UniformVarMemberNames;
+
+	TMap<FString, uint32> GlobalOffsets;
+	TArray<std::string> GlobalRemap;
+	TArray<std::string> GlobalArrays;
+	TArray<PackedUBMemberInfo> GlobalMemberInfos;
+
+	TMap<uint32, TMap<FString, uint32>> PackedUBOffsets;
+	TMap<uint32, TArray<std::string>> PackedUBRemap;
+	TMap<uint32, TArray<std::string>> PackedUBArrays;
+	TMap<uint32, TArray<PackedUBMemberInfo>> PackedUBMemberInfos;
+	TMap<uint32, std::string> PackedUBNames;
+
+	TArray<FString> InputVarNames;
+	TArray<FString> OutputVarNames;
+};
+
+void ParseReflectionData(const FShaderCompilerInput& ShaderInput, CrossCompiler::FHlslccHeaderWriter& CCHeaderWriter, ReflectionData& ReflectionOut, TArray<uint32>& SpirvData, 
+							spv_reflect::ShaderModule& Reflection,	const ANSICHAR* SPIRV_DummySamplerName, const EShaderFrequency Frequency, bool bEmulatedUBs)
+{
+	const ANSICHAR* FrequencyPrefix = GetFrequencyPrefix(Frequency);
+
+	check(Reflection.GetResult() == SPV_REFLECT_RESULT_SUCCESS);
+
+	SpvReflectResult SPVRResult = SPV_REFLECT_RESULT_NOT_READY;
+	TArray<SpvReflectBlockVariable*> ConstantBindings;
+	const uint32 GlobalSetId = 32;
+
+	FSpirvReflectBindings ReflectionBindings;
+	ReflectionBindings.GatherDescriptorBindings(Reflection);
+
+	uint32 BufferIndices = 0xffffffff;
+	uint32 UAVIndices = 0xffffffff;
+	uint32 TextureIndices = 0xffffffff;
+	uint32 UBOIndices = 0xffffffff;
+	uint32 SamplerIndices = 0xffffffff;
+	uint32_t PackedUBIndex = 0;
+
+	for (auto const& Binding : ReflectionBindings.TBufferUAVs)
+	{
+		check(UAVIndices);
+		uint32 Index = FPlatformMath::CountTrailingZeros(UAVIndices);
+
+		// UAVs always claim all slots so we don't have conflicts as D3D expects 0-7
+		BufferIndices &= ~(1 << Index);
+		TextureIndices &= ~(1llu << uint64(Index));
+		UAVIndices &= ~(1 << Index);
+
+		CCHeaderWriter.WriteUAV(UTF8_TO_TCHAR(Binding->name), Index);
+
+		SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
+		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+
+		ReflectionOut.UAVs.Add(Binding->name);
+	}
+
+	for (auto const& Binding : ReflectionBindings.SBufferUAVs)
+	{
+		check(UAVIndices);
+		uint32 Index = FPlatformMath::CountTrailingZeros(UAVIndices);
+
+		// UAVs always claim all slots so we don't have conflicts as D3D expects 0-7
+		BufferIndices &= ~(1 << Index);
+		TextureIndices &= ~(1llu << uint64(Index));
+		UAVIndices &= ~(1 << Index);
+
+		CCHeaderWriter.WriteUAV(UTF8_TO_TCHAR(Binding->name), Index);
+		ReflectionOut.StructuredBuffers.Add(Binding->name);
+
+		SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
+		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+	}
+
+	for (auto const& Binding : ReflectionBindings.TextureUAVs)
+	{
+		check(UAVIndices);
+		uint32 Index = FPlatformMath::CountTrailingZeros(UAVIndices);
+
+		// UAVs always claim all slots so we don't have conflicts as D3D expects 0-7
+		// For texture2d this allows us to emulate atomics with buffers
+		BufferIndices &= ~(1 << Index);
+		TextureIndices &= ~(1llu << uint64(Index));
+		UAVIndices &= ~(1 << Index);
+
+		CCHeaderWriter.WriteUAV(UTF8_TO_TCHAR(Binding->name), Index);
+
+		SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
+		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+
+		ReflectionOut.UAVs.Add(Binding->name);
+	}
+
+	for (auto const& Binding : ReflectionBindings.TBufferSRVs)
+	{
+		check(TextureIndices);
+		uint32 Index = FPlatformMath::CountTrailingZeros(TextureIndices);
+
+		// No support for 3-component types in dxc/SPIRV/MSL - need to expose my workarounds there too
+		TextureIndices &= ~(1llu << uint64(Index));
+
+		ReflectionOut.Textures.Add(UTF8_TO_TCHAR(Binding->name));
+
+		SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
+		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+	}
+
+	for (int32_t SBufferIndex = ReflectionBindings.SBufferSRVs.Num() - 1; SBufferIndex >= 0; SBufferIndex--)
+	{
+		auto Binding = ReflectionBindings.SBufferSRVs[SBufferIndex];
+		check(BufferIndices);
+		uint32 Index = FPlatformMath::CountTrailingZeros(BufferIndices);
+
+		BufferIndices &= ~(1 << Index);
+
+		SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
+		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+
+		CCHeaderWriter.WriteUAV(UTF8_TO_TCHAR(Binding->name), Index);
+		ReflectionOut.StructuredBuffers.Add(Binding->name);
+	}
+
+	TArray<const SpvReflectDescriptorBinding*> RealUniformBuffers;
+	for (auto const& Binding : ReflectionBindings.UniformBuffers)
+	{
+		// Global uniform buffer - handled specially as we care about the internal layout
+		if (strstr(Binding->name, "$Globals"))
+		{
+			TMap<FString, uint32_t> GlobalOffsetSizes;
+			for (uint32 i = 0; i < Binding->block.member_count; i++)
+			{
+				SpvReflectBlockVariable& member = Binding->block.members[i];
+
+				FString TypeQualifier;
+				GetSpvVarQualifier(member, TypeQualifier);
+
+				uint32_t& GlobalOffsetSize = GlobalOffsetSizes.FindOrAdd(TypeQualifier);
+
+				if (strstr(member.name, "gl_") || !strcmp(member.name, "ARM_shader_framebuffer_fetch") || !strcmp(member.name, "ARM_shader_framebuffer_fetch_depth_stencil"))
+				{
+					continue;
+				}
+
+				bool bHalfPrecision = member.decoration_flags & SPV_REFLECT_DECORATION_RELAXED_PRECISION;
+				CCHeaderWriter.WritePackedGlobal(ANSI_TO_TCHAR(member.name), CrossCompiler::FHlslccHeaderWriter::EncodePackedGlobalType(*(member.type_description), bHalfPrecision), GlobalOffsetSize, member.size);
+				GlobalOffsetSize += Align(member.size, 16);
+
+				AddMemberToPackedUB(FrequencyPrefix,
+					member,
+					"_Globals_",
+					-1,
+					ReflectionOut.GlobalOffsets,
+					ReflectionOut.GlobalMemberInfos,
+					ReflectionOut.GlobalRemap,
+					ReflectionOut.GlobalArrays);
+			}
+		}
+		else
+		{
+			if (bEmulatedUBs)
+			{
+				check(UBOIndices);
+				uint32 Index = FPlatformMath::CountTrailingZeros(UBOIndices);
+				UBOIndices &= ~(1 << Index);
+
+				ReflectionOut.PackedUBOffsets.Add(Index);
+				ReflectionOut.PackedUBRemap.Add(Index);
+				ReflectionOut.PackedUBArrays.Add(Index);
+				ReflectionOut.PackedUBMemberInfos.Add(Index);
+				ReflectionOut.PackedUBNames.Add(Index, std::string(Binding->name));
+
+				for (uint32 i = 0; i < Binding->block.member_count; i++)
+				{
+					SpvReflectBlockVariable& member = Binding->block.members[i];
+
+					std::string UBName = "_" + std::string(Binding->name) + "_";
+
+					if (member.type_description->type_flags & SPV_REFLECT_TYPE_FLAG_STRUCT)
+					{
+						for (uint32 n = 0; n < member.member_count; n++)
+						{
+							// Clone struct member and rename it for struct
+							SpvReflectBlockVariable StructMember = member.members[n];
+
+							std::string StructMemberName = std::string(member.name) + "." + std::string(StructMember.name);
+							StructMember.name = StructMemberName.c_str();
+
+							AddMemberToPackedUB(FrequencyPrefix,
+								StructMember,
+								UBName,
+								Index,
+								ReflectionOut.PackedUBOffsets[Index],
+								ReflectionOut.PackedUBMemberInfos[Index],
+								ReflectionOut.PackedUBRemap[Index],
+								ReflectionOut.PackedUBArrays[Index]);
+						}
+					}
+					else
+					{
+						AddMemberToPackedUB(FrequencyPrefix,
+							member,
+							UBName,
+							Index,
+							ReflectionOut.PackedUBOffsets[Index],
+							ReflectionOut.PackedUBMemberInfos[Index],
+							ReflectionOut.PackedUBRemap[Index],
+							ReflectionOut.PackedUBArrays[Index]);
+					}
+				}
+
+				SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
+				check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+			}
+			else
+			{
+				RealUniformBuffers.Add(Binding);
+			}
+		}
+	}
+
+	//Always write the real uniform buffers after the emulated because OpenGLShaders expects emulated to be in consecutive slots
+	for (auto const& Binding : RealUniformBuffers)
+	{
+		uint32 Index = FPlatformMath::CountTrailingZeros(UBOIndices);
+		UBOIndices &= ~(1 << Index);
+
+		std::string OldName = Binding->name;
+		std::string NewName = FrequencyPrefix;
+		NewName += "b";
+		NewName += std::to_string(Index);
+		ReflectionOut.UniformVarNames[OldName] = NewName;
+		// Regular uniform buffer - we only care about the binding index
+		CCHeaderWriter.WriteUniformBlock(UTF8_TO_TCHAR(Binding->name), Index);
+
+		ReflectionOut.UniformVarMemberNames.insert({ OldName, {} });
+		for (uint32 i = 0; i < Binding->block.member_count; i++)
+		{
+			SpvReflectBlockVariable& member = Binding->block.members[i];
+			ReflectionOut.UniformVarMemberNames[OldName].push_back(member.name);
+		}
+
+		SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
+		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+	}
+
+	WritePackedUBHeader(CCHeaderWriter, ReflectionOut.PackedUBMemberInfos, ReflectionOut.PackedUBNames);
+
+	for (auto const& Binding : ReflectionBindings.TextureSRVs)
+	{
+		check(TextureIndices);
+		uint32 Index = FPlatformMath::CountTrailingZeros64(TextureIndices);
+		TextureIndices &= ~(1llu << uint64(Index));
+
+		ReflectionOut.Textures.Add(UTF8_TO_TCHAR(Binding->name));
+
+		SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
+		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+	}
+
+	for (auto const& Binding : ReflectionBindings.Samplers)
+	{
+		check(SamplerIndices);
+		uint32 Index = FPlatformMath::CountTrailingZeros(SamplerIndices);
+		SamplerIndices &= ~(1 << Index);
+
+		ReflectionOut.Samplers.Add(UTF8_TO_TCHAR(Binding->name));
+
+		SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
+		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+	}
+
+	// Spirv-cross can add a dummy sampler for glsl which isn't in the reflection bindings
+	ReflectionOut.Samplers.Add(SPIRV_DummySamplerName);
+
+	{
+		uint32 Count = 0;
+		SPVRResult = Reflection.EnumeratePushConstantBlocks(&Count, nullptr);
+		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+		ConstantBindings.SetNum(Count);
+		SPVRResult = Reflection.EnumeratePushConstantBlocks(&Count, ConstantBindings.GetData());
+		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+		if (Count > 0)
+		{
+			for (auto const& Var : ConstantBindings)
+			{
+				// Global uniform buffer - handled specially as we care about the internal layout
+				if (strstr(Var->name, "$Globals"))
+				{
+					TMap<FString, uint32_t> GlobalOffsetSizes;
+
+					for (uint32 i = 0; i < Var->member_count; i++)
+					{
+						SpvReflectBlockVariable& member = Var->members[i];
+
+						FString TypeQualifier;
+						GetSpvVarQualifier(member, TypeQualifier);
+
+						uint32_t& GlobalOffsetSize = GlobalOffsetSizes.FindOrAdd(TypeQualifier);
+
+						if (!strcmp(member.name, "gl_FragColor") || !strcmp(member.name, "gl_LastFragColorARM") || !strcmp(member.name, "gl_LastFragDepthARM") || !strcmp(member.name, "ARM_shader_framebuffer_fetch") || !strcmp(member.name, "ARM_shader_framebuffer_fetch_depth_stencil"))
+						{
+							continue;
+						}
+
+						bool bHalfPrecision = member.decoration_flags & SPV_REFLECT_DECORATION_RELAXED_PRECISION;
+						CCHeaderWriter.WritePackedGlobal(ANSI_TO_TCHAR(member.name), CrossCompiler::FHlslccHeaderWriter::EncodePackedGlobalType(*(member.type_description), bHalfPrecision), GlobalOffsetSize, member.size);
+						GlobalOffsetSize += Align(member.size, 16);
+
+						AddMemberToPackedUB(FrequencyPrefix,
+							member,
+							"_Globals_",
+							-1,
+							ReflectionOut.GlobalOffsets,
+							ReflectionOut.GlobalMemberInfos,
+							ReflectionOut.GlobalRemap,
+							ReflectionOut.GlobalArrays);
+					}
+				}
+			}
+		}
+	}
+
+	{
+		uint32 AssignedInputs = 0;
+
+		ReflectionBindings.GatherOutputAttributes(Reflection);
+		for (SpvReflectInterfaceVariable* Var : ReflectionBindings.OutputAttributes)
+		{
+			if (Var->storage_class == SpvStorageClassOutput && Var->built_in == -1 && !CrossCompiler::FShaderConductorContext::IsIntermediateSpirvOutputVariable(Var->name))
+			{
+				if (Frequency == SF_Pixel && strstr(Var->name, "SV_Target"))
+				{
+					FString TypeQualifier;
+
+					auto const type = *Var->type_description;
+					uint32_t masked_type = type.type_flags & 0xF;
+
+					switch (masked_type) {
+					default: checkf(false, TEXT("unsupported component type %d"), masked_type); break;
+					case SPV_REFLECT_TYPE_FLAG_BOOL: TypeQualifier = TEXT("b"); break;
+					case SPV_REFLECT_TYPE_FLAG_INT: TypeQualifier = (type.traits.numeric.scalar.signedness ? TEXT("i") : TEXT("u")); break;
+					case SPV_REFLECT_TYPE_FLAG_FLOAT: TypeQualifier = (type.traits.numeric.scalar.width == 32 ? TEXT("f") : TEXT("h")); break;
+					}
+
+					if (type.type_flags & SPV_REFLECT_TYPE_FLAG_MATRIX)
+					{
+						TypeQualifier += FString::Printf(TEXT("%d%d"), type.traits.numeric.matrix.row_count, type.traits.numeric.matrix.column_count);
+					}
+					else if (type.type_flags & SPV_REFLECT_TYPE_FLAG_VECTOR)
+					{
+						TypeQualifier += FString::Printf(TEXT("%d"), type.traits.numeric.vector.component_count);
+					}
+					else
+					{
+						TypeQualifier += TEXT("1");
+					}
+
+					FString Name = ANSI_TO_TCHAR(Var->name);
+					Name.ReplaceInline(TEXT("."), TEXT("_"));
+					ReflectionOut.OutputVarNames.Add(Name);
+					CCHeaderWriter.WriteOutputAttribute(TEXT("out_Target"), *TypeQualifier, Var->location, /*bLocationPrefix:*/ true, /*bLocationSuffix:*/ true);
+				}
+				else
+				{
+					unsigned Location = Var->location;
+					unsigned SemanticIndex = Location;
+					check(Var->semantic);
+					unsigned i = (unsigned)strlen(Var->semantic);
+					check(i);
+					while (isdigit((unsigned char)(Var->semantic[i - 1])))
+					{
+						i--;
+					}
+					if (i < strlen(Var->semantic))
+					{
+						SemanticIndex = (unsigned)atoi(Var->semantic + i);
+						if (Location != SemanticIndex)
+						{
+							Location = SemanticIndex;
+						}
+					}
+
+					while ((1 << Location) & AssignedInputs)
+					{
+						Location++;
+					}
+
+					if (Location != Var->location)
+					{
+						SPVRResult = Reflection.ChangeOutputVariableLocation(Var, Location);
+						check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+					}
+
+					uint32 ArrayCount = 1;
+					for (uint32 Dim = 0; Dim < Var->array.dims_count; Dim++)
+					{
+						ArrayCount *= Var->array.dims[Dim];
+					}
+
+					FString TypeQualifier;
+
+					auto const type = *Var->type_description;
+					uint32_t masked_type = type.type_flags & 0xF;
+
+					switch (masked_type) {
+					default: checkf(false, TEXT("unsupported component type %d"), masked_type); break;
+					case SPV_REFLECT_TYPE_FLAG_BOOL: TypeQualifier = TEXT("b"); break;
+					case SPV_REFLECT_TYPE_FLAG_INT: TypeQualifier = (type.traits.numeric.scalar.signedness ? TEXT("i") : TEXT("u")); break;
+					case SPV_REFLECT_TYPE_FLAG_FLOAT: TypeQualifier = (type.traits.numeric.scalar.width == 32 ? TEXT("f") : TEXT("h")); break;
+					}
+
+					if (type.type_flags & SPV_REFLECT_TYPE_FLAG_MATRIX)
+					{
+						TypeQualifier += FString::Printf(TEXT("%d%d"), type.traits.numeric.matrix.row_count, type.traits.numeric.matrix.column_count);
+					}
+					else if (type.type_flags & SPV_REFLECT_TYPE_FLAG_VECTOR)
+					{
+						TypeQualifier += FString::Printf(TEXT("%d"), type.traits.numeric.vector.component_count);
+					}
+					else
+					{
+						TypeQualifier += TEXT("1");
+					}
+
+					for (uint32 j = 0; j < ArrayCount; j++)
+					{
+						AssignedInputs |= (1 << (Location + j));
+					}
+
+					FString Name = ANSI_TO_TCHAR(Var->name);
+					Name.ReplaceInline(TEXT("."), TEXT("_"));
+					CCHeaderWriter.WriteOutputAttribute(*Name, *TypeQualifier, Location, /*bLocationPrefix:*/ true, /*bLocationSuffix:*/ false);
+				}
+			}
+		}
+	}
+
+	{
+		uint32 AssignedInputs = 0;
+
+		ReflectionBindings.GatherInputAttributes(Reflection);
+		for (SpvReflectInterfaceVariable* Var : ReflectionBindings.InputAttributes)
+		{
+			if (Var->storage_class == SpvStorageClassInput && Var->built_in == -1)
+			{
+				unsigned Location = Var->location;
+				unsigned SemanticIndex = Location;
+				check(Var->semantic);
+				unsigned i = (unsigned)strlen(Var->semantic);
+				check(i);
+				while (isdigit((unsigned char)(Var->semantic[i - 1])))
+				{
+					i--;
+				}
+				if (i < strlen(Var->semantic))
+				{
+					SemanticIndex = (unsigned)atoi(Var->semantic + i);
+					if (Location != SemanticIndex)
+					{
+						Location = SemanticIndex;
+					}
+				}
+
+				while ((1 << Location) & AssignedInputs)
+				{
+					Location++;
+				}
+
+				if (Location != Var->location)
+				{
+					SPVRResult = Reflection.ChangeInputVariableLocation(Var, Location);
+					check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
+				}
+
+				uint32 ArrayCount = 1;
+				for (uint32 Dim = 0; Dim < Var->array.dims_count; Dim++)
+				{
+					ArrayCount *= Var->array.dims[Dim];
+				}
+
+				FString TypeQualifier;
+
+				auto const type = *Var->type_description;
+				uint32_t masked_type = type.type_flags & 0xF;
+
+				switch (masked_type) {
+				default: checkf(false, TEXT("unsupported component type %d"), masked_type); break;
+				case SPV_REFLECT_TYPE_FLAG_BOOL: TypeQualifier = TEXT("b"); break;
+				case SPV_REFLECT_TYPE_FLAG_INT: TypeQualifier = (type.traits.numeric.scalar.signedness ? TEXT("i") : TEXT("u")); break;
+				case SPV_REFLECT_TYPE_FLAG_FLOAT: TypeQualifier = (type.traits.numeric.scalar.width == 32 ? TEXT("f") : TEXT("h")); break;
+				}
+
+				if (type.type_flags & SPV_REFLECT_TYPE_FLAG_MATRIX)
+				{
+					TypeQualifier += FString::Printf(TEXT("%d%d"), type.traits.numeric.matrix.row_count, type.traits.numeric.matrix.column_count);
+				}
+				else if (type.type_flags & SPV_REFLECT_TYPE_FLAG_VECTOR)
+				{
+					TypeQualifier += FString::Printf(TEXT("%d"), type.traits.numeric.vector.component_count);
+				}
+				else
+				{
+					TypeQualifier += TEXT("1");
+				}
+
+				for (uint32 j = 0; j < ArrayCount; j++)
+				{
+					AssignedInputs |= (1 << (Location + j));
+				}
+
+				FString Name = ANSI_TO_TCHAR(Var->name);
+				Name.ReplaceInline(TEXT("."), TEXT("_"));
+				ReflectionOut.InputVarNames.Add(Name);
+				CCHeaderWriter.WriteInputAttribute(*Name, *TypeQualifier, Location, /*bLocationPrefix:*/ true, /*bLocationSuffix:*/ false);
+			}
+		}
+	}
+}
+
+static void ConvertToEmulatedUBs(std::string& GlslSource, const ReflectionData& ReflectData, const EShaderFrequency Frequency)
+{
+	const ANSICHAR* FrequencyPrefix = GetFrequencyPrefix(Frequency);
+	
+	for (const auto& PackedUBNamePair : ReflectData.PackedUBNames)
+	{
+		bool bIsLayout = true;
+		std::string UBSearchString = "layout\\(.*\\) uniform type_" + PackedUBNamePair.Value + "$";
+
+		std::smatch RegexMatch;
+		std::regex_search(GlslSource, RegexMatch, std::regex(UBSearchString));
+
+		for (auto Match : RegexMatch)
+		{
+			UBSearchString = Match;
+			break;
+		}
+
+		size_t UBPos = GlslSource.find(UBSearchString);
+
+		if (UBPos == std::string::npos)
+		{
+			UBSearchString = "struct type_" + PackedUBNamePair.Value;
+			UBPos = GlslSource.find(UBSearchString);
+			bIsLayout = false;
+		}
+
+		if (UBPos != std::string::npos)
+		{
+			std::string UBEndSearchString;
+			if (bIsLayout)
+			{
+				UBEndSearchString = "} " + PackedUBNamePair.Value + ";";
+			}
+			else
+			{
+				UBEndSearchString = "uniform type_" + PackedUBNamePair.Value + " " + PackedUBNamePair.Value + ";";
+			}
+
+			size_t UBEndPos = GlslSource.find(UBEndSearchString);
+
+			if (UBEndPos != std::string::npos)
+			{
+				GlslSource.erase(UBPos, UBEndPos - UBPos + UBEndSearchString.length());
+
+				size_t UBVarPos = 0;
+
+				for (const PackedUBMemberInfo& MemberInfo : ReflectData.PackedUBMemberInfos[PackedUBNamePair.Key])
+				{
+					std::string UBVarString = PackedUBNamePair.Value + "." + MemberInfo.Name;
+
+					UBVarPos = GlslSource.find(UBVarString);
+					while (UBVarPos != std::string::npos)
+					{
+						GlslSource.erase(UBVarPos, PackedUBNamePair.Value.length() + 1);
+						GlslSource.replace(UBVarPos, MemberInfo.Name.size(), MemberInfo.SanitizedName);
+
+						for (std::string const& SearchString : ReflectData.PackedUBArrays[PackedUBNamePair.Key])
+						{
+							if (!GlslSource.compare(UBVarPos, SearchString.length(), SearchString))
+							{
+								GlslSource.replace(UBVarPos + SearchString.length(), 1, "(");
+
+								size_t ClosingBrace = GlslSource.find("]", UBVarPos + SearchString.length());
+								if (ClosingBrace != std::string::npos)
+									GlslSource.replace(ClosingBrace, 1, ")");
+							}
+						}
+
+						UBVarPos = GlslSource.find(UBVarString);
+					}
+				}
+
+				for (auto const& Pair : ReflectData.PackedUBOffsets[PackedUBNamePair.Key])
+				{
+					if (Pair.Value > 0)
+					{
+						std::string NewUniforms;
+						std::string UniformPrefix = FrequencyPrefix + std::string("c") + std::to_string(PackedUBNamePair.Key);
+						GetPackedUniformString(NewUniforms, UniformPrefix, Pair.Key, Pair.Value);
+						GlslSource.insert(UBPos, NewUniforms);
+					}
+				}
+
+				for (std::string const& Define : ReflectData.PackedUBRemap[PackedUBNamePair.Key])
+				{
+					GlslSource.insert(UBPos, Define);
+				}
+			}
+		}
+	}
+}
+
+const ANSICHAR* GlslFrameBufferExtensions =
+"\n\n#ifdef GL_ARM_shader_framebuffer_fetch_depth_stencil\n"
+"\t#extension GL_ARM_shader_framebuffer_fetch_depth_stencil : enable\n"
+"#elif defined(GL_EXT_shader_framebuffer_fetch)\n"
+"\t#extension GL_EXT_shader_framebuffer_fetch : enable\n"
+"\t#define FBF_STORAGE_QUALIFIER inout\n"
+"#endif\n"
+"#extension GL_EXT_texture_buffer : enable\n"
+"// end extensions";
+
+// GLSL framebuffer macro definitions. Used to patch GLSL output source.
+const ANSICHAR* GlslFrameBufferDefines =
+"\n\n#ifdef UE_EXT_shader_framebuffer_fetch\n"
+"#define _Globals_ARM_shader_framebuffer_fetch 0\n"
+"#define FRAME_BUFFERFETCH_STORAGE_QUALIFIER inout\n"
+"#define _Globals_gl_FragColor out_var_SV_Target0\n"
+"#define _Globals_gl_LastFragColorARM vec4(0.0, 0.0, 0.0, 0.0)\n"
+"#elif defined( GL_ARM_shader_framebuffer_fetch)\n"
+"#define _Globals_ARM_shader_framebuffer_fetch 1\n"
+"#define FRAME_BUFFERFETCH_STORAGE_QUALIFIER out\n"
+"#define _Globals_gl_FragColor vec4(0.0, 0.0, 0.0, 0.0)\n"
+"#define _Globals_gl_LastFragColorARM gl_LastFragDepthARM\n"
+"#else\n"
+"#define FRAME_BUFFERFETCH_STORAGE_QUALIFIER out\n"
+"#define _Globals_ARM_shader_framebuffer_fetch 0\n"
+"#define _Globals_gl_FragColor vec4(0.0, 0.0, 0.0, 0.0)\n"
+"#define _Globals_gl_LastFragColorARM vec4(0.0, 0.0, 0.0, 0.0)\n"
+"#endif\n"
+"#ifdef GL_ARM_shader_framebuffer_fetch_depth_stencil\n"
+"#define _Globals_ARM_shader_framebuffer_fetch_depth_stencil 1u\n"
+"#else\n"
+"#define _Globals_ARM_shader_framebuffer_fetch_depth_stencil 0u\n"
+"#endif\n";
+
+struct GLSLCompileParameters
+{
+	CrossCompiler::FShaderConductorContext* CompilerContext;
+	CrossCompiler::FHlslccHeaderWriter* CCHeaderWriter;
+	CrossCompiler::FShaderConductorTarget* TargetDesc;
+	CrossCompiler::FShaderConductorOptions* Options;
+
+	FShaderCompilerOutput* Output;
+	TArray<uint32>* SpirvData;
+
+	EShaderFrequency Frequency;
+	const ANSICHAR* SPIRV_DummySamplerName;
+};
+
+bool GenerateGlslShader(std::string& OutString, GLSLCompileParameters& GLSLCompileParams, ReflectionData& ReflectData, bool bWriteToCCHeader, bool bIsDeferred, bool bEmulatedUBs)
+{
+	const bool bGlslSourceCompileSucceeded = GLSLCompileParams.CompilerContext->CompileSpirvToSourceBuffer(
+		*GLSLCompileParams.Options, *GLSLCompileParams.TargetDesc, GLSLCompileParams.SpirvData->GetData(), GLSLCompileParams.SpirvData->Num() * sizeof(uint32),
+		[&OutString](const void* Data, uint32 Size)
+		{
+			OutString = std::string(reinterpret_cast<const ANSICHAR*>(Data), Size);
+		}
+	);
+
+	if (!bGlslSourceCompileSucceeded)
+	{
+		GLSLCompileParams.CompilerContext->FlushErrors(GLSLCompileParams.Output->Errors);
+		return false;
+	}
+
+	const ANSICHAR* FrequencyPrefix = GetFrequencyPrefix(GLSLCompileParams.Frequency);
+
+	std::string LayoutString = "#extension ";
+	size_t LayoutPos = OutString.find(LayoutString);
+	if (LayoutPos != std::string::npos)
+	{
+		for (FString Name : ReflectData.InputVarNames)
+		{
+			std::string DefineString = "#define ";
+			DefineString += TCHAR_TO_ANSI(*Name);
+			DefineString += " ";
+			DefineString += TCHAR_TO_ANSI(*Name.Replace(TEXT("in_var_"), TEXT("in_")));
+			DefineString += "\n";
+
+			OutString.insert(LayoutPos, DefineString);
+		}
+		for (FString Name : ReflectData.OutputVarNames)
+		{
+			std::string DefineString = "#define ";
+			DefineString += TCHAR_TO_ANSI(*Name);
+			DefineString += " ";
+			DefineString += TCHAR_TO_ANSI(*Name.Replace(TEXT("out_var_SV_"), TEXT("out_")));
+			DefineString += "\n";
+
+			OutString.insert(LayoutPos, DefineString);
+		}
+	}
+
+	// Perform FBF replacements
+	{
+
+		size_t MainPos = OutString.find("#version 320 es");
+
+		// Fallback if the shader is 310 
+		if (MainPos == std::string::npos)
+		{
+			MainPos = OutString.find("#version 310 es");
+		}
+
+		if (MainPos != std::string::npos)
+		{
+			MainPos += strlen("#version 320 es");
+		}
+
+		// Framebuffer Depth Fetch
+		{
+			std::string FBDFString = "_Globals.ARM_shader_framebuffer_fetch_depth_stencil";
+			std::string FBDFReplaceString = "1u";
+
+			std::string FBFString = "_Globals.ARM_shader_framebuffer_fetch";
+			std::string FBFReplaceString = "_Globals_ARM_shader_framebuffer_fetch";
+
+			bool UsesFramebufferDepthFetch = GLSLCompileParams.Frequency == SF_Pixel && OutString.find(FBDFString) != std::string::npos;
+			bool UsesFramebufferFetch = GLSLCompileParams.Frequency == SF_Pixel && OutString.find(FBFString) != std::string::npos;
+
+			if (UsesFramebufferDepthFetch || UsesFramebufferFetch)
+			{
+				OutString.insert(MainPos, GlslFrameBufferDefines);
+				OutString.insert(MainPos, GlslFrameBufferExtensions);
+
+				size_t FramebufferDepthFetchPos = OutString.find(FBDFString);
+
+				OutString.erase(FramebufferDepthFetchPos, FBDFString.length());
+				OutString.insert(FramebufferDepthFetchPos, FBDFReplaceString);
+
+				std::string LastFragDepthARMString = "_Globals._RESERVED_IDENTIFIER_FIXUP_gl_LastFragDepthARM";
+				std::string LastFragDepthARMReplaceString = "GLFetchDepthBuffer()";
+
+				size_t LastFragDepthARMStringPos = OutString.find(LastFragDepthARMString);
+				
+				while (LastFragDepthARMStringPos != std::string::npos)
+				{
+					OutString.erase(LastFragDepthARMStringPos, LastFragDepthARMString.length());
+					OutString.insert(LastFragDepthARMStringPos, LastFragDepthARMReplaceString);
+
+					LastFragDepthARMStringPos = OutString.find(LastFragDepthARMString);
+				}
+
+				MainPos = OutString.find("void main()");
+
+				// Add support for framebuffer fetch depth when ARM extension is not supported
+				if (MainPos != std::string::npos)
+				{
+					std::string DepthBufferIndex = bIsDeferred ? "4" : "1";
+					std::string DepthBufferOutVarString = "out_var_SV_Target" + DepthBufferIndex;
+
+					// Insert function declaration to handle retrieving depth
+					OutString.insert(MainPos, "float GLFetchDepthBuffer()\n"
+						"{\n"
+						"\t#if defined(GL_ARM_shader_framebuffer_fetch_depth_stencil)\n"
+						"\treturn gl_LastFragDepthARM;\n"
+						"\t#elif defined(GL_EXT_shader_framebuffer_fetch)\n"
+						"\treturn " + DepthBufferOutVarString + ".x;\n"
+						"\t#else\n"
+						"\treturn 0.0f;\n"
+						"\t#endif\n"
+						"}\n");
+
+					
+					// If SceneDepthAux is not declared then declare it, otherwise modify so that we only enable it on devices that don't support
+					// GL_ARM_shader_framebuffer_fetch_depth_stencil and do support GL_EXT_shader_framebuffer_fetch
+					size_t DepthBufferOutVarPos = OutString.find(DepthBufferOutVarString + ";");
+
+					std::string DepthBufferDeclString = "layout(location = " + DepthBufferIndex + ") inout highp vec4 " + DepthBufferOutVarString + ";\n";
+					std::string DepthBufferOutString = "\n#if !defined(GL_ARM_shader_framebuffer_fetch_depth_stencil) && defined(GL_EXT_shader_framebuffer_fetch)\n" +
+														DepthBufferDeclString +
+														"#endif\n";
+
+					// If we cannot find a declararation of out_var_SV_Target(n) in the shader, insert one
+					if (DepthBufferOutVarPos == std::string::npos)
+					{
+						OutString.insert(MainPos, DepthBufferOutString);
+					}
+					else 
+					{
+						// If we have a declaration, replace with one that will be stripped if GL_ARM_shader_framebuffer_fetch_depth_stencil is enabled
+						size_t StringStartPos = OutString.rfind("layout", DepthBufferOutVarPos - 1);
+						size_t StringEndPos = OutString.find(";", StringStartPos);
+
+						OutString.erase(StringStartPos, (StringEndPos+1) - StringStartPos);
+						OutString.insert(StringStartPos, DepthBufferOutString);
+					}
+
+					// Make SceneDepthAux assignment conditional
+					// We only need to write the depth when we don't support GL_ARM_shader_framebuffer_fetch_depth_stencil
+					std::string DepthBufferAssignment = DepthBufferOutVarString + " =";
+					size_t DepthBufferAssignmentPos = OutString.find(DepthBufferAssignment);
+
+					if (DepthBufferAssignmentPos != std::string::npos)
+					{
+						size_t LineEnd = OutString.find_first_of(";", DepthBufferAssignmentPos);
+						uint32_t AssignmentValueStart = DepthBufferAssignmentPos + DepthBufferAssignment.size();
+						std::string AssignmentValue = OutString.substr(AssignmentValueStart + 1, LineEnd - AssignmentValueStart);
+
+						if (LineEnd != std::string::npos)
+						{
+							OutString.erase(DepthBufferAssignmentPos, LineEnd + 1 - DepthBufferAssignmentPos);
+							OutString.insert(DepthBufferAssignmentPos, std::string("#if !defined(GL_ARM_shader_framebuffer_fetch_depth_stencil) && defined(GL_EXT_shader_framebuffer_fetch)\n") + DepthBufferAssignment + AssignmentValue + std::string("\n#endif\n"));
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// If we are rendering deferred, then we only need SceneDepthAux on devices that don't support framebuffer fetch depth
+	if (bIsDeferred)
+	{
+		std::string SceneDepthAux = "layout(location = 4) out highp float out_var_SV_Target4;";
+		size_t SceneDepthAuxPos = OutString.find(SceneDepthAux);
+		if (SceneDepthAuxPos != std::string::npos)
+		{
+			OutString.insert(SceneDepthAuxPos + SceneDepthAux.size(), "\n#endif\n");
+			OutString.insert(SceneDepthAuxPos, "\n#ifndef GL_ARM_shader_framebuffer_fetch_depth_stencil\n");
+
+			std::string SceneDepthAuxAssignment = "out_var_SV_Target4 =";
+			size_t SceneDepthAuxAssignmentPos = OutString.find(SceneDepthAuxAssignment);
+
+			if (SceneDepthAuxAssignmentPos != std::string::npos)
+			{
+				size_t LineEnd = OutString.find_first_of(";", SceneDepthAuxAssignmentPos);
+				uint32_t AssignmentValueStart = SceneDepthAuxAssignmentPos + SceneDepthAuxAssignment.size();
+				std::string AssignmentValue = OutString.substr(AssignmentValueStart + 1, LineEnd - AssignmentValueStart);
+
+				if (LineEnd != std::string::npos)
+				{
+					OutString.erase(SceneDepthAuxAssignmentPos, LineEnd + 1 - SceneDepthAuxAssignmentPos);
+					OutString.insert(SceneDepthAuxAssignmentPos, std::string("#ifndef GL_ARM_shader_framebuffer_fetch_depth_stencil\n") + SceneDepthAuxAssignment + AssignmentValue + std::string("\n#endif\n"));
+				}
+			}
+		}
+	}
+
+	// Fixup packed globals
+	{
+		bool bIsLayout = true;
+
+		std::string GlobalsSearchString = "layout\\(.*\\) uniform type_Globals$";
+
+		std::smatch RegexMatch;
+		std::regex_search(OutString, RegexMatch, std::regex(GlobalsSearchString));
+
+		for (auto Match : RegexMatch)
+		{
+			GlobalsSearchString = Match;
+			break;
+		}
+
+		size_t GlobalPos = OutString.find(GlobalsSearchString);
+
+		if (GlobalPos == std::string::npos)
+		{
+			GlobalsSearchString = "struct type_Globals";
+			GlobalPos = OutString.find(GlobalsSearchString);
+			bIsLayout = false;
+		}
+
+		if (GlobalPos != std::string::npos)
+		{
+			std::string GlobalsEndSearchString;
+			if (bIsLayout)
+			{
+				GlobalsEndSearchString = "} _Globals;";
+			}
+			else
+			{
+				GlobalsEndSearchString = "uniform type_Globals _Globals;";
+			}
+
+			size_t GlobalEndPos = OutString.find(GlobalsEndSearchString);
+
+			if (GlobalEndPos != std::string::npos)
+			{
+				OutString.erase(GlobalPos, GlobalEndPos - GlobalPos + GlobalsEndSearchString.length());
+
+				std::string GlobalVarString = "_Globals.";
+				size_t GlobalVarPos = 0;
+				do
+				{
+					GlobalVarPos = OutString.find(GlobalVarString, GlobalVarPos);
+					if (GlobalVarPos != std::string::npos)
+					{
+						OutString.replace(GlobalVarPos, GlobalVarString.length(), "_Globals_");
+						for (std::string const& SearchString : ReflectData.GlobalArrays)
+						{
+							if (!OutString.compare(GlobalVarPos, SearchString.length(), SearchString))
+							{
+								OutString.replace(GlobalVarPos + SearchString.length(), 1, "(");
+
+								size_t ClosingBrace = OutString.find("]", GlobalVarPos + SearchString.length());
+								if (ClosingBrace != std::string::npos)
+									OutString.replace(ClosingBrace, 1, ")");
+							}
+						}
+					}
+				} while (GlobalVarPos != std::string::npos);
+
+				for (auto const& Pair : ReflectData.GlobalOffsets)
+				{
+					if (Pair.Value > 0)
+					{
+						std::string NewUniforms;
+						GetPackedUniformString(NewUniforms, FrequencyPrefix + std::string("u"), Pair.Key, Pair.Value);
+						OutString.insert(GlobalPos, NewUniforms);
+					}
+				}
+
+				for (std::string const& Define : ReflectData.GlobalRemap)
+				{
+					OutString.insert(GlobalPos, Define);
+				}
+
+				bool UsesFramebufferFetch = GLSLCompileParams.Frequency == SF_Pixel && OutString.find("_Globals.ARM_shader_framebuffer_fetch") != std::string::npos;
+
+				if (UsesFramebufferFetch)
+				{
+					size_t OutColor = OutString.find("0) out ");
+					if (OutColor != std::string::npos)
+						OutString.replace(OutColor, 7, "0) FRAME_BUFFERFETCH_STORAGE_QUALIFIER ");
+				}
+			}
+		}
+	}
+
+	if (bEmulatedUBs)
+	{
+		ConvertToEmulatedUBs(OutString, ReflectData, GLSLCompileParams.Frequency);
+	}
+
+	const size_t GlslSourceLen = OutString.length();
+	if (GlslSourceLen > 0)
+	{
+		uint32 TextureIndex = 0;
+		for (const FString& Texture : ReflectData.Textures)
+		{
+			const size_t SamplerPos = OutString.find("\nuniform ");
+
+			TArray<FString> UsedSamplers;
+			FString SamplerString;
+			for (const FString& Sampler : ReflectData.Samplers)
+			{
+				std::string SamplerName = "SPIRV_Cross_Combined";
+				SamplerName += TCHAR_TO_ANSI(*(Texture + Sampler));
+				size_t FindCombinedSampler = OutString.find(SamplerName.c_str());
+
+				if (FindCombinedSampler != std::string::npos)
+				{
+					checkf(SamplerPos != std::string::npos, TEXT("Generated GLSL shader is expected to have combined sampler '%s:%s' but no appropriate 'uniform' declaration could be found"), *Texture, *Sampler);
+
+					uint32 NewIndex = TextureIndex + UsedSamplers.Num();
+					std::string NewDefine = "#define ";
+					NewDefine += SamplerName;
+					NewDefine += " ";
+					NewDefine += FrequencyPrefix;
+					NewDefine += "s";
+					NewDefine += std::to_string(NewIndex);
+					NewDefine += "\n";
+					OutString.insert(SamplerPos + 1, NewDefine);
+
+					// Do not add an entry for the dummy sampler as it will throw errors in the runtime checks
+					if (Sampler != GLSLCompileParams.SPIRV_DummySamplerName)
+					{
+						UsedSamplers.Add(Sampler);
+					}
+
+					SamplerString += FString::Printf(TEXT("%s%s"), SamplerString.Len() ? TEXT(",") : TEXT(""), *Sampler);
+				}
+			}
+
+			// Rename texture buffers
+			std::string SamplerBufferName = std::string("samplerBuffer ") + TCHAR_TO_ANSI(*Texture);
+			size_t SamplerBufferPos = OutString.find(SamplerBufferName);
+
+			if (SamplerBufferPos != std::string::npos)
+			{
+				std::string NewSamplerBufferName = std::string(FrequencyPrefix) + "s" + std::to_string(TextureIndex);
+
+				OutString.erase(SamplerBufferPos + SamplerBufferName.size() - Texture.Len(), Texture.Len());
+				OutString.insert(SamplerBufferPos + SamplerBufferName.size() - Texture.Len(), NewSamplerBufferName);
+
+				std::string SamplerTexFetchExpression = std::string("texelFetch\\(\\s?") + TCHAR_TO_ANSI(*Texture) + "\\s?,";
+				std::regex SamplerTexFetchPattern(SamplerTexFetchExpression);
+				OutString = std::regex_replace(OutString, SamplerTexFetchPattern, std::string("texelFetch(") + NewSamplerBufferName + ",");
+			}
+
+			const uint32 SamplerCount = FMath::Max(1, UsedSamplers.Num());
+			if (bWriteToCCHeader)
+			{
+				GLSLCompileParams.CCHeaderWriter->WriteSRV(*Texture, TextureIndex, SamplerCount, UsedSamplers);
+			}
+			TextureIndex += SamplerCount;
+		}
+
+		// UAVS, rename as ci0 format
+		uint32_t UAVIndex = 0;
+		for (const std::string& UAV : ReflectData.UAVs)
+		{
+			std::string NewUAVName = FrequencyPrefix + std::string("i") + std::to_string(UAVIndex);
+
+			// Find instances of UAVs
+			std::string RegexExpression = "(?:^|\\W|\\S)" + UAV + "(?:$|\\W)";
+
+			std::cmatch RegexMatch;
+			std::vector<std::string> RegexMatches;
+
+			const char* TempString = OutString.c_str();
+			while (std::regex_search(TempString, RegexMatch, std::regex(RegexExpression)))
+			{
+				RegexMatches.push_back(RegexMatch.str());
+				TempString = RegexMatch.suffix().first;
+			}
+
+			for (const auto& Match : RegexMatches)
+			{
+				size_t MatchOffset = Match.find_first_of(UAV);
+				size_t MatchPos = OutString.find(Match);
+
+				OutString.replace(MatchPos + MatchOffset, UAV.size(), NewUAVName);
+			}
+
+			UAVIndex++;
+		}
+
+		// StructuredBuffers, rename as ci0 format
+		for (const std::string& SBuffer : ReflectData.StructuredBuffers)
+		{
+			std::string NewSBufferName = FrequencyPrefix + std::string("i") + std::to_string(UAVIndex);
+			std::string NewSBufferVarName = NewSBufferName + std::string("_VAR");
+
+			std::string SearchString = "} " + SBuffer;
+			size_t SBufferPos = OutString.find(SearchString);
+
+			size_t SBufferEndPos = OutString.find(";", SBufferPos);
+
+			std::string ReplacementSubStr = OutString.substr(SBufferPos + 2, SBufferEndPos - SBufferPos - 2);
+			OutString.erase(SBufferPos + 1, SBufferEndPos - SBufferPos - 1);
+
+			const std::string SBufferData = "_m0";
+			size_t SBufferDataPos = OutString.rfind(SBufferData, SBufferPos);
+			OutString.replace(SBufferDataPos, SBufferData.size(), NewSBufferName);
+
+			const std::string BufferString = " buffer ";
+			size_t BufferNamePos = OutString.rfind(BufferString, SBufferPos);
+			size_t BufferLineEndPos = OutString.find("\n", BufferNamePos);
+			size_t ReplacePos = BufferNamePos + BufferString.size();
+
+			OutString.replace(ReplacePos, BufferLineEndPos - ReplacePos, NewSBufferVarName);
+
+			// Replace the usage of StructuredBuffer with new name
+			size_t CurPos = OutString.find(ReplacementSubStr + ".");
+			while (CurPos != std::string::npos)
+			{
+				// Offset by 4 to account for ._m0
+				OutString.replace(CurPos, ReplacementSubStr.size() + 4, NewSBufferName);
+				CurPos = OutString.find(ReplacementSubStr + ".");
+			}
+
+			UAVIndex++;
+		}
+
+		for (const auto& pair : ReflectData.UniformVarNames)
+		{
+			std::string OldUniformTypeName = "uniform type_" + pair.first + " " + pair.first + ";";
+
+			size_t UniformTypePos = OutString.find(OldUniformTypeName);
+
+			if (UniformTypePos != std::string::npos)
+			{
+				OutString.erase(UniformTypePos, OldUniformTypeName.length());
+			}
+
+			// Replace struct type with layout, for compatibility 
+			std::string OldStructTypeName = "struct type_" + pair.first + "\n";
+			std::string NewStructTypeName = "layout(std140) uniform " + pair.second + "\n";
+
+			size_t StructTypePos = OutString.find(OldStructTypeName);
+
+			if (StructTypePos != std::string::npos)
+			{
+				OutString.erase(StructTypePos, OldStructTypeName.length());
+				OutString.insert(StructTypePos, NewStructTypeName);
+			}
+
+			// Append the uniform buffer name i.e. pb0 to ensure variable names are unique across shaders
+			std::vector<std::string>& MemberNames = ReflectData.UniformVarMemberNames[pair.first];
+			for (const std::string& uniform_member_name : MemberNames)
+			{
+				std::string OldVarName = uniform_member_name;
+				std::string NewVarName = uniform_member_name + pair.second;
+
+				size_t OldVarNamePos = OutString.find(OldVarName);
+
+				OutString.erase(OldVarNamePos, OldVarName.length());
+				OutString.insert(OldVarNamePos, NewVarName);
+			}
+
+			// Sort the member names by length so that we don't accidently replace a partial string
+			std::sort(MemberNames.begin(), MemberNames.end(), [](const std::string& a, const std::string& b) {
+				return a.length() > b.length();
+				});
+
+			// Replace uniform member names in the glsl
+			for (const std::string& uniform_member_name : MemberNames)
+			{
+				std::string OldUniformBufferAccessor = pair.first + "." + uniform_member_name;
+				std::string NewUniformBufferAccessor = uniform_member_name + pair.second;
+
+				size_t OldAccessorPos = OutString.find(OldUniformBufferAccessor);
+				while (OldAccessorPos != std::string::npos)
+				{
+					OutString.erase(OldAccessorPos, OldUniformBufferAccessor.length());
+					OutString.insert(OldAccessorPos, NewUniformBufferAccessor);
+
+					OldAccessorPos = OutString.find(OldUniformBufferAccessor);
+				}
+			}
+
+			// Rename the padding variables to stop conflicts between shaders
+			std::string OldPaddingName = "type_" + pair.first + "_pad";
+			std::string NewPaddingName = pair.second + "_pad";
+
+			size_t OldPaddingPos = OutString.find(OldPaddingName);
+			while (OldPaddingPos != std::string::npos)
+			{
+				OutString.erase(OldPaddingPos, OldPaddingName.length());
+				OutString.insert(OldPaddingPos, NewPaddingName);
+
+				OldPaddingPos = OutString.find(OldPaddingName);
+			}
+		}
+	}
+
+	return true;
+}
+
+bool GenerateDeferredMobileShaders(std::string& GlslSource, GLSLCompileParameters& GLSLCompileParams, const std::string& HlslString, ReflectionData& ReflectData, bool bWriteToCCHeader, bool bIsDeferred, bool bEmulatedUBs)
+{
+	bool bHasGbufferTextures[4];
+	bHasGbufferTextures[0] = HlslString.find("GENERATED_SubpassFetchAttachment0") != std::string::npos;
+	bHasGbufferTextures[1] = HlslString.find("GENERATED_SubpassFetchAttachment1") != std::string::npos;
+	bHasGbufferTextures[2] = HlslString.find("GENERATED_SubpassFetchAttachment2") != std::string::npos;
+	bHasGbufferTextures[3] = HlslString.find("GENERATED_SubpassFetchAttachment3") != std::string::npos;
+
+	bool bHasGBufferOutputs[4];
+	bHasGBufferOutputs[0] = HlslString.find("OutProxy") != std::string::npos;
+	bHasGBufferOutputs[1] = HlslString.find("OutGBufferA") != std::string::npos;
+	bHasGBufferOutputs[2] = HlslString.find("OutGBufferB") != std::string::npos;
+	bHasGBufferOutputs[3] = HlslString.find("OutGBufferC") != std::string::npos;
+
+	bool bHasInputs = false;
+	bool bHasOutputs = false;
+
+	for (uint32_t i = 0; i < 4; ++i)
+	{
+		bHasInputs |= bHasGbufferTextures[i];
+		bHasOutputs |= bHasGBufferOutputs[i];
+	}
+
+	bool bHasInOut = (bHasInputs && bHasOutputs) || HlslString.find("OutTarget0") != std::string::npos;
+
+	if (bHasInputs || bHasOutputs)
+	{
+		std::string OutString;
+		std::string ESVersionString = "#version 320 es";
+		OutString += ESVersionString + "\n";
+		OutString += "#ifdef UE_MRT_FRAMEBUFFER_FETCH\n";
+
+		FShaderCompilerDefinitions CompileFlagsCopy = GLSLCompileParams.TargetDesc->CompileFlags;
+
+		// Add defines for FBF in spirv-glsl
+		for (uint32_t i = 1; i < 4; ++i)
+		{
+			if (bHasGbufferTextures[i])
+			{
+				FString DefineKey = FString::Printf(TEXT("remap_ext_framebuffer_fetch%d"), i);
+				FString DefineValue = FString::Printf(TEXT("%d %d"), i + 1, i);
+				GLSLCompileParams.TargetDesc->CompileFlags.SetDefine(*DefineKey, *DefineValue);
+			}
+		}
+
+		std::string FBFSourceString;
+		if (!GenerateGlslShader(FBFSourceString, GLSLCompileParams, ReflectData, true, true, bEmulatedUBs))
+		{
+			return false;
+		}
+
+		size_t VersionStringPos = FBFSourceString.find(ESVersionString);
+		if (VersionStringPos != std::string::npos)
+		{
+			FBFSourceString.replace(VersionStringPos, ESVersionString.length(), "");
+		}
+
+		GLSLCompileParams.TargetDesc->CompileFlags = CompileFlagsCopy;
+
+		OutString += FBFSourceString;
+
+		// Generate PLS shader
+		OutString += "#else\n";
+
+		// Using rgb10_a2ui because r11_g11_b10 has issues with swizzle from 4 to 3 components in DXC
+		static const FString GBufferOutputNames[] =
+		{
+			TEXT("rgb10_a2 out.var.SV_Target0"),
+			TEXT("rgba8 out.var.SV_Target1"),
+			TEXT("rgba8 out.var.SV_Target2"),
+			TEXT("rgba8 out.var.SV_Target3"),
+		};
+
+		static const FString GBufferInputNames[] =
+		{
+			TEXT("rgb10_a2 GENERATED_SubpassFetchAttachment0"),
+			TEXT("rgba8 GENERATED_SubpassFetchAttachment1"),
+			TEXT("rgba8 GENERATED_SubpassFetchAttachment2"),
+			TEXT("rgba8 GENERATED_SubpassFetchAttachment3"),
+		};
+
+		static const FString GBufferInOutNames[] =
+		{
+			TEXT("rgb10_a2 GENERATED_SubpassFetchAttachment0 out.var.SV_Target0"),
+			TEXT("rgba8 GENERATED_SubpassFetchAttachment1 out.var.SV_Target1"),
+			TEXT("rgba8 GENERATED_SubpassFetchAttachment2 out.var.SV_Target2"),
+			TEXT("rgba8 GENERATED_SubpassFetchAttachment3 out.var.SV_Target3"),
+		};
+
+		// Add defines for PLS in spirv-glsl
+		{
+			FString DefineKey = "";
+			FString DefineValue = "";
+
+			for (uint32_t i = 0; i < 4; ++i)
+			{
+				if (bHasInOut)
+				{
+					DefineKey = FString::Printf(TEXT("pls_io%d"), i);
+					DefineValue = GBufferInOutNames[i];
+				}
+				else if (bHasInputs)
+				{
+					DefineKey = FString::Printf(TEXT("pls_in%d"), i);
+					DefineValue = GBufferInputNames[i];
+				}
+				else
+				{
+					DefineKey = FString::Printf(TEXT("pls_out%d"), i);
+					DefineValue = GBufferOutputNames[i];
+				}
+
+				GLSLCompileParams.TargetDesc->CompileFlags.SetDefine(*DefineKey, *DefineValue);
+			}
+		}
+
+		std::string PLSSourceString;
+		if (!GenerateGlslShader(PLSSourceString, GLSLCompileParams, ReflectData, false, true, bEmulatedUBs))
+		{
+			return false;
+		}
+
+		// Replace assignment of output to buffer 0 to additive if the output proxy additive is used
+		if (HlslString.find("OutProxyAdditive") != std::string::npos ||
+			HlslString.find("OutTarget0") != std::string::npos)
+		{
+			std::string OutProxyString = "GENERATED_SubpassFetchAttachment0 =";
+			std::string OutProxyModifiedString = "GENERATED_SubpassFetchAttachment0 +=";
+
+			size_t OutProxyStringPos = PLSSourceString.find(OutProxyString);
+			while (OutProxyStringPos != std::string::npos)
+			{
+				PLSSourceString.replace(OutProxyStringPos, OutProxyString.size(), OutProxyModifiedString);
+				OutProxyStringPos = PLSSourceString.find(OutProxyString);
+			}
+		}
+
+		// Strip version string
+		VersionStringPos = PLSSourceString.find(ESVersionString);
+		if (VersionStringPos != std::string::npos)
+		{
+			PLSSourceString.replace(VersionStringPos, ESVersionString.length(), "", 0);
+		}
+
+		OutString += PLSSourceString;
+
+		OutString += "#endif\n";
+		GlslSource = OutString;
+	}
+	else
+	{
+		if (!GenerateGlslShader(GlslSource, GLSLCompileParams, ReflectData, true, false, bEmulatedUBs))
+		{
+			return false;
+		}
+	}
+
+	return true;
 }
 
 static bool CompileToGlslWithShaderConductor(
@@ -1232,7 +2814,7 @@ static bool CompileToGlslWithShaderConductor(
 	FShaderCompilerOutput&		Output,
 	const FString&				WorkingDirectory,
 	GLSLVersion					Version,
-	const EHlslShaderFrequency	Frequency,
+	const EShaderFrequency		Frequency,
 	uint32						CCFlags,
 	const FString&				PreprocessedShader,
 	char*&						OutGlslShaderSource)
@@ -1244,12 +2826,16 @@ static bool CompileToGlslWithShaderConductor(
 
 	// Initialize compilation options for ShaderConductor
 	CrossCompiler::FShaderConductorOptions Options;
-	Options.bGlobalsAsPushConstants = true;
-
+	Options.bDisableScalarBlockLayout = true;
+	Options.bRemapAttributeLocations = true;
+	Options.bPreserveStorageInput = true;
+	
 	// Convert input strings from FString to ANSI strings
 	std::string SourceData(TCHAR_TO_UTF8(*PreprocessedShader));
 	std::string FileName(TCHAR_TO_UTF8(*Input.VirtualSourceFilePath));
 	std::string EntryPointName(TCHAR_TO_UTF8(*Input.EntryPointName));
+	
+	bool bEmulatedUBs = Input.Environment.CompilerFlags.Contains(CFLAG_UseEmulatedUB);
 
 	// HLSL framebuffer declarations. Used to modify HLSL input source.
 	const ANSICHAR* HlslFrameBufferDeclarations =
@@ -1271,36 +2857,15 @@ static bool CompileToGlslWithShaderConductor(
 		"}\n"
 		"float DepthbufferFetchES2()\n"
 		"{\n"
-		"  return (!ARM_shader_framebuffer_fetch_depth_stencil ? 0.0 : gl_LastFragDepthARM);\n"
+		"  return (ARM_shader_framebuffer_fetch_depth_stencil == 0 ? 0.0 : gl_LastFragDepthARM);\n"
 		"}\n"
 		;
 
-	SourceData = HlslFrameBufferDeclarations + SourceData;
-
-	// GLSL framebuffer macro definitions. Used to patch GLSL output source.
-	const ANSICHAR* GlslFrameBufferDefines =
-		"#ifdef UE_EXT_shader_framebuffer_fetch\n"
-		"#define _Globals_ARM_shader_framebuffer_fetch 0\n"
-		"#define FRAME_BUFFERFETCH_STORAGE_QUALIFIER inout\n"
-		"#define _Globals_gl_FragColor out_var_SV_Target0\n"
-		"#define _Globals_gl_LastFragColorARM vec4(0.0, 0.0, 0.0, 0.0)\n"
-		"#elif defined( GL_ARM_shader_framebuffer_fetch)\n"
-		"#define _Globals_ARM_shader_framebuffer_fetch 1\n"
-		"#define FRAME_BUFFERFETCH_STORAGE_QUALIFIER out\n"
-		"#define _Globals_gl_FragColor vec4(0.0, 0.0, 0.0, 0.0)\n"
-		"#define _Globals_gl_LastFragColorARM gl_LastFragDepthARM\n"
-		"#else\n"
-		"#define FRAME_BUFFERFETCH_STORAGE_QUALIFIER out\n"
-		"#define _Globals_ARM_shader_framebuffer_fetch 0\n"
-		"#define _Globals_gl_FragColor vec4(0.0, 0.0, 0.0, 0.0)\n"
-		"#define _Globals_gl_LastFragColorARM vec4(0.0, 0.0, 0.0, 0.0)\n"
-		"#endif\n"
-		"#ifdef GL_ARM_shader_framebuffer_fetch_depth_stencil\n"
-		"#define _Globals_ARM_shader_framebuffer_fetch_depth_stencil 1\n"
-		"#else\n"
-		"#define _Globals_ARM_shader_framebuffer_fetch_depth_stencil 0\n"
-		"#endif\n"
-		;
+	if (SourceData.find("DepthbufferFetchES2") != std::string::npos ||
+		SourceData.find("FramebufferFetchES2") != std::string::npos)
+	{
+		SourceData = HlslFrameBufferDeclarations + SourceData;
+	}
 	
 	// Inject additional macro definitions to circumvent missing features: external textures
 	FShaderCompilerDefinitions AdditionalDefines;
@@ -1351,6 +2916,7 @@ static bool CompileToGlslWithShaderConductor(
 
 	// Compile HLSL source to SPIR-V binary
 	TArray<uint32> SpirvData;
+	
 	if (!bCompilationFailed && !CompilerContext.CompileHlslToSpirv(Options, SpirvData))
 	{
 		// Flush compile errors
@@ -1360,644 +2926,22 @@ static bool CompileToGlslWithShaderConductor(
 
 	if (!bCompilationFailed)
 	{
-		FString MetaData;
-
-		const ANSICHAR* FrequencyPrefix = GetFrequencyPrefix(Frequency);
-
+		ReflectionData ReflectData;
+		CrossCompiler::FHlslccHeaderWriter CCHeaderWriter;
+		
 		// Now perform reflection on the SPIRV and tweak any decorations that we need to.
 		// This used to be done via JSON, but that was slow and alloc happy so use SPIRV-Reflect instead.
 		spv_reflect::ShaderModule Reflection(SpirvData.Num() * sizeof(uint32), SpirvData.GetData());
 		check(Reflection.GetResult() == SPV_REFLECT_RESULT_SUCCESS);
 
-		SpvReflectResult SPVRResult = SPV_REFLECT_RESULT_NOT_READY;
-		uint32 Count = 0;
-		TArray<SpvReflectDescriptorBinding*> Bindings;
-		TSet<SpvReflectDescriptorBinding*> Counters;
-		TArray<SpvReflectInterfaceVariable*> InputVars;
-		TArray<SpvReflectInterfaceVariable*> OutputVars;
-		TArray<SpvReflectBlockVariable*> ConstantBindings;
-		uint32 GlobalSetId = 32;
-		FString SRVString;
-		FString UAVString;
-		FString UBOString;
-		FString SMPString;
-		FString INPString;
-		FString OUTString;
-		FString PAKString;
-		TArray<FString> Textures;
-		TArray<FString> Samplers;
-		uint32 UAVIndices = 0xffffffff;
-		uint32 BufferIndices = 0xffffffff;
-		uint32 TextureIndices = 0xffffffff;
-		uint32 UBOIndices = 0xffffffff;
-		uint32 SamplerIndices = 0xffffffff;
-
-		std::map<std::string, std::string> UniformVarNames;
-		Count = 0;
-		SPVRResult = Reflection.EnumerateDescriptorBindings(&Count, nullptr);
-		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-		Bindings.SetNum(Count);
-		SPVRResult = Reflection.EnumerateDescriptorBindings(&Count, Bindings.GetData());
-		check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-		if (Count > 0)
-		{
-			TArray<SpvReflectDescriptorBinding*> UniformBindings;
-			TArray<SpvReflectDescriptorBinding*> SamplerBindings;
-			TArray<SpvReflectDescriptorBinding*> TextureSRVBindings;
-			TArray<SpvReflectDescriptorBinding*> TextureUAVBindings;
-			TArray<SpvReflectDescriptorBinding*> TBufferSRVBindings;
-			TArray<SpvReflectDescriptorBinding*> TBufferUAVBindings;
-			TArray<SpvReflectDescriptorBinding*> SBufferSRVBindings;
-			TArray<SpvReflectDescriptorBinding*> SBufferUAVBindings;
-
-			// Extract all the bindings first so that we process them in order - this lets us assign UAVs before other resources
-			// Which is necessary to match the D3D binding scheme.
-			for (auto const& Binding : Bindings)
-			{
-				switch (Binding->resource_type)
-				{
-				case SPV_REFLECT_RESOURCE_FLAG_CBV:
-				{
-					check(Binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-					if (Binding->accessed)
-					{
-						UniformBindings.Add(Binding);
-					}
-					break;
-				}
-				case SPV_REFLECT_RESOURCE_FLAG_SAMPLER:
-				{
-					check(Binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLER);
-					if (Binding->accessed)
-					{
-						SamplerBindings.Add(Binding);
-					}
-					break;
-				}
-				case SPV_REFLECT_RESOURCE_FLAG_SRV:
-				{
-					switch (Binding->descriptor_type)
-					{
-					case SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-					{
-						if (Binding->accessed)
-						{
-							TextureSRVBindings.Add(Binding);
-						}
-						break;
-					}
-					case SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-					{
-						if (Binding->accessed)
-						{
-							TBufferSRVBindings.Add(Binding);
-						}
-						break;
-					}
-					case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-					{
-						if (Binding->accessed)
-						{
-							SBufferSRVBindings.Add(Binding);
-						}
-						break;
-					}
-					default:
-					{
-						// check(false);
-						break;
-					}
-					}
-					break;
-				}
-				case SPV_REFLECT_RESOURCE_FLAG_UAV:
-				{
-					if (Binding->uav_counter_binding)
-					{
-						Counters.Add(Binding->uav_counter_binding);
-					}
-
-					switch (Binding->descriptor_type)
-					{
-					case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-					{
-						TextureUAVBindings.Add(Binding);
-						break;
-					}
-					case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-					{
-						TBufferUAVBindings.Add(Binding);
-						break;
-					}
-					case SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-					{
-						if (!Counters.Contains(Binding) || Binding->accessed)
-						{
-							SBufferUAVBindings.Add(Binding);
-						}
-						break;
-					}
-					default:
-					{
-						// check(false);
-						break;
-					}
-					}
-					break;
-				}
-				default:
-				{
-					// check(false);
-					break;
-				}
-				}
-			}
-
-			for (auto const& Binding : TBufferUAVBindings)
-			{
-				check(UAVIndices);
-				uint32 Index = FPlatformMath::CountTrailingZeros(UAVIndices);
-
-				// UAVs always claim all slots so we don't have conflicts as D3D expects 0-7
-				BufferIndices &= ~(1 << Index);
-				TextureIndices &= ~(1llu << uint64(Index));
-				UAVIndices &= ~(1 << Index);
-
-				UAVString += FString::Printf(TEXT("%s%s(%u:%u)"), UAVString.Len() ? TEXT(",") : TEXT(""), UTF8_TO_TCHAR(Binding->name), Index, 1);
-
-				SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
-				check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			}
-
-			for (auto const& Binding : SBufferUAVBindings)
-			{
-				check(UAVIndices);
-				uint32 Index = FPlatformMath::CountTrailingZeros(UAVIndices);
-
-				// UAVs always claim all slots so we don't have conflicts as D3D expects 0-7
-				BufferIndices &= ~(1 << Index);
-				TextureIndices &= ~(1llu << uint64(Index));
-				UAVIndices &= ~(1 << Index);
-
-				UAVString += FString::Printf(TEXT("%s%s(%u:%u)"), UAVString.Len() ? TEXT(",") : TEXT(""), UTF8_TO_TCHAR(Binding->name), Index, 1);
-
-				SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
-				check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			}
-
-			for (auto const& Binding : TextureUAVBindings)
-			{
-				check(UAVIndices);
-				uint32 Index = FPlatformMath::CountTrailingZeros(UAVIndices);
-
-				// UAVs always claim all slots so we don't have conflicts as D3D expects 0-7
-				// For texture2d this allows us to emulate atomics with buffers
-				BufferIndices &= ~(1 << Index);
-				TextureIndices &= ~(1llu << uint64(Index));
-				UAVIndices &= ~(1 << Index);
-
-				UAVString += FString::Printf(TEXT("%s%s(%u:%u)"), UAVString.Len() ? TEXT(",") : TEXT(""), UTF8_TO_TCHAR(Binding->name), Index, 1);
-
-				SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
-				check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			}
-
-			for (auto const& Binding : TBufferSRVBindings)
-			{
-				check(TextureIndices);
-				uint32 Index = FPlatformMath::CountTrailingZeros(TextureIndices);
-
-				// No support for 3-component types in dxc/SPIRV/MSL - need to expose my workarounds there too
-				BufferIndices &= ~(1 << Index);
-				TextureIndices &= ~(1llu << uint64(Index));
-
-				Textures.Add(UTF8_TO_TCHAR(Binding->name));
-
-				SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
-				check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			}
-
-			for (auto const& Binding : SBufferSRVBindings)
-			{
-				check(BufferIndices);
-				uint32 Index = FPlatformMath::CountTrailingZeros(BufferIndices);
-
-				BufferIndices &= ~(1 << Index);
-
-				SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
-				check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			}
-
-			for (auto const& Binding : UniformBindings)
-			{
-				check(UBOIndices);
-				uint32 Index = FPlatformMath::CountTrailingZeros(UBOIndices);
-				UBOIndices &= ~(1 << Index);
-
-				// Global uniform buffer - handled specially as we care about the internal layout
-				if (strstr(Binding->name, "$Globals"))
-				{
-					for (uint32 i = 0; i < Binding->block.member_count; i++)
-					{
-						SpvReflectBlockVariable& member = Binding->block.members[i];
-						uint32 MbrOffset = member.absolute_offset / sizeof(float);
-						uint32 MbrSize = member.size / sizeof(float);
-
-						PAKString += FString::Printf(TEXT("%s%s(h:%u,%u)"), PAKString.Len() ? TEXT(",") : TEXT(""), UTF8_TO_TCHAR(member.name), MbrOffset, MbrSize);
-					}
-				}
-				else
-				{
-					std::string OldName = "type_";
-					OldName += Binding->name;
-					std::string NewName = FrequencyPrefix;
-					NewName += "b";
-					NewName += std::to_string(Index);
-					UniformVarNames[OldName] = NewName;
-					// Regular uniform buffer - we only care about the binding index
-					UBOString += FString::Printf(TEXT("%s%s(%u)"), UBOString.Len() ? TEXT(",") : TEXT(""), UTF8_TO_TCHAR(Binding->name), Index);
-				}
-
-				SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
-				check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			}
-
-			for (auto const& Binding : TextureSRVBindings)
-			{
-				check(TextureIndices);
-				uint32 Index = FPlatformMath::CountTrailingZeros64(TextureIndices);
-				TextureIndices &= ~(1llu << uint64(Index));
-
-				Textures.Add(UTF8_TO_TCHAR(Binding->name));
-
-				SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
-				check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			}
-
-			for (auto const& Binding : SamplerBindings)
-			{
-				check(SamplerIndices);
-				uint32 Index = FPlatformMath::CountTrailingZeros(SamplerIndices);
-				SamplerIndices &= ~(1 << Index);
-
-				Samplers.Add(UTF8_TO_TCHAR(Binding->name));
-
-				SPVRResult = Reflection.ChangeDescriptorBindingNumbers(Binding, Index, GlobalSetId);
-				check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			}
-		}
-
-		TArray<std::string> GlobalRemap;
-		TArray<std::string> GlobalArrays;
-		TMap<FString, uint32> GlobalOffsets;
-
-		{
-			Count = 0;
-			SPVRResult = Reflection.EnumeratePushConstantBlocks(&Count, nullptr);
-			check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			ConstantBindings.SetNum(Count);
-			SPVRResult = Reflection.EnumeratePushConstantBlocks(&Count, ConstantBindings.GetData());
-			check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			if (Count > 0)
-			{
-				for (auto const& Var : ConstantBindings)
-				{
-					// Global uniform buffer - handled specially as we care about the internal layout
-					if (strstr(Var->name, "$Globals"))
-					{
-						for (uint32 i = 0; i < Var->member_count; i++)
-						{
-							SpvReflectBlockVariable& member = Var->members[i];
-							
-							if(!strcmp(member.name, "gl_FragColor") || !strcmp(member.name, "gl_LastFragColorARM") || !strcmp(member.name, "gl_LastFragDepthARM") || !strcmp(member.name, "ARM_shader_framebuffer_fetch") || !strcmp(member.name, "ARM_shader_framebuffer_fetch_depth_stencil"))
-							{
-								continue;
-							}
-							auto const type = *member.type_description;
-
-							uint32 MbrOffset = Align(member.absolute_offset / sizeof(float), 4);
-							uint32 MbrSize = member.size / sizeof(float);
-
-							FString TypeQualifier;
-
-							uint32_t masked_type = type.type_flags & 0xF;
-
-							switch (masked_type) {
-							default: checkf(false, TEXT("unsupported component type %d"), masked_type); break;
-							case SPV_REFLECT_TYPE_FLAG_BOOL:
-							case SPV_REFLECT_TYPE_FLAG_INT: TypeQualifier = (type.traits.numeric.scalar.signedness ? TEXT("i") : TEXT("u")); break;
-							case SPV_REFLECT_TYPE_FLAG_FLOAT: TypeQualifier = (TEXT("h")); break;
-							}
-
-							FString MemberName = UTF8_TO_TCHAR(member.name);
-
-							uint32& Offset = GlobalOffsets.FindOrAdd(TypeQualifier);
-
-							PAKString += FString::Printf(TEXT("%s%s(%s:%u,%u)"), PAKString.Len() ? TEXT(",") : TEXT(""), *MemberName, *TypeQualifier, Offset * 4, MbrSize);
-
-							bool const bArray = type.traits.array.dims_count > 0;
-
-							std::string Name = "#define _Globals_";
-							std::string OffsetString = std::to_string(Offset);
-							Name += member.name;
-							if (bArray)
-							{
-								std::string ArrayName = "_Globals_";
-								ArrayName += member.name;
-								GlobalArrays.Add(ArrayName);
-								Name += "(Offset)";
-								if (type.op == SpvOpTypeMatrix)
-									OffsetString += " + (Offset * 4)";
-								else
-									OffsetString += " + Offset";
-							}
-							Name += " (";
-							if (type.op == SpvOpTypeMatrix)
-							{
-								check(type.traits.numeric.matrix.column_count == 4 && type.traits.numeric.matrix.row_count == 4);
-								Name += "mat4(";
-								Name += FrequencyPrefix;
-								Name += "u_";
-								Name += TCHAR_TO_UTF8(*TypeQualifier);
-								Name += "[";
-								Name += OffsetString;
-								Name += "],";
-
-								Name += FrequencyPrefix;
-								Name += "u_";
-								Name += TCHAR_TO_UTF8(*TypeQualifier);
-								Name += "[";
-								Name += OffsetString;
-								Name += "+ 1],";
-
-								Name += FrequencyPrefix;
-								Name += "u_";
-								Name += TCHAR_TO_UTF8(*TypeQualifier);
-								Name += "[";
-								Name += OffsetString;
-								Name += " + 2],";
-
-								Name += FrequencyPrefix;
-								Name += "u_";
-								Name += TCHAR_TO_UTF8(*TypeQualifier);
-								Name += "[";
-								Name += OffsetString;
-								Name += " + 3]";
-								Name += ")";
-							}
-							else
-							{
-								Name += FrequencyPrefix;
-								Name += "u_";
-								Name += TCHAR_TO_UTF8(*TypeQualifier);
-								Name += "[";
-								Name += OffsetString;
-								Name += "].";
-								switch (type.traits.numeric.vector.component_count)
-								{
-								case 0:
-								case 1:
-									Name += "x";
-									break;
-								case 2:
-									Name += "xy";
-									break;
-								case 3:
-									Name += "xyz";
-									break;
-								case 4:
-								default:
-									Name += "xyzw";
-									break;
-								}
-							}
-							Name += ")\n";
-
-							GlobalRemap.Add(Name);
-
-							Offset += Align(MbrSize, 4) / 4;
-						}
-					}
-				}
-			}
-		}
-
-		TArray<FString> OutputVarNames;
-
-		{
-			Count = 0;
-			SPVRResult = Reflection.EnumerateOutputVariables(&Count, nullptr);
-			check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			OutputVars.SetNum(Count);
-			SPVRResult = Reflection.EnumerateOutputVariables(&Count, OutputVars.GetData());
-			check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			if (Count > 0)
-			{
-				uint32 AssignedInputs = 0;
-
-				for (auto const& Var : OutputVars)
-				{
-					if (Var->storage_class == SpvStorageClassOutput && Var->built_in == -1 && !CrossCompiler::FShaderConductorContext::IsIntermediateSpirvOutputVariable(Var->name))
-					{
-						if (Frequency == HSF_PixelShader && strstr(Var->name, "SV_Target"))
-						{
-							FString TypeQualifier;
-
-							auto const type = *Var->type_description;
-							uint32_t masked_type = type.type_flags & 0xF;
-
-							switch (masked_type) {
-							default: checkf(false, TEXT("unsupported component type %d"), masked_type); break;
-							case SPV_REFLECT_TYPE_FLAG_BOOL: TypeQualifier = TEXT("b"); break;
-							case SPV_REFLECT_TYPE_FLAG_INT: TypeQualifier = (type.traits.numeric.scalar.signedness ? TEXT("i") : TEXT("u")); break;
-							case SPV_REFLECT_TYPE_FLAG_FLOAT: TypeQualifier = (type.traits.numeric.scalar.width == 32 ? TEXT("f") : TEXT("h")); break;
-							}
-
-							if (type.type_flags & SPV_REFLECT_TYPE_FLAG_MATRIX)
-							{
-								TypeQualifier += FString::Printf(TEXT("%d%d"), type.traits.numeric.matrix.row_count, type.traits.numeric.matrix.column_count);
-							}
-							else if (type.type_flags & SPV_REFLECT_TYPE_FLAG_VECTOR)
-							{
-								TypeQualifier += FString::Printf(TEXT("%d"), type.traits.numeric.vector.component_count);
-							}
-							else
-							{
-								TypeQualifier += TEXT("1");
-							}
-
-							FString Name = ANSI_TO_TCHAR(Var->name);
-							Name.ReplaceInline(TEXT("."), TEXT("_"));
-							OutputVarNames.Add(Name);
-							OUTString += FString::Printf(TEXT("%s%s;%d:out_Target%d"), OUTString.Len() ? TEXT(",") : TEXT(""), *TypeQualifier, Var->location, Var->location);
-						}
-						else
-						{
-							unsigned Location = Var->location;
-							unsigned SemanticIndex = Location;
-							check(Var->semantic);
-							unsigned i = (unsigned)strlen(Var->semantic);
-							check(i);
-							while (isdigit((unsigned char)(Var->semantic[i - 1])))
-							{
-								i--;
-							}
-							if (i < strlen(Var->semantic))
-							{
-								SemanticIndex = (unsigned)atoi(Var->semantic + i);
-								if (Location != SemanticIndex)
-								{
-									Location = SemanticIndex;
-								}
-							}
-
-							while ((1 << Location) & AssignedInputs)
-							{
-								Location++;
-							}
-
-							if (Location != Var->location)
-							{
-								SPVRResult = Reflection.ChangeOutputVariableLocation(Var, Location);
-								check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-							}
-
-							uint32 ArrayCount = 1;
-							for (uint32 Dim = 0; Dim < Var->array.dims_count; Dim++)
-							{
-								ArrayCount *= Var->array.dims[Dim];
-							}
-
-							FString TypeQualifier;
-
-							auto const type = *Var->type_description;
-							uint32_t masked_type = type.type_flags & 0xF;
-
-							switch (masked_type) {
-							default: checkf(false, TEXT("unsupported component type %d"), masked_type); break;
-							case SPV_REFLECT_TYPE_FLAG_BOOL: TypeQualifier = TEXT("b"); break;
-							case SPV_REFLECT_TYPE_FLAG_INT: TypeQualifier = (type.traits.numeric.scalar.signedness ? TEXT("i") : TEXT("u")); break;
-							case SPV_REFLECT_TYPE_FLAG_FLOAT: TypeQualifier = (type.traits.numeric.scalar.width == 32 ? TEXT("f") : TEXT("h")); break;
-							}
-
-							if (type.type_flags & SPV_REFLECT_TYPE_FLAG_MATRIX)
-							{
-								TypeQualifier += FString::Printf(TEXT("%d%d"), type.traits.numeric.matrix.row_count, type.traits.numeric.matrix.column_count);
-							}
-							else if (type.type_flags & SPV_REFLECT_TYPE_FLAG_VECTOR)
-							{
-								TypeQualifier += FString::Printf(TEXT("%d"), type.traits.numeric.vector.component_count);
-							}
-							else
-							{
-								TypeQualifier += TEXT("1");
-							}
-
-							for (uint32 j = 0; j < ArrayCount; j++)
-							{
-								AssignedInputs |= (1 << (Location + j));
-							}
-
-							FString Name = ANSI_TO_TCHAR(Var->name);
-							Name.ReplaceInline(TEXT("."), TEXT("_"));
-							OUTString += FString::Printf(TEXT("%s%s;%d:%s"), OUTString.Len() ? TEXT(",") : TEXT(""), *TypeQualifier, Location, *Name);
-						}
-					}
-				}
-			}
-		}
-
-		TArray<FString> InputVarNames;
-
-		{
-			Count = 0;
-			SPVRResult = Reflection.EnumerateInputVariables(&Count, nullptr);
-			check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			InputVars.SetNum(Count);
-			SPVRResult = Reflection.EnumerateInputVariables(&Count, InputVars.GetData());
-			check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-			if (Count > 0)
-			{
-				uint32 AssignedInputs = 0;
-
-				for (auto const& Var : InputVars)
-				{
-					if (Var->storage_class == SpvStorageClassInput && Var->built_in == -1)
-					{
-						unsigned Location = Var->location;
-						unsigned SemanticIndex = Location;
-						check(Var->semantic);
-						unsigned i = (unsigned)strlen(Var->semantic);
-						check(i);
-						while (isdigit((unsigned char)(Var->semantic[i - 1])))
-						{
-							i--;
-						}
-						if (i < strlen(Var->semantic))
-						{
-							SemanticIndex = (unsigned)atoi(Var->semantic + i);
-							if (Location != SemanticIndex)
-							{
-								Location = SemanticIndex;
-							}
-						}
-
-						while ((1 << Location) & AssignedInputs)
-						{
-							Location++;
-						}
-
-						if (Location != Var->location)
-						{
-							SPVRResult = Reflection.ChangeInputVariableLocation(Var, Location);
-							check(SPVRResult == SPV_REFLECT_RESULT_SUCCESS);
-						}
-
-						uint32 ArrayCount = 1;
-						for (uint32 Dim = 0; Dim < Var->array.dims_count; Dim++)
-						{
-							ArrayCount *= Var->array.dims[Dim];
-						}
-
-						FString TypeQualifier;
-
-						auto const type = *Var->type_description;
-						uint32_t masked_type = type.type_flags & 0xF;
-
-						switch (masked_type) {
-						default: checkf(false, TEXT("unsupported component type %d"), masked_type); break;
-						case SPV_REFLECT_TYPE_FLAG_BOOL: TypeQualifier = TEXT("b"); break;
-						case SPV_REFLECT_TYPE_FLAG_INT: TypeQualifier = (type.traits.numeric.scalar.signedness ? TEXT("i") : TEXT("u")); break;
-						case SPV_REFLECT_TYPE_FLAG_FLOAT: TypeQualifier = (type.traits.numeric.scalar.width == 32 ? TEXT("f") : TEXT("h")); break;
-						}
-
-						if (type.type_flags & SPV_REFLECT_TYPE_FLAG_MATRIX)
-						{
-							TypeQualifier += FString::Printf(TEXT("%d%d"), type.traits.numeric.matrix.row_count, type.traits.numeric.matrix.column_count);
-						}
-						else if (type.type_flags & SPV_REFLECT_TYPE_FLAG_VECTOR)
-						{
-							TypeQualifier += FString::Printf(TEXT("%d"), type.traits.numeric.vector.component_count);
-						}
-						else
-						{
-							TypeQualifier += TEXT("1");
-						}
-
-						for (uint32 j = 0; j < ArrayCount; j++)
-						{
-							AssignedInputs |= (1 << (Location + j));
-						}
-
-						FString Name = ANSI_TO_TCHAR(Var->name);
-						Name.ReplaceInline(TEXT("."), TEXT("_"));
-						InputVarNames.Add(Name);
-						INPString += FString::Printf(TEXT("%s%s;%d:%s"), INPString.Len() ? TEXT(",") : TEXT(""), *TypeQualifier, Location, *Name);
-					}
-				}
-			}
-		}
-
+		const ANSICHAR* SPIRV_DummySamplerName = CrossCompiler::FShaderConductorContext::GetIdentifierTable().DummySampler;
+
+		ParseReflectionData(Input, CCHeaderWriter, ReflectData, SpirvData, Reflection, SPIRV_DummySamplerName, Frequency, bEmulatedUBs);
+		
+		const ANSICHAR* FrequencyPrefix = GetFrequencyPrefix(Frequency);
+		
+		// Step 2 : End of reflection
+		// 
 		// Overwrite updated SPIRV code
 		SpirvData = TArray<uint32>(Reflection.GetCode(), Reflection.GetCodeSize() / 4);
 
@@ -2011,10 +2955,6 @@ static bool CompileToGlslWithShaderConductor(
 
 		switch (Version)
 		{
-		case GLSL_150_ES3_1:	// ES3.1 Emulation
-			TargetDesc.Language = CrossCompiler::EShaderConductorLanguage::Glsl;
-			TargetDesc.Version = 330;
-			break;
 		case GLSL_SWITCH_FORWARD:
 			TargetDesc.Language = CrossCompiler::EShaderConductorLanguage::Essl;
 			TargetDesc.Version = 320;
@@ -2023,10 +2963,27 @@ static bool CompileToGlslWithShaderConductor(
 			TargetDesc.Language = CrossCompiler::EShaderConductorLanguage::Glsl;
 			TargetDesc.Version = 430;
 			break;
+		case GLSL_150_ES3_1:
 		case GLSL_ES3_1_ANDROID:
 		default:
+			TargetDesc.CompileFlags.SetDefine(TEXT("force_flattened_io_blocks"), 1);
+			TargetDesc.CompileFlags.SetDefine(TEXT("emit_uniform_buffer_as_plain_uniforms"), 1);
+			// TODO: Currently disabled due to bug when assigning an array to temporary variable
+			///TargetDesc.CompileFlags.SetDefine(TEXT("force_temporary"), 1);
+
+			// If we have mobile multiview define set then set the view count and enable extension
+			const FString* MultiViewDefine = Input.Environment.GetDefinitions().Find(TEXT("MOBILE_MULTI_VIEW"));
+			if (Frequency == SF_Vertex && MultiViewDefine && *MultiViewDefine == "1")
+			{
+				TargetDesc.CompileFlags.SetDefine(TEXT("ovr_multiview_view_count"), 2);
+			}
+
+			if (Version == GLSL_150_ES3_1)
+			{
+				TargetDesc.CompileFlags.SetDefine(TEXT("force_glsl_clipspace"), 1);
+			}
 			TargetDesc.Language = CrossCompiler::EShaderConductorLanguage::Essl;
-			TargetDesc.Version = 310;
+			TargetDesc.Version = 320;
 			break;
 		}
 
@@ -2053,7 +3010,7 @@ static bool CompileToGlslWithShaderConductor(
 					FString Name = TextureExternalName;
 					if (Name.RemoveFromEnd(TEXT(";")))
 					{
-						ExternalTextures.Add(TEXT("SPIRV_Cross_Combined") + Name);
+						ExternalTextures.Add(TEXT("SPIRV_Cross_Combined") + Name + Name + TEXT("Sampler"));
 					}
 				}
 			}
@@ -2074,222 +3031,52 @@ static bool CompileToGlslWithShaderConductor(
 			return false;
 		};
 
-		std::string GlslSource;
-		const bool bGlslSourceCompileSucceeded = CompilerContext.CompileSpirvToSourceBuffer(
-			Options, TargetDesc, SpirvData.GetData(), SpirvData.Num() * sizeof(uint32),
-			[&GlslSource](const void* Data, uint32 Size)
-			{
-				GlslSource = std::string(reinterpret_cast<const ANSICHAR*>(Data), Size);
-			}
-		);
+		GLSLCompileParameters GLSLCompileParams;
 
-		if (!bGlslSourceCompileSucceeded)
+		GLSLCompileParams.CompilerContext = &CompilerContext;
+		GLSLCompileParams.CCHeaderWriter = &CCHeaderWriter;
+		GLSLCompileParams.TargetDesc = &TargetDesc;
+		GLSLCompileParams.Options = &Options;
+
+		GLSLCompileParams.Output = &Output;
+		GLSLCompileParams.SpirvData = &SpirvData;
+
+		GLSLCompileParams.Frequency = Frequency;
+		GLSLCompileParams.SPIRV_DummySamplerName = SPIRV_DummySamplerName;
+
+		std::string GlslSource;
+
+		// Handle PLS and FBF in OpenGL
+		if (Input.Environment.GetDefinitions().Contains("SHADING_PATH_MOBILE") && Input.Environment.GetDefinitions()["SHADING_PATH_MOBILE"] == "1" &&
+			Input.Environment.GetDefinitions().Contains("MOBILE_DEFERRED_SHADING") && Input.Environment.GetDefinitions()["MOBILE_DEFERRED_SHADING"] == "1" &&
+			Version == GLSL_ES3_1_ANDROID)
 		{
-			CompilerContext.FlushErrors(Output.Errors);
-			bCompilationFailed = true;
+			bCompilationFailed = !GenerateDeferredMobileShaders(GlslSource, GLSLCompileParams, SourceData, ReflectData, true, false, bEmulatedUBs);
 		}
 		else
 		{
-			std::string LayoutString = "#extension ";
-			size_t LayoutPos = GlslSource.find(LayoutString);
-			if (LayoutPos != std::string::npos)
-			{
-				for (FString Name : InputVarNames)
-				{
-					std::string DefineString = "#define ";
-					DefineString += TCHAR_TO_ANSI(*Name);
-					DefineString += " ";
-					DefineString += TCHAR_TO_ANSI(*Name.Replace(TEXT("in_var_"), TEXT("in_")));
-					DefineString += "\n";
+			bCompilationFailed = !GenerateGlslShader(GlslSource, GLSLCompileParams, ReflectData, true, false, bEmulatedUBs);
+		}
 
-					GlslSource.insert(LayoutPos, DefineString);
-				}
-				for (FString Name : OutputVarNames)
-				{
-					std::string DefineString = "#define ";
-					DefineString += TCHAR_TO_ANSI(*Name);
-					DefineString += " ";
-					DefineString += TCHAR_TO_ANSI(*Name.Replace(TEXT("out_var_SV_"), TEXT("out_")));
-					DefineString += "\n";
+		// Generate meta data for CCHeader
+		CCHeaderWriter.WriteSourceInfo(*Input.GetSourceFilename(), *Input.EntryPointName, *Input.DebugGroupName);
+		CCHeaderWriter.WriteCompilerInfo();
 
-					GlslSource.insert(LayoutPos, DefineString);
-				}
-				for (auto const& Pair : UniformVarNames)
-				{
-					std::string DefineString = "#define ";
-					DefineString += Pair.first;
-					DefineString += " ";
-					DefineString += Pair.second;
-					DefineString += "\n";
+		if (GlslSource.length() > 0)
+		{
+			const FString MetaData = CCHeaderWriter.ToString();
 
-					GlslSource.insert(LayoutPos, DefineString);
-				}
-			}
-
-			std::string GlobalsSearchString = "uniform type_Globals _Globals;";
-			std::string GlobalsString = "//";
-
-			size_t GlobalPos = GlslSource.find(GlobalsSearchString);
-			if (GlobalPos != std::string::npos)
-			{
-				GlslSource.insert(GlobalPos, GlobalsString);
-				
-				bool UsesFramebufferFetch = Frequency == HSF_PixelShader && GlslSource.find("_Globals.ARM_shader_framebuffer_fetch") != std::string::npos;
-
-				std::string GlobalVarString = "_Globals.";
-				size_t GlobalVarPos = 0;
-				do
-				{
-					GlobalVarPos = GlslSource.find(GlobalVarString, GlobalVarPos);
-					if (GlobalVarPos != std::string::npos)
-					{
-						GlslSource.replace(GlobalVarPos, GlobalVarString.length(), "_Globals_");
-						for (std::string const& SearchString : GlobalArrays)
-						{
-							if (!GlslSource.compare(GlobalVarPos, SearchString.length(), SearchString))
-							{
-								GlslSource.replace(GlobalVarPos + SearchString.length(), 1, "(");
-
-								size_t ClosingBrace = GlslSource.find("]", GlobalVarPos + SearchString.length());
-								if (ClosingBrace != std::string::npos)
-									GlslSource.replace(ClosingBrace, 1, ")");
-							}
-						}
-					}
-				} while (GlobalVarPos != std::string::npos);
-
-				for (auto const& Pair : GlobalOffsets)
-				{
-					if (Pair.Value > 0)
-					{
-						std::string NewUniforms;
-						if (Pair.Key == TEXT("u"))
-						{
-							NewUniforms = "uniform uvec4 ";
-							NewUniforms += FrequencyPrefix;
-							NewUniforms += "u_u[";
-							NewUniforms += std::to_string(Pair.Value);
-							NewUniforms += "];\n";
-						}
-						else if (Pair.Key == TEXT("i"))
-						{
-							NewUniforms = "uniform ivec4 ";
-							NewUniforms += FrequencyPrefix;
-							NewUniforms += "u_i[";
-							NewUniforms += std::to_string(Pair.Value);
-							NewUniforms += "];\n";
-						}
-						else if (Pair.Key == TEXT("h"))
-						{
-							NewUniforms = "uniform vec4 ";
-							NewUniforms += FrequencyPrefix;
-							NewUniforms += "u_h[";
-							NewUniforms += std::to_string(Pair.Value);
-							NewUniforms += "];\n";
-						}
-						GlslSource.insert(GlobalPos, NewUniforms);
-					}
-				}
-
-				for (std::string const& Define : GlobalRemap)
-				{
-					GlslSource.insert(GlobalPos, Define);
-				}
-				
-				if (UsesFramebufferFetch)
-				{
-					size_t MainPos = GlslSource.find("struct type_Globals");
-					if (MainPos != std::string::npos)
-						GlslSource.insert(MainPos, GlslFrameBufferDefines);
-					
-					size_t OutColor = GlslSource.find("0) out ");
-					if (OutColor != std::string::npos)
-						GlslSource.replace(OutColor, 7, "0) FRAME_BUFFERFETCH_STORAGE_QUALIFIER ");
-				}
-			}
-
-			size_t GlslSourceLen = GlslSource.length();
-			if (GlslSourceLen > 0)
-			{
-				size_t SamplerPos = GlslSource.find("\nuniform ");
-
-				uint32 TextureIndex = 0;
-				for (FString& Texture : Textures)
-				{
-					TArray<FString> UsedSamplers;
-					FString SamplerString;
-					for (FString& Sampler : Samplers)
-					{
-						std::string SamplerName = TCHAR_TO_ANSI(*(Texture + Sampler));
-						size_t FindCombinedSampler = GlslSource.find(SamplerName.c_str());
-						if (FindCombinedSampler != std::string::npos)
-						{
-							uint32 NewIndex = TextureIndex + UsedSamplers.Num();
-							std::string NewDefine = "#define SPIRV_Cross_Combined";
-							NewDefine += SamplerName;
-							NewDefine += " ";
-							NewDefine += FrequencyPrefix;
-							NewDefine += "s";
-							NewDefine += std::to_string(NewIndex);
-							NewDefine += "\n";
-							GlslSource.insert(SamplerPos+1, NewDefine);
-
-							UsedSamplers.Add(Sampler);
-							SamplerString += FString::Printf(TEXT("%s%s"), SamplerString.Len() ? TEXT(",") : TEXT(""), *Sampler);
-						}
-					}
-					if (UsedSamplers.Num() > 0)
-					{
-						SRVString += FString::Printf(TEXT("%s%s(%u:%u[%s])"), SRVString.Len() ? TEXT(",") : TEXT(""), *Texture, TextureIndex, UsedSamplers.Num(), *SamplerString);
-						TextureIndex += UsedSamplers.Num();
-					}
-					else
-					{
-						SRVString += FString::Printf(TEXT("%s%s(%u:%u)"), SRVString.Len() ? TEXT(",") : TEXT(""), *Texture, TextureIndex++, 1);
-					}
-				}
-
-				MetaData += TEXT("// Compiled by ShaderConductor\n");
-				if (INPString.Len())
-				{
-					MetaData += FString::Printf(TEXT("// @Inputs: %s\n"), *INPString);
-				}
-				if (OUTString.Len())
-				{
-					MetaData += FString::Printf(TEXT("// @Outputs: %s\n"), *OUTString);
-				}
-				if (UBOString.Len())
-				{
-					MetaData += FString::Printf(TEXT("// @UniformBlocks: %s\n"), *UBOString);
-				}
-				if (PAKString.Len())
-				{
-					MetaData += FString::Printf(TEXT("// @PackedGlobals: %s\n"), *PAKString);
-				}
-				if (SRVString.Len())
-				{
-					MetaData += FString::Printf(TEXT("// @Samplers: %s\n"), *SRVString);
-				}
-				if (UAVString.Len())
-				{
-					MetaData += FString::Printf(TEXT("// @UAVs: %s\n"), *UAVString);
-				}
-				if (SMPString.Len())
-				{
-					MetaData += FString::Printf(TEXT("// @SamplerStates: %s\n"), *SMPString);
-				}
-
-				// Merge meta data and GLSL source to output string
-				const int32 GlslShaderSourceLen = MetaData.Len() + static_cast<int32>(GlslSource.size()) + 1;
-				OutGlslShaderSource = (char*)malloc(GlslShaderSourceLen);
-				FCStringAnsi::Snprintf(OutGlslShaderSource, GlslShaderSourceLen, "%s%s", TCHAR_TO_ANSI(*MetaData), GlslSource.c_str());
-			}
+			// Merge meta data and GLSL source to output string
+			const int32 GlslShaderSourceLen = MetaData.Len() + static_cast<int32>(GlslSource.size()) + 1;
+			OutGlslShaderSource = (char*)malloc(GlslShaderSourceLen);
+			FCStringAnsi::Snprintf(OutGlslShaderSource, GlslShaderSourceLen, "%s%s", TCHAR_TO_ANSI(*MetaData), GlslSource.c_str());
 		}
 	}
 
 	if (bDumpDebugInfo && OutGlslShaderSource != nullptr)
 	{
-		DumpDebugShaderText(Input, OutGlslShaderSource, FCStringAnsi::Strlen(OutGlslShaderSource), GetFrequencyFileExt(Frequency));
+		const TCHAR* ShaderFileExt = CrossCompiler::FShaderConductorContext::GetShaderFileExt(CrossCompiler::EShaderConductorLanguage::Essl, Frequency);
+		DumpDebugShaderText(Input, OutGlslShaderSource, FCStringAnsi::Strlen(OutGlslShaderSource), ShaderFileExt);
 	}
 
 	return !bCompilationFailed;
@@ -2356,7 +3143,7 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 		AdditionalDefines.SetDefine(TEXT("COMPILER_SUPPORTS_ATTRIBUTES"), (uint32)0);
 	}
 
-	if (Input.Environment.CompilerFlags.Contains(CFLAG_UseFullPrecisionInPS))
+	if (Input.Environment.FullPrecisionInPS)
 	{
 		AdditionalDefines.SetDefine(TEXT("FORCE_FLOATS"), (uint32)1);
 	}
@@ -2387,21 +3174,24 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 	const EHlslShaderFrequency FrequencyTable[] =
 	{
 		HSF_VertexShader,
-		bIsSM5 ? HSF_HullShader : HSF_InvalidFrequency,
-		bIsSM5 ? HSF_DomainShader : HSF_InvalidFrequency,
+		HSF_InvalidFrequency,
+		HSF_InvalidFrequency,
 		HSF_PixelShader,
 		HSF_GeometryShader,
-		RHISupportsComputeShaders(Input.Target.GetPlatform()) ? HSF_ComputeShader : HSF_InvalidFrequency
+		HSF_ComputeShader
 	};
+	static_assert(SF_NumStandardFrequencies == UE_ARRAY_COUNT(FrequencyTable), "NumFrequencies changed. Please update tables.");
 
-	const EHlslShaderFrequency Frequency = FrequencyTable[Input.Target.Frequency];
-	if (Frequency == HSF_InvalidFrequency)
+	const EShaderFrequency Frequency = (EShaderFrequency)Input.Target.Frequency;
+
+	const EHlslShaderFrequency HlslFrequency = FrequencyTable[Frequency];
+	if (HlslFrequency == HSF_InvalidFrequency)
 	{
 		Output.bSucceeded = false;
 		FShaderCompilerError* NewError = new(Output.Errors) FShaderCompilerError();
 		NewError->StrippedErrorMessage = FString::Printf(
 			TEXT("%s shaders not supported for use in OpenGL."),
-			CrossCompiler::GetFrequencyName((EShaderFrequency)Input.Target.Frequency)
+			CrossCompiler::GetFrequencyName(Frequency)
 			);
 		return;
 	}
@@ -2417,7 +3207,7 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 	// This requires removing the HLSLCC_NoPreprocess flag later on!
 	RemoveUniformBuffersFromSource(Input.Environment, PreprocessedShader);
 
-	uint32 CCFlags = CalculateCrossCompilerFlags(Version, Input.Environment.CompilerFlags);
+	uint32 CCFlags = CalculateCrossCompilerFlags(Version, Input.Environment.FullPrecisionInPS, Input.Environment.CompilerFlags);
 
 	// Required as we added the RemoveUniformBuffersFromSource() function (the cross-compiler won't be able to interpret comments w/o a preprocessor)
 	CCFlags &= ~HLSLCC_NoPreprocess;
@@ -2448,7 +3238,7 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 		bool bDefaultPrecisionIsHalf = (CCFlags & HLSLCC_UseFullPrecisionInPS) == 0;
 		FGlslLanguageSpec* LanguageSpec = CreateLanguageSpec(Version, bDefaultPrecisionIsHalf);
 
-		FHlslCrossCompilerContext CrossCompilerContext(CCFlags, Frequency, HlslCompilerTarget);
+		FHlslCrossCompilerContext CrossCompilerContext(CCFlags, HlslFrequency, HlslCompilerTarget);
 		if (CrossCompilerContext.Init(TCHAR_TO_ANSI(*Input.VirtualSourceFilePath), LanguageSpec))
 		{
 			bCompilationSucceeded = CrossCompilerContext.Run(
@@ -2462,6 +3252,12 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 
 		delete BackEnd;
 		delete LanguageSpec;
+
+		if (bDumpDebugInfo && bCompilationSucceeded && GlslShaderSource != nullptr)
+		{
+			const TCHAR* ShaderFileExt = CrossCompiler::FShaderConductorContext::GetShaderFileExt(CrossCompiler::EShaderConductorLanguage::Essl, Frequency);
+			DumpDebugShaderText(Input, GlslShaderSource, FCStringAnsi::Strlen(GlslShaderSource), ShaderFileExt);
+		}
 	}
 
 	static const bool bDirectCompile = FParse::Param(FCommandLine::Get(), TEXT("directcompile"));
@@ -2473,16 +3269,17 @@ void FOpenGLFrontend::CompileShader(const FShaderCompilerInput& Input, FShaderCo
 		}
 
 #if VALIDATE_GLSL_WITH_DRIVER
-		PrecompileShader(Output, Input, GlslShaderSource, Version, Frequency);
+		PrecompileShader(Output, Input, GlslShaderSource, Version, HlslFrequency);
 #else // VALIDATE_GLSL_WITH_DRIVER
-		int32 SourceLen = FCStringAnsi::Strlen(GlslShaderSource);
+		int32 SourceLen = FCStringAnsi::Strlen(GlslShaderSource); //-V595
 		Output.Target = Input.Target;
 		BuildShaderOutput(Output, Input, GlslShaderSource, SourceLen, Version);
 #endif // VALIDATE_GLSL_WITH_DRIVER
 
-		if (bDumpDebugInfo)
+		if (bDumpDebugInfo && GlslShaderSource != nullptr)
 		{
-			FString DumpedGlslFile = *Input.DumpDebugInfoPath / (TEXT("Output") + GetExtension(Frequency));
+			const TCHAR* ShaderFileExt = CrossCompiler::FShaderConductorContext::GetShaderFileExt(CrossCompiler::EShaderConductorLanguage::Essl, Frequency);
+			FString DumpedGlslFile = FString::Printf(TEXT("%s/Output.%s"), *Input.DumpDebugInfoPath, ShaderFileExt);
 			if (TUniquePtr<FArchive> FileWriter = TUniquePtr<FArchive>(IFileManager::Get().CreateFileWriter(*DumpedGlslFile)))
 			{
 				FileWriter->Serialize(GlslShaderSource, FCStringAnsi::Strlen(GlslShaderSource));
@@ -2617,15 +3414,15 @@ TSharedPtr<ANSICHAR> FOpenGLFrontend::PrepareCodeForOfflineCompilation(const GLS
 	bool bNeedsExtDrawInstancedDefine = false;
 	if (Capabilities.TargetPlatform == EPlatformType::Android || Capabilities.TargetPlatform == EPlatformType::Web)
 	{
-		const TCHAR *ES310Version = TEXT("#version 310 es");
-		StrOutSource.Append(ES310Version);
+		const TCHAR *ES320Version = TEXT("#version 320 es");
+		StrOutSource.Append(ES320Version);
 		StrOutSource.Append(TEXT("\n"));
-		OriginalShaderSource.RemoveFromStart(ES310Version);
+		OriginalShaderSource.RemoveFromStart(ES320Version);
 	}
 
 	const GLenum TypeEnum = GLFrequencyTable[Frequency];
 	// The incoming glsl may have preprocessor code that is dependent on defines introduced via the engine.
-	// This is the place to insert such engine preprocessor defines, immediately after the glsl version declaration.
+	// This is the place to insert such engine preprocessor defines, immediately after the glsl version declarati
 
 	if (bEmitMobileMultiView)
 	{

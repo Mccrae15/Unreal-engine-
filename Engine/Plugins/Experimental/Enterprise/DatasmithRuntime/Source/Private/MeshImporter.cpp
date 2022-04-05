@@ -81,14 +81,16 @@ namespace DatasmithRuntime
 			else
 			{
 				FString MeshName = FString::Printf(TEXT("SM_%s_%d"), MeshElement->GetName(), MeshData.ElementId);
-#ifdef ASSET_DEBUG
 				MeshName = FDatasmithUtils::SanitizeObjectName(MeshName);
+#ifdef ASSET_DEBUG
 				UPackage* Package = CreatePackage(*FPaths::Combine( TEXT("/Game/Runtime/Meshes"), MeshName));
-				StaticMesh = NewObject< URuntimeMesh >(Package, *MeshName, RF_Public);
+				StaticMesh = NewObject< URuntimeMesh >(Package, NAME_None, RF_Public);
 #else
-				StaticMesh = NewObject< URuntimeMesh >(GetTransientPackage(), *MeshName);
+				StaticMesh = NewObject< URuntimeMesh >(GetTransientPackage());
 #endif
 				check(StaticMesh);
+
+				RenameObject(StaticMesh, *MeshName);
 
 				StaticMesh->SetWorld(RootComponent->GetWorld());
 
@@ -307,27 +309,6 @@ namespace DatasmithRuntime
 
 		TSharedRef< IDatasmithMeshElement > MeshElement = StaticCastSharedPtr< IDatasmithMeshElement >(Elements[ElementId]).ToSharedRef();
 
-		TFunction<bool()> MaterialRequiresAdjacency;
-		MaterialRequiresAdjacency = [this, MeshElementPtr = &MeshElement.Get()]() -> bool
-		{
-			for (int32 Index = 0; Index < MeshElementPtr->GetMaterialSlotCount(); Index++)
-			{
-				if (const IDatasmithMaterialIDElement* MaterialIDElement = MeshElementPtr->GetMaterialSlotAt(Index).Get())
-				{
-					// #ue_datasmithruntime: Missing code to handle the case where a MaterialID's name is an asset's path
-					if (FSceneGraphId* MaterialElementIdPtr = AssetElementMapping.Find(MaterialPrefix + MaterialIDElement->GetName()))
-					{
-						if (AssetDataList[*MaterialElementIdPtr].Requirements & EMaterialRequirements::RequiresAdjacency)
-						{
-							return true;
-						}
-					}
-				}
-			}
-
-			return false;
-		};
-
 		FAssetData& MeshData = AssetDataList[ElementId];
 
 		UStaticMesh* StaticMesh = MeshData.GetObject<UStaticMesh>();
@@ -415,17 +396,22 @@ namespace DatasmithRuntime
 
 			// If normals are invalid, compute normals and tangents at polygon level then vertex level
 			if (bHasInvalidNormals)
-			{
-				FStaticMeshOperations::ComputePolygonTangentsAndNormals(MeshDescription, THRESH_POINTS_ARE_SAME);
+				{
+				FStaticMeshOperations::ComputeTriangleTangentsAndNormals(MeshDescription, THRESH_POINTS_ARE_SAME);
 
 				const EComputeNTBsFlags ComputeFlags = EComputeNTBsFlags::Normals | EComputeNTBsFlags::Tangents | EComputeNTBsFlags::UseMikkTSpace;
 				FStaticMeshOperations::ComputeTangentsAndNormals(MeshDescription, ComputeFlags);
-			}
+					}
 			else if (bHasInvalidTangents)
 			{
 				FStaticMeshOperations::ComputeMikktTangents(MeshDescription, true);
 			}
 		}
+
+#if WITH_EDITOR
+		// Force the generation of UVs data with full precision in the vertex buffer
+		StaticMesh->GetSourceModel(0).BuildSettings.bUseFullPrecisionUVs = true;
+#endif
 
 		TArray<const FMeshDescription*> MeshDescriptionPointers;
 		for (FMeshDescription& MeshDescription : MeshDescriptions)
@@ -441,6 +427,7 @@ namespace DatasmithRuntime
 			Params.bBuildSimpleCollision = false;
 			// Do not commit since we only need the render data and commit is slow
 			Params.bCommitMeshDescription = false;
+			Params.bFastBuild = true;
 #if !WITH_EDITOR
 			// Force build process to keep index buffer for complex collision when in game
 			Params.bAllowCpuAccess = ImportOptions.BuildCollisions != ECollisionEnabled::NoCollision && (ImportOptions.CollisionType == ECollisionTraceFlag::CTF_UseComplexAsSimple || ImportOptions.CollisionType == ECollisionTraceFlag::CTF_UseSimpleAndComplex);
@@ -456,6 +443,7 @@ namespace DatasmithRuntime
 
 		// Free up memory
 		MeshDescriptions.Empty();
+
 #if WITH_EDITORONLY_DATA
 		StaticMesh->ClearMeshDescriptions();
 #endif

@@ -17,16 +17,14 @@ public:
 
 	UFracturePlaneCutSettings(const FObjectInitializer& ObjInit)
 		: Super(ObjInit)
-		, NumberPlanarCuts(3) {}
+		, NumberPlanarCuts(1) {}
 
-	/** Number of Clusters - Cluster Voronoi Method */
-	UPROPERTY(EditAnywhere, Category = PlaneCut, meta = (DisplayName = "Number of Cuts", UIMin = "1", UIMax = "20", ClampMin = "1"))
+	/** Number of cutting planes. Only used when "Use Gizmo" is disabled */
+	UPROPERTY(EditAnywhere, Category = PlaneCut, meta = (DisplayName = "Number of Cuts", UIMin = "1", UIMax = "20", ClampMin = "1", EditCondition = "bCanCutWithMultiplePlanes", HideEditConditionToggle))
 	int32 NumberPlanarCuts;
 
-	/** Actor to be used for voronoi bounds or plane cutting  */
-	UPROPERTY(EditAnywhere, Category = PlaneCut, meta = (DisplayName = "Reference Actor"))
-	TLazyObjectPtr<AActor> ReferenceActor;
-
+	UPROPERTY()
+	bool bCanCutWithMultiplePlanes = false;
 };
 
 
@@ -42,6 +40,7 @@ public:
 	virtual FText GetDisplayText() const override;
 	virtual FText GetTooltipText() const override;
 	virtual FSlateIcon GetToolIcon() const override;
+	virtual void SelectedBonesChanged() override;
 
 	void Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI) override;
 
@@ -52,15 +51,32 @@ public:
 	virtual void FractureContextChanged() override;
 	virtual int32 ExecuteFracture(const FFractureToolContext& FractureContext) override;
 
+	virtual void Setup() override;
+	virtual void Shutdown() override;
+
+protected:
+	virtual void ClearVisualizations() override
+	{
+		Super::ClearVisualizations();
+		RenderCuttingPlanesTransforms.Empty();
+		PlanesMappings.Empty();
+	}
+
+	virtual void PostEditChangeChainProperty(struct FPropertyChangedChainEvent& PropertyChangedEvent) override;
+
 private:
 	// Slicing
 	UPROPERTY(EditAnywhere, Category = Slicing)
-	UFracturePlaneCutSettings* PlaneCutSettings;
+	TObjectPtr<UFracturePlaneCutSettings> PlaneCutSettings;
+
+	UPROPERTY(EditAnywhere, Category = Uniform)
+	TObjectPtr<UFractureTransformGizmoSettings> GizmoSettings;
 
 	void GenerateSliceTransforms(const FFractureToolContext& Context, TArray<FTransform>& CuttingPlaneTransforms);
 
 	float RenderCuttingPlaneSize;
 	TArray<FTransform> RenderCuttingPlanesTransforms;
+	FVisualizationMappings PlanesMappings;
 };
 
 

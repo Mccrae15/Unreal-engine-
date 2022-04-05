@@ -5,7 +5,7 @@
 =============================================================================*/
 
 #include "OpenGLShaders.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Serialization/MemoryWriter.h"
@@ -359,8 +359,6 @@ static const TCHAR* ShaderNameFromShaderType(GLenum ShaderType)
 		case GL_VERTEX_SHADER: return TEXT("vertex");
 		case GL_FRAGMENT_SHADER: return TEXT("fragment");
 		case GL_GEOMETRY_SHADER: return TEXT("geometry");
-		case GL_TESS_CONTROL_SHADER: return TEXT("hull");
-		case GL_TESS_EVALUATION_SHADER: return TEXT("domain");
 		case GL_COMPUTE_SHADER: return TEXT("compute");
 		default: return NULL;
 	}
@@ -650,9 +648,7 @@ ShaderType* CompileOpenGLShader(TArrayView<const uint8> InShaderCode, const FSHA
 		|| (TypeEnum == GL_VERTEX_SHADER && Header.FrequencyMarker != 0x5653)
 		|| (TypeEnum == GL_FRAGMENT_SHADER && Header.FrequencyMarker != 0x5053)
 		|| (TypeEnum == GL_GEOMETRY_SHADER && Header.FrequencyMarker != 0x4753)
-		|| (TypeEnum == GL_COMPUTE_SHADER && Header.FrequencyMarker != 0x4353 && FOpenGL::SupportsComputeShaders())
-		|| (TypeEnum == GL_TESS_CONTROL_SHADER && Header.FrequencyMarker != 0x4853 && FOpenGL::SupportsTessellation()) /* hull shader*/
-		|| (TypeEnum == GL_TESS_EVALUATION_SHADER && Header.FrequencyMarker != 0x4453 && FOpenGL::SupportsTessellation()) /* domain shader*/
+		|| (TypeEnum == GL_COMPUTE_SHADER && Header.FrequencyMarker != 0x4353)
 		)
 	{
 		UE_LOG(LogRHI,Fatal,
@@ -782,6 +778,13 @@ ShaderType* CompileOpenGLShader(TArrayView<const uint8> InShaderCode, const FSHA
 		}
 	}
 
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (RHIShader)
+	{
+		RHIShader->ShaderName = ShaderCode.FindOptionalData(FShaderCodeName::Key);
+	}
+#endif
+
 #if DEBUG_GL_SHADERS
 	Shader->GlslCode = GlslCode;
 	Shader->GlslCodeString = (ANSICHAR*)Shader->GlslCode.GetData();
@@ -819,15 +822,11 @@ void OPENGLDRV_API GetCurrentOpenGLShaderDeviceCapabilities(FOpenGLShaderDeviceC
 	}
 
 #elif PLATFORM_ANDROID
-	#if PLATFORM_LUMINGL4
-		Capabilities.TargetPlatform = EOpenGLShaderTargetPlatform::OGLSTP_Desktop;
-	#else
 		Capabilities.TargetPlatform = EOpenGLShaderTargetPlatform::OGLSTP_Android;
 		Capabilities.bSupportsShaderFramebufferFetch = FOpenGL::SupportsShaderFramebufferFetch();
 		Capabilities.bRequiresARMShaderFramebufferFetchDepthStencilUndef = FOpenGL::RequiresARMShaderFramebufferFetchDepthStencilUndef();
 		Capabilities.MaxVaryingVectors = FOpenGL::GetMaxVaryingVectors();
 		Capabilities.bRequiresDisabledEarlyFragmentTests = FOpenGL::RequiresDisabledEarlyFragmentTests();
-	#endif // PLATFORM_LUMINGL4
 #elif PLATFORM_IOS
 	Capabilities.TargetPlatform = EOpenGLShaderTargetPlatform::OGLSTP_iOS;
 #else
@@ -856,17 +855,18 @@ void OPENGLDRV_API GLSLToDeviceCompatibleGLSL(FAnsiCharArray& GlslCodeOriginal, 
 	
 	if (Capabilities.TargetPlatform == EOpenGLShaderTargetPlatform::OGLSTP_Android)
 	{
-		const ANSICHAR* ES310Version = "#version 310 es";
+		const ANSICHAR* ESVersion = "#version 320 es";
 
-		// @todo Lumin hack: This is needed for AEP on Lumin, so that some shaders compile that need version 320
-		#if PLATFORM_LUMINGL4
-			AppendCString(GlslCode, "#version 320 es\n");
-			ReplaceCString(GlslCodeOriginal, ES310Version, "");
-		#else
-			AppendCString(GlslCode, ES310Version);
-			AppendCString(GlslCode, "\n");
-			ReplaceCString(GlslCodeOriginal, ES310Version, "");
-		#endif
+		bool FoundVersion = (FCStringAnsi::Strstr(GlslCodeOriginal.GetData(), ESVersion)) != nullptr;
+
+		if (!FoundVersion)
+		{
+			ESVersion = "#version 310 es";
+		}
+		
+		AppendCString(GlslCode, ESVersion);
+		AppendCString(GlslCode, "\n");
+		ReplaceCString(GlslCodeOriginal, ESVersion, "");
 	}
 
 	if (TypeEnum == GL_FRAGMENT_SHADER && Capabilities.bRequiresDisabledEarlyFragmentTests)
@@ -876,6 +876,17 @@ void OPENGLDRV_API GLSLToDeviceCompatibleGLSL(FAnsiCharArray& GlslCodeOriginal, 
 
 	// The incoming glsl may have preprocessor code that is dependent on defines introduced via the engine.
 	// This is the place to insert such engine preprocessor defines, immediately after the glsl version declaration.
+	if (TypeEnum == GL_FRAGMENT_SHADER)
+	{
+		if (FOpenGL::SupportsPixelLocalStorage())
+		{
+			AppendCString(GlslCode, "#define UE_MRT_PLS 1\n");
+		}
+		else if(FOpenGL::SupportsShaderMRTFramebufferFetch())
+		{
+			AppendCString(GlslCode, "#define UE_MRT_FRAMEBUFFER_FETCH 1\n");
+		}
+	}
 
 	if (bEmitTextureExternal)
 	{
@@ -888,7 +899,7 @@ void OPENGLDRV_API GLSLToDeviceCompatibleGLSL(FAnsiCharArray& GlslCodeOriginal, 
 		{
 			AppendCString(GlslCode, "\n\n");
 
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
 			FOpenGL::EImageExternalType ImageExternalType = FOpenGL::GetImageExternalType();
 			switch (ImageExternalType)
 			{
@@ -1055,18 +1066,6 @@ FGeometryShaderRHIRef FOpenGLDynamicRHI::RHICreateGeometryShader(TArrayView<cons
 	return CreateProxyShader<FRHIGeometryShader, FOpenGLGeometryShaderProxy>(Code, Hash);
 }
 
-FHullShaderRHIRef FOpenGLDynamicRHI::RHICreateHullShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	check(GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5);
-	return CreateProxyShader<FRHIHullShader, FOpenGLHullShaderProxy>(Code, Hash);
-}
-
-FDomainShaderRHIRef FOpenGLDynamicRHI::RHICreateDomainShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	check(GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5);
-	return CreateProxyShader<FRHIDomainShader, FOpenGLDomainShaderProxy>(Code, Hash);
-}
-
 static void MarkShaderParameterCachesDirty(FOpenGLShaderParameterCache* ShaderParameters, bool UpdateCompute)
 {
 	VERIFY_GL_SCOPE();
@@ -1111,7 +1110,7 @@ void FOpenGLDynamicRHI::BindUniformBufferBase(FOpenGLContextState& ContextState,
 				CachedBindUniformBuffer(ContextState,PendingState.ZeroFilledDummyUniformBuffer);
 				glBufferData(GL_UNIFORM_BUFFER, ZERO_FILLED_DUMMY_UNIFORM_BUFFER_SIZE, ZeroBuffer, GL_STATIC_DRAW);
 				FMemory::Free(ZeroBuffer);
-				IncrementBufferMemory(GL_UNIFORM_BUFFER, false, ZERO_FILLED_DUMMY_UNIFORM_BUFFER_SIZE);
+				IncrementBufferMemory(GL_UNIFORM_BUFFER, ZERO_FILLED_DUMMY_UNIFORM_BUFFER_SIZE);
 			}
 
 			Buffer = PendingState.ZeroFilledDummyUniformBuffer;
@@ -1233,7 +1232,6 @@ public:
 	FStagePackedUniformInfo	StagePackedUniformInfo[CrossCompiler::NUM_SHADER_STAGES];
 
 	GLuint		Program;
-	bool		bUsingTessellation;
 	bool		bDrawn;
 	bool		bConfigIsInitalized;
 
@@ -1260,7 +1258,7 @@ public:
 
 private:
 	FOpenGLLinkedProgram()
-	: Program(0), bUsingTessellation(false), bDrawn(false), bConfigIsInitalized(false), MaxTextureStage(-1), MaxUAVUnitUsed(-1)
+	: Program(0), bDrawn(false), bConfigIsInitalized(false), MaxTextureStage(-1), MaxUAVUnitUsed(-1)
 	{
 		TextureStageNeeds.Init( false, FOpenGL::GetMaxCombinedTextureImageUnits() );
 		UAVStageNeeds.Init( false, FOpenGL::GetMaxCombinedUAVUnits() );
@@ -1284,12 +1282,11 @@ public:
 		Config.ProgramKey = ProgramKeyIn;
 	}
 
-	FOpenGLLinkedProgram(const FOpenGLLinkedProgramConfiguration& ConfigIn, GLuint ProgramIn, bool bUsingTessellationIn)
+	FOpenGLLinkedProgram(const FOpenGLLinkedProgramConfiguration& ConfigIn, GLuint ProgramIn)
 		: FOpenGLLinkedProgram()
 	{
 		SetConfig(ConfigIn);
 		Program = ProgramIn;
-		bUsingTessellation = bUsingTessellationIn;
 	}
 
 	~FOpenGLLinkedProgram()
@@ -1437,29 +1434,6 @@ static void ConfigureStageStates(FOpenGLLinkedProgram* LinkedProgram)
 			Config.Shaders[CrossCompiler::SHADER_STAGE_PIXEL].Bindings.NumUniformBuffers
 		);
 		check(LinkedProgram->StagePackedUniformInfo[CrossCompiler::SHADER_STAGE_GEOMETRY].PackedUniformInfos.Num() <= Config.Shaders[CrossCompiler::SHADER_STAGE_GEOMETRY].Bindings.PackedGlobalArrays.Num());
-	}
-
-	if (Config.Shaders[CrossCompiler::SHADER_STAGE_HULL].Resource)
-	{
-		LinkedProgram->ConfigureShaderStage(
-			CrossCompiler::SHADER_STAGE_HULL,
-			OGL_FIRST_UNIFORM_BUFFER +
-			Config.Shaders[CrossCompiler::SHADER_STAGE_VERTEX].Bindings.NumUniformBuffers +
-			Config.Shaders[CrossCompiler::SHADER_STAGE_PIXEL].Bindings.NumUniformBuffers +
-			Config.Shaders[CrossCompiler::SHADER_STAGE_GEOMETRY].Bindings.NumUniformBuffers
-		);
-	}
-
-	if (Config.Shaders[CrossCompiler::SHADER_STAGE_DOMAIN].Resource)
-	{
-		LinkedProgram->ConfigureShaderStage(
-			CrossCompiler::SHADER_STAGE_DOMAIN,
-			OGL_FIRST_UNIFORM_BUFFER +
-			Config.Shaders[CrossCompiler::SHADER_STAGE_VERTEX].Bindings.NumUniformBuffers +
-			Config.Shaders[CrossCompiler::SHADER_STAGE_PIXEL].Bindings.NumUniformBuffers +
-			Config.Shaders[CrossCompiler::SHADER_STAGE_GEOMETRY].Bindings.NumUniformBuffers +
-			Config.Shaders[CrossCompiler::SHADER_STAGE_HULL].Bindings.NumUniformBuffers
-		);
 	}
 
 	if (Config.Shaders[CrossCompiler::SHADER_STAGE_COMPUTE].Resource)
@@ -2202,13 +2176,13 @@ void FOpenGLLinkedProgram::ConfigureShaderStage( int Stage, uint32 FirstUniformB
 		FOpenGL::GetFirstVertexTextureUnit(),
 		FOpenGL::GetFirstPixelTextureUnit(),
 		FOpenGL::GetFirstGeometryTextureUnit(),
-		FOpenGL::GetFirstHullTextureUnit(),
-		FOpenGL::GetFirstDomainTextureUnit(),
+		0,
+		0,
 		FOpenGL::GetFirstComputeTextureUnit()
 	};
 	static const GLint FirstUAVUnit[CrossCompiler::NUM_SHADER_STAGES] =
 	{
-		OGL_UAV_NOT_SUPPORTED_FOR_GRAPHICS_UNIT,
+		FOpenGL::GetFirstVertexUAVUnit(),
 		FOpenGL::GetFirstPixelUAVUnit(),
 		OGL_UAV_NOT_SUPPORTED_FOR_GRAPHICS_UNIT,
 		OGL_UAV_NOT_SUPPORTED_FOR_GRAPHICS_UNIT,
@@ -2345,8 +2319,19 @@ void FOpenGLLinkedProgram::ConfigureShaderStage( int Stage, uint32 FirstUniformB
 	int32 LastFoundUAVIndex = -1;
 	for (int32 UAVIndex = 0; UAVIndex < Config.Shaders[Stage].Bindings.NumUAVs; ++UAVIndex)
 	{
-		SetIndex(Name.Buffer, 2, UAVIndex);
+		ANSICHAR* Str = SetIndex(Name.Buffer, 2, UAVIndex);
 		GLint Location = glGetUniformLocation(StageProgram, Name.Buffer);
+		if (Location == -1)
+		{
+			// SSBO
+			Str[0] = '_';
+			Str[1] = 'V';
+			Str[2] = 'A';
+			Str[3] = 'R';
+			Str[4] = '\0';
+			Location = glGetProgramResourceIndex(StageProgram, GL_SHADER_STORAGE_BLOCK, Name.Buffer);
+		}
+
 		if (Location == -1)
 		{
 			if (LastFoundUAVIndex != -1)
@@ -2574,12 +2559,9 @@ static void VerifyUniformBufferLayouts(GLuint Program)
 #endif
 			}
 			
-			if (RHISupportsComputeShaders(GMaxRHIShaderPlatform))
-			{
 #ifdef GL_UNIFORM_BLOCK_REFERENCED_BY_COMPUTE_SHADER
 				glGetActiveUniformBlockiv(Program, BlockIndex, GL_UNIFORM_BLOCK_REFERENCED_BY_COMPUTE_SHADER, &ReferencedByCS);
 #endif
-			}
 
 			if(ReferencedByVS) {ReferencedBy += TEXT("V");}
 			if(ReferencedByHS) {ReferencedBy += TEXT("H");}
@@ -2701,14 +2683,6 @@ static FOpenGLLinkedProgram* LinkProgram( const FOpenGLLinkedProgramConfiguratio
 		{
 			FOpenGL::UseProgramStages(Program, GL_GEOMETRY_SHADER_BIT, Config.Shaders[CrossCompiler::SHADER_STAGE_GEOMETRY].Resource);
 		}
-		if (Config.Shaders[CrossCompiler::SHADER_STAGE_HULL].Resource)
-		{
-			FOpenGL::UseProgramStages(Program, GL_TESS_CONTROL_SHADER_BIT, Config.Shaders[CrossCompiler::SHADER_STAGE_HULL].Resource);
-		}
-		if (Config.Shaders[CrossCompiler::SHADER_STAGE_DOMAIN].Resource)
-		{
-			FOpenGL::UseProgramStages(Program, GL_TESS_EVALUATION_SHADER_BIT, Config.Shaders[CrossCompiler::SHADER_STAGE_DOMAIN].Resource);
-		}
 		if (Config.Shaders[CrossCompiler::SHADER_STAGE_COMPUTE].Resource)
 		{
 			FOpenGL::UseProgramStages(Program, GL_COMPUTE_SHADER_BIT, Config.Shaders[CrossCompiler::SHADER_STAGE_COMPUTE].Resource);
@@ -2746,8 +2720,7 @@ static FOpenGLLinkedProgram* LinkProgram( const FOpenGLLinkedProgramConfiguratio
 	
 	FOpenGL::BindProgramPipeline(Program);
 
-	bool bUsingTessellation = Config.Shaders[CrossCompiler::SHADER_STAGE_HULL].Resource && Config.Shaders[CrossCompiler::SHADER_STAGE_DOMAIN].Resource;
-	FOpenGLLinkedProgram* LinkedProgram = new FOpenGLLinkedProgram(Config, Program, bUsingTessellation);
+	FOpenGLLinkedProgram* LinkedProgram = new FOpenGLLinkedProgram(Config, Program);
 
 	if (GetOpenGLProgramsCache().IsUsingLRU() && CVarLRUKeepProgramBinaryResident.GetValueOnAnyThread() && CachedProgramBinary.Num())
 	{
@@ -2810,6 +2783,15 @@ FOpenGLLinkedProgram* FOpenGLDynamicRHI::GetLinkedComputeProgram(FRHIComputeShad
 	Config.ProgramKey.ShaderHashes[CrossCompiler::SHADER_STAGE_COMPUTE] = ComputeShaderRHI->GetHash();
 
 	FOpenGLLinkedProgram* LinkedProgram = GetOpenGLProgramsCache().Find(Config.ProgramKey, true);
+	if (!LinkedProgram)
+	{
+		// ensure that pending request for this program has been completed before attempting to link
+		if (FOpenGLProgramBinaryCache::CheckSinglePendingGLProgramCreateRequest(Config.ProgramKey))
+		{
+			LinkedProgram = GetOpenGLProgramsCache().Find(Config.ProgramKey, true);
+		}
+	}
+
 	if (LinkedProgram == nullptr)
 	{
 		// Not in the cache. Create and add the program here.
@@ -2831,7 +2813,6 @@ FOpenGLLinkedProgram* FOpenGLDynamicRHI::GetLinkedComputeProgram(FRHIComputeShad
 
 FComputeShaderRHIRef FOpenGLDynamicRHI::RHICreateComputeShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 {
-	check(RHISupportsComputeShaders(GMaxRHIShaderPlatform));
 	return CreateProxyShader<FRHIComputeShader, FOpenGLComputeShaderProxy>(Code, Hash);
 }
 
@@ -3006,12 +2987,6 @@ static void BindShaderStage(FOpenGLLinkedProgramConfiguration& Config, CrossComp
 						case SF_Geometry:
 							Header.FrequencyMarker = 0x4753;
 							break;
-						case SF_Hull:
-							Header.FrequencyMarker = 0x4853;
-							break;
-						case SF_Domain:
-							Header.FrequencyMarker = 0x4453;
-							break;
 						case SF_Compute:
 							Header.FrequencyMarker = 0x4353;
 							break;
@@ -3105,8 +3080,6 @@ static FCriticalSection GProgramBinaryCacheCS;
 FBoundShaderStateRHIRef FOpenGLDynamicRHI::RHICreateBoundShaderState_OnThisThread(
 	FRHIVertexDeclaration* VertexDeclarationRHI,
 	FRHIVertexShader* VertexShaderRHI,
-	FRHIHullShader* HullShaderRHI,
-	FRHIDomainShader* DomainShaderRHI,
 	FRHIPixelShader* PixelShaderRHI,
 	FRHIGeometryShader* GeometryShaderRHI,
 	bool bFromPSOFileCache
@@ -3126,12 +3099,10 @@ FBoundShaderStateRHIRef FOpenGLDynamicRHI::RHICreateBoundShaderState_OnThisThrea
 		PixelShaderRHI = TShaderMapRef<FNULLPS>(GetGlobalShaderMap(GMaxRHIFeatureLevel)).GetPixelShader();
 	}
 
-	auto CreateConfig = [VertexShaderRHI, HullShaderRHI, DomainShaderRHI, PixelShaderRHI, GeometryShaderRHI]()
+	auto CreateConfig = [VertexShaderRHI, PixelShaderRHI, GeometryShaderRHI]()
 	{
 		FOpenGLVertexShader* VertexShader = ResourceCast(VertexShaderRHI);
 		FOpenGLPixelShader* PixelShader = ResourceCast(PixelShaderRHI);
-		FOpenGLHullShader* HullShader = ResourceCast(HullShaderRHI);
-		FOpenGLDomainShader* DomainShader = ResourceCast(DomainShaderRHI);
 		FOpenGLGeometryShader* GeometryShader = ResourceCast(GeometryShaderRHI);
 
 		FOpenGLLinkedProgramConfiguration Config;
@@ -3144,39 +3115,14 @@ FBoundShaderStateRHIRef FOpenGLDynamicRHI::RHICreateBoundShaderState_OnThisThrea
 		Config.Shaders[CrossCompiler::SHADER_STAGE_VERTEX].Resource = VertexShader->Resource;
 		Config.ProgramKey.ShaderHashes[CrossCompiler::SHADER_STAGE_VERTEX] = VertexShaderRHI->GetHash();
 
-		if (FOpenGL::SupportsTessellation())
-		{
-			if (HullShader)
+		if (GeometryShader)
 			{
 				check(VertexShader);
-				BindShaderStage(Config, CrossCompiler::SHADER_STAGE_HULL, HullShader, HullShaderRHI->GetHash(), CrossCompiler::SHADER_STAGE_VERTEX, VertexShader);
-			}
-			if (DomainShader)
-			{
-				check(HullShader);
-				BindShaderStage(Config, CrossCompiler::SHADER_STAGE_DOMAIN, DomainShader, DomainShaderRHI->GetHash(), CrossCompiler::SHADER_STAGE_HULL, HullShader);
-			}
+			BindShaderStage(Config, CrossCompiler::SHADER_STAGE_GEOMETRY, GeometryShader, GeometryShaderRHI->GetHash(), CrossCompiler::SHADER_STAGE_VERTEX, VertexShader);
 		}
 
+		check(GeometryShader || VertexShader);
 		if (GeometryShader)
-		{
-			check(DomainShader || VertexShader);
-			if (DomainShader)
-			{
-				BindShaderStage(Config, CrossCompiler::SHADER_STAGE_GEOMETRY, GeometryShader, GeometryShaderRHI->GetHash(), CrossCompiler::SHADER_STAGE_DOMAIN, DomainShader);
-			}
-			else
-			{
-				BindShaderStage(Config, CrossCompiler::SHADER_STAGE_GEOMETRY, GeometryShader, GeometryShaderRHI->GetHash(), CrossCompiler::SHADER_STAGE_VERTEX, VertexShader);
-			}
-		}
-
-		check(DomainShader || GeometryShader || VertexShader);
-		if (DomainShader)
-		{
-			BindShaderStage(Config, CrossCompiler::SHADER_STAGE_PIXEL, PixelShader, PixelShaderRHI->GetHash(), CrossCompiler::SHADER_STAGE_DOMAIN, DomainShader);
-		}
-		else if (GeometryShader)
 		{
 			BindShaderStage(Config, CrossCompiler::SHADER_STAGE_PIXEL, PixelShader, PixelShaderRHI->GetHash(), CrossCompiler::SHADER_STAGE_GEOMETRY, GeometryShader);
 		}
@@ -3192,8 +3138,6 @@ FBoundShaderStateRHIRef FOpenGLDynamicRHI::RHICreateBoundShaderState_OnThisThrea
 		VertexDeclarationRHI,
 		VertexShaderRHI,
 		PixelShaderRHI,
-		HullShaderRHI,
-		DomainShaderRHI,
 		GeometryShaderRHI
 		);
 
@@ -3268,8 +3212,6 @@ FBoundShaderStateRHIRef FOpenGLDynamicRHI::RHICreateBoundShaderState_OnThisThrea
 			{
 				FOpenGLVertexShader* VertexShader = ResourceCast(VertexShaderRHI);
 				FOpenGLPixelShader* PixelShader = ResourceCast(PixelShaderRHI);
-				FOpenGLHullShader* HullShader = ResourceCast(HullShaderRHI);
-				FOpenGLDomainShader* DomainShader = ResourceCast(DomainShaderRHI);
 				FOpenGLGeometryShader* GeometryShader = ResourceCast(GeometryShaderRHI);
 		
 				// Make sure we have OpenGL context set up, and invalidate the parameters cache and current program (as we'll link a new one soon)
@@ -3295,17 +3237,6 @@ FBoundShaderStateRHIRef FOpenGLDynamicRHI::RHICreateBoundShaderState_OnThisThrea
 					{
 						UE_LOG(LogRHI, Error, TEXT("Geometry Shader:\n%s"), ANSI_TO_TCHAR(GeometryShader->GlslCode.GetData()));
 					}
-					if (FOpenGL::SupportsTessellation())
-					{
-						if (HullShader)
-						{
-							UE_LOG(LogRHI, Error, TEXT("Hull Shader:\n%s"), ANSI_TO_TCHAR(HullShader->GlslCode.GetData()));
-						}
-						if (DomainShader)
-						{
-							UE_LOG(LogRHI, Error, TEXT("Domain Shader:\n%s"), ANSI_TO_TCHAR(DomainShader->GlslCode.GetData()));
-						}
-					}
 #endif //DEBUG_GL_SHADERS
 					FName LinkFailurePanic = bFromPSOFileCache ? FName("FailedProgramLinkDuringPrecompile") : FName("FailedProgramLink");
 					RHIGetPanicDelegate().ExecuteIfBound(LinkFailurePanic);
@@ -3330,9 +3261,7 @@ FBoundShaderStateRHIRef FOpenGLDynamicRHI::RHICreateBoundShaderState_OnThisThrea
 			VertexDeclarationRHI,
 			VertexShaderRHI,
 			PixelShaderRHI,
-			GeometryShaderRHI,
-			HullShaderRHI,
-			DomainShaderRHI
+			GeometryShaderRHI
 			);
 
 		return BoundShaderState;
@@ -3447,7 +3376,6 @@ void FOpenGLDynamicRHI::BindPendingShaderState( FOpenGLContextState& ContextStat
 	{
 		FOpenGL::BindProgramPipeline(PendingProgram);
 		ContextState.Program = PendingProgram;
-		ContextState.bUsingTessellation = PendingState.BoundShaderState->LinkedProgram->bUsingTessellation;
 		MarkShaderParameterCachesDirty(PendingState.ShaderParameters, false);
 		PendingState.LinkedProgramAndDirtyFlag = nullptr;
 
@@ -3459,10 +3387,10 @@ void FOpenGLDynamicRHI::BindPendingShaderState( FOpenGLContextState& ContextStat
 	{
 		int32 NextUniformBufferIndex = OGL_FIRST_UNIFORM_BUFFER;
 
-		static_assert(SF_Compute == 5 && SF_NumFrequencies == 10, "Unexpected SF_ ordering");
-		static_assert(SF_RayGen > SF_Compute, "SF_Compute must be at the end of the list of frequencies supported in OpenGL");
+		static_assert(SF_NumGraphicsFrequencies == 5 && SF_NumFrequencies == 10, "Unexpected SF_ ordering");
+		static_assert(SF_RayGen > SF_NumGraphicsFrequencies, "SF_NumGraphicsFrequencies be the number of frequencies supported in OpenGL");
 
-		int32 NumUniformBuffers[SF_Compute];
+		int32 NumUniformBuffers[SF_NumGraphicsFrequencies];
 
 		PendingState.BoundShaderState->GetNumUniformBuffers(NumUniformBuffers);
 			
@@ -3497,27 +3425,6 @@ void FOpenGLDynamicRHI::BindPendingShaderState( FOpenGLContextState& ContextStat
 			NextUniformBufferIndex += NumUniformBuffers[SF_Geometry];
 		}
 
-		if (NumUniformBuffers[SF_Hull] >= 0)
-		{
-			PendingState.BoundShaderState->LinkedProgram->VerifyUniformBlockBindings(CrossCompiler::SHADER_STAGE_HULL, NextUniformBufferIndex);
-			BindUniformBufferBase(ContextState,
-				NumUniformBuffers[SF_Hull],
-				PendingState.BoundUniformBuffers[SF_Hull],
-				NextUniformBufferIndex,
-				ForceUniformBindingUpdate);
-			NextUniformBufferIndex += NumUniformBuffers[SF_Hull];
-		}
-
-		if (NumUniformBuffers[SF_Domain] >= 0)
-		{
-			PendingState.BoundShaderState->LinkedProgram->VerifyUniformBlockBindings(CrossCompiler::SHADER_STAGE_DOMAIN, NextUniformBufferIndex);
-			BindUniformBufferBase(ContextState,
-				NumUniformBuffers[SF_Domain],
-				PendingState.BoundUniformBuffers[SF_Domain],
-				NextUniformBufferIndex,
-				ForceUniformBindingUpdate);
-			NextUniformBufferIndex += NumUniformBuffers[SF_Domain];
-		}
 		if (FOpenGL::SupportsBindlessTexture())
 		{
 			SetupBindlessTextures(ContextState, PendingState.BoundShaderState->LinkedProgram->Samplers);
@@ -3530,20 +3437,16 @@ FOpenGLBoundShaderState::FOpenGLBoundShaderState(
 	FRHIVertexDeclaration* InVertexDeclarationRHI,
 	FRHIVertexShader* InVertexShaderRHI,
 	FRHIPixelShader* InPixelShaderRHI,
-	FRHIGeometryShader* InGeometryShaderRHI,
-	FRHIHullShader* InHullShaderRHI,
-	FRHIDomainShader* InDomainShaderRHI
+	FRHIGeometryShader* InGeometryShaderRHI
 	)
 	:	CacheLink(InVertexDeclarationRHI, InVertexShaderRHI, InPixelShaderRHI,
-		InHullShaderRHI, InDomainShaderRHI,	InGeometryShaderRHI, this)
+		InGeometryShaderRHI, this)
 {
 	FOpenGLVertexDeclaration* InVertexDeclaration = FOpenGLDynamicRHI::ResourceCast(InVertexDeclarationRHI);
 	VertexDeclaration = InVertexDeclaration;
 	VertexShaderProxy = static_cast<FOpenGLVertexShaderProxy*>(InVertexShaderRHI);
 	PixelShaderProxy = static_cast<FOpenGLPixelShaderProxy*>(InPixelShaderRHI);
 	GeometryShaderProxy = static_cast<FOpenGLGeometryShaderProxy*>(InGeometryShaderRHI);
-	HullShaderProxy = static_cast<FOpenGLHullShaderProxy*>(InHullShaderRHI);
-	DomainShaderProxy = static_cast<FOpenGLDomainShaderProxy*>(InDomainShaderRHI);
 
 	LinkedProgram = InLinkedProgram;
 
@@ -3612,7 +3515,7 @@ const TBitArray<>& FOpenGLBoundShaderState::GetUAVNeeds(int32& OutMaxUAVUnitUsed
 	return LinkedProgram->UAVStageNeeds;
 }
 
-void FOpenGLBoundShaderState::GetNumUniformBuffers(int32 NumUniformBuffers[SF_Compute])
+void FOpenGLBoundShaderState::GetNumUniformBuffers(int32 NumUniformBuffers[SF_NumGraphicsFrequencies])
 {
 	if (IsRunningRHIInSeparateThread())
 	{
@@ -3624,16 +3527,12 @@ void FOpenGLBoundShaderState::GetNumUniformBuffers(int32 NumUniformBuffers[SF_Co
 		NumUniformBuffers[SF_Vertex] = VertexShaderProxy->GetGLResourceObject_OnRHIThread()->Bindings.NumUniformBuffers;
 		NumUniformBuffers[SF_Pixel] = PixelShaderProxy->GetGLResourceObject_OnRHIThread()->Bindings.NumUniformBuffers;
 		NumUniformBuffers[SF_Geometry] = GeometryShaderProxy ? GeometryShaderProxy->GetGLResourceObject_OnRHIThread()->Bindings.NumUniformBuffers : -1;
-		NumUniformBuffers[SF_Hull] = HullShaderProxy ? HullShaderProxy->GetGLResourceObject_OnRHIThread()->Bindings.NumUniformBuffers : -1;
-		NumUniformBuffers[SF_Domain] = DomainShaderProxy ? DomainShaderProxy->GetGLResourceObject_OnRHIThread()->Bindings.NumUniformBuffers : -1;
 	}
 	else
 	{
 		NumUniformBuffers[SF_Vertex] = VertexShaderProxy->GetGLResourceObject()->Bindings.NumUniformBuffers;
 		NumUniformBuffers[SF_Pixel] = PixelShaderProxy->GetGLResourceObject()->Bindings.NumUniformBuffers;
 		NumUniformBuffers[SF_Geometry] = GeometryShaderProxy ? GeometryShaderProxy->GetGLResourceObject()->Bindings.NumUniformBuffers : -1;
-		NumUniformBuffers[SF_Hull] = HullShaderProxy ? HullShaderProxy->GetGLResourceObject()->Bindings.NumUniformBuffers : -1;
-		NumUniformBuffers[SF_Domain] = DomainShaderProxy ? DomainShaderProxy->GetGLResourceObject()->Bindings.NumUniformBuffers : -1;
 	}
 }
 
@@ -4057,7 +3956,7 @@ void FOpenGLProgramBinaryCache::Initialize()
 		return;
 	}
 
-#if PLATFORM_ANDROID && !PLATFORM_LUMIN && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
 	if (FOpenGL::HasBinaryProgramRetrievalFailed())
 	{
 		if (FOpenGL::SupportsProgramBinary())
@@ -4793,16 +4692,21 @@ void FOpenGLProgramBinaryCache::CheckPendingGLProgramCreateRequests_internal()
 	FScopeLock Lock(&GPendingGLProgramCreateRequestsCS);
 	//UE_LOG(LogRHI, Log, TEXT("CheckPendingGLProgramCreateRequests : PendingGLProgramCreateRequests = %d"), PendingGLProgramCreateRequests.Num());
 
-	float TimeRemainingS = (float)GMaxShaderLibProcessingTimeMS / 1000.0f;
-	double StartTime = FPlatformTime::Seconds();
-	int32 Count = 0;
-	while(PendingGLProgramCreateRequests.Num() && TimeRemainingS > 0.0f)
+	if(PendingGLProgramCreateRequests.Num() > 0)
 	{
-		CompleteLoadedGLProgramRequest_internal(PendingGLProgramCreateRequests.Pop());
-		TimeRemainingS -= (float)(FPlatformTime::Seconds() - StartTime);
-		Count++;
+		float TimeRemainingS = (float)GMaxShaderLibProcessingTimeMS / 1000.0f;
+		double StartTime = FPlatformTime::Seconds();
+		int32 Count = 0;
+		while(PendingGLProgramCreateRequests.Num() && TimeRemainingS > 0.0f)
+		{
+			CompleteLoadedGLProgramRequest_internal(PendingGLProgramCreateRequests.Pop());
+			TimeRemainingS -= (float)(FPlatformTime::Seconds() - StartTime);
+			StartTime = FPlatformTime::Seconds();
+			Count++;
+		}
+		float TimeTaken = (float)GMaxShaderLibProcessingTimeMS - (TimeRemainingS * 1000.0f);
+		UE_CLOG(TimeTaken>2.0f, LogRHI, Log, TEXT("CheckPendingGLProgramCreateRequests : iter count = %d, time taken = %f ms (remaining %d)"), Count, TimeTaken, PendingGLProgramCreateRequests.Num());
 	}
-	UE_CLOG(PendingGLProgramCreateRequests.Num()>0, LogRHI, Log, TEXT("CheckPendingGLProgramCreateRequests : iter count = %d, time taken = %d ms (remaining %d)"), Count, GMaxShaderLibProcessingTimeMS - (int32)(TimeRemainingS*1000.0f), PendingGLProgramCreateRequests.Num());
 }
 
 void FOpenGLProgramBinaryCache::CompleteLoadedGLProgramRequest_internal(FGLProgramBinaryFileCacheEntry* PendingGLCreate)

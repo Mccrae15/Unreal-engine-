@@ -75,6 +75,7 @@ public:
 	virtual FCustomizedToolMenu* AddMenuCustomization() const override;
 	virtual FCustomizedToolMenuHierarchy GetMenuCustomizationHierarchy() const override;
 	virtual void UpdateMenuCustomizationFromMultibox(const TSharedRef<const FMultiBox>& InMultiBox) override;
+	virtual void OnMenuDestroyed() override;
 	//~ End UToolMenuBase Interface
 
 	TArray<FName> GetMenuHierarchyNames(bool bIncludeSubMenuRoot) const;
@@ -89,6 +90,8 @@ public:
 		return Context.FindContext<TContextType>();
 	}
 
+
+	FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent);
 
 	friend class UToolMenus;
 
@@ -127,6 +130,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tool Menus")
 	EMultiBoxType MenuType;
 
+	UPROPERTY(Transient)
+	bool bShouldCleanupContextOnDestroy;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tool Menus")
 	bool bShouldCloseWindowAfterMenuSelection;
 
@@ -156,7 +162,7 @@ public:
 	TArray<FToolMenuSection> Sections;
 
 	UPROPERTY()
-	const UToolMenu* SubMenuParent;
+	TObjectPtr<const UToolMenu> SubMenuParent;
 
 	UPROPERTY()
 	FName SubMenuSourceEntryName;

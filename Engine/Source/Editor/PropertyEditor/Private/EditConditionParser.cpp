@@ -31,13 +31,13 @@ static const TCHAR PropertyBreakingChars[] = { '|', '=', '&', '>', '<', '!', '+'
 
 static TOptional<FExpressionError> ConsumeBool(FExpressionTokenConsumer& Consumer)
 {
-	TOptional<FStringToken> TrueToken = Consumer.GetStream().ParseToken(TEXT("true"));
+	TOptional<FStringToken> TrueToken = Consumer.GetStream().ParseTokenIgnoreCase(TEXT("true"));
 	if (TrueToken.IsSet())
 	{
 		Consumer.Add(TrueToken.GetValue(), true);
 	}
 
-	TOptional<FStringToken> FalseToken = Consumer.GetStream().ParseToken(TEXT("false"));
+	TOptional<FStringToken> FalseToken = Consumer.GetStream().ParseTokenIgnoreCase(TEXT("false"));
 	if (FalseToken.IsSet())
 	{
 		Consumer.Add(FalseToken.GetValue(), false);
@@ -114,6 +114,24 @@ static TOptional<FExpressionError> ConsumePropertyName(FExpressionTokenConsumer&
 	}
 
 	return TOptional<FExpressionError>();
+}
+
+template <typename ValueType>
+static void LogEditConditionError(const TValueOrError<ValueType, FExpressionError>& Error)
+{
+	if (!Error.HasError())
+	{
+		return;
+	}
+
+	static TSet<FString> ErrorsAlreadyLogged;
+	
+	const FString& Message = Error.GetError().Text.ToString();
+	if (!ErrorsAlreadyLogged.Find(Message))
+	{
+		ErrorsAlreadyLogged.Add(Message);
+		UE_LOG(LogEditCondition, Error, TEXT("%s"), *Message);
+	}
 }
 
 template <typename T>
@@ -213,8 +231,6 @@ static FExpressionResult ApplyPropertyIsNull(const EditConditionParserTokens::FP
 		return MakeError(FText::Format(LOCTEXT("InvalidOperand", "EditCondition attempted to use an invalid operand \"{0}\"."), FText::FromString(Property.PropertyName)));
 	}
 
-	const FString& TypeNameValue = TypeName.GetValue();
-	
 	TOptional<UObject*> Ptr = Context.GetPointerValue(Property.PropertyName);
 	if (!Ptr.IsSet())
 	{
@@ -559,6 +575,11 @@ static FExpressionResult EnumPropertyEquals(const EditConditionParserTokens::FEn
 {
 	TOptional<FString> TypeName = Context.GetTypeName(Property.PropertyName);
 
+	if (!TypeName.IsSet())
+	{
+		return MakeError(FText::Format(LOCTEXT("InvalidOperand_Type", "EditCondition attempted to use an invalid operand \"{0}\" (type error)."), FText::FromString(Property.PropertyName)));
+	}
+
 	if (TypeName.GetValue() != Enum.Type)
 	{
 		return MakeError(FText::Format(LOCTEXT("OperandTypeMismatch", "EditCondition attempted to compare operands of different types: \"{0}\" and \"{1}\"."), FText::FromString(Property.PropertyName), FText::FromString(Enum.Type + TEXT("::") + Enum.Value)));
@@ -568,7 +589,7 @@ static FExpressionResult EnumPropertyEquals(const EditConditionParserTokens::FEn
 
 	if (!ValueProp.IsSet())
 	{
-		return MakeError(FText::Format(LOCTEXT("InvalidOperand", "EditCondition attempted to use an invalid operand \"{0}\"."), FText::FromString(Property.PropertyName)));
+		return MakeError(FText::Format(LOCTEXT("InvalidOperand_Value", "EditCondition attempted to use an invalid operand \"{0}\" (value error)."), FText::FromString(Property.PropertyName)));
 	}
 
 	bool bEqual = ValueProp.GetValue() == Enum.Value;
@@ -707,6 +728,10 @@ TOptional<bool> FEditConditionParser::Evaluate(const FEditConditionExpression& E
 			}
 		}
 	}
+	else
+	{
+		LogEditConditionError(Result);
+	}
 
 	return TOptional<bool>();
 }
@@ -723,6 +748,14 @@ TSharedPtr<FEditConditionExpression> FEditConditionParser::Parse(const FString& 
 		{
 			return TSharedPtr<FEditConditionExpression>(new FEditConditionExpression(CompileResult.StealValue()));
 		}
+		else
+		{
+			LogEditConditionError(CompileResult);
+		}
+	}
+	else
+	{
+		LogEditConditionError(LexResult);
 	}
 
 	return TSharedPtr<FEditConditionExpression>();

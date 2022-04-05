@@ -71,9 +71,9 @@ enum EMTLTextureType
 };
 
 // This is the right VERSION check, see Availability.h in the SDK
-#define METAL_SUPPORTS_INDIRECT_ARGUMENT_BUFFERS ((PLATFORM_MAC && __MAC_OS_X_VERSION_MAX_ALLOWED >= 101300) || (!PLATFORM_MAC && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000)) && (__clang_major__ >= 9)
-#define METAL_SUPPORTS_CAPTURE_MANAGER (PLATFORM_MAC && __MAC_OS_X_VERSION_MAX_ALLOWED >= 101300) || (!PLATFORM_MAC && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000) && (__clang_major__ >= 9)
-#define METAL_SUPPORTS_TILE_SHADERS (!PLATFORM_MAC && !PLATFORM_TVOS && __IPHONE_OS_VERSION_MAX_ALLOWED >= 110000) && (__clang_major__ >= 9)
+#define METAL_SUPPORTS_INDIRECT_ARGUMENT_BUFFERS 1
+#define METAL_SUPPORTS_CAPTURE_MANAGER 1
+#define METAL_SUPPORTS_TILE_SHADERS 1
 // In addition to compile-time SDK checks we also need a way to check if these are available on runtime
 extern bool GMetalSupportsCaptureManager;
 
@@ -146,12 +146,6 @@ struct FMetalDebugInfo
 // Get a compute pipeline state used to implement some debug features.
 mtlpp::ComputePipelineState GetMetalDebugComputeState();
 
-// Get the copy 32-bit indices function
-mtlpp::ComputePipelineState GetMetalCopyIndex32Function();
-
-// Get the copy 16-bit indices function
-mtlpp::ComputePipelineState GetMetalCopyIndex16Function();
-
 // Access the internal context for the device-owning DynamicRHI object
 FMetalDeviceContext& GetMetalDeviceContext();
 
@@ -187,31 +181,6 @@ FORCEINLINE bool MetalIsSafeToUseRHIThreadResources()
 	return (GIsMetalInitialized && !GIsRHIInitialized) ||
 			IsInRHIThread() ||
 			(IsInRenderingThread() && (!IsRunningRHIInSeparateThread() || !FRHICommandListExecutor::IsRHIThreadActive() || FRHICommandListImmediate::IsStalled() || FRHICommandListExecutor::IsRHIThreadCompletelyFlushed()));
-}
-
-FORCEINLINE mtlpp::IndexType GetMetalIndexType(EMetalIndexType IndexType)
-{
-	switch (IndexType)
-	{
-		case EMetalIndexType_UInt16: return mtlpp::IndexType::UInt16;
-		case EMetalIndexType_UInt32: return mtlpp::IndexType::UInt32;
-		case EMetalIndexType_None:
-		default:
-		{
-			METAL_FATAL_ERROR(TEXT("There is not equivalent mtlpp::IndexType for %d"), (uint32)IndexType);
-			return mtlpp::IndexType::UInt16;
-		}
-	}
-}
-
-FORCEINLINE EMetalIndexType GetRHIMetalIndexType(mtlpp::IndexType IndexType)
-{
-	switch (IndexType)
-	{
-		case mtlpp::IndexType::UInt16: return EMetalIndexType_UInt16;
-		case mtlpp::IndexType::UInt32: return EMetalIndexType_UInt32;
-		default: return EMetalIndexType_None;
-	}
 }
 
 FORCEINLINE int32 GetMetalCubeFace(ECubeFace Face)
@@ -260,16 +229,12 @@ uint32 SafeGetRuntimeDebuggingLevel();
 
 extern int32 GMetalBufferZeroFill;
 
-mtlpp::LanguageVersion ValidateVersion(uint8 Version);
+mtlpp::LanguageVersion ValidateVersion(uint32 Version);
 
 // Needs to be the same as EShaderFrequency when all stages are supported, but unlike EShaderFrequency you can compile out stages.
 enum EMetalShaderStages
 {
 	Vertex,
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	Hull,
-	Domain,
-#endif
 	Pixel,
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	Geometry,
@@ -285,12 +250,6 @@ FORCEINLINE EShaderFrequency GetRHIShaderFrequency(EMetalShaderStages Stage)
 	{
 		case EMetalShaderStages::Vertex:
 			return SF_Vertex;
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		case EMetalShaderStages::Hull:
-			return SF_Hull;
-		case EMetalShaderStages::Domain:
-			return SF_Domain;
-#endif
 		case EMetalShaderStages::Pixel:
 			return SF_Pixel;
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
@@ -310,12 +269,6 @@ FORCEINLINE EMetalShaderStages GetMetalShaderFrequency(EShaderFrequency Stage)
 	{
 		case SF_Vertex:
 			return EMetalShaderStages::Vertex;
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		case SF_Hull:
-			return EMetalShaderStages::Hull;
-		case SF_Domain:
-			return EMetalShaderStages::Domain;
-#endif
 		case SF_Pixel:
 			return EMetalShaderStages::Pixel;
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS

@@ -51,6 +51,8 @@ public:
 
 	void ServerRefreshConversationChoices();
 
+	void ServerRefreshTaskChoiceData(const FConversationNodeHandle& Handle);
+
 	/**
      * This is memory that will last for the duration of the conversation instance.  Don't store
      * anything here you want to be long lived.
@@ -113,6 +115,10 @@ private:
 	void OnCurrentConversationNodeModified();
 #endif
 
+protected:
+
+	TArray<FClientConversationOptionEntry> CurrentUserChoices;
+
 private:
 	UPROPERTY()
 	FConversationParticipants Participants;
@@ -131,7 +137,6 @@ private:
 	TArray<FCheckpoint> ClientBranchPoints;
 
 	TArray<FConversationBranchPoint> CurrentBranchPoints;
-	TArray<FClientConversationOptionEntry> CurrentUserChoices;
 
 	TArray<FConversationChoiceReference> ScopeStack;
 

@@ -6,8 +6,10 @@ using System.Text;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Reflection;
+using System.Diagnostics.CodeAnalysis;
+using OpenTracing.Util;
 
 namespace UnrealBuildTool
 {
@@ -26,25 +28,37 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// All the platform folder names
 		/// </summary>
-		private static string[] CachedPlatformFolderNames;
+		private static string[]? CachedPlatformFolderNames;
 
 		/// <summary>
 		/// Cached copy of the list of folders to include for this platform
 		/// </summary>
-		private ReadOnlyHashSet<string> CachedIncludedFolderNames;
+		private ReadOnlyHashSet<string>? CachedIncludedFolderNames;
 
 		/// <summary>
 		/// Cached copy of the list of folders to exclude for this platform
 		/// </summary>
-		private ReadOnlyHashSet<string> CachedExcludedFolderNames;
+		private ReadOnlyHashSet<string>? CachedExcludedFolderNames;
 
 		/// <summary>
 		/// Constructor.
 		/// </summary>
 		/// <param name="InPlatform">The enum value for this platform</param>
-		public UEBuildPlatform(UnrealTargetPlatform InPlatform)
+		/// <param name="SDK">The SDK management object for this platform</param>
+		public UEBuildPlatform(UnrealTargetPlatform InPlatform, UEBuildPlatformSDK SDK)
 		{
 			Platform = InPlatform;
+
+			// check DDPI to see if the platform is enabled on this host platform
+			string IniPlatformName = ConfigHierarchy.GetIniPlatformName(Platform);
+			bool bIsEnabled = DataDrivenPlatformInfo.GetDataDrivenInfoForPlatform(IniPlatformName)?.bIsEnabled ?? true;
+
+			// set up the SDK if the platform is enabled
+			UEBuildPlatformSDK.RegisterSDKForPlatform(SDK, Platform.ToString(), bIsEnabled);
+			if (bIsEnabled)
+			{
+				SDK.ManageAndValidateSDK();
+			}
 		}
 
 		/// <summary>
@@ -55,14 +69,14 @@ namespace UnrealBuildTool
 		public static void RegisterPlatforms(bool bIncludeNonInstalledPlatforms, bool bHostPlatformOnly)
 		{
 			// Initialize the installed platform info
-			using(Timeline.ScopeEvent("Initializing InstalledPlatformInfo"))
+			using (GlobalTracer.Instance.BuildSpan("Initializing InstalledPlatformInfo").StartActive())
 			{
 				InstalledPlatformInfo.Initialize();
 			}
 
 			// Find and register all tool chains and build platforms that are present
 			Type[] AllTypes;
-			using(Timeline.ScopeEvent("Querying types"))
+			using (GlobalTracer.Instance.BuildSpan("Querying types").StartActive())
 			{
 				AllTypes = Assembly.GetExecutingAssembly().GetTypes();
 			}
@@ -75,9 +89,9 @@ namespace UnrealBuildTool
 					if (CheckType.IsSubclassOf(typeof(UEBuildPlatformFactory)))
 					{
 						Log.TraceVerbose("    Registering build platform: {0}", CheckType.ToString());
-						using(Timeline.ScopeEvent(CheckType.Name))
+						using (GlobalTracer.Instance.BuildSpan(CheckType.Name).StartActive())
 						{
-							UEBuildPlatformFactory TempInst = (UEBuildPlatformFactory)Activator.CreateInstance(CheckType);
+							UEBuildPlatformFactory TempInst = (UEBuildPlatformFactory)Activator.CreateInstance(CheckType)!;
 							
 							if(bHostPlatformOnly && TempInst.TargetPlatform != BuildHostPlatform.Current.Platform)
 							{
@@ -153,15 +167,9 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Whether the required external SDKs are installed for this platform. Could be either a manual install or an AutoSDK.
 		/// </summary>
-		public abstract SDKStatus HasRequiredSDKsInstalled();
-
-		/// <summary>
-		/// Returns SDK string as required by the platform
-		/// </summary>
-		/// <returns>Valid SDK string</returns>
-		public virtual string GetRequiredSDKString()
+		public SDKStatus HasRequiredSDKsInstalled()
 		{
-			return "";
+			return UEBuildPlatform.GetSDK(Platform)!.HasRequiredSDKsInstalled();
 		}
 
 		/// <summary>
@@ -195,7 +203,7 @@ namespace UnrealBuildTool
 		/// Get the default architecture for a project. This may be overriden on the command line to UBT.
 		/// </summary>
 		/// <param name="ProjectFile">Optional project to read settings from </param>
-		public virtual string GetDefaultArchitecture(FileReference ProjectFile)
+		public virtual string GetDefaultArchitecture(FileReference? ProjectFile)
 		{
 			// by default, use an empty architecture (which is really just a modifer to the platform for some paths/names)
 			return "";
@@ -214,7 +222,7 @@ namespace UnrealBuildTool
 		/// Searches a directory tree for build products to be cleaned.
 		/// </summary>
 		/// <param name="BaseDir">The directory to search</param>
-		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UE4Editor", "ShooterGameEditor")</param>
+		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UnrealEditor", "ShooterGameEditor")</param>
 		/// <param name="NameSuffixes">Suffixes which may appear at the end of the build product name</param>
 		/// <param name="FilesToClean">List to receive a list of files to be cleaned</param>
 		/// <param name="DirectoriesToClean">List to receive a list of directories to be cleaned</param>
@@ -256,7 +264,7 @@ namespace UnrealBuildTool
 		/// Determines if a filename is a default UBT build product
 		/// </summary>
 		/// <param name="FileName">The name to check</param>
-		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UE4Editor", "ShooterGameEditor")</param>
+		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UnrealEditor", "ShooterGameEditor")</param>
 		/// <param name="NameSuffixes">Suffixes which may appear at the end of the build product name</param>
 		/// <returns>True if the substring matches the name of a build product, false otherwise</returns>
 		public static bool IsDefaultBuildProduct(string FileName, string[] NamePrefixes, string[] NameSuffixes)
@@ -270,16 +278,16 @@ namespace UnrealBuildTool
 		/// Determines if the given name is a build product for a target.
 		/// </summary>
 		/// <param name="FileName">The name to check</param>
-		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UE4Editor", "ShooterGameEditor")</param>
+		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UnrealEditor", "ShooterGameEditor")</param>
 		/// <param name="NameSuffixes">Suffixes which may appear at the end of the build product name</param>
 		/// <returns>True if the string matches the name of a build product, false otherwise</returns>
 		public abstract bool IsBuildProduct(string FileName, string[] NamePrefixes, string[] NameSuffixes);
 
 		/// <summary>
-		/// Determines if a string is in the canonical name of a UE build product, with a specific extension (eg. "UE4Editor-Win64-Debug.exe" or "UE4Editor-ModuleName-Win64-Debug.dll"). 
+		/// Determines if a string is in the canonical name of a UE build product, with a specific extension (eg. "UnrealEditor-Win64-Debug.exe" or "UnrealEditor-ModuleName-Win64-Debug.dll"). 
 		/// </summary>
 		/// <param name="FileName">The file name to check</param>
-		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UE4Editor", "ShooterGameEditor")</param>
+		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UnrealEditor", "ShooterGameEditor")</param>
 		/// <param name="NameSuffixes">Suffixes which may appear at the end of the build product name</param>
 		/// <param name="Extension">The extension to check for</param>
 		/// <returns>True if the string matches the name of a build product, false otherwise</returns>
@@ -289,12 +297,12 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Determines if a substring is in the canonical name of a UE build product, with a specific extension (eg. "UE4Editor-Win64-Debug.exe" or "UE4Editor-ModuleName-Win64-Debug.dll"). 
+		/// Determines if a substring is in the canonical name of a UE build product, with a specific extension (eg. "UnrealEditor-Win64-Debug.exe" or "UnrealEditor-ModuleName-Win64-Debug.dll"). 
 		/// </summary>
 		/// <param name="FileName">The name to check</param>
 		/// <param name="Index">Index of the first character to be checked</param>
 		/// <param name="Count">Number of characters of the substring to check</param>
-		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UE4Editor", "ShooterGameEditor")</param>
+		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UnrealEditor", "ShooterGameEditor")</param>
 		/// <param name="NameSuffixes">Suffixes which may appear at the end of the build product name</param>
 		/// <param name="Extension">The extension to check for</param>
 		/// <returns>True if the substring matches the name of a build product, false otherwise</returns>
@@ -309,12 +317,12 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Determines if a substring is in the canonical name of a UE build product, excluding extension or other decoration (eg. "UE4Editor-Win64-Debug" or "UE4Editor-ModuleName-Win64-Debug"). 
+		/// Determines if a substring is in the canonical name of a UE build product, excluding extension or other decoration (eg. "UnrealEditor-Win64-Debug" or "UnrealEditor-ModuleName-Win64-Debug"). 
 		/// </summary>
 		/// <param name="FileName">The name to check</param>
 		/// <param name="Index">Index of the first character to be checked</param>
 		/// <param name="Count">Number of characters of the substring to check</param>
-		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UE4Editor", "ShooterGameEditor")</param>
+		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UnrealEditor", "ShooterGameEditor")</param>
 		/// <param name="NameSuffixes">Suffixes which may appear at the end of the build product name</param>
 		/// <returns>True if the substring matches the name of a build product, false otherwise</returns>
 		public static bool IsBuildProductName(string FileName, int Index, int Count, string[] NamePrefixes, string[] NameSuffixes)
@@ -358,7 +366,7 @@ namespace UnrealBuildTool
 		/// <param name="Rules">The target rules</param>
 		/// <param name="OutputFiles">List of executable output files</param>
 		/// <returns>Path to the bundle directory</returns>
-		public virtual DirectoryReference GetBundleDirectory(ReadOnlyTargetRules Rules, List<FileReference> OutputFiles)
+		public virtual DirectoryReference? GetBundleDirectory(ReadOnlyTargetRules Rules, List<FileReference> OutputFiles)
 		{
 			return null;
 		}
@@ -371,6 +379,17 @@ namespace UnrealBuildTool
 		public static bool IsPlatformAvailable(UnrealTargetPlatform Platform)
 		{
 			return BuildPlatformDictionary.ContainsKey(Platform) && BuildPlatformDictionary[Platform].HasRequiredSDKsInstalled() == SDKStatus.Valid;
+		}
+
+		/// <summary>
+		/// Determines whether a given platform is available in the context of a particular Taget
+		/// </summary>
+		/// <param name="Platform">The platform to check for</param>
+		/// <param name="Target">A Target object that may further restrict available platforms</param>
+		/// <returns>True if it's available, false otherwise</returns>
+		public static bool IsPlatformAvailableForTarget(UnrealTargetPlatform Platform, ReadOnlyTargetRules Target)
+		{
+			return IsPlatformAvailable(Platform) && Target.IsPlatformOptedIn(Platform);
 		}
 
 		/// <summary>
@@ -399,7 +418,7 @@ namespace UnrealBuildTool
 		public static void RegisterPlatformWithGroup(UnrealTargetPlatform InPlatform, UnrealPlatformGroup InGroup)
 		{
 			// find or add the list of groups for this platform
-			List<UnrealTargetPlatform> Platforms;
+			List<UnrealTargetPlatform>? Platforms;
 			if(!PlatformGroupDictionary.TryGetValue(InGroup, out Platforms))
 			{
 				Platforms = new List<UnrealTargetPlatform>();
@@ -413,8 +432,11 @@ namespace UnrealBuildTool
 		/// </summary>
 		public static List<UnrealTargetPlatform> GetPlatformsInGroup(UnrealPlatformGroup InGroup)
 		{
-			List<UnrealTargetPlatform> PlatformList;
-			PlatformGroupDictionary.TryGetValue(InGroup, out PlatformList);
+			List<UnrealTargetPlatform>? PlatformList;
+			if (!PlatformGroupDictionary.TryGetValue(InGroup, out PlatformList))
+			{
+				PlatformList = new List<UnrealTargetPlatform>();
+			}
 			return PlatformList;
 		}
 
@@ -432,19 +454,26 @@ namespace UnrealBuildTool
 		/// Retrieve the IUEBuildPlatform instance for the given TargetPlatform
 		/// </summary>
 		/// <param name="InPlatform">  The UnrealTargetPlatform being built</param>
-		/// <param name="bInAllowFailure"> If true, do not throw an exception and return null</param>
 		/// <returns>UEBuildPlatform  The instance of the build platform</returns>
-		public static UEBuildPlatform GetBuildPlatform(UnrealTargetPlatform InPlatform, bool bInAllowFailure = false)
+		public static UEBuildPlatform GetBuildPlatform(UnrealTargetPlatform InPlatform)
 		{
-			if (BuildPlatformDictionary.ContainsKey(InPlatform) == true)
+			UEBuildPlatform? Platform;
+			if(!TryGetBuildPlatform(InPlatform, out Platform))
 			{
-				return BuildPlatformDictionary[InPlatform];
+				throw new BuildException("GetBuildPlatform: No BuildPlatform found for {0}", InPlatform.ToString());
 			}
-			if (bInAllowFailure == true)
-			{
-				return null;
+			return Platform;
 			}
-			throw new BuildException("GetBuildPlatform: No BuildPlatform found for {0}", InPlatform.ToString());
+
+		/// <summary>
+		/// Retrieve the IUEBuildPlatform instance for the given TargetPlatform
+		/// </summary>
+		/// <param name="InPlatform">  The UnrealTargetPlatform being built</param>
+		/// <param name="Platform"></param>
+		/// <returns>UEBuildPlatform  The instance of the build platform</returns>
+		public static bool TryGetBuildPlatform(UnrealTargetPlatform InPlatform, [NotNullWhen(true)] out UEBuildPlatform? Platform)
+		{
+			return BuildPlatformDictionary.TryGetValue(InPlatform, out Platform);
 		}
 
 		/// <summary>
@@ -468,12 +497,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		public static String GetPathVarDelimiter()
 		{
-			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Linux || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.LinuxAArch64 ||
+			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Linux || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.LinuxArm64 ||
 				BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
 			{
 				return ":";
 			}
-			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win32 || BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 || 
+			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 || 
 				BuildHostPlatform.Current.Platform == UnrealTargetPlatform.HoloLens)
 			{
 				return ";";
@@ -505,14 +534,6 @@ namespace UnrealBuildTool
 		public virtual bool CanUseParallelExecutor()
 		{
 			return CanUseXGE();
-		}
-
-		/// <summary>
-		/// If this platform can be compiled with DMUCS/Distcc
-		/// </summary>
-		public virtual bool CanUseDistcc()
-		{
-			return false;
 		}
 
 		/// <summary>
@@ -554,8 +575,8 @@ namespace UnrealBuildTool
 		public static bool PlatformRequiresMonolithicBuilds(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration)
 		{
 			// Some platforms require monolithic builds...
-			UEBuildPlatform BuildPlatform = GetBuildPlatform(InPlatform, true);
-			if (BuildPlatform != null)
+			UEBuildPlatform? BuildPlatform;
+			if (TryGetBuildPlatform(InPlatform, out BuildPlatform))
 			{
 				return BuildPlatform.ShouldCompileMonolithicBinary(InPlatform);
 			}
@@ -617,7 +638,7 @@ namespace UnrealBuildTool
 		/// For platforms that need to output multiple files per binary (ie Android "fat" binaries)
 		/// this will emit multiple paths. By default, it simply makes an array from the input
 		/// </summary>
-		public virtual List<FileReference> FinalizeBinaryPaths(FileReference BinaryName, FileReference ProjectFile, ReadOnlyTargetRules Target)
+		public virtual List<FileReference> FinalizeBinaryPaths(FileReference BinaryName, FileReference? ProjectFile, ReadOnlyTargetRules Target)
 		{
 			List<FileReference> TempList = new List<FileReference>() { BinaryName };
 			return TempList;
@@ -642,10 +663,10 @@ namespace UnrealBuildTool
 			return Configurations;
 		}
 
-		protected static bool DoProjectSettingsMatchDefault(UnrealTargetPlatform Platform, DirectoryReference ProjectDirectoryName, string Section, string[] BoolKeys, string[] IntKeys, string[] StringKeys)
+		protected static bool DoProjectSettingsMatchDefault(UnrealTargetPlatform Platform, DirectoryReference ProjectDirectoryName, string Section, string[]? BoolKeys, string[]? IntKeys, string[]? StringKeys)
 		{
 			ConfigHierarchy ProjIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, ProjectDirectoryName, Platform);
-			ConfigHierarchy DefaultIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, (DirectoryReference)null, Platform);
+			ConfigHierarchy DefaultIni = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, (DirectoryReference?)null, Platform);
 
 			// look at all bool values
 			if (BoolKeys != null) foreach (string Key in BoolKeys)
@@ -676,7 +697,7 @@ namespace UnrealBuildTool
 			// look for all string values
 			if (StringKeys != null) foreach (string Key in StringKeys)
 				{
-					string Default = "", Project = "";
+					string? Default = "", Project = "";
 					DefaultIni.GetString(Section, Key, out Default);
 					ProjIni.GetString(Section, Key, out Project);
 					if (Default != Project)
@@ -792,7 +813,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ProjectFile">The project file being built</param>
 		/// <returns>String describing the current build metadata</returns>
-		public string GetExternalBuildMetadata(FileReference ProjectFile)
+		public string GetExternalBuildMetadata(FileReference? ProjectFile)
 		{
 			StringBuilder Result = new StringBuilder();
 			GetExternalBuildMetadata(ProjectFile, Result);
@@ -804,7 +825,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ProjectFile">The project file being built</param>
 		/// <param name="Metadata">String builder to contain build metadata</param>
-		public virtual void GetExternalBuildMetadata(FileReference ProjectFile, StringBuilder Metadata)
+		public virtual void GetExternalBuildMetadata(FileReference? ProjectFile, StringBuilder Metadata)
 		{
 		}
 
@@ -830,7 +851,7 @@ namespace UnrealBuildTool
 		/// <returns>True if platform is part of a platform group</returns>
 		internal static bool IsPlatformInGroup(UnrealTargetPlatform Platform, UnrealPlatformGroup PlatformGroup)
 		{
-			List<UnrealTargetPlatform> Platforms = UEBuildPlatform.GetPlatformsInGroup(PlatformGroup);
+			List<UnrealTargetPlatform>? Platforms = UEBuildPlatform.GetPlatformsInGroup(PlatformGroup);
 			if (Platforms != null)
 			{
 				return Platforms.Contains(Platform);
@@ -839,6 +860,23 @@ namespace UnrealBuildTool
 			{
 				return false;
 			}
+		}
+
+		/// <summary>
+		/// Gets the SDK object that was passed in to the constructor
+		/// </summary>
+		/// <returns>The SDK object</returns>
+		public UEBuildPlatformSDK? GetSDK()
+		{
+			return UEBuildPlatformSDK.GetSDKForPlatform(Platform.ToString());
+		}
+		/// <summary>
+		/// Gets the SDK object that was passed in to the constructor to the UEBuildPlatform constructor for this platform
+		/// </summary>
+		/// <returns>The SDK object</returns>
+		public static UEBuildPlatformSDK? GetSDK(UnrealTargetPlatform Platform)
+		{
+			return UEBuildPlatformSDK.GetSDKForPlatform(Platform.ToString());
 		}
 
 		/// <summary>

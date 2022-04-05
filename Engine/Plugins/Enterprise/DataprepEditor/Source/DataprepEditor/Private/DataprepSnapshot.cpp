@@ -13,6 +13,7 @@
 #include "Async/ParallelFor.h"
 #include "Editor/UnrealEdEngine.h"
 #include "EngineUtils.h"
+#include "Engine/StaticMeshSourceData.h"
 #include "Engine/Texture.h"
 #include "Exporters/Exporter.h"
 #include "Factories/LevelFactory.h"
@@ -213,6 +214,36 @@ namespace DataprepSnapshotUtil
 		return FPaths::ConvertRelativePathToFull( FPaths::Combine( RootPath, PackageFileName ) + SnapshotExtension );
 	}
 
+	// #ueent_dataprep: Revisit serialization of snapshot in 5.0
+	void SerializeObject(FSnapshotCustomArchive& Ar, UObject* Object, TArray< UObject* >& SubObjects)
+	{
+		bool bIsStaticMesh = Cast<UStaticMesh>(Object) != nullptr;
+
+		// Overwrite persistent flag if Object is a static mesh.
+		// This will skip the persistence of the MeshDescription on static mesh and geometrical sub-objects
+
+		// Serialize SubObjects' content
+		for(UObject* SubObject : SubObjects)
+		{
+			if (SubObject && (!bIsStaticMesh || !SubObject->HasAnyFlags(RF_DefaultSubObject)))
+			{
+				// Do not set the archive as persistent if the subobject is mesh description's bulk data.
+				// The combination of transient object and persistence is not accepted by such object during serialization
+				Ar.SetIsPersistent(bIsStaticMesh && SubObject->StaticClass()->IsChildOf(UMeshDescriptionBaseBulkData::StaticClass()));
+				SubObject->Serialize(Ar);
+			}
+		}
+
+		// Overwrite transacting flag if Object is a static mesh.
+		// This will skip the persistence of the MeshDescription
+		// Set archive as persistent if dealing with a static mesh. Otherwise nothingis serialized
+		Ar.SetIsPersistent(bIsStaticMesh);
+		Ar.SetIsTransacting(!bIsStaticMesh);
+
+		// Serialize object
+		Object->Serialize(Ar);
+	}
+
 	void WriteSnapshotData(UObject* Object, FSnapshotBuffer& OutSerializedData)
 	{
 		// Helper struct to identify dependency of a UObject on other UObject(s) except given one (its outer)
@@ -310,8 +341,10 @@ namespace DataprepSnapshotUtil
 		MemAr << SubObjectsCount;
 
 		// Serialize class and path of each sub-object
-		for(UObject* SubObject : SubObjectsArray)
+		for(int32 Index = SubObjectsArray.Num() - 1; Index >= 0; --Index)
 		{
+			const UObject* SubObject = SubObjectsArray[Index];
+
 			UClass* SubObjectClass = SubObject->GetClass();
 
 			FString ClassName = SubObjectClass->GetName();
@@ -337,38 +370,28 @@ namespace DataprepSnapshotUtil
 			MemAr << SubObjectName;
 		}
 
-		// Serialize sub-objects' content
-		for(UObject* SubObject : SubObjectsArray)
-		{
-			SubObject->Serialize(Ar);
-		}
-
-		// Serialize object
-		// Overwrite transacting and persistent flags if Object is a static mesh. This will skip the persistence of the MeshDescription
-		Ar.SetIsTransacting(Cast<UStaticMesh>(Object) == nullptr);
-		Ar.SetIsPersistent(Cast<UStaticMesh>(Object) != nullptr);
-		Object->Serialize(Ar);
-
-		if(UTexture* Texture = Cast<UTexture>(Object))
-		{
-			bool bRebuildResource = !!Texture->Resource;
-			Ar << bRebuildResource;
-		}
+		SerializeObject(Ar, Object, SubObjectsArray);
 	}
 
 	void ReadSnapshotData(UObject* Object, const FSnapshotBuffer& InSerializedData, TMap<FString, UClass*>& InClassesMap, TArray<UObject*>& ObjectsToDelete)
 	{
+		bool bIsStaticMesh = Cast<UStaticMesh>(Object) != nullptr;
+
 		// Remove all objects created by default that InObject is dependent on
 		// This method must obviously be called just after the InObject is created
-		auto RemoveDefaultDependencies = [&ObjectsToDelete](UObject* InObject)
+		auto RemoveDefaultDependencies = [&ObjectsToDelete, bIsStaticMesh](UObject* InObject)
 		{
 			TArray< UObject* > ObjectsWithOuter;
 			GetObjectsWithOuter( InObject, ObjectsWithOuter, /*bIncludeNestedObjects = */ true );
 
 			for(UObject* ObjectWithOuter : ObjectsWithOuter)
 			{
-				FDataprepCoreUtils::MoveToTransientPackage( ObjectWithOuter );
-				ObjectsToDelete.Add( ObjectWithOuter );
+				// Do not delete default sub-objects
+				if (!bIsStaticMesh || !ObjectWithOuter->HasAnyFlags(RF_DefaultSubObject))
+				{
+					FDataprepCoreUtils::MoveToTransientPackage( ObjectWithOuter );
+					ObjectsToDelete.Add( ObjectWithOuter );
+				}
 			}
 		};
 
@@ -383,9 +406,12 @@ namespace DataprepSnapshotUtil
 
 		// Create empty sub-objects based on class and patch
 		TArray< UObject* > SubObjectsArray;
-		SubObjectsArray.Reserve(SubObjectsCount);
+		SubObjectsArray.SetNumZeroed(SubObjectsCount);
 
-		for(int32 Index = 0; Index < SubObjectsCount; ++Index)
+		// Create root name to avoid name collision
+		FString RootName = FGuid::NewGuid().ToString();
+
+		for(int32 Index = SubObjectsCount - 1; Index >= 0; --Index)
 		{
 			FString ClassName;
 			MemAr << ClassName;
@@ -396,8 +422,17 @@ namespace DataprepSnapshotUtil
 			int32 ObjectFlags;
 			MemAr << ObjectFlags;
 
-			UObject* SubObject = NewObject<UObject>( Object, SubObjectClass, NAME_None, EObjectFlags(ObjectFlags) );
-			SubObjectsArray.Add( SubObject );
+			// Temporary - Do not create default sub-object for static mesh
+			// #ueent_dataprep: TODO: Implement a more robust serialization process for transient UProperties
+			if (bIsStaticMesh && (ObjectFlags & RF_DefaultSubObject))
+			{
+				continue;
+			}
+
+			FString SubObjectName = RootName + FString::FromInt(Index);
+
+			UObject* SubObject = NewObject<UObject>( Object, SubObjectClass, *SubObjectName, EObjectFlags(ObjectFlags) );
+			SubObjectsArray[Index] = SubObject;
 
 			RemoveDefaultDependencies( SubObject );
 		}
@@ -417,34 +452,25 @@ namespace DataprepSnapshotUtil
 			UObject* NewOuter = SoftPath.ResolveObject();
 			ensure( NewOuter );
 
-			UObject* SubObject = SubObjectsArray[Index];
-			if( NewOuter != SubObject->GetOuter() )
+			if (UObject* SubObject = SubObjectsArray[Index])
 			{
-				FDataprepCoreUtils::RenameObject( SubObject, *SubObjectName, NewOuter );
+				if( NewOuter != SubObject->GetOuter() )
+				{
+					FDataprepCoreUtils::RenameObject( SubObject, nullptr, NewOuter );
+				}
+
+				if( SubObjectName != SubObject->GetName() && SubObject->Rename( *SubObjectName, nullptr, REN_Test ))
+				{
+					FDataprepCoreUtils::RenameObject( SubObject, *SubObjectName );
+				}
 			}
 		}
 
-		// Deserialize sub-objects
-		for(UObject* SubObject : SubObjectsArray)
-		{
-			SubObject->Serialize(Ar);
-		}
-
-		// Deserialize object
-		// Overwrite transacting and persistent flags if Object is a static mesh. This will skip the persistence of the MeshDescription
-		Ar.SetIsTransacting(Cast<UStaticMesh>(Object) == nullptr);
-		Ar.SetIsPersistent(Cast<UStaticMesh>(Object) != nullptr);
-		Object->Serialize(Ar);
+		SerializeObject(Ar, Object, SubObjectsArray);
 
 		if(UTexture* Texture = Cast<UTexture>(Object))
 		{
-			bool bRebuildResource = false;
-			Ar << bRebuildResource;
-
-			if(bRebuildResource)
-			{
-				Texture->UpdateResource();
-			}
+			Texture->UpdateResource();
 		}
 	}
 }
@@ -470,9 +496,8 @@ public:
 			{
 				AActor* TestParentAsActor = Cast<AActor>(TestParent);
 
-				const bool bIsValidActor = TestParentAsActor &&
+				const bool bIsValidActor = IsValid(TestParentAsActor) &&
 					TestParentAsActor->GetWorld() == World &&
-					!TestParentAsActor->IsPendingKill() &&
 					TestParentAsActor->IsEditable() &&
 					!TestParentAsActor->IsTemplate() &&
 					!FActorEditorUtils::IsABuilderBrush(TestParentAsActor) &&
@@ -480,12 +505,8 @@ public:
 
 				if ( bIsValidActor )
 				{
-					// Select actor so it will be processed during the copy
-					if(SelectedActors.Find(TestParentAsActor) == nullptr)
-					{
-						SelectedActors.Add(TestParentAsActor);
-						GSelectedActorAnnotation.Set(TestParentAsActor);
-					}
+					// Track actor so it will be processed during the copy
+					SelectedActors.Add(TestParentAsActor);
 
 					bObjectMustBeCopied = true;
 					break;
@@ -512,17 +533,14 @@ public:
 		}
 	}
 
-	~FDataprepExportObjectInnerContext()
+	virtual bool IsObjectSelected(const UObject* InObj) const override
 	{
-		// Deselect all actors we processed
-		for(AActor* SelectedActor : SelectedActors)
-		{
-			GSelectedActorAnnotation.Clear(SelectedActor);
-		}
+		const AActor* Actor = Cast<AActor>(InObj);
+		return Actor && SelectedActors.Contains(Actor);
 	}
 
 	/** Set of actors marked as selected so they get included in the copy */
-	TSet<AActor*> SelectedActors;
+	TSet<const AActor*> SelectedActors;
 };
 
 void FDataprepEditor::TakeSnapshot()
@@ -854,7 +872,7 @@ void FDataprepEditor::RestoreFromSnapshot(bool bUpdateViewport)
 		GWorld = PreviewWorld;
 
 		// Cache and disable recording of transaction
-		TGuardValue<UTransactor*> NormalTransactor( GEditor->Trans, nullptr );
+		TGuardValue<decltype(GEditor->Trans)> NormalTransactor( GEditor->Trans, nullptr );
 
 		// Cache and disable warnings from LogExec because ULevelFactory::FactoryCreateText is pretty verbose on harmless warnings
 		ELogVerbosity::Type PrevLogExecVerbosity = LogExec.GetVerbosity();

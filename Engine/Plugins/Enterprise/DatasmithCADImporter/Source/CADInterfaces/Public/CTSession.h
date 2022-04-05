@@ -20,18 +20,16 @@ public:
 	 * Make sure CT is initialized, and a main object is ready.
 	 * Handle input file unit and an output unit
 	 * @param InOwner:        text that describe the owner of the session (helps to fix initialization issues)
-	 * @param FileMetricUnit: number of meters per file unit.
-	 * eg. For a file in inches, arg should be 0.0254
 	 */
-	FCTSession(const TCHAR* InOwner)
+	FCTSession(const TCHAR* InOwner, const CADLibrary::FImportParameters& InImportParameters)
 		: FCoreTechSessionBase(InOwner)
+		, ImportParams(InImportParameters)
 	{
 	}
 
 	void ClearData();
 
 	bool SaveBrep(const FString& FilePath);
-
 
 	/**
  	 * This function calls, according to the chosen EStitchingTechnique, Kernel_io CT_REPAIR_IO::Sew or CT_REPAIR_IO::Heal. In case of sew, the used tolerance is 100x the geometric tolerance (SewingToleranceFactor = 100). 
@@ -40,14 +38,21 @@ public:
 	 */
 	bool TopoFixes(double SewingToleranceFactor = 100);
 
-	/**
-	 * @param InScaleFactor : use to scale meshing from Kernel-IO
-	 */
-	void SetScaleFactor(double InScaleFactor)
+	double GetScaleFactor() const
 	{
-		ImportParams.ScaleFactor = InScaleFactor;
+		return ImportParams.GetScaleFactor();
 	}
 
+	double GetSceneUnit() const
+	{
+		return ImportParams.GetMetricUnit();
+	}
+
+	/**
+	 * Handle input file unit
+	 * @param FileMetricUnit: number of meters per file unit.
+	 * e.g. For a file in inches, arg should be 0.0254
+	 */
 	void SetSceneUnit(double InMetricUnit);
 
 	/**
@@ -58,9 +63,14 @@ public:
 	 * @param NormalTolerance : Angle between two adjacent triangles
 	 * @param StitchingTechnique : CAD topology correction technique
 	 */
-	void SetImportParameters(float ChordTolerance, float MaxEdgeLength, float NormalTolerance, CADLibrary::EStitchingTechnique StitchingTechnique, bool bScaleUVMap);
+	void SetImportParameters(double ChordTolerance, double MaxEdgeLength, double NormalTolerance, CADLibrary::EStitchingTechnique StitchingTechnique);
 	
-	CADLibrary::FImportParameters& GetImportParameters()
+	void SetModelCoordinateSystem(FDatasmithUtils::EModelCoordSystem NewCoordinateSystem)
+	{
+		ImportParams.SetModelCoordinateSystem(NewCoordinateSystem);
+	}
+
+	const CADLibrary::FImportParameters& GetImportParameters() const
 	{
 		return ImportParams;
 	}

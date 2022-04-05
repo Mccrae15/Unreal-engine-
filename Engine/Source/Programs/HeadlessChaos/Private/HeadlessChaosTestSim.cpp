@@ -61,7 +61,8 @@ namespace ChaosTest {
 
 	GTEST_TEST(AllEvolutions, SimTests_SphereSphereSimTest)
 	{
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		FPBDRigidsEvolutionGBF Evolution(Particles, PhysicalMaterials);
 		InitEvolutionSettings(Evolution);
@@ -80,14 +81,17 @@ namespace ChaosTest {
 
 		Static->X() = FVec3(10, 10, 10);
 		Dynamic->X() = FVec3(10, 10, 150);
-		Dynamic->I() = FMatrix33(100000.0f, 100000.0f, 100000.0f);
-		Dynamic->InvI() = FMatrix33(1.0f / 100000.0f, 1.0f / 100000.0f, 1.0f / 100000.0f);
+		Dynamic->I() = TVec3<FRealSingle>(100000.0f);
+		Dynamic->InvI() = TVec3<FRealSingle>(1.0f / 100000.0f);
 
 		// The position of the static has changed and statics don't automatically update bounds, so update explicitly
-		Static->SetWorldSpaceInflatedBounds(Sphere->BoundingBox().TransformedAABB(FRigidTransform3(Static->X(), Static->R())));
+		Static->UpdateWorldSpaceState(FRigidTransform3(Static->X(), Static->R()), FVec3(0));
 
 		::ChaosTest::SetParticleSimDataToCollide({ Static,Dynamic });
 
+		// IMPORTANT : this is required to make sure the particles internal representation will reflect the sim data
+		Evolution.DirtyParticle(*Static);
+		Evolution.DirtyParticle(*Dynamic);
 
 		const FReal Dt = 1 / 60.f;
 		for (int i = 0; i < 200; ++i)
@@ -101,7 +105,8 @@ namespace ChaosTest {
 
 	GTEST_TEST(AllEvolutions, SimTests_BoxBoxSimTest)
 	{
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		FPBDRigidsEvolutionGBF Evolution(Particles, PhysicalMaterials);
 		InitEvolutionSettings(Evolution);
@@ -115,12 +120,16 @@ namespace ChaosTest {
 		Dynamic->SetGeometry(MakeSerializable(DynamicBox));
 
 		Static->X() = FVec3(10, 10, 10);
-		Dynamic->X() = FVec3(10, 10, 300);
-		Dynamic->I() = FMatrix33(100000.0f, 100000.0f, 100000.0f);
-		Dynamic->InvI() = FMatrix33(1.0f / 100000.0f, 1.0f / 100000.0f, 1.0f / 100000.0f);
+		Static->UpdateWorldSpaceState(FRigidTransform3(Static->X(), Static->R()), FVec3(0));
+		Dynamic->X() = FVec3(10, 10, 120);
+		Dynamic->I() = TVec3<FRealSingle>(100000.0f);
+		Dynamic->InvI() = TVec3<FRealSingle>(1.0f / 100000.0f);
 
 		::ChaosTest::SetParticleSimDataToCollide({ Static,Dynamic });
 
+		// IMPORTANT : this is required to make sure the particles internal representation will reflect the sim data
+		Evolution.DirtyParticle(*Static);
+		Evolution.DirtyParticle(*Dynamic);
 
 		const FReal Dt = 1 / 60.f;
 		for (int i = 0; i < 100; ++i)
@@ -142,7 +151,8 @@ namespace ChaosTest {
 	//
 	GTEST_TEST(AllEvolutions, DISABLED_SimTests_VeryLowInertiaSimTest)
 	{
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		FPBDRigidsEvolutionGBF Evolution(Particles, PhysicalMaterials);
 		InitEvolutionSettings(Evolution);
@@ -156,9 +166,10 @@ namespace ChaosTest {
 		Dynamic->SetGeometry(MakeSerializable(DynamicBox));
 
 		Static->X() = FVec3(10, 10, 10);
+		Static->UpdateWorldSpaceState(FRigidTransform3(Static->X(), Static->R()), FVec3(0));
 		Dynamic->X() = FVec3(10, 10, 300);
-		Dynamic->I() = FMatrix33(1, 1, 1);
-		Dynamic->InvI() = FMatrix33(1, 1, 1);
+		Dynamic->I() = TVec3<FRealSingle>(1);
+		Dynamic->InvI() = TVec3<FRealSingle>(1);
 
 		::ChaosTest::SetParticleSimDataToCollide({ Static,Dynamic });
 
@@ -173,7 +184,8 @@ namespace ChaosTest {
 
 	GTEST_TEST(AllEvolutions, SimTests_SleepAndWakeSimTest)
 	{
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		FPBDRigidsEvolutionGBF Evolution(Particles, PhysicalMaterials);
 		InitEvolutionSettings(Evolution);
@@ -191,25 +203,31 @@ namespace ChaosTest {
 		PhysicsMaterial->SleepingAngularThreshold = 20;
 		PhysicsMaterial->SleepCounterThreshold = 5;
 
-		Static->X() = FVec3(10, 10, 10);
-		Dynamic1->X() = FVec3(10, 10, 120);
-		Dynamic2->X() = FVec3(10, 10, 400);
-
 		TUniquePtr<FImplicitObject> StaticBox(new TBox<FReal, 3>(FVec3(-500, -500, -50), FVec3(500, 500, 50)));
 		TUniquePtr<FImplicitObject> DynamicBox(new TBox<FReal, 3>(FVec3(-50, -50, -50), FVec3(50, 50, 50)));
 		Static->SetGeometry(MakeSerializable(StaticBox));
 		Dynamic1->SetGeometry(MakeSerializable(DynamicBox));
 		Dynamic2->SetGeometry(MakeSerializable(DynamicBox));
 
+		Static->X() = FVec3(10, 10, 10);
+		Static->UpdateWorldSpaceState(FRigidTransform3(Static->X(), Static->R()), FVec3(0));
+		Dynamic1->X() = FVec3(10, 10, 120);
+		Dynamic2->X() = FVec3(10, 10, 400);
+
 		Evolution.SetPhysicsMaterial(Dynamic1, MakeSerializable(PhysicsMaterial));
 		Evolution.SetPhysicsMaterial(Dynamic2, MakeSerializable(PhysicsMaterial));
 
-		Dynamic1->I() = FMatrix33(100000.0f, 100000.0f, 100000.0f);
-		Dynamic1->InvI() = FMatrix33(1.0f / 100000.0f, 1.0f / 100000.0f, 1.0f / 100000.0f);
-		Dynamic2->I() = FMatrix33(100000.0f, 100000.0f, 100000.0f);
-		Dynamic2->InvI() = FMatrix33(1.0f / 100000.0f, 1.0f / 100000.0f, 1.0f / 100000.0f);
+		Dynamic1->I() = TVec3<FRealSingle>(100000.0f);
+		Dynamic1->InvI() = TVec3<FRealSingle>(1.0f / 100000.0f);
+		Dynamic2->I() = TVec3<FRealSingle>(100000.0f);
+		Dynamic2->InvI() = TVec3<FRealSingle>(1.0f / 100000.0f);
 
 		::ChaosTest::SetParticleSimDataToCollide({ Static,Dynamic1,Dynamic2 });
+
+		// IMPORTANT : this is required to make sure the particles internal representation will reflect the sim data
+		Evolution.DirtyParticle(*Static);
+		Evolution.DirtyParticle(*Dynamic1);
+		Evolution.DirtyParticle(*Dynamic2);
 
 		bool Dynamic1WentToSleep = false;
 		bool Dynamic1HasWokeAgain = false;
@@ -239,6 +257,151 @@ namespace ChaosTest {
 
 		EXPECT_TRUE(Dynamic1WentToSleep);
 		EXPECT_TRUE(Dynamic1HasWokeAgain);
+	}
+
+	GTEST_TEST(AllTraits, DISABLED_SimTests_MidSubstepSleep)
+	{
+		TSharedPtr<FImplicitObject, ESPMode::ThreadSafe> Sphere{new TSphere<FReal, 3>(FVec3(0), 10)};
+
+		FChaosSolversModule* Module = FChaosSolversModule::GetModule();
+		auto Solver = Module->CreateSolver(nullptr, /*AsyncDt=*/-1);
+
+		FSingleParticlePhysicsProxy* Proxy = FSingleParticlePhysicsProxy::Create(Chaos::TPBDRigidParticle<FReal, 3>::CreateParticle());
+		Chaos::FRigidBodyHandle_External& Particle = Proxy->GetGameThreadAPI();
+		Particle.SetGeometry(Sphere);
+		Particle.SetV(FVec3(0, 0, -1));
+
+		Solver->RegisterObject(Proxy);
+
+		Solver->SetMaxSubSteps_External(4);
+		Solver->SetMaxDeltaTime_External(1.0f / 60.0f);
+		Solver->DisableAsyncMode();
+
+		const FVector InitialX = Proxy->GetGameThreadAPI().X();
+
+		struct FCallback : TSimCallbackObject<>
+		{
+			virtual void OnPreSimulate_Internal() override
+			{
+				check(Proxy);
+				PTX = Proxy->GetPhysicsThreadAPI()->X();
+				if(Hits == 1)
+				{
+					Proxy->GetPhysicsThreadAPI()->SetObjectState(EObjectStateType::Sleeping);
+				}
+				++Hits;
+			}
+
+			FSingleParticlePhysicsProxy* Proxy = nullptr;
+			FVector PTX = FVector::ZeroVector;
+			int32 Hits = 0;
+		};
+
+		FCallback* Callback = Solver->CreateAndRegisterSimCallbackObject_External<FCallback>();
+		Callback->Proxy = Proxy;
+
+		// This should ensure 4 steps take place.
+		Solver->AdvanceAndDispatch_External(1.0f);
+		Solver->UpdateGameThreadStructures();
+
+		EXPECT_EQ(Callback->Hits, 4);
+
+		const FVector GTX = Proxy->GetGameThreadAPI().X();
+
+		EXPECT_NE(GTX, InitialX);
+		EXPECT_EQ(GTX, Callback->PTX);
+
+		Solver->UnregisterAndFreeSimCallbackObject_External(Callback);
+
+		Module->DestroySolver(Solver);
+	}
+
+	GTEST_TEST(AllEvolutions, SimTests_SleepAndWakeSimTest3)
+	{
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
+		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
+		FPBDRigidsEvolutionGBF Evolution(Particles, PhysicalMaterials);
+		InitEvolutionSettings(Evolution);
+
+		// This lambda assumes two freshly awakened dynamics, ticked over 100 frames.
+		// The sleepy one has a material sleep type and will fall asleep after 5 frames.
+		const auto AdvanceSleepStates = [&](auto& SleepyDynamic, auto& AwakeDynamic)
+		{
+			for (int i = 0; i < 10; ++i)
+			{
+				Evolution.AdvanceOneTimeStep(1 / 60.f);
+				Evolution.EndFrame(1 / 60.f);
+
+				// Dynamic1 should fall asleep after 5 frames of sitting still
+				if (i < 5)
+				{
+					EXPECT_EQ(SleepyDynamic->ObjectState(), EObjectStateType::Dynamic);
+				}
+				else
+				{
+					EXPECT_EQ(SleepyDynamic->ObjectState(), EObjectStateType::Sleeping);
+				}
+
+				// Dynamic2 should never fall asleep
+				EXPECT_EQ(AwakeDynamic->ObjectState(), EObjectStateType::Dynamic);
+			}
+		};
+
+		auto Dynamic1 = Evolution.CreateDynamicParticles(1)[0];
+		auto Dynamic2 = Evolution.CreateDynamicParticles(1)[0];
+		TArrayCollectionArray<TSerializablePtr<FChaosPhysicsMaterial>> PhysicsMaterials;
+		Particles.GetParticleHandles().AddArray(&PhysicsMaterials);
+		TUniquePtr<FChaosPhysicsMaterial> PhysicsMaterial = MakeUnique<FChaosPhysicsMaterial>();
+		PhysicsMaterial->SleepingLinearThreshold = 20;
+		PhysicsMaterial->SleepingAngularThreshold = 20;
+		PhysicsMaterial->SleepCounterThreshold = 5;
+
+		Dynamic1->X() = FVec3(-200, 0, 0);
+		Dynamic2->X() = FVec3(200, 0, 0);
+
+		TUniquePtr<FImplicitObject> DynamicBox(new TBox<FReal, 3>(FVec3(-50, -50, -50), FVec3(50, 50, 50)));
+		Dynamic1->SetGeometry(MakeSerializable(DynamicBox));
+		Dynamic2->SetGeometry(MakeSerializable(DynamicBox));
+
+		Dynamic1->SetGravityEnabled(false);
+		Dynamic2->SetGravityEnabled(false);
+
+		Dynamic1->SetSleepType(ESleepType::MaterialSleep);
+		Dynamic2->SetSleepType(ESleepType::NeverSleep);
+
+		Evolution.SetPhysicsMaterial(Dynamic1, MakeSerializable(PhysicsMaterial));
+		Evolution.SetPhysicsMaterial(Dynamic2, MakeSerializable(PhysicsMaterial));
+
+		// IMPORTANT : this is required to make sure the particles internal representation will reflect the sim data
+		Evolution.DirtyParticle(*Dynamic1);
+		Evolution.DirtyParticle(*Dynamic2);
+
+		const auto& SleepData = Evolution.GetParticles().GetDynamicParticles().GetSleepData();
+		EXPECT_EQ(SleepData.Num(), 0);
+
+		AdvanceSleepStates(Dynamic1, Dynamic2);
+
+		// Particle 1 should have fallen asleep
+		EXPECT_EQ(SleepData.Num(), 1);
+		EXPECT_EQ(SleepData[0].Particle, Dynamic1);
+		EXPECT_TRUE(SleepData[0].Sleeping);
+
+		// Switch the sleep types and observe state changes and sleep events
+		Dynamic1->SetSleepType(ESleepType::NeverSleep);
+		Dynamic2->SetSleepType(ESleepType::MaterialSleep);
+
+		// Particle 1 should have woken up due to the sleep type change
+		EXPECT_EQ(SleepData.Num(), 2);
+		EXPECT_EQ(SleepData[1].Particle, Dynamic1);
+		EXPECT_FALSE(SleepData[1].Sleeping);
+
+		AdvanceSleepStates(Dynamic2, Dynamic1);
+
+		// Particle 2 should have fallen asleep
+		EXPECT_EQ(SleepData.Num(), 3);
+		EXPECT_EQ(SleepData[2].Particle, Dynamic2);
+		EXPECT_TRUE(SleepData[2].Sleeping);
 	}
 }
 

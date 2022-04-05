@@ -4,17 +4,19 @@
 
 #include "RenderGraph.h"
 #include "ScenePrivate.h"
+#include "ScreenPass.h"
+
+struct FBloomOutputs;
 
 // Returns whether FFT bloom is enabled for the view.
 bool IsFFTBloomEnabled(const FViewInfo& View);
 
-struct FFFTBloomInputs
-{
-	FRDGTextureRef FullResolutionTexture;
-	FIntRect FullResolutionViewRect;
+float GetFFTBloomResolutionFraction(const FIntPoint& ViewSize);
 
-	FRDGTextureRef HalfResolutionTexture;
-	FIntRect HalfResolutionViewRect;
+struct FFFTBloomOutput
+{
+	FScreenPassTexture BloomTexture;
+	FRDGBufferRef SceneColorApplyParameters = nullptr;
 };
 
-FRDGTextureRef AddFFTBloomPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FFFTBloomInputs& Inputs);
+FFFTBloomOutput AddFFTBloomPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FScreenPassTexture& InputSceneColor, float InputResolutionFraction);

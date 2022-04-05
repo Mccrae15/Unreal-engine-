@@ -9,7 +9,7 @@ SkeletalMeshUpdate.cpp: Helpers to stream in and out skeletal mesh LODs.
 #include "Containers/ResourceArray.h"
 #include "ContentStreaming.h"
 #include "Streaming/TextureStreamingHelpers.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Serialization/MemoryReader.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Components/SkinnedMeshComponent.h"
@@ -29,9 +29,10 @@ FSkelMeshUpdateContext::FSkelMeshUpdateContext(const USkeletalMesh* InMesh, EThr
 	check(InMesh);
 	checkSlow(InCurrentThread != FSkeletalMeshUpdate::TT_Render || IsInRenderingThread());
 	RenderData = Mesh->GetResourceForRendering();
+	AssetLODBias = Mesh->GetStreamableResourceState().AssetLODBias;
 	if (RenderData)
 	{
-		LODResourcesView = TArrayView<FSkeletalMeshLODRenderData*>(RenderData->LODRenderData.GetData() + InMesh->GetStreamableResourceState().AssetLODBias, InMesh->GetStreamableResourceState().MaxNumLODs);
+		LODResourcesView = TArrayView<FSkeletalMeshLODRenderData*>(RenderData->LODRenderData.GetData() + AssetLODBias, Mesh->GetStreamableResourceState().MaxNumLODs);
 	}
 }
 
@@ -59,7 +60,6 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_RenderThread
 	SkinWeightVertexBuffer = LODResource.SkinWeightVertexBuffer.CreateRHIBuffer_RenderThread();
 	ClothVertexBuffer = LODResource.ClothVertexBuffer.CreateRHIBuffer_RenderThread();
 	IndexBuffer = LODResource.MultiSizeIndexContainer.CreateRHIBuffer_RenderThread();
-	AdjacencyIndexBuffer = LODResource.AdjacencyMultiSizeIndexContainer.CreateRHIBuffer_RenderThread();
 }
 
 void FSkeletalMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_Async(FSkeletalMeshLODRenderData& LODResource)
@@ -73,7 +73,6 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_Async(FSkele
 	SkinWeightVertexBuffer = LODResource.SkinWeightVertexBuffer.CreateRHIBuffer_Async();
 	ClothVertexBuffer = LODResource.ClothVertexBuffer.CreateRHIBuffer_Async();
 	IndexBuffer = LODResource.MultiSizeIndexContainer.CreateRHIBuffer_Async();
-	AdjacencyIndexBuffer = LODResource.AdjacencyMultiSizeIndexContainer.CreateRHIBuffer_Async();
 }
 
 void FSkeletalMeshStreamIn::FIntermediateBuffers::SafeRelease()
@@ -86,7 +85,6 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::SafeRelease()
 	SkinWeightVertexBuffer.LookupVertexBufferRHI.SafeRelease();
 	ClothVertexBuffer.SafeRelease();
 	IndexBuffer.SafeRelease();
-	AdjacencyIndexBuffer.SafeRelease();
 	AltSkinWeightVertexBuffers.Empty();
 }
 
@@ -100,7 +98,6 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::TransferBuffers(FSkeletalMeshL
 	LODResource.SkinWeightVertexBuffer.InitRHIForStreaming(SkinWeightVertexBuffer, Batcher);
 	LODResource.ClothVertexBuffer.InitRHIForStreaming(ClothVertexBuffer, Batcher);
 	LODResource.MultiSizeIndexContainer.InitRHIForStreaming(IndexBuffer, Batcher);
-	LODResource.AdjacencyMultiSizeIndexContainer.InitRHIForStreaming(AdjacencyIndexBuffer, Batcher);
 	LODResource.SkinWeightProfilesData.InitRHIForStreaming(AltSkinWeightVertexBuffers, Batcher);
 	SafeRelease();
 }
@@ -115,7 +112,6 @@ void FSkeletalMeshStreamIn::FIntermediateBuffers::CheckIsNull() const
 		&& !SkinWeightVertexBuffer.LookupVertexBufferRHI
 		&& !ClothVertexBuffer
 		&& !IndexBuffer
-		&& !AdjacencyIndexBuffer
 		&& !AltSkinWeightVertexBuffers.Num());
 }
 
@@ -328,7 +324,7 @@ void FSkeletalMeshStreamOut::WaitForReferences(const FContext& Context)
 		++NumReferenceChecks;
 		if (NumReferenceChecks >= GStreamingMaxReferenceChecks)
 		{
-			UE_LOG(LogSkeletalMesh, Log, TEXT("[%s] Streamed out LODResources references are not getting released."), *Mesh->GetName());
+			UE_LOG(LogSkeletalMesh, Warning, TEXT("[%s] Streamed out LODResources references are not getting released."), *Mesh->GetName());
 		}
 
 		bDeferExecution = true;
@@ -359,7 +355,6 @@ void FSkeletalMeshStreamOut::ReleaseBuffers(const FContext& Context)
 			LODResource.SkinWeightVertexBuffer.ReleaseRHIForStreaming(Batcher);
 			LODResource.ClothVertexBuffer.ReleaseRHIForStreaming(Batcher);
 			LODResource.MultiSizeIndexContainer.ReleaseRHIForStreaming(Batcher);
-			LODResource.AdjacencyMultiSizeIndexContainer.ReleaseRHIForStreaming(Batcher);
 			LODResource.SkinWeightProfilesData.ReleaseRHIForStreaming(Batcher);
 
 			if (!FPlatformProperties::HasEditorOnlyData())
@@ -465,11 +460,6 @@ void FSkeletalMeshStreamIn_IO::SetIORequest(const FContext& Context)
 	FSkeletalMeshRenderData* RenderData = Context.RenderData;
 	if (Mesh && RenderData)
 	{
-#if USE_BULKDATA_STREAMING_TOKEN
-		FString Filename;
-		verify(Mesh->GetMipDataFilename(PendingFirstLODIdx, Filename));
-#endif	
-
 		SetAsyncFileCallback(Context);
 
 		FBulkDataInterface::BulkDataRangeArray BulkDataArray;
@@ -483,7 +473,6 @@ void FSkeletalMeshStreamIn_IO::SetIORequest(const FContext& Context)
 		TaskSynchronization.Increment();
 
 		IORequest = FBulkDataInterface::CreateStreamingRequestForRange(
-			STREAMINGTOKEN_PARAM(Filename)
 			BulkDataArray,
 			bHighPrioIORequest ? AIOP_BelowNormal : AIOP_Low,
 			&AsyncFileCallback);
@@ -526,7 +515,7 @@ void FSkeletalMeshStreamIn_IO::ReportIOError(const FContext& Context)
 
 void FSkeletalMeshStreamIn_IO::SerializeLODData(const FContext& Context)
 {
-	LLM_SCOPE(ELLMTag::SkeletalMesh);
+	LLM_SCOPE_BYNAME(TEXT("SkeletalMesh/Serialize"));
 
 	check(!TaskSynchronization.GetValue());
 	const USkeletalMesh* Mesh = Context.Mesh;
@@ -541,9 +530,9 @@ void FSkeletalMeshStreamIn_IO::SerializeLODData(const FContext& Context)
 		{
 			FSkeletalMeshLODRenderData& LODResource = *Context.LODResourcesView[LODIndex];
 			const bool bForceKeepCPUResources = FSkeletalMeshLODRenderData::ShouldForceKeepCPUResources();
-			const bool bNeedsCPUAccess = FSkeletalMeshLODRenderData::ShouldKeepCPUResources(Mesh, LODIndex, bForceKeepCPUResources);
+			const bool bNeedsCPUAccess = FSkeletalMeshLODRenderData::ShouldKeepCPUResources(Mesh, LODIndex + Context.AssetLODBias, bForceKeepCPUResources);
 			constexpr uint8 DummyStripFlags = 0;
-			LODResource.SerializeStreamedData(Ar, const_cast<USkeletalMesh*>(Mesh), LODIndex, DummyStripFlags, bNeedsCPUAccess, bForceKeepCPUResources);
+			LODResource.SerializeStreamedData(Ar, const_cast<USkeletalMesh*>(Mesh), LODIndex + Context.AssetLODBias, DummyStripFlags, bNeedsCPUAccess, bForceKeepCPUResources);
 		}
 
 		FMemory::Free(Data.GetData()); // Free the memory we took ownership of via IORequest->GetReadResults()

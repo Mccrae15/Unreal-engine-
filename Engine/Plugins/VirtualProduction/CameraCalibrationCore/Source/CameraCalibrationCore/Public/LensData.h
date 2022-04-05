@@ -27,6 +27,7 @@ public:
 		return LensModelName == Other.LensModelName
 			&& LensSerialNumber == Other.LensSerialNumber
 			&& LensModel == Other.LensModel
+			&& ImageDimensions == Other.ImageDimensions
 			&& SensorDimensions == Other.SensorDimensions;
 	}
 	
@@ -47,6 +48,11 @@ public:
 	/** Width and height of the calibrated camera's sensor, in millimeters */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens Info")
 	FVector2D SensorDimensions = FVector2D(23.76f, 13.365f);
+
+	/** Camera image size, in pixels */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens Info")
+	FIntPoint ImageDimensions = FIntPoint(1920, 1080);
+
 };
 
 /**

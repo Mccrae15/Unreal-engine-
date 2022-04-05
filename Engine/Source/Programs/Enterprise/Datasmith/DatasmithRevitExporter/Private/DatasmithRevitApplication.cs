@@ -23,13 +23,41 @@ namespace DatasmithRevitExporter
 		private EventHandler<DocumentClosingEventArgs> DocumentClosingHandler;
 		private EventHandler<ViewActivatedEventArgs> ViewActivatedHandler;
 
+		//PushButton AutoSyncPushButton;
+		PushButton SyncPushButton;
+
+		//BitmapImage AutoSyncIconOn_Small;
+		//BitmapImage AutoSyncIconOn_Large;
+		//BitmapImage AutoSyncIconOff_Small;
+		//BitmapImage AutoSyncIconOff_Large;
+
 		public object Properties { get; private set; }
 
+		public static DatasmithRevitApplication Instance { get; private set; }
+
+#if false
+		public void SetAutoSyncButtonToggled(bool bToggled)
+		{
+			if (bToggled)
+			{
+				AutoSyncPushButton.Image = AutoSyncIconOff_Small;
+				AutoSyncPushButton.LargeImage = AutoSyncIconOff_Large;
+			}
+			else
+			{
+				AutoSyncPushButton.Image = AutoSyncIconOn_Small;
+				AutoSyncPushButton.LargeImage = AutoSyncIconOn_Large;
+			}
+			SyncPushButton.Enabled = !bToggled;
+		}
+#endif
 		// Implement the interface to execute some tasks when Revit starts.
 		public Result OnStartup(
 			UIControlledApplication InApplication // handle to the application being started
 		)
 		{
+			Instance = this;
+
 			// Create a custom ribbon tab
 			string TabName = DatasmithRevitResources.Strings.DatasmithTabName;
 			InApplication.CreateRibbonTab(TabName);
@@ -42,13 +70,17 @@ namespace DatasmithRevitExporter
 			string AssemblyPath = Assembly.GetExecutingAssembly().Location;
 			PushButtonData ExportButtonData = new PushButtonData("Export3DView", DatasmithRevitResources.Strings.ButtonExport3DView, AssemblyPath, "DatasmithRevitExporter.DatasmithExportRevitCommand");
 			PushButtonData SyncButtonData = new PushButtonData("Sync3DView", DatasmithRevitResources.Strings.ButtonSync, AssemblyPath, "DatasmithRevitExporter.DatasmithSyncRevitCommand");
+			//PushButtonData AutoSyncButtonData = new PushButtonData("AutoSync3DView", DatasmithRevitResources.Strings.ButtonAutoSync, AssemblyPath, "DatasmithRevitExporter.DatasmithAutoSyncRevitCommand");
 			PushButtonData ManageConnectionsButtonData = new PushButtonData("Connections", DatasmithRevitResources.Strings.ButtonConnections, AssemblyPath, "DatasmithRevitExporter.DatasmithManageConnectionsRevitCommand");
+			PushButtonData SettingsButtonData = new PushButtonData("Settings", DatasmithRevitResources.Strings.ButtonSettings, AssemblyPath, "DatasmithRevitExporter.DatasmithShowSettingsRevitCommand");
 			PushButtonData LogButtonData = new PushButtonData("Messages", DatasmithRevitResources.Strings.ButtonMessages, AssemblyPath, "DatasmithRevitExporter.DatasmithShowMessagesRevitCommand");
 
-			PushButton SyncPushButton = DirectLinkRibbonPanel.AddItem(SyncButtonData) as PushButton;
+			SyncPushButton = DirectLinkRibbonPanel.AddItem(SyncButtonData) as PushButton;
+			//AutoSyncPushButton = DirectLinkRibbonPanel.AddItem(AutoSyncButtonData) as PushButton;
 			PushButton ManageConnectionsButton = DirectLinkRibbonPanel.AddItem(ManageConnectionsButtonData) as PushButton;
 			PushButton ExportPushButton = FileExportRibbonPanel.AddItem(ExportButtonData) as PushButton;
 			PushButton ShowLogButton = DatasmithRibbonPanel.AddItem(LogButtonData) as PushButton;
+			PushButton SettingsButton = DatasmithRibbonPanel.AddItem(SettingsButtonData) as PushButton;
 
 			string DatasmithIconBase = Path.Combine(Path.GetDirectoryName(AssemblyPath), "DatasmithIcon");
 			ExportPushButton.Image = new BitmapImage(new Uri(DatasmithIconBase + "16.png"));
@@ -60,10 +92,26 @@ namespace DatasmithRevitExporter
 			SyncPushButton.LargeImage = new BitmapImage(new Uri(DatasmithIconBase + "32.png"));
 			SyncPushButton.ToolTip = DatasmithRevitResources.Strings.ButtonSyncHint;
 
+			DatasmithIconBase = Path.Combine(Path.GetDirectoryName(AssemblyPath), "DatasmithAutoSyncIcon");
+
+			//AutoSyncIconOn_Small = new BitmapImage(new Uri(DatasmithIconBase + "On16.png"));
+			//AutoSyncIconOn_Large = new BitmapImage(new Uri(DatasmithIconBase + "On32.png"));
+			//AutoSyncIconOff_Small = new BitmapImage(new Uri(DatasmithIconBase + "Off16.png"));
+			//AutoSyncIconOff_Large = new BitmapImage(new Uri(DatasmithIconBase + "Off32.png"));
+
+			//AutoSyncPushButton.Image = AutoSyncIconOn_Small;
+			//AutoSyncPushButton.LargeImage = AutoSyncIconOn_Large;
+			//AutoSyncPushButton.ToolTip = DatasmithRevitResources.Strings.ButtonAutoSyncHint;
+
 			DatasmithIconBase = Path.Combine(Path.GetDirectoryName(AssemblyPath), "DatasmithManageConnectionsIcon");
 			ManageConnectionsButton.Image = new BitmapImage(new Uri(DatasmithIconBase + "16.png"));
 			ManageConnectionsButton.LargeImage = new BitmapImage(new Uri(DatasmithIconBase + "32.png"));
 			ManageConnectionsButton.ToolTip = DatasmithRevitResources.Strings.ButtonConnectionsHint;
+
+			DatasmithIconBase = Path.Combine(Path.GetDirectoryName(AssemblyPath), "DatasmithSettingsIcon");
+			SettingsButton.Image = new BitmapImage(new Uri(DatasmithIconBase + "16.png"));
+			SettingsButton.LargeImage = new BitmapImage(new Uri(DatasmithIconBase + "32.png"));
+			SettingsButton.ToolTip = DatasmithRevitResources.Strings.ButtonSettingsHint;
 
 			DatasmithIconBase = Path.Combine(Path.GetDirectoryName(AssemblyPath), "DatasmithLogIcon");
 			ShowLogButton.Image = new BitmapImage(new Uri(DatasmithIconBase + "16.png"));
@@ -100,6 +148,8 @@ namespace DatasmithRevitExporter
 
 			Debug.Assert(bDirectLinkInitOk);
 
+			FSettingsManager.Init(InApplication);
+
 			return Result.Succeeded;
 		}
 
@@ -134,6 +184,7 @@ namespace DatasmithRevitExporter
 			{
 				ExportMessagesDialog.Close();
 			}
+			FSettingsManager.Destroy(InApplication);
 			FDatasmithFacadeDirectLink.Shutdown();
 			return Result.Succeeded;
 		}

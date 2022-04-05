@@ -26,7 +26,7 @@
 // FActorPaletteViewportClient
 
 FActorPaletteViewportClient::FActorPaletteViewportClient(int32 InTabIndex)
-	: FEditorViewportClient(new FAssetEditorModeManager(), nullptr, nullptr)
+	: FEditorViewportClient(nullptr, nullptr, nullptr)
 	, TabIndex(InTabIndex)
 {
 	SetViewModes(VMI_Lit, VMI_Lit);
@@ -81,7 +81,7 @@ bool FActorPaletteViewportClient::InputKey(FViewport* InViewport, int32 Controll
 
 			if (HActor* ActorProxy = HitProxyCast<HActor>(HitProxy))
 			{
-				if ((ActorProxy->Actor != nullptr) && !ActorProxy->Actor->bLockLocation)
+				if ((ActorProxy->Actor != nullptr) && !ActorProxy->Actor->IsLockLocation())
 				{
 					TArray<UObject*> Assets;
 					ActorProxy->Actor->GetReferencedContentObjects(Assets);

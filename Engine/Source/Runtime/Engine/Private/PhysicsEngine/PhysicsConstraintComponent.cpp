@@ -244,6 +244,12 @@ void UPhysicsConstraintComponent::OnConstraintBrokenWrapper(int32 ConstraintInde
 	OnConstraintBroken.Broadcast(ConstraintIndex);
 }
 
+/** Wrapper that calls our plasticity delegate */
+void UPhysicsConstraintComponent::OnPlasticDeformationWrapper(int32 ConstraintIndex)
+{
+	OnPlasticDeformation.Broadcast(ConstraintIndex);
+}
+
 void UPhysicsConstraintComponent::InitComponentConstraint()
 {
 	// First we convert world space position of constraint into local space frames
@@ -269,9 +275,24 @@ void UPhysicsConstraintComponent::OnConstraintBrokenHandler(FConstraintInstance*
 	OnConstraintBroken.Broadcast(BrokenConstraint->ConstraintIndex);
 }
 
+void UPhysicsConstraintComponent::OnPlasticDeformationHandler(FConstraintInstance* Constraint)
+{
+	OnPlasticDeformation.Broadcast(Constraint->ConstraintIndex);
+}
+
+
 float UPhysicsConstraintComponent::GetConstraintScale() const
 {
 	return GetComponentScale().GetAbsMin();
+}
+
+void UPhysicsConstraintComponent::GetConstrainedComponents(UPrimitiveComponent*& OutComponent1, FName& OutBoneName1, UPrimitiveComponent*& OutComponent2, FName& OutBoneName2)
+{
+	OutComponent1 = GetComponentInternal(EConstraintFrame::Frame1);
+	OutBoneName1 = ConstraintInstance.ConstraintBone1;
+
+	OutComponent2 = GetComponentInternal(EConstraintFrame::Frame2);
+	OutBoneName2 = ConstraintInstance.ConstraintBone2;
 }
 
 void UPhysicsConstraintComponent::SetConstrainedComponents(UPrimitiveComponent* Component1, FName BoneName1, UPrimitiveComponent* Component2, FName BoneName2)
@@ -340,14 +361,14 @@ void UPhysicsConstraintComponent::PostLoad()
 	Super::PostLoad();
 
 	// Fix old content that used a ConstraintSetup
-	if ( GetLinkerUE4Version() < VER_UE4_ALL_PROPS_TO_CONSTRAINTINSTANCE && (ConstraintSetup_DEPRECATED != NULL) )
+	if ( GetLinkerUEVersion() < VER_UE4_ALL_PROPS_TO_CONSTRAINTINSTANCE && (ConstraintSetup_DEPRECATED != NULL) )
 	{
 		// Will have copied from setup into DefaultIntance inside
 		ConstraintInstance.CopyConstraintParamsFrom(&ConstraintSetup_DEPRECATED->DefaultInstance);
 		ConstraintSetup_DEPRECATED = NULL;
 	}
 
-	if (GetLinkerUE4Version() < VER_UE4_SOFT_CONSTRAINTS_USE_MASS)
+	if (GetLinkerUEVersion() < VER_UE4_SOFT_CONSTRAINTS_USE_MASS)
 	{
 		//In previous versions the mass was placed into the spring constant. This is correct because you use different springs for different mass - however, this makes tuning hard
 		//We now multiply mass into the spring constant. To fix old data we use CalculateMass which is not perfect but close (within 0.1kg)
@@ -400,9 +421,10 @@ void UPhysicsConstraintComponent::PostEditChangeChainProperty(FPropertyChangedCh
 
 void UPhysicsConstraintComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
 	UpdateConstraintFrames();
 	UpdateSpriteTexture();
+
+	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
 void UPhysicsConstraintComponent::PostEditComponentMove(bool bFinished)
@@ -532,6 +554,10 @@ void UPhysicsConstraintComponent::SetDisableCollision(bool bDisableCollision)
 	ConstraintInstance.SetDisableCollision(bDisableCollision);
 }
 
+FConstraintInstanceAccessor UPhysicsConstraintComponent::GetConstraint()
+{
+	return FConstraintInstanceAccessor(this);
+}
 
 #if WITH_EDITOR
 void UPhysicsConstraintComponent::UpdateSpriteTexture()
@@ -656,9 +682,9 @@ void UPhysicsConstraintComponent::SetLinearBreakable(bool bLinearBreakable, floa
 	ConstraintInstance.SetLinearBreakable(bLinearBreakable, LinearBreakThreshold);
 }
 
-void UPhysicsConstraintComponent::SetLinearPlasticity(bool bLinearPlasticity, float LinearPlasticityThreshold)
+void UPhysicsConstraintComponent::SetLinearPlasticity(bool bLinearPlasticity, float LinearPlasticityThreshold, EConstraintPlasticityType PlasticityType)
 {
-	ConstraintInstance.SetLinearPlasticity(bLinearPlasticity, LinearPlasticityThreshold);
+	ConstraintInstance.SetLinearPlasticity(bLinearPlasticity, LinearPlasticityThreshold, PlasticityType);
 }
 
 void UPhysicsConstraintComponent::SetAngularBreakable(bool bAngularBreakable, float AngularBreakThreshold)
@@ -669,6 +695,11 @@ void UPhysicsConstraintComponent::SetAngularBreakable(bool bAngularBreakable, fl
 void UPhysicsConstraintComponent::SetAngularPlasticity(bool bAngularPlasticity, float AngularPlasticityThreshold)
 {
 	ConstraintInstance.SetAngularPlasticity(bAngularPlasticity, AngularPlasticityThreshold);
+}
+
+void UPhysicsConstraintComponent::SetContactTransferScale(float ContactTransferScale)
+{
+	ConstraintInstance.SetContactTransferScale(ContactTransferScale);
 }
 
 float UPhysicsConstraintComponent::GetCurrentTwist() const

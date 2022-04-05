@@ -125,7 +125,7 @@ void SLensDistortionToolPanel::UpdateAlgosOptions()
 
 	for (FName& AlgoName : Tool->GetAlgos())
 	{
-		CurrentAlgos.Add(MakeShareable(new FString(AlgoName.ToString())));
+		CurrentAlgos.Add(MakeShared<FString>(AlgoName.ToString()));
 	}
 
 	// Ask the ComboBox to refresh its options from its source (that we just updated)
@@ -188,7 +188,7 @@ TSharedRef<SWidget> SLensDistortionToolPanel::BuildAlgoPickerWidget()
 			.ToolTipText(LOCTEXT("ShowHelp_Tip", "Help about this algo"))
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.ButtonColorAndOpacity(FLinearColor::Transparent)
+			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
 			.OnClicked_Lambda([&]() -> FReply
 			{
 				if (!Tool.IsValid())

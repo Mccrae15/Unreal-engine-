@@ -98,6 +98,27 @@ ETrackingConfidence FOculusHandTracking::GetTrackingConfidence(const int32 Contr
 	return ETrackingConfidence::Low;
 }
 
+ETrackingConfidence FOculusHandTracking::GetFingerTrackingConfidence(const int32 ControllerIndex, const EOculusHandType DeviceHand, const EOculusHandAxes Finger)
+{
+	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
+	if (OculusInputModule.IsValid())
+	{
+		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
+		for (const FOculusControllerPair& HandPair : ControllerPairs)
+		{
+			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			{
+				if (DeviceHand != EOculusHandType::None)
+				{
+					ovrpHand Hand = DeviceHand == EOculusHandType::HandLeft ? ovrpHand_Left : ovrpHand_Right;
+					return HandPair.HandControllerStates[Hand].FingerConfidences[(int)Finger];
+				}
+			}
+		}
+	}
+	return ETrackingConfidence::Low;
+}
+
 FTransform FOculusHandTracking::GetPointerPose(const int32 ControllerIndex, const EOculusHandType DeviceHand, const float WorldToMeters)
 {
 #if OCULUS_INPUT_SUPPORTED_PLATFORMS
@@ -177,6 +198,27 @@ bool FOculusHandTracking::IsHandDominant(const int32 ControllerIndex, const EOcu
 		}
 	}
 #endif
+	return false;
+}
+
+bool FOculusHandTracking::IsHandPositionValid(int32 ControllerIndex, EOculusHandType DeviceHand)
+{
+	TSharedPtr<FOculusInput> OculusInputModule = StaticCastSharedPtr<FOculusInput>(IOculusInputModule::Get().GetInputDevice());
+	if (OculusInputModule.IsValid())
+	{
+		TArray<FOculusControllerPair> ControllerPairs = OculusInputModule.Get()->ControllerPairs;
+		for (const FOculusControllerPair& HandPair : ControllerPairs)
+		{
+			if (HandPair.UnrealControllerIndex == ControllerIndex)
+			{
+				if (DeviceHand != EOculusHandType::None)
+				{
+					ovrpHand Hand = DeviceHand == EOculusHandType::HandLeft ? ovrpHand_Left : ovrpHand_Right;
+					return HandPair.HandControllerStates[Hand].bIsPositionValid;
+				}
+			}
+		}
+	}
 	return false;
 }
 
@@ -280,11 +322,11 @@ void FOculusHandTracking::InitializeHandMesh(USkeletalMesh* SkeletalMesh, const 
 		SoftVertex.Color = FColor::White;
 		ovrpVector3f VertexPosition = OvrMesh->VertexPositions[VertexIndex];
 		ovrpVector3f Normal = OvrMesh->VertexNormals[VertexIndex];
-		SoftVertex.Position = FVector(VertexPosition.x, VertexPosition.z, VertexPosition.y) * WorldToMeters;
-		SoftVertex.TangentZ = FVector(Normal.x, Normal.z, Normal.y);
-		SoftVertex.TangentX = FVector(1.0f, 0.0f, 0.0f);
-		SoftVertex.TangentY = FVector(0.0f, 1.0f, 0.0f);// SoftVertex.TangentZ^ SoftVertex.TangentX* SoftVertex.TangentZ.W;
-		SoftVertex.UVs[0] = FVector2D(OvrMesh->VertexUV0[VertexIndex].x, OvrMesh->VertexUV0[VertexIndex].y);
+		SoftVertex.Position = FVector3f(VertexPosition.x, VertexPosition.z, VertexPosition.y) * WorldToMeters;
+		SoftVertex.TangentZ = FVector3f(Normal.x, Normal.z, Normal.y);
+		SoftVertex.TangentX = FVector3f(1.0f, 0.0f, 0.0f);
+		SoftVertex.TangentY = FVector3f(0.0f, 1.0f, 0.0f);// SoftVertex.TangentZ^ SoftVertex.TangentX* SoftVertex.TangentZ.W;
+		SoftVertex.UVs[0] = FVector2f(OvrMesh->VertexUV0[VertexIndex].x, OvrMesh->VertexUV0[VertexIndex].y);
 
 		// Update the Bounds
 		float VertexDistSq = SoftVertex.Position.SizeSquared();
@@ -374,10 +416,10 @@ void FOculusHandTracking::InitializeHandMesh(USkeletalMesh* SkeletalMesh, const 
 		// Update Model Vertex
 		ovrpVector3f VertexPosition = OvrMesh->VertexPositions[VertexIndex];
 		ovrpVector3f Normal = OvrMesh->VertexNormals[VertexIndex];
-		ModelVertex.Position = FVector(VertexPosition.x, VertexPosition.z, VertexPosition.y) * WorldToMeters;
-		ModelVertex.TangentZ = FVector(Normal.x, Normal.z, Normal.y);
-		ModelVertex.TangentX = FVector(1.0f, 0.0f, 0.0f);
-		ModelVertex.TexCoord = FVector2D(OvrMesh->VertexUV0[VertexIndex].x, OvrMesh->VertexUV0[VertexIndex].y);
+		ModelVertex.Position = FVector3f(VertexPosition.x, VertexPosition.z, VertexPosition.y) * WorldToMeters;	// LWC_TODO: Precision loss?
+		ModelVertex.TangentZ = FVector3f(Normal.x, Normal.z, Normal.y);
+		ModelVertex.TangentX = FVector3f(1.0f, 0.0f, 0.0f);
+		ModelVertex.TexCoord = FVector2f(OvrMesh->VertexUV0[VertexIndex].x, OvrMesh->VertexUV0[VertexIndex].y);
 
 		// Add Model Vertex data to vertex buffer
 		LodRenderData->StaticVertexBuffers.PositionVertexBuffer.VertexPosition(VertexIndex) = ModelVertex.Position;

@@ -54,6 +54,10 @@ public:
 
 	// FSerializableObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FSpriteEditor");
+	}
 	// End of FSerializableObject interface
 
 	// Get the source texture for the current sprite being edited
@@ -75,6 +79,7 @@ protected:
 	void BindCommands();
 	void ExtendMenu();
 	void ExtendToolbar();
+	virtual void CreateEditorModeManager() override;
 
 	TSharedRef<SDockTab> SpawnTab_Viewport(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Details(const FSpawnTabArgs& Args);

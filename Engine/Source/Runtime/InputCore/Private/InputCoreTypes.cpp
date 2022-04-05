@@ -231,8 +231,10 @@ const FKey EKeys::Gesture_Pinch("Gesture_Pinch");
 const FKey EKeys::Gesture_Flick("Gesture_Flick");
 const FKey EKeys::Gesture_Rotate("Gesture_Rotate");
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 // PS4-specific
 const FKey EKeys::PS4_Special("PS4_Special");
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 // Steam Controller Specific
 const FKey EKeys::Steam_Touch_0("Steam_Touch_0");
@@ -254,18 +256,6 @@ const FKey EKeys::Android_Back("Android_Back");
 const FKey EKeys::Android_Volume_Up("Android_Volume_Up");
 const FKey EKeys::Android_Volume_Down("Android_Volume_Down");
 const FKey EKeys::Android_Menu("Android_Menu");
-
-// Google Daydream
-const FKey EKeys::Daydream_Left_Select_Click("Daydream_Left_Select_Click");
-const FKey EKeys::Daydream_Left_Trackpad_X("Daydream_Left_Trackpad_X");
-const FKey EKeys::Daydream_Left_Trackpad_Y("Daydream_Left_Trackpad_Y");
-const FKey EKeys::Daydream_Left_Trackpad_Click("Daydream_Left_Trackpad_Click");
-const FKey EKeys::Daydream_Left_Trackpad_Touch("Daydream_Left_Trackpad_Touch");
-const FKey EKeys::Daydream_Right_Select_Click("Daydream_Right_Select_Click");
-const FKey EKeys::Daydream_Right_Trackpad_X("Daydream_Right_Trackpad_X");
-const FKey EKeys::Daydream_Right_Trackpad_Y("Daydream_Right_Trackpad_Y");
-const FKey EKeys::Daydream_Right_Trackpad_Click("Daydream_Right_Trackpad_Click");
-const FKey EKeys::Daydream_Right_Trackpad_Touch("Daydream_Right_Trackpad_Touch");
 
 // HTC Vive Controller
 const FKey EKeys::Vive_Left_System_Click("Vive_Left_System_Click");
@@ -470,6 +460,7 @@ void FKeyDetails::CommonInit(const uint32 InKeyFlags)
 	bShouldUpdateAxisWithoutSamples = ((InKeyFlags & EKeyFlags::UpdateAxisWithoutSamples) != 0);
 	bIsBindableToActions = ((~InKeyFlags & EKeyFlags::NotActionBindableKey) != 0) && ((~InKeyFlags & EKeyFlags::Deprecated) != 0);
 	bIsDeprecated = ((InKeyFlags & EKeyFlags::Deprecated) != 0);
+	bIsGesture = ((InKeyFlags & EKeyFlags::Gesture) != 0);
 
 	if ((InKeyFlags & EKeyFlags::ButtonAxis) != 0)
 	{
@@ -534,8 +525,8 @@ void EKeys::Initialize()
 	AddKey(FKeyDetails(EKeys::MouseScrollUp, LOCTEXT("MouseScrollUp", "Mouse Wheel Up"), FKeyDetails::MouseButton | FKeyDetails::ButtonAxis));
 	AddKey(FKeyDetails(EKeys::MouseScrollDown, LOCTEXT("MouseScrollDown", "Mouse Wheel Down"), FKeyDetails::MouseButton | FKeyDetails::ButtonAxis));
 
-	AddKey(FKeyDetails(EKeys::LeftMouseButton, LOCTEXT("LeftMouseButton", "Left Mouse Button"), FKeyDetails::MouseButton));
-	AddKey(FKeyDetails(EKeys::RightMouseButton, LOCTEXT("RightMouseButton", "Right Mouse Button"), FKeyDetails::MouseButton));
+	AddKey(FKeyDetails(EKeys::LeftMouseButton, LOCTEXT("LeftMouseButton", "Left Mouse Button"), FKeyDetails::MouseButton, NAME_None, LOCTEXT("LeftMouseButtonShort", "LMB")));
+	AddKey(FKeyDetails(EKeys::RightMouseButton, LOCTEXT("RightMouseButton", "Right Mouse Button"), FKeyDetails::MouseButton, NAME_None, LOCTEXT("RightMouseButtonShort", "RMB")));
 	AddKey(FKeyDetails(EKeys::MiddleMouseButton, LOCTEXT("MiddleMouseButton", "Middle Mouse Button"), FKeyDetails::MouseButton));
 	AddKey(FKeyDetails(EKeys::ThumbMouseButton, LOCTEXT("ThumbMouseButton", "Thumb Mouse Button"), FKeyDetails::MouseButton));
 	AddKey(FKeyDetails(EKeys::ThumbMouseButton2, LOCTEXT("ThumbMouseButton2", "Thumb Mouse Button 2"), FKeyDetails::MouseButton));
@@ -741,15 +732,17 @@ void EKeys::Initialize()
 	// Gestures
 	AddMenuCategoryDisplayInfo("Gesture", LOCTEXT("GestureSubCateogry", "Gesture"), TEXT("GraphEditor.KeyEvent_16x"));
 
-	AddKey(FKeyDetails(EKeys::Gesture_Pinch, LOCTEXT("Gesture_Pinch", "Pinch"), 0, "Gesture"));
-	AddKey(FKeyDetails(EKeys::Gesture_Flick, LOCTEXT("Gesture_Flick", "Flick"), 0, "Gesture"));
-	AddKey(FKeyDetails(EKeys::Gesture_Rotate, LOCTEXT("Gesture_Rotate", "Rotate"), 0, "Gesture"));
+	AddKey(FKeyDetails(EKeys::Gesture_Pinch, LOCTEXT("Gesture_Pinch", "Pinch"), FKeyDetails::Gesture, "Gesture"));
+	AddKey(FKeyDetails(EKeys::Gesture_Flick, LOCTEXT("Gesture_Flick", "Flick"), FKeyDetails::Gesture, "Gesture"));
+	AddKey(FKeyDetails(EKeys::Gesture_Rotate, LOCTEXT("Gesture_Rotate", "Rotate"), FKeyDetails::Gesture, "Gesture"));
 
 	// PS4-specific
-	AddMenuCategoryDisplayInfo("PS4", LOCTEXT("PS4SubCategory", "PS4"), TEXT("GraphEditor.PadEvent_16x"));
-	AddKey(FKeyDetails(EKeys::PS4_Special, LOCTEXT("PS4_Special", "PS4_Special"), FKeyDetails::NotBlueprintBindableKey | FKeyDetails::NotActionBindableKey, "PS4"));
-	AddKey(FKeyDetails(EKeys::Gamepad_Special_Left_X, LOCTEXT("PS4_Gamepad_Special_Left_X", "PS4 Touchpad Button X Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, "PS4"));
-	AddKey(FKeyDetails(EKeys::Gamepad_Special_Left_Y, LOCTEXT("PS4_Gamepad_Special_Left_Y", "PS4 Touchpad Button Y Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, "PS4"));
+	AddMenuCategoryDisplayInfo("Special Gamepad", LOCTEXT("SpecialGamepadSubCategory", "SpecialGamepad"), TEXT("GraphEditor.PadEvent_16x"));
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	AddKey(FKeyDetails(EKeys::PS4_Special, LOCTEXT("PS4_Special", "PS4_Special_DEPRECATED"), FKeyDetails::Deprecated | FKeyDetails::NotBlueprintBindableKey | FKeyDetails::NotActionBindableKey, "PS4"));
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	AddKey(FKeyDetails(EKeys::Gamepad_Special_Left_X, LOCTEXT("Gamepad_Special_Left_X", "Touchpad Button X Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, "PS4"));
+	AddKey(FKeyDetails(EKeys::Gamepad_Special_Left_Y, LOCTEXT("Gamepad_Special_Left_Y", "Touchpad Button Y Axis"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D, "PS4"));
 
 
 	// Steam Controller specific
@@ -778,20 +771,6 @@ void EKeys::Initialize()
 	AddKey(FKeyDetails(EKeys::Android_Volume_Up, LOCTEXT("Android_Volume_Up", "Android Volume Up"), FKeyDetails::GamepadKey, "Android"));
 	AddKey(FKeyDetails(EKeys::Android_Volume_Down, LOCTEXT("Android_Volume_Down", "Android Volume Down"), FKeyDetails::GamepadKey, "Android"));
 	AddKey(FKeyDetails(EKeys::Android_Menu, LOCTEXT("Android_Menu", "Android Menu"), FKeyDetails::GamepadKey, "Android"));
-
-	// Google Daydream
-	AddMenuCategoryDisplayInfo("Daydream", LOCTEXT("DaydreamSubCategory", "Google Daydream"), TEXT("GraphEditor.PadEvent_16x"));
-
-	AddKey(FKeyDetails(EKeys::Daydream_Left_Select_Click, LOCTEXT("Daydream_Left_Select_Click", "Daydream (L) Select"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "Daydream"));
-	AddKey(FKeyDetails(EKeys::Daydream_Left_Trackpad_X, LOCTEXT("Daydream_Left_Trackpad_X", "Daydream (L) Trackpad X"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey, "Daydream"));
-	AddKey(FKeyDetails(EKeys::Daydream_Left_Trackpad_Y, LOCTEXT("Daydream_Left_Trackpad_Y", "Daydream (L) Trackpad Y"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey, "Daydream"));
-	AddKey(FKeyDetails(EKeys::Daydream_Left_Trackpad_Click, LOCTEXT("Daydream_Left_Trackpad_Click", "Daydream (L) Trackpad"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "Daydream"));
-	AddKey(FKeyDetails(EKeys::Daydream_Left_Trackpad_Touch, LOCTEXT("Daydream_Left_Trackpad_Touch", "Daydream (L) Trackpad Touch"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "Daydream"));
-	AddKey(FKeyDetails(EKeys::Daydream_Right_Select_Click, LOCTEXT("Daydream_Right_Select_Click", "Daydream (R) Select"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "Daydream"));
-	AddKey(FKeyDetails(EKeys::Daydream_Right_Trackpad_X, LOCTEXT("Daydream_Right_Trackpad_X", "Daydream (R) Trackpad X"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey, "Daydream"));
-	AddKey(FKeyDetails(EKeys::Daydream_Right_Trackpad_Y, LOCTEXT("Daydream_Right_Trackpad_Y", "Daydream (R) Trackpad Y"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey, "Daydream"));
-	AddKey(FKeyDetails(EKeys::Daydream_Right_Trackpad_Click, LOCTEXT("Daydream_Right_Trackpad_Click", "Daydream (R) Trackpad"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "Daydream"));
-	AddKey(FKeyDetails(EKeys::Daydream_Right_Trackpad_Touch, LOCTEXT("Daydream_Right_Trackpad_Touch", "Daydream (R) Trackpad Touch"), FKeyDetails::GamepadKey | FKeyDetails::NotBlueprintBindableKey, "Daydream"));
 
 	// HTC Vive Controller
 	AddMenuCategoryDisplayInfo("Vive", LOCTEXT("ViveSubCategory", "HTC Vive"), TEXT("GraphEditor.PadEvent_16x"));
@@ -1365,6 +1344,12 @@ bool FKey::IsDeprecated() const
 {
 	ConditionalLookupKeyDetails();
 	return (KeyDetails.IsValid() ? KeyDetails->IsDeprecated() : false);
+}
+
+bool FKey::IsGesture() const
+{
+	ConditionalLookupKeyDetails();
+	return (KeyDetails.IsValid() ? KeyDetails->IsGesture() : false);
 }
 
 FText FKeyDetails::GetDisplayName(const bool bLongDisplayName) const

@@ -23,6 +23,7 @@
 #include "Async/ParallelFor.h"
 #include "UObject/ReferenceChainSearch.h"
 #include "UObject/FastReferenceCollector.h"
+#include <atomic>
 
 /*-----------------------------------------------------------------------------
    Garbage collection verification code.
@@ -51,7 +52,7 @@ public:
 	{
 		return NumErrors.GetValue();
 	}
-	FORCEINLINE_DEBUGGABLE void HandleTokenStreamObjectReference(TArray<UObject*>& ObjectsToSerialize, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, bool bAllowReferenceElimination)
+	FORCEINLINE_DEBUGGABLE void HandleTokenStreamObjectReference(FGCArrayStruct& ObjectsToSerializeStruct, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, const EGCTokenType TokenType, bool bAllowReferenceElimination)
 	{
 		if (Object)
 		{
@@ -158,7 +159,7 @@ public:
 	{
 		return NumErrors.GetValue();
 	}
-	void SetCurrentObject(UObject* InRootOrClusterObject)
+	void SetCurrentObjectAndCluster(UObject* InRootOrClusterObject)
 	{
 		check(InRootOrClusterObject);
 		CurrentObject = InRootOrClusterObject;
@@ -176,10 +177,14 @@ public:
 	* @param TokenIndex Index to the token stream where the reference was found.
 	* @param bAllowReferenceElimination True if reference elimination is allowed (ignored when constructing clusters).
 	*/
-	FORCEINLINE_DEBUGGABLE void HandleTokenStreamObjectReference(TArray<UObject*>& ObjectsToSerialize, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, bool bAllowReferenceElimination)
+	FORCEINLINE_DEBUGGABLE void HandleTokenStreamObjectReference(FGCArrayStruct& ObjectsToSerializeStruct, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, const EGCTokenType TokenType, bool bAllowReferenceElimination)
 	{
 		if (Object)
 		{
+			if (ObjectsToSerializeStruct.GetReferencingObject() != CurrentObject)
+			{
+				SetCurrentObjectAndCluster(ObjectsToSerializeStruct.GetReferencingObject());
+			}
 			check(CurrentObject);
 
 #if ENABLE_GC_OBJECT_CHECKS
@@ -331,6 +336,55 @@ void VerifyClustersAssumptions()
 	delete[] ArrayStructs;
 
 	UE_CLOG(NumErrors.GetValue() > 0, LogGarbage, Fatal, TEXT("Encountered %d object(s) breaking GC Clusters assumptions. Please check log for details."), NumErrors.GetValue());
+}
+
+void VerifyObjectFlagMirroring()
+{
+	int32 MaxNumberOfObjects = GUObjectArray.GetObjectArrayNum();
+	int32 NumThreads = FMath::Max(1, FTaskGraphInterface::Get().GetNumWorkerThreads());
+	int32 NumberOfObjectsPerThread = (MaxNumberOfObjects / NumThreads) + 1;
+	std::atomic<uint32> NumErrors(0);
+
+	ParallelFor(NumThreads, [&NumErrors, NumberOfObjectsPerThread, NumThreads, MaxNumberOfObjects](int32 ThreadIndex)
+	{
+		int32 FirstObjectIndex = ThreadIndex * NumberOfObjectsPerThread;
+		int32 NumObjects = (ThreadIndex < (NumThreads - 1)) ? NumberOfObjectsPerThread : (MaxNumberOfObjects - (NumThreads - 1) * NumberOfObjectsPerThread);
+
+		for (int32 ObjectIndex = 0; ObjectIndex < NumObjects && (FirstObjectIndex + ObjectIndex) < MaxNumberOfObjects; ++ObjectIndex)
+		{
+			FUObjectItem& ObjectItem = GUObjectArray.GetObjectItemArrayUnsafe()[FirstObjectIndex + ObjectIndex];
+			if (ObjectItem.Object)
+			{
+				UObjectBaseUtility* Object = (UObjectBaseUtility*)ObjectItem.Object;
+				bool bHasObjectFlag = Object->HasAnyFlags(RF_InternalPendingKill);
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				bool bHasInternalFlag = ObjectItem.HasAnyFlags(EInternalObjectFlags::PendingKill);
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+				if (bHasObjectFlag != bHasInternalFlag)
+				{
+					UE_LOG(LogGarbage, Warning, TEXT("RF_PendingKill (%d) and EInternalObjectFlags::PendingKill (%d) flag mismatch on %s"),
+						(int32)bHasObjectFlag,
+						(int32)bHasInternalFlag,
+						*Object->GetFullName());
+
+					++NumErrors;
+				}
+
+				bHasObjectFlag = Object->HasAnyFlags(RF_InternalGarbage);
+				bHasInternalFlag = ObjectItem.HasAnyFlags(EInternalObjectFlags::Garbage);
+				if (bHasObjectFlag != bHasInternalFlag)
+				{
+					UE_LOG(LogGarbage, Warning, TEXT("RF_Garbage (%d) and EInternalObjectFlags::Garbage (%d) flag mismatch on %s"),
+						(int32)bHasObjectFlag,
+						(int32)bHasInternalFlag,
+						*Object->GetFullName());
+
+					++NumErrors;
+				}
+		}
+	}});
+
+	UE_CLOG(NumErrors > 0, LogGarbage, Fatal, TEXT("Encountered %d object(s) breaking Object and Internal flag mirroring assumptions. Please check log for details."), (uint32)NumErrors);
 }
 
 #endif // VERIFY_DISREGARD_GC_ASSUMPTIONS

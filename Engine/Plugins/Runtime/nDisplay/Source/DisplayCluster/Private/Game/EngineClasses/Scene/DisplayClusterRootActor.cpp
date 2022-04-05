@@ -12,6 +12,7 @@
 #include "Components/DisplayClusterICVFXCameraComponent.h"
 #include "Components/DisplayClusterSceneComponentSyncThis.h"
 #include "CineCameraComponent.h"
+#include "ProceduralMeshComponent.h"
 
 #include "Config/IPDisplayClusterConfigManager.h"
 #include "DisplayClusterConfigurationStrings.h"
@@ -36,8 +37,22 @@
 #include "Misc/DisplayClusterStrings.h"
 
 #include "Render/Viewport/DisplayClusterViewportManager.h"
+
 #include "Game/EngineClasses/Scene/DisplayClusterRootActorInitializer.h"
 
+#if WITH_EDITOR
+#include "IConcertSyncClientModule.h"
+#include "IConcertClientWorkspace.h"
+#include "IConcertSyncClient.h"
+#endif
+
+static TAutoConsoleVariable<int32> CVarShowVisualizationComponents(
+	TEXT("nDisplay.render.show.visualizationcomponents"),
+	1,
+	TEXT("Whether to show or hide visualization mesh components \n")
+	TEXT("0 : Hides visualization components \n")
+	TEXT("1 : Shows visualization components\n")
+);
 
 ADisplayClusterRootActor::ADisplayClusterRootActor(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -167,9 +182,10 @@ void ADisplayClusterRootActor::OverrideFromConfig(UDisplayClusterConfigurationDa
 	// Override Cluster
 	if (CurrentConfigData->Cluster)
 	{
-		CurrentConfigData->Cluster->MasterNode = ConfigData->Cluster->MasterNode;
-		CurrentConfigData->Cluster->Sync = ConfigData->Cluster->Sync;
-		CurrentConfigData->Cluster->Network = ConfigData->Cluster->Network;
+		CurrentConfigData->Cluster->PrimaryNode = ConfigData->Cluster->PrimaryNode;
+		CurrentConfigData->Cluster->Sync        = ConfigData->Cluster->Sync;
+		CurrentConfigData->Cluster->Network     = ConfigData->Cluster->Network;
+		CurrentConfigData->Cluster->Failover    = ConfigData->Cluster->Failover;
 
 		// Remove nodes in current config that are not in the new config
 
@@ -213,45 +229,46 @@ void ADisplayClusterRootActor::OverrideFromConfig(UDisplayClusterConfigurationDa
 			CurrentNode->Postprocess = NewNode->Postprocess;
 			CurrentNode->OutputRemap = NewNode->OutputRemap;
 
-			// Remove viewports in current node that are not in the new node
-
-			for (auto CurrentViewportIt = CurrentNode->Viewports.CreateIterator(); CurrentViewportIt; ++CurrentViewportIt)
+			if (ConfigData->bOverrideViewportsFromExternalConfig)
 			{
-				if (!NewNode->Viewports.Find(CurrentViewportIt->Key))
+				// Remove viewports in current node that are not in the new node
+				for (auto CurrentViewportIt = CurrentNode->Viewports.CreateIterator(); CurrentViewportIt; ++CurrentViewportIt)
 				{
-					CurrentViewportIt.RemoveCurrent();
-				}
-			}
-
-			// Go over viewport and override the current ones (or add new ones that didn't exist)
-
-			for (auto NewViewportIt = NewNode->Viewports.CreateConstIterator(); NewViewportIt; ++NewViewportIt)
-			{
-				UDisplayClusterConfigurationViewport** CurrentViewportPtr = CurrentNode->Viewports.Find(NewViewportIt->Key);
-
-				// Add the viewport if it doesn't exist
-				if (!CurrentViewportPtr)
-				{
-					CurrentNode->Viewports.Add(
-						NewViewportIt->Key,
-						DuplicateObject(NewViewportIt->Value, CurrentNode, NewViewportIt->Value->GetFName())
-					);
-					continue;
+					if (!NewNode->Viewports.Find(CurrentViewportIt->Key))
+					{
+						CurrentViewportIt.RemoveCurrent();
+					}
 				}
 
-				UDisplayClusterConfigurationViewport* CurrentViewport = *CurrentViewportPtr;
-				check(CurrentViewport);
+				// Go over viewport and override the current ones (or add new ones that didn't exist)
+				for (auto NewViewportIt = NewNode->Viewports.CreateConstIterator(); NewViewportIt; ++NewViewportIt)
+				{
+					UDisplayClusterConfigurationViewport** CurrentViewportPtr = CurrentNode->Viewports.Find(NewViewportIt->Key);
 
-				const UDisplayClusterConfigurationViewport* NewViewport = NewViewportIt->Value;
-				check(NewViewport);
+					// Add the viewport if it doesn't exist
+					if (!CurrentViewportPtr)
+					{
+						CurrentNode->Viewports.Add(
+							NewViewportIt->Key,
+							DuplicateObject(NewViewportIt->Value, CurrentNode, NewViewportIt->Value->GetFName())
+						);
+						continue;
+					}
 
-				// Override viewport settings
+					UDisplayClusterConfigurationViewport* CurrentViewport = *CurrentViewportPtr;
+					check(CurrentViewport);
 
-				CurrentViewport->Camera = NewViewport->Camera;
-				CurrentViewport->RenderSettings.BufferRatio = NewViewport->RenderSettings.BufferRatio;
-				CurrentViewport->GPUIndex = NewViewport->GPUIndex;
-				CurrentViewport->Region = NewViewport->Region;
-				CurrentViewport->ProjectionPolicy = NewViewport->ProjectionPolicy;
+					const UDisplayClusterConfigurationViewport* NewViewport = NewViewportIt->Value;
+					check(NewViewport);
+
+					// Override viewport settings
+
+					CurrentViewport->Camera = NewViewport->Camera;
+					CurrentViewport->RenderSettings.BufferRatio = NewViewport->RenderSettings.BufferRatio;
+					CurrentViewport->GPUIndex = NewViewport->GPUIndex;
+					CurrentViewport->Region = NewViewport->Region;
+					CurrentViewport->ProjectionPolicy = NewViewport->ProjectionPolicy;
+				}
 			}
 		}
 	}
@@ -266,16 +283,6 @@ void ADisplayClusterRootActor::OverrideFromConfig(UDisplayClusterConfigurationDa
 		UpdatePreviewComponents();
 	}
 #endif
-}
-
-UDisplayClusterConfigurationViewport* ADisplayClusterRootActor::GetViewportConfiguration(const FString& ClusterNodeID, const FString& ViewportID)
-{
-	if (CurrentConfigData)
-	{
-		return CurrentConfigData->GetViewportConfiguration(ClusterNodeID, ViewportID);
-	}
-
-	return nullptr;
 }
 
 void ADisplayClusterRootActor::UpdateConfigDataInstance(UDisplayClusterConfigurationData* ConfigDataTemplate, bool bForceRecreate)
@@ -379,9 +386,15 @@ int ADisplayClusterRootActor::GetInnerFrustumPriority(const FString& InnerFrustu
 }
 
 template <typename TComp>
-void ImplCollectChildrenVisualizationComponent(TSet<FPrimitiveComponentId>& OutPrimitives, TComp* pComp)
+void ImplCollectChildVisualizationOrHiddenComponents(TSet<FPrimitiveComponentId>& OutPrimitives, TComp* pComp, bool bCollectVisualizationComponents = true, bool bCollectHiddenComponents = true)
 {
 #if WITH_EDITOR
+
+	if (!bCollectVisualizationComponents && !bCollectHiddenComponents)
+	{
+		return;
+	}
+
 	USceneComponent* SceneComp = Cast<USceneComponent>(pComp);
 	if (SceneComp)
 	{
@@ -389,8 +402,8 @@ void ImplCollectChildrenVisualizationComponent(TSet<FPrimitiveComponentId>& OutP
 		SceneComp->GetChildrenComponents(false, Childrens);
 		for (USceneComponent* ChildIt : Childrens)
 		{
-			// Hide attached visualization components
-			if (ChildIt->IsVisualizationComponent() || ChildIt->bHiddenInGame)
+			if ((bCollectVisualizationComponents && ChildIt->IsVisualizationComponent()) 
+				|| (bCollectHiddenComponents && ChildIt->bHiddenInGame))
 			{
 				UPrimitiveComponent* PrimComp = Cast<UPrimitiveComponent>(ChildIt);
 				if (PrimComp)
@@ -428,7 +441,7 @@ void ADisplayClusterRootActor::GetTypedPrimitives(TSet<FPrimitiveComponentId>& O
 
 						if (bCollectChildrenVisualizationComponent)
 						{
-							ImplCollectChildrenVisualizationComponent(OutPrimitives, CompIt);
+							ImplCollectChildVisualizationOrHiddenComponents(OutPrimitives, CompIt);
 						}
 						break;
 					}
@@ -444,7 +457,7 @@ void ADisplayClusterRootActor::GetTypedPrimitives(TSet<FPrimitiveComponentId>& O
 
 				if (bCollectChildrenVisualizationComponent)
 				{
-					ImplCollectChildrenVisualizationComponent(OutPrimitives, CompIt);
+					ImplCollectChildVisualizationOrHiddenComponents(OutPrimitives, CompIt);
 				}
 			}
 
@@ -459,7 +472,7 @@ bool ADisplayClusterRootActor::FindPrimitivesByName(const TArray<FString>& InNam
 	return true;
 }
 
-// Gather components no rendered in game
+// Gather components not rendered in game
 bool ADisplayClusterRootActor::GetHiddenInGamePrimitives(TSet<FPrimitiveComponentId>& OutPrimitives)
 {
 	check(IsInGameThread());
@@ -474,52 +487,60 @@ bool ADisplayClusterRootActor::GetHiddenInGamePrimitives(TSet<FPrimitiveComponen
 		if (WarpMeshNames.Num() > 0)
 		{
 			GetTypedPrimitives<UStaticMeshComponent>(OutPrimitives, &WarpMeshNames);
+			GetTypedPrimitives<UProceduralMeshComponent>(OutPrimitives, &WarpMeshNames);
 		}
 	}
 
+	// Always hide DC Screen component in game
+	GetTypedPrimitives<UDisplayClusterScreenComponent>(OutPrimitives);
+
 #if WITH_EDITOR
 
-	// Hide all visualization components from RootActor
+	const bool bHideVisualizationComponents = !CVarShowVisualizationComponents.GetValueOnGameThread();
+
+	// Hide visualization and hidden components from RootActor
 	{
 		TArray<UPrimitiveComponent*> PrimitiveComponents;
 		GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+
 		for (UPrimitiveComponent* CompIt : PrimitiveComponents)
 		{
-			if (CompIt->IsVisualizationComponent() || CompIt->bHiddenInGame)
+			if ((bHideVisualizationComponents && CompIt->IsVisualizationComponent()) || CompIt->bHiddenInGame)
 			{
 				OutPrimitives.Add(CompIt->ComponentId);
 			}
 
-			ImplCollectChildrenVisualizationComponent(OutPrimitives, CompIt);
+			ImplCollectChildVisualizationOrHiddenComponents(OutPrimitives, CompIt, bHideVisualizationComponents);
 		}
 	}
 
-	// Hide all visualization components from preview scene
-	UWorld* CurrentWorld = GetWorld();
-	if (CurrentWorld)
+	// Hide visualization and hidden components from scene
+	if (const UWorld* CurrentWorld = GetWorld())
 	{
 		// Iterate over all actors, looking for editor components.
 		for (const TWeakObjectPtr<AActor>& WeakActor : FActorRange(CurrentWorld))
 		{
 			if (AActor* Actor = WeakActor.Get())
 			{
-				// do not render hiiden in game actors on preview
-				bool bActorHideInGame = Actor->IsHidden();
+				// do not render hidden in game actors
+				const bool bActorHideInGame = Actor->IsHidden();
 
 				TArray<UPrimitiveComponent*> PrimitiveComponents;
 				Actor->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
+
 				for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
 				{
-					if (PrimComp->IsVisualizationComponent() || bActorHideInGame || PrimComp->bHiddenInGame)
+					if ((bHideVisualizationComponents && PrimComp->IsVisualizationComponent()) || bActorHideInGame || PrimComp->bHiddenInGame)
 					{
 						OutPrimitives.Add(PrimComp->ComponentId);
 					}
 
-					ImplCollectChildrenVisualizationComponent(OutPrimitives, PrimComp);
+					ImplCollectChildVisualizationOrHiddenComponents(OutPrimitives, PrimComp, bHideVisualizationComponents);
 				}
 			}
 		}
 	}
+
 #endif
 
 	return OutPrimitives.Num() > 0;
@@ -574,6 +595,19 @@ void ADisplayClusterRootActor::InitializeRootActor()
 #endif
 }
 
+void ADisplayClusterRootActor::UpdateProceduralMeshComponentData(const UProceduralMeshComponent* InProceduralMeshComponent)
+{
+	check(IsInGameThread());
+
+	if (ViewportManager.IsValid())
+	{
+		FName ProceduralComponentName = (InProceduralMeshComponent==nullptr) ? NAME_None : InProceduralMeshComponent->GetFName();
+
+		// Support for all hidden internal refs
+		ViewportManager->MarkComponentGeometryDirty(ProceduralComponentName);
+	}
+}
+
 bool ADisplayClusterRootActor::BuildHierarchy()
 {
 	check(CurrentConfigData);
@@ -595,7 +629,7 @@ bool ADisplayClusterRootActor::IsBlueprint() const
 {
 	for (UClass* Class = GetClass(); Class; Class = Class->GetSuperClass())
 	{
-		if (Cast<UBlueprintGeneratedClass>(Class) != nullptr || Cast<UDynamicClass>(Class) != nullptr)
+		if (Cast<UBlueprintGeneratedClass>(Class) != nullptr)
 		{
 			return true;
 		}
@@ -627,7 +661,7 @@ void ADisplayClusterRootActor::BeginPlay()
 		}
 
 		// Optionally activate native input synchronization
-		if (SyncPolicyType.Equals(DisplayClusterConfigurationStrings::config::cluster::input_sync::InputSyncPolicyReplicateMaster, ESearchCase::IgnoreCase))
+		if (SyncPolicyType.Equals(DisplayClusterConfigurationStrings::config::cluster::input_sync::InputSyncPolicyReplicatePrimary, ESearchCase::IgnoreCase))
 		{
 			APlayerController* const PlayerController = GetWorld()->GetFirstPlayerController();
 			if (PlayerController)
@@ -668,7 +702,7 @@ void ADisplayClusterRootActor::Tick(float DeltaSeconds)
 				{
 					if (CurPlayerController->WasInputKeyJustPressed(EKeys::Escape))
 					{
-						FDisplayClusterAppExit::ExitApplication(FDisplayClusterAppExit::EExitType::NormalSoft, FString("Exit on ESC requested"));
+						FDisplayClusterAppExit::ExitApplication(FString("Exit on ESC requested"));
 					}
 				}
 			}
@@ -712,6 +746,11 @@ void ADisplayClusterRootActor::PostLoad()
 void ADisplayClusterRootActor::PostActorCreated()
 {
 	Super::PostActorCreated();
+
+#if WITH_EDITOR
+	PostActorCreated_Editor();
+#endif
+
 	InitializeRootActor();
 }
 
@@ -798,11 +837,34 @@ static void PropagateDefaultMapToInstancedMap(const FMapProperty* MapProperty, U
 		
 		if (UObject** InstancedObjectPtr = (UObject**)MapInstanceHelper.FindValueFromHash(Key))
 		{
-			UObject* InstancedObject = *InstancedObjectPtr;
-			check(InstancedObject);
-			
-			if (ensure(DefaultObject == InstancedObject->GetArchetype()))
+			if (const UObject* InstancedObject = *InstancedObjectPtr)
 			{
+				const bool bArchetypeCorrect = DefaultObject == InstancedObject->GetArchetype();
+				
+				// The archetype should always match the new default. There are edge cases with MU
+				// where the instance may be updated prior to the CDO and should be corrected once
+				// the BP is saved. If this occurs outside of MU there could be a serious problem.
+				if (!bArchetypeCorrect)
+				{
+					const ADisplayClusterRootActor* RootActor =
+					CastChecked<ADisplayClusterRootActor>(InstancedObject->GetTypedOuter(ADisplayClusterRootActor::StaticClass()));
+#if WITH_EDITOR
+					if (GEditor)
+					{
+						bool bIsMultiUserSession = false;
+						TSharedPtr<IConcertSyncClient> ConcertSyncClient = IConcertSyncClientModule::Get().GetClient(TEXT("MultiUser"));
+						if (ConcertSyncClient.IsValid())
+						{
+							TSharedPtr<IConcertClientWorkspace> Workspace = ConcertSyncClient->GetWorkspace();
+							bIsMultiUserSession = Workspace.IsValid();
+						}
+
+						ensure(bArchetypeCorrect || bIsMultiUserSession);
+					}
+#endif
+					UE_LOG(LogDisplayClusterBlueprint, Warning, TEXT("Archetype mismatch on nDisplay config %s. Make sure the config is compiled and saved. Property: %s, Instance: %s, Archetype: %s, Default %s."),
+						*RootActor->GetName(), *MapProperty->GetName(), *InstancedObject->GetName(), *InstancedObject->GetArchetype()->GetName(), *DefaultObject->GetName());
+				}
 				continue;
 			}
 		}
@@ -821,18 +883,17 @@ static void PropagateDefaultMapToInstancedMap(const FMapProperty* MapProperty, U
 		
 		if (!MapDefaultsHelper.FindValueFromHash(Key))
 		{
-			UObject** InstanceObjectPtr = MapProperty->ValueProp->ContainerPtrToValuePtr<UObject*>(InstancePairPtr);
-			if (InstanceObjectPtr)
+			if (UObject** InstanceObjectPtr = MapProperty->ValueProp->ContainerPtrToValuePtr<UObject*>(InstancePairPtr))
 			{
-				UObject* InstanceObject = *InstanceObjectPtr;
-				check(InstanceObject);
-				
-				// Trash the object -- default propagation won't handle this any more.
-				// RemoveAt below will remove the reference to it. This transaction can still be undone.
-				// Rename to transient package now so the same name is available immediately.
-				// It's possible a new object needs to be created with this outer using the same name.
-				InstanceObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
-				InstanceObject->SetFlags(RF_Transient);
+				if (UObject* InstanceObject = *InstanceObjectPtr)
+				{
+					// Trash the object -- default propagation won't handle this any more.
+					// RemoveAt below will remove the reference to it. This transaction can still be undone.
+					// Rename to transient package now so the same name is available immediately.
+					// It's possible a new object needs to be created with this outer using the same name.
+					InstanceObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
+					InstanceObject->SetFlags(RF_Transient);
+				}
 			}
 			
 			MapInstanceHelper.RemoveAt(*InstanceIt);
@@ -881,7 +942,9 @@ static void PropagateDataFromDefaultConfig(UDisplayClusterConfigurationData* InD
 
 void ADisplayClusterRootActor::RerunConstructionScripts()
 {
-	IDisplayClusterConfiguration& Config = IDisplayClusterConfiguration::Get();
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("ADisplayClusterRootActor::RerunConstructionScripts"), STAT_RerunConstructionScripts, STATGROUP_NDisplay);
+	
+	const IDisplayClusterConfiguration& Config = IDisplayClusterConfiguration::Get();
 	if (!Config.IsTransactingSnapshot())
 	{
 		Super::RerunConstructionScripts();
@@ -918,11 +981,38 @@ bool ADisplayClusterRootActor::SetReplaceTextureFlagForAllViewports(bool bReplac
 		return false;
 	}
 
-	const FString NodeId = Display.GetClusterMgr()->GetNodeId();
-	const UDisplayClusterConfigurationClusterNode* Node = ConfigData->GetClusterNode(NodeId);
-
-	if (Node)
+	if (!ConfigData->Cluster)
 	{
+		UE_LOG(LogDisplayClusterGame, Warning, TEXT("ConfigData's Cluster was null"));
+		return false;
+	}
+
+	// Only update the viewports of the current node. If there isn't one, which is normal in Editor, we update them all.
+
+	const FString NodeId = Display.GetClusterMgr()->GetNodeId();
+	TArray<UDisplayClusterConfigurationClusterNode*, TInlineAllocator<1>> Nodes;
+
+	if (NodeId.IsEmpty())
+	{
+		ConfigData->Cluster->Nodes.GenerateValueArray(Nodes);
+	}
+	else
+	{
+		UDisplayClusterConfigurationClusterNode* Node = ConfigData->Cluster->GetNode(NodeId);
+
+		if (!Node)
+		{
+			UE_LOG(LogDisplayClusterGame, Warning, TEXT("NodeId '%s' not found in ConfigData"), *NodeId);
+			return false;
+		}
+
+		Nodes.Add(Node);
+	}
+
+	for (const UDisplayClusterConfigurationClusterNode* Node: Nodes)
+	{
+		check(Node != nullptr);
+
 		for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportItem : Node->Viewports)
 		{
 			if (ViewportItem.Value)
@@ -930,9 +1020,7 @@ bool ADisplayClusterRootActor::SetReplaceTextureFlagForAllViewports(bool bReplac
 				ViewportItem.Value->RenderSettings.Replace.bAllowReplace = bReplace;
 			}
 		}
-	}
-	else if (ConfigData->Cluster)
-	{
+
 		for (const TPair<FString, UDisplayClusterConfigurationClusterNode*>& NodeItem : ConfigData->Cluster->Nodes)
 		{
 			if (!NodeItem.Value)
@@ -949,11 +1037,18 @@ bool ADisplayClusterRootActor::SetReplaceTextureFlagForAllViewports(bool bReplac
 			}
 		}
 	}
-	else
-	{
-		UE_LOG(LogDisplayClusterGame, Warning, TEXT("ConfigData's Cluster was null"));
-		return false;
-	}
 
 	return true;
+}
+
+void ADisplayClusterRootActor::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	ADisplayClusterRootActor* This = CastChecked<ADisplayClusterRootActor>(InThis);
+
+	if (This && This->ViewportManager.IsValid())
+	{
+		This->ViewportManager->AddReferencedObjects(Collector);
+	}
+
+	Super::AddReferencedObjects(InThis, Collector);
 }

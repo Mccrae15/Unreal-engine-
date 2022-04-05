@@ -49,7 +49,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "GameFramework/Actor.h"
 #include "GenericPlatform/GenericPlatformFile.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "IContentBrowserSingleton.h"
 #include "ImageUtils.h"
 #include "LevelEditor.h"
@@ -62,6 +62,7 @@
 #include "ObjectTools.h"
 #include "SceneOutlinerModule.h"
 #include "SceneOutlinerPublicTypes.h"
+#include "ActorTreeItem.h"
 #include "ScopedTransaction.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -242,8 +243,6 @@ void SVariantManager::Construct(const FArguments& InArgs, TSharedRef<FVariantMan
 		OnMapChangedHandle = LevelEditorModule.OnMapChanged().AddSP(this, &SVariantManager::OnMapChanged);
 	}
 
-	RecordButtonBrush = MakeShared<FSlateImageBrush>(FPaths::EngineContentDir() / TEXT("Editor/Slate/Icons/CA_Record.png"), FVector2D(24.0f, 24.0f));
-
 	RightTreeRootItems.Empty();
 	RightTreeRootItems.Reserve(2);
 	RightTreeRootItems.Add(MakeShared<ERightTreeRowType>(ERightTreeRowType::PropertiesHeader));
@@ -317,30 +316,18 @@ void SVariantManager::Construct(const FArguments& InArgs, TSharedRef<FVariantMan
 				.AutoWidth()
 				.MaxWidth(VM_COMMON_HEADER_MAX_HEIGHT) // square aspect ratio
 				[
-					SNew(SBox)
-					.HeightOverride(VM_COMMON_HEADER_MAX_HEIGHT - 8.0f) // These so that it matches the height of the search box
-					.WidthOverride(VM_COMMON_HEADER_MAX_HEIGHT - 8.0f)
-					[
-						SNew(SCheckBox)
-						.Style(FCoreStyle::Get(), "ToggleButtonCheckbox")
-						.ToolTipText(LOCTEXT("AutoCaptureTooltip", "Enable or disable auto-capturing properties"))
-						.IsChecked_Lambda([&bAutoCaptureProperties = bAutoCaptureProperties]()
-						{
-							return bAutoCaptureProperties? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-						})
-						.OnCheckStateChanged_Lambda([&bAutoCaptureProperties = bAutoCaptureProperties](const ECheckBoxState NewState)
-						{
-							bAutoCaptureProperties = NewState == ECheckBoxState::Checked;
-						})
-						[
-							SNew(SBox)
-							.Padding(FMargin(0.0f, 2.0, 2.0f, 2.0)) // Extra padding on the right because ToggleButtonCheckboxes always nudges the image to the right
-							[
-								SNew(SImage)
-								.Image(RecordButtonBrush.Get())
-							]
-						]
-					]
+					SNew(SCheckBox)
+					.Style( FVariantManagerStyle::Get(), "AutoCaptureCheckbox" )
+					.Padding( FMargin( 10.f, 10.f, 10.0f, 10.f ) ) // Give some space to show up the style image or else it will collapse to nothing since it has no content
+					.ToolTipText(LOCTEXT("AutoCaptureTooltip", "Enable or disable auto-capturing properties"))
+					.IsChecked_Lambda([&bAutoCaptureProperties = bAutoCaptureProperties]()
+					{
+						return bAutoCaptureProperties? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+					})
+					.OnCheckStateChanged_Lambda([&bAutoCaptureProperties = bAutoCaptureProperties](const ECheckBoxState NewState)
+					{
+						bAutoCaptureProperties = NewState == ECheckBoxState::Checked;
+					})
 				]
 
 				+SHorizontalBox::Slot()
@@ -449,7 +436,7 @@ SVariantManager::~SVariantManager()
 		if (MainSlots->Num() > 0)
 		{
 			FSplitterValues Values;
-			Values.VariantColumn = MainSplitter->SlotAt(0).SizeValue.Get();
+			Values.VariantColumn = MainSplitter->SlotAt(0).GetSizeValue();
 			Values.ActorColumn = OnGetPropertiesActorColumnWidth();;
 			Values.PropertyNameColumn = OnGetPropertiesNameColumnWidth();
 			Values.DependenciesVariantSetsColumn = OnGetDependenciesVariantSetColumnWidth();
@@ -1865,7 +1852,7 @@ void SVariantManager::SwitchOnVariant(UVariant* Variant)
 	// Do this on next frame because there is some minor issue where if visibility changes are triggered
 	// on the same frame that is meant to be invalidated, sometimes the primitive's occlusion history doesn't
 	// refresh properly and we get some incorrectly hidden/visible objects (UE-100896)
-	FTicker::GetCoreTicker().AddTicker(
+	FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateLambda([](float Time)
 		{
 			const bool bInvalidateHitProxies = false;
@@ -2559,8 +2546,6 @@ FReply SVariantManager::OnAddVariantSetClicked()
 
 FReply SVariantManager::OnSummonAddActorMenu()
 {
-	using namespace SceneOutliner;
-
 	TSharedPtr<FVariantManager> VarMan = VariantManagerPtr.Pin();
 	if (!VarMan.IsValid())
 	{
@@ -2628,14 +2613,13 @@ FReply SVariantManager::OnSummonAddActorMenu()
 		return !CommonActorSet.Contains(InActor);
 	};
 
-	FInitializationOptions InitOptions;
-	InitOptions.Mode = ESceneOutlinerMode::ActorPicker;
+	FSceneOutlinerInitializationOptions InitOptions;
 	InitOptions.bShowHeaderRow = true;
 	InitOptions.bShowSearchBox = true;
 	InitOptions.bShowCreateNewFolder = false;
 	InitOptions.bFocusSearchBoxWhenOpened = true;
-	InitOptions.ColumnMap.Add(FBuiltInColumnTypes::Label(), FColumnInfo(EColumnVisibility::Visible, 0));
-	InitOptions.Filters->AddFilterPredicate( FActorFilterPredicate::CreateLambda( IsActorValidForAssignment ) );
+	InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Label(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 0));
+	InitOptions.Filters->AddFilterPredicate<FActorTreeItem>(FActorTreeItem::FFilterPredicate::CreateLambda( IsActorValidForAssignment ));
 
 	// Create mini scene outliner menu
 	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
@@ -2644,7 +2628,7 @@ FReply SVariantManager::OnSummonAddActorMenu()
 		.MaxDesiredHeight(400.0f)
 		.WidthOverride(300.0f)
 		[
-			SceneOutlinerModule.CreateSceneOutliner(
+			SceneOutlinerModule.CreateActorPicker(
 				InitOptions,
 				FOnActorPicked::CreateLambda([SelectedVariants, VarMan, this](AActor* Actor)
 				{

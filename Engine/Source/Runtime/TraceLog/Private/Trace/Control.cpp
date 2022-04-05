@@ -9,12 +9,16 @@
 #include "Misc/CString.h"
 #include "Templates/UnrealTemplate.h"
 
+#include <type_traits>
+
+namespace UE {
 namespace Trace {
 namespace Private {
 
 ////////////////////////////////////////////////////////////////////////////////
-bool	Writer_SendTo(const ANSICHAR*, uint32);
+bool	Writer_SendTo(const ANSICHAR*, uint32=0);
 bool	Writer_WriteTo(const ANSICHAR*);
+bool	Writer_Stop();
 
 
 
@@ -39,6 +43,7 @@ struct FControlCommands
 	}			Commands[Max];
 	uint8		Count;
 };
+static_assert(std::is_trivial<FControlCommands>(), "FControlCommands must be trivial");
 
 
 
@@ -47,6 +52,7 @@ static FControlCommands	GControlCommands;
 static UPTRINT			GControlListen		= 0;
 static UPTRINT			GControlSocket		= 0;
 static EControlState	GControlState;		// = EControlState::Closed;
+static uint32			GControlPort		= 1985;
 
 ////////////////////////////////////////////////////////////////////////////////
 static uint32 Writer_ControlHash(const ANSICHAR* Word)
@@ -100,7 +106,22 @@ static bool Writer_ControlDispatch(uint32 ArgC, ANSICHAR const* const* ArgV)
 ////////////////////////////////////////////////////////////////////////////////
 static bool Writer_ControlListen()
 {
-	GControlListen = TcpSocketListen(1985);
+	GControlListen = TcpSocketListen(GControlPort);
+	if (!GControlListen)
+	{
+		uint32 Seed = uint32(TimeGetTimestamp());
+		for (uint32 i = 0; i < 10 && !GControlListen; Seed *= 13, ++i)
+		{
+			uint32 Port = (Seed & 0x1fff) + 0x8000;
+			GControlListen = TcpSocketListen(Port);
+			if (GControlListen)
+			{
+				GControlPort = Port;
+				break;
+			}
+		}
+	}
+
 	if (!GControlListen)
 	{
 		GControlState = EControlState::Failed;
@@ -226,6 +247,12 @@ static void Writer_ControlRecv()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+uint32 Writer_GetControlPort()
+{
+	return GControlPort;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 void Writer_UpdateControl()
 {
 	switch (GControlState)
@@ -263,7 +290,7 @@ void Writer_InitializeControl()
 		{
 			if (ArgC > 0)
 			{
-				Writer_SendTo(ArgV[0], 1980);
+				Writer_SendTo(ArgV[0]);
 			}
 		}
 	);
@@ -275,6 +302,13 @@ void Writer_InitializeControl()
 			{
 				Writer_WriteTo(ArgV[0]);
 			}
+		}
+	);
+
+	Writer_ControlAddCommand("Stop", nullptr,
+		[] (void*, uint32 ArgC, ANSICHAR const* const* ArgV)
+		{
+			Writer_Stop();
 		}
 	);
 
@@ -313,5 +347,6 @@ void Writer_ShutdownControl()
 
 } // namespace Private
 } // namespace Trace
+} // namespace UE
 
 #endif // UE_TRACE_ENABLED

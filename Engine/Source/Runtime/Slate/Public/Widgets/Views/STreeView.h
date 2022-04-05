@@ -112,7 +112,8 @@ public:
 public:
 	
 	SLATE_BEGIN_ARGS( STreeView<ItemType> )
-		: _OnGenerateRow()
+		: _TreeViewStyle(&FAppStyle::Get().GetWidgetStyle<FTableViewStyle>("TreeView"))
+		, _OnGenerateRow()
 		, _OnGetChildren()
 		, _OnSetExpansionRecursive()
 		, _TreeItemsSource( static_cast< const TArray<ItemType>* >(nullptr) ) //@todo Slate Syntax: Initializing from nullptr without a cast
@@ -130,6 +131,7 @@ public:
 		, _ScrollbarDragFocusCause(EFocusCause::Mouse)
 		, _ConsumeMouseWheel( EConsumeMouseWheel::WhenScrollingPossible )
 		, _AllowOverscroll(EAllowOverscroll::Yes)
+		, _ScrollBarStyle(&FAppStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar"))
 		, _WheelScrollMultiplier(GetGlobalScrollAmount())
 		, _OnItemToString_Debug()
 		, _OnEnteredBadState()
@@ -141,6 +143,8 @@ public:
 		{
 			this->_Clipping = EWidgetClipping::ClipToBounds;
 		}
+
+		SLATE_STYLE_ARGUMENT( FTableViewStyle, TreeViewStyle )
 
 		SLATE_EVENT( FOnGenerateRow, OnGenerateRow )
 
@@ -187,6 +191,8 @@ public:
 		SLATE_ARGUMENT( EConsumeMouseWheel, ConsumeMouseWheel );
 		
 		SLATE_ARGUMENT( EAllowOverscroll, AllowOverscroll );
+		
+		SLATE_STYLE_ARGUMENT( FScrollBarStyle, ScrollBarStyle );
 
 		SLATE_ARGUMENT( float, WheelScrollMultiplier );
 
@@ -253,6 +259,8 @@ public:
 
 		this->bReturnFocusToSelection = InArgs._ReturnFocusToSelection;
 
+		this->SetStyle(InArgs._TreeViewStyle);
+
 		// Check for any parameters that the coder forgot to specify.
 		FString ErrorString;
 		{
@@ -286,7 +294,7 @@ public:
 		else
 		{
 			// Make the TableView
-			this->ConstructChildren( 0, InArgs._ItemHeight, EListItemAlignment::LeftAligned, InArgs._HeaderRow, InArgs._ExternalScrollbar, Orient_Vertical, InArgs._OnTreeViewScrolled );
+			this->ConstructChildren( 0, InArgs._ItemHeight, EListItemAlignment::LeftAligned, InArgs._HeaderRow, InArgs._ExternalScrollbar, Orient_Vertical, InArgs._OnTreeViewScrolled, InArgs._ScrollBarStyle );
 			if (this->ScrollBar.IsValid())
 			{
 				this->ScrollBar->SetDragFocusCause(InArgs._ScrollbarDragFocusCause);
@@ -712,6 +720,12 @@ public:
 		SListView<ItemType>::RebuildList();
 	}
 
+	void SetStyle(const FTableViewStyle* InStyle)
+	{
+		Style = InStyle;
+		STableViewBase::SetBackgroundBrush( Style != nullptr ? &Style->BackgroundBrush : FStyleDefaults::GetNoBrush() );
+	}
+
 	/**
 	 * Set whether some data item is expanded or not.
 	 * 
@@ -806,6 +820,9 @@ protected:
 
 	/** The delegate that is invoked whenever an item in the tree is expanded or collapsed. */
 	FOnExpansionChanged OnExpansionChanged;
+
+	/** Style resource for the tree */
+	const FTableViewStyle* Style;
 
 private:		
 

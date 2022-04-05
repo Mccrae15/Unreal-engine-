@@ -62,11 +62,17 @@ public:
 
 	void StopRecording();
 
+	void CancelRecording();
+
 	void Refresh();
 
 private:
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("STakeRecorderCockpit");
+	}
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
 private:
@@ -82,6 +88,8 @@ private:
 
 	EVisibility GetCountdownVisibility() const;
 	FText GetCountdownText() const;
+
+	TSharedRef<SWidget> OnRecordingOptionsMenu();
 
 	FText GetTimecodeText() const;
 

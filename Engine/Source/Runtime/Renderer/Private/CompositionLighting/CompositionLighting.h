@@ -9,8 +9,7 @@
 #include "CoreMinimal.h"
 #include "SceneRendering.h"
 #include "PostProcessDeferredDecals.h"
-
-class FPersistentUniformBuffers;
+#include "PostProcessAmbientOcclusion.h"
 
 /**
  * The center for all screen space processing activities (e.g. G-buffer manipulation, lighting).
@@ -18,37 +17,43 @@ class FPersistentUniformBuffers;
 class FCompositionLighting
 {
 public:
-	void Reset();
+	FCompositionLighting(TArrayView<const FViewInfo> InViews, const FSceneTextures& InSceneTextures, TUniqueFunction<bool(int32)> RequestSSAOFunction);
 
-	void ProcessBeforeBasePass(
-		FRDGBuilder& GraphBuilder,
-		FPersistentUniformBuffers& UniformBuffers,
-		const FViewInfo& View,
-		TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer,
-		bool bDBuffer,
-		uint32 SSAOLevels);
+	void ProcessAfterOcclusion(FRDGBuilder& GraphBuilder);
 
-	void ProcessAfterBasePass(
-		FRDGBuilder& GraphBuilder,
-		FPersistentUniformBuffers& UniformBuffers,
-		const FViewInfo& View,
-		TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer);
+	void ProcessBeforeBasePass(FRDGBuilder& GraphBuilder, FDBufferTextures& DBufferTextures);
 
-	// only call if LPV is enabled
-	void ProcessLpvIndirect(FRHICommandListImmediate& RHICmdList, FViewInfo& View);
-
-	bool CanProcessAsyncSSAO(const TArray<FViewInfo>& Views);
-
-	void ProcessAsyncSSAO(
-		FRDGBuilder& GraphBuilder,
-		const TArray<FViewInfo>& Views,
-		TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformBuffer);
+	void ProcessAfterBasePass(FRDGBuilder& GraphBuilder);
 
 private:
-	FDeferredDecalPassTextures DecalPassTextures;
-};
+	void TryInit();
 
-/** The global used for deferred lighting. */
-extern FCompositionLighting GCompositionLighting;
+	const TArrayView<const FViewInfo> Views;
+	const FSceneViewFamily& ViewFamily;
+	const FSceneTextures& SceneTextures;
+
+	const bool bEnableDBuffer;
+	const bool bEnableDecals;
+
+	enum class ESSAOLocation
+	{
+		None,
+		BeforeBasePass,
+		AfterBasePass
+	};
+
+	struct FAOConfig
+	{
+		uint32 Levels = 0;
+		EGTAOType GTAOType = EGTAOType::EOff;
+		ESSAOLocation SSAOLocation = ESSAOLocation::None;
+		bool bSSAOAsync = false;
+		bool bRequested = false;
+	};
+
+	TArray<FAOConfig, TInlineAllocator<8>> ViewAOConfigs;
+	FRDGTextureRef HorizonsTexture = nullptr;
+	bool bInitialized = false;
+};
 
 extern bool ShouldRenderScreenSpaceAmbientOcclusion(const FViewInfo& View);

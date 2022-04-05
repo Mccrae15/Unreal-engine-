@@ -28,8 +28,10 @@ namespace TimecodeSynchronizerEditorToolkit
 	const FName PropertiesTabId(TEXT("TimecodeSynchronizerEditor_Properties"));
 	const FName SourceViewerTabId(TEXT("TimecodeSynchronizerEditor_SourceViewer"));
 	const FName SynchronizerWidgetTabId(TEXT("TimecodeSynchronizerEditor_SynchronizerWidget"));
-	const FName Layout(TEXT("Standalone_TimecodeSynchronizerEditor_Layout_v0"));
+	const FName Layout(TEXT("Standalone_TimecodeSynchronizerEditor_Layout_v1"));
 }
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
 TSharedRef<FTimecodeSynchronizerEditorToolkit> FTimecodeSynchronizerEditorToolkit::CreateEditor(const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, class UTimecodeSynchronizer* InTimecodeSynchronizer)
 {
@@ -42,23 +44,14 @@ void FTimecodeSynchronizerEditorToolkit::InitTimecodeSynchronizerEditor(const ET
 {
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.AddRaw(this, &FTimecodeSynchronizerEditorToolkit::HandleAssetPostImport);
 
-	const bool bIsUpdatable = false;
-	const bool bAllowFavorites = true;
-	const bool bIsLockable = false;
-	const FDetailsViewArgs DetailsViewArgs(bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 	DetailsView = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor").CreateDetailView(DetailsViewArgs);
 	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout(TimecodeSynchronizerEditorToolkit::Layout)
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -208,7 +201,6 @@ TSharedRef<SDockTab> FTimecodeSynchronizerEditorToolkit::SpawnPropertiesTab(cons
 	check(Args.GetTabId() == TimecodeSynchronizerEditorToolkit::PropertiesTabId);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Properties"))
 		.Label(LOCTEXT("GenericDetailsTitle", "Details"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -237,7 +229,7 @@ TSharedRef<SDockTab> FTimecodeSynchronizerEditorToolkit::SpawnPropertiesTab(cons
 				[
 					SNew(SColorBlock)
 					.Color(this, &FTimecodeSynchronizerEditorToolkit::GetProgressColor)
-					.IgnoreAlpha(true)
+					.AlphaDisplayMode(EColorBlockAlphaDisplayMode::Ignore)
 					.Visibility_Lambda([this]() -> EVisibility
 					{
 						if (UTimecodeSynchronizer* Asset = GetTimecodeSynchronizer())
@@ -267,7 +259,6 @@ TSharedRef<SDockTab> FTimecodeSynchronizerEditorToolkit::SpawnSourceViewerTab(co
 	TSharedPtr<SWidget> TabWidget = SNew(STimecodeSynchronizerSourceViewer, *GetTimecodeSynchronizer());
 
 	return SNew(SDockTab)
-		.Icon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Viewports").GetIcon())
 		.Label(LOCTEXT("GenericSourceViewerTitle", "Sources"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -282,7 +273,6 @@ TSharedRef<SDockTab> FTimecodeSynchronizerEditorToolkit::SpawnSynchronizerWidget
 	TSharedPtr<SWidget> TabWidget = SNew(STimecodeSynchronizerWidget, *GetTimecodeSynchronizer());
 
 	return SNew(SDockTab)
-		.Icon(FSlateIcon(FTimecodeSynchronizerEditorStyle::GetStyleSetName(), "SynchronizationWidget.small").GetIcon())
 		.Label(LOCTEXT("SynchronizerWidget", "Synchronization"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -421,5 +411,7 @@ void FTimecodeSynchronizerEditorToolkit::RemoveEditingObject(UObject* Object)
 	}
 	Super::RemoveEditingObject(Object);
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 #undef LOCTEXT_NAMESPACE

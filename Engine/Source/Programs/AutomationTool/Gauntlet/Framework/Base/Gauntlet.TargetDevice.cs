@@ -85,24 +85,33 @@ namespace Gauntlet
 		/// <returns></returns>
 		Dictionary<EIntendedBaseCopyDirectory, string> GetPlatformDirectoryMappings();
 
-		/// <summary>
-		/// Checks the device's OS/Firmware version and returns whether an update is necessary
-		/// </summary>
-		/// <returns></returns>
-		bool IsOSOutOfDate();
-
-		/// <summary>
-		/// Pushes the latest version of the console's OS/Firmware to the device, returning false if the process fails
-		/// </summary>
-		/// <returns></returns>
-		bool UpdateOS();
-
 		IAppInstall InstallApplication(UnrealAppConfig AppConfiguration);
 
 		IAppInstance Run(IAppInstall App);
 
+		string GetPackagedExecutableLocation() { return null; }
 	};
 
+	/// <summary>
+	/// Interface used by TargetDevice* classes to track spawned application running state.
+	/// </summary>
+	public interface IRunningStateOptions
+	{
+		/// <summary>
+		/// Whether or not to sleep after launching an app before querying for its running state.
+		/// </summary>
+		bool WaitForRunningState { get; set; }
+
+		/// <summary>
+		/// The number of seconds to sleep after launching an app before querying for its running state.
+		/// </summary>
+		int SecondsToRunningState { get; set; }
+
+		/// <summary>
+		/// Interval of time between app running state queries, in seconds.
+		/// </summary>
+		int CachedStateRefresh { get; set; }
+	}
 
 	/// <summary>
 	/// Represents a class able to provide devices
@@ -126,5 +135,54 @@ namespace Gauntlet
 	public interface IDeviceFactory : IDeviceSource
 	{
 		ITargetDevice CreateDevice(string InRef, string InLocalCache, string InParam=null);
+	}
+
+	/// <summary>
+	/// Represents a class that provides services for available devices
+	/// </summary>
+	public interface IDeviceService : IDeviceSource
+	{
+		void CleanupDevices();
+	}
+
+	/// <summary>
+	/// Represents a class that can provides virtual local devices 
+	/// </summary>
+	public interface IVirtualLocalDevice : IDeviceSource
+	{
+		bool CanRunVirtualFromPlatform(UnrealTargetPlatform? Platfrom);
+		UnrealTargetPlatform? GetPlatform();
+	}
+
+	/// <summary>
+	/// Represents a class that tell what build the device support
+	/// </summary>
+	public interface IDeviceBuildSupport : IDeviceSource
+	{
+		bool CanSupportBuildType(BuildFlags Flag);
+		UnrealTargetPlatform? GetPlatform();
+		bool NeedBuildDeployed();
+	}
+	public abstract class BaseBuildSupport : IDeviceBuildSupport
+	{
+		protected virtual BuildFlags SupportedBuildTypes => BuildFlags.None;
+		protected virtual UnrealTargetPlatform? Platform => null;
+
+		public bool CanSupportBuildType(BuildFlags Flag)
+		{
+			return (SupportedBuildTypes & Flag) == Flag;
+		}
+
+		public bool CanSupportPlatform(UnrealTargetPlatform? InPlatform)
+		{
+			return Platform == InPlatform;
+		}
+
+		public UnrealTargetPlatform? GetPlatform()
+		{
+			return Platform;
+		}
+
+		public virtual bool NeedBuildDeployed() => true;
 	}
 }

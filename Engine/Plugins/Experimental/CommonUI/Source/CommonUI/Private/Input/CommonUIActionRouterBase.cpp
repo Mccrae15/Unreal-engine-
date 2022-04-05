@@ -14,11 +14,13 @@
 #include "Engine/Canvas.h"
 #include "Stats/Stats.h"
 
+#include "CommonGameViewportClient.h"
 #include "CommonUIPrivatePCH.h"
 #include "CommonActivatableWidget.h"
 #include "CommonUIUtils.h"
 #include "CommonUISubsystemBase.h"
 #include "Slate/SGameLayerManager.h"
+#include "Framework/Commands/InputBindingManager.h"
 
 bool bAlwaysShowCursor = false;
 static const FAutoConsoleVariableRef CVarAlwaysShowCursor(
@@ -133,6 +135,11 @@ FUIActionBindingHandle UCommonUIActionRouterBase::RegisterUIActionBinding(const 
 		if (OwnerNode)
 		{
 			OwnerNode->AddBinding(*FUIActionBinding::FindBinding(BindingHandle));
+			
+			if (UCommonActivatableWidget* ActivatableWidget = OwnerNode->GetWidget())
+			{
+				ActivatableWidget->RegisterInputTreeNode(OwnerNode);
+			}
 		}
 		else if (Widget.GetCachedWidget())
 		{
@@ -179,13 +186,20 @@ bool UCommonUIActionRouterBase::RegisterLinkedPreprocessor(const UWidget& Widget
 void UCommonUIActionRouterBase::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	Collection.InitializeDependency(UCommonInputSubsystem::StaticClass());
+	UCommonInputSubsystem* InputSubsystem = Collection.InitializeDependency<UCommonInputSubsystem>();
 
 	UCommonActivatableWidget::OnRebuilding.AddUObject(this, &UCommonUIActionRouterBase::HandleActivatableWidgetRebuilding);
 	FCoreUObjectDelegates::GetPostGarbageCollect().AddUObject(this, &UCommonUIActionRouterBase::HandlePostGarbageCollect);
 
-	AnalogCursor = MakeAnalogCursor();
-	PostAnalogCursorCreate();
+	if (ensure(InputSubsystem))
+	{
+		AnalogCursor = MakeAnalogCursor();
+		PostAnalogCursorCreate();
+	}
+	else
+	{
+		UE_LOG(LogUIActionRouter, Warning, TEXT("Input system not initialized before action router!"));
+	}
 
 	FSlateApplication::Get().OnFocusChanging().AddUObject(this, &UCommonUIActionRouterBase::HandleSlateFocusChanging);
 }
@@ -197,11 +211,15 @@ void UCommonUIActionRouterBase::PostAnalogCursorCreate()
 
 void UCommonUIActionRouterBase::RegisterAnalogCursorTick()
 {
-	FSlateApplication::Get().RegisterInputPreProcessor(AnalogCursor, UCommonUIInputSettings::Get().GetAnalogCursorSettings().PreprocessorPriority);
+	if (GEngine->GameViewportClientClass->IsChildOf<UCommonGameViewportClient>())
+	{
+		FSlateApplication::Get().RegisterInputPreProcessor(AnalogCursor, UCommonUIInputSettings::Get().GetAnalogCursorSettings().PreprocessorPriority);
+	}
+
 	if (bIsActivatableTreeEnabled)
 	{
-		FTicker::GetCoreTicker().RemoveTicker(TickHandle);
-		TickHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCommonUIActionRouterBase::Tick));
+		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+		TickHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCommonUIActionRouterBase::Tick));
 	}
 }
 
@@ -209,9 +227,12 @@ void UCommonUIActionRouterBase::Deinitialize()
 {
 	Super::Deinitialize();
 	
-	FSlateApplication::Get().OnFocusChanging().RemoveAll(this);
-	FSlateApplication::Get().UnregisterInputPreProcessor(AnalogCursor);
-	FTicker::GetCoreTicker().RemoveTicker(TickHandle);
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().OnFocusChanging().RemoveAll(this);
+		FSlateApplication::Get().UnregisterInputPreProcessor(AnalogCursor);
+	}
+	FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
 	SetActiveRoot(nullptr);
 	HeldKeys.Empty();
 }
@@ -220,6 +241,8 @@ bool UCommonUIActionRouterBase::ShouldCreateSubsystem(UObject* Outer) const
 {
 	TArray<UClass*> ChildClasses;
 	GetDerivedClasses(GetClass(), ChildClasses, false);
+
+	UE_LOG(LogUIActionRouter, Display, TEXT("Found %i derived classes when attemping to create action router (%s)"), ChildClasses.Num(), *GetClass()->GetName());
 
 	// Only create an instance if there is no override implementation defined elsewhere
 	return ChildClasses.Num() == 0;
@@ -286,13 +309,21 @@ TSharedRef<FCommonAnalogCursor> UCommonUIActionRouterBase::MakeAnalogCursor() co
 ERouteUIInputResult UCommonUIActionRouterBase::ProcessInput(FKey Key, EInputEvent InputEvent) const
 {
 #if WITH_EDITOR
-	// In PIE, let unmodified escape through (people expect it to close PIE)
-	if (GIsPlayInEditorWorld && InputEvent == IE_Pressed && Key == EKeys::Escape)
+	// In PIE, check if the user is attempting to press the StopPlaySession command chord.
+	if (GIsPlayInEditorWorld && InputEvent == IE_Pressed)
 	{
-		FModifierKeysState ModifierKeys = FSlateApplication::Get().GetModifierKeys();
-		if (!ModifierKeys.IsAltDown() && !ModifierKeys.IsCommandDown() && !ModifierKeys.IsControlDown() && !ModifierKeys.IsShiftDown())
+		//TODO This could be more generic to be a list of command in commands to allow to be ignored by the UI action router.
+		TSharedPtr<FUICommandInfo> StopCommand = FInputBindingManager::Get().FindCommandInContext("PlayWorld", "StopPlaySession");
+		if (ensure(StopCommand))
 		{
-			return ERouteUIInputResult::Unhandled;
+			const FModifierKeysState ModifierKeys = FSlateApplication::Get().GetModifierKeys();
+			const FInputChord CheckChord( Key, EModifierKey::FromBools(ModifierKeys.IsControlDown(), ModifierKeys.IsAltDown(), ModifierKeys.IsShiftDown(), ModifierKeys.IsCommandDown()) );
+
+			// If the stop command matches the incoming key chord, let it execute.
+			if (StopCommand->HasActiveChord(CheckChord))
+			{
+				return ERouteUIInputResult::Unhandled;
+			}
 		}
 	}
 #endif
@@ -534,7 +565,12 @@ void UCommonUIActionRouterBase::HandleRootNodeActivated(TWeakPtr<FActivatableTre
 		const int32 CurrentRootLayer = ActiveRootNode ? ActiveRootNode->GetLastPaintLayer() : INDEX_NONE;
 		if (ActivatedRoot->GetLastPaintLayer() > CurrentRootLayer)
 		{
-			SetActiveRoot(ActivatedRoot);
+			// Ensure we have a local player so the action router local player subsystem will handle root change
+			const ULocalPlayer* LocalPlayer = GetLocalPlayer();
+			if (LocalPlayer && LocalPlayer->ViewportClient)
+			{
+				SetActiveRoot(ActivatedRoot);
+			}
 		}
 	}
 }
@@ -564,6 +600,15 @@ void UCommonUIActionRouterBase::HandleSlateFocusChanging(const FFocusEvent& Focu
 void UCommonUIActionRouterBase::HandlePostGarbageCollect()
 {
 	FUIActionBinding::CleanRegistrations();
+
+	// GC may result in root widget being purged while conditional slate resource release skips HandleRootWidgetSlateReleased, handle this scenario
+	for (auto Iter = RootNodes.CreateIterator(); Iter; ++Iter)
+	{
+		if (!Iter->Get().IsWidgetValid())
+		{
+			Iter.RemoveCurrent();
+		}
+	}
 }
 
 void UCommonUIActionRouterBase::ProcessRebuiltWidgets()
@@ -640,6 +685,11 @@ void UCommonUIActionRouterBase::ProcessRebuiltWidgets()
 		{
 			FActivatableTreeNodePtr OwnerNode = FindOwningNode(*Widget);
 			RegisterWidgetBindings(OwnerNode, PendingRegistration.ActionBindings);
+
+			if (UCommonActivatableWidget* OwnerWidget = OwnerNode ? OwnerNode->GetWidget() : nullptr)
+			{
+				OwnerWidget->RegisterInputTreeNode(OwnerNode);
+			}
 
 			if ((PendingRegistration.bIsScrollRecipient || PendingRegistration.Preprocessors.Num() > 0) && ensureMsgf(OwnerNode, TEXT("Widget [%s] does not have a parent activatable widget at any level - cannot register preprocessors or as a scroll recipient"), *Widget->GetName()))
 			{
@@ -983,6 +1033,10 @@ void UCommonUIActionRouterBase::ApplyUIInputConfig(const FUIInputConfig& NewConf
 {
 	if (bForceRefresh || NewConfig != ActiveInputConfig.GetValue())
 	{
+		UE_LOG(LogUIActionRouter, Display, TEXT("UIInputConfig being changed. bForceRefresh: %d"), bForceRefresh ? 1 : 0);
+		UE_LOG(LogUIActionRouter, Display, TEXT("\tInputMode: Previous (%s), New (%s)"),
+			ActiveInputConfig.IsSet() ? *StaticEnum<ECommonInputMode>()->GetValueAsString(ActiveInputConfig->GetInputMode()) : TEXT("None"), *StaticEnum<ECommonInputMode>()->GetValueAsString(NewConfig.GetInputMode()));
+
 		const ECommonInputMode PreviousInputMode = GetActiveInputMode();
 
 		ActiveInputConfig = NewConfig;
@@ -1030,23 +1084,56 @@ void UCommonUIActionRouterBase::ApplyUIInputConfig(const FUIInputConfig& NewConf
 						SlateOperations.ReleaseMouseCapture();
 
 						// If the mouse was captured previously, set it back to the center of the viewport now that we're showing it again 
-						// (don't bother on touch, when refreshing an input config, or when we're setting up the initial config - the cursor isn't really relevant there)
-						if (!bForceRefresh && bWasPermanentlyCaptured && GetInputSubsystem().GetCurrentInputType() != ECommonInputType::Touch)
+						if (!bForceRefresh && bWasPermanentlyCaptured)
 						{
-							TSharedPtr<FSlateUser> SlateUser = LocalPlayer.GetSlateUser();
-							TSharedPtr<IGameLayerManager> GameLayerManager = GameViewportClient->GetGameLayerManager();
-							if (ensure(SlateUser) && ensure(GameLayerManager))
+							const ECommonInputType CurrentInputType = GetInputSubsystem().GetCurrentInputType();
+							
+							bool bCenterCursor = true;
+							switch (CurrentInputType)
 							{
-								FGeometry PlayerViewGeometry = GameLayerManager->GetPlayerWidgetHostGeometry(&LocalPlayer);
-								const FVector2D AbsoluteViewCenter = PlayerViewGeometry.GetAbsolutePositionAtCoordinates(FVector2D(0.5f, 0.5f));
-								SlateUser->SetCursorPosition(AbsoluteViewCenter);
+								// Touch - Don't do it - the cursor isn't really relevant there.
+								case ECommonInputType::Touch:
+									bCenterCursor = false;
+									break;
+								// Gamepad - Let the settings tell us if we should center it.
+								case ECommonInputType::Gamepad:
+									//TODO - Consider doing something here so that the gamepad isn't moved when the gamepad's
+									// hovering is really based on what has focus right now when not in analog mode, but we
+									// don't have a good way to know that here, other than to maybe expose a setting.
+									break;
+							}
+
+							if (bCenterCursor)
+							{
+								TSharedPtr<FSlateUser> SlateUser = LocalPlayer.GetSlateUser();
+								TSharedPtr<IGameLayerManager> GameLayerManager = GameViewportClient->GetGameLayerManager();
+								if (ensure(SlateUser) && ensure(GameLayerManager))
+								{
+									FGeometry PlayerViewGeometry = GameLayerManager->GetPlayerWidgetHostGeometry(&LocalPlayer);
+									const FVector2D AbsoluteViewCenter = PlayerViewGeometry.GetAbsolutePositionAtCoordinates(FVector2D(0.5f, 0.5f));
+									SlateUser->SetCursorPosition(AbsoluteViewCenter);
+
+									UE_LOG(LogUIActionRouter, Verbose, TEXT("Capturing the cursor at the viewport center."));
+								}
 							}
 						}
 					}
 					break;
 					}
 				}
+				else
+				{
+					UE_LOG(LogUIActionRouter, Warning, TEXT("\tFailed to commit change! Local player controller was null."));
+				}
 			}
+			else
+			{
+				UE_LOG(LogUIActionRouter, Warning, TEXT("\tFailed to commit change! ViewportWidget was null."));
+			}
+		}
+		else
+		{
+			UE_LOG(LogUIActionRouter, Warning, TEXT("\tFailed to commit change! GameViewportClient was null."));
 		}
 
 		if (PreviousInputMode != NewConfig.GetInputMode())

@@ -16,7 +16,7 @@
 #include "Trace/Analyzer.h"
 #include "Trace/SlateTrace.h"
 
-namespace Trace { class IAnalysisSession; }
+namespace TraceServices { class IAnalysisSession; }
 
 namespace UE
 {
@@ -36,6 +36,7 @@ public:
 	template<typename T, typename U = typename TEnableIf<TIsSame<T, uint64>::Value>::Type>
 	constexpr FWidgetId(T InValue) : Value(InValue) {}
 	explicit operator bool() const { return Value != 0; }
+	uint64 GetValue() const { return Value; }
 	friend uint32 GetTypeHash(const FWidgetId& Key) { return ::GetTypeHash(Key.Value); }
 	friend bool operator==(const FWidgetId A, const FWidgetId B) { return A.Value == B.Value; }
 	friend bool operator!=(const FWidgetId A, const FWidgetId B) { return A.Value != B.Value; }
@@ -49,33 +50,36 @@ struct FWidgetInfo
 	uint64 EventIndex;
 
 	FWidgetInfo() = default;
-	FWidgetInfo(const Trace::IAnalyzer::FEventData& EventData);
+	FWidgetInfo(const UE::Trace::IAnalyzer::FEventData& EventData);
 	friend bool operator==(const FWidgetInfo& A, FWidgetId B) { return A.WidgetId == B; }
 };
 
 struct FWidgetUpdatedMessage
 {
 	FWidgetId WidgetId;
+	/** How long the update took. */
+	double Duration;
+	/** Number of widget that was affected by the updated widget. */
+	int32 AffectedCount;
 	/** Flag that was set by an invalidation or on the widget directly. */
 	EWidgetUpdateFlags UpdateFlags;
 
-	FWidgetUpdatedMessage(const Trace::IAnalyzer::FEventData& EventData);
+	FWidgetUpdatedMessage(const UE::Trace::IAnalyzer::FEventData& EventData, const UE::Trace::IAnalyzer::FEventTime& EventTime);
 };
 
 struct FWidgetInvalidatedMessage
 {
+	uint64 SourceCycle;
 	FWidgetId WidgetId;
 	FWidgetId InvestigatorId;
 	EInvalidateWidgetReason InvalidationReason = EInvalidateWidgetReason::None;
 	bool bRootInvalidated = false;
 	bool bRootChildOrderInvalidated = false;
 	FString ScriptTrace;
-	FString Callstack;
 
-	static FWidgetInvalidatedMessage FromWidget(const Trace::IAnalyzer::FEventData& EventData);
-	static FWidgetInvalidatedMessage FromRoot(const Trace::IAnalyzer::FEventData& EventData);
-	static FWidgetInvalidatedMessage FromChildOrder(const Trace::IAnalyzer::FEventData& EventData);
-	static FString GetCallstack(const Trace::IAnalyzer::FEventData& EventData);
+	static FWidgetInvalidatedMessage FromWidget(const UE::Trace::IAnalyzer::FEventData& EventData);
+	static FWidgetInvalidatedMessage FromRoot(const UE::Trace::IAnalyzer::FEventData& EventData);
+	static FWidgetInvalidatedMessage FromChildOrder(const UE::Trace::IAnalyzer::FEventData& EventData);
 };
 
 struct FApplicationTickedMessage
@@ -91,17 +95,33 @@ struct FApplicationTickedMessage
 	uint32 RootInvalidatedCount;
 	ESlateTraceApplicationFlags Flags;
 
-	FApplicationTickedMessage(const Trace::IAnalyzer::FEventData& EventData);
+	FApplicationTickedMessage(const UE::Trace::IAnalyzer::FEventData& EventData);
+};
+
+struct FInvalidationCallstackMessage
+{
+	uint64 SourceCycle;
+	FString Callstack;
+
+	FInvalidationCallstackMessage(const Trace::IAnalyzer::FEventData& EventData);
+};
+
+struct FWidgetUpdateStep
+{
+	enum class EUpdateStepType : uint8 { Layout, Paint };
+	FWidgetId WidgetId;
+	int32 Depth;
+	EUpdateStepType UpdateStep = EUpdateStepType::Paint;
 };
 
 } //namespace Message
 
-class FSlateProvider : public Trace::IProvider
+class FSlateProvider : public TraceServices::IProvider
 {
 public:
 	static FName ProviderName;
 
-	FSlateProvider(Trace::IAnalysisSession& InSession);
+	FSlateProvider(TraceServices::IAnalysisSession& InSession);
 
 	/** */
 	void AddWidget(double Seconds, uint64 WidgetId);
@@ -112,54 +132,64 @@ public:
 	void AddApplicationTickedEvent(double Seconds, Message::FApplicationTickedMessage Message);
 	void AddWidgetUpdatedEvent(double Seconds, Message::FWidgetUpdatedMessage UpdatedMessage);
 	void AddWidgetInvalidatedEvent(double Seconds, Message::FWidgetInvalidatedMessage InvalidatedMessage);
+	void ProcessInvalidationCallstack(Message::FInvalidationCallstackMessage InvalidatedMessage);
+	void ProcessWidgetUpdateSteps(const UE::Trace::IAnalyzer::FEventTime& EventTime, const UE::Trace::IAnalyzer::FEventData& EventData);
 
 	/** */
-	using TApplicationTickedTimeline = Trace::TPointTimeline<Message::FApplicationTickedMessage>;
-	const TApplicationTickedTimeline& GetApplicationTickedTimeline() const
+	using FApplicationTickedTimeline = TraceServices::TPointTimeline<Message::FApplicationTickedMessage>;
+	const FApplicationTickedTimeline& GetApplicationTickedTimeline() const
 	{
 		Session.ReadAccessCheck();
 		return ApplicationTickedTimeline;
 	}
 
 	/** */
-	using TWidgetUpdatedTimeline = Trace::TPointTimeline<Message::FWidgetUpdatedMessage>;
-	const TWidgetUpdatedTimeline& GetWidgetUpdatedTimeline() const
+	using FWidgetUpdatedTimeline = TraceServices::TPointTimeline<Message::FWidgetUpdatedMessage>;
+	const FWidgetUpdatedTimeline& GetWidgetUpdatedTimeline() const
 	{
 		Session.ReadAccessCheck();
 		return WidgetUpdatedTimeline;
 	}
 	
 	/** */
-	using TWidgetInvalidatedTimeline = Trace::TPointTimeline<Message::FWidgetInvalidatedMessage>;
-	const TWidgetInvalidatedTimeline& GetWidgetInvalidatedTimeline() const
+	using FWidgetInvalidatedTimeline = TraceServices::TPointTimeline<Message::FWidgetInvalidatedMessage>;
+	const FWidgetInvalidatedTimeline& GetWidgetInvalidatedTimeline() const
 	{
 		Session.ReadAccessCheck();
 		return WidgetInvalidatedTimeline;
 	}
 
 	/** */
-	using TWidgetTimeline = Trace::TIntervalTimeline<Message::FWidgetId>;
-	const TWidgetTimeline& GetWidgetTimeline() const
+	using FWidgetTimeline = TraceServices::TIntervalTimeline<Message::FWidgetId>;
+	const FWidgetTimeline& GetWidgetTimeline() const
 	{
 		Session.ReadAccessCheck();
 		return WidgetTimelines;
 	}
 
 	/** */
-	template<typename T>
-	struct FScopedEnumerateOutsideRange
+	using FWidgetUpdateStepsTimeline = TraceServices::TIntervalTimeline<Message::FWidgetUpdateStep>;
+	const FWidgetUpdateStepsTimeline GetWidgetUpdateStepsTimeline() const
 	{
-		FScopedEnumerateOutsideRange(const T& InTimeline)
+		Session.ReadAccessCheck();
+		return WidgetPaintTimelines;
+	}
+
+	/** */
+	template<typename T>
+	struct TScopedEnumerateOutsideRange
+	{
+		TScopedEnumerateOutsideRange(const T& InTimeline)
 			: Timeline(InTimeline)
 		{
 			const_cast<T&>(Timeline).SetEnumerateOutsideRange(true);
 		}
-		~FScopedEnumerateOutsideRange()
+		~TScopedEnumerateOutsideRange()
 		{
 			const_cast<T&>(Timeline).SetEnumerateOutsideRange(false);
 		}
-		FScopedEnumerateOutsideRange(const FScopedEnumerateOutsideRange&) = delete;
-		FScopedEnumerateOutsideRange& operator= (const FScopedEnumerateOutsideRange&) = delete;
+		TScopedEnumerateOutsideRange(const TScopedEnumerateOutsideRange&) = delete;
+		TScopedEnumerateOutsideRange& operator= (const TScopedEnumerateOutsideRange&) = delete;
 	private:
 		const T& Timeline;
 	};
@@ -170,15 +200,27 @@ public:
 		return WidgetInfos.Find(WidgetId);
 	}
 
+	/** Find a callstack that should have been saved off from the Slate Provider */
+	const FString* FindInvalidationCallstack(uint64 SourceCycle) const
+	{
+		return InvalidationCallstacks.Find(SourceCycle);
+	}
+
 private:
-	Trace::IAnalysisSession& Session;
+	TraceServices::IAnalysisSession& Session;
 
 	TMap<Message::FWidgetId, Message::FWidgetInfo> WidgetInfos;
+	TMap<uint64, FString> InvalidationCallstacks;
 
-	TWidgetTimeline WidgetTimelines;
-	TApplicationTickedTimeline ApplicationTickedTimeline;
-	TWidgetUpdatedTimeline WidgetUpdatedTimeline;
-	TWidgetInvalidatedTimeline WidgetInvalidatedTimeline;
+	FWidgetTimeline WidgetTimelines;
+	FApplicationTickedTimeline ApplicationTickedTimeline;
+	FWidgetUpdatedTimeline WidgetUpdatedTimeline;
+	FWidgetInvalidatedTimeline WidgetInvalidatedTimeline;
+	FWidgetUpdateStepsTimeline WidgetPaintTimelines;
+
+	TArray<TTuple<uint64, Message::FWidgetId>> WidgetUpdateStepsEventIndexes;
+	uint32 WidgetUpdateStepsBufferNumber;
+	bool bAcceptWidgetUpdateStepsComand;
 };
 
 } //namespace SlateInsights

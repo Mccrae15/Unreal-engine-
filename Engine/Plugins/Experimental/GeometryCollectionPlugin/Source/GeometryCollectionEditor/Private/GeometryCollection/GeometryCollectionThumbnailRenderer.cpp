@@ -16,7 +16,7 @@ UGeometryCollectionThumbnailRenderer::UGeometryCollectionThumbnailRenderer(const
 void UGeometryCollectionThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 Width, uint32 Height, FRenderTarget* RenderTarget, FCanvas* Canvas, bool bAdditionalViewFamily)
 {
 	UGeometryCollection* GeometryCollection = Cast<UGeometryCollection>(Object);
-	if (GeometryCollection != nullptr && !GeometryCollection->IsPendingKill())
+	if (IsValid(GeometryCollection))
 	{
 		if (ThumbnailScene == nullptr)
 		{
@@ -27,15 +27,14 @@ void UGeometryCollectionThumbnailRenderer::Draw(UObject* Object, int32 X, int32 
 		ThumbnailScene->GetScene()->UpdateSpeedTreeWind(0.0);
 
 		FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(RenderTarget, ThumbnailScene->GetScene(), FEngineShowFlags(ESFIM_Game))
-			.SetWorldTimes(FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime)
+			.SetTime(UThumbnailRenderer::GetTime())
 			.SetAdditionalViewFamily(bAdditionalViewFamily));
 
 		ViewFamily.EngineShowFlags.DisableAdvancedFeatures();
 		ViewFamily.EngineShowFlags.MotionBlur = 0;
 		ViewFamily.EngineShowFlags.LOD = 0;
 
-		ThumbnailScene->GetView(&ViewFamily, X, Y, Width, Height);
-		RenderViewFamily(Canvas, &ViewFamily);
+		RenderViewFamily(Canvas, &ViewFamily, ThumbnailScene->CreateView(&ViewFamily, X, Y, Width, Height));
 		ThumbnailScene->SetGeometryCollection(nullptr);
 	}
 }

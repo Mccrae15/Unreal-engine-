@@ -11,7 +11,8 @@
 #include "WaterLandscapeBrush.h"
 #include "EngineUtils.h"
 #include "Landscape.h"
-#include "WaterMeshActor.h"
+#include "WaterZoneActor.h"
+#include "WaterMeshComponent.h"
 #include "Editor.h"
 #include "ISettingsModule.h"
 #include "WaterEditorSettings.h"
@@ -23,6 +24,7 @@
 #include "LevelEditorViewport.h"
 #include "WaterBodyActorFactory.h"
 #include "WaterBodyIslandActorFactory.h"
+#include "WaterZoneActorFactory.h"
 #include "WaterBodyActorDetailCustomization.h"
 #include "WaterBrushManagerFactory.h"
 #include "IAssetTools.h"
@@ -67,6 +69,7 @@ void FWaterEditorModule::StartupModule()
 
 	if (GEditor)
 	{
+		GEditor->ActorFactories.Add(NewObject<UWaterZoneActorFactory>());
 		GEditor->ActorFactories.Add(NewObject<UWaterBodyIslandActorFactory>());
 		GEditor->ActorFactories.Add(NewObject<UWaterBodyRiverActorFactory>());
 		GEditor->ActorFactories.Add(NewObject<UWaterBodyLakeActorFactory>());
@@ -183,14 +186,19 @@ void FWaterEditorModule::OnLevelActorAddedToWorld(AActor* Actor)
 				}
 			}
 
-			const bool bHasMeshActor = !!TActorIterator<AWaterMeshActor>(ActorWorld);
+			const bool bHasMeshActor = !!TActorIterator<AWaterZone>(ActorWorld);
 
 			if (!bHasMeshActor && bHasWaterManager)
 			{
 				FActorSpawnParameters SpawnParams;
 				SpawnParams.OverrideLevel = ActorWorld->PersistentLevel;
 				SpawnParams.bAllowDuringConstructionScript = true; // This can be called by construction script if the actor being added to the world is part of a blueprint, for example : 
-				ActorWorld->SpawnActor<AWaterMeshActor>(AWaterMeshActor::StaticClass(), SpawnParams);
+				AWaterZone* WaterZoneActor = ActorWorld->SpawnActor<AWaterZone>(AWaterZone::StaticClass(), SpawnParams);
+
+				// Set the defaults here because the actor factory isn't triggered on manual SpawnActor.
+				const FWaterZoneActorDefaults& WaterMeshActorDefaults = GetDefault<UWaterEditorSettings>()->WaterZoneActorDefaults;
+				WaterZoneActor->GetWaterMeshComponent()->FarDistanceMaterial = WaterMeshActorDefaults.GetFarDistanceMaterial();
+				WaterZoneActor->GetWaterMeshComponent()->FarDistanceMeshExtent = WaterMeshActorDefaults.FarDistanceMeshExtent;
 			}
 		}
 	}

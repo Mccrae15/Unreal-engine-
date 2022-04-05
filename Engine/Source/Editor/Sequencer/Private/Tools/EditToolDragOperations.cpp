@@ -666,29 +666,24 @@ FMoveKeysAndSections::FMoveKeysAndSections(FSequencer& InSequencer, const TSet<F
 
 	KeysAsArray = Keys.Array();
 
-	// However, we don't want infinite sections to be movable, so we discard them from our selection.
-	// We support partially infinite (infinite on one side) sections however.
 	for (const TWeakObjectPtr<UMovieSceneSection>& WeakSection : InSelectedSections)
 	{
 		const UMovieSceneSection* SelectedSection = WeakSection.Get();
-		if (SelectedSection->HasStartFrame() || SelectedSection->HasEndFrame())
-		{
-			Sections.AddUnique(WeakSection);
+		Sections.AddUnique(WeakSection);
 
-			UMovieScene* MovieScene = InSequencer.GetFocusedMovieSceneSequence()->GetMovieScene();
-			if (MovieScene)
+		UMovieScene* MovieScene = InSequencer.GetFocusedMovieSceneSequence()->GetMovieScene();
+		if (MovieScene)
+		{
+			// If the section is in a group, we also want to add the sections it is grouped with
+			const FMovieSceneSectionGroup* SectionGroup = MovieScene->GetSectionGroup(*SelectedSection);
+			if (SectionGroup)
 			{
-				// If the section is in a group, we also want to add the sections it is grouped with
-				const FMovieSceneSectionGroup* SectionGroup = MovieScene->GetSectionGroup(*SelectedSection);
-				if (SectionGroup)
+				for (TWeakObjectPtr<UMovieSceneSection> WeakGroupedSection : *SectionGroup)
 				{
-					for (TWeakObjectPtr<UMovieSceneSection> WeakGroupedSection : *SectionGroup)
+					// Verify sections are still valid, and are not infinite.
+					if (WeakGroupedSection.IsValid())
 					{
-						// Verify sections are still valid, and are not infinite.
-						if (WeakGroupedSection.IsValid() && (WeakGroupedSection->HasStartFrame() || WeakGroupedSection->HasEndFrame()))
-						{
-							Sections.AddUnique(WeakGroupedSection);
-						}
+						Sections.AddUnique(WeakGroupedSection);
 					}
 				}
 			}
@@ -1120,16 +1115,32 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 		return false;
 	}
 
-	// If sections are all on different rows, don't set row indices for anything because it leads to odd behavior.
+	// If sections are all on different rows or from different tracks, don't set row indices for anything because it leads to odd behavior.
 	bool bSectionsAreOnDifferentRows = false;
 	int32 FirstRowIndex = Sections[0].Get()->GetRowIndex();
+	UMovieSceneTrack* FirstTrack = nullptr;
 
 	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sections)
 	{
 		UMovieSceneSection* Section = WeakSection.Get();
-		if (FirstRowIndex != Section->GetRowIndex())
+		if (Section)
 		{
-			bSectionsAreOnDifferentRows = true;
+			UMovieSceneTrack* Track = Section->GetTypedOuter<UMovieSceneTrack>();
+			if (FirstRowIndex != Section->GetRowIndex())
+			{
+				bSectionsAreOnDifferentRows = true;
+			}
+			if (FirstTrack)
+			{
+				if (FirstTrack != Track)
+				{
+					bSectionsAreOnDifferentRows = true;
+				}
+			}
+			else
+			{
+				FirstTrack = Track;
+			}
 		}
 	}
 
@@ -1344,7 +1355,7 @@ bool FMoveKeysAndSections::HandleSectionMovement(FFrameTime MouseTime, FVector2D
 		// Expand track node if it wasn't already expanded. This ensures that multi row tracks will show multiple rows if regenerated
 		for (TSharedRef<FSequencerTrackNode> TrackNode : TrackNodes)
 		{
-			if (!TrackNode->IsExpanded())
+			if (!TrackNode->IsExpanded() && TrackNode->GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::None)
 			{
 				TArray<TSharedRef<ISequencerSection> > TrackNodeSections = TrackNode->GetSections();
 				if (TrackNodeSections.Num() && TrackNodeSections[0]->GetSectionObject())
@@ -1433,11 +1444,11 @@ void FMoveKeysAndSections::HandleKeyMovement(TOptional<FFrameNumber> MaxDeltaX, 
 		}
 	}
 
-	for (UMovieSceneSection* Section : ModifiedNonSelectedSections)
+	for (TWeakObjectPtr<UMovieSceneSection> Section : ModifiedNonSelectedSections)
 	{
-		if (Section)
+		if (Section.Get())
 		{
-			Section->MarkAsChanged();
+			Section.Get()->MarkAsChanged();
 		}
 	}
 }

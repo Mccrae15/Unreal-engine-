@@ -13,7 +13,6 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/PostProcessMaterial.h"
-#include "PostProcessParameters.h"
 #include "MaterialShader.h"
 #include "MaterialShaderType.h"
 #include "GoogleARCoreAndroidHelper.h"
@@ -67,7 +66,7 @@ void FGoogleARCorePassthroughCameraRenderer::InitializeRenderer_RenderThread(FSc
 		FMemory::Memcpy(IndexBuffer.GetData(), Indices, NumIndices * sizeof(uint16));
 
 		// Create index buffer. Fill buffer with initial data upon creation
-		FRHIResourceCreateInfo CreateInfo(&IndexBuffer);
+		FRHIResourceCreateInfo CreateInfo(TEXT("OverlayIndexBuffer"), &IndexBuffer);
 		OverlayIndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfo);
 	}
 	
@@ -77,20 +76,20 @@ void FGoogleARCorePassthroughCameraRenderer::InitializeRenderer_RenderThread(FSc
 		Vertices.SetNumUninitialized(4);
 
 		// Unreal uses reversed z. 0 is the farthest.
-		Vertices[0].Position = FVector4(0, 0, 0, 1);
+		Vertices[0].Position = FVector4f(0, 0, 0, 1);
 		Vertices[0].UV = { 0, 0 };
 
-		Vertices[1].Position = FVector4(0, 1, 0, 1);
+		Vertices[1].Position = FVector4f(0, 1, 0, 1);
 		Vertices[1].UV = { 0, 1 };
 
-		Vertices[2].Position = FVector4(1, 0, 0, 1);
+		Vertices[2].Position = FVector4f(1, 0, 0, 1);
 		Vertices[2].UV = { 1, 0 };
 
-		Vertices[3].Position = FVector4(1, 1, 0, 1);
+		Vertices[3].Position = FVector4f(1, 1, 0, 1);
 		Vertices[3].UV = { 1, 1 };
 
 		// Create vertex buffer. Fill buffer with initial data upon creation
-		FRHIResourceCreateInfo CreateInfo(&Vertices);
+		FRHIResourceCreateInfo CreateInfo(TEXT("OverlayVertexBuffer"), &Vertices);
 		OverlayVertexBufferRHI = RHICreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfo);
 	}
 }
@@ -190,10 +189,6 @@ void FGoogleARCorePassthroughCameraRenderer::RenderVideoOverlayWithMaterial(FRHI
 
 	if (FeatureLevel <= ERHIFeatureLevel::ES3_1)
 	{
-		FUniformBufferRHIRef PassUniformBuffer = CreateSceneTextureUniformBufferDependentOnShadingPath(RHICmdList, FeatureLevel, ESceneTextureSetupMode::None);
-		FUniformBufferStaticBindings GlobalUniformBuffers(PassUniformBuffer);
-		SCOPED_UNIFORM_BUFFER_GLOBAL_BINDINGS(RHICmdList, GlobalUniformBuffers);
-
 		const FMaterialRenderProxy* MaterialProxy = OverlayMaterialToUse->GetRenderProxy();
 		const FMaterial& CameraMaterial = MaterialProxy->GetMaterialWithFallback(FeatureLevel, MaterialProxy);
 		const FMaterialShaderMap* MaterialShaderMap = CameraMaterial.GetRenderingThreadShaderMap();
@@ -202,6 +197,7 @@ void FGoogleARCorePassthroughCameraRenderer::RenderVideoOverlayWithMaterial(FRHI
 		TShaderRef<FGoogleARCoreCameraOverlayVS> VertexShader = MaterialShaderMap->GetShader<FGoogleARCoreCameraOverlayVS>();
 
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
+		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 		GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
 		
@@ -225,7 +221,7 @@ void FGoogleARCorePassthroughCameraRenderer::RenderVideoOverlayWithMaterial(FRHI
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 		GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 		VertexShader->SetParameters(RHICmdList, InView);
 		PixelShader->SetParameters(RHICmdList, InView, MaterialProxy, CameraMaterial);
@@ -233,10 +229,10 @@ void FGoogleARCorePassthroughCameraRenderer::RenderVideoOverlayWithMaterial(FRHI
 		FIntPoint ViewSize = InView.UnscaledViewRect.Size();
 
 		FDrawRectangleParameters Parameters;
-		Parameters.PosScaleBias = FVector4(ViewSize.X, ViewSize.Y, 0, 0);
-		Parameters.UVScaleBias = FVector4(1.0f, 1.0f, 0.0f, 0.0f);
+		Parameters.PosScaleBias = FVector4f(ViewSize.X, ViewSize.Y, 0, 0);
+		Parameters.UVScaleBias = FVector4f(1.0f, 1.0f, 0.0f, 0.0f);
 
-		Parameters.InvTargetSizeAndTextureSize = FVector4(
+		Parameters.InvTargetSizeAndTextureSize = FVector4f(
 			1.0f / ViewSize.X, 1.0f / ViewSize.Y,
 			1.0f, 1.0f);
 

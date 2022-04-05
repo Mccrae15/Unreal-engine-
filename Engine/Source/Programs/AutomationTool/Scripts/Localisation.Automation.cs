@@ -9,7 +9,8 @@ using System.Security.Cryptography;
 using AutomationTool;
 using UnrealBuildTool;
 using EpicGames.Localization;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using System.Threading.Tasks;
 
 [Help("Updates the external localization data using the arguments provided.")]
 [Help("UEProjectRoot", "Optional root-path to the project we're gathering for (defaults to CmdEnv.LocalRoot if unset).")]
@@ -270,6 +271,18 @@ class Localize : BuildCommand
 			InitalPOFileHashes = GetPOFileHashes(LocalizationBatches, UEProjectRoot);
 		}
 
+		foreach (var LocalizationTask in LocalizationTasks)
+		{
+			if (LocalizationTask.LocProvider != null)
+			{
+				foreach (var ProjectInfo in LocalizationTask.ProjectInfos)
+				{
+					Task SetupTask = LocalizationTask.LocProvider.InitializeProjectWithLocalizationProvider(ProjectInfo.ProjectName, ProjectInfo.ImportInfo);
+					SetupTask.Wait();
+				}
+			}
+		}
+
 		// Download the latest translations from our localization provider
 		if (LocalizationStepNames.Contains("Download"))
 		{
@@ -279,7 +292,8 @@ class Localize : BuildCommand
 				{
 					foreach (var ProjectInfo in LocalizationTask.ProjectInfos)
 					{
-						LocalizationTask.LocProvider.DownloadProjectFromLocalizationProvider(ProjectInfo.ProjectName, ProjectInfo.ImportInfo);
+						Task DownloadTask = LocalizationTask.LocProvider.DownloadProjectFromLocalizationProvider(ProjectInfo.ProjectName, ProjectInfo.ImportInfo);
+						DownloadTask.Wait();
 					}
 				}
 			}
@@ -288,7 +302,7 @@ class Localize : BuildCommand
 		// Begin the gather command for each task
 		// These can run in parallel when ParallelGather is enabled
 		{
-			var EditorExe = CombinePaths(CmdEnv.LocalRoot, @"Engine/Binaries/Win64/UE4Editor-Cmd.exe");
+			var EditorExe = CombinePaths(CmdEnv.LocalRoot, @"Engine/Binaries/Win64/UnrealEditor-Cmd.exe");
 
 			// Set the common basic editor arguments
 			var EditorArguments = P4Enabled 
@@ -299,6 +313,7 @@ class Localize : BuildCommand
 				EditorArguments += " -BuildMachine";
 			}
 			EditorArguments += " -Unattended";
+			EditorArguments += " -NoShaderCompile";
 			//EditorArguments += " -LogLocalizationConflicts";
 			if (EnableParallelGather)
 			{
@@ -389,7 +404,8 @@ class Localize : BuildCommand
 						{
 							// Recalculate the split platform paths before doing the upload, as the export may have changed them
 							ProjectInfo.ExportInfo.CalculateSplitPlatformNames(LocalizationTask.RootLocalizationTargetDirectory);
-							LocalizationTask.LocProvider.UploadProjectToLocalizationProvider(ProjectInfo.ProjectName, ProjectInfo.ExportInfo);
+							Task UploadTask = LocalizationTask.LocProvider.UploadProjectToLocalizationProvider(ProjectInfo.ProjectName, ProjectInfo.ExportInfo);
+							UploadTask.Wait();
 						}
 						else
 						{
@@ -429,7 +445,7 @@ class Localize : BuildCommand
 						}
 					}
 
-					P4.LogP4(String.Format("-x{0} revert", P4RevertArgsFilename));
+					P4.LogP4(String.Format("-x {0}", P4RevertArgsFilename), "revert");
 					DeleteFile_NoExceptions(P4RevertArgsFilename);
 				}
 			}
@@ -646,8 +662,8 @@ public class ExportMcpTemplates : BuildCommand
 
 	public static void RunExportTemplates(FileReference ProjectFile, bool bCheckoutAndSubmit, bool bOnlyLoc, bool bbNoRobomerge, string CommandletOverride)
 	{
-		string EditorExe = "UE4Editor.exe";
-		EditorExe = HostPlatform.Current.GetUE4ExePath(EditorExe);
+		string EditorExe = "UnrealEditor.exe";
+		EditorExe = HostPlatform.Current.GetUnrealExePath(EditorExe);
 
 		string GameBackendFolder = GetGameBackendFolder(ProjectFile);
 		if (!DirectoryExists_NoExceptions(GameBackendFolder))

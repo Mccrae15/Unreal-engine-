@@ -11,11 +11,13 @@
 #include "Templates/IsValidVariadicFunctionArg.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/IsArrayOrRefOfType.h"
+#include "UObject/ObjectKey.h"
+#include "Containers/Ticker.h"
 
 #if ENABLE_VISUAL_LOG
 
-#define REDIRECT_TO_VLOG(Dest) FVisualLogger::Get().Redirect(this, Dest)
-#define REDIRECT_OBJECT_TO_VLOG(Src, Dest) FVisualLogger::Get().Redirect(Src, Dest)
+#define REDIRECT_TO_VLOG(Dest) FVisualLogger::Redirect(this, Dest)
+#define REDIRECT_OBJECT_TO_VLOG(Src, Dest) FVisualLogger::Redirect(Src, Dest)
 
 #define CONNECT_WITH_VLOG(Dest)
 #define CONNECT_OBJECT_WITH_VLOG(Src, Dest)
@@ -25,7 +27,7 @@
 #define UE_CVLOG(Condition, LogOwner, CategoryName, Verbosity, Format, ...)  if(FVisualLogger::IsRecording() && Condition) {UE_VLOG(LogOwner, CategoryName, Verbosity, Format, ##__VA_ARGS__);} 
 // Text, log with output to regular unreal logs too
 #define UE_VLOG_UELOG(LogOwner, CategoryName, Verbosity, Format, ...) { if(FVisualLogger::IsRecording()) FVisualLogger::CategorizedLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, Format, ##__VA_ARGS__); UE_LOG(CategoryName, Verbosity, Format, ##__VA_ARGS__); }
-#define UE_CVLOG_UELOG(Condition, LogOwner, CategoryName, Verbosity, Format, ...)  if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_UELOG(LogOwner, CategoryName, Verbosity, Format, ##__VA_ARGS__);} 
+#define UE_CVLOG_UELOG(Condition, LogOwner, CategoryName, Verbosity, Format, ...)  if(Condition) {UE_VLOG_UELOG(LogOwner, CategoryName, Verbosity, Format, ##__VA_ARGS__);} 
 // Segment shape
 #define UE_VLOG_SEGMENT(LogOwner, CategoryName, Verbosity, SegmentStart, SegmentEnd, Color, Format, ...) if(FVisualLogger::IsRecording()) FVisualLogger::GeometryShapeLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, SegmentStart, SegmentEnd, Color, 0, Format, ##__VA_ARGS__)
 #define UE_CVLOG_SEGMENT(Condition, LogOwner, CategoryName, Verbosity, SegmentStart, SegmentEnd, Color, Format, ...) if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_SEGMENT(LogOwner, CategoryName, Verbosity, SegmentStart, SegmentEnd, Color, Format, ##__VA_ARGS__);}
@@ -42,14 +44,14 @@
 #define UE_VLOG_OBOX(LogOwner, CategoryName, Verbosity, Box, Matrix, Color, Format, ...) if(FVisualLogger::IsRecording()) FVisualLogger::GeometryBoxLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, Box, Matrix, Color, Format, ##__VA_ARGS__)
 #define UE_CVLOG_OBOX(Condition, LogOwner, CategoryName, Verbosity, Box, Matrix, Color, Format, ...)  if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_OBOX(LogOwner, CategoryName, Verbosity, Box, Matrix, Color, Format, ##__VA_ARGS__);} 
 // Cone shape
-#define UE_VLOG_CONE(LogOwner, CategoryName, Verbosity, Orgin, Direction, Length, Angle, Color, Format, ...) if(FVisualLogger::IsRecording()) FVisualLogger::GeometryShapeLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, Orgin, Direction, Length, Angle, Color, Format, ##__VA_ARGS__)
-#define UE_CVLOG_CONE(Condition, LogOwner, CategoryName, Verbosity, Orgin, Direction, Length, Angle, Color, Format, ...)  if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_CONE(LogOwner, CategoryName, Verbosity, Orgin, Direction, Length, Angle, Color, Format, ##__VA_ARGS__);} 
+#define UE_VLOG_CONE(LogOwner, CategoryName, Verbosity, Origin, Direction, Length, Angle, Color, Format, ...) if(FVisualLogger::IsRecording()) FVisualLogger::GeometryShapeLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, Orgin, Direction, Length, Angle, Color, Format, ##__VA_ARGS__)
+#define UE_CVLOG_CONE(Condition, LogOwner, CategoryName, Verbosity, Origin, Direction, Length, Angle, Color, Format, ...)  if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_CONE(LogOwner, CategoryName, Verbosity, Orgin, Direction, Length, Angle, Color, Format, ##__VA_ARGS__);} 
 // Cylinder shape
 #define UE_VLOG_CYLINDER(LogOwner, CategoryName, Verbosity, Start, End, Radius, Color, Format, ...) if(FVisualLogger::IsRecording()) FVisualLogger::GeometryShapeLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, Start, End, Radius, Color, Format, ##__VA_ARGS__)
 #define UE_CVLOG_CYLINDER(Condition, LogOwner, CategoryName, Verbosity, Start, End, Radius, Color, Format, ...)  if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_CYLINDER(LogOwner, CategoryName, Verbosity, Start, End, Radius, Color, Format, ##__VA_ARGS__);} 
 // Capsule shape
-#define UE_VLOG_CAPSULE(LogOwner, CategoryName, Verbosity, Center, HalfHeight, Radius, Rotation, Color, Format, ...) if(FVisualLogger::IsRecording()) FVisualLogger::GeometryShapeLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, Center, HalfHeight, Radius, Rotation, Color, Format, ##__VA_ARGS__)
-#define UE_CVLOG_CAPSULE(Condition, LogOwner, CategoryName, Verbosity, Center, HalfHeight, Radius, Rotation, Color, Format, ...)  if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_CAPSULE(LogOwner, CategoryName, Verbosity, Center, HalfHeight, Radius, Rotation, Color, Format, ##__VA_ARGS__);} 
+#define UE_VLOG_CAPSULE(LogOwner, CategoryName, Verbosity, Base, HalfHeight, Radius, Rotation, Color, Format, ...) if(FVisualLogger::IsRecording()) FVisualLogger::GeometryShapeLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, Base, HalfHeight, Radius, Rotation, Color, Format, ##__VA_ARGS__)
+#define UE_CVLOG_CAPSULE(Condition, LogOwner, CategoryName, Verbosity, Base, HalfHeight, Radius, Rotation, Color, Format, ...)  if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_CAPSULE(LogOwner, CategoryName, Verbosity, Base, HalfHeight, Radius, Rotation, Color, Format, ##__VA_ARGS__);} 
 // Histogram data for 2d graphs 
 #define UE_VLOG_HISTOGRAM(LogOwner, CategoryName, Verbosity, GraphName, DataName, Data) if(FVisualLogger::IsRecording()) FVisualLogger::HistogramDataLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, GraphName, DataName, Data, FColor::White, TEXT(""))
 #define UE_CVLOG_HISTOGRAM(Condition, LogOwner, CategoryName, Verbosity, GraphName, DataName, Data) if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_HISTOGRAM(LogOwner, CategoryName, Verbosity, GraphName, DataName, Data);} 
@@ -65,6 +67,12 @@
 // Segment with an arrowhead
 #define UE_VLOG_ARROW(LogOwner, CategoryName, Verbosity, SegmentStart, SegmentEnd, Color, Format, ...) if(FVisualLogger::IsRecording()) FVisualLogger::ArrowLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, SegmentStart, SegmentEnd, Color, Format, ##__VA_ARGS__)
 #define UE_CVLOG_ARROW(Condition, LogOwner, CategoryName, Verbosity, SegmentStart, SegmentEnd, Color, Format, ...) if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_ARROW(LogOwner, CategoryName, Verbosity, SegmentStart, SegmentEnd, Color, Format, ##__VA_ARGS__);} 
+// Circle shape
+#define UE_VLOG_CIRCLE(LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, Format, ...) if(FVisualLogger::IsRecording()) FVisualLogger::CircleLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, Center, UpAxis, Radius, Color, 0, Format, ##__VA_ARGS__)
+#define UE_CVLOG_CIRCLE(Condition, LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, Format, ...)  if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_CIRCLE(LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, 0, Format, ##__VA_ARGS__);} 
+// Circle shape
+#define UE_VLOG_CIRCLE_THICK(LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, Thickness, Format, ...) if(FVisualLogger::IsRecording()) FVisualLogger::CircleLogf(LogOwner, CategoryName, ELogVerbosity::Verbosity, Center, UpAxis, Radius, Color, Thickness, Format, ##__VA_ARGS__)
+#define UE_CVLOG_CIRCLE_THICK(Condition, LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, Thickness, Format, ...)  if(FVisualLogger::IsRecording() && Condition) {UE_VLOG_CIRCLE(LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, Thickness, Format, ##__VA_ARGS__);} 
 
 #define DECLARE_VLOG_EVENT(EventName) extern FVisualLogEventBase EventName;
 #define DEFINE_VLOG_EVENT(EventName, Verbosity, UserFriendlyDesc) FVisualLogEventBase EventName(TEXT(#EventName), TEXT(UserFriendlyDesc), ELogVerbosity::Verbosity); 
@@ -100,8 +108,8 @@
 #define UE_CVLOG_CONE(Condition, Object, CategoryName, Verbosity, Orgin, Direction, Length, Angle, Color, DescriptionFormat, ...)
 #define UE_VLOG_CYLINDER(Object, CategoryName, Verbosity, Start, End, Radius, Color, DescriptionFormat, ...)
 #define UE_CVLOG_CYLINDER(Condition, Object, CategoryName, Verbosity, Start, End, Radius, Color, DescriptionFormat, ...)
-#define UE_VLOG_CAPSULE(Object, CategoryName, Verbosity, Center, HalfHeight, Radius, Rotation, Color, DescriptionFormat, ...)
-#define UE_CVLOG_CAPSULE(Condition, Object, CategoryName, Verbosity, Center, HalfHeight, Radius, Rotation, Color, DescriptionFormat, ...)
+#define UE_VLOG_CAPSULE(Object, CategoryName, Verbosity, Base, HalfHeight, Radius, Rotation, Color, DescriptionFormat, ...)
+#define UE_CVLOG_CAPSULE(Condition, Object, CategoryName, Verbosity, Base, HalfHeight, Radius, Rotation, Color, DescriptionFormat, ...)
 #define UE_VLOG_HISTOGRAM(Actor, CategoryName, Verbosity, GraphName, DataName, Data)
 #define UE_CVLOG_HISTOGRAM(Condition, Actor, CategoryName, Verbosity, GraphName, DataName, Data)
 #define UE_VLOG_PULLEDCONVEX(LogOwner, CategoryName, Verbosity, ConvexPoints, MinZ, MaxZ, Color, Format, ...)
@@ -112,6 +120,10 @@
 #define UE_CVLOG_CONVEXPOLY(Condition, LogOwner, CategoryName, Verbosity, Points, Color, Format, ...)
 #define UE_VLOG_ARROW(LogOwner, CategoryName, Verbosity, SegmentStart, SegmentEnd, Color, Format, ...) 
 #define UE_CVLOG_ARROW(Condition, LogOwner, CategoryName, Verbosity, SegmentStart, SegmentEnd, Color, Format, ...) 
+#define UE_VLOG_CIRCLE(LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, Format, ...)
+#define UE_CVLOG_CIRCLE(Condition, LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, Format, ...)
+#define UE_VLOG_CIRCLE_THICK(LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, Thickness, Format, ...)
+#define UE_CVLOG_CIRCLE_THICK(Condition, LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, Thickness, Format, ...)
 
 #define DECLARE_VLOG_EVENT(EventName)
 #define DEFINE_VLOG_EVENT(EventName, Verbosity, UserFriendlyDesc)
@@ -133,8 +145,7 @@
 
 class FVisualLogger;
 
-DECLARE_LOG_CATEGORY_EXTERN(LogVisual, Display, All);
-
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogVisual, Display, All);
 
 #if ENABLE_VISUAL_LOG
 
@@ -160,8 +171,8 @@ class ENGINE_API FVisualLogger : public FOutputDevice
 	static void GeometryShapeLogfImpl (const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Origin, const FVector& Direction, const float Length, const float Angle, const FColor& Color, const TCHAR* Fmt, ...);
 	static void GeometryShapeLogfImpl (const UObject* LogOwner, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Start, const FVector& End, const float Radius, const FColor& Color, const TCHAR* Fmt, ...);
 	static void GeometryShapeLogfImpl (const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Start, const FVector& End, const float Radius, const FColor& Color, const TCHAR* Fmt, ...);
-	static void GeometryShapeLogfImpl (const UObject* LogOwner, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, const TCHAR* Fmt, ...);
-	static void GeometryShapeLogfImpl (const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, const TCHAR* Fmt, ...);
+	static void GeometryShapeLogfImpl (const UObject* LogOwner, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Base, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, const TCHAR* Fmt, ...);
+	static void GeometryShapeLogfImpl (const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Base, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, const TCHAR* Fmt, ...);
 	static void NavAreaShapeLogfImpl  (const UObject* LogOwner, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const TArray<FVector>& ConvexPoints, float MinZ, float MaxZ, const FColor& Color, const TCHAR* Fmt, ...);
 	static void NavAreaShapeLogfImpl  (const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, const TArray<FVector>& ConvexPoints, float MinZ, float MaxZ, const FColor& Color, const TCHAR* Fmt, ...);
 	static void GeometryShapeLogfImpl (const UObject* LogOwner, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const TArray<FVector>& Vertices, const TArray<int32>&Indices, const FColor& Color, const TCHAR* Fmt, ...);
@@ -172,6 +183,8 @@ class ENGINE_API FVisualLogger : public FOutputDevice
 	static void HistogramDataLogfImpl (const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, FName GraphName, FName DataName, const FVector2D& Data, const FColor& Color, const TCHAR* Fmt, ...);
 	static void ArrowLogfImpl(const UObject* LogOwner, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Start, const FVector& End, const FColor& Color, const TCHAR* Fmt, ...);
 	static void ArrowLogfImpl(const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Start, const FVector& End, const FColor& Color, const TCHAR* Fmt, ...);
+	static void CircleLogfImpl(const UObject* LogOwner, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Center, const FVector& UpAxis, const float Radius, const FColor& Color, const uint16 Thickness, const TCHAR* Fmt, ...);
+	static void CircleLogfImpl(const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Center, const FVector& UpAxis, const float Radius, const FColor& Color, const uint16 Thickness, const TCHAR* Fmt, ...);
 
 public:
 	// Regular text log
@@ -225,6 +238,25 @@ public:
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FVisualLogger::ArrowLogf");
 
 		ArrowLogfImpl(LogOwner, CategoryName, Verbosity, Start, End, Color, Fmt, Args...);
+	}
+
+
+	// Circle log
+	template <typename FmtType, typename... Types>
+	static void CircleLogf(const UObject* LogOwner, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Center, const FVector& UpAxis, const float Radius, const FColor& Color, const uint16 Thickness, const FmtType& Fmt, Types... Args)
+	{
+		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FVisualLogger::CircleLogf");
+
+		CircleLogfImpl(LogOwner, Category, Verbosity, Center, UpAxis, Radius, Color, Thickness, Fmt, Args...);
+	}
+	template <typename FmtType, typename... Types>
+	static void CircleLogf(const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Center, const FVector& UpAxis, const float Radius, const FColor& Color, const uint16 Thickness, const FmtType& Fmt, Types... Args)
+	{
+		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FVisualLogger::CircleLogf");
+
+		CircleLogfImpl(LogOwner, CategoryName, Verbosity, Center, UpAxis, Radius, Color, Thickness, Fmt, Args...);
 	}
 
 	// Location/Sphere log
@@ -301,20 +333,20 @@ public:
 
 	// Capsule log
 	template <typename FmtType, typename... Types>
-	static void GeometryShapeLogf(const UObject* LogOwner, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Center, float HalfHeight, float Radius, const FQuat & Rotation, const FColor& Color, const FmtType& Fmt, Types... Args)
+	static void GeometryShapeLogf(const UObject* LogOwner, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Base, float HalfHeight, float Radius, const FQuat & Rotation, const FColor& Color, const FmtType& Fmt, Types... Args)
 	{
 		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FVisualLogger::GeometryShapeLogf");
 
-		GeometryShapeLogfImpl(LogOwner, Category, Verbosity, Center, HalfHeight, Radius, Rotation, Color, Fmt, Args...);
+		GeometryShapeLogfImpl(LogOwner, Category, Verbosity, Base, HalfHeight, Radius, Rotation, Color, Fmt, Args...);
 	}
 	template <typename FmtType, typename... Types>
-	static void GeometryShapeLogf(const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Center, float HalfHeight, float Radius, const FQuat & Rotation, const FColor& Color, const FmtType& Fmt, Types... Args)
+	static void GeometryShapeLogf(const UObject* LogOwner, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Base, float HalfHeight, float Radius, const FQuat & Rotation, const FColor& Color, const FmtType& Fmt, Types... Args)
 	{
 		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to FVisualLogger::GeometryShapeLogf");
 
-		GeometryShapeLogfImpl(LogOwner, CategoryName, Verbosity, Center, HalfHeight, Radius, Rotation, Color, Fmt, Args...);
+		GeometryShapeLogfImpl(LogOwner, CategoryName, Verbosity, Base, HalfHeight, Radius, Rotation, Color, Fmt, Args...);
 	}
 
 	// NavArea/Extruded convex log
@@ -407,11 +439,7 @@ public:
 	static void EventLog(const UObject* LogOwner, const FVisualLogEventBase& Event1, const FName EventTag1 = NAME_None, const FName EventTag2 = NAME_None, const FName EventTag3 = NAME_None, const FName EventTag4 = NAME_None, const FName EventTag5 = NAME_None, const FName EventTag6 = NAME_None);
 
 	// static getter
-	static FVisualLogger& Get()
-	{
-		static FVisualLogger GVisLog;
-		return GVisLog;
-	}
+	static FVisualLogger& Get();
 
 	virtual ~FVisualLogger() {}
 
@@ -422,34 +450,45 @@ public:
 	void Cleanup(UWorld* OldWorld, bool bReleaseMemory = false);
 
 	/** Set log owner redirection from one object to another, to combine logs */
-	static void Redirect(UObject* FromObject, UObject* ToObject);
+	static void Redirect(const UObject* FromObject, const UObject* ToObject)
+	{ 
+		FVisualLogger& Logger = FVisualLogger::Get();
+		UObject* NewRedirection = nullptr;
+		{
+			FWriteScopeLock Lock(Logger.RedirectRWLock);
+			NewRedirection = Logger.RedirectInternal(FromObject, ToObject);
+		}
+		UE_CVLOG(FromObject != nullptr && NewRedirection != nullptr, FromObject, LogVisual, Log, TEXT("Redirected '%s' to '%s'"), *FromObject->GetName(), *NewRedirection->GetName());
+	}
 
 	/** find and return redirection object for given object*/
-	static UObject* FindRedirection(const UObject* Object);
+	static UObject* FindRedirection(const UObject* Object)
+	{ 
+		FVisualLogger& Logger = FVisualLogger::Get();
+		FReadScopeLock Lock(Logger.RedirectRWLock);
+		return Logger.FindRedirectionInternal(Object);
+	}
 
-	/** blocks all categories from logging. It can be bypassed with white list for categories */
-	void BlockAllCategories(bool InBlock) { bBlockedAllCategories = InBlock; }
+	/** blocks all categories from logging. It can be bypassed with the category allow list */
+	void BlockAllCategories(const bool bInBlock) { bBlockedAllCategories = bInBlock; }
 
 	/** checks if all categories are blocked */
 	bool IsBlockedForAllCategories() const { return !!bBlockedAllCategories; }
 
-	/** Returns white list for modifications */
-	const TArray<FName>& GetWhiteList() const { return CategoriesWhitelist; }
+	/** Returns category allow list for logging */
+	const TArray<FName>& GetCategoryAllowList() const { return CategoryAllowList; }
 
-	bool IsWhiteListed(const FName& Name) const { return CategoriesWhitelist.Find(Name) != INDEX_NONE; }
+	bool IsCategoryAllowed(const FName& Name) const { return CategoryAllowList.Find(Name) != INDEX_NONE; }
 
-	void AddCategoryToWhitelist(FName Category) { CategoriesWhitelist.AddUnique(Category); }
+	void AddCategoryToAllowList(FName Category) { CategoryAllowList.AddUnique(Category); }
 
-	UE_DEPRECATED(4.12, "Please use the AddCategoryToWhitelist instead")
-	void AddCategortyToWhiteList(FName Category) { AddCategoryToWhitelist(Category); }
-
-	void ClearWhiteList() { CategoriesWhitelist.Reset(); }
+	void ClearCategoryAllowList() { CategoryAllowList.Reset(); }
 
 	/** Generates and returns Id unique for given timestamp - used to connect different logs between (ex. text log with geometry shape) */
 	int32 GetUniqueId(float Timestamp);
 
 	/** Starts visual log collecting and recording */
-	void SetIsRecording(bool InIsRecording);
+	void SetIsRecording(const bool bInIsRecording);
 	/** return information is vlog recording is enabled or not */
 	FORCEINLINE static bool IsRecording() { return !!bIsRecording; }
 
@@ -460,11 +499,14 @@ public:
 	/** disables recording to file and discards all data without saving it to file */
 	void DiscardRecordingToFile();
 
-	void SetIsRecordingOnServer(bool IsRecording) { bIsRecordingOnServer = IsRecording; }
+	/** Starts visual log collecting and recording to insights traces (for Rewind Debugger)*/
+	void SetIsRecordingToTrace(const bool bInIsRecording);
+
+	void SetIsRecordingOnServer(const bool bInIsRecording) { bIsRecordingOnServer = bInIsRecording; }
 	bool IsRecordingOnServer() const { return !!bIsRecordingOnServer; }
 
-	/** COnfigure whether VisLog should be using decorated, unique names */
-	void SetUseUniqueNames(bool bEnable) { bForceUniqueLogNames = bEnable; }
+	/** Configure whether VisLog should be using decorated, unique names */
+	void SetUseUniqueNames(const bool bEnable) { bForceUniqueLogNames = bEnable; }
 
 	/** Add visual logger output device */
 	void AddDevice(FVisualLogDevice* InDevice) { OutputDevices.AddUnique(InDevice); }
@@ -474,7 +516,7 @@ public:
 	const TArray<FVisualLogDevice*>& GetDevices() const { return OutputDevices; }
 	/** Check if log category can be recorded, verify before using GetEntryToWrite! */
 	bool IsCategoryLogged(const FLogCategoryBase& Category) const;
-	/** Returns  current entry for given TimeStap or creates another one  but first it serialize previous 
+	/** Returns  current entry for given TimeStamp or creates another one  but first it serialize previous 
 	 *	entry as completed to vislog devices. Use VisualLogger::DontCreate to get current entry without serialization
 	 *	@note this function can return null */
 	FVisualLogEntry* GetEntryToWrite(const UObject* Object, float TimeStamp, ECreateIfNeeded ShouldCreate = ECreateIfNeeded::Create);
@@ -483,8 +525,10 @@ public:
 	FVisualLogEntry* GetLastEntryForObject(const UObject* Object);
 	/** flush and serialize data if timestamp allows it */
 	virtual void Flush() override;
+	/** Moves all threads entries into the global entry map */
+	void FlushThreadsEntries();
 
-	/** FileName getter to set project specific file name for vlogs - highly encouradged to use FVisualLogFilenameGetterDelegate::CreateUObject with this */
+	/** FileName getter to set project specific file name for vlogs - highly encouraged to use FVisualLogFilenameGetterDelegate::CreateUObject with this */
 	void SetLogFileNameGetter(const FVisualLogFilenameGetterDelegate& InLogFileNameGetter) { LogFileNameGetter = InLogFileNameGetter; }
 
 	/** Register extension to use by LogVisualizer  */
@@ -498,78 +542,134 @@ public:
 
 	/** internal check for each usage of visual logger */
 	static bool CheckVisualLogInputInternal(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, UWorld **World, FVisualLogEntry **CurrentEntry);
+	
+	/** Returns time stamp for object */
+	float GetTimeStampForObject(const UObject* Object) const;
 
-	typedef TMap<UObject*, TArray<TWeakObjectPtr<const UObject> > > FOwnerToChildrenRedirectionMap;
+	/** Sets function to call to get a timestamp instead of the default implementation (i.e. world time) */
+	void SetGetTimeStampFunc(TFunction<float(const UObject*)> Function);
+
+	typedef TMap<FObjectKey, TArray<TWeakObjectPtr<const UObject> > > FOwnerToChildrenRedirectionMap;
 	static FOwnerToChildrenRedirectionMap& GetRedirectionMap(const UObject* InObject);
 
-	typedef TMap<TWeakObjectPtr<const UObject>, TWeakObjectPtr<const UObject> > FChildToOwnerRedirectionMap;
+	typedef TMap<FObjectKey, TWeakObjectPtr<const UObject> > FChildToOwnerRedirectionMap;
 	FChildToOwnerRedirectionMap& GetChildToOwnerRedirectionMap() { return ChildToOwnerMap; }
 
-	typedef TMap<const UObject*, TWeakObjectPtr<const UWorld> > FObjectToWorldMapType;
+	typedef TMap<FObjectKey, TWeakObjectPtr<const UWorld> > FObjectToWorldMapType;
 	FObjectToWorldMapType& GetObjectToWorldMap() { return ObjectToWorldMap; }
 
-	void AddWhitelistedClass(UClass& InClass);
-	bool IsClassWhitelisted(const UClass& InClass) const;
+	void AddClassToAllowList(UClass& InClass);
+	bool IsClassAllowed(const UClass& InClass) const;
 
-	void AddWhitelistedObject(const UObject& InObject);
-	void ClearObjectWhitelist();
-	bool IsObjectWhitelisted(const UObject* InObject) const;
+	void AddObjectToAllowList(const UObject& InObject);
+	void ClearObjectAllowList();
+	bool IsObjectAllowed(const UObject* InObject) const;
+
+	UE_DEPRECATED(5.0, "Use AddCategoryToAllowList instead")
+	void AddCategoryToWhitelist(FName Category) { AddCategoryToAllowList(Category); }
+	
+	UE_DEPRECATED(5.0, "Use ClearCategoryAllowList instead")
+	void ClearWhiteList() { ClearCategoryAllowList(); }
+
+	UE_DEPRECATED(5.0, "Use AddObjectToAllowList instead")
+	void AddWhitelistedClass(UClass& InClass) { AddClassToAllowList(InClass); }
+
+	UE_DEPRECATED(5.0, "Use AddObjectToAllowList instead")
+	void AddWhitelistedObject(const UObject& InObject) { AddObjectToAllowList(InObject); }
+
+	typedef TMap<FObjectKey, FVisualLogEntry> FVisualLoggerObjectEntryMap;
 
 private:
 	FVisualLogger();
 	virtual void Serialize(const TCHAR* V, ELogVerbosity::Type Verbosity, const FName& Category) override { ensureMsgf(0, TEXT("Regular serialize is forbiden for visual logs")); }
 
+	FVisualLoggerObjectEntryMap& GetThreadCurrentEntryMap();
+
+	/** Get global entry to write where all logs are combined together, not thread safe */
+	FVisualLogEntry* GetEntryToWriteInternal(const UObject* Object, float TimeStamp, ECreateIfNeeded ShouldCreate);
+
+	/** Redirect internal implementation, not thread safe */
+	UObject* RedirectInternal(const UObject* FromObject, const UObject* ToObject);
+	/** Find redirects internal implementation, not thread safe */
+	UObject* FindRedirectionInternal(const UObject* Object) const;
+	/** Cleanup invalid redirects */
+	void CleanupRedirects();
+	/** Figure out all conditions if this entry is allowed to log */
+	void CalculateEntryAllowLogging(FVisualLogEntry* CurrentEntry, const UObject* LogOwner, const UObject* Object);
+
 protected:
+	/** Flushes entries recorded in the frame */
+	void Tick(float DeltaTime);
+
+	/**
+	 * Serializes a single entry and resets it.
+	 * Method expects an initialized entry and will ensure otherwise. 
+	 */
+	void FlushEntry(FVisualLogEntry& Entry, const FObjectKey& ObjectKey);
+
+	/** Handle to the registered ticker to flush entries */
+	FTSTicker::FDelegateHandle TickerHandle;
+	
 	/** Array of output devices to redirect to */
 	TArray<FVisualLogDevice*> OutputDevices;
 	// Map for inter-objects redirections
 	static TMap<const UWorld*, FOwnerToChildrenRedirectionMap> WorldToRedirectionMap;
 
-	// white-listed classes - only instances of these classes will be logged. 
-	// if ClassWhitelist is empty (default) everything will log
-	TArray<UClass*> ClassWhitelist;
+	// allowed classes - only instances of these classes will be logged. 
+	// if ClassAllowList is empty (default) everything will log
+	TArray<UClass*> ClassAllowList;
 
-	// white-listed objects - takes priority over class whitelist and should be used to create exceptions in it
-	// if ObjectWhitelist is empty (default) everything will log
+	// allowed objects - takes priority over class allow list and should be used to create exceptions in it
+	// if ObjectAllowList is empty (default) everything will log
 	// do NOT read from those pointers, they can be invalid!
-	TSet<const UObject*> ObjectWhitelist;
+	TSet<FObjectKey> ObjectAllowList;
 
-	// white list of categories to bypass blocking
-	TArray<FName>	CategoriesWhitelist;
+	// list of categories that are still allowed to be logged when logging is blocking
+	TArray<FName> CategoryAllowList;
+
 	// Visual Logger extensions map
 	TMap<FName, FVisualLogExtensionInterface*> AllExtensions;
 	// last generated unique id for given times tamp
 	TMap<float, int32> LastUniqueIds;
 	// Current entry with all data
-	TMap<const UObject*, FVisualLogEntry>	CurrentEntryPerObject;
+	FVisualLoggerObjectEntryMap CurrentEntryPerObject;
+	// Threads current entry maps
+	TArray<FVisualLoggerObjectEntryMap*> ThreadCurrentEntryMaps;
+	// Read Write lock protecting object entries
+	mutable FRWLock EntryRWLock;
 	// Map to contain names for Objects (they can be destroyed after while)
-	TMap<const UObject*, FName> ObjectToNameMap;
+	TMap<FObjectKey, FName> ObjectToNameMap;
 	// Map to contain class names for Objects (they can be destroyed after while)
-	TMap<const UObject*, FName> ObjectToClassNameMap;
-	// Map to contain information about pointers in game
-	TMap<const UObject*, TWeakObjectPtr<const UObject> > ObjectToPointerMap;
+	TMap<FObjectKey, FName> ObjectToClassNameMap;
 	// Cached map to world information because it's just raw pointer and not real object
 	FObjectToWorldMapType ObjectToWorldMap;
 	// for any object that has requested redirection this map holds where we should
-	// redirect the trafic to
+	// redirect the traffic to
 	FChildToOwnerRedirectionMap ChildToOwnerMap;
+	// Read Write lock protecting redirection maps (ChildToOwnerMap and ObjectToWorldMap)
+	mutable FRWLock RedirectRWLock;
 	// if set all categories are blocked from logging
-	int32 bBlockedAllCategories : 1;
+	bool bBlockedAllCategories : 1;
 	// if set we are recording to file
-	int32 bIsRecordingToFile : 1;
+	bool bIsRecordingToFile : 1;
+	// if set we are recording to insights trace 
+	bool bIsRecordingToTrace : 1;
 	// variable set (from cheat manager) when logging is active on server
-	int32 bIsRecordingOnServer : 1;
+	bool bIsRecordingOnServer : 1;
 	// controls how we generate log names. When set to TRUE there's a lower 
 	// chance of name conflict, but it's more expensive
-	int32 bForceUniqueLogNames : 1;
-	/** Specifies if the Binary Device is being used */
-	int32 bUseBinaryFileDevice : 1;
+	bool bForceUniqueLogNames : 1;
+	/** Indicates that entries were added/updated and that a flush is required */
+	bool bIsFlushRequired : 1;
+	/** Indicates there are entries in the redirection map that are invalid */
+	mutable bool bContainsInvalidRedirects : 1;
 	// start recording time
 	float StartRecordingToFileTime;
 	/** Delegate to set project specific file name for vlogs */
 	FVisualLogFilenameGetterDelegate LogFileNameGetter;
-	/** Handle for timer used to serialize all waiting logs */
-	FTimerHandle VisualLoggerCleanupTimerHandle;
+
+	/** function to call when getting the time stamp */
+	TFunction<float(const UObject*)> GetTimeStampFunc;
 
 	// if set we are recording and collecting all vlog data
 	static int32 bIsRecording;
@@ -653,17 +753,31 @@ inline void FVisualLogger::ArrowLogfImpl(const UObject* Object, const FName& Cat
 	);
 }
 
+inline void FVisualLogger::CircleLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Center, const FVector& UpAxis, const float Radius, const FColor& Color, const uint16 Thickness, const TCHAR* Fmt, ...)
+{
+	const FName CategoryName = Category.GetCategoryName();
+	COLLAPSED_LOGF(
+		CurrentEntry->AddCircle(Center, UpAxis, Radius, CategoryName, Verbosity, Color, Buffer, Thickness);
+	);
+}
+inline void FVisualLogger::CircleLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Center, const FVector& UpAxis, const float Radius, const FColor& Color, const uint16 Thickness, const TCHAR* Fmt, ...)
+{
+	COLLAPSED_LOGF(
+		CurrentEntry->AddCircle(Center, UpAxis, Radius, CategoryName, Verbosity, Color, Buffer, Thickness);
+	);
+}
+
 inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Location, float Radius, const FColor& Color, const TCHAR* Fmt, ...)
 {
 	const FName CategoryName = Category.GetCategoryName(); 
 	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Location, CategoryName, Verbosity, Color, Buffer, Radius);
+		CurrentEntry->AddElement(Location, CategoryName, Verbosity, Color, Buffer, (uint16)Radius);
 	);
 }
 inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Location, float Radius, const FColor& Color, const TCHAR* Fmt, ...)
 {
 	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Location, CategoryName, Verbosity, Color, Buffer, Radius);
+		CurrentEntry->AddElement(Location, CategoryName, Verbosity, Color, Buffer, (uint16)Radius);
 	);
 }
 
@@ -709,17 +823,17 @@ inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FN
 	);
 }
 
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, const TCHAR* Fmt, ...)
+inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FLogCategoryBase& Category, ELogVerbosity::Type Verbosity, const FVector& Base, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, const TCHAR* Fmt, ...)
 {
 	const FName CategoryName = Category.GetCategoryName(); 
 	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Center, HalfHeight, Radius, Rotation, CategoryName, Verbosity, Color, Buffer);
+		CurrentEntry->AddElement(Base, HalfHeight, Radius, Rotation, CategoryName, Verbosity, Color, Buffer);
 	);
 }
-inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Center, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, const TCHAR* Fmt, ...)
+inline void FVisualLogger::GeometryShapeLogfImpl(const UObject* Object, const FName& CategoryName, ELogVerbosity::Type Verbosity, const FVector& Base, float HalfHeight, float Radius, const FQuat& Rotation, const FColor& Color, const TCHAR* Fmt, ...)
 {
 	COLLAPSED_LOGF(
-		CurrentEntry->AddElement(Center, HalfHeight, Radius, Rotation, CategoryName, Verbosity, Color, Buffer);
+		CurrentEntry->AddElement(Base, HalfHeight, Radius, Rotation, CategoryName, Verbosity, Color, Buffer);
 	);
 }
 

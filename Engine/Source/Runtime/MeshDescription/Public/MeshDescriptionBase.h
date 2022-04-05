@@ -19,13 +19,20 @@ public:
 	//
 
 	/** Get a reference to the actual mesh description */
-	FMeshDescription& GetMeshDescription() { return MeshDescription; }
-	const FMeshDescription& GetMeshDescription() const { return MeshDescription; }
+	FMeshDescription& GetMeshDescription()
+	{
+		return OwnedMeshDescription;
+	}
+
+	const FMeshDescription& GetMeshDescription() const
+	{
+		return OwnedMeshDescription;
+	}
 
 	/** Set the mesh description */
 	void SetMeshDescription(FMeshDescription InMeshDescription)
 	{ 
-		MeshDescription = MoveTemp(InMeshDescription);
+		OwnedMeshDescription = MoveTemp(InMeshDescription);
 	}
 
 	// UMeshDescriptionBase interface
@@ -38,46 +45,46 @@ public:
 	void Reset();
 
 	/** Accessors for mesh element arrays */
-	FVertexArray& Vertices() { return MeshDescription.Vertices(); }
-	const FVertexArray& Vertices() const { return MeshDescription.Vertices(); }
+	FVertexArray& Vertices() { return GetMeshDescription().Vertices(); }
+	const FVertexArray& Vertices() const { return GetMeshDescription().Vertices(); }
 
-	FVertexInstanceArray& VertexInstances() { return MeshDescription.VertexInstances(); }
-	const FVertexInstanceArray& VertexInstances() const { return MeshDescription.VertexInstances(); }
+	FVertexInstanceArray& VertexInstances() { return GetMeshDescription().VertexInstances(); }
+	const FVertexInstanceArray& VertexInstances() const { return GetMeshDescription().VertexInstances(); }
 
-	FEdgeArray& Edges() { return MeshDescription.Edges(); }
-	const FEdgeArray& Edges() const { return MeshDescription.Edges(); }
+	FEdgeArray& Edges() { return GetMeshDescription().Edges(); }
+	const FEdgeArray& Edges() const { return GetMeshDescription().Edges(); }
 
-	FTriangleArray& Triangles() { return MeshDescription.Triangles(); }
-	const FTriangleArray& Triangles() const { return MeshDescription.Triangles(); }
+	FTriangleArray& Triangles() { return GetMeshDescription().Triangles(); }
+	const FTriangleArray& Triangles() const { return GetMeshDescription().Triangles(); }
 
-	FPolygonArray& Polygons() { return MeshDescription.Polygons(); }
-	const FPolygonArray& Polygons() const { return MeshDescription.Polygons(); }
+	FPolygonArray& Polygons() { return GetMeshDescription().Polygons(); }
+	const FPolygonArray& Polygons() const { return GetMeshDescription().Polygons(); }
 
-	FPolygonGroupArray& PolygonGroups() { return MeshDescription.PolygonGroups(); }
-	const FPolygonGroupArray& PolygonGroups() const { return MeshDescription.PolygonGroups(); }
+	FPolygonGroupArray& PolygonGroups() { return GetMeshDescription().PolygonGroups(); }
+	const FPolygonGroupArray& PolygonGroups() const { return GetMeshDescription().PolygonGroups(); }
 
 	/** Accessors for mesh element attributes */
-	TAttributesSet<FVertexID>& VertexAttributes() { return MeshDescription.VertexAttributes(); }
-	const TAttributesSet<FVertexID>& VertexAttributes() const { return MeshDescription.VertexAttributes(); }
+	TAttributesSet<FVertexID>& VertexAttributes() { return GetMeshDescription().VertexAttributes(); }
+	const TAttributesSet<FVertexID>& VertexAttributes() const { return GetMeshDescription().VertexAttributes(); }
 
-	TAttributesSet<FVertexInstanceID>& VertexInstanceAttributes() { return MeshDescription.VertexInstanceAttributes(); }
-	const TAttributesSet<FVertexInstanceID>& VertexInstanceAttributes() const { return MeshDescription.VertexInstanceAttributes(); }
+	TAttributesSet<FVertexInstanceID>& VertexInstanceAttributes() { return GetMeshDescription().VertexInstanceAttributes(); }
+	const TAttributesSet<FVertexInstanceID>& VertexInstanceAttributes() const { return GetMeshDescription().VertexInstanceAttributes(); }
 
-	TAttributesSet<FEdgeID>& EdgeAttributes() { return MeshDescription.EdgeAttributes(); }
-	const TAttributesSet<FEdgeID>& EdgeAttributes() const { return MeshDescription.EdgeAttributes(); }
+	TAttributesSet<FEdgeID>& EdgeAttributes() { return GetMeshDescription().EdgeAttributes(); }
+	const TAttributesSet<FEdgeID>& EdgeAttributes() const { return GetMeshDescription().EdgeAttributes(); }
 
-	TAttributesSet<FTriangleID>& TriangleAttributes() { return MeshDescription.TriangleAttributes(); }
-	const TAttributesSet<FTriangleID>& TriangleAttributes() const { return MeshDescription.TriangleAttributes(); }
+	TAttributesSet<FTriangleID>& TriangleAttributes() { return GetMeshDescription().TriangleAttributes(); }
+	const TAttributesSet<FTriangleID>& TriangleAttributes() const { return GetMeshDescription().TriangleAttributes(); }
 
-	TAttributesSet<FPolygonID>& PolygonAttributes() { return MeshDescription.PolygonAttributes(); }
-	const TAttributesSet<FPolygonID>& PolygonAttributes() const { return MeshDescription.PolygonAttributes(); }
+	TAttributesSet<FPolygonID>& PolygonAttributes() { return GetMeshDescription().PolygonAttributes(); }
+	const TAttributesSet<FPolygonID>& PolygonAttributes() const { return GetMeshDescription().PolygonAttributes(); }
 
-	TAttributesSet<FPolygonGroupID>& PolygonGroupAttributes() { return MeshDescription.PolygonGroupAttributes(); }
-	const TAttributesSet<FPolygonGroupID>& PolygonGroupAttributes() const { return MeshDescription.PolygonGroupAttributes(); }
+	TAttributesSet<FPolygonGroupID>& PolygonGroupAttributes() { return GetMeshDescription().PolygonGroupAttributes(); }
+	const TAttributesSet<FPolygonGroupID>& PolygonGroupAttributes() const { return GetMeshDescription().PolygonGroupAttributes(); }
 
 	/** Accessors for cached vertex position array */
-	TVertexAttributesRef<FVector> GetVertexPositions() { return GetRequiredAttributes().GetVertexPositions(); }
-	TVertexAttributesConstRef<FVector> GetVertexPositions() const { return GetRequiredAttributes().GetVertexPositions(); }
+	TVertexAttributesRef<FVector3f> GetVertexPositions() { return GetRequiredAttributes().GetVertexPositions(); }
+	TVertexAttributesConstRef<FVector3f> GetVertexPositions() const { return GetRequiredAttributes().GetVertexPositions(); }
 
 public:
 
@@ -91,7 +98,7 @@ public:
 
 
 	///////////////////////////////////////////////////////
-	// Create / remove mesh elements
+	// Create / remove / count mesh elements
 
 	/** Reserves space for this number of new vertices */
 	UFUNCTION(BlueprintCallable, Category="MeshDescription")
@@ -113,6 +120,10 @@ public:
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	bool IsVertexValid(FVertexID VertexID) const;
 
+	/** Returns the number of vertices */
+	UFUNCTION(BlueprintPure, Category="MeshDescription")
+	int32 GetVertexCount() const { return Vertices().Num(); }
+
 	/** Reserves space for this number of new vertex instances */
 	UFUNCTION(BlueprintCallable, Category="MeshDescription")
 	void ReserveNewVertexInstances(int32 NumberOfNewVertexInstances);
@@ -132,6 +143,10 @@ public:
 	/** Returns whether the passed vertex instance ID is valid */
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	bool IsVertexInstanceValid(FVertexInstanceID VertexInstanceID) const;
+
+	/** Returns the number of vertex instances */
+	UFUNCTION(BlueprintPure, Category="MeshDescription")
+	int32 GetVertexInstanceCount() const { return VertexInstances().Num(); }
 
 	/** Reserves space for this number of new edges */
 	UFUNCTION(BlueprintCallable, Category="MeshDescription")
@@ -153,6 +168,10 @@ public:
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	bool IsEdgeValid(FEdgeID EdgeID) const;
 
+	/** Returns the number of edges */
+	UFUNCTION(BlueprintPure, Category="MeshDescription")
+	int32 GetEdgeCount() const { return Edges().Num(); }
+
 	/** Reserves space for this number of new triangles */
 	UFUNCTION(BlueprintCallable, Category="MeshDescription")
 	void ReserveNewTriangles(int32 NumberOfNewTriangles);
@@ -172,6 +191,10 @@ public:
 	/** Returns whether the passed triangle ID is valid */
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	bool IsTriangleValid(const FTriangleID TriangleID) const;
+
+	/** Returns the number of triangles */
+	UFUNCTION(BlueprintPure, Category="MeshDescription")
+	int32 GetTriangleCount() const { return Triangles().Num(); }
 
 	/** Reserves space for this number of new polygons */
 	UFUNCTION(BlueprintCallable, Category="MeshDescription")
@@ -193,6 +216,10 @@ public:
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	bool IsPolygonValid(FPolygonID PolygonID) const;
 
+	/** Returns the number of polygons */
+	UFUNCTION(BlueprintPure, Category="MeshDescription")
+	int32 GetPolygonCount() const { return Polygons().Num(); }
+
 	/** Reserves space for this number of new polygon groups */
 	UFUNCTION(BlueprintCallable, Category="MeshDescription")
 	void ReserveNewPolygonGroups(int32 NumberOfNewPolygonGroups);
@@ -213,6 +240,10 @@ public:
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	bool IsPolygonGroupValid(FPolygonGroupID PolygonGroupID) const;
 
+	/** Returns the number of polygon groups */
+	UFUNCTION(BlueprintPure, Category="MeshDescription")
+	int32 GetPolygonGroupCount() const { return PolygonGroups().Num(); }
+
 
 	//////////////////////////////////////////////////////////////////////
 	// Vertex operations
@@ -221,7 +252,7 @@ public:
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	bool IsVertexOrphaned(FVertexID VertexID) const;
 
-	/** Returns the edge ID defined by the two given vertex IDs, if there is one; otherwise FEdgeID::Invalid */
+	/** Returns the edge ID defined by the two given vertex IDs, if there is one; otherwise INDEX_NONE */
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	FEdgeID GetVertexPairEdge(FVertexID VertexID0, FVertexID VertexID1) const;
 
@@ -277,7 +308,7 @@ public:
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	FVertexID GetVertexInstanceVertex(FVertexInstanceID VertexInstanceID) const;
 
-	/** Returns the edge ID defined by the two given vertex instance IDs, if there is one; otherwise FEdgeID::Invalid */
+	/** Returns the edge ID defined by the two given vertex instance IDs, if there is one; otherwise INDEX_NONE */
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	FEdgeID GetVertexInstancePairEdge(FVertexInstanceID VertexInstanceID0, FVertexInstanceID VertexInstanceID1) const;
 
@@ -369,7 +400,7 @@ public:
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	void GetTriangleAdjacentTriangles(FTriangleID TriangleID, TArray<FTriangleID>& OutTriangleIDs) const;
 
-	/** Return the vertex instance which corresponds to the given vertex on the given triangle, or FVertexInstanceID::Invalid */
+	/** Return the vertex instance which corresponds to the given vertex on the given triangle, or INDEX_NONE */
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	FVertexInstanceID GetVertexInstanceForTriangleVertex(FTriangleID TriangleID, FVertexID VertexID) const;
 
@@ -418,13 +449,13 @@ public:
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	FPolygonGroupID GetPolygonPolygonGroup(FPolygonID PolygonID) const;
 
-	/** Return the vertex instance which corresponds to the given vertex on the given polygon, or FVertexInstanceID::Invalid */
+	/** Return the vertex instance which corresponds to the given vertex on the given polygon, or INDEX_NONE */
 	UFUNCTION(BlueprintPure, Category="MeshDescription")
 	FVertexInstanceID GetVertexInstanceForPolygonVertex(FPolygonID PolygonID, FVertexID VertexID) const;
 
 	/** Set the vertex instance at the given index around the polygon to the new value */
 	UFUNCTION(BlueprintCallable, Category="MeshDescription")
-	void SetPolygonVertexInstance(FPolygonID PolygonID, int32 PerimeterIndex, FVertexInstanceID VertexInstanceID);
+	void SetPolygonVertexInstances(FPolygonID PolygonID, const TArray<FVertexInstanceID>& VertexInstanceIDs);
 
 	/** Sets the polygon group associated with a polygon */
 	UFUNCTION(BlueprintCallable, Category="MeshDescription")
@@ -451,6 +482,6 @@ public:
 	int32 GetNumPolygonGroupPolygons(FPolygonGroupID PolygonGroupID) const;
 
 protected:
-	FMeshDescription MeshDescription;
+	FMeshDescription OwnedMeshDescription;
 	TUniquePtr<FMeshAttributes> RequiredAttributes;
 };

@@ -5,10 +5,18 @@
 #include "CoreTypes.h"
 #include "Containers/UnrealString.h"
 #include "Templates/Function.h"
+#include "Misc/EnumClassFlags.h"
+#include "Misc/EnumClassFlags.h"
+#include "GenericPlatform/GenericPlatformAffinity.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 #if PLATFORM_CPU_X86_FAMILY
 #include <emmintrin.h>
+#endif
+
+////////////////////////////////////////////////////////////////////////////////
+#if PLATFORM_APPLE
+#include <mach/mach_time.h>
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -223,6 +231,13 @@ struct CORE_API FGenericPlatformProcess
 	static void SetThreadAffinityMask( uint64 AffinityMask );
 
 	/**
+	 * Change the thread processor priority
+	 *
+	 * @param NewPriority an EThreadPriority indicating what priority the thread is to run at.
+	 */
+	static void SetThreadPriority( EThreadPriority NewPriority );
+
+	/**
 	 * Helper function to set thread name of the current thread.
 	 * @param ThreadName   Name to set
 	 */
@@ -239,6 +254,9 @@ struct CORE_API FGenericPlatformProcess
 
 	/** Allow the platform to do anything it needs for render thread */
 	static void SetupRenderThread() { }
+
+	/** Allow the platform to do anything it needs for the RHI thread */
+	static void SetupRHIThread() { }
 
 	/** Allow the platform to do anything it needs for audio thread */
 	static void SetupAudioThread() { }
@@ -321,7 +339,7 @@ struct CORE_API FGenericPlatformProcess
 	 *
 	 * The application must reside in the Engine's binaries directory. The returned path is relative to this
 	 * executable's directory.For example, calling this method with "UE4" and EBuildConfiguration::Debug
-	 * on Windows 64-bit will generate the path "../Win64/UE4Editor-Win64-Debug.exe"
+	 * on Windows 64-bit will generate the path "../Win64/UnrealEditor-Win64-Debug.exe"
 	 *
 	 * @param AppName The name of the application or game.
 	 * @param BuildConfiguration The build configuration of the game.
@@ -389,10 +407,29 @@ struct CORE_API FGenericPlatformProcess
 	 * @param OutProcessId			if non-NULL, this will be filled in with the ProcessId
 	 * @param PriorityModifier		-2 idle, -1 low, 0 normal, 1 high, 2 higher
 	 * @param OptionalWorkingDirectory		Directory to start in when running the program, or NULL to use the current working directory
-	 * @param PipeWrite				Optional HANDLE to pipe for redirecting output
+	 * @param PipeWriteChild		Optional HANDLE to pipe for redirecting output
+	 * @param PipeReadChild			Optional HANDLE to pipe for redirecting input
 	 * @return	The process handle for use in other process functions
 	 */
-	static FProcHandle CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void * PipeReadChild = nullptr);
+	static FProcHandle CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild = nullptr);
+	
+	/**
+	 * Creates a new process and its primary thread, with separate std pipes. The new process runs the
+	 * specified executable file in the security context of the calling process.
+	 * @param URL					executable name
+	 * @param Parms					command line arguments
+	 * @param bLaunchDetached		if true, the new process will have its own window
+	 * @param bLaunchHidden			if true, the new process will be minimized in the task bar
+	 * @param bLaunchReallyHidden	if true, the new process will not have a window or be in the task bar
+	 * @param OutProcessId			if non-NULL, this will be filled in with the ProcessId
+	 * @param PriorityModifier		-2 idle, -1 low, 0 normal, 1 high, 2 higher
+	 * @param OptionalWorkingDirectory		Directory to start in when running the program, or NULL to use the current working directory
+	 * @param PipeWriteChild		Optional HANDLE to pipe for redirecting stdout
+	 * @param PipeReadChild			Optional HANDLE to pipe for redirecting stdin
+	 * @param PipeStdErrChild		Optional HANDLE to pipe for redirecting stderr
+	 * @return	The process handle for use in other process functions
+	 */
+	static FProcHandle CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild, void* PipeStdErrChild);
 
 	/**
 	 * Opens an existing process. 
@@ -470,8 +507,9 @@ struct CORE_API FGenericPlatformProcess
 	 * @param OutStdOut may be 0
 	 * @param OutStdErr may be 0
 	 * @OptionalWorkingDirectory may be 0
+	 * @OptionalbShouldEndWithParentProcess false by default. True to make sure the process is killed with the parent processor (Not Supported on all Platforms)
 	 */
-	static bool ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory = NULL);
+	static bool ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory = NULL, bool bShouldEndWithParentProcess = false);
 
 	/**
 	 * Executes a process as administrator, requesting elevation as necessary. This
@@ -487,8 +525,9 @@ struct CORE_API FGenericPlatformProcess
 	 * @param	FileName	Name of the file to attempt to launch in its default external application
 	 * @param	Parms		Optional parameters to the default application
 	 * @param	Verb		Optional verb to use when opening the file, if it applies for the platform.
+	 * @return true if the file is launched successfully, false otherwise.
 	 */
-	static void LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms = NULL, ELaunchVerb::Type Verb = ELaunchVerb::Open );
+	static bool LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms = NULL, ELaunchVerb::Type Verb = ELaunchVerb::Open, bool bPromptToOpenOnFailure = true );
 
 	/**
 	 * Attempt to "explore" the folder specified by the provided file path
@@ -504,7 +543,7 @@ struct CORE_API FGenericPlatformProcess
 	/** Sleep this thread for Seconds.  0.0 means release the current time slice to let other threads get some attention. */
 	static void SleepNoStats( float Seconds );
 	/** Sleep this thread infinitely. */
-	static void SleepInfinite();
+	[[noreturn]] static void SleepInfinite();
 	/** Yield this thread so another may run for a while. */
 	static void YieldThread();
 
@@ -525,8 +564,8 @@ struct CORE_API FGenericPlatformProcess
 	 * @return A new event, or nullptr none could be created.
 	 * @see GetSynchEventFromPool, ReturnSynchEventToPool
 	 */
-	// Message to others in the future, don't try to delete this function as it isn't exactly deprecated, but it should only ever be called from FEventPool::GetEventFromPool()
-	UE_DEPRECATED(4.8, "Please use GetSynchEventFromPool to create a new event, and ReturnSynchEventToPool to release the event.")
+	// Message to others in the future, don't try to delete this function as it isn't exactly deprecated, but it should only ever be called from TEventPool::GetEventFromPool()
+	UE_DEPRECATED(5.0, "Please use GetSynchEventFromPool to create a new event, and ReturnSynchEventToPool to release the event.")
 	static class FEvent* CreateSynchEvent(bool bIsManualReset = false);
 
 	/**
@@ -575,10 +614,11 @@ struct CORE_API FGenericPlatformProcess
 	 *
 	 * @param ReadPipe Will hold the handle to the read end of the pipe.
 	 * @param WritePipe Will hold the handle to the write end of the pipe.
+	 * @parm bWritePipeLocal indicates that the write pipe end will be used locally, instead of the read pipe
 	 * @return true on success, false otherwise.
 	 * @see ClosePipe, ReadPipe
 	 */
-	static bool CreatePipe( void*& ReadPipe, void*& WritePipe );
+	static bool CreatePipe(void*& ReadPipe, void*& WritePipe, bool bWritePipeLocal = false);
 
 	/**
 	 * Reads all pending data from an anonymous pipe, such as STDOUT or STDERROR of a process.
@@ -710,6 +750,40 @@ struct CORE_API FGenericPlatformProcess
 #	error Unsupported architecture!
 #endif
 	}
+
+	/**
+	* Tells the processor to pause for at least the amount of cycles given. Is used for spin-loops to improve the speed at 
+	* which the code detects the release of the lock and power-consumption.
+	*/
+	static FORCEINLINE void YieldCycles(uint64 Cycles)
+	{
+#if PLATFORM_CPU_X86_FAMILY
+		auto ReadCycleCounter = []()
+		{
+#if defined(_MSC_VER)
+			return __rdtsc();
+#elif PLATFORM_APPLE
+			return mach_absolute_time();
+#elif __has_builtin(__builtin_readcyclecounter)
+			return __builtin_readcyclecounter();
+#else
+#	error Unsupported architecture!
+#endif
+		};
+
+		uint64 start = ReadCycleCounter();
+		//some 32bit implementations return 0 for __builtin_readcyclecounter just to be on the safe side we protect against this.
+		Cycles = start != 0 ? Cycles : 0;
+		do
+		{
+			Yield();
+		} while((ReadCycleCounter() - start) < Cycles);
+#else
+		// We can't read cycle counter from user mode on these platform
+		for (uint64 i = 0; i < Cycles; i++)
+		{
+			Yield();
+		}
+#endif
+	}
 };
-
-

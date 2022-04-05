@@ -16,6 +16,7 @@
 #include "Runtime/Launch/Resources/Version.h"
 #include "UObject/RenderingObjectVersion.h"
 #include "SceneTypes.h"
+#include "DrawDebugHelpers.h"
 #include "StaticMeshComponent.generated.h"
 
 class FColorVertexBuffer;
@@ -31,6 +32,10 @@ struct FEngineShowFlags;
 struct FNavigableGeometryExport;
 struct FNavigationRelevantData;
 struct FStaticLightingPrimitiveInfo;
+
+/** Whether FStaticMeshSceneProxy should to store data and enable codepaths needed for debug rendering */
+#define STATICMESH_ENABLE_DEBUG_RENDERING			ENABLE_DRAW_DEBUG
+
 
 /** Cached vertex information at the time the mesh was painted. */
 USTRUCT()
@@ -197,7 +202,15 @@ class ENGINE_API UStaticMeshComponent : public UMeshComponent
 	/** The static mesh that this component uses to render */
 private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=StaticMesh, ReplicatedUsing=OnRep_StaticMesh, meta=(AllowPrivateAccess="true"))
-	class UStaticMesh* StaticMesh;
+	TObjectPtr<class UStaticMesh> StaticMesh;
+
+	void SetStaticMeshInternal(UStaticMesh* StaticMesh);
+
+#if WITH_EDITOR
+	/** Used to track down when StaticMesh has been modified for notification purpose */
+	class UStaticMesh* KnownStaticMesh = nullptr;
+#endif
+	void NotifyIfStaticMeshChanged();
 
 public:
 	/** Helper function to get the FName of the private static mesh member */
@@ -261,7 +274,7 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category=Rendering)
 	uint8 bDisallowMeshPaintPerInstance : 1;
 
-#if !(UE_BUILD_SHIPPING)
+#if STATICMESH_ENABLE_DEBUG_RENDERING
 	/** Draw mesh collision if used for complex collision */
 	uint8 bDrawMeshCollisionIfComplex : 1;
 	/** Draw mesh collision if used for simple collision */
@@ -311,7 +324,14 @@ public:
 	UPROPERTY(transient)
 	uint8 bDisplayPhysicalMaterialMasks : 1;
 
+	/** For nanite enabled meshes, we'll only show the proxy mesh if this is true */
+	UPROPERTY()
+	uint8 bDisplayNaniteFallbackMesh:1;
 #endif
+
+	/** Enable dynamic sort mesh's triangles to remove ordering issue when rendered with a translucent material */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Lighting, meta = (UIMin = "0", UIMax = "1", DisplayName = "Sort Triangles (Experimental)"))
+	uint8 bSortTriangles : 1;
 
 	/**
 	 * Controls whether the static mesh component's backface culling should be reversed
@@ -376,8 +396,15 @@ public:
 	virtual bool SetStaticMesh(class UStaticMesh* NewMesh);
 
 	/** Get the StaticMesh used by this instance. */
-	UStaticMesh* GetStaticMesh() const 
+	TObjectPtr<UStaticMesh> GetStaticMesh() const 
 	{ 
+#if WITH_EDITOR
+		// This should never happen and is a last resort, we should have catched the property overwrite well before we reach this code
+		if (KnownStaticMesh != StaticMesh)
+		{
+			OutdatedKnownStaticMeshDetected();
+		}
+#endif
 		return StaticMesh; 
 	}
 
@@ -413,14 +440,26 @@ public:
 	virtual void ImportCustomProperties(const TCHAR* SourceText, FFeedbackContext* Warn) override;	
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostInitProperties() override;
+	virtual void PostReinitProperties() override;
+	virtual void PostApplyToComponent() override;
 #if WITH_EDITOR
 	virtual void PostEditUndo() override;
 	virtual void PreEditUndo() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
+	virtual void BeginCacheForCookedPlatformData(const ITargetPlatform* TargetPlatform) override;
+	virtual bool IsCachedCookedPlatformDataLoaded(const ITargetPlatform* TargetPlatform) override;
+	virtual void PostDuplicate(bool bDuplicateForPIE) override;
+	virtual void PostEditImport() override;
+	virtual void InitializeComponent() override;
+	virtual void UpdateBounds() override;
 #endif // WITH_EDITOR
 #if WITH_EDITORONLY_DATA
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 #endif // WITH_EDITORONLY_DATA
 	virtual void PostLoad() override;
 	virtual bool IsPostLoadThreadSafe() const override;
@@ -430,6 +469,9 @@ public:
 	//~ End UObject Interface.
 
 	//~ Begin USceneComponent Interface
+#if WITH_EDITOR
+	virtual bool GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty) override;
+#endif // WITH_EDITOR
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	virtual bool HasAnySockets() const override;
 	virtual void QuerySupportedSockets(TArray<FComponentSocketDescription>& OutSockets) const override;
@@ -452,16 +494,21 @@ public:
 protected: 
 	virtual void OnRegister() override;
 	virtual void OnUnregister() override;
+	virtual bool RequiresGameThreadEndOfFrameRecreate() const override;
 	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
 	virtual void OnCreatePhysicsState() override;
 	virtual void OnDestroyPhysicsState() override;
+	virtual bool ShouldCreatePhysicsState() const override;
+	virtual bool ShouldCreateRenderState() const override;
 public:
 	virtual void InvalidateLightingCacheDetailed(bool bInvalidateBuildEnqueuedLighting, bool bTranslationOnly) override;
 	virtual UObject const* AdditionalStatObject() const override;
 #if WITH_EDITOR
 	virtual void CheckForErrors() override;
+	virtual bool IsCompiling() const override;
 #endif
 	virtual TStructOnScope<FActorComponentInstanceData> GetComponentInstanceData() const override;
+	virtual bool IsHLODRelevant() const override;
 	//~ End UActorComponent Interface.
 
 	//~ Begin UPrimitiveComponent Interface.
@@ -484,9 +531,13 @@ public:
 	/** Get material, UV density and bounds for a given material index. */
 	virtual bool GetMaterialStreamingData(int32 MaterialIndex, FPrimitiveMaterialInfo& MaterialData) const override;
 	/** Build the data to compute accuracte StreaminTexture data. */
-	virtual bool BuildTextureStreamingData(ETextureStreamingBuildType BuildType, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<FGuid>& DependentResources) override;
+	virtual bool BuildTextureStreamingDataImpl(ETextureStreamingBuildType BuildType, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<FGuid>& DependentResources, bool& bOutSupportsBuildTextureStreamingData) override;
 	/** Get the StreaminTexture data. */
 	virtual void GetStreamingRenderAssetInfo(FStreamingTextureLevelContext& LevelContext, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const override;
+#if WITH_EDITOR
+	virtual bool RemapActorTextureStreamingBuiltDataToLevel(const class UActorTextureStreamingBuildDataComponent* InActorTextureBuildData) override;
+	virtual uint32 ComputeHashTextureStreamingBuiltData() const override;
+#endif 
 
 	virtual class UBodySetup* GetBodySetup() override;
 	virtual bool CanEditSimulatePhysics() override;
@@ -508,6 +559,7 @@ public:
 
 	virtual bool DoCustomNavigableGeometryExport(FNavigableGeometryExport& GeomExport) const override;
 #if WITH_EDITOR
+	virtual void PostStaticMeshCompilation();
 	virtual bool ComponentIsTouchingSelectionBox(const FBox& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
 	virtual bool ComponentIsTouchingSelectionFrustum(const FConvexVolume& InSelBBox, const FEngineShowFlags& ShowFlags, const bool bConsiderOnlyBSP, const bool bMustEncompassEntireComponent) const override;
 #endif
@@ -643,6 +695,12 @@ private:
 #if WITH_EDITOR
 	/** Update the vertex override colors */
 	void PrivateFixupOverrideColors();
+
+	/** Called when the StaticMesh property gets overwritten without us knowing about it */
+	void OutdatedKnownStaticMeshDetected() const;
+
+	/** Clears texture streaming data. */
+	void ClearStreamingTextureData();
 #endif
 protected:
 
@@ -651,6 +709,8 @@ protected:
 	{
 		return true;
 	}
+
+	bool ShouldCreateNaniteProxy() const;	
 
 public:
 
@@ -721,7 +781,7 @@ struct FStaticMeshVertexColorLODData
 
 	/** Index of the LOD that this data came from */
 	UPROPERTY()
-	uint32 LODIndex=0;
+	uint32 LODIndex = 0;
 
 	/** Check whether this contains valid data */
 	bool IsValid() const
@@ -753,7 +813,7 @@ public:
 
 	/** Mesh being used by component */
 	UPROPERTY()
-	class UStaticMesh* StaticMesh = nullptr;
+	TObjectPtr<class UStaticMesh> StaticMesh = nullptr;
 
 	/** Array of cached vertex colors for each LOD */
 	UPROPERTY()

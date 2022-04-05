@@ -37,8 +37,16 @@ static TAutoConsoleVariable<int> CVarHMDFixedFoveationLevel(
 	TEXT(" 0: Disabled (default);\n")
 	TEXT(" 1: Low;\n")
 	TEXT(" 2: Medium;\n")
-	TEXT(" 3: High;\n"),
-	// @todo: 4 - Dynamic (adjusts based on framerate)
+	TEXT(" 3: High;\n")
+	TEXT(" 4: High Top;\n"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarHMDFixedFoveationDynamic(
+	TEXT("vr.VRS.HMDFixedFoveationDynamic"),
+	0,
+	TEXT("Whether fixed-foveation level should adjust based on GPU utilization\n")
+	TEXT(" 0: Disabled (default);\n")
+	TEXT(" 1: Enabled\n"),
 	ECVF_RenderThreadSafe);
 
 TGlobalResource<FVariableRateShadingImageManager> GVRSImageManager;
@@ -52,9 +60,9 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<uint>, RWOutputTexture)
 		SHADER_PARAMETER_RDG_TEXTURE_ARRAY(Texture2D<uint>, CombineSourceIn, [kMaxCombinedSources])
-		SHADER_PARAMETER(FVector2D, HMDFieldOfView)
-		SHADER_PARAMETER(FVector2D, LeftEyeCenterPixelXY)
-		SHADER_PARAMETER(FVector2D, RightEyeCenterPixelXY)
+		SHADER_PARAMETER(FVector2f, HMDFieldOfView)
+		SHADER_PARAMETER(FVector2f, LeftEyeCenterPixelXY)
+		SHADER_PARAMETER(FVector2f, RightEyeCenterPixelXY)
 		SHADER_PARAMETER(float, ViewDiagonalSquaredInPixels)
 		SHADER_PARAMETER(float, FixedFoveationFullRateCutoffSquared)
 		SHADER_PARAMETER(float, FixedFoveationHalfRateCutoffSquared)
@@ -102,13 +110,16 @@ struct FVRSImageGenerationParameters
 {
 	FIntPoint Size = FIntPoint(0, 0);
 
-	FVector2D HMDFieldOfView = FVector2D(90.0f, 90.0f);
-	FVector2D HMDEyeTrackedFoveationOrigin = FVector2D(0.0f, 0.0f);
+	FVector2f HMDFieldOfView = FVector2f(90.0f, 90.0f);
+	FVector2f HMDEyeTrackedFoveationOrigin = FVector2f(0.0f, 0.0f);
 
 	float HMDFixedFoveationFullRateCutoff = 1.0f;
 	float HMDFixedFoveationHalfRateCutoff = 1.0f;
 	float HMDEyeTrackedFoveationFullRateCutoff = 1.0f;
-	float HMDEYeTrackedFoveationHalfRateCutoff = 1.0f;
+	float HMDEyeTrackedFoveationHalfRateCutoff = 1.0f;
+
+	float HMDFixedFoveationCenterX = 0.5f;
+	float HMDFixedFoveationCenterY = 0.5f;
 
 	bool bGenerateFixedFoveation = false;
 	bool bGenerateEyeTrackedFoveation = false;
@@ -129,8 +140,10 @@ uint64 FVariableRateShadingImageManager::CalculateVRSImageHash(const FVRSImageGe
 		Hash = HashCombine(Hash, GetTypeHash(GenerationParamsIn.HMDFixedFoveationHalfRateCutoff));
 		Hash = HashCombine(Hash, GetTypeHash(GenerationParamsIn.HMDEyeTrackedFoveationOrigin));
 		Hash = HashCombine(Hash, GetTypeHash(GenerationParamsIn.HMDEyeTrackedFoveationFullRateCutoff));
-		Hash = HashCombine(Hash, GetTypeHash(GenerationParamsIn.HMDEYeTrackedFoveationHalfRateCutoff));
+		Hash = HashCombine(Hash, GetTypeHash(GenerationParamsIn.HMDEyeTrackedFoveationHalfRateCutoff));
 		Hash = HashCombine(Hash, GetTypeHash(GenerationParamsIn.bInstancedStereo));
+		Hash = HashCombine(Hash, GetTypeHash(GenerationParamsIn.HMDFixedFoveationCenterX));
+		Hash = HashCombine(Hash, GetTypeHash(GenerationParamsIn.HMDFixedFoveationCenterY));
 	}
 
 	return Hash;
@@ -160,7 +173,7 @@ void FVariableRateShadingImageManager::ReleaseDynamicRHI()
 FRDGTextureRef FVariableRateShadingImageManager::GetVariableRateShadingImage(FRDGBuilder& GraphBuilder, const FSceneViewFamily& ViewFamily, const TArray<TRefCountPtr<IPooledRenderTarget>>* ExternalVRSSources, EVRSType VRSTypesToExclude)
 {
 	// If the RHI doesn't support VRS, we should always bail immediately.
-	if (!GRHISupportsAttachmentVariableRateShading || !GRHIVariableRateShadingEnabled || !GRHIAttachmentVariableRateShadingEnabled)
+	if (!GRHISupportsAttachmentVariableRateShading || !GRHIVariableRateShadingEnabled || !GRHIAttachmentVariableRateShadingEnabled || !FDataDrivenShaderPlatformInfo::GetSupportsVariableRateShading(GMaxRHIShaderPlatform))
 	{
 		return nullptr;
 	}
@@ -272,7 +285,7 @@ TRefCountPtr<IPooledRenderTarget> FVariableRateShadingImageManager::RenderShadin
 		return Attachment;
 	}
 
-	FRDGTextureRef RDGAttachment = GraphBuilder.RegisterExternalTexture(Attachment, ERenderTargetTexture::Targetable);
+	FRDGTextureRef RDGAttachment = GraphBuilder.RegisterExternalTexture(Attachment);
 
 	FComputeVariableRateShadingImageGeneration::FParameters* PassParameters = GraphBuilder.AllocParameters<FComputeVariableRateShadingImageGeneration::FParameters>();
 	PassParameters->RWOutputTexture = GraphBuilder.CreateUAV(RDGAttachment);
@@ -282,7 +295,7 @@ TRefCountPtr<IPooledRenderTarget> FVariableRateShadingImageManager::RenderShadin
 	PassParameters->FixedFoveationFullRateCutoffSquared = VRSImageGenParamsIn.HMDFixedFoveationFullRateCutoff * VRSImageGenParamsIn.HMDFixedFoveationFullRateCutoff;
 	PassParameters->FixedFoveationHalfRateCutoffSquared = VRSImageGenParamsIn.HMDFixedFoveationHalfRateCutoff * VRSImageGenParamsIn.HMDFixedFoveationHalfRateCutoff;
 
-	PassParameters->LeftEyeCenterPixelXY = FVector2D(AttachmentSize.X / 2, AttachmentSize.Y / 2);
+	PassParameters->LeftEyeCenterPixelXY = FVector2f(AttachmentSize.X * VRSImageGenParamsIn.HMDFixedFoveationCenterX, AttachmentSize.Y * VRSImageGenParamsIn.HMDFixedFoveationCenterY);
 	PassParameters->RightEyeCenterPixelXY = PassParameters->LeftEyeCenterPixelXY;
 
 	// If instanced (side-by-side) stereo, there's two "center" points, so adjust both eyes
@@ -292,7 +305,7 @@ TRefCountPtr<IPooledRenderTarget> FVariableRateShadingImageManager::RenderShadin
 		PassParameters->RightEyeCenterPixelXY.X = PassParameters->LeftEyeCenterPixelXY.X + AttachmentSize.X / 2;
 	}
 
-	PassParameters->ViewDiagonalSquaredInPixels = FVector2D::DotProduct(PassParameters->LeftEyeCenterPixelXY, PassParameters->LeftEyeCenterPixelXY);
+	PassParameters->ViewDiagonalSquaredInPixels = FVector2f::DotProduct(PassParameters->LeftEyeCenterPixelXY, PassParameters->LeftEyeCenterPixelXY);
 	PassParameters->CombineSourceCount = 0;
 	PassParameters->ShadingRateAttachmentGenerationFlags = (uint32)GenFlags;
 
@@ -380,21 +393,34 @@ void FVariableRateShadingImageManager::Tick()
 
 void FVariableRateShadingImageManager::UpdateFixedFoveationParameters(FVRSImageGenerationParameters& VRSImageGenParamsInOut)
 {
-	static const float FIXED_FOVEATION_FULL_RATE_CUTOFFS[] = { 1.0f, 0.7f, 0.50f, 0.35f };
-	static const float FIXED_FOVEATION_HALF_RATE_CUTOFFS[] = { 1.0f, 0.9f, 0.75f, 0.45f };
 
-	int Level = FMath::Clamp(CVarHMDFixedFoveationLevel.GetValueOnAnyThread(), 0, 3);
+	// VRS level parameters - pretty arbitrary right now, later should depend on device characteristics
+	static const float kFixedFoveationFullRateCutoffs[] = { 1.0f, 0.7f, 0.50f, 0.35f, 0.35f };
+	static const float kFixedFoveationHalfRateCutofffs[] = { 1.0f, 0.9f, 0.75f, 0.55f, 0.55f };
+	static const float kFixedFoveationCenterX[] = { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+	static const float kFixedFoveationCenterY[] = { 0.5f, 0.5f, 0.5f, 0.5f, 0.42f };
 
-	VRSImageGenParamsInOut.bGenerateFixedFoveation = Level ? true : false;
-	VRSImageGenParamsInOut.HMDFixedFoveationFullRateCutoff = FIXED_FOVEATION_FULL_RATE_CUTOFFS[Level];
-	VRSImageGenParamsInOut.HMDFixedFoveationHalfRateCutoff = FIXED_FOVEATION_HALF_RATE_CUTOFFS[Level];
+
+	const int VRSMaxLevel = FMath::Clamp(CVarHMDFixedFoveationLevel.GetValueOnAnyThread(), 0, 4);
+	float VRSAmount = 1.0f;
+	
+	if (CVarHMDFixedFoveationDynamic.GetValueOnAnyThread() && VRSMaxLevel > 0)
+	{
+		VRSAmount = GetDynamicVRSAmount();
+	}
+	
+	VRSImageGenParamsInOut.bGenerateFixedFoveation = (VRSMaxLevel > 0 && VRSAmount > 0.0f);
+	VRSImageGenParamsInOut.HMDFixedFoveationFullRateCutoff = FMath::Lerp(kFixedFoveationFullRateCutoffs[0], kFixedFoveationFullRateCutoffs[VRSMaxLevel], VRSAmount);
+	VRSImageGenParamsInOut.HMDFixedFoveationHalfRateCutoff = FMath::Lerp(kFixedFoveationHalfRateCutofffs[0], kFixedFoveationHalfRateCutofffs[VRSMaxLevel], VRSAmount);
+	VRSImageGenParamsInOut.HMDFixedFoveationCenterX = FMath::Lerp(kFixedFoveationCenterX[0], kFixedFoveationCenterX[VRSMaxLevel], VRSAmount);
+	VRSImageGenParamsInOut.HMDFixedFoveationCenterY = FMath::Lerp(kFixedFoveationCenterY[0], kFixedFoveationCenterY[VRSMaxLevel], VRSAmount);
 }
 
 void FVariableRateShadingImageManager::UpdateEyeTrackedFoveationParameters(FVRSImageGenerationParameters& VRSImageGenParamsInOut, const FSceneViewFamily& ViewFamily)
 {
 	VRSImageGenParamsInOut.bGenerateEyeTrackedFoveation = false;
 	VRSImageGenParamsInOut.HMDEyeTrackedFoveationFullRateCutoff = 1.0f;
-	VRSImageGenParamsInOut.HMDEYeTrackedFoveationHalfRateCutoff = 1.0f;
+	VRSImageGenParamsInOut.HMDEyeTrackedFoveationHalfRateCutoff = 1.0f;
 
 	auto EyeTracker = GEngine->EyeTrackingDevice;
 	if (!EyeTracker.IsValid())
@@ -409,4 +435,54 @@ void FVariableRateShadingImageManager::UpdateEyeTrackedFoveationParameters(FVRSI
 	}
 
 	// @todo:
+}
+
+float FVariableRateShadingImageManager::GetDynamicVRSAmount()
+{
+	const float		kUpdateIncrement		= 0.1f;
+	const int		kNumFramesToAverage		= 10; 
+	const double	kRoundingErrorMargin	= 0.5; // Add a small margin (.5 ms) to avoid oscillation
+	const double	kDesktopMaxAllowedFrameTime	= 12.50; // 80 fps
+	const double	kMobileMaxAllowedFrameTime	= 16.66; // 60 fps
+
+	if (GFrameNumber != DynamicVRSData.LastUpdateFrame)
+	{
+		DynamicVRSData.LastUpdateFrame = GFrameNumber;
+
+		const double GPUFrameTime = FPlatformTime::ToMilliseconds(RHIGetGPUFrameCycles());
+		
+		// Update sum for rolling average
+		if (DynamicVRSData.NumFramesStored < kNumFramesToAverage)
+		{
+			DynamicVRSData.SumBusyTime += GPUFrameTime;
+			DynamicVRSData.NumFramesStored++;
+		}
+		else if (DynamicVRSData.NumFramesStored == kNumFramesToAverage)
+		{
+			DynamicVRSData.SumBusyTime -= DynamicVRSData.SumBusyTime / kNumFramesToAverage;
+			DynamicVRSData.SumBusyTime += GPUFrameTime;
+		}
+
+		// If rolling average has sufficient samples, check if update is necessary
+		if (DynamicVRSData.NumFramesStored == kNumFramesToAverage)
+		{
+			const double AverageBusyTime = DynamicVRSData.SumBusyTime / kNumFramesToAverage;
+			const double TargetBusyTime = IsMobilePlatform(GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel]) ? kMobileMaxAllowedFrameTime : kDesktopMaxAllowedFrameTime;
+			
+			if (AverageBusyTime > TargetBusyTime + kRoundingErrorMargin && DynamicVRSData.VRSAmount < 1.0f)
+			{
+				DynamicVRSData.VRSAmount = FMath::Clamp(DynamicVRSData.VRSAmount + kUpdateIncrement, 0.0f, 1.0f);
+				DynamicVRSData.SumBusyTime = 0.0;
+				DynamicVRSData.NumFramesStored = 0;
+			}
+			else if (AverageBusyTime < TargetBusyTime - kRoundingErrorMargin && DynamicVRSData.VRSAmount > 0.0f)
+			{
+				DynamicVRSData.VRSAmount = FMath::Clamp(DynamicVRSData.VRSAmount - kUpdateIncrement, 0.0f, 1.0f);
+				DynamicVRSData.SumBusyTime = 0.0;
+				DynamicVRSData.NumFramesStored = 0;
+			}
+		}
+	}
+
+	return DynamicVRSData.VRSAmount;
 }

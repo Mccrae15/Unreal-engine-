@@ -6,6 +6,9 @@
 #include "Modules/ModuleInterface.h"
 
 class IOnlineSubsystemUtils;
+namespace UE::Online {
+	class IOnlineServicesEngineUtils;
+}
 
 /**
  * Online subsystem utils module class
@@ -15,11 +18,14 @@ class FOnlineSubsystemUtilsModule : public IModuleInterface
 {
 public:
 
-	FOnlineSubsystemUtilsModule() {}
-	virtual ~FOnlineSubsystemUtilsModule() {}
+	FOnlineSubsystemUtilsModule();
+	virtual ~FOnlineSubsystemUtilsModule();
 
 	/** @return the singleton utility interface */
 	IOnlineSubsystemUtils* GetUtils() const { return SubsystemUtils.Get(); }
+
+	/** @return the singleton utility interface */
+	UE::Online::IOnlineServicesEngineUtils* GetServicesUtils() const { return OnlineServicesUtils.Get(); }
 
 	// IModuleInterface
 	virtual void StartupModule() override;
@@ -30,16 +36,13 @@ public:
 		return false;
 	}
 
-	virtual bool SupportsAutomaticShutdown() override
-	{
-		return false;
-	}
-
-
 private:
 
 	/** Online subsystem utilities singleton */
 	TUniquePtr<IOnlineSubsystemUtils> SubsystemUtils;
+
+	/** Online Services (OSSv2) utilities singleton */
+	TUniquePtr<UE::Online::IOnlineServicesEngineUtils> OnlineServicesUtils;
 };
 
 

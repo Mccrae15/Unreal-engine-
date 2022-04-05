@@ -24,7 +24,7 @@ struct FCanvasIcon
 
 	/** Source texture */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=CanvasIcon)
-	class UTexture* Texture;
+	TObjectPtr<class UTexture> Texture;
 
 	/** UV coords */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=CanvasIcon)
@@ -53,19 +53,19 @@ struct FDisplayDebugManager
 {
 private:
 	FCanvasTextItem DebugTextItem;
-	FVector2D CurrentPos;
+	FVector2f CurrentPos;
 	float NextColumXPos;
 	float MaxCharHeight;
-	FVector2D InitialPos;
+	FVector2f InitialPos;
 	class UCanvas* Canvas;
 
 public:
 	FDisplayDebugManager()
 		: DebugTextItem(FCanvasTextItem(FVector2D(0, 0), FText::GetEmpty(), nullptr, FLinearColor::White))
-		, CurrentPos(FVector2D::ZeroVector)
+		, CurrentPos(FVector2f::ZeroVector)
 		, NextColumXPos(0.f)
 		, MaxCharHeight(0.f)
-		, InitialPos(FVector2D::ZeroVector)
+		, InitialPos(FVector2f::ZeroVector)
 		, Canvas(nullptr)
 	{
 		DebugTextItem.EnableShadow(FLinearColor::Black);
@@ -75,7 +75,7 @@ public:
 	{
 		SetFont(NewFont);
 		Canvas = InCanvas;
-		InitialPos = InInitialPosition;
+		InitialPos = (FVector2f)InInitialPosition;
 		CurrentPos = InitialPos;
 		NextColumXPos = 0.f;
 	}
@@ -192,14 +192,14 @@ class ENGINE_API UCanvas
 	FPlane ColorModulate; 
 
 	UPROPERTY()
-	class UTexture2D* DefaultTexture; //Default texture to use 
+	TObjectPtr<class UTexture2D> DefaultTexture; //Default texture to use 
 
 	UPROPERTY()
-	class UTexture2D* GradientTexture0; //Default texture to use 
+	TObjectPtr<class UTexture2D> GradientTexture0; //Default texture to use 
 
 	/** Helper class to render 2d graphs on canvas */
 	UPROPERTY()
-	class UReporterGraph* ReporterGraph;
+	TObjectPtr<class UReporterGraph> ReporterGraph;
 
 	int32 UnsafeSizeX;   // Canvas size before safe frame adjustment
 	int32 UnsafeSizeY;	// Canvas size before safe frame adjustment
@@ -365,10 +365,11 @@ public:
 	/**
 	 * Transforms a 3D world-space vector into 2D screen coordinates.
 	 *
-	 * @param Location The vector to transform.
+	 * @param Location			The vector to transform.
+	 * @param bClampToZeroPlane	If true, 2D screen coordinates behind the viewing plane (-Z) will have Z set to 0 (leaving X and Y alone)
 	 * @return The transformed vector.
 	 */
-	FVector Project(FVector Location) const;
+	FVector Project(FVector Location, bool bClampToZeroPlane = true) const;
 
 	/** 
 	 * Transforms 2D screen coordinates into a 3D world-space origin and direction.
@@ -386,9 +387,23 @@ public:
 	 * @param Text The string to calculate for.
 	 * @param XL out Horizontal length of string.
 	 * @param YL out Vertical length of string.
-	 * @param bDPUAware If true measures text considering the current DPI scale factor of the canvas.  Defaults to false for backwards compatibility
+	 * @param bDPIAware If true measures text considering the current DPI scale factor of the canvas.  Defaults to false for backwards compatibility
+	 * @param Canvas Canvas state object
+	 */
+	static void StrLen(const UFont* InFont, const FString& InText, float& XL, float& YL, bool bDPIAware, FCanvas* InCanvas);
+	static void StrLen(const UFont* InFont, const FString& InText, double& XL, double& YL, bool bDPIAware, FCanvas* InCanvas);
+
+	/**
+	 * Calculate the length of a string, taking text wrapping into account.
+	 *
+	 * @param InFont The Font use.
+	 * @param Text The string to calculate for.
+	 * @param XL out Horizontal length of string.
+	 * @param YL out Vertical length of string.
+	 * @param bDPIAware If true measures text considering the current DPI scale factor of the canvas.  Defaults to false for backwards compatibility
 	 */
 	void StrLen(const UFont* InFont, const FString& InText, float& XL, float& YL, bool bDPIAware = false);
+	void StrLen(const UFont* InFont, const FString& InText, double& XL, double& YL, bool bDPIAware = false);
 
 	/** 
 	 * Calculates the horizontal and vertical size of a given string. This is used for clipped text as it does not take wrapping into account.
@@ -401,7 +416,8 @@ public:
 	 * @param ScaleY Scale that the string is expected to draw at vertically.
 	 */
 	void TextSize( const UFont* InFont, const FString& InText, float& XL, float& YL, float ScaleX=1.f, float ScaleY=1.f);
-	
+	void TextSize( const UFont* InFont, const FString& InText, double& XL, double& YL, double ScaleX=1.f, double ScaleY=1.f);
+
 	/** Set DrawColor with a FLinearColor and optional opacity override */
 	void SetLinearDrawColor(FLinearColor InColor, float OpacityOverride=-1.f);
 
@@ -422,7 +438,8 @@ public:
 
 	/** Return X,Y for center of the draw region. */
 	void GetCenter(float& outX, float& outY) const;
-
+	void GetCenter(double& outX, double& outY) const;
+	
 	/** Fake CanvasIcon constructor.	 */
 	static FCanvasIcon MakeIcon(class UTexture* Texture, float U = 0.f, float V = 0.f, float UL = 0.f, float VL = 0.f);
 

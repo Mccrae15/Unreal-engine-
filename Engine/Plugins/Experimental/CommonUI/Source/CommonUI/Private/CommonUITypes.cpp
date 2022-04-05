@@ -4,6 +4,7 @@
 #include "CommonUIPrivatePCH.h"
 #include "ICommonInputModule.h"
 #include "CommonInputSettings.h"
+#include "HAL/PlatformInput.h"
 
 FScrollBoxStyle CommonUI::EmptyScrollBoxStyle = FScrollBoxStyle();
 
@@ -17,21 +18,7 @@ FCommonInputTypeInfo::FCommonInputTypeInfo()
 
 FKey FCommonInputTypeInfo::GetKey() const
 {
-	FKey ReturnKey = Key;
-#if PLATFORM_PS4
-	if (EKeys::Virtual_Accept == EKeys::Gamepad_FaceButton_Right)
-	{
-		if (ReturnKey == EKeys::Gamepad_FaceButton_Bottom)
-		{
-			ReturnKey = EKeys::Gamepad_FaceButton_Right;
-		}
-		else if (ReturnKey == EKeys::Gamepad_FaceButton_Right)
-		{
-			ReturnKey = EKeys::Gamepad_FaceButton_Bottom;
-		}
-	}
-#endif
-	return ReturnKey;
+	return FPlatformInput::RemapKey(Key);
 }
 
 FCommonInputActionDataBase::FCommonInputActionDataBase()
@@ -86,7 +73,7 @@ const FCommonInputTypeInfo& FCommonInputActionDataBase::GetInputTypeInfo(ECommon
 		}
 
 		//ensureAlways(NewGamepadTypeInfo->GetKey().IsValid());
-		UE_CLOG(!GamepadTypeInfo->GetKey().IsValid(), LogCommonUI, Warning, TEXT("Invalid default common action key for action \"%s\""), *DisplayName.ToString());
+		UE_CLOG(!GamepadTypeInfo->GetKey().IsValid(), LogCommonUI, Verbose, TEXT("Invalid default common action key for action \"%s\""), *DisplayName.ToString());
 		return *GamepadTypeInfo;
 	}
 	else if (InputType == ECommonInputType::Touch)
@@ -138,7 +125,7 @@ FSlateBrush FCommonInputActionDataBase::GetCurrentInputActionIcon(const UCommonI
 	//}
 
 	FSlateBrush SlateBrush;
-	if (FCommonInputBase::GetCurrentBasePlatformData().TryGetInputBrush(SlateBrush, CurrentInputTypeInfo.GetKey(), CommonInputSubsystem->GetCurrentInputType(), CommonInputSubsystem->GetCurrentGamepadName()))
+	if (UCommonInputPlatformSettings::Get()->TryGetInputBrush(SlateBrush, CurrentInputTypeInfo.GetKey(), CommonInputSubsystem->GetCurrentInputType(), CommonInputSubsystem->GetCurrentGamepadName()))
 	{
 		return SlateBrush;
 	}
@@ -180,6 +167,21 @@ bool FCommonInputActionDataBase::HasHoldBindings() const
 	return false;
 }
 
+const FCommonInputTypeInfo& FCommonInputActionDataBase::GetDefaultGamepadInputTypeInfo() const
+{
+	return DefaultGamepadInputTypeInfo;
+}
+
+bool FCommonInputActionDataBase::HasGamepadInputOverride(const FName& GamepadName) const
+{
+	return GamepadInputOverrides.Contains(GamepadName);
+}
+
+void FCommonInputActionDataBase::AddGamepadInputOverride(const FName& GamepadName, const FCommonInputTypeInfo& InputInfo)
+{
+	GamepadInputOverrides.Add(GamepadName, InputInfo);
+}
+
 void CommonUI::SetupStyles()
 {
 	EmptyScrollBoxStyle.BottomShadowBrush.DrawAs = ESlateBrushDrawType::NoDrawType;
@@ -210,7 +212,7 @@ FSlateBrush CommonUI::GetIconForInputActions(const UCommonInputSubsystem* Common
 	}
 
 	FSlateBrush SlateBrush;
-	if (FCommonInputBase::GetCurrentBasePlatformData().TryGetInputBrush(SlateBrush, Keys, CommonInputSubsystem->GetCurrentInputType(), CommonInputSubsystem->GetCurrentGamepadName()))
+	if (UCommonInputPlatformSettings::Get()->TryGetInputBrush(SlateBrush, Keys, CommonInputSubsystem->GetCurrentInputType(), CommonInputSubsystem->GetCurrentGamepadName()))
 	{
 		return SlateBrush;
 	}

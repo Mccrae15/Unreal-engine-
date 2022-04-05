@@ -25,7 +25,7 @@ FSoundClassProperties::FSoundClassProperties()
 	, Pitch(1.0f)
 	, LowPassFilterFrequency(MAX_FILTER_FREQUENCY)
 	, AttenuationDistanceScale(1.0f)
-	, LFEBleed(0.5f)
+	, LFEBleed(0.0f)
 	, VoiceCenterChannelVolume(0.0f)
 	, RadioFilterVolume(0.0f)
 	, RadioFilterVolumeThreshold(0.0f)
@@ -66,7 +66,7 @@ void USoundClass::PostLoad()
 #if WITH_EDITORONLY_DATA
 	for (int32 ChildIndex = ChildClasses.Num()-1; ChildIndex >= 0; ChildIndex--)
 	{
-		if (ChildClasses[ChildIndex] != NULL && ChildClasses[ChildIndex]->GetLinkerUE4Version() < VER_UE4_SOUND_CLASS_GRAPH_EDITOR)
+		if (ChildClasses[ChildIndex] != NULL && ChildClasses[ChildIndex]->GetLinkerUEVersion() < VER_UE4_SOUND_CLASS_GRAPH_EDITOR)
 		{
 			// first come, first served
 			if (ChildClasses[ChildIndex]->ParentClass == nullptr)
@@ -277,7 +277,7 @@ void USoundClass::Serialize( FArchive& Ar )
 {
 	Super::Serialize( Ar );
 
-	if (Ar.UE4Ver() < VER_UE4_SOUND_CLASS_GRAPH_EDITOR)
+	if (Ar.UEVer() < VER_UE4_SOUND_CLASS_GRAPH_EDITOR)
 	{
 		// load this to match size and then throw away
 		TMap<USoundClass*, FSoundClassEditorData>	EditorData_DEPRECATED;

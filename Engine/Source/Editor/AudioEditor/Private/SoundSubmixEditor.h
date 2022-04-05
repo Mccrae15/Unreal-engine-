@@ -8,7 +8,6 @@
 #include "ISoundSubmixEditor.h"
 #include "Toolkits/IToolkitHost.h"
 #include "UObject/Object.h"
-#include "Widgets/Docking/SDockableTab.h"
 
 
 // Forward Declarations
@@ -35,6 +34,10 @@ public:
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FSoundSubmixEditor");
+	}
 
 	/** FAssetEditorToolkit interface */
 	virtual FText GetBaseToolkitName() const override;
@@ -100,9 +103,6 @@ private:
 	void RedoGraphAction();
 
 private:
-	/** List of open tool panels; used to ensure only one exists at any one time */
-	TMap<FName, TWeakPtr<SDockableTab>> SpawnedToolPanels;
-
 	/** Graph Editor */
 	TSharedPtr<SGraphEditor> GraphEditor;
 

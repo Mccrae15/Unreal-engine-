@@ -10,6 +10,7 @@
 
 class UToolMenu;
 class FContentBrowserFileDataDiscovery;
+class IAssetTypeActions;
 struct FFileChangeData;
 
 USTRUCT()
@@ -18,9 +19,12 @@ struct CONTENTBROWSERFILEDATASOURCE_API FContentBrowserCompiledFileDataFilter
 	GENERATED_BODY()
 
 public:
-	TArray<FName> MatchingFolderItems;
-
-	TArray<FName> MatchingFileItems;
+	FName VirtualPathName;
+	FString VirtualPath;
+	bool bRecursivePaths = false;
+	EContentBrowserItemAttributeFilter ItemAttributeFilter = EContentBrowserItemAttributeFilter::IncludeNone;
+	TSharedPtr<FPathPermissionList> PermissionList;
+	TArray<FString> FileExtensionsToInclude;
 };
 
 UCLASS()
@@ -29,7 +33,7 @@ class CONTENTBROWSERFILEDATASOURCE_API UContentBrowserFileDataSource : public UC
 	GENERATED_BODY()
 
 public:
-	void Initialize(const FName InMountRoot, const ContentBrowserFileData::FFileConfigData& InConfig, const bool InAutoRegister = true);
+	void Initialize(const ContentBrowserFileData::FFileConfigData& InConfig, const bool InAutoRegister = true);
 
 	virtual void Shutdown() override;
 
@@ -105,8 +109,9 @@ public:
 
 	virtual bool UpdateThumbnail(const FContentBrowserItemData& InItem, FAssetThumbnail& InThumbnail) override;
 
+	virtual void BuildRootPathVirtualTree() override;
+
 protected:
-	virtual void EnumerateRootPaths(const FContentBrowserDataFilter& InFilter, TFunctionRef<void(FName)> InCallback) override;
 
 	struct FFileMount
 	{
@@ -169,9 +174,15 @@ protected:
 
 	FContentBrowserItemData OnFinalizeDuplicateFile(const FContentBrowserItemData& InItemData, const FString& InProposedName, FText* OutErrorMsg);
 
+	bool PassesFilters(const FName InPath, const int32 InFolderDepthChecked, const FContentBrowserCompiledFileDataFilter& InFileDataFilter) const;
+	static bool PassesFilters(const FStringView InPath, const FDiscoveredItem& InDiscoveredItem, const int32 InFolderDepthChecked, const FContentBrowserCompiledFileDataFilter& InFileDataFilter);
+
 	ContentBrowserFileData::FFileConfigData Config;
 
+	TArray<TSharedRef<IAssetTypeActions>> RegisteredAssetTypeActions;
+
 	TSortedMap<FName, FFileMount, FDefaultAllocator, FNameFastLess> RegisteredFileMounts;
+	TMap<FName, TArray<FName>> RegisteredFileMountRoots;
 
 	TMap<FName, FDiscoveredItem> DiscoveredItems;
 

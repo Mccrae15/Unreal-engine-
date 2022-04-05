@@ -6,6 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "Fonts/SlateFontInfo.h"
+#include "Input/Reply.h"
 
 class FMenuBuilder;
 class SWidget;
@@ -26,6 +27,10 @@ struct FDataprepParametrizationActionData : public FGCObject
 	TArray<FDataprepPropertyLink> PropertyChain;
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FDataprepParametrizationActionData");
+	}
 
 	bool IsValid() const;
 };
@@ -33,6 +38,8 @@ struct FDataprepParametrizationActionData : public FGCObject
 class FDataprepEditorUtils
 {
 public:
+	DECLARE_DELEGATE_RetVal_TwoParams(FReply, FOnKeyDown, const FGeometry& , const FKeyEvent& )
+
 	/**
 	 * Populate a menu builder with the section made for the parameterization
 	 * @param DataprepAsset the asset that own the object

@@ -1,9 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AnimationModifier.h"
+#include "AssetViewUtils.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/Skeleton.h"
 #include "ModifierOutputFilter.h"
+#include "ScopedTransaction.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Editor/Transactor.h"
 #include "UObject/UObjectIterator.h"
 
@@ -12,6 +15,26 @@
 #include "Editor/Transactor.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/AnimObjectVersion.h"
+
+#define LOCTEXT_NAMESPACE "AnimationModifier"
+
+int32 UE::Anim::FApplyModifiersScope::ScopesOpened = 0;
+TMap<FObjectKey, TOptional<EAppReturnType::Type>>  UE::Anim::FApplyModifiersScope::PerClassReturnTypeValues;
+
+TOptional<EAppReturnType::Type> UE::Anim::FApplyModifiersScope::GetReturnType(const UAnimationModifier* InModifier)
+{
+	TOptional<EAppReturnType::Type>* ReturnTypePtr = PerClassReturnTypeValues.Find(FObjectKey(InModifier->GetClass()));
+	return ReturnTypePtr ? *ReturnTypePtr : TOptional<EAppReturnType::Type>();
+}
+
+void UE::Anim::FApplyModifiersScope::SetReturnType(const UAnimationModifier* InModifier, EAppReturnType::Type InReturnType)
+{
+	const FObjectKey Key(InModifier->GetClass());
+	ensure(!PerClassReturnTypeValues.Contains(Key));
+	PerClassReturnTypeValues.Add(Key, InReturnType);
+}
+
+const FName UAnimationModifier::RevertModifierObjectName("REVERT_AnimationModifier");
 
 UAnimationModifier::UAnimationModifier()
 	: PreviouslyAppliedModifier(nullptr)
@@ -22,14 +45,16 @@ void UAnimationModifier::ApplyToAnimationSequence(class UAnimSequence* InAnimati
 {
 	FEditorScriptExecutionGuard ScriptGuard;
 
-	checkf(InAnimationSequence, TEXT("Invalid Animation Sequence supplied"));
 	CurrentAnimSequence = InAnimationSequence;
+	checkf(CurrentAnimSequence, TEXT("Invalid Animation Sequence supplied"));
 	CurrentSkeleton = InAnimationSequence->GetSkeleton();
+	checkf(CurrentSkeleton, TEXT("Invalid Skeleton for supplied Animation Sequence"));
 
 	// Filter to check for warnings / errors thrown from animation blueprint library (rudimentary approach for now)
 	FCategoryLogOutputFilter OutputLog;
 	OutputLog.SetAutoEmitLineTerminator(true);
 	OutputLog.AddCategoryName("LogAnimationBlueprintLibrary");
+	OutputLog.AddCategoryName("LogAnimation");
 
 	GLog->AddOutputDevice(&OutputLog);
 		
@@ -44,13 +69,17 @@ void UAnimationModifier::ApplyToAnimationSequence(class UAnimSequence* InAnimati
 	/** In case this modifier has been previously applied, revert it using the serialised out version at the time */	
 	if (PreviouslyAppliedModifier)
 	{
-
 		PreviouslyAppliedModifier->Modify();
 		PreviouslyAppliedModifier->OnRevert(CurrentAnimSequence);
 	}
 
-	/** Reverting and applying, populates the log with possible warnings and or errors to notify the user about */
-	OnApply(CurrentAnimSequence);
+	IAnimationDataController& Controller = CurrentAnimSequence->GetController(); //-V595
+
+	{
+		IAnimationDataController::FScopedBracket ScopedBracket(Controller, LOCTEXT("ApplyModifierBracket", "Applying Animation Modifier"));
+		/** Reverting and applying, populates the log with possible warnings and or errors to notify the user about */
+		OnApply(CurrentAnimSequence);
+	}
 
 	// Apply transaction
 	ModifierTransaction.BeginOperation();
@@ -60,17 +89,50 @@ void UAnimationModifier::ApplyToAnimationSequence(class UAnimSequence* InAnimati
 	GLog->RemoveOutputDevice(&OutputLog);
 
 	// Check if warnings or errors have occurred and show dialog to user to inform her about this
-	const bool bWarningsOrErrors = OutputLog.ContainsWarnings() || OutputLog.ContainsErrors();
-	bool bShouldRevert = false;
-	if (bWarningsOrErrors)
-	{
-		static const FText WarningMessageFormat = FText::FromString("Modifier has generated warnings during a test run:\n\n{0}\nAre you sure you want to Apply it?");
-		static const FText ErrorMessageFormat = FText::FromString("Modifier has generated errors (and warnings) during a test run:\n\n{0}\nResolve the Errors before trying to Apply!");
+	const bool bWarnings = OutputLog.ContainsWarnings();
+	const bool bErrors = OutputLog.ContainsErrors();
+	bool bShouldRevert = bErrors;
+	
+	// If errors have occured - prompt user with OK and revert
+	TOptional<EAppReturnType::Type> ScopeReturnType = UE::Anim::FApplyModifiersScope::GetReturnType(this);	
+	static const FText MessageTitle = LOCTEXT("ModifierDialogTitle", "Modifier has generated errors during test run.");
+	if (bErrors)
+	{		
+		if (UE::Anim::FApplyModifiersScope::ScopesOpened == 0 || !ScopeReturnType.IsSet() || ScopeReturnType.GetValue() != EAppReturnType::Type::Ok)
+		{
+			const FText ErrorMessageFormat = FText::FormatOrdered(LOCTEXT("ModifierErrorDescription", "Modifier: {0}\nAsset: {1}\n{2}\nResolve the errors before trying to apply again."), FText::FromString(GetClass()->GetPathName()),
+				FText::FromString(CurrentAnimSequence->GetPathName()), FText::FromString(OutputLog));
+			
+			EAppReturnType::Type ReturnValue = FMessageDialog::Open(EAppMsgType::Ok, ErrorMessageFormat, &MessageTitle);
+			UE::Anim::FApplyModifiersScope::SetReturnType(this, ReturnValue);
+		}
+	}
 
-		EAppMsgType::Type MessageType = OutputLog.ContainsErrors() ? EAppMsgType::Ok : EAppMsgType::YesNo;
-		const FText& MessageFormat = OutputLog.ContainsErrors() ? ErrorMessageFormat : WarningMessageFormat;
-		const FText MessageTitle = FText::FromString("Modifier has Generated Warnings/Errors");
-		bShouldRevert = (FMessageDialog::Open(MessageType, FText::FormatOrdered(MessageFormat, FText::FromString(OutputLog)), &MessageTitle) != EAppReturnType::Yes);
+	// If _only_ warnings have occured - check if user has previously said YesAll / NoAll and process the result
+	if (bWarnings && !bShouldRevert)
+	{
+		if (UE::Anim::FApplyModifiersScope::ScopesOpened == 0 || !ScopeReturnType.IsSet())
+		{
+			const FText WarningMessage = FText::FormatOrdered(LOCTEXT("ModifierWarningDescription", "Modifier: {0}\nAsset: {1}\n{2}\nAre you sure you want to apply it?"), FText::FromString(GetClass()->GetPathName()),
+			FText::FromString(CurrentAnimSequence->GetPathName()), FText::FromString(OutputLog));
+
+			EAppReturnType::Type ReturnValue = FMessageDialog::Open(EAppMsgType::YesNoYesAllNoAll, WarningMessage, &MessageTitle);
+			bShouldRevert = ReturnValue == EAppReturnType::No || ReturnValue == EAppReturnType::NoAll;
+
+			// check if user response should be stored for further modifier applications
+			if(UE::Anim::FApplyModifiersScope::ScopesOpened > 0)
+			{
+				if (ReturnValue == EAppReturnType::Type::YesAll || ReturnValue == EAppReturnType::Type::NoAll)
+				{
+					UE::Anim::FApplyModifiersScope::SetReturnType(this, ReturnValue);
+				}
+			}
+		}
+		else
+		{
+			// Revert if previous user prompt return NoAll or if any errors occured previously 
+			bShouldRevert = ScopeReturnType.GetValue() == EAppReturnType::NoAll || ScopeReturnType.GetValue() == EAppReturnType::Ok;
+		}
 	}
 
 	// Revert changes if necessary, otherwise post edit and refresh animation data
@@ -80,25 +142,20 @@ void UAnimationModifier::ApplyToAnimationSequence(class UAnimSequence* InAnimati
 		AnimationDataTransaction.Apply();
 		AnimationDataTransaction.EndOperation();
 		CurrentAnimSequence->RefreshCacheData();
-		CurrentAnimSequence->RefreshCurveData();
 	}
 	else
-	{		
-		UpdateCompressedAnimationData();
-		
+	{
 		/** Mark the previous modifier pending kill, as it will be replaced with the current modifier state */
 		if (PreviouslyAppliedModifier)
 		{
-			PreviouslyAppliedModifier->MarkPendingKill();
+			PreviouslyAppliedModifier->MarkAsGarbage();
 		}
 
-		PreviouslyAppliedModifier = DuplicateObject(this, GetOuter());
+		PreviouslyAppliedModifier = DuplicateObject(this, GetOuter(), MakeUniqueObjectName(GetOuter(), GetClass(), RevertModifierObjectName));
 
 		CurrentAnimSequence->PostEditChange();
 		CurrentSkeleton->PostEditChange();
 		CurrentAnimSequence->RefreshCacheData();
-		CurrentAnimSequence->RefreshCurveData();
-		CurrentAnimSequence->MarkRawDataAsModified();
 
 		UpdateStoredRevisions();
 	}
@@ -110,17 +167,9 @@ void UAnimationModifier::ApplyToAnimationSequence(class UAnimSequence* InAnimati
 
 void UAnimationModifier::UpdateCompressedAnimationData()
 {
-	if (CurrentAnimSequence->DoesNeedRebake() || CurrentAnimSequence->DoesNeedRecompress())
+	if (CurrentAnimSequence->DoesNeedRecompress())
 	{
-		if (CurrentAnimSequence->DoesNeedRebake())
-		{
-			CurrentAnimSequence->BakeTrackCurvesToRawAnimation();
-		}
-
-		if (CurrentAnimSequence->DoesNeedRecompress())
-		{
-			CurrentAnimSequence->RequestSyncAnimRecompression(false);
-		}
+		CurrentAnimSequence->RequestSyncAnimRecompression(false);
 	}
 }
 
@@ -140,20 +189,22 @@ void UAnimationModifier::RevertFromAnimationSequence(class UAnimSequence* InAnim
 		Transaction.SaveObject(this);
 
 		PreviouslyAppliedModifier->Modify();
-		PreviouslyAppliedModifier->OnRevert(CurrentAnimSequence);
+
+		IAnimationDataController& Controller = CurrentAnimSequence->GetController();
+
+		{
+			IAnimationDataController::FScopedBracket ScopedBracket(Controller, LOCTEXT("RevertModifierBracket", "Reverting Animation Modifier"));
+			PreviouslyAppliedModifier->OnRevert(CurrentAnimSequence);
+		}
 
 		// Apply transaction
 		Transaction.BeginOperation();
 		Transaction.Apply();
 		Transaction.EndOperation();
 
-		UpdateCompressedAnimationData();
-
 	    CurrentAnimSequence->PostEditChange();
 	    CurrentSkeleton->PostEditChange();
 	    CurrentAnimSequence->RefreshCacheData();
-	    CurrentAnimSequence->RefreshCurveData();
-	    CurrentAnimSequence->MarkRawDataAsModified();
 
 		ResetStoredRevisions();
 
@@ -161,7 +212,7 @@ void UAnimationModifier::RevertFromAnimationSequence(class UAnimSequence* InAnim
 		CurrentAnimSequence = nullptr;
 		CurrentSkeleton = nullptr;
 
-		PreviouslyAppliedModifier->MarkPendingKill();
+		PreviouslyAppliedModifier->MarkAsGarbage();
 		PreviouslyAppliedModifier = nullptr;
 	}
 }
@@ -175,13 +226,6 @@ void UAnimationModifier::PostInitProperties()
 {
 	Super::PostInitProperties();
 	UpdateNativeRevisionGuid();
-
-	// Ensure we always have a valid guid
-	if (!RevisionGuid.IsValid())
-	{
-		UpdateRevisionGuid(GetClass());
-		MarkPackageDirty();
-	}
 }
 
 void UAnimationModifier::Serialize(FArchive& Ar)
@@ -196,6 +240,30 @@ void UAnimationModifier::Serialize(FArchive& Ar)
 	}
 }
 
+void UAnimationModifier::PostLoad()
+{
+	Super::PostLoad();
+
+	UClass* Class = GetClass();
+	UObject* DefaultObject = Class->GetDefaultObject();
+
+	// CDO, set GUID if invalid
+	if(DefaultObject == this)
+	{
+		// Ensure we always have a valid guid
+		if (!RevisionGuid.IsValid())
+		{
+			UpdateRevisionGuid(GetClass());
+			MarkPackageDirty();
+		}
+	}
+	// Non CDO, update revision GUID
+	else if(UAnimationModifier* TypedDefaultObject = Cast<UAnimationModifier>(DefaultObject))
+	{
+		RevisionGuid = TypedDefaultObject->RevisionGuid;
+	}
+}
+
 const USkeleton* UAnimationModifier::GetSkeleton()
 {
 	return CurrentSkeleton;
@@ -203,14 +271,17 @@ const USkeleton* UAnimationModifier::GetSkeleton()
 
 void UAnimationModifier::UpdateRevisionGuid(UClass* ModifierClass)
 {
-	RevisionGuid = FGuid::NewGuid();
-
-	// Native classes are more difficult?
-	for (TObjectIterator<UAnimationModifier> It; It; ++It)
+	if (ModifierClass)
 	{
-		if (*It != this && It->GetClass() == ModifierClass)
+		RevisionGuid = FGuid::NewGuid();
+
+		// Apply to any currently loaded instances of this class
+		for (TObjectIterator<UAnimationModifier> It; It; ++It)
 		{
-			It->SetInstanceRevisionGuid(RevisionGuid);
+			if (*It != this && It->GetClass() == ModifierClass)
+			{
+				It->SetInstanceRevisionGuid(RevisionGuid);
+			}
 		}
 	}
 }
@@ -232,8 +303,57 @@ void UAnimationModifier::UpdateNativeRevisionGuid()
 
 			// Save the new native revision to config files
 			SaveConfig();
-			UpdateDefaultConfigFile();
+			TryUpdateDefaultConfigFile();
 		}
+	}
+}
+
+void UAnimationModifier::ApplyToAll(TSubclassOf<UAnimationModifier> ModifierSubClass, bool bForceApply /*= true*/)
+{
+	if (UClass* ModifierClass = ModifierSubClass.Get())
+	{
+		// Make sure all packages (in this case UAnimSequences) are loaded to ensure the TObjectIterator has any instances to iterate over
+		LoadModifierReferencers(ModifierSubClass);
+		
+		const FScopedTransaction Transaction(LOCTEXT("UndoAction_ApplyModifiers", "Applying Animation Modifier to Animation Sequence(s)"));		
+		for (TObjectIterator<UAnimationModifier> It; It; ++It)
+		{
+			// Check if valid, of the required class, not pending kill and not a modifier back-up for reverting
+			const bool bIsRevertModifierInstance = *It && It->GetFName().ToString().StartsWith(RevertModifierObjectName.ToString());
+			if (*It && It->GetClass() == ModifierClass && IsValidChecked(*It) && !bIsRevertModifierInstance)
+			{
+				if (bForceApply || !It->IsLatestRevisionApplied())
+				{
+					// Go through outer chain to find AnimSequence
+					UObject* Outer = It->GetOuter();
+
+					while(Outer && !Outer->IsA<UAnimSequence>())
+					{
+						Outer = Outer->GetOuter();
+					}
+
+					if (UAnimSequence* AnimSequence = Cast<UAnimSequence>(Outer))
+					{
+						AnimSequence->Modify();
+						It->ApplyToAnimationSequence(AnimSequence);
+					}	
+				}
+			}
+		}
+	}	
+}
+
+void UAnimationModifier::LoadModifierReferencers(TSubclassOf<UAnimationModifier> ModifierSubClass)
+{
+	if (UClass* ModifierClass = ModifierSubClass.Get())
+	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+		TArray<FName> PackageDependencies;
+		AssetRegistryModule.GetRegistry().GetReferencers(ModifierClass->GetPackage()->GetFName(), PackageDependencies);
+
+		TArray<FString> PackageNames;
+		Algo::Transform(PackageDependencies, PackageNames, [](FName Name) { return Name.ToString(); });
+		TArray<UPackage*> Packages = AssetViewUtils::LoadPackages(PackageNames);
 	}
 }
 
@@ -262,3 +382,5 @@ void UAnimationModifier::SetInstanceRevisionGuid(FGuid Guid)
 {
 	RevisionGuid = Guid;
 }
+
+#undef LOCTEXT_NAMESPACE

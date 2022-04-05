@@ -84,16 +84,10 @@ private:
 
 struct CORE_API FAndroidMemoryWarningContext : public FGenericMemoryWarningContext
 {
-	FAndroidMemoryWarningContext() : LastTrimMemoryState(-1), LastNativeMemoryAdvisorState(-1), MemoryAdvisorEstimatedAvailableMemoryMB(0), OomScore(0) {}
+	FAndroidMemoryWarningContext() : LastTrimMemoryState(FAndroidPlatformMemory::ETrimValues::Unknown) {}
 
-	// value last recorded from java side's OnTrimMemory. -1 if unset.
-	int LastTrimMemoryState;
-	// last value recorded from java side's memory advisor. -1 if unset.
-	int LastNativeMemoryAdvisorState;
-	// an estimate on available memory provided by MemoryAdvisor. Updated periodically. 0 if unset
-	int MemoryAdvisorEstimatedAvailableMemoryMB;
-	// last value recorded from java side's memory advisor. 0 if unset, -1 on error
-	int OomScore;
+	// value last recorded from java side's OnTrimMemory.
+	FAndroidPlatformMemory::ETrimValues LastTrimMemoryState;
 };
 
 typedef FAndroidCrashContext FPlatformCrashContext;

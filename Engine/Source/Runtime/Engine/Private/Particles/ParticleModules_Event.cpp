@@ -102,7 +102,7 @@ void UParticleModuleEventGenerator::PostEditChangeProperty(FPropertyChangedEvent
 		check(Emitter);
 		OuterObj = Emitter->GetOuter();
 	}
-	UParticleSystem* PartSys = PartSys = CastChecked<UParticleSystem>(OuterObj);
+	UParticleSystem* PartSys = CastChecked<UParticleSystem>(OuterObj);
 	if (PartSys)
 	{
 		PartSys->PostEditChangeProperty(PropertyChangedEvent);
@@ -125,10 +125,10 @@ bool UParticleModuleEventGenerator::HandleParticleSpawned(FParticleEmitterInstan
 		{
 			if (EventGenInfo.Frequency == 0 || (EventPayload->SpawnTrackingCount % EventGenInfo.Frequency) == 0)
 			{
-				FVector ParticleLocation = EventGenInfo.bUseOrbitOffset ? Owner->GetParticleLocationWithOrbitOffset(NewParticle) : NewParticle->Location;
+				FVector ParticleLocation = EventGenInfo.bUseOrbitOffset ? Owner->GetParticleLocationWithOrbitOffset(NewParticle) : FVector(NewParticle->Location);
 
 				Owner->Component->ReportEventSpawn(EventGenInfo.CustomName, Owner->EmitterTime, 
-					ParticleLocation, NewParticle->Velocity, EventGenInfo.ParticleModuleEventsToSendToGame);
+					ParticleLocation, FVector(NewParticle->Velocity), EventGenInfo.ParticleModuleEventsToSendToGame);
 				bProcessed = true;
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 				Owner->EventCount++;
@@ -155,10 +155,10 @@ bool UParticleModuleEventGenerator::HandleParticleKilled(FParticleEmitterInstanc
 		{
 			if (EventGenInfo.Frequency == 0 || (EventPayload->DeathTrackingCount % EventGenInfo.Frequency) == 0)
 			{
-				FVector ParticleLocation = EventGenInfo.bUseOrbitOffset ? Owner->GetParticleLocationWithOrbitOffset(DeadParticle) : DeadParticle->Location;
+				FVector ParticleLocation = EventGenInfo.bUseOrbitOffset ? Owner->GetParticleLocationWithOrbitOffset(DeadParticle) : FVector(DeadParticle->Location);
 
 				Owner->Component->ReportEventDeath(EventGenInfo.CustomName, 
-					Owner->EmitterTime, ParticleLocation, DeadParticle->Velocity, 
+					Owner->EmitterTime, ParticleLocation, (FVector)DeadParticle->Velocity,
 					EventGenInfo.ParticleModuleEventsToSendToGame, DeadParticle->RelativeTime);
 				bProcessed = true;
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -208,7 +208,7 @@ bool UParticleModuleEventGenerator::HandleParticleCollision(FParticleEmitterInst
 					Owner->EmitterTime, 
 					Hit->Location,
 					CollideDirection, 
-					CollideParticle->Velocity, 
+					(FVector)CollideParticle->Velocity,
 					EventGenInfo.ParticleModuleEventsToSendToGame,
 					CollideParticle->RelativeTime, 
 					Hit->Normal, 

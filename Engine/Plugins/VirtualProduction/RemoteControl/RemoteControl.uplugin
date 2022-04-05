@@ -33,9 +33,8 @@
 			"Name": "WebRemoteControl",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Mac",
-				"Win32",
 				"Win64",
 				"Linux"
 			]

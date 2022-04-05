@@ -69,6 +69,9 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 				MenuBuilder.AddMenuSeparator();
 			}
 
+			// Select
+			MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().SelectAllKeys);
+
 			// Filters
 			MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().OpenUserImplementableFilterWindow);
 			
@@ -99,7 +102,7 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 
 					MenuBuilder.AddMenuSeparator();
 					
-					MenuBuilder.AddSubMenu(LOCTEXT("PreExtrapText", "Pre-Extrap"), FText(), FNewMenuDelegate::CreateLambda(
+					MenuBuilder.AddSubMenu(LOCTEXT("PreInfinityText", "Pre-Infinity"), FText(), FNewMenuDelegate::CreateLambda(
 						[](FMenuBuilder& SubMenu)
 						{
 							SubMenu.AddMenuEntry(FCurveEditorCommands::Get().SetPreInfinityExtrapCycle);
@@ -110,7 +113,7 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 						})
 					);
 
-					MenuBuilder.AddSubMenu(LOCTEXT("PostExtrapText", "Post-Extrap"), FText(), FNewMenuDelegate::CreateLambda(
+					MenuBuilder.AddSubMenu(LOCTEXT("PostInfinityText", "Post-Infinity"), FText(), FNewMenuDelegate::CreateLambda(
 						[](FMenuBuilder& SubMenu)
 						{
 							SubMenu.AddMenuEntry(FCurveEditorCommands::Get().SetPostInfinityExtrapCycle);
@@ -123,6 +126,9 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 
 					MenuBuilder.AddMenuSeparator();
 				}
+
+				// Select
+				MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().SelectAllKeys);
 
 				// Filters
 				MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().OpenUserImplementableFilterWindow);
@@ -161,11 +167,14 @@ void FCurveEditorContextMenu::BuildMenu(FMenuBuilder& MenuBuilder, TSharedRef<FC
 					// Modify Curves
 					MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().AddKeyToAllCurves);
 					MenuBuilder.AddMenuSeparator();
-
-					// Filters
-					MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().OpenUserImplementableFilterWindow);
 				}
 
+				// Select
+				MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().SelectAllKeys);
+
+				// Filters
+				MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().OpenUserImplementableFilterWindow);
+				
 				// View
 				MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().ZoomToFit);
 			}

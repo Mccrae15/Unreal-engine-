@@ -21,7 +21,7 @@
 
 
 #ifndef UE_VERYLARGEPAGEALLOCATOR_TAKEONALL64KBALLOCATIONS
-#define UE_VERYLARGEPAGEALLOCATOR_TAKEONALL64KBALLOCATIONS 0
+#define UE_VERYLARGEPAGEALLOCATOR_TAKEONALL64KBALLOCATIONS 1
 #endif
 
 #ifndef UE_VERYLARGEPAGEALLOCATOR_RESERVED_SIZE_IN_GB
@@ -30,22 +30,22 @@
 
 
 #ifndef UE_VERYLARGEPAGEALLOCATOR_PAGESIZE_KB
-#define UE_VERYLARGEPAGEALLOCATOR_PAGESIZE_KB 4096	//default to 4MB
+#define UE_VERYLARGEPAGEALLOCATOR_PAGESIZE_KB 2048	//default to 2MB
 #endif
 class FCachedOSVeryLargePageAllocator
 {
 	// we make the address space twice as big as we need and use the 1st have for small pool allocations, the 2nd half is used for other allocations that are still == SizeOfSubPage
 #if UE_VERYLARGEPAGEALLOCATOR_TAKEONALL64KBALLOCATIONS
-	static const uint64 AddressSpaceToReserve = ((1024LL * 1024LL * 1024LL) * UE_VERYLARGEPAGEALLOCATOR_RESERVED_SIZE_IN_GB * 2LL);
-	static const uint64 AddressSpaceToReserveSmall = AddressSpaceToReserve / 2;
+	static constexpr uint64 AddressSpaceToReserve = ((1024LL * 1024LL * 1024LL) * UE_VERYLARGEPAGEALLOCATOR_RESERVED_SIZE_IN_GB * 2LL);
+	static constexpr uint64 AddressSpaceToReserveForSmallPool = AddressSpaceToReserve/2;
 #else
-	static const uint64 AddressSpaceToReserve = ((1024 * 1024 * 1024LL) * UE_VERYLARGEPAGEALLOCATOR_RESERVED_SIZE_IN_GB);
-	static const uint64 AddressSpaceToReserveSmall = AddressSpaceToReserve;
+	static constexpr uint64 AddressSpaceToReserve = ((1024 * 1024 * 1024LL) * UE_VERYLARGEPAGEALLOCATOR_RESERVED_SIZE_IN_GB);
+	static constexpr uint64 AddressSpaceToReserveForSmallPool = AddressSpaceToReserve;
 #endif
-	static const uint64 SizeOfLargePage = (UE_VERYLARGEPAGEALLOCATOR_PAGESIZE_KB * 1024);
-	static const uint64 SizeOfSubPage = (1024 * 64);
-	static const uint64 NumberOfLargePages = (AddressSpaceToReserve / SizeOfLargePage);
-	static const uint64 NumberOfSubPagesPerLargePage = (SizeOfLargePage / SizeOfSubPage);
+	static constexpr uint64 SizeOfLargePage = (UE_VERYLARGEPAGEALLOCATOR_PAGESIZE_KB * 1024);
+	static constexpr uint64 SizeOfSubPage = (1024 * 64);
+	static constexpr uint64 NumberOfLargePages = (AddressSpaceToReserve / SizeOfLargePage);
+	static constexpr uint64 NumberOfSubPagesPerLargePage = (SizeOfLargePage / SizeOfSubPage);
 public:
 
 	FCachedOSVeryLargePageAllocator()
@@ -62,7 +62,7 @@ public:
 
 	void* Allocate(SIZE_T Size, uint32 AllocationHint = 0, FCriticalSection* Mutex = nullptr);
 
-	void Free(void* Ptr, SIZE_T Size, FCriticalSection* Mutex = nullptr);
+	void Free(void* Ptr, SIZE_T Size, FCriticalSection* Mutex = nullptr, bool ThreadIsTimeCritical = false);
 
 	void FreeAll(FCriticalSection* Mutex = nullptr);
 
@@ -73,7 +73,7 @@ public:
 
 	FORCEINLINE bool IsPartOf(const void* Ptr)
 	{
-		if (((uintptr_t)Ptr - AddressSpaceReserved) < AddressSpaceToReserveSmall)
+		if (((uintptr_t)Ptr - AddressSpaceReserved) < AddressSpaceToReserveForSmallPool)
 		{
 			return true;
 		}

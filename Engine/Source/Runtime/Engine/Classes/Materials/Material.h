@@ -10,13 +10,13 @@
 #include "RenderCommandFence.h"
 #include "Materials/MaterialInterface.h"
 #include "MaterialShared.h"
-#include "MaterialCachedData.h"
 #include "MaterialExpressionIO.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionMaterialAttributeLayers.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialLayersFunctions.h"
 #include "Templates/UniquePtr.h"
+#include "Shader/ShaderTypes.h"
 #if WITH_CHAOS
 #include "Physics/PhysicsInterfaceCore.h"
 #endif
@@ -106,26 +106,6 @@ enum EDecalBlendMode
 	DBM_MAX,
 };
 
-inline bool IsDBufferDecalBlendMode(EDecalBlendMode In)
-{
-	switch(In)
-	{
-		case DBM_DBuffer_ColorNormalRoughness:
-		case DBM_DBuffer_Color:
-		case DBM_DBuffer_ColorNormal:
-		case DBM_DBuffer_ColorRoughness:
-		case DBM_DBuffer_Normal:
-		case DBM_DBuffer_NormalRoughness:
-		case DBM_DBuffer_Roughness:
-		case DBM_DBuffer_Emissive:
-		case DBM_DBuffer_AlphaComposite:
-		case DBM_DBuffer_EmissiveAlphaComposite:
-			return true;
-	}
-
-	return false;
-}
-
 /** Defines how the material reacts on DBuffer decals, later we can expose more variants between None and Default. */
 UENUM()
 enum EMaterialDecalResponse
@@ -133,25 +113,38 @@ enum EMaterialDecalResponse
 	/** Do not receive decals (Later we still can read the DBuffer channels to customize the effect, this frees up some interpolators). */
 	MDR_None UMETA(DisplayName="None"),
 
-	/** Receive Decals, applies all DBuffer channels, assumes the decal is non metal and mask the subsurface scattering. */
+	/** Receive Decals, applies all DBuffer channels. */
 	MDR_ColorNormalRoughness UMETA(DisplayName="Color Normal Roughness"),
-	/** Receive Decals, applies color DBuffer channels, assumes the decal is non metal and mask the subsurface scattering. */
+	/** Receive Decals, applies color DBuffer channels. */
 	MDR_Color UMETA(DisplayName="Color"),
-	/** Receive Decals, applies all DBuffer channels, assumes the decal is non metal and mask the subsurface scattering. */
+	/** Receive Decals, applies color and normal DBuffer channels. */
 	MDR_ColorNormal UMETA(DisplayName="Color Normal"),
-	/** Receive Decals, applies all DBuffer channels, assumes the decal is non metal and mask the subsurface scattering. */
+	/** Receive Decals, applies color, roughness, specular and metallic DBuffer channels. */
 	MDR_ColorRoughness UMETA(DisplayName="Color Roughness"),
-	/** Receive Decals, applies all DBuffer channels, assumes the decal is non metal and mask the subsurface scattering. */
+	/** Receive Decals, applies normal DBuffer channels. */
 	MDR_Normal UMETA(DisplayName="Normal"),
-	/** Receive Decals, applies all DBuffer channels, assumes the decal is non metal and mask the subsurface scattering. */
+	/** Receive Decals, applies normal, roughness, specular and metallic DBuffer channels. */
 	MDR_NormalRoughness UMETA(DisplayName="Normal Roughness"),
-	/** Receive Decals, applies all DBuffer channels, assumes the decal is non metal and mask the subsurface scattering. */
+	/** Receive Decals, applies roughness, specular and metallic DBuffer channels. */
 	MDR_Roughness UMETA(DisplayName="Roughness"),
 	MDR_MAX
 };
 
+/** Specifies which separate translucency pass to render in. */
+UENUM()
+enum EMaterialTranslucencyPass
+{
+	/** Render after depth of field. */
+	MTP_BeforeDOF UMETA(DisplayName="Before DOF"),
+	/** Render after depth of field. */
+	MTP_AfterDOF UMETA(DisplayName="After DOF"),
+	/** Render after motion blur. */
+	MTP_AfterMotionBlur UMETA(DisplayName="After Motion Blur"),
+	MTP_MAX
+};
+
 // Material input structs.
-//@warning: manually mirrored in MaterialExpressionIO.h
+//@warning: manually mirrored in MaterialShared.h
 #if !CPP      //noexport struct
 USTRUCT(noexport)
 struct FMaterialInput
@@ -159,7 +152,7 @@ struct FMaterialInput
 #if WITH_EDITORONLY_DATA
 	/** Material expression that this input is connected to, or NULL if not connected. */
 	UPROPERTY()
-	class UMaterialExpression* Expression;
+	TObjectPtr<class UMaterialExpression> Expression;
 #endif
 
 	/** Index into Expression's outputs array that this input is connected to. */
@@ -174,6 +167,7 @@ struct FMaterialInput
 	FName InputName;
 
 #if WITH_EDITORONLY_DATA
+
 	UPROPERTY()
 	int32 Mask;
 
@@ -207,6 +201,9 @@ struct FColorMaterialInput : public FMaterialInput
 
 	UPROPERTY()
 	FColor Constant;
+
+	FColorMaterialInput() :
+		UseConstant(0) {}
 #endif
 };
 #endif
@@ -221,6 +218,9 @@ struct FScalarMaterialInput : public FMaterialInput
 
 	UPROPERTY()
 	float Constant;
+
+	FScalarMaterialInput() :
+		UseConstant(0) {}
 #endif
 };
 #endif
@@ -235,6 +235,14 @@ struct FShadingModelMaterialInput : public FMaterialInput
 
 #if !CPP      //noexport struct
 USTRUCT(noexport)
+struct FStrataMaterialInput : public FMaterialInput
+{
+	// No support for constant
+};
+#endif
+
+#if !CPP      //noexport struct
+USTRUCT(noexport)
 struct FVectorMaterialInput : public FMaterialInput
 {
 #if WITH_EDITORONLY_DATA
@@ -242,7 +250,10 @@ struct FVectorMaterialInput : public FMaterialInput
 	uint32 UseConstant : 1;
 
 	UPROPERTY()
-	FVector Constant;
+	FVector3f Constant;
+
+	FVectorMaterialInput:
+		UseConstant(0) {}
 #endif
 };
 #endif
@@ -256,13 +267,25 @@ struct FVector2MaterialInput : public FMaterialInput
 	uint32 UseConstant : 1;
 
 	UPROPERTY()
-	float ConstantX;
+	float ConstantX=0.0f;
 
 	UPROPERTY()
-	float ConstantY;
+	float ConstantY=0.0f;
+
+	FVector2MaterialInput:
+		UseConstant(0) {}
 #endif
 };
 #endif
+
+struct FMaterialInputDescription
+{
+	FExpressionInput* Input = nullptr;
+	UE::Shader::EValueType Type = UE::Shader::EValueType::Void;
+	UE::Shader::FValue ConstantValue;
+	bool bUseConstant = false;
+	bool bHidden = false;
+};
 
 USTRUCT()
 struct FParameterGroupData
@@ -303,15 +326,15 @@ class UMaterial : public UMaterialInterface
 	
 	/** Physical material to use for this graphics material. Used for sounds, effects etc.*/
 	UPROPERTY(EditAnywhere, Category=PhysicalMaterial)
-	class UPhysicalMaterial* PhysMaterial;
+	TObjectPtr<class UPhysicalMaterial> PhysMaterial;
 
 	/** Physical material mask to use for this graphics material. Used for sounds, effects etc.*/
 	UPROPERTY(EditAnywhere, Category = PhysicalMaterial)
-	class UPhysicalMaterialMask* PhysMaterialMask;
+	TObjectPtr<class UPhysicalMaterialMask> PhysMaterialMask;
 
 	/** Physical material mask map to use for this graphics material. Used for sounds, effects etc.*/
 	UPROPERTY(EditAnywhere, Category = PhysicalMaterialMask)
-	class UPhysicalMaterial* PhysicalMaterialMap[EPhysicalMaterialMaskColor::MAX];
+	TObjectPtr<class UPhysicalMaterial> PhysicalMaterialMap[EPhysicalMaterialMaskColor::MAX];
 
 	// Reflection.
 #if WITH_EDITORONLY_DATA
@@ -320,10 +343,10 @@ class UMaterial : public UMaterialInterface
 
 	UPROPERTY()
 	FColorMaterialInput SpecularColor_DEPRECATED;
+#endif
 
 	UPROPERTY()
 	FColorMaterialInput BaseColor;
-#endif
 
 	UPROPERTY()
 	FScalarMaterialInput Metallic;
@@ -331,10 +354,8 @@ class UMaterial : public UMaterialInterface
 	UPROPERTY()
 	FScalarMaterialInput Specular;
 
-#if WITH_EDITORONLY_DATA
 	UPROPERTY()
 	FScalarMaterialInput Roughness;
-#endif
 
 	UPROPERTY()
 	FScalarMaterialInput Anisotropy;
@@ -345,7 +366,6 @@ class UMaterial : public UMaterialInterface
 	UPROPERTY()
 	FVectorMaterialInput Tangent;
 
-	// Emission.
 	UPROPERTY()
 	FColorMaterialInput EmissiveColor;
 
@@ -369,8 +389,7 @@ class UMaterial : public UMaterialInterface
 	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category=Material, AssetRegistrySearchable)
 	TEnumAsByte<enum EBlendMode> BlendMode;
 
-	/** Defines how the GBuffer chanels are getting manipulated by a decal material pass. (only with MaterialDomain == MD_DeferredDecal) */
-	UPROPERTY(EditAnywhere, Category=Material)
+	UPROPERTY(meta = (DeprecatedProperty, DeprecationMessage = "No longer used."))
 	TEnumAsByte<enum EDecalBlendMode> DecalBlendMode;
 
 	/** 
@@ -415,14 +434,6 @@ public:
 	FVectorMaterialInput WorldPositionOffset;
 
 #if WITH_EDITORONLY_DATA
-	/** Offset in world space applied to tessellated vertices. */
-	UPROPERTY()
-	FVectorMaterialInput WorldDisplacement;
-
-	/** Multiplies the tessellation factors applied when a tessellation mode is set. */
-	UPROPERTY()
-	FScalarMaterialInput TessellationMultiplier;
-
 	/** Inner material color, only used for ShadingModel=Subsurface */
 	UPROPERTY()
 	FColorMaterialInput SubsurfaceColor;
@@ -434,11 +445,11 @@ public:
 	/**  */
 	UPROPERTY()
 	FScalarMaterialInput ClearCoatRoughness;
+#endif
 
 	/** output ambient occlusion to the GBuffer */
 	UPROPERTY()
 	FScalarMaterialInput AmbientOcclusion;
-#endif
 
 	/**
 	 * output refraction index for translucent rendering
@@ -465,10 +476,15 @@ public:
 	UPROPERTY()
 	FShadingModelMaterialInput ShadingModelFromMaterialExpression;
 
-	/** Indicates that the material should be rendered in the SeparateTranslucency Pass (not affected by DOF, requires bAllowSeparateTranslucency to be set in .ini). */
-	UPROPERTY(EditAnywhere, Category=Translucency, meta=(DisplayName = "Render After DOF"), AdvancedDisplay)
-	uint8 bEnableSeparateTranslucency : 1;
+	UPROPERTY()
+	FStrataMaterialInput FrontMaterial;
 
+private:
+	/** Deprecated. Use TranslucencyPass instead. */
+	UPROPERTY()
+	uint8 bEnableSeparateTranslucency_DEPRECATED : 1;
+
+public:
 	/**
 	 * Indicates that the material should be rendered using responsive anti-aliasing. Improves sharpness of small moving particles such as sparks.
 	 * Only use for small moving features because it will cause aliasing of the background.
@@ -499,6 +515,13 @@ public:
 	/** Whether the material should allow outputting negative emissive color values.  Only allowed on unlit materials. */
 	UPROPERTY(EditAnywhere, Category=Material, AdvancedDisplay)
 	uint8 bAllowNegativeEmissiveColor : 1;
+
+	/**
+	 * Specifies the separate pass in which to render translucency.
+	 * This can be used to avoid artifacts caused by certain post processing effects.
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Translucency)
+	TEnumAsByte<enum EMaterialTranslucencyPass> TranslucencyPass;
 
 	/** Sets the lighting mode that will be used on this material if it is translucent. */
 	UPROPERTY(EditAnywhere, AssetRegistrySearchable, Category=Translucency, meta=(DisplayName = "Lighting Mode"))
@@ -581,12 +604,6 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Material, meta=(DisplayName = "Emissive (Dynamic Area Light)"), AdvancedDisplay)
 	uint8 bUseEmissiveForDynamicAreaLighting : 1;
-
-	/**
-	 * If enabled, the material's opacity defines how much GI is blocked when using the LightPropagationVolume feature
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Material, meta=(DisplayName = "Block Global Illumination"), AdvancedDisplay)
-	uint8 bBlockGI : 1;
 
 	/** 
 	 * This is a special usage flag that allows a material to be assignable to any primitive type.
@@ -725,6 +742,13 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Usage)
 	uint32 bUsedWithVirtualHeightfieldMesh : 1;
+	
+	/**
+	 * Indicates that the material and its instances can be used with Nanite meshes.
+	 * This will result in the shaders required to support Nanite geometries being compiled which will increase shader compile time and memory usage.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Usage)
+	uint32 bUsedWithNanite : 1;
 
 	/** 
 	 * Indicates that the material and its instances can be used with Slate UI and UMG
@@ -744,17 +768,31 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Material, AdvancedDisplay)
 	uint8 bFullyRough : 1;
 
-	/** 
-	 *	Forces this material to use full (highp) precision in the pixel shader.
+	/**
+	 *	Deprecated. Use FloatPrecisionMode instead.
+	 *  Forces this material to use full (highp) precision in the pixel shader.
 	 *	This is slower than the default (mediump) but can be used to work around precision-related rendering errors.
-	 *	This setting has no effect on older mobile devices that do not support high precision. 
+	 *	This setting has no effect on older mobile devices that do not support high precision.
+	 */
+	UPROPERTY()
+	uint8 bUseFullPrecision_DEPRECATED : 1;
+
+	/**
+	 *	How to use full (highp) precision in the pixel shader.
+	 *	highp is slower than the default (mediump) but can be used to work around precision-related rendering errors.
+	 *  Use 'Full-precision for MaterialExpressions only' if you still want to keep the precision of the halfs in .ush/.usf
+	 *	This setting has no effect on older mobile devices that do not support high precision.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Mobile)
-	uint8 bUseFullPrecision : 1;
+	TEnumAsByte<enum EMaterialFloatPrecisionMode> FloatPrecisionMode;
 
 	/* Use lightmap directionality and per pixel normals. If disabled, lighting from lightmaps will be flat but cheaper. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Mobile)
 	uint8 bUseLightmapDirectionality : 1;
+
+	/* Use the high quality brdf functions on mobile to get better visual effects but adds GPU cost. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Mobile, meta = (DisplayName = "Mobile High Quality BRDF"))
+	uint8 bMobileEnableHighQualityBRDF : 1;
 
 	/* Use alpha to coverage for masked material on mobile, make sure MSAA is enabled as well. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Mobile, AdvancedDisplay, meta = (EditCondition = "BlendMode != EBlendMode::BLEND_Opaque"))
@@ -785,21 +823,6 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Material, AdvancedDisplay)
 	uint8 bNormalCurvatureToRoughness : 1;
 
-	/** The type of tessellation to apply to this object.  Note D3D11 required for anything except MTM_NoTessellation. */
-	UE_DEPRECATED(4.26, "Tessellation is deprecated.")
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Tessellation)
-	TEnumAsByte<enum EMaterialTessellationMode> D3D11TessellationMode;
-
-	/** Prevents cracks in the surface of the mesh when using tessellation. */
-	UE_DEPRECATED(4.26, "Tessellation is deprecated.")
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Tessellation, meta=(DisplayName = "Crack Free Displacement"))
-	uint8 bEnableCrackFreeDisplacement : 1;
-
-	/** Enables adaptive tessellation, which tries to maintain a uniform number of pixels per triangle. */
-	UE_DEPRECATED(4.26, "Tessellation is deprecated.")
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Tessellation, meta=(DisplayName = "Adaptive Tessellation"))
-	uint8 bEnableAdaptiveTessellation : 1;
-
 	/** Allows a translucent material to be used with custom depth writing by compiling additional shaders. */
 	UPROPERTY(EditAnywhere, Category = Translucency, AdvancedDisplay, meta = (DisplayName = "Allow Custom Depth Writes"))
 	uint8 AllowTranslucentCustomDepthWrites : 1;
@@ -807,10 +830,6 @@ public:
 	/** Enables a wireframe view of the mesh the material is applied to.  */
 	UPROPERTY(EditAnywhere, Category=Material, AdvancedDisplay)
 	uint8 Wireframe : 1;
-
-	/** Write depth to translucent materials in the mobile forward renderer (currently only supported on the HoloLens 2 device). */
-	UPROPERTY(EditAnywhere, Category = "Hololens", AdvancedDisplay, meta = (DisplayName = "Write Depth to Translucent Material"))
-	uint8 WriteDepthToTranslucentMaterial : 1;
 
 	/** Select what shading rate to apply for platforms that have variable rate shading */
 	UPROPERTY(EditAnywhere, Category = Material, AdvancedDisplay)
@@ -831,11 +850,18 @@ public:
 
 	/** Array of material expressions, excluding Comments.  Used by the material editor. */
 	UPROPERTY()
-	TArray<class UMaterialExpression*> Expressions;
+	TArray<TObjectPtr<class UMaterialExpression>> Expressions;
 
 	/** Array of comments associated with this material; viewed in the material editor. */
 	UPROPERTY()
-	TArray<class UMaterialExpressionComment*> EditorComments;
+	TArray<TObjectPtr<class UMaterialExpressionComment>> EditorComments;
+
+	/** The execution begin expression, if material is using an exec wire */
+	UPROPERTY()
+	TObjectPtr<class UMaterialExpressionExecBegin> ExpressionExecBegin;
+	
+	UPROPERTY()
+	TObjectPtr<class UMaterialExpressionExecEnd> ExpressionExecEnd;
 
 	/** Controls where this parameter group is displayed in a material instance parameter list.  The lower the number the higher up in the parameter list. */
 	UPROPERTY(EditAnywhere, EditFixedSize, Category = "Group Sorting")
@@ -861,6 +887,12 @@ public:
 	/** when true, the material attributes pin is used instead of the regular pins. */
 	UPROPERTY(EditAnywhere, Category=Material)
 	uint8 bUseMaterialAttributes : 1;
+
+	UPROPERTY(EditAnywhere, Category = Material)
+	uint8 bEnableExecWire : 1;
+
+	UPROPERTY(EditAnywhere, Category = Material)
+	uint8 bEnableNewHLSLGenerator : 1;
 
 	/** when true, the material casts ray tracing shadows. */
 	UPROPERTY(EditAnywhere, Category = Material)
@@ -944,10 +976,6 @@ public:
 	UPROPERTY()
 	FGuid StateId;
 
-	UE_DEPRECATED(4.26, "Tessellation is deprecated.")
-	UPROPERTY(EditAnywhere, Category = Tessellation)
-	float MaxDisplacement;
-
 #if STORE_ONLY_ACTIVE_SHADERMAPS
 	// Relative offset to the beginning of the package containing this
 	uint32 OffsetToFirstResource;
@@ -984,8 +1012,10 @@ private:
 	/** Flag used to guarantee that the RT is finished using various resources in this UMaterial before cleanup. */
 	FThreadSafeBool ReleasedByRT;
 
+#if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	FMaterialCachedExpressionData CachedExpressionData;
+	bool bSavedCachedExpressionData_DEPRECATED;
+#endif
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
@@ -994,29 +1024,15 @@ private:
 #endif // WITH_EDITORONLY_DATA
 public:
 
-	const FMaterialCachedExpressionData& GetCachedExpressionData() const { return CachedExpressionData; }
-
 	//~ Begin UMaterialInterface Interface.
 	ENGINE_API virtual UMaterial* GetMaterial() override;
 	ENGINE_API virtual const UMaterial* GetMaterial() const override;
 	ENGINE_API virtual const UMaterial* GetMaterial_Concurrent(TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) const override;
-	ENGINE_API virtual bool GetScalarParameterValue(const FHashedMaterialParameterInfo& ParameterInfo,float& OutValue, bool bOveriddenOnly = false) const override;
-#if WITH_EDITOR
-	ENGINE_API virtual bool IsScalarParameterUsedAsAtlasPosition(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue, TSoftObjectPtr<class UCurveLinearColor>& Curve, TSoftObjectPtr<class UCurveLinearColorAtlas>& Atlas) const override;
-	ENGINE_API virtual bool GetScalarParameterSliderMinMax(const FHashedMaterialParameterInfo& ParameterInfo, float& OutMinSlider, float& OutMaxSlider) const override;
-#endif
-	ENGINE_API virtual bool GetVectorParameterValue(const FHashedMaterialParameterInfo& ParameterInfo,FLinearColor& OutValue, bool bOveriddenOnly = false) const override;
-#if WITH_EDITOR
-	ENGINE_API virtual bool IsVectorParameterUsedAsChannelMask(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue) const override;
-	ENGINE_API virtual bool GetVectorParameterChannelNames(const FHashedMaterialParameterInfo& ParameterInfo, FParameterChannelNames& OutValue) const override;
-#endif
-	ENGINE_API virtual bool GetTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo,class UTexture*& OutValue, bool bOveriddenOnly = false) const override;
-	ENGINE_API virtual bool GetRuntimeVirtualTextureParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue, bool bOveriddenOnly = false) const override;
-#if WITH_EDITOR
-	ENGINE_API virtual bool GetTextureParameterChannelNames(const FHashedMaterialParameterInfo& ParameterInfo, FParameterChannelNames& OutValue) const override;
-#endif
-	ENGINE_API virtual bool GetFontParameterValue(const FHashedMaterialParameterInfo& ParameterInfo,class UFont*& OutFontValue,int32& OutFontPage, bool bOveriddenOnly = false) const override;
+	ENGINE_API virtual void GetMaterialInheritanceChain(FMaterialInheritanceChain& OutChain) const override;
+	ENGINE_API virtual bool GetParameterValue(EMaterialParameterType Type, const FMemoryImageMaterialParameterInfo& ParameterInfo, FMaterialParameterMetadata& OutValue, EMaterialGetParameterValueFlags Flags = EMaterialGetParameterValueFlags::Default) const override;
+
 	ENGINE_API virtual bool GetRefractionSettings(float& OutBiasValue) const override;
+	ENGINE_API virtual void GetDependencies(TSet<UMaterialInterface*>& Dependencies) override;
 	ENGINE_API virtual FMaterialRenderProxy* GetRenderProxy() const override;
 	ENGINE_API virtual UPhysicalMaterial* GetPhysicalMaterial() const override;
 	ENGINE_API virtual UPhysicalMaterialMask* GetPhysicalMaterialMask() const override;
@@ -1024,25 +1040,15 @@ public:
 	ENGINE_API virtual void GetUsedTextures(TArray<UTexture*>& OutTextures, EMaterialQualityLevel::Type QualityLevel, bool bAllQualityLevels, ERHIFeatureLevel::Type FeatureLevel, bool bAllFeatureLevels) const override;
 	ENGINE_API virtual void GetUsedTexturesAndIndices(TArray<UTexture*>& OutTextures, TArray< TArray<int32> >& OutIndices, EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel) const override;
 	ENGINE_API virtual void OverrideTexture(const UTexture* InTextureToOverride, UTexture* OverrideTexture, ERHIFeatureLevel::Type InFeatureLevel) override;
-	ENGINE_API virtual void OverrideVectorParameterDefault(const FHashedMaterialParameterInfo& ParameterInfo, const FLinearColor& Value, bool bOverride, ERHIFeatureLevel::Type FeatureLevel) override;
-	ENGINE_API virtual void OverrideScalarParameterDefault(const FHashedMaterialParameterInfo& ParameterInfo, float Value, bool bOverride, ERHIFeatureLevel::Type FeatureLevel) override;
+	ENGINE_API virtual void OverrideNumericParameterDefault(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, const UE::Shader::FValue& Value, bool bOverride, ERHIFeatureLevel::Type FeatureLevel) override;
 	ENGINE_API virtual bool CheckMaterialUsage(const EMaterialUsage Usage) override;
 	ENGINE_API virtual bool CheckMaterialUsage_Concurrent(const EMaterialUsage Usage) const override;
 	ENGINE_API virtual FMaterialResource* AllocateResource();
 	ENGINE_API virtual FMaterialResource* GetMaterialResource(ERHIFeatureLevel::Type InFeatureLevel, EMaterialQualityLevel::Type QualityLevel = EMaterialQualityLevel::Num) override;
 	ENGINE_API virtual const FMaterialResource* GetMaterialResource(ERHIFeatureLevel::Type InFeatureLevel, EMaterialQualityLevel::Type QualityLevel = EMaterialQualityLevel::Num) const override;
-#if WITH_EDITORONLY_DATA
-	ENGINE_API virtual bool GetStaticSwitchParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue, FGuid& OutExpressionGuid, bool bOveriddenOnly = false, bool bCheckParent = true) const override;
-	ENGINE_API virtual bool GetStaticComponentMaskParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, bool& R, bool& G, bool& B, bool& A, FGuid& OutExpressionGuid, bool bOveriddenOnly = false, bool bCheckParent = true) const override;
-	ENGINE_API virtual bool GetMaterialLayersParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, FMaterialLayersFunctions& OutLayers, FGuid& OutExpressionGuid, bool bCheckParent = true) const override;
-#endif // WITH_EDITORONLY_DATA
-	ENGINE_API virtual bool GetTerrainLayerWeightParameterValue(const FHashedMaterialParameterInfo& ParameterInfo, int32& OutWeightmapIndex, FGuid& OutExpressionGuid) const override;
+	ENGINE_API virtual bool GetMaterialLayers(FMaterialLayersFunctions& OutLayers, TMicRecursionGuard RecursionGuard = TMicRecursionGuard()) const override;
 	ENGINE_API virtual bool UpdateLightmassTextureTracking() override;
-	ENGINE_API virtual int32 GetLayerParameterIndex(EMaterialParameterAssociation Association, UMaterialFunctionInterface* LayerFunction) const override;
 #if WITH_EDITOR
-	ENGINE_API virtual bool GetGroupName(const FHashedMaterialParameterInfo& ParameterInfo, FName& OutGroup) const override;
-	ENGINE_API virtual bool GetParameterDesc(const FHashedMaterialParameterInfo& ParameterInfo, FString& OutDesc, const TArray<struct FStaticMaterialLayersParameter>* MaterialLayersParameters = nullptr) const override;
-	ENGINE_API virtual bool GetParameterSortPriority(const FHashedMaterialParameterInfo& ParameterInfo, int32& OutSortPriority, const TArray<struct FStaticMaterialLayersParameter>* MaterialLayersParameters = nullptr) const override;
 	ENGINE_API virtual bool GetGroupSortPriority(const FString& InGroupName, int32& OutSortPriority) const override;
 	ENGINE_API virtual bool GetTexturesInPropertyChain(EMaterialProperty InProperty, TArray<UTexture*>& OutTextures, 
 		TArray<FName>* OutTextureParamNames, struct FStaticParameterSet* InStaticParameterSet,
@@ -1084,6 +1090,10 @@ public:
 	/** Like IsPropertyActive(), but considers any state overriden by DerivedMaterial */
 	ENGINE_API bool IsPropertyActiveInDerived(EMaterialProperty InProperty, const UMaterialInterface* DerivedMaterial) const;
 
+	ENGINE_API bool IsCompiledWithExecutionFlow() const;
+
+	ENGINE_API bool IsUsingNewHLSLGenerator() const;
+
 #if WITH_EDITOR
 	/** Allows material properties to be compiled with the option of being overridden by the material attributes input. */
 	ENGINE_API virtual int32 CompilePropertyEx( class FMaterialCompiler* Compiler, const FGuid& AttributeID ) override;
@@ -1093,7 +1103,11 @@ public:
 	//~ End UMaterialInterface Interface.
 
 	//~ Begin UObject Interface
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	ENGINE_API virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	ENGINE_API virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	ENGINE_API virtual void PostInitProperties() override;
 	ENGINE_API virtual void Serialize(FArchive& Ar) override;
 	ENGINE_API virtual void PostDuplicate(bool bDuplicateForPIE) override;
@@ -1155,12 +1169,12 @@ public:
 	ENGINE_API bool IsCompilingOrHadCompileError(ERHIFeatureLevel::Type InFeatureLevel);
 
 #if WITH_EDITOR
+	ENGINE_API bool SetParameterValueEditorOnly(const FName& ParameterName, const FMaterialParameterMetadata& Meta);
 	ENGINE_API bool SetVectorParameterValueEditorOnly(FName ParameterName, FLinearColor InValue);
 	ENGINE_API bool SetScalarParameterValueEditorOnly(FName ParameterName, float InValue);
 	ENGINE_API bool SetTextureParameterValueEditorOnly(FName ParameterName, class UTexture* InValue);
 	ENGINE_API bool SetRuntimeVirtualTextureParameterValueEditorOnly(FName ParameterName, class URuntimeVirtualTexture* InValue);
 	ENGINE_API bool SetFontParameterValueEditorOnly(FName ParameterName, class UFont* InFontValue, int32 InFontPage);
-	ENGINE_API bool SetMaterialLayersParameterValueEditorOnly(FName ParameterName, struct FMaterialLayersFunctions InValue, FGuid OutExpressionGuid);
 	ENGINE_API bool SetStaticComponentMaskParameterValueEditorOnly(FName ParameterName, bool R, bool G, bool B, bool A, FGuid OutExpressionGuid);
 	ENGINE_API bool SetStaticSwitchParameterValueEditorOnly(FName ParameterName, bool OutValue, FGuid OutExpressionGuid);
 #endif // WITH_EDITOR
@@ -1184,21 +1198,10 @@ public:
 	ENGINE_API virtual void GetLightingGuidChain(bool bIncludeTextures, TArray<FGuid>& OutGuids) const override;
 
 private:
-#if WITH_EDITOR
-	bool GetScalarParameterValue_Legacy(const FHashedMaterialParameterInfo& ParameterInfo, float& OutValue, bool bOveriddenOnly) const;
-	bool GetVectorParameterValue_Legacy(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor& OutValue, bool bOveriddenOnly) const;
-	bool GetTextureParameterValue_Legacy(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue, bool bOveriddenOnly) const;
-	bool GetRuntimeVirtualTextureParameterValue_Legacy(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue, bool bOveriddenOnly) const;
-	bool GetFontParameterValue_Legacy(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage, bool bOveriddenOnly) const;
-#endif // WITH_EDITOR
-	bool GetScalarParameterValue_New(const FHashedMaterialParameterInfo& ParameterInfo, float& OutValue, bool bOveriddenOnly) const;
-	bool GetVectorParameterValue_New(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor& OutValue, bool bOveriddenOnly) const;
-	bool GetTextureParameterValue_New(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue, bool bOveriddenOnly) const;
-	bool GetRuntimeVirtualTextureParameterValue_New(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue, bool bOveriddenOnly) const;
-	bool GetFontParameterValue_New(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage, bool bOveriddenOnly) const;
-
 	void BackwardsCompatibilityInputConversion();
 	void BackwardsCompatibilityVirtualTextureOutputConversion();
+	void BackwardsCompatibilityDecalConversion();
+	void ConvertMaterialToStrataMaterial();
 
 	/** Handles setting up an annotation for this object if a flag has changed value */
 	void MarkUsageFlagDirty(EMaterialUsage Usage, bool CurrentValue, bool NewValue);
@@ -1215,6 +1218,8 @@ private:
 	  * from the Map Check message log.
 	  */
 	void FixupMaterialUsageAfterLoad();
+
+	void CreateExecutionFlowExpressions();
 #endif
 
 public:
@@ -1250,9 +1255,10 @@ public:
 	 * @return	Returns a array of parameter names used in this material for the specified expression type.
 	 */
 	template<typename ExpressionType>
-	void GetAllParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds, const TArray<FStaticMaterialLayersParameter>* MaterialLayersParameters = nullptr) const
+	UE_DEPRECATED(5.0, "Use GetAllParameterInfoOfType or GetAllParametersOfType")
+	void GetAllParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const
 	{
-		for (class UMaterialExpression* Expression : Expressions)
+		for (const TObjectPtr<UMaterialExpression>& Expression : Expressions)
 		{
 			FMaterialParameterInfo BaseParameterInfo;
 			BaseParameterInfo.Association = EMaterialParameterAssociation::GlobalParameter;
@@ -1262,40 +1268,23 @@ public:
 			// which are a top-level only parameter without having to deal with the below recursion
 			if (const ExpressionType* ParameterExpression = Cast<const ExpressionType>(Expression))
 			{
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
 				ParameterExpression->GetAllParameterInfo(OutParameterInfo, OutParameterIds, BaseParameterInfo);
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 			else if (const UMaterialExpressionMaterialFunctionCall* FunctionExpression = Cast<const UMaterialExpressionMaterialFunctionCall>(Expression))
 			{
 				if (FunctionExpression->MaterialFunction)
 				{
+					PRAGMA_DISABLE_DEPRECATION_WARNINGS
 					FunctionExpression->MaterialFunction->GetAllParameterInfo<ExpressionType>(OutParameterInfo, OutParameterIds, BaseParameterInfo);
+					PRAGMA_ENABLE_DEPRECATION_WARNINGS
 				}
 			}
 			else if (const UMaterialExpressionMaterialAttributeLayers* LayersExpression = Cast<const UMaterialExpressionMaterialAttributeLayers>(Expression))
 			{
 				const TArray<UMaterialFunctionInterface*>* Layers = &LayersExpression->GetLayers();
 				const TArray<UMaterialFunctionInterface*>* Blends = &LayersExpression->GetBlends();
-#if WITH_EDITOR
-				const TArray<FText>* LayerNames = &LayersExpression->GetLayerNames();
-#endif
-
-				// Handle function overrides when searching for parameters
-				if (MaterialLayersParameters)
-				{
-					const FName& ParameterName = LayersExpression->ParameterName;
-					for (const FStaticMaterialLayersParameter& LayersParameter : *MaterialLayersParameters)
-					{
-						if (LayersParameter.ParameterInfo.Name == ParameterName)
-						{
-							Layers = &LayersParameter.Value.Layers;
-							Blends = &LayersParameter.Value.Blends;
-#if WITH_EDITOR
-							LayerNames = &LayersParameter.Value.LayerNames;
-#endif
-							break;
-						}
-					}
-				}
 
 				for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
 				{
@@ -1303,7 +1292,9 @@ public:
 					{
 						BaseParameterInfo.Association = EMaterialParameterAssociation::LayerParameter;
 						BaseParameterInfo.Index = LayerIndex;
+						PRAGMA_DISABLE_DEPRECATION_WARNINGS
 						Layer->GetAllParameterInfo<ExpressionType>(OutParameterInfo, OutParameterIds, BaseParameterInfo);
+						PRAGMA_ENABLE_DEPRECATION_WARNINGS
 					}
 				}
 
@@ -1313,7 +1304,9 @@ public:
 					{
 						BaseParameterInfo.Association = EMaterialParameterAssociation::BlendParameter;
 						BaseParameterInfo.Index = BlendIndex;
+						PRAGMA_DISABLE_DEPRECATION_WARNINGS
 						Blend->GetAllParameterInfo<ExpressionType>(OutParameterInfo, OutParameterIds, BaseParameterInfo);
+						PRAGMA_ENABLE_DEPRECATION_WARNINGS
 					}
 				}
 			}
@@ -1323,31 +1316,12 @@ public:
 	}
 #endif // WITH_EDITORONLY_DATA
 
-	ENGINE_API virtual void GetAllScalarParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const override;
-	ENGINE_API virtual void GetAllVectorParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const override;
-	ENGINE_API virtual void GetAllTextureParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const override;
-	ENGINE_API virtual void GetAllFontParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const override;
-	ENGINE_API virtual void GetAllRuntimeVirtualTextureParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const override;
 #if WITH_EDITORONLY_DATA
-	ENGINE_API virtual void GetAllMaterialLayersParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const override;
-	ENGINE_API virtual void GetAllStaticSwitchParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const override;
-	ENGINE_API virtual void GetAllStaticComponentMaskParameterInfo(TArray<FMaterialParameterInfo>& OutParameterInfo, TArray<FGuid>& OutParameterIds) const override;
-
 	ENGINE_API virtual bool IterateDependentFunctions(TFunctionRef<bool(UMaterialFunctionInterface*)> Predicate) const override;
 	ENGINE_API virtual void GetDependentFunctions(TArray<class UMaterialFunctionInterface*>& DependentFunctions) const override;
 #endif // WITH_EDITORONLY_DATA
 
-	ENGINE_API virtual bool GetScalarParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, float& OutValue, bool bOveriddenOnly = false, bool bCheckOwnedGlobalOverrides = false) const override;
-	ENGINE_API virtual bool GetVectorParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor& OutValue, bool bOveriddenOnly = false, bool bCheckOwnedGlobalOverrides = false) const override;
-	ENGINE_API virtual bool GetTextureParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue, bool bCheckOwnedGlobalOverrides = false) const override;
-	ENGINE_API virtual bool GetRuntimeVirtualTextureParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue, bool bCheckOwnedGlobalOverrides = false) const override;
-	ENGINE_API virtual bool GetFontParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage, bool bCheckOwnedGlobalOverrides = false) const override;
-#if WITH_EDITOR
-	ENGINE_API virtual bool GetStaticComponentMaskParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutR, bool& OutG, bool& OutB, bool& OutA, FGuid& OutExpressionGuid, bool bCheckOwnedGlobalOverrides = false) const override;
-	ENGINE_API virtual bool GetStaticSwitchParameterDefaultValue(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue, FGuid& OutExpressionGuid, bool bCheckOwnedGlobalOverrides = false) const override;
-#endif // WITH_EDITOR
-
-	/** Returns the material's decal blend mode, calculated from the DecalBlendMode property and what inputs are connected. */
+	UE_DEPRECATED(5.0, "No longer used.")
 	uint32 GetDecalBlendMode() const { return DecalBlendMode; }
 
 	/** Returns the material's decal response mode */
@@ -1473,19 +1447,6 @@ public:
 	}
 #endif // WITH_EDITORONLY_DATA
 
-	/** Determines whether each quality level has different nodes by inspecting the material's expressions. 
-	* Or is required by the material quality setting overrides.
-	* @param	QualityLevelsUsed	output array of used quality levels.
-	* @param	ShaderPlatform	The shader platform to use for the quality settings.
-	* @param	bCooking		During cooking, certain quality levels may be discarded
-	*/
-	void GetQualityLevelUsage(TArray<bool, TInlineAllocator<EMaterialQualityLevel::Num> >& QualityLevelsUsed, EShaderPlatform ShaderPlatform, bool bCooking = false);
-	
-	inline void GetQualityLevelUsageForCooking(TArray<bool, TInlineAllocator<EMaterialQualityLevel::Num> >& QualityLevelsUsed, EShaderPlatform ShaderPlatform)
-	{
-		GetQualityLevelUsage(QualityLevelsUsed, ShaderPlatform, true);
-	}
-
 #if WITH_EDITOR
 	ENGINE_API void UpdateCachedExpressionData();
 #endif
@@ -1495,9 +1456,11 @@ public:
 
 private:
 	/**
-	 * Flush existing resource shader maps and resets the material resource's Ids.
+	 * Flush existing resource shader maps and combines the material resource's Ids with another unique guid that represent the transformation applied so we can stay deterministic.
+	 * If the guid given is non-valid (default value) we generate an entirely new guid for the resource.
+	 * @param	TransformationId	If valid, combine this guid with the current material resource's Ids yielding a new but deterministic Ids.
 	 */
-	ENGINE_API virtual void FlushResourceShaderMaps();
+	ENGINE_API virtual void ReleaseResourcesAndMutateDDCKey(const FGuid& TransformationId = FGuid());
 	
 	/** 
 	 * Cache resource shaders for rendering. 
@@ -1515,6 +1478,8 @@ private:
 	 * Note: This modifies material variables used for rendering and is assumed to be called within a FMaterialUpdateContext!
 	 */
 	void CacheResourceShadersForCooking(EShaderPlatform Platform, TArray<FMaterialResource*>& OutCachedMaterialResources, const ITargetPlatform* TargetPlatform = nullptr);
+
+	void GetNewResources(EShaderPlatform ShaderPlatform, TArray<FMaterialResource*>& NewResourcesToCache);
 
 	/** Caches shader maps for an array of material resources. */
 	void CacheShadersForResources(EShaderPlatform ShaderPlatform, const TArray<FMaterialResource*>& ResourcesToCache, EMaterialShaderPrecompileMode PrecompileMode = EMaterialShaderPrecompileMode::Default, const ITargetPlatform* TargetPlatform = nullptr);
@@ -1579,7 +1544,15 @@ public:
 	 * the expression nodes will not accurately display the final compiled material.
 	 * @param	Parameter	Pointer to the expression node whose state needs to be propagated.
 	 */
-	ENGINE_API virtual void PropagateExpressionParameterChanges(UMaterialExpression* Parameter);
+	ENGINE_API virtual void PropagateExpressionParameterChanges(const UMaterialExpression* Parameter);
+
+	/**
+	 * A parameter with duplicates has to update its peers so that they all have the same value. If this step isn't performed then
+	 * the expression nodes will not accurately display the final compiled material.
+	 * @param	ParameterName	Name of the parameter to update
+	 * @param	Meta			New value of the parameter
+	 */
+	ENGINE_API virtual void PropagateExpressionParameterChanges(const FName& ParameterName, const FMaterialParameterMetadata& Meta);
 
 	/**
 	 * Remove the expression from the editor parameters list (if it exists) and then re-adds it.
@@ -1615,8 +1588,6 @@ public:
 	/** Collect all material expressions fomr this material and all its functions and figure out which possible shading models exist in this material */
 	ENGINE_API void RebuildShadingModelField();
 
-#endif // WITH_EDITOR
-
 	/**
 	 * Get the name of a parameter.
 	 * @param	Expression	The expression to retrieve the name from.
@@ -1624,14 +1595,6 @@ public:
 	 * @return	true if the expression is a parameter with a name.
 	 */
 	static bool GetExpressionParameterName(const UMaterialExpression* Expression, FName& OutName);
-
-	/**
-	 * Copy the values of an expression parameter to another expression parameter of the same class.
-	 *
-	 * @param	Source			The source parameter.
-	 * @param	Destination		The destination parameter that will receive Source's values.
-	 */
-	static bool CopyExpressionParameters(UMaterialExpression* Source, UMaterialExpression* Destination);
 
 	/**
 	 * Return whether the provided expression node is a parameter.
@@ -1646,12 +1609,7 @@ public:
 	 * @param	Expression	The expression node to inspect.
 	 */
 	ENGINE_API static bool IsDynamicParameter(const UMaterialExpression* Expression);
-
-	/** Returns an array of the guids of functions used in this material, with the call hierarchy flattened. */
-	void AppendReferencedFunctionIdsTo(TArray<FGuid>& OutIds) const;
-
-	/** Returns an array of the guids of parameter collections used in this material. */
-	void AppendReferencedParameterCollectionIdsTo(TArray<FGuid>& OutIds) const;
+#endif // WITH_EDITOR
 
 	/* Helper functions for text output of properties. */
 	static const TCHAR* GetMaterialShadingModelString(EMaterialShadingModel InMaterialShadingModel);
@@ -1669,6 +1627,8 @@ public:
 	*									or NULL if an invalid property was requested (some properties have been removed from UI, those return NULL).
 	*/
 	ENGINE_API FExpressionInput* GetExpressionInputForProperty(EMaterialProperty InProperty);
+
+	ENGINE_API bool GetExpressionInputDescription(EMaterialProperty InProperty, FMaterialInputDescription& OutDescription);
 #endif
 
 #if WITH_EDITORONLY_DATA
@@ -1711,13 +1671,7 @@ public:
 		TArray<UMaterialExpression*>& OutExpressions, struct FStaticParameterSet* InStaticParameterSet,
 		ERHIFeatureLevel::Type InFeatureLevel = ERHIFeatureLevel::Num, EMaterialQualityLevel::Type InQuality = EMaterialQualityLevel::Num, ERHIShadingPath::Type InShadingPath = ERHIShadingPath::Num);
 
-	/** Add to the set any texture referenced by expressions, including nested functions, as well as any overrides from parameters. */
-	ENGINE_API virtual void GetReferencedTexturesAndOverrides(TSet<const UTexture*>& InOutTextures) const;
-
 #endif // WITH_EDITOR
-
-	/** Appends textures referenced by expressions, including nested functions. */
-	ENGINE_API virtual TArrayView<UObject* const> GetReferencedTextures() const override final { return CachedExpressionData.ReferencedTextures; }
 
 protected:
 
@@ -1759,20 +1713,21 @@ public:
 	void SaveShaderStableKeys(const class ITargetPlatform* TP);
 	ENGINE_API virtual void SaveShaderStableKeysInner(const class ITargetPlatform* TP, const struct FStableShaderKeyAndValue& SaveKeyVal) override;
 
-#if WITH_EDITORONLY_DATA
-	bool HasBaseColorConnected() const { return BaseColor.IsConnected(); }
-	bool HasRoughnessConnected() const { return Roughness.IsConnected(); }
-	bool HasAmbientOcclusionConnected() const { return AmbientOcclusion.IsConnected(); }
-#else	
-	// Add to runtime data only if we need to call these at runtime
-	bool HasBaseColorConnected() const { check(0); return false; }
-	bool HasRoughnessConnected() const { check(0); return false; }
-	bool HasAmbientOcclusionConnected() const { check(0); return false; }
-#endif 	
-	bool HasNormalConnected() const { return Normal.IsConnected(); }
-	bool HasSpecularConnected() const { return Specular.IsConnected(); }
-	bool HasEmissiveColorConnected() const { return EmissiveColor.IsConnected(); }
-	bool HasAnisotropyConnected() const { return Anisotropy.IsConnected(); }
+#if WITH_EDITOR
+	ENGINE_API virtual void GetShaderTypes(EShaderPlatform Platform, const ITargetPlatform* TargetPlatform, TArray<FDebugShaderTypeInfo>& OutShaderInfo) override;
+#endif // WITH_EDITOR
+
+	bool HasBaseColorConnected() const { return BaseColor.IsConnected() || GetCachedExpressionData().IsMaterialAttributePropertyConnected(MP_BaseColor); }
+	bool HasRoughnessConnected() const { return Roughness.IsConnected() || GetCachedExpressionData().IsMaterialAttributePropertyConnected(MP_Roughness); }
+	bool HasAmbientOcclusionConnected() const { return AmbientOcclusion.IsConnected() || GetCachedExpressionData().IsMaterialAttributePropertyConnected(MP_AmbientOcclusion); }
+	bool HasNormalConnected() const { return Normal.IsConnected() || GetCachedExpressionData().IsMaterialAttributePropertyConnected(MP_Normal); }
+	bool HasSpecularConnected() const { return Specular.IsConnected() || GetCachedExpressionData().IsMaterialAttributePropertyConnected(MP_Specular); }
+	bool HasMetallicConnected() const { return Metallic.IsConnected() || GetCachedExpressionData().IsMaterialAttributePropertyConnected(MP_Metallic); }
+	bool HasEmissiveColorConnected() const { return EmissiveColor.IsConnected() || GetCachedExpressionData().IsMaterialAttributePropertyConnected(MP_EmissiveColor); }
+	bool HasAnisotropyConnected() const { return Anisotropy.IsConnected() || GetCachedExpressionData().IsMaterialAttributePropertyConnected(MP_Anisotropy); }
+	bool HasStrataFrontMaterialConnected() const { return FrontMaterial.IsConnected(); }
+	bool HasVertexPositionOffsetConnected() const { return WorldPositionOffset.IsConnected() || GetCachedExpressionData().IsMaterialAttributePropertyConnected(MP_WorldPositionOffset); }
+	bool HasPixelDepthOffsetConnected() const { return PixelDepthOffset.IsConnected() || GetCachedExpressionData().IsMaterialAttributePropertyConnected(MP_PixelDepthOffset); }
 
 #if WITH_EDITOR
 	static void NotifyCompilationFinished(UMaterialInterface* Material);
@@ -1826,7 +1781,7 @@ private:
 #if WITH_EDITORONLY_DATA
 	/* Helper function to help finding expression GUID taking into account UMaterialExpressionMaterialFunctionCall */
 	template<typename ExpressionType>
-	ExpressionType* FindExpressionByGUIDRecursive(const FGuid &InGUID, const TArray<UMaterialExpression*>& InMaterialExpression)
+	ExpressionType* FindExpressionByGUIDRecursive(const FGuid &InGUID, const TArray<TObjectPtr<UMaterialExpression>>& InMaterialExpression)
 	{
 		for (int32 ExpressionIndex = 0; ExpressionIndex < InMaterialExpression.Num(); ExpressionIndex++)
 		{
@@ -1841,7 +1796,7 @@ private:
 			}
 			else if (MaterialFunctionCall && MaterialFunctionCall->MaterialFunction)
 			{
-				if (const TArray<UMaterialExpression*>* FunctionExpressions = MaterialFunctionCall->MaterialFunction->GetFunctionExpressions())
+				if (const TArray<TObjectPtr<UMaterialExpression>>* FunctionExpressions = MaterialFunctionCall->MaterialFunction->GetFunctionExpressions())
 				{
 					if (ExpressionType* Expression = FindExpressionByGUIDRecursive<ExpressionType>(InGUID, *FunctionExpressions))
 					{
@@ -1858,7 +1813,7 @@ private:
 				{
 					if (Layer)
 					{
-						if (const TArray<UMaterialExpression*>* FunctionExpressions = Layer->GetFunctionExpressions())
+						if (const TArray<TObjectPtr<UMaterialExpression>>* FunctionExpressions = Layer->GetFunctionExpressions())
 						{
 							if (ExpressionType* Expression = FindExpressionByGUIDRecursive<ExpressionType>(InGUID, *FunctionExpressions))
 							{
@@ -1872,7 +1827,7 @@ private:
 				{
 					if (Blend)
 					{
-						if (const TArray<UMaterialExpression*>* FunctionExpressions = Blend->GetFunctionExpressions())
+						if (const TArray<TObjectPtr<UMaterialExpression>>* FunctionExpressions = Blend->GetFunctionExpressions())
 						{
 							if (ExpressionType* Expression = FindExpressionByGUIDRecursive<ExpressionType>(InGUID, *FunctionExpressions))
 							{
@@ -1887,66 +1842,6 @@ private:
 		return nullptr;
 	}
 #endif // WITH_EDITORONLY_DATA
-
-#if WITH_EDITOR
-
-	template<typename ParameterType, typename ...Arguments>
-	bool SetParameterValueEditorOnly(FName InParameterName, Arguments... Args)
-	{
-		// Warning: in the case of duplicate parameters with different default values, this will find the first in the expression array, not necessarily the one that's used for rendering
-
-		// Lambda which calls SetParameterValue on a given parameter and triggers a PostEditChange event if successful
-		auto TrySetParameterValue = [&](ParameterType* Parameter) -> bool
-		{
-			if (Parameter && Parameter->SetParameterValue(InParameterName, Args...))
-			{
-				if (FProperty* ParamProperty = FindFProperty<FProperty>(ParameterType::StaticClass(), "DefaultValue"))
-				{
-					FPropertyChangedEvent PropertyChangedEvent(ParamProperty);
-					Parameter->PostEditChangeProperty(PropertyChangedEvent);
-					return true;
-				}
-			}
-			return false;
-		};
-
-		for (UMaterialExpression* Expression : Expressions)
-		{
-			if (TrySetParameterValue(Cast<ParameterType>(Expression)))
-			{
-				return true;
-			}
-			else if (UMaterialExpressionMaterialFunctionCall* FunctionCall = Cast<UMaterialExpressionMaterialFunctionCall>(Expression))
-			{
-				if (FunctionCall->MaterialFunction)
-				{
-					TArray<UMaterialFunctionInterface*> Functions;
-					Functions.Add(FunctionCall->MaterialFunction);
-					FunctionCall->MaterialFunction->GetDependentFunctions(Functions);
-
-					for (UMaterialFunctionInterface* Function : Functions)
-					{
-						const TArray<UMaterialExpression*>* ExpressionPtr = Function->GetFunctionExpressions();
-						if (ExpressionPtr)
-						{
-							for (UMaterialExpression* FunctionExpression : *ExpressionPtr)
-							{
-								if (TrySetParameterValue(Cast<ParameterType>(FunctionExpression)))
-								{
-									return true;
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		return false;
-	}
-
-#endif // WITH_EDITOR
-
 };
 
 

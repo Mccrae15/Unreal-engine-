@@ -41,8 +41,11 @@ FUdpMessageProcessor::FUdpMessageProcessor(FSocket& InSocket, const FGuid& InNod
 	, Socket(&InSocket)
 	, SocketSender(nullptr)
 	, bStopping(false)
+	, bIsInitialized(false)
 	, MessageFormat(GetDefault<UUdpMessagingSettings>()->MessageFormat) // NOTE: When the message format changes (in the Udp Messaging settings panel), the service is restarted and the processor recreated.
 {
+	Init();
+
 	WorkEvent = MakeShareable(FPlatformProcess::GetSynchEventFromPool(), [](FEvent* EventToDelete)
 	{
 		FPlatformProcess::ReturnSynchEventToPool(EventToDelete);
@@ -55,10 +58,17 @@ FUdpMessageProcessor::FUdpMessageProcessor(FSocket& InSocket, const FGuid& InNod
 
 FUdpMessageProcessor::~FUdpMessageProcessor()
 {
-	// shut down worker thread
-	Thread->Kill(true);
+	// shut down worker thread if it is still running
+	Thread->Kill();
+
 	delete Thread;
 	Thread = nullptr;
+
+	delete Beacon;
+	Beacon = nullptr;
+
+	delete SocketSender;
+	SocketSender = nullptr;
 
 	// remove all transport nodes
 	if (NodeLostDelegate.IsBound())
@@ -219,18 +229,22 @@ FSingleThreadRunnable* FUdpMessageProcessor::GetSingleThreadInterface()
 
 bool FUdpMessageProcessor::Init()
 {
-	Beacon = new FUdpMessageBeacon(Socket, LocalNodeId, MulticastEndpoint);
-	SocketSender = new FUdpSocketSender(Socket, TEXT("FUdpMessageProcessor.Sender"));
+	if (!bIsInitialized)
+	{
+		Beacon = new FUdpMessageBeacon(Socket, LocalNodeId, MulticastEndpoint);
+		SocketSender = new FUdpSocketSender(Socket, TEXT("FUdpMessageProcessor.Sender"));
 
-	// Current protocol version 14
-	SupportedProtocolVersions.Add(UDP_MESSAGING_TRANSPORT_PROTOCOL_VERSION);
-	// Support Protocol version 10, 11, 12, 13
-	SupportedProtocolVersions.Add(13);
-	SupportedProtocolVersions.Add(12);
-	SupportedProtocolVersions.Add(11);
-	SupportedProtocolVersions.Add(10);
-
-	return true;
+		// Current protocol version 15
+		SupportedProtocolVersions.Add(UDP_MESSAGING_TRANSPORT_PROTOCOL_VERSION);
+		// Support Protocol version 10, 11, 12, 13, 14
+		SupportedProtocolVersions.Add(14);
+		SupportedProtocolVersions.Add(13);
+		SupportedProtocolVersions.Add(12);
+		SupportedProtocolVersions.Add(11);
+		SupportedProtocolVersions.Add(10);
+		bIsInitialized = true;
+	}
+	return bIsInitialized;
 }
 
 
@@ -253,12 +267,6 @@ uint32 FUdpMessageProcessor::Run()
 		} while ((!InboundSegments.IsEmpty() || MoreToSend()) && !bStopping);
 	}
 
-	delete Beacon;
-	Beacon = nullptr;
-
-	delete SocketSender;
-	SocketSender = nullptr;
-
 	return 0;
 }
 
@@ -272,14 +280,11 @@ void FUdpMessageProcessor::Stop()
 
 void FUdpMessageProcessor::WaitAsyncTaskCompletion()
 {
-	// Stop the processor thread
+	// Stop to prevent any new work from being queued.
 	Stop();
 
-	// Make sure we stopped, so we can access KnownNodes safely
-	while (SocketSender != nullptr)
-	{
-		FPlatformProcess::Sleep(0); // Yield.
-	}
+	// Wait for the processor thread, so we can access KnownNodes safely
+	Thread->WaitForCompletion();
 
 	// Check if processor has in-flight serialization task(s).
 	auto HasIncompleteSerializationTasks = [this]()
@@ -852,7 +857,7 @@ void FUdpMessageProcessor::UpdateKnownNodes()
 		bSuccess = NodeByteSent >= 0;
 		if (!bSuccess)
 		{
-			UE_LOG(LogUdpMessaging, Warning, TEXT("FUdpMessageProcessor::UpdateKnownNodes received negative NodeByteSent (%d) from socket."), NodeByteSent);
+			UE_LOG(LogUdpMessaging, Verbose, TEXT("FUdpMessageProcessor::UpdateKnownNodes received negative NodeByteSent (%d) from socket sender."), NodeByteSent);
 			break;
 		}
 

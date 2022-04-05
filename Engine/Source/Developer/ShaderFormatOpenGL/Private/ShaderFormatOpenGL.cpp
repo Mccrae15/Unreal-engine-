@@ -17,7 +17,7 @@ class FShaderFormatGLSL : public IShaderFormat
 	enum
 	{
 		/** Version for shader format, this becomes part of the DDC key. */
-		UE_SHADER_GLSL_VER = 98,
+		UE_SHADER_GLSL_VER = 103,
 	};
 
 	void CheckFormat(FName Format) const
@@ -77,7 +77,7 @@ public:
 
 	virtual const TCHAR* GetPlatformIncludeDirectory() const
 	{
-		return TEXT("");
+		return TEXT("GL");
 	}
 
 	virtual bool UsesHLSLcc(const struct FShaderCompilerInput& Input) const override

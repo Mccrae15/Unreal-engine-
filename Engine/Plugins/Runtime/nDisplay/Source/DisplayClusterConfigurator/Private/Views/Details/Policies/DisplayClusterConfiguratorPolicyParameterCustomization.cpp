@@ -27,7 +27,6 @@
 #include "ScopedTransaction.h"
 
 #include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 
@@ -238,6 +237,7 @@ void FPolicyParameterInfoCombo::CreateCustomRowWidget(IDetailChildrenBuilder& In
 		[
 			SNew(STextBlock)
 			.Text(this, &FPolicyParameterInfoCombo::GetOrAddCustomParameterValueText)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
 		]
 	];
 }
@@ -249,7 +249,9 @@ void FPolicyParameterInfoCombo::SetOnSelectedDelegate(FOnItemSelected InDelegate
 
 TSharedRef<SWidget> FPolicyParameterInfoCombo::MakeCustomParameterValueComboWidget(TSharedPtr<FString> InItem)
 {
-	return SNew(STextBlock).Text(FText::FromString(*InItem));
+	return SNew(STextBlock)
+		.Text(FText::FromString(*InItem))
+		.Font(IDetailLayoutBuilder::GetDetailFont());
 }
 
 void FPolicyParameterInfoCombo::OnCustomParameterValueSelected(TSharedPtr<FString> InValue, ESelectInfo::Type SelectInfo)
@@ -319,6 +321,7 @@ void FPolicyParameterInfoText::CreateCustomRowWidget(IDetailChildrenBuilder& InD
 			SNew(STextBlock)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
 			.Text(GetParameterDisplayName())
+			.ToolTipText(this, &FPolicyParameterInfo::GetParameterTooltip)
 		]
 		.ValueContent()
 		[
@@ -347,6 +350,7 @@ void FPolicyParameterInfoBool::CreateCustomRowWidget(IDetailChildrenBuilder& InD
 			SNew(STextBlock)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
 			.Text(GetParameterDisplayName())
+			.ToolTipText(this, &FPolicyParameterInfo::GetParameterTooltip)
 		]
 		.ValueContent()
 		[
@@ -383,6 +387,7 @@ void FPolicyParameterInfoFile::CreateCustomRowWidget(IDetailChildrenBuilder& InD
 			SNew(STextBlock)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
 			.Text(GetParameterDisplayName())
+			.ToolTipText(this, &FPolicyParameterInfo::GetParameterTooltip)
 		]
 		.ValueContent()
 		[
@@ -550,6 +555,7 @@ void FPolicyParameterInfoMatrix::CreateCustomRowWidget(IDetailChildrenBuilder& I
 		SNew(STextBlock)
 		.Font(IDetailLayoutBuilder::GetDetailFont())
 		.Text(GetParameterDisplayName())
+		.ToolTipText(this, &FPolicyParameterInfo::GetParameterTooltip)
 		.Visibility(this, &FPolicyParameterInfoMatrix::IsParameterVisible)
 	]
 	.Visibility(MakeAttributeRaw(this, &FPolicyParameterInfoMatrix::IsParameterVisible));
@@ -763,6 +769,7 @@ void FPolicyParameterInfo4x4Matrix::CreateCustomRowWidget(IDetailChildrenBuilder
 		SNew(STextBlock)
 		.Font(IDetailLayoutBuilder::GetDetailFont())
 		.Text(GetParameterDisplayName())
+		.ToolTipText(this, &FPolicyParameterInfo::GetParameterTooltip)
 		.Visibility(this, &FPolicyParameterInfo4x4Matrix::IsParameterVisible)
 	]
 	.Visibility(MakeAttributeRaw(this, &FPolicyParameterInfo4x4Matrix::IsParameterVisible));
@@ -890,6 +897,7 @@ void FPolicyParameterInfoRotator::CreateCustomRowWidget(IDetailChildrenBuilder& 
 		SNew(STextBlock)
 		.Font(IDetailLayoutBuilder::GetDetailFont())
 		.Text(LOCTEXT("RotationLabel", "Rotation"))
+		.ToolTipText(this, &FPolicyParameterInfo::GetParameterTooltip)
 	]
 	.ValueContent()
 	.MinDesiredWidth(375.0f)
@@ -1005,13 +1013,15 @@ FPolicyParameterInfoFrustumAngle::FPolicyParameterInfoFrustumAngle(const FString
 }
 
 void FPolicyParameterInfoFrustumAngle::CreateCustomRowWidget(IDetailChildrenBuilder& InDetailWidgetRow)
-{	InDetailWidgetRow.AddCustomRow(GetParameterDisplayName())
+{
+	InDetailWidgetRow.AddCustomRow(GetParameterDisplayName())
 	.Visibility(MakeAttributeRaw(this, &FPolicyParameterInfoFrustumAngle::IsParameterVisible))
 	.NameContent()
 	[
 		SNew(STextBlock)
 		.Font(IDetailLayoutBuilder::GetDetailFont())
 		.Text(GetParameterDisplayName())
+		.ToolTipText(this, &FPolicyParameterInfo::GetParameterTooltip)
 	]
 	.ValueContent()
 	.MinDesiredWidth(375.0f)

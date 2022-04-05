@@ -41,14 +41,14 @@ void OculusAudioSpatializationAudioMixer::Initialize(const FAudioPluginInitializ
 
 	Params.AddDefaulted(InitParams.NumSources);
 
-	// UE4 is in centimeters
+	// UE is in centimeters
 	ovrResult Result = OVRA_CALL(ovrAudio_SetUnitScale)(Context, 0.01f);
 	OVR_AUDIO_CHECK(Result == ovrSuccess, "Failed to set unit scale");
 
 	const UOculusAudioSettings* Settings = GetDefault<UOculusAudioSettings>();
 	ApplyOculusAudioSettings(Settings);
 
-	TickDelegateHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &OculusAudioSpatializationAudioMixer::Tick));
+	TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &OculusAudioSpatializationAudioMixer::Tick));
 }
 
 void OculusAudioSpatializationAudioMixer::ApplyOculusAudioSettings(const UOculusAudioSettings* Settings)
@@ -83,7 +83,7 @@ void OculusAudioSpatializationAudioMixer::Shutdown()
 {
 	if (TickDelegateHandle.IsValid())
 	{
-		FTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
 	}
 }
 

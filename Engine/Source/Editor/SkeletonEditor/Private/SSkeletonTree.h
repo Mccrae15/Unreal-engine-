@@ -41,12 +41,13 @@ struct FNotificationInfo;
 class IPinnedCommandList;
 class FPackageReloadedEvent;
 enum class EPackageReloadPhase : uint8;
+enum class EBlendProfileMode : uint8;
 
 //////////////////////////////////////////////////////////////////////////
 // SSkeletonTree
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
-class SSkeletonTree : public ISkeletonTree, public FEditorUndoClient, public FGCObject
+class SSkeletonTree : public ISkeletonTree, public FSelfRegisteringEditorUndoClient
 {
 public:
 	SLATE_BEGIN_ARGS( SSkeletonTree )
@@ -80,16 +81,6 @@ public:
 	virtual void SelectItemsBy(TFunctionRef<bool(const TSharedRef<ISkeletonTreeItem>&, bool&)> Predicate) const override;
 	virtual void DuplicateAndSelectSocket(const FSelectedSocketInfo& SocketInfoToDuplicate, const FName& NewParentBoneName = FName()) override;
 
-	virtual void RegisterOnObjectSelected(const FOnObjectSelected& Delegate) override
-	{
-		OnObjectSelectedMulticast.Add(Delegate);
-	}
-
-	virtual void UnregisterOnObjectSelected(SWidget* Widget) override
-	{
-		OnObjectSelectedMulticast.RemoveAll(Widget);
-	}
-
 	virtual FDelegateHandle RegisterOnSelectionChanged(const FOnSkeletonTreeSelectionChanged& Delegate) override
 	{
 		return OnSelectionChangedMulticast.Add(Delegate);
@@ -105,12 +96,9 @@ public:
 	virtual TSharedPtr<SWidget> GetSearchWidget() const override { return NameFilterBox; }
 	virtual TSharedPtr<IPinnedCommandList> GetPinnedCommandList() const override { return PinnedCommands; }
 
-	/** FEditorUndoClient interface */
+	/** FSelfRegisteringEditorUndoClient interface */
 	virtual void PostUndo(bool bSuccess) override;
 	virtual void PostRedo(bool bSuccess) override;
-
-	/** FGCObject interface */
-	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
 
 	/** Creates the tree control and then populates */
 	void CreateTreeColumns();
@@ -163,6 +151,9 @@ public:
 	/** Update preview scene and tree after a socket duplication */
 	void PostDuplicateSocket(UObject* InAttachedObject, const FName& InSocketName);
 
+	/** Update tree after a socket changes parent */
+	void PostSetSocketParent();
+
 private:
 	/** Binds the commands in FSkeletonTreeCommands to functions in this class */
 	void BindCommands();
@@ -175,6 +166,9 @@ private:
 
 	/** Called to display context menu when right clicking on the widget */
 	TSharedPtr< SWidget > CreateContextMenu();
+
+	/** Called to display the add new menu */
+	TSharedRef< SWidget > CreateNewMenu();
 
 	/** Called to display the filter menu */
 	TSharedRef< SWidget > CreateFilterMenu();
@@ -302,6 +296,9 @@ private:
 	/** Handle focusing the camera on the current selection */
 	void HandleFocusCamera();
 
+	/** Handle framing the selected item in the tree */
+	void HandleFrameSelection();
+
 	/** Handle filtering the tree  */
 	ESkeletonTreeFilterResult HandleFilterSkeletonTreeItem(const FSkeletonTreeFilterArgs& InArgs, const TSharedPtr<class ISkeletonTreeItem>& InItem);
 
@@ -323,6 +320,19 @@ private:
 	/** Handle package reloading (might be our skeleton) */
 	void HandlePackageReloaded(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent);
 
+	/** Creates a new Blend Profile */
+	void OnCreateBlendProfile(const EBlendProfileMode InMode);
+
+	/** Removes the active Blend Profile */
+	void OnDeleteCurrentBlendProfile();
+
+	/** Generate Blend Profile Menu */
+	void GetBlendProfileMenu(FMenuBuilder& MenuBuilder);
+
+	TSharedRef<SWidget> GetBlendProfileColumnMenuContent();
+
+	void ExpandTreeOnSelection(TSharedPtr<ISkeletonTreeItem> RowToExpand, bool bForce = false);
+
 private:
 	/** Pointer back to the skeleton tree that owns us */
 	TWeakPtr<FEditableSkeleton> EditableSkeleton;
@@ -335,6 +345,9 @@ private:
 
 	/** The blend profile picker displaying the selected profile */
 	TSharedPtr<SBlendProfilePicker> BlendProfilePicker;
+
+	/** Blend Profile Header Label.  Also used to name new blend profiles */
+	TSharedPtr<SInlineEditableTextBlock> BlendProfileHeader;
 
 	/** Widget user to hold the skeleton tree */
 	TSharedPtr<SOverlay> TreeHolder;
@@ -360,13 +373,14 @@ private:
 	/** Commands that are bound to delegates*/
 	TSharedPtr<FUICommandList_Pinnable> UICommandList;
 
+	/** Current type of blend profile no create. We shouldn't need to hold state for this, but blend profile creation is tied to its header text committed*/
+	EBlendProfileMode NewBlendProfileMode;
+
 	/** Current type of bones to show */
 	EBoneFilter BoneFilter;
 
 	/** Current type of sockets to show */
 	ESocketFilter SocketFilter;
-
-	bool bShowingAdvancedOptions;
 
 	/** Points to an item that is being requested to be renamed */
 	TSharedPtr<ISkeletonTreeItem> DeferredRenameRequest;
@@ -377,9 +391,6 @@ private:
 	/** Delegate for when an item is selected */
 	FOnSkeletonTreeSelectionChangedMulticast OnSelectionChangedMulticast;
 
-	UE_DEPRECATED(4.17, "Please use OnSelectionChangedMulticast")
-	FOnObjectSelectedMulticast OnObjectSelectedMulticast;
-
 	/** Selection recursion guard flag */
 	bool bSelecting;
 
@@ -389,14 +400,14 @@ private:
 	/** Add virtual bones to the skeleton tree */
 	void AddVirtualBones(const TArray<FVirtualBone>& VirtualBones);
 
+	/** Checks if the named profile is the currently selected/active one */
+	bool IsBlendProfileSelected(FName ProfileName) const;
+
 	/** The builder we use to construct the tree */
 	TSharedPtr<class ISkeletonTreeBuilder> Builder;
 
 	/** Compiled filter search terms. */
 	TSharedPtr<class FTextFilterExpressionEvaluator> TextFilterPtr;
-
-	/** Proxy object used to display and edit bone transforms in details panels. Note this is only kept for backwards compatibility (used with OnObjectSelectedMulticast) */
-	class UBoneProxy* BoneProxy;
 
 	/** Whether to allow operations that modify the mesh */
 	bool bAllowMeshOperations;

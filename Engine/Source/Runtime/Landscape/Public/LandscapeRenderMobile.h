@@ -41,11 +41,6 @@ public:
 	{
 	}
 
-	virtual ~FLandscapeVertexFactoryMobile()
-	{
-		ReleaseResource();
-	}
-
 	/**
 	* Should we cache the material's shadertype on this platform with this vertex factory? 
 	*/
@@ -96,7 +91,7 @@ public:
 	/** Destructor. */
 	virtual ~FLandscapeVertexBufferMobile()
 	{
-		ReleaseResource();
+		FVertexBuffer::ReleaseResource();
 		DEC_DWORD_STAT_BY(STAT_LandscapeVertexMem, DataSize);
 	}
 
@@ -116,7 +111,6 @@ struct FLandscapeMobileRenderData
 {
 	FLandscapeVertexBufferMobile* VertexBuffer = nullptr;
 	struct FLandscapeMobileHoleData* HoleData = nullptr;
-	FOccluderVertexArraySP OccluderVerticesSP;
 	uint8 CurrentFirstLODIdx;
 	bool bReadyForStreaming = false;
 
@@ -139,7 +133,6 @@ public:
 	FLandscapeComponentSceneProxyMobile(ULandscapeComponent* InComponent);
 
 	virtual void CreateRenderThreadResources() override;
-	virtual int32 CollectOccluderElements(FOccluderElementsCollector& Collector) const override;
 
 	friend class FLandscapeVertexBufferMobile;
 

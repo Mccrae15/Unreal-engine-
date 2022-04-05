@@ -9,8 +9,7 @@
 #include "Internationalization/Internationalization.h"
 
 #if !UE_ENABLE_ICU
-#include "Internationalization/Text.h"
-#include "TextData.h"
+#include "Internationalization/TextHistory.h"
 
 FString FTextChronoFormatter::AsDate( const FDateTime& DateTime, const EDateTimeStyle::Type DateStyle, const FString& TimeZone, const FCulture& TargetCulture )
 {
@@ -28,6 +27,12 @@ FString FTextChronoFormatter::AsDateTime( const FDateTime& DateTime, const EDate
 {
 	checkf(FInternationalization::Get().IsInitialized() == true, TEXT("FInternationalization is not initialized. An FText formatting method was likely used in static object initialization - this is not supported."));
 	return DateTime.ToString(TEXT("%Y.%m.%d-%H.%M.%S"));
+}
+
+FString FTextChronoFormatter::AsDateTime(const FDateTime& DateTime, const FString& CustomPattern, const FString& TimeZone, const FCulture& TargetCulture)
+{
+	checkf(FInternationalization::Get().IsInitialized() == true, TEXT("FInternationalization is not initialized. An FText formatting method was likely used in static object initialization - this is not supported."));
+	return DateTime.ToFormattedString(*CustomPattern);
 }
 
 FString FTextTransformer::ToLower(const FString& InStr)

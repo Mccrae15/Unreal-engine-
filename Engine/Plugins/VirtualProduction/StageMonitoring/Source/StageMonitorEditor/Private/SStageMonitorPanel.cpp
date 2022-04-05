@@ -62,7 +62,7 @@ void SStageMonitorPanel::RegisterNomadTabSpawner(TSharedRef<FWorkspaceItem> InWo
 			.SetDisplayName(LOCTEXT("TabTitle", "Stage Monitor"))
 			.SetTooltipText(LOCTEXT("TooltipText", "Monitor performance data from stage machines"))
 			.SetGroup(InWorkspaceItem)
-			.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.GameSettings.Small")); //todo t2
+			.SetIcon(FSlateIcon(FStageMonitorEditorStyle::Get().GetStyleSetName(), "StageMonitor.TabIcon"));
 	};
 
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(StageMonitorUtilities::NAME_LevelEditorModuleName);
@@ -202,7 +202,7 @@ void SStageMonitorPanel::Construct(const FArguments& InArgs)
 					[
 						SNew(SCheckBox)
 						.Style(FStageMonitorEditorStyle::Get(), "ViewMode")
-						.ToolTipText(LOCTEXT("ViewModeTooltip", "Start / stop monitor"))
+						.ToolTipText(LOCTEXT("ActivateMonitorTooltip", "Start / stop monitor"))
 						.IsChecked(this, &SStageMonitorPanel::IsMonitorActive)
 						.OnCheckStateChanged(this, &SStageMonitorPanel::OnMonitorStateChanged)
 						[

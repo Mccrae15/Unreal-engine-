@@ -78,7 +78,7 @@ struct FTimelineVectorTrack
 
 	/** Vector curve to be evaluated */
 	UPROPERTY()
-	class UCurveVector* VectorCurve;
+	TObjectPtr<class UCurveVector> VectorCurve;
 
 	/** Function that the output from ValueCurve will be passed to */
 	UPROPERTY()
@@ -115,7 +115,7 @@ struct FTimelineFloatTrack
 
 	/** Float curve to be evaluated */
 	UPROPERTY()
-	class UCurveFloat* FloatCurve;
+	TObjectPtr<class UCurveFloat> FloatCurve;
 
 	/** Function that the output from ValueCurve will be passed to */
 	UPROPERTY()
@@ -153,7 +153,7 @@ struct FTimelineLinearColorTrack
 
 	/** Float curve to be evaluated */
 	UPROPERTY()
-	class UCurveLinearColor* LinearColorCurve;
+	TObjectPtr<class UCurveLinearColor> LinearColorCurve;
 
 	/** Function that the output from ValueCurve will be passed to */
 	UPROPERTY()
@@ -316,6 +316,9 @@ public:
 	/** Get length of the timeline */
 	ENGINE_API float GetTimelineLength() const;
 
+	/** Get length of the timeline divided by the play rate */
+	ENGINE_API float GetScaledTimelineLength() const;
+
 	/** Sets the timeline length mode */
 	ENGINE_API void SetTimelineLengthMode(ETimelineLengthMode NewMode);
 
@@ -461,6 +464,10 @@ public:
 	/** Get length of the timeline */
 	UFUNCTION(BlueprintCallable, Category="Components|Timeline")
 	ENGINE_API float GetTimelineLength() const;
+
+	/** Get length of the timeline divided by the play rate */
+	UFUNCTION(BlueprintCallable, Category="Components|Timeline")
+	ENGINE_API float GetScaledTimelineLength() const;
 
 	/** Set length of the timeline */
 	UFUNCTION(BlueprintCallable, Category="Components|Timeline")

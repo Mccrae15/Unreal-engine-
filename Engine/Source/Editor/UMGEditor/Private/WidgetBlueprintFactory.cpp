@@ -59,6 +59,29 @@ UWidgetBlueprintFactory::UWidgetBlueprintFactory(const FObjectInitializer& Objec
 
 bool UWidgetBlueprintFactory::ConfigureProperties()
 {
+	{
+		FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
+
+		// Fill in options
+		FClassViewerInitializationOptions Options;
+		Options.DisplayMode = EClassViewerDisplayMode::Type::TreeView;
+		Options.Mode = EClassViewerMode::ClassPicker;
+		Options.bShowNoneOption = false;
+		Options.bExpandAllNodes = true;
+
+		TSharedPtr<FWidgetClassFilter> Filter = MakeShareable(new FWidgetClassFilter);
+		Options.ClassFilters.Add(Filter.ToSharedRef());
+		Options.ExtraPickerCommonClasses.Add(UUserWidget::StaticClass());
+
+		Filter->DisallowedClassFlags = CLASS_Deprecated | CLASS_NewerVersionExists;
+		Filter->AllowedChildrenOfClasses.Add(UUserWidget::StaticClass());
+
+		const FText TitleText = LOCTEXT("CreateWidgetBlueprint", "Pick Root Widget for New Widget Blueprint");
+
+		UClass* ChosenParentClass = nullptr;
+		SClassPickerDialog::PickClass(TitleText, Options, ChosenParentClass, UUserWidget::StaticClass());
+		ParentClass = ChosenParentClass ? ChosenParentClass : UUserWidget::StaticClass();
+	}
 	if (GetDefault<UUMGEditorProjectSettings>()->bUseWidgetTemplateSelector)
 	{
 		// Load the classviewer module to display a class picker
@@ -75,13 +98,13 @@ bool UWidgetBlueprintFactory::ConfigureProperties()
 		Options.ExtraPickerCommonClasses.Add(UCanvasPanel::StaticClass());
 
 		TSharedPtr<FWidgetClassFilter> Filter = MakeShareable(new FWidgetClassFilter);
-		Options.ClassFilter = Filter;
+		Options.ClassFilters.Add(Filter.ToSharedRef());
 
 		Filter->DisallowedClassFlags = CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists;
 		Filter->AllowedChildrenOfClasses.Add(UPanelWidget::StaticClass());
 
 		const FText TitleText = LOCTEXT("CreateWidgetBlueprint", "Pick Root Widget for New Widget Blueprint");
-		return SClassPickerDialog::PickClass(TitleText, Options, RootWidgetClass, UPanelWidget::StaticClass());
+		return SClassPickerDialog::PickClass(TitleText, Options, static_cast<UClass*&>(RootWidgetClass), UPanelWidget::StaticClass());
 
 	}
 	return true;

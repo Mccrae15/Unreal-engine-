@@ -128,9 +128,9 @@ public:
 		CurrentState->SetPackedGlobalShaderParameter(BufferIndex, Offset, NumBytes, NewValue);
 	}
 
-	inline void SetUniformBufferConstantData(uint32 BindingIndex, const TArray<uint8>& ConstantData, const FVulkanUniformBuffer* SrcBuffer)
+	inline void SetUniformBufferConstantData(uint32 BindingIndex, const TArray<uint8>& ConstantData)
 	{
-		CurrentState->SetUniformBufferConstantData(BindingIndex, ConstantData, SrcBuffer);
+		CurrentState->SetUniformBufferConstantData(BindingIndex, ConstantData);
 	}
 
 	inline void SetSamplerStateForUBResource(uint32 DescriptorSet, uint32 BindingIndex, FVulkanSamplerState* Sampler)
@@ -271,13 +271,13 @@ public:
 		CurrentState->SetTexture(DescriptorSet, BindingIndex, TextureBase, Layout);
 	}
 
-	inline void SetUniformBufferConstantData(ShaderStage::EStage Stage, uint32 BindingIndex, const TArray<uint8>& ConstantData, const FVulkanUniformBuffer* SrcBuffer)
+	inline void SetUniformBufferConstantData(ShaderStage::EStage Stage, uint32 BindingIndex, const TArray<uint8>& ConstantData)
 	{
-		CurrentState->SetUniformBufferConstantData(Stage, BindingIndex, ConstantData, SrcBuffer);
+		CurrentState->SetUniformBufferConstantData(Stage, BindingIndex, ConstantData);
 	}
 
 	template<bool bDynamic>
-	inline void SetUniformBuffer(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanRealUniformBuffer* UniformBuffer)
+	inline void SetUniformBuffer(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanUniformBuffer* UniformBuffer)
 	{
 		CurrentState->SetUniformBuffer<bDynamic>(DescriptorSet, BindingIndex, UniformBuffer);
 	}

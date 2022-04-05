@@ -12,7 +12,6 @@
 
 class FDestructibleMeshEditorViewportClient;
 class IDestructibleMeshEditor;
-class SDockableTab;
 class UDestructibleComponent;
 class UDestructibleMesh;
 
@@ -34,6 +33,10 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	
 	// FGCObject interface
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SDestructibleMeshEditorViewport");
+	}
 	// End of FGCObject interface
 
 	// FNotifyHook interface
@@ -63,9 +66,6 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** Component for the preview Destructible mesh. */
 	UDestructibleComponent* PreviewComponent;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-	/** The parent tab where this viewport resides */
-	TWeakPtr<SDockableTab> ParentTab;
 
 	/** 
 	 *	Causes chunks at the given PreviewDepth to be displayed in the viewport.  Clamped to the range [0, depth count), where (depth count) = the number of chunk hierarchy depths in the destructible.

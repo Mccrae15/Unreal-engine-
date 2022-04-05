@@ -137,9 +137,8 @@ void FWindowsStylusInputInterface::Tick()
 			if (CurrentPlugin == nullptr)
 			{
 				CreateStylusPluginForHWND(Hwnd);
+				Window->GetOnWindowClosedEvent().AddRaw(this, &FWindowsStylusInputInterface::RemovePluginForWindow);
 			}
-
-			Window->GetOnWindowClosedEvent().AddRaw(this, &FWindowsStylusInputInterface::RemovePluginForWindow);
 		}
 	}
 }
@@ -178,7 +177,7 @@ TSharedPtr<IStylusInputInterfaceInternal> CreateStylusInputInterface()
 {
 	if (!FWindowsPlatformMisc::CoInitialize()) 
 	{
-		UE_LOG(LogStylusInput, Warning, TEXT("Could not initialize COM library!"));
+		UE_LOG(LogStylusInput, Display, TEXT("Could not initialize COM library!"));
 		return nullptr;
 	}
 

@@ -3,16 +3,18 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/EngineBaseTypes.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/Text/STextBlock.h"
 
 #include "CameraNodalOffsetAlgo.generated.h"
 
 struct FGeometry;
+struct FKey;
 struct FNodalPointOffset;
 struct FPointerEvent;
-struct FTransform;
 
+class UMaterialInterface;
 class UNodalOffsetTool;
 class SWidget;
 
@@ -39,6 +41,9 @@ public:
 	/** Callback when viewport is clicked. Returns false if the event was not handled. */
 	virtual bool OnViewportClicked(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) { return false;  };
 
+	/** Callback when viewport receives input key presses. Returns false if the event was not handled. */
+	virtual bool OnViewportInputKey(const FKey& InKey, const EInputEvent& InEvent) { return false; };
+
 	/** Returns the UI of this calibrator. Expected to only be called once */
 	virtual TSharedRef<SWidget> BuildUI() { return SNullWidget::NullWidget; };
 
@@ -48,9 +53,15 @@ public:
 	/** Returns a descriptive name/title of this nodal offset algorithm */
 	virtual FName FriendlyName() const { return TEXT("Invalid Name"); };
 
+	/** Returns the overlay material used by this algo (if any) */
+	virtual UMaterialInterface* GetOverlayMaterial() const { return nullptr; };
+
+	/** Returns true is this algo has enabled an overlay */
+	virtual bool IsOverlayEnabled() const { return false; };
+
 	/** Called when the current offset was saved */
 	virtual void OnSavedNodalOffset() { };
 
-	/** Called to present the user with instructions on how to this this algo */
+	/** Called to present the user with instructions on how to use this algo */
 	virtual TSharedRef<SWidget> BuildHelpWidget() { return SNew(STextBlock).Text(FText::FromString(TEXT("Coming soon!")));  };
 };

@@ -13,6 +13,13 @@ UAnimNotify_ResetDynamics::UAnimNotify_ResetDynamics()
 
 void UAnimNotify_ResetDynamics::Notify(class USkeletalMeshComponent* MeshComp, class UAnimSequenceBase* Animation)
 {
+}
+
+void UAnimNotify_ResetDynamics::Notify(class USkeletalMeshComponent* MeshComp, class UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+    Notify(MeshComp, Animation);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	MeshComp->ResetAnimInstanceDynamics();
 }
 

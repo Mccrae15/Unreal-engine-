@@ -37,46 +37,42 @@ public:
 		Null,
 		// The pointed to actor is fully loaded in memory
 		Loaded,
+		// The pointed to actor exists because the pointed to map is loaded but not the actor
+		Exists,
 		// The pointed to actor is unknown because the pointed to map is not loaded 
 		Unknown,
 		// This is a known bad reference, the owning map is loaded but the actor does not exist
 		Error,
 	};
 
-	SLATE_BEGIN_ARGS( SPropertyEditorAsset )
-		: _AssetFont( FEditorStyle::GetFontStyle("PropertyEditor.AssetName.Font") ) 
-		, _ClassFont( FEditorStyle::GetFontStyle("PropertyEditor.AssetClass.Font") ) 
-		, _DisplayThumbnail(true)
+	SLATE_BEGIN_ARGS(SPropertyEditorAsset)
+		: _DisplayThumbnail(true)
 		, _DisplayUseSelected(true)
 		, _DisplayBrowse(true)
 		, _EnableContentPicker(true)
-		, _DisplayCompactSize(false)
+		, _DisplayCompactSize(true)
 		, _ThumbnailPool(nullptr)
-		, _ThumbnailSize(FIntPoint(64, 64))
+		, _ThumbnailSize(FIntPoint(48, 48))
 		, _ObjectPath()
 		, _Class(nullptr)
 		, _CustomContentSlot()
-		, _ResetToDefaultSlot()
-		{}
-		SLATE_ATTRIBUTE( FSlateFontInfo, AssetFont )
-		SLATE_ATTRIBUTE( FSlateFontInfo, ClassFont )
-		SLATE_ARGUMENT( TOptional<bool>, AllowClear )
-		SLATE_ARGUMENT( bool, DisplayThumbnail )
-		SLATE_ARGUMENT( bool, DisplayUseSelected )
-		SLATE_ARGUMENT( bool, DisplayBrowse )
-		SLATE_ARGUMENT( bool, EnableContentPicker)
-		SLATE_ARGUMENT( bool, DisplayCompactSize)
-		SLATE_ARGUMENT( TSharedPtr<FAssetThumbnailPool>, ThumbnailPool )
-		SLATE_ARGUMENT( FIntPoint, ThumbnailSize )
-		SLATE_ATTRIBUTE( FString, ObjectPath )
-		SLATE_ARGUMENT( UClass*, Class )
-		SLATE_ARGUMENT( TOptional<TArray<UFactory*>>, NewAssetFactories )
-		SLATE_EVENT( FOnSetObject, OnSetObject )
+	{}
+		SLATE_ARGUMENT(TOptional<bool>, AllowClear)
+		SLATE_ARGUMENT(bool, DisplayThumbnail)
+		SLATE_ARGUMENT(bool, DisplayUseSelected)
+		SLATE_ARGUMENT(bool, DisplayBrowse)
+		SLATE_ARGUMENT(bool, EnableContentPicker)
+		SLATE_ARGUMENT(bool, DisplayCompactSize)
+		SLATE_ARGUMENT(TSharedPtr<FAssetThumbnailPool>, ThumbnailPool)
+		SLATE_ARGUMENT(FIntPoint, ThumbnailSize)
+		SLATE_ATTRIBUTE(FString, ObjectPath)
+		SLATE_ARGUMENT(UClass*, Class)
+		SLATE_ARGUMENT(TOptional<TArray<UFactory*>>, NewAssetFactories)
+		SLATE_EVENT(FOnSetObject, OnSetObject)
 		SLATE_EVENT(FOnShouldFilterAsset, OnShouldFilterAsset)
-		SLATE_NAMED_SLOT( FArguments, CustomContentSlot )
-		SLATE_NAMED_SLOT( FArguments, ResetToDefaultSlot )
-		SLATE_ARGUMENT( TSharedPtr<IPropertyHandle>, PropertyHandle )
-		SLATE_ARGUMENT( TArray<FAssetData>, OwnerAssetDataArray)
+		SLATE_NAMED_SLOT(FArguments, CustomContentSlot)
+		SLATE_ARGUMENT(TSharedPtr<IPropertyHandle>, PropertyHandle)
+		SLATE_ARGUMENT(TArray<FAssetData>, OwnerAssetDataArray)
 
 	SLATE_END_ARGS()
 
@@ -271,13 +267,13 @@ private:
 	 * @param	OutReason	When returning false, the reason it was not allowed
 	 * @returns true if the object can be dropped
 	 */
-	bool OnAssetDraggedOver( const UObject* InObject, FText& OutReason ) const;
+	bool OnAssetDraggedOver( TArrayView<FAssetData> InAssets, FText& OutReason ) const;
 
 	/** 
 	 * Delegate handling dropping an object on this widget
 	 * @param	InObject	The object we are dropping
 	 */
-	void OnAssetDropped( UObject* InObject );
+	void OnAssetDropped( const FDragDropEvent&, TArrayView<FAssetData> InAssets );
 
 	/** 
 	 * Delegate handling ctrl+c
@@ -379,6 +375,9 @@ private:
 
 	/** Whether the classes in the AllowedClassFilters list are exact or whether valid classes can be derived. */
 	bool bExactClass;
+
+	/** The number of additional buttons this picker has. */
+	int32 NumButtons;
 
 	/** Delegate to call when our object value is set */
 	FOnSetObject OnSetObject;

@@ -21,6 +21,7 @@
 #include "CollisionQueryParams.h"
 #include "WorldCollision.h"
 #include "Engine/CollisionProfile.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
 #include "UObject/PropertyPortFlags.h"
@@ -130,6 +131,28 @@ const FGuid FParticleSystemCustomVersion::GUID(0x4A56EB40, 0x10F511DC, 0x92D3347
 // Register the custom version with core
 FCustomVersionRegistration GRegisterParticleSystemCustomVersion(FParticleSystemCustomVersion::GUID, FParticleSystemCustomVersion::LatestVersion, TEXT("ParticleSystemVer"));
 
+//////////////////////////////////////////////////////////////////////////
+
+void UFXSystemAsset::PostInitProperties()
+{
+	Super::PostInitProperties();
+
+#if WITH_PARTICLE_PERF_CSV_STATS
+	CSVStat_Total = *FString::Printf(TEXT("Total/%s"), *GetFName().ToString());
+	CSVStat_GTOnly = *FString::Printf(TEXT("GTOnly/%s"), *GetFName().ToString());
+	CSVStat_InstAvgGT = *FString::Printf(TEXT("InstAvgGT/%s"), *GetFName().ToString());
+	CSVStat_RT = *FString::Printf(TEXT("RT/%s"), *GetFName().ToString());
+	CSVStat_InstAvgRT = *FString::Printf(TEXT("InstAvgRT/%s"), *GetFName().ToString());
+	CSVStat_GPU = *FString::Printf(TEXT("GPU/%s"), *GetFName().ToString());
+	CSVStat_InstAvgGPU = *FString::Printf(TEXT("InstAvgGPU/%s"), *GetFName().ToString());
+	CSVStat_Count = *FString::Printf(TEXT("Count/%s"), *GetFName().ToString());
+	CSVStat_Activation = *FString::Printf(TEXT("Activation/%s"), *GetFName().ToString());
+	CSVStat_Waits = *FString::Printf(TEXT("Waits/%s"), *GetFName().ToString());
+	CSVStat_Culled = *FString::Printf(TEXT("Culled/%s"), *GetFName().ToString());
+#endif
+}
+
+//////////////////////////////////////////////////////////////////////////
 
 int32 GParticleLODBias = 0;
 FAutoConsoleVariableRef CVarParticleLODBias(
@@ -1694,9 +1717,7 @@ void UParticleEmitter::CacheEmitterModuleInfo()
 	// This assert makes sure that packing is as expected.
 	// Added FBaseColor...
 	// Linear color change
-	// Added Flags field	
-	static_assert(sizeof(FBaseParticle) == 128, "FBaseParticle size");
-
+	// Added Flags field
 
 	bRequiresLoopNotification = false;
 	bAxisLockEnabled = false;
@@ -2307,7 +2328,14 @@ void UParticleSystem::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 
 void UParticleSystem::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UParticleSystem::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
 #if WITH_EDITORONLY_DATA
 	// Ensure that soloing is undone...
 	int32 NumEmitters = FMath::Min(Emitters.Num(),SoloTracking.Num());
@@ -3761,6 +3789,8 @@ void UParticleSystemComponent::BeginDestroy()
 			*GetPathName(), Template ? *Template->GetPathName() : TEXT("NULL"));
 	}
 
+	// Call delegate to ensure we unregister from Significance Manager regardless if this PSC is active or not
+	OnSystemPreActivationChange.Broadcast(this, false);
 	ResetParticles(true);
 }
 
@@ -3895,6 +3925,13 @@ void UParticleSystemComponent::OnRegister()
 	{
 		// Force it to LODLevel 0
 		LODLevel = 0;
+	}
+
+	// Deal with the case where the particle component is attached to an actor in a hidden sublevel. Without this, the component will be visible instead of being hidden as well.
+	if (CachedLevelCollection == nullptr && GetOwner() == nullptr && IsValid(GetAttachParent()))
+	{
+		const ULevel* const AttachParentLevel = GetAttachParent()->GetComponentLevel();
+		CachedLevelCollection = AttachParentLevel ? AttachParentLevel->GetCachedLevelCollection() : nullptr;
 	}
 }
 
@@ -4407,6 +4444,40 @@ int32 UParticleSystemComponent::GetNumMaterials() const
 	return 0;
 }
 
+#if WITH_EDITOR
+bool UParticleSystemComponent::GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty)
+{
+	if (EmitterMaterials.IsValidIndex(ElementIndex))
+	{
+		OutOwner = this;
+		OutPropertyPath = FString::Printf(TEXT("%s[%d]"), GET_MEMBER_NAME_STRING_CHECKED(UParticleSystemComponent, EmitterMaterials), ElementIndex);
+
+		if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(UParticleSystemComponent::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UParticleSystemComponent, EmitterMaterials))))
+		{
+			OutProperty = ArrayProperty->Inner;
+		}
+		return true;
+	}
+	if (Template && Template->Emitters.IsValidIndex(ElementIndex))
+	{
+		UParticleEmitter* Emitter = Template->Emitters[ElementIndex];
+		if (Emitter && Emitter->LODLevels.Num() > 0)
+		{
+			UParticleLODLevel* EmitterLODLevel = Emitter->LODLevels[0];
+			if (EmitterLODLevel && EmitterLODLevel->RequiredModule)
+			{
+				OutOwner = EmitterLODLevel->RequiredModule;
+				OutPropertyPath = GET_MEMBER_NAME_STRING_CHECKED(UParticleModuleRequired, Material);
+				OutProperty = UParticleModuleRequired::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UParticleModuleRequired, Material));
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+#endif // WITH_EDITOR
+
 UMaterialInterface* UParticleSystemComponent::GetMaterial(int32 ElementIndex) const
 {
 	if (EmitterMaterials.IsValidIndex(ElementIndex) && EmitterMaterials[ElementIndex] != NULL)
@@ -4782,6 +4853,7 @@ public:
 
 	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
+		FTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
 		Target->ComputeTickComponent_Concurrent();
 #if !WITH_EDITOR  // otherwise this is queued by the calling code because we need to be able to block and wait on it
 		{
@@ -5423,7 +5495,7 @@ void UParticleSystemComponent::FinalizeTickComponent()
 		}
 
 		UWorld* World = GetWorld();
-		AParticleEventManager* EventManager = (World ? World->MyParticleEventManager : NULL);
+		AParticleEventManager* EventManager = (World ? ToRawPtr(World->MyParticleEventManager) : NULL);
 		if (EventManager)
 		{
 			if (SpawnEvents.Num() > 0) EventManager->HandleParticleSpawnEvents(this, SpawnEvents);
@@ -5541,6 +5613,7 @@ void UParticleSystemComponent::WaitForAsyncAndFinalize(EForceAsyncWorkCompletion
 			check(IsInGameThread());
 			SCOPE_CYCLE_COUNTER(STAT_GTSTallTime);
 			SCOPE_CYCLE_COUNTER(STAT_UParticleSystemComponent_WaitForAsyncAndFinalize);
+			PARTICLE_PERF_STAT_CYCLES_GT(FParticlePerfStatsContext(GetWorld(), Template, this), Wait);
 			
 			if(WITH_EDITOR && !IsTickManaged())
 			{
@@ -5557,6 +5630,7 @@ void UParticleSystemComponent::WaitForAsyncAndFinalize(EForceAsyncWorkCompletion
 		else
 		{
 			SCOPE_CYCLE_COUNTER(STAT_UParticleSystemComponent_WaitForAsyncAndFinalize);
+			PARTICLE_PERF_STAT_CYCLES_GT(FParticlePerfStatsContext(GetWorld(), Template, this), Wait);
 			while (bAsyncWorkOutstanding)
 			{
 				FPlatformProcess::SleepNoStats(0.0f);
@@ -5884,6 +5958,7 @@ void UParticleSystemComponent::ActivateSystem(bool bFlagAsJustAttached)
 	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Effects);
 	SCOPE_CYCLE_COUNTER(STAT_ParticleActivateTime);
 	SCOPE_CYCLE_COUNTER(STAT_ParticlesOverview_GT);
+	PARTICLE_PERF_STAT_CYCLES_GT(FParticlePerfStatsContext(GetWorld(), Template, this), Activation);
 	ForceAsyncWorkCompletion(STALL);
 
 	if (IsTemplate() == true || !IsRegistered() || 	!FApp::CanEverRender())
@@ -5894,6 +5969,9 @@ void UParticleSystemComponent::ActivateSystem(bool bFlagAsJustAttached)
 	bOldPositionValid = false;
 	OldPosition = FVector::ZeroVector;
 	PartSysVelocity = FVector::ZeroVector;
+	
+	// Set tile for LWC offset
+	LWCTile = FLargeWorldRenderScalar::GetTileFor(GetComponentLocation());
 
 	UWorld* World = GetWorld();
 	check(World);
@@ -6385,7 +6463,7 @@ void UParticleSystemComponent::UpdateInstances(bool bEmptyInstances)
 	}
 }
 
-int32 UParticleSystemComponent::GetNumActiveParticles() const
+int32 UParticleSystemComponent::GetNumActiveParticles()const
 {
 	ForceAsyncWorkCompletion(STALL);
 	int32 NumParticles = 0;
@@ -7759,7 +7837,7 @@ void UParticleSystemComponent::GetStreamingRenderAssetInfo(FStreamingTextureLeve
 	}
 }
 
-FBodyInstance* UParticleSystemComponent::GetBodyInstance(FName BoneName /*= NAME_None*/, bool bGetWelded /*= true*/) const
+FBodyInstance* UParticleSystemComponent::GetBodyInstance(FName BoneName /*= NAME_None*/, bool bGetWelded /*= true*/, int32 Index /*=INDEX_NONE*/) const
 {
 	return nullptr;
 }
@@ -8193,29 +8271,12 @@ AEmitterCameraLensEffectBase::AEmitterCameraLensEffectBase(const FObjectInitiali
 
 FTransform AEmitterCameraLensEffectBase::GetAttachedEmitterTransform(AEmitterCameraLensEffectBase const* Emitter, const FVector& CamLoc, const FRotator& CamRot, float CamFOVDeg)
 {
-	if (Emitter)
-	{
-		// adjust for FOV
-		// base dist uses BaseFOV which is set on the indiv camera lens effect class
-		FTransform RelativeTransformAdjustedForFOV = Emitter->RelativeTransform;
-		FVector AdjustedRelativeLoc = RelativeTransformAdjustedForFOV.GetLocation();
-		AdjustedRelativeLoc.X *= FMath::Tan(Emitter->BaseFOV*0.5f*PI / 180.f) / FMath::Tan(CamFOVDeg*0.5f*PI / 180.f);
-		RelativeTransformAdjustedForFOV.SetLocation(AdjustedRelativeLoc);
-
-		FTransform const CameraToWorld(CamRot, CamLoc);
-
-		// RelativeTransform is "effect to camera"
-		FTransform const EffectToWorld = RelativeTransformAdjustedForFOV * CameraToWorld;
-
-		return EffectToWorld;
-	}
-
-	return FTransform::Identity;
+	return ICameraLensEffectInterface::GetAttachedEmitterTransform(Emitter, CamLoc, CamRot, CamFOVDeg);
 }
 
 void AEmitterCameraLensEffectBase::UpdateLocation(const FVector& CamLoc, const FRotator& CamRot, float CamFOVDeg)
 {
-	FTransform const EffectToWorld = GetAttachedEmitterTransform(this, CamLoc, CamRot, CamFOVDeg);
+	FTransform const EffectToWorld = ICameraLensEffectInterface::GetAttachedEmitterTransform(this, CamLoc, CamRot, CamFOVDeg);
 	SetActorTransform(EffectToWorld);
 }
 
@@ -8223,7 +8284,7 @@ void AEmitterCameraLensEffectBase::EndPlay(const EEndPlayReason::Type EndPlayRea
 {
 	if (BaseCamera != NULL)
 	{
-		BaseCamera->RemoveCameraLensEffect(this);
+		BaseCamera->RemoveGenericCameraLensEffect(this);
 	}
 	Super::EndPlay(EndPlayReason);
 }
@@ -8278,17 +8339,7 @@ void AEmitterCameraLensEffectBase::ActivateLensEffect()
 	check(World);
 	if( !IsNetMode(NM_DedicatedServer) )
 	{
-		UParticleSystem* PSToActuallySpawn = PS_CameraEffect;
-
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		AGameState* GameState = World->GetGameState<AGameState>();
-		if(GameState && !GameState->ShouldShowGore() )
-		{
-			PSToActuallySpawn = PS_CameraEffectNonExtremeContent_DEPRECATED;
-		}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-		if( PSToActuallySpawn != NULL )
+		if (PS_CameraEffect)
 		{
 			SetTemplate( PS_CameraEffect );
 		}
@@ -8311,12 +8362,48 @@ bool AEmitterCameraLensEffectBase::IsLooping() const
 		return true;
 	}
 
-	if ((PS_CameraEffectNonExtremeContent_DEPRECATED != nullptr) && PS_CameraEffectNonExtremeContent_DEPRECATED->IsLooping())
-	{
-		return true;
-	}
-
 	return false;
+}
+
+
+
+const FTransform& AEmitterCameraLensEffectBase::GetRelativeTransform() const
+{
+	return RelativeTransform;
+}
+
+
+float AEmitterCameraLensEffectBase::GetBaseFOV() const
+{
+	return BaseFOV;
+}
+
+
+bool AEmitterCameraLensEffectBase::ShouldAllowMultipleInstances() const
+{
+	return bAllowMultipleInstances;
+}
+
+
+bool AEmitterCameraLensEffectBase::ResetWhenTriggered() const
+{
+	return bResetWhenRetriggered;
+}
+
+
+bool AEmitterCameraLensEffectBase::ShouldTreatEmitterAsSame(TSubclassOf<AActor> OtherEmitter) const
+{
+	return OtherEmitter && (OtherEmitter == GetClass() || EmittersToTreatAsSame.Find(OtherEmitter) != INDEX_NONE);
+}
+
+void AEmitterCameraLensEffectBase::NotifyWillBePooled()
+{
+	bDestroyOnSystemFinish = false;
+}
+
+void AEmitterCameraLensEffectBase::AdjustBaseFOV(float NewFOV)
+{
+	BaseFOV = NewFOV;
 }
 
 //////////////////////////////////////////////////////////////////////////

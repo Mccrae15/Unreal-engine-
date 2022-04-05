@@ -330,7 +330,7 @@ public:
 
 
 USTRUCT()
-struct FDisplayClusterConfigurationJsonMasterNode_427
+struct FDisplayClusterConfigurationJsonPrimaryNode_427
 {
 	GENERATED_BODY()
 
@@ -383,6 +383,9 @@ struct FDisplayClusterConfigurationJsonOverscan_427
 
 public:
 	UPROPERTY()
+	bool bEnabled = false;
+
+	UPROPERTY()
 	FString Mode = "";
 
 	UPROPERTY()
@@ -402,25 +405,6 @@ public:
 };
 
 USTRUCT()
-struct FDisplayClusterConfigurationJsonTextureShare_427
-{
-	GENERATED_BODY()
-
-public:
-	UPROPERTY()
-	bool bIsEnabled = false;
-
-	UPROPERTY()
-	int SyncPolicy_Connection;
-
-	UPROPERTY()
-	int SyncPolicy_Frame;
-
-	UPROPERTY()
-	int SyncPolicy_Texture;
-};
-
-USTRUCT()
 struct FDisplayClusterConfigurationJsonViewport_427
 {
 	GENERATED_BODY()
@@ -430,13 +414,16 @@ public:
 	FString Camera;
 
 	UPROPERTY()
-	float BufferRatio;
+	float BufferRatio = 1.0f;
 
 	UPROPERTY()
-	int GPUIndex;
+	int32 GPUIndex = 0;
 
 	UPROPERTY()
-	FDisplayClusterConfigurationJsonTextureShare_427 TextureShare;
+	bool AllowCrossGPUTransfer = false;
+
+	UPROPERTY()
+	bool IsShared = false;
 
 	UPROPERTY()
 	FDisplayClusterConfigurationJsonOverscan_427 Overscan;
@@ -477,10 +464,10 @@ public:
 	FString Host;
 
 	UPROPERTY()
-	bool Sound;
+	bool Sound = true;
 
 	UPROPERTY()
-	bool FullScreen;
+	bool FullScreen = false;
 
 	UPROPERTY()
 	FDisplayClusterConfigurationJsonRectangle_427 Window;
@@ -502,7 +489,7 @@ struct FDisplayClusterConfigurationJsonCluster_427
 
 public:
 	UPROPERTY()
-	FDisplayClusterConfigurationJsonMasterNode_427 MasterNode;
+	FDisplayClusterConfigurationJsonPrimaryNode_427 MasterNode;
 
 	UPROPERTY()
 	FDisplayClusterConfigurationJsonClusterSync_427 Sync;
@@ -521,13 +508,13 @@ struct FDisplayClusterConfigurationJsonDiagnostics_427
 
 public:
 	UPROPERTY()
-	bool SimulateLag;
+	bool SimulateLag = false;
 
 	UPROPERTY()
-	float MinLagTime;
+	float MinLagTime = 0.01f;
 
 	UPROPERTY()
-	float MaxLagTime;
+	float MaxLagTime = 0.3f;
 };
 
 

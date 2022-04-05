@@ -84,6 +84,10 @@ bool FOpenGLES::bSupportsColorBufferFloat = false;
 /** GL_EXT_shader_framebuffer_fetch */
 bool FOpenGLES::bSupportsShaderFramebufferFetch = false;
 
+/** GL_EXT_shader_framebuffer_fetch (MRT's) */
+bool FOpenGLES::bSupportsShaderMRTFramebufferFetch = false;
+
+
 /** GL_ARM_shader_framebuffer_fetch_depth_stencil */
 bool FOpenGLES::bSupportsShaderDepthStencilFetch = false;
 
@@ -95,6 +99,9 @@ bool FOpenGLES::bSupportsDXT = false;
 
 /** OpenGL ES 3.0 profile */
 bool FOpenGLES::bSupportsETC2 = false;
+
+/** GL_EXT_shader_pixel_local_storage */
+bool FOpenGLES::bSupportsPixelLocalStorage = false;
 
 /** GL_FRAGMENT_SHADER, GL_LOW_FLOAT */
 int FOpenGLES::ShaderLowPrecision = 0;
@@ -150,7 +157,7 @@ void FOpenGLES::ProcessQueryGLInt()
 	if (MaxVertexAttribs < 16)
 	{
 		UE_LOG(LogRHI, Error,
-			TEXT("Device reports support for %d vertex attributes, UE4 requires 16. Rendering artifacts may occur."),
+			TEXT("Device reports support for %d vertex attributes, UnrealEditor requires 16. Rendering artifacts may occur."),
 			MaxVertexAttribs
 		);
 	}
@@ -166,16 +173,22 @@ void FOpenGLES::ProcessQueryGLInt()
 	LOG_AND_GET_GL_INT(GL_MAX_COMPUTE_IMAGE_UNIFORMS, 0, MaxComputeUAVUnits);
 	LOG_AND_GET_GL_INT(GL_MAX_FRAGMENT_IMAGE_UNIFORMS, 0, MaxPixelUAVUnits);
 
+	GLint MaxCombinedSSBOUnits = 0;
+	GET_GL_INT(GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS, 0, MaxCombinedSSBOUnits);
+	// UAVs slots in UE are shared between Images and SSBO, so this should be max(GL_MAX_COMBINED_IMAGE_UNIFORMS, GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS)
+	MaxCombinedUAVUnits = FMath::Max(MaxCombinedUAVUnits, MaxCombinedSSBOUnits);
+
 	// clamp UAV units to a sensible limit
-	MaxCombinedUAVUnits = FMath::Min(MaxCombinedUAVUnits, 8);
-	MaxComputeUAVUnits = FMath::Min(MaxComputeUAVUnits, MaxCombinedUAVUnits);
-	MaxPixelUAVUnits = FMath::Min(MaxPixelUAVUnits, MaxCombinedUAVUnits);
+	MaxCombinedUAVUnits = FMath::Min(MaxCombinedUAVUnits, 16);
+	MaxComputeUAVUnits = FMath::Min(MaxComputeUAVUnits, 16);
+	// this is split between VS and PS, 4 to each stage
+	MaxPixelUAVUnits = FMath::Min(MaxPixelUAVUnits, 4);
 
 	const GLint RequiredMaxVertexUniformComponents = 256;
 	if (MaxVertexUniformComponents < RequiredMaxVertexUniformComponents)
 	{
 		UE_LOG(LogRHI, Warning,
-			TEXT("Device reports support for %d vertex uniform vectors, UE4 requires %d. Rendering artifacts may occur, especially with skeletal meshes. Some drivers, e.g. iOS, report a smaller number than is actually supported."),
+			TEXT("Device reports support for %d vertex uniform vectors, UnrealEditor requires %d. Rendering artifacts may occur, especially with skeletal meshes. Some drivers, e.g. iOS, report a smaller number than is actually supported."),
 			MaxVertexUniformComponents,
 			RequiredMaxVertexUniformComponents
 		);
@@ -183,8 +196,6 @@ void FOpenGLES::ProcessQueryGLInt()
 	MaxVertexUniformComponents = FMath::Max<GLint>(MaxVertexUniformComponents, RequiredMaxVertexUniformComponents);
 	MaxGeometryUniformComponents = 0;
 	MaxGeometryTextureImageUnits = 0;
-	MaxHullTextureImageUnits = 0;
-	MaxDomainTextureImageUnits = 0;
 
 	// Set lowest possible limits for texture units, to avoid extra work in GL RHI
 	MaxTextureImageUnits = FMath::Min(MaxTextureImageUnits, 16);
@@ -204,6 +215,8 @@ void FOpenGLES::ProcessExtensions(const FString& ExtensionsString)
 	bSupportsColorBufferHalfFloat = ExtensionsString.Contains(TEXT("GL_EXT_color_buffer_half_float"));
 	bSupportsShaderFramebufferFetch = ExtensionsString.Contains(TEXT("GL_EXT_shader_framebuffer_fetch")) || ExtensionsString.Contains(TEXT("GL_NV_shader_framebuffer_fetch"))
 		|| ExtensionsString.Contains(TEXT("GL_ARM_shader_framebuffer_fetch ")); // has space at the end to exclude GL_ARM_shader_framebuffer_fetch_depth_stencil match
+	bSupportsShaderMRTFramebufferFetch = ExtensionsString.Contains(TEXT("GL_EXT_shader_framebuffer_fetch")) || ExtensionsString.Contains(TEXT("GL_NV_shader_framebuffer_fetch"));
+	bSupportsPixelLocalStorage = ExtensionsString.Contains(TEXT("GL_EXT_shader_pixel_local_storage"));
 	bSupportsShaderDepthStencilFetch = ExtensionsString.Contains(TEXT("GL_ARM_shader_framebuffer_fetch_depth_stencil"));
 	bSupportsMultisampledRenderToTexture = ExtensionsString.Contains(TEXT("GL_EXT_multisampled_render_to_texture"));
 	bSupportsDXT = ExtensionsString.Contains(TEXT("GL_NV_texture_compression_s3tc")) || ExtensionsString.Contains(TEXT("GL_EXT_texture_compression_s3tc"));
@@ -242,7 +255,7 @@ void FOpenGLES::ProcessExtensions(const FString& ExtensionsString)
 		glBufferStorageEXT = (PFNGLBUFFERSTORAGEEXTPROC)((void*)eglGetProcAddress("glBufferStorageEXT"));
 	}
 
-	if (ExtensionsString.Contains(TEXT("GL_EXT_multisampled_render_to_texture")))
+	if (ExtensionsString.Contains(TEXT("GL_EXT_multisampled_render_to_texture2")))
 	{
 		glFramebufferTexture2DMultisampleEXT = (PFNGLFRAMEBUFFERTEXTURE2DMULTISAMPLEEXTPROC)((void*)eglGetProcAddress("glFramebufferTexture2DMultisampleEXT"));
 		glRenderbufferStorageMultisampleEXT = (PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC)((void*)eglGetProcAddress("glRenderbufferStorageMultisampleEXT"));

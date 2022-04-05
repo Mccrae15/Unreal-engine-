@@ -5,7 +5,7 @@
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Engine/EngineTypes.h"
-
+#include "Editor.h"
 #include "EditorSkeletalMeshLibrary.generated.h"
 
 class UPhysicsAsset;
@@ -15,8 +15,8 @@ class USkeletalMesh;
 * Utility class to altering and analyzing a SkeletalMesh and use the common functionalities of the SkeletalMesh Editor.
 * The editor should not be in play in editor mode.
  */
-UCLASS()
-class EDITORSCRIPTINGUTILITIES_API UEditorSkeletalMeshLibrary : public UBlueprintFunctionLibrary
+UCLASS(deprecated)
+class EDITORSCRIPTINGUTILITIES_API UDEPRECATED_EditorSkeletalMeshLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
@@ -31,7 +31,8 @@ public:
 	 * @param bGenerateBaseLOD If this is true and there is some reduction data, the base LOD will be reduce according to the settings
 	 * @return	true if succeed. If mesh reduction is not available this will return false.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh", meta = (ScriptMethod))
+	UE_DEPRECATED(5.0, "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem")
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh", meta = (DeprecatedFunction, DeprecationMessage = "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem"))
 	static bool RegenerateLOD(USkeletalMesh* SkeletalMesh, int32 NewLODCount = 0, bool bRegenerateEvenIfImported = false, bool bGenerateBaseLOD = false);
 
 	/** Get number of mesh vertices for an LOD of a Skeletal Mesh
@@ -40,27 +41,9 @@ public:
 	 * @param LODIndex			Index of the mesh LOD.
 	 * @return Number of vertices. Returns 0 if invalid mesh or LOD index.
 	 */
-	UFUNCTION(BlueprintPure, Category = "Editor Scripting | SkeletalMesh")
+	UE_DEPRECATED(5.0, "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem")
+	UFUNCTION(BlueprintPure, Category = "Editor Scripting | SkeletalMesh", meta = (DeprecatedFunction, DeprecationMessage = "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem"))
 	static int32 GetNumVerts(USkeletalMesh* SkeletalMesh, int32 LODIndex);
-
-	/** Get number of sections for a LOD of a Skeletal Mesh
-	 *
-	 * @param SkeletalMesh		Mesh to get number of vertices from.
-	 * @param LODIndex			Index of the mesh LOD.
-	 * @return Number of sections. Returns INDEX_NONE if invalid mesh or LOD index.
-	 */
-	UFUNCTION(BlueprintPure, Category = "Editor Scripting | SkeletalMesh")
-	static int32 GetNumSections(USkeletalMesh* SkeletalMesh, int32 LODIndex);
-
-	/**
-	 * Gets the material slot used for a specific LOD section.
-	 * @param	SkeletalMesh		SkeletalMesh to get the material index from.
-	 * @param	LODIndex			Index of the StaticMesh LOD.
-	 * @param	SectionIndex		Index of the StaticMesh Section.
-	 * @return  MaterialSlotIndex	Index of the material slot used by the section or INDEX_NONE in case of error.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | StaticMesh")
-	static int32 GetLODMaterialSlot(USkeletalMesh* SkeletalMesh, int32 LODIndex, int32 SectionIndex);
 
 	/** Rename a socket within a skeleton
 	 * @param SkeletalMesh	The mesh inside which we are renaming a socket
@@ -68,7 +51,8 @@ public:
 	 * @param NewName		The new name of the socket
 	 * @return true if the renaming succeeded.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh", meta = (ScriptMethod))
+	UE_DEPRECATED(5.0, "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem")
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh", meta = (DeprecatedFunction, DeprecationMessage = "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem"))
 	static bool RenameSocket(USkeletalMesh* SkeletalMesh, FName OldName, FName NewName);
 
 	/**
@@ -78,7 +62,8 @@ public:
 	 *
 	 * @return The LOD number.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh")
+	UE_DEPRECATED(5.0, "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Utilities")
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh", meta = (DeprecatedFunction, DeprecationMessage = "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem"))
 	static int32 GetLODCount(USkeletalMesh* SkeletalMesh);
 
 	/**
@@ -90,7 +75,8 @@ public:
 	 *
 	 * @return The index of the LOD that was imported or re-imported. Will return INDEX_NONE if anything goes bad.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh")
+	UE_DEPRECATED(5.0, "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Utilities")
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh", meta = (DeprecatedFunction, DeprecationMessage = "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem"))
 	static int32 ImportLOD(USkeletalMesh* BaseMesh, const int32 LODIndex, const FString& SourceFilename);
 
 	/**
@@ -100,7 +86,8 @@ public:
 	 *
 	 * @return true if re-import works, false otherwise see log for explanation.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh")
+	UE_DEPRECATED(5.0, "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Utilities")
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh", meta = (DeprecatedFunction, DeprecationMessage = "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem"))
 	static bool ReimportAllCustomLODs(USkeletalMesh* SkeletalMesh);
 
 	/**
@@ -109,7 +96,8 @@ public:
 	 * @param LodIndex - The LOD we get the reduction settings.
 	 * @param OutBuildOptions - The build settings where we copy the build options.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh")
+	UE_DEPRECATED(5.0, "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Utilities")
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh", meta = (DeprecatedFunction, DeprecationMessage = "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem"))
 	static void GetLodBuildSettings(const USkeletalMesh* SkeletalMesh, const int32 LodIndex, FSkeletalMeshBuildSettings& OutBuildOptions);
 
 	/**
@@ -118,9 +106,9 @@ public:
 	 * @param LodIndex - The LOD we will apply the build settings.
 	 * @param BuildOptions - The build settings we want to apply to the LOD.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh")
+	UE_DEPRECATED(5.0, "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Utilities")
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | SkeletalMesh", meta = (DeprecatedFunction, DeprecationMessage = "The Editor Scripting Utilities Plugin is deprecated - Use the function in Skeletal Mesh Editor Subsystem"))
 	static void SetLodBuildSettings(USkeletalMesh* SkeletalMesh, const int32 LodIndex, const FSkeletalMeshBuildSettings& BuildOptions);
-
 	/** Remove all the specified LODs. This function will remove all the valid LODs in the list.
 	 * Valid LOD is any LOD greater then 0 that exist in the skeletalmesh. We cannot remove the base LOD 0.
 	 *

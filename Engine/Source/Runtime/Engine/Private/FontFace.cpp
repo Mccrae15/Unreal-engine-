@@ -11,6 +11,7 @@
 #include "UObject/Package.h"
 #include "Misc/PackageName.h"
 #include "UObject/EditorObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogFontFace, Log, All);
 
@@ -22,24 +23,19 @@ UFontFace::UFontFace()
 void UFontFace::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FEditorObjectVersion::GUID);
-
-	FString OriginalSourceFilename;
-	if (Ar.IsCooking() && !HasAnyFlags(RF_ClassDefaultObject))
-	{
-		OriginalSourceFilename = MoveTemp(SourceFilename);
-		SourceFilename = GetCookedFilename();
-	}
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 
 	Super::Serialize(Ar);
 
-	if (Ar.IsCooking() && !HasAnyFlags(RF_ClassDefaultObject))
+	bool bCooked = Ar.IsCooking();
+	if (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::AddedCookedBoolFontFaceAssets)
 	{
-		SourceFilename = MoveTemp(OriginalSourceFilename);
+		Ar << bCooked;
 	}
 
 	if (Ar.IsLoading())
 	{
-		if (FPlatformProperties::RequiresCookedData())
+		if (FPlatformProperties::RequiresCookedData() || bCooked)
 		{
 			SourceFilename = GetCookedFilename();
 		}
@@ -214,7 +210,10 @@ FString UFontFace::GetCookedFilename() const
 {
 	// UFontFace assets themselves can't be localized, however that doesn't mean the package they're in isn't localized (ie, when they're upgraded into a UFont asset)
 	FString PackageName = GetOutermost()->GetName();
-	PackageName = FPackageName::GetLocalizedPackagePath(PackageName);
+	if (!GIsEditor)
+	{
+		PackageName = FPackageName::GetLocalizedPackagePath(PackageName);
+	}
 	
 	// Note: This must match the replacement logic in UFontFace::CookAdditionalFiles
 	const FString PackageFilename = FPackageName::LongPackageNameToFilename(PackageName, TEXT(".uasset"));

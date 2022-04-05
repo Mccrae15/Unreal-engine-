@@ -12,6 +12,7 @@
 struct FGuid;
 class UDatasmithImportOptions;
 class UDatasmithScene;
+class UObject;
 class UPackage;
 class UWorld;
 
@@ -36,6 +37,12 @@ public:
 DECLARE_DELEGATE_TwoParams( FOnSpawnDatasmithSceneActors, class ADatasmithSceneActor*, bool );
 DECLARE_DELEGATE_ThreeParams( FOnCreateDatasmithSceneEditor, const EToolkitMode::Type, const TSharedPtr< class IToolkitHost >&, class UDatasmithScene*);
 DECLARE_DELEGATE_RetVal(TSharedPtr<IDataprepImporterInterface>, FOnCreateDatasmithImportHandler );
+
+DECLARE_DELEGATE_RetVal_TwoParams(bool, FOnSetAssetAutoReimport, UObject* /*Asset*/, bool /*bEnabled*/);
+DECLARE_DELEGATE_RetVal_OneParam(bool, FOnIsAssetAutoReimportAvailable, UObject* /*Asset*/);
+DECLARE_DELEGATE_RetVal_OneParam(bool, FOnIsAssetAutoReimportEnabled, UObject* /*Asset*/);
+DECLARE_DELEGATE_RetVal_FourParams(bool, FOnBrowseExternalSourceUri, FName/*UriScheme*/, const FString& /*DefaultUri*/, FString& /*OutSourceUri*/, FString& /*OutFallbackFilepath*/);
+DECLARE_DELEGATE_RetVal(const TArray<FName>&, FOnGetSupportedUriSchemes);
 
 struct FImporterDescription
 {
@@ -100,5 +107,34 @@ public:
 
 	/** Category bit associated with Datasmith related content */
 	static DATASMITHCONTENTEDITOR_API EAssetTypeCategories::Type DatasmithAssetCategoryBit;
+
+	/**
+	 * Delegate to enable or disable AutoReimport of an asset.
+	 */
+	virtual void RegisterSetAssetAutoReimportHandler(FOnSetAssetAutoReimport&& SetAssetAutoReimportDelegate) = 0;
+	virtual void UnregisterSetAssetAutoReimportHandler(FDelegateHandle InHandle) = 0;
+	virtual TOptional<bool> SetAssetAutoReimport(UObject* Asset, bool bEnabled) const = 0;
+
+	/**
+	 * Delegate returning if the AutoReimport feature is available for a given asset.
+	 */
+	virtual void RegisterIsAssetAutoReimportAvailableHandler(FOnIsAssetAutoReimportAvailable&& IsAssetAutoReimportAvailableDelegate) = 0;
+	virtual void UnregisterIsAssetAutoReimportAvailableHandler(FDelegateHandle InHandle) = 0;
+	virtual TOptional<bool> IsAssetAutoReimportAvailable(UObject* Asset) const = 0;
+
+	/**
+	 * Delegate returning if the AutoReimport is currently active for a given asset.
+	 */
+	virtual void RegisterIsAssetAutoReimportEnabledHandler(FOnIsAssetAutoReimportEnabled&& IsAssetAutoReimportEnabledDelegate) = 0;
+	virtual void UnregisterIsAssetAutoReimportEnabledHandler(FDelegateHandle InHandle) = 0;
+	virtual TOptional<bool> IsAssetAutoReimportEnabled(UObject* Asset) const = 0;
+
+	virtual void RegisterBrowseExternalSourceUriHandler(FOnBrowseExternalSourceUri&& BrowseExternalSourceUriDelegate) = 0;
+	virtual void UnregisterBrowseExternalSourceUriHandler(FDelegateHandle InHandle) = 0;
+	virtual bool BrowseExternalSourceUri(FName UriScheme, const FString& DefaultUri, FString& OutSourceUri, FString& OutFallbackFilepath) const = 0;
+
+	virtual void RegisterGetSupportedUriSchemeHandler(FOnGetSupportedUriSchemes&& GetSupportedUriSchemeDelegate) = 0;
+	virtual void UnregisterGetSupportedUriSchemeHandler(FDelegateHandle InHandle) = 0;
+	virtual TOptional<TArray<FName>> GetSupportedUriScheme() const = 0;
 };
 

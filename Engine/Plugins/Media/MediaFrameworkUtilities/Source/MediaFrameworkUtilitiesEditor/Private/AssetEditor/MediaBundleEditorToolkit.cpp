@@ -23,7 +23,7 @@ namespace MediaBundleEditorToolkit
 {
 	const FName AppIdentifier = TEXT("MediaBundleEditorApp");
 	const FName PropertiesTabId(TEXT("MediaBundleEditor_Properties"));
-	const FName Layout(TEXT("Standalone_MediaBundleEditor_Layout_v0"));
+	const FName Layout(TEXT("Standalone_MediaBundleEditor_Layout_v1"));
 }
 
 TSharedRef<FMediaBundleEditorToolkit> FMediaBundleEditorToolkit::CreateEditor(const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, class UMediaBundle* InMediaBundle)
@@ -37,10 +37,8 @@ void FMediaBundleEditorToolkit::InitMediaBundleEditor(const EToolkitMode::Type M
 {
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.AddRaw(this, &FMediaBundleEditorToolkit::HandleAssetPostImport);
 
-	const bool bIsUpdatable = false;
-	const bool bAllowFavorites = true;
-	const bool bIsLockable = false;
-	const FDetailsViewArgs DetailsViewArgs(bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 	DetailsView = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor").CreateDetailView(DetailsViewArgs);
 
 	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout(MediaBundleEditorToolkit::Layout)
@@ -48,13 +46,6 @@ void FMediaBundleEditorToolkit::InitMediaBundleEditor(const EToolkitMode::Type M
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -169,7 +160,6 @@ TSharedRef<SDockTab> FMediaBundleEditorToolkit::SpawnPropertiesTab(const FSpawnT
 	check(Args.GetTabId() == MediaBundleEditorToolkit::PropertiesTabId);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Properties"))
 		.Label(LOCTEXT("GenericDetailsTitle", "Details"))
 		.TabColorScale(GetTabColorScale())
 		[

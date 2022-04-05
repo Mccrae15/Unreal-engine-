@@ -27,6 +27,7 @@ namespace UnrealBuildTool.Rules
 					"Projects",
 					"RenderCore",
                     "RHI",
+					"RHICore",
                     "WmfMediaFactory"
                 });
 
@@ -55,8 +56,7 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.Add("HeadMountedDisplay");
 			}
 
-			if ((Target.Platform == UnrealTargetPlatform.Win64) ||
-				(Target.Platform == UnrealTargetPlatform.Win32))
+			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				PrivateDependencyModuleNames.AddRange(
 				  new string[] {
@@ -67,6 +67,8 @@ namespace UnrealBuildTool.Rules
 				PublicDelayLoadDLLs.Add("mfplat.dll");
 				PublicDelayLoadDLLs.Add("mfplay.dll");
 				PublicDelayLoadDLLs.Add("shlwapi.dll");
+
+				PublicSystemLibraries.Add("dxgi.lib");
 			}
 			
 			PublicDefinitions.Add("WMFMEDIA_PLAYER_VERSION=2");

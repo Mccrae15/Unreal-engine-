@@ -5,177 +5,348 @@
 #include "UnrealHeaderTool.h"
 #include "Algo/Find.h"
 #include "Misc/DefaultValueHelper.h"
+#include "UnrealTypeDefinitionInfo.h"
+#include "ClassMaps.h"
 
-/////////////////////////////////////////////////////
-// FClassMetaData
-
-/**
- * Finds the metadata for the property specified
- *
- * @param	Prop	the property to search for
- *
- * @return	pointer to the metadata for the property specified, or NULL
- *			if the property doesn't exist in the list (for example, if it
- *			is declared in a package that is already compiled and has had its
- *			source stripped)
- */
-FTokenData* FClassMetaData::FindTokenData( FProperty* Prop )
-{
-	check(Prop);
-
-	FTokenData* Result = nullptr;
-	UObject* Outer = Prop->GetOwner<UObject>();
-	check(Outer);
-	UClass* OuterClass = nullptr;
-	if (Outer->IsA<UStruct>())
-	{
-		Result = GlobalPropertyData.Find(Prop);
-
-		if (Result == nullptr)
-		{
-			OuterClass = Cast<UClass>(Outer);
-
-			if (OuterClass != nullptr && OuterClass->GetSuperClass() != OuterClass)
-			{
-				OuterClass = OuterClass->GetSuperClass();
-			}
-		}
-	}
-	else
-	{
-		UFunction* OuterFunction = Cast<UFunction>(Outer);
-		if ( OuterFunction != NULL )
-		{
-			// function parameter, return, or local property
-			FFunctionData* FuncData = nullptr;
-			if (FFunctionData::TryFindForFunction(OuterFunction, FuncData))
-			{
-				FPropertyData& FunctionParameters = FuncData->GetParameterData();
-				Result = FunctionParameters.Find(Prop);
-				if ( Result == NULL )
-				{
-					Result = FuncData->GetReturnTokenData();
-				}
-			}
-			else
-			{
-				OuterClass = OuterFunction->GetOwnerClass();
-			}
-		}
-		else
-		{
-			// struct property
-			UScriptStruct* OuterStruct = Cast<UScriptStruct>(Outer);
-			check(OuterStruct != NULL);
-			OuterClass = OuterStruct->GetOwnerClass();
-		}
-	}
-
-	if (Result == nullptr && OuterClass != nullptr)
-	{
-		FClassMetaData* SuperClassData = GScriptHelper.FindClassData(OuterClass);
-		if (SuperClassData && SuperClassData != this)
-		{
-			Result = SuperClassData->FindTokenData(Prop);
-		}
-	}
-
-	return Result;
-}
-
-void FClassMetaData::AddInheritanceParent(FString&& InParent, FUnrealSourceFile* UnrealSourceFile)
-{
-	MultipleInheritanceParents.Add(new FMultipleInheritanceBaseClass(MoveTemp(InParent)));
-}
-
-void FClassMetaData::AddInheritanceParent(UClass* ImplementedInterfaceClass, FUnrealSourceFile* UnrealSourceFile)
-{
-	MultipleInheritanceParents.Add(new FMultipleInheritanceBaseClass(ImplementedInterfaceClass));
-}
+// Globals for common class definitions
+extern FUnrealClassDefinitionInfo* GUObjectDef;
+extern FUnrealClassDefinitionInfo* GUClassDef;
+extern FUnrealClassDefinitionInfo* GUInterfaceDef;
 
 /////////////////////////////////////////////////////
 // FPropertyBase
 
-const TCHAR* FPropertyBase::GetPropertyTypeText( EPropertyType Type )
+FPropertyBase::FPropertyBase(EPropertyType InType)
+	: Type(InType)
+	, IntType(GetSizedIntTypeFromPropertyType(InType))
 {
-	switch ( Type )
+}
+
+FPropertyBase::FPropertyBase(EPropertyType InType, EIntType InIntType)
+	: Type(InType)
+	, IntType(InIntType)
+{
+}
+
+FPropertyBase::FPropertyBase(FUnrealEnumDefinitionInfo& InEnumDef, EPropertyType InType)
+	: Type(InType)
+	, EnumDef(&InEnumDef)
+	, IntType(GetSizedIntTypeFromPropertyType(InType))
+{
+}
+
+FPropertyBase::FPropertyBase(FUnrealClassDefinitionInfo& InClassDef, EPropertyType InType, bool bWeakIsAuto/* = false*/)
+	: Type(InType)
+	, ClassDef(&InClassDef)
+{
+	if ((Type == CPT_WeakObjectReference) && bWeakIsAuto)
 	{
-		CASE_TEXT(CPT_None);
-		CASE_TEXT(CPT_Byte);
-		CASE_TEXT(CPT_Int8);
-		CASE_TEXT(CPT_Int16);
-		CASE_TEXT(CPT_Int);
-		CASE_TEXT(CPT_Int64);
-		CASE_TEXT(CPT_UInt16);
-		CASE_TEXT(CPT_UInt32);
-		CASE_TEXT(CPT_UInt64);
-		CASE_TEXT(CPT_Bool);
-		CASE_TEXT(CPT_Bool8);
-		CASE_TEXT(CPT_Bool16);
-		CASE_TEXT(CPT_Bool32);
-		CASE_TEXT(CPT_Bool64);
-		CASE_TEXT(CPT_Float);
-		CASE_TEXT(CPT_Double);
-		CASE_TEXT(CPT_ObjectReference);
-		CASE_TEXT(CPT_Interface);
-		CASE_TEXT(CPT_Name);
-		CASE_TEXT(CPT_Delegate);
-		CASE_TEXT(CPT_Struct);
-		CASE_TEXT(CPT_String);
-		CASE_TEXT(CPT_Text);
-		CASE_TEXT(CPT_MulticastDelegate);
-		CASE_TEXT(CPT_SoftObjectReference);
-		CASE_TEXT(CPT_WeakObjectReference);
-		CASE_TEXT(CPT_LazyObjectReference);
-		CASE_TEXT(CPT_Map);
-		CASE_TEXT(CPT_Set);
-		CASE_TEXT(CPT_FieldPath);
-		CASE_TEXT(CPT_MAX);
+		PropertyFlags |= CPF_AutoWeak;
+	}
+}
+
+FPropertyBase::FPropertyBase(FUnrealScriptStructDefinitionInfo& InStructDef)
+	: Type(CPT_Struct)
+	, ScriptStructDef(&InStructDef)
+{
+}
+
+FPropertyBase::FPropertyBase(FName InFieldClassName, EPropertyType InType)
+	: Type(InType)
+	, FieldClassName(InFieldClassName)
+	, IntType(GetSizedIntTypeFromPropertyType(InType))
+{
+}
+
+FUnrealEnumDefinitionInfo* FPropertyBase::AsEnum() const
+{
+	return UHTCast<FUnrealEnumDefinitionInfo>(TypeDef);
+}
+
+bool FPropertyBase::IsEnum() const
+{
+	return AsEnum() != nullptr;
+}
+
+EUHTPropertyType FPropertyBase::GetUHTPropertyType() const
+{
+	if (ArrayType == EArrayType::Dynamic)
+	{
+		return EUHTPropertyType::DynamicArray;
+	}
+	else if (ArrayType == EArrayType::Set)
+	{
+		return EUHTPropertyType::Set;
+	}
+	else if (MapKeyProp.IsValid())
+	{
+		return EUHTPropertyType::Map;
+	}
+	else if (IsEnum())
+	{
+		return EUHTPropertyType::Enum;
+	}
+	else
+	{
+		return EUHTPropertyType(Type);
+	}
+}
+
+bool FPropertyBase::IsClassRefOrClassRefStaticArray() const
+{
+	return IsObjectRefOrObjectRefStaticArray() && ClassDef->IsChildOf(*GUClassDef);
+}
+
+bool FPropertyBase::IsByteEnumOrByteEnumStaticArray() const
+{
+	if (Type != CPT_Byte || !IsPrimitiveOrPrimitiveStaticArray())
+	{
+		return false;
+	}
+	FUnrealEnumDefinitionInfo* Enum = AsEnum();
+	if (Enum == nullptr)
+	{
+		return false;
+	}
+	return Enum->GetCppForm() != UEnum::ECppForm::EnumClass;
+}
+
+bool FPropertyBase::MatchesType(const FPropertyBase& Other, bool bDisallowGeneralization, bool bIgnoreImplementedInterfaces/* = false*/, bool bEmulateSameType/* = false*/) const
+{
+	check(Type != CPT_None || !bDisallowGeneralization);
+
+	bool bIsObjectType = IsObjectOrInterface();
+	bool bOtherIsObjectType = Other.IsObjectOrInterface();
+	bool bIsObjectComparison = bIsObjectType && bOtherIsObjectType;
+	bool bReverseClassChainCheck = true;
+
+	// If converting to an l-value, we require an exact match with an l-value.
+	if ((PropertyFlags & CPF_OutParm) != 0)
+	{
+		// if the other type is not an l-value, disallow
+		if ((Other.PropertyFlags & CPF_OutParm) == 0)
+		{
+			return false;
+		}
+
+		// if the other type is const and we are not const, disallow
+		if ((Other.PropertyFlags & CPF_ConstParm) != 0 && (PropertyFlags & CPF_ConstParm) == 0)
+		{
+			return false;
+		}
+
+		if (Type == CPT_Struct)
+		{
+			// Allow derived structs to be passed by reference, unless this is a dynamic array of structs
+			bDisallowGeneralization = bDisallowGeneralization || ArrayType == EArrayType::Dynamic || Other.ArrayType == EArrayType::Dynamic;
+		}
+
+		// if Type == CPT_ObjectReference, out object function parm; allow derived classes to be passed in
+		// if Type == CPT_Interface, out interface function parm; allow derived classes to be passed in
+		else if ((PropertyFlags & CPF_ConstParm) == 0 || !IsObjectOrInterface())
+		{
+			// all other variable types must match exactly when passed as the value to an 'out' parameter
+			bDisallowGeneralization = true;
+		}
+
+		// both types are objects, but one is an interface and one is an object reference
+		else if (bIsObjectComparison && Type != Other.Type)
+		{
+			return false;
+		}
+	}
+	else if ((Type == CPT_ObjectReference || Type == CPT_WeakObjectReference || Type == CPT_LazyObjectReference || Type == CPT_ObjectPtrReference || Type == CPT_SoftObjectReference) && Other.Type != CPT_Interface && (PropertyFlags & CPF_ReturnParm))
+	{
+		bReverseClassChainCheck = false;
 	}
 
-	return TEXT("");
+	// Check everything.
+	if (Type == CPT_None && (Other.Type == CPT_None || !bDisallowGeneralization))
+	{
+		// If Other has no type, accept anything.
+		return true;
+	}
+	else if (Type != Other.Type && !(bEmulateSameType && ::IsBool(Type) && ::IsBool(Other.Type)) && !bIsObjectComparison)
+	{
+		// Mismatched base types.
+		return false;
+	}
+	else if (ArrayType != Other.ArrayType)
+	{
+		// Mismatched array types.
+		return false;
+	}
+	else if (Type == CPT_Byte)
+	{
+		// Make sure enums match, or we're generalizing.
+		return EnumDef == Other.EnumDef || (EnumDef == NULL && !bDisallowGeneralization);
+	}
+	else if (bIsObjectType)
+	{
+		check(ClassDef != NULL);
+
+		// Make sure object types match, or we're generalizing.
+		if (bDisallowGeneralization)
+		{
+			// Exact match required.
+			return ClassDef == Other.ClassDef && MetaClassDef == Other.MetaClassDef;
+		}
+		else if (Other.ClassDef == NULL)
+		{
+			// Cannonical 'None' matches all object classes.
+			return true;
+		}
+		else
+		{
+			// Generalization is ok (typical example of this check would look like: VarA = VarB;, where this is VarB and Other is VarA)
+			if (Other.ClassDef->IsChildOf(*ClassDef))
+			{
+				if (!bIgnoreImplementedInterfaces || ((Type == CPT_Interface) == (Other.Type == CPT_Interface)))
+				{
+					if (!ClassDef->IsChildOf(*GUClassDef) || MetaClassDef == nullptr || Other.MetaClassDef->IsChildOf(*MetaClassDef) ||
+						(bReverseClassChainCheck && (Other.MetaClassDef == nullptr || MetaClassDef->IsChildOf(*Other.MetaClassDef))))
+					{
+						return true;
+					}
+				}
+			}
+			// check the opposite class chain for object types
+			else if (bReverseClassChainCheck && Type != CPT_Interface && bIsObjectComparison && ClassDef != nullptr && ClassDef->IsChildOf(*Other.ClassDef))
+			{
+				if (!Other.ClassDef->IsChildOf(*GUClassDef) || MetaClassDef == nullptr || Other.MetaClassDef == nullptr || MetaClassDef->IsChildOf(*Other.MetaClassDef) || Other.MetaClassDef->IsChildOf(*MetaClassDef))
+				{
+					return true;
+				}
+			}
+
+			if (ClassDef->HasAnyClassFlags(CLASS_Interface) && !bIgnoreImplementedInterfaces)
+			{
+				if (Other.ClassDef->ImplementsInterface(*ClassDef))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+	}
+	else if (Type == CPT_Struct)
+	{
+		check(ScriptStructDef != NULL);
+		check(Other.ScriptStructDef != NULL);
+
+		if (ScriptStructDef == Other.ScriptStructDef)
+		{
+			// struct types match exactly 
+			return true;
+		}
+
+		// returning false here prevents structs related through inheritance from being used interchangeably, such as passing a derived struct as the value for a parameter
+		// that expects the base struct, or vice versa.  An easier example is assignment (e.g. Vector = Plane or Plane = Vector).
+		// there are two cases to consider (let's use vector and plane for the example):
+		// - Vector = Plane;
+		//		in this expression, 'this' is the vector, and Other is the plane.  This is an unsafe conversion, as the destination property type is used to copy the r-value to the l-value
+		//		so in this case, the VM would call CopyCompleteValue on the FPlane struct, which would copy 16 bytes into the l-value's buffer;  However, the l-value buffer will only be
+		//		12 bytes because that is the size of FVector
+		// - Plane = Vector;
+		//		in this expression, 'this' is the plane, and Other is the vector.  This is a safe conversion, since only 12 bytes would be copied from the r-value into the l-value's buffer
+		//		(which would be 16 bytes).  The problem with allowing this conversion is that what to do with the extra member (e.g. Plane.W); should it be left alone? should it be zeroed?
+		//		difficult to say what the correct behavior should be, so let's just ignore inheritance for the sake of determining whether two structs are identical
+
+		// Previously, the logic for determining whether this is a generalization of Other was reversed; this is very likely the culprit behind all current issues with 
+		// using derived structs interchangeably with their base versions.  The inheritance check has been fixed; for now, allow struct generalization and see if we can find any further
+		// issues with allowing conversion.  If so, then we disable all struct generalization by returning false here.
+		// return false;
+
+		if (bDisallowGeneralization)
+		{
+			return false;
+		}
+
+		// Generalization is ok if this is not a dynamic array
+		if (ArrayType != EArrayType::Dynamic && Other.ArrayType != EArrayType::Dynamic)
+		{
+			if (!Other.ScriptStructDef->IsChildOf(*ScriptStructDef) && ScriptStructDef->IsChildOf(*Other.ScriptStructDef))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+	else
+	{
+		// General match.
+		return true;
+	}
 }
 
 /////////////////////////////////////////////////////
-// FToken
+// FFuncData
 
-/**
- * Copies the properties from this token into another.
- *
- * @param	Other	the token to copy this token's properties to.
- */
-FToken& FToken::operator=(const FToken& Other)
+void FFuncInfo::SetFunctionNames(FUnrealFunctionDefinitionInfo& FunctionDef)
 {
-	FPropertyBase::operator=((FPropertyBase&)Other);
+	FString FunctionName = FunctionDef.GetName();
+	if (FunctionDef.HasAnyFunctionFlags(FUNC_Delegate))
+	{
+		FunctionName.LeftChopInline(FString(HEADER_GENERATED_DELEGATE_SIGNATURE_SUFFIX).Len(), false);
+	}
+	UnMarshallAndCallName = FString(TEXT("exec")) + FunctionName;
 
-	TokenType = Other.TokenType;
-	TokenName = Other.TokenName;
-	bTokenNameInitialized = Other.bTokenNameInitialized;
-	StartPos = Other.StartPos;
-	StartLine = Other.StartLine;
-	TokenProperty = Other.TokenProperty;
+	if (FunctionDef.HasAnyFunctionFlags(FUNC_BlueprintEvent))
+	{
+		MarshallAndCallName = FunctionName;
+	}
+	else
+	{
+		MarshallAndCallName = FString(TEXT("event")) + FunctionName;
+	}
 
-	FCString::Strncpy(Identifier, Other.Identifier, NAME_SIZE);
-	FMemory::Memcpy(String, Other.String, sizeof(String));
+	if (FunctionDef.HasAllFunctionFlags(FUNC_Native | FUNC_Net))
+	{
+		MarshallAndCallName = FunctionName;
+		if (FunctionDef.HasAllFunctionFlags(FUNC_NetResponse))
+		{
+			// Response function implemented by programmer and called directly from thunk
+			CppImplName = FunctionDef.GetName();
+		}
+		else
+		{
+			if (CppImplName.IsEmpty())
+			{
+				CppImplName = FunctionDef.GetName() + TEXT("_Implementation");
+			}
+			else if (CppImplName == FunctionName)
+			{
+				FunctionDef.Throwf(TEXT("Native implementation function must be different than original function name."));
+			}
 
-	return *this;
-}
+			if (CppValidationImplName.IsEmpty() && FunctionDef.HasAllFunctionFlags(FUNC_NetValidate))
+			{
+				CppValidationImplName = FunctionDef.GetName() + TEXT("_Validate");
+			}
+			else if (CppValidationImplName == FunctionName)
+			{
+				FunctionDef.Throwf(TEXT("Validation function must be different than original function name."));
+			}
+		}
+	}
 
-FToken& FToken::operator=(FToken&& Other)
-{
-	FPropertyBase::operator=(MoveTemp(Other));
+	if (FunctionDef.HasAllFunctionFlags(FUNC_Delegate))
+	{
+		MarshallAndCallName = FString(TEXT("delegate")) + FunctionName;
+	}
 
-	TokenType = Other.TokenType;
-	TokenName = Other.TokenName;
-	bTokenNameInitialized = Other.bTokenNameInitialized;
-	StartPos = Other.StartPos;
-	StartLine = Other.StartLine;
-	TokenProperty = Other.TokenProperty;
+	if (FunctionDef.HasAllFunctionFlags(FUNC_BlueprintEvent | FUNC_Native))
+	{
+		MarshallAndCallName = FunctionName;
+		CppImplName = FunctionDef.GetName() + TEXT("_Implementation");
+	}
 
-	FCString::Strncpy(Identifier, Other.Identifier, NAME_SIZE);
-	FMemory::Memcpy(String, Other.String, sizeof(String));
-
-	return *this;
+	if (CppImplName.IsEmpty())
+	{
+		CppImplName = FunctionName;
+	}
 }
 
 /////////////////////////////////////////////////////
@@ -233,93 +404,4 @@ bool FAdvancedDisplayParameterHandler::ShouldMarkParameter(const FString& Parame
 bool FAdvancedDisplayParameterHandler::CanMarkMore() const
 {
 	return bUseNumber ? (NumberLeaveUnmarked > 0) : (0 != ParametersNames.Num());
-}
-
-TMap<UFunction*, TUniqueObj<FFunctionData> > FFunctionData::FunctionDataMap;
-
-FFunctionData* FFunctionData::FindForFunction(UFunction* Function)
-{
-	TUniqueObj<FFunctionData>* Output = FunctionDataMap.Find(Function);
-
-	check(Output);
-
-	return &(*Output).Get();
-}
-
-FFunctionData* FFunctionData::Add(UFunction* Function)
-{
-	TUniqueObj<FFunctionData>& Output = FunctionDataMap.Add(Function);
-
-	return &Output.Get();
-}
-
-FFunctionData* FFunctionData::Add(FFuncInfo&& FunctionInfo)
-{
-	TUniqueObj<FFunctionData>& Output = FunctionDataMap.Emplace(FunctionInfo.FunctionReference, MoveTemp(FunctionInfo));
-
-	return &Output.Get();
-}
-
-bool FFunctionData::TryFindForFunction(UFunction* Function, FFunctionData*& OutData)
-{
-	TUniqueObj<FFunctionData>* Output = FunctionDataMap.Find(Function);
-
-	if (!Output)
-	{
-		return false;
-	}
-
-	OutData = &(*Output).Get();
-	return true;
-}
-
-FClassMetaData* FCompilerMetadataManager::AddClassData(UStruct* Struct, FUnrealSourceFile* UnrealSourceFile)
-{
-	TUniquePtr<FClassMetaData>* pClassData = Find(Struct);
-	if (pClassData == NULL)
-	{
-		pClassData = &Emplace(Struct, new FClassMetaData());
-	}
-
-	return pClassData->Get();
-}
-
-FClassMetaData* FCompilerMetadataManager::AddInterfaceClassData(UStruct* Struct, FUnrealSourceFile* UnrealSourceFile)
-{
-	FClassMetaData* ClassData = AddClassData(Struct, UnrealSourceFile);
-	ClassData->ParsedInterface = EParsedInterface::ParsedUInterface;
-	InterfacesToVerify.Emplace(Struct, ClassData);
-	return ClassData;
-}
-
-FTokenData* FPropertyData::Set(FProperty* InKey, FTokenData&& InValue, FUnrealSourceFile* UnrealSourceFile)
-{
-	FTokenData* Result = NULL;
-
-	TSharedPtr<FTokenData>* pResult = Super::Find(InKey);
-	if (pResult != NULL)
-	{
-		Result = pResult->Get();
-		*Result = MoveTemp(InValue);
-	}
-	else
-	{
-		pResult = &Super::Emplace(InKey, new FTokenData(MoveTemp(InValue)));
-		Result = pResult->Get();
-	}
-
-	return Result;
-}
-
-void FCompilerMetadataManager::CheckForNoIInterfaces()
-{
-	for (const TPair<UStruct*, FClassMetaData*>& StructDataPair : InterfacesToVerify)
-	{
-		if (StructDataPair.Value->ParsedInterface == EParsedInterface::ParsedUInterface)
-		{
-			FString Name = StructDataPair.Key->GetName();
-			FError::Throwf(TEXT("UInterface 'U%s' parsed without a corresponding 'I%s'"), *Name, *Name);
-		}
-	}
-	InterfacesToVerify.Reset();
 }

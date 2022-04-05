@@ -11,8 +11,6 @@
 
 namespace Audio
 {
-	typedef TArray<float, TInlineAllocator<MAX_BUFFER_SIZE>> FStackSampleBuffer;
-
 	struct FLinkwitzRileyBandFilter
 	{
 		TArray<FVariablePoleFilter> Filters;
@@ -22,7 +20,7 @@ namespace Audio
 
 	struct FMultibandBuffer
 	{
-		Audio::AlignedFloatBuffer Buffer;
+		Audio::FAlignedFloatBuffer Buffer;
 
 		int32 NumBands = 0;
 		int32 NumSamples = 0;
@@ -84,7 +82,8 @@ namespace Audio
 		// initalize filters
 		void Init(const int32 InChannels,
 				  const float InSampleRate,
-				  const EFilterOrder FilterOrder,
+				  const EFilterOrder FilterOrder, 
+				  const bool bInPhaseCompensate,
 				  const TArray<float>& InCrossovers); // Always InBands - 1 Crossovers
 
 		void ProcessAudioFrame(const float* InBuffer, FMultibandBuffer& OutBuffer);
@@ -101,6 +100,8 @@ namespace Audio
 
 		TArray<float> SharedBuffer;
 		TArray<float> BandWorkBuffer;
+		FAlignedFloatBuffer SharedAlignedBuffer;
+		FAlignedFloatBuffer BandAlignedBuffer;
 
 		TArray<FLinkwitzRileyBandFilter> BandFilters;
 		TArray<FCrossoverBandwidthPair> Crossovers;

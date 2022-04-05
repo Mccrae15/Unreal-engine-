@@ -96,10 +96,10 @@ bool FARKitMeshData::GetClassificationAtLocation(const FVector& InWorldLocation,
 		const auto& Vert1 = Vertices[Indices[3 * FaceIndex + 1]];
 		const auto& Vert2 = Vertices[Indices[3 * FaceIndex + 2]];
 		const auto Center = (Vert0 + Vert1 + Vert2) / 3.f;
-		if ((Center - LocalLocation).SizeSquared() < DistanceSquared) // distance less than 5cm
+		if (((FVector)Center - LocalLocation).SizeSquared() < DistanceSquared) // distance less than 5cm
 		{
 			OutClassification = Classifications[FaceIndex];
-			OutClassificationLocation = InLocalToWorldTransform.TransformPosition(Center);
+			OutClassificationLocation = InLocalToWorldTransform.TransformPosition((FVector)Center);
 			return true;
 		}
 	}
@@ -186,8 +186,8 @@ void FARKitMeshData::UpdateMeshData()
 				for (auto Index = 0; Index < NumVertices; ++Index, SourceVertices += 3)
 				{
 					// See FAppleARKitConversion::ToFVector
-					Vertices[Index] = FVector(-SourceVertices[2], SourceVertices[0], SourceVertices[1]) * FAppleARKitConversion::ToUE4Scale();
-					MergeBoxWith(BoundingBox, Vertices[Index]);
+					Vertices[Index] = FVector3f(-SourceVertices[2], SourceVertices[0], SourceVertices[1]) * FAppleARKitConversion::ToUEScale();
+					MergeBoxWith(BoundingBox, static_cast<FVector>(Vertices[Index]));
 				}
 			}
 			else
@@ -254,7 +254,15 @@ void FARKitMeshData::UpdateMeshData()
 		}
 #else // USE_ARKIT_NORMALS
 		{
-			FAccumulatedNormal::CalculateVertexNormals(AccumulatedNormals, Vertices, Indices, TangentData, BoundingBox.GetCenter(), 100.f);
+			// TODO: Revisit LWC and AR geometry; temp fix to unbreak build.
+			TArray<FVector> LwcVertices;
+			LwcVertices.SetNumUninitialized(Vertices.Num());
+			for (int32 i = 0; i < Vertices.Num(); ++i)
+			{
+				LwcVertices[i] = FVector(Vertices[i].X, Vertices[i].Y, Vertices[i].Z);
+			}
+
+			FAccumulatedNormal::CalculateVertexNormals(AccumulatedNormals, LwcVertices, Indices, TangentData, BoundingBox.GetCenter(), 100.f);
 		}
 #endif // USE_ARKIT_NORMALS
 		

@@ -170,7 +170,7 @@ FQuat FSimpleHMD::GetBaseOrientation() const
 	return FQuat::Identity;
 }
 
-void FSimpleHMD::DrawDistortionMesh_RenderThread(struct FRenderingCompositePassContext& Context, const FIntPoint& TextureSize)
+void FSimpleHMD::DrawDistortionMesh_RenderThread(struct FHeadMountedDisplayPassContext& Context, const FIntPoint& TextureSize)
 {
 	float ClipSpaceQuadZ = 0.0f;
 	FMatrix QuadTexTransform = FMatrix::Identity;
@@ -186,36 +186,35 @@ void FSimpleHMD::DrawDistortionMesh_RenderThread(struct FRenderingCompositePassC
 	static const uint32 NumVerts = 4;
 	static const uint32 NumTris = 2;
 
-	static const FDistortionVertex LeftVerts[] =
-	{
-		// left eye
-		{ FVector2D(-0.9f, -0.9f), FVector2D(0.0f, 1.0f), FVector2D(0.0f, 1.0f), FVector2D(0.0f, 1.0f), 1.0f, 0.0f },
-		{ FVector2D(-0.1f, -0.9f), FVector2D(0.5f, 1.0f), FVector2D(0.5f, 1.0f), FVector2D(0.5f, 1.0f), 1.0f, 0.0f },
-		{ FVector2D(-0.1f, 0.9f), FVector2D(0.5f, 0.0f), FVector2D(0.5f, 0.0f), FVector2D(0.5f, 0.0f), 1.0f, 0.0f },
-		{ FVector2D(-0.9f, 0.9f), FVector2D(0.0f, 0.0f), FVector2D(0.0f, 0.0f), FVector2D(0.0f, 0.0f), 1.0f, 0.0f },
+	static const FDistortionVertex MeshVerts[][NumVerts] = {
+		{
+			// left eye
+			{ FVector2f(-0.9f, -0.9f), FVector2f(0.0f, 1.0f), FVector2f(0.0f, 1.0f), FVector2f(0.0f, 1.0f), 1.0f, 0.0f },
+			{ FVector2f(-0.1f, -0.9f), FVector2f(0.5f, 1.0f), FVector2f(0.5f, 1.0f), FVector2f(0.5f, 1.0f), 1.0f, 0.0f },
+			{ FVector2f(-0.1f, 0.9f), FVector2f(0.5f, 0.0f), FVector2f(0.5f, 0.0f), FVector2f(0.5f, 0.0f), 1.0f, 0.0f },
+			{ FVector2f(-0.9f, 0.9f), FVector2f(0.0f, 0.0f), FVector2f(0.0f, 0.0f), FVector2f(0.0f, 0.0f), 1.0f, 0.0f },
+		},
+		{
+			// right eye
+			{ FVector2f(0.1f, -0.9f), FVector2f(0.5f, 1.0f), FVector2f(0.5f, 1.0f), FVector2f(0.5f, 1.0f), 1.0f, 0.0f },
+			{ FVector2f(0.9f, -0.9f), FVector2f(1.0f, 1.0f), FVector2f(1.0f, 1.0f), FVector2f(1.0f, 1.0f), 1.0f, 0.0f },
+			{ FVector2f(0.9f, 0.9f), FVector2f(1.0f, 0.0f), FVector2f(1.0f, 0.0f), FVector2f(1.0f, 0.0f), 1.0f, 0.0f },
+			{ FVector2f(0.1f, 0.9f), FVector2f(0.5f, 0.0f), FVector2f(0.5f, 0.0f), FVector2f(0.5f, 0.0f), 1.0f, 0.0f },
+		}
 	};
 
-	static const FDistortionVertex RightVerts[] =
-	{
-		// right eye
-		{ FVector2D(0.1f, -0.9f), FVector2D(0.5f, 1.0f), FVector2D(0.5f, 1.0f), FVector2D(0.5f, 1.0f), 1.0f, 0.0f },
-		{ FVector2D(0.9f, -0.9f), FVector2D(1.0f, 1.0f), FVector2D(1.0f, 1.0f), FVector2D(1.0f, 1.0f), 1.0f, 0.0f },
-		{ FVector2D(0.9f, 0.9f), FVector2D(1.0f, 0.0f), FVector2D(1.0f, 0.0f), FVector2D(1.0f, 0.0f), 1.0f, 0.0f },
-		{ FVector2D(0.1f, 0.9f), FVector2D(0.5f, 0.0f), FVector2D(0.5f, 0.0f), FVector2D(0.5f, 0.0f), 1.0f, 0.0f },
-	};
-
-	FRHIResourceCreateInfo CreateInfo;
-	FVertexBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FDistortionVertex) * NumVerts, BUF_Volatile, CreateInfo);
-	void* VoidPtr = RHILockVertexBuffer(VertexBufferRHI, 0, sizeof(FDistortionVertex) * NumVerts, RLM_WriteOnly);
-	FPlatformMemory::Memcpy(VoidPtr, View.StereoPass == eSSP_RIGHT_EYE ? RightVerts : LeftVerts, sizeof(FDistortionVertex) * NumVerts);
-	RHIUnlockVertexBuffer(VertexBufferRHI);
+	FRHIResourceCreateInfo CreateInfo(TEXT("FSimpleHMD"));
+	FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FDistortionVertex) * NumVerts, BUF_Volatile, CreateInfo);
+	void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FDistortionVertex) * NumVerts, RLM_WriteOnly);
+	FPlatformMemory::Memcpy(VoidPtr, MeshVerts[View.StereoViewIndex], sizeof(FDistortionVertex) * NumVerts);
+	RHIUnlockBuffer(VertexBufferRHI);
 
 	static const uint16 Indices[] = { 0, 1, 2, 0, 2, 3 };
 
-	FIndexBufferRHIRef IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), sizeof(uint16) * 12, BUF_Volatile, CreateInfo);
-	void* VoidPtr2 = RHILockIndexBuffer(IndexBufferRHI, 0, sizeof(uint16) * 12, RLM_WriteOnly);
-	FPlatformMemory::Memcpy(VoidPtr2, Indices, sizeof(uint16) * 12);
-	RHIUnlockIndexBuffer(IndexBufferRHI);
+	FBufferRHIRef IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), sizeof(uint16) * 6, BUF_Volatile, CreateInfo);
+	void* VoidPtr2 = RHILockBuffer(IndexBufferRHI, 0, sizeof(uint16) * 6, RLM_WriteOnly);
+	FPlatformMemory::Memcpy(VoidPtr2, Indices, sizeof(uint16) * 6);
+	RHIUnlockBuffer(IndexBufferRHI);
 
 	RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
 	RHICmdList.DrawIndexedPrimitive(IndexBufferRHI, 0, 0, NumVerts, 0, NumTris, 1);
@@ -234,29 +233,26 @@ bool FSimpleHMD::EnableStereo(bool stereo)
 	return true;
 }
 
-void FSimpleHMD::AdjustViewRect(EStereoscopicPass StereoPass, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const
+void FSimpleHMD::AdjustViewRect(int32 ViewIndex, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const
 {
 	SizeX = SizeX / 2;
-	if( StereoPass == eSSP_RIGHT_EYE )
-	{
-		X += SizeX;
-	}
+	X += SizeX * ViewIndex;
 }
 
-void FSimpleHMD::CalculateStereoViewOffset(const enum EStereoscopicPass StereoPassType, FRotator& ViewRotation, const float InWorldToMeters, FVector& ViewLocation)
+void FSimpleHMD::CalculateStereoViewOffset(const int32 ViewIndex, FRotator& ViewRotation, const float InWorldToMeters, FVector& ViewLocation)
 {
-	if( StereoPassType != eSSP_FULL)
+	if( ViewIndex != INDEX_NONE)
 	{
 		float EyeOffset = 3.20000005f;
-		const float PassOffset = (StereoPassType == eSSP_LEFT_EYE) ? EyeOffset : -EyeOffset;
+		const float PassOffset = (ViewIndex == EStereoscopicEye::eSSE_LEFT_EYE) ? EyeOffset : -EyeOffset;
 		ViewLocation += ViewRotation.Quaternion().RotateVector(FVector(0,PassOffset,0));
 	}
 }
 
-FMatrix FSimpleHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass StereoPassType) const
+FMatrix FSimpleHMD::GetStereoProjectionMatrix(const int32 ViewIndex) const
 {
 	const float ProjectionCenterOffset = 0.151976421f;
-	const float PassProjectionOffset = (StereoPassType == eSSP_LEFT_EYE) ? ProjectionCenterOffset : -ProjectionCenterOffset;
+	const float PassProjectionOffset = (ViewIndex == EStereoscopicEye::eSSE_LEFT_EYE) ? ProjectionCenterOffset : -ProjectionCenterOffset;
 
 	const float HalfFov = 2.19686294f / 2.f;
 	const float InWidth = 640.f;
@@ -274,7 +270,7 @@ FMatrix FSimpleHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass Stere
 		* FTranslationMatrix(FVector(PassProjectionOffset,0,0));
 }
 
-void FSimpleHMD::GetEyeRenderParams_RenderThread(const FRenderingCompositePassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const
+void FSimpleHMD::GetEyeRenderParams_RenderThread(const FHeadMountedDisplayPassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const
 {
 	EyeToSrcUVOffsetValue = FVector2D::ZeroVector;
 	EyeToSrcUVScaleValue = FVector2D(1.0f, 1.0f);
@@ -309,14 +305,9 @@ void FSimpleHMD::PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHIC
 	check(IsInRenderingThread());
 }
 
-bool FSimpleHMD::IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const
-{
-	return GEngine && GEngine->IsStereoscopic3D(Context.Viewport);
-}
-
 FSimpleHMD::FSimpleHMD(const FAutoRegister& AutoRegister) :
 	FHeadMountedDisplayBase(nullptr),
-	FSceneViewExtensionBase(AutoRegister),
+	FHMDSceneViewExtension(AutoRegister),
 	CurHmdOrientation(FQuat::Identity),
 	LastHmdOrientation(FQuat::Identity),
 	DeltaControlRotation(FRotator::ZeroRotator),

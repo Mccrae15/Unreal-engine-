@@ -737,7 +737,7 @@ struct NETCODEUNITTEST_API NUTDebug
 	 */
 	static inline void StringToBytes(const FString& InString, TArray<uint8>& OutBytes)
 	{
-		TArray<TCHAR> InStrCharArray = InString.GetCharArray();
+		TArray<TCHAR, FString::AllocatorType> InStrCharArray = InString.GetCharArray();
 
 		for (int i=0; i<InString.Len(); i++)
 		{
@@ -796,11 +796,7 @@ struct NETCODEUNITTEST_API NUTDebug
 		FString HexDumpStr = HexDump(InBytes, bDumpASCII, bDumpOffset);
 		TArray<FString> LogLines;
 
-#if TARGET_UE4_CL < CL_STRINGPARSEARRAY
-		HexDumpStr.ParseIntoArray(&LogLines, LINE_TERMINATOR, false);
-#else
 		HexDumpStr.ParseIntoArray(LogLines, LINE_TERMINATOR, false);
-#endif
 
 		for (int32 i=0; i<LogLines.Num(); i++)
 		{
@@ -881,11 +877,7 @@ struct NETCODEUNITTEST_API NUTDebug
 		FString BitDumpStr = BitDump(InBytes, bDumpOffset, bLSBFirst);
 		TArray<FString> LogLines;
 
-#if TARGET_UE4_CL < CL_STRINGPARSEARRAY
-		BitDumpStr.ParseIntoArray(&LogLines, LINE_TERMINATOR, false);
-#else
 		BitDumpStr.ParseIntoArray(LogLines, LINE_TERMINATOR, false);
-#endif
 
 		for (int32 i=0; i<LogLines.Num(); i++)
 		{

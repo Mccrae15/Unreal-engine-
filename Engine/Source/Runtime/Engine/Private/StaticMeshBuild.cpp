@@ -14,18 +14,23 @@
 #include "StaticMeshResources.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "DistanceFieldAtlas.h"
+#include "MeshCardRepresentation.h"
 
 #if WITH_EDITOR
+#include "Templates/UniquePtr.h"
 #include "Async/Async.h"
+#include "ObjectCacheContext.h"
 #include "IMeshBuilderModule.h"
 #include "IMeshReductionManagerModule.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
-
+#include "StaticMeshCompiler.h"
 #include "MeshUtilities.h"
+#include "StaticMeshDescription.h"
 #include "MeshUtilitiesCommon.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Misc/App.h"
+#include <atomic>
 
 #include "Rendering/StaticLightingSystemInterface.h"
 #endif // #if WITH_EDITOR
@@ -52,9 +57,9 @@ static bool HasBadNTB(UStaticMesh* Mesh, bool &bZeroNormals, bool &bZeroTangents
 			int32 NumVerts = LOD.VertexBuffers.PositionVertexBuffer.GetNumVertices();
 			for (int32 VertIndex = 0; VertIndex < NumVerts; ++VertIndex)
 			{
-				const FVector TangentX = LOD.VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertIndex);
-				const FVector TangentY = LOD.VertexBuffers.StaticMeshVertexBuffer.VertexTangentY(VertIndex);
-				const FVector TangentZ = LOD.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertIndex);
+				const FVector3f TangentX = LOD.VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertIndex);
+				const FVector3f TangentY = LOD.VertexBuffers.StaticMeshVertexBuffer.VertexTangentY(VertIndex);
+				const FVector3f TangentZ = LOD.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertIndex);
 				
 				if (TangentX.IsNearlyZero(KINDA_SMALL_NUMBER))
 				{
@@ -117,7 +122,7 @@ void UStaticMesh::Build(bool bInSilent, TArray<FText>* OutErrors)
 	FScopedSlowTask StaticMeshBuildingSlowTask(1, StatusUpdate);
 	if (!bInSilent)
 	{
-		StaticMeshBuildingSlowTask.MakeDialog();
+		StaticMeshBuildingSlowTask.MakeDialogDelayed(1.0f);
 	}
 	StaticMeshBuildingSlowTask.EnterProgressFrame(1);
 #endif // #if WITH_EDITOR
@@ -128,27 +133,38 @@ void UStaticMesh::Build(bool bInSilent, TArray<FText>* OutErrors)
 void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bInSilent, TFunction<bool(UStaticMesh*)> InProgressCallback, TArray<FText>* OutErrors)
 {
 #if WITH_EDITOR
+	check(IsInGameThread());
 	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::BatchBuild);
 
-	TArray<UStaticMesh*> StaticMeshesToProcess;
+	FObjectCacheContextScope ObjectCacheScope;
+
+	TSet<UStaticMesh*> StaticMeshesToProcess;
 	StaticMeshesToProcess.Reserve(InStaticMeshes.Num());
 
+	bool bIsFinishCompilationRequired = false;
 	for (UStaticMesh* StaticMesh : InStaticMeshes)
 	{
 		if (StaticMesh && StaticMesh->CanBuild())
 		{
+			bIsFinishCompilationRequired |= StaticMesh->IsCompiling();
 			StaticMeshesToProcess.Add(StaticMesh);
 		}
 	}
 
 	if (StaticMeshesToProcess.Num())
 	{
+		if (bIsFinishCompilationRequired)
+		{
+			FStaticMeshCompilingManager::Get().FinishCompilation(StaticMeshesToProcess.Array());
+		}
+
 		// Make sure the target platform is properly initialized before accessing it from multiple threads
 		ITargetPlatformManagerModule& TargetPlatformManager = GetTargetPlatformManagerRef();
 		ITargetPlatform* RunningPlatform = TargetPlatformManager.GetRunningTargetPlatform();
 		check(RunningPlatform);
 
 		// Ensure those modules are loaded on the main thread - we'll need them in async tasks
+		FModuleManager::Get().LoadModuleChecked<IMeshUtilities>(TEXT("MeshUtilities"));
 		FModuleManager::Get().LoadModuleChecked<IMeshReductionManagerModule>(TEXT("MeshReductionInterface"));
 		IMeshBuilderModule::GetForRunningPlatform();
 		for (const ITargetPlatform* TargetPlatform : TargetPlatformManager.GetActiveTargetPlatforms())
@@ -156,87 +172,182 @@ void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bI
 			IMeshBuilderModule::GetForPlatform(TargetPlatform);
 		}
 
-		for (UStaticMesh* StaticMesh : StaticMeshesToProcess)
+		if (GDistanceFieldAsyncQueue)
 		{
-			if (StaticMesh->GetRenderData())
+			GDistanceFieldAsyncQueue->CancelBuilds(StaticMeshesToProcess);
+		}
+
+		if (GCardRepresentationAsyncQueue)
+		{
+			GCardRepresentationAsyncQueue->CancelBuilds(StaticMeshesToProcess);
+		}
+		
+		TMap<UStaticMesh*, TArray<UStaticMeshComponent*>> StaticMeshComponents;
+		StaticMeshComponents.Reserve(InStaticMeshes.Num());
+
+		TSet<FSceneInterface*> Scenes;
+
+		for (UStaticMesh* StaticMesh : InStaticMeshes)
+		{
+			if (StaticMesh)
 			{
-				// Finish any previous async builds before modifying RenderData
-				// This can happen during import as the mesh is rebuilt redundantly
-				GDistanceFieldAsyncQueue->BlockUntilBuildComplete(StaticMesh, true);
+				StaticMeshComponents.Add(StaticMesh);
+
+				for (UStaticMeshComponent* Component : ObjectCacheScope.GetContext().GetStaticMeshComponents(StaticMesh))
+				{
+					// Detach all instances of those static meshes from the scene.
+					if (Component->IsRenderStateCreated())
+					{
+						Component->DestroyRenderState_Concurrent();
+						StaticMeshComponents[StaticMesh].Add(Component);
+						Scenes.Add(Component->GetScene());
+					}
+				}
 			}
 		}
 
-		// Detach all instances of those static meshes from the scene.
-		FStaticMeshComponentRecreateRenderStateContext RecreateRenderStateContext(StaticMeshesToProcess, false);
+		// Only flush rendering commands if necessary
+		if (Scenes.Num())
+		{
+			UpdateAllPrimitiveSceneInfosForScenes(MoveTemp(Scenes));
+
+			// Flush the rendering commands generated by the detachments.
+			// The static mesh scene proxies reference the UStaticMesh, and this ensures that they are cleaned up before the UStaticMesh changes.
+			FlushRenderingCommands();
+		}
+
+		auto FinalizeStaticMesh = 
+			[&Scenes, &StaticMeshComponents](UStaticMesh* StaticMesh)
+			{
+				if (TArray<UStaticMeshComponent*>* MeshComponents = StaticMeshComponents.Find(StaticMesh))
+				{
+					for (UPrimitiveComponent* Component : *MeshComponents)
+					{
+						if (Component->IsRegistered() && !Component->IsRenderStateCreated())
+						{
+							Component->CreateRenderState_Concurrent(nullptr);
+							Scenes.Add(Component->GetScene());
+						}
+					}
+				}
+			};
+
+		auto LaunchAsyncBuild =
+			[OutErrors](UStaticMesh* StaticMesh)
+			{
+				// Only launch async compile if errors are not required
+				if (OutErrors == nullptr && FStaticMeshCompilingManager::Get().IsAsyncCompilationAllowed(StaticMesh))
+				{
+					TUniquePtr<FStaticMeshBuildContext> Context = MakeUnique<FStaticMeshBuildContext>();
+					StaticMesh->BeginBuildInternal(Context.Get());
+
+					FQueuedThreadPool* StaticMeshThreadPool = FStaticMeshCompilingManager::Get().GetThreadPool();
+					EQueuedWorkPriority BasePriority = FStaticMeshCompilingManager::Get().GetBasePriority(StaticMesh);
+					check(StaticMesh->AsyncTask == nullptr);
+					StaticMesh->AsyncTask = MakeUnique<FStaticMeshAsyncBuildTask>(StaticMesh, MoveTemp(Context));
+					StaticMesh->AsyncTask->StartBackgroundTask(StaticMeshThreadPool, BasePriority, EQueuedWorkFlags::DoNotRunInsideBusyWait, StaticMesh->GetBuildRequiredMemory());
+					FStaticMeshCompilingManager::Get().AddStaticMeshes({ StaticMesh });
+					return true;
+				}
+
+				return false;
+			};
 
 		if (StaticMeshesToProcess.Num() > 1 && CVarStaticMeshDisableThreadedBuild.GetValueOnAnyThread() == 0)
 		{
 			FCriticalSection OutErrorsLock;
 
+			struct FStaticMeshTask
+			{
+				UStaticMesh*  StaticMesh;
+				TFuture<bool> Future;
+
+				FStaticMeshTask(UStaticMesh* InStaticMesh, TFuture<bool>&& InFuture)
+					: StaticMesh(InStaticMesh)
+					, Future(MoveTemp(InFuture))
+				{
+				}
+			};
+
 			// Start async tasks to build the static meshes in parallel
-			TArray<TFuture<bool>> AsyncTasks;
+			TArray<FStaticMeshTask> AsyncTasks;
 			AsyncTasks.Reserve(StaticMeshesToProcess.Num());
-			TAtomic<bool> bCancelled(false);
+			std::atomic<bool> bCancelled(false);
 
 			for (UStaticMesh* StaticMesh : StaticMeshesToProcess)
 			{
-				StaticMesh->PreBuildInternal();
+				// Preferably launch as an async build, if it fails, fallback on the old behavior
+				const bool bAsyncBuildSucceeded = LaunchAsyncBuild(StaticMesh);
+				if (!bAsyncBuildSucceeded)
+				{
+					StaticMesh->BeginBuildInternal();
 
-				AsyncTasks.Emplace(
-					Async(
-						EAsyncExecution::LargeThreadPool,
-						[StaticMesh, bInSilent, OutErrors, &OutErrorsLock, &bCancelled]()
-						{
-							if (bCancelled.Load(EMemoryOrder::Relaxed))
+					AsyncTasks.Emplace(
+						StaticMesh,
+						Async(
+							EAsyncExecution::LargeThreadPool,
+							[StaticMesh, bInSilent, OutErrors, &OutErrorsLock, &bCancelled]()
 							{
-								return false;
-							}
+								if (bCancelled.load(std::memory_order_relaxed))
+								{
+									return false;
+								}
 
-							TArray<FText> Errors;
-							const bool bHasRenderDataChanged = StaticMesh->BuildInternal(bInSilent, &Errors);
-						
-							if (OutErrors)
-							{
-								FScopeLock ScopeLock(&OutErrorsLock);
-								OutErrors->Append(Errors);
-							}
+								TArray<FText> Errors;
+								const bool bHasRenderDataChanged = StaticMesh->ExecuteBuildInternal(bInSilent, &Errors);
+								if (OutErrors)
+								{
+									FScopeLock ScopeLock(&OutErrorsLock);
+									OutErrors->Append(Errors);
+								}
 
-							return bHasRenderDataChanged;
-						}
-					)
-				);
+								return bHasRenderDataChanged;
+							}
+						)
+					);
+				}
 			}
 
-			for (int32 Index = 0; Index < AsyncTasks.Num(); ++Index)
+			for (FStaticMeshTask& Task : AsyncTasks)
 			{
-				UStaticMesh* StaticMesh = StaticMeshesToProcess[Index];
-
-				if (InProgressCallback && !InProgressCallback(StaticMesh))
+				if (InProgressCallback && !InProgressCallback(Task.StaticMesh))
 				{
 					bCancelled = true;
 				}
 
 				// Wait the result of the async task
-				const bool bHasRenderDataChanged = AsyncTasks[Index].Get();
+				const bool bHasRenderDataChanged = Task.Future.Get();
 
-				StaticMesh->PostBuildInternal(RecreateRenderStateContext.GetComponentsUsingMesh(StaticMesh), bHasRenderDataChanged);
+				Task.StaticMesh->FinishBuildInternal(StaticMeshComponents.FindChecked(Task.StaticMesh), bHasRenderDataChanged);
+				FinalizeStaticMesh(Task.StaticMesh);
 			}
 		}
 		else
 		{
 			for (UStaticMesh* StaticMesh : StaticMeshesToProcess)
 			{
-				if (InProgressCallback && !InProgressCallback(StaticMesh))
+				// Preferably launch as an async build, if it fails, fallback on the old behavior
+				const bool bAsyncBuildSucceeded = LaunchAsyncBuild(StaticMesh);
+				if (!bAsyncBuildSucceeded)
 				{
-					break;
+					if (InProgressCallback && !InProgressCallback(StaticMesh))
+					{
+						break;
+					}
+				
+					StaticMesh->BeginBuildInternal();
+
+					const bool bHasRenderDataChanged = StaticMesh->ExecuteBuildInternal(bInSilent, OutErrors);
+
+					StaticMesh->FinishBuildInternal(StaticMeshComponents.FindChecked(StaticMesh), bHasRenderDataChanged);
+					FinalizeStaticMesh(StaticMesh);
 				}
-
-				StaticMesh->PreBuildInternal();
-
-				const bool bHasRenderDataChanged = StaticMesh->BuildInternal(bInSilent, OutErrors);
-
-				StaticMesh->PostBuildInternal(RecreateRenderStateContext.GetComponentsUsingMesh(StaticMesh), bHasRenderDataChanged);
 			}
+		}
+
+		if (Scenes.Num())
+		{
+			UpdateAllPrimitiveSceneInfosForScenes(MoveTemp(Scenes));
 		}
 	}
 #else
@@ -246,12 +357,18 @@ void UStaticMesh::BatchBuild(const TArray<UStaticMesh*>& InStaticMeshes, bool bI
 
 #if WITH_EDITOR
 
-void UStaticMesh::PreBuildInternal()
+extern const FString& GetStaticMeshDerivedDataVersion();
+void UStaticMesh::BeginBuildInternal(FStaticMeshBuildContext* Context)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::PreBuildInternal);
+	check(AsyncTask == nullptr);
+
+	// Make sure every static FString's are built and cached on the main thread
+	// before trying to access it from multiple threads
+	GetStaticMeshDerivedDataVersion();
 
 	PreMeshBuild.Broadcast(this);
-
+	
 	// Ensure we have a bodysetup.
 	CreateBodySetup();
 	check(GetBodySetup() != nullptr);
@@ -262,22 +379,48 @@ void UStaticMesh::PreBuildInternal()
 	// Flush the resource release commands to the rendering thread to ensure that the build doesn't occur while a resource is still
 	// allocated, and potentially accessing the UStaticMesh.
 	ReleaseResourcesFence.Wait();
-}
 
-bool UStaticMesh::BuildInternal(bool bInSilent, TArray<FText> * OutErrors)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::BuildInternal);
-
-	// If we're controlled by an editable mesh do not build. The editable mesh will build us
-	if (EditableMesh)
+	// Having a context means we're running async
+	if (Context)
 	{
-		if (FApp::CanEverRender())
+		// Lock all the async properties that could be modified during async build
+		AcquireAsyncProperty();
+
+		// Ensure that anything we perform here doesn't cause stalls
+		FStaticMeshAsyncBuildScope AsyncBuildScope(this);
+
+		// Extended bounds are super important to avoid many stalls since a lot of different
+		// systems rely on mesh bounds. If mesh description is available and doesn't require being
+		// loaded, compute bounds right now so we can unlock the property before going async.
+		if (IsSourceModelValid(0) && GetSourceModel(0).GetCachedMeshDescription() != nullptr)
 		{
-			InitResources();
+			CachedMeshDescriptionBounds = GetSourceModel(0).GetCachedMeshDescription()->GetBounds();
 		}
 
-		return false;
+		// CommitMeshDescription will also fill out CachedMeshDescriptionBounds
+		// so the bounds might be available even if ClearMeshDescriptions has been called.
+		if (CachedMeshDescriptionBounds.IsSet())
+		{
+			CalculateExtendedBounds();
+			Context->bShouldComputeExtendedBounds = false;
+
+			// Release the property now that it contains valid values to avoid game-thread stalls while we do the rest async
+			ReleaseAsyncProperty(EStaticMeshAsyncProperties::ExtendedBounds);
+		}
+		else
+		{
+			Context->bShouldComputeExtendedBounds = true;
+		}
 	}
+}
+
+bool UStaticMesh::ExecuteBuildInternal(bool bInSilent, TArray<FText>* OutErrors)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::ExecuteBuildInternal);
+
+#if WITH_EDITORONLY_DATA
+	check(EditableMesh_DEPRECATED == nullptr);
+#endif
 
 	FFormatNamedArguments Args;
 	Args.Add( TEXT("Path"), FText::FromString( GetPathName() ) );
@@ -293,14 +436,12 @@ bool UStaticMesh::BuildInternal(bool bInSilent, TArray<FText> * OutErrors)
 
 	// Free existing render data and recache.
 	CacheDerivedData();
+	PrepareDerivedDataForActiveTargetPlatforms();
 
-	// Note: meshes can be built during automated importing.  We should not create resources in that case
-	// as they will never be released when this object is deleted
-	if(FApp::CanEverRender())
-	{
-		// Reinitialize the static mesh's resources.
-		InitResources();
-	}
+	// InitResources will send commands to other threads that will
+	// use our RenderData, we must mark it as ready to be used since
+	// we're not going to modify it anymore
+	ReleaseAsyncProperty(EStaticMeshAsyncProperties::RenderData);
 
 	if( GetNumSourceModels() )
 	{
@@ -424,9 +565,17 @@ bool UStaticMesh::BuildInternal(bool bInSilent, TArray<FText> * OutErrors)
 	return bHasRenderDataChanged;
 }
 
-void UStaticMesh::PostBuildInternal(const TArray<UStaticMeshComponent*> & InAffectedComponents, bool bHasRenderDataChanged)
+void UStaticMesh::FinishBuildInternal(const TArray<UStaticMeshComponent*> & InAffectedComponents, bool bHasRenderDataChanged, bool bShouldComputeExtendedBounds)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UStaticMesh::PostBuildInternal);
+
+	// Note: meshes can be built during automated importing.  We should not create resources in that case
+	// as they will never be released when this object is deleted
+	if (FApp::CanEverRender())
+	{
+		// Reinitialize the static mesh's resources.
+		InitResources();
+	}
 
 	if (bHasRenderDataChanged)
 	{
@@ -440,7 +589,6 @@ void UStaticMesh::PostBuildInternal(const TArray<UStaticMeshComponent*> & InAffe
 	}
 	else
 	{
-#if WITH_EDITOR
 		// No change in RenderData, still re-register components with preview static lighting system as ray tracing geometry has been recreated
 		// When RenderData is changed, this is handled by InvalidateLightingCache()
 		for (UStaticMeshComponent* Component : InAffectedComponents)
@@ -451,19 +599,41 @@ void UStaticMesh::PostBuildInternal(const TArray<UStaticMeshComponent*> & InAffe
 				FStaticLightingSystemInterface::OnPrimitiveComponentRegistered.Broadcast(Component);
 			}
 		}
-#endif
 	}
 
-	// Calculate extended bounds
-	CalculateExtendedBounds();
+	// If extended bounds were already calculated in the PreBuild step and are unlocked, 
+	// we will only validate here to avoid modifying the value while another thread could read it.
+	if (bShouldComputeExtendedBounds)
+	{
+		// Calculate extended bounds
+		CalculateExtendedBounds();
+	}
+	else
+	{
+		// We don't care about minor differences but might want to highlight if big differences are noted.
+		const FBoxSphereBounds RenderBounds = GetRenderData()->Bounds;
+		const FBoxSphereBounds CachedBounds = CachedMeshDescriptionBounds.GetValue();
+
+		const float SizeDifferencePercent   = 100.f * 2.0f * FMath::Abs(CachedBounds.BoxExtent.Size() - RenderBounds.BoxExtent.Size()) / (FMath::Abs(CachedBounds.BoxExtent.Size() + RenderBounds.BoxExtent.Size()) + KINDA_SMALL_NUMBER);
+		const float OriginDifferencePercent = 100.f * 2.0f * FVector::Dist(CachedBounds.Origin, RenderBounds.Origin) / ((CachedBounds.Origin + RenderBounds.Origin).Size() + KINDA_SMALL_NUMBER);
+		// Anything more than 5% is probably worth investigating
+		if (SizeDifferencePercent > 5.0f || OriginDifferencePercent > 5.0f)
+		{	
+			UE_LOG(LogStaticMesh, Warning, TEXT("The difference between RenderData Bounds (%s) and MeshDescription Bounds (%s) is significative for %s"), *RenderBounds.ToString(), *CachedBounds.ToString(), *GetFullName());
+		}
+	}
 
 	// Update nav collision 
 	CreateNavCollision(/*bIsUpdate=*/true);
+
+	// Async build is finished, we can unlock everything now.
+	ReleaseAsyncProperty();
 
 	PostMeshBuild.Broadcast(this);
 }
 
 #endif // #if WITH_EDITOR
+
 /*------------------------------------------------------------------------------
 	Remapping of painted vertex colors.
 ------------------------------------------------------------------------------*/
@@ -548,8 +718,8 @@ void RemapPaintedVertexColors(const TArray<FPaintedVertex>& InPaintedVertices,
 		for (int32 Index = 0; Index < Colors.Num(); ++Index)
 		{
 			PaintedVertex.Color = Colors[Index];
-			PaintedVertex.Normal = OldVertexBuffer.VertexTangentZ(Index);
-			PaintedVertex.Position = OldPositions.VertexPosition(Index);
+			PaintedVertex.Normal = (FVector4)OldVertexBuffer.VertexTangentZ(Index);
+			PaintedVertex.Position = (FVector)OldPositions.VertexPosition(Index);
 			Bounds += PaintedVertex.Position;
 
 			PaintedVertices.Add(PaintedVertex);
@@ -560,7 +730,7 @@ void RemapPaintedVertexColors(const TArray<FPaintedVertex>& InPaintedVertices,
 	// of the new vertex positions
 	for (int32 VertIndex = 0; VertIndex < (int32)NewPositions.GetNumVertices(); ++VertIndex)
 	{
-		Bounds += NewPositions.VertexPosition(VertIndex);
+		Bounds += (FVector)NewPositions.VertexPosition(VertIndex);
 	}
 
 	TSMCVertPosOctree VertPosOctree( Bounds.GetCenter(), Bounds.GetExtent().GetMax() );
@@ -579,15 +749,15 @@ void RemapPaintedVertexColors(const TArray<FPaintedVertex>& InPaintedVertices,
 	for ( uint32 NewVertIndex = 0; NewVertIndex < NewPositions.GetNumVertices(); ++NewVertIndex )
 	{
 		PointsToConsider.Reset();
-		const FVector& CurPosition = NewPositions.VertexPosition( NewVertIndex );
+		const FVector3f& CurPosition = NewPositions.VertexPosition( NewVertIndex );
 		FVector CurNormal = FVector::ZeroVector;
 		if (OptionalVertexBuffer)
 		{
-			CurNormal = OptionalVertexBuffer->VertexTangentZ( NewVertIndex );
+			CurNormal = FVector4(OptionalVertexBuffer->VertexTangentZ( NewVertIndex ));
 		}
 
 		// Iterate through the octree attempting to find the vertices closest to the current new point
-		VertPosOctree.FindNearbyElements(CurPosition, [&PointsToConsider](const FPaintedVertex& Vertex)
+		VertPosOctree.FindNearbyElements((FVector)CurPosition, [&PointsToConsider](const FPaintedVertex& Vertex)
 		{
 			PointsToConsider.Add(Vertex);
 		});
@@ -598,7 +768,7 @@ void RemapPaintedVertexColors(const TArray<FPaintedVertex>& InPaintedVertices,
 			FPaintedVertex BestVertex = PointsToConsider[0];
 			FVector BestVertexNormal = BestVertex.Normal;
 
-			float BestDistanceSquared = ( BestVertex.Position - CurPosition ).SizeSquared();
+			float BestDistanceSquared = ( BestVertex.Position - (FVector)CurPosition ).SizeSquared();
 			float BestNormalDot = BestVertexNormal | CurNormal;
 
 			for ( int32 ConsiderationIndex = 1; ConsiderationIndex < PointsToConsider.Num(); ++ConsiderationIndex )
@@ -606,7 +776,7 @@ void RemapPaintedVertexColors(const TArray<FPaintedVertex>& InPaintedVertices,
 				FPaintedVertex& Vertex = PointsToConsider[ ConsiderationIndex ];
 				FVector VertexNormal = Vertex.Normal;
 
-				const float DistSqrd = ( Vertex.Position - CurPosition ).SizeSquared();
+				const float DistSqrd = ( Vertex.Position - (FVector)CurPosition ).SizeSquared();
 				const float NormalDot = VertexNormal | CurNormal;
 				if ( DistSqrd < BestDistanceSquared - DistanceOverNormalThreshold )
 				{
@@ -636,17 +806,17 @@ void RemapPaintedVertexColors(const TArray<FPaintedVertex>& InPaintedVertices,
 
 struct FStaticMeshTriangle
 {
-	FVector		Vertices[3];
-	FVector2D	UVs[3][8];
+	FVector3f	Vertices[3];
+	FVector2f	UVs[3][8];
 	FColor		Colors[3];
-	int32			MaterialIndex;
-	int32			FragmentIndex;
+	int32		MaterialIndex;
+	int32		FragmentIndex;
 	uint32		SmoothingMask;
-	int32			NumUVs;
+	int32		NumUVs;
 
-	FVector		TangentX[3]; // Tangent, U-direction
-	FVector		TangentY[3]; // Binormal, V-direction
-	FVector		TangentZ[3]; // Normal
+	FVector3f	TangentX[3]; // Tangent, U-direction
+	FVector3f	TangentY[3]; // Binormal, V-direction
+	FVector3f	TangentZ[3]; // Normal
 
 	uint32		bOverrideTangentBasis;
 	uint32		bExplicitNormals;

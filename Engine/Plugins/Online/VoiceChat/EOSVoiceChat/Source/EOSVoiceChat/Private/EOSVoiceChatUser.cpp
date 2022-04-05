@@ -120,10 +120,16 @@ void FEOSVoiceChatUser::SetSetting(const FString& Name, const FString& Value)
 			if (bIsNotListening != ChannelSession.bIsNotListening)
 			{
 				ChannelSession.bIsNotListening = bIsNotListening;
-				ApplySendingOptions(ChannelSession, true);
-				for (TPair<FString, FChannelParticipant>& ChannelParticipant : ChannelSession.Participants)
+				ApplySendingOptions(ChannelSession);
+				ApplyReceivingOptions(ChannelSession);
+				for (TPair<FString, FChannelParticipant>& ChannelParticipantPair : ChannelSession.Participants)
 				{
-					ApplyPlayerReceivingOptions(GetGlobalParticipant(ChannelParticipant.Key), ChannelSession, ChannelParticipant.Value, true);
+					const FString& ChannelParticipantName = ChannelParticipantPair.Key;
+					FChannelParticipant& ChannelParticipant = ChannelParticipantPair.Value;
+					if (!ChannelSession.IsLocalUser(ChannelParticipant))
+					{
+						ApplyPlayerReceivingOptions(GetGlobalParticipant(ChannelParticipantName), ChannelSession, ChannelParticipant);
+					}
 				}
 			}
 		}
@@ -554,26 +560,12 @@ void FEOSVoiceChatUser::JoinChannel(const FString& ChannelName, const FString& C
 
 			BindChannelCallbacks(ChannelSession);
 			ApplySendingOptions(ChannelSession);
+			ApplyReceivingOptions(ChannelSession);
 
 			const FTCHARToUTF8 Utf8RoomName(*ChannelName);
 			const FTCHARToUTF8 Utf8ClientBaseUrl(*ChannelCredentials.ClientBaseUrl);
 			const FTCHARToUTF8 Utf8ParticipantToken(*ChannelCredentials.ParticipantToken);
 			const FTCHARToUTF8 Utf8ParticipantId(*ChannelSession.PlayerName);
-
-			// Call UpdateReceiving once to set the default receiving state for all participants
-			{
-				EOS_RTCAudio_UpdateReceivingOptions UpdateReceivingOptions = {};
-				UpdateReceivingOptions.ApiVersion = EOS_RTCAUDIO_UPDATERECEIVING_API_LATEST;
-				static_assert(EOS_RTCAUDIO_UPDATERECEIVING_API_LATEST == 1, "EOS_RTCAudio_UpdateReceivingOptions updated, check new fields");
-				UpdateReceivingOptions.LocalUserId = LoginSession.LocalUserProductUserId;
-				UpdateReceivingOptions.RoomName = Utf8RoomName.Get();
-				UpdateReceivingOptions.ParticipantId = nullptr;
-				UpdateReceivingOptions.bAudioEnabled = ChannelSession.bIsNotListening ? EOS_FALSE : EOS_TRUE;
-
-				CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EOSVoiceChat);
-				QUICK_SCOPE_CYCLE_COUNTER(EOS_RTC_UpdateReceiving);
-				EOS_RTCAudio_UpdateReceiving(EOS_RTC_GetAudioInterface(GetRtcInterface()), &UpdateReceivingOptions, this, &FEOSVoiceChatUser::OnUpdateReceivingAudioStatic);
-			}
 
 			// Attempt to join the channel
 			{
@@ -724,6 +716,41 @@ void FEOSVoiceChatUser::SetPlayerMuted(const FString& PlayerName, bool bAudioMut
 bool FEOSVoiceChatUser::IsPlayerMuted(const FString& PlayerName) const
 {
 	return GetGlobalParticipant(PlayerName).bAudioMuted;
+}
+
+void FEOSVoiceChatUser::SetChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName, bool bAudioMuted)
+{
+	if (FChannelSession* ChannelSession = LoginSession.ChannelSessions.Find(ChannelName))
+	{
+		if (FChannelParticipant* ChannelParticipant = ChannelSession->Participants.Find(PlayerName))
+		{
+			const bool bMutedInChannelChanged = ChannelParticipant->bMutedInChannel != bAudioMuted;
+
+			EOSVOICECHATUSER_CLOG(bMutedInChannelChanged, Log, TEXT("SetChannelPlayerMuted PlayerName=[%s] bMutedInChannel=[%s]"), *PlayerName, *LexToString(bAudioMuted));
+			EOSVOICECHATUSER_CLOG(!bMutedInChannelChanged, Verbose, TEXT("SetChannelPlayerMuted PlayerName=[%s] bMutedInChannel=[%s] (No change)"), *PlayerName, *LexToString(bAudioMuted));
+
+			if (bMutedInChannelChanged)
+			{
+				ChannelParticipant->bMutedInChannel = bAudioMuted;
+
+				FGlobalParticipant& GlobalParticipant = GetGlobalParticipant(PlayerName);
+				ApplyPlayerReceivingOptions(GlobalParticipant, *ChannelSession, *ChannelParticipant);
+			}
+		}
+	}
+}
+
+bool FEOSVoiceChatUser::IsChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName) const
+{
+	if (const FChannelSession* ChannelSession = LoginSession.ChannelSessions.Find(ChannelName))
+	{
+		if (const FChannelParticipant* ChannelParticipant = ChannelSession->Participants.Find(PlayerName))
+		{
+			return ChannelParticipant->bMutedInChannel;
+		}
+	}
+
+	return false;
 }
 
 void FEOSVoiceChatUser::SetPlayerVolume(const FString& PlayerName, float Volume)
@@ -1151,58 +1178,63 @@ void FEOSVoiceChatUser::ApplyAudioOutputOptions()
 
 void FEOSVoiceChatUser::ApplyPlayerBlock(const FGlobalParticipant& GlobalParticipant, const FChannelSession& ChannelSession, FChannelParticipant& ChannelParticipant)
 {
-	if (GlobalParticipant.bBlocked != ChannelParticipant.bBlocked)
-	{
-		EOSVOICECHATUSER_LOG(Log, TEXT("ApplyPlayerBlock ChannelName=[%s] PlayerName=[%s] bBlocked=%s"), *ChannelSession.ChannelName, *GlobalParticipant.PlayerName, *LexToString(GlobalParticipant.bBlocked));
-		ChannelParticipant.bBlocked = GlobalParticipant.bBlocked;
+	EOSVOICECHATUSER_LOG(Verbose, TEXT("ApplyPlayerBlock ChannelName=[%s] PlayerName=[%s] bBlocked=%s"), *ChannelSession.ChannelName, *GlobalParticipant.PlayerName, *LexToString(GlobalParticipant.bBlocked));
 
-		const FTCHARToUTF8 Utf8RoomName(*ChannelSession.ChannelName);
-		const FTCHARToUTF8 Utf8ParticipantId(*GlobalParticipant.PlayerName);
+	const FTCHARToUTF8 Utf8RoomName(*ChannelSession.ChannelName);
+	const FTCHARToUTF8 Utf8ParticipantId(*GlobalParticipant.PlayerName);
 
-		EOS_RTC_BlockParticipantOptions Options = {};
-		Options.ApiVersion = EOS_RTC_BLOCKPARTICIPANT_API_LATEST;
-		static_assert(EOS_RTC_BLOCKPARTICIPANT_API_LATEST == 1, "EOS_RTC_BlockParticipantOptions updated, check new fields");
-		Options.LocalUserId = LoginSession.LocalUserProductUserId;
-		Options.RoomName = Utf8RoomName.Get();
-		Options.ParticipantId = EOS_ProductUserId_FromString(Utf8ParticipantId.Get());
-		Options.bBlocked = ChannelParticipant.bBlocked;
+	EOS_RTC_BlockParticipantOptions Options = {};
+	Options.ApiVersion = EOS_RTC_BLOCKPARTICIPANT_API_LATEST;
+	static_assert(EOS_RTC_BLOCKPARTICIPANT_API_LATEST == 1, "EOS_RTC_BlockParticipantOptions updated, check new fields");
+	Options.LocalUserId = LoginSession.LocalUserProductUserId;
+	Options.RoomName = Utf8RoomName.Get();
+	Options.ParticipantId = EOS_ProductUserId_FromString(Utf8ParticipantId.Get());
+	Options.bBlocked = GlobalParticipant.bBlocked;
 
-		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EOSVoiceChat);
-		QUICK_SCOPE_CYCLE_COUNTER(EOS_RTC_BlockParticipant);
-		EOS_RTC_BlockParticipant(GetRtcInterface(), &Options, this, &FEOSVoiceChatUser::OnBlockParticipantStatic);
-	}
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EOSVoiceChat);
+	QUICK_SCOPE_CYCLE_COUNTER(EOS_RTC_BlockParticipant);
+	EOS_RTC_BlockParticipant(GetRtcInterface(), &Options, this, &FEOSVoiceChatUser::OnBlockParticipantStatic);
 };
 
-void FEOSVoiceChatUser::ApplyPlayerReceivingOptions(const FGlobalParticipant& GlobalParticipant, const FChannelSession& ChannelSession, FChannelParticipant& ChannelParticipant, const bool bForce)
+void FEOSVoiceChatUser::ApplyReceivingOptions(const FChannelSession& ChannelSession)
+{
+	const FTCHARToUTF8 Utf8RoomName(*ChannelSession.ChannelName);
+
+	EOS_RTCAudio_UpdateReceivingOptions UpdateReceivingOptions = {};
+	UpdateReceivingOptions.ApiVersion = EOS_RTCAUDIO_UPDATERECEIVING_API_LATEST;
+	static_assert(EOS_RTCAUDIO_UPDATERECEIVING_API_LATEST == 1, "EOS_RTCAudio_UpdateReceivingOptions updated, check new fields");
+	UpdateReceivingOptions.LocalUserId = LoginSession.LocalUserProductUserId;
+	UpdateReceivingOptions.RoomName = Utf8RoomName.Get();
+	UpdateReceivingOptions.ParticipantId = nullptr;
+	UpdateReceivingOptions.bAudioEnabled = ChannelSession.bIsNotListening ? EOS_FALSE : EOS_TRUE;
+
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EOSVoiceChat);
+	QUICK_SCOPE_CYCLE_COUNTER(EOS_RTC_UpdateReceiving);
+	EOS_RTCAudio_UpdateReceiving(EOS_RTC_GetAudioInterface(GetRtcInterface()), &UpdateReceivingOptions, this, &FEOSVoiceChatUser::OnUpdateReceivingAudioStatic);
+}
+
+void FEOSVoiceChatUser::ApplyPlayerReceivingOptions(const FGlobalParticipant& GlobalParticipant, const FChannelSession& ChannelSession, FChannelParticipant& ChannelParticipant)
 {
 	// TODO ChannelParticipant should be const, and we should update the bAudioMuted (the *actual* state, not the *desired* state) in the OnUpdateReceiving callback.
 	check(IsLoggedIn());
 
-	if (ChannelParticipant.bAudioMuted != GlobalParticipant.bAudioMuted || bForce)
-	{
-		ChannelParticipant.bAudioMuted = GlobalParticipant.bAudioMuted;
+	ChannelParticipant.bAudioDisabled = GlobalParticipant.bAudioMuted || ChannelSession.bIsNotListening || ChannelParticipant.bMutedInChannel;
+	EOSVOICECHATUSER_LOG(Verbose, TEXT("ApplyPlayerReceivingOptions ChannelName=[%s] PlayerName=[%s] bAudioMuted=[%s]"), *ChannelSession.ChannelName, *GlobalParticipant.PlayerName, *LexToString(GlobalParticipant.bAudioMuted));
 
-		EOSVOICECHATUSER_LOG(Log, TEXT("ApplyPlayerReceivingOptions ChannelName=[%s] PlayerName=[%s] bAudioMuted=[%s]"), *ChannelSession.ChannelName, *GlobalParticipant.PlayerName, *LexToString(GlobalParticipant.bAudioMuted));
+	const FTCHARToUTF8 Utf8RoomName(*ChannelSession.ChannelName);
+	const FTCHARToUTF8 Utf8ParticipantId(*GlobalParticipant.PlayerName);
 
-		const FTCHARToUTF8 Utf8RoomName(*ChannelSession.ChannelName);
-		const FTCHARToUTF8 Utf8ParticipantId(*GlobalParticipant.PlayerName);
+	EOS_RTCAudio_UpdateReceivingOptions UpdateReceivingOptions = {};
+	UpdateReceivingOptions.ApiVersion = EOS_RTCAUDIO_UPDATERECEIVING_API_LATEST;
+	static_assert(EOS_RTCAUDIO_UPDATERECEIVING_API_LATEST == 1, "EOS_RTCAudio_UpdateReceivingOptions updated, check new fields");
+	UpdateReceivingOptions.LocalUserId = LoginSession.LocalUserProductUserId;
+	UpdateReceivingOptions.RoomName = Utf8RoomName.Get();
+	UpdateReceivingOptions.ParticipantId = EOS_ProductUserId_FromString(Utf8ParticipantId.Get());
+	UpdateReceivingOptions.bAudioEnabled = ChannelParticipant.bAudioDisabled ? EOS_FALSE : EOS_TRUE;
 
-		EOS_RTCAudio_UpdateReceivingOptions UpdateReceivingOptions = {};
-		UpdateReceivingOptions.ApiVersion = EOS_RTCAUDIO_UPDATERECEIVING_API_LATEST;
-		static_assert(EOS_RTCAUDIO_UPDATERECEIVING_API_LATEST == 1, "EOS_RTCAudio_UpdateReceivingOptions updated, check new fields");
-		UpdateReceivingOptions.LocalUserId = LoginSession.LocalUserProductUserId;
-		UpdateReceivingOptions.RoomName = Utf8RoomName.Get();
-		UpdateReceivingOptions.ParticipantId = EOS_ProductUserId_FromString(Utf8ParticipantId.Get());
-		UpdateReceivingOptions.bAudioEnabled = (ChannelSession.bIsNotListening || GlobalParticipant.bAudioMuted) ? EOS_FALSE : EOS_TRUE;
-
-		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EOSVoiceChat);
-		QUICK_SCOPE_CYCLE_COUNTER(EOS_RTCAudio_UpdateReceiving);
-		EOS_RTCAudio_UpdateReceiving(EOS_RTC_GetAudioInterface(GetRtcInterface()), &UpdateReceivingOptions, this, &FEOSVoiceChatUser::OnUpdateReceivingAudioStatic);
-	}
-	else
-	{
-		EOSVOICECHATUSER_LOG(VeryVerbose, TEXT("ApplyPlayerReceivingOptions ChannelName=[%s] PlayerName=[%s] mute state up to date"), *ChannelSession.ChannelName, *GlobalParticipant.PlayerName);
-	}
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EOSVoiceChat);
+	QUICK_SCOPE_CYCLE_COUNTER(EOS_RTCAudio_UpdateReceiving);
+	EOS_RTCAudio_UpdateReceiving(EOS_RTC_GetAudioInterface(GetRtcInterface()), &UpdateReceivingOptions, this, &FEOSVoiceChatUser::OnUpdateReceivingAudioStatic);
 }
 
 void FEOSVoiceChatUser::ApplySendingOptions()
@@ -1217,34 +1249,29 @@ void FEOSVoiceChatUser::ApplySendingOptions()
 	}
 }
 
-void FEOSVoiceChatUser::ApplySendingOptions(FChannelSession& ChannelSession, const bool bForce)
+void FEOSVoiceChatUser::ApplySendingOptions(FChannelSession& ChannelSession)
 {
 	const bool bCanTransmitToChannel = TransmitState.Mode == EVoiceChatTransmitMode::All ||
 		(TransmitState.Mode == EVoiceChatTransmitMode::Channel && TransmitState.ChannelName == ChannelSession.ChannelName);
-	const bool bAudioEnabled = bCanTransmitToChannel && !AudioInputOptions.bMuted && !ChannelSession.bIsNotListening;
 
-	if (ChannelSession.DesiredSendingState.bAudioEnabled != bAudioEnabled
-		|| bForce)
-	{
-		ChannelSession.DesiredSendingState.bAudioEnabled = bAudioEnabled;
+	ChannelSession.DesiredSendingState.bAudioEnabled = bCanTransmitToChannel && !AudioInputOptions.bMuted && !ChannelSession.bIsNotListening;
 
-		const FTCHARToUTF8 Utf8RoomName(*ChannelSession.ChannelName);
+	const FTCHARToUTF8 Utf8RoomName(*ChannelSession.ChannelName);
 		
-		EOS_RTCAudio_UpdateSendingOptions UpdateSendingOptions = {};
-		UpdateSendingOptions.ApiVersion = EOS_RTCAUDIO_UPDATESENDING_API_LATEST;
-		static_assert(EOS_RTCAUDIO_UPDATESENDING_API_LATEST == 1, "EOS_RTCAudio_UpdateSendingOptions updated, check new fields");
-		UpdateSendingOptions.LocalUserId = LoginSession.LocalUserProductUserId;
-		UpdateSendingOptions.RoomName = Utf8RoomName.Get();
-		UpdateSendingOptions.AudioStatus = ChannelSession.bIsNotListening
-			? EOS_ERTCAudioStatus::EOS_RTCAS_NotListeningDisabled
-			: ChannelSession.DesiredSendingState.bAudioEnabled
-			? EOS_ERTCAudioStatus::EOS_RTCAS_Enabled
-			: EOS_ERTCAudioStatus::EOS_RTCAS_Disabled;
+	EOS_RTCAudio_UpdateSendingOptions UpdateSendingOptions = {};
+	UpdateSendingOptions.ApiVersion = EOS_RTCAUDIO_UPDATESENDING_API_LATEST;
+	static_assert(EOS_RTCAUDIO_UPDATESENDING_API_LATEST == 1, "EOS_RTCAudio_UpdateSendingOptions updated, check new fields");
+	UpdateSendingOptions.LocalUserId = LoginSession.LocalUserProductUserId;
+	UpdateSendingOptions.RoomName = Utf8RoomName.Get();
+	UpdateSendingOptions.AudioStatus = ChannelSession.bIsNotListening
+		? EOS_ERTCAudioStatus::EOS_RTCAS_NotListeningDisabled
+		: ChannelSession.DesiredSendingState.bAudioEnabled
+		? EOS_ERTCAudioStatus::EOS_RTCAS_Enabled
+		: EOS_ERTCAudioStatus::EOS_RTCAS_Disabled;
 
-		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EOSVoiceChat);
-		QUICK_SCOPE_CYCLE_COUNTER(EOS_RTCAudio_UpdateSending);
-		EOS_RTCAudio_UpdateSending(EOS_RTC_GetAudioInterface(GetRtcInterface()), &UpdateSendingOptions, this, &FEOSVoiceChatUser::OnUpdateSendingAudioStatic);
-	}
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(EOSVoiceChat);
+	QUICK_SCOPE_CYCLE_COUNTER(EOS_RTCAudio_UpdateSending);
+	EOS_RTCAudio_UpdateSending(EOS_RTC_GetAudioInterface(GetRtcInterface()), &UpdateSendingOptions, this, &FEOSVoiceChatUser::OnUpdateSendingAudioStatic);
 }
 
 void FEOSVoiceChatUser::BindChannelCallbacks(FChannelSession& ChannelSession)
@@ -1333,6 +1360,7 @@ void FEOSVoiceChatUser::BindChannelCallbacks(FChannelSession& ChannelSession)
 		static_assert(EOS_RTCAUDIO_ADDNOTIFYAUDIOBEFORERENDER_API_LATEST == 1, "EOS_RTC_AddNotifyAudioBeforeRenderOptions updated, check new fields");
 		AudioBeforeRenderOptions.LocalUserId = LoginSession.LocalUserProductUserId;
 		AudioBeforeRenderOptions.RoomName = Utf8RoomName.Get();
+		AudioBeforeRenderOptions.bUnmixedAudio = false;
 		ChannelSession.OnAudioBeforeRenderNotificationId = EOS_RTCAudio_AddNotifyAudioBeforeRender(EOS_RTC_GetAudioInterface(GetRtcInterface()), &AudioBeforeRenderOptions, this, &FEOSVoiceChatUser::OnChannelAudioBeforeRenderStatic);
 		if (ChannelSession.OnAudioBeforeRenderNotificationId == EOS_INVALID_NOTIFICATIONID)
 		{
@@ -1589,7 +1617,7 @@ void FEOSVoiceChatUser::OnJoinRoom(const EOS_RTC_JoinRoomCallbackInfo* CallbackI
 				ChannelParticipant.PlayerName = ChannelSession->PlayerName;
 				OnVoiceChatPlayerAddedDelegate.Broadcast(ChannelSession->ChannelName, ChannelSession->PlayerName);
 
-				ApplySendingOptions(*ChannelSession, true);
+				ApplySendingOptions(*ChannelSession);
 			}
 			else
 			{
@@ -1765,7 +1793,8 @@ void FEOSVoiceChatUser::OnUpdateReceivingAudio(const EOS_RTCAudio_UpdateReceivin
 			FChannelSession& ChannelSession = GetChannelSession(ChannelName);
 			if (FChannelParticipant* ChannelParticipant = ChannelSession.Participants.Find(PlayerName))
 			{
-				OnVoiceChatPlayerMuteUpdatedDelegate.Broadcast(ChannelSession.ChannelName, ChannelParticipant->PlayerName, ChannelParticipant->bAudioMuted);
+				const FGlobalParticipant& GlobalParticipant = GetGlobalParticipant(PlayerName);
+				OnVoiceChatPlayerMuteUpdatedDelegate.Broadcast(ChannelSession.ChannelName, ChannelParticipant->PlayerName, GlobalParticipant.bAudioMuted);
 			}
 			else
 			{
@@ -2167,9 +2196,11 @@ void FEOSVoiceChatUser::OnChannelAudioBeforeRender(const EOS_RTCAudio_AudioBefor
 
 			// TODO EOS doesn't tell us if it's silence or not, maybe need to compare all the samples to some threshold?
 			const bool bIsSilence = false;
+			const FString PlayerName = LexToString(CallbackInfo->ParticipantId);
+			const FString ChannelName = UTF8_TO_TCHAR(CallbackInfo->RoomName);
 
 			FScopeLock Lock(&BeforeRecvAudioRenderedLock);
-			OnVoiceChatBeforeRecvAudioRenderedDelegate.Broadcast(Samples, Buffer->SampleRate, Buffer->Channels, bIsSilence);
+			OnVoiceChatBeforeRecvAudioRenderedDelegate.Broadcast(Samples, Buffer->SampleRate, Buffer->Channels, bIsSilence, ChannelName, PlayerName);
 		}
 		else
 		{
@@ -2302,7 +2333,7 @@ bool FEOSVoiceChatUser::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& A
 						{
 							const FString& ParticipantName = ParticipantPair.Key;
 							const FChannelParticipant& Participant = ParticipantPair.Value;
-							EOS_EXEC_LOG(TEXT("          %s talking:%s muted:%s"), *ParticipantName, *LexToString(Participant.bTalking), *LexToString(Participant.bAudioMuted));
+							EOS_EXEC_LOG(TEXT("          %s talking:%s bAudioDisabled:%s"), *ParticipantName, *LexToString(Participant.bTalking), *LexToString(Participant.bAudioDisabled));
 						}
 					}
 				}
@@ -2408,7 +2439,8 @@ bool FEOSVoiceChatUser::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& A
 		{
 			FString Token = InsecureGetLoginToken(PlayerName);
 
-			Login(0, PlayerName, Token, FOnVoiceChatLoginCompleteDelegate::CreateLambda([this, &Ar](const FString& LoggedInPlayerName, const FVoiceChatResult& Result)
+			FPlatformUserId FirstUser = FPlatformMisc::GetPlatformUserForUserIndex(0);
+			Login(FirstUser, PlayerName, Token, FOnVoiceChatLoginCompleteDelegate::CreateLambda([this, &Ar](const FString& LoggedInPlayerName, const FVoiceChatResult& Result)
 			{
 				EOSVOICECHATUSER_LOG(Display, TEXT("EOS LOGIN playername:%s result:%s"), *LoggedInPlayerName, *LexToString(Result));
 			}));
@@ -2554,6 +2586,11 @@ FEOSVoiceChatUser::FChannelSession::~FChannelSession()
 	check(OnAudioBeforeSendNotificationId == EOS_INVALID_NOTIFICATIONID);
 	check(OnAudioBeforeRenderNotificationId == EOS_INVALID_NOTIFICATIONID);
 	check(OnAudioInputStateNotificationId == EOS_INVALID_NOTIFICATIONID);
+}
+
+bool FEOSVoiceChatUser::FChannelSession::IsLocalUser(const FChannelParticipant& Participant)
+{
+	return PlayerName == Participant.PlayerName;
 }
 
 bool FEOSVoiceChatUser::FChannelSession::IsLobbySession() const

@@ -77,6 +77,10 @@ struct FRDGTextureSubresourceLayout
 		, NumArraySlices(InNumArraySlices)
 	{}
 
+	FRDGTextureSubresourceLayout(const FRHITextureCreateInfo& CreateInfo)
+		: FRDGTextureSubresourceLayout(CreateInfo.NumMips, CreateInfo.ArraySize * (CreateInfo.IsTextureCube() ? 6 : 1), IsStencilFormat(CreateInfo.Format) ? 2 : 1)
+	{}
+
 	inline uint32 GetSubresourceCount() const
 	{
 		return NumMips * NumArraySlices * NumPlaneSlices;
@@ -86,6 +90,15 @@ struct FRDGTextureSubresourceLayout
 	{
 		check(Subresource < GetMaxSubresource());
 		return Subresource.MipIndex + (Subresource.ArraySlice * NumMips) + (Subresource.PlaneSlice * NumMips * NumArraySlices);
+	}
+
+	inline FRDGTextureSubresource GetSubresource(uint32 Index) const
+	{
+		FRDGTextureSubresource Subresource;
+		Subresource.MipIndex = Index % NumMips;
+		Subresource.ArraySlice = (Index / NumMips) % NumArraySlices;
+		Subresource.PlaneSlice = Index / (NumMips * NumArraySlices);
+		return Subresource;
 	}
 
 	inline FRDGTextureSubresource GetMaxSubresource() const
@@ -211,7 +224,8 @@ inline void InitAsSubresources(TRDGTextureSubresourceArray<ElementType, Allocato
 	const uint32 SubresourceCount = Layout.GetSubresourceCount();
 	checkf(SubresourceCount > 0, TEXT("Subresource layout has no subresources."));
 	checkf(SubresourceCount > 1, TEXT("Subresource layout has only 1 resource. Use InitAsWholeResource instead."));
-	SubresourceArray.SetNum(SubresourceCount, false);
+	SubresourceArray.Reserve(SubresourceCount);
+	SubresourceArray.SetNum(SubresourceCount);
 	for (uint32 SubresourceIndex = 0; SubresourceIndex < SubresourceCount; ++SubresourceIndex)
 	{
 		SubresourceArray[SubresourceIndex] = Element;

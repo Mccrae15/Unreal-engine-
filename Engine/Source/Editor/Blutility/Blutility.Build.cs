@@ -24,12 +24,14 @@ public class Blutility : ModuleRules
 				"Slate",
 				"SlateCore",
                 "EditorStyle",
+				"EditorFramework",
 				"UnrealEd",
 				"Kismet",
 				"AssetRegistry",
 				"AssetTools",
 				"WorkspaceMenuStructure",
 				"ContentBrowser",
+				"ContentBrowserData",
 				"ClassViewer",
 				"CollectionManager",
                 "PropertyEditor",
@@ -38,6 +40,10 @@ public class Blutility : ModuleRules
                 "UMGEditor",
                 "KismetCompiler",
 				"ToolMenus",
+				"RHI",
+				"RenderCore",
+				"ImageWrapper",
+				"ImageWriteQueue"
 			}
 			);
 	}

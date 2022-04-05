@@ -50,6 +50,8 @@ struct DMXPROTOCOL_API FDMXInputPortConfigParams
 	int32 LocalUniverseStart;
 	int32 NumUniverses;
 	int32 ExternUniverseStart;
+	EDMXPortPriorityStrategy PriorityStrategy;
+	int32 Priority;
 };
 
 /** 
@@ -87,9 +89,13 @@ public:
 	FORCEINLINE const int32 GetPriority() const { return Priority; }
 
 #if WITH_EDITOR
+	static FName GetPortNamePropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, PortName); }
 	static FName GetProtocolNamePropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, ProtocolName); }
 	static FName GetCommunicationTypePropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, CommunicationType); }
 	static FName GetDeviceAddressPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, DeviceAddress); }
+	static FName GetLocalUniverseStartPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, LocalUniverseStart); }
+	static FName GetNumUniversesPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, NumUniverses); }
+	static FName GetExternUniverseStartPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, ExternUniverseStart); }
 	static FName GetPriorityStrategyPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, PriorityStrategy); }
 	static FName GetPriorityPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, Priority); }
 	static FName GetPortGuidPropertyNameChecked() { return GET_MEMBER_NAME_CHECKED(FDMXInputPortConfig, PortGuid); }
@@ -129,15 +135,13 @@ protected:
 
 	/** How to deal with the priority value */
 	UPROPERTY(Config, BlueprintReadOnly, EditDefaultsOnly, Category = "Port Config")
-	EDMXPortPriorityStrategy PriorityStrategy = EDMXPortPriorityStrategy::None;
+	EDMXPortPriorityStrategy PriorityStrategy = EDMXPortPriorityStrategy::Highest;
 
 	/** Priority value, can act as a filter or a threshold */
 	UPROPERTY(Config, BlueprintReadOnly, EditDefaultsOnly, Category = "Port Config")
 	int32 Priority = 0;
 
 protected:
-	/** Generates a unique port name (unique for those stored in project settings) */
-	void GenerateUniquePortName();
 	
 	/** 
 	 * Unique identifier, shared with the port instance.

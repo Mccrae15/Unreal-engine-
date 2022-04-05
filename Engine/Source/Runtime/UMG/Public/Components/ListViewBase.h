@@ -9,6 +9,7 @@
 #include "Widgets/Views/STileView.h"
 #include "Widgets/Views/STreeView.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Styling/UMGCoreStyle.h"
 
 #include "ListViewBase.generated.h"
 
@@ -131,6 +132,18 @@ public:
 		return nullptr;
 	}
 
+	int32 GetIndexInList(const ItemType& Item) const
+	{
+		if (SListView<ItemType>* MyListView = GetMyListView())
+		{
+			if (TSharedPtr<ITableRow> RowWidget = MyListView->WidgetFromItem(Item))
+			{
+				return RowWidget->GetIndexInList();
+			}
+		}
+		return INDEX_NONE;
+	}
+
 	int32 GetSelectedItems(TArray<ItemType>& OutSelectedItems) const
 	{
 		SListView<ItemType>* MyListView = GetMyListView();
@@ -218,6 +231,8 @@ protected:
 		EConsumeMouseWheel ConsumeMouseWheel = EConsumeMouseWheel::WhenScrollingPossible;
 		bool bReturnFocusToSelection = false;
 		EOrientation Orientation = Orient_Vertical;
+		const FTableViewStyle* ListViewStyle = &FUMGCoreStyle::Get().GetWidgetStyle<FTableViewStyle>("ListView");
+		const FScrollBarStyle* ScrollBarStyle = &FUMGCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar");
 	};
 
 	template <template<typename> class ListViewT = SListView, typename UListViewBaseT>
@@ -235,6 +250,8 @@ protected:
 			.SelectionMode(Args.SelectionMode)
 			.ReturnFocusToSelection(Args.bReturnFocusToSelection)
 			.Orientation(Args.Orientation)
+			.ListViewStyle(Args.ListViewStyle)
+			.ScrollBarStyle(Args.ScrollBarStyle)
 			.OnGenerateRow_UObject(Implementer, &UListViewBaseT::HandleGenerateRow)
 			.OnSelectionChanged_UObject(Implementer, &UListViewBaseT::HandleSelectionChanged)
 			.OnIsSelectableOrNavigable_UObject(Implementer, &UListViewBaseT::HandleIsSelectableOrNavigable)
@@ -251,6 +268,7 @@ protected:
 		TAttribute<float> EntryHeight;
 		TAttribute<float> EntryWidth;
 		bool bWrapDirectionalNavigation = false;
+		const FScrollBarStyle* ScrollBarStyle = &FUMGCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar");
 	};
 
 	template <template<typename> class TileViewT = STileView, typename UListViewBaseT>
@@ -271,6 +289,7 @@ protected:
 			.ItemWidth(Args.EntryWidth)
 			.ItemAlignment(Args.TileAlignment)
 			.Orientation(Args.Orientation)
+			.ScrollBarStyle(Args.ScrollBarStyle)
 			.OnGenerateTile_UObject(Implementer, &UListViewBaseT::HandleGenerateRow)
 			.OnTileReleased_UObject(Implementer, &UListViewBaseT::HandleRowReleased)
 			.OnSelectionChanged_UObject(Implementer, &UListViewBaseT::HandleSelectionChanged)
@@ -287,6 +306,8 @@ protected:
 		bool bClearSelectionOnClick = false;
 		EConsumeMouseWheel ConsumeMouseWheel = EConsumeMouseWheel::WhenScrollingPossible;
 		bool bReturnFocusToSelection = false;
+		const FTableViewStyle* TreeViewStyle = &FUMGCoreStyle::Get().GetWidgetStyle<FTableViewStyle>("TreeView");
+		const FScrollBarStyle* ScrollBarStyle = &FUMGCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar");
 	};
 
 	template <template<typename> class TreeViewT = STreeView, typename UListViewBaseT>
@@ -302,6 +323,8 @@ protected:
 			.ConsumeMouseWheel(Args.ConsumeMouseWheel)
 			.SelectionMode(Args.SelectionMode)
 			.ReturnFocusToSelection(Args.bReturnFocusToSelection)
+			.TreeViewStyle(Args.TreeViewStyle)
+			.ScrollBarStyle(Args.ScrollBarStyle)
 			.OnGenerateRow_UObject(Implementer, &UListViewBaseT::HandleGenerateRow)
 			.OnSelectionChanged_UObject(Implementer, &UListViewBaseT::HandleSelectionChanged)
 			.OnIsSelectableOrNavigable_UObject(Implementer, &UListViewBaseT::HandleIsSelectableOrNavigable)
@@ -535,6 +558,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = ListViewBase)
 	const TArray<UUserWidget*>& GetDisplayedEntryWidgets() const;
 
+	/** Get the scroll offset of this view (in items) */
+	UFUNCTION(BlueprintCallable, Category = ListViewBase)
+	float GetScrollOffset() const;
+
 	/**
 	 * Full regeneration of all entries in the list. Note that the entry UWidget instances will not be destroyed, but they will be released and re-generated.
 	 * In other words, entry widgets will not receive Destruct/Construct events. They will receive OnEntryReleased and IUserObjectListEntry implementations will receive OnListItemObjectSet.
@@ -600,6 +627,7 @@ protected:
 			[this, &OwnerTable] (UUserWidget* WidgetObject, TSharedRef<SWidget> Content)
 			{
 				return SNew(ObjectTableRowT, OwnerTable, *WidgetObject, this)
+					.bAllowDragging(bAllowDragging)
 					.OnHovered_UObject(this, &UListViewBase::HandleListEntryHovered)
 					.OnUnhovered_UObject(this, &UListViewBase::HandleListEntryUnhovered)
 					[
@@ -678,6 +706,14 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Scrolling)
 	bool bEnableScrollAnimation = false;
 
+	/**  Disable to stop scrollbars from activating inertial overscrolling */
+	UPROPERTY(EditAnywhere, Category = Scrolling)
+	bool AllowOverscroll = true;
+
+	/** True to allow right click drag scrolling. */
+	UPROPERTY(EditAnywhere, Category = Scrolling)
+	bool bEnableRightClickScrolling = true;
+
 	UPROPERTY(EditAnywhere, Category = Scrolling)
 	bool bEnableFixedLineOffset = false;
 
@@ -688,6 +724,10 @@ protected:
 	 */
 	UPROPERTY(EditAnywhere, Category = Scrolling, meta = (EditCondition = bEnableFixedLineOffset, ClampMin = 0.0f, ClampMax = 0.5f))
 	float FixedLineScrollOffset = 0.f;
+
+	/** True to allow dragging of row widgets in the list */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Input)
+	bool bAllowDragging = true;
 
 private:
 	void FinishGeneratingEntry(UUserWidget& GeneratedEntry);

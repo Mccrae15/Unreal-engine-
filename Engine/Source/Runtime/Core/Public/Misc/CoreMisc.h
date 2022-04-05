@@ -65,10 +65,10 @@ struct CORE_API FMaintenance
 	Module singletons.
 -----------------------------------------------------------------------------*/
 
-/** Return the DDC interface, if it is available, otherwise return NULL **/
+/** Returns the derived data cache interface if it is available, otherwise null. */
 CORE_API class FDerivedDataCacheInterface* GetDerivedDataCache();
 
-/** Return the DDC interface, fatal error if it is not available. **/
+/** Returns the derived data cache interface, or fatal error if it is not available. */
 CORE_API class FDerivedDataCacheInterface& GetDerivedDataCacheRef();
 
 /**
@@ -81,6 +81,12 @@ CORE_API class ITargetPlatformManagerModule* GetTargetPlatformManager(bool bFail
 
 /** Return the Target Platform Manager interface, fatal error if it is not available. **/
 CORE_API class ITargetPlatformManagerModule& GetTargetPlatformManagerRef();
+
+/**
+ * Return true if we are currently in a commandlet is targeting platforms with AV requirements (ie not a server) 
+ * or we are not targetingother platforms, and the current platform needs to render (CanEverRender())
+ */
+CORE_API bool WillNeedAudioVisualData();
 
 /*-----------------------------------------------------------------------------
 	Runtime.
@@ -262,7 +268,7 @@ struct CORE_API FScopedScriptExceptionHandler
  * If this is true, it will create a FBlueprintContextTracker (previously FBlueprintExceptionTracker) which is defined in Script.h
  */
 #ifndef DO_BLUEPRINT_GUARD
-	#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	#if (!(UE_BUILD_SHIPPING || UE_BUILD_TEST) || WITH_EDITOR)
 		#define DO_BLUEPRINT_GUARD 1
 	#else
 		#define DO_BLUEPRINT_GUARD 0

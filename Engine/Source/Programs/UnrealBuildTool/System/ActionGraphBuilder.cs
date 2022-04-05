@@ -6,7 +6,8 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -16,11 +17,10 @@ namespace UnrealBuildTool
 	interface IActionGraphBuilder
 	{
 		/// <summary>
-		/// Creates a new action to be built as part of this target
+		/// Adds an action to this graph
 		/// </summary>
-		/// <param name="Type">Type of action to create</param>
-		/// <returns>New action</returns>
-		Action CreateAction(ActionType Type);
+		/// <param name="Action">Action to add</param>
+		void AddAction(IExternalAction Action);
 
 		/// <summary>
 		/// Creates a response file for use in the action graph
@@ -28,7 +28,15 @@ namespace UnrealBuildTool
 		/// <param name="Location">Location of the response file</param>
 		/// <param name="Contents">Contents of the file</param>
 		/// <returns>New file item</returns>
-		FileItem CreateIntermediateTextFile(FileReference Location, string Contents);
+		void CreateIntermediateTextFile(FileItem Location, string Contents);
+
+		/// <summary>
+		/// Creates a response file for use in the action graph, with a newline between each string in ContentLines
+		/// </summary>
+		/// <param name="Location">Location of the response file</param>
+		/// <param name="ContentLines">Contents of the file</param>
+		/// <returns>New file item</returns>
+		void CreateIntermediateTextFile(FileItem Location, IEnumerable<string> ContentLines);
 
 		/// <summary>
 		/// Adds a file which is in the non-unity working set
@@ -75,16 +83,20 @@ namespace UnrealBuildTool
 	class NullActionGraphBuilder : IActionGraphBuilder
 	{
 		/// <inheritdoc/>
-		public Action CreateAction(ActionType Type)
+		public void AddAction(IExternalAction Action)
 		{
-			return new Action(Type);
 		}
 
 		/// <inheritdoc/>
-		public virtual FileItem CreateIntermediateTextFile(FileReference Location, string Contents)
+		public virtual void CreateIntermediateTextFile(FileItem FileItem, string Contents)
 		{
-			Utils.WriteFileIfChanged(Location, Contents, StringComparison.OrdinalIgnoreCase);
-			return FileItem.GetItemByFileReference(Location);
+			Utils.WriteFileIfChanged(FileItem, Contents);
+		}
+
+		/// <inheritdoc/>
+		public virtual void CreateIntermediateTextFile(FileItem FileItem, IEnumerable<string> ContentLines)
+		{
+			Utils.WriteFileIfChanged(FileItem, ContentLines);
 		}
 
 		/// <inheritdoc/>
@@ -138,15 +150,21 @@ namespace UnrealBuildTool
 		}
 
 		/// <inheritdoc/>
-		public virtual Action CreateAction(ActionType Type)
+		public virtual void AddAction(IExternalAction Action)
 		{
-			return Inner.CreateAction(Type);
+			Inner.AddAction(Action);
 		}
 
 		/// <inheritdoc/>
-		public virtual FileItem CreateIntermediateTextFile(FileReference Location, string Contents)
+		public virtual void CreateIntermediateTextFile(FileItem FileItem, string Contents)
 		{
-			return Inner.CreateIntermediateTextFile(Location, Contents);
+			Inner.CreateIntermediateTextFile(FileItem, Contents);
+		}
+
+		/// <inheritdoc/>
+		public virtual void CreateIntermediateTextFile(FileItem FileItem, IEnumerable<string> ContentLines)
+		{
+			Inner.CreateIntermediateTextFile(FileItem, ContentLines);
 		}
 
 		/// <inheritdoc/>
@@ -192,6 +210,19 @@ namespace UnrealBuildTool
 	static class ActionGraphBuilderExtensions
 	{
 		/// <summary>
+		/// Creates a new action to be built as part of this target
+		/// </summary>
+		/// <param name="Graph">Graph to add the action to</param>
+		/// <param name="Type">Type of action to create</param>
+		/// <returns>New action</returns>
+		public static Action CreateAction(this IActionGraphBuilder Graph, ActionType Type)
+		{
+			Action Action = new Action(Type);
+			Graph.AddAction(Action);
+			return Action;
+		}
+
+		/// <summary>
 		/// Creates an action which copies a file from one location to another
 		/// </summary>
 		/// <param name="Graph">The action graph</param>
@@ -209,7 +240,7 @@ namespace UnrealBuildTool
 			}
 			else
 			{
-				CopyAction.CommandArguments = String.Format("-c 'cp -f \"{0}\" \"{1}\"'", SourceFile.AbsolutePath, TargetFile.AbsolutePath);
+				CopyAction.CommandArguments = String.Format("-c 'cp -f \"\"{0}\"\" \"\"{1}\"'", SourceFile.AbsolutePath, TargetFile.AbsolutePath);
 			}
 			CopyAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
 			CopyAction.PrerequisiteItems.Add(SourceFile);
@@ -246,15 +277,16 @@ namespace UnrealBuildTool
 		/// <returns>New action instance</returns>
 		public static Action CreateRecursiveAction<T>(this IActionGraphBuilder Graph, ActionType Type, string Arguments) where T : ToolMode
 		{
-			ToolModeAttribute Attribute = typeof(T).GetCustomAttribute<ToolModeAttribute>();
+			ToolModeAttribute? Attribute = typeof(T).GetCustomAttribute<ToolModeAttribute>();
 			if (Attribute == null)
 			{
 				throw new BuildException("Missing ToolModeAttribute on {0}", typeof(T).Name);
 			}
 
 			Action NewAction = Graph.CreateAction(Type);
-			NewAction.CommandPath = UnrealBuildTool.GetUBTPath();
-			NewAction.CommandArguments = String.Format("-Mode={0} {1}", Attribute.Name, Arguments);
+			NewAction.CommandPath = Unreal.DotnetPath;
+			NewAction.CommandArguments = $"\"{Unreal.UnrealBuildToolDllPath}\" -Mode={Attribute.Name} {Arguments}";
+			NewAction.CommandDescription = Attribute.Name;
 			return NewAction;
 		}
 
@@ -266,9 +298,26 @@ namespace UnrealBuildTool
 		/// <param name="AbsolutePath">Path to the intermediate file to create</param>
 		/// <param name="Contents">Contents of the new file</param>
 		/// <returns>File item for the newly created file</returns>
-		public static FileItem CreateIntermediateTextFile(this IActionGraphBuilder Graph, FileReference AbsolutePath, IEnumerable<string> Contents)
+		public static FileItem CreateIntermediateTextFile(this IActionGraphBuilder Graph, FileReference AbsolutePath, string Contents)
 		{
-			return Graph.CreateIntermediateTextFile(AbsolutePath, string.Join(Environment.NewLine, Contents));
+			FileItem FileItem = FileItem.GetItemByFileReference(AbsolutePath);
+			Graph.CreateIntermediateTextFile(FileItem, Contents);
+			return FileItem;
+		}
+
+		/// <summary>
+		/// Creates a text file with the given contents.  If the contents of the text file aren't changed, it won't write the new contents to
+		/// the file to avoid causing an action to be considered outdated.
+		/// </summary>
+		/// <param name="Graph">The action graph</param>
+		/// <param name="AbsolutePath">Path to the intermediate file to create</param>
+		/// <param name="ContentLines">Contents of the new file</param>
+		/// <returns>File item for the newly created file</returns>
+		public static FileItem CreateIntermediateTextFile(this IActionGraphBuilder Graph, FileReference AbsolutePath, IEnumerable<string> ContentLines)
+		{
+			FileItem FileItem = UnrealBuildBase.FileItem.GetItemByFileReference(AbsolutePath);
+			Graph.CreateIntermediateTextFile(FileItem, ContentLines);
+			return FileItem;
 		}
 	}
 }

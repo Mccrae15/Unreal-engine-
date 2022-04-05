@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "OnlineSubsystemTypes.h"
 #include "Interfaces/OnlineUserCloudInterface.h"
 #include "Interfaces/OnlineSharedCloudInterface.h"
@@ -14,7 +14,7 @@
 /**
  * Class used to test the friends interface
  */
- class FTestCloudInterface : public FTickerObjectBase
+ class FTestCloudInterface : public FTSTickerObjectBase
  {
 	/** The subsystem that was requested to be tested or the default if empty */
 	const FString Subsystem;
@@ -257,7 +257,7 @@
 		SharedCloud = NULL;
 	}
 
-	// FTickerObjectBase
+	// FTSTickerObjectBase
 
 	bool Tick( float DeltaTime ) override;
 

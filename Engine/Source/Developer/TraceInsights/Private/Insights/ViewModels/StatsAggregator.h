@@ -4,11 +4,12 @@
 
 #include "CoreMinimal.h"
 #include "Async/AsyncWork.h"
+#include "Insights/Common/InsightsAsyncWorkUtils.h"
 #include "Insights/Common/Stopwatch.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-namespace Trace
+namespace TraceServices
 {
 	class IAnalysisSession;
 }
@@ -18,18 +19,13 @@ namespace Insights
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-class IStatsAggregator
+class IStatsAggregator : public IAsyncOperationStatusProvider
 {
 public:
 	virtual void Start() = 0;
 	virtual void Cancel() = 0;
 
 	virtual bool IsCancelRequested() const = 0;
-	virtual bool IsRunning() const = 0;
-
-	virtual double GetAllOperationsDuration() = 0;
-	virtual double GetCurrentOperationDuration() = 0;
-	virtual uint32 GetOperationCount() const = 0;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -56,6 +52,7 @@ public:
 
 	double GetIntervalStartTime() const { return IntervalStartTime; }
 	double GetIntervalEndTime() const { return IntervalEndTime; }
+	bool IsEmptyTimeInterval() const { return IntervalStartTime >= IntervalEndTime; }
 
 	void SetTimeInterval(double InStartTime, double InEndTime)
 	{
@@ -63,13 +60,13 @@ public:
 		IntervalEndTime = InEndTime;
 	}
 
-	void Tick(TSharedPtr<const Trace::IAnalysisSession> InSession, const double InCurrentTime, const float InDeltaTime, TFunctionRef<void()> OnFinishedCallback);
+	void Tick(TSharedPtr<const TraceServices::IAnalysisSession> InSession, const double InCurrentTime, const float InDeltaTime, TFunctionRef<void()> OnFinishedCallback);
 
 	//////////////////////////////////////////////////
 	// IStatsAggregator
 
 	virtual void Start() override;
-	virtual void Cancel() override { bIsCancelRequested = true; }
+	virtual void Cancel() override;
 
 	virtual bool IsCancelRequested() const override { return bIsCancelRequested; }
 	virtual bool IsRunning() const override { return AsyncTask != nullptr; }
@@ -78,10 +75,12 @@ public:
 	virtual double GetCurrentOperationDuration() override { CurrentOpStopwatch.Update(); return CurrentOpStopwatch.GetAccumulatedTime(); }
 	virtual uint32 GetOperationCount() const override { return OperationCount; }
 
+	virtual FText GetCurrentOperationName() const;
+
 	//////////////////////////////////////////////////
 
 protected:
-	virtual IStatsAggregationWorker* CreateWorker(TSharedPtr<const Trace::IAnalysisSession> InSession) = 0;
+	virtual IStatsAggregationWorker* CreateWorker(TSharedPtr<const TraceServices::IAnalysisSession> InSession) = 0;
 
 	// Returns true only when it is called from OnFinishedCallback.
 	bool IsFinished() const { return bIsFinished; }

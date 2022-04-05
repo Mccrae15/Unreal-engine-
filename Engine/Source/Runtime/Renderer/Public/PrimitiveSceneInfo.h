@@ -15,6 +15,7 @@
 #include "Engine/Scene.h"
 #include "RendererInterface.h"
 #include "MeshPassProcessor.h"
+#include "PrimitiveSceneProxy.h"
 
 class FPrimitiveSceneInfo;
 class FPrimitiveSceneProxy;
@@ -25,6 +26,14 @@ class FViewInfo;
 class UPrimitiveComponent;
 class FIndirectLightingCacheUniformParameters;
 template<typename ElementType,typename OctreeSemantics> class TOctree2;
+
+class FNaniteCommandInfo;
+struct FRayTracingInstance;
+
+namespace Nanite
+{
+	using CoarseMeshStreamingHandle = int16;
+}
 
 /** Data used to track a primitive's allocation in the volume texture atlas that stores indirect lighting. */
 class FIndirectLightingCacheAllocation
@@ -40,10 +49,10 @@ public:
 		AllocationTexelSize(0),
 		TargetPosition(FVector(0, 0, 0)),
 		TargetDirectionalShadowing(1),
-		TargetSkyBentNormal(FVector4(0, 0, 1, 1)),
+		TargetSkyBentNormal(FVector4f(0, 0, 1, 1)),
 		SingleSamplePosition(FVector(0, 0, 0)),
 		CurrentDirectionalShadowing(1),
-		CurrentSkyBentNormal(FVector4(0, 0, 1, 1)),
+		CurrentSkyBentNormal(FVector4f(0, 0, 1, 1)),
 		bHasEverUpdatedSingleSample(false),
 		bPointSample(true),
 		bIsDirty(false),
@@ -51,13 +60,13 @@ public:
 	{
 		for (int32 VectorIndex = 0; VectorIndex < 3; VectorIndex++) // RGB
 		{
-			TargetSamplePacked0[VectorIndex] = FVector4(0, 0, 0, 0);
-			SingleSamplePacked0[VectorIndex] = FVector4(0, 0, 0, 0);
-			TargetSamplePacked1[VectorIndex] = FVector4(0, 0, 0, 0);
-			SingleSamplePacked1[VectorIndex] = FVector4(0, 0, 0, 0);
+			TargetSamplePacked0[VectorIndex] = FVector4f(0, 0, 0, 0);
+			SingleSamplePacked0[VectorIndex] = FVector4f(0, 0, 0, 0);
+			TargetSamplePacked1[VectorIndex] = FVector4f(0, 0, 0, 0);
+			SingleSamplePacked1[VectorIndex] = FVector4f(0, 0, 0, 0);
 		}
-		TargetSamplePacked2 = FVector4(0, 0, 0, 0);
-		SingleSamplePacked2 = FVector4(0, 0, 0, 0);
+		TargetSamplePacked2 = FVector4f(0, 0, 0, 0);
+		SingleSamplePacked2 = FVector4f(0, 0, 0, 0);
 	}
 
 	/** Add factor for calculating UVs from position. */
@@ -82,29 +91,29 @@ public:
 	FVector TargetPosition;
 
 	/** SH sample at the new single lighting sample position. Used for interpolation over time. */
-	FVector4 TargetSamplePacked0[3];	// { { R.C0, R.C1, R.C2, R.C3 }, { G.C0, G.C1, G.C2, G.C3 }, { B.C0, B.C1, B.C2, B.C3 } }
-	FVector4 TargetSamplePacked1[3];	// { { R.C4, R.C5, R.C6, R.C7 }, { G.C4, G.C5, G.C6, G.C7 }, { B.C4, B.C5, B.C6, B.C7 } }
-	FVector4 TargetSamplePacked2;		// { R.C8, R.C8, R.C8, R.C8 }
+	FVector4f TargetSamplePacked0[3];	// { { R.C0, R.C1, R.C2, R.C3 }, { G.C0, G.C1, G.C2, G.C3 }, { B.C0, B.C1, B.C2, B.C3 } }
+	FVector4f TargetSamplePacked1[3];	// { { R.C4, R.C5, R.C6, R.C7 }, { G.C4, G.C5, G.C6, G.C7 }, { B.C4, B.C5, B.C6, B.C7 } }
+	FVector4f TargetSamplePacked2;		// { R.C8, R.C8, R.C8, R.C8 }
 
 	/** Target shadowing of the stationary directional light. */
 	float TargetDirectionalShadowing;
 
 	/** Target directional occlusion of the sky. */
-	FVector4 TargetSkyBentNormal;
+	FVector4f TargetSkyBentNormal;
 
 	/** Current position of the single lighting sample.  Used for interpolation over time. */
 	FVector SingleSamplePosition;
 
 	/** Current SH sample used when lighting the entire object with one sample. */
-	FVector4 SingleSamplePacked0[3];	// { { R.C0, R.C1, R.C2, R.C3 }, { G.C0, G.C1, G.C2, G.C3 }, { B.C0, B.C1, B.C2, B.C3 } }
-	FVector4 SingleSamplePacked1[3];	// { { R.C4, R.C5, R.C6, R.C7 }, { G.C4, G.C5, G.C6, G.C7 }, { B.C4, B.C5, B.C6, B.C7 } }
-	FVector4 SingleSamplePacked2;		// { R.C8, R.C8, R.C8, R.C8 }
+	FVector4f SingleSamplePacked0[3];	// { { R.C0, R.C1, R.C2, R.C3 }, { G.C0, G.C1, G.C2, G.C3 }, { B.C0, B.C1, B.C2, B.C3 } }
+	FVector4f SingleSamplePacked1[3];	// { { R.C4, R.C5, R.C6, R.C7 }, { G.C4, G.C5, G.C6, G.C7 }, { B.C4, B.C5, B.C6, B.C7 } }
+	FVector4f SingleSamplePacked2;		// { R.C8, R.C8, R.C8, R.C8 }
 
 	/** Current shadowing of the stationary directional light. */
 	float CurrentDirectionalShadowing;
 
 	/** Current directional occlusion of the sky. */
-	FVector4 CurrentSkyBentNormal;
+	FVector4f CurrentSkyBentNormal;
 
 	/** Whether SingleSamplePacked has ever been populated with valid results, used to initialize. */
 	bool bHasEverUpdatedSingleSample;
@@ -147,10 +156,18 @@ struct FPrimitiveFlagsCompact
 {
 	/** True if the primitive casts dynamic shadows. */
 	uint8 bCastDynamicShadow : 1;
+
 	/** True if the primitive will cache static lighting. */
 	uint8 bStaticLighting : 1;
+
 	/** True if the primitive casts static shadows. */
 	uint8 bCastStaticShadow : 1;
+
+	/** True if the primitive is a Nanite mesh. */
+	uint8 bIsNaniteMesh : 1;
+
+	/** True if the primitive draws only meshes that support GPU-Scene. */
+	uint8 bSupportsGPUScene : 1;
 
 	FPrimitiveFlagsCompact(const FPrimitiveSceneProxy* Proxy);
 };
@@ -161,7 +178,7 @@ class FPrimitiveSceneInfoCompact
 public:
 	FPrimitiveSceneInfo* PrimitiveSceneInfo;
 	FPrimitiveSceneProxy* Proxy;
-	FBoxSphereBounds Bounds;
+	FCompactBoxSphereBounds Bounds;
 	float MinDrawDistance;
 	float MaxDrawDistance;
 	/** Used for precomputed visibility */
@@ -209,6 +226,53 @@ struct FPrimitiveVirtualTextureLodInfo
 /** The type of the octree used by FScene to find primitives. */
 typedef TOctree2<FPrimitiveSceneInfoCompact,struct FPrimitiveOctreeSemantics> FScenePrimitiveOctree;
 
+/** Nanite mesh pass types. */
+namespace ENaniteMeshPass
+{
+	enum Type
+	{
+		BasePass,
+		LumenCardCapture,
+
+		Num,
+	};
+}
+
+
+enum class EPrimitiveDirtyState : uint8
+{
+	None                  = 0U,
+	ChangedId             = (1U << 0U),
+	ChangedTransform      = (1U << 1U),
+	ChangedStaticLighting = (1U << 2U),
+	ChangedOther          = (1U << 3U),
+	/** The Added flag is a bit special, as it is used to skip invalidations in the VSM, and thus must only be set if the primitive is in fact added
+	 * (a previous remove must have been processed by GPU scene, or it is new). If in doubt, don't set this. */
+	 Added                = (1U << 4U),
+	 Removed              = (1U << 5U), // Only used to make sure we don't process something that has been marked as Removed (more a debug feature, can be trimmed if need be)
+	 ChangedAll = ChangedId | ChangedTransform | ChangedStaticLighting | ChangedOther,
+	 /** Mark all data as changed and set Added flag. Must ONLY be used when a primitive is added, c.f. Added, above. */
+	 AddedMask = ChangedAll | Added,
+};
+ENUM_CLASS_FLAGS(EPrimitiveDirtyState);
+
+enum class EUpdateStaticMeshFlags : uint8
+{
+	RasterCommands		= (1U << 1U),
+	RayTracingCommands	= (1U << 2U),
+
+	AllCommands			= RasterCommands | RayTracingCommands,
+};
+ENUM_CLASS_FLAGS(EUpdateStaticMeshFlags);
+
+/**
+ * Wrapper to make it harder to confuse the packed and persistent index when used as arguments etc.
+ */
+struct FPersistentPrimitiveIndex
+{
+	int32 Index;
+};
+
 /**
  * The renderer's internal state for a single UPrimitiveComponent.  This has a one to one mapping with FPrimitiveSceneProxy, which is in the engine module.
  */
@@ -225,6 +289,13 @@ public:
 	 * This will stay the same for the lifetime of the component, so it can be used to identify the component across re-registers.
 	 */
 	FPrimitiveComponentId PrimitiveComponentId;
+
+	/**
+	 * Number assigned to this component when it was registered with the world.
+	 * This will only ever be updated if the object is re-registered.
+	 * Used by FPrimitiveArraySortKey for deterministic ordering.
+	 */
+	int32 RegistrationSerialNumber;
 
 	/** 
 	 * Pointer to the last render time variable on the primitive's owning actor (if owned), which is written to by the RT and read by the GT.
@@ -254,6 +325,12 @@ public:
 	/** The primitive's static meshes. */
 	TArray<class FStaticMeshBatch> StaticMeshes;
 
+	TArray<FNaniteCommandInfo> NaniteCommandInfos[ENaniteMeshPass::Num];
+	TArray<uint32> NaniteMaterialSlots[ENaniteMeshPass::Num];
+#if WITH_EDITOR
+	TArray<uint32> NaniteHitProxyIds;
+#endif
+
 	/** The identifier for the primitive in Scene->PrimitiveOctree. */
 	FOctreeElementId2 OctreeId;
 
@@ -282,6 +359,9 @@ public:
 
 	/** Mapping from instance index in this primitive to index in the global distance field object buffers. */
 	TArray<int32, TInlineAllocator<1>> DistanceFieldInstanceIndices;
+
+	/** Mapping from instance index in this primitive to index in the LumenPrimitiveGroup array. */
+	TArray<int32, TInlineAllocator<1>> LumenPrimitiveGroupIndices;
 
 	/** Whether the primitive is newly registered or moved and CachedReflectionCaptureProxy needs to be updated on the next render. */
 	uint32 bNeedsCachedReflectionCaptureUpdate : 1;
@@ -318,20 +398,23 @@ public:
 
 #if RHI_RAYTRACING
 	bool bDrawInGame : 1;
-	bool bIsVisibleInReflectionCaptures : 1;
+	bool bIsVisibleInSceneCaptures : 1;
 	bool bIsRayTracingRelevant : 1;
 	bool bIsRayTracingStaticRelevant : 1;
 	bool bIsVisibleInRayTracing : 1;
+	bool bCachedRaytracingDataDirty : 1;
+	Nanite::CoarseMeshStreamingHandle CoarseMeshStreamingHandle;
 
 	TArray<TArray<int32, TInlineAllocator<2>>> CachedRayTracingMeshCommandIndicesPerLOD;
 
 	TArray<uint64> CachedRayTracingMeshCommandsHashPerLOD;
-
-	struct FStaticMeshOrCommandIndex
-	{
-		int32 StaticMeshIndex;
-		int32 CommandIndex;
-	};
+	// TODO: this should be placed in FRayTracingScene and we have a pointer/handle here. It's here for now for PoC
+	FRayTracingGeometryInstance CachedRayTracingInstance;
+	TArray<FMatrix> CachedRayTracingInstanceLocalTransforms;
+	TArray<FMatrix> CachedRayTracingInstanceWorldTransforms;
+	TArray<FBoxSphereBounds> CachedRayTracingInstanceWorldBounds;
+	int32 SmallestRayTracingInstanceWorldBoundsIndex;
+	bool bUpdateCachedRayTracingInstanceWorldTransforms;
 #endif
 
 	/** Initialization constructor. */
@@ -346,8 +429,16 @@ public:
 	/** Removes the primitive from the scene. */
 	void RemoveFromScene(bool bUpdateStaticDrawLists);
 
+	/** Allocate/Free slots for instance data in GPU-Scene */
+	static void AllocateGPUSceneInstances(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
+	static void ReallocateGPUSceneInstances(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
+	void FreeGPUSceneInstances();
+
 	/** return true if we need to call ConditionalUpdateStaticMeshes */
 	bool NeedsUpdateStaticMeshes();
+
+	/** Returns true it primitive contains cached Lumen Card Capture mesh draw commands. */
+	bool HasLumenCaptureMeshPass() const;
 
 	/** return true if we need to call LazyUpdateForRendering */
 	FORCEINLINE bool NeedsUniformBufferUpdate() const
@@ -362,7 +453,7 @@ public:
 	}
 
 	/** Updates the primitive's static meshes in the scene. */
-	static void UpdateStaticMeshes(FRHICommandListImmediate& RHICmdList, FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos, bool bReAddToDrawLists = true);
+	static void UpdateStaticMeshes(FRHICommandListImmediate& RHICmdList, FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos, EUpdateStaticMeshFlags UpdateFlags, bool bReAddToDrawLists = true);
 
 	/** Updates the primitive's uniform buffer. */
 	void UpdateUniformBuffer(FRHICommandListImmediate& RHICmdList);
@@ -400,6 +491,9 @@ public:
 	/** Removes the primitive from the scene's attachment groups. */
 	void UnlinkAttachmentGroup();
 
+	/** Adds a request to update GPU scene representation. */
+	RENDERER_API bool RequestGPUSceneUpdate(EPrimitiveDirtyState PrimitiveDirtyState = EPrimitiveDirtyState::ChangedAll);
+
 	/** 
 	 * Builds an array of all primitive scene info's in this primitive's attachment group. 
 	 * This only works on potential parents (!LightingAttachmentRoot.IsValid()) and will include the current primitive in the output array.
@@ -430,7 +524,19 @@ public:
 
 	/** Simple comparison against the invalid values used before/after scene add/remove. */
 	FORCEINLINE bool IsIndexValid() const { return PackedIndex != INDEX_NONE && PackedIndex != MAX_int32; }
-	
+
+	/**
+	 * Persistent index of the primitive in the range [0, FScene::GetMaxPersistentPrimitiveIndex() ). Where the max is never higher than the high watermark of the primitives in the scene.
+	 * This index remains stable for the life-time of the primitive in the scene (i.e., same as PrimitiveSceneInfo and Proxy - between FScene::AddPrimitive / FScene::RemovePrimitive). 
+	 * The intended use is to enable tracking primitive data over time in renderer systems using direct indexing, e.g., for efficiently storing a bit per primitive. 
+	 * Direct indexing also facilitates easy GPU-reflection and access of the persistent data, where it can be accessed as e.g., GetPrimitiveData(...).PersistentPrimitiveIndex.
+	 * It is allocated using FScene::PersistentPrimitiveIdAllocator from a range with holes that is kept as compact as possible up to the high-water mark of the scene primitives. 
+	 * Due to persistence this maximum can be substantially larger than the current number of Primitives at times, but never worse than the high-watermark.
+	 * In the future, the index will likely be refactored to persist for the lifetime of the component (to facilitate tracking data past proxy re-creates).
+	 * Note: It is not currently used to index any of the current FScene primitive arrays (use PackedIndex), though this is intended to change.
+	 */
+	FORCEINLINE FPersistentPrimitiveIndex GetPersistentIndex() const { return PersistentIndex; }
+
 	/**
 	 * Shifts primitive position and all relevant data by an arbitrary delta.
 	 * Called on world origin changes
@@ -458,6 +564,12 @@ public:
 
 	/** Will output the FMeshBatch associated with the specified LODIndex. */
 	RENDERER_API const FMeshBatch* GetMeshBatch(int8 InLODIndex) const;
+
+	int32 GetInstanceSceneDataOffset() const { return InstanceSceneDataOffset; }
+	int32 GetNumInstanceSceneDataEntries() const { return NumInstanceSceneDataEntries; }
+
+	int32 GetInstancePayloadDataOffset() const { return InstancePayloadDataOffset; }
+	int32 GetInstancePayloadDataStride() const { return InstancePayloadDataStride; }
 
 	int32 GetLightmapDataOffset() const { return LightmapDataOffset; }
 	int32 GetNumLightmapDataEntries() const { return NumLightmapDataEntries; }
@@ -487,8 +599,16 @@ public:
 	void FlushRuntimeVirtualTexture();
 
 #if RHI_RAYTRACING
+	static void UpdateCachedRaytracingData(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
 	RENDERER_API FRHIRayTracingGeometry* GetStaticRayTracingGeometryInstance(int LodLevel) const;
+
+	void UpdateCachedRayTracingInstanceWorldTransforms();
+
+	int GetRayTracingGeometryNum() const { return RayTracingGeometries.Num(); }
 #endif
+
+	/** Return primitive fullname (for debugging only). */
+	FString GetFullnameForDebuggingOnly() const;
 
 private:
 
@@ -500,6 +620,11 @@ private:
 	 * change as primitives are added and removed from the scene.
 	 */
 	int32 PackedIndex;
+
+	/**
+	 * See GetPersistentIndex()
+	 */
+	FPersistentPrimitiveIndex PersistentIndex;
 
 	/** 
 	 * The UPrimitiveComponent this scene info is for, useful for quickly inspecting properties on the corresponding component while debugging.
@@ -517,11 +642,30 @@ private:
 	/** If this is TRUE, this primitive's indirect lighting cache buffer needs to be updated before it can be rendered. */
 	bool bIndirectLightingCacheBufferDirty : 1;
 
-	/** If this is TRUE, this primitive has registerd with the virtual texture system for a callback on virtual texture changes. */
+	/** If this is TRUE, this primitive has registered with the virtual texture system for a callback on virtual texture changes. */
 	bool bRegisteredVirtualTextureProducerCallback : 1;
+
+	/** True if the primitive registered with velocity data and needs to remove itself when being removed from the scene. */
+	bool bRegisteredWithVelocityData : 1;
+
+	/** Index into the scene's PrimitivesNeedingLevelUpdateNotification array for this primitive scene info level. */
+	int32 LevelUpdateNotificationIndex;
+
+	/** Offset into the scene's instance scene data buffer, when GPUScene is enabled. */
+	int32 InstanceSceneDataOffset;
+
+	/** Number of entries in the scene's instance scene data buffer. */
+	int32 NumInstanceSceneDataEntries;
+
+	/** Offset into the scene's instance payload data buffer, when GPUScene is enabled. */
+	int32 InstancePayloadDataOffset;
+
+	/** Number of float4 payload data values per instance */
+	int32 InstancePayloadDataStride;
 
 	/** Offset into the scene's lightmap data buffer, when GPUScene is enabled. */
 	int32 LightmapDataOffset;
+
 	/** Number of entries in the scene's lightmap data buffer. */
 	int32 NumLightmapDataEntries;
 
@@ -541,9 +685,33 @@ private:
 	/** These flags carry information about which runtime virtual textures are bound to this primitive. */
 	FPrimitiveVirtualTextureFlags RuntimeVirtualTextureFlags;
 
+	/** Creates or add ref's cached draw commands for each unique material instance found within the scene. */
+	static void CacheNaniteDrawCommands(FRHICommandListImmediate& RHICmdList, FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
+
+	/** Removes or remove ref's cached draw commands */
+	void RemoveCachedNaniteDrawCommands();
+
 #if RHI_RAYTRACING
 	TArray<FRayTracingGeometry*> RayTracingGeometries;
+
+	/** Creates cached ray tracing representations for all meshes. */
+	static void CacheRayTracingPrimitives(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
+
+	/** Removes cached ray tracing representations for all meshes. */
+	void RemoveCachedRayTracingPrimitives();
+
+	/** Updates cached transforms in CachedRayTracingInstance */
+	void UpdateCachedRayTracingInstanceTransforms(const FMatrix& NewPrimitiveLocalToWorld);
+
+	/** Updates cached ray tracing instances. Utility closely mirrors CacheRayTracingPrimitives(..) */
+	static void UpdateCachedRayTracingInstances(FScene* Scene, const TArrayView<FPrimitiveSceneInfo*>& SceneInfos);
+	static void UpdateCachedRayTracingInstance(FPrimitiveSceneInfo* SceneInfo, const FRayTracingInstance& CachedRayTracingInstance, const ERayTracingPrimitiveFlags Flags);
 #endif
+
+public:
+	DECLARE_MULTICAST_DELEGATE(FPrimitiveSceneInfoEvent);
+	RENDERER_API static FPrimitiveSceneInfoEvent OnGPUSceneInstancesAllocated;
+	RENDERER_API static FPrimitiveSceneInfoEvent OnGPUSceneInstancesFreed;
 };
 
 /** Defines how the primitive is stored in the scene's primitive octree. */
@@ -556,7 +724,7 @@ struct FPrimitiveOctreeSemantics
 
 	typedef TInlineAllocator<MaxElementsPerLeaf> ElementAllocator;
 
-	FORCEINLINE static const FBoxSphereBounds& GetBoundingBox(const FPrimitiveSceneInfoCompact& PrimitiveSceneInfoCompact)
+	FORCEINLINE static const FCompactBoxSphereBounds& GetBoundingBox(const FPrimitiveSceneInfoCompact& PrimitiveSceneInfoCompact)
 	{
 		return PrimitiveSceneInfoCompact.Bounds;
 	}
@@ -569,11 +737,14 @@ struct FPrimitiveOctreeSemantics
 	FORCEINLINE static void SetElementId(const FPrimitiveSceneInfoCompact& Element,FOctreeElementId2 Id)
 	{
 		Element.PrimitiveSceneInfo->OctreeId = Id;
+		SetOctreeNodeIndex(Element, Id);
 	}
 
 	FORCEINLINE static void ApplyOffset(FPrimitiveSceneInfoCompact& Element, FVector Offset)
 	{
 		Element.Bounds.Origin+= Offset;
 	}
+
+	static void SetOctreeNodeIndex(const FPrimitiveSceneInfoCompact& Element, FOctreeElementId2 Id);
 };
 

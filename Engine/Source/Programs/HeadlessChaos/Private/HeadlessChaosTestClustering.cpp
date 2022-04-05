@@ -23,7 +23,8 @@ namespace ChaosTest {
 
 	void ImplicitCluster()
 	{
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		FPBDRigidsEvolution Evolution(Particles, PhysicalMaterials);
 		FPBDRigidClusteredParticles& ClusteredParticles = Particles.GetClusteredParticles();
@@ -68,7 +69,8 @@ namespace ChaosTest {
 
 	void FractureCluster()
 	{
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		FPBDRigidsEvolution Evolution(Particles, PhysicalMaterials);
 		auto& ClusteredParticles = Particles.GetClusteredParticles();
@@ -192,7 +194,8 @@ namespace ChaosTest {
 
 	void PartialFractureCluster()
 	{
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 		THandleArray<FChaosPhysicsMaterial> PhysicalMaterials;
 		FPBDRigidsEvolution Evolution(Particles, PhysicalMaterials);
 		auto& ClusteredParticles = Particles.GetClusteredParticles();
@@ -261,11 +264,12 @@ namespace ChaosTest {
 		//EXPECT_TRUE(Evolution.GetParticles().Disabled(RootClusterHandle) == false);	//one of the connected pieces should re-use this
 		EXPECT_TRUE(ClusterHandlesDup[2]->Disabled() == false);	//this cluster is on its own and should be enabled 
 		
-		EXPECT_EQ(Evolution.GetActiveClusteredArray().Num(), 3);	//there should only be 3 pieces
+		
+		EXPECT_EQ(Evolution.GetRigidClustering().GetTopLevelClusterParents().Num(), 3);	//there should only be 3 pieces
 		for (uint32 BoxID : BoxIDs)
 		{
 			EXPECT_TRUE(ClusteredParticles.Disabled(BoxID));	//no boxes should be active yet
-			EXPECT_TRUE(Evolution.GetActiveClusteredArray().Contains(ClusteredParticles.Handle(BoxID)) == false);
+			EXPECT_TRUE(Evolution.GetRigidClustering().GetTopLevelClusterParents().Contains(ClusteredParticles.Handle(BoxID)) == false);
 			for (int32 Island = 0; Island < Evolution.NumIslands(); ++Island)
 			{
 				EXPECT_TRUE(Evolution.GetIslandParticles(Island).Contains(ClusteredParticles.Handle(BoxID)) == false);
@@ -281,16 +285,17 @@ namespace ChaosTest {
 		//EXPECT_TRUE(Evolution.GetParticles().Disabled(RootClusterHandle) == false);	//one of the connected pieces should re-use this
 		EXPECT_TRUE(ClusterHandlesDup[2]->Disabled() == false);	//this cluster is on its own and should be enabled 
 
-		EXPECT_EQ(Evolution.GetActiveClusteredArray().Num(), 3);	//there should only be 3 pieces
+		EXPECT_EQ(Evolution.GetRigidClustering().GetTopLevelClusterParents().Num(), 3);	//there should only be 3 pieces
 		for (uint32 BoxID : BoxIDs)
 		{
 			EXPECT_TRUE(ClusteredParticles.Disabled(BoxID));	//no boxes should be active yet
-			EXPECT_TRUE(Evolution.GetActiveClusteredArray().Contains(ClusteredParticles.Handle(BoxID)) == false);
+			EXPECT_TRUE(Evolution.GetRigidClustering().GetTopLevelClusterParents().Contains(ClusteredParticles.Handle(BoxID)) == false);
 			for (int32 Island = 0; Island < Evolution.NumIslands(); ++Island)
 			{
 				EXPECT_TRUE(Evolution.GetIslandParticles(Island).Contains(ClusteredParticles.Handle(BoxID)) == false);
 			}
 		}
+		
 	}
 }
 

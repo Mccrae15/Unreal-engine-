@@ -10,7 +10,7 @@
 #include <sys/file.h>
 
 #include "HAL/PlatformFileCommon.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnixPlatformFile, Log, All);
 
@@ -953,9 +953,13 @@ IFileHandle* FUnixPlatformFile::OpenWrite(const TCHAR* Filename, bool bAppend, b
 	int32 Handle = open(TCHAR_TO_UTF8(*NormalizeFilename(Filename, true)), Flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
 	if (Handle != -1)
 	{
+		// Due to dotnet not allowing any files marked as LOCK_EX to be opened for read only or copied, this allows us to
+		// to disable the locking mechanics. https://github.com/dotnet/runtime/issues/34126
+		extern bool GAllowExclusiveLockOnWrite;
+
 		// mimic Windows "exclusive write" behavior (we don't use FILE_SHARE_WRITE) by locking the file.
 		// note that the (non-mandatory) "lock" will be removed by itself when the last file descriptor is close()d
-		if (flock(Handle, LOCK_EX | LOCK_NB) == -1)
+		if (GAllowExclusiveLockOnWrite && (flock(Handle, LOCK_EX | LOCK_NB) == -1))
 		{
 			// if locked, consider operation a failure
 			if (EAGAIN == errno || EWOULDBLOCK == errno)
@@ -1017,7 +1021,13 @@ bool FUnixPlatformFile::DirectoryExists(const TCHAR* Directory)
 
 bool FUnixPlatformFile::CreateDirectory(const TCHAR* Directory)
 {
-	return mkdir(TCHAR_TO_UTF8(*NormalizeFilename(Directory, true)), 0775) == 0 || (errno == EEXIST);
+	FString NormalizedPath = NormalizeFilename(Directory, true);
+	if (!CreateDirectoriesFromPath(*NormalizedPath))
+	{
+		return false;
+	}
+
+	return mkdir(TCHAR_TO_UTF8(*NormalizedPath), 0775) == 0 || (errno == EEXIST);
 }
 
 bool FUnixPlatformFile::DeleteDirectory(const TCHAR* Directory)
@@ -1134,6 +1144,21 @@ bool FUnixPlatformFile::IterateDirectoryCommon(const TCHAR* Directory, const TFu
 			}
 		}
 		closedir(Handle);
+	}
+	return Result;
+}
+
+bool FUnixPlatformFile::CopyFile(const TCHAR* To, const TCHAR* From, EPlatformFileRead ReadFlags, EPlatformFileWrite WriteFlags)
+{
+	bool Result = IPlatformFile::CopyFile(To, From, ReadFlags, WriteFlags);
+	if (Result)
+	{
+		struct stat FileInfo;
+		if (stat(TCHAR_TO_UTF8(*NormalizeFilename(From, false)), &FileInfo) == 0)
+		{
+			FileInfo.st_mode |= S_IWUSR;
+			chmod(TCHAR_TO_UTF8(*NormalizeFilename(To, true)), FileInfo.st_mode);
+		}
 	}
 	return Result;
 }

@@ -3,10 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Delegates/IDelegateInstance.h"
 #include "Misc/Guid.h"
 #include "InputCoreTypes.h"
 #include "HitProxies.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "EditorViewportClient.h"
 #include "Toolkits/AssetEditorToolkit.h"
 #include "Animation/DebugSkelMeshComponent.h"
@@ -43,8 +44,10 @@ namespace EBoneDrawMode
 		None,
 		Selected,
 		SelectedAndParents,
+		SelectedAndChildren,
+		SelectedAndParentsAndChildren,
 		All,
-		NumAxesModes
+		NumDrawModes
 	};
 };
 
@@ -80,34 +83,6 @@ namespace EAnimationPlaybackSpeeds
 	extern float Values[NumPlaybackSpeeds];
 };
 
-/**
-* A hit proxy class for sockets in the Persona viewport.
-*/
-struct HPersonaSocketProxy : public HHitProxy
-{
-	DECLARE_HIT_PROXY();
-
-	FSelectedSocketInfo SocketInfo;
-
-	explicit HPersonaSocketProxy(FSelectedSocketInfo InSocketInfo)
-		: SocketInfo(InSocketInfo)
-	{}
-};
-
-/**
-* A hit proxy class for sockets in the Persona viewport.
-*/
-struct HPersonaBoneProxy : public HHitProxy
-{
-	DECLARE_HIT_PROXY();
-
-	FName BoneName;
-
-	explicit HPersonaBoneProxy(const FName& InBoneName)
-		: BoneName(InBoneName)
-	{}
-};
-
 /////////////////////////////////////////////////////////////////////////
 // FAnimationViewportClient
 
@@ -116,7 +91,10 @@ class FAnimationViewportClient : public FEditorViewportClient
 protected:
 
 	/** Function to display bone names*/
-	void ShowBoneNames( FCanvas* Canvas, FSceneView* View );
+	void ShowBoneNames(FCanvas* Canvas, FSceneView* View);
+
+	/** Function to display transform attribute names*/
+	void ShowAttributeNames(FCanvas* Canvas, FSceneView* View);
 
 	/** Function to display debug lines generated from skeletal controls in animBP mode */
 	void DrawNodeDebugLines(TArray<FText>& Lines, FCanvas* Canvas, FSceneView* View);
@@ -135,9 +113,9 @@ public:
 //	virtual bool InputWidgetDelta( FViewport* Viewport, EAxisList::Type CurrentAxis, FVector& Drag, FRotator& Rot, FVector& Scale ) override;
 	virtual void TrackingStarted( const struct FInputEventState& InInputState, bool bIsDragging, bool bNudge ) override;
 	virtual void TrackingStopped() override;
-//	virtual FWidget::EWidgetMode GetWidgetMode() const override;
-//	virtual void SetWidgetMode(FWidget::EWidgetMode InWidgetMode) override;
-//	virtual bool CanSetWidgetMode(FWidget::EWidgetMode NewMode) const override;
+//	virtual UE::Widget::EWidgetMode GetWidgetMode() const override;
+//	virtual void SetWidgetMode(UE::Widget::EWidgetMode InWidgetMode) override;
+//	virtual bool CanSetWidgetMode(UE::Widget::EWidgetMode NewMode) const override;
 	virtual FVector GetWidgetLocation() const override;
 	virtual FMatrix GetWidgetCoordSystem() const override;
 	virtual ECoordSystem GetWidgetCoordSystemSpace() const override;
@@ -346,7 +324,7 @@ private:
 	TWeakPtr<class FAssetEditorToolkit> AssetEditorToolkitPtr;
 
 	// Current widget mode
-	FWidget::EWidgetMode WidgetMode;
+	UE::Widget::EWidgetMode WidgetMode;
 
 	/** The current camera follow mode */
 	EAnimationViewportCameraFollowMode CameraFollowMode;
@@ -387,6 +365,12 @@ private:
 	/** Screen size cached when we draw */
 	float CachedScreenSize;
 
+	/* Member use to unregister OnPhysicsCreatedDelegate */
+	FDelegateHandle OnPhysicsCreatedDelegateHandle;
+
+	/* Member use to unregister OnMeshChanged for our preview skeletal mesh */
+	FDelegateHandle OnMeshChangedDelegateHandle;
+
 private:
 
 	void SetCameraTargetLocation(const FSphere &BoundSphere, float DeltaSeconds);
@@ -408,9 +392,12 @@ private:
 	/** Draw Bones for non retargeted animation. */
 	void DrawMeshBonesBakedAnimation(UDebugSkelMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI) const;
 	/** Draws Bones for RequiredBones with WorldTransform **/
-	void DrawBones(const TArray<FBoneIndexType> & RequiredBones, const FReferenceSkeleton& RefSkeleton, const TArray<FTransform> & WorldTransforms, const TArray<int32>& InSelectedBones, FPrimitiveDrawInterface* PDI, const TArray<FLinearColor>& BoneColours, float BoundRadius, float LineThickness = 0.f, bool bForceDraw = false) const;
+	void DrawBones(const TArray<FBoneIndexType> & RequiredBones, const FReferenceSkeleton& RefSkeleton, const TArray<FTransform> & WorldTransforms, const TArray<int32>& InSelectedBones, FPrimitiveDrawInterface* PDI, const TArray<FLinearColor>& BoneColours, float BoundRadius, float LineThickness = 0.f, bool bForceDraw = false, float InBoneRadius = 1.f) const;
 	/** Draw Sub set of Bones **/
 	void DrawMeshSubsetBones(const UDebugSkelMeshComponent* MeshComponent, const TArray<int32>& BonesOfInterest, FPrimitiveDrawInterface* PDI) const;
+
+	/** Draws active transform attributes */
+	void DrawAttributes(UDebugSkelMeshComponent* MeshComponent, FPrimitiveDrawInterface* PDI) const;
 
 	/** Draws bones from watched poses*/
 	void DrawWatchedPoses(UDebugSkelMeshComponent * MeshComponent, FPrimitiveDrawInterface* PDI);

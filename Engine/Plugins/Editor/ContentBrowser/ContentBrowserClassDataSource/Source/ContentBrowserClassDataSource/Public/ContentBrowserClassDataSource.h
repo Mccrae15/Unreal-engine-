@@ -6,6 +6,7 @@
 #include "ContentBrowserDataSource.h"
 #include "ContentBrowserDataMenuContexts.h"
 #include "ContentBrowserClassDataPayload.h"
+#include "NativeClassHierarchy.h"
 #include "ContentBrowserClassDataSource.generated.h"
 
 class IAssetTypeActions;
@@ -21,7 +22,7 @@ struct CONTENTBROWSERCLASSDATASOURCE_API FContentBrowserCompiledClassDataFilter
 
 public:
 	UPROPERTY()
-	TSet<UClass*> ValidClasses;
+	TSet<TObjectPtr<UClass>> ValidClasses;
 
 	UPROPERTY()
 	TSet<FName> ValidFolders;
@@ -33,7 +34,7 @@ class CONTENTBROWSERCLASSDATASOURCE_API UContentBrowserClassDataSource : public 
 	GENERATED_BODY()
 
 public:
-	void Initialize(const FName InMountRoot, const bool InAutoRegister = true);
+	void Initialize(const bool InAutoRegister = true);
 
 	virtual void Shutdown() override;
 
@@ -42,6 +43,8 @@ public:
 	virtual void EnumerateItemsMatchingFilter(const FContentBrowserDataCompiledFilter& InFilter, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback) override;
 
 	virtual void EnumerateItemsAtPath(const FName InPath, const EContentBrowserItemTypeFilter InItemTypeFilter, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback) override;
+
+	virtual bool EnumerateItemsForObjects(const TArrayView<UObject*> InObjects, TFunctionRef<bool(FContentBrowserItemData&&)> InCallback) override;
 
 	virtual bool IsFolderVisibleIfHidingEmpty(const FName InPath) override;
 
@@ -74,7 +77,8 @@ public:
 	virtual bool Legacy_TryConvertAssetDataToVirtualPath(const FAssetData& InAssetData, const bool InUseFolderPaths, FName& OutPath) override;
 
 protected:
-	virtual void EnumerateRootPaths(const FContentBrowserDataFilter& InFilter, TFunctionRef<void(FName)> InCallback) override;
+	virtual void BuildRootPathVirtualTree() override;
+	bool RootClassPathPassesFilter(const FName InRootClassPath, const bool bIncludeEngineClasses, const bool bIncludePluginClasses) const;
 
 private:
 	bool IsKnownClassPath(const FName InPackagePath) const;
@@ -83,7 +87,7 @@ private:
 
 	FContentBrowserItemData CreateClassFolderItem(const FName InFolderPath);
 
-	FContentBrowserItemData CreateClassFileItem(UClass* InClass);
+	FContentBrowserItemData CreateClassFileItem(UClass* InClass, FNativeClassHierarchyGetClassPathCache& InCache);
 
 	TSharedPtr<const FContentBrowserClassFolderItemDataPayload> GetClassFolderItemPayload(const FContentBrowserItemData& InItem) const;
 
@@ -95,7 +99,10 @@ private:
 
 	void ConditionalCreateNativeClassHierarchy();
 
+	void ClassHierarchyUpdated();
+
 	TSharedPtr<FNativeClassHierarchy> NativeClassHierarchy;
+	FNativeClassHierarchyGetClassPathCache NativeClassHierarchyGetClassPathCache;
 
 	TSharedPtr<IAssetTypeActions> ClassTypeActions;
 

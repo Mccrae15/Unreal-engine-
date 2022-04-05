@@ -281,7 +281,7 @@ bool FMergeAsset::Load(FCommandLineErrorReporter& ErrorReporter)
 		return false;
 	}
 
-	// UE4 cannot open files with certain special characters in them (like 
+	// UE cannot open files with certain special characters in them (like 
 	// the # symbol), so we make a copy of the file with a more UE digestible 
 	// path (since this may be a perforce temp file)
 	if (IFileManager::Get().Copy(*DestFilePath, *SrcFilePath) != COPY_OK)
@@ -641,7 +641,7 @@ static void EditorCommandLineUtilsImpl::RunAssetMerge(FMergeAsset const& Base, F
 		{
 			if ((Resolution != EMergeResult::Cancelled) && !MergingPackage->IsDirty())
 			{
-				FString SrcFilePath = MergingPackage->FileName.ToString();
+				FString SrcFilePath = MergingPackage->GetLoadedPath().GetLocalFullPath();
 				IFileManager::Get().Copy(*DstFilePath, *SrcFilePath);
 			}
 		}
@@ -691,20 +691,7 @@ static void EditorCommandLineUtilsImpl::RunAssetMerge(FMergeAsset const& Base, F
 //------------------------------------------------------------------------------
 static UObject* EditorCommandLineUtilsImpl::ExtractAssetFromPackage(UPackage* Package)
 {
-	TArray<UObject*> ObjectsWithOuter;
-	GetObjectsWithOuter(Package, ObjectsWithOuter, /*bIncludeNestedObjects =*/false);
-
-	UObject* FoundAsset = nullptr;
-	for (UObject* PackageObj : ObjectsWithOuter)
-	{
-		if (PackageObj->IsAsset() && !UE::AssetRegistry::FFiltering::ShouldSkipAsset(PackageObj))
-		{
-			FoundAsset = PackageObj;
-			break;
-		}
-	}
-
-	return FoundAsset;
+	return Package->FindAssetInPackage();
 }
 
 /*******************************************************************************

@@ -7,6 +7,7 @@
 #include "UObject/PropertyPortFlags.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/Engine.h"
+#include "Engine/DemoNetDriver.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogChildActorComponent, Warning, All);
 
@@ -95,7 +96,7 @@ void UChildActorComponent::Serialize(FArchive& Ar)
 
 			if (AActor* UnwantedDuplicate = static_cast<AActor*>(FindObjectWithOuter(this, AActor::StaticClass())))
 			{
-				UnwantedDuplicate->MarkPendingKill();
+				UnwantedDuplicate->MarkAsGarbage();
 			}
 		}
 		else if (!GIsEditor && !Ar.IsLoading() && !GIsDuplicatingClassForReinstancing)
@@ -255,7 +256,7 @@ void UChildActorComponent::PostEditUndo()
 	{
 		if (Component)
 		{
-			if (Component->IsPendingKill() && Component->GetOwner() == ChildActor)
+			if (!IsValid(Component) && Component->GetOwner() == ChildActor)
 			{
 				Component = ChildActor->GetRootComponent();
 			}
@@ -533,7 +534,7 @@ void UChildActorComponent::SetChildActorClass(TSubclassOf<AActor> Class, AActor*
 			DestroyChildActor();
 
 			// If an actor template was supplied, temporarily set ChildActorTemplate to create the new Actor with ActorTemplate used as the template
-			TGuardValue<AActor*> ChildActorTemplateGuard(ChildActorTemplate, (ActorTemplate ? ActorTemplate : ChildActorTemplate));
+			TGuardValue<decltype(ChildActorTemplate)> ChildActorTemplateGuard(ChildActorTemplate, (ActorTemplate ? ActorTemplate : ToRawPtr(ChildActorTemplate)));
 
 			CreateChildActor();
 		}
@@ -566,7 +567,30 @@ void UChildActorComponent::PostLoad()
 	}
 
 }
+
+EDataValidationResult UChildActorComponent::IsDataValid(TArray<FText>& ValidationErrors)
+{
+	EDataValidationResult Result = CombineDataValidationResults(Super::IsDataValid(ValidationErrors), EDataValidationResult::Valid);
+
+	// If a CAC is set to the class of the blueprint it is currently on, then there will be a cycle and the data is invalid
+	const UClass* const Outer = Cast<UClass>(GetOuter());
+	if (Outer && Outer == ChildActorClass)
+	{
+		Result = EDataValidationResult::Invalid;
+		ValidationErrors.Add(FText::Format(NSLOCTEXT("ChildActorComponent", "ChildActorCycle", "A Child Actor Component's class cannot be set to its owner! '{0}' is an invalid class choice for '{1}'."), FText::FromString(ChildActorClass->GetName()), FText::FromString(GetPathName())));
+	}
+	return Result;
+}
 #endif
+
+bool UChildActorComponent::IsChildActorReplicated() const
+{
+	AActor* ChildClassCDO = (ChildActorClass ? ChildActorClass->GetDefaultObject<AActor>() : nullptr);
+	const bool bChildActorClassReplicated = ChildClassCDO && ChildClassCDO->GetIsReplicated();
+	const bool bChildActorTemplateReplicated = ChildActorTemplate && (ChildActorTemplate->GetClass() == ChildActorClass) && ChildActorTemplate->GetIsReplicated();
+
+	return (bChildActorClassReplicated || bChildActorTemplateReplicated);
+}
 
 void UChildActorComponent::CreateChildActor()
 {
@@ -574,10 +598,7 @@ void UChildActorComponent::CreateChildActor()
 
 	if (MyOwner && !MyOwner->HasAuthority())
 	{
-		AActor* ChildClassCDO = (ChildActorClass ? ChildActorClass->GetDefaultObject<AActor>() : nullptr);
-		const bool bChildActorTemplateReplicated = ChildActorTemplate && ChildActorTemplate->GetClass() == ChildActorClass && ChildActorTemplate->GetIsReplicated();
-
-		if ((ChildClassCDO && ChildClassCDO->GetIsReplicated()) || bChildActorTemplateReplicated)
+		if (IsChildActorReplicated())
 		{
 			// If we belong to an actor that is not authoritative and the child class is replicated then we expect that Actor will be replicated across so don't spawn one
 			return;
@@ -593,6 +614,12 @@ void UChildActorComponent::CreateChildActor()
 		UWorld* World = GetWorld();
 		if(World != nullptr)
 		{
+			// If we're in a replay scrub and this is a startup actor and the class exists, assume the reference will be restored later
+			if (World->IsPlayingReplay() && World->GetDemoNetDriver()->IsRestoringStartupActors() && MyOwner && MyOwner->IsNetStartupActor() && ChildActorClass)
+			{
+				return;
+			}
+
 			// Before we spawn let's try and prevent cyclic disaster
 			bool bSpawn = true;
 			AActor* Actor = MyOwner;
@@ -615,9 +642,11 @@ void UChildActorComponent::CreateChildActor()
 				Params.OverrideLevel = (MyOwner ? MyOwner->GetLevel() : nullptr);
 				Params.Name = ChildActorName;
 				Params.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
-#if WITH_EDITOR
-				Params.OverridePackage = GetOwner()->GetExternalPackage();
 				Params.OverrideParentComponent = this;
+
+#if WITH_EDITOR
+				Params.bCreateActorPackage = false;
+				Params.OverridePackage = (MyOwner ? MyOwner->GetExternalPackage() : nullptr);
 				Params.OverrideActorGuid = CachedInstanceData ? CachedInstanceData->ChildActorGUID : FGuid();
 #endif
 				if (ChildActorTemplate && ChildActorTemplate->GetClass() == ChildActorClass)
@@ -629,10 +658,9 @@ void UChildActorComponent::CreateChildActor()
 				{
 					Params.ObjectFlags &= ~RF_Transactional;
 				}
-				if (HasAllFlags(RF_Transient) || IsEditorOnly() || (MyOwner && (MyOwner->HasAllFlags(RF_Transient) || MyOwner->IsEditorOnly())))
+				if (HasAllFlags(RF_Transient) || (MyOwner && MyOwner->HasAllFlags(RF_Transient)))
 				{
-					// If this component or its owner are transient or editor only, set our created actor to transient. 
-					// We can't programatically set editor only on an actor so this is the best option
+					// If this component or its owner are transient, set our created actor to transient. 
 					Params.ObjectFlags |= RF_Transient;
 				}
 
@@ -645,10 +673,13 @@ void UChildActorComponent::CreateChildActor()
 				// If spawn was successful, 
 				if(ChildActor != nullptr)
 				{
-					ChildActorName = ChildActor->GetFName();
+					if (IsEditorOnly() || (MyOwner && MyOwner->IsEditorOnly()))
+					{
+						// If this component or its owner are editor only, set our created actor to editor only. 
+						ChildActor->bIsEditorOnlyActor = true;
+					}
 
-					// Remember which component spawned it (for selection in editor etc)
-					FActorParentComponentSetter::Set(ChildActor, this);
+					ChildActorName = ChildActor->GetFName();
 
 					// Parts that we deferred from SpawnActor
 					const FComponentInstanceDataCache* ComponentInstanceData = (CachedInstanceData ? CachedInstanceData->ComponentInstanceData.Get() : nullptr);
@@ -707,12 +738,12 @@ void UChildActorComponent::DestroyChildActor()
 		return false;
 	};
 
-	if (ChildActor && ChildActor->HasAuthority() && !IsLevelBeingRemoved())
+	if (ChildActor && (ChildActor->HasAuthority() || !IsChildActorReplicated()) && !IsLevelBeingRemoved())
 	{
 		if (!GExitPurge)
 		{
 			// if still alive, destroy, otherwise just clear the pointer
-			const bool bIsChildActorPendingKillOrUnreachable = ChildActor->IsPendingKillOrUnreachable();
+			const bool bIsChildActorPendingKillOrUnreachable = !IsValidChecked(ChildActor) || ChildActor->IsUnreachable();
 			if (!bIsChildActorPendingKillOrUnreachable)
 			{
 #if WITH_EDITOR

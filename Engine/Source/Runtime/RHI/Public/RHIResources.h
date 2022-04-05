@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "CoreTypes.h"
 #include "Misc/AssertionMacros.h"
 #include "HAL/UnrealMemory.h"
@@ -15,14 +17,34 @@
 #include "RHIDefinitions.h"
 #include "Templates/RefCounting.h"
 #include "PixelFormat.h"
+#include "TextureProfiler.h"
 #include "Containers/LockFreeList.h"
 #include "Misc/SecureHash.h"
 #include "Hash/CityHash.h"
 #include "Async/TaskGraphInterfaces.h"
 #include "Serialization/MemoryImage.h"
+#include "Experimental/Containers/HazardPointer.h"
+#include "Containers/ClosableMpscQueue.h"
+#include "Misc/CoreDelegates.h"
 
-#define DISABLE_RHI_DEFFERED_DELETE 0
+// RHI_WANT_RESOURCE_INFO should be controlled by the RHI module.
+#ifndef RHI_WANT_RESOURCE_INFO
+#define RHI_WANT_RESOURCE_INFO 0
+#endif
 
+// RHI_FORCE_DISABLE_RESOURCE_INFO can be defined anywhere else, like in GlobalDefinitions.
+#ifndef RHI_FORCE_DISABLE_RESOURCE_INFO
+#define RHI_FORCE_DISABLE_RESOURCE_INFO 0
+#endif
+
+#define RHI_ENABLE_RESOURCE_INFO (RHI_WANT_RESOURCE_INFO && !RHI_FORCE_DISABLE_RESOURCE_INFO)
+
+#ifndef RHI_RESOURCE_LIFETIME_VALIDATION
+#define RHI_RESOURCE_LIFETIME_VALIDATION 0
+#endif
+
+
+class FRHICommandListImmediate;
 struct FClearValueBinding;
 struct FRHIResourceInfo;
 struct FGenerateMipsStruct;
@@ -32,119 +54,282 @@ enum class EClearBinding;
 class RHI_API FRHIResource
 {
 public:
-	FRHIResource(bool InbDoNotDeferDelete = false)
-		: MarkedForDelete(0)
-		, bDoNotDeferDelete(InbDoNotDeferDelete)
-		, bCommitted(true)
+	UE_DEPRECATED(5.0, "FRHIResource(bool) is deprecated, please use FRHIResource(ERHIResourceType)")
+	FRHIResource(bool InbDoNotDeferDelete=false)
+		: ResourceType(RRT_None)
 	{
 	}
-	virtual ~FRHIResource() 
+
+	FRHIResource(ERHIResourceType InResourceType)
+		: ResourceType(InResourceType)
 	{
-		check(PlatformNeedsExtraDeletionLatency() || (NumRefs.GetValue() == 0 && (CurrentlyDeleting == this || bDoNotDeferDelete || Bypass()))); // this should not have any outstanding refs
+#if RHI_ENABLE_RESOURCE_INFO
+		BeginTrackingResource(this);
+#endif
 	}
+
+	virtual ~FRHIResource()
+	{
+		check(IsEngineExitRequested() || CurrentlyDeleting == this);
+		check(AtomicFlags.GetNumRefs(std::memory_order_relaxed) == 0); // this should not have any outstanding refs
+		CurrentlyDeleting = nullptr;
+
+#if RHI_ENABLE_RESOURCE_INFO
+		EndTrackingResource(this);
+#endif
+	}
+
 	FORCEINLINE_DEBUGGABLE uint32 AddRef() const
 	{
-		int32 NewValue = NumRefs.Increment();
+		int32 NewValue = AtomicFlags.AddRef(std::memory_order_acquire);
 		checkSlow(NewValue > 0); 
 		return uint32(NewValue);
 	}
-	FORCEINLINE_DEBUGGABLE uint32 Release() const
+
+private:
+	// Separate function to avoid force inlining this everywhere. Helps both for code size and performance.
+	inline void Destroy() const
 	{
-		int32 NewValue = NumRefs.Decrement();
-		if (NewValue == 0)
+		if (!AtomicFlags.MarkForDelete(std::memory_order_release))
 		{
-			if (!DeferDelete())
-			{ 
-				delete this;
-			}
-			else
+			while (true)
 			{
-				if (FPlatformAtomics::InterlockedCompareExchange(&MarkedForDelete, 1, 0) == 0)
+				auto HP = MakeHazardPointer(PendingDeletes, PendingDeletesHPC);
+				TClosableMpscQueue<FRHIResource*>* PendingDeletesPtr = HP.Get();
+				if (PendingDeletesPtr->Enqueue(const_cast<FRHIResource*>(this)))
 				{
-					PendingDeletes.Push(const_cast<FRHIResource*>(this));
+					break;
 				}
 			}
+		}
+	}
+
+public:
+	FORCEINLINE_DEBUGGABLE uint32 Release() const
+	{
+		int32 NewValue = AtomicFlags.Release(std::memory_order_release);
+		check(NewValue >= 0);
+
+		if (NewValue == 0)
+		{
+			Destroy();
 		}
 		checkSlow(NewValue >= 0);
 		return uint32(NewValue);
 	}
+
 	FORCEINLINE_DEBUGGABLE uint32 GetRefCount() const
 	{
-		int32 CurrentValue = NumRefs.GetValue();
+		int32 CurrentValue = AtomicFlags.GetNumRefs(std::memory_order_relaxed);
 		checkSlow(CurrentValue >= 0); 
 		return uint32(CurrentValue);
 	}
-	void DoNoDeferDelete()
-	{
-		check(!MarkedForDelete);
-		bDoNotDeferDelete = true;
-		FPlatformMisc::MemoryBarrier();
-		check(!MarkedForDelete);
-	}
 
-	static void FlushPendingDeletes(bool bFlushDeferredDeletes = false);
-
-	FORCEINLINE static bool PlatformNeedsExtraDeletionLatency()
-	{
-		return GRHINeedsExtraDeletionLatency && GIsRHIInitialized;
-	}
+	static int32 FlushPendingDeletes(FRHICommandListImmediate& RHICmdList);
 
 	static bool Bypass();
 
-	// Transient resource tracking
-	// We do this at a high level so we can catch errors even when transient resources are not supported
-	void SetCommitted(bool bInCommitted) 
-	{ 
-		check(IsInRenderingThread()); 
-		bCommitted = bInCommitted;
-	}
-	bool IsCommitted() const 
-	{ 
-		check(IsInRenderingThread());
-		return bCommitted;
-	}
-
 	bool IsValid() const
 	{
-		return !MarkedForDelete && NumRefs.GetValue() > 0;
+		return AtomicFlags.IsValid(std::memory_order_relaxed);
 	}
+
+	void Delete()
+	{
+		verify(!AtomicFlags.MarkForDelete(std::memory_order_acquire));
+		CurrentlyDeleting = this;
+		delete this;
+	}
+
+	inline ERHIResourceType GetType() const { return ResourceType; }
+
+#if RHI_ENABLE_RESOURCE_INFO
+	// Get resource info if available.
+	// Should return true if the ResourceInfo was filled with data.
+	virtual bool GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const
+	{
+		OutResourceInfo = FRHIResourceInfo{};
+		return false;
+	}
+
+	static void BeginTrackingResource(FRHIResource* InResource);
+	static void EndTrackingResource(FRHIResource* InResource);
+	static void StartTrackingAllResources();
+	static void StopTrackingAllResources();
+#endif
 
 private:
-	mutable FThreadSafeCounter NumRefs;
-	mutable int32 MarkedForDelete;
-	bool bDoNotDeferDelete;
-	bool bCommitted;
-
-	static TLockFreePointerListUnordered<FRHIResource, PLATFORM_CACHE_LINE_SIZE> PendingDeletes;
-	static FRHIResource* CurrentlyDeleting;
-
-	FORCEINLINE bool DeferDelete() const
+	class FAtomicFlags
 	{
-#if DISABLE_RHI_DEFFERED_DELETE
-		checkf(!GRHIValidationEnabled, TEXT("RHI validation is not supported when DISABLE_RHI_DEFERRED_DELETE flag is set."));
-		return false;
+#if RHI_RESOURCE_LIFETIME_VALIDATION
+		struct FPacked
+		{
+			FPacked(uint64 InNumRefs, bool InMarkedForDelete, bool InDeleting) : NumRefs(InNumRefs), MarkedForDelete(InMarkedForDelete), Deleting(InDeleting)
+			{
+			}
+
+			FPacked() : NumRefs(0), MarkedForDelete(0), Deleting(0)
+			{
+			}
+
+			uint32 NumRefs			: 30;
+			uint32 MarkedForDelete	: 1;
+			uint32 Deleting			: 1;
+		};
+		std::atomic<FPacked> Packed = {};
 #else
-		// Defer if GRHINeedsExtraDeletionLatency or we are doing threaded rendering (unless otherwise requested).
-		return !bDoNotDeferDelete && (GRHINeedsExtraDeletionLatency || !Bypass());
+		std::atomic_int NumRefs = { 0 };
+		std::atomic_bool MarkedForDelete = { 0 };
 #endif
-	}
+
+	public:
+		int32 AddRef(std::memory_order MemoryOrder)
+		{
+#if RHI_RESOURCE_LIFETIME_VALIDATION
+			FPacked Old = Packed.load(std::memory_order_relaxed);
+			while(true)
+			{
+				check(Old.Deleting == false);
+				if(Packed.compare_exchange_weak(Old, FPacked(Old.NumRefs + 1, Old.MarkedForDelete, false), MemoryOrder, std::memory_order_relaxed))
+				{
+					return Old.NumRefs + 1;
+				}
+			}
+#else
+			return NumRefs.fetch_add(1, MemoryOrder) + 1;
+#endif
+		}
+
+		int32 Release(std::memory_order MemoryOrder)
+		{
+#if RHI_RESOURCE_LIFETIME_VALIDATION
+			FPacked Old = Packed.load(std::memory_order_relaxed);
+			while(true)
+			{
+				check(Old.Deleting == false);
+				if(Packed.compare_exchange_weak(Old, FPacked(Old.NumRefs - 1, Old.MarkedForDelete, false), MemoryOrder, std::memory_order_relaxed))
+				{
+					return Old.NumRefs - 1;
+				}
+			}
+#else
+			return NumRefs.fetch_sub(1, MemoryOrder) - 1;
+#endif
+		}
+
+		bool MarkForDelete(std::memory_order MemoryOrder)
+		{
+#if RHI_RESOURCE_LIFETIME_VALIDATION
+			FPacked Old = Packed.load(std::memory_order_relaxed);
+			while(true)
+			{
+				check(Old.Deleting == false);
+				if(Packed.compare_exchange_weak(Old, FPacked(Old.NumRefs, true, false), MemoryOrder, std::memory_order_relaxed))
+				{
+					return Old.MarkedForDelete;
+				}
+			}
+#else
+			return MarkedForDelete.exchange(true, MemoryOrder);
+#endif
+		}
+
+		bool UnmarkForDelete(std::memory_order MemoryOrder)
+		{
+#if RHI_RESOURCE_LIFETIME_VALIDATION
+			FPacked Old = Packed.load(std::memory_order_relaxed);
+			while(true)
+			{
+				check(Old.Deleting == false); 
+				check(Old.MarkedForDelete == true);
+				if(Packed.compare_exchange_weak(Old, FPacked(Old.NumRefs, false, false), MemoryOrder, std::memory_order_relaxed))
+				{
+					return Old.MarkedForDelete;
+				}
+			}
+#else
+			bool Old = MarkedForDelete.exchange(false, MemoryOrder);
+			check(Old == true);
+			return Old;
+#endif
+		}
+
+		bool Deleteing()
+		{
+#if RHI_RESOURCE_LIFETIME_VALIDATION
+			FPacked Old = Packed.load(std::memory_order_relaxed);
+			while(true)
+			{
+				check(Old.Deleting == false); 
+				check(Old.MarkedForDelete == true);
+				if(Old.NumRefs == 0)
+				{
+					if(Packed.compare_exchange_weak(Old, FPacked(0, true, true), std::memory_order_acquire, std::memory_order_relaxed))
+					{
+						return true;
+					}
+				}
+				else
+				{
+					if(Packed.compare_exchange_weak(Old, FPacked(Old.NumRefs, false, false), std::memory_order_release, std::memory_order_relaxed))
+					{
+						return false;
+					}
+				}
+			}
+#else
+			check(MarkedForDelete.load(std::memory_order_relaxed) == 1);
+			if (NumRefs.load(std::memory_order_acquire) == 0) // caches can bring dead objects back to life
+			{
+				return true;
+			}
+			else
+			{
+				verify(MarkedForDelete.exchange(false, std::memory_order_release));	
+				return false;
+			}
+#endif
+		}
+
+		bool IsValid(std::memory_order MemoryOrder)
+		{
+#if RHI_RESOURCE_LIFETIME_VALIDATION
+			FPacked Old = Packed.load(MemoryOrder);
+			return !Old.MarkedForDelete && Old.NumRefs > 0;
+#else
+			return !MarkedForDelete.load(MemoryOrder) && NumRefs.load(MemoryOrder) > 0;
+#endif
+		}
+
+		int32 GetNumRefs(std::memory_order MemoryOrder)
+		{
+#if RHI_RESOURCE_LIFETIME_VALIDATION
+			FPacked Old = Packed.load(MemoryOrder);
+			return Old.NumRefs;
+#else
+			return NumRefs.load(MemoryOrder);
+#endif
+		}
+	};
+	mutable FAtomicFlags AtomicFlags;
+
+	const ERHIResourceType ResourceType;
+	bool bCommitted { true };
+#if RHI_ENABLE_RESOURCE_INFO
+	bool bBeingTracked { false };
+#endif
+
+	static std::atomic<TClosableMpscQueue<FRHIResource*>*> PendingDeletes;
+	static FHazardPointerCollection PendingDeletesHPC;
+	static FRHIResource* CurrentlyDeleting;
 
 	// Some APIs don't do internal reference counting, so we have to wait an extra couple of frames before deleting resources
 	// to ensure the GPU has completely finished with them. This avoids expensive fences, etc.
 	struct ResourcesToDelete
 	{
-		ResourcesToDelete(uint32 InFrameDeleted = 0)
-			: FrameDeleted(InFrameDeleted)
-		{
-
-		}
-
 		TArray<FRHIResource*>	Resources;
-		uint32					FrameDeleted;
+		uint32					FrameDeleted{};
 	};
-
-	static TArray<ResourcesToDelete> DeferredDeletionQueue;
-	static uint32 CurrentFrame;
 };
 
 class FExclusiveDepthStencil
@@ -275,9 +460,7 @@ public:
 
 		// SRV access is allowed whilst a depth stencil target is "readable".
 		constexpr ERHIAccess DSVReadOnlyMask =
-			ERHIAccess::DSVRead |
-			ERHIAccess::SRVGraphics |
-			ERHIAccess::SRVCompute;
+			ERHIAccess::DSVRead;
 
 		// If write access is required, only the depth block can access the resource.
 		constexpr ERHIAccess DSVReadWriteMask =
@@ -413,25 +596,31 @@ private:
 class FRHISamplerState : public FRHIResource 
 {
 public:
+	FRHISamplerState() : FRHIResource(RRT_SamplerState) {}
 	virtual bool IsImmutable() const { return false; }
 };
 
 class FRHIRasterizerState : public FRHIResource
 {
 public:
+	FRHIRasterizerState() : FRHIResource(RRT_RasterizerState) {}
 	virtual bool GetInitializer(struct FRasterizerStateInitializerRHI& Init) { return false; }
 };
+
 class FRHIDepthStencilState : public FRHIResource
 {
 public:
+	FRHIDepthStencilState() : FRHIResource(RRT_DepthStencilState) {}
 #if ENABLE_RHI_VALIDATION
 	FExclusiveDepthStencil ActualDSMode;
 #endif
 	virtual bool GetInitializer(struct FDepthStencilStateInitializerRHI& Init) { return false; }
 };
+
 class FRHIBlendState : public FRHIResource
 {
 public:
+	FRHIBlendState() : FRHIResource(RRT_BlendState) {}
 	virtual bool GetInitializer(class FBlendStateInitializerRHI& Init) { return false; }
 };
 
@@ -443,14 +632,25 @@ typedef TArray<struct FVertexElement,TFixedAllocator<MaxVertexElementCount> > FV
 class FRHIVertexDeclaration : public FRHIResource
 {
 public:
+	FRHIVertexDeclaration() : FRHIResource(RRT_VertexDeclaration) {}
 	virtual bool GetInitializer(FVertexDeclarationElementList& Init) { return false; }
 };
 
-class FRHIBoundShaderState : public FRHIResource {};
+class FRHIBoundShaderState : public FRHIResource
+{
+public:
+	FRHIBoundShaderState() : FRHIResource(RRT_BoundShaderState) {}
+};
 
 //
 // Shaders
 //
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	#define RHI_INCLUDE_SHADER_DEBUG_DATA 1
+#else
+	#define RHI_INCLUDE_SHADER_DEBUG_DATA 0
+#endif
 
 class FRHIShader : public FRHIResource
 {
@@ -458,7 +658,7 @@ public:
 	void SetHash(FSHAHash InHash) { Hash = InHash; }
 	FSHAHash GetHash() const { return Hash; }
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+#if RHI_INCLUDE_SHADER_DEBUG_DATA
 	// for debugging only e.g. MaterialName:ShaderFile.usf or ShaderFile.usf/EntryFunc
 	FString ShaderName;
 	FORCEINLINE const TCHAR* GetShaderName() const { return *ShaderName; }
@@ -466,8 +666,10 @@ public:
 	FORCEINLINE const TCHAR* GetShaderName() const { return TEXT(""); }
 #endif
 
-	explicit FRHIShader(EShaderFrequency InFrequency)
-		: Frequency(InFrequency)
+	FRHIShader() = delete;
+	FRHIShader(ERHIResourceType InResourceType, EShaderFrequency InFrequency)
+		: FRHIResource(InResourceType)
+		, Frequency(InFrequency)
 	{
 	}
 
@@ -484,49 +686,74 @@ private:
 class FRHIGraphicsShader : public FRHIShader
 {
 public:
-	explicit FRHIGraphicsShader(EShaderFrequency InFrequency) : FRHIShader(InFrequency) {}
+	explicit FRHIGraphicsShader(ERHIResourceType InResourceType, EShaderFrequency InFrequency)
+		: FRHIShader(InResourceType, InFrequency) {}
 };
 
 class FRHIVertexShader : public FRHIGraphicsShader
 {
 public:
-	FRHIVertexShader() : FRHIGraphicsShader(SF_Vertex) {}
+	FRHIVertexShader() : FRHIGraphicsShader(RRT_VertexShader, SF_Vertex) {}
 };
 
-class FRHIHullShader : public FRHIGraphicsShader
+class FRHIMeshShader : public FRHIGraphicsShader
 {
 public:
-	FRHIHullShader() : FRHIGraphicsShader(SF_Hull) {}
+	FRHIMeshShader() : FRHIGraphicsShader(RRT_MeshShader, SF_Mesh) {}
 };
 
-class FRHIDomainShader : public FRHIGraphicsShader
+class FRHIAmplificationShader : public FRHIGraphicsShader
 {
 public:
-	FRHIDomainShader() : FRHIGraphicsShader(SF_Domain) {}
+	FRHIAmplificationShader() : FRHIGraphicsShader(RRT_AmplificationShader, SF_Amplification) {}
 };
 
 class FRHIPixelShader : public FRHIGraphicsShader
 {
 public:
-	FRHIPixelShader() : FRHIGraphicsShader(SF_Pixel) {}
+	FRHIPixelShader() : FRHIGraphicsShader(RRT_PixelShader, SF_Pixel) {}
 };
 
 class FRHIGeometryShader : public FRHIGraphicsShader
 {
 public:
-	FRHIGeometryShader() : FRHIGraphicsShader(SF_Geometry) {}
+	FRHIGeometryShader() : FRHIGraphicsShader(RRT_GeometryShader, SF_Geometry) {}
 };
 
 class FRHIRayTracingShader : public FRHIShader
 {
 public:
-	explicit FRHIRayTracingShader(EShaderFrequency InFrequency) : FRHIShader(InFrequency) {}
+	explicit FRHIRayTracingShader(EShaderFrequency InFrequency) : FRHIShader(RRT_RayTracingShader, InFrequency) {}
+};
+
+class FRHIRayGenShader : public FRHIRayTracingShader
+{
+public:
+	FRHIRayGenShader() : FRHIRayTracingShader(SF_RayGen) {}
+};
+
+class FRHIRayMissShader : public FRHIRayTracingShader
+{
+public:
+	FRHIRayMissShader() : FRHIRayTracingShader(SF_RayMiss) {}
+};
+
+class FRHIRayCallableShader : public FRHIRayTracingShader
+{
+public:
+	FRHIRayCallableShader() : FRHIRayTracingShader(SF_RayCallable) {}
+};
+
+class FRHIRayHitGroupShader : public FRHIRayTracingShader
+{
+public:
+	FRHIRayHitGroupShader() : FRHIRayTracingShader(SF_RayHitGroup) {}
 };
 
 class RHI_API FRHIComputeShader : public FRHIShader
 {
 public:
-	FRHIComputeShader() : FRHIShader(SF_Compute), Stats(nullptr) {}
+	FRHIComputeShader() : FRHIShader(RRT_ComputeShader, SF_Compute), Stats(nullptr) {}
 	
 	inline void SetStats(struct FPipelineStateStats* Ptr) { Stats = Ptr; }
 	void UpdateStats();
@@ -541,14 +768,31 @@ private:
 
 class FRHIGraphicsPipelineState : public FRHIResource 
 {
+public:
+	FRHIGraphicsPipelineState() : FRHIResource(RRT_GraphicsPipelineState) {}
+
+	inline void SetSortKey(uint64 InSortKey) { SortKey = InSortKey; }
+	inline uint64 GetSortKey() const { return SortKey; }
+
+private:
+	uint64 SortKey = 0;
+
 #if ENABLE_RHI_VALIDATION
 	friend class FValidationContext;
 	friend class FValidationRHI;
 	FExclusiveDepthStencil DSMode;
 #endif
 };
-class FRHIComputePipelineState : public FRHIResource {};
-class FRHIRayTracingPipelineState : public FRHIResource {};
+class FRHIComputePipelineState : public FRHIResource
+{
+public:
+	FRHIComputePipelineState() : FRHIResource(RRT_ComputePipelineState) {}
+};
+class FRHIRayTracingPipelineState : public FRHIResource
+{
+public:
+	FRHIRayTracingPipelineState() : FRHIResource(RRT_RayTracingPipelineState) {}
+};
 
 //
 // Buffers
@@ -561,34 +805,52 @@ class FRHIRayTracingPipelineState : public FRHIResource {};
 // Enabling this requires -norhithread to work correctly since FRHIResource lifetime is managed by both the RT and RHIThread
 #define VALIDATE_UNIFORM_BUFFER_LIFETIME 0
 
-/** The layout of a uniform buffer in memory. */
-struct FRHIUniformBufferLayout
+/** Data structure to store information about resource parameter in a shader parameter structure. */
+struct FRHIUniformBufferResource
 {
-public:
-	static const uint16 kInvalidOffset = TNumericLimits<uint16>::Max();
+	DECLARE_EXPORTED_TYPE_LAYOUT(FRHIUniformBufferResource, RHI_API, NonVirtual);
 
-	/** Data structure to store information about resource parameter in a shader parameter structure. */
-	struct FResourceParameter
+	/** Byte offset to each resource in the uniform buffer memory. */
+	LAYOUT_FIELD(uint16, MemberOffset);
+
+	/** Type of the member that allow (). */
+	LAYOUT_FIELD(EUniformBufferBaseType, MemberType);
+};
+
+inline FArchive& operator<<(FArchive& Ar, FRHIUniformBufferResource& Ref)
+{
+	uint8 Type = (uint8)Ref.MemberType;
+	Ar << Ref.MemberOffset;
+	Ar << Type;
+	Ref.MemberType = (EUniformBufferBaseType)Type;
+	return Ar;
+}
+
+/** Compare two uniform buffer layout resources. */
+inline bool operator==(const FRHIUniformBufferResource& A, const FRHIUniformBufferResource& B)
+{
+	return A.MemberOffset == B.MemberOffset
+		&& A.MemberType == B.MemberType;
+}
+
+static constexpr uint16 kUniformBufferInvalidOffset = TNumericLimits<uint16>::Max();
+
+/** Initializer for the layout of a uniform buffer in memory. */
+struct FRHIUniformBufferLayoutInitializer
+{
+	DECLARE_EXPORTED_TYPE_LAYOUT(FRHIUniformBufferLayoutInitializer, RHI_API, NonVirtual);
+
+	FRHIUniformBufferLayoutInitializer() = default;
+
+	explicit FRHIUniformBufferLayoutInitializer(const TCHAR * InName)
+		: Name(InName)
+	{}
+	explicit FRHIUniformBufferLayoutInitializer(const TCHAR * InName, uint32 InConstantBufferSize)
+		: Name(InName)
+		, ConstantBufferSize(InConstantBufferSize)
 	{
-		DECLARE_EXPORTED_TYPE_LAYOUT(FResourceParameter, RHI_API, NonVirtual);
-	public:
-		friend inline FArchive& operator<<(FArchive& Ar, FResourceParameter& Ref)
-		{
-			uint8 Type = (uint8)Ref.MemberType;
-			Ar << Ref.MemberOffset;
-			Ar << Type;
-			Ref.MemberType = (EUniformBufferBaseType)Type;
-			return Ar;
-		}
-
-		/** Byte offset to each resource in the uniform buffer memory. */
-		LAYOUT_FIELD(uint16, MemberOffset);
-		/** Type of the member that allow (). */
-		LAYOUT_FIELD(EUniformBufferBaseType, MemberType);
-	};
-
-	DECLARE_EXPORTED_TYPE_LAYOUT(FRHIUniformBufferLayout, RHI_API, NonVirtual);
-public:
+		ComputeHash();
+	}
 
 	inline uint32 GetHash() const
 	{
@@ -598,7 +860,8 @@ public:
 
 	void ComputeHash()
 	{
-		uint32 TmpHash = ConstantBufferSize << 16 | static_cast<uint32>(StaticSlot);
+		// Static slot is not stable. Just track whether we have one at all.
+		uint32 TmpHash = ConstantBufferSize << 16 | static_cast<uint32>(BindingFlags) << 8 | static_cast<uint32>(StaticSlot != MAX_UNIFORM_BUFFER_STATIC_SLOTS);
 
 		for (int32 ResourceIndex = 0; ResourceIndex < Resources.Num(); ResourceIndex++)
 		{
@@ -627,23 +890,11 @@ public:
 		Hash = TmpHash;
 	}
 
-	FRHIUniformBufferLayout() = default;
-
-	explicit FRHIUniformBufferLayout(const TCHAR* InName)
-		: Name(InName)
-	{}
-
-#if VALIDATE_UNIFORM_BUFFER_LAYOUT_LIFETIME
-	~FRHIUniformBufferLayout()
-	{
-		check(NumUsesForDebugging == 0 || IsEngineExitRequested());
-	}
-#endif
-
-	void CopyFrom(const FRHIUniformBufferLayout& Source)
+	void CopyFrom(const FRHIUniformBufferLayoutInitializer& Source)
 	{
 		ConstantBufferSize = Source.ConstantBufferSize;
 		StaticSlot = Source.StaticSlot;
+		BindingFlags = Source.BindingFlags;
 		Resources = Source.Resources;
 		Name = Source.Name;
 		Hash = Source.Hash;
@@ -656,7 +907,7 @@ public:
 
 	bool HasRenderTargets() const
 	{
-		return RenderTargetsOffset != kInvalidOffset;
+		return RenderTargetsOffset != kUniformBufferInvalidOffset;
 	}
 
 	bool HasExternalOutputs() const
@@ -669,12 +920,13 @@ public:
 		return IsUniformBufferStaticSlotValid(StaticSlot);
 	}
 
-	friend FArchive& operator<<(FArchive& Ar, FRHIUniformBufferLayout& Ref)
+	friend FArchive& operator<<(FArchive& Ar, FRHIUniformBufferLayoutInitializer& Ref)
 	{
 		Ar << Ref.ConstantBufferSize;
 		Ar << Ref.StaticSlot;
 		Ar << Ref.RenderTargetsOffset;
 		Ar << Ref.bHasNonGraphOutputs;
+		Ar << Ref.BindingFlags;
 		Ar << Ref.Resources;
 		Ar << Ref.GraphResources;
 		Ar << Ref.GraphTextures;
@@ -686,56 +938,150 @@ public:
 		return Ar;
 	}
 
+private:
+	// for debugging / error message
+	LAYOUT_FIELD(FMemoryImageString, Name);
+
+public:
+	/** The list of all resource inlined into the shader parameter structure. */
+	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, Resources);
+
+	/** The list of all RDG resource references inlined into the shader parameter structure. */
+	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, GraphResources);
+
+	/** The list of all RDG texture references inlined into the shader parameter structure. */
+	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, GraphTextures);
+
+	/** The list of all RDG buffer references inlined into the shader parameter structure. */
+	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, GraphBuffers);
+
+	/** The list of all RDG uniform buffer references inlined into the shader parameter structure. */
+	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, GraphUniformBuffers);
+
+	/** The list of all non-RDG uniform buffer references inlined into the shader parameter structure. */
+	LAYOUT_FIELD(TMemoryImageArray<FRHIUniformBufferResource>, UniformBuffers);
+
+private:
+	LAYOUT_FIELD_INITIALIZED(uint32, Hash, 0);
+
+public:
 	/** The size of the constant buffer in bytes. */
 	LAYOUT_FIELD_INITIALIZED(uint32, ConstantBufferSize, 0);
+
+	/** The render target binding slots offset, if it exists. */
+	LAYOUT_FIELD_INITIALIZED(uint16, RenderTargetsOffset, kUniformBufferInvalidOffset);
 
 	/** The static slot (if applicable). */
 	LAYOUT_FIELD_INITIALIZED(FUniformBufferStaticSlot, StaticSlot, MAX_UNIFORM_BUFFER_STATIC_SLOTS);
 
-	/** The render target binding slots offset, if it exists. */
-	LAYOUT_FIELD_INITIALIZED(uint16, RenderTargetsOffset, kInvalidOffset);
+	/** The binding flags describing how this resource can be bound to the RHI. */
+	LAYOUT_FIELD_INITIALIZED(EUniformBufferBindingFlags, BindingFlags, EUniformBufferBindingFlags::Shader);
 
 	/** Whether this layout may contain non-render-graph outputs (e.g. RHI UAVs). */
 	LAYOUT_FIELD_INITIALIZED(bool, bHasNonGraphOutputs, false);
-
-	/** The list of all resource inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FResourceParameter>, Resources);
-
-	/** The list of all RDG resource references inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FResourceParameter>, GraphResources);
-
-	/** The list of all RDG texture references inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FResourceParameter>, GraphTextures);
-
-	/** The list of all RDG buffer references inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FResourceParameter>, GraphBuffers);
-
-	/** The list of all RDG uniform buffer references inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FResourceParameter>, GraphUniformBuffers);
-
-	/** The list of all non-RDG uniform buffer references inlined into the shader parameter structure. */
-	LAYOUT_FIELD(TMemoryImageArray<FResourceParameter>, UniformBuffers);
-
-	LAYOUT_MUTABLE_FIELD_INITIALIZED(int32, NumUsesForDebugging, 0);
-
-private:
-	// for debugging / error message
-	LAYOUT_FIELD(FMemoryImageString, Name);
-	LAYOUT_FIELD_INITIALIZED(uint32, Hash, 0);
 };
 
-/** Compare two uniform buffer layouts. */
-inline bool operator==(const FRHIUniformBufferLayout::FResourceParameter& A, const FRHIUniformBufferLayout::FResourceParameter& B)
+/** Compare two uniform buffer layout initializers. */
+inline bool operator==(const FRHIUniformBufferLayoutInitializer& A, const FRHIUniformBufferLayoutInitializer& B)
 {
-	return A.MemberOffset == B.MemberOffset
-		&& A.MemberType == B.MemberType;
+	return A.ConstantBufferSize == B.ConstantBufferSize
+		&& A.StaticSlot == B.StaticSlot
+		&& A.BindingFlags == B.BindingFlags
+		&& A.Resources == B.Resources;
 }
+
+/** The layout of a uniform buffer in memory. */
+struct FRHIUniformBufferLayout : public FRHIResource
+{
+	FRHIUniformBufferLayout() = delete;
+
+	explicit FRHIUniformBufferLayout(const FRHIUniformBufferLayoutInitializer& Initializer)
+		: FRHIResource(RRT_UniformBufferLayout)
+		, Name(Initializer.GetDebugName())
+		, Resources(Initializer.Resources)
+		, GraphResources(Initializer.GraphResources)
+		, GraphTextures(Initializer.GraphTextures)
+		, GraphBuffers(Initializer.GraphBuffers)
+		, GraphUniformBuffers(Initializer.GraphUniformBuffers)
+		, UniformBuffers(Initializer.UniformBuffers)
+		, Hash(Initializer.GetHash())
+		, ConstantBufferSize(Initializer.ConstantBufferSize)
+		, RenderTargetsOffset(Initializer.RenderTargetsOffset)
+		, StaticSlot(Initializer.StaticSlot)
+		, BindingFlags(Initializer.BindingFlags)
+		, bHasNonGraphOutputs(Initializer.bHasNonGraphOutputs)
+	{}
+
+	inline const FString& GetDebugName() const
+	{
+		return Name;
+	}
+
+	inline uint32 GetHash() const
+	{
+		checkSlow(Hash != 0);
+		return Hash;
+	}
+
+	inline bool HasRenderTargets() const
+	{
+		return RenderTargetsOffset != kUniformBufferInvalidOffset;
+	}
+
+	inline bool HasExternalOutputs() const
+	{
+		return bHasNonGraphOutputs;
+	}
+
+	inline bool HasStaticSlot() const
+	{
+		return IsUniformBufferStaticSlotValid(StaticSlot);
+	}
+
+	const FString Name;
+
+	/** The list of all resource inlined into the shader parameter structure. */
+	const TArray<FRHIUniformBufferResource> Resources;
+
+	/** The list of all RDG resource references inlined into the shader parameter structure. */
+	const TArray<FRHIUniformBufferResource> GraphResources;
+
+	/** The list of all RDG texture references inlined into the shader parameter structure. */
+	const TArray<FRHIUniformBufferResource> GraphTextures;
+
+	/** The list of all RDG buffer references inlined into the shader parameter structure. */
+	const TArray<FRHIUniformBufferResource> GraphBuffers;
+
+	/** The list of all RDG uniform buffer references inlined into the shader parameter structure. */
+	const TArray<FRHIUniformBufferResource> GraphUniformBuffers;
+
+	/** The list of all non-RDG uniform buffer references inlined into the shader parameter structure. */
+	const TArray<FRHIUniformBufferResource> UniformBuffers;
+
+	const uint32 Hash;
+
+	/** The size of the constant buffer in bytes. */
+	const uint32 ConstantBufferSize;
+
+	/** The render target binding slots offset, if it exists. */
+	const uint16 RenderTargetsOffset;
+
+	/** The static slot (if applicable). */
+	const FUniformBufferStaticSlot StaticSlot;
+
+	/** The binding flags describing how this resource can be bound to the RHI. */
+	const EUniformBufferBindingFlags BindingFlags;
+
+	/** Whether this layout may contain non-render-graph outputs (e.g. RHI UAVs). */
+	const bool bHasNonGraphOutputs;
+};
 
 /** Compare two uniform buffer layouts. */
 inline bool operator==(const FRHIUniformBufferLayout& A, const FRHIUniformBufferLayout& B)
 {
 	return A.ConstantBufferSize == B.ConstantBufferSize
 		&& A.StaticSlot == B.StaticSlot
+		&& A.BindingFlags == B.BindingFlags
 		&& A.Resources == B.Resources;
 }
 
@@ -745,23 +1091,14 @@ class FRHIUniformBuffer : public FRHIResource
 #endif
 {
 public:
+	FRHIUniformBuffer() = delete;
 
 	/** Initialization constructor. */
-	FRHIUniformBuffer(const FRHIUniformBufferLayout& InLayout)
-	: Layout(&InLayout)
-	, LayoutConstantBufferSize(InLayout.ConstantBufferSize)
+	FRHIUniformBuffer(const FRHIUniformBufferLayout* InLayout)
+	: FRHIResource(RRT_UniformBuffer)
+	, Layout(InLayout)
+	, LayoutConstantBufferSize(InLayout->ConstantBufferSize)
 	{}
-
-	FORCEINLINE_DEBUGGABLE uint32 AddRef() const
-	{
-#if VALIDATE_UNIFORM_BUFFER_LAYOUT_LIFETIME
-		if (GetRefCount() == 0)
-		{
-			Layout->NumUsesForDebugging++;
-		}
-#endif
-		return FRHIResource::AddRef();
-	}
 
 	FORCEINLINE_DEBUGGABLE uint32 Release() const
 	{
@@ -775,10 +1112,6 @@ public:
 
 		if (NewRefCount == 0)
 		{
-#if VALIDATE_UNIFORM_BUFFER_LAYOUT_LIFETIME
-			LocalLayout->NumUsesForDebugging--;
-			check(LocalLayout->NumUsesForDebugging >= 0);
-#endif
 #if VALIDATE_UNIFORM_BUFFER_LIFETIME
 			check(LocalNumMeshCommandReferencesForDebugging == 0 || IsEngineExitRequested());
 #endif
@@ -794,148 +1127,81 @@ public:
 		return LayoutConstantBufferSize;
 	}
 	const FRHIUniformBufferLayout& GetLayout() const { return *Layout; }
-
-	bool IsGlobal() const
-	{
-		return IsUniformBufferStaticSlotValid(Layout->StaticSlot);
-	}
+	const FRHIUniformBufferLayout* GetLayoutPtr() const { return Layout; }
 
 #if VALIDATE_UNIFORM_BUFFER_LIFETIME
 	mutable int32 NumMeshCommandReferencesForDebugging = 0;
 #endif
 
-	virtual int32 GetPatchingFrameNumber() const { return -1; }
-	virtual void SetPatchingFrameNumber(int32 FrameNumber) { }
-
 private:
 	/** Layout of the uniform buffer. */
-	const FRHIUniformBufferLayout* Layout;
+	TRefCountPtr<const FRHIUniformBufferLayout> Layout;
 
 	uint32 LayoutConstantBufferSize;
 };
 
-class FRHIIndexBuffer : public FRHIResource
+class FRHIBuffer : public FRHIResource
 #if ENABLE_RHI_VALIDATION
 	, public RHIValidation::FBufferResource
 #endif
 {
 public:
+	FRHIBuffer() : FRHIResource(RRT_Buffer) {}
 
 	/** Initialization constructor. */
-	FRHIIndexBuffer(uint32 InStride,uint32 InSize,uint32 InUsage)
-	: Stride(InStride)
-	, Size(InSize)
-	, Usage(InUsage)
-	{}
+	FRHIBuffer(uint32 InSize, EBufferUsageFlags InUsage, uint32 InStride)
+		: FRHIResource(RRT_Buffer)
+		, Size(InSize)
+		, Stride(InStride)
+		, Usage(InUsage)
+	{
+	}
 
-	/** @return The stride in bytes of the index buffer; must be 2 or 4. */
-	uint32 GetStride() const { return Stride; }
-
-	/** @return The number of bytes in the index buffer. */
+	/** @return The number of bytes in the buffer. */
 	uint32 GetSize() const { return Size; }
 
-	/** @return The usage flags used to create the index buffer. */
-	uint32 GetUsage() const { return Usage; }
+	/** @return The stride in bytes of the buffer. */
+	uint32 GetStride() const { return Stride; }
+
+	/** @return The usage flags used to create the buffer. */
+	EBufferUsageFlags GetUsage() const { return Usage; }
+
+	void SetName(const FName& InName) { BufferName = InName; }
+
+	FName GetName() const { return BufferName; }
+
+	virtual uint32 GetParentGPUIndex() const { return 0; }
 
 protected:
-	FRHIIndexBuffer()
-		: Stride(0)
-		, Size(0)
-		, Usage(0)
-	{}
-
-	void Swap(FRHIIndexBuffer& Other)
+	void Swap(FRHIBuffer& Other)
 	{
 		::Swap(Stride, Other.Stride);
 		::Swap(Size, Other.Size);
 		::Swap(Usage, Other.Usage);
 	}
 
-	void ReleaseUnderlyingResource()
+	// Used by RHI implementations that may adjust internal usage flags during object construction.
+	void SetUsage(EBufferUsageFlags InUsage)
 	{
-		Stride = Size = Usage = 0;
-	}
-
-private:
-	uint32 Stride;
-	uint32 Size;
-	uint32 Usage;
-};
-
-class FRHIVertexBuffer : public FRHIResource
-#if ENABLE_RHI_VALIDATION
-	, public RHIValidation::FBufferResource
-#endif
-{
-public:
-
-	/**
-	 * Initialization constructor.
-	 * @apram InUsage e.g. BUF_UnorderedAccess
-	 */
-	FRHIVertexBuffer(uint32 InSize,uint32 InUsage)
-	: Size(InSize)
-	, Usage(InUsage)
-	{}
-
-	/** @return The number of bytes in the vertex buffer. */
-	uint32 GetSize() const { return Size; }
-
-	/** @return The usage flags used to create the vertex buffer. e.g. BUF_UnorderedAccess */
-	uint32 GetUsage() const { return Usage; }
-
-protected:
-	FRHIVertexBuffer()
-		: Size(0)
-		, Usage(0)
-	{}
-
-	void Swap(FRHIVertexBuffer& Other)
-	{
-		::Swap(Size, Other.Size);
-		::Swap(Usage, Other.Usage);
+		Usage = InUsage;
 	}
 
 	void ReleaseUnderlyingResource()
 	{
-		Size = 0;
-		Usage = 0;
+		Stride = Size = 0;
+		Usage = EBufferUsageFlags::None;
 	}
 
 private:
-	uint32 Size;
-	// e.g. BUF_UnorderedAccess
-	uint32 Usage;
+	uint32 Size{};
+	uint32 Stride{};
+	EBufferUsageFlags Usage{};
+	FName BufferName;
 };
 
-class FRHIStructuredBuffer : public FRHIResource
-#if ENABLE_RHI_VALIDATION
-	, public RHIValidation::FBufferResource
-#endif
-{
-public:
-
-	/** Initialization constructor. */
-	FRHIStructuredBuffer(uint32 InStride,uint32 InSize,uint32 InUsage)
-	: Stride(InStride)
-	, Size(InSize)
-	, Usage(InUsage)
-	{}
-
-	/** @return The stride in bytes of the structured buffer; must be 2 or 4. */
-	uint32 GetStride() const { return Stride; }
-
-	/** @return The number of bytes in the structured buffer. */
-	uint32 GetSize() const { return Size; }
-
-	/** @return The usage flags used to create the structured buffer. */
-	uint32 GetUsage() const { return Usage; }
-
-private:
-	uint32 Stride;
-	uint32 Size;
-	uint32 Usage;
-};
+UE_DEPRECATED(5.0, "FRHIIndexBuffer is deprecated, please use FRHIBuffer.")      typedef class FRHIBuffer FRHIIndexBuffer;
+UE_DEPRECATED(5.0, "FRHIVertexBuffer is deprecated, please use FRHIBuffer.")     typedef class FRHIBuffer FRHIVertexBuffer;
+UE_DEPRECATED(5.0, "FRHIStructuredBuffer is deprecated, please use FRHIBuffer.") typedef class FRHIBuffer FRHIStructuredBuffer;
 
 //
 // Textures
@@ -969,13 +1235,18 @@ class RHI_API FRHITexture : public FRHIResource
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture(uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, ETextureCreateFlags InFlags, FLastRenderTimeContainer* InLastRenderTime, const FClearValueBinding& InClearValue)
-		: ClearValue(InClearValue)
+	FRHITexture(ERHIResourceType InResourceType, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
+		: FRHIResource(InResourceType)
+		, ClearValue(InClearValue)
 		, NumMips(InNumMips)
 		, NumSamples(InNumSamples)
 		, Format(InFormat)
 		, Flags(InFlags)
-	, LastRenderTime(InLastRenderTime ? *InLastRenderTime : DefaultLastRenderTime)	
+	{}
+
+	UE_DEPRECATED(5.0, "The InLastRenderTime parameter will be removed in the future")
+	FRHITexture(ERHIResourceType InResourceType, uint32 InNumMips, uint32 InNumSamples, EPixelFormat InFormat, ETextureCreateFlags InFlags, FLastRenderTimeContainer* InLastRenderTime, const FClearValueBinding& InClearValue)
+		: FRHITexture(InResourceType, InNumMips, InNumSamples, InFormat, InFlags, InClearValue)
 	{}
 
 	// Dynamic cast methods.
@@ -1022,6 +1293,21 @@ public:
 		return nullptr;
 	}
 
+	/**
+	 * Returns the dimensions (i.e. the actual number of texels in each dimension) of the specified mip. ArraySize is ignored.
+	 * The Z component will always be 1 for 2D/cube resources and will contain depth for volume textures.
+	 * This differs from GetSizeXYZ() which returns ArraySize in Z for 2D arrays.
+	 */
+	virtual FIntVector GetMipDimensions(uint8 MipIndex) const
+	{
+		FIntVector Size = GetSizeXYZ();
+		return FIntVector(
+			FMath::Max(Size.X >> MipIndex, 1),
+			FMath::Max(Size.Y >> MipIndex, 1),
+			FMath::Max(Size.Z >> MipIndex, 1)
+		);
+	}
+
 	/** @return The number of mip-maps in the texture. */
 	uint32 GetNumMips() const { return NumMips; }
 
@@ -1037,32 +1323,36 @@ public:
 	/** @return Whether the texture is multi sampled. */
 	bool IsMultisampled() const { return NumSamples > 1; }		
 
-	FRHIResourceInfo ResourceInfo;
-
 	/** sets the last time this texture was cached in a resource table. */
 	FORCEINLINE_DEBUGGABLE void SetLastRenderTime(float InLastRenderTime)
 	{
 		LastRenderTime.SetLastRenderTime(InLastRenderTime);
 	}
 
-	/** Returns the last render time container, or NULL if none were specified at creation. */
-	FLastRenderTimeContainer* GetLastRenderTimeContainer()
+	double GetLastRenderTime() const
 	{
-		if (&LastRenderTime == &DefaultLastRenderTime)
-		{
-			return NULL;
-		}
-		return &LastRenderTime;
+		return LastRenderTime.GetLastRenderTime();
 	}
 
+	/** Returns the last render time container, or NULL if none were specified at creation. */
+	UE_DEPRECATED(5.0, "GetLastRenderTimeContainer is deprecated and will be removed in the future")
+	FLastRenderTimeContainer* GetLastRenderTimeContainer()
+	{
+		return nullptr;
+	}
+
+	UE_DEPRECATED(5.0, "SetDefaultLastRenderTimeContainer is deprecated and will be removed in the future")
 	FORCEINLINE_DEBUGGABLE void SetDefaultLastRenderTimeContainer()
 	{
-		LastRenderTime = DefaultLastRenderTime;
 	}
 
 	void SetName(const FName& InName)
 	{
 		TextureName = InName;
+
+#if TEXTURE_PROFILER_ENABLED
+		FTextureProfiler::Get()->UpdateTextureName(this);
+#endif
 	}
 
 	FName GetName() const
@@ -1118,8 +1408,7 @@ private:
 	uint32 NumSamples;
 	EPixelFormat Format;
 	ETextureCreateFlags Flags;
-	FLastRenderTimeContainer& LastRenderTime;
-	FLastRenderTimeContainer DefaultLastRenderTime;	
+	FLastRenderTimeContainer LastRenderTime;
 	FName TextureName;
 };
 
@@ -1128,8 +1417,8 @@ class RHI_API FRHITexture2D : public FRHITexture
 public:
 	
 	/** Initialization constructor. */
-	FRHITexture2D(uint32 InSizeX,uint32 InSizeY,uint32 InNumMips,uint32 InNumSamples,EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
-	: FRHITexture(InNumMips, InNumSamples, InFormat, InFlags, NULL, InClearValue)
+	FRHITexture2D(uint32 InSizeX,uint32 InSizeY,uint32 InNumMips,uint32 InNumSamples,EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue, ERHIResourceType InResourceTypeOverride = RRT_None)
+	: FRHITexture(InResourceTypeOverride != RRT_None ? InResourceTypeOverride : RRT_Texture2D, InNumMips, InNumSamples, InFormat, InFlags, InClearValue)
 	, SizeX(InSizeX)
 	, SizeY(InSizeY)
 	{}
@@ -1165,7 +1454,7 @@ public:
 	
 	/** Initialization constructor. */
 	FRHITexture2DArray(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,uint32 NumSamples, EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
-	: FRHITexture2D(InSizeX, InSizeY, InNumMips,NumSamples,InFormat,InFlags, InClearValue)
+	: FRHITexture2D(InSizeX, InSizeY, InNumMips,NumSamples,InFormat,InFlags, InClearValue, RRT_Texture2DArray)
 	, SizeZ(InSizeZ)
 	{
 		check(InSizeZ != 0);
@@ -1184,6 +1473,17 @@ public:
 		return FIntVector(GetSizeX(), GetSizeY(), SizeZ);
 	}
 
+	// Because GetSizeXYZ() returns ArraySize in Z, we need to override this function to return 1 instead.
+	// @todo: Unify the meaning of "Z" in all texture resources
+	virtual FIntVector GetMipDimensions(uint8 MipIndex) const final override
+	{
+		return FIntVector(
+			FMath::Max(GetSizeX() >> MipIndex, 1u),
+			FMath::Max(GetSizeY() >> MipIndex, 1u),
+			1
+		);
+	}
+
 private:
 
 	uint32 SizeZ;
@@ -1195,7 +1495,7 @@ public:
 	
 	/** Initialization constructor. */
 	FRHITexture3D(uint32 InSizeX,uint32 InSizeY,uint32 InSizeZ,uint32 InNumMips,EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
-	: FRHITexture(InNumMips,1,InFormat,InFlags,NULL, InClearValue)
+	: FRHITexture(RRT_Texture3D, InNumMips,1,InFormat,InFlags, InClearValue)
 	, SizeX(InSizeX)
 	, SizeY(InSizeY)
 	, SizeZ(InSizeZ)
@@ -1231,7 +1531,7 @@ public:
 	
 	/** Initialization constructor. */
 	FRHITextureCube(uint32 InSize,uint32 InNumMips,EPixelFormat InFormat,ETextureCreateFlags InFlags, const FClearValueBinding& InClearValue)
-	: FRHITexture(InNumMips,1,InFormat,InFlags,NULL, InClearValue)
+	: FRHITexture(RRT_TextureCube, InNumMips,1,InFormat,InFlags, InClearValue)
 	, Size(InSize)
 	{}
 	
@@ -1251,28 +1551,54 @@ private:
 	uint32 Size;
 };
 
-class RHI_API FRHITextureReference : public FRHITexture
+class RHI_API FRHITextureReference final : public FRHITexture
 {
 public:
-	explicit FRHITextureReference(FLastRenderTimeContainer* InLastRenderTime)
-		: FRHITexture(0,0,PF_Unknown,TexCreate_None,InLastRenderTime, FClearValueBinding())
-	{}
-
-	virtual FRHITextureReference* GetTextureReference() override { return this; }
-	inline FRHITexture* GetReferencedTexture() const { return ReferencedTexture.GetReference(); }
-
-	void SetReferencedTexture(FRHITexture* InTexture)
+	explicit FRHITextureReference()
+		: FRHITexture(RRT_TextureReference, 0, 0, PF_Unknown, TexCreate_None, FClearValueBinding())
 	{
-		ReferencedTexture = InTexture;
+		check(DefaultTexture);
+		ReferencedTexture = DefaultTexture;
 	}
 
-	virtual FIntVector GetSizeXYZ() const final override
+	UE_DEPRECATED(5.0, "The InLastRenderTime parameter will be removed in the future")
+	explicit FRHITextureReference(FLastRenderTimeContainer* InLastRenderTime)
+		: FRHITextureReference()
+	{}
+
+	virtual class FRHITextureReference* GetTextureReference() override
 	{
-		if (ReferencedTexture)
-		{
-			return ReferencedTexture->GetSizeXYZ();
-		}
-		return FIntVector(0, 0, 0);
+		return this;
+	}
+
+	virtual FIntVector GetSizeXYZ() const override 
+	{
+		check(ReferencedTexture);
+		return ReferencedTexture->GetSizeXYZ();
+	}
+
+	virtual void* GetNativeResource() const override 
+	{
+		check(ReferencedTexture);
+		return ReferencedTexture->GetNativeResource();
+	}
+
+	virtual void* GetNativeShaderResourceView() const override
+	{
+		check(ReferencedTexture);
+		return ReferencedTexture->GetNativeShaderResourceView();
+	}
+
+	virtual void* GetTextureBaseRHI() override 
+	{
+		check(ReferencedTexture);
+		return ReferencedTexture->GetTextureBaseRHI();
+	}
+
+	virtual void GetWriteMaskProperties(void*& OutData, uint32& OutSize) override
+	{
+		check(ReferencedTexture);
+		return ReferencedTexture->GetWriteMaskProperties(OutData, OutSize);
 	}
 
 #if ENABLE_RHI_VALIDATION
@@ -1283,21 +1609,28 @@ public:
 	}
 #endif
 
+	inline FRHITexture* GetReferencedTexture() const
+	{
+		return ReferencedTexture.GetReference();
+	}
+
 private:
-	TRefCountPtr<FRHITexture> ReferencedTexture;
-};
-
-class RHI_API FRHITextureReferenceNullImpl : public FRHITextureReference
-{
-public:
-	FRHITextureReferenceNullImpl()
-		: FRHITextureReference(NULL)
-	{}
-
+	friend class FRHICommandListImmediate;
+	// Called only from FRHICommandListImmediate::UpdateTextureReference()
 	void SetReferencedTexture(FRHITexture* InTexture)
 	{
-		FRHITextureReference::SetReferencedTexture(InTexture);
+		ReferencedTexture = InTexture
+			? InTexture
+			: DefaultTexture.GetReference();
 	}
+
+	TRefCountPtr<FRHITexture> ReferencedTexture;
+
+	// This pointer is set by the InitRHI() function on the FBlackTextureWithSRV global resource,
+	// to allow FRHITextureReference to use the global black texture when the reference is nullptr.
+	// A pointer is required since FBlackTextureWithSRV is defined in RenderCore.
+	friend class FBlackTextureWithSRV;
+	static TRefCountPtr<FRHITexture> DefaultTexture;
 };
 
 //
@@ -1307,6 +1640,7 @@ public:
 class RHI_API FRHITimestampCalibrationQuery : public FRHIResource
 {
 public:
+	FRHITimestampCalibrationQuery() : FRHIResource(RRT_TimestampCalibrationQuery) {}
 	uint64 GPUMicroseconds[MAX_NUM_GPUS] = {};
 	uint64 CPUMicroseconds[MAX_NUM_GPUS] = {};
 };
@@ -1321,7 +1655,7 @@ public:
 class RHI_API FRHIGPUFence : public FRHIResource
 {
 public:
-	FRHIGPUFence(FName InName) : FenceName(InName) {}
+	FRHIGPUFence(FName InName) : FRHIResource(RRT_GPUFence), FenceName(InName) {}
 	virtual ~FRHIGPUFence() {}
 
 	virtual void Clear() = 0;
@@ -1362,7 +1696,11 @@ private:
 	uint32 InsertedFrameNumber;
 };
 
-class FRHIRenderQuery : public FRHIResource {};
+class FRHIRenderQuery : public FRHIResource
+{
+public:
+	FRHIRenderQuery() : FRHIResource(RRT_RenderQuery) {}
+};
 
 class FRHIRenderQueryPool;
 class RHI_API FRHIPooledRenderQuery
@@ -1396,6 +1734,7 @@ public:
 class RHI_API FRHIRenderQueryPool : public FRHIResource
 {
 public:
+	FRHIRenderQueryPool() : FRHIResource(RRT_RenderQueryPool) {}
 	virtual ~FRHIRenderQueryPool() {};
 	virtual FRHIPooledRenderQuery AllocateQuery() = 0;
 
@@ -1408,7 +1747,7 @@ inline FRHIPooledRenderQuery::FRHIPooledRenderQuery(FRHIRenderQueryPool* InQuery
 	: Query(MoveTemp(InQuery))
 	, QueryPool(InQueryPool)
 {
-	check(IsInRenderingThread());
+	check(IsInParallelRenderingThread());
 }
 
 inline void FRHIPooledRenderQuery::ReleaseQuery()
@@ -1423,7 +1762,7 @@ inline void FRHIPooledRenderQuery::ReleaseQuery()
 
 inline FRHIPooledRenderQuery::~FRHIPooledRenderQuery()
 {
-	check(IsInRenderingThread());
+	check(IsInParallelRenderingThread());
 	ReleaseQuery();
 }
 
@@ -1432,7 +1771,8 @@ class FRHIComputeFence final : public FRHIResource
 public:
 
 	FRHIComputeFence(FName InName)
-		: Name(InName)
+		: FRHIResource(RRT_ComputeFence)
+		, Name(InName)
 	{}
 
 	FORCEINLINE FName GetName() const
@@ -1456,6 +1796,8 @@ public:
 class FRHIViewport : public FRHIResource 
 {
 public:
+	FRHIViewport() : FRHIResource(RRT_Viewport) {}
+
 	/**
 	 * Returns access to the platform-specific native resource pointer.  This is designed to be used to provide plugins with access
 	 * to the underlying resource and should be used very carefully or not at all.
@@ -1516,13 +1858,19 @@ class FRHIUnorderedAccessView : public FRHIResource
 #if ENABLE_RHI_VALIDATION
 	, public RHIValidation::FUnorderedAccessView
 #endif
-{};
+{
+public:
+	FRHIUnorderedAccessView() : FRHIResource(RRT_UnorderedAccessView) {}
+};
 
 class FRHIShaderResourceView : public FRHIResource 
 #if ENABLE_RHI_VALIDATION
 	, public RHIValidation::FShaderResourceView
 #endif
-{};
+{
+public:
+	FRHIShaderResourceView() : FRHIResource(RRT_ShaderResourceView) {}
+};
 
 
 typedef TRefCountPtr<FRHISamplerState> FSamplerStateRHIRef;
@@ -1531,18 +1879,20 @@ typedef TRefCountPtr<FRHIDepthStencilState> FDepthStencilStateRHIRef;
 typedef TRefCountPtr<FRHIBlendState> FBlendStateRHIRef;
 typedef TRefCountPtr<FRHIVertexDeclaration> FVertexDeclarationRHIRef;
 typedef TRefCountPtr<FRHIVertexShader> FVertexShaderRHIRef;
-typedef TRefCountPtr<FRHIHullShader> FHullShaderRHIRef;
-typedef TRefCountPtr<FRHIDomainShader> FDomainShaderRHIRef;
+typedef TRefCountPtr<FRHIMeshShader> FMeshShaderRHIRef;
+typedef TRefCountPtr<FRHIAmplificationShader> FAmplificationShaderRHIRef;
 typedef TRefCountPtr<FRHIPixelShader> FPixelShaderRHIRef;
 typedef TRefCountPtr<FRHIGeometryShader> FGeometryShaderRHIRef;
 typedef TRefCountPtr<FRHIComputeShader> FComputeShaderRHIRef;
 typedef TRefCountPtr<FRHIRayTracingShader>          FRayTracingShaderRHIRef;
 typedef TRefCountPtr<FRHIComputeFence>	FComputeFenceRHIRef;
 typedef TRefCountPtr<FRHIBoundShaderState> FBoundShaderStateRHIRef;
+typedef TRefCountPtr<const FRHIUniformBufferLayout> FUniformBufferLayoutRHIRef;
 typedef TRefCountPtr<FRHIUniformBuffer> FUniformBufferRHIRef;
-typedef TRefCountPtr<FRHIIndexBuffer> FIndexBufferRHIRef;
-typedef TRefCountPtr<FRHIVertexBuffer> FVertexBufferRHIRef;
-typedef TRefCountPtr<FRHIStructuredBuffer> FStructuredBufferRHIRef;
+typedef TRefCountPtr<FRHIBuffer> FBufferRHIRef;
+UE_DEPRECATED(5.0, "FIndexBufferRHIRef is deprecated, please use FBufferRHIRef.")      typedef FBufferRHIRef FIndexBufferRHIRef;
+UE_DEPRECATED(5.0, "FVertexBufferRHIRef is deprecated, please use FBufferRHIRef.")     typedef FBufferRHIRef FVertexBufferRHIRef;
+UE_DEPRECATED(5.0, "FStructuredBufferRHIRef is deprecated, please use FBufferRHIRef.") typedef FBufferRHIRef FStructuredBufferRHIRef;
 typedef TRefCountPtr<FRHITexture> FTextureRHIRef;
 typedef TRefCountPtr<FRHITexture2D> FTexture2DRHIRef;
 typedef TRefCountPtr<FRHITexture2DArray> FTexture2DArrayRHIRef;
@@ -1557,6 +1907,7 @@ typedef TRefCountPtr<FRHIViewport> FViewportRHIRef;
 typedef TRefCountPtr<FRHIUnorderedAccessView> FUnorderedAccessViewRHIRef;
 typedef TRefCountPtr<FRHIShaderResourceView> FShaderResourceViewRHIRef;
 typedef TRefCountPtr<FRHIGraphicsPipelineState> FGraphicsPipelineStateRHIRef;
+typedef TRefCountPtr<FRHIComputePipelineState> FComputePipelineStateRHIRef;
 typedef TRefCountPtr<FRHIRayTracingPipelineState> FRayTracingPipelineStateRHIRef;
 
 
@@ -1564,18 +1915,307 @@ typedef TRefCountPtr<FRHIRayTracingPipelineState> FRayTracingPipelineStateRHIRef
 // Ray tracing resources
 //
 
+enum class ERayTracingInstanceFlags : uint8
+{
+	None = 0,
+	TriangleCullDisable = 1 << 1, // No back face culling. Triangle is visible from both sides.
+	TriangleCullReverse = 1 << 2, // Makes triangle front-facing if its vertices are counterclockwise from ray origin.
+	ForceOpaque = 1 << 3, // Disable any-hit shader invocation for this instance.
+	ForceNonOpaque = 1 << 4, // Force any-hit shader invocation even if geometries inside the instance were marked opaque.
+};
+ENUM_CLASS_FLAGS(ERayTracingInstanceFlags);
+
+class FRHIRayTracingGeometry;
+/**
+* High level descriptor of one or more instances of a mesh in a ray tracing scene.
+* All instances covered by this descriptor will share shader bindings, but may have different transforms and user data.
+*/
+struct FRayTracingGeometryInstance
+{
+	// TODO: UE-130819 Ref counting is a temporary workaround for a very rare streaming crash.
+	TRefCountPtr<FRHIRayTracingGeometry> GeometryRHI = nullptr;
+
+	// A single physical mesh may be duplicated many times in the scene with different transforms and user data.
+	// All copies share the same shader binding table entries and therefore will have the same material and shader resources.
+	TArrayView<const FMatrix> Transforms;
+
+	TArrayView<const uint32> InstanceSceneDataOffsets;
+
+	// Optional buffer that stores GPU transforms. Used instead of CPU-side transform data.
+	FShaderResourceViewRHIRef GPUTransformsSRV = nullptr;
+
+	// Conservative number of instances. Some of the actual instances may be made inactive if GPU transforms are used.
+	// Must be less or equal to number of entries in Transforms view if CPU transform data is used.
+	// Must be less or equal to number of entries in GPUTransformsSRV if it is non-null.
+	uint32 NumTransforms = 0;
+
+	// Each geometry copy can receive a user-provided integer, which can be used to retrieve extra shader parameters or customize appearance.
+	// This data can be retrieved using GetInstanceUserData() in closest/any hit shaders.
+	// If UserData view is empty, then DefaultUserData value will be used for all instances.
+	// If UserData view is used, then it must have the same number of entries as NumInstances.
+	uint32 DefaultUserData = 0;
+	TArrayView<const uint32> UserData;
+
+	// Each geometry copy can have one bit to make it individually deactivated (removed from TLAS while maintaining hit group indexing). Useful for culling.
+	TArrayView<const uint32> ActivationMask;
+
+	// Mask that will be tested against one provided to TraceRay() in shader code.
+	// If binary AND of instance mask with ray mask is zero, then the instance is considered not intersected / invisible.
+	uint8 Mask = 0xFF;
+
+	// Flags to control triangle back face culling, whether to allow any-hit shaders, etc.
+	ERayTracingInstanceFlags Flags = ERayTracingInstanceFlags::None;
+};
+
+enum ERayTracingGeometryType
+{
+	// Indexed or non-indexed triangle list with fixed function ray intersection.
+	// Vertex buffer must contain vertex positions as VET_Float3.
+	// Vertex stride must be at least 12 bytes, but may be larger to support custom per-vertex data.
+	// Index buffer may be provided for indexed triangle lists. Implicit triangle list is assumed otherwise.
+	RTGT_Triangles,
+
+	// Custom primitive type that requires an intersection shader.
+	// Vertex buffer for procedural geometry must contain one AABB per primitive as {float3 MinXYZ, float3 MaxXYZ}.
+	// Vertex stride must be at least 24 bytes, but may be larger to support custom per-primitive data.
+	// Index buffers can't be used with procedural geometry.
+	RTGT_Procedural,
+};
+DECLARE_INTRINSIC_TYPE_LAYOUT(ERayTracingGeometryType);
+
+enum class ERayTracingGeometryInitializerType
+{
+	// Fully initializes the RayTracingGeometry object: creates underlying buffer and initializes shader parameters.
+	Rendering,
+
+	// Does not create underlying buffer or shader parameters. Used by the streaming system as an object that is streamed into. 
+	StreamingDestination,
+
+	// Creates buffers but does not create shader parameters. Used for intermediate objects in the streaming system.
+	StreamingSource,
+};
+DECLARE_INTRINSIC_TYPE_LAYOUT(ERayTracingGeometryInitializerType);
+
+struct FRayTracingGeometrySegment
+{
+	DECLARE_TYPE_LAYOUT(FRayTracingGeometrySegment, NonVirtual);
+public:
+	LAYOUT_FIELD_INITIALIZED(FBufferRHIRef, VertexBuffer, nullptr);
+	LAYOUT_FIELD_INITIALIZED(EVertexElementType, VertexBufferElementType, VET_Float3);
+
+	// Offset in bytes from the base address of the vertex buffer.
+	LAYOUT_FIELD_INITIALIZED(uint32, VertexBufferOffset, 0);
+
+	// Number of bytes between elements of the vertex buffer (sizeof VET_Float3 by default).
+	// Must be equal or greater than the size of the position vector.
+	LAYOUT_FIELD_INITIALIZED(uint32, VertexBufferStride, 12);
+
+	// Number of vertices (positions) in VertexBuffer.
+	// If an index buffer is present, this must be at least the maximum index value in the index buffer + 1.
+	LAYOUT_FIELD_INITIALIZED(uint32, MaxVertices, 0);
+
+	// Primitive range for this segment.
+	LAYOUT_FIELD_INITIALIZED(uint32, FirstPrimitive, 0);
+	LAYOUT_FIELD_INITIALIZED(uint32, NumPrimitives, 0);
+
+	// Indicates whether any-hit shader could be invoked when hitting this geometry segment.
+	// Setting this to `false` turns off any-hit shaders, making the section "opaque" and improving ray tracing performance.
+	LAYOUT_FIELD_INITIALIZED(bool, bForceOpaque, false);
+
+	// Any-hit shader may be invoked multiple times for the same primitive during ray traversal.
+	// Setting this to `false` guarantees that only a single instance of any-hit shader will run per primitive, at some performance cost.
+	LAYOUT_FIELD_INITIALIZED(bool, bAllowDuplicateAnyHitShaderInvocation, true);
+
+	// Indicates whether this section is enabled and should be taken into account during acceleration structure creation
+	LAYOUT_FIELD_INITIALIZED(bool, bEnabled, true);
+};
+
+struct FRayTracingGeometryInitializer
+{
+	DECLARE_EXPORTED_TYPE_LAYOUT(FRayTracingGeometryInitializer, RHI_API, NonVirtual);
+public:
+	LAYOUT_FIELD_INITIALIZED(FBufferRHIRef, IndexBuffer, nullptr);
+
+	// Offset in bytes from the base address of the index buffer.
+	LAYOUT_FIELD_INITIALIZED(uint32, IndexBufferOffset, 0);
+
+	LAYOUT_FIELD_INITIALIZED(ERayTracingGeometryType, GeometryType, RTGT_Triangles);
+
+	// Total number of primitives in all segments of the geometry. Only used for validation.
+	LAYOUT_FIELD_INITIALIZED(uint32, TotalPrimitiveCount, 0);
+
+	// Partitions of geometry to allow different shader and resource bindings.
+	// All ray tracing geometries must have at least one segment.
+	LAYOUT_FIELD(TMemoryImageArray<FRayTracingGeometrySegment>, Segments);
+
+	// Offline built geometry data. If null, the geometry will be built by the RHI at runtime.
+	LAYOUT_FIELD_INITIALIZED(FResourceArrayInterface*, OfflineData, nullptr);
+
+	// Pointer to an existing ray tracing geometry which the new geometry is built from.
+	LAYOUT_FIELD_INITIALIZED(FRHIRayTracingGeometry*, SourceGeometry, nullptr);
+
+	LAYOUT_FIELD_INITIALIZED(bool, bFastBuild, false);
+	LAYOUT_FIELD_INITIALIZED(bool, bAllowUpdate, false);
+	LAYOUT_FIELD_INITIALIZED(bool, bAllowCompaction, true);
+	LAYOUT_FIELD_INITIALIZED(ERayTracingGeometryInitializerType, Type, ERayTracingGeometryInitializerType::Rendering);
+
+	LAYOUT_FIELD(FName, DebugName);
+};
+
+enum ERayTracingSceneLifetime
+{
+	// Scene may only be used during the frame when it was created.
+	RTSL_SingleFrame,
+
+	// Scene may be constructed once and used in any number of later frames (not currently implemented).
+	// RTSL_MultiFrame,
+};
+
+enum class ERayTracingAccelerationStructureFlags
+{
+	None = 0,
+	AllowUpdate = 1 << 0,
+	AllowCompaction = 1 << 1,
+	FastTrace = 1 << 2,
+	FastBuild = 1 << 3,
+	MinimizeMemory = 1 << 4,
+};
+ENUM_CLASS_FLAGS(ERayTracingAccelerationStructureFlags);
+
+struct FRayTracingSceneInitializer
+{
+	TArrayView<FRayTracingGeometryInstance> Instances;
+
+	// This value controls how many elements will be allocated in the shader binding table per geometry segment.
+	// Changing this value allows different hit shaders to be used for different effects.
+	// For example, setting this to 2 allows one hit shader for regular material evaluation and a different one for shadows.
+	// Desired hit shader can be selected by providing appropriate RayContributionToHitGroupIndex to TraceRay() function.
+	// Use ShaderSlot argument in SetRayTracingHitGroup() to assign shaders and resources for specific part of the shder binding table record.
+	uint32 ShaderSlotsPerGeometrySegment = 1;
+
+	// Defines how many different callable shaders with unique resource bindings can be bound to this scene.
+	// Shaders and resources are assigned to slots in the scene using SetRayTracingCallableShader().
+	uint32 NumCallableShaderSlots = 0;
+
+	// At least one miss shader must be present in a ray tracing scene.
+	// Default miss shader is always in slot 0. Default shader must not use local resources.
+	// Custom miss shaders can be bound to other slots using SetRayTracingMissShader().
+	uint32 NumMissShaderSlots = 1;
+
+	// Defines whether data in this scene should persist between frames.
+	// Currently only single-frame lifetime is supported.
+	ERayTracingSceneLifetime Lifetime = RTSL_SingleFrame;
+
+	FName DebugName;
+};
+
+struct FRayTracingSceneInitializer2
+{
+	// Unique list of geometries referenced by all instances in this scene.
+	// Any referenced geometry is kept alive while the scene is alive.
+	TArray<TRefCountPtr<FRHIRayTracingGeometry>> ReferencedGeometries;
+	// One entry per instance
+	TArray<FRHIRayTracingGeometry*> PerInstanceGeometries;
+	// Exclusive prefix sum of `Instance.NumTransforms` for all instances in this scene. Used to emulate SV_InstanceID in hit shaders.
+	TArray<uint32> BaseInstancePrefixSum;
+	// Exclusive prefix sum of instance geometry segments is used to calculate SBT record address from instance and segment indices.
+	TArray<uint32> SegmentPrefixSum;
+
+	// Total flattened number of ray tracing geometry instances (a single FRayTracingGeometryInstance may represent many).
+	uint32 NumNativeInstances = 0;
+
+	uint32 NumTotalSegments = 0;
+
+	// This value controls how many elements will be allocated in the shader binding table per geometry segment.
+	// Changing this value allows different hit shaders to be used for different effects.
+	// For example, setting this to 2 allows one hit shader for regular material evaluation and a different one for shadows.
+	// Desired hit shader can be selected by providing appropriate RayContributionToHitGroupIndex to TraceRay() function.
+	// Use ShaderSlot argument in SetRayTracingHitGroup() to assign shaders and resources for specific part of the shder binding table record.
+	uint32 ShaderSlotsPerGeometrySegment = 1;
+
+	// Defines how many different callable shaders with unique resource bindings can be bound to this scene.
+	// Shaders and resources are assigned to slots in the scene using SetRayTracingCallableShader().
+	uint32 NumCallableShaderSlots = 0;
+
+	// At least one miss shader must be present in a ray tracing scene.
+	// Default miss shader is always in slot 0. Default shader must not use local resources.
+	// Custom miss shaders can be bound to other slots using SetRayTracingMissShader().
+	uint32 NumMissShaderSlots = 1;
+
+	// Defines whether data in this scene should persist between frames.
+	// Currently only single-frame lifetime is supported.
+	ERayTracingSceneLifetime Lifetime = RTSL_SingleFrame;
+
+	FName DebugName;
+};
+
+struct FRayTracingAccelerationStructureSize
+{
+	uint64 ResultSize = 0;
+	uint64 BuildScratchSize = 0;
+	uint64 UpdateScratchSize = 0;
+};
+
+class FRHIRayTracingAccelerationStructure
+	: public FRHIResource
+#if ENABLE_RHI_VALIDATION
+	, public RHIValidation::FAccelerationStructureResource
+#endif
+{
+public:
+	FRHIRayTracingAccelerationStructure() : FRHIResource(RRT_RayTracingAccelerationStructure) {}
+};
+
+using FRayTracingAccelerationStructureAddress = uint64;
+
 /** Bottom level ray tracing acceleration structure (contains triangles). */
-class FRHIRayTracingGeometry : public FRHIResource {};
+class FRHIRayTracingGeometry : public FRHIRayTracingAccelerationStructure
+{
+public:
+	FRHIRayTracingGeometry() = default;
+	FRHIRayTracingGeometry(const FRayTracingGeometryInitializer& InInitializer)
+		: Initializer(InInitializer)
+		, InitializedType(InInitializer.Type)
+	{}
+
+	virtual FRayTracingAccelerationStructureAddress GetAccelerationStructureAddress(uint64 GPUIndex) const = 0;
+	virtual void SetInitializer(const FRayTracingGeometryInitializer& Initializer) = 0;
+
+	const FRayTracingGeometryInitializer& GetInitializer() const
+	{
+		return Initializer;
+	}
+
+	uint32 GetNumSegments() const 
+	{ 
+		return Initializer.Segments.Num(); 
+	}
+
+	FRayTracingAccelerationStructureSize GetSizeInfo() const
+	{
+		return SizeInfo;
+	};
+protected:
+	FRayTracingAccelerationStructureSize SizeInfo = {};
+	FRayTracingGeometryInitializer Initializer = {};
+	ERayTracingGeometryInitializerType InitializedType = ERayTracingGeometryInitializerType::Rendering;
+};
 
 typedef TRefCountPtr<FRHIRayTracingGeometry>     FRayTracingGeometryRHIRef;
 
 /** Top level ray tracing acceleration structure (contains instances of meshes). */
-class FRHIRayTracingScene : public FRHIResource
+class FRHIRayTracingScene : public FRHIRayTracingAccelerationStructure
 {
 public:
-	FRHIShaderResourceView* GetShaderResourceView() { return ShaderResourceView; }
-protected:
-	FShaderResourceViewRHIRef ShaderResourceView;
+	virtual const FRayTracingSceneInitializer2& GetInitializer() const = 0;
+
+	// Returns a buffer view for RHI-specific system parameters associated with this scene.
+	// This may be needed to access ray tracing geometry data in shaders that use ray queries.
+	// Returns NULL if current RHI does not require this buffer.
+	virtual FRHIShaderResourceView* GetMetadataBufferSRV() const
+	{
+		return nullptr;
+	}
 };
 
 typedef TRefCountPtr<FRHIRayTracingScene>        FRayTracingSceneRHIRef;
@@ -1588,7 +2228,8 @@ class RHI_API FRHIStagingBuffer : public FRHIResource
 {
 public:
 	FRHIStagingBuffer()
-		: bIsLocked(false)
+		: FRHIResource(RRT_StagingBuffer)
+		, bIsLocked(false)
 	{}
 
 	virtual ~FRHIStagingBuffer() {}
@@ -1610,7 +2251,7 @@ public:
 
 	virtual void* Lock(uint32 Offset, uint32 NumBytes) final override;
 	virtual void Unlock() final override;
-	FVertexBufferRHIRef ShadowBuffer;
+	FBufferRHIRef ShadowBuffer;
 	uint32 Offset;
 };
 
@@ -1900,7 +2541,7 @@ public:
 class FRHICustomPresent : public FRHIResource
 {
 public:
-	FRHICustomPresent() {}
+	FRHICustomPresent() : FRHIResource(RRT_CustomPresent) {}
 	
 	virtual ~FRHICustomPresent() {} // should release any references to D3D resources.
 	
@@ -1938,26 +2579,32 @@ public:
 
 typedef TRefCountPtr<FRHICustomPresent> FCustomPresentRHIRef;
 
-// Template magic to convert an FRHI*Shader to its enum
+// Templates to convert an FRHI*Shader to its enum
 template<typename TRHIShader> struct TRHIShaderToEnum {};
-template<> struct TRHIShaderToEnum<FRHIVertexShader>		{ enum { ShaderFrequency = SF_Vertex }; };
-template<> struct TRHIShaderToEnum<FRHIHullShader>			{ enum { ShaderFrequency = SF_Hull }; };
-template<> struct TRHIShaderToEnum<FRHIDomainShader>		{ enum { ShaderFrequency = SF_Domain }; };
-template<> struct TRHIShaderToEnum<FRHIPixelShader>			{ enum { ShaderFrequency = SF_Pixel }; };
-template<> struct TRHIShaderToEnum<FRHIGeometryShader>		{ enum { ShaderFrequency = SF_Geometry }; };
-template<> struct TRHIShaderToEnum<FRHIComputeShader>		{ enum { ShaderFrequency = SF_Compute }; };
-template<> struct TRHIShaderToEnum<FRHIVertexShader*>		{ enum { ShaderFrequency = SF_Vertex }; };
-template<> struct TRHIShaderToEnum<FRHIHullShader*>			{ enum { ShaderFrequency = SF_Hull }; };
-template<> struct TRHIShaderToEnum<FRHIDomainShader*>		{ enum { ShaderFrequency = SF_Domain }; };
-template<> struct TRHIShaderToEnum<FRHIPixelShader*>		{ enum { ShaderFrequency = SF_Pixel }; };
-template<> struct TRHIShaderToEnum<FRHIGeometryShader*>		{ enum { ShaderFrequency = SF_Geometry }; };
-template<> struct TRHIShaderToEnum<FRHIComputeShader*>		{ enum { ShaderFrequency = SF_Compute }; };
-template<> struct TRHIShaderToEnum<FVertexShaderRHIRef>		{ enum { ShaderFrequency = SF_Vertex }; };
-template<> struct TRHIShaderToEnum<FHullShaderRHIRef>		{ enum { ShaderFrequency = SF_Hull }; };
-template<> struct TRHIShaderToEnum<FDomainShaderRHIRef>		{ enum { ShaderFrequency = SF_Domain }; };
-template<> struct TRHIShaderToEnum<FPixelShaderRHIRef>		{ enum { ShaderFrequency = SF_Pixel }; };
-template<> struct TRHIShaderToEnum<FGeometryShaderRHIRef>	{ enum { ShaderFrequency = SF_Geometry }; };
-template<> struct TRHIShaderToEnum<FComputeShaderRHIRef>	{ enum { ShaderFrequency = SF_Compute }; };
+template<> struct TRHIShaderToEnum<FRHIVertexShader>           { enum { ShaderFrequency = SF_Vertex        }; };
+template<> struct TRHIShaderToEnum<FRHIMeshShader>             { enum { ShaderFrequency = SF_Mesh          }; };
+template<> struct TRHIShaderToEnum<FRHIAmplificationShader>    { enum { ShaderFrequency = SF_Amplification }; };
+template<> struct TRHIShaderToEnum<FRHIPixelShader>            { enum { ShaderFrequency = SF_Pixel         }; };
+template<> struct TRHIShaderToEnum<FRHIGeometryShader>         { enum { ShaderFrequency = SF_Geometry      }; };
+template<> struct TRHIShaderToEnum<FRHIComputeShader>          { enum { ShaderFrequency = SF_Compute       }; };
+template<> struct TRHIShaderToEnum<FRHIVertexShader*>          { enum { ShaderFrequency = SF_Vertex        }; };
+template<> struct TRHIShaderToEnum<FRHIMeshShader*>            { enum { ShaderFrequency = SF_Mesh          }; };
+template<> struct TRHIShaderToEnum<FRHIAmplificationShader*>   { enum { ShaderFrequency = SF_Amplification }; };
+template<> struct TRHIShaderToEnum<FRHIPixelShader*>           { enum { ShaderFrequency = SF_Pixel         }; };
+template<> struct TRHIShaderToEnum<FRHIGeometryShader*>        { enum { ShaderFrequency = SF_Geometry      }; };
+template<> struct TRHIShaderToEnum<FRHIComputeShader*>         { enum { ShaderFrequency = SF_Compute       }; };
+template<> struct TRHIShaderToEnum<FVertexShaderRHIRef>        { enum { ShaderFrequency = SF_Vertex        }; };
+template<> struct TRHIShaderToEnum<FMeshShaderRHIRef>          { enum { ShaderFrequency = SF_Mesh          }; };
+template<> struct TRHIShaderToEnum<FAmplificationShaderRHIRef> { enum { ShaderFrequency = SF_Amplification }; };
+template<> struct TRHIShaderToEnum<FPixelShaderRHIRef>         { enum { ShaderFrequency = SF_Pixel         }; };
+template<> struct TRHIShaderToEnum<FGeometryShaderRHIRef>      { enum { ShaderFrequency = SF_Geometry      }; };
+template<> struct TRHIShaderToEnum<FComputeShaderRHIRef>       { enum { ShaderFrequency = SF_Compute       }; };
+
+template<typename TRHIShaderType>
+inline const TCHAR* GetShaderFrequencyString(bool bIncludePrefix = true)
+{
+	return GetShaderFrequencyString(static_cast<EShaderFrequency>(TRHIShaderToEnum<TRHIShaderType>::ShaderFrequency), bIncludePrefix);
+}
 
 struct FBoundShaderStateInput
 {
@@ -1967,10 +2614,6 @@ struct FBoundShaderStateInput
 	(
 		FRHIVertexDeclaration* InVertexDeclarationRHI
 		, FRHIVertexShader* InVertexShaderRHI
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		, FRHIHullShader* InHullShaderRHI
-		, FRHIDomainShader* InDomainShaderRHI
-#endif
 		, FRHIPixelShader* InPixelShaderRHI
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 		, FRHIGeometryShader* InGeometryShaderRHI
@@ -1978,10 +2621,6 @@ struct FBoundShaderStateInput
 	)
 		: VertexDeclarationRHI(InVertexDeclarationRHI)
 		, VertexShaderRHI(InVertexShaderRHI)
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		, HullShaderRHI(InHullShaderRHI)
-		, DomainShaderRHI(InDomainShaderRHI)
-#endif
 		, PixelShaderRHI(InPixelShaderRHI)
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 		, GeometryShaderRHI(InGeometryShaderRHI)
@@ -1989,22 +2628,38 @@ struct FBoundShaderStateInput
 	{
 	}
 
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	inline FBoundShaderStateInput(
+		FRHIMeshShader* InMeshShaderRHI,
+		FRHIAmplificationShader* InAmplificationShader,
+		FRHIPixelShader* InPixelShaderRHI)
+		: PixelShaderRHI(InPixelShaderRHI)
+		, MeshShaderRHI(InMeshShaderRHI)
+		, AmplificationShaderRHI(InAmplificationShader)
+	{
+	}
+#endif
+
 	void AddRefResources()
 	{
-		check(VertexDeclarationRHI);
-		VertexDeclarationRHI->AddRef();
-
-		check(VertexShaderRHI);
-		VertexShaderRHI->AddRef();
-
-		if (HullShaderRHI)
+		if (GetMeshShader())
 		{
-			HullShaderRHI->AddRef();
+			check(VertexDeclarationRHI == nullptr);
+			check(VertexShaderRHI == nullptr);
+			GetMeshShader()->AddRef();
+
+			if (GetAmplificationShader())
+			{
+				GetAmplificationShader()->AddRef();
+			}
 		}
-
-		if (DomainShaderRHI)
+		else
 		{
-			DomainShaderRHI->AddRef();
+			check(VertexDeclarationRHI);
+			VertexDeclarationRHI->AddRef();
+
+			check(VertexShaderRHI);
+			VertexShaderRHI->AddRef();
 		}
 
 		if (PixelShaderRHI)
@@ -2012,28 +2667,32 @@ struct FBoundShaderStateInput
 			PixelShaderRHI->AddRef();
 		}
 
-		if (GeometryShaderRHI)
+		if (GetGeometryShader())
 		{
-			GeometryShaderRHI->AddRef();
+			GetGeometryShader()->AddRef();
 		}
 	}
 
 	void ReleaseResources()
 	{
-		check(VertexDeclarationRHI);
-		VertexDeclarationRHI->Release();
-
-		check(VertexShaderRHI);
-		VertexShaderRHI->Release();
-
-		if (HullShaderRHI)
+		if (GetMeshShader())
 		{
-			HullShaderRHI->Release();
+			check(VertexDeclarationRHI == nullptr);
+			check(VertexShaderRHI == nullptr);
+			GetMeshShader()->Release();
+
+			if (GetAmplificationShader())
+			{
+				GetAmplificationShader()->Release();
+			}
 		}
-
-		if (DomainShaderRHI)
+		else
 		{
-			DomainShaderRHI->Release();
+			check(VertexDeclarationRHI);
+			VertexDeclarationRHI->Release();
+
+			check(VertexShaderRHI);
+			VertexShaderRHI->Release();
 		}
 
 		if (PixelShaderRHI)
@@ -2041,18 +2700,46 @@ struct FBoundShaderStateInput
 			PixelShaderRHI->Release();
 		}
 
-		if (GeometryShaderRHI)
+		if (GetGeometryShader())
 		{
-			GeometryShaderRHI->Release();
+			GetGeometryShader()->Release();
 		}
 	}
 
+	FRHIVertexShader* GetVertexShader() const { return VertexShaderRHI; }
+	FRHIPixelShader* GetPixelShader() const { return PixelShaderRHI; }
+
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	FRHIMeshShader* GetMeshShader() const { return MeshShaderRHI; }
+	void SetMeshShader(FRHIMeshShader* InMeshShader) { MeshShaderRHI = InMeshShader; }
+	FRHIAmplificationShader* GetAmplificationShader() const { return AmplificationShaderRHI; }
+	void SetAmplificationShader(FRHIAmplificationShader* InAmplificationShader) { AmplificationShaderRHI = InAmplificationShader; }
+#else
+	constexpr FRHIMeshShader* GetMeshShader() const { return nullptr; }
+	void SetMeshShader(FRHIMeshShader*) {}
+	constexpr FRHIAmplificationShader* GetAmplificationShader() const { return nullptr; }
+	void SetAmplificationShader(FRHIAmplificationShader*) {}
+#endif
+
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
+	FRHIGeometryShader* GetGeometryShader() const { return GeometryShaderRHI; }
+	void SetGeometryShader(FRHIGeometryShader* InGeometryShader) { GeometryShaderRHI = InGeometryShader; }
+#else
+	constexpr FRHIGeometryShader* GetGeometryShader() const { return nullptr; }
+	void SetGeometryShader(FRHIGeometryShader*) {}
+#endif
+
 	FRHIVertexDeclaration* VertexDeclarationRHI = nullptr;
 	FRHIVertexShader* VertexShaderRHI = nullptr;
-	FRHIHullShader* HullShaderRHI = nullptr;
-	FRHIDomainShader* DomainShaderRHI = nullptr;
 	FRHIPixelShader* PixelShaderRHI = nullptr;
+private:
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	FRHIMeshShader* MeshShaderRHI = nullptr;
+	FRHIAmplificationShader* AmplificationShaderRHI = nullptr;
+#endif
+#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	FRHIGeometryShader* GeometryShaderRHI = nullptr;
+#endif
 };
 
 struct FImmutableSamplerState
@@ -2060,7 +2747,7 @@ struct FImmutableSamplerState
 	using TImmutableSamplers = TStaticArray<FRHISamplerState*, MaxImmutableSamplers>;
 
 	FImmutableSamplerState()
-		: ImmutableSamplers(nullptr)
+		: ImmutableSamplers(InPlace, nullptr)
 	{}
 
 	void Reset()
@@ -2097,22 +2784,53 @@ enum class ESubpassHint : uint8
 	DeferredShadingSubpass,
 };
 
+enum class EConservativeRasterization : uint8
+{
+	Disabled,
+	Overestimated,
+};
+
+struct FGraphicsPipelineRenderTargetsInfo
+{
+	FGraphicsPipelineRenderTargetsInfo()
+		: RenderTargetFormats(InPlace, UE_PIXELFORMAT_TO_UINT8(PF_Unknown))
+		, RenderTargetFlags(InPlace, TexCreate_None)
+		, DepthStencilAccess(FExclusiveDepthStencil::DepthNop_StencilNop)
+	{
+	}
+
+	uint32															RenderTargetsEnabled = 0;
+	TStaticArray<uint8, MaxSimultaneousRenderTargets>				RenderTargetFormats;
+	TStaticArray<ETextureCreateFlags, MaxSimultaneousRenderTargets>	RenderTargetFlags;
+	EPixelFormat													DepthStencilTargetFormat = PF_Unknown;
+	ETextureCreateFlags												DepthStencilTargetFlag = ETextureCreateFlags::None;
+	ERenderTargetLoadAction											DepthTargetLoadAction = ERenderTargetLoadAction::ENoAction;
+	ERenderTargetStoreAction										DepthTargetStoreAction = ERenderTargetStoreAction::ENoAction;
+	ERenderTargetLoadAction											StencilTargetLoadAction = ERenderTargetLoadAction::ENoAction;
+	ERenderTargetStoreAction										StencilTargetStoreAction = ERenderTargetStoreAction::ENoAction;
+	FExclusiveDepthStencil											DepthStencilAccess;
+	uint16															NumSamples = 0;
+	uint8															MultiViewCount = 0;
+	bool															bHasFragmentDensityAttachment = false;
+};
+
+
 class FGraphicsPipelineStateInitializer
 {
 public:
 	// Can't use TEnumByte<EPixelFormat> as it changes the struct to be non trivially constructible, breaking memset
 	using TRenderTargetFormats		= TStaticArray<uint8/*EPixelFormat*/, MaxSimultaneousRenderTargets>;
-	using TRenderTargetFlags		= TStaticArray<uint32/*ETextureCreateFlags*/, MaxSimultaneousRenderTargets>;
+	using TRenderTargetFlags		= TStaticArray<ETextureCreateFlags, MaxSimultaneousRenderTargets>;
 
 	FGraphicsPipelineStateInitializer()
 		: BlendState(nullptr)
 		, RasterizerState(nullptr)
 		, DepthStencilState(nullptr)
 		, RenderTargetsEnabled(0)
-		, RenderTargetFormats(PF_Unknown)
-		, RenderTargetFlags(0)
+		, RenderTargetFormats(InPlace, UE_PIXELFORMAT_TO_UINT8(PF_Unknown))
+		, RenderTargetFlags(InPlace, TexCreate_None)
 		, DepthStencilTargetFormat(PF_Unknown)
-		, DepthStencilTargetFlag(0)
+		, DepthStencilTargetFlag(TexCreate_None)
 		, DepthTargetLoadAction(ERenderTargetLoadAction::ENoAction)
 		, DepthTargetStoreAction(ERenderTargetStoreAction::ENoAction)
 		, StencilTargetLoadAction(ERenderTargetLoadAction::ENoAction)
@@ -2120,6 +2838,7 @@ public:
 		, NumSamples(0)
 		, SubpassHint(ESubpassHint::None)
 		, SubpassIndex(0)
+		, ConservativeRasterization(EConservativeRasterization::Disabled)
 		, bDepthBounds(false)
 		, MultiViewCount(0)
 		, bHasFragmentDensityAttachment(false)
@@ -2128,7 +2847,6 @@ public:
 	{
 #if PLATFORM_WINDOWS
 		static_assert(sizeof(TRenderTargetFormats::ElementType) == sizeof(uint8/*EPixelFormat*/), "Change TRenderTargetFormats's uint8 to EPixelFormat's size!");
-		static_assert(sizeof(TRenderTargetFlags::ElementType) == sizeof(uint32/*ETextureCreateFlags*/), "Change TRenderTargetFlags's uint32 to ETextureCreateFlags's size!");
 #endif
 		static_assert(PF_MAX < MAX_uint8, "TRenderTargetFormats assumes EPixelFormat can fit in a uint8!");
 	}
@@ -2150,9 +2868,10 @@ public:
 		ERenderTargetLoadAction		InStencilTargetLoadAction,
 		ERenderTargetStoreAction	InStencilTargetStoreAction,
 		FExclusiveDepthStencil		InDepthStencilAccess,
-		uint32						InNumSamples,
+		uint16						InNumSamples,
 		ESubpassHint				InSubpassHint,
 		uint8						InSubpassIndex,
+		EConservativeRasterization	InConservativeRasterization,
 		uint16						InFlags,
 		bool						bInDepthBounds,
 		uint8						InMultiViewCount,
@@ -2177,6 +2896,7 @@ public:
 		, NumSamples(InNumSamples)
 		, SubpassHint(InSubpassHint)
 		, SubpassIndex(InSubpassIndex)
+		, ConservativeRasterization(EConservativeRasterization::Disabled)
 		, bDepthBounds(bInDepthBounds)
 		, MultiViewCount(InMultiViewCount)
 		, bHasFragmentDensityAttachment(bInHasFragmentDensityAttachment)
@@ -2190,13 +2910,9 @@ public:
 		if (BoundShaderState.VertexDeclarationRHI != rhs.BoundShaderState.VertexDeclarationRHI ||
 			BoundShaderState.VertexShaderRHI != rhs.BoundShaderState.VertexShaderRHI ||
 			BoundShaderState.PixelShaderRHI != rhs.BoundShaderState.PixelShaderRHI ||
-#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
-			BoundShaderState.GeometryShaderRHI != rhs.BoundShaderState.GeometryShaderRHI ||
-#endif
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-			BoundShaderState.DomainShaderRHI != rhs.BoundShaderState.DomainShaderRHI ||
-			BoundShaderState.HullShaderRHI != rhs.BoundShaderState.HullShaderRHI ||
-#endif
+			BoundShaderState.GetMeshShader() != rhs.BoundShaderState.GetMeshShader() ||
+			BoundShaderState.GetAmplificationShader() != rhs.BoundShaderState.GetAmplificationShader() ||
+			BoundShaderState.GetGeometryShader() != rhs.BoundShaderState.GetGeometryShader() ||
 			BlendState != rhs.BlendState ||
 			RasterizerState != rhs.RasterizerState ||
 			DepthStencilState != rhs.DepthStencilState ||
@@ -2218,7 +2934,8 @@ public:
 			DepthStencilAccess != rhs.DepthStencilAccess ||
 			NumSamples != rhs.NumSamples ||
 			SubpassHint != rhs.SubpassHint ||
-			SubpassIndex != rhs.SubpassIndex)
+			SubpassIndex != rhs.SubpassIndex ||
+			ConservativeRasterization != rhs.ConservativeRasterization)
 		{
 			return false;
 		}
@@ -2256,7 +2973,7 @@ public:
 	TRenderTargetFormats			RenderTargetFormats;
 	TRenderTargetFlags				RenderTargetFlags;
 	EPixelFormat					DepthStencilTargetFormat;
-	uint32							DepthStencilTargetFlag;
+	ETextureCreateFlags				DepthStencilTargetFlag;
 	ERenderTargetLoadAction			DepthTargetLoadAction;
 	ERenderTargetStoreAction		DepthTargetStoreAction;
 	ERenderTargetLoadAction			StencilTargetLoadAction;
@@ -2265,6 +2982,7 @@ public:
 	uint16							NumSamples;
 	ESubpassHint					SubpassHint;
 	uint8							SubpassIndex;
+	EConservativeRasterization		ConservativeRasterization;
 	bool							bDepthBounds;
 	uint8							MultiViewCount;
 	bool							bHasFragmentDensityAttachment;
@@ -2441,7 +3159,7 @@ protected:
 class FRHIShaderLibrary : public FRHIResource
 {
 public:
-	FRHIShaderLibrary(EShaderPlatform InPlatform, FString const& InName) : Platform(InPlatform), LibraryName(InName), LibraryId(GetTypeHash(InName)) {}
+	FRHIShaderLibrary(EShaderPlatform InPlatform, FString const& InName) : FRHIResource(RRT_ShaderLibrary), Platform(InPlatform), LibraryName(InName), LibraryId(GetTypeHash(InName)) {}
 	virtual ~FRHIShaderLibrary() {}
 	
 	FORCEINLINE EShaderPlatform GetPlatform(void) const { return Platform; }
@@ -2457,6 +3175,7 @@ public:
 	virtual int32 FindShaderIndex(const FSHAHash& Hash) = 0;
 	virtual bool PreloadShader(int32 ShaderIndex, FGraphEventArray& OutCompletionEvents) { return false; }
 	virtual bool PreloadShaderMap(int32 ShaderMapIndex, FGraphEventArray& OutCompletionEvents) { return false; }
+	virtual bool PreloadShaderMap(int32 ShaderMapIndex, FCoreDelegates::FAttachShaderReadRequestFunc AttachShaderReadRequestFunc) { return false; }
 	virtual void ReleasePreloadedShader(int32 ShaderIndex) {}
 
 	virtual TRefCountPtr<FRHIShader> CreateShader(int32 ShaderIndex) { return nullptr; }
@@ -2473,7 +3192,7 @@ typedef TRefCountPtr<FRHIShaderLibrary>	FRHIShaderLibraryRef;
 class FRHIPipelineBinaryLibrary : public FRHIResource
 {
 public:
-	FRHIPipelineBinaryLibrary(EShaderPlatform InPlatform, FString const& FilePath) : Platform(InPlatform) {}
+	FRHIPipelineBinaryLibrary(EShaderPlatform InPlatform, FString const& FilePath) : FRHIResource(RRT_PipelineBinaryLibrary), Platform(InPlatform) {}
 	virtual ~FRHIPipelineBinaryLibrary() {}
 	
 	FORCEINLINE EShaderPlatform GetPlatform(void) const { return Platform; }
@@ -2583,6 +3302,8 @@ struct FRHIRenderPassInfo
 	};
 	FDepthStencilEntry DepthStencilRenderTarget;
 
+	// Parameters for resolving a multisampled image
+	// When doing raster-only passes with no render targets bound to the pass, use DestRect to describe render area
 	FResolveParams ResolveParameters;
 
 	// Some RHIs can use a texture to control the sampling and/or shading resolution of different areas 
@@ -2607,7 +3328,7 @@ struct FRHIRenderPassInfo
 
 
 	// Color, no depth, optional resolve, optional mip, optional array slice
-	explicit FRHIRenderPassInfo(FRHITexture* ColorRT, ERenderTargetActions ColorAction, FRHITexture* ResolveRT = nullptr, uint32 InMipIndex = 0, int32 InArraySlice = -1)
+	explicit FRHIRenderPassInfo(FRHITexture* ColorRT, ERenderTargetActions ColorAction, FRHITexture* ResolveRT = nullptr, uint8 InMipIndex = 0, int32 InArraySlice = -1)
 	{
 		check(ColorRT);
 		ColorRenderTargets[0].RenderTarget = ColorRT;
@@ -2840,6 +3561,57 @@ struct FRHIRenderPassInfo
 		return bIsMSAA;
 	}
 
+	FGraphicsPipelineRenderTargetsInfo ExtractRenderTargetsInfo() const
+	{
+		FGraphicsPipelineRenderTargetsInfo RenderTargetsInfo;
+
+		RenderTargetsInfo.NumSamples = 1;
+		int32 RenderTargetIndex = 0;
+
+		for (; RenderTargetIndex < MaxSimultaneousRenderTargets; ++RenderTargetIndex)
+		{
+			FRHITexture* RenderTarget = ColorRenderTargets[RenderTargetIndex].RenderTarget;
+			if (!RenderTarget)
+			{
+				break;
+			}
+
+			RenderTargetsInfo.RenderTargetFormats[RenderTargetIndex] = (uint8)RenderTarget->GetFormat();
+			RenderTargetsInfo.RenderTargetFlags[RenderTargetIndex] = RenderTarget->GetFlags();
+			RenderTargetsInfo.NumSamples |= RenderTarget->GetNumSamples();
+		}
+
+		RenderTargetsInfo.RenderTargetsEnabled = RenderTargetIndex;
+		for (; RenderTargetIndex < MaxSimultaneousRenderTargets; ++RenderTargetIndex)
+		{
+			RenderTargetsInfo.RenderTargetFormats[RenderTargetIndex] = PF_Unknown;
+		}
+
+		if (DepthStencilRenderTarget.DepthStencilTarget)
+		{
+			RenderTargetsInfo.DepthStencilTargetFormat = DepthStencilRenderTarget.DepthStencilTarget->GetFormat();
+			RenderTargetsInfo.DepthStencilTargetFlag = DepthStencilRenderTarget.DepthStencilTarget->GetFlags();
+			RenderTargetsInfo.NumSamples |= DepthStencilRenderTarget.DepthStencilTarget->GetNumSamples();
+		}
+		else
+		{
+			RenderTargetsInfo.DepthStencilTargetFormat = PF_Unknown;
+		}
+
+		const ERenderTargetActions DepthActions = GetDepthActions(DepthStencilRenderTarget.Action);
+		const ERenderTargetActions StencilActions = GetStencilActions(DepthStencilRenderTarget.Action);
+		RenderTargetsInfo.DepthTargetLoadAction = GetLoadAction(DepthActions);
+		RenderTargetsInfo.DepthTargetStoreAction = GetStoreAction(DepthActions);
+		RenderTargetsInfo.StencilTargetLoadAction = GetLoadAction(StencilActions);
+		RenderTargetsInfo.StencilTargetStoreAction = GetStoreAction(StencilActions);
+		RenderTargetsInfo.DepthStencilAccess = DepthStencilRenderTarget.ExclusiveDepthStencil;
+
+		RenderTargetsInfo.MultiViewCount = MultiViewCount;
+		RenderTargetsInfo.bHasFragmentDensityAttachment = ShadingRateTexture != nullptr;
+
+		return RenderTargetsInfo;
+	}
+
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	RHI_API void Validate() const;
 #else
@@ -2859,4 +3631,449 @@ struct FRHIRenderPassInfo
 
 private:
 	RHI_API void OnVerifyNumUAVsFailed(int32 InNumUAVs);
+};
+
+/** Descriptor used to create a texture resource */
+struct RHI_API FRHITextureCreateInfo
+{
+	static FRHITextureCreateInfo Create2D(
+		FIntPoint InExtent,
+		EPixelFormat InFormat,
+		FClearValueBinding InClearValue,
+		ETextureCreateFlags InFlags,
+		uint8 InNumMips = 1,
+		uint8 InNumSamples = 1)
+	{
+		return FRHITextureCreateInfo(ETextureDimension::Texture2D, InFlags, InFormat, InExtent, InClearValue, 1, 1, InNumMips, InNumSamples);
+	}
+
+	static FRHITextureCreateInfo Create2DArray(
+		FIntPoint InExtent,
+		EPixelFormat InFormat,
+		FClearValueBinding InClearValue,
+		ETextureCreateFlags InFlags,
+		uint16 InArraySize,
+		uint8 InNumMips = 1,
+		uint8 InNumSamples = 1)
+	{
+		return FRHITextureCreateInfo(ETextureDimension::Texture2DArray, InFlags, InFormat, InExtent, InClearValue, 1, InArraySize, InNumMips, InNumSamples);
+	}
+
+	static FRHITextureCreateInfo Create3D(
+		FIntVector InSize,
+		EPixelFormat InFormat,
+		FClearValueBinding InClearValue,
+		ETextureCreateFlags InFlags,
+		uint8 InNumMips = 1)
+	{
+		checkf(InSize.Z >= 0 && InSize.Z <= TNumericLimits<uint16>::Max(), TEXT("Depth parameter (InSize.Z) exceeds valid range"));
+		return FRHITextureCreateInfo(ETextureDimension::Texture3D, InFlags, InFormat, FIntPoint(InSize.X, InSize.Y), InClearValue, (uint16)InSize.Z, 1, InNumMips);
+	}
+
+	static FRHITextureCreateInfo CreateCube(
+		uint32 InSizeInPixels,
+		EPixelFormat InFormat,
+		FClearValueBinding InClearValue,
+		ETextureCreateFlags InFlags,
+		uint8 InNumMips = 1,
+		uint8 InNumSamples = 1)
+	{
+		return FRHITextureCreateInfo(ETextureDimension::TextureCube, InFlags, InFormat, FIntPoint(InSizeInPixels, InSizeInPixels), InClearValue, 1, 1, InNumMips, InNumSamples);
+	}
+
+	static FRHITextureCreateInfo CreateCubeArray(
+		uint32 InSizeInPixels,
+		EPixelFormat InFormat,
+		FClearValueBinding InClearValue,
+		ETextureCreateFlags InFlags,
+		uint16 InArraySize,
+		uint8 InNumMips = 1,
+		uint8 InNumSamples = 1)
+	{
+		return FRHITextureCreateInfo(ETextureDimension::TextureCubeArray, InFlags, InFormat, FIntPoint(InSizeInPixels, InSizeInPixels), InClearValue, 1, InArraySize, InNumMips, InNumSamples);
+	}
+
+	FRHITextureCreateInfo() = default;
+	FRHITextureCreateInfo(
+		ETextureDimension InDimension,
+		ETextureCreateFlags InFlags,
+		EPixelFormat InFormat,
+		FIntPoint InExtent,
+		FClearValueBinding InClearValue,
+		uint16 InDepth = 1,
+		uint16 InArraySize = 1,
+		uint8 InNumMips = 1,
+		uint8 InNumSamples = 1)
+		: ClearValue(InClearValue)
+		, Dimension(InDimension)
+		, Flags(InFlags)
+		, Format(InFormat)
+		, Extent(InExtent)
+		, Depth(InDepth)
+		, ArraySize(InArraySize)
+		, NumMips(InNumMips)
+		, NumSamples(InNumSamples)
+	{}
+
+	bool operator == (const FRHITextureCreateInfo& Other) const
+	{
+		return Dimension == Other.Dimension
+			&& Flags == Other.Flags
+			&& Format == Other.Format
+			&& UAVFormat == Other.UAVFormat
+			&& Extent == Other.Extent
+			&& Depth == Other.Depth
+			&& ArraySize == Other.ArraySize
+			&& NumMips == Other.NumMips
+			&& NumSamples == Other.NumSamples
+			&& ClearValue == Other.ClearValue;
+	}
+
+	bool operator != (const FRHITextureCreateInfo& Other) const
+	{
+		return !(*this == Other);
+	}
+
+	bool IsTexture2D() const
+	{
+		return Dimension == ETextureDimension::Texture2D || Dimension == ETextureDimension::Texture2DArray;
+	}
+
+	bool IsTexture3D() const
+	{
+		return Dimension == ETextureDimension::Texture3D;
+	}
+
+	bool IsTextureCube() const
+	{
+		return Dimension == ETextureDimension::TextureCube || Dimension == ETextureDimension::TextureCubeArray;
+	}
+
+	bool IsTextureArray() const
+	{
+		return Dimension == ETextureDimension::Texture2DArray || Dimension == ETextureDimension::TextureCubeArray;
+	}
+
+	bool IsMipChain() const
+	{
+		return NumMips > 1;
+	}
+
+	bool IsMultisample() const
+	{
+		return NumSamples > 1;
+	}
+
+	FIntVector GetSize() const
+	{
+		return FIntVector(Extent.X, Extent.Y, Depth);
+	}
+
+	void Reset()
+	{
+		// Usually we don't want to propagate MSAA samples.
+		NumSamples = 1;
+
+		// Remove UAV flag for textures that don't need it (some formats are incompatible).
+		Flags |= TexCreate_RenderTargetable;
+		Flags &= ~(TexCreate_UAV | TexCreate_ResolveTargetable | TexCreate_DepthStencilResolveTarget);
+	}
+
+	/** Returns whether this descriptor conforms to requirements. */
+	inline bool IsValid() const
+	{
+		return FRHITextureCreateInfo::Validate(*this, /* Name = */ TEXT(""), /* bFatal = */ false);
+	}
+
+	/** Clear value to use when fast-clearing the texture. */
+	FClearValueBinding ClearValue;
+
+	/** Texture dimension to use when creating the RHI texture. */
+	ETextureDimension Dimension = ETextureDimension::Texture2D;
+
+	/** Texture flags passed on to RHI texture. */
+	ETextureCreateFlags Flags = TexCreate_None;
+
+	/** Pixel format used to create RHI texture. */
+	EPixelFormat Format = PF_Unknown;
+
+	/** Texture format used when creating the UAV. PF_Unknown means to use the default one (same as Format). */
+	EPixelFormat UAVFormat = PF_Unknown;
+
+	/** Extent of the texture in x and y. */
+	FIntPoint Extent = FIntPoint(1, 1);
+
+	/** Depth of the texture if the dimension is 3D. */
+	uint16 Depth = 1;
+
+	/** The number of array elements in the texture. (Keep at 1 if dimension is 3D). */
+	uint16 ArraySize = 1;
+
+	/** Number of mips in the texture mip-map chain. */
+	uint8 NumMips = 1;
+
+	/** Number of samples in the texture. >1 for MSAA. */
+	uint8 NumSamples = 1;
+
+	/** Check the validity. */
+	static bool CheckValidity(const FRHITextureCreateInfo& Desc, const TCHAR* Name)
+	{
+		return FRHITextureCreateInfo::Validate(Desc, Name, /* bFatal = */ true);
+	}
+
+private:
+	static bool Validate(const FRHITextureCreateInfo& Desc, const TCHAR* Name, bool bFatal);
+};
+
+/** Used to specify a texture metadata plane when creating a view. */
+enum class ERHITextureMetaDataAccess : uint8
+{
+	/** The primary plane is used with default compression behavior. */
+	None = 0,
+
+	/** The primary plane is used without decompressing it. */
+	CompressedSurface,
+
+	/** The depth plane is used with default compression behavior. */
+	Depth,
+
+	/** The stencil plane is used with default compression behavior. */
+	Stencil,
+
+	/** The HTile plane is used. */
+	HTile,
+
+	/** the FMask plane is used. */
+	FMask,
+
+	/** the CMask plane is used. */
+	CMask
+};
+
+enum ERHITextureSRVOverrideSRGBType
+{
+	SRGBO_Default,
+	SRGBO_ForceDisable,
+};
+
+struct FRHITextureSRVCreateInfo
+{
+	explicit FRHITextureSRVCreateInfo(uint8 InMipLevel = 0u, uint8 InNumMipLevels = 1u, EPixelFormat InFormat = PF_Unknown)
+		: Format(InFormat)
+		, MipLevel(InMipLevel)
+		, NumMipLevels(InNumMipLevels)
+		, SRGBOverride(SRGBO_Default)
+		, FirstArraySlice(0)
+		, NumArraySlices(0)
+	{}
+
+	explicit FRHITextureSRVCreateInfo(uint8 InMipLevel, uint8 InNumMipLevels, uint32 InFirstArraySlice, uint32 InNumArraySlices, EPixelFormat InFormat = PF_Unknown)
+		: Format(InFormat)
+		, MipLevel(InMipLevel)
+		, NumMipLevels(InNumMipLevels)
+		, SRGBOverride(SRGBO_Default)
+		, FirstArraySlice(InFirstArraySlice)
+		, NumArraySlices(InNumArraySlices)
+	{}
+
+	/** View the texture with a different format. Leave as PF_Unknown to use original format. Useful when sampling stencil */
+	EPixelFormat Format;
+
+	/** Specify the mip level to use. Useful when rendering to one mip while sampling from another */
+	uint8 MipLevel;
+
+	/** Create a view to a single, or multiple mip levels */
+	uint8 NumMipLevels;
+
+	/** Potentially override the texture's sRGB flag */
+	ERHITextureSRVOverrideSRGBType SRGBOverride;
+
+	/** Specify first array slice index. By default 0. */
+	uint32 FirstArraySlice;
+
+	/** Specify number of array slices. If FirstArraySlice and NumArraySlices are both zero, the SRV is created for all array slices. By default 0. */
+	uint32 NumArraySlices;
+
+	/** Specify the metadata plane to use when creating a view. */
+	ERHITextureMetaDataAccess MetaData = ERHITextureMetaDataAccess::None;
+
+	FORCEINLINE bool operator==(const FRHITextureSRVCreateInfo& Other)const
+	{
+		return (
+			Format == Other.Format &&
+			MipLevel == Other.MipLevel &&
+			NumMipLevels == Other.NumMipLevels &&
+			SRGBOverride == Other.SRGBOverride &&
+			FirstArraySlice == Other.FirstArraySlice &&
+			NumArraySlices == Other.NumArraySlices &&
+			MetaData == Other.MetaData);
+	}
+
+	FORCEINLINE bool operator!=(const FRHITextureSRVCreateInfo& Other)const
+	{
+		return !(*this == Other);
+	}
+};
+
+FORCEINLINE uint32 GetTypeHash(const FRHITextureSRVCreateInfo& Var)
+{
+	uint32 Hash0 = uint32(Var.Format) | uint32(Var.MipLevel) << 8 | uint32(Var.NumMipLevels) << 16 | uint32(Var.SRGBOverride) << 24;
+	return HashCombine(HashCombine(GetTypeHash(Hash0), GetTypeHash(Var.FirstArraySlice)), GetTypeHash(Var.NumArraySlices));
+}
+
+struct FRHITextureUAVCreateInfo
+{
+public:
+	FRHITextureUAVCreateInfo() = default;
+
+	explicit FRHITextureUAVCreateInfo(uint8 InMipLevel, EPixelFormat InFormat = PF_Unknown, uint16 InFirstArraySlice = 0, uint16 InNumArraySlices = 0)
+		: Format(InFormat)
+		, MipLevel(InMipLevel)
+		, FirstArraySlice(InFirstArraySlice)
+		, NumArraySlices(InNumArraySlices)
+	{}
+
+	explicit FRHITextureUAVCreateInfo(ERHITextureMetaDataAccess InMetaData)
+		: MetaData(InMetaData)
+	{}
+
+	FORCEINLINE bool operator==(const FRHITextureUAVCreateInfo& Other)const
+	{
+		return Format == Other.Format && MipLevel == Other.MipLevel && MetaData == Other.MetaData && FirstArraySlice == Other.FirstArraySlice && NumArraySlices == Other.NumArraySlices;
+	}
+
+	FORCEINLINE bool operator!=(const FRHITextureUAVCreateInfo& Other)const
+	{
+		return !(*this == Other);
+	}
+
+	EPixelFormat Format = PF_Unknown;
+	uint8 MipLevel = 0;
+	uint16 FirstArraySlice = 0;
+	uint16 NumArraySlices = 0;	// When 0, the default behavior will be used, e.g. all slices mapped.
+	ERHITextureMetaDataAccess MetaData = ERHITextureMetaDataAccess::None;
+};
+
+/** Descriptor used to create a buffer resource */
+struct FRHIBufferCreateInfo
+{
+	bool operator == (const FRHIBufferCreateInfo& Other) const
+	{
+		return (
+			Size == Other.Size &&
+			Stride == Other.Stride &&
+			Usage == Other.Usage);
+	}
+
+	bool operator != (const FRHIBufferCreateInfo& Other) const
+	{
+		return !(*this == Other);
+	}
+
+	/** Total size of the buffer. */
+	uint32 Size = 1;
+
+	/** Stride in bytes */
+	uint32 Stride = 1;
+
+	/** Bitfields describing the uses of that buffer. */
+	EBufferUsageFlags Usage = BUF_None;
+};
+
+struct FRHIBufferSRVCreateInfo
+{
+	explicit FRHIBufferSRVCreateInfo() = default;
+
+	explicit FRHIBufferSRVCreateInfo(EPixelFormat InFormat)
+		: Format(InFormat)
+	{
+		if (InFormat != PF_Unknown)
+		{
+			BytesPerElement = GPixelFormats[Format].BlockBytes;
+		}
+	}
+
+	FORCEINLINE bool operator==(const FRHIBufferSRVCreateInfo& Other)const
+	{
+		return BytesPerElement == Other.BytesPerElement && Format == Other.Format;
+	}
+
+	FORCEINLINE bool operator!=(const FRHIBufferSRVCreateInfo& Other)const
+	{
+		return !(*this == Other);
+	}
+
+	/** Number of bytes per element. */
+	uint32 BytesPerElement = 1;
+
+	/** Encoding format for the element. */
+	EPixelFormat Format = PF_Unknown;
+};
+
+struct FRHIBufferUAVCreateInfo
+{
+	FRHIBufferUAVCreateInfo() = default;
+
+	explicit FRHIBufferUAVCreateInfo(EPixelFormat InFormat)
+		: Format(InFormat)
+	{}
+
+	FORCEINLINE bool operator==(const FRHIBufferUAVCreateInfo& Other)const
+	{
+		return Format == Other.Format && bSupportsAtomicCounter == Other.bSupportsAtomicCounter && bSupportsAppendBuffer == Other.bSupportsAppendBuffer;
+	}
+
+	FORCEINLINE bool operator!=(const FRHIBufferUAVCreateInfo& Other)const
+	{
+		return !(*this == Other);
+	}
+
+	/** Number of bytes per element (used for typed buffers). */
+	EPixelFormat Format = PF_Unknown;
+
+	/** Whether the uav supports atomic counter or append buffer operations (used for structured buffers) */
+	bool bSupportsAtomicCounter = false;
+	bool bSupportsAppendBuffer = false;
+};
+
+class RHI_API FRHITextureViewCache
+{
+public:
+	// Finds a UAV matching the descriptor in the cache or creates a new one and updates the cache.
+	FRHIUnorderedAccessView* GetOrCreateUAV(FRHITexture* Texture, const FRHITextureUAVCreateInfo& CreateInfo);
+
+	// Finds a SRV matching the descriptor in the cache or creates a new one and updates the cache.
+	FRHIShaderResourceView* GetOrCreateSRV(FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo);
+
+	// Sets the debug name of the RHI view resources.
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	void SetDebugName(const TCHAR* DebugName);
+#else
+	void SetDebugName(const TCHAR* DebugName) {}
+#endif
+
+private:
+	TArray<TPair<FRHITextureUAVCreateInfo, FUnorderedAccessViewRHIRef>, TInlineAllocator<1>> UAVs;
+	TArray<TPair<FRHITextureSRVCreateInfo, FShaderResourceViewRHIRef>, TInlineAllocator<1>> SRVs;
+};
+
+class RHI_API FRHIBufferViewCache
+{
+public:
+	// Finds a UAV matching the descriptor in the cache or creates a new one and updates the cache.
+	FRHIUnorderedAccessView* GetOrCreateUAV(FRHIBuffer* Buffer, const FRHIBufferUAVCreateInfo& CreateInfo);
+
+	// Finds a SRV matching the descriptor in the cache or creates a new one and updates the cache.
+	FRHIShaderResourceView* GetOrCreateSRV(FRHIBuffer* Buffer, const FRHIBufferSRVCreateInfo& CreateInfo);
+
+	// Sets the debug name of the RHI view resources.
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	void SetDebugName(const TCHAR* DebugName);
+#else
+	void SetDebugName(const TCHAR* DebugName) {}
+#endif
+
+private:
+	TArray<TPair<FRHIBufferUAVCreateInfo, FUnorderedAccessViewRHIRef>, TInlineAllocator<1>> UAVs;
+	TArray<TPair<FRHIBufferSRVCreateInfo, FShaderResourceViewRHIRef>, TInlineAllocator<1>> SRVs;
 };

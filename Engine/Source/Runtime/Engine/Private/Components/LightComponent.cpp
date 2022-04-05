@@ -5,11 +5,14 @@
 =============================================================================*/
 
 #include "Components/LightComponent.h"
+
 #include "Misc/App.h"
 #include "RenderingThread.h"
 #include "Engine/MapBuildDataRegistry.h"
 #include "Materials/Material.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/RenderingObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
@@ -32,7 +35,7 @@ void FStaticShadowDepthMap::InitRHI()
 {
 	if (FApp::CanEverRender() && Data && Data->ShadowMapSizeX > 0 && Data->ShadowMapSizeY > 0 && GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5)
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FStaticShadowDepthMap"));
 		FTexture2DRHIRef Texture2DRHI = RHICreateTexture2D(Data->ShadowMapSizeX, Data->ShadowMapSizeY, PF_R16F, 1, 1, TexCreate_None, CreateInfo);
 		TextureRHI = Texture2DRHI;
 
@@ -104,12 +107,30 @@ void ULightComponentBase::SetAffectGlobalIllumination(bool bNewValue)
 	}
 }
 
+// Deprecated
 void ULightComponentBase::SetCastRaytracedShadow(bool bNewValue)
 {
-	if (AreDynamicDataChangesAllowed()
-		&& bCastRaytracedShadow != bNewValue)
+	if (AreDynamicDataChangesAllowed())
 	{
-		bCastRaytracedShadow = bNewValue;
+		if (bNewValue && CastRaytracedShadow == ECastRayTracedShadow::Disabled)
+		{
+			CastRaytracedShadow = ECastRayTracedShadow::UseProjectSetting;
+			MarkRenderStateDirty();
+		}
+		else if (!bNewValue && CastRaytracedShadow > ECastRayTracedShadow::Disabled)
+		{
+			CastRaytracedShadow = ECastRayTracedShadow::Disabled;
+			MarkRenderStateDirty();
+		}
+	}
+}
+
+void ULightComponentBase::SetCastRaytracedShadows(ECastRayTracedShadow::Type bNewValue)
+{
+	if (AreDynamicDataChangesAllowed()
+		&& CastRaytracedShadow != bNewValue)
+	{
+		CastRaytracedShadow = bNewValue;
 		MarkRenderStateDirty();
 	}
 }
@@ -128,9 +149,16 @@ void ULightComponentBase::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	if (Ar.UE4Ver() < VER_UE4_INVERSE_SQUARED_LIGHTS_DEFAULT)
+	if (Ar.UEVer() < VER_UE4_INVERSE_SQUARED_LIGHTS_DEFAULT)
 	{
 		Intensity = Brightness_DEPRECATED;
+	}
+
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
+	if (Ar.IsLoading() && (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::RayTracedShadowsType))
+	{
+		CastRaytracedShadow = bCastRaytracedShadow_DEPRECATED == 0? ECastRayTracedShadow::Disabled : ECastRayTracedShadow::UseProjectSetting;
 	}
 }
 
@@ -281,6 +309,23 @@ FBoxSphereBounds ULightComponentBase::GetPlacementExtent() const
 	return NewBounds;
 }
 
+void FLightRenderParameters::MakeShaderParameters(const FViewMatrices& ViewMatrices, FLightShaderParameters& OutShaderParameters) const
+{
+	OutShaderParameters.TranslatedWorldPosition = FVector3f(ViewMatrices.GetPreViewTranslation() + WorldPosition);
+	OutShaderParameters.InvRadius = InvRadius;
+	OutShaderParameters.Color = FVector3f(Color);
+	OutShaderParameters.FalloffExponent = FalloffExponent;
+	OutShaderParameters.Direction = Direction;
+	OutShaderParameters.SpecularScale = SpecularScale;
+	OutShaderParameters.Tangent = Tangent;
+	OutShaderParameters.SourceRadius = SourceRadius;
+	OutShaderParameters.SpotAngles = SpotAngles;
+	OutShaderParameters.SoftSourceRadius = SoftSourceRadius;
+	OutShaderParameters.SourceLength = SourceLength;
+	OutShaderParameters.RectLightBarnCosAngle = RectLightBarnCosAngle;
+	OutShaderParameters.RectLightBarnLength = RectLightBarnLength;
+	OutShaderParameters.SourceTexture = SourceTexture;
+}
 
 FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	: LightComponent(InLightComponent)
@@ -308,23 +353,22 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	, bCastHairStrandsDeepShadow(InLightComponent->bCastDeepShadow)
 	, bCastShadowsFromCinematicObjectsOnly(InLightComponent->bCastShadowsFromCinematicObjectsOnly)
 	, bForceCachedShadowsForMovablePrimitives(InLightComponent->bForceCachedShadowsForMovablePrimitives)
-	, bCastRaytracedShadow(InLightComponent->bCastRaytracedShadow)
+	, CastRaytracedShadow(InLightComponent->CastShadows == 0? (TEnumAsByte<ECastRayTracedShadow::Type>) ECastRayTracedShadow::Disabled : InLightComponent->CastRaytracedShadow)
 	, bAffectReflection(InLightComponent->bAffectReflection)
 	, bAffectGlobalIllumination(InLightComponent->bAffectGlobalIllumination)
 	, bAffectTranslucentLighting(InLightComponent->bAffectTranslucentLighting)
 	, bUsedAsAtmosphereSunLight(InLightComponent->IsUsedAsAtmosphereSunLight())
 	, bAffectDynamicIndirectLighting(InLightComponent->bAffectDynamicIndirectLighting)
-	, bHasReflectiveShadowMap(InLightComponent->bAffectDynamicIndirectLighting && InLightComponent->GetLightType() == LightType_Directional)
 	, bUseRayTracedDistanceFieldShadows(InLightComponent->bUseRayTracedDistanceFieldShadows)
+	, bUseVirtualShadowMaps(false)	// See below
 	, bCastModulatedShadows(false)
 	, bUseWholeSceneCSMForMovableObjects(false)
-	, bTiledDeferredLightingSupported(false)
 	, AtmosphereSunLightIndex(InLightComponent->GetAtmosphereSunLightIndex())
 	, AtmosphereSunDiskColorScale(InLightComponent->GetAtmosphereSunDiskColorScale())
 	, LightType(InLightComponent->GetLightType())	
 	, LightingChannelMask(GetLightingChannelMaskForStruct(InLightComponent->LightingChannels))
 	, StatId(InLightComponent->GetStatID(true))
-	, ComponentName(InLightComponent->GetOwner() ? InLightComponent->GetOwner()->GetFName() : InLightComponent->GetFName())
+	, ComponentName(InLightComponent->GetFName())
 	, LevelName(InLightComponent->GetOwner() ? InLightComponent->GetOwner()->GetLevel()->GetOutermost()->GetFName() : NAME_None)
 	, FarShadowDistance(0)
 	, FarShadowCascadeCount(0)
@@ -334,9 +378,22 @@ FLightSceneProxy::FLightSceneProxy(const ULightComponent* InLightComponent)
 	, bMobileMovablePointLightUniformBufferNeedsUpdate(false)
 	, bMobileMovablePointLightShouldBeRender(false)
 	, bMobileMovablePointLightShouldCastShadow(false)
-	, MobileMovablePointLightShadowmapMinMax()
+	, MobileMovablePointLightShadowmapMinMax(0.0f)
+#if ACTOR_HAS_LABELS
+	, OwnerNameOrLabel(InLightComponent->GetOwner() ? InLightComponent->GetOwner()->GetActorNameOrLabel() : InLightComponent->GetName())
+#endif
 {
 	check(SceneInterface);
+
+	// Currently we use virtual shadows maps for all lights when the global setting is enabled
+	bUseVirtualShadowMaps = ::UseVirtualShadowMaps(SceneInterface->GetShaderPlatform(), SceneInterface->GetFeatureLevel());
+
+	// Treat stationary lights as movable when non-nanite VSMs are enabled
+	const bool bNonNaniteVirtualShadowMaps = UseNonNaniteVirtualShadowMaps(SceneInterface->GetShaderPlatform(), SceneInterface->GetFeatureLevel());
+	if (bNonNaniteVirtualShadowMaps)
+	{
+		bStaticShadowing = bStaticLighting;
+	}
 
 	const FLightComponentMapBuildData* MapBuildData = InLightComponent->GetLightComponentMapBuildData();
 	
@@ -420,7 +477,8 @@ ULightComponentBase::ULightComponentBase(const FObjectInitializer& ObjectInitial
 	CastShadows = true;
 	CastStaticShadows = true;
 	CastDynamicShadows = true;
-	bCastRaytracedShadow = true;
+	CastRaytracedShadow = ECastRayTracedShadow::UseProjectSetting;
+	bCastRaytracedShadow_DEPRECATED = true;
 	bAffectReflection = true;
 	bAffectGlobalIllumination = true;
 #if WITH_EDITORONLY_DATA
@@ -542,7 +600,7 @@ void ULightComponent::Serialize(FArchive& Ar)
 
 	Ar.UsingCustomVersion(FRenderingObjectVersion::GUID);
 
-	if (Ar.UE4Ver() >= VER_UE4_STATIC_SHADOW_DEPTH_MAPS)
+	if (Ar.UEVer() >= VER_UE4_STATIC_SHADOW_DEPTH_MAPS)
 	{
 		if (Ar.IsLoading() && Ar.CustomVer(FRenderingObjectVersion::GUID) < FRenderingObjectVersion::MapBuildDataSeparatePackage)
 		{
@@ -580,7 +638,7 @@ void ULightComponent::PostLoad()
 	PreviewShadowMapChannel = INDEX_NONE;
 	Intensity = FMath::Max(0.0f, Intensity);
 
-	if (GetLinkerUE4Version() < VER_UE4_LIGHTCOMPONENT_USE_IES_TEXTURE_MULTIPLIER_ON_NON_IES_BRIGHTNESS)
+	if (GetLinkerUEVersion() < VER_UE4_LIGHTCOMPONENT_USE_IES_TEXTURE_MULTIPLIER_ON_NON_IES_BRIGHTNESS)
 	{
 		if(IESTexture)
 		{
@@ -594,7 +652,14 @@ void ULightComponent::PostLoad()
 #if WITH_EDITOR
 void ULightComponent::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void ULightComponent::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
 	ValidateLightGUIDs();
 }
 
@@ -630,8 +695,7 @@ bool ULightComponent::CanEditChange(const FProperty* InProperty) const
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bUseRayTracedDistanceFieldShadows)
 			|| bIsRayStartOffset)
 		{
-			static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GenerateMeshDistanceFields"));
-			bool bCanEdit = CastShadows && CastDynamicShadows && Mobility != EComponentMobility::Static && CVar->GetValueOnGameThread() != 0;
+			bool bCanEdit = CastShadows && CastDynamicShadows && Mobility != EComponentMobility::Static && DoesProjectSupportDistanceFields();
 
 			if (bIsRayStartOffset)
 			{
@@ -639,6 +703,11 @@ bool ULightComponent::CanEditChange(const FProperty* InProperty) const
 			}
 
 			return bCanEdit;
+		}
+
+		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, CastRaytracedShadow))
+		{
+			return IsRayTracingEnabled();
 		}
 
 		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, LightFunctionScale)
@@ -715,7 +784,7 @@ void ULightComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, VolumetricScatteringIntensity) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bCastVolumetricShadow) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bCastDeepShadow) &&
-		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bCastRaytracedShadow) &&
+		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, CastRaytracedShadow) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bAffectReflection) &&
 		PropertyName != GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, bAffectGlobalIllumination) &&
 		// Point light properties that shouldn't unbuild lighting
@@ -852,6 +921,21 @@ void ULightComponent::DestroyRenderState_Concurrent()
 	}
 	bAddedToSceneVisible = false;
 }
+
+#if WITH_EDITOR
+bool ULightComponent::GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty)
+{
+	if (ElementIndex == 0)
+	{
+		OutOwner = this;
+		OutPropertyPath = GET_MEMBER_NAME_STRING_CHECKED(ULightComponent, LightFunctionMaterial);
+		OutProperty = ULightComponent::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(ULightComponent, LightFunctionMaterial));
+		return true;
+	}
+
+	return false;
+}
+#endif // WITH_EDITOR
 
 /** Set brightness of the light */
 void ULightComponent::SetIntensity(float NewIntensity)
@@ -1448,12 +1532,12 @@ void ULightComponent::ReassignStationaryLightChannels(UWorld* TargetWorld, bool 
 	TMap<FLightAndChannel*, TArray<FLightAndChannel*> > LightToOverlapMap;
 
 	// Build an array of all static shadowing lights that need to be assigned
-	for (TObjectIterator<ULightComponent> LightIt(RF_ClassDefaultObject, /** bIncludeDerivedClasses */ true, /** InternalExcludeFlags */ EInternalObjectFlags::PendingKill); LightIt; ++LightIt)
+	for (TObjectIterator<ULightComponent> LightIt(RF_ClassDefaultObject, /** bIncludeDerivedClasses */ true, /** InternalExcludeFlags */ EInternalObjectFlags::Garbage); LightIt; ++LightIt)
 	{
 		ULightComponent* const LightComponent = *LightIt;
 		AActor* LightOwner = LightComponent->GetOwner();
 
-		const bool bLightIsInWorld = LightOwner && TargetWorld->ContainsActor(LightOwner) && !LightOwner->IsPendingKill();
+		const bool bLightIsInWorld = IsValid(LightOwner) && TargetWorld->ContainsActor(LightOwner);
 
 		if (bLightIsInWorld 
 			// Only operate on stationary light components (static shadowing only)

@@ -164,6 +164,8 @@ public:
 		FString DeviceId;
 		/** The name of the Device selected in the Launch drop-down to launch on. */
 		FString DeviceName;
+		/** If True, a remote play session will attempt to update the flash/software on the target device if it's out of date */
+		bool bUpdateDeviceFlash = false;
 	};
 
 	/** Where should the session be launched? May be local or remote. */
@@ -241,6 +243,7 @@ public:
 		, bUsingOnlinePlatform(false)
 		, bAnyBlueprintErrors(false)
 		, bServerWasLaunched(false)
+		, bLateJoinRequested(false)
 	{
 	}
 
@@ -286,6 +289,9 @@ public:
 
 	/** Have we launched a server for this PIE session yet? */
 	bool bServerWasLaunched;
+
+	/** If true, a late join client will be added on the next tick. */
+	bool bLateJoinRequested;
 
 	/** Transient information about window sizes/positions. This gets loaded from settings at start and saved at end. */
 	TArray<FWindowSizeAndPos> CachedWindowInfo;

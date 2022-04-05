@@ -63,6 +63,13 @@ public:
 		None
 	};
 
+	enum class EIconMode
+	{
+		Brush,
+		Text,
+		None
+	};
+
 	struct FDropRequest
 	{
 		FDropRequest(TSharedRef<const FDragDropOperation> InDragDropOperation, EItemDropZone InDropZone, EDragOptions InDragOptions, EDropOptions InDropOptions)
@@ -128,9 +135,12 @@ public:
 		ItemHeader,
 		ItemContent,
 		ItemContentAdvanced,
+		ItemContentNote,
 		ItemFooter,
 		ItemCategory,
-		StackIssue
+		ItemSubCategory,
+		StackIssue,
+		Spacer
 	};
 
 	struct FRequiredEntryData
@@ -250,6 +260,8 @@ public:
 
 	virtual UObject* GetDisplayedObject() const;
 
+	virtual FGuid GetSelectionId() const;
+
 	UNiagaraStackEditorData& GetStackEditorData() const;
 
 	FString GetStackEditorDataKey() const;
@@ -258,15 +270,19 @@ public:
 
 	virtual bool GetCanExpand() const;
 
+	virtual bool GetCanExpandInOverview() const;
+
 	virtual bool IsExpandedByDefault() const;
 
 	bool GetIsExpanded() const;
 
-	// Calling this doesn't broadcast structure change automatically due to the expense of synchronizing
-	// expanded state with the tree which is done to prevent items being expanded on tick.
 	void SetIsExpanded(bool bInExpanded);
 
 	void SetIsExpanded_Recursive(bool bInExpanded);
+
+	bool GetIsExpandedInOverview() const;
+
+	void SetIsExpandedInOverview(bool bInExpanded);
 
 	virtual bool GetIsEnabled() const;
 
@@ -279,16 +295,45 @@ public:
 	FName GetExecutionSubcategoryName() const;
 
 	virtual EStackRowStyle GetStackRowStyle() const;
-	virtual bool HasFrontDivider() const;
 
 	int32 GetIndentLevel() const;
 
+	/** Returns whether or not this entry should be treated as a child of a previous sibling for layout purposes. */
+	virtual bool IsSemanticChild() const { return false; }
+
 	virtual bool GetShouldShowInStack() const;
 
-	void GetFilteredChildren(TArray<UNiagaraStackEntry*>& OutFilteredChildren) const;
+	virtual bool GetShouldShowInOverview() const;
 
+	void GetFilteredChildren(TArray<UNiagaraStackEntry*>& OutFilteredChildren) const;
+	
 	void GetUnfilteredChildren(TArray<UNiagaraStackEntry*>& OutUnfilteredChildren) const;
 
+	void GetCustomFilteredChildren(TArray<UNiagaraStackEntry*>& OutFilteredChildren, const TArray<FOnFilterChild>& ChildFilters) const;
+
+	void GetFilteredChildrenOfTypes(TArray<UNiagaraStackEntry*>& OutFilteredChildren, const TSet<UClass*>& AllowedClasses) const
+	{
+		TArray<UNiagaraStackEntry*> FilteredChildrenTmp;
+		GetFilteredChildren(FilteredChildrenTmp);
+		for (UNiagaraStackEntry* FilteredChild : FilteredChildrenTmp)
+		{
+			for(const UClass* Class : AllowedClasses)
+			{
+				if(FilteredChild->IsA(Class))
+				{
+					OutFilteredChildren.Add(FilteredChild);
+					break;
+				}
+			}
+			UClass* ChildClass = FilteredChild->GetClass();
+
+			if(AllowedClasses.Contains(ChildClass))
+			{
+				OutFilteredChildren.Add(FilteredChild);	
+			}
+		}
+	}
+	
 	template<typename T>
 	void GetUnfilteredChildrenOfType(TArray<T*>& OutUnfilteredChildrenOfType) const
 	{
@@ -304,7 +349,49 @@ public:
 		}
 	}
 
+	template<typename T>
+	void GetFilteredChildrenOfType(TArray<T*>& OutFilteredChildrenOfType) const
+	{
+		TArray<UNiagaraStackEntry*> OutFilteredChildren;
+		GetFilteredChildren(OutFilteredChildren);
+		for (UNiagaraStackEntry* UnfilteredChild : OutFilteredChildren)
+		{
+			T* UnfilteredChildOfType = Cast<T>(UnfilteredChild);
+			if (UnfilteredChildOfType != nullptr)
+			{
+				OutFilteredChildrenOfType.Add(UnfilteredChildOfType);
+			}
+		}
+	}
+
+	template<typename T>
+	void GetCustomFilteredChildrenOfType(TArray<T*>& OutFilteredChildrenOfType, const TArray<FOnFilterChild>& CustomChildFilters) const
+	{
+		for (UNiagaraStackEntry* Child : Children)
+		{
+			if(T* CastChild = Cast<T>(Child))
+			{
+				bool bPassesFilter = true;
+				for (const FOnFilterChild& ChildFilter : CustomChildFilters)
+				{
+					if (ChildFilter.Execute(*CastChild) == false)
+					{
+						bPassesFilter = false;
+						break;
+					}
+				}
+
+				if (bPassesFilter)
+				{
+					OutFilteredChildrenOfType.Add(CastChild);
+				}				
+			}
+		}
+	}
+
 	FOnExpansionChanged& OnExpansionChanged();
+
+	FOnExpansionChanged& OnExpansionInOverviewChanged();
 
 	FOnStructureChanged& OnStructureChanged();
 
@@ -425,6 +512,18 @@ public:
 	/** Handler for when a rename is committed for this stack entry. */
 	virtual void OnRenamed(FText NewName);
 
+	virtual EIconMode GetSupportedIconMode() const { return EIconMode::None; }
+
+	virtual const FSlateBrush* GetIconBrush() const { return nullptr; }
+
+	virtual FText GetIconText() const { return FText(); }
+
+	virtual bool SupportsInheritance() const { return false; }
+
+	virtual bool GetIsInherited() const { return false; }
+
+	virtual FText GetInheritanceMessage() const { return FText(); }
+
 protected:
 	virtual void BeginDestroy() override;
 
@@ -452,6 +551,8 @@ private:
 	void ChildStructureChanged(ENiagaraStructureChangedFlags Info);
 
 	void ChildExpansionChanged();
+
+	void ChildExpansionInOverviewChanged();
 	
 	void ChildDataObjectModified(TArray<UObject*> ChangedObjects, ENiagaraDataObjectChange ChangeType);
 
@@ -494,11 +595,13 @@ private:
 	TWeakPtr<FNiagaraEmitterViewModel> EmitterViewModel;
 
 	UPROPERTY()
-	UNiagaraStackEditorData* StackEditorData;
+	TObjectPtr<UNiagaraStackEditorData> StackEditorData;
 
 	FString StackEditorDataKey;
 
 	FOnExpansionChanged ExpansionChangedDelegate;
+
+	FOnExpansionChanged ExpansionInOverviewChangedDelegate;
 	
 	FOnStructureChanged StructureChangedDelegate;
 
@@ -513,16 +616,17 @@ private:
 	TArray<FOnFilterChild> ChildFilters;
 
 	UPROPERTY()
-	TArray<UNiagaraStackEntry*> Children;
+	TArray<TObjectPtr<UNiagaraStackEntry>> Children;
 
 	mutable bool bFilterChildrenPending;
 
 	mutable TArray<UNiagaraStackEntry*> FilteredChildren;
 
 	UPROPERTY()
-	TArray<UNiagaraStackErrorItem*> ErrorChildren;
+	TArray<TObjectPtr<UNiagaraStackErrorItem>> ErrorChildren;
 
 	mutable TOptional<bool> bIsExpandedCache;
+	mutable TOptional<bool> bIsExpandedInOverviewCache;
 
 	int32 IndentLevel;
 
@@ -545,4 +649,22 @@ private:
 	TOptional<FText> AlternateDisplayName;
 
 	mutable TOptional<FCollectedIssueData> CachedCollectedIssueData;
+};
+
+
+UCLASS()
+class NIAGARAEDITOR_API UNiagaraStackSpacer : public UNiagaraStackEntry
+{
+	GENERATED_BODY()
+public:
+	void Initialize(FRequiredEntryData InRequiredEntryData, float InSpacerHeight, TAttribute<bool> InShouldShowInStack, FString InOwningStackItemEditorDataKey);
+	virtual EStackRowStyle GetStackRowStyle() const override { return UNiagaraStackEntry::EStackRowStyle::Spacer; }
+	virtual bool GetCanExpand() const override { return false; }
+	virtual bool GetShouldShowInStack() const override { return ShouldShowInStack.Get(); }
+
+	float GetSpacerHeight() const { return SpacerHeight; }
+
+private:
+	float SpacerHeight;
+	TAttribute<bool> ShouldShowInStack;
 };

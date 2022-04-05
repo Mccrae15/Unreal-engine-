@@ -5,7 +5,8 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -32,22 +33,22 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// On Mac, indicates the path to the target's application bundle
 		/// </summary>
-		public DirectoryReference BundleDirectory;
+		public DirectoryReference? BundleDirectory;
 
 		/// <summary>
 		/// The directory to put the non-executable files in (PDBs, import library, etc)
 		/// </summary>
-		public DirectoryReference OutputDirectory;
+		public DirectoryReference? OutputDirectory;
 
 		/// <summary>
 		/// Intermediate file directory
 		/// </summary>
-		public DirectoryReference IntermediateDirectory;
+		public DirectoryReference? IntermediateDirectory;
 
 		/// <summary>
 		/// The directory to shadow source files in for syncing to remote compile servers
 		/// </summary>
-		public DirectoryReference LocalShadowDirectory = null;
+		public DirectoryReference? LocalShadowDirectory = null;
 
 		/// <summary>
 		/// The file path for the executable file that is output by the linker.
@@ -148,18 +149,22 @@ namespace UnrealBuildTool
 		public bool bIsBuildingDLL = false;
 
 		/// <summary>
+		/// Whether we should compile using the statically-linked CRT. This is not widely supported for the whole engine, but is required for programs that need to run without dependencies.
+		/// </summary>
+		public bool bUseStaticCRT = false;
+
+		/// <summary>
+		/// Whether to use the debug CRT in debug configurations
+		/// </summary>
+		public bool bUseDebugCRT = false;
+
+		/// <summary>
 		/// True if this is a console application that's being build
 		/// </summary>
 		public bool bIsBuildingConsoleApplication = false;
 
 		/// <summary>
-		/// This setting is replaced by UEBuildBinaryConfiguration.bBuildAdditionalConsoleApp.
-		/// </summary>
-		[Obsolete("This setting is replaced by UEBuildBinaryConfiguration.bBuildAdditionalConsoleApp. It is explicitly set to true for editor targets, and defaults to false otherwise.")]
-		public bool bBuildAdditionalConsoleApplication { set { } }
-
-		/// <summary>
-		/// If set, overrides the program entry function on Windows platform.  This is used by the base UE4
+		/// If set, overrides the program entry function on Windows platform.  This is used by the base Unreal
 		/// program so we can link in either command-line mode or windowed mode without having to recompile the Launch module.
 		/// </summary>
 		public string WindowsEntryPointOverride = String.Empty;
@@ -229,12 +234,12 @@ namespace UnrealBuildTool
         /// <summary>
         /// Platform specific directory where PGO profiling data is stored.
         /// </summary>
-        public string PGODirectory;
+        public string? PGODirectory;
 
         /// <summary>
         /// Platform specific filename where PGO profiling data is saved.
         /// </summary>
-        public string PGOFilenamePrefix;
+        public string? PGOFilenamePrefix;
 
         /// <summary>
         /// Whether to request the linker create a map file as part of the build
@@ -264,12 +269,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Bundle version for Mac apps
 		/// </summary>
-		public string BundleVersion;
+		public string? BundleVersion;
 
 		/// <summary>
 		/// When building a dynamic library on Apple platforms, specifies the installed name for other binaries that link against it.
 		/// </summary>
-		public string InstallName;
+		public string? InstallName;
 
 		/// <summary>
 		/// A list of the object files to be linked.
@@ -295,7 +300,7 @@ namespace UnrealBuildTool
 		/// Provides a Module Definition File (.def) to the linker to describe various attributes of a DLL.
 		/// Necessary when exporting functions by ordinal values instead of by name.
 		/// </summary>
-		public string ModuleDefinitionFile;
+		public string? ModuleDefinitionFile;
 
 		/// <summary>
 		/// All the additional properties from the modules linked into this binary
@@ -341,6 +346,8 @@ namespace UnrealBuildTool
 			bIsBuildingLibrary = Other.bIsBuildingLibrary;
             bDisableSymbolCache = Other.bDisableSymbolCache;
 			bIsBuildingDLL = Other.bIsBuildingDLL;
+			bUseStaticCRT = Other.bUseStaticCRT;
+			bUseDebugCRT = Other.bUseDebugCRT;
 			bIsBuildingConsoleApplication = Other.bIsBuildingConsoleApplication;
 			WindowsEntryPointOverride = Other.WindowsEntryPointOverride;
 			bIsCrossReferenced = Other.bIsCrossReferenced;

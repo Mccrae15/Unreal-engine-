@@ -3,6 +3,8 @@
 #pragma once
 
 #include "NiagaraCommon.h"
+#include "Delegates/Delegate.h"
+#include "NiagaraEditorCommon.generated.h"
 
 NIAGARAEDITOR_API DECLARE_LOG_CATEGORY_EXTERN(LogNiagaraEditor, Log, All);
 
@@ -25,6 +27,7 @@ public:
 		, bSupportsAddedInputs(false)
 		, bNumericsCanBeIntegers(true)
 		, bNumericsCanBeFloats(true)
+		, bSupportsStaticResolution(false)
 	{}
 
 	FName Name;
@@ -35,6 +38,7 @@ public:
 	ENiagaraNumericOutputTypeSelectionMode NumericOuputTypeSelectionMode;
 	TArray<FNiagaraOpInOutInfo> Inputs;
 	TArray<FNiagaraOpInOutInfo> Outputs;
+
 
 	/** If true then this operation supports a variable number of inputs */
 	bool bSupportsAddedInputs;
@@ -67,6 +71,17 @@ public:
 	void BuildName(FString InName, FString InCategory);
 
 	bool CreateHlslForAddedInputs(int32 InputCount, FString& HlslResult) const;
+
+	DECLARE_DELEGATE_RetVal_OneParam(int32, FStaticVariableResolve, const TArray<int32>& );
+	DECLARE_DELEGATE_RetVal_TwoParams(bool, FInputTypeValidation, const TArray<FNiagaraTypeDefinition>&, FText& );;
+	DECLARE_DELEGATE_RetVal_OneParam(FNiagaraTypeDefinition, FCustomNumericResolve, const TArray<FNiagaraTypeDefinition>& )
+
+	FStaticVariableResolve StaticVariableResolveFunction;
+	FInputTypeValidation InputTypeValidationFunction;
+	FCustomNumericResolve CustomNumericResolveFunction;
+
+	/** Whether or not you can upgrade type to static on connection.*/
+	bool bSupportsStaticResolution;
 };
 
 /** Interface for struct representing information about where to focus in a Niagara Script Graph after opening the editor for it. */
@@ -173,3 +188,79 @@ enum class EParameterDefinitionMatchState : uint8
 	MatchingDefinitionNameButNotType,
 };
 
+
+USTRUCT()
+struct NIAGARAEDITOR_API FFunctionInputSummaryViewKey
+{
+	GENERATED_BODY()
+
+private:
+	UPROPERTY()
+	FGuid FunctionGuid;
+
+	UPROPERTY()
+	FGuid InputGuid;
+
+	UPROPERTY()
+	FName InputName;
+public:
+
+	FFunctionInputSummaryViewKey() { }
+
+	FFunctionInputSummaryViewKey(const FGuid& InFunctionGuid, const FGuid& InInputGuid)
+		: FunctionGuid(InFunctionGuid), InputGuid(InInputGuid)
+	{
+		check(InFunctionGuid.IsValid());
+		check(InInputGuid.IsValid());		
+	}
+
+	FFunctionInputSummaryViewKey(const FGuid& InFunctionGuid, const FName& InInputName)
+		: FunctionGuid(InFunctionGuid), InputName(InInputName)
+	{
+		check(InFunctionGuid.IsValid());
+		check(!InputName.IsNone());		
+	}
+
+	bool operator==(const FFunctionInputSummaryViewKey& Other) const
+	{
+		return FunctionGuid == Other.FunctionGuid && InputGuid == Other.InputGuid && InputName == Other.InputName;
+	}
+
+	friend uint32 GetTypeHash(const FFunctionInputSummaryViewKey& Key)
+	{
+		return HashCombine(
+			GetTypeHash(Key.FunctionGuid),
+			Key.InputGuid.IsValid()? GetTypeHash(Key.InputGuid) : GetTypeHash(Key.InputName));
+	}
+};
+
+USTRUCT()
+struct NIAGARAEDITOR_API FFunctionInputSummaryViewMetadata
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY()
+	bool bVisible;
+	UPROPERTY()
+	FName DisplayName;
+	UPROPERTY()
+	FName Category;
+	UPROPERTY()
+	int32 SortIndex;
+	
+	FFunctionInputSummaryViewMetadata()
+		: bVisible(false)
+		, SortIndex(INDEX_NONE)
+	{		
+	}
+
+	bool operator==(const FFunctionInputSummaryViewMetadata& Other) const
+	{
+		return
+			bVisible == Other.bVisible &&
+			DisplayName == Other.DisplayName &&
+			Category == Other.Category &&
+			SortIndex == Other.SortIndex;
+	}
+};

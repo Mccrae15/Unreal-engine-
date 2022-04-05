@@ -7,7 +7,7 @@
 #include "AssetViewUtils.h"
 #include "AssetPropertyTagCache.h"
 #include "ObjectTools.h"
-#include "Misc/BlacklistNames.h"
+#include "Misc/NamePermissionList.h"
 #include "Misc/ScopedSlowTask.h"
 #include "HAL/FileManager.h"
 #include "FileHelpers.h"
@@ -16,53 +16,19 @@
 #include "ToolMenus.h"
 #include "AssetFolderContextMenu.h"
 #include "AssetFileContextMenu.h"
+#include "ContentBrowserDataUtils.h"
+#include "Settings/ContentBrowserSettings.h"
+#include "Engine/World.h"
 
 #define LOCTEXT_NAMESPACE "ContentBrowserAssetDataSource"
 
 namespace ContentBrowserAssetData
 {
 
-bool IsTopLevelFolder(const FName InFolderPath)
-{
-	TStringBuilder<FName::StringBufferSize> FolderPathStr;
-	InFolderPath.ToString(FolderPathStr);
-
-	int32 SlashCount = 0;
-	for (const TCHAR PathChar : FStringView(FolderPathStr))
-	{
-		if (PathChar == TEXT('/'))
-		{
-			if (++SlashCount > 1)
-			{
-				break;
-			}
-		}
-	}
-
-	return SlashCount == 1;
-}
-
 FContentBrowserItemData CreateAssetFolderItem(UContentBrowserDataSource* InOwnerDataSource, const FName InVirtualPath, const FName InFolderPath)
 {
-	static const FName GameRootPath = "/Game";
-	static const FName EngineRootPath = "/Engine";
-
 	const FString FolderItemName = FPackageName::GetShortName(InFolderPath);
-
-	FText FolderDisplayNameOverride;
-	if (InFolderPath == GameRootPath)
-	{
-		FolderDisplayNameOverride = LOCTEXT("GameFolderDisplayName", "Content");
-	}
-	else if (InFolderPath == EngineRootPath)
-	{
-		FolderDisplayNameOverride = LOCTEXT("EngineFolderDisplayName", "Engine Content");
-	}
-	else if (IsTopLevelFolder(InFolderPath))
-	{
-		FolderDisplayNameOverride = FText::Format(LOCTEXT("ContentFolderDisplayNameFmt", "{0} Content"), FText::AsCultureInvariant(FolderItemName));
-	}
-
+	FText FolderDisplayNameOverride = ContentBrowserDataUtils::GetFolderItemDisplayNameOverride(InFolderPath, FolderItemName, /*bIsClassesFolder*/ false);
 	return FContentBrowserItemData(InOwnerDataSource, EContentBrowserItemFlags::Type_Folder | EContentBrowserItemFlags::Category_Asset, InVirtualPath, *FolderItemName, MoveTemp(FolderDisplayNameOverride), MakeShared<FContentBrowserAssetFolderItemDataPayload>(InFolderPath));
 }
 
@@ -146,6 +112,11 @@ bool IsPrimaryAsset(const FAssetData& InAssetData)
 	return !InAssetData.IsRedirector() || InAssetData.IsUAsset();
 }
 
+bool IsPrimaryAsset(UObject* InObject)
+{
+	return !FAssetData::IsRedirector(InObject) && FAssetData::IsUAsset(InObject);
+}
+
 void SetOptionalErrorMessage(FText* OutErrorMsg, FText InErrorMsg)
 {
 	if (OutErrorMsg)
@@ -156,7 +127,7 @@ void SetOptionalErrorMessage(FText* OutErrorMsg, FText InErrorMsg)
 
 bool CanModifyPath(IAssetTools* InAssetTools, const FName InFolderPath, FText* OutErrorMsg)
 {
-	const TSharedRef<FBlacklistPaths>& WritableFolderFilter = InAssetTools->GetWritableFolderBlacklist();
+	const TSharedRef<FPathPermissionList>& WritableFolderFilter = InAssetTools->GetWritableFolderPermissionList();
 	if (!WritableFolderFilter->PassesStartsWithFilter(InFolderPath))
 	{
 		SetOptionalErrorMessage(OutErrorMsg, FText::Format(LOCTEXT("Error_FolderIsLocked", "Folder '{0}' is Locked"), FText::FromName(InFolderPath)));
@@ -261,6 +232,7 @@ bool EditOrPreviewAssetFileItems(TArrayView<const TSharedRef<const FContentBrows
 
 	// Now that we have created our map, load and activate all the lists of objects for each asset type action.
 	const bool bHasOpenActivationMethod = (ActivationMethod == EAssetTypeActivationMethod::DoubleClicked || ActivationMethod == EAssetTypeActivationMethod::Opened);
+	bool bSuccessfulEditorOpen = true;
 	for (auto& TypeActionToObjectsPair : TypeActionsToAssetData)
 	{
 		SlowTask.EnterProgressFrame(25.0f / TypeActionsToAssetData.Num());
@@ -295,11 +267,11 @@ bool EditOrPreviewAssetFileItems(TArrayView<const TSharedRef<const FContentBrows
 
 		if (bOpenEditorForAssets)
 		{
-			AssetEditorSubsystem->OpenEditorForAssets(ObjList);
+			bSuccessfulEditorOpen &= AssetEditorSubsystem->OpenEditorForAssets(ObjList);
 		}
 	}
 
-	return true;
+	return bSuccessfulEditorOpen;
 }
 
 bool EditOrPreviewItems(IAssetTools* InAssetTools, const UContentBrowserDataSource* InOwnerDataSource, TArrayView<const FContentBrowserItemData> InItems, const bool bIsPreview)
@@ -356,6 +328,14 @@ bool CanDuplicateAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserA
 		return false;
 	}
 
+	if (TSharedPtr<IAssetTypeActions> AssetTypeActions = InAssetPayload.GetAssetTypeActions())
+	{
+		if (!AssetTypeActions->CanDuplicate(InAssetPayload.GetAssetData(), OutErrorMsg))
+		{
+			return false;
+		}
+	}
+
 	return true;
 }
 
@@ -375,6 +355,7 @@ bool DuplicateItem(IAssetTools* InAssetTools, const UContentBrowserDataSource* I
 bool DuplicateAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFileItemDataPayload& InAssetPayload, UObject*& OutSourceAsset, FAssetData& OutNewAsset)
 {
 	// We need to potentially load the asset in order to duplicate it
+	FScopedLoadAllExternalObjects Scope(InAssetPayload.GetAssetData().PackageName);
 	if (UObject* Asset = InAssetPayload.LoadAsset())
 	{
 		// Find a unique default name for the duplicated asset
@@ -413,6 +394,7 @@ bool DuplicateAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAs
 	for (const TSharedRef<const FContentBrowserAssetFileItemDataPayload>& AssetPayload : InAssetPayloads)
 	{
 		// We need to potentially load the asset in order to duplicate it
+		FScopedLoadAllExternalObjects Scope(AssetPayload->GetAssetData().PackageName);
 		if (UObject* Asset = AssetPayload->LoadAsset())
 		{
 			ObjectsToDuplicate.Add(Asset);
@@ -546,7 +528,7 @@ bool CanDeleteAssetFolderItem(IAssetTools* InAssetTools, IAssetRegistry* InAsset
 		return false;
 	}
 
-	if (IsTopLevelFolder(InFolderPayload.GetInternalPath()))
+	if (ContentBrowserDataUtils::IsTopLevelFolder(InFolderPayload.GetInternalPath()))
 	{
 		ContentBrowserAssetData::SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotDeleteRootFolders", "Cannot delete root folders"));
 		return false;
@@ -676,7 +658,7 @@ bool CanRenameAssetFolderItem(IAssetTools* InAssetTools, const FContentBrowserAs
 		return false;
 	}
 
-	if (IsTopLevelFolder(InFolderPayload.GetInternalPath()))
+	if (ContentBrowserDataUtils::IsTopLevelFolder(InFolderPayload.GetInternalPath()))
 	{
 		ContentBrowserAssetData::SetOptionalErrorMessage(OutErrorMsg, LOCTEXT("Error_CannotRenameRootFolders", "Cannot rename root folders"));
 		return false;
@@ -735,6 +717,14 @@ bool CanRenameAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAsse
 		}
 	}
 
+	if (TSharedPtr<IAssetTypeActions> AssetTypeActions = InAssetPayload.GetAssetTypeActions())
+	{
+		if (!AssetTypeActions->CanRename(InAssetPayload.GetAssetData(), OutErrorMsg))
+		{
+			return false;
+		}
+	}
+
 	return true;
 }
 
@@ -780,6 +770,7 @@ bool RenameAssetFolderItem(IAssetRegistry* InAssetRegistry, const FContentBrowse
 bool RenameAssetFileItem(IAssetTools* InAssetTools, const FContentBrowserAssetFileItemDataPayload& InAssetPayload, const FString& InNewName)
 {
 	// We need to potentially load the asset in order to rename it
+	FScopedLoadAllExternalObjects Scope(InAssetPayload.GetAssetData().PackageName);
 	if (UObject* Asset = InAssetPayload.LoadAsset())
 	{
 		const FString PackagePath = FPackageName::GetLongPackagePath(Asset->GetOutermost()->GetName());
@@ -853,6 +844,7 @@ bool CopyAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFi
 	for (const TSharedRef<const FContentBrowserAssetFileItemDataPayload>& AssetPayload : InAssetPayloads)
 	{
 		// We need to potentially load the asset in order to duplicate it
+		FScopedLoadAllExternalObjects Scope(AssetPayload->GetAssetData().PackageName);
 		if (UObject* Asset = AssetPayload->LoadAsset())
 		{
 			AssetsToCopy.Add(Asset);
@@ -938,6 +930,7 @@ bool MoveAssetFileItems(TArrayView<const TSharedRef<const FContentBrowserAssetFi
 	for (const TSharedRef<const FContentBrowserAssetFileItemDataPayload>& AssetPayload : InAssetPayloads)
 	{
 		// We need to potentially load the asset in order to duplicate it
+		FScopedLoadAllExternalObjects Scope(AssetPayload->GetAssetData().PackageName);
 		if (UObject* Asset = AssetPayload->LoadAsset())
 		{
 			AssetsToMove.Add(Asset);
@@ -1095,6 +1088,30 @@ void GetClassItemAttribute(const FAssetData& InAssetData, const bool InIncludeMe
 	}
 }
 
+bool GetDiskSizeItemAttribute(const FAssetData& InAssetData, IAssetRegistry* InAssetRegistry, const bool InIncludeMetaData, FContentBrowserItemDataAttributeValue& OutAttributeValue)
+{
+	check(InAssetData.IsValid());
+	check(InAssetRegistry);
+
+	if (TOptional<FAssetPackageData> PackageData = InAssetRegistry->GetAssetPackageDataCopy(InAssetData.PackageName))
+	{
+		OutAttributeValue.SetValue(PackageData->DiskSize);
+
+		if (InIncludeMetaData)
+		{
+			static const FText DiskSizeDisplayName = LOCTEXT("AttributeDisplayName_DiskSize", "Disk Size");
+
+			FContentBrowserItemDataAttributeMetaData AttributeMetaData;
+			AttributeMetaData.AttributeType = UObject::FAssetRegistryTag::TT_Numerical;
+			AttributeMetaData.DisplayFlags = UObject::FAssetRegistryTag::TD_Memory;
+			AttributeMetaData.DisplayName = DiskSizeDisplayName;
+			OutAttributeValue.SetMetaData(MoveTemp(AttributeMetaData));
+		}
+		return true;
+	}
+	return false;
+}
+
 void GetGenericItemAttribute(const FName InTagKey, const FString& InTagValue, const FAssetPropertyTagCache::FClassPropertyTagCache& InClassPropertyTagCache, const bool InIncludeMetaData, FContentBrowserItemDataAttributeValue& OutAttributeValue)
 {
 	check(!InTagKey.IsNone());
@@ -1226,6 +1243,11 @@ bool GetAssetFileItemAttribute(const FContentBrowserAssetFileItemDataPayload& In
 			return false;
 		}
 
+		if (InAttributeKey == ContentBrowserItemAttributes::ItemDiskSize)
+		{
+			return GetDiskSizeItemAttribute(InAssetPayload.GetAssetData(), IAssetRegistry::Get(), InIncludeMetaData, OutAttributeValue);
+		}
+
 		if (InAttributeKey == ContentBrowserItemAttributes::ItemIsDeveloperContent)
 		{
 			const bool bIsDevelopersFolder = AssetViewUtils::IsDevelopersFolder(InAssetPayload.GetAssetData().PackageName.ToString());
@@ -1313,8 +1335,16 @@ bool GetAssetFileItemAttributes(const FContentBrowserAssetFileItemDataPayload& I
 {
 	// Hard-coded attribute keys
 	{
+		// Class
 		FContentBrowserItemDataAttributeValue& ClassAttributeValue = OutAttributeValues.Add(NAME_Class);
 		GetClassItemAttribute(InAssetPayload.GetAssetData(), InIncludeMetaData, ClassAttributeValue);
+
+		// Disk Size
+		FContentBrowserItemDataAttributeValue DiskSizeAttributeValue;
+		if (GetDiskSizeItemAttribute(InAssetPayload.GetAssetData(), IAssetRegistry::Get(), InIncludeMetaData, DiskSizeAttributeValue))
+		{
+			OutAttributeValues.Add(ContentBrowserItemAttributes::ItemDiskSize, MoveTemp(DiskSizeAttributeValue));
+		}
 	}
 
 	// Generic attribute keys

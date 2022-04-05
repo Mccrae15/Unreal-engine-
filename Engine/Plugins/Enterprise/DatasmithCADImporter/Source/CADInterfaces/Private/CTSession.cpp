@@ -17,30 +17,24 @@ namespace CADLibrary
 
 	bool FCTSession::SaveBrep(const FString& FilePath)
 	{
-		return CTKIO_SaveFile({ MainObjectId }, *FilePath, L"Ct");
+		return CTKIO_SaveFile({ MainObjectId }, *FilePath, TEXT("Ct"));
 	}
 
 	bool FCTSession::TopoFixes(double SewingToleranceFactor)
 	{
-		return CADLibrary::CTKIO_Repair(MainObjectId, ImportParams.StitchingTechnique, SewingToleranceFactor);
+		return CADLibrary::CTKIO_Repair(MainObjectId, ImportParams.GetStitchingTechnique(), SewingToleranceFactor);
 	}
 
 	void FCTSession::SetSceneUnit(double InMetricUnit)
 	{
-		ImportParams.MetricUnit = InMetricUnit;
+		ImportParams.SetMetricUnit(InMetricUnit);
 		CTKIO_ChangeUnit(InMetricUnit);
 	}
 
-
-	void FCTSession::SetImportParameters(float ChordTolerance, float MaxEdgeLength, float NormalTolerance, CADLibrary::EStitchingTechnique StitchingTechnique, bool bScaleUVMap)
+	void FCTSession::SetImportParameters(double ChordTolerance, double MaxEdgeLength, double NormalTolerance, CADLibrary::EStitchingTechnique StitchingTechnique)
 	{
-		ImportParams.ChordTolerance = ChordTolerance;
-		ImportParams.MaxEdgeLength = MaxEdgeLength;
-		ImportParams.MaxNormalAngle = NormalTolerance;
-		ImportParams.StitchingTechnique = StitchingTechnique;
-		ImportParams.bScaleUVMap = bScaleUVMap;
-
-		CTKIO_ChangeTesselationParameters(ImportParams.ChordTolerance, ImportParams.MaxEdgeLength, ImportParams.MaxNormalAngle);
+		ImportParams.SetTesselationParameters(ChordTolerance, MaxEdgeLength, NormalTolerance, StitchingTechnique);
+		CTKIO_ChangeTesselationParameters(ImportParams.GetChordTolerance(), ImportParams.GetMaxEdgeLength(), ImportParams.GetMaxNormalAngle());
 	}
 
 } // namespace CADLibrary

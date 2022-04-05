@@ -13,11 +13,32 @@
 #include "TextureCompressorModule.h"
 #include "PixelFormat.h"
 #include "EngineLogs.h"
+#include "Async/ParallelFor.h"
+#include "TextureBuildFunction.h"
+#include "DerivedDataBuildFunctionFactory.h"
+#include "DerivedDataSharedString.h"
+
 THIRD_PARTY_INCLUDES_START
 	#include "nvtt/nvtt.h"
 THIRD_PARTY_INCLUDES_END
 
 DEFINE_LOG_CATEGORY_STATIC(LogTextureFormatDXT, Log, All);
+
+class FDXTTextureBuildFunction final : public FTextureBuildFunction
+{
+	const UE::DerivedData::FUtf8SharedString& GetName() const final
+	{
+		static const UE::DerivedData::FUtf8SharedString Name(UTF8TEXTVIEW("DXTTexture"));
+		return Name;
+	}
+
+	void GetVersion(UE::DerivedData::FBuildVersionBuilder& Builder, ITextureFormat*& OutTextureFormatVersioning) const final
+	{
+		static FGuid Version(TEXT("c2d5dbc5-131c-4525-a332-843230076d99"));
+		Builder << Version;
+		OutTextureFormatVersioning = FModuleManager::GetModuleChecked<ITextureFormatModule>(TEXT("TextureFormatDXT")).GetTextureFormat();
+	}
+};
 
 /**
  * Macro trickery for supported format names.
@@ -97,9 +118,6 @@ struct FNVErrorHandler : public nvtt::ErrorHandler
 
 	bool bSuccess;
 };
-
-/** Critical section to isolate construction of nvtt objects */
-FCriticalSection GNVCompressionCriticalSection;
 
 /**
  * All state objects needed for NVTT.
@@ -234,7 +252,7 @@ public:
 /**
  * Asynchronous NVTT worker.
  */
-class FAsyncNVTTWorker : public FNonAbandonableTask 
+class FAsyncNVTTWorker
 {
 public:
 	/**
@@ -252,11 +270,6 @@ public:
 		bCompressionResults = Compressor->Compress();
 	}
 
-	FORCEINLINE TStatId GetStatId() const
-	{
-		RETURN_QUICK_DECLARE_CYCLE_STAT(FAsyncNVTTWorker, STATGROUP_ThreadPoolAsyncTasks);
-	}
-
 	/** Retrieve compression results. */
 	bool GetCompressionResults() const { return bCompressionResults; }
 
@@ -266,7 +279,6 @@ private:
 	/** true if compression was successful. */
 	bool bCompressionResults;
 };
-typedef FAsyncTask<FAsyncNVTTWorker> FAsyncNVTTTask;
 
 namespace CompressionSettings
 {
@@ -328,7 +340,6 @@ static bool CompressImageUsingNVTT(
 	{
 		FNVTTCompressor* Compressor = NULL;
 		{
-			FScopeLock ScopeLock(&GNVCompressionCriticalSection);
 			Compressor = new FNVTTCompressor(
 				SourceData,
 				PixelFormat,
@@ -343,7 +354,6 @@ static bool CompressImageUsingNVTT(
 		}
 		bool bSuccess = Compressor->Compress();
 		{
-			FScopeLock ScopeLock(&GNVCompressionCriticalSection);
 			delete Compressor;
 			Compressor = NULL;
 		}
@@ -357,7 +367,6 @@ static bool CompressImageUsingNVTT(
 	TIndirectArray<FNVTTCompressor> Compressors;
 	Compressors.Empty(NumBatches);
 	{
-		FScopeLock ScopeLock(&GNVCompressionCriticalSection);
 		const uint8* Src = (const uint8*)SourceData;
 		uint8* Dest = OutCompressedData.GetData();
 		for (int32 BatchIndex = 0; BatchIndex < NumBatches; ++BatchIndex)
@@ -380,28 +389,27 @@ static bool CompressImageUsingNVTT(
 	// Asynchronously compress each batch.
 	bool bSuccess = true;
 	{
-		TIndirectArray<FAsyncNVTTTask> AsyncTasks;
+		TArray<FAsyncNVTTWorker> AsyncTasks;
+		AsyncTasks.Reserve(NumBatches);
+
 		for (int32 BatchIndex = 0; BatchIndex < NumBatches; ++BatchIndex)
 		{
-			FAsyncNVTTTask* AsyncTask = new FAsyncNVTTTask(&Compressors[BatchIndex]);
-			AsyncTasks.Add(AsyncTask);
-#if WITH_EDITOR
-			AsyncTask->StartBackgroundTask(GLargeThreadPool);
-#else
-			AsyncTask->StartBackgroundTask();
-#endif
+			AsyncTasks.Emplace(&Compressors[BatchIndex]);
 		}
+
+		ParallelForTemplate(AsyncTasks.Num(), [&AsyncTasks](int32 TaskIndex)
+		{
+			AsyncTasks[TaskIndex].DoWork();
+		}, EParallelForFlags::Unbalanced);
+
 		for (int32 BatchIndex = 0; BatchIndex < NumBatches; ++BatchIndex)
 		{
-			FAsyncNVTTTask& AsyncTask = AsyncTasks[BatchIndex];
-			AsyncTask.EnsureCompletion();
-			bSuccess = bSuccess && AsyncTask.GetTask().GetCompressionResults();
+			bSuccess = bSuccess && AsyncTasks[BatchIndex].GetCompressionResults();
 		}
 	}
 
 	// Release compressors
 	{
-		FScopeLock ScopeLock(&GNVCompressionCriticalSection);
 		Compressors.Empty();
 	}
 
@@ -416,6 +424,12 @@ class FTextureFormatDXT : public ITextureFormat
 	virtual bool AllowParallelBuild() const override
 	{
 		return true;
+	}
+
+	virtual FName GetEncoderName(FName Format) const override
+	{
+		static const FName DXTName("EngineDXT");
+		return DXTName;
 	}
 
 	virtual uint16 GetVersion(
@@ -477,6 +491,7 @@ class FTextureFormatDXT : public ITextureFormat
 	virtual bool CompressImage(
 		const FImage& InImage,
 		const struct FTextureBuildSettings& BuildSettings,
+		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
 		FCompressedImage2D& OutCompressedImage
 		) const override
@@ -557,6 +572,8 @@ public:
 		}
 		return Singleton;
 	}
+
+	static inline UE::DerivedData::TBuildFunctionFactory<FDXTTextureBuildFunction> BuildFunctionFactory;
 };
 
 IMPLEMENT_MODULE(FTextureFormatDXTModule, TextureFormatDXT);

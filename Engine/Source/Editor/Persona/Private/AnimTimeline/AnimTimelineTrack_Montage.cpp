@@ -361,7 +361,7 @@ class SMontageSections : public SLeafWidget
 							SNew(SNumericEntryBox<float>)
 							.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
 							.MinValue(0.0f)
-							.MaxValue(AnimMontage->SequenceLength)
+							.MaxValue(AnimMontage->GetPlayLength())
 							.Value(Section.GetTime())
 							.AllowSpin(true)
 							.OnValueCommitted_Lambda([this, SectionIndex](float InValue, ETextCommit::Type InCommitType)
@@ -391,14 +391,14 @@ class SMontageSections : public SLeafWidget
 							SNew(SNumericEntryBox<int32>)
 							.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
 							.MinValue(0)
-							.MaxValue(AnimMontage->GetNumberOfFrames())
+							.MaxValue(AnimMontage->GetNumberOfSampledKeys())
 							.Value(AnimMontage->GetFrameAtTime(Section.GetTime()))
 							.AllowSpin(true)						
 							.OnValueCommitted_Lambda([this, SectionIndex](int32 InValue, ETextCommit::Type InCommitType)
 							{
 								if (AnimMontage->CompositeSections.IsValidIndex(SectionIndex))
 								{
-									float NewTime = FMath::Clamp(AnimMontage->GetTimeAtFrame(InValue), 0.0f, AnimMontage->SequenceLength);
+									float NewTime = FMath::Clamp(AnimMontage->GetTimeAtFrame(InValue), 0.0f, AnimMontage->GetPlayLength());
 									WeakModel.Pin()->GetMontagePanel()->GetAnimMontagePanel()->SetSectionTime(SectionIndex, NewTime);
 								}
 
@@ -500,14 +500,14 @@ TSharedRef<SWidget> FAnimTimelineTrack_Montage::BuildMontageSubMenu()
 			MenuBuilder.AddMenuEntry(
 				LOCTEXT("FindParent", "Find parent"),
 				LOCTEXT("FindParentInCBToolTip", "Find parent in Content Browser"),
-				FSlateIcon("EditorStyle", "PropertyWindow.Button_Browse"),
+				FSlateIcon("EditorStyle", "Icons.Search"),
 				FUIAction(FExecuteAction::CreateSP(this, &FAnimTimelineTrack_Montage::OnFindParentClassInContentBrowserClicked))
 			);
 
 			MenuBuilder.AddMenuEntry(
 				LOCTEXT("EditParent", "Edit parent"),
 				LOCTEXT("EditParentToolTip", "Open parent in editor"),
-				FSlateIcon("EditorStyle", "PropertyWindow.Button_Edit"),
+				FSlateIcon("EditorStyle", "Icons.Edit"),
 				FUIAction(FExecuteAction::CreateSP(this, &FAnimTimelineTrack_Montage::OnEditParentClassClicked))
 			);
 		}
@@ -518,11 +518,10 @@ TSharedRef<SWidget> FAnimTimelineTrack_Montage::BuildMontageSubMenu()
 		// Slots
 		MenuBuilder.BeginSection("AnimMontageSlots", LOCTEXT("Slots", "Slots") );
 		{
-			MenuBuilder.AddMenuEntry(
+			MenuBuilder.AddSubMenu(
 				LOCTEXT("NewSlot", "New Slot"),
-				LOCTEXT("NewSlotToolTip", "Adds a new Slot"),
-				FSlateIcon(), 
-				FUIAction(FExecuteAction::CreateSP(&MontageModel->GetMontagePanel()->GetAnimMontagePanel().Get(), &SAnimMontagePanel::OnNewSlotClicked))
+				LOCTEXT("NewSlotToolTip", "Adds a new Slot"), 
+				FNewMenuDelegate::CreateSP(&MontageModel->GetMontagePanel()->GetAnimMontagePanel().Get(), &SAnimMontagePanel::BuildNewSlotMenu)
 			);
 
 			MenuBuilder.AddMenuEntry(

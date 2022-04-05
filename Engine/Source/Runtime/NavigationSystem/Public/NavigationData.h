@@ -24,6 +24,8 @@ class INavLinkCustomInterface;
 class UNavArea;
 class UPrimitiveComponent;
 
+// LWC_TODO_AI: A lot of the floats in this file should be FVector::FReal. Not until after 5.0!
+
 USTRUCT()
 struct NAVIGATIONSYSTEM_API FSupportedAreaData
 {
@@ -36,7 +38,7 @@ struct NAVIGATIONSYSTEM_API FSupportedAreaData
 	int32 AreaID;
 
 	UPROPERTY(transient)
-	const UClass* AreaClass;
+	TObjectPtr<const UClass> AreaClass;
 
 	FSupportedAreaData(TSubclassOf<UNavArea> NavAreaClass = NULL, int32 InAreaID = INDEX_NONE);
 };
@@ -224,7 +226,9 @@ struct NAVIGATIONSYSTEM_API FNavigationPath : public TSharedFromThis<FNavigation
 	  * This function will NOT reset setup variables like goal actor, filter, observer, etc */
 	virtual void ResetForRepath();
 
+	UE_DEPRECATED(5.0, "Use version that takes LifeTime instead.")
 	virtual void DebugDraw(const ANavigationData* NavData, FColor PathColor, class UCanvas* Canvas, bool bPersistent, const uint32 NextPathPointIndex = 0) const;
+	virtual void DebugDraw(const ANavigationData* NavData, const FColor PathColor, class UCanvas* Canvas, const bool bPersistent, const float LifeTime, const uint32 NextPathPointIndex = 0) const;
 	
 #if ENABLE_VISUAL_LOG
 	virtual void DescribeSelfToVisLog(struct FVisualLogEntry* Snapshot) const;
@@ -310,7 +314,7 @@ public:
 	template<typename PathClass>
 	FORCEINLINE const PathClass* CastPath() const
 	{
-		return PathType.IsA(PathClass::Type) ? static_cast<PathClass*>(this) : NULL;
+		return PathType.IsA(PathClass::Type) ? static_cast<const PathClass*>(this) : NULL;
 	}
 
 	template<typename PathClass>
@@ -496,7 +500,7 @@ class NAVIGATIONSYSTEM_API ANavigationData : public AActor, public INavigationDa
 	GENERATED_UCLASS_BODY()
 	
 	UPROPERTY(transient, duplicatetransient)
-	UPrimitiveComponent* RenderingComp;
+	TObjectPtr<UPrimitiveComponent> RenderingComp;
 
 protected:
 	UPROPERTY()
@@ -586,6 +590,11 @@ public:
 	virtual bool SupportsRuntimeGeneration() const;
 	virtual bool SupportsStreaming() const;
 	virtual void OnNavigationBoundsChanged();
+
+	virtual void FillNavigationDataChunkActor(const FBox& QueryBounds, class ANavigationDataChunkActor& DataChunkActor, FBox& OutTilesBounds) const {};
+	virtual void OnStreamingNavDataAdded(class ANavigationDataChunkActor& InActor) {};
+	virtual void OnStreamingNavDataRemoved(class ANavigationDataChunkActor& InActor) {};
+	
 	virtual void OnStreamingLevelAdded(ULevel* InLevel, UWorld* InWorld) {};
 	virtual void OnStreamingLevelRemoved(ULevel* InLevel, UWorld* InWorld) {};
 	
@@ -649,6 +658,12 @@ public:
 	 *	SuspendedDirtyAreas care needs to be taken to not use this feature for 
 	 *	extended periods of time - otherwise SuspendedDirtyAreas can get very large. */
 	virtual void SetRebuildingSuspended(const bool bNewSuspend);
+
+	/** Retrieves if this NavData instance's navigation generation is suspended */
+	virtual bool IsRebuildingSuspended() const { return bRebuildingSuspended; }
+
+	/** Retrieves the number of suspended dirty areas */
+	virtual int32 GetNumSuspendedDirtyAreas() const { return SuspendedDirtyAreas.Num(); }
 	
 	/** releases navigation generator if any has been created */
 protected:
@@ -682,11 +697,11 @@ public:
 		ObservedPaths.Add(SharedPath);
 	}
 
-    void RequestRePath(FNavPathSharedPtr Path, ENavPathUpdateType::Type Reason)
-    {
-	    check(IsInGameThread());
-	    RepathRequests.AddUnique(FNavPathRecalculationRequest(Path, Reason)); 
-    }
+	void RequestRePath(FNavPathSharedPtr Path, ENavPathUpdateType::Type Reason)
+	{
+		check(IsInGameThread());
+		RepathRequests.AddUnique(FNavPathRecalculationRequest(Path, Reason)); 
+	}
 
 protected:
 	/** removes from ActivePaths all paths that no longer have shared references (and are invalid in fact) */
@@ -712,7 +727,9 @@ public:
 	//----------------------------------------------------------------------//
 	// Debug                                                                
 	//----------------------------------------------------------------------//
-	void DrawDebugPath(FNavigationPath* Path, FColor PathColor = FColor::White, class UCanvas* Canvas = NULL, bool bPersistent = true, const uint32 NextPathPointIndex = 0) const;
+	UE_DEPRECATED(5.0, "Use version that takes LifeTime instead.")
+	void DrawDebugPath(FNavigationPath* Path, const FColor PathColor, class UCanvas* Canvas, const bool bPersistent, const uint32 NextPathPointIndex) const;
+	void DrawDebugPath(FNavigationPath* Path, const FColor PathColor = FColor::White, class UCanvas* Canvas = nullptr, const bool bPersistent = true, const float LifeTime = -1.f, const uint32 NextPathPointIndex = 0) const;
 
 	FORCEINLINE bool IsDrawingEnabled() const { return bEnableDrawing; }
 
@@ -919,6 +936,10 @@ public:
 
 	/** updates state of rendering component */
 	void SetNavRenderingEnabled(bool bEnable);
+
+#if WITH_EDITOR
+	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return false; }
+#endif
 
 protected:
 	void InstantiateAndRegisterRenderingComponent();

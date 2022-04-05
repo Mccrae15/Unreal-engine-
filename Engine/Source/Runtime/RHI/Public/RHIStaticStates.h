@@ -87,10 +87,14 @@ private:
 			check(!GIsRHIInitialized || !GRHISupportsRHIThread);
 			StateRHI = InitializerType::CreateRHI();
 		}
-		virtual void ReleaseRHI() override
+		virtual void ReleaseRHI() override final
 		{
 			check(!GIsRHIInitialized || !GRHISupportsRHIThread);
 			StateRHI.SafeRelease();
+		}
+		virtual void ReleaseResource() override final
+		{
+			FRenderResource::ReleaseResource();
 		}
 
 		~FStaticStateResource()

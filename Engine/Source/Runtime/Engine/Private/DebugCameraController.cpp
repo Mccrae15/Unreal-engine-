@@ -252,7 +252,7 @@ AActor* ADebugCameraController::GetSelectedActor() const
 void ADebugCameraController::Select( FHitResult const& Hit )
 {
 	// store selection
-	SelectedActor = Hit.GetActor();
+	SelectedActor = Hit.HitObjectHandle.FetchActor();
 	SelectedComponent = Hit.Component.Get();
 	SelectedHitPoint = Hit;
 
@@ -340,7 +340,7 @@ ASpectatorPawn* ADebugCameraController::SpawnSpectatorPawn()
 			if (SpawnedSpectator)
 			{
 				SpawnedSpectator->PossessedBy(this);
-				SpawnedSpectator->PawnClientRestart();
+				SpawnedSpectator->DispatchRestart(true);
 				if (SpawnedSpectator->PrimaryActorTick.bStartWithTickEnabled)
 				{
 					SpawnedSpectator->SetActorTickEnabled(true);
@@ -565,7 +565,7 @@ void ADebugCameraController::UpdateRotationForOrbit(float DeltaTime)
 
 			// Handle either forward or lateral motion but not both, because small forward
 			// motion deltas while moving laterally cause the distance from pivot to drift
-			if (FMath::IsNearlyZero(MoveDeltaObj.Y, 0.01f))
+			if (FMath::IsNearlyZero(MoveDeltaObj.Y, FVector::FReal(0.01)))
 			{
 				// Clamp delta to avoid flipping to opposite view
 				const float ForwardScale = 3.0f;

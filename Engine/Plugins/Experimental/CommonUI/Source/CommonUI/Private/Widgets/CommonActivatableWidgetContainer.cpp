@@ -124,6 +124,7 @@ void UCommonActivatableWidgetContainerBase::ReleaseSlateResources(bool bReleaseC
 	MyOverlay.Reset();
 	MyInputGuard.Reset();
 	MySwitcher.Reset();
+	ReleasedWidgets.Empty();
 
 	GeneratedWidgetsPool.ReleaseAllSlateResources();
 }
@@ -192,6 +193,7 @@ void UCommonActivatableWidgetContainerBase::HandleSwitcherIsTransitioningChanged
 {
 	// While the switcher is transitioning, put up the guard to intercept all input
 	MyInputGuard->SetVisibility(bIsTransitioning ? EVisibility::Visible : EVisibility::Collapsed);
+	OnTransitioningChanged.Broadcast(this, bIsTransitioning);
 }
 
 void UCommonActivatableWidgetContainerBase::HandleActiveWidgetDeactivated(UCommonActivatableWidget* DeactivatedWidget)
@@ -218,7 +220,7 @@ void UCommonActivatableWidgetContainerBase::ReleaseWidget(const TSharedRef<SWidg
 		ReleasedWidgets.Add(WidgetToRelease);
 		if (ReleasedWidgets.Num() == 1)
 		{
-			FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this,
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this,
 				[this](float)
 				{
 					QUICK_SCOPE_CYCLE_COUNTER(STAT_UCommonActivatableWidgetContainerBase_ReleaseWidget);
@@ -274,14 +276,28 @@ void UCommonActivatableWidgetContainerBase::HandleActiveIndexChanged(int32 Activ
 	OnDisplayedWidgetChanged().Broadcast(DisplayedWidget);
 }
 
-UCommonActivatableWidget* UCommonActivatableWidgetStack::GetRootContent() const
+void UCommonActivatableWidgetContainerBase::SetTransitionDuration(float Duration)
 {
-	return RootContentWidget;
+	TransitionDuration = Duration;
+	if (MySwitcher.IsValid())
+	{
+		MySwitcher->SetTransition(TransitionDuration, TransitionCurveType);
+	}
+}
+
+float UCommonActivatableWidgetContainerBase::GetTransitionDuration() const
+{
+	return TransitionDuration;
 }
 
 //////////////////////////////////////////////////////////////////////////
 // UCommonActivatableWidgetStack
 //////////////////////////////////////////////////////////////////////////
+
+UCommonActivatableWidget* UCommonActivatableWidgetStack::GetRootContent() const
+{
+	return RootContentWidget;
+}
 
 void UCommonActivatableWidgetStack::SynchronizeProperties()
 {

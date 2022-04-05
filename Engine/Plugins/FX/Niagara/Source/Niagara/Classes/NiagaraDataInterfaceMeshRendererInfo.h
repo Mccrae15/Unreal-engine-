@@ -54,12 +54,12 @@ protected:
 	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;
 	virtual void PushToRenderThreadImpl() override;
 
-	void GetNumMeshes(FVectorVMContext& Context);
-	void GetMeshLocalBounds(FVectorVMContext& Context);
+	void GetNumMeshes(FVectorVMExternalFunctionContext& Context);
+	void GetMeshLocalBounds(FVectorVMExternalFunctionContext& Context);
 
 	/** The name of the mesh renderer */
 	UPROPERTY(EditAnywhere, Category = "Source")
-	UNiagaraMeshRendererProperties* MeshRenderer;
+	TObjectPtr<UNiagaraMeshRendererProperties> MeshRenderer;
 
 	FNDIMeshRendererInfoPtr Info;
 };

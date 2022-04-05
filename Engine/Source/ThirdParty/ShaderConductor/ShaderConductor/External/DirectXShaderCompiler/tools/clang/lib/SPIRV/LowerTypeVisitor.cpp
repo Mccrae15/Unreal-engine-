@@ -36,23 +36,19 @@ namespace clang {
 namespace spirv {
 
 bool LowerTypeVisitor::visit(SpirvFunction *fn, Phase phase) {
-  if (phase == Visitor::Phase::Init) {
+  if (phase == Visitor::Phase::Done) {
     // Lower the function return type.
     const SpirvType *spirvReturnType =
         lowerType(fn->getAstReturnType(), SpirvLayoutRule::Void,
                   /*isRowMajor*/ llvm::None,
                   /*SourceLocation*/ {});
-    fn->setReturnType(const_cast<SpirvType *>(spirvReturnType));
+    fn->setReturnType(spirvReturnType);
 
     // Lower the function parameter types.
-    auto paramQualTypes = fn->getAstParamTypes();
+    auto params = fn->getParameters();
     llvm::SmallVector<const SpirvType *, 4> spirvParamTypes;
-    for (auto qualtype : paramQualTypes) {
-      const auto *spirvParamType =
-          lowerType(qualtype, SpirvLayoutRule::Void,
-                    /*isRowMajor*/ llvm::None, fn->getSourceLocation());
-      spirvParamTypes.push_back(spvContext.getPointerType(
-          spirvParamType, spv::StorageClass::Function));
+    for (auto *param : params) {
+      spirvParamTypes.push_back(param->getResultType());
     }
     fn->setFunctionType(
         spvContext.getFunctionType(spirvReturnType, spirvParamTypes));
@@ -61,6 +57,9 @@ bool LowerTypeVisitor::visit(SpirvFunction *fn, Phase phase) {
 }
 
 bool LowerTypeVisitor::visitInstruction(SpirvInstruction *instr) {
+  if (spvContext.hasLoweredType(instr))
+    return true;
+
   const QualType astType = instr->getAstResultType();
   const SpirvType *hybridType = instr->getResultType();
 
@@ -76,6 +75,33 @@ bool LowerTypeVisitor::visitInstruction(SpirvInstruction *instr) {
     const SpirvType *spirvType = lowerType(hybridType, instr->getLayoutRule(),
                                            instr->getSourceLocation());
     instr->setResultType(spirvType);
+  }
+
+  // Lower QualType of DebugLocalVariable or DebugGlobalVariable to SpirvType.
+  // Since debug local/global variable must have a debug type, SpirvEmitter sets
+  // its QualType. Here we lower it to SpirvType and DebugTypeVisitor will lower
+  // the SpirvType to debug type.
+  if (auto *debugInstruction = dyn_cast<SpirvDebugInstruction>(instr)) {
+    const QualType debugQualType = debugInstruction->getDebugQualType();
+    if (!debugQualType.isNull()) {
+      assert(isa<SpirvDebugLocalVariable>(debugInstruction) ||
+             isa<SpirvDebugGlobalVariable>(debugInstruction));
+      const SpirvType *spirvType =
+          lowerType(debugQualType, instr->getLayoutRule(),
+                    /*isRowMajor*/ llvm::None, instr->getSourceLocation());
+      debugInstruction->setDebugSpirvType(spirvType);
+    } else if (const auto *debugSpirvType =
+                   debugInstruction->getDebugSpirvType()) {
+      // When it does not have a QualType, SpirvEmitter or DeclResultIdMapper
+      // generates a hybrid type. In that case, we keep the hybrid type for the
+      // DebugGlobalVariable, not QualType. We have to lower the hybrid type and
+      // update the SpirvType for the DebugGlobalVariable.
+      assert(isa<SpirvDebugGlobalVariable>(debugInstruction) &&
+             isa<HybridType>(debugSpirvType));
+      const SpirvType *loweredSpirvType = lowerType(
+          debugSpirvType, instr->getLayoutRule(), instr->getSourceLocation());
+      debugInstruction->setDebugSpirvType(loweredSpirvType);
+    }
   }
 
   // Instruction-specific type updates
@@ -97,6 +123,14 @@ bool LowerTypeVisitor::visitInstruction(SpirvInstruction *instr) {
     if (auto *var = dyn_cast<SpirvVariable>(instr)) {
       if (var->hasBinding() && var->getHlslUserType().empty()) {
         var->setHlslUserType(getHlslResourceTypeName(var->getAstResultType()));
+      }
+
+      auto vkImgFeatures = spvContext.getVkImageFeaturesForSpirvVariable(var);
+      if (vkImgFeatures.format != spv::ImageFormat::Unknown) {
+        if (const auto *imageType = dyn_cast<ImageType>(resultType)) {
+          resultType = spvContext.getImageType(imageType, vkImgFeatures.format);
+          instr->setResultType(resultType);
+        }
       }
     }
     const SpirvType *pointerType =
@@ -166,9 +200,12 @@ const SpirvType *LowerTypeVisitor::lowerType(const SpirvType *type,
     // lower all fields of the struct.
     auto loweredFields =
         populateLayoutInformation(hybridStruct->getFields(), rule);
-    return spvContext.getStructType(
+    const StructType *structType = spvContext.getStructType(
         loweredFields, hybridStruct->getStructName(),
         hybridStruct->isReadOnly(), hybridStruct->getInterfaceType());
+    if (const auto *decl = spvContext.getStructDeclForSpirvType(type))
+      spvContext.registerStructDeclForSpirvType(structType, decl);
+    return structType;
   }
   // Void, bool, int, float cannot be further lowered.
   // Matrices cannot contain hybrid types. Only matrices of scalars are valid.
@@ -257,6 +294,11 @@ const SpirvType *LowerTypeVisitor::lowerType(QualType type,
         case BuiltinType::Int:
           return spvContext.getSIntType(32);
         case BuiltinType::UInt:
+        case BuiltinType::ULong:
+        // The 'int8_t4_packed' and 'uint8_t4_packed' types are in fact 32-bit
+        // unsigned integers.
+        case BuiltinType::Int8_4Packed:
+        case BuiltinType::UInt8_4Packed:
           return spvContext.getUIntType(32);
 
           // void and bool
@@ -288,6 +330,14 @@ const SpirvType *LowerTypeVisitor::lowerType(QualType type,
           return spvContext.getSIntType(16);
         case BuiltinType::UShort: // uint16_t
           return spvContext.getUIntType(16);
+
+        // 8-bit integer types
+        case BuiltinType::UChar:
+        case BuiltinType::Char_U:
+          return spvContext.getUIntType(8);
+        case BuiltinType::SChar:
+        case BuiltinType::Char_S:
+          return spvContext.getSIntType(8);
 
           // Relaxed precision types
         case BuiltinType::Min10Float:
@@ -323,6 +373,26 @@ const SpirvType *LowerTypeVisitor::lowerType(QualType type,
 
   // AST vector/matrix types are TypedefType of TemplateSpecializationType. We
   // handle them via HLSL type inspection functions.
+
+  // When the memory layout rule is FxcCTBuffer, typeNxM matrix with M > 1 and
+  // N == 1 consists of M vectors where each vector has a single element. Since
+  // SPIR-V does not have a vector with single element, we have to use an
+  // OpTypeArray with ArrayStride 16 instead of OpTypeVector. We have the same
+  // rule for column_major typeNxM and row_major typeMxN.
+  if (rule == SpirvLayoutRule::FxcCTBuffer && hlsl::IsHLSLMatType(type)) {
+    uint32_t rowCount = 0, colCount = 0;
+    hlsl::GetHLSLMatRowColCount(type, rowCount, colCount);
+    if (!alignmentCalc.useRowMajor(isRowMajor, type))
+      std::swap(rowCount, colCount);
+    if (rowCount == 1) {
+      useArrayForMat1xN = true;
+      auto elemType = hlsl::GetHLSLMatElementType(type);
+      uint32_t stride = 0;
+      alignmentCalc.getAlignmentAndSize(type, rule, isRowMajor, &stride);
+      return spvContext.getArrayType(
+          lowerType(elemType, rule, isRowMajor, srcLoc), colCount, stride);
+    }
+  }
 
   { // Vector types
     QualType elemType = {};
@@ -365,8 +435,10 @@ const SpirvType *LowerTypeVisitor::lowerType(QualType type,
     // (ClassTemplateSpecializationDecl is a subclass of CXXRecordDecl, which
     // is then a subclass of RecordDecl.) So we need to check them before
     // checking the general struct type.
-    if (const auto *spvType = lowerResourceType(type, rule, srcLoc))
+    if (const auto *spvType = lowerResourceType(type, rule, srcLoc)) {
+      spvContext.registerStructDeclForSpirvType(spvType, decl);
       return spvType;
+    }
 
     // Collect all fields' information.
     llvm::SmallVector<HybridStructType::FieldInfo, 8> fields;
@@ -391,7 +463,10 @@ const SpirvType *LowerTypeVisitor::lowerType(QualType type,
 
     auto loweredFields = populateLayoutInformation(fields, rule);
 
-    return spvContext.getStructType(loweredFields, decl->getName());
+    const auto *spvStructType =
+        spvContext.getStructType(loweredFields, decl->getName());
+    spvContext.registerStructDeclForSpirvType(spvStructType, decl);
+    return spvStructType;
   }
 
   // Array type
@@ -477,10 +552,14 @@ const SpirvType *LowerTypeVisitor::lowerResourceType(QualType type,
         (dim = spv::Dim::Cube, isArray = true, name == "TextureCubeArray")) {
       const bool isMS = (name == "Texture2DMS" || name == "Texture2DMSArray");
       const auto sampledType = hlsl::GetHLSLResourceResultType(type);
+      auto loweredType = lowerType(getElementType(astContext, sampledType), rule,
+                    /*isRowMajor*/ llvm::None, srcLoc);
+      // Treat bool textures as uint for compatibility with OpTypeImage.
+      if (loweredType == spvContext.getBoolType()) {
+        loweredType = spvContext.getUIntType(32);
+      }
       return spvContext.getImageType(
-          lowerType(getElementType(astContext, sampledType), rule,
-                    /*isRowMajor*/ llvm::None, srcLoc),
-          dim, ImageType::WithDepth::Unknown, isArray, isMS,
+          loweredType, dim, ImageType::WithDepth::Unknown, isArray, isMS,
           ImageType::WithSampler::Yes, spv::ImageFormat::Unknown);
     }
 
@@ -510,6 +589,9 @@ const SpirvType *LowerTypeVisitor::lowerResourceType(QualType type,
   if (name == "RaytracingAccelerationStructure") {
     return spvContext.getAccelerationStructureTypeNV();
   }
+
+  if (name == "RayQuery")
+    return spvContext.getRayQueryTypeKHR();
 
   if (name == "StructuredBuffer" || name == "RWStructuredBuffer" ||
       name == "AppendStructuredBuffer" || name == "ConsumeStructuredBuffer") {
@@ -543,15 +625,22 @@ const SpirvType *LowerTypeVisitor::lowerResourceType(QualType type,
         s, llvm::APInt(32, 1), clang::ArrayType::Normal, 0);
     alignmentCalc.getAlignmentAndSize(sArray, rule, isRowMajor, &arrayStride);
 
-    // UE Change Begin: Don't allow padding in structured buffers, we can't support VK_EXT_scalar_block_layout due to low coverage on Android devices
+    // UE Change Begin: Don't allow padding in structured buffers, we can't
+    // support VK_EXT_scalar_block_layout due to low coverage on Android devices
+    if (spvOptions.disableScalarBlockLayout)
     {
       uint32_t packedArrayStride = 0;
-      alignmentCalc.getAlignmentAndSize(sArray, SpirvLayoutRule::FxcSBuffer, isRowMajor, &packedArrayStride);
+      alignmentCalc.getAlignmentAndSize(sArray, SpirvLayoutRule::FxcSBuffer,
+                                        isRowMajor, &packedArrayStride);
       if (packedArrayStride != arrayStride) {
-        emitError("cannot instantiate %0 with given packed alignment; 'VK_EXT_scalar_block_layout' not supported", srcLoc) << name;
+        emitError("cannot instantiate %0 with given packed alignment; "
+                  "'VK_EXT_scalar_block_layout' not supported",
+                  srcLoc)
+            << name;
       }
     }
-    // UE Change End: Don't allow padding in structured buffers, we can't support VK_EXT_scalar_block_layout due to low coverage on Android devices
+    // UE Change End: Don't allow padding in structured buffers, we can't
+    // support VK_EXT_scalar_block_layout due to low coverage on Android devices
 
     // We have a runtime array of structures. So:
     // The stride of the runtime array is the size of the struct.
@@ -650,13 +739,18 @@ const SpirvType *LowerTypeVisitor::lowerResourceType(QualType type,
 
   if (name == "SubpassInput" || name == "SubpassInputMS") {
     const auto sampledType = hlsl::GetHLSLResourceResultType(type);
+
+	// UE Change Begin: Force subpass OpTypeImage depth flag to be set to 0
+
+    const ImageType::WithDepth depthType = getCodeGenOptions().forceSubpassImageDepthFalse ? ImageType::WithDepth::No : ImageType::WithDepth::Unknown; 
     return spvContext.getImageType(
         lowerType(getElementType(astContext, sampledType), rule,
                   /*isRowMajor*/ llvm::None, srcLoc),
-        spv::Dim::SubpassData, ImageType::WithDepth::Unknown,
+        spv::Dim::SubpassData, depthType,
         /*isArrayed=*/false,
         /*isMultipleSampled=*/name == "SubpassInputMS",
         ImageType::WithSampler::No, spv::ImageFormat::Unknown);
+	// UE Change End: Force subpass OpTypeImage depth flag to be set to 0
   }
 
   return nullptr;
@@ -673,18 +767,29 @@ LowerTypeVisitor::translateSampledTypeToImageFormat(QualType sampledType,
     if (const auto *builtinType = ty->getAs<BuiltinType>()) {
       switch (builtinType->getKind()) {
       case BuiltinType::Int:
+      case BuiltinType::Min12Int:
+      case BuiltinType::Min16Int:
         return elemCount == 1 ? spv::ImageFormat::R32i
                               : elemCount == 2 ? spv::ImageFormat::Rg32i
                                                : spv::ImageFormat::Rgba32i;
       case BuiltinType::UInt:
+      case BuiltinType::Min16UInt:
         return elemCount == 1 ? spv::ImageFormat::R32ui
                               : elemCount == 2 ? spv::ImageFormat::Rg32ui
                                                : spv::ImageFormat::Rgba32ui;
       case BuiltinType::Float:
       case BuiltinType::HalfFloat:
+      case BuiltinType::Min10Float:
+      case BuiltinType::Min16Float:
         return elemCount == 1 ? spv::ImageFormat::R32f
                               : elemCount == 2 ? spv::ImageFormat::Rg32f
                                                : spv::ImageFormat::Rgba32f;
+      case BuiltinType::LongLong:
+        if (elemCount == 1)
+          return spv::ImageFormat::R64i;
+      case BuiltinType::ULongLong:
+        if (elemCount == 1)
+          return spv::ImageFormat::R64ui;
       default:
         // Other sampled types unimplemented or irrelevant.
         break;
@@ -815,6 +920,7 @@ LowerTypeVisitor::populateLayoutInformation(
 
     // Each structure-type member must have an Offset Decoration.
     loweredField.offset = offset;
+    loweredField.sizeInBytes = memberSize;
     offset += memberSize;
 
     // Each structure-type member that is a matrix or array-of-matrices must be

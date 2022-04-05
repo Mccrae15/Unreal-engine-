@@ -721,7 +721,15 @@ TArray<FARTraceResult> FAppleARKitSystem::OnLineTraceTrackedObjects( const FVect
 				};
 				
 				// GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Blue, FString::Printf(TEXT("Hit Test At Screen Position: x: %f, y: %f"), NormalizedImagePosition.X, NormalizedImagePosition.Y));
-				
+
+				//
+				// TODO: Re-enable deprecation warnings after updating the following code to use raycasting.
+				//
+				//   - 'ARHitTestResult' is deprecated: first deprecated in iOS 14.0 - Use raycasting
+				//   - 'hitTest:types:' is deprecated: first deprecated in iOS 14.0 - Use [ARSession raycast:]
+				//
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+
 				// First run hit test against existing planes with extents (converting & filtering results as we go)
 				if (!!(TraceChannels & EARLineTraceChannels::PlaneUsingExtent) || !!(TraceChannels & EARLineTraceChannels::PlaneUsingBoundaryPolygon))
 				{
@@ -772,6 +780,8 @@ TArray<FARTraceResult> FAppleARKitSystem::OnLineTraceTrackedObjects( const FVect
 						}
 					}
 				}
+
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 		}
 #endif
@@ -1291,17 +1301,39 @@ void FAppleARKitSystem::AddReferencedObjects( FReferenceCollector& Collector )
 		Collector.AddReferencedObject(TrackedGeometryGroup.ARComponent);
 	}
 
-	Collector.AddReferencedObjects(Pins);
-	Collector.AddReferencedObject(CameraImage);
-	Collector.AddReferencedObject(CameraDepth);
-	Collector.AddReferencedObjects(CandidateImages);
-	Collector.AddReferencedObjects(CandidateObjects);
-	Collector.AddReferencedObject(TimecodeProvider);
-	
-	Collector.AddReferencedObject(SceneDepthMap);
-	Collector.AddReferencedObject(SceneDepthConfidenceMap);
-
-	if(LightEstimate)
+	if (Pins.Num())
+	{
+		Collector.AddReferencedObjects(Pins);
+	}
+	if (CameraImage)
+	{
+		Collector.AddReferencedObject(CameraImage);
+	}
+	if (CameraDepth)
+	{
+		Collector.AddReferencedObject(CameraDepth);
+	}
+	if (CandidateImages.Num())
+	{
+		Collector.AddReferencedObjects(CandidateImages);
+	}
+	if (CandidateObjects.Num())
+	{
+		Collector.AddReferencedObjects(CandidateObjects);
+	}
+	if (TimecodeProvider)
+	{
+		Collector.AddReferencedObject(TimecodeProvider);
+	}
+	if (SceneDepthMap)
+	{
+		Collector.AddReferencedObject(SceneDepthMap);
+	}
+	if (SceneDepthConfidenceMap)
+	{
+		Collector.AddReferencedObject(SceneDepthConfidenceMap);
+	}
+	if (LightEstimate)
 	{
 		Collector.AddReferencedObject(LightEstimate);
 	}

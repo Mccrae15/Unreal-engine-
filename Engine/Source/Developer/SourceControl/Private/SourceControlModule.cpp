@@ -5,6 +5,7 @@
 #include "SSourceControlLogin.h"
 #include "SourceControlOperations.h"
 #include "SourceControlHelpers.h"
+#include "SourceControlAssetDataCache.h"
 
 #if SOURCE_CONTROL_WITH_SLATE
 	#include "Widgets/DeclarativeSyntaxSupport.h"
@@ -61,10 +62,13 @@ void FSourceControlModule::StartupModule()
 	FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
 	MessageLogModule.RegisterLogListing("SourceControl", LOCTEXT("SourceControlLogLabel", "Source Control"));
 #endif
+
+	AssetDataCache.Startup();
 }
 
 void FSourceControlModule::ShutdownModule()
 {
+	AssetDataCache.Shutdown();
 	// close the current provider
 	GetProvider().Close();
 
@@ -93,6 +97,9 @@ void FSourceControlModule::SaveSettings()
 void FSourceControlModule::ShowLoginDialog(const FSourceControlLoginClosed& InOnSourceControlLoginClosed, ELoginWindowMode::Type InLoginWindowMode, EOnLoginWindowStartup::Type InOnLoginWindowStartup)
 {
 #if SOURCE_CONTROL_WITH_SLATE
+	// Avoid continue running tasks while the dialog is displayed. Any change in textboxes could affect the connection status.
+	AssetDataCache.OnSourceControlDialogShown();
+
 	// Get Active Provider Name
 	ActiveProviderName = GetProvider().GetName().ToString();
 
@@ -126,7 +133,7 @@ void FSourceControlModule::ShowLoginDialog(const FSourceControlLoginClosed& InOn
 		// Create the window
 		SourceControlLoginWindowPtr = SNew(SWindow)
 			.Title( LOCTEXT("SourceControlLoginTitle", "Source Control Login") )
-			.HasCloseButton(false)
+			.HasCloseButton(true)
 			.SupportsMaximize(false) 
 			.SupportsMinimize(false)
 			.SizingRule( ESizingRule::Autosized );
@@ -136,13 +143,9 @@ void FSourceControlModule::ShowLoginDialog(const FSourceControlLoginClosed& InOn
 
 		// Setup the content for the created login window.
 		SourceControlLoginWindowPtr->SetContent(
-			SNew(SBox)
-			.WidthOverride(700.0f)
-			[
 				SAssignNew(SourceControlLoginPtr, SSourceControlLogin)
 				.ParentWindow(SourceControlLoginWindowPtr)
 				.OnSourceControlLoginClosed(InOnSourceControlLoginClosed)
-			]
 			);
 
 		TSharedPtr<SWindow> RootWindow = FGlobalTabmanager::Get()->GetRootWindow();
@@ -188,6 +191,8 @@ void FSourceControlModule::OnSourceControlDialogClosed(const TSharedRef<SWindow>
 		ActiveProviderName = NewProvider;
 	}
 #endif
+
+	AssetDataCache.OnSourceControlDialogClosed();
 }
 
 void FSourceControlModule::InitializeSourceControlProviders()
@@ -239,6 +244,8 @@ void FSourceControlModule::Tick()
 
 		// tick the provider, so any operation results can be read back
 		Provider.Tick();
+
+		AssetDataCache.Tick();
 
 		// don't allow background status updates when temporarily disabled for login
 		if(!bTemporarilyDisabled)
@@ -324,6 +331,11 @@ bool FSourceControlModule::IsEnabled() const
 ISourceControlProvider& FSourceControlModule::GetProvider() const
 {
 	return *CurrentSourceControlProvider;
+}
+
+FSourceControlAssetDataCache& FSourceControlModule::GetAssetDataCache()
+{
+	return AssetDataCache;
 }
 
 void FSourceControlModule::SetProvider( const FName& InName )
@@ -447,6 +459,51 @@ FDelegateHandle FSourceControlModule::RegisterProviderChanged(const FSourceContr
 void FSourceControlModule::UnregisterProviderChanged(FDelegateHandle Handle)
 {
 	OnSourceControlProviderChanged.Remove(Handle);
+}
+
+void FSourceControlModule::RegisterPreSubmitDataValidation(const FSourceControlPreSubmitDataValidationDelegate& PreSubmitDataValidationDelegate)
+{
+	OnSourceControlPreSubmitDataValidation = PreSubmitDataValidationDelegate;
+}
+
+void FSourceControlModule::UnregisterPreSubmitDataValidation()
+{
+	OnSourceControlPreSubmitDataValidation = FSourceControlPreSubmitDataValidationDelegate();
+}
+
+FSourceControlPreSubmitDataValidationDelegate FSourceControlModule::GetRegisteredPreSubmitDataValidation()
+{
+	return OnSourceControlPreSubmitDataValidation;
+}
+
+FDelegateHandle FSourceControlModule::RegisterPreSubmitFinalize(const FSourceControlPreSubmitFinalizeDelegate::FDelegate& Delegate)
+{
+	return OnPresubmitFinalize.Add(Delegate);
+}
+
+void FSourceControlModule::UnregisterPreSubmitFinalize(FDelegateHandle Handle)
+{
+	OnPresubmitFinalize.Remove(Handle);
+}
+
+const FSourceControlPreSubmitFinalizeDelegate& FSourceControlModule::GetOnPreSubmitFinalize() const
+{
+	return OnPresubmitFinalize;
+}
+
+FDelegateHandle FSourceControlModule::RegisterFilesDeleted(const FSourceControlFilesDeletedDelegate::FDelegate& InDelegate)
+{
+	return OnFilesDeleted.Add(InDelegate);
+}
+
+void FSourceControlModule::UnregisterFilesDeleted(FDelegateHandle InHandle)
+{
+	OnFilesDeleted.Remove(InHandle);
+}
+
+const FSourceControlFilesDeletedDelegate& FSourceControlModule::GetOnFilesDeleted() const
+{
+	return OnFilesDeleted;
 }
 
 IMPLEMENT_MODULE( FSourceControlModule, SourceControl );

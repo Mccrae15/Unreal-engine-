@@ -25,6 +25,9 @@
 #include "CoreMinimal.h"
 #include "Detour/DetourAlloc.h"
 #include "Detour/DetourStatus.h"
+#include "DetourLargeWorldCoordinates.h"
+
+NAVMESH_API DECLARE_LOG_CATEGORY_EXTERN(LogDetour, Log, All);
 
 // Note: If you want to use 64-bit refs, change the types of both dtPolyRef & dtTileRef.
 // It is also recommended that you change dtHashRef() to a proper 64-bit hash.
@@ -36,23 +39,23 @@
 #if USE_64BIT_ADDRESS
 
 #if defined(__LP64__)
-// LP64 (Linux/OS X): UE4 will define its uint64 type as "unsigned long long" so we need to match this
-typedef unsigned long long UE4Type_uint64;
+// LP64 (Linux/OS X): UE will define its uint64 type as "unsigned long long" so we need to match this
+typedef unsigned long long UEType_uint64;
 #else
 #include <stdint.h>
-typedef uint64_t UE4Type_uint64;
+typedef uint64_t UEType_uint64;
 #endif
 
 /// A handle to a polygon within a navigation mesh tile.
 /// @ingroup detour
-typedef UE4Type_uint64 dtPolyRef;
+typedef UEType_uint64 dtPolyRef;
 
 /// A handle to a tile within a navigation mesh.
 /// @ingroup detour
-typedef UE4Type_uint64 dtTileRef;
+typedef UEType_uint64 dtTileRef;
 
 /// A handle to a cluster within a navigation mesh tile.
-typedef UE4Type_uint64 dtClusterRef;
+typedef UEType_uint64 dtClusterRef;
 
 #else
 
@@ -80,7 +83,8 @@ static const int DT_VERTS_PER_POLYGON = 6;
 ///
 
 /// A magic number used to detect compatibility of navigation tile data.
-static const int DT_NAVMESH_MAGIC = 'D'<<24 | 'N'<<16 | 'A'<<8 | 'V';
+/// UE magic removed to save memory
+//static const int DT_NAVMESH_MAGIC = 'D'<<24 | 'N'<<16 | 'A'<<8 | 'V';
 
 /// A version number used to detect compatibility of navigation tile data.
 static const int DT_NAVMESH_VERSION = 7;
@@ -103,17 +107,17 @@ static const unsigned int DT_NULL_LINK = 0xffffffff;
 /// A flag that indicates that an off-mesh connection can be traversed in both directions. (Is bidirectional.)
 static const unsigned char DT_OFFMESH_CON_BIDIR = 0x01;
 
-//@UE4 BEGIN
+//@UE BEGIN
 static const unsigned char DT_OFFMESH_CON_POINT = 0x02;
 static const unsigned char DT_OFFMESH_CON_SEGMENT = 0x04;
 static const unsigned char DT_OFFMESH_CON_CHEAPAREA = 0x08;
-//@UE4 END
+//@UE END
 
 /// The maximum number of user defined area ids.
 /// @ingroup detour
 static const int DT_MAX_AREAS = 64;
 
-//@UE4 BEGIN
+//@UE BEGIN
 /// Navmesh tiles' salt will have at least this much bits
 static const int DT_MIN_SALT_BITS = 5;
 static const int DT_SALT_BASE = 1;
@@ -140,7 +144,17 @@ static const unsigned char DT_CLINK_VALID_BCK = 0x02;
 /// Index of first cluster link within tile
 static const unsigned int DT_CLINK_FIRST = 0x80000000;
 #endif // WITH_NAVMESH_CLUSTER_LINKS
-//@UE4 END
+//@UE END
+
+//@UE BEGIN Adding support for memory tracking.
+struct dtMeshTile;
+
+typedef void (dtStatsPostAddTileFunc)(const dtMeshTile& TileAdd);
+
+typedef void (dtStatsPreRemoveTileFunc)(const dtMeshTile& tileRemove);
+
+NAVMESH_API void dtStatsSetCustom(dtStatsPostAddTileFunc* addFunc, dtStatsPreRemoveTileFunc* removeFunc);
+//@UE END Adding support for memory tracking.
 
 /// Tile flags used for various functions and fields.
 /// For an example, see dtNavMesh::addTile().
@@ -172,12 +186,12 @@ enum dtPolyTypes
 	/// The polygon is an off-mesh connection consisting of two vertices.
 	DT_POLYTYPE_OFFMESH_POINT = 1,
 
-	//@UE4 BEGIN
+	//@UE BEGIN
 #if WITH_NAVMESH_SEGMENT_LINKS
 	/// The polygon is an off-mesh connection consisting of four vertices.
 	DT_POLYTYPE_OFFMESH_SEGMENT = 2,
 #endif // WITH_NAVMESH_SEGMENT_LINKS
-	//@UE4 END
+	//@UE END
 };
 
 
@@ -221,8 +235,8 @@ struct dtPoly
 /// Defines the location of detail sub-mesh data within a dtMeshTile.
 struct dtPolyDetail
 {
-	unsigned int vertBase;			///< The offset of the vertices in the dtMeshTile::detailVerts array.
-	unsigned int triBase;			///< The offset of the triangles in the dtMeshTile::detailTris array.
+	unsigned short vertBase;		///< The offset of the vertices in the dtMeshTile::detailVerts array.
+	unsigned short triBase;			///< The offset of the triangles in the dtMeshTile::detailTris array.
 	unsigned char vertCount;		///< The number of vertices in the sub-mesh.
 	unsigned char triCount;			///< The number of triangles in the sub-mesh.
 };
@@ -250,20 +264,20 @@ struct dtBVNode
 	int i;							///< The node's index. (Negative for escape sequence.)
 };
 
-//@UE4 BEGIN
+//@UE BEGIN
 #if WITH_NAVMESH_SEGMENT_LINKS
 struct dtOffMeshSegmentConnection
 {
-	float startA[3];				///< Start point of segment A
-	float endA[3];					///< End point of segment A
-	float startB[3];				///< Start point of segment B
-	float endB[3];					///< End point of segment B
+	dtReal startA[3];				///< Start point of segment A
+	dtReal endA[3];					///< End point of segment A
+	dtReal startB[3];				///< Start point of segment B
+	dtReal endB[3];					///< End point of segment B
 
 	/// The radius of the endpoints. [Limit: >= 0]
-	float rad;
+	dtReal rad;
 
 	/// The snap height of endpoints (less than 0 = use step height)
-	float height;
+	dtReal height;
 
 	/// The id of the offmesh connection. (User assigned when the navigation mesh is built.)
 	unsigned int userId;	
@@ -287,22 +301,22 @@ struct dtOffMeshSegmentConnection
 	inline bool getBiDirectional() const { return (flags & 0x80) != 0; }
 };
 #endif // WITH_NAVMESH_SEGMENT_LINKS
-//@UE4 END
+//@UE END
 
 /// Defines an navigation mesh off-mesh connection within a dtMeshTile object.
 /// An off-mesh connection is a user defined traversable connection made up to two vertices.
 struct dtOffMeshConnection
 {
 	/// The endpoints of the connection. [(ax, ay, az, bx, by, bz)]
-	float pos[6];
+	dtReal pos[6];
 
 	/// The radius of the endpoints. [Limit: >= 0]
-	float rad;		
+	dtReal rad;
 
-	//@UE4 BEGIN
+	//@UE BEGIN
 	/// The snap height of endpoints (less than 0 = use step height)
-	float height;
-	//@UE4 END
+	dtReal height;
+	//@UE END
 
 	/// The id of the offmesh connection. (User assigned when the navigation mesh is built.)
 	unsigned int userId;
@@ -316,7 +330,7 @@ struct dtOffMeshConnection
 	/// Link flags. 
 	unsigned char flags;
 
-	//@UE4 BEGIN
+	//@UE BEGIN
 	/// Sets link flags
 	inline void setFlags(unsigned char conFlags)
 	{
@@ -329,15 +343,15 @@ struct dtOffMeshConnection
 
 	/// Gets the link snap mode
 	inline bool getSnapToCheapestArea() const { return (flags & 0x40) != 0; }
-	//@UE4 END
+	//@UE END
 };
 
-//@UE4 BEGIN
+//@UE BEGIN
 #if WITH_NAVMESH_CLUSTER_LINKS
 /// Cluster of polys
 struct dtCluster
 {
-	float center[3];				///< Center pos of cluster
+	dtReal center[3];				///< Center pos of cluster
 	unsigned int firstLink;			///< Link in dtMeshTile.links array
 	unsigned int numLinks;			///< Number of cluster links
 };
@@ -350,51 +364,47 @@ struct dtClusterLink
 	unsigned char flags;			///< Link traversing data
 };
 #endif // WITH_NAVMESH_CLUSTER_LINKS
-//@UE4 END
+//@UE END
 
 /// Provides high level information related to a dtMeshTile object.
 /// @ingroup detour
 struct dtMeshHeader
 {
-	int magic;				///< Tile magic number. (Used to identify the data format.)
-	int version;			///< Tile data format version number.
+	unsigned short version;	///< Tile data format version number.
+	unsigned short layer;			///< The layer of the tile within the dtNavMesh tile grid. (x, y, layer)
+
+	unsigned short polyCount;		///< The number of polygons in the tile.
+	unsigned short vertCount;		///< The number of vertices in the tile.
+
 	int x;					///< The x-position of the tile within the dtNavMesh tile grid. (x, y, layer)
 	int y;					///< The y-position of the tile within the dtNavMesh tile grid. (x, y, layer)
-	int layer;				///< The layer of the tile within the dtNavMesh tile grid. (x, y, layer)
-	unsigned int userId;	///< The user defined id of the tile.
-	int polyCount;			///< The number of polygons in the tile.
-	int vertCount;			///< The number of vertices in the tile.
-	int maxLinkCount;		///< The number of allocated links.
-	int detailMeshCount;	///< The number of sub-meshes in the detail mesh.
+			
+	unsigned short maxLinkCount;		///< The number of allocated links.
+	unsigned short detailMeshCount;		///< The number of sub-meshes in the detail mesh.
 	
 	/// The number of unique vertices in the detail mesh. (In addition to the polygon vertices.)
-	int detailVertCount;
+	unsigned short detailVertCount;
 	
-	int detailTriCount;			///< The number of triangles in the detail mesh.
-	int bvNodeCount;			///< The number of bounding volume nodes. (Zero if bounding volumes are disabled.)
-	int offMeshConCount;		///< The number of point type off-mesh connections.
-	int offMeshBase;			///< The index of the first polygon which is an point type off-mesh connection.
+	unsigned short detailTriCount;		///< The number of triangles in the detail mesh.
+	unsigned short bvNodeCount;			///< The number of bounding volume nodes. (Zero if bounding volumes are disabled.)
+	unsigned short offMeshConCount;		///< The number of point type off-mesh connections.
+	unsigned short offMeshBase;			///< The index of the first polygon which is an point type off-mesh connection.
 
-	//@UE4 BEGIN
+	//@UE BEGIN
 #if WITH_NAVMESH_SEGMENT_LINKS
-	int offMeshSegConCount;		///< The number of segment type off-mesh connections.
-	int offMeshSegPolyBase;		///< The index of the first polygon which is an segment type off-mesh connection
-	int offMeshSegVertBase;		///< The index of the first vertex used by segment type off-mesh connection
+	unsigned short offMeshSegConCount;	///< The number of segment type off-mesh connections.
+	unsigned short offMeshSegPolyBase;	///< The index of the first polygon which is an segment type off-mesh connection
+	unsigned short offMeshSegVertBase;	///< The index of the first vertex used by segment type off-mesh connection
 #endif // WITH_NAVMESH_SEGMENT_LINKS
 
 #if WITH_NAVMESH_CLUSTER_LINKS
-	int clusterCount;			///< Number of clusters
+	unsigned short clusterCount;			///< Number of clusters
 #endif // WITH_NAVMESH_CLUSTER_LINKS
-	//@UE4 END
+	//@UE END
 
-	float walkableHeight;		///< The height of the agents using the tile.
-	float walkableRadius;		///< The radius of the agents using the tile.
-	float walkableClimb;		///< The maximum climb height of the agents using the tile.
-	float bmin[3];				///< The minimum bounds of the tile's AABB. [(x, y, z)]
-	float bmax[3];				///< The maximum bounds of the tile's AABB. [(x, y, z)]
-	
-	/// The bounding volume quantization factor. 
-	float bvQuantFactor;
+	// These should be at the bottom, as they are less often used than the rest of the data. The rest will fit in one cache line.
+	dtReal bmin[3];				///< The minimum bounds of the tile's AABB. [(x, y, z)]
+	dtReal bmax[3];				///< The maximum bounds of the tile's AABB. [(x, y, z)]
 };
 
 /// Defines a navigation mesh tile.
@@ -406,12 +416,12 @@ struct dtMeshTile
 	unsigned int linksFreeList;			///< Index to the next free link.
 	dtMeshHeader* header;				///< The tile header.
 	dtPoly* polys;						///< The tile polygons. [Size: dtMeshHeader::polyCount]
-	float* verts;						///< The tile vertices. [Size: dtMeshHeader::vertCount]
+	dtReal* verts;						///< The tile vertices. [Size: dtMeshHeader::vertCount]
 	dtLink* links;						///< The tile links. [Size: dtMeshHeader::maxLinkCount]
 	dtPolyDetail* detailMeshes;			///< The tile's detail sub-meshes. [Size: dtMeshHeader::detailMeshCount]
 	
 	/// The detail mesh's unique vertices. [(x, y, z) * dtMeshHeader::detailVertCount]
-	float* detailVerts;	
+	dtReal* detailVerts;
 
 	/// The detail mesh's triangles. [(vertA, vertB, vertC) * dtMeshHeader::detailTriCount]
 	unsigned char* detailTris;	
@@ -427,7 +437,7 @@ struct dtMeshTile
 	int flags;								///< Tile flags. (See: #dtTileFlags)
 	dtMeshTile* next;						///< The next free tile, or the next tile in the spatial grid.
 
-	//@UE4 BEGIN
+	//@UE BEGIN
 #if WITH_NAVMESH_SEGMENT_LINKS
 	dtOffMeshSegmentConnection* offMeshSeg;		///< The tile off-mesh connections. [Size: dtMeshHeader::offMeshSegConCount]
 #endif // WITH_NAVMESH_SEGMENT_LINKS
@@ -436,13 +446,17 @@ struct dtMeshTile
 	dtCluster* clusters;						///< Cluster data
 	unsigned short* polyClusters;				///< Cluster Id for each ground type polygon [Size: dtMeshHeader::polyCount]
 
-	dtChunkArray<dtClusterLink> dynamicLinksC;	///< Dynamic links array (indices starting from DT_CLINK_FIRST)
+	dtChunkArray<dtClusterLink, DT_ALLOC_PERM_TILE_DYNLINK_CLUSTER> dynamicLinksC; ///< Dynamic links array (indices starting from DT_CLINK_FIRST)
+#endif // WITH_NAVMESH_CLUSTER_LINKS
+
+	dtChunkArray<dtLink, DT_ALLOC_PERM_TILE_DYNLINK_OFFMESH> dynamicLinksO; ///< Dynamic links array (indices starting from dtMeshHeader::maxLinkCount)
+	unsigned int dynamicFreeListO;				///< Index of the next free dynamic link
+
+#if WITH_NAVMESH_CLUSTER_LINKS
 	unsigned int dynamicFreeListC;				///< Index of the next free dynamic link
 #endif // WITH_NAVMESH_CLUSTER_LINKS
 
-	dtChunkArray<dtLink> dynamicLinksO;			///< Dynamic links array (indices starting from dtMeshHeader::maxLinkCount)
-	unsigned int dynamicFreeListO;				///< Index of the next free dynamic link
-	//@UE4 END
+	//@UE END
 };
 
 /// Configuration parameters used to define multi-tile navigation meshes.
@@ -451,9 +465,16 @@ struct dtMeshTile
 /// @ingroup detour
 struct dtNavMeshParams
 {
-	float orig[3];					///< The world space origin of the navigation mesh's tile space. [(x, y, z)]
-	float tileWidth;				///< The width of each tile. (Along the x-axis.)
-	float tileHeight;				///< The height of each tile. (Along the z-axis.)
+	//@UE BEGIN Memory optimization
+	dtReal walkableHeight;			///< The height of the agents using the tile.
+	dtReal walkableRadius;			///< The radius of the agents using the tile.
+	dtReal walkableClimb;			///< The maximum climb height of the agents using the tile.	
+	dtReal bvQuantFactor;			///< The bounding volume quantization factor.
+	//@UE END Memory optimization 	
+	
+	dtReal orig[3];					///< The world space origin of the navigation mesh's tile space. [(x, y, z)]
+	dtReal tileWidth;				///< The width of each tile. (Along the x-axis.)
+	dtReal tileHeight;				///< The height of each tile. (Along the z-axis.)
 	int maxTiles;					///< The maximum number of tiles the navigation mesh can contain.
 	int maxPolys;					///< The maximum number of polygons each tile can contain.
 };
@@ -510,7 +531,7 @@ public:
 	///  @param[in]	pos  The world position for the query. [(x, y, z)]
 	///  @param[out]	tx		The tile's x-location. (x, y)
 	///  @param[out]	ty		The tile's y-location. (x, y)
-	void calcTileLoc(const float* pos, int* tx, int* ty) const;
+	void calcTileLoc(const dtReal* pos, int* tx, int* ty) const;
 
 	/// Gets the tile at the specified grid location.
 	///  @param[in]	x		The tile's x-location. (x, y, layer)
@@ -519,13 +540,13 @@ public:
 	/// @return The tile, or null if the tile does not exist.
 	const dtMeshTile* getTileAt(const int x, const int y, const int layer) const;
 
-// @UE4 BEGIN
+// @UE BEGIN
 	/// Gets number of tiles at the specified grid location. (All layers.)
 	///  @param[in]		x			The tile's x-location. (x, y)
 	///  @param[in]		y			The tile's y-location. (x, y)
 	/// @return The number of tiles in grid.
 	int getTileCountAt(const int x, const int y) const;
-// @UE4 END
+// @UE END
 
 	/// Gets all tiles at the specified grid location. (All layers.)
 	///  @param[in]		x			The tile's x-location. (x, y)
@@ -598,7 +619,7 @@ public:
 	///  @param[out]	startPos	The start position of the off-mesh connection. [(x, y, z)]
 	///  @param[out]	endPos		The end position of the off-mesh connection. [(x, y, z)]
 	/// @return The status flags for the operation.
-	dtStatus getOffMeshConnectionPolyEndPoints(dtPolyRef prevRef, dtPolyRef polyRef, const float* currentPos, float* startPos, float* endPos) const;
+	dtStatus getOffMeshConnectionPolyEndPoints(dtPolyRef prevRef, dtPolyRef polyRef, const dtReal* currentPos, dtReal* startPos, dtReal* endPos) const;
 
 	/// Gets the specified off-mesh connection: point type.
 	///  @param[in]	ref		The polygon reference of the off-mesh connection.
@@ -610,7 +631,7 @@ public:
 	///	 @param[in] newArea	Area code to apply
 	void updateOffMeshConnectionByUserId(unsigned int userId, unsigned char newArea, unsigned short newFlags);
 
-	//@UE4 BEGIN
+	//@UE BEGIN
 #if WITH_NAVMESH_SEGMENT_LINKS
 	/// Gets the specified off-mesh connection: segment type
 	///  @param[in]	ref		The polygon reference of the off-mesh connection.
@@ -622,7 +643,7 @@ public:
 	///	 @param[in] newArea	Area code to apply
 	void updateOffMeshSegmentConnectionByUserId(unsigned int userId, unsigned char newArea, unsigned short newFlags);
 #endif // WITH_NAVMESH_SEGMENT_LINKS
-	//@UE4 END
+	//@UE END
 
 	/// @}
 
@@ -744,7 +765,7 @@ public:
 		return decodePolyIdTile(ref);
 	}
 
-	//@UE4 BEGIN 
+	//@UE BEGIN 
 #if WITH_NAVMESH_CLUSTER_LINKS
 	/// Extracts the cluster's index (within its tile) from the specified cluster reference.
 	///  @note This function is generally meant for internal use only.
@@ -756,7 +777,7 @@ public:
 #endif // WITH_NAVMESH_CLUSTER_LINKS
 
 	/// Shift navigation mesh by provided offset
-	void applyWorldOffset(const float* offset);
+	void applyWorldOffset(const dtReal* offset);
 
 	/// Helper for accessing links
 	inline dtLink& getLink(dtMeshTile* tile, unsigned int linkIdx)
@@ -824,16 +845,23 @@ public:
 	{
 		return (unsigned int)(tile - m_tiles);
 	}
-	//@UE4 END
+	//@UE END
 	/// @}
+
+	//@UE Begin LWCoords
+	dtReal getWalkableHeight() const { return m_walkableHeight; }
+	dtReal getWalkableRadius() const { return m_walkableRadius; }
+	dtReal getWalkableClimb() const { return m_walkableClimb; }
+	dtReal getBVQuantFactor() const { return m_bvQuantFactor; }
+	//@UE END LWCoords
 
 private:
 
-	// [UE4] result struct for findConnectingPolys
+	// [UE] result struct for findConnectingPolys
 	struct FConnectingPolyData
 	{
-		float min;
-		float max;
+		dtReal min;
+		dtReal max;
 		dtPolyRef ref;
 	};
 
@@ -848,8 +876,8 @@ private:
 	int getNeighbourTilesAt(const int x, const int y, const int side,
 							dtMeshTile** tiles, const int maxTiles) const;
 	
-	/// [UE4] Returns all polygons in neighbour tile based on portal defined by the segment.
-	int findConnectingPolys(const float* va, const float* vb,
+	/// [UE] Returns all polygons in neighbour tile based on portal defined by the segment.
+	int findConnectingPolys(const dtReal* va, const dtReal* vb,
 		const dtMeshTile* fromTile, int fromPolyIdx,
 		const dtMeshTile* tile, int side,
 		dtChunkArray<FConnectingPolyData>& cons) const;
@@ -867,7 +895,7 @@ private:
 	/// Removes external links at specified side.
 	void unconnectExtLinks(dtMeshTile* tile, dtMeshTile* target);
 	
-	//@UE4 BEGIN
+	//@UE BEGIN
 #if WITH_NAVMESH_CLUSTER_LINKS
 	/// Try to connect clusters
 	void connectClusterLink(dtMeshTile* tile0, unsigned int cluster0,
@@ -877,25 +905,33 @@ private:
 	/// Removes cluster links at specified side.
 	void unconnectClusterLinks(dtMeshTile* tile, dtMeshTile* target);
 #endif // WITH_NAVMESH_CLUSTER_LINKS
-	//@UE4 END
+	//@UE END
 
 	// TODO: These methods are duplicates from dtNavMeshQuery, but are needed for off-mesh connection finding.
 	
 	/// Queries polygons within a tile.
-	int queryPolygonsInTile(const dtMeshTile* tile, const float* qmin, const float* qmax,
+	int queryPolygonsInTile(const dtMeshTile* tile, const dtReal* qmin, const dtReal* qmax,
 							dtPolyRef* polys, const int maxPolys, bool bExcludeUnwalkable = false) const;
 	/// Find nearest polygon within a tile.
-	dtPolyRef findNearestPolyInTile(const dtMeshTile* tile, const float* center,
-									const float* extents, float* nearestPt, bool bExcludeUnwalkable = false) const;
-	dtPolyRef findCheapestNearPolyInTile(const dtMeshTile* tile, const float* center,
-										 const float* extents, float* nearestPt) const;
+	dtPolyRef findNearestPolyInTile(const dtMeshTile* tile, const dtReal* center,
+									const dtReal* extents, dtReal* nearestPt, bool bExcludeUnwalkable = false) const;
+	dtPolyRef findCheapestNearPolyInTile(const dtMeshTile* tile, const dtReal* center,
+										 const dtReal* extents, dtReal* nearestPt) const;
 	/// Returns closest point on polygon.
 	void closestPointOnPolyInTile(const dtMeshTile* tile, unsigned int ip,
-								  const float* pos, float* closest) const;
+								  const dtReal* pos, dtReal* closest) const;
 	
 	dtNavMeshParams m_params;			///< Current initialization params. TODO: do not store this info twice.
-	float m_orig[3];					///< Origin of the tile (0,0)
-	float m_tileWidth, m_tileHeight;	///< Dimensions of each tile.
+	dtReal m_orig[3];					///< Origin of the tile (0,0)
+	dtReal m_tileWidth, m_tileHeight;	///< Dimensions of each tile.
+
+	//@UE BEGIN Memory optimization
+	dtReal m_walkableHeight;			///< The height of the agents using the tile.
+	dtReal m_walkableRadius;			///< The radius of the agents using the tile.
+	dtReal m_walkableClimb;				///< The maximum climb height of the agents using the tile.
+	dtReal m_bvQuantFactor;				///< The bounding volume quantization factor. 
+	//@UE END Memory optimization
+
 	int m_maxTiles;						///< Max number of tiles.
 	int m_tileLutSize;					///< Tile hash lookup size (must be pot).
 	int m_tileLutMask;					///< Tile hash lookup mask.
@@ -921,7 +957,7 @@ NAVMESH_API dtNavMesh* dtAllocNavMesh();
 ///  @ingroup detour
 NAVMESH_API void dtFreeNavMesh(dtNavMesh* navmesh);
 
-// @UE4 BEGIN: helper for reading tiles
+// @UE BEGIN: helper for reading tiles
 struct ReadTilesHelper
 {
 	static const int MaxTiles = 32;
@@ -933,7 +969,7 @@ struct ReadTilesHelper
 	ReadTilesHelper() : NumAllocated(0), AllocatedTiles(0) {}
 	~ReadTilesHelper()
 	{
-		dtFree(AllocatedTiles);
+		dtFree(AllocatedTiles, DT_ALLOC_TEMP);
 	}
 
 	dtMeshTile** PrepareArray(int RequestedSize)
@@ -945,7 +981,7 @@ struct ReadTilesHelper
 
 		if (NumAllocated < RequestedSize)
 		{
-			dtFree(AllocatedTiles);
+			dtFree(AllocatedTiles, DT_ALLOC_TEMP);
 			AllocatedTiles = (dtMeshTile**)dtAlloc(RequestedSize * sizeof(dtMeshTile*), DT_ALLOC_TEMP);
 			NumAllocated = RequestedSize;
 		}
@@ -953,7 +989,7 @@ struct ReadTilesHelper
 		return AllocatedTiles;
 	}
 };
-// @UE4 END
+// @UE END
 
 #endif // DETOURNAVMESH_H
 
@@ -1011,19 +1047,19 @@ if (neis[n] & #DT_EX_LINK)
 }
 @endcode
 
-@var float dtMeshHeader::bvQuantFactor
+@var dtReal dtNavMesh::bvQuantFactor
 @par
 
 This value is used for converting between world and bounding volume coordinates.
 For example:
 @code
-const float cs = 1.0f / tile->header->bvQuantFactor;
+const dtReal cs = 1.0f / bvQuantFactor;
 const dtBVNode* n = &tile->bvTree[i];
 if (n->i >= 0)
 {
     // This is a leaf node.
-    float worldMinX = tile->header->bmin[0] + n->bmin[0]*cs;
-    float worldMinY = tile->header->bmin[0] + n->bmin[1]*cs;
+    dtReal worldMinX = tile->header->bmin[0] + n->bmin[0]*cs;
+    dtReal worldMinY = tile->header->bmin[0] + n->bmin[1]*cs;
     // Etc...
 }
 @endcode
@@ -1044,7 +1080,7 @@ For example: The tile at a location might not have been loaded yet, or may have 
 In this case, pointers will be null.  So if in doubt, check the polygon count in the 
 tile's header to determine if a tile has polygons defined.
 
-@var float dtOffMeshConnection::pos[6]
+@var dtReal dtOffMeshConnection::pos[6]
 @par
 
 For a properly built navigation mesh, vertex A will always be within the bounds of the mesh. 

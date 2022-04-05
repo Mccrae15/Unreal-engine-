@@ -11,7 +11,7 @@
 #include "SceneTypes.h"
 #include "Engine/Scene.h"
 #include "Camera/CameraTypes.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "ShowFlags.h"
 #include "UnrealClient.h"
 #include "SceneManagement.h"
@@ -31,9 +31,9 @@ class FEditorViewportClient;
 class FEdMode;
 class FMouseDeltaTracker;
 class FPreviewScene;
-class IMatineeBase;
 class SEditorViewport;
 class UActorFactory;
+class UTypedElementViewportInteraction;
 
 /** Delegate called by FEditorViewportClient to check its visibility */
 DECLARE_DELEGATE_RetVal( bool, FViewportStateGetter );
@@ -372,7 +372,7 @@ public:
 	/** @return		True if viewport is in realtime mode, false otherwise. */
 	bool IsRealtime() const
 	{ 
-		return (RealtimeOverrides.Num() > 0 ? RealtimeOverrides.Last().Key : bIsRealtime) || GFrameCounter < RealTimeUntilFrameNumber;
+		return (RealtimeOverrides.Num() > 0 ? RealtimeOverrides.Last().bIsRealtime : bIsRealtime) || GFrameCounter < RealTimeUntilFrameNumber;
 	}
 
 	/**
@@ -544,8 +544,6 @@ public:
 	void TakeHighResScreenShot();
 
 	/** Called when an editor mode has been (de)activated */
-	UE_DEPRECATED(4.24, "Use OnEditorModeIDChanged() instead.")
-	void OnEditorModeChanged(FEdMode* EditorMode, bool bIsEntering);
 	void OnEditorModeIDChanged(const FEditorModeID& EditorModeID, bool bIsEntering);
 
 	/** FViewElementDrawer interface */
@@ -625,12 +623,12 @@ public:
 	/**
 	 * Sets the current widget mode
 	 */
-	virtual void SetWidgetMode(FWidget::EWidgetMode NewMode);
+	virtual void SetWidgetMode(UE::Widget::EWidgetMode NewMode);
 
 	/**
 	 * Whether or not the new widget mode can be set in this viewport
 	 */
-	virtual bool CanSetWidgetMode(FWidget::EWidgetMode NewMode) const;
+	virtual bool CanSetWidgetMode(UE::Widget::EWidgetMode NewMode) const;
 
 	/**
 	 * Whether or not the widget mode can be cycled
@@ -640,7 +638,7 @@ public:
 	/**
 	 * @return The current display mode for transform widget 
 	 */
-	virtual FWidget::EWidgetMode GetWidgetMode() const;
+	virtual UE::Widget::EWidgetMode GetWidgetMode() const;
 
 	/**
 	 * @return The world space location of the transform widget
@@ -709,7 +707,7 @@ public:
 	 * @param	StereoPass	Which eye we're drawing this view for when in stereo mode
 	 * @return	A pointer to the view within the view family which represents the viewport's primary view.
 	 */
-	virtual FSceneView* CalcSceneView(FSceneViewFamily* ViewFamily, const EStereoscopicPass StereoPass = eSSP_FULL);
+	virtual FSceneView* CalcSceneView(FSceneViewFamily* ViewFamily, const int32 StereoViewIndex = INDEX_NONE);
 
 	/** 
 	 * @return The scene being rendered in this viewport
@@ -975,7 +973,6 @@ public:
 	 * Focuses the viewport to the center of the bounding box ensuring that the entire box is in view 
 	 *
 	 * @param BoundingBox			The box to focus
-	 * @param bUpdateLinkedOrthoViewports	Whether or not to updated linked viewports when this viewport changes
 	 * @param bInstant			Whether or not to focus the viewport instantly or over time
 	 */
 	void FocusViewportOnBox( const FBox& BoundingBox, bool bInstant = false );
@@ -1069,15 +1066,14 @@ public:
 	/**
 	 * Allows custom disabling of camera recoil
 	 */
-	void SetMatineeRecordingWindow(IMatineeBase* InInterpEd);
+	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
+	void SetMatineeRecordingWindow(class IMatineeBase* InInterpEd) {}
 
 	/**
 	 * Returns true if camera recoil is currently allowed
 	 */
-	bool IsMatineeRecordingWindow() const
-	{
-		return (RecordingInterpEd != NULL);
-	}
+	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
+	bool IsMatineeRecordingWindow() const { return false; }
 	
 	EAxisList::Type GetCurrentWidgetAxis() const;
 
@@ -1085,7 +1081,7 @@ public:
 	void SetRequiredCursorOverride( bool WantOverride, EMouseCursor::Type RequiredCursor = EMouseCursor::Default ); 
 
 	/** Overrides current widget mode */
-	void SetWidgetModeOverride(FWidget::EWidgetMode InWidgetMode);
+	void SetWidgetModeOverride(UE::Widget::EWidgetMode InWidgetMode);
 
 	/** Get the camera speed for this viewport */
 	float GetCameraSpeed() const;
@@ -1108,8 +1104,12 @@ public:
 	/** Editor mode tool manager being used for this viewport client */
 	FEditorModeTools* GetModeTools() const
 	{
-		return ModeTools;
+		return ModeTools.Get();
 	}
+
+	/** Legacy adapter for a toolkit to take ownership of a mode manager that may have been created by this viewport client */
+	UE_DEPRECATED(5.0, "This function is meant for legacy edge cases (pre-UAssetEditor), where the toolkit may not be the original owner of the mode manager.")
+	void TakeOwnershipOfModeManager(TSharedPtr<FEditorModeTools>& ModeManagerPtr);
 
 	/** Get the editor viewport widget */
 	TSharedPtr<SEditorViewport> GetEditorViewportWidget() const { return EditorViewportWidget.Pin(); }
@@ -1217,14 +1217,14 @@ public:
 	virtual bool HandleIsShowFlagEnabled(FEngineShowFlags::EShowFlag EngineShowFlagIndex) const;
 
 	/**
-	 * Changes the buffer visualization mode for this viewport
+	 * Changes the buffer visualization mode for this viewport.
 	 *
 	 * @param InName	The ID of the required visualization mode
 	 */
 	void ChangeBufferVisualizationMode( FName InName );
 
 	/**
-	 * Checks if a buffer visualization mode is selected
+	 * Checks if a buffer visualization mode is selected.
 	 * 
 	 * @param InName	The ID of the required visualization mode
 	 * @return	true if the supplied buffer visualization mode is checked
@@ -1232,9 +1232,69 @@ public:
 	bool IsBufferVisualizationModeSelected( FName InName ) const;
 
 	/**
-	 * It returns the FText display name associate with CurrentBufferVisualizationMode
+	 * Returns the FText display name associated with CurrentBufferVisualizationMode.
 	 */
 	FText GetCurrentBufferVisualizationModeDisplayName() const;
+
+	/**
+	 * Changes the Nanite visualization mode for this viewport.
+	 *
+	 * @param InName	The ID of the required visualization mode
+	 */
+	void ChangeNaniteVisualizationMode(FName InName);
+
+	/**
+	 * Checks if a Nanite visualization mode is selected.
+	 *
+	 * @param InName	The ID of the required visualization mode
+	 * @return	true if the supplied Nanite visualization mode is checked
+	 */
+	bool IsNaniteVisualizationModeSelected(FName InName) const;
+
+	/**
+	 * Returns the FText display name associated with CurrentNaniteVisualizationMode.
+	 */
+	FText GetCurrentNaniteVisualizationModeDisplayName() const;
+
+	/**
+	 * Changes the Lumen visualization mode for this viewport.
+	 *
+	 * @param InName	The ID of the required visualization mode
+	 */
+	void ChangeLumenVisualizationMode(FName InName);
+
+	/**
+	 * Checks if a Lumen visualization mode is selected.
+	 *
+	 * @param InName	The ID of the required visualization mode
+	 * @return	true if the supplied Lumen visualization mode is checked
+	 */
+	bool IsLumenVisualizationModeSelected(FName InName) const;
+
+	/**
+	 * Returns the FText display name associated with CurrentLumenVisualizationMode.
+	 */
+	FText GetCurrentLumenVisualizationModeDisplayName() const;
+
+	/**
+	* Changes the virtual shadow map visualization mode for this viewport.
+	*
+	* @param InName	The ID of the required visualization mode
+	*/
+	void ChangeVirtualShadowMapVisualizationMode(FName InName);
+
+	/**
+	* Checks if a virtual shadow map visualization mode is selected.
+	*
+	* @param InName	The ID of the required visualization mode
+	* @return	true if the supplied virtual shadow map visualization mode is checked
+	*/
+	bool IsVirtualShadowMapVisualizationModeSelected(FName InName) const;
+
+	/**
+	* Returns the FText display name associated with CurrentVirtualShadowMapVisualizationMode.
+	*/
+	FText GetCurrentVirtualShadowMapVisualizationModeDisplayName() const;
 
 	/**
 	* Returns whether visualize debug material is enabled.
@@ -1259,6 +1319,9 @@ public:
 	/** @return True if PreviewResolutionFraction is supported. */
 	bool SupportsPreviewResolutionFraction() const;
 
+	/** @return default resolution fraction for UI based on display resolution and user settings. */
+	float GetDefaultPrimaryResolutionFractionTarget() const;
+
 	/** @return preview screen percentage for UI. */
 	int32 GetPreviewScreenPercentage() const;
 
@@ -1269,7 +1332,7 @@ public:
 	bool SupportsLowDPIPreview() const;
 
 	/** @return whether previewing for low DPI. */
-	bool IsLowDPIPreview();
+	bool IsLowDPIPreview() const;
 
 	/** Set whether previewing for low DPI. */
 	void SetLowDPIPreview(bool LowDPIPreview);
@@ -1556,6 +1619,9 @@ public:
 	FExposureSettings		ExposureSettings;
 
 	FName CurrentBufferVisualizationMode;
+	FName CurrentNaniteVisualizationMode;
+	FName CurrentLumenVisualizationMode;
+	FName CurrentVirtualShadowMapVisualizationMode;
 
 	FName CurrentRayTracingDebugVisualizationMode;
 
@@ -1616,11 +1682,8 @@ public:
 	bool bShouldApplyViewModifiers;
 
 protected:
-	/** Does this viewport client own the mode tools instance pointed at by ModeTools control the lifetime of it? */
-	bool bOwnsModeTools;
-
-	/** Editor mode tools provided to this instance. Assumed to be managed externally if bOwnsModeTools is false */
-	FEditorModeTools*		ModeTools;
+	/** Editor mode tools provided to this instance. */
+	TSharedPtr<FEditorModeTools> ModeTools;
 
 	FWidget*				Widget;
 
@@ -1628,9 +1691,6 @@ protected:
 	bool bShowWidget;
 
 	FMouseDeltaTracker*		MouseDeltaTracker;
-		
-	/**InterpEd, should only be set if used for matinee recording*/
-	IMatineeBase* RecordingInterpEd;
 
 	/** If true, the canvas has been been moved using bMoveCanvas Mode*/
 	bool bHasMouseMovedSinceClick;
@@ -1736,6 +1796,9 @@ protected:
 	/** The editor viewport widget this client is attached to */
 	TWeakPtr<SEditorViewport> EditorViewportWidget;
 
+	/** The viewport interaction instance for this viewport */
+	UTypedElementViewportInteraction* ViewportInteraction;
+
 	/** The scene used for the viewport. Owned externally */
 	FPreviewScene* PreviewScene;
 
@@ -1749,8 +1812,15 @@ protected:
 	 * Temporary realtime overrides and user messages that are not saved between editor sessions.
 	 * If any value has been pushed into the container, this viewport determines realtime from the last item,
 	 * otherwise it reads the real realtime value.
-	 * */
-	TArray<TPair<bool, FText>> RealtimeOverrides;
+	 */
+	struct FRealtimeOverride
+	{
+		FText SystemDisplayName;
+		bool bIsRealtime = false;
+
+		FRealtimeOverride(bool bInIsRealtime, FText InSystemDisplayName);
+	};
+	TArray<FRealtimeOverride> RealtimeOverrides;
 	
 	/** Custom override function that will be called every ::Draw() until override is disabled */
 	TUniqueFunction<void(FEngineShowFlags&)> OverrideShowFlagsFunc;
@@ -1806,12 +1876,12 @@ private:
 
 private:
 	/** Controles resolution fraction for previewing in editor viewport at different screen percentage. */
-	float PreviewResolutionFraction;
+	TOptional<float> PreviewResolutionFraction;
 
 	// DPI mode for scene rendering.
 	enum class ESceneDPIMode
 	{
-		// Uses Editor.OverrideDPIBasedEditorViewportScaling.
+		// Uses r.Editor.Viewport.HighDPI.
 		EditorDefault,
 
 		// Force emulating low DPI.

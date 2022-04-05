@@ -19,6 +19,7 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GameFramework/Actor.h"
+#include "Materials/Material.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyCustomizationHelpers.h"
 #include "PropertyHandle.h"
@@ -30,7 +31,6 @@
 #include "RemoteControlLogger.h"
 #include "RemoteControlPanelStyle.h"
 #include "RemoteControlPreset.h"
-#include "RemoteControlUIModule.h"
 #include "RemoteControlSettings.h"
 #include "ScopedTransaction.h"
 #include "SClassViewer.h"
@@ -41,6 +41,7 @@
 #include "SRCPanelExposedField.h"
 #include "SRCPanelTreeNode.h"
 #include "Subsystems/Subsystem.h"
+#include "SWarningOrErrorBox.h"
 #include "Templates/SharedPointer.h"
 #include "Templates/SubclassOf.h"
 #include "Templates/UnrealTypeTraits.h"
@@ -59,6 +60,7 @@
 
 #define LOCTEXT_NAMESPACE "RemoteControlPanel"
 
+
 namespace RemoteControlPanelUtils
 {
 	bool IsExposableActor(AActor* Actor)
@@ -76,14 +78,14 @@ namespace RemoteControlPanelUtils
 		return GEditor ? GEditor->GetEditorWorldContext(false).World() : nullptr;
 	}
 
-	template <typename EntityType> 
-	TSharedPtr<FStructOnScope> GetEntityOnScope(const TSharedPtr<EntityType>& Entity)
+	TSharedPtr<FStructOnScope> GetEntityOnScope(const TSharedPtr<FRemoteControlEntity>& Entity, const UScriptStruct* EntityType)
 	{
-		static_assert(TIsDerivedFrom<EntityType, FRemoteControlEntity>::Value, "EntityType must derive from FRemoteControlEntity.");
-		if (Entity)
+		if (ensure(Entity && EntityType))
 		{
-			return MakeShared<FStructOnScope>(EntityType::StaticStruct(), reinterpret_cast<uint8*>(Entity.Get()));
+			check(EntityType->IsChildOf(FRemoteControlEntity::StaticStruct()));
+			return MakeShared<FStructOnScope>(EntityType, reinterpret_cast<uint8*>(Entity.Get()));
 		}
+
 		return nullptr;
 	}
 }
@@ -105,12 +107,11 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 	EntityProtocolDetails = SNew(SBox);
 	
 	EntityList = SNew(SRCPanelExposedEntitiesList, Preset.Get(), WidgetRegistry)
-		.DisplayValues(true)
 		.OnEntityListUpdated_Lambda([this] ()
 		{
 			UpdateEntityDetailsView(EntityList->GetSelection());
 			UpdateRebindButtonVisibility();
-			CachedExposedProperties.Reset();
+			CachedExposedPropertyArgs.Reset();
 		})
 		.EditMode_Lambda([this](){ return bIsInEditMode; });
 	
@@ -139,12 +140,6 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 		[
 			// Top tool bar
 			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			[
-				CreateCPUThrottleButton()
-			]
 
 			+ SHorizontalBox::Slot()
 			.Padding(FMargin(5.0f, 0.0f))
@@ -153,11 +148,11 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 			[
 				SNew(SButton)
 				.Visibility_Lambda([this]() { return bIsInEditMode ? EVisibility::Visible : EVisibility::Collapsed; })
-				.ButtonStyle(FEditorStyle::Get(), "FlatButton")
+				.ButtonStyle(FAppStyle::Get(), "FlatButton")
 				.OnClicked(this, &SRemoteControlPanel::OnCreateGroup)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("SceneOutliner.NewFolderIcon"))
+					.Image(FAppStyle::Get().GetBrush("SceneOutliner.NewFolderIcon"))
 				]
 			]
 			// Function library picker
@@ -189,7 +184,7 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 						.Text(LOCTEXT("RebindButtonText", "Rebind All"))
 					]
 				]
-				// Open details button
+
 				+ SHorizontalBox::Slot()
 				.VAlign(VAlign_Center)
 				.AutoWidth()
@@ -204,23 +199,28 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 						.Image(FEditorStyle::Get().GetBrush("LevelEditor.Tabs.Details"))
 					]
 				]
-
+				// Edit Mode
 				+ SHorizontalBox::Slot()
-				.VAlign(VAlign_Center)
-				.Padding(4.0f, 0)
 				.AutoWidth()
+				.Padding(2.f, 0.f)
+				.VAlign(VAlign_Center)
 				[
 					SNew(STextBlock)
-					.Text(LOCTEXT("EditModeLabel", "Edit Mode: "))
+					.Text(LOCTEXT("EditModeLabel", "Edit Mode : "))
 				]
 				+ SHorizontalBox::Slot()
-				.VAlign(VAlign_Center)
 				.AutoWidth()
+				.Padding(2.f, 0.f)
+				.VAlign(VAlign_Center)
 				[
 					SNew(SCheckBox)
+					.Style(FRemoteControlPanelStyle::Get(), "RemoteControlPanel.Switch")
+					.ToolTipText(LOCTEXT("EditModeTooltip", "Toggle Editing (Ctrl + E)"))
 					.IsChecked_Lambda([this]() { return this->bIsInEditMode ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+					.Padding(2.f)
 					.OnCheckStateChanged(this, &SRemoteControlPanel::OnEditModeCheckboxToggle)
 				]
+				// Enable Log
 				+ SHorizontalBox::Slot()
 				.VAlign(VAlign_Center)
 				.Padding(4.0f, 0)
@@ -249,7 +249,7 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 				.AutoWidth()
 				[
 					SAssignNew(PresetNameTextBlock, STextBlock)
-					.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
+					.Font(FAppStyle::Get().GetFontStyle("DetailsView.CategoryFontStyle"))
 					.Text(FText::FromName(Preset->GetFName()))
 				]
 				+ SHorizontalBox::Slot()
@@ -264,14 +264,15 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 				.AutoWidth()
 				[
 					SNew(SButton)
-					.ButtonStyle(FEditorStyle::Get(), "FlatButton")
+					.ContentPadding(2.0f)
+					.ButtonStyle(FAppStyle::Get(), "FlatButton")
 					.TextStyle(FRemoteControlPanelStyle::Get(), "RemoteControlPanel.Button.TextStyle")
 					.OnClicked_Raw(this, &SRemoteControlPanel::OnClickSettingsButton)
 					[
 						SNew(STextBlock)
 						.ColorAndOpacity(FColor::White)
 						.ToolTipText(LOCTEXT("OpenRemoteControlSettings", "Open Remote Control settings."))
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+						.Font(FAppStyle::Get().GetFontStyle("FontAwesome.10"))
 						.Text(FEditorFontGlyphs::Cogs)
 					]
 				]
@@ -286,7 +287,7 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 			[
 				SNew(SBorder)
 				.Padding(FMargin(0.f, 5.f, 0.f, 0.f))
-				.BorderImage(FEditorStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+				.BorderImage(FAppStyle::Get().GetBrush("ToolPanel.DarkGroupBorder"))
 				[
 					SNew(SWidgetSwitcher)
 					.WidgetIndex_Lambda([this](){ return !bIsInEditMode ? 0 : 1; })
@@ -294,7 +295,7 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 					[
 						// Exposed entities List
 						SNew(SBorder)
-						.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+						.BorderImage(FAppStyle::Get().GetBrush("ToolPanel.GroupBorder"))
 						[
 							EntityList.ToSharedRef()
 						]
@@ -315,7 +316,7 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 						[
 							// Exposed entities List
 							SNew(SBorder)
-							.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+							.BorderImage(FAppStyle::Get().GetBrush("ToolPanel.GroupBorder"))
 							[
 								EntityList.ToSharedRef()
 							]
@@ -324,7 +325,7 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 						.Value(TreeBindingSplitRatioBottom)
 						[
 							SNew(SBorder)
-							.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+							.BorderImage(FAppStyle::Get().GetBrush("ToolPanel.GroupBorder"))
 							[
 								EntityProtocolDetails.ToSharedRef()
 							]
@@ -338,14 +339,21 @@ void SRemoteControlPanel::Construct(const FArguments& InArgs, URemoteControlPres
 				SNew(SRCLogger)
 			]
 		]
+		// Use less CPU Warning
+		+SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(FMargin(5.f, 8.f, 5.f, 5.f))
+		[
+			CreateCPUThrottleWarning()
+		]
 	];
 
 	for (const TSharedRef<SWidget>& Widget : ExtensionWidgets)
 	{
 		// We want to insert the widgets before the edit mode buttons.
 		constexpr int32 NumEditModeWidgets = 2;
-		const int32 ExtensionsPosititon = ExtensionWidgets.Num() - NumEditModeWidgets;
-		TopExtensions->InsertSlot(ExtensionsPosititon)
+		const int32 ExtensionsPosition = ExtensionWidgets.Num() - NumEditModeWidgets;
+		TopExtensions->InsertSlot(ExtensionsPosition)
 			.VAlign(VAlign_Center)
 			.AutoWidth()
 			[
@@ -380,24 +388,66 @@ void SRemoteControlPanel::PostRedo(bool bSuccess)
 	Refresh();
 }
 
-bool SRemoteControlPanel::IsExposed(const TSharedPtr<IPropertyHandle>& PropertyHandle)
+bool SRemoteControlPanel::IsExposed(const FRCExposesPropertyArgs& InPropertyArgs)
 {
-	if (CachedExposedProperties.Contains(TWeakPtr<IPropertyHandle>{PropertyHandle}))
+	if (!ensure(InPropertyArgs.IsValid()))
 	{
-		return true;
+		return false;
 	}
-	
-	TArray<UObject*> OuterObjects;
-	PropertyHandle->GetOuterObjects(OuterObjects);
 
-	FString Path = PropertyHandle->GeneratePathToProperty();
+	const FRCExposesPropertyArgs::EType ExtensionArgsType = InPropertyArgs.GetType();
 
+	auto CheckCachedExposedArgs = [this, InPropertyArgs](const TArray<UObject*> InOwnerObjects, const FString& InPath, bool bIsCheckIsBoundByFullPath)
+	{
+		if (CachedExposedPropertyArgs.Contains(InPropertyArgs))
+		{
+			return true;
+		}
+
+		const bool bAllObjectsExposed = IsAllObjectsExposed(InOwnerObjects, InPath, bIsCheckIsBoundByFullPath);
+
+		if (bAllObjectsExposed)
+		{
+			CachedExposedPropertyArgs.Emplace(InPropertyArgs);
+		}
+
+		return bAllObjectsExposed;
+	};
+
+	if (ExtensionArgsType == FRCExposesPropertyArgs::EType::E_Handle)
+	{
+		TArray<UObject*> OuterObjects;
+		InPropertyArgs.PropertyHandle->GetOuterObjects(OuterObjects);
+		const FString Path = InPropertyArgs.PropertyHandle->GeneratePathToProperty();
+
+		constexpr bool bIsCheckIsBoundByFullPath = true;
+		return CheckCachedExposedArgs({ OuterObjects }, Path, bIsCheckIsBoundByFullPath);
+	}
+	else if (ExtensionArgsType == FRCExposesPropertyArgs::EType::E_OwnerObject)
+	{
+		constexpr bool bIsCheckIsBoundByFullPath = false;
+		return CheckCachedExposedArgs({ InPropertyArgs.OwnerObject }, InPropertyArgs.PropertyPath, bIsCheckIsBoundByFullPath);
+	}
+
+	// It never should hit this point
+	ensure(false);
+
+	return false;
+}
+
+
+bool SRemoteControlPanel::IsAllObjectsExposed(TArray<UObject*> InOuterObjects, const FString& InPath, bool bUsingDuplicatesInPath)
+{
 	TArray<TSharedPtr<FRemoteControlProperty>, TInlineAllocator<1>> PotentialMatches;
 	for (const TWeakPtr<FRemoteControlProperty>& WeakProperty : Preset->GetExposedEntities<FRemoteControlProperty>())
 	{
 		if (TSharedPtr<FRemoteControlProperty> Property = WeakProperty.Pin())
 		{
-			if (Property->FieldPathInfo.ToPathPropertyString() == Path)
+			// If that was exposed by property path it should be checked by the full path with duplicated like propertypath.propertypath[0]
+			// If that was exposed by the owner object it should be without duplicated in the path, just propertypath[0]
+			const bool Isbound = bUsingDuplicatesInPath ? Property->CheckIsBoundToPropertyPath(InPath) : Property->CheckIsBoundToString(InPath);
+
+			if (Isbound)
 			{
 				PotentialMatches.Add(Property);
 			}
@@ -406,13 +456,13 @@ bool SRemoteControlPanel::IsExposed(const TSharedPtr<IPropertyHandle>& PropertyH
 
 	bool bAllObjectsExposed = true;
 
-	for (UObject* OuterObject : OuterObjects)
+	for (UObject* OuterObject : InOuterObjects)
 	{
 		bool bFoundPropForObject = false;
 
 		for (const TSharedPtr<FRemoteControlProperty>& Property : PotentialMatches)
 		{
-			if (Property->GetBoundObjects().Contains(OuterObject))
+			if (Property->ContainsBoundObjects({ InOuterObjects } ))
 			{
 				bFoundPropForObject = true;
 				break;
@@ -422,46 +472,71 @@ bool SRemoteControlPanel::IsExposed(const TSharedPtr<IPropertyHandle>& PropertyH
 		bAllObjectsExposed &= bFoundPropForObject;
 	}
 
-	if (bAllObjectsExposed)
-	{
-		CachedExposedProperties.Emplace(PropertyHandle);
-	}
-	
 	return bAllObjectsExposed;
 }
 
-void SRemoteControlPanel::ToggleProperty(const TSharedPtr<IPropertyHandle>& PropertyHandle)
+void SRemoteControlPanel::ToggleProperty(const FRCExposesPropertyArgs& InPropertyArgs)
 {
-	TSet<UObject*> UniqueOuterObjects;
+	if (!ensure(InPropertyArgs.IsValid()))
 	{
-		// Make sure properties are only being exposed once per object.
-		TArray<UObject*> OuterObjects;
-		PropertyHandle->GetOuterObjects(OuterObjects);
-		UniqueOuterObjects.Append(MoveTemp(OuterObjects));
+		return;
 	}
 
-	if (IsExposed(PropertyHandle))
+	if (IsExposed(InPropertyArgs))
 	{
 		FScopedTransaction Transaction(LOCTEXT("UnexposeProperty", "Unexpose Property"));
 		Preset->Modify();
-		Unexpose(PropertyHandle);
+		Unexpose(InPropertyArgs);
 		return;
 	}
-	if (UniqueOuterObjects.Num())
+
+
+	auto PreExpose = [this]()
 	{
 		FScopedTransaction Transaction(LOCTEXT("ExposeProperty", "Expose Property"));
 		Preset->Modify();
-		
-		for (UObject* Object : UniqueOuterObjects)
+	};
+
+	auto PostExpose = [this, InPropertyArgs]()
+	{
+		CachedExposedPropertyArgs.Emplace(InPropertyArgs);
+	};
+
+	const FRCExposesPropertyArgs::EType ExtensionArgsType = InPropertyArgs.GetType();
+	if (ExtensionArgsType == FRCExposesPropertyArgs::EType::E_Handle)
+	{
+		TSet<UObject*> UniqueOuterObjects;
 		{
-			if (Object)
-			{
-				constexpr bool bCleanDuplicates = true; //GeneratePathToProperty duplicates container name (Array.Array[1], Set.Set[1], etc...)
-				ExposeProperty(Object, FRCFieldPathInfo{PropertyHandle->GeneratePathToProperty(), bCleanDuplicates});
-			}
+			// Make sure properties are only being exposed once per object.
+			TArray<UObject*> OuterObjects;
+			InPropertyArgs.PropertyHandle->GetOuterObjects(OuterObjects);
+			UniqueOuterObjects.Append(MoveTemp(OuterObjects));
 		}
-		
-		CachedExposedProperties.Emplace(PropertyHandle);
+
+		if (UniqueOuterObjects.Num())
+		{
+			PreExpose();
+
+			for (UObject* Object : UniqueOuterObjects)
+			{
+				if (Object)
+				{
+					constexpr bool bCleanDuplicates = true; // GeneratePathToProperty duplicates container name (Array.Array[1], Set.Set[1], etc...)
+					ExposeProperty(Object, FRCFieldPathInfo{ InPropertyArgs.PropertyHandle->GeneratePathToProperty(), bCleanDuplicates });
+				}
+			}
+
+			PostExpose();
+		}
+	}
+	else if (ExtensionArgsType == FRCExposesPropertyArgs::EType::E_OwnerObject)
+	{
+		PreExpose();
+
+		constexpr bool bCleanDuplicates = true; // GeneratePathToProperty duplicates container name (Array.Array[1], Set.Set[1], etc...)
+		ExposeProperty(InPropertyArgs.OwnerObject, FRCFieldPathInfo{ InPropertyArgs.PropertyPath, bCleanDuplicates });
+
+		PostExpose();
 	}
 }
 
@@ -469,9 +544,9 @@ FGuid SRemoteControlPanel::GetSelectedGroup() const
 {
 	if (TSharedPtr<SRCPanelTreeNode> Node = EntityList->GetSelection())
 	{
-		if (Node->AsGroup())
+		if (Node->GetRCType() == SRCPanelTreeNode::Group)
 		{
-			return Node->GetId();		
+			return Node->GetRCId();		
 		}
 	}
 	return FGuid();
@@ -486,23 +561,22 @@ FReply SRemoteControlPanel::OnClickDisableUseLessCPU() const
 	return FReply::Handled();
 }
 
-TSharedRef<SWidget> SRemoteControlPanel::CreateCPUThrottleButton() const
+TSharedRef<SWidget> SRemoteControlPanel::CreateCPUThrottleWarning() const
 {
 	FProperty* PerformanceThrottlingProperty = FindFieldChecked<FProperty>(UEditorPerformanceSettings::StaticClass(), GET_MEMBER_NAME_CHECKED(UEditorPerformanceSettings, bThrottleCPUWhenNotForeground));
 	FFormatNamedArguments Arguments;
 	Arguments.Add(TEXT("PropertyName"), PerformanceThrottlingProperty->GetDisplayNameText());
 	FText PerformanceWarningText = FText::Format(LOCTEXT("RemoteControlPerformanceWarning", "Warning: The editor setting '{PropertyName}' is currently enabled\nThis will stop editor windows from updating in realtime while the editor is not in focus"), Arguments);
 
-	return SNew(SButton)
-		.ButtonStyle(FEditorStyle::Get(), "FlatButton")
-		.Visibility_Lambda([]() {return GetDefault<UEditorPerformanceSettings>()->bThrottleCPUWhenNotForeground ? EVisibility::Visible : EVisibility::Collapsed; } )
-		.OnClicked_Raw(this, &SRemoteControlPanel::OnClickDisableUseLessCPU)
+	return SNew(SWarningOrErrorBox)
+		.Visibility_Lambda([]() { return GetDefault<UEditorPerformanceSettings>()->bThrottleCPUWhenNotForeground ? EVisibility::Visible : EVisibility::Collapsed; })
+		.MessageStyle(EMessageStyle::Warning)
+		.Message(PerformanceWarningText)
 		[
-			SNew(STextBlock)
-			.ToolTipText(MoveTemp(PerformanceWarningText))
-			.TextStyle(FRemoteControlPanelStyle::Get(), "RemoteControlPanel.Button.TextStyle")
-			.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-			.Text(FEditorFontGlyphs::Exclamation_Triangle)
+			SNew(SButton)
+			.OnClicked(this, &SRemoteControlPanel::OnClickDisableUseLessCPU)
+			.TextStyle(FAppStyle::Get(), "DialogButtonText")
+			.Text(LOCTEXT("RemoteControlPerformanceWarningDisable", "Disable"))
 		];
 }
 
@@ -560,7 +634,7 @@ TSharedRef<SWidget> SRemoteControlPanel::CreateExposeButton()
 		
 		CreatePickerSubMenu(
 			LOCTEXT("ActorFunctionSubMenu", "Actor Function"),
-			LOCTEXT("SubsystemFunctionSubMenuToolTip", "Expose an actor's function."),
+			LOCTEXT("ActorFunctionSubMenuToolTip", "Expose an actor's function."),
 			ActorFunctionPicker.ToSharedRef()
 		);
 		
@@ -583,20 +657,21 @@ TSharedRef<SWidget> SRemoteControlPanel::CreateExposeButton()
 	MenuBuilder.EndSection();
 	
 	return SAssignNew(ExposeComboButton, SComboButton)
-	.Visibility_Lambda([this]() { return this->bIsInEditMode ? EVisibility::Visible : EVisibility::Collapsed; })
-	.ButtonStyle(FEditorStyle::Get(), "PropertyEditor.AssetComboStyle")
-	.ForegroundColor(FSlateColor::UseForeground())
-	.CollapseMenuOnParentFocus(true)
-	.ButtonContent()
-	[
-		SNew(STextBlock)
-		.TextStyle(FEditorStyle::Get(), "ContentBrowser.TopBar.Font")
-		.Text(LOCTEXT("ExposeButtonLabel", "Expose"))
-	]
-	.MenuContent()
-	[
-		MenuBuilder.MakeWidget()
-	];
+		.Visibility_Lambda([this]() { return this->bIsInEditMode ? EVisibility::Visible : EVisibility::Collapsed; })
+		.ButtonStyle(FAppStyle::Get(), "PropertyEditor.AssetComboStyle")
+		.ForegroundColor(FSlateColor::UseForeground())
+		.CollapseMenuOnParentFocus(true)
+		.ContentPadding(FMargin(10.0f, 0.f))
+		.ButtonContent()
+		[
+			SNew(STextBlock)
+			.TextStyle(FAppStyle::Get(), "ContentBrowser.TopBar.Font")
+			.Text(LOCTEXT("ExposeButtonLabel", "Expose"))
+		]
+		.MenuContent()
+		[
+			MenuBuilder.MakeWidget()
+		];
 }
 
 TSharedRef<SWidget> SRemoteControlPanel::CreateExposeByClassWidget()
@@ -627,7 +702,7 @@ TSharedRef<SWidget> SRemoteControlPanel::CreateExposeByClassWidget()
 	
 	FClassViewerInitializationOptions Options;
 	{
-		Options.ClassFilter = Filter;
+		Options.ClassFilters.Add(Filter.ToSharedRef());
 		Options.bIsPlaceableOnly = true;
 		Options.Mode = EClassViewerMode::ClassPicker;
 		Options.DisplayMode = EClassViewerDisplayMode::ListView;
@@ -741,6 +816,7 @@ void SRemoteControlPanel::OnMapChange(uint32)
 
 	// Clear the widget cache on map change to make sure we don't keep widgets around pointing to potentially stale objects.
 	WidgetRegistry->Clear();
+	Refresh();
 }
 
 void SRemoteControlPanel::RegisterEvents()
@@ -763,6 +839,8 @@ void SRemoteControlPanel::RegisterEvents()
 
 	Preset->OnEntityExposed().AddSP(this, &SRemoteControlPanel::OnEntityExposed);
 	Preset->OnEntityUnexposed().AddSP(this, &SRemoteControlPanel::OnEntityUnexposed);
+
+	UMaterial::OnMaterialCompilationFinished().AddSP(this, &SRemoteControlPanel::OnMaterialCompiled);
 }
 
 void SRemoteControlPanel::UnregisterEvents()
@@ -786,6 +864,8 @@ void SRemoteControlPanel::UnregisterEvents()
 	
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	AssetRegistryModule.Get().OnAssetRenamed().RemoveAll(this);
+	
+	UMaterial::OnMaterialCompilationFinished().RemoveAll(this);
 }
 
 void SRemoteControlPanel::Refresh()
@@ -796,51 +876,54 @@ void SRemoteControlPanel::Refresh()
 	EntityList->Refresh();
 }
 
-void SRemoteControlPanel::Unexpose(const TSharedPtr<IPropertyHandle>& Handle)
+
+void SRemoteControlPanel::Unexpose(const FRCExposesPropertyArgs& InPropertyArgs)
 {
-	TArray<UObject*> OuterObjects;
-	Handle->GetOuterObjects(OuterObjects);
-
-	FString Path = Handle->GeneratePathToProperty();
-
-	// Find an exposed property with the same path.
-	TArray<TSharedPtr<FRemoteControlProperty>, TInlineAllocator<1>> PotentialMatches;
-	for (const TWeakPtr<FRemoteControlProperty>& WeakProperty : Preset->GetExposedEntities<FRemoteControlProperty>())
+	if (!InPropertyArgs.IsValid())
 	{
-		if (TSharedPtr<FRemoteControlProperty> Property = WeakProperty.Pin())
-		{
-			if (Property->FieldPathInfo.ToPathPropertyString() == Path)
-			{
-				PotentialMatches.Add(Property);
-			}
-		}
+		return;
 	}
 
-	for (const TSharedPtr<FRemoteControlProperty>& Property : PotentialMatches)
+	auto CheckAndExpose = [&](TArray<UObject*> InOuterObjects, const FString& InPath)
 	{
-		TArray<UObject*> PropertyOwners = Property->GetBoundObjects();
-		if (PropertyOwners.Num() != OuterObjects.Num())
+		// Find an exposed property with the same path.
+		TArray<TSharedPtr<FRemoteControlProperty>, TInlineAllocator<1>> PotentialMatches;
+		for (const TWeakPtr<FRemoteControlProperty>& WeakProperty : Preset->GetExposedEntities<FRemoteControlProperty>())
 		{
-			continue;
+			if (TSharedPtr<FRemoteControlProperty> Property = WeakProperty.Pin())
+			{
+				if (Property->CheckIsBoundToString(InPath))
+				{
+					PotentialMatches.Add(Property);
+				}
+			}
 		}
 
-		bool bHasSameObjects = true;
-		for (UObject* Owner : PropertyOwners)
+		for (const TSharedPtr<FRemoteControlProperty>& Property : PotentialMatches)
 		{
-			if (!OuterObjects.Contains(Owner))
+			if (Property->ContainsBoundObjects(InOuterObjects))
 			{
-				bHasSameObjects = false;
+				Preset->Unexpose(Property->GetId());
 				break;
 			}
 		}
+	};
 
-		if (bHasSameObjects && OuterObjects.Num())
-		{
-			Preset->Unexpose(Property->GetId());
-			break;
-		}
+	const FRCExposesPropertyArgs::EType ExtensionArgsType = InPropertyArgs.GetType();
+
+	if (ExtensionArgsType == FRCExposesPropertyArgs::EType::E_Handle)
+	{
+		TArray<UObject*> OuterObjects;
+		InPropertyArgs.PropertyHandle->GetOuterObjects(OuterObjects);
+
+		CheckAndExpose(OuterObjects, InPropertyArgs.PropertyHandle->GeneratePathToProperty());
+	}
+	else if (ExtensionArgsType == FRCExposesPropertyArgs::EType::E_OwnerObject)
+	{
+		CheckAndExpose({ InPropertyArgs.OwnerObject }, InPropertyArgs.PropertyPath);
 	}
 }
+
 
 void SRemoteControlPanel::OnEditModeCheckboxToggle(ECheckBoxState State)
 {
@@ -915,9 +998,9 @@ void SRemoteControlPanel::ToggleDetailsView()
 {
 	const FTabId TabId = FTabId(FRemoteControlUIModule::EntityDetailsTabName);
 	
-	if (ToolkitHost)
+	if (TSharedPtr<IToolkitHost> PinnedToolkit = ToolkitHost.Pin())
 	{
-		if (TSharedPtr<SDockTab> ExistingTab = ToolkitHost->GetTabManager()->FindExistingLiveTab(TabId))
+		if (TSharedPtr<SDockTab> ExistingTab = PinnedToolkit->GetTabManager()->FindExistingLiveTab(TabId))
 		{
 			ExistingTab->RequestCloseTab();
 		}
@@ -925,13 +1008,12 @@ void SRemoteControlPanel::ToggleDetailsView()
 		{
 			// Request the Tab Manager to invoke the tab. This will spawn the tab if needed, otherwise pull it to focus. This assumes
 			// that the Toolkit Host's Tab Manager has already registered a tab with a NullWidget for content.
-			if (TSharedPtr<SDockTab> EntityDetailsTab = ToolkitHost->GetTabManager()->TryInvokeTab(TabId))
+			if (TSharedPtr<SDockTab> EntityDetailsTab = PinnedToolkit->GetTabManager()->TryInvokeTab(TabId))
 			{
 				EntityDetailsTab->SetContent(CreateEntityDetailsView());
 			}
 		}
 	}
-
 }
 
 TSharedRef<SWidget> SRemoteControlPanel::CreateEntityDetailsView()
@@ -956,55 +1038,31 @@ TSharedRef<SWidget> SRemoteControlPanel::CreateEntityDetailsView()
 void SRemoteControlPanel::UpdateEntityDetailsView(const TSharedPtr<SRCPanelTreeNode>& SelectedNode)
 {
 	TSharedPtr<FStructOnScope> SelectedEntityPtr;
-	EExposedFieldType FieldType = EExposedFieldType::Invalid;
+
 	if (SelectedNode)
 	{
-		if (const TSharedPtr<SRCPanelExposedField> FieldWidget = SelectedNode->AsField())
+		if (SelectedNode->GetRCType() != SRCPanelTreeNode::Group &&
+			SelectedNode->GetRCType() != SRCPanelTreeNode::FieldChild) // Field Child does not contain entity ID, that is why it should not be processed
 		{
-			if (const TSharedPtr<FRemoteControlField> Field = FieldWidget->GetRemoteControlField().Pin())
-			{
-				if(Field->GetStruct() == FRemoteControlProperty::StaticStruct())
-				{
-					SelectedEntityPtr = RemoteControlPanelUtils::GetEntityOnScope(StaticCastSharedPtr<FRemoteControlProperty>(Field));
-					FieldType = EExposedFieldType::Property;
-				}
-				else if(Field->GetStruct() == FRemoteControlFunction::StaticStruct())
-				{
-					SelectedEntityPtr = RemoteControlPanelUtils::GetEntityOnScope(StaticCastSharedPtr<FRemoteControlFunction>(Field));
-					FieldType = EExposedFieldType::Function;
-				}
-				else
-				{
-					checkNoEntry();
-				}
-				
-				SelectedEntity = Field;			
-			}
-		}
-		else if (const TSharedPtr<SRCPanelExposedActor> ActorWidget = SelectedNode->AsActor())
-		{
-			if (const TSharedPtr<FRemoteControlActor> Actor = ActorWidget->GetRemoteControlActor().Pin())
-			{
-				SelectedEntity = Actor;
-				SelectedEntityPtr = RemoteControlPanelUtils::GetEntityOnScope<FRemoteControlActor>(Actor);
-			}
+			TSharedPtr<FRemoteControlEntity> Entity = Preset->GetExposedEntity<FRemoteControlEntity>(SelectedNode->GetRCId()).Pin();
+			SelectedEntityPtr = RemoteControlPanelUtils::GetEntityOnScope(Entity, Preset->GetExposedEntityType(SelectedNode->GetRCId()));
 		}
 	}
+
 	if (EntityDetailsView)
 	{
 		EntityDetailsView->SetStructureData(SelectedEntityPtr);
 	}
 
 	static const FName ProtocolWidgetsModuleName = "RemoteControlProtocolWidgets";	
-	if(SelectedEntity && SelectedNode.IsValid() && FModuleManager::Get().IsModuleLoaded(ProtocolWidgetsModuleName))
+	if(SelectedNode.IsValid() && FModuleManager::Get().IsModuleLoaded(ProtocolWidgetsModuleName) && ensure(Preset.IsValid()))
 	{
-		// If the SelectedNode is valid, the Preset should be too.
-		if(ensure(Preset.IsValid()))
+		if (TSharedPtr<FRemoteControlEntity> RCEntity = Preset->GetExposedEntity(SelectedNode->GetRCId()).Pin())
 		{
-			if(SelectedEntity->IsBound())
+			if(RCEntity->IsBound())
 			{
 				IRemoteControlProtocolWidgetsModule& ProtocolWidgetsModule = FModuleManager::LoadModuleChecked<IRemoteControlProtocolWidgetsModule>(ProtocolWidgetsModuleName);
-				EntityProtocolDetails->SetContent(ProtocolWidgetsModule.GenerateDetailsForEntity(Preset.Get(), SelectedEntity->GetId(), FieldType));	
+				EntityProtocolDetails->SetContent(ProtocolWidgetsModule.GenerateDetailsForEntity(Preset.Get(), RCEntity->GetId()));
 			}
 			else
 			{
@@ -1047,13 +1105,14 @@ FReply SRemoteControlPanel::OnClickRebindAllButton()
 
 void SRemoteControlPanel::UpdateActorFunctionPicker()
 {
-	if (GEditor && ActorFunctionPicker)
+	if (GEditor && ActorFunctionPicker && !NextTickTimerHandle.IsValid())
 	{
-		GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateLambda([WeakPanelPtr = TWeakPtr<SRemoteControlPanel>(StaticCastSharedRef<SRemoteControlPanel>(AsShared()))]()
+		NextTickTimerHandle = GEditor->GetTimerManager()->SetTimerForNextTick(FTimerDelegate::CreateLambda([WeakPanelPtr = TWeakPtr<SRemoteControlPanel>(StaticCastSharedRef<SRemoteControlPanel>(AsShared()))]()
 		{
 			if (TSharedPtr<SRemoteControlPanel> PanelPtr = WeakPanelPtr.Pin())
 			{
 				PanelPtr->ActorFunctionPicker->Refresh();
+				PanelPtr->NextTickTimerHandle.Invalidate();
 			}
 		}));
 	}
@@ -1072,12 +1131,12 @@ void SRemoteControlPanel::OnAssetRenamed(const FAssetData& Asset, const FString&
 
 void SRemoteControlPanel::OnEntityExposed(URemoteControlPreset* InPreset, const FGuid& InEntityId)
 {
-	CachedExposedProperties.Empty();
+	CachedExposedPropertyArgs.Empty();
 }
 
 void SRemoteControlPanel::OnEntityUnexposed(URemoteControlPreset* InPreset, const FGuid& InEntityId)
 {
-	CachedExposedProperties.Empty();
+	CachedExposedPropertyArgs.Empty();
 }
 
 FReply SRemoteControlPanel::OnClickSettingsButton()
@@ -1085,5 +1144,14 @@ FReply SRemoteControlPanel::OnClickSettingsButton()
 	FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer("Project", "Plugins", "Remote Control");
 	return FReply::Handled();
 }
+
+void SRemoteControlPanel::OnMaterialCompiled(UMaterialInterface* MaterialInterface)
+{
+	// Clear the widget cache on material compiled to make sure we have valid property nodes for IPropertyRowGenerator
+	WidgetRegistry->Clear();
+	Refresh();
+}
+
+
 
 #undef LOCTEXT_NAMESPACE /*RemoteControlPanel*/

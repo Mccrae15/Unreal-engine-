@@ -11,6 +11,7 @@
 
 struct FMovieSceneSkeletalAnimRootMotionTrackParams;
 struct FAnimationPoseData;
+class UMirrorDataTable;
 
 USTRUCT(BlueprintType)
 struct FMovieSceneSkeletalAnimationParams
@@ -20,14 +21,14 @@ struct FMovieSceneSkeletalAnimationParams
 	FMovieSceneSkeletalAnimationParams();
 
 	/** Gets the animation duration, modified by play rate */
-	float GetDuration() const { return FMath::IsNearlyZero(PlayRate) || Animation == nullptr ? 0.f : Animation->SequenceLength / PlayRate; }
+	float GetDuration() const { return FMath::IsNearlyZero(PlayRate) || Animation == nullptr ? 0.f : Animation->GetPlayLength() / PlayRate; }
 
 	/** Gets the animation sequence length, not modified by play rate */
-	float GetSequenceLength() const { return Animation != nullptr ? Animation->SequenceLength : 0.f; }
+	float GetSequenceLength() const { return Animation != nullptr ? Animation->GetPlayLength() : 0.f; }
 
 	/** The animation this section plays */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Animation", meta=(AllowedClasses = "AnimSequence,AnimComposite,AnimStreamable"))
-	UAnimSequenceBase* Animation;
+	TObjectPtr<UAnimSequenceBase> Animation;
 
 	/** The offset into the beginning of the animation clip for the first loop of play. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category="Animation")
@@ -52,6 +53,9 @@ struct FMovieSceneSkeletalAnimationParams
 	/** The slot name to use for the animation */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Animation" )
 	FName SlotName;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Animation")
+	TObjectPtr<class UMirrorDataTable> MirrorDataTable;
 
 	/** The weight curve for this animation section */
 	UPROPERTY()
@@ -88,7 +92,7 @@ public:
 	FMovieSceneSkeletalAnimationParams Params;
 
 	/** Get Frame Time as Animation Time*/
-	MOVIESCENETRACKS_API float MapTimeToAnimation(FFrameTime InPosition, FFrameRate InFrameRate) const;
+	MOVIESCENETRACKS_API double MapTimeToAnimation(FFrameTime InPosition, FFrameRate InFrameRate) const;
 	
 	//~ UMovieSceneSection interface
 	virtual void SetRange(const TRange<FFrameNumber>& NewRange) override;
@@ -102,6 +106,7 @@ protected:
 	virtual UMovieSceneSection* SplitSection(FQualifiedFrameTime SplitTime, bool bDeleteKeys) override;
 	virtual void GetSnapTimes(TArray<FFrameNumber>& OutSnapTimes, bool bGetSectionBorders) const override;
 	virtual TOptional<FFrameTime> GetOffsetTime() const override;
+	virtual void MigrateFrameTimes(FFrameRate SourceRate, FFrameRate DestinationRate) override;
 	virtual float GetTotalWeightValue(FFrameTime InTime) const override;
 
 	/** ~UObject interface */
@@ -128,10 +133,10 @@ private:
 private:
 
 	UPROPERTY()
-	class UAnimSequence* AnimSequence_DEPRECATED;
+	TObjectPtr<class UAnimSequence> AnimSequence_DEPRECATED;
 
 	UPROPERTY()
-	UAnimSequenceBase* Animation_DEPRECATED;
+	TObjectPtr<UAnimSequenceBase> Animation_DEPRECATED;
 
 	UPROPERTY()
 	float StartOffset_DEPRECATED;

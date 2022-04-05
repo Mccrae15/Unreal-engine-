@@ -161,7 +161,7 @@ enum class EDatasmithTextureMode : uint8
 	Specular,
 	Normal,
 	NormalGreenInv,
-	Displace,
+	UNUSED_Displace,
 	Other,
 	Bump,
 	Ies
@@ -234,6 +234,7 @@ enum class EDatasmithMasterMaterialType : uint8
 	Custom,
 	/** Material has a transparent cutout map */
 	CutOut,
+	Emissive,
 	/** Dummy element to count the number of types */
 	Count
 };
@@ -598,11 +599,6 @@ static const TCHAR* KeyValuePropertyTypeStrings[] = { TEXT("String"), TEXT("Colo
 #define DATASMITH_IORKVALUENAME					TEXT("IORk")
 #define DATASMITH_REFRAIORVALUENAME				TEXT("IORRefraction")
 
-#define DATASMITH_DISPLACETEXNAME				TEXT("Displace")
-#define DATASMITH_DISPLACEVALNAME				TEXT("Displaceval")
-#define DATASMITH_DISPLACECOMPNAME				TEXT("Displacecomp")
-#define DATASMITH_DISPLACESUBNAME				TEXT("DisplaceSubdivisionval")
-
 #define DATASMITH_METALTEXNAME					TEXT("Metal")
 #define DATASMITH_METALVALUENAME				TEXT("Metalval")
 #define DATASMITH_METALCOMPNAME					TEXT("Metalcomp")
@@ -625,6 +621,7 @@ static const TCHAR* KeyValuePropertyTypeStrings[] = { TEXT("String"), TEXT("Colo
 #define DATASMITH_BLENDMODE						TEXT("Blendmode")
 #define DATASMITH_OPACITYMASKCLIPVALUE			TEXT("OpacityMaskClipValue")
 #define DATASMITH_SHADINGMODEL					TEXT("ShadingModel")
+#define DATASMITH_TRANSLUCENCYLIGHTINGMODE		TEXT("TranslucencyLightingMode")
 
 #define DATASMITH_ENVILLUMINATIONMAP			TEXT("Illuminate")
 

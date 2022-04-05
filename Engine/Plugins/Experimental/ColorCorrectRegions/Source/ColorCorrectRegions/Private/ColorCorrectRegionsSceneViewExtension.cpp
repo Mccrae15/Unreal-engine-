@@ -4,7 +4,7 @@
 #include "RHI.h"
 #include "SceneView.h"
 #include "PostProcess/PostProcessing.h"
-#include "ColorCorrectRegionDatabase.h"
+#include "ColorCorrectRegionsModule.h"
 #include "ColorCorrectRegionsSubsystem.h"
 #include "ColorCorrectRegionsPostProcessMaterial.h"
 #include "ScreenPass.h"
@@ -44,32 +44,32 @@ namespace
 
 	FScreenPassTextureViewportParameters GetTextureViewportParameters(const FScreenPassTextureViewport& InViewport)
 	{
-		const FVector2D Extent(InViewport.Extent);
-		const FVector2D ViewportMin(InViewport.Rect.Min.X, InViewport.Rect.Min.Y);
-		const FVector2D ViewportMax(InViewport.Rect.Max.X, InViewport.Rect.Max.Y);
-		const FVector2D ViewportSize = ViewportMax - ViewportMin;
+		const FVector2f Extent(InViewport.Extent);	// LWC_TODO: Precision loss
+		const FVector2f ViewportMin(InViewport.Rect.Min.X, InViewport.Rect.Min.Y);
+		const FVector2f ViewportMax(InViewport.Rect.Max.X, InViewport.Rect.Max.Y);
+		const FVector2f ViewportSize = ViewportMax - ViewportMin;
 
 		FScreenPassTextureViewportParameters Parameters;
 
 		if (!InViewport.IsEmpty())
 		{
-			Parameters.Extent = Extent;
-			Parameters.ExtentInverse = FVector2D(1.0f / Extent.X, 1.0f / Extent.Y);
+			Parameters.Extent = FVector2f(Extent);
+			Parameters.ExtentInverse = FVector2f(1.0f / Extent.X, 1.0f / Extent.Y);
 
-			Parameters.ScreenPosToViewportScale = FVector2D(0.5f, -0.5f) * ViewportSize;
-			Parameters.ScreenPosToViewportBias = (0.5f * ViewportSize) + ViewportMin;
+			Parameters.ScreenPosToViewportScale = FVector2f(0.5f, -0.5f) * ViewportSize;	
+			Parameters.ScreenPosToViewportBias = (0.5f * ViewportSize) + ViewportMin;	
 
 			Parameters.ViewportMin = InViewport.Rect.Min;
 			Parameters.ViewportMax = InViewport.Rect.Max;
 
 			Parameters.ViewportSize = ViewportSize;
-			Parameters.ViewportSizeInverse = FVector2D(1.0f / Parameters.ViewportSize.X, 1.0f / Parameters.ViewportSize.Y);
+			Parameters.ViewportSizeInverse = FVector2f(1.0f / Parameters.ViewportSize.X, 1.0f / Parameters.ViewportSize.Y);
 
 			Parameters.UVViewportMin = ViewportMin * Parameters.ExtentInverse;
 			Parameters.UVViewportMax = ViewportMax * Parameters.ExtentInverse;
 
 			Parameters.UVViewportSize = Parameters.UVViewportMax - Parameters.UVViewportMin;
-			Parameters.UVViewportSizeInverse = FVector2D(1.0f / Parameters.UVViewportSize.X, 1.0f / Parameters.UVViewportSize.Y);
+			Parameters.UVViewportSizeInverse = FVector2f(1.0f / Parameters.UVViewportSize.X, 1.0f / Parameters.UVViewportSize.Y);
 
 			Parameters.UVViewportBilinearMin = Parameters.UVViewportMin + 0.5f * Parameters.ExtentInverse;
 			Parameters.UVViewportBilinearMax = Parameters.UVViewportMax - 0.5f * Parameters.ExtentInverse;
@@ -170,7 +170,23 @@ namespace
 	{
 		TArray<FVector> Points;
 		Points.Reserve(6);
-		CalculatePlaneAABBIntersectionPoints(InView.ViewFrustum.Planes[4], InBoxCenter, InBoxExtents, Points);
+		static bool bNotifiedOfClippingPlaneError = false;
+
+		if (InView.bHasNearClippingPlane)
+		{
+			CalculatePlaneAABBIntersectionPoints(InView.NearClippingPlane, InBoxCenter, InBoxExtents, Points);
+		}
+		// Previously last plane was near clipping plane.
+		else if (InView.ViewFrustum.Planes.Num() == 5)
+		{
+			CalculatePlaneAABBIntersectionPoints(InView.ViewFrustum.Planes[4], InBoxCenter, InBoxExtents, Points);
+		}
+		else if (!bNotifiedOfClippingPlaneError)
+		{
+			bNotifiedOfClippingPlaneError = true;
+			UE_LOG(ColorCorrectRegions, Error, TEXT("Couldn't find a correct near clipping plane in View Frustrum"));
+		}
+
 		if (Points.Num() == 0)
 		{
 			return;
@@ -205,7 +221,7 @@ namespace
 
 	template<typename TSetupFunction>
 	void DrawScreenPass(
-		FRHICommandListImmediate& RHICmdList,
+		FRHICommandList& RHICmdList,
 		const FSceneView& View,
 		const FScreenPassTextureViewport& OutputViewport,
 		const FScreenPassTextureViewport& InputViewport,
@@ -237,7 +253,7 @@ namespace
 			OutputSize,
 			InputSize,
 			PipelineState.VertexShader,
-			View.StereoPass,
+			View.StereoViewIndex,
 			false,
 			DrawRectangleFlags);
 	}
@@ -348,24 +364,20 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 		{
 			AColorCorrectRegion* Region = *It;
 
-			// We use primitive componentIds to check if this region is hidden from camera in cases such as Display cluster.
-			FPrimitiveComponentId FirstComponentId = FColorCorrectRegionDatabase::GetFirstComponentId(Region);
-
 			/* If Region is pending for kill, invisible or disabled we don't need to render it.
 			*	If Region's Primitive is not visible in the current view's scene then we don't need to render it either.
 			*	We are checking if the region belongs to the same world as the view. 
 			* Alternative is to get all component ids from ViewFamily.Scene and compare with actor's 
 			*	Region->ActiveMeshComponent->ComponentId ComponentIdSearchTable.Contains(RegionPrimitiveComponentId)
 			*/
-			if (Region->IsPendingKill() || 
+			if (!IsValid(Region) || 
 				Region->IsActorBeingDestroyed() ||
 				!Region->Enabled || 
 				Region->IsHidden() ||
 #if WITH_EDITOR
 				Region->IsHiddenEd() ||
 #endif
-				Region->GetWorld() != ViewFamily.Scene->GetWorld() ||
-				View.HiddenPrimitives.Contains(FirstComponentId))
+				Region->GetWorld() != ViewFamily.Scene->GetWorld())
 			{
 				continue;
 			}
@@ -482,12 +494,12 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 
 			// Setting constant buffer data to be passed to the shader.
 			{
-				RegionData.Rotate = FMath::DegreesToRadians<FVector>(Region->GetActorRotation().Euler());
-				RegionData.Translate = Region->GetActorLocation();
+				RegionData.Rotate = FMath::DegreesToRadians<FVector3f>((FVector3f)Region->GetActorRotation().Euler());	// LWC_TODO: Precision Loss
+				RegionData.Translate = (FVector3f)Region->GetActorLocation();	// LWC_TODO: Precision Loss
 
 				const float ScaleMultiplier = 50.;
 				// Pre multiplied scale. 
-				RegionData.Scale = Region->GetActorScale() * ScaleMultiplier;
+				RegionData.Scale = (FVector3f)Region->GetActorScale() * ScaleMultiplier;
 
 				RegionData.WhiteTemp = Region->Temperature;
 				// Inner could be larger than outer, in which case we need to make sure these are swapped.
@@ -498,11 +510,11 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 				RegionData.ExcludeStencil = Region->ExcludeStencil;
 				RegionData.Invert = Region->Invert;
 
-				CCBase.ColorSaturation = Region->ColorGradingSettings.Global.Saturation;
-				CCBase.ColorContrast = Region->ColorGradingSettings.Global.Contrast;
-				CCBase.ColorGamma = Region->ColorGradingSettings.Global.Gamma;
-				CCBase.ColorGain = Region->ColorGradingSettings.Global.Gain;
-				CCBase.ColorOffset = Region->ColorGradingSettings.Global.Offset;
+				CCBase.ColorSaturation = (FVector4f)Region->ColorGradingSettings.Global.Saturation;
+				CCBase.ColorContrast = (FVector4f)Region->ColorGradingSettings.Global.Contrast;
+				CCBase.ColorGamma = (FVector4f)Region->ColorGradingSettings.Global.Gamma;
+				CCBase.ColorGain = (FVector4f)Region->ColorGradingSettings.Global.Gain;
+				CCBase.ColorOffset = (FVector4f)Region->ColorGradingSettings.Global.Offset;
 
 				// Set advanced 
 				if (bIsAdvanced)
@@ -510,24 +522,24 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 					const float GammaMin = 0.02;
 					const float GammaMax = 10.;
 					//clamp(ExternalExpressions.ColorGammaHighlights, 0.02, 10.)
-					CCShadows.ColorSaturation = Region->ColorGradingSettings.Shadows.Saturation;
-					CCShadows.ColorContrast = Region->ColorGradingSettings.Shadows.Contrast;
-					CCShadows.ColorGamma = Clamp(Region->ColorGradingSettings.Shadows.Gamma, GammaMin, GammaMax);
-					CCShadows.ColorGain = Region->ColorGradingSettings.Shadows.Gain;
-					CCShadows.ColorOffset = Region->ColorGradingSettings.Shadows.Offset;
+					CCShadows.ColorSaturation = (FVector4f)Region->ColorGradingSettings.Shadows.Saturation;
+					CCShadows.ColorContrast = (FVector4f)Region->ColorGradingSettings.Shadows.Contrast;
+					CCShadows.ColorGamma = (FVector4f)Clamp(Region->ColorGradingSettings.Shadows.Gamma, GammaMin, GammaMax);
+					CCShadows.ColorGain = (FVector4f)Region->ColorGradingSettings.Shadows.Gain;
+					CCShadows.ColorOffset = (FVector4f)Region->ColorGradingSettings.Shadows.Offset;
 					CCShadows.ShadowMax = Region->ColorGradingSettings.ShadowsMax;
 
-					CCMidtones.ColorSaturation = Region->ColorGradingSettings.Midtones.Saturation;
-					CCMidtones.ColorContrast = Region->ColorGradingSettings.Midtones.Contrast;
-					CCMidtones.ColorGamma = Clamp(Region->ColorGradingSettings.Midtones.Gamma, GammaMin, GammaMax);
-					CCMidtones.ColorGain = Region->ColorGradingSettings.Midtones.Gain;
-					CCMidtones.ColorOffset = Region->ColorGradingSettings.Midtones.Offset;
+					CCMidtones.ColorSaturation = (FVector4f)Region->ColorGradingSettings.Midtones.Saturation;
+					CCMidtones.ColorContrast = (FVector4f)Region->ColorGradingSettings.Midtones.Contrast;
+					CCMidtones.ColorGamma = (FVector4f)Clamp(Region->ColorGradingSettings.Midtones.Gamma, GammaMin, GammaMax);
+					CCMidtones.ColorGain = (FVector4f)Region->ColorGradingSettings.Midtones.Gain;
+					CCMidtones.ColorOffset = (FVector4f)Region->ColorGradingSettings.Midtones.Offset;
 
-					CCHighlights.ColorSaturation = Region->ColorGradingSettings.Highlights.Saturation;
-					CCHighlights.ColorContrast = Region->ColorGradingSettings.Highlights.Contrast;
-					CCHighlights.ColorGamma = Clamp(Region->ColorGradingSettings.Highlights.Gamma, GammaMin, GammaMax);
-					CCHighlights.ColorGain = Region->ColorGradingSettings.Highlights.Gain;
-					CCHighlights.ColorOffset = Region->ColorGradingSettings.Highlights.Offset;
+					CCHighlights.ColorSaturation = (FVector4f)Region->ColorGradingSettings.Highlights.Saturation;
+					CCHighlights.ColorContrast = (FVector4f)Region->ColorGradingSettings.Highlights.Contrast;
+					CCHighlights.ColorGamma = (FVector4f)Clamp(Region->ColorGradingSettings.Highlights.Gamma, GammaMin, GammaMax);
+					CCHighlights.ColorGain = (FVector4f)Region->ColorGradingSettings.Highlights.Gain;
+					CCHighlights.ColorOffset = (FVector4f)Region->ColorGradingSettings.Highlights.Offset;
 					CCHighlights.HighlightsMin = Region->ColorGradingSettings.HighlightsMin;
 				}
 			}
@@ -546,7 +558,7 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 					RDG_EVENT_NAME("ColorCorrectRegions_ClearViewport"),
 					Parameters,
 					ERDGPassFlags::Raster,
-					[&View, ScreenPassVS, CopyPixelShader, RegionViewport, Parameters, DefaultBlendState](FRHICommandListImmediate& RHICmdList)
+					[&View, ScreenPassVS, CopyPixelShader, RegionViewport, Parameters, DefaultBlendState](FRHICommandList& RHICmdList)
 				{
 					DrawScreenPass(
 						RHICmdList,
@@ -554,7 +566,7 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 						RegionViewport,
 						RegionViewport,
 						FScreenPassPipelineState(ScreenPassVS, CopyPixelShader, DefaultBlendState),
-						[&](FRHICommandListImmediate&)
+						[&](FRHICommandList&)
 					{
 						SetShaderParameters(RHICmdList, CopyPixelShader, CopyPixelShader.GetPixelShader(), *Parameters);
 					});
@@ -578,7 +590,7 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 				CCShadows,
 				CCMidtones,
 				CCHighlights,
-				bIsAdvanced](FRHICommandListImmediate& RHICmdList)
+				bIsAdvanced](FRHICommandList& RHICmdList)
 			{
 				
 				DrawScreenPass(
@@ -587,7 +599,7 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 					RegionViewport, // Output Viewport
 					RegionViewport, // Input Viewport
 					FScreenPassPipelineState(VertexShader, PixelShader, DefaultBlendState, DepthStencilState),
-					[&](FRHICommandListImmediate& RHICmdList)
+					[&](FRHICommandList& RHICmdList)
 				{
 					SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRRegionDataInputParameter>(), RegionData);
 					SetUniformBufferParameterImmediate(RHICmdList, PixelShader.GetPixelShader(), PixelShader->GetUniformBufferParameter<FCCRColorCorrectParameter>(), CCBase);
@@ -628,7 +640,7 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 				RDG_EVENT_NAME("ColorCorrectRegions_CopyViewport"),
 				Parameters,
 				ERDGPassFlags::Raster,
-				[&View, ScreenPassVS, CopyPixelShader, RegionViewport, Parameters, CopyBlendState](FRHICommandListImmediate& RHICmdList)
+				[&View, ScreenPassVS, CopyPixelShader, RegionViewport, Parameters, CopyBlendState](FRHICommandList& RHICmdList)
 			{
 				DrawScreenPass(
 					RHICmdList,
@@ -636,7 +648,7 @@ void FColorCorrectRegionsSceneViewExtension::PrePostProcessPass_RenderThread(FRD
 					RegionViewport,
 					RegionViewport,
 					FScreenPassPipelineState(ScreenPassVS, CopyPixelShader, CopyBlendState),
-					[&](FRHICommandListImmediate&)
+					[&](FRHICommandList&)
 				{
 					SetShaderParameters(RHICmdList, CopyPixelShader, CopyPixelShader.GetPixelShader(), *Parameters);
 				});

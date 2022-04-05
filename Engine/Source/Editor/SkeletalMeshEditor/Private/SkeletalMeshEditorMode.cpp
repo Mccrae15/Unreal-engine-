@@ -26,6 +26,7 @@ FSkeletalMeshEditorMode::FSkeletalMeshEditorMode(TSharedRef<FWorkflowCentricAppl
 
 	FPersonaViewportArgs ViewportArgs(SkeletalMeshEditor->GetPersonaToolkit()->GetPreviewScene());
 	ViewportArgs.ContextName = TEXT("SkeletalMeshEditor.Viewport");
+	ViewportArgs.OnViewportCreated = FOnViewportCreated::CreateSP(SkeletalMeshEditor, &FSkeletalMeshEditor::HandleViewportCreated);
 
 	PersonaModule.RegisterPersonaViewportTabFactories(TabFactories, InHostingApp, ViewportArgs);
 
@@ -35,18 +36,11 @@ FSkeletalMeshEditorMode::FSkeletalMeshEditorMode(TSharedRef<FWorkflowCentricAppl
 
 	TabFactories.RegisterFactory(CreateMeshControllerMappingTabFactory(InHostingApp, Cast<USkeletalMesh> (SkeletalMeshEditor->HandleGetAsset()), SkeletalMeshEditor->OnPostUndo));
 
-	TabLayout = FTabManager::NewLayout("Standalone_SkeletalMeshEditor_Layout_v3.2")
+	TabLayout = FTabManager::NewLayout("Standalone_SkeletalMeshEditor_Layout_v3.4")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(InHostingApp->GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -75,6 +69,7 @@ FSkeletalMeshEditorMode::FSkeletalMeshEditorMode(TSharedRef<FWorkflowCentricAppl
 					->SetHideTabWell(false)
 					->AddTab(SkeletalMeshEditorTabs::MorphTargetsTab, ETabState::OpenedTab)
 					->AddTab(SkeletalMeshEditorTabs::DetailsTab, ETabState::ClosedTab)
+	                ->AddTab(SkeletalMeshEditorTabs::ToolboxDetailsTab, ETabState::ClosedTab)
 					->AddTab(SkeletalMeshEditorTabs::AdvancedPreviewTab, ETabState::OpenedTab)
 					->SetForegroundTab(SkeletalMeshEditorTabs::MorphTargetsTab)
 				)

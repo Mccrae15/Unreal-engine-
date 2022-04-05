@@ -73,10 +73,20 @@ void FAnimNode_CopyPoseFromMesh::RefreshMeshComponent(USkeletalMeshComponent* Ta
 	{
 		if (TargetMeshComponent)
 		{
-			USkeletalMeshComponent* ParentComponent = Cast<USkeletalMeshComponent>(TargetMeshComponent->GetAttachParent());
-			if (ParentComponent)
+			// Walk up the attachment chain until we find a skeletal mesh component
+			USkeletalMeshComponent* ParentMeshComponent = nullptr;
+			for (USceneComponent* AttachParentComp = TargetMeshComponent->GetAttachParent(); AttachParentComp != nullptr; AttachParentComp = AttachParentComp->GetAttachParent())
 			{
-				ResetMeshComponent(ParentComponent, TargetMeshComponent);
+				ParentMeshComponent = Cast<USkeletalMeshComponent>(AttachParentComp);
+				if (ParentMeshComponent)
+				{
+					break;
+				}
+			}
+
+			if (ParentMeshComponent)
+			{
+				ResetMeshComponent(ParentMeshComponent, TargetMeshComponent);
 			}
 			else
 			{
@@ -180,9 +190,8 @@ void FAnimNode_CopyPoseFromMesh::Evaluate_AnyThread(FPoseContext& Output)
 
 			for (FCompactPoseBoneIndex PoseBoneIndex : OutPose.ForEachBoneIndex())
 			{
-				const int32 SkeletonBoneIndex = RequiredBones.GetSkeletonIndex(PoseBoneIndex);
-				const int32 MeshBoneIndex = RequiredBones.GetSkeletonToPoseBoneIndexArray()[SkeletonBoneIndex];
-				const int32* Value = BoneMapToSource.Find(MeshBoneIndex);
+				const FMeshPoseBoneIndex MeshBoneIndex = RequiredBones.MakeMeshPoseIndex(PoseBoneIndex);
+				const int32* Value = BoneMapToSource.Find(MeshBoneIndex.GetInt());
  				if (Value && SourceMeshTransformArray.IsValidIndex(*Value))
 				{
 					const int32 SourceBoneIndex = *Value;
@@ -196,9 +205,8 @@ void FAnimNode_CopyPoseFromMesh::Evaluate_AnyThread(FPoseContext& Output)
 		{
 			for (FCompactPoseBoneIndex PoseBoneIndex : OutPose.ForEachBoneIndex())
 			{
-				const int32 SkeletonBoneIndex = RequiredBones.GetSkeletonIndex(PoseBoneIndex);
-				const int32 MeshBoneIndex = RequiredBones.GetSkeletonToPoseBoneIndexArray()[SkeletonBoneIndex];
-				const int32* Value = BoneMapToSource.Find(MeshBoneIndex);
+				const FMeshPoseBoneIndex MeshBoneIndex = RequiredBones.MakeMeshPoseIndex(PoseBoneIndex);
+				const int32* Value = BoneMapToSource.Find(MeshBoneIndex.GetInt());
 				if (Value && SourceMeshTransformArray.IsValidIndex(*Value))
 				{
 					const int32 SourceBoneIndex = *Value;
@@ -236,7 +244,7 @@ void FAnimNode_CopyPoseFromMesh::Evaluate_AnyThread(FPoseContext& Output)
 	if (bCopyCustomAttributes)
 	{	
 		const FBoneContainer& RequiredBones = OutPose.GetBoneContainer();
-		FCustomAttributesRuntime::CopyAndRemapAttributes(SourceCustomAttributes, Output.CustomAttributes, BoneMapToSource, RequiredBones);		
+		UE::Anim::Attributes::CopyAndRemapAttributes(SourceCustomAttributes, Output.CustomAttributes, SourceBoneToTarget, RequiredBones);		
 	}
 }
 
@@ -258,13 +266,13 @@ void FAnimNode_CopyPoseFromMesh::ReinitializeMeshComponent(USkeletalMeshComponen
 	BoneMapToSource.Reset();
 	CurveNameToUIDMap.Reset();
 
-	if (TargetMeshComponent && NewSourceMeshComponent && NewSourceMeshComponent->SkeletalMesh && !NewSourceMeshComponent->IsPendingKill())
+	if (TargetMeshComponent && IsValid(NewSourceMeshComponent) && NewSourceMeshComponent->SkeletalMesh)
 	{
 		USkeletalMesh* SourceSkelMesh = NewSourceMeshComponent->SkeletalMesh;
 		USkeletalMesh* TargetSkelMesh = TargetMeshComponent->SkeletalMesh;
 		
-		if (SourceSkelMesh && !SourceSkelMesh->IsPendingKill() && !SourceSkelMesh->HasAnyFlags(RF_NeedPostLoad) &&
-			TargetSkelMesh && !TargetSkelMesh->IsPendingKill() && !TargetSkelMesh->HasAnyFlags(RF_NeedPostLoad))
+		if (IsValid(SourceSkelMesh) && !SourceSkelMesh->HasAnyFlags(RF_NeedPostLoad) &&
+			IsValid(TargetSkelMesh) && !TargetSkelMesh->HasAnyFlags(RF_NeedPostLoad))
 		{
 			CurrentlyUsedSourceMeshComponent = NewSourceMeshComponent;
 			CurrentlyUsedSourceMesh = SourceSkelMesh;
@@ -316,6 +324,15 @@ void FAnimNode_CopyPoseFromMesh::ReinitializeMeshComponent(USkeletalMeshComponen
 						}
 					}
 				}
+			}
+
+			if (bCopyCustomAttributes)
+			{
+				SourceBoneToTarget.Reserve(BoneMapToSource.Num());
+				Algo::Transform(BoneMapToSource, SourceBoneToTarget, [](const TPair<int32, int32>& Pair)
+				{
+					return TPair<int32, int32>(Pair.Value, Pair.Key);
+				});
 			}
 		}
 	}

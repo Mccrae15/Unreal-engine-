@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Blueprint/UserWidget.h"
+
 #include "Rendering/DrawElements.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SlateSound.h"
@@ -22,12 +23,14 @@
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "UObject/EditorObjectVersion.h"
 #include "UMGPrivate.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/PropertyPortFlags.h"
 #include "TimerManager.h"
 #include "UObject/Package.h"
 #include "Editor/WidgetCompilerLog.h"
 #include "GameFramework/InputSettings.h"
+#include "Engine/InputDelegateBinding.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -195,7 +198,7 @@ void UUserWidget::DuplicateAndInitializeFromWidgetTree(UWidgetTree* InWidgetTree
 {
 	TScopeCounter<uint32> ScopeInitializingFromWidgetTree(bInitializingFromWidgetTree);
 
-	if ( ensure(InWidgetTree) )
+	if ( ensure(InWidgetTree) && !HasAnyFlags(RF_NeedPostLoad))
 	{
 		FObjectInstancingGraph ObjectInstancingGraph;
 		WidgetTree = NewObject<UWidgetTree>(this, InWidgetTree->GetClass(), TEXT("WidgetTree"), RF_Transactional, InWidgetTree, false, &ObjectInstancingGraph);
@@ -204,11 +207,16 @@ void UUserWidget::DuplicateAndInitializeFromWidgetTree(UWidgetTree* InWidgetTree
 		// After using the widget tree as a template, we need to loop over the instanced sub-objects and
 		// initialize any UserWidgets, so that they can repeat the process for their children.
 		ObjectInstancingGraph.ForEachObjectInstance([this](UObject* Instanced) {
+			// Make sure all widgets inherit the designer flags.
+#if WITH_EDITOR
+			if (UWidget* InstancedWidget = Cast<UWidget>(Instanced))
+			{
+				InstancedWidget->SetDesignerFlags(GetDesignerFlags());
+			}
+#endif
+
 			if (UUserWidget* InstancedSubUserWidget = Cast<UUserWidget>(Instanced))
 			{
-#if WITH_EDITOR
-				InstancedSubUserWidget->SetDesignerFlags(GetDesignerFlags());
-#endif
 				InstancedSubUserWidget->SetPlayerContext(GetPlayerContext());
 				InstancedSubUserWidget->Initialize();
 			}
@@ -371,7 +379,7 @@ UWorld* UUserWidget::GetWorld() const
 
 UUMGSequencePlayer* UUserWidget::GetSequencePlayer(const UWidgetAnimation* InAnimation) const
 {
-	UUMGSequencePlayer*const* FoundPlayer = ActiveSequencePlayers.FindByPredicate(
+	TObjectPtr<UUMGSequencePlayer> const* FoundPlayer = ActiveSequencePlayers.FindByPredicate(
 		[&](const UUMGSequencePlayer* Player)
 	{
 		return Player->GetAnimation() == InAnimation;
@@ -438,6 +446,17 @@ void UUserWidget::TearDownAnimations()
 
 	ActiveSequencePlayers.Empty();
 	StoppedSequencePlayers.Empty();
+}
+
+void UUserWidget::DisableAnimations()
+{
+	for (UUMGSequencePlayer* Player : ActiveSequencePlayers)
+	{
+		if (Player)
+		{
+			Player->RemoveEvaluationData();
+		}
+	}
 }
 
 void UUserWidget::Invalidate()
@@ -656,7 +675,7 @@ bool UUserWidget::IsAnimationPlayingForward(const UWidgetAnimation* InAnimation)
 {
 	if (InAnimation)
 	{
-		UUMGSequencePlayer** FoundPlayer = ActiveSequencePlayers.FindByPredicate([&](const UUMGSequencePlayer* Player) { return Player->GetAnimation() == InAnimation; });
+		TObjectPtr<UUMGSequencePlayer>* FoundPlayer = ActiveSequencePlayers.FindByPredicate([&](const UUMGSequencePlayer* Player) { return Player->GetAnimation() == InAnimation; });
 
 		if (FoundPlayer)
 		{
@@ -678,6 +697,11 @@ void UUserWidget::OnAnimationFinishedPlaying(UUMGSequencePlayer& Player)
 	if ( Player.GetPlaybackStatus() == EMovieScenePlayerStatus::Stopped )
 	{
 		StoppedSequencePlayers.Add(&Player);
+
+		if (AnimationTickManager)
+		{
+			AnimationTickManager->AddLatentAction(FMovieSceneSequenceLatentActionDelegate::CreateUObject(this, &UUserWidget::ClearStoppedSequencePlayers));
+		}
 	}
 
 	UpdateCanTick();
@@ -1325,6 +1349,12 @@ void UUserWidget::BindToAnimationEvent(UWidgetAnimation* InAnimation, FWidgetAni
 
 void UUserWidget::NativeOnInitialized()
 {
+	// Bind any input delegates that may be on this widget to its owning player controller
+	if(APlayerController* PC = GetOwningPlayer())
+	{
+		UInputDelegateBinding::BindInputDelegates(GetClass(), PC->InputComponent, this);		
+	}
+	
 	OnInitialized();
 }
 
@@ -1359,6 +1389,11 @@ void UUserWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 #endif
 		if (bTickAnimations)
 		{
+			if (AnimationTickManager)
+			{
+				AnimationTickManager->OnWidgetTicked(this);
+			}
+
 			if (!CVarUserWidgetUseParallelAnimation.GetValueOnGameThread())
 			{
 				TickActionsAndAnimation(InDeltaTime);
@@ -1401,24 +1436,7 @@ void UUserWidget::TickActionsAndAnimation(float InDeltaTime)
 
 void UUserWidget::PostTickActionsAndAnimation(float InDeltaTime)
 {
-	const bool bWasPlayingAnimation = IsPlayingAnimation();
-	if (bWasPlayingAnimation)
-	{ 
-		TSharedPtr<SWidget> CachedWidget = GetCachedWidget();
-		if (CachedWidget.IsValid())
-		{
-			CachedWidget->InvalidatePrepass();
-		}
-	}
-
-	// The process of ticking the players above can stop them so we remove them after all players have ticked
-	for (UUMGSequencePlayer* StoppedPlayer : StoppedSequencePlayers)
-	{
-		ActiveSequencePlayers.RemoveSwap(StoppedPlayer);
-		StoppedPlayer->TearDown();
-	}
-
-	StoppedSequencePlayers.Empty();
+	ClearStoppedSequencePlayers();
 }
 
 void UUserWidget::FlushAnimations()
@@ -1487,7 +1505,7 @@ void UUserWidget::StopListeningForAllInputActions()
 		UnregisterInputComponent();
 
 		InputComponent->ClearActionBindings();
-		InputComponent->MarkPendingKill();
+		InputComponent->MarkAsGarbage();
 		InputComponent = nullptr;
 	}
 }
@@ -1563,7 +1581,11 @@ void UUserWidget::InitializeInputComponent()
 {
 	if ( APlayerController* Controller = GetOwningPlayer() )
 	{
-		InputComponent = NewObject< UInputComponent >( this, UInputSettings::GetDefaultInputComponentClass(), NAME_None, RF_Transient );
+		// Use the existing PC's input class, or fallback to the project default. We should use the existing class
+		// instead of just the default one because if you have a plugin that has a PC with a different default input
+		// class then this would fail
+		UClass* InputClass = Controller->InputComponent ? Controller->InputComponent->GetClass() : UInputSettings::GetDefaultInputComponentClass();
+		InputComponent = NewObject< UInputComponent >( this, InputClass, NAME_None, RF_Transient );
 		InputComponent->bBlockInput = bStopAction;
 		InputComponent->Priority = Priority;
 		Controller->PushInputComponent( InputComponent );
@@ -1585,7 +1607,7 @@ void UUserWidget::UpdateCanTick()
 		bool bCanTick = false;
 		if (TickFrequency == EWidgetTickFrequency::Auto)
 		{
-			// Note: WidgetBPClass can be NULL in a cooked build, if the Blueprint has been nativized (in that case, it will be a UDynamicClass type).
+			// Note: WidgetBPClass can be NULL in a cooked build.
 			UWidgetBlueprintGeneratedClass* WidgetBPClass = Cast<UWidgetBlueprintGeneratedClass>(GetClass());
 			bCanTick |= !WidgetBPClass || WidgetBPClass->ClassRequiresNativeTick();
 			bCanTick |= bHasScriptImplementedTick;
@@ -1644,10 +1666,10 @@ void UUserWidget::NativeOnFocusChanging(const FWeakWidgetPath& PreviousFocusPath
 	TSharedPtr<SObjectWidget> SafeGCWidget = MyGCWidget.Pin();
 	if ( SafeGCWidget.IsValid() )
 	{
-		const bool bDecendantNewlyFocused = NewWidgetPath.ContainsWidget(SafeGCWidget.ToSharedRef());
+		const bool bDecendantNewlyFocused = NewWidgetPath.ContainsWidget(SafeGCWidget.Get());
 		if ( bDecendantNewlyFocused )
 		{
-			const bool bDecendantPreviouslyFocused = PreviousFocusPath.ContainsWidget(SafeGCWidget.ToSharedRef());
+			const bool bDecendantPreviouslyFocused = PreviousFocusPath.ContainsWidget(SafeGCWidget.Get());
 			if ( !bDecendantPreviouslyFocused )
 			{
 				NativeOnAddedToFocusPath( InFocusEvent );
@@ -1827,13 +1849,25 @@ bool UUserWidget::IsAsset() const
 
 void UUserWidget::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UUserWidget::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	if (WidgetTree)
+	{
+		WidgetTree->SetFlags(RF_Transient);
+	}
+
 	// Remove bindings that are no longer contained in the class.
 	if ( UWidgetBlueprintGeneratedClass* BGClass = GetWidgetTreeOwningClass())
 	{
 		RemoveObsoleteBindings(BGClass->NamedSlots);
 	}
 
-	Super::PreSave(TargetPlatform);
+	Super::PreSave(ObjectSaveContext);
 }
 
 void UUserWidget::PostLoad()
@@ -1858,7 +1892,7 @@ void UUserWidget::Serialize(FArchive& Ar)
 
 	if ( Ar.IsLoading() )
 	{
-		if ( Ar.UE4Ver() < VER_UE4_USERWIDGET_DEFAULT_FOCUSABLE_FALSE )
+		if ( Ar.UEVer() < VER_UE4_USERWIDGET_DEFAULT_FOCUSABLE_FALSE )
 		{
 			bIsFocusable = bSupportsKeyboardFocus_DEPRECATED;
 		}
@@ -1986,6 +2020,18 @@ UUserWidget* UUserWidget::CreateInstanceInternal(UObject* Outer, TSubclassOf<UUs
 	return NewWidget;
 }
 
+
+void UUserWidget::ClearStoppedSequencePlayers()
+{
+	// after all players have ticked, remove and tear down stopped players
+	for (UUMGSequencePlayer* StoppedPlayer : StoppedSequencePlayers)
+	{
+		ActiveSequencePlayers.RemoveSwap(StoppedPlayer);
+		StoppedPlayer->TearDown();
+	}
+
+	StoppedSequencePlayers.Empty();
+}
 
 void UUserWidget::OnLatentActionsChanged(UObject* ObjectWhichChanged, ELatentActionChangeType ChangeType)
 {

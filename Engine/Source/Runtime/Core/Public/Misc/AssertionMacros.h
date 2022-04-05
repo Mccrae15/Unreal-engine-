@@ -3,7 +3,9 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "HAL/Platform.h"
 #include "HAL/PlatformMisc.h"
+#include "HAL/PreprocessorHelpers.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/EnableIf.h"
 #include "Templates/IsArrayOrRefOfType.h"
@@ -30,7 +32,7 @@ namespace ELogVerbosity
 }
 /**
  * C Exposed function to print the callstack to ease debugging needs.  In an 
- * editor build you can call this in the Immediate Window by doing, {,,UE4Editor-Core}::PrintScriptCallstack()
+ * editor build you can call this in the Immediate Window by doing, {,,UnrealEditor-Core}::PrintScriptCallstack()
  */
 extern "C" CORE_API void PrintScriptCallstack();
 
@@ -45,7 +47,7 @@ struct CORE_API FDebug
 	static void VARARGS AssertFailed(const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const TCHAR* Format = TEXT(""), ...);
 
 	/** Triggers a fatal error, using the error formatted to GErrorHist via a previous call to FMsg*/
-	static void ProcessFatalError();
+	static void ProcessFatalError(void* ProgramCounter);
 
 	// returns true if an assert has occurred
 	static bool HasAsserted();
@@ -63,17 +65,18 @@ struct CORE_API FDebug
 	static void DumpStackTraceToLog(const TCHAR* Heading, const ELogVerbosity::Type LogVerbosity);
 
 #if DO_CHECK || DO_GUARD_SLOW || DO_ENSURE
+public:
+	static void VARARGS CheckVerifyFailedImpl(const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* Format, ...);
 private:
-	static void VARARGS CheckVerifyFailedImpl(const ANSICHAR* Expr, const char* File, int32 Line, const TCHAR* Format, ...);
-	static void VARARGS LogAssertFailedMessageImpl(const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const TCHAR* Fmt, ...);
-	static void LogAssertFailedMessageImplV(const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const TCHAR* Fmt, va_list Args);
+	static void VARARGS LogAssertFailedMessageImpl(const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* Fmt, ...);
+	static void LogAssertFailedMessageImplV(const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* Fmt, va_list Args);
 
 public:
-	/**
-	 * Called when a 'check/verify' assertion fails.
-	 */
-	template <typename FmtType, typename... Types>
-	static void UE_DEBUG_SECTION CheckVerifyFailed(const ANSICHAR* Expr, const char* File, int32 Line, const FmtType& Format, Types... Args);
+//	/**
+//	 * Called when a 'check/verify' assertion fails.
+//	 */
+//	template <typename FmtType, typename... Types>
+//	static void UE_DEBUG_SECTION CheckVerifyFailed(const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const FmtType& Format, Types... Args);
 	
 	/**
 	 * Called when an 'ensure' assertion fails; gathers stack data and generates and error report.
@@ -86,10 +89,10 @@ public:
 	 * 
 	 * Don't change the name of this function, it's used to detect ensures by the crash reporter.
 	 */
-	static void EnsureFailed( const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const TCHAR* Msg, int NumStackFramesToIgnore );
+	static void EnsureFailed( const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* Msg );
 
 private:
-	static bool VARARGS OptionallyLogFormattedEnsureMessageReturningFalseImpl(bool bLog, const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const TCHAR* FormattedMsg, ...);
+	static bool VARARGS OptionallyLogFormattedEnsureMessageReturningFalseImpl(bool bLog, const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* FormattedMsg, ...);
 
 public:
 	/**
@@ -108,12 +111,12 @@ public:
 
 	/** Failed assertion handler.  Warning: May be called at library startup time. */
 	template <typename FmtType, typename... Types>
-	static FORCEINLINE typename TEnableIf<TIsArrayOrRefOfType<FmtType, TCHAR>::Value, bool>::Type OptionallyLogFormattedEnsureMessageReturningFalse(bool bLog, const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, const FmtType& FormattedMsg, Types... Args)
+	static FORCEINLINE typename TEnableIf<TIsArrayOrRefOfType<FmtType, TCHAR>::Value, bool>::Type OptionallyLogFormattedEnsureMessageReturningFalse(bool bLog, const ANSICHAR* Expr, const ANSICHAR* File, int32 Line, void* ProgramCounter, const FmtType& FormattedMsg, Types... Args)
 	{
 		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
 		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to ensureMsgf");
 
-		return OptionallyLogFormattedEnsureMessageReturningFalseImpl(bLog, Expr, File, Line, FormattedMsg, Args...);
+		return OptionallyLogFormattedEnsureMessageReturningFalseImpl(bLog, Expr, File, Line, ProgramCounter, FormattedMsg, Args...);
 	}
 
 #endif // DO_CHECK || DO_GUARD_SLOW
@@ -141,29 +144,30 @@ public:
 // "verify" expressions are always evaluated, but only cause an error if enabled.
 //
 
-#if DO_CHECK || DO_GUARD_SLOW || DO_ENSURE
-	template <typename FmtType, typename... Types>
-	void FORCENOINLINE UE_DEBUG_SECTION FDebug::CheckVerifyFailed(
-		const ANSICHAR* Expr,
-		const ANSICHAR* File,
-		const int Line,
-		const FmtType& Format,
-		Types... Args)
-	{
-		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
-		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to CheckVerifyFailed()");
-		return CheckVerifyFailedImpl(Expr, File, Line, Format, Args...);
-	}
+//#if DO_CHECK || DO_GUARD_SLOW || DO_ENSURE
+//	template <typename FmtType, typename... Types>
+//	void FORCENOINLINE UE_DEBUG_SECTION FDebug::CheckVerifyFailed(
+//		const ANSICHAR* Expr,
+//		const ANSICHAR* File,
+//		int32 Line,
+//		void* ProgramCounter,
+//		const FmtType& Format,
+//		Types... Args)
+//	{
+//		static_assert(TIsArrayOrRefOfType<FmtType, TCHAR>::Value, "Formatting string must be a TCHAR array.");
+//		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to CheckVerifyFailed()");
+//		return CheckVerifyFailedImpl(Expr, File, Line, ProgramCounter, Format, Args...);
+//	}
+//#endif
 
-	// MSVC (v19.00.24215.1 at time of writing) ignores no-inline attributes on
-	// lambdas. This can be worked around by calling the lambda from inside this
-	// templated (and correctly non-inlined) function.
-	template <typename RetType=void, class InnerType>
-	RetType FORCENOINLINE UE_DEBUG_SECTION DispatchCheckVerify(InnerType&& Inner)
-	{
-		return Inner();
-	}
-#endif
+// MSVC (v19.00.24215.1 at time of writing) ignores no-inline attributes on
+// lambdas. This can be worked around by calling the lambda from inside this
+// templated (and correctly non-inlined) function.
+template <typename RetType=void, class InnerType, typename... ArgTypes>
+RetType FORCENOINLINE UE_DEBUG_SECTION DispatchCheckVerify(InnerType&& Inner, ArgTypes const&... Args)
+{
+	return Inner(Args...);
+}
 
 #if !UE_BUILD_SHIPPING
 #define _DebugBreakAndPromptForRemote() \
@@ -195,7 +199,7 @@ public:
 				{ \
 					static void FORCENOINLINE UE_DEBUG_SECTION ExecCheckImplInternal() \
 					{ \
-						FDebug::CheckVerifyFailed(#expr, __FILE__, __LINE__, TEXT("")); \
+						FDebug::CheckVerifyFailedImpl(#expr, __FILE__, __LINE__, PLATFORM_RETURN_ADDRESS(), TEXT("")); \
 					} \
 				}; \
 				Impl::ExecCheckImplInternal(); \
@@ -219,9 +223,9 @@ public:
 		{ \
 			if(UNLIKELY(!(expr))) \
 			{ \
-				DispatchCheckVerify([&] () FORCENOINLINE UE_DEBUG_SECTION \
+				DispatchCheckVerify([&] () UE_DEBUG_SECTION \
 				{ \
-					FDebug::CheckVerifyFailed(#expr, __FILE__, __LINE__, format, ##__VA_ARGS__); \
+					FDebug::CheckVerifyFailedImpl(#expr, __FILE__, __LINE__, PLATFORM_RETURN_ADDRESS(), format, ##__VA_ARGS__); \
 				}); \
 				PLATFORM_BREAK(); \
 				CA_ASSUME(false); \
@@ -326,7 +330,7 @@ public:
 			if ((!bExecuted || Always) && FPlatformMisc::IsEnsureAllowed()) \
 			{ \
 				bExecuted = true; \
-				FDebug::OptionallyLogFormattedEnsureMessageReturningFalse(true, #InExpression, __FILE__, __LINE__, ##__VA_ARGS__); \
+				FDebug::OptionallyLogFormattedEnsureMessageReturningFalse(true, #InExpression, __FILE__, __LINE__, PLATFORM_RETURN_ADDRESS(), ##__VA_ARGS__); \
 				if (!FPlatformMisc::IsDebuggerPresent()) \
 				{ \
 					FPlatformMisc::PromptForRemoteDebugging(true); \
@@ -351,7 +355,7 @@ public:
 
 #endif	// DO_CHECK
 
-namespace UE4Asserts_Private
+namespace UEAsserts_Private
 {
 	// A junk function to allow us to use sizeof on a member variable which is potentially a bitfield
 	template <typename T>
@@ -364,14 +368,14 @@ namespace UE4Asserts_Private
 
 // Returns FName(TEXT("EnumeratorName")), while statically verifying that the enumerator exists in the enum
 #define GET_ENUMERATOR_NAME_CHECKED(EnumName, EnumeratorName) \
-	((void)sizeof(UE4Asserts_Private::GetMemberNameCheckedJunk(EnumName::EnumeratorName)), FName(TEXT(#EnumeratorName)))
+	((void)sizeof(UEAsserts_Private::GetMemberNameCheckedJunk(EnumName::EnumeratorName)), FName(TEXT(#EnumeratorName)))
 
 // Returns FName(TEXT("MemberName")), while statically verifying that the member exists in ClassName
 #define GET_MEMBER_NAME_CHECKED(ClassName, MemberName) \
-	((void)sizeof(UE4Asserts_Private::GetMemberNameCheckedJunk(((ClassName*)0)->MemberName)), FName(TEXT(#MemberName)))
+	((void)sizeof(UEAsserts_Private::GetMemberNameCheckedJunk(((ClassName*)0)->MemberName)), FName(TEXT(#MemberName)))
 
 #define GET_MEMBER_NAME_STRING_CHECKED(ClassName, MemberName) \
-	((void)sizeof(UE4Asserts_Private::GetMemberNameCheckedJunk(((ClassName*)0)->MemberName)), TEXT(#MemberName))
+	((void)sizeof(UEAsserts_Private::GetMemberNameCheckedJunk(((ClassName*)0)->MemberName)), TEXT(#MemberName))
 
 // Returns FName(TEXT("FunctionName")), while statically verifying that the function exists in ClassName
 #define GET_FUNCTION_NAME_CHECKED(ClassName, FunctionName) \
@@ -380,18 +384,48 @@ namespace UE4Asserts_Private
 #define GET_FUNCTION_NAME_STRING_CHECKED(ClassName, FunctionName) \
 	((void)sizeof(&ClassName::FunctionName), TEXT(#FunctionName))
 
+// Returns FName(TEXT("FunctionName")), while statically verifying that the function exists in ClassName
+// Handles overloaded functions by specifying the argument of the overload to use
+#define GET_FUNCTION_NAME_CHECKED_OneParam(ClassName, FunctionName, ArgType) \
+	((void)sizeof((std::declval<ClassName&>().FunctionName(std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType)>()), (int)0)), FName(TEXT(#FunctionName)))
+
+#define GET_FUNCTION_NAME_CHECKED_TwoParams(ClassName, FunctionName, ArgType1, ArgType2) \
+	((void)sizeof((std::declval<ClassName&>().FunctionName(std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType1)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType2)>()), (int)0)), FName(TEXT(#FunctionName)))
+
+#define GET_FUNCTION_NAME_CHECKED_ThreeParams(ClassName, FunctionName, ArgType1, ArgType2, ArgType3) \
+	((void)sizeof((std::declval<ClassName&>().FunctionName(std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType1)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType2)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType3)>()), (int)0)), FName(TEXT(#FunctionName)))
+
+#define GET_FUNCTION_NAME_CHECKED_FourParams(ClassName, FunctionName, ArgType1, ArgType2, ArgType3, ArgType4) \
+	((void)sizeof((std::declval<ClassName&>().FunctionName(std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType1)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType2)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType3)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType4)>()), (int)0)), FName(TEXT(#FunctionName)))
+
+#define GET_FUNCTION_NAME_STRING_CHECKED_OneParam(ClassName, FunctionName, ArgType) \
+	((void)sizeof((std::declval<ClassName&>().FunctionName(std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType)>()), (int)0)), TEXT(#FunctionName))
+
+#define GET_FUNCTION_NAME_STRING_CHECKED_TwoParams(ClassName, FunctionName, ArgType1, ArgType2) \
+	((void)sizeof((std::declval<ClassName&>().FunctionName(std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType1)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType2)>()), (int)0)), TEXT(#FunctionName))
+
+#define GET_FUNCTION_NAME_STRING_CHECKED_ThreeParams(ClassName, FunctionName, ArgType1, ArgType2, ArgType3) \
+	((void)sizeof((std::declval<ClassName&>().FunctionName(std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType1)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType2)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType3)>()), (int)0)), TEXT(#FunctionName))
+
+#define GET_FUNCTION_NAME_STRING_CHECKED_FourParams(ClassName, FunctionName, ArgType1, ArgType2, ArgType3, ArgType4) \
+	((void)sizeof((std::declval<ClassName&>().FunctionName(std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType1)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType2)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType3)>(), std::declval<PREPROCESSOR_REMOVE_OPTIONAL_PARENS(ArgType4)>()), (int)0)), TEXT(#FunctionName))
+
 /*----------------------------------------------------------------------------
 	Low level error macros
 ----------------------------------------------------------------------------*/
 
 /** low level fatal error handler. */
-CORE_API void VARARGS LowLevelFatalErrorHandler(const ANSICHAR* File, int32 Line, const TCHAR* Format=TEXT(""), ... );
+CORE_API void VARARGS LowLevelFatalErrorHandler(const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* Format=TEXT(""), ... );
 
 #define LowLevelFatalError(Format, ...) \
 	{ \
 		static_assert(TIsArrayOrRefOfType<decltype(Format), TCHAR>::Value, "Formatting string must be a TCHAR array."); \
-		LowLevelFatalErrorHandler(__FILE__, __LINE__, Format, ##__VA_ARGS__); \
-		_DebugBreakAndPromptForRemote(); \
-		FDebug::ProcessFatalError(); \
+		DispatchCheckVerify([&] () FORCENOINLINE UE_DEBUG_SECTION \
+		{ \
+			void* ProgramCounter = PLATFORM_RETURN_ADDRESS(); \
+			LowLevelFatalErrorHandler(__FILE__, __LINE__, ProgramCounter, Format, ##__VA_ARGS__); \
+			_DebugBreakAndPromptForRemote(); \
+			FDebug::ProcessFatalError(ProgramCounter); \
+		}); \
 	}
 

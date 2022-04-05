@@ -19,7 +19,7 @@
 			"Name": "DataprepGeometryOperations",
 			"Type": "Editor",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": [ "Win64" ]
+			"PlatformAllowList": [ "Win64" ]
 		}
 	],
 	"Plugins": [
@@ -32,7 +32,7 @@
 			"Enabled": true
 		},
 		{
-			"Name": "MeshModelingToolset",
+			"Name": "MeshModelingToolsetExp",
 			"Enabled": true
 		},
 		{
@@ -40,7 +40,7 @@
 			"Enabled": true
 		},
 		{
-			"Name": "StaticMeshEditorExtension",
+			"Name": "ProxyLODPlugin",
 			"Enabled": true
 		}
 	]

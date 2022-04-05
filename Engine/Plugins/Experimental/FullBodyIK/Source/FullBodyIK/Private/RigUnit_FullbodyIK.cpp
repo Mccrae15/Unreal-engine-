@@ -7,57 +7,12 @@
 #include "FBIKConstraintLib.h"
 
 #define MAX_DEPTH 10000
-
-void FJacobianSolver_FullbodyIK::InitializeSolver(TArray<FFBIKLinkData>& InOutLinkData, TMap<int32, FFBIKEffectorTarget>& InOutEffectors) const
-{
-// since we're using constraints, we don't want to create new motion base all the time
-// constraints will add that info and we'll utilize it
-}
-
-void FJacobianSolver_FullbodyIK::PreSolve(TArray<FFBIKLinkData>& InOutLinkData, const TMap<int32, FFBIKEffectorTarget>& InEffectors) const
-{
-	// for final one, we'll have to add those in the beginning, and then just update the frame for every iteration
-	for (int32 Index = 0; Index < InOutLinkData.Num(); ++Index)
-	{
-		// we update existing data
-		const FQuat& LocalFrame = InOutLinkData[Index].LocalFrame;
-
-		FQuat CurrentFrame;
-
-		if (InOutLinkData[Index].ParentLinkIndex != INDEX_NONE)
-		{
-			CurrentFrame = InOutLinkData[InOutLinkData[Index].ParentLinkIndex].GetTransform().GetRotation() * LocalFrame;
-		}
-		else
-		{
-			CurrentFrame = LocalFrame;
-		}
-
-		// update the base axis
-		if (InOutLinkData[Index].GetNumMotionBases() == 3)
-		{
-			InOutLinkData[Index].GetMotionBase(0).BaseAxis = CurrentFrame.RotateVector(FVector::ForwardVector);
-			InOutLinkData[Index].GetMotionBase(1).BaseAxis = CurrentFrame.RotateVector(FVector::RightVector);
-			InOutLinkData[Index].GetMotionBase(2).BaseAxis = CurrentFrame.RotateVector(FVector::UpVector);
-		}
-		else
-		{
-			ensure(InOutLinkData[Index].GetNumMotionBases() == 0);
-
-			// invalid number of motion bases for this solver
-			InOutLinkData[Index].ResetMotionBases();
-			InOutLinkData[Index].AddMotionBase(FMotionBase(CurrentFrame.RotateVector(FVector::ForwardVector)));
-			InOutLinkData[Index].AddMotionBase(FMotionBase(CurrentFrame.RotateVector(FVector::RightVector)));
-			InOutLinkData[Index].AddMotionBase(FMotionBase(CurrentFrame.RotateVector(FVector::UpVector)));
-		}
-	}
-}
 /////////////////////////////////////////////////////
 
 /////////////////////////////////////////////////////
 
 
-static float EnsureToAddBoneToLinkData(FRigHierarchyContainer* Hierarchy, const FRigElementKey& CurrentItem, TArray<FFBIKLinkData>& LinkData,
+static float EnsureToAddBoneToLinkData(URigHierarchy* Hierarchy, const FRigElementKey& CurrentItem, TArray<FFBIKLinkData>& LinkData,
 	TMap<FRigElementKey, int32>& HierarchyToLinkDataMap, TMap<int32, FRigElementKey>& LinkDataToHierarchyIndices)
 {
 	float ChainLength = 0;
@@ -70,14 +25,18 @@ static float EnsureToAddBoneToLinkData(FRigHierarchyContainer* Hierarchy, const 
 		FFBIKLinkData& NewLink = LinkData[NewLinkIndex];
 
 		// find parent LinkIndex
-		const FRigElementKey& ParentItem = Hierarchy->GetParentKey(CurrentItem);
+		FRigElementKey ParentItem = Hierarchy->GetFirstParent(CurrentItem);
+
+		const int32 CurrentItemIndex = Hierarchy->GetIndex(CurrentItem);
+		const int32 ParentItemIndex = Hierarchy->GetIndex(ParentItem); 
+		
 		FoundLinkIndex = HierarchyToLinkDataMap.Find(ParentItem);
 		NewLink.ParentLinkIndex = (FoundLinkIndex) ? *FoundLinkIndex : INDEX_NONE;
 		NewLink.SetTransform(Hierarchy->GetGlobalTransform(CurrentItem));
 
 		if (ParentItem.IsValid())
 		{
-			FVector DiffLocation = Hierarchy->GetInitialGlobalTransform(CurrentItem).GetLocation() - Hierarchy->GetInitialGlobalTransform(ParentItem).GetLocation();
+			FVector DiffLocation = Hierarchy->GetInitialGlobalTransform(CurrentItemIndex).GetLocation() - Hierarchy->GetInitialGlobalTransform(ParentItemIndex).GetLocation();
 			// set Length
 			NewLink.Length = DiffLocation.Size();
 		}
@@ -120,7 +79,7 @@ static void AddToEffectorTarget(int32 EffectorIndex, const FRigElementKey& Effec
 	}
 }
 
-static void AddEffectors(FRigHierarchyContainer* Hierarchy, const FRigElementKey& Root, const TArray<FFBIKEndEffector>& Effectors,
+static void AddEffectors(URigHierarchy* Hierarchy, const FRigElementKey& Root, const TArrayView<const FFBIKEndEffector>& Effectors,
 	TArray<FFBIKLinkData>& LinkData, TMap<int32, FFBIKEffectorTarget>& EffectorTargets, TArray<int32>& EffectorLinkIndices, 
 	TMap<int32, FRigElementKey>& LinkDataToHierarchyIndices, TMap<FRigElementKey, int32>& HierarchyToLinkDataMap, const FSolverInput& SolverProperty)
 {
@@ -133,6 +92,12 @@ static void AddEffectors(FRigHierarchyContainer* Hierarchy, const FRigElementKey
 		// create LinkeData from root bone to all effectors 
 		const FRigElementKey& Item = Effectors[Index].Item;
 		if (!Item.IsValid())
+		{
+			continue;
+		}
+
+		// can only add IK to bones
+		if (Item.Type != ERigElementType::Bone)
 		{
 			continue;
 		}
@@ -213,7 +178,7 @@ FRigUnit_FullbodyIK_Execute()
 {
     DECLARE_SCOPE_HIERARCHICAL_COUNTER_RIGUNIT()
 
-	FRigHierarchyContainer* Hierarchy = ExecuteContext.Hierarchy;
+	URigHierarchy* Hierarchy = ExecuteContext.Hierarchy;
 	if (Hierarchy == nullptr)
 	{
 		return;
@@ -243,7 +208,8 @@ FRigUnit_FullbodyIK_Execute()
 		HierarchyToLinkDataMap.Reset();
 
 		// verify the chain
-		AddEffectors(Hierarchy, Root, Effectors, LinkData, EffectorTargets, EffectorLinkIndices, LinkDataToHierarchyIndices, HierarchyToLinkDataMap, SolverProperty);
+		const TArrayView<const FFBIKEndEffector> EffectorsView(Effectors.GetData(), Effectors.Num());
+		AddEffectors(Hierarchy, Root, EffectorsView, LinkData, EffectorTargets, EffectorLinkIndices, LinkDataToHierarchyIndices, HierarchyToLinkDataMap, SolverProperty);
 	}
 
 	if (Context.State == EControlRigState::Update)
@@ -257,7 +223,8 @@ FRigUnit_FullbodyIK_Execute()
 			{
 				DECLARE_SCOPE_HIERARCHICAL_COUNTER(TEXT("Build Constraint"))
 				//Build constraints
-				FBIKConstraintLib::BuildConstraints(Constraints, InternalConstraints, Hierarchy, LinkData, LinkDataToHierarchyIndices, HierarchyToLinkDataMap);
+				const TArrayView<const FFBIKConstraintOption> ConstraintsView(Constraints.GetData(), Constraints.Num());
+				FBIKConstraintLib::BuildConstraints(ConstraintsView, InternalConstraints, Hierarchy, LinkData, LinkDataToHierarchyIndices, HierarchyToLinkDataMap);
 			}
 
 			// during only editor and update
@@ -574,7 +541,7 @@ FRigUnit_FullbodyIK_Execute()
 			// this means, only the last joint in the test
 			const FRigElementKey& CurrentItem = *LinkDataToHierarchyIndices.Find(LinkIndex);
 			const FTransform& LinkTransform = LinkData[LinkIndex].GetTransform();
-			Hierarchy->SetGlobalTransform(CurrentItem, LinkTransform, bPropagateToChildren);
+			Hierarchy->SetGlobalTransform(CurrentItem, LinkTransform, false, bPropagateToChildren);
 		}
 	}
 }

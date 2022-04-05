@@ -3,6 +3,7 @@
 
 #include "SGraphPin.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/SToolTip.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBox.h"
@@ -19,6 +20,7 @@
 #include "ScopedTransaction.h"
 #include "SLevelOfDetailBranchNode.h"
 #include "SPinTypeSelector.h"
+#include "SPinValueInspector.h"
 #include "Animation/AnimNodeBase.h"
 
 /////////////////////////////////////////////////////
@@ -77,7 +79,7 @@ SGraphPin::SGraphPin()
 	, bOnlyShowDefaultValue(false)
 	, bIsMovingLinks(false)
 	, bUsePinColorForText(false)
-
+	, bDragAndDropEnabled(true)
 {
 	IsEditable = true;
 
@@ -145,12 +147,21 @@ SGraphPin::SGraphPin()
 	CachedImg_Pin_BackgroundHovered = FEditorStyle::GetBrush( NAME_Pin_BackgroundHovered );
 }
 
+SGraphPin::~SGraphPin()
+{
+	if (ValueInspectorTooltip.IsValid())
+	{
+		bool bForceDismiss = true;
+		ValueInspectorTooltip.Pin()->TryDismissTooltip(bForceDismiss);
+	}
+}
+
 void SGraphPin::Construct(const FArguments& InArgs, UEdGraphPin* InPin)
 {
 	bUsePinColorForText = InArgs._UsePinColorForText;
 	this->SetCursor(EMouseCursor::Default);
 
-	Visibility = TAttribute<EVisibility>(this, &SGraphPin::GetPinVisiblity);
+	SetVisibility(MakeAttributeSP(this, &SGraphPin::GetPinVisiblity));
 
 	GraphPinObj = InPin;
 	check(GraphPinObj != NULL);
@@ -168,10 +179,10 @@ void SGraphPin::Construct(const FArguments& InArgs, UEdGraphPin* InPin)
 
 	// Create the pin icon widget
 	TSharedRef<SWidget> PinWidgetRef = SPinTypeSelector::ConstructPinTypeImage(
-		TAttribute<const FSlateBrush*>::Create( TAttribute<const FSlateBrush*>::FGetter::CreateRaw(this, &SGraphPin::GetPinIcon ) ),
-		TAttribute<FSlateColor>::Create( TAttribute<FSlateColor>::FGetter::CreateRaw(this, &SGraphPin::GetPinColor) ),
-		TAttribute<const FSlateBrush*>::Create( TAttribute<const FSlateBrush*>::FGetter::CreateRaw(this, &SGraphPin::GetSecondaryPinIcon ) ),
-		TAttribute<FSlateColor>::Create( TAttribute<FSlateColor>::FGetter::CreateRaw(this, &SGraphPin::GetSecondaryPinColor) ));
+		MakeAttributeSP(this, &SGraphPin::GetPinIcon ),
+		MakeAttributeSP(this, &SGraphPin::GetPinColor),
+		MakeAttributeSP(this, &SGraphPin::GetSecondaryPinIcon),
+		MakeAttributeSP(this, &SGraphPin::GetSecondaryPinColor));
 	PinImage = PinWidgetRef;
 
 	PinWidgetRef->SetCursor( 
@@ -310,8 +321,10 @@ void SGraphPin::Construct(const FArguments& InArgs, UEdGraphPin* InPin)
 		]
 	);
 
-	TAttribute<FText> ToolTipAttribute = TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &SGraphPin::GetTooltipText));
-	SetToolTipText(ToolTipAttribute);
+	TSharedPtr<IToolTip> TooltipWidget = SNew(SToolTip)
+		.Text(this, &SGraphPin::GetTooltipText);
+
+	SetToolTip(TooltipWidget);
 }
 
 TSharedRef<SWidget>	SGraphPin::GetDefaultValueWidget()
@@ -448,7 +461,7 @@ FReply SGraphPin::OnPinMouseDown( const FGeometry& SenderGeometry, const FPointe
 				}
 			}
 
-			if (!MouseEvent.IsShiftDown() && !GraphPinObj->bNotConnectable)
+			if (!MouseEvent.IsShiftDown() && !GraphPinObj->bNotConnectable && bDragAndDropEnabled)
 			{
 				// Start a drag-drop on the pin
 				if (ensure(OwnerNodePinned.IsValid()))
@@ -568,7 +581,7 @@ FReply SGraphPin::OnMouseButtonUp( const FGeometry& MyGeometry, const FPointerEv
 
 void SGraphPin::OnMouseEnter( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent )
 {
-	if (!bIsHovered && ensure(!bGraphDataInvalid))
+	if (!IsHovered() && ensure(!bGraphDataInvalid))
 	{
 		UEdGraphPin* MyPin = GetPinObj();
 		if (MyPin && !MyPin->IsPendingKill() && MyPin->GetOuter() && MyPin->GetOuter()->IsA(UEdGraphNode::StaticClass()))
@@ -767,13 +780,20 @@ FReply SGraphPin::OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& Dra
 		TSharedPtr<SGraphNode> OwnerNode = OwnerNodePtr.Pin();
 		if (OwnerNode.IsValid())
 		{
-			NodeAddPosition	= OwnerNode->GetPosition() + MyGeometry.Position;
+			NodeAddPosition	= OwnerNode->GetPosition() + FVector2D(MyGeometry.Position);
 
-			//Don't have access to bounding information for node, using fixed offet that should work for most cases.
+			//Don't have access to bounding information for node, using fixed offset that should work for most cases.
 			const float FixedOffset = 200.0f;
 
 			//Line it up vertically with pin
 			NodeAddPosition.Y += MyGeometry.Size.Y;
+
+			// if the pin widget is nested into another compound
+			if (MyGeometry.Position == FVector2f::ZeroVector)
+			{
+				FVector2D PinOffsetPosition = FVector2D(MyGeometry.AbsolutePosition) - FVector2D(NodeWidget->GetTickSpaceGeometry().AbsolutePosition);
+				NodeAddPosition = OwnerNode->GetPosition() + PinOffsetPosition;
+			}
 
 			if(GetDirection() == EEdGraphPinDirection::EGPD_Input)
 			{
@@ -801,7 +821,7 @@ FReply SGraphPin::OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& Dra
 			TSharedPtr<FAssetDragDropOp> AssetOp = StaticCastSharedPtr<FAssetDragDropOp>(Operation);
 			if (AssetOp->HasAssets())
 			{
-				Node->GetSchema()->DroppedAssetsOnPin(AssetOp->GetAssets(), NodeWidget->GetPosition() + MyGeometry.Position, GraphPinObj);
+				Node->GetSchema()->DroppedAssetsOnPin(AssetOp->GetAssets(), NodeWidget->GetPosition() + FVector2D(MyGeometry.Position), GraphPinObj);
 			}
 		}
 		return FReply::Handled();
@@ -812,8 +832,25 @@ FReply SGraphPin::OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& Dra
 
 void SGraphPin::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
 {
-	CachedNodeOffset = AllottedGeometry.AbsolutePosition/AllottedGeometry.Scale - OwnerNodePtr.Pin()->GetUnscaledPosition();
+	CachedNodeOffset = FVector2D(AllottedGeometry.AbsolutePosition)/AllottedGeometry.Scale - OwnerNodePtr.Pin()->GetUnscaledPosition();
 	CachedNodeOffset.Y += AllottedGeometry.Size.Y * 0.5f;
+
+	if (!ValueInspectorTooltip.IsValid() && IsHovered() && FKismetDebugUtilities::CanInspectPinValue(GetPinObj()))
+	{
+		ValueInspectorTooltip = FPinValueInspectorTooltip::SummonTooltip(GetPinObj());
+		TSharedPtr<FPinValueInspectorTooltip> ValueTooltip = ValueInspectorTooltip.Pin();
+
+		if (ValueTooltip.IsValid())
+		{
+			FVector2D TooltipLocation;
+			GetInteractiveTooltipLocation(TooltipLocation);
+			ValueTooltip->MoveTooltip(TooltipLocation);
+		}
+	}
+	else if (ValueInspectorTooltip.IsValid() && ((!IsHovered()) || !FKismetDebugUtilities::CanInspectPinValue(GetPinObj())))
+	{
+		ValueInspectorTooltip.Pin()->TryDismissTooltip();
+	}
 }
 
 UEdGraphPin* SGraphPin::GetPinObj() const
@@ -855,9 +892,12 @@ FVector2D SGraphPin::GetNodeOffset() const
 FText SGraphPin::GetPinLabel() const
 {
 	UEdGraphPin* GraphPin = GetPinObj();
-	if (UEdGraphNode* GraphNode = GraphPin ? GraphPin->GetOwningNodeUnchecked() : nullptr)
+	if (GraphPin && !GraphPin->IsPendingKill())
 	{
-		return GraphNode->GetPinDisplayName(GetPinObj());
+		if (UEdGraphNode* GraphNode = GraphPin->GetOwningNodeUnchecked())
+		{
+			return GraphNode->GetPinDisplayName(GraphPin);
+		}
 	}
 	return FText::GetEmpty();
 }
@@ -911,7 +951,7 @@ bool SGraphPin::IsConnected() const
 const FSlateBrush* SGraphPin::GetPinIcon() const
 {
 	UEdGraphPin* GraphPin = GetPinObj();
-	if (GraphPin == nullptr)
+	if (!GraphPin || GraphPin->IsPendingKill() || !GraphPin->GetOwningNodeUnchecked())
 	{
 		return CachedImg_Pin_Disconnected;
 	}
@@ -1008,10 +1048,12 @@ const FSlateBrush* SGraphPin::GetPinBorder() const
 {
 	bool bIsMarkedPin = false;
 	TSharedPtr<SGraphPanel> OwnerPanelPtr = OwnerNodePtr.Pin()->GetOwnerPanel();
-	check(OwnerPanelPtr.IsValid());
-	if (OwnerPanelPtr->MarkedPin.IsValid())
+	if (OwnerPanelPtr.IsValid())
 	{
-		bIsMarkedPin = (OwnerPanelPtr->MarkedPin.Pin() == SharedThis(this));
+		if (OwnerPanelPtr->MarkedPin.IsValid())
+		{
+			bIsMarkedPin = (OwnerPanelPtr->MarkedPin.Pin() == SharedThis(this));
+		}
 	}
 	UEdGraphPin* GraphPin = GetPinObj();
 	return (IsHovered() || bIsMarkedPin || (GraphPin && GraphPin->bIsDiffing) || bOnlyShowDefaultValue) ? CachedImg_Pin_BackgroundHovered : CachedImg_Pin_Background;
@@ -1100,7 +1142,7 @@ const FSlateBrush* SGraphPin::GetPinStatusIcon() const
 		{
 			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(GraphNode);
 
-			if (FKismetDebugUtilities::IsPinBeingWatched(Blueprint, WatchedPin))
+			if (FKismetDebugUtilities::DoesPinHaveWatches(Blueprint, WatchedPin))
 			{
 				return FEditorStyle::GetBrush(TEXT("Graph.WatchedPinIcon_Pinned"));
 			}
@@ -1118,10 +1160,16 @@ EVisibility SGraphPin::GetPinStatusIconVisibility() const
 		return EVisibility::Collapsed;
 	}
 
+	UEdGraphNode* GraphNode = GraphPin->GetOwningNode();
+	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNode(GraphNode);
+	if (!Blueprint)
+	{
+		return EVisibility::Collapsed;
+	}
+
 	UEdGraphPin const* WatchedPin = ((GraphPin->Direction == EGPD_Input) && (GraphPin->LinkedTo.Num() > 0)) ? GraphPin->LinkedTo[0] : GraphPin;
 
-	UEdGraphSchema const* Schema = GraphPin->GetSchema();
-	return Schema && Schema->IsPinBeingWatched(WatchedPin) ? EVisibility::Visible : EVisibility::Collapsed;
+	return FKismetDebugUtilities::DoesPinHaveWatches(Blueprint, WatchedPin) ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 FReply SGraphPin::ClickedOnPinStatusIcon()
@@ -1183,6 +1231,18 @@ void SGraphPin::SetOnlyShowDefaultValue(bool bNewOnlyShowDefaultValue)
 	bOnlyShowDefaultValue = bNewOnlyShowDefaultValue;
 }
 
+TSharedPtr<IToolTip> SGraphPin::GetToolTip()
+{
+	// If we want the PinValueInspector tooltip, we'll create a custom tooltip window
+	const UEdGraphPin* GraphPin = GetPinObj();
+	if (GraphPin && FKismetDebugUtilities::CanInspectPinValue(GraphPin))
+	{
+		return nullptr;
+	}
+
+	return SBorder::GetToolTip();
+}
+
 FText SGraphPin::GetTooltipText() const
 {
 	if(!ensure(!bGraphDataInvalid))
@@ -1207,6 +1267,48 @@ FText SGraphPin::GetTooltipText() const
 	return HoverText;
 }
 
+void SGraphPin::GetInteractiveTooltipLocation(FVector2D& InOutDesiredLocation) const
+{
+	TSharedPtr<SGraphNode> OwnerNode = OwnerNodePtr.Pin();
+	if (OwnerNode.IsValid())
+	{
+		TSharedPtr<SGraphPanel> GraphPanel = OwnerNode->GetOwnerPanel();
+		if (GraphPanel.IsValid())
+		{
+			// Reset to the pin's location in graph space.
+			InOutDesiredLocation = OwnerNode->GetPosition() + CachedNodeOffset;
+			
+			// Shift the desired location to the right edge of the pin's geometry.
+			InOutDesiredLocation.X += GetTickSpaceGeometry().Size.X;
+
+			// Align to the first entry in the inspector's tree view.
+			TSharedPtr<FPinValueInspectorTooltip> Inspector = ValueInspectorTooltip.Pin();
+			if (Inspector.IsValid() && Inspector->ValueInspectorWidget.IsValid())
+			{
+				// @todo - Find a way to calculate these at runtime, e.g. based off of actual child widget geometry?
+				static const float VerticalOffsetWithSearchFilter = 41.0f;
+				static const float VerticalOffsetWithoutSearchFilter = 19.0f;
+
+				if (Inspector->ValueInspectorWidget->ShouldShowSearchFilter())
+				{
+					InOutDesiredLocation.Y -= VerticalOffsetWithSearchFilter;
+				}
+				else
+				{
+					InOutDesiredLocation.Y -= VerticalOffsetWithoutSearchFilter;
+				}
+			}
+
+			// Convert our desired location from graph coordinates into panel space.
+			InOutDesiredLocation -= GraphPanel->GetViewOffset();
+			InOutDesiredLocation *= GraphPanel->GetZoomAmount();
+
+			// Finally, convert the modified location from panel space into screen space.
+			InOutDesiredLocation = GraphPanel->GetTickSpaceGeometry().LocalToAbsolute(InOutDesiredLocation);
+		}
+	}
+}
+
 bool SGraphPin::IsEditingEnabled() const
 {
 	if (OwnerNodePtr.IsValid())
@@ -1219,14 +1321,19 @@ bool SGraphPin::IsEditingEnabled() const
 bool SGraphPin::UseLowDetailPinNames() const
 {
 	SGraphNode* MyOwnerNode = OwnerNodePtr.Pin().Get();
-	if (MyOwnerNode && MyOwnerNode->GetOwnerPanel().IsValid())
+	if (MyOwnerNode)
 	{
-		return MyOwnerNode->GetOwnerPanel()->GetCurrentLOD() <= EGraphRenderingLOD::LowDetail;
+		if(MyOwnerNode->UseLowDetailPinNames())
+		{
+			return true;
+		}
+
+		if(MyOwnerNode->GetOwnerPanel().IsValid())
+		{
+			return MyOwnerNode->GetOwnerPanel()->GetCurrentLOD() <= EGraphRenderingLOD::LowDetail;
+		}
 	}
-	else
-	{
-		return false;
-	}
+	return false;
 }
 
 EVisibility SGraphPin::GetPinVisiblity() const
@@ -1239,10 +1346,25 @@ EVisibility SGraphPin::GetPinVisiblity() const
 	return EVisibility::Visible;
 }
 
+TSharedPtr<SWidget> SGraphPin::GetPinImageWidget() const
+{
+	return PinImage;
+}
+
+void SGraphPin::SetPinImageWidget(TSharedRef<SWidget> NewWidget)
+{
+	PinImage = NewWidget;
+}
+
 void SGraphPin::SetCustomPinIcon(const FSlateBrush* InConnectedBrush, const FSlateBrush* InDisconnectedBrush)
 {
 	Custom_Brush_Connected = InConnectedBrush;
 	Custom_Brush_Disconnected = InDisconnectedBrush;
+}
+
+bool SGraphPin::HasInteractiveTooltip() const
+{
+	return ValueInspectorTooltip.IsValid();
 }
 
 bool SGraphPin::GetIsConnectable() const

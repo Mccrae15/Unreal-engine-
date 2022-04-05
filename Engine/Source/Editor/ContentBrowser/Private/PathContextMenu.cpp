@@ -129,7 +129,7 @@ void FPathContextMenu::MakePathViewContextMenu(UToolMenu* Menu)
 						FUIAction(),
 						EUserInterfaceActionType::Button,
 						false,
-						FSlateIcon()
+						FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Import")
 					);
 				}
 			}
@@ -138,10 +138,10 @@ void FPathContextMenu::MakePathViewContextMenu(UToolMenu* Menu)
 			if (!Context->bNoFolderOnDisk)
 			{
 				Section.AddMenuEntry(
-					"ExploreTooltip",
+					"Explore",
 					ContentBrowserUtils::GetExploreFolderText(),
 					LOCTEXT("ExploreTooltip", "Finds this folder on disk."),
-					FSlateIcon(),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.BrowseContent"),
 					FUIAction( FExecuteAction::CreateSP( this, &FPathContextMenu::ExecuteExplore ) )
 					);
 			}
@@ -164,7 +164,7 @@ void FPathContextMenu::MakePathViewContextMenu(UToolMenu* Menu)
 					LOCTEXT("SetColorTooltip", "Sets the color this folder should appear as."),
 					FNewToolMenuDelegate::CreateRaw( this, &FPathContextMenu::MakeSetColorSubMenu ),
 					false,
-					FSlateIcon()
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Color")
 					);
 			}
 			else
@@ -174,7 +174,7 @@ void FPathContextMenu::MakePathViewContextMenu(UToolMenu* Menu)
 					"SetColor",
 					LOCTEXT("SetColor", "Set Color"),
 					LOCTEXT("SetColorTooltip", "Sets the color this folder should appear as."),
-					FSlateIcon(),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Color"),
 					FUIAction( FExecuteAction::CreateSP( this, &FPathContextMenu::ExecutePickColor ) )
 					);
 			}			
@@ -187,7 +187,7 @@ void FPathContextMenu::MakePathViewContextMenu(UToolMenu* Menu)
 					"RemoveFromFavorites",
 					LOCTEXT("RemoveFromFavorites", "Remove From Favorites"),
 					LOCTEXT("RemoveFromFavoritesTooltip", "Removes this folder from the favorites section."),
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "PropertyWindow.Favorites_Disabled"),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "PropertyWindow.Favorites_Disabled"),
 					FUIAction(FExecuteAction::CreateSP(this, &FPathContextMenu::ExecuteFavorite))
 				);
 			}
@@ -198,7 +198,7 @@ void FPathContextMenu::MakePathViewContextMenu(UToolMenu* Menu)
 					"AddToFavorites",
 					LOCTEXT("AddToFavorites", "Add To Favorites"),
 					LOCTEXT("AddToFavoritesTooltip", "Adds this folder to the favorites section for easy access."),
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "PropertyWindow.Favorites_Enabled"),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Star"),
 					FUIAction(FExecuteAction::CreateSP(this, &FPathContextMenu::ExecuteFavorite))
 				);
 			}
@@ -222,7 +222,7 @@ void FPathContextMenu::MakePathViewContextMenu(UToolMenu* Menu)
 				// Delete
 				Section.AddMenuEntry(FGenericCommands::Get().Delete,
 					LOCTEXT("DeleteFolder", "Delete"),
-					LOCTEXT("DeleteFolderTooltip", "Removes this folder and all assets it contains.")
+					TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateSP(this, &FPathContextMenu::GetDeleteToolTip))
 					);
 			}
 		}
@@ -296,14 +296,7 @@ void FPathContextMenu::MakeSetColorSubMenu(UToolMenu* Menu)
 
 void FPathContextMenu::ExecuteExplore()
 {
-	for (const FContentBrowserItem& SelectedItem : SelectedFolders)
-	{
-		FString ItemFilename;
-		if (SelectedItem.GetItemPhysicalPath(ItemFilename) && FPaths::DirectoryExists(ItemFilename))
-		{
-			FPlatformProcess::ExploreFolder(*IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*ItemFilename));
-		}
-	}
+	ContentBrowserUtils::ExploreFolders(SelectedFolders, ParentContent.Pin().ToSharedRef());
 }
 
 bool FPathContextMenu::CanExecuteRename() const
@@ -337,7 +330,8 @@ void FPathContextMenu::ExecutePickColor()
 		// Make sure an color entry exists for all the paths, otherwise they won't update in realtime with the widget color
 		for (int32 FolderIndex = SelectedFolders.Num() - 1; FolderIndex >= 0; --FolderIndex)
 		{
-			const FString Path = SelectedFolders[FolderIndex].GetVirtualPath().ToString();
+			const FString Path = SelectedFolders[FolderIndex].GetInvariantPath().ToString();
+
 			TSharedPtr<FLinearColor> Color = ContentBrowserUtils::LoadColor(Path);
 			if (!Color.IsValid())
 			{
@@ -375,7 +369,7 @@ void FPathContextMenu::NewColorComplete(const TSharedRef<SWindow>& Window)
 	// Save the colors back in the config (ptr should have already updated by the widget)
 	for (const FContentBrowserItem& SelectedItem : SelectedFolders)
 	{
-		const FString Path = SelectedItem.GetVirtualPath().ToString();
+		const FString Path = SelectedItem.GetInvariantPath().ToString();
 		const TSharedPtr<FLinearColor> Color = ContentBrowserUtils::LoadColor(Path);
 		check(Color.IsValid());
 		ContentBrowserUtils::SaveColor(Path, Color);
@@ -387,7 +381,7 @@ FReply FPathContextMenu::OnColorClicked( const FLinearColor InColor )
 	// Make sure a color entry exists for all the paths, otherwise it can't save correctly
 	for (const FContentBrowserItem& SelectedItem : SelectedFolders)
 	{
-		const FString Path = SelectedItem.GetVirtualPath().ToString();
+		const FString Path = SelectedItem.GetInvariantPath().ToString();
 		TSharedPtr<FLinearColor> Color = ContentBrowserUtils::LoadColor(Path);
 		if (!Color.IsValid())
 		{
@@ -408,7 +402,7 @@ void FPathContextMenu::ResetColors()
 	// Clear the custom colors for all the selected paths
 	for (const FContentBrowserItem& SelectedItem : SelectedFolders)
 	{
-		ContentBrowserUtils::SaveColor(SelectedItem.GetVirtualPath().ToString(), nullptr);
+		ContentBrowserUtils::SaveColor(SelectedItem.GetInvariantPath().ToString(), nullptr);
 	}
 }
 
@@ -465,6 +459,23 @@ bool FPathContextMenu::CanExecuteDelete() const
 		bCanDelete |= SelectedItem.CanDelete();
 	}
 	return bCanDelete;
+}
+
+FText FPathContextMenu::GetDeleteToolTip() const
+{
+	FText ErrorMessage;
+	bool bCanDelete = false;
+	for (const FContentBrowserItem& SelectedItem : SelectedFolders)
+	{
+		bCanDelete |= SelectedItem.CanDelete(&ErrorMessage);
+	}
+
+	if (!bCanDelete && !ErrorMessage.IsEmpty())
+	{
+		return ErrorMessage;
+	}
+
+	return LOCTEXT("DeleteFolderTooltip", "Removes this folder and all assets it contains.");
 }
 
 void FPathContextMenu::ExecuteDelete()
@@ -541,7 +552,7 @@ bool FPathContextMenu::SelectedHasCustomColors() const
 	for (const FContentBrowserItem& SelectedItem : SelectedFolders)
 	{
 		// Ignore any that are the default color
-		const TSharedPtr<FLinearColor> Color = ContentBrowserUtils::LoadColor(SelectedItem.GetVirtualPath().ToString());
+		const TSharedPtr<FLinearColor> Color = ContentBrowserUtils::LoadColor(SelectedItem.GetInvariantPath().ToString());
 		if (Color.IsValid() && !Color->Equals(ContentBrowserUtils::GetDefaultColor()))
 		{
 			return true;

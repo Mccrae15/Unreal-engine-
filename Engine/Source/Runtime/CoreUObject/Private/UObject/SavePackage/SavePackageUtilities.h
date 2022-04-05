@@ -12,15 +12,27 @@
 #include "Serialization/ArchiveStackTrace.h"
 #include "Serialization/FileRegions.h"
 #include "UObject/NameTypes.h"
+#include "UObject/Package.h"
 #include "UObject/UObjectMarks.h"
 
 // This file contains private utilities shared by UPackage::Save and UPackage::Save2 
 
 class FMD5;
+class FPackagePath;
+class FSaveContext;
 class FSavePackageContext;
+class IPackageWriter;
 template<typename StateType> class TAsyncWorkSequence;
 
-DECLARE_LOG_CATEGORY_EXTERN(LogSavePackage, Log, All);
+enum class ESavePackageResult;
+
+// Save Time trace
+#if UE_TRACE_ENABLED && !UE_BUILD_SHIPPING
+UE_TRACE_CHANNEL_EXTERN(SaveTimeChannel)
+#define SCOPED_SAVETIMER(TimerName) TRACE_CPUPROFILER_EVENT_SCOPE_ON_CHANNEL(TimerName, SaveTimeChannel)
+#else
+#define SCOPED_SAVETIMER(TimerName)
+#endif
 
 struct FLargeMemoryDelete
 {
@@ -37,25 +49,20 @@ typedef TUniquePtr<uint8, FLargeMemoryDelete> FLargeMemoryPtr;
 enum class EAsyncWriteOptions
 {
 	None = 0,
-	WriteFileToDisk = 0x01,
-	ComputeHash = 0x02
+	ComputeHash = 0x01,
 };
 ENUM_CLASS_FLAGS(EAsyncWriteOptions)
 
 struct FScopedSavingFlag
 {
-	FScopedSavingFlag(bool InSavingConcurrent);
+	FScopedSavingFlag(bool InSavingConcurrent, UPackage* InSavedPackage);
 	~FScopedSavingFlag();
 
 	bool bSavingConcurrent;
-};
 
-struct FSavePackageDiffSettings
-{
-	int32 MaxDiffsToLog;
-	bool bIgnoreHeaderDiffs;
-	bool bSaveForDiff;
-	FSavePackageDiffSettings(bool bDiffing);
+private:
+	// The package being saved
+	UPackage* SavedPackage = nullptr;
 };
 
 struct FCanSkipEditorReferencedPackagesWhenCooking
@@ -65,34 +72,88 @@ struct FCanSkipEditorReferencedPackagesWhenCooking
 	FORCEINLINE operator bool() const { return bCanSkipEditorReferencedPackagesWhenCooking; }
 };
 
+
+/** Represents an output file from the package when saving */
+struct FSavePackageOutputFile
+{
+	/** Constructor used for async saving */
+	FSavePackageOutputFile(const FString& InTargetPath, FLargeMemoryPtr&& MemoryBuffer, const TArray<FFileRegion>& InFileRegions, int64 InDataSize)
+		: TargetPath(InTargetPath)
+		, FileMemoryBuffer(MoveTemp(MemoryBuffer))
+		, FileRegions(InFileRegions)
+		, DataSize(InDataSize)
+	{
+
+	}
+
+	/** Constructor used for saving first to a temp file which can be later moved to the target directory */
+	FSavePackageOutputFile(const FString& InTargetPath, const FString& InTempFilePath, int64 InDataSize)
+		: TargetPath(InTargetPath)
+		, TempFilePath(InTempFilePath)
+		, DataSize(InDataSize)
+	{
+
+	}
+
+	/** The final target location of the file once all saving operations are completed */
+	FString TargetPath;
+
+	/** The temp location (if any) that the file is stored at, pending a move to the TargetPath */
+	FString TempFilePath;
+
+	/** The entire file stored as a memory buffer for the async saving path */
+	FLargeMemoryPtr FileMemoryBuffer;
+	/** An array of file regions in FileMemoryBuffer generated during cooking */
+	TArray<FFileRegion> FileRegions;
+
+	/** The size of the file in bytes */
+	int64 DataSize;
+};
+
+// Currently we only expect to store up to 2 files in this, so set the inline capacity to double of this
+using FSavePackageOutputFileArray = TArray<FSavePackageOutputFile, TInlineAllocator<4>>;
+
+ /**
+  * Helper structure to encapsulate sorting a linker's import table alphabetically
+  * @note Save2 should not have to use this sorting long term
+  */
+struct FObjectImportSortHelper
+{
+private:
+	/**
+	 * Map of UObject => full name; optimization for sorting.
+	 */
+	TMap<UObject*, FString>			ObjectToFullNameMap;
+
+	/** the linker that we're sorting names for */
+	friend struct TDereferenceWrapper<FObjectImport, FObjectImportSortHelper>;
+
+	/** Comparison function used by Sort */
+	bool operator()(const FObjectImport& A, const FObjectImport& B) const;
+
+public:
+
+	/**
+	 * Sorts imports according to the order in which they occur in the list of imports.
+	 *
+	 * @param	Linker				linker containing the imports that need to be sorted
+	 */
+	void SortImports(FLinkerSave* Linker);
+};
+
 /**
- * Helper structure to encapsulate sorting a linker's export table alphabetically, taking into account conforming to other linkers.
+ * Helper structure to encapsulate sorting a linker's export table alphabetically
  * @note Save2 should not have to use this sorting long term
  */
 struct FObjectExportSortHelper
 {
-private:
-	struct FObjectFullName
-	{
-	public:
-		FObjectFullName(const UObject* Object, const UObject* Root);
-		FObjectFullName(FObjectFullName&& InFullName);
-
-		FName ClassName;
-		TArray<FName> Path;
-	};
-
 public:
-	FObjectExportSortHelper() : bUseFObjectFullName(false) {}
-
 	/**
-	 * Sorts exports alphabetically.  If a package is specified to be conformed against, ensures that the order
-	 * of the exports match the order in which the corresponding exports occur in the old package.
+	 * Sorts exports alphabetically.
 	 *
 	 * @param	Linker				linker containing the exports that need to be sorted
-	 * @param	LinkerToConformTo	optional linker to conform against.
 	 */
-	void SortExports(FLinkerSave* Linker, FLinkerLoad* LinkerToConformTo = nullptr, bool InbUseFObjectFullName = false);
+	void SortExports(FLinkerSave* Linker);
 
 private:
 	/** Comparison function used by Sort */
@@ -100,10 +161,6 @@ private:
 
 	/** the linker that we're sorting exports for */
 	friend struct TDereferenceWrapper<FObjectExport, FObjectExportSortHelper>;
-
-	bool bUseFObjectFullName;
-
-	TMap<UObject*, FObjectFullName> ObjectToObjectFullNameMap;
 
 	/**
 	 * Map of UObject => full name; optimization for sorting.
@@ -123,6 +180,7 @@ struct FEDLCookChecker : public TThreadSingleton<FEDLCookChecker>
 	void AddImport(UObject* Import, UPackage* ImportingPackage);
 	void AddExport(UObject* Export);
 	void AddArc(UObject* DepObject, bool bDepIsSerialize, UObject* Export, bool bExportIsSerialize);
+	void AddPackageWithUnknownExports(FName LongPackageName);
 
 	static void StartSavingEDLCookInfoForVerification();
 	static void Verify(bool bFullReferencesExpected);
@@ -211,6 +269,7 @@ private:
 
 		FString ToString(const FEDLCookChecker& Owner) const;
 		void AppendPathName(const FEDLCookChecker& Owner, FStringBuilderBase& Result) const;
+		FName GetPackageName(const FEDLCookChecker& Owner) const;
 		void Merge(FEDLNodeData&& Other);
 	};
 
@@ -238,6 +297,11 @@ private:
 	TMap<FEDLNodeHash, FEDLNodeID> NodeHashToNodeID;
 	/** The graph of dependencies between nodes. */
 	TMultiMap<FEDLNodeID, FEDLNodeID> NodePrereqs;
+	/**
+	 * Packages that were cooked iteratively and therefore have an unknown set of exports.
+	 * We suppress warnings for exports missing from these packages.
+	 */
+	TSet<FName> PackagesWithUnknownExports;
 	/** True if the EDLCookChecker should be active; it is turned off if the runtime will not be using EDL. */
 	bool bIsActive;
 
@@ -288,25 +352,71 @@ namespace SavePackageUtilities
 	extern const FName NAME_Level;
 	extern const FName NAME_PrestreamPackage;
 
-	void GetBlueprintNativeCodeGenReplacement(UObject* InObj, UClass*& ObjClass, UObject*& ObjOuter, FName& ObjName, const ITargetPlatform* TargetPlatform);
-
-	void IncrementOutstandingAsyncWrites();
-	void DecrementOutstandingAsyncWrites();
+	// return if the new save algorithm is enabled for cooked or uncooked
+	bool IsNewSaveEnabled(bool bForCooking = false);
 
 	void SaveThumbnails(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FSlot Slot);
-	void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Filename, const ITargetPlatform* TargetPlatform,
-		FSavePackageContext* SavePackageContext, const bool bTextFormat, const bool bDiffing, const bool bComputeHash, TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, int64& TotalPackageSizeUncompressed);
+
+	/**
+	 * Save all of the BulkDatas that have registered as not being inline.
+	 * They may be saved to the end of the file, or to an archive for a separate file.
+	 * 
+	 * @param Linker The linker containing the exports. Provides metadata for BulkData, and BulkData may write to it as their target archive.
+	 * @param InOutStartOffset In value is the offset in the Linker's archive where the BulkDatas will be put. If SavePackageContext settings direct
+	 *        the bulkdatas to write in a separate archive that will be combined after the linker, the value is the Linker archive's totalsize.
+	 *        Output value is incremented by the number of bytes written the Linker or the separate archive at the end of the linker.
+	 *        Bytes written to separate files do not contribute to this offset.
+	 * @param InOuter The package being saved
+	 * @param Filename The filename the package is being saved to. Used to decide the filename of separate archives, if any are used.
+	 * @param SavePackageContext Provides The PackageWriter and other parameters of how the bulkdata should be saved.
+	 * @param SaveFlags The flags passed into SavePackage; affects how the bulkdata should be saved.
+	 * @param bTextFormat True if package is saving to text. Bulkdata has special handling for text output.
+	 * @param bDiffing True if the package is only diffing, so bulk data should be recorded but not saved to disk.
+	 * @param bComputeHash True if package hash needs to be computed; bulkdatas contribute to the hash.
+	 * @param AsyncWriteAndHashSequence Output: Collects the writes of the bulkdata to disk for async writing.
+	 * @param TotalPackageSizeUncompressed Output: Bulkdata sizes are added to it.
+	 */
+	ESavePackageResult SaveBulkData(FLinkerSave* Linker, int64& InOutStartOffset, const UPackage* InOuter,
+		const TCHAR* Filename, const ITargetPlatform* TargetPlatform, FSavePackageContext* SavePackageContext,
+		uint32 SaveFlags, const bool bTextFormat, const bool bComputeHash,
+		TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, int64& TotalPackageSizeUncompressed, bool bIsOptionalRealm = false);
+	
+	/**
+	 * Used to append additional data to the end of the package file by invoking callbacks stored in the linker.
+	 * They may be saved to the end of the file, or to a separate archive passed into the PackageWriter.
+	 
+	 * @param Linker The linker containing the exports. Provides the list of AdditionalData, and the data may write to it as their target archive.
+	 * @param InOutStartOffset In value is the offset in the Linker's archive where the datas will be put. If SavePackageContext settings direct
+	 *        the datas to write in a separate archive that will be combined after the linker, the value is the offset after the Linker archive's 
+	 *        totalsize and after any previous post-Linker archive data such as BulkDatas.
+	 *        Output value is incremented by the number of bytes written the Linker or the separate archive at the end of the linker.
+	 * @param SavePackageContext If non-null and configured to require it, data is passed to this PackageWriter on this context rather than appended to the Linker archive.
+	  */
+	ESavePackageResult AppendAdditionalData(FLinkerSave& Linker, int64& InOutDataStartOffset, FSavePackageContext* SavePackageContext);
+	
+	/** Used to create the sidecar file (.upayload) from payloads that have been added to the linker */
+	ESavePackageResult CreatePayloadSidecarFile(FLinkerSave& Linker, const FPackagePath& PackagePath, const bool bSaveToMemory,
+		FSavePackageOutputFileArray& AdditionalPackageFiles, FSavePackageContext* SavePackageContext);
+	
 	void SaveWorldLevelInfo(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FRecord Record);
 	EObjectMark GetExcludedObjectMarksForTargetPlatform(const class ITargetPlatform* TargetPlatform);
 	bool HasUnsaveableOuter(UObject* InObj, UPackage* InSavingPackage);
 	void CheckObjectPriorToSave(FArchiveUObject& Ar, UObject* InObj, UPackage* InSavingPackage);
 	void ConditionallyExcludeObjectForTarget(UObject* Obj, EObjectMark ExcludedObjectMarks, const ITargetPlatform* TargetPlatform);
-	void FindMostLikelyCulprit(TArray<UObject*> BadObjects, UObject*& MostLikelyCulprit, const FProperty*& PropertyRef);
+	void FindMostLikelyCulprit(const TArray<UObject*>& BadObjects, UObject*& MostLikelyCulprit, FString& OutReferencer, FSaveContext* InOptionalSaveContext = nullptr);
 	void AddFileToHash(FString const& Filename, FMD5& Hash);
+
+	/** 
+	  * Search 'OutputFiles' for output files that were saved to the temp directory and move those files
+	  * to their final location. Output files that were not saved to the temp directory will be ignored.
+	  * 
+	  * If errors are encountered then the original state of the package will be restored and should continue to work.
+	  */
+	ESavePackageResult FinalizeTempOutputFiles(const FPackagePath& PackagePath, const FSavePackageOutputFileArray& OutputFiles, const bool bComputeHash, const FDateTime& FinalTimeStamp, TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence);
 
 	void WriteToFile(const FString& Filename, const uint8* InDataPtr, int64 InDataSize);
 	void AsyncWriteFile(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, FLargeMemoryPtr Data, const int64 DataSize, const TCHAR* Filename, EAsyncWriteOptions Options, TArrayView<const FFileRegion> InFileRegions);
-	void AsyncWriteFileWithSplitExports(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, FLargeMemoryPtr Data, const int64 DataSize, const int64 HeaderSize, const TCHAR* Filename, EAsyncWriteOptions Options, TArrayView<const FFileRegion> InFileRegions);
+	void AsyncWriteFile(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, EAsyncWriteOptions Options, FSavePackageOutputFile& File);
 
 	void GetCDOSubobjects(UObject* CDO, TArray<UObject*>& Subobjects);
 }
@@ -335,4 +445,3 @@ struct FSavePackageStats
 	static void MergeStats(const TMap<FName, FArchiveDiffStats>& ToMerge);
 };
 #endif
-

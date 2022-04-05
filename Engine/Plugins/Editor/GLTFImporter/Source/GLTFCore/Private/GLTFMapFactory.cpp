@@ -35,12 +35,12 @@ namespace GLTF
 			Expression->GetScalar() = Value;
 		}
 
-		inline void SetExpresisonValue(const FVector& Color, FMaterialExpressionColor* Expression)
+		inline void SetExpresisonValue(const FVector3f& Color, FMaterialExpressionColor* Expression)
 		{
 			Expression->GetColor() = FLinearColor(Color);
 		}
 
-		inline void SetExpresisonValue(const FVector4& Color, FMaterialExpressionColor* Expression)
+		inline void SetExpresisonValue(const FVector4f& Color, FMaterialExpressionColor* Expression)
 		{
 			Expression->GetColor() = FLinearColor(Color);
 		}
@@ -103,13 +103,13 @@ namespace GLTF
 		Normalize->ConnectExpression(CurrentMaterialElement->GetNormal(), 0);
 	}
 
-	FMaterialExpression* FPBRMapFactory::CreateColorMap(const GLTF::FTexture& Map, int CoordinateIndex, const FVector& Color, const TCHAR* MapName,
+	FMaterialExpression* FPBRMapFactory::CreateColorMap(const GLTF::FTexture& Map, int CoordinateIndex, const FVector3f& Color, const TCHAR* MapName,
 	                                                    const TCHAR* ValueName, ETextureMode TextureMode, FMaterialExpressionInput& MaterialInput)
 	{
 		return CreateMap<FMaterialExpressionColor>(Map, CoordinateIndex, Color, MapName, ValueName, TextureMode, MaterialInput);
 	}
 
-	FMaterialExpression* FPBRMapFactory::CreateColorMap(const GLTF::FTexture& Map, int CoordinateIndex, const FVector4& Color, const TCHAR* MapName,
+	FMaterialExpression* FPBRMapFactory::CreateColorMap(const GLTF::FTexture& Map, int CoordinateIndex, const FVector4f& Color, const TCHAR* MapName,
 	                                                    const TCHAR* ValueName, ETextureMode TextureMode, FMaterialExpressionInput& MaterialInput)
 	{
 		return CreateMap<FMaterialExpressionColor>(Map, CoordinateIndex, Color, MapName, ValueName, TextureMode, MaterialInput);
@@ -132,7 +132,7 @@ namespace GLTF
 				{
 					ValueExpression = CurrentMaterialElement->AddMaterialExpression<FMaterialExpressionColor>();
 					FMaterialExpressionColor* ColorExpression = static_cast<FMaterialExpressionColor*>(ValueExpression);
-					SetExpresisonValue(*reinterpret_cast<const FVector*>(MapChannel.VecValue), ColorExpression);
+					SetExpresisonValue(*reinterpret_cast<const FVector3f*>(MapChannel.VecValue), ColorExpression);
 					ColorExpression->SetGroupName(*GroupName);
 					break;
 				}

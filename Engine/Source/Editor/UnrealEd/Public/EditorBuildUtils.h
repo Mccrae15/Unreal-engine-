@@ -30,14 +30,16 @@ struct FBuildOptions
 	UNREALED_API static const FName BuildAllSubmit;
 	/** Build everything except for paths only build selected */
 	UNREALED_API static const FName BuildAllOnlySelectedPaths;
-	/** Build Hierarchical LOD system - need WorldSetting setup*/
+	/** Build HLODs */
 	UNREALED_API static const FName BuildHierarchicalLOD;
+	/** Build minimap */
+	UNREALED_API static const FName BuildMinimap;
 	/** Build texture streaming */
 	UNREALED_API static const FName BuildTextureStreaming;
 	/** Build virtual textures */
 	UNREALED_API static const FName BuildVirtualTexture;
-	/** Build grass maps */
-	UNREALED_API static const FName BuildGrassMaps;
+	/** Build All Landscape Data */
+	UNREALED_API static const FName BuildAllLandscape;
 };
 /**
  * Result of a custom editor build.
@@ -165,11 +167,10 @@ public:
 	static UNREALED_API bool EditorBuildVirtualTexture(UWorld* InWorld);
 
 	/**
-	 * Perform an editor build for grass maps
-	 *
-	 * @param	InWorld				WorldContext
-	 */
-	static UNREALED_API void EditorBuildGrassMaps(UWorld* InWorld);
+	* Perform an editor build for All Landscape Data
+	* @param	InWorld				WorldContext
+	*/
+	static UNREALED_API void EditorBuildAllLandscape(UWorld* InWorld);
 
 	/** 
 	* check if navigation build was was triggered from editor as user request
@@ -255,27 +256,28 @@ private:
 	/** 
 	 * Trigger navigation builder to (re)generate NavMesh 
 	 *
-	 * @param	InWorld			WorldContext
+	 * @param	InOutWorld		WorldContext
 	 * @param	BuildSettings	Build settings that will be used for the editor build
 	 */
-	static void TriggerNavigationBuilder(UWorld* InWorld, FName Id);
+	static void TriggerNavigationBuilder(UWorld*& InOutWorld, FName Id);
+
+	static bool WorldPartitionBuildNavigation(const FString& InLongPackageName);
 
 	/** 
-	 * Trigger LOD builder to (re)generate LODActors
+	 * Trigger HLOD builder to (re)generate HLOD actors
 	 *
 	 * @param	InWorld			WorldContext
 	 * @param	BuildSettings	Build settings that will be used for the editor build
 	 */
 	static void TriggerHierarchicalLODBuilder(UWorld* InWorld, FName Id);
 
-	/** this will attempt to trigger the associated real shader in respect to the current (mobile) emulated versions used by the editor and copy
-	 * obtained number of instructions in place of the emulated ones
+	/** 
+	 * Trigger minimap builder to (re)generate minimap
 	 *
-	 * @param	QualityLevel	Material quality setting for which the shaders to be compiled
-	 * @param	FeatureLevel	RHI feature level
-	 * @param	Materials		Set of materials to compile shaders for
+	 * @param	InWorld			WorldContext
+	 * @param	BuildSettings	Build settings that will be used for the editor build
 	 */
-	static bool CompileShadersComplexityViewMode(EMaterialQualityLevel::Type QualityLevel, ERHIFeatureLevel::Type FeatureLevel, TSet<class UMaterialInterface*>& Materials, struct FSlowTask& ProgressTask);
+	static void TriggerMinimapBuilder(UWorld* InWorld, FName Id);
 
 	/** Intentionally hide constructors, etc. to prevent instantiation */
 	FEditorBuildUtils();

@@ -5,7 +5,7 @@
 #include "MoviePipelineOutputSetting.h"
 #include "MoviePipelineMasterConfig.h"
 #include "Misc/FileHelper.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 
 #if WITH_EDITOR
 #include "FCPXML/FCPXMLMovieSceneTranslator.h"

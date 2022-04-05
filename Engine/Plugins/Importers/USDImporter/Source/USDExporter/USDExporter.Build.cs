@@ -23,23 +23,29 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
-                    "EditorStyle",
-                    "GeometryCache",
-                    "PropertyEditor",
-                    "RawMesh",
-                    "RenderCore",
-                    "RHI",
+					"Analytics",
+					"AnalyticsBlueprintLibrary",
 					"CinematicCamera",
+					"EditorStyle",
+					"GeometryCache",
 					"InputCore",
 					"JsonUtilities",
 					"Landscape",
 					"LevelSequence",
+					"LevelSequenceEditor", // For LevelSequenceEditorSpawnRegister, which we need to use when exporting level sequences with spawnables
 					"MaterialBaking", // So that we can use some of the export option properties
 					"MaterialUtilities",
 					"MeshDescription",
 					"MeshUtilities",
 					"MessageLog",
+					"MovieScene",
+					"MovieSceneTracks",
+					"PropertyEditor",
 					"PythonScriptPlugin",
+					"RawMesh",
+					"RenderCore",
+					"RHI",
+					"Sequencer",
 					"Slate",
 					"SlateCore",
 					"StaticMeshDescription",
@@ -47,7 +53,7 @@ namespace UnrealBuildTool.Rules
 					"USDClasses",
 					"USDStageImporter", // For USDOptionsWindow
 					"USDUtilities",
-                }
+				}
 			);
 		}
 	}

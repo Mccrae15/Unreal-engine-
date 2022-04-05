@@ -48,6 +48,7 @@ typedef FHoloLensTypes FPlatformTypes;
 //@MIXEDREALITY_CHANGE : BEGIN 0 -> 1 to not use SSE2
 #if (defined(_M_ARM) || defined(_M_ARM64))
 #define PLATFORM_CPU_ARM_FAMILY								1
+#define PLATFORM_ENABLE_VECTORINTRINSICS					1
 #define PLATFORM_ENABLE_VECTORINTRINSICS_NEON				1
 #elif (defined(_M_IX86) || defined(_M_X64))
 #define PLATFORM_CPU_X86_FAMILY								1
@@ -72,6 +73,7 @@ typedef FHoloLensTypes FPlatformTypes;
 #define PLATFORM_COMPILER_HAS_EXPLICIT_OPERATORS			1
 //#define EXCEPTION_EXECUTE_HANDLER                           1
 //#define PLATFORM_COMPILER_HAS_DEFAULT_FUNCTION_TEMPLATE_ARGUMENTS	1
+#define PLATFORM_USE_GENERIC_STRING_IMPLEMENTATION			0  // GenericWidePlatformString will fail on HoloLens in UE5
 
 #define PLATFORM_BREAK() (__nop(), __debugbreak())
 

@@ -19,6 +19,7 @@
 #include "AssetToolsModule.h"
 #include "AutoReimport/ReimportFeedbackContext.h"
 #include "AutoReimport/AssetSourceFilenameCache.h"
+#include "Misc/NamePermissionList.h"
 
 #define LOCTEXT_NAMESPACE "ContentDirectoryMonitor"
 
@@ -149,6 +150,14 @@ bool FContentDirectoryMonitor::ShouldConsiderChange(const DirectoryWatcher::FUpd
 	{
 		return false;
 	}
+
+	static const FName AssetToolsName("AssetTools");
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(AssetToolsName).Get();
+	if (!AssetTools.GetWritableFolderPermissionList()->PassesStartsWithFilter(Transaction.Filename.Get()))
+	{
+		return false;
+	}
+
 	return true;
 }
 
@@ -439,41 +448,48 @@ void FContentDirectoryMonitor::ProcessModifications(const DirectoryWatcher::FTim
 					const FString PackagePath = UPackageTools::SanitizePackageName(MountedContentPath / FPaths::GetPath(Change.Filename.Get()));
 					const FString FullDestPath = PackagePath / NewAssetName;
 
-					if (ExistingPackage && ExistingPackage->FileName.ToString() == FullDestPath)
+					const FText SrcPathText = FText::FromString(Assets[0].PackageName.ToString());
+					const FText DstPathText = FText::FromString(FullDestPath);
+					FPackagePath DestPackagePath;
+					if (!FPackagePath::TryFromMountedName(FullDestPath, DestPackagePath))
 					{
-						// No need to process this asset - it's already been moved to the right location
-						Cache.CompleteTransaction(MoveTemp(Change));
-						continue;
-					}
-
-					const FText SrcPathText = FText::FromString(Assets[0].PackageName.ToString()),
-						DstPathText = FText::FromString(FullDestPath);
-
-					if (FPackageName::DoesPackageExist(*FullDestPath))
-					{
-						Context.AddMessage(EMessageSeverity::Warning, FText::Format(LOCTEXT("MoveWarning_ExistingAsset", "Can't move {0} to {1} - one already exists."), SrcPathText, DstPathText));
+						Context.AddMessage(EMessageSeverity::Warning, FText::Format(LOCTEXT("MoveWarning_NotInMountedPath", "Can't move {0} to {1} - {1} is not in a mounted path."), SrcPathText, DstPathText));
 					}
 					else
 					{
-						TArray<FAssetRenameData> RenameData;
-						RenameData.Emplace(Asset, PackagePath, NewAssetName);
-
-						Context.AddMessage(EMessageSeverity::Info, FText::Format(LOCTEXT("Success_MovedAsset", "Moving asset {0} to {1}."),	SrcPathText, DstPathText));
-
-						FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get().RenameAssetsWithDialog(RenameData);
-
-						TArray<FString> Filenames;
-						Filenames.Add(FullFilename);
-
-						// Update the reimport file names
-						FReimportManager::Instance()->UpdateReimportPaths(Asset, Filenames);
-						Asset->MarkPackageDirty();
-
-						if (!bAssetWasDirty)
+						if (ExistingPackage && ExistingPackage->GetLoadedPath() == DestPackagePath)
 						{
-							if (UPackage* NewPackage = Asset->GetOutermost())
+							// No need to process this asset - it's already been moved to the right location
+							Cache.CompleteTransaction(MoveTemp(Change));
+							continue;
+						}
+
+						if (FPackageName::DoesPackageExist(DestPackagePath, &DestPackagePath))
+						{
+							Context.AddMessage(EMessageSeverity::Warning, FText::Format(LOCTEXT("MoveWarning_ExistingAsset", "Can't move {0} to {1} - one already exists."), SrcPathText, DstPathText));
+						}
+						else
+						{
+							TArray<FAssetRenameData> RenameData;
+							RenameData.Emplace(Asset, PackagePath, NewAssetName);
+
+							Context.AddMessage(EMessageSeverity::Info, FText::Format(LOCTEXT("Success_MovedAsset", "Moving asset {0} to {1}."), SrcPathText, DstPathText));
+
+							FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get().RenameAssetsWithDialog(RenameData);
+
+							TArray<FString> Filenames;
+							Filenames.Add(FullFilename);
+
+							// Update the reimport file names
+							FReimportManager::Instance()->UpdateReimportPaths(Asset, Filenames);
+							Asset->MarkPackageDirty();
+
+							if (!bAssetWasDirty)
 							{
-								OutPackagesToSave.Add(NewPackage);
+								if (UPackage* NewPackage = Asset->GetOutermost())
+								{
+									OutPackagesToSave.Add(NewPackage);
+								}
 							}
 						}
 					}

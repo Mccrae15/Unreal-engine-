@@ -11,6 +11,8 @@
 #include "ShaderParameterUtils.h"
 #include "Rendering/RenderingCommon.h"
 #include "RHIStaticStates.h"
+#include "TextureResource.h"
+#include "RenderUtils.h"
 
 extern EColorVisionDeficiency GSlateColorDeficiencyType;
 extern int32 GSlateColorDeficiencySeverity;
@@ -78,14 +80,14 @@ public:
 	 *
 	 * @param InViewProjection	The ViewProjection matrix to use when this shader is bound 
 	 */
-	void SetViewProjection(FRHICommandList& RHICmdList, const FMatrix& InViewProjection );
+	void SetViewProjection(FRHICommandList& RHICmdList, const FMatrix44f& InViewProjection );
 
 	/** 
 	 * Sets shader parameters for use in this shader
 	 *
 	 * @param ShaderParams	The shader params to be used
 	 */
-	void SetShaderParameters(FRHICommandList& RHICmdList, const FVector4& ShaderParams );
+	void SetShaderParameters(FRHICommandList& RHICmdList, const FVector4f& ShaderParams );
 
 	/**
 	 * Sets the vertical axis multiplier to use depending on graphics api
@@ -125,10 +127,15 @@ public:
 	FSlateElementPS( const ShaderMetaType::CompiledShaderInitializerType& Initializer )
 		: FGlobalShader( Initializer )
 	{
-		TextureParameter.Bind( Initializer.ParameterMap, TEXT("ElementTexture"));
-		TextureParameterSampler.Bind( Initializer.ParameterMap, TEXT("ElementTextureSampler"));
-		ShaderParams.Bind( Initializer.ParameterMap, TEXT("ShaderParams"));
-		GammaAndAlphaValues.Bind( Initializer.ParameterMap,TEXT("GammaAndAlphaValues"));
+		TextureParameter.Bind(Initializer.ParameterMap, TEXT("ElementTexture"));
+		TextureParameterSampler.Bind(Initializer.ParameterMap, TEXT("ElementTextureSampler"));
+		InPageTableTexture.Bind(Initializer.ParameterMap, TEXT("InPageTableTexture"));
+		VTPackedPageTableUniform.Bind(Initializer.ParameterMap, TEXT("VTPackedPageTableUniform"));
+		VTPackedUniform.Bind(Initializer.ParameterMap, TEXT("VTPackedUniform"));
+		ShaderParams.Bind(Initializer.ParameterMap, TEXT("ShaderParams"));
+		ShaderParams2.Bind(Initializer.ParameterMap, TEXT("ShaderParams2"));
+		VTShaderParams.Bind(Initializer.ParameterMap, TEXT("VTShaderParams"));
+		GammaAndAlphaValues.Bind(Initializer.ParameterMap,TEXT("GammaAndAlphaValues"));
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
@@ -145,13 +152,48 @@ public:
 	}
 
 	/**
+	 * Sets the texture used by this shader in case a VirtualTexture is used
+	 *
+	 * @param InVirtualTexture	Virtual Texture resource to use when this pixel shader is bound
+	 */
+	void SetVirtualTextureParameters(FRHICommandList& RHICmdList, FVirtualTexture2DResource* InVirtualTexture)
+	{
+		if (InVirtualTexture == nullptr)
+		{
+			return;
+		}
+
+		IAllocatedVirtualTexture* AllocatedVT = InVirtualTexture->AcquireAllocatedVT();
+		uint32 LayerIndex = 0;
+
+		FRHIShaderResourceView* PhysicalView = AllocatedVT->GetPhysicalTextureSRV(LayerIndex, InVirtualTexture->bSRGB);
+		
+		SetSRVParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), TextureParameter, PhysicalView);
+		SetSamplerParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), TextureParameterSampler, InVirtualTexture->SamplerStateRHI);
+		SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), InPageTableTexture, AllocatedVT->GetPageTableTexture(0u));
+		
+		FUintVector4 PageTableUniform[2];
+		FUintVector4 Uniform;
+		// VTParams.X = MipLevel, VTParams.Y = LayerIndex
+		FVector4f VTParams{ 0.f, static_cast<float>(LayerIndex), 0.f, 0.f };
+
+		AllocatedVT->GetPackedPageTableUniform(PageTableUniform);
+		AllocatedVT->GetPackedUniform(&Uniform, LayerIndex);
+
+		SetShaderValueArray(RHICmdList, RHICmdList.GetBoundPixelShader(), VTPackedPageTableUniform, PageTableUniform, UE_ARRAY_COUNT(PageTableUniform));
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), VTPackedUniform, Uniform);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), VTShaderParams, VTParams);
+	}
+
+	/**
 	 * Sets shader params used by the shader
 	 * 
 	 * @param InShaderParams Shader params to use
 	 */
-	void SetShaderParams(FRHICommandList& RHICmdList, const FVector4& InShaderParams )
+	void SetShaderParams(FRHICommandList& RHICmdList, const FShaderParams& InShaderParams)
 	{
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams, InShaderParams );
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams, (FVector4f)InShaderParams.PixelParams);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), ShaderParams2, (FVector4f)InShaderParams.PixelParams2);
 	}
 
 	/**
@@ -161,7 +203,7 @@ public:
 	 */
 	void SetDisplayGammaAndInvertAlphaAndContrast(FRHICommandList& RHICmdList, float InDisplayGamma, float bInvertAlpha, float InContrast)
 	{
-		FVector4 Values( 2.2f / InDisplayGamma, 1.0f/InDisplayGamma, bInvertAlpha, InContrast);
+		FVector4f Values( 2.2f / InDisplayGamma, 1.0f/InDisplayGamma, bInvertAlpha, InContrast);
 
 		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), GammaAndAlphaValues, Values);
 	}
@@ -171,14 +213,19 @@ private:
 	/** Texture parameter used by the shader */
 	LAYOUT_FIELD(FShaderResourceParameter, TextureParameter);
 	LAYOUT_FIELD(FShaderResourceParameter, TextureParameterSampler);
+	LAYOUT_FIELD(FShaderResourceParameter, InPageTableTexture);
+	LAYOUT_FIELD(FShaderParameter, VTPackedPageTableUniform);
+	LAYOUT_FIELD(FShaderParameter, VTPackedUniform);
 	LAYOUT_FIELD(FShaderParameter, ShaderParams);
+	LAYOUT_FIELD(FShaderParameter, ShaderParams2);
+	LAYOUT_FIELD(FShaderParameter, VTShaderParams);
 	LAYOUT_FIELD(FShaderParameter, GammaAndAlphaValues);
 };
 
 /** 
  * Pixel shader types for all elements
  */
-template<ESlateShader ShaderType, bool bDrawDisabledEffect, bool bUseTextureAlpha=true>
+template<ESlateShader ShaderType, bool bDrawDisabledEffect, bool bUseTextureAlpha=true, bool bIsVirtualTexture=false>
 class TSlateElementPS : public FSlateElementPS
 {
 	DECLARE_SHADER_TYPE( TSlateElementPS, Global );
@@ -205,6 +252,7 @@ public:
 		OutEnvironment.SetDefine(TEXT("DRAW_DISABLED_EFFECT"), (uint32)( bDrawDisabledEffect ? 1 : 0 ));
 		OutEnvironment.SetDefine(TEXT("USE_TEXTURE_ALPHA"), (uint32)( bUseTextureAlpha ? 1 : 0 ));
 		OutEnvironment.SetDefine(TEXT("USE_MATERIALS"), (uint32)0);
+		OutEnvironment.SetDefine(TEXT("SAMPLE_VIRTUAL_TEXTURE"), (uint32)(bIsVirtualTexture ? 1 : 0));
 
 		FSlateElementPS::ModifyCompilationEnvironment( Parameters, OutEnvironment );
 	}
@@ -300,17 +348,17 @@ public:
 
 	void SetBufferSizeAndDirection(FRHICommandList& RHICmdList, const FVector2D& InBufferSize, const FVector2D& InDir)
 	{
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), BufferSizeAndDirection, FVector4(InBufferSize, InDir));
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), BufferSizeAndDirection, FVector4f(FVector2f(InBufferSize), FVector2f(InDir)));	// LWC_TODO: Precision loss
 	}
 
-	void SetWeightsAndOffsets(FRHICommandList& RHICmdList, const TArray<FVector4>& InWeightsAndOffsets, int32 NumSamples )
+	void SetWeightsAndOffsets(FRHICommandList& RHICmdList, const TArray<FVector4f>& InWeightsAndOffsets, int32 NumSamples )
 	{
 		check(InWeightsAndOffsets.Num() <= MAX_BLUR_SAMPLES);
-		SetShaderValueArray<FRHIPixelShader*, FVector4>(RHICmdList, RHICmdList.GetBoundPixelShader(), WeightAndOffsets, InWeightsAndOffsets.GetData(), InWeightsAndOffsets.Num() );
+		SetShaderValueArray<FRHIPixelShader*, FVector4f>(RHICmdList, RHICmdList.GetBoundPixelShader(), WeightAndOffsets, InWeightsAndOffsets.GetData(), InWeightsAndOffsets.Num() );
 		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), SampleCount, NumSamples);
 	}
 
-	void SetUVBounds(FRHICommandList& RHICmdList, const FVector4& InUVBounds)
+	void SetUVBounds(FRHICommandList& RHICmdList, const FVector4f& InUVBounds)
 	{
 		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), UVBounds, InUVBounds);
 	}
@@ -344,13 +392,37 @@ public:
 		UVBounds.Bind(Initializer.ParameterMap, TEXT("UVBounds"));
 	}
 
-	void SetUVBounds(FRHICommandList& RHICmdList, const FVector4& InUVBounds)
+	void SetUVBounds(FRHICommandList& RHICmdList, const FVector4f& InUVBounds)
 	{
 		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), UVBounds, InUVBounds);
 	}
 
 private:
 	LAYOUT_FIELD(FShaderParameter, UVBounds);
+};
+
+
+class FSlatePostProcessUpsamplePS : public FSlateElementPS
+{
+	DECLARE_SHADER_TYPE(FSlatePostProcessUpsamplePS, Global);
+public:
+	/** Indicates that this shader should be cached */
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return true;
+	}
+
+	FSlatePostProcessUpsamplePS()
+	{
+	}
+
+	/** Constructor.  Binds all parameters used by the shader */
+	FSlatePostProcessUpsamplePS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FSlateElementPS(Initializer)
+	{
+	}
+
+private:
 };
 
 
@@ -420,7 +492,7 @@ public:
 	*
 	* @param InViewProjection	The ViewProjection matrix to use when this shader is bound
 	*/
-	void SetViewProjection(FRHICommandList& RHICmdList, const FMatrix& InViewProjection);
+	void SetViewProjection(FRHICommandList& RHICmdList, const FMatrix44f& InViewProjection);
 
 	/**
 	 * Sets the vertical axis multiplier to use depending on graphics api

@@ -207,15 +207,15 @@ public:
 
 	/** The blueprint associated with this context; may be NULL for non-Kismet related graphs. */
 	UPROPERTY()
-	const UBlueprint* Blueprint;
+	TObjectPtr<const UBlueprint> Blueprint;
 
 	/** The graph associated with this context. */
 	UPROPERTY()
-	const UEdGraph* Graph;
+	TObjectPtr<const UEdGraph> Graph;
 
 	/** The node associated with this context. */
 	UPROPERTY()
-	const UEdGraphNode* Node;
+	TObjectPtr<const UEdGraphNode> Node;
 
 	/** The pin associated with this context; may be NULL when over a node. */
 	const UEdGraphPin* Pin;
@@ -265,7 +265,7 @@ public:
 
 	/** List of connector pins */
 	UPROPERTY()
-	TArray<class UEdGraphPin_Deprecated*> DeprecatedPins;
+	TArray<TObjectPtr<class UEdGraphPin_Deprecated>> DeprecatedPins;
 
 	/** X position of node in the editor */
 	UPROPERTY()
@@ -308,18 +308,13 @@ private:
 	UPROPERTY()
 	uint8 bUserSetEnabledState:1;
 
-protected:
-	/** (DEPRECATED) Value used for AllowSplitPins(). Do not override. */
-	uint8 bAllowSplitPins_DEPRECATED:1;
-
-private:
+#if WITH_EDITORONLY_DATA
 	/** (DEPRECATED) FALSE if the node is a disabled, which eliminates it from being compiled */
 	UPROPERTY()
 	uint8 bIsNodeEnabled_DEPRECATED:1;
 
 public:
 
-#if WITH_EDITORONLY_DATA
 	/** If true, this node can be resized and should be drawn with a resize handle */
 	UPROPERTY()
 	uint8 bCanResizeNode:1;
@@ -447,6 +442,7 @@ public:
 
 	// UObject interface
 	virtual void Serialize(FArchive& Ar) override;
+	virtual void DeclareCustomVersions(FArchive& Ar) override;
 	// End of UObject interface
 
 #if WITH_EDITOR
@@ -457,7 +453,11 @@ private:
 public:
 	// UObject interface
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void PostLoad() override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditUndo() override;
@@ -612,6 +612,9 @@ public:
 	/** Find the pin on this node with the supplied guid and assert if it is not present */
 	UEdGraphPin* FindPinByIdChecked(const FGuid PinId) const;
 
+	/** Find a pin using a user-defined predicate */
+	UEdGraphPin* FindPinByPredicate(TFunctionRef<bool(UEdGraphPin* InPin)> InFunction) const;
+	
 	/** Find a pin on this node with the supplied name and remove it, returns TRUE if successful */
 	bool RemovePin(UEdGraphPin* Pin);
 
@@ -622,16 +625,7 @@ public:
 	virtual bool ShouldOverridePinNames() const { return false; }
 
 	/** Whether or not struct pins belonging to this node should be allowed to be split or not. */
-	UE_DEPRECATED(4.14, "Please call CanSplitPin and provide the specific Pin to split.")
-	virtual bool AllowSplitPins() const { return bAllowSplitPins_DEPRECATED; }
-
-	/** Whether or not struct pins belonging to this node should be allowed to be split or not. */
-	virtual bool CanSplitPin(const UEdGraphPin* Pin) const 
-	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return AllowSplitPins();
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	}
+	virtual bool CanSplitPin(const UEdGraphPin* Pin) const { return false; }
 
 	/** Gets the overridden name for the specified pin, if any */
 	virtual FText GetPinNameOverride(const UEdGraphPin& Pin) const { return FText::GetEmpty(); }
@@ -655,6 +649,9 @@ public:
 	* @return The pin found at this location or nullptr if invalid index.
 	*/
 	UEdGraphPin* GetPinAt(int32 Index) const;
+
+	/** Gets the pin with the given direction, at the given index. Pins of each direction are indexed separately for the purposes of this method */
+	UEdGraphPin* GetPinWithDirectionAt(int32 Index, EEdGraphPinDirection PinDirection) const;
 
 	/** Break all links on this node */
 	void BreakAllNodeLinks();
@@ -685,6 +682,9 @@ public:
 
 	/** Returns the graph that contains this node */
 	class UEdGraph* GetGraph() const;
+
+	/** @returns any sub graphs (graphs that have this node as an outer) that this node might contain (e.g. composite, animation state machine etc.).*/
+	virtual TArray<UEdGraph*> GetSubGraphs() const { return TArray<UEdGraph*>(); }
 
 	/**
 	 * Allocate default pins for a given node, based only the NodeType, which should already be filled in.
@@ -774,10 +774,6 @@ public:
 	 * Default behavior is to return the class name (including prefix)
 	 */
 	virtual FString GetDocumentationExcerptName() const;
-
-	/** @return Icon to use in menu or on node */
-	UE_DEPRECATED(4.13, "Please override 'virtual FSlateIcon GetIconAndTint(FLinearColor& OutColor) const;' instead.")
-	virtual FName GetPaletteIcon(FLinearColor& OutColor) const { return NAME_None; }
 
 	/** @return Icon to use in menu or on node */
 	virtual FSlateIcon GetIconAndTint(FLinearColor& OutColor) const;

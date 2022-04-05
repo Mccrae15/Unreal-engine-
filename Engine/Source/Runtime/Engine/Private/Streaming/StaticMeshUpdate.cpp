@@ -8,7 +8,7 @@ StaticMeshUpdate.cpp: Helpers to stream in and out static mesh LODs.
 #include "RenderUtils.h"
 #include "Containers/ResourceArray.h"
 #include "Streaming/TextureStreamingHelpers.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Serialization/MemoryReader.h"
 #include "Streaming/RenderAssetUpdate.inl"
 #include "ContentStreaming.h"
@@ -70,7 +70,6 @@ void FStaticMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_RenderThread(F
 		ReversedIndexBuffer = LODResource.AdditionalIndexBuffers->ReversedIndexBuffer.CreateRHIBuffer_RenderThread();
 		ReversedDepthOnlyIndexBuffer = LODResource.AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.CreateRHIBuffer_RenderThread();
 		WireframeIndexBuffer = LODResource.AdditionalIndexBuffers->WireframeIndexBuffer.CreateRHIBuffer_RenderThread();
-		AdjacencyIndexBuffer = LODResource.AdditionalIndexBuffers->AdjacencyIndexBuffer.CreateRHIBuffer_RenderThread();
 	}
 }
 
@@ -89,7 +88,6 @@ void FStaticMeshStreamIn::FIntermediateBuffers::CreateFromCPUData_Async(FStaticM
 		ReversedIndexBuffer = LODResource.AdditionalIndexBuffers->ReversedIndexBuffer.CreateRHIBuffer_Async();
 		ReversedDepthOnlyIndexBuffer = LODResource.AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.CreateRHIBuffer_Async();
 		WireframeIndexBuffer = LODResource.AdditionalIndexBuffers->WireframeIndexBuffer.CreateRHIBuffer_Async();
-		AdjacencyIndexBuffer = LODResource.AdditionalIndexBuffers->AdjacencyIndexBuffer.CreateRHIBuffer_Async();
 	}
 }
 
@@ -104,7 +102,6 @@ void FStaticMeshStreamIn::FIntermediateBuffers::SafeRelease()
 	DepthOnlyIndexBuffer.SafeRelease();
 	ReversedDepthOnlyIndexBuffer.SafeRelease();
 	WireframeIndexBuffer.SafeRelease();
-	AdjacencyIndexBuffer.SafeRelease();
 }
 
 template <uint32 MaxNumUpdates>
@@ -122,7 +119,6 @@ void FStaticMeshStreamIn::FIntermediateBuffers::TransferBuffers(FStaticMeshLODRe
 		LODResource.AdditionalIndexBuffers->ReversedIndexBuffer.InitRHIForStreaming(ReversedIndexBuffer, Batcher);
 		LODResource.AdditionalIndexBuffers->ReversedDepthOnlyIndexBuffer.InitRHIForStreaming(ReversedDepthOnlyIndexBuffer, Batcher);
 		LODResource.AdditionalIndexBuffers->WireframeIndexBuffer.InitRHIForStreaming(WireframeIndexBuffer, Batcher);
-		LODResource.AdditionalIndexBuffers->AdjacencyIndexBuffer.InitRHIForStreaming(AdjacencyIndexBuffer, Batcher);
 	}
 	SafeRelease();
 }
@@ -137,8 +133,7 @@ void FStaticMeshStreamIn::FIntermediateBuffers::CheckIsNull() const
 		&& !ReversedIndexBuffer
 		&& !DepthOnlyIndexBuffer
 		&& !ReversedDepthOnlyIndexBuffer
-		&& !WireframeIndexBuffer
-		&& !AdjacencyIndexBuffer);
+		&& !WireframeIndexBuffer);
 }
 
 FStaticMeshStreamIn::FStaticMeshStreamIn(const UStaticMesh* InMesh)
@@ -174,6 +169,18 @@ void FStaticMeshStreamIn::CreateBuffers_Internal(const FContext& Context)
 			{
 				IntermediateBuffersArray[LODIdx].CreateFromCPUData_Async(LODResource);
 			}
+
+#if RHI_RAYTRACING
+			if (IsRayTracingEnabled() && Context.Mesh->bSupportRayTracing &&
+				LODResource.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0)
+			{
+				FRayTracingGeometryInitializer Initializer;
+				Context.LODResourcesView[LODIdx]->SetupRayTracingGeometryInitializer(Initializer, Context.Mesh->GetFName());
+				Initializer.Type = ERayTracingGeometryInitializerType::StreamingSource;
+				IntermediateRayTracingGeometry[LODIdx].SetInitializer(Initializer);
+				IntermediateRayTracingGeometry[LODIdx].CreateRayTracingGeometryFromCPUData(LODResource.RayTracingGeometry.RawData);
+			}
+#endif
 		}
 	}
 }
@@ -218,23 +225,48 @@ void FStaticMeshStreamIn::DoFinishUpdate(const FContext& Context)
 				FStaticMeshLODResources& LODResource = *Context.LODResourcesView[LODIdx];
 				LODResource.IncrementMemoryStats();
 				IntermediateBuffersArray[LODIdx].TransferBuffers(LODResource, Batcher);
+
+#if RHI_RAYTRACING
+				if (IsRayTracingEnabled() && Context.Mesh->bSupportRayTracing &&
+					LODResource.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0)
+				{
+					check(LODResource.RayTracingGeometry.RayTracingGeometryRHI != nullptr);
+					check(IntermediateRayTracingGeometry[LODIdx].RayTracingGeometryRHI != nullptr);
+					LODResource.RayTracingGeometry.InitRHIForStreaming(IntermediateRayTracingGeometry[LODIdx].RayTracingGeometryRHI, Batcher);
+
+					LODResource.RayTracingGeometry.bRequiresBuild = IntermediateRayTracingGeometry[LODIdx].bRequiresBuild;
+
+					IntermediateRayTracingGeometry[LODIdx].Initializer = {};
+					IntermediateRayTracingGeometry[LODIdx].RayTracingGeometryRHI.SafeRelease();				
+				}
+#endif
 			}
 		}
 
 #if RHI_RAYTRACING
 		// Must happen after the batched updates have been flushed
-		if (IsRayTracingEnabled())
+		if (IsRayTracingEnabled() && Context.Mesh->bSupportRayTracing)
 		{
 			for (int32 LODIndex = PendingFirstLODIdx; LODIndex < CurrentFirstLODIdx; ++LODIndex)
 			{
+				FStaticMeshLODResources& LODResource = *Context.LODResourcesView[LODIndex];
+
 				// Skip LODs that have their render data stripped
-				if (Context.LODResourcesView[LODIndex]->VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0)
+				if (LODResource.VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() > 0)
 				{
-					Context.LODResourcesView[LODIndex]->RayTracingGeometry.InitResource();
+					// Rebuild the initializer because it could have been reset during a previous release
+					FRayTracingGeometryInitializer Initializer;
+					LODResource.SetupRayTracingGeometryInitializer(Initializer, Context.Mesh->GetFName());
+					LODResource.RayTracingGeometry.SetInitializer(Initializer);
+
+					LODResource.RayTracingGeometry.RequestBuildIfNeeded(ERTAccelerationStructureBuildPriority::Normal);
 				}
 			}
+
 		}
 #endif
+				
+		Context.Mesh->RequestUpdateCachedRenderState();
 		RenderData->CurrentFirstLODIdx = ResourceState.LODCountToAssetFirstLODIdx(ResourceState.NumRequestedLODs);
 		MarkAsSuccessfullyFinished();
 	}
@@ -243,6 +275,11 @@ void FStaticMeshStreamIn::DoFinishUpdate(const FContext& Context)
 		for (int32 LODIdx = PendingFirstLODIdx; LODIdx < CurrentFirstLODIdx; ++LODIdx)
 		{
 			IntermediateBuffersArray[LODIdx].SafeRelease();
+
+#if RHI_RAYTRACING
+			IntermediateRayTracingGeometry[LODIdx].Initializer = {};
+			IntermediateRayTracingGeometry[LODIdx].RayTracingGeometryRHI.SafeRelease();
+#endif
 		}
 	}
 }
@@ -323,7 +360,7 @@ void FStaticMeshStreamOut::CheckReferencesAndDiscardCPUData(const FContext& Cont
 		++NumReferenceChecks;
 		if (NumReferenceChecks >= GStreamingMaxReferenceChecks)
 		{
-			UE_LOG(LogContentStreaming, Log, TEXT("[%s] Streamed out LODResources references are not getting released."), *Mesh->GetName());
+			UE_LOG(LogContentStreaming, Warning, TEXT("[%s] Streamed out LODResources references are not getting released."), *Mesh->GetName());
 		}
 
 		bDeferExecution = true;
@@ -349,10 +386,12 @@ void FStaticMeshStreamOut::ReleaseRHIBuffers(const FContext& Context)
 #if RHI_RAYTRACING
 			if (IsRayTracingEnabled())
 			{
-				LODResource.RayTracingGeometry.ReleaseResource();
+				LODResource.RayTracingGeometry.ReleaseRHIForStreaming(Batcher);
 			}
 #endif
 		}
+
+		Context.Mesh->RequestUpdateCachedRenderState();
 	}
 	MarkAsSuccessfullyFinished();
 }
@@ -443,11 +482,6 @@ void FStaticMeshStreamIn_IO::SetIORequest(const FContext& Context)
 	FStaticMeshRenderData* RenderData = Context.RenderData;
 	if (Mesh && RenderData)
 	{
-#if USE_BULKDATA_STREAMING_TOKEN
-		FString Filename;
-		verify(Mesh->GetMipDataFilename(PendingFirstLODIdx, Filename));
-#endif	
-
 		SetAsyncFileCallback(Context);
 
 		FBulkDataInterface::BulkDataRangeArray BulkDataArray;
@@ -461,7 +495,6 @@ void FStaticMeshStreamIn_IO::SetIORequest(const FContext& Context)
 		TaskSynchronization.Increment();
 
 		IORequest = FBulkDataInterface::CreateStreamingRequestForRange(
-			STREAMINGTOKEN_PARAM(Filename)
 			BulkDataArray,
 			bHighPrioIORequest ? AIOP_BelowNormal : AIOP_Low,
 			&AsyncFileCallback);

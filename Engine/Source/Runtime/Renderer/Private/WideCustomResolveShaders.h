@@ -57,7 +57,7 @@ public:
 		{
 			SetSRVParameter(RHICmdList, PixelShaderRHI, FMaskTex, FmaskSRV);
 		}
-		SetShaderValue(RHICmdList, PixelShaderRHI, ResolveOrigin, FVector2D(Origin));
+		SetShaderValue(RHICmdList, PixelShaderRHI, ResolveOrigin, FVector2f(Origin));
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -83,4 +83,4 @@ extern void ResolveFilterWide(
 	const FIntPoint& SrcOrigin,
 	int32 NumSamples,
 	int32 WideFilterWidth,
-	FRHIVertexBuffer* DummyVB);
+	FRHIBuffer* DummyVB);

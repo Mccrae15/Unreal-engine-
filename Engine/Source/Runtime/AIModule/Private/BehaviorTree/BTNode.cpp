@@ -87,7 +87,7 @@ void UBTNode::InitializeInSubtree(UBehaviorTreeComponent& OwnerComp, uint8* Node
 		// composite nodes can't be instanced!
 		check(IsA(UBTCompositeNode::StaticClass()) == false);
 
-		UBTNode* NodeInstance = OwnerComp.NodeInstances.IsValidIndex(NextInstancedIndex) ? OwnerComp.NodeInstances[NextInstancedIndex] : NULL;
+		UBTNode* NodeInstance = OwnerComp.NodeInstances.IsValidIndex(NextInstancedIndex) ? ToRawPtr(OwnerComp.NodeInstances[NextInstancedIndex]) : NULL;
 		if (NodeInstance == NULL)
 		{
 			NodeInstance = (UBTNode*)StaticDuplicateObject(this, &OwnerComp);
@@ -105,6 +105,8 @@ void UBTNode::InitializeInSubtree(UBehaviorTreeComponent& OwnerComp, uint8* Node
 		NodeInstance->SetOwner(OwnerComp.GetOwner());
 		NodeInstance->InitializeMemory(OwnerComp, NodeMemory, InitType);
 		check(TreeAsset);
+
+		FScopedBTLoggingContext LogContext(NodeInstance);
 		NodeInstance->InitializeFromAsset(*TreeAsset);
 		NodeInstance->OnInstanceCreated(OwnerComp);
 		NextInstancedIndex++;

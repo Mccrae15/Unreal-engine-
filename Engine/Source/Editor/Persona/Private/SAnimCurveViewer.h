@@ -18,6 +18,7 @@
 #include "Animation/AnimInstance.h"
 #include "EditorObjectsTracker.h"
 #include "PersonaDelegates.h"
+#include "EditorUndoClient.h"
 
 class FUICommandList;
 class IEditableSkeleton;
@@ -135,7 +136,7 @@ private:
 //////////////////////////////////////////////////////////////////////////
 // SAnimCurveViewer
 
-class SAnimCurveViewer : public SCompoundWidget
+class SAnimCurveViewer : public SCompoundWidget, public FSelfRegisteringEditorUndoClient
 {
 public:
 	SLATE_BEGIN_ARGS( SAnimCurveViewer )
@@ -149,7 +150,7 @@ public:
 	* @param InArgs - Arguments passed from Slate
 	*
 	*/
-	void Construct( const FArguments& InArgs, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, const TSharedRef<class IPersonaPreviewScene>& InPreviewScene, FSimpleMulticastDelegate& InOnPostUndo, FOnObjectsSelected InOnObjectsSelected);
+	void Construct( const FArguments& InArgs, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, const TSharedRef<class IPersonaPreviewScene>& InPreviewScene, FOnObjectsSelected InOnObjectsSelected);
 
 	/**
 	* Destructor - resets the animation curve
@@ -236,10 +237,14 @@ public:
 	*/
 	FText& GetFilterText() { return FilterText; }
 
+	// FSelfRegisteringEditorUndoClient interface
+	virtual void PostUndo(bool bSuccess) override { PostUndoRedo(); }
+	virtual void PostRedo(bool bSuccess) override { PostUndoRedo(); }
+
 	/**
 	 * Refreshes the morph target list after an undo
 	 */
-	void OnPostUndo();
+	void PostUndoRedo();
 
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime);
 

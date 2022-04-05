@@ -19,6 +19,7 @@ namespace UnrealBuildTool.Rules
                     "Engine",
                     "RenderCore",
                     "RHI",
+					"Renderer",
                     "PhysX",
                     "FieldSystemEngine",
 	                "ChaosSolverEngine",
@@ -32,17 +33,16 @@ namespace UnrealBuildTool.Rules
 				PublicDependencyModuleNames.Add("APEX");
 			}
 
-	        if (!Target.bBuildRequiresCookedData)
-			{
-	            DynamicallyLoadedModuleNames.AddRange(new string[] { "DerivedDataCache" });
-		    }
-
 			PrivateIncludePathModuleNames.Add("DerivedDataCache");
 
-			if(Target.bBuildEditor)
+			if (Target.bBuildEditor)
             {
+				DynamicallyLoadedModuleNames.Add("NaniteBuilder");
+				PrivateIncludePathModuleNames.Add("NaniteBuilder");
+
+				PublicDependencyModuleNames.Add("EditorFramework");
                 PublicDependencyModuleNames.Add("UnrealEd");
-            }
+			}
 
 			PrivateDefinitions.Add("CHAOS_INCLUDE_LEVEL_1=1");
 		}

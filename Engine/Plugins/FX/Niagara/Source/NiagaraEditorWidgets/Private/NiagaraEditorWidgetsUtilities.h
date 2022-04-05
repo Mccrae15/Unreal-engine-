@@ -22,6 +22,8 @@ namespace FNiagaraStackEditorWidgetsUtilities
 
 	FName GetIconColorNameForExecutionCategory(FName ExecutionCategoryName);
 
+	FName GetAddItemButtonStyleNameForExecutionCategory(FName ExecutionCategoryName);
+
 	FText GetIconTextForInputMode(UNiagaraStackFunctionInput::EValueMode InputValueMode);
 
 	FText GetIconToolTipForInputMode(UNiagaraStackFunctionInput::EValueMode InputValueMode);
@@ -43,4 +45,8 @@ namespace FNiagaraStackEditorWidgetsUtilities
 	bool HandleDropForStackEntry(const FDragDropEvent& InDragDropEvent, EItemDropZone InDropZone, UNiagaraStackEntry* InTargetEntry, UNiagaraStackEntry::EDropOptions DropOptions);
 
 	FString StackEntryToStringForListDebug(UNiagaraStackEntry* StackEntry);
+	
+	TOptional<FFunctionInputSummaryViewKey> GetSummaryViewInputKeyForFunctionInput(UNiagaraStackFunctionInput* FunctionInput);
+
+	UNiagaraStackFunctionInput* GetParentInputForSummaryView(UNiagaraStackFunctionInput* FunctionInput);
 }

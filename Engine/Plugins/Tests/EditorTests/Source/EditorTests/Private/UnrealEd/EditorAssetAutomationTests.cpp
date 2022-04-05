@@ -61,13 +61,11 @@
 #include "Factories/BlueprintFactory.h"
 #include "Factories/BlueprintFunctionLibraryFactory.h"
 #include "Factories/BlueprintMacroFactory.h"
-#include "Factories/CameraAnimFactory.h"
 #include "Factories/DialogueVoiceFactory.h"
 #include "Factories/DialogueWaveFactory.h"
 #include "Factories/EnumFactory.h"
 #include "Factories/ForceFeedbackAttenuationFactory.h"
 #include "Factories/ForceFeedbackEffectFactory.h"
-#include "Factories/InterpDataFactoryNew.h"
 #include "Factories/MaterialFactoryNew.h"
 #include "Factories/MaterialFunctionFactoryNew.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
@@ -89,6 +87,7 @@
 #include "Factories/TouchInterfaceFactory.h"
 #include "Editor.h"
 #include "UnrealEdGlobals.h"
+#include "UObject/SavePackage.h"
 
 #include "Tests/AutomationTestSettings.h"
 #include "ObjectTools.h"
@@ -264,7 +263,12 @@ namespace CreateAssetHelper
 			{
 				AssetPackage->SetDirtyFlag(true);
 				const FString PackagePath = FString::Printf(TEXT("%s/%s"), *GetGamePath(), *AssetName);
-				if (UPackage::SavePackage(AssetPackage, NULL, RF_Standalone, *FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension()), GError, nullptr, false, true, SAVE_NoError))
+				FSavePackageArgs SaveArgs;
+				SaveArgs.TopLevelFlags = RF_Standalone;
+				SaveArgs.SaveFlags = SAVE_NoError;
+				if (UPackage::SavePackage(AssetPackage, nullptr,
+					*FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension()),
+					SaveArgs))
 				{
 					TestStats->NumSaved++;
 					UE_LOG(LogEditorAssetAutomationTests, Display, TEXT("Saved asset %s (%s)"), *CreatedAsset->GetName(), *Class->GetName());
@@ -285,7 +289,12 @@ namespace CreateAssetHelper
 			{
 				DuplicatedPackage->SetDirtyFlag(true);
 				const FString PackagePath = FString::Printf(TEXT("%s/%s_Copy"), *GetGamePath(), *AssetName);
-				if (UPackage::SavePackage(DuplicatedPackage, NULL, RF_Standalone, *FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension()), GError, nullptr, false, true, SAVE_NoError))
+				FSavePackageArgs SaveArgs;
+				SaveArgs.TopLevelFlags = RF_Standalone;
+				SaveArgs.SaveFlags = SAVE_NoError;
+				if (UPackage::SavePackage(DuplicatedPackage, nullptr,
+					*FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension()),
+					SaveArgs))
 				{
 					TestStats->NumDuplicatesSaved++;
 					UE_LOG(LogEditorAssetAutomationTests, Display, TEXT("Saved asset %s (%s)"), *DuplicatedAsset->GetName(), *Class->GetName());
@@ -355,7 +364,7 @@ namespace CreateAssetHelper
 				if (bSuccessful)
 				{
 					FString PackageFilename;
-					if (FPackageName::DoesPackageExist(AssetPackage->GetName(), NULL, &PackageFilename))
+					if (FPackageName::DoesPackageExist(AssetPackage->GetName(), &PackageFilename))
 					{
 						TArray<UPackage*> PackagesToDelete;
 						PackagesToDelete.Add(AssetPackage);
@@ -634,7 +643,6 @@ bool FAssetEditorTest::RunTest(const FString& Parameters)
 	ASSET_TEST_CREATE_BY_NAME(AIModule.BehaviorTree, BehaviorTreeEditor.BehaviorTreeFactory, BT, )
 	ASSET_TEST_CREATE(UBlueprint, UBlueprintFunctionLibraryFactory, BFL, )
 	ASSET_TEST_CREATE(UBlueprint, UBlueprintMacroFactory, MPL, FactoryInst->ParentClass = AActor::StaticClass();)
-	ASSET_TEST_CREATE(UCameraAnim, UCameraAnimFactory, CA, )
 	ASSET_TEST_CREATE(UCurveBase, UCurveFactory, C, FactoryInst->CurveClass = UCurveFloat::StaticClass();)
 	UClass* GameplayAbilityClass = StaticLoadClass(UObject::StaticClass(), NULL, TEXT("GameplayAbilities.GameplayAbilitySet"), NULL, LOAD_None, NULL);
 	if (GameplayAbilityClass)

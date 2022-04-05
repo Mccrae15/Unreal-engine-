@@ -23,6 +23,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SEditableText.h"
 #include "Widgets/Input/SSpinBox.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Colors/SColorBlock.h"
 #include "Containers/UnrealString.h"
 
@@ -39,6 +40,7 @@ public:
 	static const FLinearColor RedLabelBackgroundColor;
 	static const FLinearColor GreenLabelBackgroundColor;
 	static const FLinearColor BlueLabelBackgroundColor;
+	static const FLinearColor LilacLabelBackgroundColor;
 	static const FText DefaultUndeterminedString;
 
 	/** Notification for numeric value change */
@@ -56,28 +58,41 @@ public:
 	/** Notification when the max/min spinner values are changed (only apply if SupportDynamicSliderMaxValue or SupportDynamicSliderMinValue are true) */
 	DECLARE_DELEGATE_FourParams(FOnDynamicSliderMinMaxValueChanged, NumericType, TWeakPtr<SWidget>, bool, bool);
 
+	enum class ELabelLocation
+	{
+		// Outside the bounds of the editable area of this box. Usually preferred for text based labels
+		Outside,
+		// Inside the bounds of the editable area of this box. Usually preferred for non-text based labels
+		// when a spin box is used the label will appear on top of the spin box in this case
+		Inside
+	};
 public:
 
 	SLATE_BEGIN_ARGS( SNumericEntryBox<NumericType> )
-		: _EditableTextBoxStyle( &FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox") )
-		, _SpinBoxStyle(&FCoreStyle::Get().GetWidgetStyle<FSpinBoxStyle>("NumericEntrySpinBox") )
+		: _EditableTextBoxStyle( &FAppStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox") )
+		, _SpinBoxStyle(&FAppStyle::Get().GetWidgetStyle<FSpinBoxStyle>("NumericEntrySpinBox") )
 		, _Label()
 		, _LabelVAlign( VAlign_Fill )
-		, _LabelPadding( FMargin(3,0) )
-		, _BorderForegroundColor(FCoreStyle::Get().GetSlateColor("InvertedForeground"))
+		, _Justification(ETextJustify::Left)
+		, _LabelLocation(ELabelLocation::Outside)
+		, _LabelPadding(FMargin(3.f,0.f) )
+		, _BorderForegroundColor(FAppStyle::Get().GetWidgetStyle<FSpinBoxStyle>("NumericEntrySpinBox").ForegroundColor)
 		, _BorderBackgroundColor(FLinearColor::White)
 		, _UndeterminedString( SNumericEntryBox<NumericType>::DefaultUndeterminedString )
 		, _AllowSpin(false)
 		, _ShiftMouseMovePixelPerDelta(1)
 		, _SupportDynamicSliderMaxValue(false)
 		, _SupportDynamicSliderMinValue(false)
-		, _Delta(0)
+		, _Delta(NumericType(0))
 		, _MinValue(TNumericLimits<NumericType>::Lowest())
 		, _MaxValue(TNumericLimits<NumericType>::Max())
-		, _MinSliderValue(0)				
-		, _MaxSliderValue(100)
+		, _MinSliderValue(NumericType(0))				
+		, _MaxSliderValue(NumericType(100))
 		, _SliderExponent(1.f)
-		, _MinDesiredValueWidth(0)		
+		, _MinDesiredValueWidth(0.f)
+		, _DisplayToggle(false)
+		, _ToggleChecked(ECheckBoxState::Checked)
+		, _TogglePadding(FMargin(1.f,0.f,1.f,0.f) )
 	{}		
 
 		/** Style to use for the editable text box within this widget */
@@ -90,6 +105,10 @@ public:
 		SLATE_NAMED_SLOT( FArguments, Label )
 		/** Vertical alignment of the label content */
 		SLATE_ARGUMENT( EVerticalAlignment, LabelVAlign )
+		/** How should the value be justified in the editable text field. */
+		SLATE_ATTRIBUTE(ETextJustify::Type, Justification)
+
+		SLATE_ARGUMENT(ELabelLocation, LabelLocation)
 		/** Padding around the label content */
 		SLATE_ARGUMENT( FMargin, LabelPadding )
 		/** Border Foreground Color */
@@ -150,6 +169,14 @@ public:
 		SLATE_EVENT( FMenuExtensionDelegate, ContextMenuExtender )
 		/** Provide custom type conversion functionality to this spin box */
 		SLATE_ARGUMENT( TSharedPtr< INumericTypeInterface<NumericType> >, TypeInterface )
+		/** Whether or not to include a toggle checkbox to the left of the widget */
+		SLATE_ARGUMENT( bool, DisplayToggle )
+		/** The value of the toggle checkbox */
+		SLATE_ATTRIBUTE( ECheckBoxState, ToggleChecked )
+		/** Called whenever the toggle changes state */
+		SLATE_EVENT( FOnCheckStateChanged, OnToggleChanged )
+		/** Padding around the toggle checkbox */
+		SLATE_ARGUMENT( FMargin, TogglePadding )
 
 	SLATE_END_ARGS()
 	SNumericEntryBox()
@@ -178,7 +205,15 @@ public:
 			CachedValueString = Interface->ToString(CachedExternalValue.GetValue());
 		}
 
-		TAttribute<FMargin> TextMargin = InArgs._OverrideTextMargin.IsSet() ? InArgs._OverrideTextMargin : InArgs._EditableTextBoxStyle->Padding;
+		const bool bDisplayToggle = InArgs._DisplayToggle;
+		if(bDisplayToggle)
+		{
+			SAssignNew(ToggleCheckBox, SCheckBox)
+			.Padding(FMargin(0.f, 0.f, 2.f, 0.f))
+			.IsChecked(InArgs._ToggleChecked)
+			.OnCheckStateChanged(this, &SNumericEntryBox::HandleToggleCheckBoxChanged, InArgs._OnToggleChanged);
+		}
+
 		const bool bAllowSpin = InArgs._AllowSpin;
 		TSharedPtr<SWidget> FinalWidget;
 
@@ -187,7 +222,6 @@ public:
 			SAssignNew(SpinBox, SSpinBox<NumericType>)
 				.Style(InArgs._SpinBoxStyle)
 				.Font(InArgs._Font.IsSet() ? InArgs._Font : InArgs._EditableTextBoxStyle->Font)
-				.ContentPadding(TextMargin)
 				.Value(this, &SNumericEntryBox<NumericType>::OnGetValueForSpinBox)
 				.Delta(InArgs._Delta)
 				.ShiftMouseMovePixelPerDelta(InArgs._ShiftMouseMovePixelPerDelta)
@@ -207,8 +241,7 @@ public:
 				.OnBeginSliderMovement(InArgs._OnBeginSliderMovement)
 				.OnEndSliderMovement(InArgs._OnEndSliderMovement)
 				.MinDesiredWidth(InArgs._MinDesiredValueWidth)
-				.TypeInterface(Interface)
-				.ToolTipText(this, &SNumericEntryBox<NumericType>::GetValueAsText);
+				.TypeInterface(Interface);
 		}
 
 		// Always create an editable text box.  In the case of an undetermined value being passed in, we cant use the spinbox.
@@ -222,15 +255,43 @@ public:
 			.OnTextCommitted(this, &SNumericEntryBox<NumericType>::OnTextCommitted)
 			.SelectAllTextOnCommit(true)
 			.ContextMenuExtender(InArgs._ContextMenuExtender)
-			.MinDesiredWidth(InArgs._MinDesiredValueWidth)
-			.ToolTipText(this, &SNumericEntryBox<NumericType>::GetValueAsText);
+			.Justification(InArgs._Justification)
+			.MinDesiredWidth(InArgs._MinDesiredValueWidth);
 
-		TSharedRef<SHorizontalBox> HorizontalBox = SNew(SHorizontalBox);
-	
-		if( InArgs._Label.Widget != SNullWidget::NullWidget )
+		TSharedRef<SOverlay> Overlay = SNew(SOverlay);
+
+		// Add the spin box if we have one
+		if( bAllowSpin )
 		{
-			HorizontalBox->AddSlot()
-				.AutoWidth()
+			Overlay->AddSlot()
+				.HAlign(HAlign_Fill) 
+				.VAlign(VAlign_Center) 
+				[
+					SpinBox.ToSharedRef()
+				];
+		}
+
+
+		TAttribute<FMargin> TextMargin = InArgs._OverrideTextMargin.IsSet() ? InArgs._OverrideTextMargin : InArgs._EditableTextBoxStyle->Padding;
+
+		Overlay->AddSlot()
+			.HAlign(HAlign_Fill) 
+			.VAlign(VAlign_Center)
+			.Padding(TextMargin)
+			[
+				EditableText.ToSharedRef()
+			];
+
+		TSharedPtr<SWidget> MainContents;
+
+		const bool bHasLabel = InArgs._Label.Widget != SNullWidget::NullWidget;
+
+		bool bHasInsideLabel = false;
+		if (bHasLabel && InArgs._LabelLocation == ELabelLocation::Inside)
+		{
+			bHasInsideLabel = true;
+
+			Overlay->AddSlot()
 				.HAlign(HAlign_Left)
 				.VAlign(InArgs._LabelVAlign)
 				.Padding(InArgs._LabelPadding)
@@ -239,55 +300,124 @@ public:
 				];
 		}
 
-		// Add the spin box if we have one
-		if( bAllowSpin )
+
+		if (bAllowSpin && !bHasInsideLabel)
 		{
-			HorizontalBox->AddSlot()
-				.HAlign(HAlign_Fill) 
-				.VAlign(VAlign_Center) 
-				.FillWidth(1)
+			MainContents = Overlay;
+		}
+		else 
+		{
+			MainContents =
+				SNew(SBorder)
+				.BorderImage(this, &SNumericEntryBox<NumericType>::GetBorderImage)
+				.BorderBackgroundColor(InArgs._BorderBackgroundColor)
+				.ForegroundColor(InArgs._BorderForegroundColor)
+				.Padding(0.f)
 				[
-					SpinBox.ToSharedRef()
+					Overlay
 				];
 		}
 
-		HorizontalBox->AddSlot()
-			.HAlign(HAlign_Fill) 
-			.VAlign(VAlign_Center)
-			.Padding(TextMargin)
-			.FillWidth(1)
+		if(!bHasLabel || bHasInsideLabel)
+		{
+			if(bDisplayToggle)
+			{
+				ChildSlot
+				[
+					SNew(SHorizontalBox)
+					+SHorizontalBox::Slot()
+					.AutoWidth()
+					.HAlign(HAlign_Fill) 
+					.VAlign(VAlign_Center) 
+					.Padding(InArgs._TogglePadding)
+					[
+						ToggleCheckBox.ToSharedRef()
+					]
+					+ SHorizontalBox::Slot()
+					[
+						MainContents.ToSharedRef()
+					]
+				];
+			}
+			else
+			{
+				ChildSlot
+				[
+					MainContents.ToSharedRef()
+				];
+			}
+		}
+		else
+		{
+			TSharedRef<SHorizontalBox> HorizontalBox = SNew(SHorizontalBox);
+
+			HorizontalBox->AddSlot()
+			.AutoWidth()
+			.HAlign(HAlign_Left)
+			.VAlign(InArgs._LabelVAlign)
+			.Padding(InArgs._LabelPadding)
 			[
-				EditableText.ToSharedRef()
+				InArgs._Label.Widget
 			];
 
-		ChildSlot
-			[
-				SNew( SBorder )
-				.BorderImage( this, &SNumericEntryBox<NumericType>::GetBorderImage )
-				.BorderBackgroundColor( InArgs._BorderBackgroundColor )
-				.ForegroundColor( InArgs._BorderForegroundColor )
-				.Padding(0)
+			if(bDisplayToggle)
+			{
+				HorizontalBox->AddSlot()
+				.AutoWidth()
+				.HAlign(HAlign_Fill)
+				.VAlign(VAlign_Center)
+				.Padding(InArgs._TogglePadding)
 				[
-					HorizontalBox
-				]
+					ToggleCheckBox.ToSharedRef()
+				];
+			}
+			
+			HorizontalBox->AddSlot()
+			[
+				MainContents.ToSharedRef()
 			];
+
+			ChildSlot
+			[
+				HorizontalBox
+			];
+		}
+
+		if (bDisplayToggle)
+		{
+			HandleToggleCheckBoxChanged(InArgs._ToggleChecked.Get(), FOnCheckStateChanged());
+		}
 	}
 
 	static TSharedRef<SWidget> BuildLabel(TAttribute<FText> LabelText, const FSlateColor& ForegroundColor, const FSlateColor& BackgroundColor)
 	{
 		return
 			SNew(SBorder)
+			.Visibility(EVisibility::HitTestInvisible)
 			.BorderImage(FCoreStyle::Get().GetBrush("NumericEntrySpinBox.Decorator"))
 			.BorderBackgroundColor(BackgroundColor)
 			.ForegroundColor(ForegroundColor)
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Left)
-			.Padding(FMargin(1, 0, 6, 0))
+			.Padding(FMargin(1.f, 0.f, 6.f, 0.f))
 			[
 				SNew(STextBlock)
 				.Text(LabelText)
 			];
 	}
+
+
+	static TSharedRef<SWidget> BuildNarrowColorLabel(FLinearColor LabelColor)
+	{
+		return
+			SNew(SBorder)
+			.Visibility(EVisibility::HitTestInvisible)
+			.BorderImage(FAppStyle::Get().GetBrush("NumericEntrySpinBox.NarrowDecorator"))
+			.BorderBackgroundColor(LabelColor)
+			.HAlign(HAlign_Left)
+			.Padding(FMargin(2.0f, 0.0f, 0.0f, 0.0f));
+	}
+
 
 	/** Return the internally created SpinBox if bAllowSpin is true */
 	TSharedPtr<SWidget> GetSpinBox() const { return SpinBox; }
@@ -544,12 +674,39 @@ private:
 		}
 	}
 
+	bool IsToggleEnabled() const
+	{
+		if(!IsEnabled())
+		{
+			return false;
+		}
+		return ToggleCheckBox->IsChecked();
+	}
+	
+	void HandleToggleCheckBoxChanged(ECheckBoxState InCheckState, FOnCheckStateChanged OnToggleChanged) const
+	{
+		if(SpinBox.IsValid())
+		{
+			SpinBox->SetEnabled(InCheckState == ECheckBoxState::Checked);
+		}
+		if(EditableText.IsValid())
+		{
+			EditableText->SetEnabled(InCheckState == ECheckBoxState::Checked);
+		}
+		if(OnToggleChanged.IsBound())
+		{
+			OnToggleChanged.Execute(InCheckState);
+		}
+	}
+
 private:
 
 	/** Attribute for getting the label */
 	TAttribute< TOptional<FString > > LabelAttribute;
 	/** Attribute for getting the value.  If the value is not set we display the undetermined string */
 	TAttribute< TOptional<NumericType> > ValueAttribute;
+	/** Toggle checkbox */
+	TSharedPtr<SCheckBox> ToggleCheckBox;
 	/** Spinbox widget */
 	TSharedPtr<SWidget> SpinBox;
 	/** Editable widget */
@@ -589,6 +746,9 @@ const FLinearColor SNumericEntryBox<NumericType>::GreenLabelBackgroundColor(0.13
 
 template <typename NumericType>
 const FLinearColor SNumericEntryBox<NumericType>::BlueLabelBackgroundColor(0.0251f,0.207f,0.85f);
+
+template <typename NumericType>
+const FLinearColor SNumericEntryBox<NumericType>::LilacLabelBackgroundColor(0.8f,0.121f,0.8f);
 
 template <typename NumericType>
 const FText SNumericEntryBox<NumericType>::DefaultUndeterminedString = FText::FromString(TEXT("---"));

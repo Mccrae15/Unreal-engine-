@@ -18,7 +18,7 @@
 #include "Framework/Docking/SDockingTabStack.h"
 #include "Framework/Docking/SDockingTabWell.h"
 #include "Framework/Docking/LayoutExtender.h"
-#include "Misc/BlacklistNames.h"
+#include "Misc/NamePermissionList.h"
 #include "HAL/PlatformApplicationMisc.h"
 #if PLATFORM_MAC
 #include "../MultiBox/Mac/MacMenu.h"
@@ -31,6 +31,81 @@ TMap<FTabId, FVector2D> FTabManager::DefaultTabWindowSizeMap;
 DEFINE_LOG_CATEGORY_STATIC(LogTabManager, Display, All);
 
 #define LOCTEXT_NAMESPACE "TabManager"
+
+static const FString UE_TABMANAGER_OPENED_TAB_STRING = TEXT("OpenedTab");
+static const FString UE_TABMANAGER_CLOSED_TAB_STRING = TEXT("ClosedTab");
+static const FString UE_TABMANAGER_SIDEBAR_TAB_STRING = TEXT("SidebarTab");
+static const FString UE_TABMANAGER_INVALID_TAB_STRING = TEXT("InvalidTab");
+
+static FString StringFromTabState(ETabState::Type TabState)
+{
+	switch (TabState)
+	{
+	case ETabState::OpenedTab:
+		return UE_TABMANAGER_OPENED_TAB_STRING;
+	case ETabState::ClosedTab:
+		return UE_TABMANAGER_CLOSED_TAB_STRING;
+	case ETabState::SidebarTab:
+		return UE_TABMANAGER_SIDEBAR_TAB_STRING;
+	default:
+		return UE_TABMANAGER_INVALID_TAB_STRING;
+	}
+}
+
+static FString StringFromSidebarLocation(ESidebarLocation Location)
+{
+	switch (Location)
+	{
+	case ESidebarLocation::Left:
+		return TEXT("Left");
+	case ESidebarLocation::Right:
+		return TEXT("Right");
+	default:
+		return TEXT("None");
+	}
+}
+
+static ESidebarLocation SidebarLocationFromString(const FString& AsString)
+{
+	if (AsString == TEXT("Left"))
+	{
+		return ESidebarLocation::Left;
+	}
+	else if (AsString == TEXT("Right"))
+	{
+		return ESidebarLocation::Right;
+	}
+	else
+	{
+		return ESidebarLocation::None;
+	}
+}
+
+static ETabState::Type TabStateFromString(const FString& AsString)
+{
+	if (AsString == UE_TABMANAGER_OPENED_TAB_STRING)
+	{
+		return ETabState::OpenedTab;
+	}
+	else if (AsString == UE_TABMANAGER_CLOSED_TAB_STRING)
+	{
+		return ETabState::ClosedTab;
+	}
+	else if (AsString == UE_TABMANAGER_INVALID_TAB_STRING)
+	{
+		return ETabState::InvalidTab;
+	}
+	else if (AsString == UE_TABMANAGER_SIDEBAR_TAB_STRING)
+	{
+		return ETabState::SidebarTab;
+	}
+	else
+	{
+		ensureMsgf(false, TEXT("Invalid tab state."));
+		return ETabState::OpenedTab;
+	}
+}
+
 
 //////////////////////////////////////////////////////////////////////////
 // 
@@ -80,9 +155,6 @@ TSharedPtr<SDockTab> FTabManager::FLastMajorOrNomadTab::Search(const FTabManager
 
 const TSharedRef<FTabManager::FLayout> FTabManager::FLayout::NullLayout = FTabManager::NewLayout("NullLayout")->AddArea(FTabManager::NewPrimaryArea());
 
-static const FString UE4_TABMANAGER_OPENED_TAB_STRING = TEXT("OpenedTab");
-static const FString UE4_TABMANAGER_CLOSED_TAB_STRING = TEXT("ClosedTab");
-static const FString UE4_TABMANAGER_INVALID_TAB_STRING = TEXT("InvalidTab");
 
 TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper( TSharedPtr<FJsonObject> JsonObject )
 {
@@ -134,26 +206,6 @@ TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper(
 			
 		}
 
-		static ETabState::Type TabStateFromString( const FString& AsString )
-		{
-			if (AsString == UE4_TABMANAGER_OPENED_TAB_STRING)
-			{
-				return ETabState::OpenedTab;
-			}
-			else if(AsString == UE4_TABMANAGER_CLOSED_TAB_STRING)
-			{
-				return ETabState::ClosedTab;
-			}
-			else if (AsString == UE4_TABMANAGER_INVALID_TAB_STRING)
-			{
-				return ETabState::InvalidTab;
-			}
-			else
-			{
-				ensureMsgf(false, TEXT("Invalid tab state."));
-				return ETabState::OpenedTab;
-			}
-		}
 	};
 
 	const FString NodeType = JsonObject->GetStringField(TEXT("Type"));
@@ -175,8 +227,8 @@ TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper(
 			{
 				FVector2D WindowSize;
 
-				WindowSize.X = JsonObject->GetNumberField( TEXT("WindowSize_X") );
-				WindowSize.Y = JsonObject->GetNumberField( TEXT("WindowSize_Y") );
+				WindowSize.X = (float)JsonObject->GetNumberField( TEXT("WindowSize_X") );
+				WindowSize.Y = (float)JsonObject->GetNumberField( TEXT("WindowSize_Y") );
 
 				NewArea = FTabManager::NewArea( WindowSize );
 			}
@@ -187,11 +239,11 @@ TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper(
 				FVector2D WindowPosition = FVector2D::ZeroVector;
 				FVector2D WindowSize;
 
-				WindowPosition.X = JsonObject->GetNumberField( TEXT("WindowPosition_X") );
-				WindowPosition.Y = JsonObject->GetNumberField( TEXT("WindowPosition_Y") );
+				WindowPosition.X = (float)JsonObject->GetNumberField( TEXT("WindowPosition_X") );
+				WindowPosition.Y = (float)JsonObject->GetNumberField( TEXT("WindowPosition_Y") );
 
-				WindowSize.X = JsonObject->GetNumberField( TEXT("WindowSize_X") );
-				WindowSize.Y = JsonObject->GetNumberField( TEXT("WindowSize_Y") );
+				WindowSize.X = (float)JsonObject->GetNumberField( TEXT("WindowSize_X") );
+				WindowSize.Y = (float)JsonObject->GetNumberField( TEXT("WindowSize_Y") );
 
 				bool bIsMaximized = JsonObject->GetBoolField(TEXT("bIsMaximized"));
 
@@ -201,7 +253,7 @@ TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper(
 			break;
 		}
 		
-		NewArea->SetSizeCoefficient( JsonObject->GetNumberField( TEXT("SizeCoefficient") ) );
+		NewArea->SetSizeCoefficient((float)JsonObject->GetNumberField( TEXT("SizeCoefficient") ) );
 		NewArea->SetOrientation( local::OrientationFromString( JsonObject->GetStringField(TEXT("Orientation")) ) );
 
 		TArray< TSharedPtr<FJsonValue> > ChildNodeValues = JsonObject->GetArrayField(TEXT("nodes"));
@@ -215,7 +267,7 @@ TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper(
 	else if ( NodeType == TEXT("Splitter") )
 	{
 		TSharedRef<FTabManager::FSplitter> NewSplitter =  FTabManager::NewSplitter();
-		NewSplitter->SetSizeCoefficient( JsonObject->GetNumberField(TEXT("SizeCoefficient")) );
+		NewSplitter->SetSizeCoefficient((float)JsonObject->GetNumberField(TEXT("SizeCoefficient")) );
 		NewSplitter->SetOrientation( local::OrientationFromString( JsonObject->GetStringField(TEXT("Orientation")) ) );
 		TArray< TSharedPtr<FJsonValue> > ChildNodeValues = JsonObject->GetArrayField(TEXT("nodes"));
 		for( int32 ChildIndex=0; ChildIndex < ChildNodeValues.Num(); ++ChildIndex )
@@ -227,7 +279,7 @@ TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper(
 	else if ( NodeType == TEXT("Stack") )
 	{
 		TSharedRef<FTabManager::FStack> NewStack = FTabManager::NewStack();
-		NewStack->SetSizeCoefficient( JsonObject->GetNumberField(TEXT("SizeCoefficient")) );
+		NewStack->SetSizeCoefficient((float)JsonObject->GetNumberField(TEXT("SizeCoefficient")) );
 		NewStack->SetHideTabWell( JsonObject->GetBoolField(TEXT("HideTabWell")) );
 
 		if(JsonObject->HasField(TEXT("ForegroundTab")))
@@ -243,7 +295,17 @@ TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper(
 			TSharedPtr<FJsonObject> TabAsJson = TabsAsJson[TabIndex]->AsObject();
 			FName TabId = FName( *TabAsJson->GetStringField(TEXT("TabId")) );
 			TabId = FGlobalTabmanager::Get()->GetTabTypeForPotentiallyLegacyTab(TabId);
-			NewStack->AddTab( TabId, local::TabStateFromString( TabAsJson->GetStringField(TEXT("TabState")) ) );			
+
+			FString SidebarLocation;
+			float SidebarSizeCoefficient = .15f;
+			bool bPinnedInSidebar = false;
+			if (TabAsJson->TryGetStringField(TEXT("SidebarLocation"), SidebarLocation))
+			{
+				TabAsJson->TryGetNumberField(TEXT("SidebarCoeff"), SidebarSizeCoefficient);
+				TabAsJson->TryGetBoolField(TEXT("SidebarPinned"), bPinnedInSidebar);
+			}
+
+			NewStack->AddTab(TabId, TabStateFromString( TabAsJson->GetStringField(TEXT("TabState"))), SidebarLocationFromString(SidebarLocation), SidebarSizeCoefficient, bPinnedInSidebar);
 		}
 		return NewStack;
 	}
@@ -256,33 +318,40 @@ TSharedRef<FTabManager::FLayoutNode> FTabManager::FLayout::NewFromString_Helper(
 
 TSharedPtr<FTabManager::FLayout> FTabManager::FLayout::NewFromString( const FString& LayoutAsText )
 {
-	TSharedPtr<FTabManager::FLayout> Layout;
 	TSharedPtr<FJsonObject> JsonObject;
-	FString OutError;
 
 	TSharedRef< TJsonReader<> > Reader = TJsonReaderFactory<>::Create( LayoutAsText );
-	
 	if (FJsonSerializer::Deserialize( Reader, JsonObject ))
 	{
-		const FString LayoutName = JsonObject->GetStringField(TEXT("Name"));
-		TSharedRef<FTabManager::FLayout> NewLayout = FTabManager::NewLayout( *LayoutName );
-		int32 PrimaryAreaIndex = FMath::TruncToInt( JsonObject->GetNumberField(TEXT("PrimaryAreaIndex")) );
-
-		TArray< TSharedPtr<FJsonValue> > Areas = JsonObject->GetArrayField(TEXT("Areas"));
-		for(int32 AreaIndex=0; AreaIndex < Areas.Num(); ++AreaIndex)
-		{
-			TSharedRef<FTabManager::FArea> NewArea = StaticCastSharedRef<FTabManager::FArea>( NewFromString_Helper( Areas[AreaIndex]->AsObject() ) );
-			NewLayout->AddArea( NewArea );
-			if (AreaIndex == PrimaryAreaIndex)
-			{
-				NewLayout->PrimaryArea = NewArea;
-			}
-		}
-		
-		Layout = NewLayout;
+		return NewFromJson( JsonObject );
 	}
 	
-	return Layout;
+	return TSharedPtr<FTabManager::FLayout>();
+}
+
+TSharedPtr<FTabManager::FLayout> FTabManager::FLayout::NewFromJson( const TSharedPtr<FJsonObject>& LayoutAsJson )
+{
+	if (!LayoutAsJson.IsValid())
+	{
+		return TSharedPtr<FTabManager::FLayout>();
+	}
+
+	const FString LayoutName = LayoutAsJson->GetStringField(TEXT("Name"));
+	TSharedRef<FTabManager::FLayout> NewLayout = FTabManager::NewLayout( *LayoutName );
+	int32 PrimaryAreaIndex = FMath::TruncToInt((float)LayoutAsJson->GetNumberField(TEXT("PrimaryAreaIndex")) );
+
+	TArray< TSharedPtr<FJsonValue> > Areas = LayoutAsJson->GetArrayField(TEXT("Areas"));
+	for(int32 AreaIndex=0; AreaIndex < Areas.Num(); ++AreaIndex)
+	{
+		TSharedRef<FTabManager::FArea> NewArea = StaticCastSharedRef<FTabManager::FArea>( NewFromString_Helper( Areas[AreaIndex]->AsObject() ) );
+		NewLayout->AddArea( NewArea );
+		if (AreaIndex == PrimaryAreaIndex)
+		{
+			NewLayout->PrimaryArea = NewArea;
+		}
+	}
+		
+	return NewLayout;
 }
 
 FName FTabManager::FLayout::GetLayoutName() const
@@ -290,7 +359,7 @@ FName FTabManager::FLayout::GetLayoutName() const
 	return LayoutName;
 }
 
-FString FTabManager::FLayout::ToString() const
+TSharedRef<FJsonObject> FTabManager::FLayout::ToJson() const
 {
 	TSharedRef<FJsonObject> LayoutJson = MakeShareable( new FJsonObject() );
 	LayoutJson->SetStringField( TEXT("Type"), TEXT("Layout") );
@@ -308,6 +377,13 @@ FString FTabManager::FLayout::ToString() const
 		AreasAsJson.Add( MakeShareable( new FJsonValueObject( PersistToString_Helper( Areas[AreaIndex] ) ) ) );
 	}
 	LayoutJson->SetArrayField( TEXT("Areas"), AreasAsJson );
+
+	return LayoutJson;
+}
+
+FString FTabManager::FLayout::ToString() const
+{
+	TSharedRef<FJsonObject> LayoutJson = this->ToJson();
 
 	FString LayoutAsString;
 	TSharedRef< TJsonWriter<> > Writer = TJsonWriterFactory<>::Create( &LayoutAsString );
@@ -390,9 +466,14 @@ TSharedRef<FJsonObject> FTabManager::FLayout::PersistToString_Helper(const TShar
 			{	
 				TSharedRef<FJsonObject> TabAsJson = MakeShareable( new FJsonObject() );
 				TabAsJson->SetStringField( TEXT("TabId"), Tab.TabId.ToString() );
-				TabAsJson->SetStringField( TEXT("TabState"), (Tab.TabState == ETabState::OpenedTab)
-					? UE4_TABMANAGER_OPENED_TAB_STRING : Tab.TabState == ETabState::ClosedTab
-					? UE4_TABMANAGER_CLOSED_TAB_STRING : UE4_TABMANAGER_INVALID_TAB_STRING);
+				TabAsJson->SetStringField(TEXT("TabState"), StringFromTabState(Tab.TabState));
+
+				if (Tab.TabState == ETabState::SidebarTab && Tab.SidebarLocation != ESidebarLocation::None)
+				{
+					TabAsJson->SetStringField(TEXT("SidebarLocation"), StringFromSidebarLocation(Tab.SidebarLocation));
+					TabAsJson->SetNumberField(TEXT("SidebarCoeff"), Tab.SidebarSizeCoefficient);
+					TabAsJson->SetBoolField(TEXT("SidebarPinned"), Tab.bPinnedInSidebar);
+				}
 
 				TabsAsJson.Add( MakeShareable( new FJsonValueObject(TabAsJson) ) );
 			}
@@ -475,6 +556,18 @@ void FTabManager::FLayout::ProcessExtensions(const FLayoutExtender& Extender)
 
 	for (FTabManager::FStack* Stack : AllTabs.AllStacks)
 	{
+		// First add to the front of the stack
+		Extender.FindStackExtensions(Stack->GetExtensionId(), ELayoutExtensionPosition::Before, ExtendedTabs);
+		int32 InsertedTabIndex = 0;
+		for (FTab& NewTab : ExtendedTabs)
+		{
+			if (!AllTabs.Contains(NewTab.TabId))
+			{
+				Stack->Tabs.Insert(NewTab, InsertedTabIndex++);
+			}
+		}
+
+		// This is the per-tab extension section
 		FSplitter* ParentSplitter = AllTabs.StackToParentSplitterMap.FindRef(Stack);
 		for (int32 TabIndex = 0; TabIndex < Stack->Tabs.Num();)
 		{
@@ -534,6 +627,17 @@ void FTabManager::FLayout::ProcessExtensions(const FLayoutExtender& Extender)
 						}
 					}
 				}
+			}
+		}
+
+		// Finally add to the end of the stack
+		Extender.FindStackExtensions(Stack->GetExtensionId(), ELayoutExtensionPosition::After, ExtendedTabs);
+		InsertedTabIndex = Stack->Tabs.Num();
+		for (FTab& NewTab : ExtendedTabs)
+		{
+			if (!AllTabs.Contains(NewTab.TabId))
+			{
+				Stack->Tabs.Insert(NewTab, InsertedTabIndex++);
 			}
 		}
 	}
@@ -607,26 +711,17 @@ const TArray< TWeakPtr<SDockingArea> >& FTabManager::FPrivateApi::GetLiveDockAre
 	return TabManager.DockAreas;
 }
 
-void FTabManager::FPrivateApi::OnTabForegrounded( const TSharedPtr<SDockTab>& NewForegroundTab, const TSharedPtr<SDockTab>& BackgroundedTab )
+void FTabManager::FPrivateApi::OnTabForegrounded(const TSharedPtr<SDockTab>& NewForegroundTab, const TSharedPtr<SDockTab>& BackgroundedTab)
 {
-	TabManager.OnTabForegrounded( NewForegroundTab, BackgroundedTab );
+	TabManager.OnTabForegrounded(NewForegroundTab, BackgroundedTab);
 }
 
-
-
-
-
-
-
-
-
-
-static void SetWindowVisibility( const TArray< TWeakPtr<SDockingArea> >& DockAreas, bool bWindowShouldBeVisible )
+static void SetWindowVisibility(const TArray< TWeakPtr<SDockingArea> >& DockAreas, bool bWindowShouldBeVisible)
 {
-	for (int32 DockAreaIndex=0; DockAreaIndex < DockAreas.Num(); ++DockAreaIndex)
+	for (int32 DockAreaIndex = 0; DockAreaIndex < DockAreas.Num(); ++DockAreaIndex)
 	{
 		TSharedPtr<SWindow> DockAreaWindow = DockAreas[DockAreaIndex].Pin()->GetParentWindow();
-		if ( DockAreaWindow.IsValid() )
+		if (DockAreaWindow.IsValid())
 		{
 			if (bWindowShouldBeVisible)
 			{
@@ -642,13 +737,13 @@ static void SetWindowVisibility( const TArray< TWeakPtr<SDockingArea> >& DockAre
 
 void FTabManager::FPrivateApi::ShowWindows()
 {
-	CleanupPointerArray( TabManager.DockAreas );
+	CleanupPointerArray(TabManager.DockAreas);
 	SetWindowVisibility(TabManager.DockAreas, true);
 }
 
 void FTabManager::FPrivateApi::HideWindows()
 {
-	CleanupPointerArray( TabManager.DockAreas );
+	CleanupPointerArray(TabManager.DockAreas);
 	SetWindowVisibility(TabManager.DockAreas, false);
 }
 
@@ -658,53 +753,79 @@ FTabManager::FPrivateApi& FTabManager::GetPrivateApi()
 }
 
 
+void FTabManager::SetAllowWindowMenuBar(bool bInAllowWindowMenuBar)
+{
+	bAllowPerWindowMenu = bInAllowWindowMenuBar;
+}
 
-
-
-
-
-
-
-
-void FTabManager::SetMenuMultiBox(const TSharedPtr< FMultiBox >& NewMenuMutliBox)
+void FTabManager::SetMenuMultiBox(const TSharedPtr<FMultiBox> NewMenuMutliBox, const TSharedPtr<SWidget> NewMenuWidget)
 {
 	// We only use the platform native global menu bar on Mac
-#if PLATFORM_MAC
 	MenuMultiBox = NewMenuMutliBox;
-	if(MenuMultiBox.IsValid())
+	MenuWidget = NewMenuWidget;
+
+	UpdateMainMenu(OwnerTabPtr.Pin(), false);
+}
+
+void FTabManager::UpdateMainMenu(TSharedPtr<SDockTab> ForTab, const bool bForce)
+{
+	bool bIsMajorTab = true;
+
+	TSharedPtr<SWindow> ParentWindowOfOwningTab;
+	if (ForTab && (ForTab->GetTabRole() == ETabRole::MajorTab || ForTab->GetVisualTabRole() == ETabRole::MajorTab))
 	{
-		UpdateMainMenu(false);
+		ParentWindowOfOwningTab = ForTab->GetParentWindow();
+	}
+	else if (auto OwnerTabPinned = OwnerTabPtr.Pin())
+	{
+		ParentWindowOfOwningTab = OwnerTabPinned->GetParentWindow();
+	}
+	else if (auto MainNonCloseableTabPinned = MainNonCloseableTab.Pin())
+	{
+		ParentWindowOfOwningTab = MainNonCloseableTabPinned->GetParentWindow();
+	}
+
+	// We only use the platform native global menu bar on Mac
+#if PLATFORM_MAC
+	if (MenuMultiBox.IsValid())
+	{
+		bool bUpdate = bForce;
+		// On OS X opening the tab will set the multi-box and take key focus, but not seemingly send a keyboard focus event into Slate.
+		if (ParentWindowOfOwningTab.IsValid())
+		{
+			bUpdate |= ParentWindowOfOwningTab->GetNativeWindow()->IsForegroundWindow();
+		}
+
+		if (bUpdate)
+		{
+			FSlateMacMenu::UpdateWithMultiBox(MenuMultiBox.ToSharedRef());
+		}
 	}
 	else
 	{
 		FSlateMacMenu::UpdateWithMultiBox(nullptr);
 	}
-#endif
-}
+#else
 
-void FTabManager::UpdateMainMenu(bool const bForce)
-{
-	// We only use the platform native global menu bar on Mac
-#if PLATFORM_MAC
-	if(MenuMultiBox.IsValid())
+
+	if (bAllowPerWindowMenu)
 	{
-		bool bUpdate = bForce;
-		// On OS X opening the tab will set the multi-box and take key focus, but not seemingly send a keyboard focus event into Slate.
-		// I'm still looking into this, so for now we just update the menu bar here if the new tab is foreground in the focused window.
-		TSharedPtr<SDockTab> Tab = OwnerTabPtr.Pin();
-		if(Tab.IsValid() && Tab->IsForeground())
-		{
-			TSharedPtr<SWindow> ParentWindow = Tab->GetParentWindow();
-			if(ParentWindow.IsValid())
-			{
-				bUpdate |= ParentWindow->GetNativeWindow()->IsForegroundWindow();
-			}
-		}
-		if(bUpdate)
-		{
-			FSlateMacMenu::UpdateWithMultiBox(MenuMultiBox.ToSharedRef());
+		if (ParentWindowOfOwningTab)
+		{	
+			ParentWindowOfOwningTab->GetTitleBar()->UpdateWindowMenu(MenuWidget);
 		}
 	}
+	else
+	{
+		MenuMultiBox.Reset();
+		MenuWidget.Reset();
+		if (ParentWindowOfOwningTab)
+		{
+			ParentWindowOfOwningTab->GetTitleBar()->UpdateWindowMenu(nullptr);
+		}
+	}
+
+
 #endif
 }
 
@@ -905,7 +1026,9 @@ TSharedPtr<SWidget> FTabManager::RestoreFrom(const TSharedRef<FLayout>& Layout, 
 	}
 
 	UpdateStats();
-	
+
+	FinishRestore();
+
 	return PrimaryDockArea;
 }
 
@@ -999,28 +1122,13 @@ void FTabManager::PopulateTabSpawnerMenu_Helper( FMenuBuilder& PopulateMe, FPopu
 
 void FTabManager::MakeSpawnerMenuEntry( FMenuBuilder &PopulateMe, const TSharedPtr<FTabSpawnerEntry> &InSpawnerNode ) 
 {
-	auto CanExecuteMenuEntry = [](TWeakPtr<FTabSpawnerEntry> SpawnerNode) -> bool
-	{
-		TSharedPtr<FTabSpawnerEntry> SpawnerNodePinned = SpawnerNode.Pin();
-		if (SpawnerNodePinned.IsValid() && SpawnerNodePinned->MenuType.Get() == ETabSpawnerMenuType::Enabled)
-		{
-			return SpawnerNodePinned->CanSpawnTab.IsBound() ? SpawnerNodePinned->CanSpawnTab.Execute(FSpawnTabArgs(TSharedPtr<SWindow>(), SpawnerNodePinned->TabType)) : true;
-		}
-
-		return false;
-	};
-
 	if (InSpawnerNode->MenuType.Get() != ETabSpawnerMenuType::Hidden )
 	{
 		PopulateMe.AddMenuEntry(
 			InSpawnerNode->GetDisplayName().IsEmpty() ? FText::FromName(InSpawnerNode->TabType ) : InSpawnerNode->GetDisplayName(),
 			InSpawnerNode->GetTooltipText(),
 			InSpawnerNode->GetIcon(),
-			FUIAction(
-			FExecuteAction::CreateSP(SharedThis(this), &FTabManager::InvokeTabForMenu, InSpawnerNode->TabType),
-			FCanExecuteAction::CreateStatic(CanExecuteMenuEntry, TWeakPtr<FTabSpawnerEntry>(InSpawnerNode)),
-			FIsActionChecked::CreateSP(InSpawnerNode.ToSharedRef(), &FTabSpawnerEntry::IsSoleTabInstanceSpawned)
-			),
+			GetUIActionForTabSpawnerMenuEntry(InSpawnerNode),
 			NAME_None,
 			EUserInterfaceActionType::Check
 			);
@@ -1101,90 +1209,101 @@ void FTabManager::DrawAttention( const TSharedRef<SDockTab>& TabToHighlight )
 {
 	// Bring the tab to front.
 	const TSharedPtr<SDockingArea> DockingArea = TabToHighlight->GetDockArea();
-	if ( DockingArea.IsValid() )
+	if (DockingArea.IsValid())
 	{
 		const TSharedRef<FTabManager> ManagerOfTabToHighlight = DockingArea->GetTabManager();
 
-		if ( ManagerOfTabToHighlight != FGlobalTabmanager::Get() )
+		if (ManagerOfTabToHighlight != FGlobalTabmanager::Get())
 		{
 			FGlobalTabmanager::Get()->DrawAttentionToTabManager(ManagerOfTabToHighlight);
 		}
 
 		TSharedPtr<SWindow> OwnerWindow = DockingArea->GetParentWindow();
 
-		if ( SWindow* OwnerWindowPtr = OwnerWindow.Get() )
+		if (SWindow* OwnerWindowPtr = OwnerWindow.Get())
 		{
 			// When should we force a window to the front?
 			// 1) The owner window is already active, so we know the user is using this screen.
 			// 2) This window is a child window of another already active window (same as 1).
 			// 3) Slate is currently processing input, which would imply we got this request at the behest of a user's click or press.
-			if ( OwnerWindowPtr->IsActive() || OwnerWindowPtr->HasActiveParent() || FSlateApplication::Get().IsProcessingInput() )
+			if (OwnerWindowPtr->IsActive() || OwnerWindowPtr->HasActiveParent() || FSlateApplication::Get().IsProcessingInput())
 			{
 				OwnerWindowPtr->BringToFront();
 			}
 		}
 
-		TabToHighlight->GetParentDockTabStack()->BringToFront(TabToHighlight);
+		if (!DockingArea->TryOpenSidebarDrawer(TabToHighlight))
+		{
+			TabToHighlight->GetParentDockTabStack()->BringToFront(TabToHighlight);
+		}
+
 		TabToHighlight->FlashTab();
 
 		FGlobalTabmanager::Get()->UpdateMainMenu(TabToHighlight, true);
 	}
 }
 
+void FTabManager::InsertNewDocumentTab(FName PlaceholderId, FName NewTabId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab)
+{
+	InsertDocumentTab(PlaceholderId, NewTabId, SearchPreference, UnmanagedTab, true);
+}
+
 void FTabManager::InsertNewDocumentTab(FName PlaceholderId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab)
 {
-	InsertDocumentTab(PlaceholderId, SearchPreference, UnmanagedTab, true);
+	InsertDocumentTab(PlaceholderId, PlaceholderId, SearchPreference, UnmanagedTab, true);
 }
 
 void FTabManager::InsertNewDocumentTab( FName PlaceholderId, ESearchPreference::Type SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab )
 {
-	if ( SearchPreference == ESearchPreference::PreferLiveTab )
+	switch (SearchPreference)
+	{
+	case ESearchPreference::PreferLiveTab:
 	{
 		FLiveTabSearch Search;
-		InsertDocumentTab(PlaceholderId, Search, UnmanagedTab, true);
+		InsertDocumentTab(PlaceholderId, PlaceholderId, Search, UnmanagedTab, true);
+		break;
 	}
-	else if ( SearchPreference == ESearchPreference::RequireClosedTab )
+
+	case ESearchPreference::RequireClosedTab:
 	{
 		FRequireClosedTab Search;
-		InsertDocumentTab(PlaceholderId, Search, UnmanagedTab, true);
+		InsertDocumentTab(PlaceholderId, PlaceholderId, Search, UnmanagedTab, true);
+		break;
 	}
-	else
-	{
+
+	default:
 		check(false);
+		break;
 	}
 }
 
 void FTabManager::RestoreDocumentTab( FName PlaceholderId, ESearchPreference::Type SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab )
 {
-	if ( SearchPreference == ESearchPreference::PreferLiveTab )
+	switch (SearchPreference)
+	{
+	case ESearchPreference::PreferLiveTab:
 	{
 		FLiveTabSearch Search;
-		InsertDocumentTab(PlaceholderId, Search, UnmanagedTab, false);
+		InsertDocumentTab(PlaceholderId, PlaceholderId, Search, UnmanagedTab, false);
+		break;
 	}
-	else if ( SearchPreference == ESearchPreference::RequireClosedTab )
+
+	case ESearchPreference::RequireClosedTab:
 	{
 		FRequireClosedTab Search;
-		InsertDocumentTab(PlaceholderId, Search, UnmanagedTab, false);
+		InsertDocumentTab(PlaceholderId, PlaceholderId, Search, UnmanagedTab, false);
+		break;
 	}
-	else
-	{
+
+	default:
 		check(false);
+		break;
 	}
 }
 
-TSharedRef<SDockTab> FTabManager::InvokeTab(const FTabId& TabId)
+TSharedPtr<SDockTab> FTabManager::TryInvokeTab(const FTabId& TabId, bool bInvokeAsInactive)
 {
-	if (TSharedPtr<SDockTab> NewTab = TryInvokeTab(TabId))
-	{
-		return NewTab.ToSharedRef();
-	}
-
-	return SNew(SDockTab);
-}
-
-TSharedPtr<SDockTab> FTabManager::TryInvokeTab(const FTabId& TabId)
-{
-	TSharedPtr<SDockTab> NewTab = InvokeTab_Internal(TabId);
+	TSharedPtr<SDockTab> NewTab = InvokeTab_Internal(TabId, bInvokeAsInactive);
 	if (!NewTab.IsValid())
 	{
 		return NewTab;
@@ -1201,7 +1320,7 @@ TSharedPtr<SDockTab> FTabManager::TryInvokeTab(const FTabId& TabId)
 	return NewTab;
 }
 
-TSharedPtr<SDockTab> FTabManager::InvokeTab_Internal( const FTabId& TabId )
+TSharedPtr<SDockTab> FTabManager::InvokeTab_Internal(const FTabId& TabId, bool bInvokeAsInactive)
 {
 	// Tab Spawning Rules:
 	// 
@@ -1238,12 +1357,23 @@ TSharedPtr<SDockTab> FTabManager::InvokeTab_Internal( const FTabId& TabId )
 			? Spawner->OnFindTabToReuse.Execute( TabId )
 			: Spawner->SpawnedTabPtr.Pin();
 
-		if ( ExistingTab.IsValid() )
+		if (ExistingTab.IsValid())
 		{
-			if ( !ExistingTab->IsActive() )
+			TSharedPtr<SDockTab> MajorTab;
+			if (TSharedPtr<FTabManager> ExistingTabManager = ExistingTab->GetTabManagerPtr())
+			{
+				MajorTab = FGlobalTabmanager::Get()->GetMajorTabForTabManager(ExistingTabManager.ToSharedRef());
+			}
+
+			// Rules for drawing attention to a tab:
+			// 1. Tab is not active
+			// 2. Tab's owning major tab is not in the foreground (making the tab we want to draw attention to is not visible)
+			// 3. Tab is nomad and is not in the foreground
+			// If the tab is not active or the tabs major tab is not in the foreground, activate it
+			if (!bInvokeAsInactive && (!ExistingTab->IsActive() || (MajorTab && !MajorTab->IsForeground()) || !ExistingTab->IsForeground()))
 			{
 				// Draw attention to this tab if it didn't already have focus
-				DrawAttention( ExistingTab.ToSharedRef() );
+				DrawAttention(ExistingTab.ToSharedRef());
 			}
 			return ExistingTab.ToSharedRef();
 		}
@@ -1254,12 +1384,13 @@ TSharedPtr<SDockTab> FTabManager::InvokeTab_Internal( const FTabId& TabId )
 
 	if (StackToSpawnIn.IsValid())
 	{
-		const TSharedPtr<SDockTab> NewTab = SpawnTab( TabId, TSharedPtr<SWindow>() );
+		const TSharedPtr<SDockTab> NewTab = SpawnTab(TabId, TSharedPtr<SWindow>());
 
 		if (NewTab.IsValid())
 		{
-			StackToSpawnIn->OpenTab(NewTab.ToSharedRef());
+			StackToSpawnIn->OpenTab(NewTab.ToSharedRef(), INDEX_NONE, bInvokeAsInactive);
 			NewTab->PlaySpawnAnim();
+			FGlobalTabmanager::Get()->UpdateMainMenu(NewTab.ToSharedRef(), false);
 		}
 
 		return NewTab;
@@ -1267,7 +1398,7 @@ TSharedPtr<SDockTab> FTabManager::InvokeTab_Internal( const FTabId& TabId )
 	else if ( FGlobalTabmanager::Get() != SharedThis(this) && NomadTabSpawner->Contains(TabId.TabType) )
 	{
 		// This tab could have been spawned in the global tab manager since it has a nomad tab spawner
-		return FGlobalTabmanager::Get()->InvokeTab_Internal(TabId);
+		return FGlobalTabmanager::Get()->InvokeTab_Internal(TabId, bInvokeAsInactive);
 	}
 	else
 	{
@@ -1322,6 +1453,26 @@ TSharedPtr<SDockingTabStack> FTabManager::FindPotentiallyClosedTab( const FTabId
 	return StackWithClosedTab;
 }
 
+FUIAction FTabManager::GetUIActionForTabSpawnerMenuEntry(TSharedPtr<FTabSpawnerEntry> InTabMenuEntry)
+{
+	auto CanExecuteMenuEntry = [](TWeakPtr<FTabSpawnerEntry> SpawnerNode) -> bool
+	{
+		TSharedPtr<FTabSpawnerEntry> SpawnerNodePinned = SpawnerNode.Pin();
+		if (SpawnerNodePinned.IsValid() && SpawnerNodePinned->MenuType.Get() == ETabSpawnerMenuType::Enabled)
+		{
+			return SpawnerNodePinned->CanSpawnTab.IsBound() ? SpawnerNodePinned->CanSpawnTab.Execute(FSpawnTabArgs(TSharedPtr<SWindow>(), SpawnerNodePinned->TabType)) : true;
+		}
+
+		return false;
+	};
+
+	return FUIAction(
+		FExecuteAction::CreateSP(SharedThis(this), &FTabManager::InvokeTabForMenu, InTabMenuEntry->TabType),
+		FCanExecuteAction::CreateStatic(CanExecuteMenuEntry, TWeakPtr<FTabSpawnerEntry>(InTabMenuEntry)),
+		FIsActionChecked::CreateSP(InTabMenuEntry.ToSharedRef(), &FTabSpawnerEntry::IsSoleTabInstanceSpawned)
+		);
+}
+
 void FTabManager::InvokeTabForMenu( FName TabId )
 {
 	TryInvokeTab(TabId);
@@ -1329,9 +1480,14 @@ void FTabManager::InvokeTabForMenu( FName TabId )
 
 void FTabManager::InsertDocumentTab(FName PlaceholderId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab, bool bPlaySpawnAnim)
 {
+	InsertDocumentTab(PlaceholderId, PlaceholderId, SearchPreference, UnmanagedTab, bPlaySpawnAnim);
+}
+
+void FTabManager::InsertDocumentTab(FName PlaceholderId, FName NewTabId, const FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& UnmanagedTab, bool bPlaySpawnAnim)
+{
 	bool bWasUnmanagedTabOpened = true;
 	const bool bTabNotManaged = ensure( ! FindTabInLiveAreas( FTabMatcher(UnmanagedTab->GetLayoutIdentifier()) ).IsValid() );
-	UnmanagedTab->SetLayoutIdentifier( FTabId(PlaceholderId, LastDocumentUID++) );
+	UnmanagedTab->SetLayoutIdentifier( FTabId(NewTabId, LastDocumentUID++) );
 	
 	if (bTabNotManaged)
 	{
@@ -1380,18 +1536,36 @@ FTabManager::FTabManager( const TSharedPtr<SDockTab>& InOwnerTab, const TSharedR
 , LastDocumentUID( 0 )
 , bIsSavingVisualState( false )
 , bCanDoDragOperation( true )
-, TabBlacklist( MakeShareable(new FBlacklistNames()) )
+, TabPermissionList( MakeShareable(new FNamePermissionList()) )
 {
 	LocalWorkspaceMenuRoot = FWorkspaceItem::NewGroup(LOCTEXT("LocalWorkspaceRoot", "Local Workspace Root"));
 }
 
-TSharedPtr<SDockingArea> FTabManager::RestoreArea(
-	const TSharedRef<FArea>& AreaToRestore, const TSharedPtr<SWindow>& InParentWindow, const bool bEmbedTitleAreaContent, const EOutputCanBeNullptr OutputCanBeNullptr)
+TSharedPtr<SDockingArea> FTabManager::RestoreArea(const TSharedRef<FArea>& AreaToRestore, const TSharedPtr<SWindow>& InParentWindow, const bool bEmbedTitleAreaContent, const EOutputCanBeNullptr OutputCanBeNullptr)
 {
-	if (TSharedPtr<SDockingNode> RestoredNode = RestoreArea_Helper(AreaToRestore, InParentWindow, bEmbedTitleAreaContent, OutputCanBeNullptr))
+	// Sidebar tabs for this area
+	FSidebarTabLists SidebarTabs;
+
+	TemporarilySidebaredTabs.Empty();
+
+	if (TSharedPtr<SDockingNode> RestoredNode = RestoreArea_Helper(AreaToRestore, InParentWindow, bEmbedTitleAreaContent, SidebarTabs, OutputCanBeNullptr))
 	{
 		TSharedRef<SDockingArea> RestoredArea = StaticCastSharedRef<SDockingArea>(RestoredNode->AsShared());
+
 		RestoredArea->CleanUp(SDockingNode::TabRemoval_None);
+
+		RestoredArea->AddSidebarTabsFromRestoredLayout(SidebarTabs);
+
+		for (const TSharedRef<SDockTab>& Tab : SidebarTabs.LeftSidebarTabs)
+		{
+			TemporarilySidebaredTabs.Add(Tab);
+		}
+
+		for (const TSharedRef<SDockTab>& Tab : SidebarTabs.RightSidebarTabs)
+		{
+			TemporarilySidebaredTabs.Add(Tab);
+		}
+
 		return RestoredArea;
 	}
 	else
@@ -1401,8 +1575,7 @@ TSharedPtr<SDockingArea> FTabManager::RestoreArea(
 	}
 }
 
-TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
-	const TSharedRef<FLayoutNode>& LayoutNode, const TSharedPtr<SWindow>& ParentWindow, const bool bEmbedTitleAreaContent, const EOutputCanBeNullptr OutputCanBeNullptr)
+TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(const TSharedRef<FLayoutNode>& LayoutNode, const TSharedPtr<SWindow>& ParentWindow, const bool bEmbedTitleAreaContent, FSidebarTabLists& OutSidebarTabs, const EOutputCanBeNullptr OutputCanBeNullptr)
 {
 	TSharedPtr<FTabManager::FStack> NodeAsStack = LayoutNode->AsStack();
 	TSharedPtr<FTabManager::FSplitter> NodeAsSplitter = LayoutNode->AsSplitter();
@@ -1449,7 +1622,7 @@ TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
 		// Open Tabs
 		for (const FTab& SomeTab : NodeAsStack->Tabs)
 		{
-			if (SomeTab.TabState == ETabState::OpenedTab && IsValidTabForSpawning(SomeTab))
+			if ((SomeTab.TabState == ETabState::OpenedTab || SomeTab.TabState == ETabState::SidebarTab) && IsValidTabForSpawning(SomeTab))
 			{
 				const TSharedPtr<SDockTab> NewTabWidget = SpawnTab(SomeTab.TabId, ParentWindow, bCanOutputBeNullptr);
 
@@ -1457,6 +1630,7 @@ TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
 				{
 					if (SomeTab.TabId == NodeAsStack->ForegroundTabId)
 					{
+						ensure(SomeTab.TabState == ETabState::OpenedTab);
 						WidgetToActivate = NewTabWidget;
 					}
 
@@ -1466,7 +1640,25 @@ TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
 						NewStackWidget = SNew(SDockingTabStack, NodeAsStack.ToSharedRef());
 						NewStackWidget->SetSizeCoefficient(LayoutNode->GetSizeCoefficient());
 					}
-					NewStackWidget->AddTabWidget(NewTabWidget.ToSharedRef());
+
+					if (SomeTab.TabState == ETabState::OpenedTab)
+					{
+						NewStackWidget->AddTabWidget(NewTabWidget.ToSharedRef());
+					}
+					else
+					{
+						// Let the stack know we have a tab that belongs in its stack that is currently in a sidebar
+						NewStackWidget->AddSidebarTab(NewTabWidget.ToSharedRef());
+						if (SomeTab.SidebarLocation == ESidebarLocation::Left)
+						{
+							OutSidebarTabs.LeftSidebarTabs.Add(NewTabWidget.ToSharedRef());
+						}
+						else
+						{
+							ensure(SomeTab.SidebarLocation == ESidebarLocation::Right);
+							OutSidebarTabs.RightSidebarTabs.Add(NewTabWidget.ToSharedRef());
+						}
+					}
 				}
 			}
 		}
@@ -1517,7 +1709,7 @@ TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
 			NewWindow->SetTitle(FGlobalTabmanager::Get()->GetApplicationTitle());
 
 			TArray<TSharedRef<SDockingNode>> DockingNodes;
-			if (CanRestoreSplitterContent(DockingNodes, NodeAsArea.ToSharedRef(), NewWindow, OutputCanBeNullptr))
+			if (CanRestoreSplitterContent(DockingNodes, NodeAsArea.ToSharedRef(), NewWindow, OutSidebarTabs, OutputCanBeNullptr))
 			{
 				// Create SplitterWidget only if it will be filled with at least 1 DockingNodes
 				// Any windows that were "pulled out" of a dock area should be children of the window in which the parent dock area resides.
@@ -1536,7 +1728,7 @@ TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
 				// Restore content
 				if (!bCanOutputBeNullptr)
 				{
-					RestoreSplitterContent(NodeAsArea.ToSharedRef(), NewDockAreaWidget.ToSharedRef(), NewWindow);
+					RestoreSplitterContent(NodeAsArea.ToSharedRef(), NewDockAreaWidget.ToSharedRef(), NewWindow, OutSidebarTabs);
 				}
 				else
 				{
@@ -1547,7 +1739,7 @@ TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
 		else
 		{
 			TArray<TSharedRef<SDockingNode>> DockingNodes;
-			if (CanRestoreSplitterContent(DockingNodes, NodeAsArea.ToSharedRef(), ParentWindow, OutputCanBeNullptr))
+			if (CanRestoreSplitterContent(DockingNodes, NodeAsArea.ToSharedRef(), ParentWindow, OutSidebarTabs, OutputCanBeNullptr))
 			{
 				SAssignNew(NewDockAreaWidget, SDockingArea, SharedThis(this), NodeAsArea.ToSharedRef())
 					// We only want to set a parent window on this dock area, if we need to have title area content
@@ -1561,7 +1753,7 @@ TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
 				// Restore content
 				if (!bCanOutputBeNullptr)
 				{
-					RestoreSplitterContent(NodeAsArea.ToSharedRef(), NewDockAreaWidget.ToSharedRef(), ParentWindow);
+					RestoreSplitterContent(NodeAsArea.ToSharedRef(), NewDockAreaWidget.ToSharedRef(), ParentWindow, OutSidebarTabs);
 				}
 				else
 				{
@@ -1575,14 +1767,14 @@ TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
 	else if ( NodeAsSplitter.IsValid() ) 
 	{
 		TArray<TSharedRef<SDockingNode>> DockingNodes;
-		if (CanRestoreSplitterContent(DockingNodes, NodeAsSplitter.ToSharedRef(), ParentWindow, OutputCanBeNullptr))
+		if (CanRestoreSplitterContent(DockingNodes, NodeAsSplitter.ToSharedRef(), ParentWindow, OutSidebarTabs, OutputCanBeNullptr))
 		{
 			TSharedRef<SDockingSplitter> NewSplitterWidget = SNew( SDockingSplitter, NodeAsSplitter.ToSharedRef() );
 			NewSplitterWidget->SetSizeCoefficient(LayoutNode->GetSizeCoefficient());
 			// Restore content
 			if (!bCanOutputBeNullptr)
 			{
-				RestoreSplitterContent(NodeAsSplitter.ToSharedRef(), NewSplitterWidget, ParentWindow);
+				RestoreSplitterContent(NodeAsSplitter.ToSharedRef(), NewSplitterWidget, ParentWindow, OutSidebarTabs);
 			}
 			else
 			{
@@ -1604,7 +1796,7 @@ TSharedPtr<SDockingNode> FTabManager::RestoreArea_Helper(
 	}
 }
 
-bool FTabManager::CanRestoreSplitterContent(TArray<TSharedRef<SDockingNode>>& DockingNodes, const TSharedRef<FSplitter>& SplitterNode, const TSharedPtr<SWindow>& ParentWindow, const EOutputCanBeNullptr OutputCanBeNullptr)
+bool FTabManager::CanRestoreSplitterContent(TArray<TSharedRef<SDockingNode>>& DockingNodes, const TSharedRef<FSplitter>& SplitterNode, const TSharedPtr<SWindow>& ParentWindow, FSidebarTabLists& OutSidebarTabs, const EOutputCanBeNullptr OutputCanBeNullptr)
 {
 	if (OutputCanBeNullptr == EOutputCanBeNullptr::Never)
 	{
@@ -1617,7 +1809,7 @@ bool FTabManager::CanRestoreSplitterContent(TArray<TSharedRef<SDockingNode>>& Do
 		const TSharedRef<FLayoutNode> ThisChildNode = SplitterNode->ChildNodes[ChildNodeIndex];
 
 		const bool bEmbedTitleAreaContent = false;
-		const TSharedPtr<SDockingNode> ThisChildNodeWidget = RestoreArea_Helper(ThisChildNode, ParentWindow, bEmbedTitleAreaContent, OutputCanBeNullptr);
+		const TSharedPtr<SDockingNode> ThisChildNodeWidget = RestoreArea_Helper(ThisChildNode, ParentWindow, bEmbedTitleAreaContent, OutSidebarTabs, OutputCanBeNullptr);
 		if (ThisChildNodeWidget)
 		{
 			const TSharedRef<SDockingNode> ThisChildNodeWidgetRef = StaticCastSharedRef<SDockingNode>(ThisChildNodeWidget->AsShared());
@@ -1627,7 +1819,7 @@ bool FTabManager::CanRestoreSplitterContent(TArray<TSharedRef<SDockingNode>>& Do
 	return (DockingNodes.Num() > 0);
 }
 
-void FTabManager::RestoreSplitterContent( const TArray<TSharedRef<SDockingNode>>& DockingNodes, const TSharedRef<SDockingSplitter>& SplitterWidget )
+void FTabManager::RestoreSplitterContent( const TArray<TSharedRef<SDockingNode>>& DockingNodes, const TSharedRef<SDockingSplitter>& SplitterWidget)
 {
 	for (const TSharedRef<SDockingNode>& DockingNode : DockingNodes)
 	{
@@ -1635,7 +1827,7 @@ void FTabManager::RestoreSplitterContent( const TArray<TSharedRef<SDockingNode>>
 	}
 }
 
-void FTabManager::RestoreSplitterContent(const TSharedRef<FSplitter>& SplitterNode, const TSharedRef<SDockingSplitter>& SplitterWidget, const TSharedPtr<SWindow>& ParentWindow)
+void FTabManager::RestoreSplitterContent(const TSharedRef<FSplitter>& SplitterNode, const TSharedRef<SDockingSplitter>& SplitterWidget, const TSharedPtr<SWindow>& ParentWindow, FSidebarTabLists& OutSidebarTabs)
 {
 	// Restore the contents of this splitter.
 	for ( int32 ChildNodeIndex = 0; ChildNodeIndex < SplitterNode->ChildNodes.Num(); ++ChildNodeIndex )
@@ -1643,7 +1835,7 @@ void FTabManager::RestoreSplitterContent(const TSharedRef<FSplitter>& SplitterNo
 		TSharedRef<FLayoutNode> ThisChildNode = SplitterNode->ChildNodes[ChildNodeIndex];
 
 		const bool bEmbedTitleAreaContent = false;
-		TSharedPtr<SDockingNode> ThisChildNodeWidget = RestoreArea_Helper(ThisChildNode, ParentWindow, bEmbedTitleAreaContent);
+		TSharedPtr<SDockingNode> ThisChildNodeWidget = RestoreArea_Helper(ThisChildNode, ParentWindow, bEmbedTitleAreaContent, OutSidebarTabs);
 		check(ThisChildNodeWidget.IsValid());
 		if (ThisChildNodeWidget)
 		{
@@ -1651,11 +1843,6 @@ void FTabManager::RestoreSplitterContent(const TSharedRef<FSplitter>& SplitterNo
 			SplitterWidget->AddChildNode( ThisChildNodeWidgetRef, INDEX_NONE );
 		}
 	}
-}
-
-bool FTabManager::CanSpawnTab(FName TabId) const
-{
-	return HasTabSpawner(TabId);
 }
 
 bool FTabManager::HasTabSpawner(FName TabId) const
@@ -1670,9 +1857,9 @@ bool FTabManager::HasTabSpawner(FName TabId) const
 	return Spawner != nullptr;
 }
 
-TSharedRef<FBlacklistNames>& FTabManager::GetTabBlacklist()
+TSharedRef<FNamePermissionList>& FTabManager::GetTabPermissionList()
 {
-	return TabBlacklist;
+	return TabPermissionList;
 }
 
 bool FTabManager::IsValidTabForSpawning( const FTab& SomeTab ) const
@@ -1694,12 +1881,60 @@ bool FTabManager::IsAllowedTab(const FTabId& TabId) const
 
 bool FTabManager::IsAllowedTabType(const FName TabType) const
 {
-	const bool bIsAllowed = TabType == NAME_None || TabBlacklist->PassesFilter(TabType);
+	const bool bIsAllowed = TabType == NAME_None || TabPermissionList->PassesFilter(TabType);
 	if (!bIsAllowed)
 	{
 		UE_LOG(LogSlate, Verbose, TEXT("Disallowed Tab: %s"), *TabType.ToString());
 	}
 	return bIsAllowed;
+}
+
+bool FTabManager::IsTabAllowedInSidebar(const FTabId TabId) const
+{
+	if (const TSharedPtr<const FTabSpawnerEntry> Spawner = FindTabSpawnerFor(TabId.TabType))
+	{
+		return Spawner->CanSidebarTab();
+	}
+
+	return false;
+}
+
+void FTabManager::ToggleSidebarOpenTabs()
+{
+	if(TemporarilySidebaredTabs.Num() == 0)
+	{
+		// Sidebar opened tabs not in a sidebar already
+		for (int32 AreaIndex = 0; AreaIndex < DockAreas.Num(); ++AreaIndex)
+		{
+			TSharedPtr<SDockingArea> SomeDockArea = DockAreas[AreaIndex].Pin();
+
+			if (SomeDockArea.IsValid() && SomeDockArea->CanHaveSidebar())
+			{
+				TArray<TSharedRef<SDockTab>> AllTabs = SomeDockArea->GetAllChildTabs();
+				for (TSharedRef<SDockTab>& Tab : AllTabs)
+				{
+					if (IsTabAllowedInSidebar(Tab->GetLayoutIdentifier()) && !SomeDockArea->IsTabInSidebar(Tab) && Tab->GetParentDockTabStack()->CanMoveTabToSideBar(Tab))
+					{
+						Tab->GetParentDockTabStack()->MoveTabToSidebar(Tab);
+						TemporarilySidebaredTabs.Add(Tab);
+					}
+				}
+
+			}
+		}
+	}
+	else
+	{
+		for (TWeakPtr<SDockTab>& TabPtr : TemporarilySidebaredTabs)
+		{
+			if (TSharedPtr<SDockTab> Tab = TabPtr.Pin())
+			{
+				Tab->GetParentDockTabStack()->GetDockArea()->RestoreTabFromSidebar(Tab.ToSharedRef());
+			}
+		}
+
+		TemporarilySidebaredTabs.Empty();
+	}
 }
 
 TSharedPtr<SDockTab> FTabManager::SpawnTab(const FTabId& TabId, const TSharedPtr<SWindow>& ParentWindow, const bool bCanOutputBeNullptr)
@@ -1794,6 +2029,7 @@ TSharedPtr<SDockTab> FTabManager::FindExistingLiveTab( const FTabId& TabId ) con
 		if ( SomeDockArea.IsValid() )
 		{
 			TArray< TSharedRef<SDockTab> > ChildTabs = SomeDockArea->GetAllChildTabs();
+			ChildTabs.Append(SomeDockArea->GetAllSidebarTabs());
 			for (int32 ChildTabIndex=0; ChildTabIndex < ChildTabs.Num(); ++ChildTabIndex)
 			{
 				if ( TabId == ChildTabs[ChildTabIndex]->GetLayoutIdentifier() )
@@ -1973,6 +2209,8 @@ void FTabManager::OnTabForegrounded( const TSharedPtr<SDockTab>& NewForegroundTa
 
 void FTabManager::OnTabRelocated( const TSharedRef<SDockTab>& RelocatedTab, const TSharedPtr<SWindow>& NewOwnerWindow )
 {
+	RelocatedTab->NotifyTabRelocated();
+
 	CleanupPointerArray(DockAreas);
 	RemoveTabFromCollapsedAreas( FTabMatcher( RelocatedTab->GetLayoutIdentifier() ) );
 	for (int32 DockAreaIndex=0; DockAreaIndex < DockAreas.Num(); ++DockAreaIndex)
@@ -2026,7 +2264,10 @@ bool FTabManager::CanCloseManager( const TSet< TSharedRef<SDockTab> >& TabsToIgn
 		
 		for (int32 TabIndex=0; bCanCloseManager && TabIndex < AreasTabs.Num(); ++TabIndex)	
 		{
-			bCanCloseManager = TabsToIgnore.Contains( AreasTabs[TabIndex] ) || AreasTabs[TabIndex]->CanCloseTab();
+			bCanCloseManager =
+				TabsToIgnore.Contains( AreasTabs[TabIndex] ) ||
+				AreasTabs[TabIndex]->GetTabRole() != ETabRole::MajorTab ||
+				AreasTabs[TabIndex]->CanCloseTab();
 		}		
 	}
 
@@ -2087,6 +2328,20 @@ TSharedPtr<FTabSpawnerEntry> FTabManager::FindTabSpawnerFor(FName TabId)
 
 	return (Spawner != nullptr)
 		? TSharedPtr<FTabSpawnerEntry>(*Spawner)
+		: TSharedPtr<FTabSpawnerEntry>();
+}
+
+const TSharedPtr<const FTabSpawnerEntry> FTabManager::FindTabSpawnerFor(FName TabId) const
+{
+	// Look for a spawner in this tab manager.
+	const TSharedRef<FTabSpawnerEntry>* Spawner = TabSpawner.Find(TabId);
+	if (Spawner == nullptr)
+	{
+		Spawner = NomadTabSpawner->Find(TabId);
+	}
+
+	return (Spawner != nullptr)
+		? TSharedPtr<const FTabSpawnerEntry>(*Spawner)
 		: TSharedPtr<FTabSpawnerEntry>();
 }
 
@@ -2225,6 +2480,7 @@ FTabSpawnerEntry& FGlobalTabmanager::RegisterNomadTabSpawner(const FName TabId, 
 	{
 		UnregisterNomadTabSpawner(TabId);
 	}
+
 	// (Re)create and return NewSpawnerEntry
 	TSharedRef<FTabSpawnerEntry> NewSpawnerEntry = MakeShareable(new FTabSpawnerEntry(TabId, OnSpawnTab, CanSpawnTab));
 	NomadTabSpawner->Add(TabId, NewSpawnerEntry);
@@ -2285,6 +2541,17 @@ TSharedPtr<SDockTab> FGlobalTabmanager::GetMajorTabForTabManager(const TSharedRe
 	return TSharedPtr<SDockTab>();
 }
 
+TSharedPtr<FTabManager> FGlobalTabmanager::GetTabManagerForMajorTab(const TSharedPtr<SDockTab> DockTab) const
+{
+	const int32 Index = SubTabManagers.IndexOfByPredicate(FindByTab(DockTab.ToSharedRef()));
+	if (Index != INDEX_NONE)
+	{
+		return SubTabManagers[Index].TabManager.Pin();
+	}
+
+	return nullptr;
+}
+
 void FGlobalTabmanager::DrawAttentionToTabManager( const TSharedRef<FTabManager>& ChildManager )
 {
 	TSharedPtr<SDockTab> Tab = GetMajorTabForTabManager(ChildManager);
@@ -2316,22 +2583,24 @@ TSharedRef<FTabManager> FGlobalTabmanager::NewTabManager( const TSharedRef<SDock
 
 	const TSharedRef<FTabManager> NewTabManager = FTabManager::New( InOwnerTab, NomadTabSpawner );
 	SubTabManagers.Add( FSubTabManager(InOwnerTab, NewTabManager) );
+
 	UpdateStats();
+
 	return NewTabManager;
 }
 
 void FGlobalTabmanager::UpdateMainMenu(const TSharedRef<SDockTab>& ForTab, bool const bForce)
 {
-	TSharedPtr<FTabManager> Tabmanager = ForTab->GetTabManager();
-	if(Tabmanager == AsShared())
+	TSharedPtr<FTabManager> TabManager = ForTab->GetTabManagerPtr();
+	if(TabManager == AsShared())
 	{
 		const int32 TabIndex = SubTabManagers.IndexOfByPredicate(FindByTab(ForTab));
 		if (TabIndex != INDEX_NONE)
 		{
-			Tabmanager = SubTabManagers[TabIndex].TabManager.Pin();
+			TabManager = SubTabManagers[TabIndex].TabManager.Pin();
 		}
 	}
-	Tabmanager->UpdateMainMenu(bForce);
+	TabManager->UpdateMainMenu(ForTab, bForce);
 }
 
 void FGlobalTabmanager::SaveAllVisualState()
@@ -2518,6 +2787,17 @@ void FGlobalTabmanager::OpenUnmanagedTab(FName PlaceholderId, const FSearchPrefe
 	else
 	{
 		FTabManager::OpenUnmanagedTab(PlaceholderId, SearchPreference, UnmanagedTab);
+	}
+}
+
+void FGlobalTabmanager::FinishRestore()
+{
+	for (FSubTabManager& SubManagerInfo : SubTabManagers)
+	{
+		if (TSharedPtr<FTabManager> Manager = SubManagerInfo.TabManager.Pin())
+		{
+			Manager->UpdateMainMenu(nullptr, false);
+		}
 	}
 }
 

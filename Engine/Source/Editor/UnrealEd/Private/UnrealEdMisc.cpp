@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UnrealEdMisc.h"
+
 #include "TickableEditorObject.h"
 #include "Components/PrimitiveComponent.h"
 #include "Misc/MessageDialog.h"
@@ -27,6 +28,7 @@
 #include "HAL/PlatformSplash.h"
 #include "Internationalization/Culture.h"
 #include "Misc/ConfigCacheIni.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectIterator.h"
 #include "EngineUtils.h"
 #include "EditorViewportClient.h"
@@ -67,6 +69,7 @@
 #include "Misc/HotReloadInterface.h"
 #include "PerformanceMonitor.h"
 #include "Engine/WorldComposition.h"
+#include "WorldPartition/WorldPartition.h"
 #include "Interfaces/IProjectManager.h"
 #include "FeaturePackContentSource.h"
 #include "ProjectDescriptor.h"
@@ -85,6 +88,7 @@
 #include "ILauncherServicesModule.h"
 #include "HAL/PlatformTime.h"
 #include "StudioAnalytics.h"
+#include "DeveloperToolSettingsDelegates.h"
 
 #define USE_UNIT_TESTS 0
 
@@ -243,12 +247,11 @@ void FUnrealEdMisc::OnInit()
 	FEditorDelegates::DisplayLoadErrors.AddRaw(this, &FUnrealEdMisc::CB_DisplayLoadErrors);
 	FEditorDelegates::MapChange.AddRaw(this, &FUnrealEdMisc::CB_MapChange);
 	FEditorDelegates::RefreshEditor.AddRaw(this, &FUnrealEdMisc::CB_RefreshEditor);
-	FEditorDelegates::PreSaveWorld.AddRaw(this, &FUnrealEdMisc::PreSaveWorld);
+	FEditorDelegates::PreSaveWorldWithContext.AddRaw(this, &FUnrealEdMisc::PreSaveWorld);
 	FEditorSupportDelegates::RedrawAllViewports.AddRaw(this, &FUnrealEdMisc::CB_RedrawAllViewports);
 	GEngine->OnLevelActorAdded().AddRaw( this, &FUnrealEdMisc::CB_LevelActorsAdded );
 
-	FCoreUObjectDelegates::OnObjectSaved.AddRaw(this, &FUnrealEdMisc::OnObjectSaved);
-	FEditorDelegates::PreSaveWorld.AddRaw(this, &FUnrealEdMisc::OnWorldSaved);
+	FCoreUObjectDelegates::OnObjectPreSave.AddRaw(this, &FUnrealEdMisc::OnObjectSaved);
 
 #if USE_UNIT_TESTS
 	FAutomationTestFramework::Get().PreTestingEvent.AddRaw(this, &FUnrealEdMisc::CB_PreAutomationTesting);
@@ -313,8 +316,7 @@ void FUnrealEdMisc::OnInit()
 	const double InitialEditorStartupTime = (FStudioAnalytics::GetAnalyticSeconds() - GStartTime);
 	UE_LOG(LogUnrealEdMisc, Log, TEXT("Loading editor; pre map load, took %.3f"), InitialEditorStartupTime);
 
-	FStudioAnalytics::FireEvent_Loading(TEXT("InitializeEditor"), InitialEditorStartupTime);
-
+	FStudioAnalytics::FireEvent_Loading(TEXT("InitializeEditor"), InitialEditorStartupTime, { FAnalyticsEventAttribute(TEXT("FirstTime"), true )});
 	// Check for automated build/submit option
 	const bool bDoAutomatedMapBuild = FParse::Param( ParsedCmdLine, TEXT("AutomatedMapBuild") );
 
@@ -501,8 +503,8 @@ void FUnrealEdMisc::OnInit()
 	FMessageLog::OnMessageSelectionChanged().BindRaw(this, &FUnrealEdMisc::OnMessageSelectionChanged);
 	FUObjectToken::DefaultOnMessageTokenActivated().BindRaw(this, &FUnrealEdMisc::OnMessageTokenActivated);
 	FUObjectToken::DefaultOnGetObjectDisplayName().BindRaw(this, &FUnrealEdMisc::OnGetDisplayName);
-	FURLToken::OnGenerateURL().BindRaw(this, &FUnrealEdMisc::GenerateURL);
 	FAssetNameToken::OnGotoAsset().BindRaw(this, &FUnrealEdMisc::OnGotoAsset);
+	FActorToken::DefaultOnMessageTokenActivated().BindRaw(this, &FUnrealEdMisc::OnActorTokenActivated);
 
 	// Register to receive notification of new key bindings
 	OnUserDefinedChordChangedDelegateHandle = FInputBindingManager::Get().RegisterUserDefinedChordChanged(FOnUserDefinedChordChanged::FDelegate::CreateRaw( this, &FUnrealEdMisc::OnUserDefinedChordChanged ));
@@ -531,7 +533,11 @@ void FUnrealEdMisc::OnInit()
 	const double TotalEditorStartupTime = (FStudioAnalytics::GetAnalyticSeconds() - GStartTime);
 	UE_LOG(LogUnrealEdMisc, Log, TEXT("Total Editor Startup Time, took %.3f"), TotalEditorStartupTime);
 
-	FStudioAnalytics::FireEvent_Loading(TEXT("TotalEditorStartup"), TotalEditorStartupTime);
+	TRACE_BOOKMARK(TEXT("Editor Startup"));
+
+	FStudioAnalytics::FireEvent_Loading(TEXT("TotalEditorStartup"), TotalEditorStartupTime, { FAnalyticsEventAttribute(TEXT("FirstTime"), true ) } );
+
+	GShaderCompilingManager->PrintStats(true);
 }
 
 FString FUnrealEdMisc::FindMapFileFromPartialName(const FString& PartialMapName)
@@ -605,6 +611,8 @@ void FUnrealEdMisc::InitEngineAnalytics()
 {
 	if ( FEngineAnalytics::IsAvailable() )
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FUnrealEdMisc::InitEngineAnalytics);
+
 		IAnalyticsProvider& EngineAnalytics = FEngineAnalytics::GetProvider();
 
 		// Send analytics about sample projects
@@ -799,8 +807,10 @@ void FUnrealEdMisc::EditorAnalyticsHeartbeat()
 
 void FUnrealEdMisc::TickAssetAnalytics()
 {
-	if( bIsAssetAnalyticsPending )
+	if( bIsAssetAnalyticsPending && FEngineAnalytics::IsAvailable())
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FUnrealEdMisc::TickAssetAnalytics);
+
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryName);
 
 		if( !AssetRegistryModule.Get().IsLoadingAssets())
@@ -870,7 +880,7 @@ bool FUnrealEdMisc::EnableWorldComposition(UWorld* InWorld, bool bEnable)
 		if (InWorld->WorldComposition != nullptr)
 		{
 			InWorld->FlushLevelStreaming();
-			InWorld->WorldComposition->MarkPendingKill();
+			InWorld->WorldComposition->MarkAsGarbage();
 			InWorld->WorldComposition = nullptr;
 			UWorldComposition::WorldCompositionChangedEvent.Broadcast(InWorld);
 		}
@@ -911,7 +921,7 @@ bool FUnrealEdMisc::EnableWorldComposition(UWorld* InWorld, bool bEnable)
 			auto AppResult = FMessageDialog::Open(EAppMsgType::OkCancel, Message);
 			if (AppResult != EAppReturnType::Ok)
 			{
-				WorldCompostion->MarkPendingKill();
+				WorldCompostion->MarkAsGarbage();
 				return false;
 			}
 		}
@@ -941,6 +951,11 @@ FString CreateProjectPath()
 #else
 #error "Unknown platform"
 #endif
+}
+
+FString FUnrealEdMisc::GetProjectEditorBinaryPath()
+{
+	return CreateProjectPath();
 }
 
 void FUnrealEdMisc::OnExit()
@@ -991,8 +1006,8 @@ void FUnrealEdMisc::OnExit()
 	FMessageLog::OnMessageSelectionChanged().Unbind();
 	FUObjectToken::DefaultOnMessageTokenActivated().Unbind();
 	FUObjectToken::DefaultOnGetObjectDisplayName().Unbind();
-	FURLToken::OnGenerateURL().Unbind();
 	FAssetNameToken::OnGotoAsset().Unbind();
+	FActorToken::DefaultOnMessageTokenActivated().Unbind();
 
 	// Unregister message log UIs
 	FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
@@ -1013,7 +1028,7 @@ void FUnrealEdMisc::OnExit()
 	FEditorDelegates::DisplayLoadErrors.RemoveAll(this);
 	FEditorDelegates::MapChange.RemoveAll(this);
 	FEditorDelegates::RefreshEditor.RemoveAll(this);
-	FEditorDelegates::PreSaveWorld.RemoveAll(this);
+	FEditorDelegates::PreSaveWorldWithContext.RemoveAll(this);
 	FEditorSupportDelegates::RedrawAllViewports.RemoveAll(this);
 	GEngine->OnLevelActorAdded().RemoveAll(this);
 
@@ -1116,10 +1131,11 @@ void FUnrealEdMisc::CB_RefreshEditor()
 	FEditorDelegates::RefreshAllBrowsers.Broadcast();
 }
 
-void FUnrealEdMisc::PreSaveWorld(uint32 SaveFlags, UWorld* World)
+void FUnrealEdMisc::PreSaveWorld(UWorld* World, FObjectPreSaveContext ObjectSaveContext)
 {
-	const bool bAutosaveOrPIE = (SaveFlags & SAVE_FromAutosave) != 0;
-	if (bAutosaveOrPIE || World == NULL || World != GEditor->GetEditorWorldContext().World() || !FEngineAnalytics::IsAvailable())
+	LogAssetUpdate(World, ObjectSaveContext);
+	const bool bAutosaveOrPIE = (ObjectSaveContext.GetSaveFlags() & SAVE_FromAutosave) != 0;
+	if (bAutosaveOrPIE || !World || World != GEditor->GetEditorWorldContext().World() || !FEngineAnalytics::IsAvailable())
 	{
 		return;
 	}
@@ -1355,15 +1371,7 @@ void FUnrealEdMisc::OnMessageTokenActivated(const TSharedRef<IMessageToken>& Tok
 
 			if (Actor && Actor->GetLevel() != nullptr)
 			{
-				// Select the actor
-				GEditor->SelectNone(false, true);
-				GEditor->SelectActor(Actor, /*InSelected=*/true, /*bNotify=*/false, /*bSelectEvenIfHidden=*/true); 
-				GEditor->NoteSelectionChange();
-				GEditor->MoveViewportCamerasToActor(*Actor, false);
-
-				// Update the property windows and create one if necessary
-				GUnrealEd->ShowActorProperties();
-				GUnrealEd->UpdateFloatingPropertyWindows();
+				SelectActorFromMessageToken(Actor);
 			}
 			else
 			{
@@ -1403,6 +1411,35 @@ void FUnrealEdMisc::OnMessageTokenActivated(const TSharedRef<IMessageToken>& Tok
 			}
 		}
 	}
+}
+
+void FUnrealEdMisc::OnActorTokenActivated(const TSharedRef<class IMessageToken>& Token)
+{
+	if (Token->GetType() == EMessageToken::Actor)
+	{
+		const TSharedRef<FActorToken> ActorToken = StaticCastSharedRef<FActorToken>(Token);
+		if (AActor* Actor = FindObject<AActor>(nullptr, *ActorToken->GetActorPath()))
+		{
+			SelectActorFromMessageToken(Actor);
+		}
+		else
+		{
+			GEditor->BroadcastSelectUnloadedActors({ ActorToken->GetActorGuid() });
+		}
+	}
+}
+
+void FUnrealEdMisc::SelectActorFromMessageToken(AActor* InActor)
+{
+	// Select the actor
+	GEditor->SelectNone(false, true);
+	GEditor->SelectActor(InActor, /*InSelected=*/true, /*bNotify=*/false, /*bSelectEvenIfHidden=*/true);
+	GEditor->NoteSelectionChange();
+	GEditor->MoveViewportCamerasToActor(*InActor, false);
+
+	// Update the property windows and create one if necessary
+	GUnrealEd->ShowActorProperties();
+	GUnrealEd->UpdateFloatingPropertyWindows();
 }
 
 FText FUnrealEdMisc::OnGetDisplayName(const UObject* InObject, const bool bFullPath)
@@ -1582,56 +1619,6 @@ void FUnrealEdMisc::OnMessageSelectionChanged(TArray< TSharedRef<FTokenizedMessa
 	}
 }
 
-FString FUnrealEdMisc::GenerateURL(const FString& InUDNPage)
-{
-	if( InUDNPage.Len() > 0 )
-	{
-		FInternationalization& I18N = FInternationalization::Get();
-		// The I18N info and version is now stored in MapErrorURL in the ini
-		const FString PageURL =  TEXT("/Editor/LevelEditing/MapErrors/index.html");
-		const FString BookmarkURL = FString::Printf( TEXT( "#%s" ), *InUDNPage );
-
-		// Developers can browse documentation included with the engine distribution, check for file presence...
-		FString MapErrorURL = FString::Printf( TEXT( "%sDocumentation/HTML/%s" ), *FPaths::ConvertRelativePathToFull( FPaths::EngineDir() ), *PageURL );
-
-		static FString Version = FString::FromInt(FEngineVersion::Current().GetMajor()) + TEXT(".") + FString::FromInt(FEngineVersion::Current().GetMinor());
-		const FString PartialPath = FString::Printf(TEXT("%s/%s%s/index.html"), *Version, *(*I18N.GetCurrentCulture()->GetName()), *PageURL);
-		return FString::Printf(TEXT("%sDocumentation/HTML/%s"), *FPaths::ConvertRelativePathToFull(FPaths::EngineDir()), *PartialPath);
-		if (IFileManager::Get().FileSize(*MapErrorURL) != INDEX_NONE)
-		{
-			MapErrorURL = FString::Printf( TEXT( "file://%s%s" ), *MapErrorURL, *BookmarkURL );
-		}
-		// ... if it's not present, fallback to using the online version, if the full URL is provided...
-		else if(FUnrealEdMisc::Get().GetURL( TEXT("MapErrorURL"), MapErrorURL, true ) && MapErrorURL.EndsWith( TEXT( ".html" ) ))
-		{	
-			FUnrealEdMisc::Get().ReplaceDocumentationURLWildcards(MapErrorURL, I18N.GetCurrentCulture());
-			MapErrorURL += BookmarkURL;
-		}
-		// ...otherwise, attempt to create the URL from what we know here...
-		else if(FUnrealEdMisc::Get().GetURL( TEXT("UDNDocsURL"), MapErrorURL, true ))
-		{
-			if ( !MapErrorURL.EndsWith( TEXT( "/" ) ) )
-			{
-				MapErrorURL += TEXT( "/" );
-			}
-
-			// UDNDocsURL is now stored with placeholders for internalization and version to be replaced
-			FUnrealEdMisc::Get().ReplaceDocumentationURLWildcards(MapErrorURL, I18N.GetCurrentCulture());
-			MapErrorURL += PageURL;
-			MapErrorURL += BookmarkURL;
-		}
-		// ... failing that, just try to access the UDN, period.
-		else
-		{
-			FUnrealEdMisc::Get().GetURL( TEXT("UDNURL"), MapErrorURL, true );
-		}
-
-		return MapErrorURL;
-	}
-
-	return FString();
-}
-
 void FUnrealEdMisc::OnGotoAsset(const FString& InAssetPath) const
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryName);
@@ -1672,27 +1659,22 @@ void FUnrealEdMisc::OnGotoAsset(const FString& InAssetPath) const
 	}	
 }
 
-void FUnrealEdMisc::OnObjectSaved(UObject* SavedObject)
+void FUnrealEdMisc::OnObjectSaved(UObject* SavedObject, FObjectPreSaveContext SaveContext)
 {
 	// Ensure the saved object is a non-UWorld asset (UWorlds are handled separately)
 	if (!SavedObject->IsA<UWorld>() && SavedObject->IsAsset())
 	{
-		LogAssetUpdate(SavedObject);
+		LogAssetUpdate(SavedObject, SaveContext);
 	}
 }
 
-void FUnrealEdMisc::OnWorldSaved(uint32 SaveFlags, UWorld* SavedWorld)
-{
-	LogAssetUpdate(SavedWorld);
-}
-
-void FUnrealEdMisc::LogAssetUpdate(UObject* UpdatedAsset)
+void FUnrealEdMisc::LogAssetUpdate(UObject* UpdatedAsset, FObjectPreSaveContext SaveContext)
 {
 	UPackage* AssetPackage = UpdatedAsset->GetOutermost();
 	const bool bIsPIESave = AssetPackage->RootPackageHasAnyFlags(PKG_PlayInEditor);
 	const bool bIsAutosave = GUnrealEd->GetPackageAutoSaver().IsAutoSaving();
 
-	if (!bIsPIESave && !bIsAutosave && !GIsAutomationTesting)
+	if (!bIsPIESave && !bIsAutosave && !GIsAutomationTesting && !SaveContext.IsProceduralSave())
 	{
 		uint32& NumUpdates = NumUpdatesByAssetName.FindOrAdd(UpdatedAsset->GetClass()->GetFName());
 		NumUpdates++;

@@ -628,8 +628,16 @@ bool FSteamVRHMD::GetHMDMonitorInfo(MonitorInfo& MonitorDesc)
 
 void FSteamVRHMD::GetFieldOfView(float& OutHFOVInDegrees, float& OutVFOVInDegrees) const
 {
-	OutHFOVInDegrees = 0.0f;
-	OutVFOVInDegrees = 0.0f;
+	float HFOV, VFOV, Left, Right, Top, Bottom;
+	VRSystem->GetProjectionRaw(vr::Eye_Left, &Right, &Left, &Top, &Bottom);
+	HFOV = FMath::Atan(-Left);
+	VFOV = FMath::Atan(Top - Bottom);
+	VRSystem->GetProjectionRaw(vr::Eye_Right, &Right, &Left, &Top, &Bottom);
+	HFOV += FMath::Atan(Right);
+	VFOV = FMath::Max(VFOV, FMath::Atan(Top - Bottom));
+
+	OutHFOVInDegrees = FMath::RadiansToDegrees(HFOV);
+	OutVFOVInDegrees = FMath::RadiansToDegrees(VFOV);
 }
 
 bool FSteamVRHMD::DoesSupportPositionalTracking() const
@@ -909,10 +917,10 @@ bool FSteamVRHMD::GetFloorToEyeTrackingTransform(FTransform& OutStandingToSeated
 
 FVector2D FSteamVRHMD::GetPlayAreaBounds(EHMDTrackingOrigin::Type Origin) const
 {
-	FVector2D Bounds;
+	FVector2f Bounds;// LWC_TODO: Precision loss
 	if (Origin == EHMDTrackingOrigin::Stage && VRChaperone->GetPlayAreaSize(&Bounds.X, &Bounds.Y))
 	{
-		return Bounds;
+		return FVector2D(Bounds);
 	}
 	return FVector2D::ZeroVector;
 }
@@ -1425,27 +1433,24 @@ bool FSteamVRHMD::EnableStereo(bool bStereo)
 	return bStereoEnabled;
 }
 
-void FSteamVRHMD::AdjustViewRect(EStereoscopicPass StereoPass, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const
+void FSteamVRHMD::AdjustViewRect(int32 ViewIndex, int32& X, int32& Y, uint32& SizeX, uint32& SizeY) const
 {
 	SizeX = FMath::CeilToInt(IdealRenderTargetSize.X * PixelDensity);
 	SizeY = FMath::CeilToInt(IdealRenderTargetSize.Y * PixelDensity);
 
 	SizeX = SizeX / 2;
-	if( StereoPass == eSSP_RIGHT_EYE )
-	{
-		X += SizeX;
-	}
+	X += SizeX * ViewIndex;
 }
 
-bool FSteamVRHMD::GetRelativeEyePose(int32 DeviceId, EStereoscopicPass Eye, FQuat& OutOrientation, FVector& OutPosition)
+bool FSteamVRHMD::GetRelativeEyePose(int32 DeviceId, int32 ViewIndex, FQuat& OutOrientation, FVector& OutPosition)
 {
-	if (DeviceId != IXRTrackingSystem::HMDDeviceId || !(Eye == eSSP_LEFT_EYE || Eye == eSSP_RIGHT_EYE))
+	if (DeviceId != IXRTrackingSystem::HMDDeviceId || !(ViewIndex == EStereoscopicEye::eSSE_LEFT_EYE || ViewIndex == EStereoscopicEye::eSSE_RIGHT_EYE))
 	{
 		return false;
 	}
 	auto Frame = GetTrackingFrame();
 
-	vr::Hmd_Eye HmdEye = (Eye == eSSP_LEFT_EYE) ? vr::Eye_Left : vr::Eye_Right;
+	vr::Hmd_Eye HmdEye = (ViewIndex == EStereoscopicEye::eSSE_LEFT_EYE) ? vr::Eye_Left : vr::Eye_Right;
 	vr::HmdMatrix34_t HeadFromEye = VRSystem->GetEyeToHeadTransform(HmdEye);
 
 		// grab the eye position, currently ignoring the rotation supplied by GetHeadFromEyePose()
@@ -1460,20 +1465,20 @@ bool FSteamVRHMD::GetRelativeEyePose(int32 DeviceId, EStereoscopicPass Eye, FQua
 	return true;
 }
 
-void FSteamVRHMD::CalculateStereoViewOffset(const enum EStereoscopicPass StereoPassType, FRotator& ViewRotation, const float WorldToMeters, FVector& ViewLocation)
+void FSteamVRHMD::CalculateStereoViewOffset(const int32 StereoViewIndex, FRotator& ViewRotation, const float WorldToMeters, FVector& ViewLocation)
 {
 	// Needed to transform world locked stereo layers
 	PlayerLocation = ViewLocation;
 
 	// Forward to the base implementation (that in turn will call the DefaultXRCamera implementation)
-	FHeadMountedDisplayBase::CalculateStereoViewOffset(StereoPassType, ViewRotation, WorldToMeters, ViewLocation);
+	FHeadMountedDisplayBase::CalculateStereoViewOffset(StereoViewIndex, ViewRotation, WorldToMeters, ViewLocation);
 }
 
-FMatrix FSteamVRHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass StereoPassType) const
+FMatrix FSteamVRHMD::GetStereoProjectionMatrix(const int32 StereoViewIndex) const
 {
 	check(IsStereoEnabled() || IsHeadTrackingEnforced());
 
-	vr::Hmd_Eye HmdEye = (StereoPassType == eSSP_LEFT_EYE) ? vr::Eye_Left : vr::Eye_Right;
+	vr::Hmd_Eye HmdEye = (StereoViewIndex == EStereoscopicEye::eSSE_RIGHT_EYE) ? vr::Eye_Right : vr::Eye_Left;
 	float Left, Right, Top, Bottom;
 
 	VRSystem->GetProjectionRaw(HmdEye, &Right, &Left, &Top, &Bottom);
@@ -1481,6 +1486,13 @@ FMatrix FSteamVRHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass Ster
 	Top *= -1.0f;
 	Right *= -1.0f;
 	Left *= -1.0f;
+
+	if (StereoViewIndex == EStereoscopicEye::eSSE_MONOSCOPIC)
+	{
+		float DummyLeft, DummyTop, DummyBottom;
+		VRSystem->GetProjectionRaw(vr::Eye_Right, &Right, &DummyLeft, &DummyTop, &DummyBottom);
+		Right *= -1.0f;
+	}
 
 	float ZNear = GNearClippingPlane;
 
@@ -1509,9 +1521,9 @@ FMatrix FSteamVRHMD::GetStereoProjectionMatrix(const enum EStereoscopicPass Ster
 	return Mat;
 }
 
-void FSteamVRHMD::GetEyeRenderParams_RenderThread(const FRenderingCompositePassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const
+void FSteamVRHMD::GetEyeRenderParams_RenderThread(const FHeadMountedDisplayPassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const
 {
-	if (Context.View.StereoPass == eSSP_LEFT_EYE)
+	if (Context.View.StereoViewIndex == EStereoscopicEye::eSSE_LEFT_EYE)
 	{
 		EyeToSrcUVOffsetValue.X = 0.0f;
 		EyeToSrcUVOffsetValue.Y = 0.0f;
@@ -1642,16 +1654,14 @@ bool FSteamVRHMD::AllocateRenderTargetTexture(uint32 Index, uint32 SizeX, uint32
 
 	for (uint32 SwapChainIter = 0; SwapChainIter < SteamVRSwapChainLength; ++SwapChainIter)
 	{
+		FRHIResourceCreateInfo CreateInfo(TEXT("FSteamVRHMD"));
 #if PLATFORM_MAC
 		IOSurfaceRef Surface = MetalBridgePtr->GetSurface(SizeX, SizeY);
 		check(Surface != nil);
 
-		FRHIResourceCreateInfo CreateInfo;
 		CreateInfo.BulkData = new FIOSurfaceResourceWrapper(Surface);
 		CFRelease(Surface);
 		CreateInfo.ResourceArray = nullptr;
-#else
-		FRHIResourceCreateInfo CreateInfo;
 #endif
 
 		FTexture2DRHIRef TargetableTexture, ShaderResourceTexture;
@@ -1704,8 +1714,7 @@ bool FSteamVRHMD::AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY,
 
 	FClearValueBinding ClearValue(0.0f, 0);
 	ClearValue.ColorBinding = EClearBinding::EDepthStencilBound;
-	FRHIResourceCreateInfo CreateInfo(ClearValue);
-	CreateInfo.DebugName = TEXT("SteamVRDepthStencil");
+	FRHIResourceCreateInfo CreateInfo(TEXT("SteamVRDepthStencil"), ClearValue);
 
 	for (uint32 SwapChainIter = 0; SwapChainIter < SteamVRSwapChainLength; ++SwapChainIter)
 	{
@@ -1746,7 +1755,7 @@ bool FSteamVRHMD::AllocateDepthTexture(uint32 Index, uint32 SizeX, uint32 SizeY,
 
 FSteamVRHMD::FSteamVRHMD(const FAutoRegister& AutoRegister, ISteamVRPlugin* InSteamVRPlugin) :
 	FHeadMountedDisplayBase(nullptr),
-	FSceneViewExtensionBase(AutoRegister), 
+	FHMDSceneViewExtension(AutoRegister),
 	bHmdEnabled(true),
 	HmdWornState(EHMDWornState::Unknown),
 	bStereoDesired(false),
@@ -1939,25 +1948,19 @@ static void SetupHiddenAreaMeshes(vr::IVRSystem* const VRSystem, FHMDViewMesh Re
 		FVector2D* const LeftEyePositions = new FVector2D[VertexCount];
 		FVector2D* const RightEyePositions = new FVector2D[VertexCount];
 
-		uint32 DataIndex = 0;
-		for (uint32 TriangleIter = 0; TriangleIter < LeftEyeMesh.unTriangleCount; ++TriangleIter)
+		for (uint32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex)
 		{
-			for (uint32 VertexIter = 0; VertexIter < 3; ++VertexIter)
-			{
-				const vr::HmdVector2_t& LeftSrc = LeftEyeMesh.pVertexData[DataIndex];
-				const vr::HmdVector2_t& RightSrc = RightEyeMesh.pVertexData[DataIndex];
+			const vr::HmdVector2_t& LeftSrc = LeftEyeMesh.pVertexData[VertexIndex];
+			const vr::HmdVector2_t& RightSrc = RightEyeMesh.pVertexData[VertexIndex];
 
-				FVector2D& LeftDst = LeftEyePositions[DataIndex];
-				FVector2D& RightDst = RightEyePositions[DataIndex];
+			FVector2D& LeftDst = LeftEyePositions[VertexIndex];
+			FVector2D& RightDst = RightEyePositions[VertexIndex];
 
-				LeftDst.X = LeftSrc.v[0];
-				LeftDst.Y = LeftSrc.v[1];
+			LeftDst.X = LeftSrc.v[0];
+			LeftDst.Y = LeftSrc.v[1];
 
-				RightDst.X = RightSrc.v[0];
-				RightDst.Y = RightSrc.v[1];
-
-				++DataIndex;
-			}
+			RightDst.X = RightSrc.v[0];
+			RightDst.Y = RightSrc.v[1];
 		}
 		
 		const FHMDViewMesh::EHMDMeshType MeshTransformType = (MeshType == vr::EHiddenAreaMeshType::k_eHiddenAreaMesh_Standard) ? FHMDViewMesh::MT_HiddenArea : FHMDViewMesh::MT_VisibleArea;

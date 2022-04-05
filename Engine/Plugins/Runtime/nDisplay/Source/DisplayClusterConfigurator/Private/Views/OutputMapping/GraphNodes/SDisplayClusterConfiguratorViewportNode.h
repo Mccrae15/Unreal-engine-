@@ -30,25 +30,30 @@ public:
 	//~ Begin SGraphNode interface
 	virtual void UpdateGraphNode() override;
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
-	virtual void MoveTo(const FVector2D& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty = true) override;
 	//~ End of SGraphNode interface
 
 	//~ Begin SDisplayClusterConfiguratorBaseNode interface
 	virtual bool IsNodeVisible() const override;
 	virtual bool CanNodeBeSnapAligned() const override { return true; }
-	virtual bool CanNodeBeResized() const { return !IsViewportLocked(); }
+	virtual bool CanNodeBeResized() const { return IsNodeUnlocked(); }
 	virtual float GetNodeMinimumSize() const override;
 	virtual float GetNodeMaximumSize() const override;
 	virtual bool IsAspectRatioFixed() const override;
+	virtual void BeginUserInteraction() const override;
+	virtual void EndUserInteraction() const override;
 	//~ End of SDisplayClusterConfiguratorBaseNode interface
 
 private:
 	FSlateColor GetBackgroundColor() const;
 	const FSlateBrush* GetBackgroundBrush() const;
+	TOptional<FSlateRenderTransform> GetBackgroundRenderTransform() const;
 	const FSlateBrush* GetNodeShadowBrush() const;
 	const FSlateBrush* GetBorderBrush() const;
 	FSlateColor GetTextBoxColor() const;
+	FSlateColor GetTextColor() const;
 	FText GetPositionAndSizeText() const;
+	FText GetTransformText() const;
+	EVisibility GetTransformTextVisibility() const;
 	FMargin GetBackgroundPosition() const;
 	FMargin GetAreaResizeHandlePosition() const;
 	bool IsViewportLocked() const;
@@ -61,4 +66,7 @@ private:
 	TSharedPtr<SImage> BackgroundImage;
 
 	UTexture* CachedTexture;
+	
+	/** If this object is managing the preview texture, such as through resizing. */
+	mutable bool bIsManagingPreviewTexture = false;
 };

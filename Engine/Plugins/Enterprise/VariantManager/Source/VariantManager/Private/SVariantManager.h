@@ -10,7 +10,7 @@
 #include "Widgets/Views/SListView.h"
 #include "Framework/Commands/UICommandList.h"
 #include "UObject/WeakObjectPtr.h"
-
+#include "PropertyCustomizationHelpers.h"
 #include "VariantManager.h"
 
 class FExtender;
@@ -51,7 +51,6 @@ struct FColumnSizeData
 	TAttribute<float> LeftColumnWidth;
 	TAttribute<float> MiddleColumnWidth;
 	TAttribute<float> RightColumnWidth;
-
 	// There are three columns, but only two splitters
 	SSplitter::FOnSlotResized OnFirstSplitterChanged;
 	SSplitter::FOnSlotResized OnSecondSplitterChanged;
@@ -313,9 +312,6 @@ private:
 	TSharedPtr<SSplitter> DependenciesSplitter;
 
 	TArray<TSharedRef<ERightTreeRowType>> RightTreeRootItems;
-
-	// TODO: Make separate VariantManagerStyle
-	TSharedPtr<FSlateImageBrush> RecordButtonBrush;
 
 	struct FCachedPropertyPath
 	{

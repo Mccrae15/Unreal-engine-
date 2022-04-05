@@ -10,7 +10,6 @@
 #include "Internationalization/StringTableRegistry.h"
 
 #include "Internationalization/TextHistory.h"
-#include "Internationalization/TextData.h"
 #include "Misc/Guid.h"
 #include "Internationalization/TextFormatter.h"
 #include "Internationalization/TextChronoFormatter.h"
@@ -22,6 +21,7 @@
 #include "Serialization/StructuredArchive.h"
 
 #include "UObject/EditorObjectVersion.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
 #include "HAL/PlatformProcess.h"
 
 //DEFINE_STAT(STAT_TextFormat);
@@ -39,52 +39,59 @@ bool FTextInspector::ShouldGatherForLocalization(const FText& Text)
 
 TOptional<FString> FTextInspector::GetNamespace(const FText& Text)
 {
-	FTextDisplayStringPtr LocalizedString = Text.TextData->GetLocalizedString();
-	if (LocalizedString.IsValid())
+	const FTextId TextId = FTextInspector::GetTextId(Text);
+	if (!TextId.IsEmpty())
 	{
-		FString Namespace;
-		FString Key;
-		if (FTextLocalizationManager::Get().FindNamespaceAndKeyFromDisplayString(LocalizedString.ToSharedRef(), Namespace, Key))
-		{
-			return Namespace;
-		}
+		return FString(TextId.GetNamespace().GetChars());
 	}
 	return TOptional<FString>();
 }
 
 TOptional<FString> FTextInspector::GetKey(const FText& Text)
 {
-	FTextDisplayStringPtr LocalizedString = Text.TextData->GetLocalizedString();
-	if (LocalizedString.IsValid())
+	const FTextId TextId = FTextInspector::GetTextId(Text);
+	if (!TextId.IsEmpty())
 	{
-		FString Namespace;
-		FString Key;
-		if (FTextLocalizationManager::Get().FindNamespaceAndKeyFromDisplayString(LocalizedString.ToSharedRef(), Namespace, Key))
-		{
-			return Key;
-		}
+		return FString(TextId.GetKey().GetChars());
 	}
 	return TOptional<FString>();
 }
 
+FTextId FTextInspector::GetTextId(const FText& Text)
+{
+	return Text.TextData->GetTextHistory().GetTextId();
+}
+
 const FString* FTextInspector::GetSourceString(const FText& Text)
 {
-	return &Text.GetSourceString();
+	return &Text.TextData->GetSourceString();
 }
 
 const FString& FTextInspector::GetDisplayString(const FText& Text)
 {
+	Text.Rebuild();
 	return Text.TextData->GetDisplayString();
 }
 
-const FTextDisplayStringRef FTextInspector::GetSharedDisplayString(const FText& Text)
+FTextConstDisplayStringPtr FTextInspector::GetSharedDisplayString(const FText& Text)
 {
-	// todo: calling PersistText here probably isn't the right thing to do, however it avoids having to make an external API change at this point
-	Text.TextData->PersistText();
-	return Text.TextData->GetLocalizedString().ToSharedRef();
+	Text.Rebuild();
+	return Text.TextData->GetLocalizedString();
 }
 
 bool FTextInspector::GetTableIdAndKey(const FText& Text, FName& OutTableId, FString& OutKey)
+{
+	FTextKey TmpKey;
+	if (GetTableIdAndKey(Text, OutTableId, TmpKey))
+	{
+		OutKey = TmpKey.GetChars();
+		return true;
+	}
+
+	return false;
+}
+
+bool FTextInspector::GetTableIdAndKey(const FText& Text, FName& OutTableId, FTextKey& OutKey)
 {
 	if (Text.IsFromStringTable())
 	{
@@ -108,6 +115,11 @@ void FTextInspector::GetHistoricFormatData(const FText& Text, TArray<FHistoricTe
 bool FTextInspector::GetHistoricNumericData(const FText& Text, FHistoricTextNumericData& OutHistoricNumericData)
 {
 	return Text.GetHistoricNumericData(OutHistoricNumericData);
+}
+
+const void* FTextInspector::GetSharedDataId(const FText& Text)
+{
+	return &Text.TextData.Get();
 }
 
 // These default values have been duplicated to the KismetTextLibrary functions for Blueprints. Please replicate any changes there!
@@ -236,18 +248,16 @@ FText::FText()
 }
 
 FText::FText( EInitToEmptyString )
-	: TextData(new TLocalizedTextData<FTextHistory_Base>(MakeShared<FString, ESPMode::ThreadSafe>()))
+	: TextData(MakeShared<FTextHistory_Base, ESPMode::ThreadSafe>())
 	, Flags(0)
 {
 }
 
-#if PLATFORM_WINDOWS && defined(__clang__)
-CORE_API const FText& FText::GetEmpty() // @todo clang: Workaround for missing symbol export
+const FText& FText::GetEmpty()
 {
 	static const FText StaticEmptyText = FText(FText::EInitToEmptyString::Value);
 	return StaticEmptyText;
 }
-#endif
 
 FText::FText( TSharedRef<ITextData, ESPMode::ThreadSafe> InTextData )
 	: TextData(MoveTemp(InTextData))
@@ -256,40 +266,31 @@ FText::FText( TSharedRef<ITextData, ESPMode::ThreadSafe> InTextData )
 }
 
 FText::FText( FString&& InSourceString )
-	: TextData(new TGeneratedTextData<FTextHistory_Base>(CopyTemp(InSourceString))) // Copy the source string as the live display string
+	: TextData(MakeShared<FTextHistory_Base, ESPMode::ThreadSafe>(FTextId(), MoveTemp(InSourceString)))
 	, Flags(0)
 {
-	TextData->SetTextHistory(FTextHistory_Base(MoveTemp(InSourceString))); // Move the source string as the historic source string
 }
 
 FText::FText( FName InTableId, FString InKey, const EStringTableLoadingPolicy InLoadingPolicy )
-	: TextData(new TIndirectTextData<FTextHistory_StringTableEntry>(FTextHistory_StringTableEntry(InTableId, MoveTemp(InKey), InLoadingPolicy)))
+	: TextData(MakeShared<FTextHistory_StringTableEntry, ESPMode::ThreadSafe>(InTableId, MoveTemp(InKey), InLoadingPolicy))
 	, Flags(0)
 {
-}
-
-FText::FText( FString&& InSourceString, FTextDisplayStringRef InDisplayString )
-	: TextData(new TLocalizedTextData<FTextHistory_Base>(MoveTemp(InDisplayString)))
-	, Flags(0)
-{
-	TextData->SetTextHistory(FTextHistory_Base(MoveTemp(InSourceString)));
 }
 
 FText::FText( FString&& InSourceString, const FTextKey& InNamespace, const FTextKey& InKey, uint32 InFlags )
-	: TextData(new TLocalizedTextData<FTextHistory_Base>(FTextLocalizationManager::Get().GetDisplayString(InNamespace, InKey, &InSourceString)))
+	: TextData(MakeShared<FTextHistory_Base, ESPMode::ThreadSafe>(FTextId(InNamespace, InKey), MoveTemp(InSourceString)))
 	, Flags(InFlags)
 {
-	TextData->SetTextHistory(FTextHistory_Base(MoveTemp(InSourceString)));
 }
 
 bool FText::IsEmpty() const
 {
-	return TextData->GetDisplayString().IsEmpty();
+	return ToString().IsEmpty();
 }
 
 bool FText::IsEmptyOrWhitespace() const
 {
-	const FString& DisplayString = TextData->GetDisplayString();
+	const FString& DisplayString = ToString();
 	if (DisplayString.IsEmpty())
 	{
 		return true;
@@ -310,7 +311,7 @@ FText FText::ToLower() const
 {
 	FString ResultString = FTextTransformer::ToLower(ToString());
 
-	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_Transform>, ESPMode::ThreadSafe>(MoveTemp(ResultString), FTextHistory_Transform(*this, FTextHistory_Transform::ETransformType::ToLower)));
+	FText Result = FText(MakeShared<FTextHistory_Transform, ESPMode::ThreadSafe>(MoveTemp(ResultString), *this, FTextHistory_Transform::ETransformType::ToLower));
 	if (!GIsEditor)
 	{
 		Result.Flags |= ETextFlag::Transient;
@@ -322,7 +323,7 @@ FText FText::ToUpper() const
 {
 	FString ResultString = FTextTransformer::ToUpper(ToString());
 
-	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_Transform>, ESPMode::ThreadSafe>(MoveTemp(ResultString), FTextHistory_Transform(*this, FTextHistory_Transform::ETransformType::ToUpper)));
+	FText Result = FText(MakeShared<FTextHistory_Transform, ESPMode::ThreadSafe>(MoveTemp(ResultString), *this, FTextHistory_Transform::ETransformType::ToUpper));
 	if (!GIsEditor)
 	{
 		Result.Flags |= ETextFlag::Transient;
@@ -510,7 +511,7 @@ FText FText::FromTextGenerator(const TSharedRef<ITextGenerator>& TextGenerator)
 {
 	FString ResultString = TextGenerator->BuildLocalizedDisplayString();
 
-	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_TextGenerator>, ESPMode::ThreadSafe>(MoveTemp(ResultString), FTextHistory_TextGenerator(TextGenerator)));
+	FText Result = FText(MakeShared<FTextHistory_TextGenerator, ESPMode::ThreadSafe>(MoveTemp(ResultString), TextGenerator));
 	if (!GIsEditor)
 	{
 		Result.Flags |= ETextFlag::Transient;
@@ -537,7 +538,7 @@ void FText::UnregisterTextGenerator( FName TypeID )
 * Generate an FText that represents the passed number in the passed culture
 */
 
-// on some platforms (PS4) int64_t is a typedef of long.  However, UE4 typedefs int64 as long long.  Since these are distinct types, and ICU only has a constructor for int64_t, casting to int64 causes a compile error from ambiguous function call, 
+// on some platforms int64_t is a typedef of long.  However, UE4 typedefs int64 as long long.  Since these are distinct types, and ICU only has a constructor for int64_t, casting to int64 causes a compile error from ambiguous function call, 
 // so cast to int64_t's where appropriate here to avoid problems.
 
 #define DEF_ASNUMBER_CAST(T1, T2) FText FText::AsNumber(T1 Val, const FNumberFormattingOptions* const Options, const FCulturePtr& TargetCulture) { return FText::AsNumberTemplate<T1, T2>(Val, Options, TargetCulture); }
@@ -566,7 +567,7 @@ FText FText::AsNumberTemplate(T1 Val, const FNumberFormattingOptions* const Opti
 	const FNumberFormattingOptions& FormattingOptions = (Options) ? *Options : FormattingRules.CultureDefaultFormattingOptions;
 	FString NativeString = FastDecimalFormat::NumberToString(Val, FormattingRules, FormattingOptions);
 
-	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_AsNumber>, ESPMode::ThreadSafe>(MoveTemp(NativeString), FTextHistory_AsNumber(Val, Options, TargetCulture)));
+	FText Result = FText(MakeShared<FTextHistory_AsNumber, ESPMode::ThreadSafe>(MoveTemp(NativeString), Val, Options, TargetCulture));
 	if (!GIsEditor)
 	{
 		Result.Flags |= ETextFlag::Transient;
@@ -603,7 +604,7 @@ FText FText::AsCurrencyTemplate(T1 Val, const FString& CurrencyCode, const FNumb
 	const FNumberFormattingOptions& FormattingOptions = (Options) ? *Options : FormattingRules.CultureDefaultFormattingOptions;
 	FString NativeString = FastDecimalFormat::NumberToString(Val, FormattingRules, FormattingOptions);
 
-	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_AsCurrency>, ESPMode::ThreadSafe>(MoveTemp(NativeString), FTextHistory_AsCurrency(Val, CurrencyCode, Options, TargetCulture)));
+	FText Result = FText(MakeShared<FTextHistory_AsCurrency, ESPMode::ThreadSafe>(MoveTemp(NativeString), Val, CurrencyCode, Options, TargetCulture));
 	if (!GIsEditor)
 	{
 		Result.Flags |= ETextFlag::Transient;
@@ -623,7 +624,7 @@ FText FText::AsCurrencyBase(int64 BaseVal, const FString& CurrencyCode, const FC
 	double Val = static_cast<double>(BaseVal) / static_cast<double>(FastDecimalFormat::Pow10(DecimalPlaces));
 	FString NativeString = FastDecimalFormat::NumberToString(Val, FormattingRules, FormattingOptions);
 
-	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_AsCurrency>, ESPMode::ThreadSafe>(MoveTemp(NativeString), FTextHistory_AsCurrency(Val, CurrencyCode, nullptr, TargetCulture)));
+	FText Result = FText(MakeShared<FTextHistory_AsCurrency, ESPMode::ThreadSafe>(MoveTemp(NativeString), Val, CurrencyCode, nullptr, TargetCulture));
 	if (!GIsEditor)
 	{
 		Result.Flags |= ETextFlag::Transient;
@@ -653,7 +654,7 @@ FText FText::AsPercentTemplate(T1 Val, const FNumberFormattingOptions* const Opt
 	const FNumberFormattingOptions& FormattingOptions = (Options) ? *Options : FormattingRules.CultureDefaultFormattingOptions;
 	FString NativeString = FastDecimalFormat::NumberToString(Val * static_cast<T1>(100), FormattingRules, FormattingOptions);
 
-	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_AsPercent>, ESPMode::ThreadSafe>(MoveTemp(NativeString), FTextHistory_AsPercent(Val, Options, TargetCulture)));
+	FText Result = FText(MakeShared<FTextHistory_AsPercent, ESPMode::ThreadSafe>(MoveTemp(NativeString), Val, Options, TargetCulture));
 	if (!GIsEditor)
 	{
 		Result.Flags |= ETextFlag::Transient;
@@ -668,7 +669,7 @@ FText FText::AsDate(const FDateTime& DateTime, const EDateTimeStyle::Type DateSt
 	const FCulture& Culture = TargetCulture.IsValid() ? *TargetCulture : *I18N.GetCurrentLocale();
 
 	FString ChronoSting = FTextChronoFormatter::AsDate(DateTime, DateStyle, TimeZone, Culture);
-	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_AsDate>, ESPMode::ThreadSafe>(MoveTemp(ChronoSting), FTextHistory_AsDate(DateTime, DateStyle, TimeZone, TargetCulture)));
+	FText Result = FText(MakeShared<FTextHistory_AsDate, ESPMode::ThreadSafe>(MoveTemp(ChronoSting), DateTime, DateStyle, TimeZone, TargetCulture));
 	if (!GIsEditor)
 	{
 		Result.Flags |= ETextFlag::Transient;
@@ -683,7 +684,22 @@ FText FText::AsDateTime(const FDateTime& DateTime, const EDateTimeStyle::Type Da
 	const FCulture& Culture = TargetCulture.IsValid() ? *TargetCulture : *I18N.GetCurrentLocale();
 
 	FString ChronoString = FTextChronoFormatter::AsDateTime(DateTime, DateStyle, TimeStyle, TimeZone, Culture);
-	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_AsDateTime>, ESPMode::ThreadSafe>(MoveTemp(ChronoString), FTextHistory_AsDateTime(DateTime, DateStyle, TimeStyle, TimeZone, TargetCulture)));
+	FText Result = FText(MakeShared<FTextHistory_AsDateTime, ESPMode::ThreadSafe>(MoveTemp(ChronoString), DateTime, DateStyle, TimeStyle, TimeZone, TargetCulture));
+	if (!GIsEditor)
+	{
+		Result.Flags |= ETextFlag::Transient;
+	}
+	return Result;
+}
+
+FText FText::AsDateTime(const FDateTime& DateTime, const FString& CustomPattern, const FString& TimeZone, const FCulturePtr& TargetCulture)
+{
+	FInternationalization& I18N = FInternationalization::Get();
+	checkf(I18N.IsInitialized() == true, TEXT("FInternationalization is not initialized. An FText formatting method was likely used in static object initialization - this is not supported."));
+	const FCulture& Culture = TargetCulture.IsValid() ? *TargetCulture : *I18N.GetCurrentLocale();
+
+	FString ChronoString = FTextChronoFormatter::AsDateTime(DateTime, CustomPattern, TimeZone, Culture);
+	FText Result = FText(MakeShared<FTextHistory_AsDateTime, ESPMode::ThreadSafe>(MoveTemp(ChronoString), DateTime, CustomPattern, TimeZone, TargetCulture));
 	if (!GIsEditor)
 	{
 		Result.Flags |= ETextFlag::Transient;
@@ -698,7 +714,7 @@ FText FText::AsTime(const FDateTime& DateTime, const EDateTimeStyle::Type TimeSt
 	const FCulture& Culture = TargetCulture.IsValid() ? *TargetCulture : *I18N.GetCurrentLocale();
 
 	FString ChronoString = FTextChronoFormatter::AsTime(DateTime, TimeStyle, TimeZone, Culture);
-	FText Result = FText(MakeShared<TGeneratedTextData<FTextHistory_AsTime>, ESPMode::ThreadSafe>(MoveTemp(ChronoString), FTextHistory_AsTime(DateTime, TimeStyle, TimeZone, TargetCulture)));
+	FText Result = FText(MakeShared<FTextHistory_AsTime, ESPMode::ThreadSafe>(MoveTemp(ChronoString), DateTime, TimeStyle, TimeZone, TargetCulture));
 	if (!GIsEditor)
 	{
 		Result.Flags |= ETextFlag::Transient;
@@ -787,11 +803,11 @@ FString FText::GetInvariantTimeZone()
 
 bool FText::FindText(const FTextKey& Namespace, const FTextKey& Key, FText& OutText, const FString* const SourceString)
 {
-	FTextDisplayStringPtr FoundString = FTextLocalizationManager::Get().FindDisplayString( Namespace, Key, SourceString );
+	FTextConstDisplayStringPtr FoundString = FTextLocalizationManager::Get().FindDisplayString( Namespace, Key, SourceString );
 
 	if ( FoundString.IsValid() )
 	{
-		OutText = FText( SourceString ? FString(*SourceString) : FString(), FoundString.ToSharedRef() );
+		OutText = FText(MakeShared<FTextHistory_Base, ESPMode::ThreadSafe>(FTextId(Namespace, Key), SourceString ? FString(*SourceString) : FString(), FoundString.ToSharedRef()));
 		return true;
 	}
 
@@ -815,32 +831,26 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 	//This would result in all subsequently duplicated objects stamping over formerly duplicated ones.
 
 	// Older FText's stored their "SourceString", that is now stored in a history class so move it there
-	if (UnderlyingArchive.IsLoading() && UnderlyingArchive.UE4Ver() < VER_UE4_FTEXT_HISTORY)
+	if (UnderlyingArchive.IsLoading() && UnderlyingArchive.UEVer() < VER_UE4_FTEXT_HISTORY)
 	{
 		FString SourceStringToImplantIntoHistory;
 		Record << SA_VALUE(TEXT("SourceStringToImplantIntoHistory"), SourceStringToImplantIntoHistory);
 
-		FTextDisplayStringPtr DisplayString;
-
 		// Namespaces and keys are no longer stored in the FText, we need to read them in and discard
-		if (UnderlyingArchive.UE4Ver() >= VER_UE4_ADDED_NAMESPACE_AND_KEY_DATA_TO_FTEXT)
+		FTextId TextId;
+		if (UnderlyingArchive.UEVer() >= VER_UE4_ADDED_NAMESPACE_AND_KEY_DATA_TO_FTEXT)
 		{
-			FString Namespace;
-			FString Key;
+			FTextKey Namespace;
+			Namespace.SerializeAsString(Record.EnterField(SA_FIELD_NAME(TEXT("Namespace"))));
 
-			Record << SA_VALUE(TEXT("Namespace"), Namespace);
-			Record << SA_VALUE(TEXT("Key"), Key);
+			FTextKey Key;
+			Key.SerializeAsString(Record.EnterField(SA_FIELD_NAME(TEXT("Key"))));
 
 			// Get the DisplayString using the namespace, key, and source string.
-			DisplayString = FTextLocalizationManager::Get().GetDisplayString(Namespace, Key, &SourceStringToImplantIntoHistory);
-		}
-		else
-		{
-			DisplayString = MakeShared<FString, ESPMode::ThreadSafe>();
+			TextId = FTextId(Namespace, Key);
 		}
 
-		check(DisplayString.IsValid());
-		Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_Base>, ESPMode::ThreadSafe>(DisplayString.ToSharedRef(), FTextHistory_Base(MoveTemp(SourceStringToImplantIntoHistory)));
+		Value.TextData = MakeShared<FTextHistory_Base, ESPMode::ThreadSafe>(TextId, MoveTemp(SourceStringToImplantIntoHistory));
 	}
 
 #if WITH_EDITOR
@@ -861,7 +871,6 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 
 	if(UnderlyingArchive.IsSaving())
 	{
-		Value.TextData->PersistText(); // We always need to do this when saving so that we can save the history correctly
 		if(UnderlyingArchive.IsPersistent())
 		{
 			Value.Flags &= ~(ETextFlag::ConvertedProperty | ETextFlag::InitializedFromString); // Remove conversion flag before saving.
@@ -879,7 +888,7 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 		Value.Flags = OriginalFlags;
 	}
 
-	if (UnderlyingArchive.UE4Ver() >= VER_UE4_FTEXT_HISTORY)
+	if (UnderlyingArchive.UEVer() >= VER_UE4_FTEXT_HISTORY)
 	{
 		bool bSerializeHistory = true;
 
@@ -888,7 +897,12 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 			// Skip the history for empty texts
 			bSerializeHistory = !Value.IsEmpty() && !Value.IsCultureInvariant();
 
-			if (!bSerializeHistory)
+			if (bSerializeHistory)
+			{
+				int8 HistoryType = (int8)Value.TextData->GetTextHistory().GetType();
+				Record << SA_VALUE(TEXT("HistoryType"), HistoryType);
+			}
+			else
 			{
 				int8 HistoryType = (int8)ETextHistoryType::None;
 				Record << SA_VALUE(TEXT("HistoryType"), HistoryType);
@@ -897,14 +911,13 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 				Record << SA_VALUE(TEXT("bHasCultureInvariantString"), bHasCultureInvariantString);
 				if (bHasCultureInvariantString)
 				{
-					FString CultureInvariantString = Value.GetSourceString();
+					FString CultureInvariantString = Value.TextData->GetSourceString();
 					Record << SA_VALUE(TEXT("CultureInvariantString"), CultureInvariantString);
 				}
 			}
 		}
 		else if (UnderlyingArchive.IsLoading())
 		{
-			// The type is serialized during the serialization of the history, during deserialization we need to deserialize it and create the correct history
 			int8 HistoryType = (int8)ETextHistoryType::None;
 			Record << SA_VALUE(TEXT("HistoryType"), HistoryType);
 
@@ -913,67 +926,67 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 			{
 			case ETextHistoryType::Base:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_Base>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_Base, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::NamedFormat:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_NamedFormat>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_NamedFormat, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::OrderedFormat:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_OrderedFormat>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_OrderedFormat, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::ArgumentFormat:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_ArgumentDataFormat>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_ArgumentDataFormat, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::AsNumber:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_AsNumber>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_AsNumber, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::AsPercent:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_AsPercent>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_AsPercent, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::AsCurrency:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_AsCurrency>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_AsCurrency, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::AsDate:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_AsDate>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_AsDate, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::AsTime:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_AsTime>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_AsTime, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::AsDateTime:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_AsDateTime>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_AsDateTime, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::Transform:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_Transform>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_Transform, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::StringTableEntry:
 				{
-					Value.TextData = MakeShared<TIndirectTextData<FTextHistory_StringTableEntry>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_StringTableEntry, ESPMode::ThreadSafe>();
 					break;
 				}
 			case ETextHistoryType::TextGenerator:
 				{
-					Value.TextData = MakeShared<TLocalizedTextData<FTextHistory_TextGenerator>, ESPMode::ThreadSafe>();
+					Value.TextData = MakeShared<FTextHistory_TextGenerator, ESPMode::ThreadSafe>();
 					break;
 				}
 			default:
@@ -996,15 +1009,9 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 			}
 		}
 
-		if(bSerializeHistory)
+		if (bSerializeHistory)
 		{
-			FTextHistory& MutableTextHistory = Value.TextData->GetMutableTextHistory();
-			MutableTextHistory.Serialize(Record);
-
-			if (Value.TextData->OwnsLocalizedString())
-			{
-				MutableTextHistory.SerializeForDisplayString(Record, Value.TextData->GetMutableLocalizedString());
-			}
+			Value.TextData->GetMutableTextHistory().Serialize(Record);
 		}
 	}
 
@@ -1025,10 +1032,10 @@ void FText::SerializeText(FStructuredArchive::FSlot Slot, FText& Value)
 	}
 }
 
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 FText FText::ChangeKey( const FTextKey& Namespace, const FTextKey& Key, const FText& Text )
 {
-	return FText(FString(*Text.TextData->GetTextHistory().GetSourceString()), Namespace, Key, 0);
+	return FText(FString(*Text.TextData->GetSourceString()), Namespace, Key, 0);
 }
 #endif
 
@@ -1068,6 +1075,19 @@ FText FText::FromString( FString&& String )
 	return NewText;
 }
 
+FText FText::FromStringView(FStringView InString)
+{
+	FText NewText = InString.IsEmpty() ? FText::GetEmpty() : FText(FString(InString));
+
+	if (!GIsEditor)
+	{
+		NewText.Flags |= ETextFlag::CultureInvariant;
+	}
+	NewText.Flags |= ETextFlag::InitializedFromString;
+
+	return NewText;
+}
+
 FText FText::AsCultureInvariant( const FString& String )
 {
 	FText NewText = String.IsEmpty() ? FText::GetEmpty() : FText(CopyTemp(String));
@@ -1095,7 +1115,6 @@ FText FText::AsCultureInvariant( FText Text )
 const FString& FText::ToString() const
 {
 	Rebuild();
-
 	return TextData->GetDisplayString();
 }
 
@@ -1106,18 +1125,12 @@ FString FText::BuildSourceString() const
 
 bool FText::IsNumeric() const
 {
-	return TextData->GetDisplayString().IsNumeric();
+	return ToString().IsNumeric();
 }
 
 void FText::Rebuild() const
 {
-	FTextHistory& MutableTextHistory = TextData->GetMutableTextHistory();
-	if (MutableTextHistory.IsOutOfDate())
-	{
-		// Need to persist the text before the rebuild so that we have a valid localized string pointer
-		TextData->PersistText();
-		MutableTextHistory.Rebuild(TextData->GetLocalizedString().ToSharedRef());
-	}
+	TextData->GetMutableTextHistory().UpdateDisplayStringIfOutOfDate();
 }
 
 bool FText::IsTransient() const
@@ -1147,7 +1160,7 @@ bool FText::ShouldGatherForLocalization() const
 		return false;
 	}
 
-	const FString& SourceString = GetSourceString();
+	const FString& SourceString = TextData->GetSourceString();
 
 	auto IsAllWhitespace = [](const FString& String) -> bool
 	{
@@ -1162,17 +1175,6 @@ bool FText::ShouldGatherForLocalization() const
 	};
 
 	return !((Flags & ETextFlag::CultureInvariant) || (Flags & ETextFlag::Transient)) && !IsFromStringTable() && !SourceString.IsEmpty() && !IsAllWhitespace(SourceString);
-}
-
-const FString& FText::GetSourceString() const
-{
-	const FString* SourceString = TextData->GetTextHistory().GetSourceString();
-	if(SourceString)
-	{
-		return *SourceString;
-	}
-
-	return TextData->GetDisplayString();
 }
 
 void FText::GetHistoricFormatData(TArray<FHistoricTextFormatData>& OutHistoricFormatData) const
@@ -1193,12 +1195,15 @@ bool FText::IdenticalTo( const FText& Other, const ETextIdenticalModeFlags Compa
 		return true;
 	}
 
+	Rebuild();
+	Other.Rebuild();
+
 	// If both instances point to the same localized string, then both instances are considered identical.
 	// This is fast as it skips a lexical compare, however it can also return false for two instances that have identical strings, but in different pointers.
 	// For instance, this method will return false for two FText objects created from FText::FromString("Wooble") as they each have unique (or null), non-shared instances.
 	{
-		FTextDisplayStringPtr DisplayStringPtr = TextData->GetLocalizedString();
-		FTextDisplayStringPtr OtherDisplayStringPtr = Other.TextData->GetLocalizedString();
+		FTextConstDisplayStringPtr DisplayStringPtr = TextData->GetLocalizedString();
+		FTextConstDisplayStringPtr OtherDisplayStringPtr = Other.TextData->GetLocalizedString();
 		if (DisplayStringPtr && OtherDisplayStringPtr && DisplayStringPtr == OtherDisplayStringPtr)
 		{
 			return true;
@@ -1431,6 +1436,7 @@ void FFormatArgumentData::ResetValue()
 	ArgumentValue = FText::GetEmpty();
 	ArgumentValueInt = 0;
 	ArgumentValueFloat = 0.0f;
+	ArgumentValueDouble = 0.0;
 	ArgumentValueGender = ETextGender::Masculine;
 }
 
@@ -1442,6 +1448,8 @@ FFormatArgumentValue FFormatArgumentData::ToArgumentValue() const
 		return FFormatArgumentValue(ArgumentValueInt);
 	case EFormatArgumentType::Float:
 		return FFormatArgumentValue(ArgumentValueFloat);
+	case EFormatArgumentType::Double:
+		return FFormatArgumentValue(ArgumentValueDouble);
 	case EFormatArgumentType::Text:
 		return FFormatArgumentValue(ArgumentValue);
 	case EFormatArgumentType::Gender:
@@ -1458,11 +1466,12 @@ void operator<<(FStructuredArchive::FSlot Slot, FFormatArgumentData& Value)
 	FStructuredArchive::FRecord Record = Slot.EnterRecord();
 
 	UnderlyingArchive.UsingCustomVersion(FEditorObjectVersion::GUID);
-
+	UnderlyingArchive.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+	
 	if (UnderlyingArchive.IsLoading())
 	{
 		// ArgumentName was changed to be FString rather than FText, so we need to convert older data to ensure serialization stays happy outside of UStruct::SerializeTaggedProperties.
-		if (UnderlyingArchive.UE4Ver() >= VER_UE4_K2NODE_VAR_REFERENCEGUIDS) // There was no version bump for this change, but VER_UE4_K2NODE_VAR_REFERENCEGUIDS was made at almost the same time.
+		if (UnderlyingArchive.UEVer() >= VER_UE4_K2NODE_VAR_REFERENCEGUIDS) // There was no version bump for this change, but VER_UE4_K2NODE_VAR_REFERENCEGUIDS was made at almost the same time.
 		{
 			Record << SA_VALUE(TEXT("ArgumentName"), Value.ArgumentName);
 		}
@@ -1502,10 +1511,23 @@ void operator<<(FStructuredArchive::FSlot Slot, FFormatArgumentData& Value)
 	switch (Value.ArgumentValueType)
 	{
 	case EFormatArgumentType::Int:
-		Record << SA_VALUE(TEXT("Value"), Value.ArgumentValueInt);
+		if (UnderlyingArchive.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) >= FUE5ReleaseStreamObjectVersion::TextFormatArgumentData64bitSupport)
+		{
+			Record << SA_VALUE(TEXT("Value"), Value.ArgumentValueInt);	
+		}
+		// Legacy support for binary serialization of int32 values before 64 bit support was the default
+		else
+		{
+			int32 IntValue = static_cast<int32>(Value.ArgumentValueInt);
+			Record << SA_VALUE(TEXT("Value"), IntValue);
+			Value.ArgumentValueInt = static_cast<int64>(IntValue);
+		}
 		break;
 	case EFormatArgumentType::Float:
 		Record << SA_VALUE(TEXT("Value"), Value.ArgumentValueFloat);
+		break;
+	case EFormatArgumentType::Double:
+		Record << SA_VALUE(TEXT("Value"), Value.ArgumentValueDouble);
 		break;
 	case EFormatArgumentType::Text:
 		Record << SA_VALUE(TEXT("Value"), Value.ArgumentValue);
@@ -1522,15 +1544,12 @@ void operator<<(FStructuredArchive::FSlot Slot, FFormatArgumentData& Value)
 }
 
 FTextSnapshot::FTextSnapshot()
-	: TextDataPtr()
-	, GlobalHistoryRevision(0)
-	, LocalHistoryRevision(0)
-	, Flags(0)
 {
 }
 
 FTextSnapshot::FTextSnapshot(const FText& InText)
 	: TextDataPtr(InText.TextData)
+	, LocalizedStringPtr(InText.TextData->GetLocalizedString())
 	, GlobalHistoryRevision(GetGlobalHistoryRevisionForText(InText))
 	, LocalHistoryRevision(GetLocalHistoryRevisionForText(InText))
 	, Flags(InText.Flags)
@@ -1543,7 +1562,9 @@ bool FTextSnapshot::IdenticalTo(const FText& InText) const
 	// (this usually happens when ToString() is called)
 	InText.Rebuild();
 
-	return TextDataPtr == InText.TextData 
+	return TextDataPtr
+		&& TextDataPtr == InText.TextData
+		&& LocalizedStringPtr == InText.TextData->GetLocalizedString()
 		&& GlobalHistoryRevision == GetGlobalHistoryRevisionForText(InText)
 		&& LocalHistoryRevision == GetLocalHistoryRevisionForText(InText)
 		&& Flags == InText.Flags;
@@ -1557,9 +1578,10 @@ bool FTextSnapshot::IsDisplayStringEqualTo(const FText& InText) const
 
 	// We have to assume that the display string has changed if the history of the text has changed
 	// (due to a culture change), as we no longer have the old display string to compare against
-	return GlobalHistoryRevision == GetGlobalHistoryRevisionForText(InText)
+	return TextDataPtr
+		&& GlobalHistoryRevision == GetGlobalHistoryRevisionForText(InText)
 		&& LocalHistoryRevision == GetLocalHistoryRevisionForText(InText)
-		&& TextDataPtr.IsValid() && TextDataPtr->GetDisplayString().Equals(InText.ToString(), ESearchCase::CaseSensitive);
+		&& TextDataPtr->GetDisplayString().Equals(InText.TextData->GetDisplayString(), ESearchCase::CaseSensitive);
 }
 
 uint16 FTextSnapshot::GetGlobalHistoryRevisionForText(const FText& InText)
@@ -1570,41 +1592,6 @@ uint16 FTextSnapshot::GetGlobalHistoryRevisionForText(const FText& InText)
 uint16 FTextSnapshot::GetLocalHistoryRevisionForText(const FText& InText)
 {
 	return (InText.IsEmpty() || InText.IsCultureInvariant()) ? 0 : InText.TextData->GetLocalHistoryRevision();
-}
-
-FScopedTextIdentityPreserver::FScopedTextIdentityPreserver(FText& InTextToPersist)
-	: TextToPersist(InTextToPersist)
-	, HadFoundNamespaceAndKey(false)
-	, Flags(TextToPersist.Flags)
-{
-	// Empty display strings can't have a namespace or key.
-	if (GIsEditor && !TextToPersist.TextData->GetDisplayString().IsEmpty())
-	{
-		// Save off namespace and key to be restored later.
-		TextToPersist.TextData->PersistText();
-		HadFoundNamespaceAndKey = FTextLocalizationManager::Get().FindNamespaceAndKeyFromDisplayString(TextToPersist.TextData->GetLocalizedString().ToSharedRef(), Namespace, Key);
-	}
-}
-
-FScopedTextIdentityPreserver::~FScopedTextIdentityPreserver()
-{
-	// Never persist identities in non-editor situations
-	// If we don't have a key, then the old identity wasn't valid and shouldn't be preserved.
-	// Never persist identities for immutable (i.e. code LOCTEXT declared) text.
-	if(GIsEditor && HadFoundNamespaceAndKey && (Flags & ETextFlag::Immutable) == 0)
-	{
-		// Get the text's new source string.
-		const FString* SourceString = FTextInspector::GetSourceString(TextToPersist);
-
-		// Without a source string, we can't possibly preserve the identity. If the text we're preserving identity for can't possibly have an identity anymore, this class shouldn't be used on this text.
-		check(SourceString);
-
-		// Create/update the display string instance for this identity in the text localization manager...
-		FTextDisplayStringRef DisplayString = FTextLocalizationManager::Get().GetDisplayString(Namespace, Key, SourceString);
-
-		// ... and update the data on the text instance
-		TextToPersist.TextData = MakeShared<TLocalizedTextData<FTextHistory_Base>, ESPMode::ThreadSafe>(MoveTemp(DisplayString), FTextHistory_Base(FString(*SourceString)));
-	}
 }
 
 bool TextBiDi::IsControlCharacter(const TCHAR InChar)
@@ -1624,7 +1611,6 @@ bool TextBiDi::IsControlCharacter(const TCHAR InChar)
 }
 
 FText FTextStringHelper::CreateFromBuffer(const TCHAR* Buffer, const TCHAR* TextNamespace, const TCHAR* PackageNamespace, const bool bRequiresQuotes)
-
 {
 	FText Value;
 	if (!ReadFromBuffer(Buffer, Value, TextNamespace, PackageNamespace, bRequiresQuotes))
@@ -1664,24 +1650,24 @@ const TCHAR* FTextStringHelper::ReadFromBuffer_ComplexText(const TCHAR* Buffer, 
 	{
 		auto CreateTextHistory = [&](FText& InOutTmpText) -> bool
 		{
-			#define CONDITIONAL_CREATE_TEXT_HISTORY(DataClass, HistoryClass)							\
-				if (HistoryClass::StaticShouldReadFromBuffer(Buffer))									\
-				{																						\
-					InOutTmpText.TextData = MakeShared<DataClass<HistoryClass>, ESPMode::ThreadSafe>();	\
-					return true;																		\
+			#define CONDITIONAL_CREATE_TEXT_HISTORY(HistoryClass)								\
+				if (HistoryClass::StaticShouldReadFromBuffer(Buffer))							\
+				{																				\
+					InOutTmpText.TextData = MakeShared<HistoryClass, ESPMode::ThreadSafe>();	\
+					return true;																\
 				}
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_Base);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_NamedFormat);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_OrderedFormat);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_ArgumentDataFormat);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_AsNumber);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_AsPercent);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_AsCurrency);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_AsDateTime);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_AsDate);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_AsTime);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TLocalizedTextData, FTextHistory_Transform);
-			CONDITIONAL_CREATE_TEXT_HISTORY(TIndirectTextData,  FTextHistory_StringTableEntry);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_Base);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_NamedFormat);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_OrderedFormat);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_ArgumentDataFormat);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_AsNumber);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_AsPercent);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_AsCurrency);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_AsDateTime);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_AsDate);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_AsTime);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_Transform);
+			CONDITIONAL_CREATE_TEXT_HISTORY(FTextHistory_StringTableEntry);
 			#undef CONDITIONAL_CREATE_TEXT_HISTORY
 			return false;
 		};
@@ -1689,18 +1675,8 @@ const TCHAR* FTextStringHelper::ReadFromBuffer_ComplexText(const TCHAR* Buffer, 
 		FText TmpText;
 		if (CreateTextHistory(TmpText))
 		{
-			FTextHistory& MutableTextHistory = TmpText.TextData->GetMutableTextHistory();
-			
-			// Read the string into the text history, potentially updating the mutable display string (if supported)
-			if (TmpText.TextData->OwnsLocalizedString())
-			{
-				TEXT_STRINGIFICATION_FUNC_MODIFY_BUFFER_AND_VALIDATE(MutableTextHistory.ReadFromBuffer, TextNamespace, PackageNamespace, TmpText.TextData->GetMutableLocalizedString());
-			}
-			else
-			{
-				FTextDisplayStringPtr DummyDisplayString;
-				TEXT_STRINGIFICATION_FUNC_MODIFY_BUFFER_AND_VALIDATE(MutableTextHistory.ReadFromBuffer, TextNamespace, PackageNamespace, DummyDisplayString);
-			}
+			// Read the string into the text history
+			TEXT_STRINGIFICATION_FUNC_MODIFY_BUFFER_AND_VALIDATE(TmpText.TextData->GetMutableTextHistory().ReadFromBuffer, TextNamespace, PackageNamespace);
 			
 			// Rebuild the text if we parsed its history correctly
 			TmpText.Rebuild();
@@ -1784,7 +1760,6 @@ bool FTextStringHelper::ReadFromString(const TCHAR* Buffer, FText& OutValue, con
 
 void FTextStringHelper::WriteToBuffer(FString& Buffer, const FText& Value, const bool bRequiresQuotes, const bool bStripPackageNamespace)
 {
-	const FTextHistory& TextHistory = Value.TextData->GetTextHistory();
 	const FString& StringValue = FTextInspector::GetDisplayString(Value);
 
 	// Culture invariant text?
@@ -1798,7 +1773,7 @@ void FTextStringHelper::WriteToBuffer(FString& Buffer, const FText& Value, const
 #undef LOC_DEFINE_REGION
 	}
 	// Is this text that should be written via its text history?
-	else if (TextHistory.WriteToBuffer(Buffer, Value.TextData->GetLocalizedString(), bStripPackageNamespace))
+	else if (Value.TextData->GetTextHistory().WriteToBuffer(Buffer, bStripPackageNamespace))
 	{
 	}
 	// This isn't special text, so write as a raw string (potentially quoted)
@@ -1970,6 +1945,7 @@ bool LexTryParseString(EDateTimeStyle::Type& OutValue, const TCHAR* Buffer)
 	ENUM_CASE_FROM_STRING(Medium);
 	ENUM_CASE_FROM_STRING(Long);
 	ENUM_CASE_FROM_STRING(Full);
+	ENUM_CASE_FROM_STRING(Custom);
 #undef ENUM_CASE_FROM_STRING
 	return false;
 }
@@ -1990,6 +1966,7 @@ const TCHAR* LexToString(EDateTimeStyle::Type InValue)
 		ENUM_CASE_TO_STRING(Medium);
 		ENUM_CASE_TO_STRING(Long);
 		ENUM_CASE_TO_STRING(Full);
+		ENUM_CASE_TO_STRING(Custom);
 #undef ENUM_CASE_TO_STRING
 	default:
 		return TEXT("<Unknown EDateTimeStyle>");

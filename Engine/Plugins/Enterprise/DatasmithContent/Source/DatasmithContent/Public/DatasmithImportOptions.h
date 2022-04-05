@@ -261,6 +261,8 @@ struct DATASMITHCONTENT_API FDatasmithTessellationOptions
 	UPROPERTY(config, EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Geometry & Tessellation Options", meta = (ToolTip = "Stitching technique applied on model before tessellation. Sewing could impact number of objects."))
 	EDatasmithCADStitchingTechnique StitchingTechnique;
 
+	bool bUseCADKernel = false;
+
 public:
 	bool operator == (const FDatasmithTessellationOptions& Other) const
 	{
@@ -384,6 +386,12 @@ public:
 	/** Full path of the imported file */
 	UPROPERTY(BlueprintReadWrite, Category = "NotVisible")
 	FString FilePath;
+
+	UPROPERTY(BlueprintReadWrite, Category = "NotVisible")
+	FString SourceUri;
+
+	/** The hash of the source referenced by SourceUri */
+	FMD5Hash SourceHash;
 
 	/** Whether to use or not the same options when loading multiple files. Default false */
 	bool bUseSameOptions;

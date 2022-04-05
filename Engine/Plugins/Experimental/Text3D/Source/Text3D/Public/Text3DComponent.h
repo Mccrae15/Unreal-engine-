@@ -1,14 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
-#include "Mesh.h"
-#include "BevelType.h"
 
 #include "CoreMinimal.h"
+#include "BevelType.h"
+#include "Mesh.h"
 #include "UObject/ObjectMacros.h"
-#include "UObject/TextProperty.h"
-#include "Text3DComponent.generated.h"
 
+#include "Text3DComponent.generated.h"
 
 UENUM()
 enum class EText3DVerticalTextAlignment : uint8
@@ -29,7 +28,7 @@ enum class EText3DHorizontalTextAlignment : uint8
 
 
 UCLASS(ClassGroup = (Text3D), meta=(BlueprintSpawnableComponent))
-class TEXT3D_API UText3DComponent final : public USceneComponent
+class TEXT3D_API UText3DComponent : public USceneComponent
 {
 	GENERATED_BODY()
 
@@ -66,6 +65,10 @@ public:
 	/** Generate Outline */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetOutline, Category = "Text3D")
 	bool bOutline;
+
+	/** Outline expand/offset amount */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetOutlineExpand, Category = "Text3D", Meta = (EditCondition = "bOutline"))
+	float OutlineExpand;
 
 	/** Material for the front part */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetFrontMaterial, Category = "Text3D")
@@ -127,12 +130,22 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter = SetScaleProportionally, Category = "Text3D")
 	bool bScaleProportionally;
 
+	// Lighting flags
+	
+	/** Controls whether the text glyphs should cast a shadow or not. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter="SetCastShadow", Category=Lighting)
+	bool bCastShadow = true;
+
 	/**
 	 * Delegate called after text is rebuilt
 	 */
-	DECLARE_MULTICAST_DELEGATE(FTextGenerated);
-	FTextGenerated& OnTextGenerated()				{ return TextGeneratedDelegate; }
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE(FTextGenerated);
 
+	/**
+	 * Delegate called after text is rebuilt
+	 */
+	DECLARE_MULTICAST_DELEGATE(FTextGeneratedNative);
+	FTextGeneratedNative& OnTextGenerated() { return TextGeneratedNativeDelegate; }
 
 	/** Set the text value and signal the primitives to be rebuilt */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
@@ -144,6 +157,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
 	void SetOutline(const bool bValue);
+	
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
+	void SetOutlineExpand(const float Value);
 
 	/** Set the text extrusion size and signal the primitives to be rebuilt */
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
@@ -222,17 +238,49 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
 	void SetFreeze(const bool bFreeze);
 
+	/** Changes the value of CastShadow. */
+	UFUNCTION(BlueprintCallable, Category="Rendering")
+	void SetCastShadow(bool NewCastShadow);
 
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
+	void GetBounds(FVector& Origin, FVector& BoxExtent);
+
+	/** Gets the number of font glyphs that are currently used */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
 	int32 GetGlyphCount();
+
+	/** Gets the USceneComponent that a glyph is attached to */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
 	USceneComponent* GetGlyphKerningComponent(int32 Index);
+
+	/** Gets all the glyph kerning components */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
+	const TArray<USceneComponent*>& GetGlyphKerningComponents();
+
+	/** Gets the StaticMeshComponent of a glyph */
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
 	UStaticMeshComponent* GetGlyphMeshComponent(int32 Index);
+
+	/** Gets all the glyph meshes*/
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Text3D")
+	const TArray<UStaticMeshComponent*>& GetGlyphMeshComponents();
+
+protected:
+	virtual void OnVisibilityChanged() override;
+	virtual void OnHiddenInGameChanged() override;
 
 private:
 	UPROPERTY(Transient)
 	class USceneComponent* TextRoot;
 
+	UPROPERTY(BlueprintAssignable, Category = Events, meta = (AllowPrivateAccess = true, DisplayName = "On Text Generated"))
 	FTextGenerated TextGeneratedDelegate;
 
+	FTextGeneratedNative TextGeneratedNativeDelegate;
+
+	/** Flagged as true when the text mesh is being built. */
+	std::atomic<bool> bIsBuilding;
+	
 	bool bPendingBuild;
 	bool bFreezeBuild;
 
@@ -245,14 +293,17 @@ private:
 	UPROPERTY(Transient)
 	TArray<UStaticMeshComponent*> CharacterMeshes;
 
+	/** Allocates, or shrinks existing components to match the input number. Returns false if nothing modified. */
+	bool AllocateGlyphs(int32 Num);
+
 	class UMaterialInterface* GetMaterial(const EText3DGroupType Type) const;
 	void SetMaterial(const EText3DGroupType Type, class UMaterialInterface* Material);
 
-
-	void Rebuild();
 	void UpdateTransforms();
+	void Rebuild(const bool bCleanCache = false);
 	void ClearTextMesh();
 	void BuildTextMesh(const bool bCleanCache = false);
+	void BuildTextMeshInternal(const bool bCleanCache);
 	void CheckBevel();
 	float MaxBevel() const;
 

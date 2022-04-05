@@ -58,7 +58,7 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnInputsChanged);
 
 	UPROPERTY(EditAnywhere, Category = "Function", meta = (ForceShowEngineContent = true, ForceShowPluginContent = true))
-	UNiagaraScript* FunctionScript;
+	TObjectPtr<UNiagaraScript> FunctionScript;
 
 	UPROPERTY(VisibleAnywhere, AdvancedDisplay, Category = "Version Details")
 	FGuid SelectedScriptVersion;
@@ -97,7 +97,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Debug")
 	bool bInheritDebugStatus = true;
 
-	bool ScriptIsValid() const;
+	NIAGARAEDITOR_API bool ScriptIsValid() const;
 
 	//Begin UObject interface
 	virtual void PostLoad()override;
@@ -126,7 +126,7 @@ public:
 	//~ End EdGraphNode Interface
 
 	/** Checks if the existing pin names match the function script parameter names and try to fix them via guid matching if there is a difference */
-	bool FixupPinNames();
+	NIAGARAEDITOR_API bool FixupPinNames();
 
 	/** When overriding an input value, this updates which variable guid was bound to which input name, so it can be reassigned when the input is renamed.*/
 	void UpdateInputNameBinding(const FGuid& BoundVariableGuid, const FName& BoundName);
@@ -168,7 +168,7 @@ public:
 	virtual TSharedPtr<SGraphNode> CreateVisualWidget() override;
 
 	// Messages API
-	NIAGARAEDITOR_API const TMap<FGuid, UNiagaraMessageData*>& GetMessages() const { return MessageKeyToMessageMap; };
+	NIAGARAEDITOR_API const auto& GetMessages() const { return MessageKeyToMessageMap; };
 	NIAGARAEDITOR_API void AddMessage(const FGuid& MessageKey, UNiagaraMessageData* NewMessage) { MessageKeyToMessageMap.Add(MessageKey, NewMessage); };
 	NIAGARAEDITOR_API void RemoveMessage(const FGuid& MessageKey) { MessageKeyToMessageMap.Remove(MessageKey); };
 	void RemoveMessageDelegateable(const FGuid MessageKey) { MessageKeyToMessageMap.Remove(MessageKey); };
@@ -180,7 +180,12 @@ public:
 	NIAGARAEDITOR_API FSimpleDelegate& OnCustomNotesChanged() { return OnCustomNotesChangedDelegate; }
 	void RemoveCustomNoteViaDelegate(const FGuid MessageKey);
 
+	/** Adds a static switch pin to this function call node by variable id and sets it's default value using the supplied data and marks it as
+		orphaned. This allows a previously available static switch value to be retained on the node even if the the switch is no longer exposed. */
+	void AddOrphanedStaticSwitchPinForDataRetention(FNiagaraVariableBase StaticSwitchVariable, const FString& StaticSwitchPinDefault);
+
 protected:
+	UEdGraphPin* AddStaticSwitchInputPin(FNiagaraVariable Input);
 
 	virtual bool GetValidateDataInterfaces() const { return true; };
 
@@ -204,6 +209,8 @@ protected:
 
 	void UpdatePinTooltips();
 
+	void UpdateStaticSwitchPinsWithPersistentGuids();
+
 	/** Adjusted every time that we compile this script. Lets us know that we might differ from any cached versions.*/
 	UPROPERTY(meta = (SkipForCompileHash="true"))
 	FGuid CachedChangeId;
@@ -215,12 +222,14 @@ protected:
 	UPROPERTY()
 	FString FunctionDisplayName;
 
+	/* Marking those properties explicitly as editoronly_data will make localization not pick these up. */
+#if WITH_EDITORONLY_DATA
 	UPROPERTY(meta = (SkipForCompileHash="true"))
-	TMap<FGuid, UNiagaraMessageData*> MessageKeyToMessageMap;
+	TMap<FGuid, TObjectPtr<UNiagaraMessageData>> MessageKeyToMessageMap;
 	
 	UPROPERTY(meta = (SkipForCompileHash="true"))
 	TArray<FNiagaraStackMessage> StackMessages;
-
+#endif
 	UPROPERTY(meta = (SkipForCompileHash="true"))
 	TMap<FGuid, FName> BoundPinNames;
 

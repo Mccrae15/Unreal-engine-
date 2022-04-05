@@ -118,9 +118,9 @@ void UCapsuleComponent::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	if (Ar.IsLoading() && (Ar.UE4Ver() < VER_UE4_AFTER_CAPSULE_HALF_HEIGHT_CHANGE))
+	if (Ar.IsLoading() && (Ar.UEVer() < VER_UE4_AFTER_CAPSULE_HALF_HEIGHT_CHANGE))
 	{
-		if ((CapsuleHeight_DEPRECATED != 0.0f) || (Ar.UE4Ver() < VER_UE4_BLUEPRINT_VARS_NOT_READ_ONLY))
+		if ((CapsuleHeight_DEPRECATED != 0.0f) || (Ar.UEVer() < VER_UE4_BLUEPRINT_VARS_NOT_READ_ONLY))
 		{
 			CapsuleHalfHeight = CapsuleHeight_DEPRECATED;
 			CapsuleHeight_DEPRECATED = 0.0f;
@@ -183,8 +183,8 @@ void UCapsuleComponent::SetCapsuleSize(float NewRadius, float NewHalfHeight, boo
 }
 
 
-template <EShapeBodySetupHelper UpdateBodySetupAction>
-bool InvalidateOrUpdateCapsuleBodySetup(UBodySetup*& ShapeBodySetup, bool bUseArchetypeBodySetup, float CapsuleRadius, float CapsuleHalfHeight)
+template <EShapeBodySetupHelper UpdateBodySetupAction, typename BodySetupType>
+bool InvalidateOrUpdateCapsuleBodySetup(BodySetupType& ShapeBodySetup, bool bUseArchetypeBodySetup, float CapsuleRadius, float CapsuleHalfHeight)
 {
 	check((bUseArchetypeBodySetup && UpdateBodySetupAction == EShapeBodySetupHelper::InvalidateSharingIfStale) || (!bUseArchetypeBodySetup && UpdateBodySetupAction == EShapeBodySetupHelper::UpdateBodySetup));
 	check(ShapeBodySetup->AggGeom.SphylElems.Num() == 1);

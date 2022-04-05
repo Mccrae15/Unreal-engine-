@@ -18,9 +18,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Diagnostics;
 using System.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -50,7 +51,7 @@ namespace UnrealBuildTool
 		public static DirectoryReference GetVCInstallDirectory(this VCEnvironment VCEnv)
 		{
 			// TODO: Check registry values before moving up ParentDirectories (as in 4.19)
-			return VCEnv.ToolChainDir.ParentDirectory.ParentDirectory.ParentDirectory;
+			return VCEnv.ToolChainDir.ParentDirectory!.ParentDirectory!.ParentDirectory!;
 		}
 	}
 
@@ -67,8 +68,12 @@ namespace UnrealBuildTool
 
 	class FASTBuild : ActionExecutor
 	{
+		/// <summary>
+		/// Executor to use for local actions
+		/// </summary>
+		ActionExecutor LocalExecutor;
 
-		public readonly static string DefaultExecutableBasePath	= Path.Combine(UnrealBuildTool.EngineDirectory.FullName, "Extras", "ThirdPartyNotUE", "FASTBuild");
+		public readonly static string DefaultExecutableBasePath	= Path.Combine(Unreal.EngineDirectory.FullName, "Extras", "ThirdPartyNotUE", "FASTBuild");
 
 		//////////////////////////////////////////
 		// Tweakables
@@ -80,7 +85,7 @@ namespace UnrealBuildTool
 		/// Used to specify the location of fbuild.exe if the distributed binary isn't being used
 		/// </summary>
 		[XmlConfigFile]
-		public static string FBuildExecutablePath	= null;
+		public static string? FBuildExecutablePath	= null;
 
 		/////////////////
 		// Distribution
@@ -95,13 +100,13 @@ namespace UnrealBuildTool
 		/// Used to specify the location of the brokerage. If null, FASTBuild will fall back to checking FASTBUILD_BROKERAGE_PATH
 		/// </summary>
 		[XmlConfigFile]
-		public static string FBuildBrokeragePath	= null;
+		public static string? FBuildBrokeragePath	= null;
 
 		/// <summary>
 		/// Used to specify the FASTBuild coordinator IP or network name. If null, FASTBuild will fall back to checking FASTBUILD_COORDINATOR
 		/// </summary>
 		[XmlConfigFile]
-		public static string FBuildCoordinator = null;
+		public static string? FBuildCoordinator = null;
 
 		/////////////////
 		// Caching
@@ -122,7 +127,7 @@ namespace UnrealBuildTool
 		/// Used to specify the location of the cache. If null, FASTBuild will fall back to checking FASTBUILD_CACHE_PATH
 		/// </summary>
 		[XmlConfigFile]
-		public static string FBuildCachePath		= null;
+		public static string? FBuildCachePath		= null;
 
 		/////////////////
 		// Misc Options
@@ -147,6 +152,16 @@ namespace UnrealBuildTool
 
 		//////////////////////////////////////////
 
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		public FASTBuild(int MaxLocalActions)
+		{
+			XmlConfig.ApplyTo(this);
+
+			this.LocalExecutor = new ParallelExecutor(MaxLocalActions);
+		}
+
 		public override string Name
 		{
 			get { return "FASTBuild"; }
@@ -154,14 +169,14 @@ namespace UnrealBuildTool
 
 		public static string GetExecutableName()
 		{
-			return Path.GetFileName(GetExecutablePath());
+			return Path.GetFileName(GetExecutablePath())!;
 		}
 
-		public static string GetExecutablePath()
+		public static string? GetExecutablePath()
 		{
 			if (string.IsNullOrEmpty(FBuildExecutablePath))
 			{
-				string EnvPath = Environment.GetEnvironmentVariable("FASTBUILD_EXECUTABLE_PATH");
+				string? EnvPath = Environment.GetEnvironmentVariable("FASTBUILD_EXECUTABLE_PATH");
 				if (!string.IsNullOrEmpty(EnvPath))
 				{
 					FBuildExecutablePath = EnvPath;
@@ -171,11 +186,11 @@ namespace UnrealBuildTool
 			return FBuildExecutablePath;
 		}
 
-		public static string GetCachePath()
+		public static string? GetCachePath()
 		{
 			if (string.IsNullOrEmpty(FBuildCachePath))
 			{
-				string EnvPath = Environment.GetEnvironmentVariable("FASTBUILD_CACHE_PATH");
+				string? EnvPath = Environment.GetEnvironmentVariable("FASTBUILD_CACHE_PATH");
 				if (!string.IsNullOrEmpty(EnvPath))
 				{
 					FBuildCachePath = EnvPath;
@@ -185,11 +200,11 @@ namespace UnrealBuildTool
 			return FBuildCachePath;
 		}
 
-		public static string GetBrokeragePath()
+		public static string? GetBrokeragePath()
 		{
 			if (string.IsNullOrEmpty(FBuildBrokeragePath))
 			{
-				string EnvPath = Environment.GetEnvironmentVariable("FASTBUILD_BROKERAGE_PATH");
+				string? EnvPath = Environment.GetEnvironmentVariable("FASTBUILD_BROKERAGE_PATH");
 				if (!string.IsNullOrEmpty(EnvPath))
 				{
 					FBuildBrokeragePath = EnvPath;
@@ -199,11 +214,11 @@ namespace UnrealBuildTool
 			return FBuildBrokeragePath;
 		}
 
-		public static string GetCoordinator()
+		public static string? GetCoordinator()
 		{
 			if (string.IsNullOrEmpty(FBuildCoordinator))
 			{
-				string EnvPath = Environment.GetEnvironmentVariable("FASTBUILD_COORDINATOR");
+				string? EnvPath = Environment.GetEnvironmentVariable("FASTBUILD_COORDINATOR");
 				if (!string.IsNullOrEmpty(EnvPath))
 				{
 					FBuildCoordinator = EnvPath;
@@ -215,7 +230,7 @@ namespace UnrealBuildTool
 
 		public static bool IsAvailable()
 		{
-			string ExecutablePath = GetExecutablePath();
+			string? ExecutablePath = GetExecutablePath();
 			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
 			{
 				if (string.IsNullOrEmpty(ExecutablePath))
@@ -239,10 +254,10 @@ namespace UnrealBuildTool
 			// UBT is faster than FASTBuild for local only builds, so only allow FASTBuild if the environment is fully set up to use FASTBuild.
 			// That's when the FASTBuild coordinator or brokerage folder is available.
 			// On Mac the latter needs the brokerage folder to be mounted, on Windows the brokerage env variable has to be set or the path specified in UBT's config
-			string Coordinator = GetCoordinator();
+			string? Coordinator = GetCoordinator();
 			if (string.IsNullOrEmpty(Coordinator))
 			{
-				string BrokeragePath = GetBrokeragePath();
+				string? BrokeragePath = GetBrokeragePath();
 				if (string.IsNullOrEmpty(BrokeragePath) || !Directory.Exists(BrokeragePath))
 				{
 					return false;
@@ -261,21 +276,24 @@ namespace UnrealBuildTool
 			string FBuildExecutableName = GetExecutableName();
 
 			// Search the path for it
-			string PathVariable = Environment.GetEnvironmentVariable("PATH");
-			foreach (string SearchPath in PathVariable.Split(Path.PathSeparator))
+			string? PathVariable = Environment.GetEnvironmentVariable("PATH");
+			if (PathVariable != null)
 			{
-				try
+				foreach (string SearchPath in PathVariable.Split(Path.PathSeparator))
 				{
-					string PotentialPath = Path.Combine(SearchPath, FBuildExecutableName);
-					if (File.Exists(PotentialPath))
+					try
 					{
-						FBuildExecutablePath = PotentialPath;
-						return true;
+						string PotentialPath = Path.Combine(SearchPath, FBuildExecutableName);
+						if (File.Exists(PotentialPath))
+						{
+							FBuildExecutablePath = PotentialPath;
+							return true;
+						}
 					}
-				}
-				catch (ArgumentException)
-				{
-					// PATH variable may contain illegal characters; just ignore them.
+					catch (ArgumentException)
+					{
+						// PATH variable may contain illegal characters; just ignore them.
+					}
 				}
 			}
 
@@ -288,13 +306,13 @@ namespace UnrealBuildTool
 
 		private ObjectIDGenerator objectIDGenerator = new ObjectIDGenerator();
 
-		private long GetActionID(Action Action)
+		private long GetActionID(LinkedAction Action)
 		{
 			bool bFirstTime = false;
 			return objectIDGenerator.GetId(Action, out bFirstTime);
 		}
 
-		private string ActionToActionString(Action Action)
+		private string ActionToActionString(LinkedAction Action)
 		{
 			return ActionToActionString(GetActionID(Action));
 		}
@@ -304,9 +322,9 @@ namespace UnrealBuildTool
 			return $"Action_{UniqueId}";
 		}
 
-		private string ActionToDependencyString(long UniqueId, string StatusDescription, string CommandDescription = null, ActionType? ActionType = null)
+		private string ActionToDependencyString(long UniqueId, string StatusDescription, string? CommandDescription = null, ActionType? ActionType = null)
 		{
-			string ExtraInfoString = null;
+			string? ExtraInfoString = null;
 			if ((CommandDescription != null) && string.IsNullOrEmpty(CommandDescription))
 				ExtraInfoString = CommandDescription;
 			else if (ActionType != null)
@@ -318,7 +336,7 @@ namespace UnrealBuildTool
 			return $"\t\t'{ActionToActionString(UniqueId)}', ;{StatusDescription}{ExtraInfoString}";
 		}
 
-		private string ActionToDependencyString(Action Action)
+		private string ActionToDependencyString(LinkedAction Action)
 		{
 			return ActionToDependencyString(GetActionID(Action), Action.StatusDescription, Action.CommandDescription, Action.ActionType);
 		}
@@ -336,33 +354,33 @@ namespace UnrealBuildTool
 
 		private FBBuildType BuildType = FBBuildType.Windows;
 
-		private readonly static Tuple<string, Func<Action, string>, FBBuildType>[] BuildTypeSearchParams = new Tuple<string, Func<Action, string>, FBBuildType>[]
+		private readonly static Tuple<string, Func<LinkedAction, string>, FBBuildType>[] BuildTypeSearchParams = new Tuple<string, Func<LinkedAction, string>, FBBuildType>[]
 		{
-			Tuple.Create<string, Func<Action, string>, FBBuildType>
+			Tuple.Create<string, Func<LinkedAction, string>, FBBuildType>
 			(
 				"Xcode",
 				Action => Action.CommandArguments,
 				FBBuildType.Apple
 			),
-			Tuple.Create<string, Func<Action, string>, FBBuildType>
+			Tuple.Create<string, Func<LinkedAction, string>, FBBuildType>
 			(
 				"apple",
 				Action => Action.CommandArguments.ToLower(),
 				FBBuildType.Apple
 			),
-			Tuple.Create<string, Func<Action, string>, FBBuildType>
+			Tuple.Create<string, Func<LinkedAction, string>, FBBuildType>
 			(
 				"/bin/sh",
 				Action => Action.CommandPath.FullName.ToLower(),
 				FBBuildType.Apple
 			),
-			Tuple.Create<string, Func<Action, string>, FBBuildType>
+			Tuple.Create<string, Func<LinkedAction, string>, FBBuildType>
 			(
 				"Windows",		// Not a great test
 				Action => Action.CommandPath.FullName,
 				FBBuildType.Windows
 			),
-			Tuple.Create<string, Func<Action, string>, FBBuildType>
+			Tuple.Create<string, Func<LinkedAction, string>, FBBuildType>
 			(
 				"Microsoft",	// Not a great test
 				Action => Action.CommandPath.FullName,
@@ -370,11 +388,11 @@ namespace UnrealBuildTool
 			),
 		};
 
-		private bool DetectBuildType(IEnumerable<Action> Actions)
+		private bool DetectBuildType(IEnumerable<LinkedAction> Actions)
 		{
-			foreach (Action Action in Actions)
+			foreach (LinkedAction Action in Actions)
 			{
-				foreach (Tuple<string, Func<Action, string>, FBBuildType> BuildTypeSearchParam in BuildTypeSearchParams)
+				foreach (Tuple<string, Func<LinkedAction, string>, FBBuildType> BuildTypeSearchParam in BuildTypeSearchParams)
 				{
 					if (BuildTypeSearchParam.Item2(Action).Contains(BuildTypeSearchParam.Item1))
 					{
@@ -386,7 +404,7 @@ namespace UnrealBuildTool
 			}
 
 			Log.TraceError("Couldn't detect build type from actions! Unsupported platform?");
-			foreach (Action Action in Actions)
+			foreach (LinkedAction Action in Actions)
 			{
 				PrintActionDetails(Action);
 			}
@@ -406,26 +424,26 @@ namespace UnrealBuildTool
 			}
 		}
 
-		public override bool ExecuteActions(List<Action> Actions, bool bLogDetailedActionStats)
+		public override bool ExecuteActions(List<LinkedAction> Actions)
 		{
 			if (Actions.Count <= 0)
 				return true;
 
-			IEnumerable<Action> CompileActions		= Actions.Where(Action => (Action.ActionType == ActionType.Compile && Action.bCanExecuteRemotely == true));
-			IEnumerable<Action> NonCompileActions	= Actions.Where(Action => (Action.ActionType != ActionType.Compile || Action.bCanExecuteRemotely == false));
+			IEnumerable<LinkedAction> CompileActions		= Actions.Where(Action => (Action.ActionType == ActionType.Compile && Action.bCanExecuteRemotely == true));
+			IEnumerable<LinkedAction> NonCompileActions	= Actions.Where(Action => (Action.ActionType != ActionType.Compile || Action.bCanExecuteRemotely == false));
 
 			///////////////////////////////////////////////////////////////
 			// Pre Compile Stage
 
 			// We want to complete any non-compile actions locally that are necessary for the distributed compile step
-			List<Action> PreCompileActions =
+			List<LinkedAction> PreCompileActions =
 				NonCompileActions
 				.Where(NonCompileAction => CompileActions.Any(CompileAction => CompileAction.PrerequisiteActions.Contains(NonCompileAction)))
 				.ToList();
 
 			// Precompile actions may have their own prerequisites which need to be executed along with them
-			List<Action> Prerequisites = new List<Action>();
-			foreach (Action PreCompileAction in PreCompileActions)
+			List<LinkedAction> Prerequisites = new List<LinkedAction>();
+			foreach (LinkedAction PreCompileAction in PreCompileActions)
 			{
 				Prerequisites.AddRange(PreCompileAction.PrerequisiteActions);
 			}
@@ -434,7 +452,7 @@ namespace UnrealBuildTool
 
 			if (PreCompileActions.Any())
 			{
-				bool bResult = new LocalExecutor().ExecuteActions(PreCompileActions, bLogDetailedActionStats);
+				bool bResult = LocalExecutor.ExecuteActions(PreCompileActions);
 
 				if (!bResult)
 					return false;
@@ -448,7 +466,7 @@ namespace UnrealBuildTool
 				if (!DetectBuildType(CompileActions))
 					return false;
 
-				string FASTBuildFilePath = Path.Combine(UnrealBuildTool.EngineDirectory.FullName, "Intermediate", "Build", "fbuild.bff");
+				string FASTBuildFilePath = Path.Combine(Unreal.EngineDirectory.FullName, "Intermediate", "Build", "fbuild.bff");
 				if (!CreateBffFile(CompileActions, FASTBuildFilePath))
 					return false;
 
@@ -459,11 +477,11 @@ namespace UnrealBuildTool
 			///////////////////////////////////////////////////////////////
 			// Post Compile Stage
 
-			List<Action> PostCompileActions = NonCompileActions.Except(PreCompileActions).ToList();
+			List<LinkedAction> PostCompileActions = NonCompileActions.Except(PreCompileActions).ToList();
 
 			if (PostCompileActions.Any())
 			{
-				bool bResult = new LocalExecutor().ExecuteActions(PostCompileActions, bLogDetailedActionStats);
+				bool bResult = LocalExecutor.ExecuteActions(PostCompileActions);
 
 				if (!bResult)
 					return false;
@@ -475,10 +493,10 @@ namespace UnrealBuildTool
 		private void AddText(string StringToWrite)
 		{
 			byte[] Info = new System.Text.UTF8Encoding(true).GetBytes(StringToWrite);
-			bffOutputMemoryStream.Write(Info, 0, Info.Length);
+			bffOutputMemoryStream!.Write(Info, 0, Info.Length);
 		}
 
-		private void AddPreBuildDependenciesText(IEnumerable<Action> PreBuildDependencies)
+		private void AddPreBuildDependenciesText(IEnumerable<LinkedAction>? PreBuildDependencies)
 		{
 			if (!PreBuildDependencies.Any())
 				return;
@@ -525,8 +543,13 @@ namespace UnrealBuildTool
 			string ResponseFilePath = "";
 			List<string> AllTokens = new List<string>();
 
+
 			int ResponseFileTokenIndex = Array.FindIndex(RawTokens, RawToken => RawToken.StartsWith("@\""));
-			if (ResponseFileTokenIndex > 0) //Response files are in 4.13 by default. Changing VCToolChain to not do this is probably better.
+			if (ResponseFileTokenIndex == -1)
+			{
+				ResponseFileTokenIndex = Array.FindIndex(RawTokens, RawToken => RawToken.StartsWith("@"));
+			}
+			if (ResponseFileTokenIndex > -1) //Response files are in 4.13 by default. Changing VCToolChain to not do this is probably better.
 			{
 				string responseCommandline = RawTokens[ResponseFileTokenIndex];
 
@@ -544,7 +567,7 @@ namespace UnrealBuildTool
 					responseCommandline += " " + RawTokens[i];
 				}
 
-				ResponseFilePath = responseCommandline.Substring(2, responseCommandline.Length - 3); // bit of a bodge to get the @"response.txt" path...
+				ResponseFilePath = responseCommandline.TrimStart('"', '@').TrimEnd('"');
 				try
 				{
 					if (!File.Exists(ResponseFilePath))
@@ -715,6 +738,11 @@ namespace UnrealBuildTool
 				{
 					++i;
 				}
+				else if (Token.StartsWith("/sourceDependencies"))
+				{
+					++i;
+					++i;
+				}
 				else if (Token == "/we4668")
 				{
 					// Replace this to make Windows builds compile happily
@@ -736,7 +764,7 @@ namespace UnrealBuildTool
 				{
 					ParsedCompilerOptions["InputFile"] = Token;
 					ProcessedTokens.RemoveAt(i);
-					break;
+					i--;
 				}
 			}
 
@@ -750,9 +778,9 @@ namespace UnrealBuildTool
 			return ParsedCompilerOptions;
 		}
 
-		private string GetOptionValue(Dictionary<string, string> OptionsDictionary, string Key, Action Action, bool ProblemIfNotFound = false)
+		private string GetOptionValue(Dictionary<string, string> OptionsDictionary, string Key, LinkedAction Action, bool ProblemIfNotFound = false)
 		{
-			string Value = string.Empty;
+			string? Value = string.Empty;
 			if (OptionsDictionary.TryGetValue(Key, out Value))
 			{
 				return Value.Trim(new Char[] { '\"' });
@@ -764,33 +792,33 @@ namespace UnrealBuildTool
 				Log.TraceWarning("Action.CommandArguments: " + Action.CommandArguments);
 			}
 
-			return Value;
+			return String.Empty;
 		}
 
 		public string GetRegistryValue(string keyName, string valueName, object defaultValue)
 		{
 			object returnValue = (string)Microsoft.Win32.Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\" + keyName, valueName, defaultValue);
 			if (returnValue != null)
-				return returnValue.ToString();
+				return returnValue.ToString()!;
 
 			returnValue = Microsoft.Win32.Registry.GetValue("HKEY_CURRENT_USER\\SOFTWARE\\" + keyName, valueName, defaultValue);
 			if (returnValue != null)
-				return returnValue.ToString();
+				return returnValue.ToString()!;
 
 			returnValue = (string)Microsoft.Win32.Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Wow6432Node\\" + keyName, valueName, defaultValue);
 			if (returnValue != null)
-				return returnValue.ToString();
+				return returnValue.ToString()!;
 
 			returnValue = Microsoft.Win32.Registry.GetValue("HKEY_CURRENT_USER\\SOFTWARE\\Wow6432Node\\" + keyName, valueName, defaultValue);
 			if (returnValue != null)
-				return returnValue.ToString();
+				return returnValue.ToString()!;
 
-			return defaultValue.ToString();
+			return defaultValue.ToString()!;
 		}
 
 		private void WriteEnvironmentSetup()
 		{
-			VCEnvironment VCEnv = null;
+			VCEnvironment? VCEnv = null;
 
 			try
 			{
@@ -798,7 +826,7 @@ namespace UnrealBuildTool
 				// it probably means we are building for another platform.
                 if(BuildType == FBBuildType.Windows)
                 {
-					VCEnv = VCEnvironment.Create(WindowsPlatform.GetDefaultCompiler(null), UnrealTargetPlatform.Win64, WindowsArchitecture.x64, null, null, null);
+					VCEnv = VCEnvironment.Create(WindowsPlatform.GetDefaultCompiler(null, WindowsArchitecture.x64), UnrealTargetPlatform.Win64, WindowsArchitecture.x64, null, null, null);
 				}
             }
 			catch (Exception)
@@ -808,9 +836,12 @@ namespace UnrealBuildTool
 
 			// Copy environment into a case-insensitive dictionary for easier key lookups
 			Dictionary<string, string> envVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-			foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
+			foreach (Nullable<DictionaryEntry> entry in Environment.GetEnvironmentVariables())
 			{
-				envVars[(string)entry.Key] = (string)entry.Value;
+				if (entry.HasValue)
+				{
+					envVars[(string)entry.Value.Key] = (string)entry.Value.Value!;
+				}
 			}
 
 			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
@@ -839,14 +870,8 @@ namespace UnrealBuildTool
 
 				switch (VCEnv.Compiler)
 				{
-					case WindowsCompiler.VisualStudio2017:
-						// For now we are working with the 140 version, might need to change to 141 or 150 depending on the version of the Toolchain you chose
-						// to install
-						platformVersionNumber = "140";
-						AddText($"\t.Executable = '$WindowsSDKBasePath$/bin/{VCEnv.WindowsSdkVersion}/x64/rc.exe'\n");
-						break;
-
 					case WindowsCompiler.VisualStudio2019:
+					case WindowsCompiler.VisualStudio2022:
 						// For now we are working with the 140 version, might need to change to 141 or 150 depending on the version of the Toolchain you chose
 						// to install
 						platformVersionNumber = "140";
@@ -859,27 +884,46 @@ namespace UnrealBuildTool
 						throw new BuildException(exceptionString);
 				}
 
-                AddText($"\t.CompilerFamily  = 'custom'\n");
-                AddText($"}}\n\n");
+				AddText($"\t.CompilerFamily  = 'custom'\n");
+				AddText($"}}\n\n");
 
 				AddText("Compiler('UECompiler') \n{\n");
 
-				DirectoryReference CLFilterDirectory = DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "Windows", "cl-filter");
+				bool UsingCLFilter = VCEnv.ToolChainVersion < VersionNumber.Parse("14.27");
+
+				DirectoryReference CLFilterDirectory = DirectoryReference.Combine(Unreal.EngineDirectory, "Build", "Windows", "cl-filter");
 
 				AddText($"\t.Root = '{VCEnv.GetToolPath()}'\n");
-				AddText($"\t.CLFilterRoot = '{CLFilterDirectory.FullName}'\n");
-				AddText($"\t.Executable = '$CLFilterRoot$\\cl-filter.exe'\n");
+				if (UsingCLFilter)
+				{
+					AddText($"\t.CLFilterRoot = '{CLFilterDirectory.FullName}'\n");
+					AddText($"\t.Executable = '$CLFilterRoot$\\cl-filter.exe'\n");
+				}
+				else
+				{
+					AddText($"\t.Executable = '$Root$\\{VCEnv.CompilerPath.GetFileName()}'\n");
+				}
 				AddText($"\t.ExtraFiles =\n\t{{\n");
-				AddText($"\t\t'$Root$/cl.exe'\n");
+				if (UsingCLFilter)
+				{
+					AddText($"\t\t'$Root$/cl.exe'\n");
+				}
 				AddText($"\t\t'$Root$/c1.dll'\n");
 				AddText($"\t\t'$Root$/c1xx.dll'\n");
 				AddText($"\t\t'$Root$/c2.dll'\n");
 
-				FileReference cluiDllPath = null;
+				FileReference? cluiDllPath = null;
 				string cluiSubDirName = "1033";
 				if (File.Exists(VCEnv.GetToolPath() + "{cluiSubDirName}/clui.dll")) //Check English first...
 				{
-					AddText("\t\t'$CLFilterRoot$/{cluiSubDirName}/clui.dll'\n");
+					if (UsingCLFilter)
+					{
+						AddText("\t\t'$CLFilterRoot$/{cluiSubDirName}/clui.dll'\n");
+					}
+					else
+					{
+						AddText("\t\t'$Root$/{cluiSubDirName}/clui.dll'\n");
+					}
 					cluiDllPath = new FileReference(VCEnv.GetToolPath() + "{cluiSubDirName}/clui.dll");
 				}
 				else
@@ -889,14 +933,21 @@ namespace UnrealBuildTool
 					if (cluiDirectories.Any())
 					{
 						cluiSubDirName = Path.GetFileName(cluiDirectories.First());
-						AddText(string.Format("\t\t'$CLFilterRoot$/{0}/clui.dll'\n", cluiSubDirName));
+						if (UsingCLFilter)
+						{
+							AddText(string.Format("\t\t'$CLFilterRoot$/{0}/clui.dll'\n", cluiSubDirName));
+						}
+						else
+						{
+							AddText(string.Format("\t\t'$Root$/{0}/clui.dll'\n", cluiSubDirName));
+						}
 						cluiDllPath = new FileReference(cluiDirectories.First() + "/clui.dll");
 					}
 				}
 
 				// FASTBuild only preserves the directory structure of compiler files for files in the same directory or sub-directories of the primary executable
 				// Since our primary executable is cl-filter.exe and we need clui.dll in a sub-directory on the worker, we need to copy it to cl-filter's subdir
-				if (cluiDllPath != null)
+				if (UsingCLFilter && cluiDllPath != null)
 				{
 					Directory.CreateDirectory(Path.Combine(CLFilterDirectory.FullName, cluiSubDirName));
 					File.Copy(cluiDllPath.FullName, Path.Combine(CLFilterDirectory.FullName, cluiSubDirName, "clui.dll"), true);
@@ -910,8 +961,8 @@ namespace UnrealBuildTool
 				AddText($"\t\t'$Root$/mspdb{platformVersionNumber}.dll'\n");
 
 				List<String> PotentialMSVCRedistPaths = new List<String>(Directory.EnumerateDirectories(string.Format("{0}/Redist/MSVC", VCEnv.GetVCInstallDirectory())));
-				string PrefferedMSVCRedistPath = null;
-				string FinalMSVCRedistPath = "";
+				string? PrefferedMSVCRedistPath = null;
+				string? FinalMSVCRedistPath = "";
 
 				if (MsvcCRTRedistVersion.Length > 0)
 				{
@@ -941,25 +992,14 @@ namespace UnrealBuildTool
 
 				PotentialMSVCRedistPaths = new List<String>(Directory.EnumerateDirectories(string.Format("{0}/{1}", PrefferedMSVCRedistPath, VCEnv.Architecture)));
 
-				FinalMSVCRedistPath = PotentialMSVCRedistPaths.Find(
-				delegate (String str)
-				{
-					return str.Contains(".CRT");
-				});
+				FinalMSVCRedistPath = PotentialMSVCRedistPaths.Find(x => x.Contains(".CRT"));
 
-				if (FinalMSVCRedistPath.Length <= 0)
+				if (String.IsNullOrEmpty(FinalMSVCRedistPath))
 				{
 					FinalMSVCRedistPath = PrefferedMSVCRedistPath;
 				}
 
-				if (VCEnv.Compiler == WindowsCompiler.VisualStudio2017)
-				{
-					//VS 2017 is really confusing in terms of version numbers and paths so these values might need to be modified depending on what version of the tool chain you
-					// chose to install.
-					AddText(string.Format("\t\t'{0}/Redist/MSVC/14.16.27012/{1}/Microsoft.VC141.CRT/msvcp{2}.dll'\n", VCEnv.GetVCInstallDirectory(), VCEnv.Architecture, platformVersionNumber));
-					AddText(string.Format("\t\t'{0}/Redist/MSVC/14.16.27012/{1}/Microsoft.VC141.CRT/vccorlib{2}.dll'\n", VCEnv.GetVCInstallDirectory(), VCEnv.Architecture, platformVersionNumber));
-				}
-				else // if (VCEnv.Compiler == WindowsCompiler.VisualStudio2019)
+				// if (VCEnv.Compiler == WindowsCompiler.VisualStudio2019)
 				{
 					AddText($"\t\t'$Root$/msvcp{platformVersionNumber}.dll'\n");
 					AddText(string.Format("\t\t'{0}/vccorlib{1}.dll'\n", FinalMSVCRedistPath, platformVersionNumber));
@@ -989,14 +1029,14 @@ namespace UnrealBuildTool
 
 			if (bEnableCaching)
 			{
-				string CachePath = GetCachePath();
+				string? CachePath = GetCachePath();
 				if (!string.IsNullOrEmpty(CachePath))
 					AddText($"\t.CachePath = '{CachePath}'\n");
 			}
 
 			if (bEnableDistribution)
 			{
-				string BrokeragePath = GetBrokeragePath();
+				string? BrokeragePath = GetBrokeragePath();
 				if (!string.IsNullOrEmpty(BrokeragePath))
 					AddText($"\t.BrokeragePath = '{BrokeragePath}'\n");
 			}
@@ -1027,7 +1067,7 @@ namespace UnrealBuildTool
 			AddText("}\n\n"); //End Settings
 		}
 
-		private void AddCompileAction(Action Action, IEnumerable<Action> DependencyActions)
+		private void AddCompileAction(LinkedAction Action, IEnumerable<LinkedAction> DependencyActions)
 		{
 			string CompilerName = GetCompilerName();
 			if (Action.CommandPath.FullName.Contains("rc.exe"))
@@ -1050,7 +1090,7 @@ namespace UnrealBuildTool
 				throw new Exception("We have no OutputObjectFileName. Bailing. Our Action.CommandArguments were: " + Action.CommandArguments);
 			}
 
-			string IntermediatePath = Path.GetDirectoryName(OutputObjectFileName);
+			string IntermediatePath = Path.GetDirectoryName(OutputObjectFileName)!;
 			if (string.IsNullOrEmpty(IntermediatePath))
 			{
 				throw new Exception("We have no IntermediatePath. Bailing. Our Action.CommandArguments were: " + Action.CommandArguments);
@@ -1142,7 +1182,7 @@ namespace UnrealBuildTool
 			AddText("}\n\n");
 		}
 
-		private void AddLinkAction(Action Action, IEnumerable<Action> DependencyActions)
+		private void AddLinkAction(LinkedAction Action, IEnumerable<LinkedAction> DependencyActions)
 		{
 			string[] SpecialLinkerOptions = IsApple() ? new string[] { "-o" } : new string[] { "/OUT:", "@", "-o" };
 
@@ -1182,13 +1222,13 @@ namespace UnrealBuildTool
 			string ResponseFilePath = GetOptionValue(ParsedLinkerOptions, "@", Action);
 			string OtherCompilerOptions = GetOptionValue(ParsedLinkerOptions, "OtherOptions", Action);
 
-			IEnumerable<Action> PrebuildDependencies = null;
+			IEnumerable<LinkedAction>? PrebuildDependencies = null;
 
 			if (Action.CommandPath.FullName.Contains("lib.exe"))
 			{
 				if (DependencyActions.Any())
 				{
-					Func<Action, bool> DoesActionProducePCH = (Action ActionToCheck) =>
+					Func<LinkedAction, bool> DoesActionProducePCH = (LinkedAction ActionToCheck) =>
 					{
 						foreach (FileItem ProducedItem in ActionToCheck.ProducedItems)
 						{
@@ -1289,9 +1329,9 @@ namespace UnrealBuildTool
 				string InputFile = GetOptionValue(ParsedLinkerOptions, "InputFile", Action, ProblemIfNotFound: true);
 				if (!string.IsNullOrEmpty(InputFile))
 				{
-					Action InputFileAction = DependencyActions
+					LinkedAction InputFileAction = DependencyActions
 						.Where(ActionToInspect =>
-							ActionToInspect.ProducedItems.Exists(Item => Item.AbsolutePath == InputFile)
+							ActionToInspect.ProducedItems.Any(Item => Item.AbsolutePath == InputFile)
 						).FirstOrDefault();
 
 					if (InputFileAction != null)
@@ -1337,7 +1377,7 @@ namespace UnrealBuildTool
 			}
 		}
 
-		private void PrintActionDetails(Action ActionToPrint)
+		private void PrintActionDetails(LinkedAction ActionToPrint)
 		{
 			Log.TraceInformation(ActionToActionString(ActionToPrint));
 			Log.TraceInformation($"Action Type: {ActionToPrint.ActionType.ToString()}");
@@ -1345,9 +1385,9 @@ namespace UnrealBuildTool
 			Log.TraceInformation($"Action CommandArgs: {ActionToPrint.CommandArguments}");
 		}
 
-		private MemoryStream bffOutputMemoryStream = null;
+		private MemoryStream? bffOutputMemoryStream = null;
 
-		private bool CreateBffFile(IEnumerable<Action> Actions, string BffFilePath)
+		private bool CreateBffFile(IEnumerable<LinkedAction> Actions, string BffFilePath)
 		{
 			try
 			{
@@ -1359,11 +1399,11 @@ namespace UnrealBuildTool
 
 				WriteEnvironmentSetup(); //Compiler, environment variables and base paths
 
-				foreach (Action Action in Actions)
+				foreach (LinkedAction Action in Actions)
 				{
 					// Resolve the list of prerequisite items for this action to
 					// a list of actions which produce these prerequisites
-					IEnumerable<Action> DependencyActions = Action.PrerequisiteActions.Distinct();
+					IEnumerable<LinkedAction> DependencyActions = Action.PrerequisiteActions.Distinct();
 
 					AddText($";** Function for Action {GetActionID(Action)} **\n");
 					AddText($";** CommandPath: {Action.CommandPath.FullName}\n");
@@ -1447,8 +1487,8 @@ namespace UnrealBuildTool
 
 			Log.TraceInformation($"FBuild Command Line Arguments: '{FBCommandLine}");
 
-			string FBExecutable		= GetExecutablePath();
-			string WorkingDirectory	= Path.GetFullPath(Path.Combine(UnrealBuildTool.EngineDirectory.MakeRelativeTo(DirectoryReference.GetCurrentDirectory()), "Source"));
+			string? FBExecutable		= GetExecutablePath();
+			string WorkingDirectory	= Path.GetFullPath(Path.Combine(Unreal.EngineDirectory.MakeRelativeTo(DirectoryReference.GetCurrentDirectory()), "Source"));
 
 			ProcessStartInfo FBStartInfo		= new ProcessStartInfo(FBExecutable, FBCommandLine);
 			FBStartInfo.UseShellExecute			= false;
@@ -1456,18 +1496,18 @@ namespace UnrealBuildTool
 			FBStartInfo.RedirectStandardError	= true;
 			FBStartInfo.RedirectStandardOutput	= true;
 
-			string Coordinator = GetCoordinator();
+			string? Coordinator = GetCoordinator();
 			if (!string.IsNullOrEmpty(Coordinator) && !FBStartInfo.EnvironmentVariables.ContainsKey("FASTBUILD_COORDINATOR"))
 			{
 				FBStartInfo.EnvironmentVariables.Add("FASTBUILD_COORDINATOR", Coordinator);
 			}
 			FBStartInfo.EnvironmentVariables.Remove("FASTBUILD_BROKERAGE_PATH"); // remove stale serialized value and defer to GetBrokeragePath
-			string BrokeragePath = GetBrokeragePath();
+			string? BrokeragePath = GetBrokeragePath();
 			if (!string.IsNullOrEmpty(BrokeragePath) && !FBStartInfo.EnvironmentVariables.ContainsKey("FASTBUILD_BROKERAGE_PATH"))
 			{
 				FBStartInfo.EnvironmentVariables.Add("FASTBUILD_BROKERAGE_PATH", BrokeragePath);
 			}
-			string CachePath = GetCachePath();
+			string? CachePath = GetCachePath();
 			if (!string.IsNullOrEmpty(CachePath) && !FBStartInfo.EnvironmentVariables.ContainsKey("FASTBUILD_CACHE_PATH"))
 			{
 				FBStartInfo.EnvironmentVariables.Add("FASTBUILD_CACHE_PATH", CachePath);

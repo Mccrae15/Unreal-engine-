@@ -10,7 +10,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/Info.h"
 #include "Engine/ServerStatReplicator.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "GameFramework/PlayerController.h"
 #include "GameModeBase.generated.h"
 
@@ -122,11 +122,11 @@ public:
 
 	/** Game Session handles login approval, arbitration, online game interface */
 	UPROPERTY(Transient)
-	AGameSession* GameSession;
+	TObjectPtr<AGameSession> GameSession;
 
 	/** GameState is used to replicate game state relevant properties to all clients. */
 	UPROPERTY(Transient)
-	AGameStateBase* GameState;
+	TObjectPtr<AGameStateBase> GameState;
 
 	/** Helper template to returns the current GameState casted to the desired type. */
 	template< class T >
@@ -136,7 +136,7 @@ public:
 	}
 
 	UPROPERTY(Transient)
-	AServerStatReplicator* ServerStatReplicator;
+	TObjectPtr<AServerStatReplicator> ServerStatReplicator;
 
 	/** Returns number of active human players, excluding spectators */
 	UFUNCTION(BlueprintCallable, Category=Game)
@@ -311,6 +311,14 @@ public:
 	/** Called after a successful login.  This is the first place it is safe to call replicated functions on the PlayerController. */
 	virtual void PostLogin(APlayerController* NewPlayer);
 
+	/** Called as part of the PostLogin process.  This is the last step before we spawn a new player. */
+	void DispatchPostLogin(AController* NewPlayer);
+
+protected:
+	/** Called as part of DispatchPostLogin */
+	virtual void OnPostLogin(AController* NewPlayer) { }
+
+public:
 	/** Notification that a player has successfully logged in, and has been given a player controller */
 	UFUNCTION(BlueprintImplementableEvent, Category=Game, meta = (DisplayName = "OnPostLogin", ScriptName = "OnPostLogin"))
 	void K2_PostLogin(APlayerController* NewPlayer);
@@ -458,7 +466,7 @@ public:
 	//~=============================================================================
 	// Engine hooks
 
-	/** @return true if player is allowed to access the cheats */
+	/** Return true if player should be allowed to use cheats by default */
 	virtual bool AllowCheats(APlayerController* P);
 
 	/** Returns true if replays will start/stop during gameplay starting/stopping */
@@ -473,9 +481,16 @@ public:
 	//~ End AActor Interface
 
 protected:
+	/**
+	 *	Attempts to initialize the 'StartSpot' of the Player.
+	 * 	@param	Player				The controller for the player.
+	 *	@param	OutErrorMessage		Any error messages.
+	 *	@return	bool	true if we updated the start spot, otherwise false.
+	 */
+	virtual bool UpdatePlayerStartSpot(AController* Player, const FString& Portal, FString& OutErrorMessage);
 
 	/**
-	 *	Check to see if we should start in cinematic mode (e.g. matinee movie capture).
+	 *	Check to see if we should start in cinematic mode 
 	 * 	@param	OutHidePlayer		Whether to hide the player
 	 *	@param	OutHideHud			Whether to hide the HUD		
 	 *	@param	OutDisableMovement	Whether to disable movement
@@ -525,20 +540,24 @@ protected:
 	virtual void FinishRestartPlayer(AController* NewPlayer, const FRotator& StartRotation);
 
 	/**
+	 * Called in the event that we fail to spawn a controller's pawn, which maybe it didn't have one or maybe it tried
+	 * to spawn and was destroyed due to collision.
+	 */
+	virtual void FailedToRestartPlayer(AController* NewPlayer);
+
+	/**
 	 * Notifies all clients to travel to the specified URL.
 	 *
 	 * @param	URL				a string containing the mapname (or IP address) to travel to, along with option key/value pairs
-	 * @param	NextMapGuid		the GUID of the server's version of the next map
 	 * @param	bSeamless		indicates whether the travel should use seamless travel or not.
 	 * @param	bAbsolute		indicates which type of travel the server will perform (i.e. TRAVEL_Relative or TRAVEL_Absolute)
 	 */
+	virtual APlayerController* ProcessClientTravel(FString& URL, bool bSeamless, bool bAbsolute);
+
 	UE_DEPRECATED(4.27, "UPackage::Guid has not been used by the engine for a long time. Please use ProcessClientTravel without a NextMapGuid.")
-	virtual APlayerController* ProcessClientTravel(FString& URL, FGuid NextMapGuid, bool bSeamless, bool bAbsolute);
-	virtual APlayerController* ProcessClientTravel(FString& URL, bool bSeamless, bool bAbsolute)
+	virtual APlayerController* ProcessClientTravel(FString& URL, FGuid NextMapGuid, bool bSeamless, bool bAbsolute)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return ProcessClientTravel(URL, FGuid(), bSeamless, bAbsolute);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		return ProcessClientTravel(URL, bSeamless, bAbsolute);
 	}
 
 	/** Handles initializing a seamless travel player, handles logic similar to InitNewPlayer */

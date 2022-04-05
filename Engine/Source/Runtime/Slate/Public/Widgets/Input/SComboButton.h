@@ -9,7 +9,7 @@
 #include "Input/Reply.h"
 #include "Widgets/SWidget.h"
 #include "Styling/SlateTypes.h"
-#include "Styling/CoreStyle.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SMenuAnchor.h"
 
@@ -23,15 +23,14 @@ class SLATE_API SComboButton : public SMenuAnchor
 public:
 
 	SLATE_BEGIN_ARGS( SComboButton )
-		: _ComboButtonStyle( &FCoreStyle::Get().GetWidgetStyle< FComboButtonStyle >( "ComboButton" ) )
+		: _ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle< FComboButtonStyle >( "ComboButton" ))
 		, _ButtonStyle(nullptr)
 		, _ButtonContent()
 		, _MenuContent()
 		, _IsFocusable(true)
 		, _HasDownArrow(true)
-		, _ForegroundColor(FCoreStyle::Get().GetSlateColor("InvertedForeground"))
+		, _ForegroundColor(FSlateColor::UseStyle())
 		, _ButtonColorAndOpacity(FLinearColor::White)
-		, _ContentPadding(FMargin(5))
 		, _MenuPlacement(MenuPlacement_ComboBox)
 		, _HAlign(HAlign_Fill)
 		, _VAlign(VAlign_Center)
@@ -97,6 +96,15 @@ protected:
 	 */
 	virtual FReply OnButtonClicked();
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
+	/**
+	 * Called to query the tool tip text for this widget, but will return an empty text when the menu is already open
+	 *
+	 * @param	ToolTipText	Tool tip text to display, if possible
+	 *
+	 * @return	Tool tip text, or an empty text if filtered out
+	 */
+	FText GetFilteredToolTipText(TAttribute<FText> ToolTipText) const;
 
 protected:
 	/** Area where the button's content resides */

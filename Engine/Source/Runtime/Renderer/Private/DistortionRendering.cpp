@@ -13,6 +13,8 @@
 #include "ScenePrivate.h"
 #include "ScreenPass.h"
 #include "MeshPassProcessor.inl"
+#include "Strata/Strata.h"
+#include "ScreenRendering.h"
 
 DECLARE_GPU_STAT(Distortion);
 
@@ -23,6 +25,39 @@ static TAutoConsoleVariable<int32> CVarDisableDistortion(
 	0,
 	TEXT("Prevents distortion effects from rendering.  Saves a full-screen framebuffer's worth of memory."),
 	ECVF_Default);
+
+static TAutoConsoleVariable<int32> CVarRefractionBlur(
+	TEXT("r.Refraction.Blur"),
+	1,
+	TEXT("Prevent rough refraction from happening, i.e. blurring of the background."),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarRefractionBlurScale(
+	TEXT("r.Refraction.BlurScale"),
+	0.2f,
+	TEXT("Global scale the background blur amount after it is mapped form the surface back roughness/scattering amount."),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarRefractionBlurCenterWeight(
+	TEXT("r.Refraction.BlurCenterWeight"),
+	0.0f,
+	TEXT("The weight of the center sample. Value greater than 0 means the sharp image is more and more visible."),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<int32> CVarRefractionOffsetQuality(
+	TEXT("r.Refraction.OffsetQuality"),
+	0,
+	TEXT("When enabled, the offset buffer is made float for higher quality. This is important to maintain the softness of the blurred scene buffer."),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
+// Using a simple scale to map roughness to mip level.
+// Later we could remove that and use depth+variance to have a better lob roughness to mip match.
+static TAutoConsoleVariable<float> CVarRefractionRoughnessToMipLevelFactor(
+	TEXT("r.Refraction.RoughnessToMipLevelFactor"),
+	5.0f,
+	TEXT("Factor to translate the roughness factor into a mip level."),
+	ECVF_Scalability | ECVF_RenderThreadSafe);
+
 
 IMPLEMENT_STATIC_UNIFORM_BUFFER_STRUCT(FDistortionPassUniformParameters, "DistortionPass", SceneTextures);
 
@@ -40,7 +75,7 @@ int32 FSceneRenderer::GetRefractionQuality(const FSceneViewFamily& ViewFamily)
 	return Value;
 }
 
-void SetupDistortionParams(FVector4& DistortionParams, const FViewInfo& View)
+void SetupDistortionParams(FVector4f& DistortionParams, const FViewInfo& View)
 {
 	float Ratio = View.UnscaledViewRect.Width() / (float)View.UnscaledViewRect.Height();
 	DistortionParams.X = View.ViewMatrices.GetProjectionMatrix().M[0][0];
@@ -49,13 +84,13 @@ void SetupDistortionParams(FVector4& DistortionParams, const FViewInfo& View)
 	DistortionParams.W = (float)View.UnscaledViewRect.Height();
 
 	// When ISR is enabled we store two FOVs in the distortion parameters and compute the aspect ratio in the shader instead.
-	if ((View.IsInstancedStereoPass() || View.bIsMobileMultiViewEnabled) && View.Family->Views.Num() > 0)
+	if (View.IsInstancedStereoPass() || View.bIsMobileMultiViewEnabled)
 	{
-		// When drawing the left eye in a stereo scene, copy the right eye view values into the instanced view uniform buffer.
-		const EStereoscopicPass StereoPassIndex = IStereoRendering::IsStereoEyeView(View) ? eSSP_RIGHT_EYE : eSSP_FULL;
-
-		const FViewInfo& InstancedView = static_cast<const FViewInfo&>(View.Family->GetStereoEyeView(StereoPassIndex));
-		DistortionParams.Y = InstancedView.ViewMatrices.GetProjectionMatrix().M[0][0];
+		const FSceneView* InstancedView = View.GetInstancedView();
+		if (InstancedView)
+		{
+			DistortionParams.Y = InstancedView->ViewMatrices.GetProjectionMatrix().M[0][0];
+		}
 	}
 }
 
@@ -67,20 +102,30 @@ TRDGUniformBufferRef<FDistortionPassUniformParameters> CreateDistortionPassUnifo
 	return GraphBuilder.CreateUniformBuffer(Parameters);
 }
 
+static bool GetUseRoughRefraction()
+{
+	return Strata::IsStrataEnabled() && CVarRefractionBlur.GetValueOnRenderThread() > 0;
+}
+
 class FDistortionScreenPS : public FGlobalShader
 {
 public:
 	class FUseMSAADim : SHADER_PERMUTATION_BOOL("USE_MSAA");
-	using FPermutationDomain = TShaderPermutationDomain<FUseMSAADim>;
+	class FUseRoughRefractionDim : SHADER_PERMUTATION_BOOL("USE_ROUGH_REFRACTION");
+	using FPermutationDomain = TShaderPermutationDomain<FUseMSAADim, FUseRoughRefractionDim>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2DMS<float4>, RoughnessScatterMSAATexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2DMS<float4>, DistortionMSAATexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2DMS<float4>, SceneColorMSAATexture)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, RoughnessScatterTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DistortionTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, RoughnessScatterSampler)
 		SHADER_PARAMETER_SAMPLER(SamplerState, DistortionTextureSampler)
 		SHADER_PARAMETER_SAMPLER(SamplerState, SceneColorTextureSampler)
+		SHADER_PARAMETER(float, RefractionRoughnessToMipLevelFactor)
 		RENDER_TARGET_BINDING_SLOTS()
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -134,42 +179,6 @@ public:
 	}
 };
 
-class FDistortionMeshHS : public FBaseHS
-{
-public:
-	DECLARE_SHADER_TYPE(FDistortionMeshHS,MeshMaterial);
-
-	FDistortionMeshHS() = default;
-
-	FDistortionMeshHS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-		: FBaseHS(Initializer)
-	{}
-
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		return FBaseHS::ShouldCompilePermutation(Parameters)
-			&& IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode) && Parameters.MaterialParameters.bIsDistorted;
-	}
-};
-
-class FDistortionMeshDS : public FBaseDS
-{
-public:
-	DECLARE_SHADER_TYPE(FDistortionMeshDS,MeshMaterial);
-
-	FDistortionMeshDS() = default;
-
-	FDistortionMeshDS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-		: FBaseDS(Initializer)
-	{}
-
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		return FBaseDS::ShouldCompilePermutation(Parameters)
-			&& IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode) && Parameters.MaterialParameters.bIsDistorted;
-	}
-};
-
 class FDistortionMeshPS : public FMeshMaterialShader
 {
 public:
@@ -196,12 +205,13 @@ public:
 			// use same path for scene textures as post-process material
 			OutEnvironment.SetDefine(TEXT("POST_PROCESS_MATERIAL_MOBILE"), 1);
 		}
+
+		// Skip the material clip if depth test should not be done
+		OutEnvironment.SetDefine(TEXT("MATERIAL_SHOULD_DISABLE_DEPTH_TEST"), Parameters.MaterialParameters.bShouldDisableDepthTest ? 1 : 0);
 	}
 };
 
 IMPLEMENT_MATERIAL_SHADER_TYPE(, FDistortionMeshVS, TEXT("/Engine/Private/DistortAccumulateVS.usf"), TEXT("Main"), SF_Vertex);
-IMPLEMENT_MATERIAL_SHADER_TYPE(, FDistortionMeshHS, TEXT("/Engine/Private/DistortAccumulateVS.usf"), TEXT("MainHull"), SF_Hull);
-IMPLEMENT_MATERIAL_SHADER_TYPE(, FDistortionMeshDS, TEXT("/Engine/Private/DistortAccumulateVS.usf"), TEXT("MainDomain"), SF_Domain);
 IMPLEMENT_MATERIAL_SHADER_TYPE(, FDistortionMeshPS,TEXT("/Engine/Private/DistortAccumulatePS.usf"),TEXT("Main"),SF_Pixel);
 
 bool FDeferredShadingSceneRenderer::ShouldRenderDistortion() const
@@ -226,10 +236,235 @@ bool FDeferredShadingSceneRenderer::ShouldRenderDistortion() const
 	return false;
 }
 
-BEGIN_SHADER_PARAMETER_STRUCT(FDistortionPassParameters, )
+BEGIN_SHADER_PARAMETER_STRUCT(FDistortionPassParameters, RENDERER_API)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FViewShaderParameters, View)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FDistortionPassUniformParameters, Pass)
+	SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
 	RENDER_TARGET_BINDING_SLOTS()
 END_SHADER_PARAMETER_STRUCT()
+
+//////////////////////////////////////////////////////////////////////////
+
+class FCopySceneColorTexturePS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FCopySceneColorTexturePS);
+	SHADER_USE_PARAMETER_STRUCT(FCopySceneColorTexturePS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SceneColorTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, SceneColorSampler)
+		RENDER_TARGET_BINDING_SLOTS()
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return true;
+	}
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("COPYSCENECOLORTEXTUREPS"), 1);
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FCopySceneColorTexturePS, "/Engine/Private/DistortFiltering.usf", "CopySceneColorTexturePS", SF_Pixel);
+
+static void AddCopySceneColorPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef SceneColorTexture, FRDGTextureRef SceneColorCopyTexture)
+{
+	const FScreenPassTextureViewport Viewport(SceneColorCopyTexture, View.ViewRect);
+
+	TShaderMapRef<FScreenVS> VertexShader(View.ShaderMap);
+	TShaderMapRef<FCopySceneColorTexturePS> PixelShader(View.ShaderMap);
+
+	auto* PassParameters = GraphBuilder.AllocParameters<FCopySceneColorTexturePS::FParameters>();
+	PassParameters->View = View.ViewUniformBuffer;
+	PassParameters->SceneColorTexture = SceneColorTexture;
+	PassParameters->SceneColorSampler = TStaticSamplerState<SF_Point>::GetRHI();
+	PassParameters->RenderTargets[0] = FRenderTargetBinding(SceneColorCopyTexture, ERenderTargetLoadAction::ENoAction);
+
+	const FScreenPassTextureViewport InputViewport(SceneColorTexture, View.ViewRect);
+	const FScreenPassTextureViewport OutputViewport(SceneColorCopyTexture);
+
+	AddDrawScreenPass(GraphBuilder, {}, View, InputViewport, OutputViewport, VertexShader, PixelShader, PassParameters);
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+class FDownsampleSceneColorCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FDownsampleSceneColorCS);
+	SHADER_USE_PARAMETER_STRUCT(FDownsampleSceneColorCS, FGlobalShader);
+
+	static const uint32 ThreadGroupSize = 8;
+
+	using FPermutationDomain = TShaderPermutationDomain<>;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(uint32, SrcMipIndex)
+		SHADER_PARAMETER(FIntPoint, SrcMipResolution)
+		SHADER_PARAMETER(FIntPoint, DstMipResolution)
+		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D, SourceTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, SourceSampler)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, OutTextureMipColor)
+	END_SHADER_PARAMETER_STRUCT()
+
+public:
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return GetMaxSupportedFeatureLevel(Parameters.Platform) >= ERHIFeatureLevel::SM5; }
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), ThreadGroupSize);
+		OutEnvironment.SetDefine(TEXT("DOWNSAMPLECOLORCS"), 1);
+	}
+};
+IMPLEMENT_GLOBAL_SHADER(FDownsampleSceneColorCS, "/Engine/Private/DistortFiltering.usf", "DownsampleColorCS", SF_Compute);
+
+static void AddDownsampleSceneColorPass(FRDGBuilder& GraphBuilder, FDownsampleSceneColorCS::FParameters* PassParameters, const FViewInfo& View)
+{
+	FIntVector NumGroups = FIntVector::DivideAndRoundUp(
+		FIntVector(PassParameters->DstMipResolution.X, PassParameters->DstMipResolution.Y, 1), 
+		FIntVector(FDownsampleSceneColorCS::ThreadGroupSize, FDownsampleSceneColorCS::ThreadGroupSize, 1));
+
+	FDownsampleSceneColorCS::FPermutationDomain PermutationVector;
+	TShaderMapRef<FDownsampleSceneColorCS> ComputeShader(View.ShaderMap, PermutationVector);
+
+	// Dispatch with GenerateMips: reading from a slice through SRV and writing into lower mip through UAV.
+	ClearUnusedGraphResources(ComputeShader, PassParameters);
+	FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("DistoMipGen"), ComputeShader, PassParameters, NumGroups);
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+// STARTA_TODO make common with the function in PostProcessWeightedSampleSum.cpp
+class FGaussianFiltering
+{
+public:
+	// Evaluates an unnormalized normal distribution PDF around 0 at given X with Variance.
+	static float NormalDistributionUnscaled(float X, float Sigma, float CrossCenterWeight)
+	{
+		const float DX = FMath::Abs(X);
+
+		const float ClampedOneMinusDX = FMath::Max(0.0f, 1.0f - DX);
+
+		// Tweak the gaussian shape e.g. "r.Bloom.Cross 3.5"
+		if (CrossCenterWeight > 1.0f)
+		{
+			return FMath::Pow(ClampedOneMinusDX, CrossCenterWeight);
+		}
+		else
+		{
+			// Constant is tweaked give a similar look to UE before we fixed the scale bug (Some content tweaking might be needed).
+			// The value defines how much of the Gaussian clipped by the sample window.
+			// r.Filter.SizeScale allows to tweak that for performance/quality.
+			const float LegacyCompatibilityConstant = -16.7f;
+
+			const float Gaussian = FMath::Exp(LegacyCompatibilityConstant * FMath::Square(DX / Sigma));
+
+			return FMath::Lerp(Gaussian, ClampedOneMinusDX, CrossCenterWeight);
+		}
+	}
+
+	static float GetClampedKernelRadius(uint32 SampleCountMax, float KernelRadius)
+	{
+		return FMath::Clamp<float>(KernelRadius, DELTA, SampleCountMax - 1);
+	}
+
+	static int GetIntegerKernelRadius(uint32 SampleCountMax, float KernelRadius)
+	{
+		// Smallest radius will be 1.
+		return FMath::Min<int32>(FMath::CeilToInt(GetClampedKernelRadius(SampleCountMax, KernelRadius)), SampleCountMax - 1);
+	}
+
+	static uint32 Compute1DGaussianFilterKernel(FVector2D* OutOffsetAndWeight, uint32 SampleCountMax, float KernelRadius, float CrossCenterWeight, float FilterSizeScale)
+	{
+		const float ClampedKernelRadius = GetClampedKernelRadius(SampleCountMax, KernelRadius);
+
+		const int32 IntegerKernelRadius = GetIntegerKernelRadius(SampleCountMax, KernelRadius * FilterSizeScale);
+
+		uint32 SampleCount = 0;
+		float WeightSum = 0.0f;
+
+		for (int32 SampleIndex = -IntegerKernelRadius; SampleIndex <= IntegerKernelRadius; SampleIndex += 2)
+		{
+			float Weight0 = NormalDistributionUnscaled(SampleIndex, ClampedKernelRadius, CrossCenterWeight);
+			float Weight1 = 0.0f;
+
+			// We use the bilinear filter optimization for gaussian blur. However, we don't want to bias the
+			// last sample off the edge of the filter kernel, so the very last tap just is on the pixel center.
+			if (SampleIndex != IntegerKernelRadius)
+			{
+				Weight1 = NormalDistributionUnscaled(SampleIndex + 1, ClampedKernelRadius, CrossCenterWeight);
+			}
+
+			const float TotalWeight = Weight0 + Weight1;
+			OutOffsetAndWeight[SampleCount].X = SampleIndex + (Weight1 / TotalWeight);
+			OutOffsetAndWeight[SampleCount].Y = TotalWeight;
+			WeightSum += TotalWeight;
+			SampleCount++;
+		}
+
+		// Normalize blur weights.
+		const float WeightSumInverse = 1.0f / WeightSum;
+		for (uint32 SampleIndex = 0; SampleIndex < SampleCount; ++SampleIndex)
+		{
+			OutOffsetAndWeight[SampleIndex].Y *= WeightSumInverse;
+		}
+
+		return SampleCount;
+	}
+};
+
+// If this is update, please update DistortFiltering.usf
+#define MAX_FILTER_SAMPLE_COUNT	128
+
+class FFilterSceneColorCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FFilterSceneColorCS);
+	SHADER_USE_PARAMETER_STRUCT(FFilterSceneColorCS, FGlobalShader);
+
+	static const uint32 ThreadGroupSize = 8;
+
+	using FPermutationDomain = TShaderPermutationDomain<>;
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(uint32, SampleCount)
+		SHADER_PARAMETER(uint32, SrcMipIndex)
+		SHADER_PARAMETER(FIntPoint, MipResolution)
+		SHADER_PARAMETER(FVector4f, BlurDirection)
+		SHADER_PARAMETER_RDG_TEXTURE_SRV(Texture2D, SourceTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, SourceSampler)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D, OutTextureMipColor)
+		SHADER_PARAMETER_ARRAY(FVector4f, SampleOffsetsWeights, [MAX_FILTER_SAMPLE_COUNT])
+	END_SHADER_PARAMETER_STRUCT()
+
+public:
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return GetMaxSupportedFeatureLevel(Parameters.Platform) >= ERHIFeatureLevel::SM5; }
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), ThreadGroupSize);
+		OutEnvironment.SetDefine(TEXT("FILTERCOLORCS"), 1);
+	}
+};
+IMPLEMENT_GLOBAL_SHADER(FFilterSceneColorCS, "/Engine/Private/DistortFiltering.usf", "FilterColorCS", SF_Compute);
+
+static void AddFilterSceneColorPass(FRDGBuilder& GraphBuilder, FFilterSceneColorCS::FParameters* PassParameters, const FViewInfo& View)
+{
+	FIntVector NumGroups = FIntVector::DivideAndRoundUp(
+		FIntVector(PassParameters->MipResolution.X, PassParameters->MipResolution.Y, 1),
+		FIntVector(FFilterSceneColorCS::ThreadGroupSize, FFilterSceneColorCS::ThreadGroupSize, 1));
+
+	FFilterSceneColorCS::FPermutationDomain PermutationVector;
+	TShaderMapRef<FFilterSceneColorCS> ComputeShader(View.ShaderMap, PermutationVector);
+
+	// Dispatch with GenerateMips: reading from a slice through SRV and writing into lower mip through UAV.
+	ClearUnusedGraphResources(ComputeShader, PassParameters);
+	FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("FilterMipGen"), ComputeShader, PassParameters, NumGroups);
+}
+
+//////////////////////////////////////////////////////////////////////////
 
 void FDeferredShadingSceneRenderer::RenderDistortion(FRDGBuilder& GraphBuilder, FRDGTextureRef SceneColorTexture, FRDGTextureRef SceneDepthTexture)
 {
@@ -246,10 +481,149 @@ void FDeferredShadingSceneRenderer::RenderDistortion(FRDGBuilder& GraphBuilder, 
 	RDG_GPU_STAT_SCOPE(GraphBuilder, Distortion);
 
 	const FDepthStencilBinding StencilReadBinding(SceneDepthTexture, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilRead);
-	FDepthStencilBinding StencilWriteBinding(SceneDepthTexture, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::EClear, FExclusiveDepthStencil::DepthRead_StencilWrite);
+	FDepthStencilBinding StencilWriteBinding(SceneDepthTexture, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthRead_StencilWrite);
 
 	FRDGTextureRef DistortionTexture = nullptr;
+	FRDGTextureRef RoughnessScatterTexture = nullptr;
+	FRDGTextureRef TempSceneColorMipchainTexture = nullptr;
 	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(FeatureLevel);
+
+	// Create a texture of the scene color with MIP levels, unfiltered
+	// NOTE: we cannot use mips on the scene color render target it self because multiple views are continuous in there and they would leak color one onto another.
+	TArray<FRDGTextureRef> ViewsSceneColorMipchain;
+	ViewsSceneColorMipchain.SetNum(Views.Num());
+	const bool bUseRoughRefraction = GetUseRoughRefraction();
+	if(bUseRoughRefraction)
+	{
+		for (int32 ViewIndex = 0, Num = Views.Num(); ViewIndex < Num; ++ViewIndex)
+		{
+			RDG_EVENT_SCOPE(GraphBuilder, "Rough Refraction View%d", ViewIndex);
+
+			const FViewInfo& View = Views[ViewIndex];
+			const FIntPoint SceneColorMip0Resolution = View.ViewRect.Size();
+
+			// We do not use max and do not add 1 to the result, this to not go down to the lowest mip level as this is not required.
+			const int32 MipCount = FMath::Max((int32)1, (int32)FMath::CeilLogTwo(FMath::Min(SceneColorMip0Resolution.X, SceneColorMip0Resolution.Y)));
+
+			FRDGTextureDesc SceneColorMipchainDesc = FRDGTextureDesc::Create2D(SceneColorMip0Resolution, PF_FloatR11G11B10, FClearValueBinding::None,
+				TexCreate_TargetArraySlicesIndependently | TexCreate_ShaderResource | TexCreate_UAV | TexCreate_RenderTargetable, MipCount);
+
+			FRDGTextureRef SceneColorMipchainTexture = GraphBuilder.CreateTexture(SceneColorMipchainDesc, TEXT("SceneColorMipchain"));
+			ViewsSceneColorMipchain[ViewIndex] = SceneColorMipchainTexture;
+
+			if (!TempSceneColorMipchainTexture || TempSceneColorMipchainTexture->Desc.Extent != SceneColorMipchainTexture->Desc.Extent)
+			{
+				// Only allocate a new temporary if it needs to have another resolution.
+				TempSceneColorMipchainTexture = GraphBuilder.CreateTexture(SceneColorMipchainDesc, TEXT("TempSceneColorMipchain"));
+			}
+
+			// Copy scene color into the first mip level
+
+			{
+				RDG_EVENT_SCOPE(GraphBuilder, "CopySceneColor");
+				AddCopySceneColorPass(GraphBuilder, View, SceneColorTexture, SceneColorMipchainTexture);
+			}
+
+			// Now render the mip chain
+			// STRATA_TODO we could optimize that pass by doing one pass with a tile of 16x16 writing out the 8x8, 4x4, 2x2 and 1x1 down sampled output
+
+			{
+				RDG_EVENT_SCOPE(GraphBuilder, "SceneColorMipChain");
+
+				FIntPoint SrcMipResolution = SceneColorMip0Resolution;
+				FIntPoint DstMipResolution = SceneColorMip0Resolution / 2;
+				for (int32 DstMipIndex = 1; DstMipIndex < MipCount; DstMipIndex++)
+				{
+					FDownsampleSceneColorCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FDownsampleSceneColorCS::FParameters>();
+					PassParameters->SrcMipIndex = DstMipIndex - 1;
+					PassParameters->SrcMipResolution = SrcMipResolution;
+					PassParameters->DstMipResolution = DstMipResolution;
+					PassParameters->SourceSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+
+					PassParameters->SourceTexture = GraphBuilder.CreateSRV(FRDGTextureSRVDesc::CreateForMipLevel(SceneColorMipchainTexture, DstMipIndex - 1));
+					PassParameters->OutTextureMipColor = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(SceneColorMipchainTexture, DstMipIndex));
+
+					AddDownsampleSceneColorPass(GraphBuilder, PassParameters, View);
+
+					SrcMipResolution = DstMipResolution;
+					DstMipResolution = DstMipResolution / 2;
+				}
+			}
+
+			// Now the horizontal blur
+			// STATA_TODO: check that compute overlap is working as all horizontal filtering steps can happen in parallel
+
+			const float KernelRadius = 16.0f; // The maximum sample count we will run. This is scaled down by FilterSizeScale.
+			const float FilterSizeScale = CVarRefractionBlurScale.GetValueOnRenderThread();
+			const float CrossCenterWeight = CVarRefractionBlurCenterWeight.GetValueOnRenderThread(); // This must be 0 for the sharp image to not affect the output, the blurring dominates.
+
+			{
+				RDG_EVENT_SCOPE(GraphBuilder, "SceneColorMipHBlur");
+
+				FIntPoint MipResolution = SceneColorMip0Resolution / 2;
+				for (int32 MipIndex = 1; MipIndex < MipCount; MipIndex++)
+				{
+					FVector2D OffsetAndWeight[MAX_FILTER_SAMPLE_COUNT];
+					uint32 SampleCount = FGaussianFiltering::Compute1DGaussianFilterKernel(OffsetAndWeight, MAX_FILTER_SAMPLE_COUNT, KernelRadius, CrossCenterWeight, FilterSizeScale);
+					const FVector2D InverseFilterTextureExtent(1.0f / static_cast<float>(MipResolution.X), 1.0f / static_cast<float>(MipResolution.Y));
+
+					FFilterSceneColorCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FFilterSceneColorCS::FParameters>();
+					PassParameters->SrcMipIndex = MipIndex;
+					PassParameters->MipResolution = MipResolution;
+					PassParameters->SourceSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+
+					PassParameters->SourceTexture = GraphBuilder.CreateSRV(FRDGTextureSRVDesc::CreateForMipLevel(SceneColorMipchainTexture, MipIndex));
+					PassParameters->OutTextureMipColor = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(TempSceneColorMipchainTexture, MipIndex));
+
+					PassParameters->SampleCount = SampleCount;
+					PassParameters->BlurDirection = FVector4f(1.0f, 0.0f, 0.0f, 0.0f);
+					for (uint32 i = 0; i < SampleCount; ++i)
+					{
+						PassParameters->SampleOffsetsWeights[i] = FVector4f(InverseFilterTextureExtent.X * OffsetAndWeight[i].X, OffsetAndWeight[i].Y);
+					}
+
+					AddFilterSceneColorPass(GraphBuilder, PassParameters, View);
+
+					MipResolution = MipResolution / 2;
+				}
+			}
+
+			// Now the vertical blur
+			// STATA_TODO: check that compute overlap is working as all vertical filtering steps can happen in parallel
+
+			{
+				RDG_EVENT_SCOPE(GraphBuilder, "SceneColorMipVBlur");
+
+				FIntPoint MipResolution = SceneColorMip0Resolution / 2;
+				for (int32 MipIndex = 1; MipIndex < MipCount; MipIndex++)
+				{
+					FVector2D OffsetAndWeight[MAX_FILTER_SAMPLE_COUNT];
+					uint32 SampleCount = FGaussianFiltering::Compute1DGaussianFilterKernel(OffsetAndWeight, MAX_FILTER_SAMPLE_COUNT, KernelRadius, CrossCenterWeight, FilterSizeScale);
+					const FVector2D InverseFilterTextureExtent(1.0f / static_cast<float>(MipResolution.X), 1.0f / static_cast<float>(MipResolution.Y));
+
+					FFilterSceneColorCS::FParameters* PassParameters = GraphBuilder.AllocParameters<FFilterSceneColorCS::FParameters>();
+					PassParameters->SrcMipIndex = MipIndex;
+					PassParameters->MipResolution = MipResolution;
+					PassParameters->SourceSampler = TStaticSamplerState<SF_Bilinear>::GetRHI();
+
+					PassParameters->SourceTexture = GraphBuilder.CreateSRV(FRDGTextureSRVDesc::CreateForMipLevel(TempSceneColorMipchainTexture, MipIndex));
+					PassParameters->OutTextureMipColor = GraphBuilder.CreateUAV(FRDGTextureUAVDesc(SceneColorMipchainTexture, MipIndex));
+
+					PassParameters->SampleCount = SampleCount;
+					PassParameters->BlurDirection = FVector4f(0.0f, 1.0f, 0.0f, 0.0f);
+					for (uint32 i = 0; i < SampleCount; ++i)
+					{
+						PassParameters->SampleOffsetsWeights[i] = FVector4f(InverseFilterTextureExtent.Y * OffsetAndWeight[i].X, OffsetAndWeight[i].Y);
+					}
+
+					AddFilterSceneColorPass(GraphBuilder, PassParameters, View);
+
+					MipResolution = MipResolution / 2;
+				}
+			}
+		}
+	}
+
 
 	// Use stencil mask to optimize cases with lower screen coverage.
 	// Note: This adds an extra pass which is actually slower as distortion tends towards full-screen.
@@ -268,18 +642,32 @@ void FDeferredShadingSceneRenderer::RenderDistortion(FRDGBuilder& GraphBuilder, 
 		DistortionTexture = GraphBuilder.CreateTexture(
 			FRDGTextureDesc::Create2D(
 				SceneDepthTexture->Desc.Extent,
-				PF_B8G8R8A8,
+				CVarRefractionOffsetQuality.GetValueOnRenderThread() > 0 ? PF_FloatRGBA : PF_B8G8R8A8,
 				FClearValueBinding::Transparent,
 				GFastVRamConfig.Distortion | TexCreate_RenderTargetable | TexCreate_ShaderResource,
 				1,
 				SceneDepthTexture->Desc.NumSamples),
 			TEXT("Distortion"));
 
+		if (bUseRoughRefraction)
+		{
+			// This is the texture containing information about the surface back scattering process
+			RoughnessScatterTexture = GraphBuilder.CreateTexture(
+				FRDGTextureDesc::Create2D(
+					SceneDepthTexture->Desc.Extent,
+					PF_R16F,
+					FClearValueBinding::Transparent,
+					GFastVRamConfig.Distortion | TexCreate_RenderTargetable | TexCreate_ShaderResource,
+					1,
+					SceneDepthTexture->Desc.NumSamples),
+				TEXT("DistortionRoughnessScatter"));
+		}
+
 		ERenderTargetLoadAction LoadAction = ERenderTargetLoadAction::EClear;
 
 		for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 		{
-			const FViewInfo& View = Views[ViewIndex];
+			FViewInfo& View = Views[ViewIndex];
 			const ETranslucencyView TranslucencyView = GetTranslucencyView(View);
 
 			if (!View.ShouldRenderView() && !EnumHasAnyFlags(TranslucencyView, ETranslucencyView::RayTracing))
@@ -289,44 +677,56 @@ void FDeferredShadingSceneRenderer::RenderDistortion(FRDGBuilder& GraphBuilder, 
 
 			RDG_GPU_MASK_SCOPE(GraphBuilder, View.GPUMask);
 			RDG_EVENT_SCOPE_CONDITIONAL(GraphBuilder, Views.Num() > 1, "View%d", ViewIndex);
+			View.BeginRenderView();
 
 			auto* PassParameters = GraphBuilder.AllocParameters<FDistortionPassParameters>();
+			PassParameters->View = View.GetShaderParameters();
 			PassParameters->Pass = CreateDistortionPassUniformBuffer(GraphBuilder, View);
 			PassParameters->RenderTargets[0] = FRenderTargetBinding(DistortionTexture, LoadAction);
+			if (bUseRoughRefraction)
+			{
+				PassParameters->RenderTargets[1] = FRenderTargetBinding(RoughnessScatterTexture, LoadAction);
+			}
 			PassParameters->RenderTargets.DepthStencil = StencilWriteBinding;
+
+			View.ParallelMeshDrawCommandPasses[EMeshPass::Distortion].BuildRenderingCommands(GraphBuilder, Scene->GPUScene, PassParameters->InstanceCullingDrawParams);
 
 			GraphBuilder.AddPass(
 				{},
 				PassParameters,
 				ERDGPassFlags::Raster,
-				[this, &View](FRHICommandListImmediate& RHICmdList)
+				[this, &View, PassParameters](FRHICommandList& RHICmdList)
 			{
 				QUICK_SCOPE_CYCLE_COUNTER(STAT_FSceneRender_RenderDistortion_Accumulate_Meshes);
-				Scene->UniformBuffers.UpdateViewUniformBuffer(View);
-
 				SetStereoViewport(RHICmdList, View);
-				View.ParallelMeshDrawCommandPasses[EMeshPass::Distortion].DispatchDraw(nullptr, RHICmdList);
+				View.ParallelMeshDrawCommandPasses[EMeshPass::Distortion].DispatchDraw(nullptr, RHICmdList, &PassParameters->InstanceCullingDrawParams);
 			});
 
 			LoadAction = ERenderTargetLoadAction::ELoad;
-			StencilWriteBinding.SetStencilLoadAction(ERenderTargetLoadAction::ELoad);
 		}
-		StencilWriteBinding.SetStencilLoadAction(ERenderTargetLoadAction::ELoad);
 	}
 
 	FRDGTextureDesc DistortedSceneColorDesc = SceneColorTexture->Desc;
-	EnumRemoveFlags(DistortedSceneColorDesc.Flags, TexCreate_FastVRAM | TexCreate_Transient);
+	EnumRemoveFlags(DistortedSceneColorDesc.Flags, TexCreate_FastVRAM);
 
 	FRDGTextureRef DistortionSceneColorTexture = GraphBuilder.CreateTexture(DistortedSceneColorDesc, TEXT("DistortedSceneColor"));
 
 	FDistortionScreenPS::FParameters CommonParameters;
 	CommonParameters.DistortionMSAATexture = DistortionTexture;
 	CommonParameters.DistortionTexture = DistortionTexture;
-	CommonParameters.SceneColorTextureSampler = TStaticSamplerState<>::GetRHI();
+	if (bUseRoughRefraction)
+	{
+		CommonParameters.RoughnessScatterMSAATexture = RoughnessScatterTexture;
+		CommonParameters.RoughnessScatterTexture = RoughnessScatterTexture;
+	}
+	CommonParameters.SceneColorTextureSampler = bUseRoughRefraction ? TStaticSamplerState<SF_Trilinear>::GetRHI() : TStaticSamplerState<>::GetRHI();
 	CommonParameters.DistortionTextureSampler = TStaticSamplerState<>::GetRHI();
+	CommonParameters.RoughnessScatterSampler = TStaticSamplerState<>::GetRHI();
+	CommonParameters.RefractionRoughnessToMipLevelFactor = FMath::Max(0.0f, CVarRefractionRoughnessToMipLevelFactor.GetValueOnRenderThread());
 
 	FDistortionScreenPS::FPermutationDomain PermutationVector;
 	PermutationVector.Set<FDistortionScreenPS::FUseMSAADim>(SceneColorTexture->Desc.NumSamples > 1);
+	PermutationVector.Set<FDistortionScreenPS::FUseRoughRefractionDim>(bUseRoughRefraction);
 
 	TShaderMapRef<FScreenPassVS> VertexShader(ShaderMap);
 	TShaderMapRef<FDistortionApplyScreenPS> ApplyPixelShader(ShaderMap, PermutationVector);
@@ -350,6 +750,7 @@ void FDeferredShadingSceneRenderer::RenderDistortion(FRDGBuilder& GraphBuilder, 
 			true, CF_Equal, SO_Keep, SO_Keep, SO_Keep,
 			false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
 			kStencilMaskBit, kStencilMaskBit>::GetRHI();
+		PipelineState.StencilRef = kStencilMaskBit;
 
 		ERenderTargetLoadAction LoadAction = ERenderTargetLoadAction::ENoAction;
 
@@ -361,6 +762,11 @@ void FDeferredShadingSceneRenderer::RenderDistortion(FRDGBuilder& GraphBuilder, 
 
 			auto* PassParameters = GraphBuilder.AllocParameters<FDistortionScreenPS::FParameters>();
 			*PassParameters = CommonParameters;
+			if (bUseRoughRefraction)
+			{
+				PassParameters->SceneColorMSAATexture = ViewsSceneColorMipchain[ViewIndex];
+				PassParameters->SceneColorTexture = ViewsSceneColorMipchain[ViewIndex];
+			}
 			PassParameters->View = View.ViewUniformBuffer;
 			PassParameters->RenderTargets[0] = FRenderTargetBinding(DistortionSceneColorTexture, LoadAction);
 
@@ -370,7 +776,6 @@ void FDeferredShadingSceneRenderer::RenderDistortion(FRDGBuilder& GraphBuilder, 
 			AddDrawScreenPass(GraphBuilder, {}, View, Viewport, Viewport, PipelineState, PassParameters,
 				[ApplyPixelShader, PassParameters](FRHICommandList& RHICmdList)
 			{
-				RHICmdList.SetStencilRef(kStencilMaskBit);
 				SetShaderParameters(RHICmdList, ApplyPixelShader, ApplyPixelShader.GetPixelShader(), *PassParameters);
 			});
 
@@ -393,6 +798,7 @@ void FDeferredShadingSceneRenderer::RenderDistortion(FRDGBuilder& GraphBuilder, 
 			true, CF_Equal, SO_Keep, SO_Keep, SO_Zero,
 			false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
 			kStencilMaskBit, kStencilMaskBit>::GetRHI();
+		PipelineState.StencilRef = kStencilMaskBit;
 
 		for (int32 ViewIndex = 0, Num = Views.Num(); ViewIndex < Num; ++ViewIndex)
 		{
@@ -411,7 +817,6 @@ void FDeferredShadingSceneRenderer::RenderDistortion(FRDGBuilder& GraphBuilder, 
 			AddDrawScreenPass(GraphBuilder, {}, View, Viewport, Viewport, PipelineState, PassParameters,
 				[MergePixelShader, PassParameters](FRHICommandList& RHICmdList)
 			{
-				RHICmdList.SetStencilRef(kStencilMaskBit);
 				SetShaderParameters(RHICmdList, MergePixelShader, MergePixelShader.GetPixelShader(), *PassParameters);
 			});
 		}
@@ -422,54 +827,73 @@ void FDistortionMeshProcessor::AddMeshBatch(const FMeshBatch& RESTRICT MeshBatch
 {
 	if (MeshBatch.bUseForMaterial)
 	{
-		// Determine the mesh's material and blend mode.
-		const FMaterialRenderProxy* FallbackMaterialRenderProxyPtr = nullptr;
-		const FMaterial& Material = MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, FallbackMaterialRenderProxyPtr);
-
-		const FMaterialRenderProxy& MaterialRenderProxy = FallbackMaterialRenderProxyPtr ? *FallbackMaterialRenderProxyPtr : *MeshBatch.MaterialRenderProxy;
-
-		const EBlendMode BlendMode = Material.GetBlendMode();
-		const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
-		const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
-		const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
-		const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode);
-
-		if (bIsTranslucent
-			&& (!PrimitiveSceneProxy || PrimitiveSceneProxy->ShouldRenderInMainPass())
-			&& ShouldIncludeDomainInMeshPass(Material.GetMaterialDomain())
-			&& Material.IsDistorted())
+		const FMaterialRenderProxy* MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
+		while (MaterialRenderProxy)
 		{
-			Process(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, MaterialRenderProxy, Material, MeshFillMode, MeshCullMode);
+			const FMaterial* Material = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+			if (Material)
+			{
+				if (TryAddMeshBatch(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, *MaterialRenderProxy, *Material))
+				{
+					break;
+				}
+			}
+
+			MaterialRenderProxy = MaterialRenderProxy->GetFallback(FeatureLevel);
 		}
 	}
 }
 
-void GetDistortionPassShaders(
+bool FDistortionMeshProcessor::TryAddMeshBatch(
+	const FMeshBatch& RESTRICT MeshBatch,
+	uint64 BatchElementMask,
+	const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
+	int32 StaticMeshId,
+	const FMaterialRenderProxy& MaterialRenderProxy,
+	const FMaterial& Material)
+{
+	// Determine the mesh's material and blend mode.
+	const EBlendMode BlendMode = Material.GetBlendMode();
+	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
+	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, Material, OverrideSettings);
+	const ERasterizerCullMode MeshCullMode = ComputeMeshCullMode(MeshBatch, Material, OverrideSettings);
+	const bool bIsTranslucent = IsTranslucentBlendMode(BlendMode);
+
+	bool bResult = true;
+	if (bIsTranslucent
+		&& (!PrimitiveSceneProxy || PrimitiveSceneProxy->ShouldRenderInMainPass())
+		&& ShouldIncludeDomainInMeshPass(Material.GetMaterialDomain())
+		&& Material.IsDistorted())
+	{
+		bResult = Process(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, MaterialRenderProxy, Material, MeshFillMode, MeshCullMode);
+	}
+
+	return bResult;
+}
+
+bool GetDistortionPassShaders(
 	const FMaterial& Material,
 	FVertexFactoryType* VertexFactoryType,
 	ERHIFeatureLevel::Type FeatureLevel,
-	TShaderRef<FDistortionMeshHS>& HullShader,
-	TShaderRef<FDistortionMeshDS>& DomainShader,
 	TShaderRef<FDistortionMeshVS>& VertexShader,
 	TShaderRef<FDistortionMeshPS>& PixelShader)
 {
-	const EMaterialTessellationMode MaterialTessellationMode = Material.GetTessellationMode();
+	FMaterialShaderTypes ShaderTypes;
+	ShaderTypes.AddShaderType<FDistortionMeshVS>();
+	ShaderTypes.AddShaderType<FDistortionMeshPS>();
 
-	const bool bNeedsHSDS = RHISupportsTessellation(GShaderPlatformForFeatureLevel[FeatureLevel])
-		&& VertexFactoryType->SupportsTessellationShaders()
-		&& MaterialTessellationMode != MTM_NoTessellation;
-
-	if (bNeedsHSDS)
+	FMaterialShaders Shaders;
+	if (!Material.TryGetShaders(ShaderTypes, VertexFactoryType, Shaders))
 	{
-		DomainShader = Material.GetShader<FDistortionMeshDS>(VertexFactoryType);
-		HullShader = Material.GetShader<FDistortionMeshHS>(VertexFactoryType);
+		return false;
 	}
 
-	VertexShader = Material.GetShader<FDistortionMeshVS>(VertexFactoryType);
-	PixelShader = Material.GetShader<FDistortionMeshPS>(VertexFactoryType);
+	Shaders.TryGetVertexShader(VertexShader);
+	Shaders.TryGetPixelShader(PixelShader);
+	return true;
 }
 
-void FDistortionMeshProcessor::Process(
+bool FDistortionMeshProcessor::Process(
 	const FMeshBatch& MeshBatch, 
 	uint64 BatchElementMask, 
 	const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
@@ -483,24 +907,24 @@ void FDistortionMeshProcessor::Process(
 
 	TMeshProcessorShaders<
 		FDistortionMeshVS,
-		FDistortionMeshHS,
-		FDistortionMeshDS,
 		FDistortionMeshPS> DistortionPassShaders;
 
-	GetDistortionPassShaders(
+	if (!GetDistortionPassShaders(
 		MaterialResource,
 		VertexFactory->GetType(),
 		FeatureLevel,
-		DistortionPassShaders.HullShader,
-		DistortionPassShaders.DomainShader,
 		DistortionPassShaders.VertexShader,
-		DistortionPassShaders.PixelShader
-		);
+		DistortionPassShaders.PixelShader))
+	{
+		return false;
+	}
 
 	FMeshMaterialShaderElementData ShaderElementData;
 	ShaderElementData.InitializeMeshMaterialData(ViewIfDynamicMeshCommand, PrimitiveSceneProxy, MeshBatch, StaticMeshId, false);
 
 	const FMeshDrawCommandSortKey SortKey = CalculateMeshStaticSortKey(DistortionPassShaders.VertexShader, DistortionPassShaders.PixelShader);
+
+	const bool bDisableDepthTest = MaterialResource.ShouldDisableDepthTest();
 
 	BuildMeshDrawCommands(
 		MeshBatch,
@@ -508,25 +932,31 @@ void FDistortionMeshProcessor::Process(
 		PrimitiveSceneProxy,
 		MaterialRenderProxy,
 		MaterialResource,
-		PassDrawRenderState,
+		bDisableDepthTest ? PassDrawRenderStateNoDepthTest : PassDrawRenderState,
 		DistortionPassShaders,
 		MeshFillMode,
 		MeshCullMode,
 		SortKey,
 		EMeshPassFeatures::Default,
 		ShaderElementData);
+
+	return true;
 }
 
-FDistortionMeshProcessor::FDistortionMeshProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, const FMeshPassProcessorRenderState& InPassDrawRenderState, FMeshPassDrawListContext* InDrawListContext)
+FDistortionMeshProcessor::FDistortionMeshProcessor(
+	const FScene* Scene,
+	const FSceneView* InViewIfDynamicMeshCommand,
+	const FMeshPassProcessorRenderState& InPassDrawRenderState,
+	const FMeshPassProcessorRenderState& InDistortionPassStateNoDepthTest,
+	FMeshPassDrawListContext* InDrawListContext)
 	: FMeshPassProcessor(Scene, Scene->GetFeatureLevel(), InViewIfDynamicMeshCommand, InDrawListContext)
 	, PassDrawRenderState(InPassDrawRenderState)
+	, PassDrawRenderStateNoDepthTest(InDistortionPassStateNoDepthTest)
 {}
 
 FMeshPassProcessor* CreateDistortionPassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
 	FMeshPassProcessorRenderState DistortionPassState;
-	DistortionPassState.SetViewUniformBuffer(Scene->UniformBuffers.ViewUniformBuffer);
-	DistortionPassState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
 	
 	// test against depth and write stencil mask
 	DistortionPassState.SetDepthStencilState(TStaticDepthStencilState<
@@ -537,24 +967,47 @@ FMeshPassProcessor* CreateDistortionPassProcessor(const FScene* Scene, const FSc
 
 	DistortionPassState.SetStencilRef(kStencilMaskBit);
 
-	// additive blending of offsets (or complexity if the shader complexity viewmode is enabled)
-	DistortionPassState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI());
+	if (GetUseRoughRefraction())
+	{
+		DistortionPassState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One,
+															CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI());
+	}
+	else
+	{
+		// additive blending of offsets (or complexity if the shader complexity viewmode is enabled)
+		DistortionPassState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI());
+	}
 
-	return new(FMemStack::Get()) FDistortionMeshProcessor(Scene, InViewIfDynamicMeshCommand, DistortionPassState, InDrawListContext);
+	FMeshPassProcessorRenderState DistortionPassStateNoDepthTest = DistortionPassState;
+	DistortionPassStateNoDepthTest.SetDepthStencilState(TStaticDepthStencilState<
+		false, CF_Always,
+		true, CF_Always, SO_Keep, SO_Keep, SO_Replace,
+		false, CF_Always, SO_Keep, SO_Keep, SO_Keep,
+		kStencilMaskBit, kStencilMaskBit>::GetRHI());
+	DistortionPassStateNoDepthTest.SetStencilRef(kStencilMaskBit);
+
+	return new(FMemStack::Get()) FDistortionMeshProcessor(Scene, InViewIfDynamicMeshCommand, DistortionPassState, DistortionPassStateNoDepthTest, InDrawListContext);
 }
 
 FMeshPassProcessor* CreateMobileDistortionPassProcessor(const FScene* Scene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassDrawListContext* InDrawListContext)
 {
 	FMeshPassProcessorRenderState DistortionPassState;
-	DistortionPassState.SetViewUniformBuffer(Scene->UniformBuffers.ViewUniformBuffer);
-	DistortionPassState.SetInstancedViewUniformBuffer(Scene->UniformBuffers.InstancedViewUniformBuffer);
 
 	// We don't have depth, render all pixels, pixel shader will sample SceneDepth from SceneColor.A and discard if occluded
 	DistortionPassState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
-	// additive blending of offsets
-	DistortionPassState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI());
 
-	return new(FMemStack::Get()) FDistortionMeshProcessor(Scene, InViewIfDynamicMeshCommand, DistortionPassState, InDrawListContext);
+	if (GetUseRoughRefraction())
+	{
+		DistortionPassState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One,
+															CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI());
+	}
+	else
+	{
+		// additive blending of offsets
+		DistortionPassState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_One, BF_One>::GetRHI());
+	}
+
+	return new(FMemStack::Get()) FDistortionMeshProcessor(Scene, InViewIfDynamicMeshCommand, DistortionPassState, DistortionPassState, InDrawListContext);
 }
 
 FRegisterPassProcessorCreateFunction RegisterDistortionPass(&CreateDistortionPassProcessor, EShadingPath::Deferred, EMeshPass::Distortion, EMeshPassFlags::MainView);

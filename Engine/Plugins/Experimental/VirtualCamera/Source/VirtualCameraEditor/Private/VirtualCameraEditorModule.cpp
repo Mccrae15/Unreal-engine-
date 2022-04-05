@@ -66,6 +66,7 @@ public:
 				IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
 					*UActorFactoryBlueprint::StaticClass(),
 					SimpleVirtualCameraAssetData,
+					FName("ClassThumbnail.CameraActor"),
 					FName("ClassIcon.CameraActor"),
 					TOptional<FLinearColor>(),
 					TOptional<int32>(),
@@ -83,6 +84,7 @@ public:
 				IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
 					*UActorFactoryBlueprint::StaticClass(),
 					VirtualCamera2ActorAssetData,
+					FName("ClassThumbnail.CameraActor"),
 					FName("ClassIcon.CameraActor"),
 					TOptional<FLinearColor>(),
 					TOptional<int32>(),

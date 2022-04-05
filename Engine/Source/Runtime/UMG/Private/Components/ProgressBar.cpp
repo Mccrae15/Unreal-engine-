@@ -2,6 +2,7 @@
 
 #include "Components/ProgressBar.h"
 #include "Slate/SlateBrushAsset.h"
+#include "Styling/UMGCoreStyle.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -10,22 +11,45 @@
 
 static FProgressBarStyle* DefaultProgressBarStyle = nullptr;
 
+#if WITH_EDITOR
+static FProgressBarStyle* EditorProgressBarStyle = nullptr;
+#endif 
+
 UProgressBar::UProgressBar(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	if (DefaultProgressBarStyle == nullptr)
 	{
-		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
-		DefaultProgressBarStyle = new FProgressBarStyle(FCoreStyle::Get().GetWidgetStyle<FProgressBarStyle>("ProgressBar"));
+		DefaultProgressBarStyle = new FProgressBarStyle(FUMGCoreStyle::Get().GetWidgetStyle<FProgressBarStyle>("ProgressBar"));
 
-		// Unlink UMG default colors from the editor settings colors.
+		// Unlink UMG default colors.
 		DefaultProgressBarStyle->UnlinkColors();
 	}
 
 	WidgetStyle = *DefaultProgressBarStyle;
+
+#if WITH_EDITOR 
+	if (EditorProgressBarStyle == nullptr)
+	{
+		EditorProgressBarStyle = new FProgressBarStyle(FCoreStyle::Get().GetWidgetStyle<FProgressBarStyle>("ProgressBar"));
+
+		// Unlink UMG Editor colors from the editor settings colors.
+		EditorProgressBarStyle->UnlinkColors();
+	}
+
+	if (IsEditorWidget())
+	{
+		WidgetStyle = *EditorProgressBarStyle;
+
+		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
+		PostEditChange();
+	}
+#endif // WITH_EDITOR
+
 	WidgetStyle.FillImage.TintColor = FLinearColor::White;
 
 	BarFillType = EProgressBarFillType::LeftToRight;
+	BarFillStyle = EProgressBarFillStyle::Mask;
 	bIsMarquee = false;
 	Percent = 0;
 	FillColorAndOpacity = FLinearColor::White;
@@ -56,6 +80,7 @@ void UProgressBar::SynchronizeProperties()
 	MyProgressBar->SetStyle(&WidgetStyle);
 
 	MyProgressBar->SetBarFillType(BarFillType);
+	MyProgressBar->SetBarFillStyle(BarFillStyle);
 	MyProgressBar->SetPercent(bIsMarquee ? TOptional<float>() : PercentBinding);
 	MyProgressBar->SetFillColorAndOpacity(FillColorAndOpacityBinding);
 	MyProgressBar->SetBorderPadding(BorderPadding);
@@ -92,7 +117,7 @@ void UProgressBar::PostLoad()
 {
 	Super::PostLoad();
 
-	if (GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS)
+	if (GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS)
 	{
 		if (Style_DEPRECATED != nullptr)
 		{

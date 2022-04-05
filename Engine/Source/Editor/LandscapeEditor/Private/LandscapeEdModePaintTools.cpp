@@ -131,17 +131,17 @@ class FLandscapeToolStrokePaint : public FLandscapeToolStrokePaintBase<FWeightma
 
 	TMap<FIntPoint, float> TotalInfluenceMap; // amount of time and weight the brush has spent on each vertex.
 
-	bool bIsWhitelistMode;
-	bool bAddToWhitelist;
+	bool bIsAllowListMode;
+	bool bAddToAllowList;
 public:
 	// Heightmap sculpt tool will continuously sculpt in the same location, weightmap paint tool doesn't
 	enum { UseContinuousApply = false };
 
 	FLandscapeToolStrokePaint(FEdModeLandscape* InEdMode, FEditorViewportClient* InViewportClient, const FLandscapeToolTarget& InTarget)
 		: FLandscapeToolStrokePaintBase<FWeightmapToolTarget>(InEdMode, InViewportClient, InTarget)
-		, bIsWhitelistMode(EdMode->UISettings->PaintingRestriction == ELandscapeLayerPaintingRestriction::UseComponentWhitelist &&
+		, bIsAllowListMode(EdMode->UISettings->PaintingRestriction == ELandscapeLayerPaintingRestriction::UseComponentAllowList &&
 		                   (InViewportClient->Viewport->KeyState(EKeys::Equals) || InViewportClient->Viewport->KeyState(EKeys::Hyphen)))
-		, bAddToWhitelist(bIsWhitelistMode && InViewportClient->Viewport->KeyState(EKeys::Equals))
+		, bAddToAllowList(bIsAllowListMode && InViewportClient->Viewport->KeyState(EKeys::Equals))
 	{
 	}
 
@@ -151,7 +151,7 @@ public:
 		bool bInvert = InteractorPositions.Last().bModifierPressed;
 		UE_LOG(LogLandscapeTools, VeryVerbose, TEXT("bInvert = %d"), bInvert);
 
-		if (bIsWhitelistMode)
+		if (bIsAllowListMode)
 		{
 			// Get list of components to delete from brush
 			// TODO - only retrieve bounds as we don't need the vert data
@@ -173,11 +173,11 @@ public:
 				Component->Modify();
 			}
 
-			if (bAddToWhitelist)
+			if (bAddToAllowList)
 			{
 				for (ULandscapeComponent* Component : SelectedComponents)
 				{
-					Component->LayerWhitelist.AddUnique(Target.LayerInfo.Get());
+					Component->LayerAllowList.AddUnique(Target.LayerInfo.Get());
 				}
 			}
 			else
@@ -185,7 +185,7 @@ public:
 				FLandscapeEditDataInterface LandscapeEdit(LandscapeInfo);
 				for (ULandscapeComponent* Component : SelectedComponents)
 				{
-					Component->LayerWhitelist.RemoveSingle(Target.LayerInfo.Get());
+					Component->LayerAllowList.RemoveSingle(Target.LayerInfo.Get());
 					Component->DeleteLayer(Target.LayerInfo.Get(), LandscapeEdit);
 				}
 			}
@@ -323,9 +323,9 @@ public:
 
 	virtual void EnterTool()
 	{
-		if (EdMode->UISettings->PaintingRestriction == ELandscapeLayerPaintingRestriction::UseComponentWhitelist)
+		if (EdMode->UISettings->PaintingRestriction == ELandscapeLayerPaintingRestriction::UseComponentAllowList)
 		{
-			EdMode->UISettings->UpdateComponentLayerWhitelist();
+			EdMode->UISettings->UpdateComponentLayerAllowList();
 		}
 
 		FLandscapeToolPaintBase::EnterTool();
@@ -761,6 +761,12 @@ public:
 		}
 
 		LayerDataCache.Write(X1, Y1, X2, Y2, Data, UISettings->PaintingRestriction);
+
+		if (ToolTarget::TargetType == ELandscapeToolTargetType::Weightmap)
+		{
+			// Dirty any runtime virtual textures that our landscape components write to.
+			DirtyRuntimeVirtualTextureForLandscapeArea(this->LandscapeInfo, X1, Y1, X2, Y2);
+		}
 	}
 };
 
@@ -1043,6 +1049,12 @@ public:
 		}
 
 		LayerDataCache.Write(X1, Y1, X2, Y2, Data, UISettings->PaintingRestriction);
+
+		if (ToolTarget::TargetType == ELandscapeToolTargetType::Weightmap)
+		{
+			// Dirty any runtime virtual textures that our landscape components write to.
+			DirtyRuntimeVirtualTextureForLandscapeArea(this->LandscapeInfo, X1, Y1, X2, Y2);
+		}
 	}
 };
 
@@ -1050,8 +1062,8 @@ template<class ToolTarget>
 class FLandscapeToolFlatten : public FLandscapeToolPaintBase < ToolTarget, FLandscapeToolStrokeFlatten<ToolTarget> >
 {
 protected:
-	UStaticMesh* PlaneMesh;
-	UStaticMeshComponent* MeshComponent;
+	UStaticMesh* HeightmapFlattenPlaneMesh;
+	UStaticMeshComponent* HeightmapFlattenPreviewComponent;
 	bool CanToolBeActivatedNextTick;
 	bool CanToolBeActivatedValue;
 	float EyeDropperFlattenTargetValue;
@@ -1059,13 +1071,13 @@ protected:
 public:
 	FLandscapeToolFlatten(FEdModeLandscape* InEdMode)
 		: FLandscapeToolPaintBase<ToolTarget, FLandscapeToolStrokeFlatten<ToolTarget>>(InEdMode)
-		, PlaneMesh(LoadObject<UStaticMesh>(NULL, TEXT("/Engine/EditorLandscapeResources/FlattenPlaneMesh.FlattenPlaneMesh")))
-		, MeshComponent(NULL)
+		, HeightmapFlattenPlaneMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/EditorLandscapeResources/FlattenPlaneMesh.FlattenPlaneMesh")))
+		, HeightmapFlattenPreviewComponent(nullptr)
 		, CanToolBeActivatedNextTick(false)
 		, CanToolBeActivatedValue(false)
 		, EyeDropperFlattenTargetValue(0.0f)
 	{
-		check(PlaneMesh);
+		check(HeightmapFlattenPlaneMesh);
 	}
 
 	virtual bool GetCursor(EMouseCursor::Type& OutCursor) const override
@@ -1087,8 +1099,8 @@ public:
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override
 	{
-		Collector.AddReferencedObject(PlaneMesh);
-		Collector.AddReferencedObject(MeshComponent);
+		Collector.AddReferencedObject(HeightmapFlattenPlaneMesh);
+		Collector.AddReferencedObject(HeightmapFlattenPreviewComponent);
 	}
 
 	virtual const TCHAR* GetToolName() override { return TEXT("Flatten"); }
@@ -1105,15 +1117,18 @@ public:
 
 		FLandscapeToolPaintBase<ToolTarget, FLandscapeToolStrokeFlatten<ToolTarget>>::Tick(ViewportClient, DeltaTime);
 
-		bool bShowGrid = this->EdMode->UISettings->bUseFlattenTarget && this->EdMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Heightmap && this->EdMode->UISettings->bShowFlattenTargetPreview;
-		MeshComponent->SetVisibility(bShowGrid);
+		if (HeightmapFlattenPreviewComponent != nullptr)
+		{
+			bool bShowGrid = this->EdMode->UISettings->bUseFlattenTarget && this->EdMode->UISettings->bShowFlattenTargetPreview;
+			HeightmapFlattenPreviewComponent->SetVisibility(bShowGrid);
+		}
 	}
 
 	virtual bool MouseMove(FEditorViewportClient* ViewportClient, FViewport* Viewport, int32 x, int32 y) override
 	{
 		bool bResult = FLandscapeToolPaintBase<ToolTarget, FLandscapeToolStrokeFlatten<ToolTarget>>::MouseMove(ViewportClient, Viewport, x, y);
 
-		if (ViewportClient->IsLevelEditorClient() && MeshComponent != NULL)
+		if (ViewportClient->IsLevelEditorClient() && HeightmapFlattenPreviewComponent != nullptr)
 		{
 			FVector MousePosition;
 			this->EdMode->LandscapeMouseTrace((FEditorViewportClient*)ViewportClient, x, y, MousePosition);
@@ -1123,7 +1138,7 @@ public:
 			Origin.X = FMath::RoundToFloat(MousePosition.X);
 			Origin.Y = FMath::RoundToFloat(MousePosition.Y);
 			Origin.Z = (FMath::RoundToFloat((this->EdMode->UISettings->FlattenTarget - LocalToWorld.GetTranslation().Z) / LocalToWorld.GetScale3D().Z * LANDSCAPE_INV_ZSCALE) - 0.1f) * LANDSCAPE_ZSCALE;
-			MeshComponent->SetRelativeLocation(Origin, false);
+			HeightmapFlattenPreviewComponent->SetRelativeLocation(Origin, false);
 
 			// Clamp the value to the height map
 			uint16 TexHeight = LandscapeDataAccess::GetTexHeight(MousePosition.Z);
@@ -1144,30 +1159,34 @@ public:
 			return;
 		}
 
-		ALandscapeProxy* LandscapeProxy = this->EdMode->CurrentToolTarget.LandscapeInfo->GetLandscapeProxy();
-		MeshComponent = NewObject<UStaticMeshComponent>(LandscapeProxy, NAME_None, RF_Transient);
-		MeshComponent->SetStaticMesh(PlaneMesh);
-		MeshComponent->AttachToComponent(LandscapeProxy->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
-		MeshComponent->RegisterComponent();
+		if (ToolTarget::TargetType == ELandscapeToolTargetType::Heightmap)
+		{
+			ALandscapeProxy* LandscapeProxy = this->EdMode->CurrentToolTarget.LandscapeInfo->GetLandscapeProxy();
+			HeightmapFlattenPreviewComponent = NewObject<UStaticMeshComponent>(LandscapeProxy, NAME_None, RF_Transient);
+			HeightmapFlattenPreviewComponent->SetStaticMesh(HeightmapFlattenPlaneMesh);
+			HeightmapFlattenPreviewComponent->SetCanEverAffectNavigation(false);
+			HeightmapFlattenPreviewComponent->AttachToComponent(LandscapeProxy->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
+			HeightmapFlattenPreviewComponent->RegisterComponent();
 
-		bool bShowGrid = this->EdMode->UISettings->bUseFlattenTarget && this->EdMode->CurrentToolTarget.TargetType == ELandscapeToolTargetType::Heightmap && this->EdMode->UISettings->bShowFlattenTargetPreview;
-		MeshComponent->SetVisibility(bShowGrid);
+			bool bShowGrid = this->EdMode->UISettings->bUseFlattenTarget && this->EdMode->UISettings->bShowFlattenTargetPreview;
+			HeightmapFlattenPreviewComponent->SetVisibility(bShowGrid);
 
-		// Try to set a sane initial location for the preview grid
-		const FTransform LocalToWorld = this->EdMode->CurrentToolTarget.LandscapeInfo->GetLandscapeProxy()->GetRootComponent()->GetComponentToWorld();
-		FVector Origin = FVector::ZeroVector;
-		Origin.Z = (FMath::RoundToFloat((this->EdMode->UISettings->FlattenTarget - LocalToWorld.GetTranslation().Z) / LocalToWorld.GetScale3D().Z * LANDSCAPE_INV_ZSCALE) - 0.1f) * LANDSCAPE_ZSCALE;
-		MeshComponent->SetRelativeLocation(Origin, false);
+			// Try to set a sane initial location for the preview grid
+			const FTransform LocalToWorld = this->EdMode->CurrentToolTarget.LandscapeInfo->GetLandscapeProxy()->GetRootComponent()->GetComponentToWorld();
+			FVector Origin = FVector::ZeroVector;
+			Origin.Z = (FMath::RoundToFloat((this->EdMode->UISettings->FlattenTarget - LocalToWorld.GetTranslation().Z) / LocalToWorld.GetScale3D().Z * LANDSCAPE_INV_ZSCALE) - 0.1f) * LANDSCAPE_ZSCALE;
+			HeightmapFlattenPreviewComponent->SetRelativeLocation(Origin, false);
+		}
 	}
 
 	virtual void ExitTool() override
 	{
 		FLandscapeToolPaintBase<ToolTarget, FLandscapeToolStrokeFlatten<ToolTarget>>::ExitTool();
 
-		if (MeshComponent)
+		if (HeightmapFlattenPreviewComponent != nullptr)
 		{
-			MeshComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
-			MeshComponent->DestroyComponent();
+			HeightmapFlattenPreviewComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
+			HeightmapFlattenPreviewComponent->DestroyComponent();
 		}
 	}
 };
@@ -1273,6 +1292,12 @@ public:
 
 		this->Cache.SetCachedData(X1, Y1, X2, Y2, Data, UISettings->PaintingRestriction);
 		this->Cache.Flush();
+
+		if (ToolTarget::TargetType == ELandscapeToolTargetType::Weightmap)
+		{
+			// Dirty any runtime virtual textures that our landscape components write to.
+			DirtyRuntimeVirtualTextureForLandscapeArea(this->LandscapeInfo, X1, Y1, X2, Y2);
+		}
 	}
 };
 

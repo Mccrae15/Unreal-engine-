@@ -52,6 +52,7 @@ public class HeadMountedDisplay : ModuleRules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
+					"EditorFramework",
 					"UnrealEd"
 				});
 		}

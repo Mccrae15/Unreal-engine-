@@ -16,25 +16,25 @@ struct TStaticMeshVertexTangentDatum
 	TangentTypeT TangentX;
 	TangentTypeT TangentZ;
 
-	FORCEINLINE FVector GetTangentX() const
+	FORCEINLINE FVector3f GetTangentX() const
 	{
-		return TangentX.ToFVector();
+		return FVector3f(TangentX.ToFVector());
 	}
 
-	FORCEINLINE FVector4 GetTangentZ() const
+	FORCEINLINE FVector4f GetTangentZ() const
 	{
-		return TangentZ.ToFVector4();
+		return TangentZ.ToFVector4f();
 	}
 
-	FORCEINLINE FVector GetTangentY() const
+	FORCEINLINE FVector3f GetTangentY() const
 	{
-		return GenerateYAxis(TangentX, TangentZ);
+		return FVector3f(GenerateYAxis(TangentX, TangentZ));
 	}
 
-	FORCEINLINE void SetTangents(FVector X, FVector Y, FVector Z)
+	FORCEINLINE void SetTangents(FVector3f X, FVector3f Y, FVector3f Z)
 	{
 		TangentX = X;
-		TangentZ = FVector4(Z, GetBasisDeterminantSign(X, Y, Z));
+		TangentZ = FVector4f(Z.X, Z.Y, Z.Z, GetBasisDeterminantSign(FVector3d(X), FVector3d(Y), FVector3d(Z)));
 	}
 
 	/**
@@ -57,12 +57,12 @@ struct TStaticMeshVertexUVsDatum
 {
 	UVTypeT UVs;
 
-	FORCEINLINE FVector2D GetUV() const
+	FORCEINLINE FVector2f GetUV() const
 	{
 		return UVs;
 	}
 
-	FORCEINLINE void SetUV(FVector2D UV)
+	FORCEINLINE void SetUV(FVector2f UV)
 	{
 		UVs = UV;
 	}
@@ -126,7 +126,18 @@ struct TStaticMeshVertexUVsTypeSelector<EStaticMeshVertexUVType::Default>
 template<>
 struct TStaticMeshVertexUVsTypeSelector<EStaticMeshVertexUVType::HighPrecision>
 {
-	typedef FVector2D UVsTypeT;
+	typedef FVector2f UVsTypeT;
+};
+
+/*
+*  FStaticMeshVertexBufferFlags : options for FStaticMeshVertexBuffer::Init
+*  bNeedsCPUAccess - Whether the vertex data needs to be accessed by the CPU after creation
+*  bUseBackwardsCompatibleF16TruncUVs - Whether backwards compatible legacy truncation mode should be used for F16 UVs
+*/
+struct FStaticMeshVertexBufferFlags
+{
+	bool bNeedsCPUAccess = true;
+	bool bUseBackwardsCompatibleF16TruncUVs = false;
 };
 
 /** Vertex buffer for a static mesh LOD */
@@ -146,17 +157,32 @@ public:
 	ENGINE_API void CleanUp();
 
 	ENGINE_API void Init(uint32 InNumVertices, uint32 InNumTexCoords, bool bNeedsCPUAccess = true);
-
+	
 	/**
 	* Initializes the buffer with the given vertices.
 	* @param InVertices - The vertices to initialize the buffer with.
 	* @param InNumTexCoords - The number of texture coordinate to store in the buffer.
+	* @param Flags - Options for Init ; FStaticMeshVertexBufferFlags can be default constructed for default options
 	*/
-	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, uint32 InNumTexCoords, bool bNeedsCPUAccess = true);
+	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, uint32 InNumTexCoords, const FStaticMeshVertexBufferFlags & InInitFlags );
+	
+	/**
+	* Initializes the buffer with the given vertices.
+	* @param InVertices - The vertices to initialize the buffer with.
+	* @param InNumTexCoords - The number of texture coordinate to store in the buffer.
+	* @param bNeedsCPUAccess - Whether the vertex data needs to be accessed by the CPU after creation (default true)
+	*/
+	ENGINE_API void Init(const TArray<FStaticMeshBuildVertex>& InVertices, uint32 InNumTexCoords, bool bNeedsCPUAccess = true)
+	{
+		FStaticMeshVertexBufferFlags Flags;
+		Flags.bNeedsCPUAccess = bNeedsCPUAccess;
+		Init(InVertices,InNumTexCoords,Flags);
+	}
 
 	/**
 	* Initializes this vertex buffer with the contents of the given vertex buffer.
 	* @param InVertexBuffer - The vertex buffer to initialize from.
+	* @param bNeedsCPUAccess - Whether the vertex data needs to be accessed by the CPU after creation (default true)
 	*/
 	void Init(const FStaticMeshVertexBuffer& InVertexBuffer, bool bNeedsCPUAccess = true);
 
@@ -165,8 +191,9 @@ public:
 	 *
 	 * @param	Vertices	The vertex data to be appended.  Must not be nullptr.
 	 * @param	NumVerticesToAppend		How many vertices should be added
+	 * @param bUseBackwardsCompatibleF16TruncUVs - Whether backwards compatible legacy truncation mode should be used for F16 UVs (default false)
 	 */
-	ENGINE_API void AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend );
+	ENGINE_API void AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend, bool bUseBackwardsCompatibleF16TruncUVs = false);
 
 	/**
 	* Serializer
@@ -186,16 +213,16 @@ public:
 	ENGINE_API void operator=(const FStaticMeshVertexBuffer &Other);
 
 	template<EStaticMeshVertexTangentBasisType TangentBasisTypeT>
-	FORCEINLINE_DEBUGGABLE FVector4 VertexTangentX_Typed(uint32 VertexIndex)const
+	FORCEINLINE_DEBUGGABLE FVector4f VertexTangentX_Typed(uint32 VertexIndex)const
 	{
 		typedef TStaticMeshVertexTangentDatum<typename TStaticMeshVertexTangentTypeSelector<TangentBasisTypeT>::TangentTypeT> TangentType;
 		TangentType* ElementData = reinterpret_cast<TangentType*>(TangentsDataPtr);
 		check((void*)((&ElementData[VertexIndex]) + 1) <= (void*)(TangentsDataPtr + TangentsData->GetResourceSize()));
 		check((void*)((&ElementData[VertexIndex]) + 0) >= (void*)(TangentsDataPtr));
-		return ElementData[VertexIndex].GetTangentX();
+		return FVector4f(ElementData[VertexIndex].GetTangentX());
 	}
 
-	FORCEINLINE_DEBUGGABLE FVector4 VertexTangentX(uint32 VertexIndex) const
+	FORCEINLINE_DEBUGGABLE FVector4f VertexTangentX(uint32 VertexIndex) const
 	{
 		checkSlow(VertexIndex < GetNumVertices());
 
@@ -210,16 +237,16 @@ public:
 	}
 
 	template<EStaticMeshVertexTangentBasisType TangentBasisTypeT>
-	FORCEINLINE_DEBUGGABLE FVector4 VertexTangentZ_Typed(uint32 VertexIndex)const
+	FORCEINLINE_DEBUGGABLE FVector4f VertexTangentZ_Typed(uint32 VertexIndex)const
 	{
 		typedef TStaticMeshVertexTangentDatum<typename TStaticMeshVertexTangentTypeSelector<TangentBasisTypeT>::TangentTypeT> TangentType;
 		TangentType* ElementData = reinterpret_cast<TangentType*>(TangentsDataPtr);
 		check((void*)((&ElementData[VertexIndex]) + 1) <= (void*)(TangentsDataPtr + TangentsData->GetResourceSize()));
 		check((void*)((&ElementData[VertexIndex]) + 0) >= (void*)(TangentsDataPtr));
-		return ElementData[VertexIndex].GetTangentZ();
+		return  FVector4f(ElementData[VertexIndex].GetTangentZ());
 	}
 
-	FORCEINLINE_DEBUGGABLE FVector4 VertexTangentZ(uint32 VertexIndex) const
+	FORCEINLINE_DEBUGGABLE FVector4f VertexTangentZ(uint32 VertexIndex) const
 	{
 		checkSlow(VertexIndex < GetNumVertices());
 
@@ -234,13 +261,13 @@ public:
 	}
 
 	template<EStaticMeshVertexTangentBasisType TangentBasisTypeT>
-	FORCEINLINE_DEBUGGABLE FVector4 VertexTangentY_Typed(uint32 VertexIndex)const
+	FORCEINLINE_DEBUGGABLE FVector4f VertexTangentY_Typed(uint32 VertexIndex)const
 	{
 		typedef TStaticMeshVertexTangentDatum<typename TStaticMeshVertexTangentTypeSelector<TangentBasisTypeT>::TangentTypeT> TangentType;
 		TangentType* ElementData = reinterpret_cast<TangentType*>(TangentsDataPtr);
 		check((void*)((&ElementData[VertexIndex]) + 1) <= (void*)(TangentsDataPtr + TangentsData->GetResourceSize()));
 		check((void*)((&ElementData[VertexIndex]) + 0) >= (void*)(TangentsDataPtr));
-		return ElementData[VertexIndex].GetTangentY();
+		return FVector4f(ElementData[VertexIndex].GetTangentY());
 	}
 
 	/**
@@ -249,7 +276,7 @@ public:
 	* @param VertexIndex - index into the vertex buffer
 	* @return binormal (TangentY) vector
 	*/
-	FORCEINLINE_DEBUGGABLE FVector VertexTangentY(uint32 VertexIndex) const
+	FORCEINLINE_DEBUGGABLE FVector3f VertexTangentY(uint32 VertexIndex) const
 	{
 		checkSlow(VertexIndex < GetNumVertices());
 
@@ -263,7 +290,7 @@ public:
 		}
 	}
 
-	FORCEINLINE_DEBUGGABLE void SetVertexTangents(uint32 VertexIndex, FVector X, FVector Y, FVector Z)
+	FORCEINLINE_DEBUGGABLE void SetVertexTangents(uint32 VertexIndex, FVector3f X, FVector3f Y, FVector3f Z)
 	{
 		checkSlow(VertexIndex < GetNumVertices());
 
@@ -291,36 +318,43 @@ public:
 	* @param VertexIndex - index into the vertex buffer
 	* @param UVIndex - [0,MAX_STATIC_TEXCOORDS] value to index into UVs array
 	* @param Vec2D - UV values to set
+	* @param bUseBackwardsCompatibleF16TruncUVs - whether backwards compatible Truncate mode is used for F32 to F16 conversion
 	*/
-	FORCEINLINE_DEBUGGABLE void SetVertexUV(uint32 VertexIndex, uint32 UVIndex, const FVector2D& Vec2D)
+	FORCEINLINE_DEBUGGABLE void SetVertexUV(uint32 VertexIndex, uint32 UVIndex, const FVector2f& Vec2D, bool bUseBackwardsCompatibleF16TruncUVs = false)
 	{
 		checkSlow(VertexIndex < GetNumVertices());
 		checkSlow(UVIndex < GetNumTexCoords());
 
 		if (GetUseFullPrecisionUVs())
 		{
-			typedef TStaticMeshVertexUVsDatum<typename TStaticMeshVertexUVsTypeSelector<EStaticMeshVertexUVType::HighPrecision>::UVsTypeT> UVType;
-			size_t UvStride = sizeof(UVType) * GetNumTexCoords();
+			size_t UvStride = sizeof(FVector2f) * GetNumTexCoords();
 
-			UVType* ElementData = reinterpret_cast<UVType*>(TexcoordDataPtr + (VertexIndex * UvStride));
+			FVector2f* ElementData = reinterpret_cast<FVector2f*>(TexcoordDataPtr + (VertexIndex * UvStride));
 			check((void*)((&ElementData[UVIndex]) + 1) <= (void*)(TexcoordDataPtr + TexcoordData->GetResourceSize()));
 			check((void*)((&ElementData[UVIndex]) + 0) >= (void*)(TexcoordDataPtr));
-			ElementData[UVIndex].SetUV(Vec2D);
+			ElementData[UVIndex] = Vec2D;
 		}
 		else
 		{
-			typedef TStaticMeshVertexUVsDatum<typename TStaticMeshVertexUVsTypeSelector<EStaticMeshVertexUVType::Default>::UVsTypeT> UVType;
-			size_t UvStride = sizeof(UVType) * GetNumTexCoords();
+			size_t UvStride = sizeof(FVector2DHalf) * GetNumTexCoords();
 
-			UVType* ElementData = reinterpret_cast<UVType*>(TexcoordDataPtr + (VertexIndex * UvStride));
+			FVector2DHalf* ElementData = reinterpret_cast<FVector2DHalf*>(TexcoordDataPtr + (VertexIndex * UvStride));
 			check((void*)((&ElementData[UVIndex]) + 1) <= (void*)(TexcoordDataPtr + TexcoordData->GetResourceSize()));
 			check((void*)((&ElementData[UVIndex]) + 0) >= (void*)(TexcoordDataPtr));
-			ElementData[UVIndex].SetUV(Vec2D);
+		
+			if ( bUseBackwardsCompatibleF16TruncUVs )
+			{
+				ElementData[UVIndex].SetTruncate( Vec2D );
+			}
+			else
+			{
+				ElementData[UVIndex] = Vec2D;
+			}
 		}
 	}
 
 	template<EStaticMeshVertexUVType UVTypeT>
-	FORCEINLINE_DEBUGGABLE FVector2D GetVertexUV_Typed(uint32 VertexIndex, uint32 UVIndex)const
+	FORCEINLINE_DEBUGGABLE FVector2f GetVertexUV_Typed(uint32 VertexIndex, uint32 UVIndex)const
 	{
 		typedef TStaticMeshVertexUVsDatum<typename TStaticMeshVertexUVsTypeSelector<UVTypeT>::UVsTypeT> UVType;
 		size_t UvStride = sizeof(UVType) * GetNumTexCoords();
@@ -338,7 +372,7 @@ public:
 	* @param UVIndex - [0,MAX_STATIC_TEXCOORDS] value to index into UVs array
 	* @param 2D UV values
 	*/
-	FORCEINLINE_DEBUGGABLE FVector2D GetVertexUV(uint32 VertexIndex, uint32 UVIndex) const
+	FORCEINLINE_DEBUGGABLE FVector2f GetVertexUV(uint32 VertexIndex, uint32 UVIndex) const
 	{
 		checkSlow(VertexIndex < GetNumVertices());
 		checkSlow(UVIndex < GetNumTexCoords());
@@ -389,10 +423,10 @@ public:
 	}
 
 	/** Create an RHI vertex buffer with CPU data. CPU data may be discarded after creation (see TResourceArray::Discard) */
-	FVertexBufferRHIRef CreateTangentsRHIBuffer_RenderThread();
-	FVertexBufferRHIRef CreateTangentsRHIBuffer_Async();
-	FVertexBufferRHIRef CreateTexCoordRHIBuffer_RenderThread();
-	FVertexBufferRHIRef CreateTexCoordRHIBuffer_Async();
+	FBufferRHIRef CreateTangentsRHIBuffer_RenderThread();
+	FBufferRHIRef CreateTangentsRHIBuffer_Async();
+	FBufferRHIRef CreateTexCoordRHIBuffer_RenderThread();
+	FBufferRHIRef CreateTexCoordRHIBuffer_Async();
 
 	/** Copy everything, keeping reference to the same RHI resources. */
 	void CopyRHIForStreaming(const FStaticMeshVertexBuffer& Other, bool InAllowCPUAccess);
@@ -400,8 +434,8 @@ public:
 	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
 	template <uint32 MaxNumUpdates>
 	void InitRHIForStreaming(
-		FRHIVertexBuffer* IntermediateTangentsBuffer,
-		FRHIVertexBuffer* IntermediateTexCoordBuffer,
+		FRHIBuffer* IntermediateTangentsBuffer,
+		FRHIBuffer* IntermediateTexCoordBuffer,
 		TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
 	{
 		check(TangentsVertexBuffer.VertexBufferRHI && TexCoordVertexBuffer.VertexBufferRHI);
@@ -469,7 +503,7 @@ public:
 
 	ENGINE_API int GetTexCoordSize();
 
-	FORCEINLINE_DEBUGGABLE bool GetAllowCPUAccess()
+	FORCEINLINE_DEBUGGABLE bool GetAllowCPUAccess() const
 	{
 		if (!TangentsData || !TexcoordData)
 			return false;
@@ -536,10 +570,10 @@ private:
 	void ConvertHalfTexcoordsToFloat(const uint8* InData);
 
 	template <bool bRenderThread>
-	FVertexBufferRHIRef CreateTangentsRHIBuffer_Internal();
+	FBufferRHIRef CreateTangentsRHIBuffer_Internal();
 
 	template<bool bRenderThread>
-	FVertexBufferRHIRef CreateTexCoordRHIBuffer_Internal();
+	FBufferRHIRef CreateTexCoordRHIBuffer_Internal();
 
 	void InitTangentAndTexCoordStrides();
 };

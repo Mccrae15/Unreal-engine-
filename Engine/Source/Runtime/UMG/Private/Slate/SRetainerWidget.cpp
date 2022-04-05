@@ -8,6 +8,7 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
 #include "UMGPrivate.h"
+#include "Widgets/SNullWidget.h"
 
 DECLARE_CYCLE_STAT(TEXT("Retainer Widget Tick"), STAT_SlateRetainerWidgetTick, STATGROUP_Slate);
 DECLARE_CYCLE_STAT(TEXT("Retainer Widget Paint"), STAT_SlateRetainerWidgetPaint, STATGROUP_Slate);
@@ -93,7 +94,10 @@ TFrameValue<int32> SRetainerWidget::Shared_RetainerWorkThisFrame(0);
 
 
 SRetainerWidget::SRetainerWidget()
-	: EmptyChildSlot(this)
+	: PreviousRenderSize(FIntPoint::NoneValue)
+	, PreviousClipRectSize(FIntPoint::NoneValue)
+	, PreviousColorAndOpacity(FColor::Transparent)
+	, LastIncomingLayerId(0)
 	, VirtualWindow(SNew(SVirtualWindow))
 	, HittestGrid(MakeShared<FHittestGrid>())
 	, RenderingResources(new FRetainerWidgetRenderingResources)
@@ -192,6 +196,7 @@ void SRetainerWidget::Construct(const FArguments& InArgs)
 	bEnableRetainedRenderingDesire = true;
 	bEnableRetainedRendering = false;
 	bEnableRenderWithLocalTransform = InArgs._RenderWithLocalTransform;
+	SetVolatilePrepass(bEnableRetainedRendering);
 
 	RefreshRenderingMode();
 	bRenderRequested = true;
@@ -280,6 +285,7 @@ void SRetainerWidget::RefreshRenderingMode()
 	if ( bEnableRetainedRendering != bShouldBeRenderingOffscreen )
 	{
 		bEnableRetainedRendering = bShouldBeRenderingOffscreen;
+		SetVolatilePrepass(bEnableRetainedRendering);
 		InvalidateRootChildOrder();
 	}
 }
@@ -334,7 +340,7 @@ FChildren* SRetainerWidget::GetChildren()
 {
 	if (bEnableRetainedRendering)
 	{
-		return &EmptyChildSlot;
+		return &FNoChildren::NoChildrenInstance;
 	}
 	else
 	{
@@ -342,10 +348,12 @@ FChildren* SRetainerWidget::GetChildren()
 	}
 }
 
-FChildren* SRetainerWidget::GetAllChildren()
+#if WITH_SLATE_DEBUGGING
+FChildren* SRetainerWidget::Debug_GetChildrenForReflector()
 {
 	return SCompoundWidget::GetChildren();
 }
+#endif
 
 void SRetainerWidget::SetRenderingPhase(int32 InPhase, int32 InPhaseCount)
 {
@@ -359,54 +367,63 @@ void SRetainerWidget::RequestRender()
 	InvalidateRootChildOrder();
 }
 
-bool SRetainerWidget::PaintRetainedContent(const FSlateInvalidationContext& Context, const FGeometry& AllottedGeometry)
-{
-	EPaintRetainedContentResult Result = PaintRetainedContentImpl(Context, AllottedGeometry);
-	return Result == EPaintRetainedContentResult::Painted;
-}
-
-SRetainerWidget::EPaintRetainedContentResult SRetainerWidget::PaintRetainedContentImpl(const FSlateInvalidationContext& Context, const FGeometry& AllottedGeometry)
+SRetainerWidget::EPaintRetainedContentResult SRetainerWidget::PaintRetainedContentImpl(const FSlateInvalidationContext& Context, const FGeometry& AllottedGeometry, int32 LayerId)
 {
 	if (RenderOnPhase)
 	{
 		if (LastTickedFrame != GFrameCounter && (GFrameCounter % PhaseCount) == Phase)
 		{
 			// If doing some phase based invalidation, just redraw everything again
-			RequestRender();
+			bRenderRequested = true;
+			InvalidateRootLayout();
 		}
 	}
 
 	const FPaintGeometry PaintGeometry = AllottedGeometry.ToPaintGeometry();
-	const FVector2D RenderSize = PaintGeometry.GetLocalSize() * PaintGeometry.GetAccumulatedRenderTransform().GetMatrix().GetScale().GetVector();
+	FSlateRenderTransform AccumulatedRenderTransform = PaintGeometry.GetAccumulatedRenderTransform();
+	const FVector2f RenderSize = FVector2f(PaintGeometry.GetLocalSize()) * AccumulatedRenderTransform.GetMatrix().GetScale().GetVector();
+	const FIntPoint RoundedRenderSize = RenderSize.IntPoint();
 
 	if (RenderOnInvalidation)
 	{
 		// the invalidation root will take care of whether or not we actually rendered
 		bRenderRequested = true;
 
-		// Aggressively repaint when a base state changes.
-		const FVector2D ClipRectSize = Context.CullingRect.GetSize().RoundToVector();
+		const FIntPoint ClipRectSize = Context.CullingRect.GetSize().IntPoint();
 		const TOptional<FSlateClippingState> ClippingState = Context.WindowElementList->GetClippingState();
-		const FLinearColor ColorAndOpacityTint = Context.WidgetStyle.GetColorAndOpacityTint();
-		if (RenderSize != PreviousRenderSize
+		const FColor ColorAndOpacityTint = Context.WidgetStyle.GetColorAndOpacityTint().ToFColor(false);
+
+
+		// Aggressively re-layout when a base state changes.
+		if (RoundedRenderSize != PreviousRenderSize
 			|| AllottedGeometry != PreviousAllottedGeometry
+			|| AllottedGeometry.GetAccumulatedRenderTransform() != PreviousAllottedGeometry.GetAccumulatedRenderTransform()
 			|| ClipRectSize != PreviousClipRectSize
-			|| ClippingState != PreviousClippingState
-			|| ColorAndOpacityTint != PreviousColorAndOpacity)
+			|| ClippingState != PreviousClippingState)
 		{
-			PreviousRenderSize = RenderSize;
+			PreviousRenderSize = RoundedRenderSize;
 			PreviousAllottedGeometry = AllottedGeometry;
 			PreviousClipRectSize = ClipRectSize;
 			PreviousClippingState = ClippingState;
+
+			InvalidateRootLayout();
+		}
+
+		// Aggressively repaint when a base state changes.
+		if (LayerId != LastIncomingLayerId
+			|| ColorAndOpacityTint != PreviousColorAndOpacity)
+		{
+			LastIncomingLayerId = LayerId;
 			PreviousColorAndOpacity = ColorAndOpacityTint;
 
-			RequestRender();
+			GetRootWidget()->Invalidate(EInvalidateWidgetReason::Paint);
 		}
 	}
-	else if (RenderSize != PreviousRenderSize)
+	else if (RoundedRenderSize != PreviousRenderSize)
 	{
-		RequestRender();
-		PreviousRenderSize = RenderSize;
+		bRenderRequested = true;
+		InvalidateRootLayout();
+		PreviousRenderSize = RoundedRenderSize;
 	}
 
 	if (Shared_MaxRetainerWorkPerFrame > 0)
@@ -461,7 +478,7 @@ SRetainerWidget::EPaintRetainedContentResult SRetainerWidget::PaintRetainedConte
 					UE_LOG(LogUMG, Error, TEXT("The requested size for SRetainerWidget is 0. W:%i H:%i"), RenderTargetWidth, RenderTargetHeight);
 				}
 			}
-			return EPaintRetainedContentResult::InvalidSize;
+			return bTextureIsTooLarge ? EPaintRetainedContentResult::TextureSizeTooBig : EPaintRetainedContentResult::TextureSizeZero;
 		}
 		bInvalidSizeLogged = false;
 
@@ -547,18 +564,24 @@ int32 SRetainerWidget::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 		Context.IncomingLayerId = LayerId;
 		Context.CullingRect = MyCullingRect;
 
-		EPaintRetainedContentResult PaintResult = MutableThis->PaintRetainedContentImpl(Context, AllottedGeometry);
+		EPaintRetainedContentResult PaintResult = MutableThis->PaintRetainedContentImpl(Context, AllottedGeometry, LayerId);
 
 #if WITH_SLATE_DEBUGGING
-		if (PaintResult == EPaintRetainedContentResult::NotPainted || PaintResult == EPaintRetainedContentResult::InvalidSize)
+		if (PaintResult == EPaintRetainedContentResult::NotPainted
+			|| PaintResult == EPaintRetainedContentResult::TextureSizeZero
+			|| PaintResult == EPaintRetainedContentResult::TextureSizeTooBig)
 		{
 			MutableThis->SetLastPaintType(ESlateInvalidationPaintType::None);
 		}
 #endif
 
-		if (PaintResult == EPaintRetainedContentResult::InvalidSize)
+		if (PaintResult == EPaintRetainedContentResult::TextureSizeTooBig)
 		{
 			return SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+		}
+		else if (PaintResult == EPaintRetainedContentResult::TextureSizeZero)
+		{
+			return GetCachedMaxLayerId();
 		}
 		else
 		{
@@ -567,7 +590,7 @@ int32 SRetainerWidget::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 
 			if (RenderTarget->GetSurfaceWidth() >= 1 && RenderTarget->GetSurfaceHeight() >= 1)
 			{
-				const FLinearColor ComputedColorAndOpacity(Context.WidgetStyle.GetColorAndOpacityTint() * ColorAndOpacity.Get() * SurfaceBrush.GetTint(Context.WidgetStyle));
+				const FLinearColor ComputedColorAndOpacity(Context.WidgetStyle.GetColorAndOpacityTint() * GetColorAndOpacity() * SurfaceBrush.GetTint(Context.WidgetStyle));
 				// Retainer widget uses pre-multiplied alpha, so pre-multiply the color by the alpha to respect opacity.
 				const FLinearColor PremultipliedColorAndOpacity(ComputedColorAndOpacity * ComputedColorAndOpacity.A);
 
@@ -627,14 +650,8 @@ bool SRetainerWidget::CustomPrepass(float LayoutScaleMultiplier)
 {
 	if (bEnableRetainedRendering)
 	{
-		// The InvalidationRoot that own this retainer will call the ProcessInvalidation.
-		//ProcessInvalidation will only be called when the GlobalInvalidation is off and the Retainer is not inside another InvalidationRoot.
-		if (!GetProxyHandle().HasValidInvalidationRootOwnership(this))
-		{
-			ProcessInvalidation();
-		}
-
-		if (NeedsPrepass())
+		ProcessInvalidation();
+		if (NeedsSlowPath())
 		{
 			FChildren* Children = SCompoundWidget::GetChildren();
 			Prepass_ChildLoop(LayoutScaleMultiplier, Children);
@@ -649,7 +666,7 @@ bool SRetainerWidget::CustomPrepass(float LayoutScaleMultiplier)
 
 TSharedRef<SWidget> SRetainerWidget::GetRootWidget()
 {
-	return bEnableRetainedRendering ? SCompoundWidget::GetChildren()->GetChildAt(0) : EmptyChildSlot.GetChildAt(0);
+	return bEnableRetainedRendering ? SCompoundWidget::GetChildren()->GetChildAt(0) : SNullWidget::NullWidget;
 }
 
 int32 SRetainerWidget::PaintSlowPath(const FSlateInvalidationContext& Context)

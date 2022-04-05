@@ -35,7 +35,7 @@ const TCHAR* FDerivedDataAnimationCompression::GetVersionString() const
 	// This is a version string that mimics the old versioning scheme. If you
 	// want to bump this version, generate a new guid using VS->Tools->Create GUID and
 	// return it here. Ex.
-	return TEXT("D0E639028BB74237AD0F9775C097BB85");
+	return TEXT("5A39C0ABF95744778F168FC8DA1619D4");
 }
 
 bool FDerivedDataAnimationCompression::Build( TArray<uint8>& OutDataArray )
@@ -98,6 +98,8 @@ bool FDerivedDataAnimationCompression::Build( TArray<uint8>& OutDataArray )
 		OutData.BoneCompressionCodec = CompressionResult.Codec;
 
 		FMemoryWriter Ar(OutDataArray, true);
+		OutData.CompressedRawData = DataToCompress.RawAnimationData;
+		OutData.OwnerName = DataToCompress.AnimFName;
 		OutData.SerializeCompressedData(Ar, true, nullptr, nullptr, DataToCompress.BoneCompressionSettings, DataToCompress.CurveCompressionSettings); //Save out compressed
 	}
 

@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Modules/ModuleInterface.h"
+#include "Serialization/CompactBinary.h"
 
 #define TEXTURE_COMPRESSOR_MODULENAME "TextureCompressor"
 
@@ -67,10 +68,14 @@ struct FColorAdjustmentParameters
  */
 struct FTextureBuildSettings
 {
+	/** Format specific config object view or null if no format specific config is applied as part of this build. */
+	FCbObjectView FormatConfigOverride;
 	/** Color adjustment parameters. */
 	FColorAdjustmentParameters ColorAdjustment;
+	/** Enable preserving alpha coverage. */
+	bool bDoScaleMipsForAlphaCoverage;
 	/** Channel values to compare to when preserving alpha coverage. */
-	FVector4 AlphaCoverageThresholds;
+	FVector4f AlphaCoverageThresholds;
 	/** The desired amount of mip sharpening. */
 	float MipSharpening;
 	/** For angular filtered cubemaps, the mip level which contains convolution with the diffuse cosine lobe. */
@@ -95,10 +100,28 @@ struct FTextureBuildSettings
 	uint32 bLongLatSource : 1;
 	/** Whether the texture contains color data in the sRGB colorspace. */
 	uint32 bSRGB : 1;
+	/** Advanced source encoding of the image. */
+	uint8 SourceEncodingOverride;
+	/** Whether the texture has a defined source color space. */
+	bool bHasColorSpaceDefinition;
+	/** Red chromaticity coordinate of the source color space. */
+	FVector2f RedChromaticityCoordinate;
+	/** Green chromaticity coordinate of the source color space. */
+	FVector2f GreenChromaticityCoordinate;
+	/** Blue chromaticity coordinate of the source color space. */
+	FVector2f BlueChromaticityCoordinate;
+	/** White chromaticity coordinate of the source color space. */
+	FVector2f WhiteChromaticityCoordinate;
+	/** Chromatic adaption method applied if the source white point differs from the working color space white point. */
+	uint8 ChromaticAdaptationMethod;
 	/** Whether the texture should use the legacy gamma space for converting to sRGB */
 	uint32 bUseLegacyGamma : 1;
 	/** Whether the border of the image should be maintained during mipmap generation. */
 	uint32 bPreserveBorder : 1;
+	/** Whether we should discard the alpha channel even if it contains non-zero values in the pixel data. */
+	uint32 bForceNoAlphaChannel : 1;
+	/** Whether we should not discard the alpha channel when it contains 1 for the entire texture. */
+	uint32 bForceAlphaChannel : 1;
 	/** Whether the alpha channel should contain a dithered alpha value. */
 	uint32 bDitherMipMapAlpha : 1;
 	/** Whether bokeh alpha values should be computed for the texture. */
@@ -149,10 +172,25 @@ struct FTextureBuildSettings
 	FColor ChromaKeyColor;
 	/** The threshold that components have to match for the texel to be considered equal to the ChromaKeyColor when chroma keying (<=, set to 0 to require a perfect exact match) */
 	float ChromaKeyThreshold;
-	/** The quality of the compression algorithm (min 0 - lowest quality, highest cook speed, 4 - highest quality, lowest cook speed)*/
+	/** The quality of the compression algorithm (min 0 - lowest quality, highest cook speed, 4 - highest quality, lowest cook speed)
+	* only used by ASTC formats right now.
+	*/
 	int32 CompressionQuality;
-	/** ETextureLossyCompressionAmount */
+
+	// ETextureLossyCompressionAmount - oodle resolves this to RDO lambda during fast/final resolution.
 	int32 LossyCompressionAmount;
+
+	// which version of Oodle Texture to encode with
+	FName OodleTextureSdkVersion;
+
+	/** Encoding settings resolved from fast/final.
+	* Enums aren't accessible from this module:
+	* ETextureEncodeEffort, ETextureUniversalTiling. */	
+	uint8 OodleRDO;
+	uint8 OodleEncodeEffort;
+	uint8 OodleUniversalTiling;
+	bool bOodleUsesRDO;
+
 	/** Values > 1.0 will scale down source texture. Ignored for textures with mips */
 	float Downscale;
 	/** ETextureDownscaleOptions */
@@ -169,9 +207,16 @@ struct FTextureBuildSettings
 	/** Is crunch compression enabled */
 	uint32 bVirtualTextureEnableCompressCrunch : 1;
 
+	// Which encode speed this build settings represents.
+	// This is not sent to the build worker, it is used to
+	// return what was done to the UI.
+	// ETextureEncodeSpeed, either Final or Fast.
+	uint8 RepresentsEncodeSpeedNoSend;
+
 	/** Default settings. */
 	FTextureBuildSettings()
-		: AlphaCoverageThresholds(0, 0, 0, 0)
+		: bDoScaleMipsForAlphaCoverage(false)
+		, AlphaCoverageThresholds(0, 0, 0, 0)
 		, MipSharpening(0.0f)
 		, DiffuseConvolveMipLevel(0)
 		, SharpenMipKernelSize(2)
@@ -183,8 +228,17 @@ struct FTextureBuildSettings
 		, bVolume(false)
 		, bLongLatSource(false)
 		, bSRGB(false)
+		, SourceEncodingOverride(0 /*UE::Color::EEncoding::None*/)
+		, bHasColorSpaceDefinition(false)
+		, RedChromaticityCoordinate(0, 0)
+		, GreenChromaticityCoordinate(0, 0)
+		, BlueChromaticityCoordinate(0, 0)
+		, WhiteChromaticityCoordinate(0, 0)
+		, ChromaticAdaptationMethod(1 /*UE::Color::EChromaticAdaptationMethod::Bradford*/)
 		, bUseLegacyGamma(false)
 		, bPreserveBorder(false)
+		, bForceNoAlphaChannel(false)
+		, bForceAlphaChannel(false)
 		, bDitherMipMapAlpha(false)
 		, bComputeBokehAlpha(false)
 		, bReplicateRed(false)
@@ -211,7 +265,12 @@ struct FTextureBuildSettings
 		, ChromaKeyColor(FColorList::Magenta)
 		, ChromaKeyThreshold(1.0f / 255.0f)
 		, CompressionQuality(-1)
-		, LossyCompressionAmount(0)
+		, LossyCompressionAmount(0 /* TLCA_Default */)
+		, OodleTextureSdkVersion() // FName() == NAME_None
+		, OodleRDO(30)
+		, OodleEncodeEffort(0 /* ETextureEncodeEffort::Default */)
+		, OodleUniversalTiling(0 /* ETextureUniversalTiling::Disabled */)
+		, bOodleUsesRDO(false)
 		, Downscale(0.0)
 		, DownscaleOptions(0)
 		, VirtualAddressingModeX(0)
@@ -237,26 +296,20 @@ class ITextureCompressorModule : public IModuleInterface
 public:
 
 	/**
-	 * Whether the compressor for BuildSettings uses the FTaskGraph API.
-	 * 
-	 * @param BuildSettings - Build settings.
-	 * @returns true if FTaskGraph is used, false otherwise
-	 */
-	virtual bool UsesTaskGraph(const FTextureBuildSettings& BuildSettings) const = 0;
-
-	/**
 	 * Builds a texture from source images.
 	 * @param SourceMips - The input mips.
 	 * @param BuildSettings - Build settings.
+	 * @param DebugTexturePathName - The path name of the texture being built, for logging/filtering/dumping.
 	 * @param OutCompressedMips - The compressed mips built by the compressor.
 	 * @param OutNumMipsInTail - The number of mips that are joined into a single mip tail mip
-	 * @param OutCompressedMips - Extra data that the runtime may need
+	 * @param OutExtData - Extra data that the runtime may need
 	 * @returns true on success
 	 */
 	virtual bool BuildTexture(
 		const TArray<struct FImage>& SourceMips,
 		const TArray<struct FImage>& AssociatedNormalSourceMips,
 		const FTextureBuildSettings& BuildSettings,
+		FStringView DebugTexturePathName,
 		TArray<FCompressedImage2D>& OutTextureMips,
 		uint32& OutNumMipsInTail,
 		uint32& OutExtData
@@ -290,7 +343,7 @@ public:
 	 * @param OutMip - The output mip.
 	 * @param SrcImage - The source longlat image.
 	 */
-	TEXTURECOMPRESSOR_API static void GenerateBaseCubeMipFromLongitudeLatitude2D(FImage* OutMip, const FImage& SrcImage, const uint32 MaxCubemapTextureResolution);
+	TEXTURECOMPRESSOR_API static void GenerateBaseCubeMipFromLongitudeLatitude2D(FImage* OutMip, const FImage& SrcImage, const uint32 MaxCubemapTextureResolution, uint8 SourceEncodingOverride = 0);
 
 
 	/**

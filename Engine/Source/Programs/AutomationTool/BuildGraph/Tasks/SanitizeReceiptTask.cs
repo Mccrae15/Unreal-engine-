@@ -1,12 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 using UnrealBuildTool;
 
 namespace AutomationTool.Tasks
@@ -58,10 +60,10 @@ namespace AutomationTool.Tasks
 		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// Set the Engine directory
-			DirectoryReference EngineDir = Parameters.EngineDir ?? CommandUtils.EngineDirectory;
+			DirectoryReference EngineDir = Parameters.EngineDir ?? Unreal.EngineDirectory;
 
 			// Resolve the input list
-			IEnumerable<FileReference> TargetFiles = ResolveFilespec(CommandUtils.RootDirectory, Parameters.Files, TagNameToFileSet);
+			IEnumerable<FileReference> TargetFiles = ResolveFilespec(Unreal.RootDirectory, Parameters.Files, TagNameToFileSet);
 			foreach(FileReference TargetFile in TargetFiles)
 			{
 				// check all files are .target files

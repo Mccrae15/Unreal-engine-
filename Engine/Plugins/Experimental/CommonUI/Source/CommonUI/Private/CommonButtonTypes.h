@@ -44,7 +44,7 @@ public:
 		SLATE_ARGUMENT(bool, IsInteractionEnabled)
 		SLATE_END_ARGS()
 
-		void Construct(const FArguments& InArgs)
+	void Construct(const FArguments& InArgs)
 	{
 		OnDoubleClicked = InArgs._OnDoubleClicked;
 
@@ -65,10 +65,13 @@ public:
 			]);
 
 		SetCanTick(false);
+		// Set the hover state to indicate that we want to override the default behavior
+		SetHover(false);
 
 		OnReceivedFocus = InArgs._OnReceivedFocus;
 		bIsButtonEnabled = InArgs._IsButtonEnabled;
 		bIsInteractionEnabled = InArgs._IsInteractionEnabled;
+		bHovered = false;
 	}
 
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
@@ -87,10 +90,6 @@ public:
 
 	virtual FReply OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 
-	virtual bool IsHovered() const override;
-
-	virtual bool IsPressed() const override;
-
 	void SetIsButtonEnabled(bool bInIsButtonEnabled);
 
 	void SetIsButtonFocusable(bool bInIsButtonFocusable);
@@ -104,6 +103,10 @@ public:
 
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyClippingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 
+protected:
+	/** Press the button */
+	virtual void Press() override;
+
 private:
 	FOnClicked OnDoubleClicked;
 
@@ -115,4 +118,7 @@ private:
 
 	/** True if clicking is enabled, to allow for things like double click */
 	bool bIsInteractionEnabled;
+
+	/** True if mouse over the widget */
+	bool bHovered;
 };

@@ -5,8 +5,9 @@ using System.IO;
 using System.Threading;
 using System.Reflection;
 using AutomationTool;
+using AutomationScripts;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 [Help(@"Builds/Cooks/Runs a project.
 
@@ -17,7 +18,7 @@ If no DefaultMap can be found, the command falls back to /Engine/Maps/Entry.")]
 [Help("destsample", "Destination Sample name")]
 [Help("foreigndest", "Foreign Destination")]
 [Help(typeof(ProjectParams))]
-[Help(typeof(UE4Build))]
+[Help(typeof(UnrealBuild))]
 [Help(typeof(CodeSign))]
 public class BuildCookRun : BuildCommand
 {
@@ -194,25 +195,14 @@ public class BuildCookRun : BuildCommand
 
 	protected void DoBuildCookRun(ProjectParams Params)
 	{
-		const ProjectBuildTargets ClientTargets = ProjectBuildTargets.ClientCooked | ProjectBuildTargets.ServerCooked;
-        bool bGenerateNativeScripts = Params.RunAssetNativization;
 		int WorkingCL = -1;
 		if (P4Enabled && GlobalCommandLine.Submit && AllowSubmit)
 		{
 			WorkingCL = P4.CreateChange(P4Env.Client, String.Format("{0} build from changelist {1}", Params.ShortProjectName, P4Env.Changelist));
 		}
 
-        Project.Build(this, Params, WorkingCL, bGenerateNativeScripts ? (ProjectBuildTargets.All & ~ClientTargets) : ProjectBuildTargets.All);
+        Project.Build(this, Params, WorkingCL, ProjectBuildTargets.All);
 		Project.Cook(Params);
-        if (bGenerateNativeScripts)
-        {
-            // crash reporter is built along with client targets, so we need to 
-            // include that target flag here as well - note: that its not folded
-            // into ClientTargets because the editor needs its own CrashReporter 
-            // as well (which would be built above)
-            Project.Build(this, Params, WorkingCL, ClientTargets | ProjectBuildTargets.CrashReporter);
-        }
-        
 		Project.CopyBuildToStagingDirectory(Params);
 		Project.Package(Params, WorkingCL);
 		Project.Archive(Params);
@@ -239,7 +229,7 @@ public class BuildCookRun : BuildCommand
 			throw new AutomationException("Can't find source directory to make foreign sample {0}.", Src);
 		}
 
-		var Dest = ParseParamValue("ForeignDest", CombinePaths(@"C:\testue4\foreign\", DestSample + "_ _Dir"));
+		var Dest = ParseParamValue("ForeignDest", CombinePaths(@"C:\testue\foreign\", DestSample + "_ _Dir"));
 		LogInformation("Make a foreign sample {0} -> {1}", Src, Dest);
 
 		CloneDirectory(Src, Dest);
@@ -265,7 +255,7 @@ public class BuildCookRun : BuildCommand
 			throw new AutomationException("Can't find source directory to make foreign sample {0}.", Src);
 		}
 
-		var Dest = ParseParamValue("ForeignDest", CombinePaths(@"C:\testue4\foreign\", DestSample + "_ _Dir"));
+		var Dest = ParseParamValue("ForeignDest", CombinePaths(@"C:\testue\foreign\", DestSample + "_ _Dir"));
 		LogInformation("Make a foreign sample {0} -> {1}", Src, Dest);
 
 		CloneDirectory(Src, Dest);
@@ -288,58 +278,14 @@ public class BuildCookRun : BuildCommand
 		{
 			if (ProjectFullPath == null)
 			{
-				var bForeign = ParseParam("foreign");
-				var bForeignCode = ParseParam("foreigncode");
-				if (bForeign)
-				{
-					var DestSample = ParseParamValue("DestSample", "CopiedHoverShip");
-					var Dest = ParseParamValue("ForeignDest", CombinePaths(@"C:\testue4\foreign\", DestSample + "_ _Dir"));
-					ProjectFullPath = new FileReference(CombinePaths(Dest, DestSample + ".uproject"));
-				}
-				else if (bForeignCode)
-				{
-					var DestSample = ParseParamValue("DestSample", "PlatformerGame");
-					var Dest = ParseParamValue("ForeignDest", CombinePaths(@"C:\testue4\foreign\", DestSample + "_ _Dir"));
-					ProjectFullPath = new FileReference(CombinePaths(Dest, DestSample + ".uproject"));
-				}
-				else
-				{
-					var OriginalProjectName = ParseParamValue("project", "");
+				ProjectFullPath = ParseProjectParam();
 
-                    if (string.IsNullOrEmpty(OriginalProjectName))
-                    {
-                        throw new AutomationException("No project file specified. Use -project=<project>.");
-                    }
-
-					var ProjectName = OriginalProjectName;
-					ProjectName = ProjectName.Trim(new char[] { '\"' });
-					if (ProjectName.IndexOfAny(new char[] { '\\', '/' }) < 0)
-					{
-						ProjectName = CombinePaths(CmdEnv.LocalRoot, ProjectName, ProjectName + ".uproject");
-					}
-					else if (!FileExists_NoExceptions(ProjectName))
-					{
-						ProjectName = CombinePaths(CmdEnv.LocalRoot, ProjectName);
-					}
-					if(FileExists_NoExceptions(ProjectName))
-					{
-						ProjectFullPath = new FileReference(ProjectName);
-					}
-					else
-					{
-						var Branch = new BranchInfo();
-						var GameProj = Branch.FindGame(OriginalProjectName);
-						if (GameProj != null)
-						{
-							ProjectFullPath = GameProj.FilePath;
-						}
-						if (ProjectFullPath == null || !FileExists_NoExceptions(ProjectFullPath.FullName))
-						{
-							throw new AutomationException("Could not find a project file {0}.", ProjectName);
-						}
-					}
+				if (ProjectFullPath == null)
+				{
+					throw new AutomationException("No project file specified. Use -project=<project>.");
 				}
 			}
+
 			return ProjectFullPath;
 		}
 	}

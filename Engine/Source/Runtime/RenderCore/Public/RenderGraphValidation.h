@@ -23,29 +23,59 @@
 class RENDERCORE_API FRDGUserValidation final
 {
 public:
-	FRDGUserValidation() = default;
+	FRDGUserValidation(FRDGAllocator& Allocator, bool bParallelExecuteEnabled);
 	FRDGUserValidation(const FRDGUserValidation&) = delete;
 	~FRDGUserValidation();
 
-	/** Validates that the graph has not executed yet. */
-	void ExecuteGuard(const TCHAR* Operation, const TCHAR* ResourceName);
+	/** Tracks and validates inputs into resource creation functions. */
+	void ValidateCreateTexture(const FRDGTextureDesc& Desc, const TCHAR* Name, ERDGTextureFlags Flags);
+	void ValidateCreateBuffer(const FRDGBufferDesc& Desc, const TCHAR* Name, ERDGBufferFlags Flags);
+	void ValidateCreateSRV(const FRDGTextureSRVDesc& Desc);
+	void ValidateCreateSRV(const FRDGBufferSRVDesc& Desc);
+	void ValidateCreateUAV(const FRDGTextureUAVDesc& Desc);
+	void ValidateCreateUAV(const FRDGBufferUAVDesc& Desc);
+	void ValidateCreateUniformBuffer(const void* ParameterStruct, const FShaderParametersMetadata* Metadata);
 
-	/** Tracks and validates the creation of a new resource in the graph. */
+	/** Tracks and validates the creation of a new externally created / registered resource instances. */
 	void ValidateCreateTexture(FRDGTextureRef Texture);
 	void ValidateCreateBuffer(FRDGBufferRef Buffer);
+	void ValidateCreateSRV(FRDGTextureSRVRef SRV);
+	void ValidateCreateSRV(FRDGBufferSRVRef SRV);
+	void ValidateCreateUAV(FRDGTextureUAVRef UAV);
+	void ValidateCreateUAV(FRDGBufferUAVRef UAV);
+	void ValidateCreateUniformBuffer(FRDGUniformBufferRef UniformBuffer);
 
-	/** Tracks and validates the creation of a new externally registered resource. */
-	void ValidateCreateExternalTexture(FRDGTextureRef Texture);
-	void ValidateCreateExternalBuffer(FRDGBufferRef Buffer);
+	void ValidateRegisterExternalTexture(
+		const TRefCountPtr<IPooledRenderTarget>& ExternalPooledTexture,
+		const TCHAR* Name,
+		ERDGTextureFlags Flags);
+
+	void ValidateRegisterExternalBuffer(
+		const TRefCountPtr<FRDGPooledBuffer>& ExternalPooledBuffer,
+		const TCHAR* Name,
+		ERDGBufferFlags Flags);
+
+	void ValidateRegisterExternalTexture(FRDGTextureRef Texture);
+	void ValidateRegisterExternalBuffer(FRDGBufferRef Buffer);
+
+	void ValidateUploadBuffer(FRDGBufferRef Buffer, const void* InitialData, uint64 InitialDataSize);
+	void ValidateUploadBuffer(FRDGBufferRef Buffer, const void* InitialData, uint64 InitialDataSize, const FRDGBufferInitialDataFreeCallback& InitialDataFreeCallback);
+	void ValidateUploadBuffer(FRDGBufferRef Buffer, const FRDGBufferInitialDataCallback& InitialDataCallback, const FRDGBufferInitialDataSizeCallback& InitialDataSizeCallback);
+	void ValidateUploadBuffer(FRDGBufferRef Buffer, const FRDGBufferInitialDataCallback& InitialDataCallback, const FRDGBufferInitialDataSizeCallback& InitialDataSizeCallback, const FRDGBufferInitialDataFreeCallback& InitialDataFreeCallback);
 
 	/** Validates a resource extraction operation. */
-	void ValidateExtractResource(FRDGParentResourceRef Resource);
+	void ValidateExtractTexture(FRDGTextureRef Texture, TRefCountPtr<IPooledRenderTarget>* OutTexturePtr);
+	void ValidateExtractBuffer(FRDGBufferRef Buffer, TRefCountPtr<FRDGPooledBuffer>* OutBufferPtr);
+
+	void ValidateConvertToExternalResource(FRDGParentResourceRef Resource);
 
 	/** Tracks and validates the addition of a new pass to the graph.
 	 *  @param bSkipPassAccessMarking Skips marking the pass as a producer or incrementing the pass access. Useful when
 	 *      the builder needs to inject a pass for debugging while preserving error messages and warnings for the original
 	 *      graph structure.
 	 */
+	void ValidateAddPass(const void* ParameterStruct, const FShaderParametersMetadata* Metadata, const FRDGEventName& Name, ERDGPassFlags Flags);
+	void ValidateAddPass(const FRDGEventName& Name, ERDGPassFlags Flags);
 	void ValidateAddPass(const FRDGPass* Pass, bool bSkipPassAccessMarking);
 
 	/** Validate pass state before and after execution. */
@@ -62,16 +92,38 @@ public:
 	/** Attempts to mark a resource for clobbering. If already marked, returns false.  */
 	bool TryMarkForClobber(FRDGParentResourceRef Resource) const;
 
-private:
+	void ValidateGetPooledTexture(FRDGTextureRef Texture) const;
+	void ValidateGetPooledBuffer(FRDGBufferRef Buffer) const;
+
+	void ValidateSetAccessFinal(FRDGParentResourceRef Resource, ERHIAccess AccessFinal);
+
+	void ValidateFinalize(FRDGParentResourceRef Resource, ERHIAccess Access, FRDGPassHandle ConvertToUntrackedPassHandle);
+	void ValidateFinalizedAccess(FRDGParentResourceRef Resource, ERHIAccess Access, const FRDGPass* Pass);
+
 	/** Traverses all resources in the pass and marks whether they are externally accessible by user pass implementations. */
 	static void SetAllowRHIAccess(const FRDGPass* Pass, bool bAllowAccess);
 
+private:
+	void ValidateCreateParentResource(FRDGParentResourceRef Resource);
+	void ValidateCreateResource(FRDGResourceRef Resource);
+	void ValidateExtractResource(FRDGParentResourceRef Resource);
+
+	FRDGAllocator& Allocator;
+
 	/** List of tracked resources for validation prior to shutdown. */
-	TArray<FRDGTextureRef, SceneRenderingAllocator> TrackedTextures;
-	TArray<FRDGBufferRef, SceneRenderingAllocator> TrackedBuffers;
+	TArray<FRDGTextureRef, FRDGArrayAllocator> TrackedTextures;
+	TArray<FRDGBufferRef, FRDGArrayAllocator> TrackedBuffers;
+
+	/** Map tracking all active resources in the graph. */
+	TSet<FRDGResourceRef, DefaultKeyFuncs<FRDGResourceRef>, FRDGSetAllocator> ResourceMap;
 
 	/** Whether the Execute() has already been called. */
 	bool bHasExecuted = false;
+	bool bHasExecuteBegun = false;
+
+	bool bParallelExecuteEnabled;
+
+	void ExecuteGuard(const TCHAR* Operation, const TCHAR* ResourceName);
 };
 
 /** This class validates and logs barriers submitted by the graph. */
@@ -87,14 +139,12 @@ public:
 	/** Validates an end barrier batch just prior to submission to the command list. */
 	void ValidateBarrierBatchEnd(const FRDGPass* Pass, const FRDGBarrierBatchEnd& Batch);
 
-	/** Validates that all barrier batches were flushed at execution end. */
-	void ValidateExecuteEnd();
-
 private:
 	struct FResourceMap
 	{
 		TMap<FRDGTextureRef, TArray<FRHITransitionInfo>> Textures;
 		TMap<FRDGBufferRef, FRHITransitionInfo> Buffers;
+		TMap<FRDGParentResourceRef, FRHITransientAliasingInfo> Aliases;
 	};
 
 	using FBarrierBatchMap = TMap<const FRDGBarrierBatchBegin*, FResourceMap>;
@@ -108,14 +158,11 @@ private:
 class FRDGLogFile
 {
 public:
-	FRDGLogFile() = default;
+	FRDGLogFile(const FRDGPassRegistry& InPasses)
+		: Passes(InPasses)
+	{}
 
-	void Begin(
-		const FRDGEventName& GraphName,
-		const FRDGPassRegistry* InPassRegistry,
-		FRDGPassBitArray InPassesCulled,
-		FRDGPassHandle InProloguePassHandle,
-		FRDGPassHandle InEpiloguePassHandle);
+	void Begin(const FRDGEventName& GraphName);
 
 	void AddFirstEdge(const FRDGTextureRef Texture, FRDGPassHandle FirstPass);
 
@@ -125,11 +172,11 @@ public:
 
 	void AddAliasEdge(const FRDGBufferRef BufferBefore, FRDGPassHandle BeforePass, const FRDGBufferRef BufferAfter, FRDGPassHandle PassAfter);
 
-	void AddTransitionEdge(FRDGPassHandle PassHandle, FRDGSubresourceState StateBefore, FRDGSubresourceState StateAfter, const FRDGTextureRef Texture);
+	void AddTransitionEdge(FRDGPassHandle PassHandle, const FRDGSubresourceState& StateBefore, const FRDGSubresourceState& StateAfter, const FRDGTextureRef Texture);
 
-	void AddTransitionEdge(FRDGPassHandle PassHandle, FRDGSubresourceState StateBefore, FRDGSubresourceState StateAfter, const FRDGTextureRef Texture, FRDGTextureSubresource Subresource);
+	void AddTransitionEdge(FRDGPassHandle PassHandle, const FRDGSubresourceState& StateBefore, const FRDGSubresourceState& StateAfter, const FRDGTextureRef Texture, FRDGTextureSubresource Subresource);
 
-	void AddTransitionEdge(FRDGPassHandle PassHandle, FRDGSubresourceState StateBefore, FRDGSubresourceState StateAfter, const FRDGBufferRef Buffer);
+	void AddTransitionEdge(FRDGPassHandle PassHandle, const FRDGSubresourceState& StateBefore, const FRDGSubresourceState& StateAfter, const FRDGBufferRef Buffer);
 
 	void End();
 
@@ -150,14 +197,11 @@ private:
 
 	bool bOpen = false;
 
+	const FRDGPassRegistry& Passes;
+
 	TSet<FRDGPassHandle> PassesReferenced;
 	TArray<const FRDGTexture*> Textures;
 	TArray<const FRDGBuffer*> Buffers;
-
-	const FRDGPassRegistry* Passes = nullptr;
-	FRDGPassBitArray PassesCulled;
-	FRDGPassHandle ProloguePassHandle;
-	FRDGPassHandle EpiloguePassHandle;
 
 	FString Indentation;
 	FString File;

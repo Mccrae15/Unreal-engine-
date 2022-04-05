@@ -12,6 +12,7 @@ public class RigVMDeveloper : ModuleRules
                 "CoreUObject",
                 "Engine",
                 "RigVM",
+                "VisualGraphUtils",
             }
         );
 
@@ -20,9 +21,15 @@ public class RigVMDeveloper : ModuleRules
             PrivateDependencyModuleNames.AddRange(
                 new string[]
                 {
+					"EditorFramework",
                     "UnrealEd",
-                }
-            );
+					"Slate",
+					"SlateCore",
+					"EditorStyle",
+					"MessageLog",
+					"BlueprintGraph"
+				}
+			);
         }
     }
 }

@@ -7,6 +7,7 @@
 #include "HairStrandsInterface.h"
 #include "HairStrandsRendering.h"
 #include "HairStrandsMeshProjection.h"
+#include "HairStrandsData.h"
 
 #include "GPUSkinCache.h"
 #include "Rendering/SkeletalMeshRenderData.h"
@@ -16,6 +17,8 @@
 #include "SkeletalRenderPublic.h"
 #include "SceneRendering.h"
 #include "SystemTextures.h"
+#include "ShaderPrint.h"
+#include "ScenePrivate.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogHairRendering, Log, All);
 
@@ -55,6 +58,30 @@ static TAutoConsoleVariable<int32> CVarHairStrandsSimulation(
 	TEXT("r.HairStrands.Simulation"), 1,
 	TEXT("Enable/disable hair simulation"),
 	ECVF_RenderThreadSafe | ECVF_Scalability);
+
+static TAutoConsoleVariable<int32> CVarHairStrandsNonVisibleShadowCasting(
+	TEXT("r.HairStrands.Shadow.CastShadowWhenNonVisible"), 0,
+	TEXT("Enable shadow casting for hair strands even when culled out from the primary view"),
+	ECVF_RenderThreadSafe);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Hair strands instance ref. counting for debug purpose only
+uint32 FHairStrandsInstance::GetRefCount() const
+{
+	return RefCount;
+}
+
+uint32 FHairStrandsInstance::AddRef() const
+{
+	return ++RefCount;
+}
+
+uint32 FHairStrandsInstance::Release() const
+{
+	check(RefCount > 0);
+	uint32 LocalRefCount = --RefCount;
+	return LocalRefCount;
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Import/export utils function for hair resources
@@ -129,10 +156,7 @@ FRDGBufferUAVRef RegisterAsUAV(FRDGBuilder& GraphBuilder, const FRDGExternalBuff
 
 bool IsHairRayTracingEnabled()
 {
-	FString Commandline = FCommandLine::Get();
-	bool bIsCookCommandlet = IsRunningCommandlet() && Commandline.Contains(TEXT("run=cook"));
-
-	if (GIsRHIInitialized && !bIsCookCommandlet)
+	if (GIsRHIInitialized && !IsRunningCookCommandlet())
 	{
 		return IsRayTracingEnabled() && CVarHairStrandsRaytracingEnable.GetValueOnAnyThread();
 	}
@@ -150,14 +174,14 @@ bool IsHairStrandsSupported(EHairStrandsShaderType Type, EShaderPlatform Platfor
 	// EHairStrandsShaderType::All: Mobile is excluded as we don't need any interpolation/simulation code for this. It only do rigid transformation. 
 	//                              The runtime setting in these case are r.HairStrands.Binding=0 & r.HairStrands.Simulation=0
 	const bool Cards_Meshes_All = true;
-	const bool bIsMobile = IsMobilePlatform(Platform) || Platform == SP_PCD3D_ES3_1;
+	const bool bIsMobile = IsMobilePlatform(Platform);
 
 	switch (Type)
 	{
 	case EHairStrandsShaderType::Strands: return IsHairStrandsGeometrySupported(Platform);
 	case EHairStrandsShaderType::Cards:	  return Cards_Meshes_All;
 	case EHairStrandsShaderType::Meshes:  return Cards_Meshes_All;
-	case EHairStrandsShaderType::Tool:	  return (IsD3DPlatform(Platform) || IsVulkanSM5Platform(Platform)) && IsPCPlatform(Platform) && GetMaxSupportedFeatureLevel(Platform) == ERHIFeatureLevel::SM5;
+	case EHairStrandsShaderType::Tool:	  return (IsD3DPlatform(Platform) || IsVulkanSM5Platform(Platform)) && IsPCPlatform(Platform) && IsFeatureLevelSupported(Platform, ERHIFeatureLevel::SM5);
 	case EHairStrandsShaderType::All:	  return Cards_Meshes_All && !bIsMobile;
 	}
 	return false;
@@ -171,7 +195,7 @@ bool IsHairStrandsEnabled(EHairStrandsShaderType Type, EShaderPlatform Platform)
 	// Important:
 	// EHairStrandsShaderType::All: Mobile is excluded as we don't need any interpolation/simulation code for this. It only do rigid transformation. 
 	//                              The runtime setting in these case are r.HairStrands.Binding=0 & r.HairStrands.Simulation=0
-	const bool bIsMobile = Platform != EShaderPlatform::SP_NumPlatforms ? IsMobilePlatform(Platform) || Platform == SP_PCD3D_ES3_1 : false;
+	const bool bIsMobile = Platform != EShaderPlatform::SP_NumPlatforms ? IsMobilePlatform(Platform) : false;
 	const int32 HairStrandsEnable = CVarHairStrandsEnable.GetValueOnAnyThread();
 	const int32 HairCardsEnable   = CVarHairCardsEnable.GetValueOnAnyThread();
 	const int32 HairMeshesEnable  = CVarHairMeshesEnable.GetValueOnAnyThread();
@@ -208,21 +232,19 @@ bool IsHairStrandsSimulationEnable()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void ConvertToExternalBufferWithViews(FRDGBuilder& GraphBuilder, FRDGBufferRef& InBuffer, FRDGExternalBuffer& OutBuffer, EPixelFormat Format)
 {
-	ConvertToExternalBuffer(GraphBuilder, InBuffer, OutBuffer.Buffer);
-	if (Format != PF_Unknown)
+	OutBuffer.Buffer = GraphBuilder.ConvertToExternalBuffer(InBuffer);
+	if (EnumHasAnyFlags(InBuffer->Desc.Usage, BUF_ShaderResource))
 	{
 		OutBuffer.SRV = OutBuffer.Buffer->GetOrCreateSRV(FRDGBufferSRVDesc(InBuffer, Format));
-		OutBuffer.UAV = OutBuffer.Buffer->GetOrCreateUAV(FRDGBufferUAVDesc(InBuffer, Format));
 	}
-	else
+	if (EnumHasAnyFlags(InBuffer->Desc.Usage, BUF_UnorderedAccess))
 	{
-		OutBuffer.SRV = OutBuffer.Buffer->GetOrCreateSRV(FRDGBufferSRVDesc(InBuffer));
-		OutBuffer.UAV = OutBuffer.Buffer->GetOrCreateUAV(FRDGBufferUAVDesc(InBuffer));
+		OutBuffer.UAV = OutBuffer.Buffer->GetOrCreateUAV(FRDGBufferUAVDesc(InBuffer, Format));
 	}
 	OutBuffer.Format = Format;
 }
 
-void InternalCreateIndirectBufferRDG(FRDGBuilder& GraphBuilder, FRDGExternalBuffer& Out, const TCHAR* DebugName, const FUintVector4& InitValues)
+void InternalCreateIndirectBufferRDG(FRDGBuilder& GraphBuilder, FRDGExternalBuffer& Out, const TCHAR* DebugName)
 {
 	FRDGBufferDesc Desc = FRDGBufferDesc::CreateBufferDesc(4, 4);
 	Desc.Usage |= BUF_DrawIndirect;
@@ -274,27 +296,58 @@ void FHairGroupPublicData::SetClusters(uint32 InClusterCount, uint32 InVertexCou
 
 void FHairGroupPublicData::InitRHI()
 {
-	if (ClusterCount == 0)
-		return;
+	if (bIsInitialized || GUsingNullRHI) { return; }
 
-	if (GUsingNullRHI) { return; }
-
+	// Resource are allocated on-demand
+	#if 0
 	FMemMark Mark(FMemStack::Get());
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 	FRDGBuilder GraphBuilder(RHICmdList);
-	InternalCreateIndirectBufferRDG(GraphBuilder, DrawIndirectBuffer, TEXT("HairStrandsCluster_DrawIndirectBuffer"), FUintVector4(GroupControlTriangleStripVertexCount, 1, 0, 0));
-	InternalCreateIndirectBufferRDG(GraphBuilder, DrawIndirectRasterComputeBuffer, TEXT("HairStrandsCluster_DrawIndirectRasterComputeBuffer"), FUintVector4(0, 1, 0, 0));
-
-	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), ClusterCount * 6, EPixelFormat::PF_R32_SINT, ClusterAABBBuffer, TEXT("HairStrandsCluster_ClusterAABBBuffer"));
-	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), 6, EPixelFormat::PF_R32_SINT, GroupAABBBuffer, TEXT("HairStrandsCluster_GroupAABBBuffer"));
-
-	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), VertexCount, EPixelFormat::PF_R32_UINT, CulledVertexIdBuffer, TEXT("HairStrandsCluster_CulledVertexIdBuffer"));
-	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(float), VertexCount, EPixelFormat::PF_R32_FLOAT, CulledVertexRadiusScaleBuffer, TEXT("HairStrandsCluster_CulledVertexRadiusScaleBuffer"), true);
-
+	Allocate(GraphBuilder);
 	GraphBuilder.Execute();
+	#endif
+}
+
+void FHairGroupPublicData::Allocate(FRDGBuilder& GraphBuilder)
+{
+	if (bIsInitialized)
+		return;
+
+	if (ClusterCount == 0)
+		return;
+
+	bool bHasStrands = false;
+	for (const EHairGeometryType& Type : LODGeometryTypes)
+	{
+		if (Type == EHairGeometryType::Strands)
+		{
+			bHasStrands = true;
+			break;
+		}
+	}
+	
+	if (GUsingNullRHI || !bHasStrands) { return; }
+
+	InternalCreateIndirectBufferRDG(GraphBuilder, DrawIndirectBuffer, TEXT("Hair.Cluster_DrawIndirectBuffer"));
+	InternalCreateIndirectBufferRDG(GraphBuilder, DrawIndirectRasterComputeBuffer, TEXT("Hair.Cluster_DrawIndirectRasterComputeBuffer"));
+
+	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), ClusterCount * 6, EPixelFormat::PF_R32_SINT, ClusterAABBBuffer, TEXT("Hair.Cluster_ClusterAABBBuffer"));
+	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), 6, EPixelFormat::PF_R32_SINT, GroupAABBBuffer, TEXT("Hair.Cluster_GroupAABBBuffer"));
+
+	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(int32), VertexCount, EPixelFormat::PF_R32_UINT, CulledVertexIdBuffer, TEXT("Hair.Cluster_CulledVertexIdBuffer"));
+	InternalCreateVertexBufferRDG(GraphBuilder, sizeof(float), VertexCount, EPixelFormat::PF_R32_FLOAT, CulledVertexRadiusScaleBuffer, TEXT("Hair.Cluster_CulledVertexRadiusScaleBuffer"), true);
+
+	GraphBuilder.SetBufferAccessFinal(Register(GraphBuilder, DrawIndirectBuffer, ERDGImportedBufferFlags::None).Buffer, ERHIAccess::IndirectArgs);
+
+	bIsInitialized = true;
 }
 
 void FHairGroupPublicData::ReleaseRHI()
+{
+	//Release();
+}
+
+void FHairGroupPublicData::Release()
 {
 	DrawIndirectBuffer.Release();
 	DrawIndirectRasterComputeBuffer.Release();
@@ -302,6 +355,24 @@ void FHairGroupPublicData::ReleaseRHI()
 	GroupAABBBuffer.Release();
 	CulledVertexIdBuffer.Release();
 	CulledVertexRadiusScaleBuffer.Release();
+	bIsInitialized = false;
+}
+
+uint32 FHairGroupPublicData::GetResourcesSize() const
+{
+	auto ExtractSize = [](const TRefCountPtr<FRDGPooledBuffer>& InBuffer)
+	{
+		return InBuffer ? InBuffer->Desc.BytesPerElement * InBuffer->Desc.NumElements : 0; 
+	};
+
+	uint32 Total = 0;
+	Total += ExtractSize(DrawIndirectBuffer.Buffer);
+	Total += ExtractSize(DrawIndirectRasterComputeBuffer.Buffer);
+	Total += ExtractSize(ClusterAABBBuffer.Buffer);
+	Total += ExtractSize(GroupAABBBuffer.Buffer);
+	Total += ExtractSize(CulledVertexIdBuffer.Buffer);
+	Total += ExtractSize(CulledVertexRadiusScaleBuffer.Buffer);
+	return Total;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -309,7 +380,7 @@ void TransitBufferToReadable(FRDGBuilder& GraphBuilder, FBufferTransitionQueue& 
 {
 	if (BuffersToTransit.Num())
 	{
-		AddPass(GraphBuilder, [LocalBuffersToTransit = MoveTemp(BuffersToTransit)](FRHICommandList& RHICmdList)
+		AddPass(GraphBuilder, RDG_EVENT_NAME("TransitionToSRV"), [LocalBuffersToTransit = MoveTemp(BuffersToTransit)](FRHICommandList& RHICmdList)
 		{
 			FMemMark Mark(FMemStack::Get());
 			TArray<FRHITransitionInfo, TMemStackAllocator<>> Transitions;
@@ -324,19 +395,61 @@ void TransitBufferToReadable(FRDGBuilder& GraphBuilder, FBufferTransitionQueue& 
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool IsHairStrandsNonVisibleShadowCastingEnable()
+{
+	return CVarHairStrandsNonVisibleShadowCasting.GetValueOnAnyThread() > 0;
+}
+
+bool IsHairStrandsVisibleInShadows(const FViewInfo& View, const FHairStrandsInstance& Instance)
+{
+	bool bIsVisibleInShadow = false;
+	if (const FHairGroupPublicData* HairData = Instance.GetHairData())
+	{
+		const int32 LODIndex = FMath::CeilToInt(HairData->LODIndex);
+		const bool bIsStrands = LODIndex >= 0 && HairData->IsVisible(LODIndex) && HairData->GetGeometryType(LODIndex) == EHairGeometryType::Strands;
+		if (bIsStrands)
+		{
+			if (const FBoxSphereBounds* Bounds = Instance.GetBounds())
+			{
+				{
+					for (const FLightSceneInfo* LightInfo : View.HairStrandsViewData.VisibleShadowCastingLights)
+					{
+						// Influence radius check
+						if (LightInfo->Proxy->AffectsBounds(*Bounds))
+						{
+							bIsVisibleInShadow = true;
+							break;
+						}
+					}
+				}
+
+				if (!bIsVisibleInShadow)
+				{
+					for (const FSphere& LightBound : View.HairStrandsViewData.VisibleShadowCastingBounds)
+					{
+						// Influence radius check
+						if (Bounds->GetSphere().Intersects(LightBound))
+						{
+							bIsVisibleInShadow = true;
+							break;
+						}
+					}
+				}
+			}
+		}
+	}
+	return bIsVisibleInShadow;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
 // Bookmark API
 THairStrandsBookmarkFunction  GHairStrandsBookmarkFunction = nullptr;
-THairStrandsParameterFunction GHairStrandsParameterFunction = nullptr;
-void RegisterBookmarkFunction(THairStrandsBookmarkFunction Bookmark, THairStrandsParameterFunction Parameter)
+void RegisterBookmarkFunction(THairStrandsBookmarkFunction Bookmark)
 {
 	if (Bookmark)
 	{
 		GHairStrandsBookmarkFunction = Bookmark;
-	}
-
-	if (Parameter)
-	{
-		GHairStrandsParameterFunction = Parameter;
 	}
 }
 
@@ -344,35 +457,92 @@ void RunHairStrandsBookmark(FRDGBuilder& GraphBuilder, EHairStrandsBookmark Book
 {
 	if (GHairStrandsBookmarkFunction)
 	{
-		GHairStrandsBookmarkFunction(GraphBuilder, Bookmark, Parameters);
+		GHairStrandsBookmarkFunction(&GraphBuilder, Bookmark, Parameters);
 	}
 }
 
-bool IsHairStrandsClusterCullingUseHzb();
-FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FViewInfo& View)
+void RunHairStrandsBookmark(EHairStrandsBookmark Bookmark, FHairStrandsBookmarkParameters& Parameters)
 {
+	if (GHairStrandsBookmarkFunction)
+	{
+		GHairStrandsBookmarkFunction(nullptr, Bookmark, Parameters);
+	}
+}
+
+FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene, FViewInfo& View)
+{
+	const int32 ActiveInstanceCount = Scene->HairStrandsSceneData.RegisteredProxies.Num();
+	TBitArray InstancesVisibility(false, ActiveInstanceCount);
+
 	FHairStrandsBookmarkParameters Out;
-	Out.DebugShaderData			= &View.ShaderDrawData;
+	Out.VisibleInstances.Reserve(View.HairStrandsMeshElements.Num());
+
+	// 1. Add all visible strands instances
+	for (const FMeshBatchAndRelevance& MeshBatch : View.HairStrandsMeshElements)
+	{
+		check(MeshBatch.PrimitiveSceneProxy && MeshBatch.PrimitiveSceneProxy->ShouldRenderInMainPass());
+		if (MeshBatch.Mesh && MeshBatch.Mesh->Elements.Num() > 0)
+		{
+			FHairGroupPublicData* HairData = HairStrands::GetHairData(MeshBatch.Mesh);
+			if (HairData && HairData->Instance)
+			{
+				Out.VisibleInstances.Add(HairData->Instance);
+				InstancesVisibility[HairData->Instance->RegisteredIndex] = true;
+			}
+		}
+	}
+
+	// 2. Add all visible cards instances
+	for (const FMeshBatchAndRelevance& MeshBatch : View.HairCardsMeshElements)
+	{
+		check(MeshBatch.PrimitiveSceneProxy && MeshBatch.PrimitiveSceneProxy->ShouldRenderInMainPass());
+		if (MeshBatch.Mesh && MeshBatch.Mesh->Elements.Num() > 0)
+		{
+			FHairGroupPublicData* HairData = HairStrands::GetHairData(MeshBatch.Mesh);
+			if (HairData && HairData->Instance)
+			{
+				Out.VisibleInstances.Add(HairData->Instance);
+				InstancesVisibility[HairData->Instance->RegisteredIndex] = true;
+			}
+		}
+	}
+
+	// 3. Add all instances non-visible primary view(s) but visible in shadow view(s)
+	if (IsHairStrandsNonVisibleShadowCastingEnable())
+	{
+		for (FHairStrandsInstance* Instance : Scene->HairStrandsSceneData.RegisteredProxies)
+		{
+			if (Instance->RegisteredIndex >= 0 && Instance->RegisteredIndex < ActiveInstanceCount && !InstancesVisibility[Instance->RegisteredIndex])
+			{
+				if (IsHairStrandsVisibleInShadows(View, *Instance))
+				{
+					Out.VisibleInstances.Add(Instance);
+				}
+			}
+		}
+	}
+
+	Out.ShaderDebugData			= ShaderDrawDebug::IsEnabled(View) ? &View.ShaderDrawData : nullptr;
+	Out.ShaderPrintData			= ShaderPrint::IsEnabled(View) ? &View.ShaderPrintData : nullptr;
 	Out.SkinCache				= View.Family->Scene->GetGPUSkinCache();
-	Out.WorldType				= View.Family->Scene->GetWorld()->WorldType;
 	Out.ShaderMap				= View.ShaderMap;
+	Out.Instances				= &Scene->HairStrandsSceneData.RegisteredProxies;
 	Out.View					= &View;
 	Out.ViewRect				= View.ViewRect;
+	Out.ViewUniqueID			= View.ViewState ? View.ViewState->UniqueID : ~0;
 	Out.SceneColorTexture		= nullptr;
-	Out.bStrandsGeometryEnabled = IsHairStrandsEnabled(EHairStrandsShaderType::Strands, View.GetShaderPlatform());
-	if (GHairStrandsParameterFunction)
-	{
-		GHairStrandsParameterFunction(Out);
-	}
-	Out.bHzbRequest = Out.bHasElements && Out.bStrandsGeometryEnabled && IsHairStrandsClusterCullingUseHzb();
+	Out.bHzbRequest				= false; // Out.HasInstances() && IsHairStrandsEnabled(EHairStrandsShaderType::Strands, View.GetShaderPlatform());
+
+	// Sanity check
+	check(Out.Instances->Num() >= Out.VisibleInstances.Num());
 
 	return Out;
 }
 
-FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(TArray<FViewInfo>& Views)
+FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(FScene* Scene, TArray<FViewInfo>& Views)
 {
 	FHairStrandsBookmarkParameters Out;
-	Out = CreateHairStrandsBookmarkParameters(Views[0]);
+	Out = CreateHairStrandsBookmarkParameters(Scene, Views[0]);
 	Out.AllViews.Reserve(Views.Num());
 	for (const FViewInfo& View : Views)
 	{
@@ -381,3 +551,81 @@ FHairStrandsBookmarkParameters CreateHairStrandsBookmarkParameters(TArray<FViewI
 
 	return Out;
 }
+
+namespace HairStrands
+{
+
+bool IsHairStrandsVF(const FMeshBatch* Mesh)
+{
+	if (Mesh)
+	{
+		static const FHashedName& VFTypeRef = FVertexFactoryType::GetVFByName(TEXT("FHairStrandsVertexFactory"))->GetHashedName();
+		const FHashedName& VFType = Mesh->VertexFactory->GetType()->GetHashedName();
+		return VFType == VFTypeRef;
+	}
+	return false;
+}
+
+bool IsHairCardsVF(const FMeshBatch* Mesh)
+{
+	if (Mesh)
+	{
+		static const FHashedName& VFTypeRef = FVertexFactoryType::GetVFByName(TEXT("FHairCardsVertexFactory"))->GetHashedName();
+		const FHashedName& VFType = Mesh->VertexFactory->GetType()->GetHashedName();
+		return VFType == VFTypeRef;
+	}
+	return false;
+}
+
+bool IsHairCompatible(const FMeshBatch* Mesh)
+{
+	return IsHairStrandsVF(Mesh) || IsHairCardsVF(Mesh);
+}
+
+bool IsHairVisible(const FMeshBatchAndRelevance& MeshBatch)
+{
+	if (MeshBatch.Mesh && MeshBatch.PrimitiveSceneProxy && MeshBatch.PrimitiveSceneProxy->ShouldRenderInMainPass())
+	{
+		const FHairGroupPublicData* Data = HairStrands::GetHairData(MeshBatch.Mesh);
+		switch (Data->VFInput.GeometryType)
+		{
+		case EHairGeometryType::Strands: return Data->VFInput.Strands.HairLengthScale > 0;
+		case EHairGeometryType::Cards: return true;
+		case EHairGeometryType::Meshes: return true;
+		}
+	}
+	return false;
+}
+
+FHairGroupPublicData* GetHairData(const FMeshBatch* Mesh)
+{
+	return reinterpret_cast<FHairGroupPublicData*>(Mesh->Elements[0].VertexFactoryUserData);
+}
+
+void AddVisibleShadowCastingLight(const FScene& Scene, TArray<FViewInfo>& Views, const FLightSceneInfo* LightSceneInfo)
+{
+	for (FViewInfo& View : Views)
+	{
+		// If any hair data are registered, track which lights are visible so that hair strands can cast shadow even if not visibible in primary view
+		if (Scene.HairStrandsSceneData.RegisteredProxies.Num() > 0)
+		{
+			View.HairStrandsViewData.VisibleShadowCastingLights.Add(LightSceneInfo);
+			break;
+		}
+	}
+}
+
+void AddVisibleShadowCastingLight(const FScene& Scene, TArray<FViewInfo>& Views, const FSphere& Bounds)
+{
+	for (FViewInfo& View : Views)
+	{
+		// If any hair data are registered, track which lights are visible so that hair strands can cast shadow even if not visibible in primary view
+		if (Scene.HairStrandsSceneData.RegisteredProxies.Num() > 0)
+		{
+			View.HairStrandsViewData.VisibleShadowCastingBounds.Add(Bounds);
+			break;
+		}
+	}
+}
+
+} // namespace HairStrands

@@ -9,7 +9,7 @@
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "Widgets/SNiagaraBakerWidget.h"
 #include "NiagaraBakerRenderer.h"
-#include "NiagaraEmitterInstanceBatcher.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraComponent.h"
 #include "NiagaraSystem.h"
 
@@ -22,6 +22,8 @@
 #include "LegacyScreenPercentageDriver.h"
 #include "PackageTools.h"
 #include "AdvancedPreviewScene.h"
+
+#include "Factories/Texture2dFactoryNew.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraBakerViewModel"
 
@@ -56,7 +58,8 @@ void FNiagaraBakerViewModel::Initialize(TWeakPtr<FNiagaraSystemViewModel> InWeak
 		PreviewComponent->SetAsset(System);
 		PreviewComponent->SetForceSolo(true);
 		PreviewComponent->SetAgeUpdateMode(ENiagaraAgeUpdateMode::DesiredAge);
-		PreviewComponent->SetCanRenderWhileSeeking(false);
+		PreviewComponent->SetCanRenderWhileSeeking(true);
+		PreviewComponent->SetMaxSimTime(0.0f);
 		PreviewComponent->Activate(true);
 
 		AdvancedPreviewScene = MakeShareable(new FAdvancedPreviewScene(FPreviewScene::ConstructionValues()));
@@ -154,12 +157,8 @@ void FNiagaraBakerViewModel::RenderBaker()
 	UWorld* World = PreviewComponent->GetWorld();
 	FSceneInterface* BakerScene = World->Scene;
 
-	NiagaraEmitterInstanceBatcher* NiagaraBatcher = nullptr;
-	if (World->Scene && World->Scene->GetFXSystem())
-	{
-		NiagaraBatcher = static_cast<NiagaraEmitterInstanceBatcher*>(World->Scene->GetFXSystem()->GetInterface(NiagaraEmitterInstanceBatcher::Name));
-	}
-	check(NiagaraBatcher);
+	FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface = FNiagaraGpuComputeDispatchInterface::Get(World);
+	ensureMsgf(ComputeDispatchInterface, TEXT("The batcher was not valid on the world this may result in incorrect baking"));
 
 	// Create output render targets & output Baker data
 	TArray<UTextureRenderTarget2D*, TInlineAllocator<4>> RenderTargets;
@@ -167,13 +166,20 @@ void FNiagaraBakerViewModel::RenderBaker()
 
 	for ( const auto& OutputTexture : BakerSettings->OutputTextures )
 	{
-		UTextureRenderTarget2D* RenderTarget = NewObject<UTextureRenderTarget2D>();
-		RenderTarget->AddToRoot();
-		RenderTarget->ClearColor = FLinearColor::Transparent;
-		RenderTarget->TargetGamma = 1.0f;
-		RenderTarget->InitCustomFormat(OutputTexture.FrameSize.X, OutputTexture.FrameSize.Y, PF_FloatRGBA, false);
+		if (OutputTexture.IsValidForBake())
+		{
+			UTextureRenderTarget2D* RenderTarget = NewObject<UTextureRenderTarget2D>();
+			RenderTarget->AddToRoot();
+			RenderTarget->ClearColor = FLinearColor::Transparent;
+			RenderTarget->TargetGamma = 1.0f;
+			RenderTarget->InitCustomFormat(OutputTexture.FrameSize.X, OutputTexture.FrameSize.Y, PF_FloatRGBA, false);
 
-		RenderTargets.Add(RenderTarget);
+			RenderTargets.Add(RenderTarget);
+		}
+		else
+		{
+			RenderTargets.Add(nullptr);
+		}
 		OutputBakers.AddDefaulted_GetRef().SetNumZeroed(OutputTexture.TextureSize.X * OutputTexture.TextureSize.Y);
 	}
 
@@ -186,6 +192,8 @@ void FNiagaraBakerViewModel::RenderBaker()
 	FScopedSlowTask SlowTask(TotalFrames, LOCTEXT("RenderingBaker", "Rendering Baker..."));
 	SlowTask.MakeDialog();
 
+	FNiagaraBakerRenderer BakerRenderer;
+
 	for ( int32 iFrame=0; iFrame < TotalFrames; ++iFrame)
 	{
 		SlowTask.EnterProgressFrame(1);
@@ -197,27 +205,25 @@ void FNiagaraBakerViewModel::RenderBaker()
 		PreviewComponent->TickComponent(BakerSettings->GetSeekDelta(), ELevelTick::LEVELTICK_All, nullptr);
 
 		// We need any GPU sims to flush pending ticks
-		if (NiagaraBatcher)
+		if (ComputeDispatchInterface)
 		{
-			ENQUEUE_RENDER_COMMAND(NiagaraFlushBatcher)(
-				[RT_NiagaraBatcher=NiagaraBatcher](FRHICommandListImmediate& RHICmdList)
-				{
-					RT_NiagaraBatcher->ProcessPendingTicksFlush(RHICmdList, true);
-				}
-			);
+			ComputeDispatchInterface->FlushPendingTicks_GameThread();
 		}
 
 		const float WorldTime = FApp::GetCurrentTime() - BakerSettings->StartSeconds - BakerSettings->DurationSeconds + FrameTime;
 
 		// Render frame
-		FNiagaraBakerRenderer BakerRenderer(PreviewComponent, BakerSettings, WorldTime);
 		for (int32 iOutputTexture=0; iOutputTexture < BakerSettings->OutputTextures.Num(); ++iOutputTexture)
 		{
 			const FNiagaraBakerTextureSettings& OutputTexture = BakerSettings->OutputTextures[iOutputTexture];
 			UTextureRenderTarget2D* RenderTarget = RenderTargets[iOutputTexture];
+			if (RenderTarget == nullptr)
+			{
+				continue;
+			}
 			FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
 
-			BakerRenderer.RenderView(RenderTarget, iOutputTexture);
+			BakerRenderer.RenderView(PreviewComponent, BakerSettings, WorldTime, RenderTarget, iOutputTexture);
 
 			TArray<FFloat16Color> OutSamples;
 			RenderTargetResource->ReadFloat16Pixels(OutSamples);
@@ -236,30 +242,31 @@ void FNiagaraBakerViewModel::RenderBaker()
 		}
 	}
 
+	// Remove existing generated settings to avoid holding references to textures
+	if (UNiagaraSystem* Asset = PreviewComponent->GetAsset())
+	{
+		Asset->SetBakerGeneratedSettings(nullptr);
+	}
+
 	// Send data to generated textures
 	for (int32 iOutputTexture = 0; iOutputTexture < BakerSettings->OutputTextures.Num(); ++iOutputTexture)
 	{
 		FNiagaraBakerTextureSettings& OutputTexture = BakerSettings->OutputTextures[iOutputTexture];
 
-		// If we don't have a texture create one
+		// If we don't already have a generated texture ask the user to create one
 		if (OutputTexture.GeneratedTexture == nullptr)
 		{
-			FString PackagePath = FPaths::GetPath(PreviewComponent->GetAsset()->GetPackage()->GetPathName());
-			if (OutputTexture.OutputName.IsNone())
-			{
-				PackagePath = PackagePath / PreviewComponent->GetAsset()->GetName() + TEXT("_Baker") + FString::FromInt(iOutputTexture);
-			}
-			else
-			{
-				PackagePath = PackagePath / PreviewComponent->GetAsset()->GetName() + OutputTexture.OutputName.ToString();
-			}
-
 			IAssetTools& AssetTools = FModuleManager::Get().LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-			FString PackageName;
-			FString AssetName;
-			AssetTools.CreateUniqueAssetName(UPackageTools::SanitizePackageName(PackagePath), TEXT(""), PackageName, AssetName);
+			UTexture2DFactoryNew* Texture2DFactory = NewObject<UTexture2DFactoryNew>();
 
-			OutputTexture.GeneratedTexture = NewObject<UTexture2D>(CreatePackage(*PackagePath), FName(*AssetName), RF_Standalone | RF_Public);
+			FString PackagePath = FPaths::GetPath(PreviewComponent->GetAsset()->GetPackage()->GetPathName());
+			FString AssetName = PreviewComponent->GetAsset()->GetName() + TEXT("_Baker") + FString::FromInt(iOutputTexture) + TEXT("Texture");
+			OutputTexture.GeneratedTexture = Cast<UTexture2D>(AssetTools.CreateAssetWithDialog(AssetName, PackagePath, UTexture2D::StaticClass(), Texture2DFactory));
+			if (OutputTexture.GeneratedTexture == nullptr)
+			{
+				// User skipped for some reason
+				continue;
+			}
 		}
 
 		const bool bIsPoT = FMath::IsPowerOfTwo(OutputTexture.TextureSize.X) && FMath::IsPowerOfTwo(OutputTexture.TextureSize.Y);
@@ -283,8 +290,11 @@ void FNiagaraBakerViewModel::RenderBaker()
 	// Clean up render targets
 	for ( UTextureRenderTarget2D* RenderTarget : RenderTargets )
 	{
-		RenderTarget->RemoveFromRoot();
-		RenderTarget = nullptr;
+		if (RenderTarget)
+		{
+			RenderTarget->RemoveFromRoot();
+			RenderTarget = nullptr;
+		}
 	}
 }
 

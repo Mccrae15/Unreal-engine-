@@ -32,7 +32,7 @@ void CommonUnixCrashHandler(const FGenericCrashContext& GenericContext)
 	FGenericCrashContext::SetMemoryStats(FPlatformMemory::GetStats());
 
 	// better than having mutable fields?
-	const_cast< FUnixCrashContext& >(Context).CaptureStackTrace();
+	const_cast< FUnixCrashContext& >(Context).CaptureStackTrace(Context.ErrorFrame);
 	if (GLog)
 	{
 		GLog->SetCurrentThreadAsMasterThread();
@@ -198,7 +198,7 @@ int CommonUnixMain(int argc, char *argv[], int (*RealMain)(const TCHAR * Command
 	if (UE_BUILD_SHIPPING)
 	{
 		// only printed in shipping
-		printf("%s %d %d\n", StringCast<ANSICHAR>(*FEngineVersion::Current().ToString()).Get(), GPackageFileUE4Version, GPackageFileLicenseeUE4Version);
+		printf("%s %d %d\n", StringCast<ANSICHAR>(*FEngineVersion::Current().ToString()).Get(), GPackageFileUEVersion.ToValue(), GPackageFileLicenseeUEVersion);
 	}
 
 	int ErrorLevel = 0;

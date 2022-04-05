@@ -1,12 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 using UnrealBuildTool;
 
 namespace AutomationTool.Tasks
@@ -47,6 +50,12 @@ namespace AutomationTool.Tasks
 		public string Stream;
 
 		/// <summary>
+		/// Branch for the workspace (legacy P4 depot path). May not be used in conjunction with Stream.
+		/// </summary>
+		[TaskParameter(Optional = true)]
+		public string Branch;
+
+		/// <summary>
 		/// Root directory for the stream. If not specified, defaults to the current root directory.
 		/// </summary>
 		[TaskParameter(Optional = true)]
@@ -63,6 +72,12 @@ namespace AutomationTool.Tasks
 		/// </summary>
 		[TaskParameter(Optional = true)]
 		public bool Force;
+
+		/// <summary>
+		/// Allow verbose P4 output (spew).
+		/// </summary>
+		[TaskParameter(Optional = true)]
+		public bool P4Verbose;
 	}
 
 	/// <summary>
@@ -93,7 +108,7 @@ namespace AutomationTool.Tasks
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
 		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
-			HashSet<FileReference> Files = ResolveFilespec(CommandUtils.RootDirectory, Parameters.Files, TagNameToFileSet);
+			HashSet<FileReference> Files = ResolveFilespec(Unreal.RootDirectory, Parameters.Files, TagNameToFileSet);
 			if (Files.Count == 0)
 			{
 				Log.TraceInformation("No files to submit.");
@@ -112,12 +127,19 @@ namespace AutomationTool.Tasks
 					P4ClientInfo Client = new P4ClientInfo();
 					Client.Owner = CommandUtils.P4Env.User;
 					Client.Host = Environment.MachineName;
-					Client.Stream = Parameters.Stream ?? CommandUtils.P4Env.Branch;
-					Client.RootPath = Parameters.RootDir.FullName ?? CommandUtils.RootDirectory.FullName;
-					Client.Name = Parameters.Workspace;
+					Client.RootPath = Parameters.RootDir.FullName ?? Unreal.RootDirectory.FullName;
+					Client.Name = $"{Parameters.Workspace}_{Regex.Replace(Client.Host, "[^a-zA-Z0-9]", "-")}_{ContentHash.MD5((CommandUtils.P4Env.ServerAndPort ?? "").ToUpperInvariant())}";
 					Client.Options = P4ClientOption.NoAllWrite | P4ClientOption.Clobber | P4ClientOption.NoCompress | P4ClientOption.Unlocked | P4ClientOption.NoModTime | P4ClientOption.RmDir;
 					Client.LineEnd = P4LineEnd.Local;
-					CommandUtils.P4.CreateClient(Client, AllowSpew: false);
+					if (!String.IsNullOrEmpty(Parameters.Branch))
+					{
+						Client.View.Add(new KeyValuePair<string, string>($"{Parameters.Branch}/...", $"/..."));
+					}
+					else
+					{
+						Client.Stream = Parameters.Stream ?? CommandUtils.P4Env.Branch;
+					}
+					CommandUtils.P4.CreateClient(Client, AllowSpew: Parameters.P4Verbose);
 
 					// Create a new connection for it
 					SubmitP4 = new P4Connection(Client.Owner, Client.Name);
@@ -127,13 +149,13 @@ namespace AutomationTool.Tasks
 				int NewCL = SubmitP4.CreateChange(Description: Parameters.Description.Replace("\\n", "\n"));
 				foreach(FileReference File in Files)
 				{
-					SubmitP4.Revert(String.Format("-k \"{0}\"", File.FullName));
-					SubmitP4.Sync(String.Format("-k \"{0}\"", File.FullName), AllowSpew: false);
+					SubmitP4.Revert(String.Format("-k \"{0}\"", File.FullName), AllowSpew: Parameters.P4Verbose);
+					SubmitP4.Sync(String.Format("-k \"{0}\"", File.FullName), AllowSpew: Parameters.P4Verbose);
 					SubmitP4.Add(NewCL, String.Format("\"{0}\"", File.FullName));
-					SubmitP4.Edit(NewCL, String.Format("\"{0}\"", File.FullName));
+					SubmitP4.Edit(NewCL, String.Format("\"{0}\"", File.FullName), AllowSpew: Parameters.P4Verbose);
 					if (Parameters.FileType != null)
 					{
-						SubmitP4.P4(String.Format("reopen -t \"{0}\" \"{1}\"", Parameters.FileType, File.FullName), AllowSpew: false);
+						SubmitP4.P4(String.Format("reopen -t \"{0}\" \"{1}\"", Parameters.FileType, File.FullName), AllowSpew: Parameters.P4Verbose);
 					}
 				}
 

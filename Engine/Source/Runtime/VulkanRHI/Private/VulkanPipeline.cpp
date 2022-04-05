@@ -6,7 +6,7 @@
 
 #include "VulkanRHIPrivate.h"
 #include "VulkanPipeline.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
@@ -110,7 +110,7 @@ static TAutoConsoleVariable<int32> GEnablePipelineCacheLoadCvar(
 
 static TAutoConsoleVariable<int32> GPipelineCacheFromShaderPipelineCacheCvar(
 	TEXT("r.Vulkan.PipelineCacheFromShaderPipelineCache"),
-	PLATFORM_ANDROID && !(PLATFORM_LUMIN || PLATFORM_LUMINGL4),
+	PLATFORM_ANDROID,
 	TEXT("0 look for a pipeline cache in the normal locations with the normal names.")
 	TEXT("1 tie the vulkan pipeline cache to the shader pipeline cache, use the PSOFC guid as part of the filename, etc."),
 	ECVF_ReadOnly
@@ -134,7 +134,24 @@ static FAutoConsoleVariableRef GVulkanPSOForceSingleThreadedCVar(
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
 
+static int32 GVulkanPSOLRUEvictAfterUnusedFrames = 0;
+static FAutoConsoleVariableRef GVulkanPSOLRUEvictAfterUnusedFramesCVar(
+	TEXT("r.Vulkan.PSOLRUEvictAfterUnusedFrames"),
+	GVulkanPSOLRUEvictAfterUnusedFrames,
+	TEXT("0: unused PSOs are not removed from the PSO LRU cache. (default)\n")
+	TEXT(">0: The number of frames an unused PSO can remain in the PSO LRU cache. When this is exceeded the PSO is destroyed and memory returned to the system. This can save memory with the risk of increased hitching.")
+	, ECVF_RenderThreadSafe
+);
 
+
+static int32 GVulkanReleaseShaderModuleWhenEvictingPSO = 0;
+static FAutoConsoleVariableRef GVulkanReleaseShaderModuleWhenEvictingPSOCVar(
+	TEXT("r.Vulkan.ReleaseShaderModuleWhenEvictingPSO"),
+	GVulkanReleaseShaderModuleWhenEvictingPSO,
+	TEXT("0: shader modules remain when a PSO is removed from the PSO LRU cache. (default)\n")
+	TEXT("1: shader modules are destroyed when a PSO is removed from the PSO LRU cache. This can save memory at the risk of increased hitching and cpu cost.")
+	,ECVF_RenderThreadSafe
+);
 
 template <typename TRHIType, typename TVulkanType>
 static inline FSHAHash GetShaderHash(TRHIType* RHIShader)
@@ -158,11 +175,7 @@ static inline FSHAHash GetShaderHashForStage(const FGraphicsPipelineStateInitial
 	case ShaderStage::Vertex:		return GetShaderHash<FRHIVertexShader, FVulkanVertexShader>(PSOInitializer.BoundShaderState.VertexShaderRHI);
 	case ShaderStage::Pixel:		return GetShaderHash<FRHIPixelShader, FVulkanPixelShader>(PSOInitializer.BoundShaderState.PixelShaderRHI);
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
-	case ShaderStage::Geometry:		return GetShaderHash<FRHIGeometryShader, FVulkanGeometryShader>(PSOInitializer.BoundShaderState.GeometryShaderRHI);
-#endif
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	case ShaderStage::Hull:			return GetShaderHash<FRHIHullShader, FVulkanHullShader>(PSOInitializer.BoundShaderState.HullShaderRHI);
-	case ShaderStage::Domain:		return GetShaderHash<FRHIDomainShader, FVulkanDomainShader>(PSOInitializer.BoundShaderState.DomainShaderRHI);
+	case ShaderStage::Geometry:		return GetShaderHash<FRHIGeometryShader, FVulkanGeometryShader>(PSOInitializer.BoundShaderState.GetGeometryShader());
 #endif
 	default:			check(0);	break;
 	}
@@ -203,12 +216,13 @@ FVulkanComputePipeline::FVulkanComputePipeline(FVulkanDevice* InDevice)
 
 FVulkanComputePipeline::~FVulkanComputePipeline()
 {
+	Device->NotifyDeletedComputePipeline(this);
+	
 	if (ComputeShader)
 	{
 		ComputeShader->Release();
 	}
-
-	Device->NotifyDeletedComputePipeline(this);
+	
 	DEC_DWORD_STAT(STAT_VulkanNumComputePSOs);
 }
 
@@ -1025,6 +1039,14 @@ FArchive& operator << (FArchive& Ar, FGfxPipelineDesc& Entry)
 	}
 #endif
 
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+	uint8 ShadingRate = static_cast<uint8>(Entry.ShadingRate);
+	uint8 Combiner = static_cast<uint8>(Entry.Combiner);
+	
+	Ar << ShadingRate;
+	Ar << Combiner;
+#endif
+
 	Ar << Entry.UseAlphaToCoverage;
 
 	return Ar;
@@ -1054,7 +1076,18 @@ FVulkanPSOKey FGfxPipelineDesc::CreateKey2() const
 	return Result;
 }
 
-
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+// Map Unreal VRS combiner operation enums to Vulkan enums.
+static const TMap<uint8, VkFragmentShadingRateCombinerOpKHR> FragmentCombinerOpMap
+{
+	{ VRSRB_Passthrough,	VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR },
+	{ VRSRB_Override,	VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR },
+	{ VRSRB_Min,			VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MIN_KHR },
+	{ VRSRB_Max,			VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MAX_KHR },
+	{ VRSRB_Sum,			VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MAX_KHR },		// No concept of Sum in Vulkan - fall back to max.
+	// @todo: Add "VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MUL_KHR"?
+};
+#endif
 
 bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGraphicsPipelineState* PSO, FVulkanShader* Shaders[ShaderStage::NumStages], VkPipeline* Pipeline)
 {
@@ -1119,7 +1152,6 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 	PipelineInfo.pStages = ShaderStages;
 	// main_00000000_00000000
 	ANSICHAR EntryPoints[ShaderStage::NumStages][24];
-	bool bHasTessellation = false;
 	for (int32 ShaderStage = 0; ShaderStage < ShaderStage::NumStages; ++ShaderStage)
 	{
 		if (!PSO->ShaderModules[ShaderStage])
@@ -1131,7 +1163,6 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 		ShaderStages[PipelineInfo.stageCount].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 		VkShaderStageFlagBits Stage = UEFrequencyToVKStageBit(ShaderStage::GetFrequencyForGfxStage(CurrStage));
 		ShaderStages[PipelineInfo.stageCount].stage = Stage;
-		bHasTessellation = bHasTessellation || ((Stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)) != 0);
 		ShaderStages[PipelineInfo.stageCount].module = PSO->ShaderModules[CurrStage];
 		Shaders[ShaderStage]->GetEntryPoint(EntryPoints[PipelineInfo.stageCount], 24);
 		ShaderStages[PipelineInfo.stageCount].pName = EntryPoints[PipelineInfo.stageCount];
@@ -1197,14 +1228,22 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 
 	PipelineInfo.pDynamicState = &DynamicState;
 
-	VkPipelineTessellationStateCreateInfo TessState;
-	if (bHasTessellation)
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+	const VkExtent2D FragmentSize = Device->GetBestMatchedShadingRateExtents(PSO->Desc.ShadingRate);
+	VkFragmentShadingRateCombinerOpKHR PipelineToPrimitiveCombinerOperation = FragmentCombinerOpMap[(uint8)PSO->Desc.Combiner];
+
+	VkPipelineFragmentShadingRateStateCreateInfoKHR PipelineFragmentShadingRate;
+
+	if (GRHISupportsPipelineVariableRateShading && GRHIVariableRateShadingEnabled)
 	{
-		ZeroVulkanStruct(TessState, VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO);
-		PipelineInfo.pTessellationState = &TessState;
-		check(InputAssembly.topology == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST);
-		TessState.patchControlPoints = GfxEntry->ControlPoints;
+		ZeroVulkanStruct(PipelineFragmentShadingRate, VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR);
+		PipelineFragmentShadingRate.fragmentSize = FragmentSize;
+		PipelineFragmentShadingRate.combinerOps[0] = PipelineToPrimitiveCombinerOperation;
+		PipelineFragmentShadingRate.combinerOps[1] = VK_FRAGMENT_SHADING_RATE_COMBINER_OP_MAX_KHR;		// @todo: This needs to be specified too.
+
+		PipelineInfo.pNext = (void*)&PipelineFragmentShadingRate;
 	}
+#endif
 
 	VkResult Result = VK_ERROR_INITIALIZATION_FAILED;
 	double BeginTime = FPlatformTime::Seconds();
@@ -1266,10 +1305,24 @@ bool FVulkanPipelineStateCacheManager::CreateGfxPipelineFromEntry(FVulkanRHIGrap
 		Result = VulkanRHI::vkCreateGraphicsPipelines(Device->GetInstanceHandle(), PipelineCache, 1, &PipelineInfo, VULKAN_CPU_ALLOCATOR, Pipeline);
 	}
 
-
 	if (Result != VK_SUCCESS)
 	{
-		UE_LOG(LogVulkanRHI, Error, TEXT("Failed to create graphics pipeline."));
+		FString ShaderHashes = "";
+		if (Shaders[ShaderStage::Vertex] && Shaders[ShaderStage::Vertex]->StageFlag == VK_SHADER_STAGE_VERTEX_BIT)
+		{
+			ShaderHashes += TEXT("VS: ") + static_cast<FVulkanVertexShader*>(Shaders[ShaderStage::Vertex])->GetHash().ToString() + TEXT("\n");
+		}
+		if (Shaders[ShaderStage::Pixel] && Shaders[ShaderStage::Pixel]->StageFlag == VK_SHADER_STAGE_FRAGMENT_BIT)
+		{
+			ShaderHashes += TEXT("PS: ") + static_cast<FVulkanPixelShader*>(Shaders[ShaderStage::Pixel])->GetHash().ToString() + TEXT("\n");
+		}
+#if VULKAN_SUPPORTS_GEOMETRY_SHADERS
+		if (Shaders[ShaderStage::Geometry] && Shaders[ShaderStage::Geometry]->StageFlag == VK_SHADER_STAGE_GEOMETRY_BIT)
+		{
+			ShaderHashes += TEXT("GS: ") + static_cast<FVulkanGeometryShader*>(Shaders[ShaderStage::Geometry])->GetHash().ToString() + TEXT("\n");
+		}
+#endif
+		UE_LOG(LogVulkanRHI, Error, TEXT("Failed to create graphics pipeline.\nShaders in pipeline: %s"), *ShaderHashes);
 		return false;
 	}
 
@@ -1321,11 +1374,7 @@ FVulkanShaderHashes::FVulkanShaderHashes(const FGraphicsPipelineStateInitializer
 	Stages[ShaderStage::Vertex] = GetShaderHash<FRHIVertexShader, FVulkanVertexShader>(PSOInitializer.BoundShaderState.VertexShaderRHI);
 	Stages[ShaderStage::Pixel] = GetShaderHash<FRHIPixelShader, FVulkanPixelShader>(PSOInitializer.BoundShaderState.PixelShaderRHI);
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
-	Stages[ShaderStage::Geometry] = GetShaderHash<FRHIGeometryShader, FVulkanGeometryShader>(PSOInitializer.BoundShaderState.GeometryShaderRHI);
-#endif
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	Stages[ShaderStage::Hull] = GetShaderHash<FRHIHullShader, FVulkanHullShader>(PSOInitializer.BoundShaderState.HullShaderRHI);
-	Stages[ShaderStage::Domain] = GetShaderHash<FRHIDomainShader, FVulkanDomainShader>(PSOInitializer.BoundShaderState.DomainShaderRHI);
+	Stages[ShaderStage::Geometry] = GetShaderHash<FRHIGeometryShader, FVulkanGeometryShader>(PSOInitializer.BoundShaderState.GetGeometryShader());
 #endif
 	Finalize();
 }
@@ -1371,110 +1420,55 @@ FVulkanLayout* FVulkanPipelineStateCacheManager::FindOrAddLayout(const FVulkanDe
 	return Layout;
 }
 
-static inline VkPrimitiveTopology UEToVulkanTopologyType(const FVulkanDevice* InDevice, EPrimitiveType PrimitiveType, bool bHasTessellation, uint16& OutControlPoints)
+static inline VkPrimitiveTopology UEToVulkanTopologyType(const FVulkanDevice* InDevice, EPrimitiveType PrimitiveType, uint16& OutControlPoints)
 {
-	if (bHasTessellation)
+	OutControlPoints = 0;
+	switch (PrimitiveType)
 	{
-		switch (PrimitiveType)
-		{
-		case PT_TriangleList:
-			// This is the case for tessellation without AEN or other buffers, so just flip to 3 CPs
-			OutControlPoints = 3;
-			return VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
-		case PT_1_ControlPointPatchList:
-		case PT_2_ControlPointPatchList:
-		case PT_3_ControlPointPatchList:
-		case PT_4_ControlPointPatchList:
-		case PT_5_ControlPointPatchList:
-		case PT_6_ControlPointPatchList:
-		case PT_7_ControlPointPatchList:
-		case PT_8_ControlPointPatchList:
-		case PT_9_ControlPointPatchList:
-		case PT_10_ControlPointPatchList:
-		case PT_12_ControlPointPatchList:
-		case PT_13_ControlPointPatchList:
-		case PT_14_ControlPointPatchList:
-		case PT_15_ControlPointPatchList:
-		case PT_16_ControlPointPatchList:
-		case PT_17_ControlPointPatchList:
-		case PT_18_ControlPointPatchList:
-		case PT_19_ControlPointPatchList:
-		case PT_20_ControlPointPatchList:
-		case PT_22_ControlPointPatchList:
-		case PT_23_ControlPointPatchList:
-		case PT_24_ControlPointPatchList:
-		case PT_25_ControlPointPatchList:
-		case PT_26_ControlPointPatchList:
-		case PT_27_ControlPointPatchList:
-		case PT_28_ControlPointPatchList:
-		case PT_29_ControlPointPatchList:
-		case PT_30_ControlPointPatchList:
-		case PT_31_ControlPointPatchList:
-		case PT_32_ControlPointPatchList:
-			OutControlPoints = (PrimitiveType - PT_1_ControlPointPatchList + 1);
-			checkf(
-				OutControlPoints <= InDevice->GetLimits().maxTessellationPatchSize,
-				TEXT("OutControlPoints (%d) exceeded limit of maximal patch size (%d)"),
-				OutControlPoints,
-				InDevice->GetLimits().maxTessellationPatchSize
-			);
-			return VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
-		default:
-			checkf(false, TEXT("Unsupported tessellation EPrimitiveType %d; probably missing a case in FStaticMeshSceneProxy::GetMeshElement()!"), (uint32)PrimitiveType);
-			break;
-		}
-		OutControlPoints = 0;
-	}
-	else
-	{
-		OutControlPoints = 0;
-		switch (PrimitiveType)
-		{
-		case PT_PointList:
-			return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-		case PT_LineList:
-			return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-		case PT_TriangleList:
-			return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-		case PT_TriangleStrip:
-			return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-		case PT_1_ControlPointPatchList:
-		case PT_2_ControlPointPatchList:
-		case PT_3_ControlPointPatchList:
-		case PT_4_ControlPointPatchList:
-		case PT_5_ControlPointPatchList:
-		case PT_6_ControlPointPatchList:
-		case PT_7_ControlPointPatchList:
-		case PT_8_ControlPointPatchList:
-		case PT_9_ControlPointPatchList:
-		case PT_10_ControlPointPatchList:
-		case PT_12_ControlPointPatchList:
-		case PT_13_ControlPointPatchList:
-		case PT_14_ControlPointPatchList:
-		case PT_15_ControlPointPatchList:
-		case PT_16_ControlPointPatchList:
-		case PT_17_ControlPointPatchList:
-		case PT_18_ControlPointPatchList:
-		case PT_19_ControlPointPatchList:
-		case PT_20_ControlPointPatchList:
-		case PT_22_ControlPointPatchList:
-		case PT_23_ControlPointPatchList:
-		case PT_24_ControlPointPatchList:
-		case PT_25_ControlPointPatchList:
-		case PT_26_ControlPointPatchList:
-		case PT_27_ControlPointPatchList:
-		case PT_28_ControlPointPatchList:
-		case PT_29_ControlPointPatchList:
-		case PT_30_ControlPointPatchList:
-		case PT_31_ControlPointPatchList:
-		case PT_32_ControlPointPatchList:
-			OutControlPoints = (PrimitiveType - PT_1_ControlPointPatchList + 1);
-			checkf(false, TEXT("Missing tessellation shaders, however tried to use EPrimitiveType %d (%d control points)"), (uint32)PrimitiveType, OutControlPoints);
-			break;
-		default:
-			checkf(false, TEXT("Unsupported EPrimitiveType %d"), (uint32)PrimitiveType);
-			break;
-		}
+	case PT_PointList:
+		return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+	case PT_LineList:
+		return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+	case PT_TriangleList:
+		return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	case PT_TriangleStrip:
+		return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+	case PT_1_ControlPointPatchList:
+	case PT_2_ControlPointPatchList:
+	case PT_3_ControlPointPatchList:
+	case PT_4_ControlPointPatchList:
+	case PT_5_ControlPointPatchList:
+	case PT_6_ControlPointPatchList:
+	case PT_7_ControlPointPatchList:
+	case PT_8_ControlPointPatchList:
+	case PT_9_ControlPointPatchList:
+	case PT_10_ControlPointPatchList:
+	case PT_12_ControlPointPatchList:
+	case PT_13_ControlPointPatchList:
+	case PT_14_ControlPointPatchList:
+	case PT_15_ControlPointPatchList:
+	case PT_16_ControlPointPatchList:
+	case PT_17_ControlPointPatchList:
+	case PT_18_ControlPointPatchList:
+	case PT_19_ControlPointPatchList:
+	case PT_20_ControlPointPatchList:
+	case PT_22_ControlPointPatchList:
+	case PT_23_ControlPointPatchList:
+	case PT_24_ControlPointPatchList:
+	case PT_25_ControlPointPatchList:
+	case PT_26_ControlPointPatchList:
+	case PT_27_ControlPointPatchList:
+	case PT_28_ControlPointPatchList:
+	case PT_29_ControlPointPatchList:
+	case PT_30_ControlPointPatchList:
+	case PT_31_ControlPointPatchList:
+	case PT_32_ControlPointPatchList:
+		OutControlPoints = (PrimitiveType - PT_1_ControlPointPatchList + 1);
+		checkf(false, TEXT("Missing tessellation shaders, however tried to use EPrimitiveType %d (%d control points)"), (uint32)PrimitiveType, OutControlPoints);
+		break;
+	default:
+		checkf(false, TEXT("Unsupported EPrimitiveType %d"), (uint32)PrimitiveType);
+		break;
 	}
 
 	return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
@@ -1514,19 +1508,10 @@ void FVulkanPipelineStateCacheManager::CreateGfxEntry(const FGraphicsPipelineSta
 			}
 #endif
 
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-			if (Shaders[ShaderStage::Hull])
-			{
-				const FVulkanShaderHeader& HSHeader = Shaders[ShaderStage::Hull]->GetCodeHeader();
-				const FVulkanShaderHeader& DSHeader = Shaders[ShaderStage::Domain]->GetCodeHeader();
-				DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, ShaderStage::Hull, HSHeader, UBGatherInfo);
-				DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, ShaderStage::Domain, DSHeader, UBGatherInfo);
-			}
-#endif
 			// Second pass
 			const int32 NumImmutableSamplers = PSOInitializer.ImmutableSamplerState.ImmutableSamplers.Num();
 			TArrayView<FRHISamplerState*> ImmutableSamplers(NumImmutableSamplers > 0 ? &(FRHISamplerState*&)PSOInitializer.ImmutableSamplerState.ImmutableSamplers[0] : nullptr, NumImmutableSamplers);
-			DescriptorSetLayoutInfo.FinalizeBindings<false>(UBGatherInfo, ImmutableSamplers);
+			DescriptorSetLayoutInfo.FinalizeBindings<false>(*Device, UBGatherInfo, ImmutableSamplers);
 	}
 
 	FDescriptorSetRemappingInfo& RemappingInfo = DescriptorSetLayoutInfo.RemappingInfo;
@@ -1543,10 +1528,8 @@ void FVulkanPipelineStateCacheManager::CreateGfxEntry(const FGraphicsPipelineSta
 
 	OutGfxEntry->UseAlphaToCoverage = PSOInitializer.NumSamples > 1 && BlendState->Initializer.bUseAlphaToCoverage ? 1 : 0;
 
-	const bool bHasTessellation = (PSOInitializer.BoundShaderState.DomainShaderRHI != nullptr);
-
 	OutGfxEntry->RasterizationSamples = PSOInitializer.NumSamples;
-	OutGfxEntry->Topology = (uint32)UEToVulkanTopologyType(Device, PSOInitializer.PrimitiveType, bHasTessellation, OutGfxEntry->ControlPoints);
+	OutGfxEntry->Topology = (uint32)UEToVulkanTopologyType(Device, PSOInitializer.PrimitiveType, OutGfxEntry->ControlPoints);
 	uint32 NumRenderTargets = PSOInitializer.ComputeNumValidRenderTargets();
 	
 	if (PSOInitializer.SubpassHint == ESubpassHint::DeferredShadingSubpass && PSOInitializer.SubpassIndex >= 2)
@@ -1604,8 +1587,10 @@ void FVulkanPipelineStateCacheManager::CreateGfxEntry(const FGraphicsPipelineSta
 		8242695776924673527llu,
 		7556751872809527943llu,
 		8278265491465149053llu,
+		1263027877466626099llu,
+		2698115308251696101llu,
 	};
-	check(sizeof(Primes) / sizeof(Primes[0]) >= ShaderStage::NumStages);
+	static_assert(sizeof(Primes) / sizeof(Primes[0]) >= ShaderStage::NumStages);
 	for (int32 Index = 0; Index < ShaderStage::NumStages; ++Index)
 	{
 		FVulkanShader* Shader = Shaders[Index];
@@ -1647,6 +1632,14 @@ void FVulkanPipelineStateCacheManager::CreateGfxEntry(const FGraphicsPipelineSta
 
 	FVulkanRenderTargetLayout RTLayout(PSOInitializer);
 	OutGfxEntry->RenderTargets.ReadFrom(RTLayout);
+
+	// Shading rate:
+	OutGfxEntry->ShadingRate = PSOInitializer.ShadingRate;
+	OutGfxEntry->Combiner = EVRSRateCombiner::VRSRB_Max;		// @todo: This needs to be specified twice; from pipeline-to-primitive, and from primitive-to-attachment. 
+																// We don't have per-primitive VRS so that should just be hard-coded to "passthrough" until this is supported; but we should expose 
+																// this setting in the material properies, especially since there's some materials that don't play nicely with 
+																// shading rates other than 1x1, in which case we'll want to use VRSRB_Min to override e.g. the attachment shading rate.
+																// For now, just locked to "max".
 }
 
 
@@ -1667,12 +1660,8 @@ FVulkanRHIGraphicsPipelineState::FVulkanRHIGraphicsPipelineState(FVulkanDevice* 
 
 	FMemory::Memset(VulkanShaders, 0, sizeof(VulkanShaders));
 	VulkanShaders[ShaderStage::Vertex] = static_cast<FVulkanVertexShader*>(PSOInitializer_.BoundShaderState.VertexShaderRHI);
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	VulkanShaders[ShaderStage::Hull] = static_cast<FVulkanHullShader*>(PSOInitializer_.BoundShaderState.HullShaderRHI);
-	VulkanShaders[ShaderStage::Domain] = static_cast<FVulkanDomainShader*>(PSOInitializer_.BoundShaderState.DomainShaderRHI);
-#endif
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
-	VulkanShaders[ShaderStage::Geometry] = static_cast<FVulkanGeometryShader*>(PSOInitializer_.BoundShaderState.GeometryShaderRHI);
+	VulkanShaders[ShaderStage::Geometry] = static_cast<FVulkanGeometryShader*>(PSOInitializer_.BoundShaderState.GetGeometryShader());
 #endif
 	VulkanShaders[ShaderStage::Pixel] = static_cast<FVulkanPixelShader*>(PSOInitializer_.BoundShaderState.PixelShaderRHI);
 
@@ -1688,11 +1677,6 @@ FVulkanRHIGraphicsPipelineState::FVulkanRHIGraphicsPipelineState(FVulkanDevice* 
 	PixelShaderRHI = PSOInitializer_.BoundShaderState.PixelShaderRHI;
 	VertexShaderRHI = PSOInitializer_.BoundShaderState.VertexShaderRHI;
 	VertexDeclarationRHI = PSOInitializer_.BoundShaderState.VertexDeclarationRHI;
-
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	DomainShaderRHI = PSOInitializer_.BoundShaderState.DomainShaderRHI;
-	HullShaderRHI = PSOInitializer_.BoundShaderState.HullShaderRHI;
-#endif 
 
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 	GeometryShaderRHI = PSOInitializer_.BoundShaderState.GeometryShaderRHI;
@@ -1799,6 +1783,15 @@ FVulkanRHIGraphicsPipelineState* FVulkanPipelineStateCacheManager::RHICreateGrap
 
 
 	{
+		// Workers can be creating PSOs while FRHIResource::FlushPendingDeletes is running on the RHI thread
+		// so let it get enqueued for a delete with Release() instead.  Only used for failed or duplicate PSOs...
+		auto DeleteNewPSO = [](FVulkanRHIGraphicsPipelineState* PSOPtr)
+		{
+			PSOPtr->AddRef();
+			const uint32 RefCount = PSOPtr->Release();
+			check(RefCount == 0);
+		};
+
 		SCOPE_CYCLE_COUNTER(STAT_VulkanPSOCreationTime);
 		NewPSO = new FVulkanRHIGraphicsPipelineState(Device, Initializer, Desc, &Key);
 		{
@@ -1845,7 +1838,7 @@ FVulkanRHIGraphicsPipelineState* FVulkanPipelineStateCacheManager::RHICreateGrap
 
 				if(!CreateGfxPipelineFromEntry(NewPSO, VulkanShaders, &NewPSO->VulkanPipeline))
 				{
-					delete NewPSO;
+					DeleteNewPSO(NewPSO);
 					return nullptr;
 				}
 				// Recover if we failed to create the pipeline.
@@ -1860,14 +1853,15 @@ FVulkanRHIGraphicsPipelineState* FVulkanPipelineStateCacheManager::RHICreateGrap
 			FVulkanRHIGraphicsPipelineState** MapPSO = GraphicsPSOLockedMap.Find(Key);
 			if(MapPSO)//another thread could end up creating it.
 			{
-				delete NewPSO;
+				DeleteNewPSO(NewPSO);
 				NewPSO = *MapPSO;
 			}
 			else
 			{
 				GraphicsPSOLockedMap.Add(MoveTemp(Key), NewPSO);
-				if (bUseLRU)
+				if (bUseLRU && NewPSO->VulkanPipeline != VK_NULL_HANDLE)
 				{
+					// we add only created pipelines to the LRU
 					FScopeLock LockRU(&LRUCS);
 					NewPSO->bIsRegistered = true;
 					LRUTrim(NewPSO->PipelineCacheSize);
@@ -1897,8 +1891,22 @@ FGraphicsPipelineStateRHIRef FVulkanDynamicRHI::RHICreateGraphicsPipelineState(c
 	return Device->PipelineStateCache->RHICreateGraphicsPipelineState(PSOInitializer);
 }
 
+FVulkanComputePipeline* FVulkanPipelineStateCacheManager::RHICreateComputePipelineState(FRHIComputeShader* ComputeShaderRHI)
+{
+	FVulkanComputeShader* ComputeShader = ResourceCast(ComputeShaderRHI);
+	return Device->GetPipelineStateCache()->GetOrCreateComputePipeline(ComputeShader);
+}
 
+FComputePipelineStateRHIRef FVulkanDynamicRHI::RHICreateComputePipelineState(FRHIComputeShader* ComputeShader)
+{
+#if VULKAN_ENABLE_AGGRESSIVE_STATS
+	SCOPE_CYCLE_COUNTER(STAT_VulkanGetOrCreatePipeline);
+#endif
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_Vulkan_RHICreateComputePipelineState);
+	LLM_SCOPE_VULKAN(ELLMTagVulkan::VulkanShaders);
 
+	return Device->PipelineStateCache->RHICreateComputePipelineState(ComputeShader);
+}
 
 FVulkanComputePipeline* FVulkanPipelineStateCacheManager::GetOrCreateComputePipeline(FVulkanComputeShader* ComputeShader)
 {
@@ -1947,7 +1955,7 @@ FVulkanComputePipeline* FVulkanPipelineStateCacheManager::CreateComputePipelineF
 	const FVulkanShaderHeader& CSHeader = Shader->GetCodeHeader();
 	FUniformBufferGatherInfo UBGatherInfo;
 	DescriptorSetLayoutInfo.ProcessBindingsForStage(VK_SHADER_STAGE_COMPUTE_BIT, ShaderStage::Compute, CSHeader, UBGatherInfo);
-	DescriptorSetLayoutInfo.FinalizeBindings<true>(UBGatherInfo, TArrayView<FRHISamplerState*>());
+	DescriptorSetLayoutInfo.FinalizeBindings<true>(*Device, UBGatherInfo, TArrayView<FRHISamplerState*>());
 	FVulkanLayout* Layout = FindOrAddLayout(DescriptorSetLayoutInfo, false);
 	FVulkanComputeLayout* ComputeLayout = (FVulkanComputeLayout*)Layout;
 	if (!ComputeLayout->ComputePipelineDescriptorInfo.IsInitialized())
@@ -1968,13 +1976,29 @@ FVulkanComputePipeline* FVulkanPipelineStateCacheManager::CreateComputePipelineF
 	PipelineInfo.stage.pName = EntryPoint;
 	PipelineInfo.layout = ComputeLayout->GetPipelineLayout();
 		
-	VERIFYVULKANRESULT(VulkanRHI::vkCreateComputePipelines(Device->GetInstanceHandle(), PipelineCache, 1, &PipelineInfo, VULKAN_CPU_ALLOCATOR, &Pipeline->Pipeline));
+	VkResult Result = VulkanRHI::vkCreateComputePipelines(Device->GetInstanceHandle(), PipelineCache, 1, &PipelineInfo, VULKAN_CPU_ALLOCATOR, &Pipeline->Pipeline);
+
+	if (Result != VK_SUCCESS)
+	{
+		FString ComputeHash = Shader->GetHash().ToString();
+		UE_LOG(LogVulkanRHI, Warning, TEXT("Failed to create graphics pipeline.\nShaders in pipeline: CS: %s"), *ComputeHash);
+	}
 
 	Pipeline->Layout = ComputeLayout;
 
 	INC_DWORD_STAT(STAT_VulkanNumPSOs);
 
 	return Pipeline;
+}
+
+void FVulkanPipelineStateCacheManager::NotifyDeletedComputePipeline(FVulkanComputePipeline* Pipeline)
+{
+	if (Pipeline->ComputeShader)
+	{
+		const uint64 Key = Pipeline->ComputeShader->GetShaderKey();
+		FRWScopeLock ScopeLock(ComputePipelineLock, SLT_Write); 
+		ComputePipelineEntries.Remove(Key);
+	}
 }
 
 template<typename T>
@@ -2043,31 +2067,14 @@ void GetVulkanShaders(const FBoundShaderStateInput& BSI, FVulkanShader* OutShade
 		OutShaders[ShaderStage::Pixel] = ResourceCast(BSI.PixelShaderRHI);
 	}
 
-#if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
-	if (BSI.GeometryShaderRHI)
+	if (BSI.GetGeometryShader())
 	{
 #if VULKAN_SUPPORTS_GEOMETRY_SHADERS
-		OutShaders[ShaderStage::Geometry] = ResourceCast(BSI.GeometryShaderRHI);
+		OutShaders[ShaderStage::Geometry] = ResourceCast(BSI.GetGeometryShader());
 #else
 		ensureMsgf(0, TEXT("Geometry not supported!"));
 #endif
 	}
-#endif
-
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	if (BSI.HullShaderRHI)
-	{
-		// Can't have Hull w/o Domain
-		check(BSI.DomainShaderRHI);
-		OutShaders[ShaderStage::Hull] = ResourceCast(BSI.HullShaderRHI);
-		OutShaders[ShaderStage::Domain] = ResourceCast(BSI.DomainShaderRHI);
-	}
-	else
-	{
-		// Can't have Domain w/o Hull
-		check(BSI.DomainShaderRHI == nullptr);
-	}
-#endif
 }
 
 void GetVulkanShaders(FVulkanDevice* Device, const FVulkanRHIGraphicsPipelineState& GfxPipelineState, FVulkanShader* OutShaders[ShaderStage::NumStages])
@@ -2076,6 +2083,34 @@ void GetVulkanShaders(FVulkanDevice* Device, const FVulkanRHIGraphicsPipelineSta
 	Device->GetShaderFactory().LookupShaders(GfxPipelineState.ShaderKeys, OutShaders);
 }
 
+void FVulkanPipelineStateCacheManager::TickLRU()
+{
+	if (!bUseLRU || GVulkanPSOLRUEvictAfterUnusedFrames == 0)
+	{
+		return;
+	}
+
+	FScopeLock Lock(&LRUCS);
+	const int MaxEvictsPerTick = 5;
+	for(int i = 0 ; i<MaxEvictsPerTick; i++)
+	{
+		uint32 tid = FPlatformTLS::GetCurrentThreadId();
+		FVulkanRHIGraphicsPipelineStateLRUNode* Node = LRU.GetTail();
+		check(Node != 0);
+		TRefCountPtr<FVulkanRHIGraphicsPipelineState> PSO = Node->GetValue();
+
+		bool bTimeToDie = PSO->LRUFrame + GVulkanPSOLRUEvictAfterUnusedFrames < GFrameNumberRenderThread;
+		if (bTimeToDie)
+		{
+			LRUPRINT_DEBUG(TEXT("Evicting after %d frames of unuse (%d : %d) %d\n"), GVulkanPSOLRUEvictAfterUnusedFrames, PSO->LRUFrame, GFrameNumberRenderThread, PSO->PipelineCacheSize);
+			LRURemove(PSO);
+		}
+		else
+		{
+			return;
+		}
+	}
+}
 
 
 void FVulkanPipelineStateCacheManager::LRUDump()
@@ -2155,7 +2190,7 @@ void FVulkanPipelineStateCacheManager::LRUAdd(FVulkanRHIGraphicsPipelineState* P
 	LRU.AddHead(PSO);
 	PSO->LRUNode = LRU.GetHead();
 	PSO->LRUFrame = GFrameNumberRenderThread;
-	LRUPRINT_DEBUG(TEXT("LRUADD %p .. Frame %d :: %d    VKPSO %08x\n"), PSO, PSO->LRUFrame, GFrameNumberRenderThread, PSO->GetVulkanPipeline());
+	LRUPRINT_DEBUG(TEXT("LRUADD %p .. Frame %d :: %d    VKPSO %08x, cache size %d\n"), PSO, PSO->LRUFrame, GFrameNumberRenderThread, PSO->GetVulkanPipeline(), PSOSize);
 
 }
 
@@ -2267,6 +2302,16 @@ void FVulkanPipelineStateCacheManager::LRURemove(FVulkanRHIGraphicsPipelineState
 		LRUUsedPipelineCount--;
 
 		PSO->DeleteVkPipeline(bImmediate);
+		if (GVulkanReleaseShaderModuleWhenEvictingPSO)
+		{
+	        for (int ShaderStageIndex = 0; ShaderStageIndex < ShaderStage::NumStages; ShaderStageIndex++)
+	        {
+				if (PSO->VulkanShaders[ShaderStageIndex] != nullptr)
+				{
+					PSO->VulkanShaders[ShaderStageIndex]->PurgeShaderModules();
+				}
+			}
+		}
 		SET_DWORD_STAT(STAT_VulkanNumPSOLRUSize, LRUUsedPipelineSize);
 		SET_DWORD_STAT(STAT_VulkanNumPSOLRU, LRUUsedPipelineCount);
 	}

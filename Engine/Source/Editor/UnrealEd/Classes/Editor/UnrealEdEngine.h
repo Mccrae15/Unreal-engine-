@@ -10,7 +10,6 @@
 #include "Editor/EditorEngine.h"
 #include "IPackageAutoSaver.h"
 #include "ISourceControlProvider.h"
-#include "IDDCNotifications.h"
 #include "ComponentVisualizer.h"
 #include "ComponentVisualizerManager.h"
 #include "UnrealEdEngine.generated.h"
@@ -25,10 +24,14 @@ class FViewport;
 class IEngineLoop;
 class ITargetPlatform;
 class UPrimitiveComponent;
+class UHierarchicalInstancedStaticMeshComponent;
 class UTexture2D;
 class UUnrealEdOptions;
+class USelection;
+class UTypedElementSelectionSet;
 class FName;
 typedef FName FEditorModeID;
+struct FTypedElementSelectionOptions;
 
 UENUM()
 enum EPackageNotifyState
@@ -76,7 +79,7 @@ struct FClassMoveInfo
 
 };
 
-/** Used during asset renaming/duplication to specify class-specific package/group targets. */
+/** Used by new level dialog. */
 USTRUCT()
 struct FTemplateMapInfo
 {
@@ -84,14 +87,25 @@ struct FTemplateMapInfo
 
 	/** The Texture2D associated with this map template */
 	UPROPERTY()
-	UTexture2D* ThumbnailTexture;
+	TSoftObjectPtr<UTexture2D> ThumbnailTexture;
+
+	/** The Texture associated with this map template */
+	UPROPERTY(config, meta = (AllowedClasses = "Texture2D"))
+	FSoftObjectPath Thumbnail;
 
 	/** The object path to the template map */
+	UPROPERTY(config, meta = (AllowedClasses = "World"))
+	FSoftObjectPath Map;
+
+	/** Optional display name override for this map template  */
 	UPROPERTY(config)
-	FString Map;
+	FText DisplayName;
+
+	/* Optional category used for sorting */
+	UPROPERTY(config)
+	FString Category;
 
 	FTemplateMapInfo()
-		: ThumbnailTexture(NULL)
 	{
 	}
 };
@@ -108,29 +122,25 @@ public:
 
 	/** Global instance of the editor options class. */
 	UPROPERTY()
-	class UUnrealEdOptions* EditorOptionsInst;
+	TObjectPtr<class UUnrealEdOptions> EditorOptionsInst;
 
 	/**
 	 * Manager responsible for configuring auto reimport
 	 */
 	UPROPERTY()
-	class UAutoReimportManager* AutoReimportManager;
+	TObjectPtr<class UAutoReimportManager> AutoReimportManager;
 
 	/** A buffer for implementing material expression copy/paste. */
 	UPROPERTY()
-	class UMaterial* MaterialCopyPasteBuffer;
-
-	/** A buffer for implementing matinee track/group copy/paste. */
-	UPROPERTY()
-	TArray<class UObject*> MatineeCopyPasteBuffer;
+	TObjectPtr<class UMaterial> MaterialCopyPasteBuffer;
 
 	/** A buffer for implementing sound cue nodes copy/paste. */
 	UPROPERTY()
-	class USoundCue* SoundCueCopyPasteBuffer;
+	TObjectPtr<class USoundCue> SoundCueCopyPasteBuffer;
 
 	/** Global list of instanced animation compression algorithms. */
 	UPROPERTY()
-	TArray<class UAnimCompress*> AnimationCompressionAlgorithms;
+	TArray<TObjectPtr<class UAnimCompress>> AnimationCompressionAlgorithms;
 
 	/** Array of packages to be fully loaded at Editor startup. */
 	UPROPERTY(config)
@@ -138,7 +148,7 @@ public:
 
 	/** Current target for LOD parenting operations (actors will use this as the replacement) */
 	UPROPERTY()
-	class AActor* CurrentLODParentActor;
+	TObjectPtr<class AActor> CurrentLODParentActor;
 
 	/** Whether the user needs to be prompted about a package being saved with an engine version newer than the current one or not */
 	UPROPERTY()
@@ -151,13 +161,14 @@ public:
 	UPROPERTY()
 	TArray<FString> SortedSpriteCategories_DEPRECATED;
 
+	UE_DEPRECATED(5.0, "This variable may no longer contain the correct template maps for the project and this property will no longer be publically accessible in the future. Use GetDefaultTemplateMapInfos to get the default list of template maps for a project")
 	/** List of info for all known template maps */
 	UPROPERTY(config)
 	TArray<FTemplateMapInfo> TemplateMapInfos;
 
 	/** Cooker server incase we want to cook on the side while editing... */
 	UPROPERTY()
-	class UCookOnTheFlyServer* CookServer;
+	TObjectPtr<class UCookOnTheFlyServer> CookServer;
 
 	/** A list of packages dirtied this tick */
 	TArray<TWeakObjectPtr<UPackage>> PackagesDirtiedThisTick;
@@ -196,7 +207,7 @@ public:
 	virtual void NoteSelectionChange(bool bNotify = true) override;
 	virtual void NoteActorMovement() override;
 	virtual void FinishAllSnaps() override;
-	virtual void Cleanse( bool ClearSelection, bool Redraw, const FText& Reason ) override;
+	virtual void Cleanse( bool ClearSelection, bool Redraw, const FText& Reason, bool bResetTrans ) override;
 	virtual bool GetMapBuildCancelled() const override;
 	virtual void SetMapBuildCancelled( bool InCancelled ) override;
 	virtual FVector GetPivotLocation() override;
@@ -205,9 +216,10 @@ public:
 	virtual void RedrawLevelEditingViewports(bool bInvalidateHitProxies=true) override;
 	virtual void TakeHighResScreenShots() override;
 	virtual void GetPackageList( TArray<UPackage*>* InPackages, UClass* InClass ) override;
-	virtual bool ShouldAbortActorDeletion() const override;
+	virtual bool ShouldAbortActorDeletion() const override final; // @note Final - Override ShouldAbortComponentDeletion or ShouldAbortActorDeletion (with parameters) instead.
 	virtual void CloseEditor() override;
-	virtual void OnOpenMatinee() override;
+
+	
 	virtual bool IsAutosaving() const override;
 	//~ End UEditorEngine Interface 
 	
@@ -257,21 +269,20 @@ public:
 	void DrawComponentVisualizersHUD(const FViewport* Viewport, const FSceneView* View, FCanvas* Canvas);
 
 	/** Updates the property windows of selected actors */
-	virtual void UpdateFloatingPropertyWindows(bool bForceRefresh=false);
+	void UpdateFloatingPropertyWindows(bool bForceRefresh=false, bool bNotifyActorSelectionChanged=true);
 
 	/**
-	*	Updates the property windows of the actors in the supplied ActorList
+	*	Updates the property windows to show the data of the supplied ActorList
 	*
-	*	@param	ActorList	The list of actors whose property windows should be updated
+	*	@param	ActorList	The list of actors to show the properties for
 	*
 	*/
-	virtual void UpdateFloatingPropertyWindowsFromActorList(const TArray< UObject *>& ActorList, bool bForceRefresh=false);
+	void UpdateFloatingPropertyWindowsFromActorList(const TArray<AActor*>& ActorList, bool bForceRefresh=false);
 
 	/**
-	 * Fast track function to set render thread flags marking selection rather than reconnecting all components
-	 * @param InActor - the actor to toggle view flags for
+	 * Called whenever the actor selection has changed to invalidate any cached state
 	 */
-	virtual void SetActorSelectionFlags (AActor* InActor);
+	void PostActorSelectionChanged();
 
 	/**
 	 * Set whether the pivot has been moved independently or not
@@ -312,6 +323,7 @@ public:
 	/**
 	 * Iterate over all levels of the world and create a list of world infos, then
 	 * Iterate over selected actors and assemble a list of actors which can be deleted.
+	 * @see CanDeleteComponent and CanDeleteActor.
 	 *
 	 * @param	InWorld					The world we want to examine
 	 * @param	bStopAtFirst			Whether or not we should stop at the first deletable actor we encounter
@@ -325,6 +337,7 @@ public:
 	bool Exec_Edit( UWorld* InWorld, const TCHAR* Str, FOutputDevice& Ar );
 	bool Exec_Pivot( const TCHAR* Str, FOutputDevice& Ar );
 	bool Exec_Actor( UWorld* InWorld, const TCHAR* Str, FOutputDevice& Ar );
+	bool Exec_Element( UWorld* InWorld, const TCHAR* Str, FOutputDevice& Ar );
 	bool Exec_Mode( const TCHAR* Str, FOutputDevice& Ar );
 	bool Exec_Group( const TCHAR* Str, FOutputDevice& Ar );
 
@@ -410,79 +423,161 @@ public:
 	virtual void edactSelectRelevantLights( UWorld* InWorld );
 
 	/**
-	 * Deletes all selected actors
+	 * Can the given component be deleted?
+	 * 
+	 * @param InComponent				Component to check
+	 * @param OutReason					Optional value to fill with the reason the component cannot be deleted, if any
+	 */
+	virtual bool CanDeleteComponent(const UActorComponent* InComponent, FText* OutReason = nullptr) const;
+
+	/**
+	 * Can the given actor be deleted?
 	 *
-	 * @param	InWorld				World context
+	 * @param InActor					Actor to check
+	 * @param OutReason					Optional value to fill with the reason the actor cannot be deleted, if any
+	 */
+	virtual bool CanDeleteActor(const AActor* InActor, FText* OutReason = nullptr) const;
+
+	/**
+	 * Should the deletion of the given components be outright aborted?
+	 *
+	 * @param InComponentsToDelete		Components to check
+	 * @param OutReason					Optional value to fill with the reason the component deletion was aborted, if any
+	 */
+	virtual bool ShouldAbortComponentDeletion(const TArray<UActorComponent*>& InComponentsToDelete, FText* OutReason = nullptr) const;
+
+	/**
+	 * Should the deletion of the given actors be outright aborted?
+	 *
+	 * @param InActorsToDelete			Actors to check
+	 * @param OutReason					Optional value to fill with the reason the actor deletion was aborted, if any
+	 */
+	virtual bool ShouldAbortActorDeletion(const TArray<AActor*>& InActorsToDelete, FText* OutReason = nullptr) const;
+
+	/**
+	 * Delete the given components.
+	 *
+	 * @param	InComponentsToDelete		Array of components to delete
+	 * @param	InSelectionSet				The selection set potentially containing to components that are being deleted
+	 * @param	OutSuggestedNewSelection	Array to fill with suitable components to select post-delete
+	 * @param	bVerifyDeletionCanHappen	If true (default), verify that deletion can be performed
+	 * 
+	 * @return								true unless the delete operation was aborted.
+	 */
+	virtual bool DeleteComponents(const TArray<UActorComponent*>& InComponentsToDelete, UTypedElementSelectionSet* InSelectionSet, const bool bVerifyDeletionCanHappen = true);
+
+	/**
+	 * Deletes the given actors.
+	 *
+	 * @param	InActorsToDelete			Array of actors to delete
+	 * @param	InWorld						World context
+	 * @param	InSelectionSet				The selection set potentially containing to actors that are being deleted
+	 * @param	bVerifyDeletionCanHappen	If true (default), verify that deletion can be performed
+	 * @param	bWarnAboutReferences		If true (default), we prompt the user about referenced actors they are about to delete
+	 * @param	bWarnAboutSoftReferences	If true (default), we prompt the user about soft references to actors they are about to delete
+	 * 
+	 * @return								true unless the delete operation was aborted.
+	 */
+	virtual bool DeleteActors(const TArray<AActor*>& InActorsToDelete, UWorld* InWorld, UTypedElementSelectionSet* InSelectionSet, const bool bVerifyDeletionCanHappen = true, const bool bWarnAboutReferences = true, const bool bWarnAboutSoftReferences = true);
+
+	/**
+	 * Deletes all selected actors
+	 * @note Final - Override DeleteComponents or DeleteActors instead
+	 *
+	 * @param	InWorld						World context
 	 * @param	bVerifyDeletionCanHappen	[opt] If true (default), verify that deletion can be performed.
 	 * @param	bWarnAboutReferences		[opt] If true (default), we prompt the user about referenced actors they are about to delete
 	 * @param	bWarnAboutSoftReferences	[opt] If true (default), we prompt the user about soft references to actors they are about to delete
 	 * @return								true unless the delete operation was aborted.
 	 */
-	virtual bool edactDeleteSelected( UWorld* InWorld, bool bVerifyDeletionCanHappen=true, bool bWarnAboutReferences = true, bool bWarnAboutSoftReferences = true) override;
+	virtual bool edactDeleteSelected( UWorld* InWorld, bool bVerifyDeletionCanHappen=true, bool bWarnAboutReferences = true, bool bWarnAboutSoftReferences = true) override final;
 
-	/**
-	 * Creates a new group from the current selection removing any existing groups.
-	 */
-	UE_DEPRECATED(4.17, "edactRegroupFromSelected is deprecated, use UActorGroupingUtils::GroupSelected")
-	virtual void edactRegroupFromSelected();
-
-	/**
-	 * Disbands any groups in the current selection, does not attempt to maintain any hierarchy
-	 */
-	UE_DEPRECATED(4.17, "edactUngroupFromSelected is deprecated, use UActorGroupingUtils::UngroupSelected")
-	virtual void edactUngroupFromSelected();
-
-	/**
-	 * Locks any groups in the current selection
-	 */
-	UE_DEPRECATED(4.17, "edactLockSelectedGroups is deprecated, use UActorGroupingUtils::LockSelectedGroups")
-	virtual void edactLockSelectedGroups();
-
-	/**
-	 * Unlocks any groups in the current selection
-	 */
-	UE_DEPRECATED(4.17, "edactUnlockSelectedGroups is deprecated, use UActorGroupingUtils::UnlockSelectedGroups")
-	virtual void edactUnlockSelectedGroups();
-
-	/**
-	 * Activates "Add to Group" mode which allows the user to select a group to append current selection
-	 */
-	UE_DEPRECATED(4.17, "edactAddToGroup is deprecated, use UActorGroupingUtils::AddSelectedToGroup")
-	virtual void edactAddToGroup();
-
-	/**
-	 * Removes any groups or actors in the current selection from their immediate parent.
-	 * If all actors/subgroups are removed, the parent group will be destroyed.
-	 */
-	UE_DEPRECATED(4.17, "edactRemoveFromGroup is deprecated, use UActorGroupingUtils::RemoveSelectedFromGroup")
-	virtual void edactRemoveFromGroup();
-	
 	/**
 	 * Copy selected actors to the clipboard.  Does not copy PrefabInstance actors or parts of Prefabs.
+	 * @note Final - Override CopyComponents or CopyActors instead.
 	 *
 	 * @param	InWorld					World context
-	 * @param	DestinationData			If != NULL, additionally copy data to string
+	 * @param	DestinationData			If != NULL, fill instead of clipboard data
 	 */
-	virtual void edactCopySelected(UWorld* InWorld, FString* DestinationData = NULL) override;
+	virtual void edactCopySelected(UWorld* InWorld, FString* DestinationData = nullptr) override final;
+
+	/**
+	 * Copy the given components to the clipboard.
+	 *
+	 * @param	InComponentsToCopy		Array of components to copy
+	 * @param	DestinationData			If != NULL, fill instead of clipboard data
+	 */
+	virtual void CopyComponents(const TArray<UActorComponent*>& InComponentsToCopy, FString* DestinationData = nullptr) const;
+
+	/**
+	 * Copy the given actors to the clipboard.  Does not copy PrefabInstance actors or parts of Prefabs.
+	 *
+	 * @param	InActorsToCopy			Array of actors to copy
+	 * @param	InWorld					World context
+	 * @param	DestinationData			If != NULL, fill instead of clipboard data
+	 */
+	virtual void CopyActors(const TArray<AActor*>& InActorsToCopy, UWorld* InWorld, FString* DestinationData = nullptr) const;
 
 	/**
 	 * Paste selected actors from the clipboard.
+	 * @note Final - Override PasteComponents or PasteActors instead.
 	 *
-	 * @param	InWorld					World context
+	 * @param	InWorld				World context
 	 * @param	bDuplicate			Is this a duplicate operation (as opposed to a real paste)?
 	 * @param	bOffsetLocations	Should the actor locations be offset after they are created?
 	 * @param	bWarnIfHidden		If true displays a warning if the destination level is hidden
 	 * @param	SourceData			If != NULL, use instead of clipboard data
 	 */
-	virtual void edactPasteSelected(UWorld* InWorld, bool bDuplicate, bool bOffsetLocations, bool bWarnIfHidden, FString* SourceData = NULL) override;
+	virtual void edactPasteSelected(UWorld* InWorld, bool bDuplicate, bool bOffsetLocations, bool bWarnIfHidden, const FString* SourceData = nullptr) override final;
+
+	/**
+	 * Paste the components from the clipboard.
+	 *
+	 * @param	OutPastedComponents List of all the components that were pasted
+	 * @param	TargetActor			The actor to attach the pasted components to
+	 * @param	bWarnIfHidden		If true displays a warning if the destination level is hidden
+	 * @param	SourceData			If != NULL, use instead of clipboard data
+	 */
+	virtual void PasteComponents(TArray<UActorComponent*>& OutPastedComponents, AActor* TargetActor, const bool bWarnIfHidden, const FString* SourceData = nullptr);
+
+	/**
+	 * Paste the actors from the clipboard.
+	 *
+	 * @param	OutPastedActors		List of all the actors that were pasted
+	 * @param	InWorld				World context
+	 * @param	LocationOffset		Offset to apply to actor locations after they're created
+	 * @param	bDuplicate			Is this a duplicate operation (as opposed to a real paste)?
+	 * @param	bWarnIfHidden		If true displays a warning if the destination level is hidden
+	 * @param	SourceData			If != NULL, use instead of clipboard data
+	 */
+	virtual void PasteActors(TArray<AActor*>& OutPastedActors, UWorld* InWorld, const FVector& LocationOffset, bool bDuplicate, bool bWarnIfHidden, const FString* SourceData = nullptr);
 
 	/**
 	 * Duplicates selected actors.  Handles the case where you are trying to duplicate PrefabInstance actors.
+	 * @note Final - Override DuplicateComponents or DuplicateActors instead.
 	 *
 	 * @param	InLevel				Level to place duplicate
-	 * @param	bUseOffset			Should the actor locations be offset after they are created?
+	 * @param	bOffsetLocations	Should the actor locations be offset after they are created?
 	 */
-	virtual void edactDuplicateSelected(ULevel* InLevel, bool bUseOffset) override;
+	virtual void edactDuplicateSelected(ULevel* InLevel, bool bOffsetLocations) override final;
+
+	/**
+	 * Duplicate the given components.
+	 * 
+	 * @param	InComponentsToDuplicate		Array of components to duplicate
+	 * @param	OutNewComponents			List of all the components that were duplicated
+	 */
+	virtual void DuplicateComponents(const TArray<UActorComponent*>& InComponentsToDuplicate, TArray<UActorComponent*>& OutNewComponents);
+
+	/**
+	 * Duplicates the given actors.  Handles the case where you are trying to duplicate PrefabInstance actors.
+	 *
+	 * @param	InActorsToDuplicate	Array of actors to duplicate
+	 * @param	OutNewActors		List of all the actors that were duplicated
+	 * @param	InLevel				Level to place duplicate
+	 * @param	LocationOffset		Offset to apply to actor locations after they're created
+	 */
+	virtual void DuplicateActors(const TArray<AActor*>& InActorsToDuplicate, TArray<AActor*>& OutNewActors, ULevel* InLevel, const FVector& LocationOffset);
 
 	/**
 	 * Replace all selected brushes with the default brush.
@@ -659,6 +754,8 @@ public:
 	 */
 	bool IsTemplateMap( const FString& MapName ) const;
 
+	void RebuildTemplateMapData();
+
 	/**
 	 * Returns true if the user is currently interacting with a viewport.
 	 */
@@ -680,7 +777,14 @@ public:
 	 * @return true if level streaming should prefer to stream levels from disk instead of duplicating them from editor world
 	 */
 	virtual bool PreferToStreamLevelsInPIE() const override;
-	
+
+	/**
+	 * Duplicate the currently selected actors.
+	 *
+	 * This is a high level routine which may ultimately call edactDuplicateSelected
+	 */
+	void DuplicateSelectedActors(UWorld* InWorld);
+
 	/**
 	 * If all selected actors belong to the same level, that level is made the current level.
 	 */
@@ -695,7 +799,8 @@ public:
 	virtual bool CanSavePackage( UPackage* PackageToSave );
 
 	/** Converts kismet based matinees in the current level to matinees controlled via matinee actors */
-	void ConvertMatinees();
+	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
+	void ConvertMatinees() {}
 
 	/**
 	 * Updates the volume actor visibility for all viewports based on the passed in volume class
@@ -746,7 +851,7 @@ public:
 	 * 
 	 * @param InWorld			World context
 	 */
-	bool WarnIfDestinationLevelIsHidden( UWorld* InWorld );
+	bool WarnIfDestinationLevelIsHidden( UWorld* InWorld ) const;
 
 	/**
 	 * Generate the package thumbails if they are needed. 
@@ -757,12 +862,6 @@ public:
 	IPackageAutoSaver& GetPackageAutoSaver() const
 	{
 		return *PackageAutoSaver;
-	}
-
-	/** @return The DDC notifications instance used by the editor */
-	IDDCNotifications& GetDDCNotifications() const
-	{
-		return *DDCNotifications;
 	}
 
 	/**
@@ -778,27 +877,44 @@ public:
 	bool HandleBuildPathsCommand( const TCHAR* Str, FOutputDevice& Ar, UWorld* InWorld );
 	bool HandleRecreateLandscapeCollisionCommand(const TCHAR* Str, FOutputDevice& Ar, UWorld* InWorld);
 	bool HandleRemoveLandscapeXYOffsetsCommand(const TCHAR* Str, FOutputDevice& Ar, UWorld* InWorld);
-	bool HandleConvertMatineesCommand( const TCHAR* Str, FOutputDevice& Ar, UWorld* InWorld );
 	bool HandleDisasmScriptCommand( const TCHAR* Str, FOutputDevice& Ar );	
-
-	/** OnEditorModeChanged delegate which looks for Matinee editor closing */
-	void UpdateEdModeOnMatineeClose(const FEditorModeID& EditorModeID, bool IsEntering);
 
 	bool IsComponentSelected(const UPrimitiveComponent* PrimComponent);
 
 	/** Return if we have write permission under the mount point this packages lives in. */
+	bool HasMountWritePermissionForPackage(const FString& PackageName);
+	UE_DEPRECATED(5.0, "Use HasMountWritePermissionForPackage instead")
 	bool HasMountWritePersmissionForPackage(const FString& PackageName);
+
+	/* Delegate to override TemplateMapInfos */
+	DECLARE_DELEGATE_RetVal(const TArray<FTemplateMapInfo>&, FGetTemplateMapInfos);
+	FGetTemplateMapInfos& OnGetTemplateMapInfos() { return GetTemplateMapInfosDelegate; }
+
+	/** Gets the canonical list of map templates that should be visible in new level picker. This function calls OnGetTemplateMapInfos to allow runtime override of the default maps */
+	const TArray<FTemplateMapInfo>& GetTemplateMapInfos() const;
+
+	/** Gets the project default map templates without any runtime overrides */
+	const TArray<FTemplateMapInfo>& GetProjectDefaultMapTemplates() const;
+
+	/** Called after files are deleted to perform necessary cleanups. */
+	void OnSourceControlFilesDeleted(const TArray<FString>& InDeletedFiles);
 
 protected:
 
 	/** Called when global editor selection changes */
 	void OnEditorSelectionChanged(UObject* SelectionThatChanged);
 
+	/** Called when the element selection set pointer set on the global editor selection changes */
+	void OnEditorElementSelectionPtrChanged(USelection* Selection, UTypedElementSelectionSet* OldSelectionSet, UTypedElementSelectionSet* NewSelectionSet);
+
+	/** Called when the element selection set associated with the global editor selection changes */
+	void OnEditorElementSelectionChanged(const UTypedElementSelectionSet* SelectionSet);
+
+	/** Called when a HISM tree has finished building */
+	void OnHISMTreeBuilt(UHierarchicalInstancedStaticMeshComponent* Component, bool bWasAsyncBuild);
+
 	/** The package auto-saver instance used by the editor */
 	TUniquePtr<IPackageAutoSaver> PackageAutoSaver;
-
-	/** The DDC notifications instance used by the editor */
-	TUniquePtr<IDDCNotifications> DDCNotifications;
 
 	/**
 	 * The list of visualizers to draw when selection changes
@@ -835,6 +951,12 @@ private:
 	/** Weak Pointer to the write permission warning toast. */
 	TWeakPtr<SNotificationItem> WritePermissionWarningNotificationWeakPtr;
 
+	/* Delegate to override TemplateMapInfos */
+	FGetTemplateMapInfos GetTemplateMapInfosDelegate;
+
+	/** Transient unsaved version of template map infos used by the editor. */
+	TArray<FTemplateMapInfo> TemplateMapInfoCache;
+
 	/**
 	* Internal helper function to count how many dirty packages require checkout.
 	*
@@ -849,4 +971,10 @@ private:
 	* The intent is to notify the user of situations where stability maybe impacted.
 	*/
 	void ValidateFreeDiskSpace() const;
+
+	/** Internal function to filter and add visualizers to a specific list */
+	void AddVisualizers(AActor* Actor, TArray<FCachedComponentVisualizer>& Visualizers, TFunctionRef<bool(const TSharedPtr<FComponentVisualizer>&)> Condition);
+
+	/** Delegate Called after files have been deleted to perform necessary cleanups. */
+	FDelegateHandle SourceControlFilesDeletedHandle;
 };

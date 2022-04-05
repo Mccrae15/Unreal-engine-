@@ -19,13 +19,14 @@
 #include "Templates/UniquePtr.h"
 #include "Windows/WindowsPlatformApplicationMisc.h"
 #include "Stats/Stats.h"
+#include "HAL/IConsoleManager.h"
 
 #if WITH_EDITOR
 #include "Modules/ModuleManager.h"
 #include "Developer/SourceCodeAccess/Public/ISourceCodeAccessModule.h"
 #endif
 
-#if WITH_ACCESSIBILITY
+#if WITH_ACCESSIBILITY && UE_WINDOWS_USING_UIA
 #include "Windows/Accessibility/WindowsUIAManager.h"
 #include "Windows/Accessibility/WindowsUIAWidgetProvider.h"
 #include <UIAutomation.h>
@@ -47,15 +48,6 @@ THIRD_PARTY_INCLUDES_END
 // Platform code uses IsMaximized which is defined to IsZoomed by windowsx.h
 #pragma push_macro("IsMaximized")
 #undef IsMaximized
-
-// This might not be defined by Windows when maintaining backwards-compatibility to pre-Vista builds
-#ifndef WM_MOUSEHWHEEL
-#define WM_MOUSEHWHEEL                  0x020E
-#endif
-
-#ifndef WM_DPICHANGED
-#define WM_DPICHANGED                   0x02E0
-#endif
 
 DEFINE_LOG_CATEGORY(LogWindowsDesktop);
 
@@ -124,7 +116,7 @@ FWindowsApplication::FWindowsApplication( const HINSTANCE HInstance, const HICON
 		bAllowedToDeferMessageProcessing,
 		TEXT( "Whether windows message processing is deferred until tick or if they are processed immediately" ) )
 	, bInModalSizeLoop( false )
-#if WITH_ACCESSIBILITY
+#if WITH_ACCESSIBILITY && UE_WINDOWS_USING_UIA
 	, UIAManager(new FWindowsUIAManager(*this))
 #endif
 	, bSimulatingHighPrecisionMouseInputForRDP(false)
@@ -222,18 +214,31 @@ FWindowsApplication::FWindowsApplication( const HINSTANCE HInstance, const HICON
 		bForceNoGamepads = true;
 	}
 
-#if WINVER >= 0x0601
-
 	if (FParse::Param(FCommandLine::Get(), TEXT("FilterLowLevelMouse")))
 	{
-		//Only check fake mouse inputs in game or digitizer devices will not work in the editor.
-		if (FApp::IsGame())
-		{
-			LowLevelMouseFilterHook = ::SetWindowsHookEx(WH_MOUSE_LL, HandleLowLevelMouseFilterHook, NULL, 0);
-		}
-	}
+		ApplyLowLevelMouseFilter();
+	}	
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("WindowsApplication.ApplyLowLevelMouseFilter"), TEXT("Applies Low Level mouse filter that filters out mouse inputs that act like touch inputs"), FConsoleCommandDelegate::CreateRaw(this, &FWindowsApplication::ApplyLowLevelMouseFilter));
+	IConsoleManager::Get().RegisterConsoleCommand(TEXT("WindowsApplication.RemoveLowLevelMouseFilter"), TEXT("Removes Low Level mouse filter that filters out mouse inputs that act like touch inputs"), FConsoleCommandDelegate::CreateRaw(this, &FWindowsApplication::RemoveLowLevelMouseFilter));
+}
 
-#endif
+void FWindowsApplication::ApplyLowLevelMouseFilter()
+{
+	//Only check fake mouse inputs in game or digitizer devices will not work in the editor.
+	if (FApp::IsGame() && !bLowLevelMouseFilterIsApplied)
+	{
+		LowLevelMouseFilterHook = ::SetWindowsHookEx(WH_MOUSE_LL, HandleLowLevelMouseFilterHook, NULL, 0);
+		bLowLevelMouseFilterIsApplied = true;
+	}
+}
+
+void FWindowsApplication::RemoveLowLevelMouseFilter()
+{
+	if (FApp::IsGame() && bLowLevelMouseFilterIsApplied)
+	{
+		::UnhookWindowsHookEx(LowLevelMouseFilterHook);
+		bLowLevelMouseFilterIsApplied = false;
+	}
 }
 
 void FWindowsApplication::AllowAccessibilityShortcutKeys(const bool bAllowKeys)
@@ -290,7 +295,9 @@ void FWindowsApplication::DestroyApplication()
 
 	TaskbarList = nullptr;
 
-	::UnhookWindowsHookEx(LowLevelMouseFilterHook);
+	RemoveLowLevelMouseFilter();
+	IConsoleManager::Get().UnregisterConsoleObject(TEXT("WindowsApplication.ApplyLowLevelMouseFilter"));
+	IConsoleManager::Get().UnregisterConsoleObject(TEXT("WindowsApplication.RemoveLowLevelMouseFilter"));
 }
 
 void FWindowsApplication::ShutDownAfterError()
@@ -301,7 +308,9 @@ void FWindowsApplication::ShutDownAfterError()
 
 	TaskbarList = nullptr;
 
-	::UnhookWindowsHookEx(LowLevelMouseFilterHook);
+	RemoveLowLevelMouseFilter();
+	IConsoleManager::Get().UnregisterConsoleObject(TEXT("WindowsApplication.ApplyLowLevelMouseFilter"));
+	IConsoleManager::Get().UnregisterConsoleObject(TEXT("WindowsApplication.RemoveLowLevelMouseFilter"));
 }
 
 bool FWindowsApplication::RegisterClass( const HINSTANCE HInstance, const HICON HIcon )
@@ -375,7 +384,9 @@ void FWindowsApplication::SetMessageHandler( const TSharedRef< FGenericApplicati
 void FWindowsApplication::SetAccessibleMessageHandler(const TSharedRef<FGenericAccessibleMessageHandler>& InAccessibleMessageHandler)
 {
 	GenericApplication::SetAccessibleMessageHandler(InAccessibleMessageHandler);
+#if UE_WINDOWS_USING_UIA
 	UIAManager->OnAccessibleMessageHandlerChanged();
+#endif
 }
 #endif
 
@@ -983,15 +994,11 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 			}
 		}
 
-#if WINVER >= 0x0601
-
 		//Only check fake mouse inputs in game or digitizer devices will not work in the editor.
 		if (FApp::IsGame() && IsFakeMouseInputMessage(msg))
 		{
 			return 0;
 		}
-	
-#endif
 
 		switch(msg)
 		{
@@ -1066,9 +1073,7 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 		case WM_NCMOUSEMOVE:
 		case WM_MOUSEMOVE:
 		case WM_MOUSEWHEEL:
-#if WINVER >= 0x0601
 		case WM_TOUCH:
-#endif
 			{
 				DeferMessage( CurrentNativeEventWindowPtr, hwnd, msg, wParam, lParam );
 				// Handled
@@ -1138,8 +1143,10 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 								int32 DeltaX = CursorPoint.x - LastCursorPoint.X;
 								int32 DeltaY = CursorPoint.y - LastCursorPoint.Y;
 
-								bool bAcceptingPreWrapDelta = false;
-								if (bCanAcceptPreWrapMsg)
+								// Always skip wrapping if no movement has occured.
+								bool bAcceptingPreWrapDelta = DeltaX == 0 && DeltaY == 0;
+
+								if (bCanAcceptPreWrapMsg && !bAcceptingPreWrapDelta)
 								{
 									const int32 DeltaXPreWrap = CursorPoint.x - LastCursorPointPreWrap.X;
 									const int32 DeltaYPreWrap = CursorPoint.y - LastCursorPointPreWrap.Y;
@@ -1599,13 +1606,11 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 			}
 			break;
 			
-#if WINVER > 0x502
 		case WM_DWMCOMPOSITIONCHANGED:
 			{
 				DeferMessage( CurrentNativeEventWindowPtr, hwnd, msg, wParam, lParam );
 			}
 			break;
-#endif
 
 			// Window focus and activation
 		case WM_MOUSEACTIVATE:
@@ -1680,7 +1685,7 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 		case WM_DESTROY:
 			{
 				Windows.Remove( CurrentNativeEventWindow );
-#if WITH_ACCESSIBILITY
+#if WITH_ACCESSIBILITY && UE_WINDOWS_USING_UIA
 				// Tell UIA that the window no longer exists so that it can release some resources
 				if (GetAccessibleMessageHandler()->ApplicationIsAccessible())
 				{
@@ -1698,7 +1703,6 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 			}
 			break;
 
-#if WITH_EDITOR // WM_ENDSESSION was added for Editor analytics purpose to detect when the Editor dies unexpectedly because it gets killed by a logoff/shutdown.
 		case WM_ENDSESSION:
 			{
 				// wParam is true if the user session is going away. Note that WM_SESSION is a follow up for WM_QUERYENDSESSION, so wParam can be false if the user (from UI)
@@ -1709,7 +1713,8 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 				}
 				return DefWindowProc(hwnd, msg, wParam, lParam);
 			}
-#endif
+			break;
+
 		case WM_SYSCOMMAND:
 			{
 				switch( wParam & 0xfff0 )
@@ -1862,7 +1867,7 @@ int32 FWindowsApplication::ProcessMessage( HWND hwnd, uint32 msg, WPARAM wParam,
 			}
 			break;
 
-#if WITH_ACCESSIBILITY
+#if WITH_ACCESSIBILITY && UE_WINDOWS_USING_UIA
 		case WM_GETOBJECT:
 		{
 			if (GetAccessibleMessageHandler()->ApplicationIsAccessible())
@@ -2283,7 +2288,6 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 			}
 			break;
 
-#if WINVER >= 0x0601
 		case WM_TOUCH:
 			{
 				UINT InputCount = LOWORD( wParam );
@@ -2343,7 +2347,6 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 				}
 				break;
 			}
-#endif
 
 			// Window focus and activation
 		case WM_MOUSEACTIVATE:
@@ -2505,13 +2508,11 @@ int32 FWindowsApplication::ProcessDeferredMessage( const FDeferredWindowsMessage
 			}
 			break;
 
-#if WINVER > 0x502
 		case WM_DWMCOMPOSITIONCHANGED:
 			{
 				CurrentNativeEventWindowPtr->OnTransparencySupportChanged(GetWindowTransparencySupport());
 			}
 			break;
-#endif
 
 		case WM_DPICHANGED:
 			{
@@ -2639,7 +2640,7 @@ bool FWindowsApplication::IsInputMessage( uint32 msg )
 
 bool FWindowsApplication::IsFakeMouseInputMessage(uint32 msg)
 {
-	const bool bShouldPrevent = IsWindowsVistaOrGreater() || bPreventDuplicateMouseEventsForTouch;
+	const bool bShouldPrevent = !!bPreventDuplicateMouseEventsForTouch;
 
 	if (bShouldPrevent && IsMouseInputMessage(msg))
 	{
@@ -3029,7 +3030,6 @@ void FWindowsApplication::QueryConnectedMice()
 	bIsMouseAttached = MouseCount > 0;
 }
 
-#if WINVER >= 0x0601
 uint32 FWindowsApplication::GetTouchIndexForID( int32 TouchID )
 {
 	for (int i = 0; i < TouchIDs.Num(); i++)
@@ -3054,7 +3054,6 @@ uint32 FWindowsApplication::GetFirstFreeTouchIndex()
 
 	return TouchIDs.Add(TOptional<int32>());
 }
-#endif
 
 void FTaskbarList::Initialize()
 {
@@ -3083,30 +3082,27 @@ FTaskbarList::~FTaskbarList()
 	TaskBarList3 = NULL;
 }
 
-void FTaskbarList::SetOverlayIcon(const TSharedRef<FGenericWindow>& NativeWindow, HICON Icon, FText Description)
+void FTaskbarList::SetOverlayIcon(HWND WindowHandle, HICON Icon, FText Description)
 {
 	if (TaskBarList3)
 	{
-		const TSharedRef< FWindowsWindow > Window = StaticCastSharedRef< FWindowsWindow >(NativeWindow);
-		TaskBarList3->SetOverlayIcon(Window->GetHWnd(), Icon, *Description.ToString());
+		TaskBarList3->SetOverlayIcon(WindowHandle, Icon, *Description.ToString());
 	}
 }
 
-void FTaskbarList::SetProgressValue(const TSharedRef<FGenericWindow>& NativeWindow, uint64 Current, uint64 Total)
+void FTaskbarList::SetProgressValue(HWND WindowHandle, uint64 Current, uint64 Total)
 {
 	if (TaskBarList3)
 	{
-		const TSharedRef< FWindowsWindow > Window = StaticCastSharedRef< FWindowsWindow >(NativeWindow);
-		TaskBarList3->SetProgressValue(Window->GetHWnd(), (ULONGLONG)Current, (ULONGLONG)Total);
+		TaskBarList3->SetProgressValue(WindowHandle, (ULONGLONG)Current, (ULONGLONG)Total);
 	}
 }
 
-void FTaskbarList::SetProgressState(const TSharedRef<FGenericWindow>& NativeWindow, ETaskbarProgressState::Type State)
+void FTaskbarList::SetProgressState(HWND WindowHandle, ETaskbarProgressState::Type State)
 {
 	if (TaskBarList3)
 	{
-		const TSharedRef< FWindowsWindow > Window = StaticCastSharedRef< FWindowsWindow >(NativeWindow);
-		TaskBarList3->SetProgressState(Window->GetHWnd(), (TBPFLAG)State);
+		TaskBarList3->SetProgressState(WindowHandle, (TBPFLAG)State);
 	}
 }
 

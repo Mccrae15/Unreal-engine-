@@ -69,7 +69,6 @@ void SUndoHistory::Construct( const FArguments& InArgs )
 										.HAlign(HAlign_Left)
 										[
 											SNew(STextBlock)
-												.TextStyle( FEditorStyle::Get(), "Docking.TabFont" )
 												.Text(LOCTEXT("TransactionHistoryLabel", "Transactions"))
 										]
 								]
@@ -180,7 +179,7 @@ void SUndoHistory::Construct( const FArguments& InArgs )
 							.ToolTipText(LOCTEXT("DiscardHistoryButtonToolTip", "Discard the Undo History."))
 							[
 								SNew(SImage)
-									.Image(FEditorStyle::Get().GetBrush("TrashCan_Small"))
+								.Image(FEditorStyle::Get().GetBrush("Icons.Delete"))
 							]
 					]
 

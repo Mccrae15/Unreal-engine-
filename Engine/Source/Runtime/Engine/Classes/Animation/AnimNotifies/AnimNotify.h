@@ -7,12 +7,12 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/ScriptMacros.h"
+#include "Animation/AnimNotifyQueue.h"
 #include "AnimNotify.generated.h"
 
 class UAnimSequenceBase;
 class USkeletalMeshComponent;
 struct FAnimNotifyEvent;
-
 USTRUCT()
 struct FBranchingPointNotifyPayload
 {
@@ -50,22 +50,31 @@ class ENGINE_API UAnimNotify : public UObject
 	UFUNCTION(BlueprintNativeEvent)
 	FString GetNotifyName() const;
 
-	UFUNCTION(BlueprintImplementableEvent)
-	bool Received_Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation) const;
+	UFUNCTION(BlueprintImplementableEvent, meta=(AutoCreateRefTerm="EventReference"))
+	bool Received_Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference) const;
 
 #if WITH_EDITORONLY_DATA
 	/** Color of Notify in editor */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=AnimNotify)
 	FColor NotifyColor;
+
+	/** Whether this notify instance should fire in animation editors */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category=AnimNotify)
+	bool bShouldFireInEditor;
 #endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
 	virtual void OnAnimNotifyCreatedInEditor(FAnimNotifyEvent& ContainingAnimNotifyEvent) {};
 	virtual bool CanBePlaced(UAnimSequenceBase* Animation) const { return true; }
 	virtual void ValidateAssociatedAssets() {}
+
+	/** Override this to prevent firing this notify type in animation editors */
+	virtual bool ShouldFireInEditor() { return bShouldFireInEditor; }
 #endif
 
+	UE_DEPRECATED(5.0, "Please use the other Notify function instead")
 	virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation);
+	virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference);
 	virtual void BranchingPointNotify(FBranchingPointNotifyPayload& BranchingPointPayload);
 
 	// @todo document 
@@ -73,6 +82,10 @@ class ENGINE_API UAnimNotify : public UObject
 	{ 
 		return TEXT(""); 
 	}
+
+	/** TriggerWeightThreshold to use when creating notifies of this type */
+	UFUNCTION(BlueprintNativeEvent)
+	float GetDefaultTriggerWeightThreshold() const;
 
 	// @todo document 
 	virtual FLinearColor GetEditorColor() 
@@ -95,7 +108,11 @@ class ENGINE_API UAnimNotify : public UObject
 
 	/** UObject Interface */
 	virtual void PostLoad() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	/** End UObject Interface */
 
 	/** This notify is always a branching point when used on Montages. */

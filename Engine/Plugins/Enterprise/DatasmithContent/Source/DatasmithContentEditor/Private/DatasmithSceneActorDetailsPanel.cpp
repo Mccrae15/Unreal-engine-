@@ -3,6 +3,8 @@
 #include "DatasmithSceneActorDetailsPanel.h"
 
 #include "DatasmithContentEditorModule.h"
+#include "DatasmithContentModule.h"
+#include "DatasmithScene.h"
 #include "DatasmithSceneActor.h"
 
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -18,6 +20,9 @@
 #include "IDetailsView.h"
 
 #include "ScopedTransaction.h"
+
+#define LOCTEXT_NAMESPACE "DatasmithSceneActor"
+
 
 FDatasmithSceneActorDetailsPanel::FDatasmithSceneActorDetailsPanel()
 	: bReimportDeletedActors(false)
@@ -42,11 +47,14 @@ void FDatasmithSceneActorDetailsPanel::CustomizeDetails(IDetailLayoutBuilder& De
 	ActionsCategory.AddProperty( DetailLayoutBuilder.GetProperty( GET_MEMBER_NAME_CHECKED( ADatasmithSceneActor, Scene ) ) );
 
 	// Add the update actors button
-	const FText ButtonCaption = FText::FromString( TEXT("Update actors from Scene") );
-	const FText CheckBoxCaption = FText::FromString( TEXT("Respawn deleted actors") );
+	const FText ButtonCaption = LOCTEXT("UpdateActorsButton", "Update actors from Scene");
+	const FText RespawnDeletedCheckBoxCaption = LOCTEXT("RespawnDeletedCheckbox", "Respawn deleted actors");
 
 	auto IsChecked = [ this ]() -> ECheckBoxState { return bReimportDeletedActors ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; };
-	auto CheckedStateChanged = [ this ]( ECheckBoxState NewState ) { bReimportDeletedActors = ( NewState == ECheckBoxState::Checked ); };
+	auto RespawnDeletedCheckedStateChanged = [ this ]( ECheckBoxState NewState ) { bReimportDeletedActors = ( NewState == ECheckBoxState::Checked ); };
+
+	const FText AutoReimportCaption = LOCTEXT("AutoReimportToggle", "Auto-Reimport");
+	const FText AutoReimportTooltip = LOCTEXT("AutoReimportToogleTooltip", "Enable Auto-Reimport if the source associated with the DatasmithScene is an available DirectLink source.");
 
 	WrapBox->AddSlot()
 		[
@@ -63,9 +71,9 @@ void FDatasmithSceneActorDetailsPanel::CustomizeDetails(IDetailLayoutBuilder& De
 			.Padding(2)
 			[
 				SNew(SCheckBox)
-				.ToolTipText(CheckBoxCaption)
+				.ToolTipText(RespawnDeletedCheckBoxCaption)
 				.IsChecked_Lambda( IsChecked )
-				.OnCheckStateChanged_Lambda( CheckedStateChanged )
+				.OnCheckStateChanged_Lambda( RespawnDeletedCheckedStateChanged )
 			]
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
@@ -73,10 +81,10 @@ void FDatasmithSceneActorDetailsPanel::CustomizeDetails(IDetailLayoutBuilder& De
 			.VAlign(VAlign_Center)
 			[
 				SNew(STextBlock)
-				.Text( CheckBoxCaption )
+				.Text( RespawnDeletedCheckBoxCaption )
 			]
 		];
-
+	
 	ActionsCategory.AddCustomRow(FText::GetEmpty())
 		.ValueContent()
 		[
@@ -96,3 +104,5 @@ FReply FDatasmithSceneActorDetailsPanel::OnExecuteAction()
 
 	return FReply::Handled();
 }
+
+#undef LOCTEXT_NAMESPACE

@@ -24,10 +24,16 @@ struct RENDERCORE_API FPixelShaderUtils
 		SHADER_USE_PARAMETER_STRUCT(FRasterizeToRectsVS, FGlobalShader);
 
 		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-			SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint4>, RectMinMaxBuffer)
-			SHADER_PARAMETER(FVector2D, InvViewSize)
+			SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint4>, RectCoordBuffer)
+			SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, RectUVBuffer)
+			SHADER_PARAMETER(FVector2f, InvViewSize)
+			SHADER_PARAMETER(FVector2f, InvTextureSize)
+			SHADER_PARAMETER(float, DownsampleFactor)
 			SHADER_PARAMETER(uint32, NumRects)
 		END_SHADER_PARAMETER_STRUCT()
+
+		class FRectUV : SHADER_PERMUTATION_BOOL("RECT_UV");
+		using FPermutationDomain = TShaderPermutationDomain<FRectUV>;
 
 		static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters);
 	};
@@ -59,7 +65,7 @@ struct RENDERCORE_API FPixelShaderUtils
 		uint32 StencilRef = 0)
 	{
 		check(PixelShader.IsValid());
-		RHICmdList.SetViewport(Viewport.Min.X, Viewport.Min.Y, 0.0f, Viewport.Max.X, Viewport.Max.Y, 1.0f);
+		RHICmdList.SetViewport((float)Viewport.Min.X, (float)Viewport.Min.Y, 0.0f, (float)Viewport.Max.X, (float)Viewport.Max.Y, 1.0f);
 		
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
 		InitFullscreenPipelineState(RHICmdList, GlobalShaderMap, PixelShader, /* out */ GraphicsPSOInit);
@@ -67,8 +73,7 @@ struct RENDERCORE_API FPixelShaderUtils
 		GraphicsPSOInit.RasterizerState = RasterizerState ? RasterizerState : GraphicsPSOInit.RasterizerState;
 		GraphicsPSOInit.DepthStencilState = DepthStencilState ? DepthStencilState : GraphicsPSOInit.DepthStencilState;
 
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-		RHICmdList.SetStencilRef(StencilRef);
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, StencilRef);
 
 		SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), Parameters);
 
@@ -111,18 +116,27 @@ struct RENDERCORE_API FPixelShaderUtils
 		FRDGEventName&& PassName,
 		const TShaderRef<TPixelShaderClass>& PixelShader,
 		TPassParameters* Parameters,
-		const FIntPoint& ViewportSize,
-		FRDGBufferSRVRef RectMinMaxBufferSRV,
+		FIntPoint ViewportSize,
+		FRDGBufferSRVRef RectCoordBufferSRV,
 		uint32 NumRects,
 		FRHIBlendState* BlendState = nullptr,
 		FRHIRasterizerState* RasterizerState = nullptr,
 		FRHIDepthStencilState* DepthStencilState = nullptr,
-		uint32 StencilRef = 0)
+		uint32 StencilRef = 0,
+		FIntPoint TextureSize = FIntPoint(1, 1),
+		FRDGBufferSRVRef RectUVBufferSRV = nullptr,
+		uint32 DownsampleFactor = 1,
+		const bool bSkipRenderPass = false)
 	{
-		auto VertexShader = GlobalShaderMap->GetShader<FRasterizeToRectsVS>();
+		FRasterizeToRectsVS::FPermutationDomain PermutationVector;
+		PermutationVector.Set<FRasterizeToRectsVS::FRectUV>(RectUVBufferSRV != nullptr);
+		auto VertexShader = GlobalShaderMap->GetShader<FRasterizeToRectsVS>(PermutationVector);
 
-		Parameters->VS.InvViewSize = FVector2D(1.0f / ViewportSize.X, 1.0f / ViewportSize.Y);
-		Parameters->VS.RectMinMaxBuffer = RectMinMaxBufferSRV;
+		Parameters->VS.InvViewSize = FVector2f(1.0f / ViewportSize.X, 1.0f / ViewportSize.Y);
+		Parameters->VS.InvTextureSize = FVector2f(1.0f / TextureSize.X, 1.0f / TextureSize.Y);
+		Parameters->VS.DownsampleFactor = 1.0f / DownsampleFactor;
+		Parameters->VS.RectCoordBuffer = RectCoordBufferSRV;
+		Parameters->VS.RectUVBuffer = RectUVBufferSRV;
 		Parameters->VS.NumRects = NumRects;
 
 		ClearUnusedGraphResources(PixelShader, &Parameters->PS);
@@ -130,17 +144,27 @@ struct RENDERCORE_API FPixelShaderUtils
 		GraphBuilder.AddPass(
 			Forward<FRDGEventName>(PassName),
 			Parameters,
-			ERDGPassFlags::Raster,
-			[Parameters, GlobalShaderMap, VertexShader, PixelShader, ViewportSize, BlendState, RasterizerState, DepthStencilState, StencilRef](FRHICommandList& RHICmdList)
+			bSkipRenderPass ? (ERDGPassFlags::Raster | ERDGPassFlags::SkipRenderPass) : ERDGPassFlags::Raster,
+			[Parameters, GlobalShaderMap, VertexShader, PixelShader, ViewportSize, BlendState, RasterizerState, DepthStencilState, StencilRef, bSkipRenderPass](FRHICommandList& RHICmdList)
 		{
+			if (bSkipRenderPass)
+			{
+				FRHIRenderPassInfo RPInfo;
+				RPInfo.ResolveParameters.DestRect.X1 = 0;
+				RPInfo.ResolveParameters.DestRect.Y1 = 0;
+				RPInfo.ResolveParameters.DestRect.X2 = ViewportSize.X;
+				RPInfo.ResolveParameters.DestRect.Y2 = ViewportSize.Y;
+				RHICmdList.BeginRenderPass(RPInfo, TEXT("RasterizeToRects"));
+			}
+
 			FGraphicsPipelineStateInitializer GraphicsPSOInit;
 			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 			RHICmdList.SetViewport(0.0f, 0.0f, 0.0f, (float)ViewportSize.X, (float)ViewportSize.Y, 1.0f);
 
-			GraphicsPSOInit.BlendState = BlendState ? BlendState : GraphicsPSOInit.BlendState;
-			GraphicsPSOInit.RasterizerState = RasterizerState ? RasterizerState : GraphicsPSOInit.RasterizerState;
-			GraphicsPSOInit.DepthStencilState = DepthStencilState ? DepthStencilState : GraphicsPSOInit.DepthStencilState;
+			GraphicsPSOInit.BlendState = BlendState ? BlendState : TStaticBlendState<>::GetRHI();
+			GraphicsPSOInit.RasterizerState = RasterizerState ? RasterizerState : TStaticRasterizerState<>::GetRHI();
+			GraphicsPSOInit.DepthStencilState = DepthStencilState ? DepthStencilState : TStaticDepthStencilState<false, CF_Always>::GetRHI();
 
 			GraphicsPSOInit.PrimitiveType = GRHISupportsRectTopology ? PT_RectList : PT_TriangleList;
 
@@ -148,9 +172,7 @@ struct RENDERCORE_API FPixelShaderUtils
 			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-
-			RHICmdList.SetStencilRef(StencilRef);
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, StencilRef);
 
 			SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), Parameters->VS);
 			SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), Parameters->PS);
@@ -158,11 +180,11 @@ struct RENDERCORE_API FPixelShaderUtils
 			const uint32 NumPrimitives = GRHISupportsRectTopology ? 1 : 2;
 			const uint32 NumInstances = Parameters->VS.NumRects;
 			RHICmdList.DrawPrimitive(0, NumPrimitives, NumInstances);
+
+			if (bSkipRenderPass)
+			{
+				RHICmdList.EndRenderPass();
+			}
 		});
 	}
-
-	static void UploadRectMinMaxBuffer(
-		FRDGBuilder& GraphBuilder,
-		const TArray<FUintVector4, SceneRenderingAllocator>& RectMinMaxArray,
-		FRDGBufferRef RectMinMaxBuffer);
 };

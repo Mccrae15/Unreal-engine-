@@ -3,6 +3,7 @@
 #include "VulkanWindowsPlatform.h"
 #include "../VulkanRHIPrivate.h"
 #include "../VulkanDevice.h"
+#include "../VulkanRayTracing.h"
 
 // Disable warning about forward declared enumeration without a type, since the D3D specific enums are not used in this translation unit
 #pragma warning(push)
@@ -31,8 +32,13 @@ bool FVulkanWindowsPlatform::LoadVulkanLibrary()
 	if (bAllowVendorDevice)
 	{
 		// Note - can't check device type here, we'll check for that before actually initializing Aftermath
-		FString AftermathBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/NVIDIA/NVaftermath/Win64/");
-		if (LoadLibraryW(*(AftermathBinariesRoot + "GFSDK_Aftermath_Lib.x64.dll")) == nullptr)
+		const FString AftermathBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/NVIDIA/NVaftermath/Win64/");
+
+		FPlatformProcess::PushDllDirectory(*AftermathBinariesRoot);
+		void* Handle = FPlatformProcess::GetDllHandle(TEXT("GFSDK_Aftermath_Lib.x64.dll"));
+		FPlatformProcess::PopDllDirectory(*AftermathBinariesRoot);
+
+		if (Handle == nullptr)
 		{
 			UE_LOG(LogVulkanRHI, Warning, TEXT("Failed to load GFSDK_Aftermath_Lib.x64.dll"));
 		}
@@ -56,7 +62,7 @@ bool FVulkanWindowsPlatform::LoadVulkanLibrary()
 			const FString PreviousEnvVar = FPlatformMisc::GetEnvironmentVariable(TEXT("VK_LAYER_PATH"));
 			if (PreviousEnvVar.IsEmpty())
 			{
-				// Change behavior of loading Vulkan layers by setting environment variable "VK_LAYER_PATH" to UE4 specific directory
+				// Change behavior of loading Vulkan layers by setting environment variable "VK_LAYER_PATH" to UE specific directory
 				FString VulkanLayerPath = FPaths::EngineDir();
 #if PLATFORM_64BITS
 				VulkanLayerPath.Append(TEXT("Binaries/ThirdParty/Windows/Vulkan/Win64"));
@@ -137,6 +143,14 @@ bool FVulkanWindowsPlatform::LoadVulkanInstanceFunctions(VkInstance inInstance)
 	ENUM_VK_ENTRYPOINTS_OPTIONAL_PLATFORM_INSTANCE(CHECK_VK_ENTRYPOINTS);
 #endif
 
+#if VULKAN_RHI_RAYTRACING
+	const bool bFoundRayTracingEntries = FVulkanRayTracingPlatform::LoadVulkanInstanceFunctions(inInstance);
+	if (!bFoundRayTracingEntries)
+	{
+		UE_LOG(LogVulkanRHI, Warning, TEXT("Vulkan RHI ray tracing is enabled, but failed to load instance functions."));
+	}
+#endif
+	
 	ENUM_VK_ENTRYPOINTS_PLATFORM_INSTANCE(GETINSTANCE_VK_ENTRYPOINTS);
 	ENUM_VK_ENTRYPOINTS_PLATFORM_INSTANCE(CHECK_VK_ENTRYPOINTS);
 #undef GET_VK_ENTRYPOINTS
@@ -212,12 +226,20 @@ void FVulkanWindowsPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<c
 	OutExtensions.Add(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
 #endif
 
+#if VULKAN_RHI_RAYTRACING
+	FVulkanRayTracingPlatform::GetDeviceExtensions(VendorId, OutExtensions);
+#endif
+
 #if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
 	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME);
 #endif
 
 #if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP2
 	OutExtensions.Add(VK_EXT_FRAGMENT_DENSITY_MAP_2_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_RENDERPASS2
+	OutExtensions.Add(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
 #endif
 
 #if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
@@ -274,7 +296,7 @@ void FVulkanWindowsPlatform::CheckDeviceDriver(uint32 DeviceIndex, EGpuVendorId 
 	{
 		AGSGPUInfo AmdGpuInfo;
 		AGSContext* AmdAgsContext = nullptr;
-		if (agsInit(AGS_MAKE_VERSION(AMD_AGS_VERSION_MAJOR, AMD_AGS_VERSION_MINOR, AMD_AGS_VERSION_PATCH), nullptr, &AmdAgsContext, &AmdGpuInfo) == AGS_SUCCESS)
+		if (agsInitialize(AGS_MAKE_VERSION(AMD_AGS_VERSION_MAJOR, AMD_AGS_VERSION_MINOR, AMD_AGS_VERSION_PATCH), nullptr, &AmdAgsContext, &AmdGpuInfo) == AGS_SUCCESS)
 		{
 			const char* Version = AmdGpuInfo.radeonSoftwareVersion;
 			if (DeviceIndex < (uint32)AmdGpuInfo.numDevices && Version && *Version)
@@ -316,7 +338,7 @@ void FVulkanWindowsPlatform::CheckDeviceDriver(uint32 DeviceIndex, EGpuVendorId 
 						{
 							if (MajorVersion < 18)
 							{
-								// Blacklist drivers older than 18.xx.xx drivers
+								// Deny drivers older than 18.xx.xx drivers
 								FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, TEXT("There are known issues with older Vulkan Radeon drivers; the recommended version is 19.4.1; please try updating your driver to that version."), TEXT("Vulkan driver version"));
 								FPlatformMisc::RequestExitWithStatus(true, 1);
 							}
@@ -340,7 +362,7 @@ void FVulkanWindowsPlatform::CheckDeviceDriver(uint32 DeviceIndex, EGpuVendorId 
 
 								if (bBadVersion)
 								{
-									// Blacklist drivers between 18.12.2 and 19.2.1, as they as it introduced an issue with Slate windows/Vulkan viewports on the editor; 19.3.x also have crashes
+									// Deny drivers between 18.12.2 and 19.2.1, as they as it introduced an issue with Slate windows/Vulkan viewports on the editor; 19.3.x also have crashes
 									FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, TEXT("There are known issues with Vulkan on the editor with the some \nRadeon drivers; the recommended version is 19.4.1: please try updating your driver to that version."), TEXT("Vulkan driver version"));
 									FPlatformMisc::RequestExitWithStatus(true, 1);
 								}
@@ -358,17 +380,17 @@ void FVulkanWindowsPlatform::CheckDeviceDriver(uint32 DeviceIndex, EGpuVendorId 
 				}
 			}
 
-			agsDeInit(AmdAgsContext);
+			agsDeInitialize(AmdAgsContext);
 		}
 	}
 	else if (VendorId == EGpuVendorId::Nvidia)
 	{
+		UNvidiaDriverVersion NvidiaVersion;
+		static_assert(sizeof(NvidiaVersion) == sizeof(Props.driverVersion), "Mismatched Nvidia pack driver version!");
+		NvidiaVersion.Packed = Props.driverVersion;
+
 		if (GRHIAdapterName.Contains(TEXT("RTX 20")))
 		{
-			UNvidiaDriverVersion NvidiaVersion;
-			static_assert(sizeof(NvidiaVersion) == sizeof(Props.driverVersion), "Mismatched Nvidia pack driver version!");
-			NvidiaVersion.Packed = Props.driverVersion;
-
 			if (NvidiaVersion.Major < 430)
 			{
 				// Workaround a crash on 20xx family
@@ -380,5 +402,19 @@ void FVulkanWindowsPlatform::CheckDeviceDriver(uint32 DeviceIndex, EGpuVendorId 
 				BypassVar->SetWithCurrentPriority(1);
 			}
 		}
+
+		if ((NvidiaVersion.Major < 496) || ((NvidiaVersion.Major == 496) && (NvidiaVersion.Minor < 13)))
+		{
+			UE_LOG(LogVulkanRHI, Warning, TEXT("Nvidia drivers < 496.13 do not support Nanite/Lumen in Vulkan."));
+			extern TAutoConsoleVariable<int32> GRHIAllow64bitShaderAtomicsCvar;
+			GRHIAllow64bitShaderAtomicsCvar->SetWithCurrentPriority(0);
+		}
 	}
+}
+
+void FVulkanWindowsPlatform::EnablePhysicalDeviceFeatureExtensions(VkDeviceCreateInfo& DeviceInfo, FVulkanDevice& Device)
+{
+#if VULKAN_RHI_RAYTRACING
+	FVulkanRayTracingPlatform::EnablePhysicalDeviceFeatureExtensions(DeviceInfo, Device);
+#endif
 }

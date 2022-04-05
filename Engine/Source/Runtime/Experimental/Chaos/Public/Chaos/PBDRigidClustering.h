@@ -11,44 +11,57 @@
 #include "Chaos/GeometryParticlesfwd.h"
 #include "Framework/BufferedData.h"
 
-#define TODO_CONVERT_GEOMETRY_COLLECTION_PARTICLE_INDICES_TO_PARTICLE_POINTERS 0
-
 namespace Chaos
 {
-	extern CHAOS_API FRealSingle ChaosClusteringChildrenInheritVelocity;
-}
+	class FPBDCollisionConstraints;
 
-namespace Chaos
-{
-
-class CHAOS_API FClusterBuffer
-{
-public:
-	using FClusterChildrenMap = TMap<FPBDRigidParticleHandle*, TArray<FPBDRigidParticleHandle*>>;
-	using FClusterTransformMap = TMap<FPBDRigidParticleHandle*, FRigidTransform3>;
-
-	virtual ~FClusterBuffer() = default;
-
-	FClusterChildrenMap MChildren;
-	FClusterTransformMap ClusterParentTransforms;
-	TArray<Chaos::TSerializablePtr<FImplicitObject>> GeometryPtrs;
+struct CHAOS_API FClusterDestoryParameters {
+	bool bReturnInternalOnly : true;
 };
 
-/* 
-* PDBRigidClustering
+/****
+*
+*   FRigidClustering
+* 
+*   The Chaos Destruction System allows artists to define exactly how geometry 
+*   will break and separate during the simulations. Artists construct the 
+*	simulation assets using pre-fractured geometry and utilize dynamically 
+*   generated rigid constraints to model the structural connections during the
+*   simulation. The resulting objects within the simulation can separate from 
+*   connected structures based on interactions with environmental elements, 
+*   like fields and collisions.
+*
+*   The destruction system relies on an internal clustering model 
+*   (aka Clustering) which controls how the rigidly attached geometry is 
+*   simulated. Clustering allows artists to initialize sets of geometry as 
+*   a single rigid body, then dynamically break the objects during the 
+*   simulation. At its core, the clustering system will simply join the mass
+*   and inertia of each connected element into one larger single rigid body.
+* 
+*   At the beginning of the simulation a connection graph is initialized 
+*   based on the rigid body’s nearest neighbors. Each connection between the
+*   bodies represents a rigid constraint within the cluster and is given 
+*   initial strain values. During the simulation, the strains within the 
+*   connection graph are evaluated. The connections can be broken when collision
+*   constraints, or field evaluations, impart an impulse on the rigid body that
+*   exceeds the connections limit. Fields can also be used to decrease the 
+*   internal strain values of the connections, resulting in a weakening of the
+*   internal structure
+*
 */
-template<class T_FPBDRigidEvolution, class T_FPBDCollisionConstraint>
-class CHAOS_API TPBDRigidClustering
+class CHAOS_API FRigidClustering
 {
-	typedef typename T_FPBDCollisionConstraint::FPointContactConstraint FPointContactConstraint;
 public:
-	/** Parent to children */
-	typedef TMap<FPBDRigidParticleHandle*, TArray<FPBDRigidParticleHandle*> > FClusterMap;
 
-	using FCollisionConstraintHandle = FPBDCollisionConstraintHandle;
+	typedef FPBDRigidsEvolutionGBF								FRigidEvolution;
+	typedef FPBDRigidParticleHandle*							FRigidHandle;
+	typedef TArray<FRigidHandle>								FRigidHandleArray;
+	typedef FPBDRigidClusteredParticleHandle*					FClusterHandle;
+	typedef TMap<FClusterHandle, FRigidHandleArray>				FClusterMap;
+	typedef TFunction<void(FRigidClustering&, FRigidHandle)>	FVisitorFunction;
 
-	TPBDRigidClustering(T_FPBDRigidEvolution& InEvolution, FPBDRigidClusteredParticles& InParticles);
-	~TPBDRigidClustering();
+	FRigidClustering(FRigidEvolution& InEvolution, FPBDRigidClusteredParticles& InParticles);
+	~FRigidClustering();
 
 	//
 	// Initialization
@@ -108,12 +121,12 @@ public:
 	*/
 	TSet<FPBDRigidParticleHandle*> ReleaseClusterParticles(
 		FPBDRigidClusteredParticleHandle* ClusteredParticle, 
-		const TMap<FGeometryParticleHandle*, FReal>* ExternalStrainMap = nullptr,
+		const TMap<FGeometryParticleHandle*, Chaos::FReal>* ExternalStrainMap = nullptr,
 		bool bForceRelease = false);
 
 	TSet<FPBDRigidParticleHandle*> ReleaseClusterParticlesNoInternalCluster(
 		FPBDRigidClusteredParticleHandle* ClusteredParticle,
-		const TMap<FGeometryParticleHandle*, FReal>* ExternalStrainMap = nullptr,
+		const TMap<FGeometryParticleHandle*, Chaos::FReal>* ExternalStrainMap = nullptr,
 		bool bForceRelease = false);
 
 	/*
@@ -122,6 +135,18 @@ public:
 	*/
 	TSet<FPBDRigidParticleHandle*> ReleaseClusterParticles(
 		TArray<FPBDRigidParticleHandle*> ChildrenParticles);
+
+	/*
+	*  DestroyClusterParticle
+	*    Disable the cluster particle and remove from all internal clustering
+	*    structures. This will not activate children.
+	* 
+	*    Returns the active parent cluster that might need to be rebuilt because
+	*    its geometry might be pointing to deleted particle handels. 
+	*/
+	FPBDRigidClusteredParticleHandle* DestroyClusterParticle(
+		FPBDRigidClusteredParticleHandle* ClusteredParticle,
+		const FClusterDestoryParameters& Parameters = FClusterDestoryParameters());
 
 	//
 	// Operational 
@@ -134,7 +159,7 @@ public:
 	*   ... Release bodies based collision impulses.
 	*   ... Updating properties as necessary.
 	*/
-	void AdvanceClustering(const FReal dt, T_FPBDCollisionConstraint& CollisionRule);
+	void AdvanceClustering(const FReal dt, FPBDCollisionConstraints& CollisionRule);
 
 	/**
 	*  BreakingModel
@@ -144,33 +169,19 @@ public:
 	*    the children clusters.
 	*/
 	TMap<FPBDRigidClusteredParticleHandle*, TSet<FPBDRigidParticleHandle*>> BreakingModel(
-		TMap<FGeometryParticleHandle*, FReal>* ExternalStrainMap = nullptr);
-
-	/**
-	*  PromoteStrains
-	*    Sums the strains based on the cluster hierarchy. For example
-	*    a cluster with two children that have strains {3,4} will have
-	*    a ExternalStrain entry of 7. Will only decent the current
-	*    node passed, and ignores the disabled flag.
-	*/
-	FReal PromoteStrains(FPBDRigidParticleHandle* CurrentNode);
-
-	/*
-	*  Process the kinematic state of the clusters. Because the leaf node geometry can
-	*  be changed by the solver, it is necessary to check all the sub clusters.
-	*/
-	void UpdateKinematicProperties(FPBDRigidParticleHandle* Parent);
+		TMap<FGeometryParticleHandle*, Chaos::FReal>* ExternalStrainMap = nullptr);
 
 	//
 	// Access
 	//
-	//  The ClusterIds and ChildrenMap are shared resources that can
-	//  be accessed via the game thread.
-	//
-	const FClusterBuffer&  GetBufferedData() const { ResourceLock.ReadLock(); return BufferResource; } /* Secure access from game thread*/
-	void                   ReleaseBufferedData() const { ResourceLock.ReadUnlock(); }    /* Release access from game thread*/
-	void                   SwapBufferedData();                                         /* Managed by the PBDRigidSolver ONLY!*/
 
+	/**
+	*
+	*  Visitor
+	*   Walk all the decendents of the current cluster and execute FVisitorFunction.
+	*   FVisitorFunction = [](FRigidClustering& Clustering, FRigidHandle RigidHandle){}
+	*/
+	void Visitor(FClusterHandle Cluster, FVisitorFunction Function);
 
 	/*
 	*  GetActiveClusterIndex
@@ -186,7 +197,7 @@ public:
 	*    active id, see the GetActiveClusterIndex to find the active cluster.
 	*    INDEX_NONE represents a non-clustered body.
 	*/
-	TArrayCollectionArray<ClusterId>&       GetClusterIdsArray() { return MParticles.ClusterIdsArray(); }
+	TArrayCollectionArray<ClusterId>& GetClusterIdsArray() { return MParticles.ClusterIdsArray(); }
 	const TArrayCollectionArray<ClusterId>& GetClusterIdsArray() const { return MParticles.ClusterIdsArray(); }
 
 	/*
@@ -209,14 +220,15 @@ public:
 	*    the cluster body, can be updated during the evaluation of the simulation.
 	*/
 	TArrayCollectionArray<FReal>& GetStrainArray() { return MParticles.StrainsArray(); }
-
+	const TArrayCollectionArray<FReal>& GetStrainArray() const { return MParticles.StrainsArray(); }
+		
 	/**
 	*  GetParentToChildren
 	*    The parent to children map stores the currently active cluster ids (Particle Indices) as
 	*    the keys of the map. The value of the map is a pointer to an array  constrained
 	*    rigid bodies.
 	*/
-	FClusterMap &       GetChildrenMap() { return MChildren; }
+	FClusterMap & GetChildrenMap() { return MChildren; }
 	const FClusterMap & GetChildrenMap() const { return MChildren; }
 
 	/*
@@ -228,27 +240,10 @@ public:
 	*/
 	TArrayCollectionArray<int32>& GetClusterGroupIndexArray() { return MParticles.ClusterGroupIndexArray(); }
 
-	/** Indicates if the child geometry is approximated by a single proxy */
-	const TArrayCollectionArray<FMultiChildProxyId>& GetMultiChildProxyIdArray() const { return MParticles.MultiChildProxyIdArray(); }
-
-	/** If multi child proxy is used, this is the data needed */
-	const TArrayCollectionArray<TUniquePtr<TMultiChildProxyData<FReal, 3>>>& GetMultiChildProxyDataArray() const { return MParticles.MultiChildProxyDataArray(); }
-
-	void AddToClusterUnion(int32 ClusterID, FPBDRigidClusteredParticleHandle* Handle)
-	{
-		if(ClusterID <= 0)
-		{
-			return;
-		}
-
-		if(!ClusterUnionMap.Contains(ClusterID))
-		{
-			ClusterUnionMap.Add(ClusterID, TArray<FPBDRigidClusteredParticleHandle*>());
-		}
-
-		ClusterUnionMap[ClusterID].Add(Handle);
-	}
-
+	/*
+	*  Cluster Break Data
+	*     The cluster breaks can be used to seed particle emissions. 
+	*/
 	const TArray<FBreakingData>& GetAllClusterBreakings() const { return MAllClusterBreakings; }
 	void SetGenerateClusterBreaking(bool DoGenerate) { DoGenerateBreakingData = DoGenerate; }
 	void ResetAllClusterBreakings() { MAllClusterBreakings.Reset(); }
@@ -274,34 +269,13 @@ public:
 	const TSet<Chaos::FPBDRigidClusteredParticleHandle*>& GetTopLevelClusterParents() const { return TopLevelClusterParents; }
 	TSet<Chaos::FPBDRigidClusteredParticleHandle*>& GetTopLevelClusterParents() { return TopLevelClusterParents; }
 
-	/* Ryan - do we still need this?
-	void InitTopLevelClusterParents(const int32 StartIndex)
-	{
-		if (!StartIndex)
-		{
-			TopLevelClusterParents.Reset();
-		}
-		for (uint32 i = StartIndex; i < MParticles.Size(); ++i)
-		{
-			if (MParticles.ClusterIds(i).Id == INDEX_NONE && !MParticles.Disabled(i))
-			{
-				TopLevelClusterParents.Add(i);
-			}
-		}
-	}
-	*/
- protected:
-	void UpdateMassProperties(
-		Chaos::FPBDRigidClusteredParticleHandle* Parent, 
-		TSet<FPBDRigidParticleHandle*>& Children, 
-		const FRigidTransform3* ForceMassOrientation);
-	void UpdateGeometry(
-		Chaos::FPBDRigidClusteredParticleHandle* Parent, 
-		const TSet<FPBDRigidParticleHandle*>& Children, 
-		TSharedPtr<Chaos::FImplicitObject, ESPMode::ThreadSafe> ProxyGeometry,
-		const FClusterCreationParameters& Parameters);
+	FRigidEvolution& GetEvolution() { return MEvolution; }
+	const FRigidEvolution& GetEvolution() const { return MEvolution; }
 
-	void ComputeStrainFromCollision(const T_FPBDCollisionConstraint& CollisionRule);
+
+ protected:
+
+	void ComputeStrainFromCollision(const FPBDCollisionConstraints& CollisionRule);
 	void ResetCollisionImpulseArray();
 	void DisableCluster(FPBDRigidClusteredParticleHandle* ClusteredParticle);
 	void DisableParticleWithBreakEvent(Chaos::FPBDRigidParticleHandle* Particle);
@@ -331,15 +305,13 @@ public:
 
 private:
 
-	T_FPBDRigidEvolution& MEvolution;
+	FRigidEvolution& MEvolution;
 	FPBDRigidClusteredParticles& MParticles;
 	TSet<Chaos::FPBDRigidClusteredParticleHandle*> TopLevelClusterParents;
 	TSet<Chaos::FPBDRigidParticleHandle*> MActiveRemovalIndices;
 
 
 	// Cluster data
-	mutable FRWLock ResourceLock;
-	FClusterBuffer BufferResource;
 	FClusterMap MChildren;
 	TMap<int32, TArray<FPBDRigidClusteredParticleHandle*> > ClusterUnionMap;
 
@@ -354,162 +326,5 @@ private:
 	FReal MClusterConnectionFactor;
 	FClusterCreationParameters::EConnectionMethod MClusterUnionConnectionType;
 };
-
-void UpdateClusterMassProperties(
-	Chaos::FPBDRigidClusteredParticleHandle* Parent,
-	TSet<FPBDRigidParticleHandle*>& Children,
-	const FRigidTransform3* ForceMassOrientation = nullptr);
-
-inline TArray<FVec3> CleanCollisionParticles(
-	const TArray<FVec3>& Vertices,
-	FAABB3 BBox, 
-	const FReal SnapDistance=(FReal)0.01)
-{
-	const int32 NumPoints = Vertices.Num();
-	if (NumPoints <= 1)
-		return TArray<FVec3>(Vertices);
-
-	FReal MaxBBoxDim = BBox.Extents().Max();
-	if (MaxBBoxDim < SnapDistance)
-		return TArray<FVec3>(&Vertices[0], 1);
-
-	BBox.Thicken(FMath::Max(SnapDistance/10, KINDA_SMALL_NUMBER*10)); // 0.001
-	MaxBBoxDim = BBox.Extents().Max();
-
-	const FVec3 PointsCenter = BBox.Center();
-	TArray<FVec3> Points(Vertices);
-
-	// Find coincident vertices.  We hash to a grid of fine enough resolution such
-	// that if 2 particles hash to the same cell, then we're going to consider them
-	// coincident.
-	TSet<int64> OccupiedCells;
-	OccupiedCells.Reserve(NumPoints);
-
-	TArray<int32> Redundant;
-	Redundant.Reserve(NumPoints); // Excessive, but ensures consistent performance.
-
-	int32 NumCoincident = 0;
-	const int64 Resolution = static_cast<int64>(floor(MaxBBoxDim / FMath::Max(SnapDistance,KINDA_SMALL_NUMBER)));
-	const FReal CellSize = MaxBBoxDim / Resolution;
-	for (int32 i = 0; i < 2; i++)
-	{
-		Redundant.Reset();
-		OccupiedCells.Reset();
-		// Shift the grid by 1/2 a grid cell the second iteration so that
-		// we don't miss slightly adjacent coincident points across cell
-		// boundaries.
-		const FVec3 GridCenter = FVec3(0) - FVec3(i * CellSize / 2);
-		for (int32 j = 0; j < Points.Num(); j++)
-		{
-			const FVec3 Pos = Points[j] - PointsCenter; // Centered at the origin
-			const TVec3<int64> Coord(
-				static_cast<int64>(floor((Pos[0] - GridCenter[0]) / CellSize + Resolution / 2)),
-				static_cast<int64>(floor((Pos[1] - GridCenter[1]) / CellSize + Resolution / 2)),
-				static_cast<int64>(floor((Pos[2] - GridCenter[2]) / CellSize + Resolution / 2)));
-			const int64 FlatIdx =
-				((Coord[0] * Resolution + Coord[1]) * Resolution) + Coord[2];
-
-			bool AlreadyInSet = false;
-			OccupiedCells.Add(FlatIdx, &AlreadyInSet);
-			if (AlreadyInSet)
-				Redundant.Add(j);
-		}
-
-		for (int32 j = Redundant.Num(); j--;)
-		{
-			Points.RemoveAt(Redundant[j]);
-		}
-	}
-
-	// Shrink the array, if appropriate
-	Points.SetNum(Points.Num(), true);
-	return Points;
-}
-
-inline TArray<FVec3> CleanCollisionParticles(
-	const TArray<FVec3>& Vertices, 
-	const FReal SnapDistance=(FReal)0.01)
-{
-	if (!Vertices.Num())
-	{
-		return TArray<FVec3>();
-	}
-	FAABB3 BBox(FAABB3::EmptyAABB());
-	for (const FVec3& Pt : Vertices)
-	{
-		BBox.GrowToInclude(Pt);
-	}
-	return CleanCollisionParticles(Vertices, BBox, SnapDistance);
-}
-
-inline TArray<FVec3> CleanCollisionParticles(
-	FTriangleMesh &TriMesh, 
-	const TArrayView<const FVec3>& Vertices, 
-	const FReal Fraction)
-{
-	TArray<FVec3> CollisionVertices;
-	if (Fraction <= 0.0)
-		return CollisionVertices;
-
-	// If the tri mesh has any open boundaries, see if we can merge any coincident
-	// vertices on the boundary.  This makes the importance ordering work much better
-	// as we need the curvature at each edge of the tri mesh, and we can't calculate
-	// curvature on discontiguous triangles.
-	TSet<int32> BoundaryPoints = TriMesh.GetBoundaryPoints();
-	if (BoundaryPoints.Num())
-	{
-		TMap<int32, int32> Remapping =
-			TriMesh.FindCoincidentVertexRemappings(BoundaryPoints.Array(), Vertices);
-		TriMesh.RemapVertices(Remapping);
-	}
-
-	// Get the importance vertex ordering, from most to least.  Reorder the 
-	// particles accordingly.
-	TArray<int32> CoincidentVertices;
-	const TArray<int32> Ordering = TriMesh.GetVertexImportanceOrdering(Vertices, &CoincidentVertices, true);
-
-	// Particles are ordered from most important to least, with coincident 
-	// vertices at the very end.
-	const int32 NumGoodPoints = Ordering.Num() - CoincidentVertices.Num();
-
-#if DO_GUARD_SLOW
-	for (int i = NumGoodPoints; i < Ordering.Num(); ++i)
-	{
-		ensure(CoincidentVertices.Contains(Ordering[i]));	//make sure all coincident vertices are at the back
-	}
-#endif
-
-	CollisionVertices.AddUninitialized(std::min(NumGoodPoints, static_cast<int32>(ceil(NumGoodPoints * Fraction))));
-	for (int i = 0; i < CollisionVertices.Num(); i++)
-	{
-		CollisionVertices[i] = Vertices[Ordering[i]];
-	}
-	return CollisionVertices;
-}
-
-inline void CleanCollisionParticles(
-	FTriangleMesh &TriMesh, 
-	const TArrayView<const FVec3>& Vertices, 
-	const FReal Fraction,
-	TSet<int32>& ResultingIndices)
-{
-	ResultingIndices.Reset();
-	if (Fraction <= 0.0)
-		return;
-
-	TArray<int32> CoincidentVertices;
-	const TArray<int32> Ordering = TriMesh.GetVertexImportanceOrdering(Vertices, &CoincidentVertices, true);
-	int32 NumGoodPoints = Ordering.Num() - CoincidentVertices.Num();
-	NumGoodPoints = std::min(NumGoodPoints, static_cast<int32>(ceil(NumGoodPoints * Fraction)));
-
-	ResultingIndices.Reserve(NumGoodPoints);
-	for (int32 i = 0; i < NumGoodPoints; i++)
-	{
-		ResultingIndices.Add(Ordering[i]);
-	}
-}
-
-template <typename T, int d>
-using TClusterBuffer UE_DEPRECATED(4.27, "Deprecated. this class is to be deleted, use FClusterBuffer instead") = FClusterBuffer;
 
 } // namespace Chaos

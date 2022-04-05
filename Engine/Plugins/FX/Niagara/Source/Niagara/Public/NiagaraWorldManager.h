@@ -20,6 +20,7 @@
 #include "NiagaraEffectType.h"
 #include "NiagaraScalabilityManager.h"
 #include "NiagaraDebuggerCommon.h"
+#include "NiagaraDeferredMethodQueue.h"
 
 #include "NiagaraWorldManager.generated.h"
 
@@ -28,49 +29,6 @@ class UNiagaraParameterCollection;
 class UNiagaraParameterCollectionInstance;
 class UNiagaraComponentPool;
 struct FNiagaraScalabilityState;
-
-class FNiagaraViewDataMgr : public FRenderResource
-{
-public:
-	FNiagaraViewDataMgr();
-
-	static void Init();
-	static void Shutdown();
-
-	void PostOpaqueRender(FPostOpaqueRenderParameters& Params)
-	{
-		SceneDepthTexture = Params.DepthTexture;
-		ViewUniformBuffer = Params.ViewUniformBuffer;
-		SceneNormalTexture = Params.NormalTexture;
-		SceneVelocityTexture = Params.VelocityTexture;
-		SceneTexturesUniformParams = Params.SceneTexturesUniformParams;
-		MobileSceneTexturesUniformParams = Params.MobileSceneTexturesUniformParams;
-	}
-
-	FRHITexture2D* GetSceneDepthTexture() { return SceneDepthTexture; }
-	FRHITexture2D* GetSceneNormalTexture() { return SceneNormalTexture; }
-	FRHITexture2D* GetSceneVelocityTexture() { return SceneVelocityTexture; }
-	FRHIUniformBuffer* GetViewUniformBuffer() { return ViewUniformBuffer; }
-	TUniformBufferRef<FSceneTextureUniformParameters> GetSceneTextureUniformParameters() { return SceneTexturesUniformParams; }
-	TUniformBufferRef<FMobileSceneTextureUniformParameters> GetMobileSceneTextureUniformParameters() { return MobileSceneTexturesUniformParams; }
-
-	virtual void InitDynamicRHI() override;
-
-	virtual void ReleaseDynamicRHI() override;
-
-private:
-	FRHITexture2D* SceneDepthTexture = nullptr;
-	FRHITexture2D* SceneNormalTexture = nullptr;
-	FRHITexture2D* SceneVelocityTexture = nullptr;
-	FRHIUniformBuffer* ViewUniformBuffer = nullptr;
-
-	TUniformBufferRef<FSceneTextureUniformParameters> SceneTexturesUniformParams;
-	TUniformBufferRef<FMobileSceneTextureUniformParameters> MobileSceneTexturesUniformParams;
-	FPostOpaqueRenderDelegate PostOpaqueDelegate;
-	FDelegateHandle PostOpaqueDelegateHandle;
-};
-
-extern TGlobalResource<FNiagaraViewDataMgr> GNiagaraViewDataManager;
 
 USTRUCT()
 struct FNiagaraWorldManagerTickFunction : public FTickFunction
@@ -95,6 +53,18 @@ struct TStructOpsTypeTraits<FNiagaraWorldManagerTickFunction> : public TStructOp
 	};
 };
 
+using FNiagaraSystemSimulationRef = TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>;
+
+enum class NIAGARA_API ENiagaraScalabilityCullingMode : uint8
+{
+	/* Scalability culling is enabled as normal. */
+	Enabled,
+	/* No scalability culling is done but FX stay registered with the managers etc for when it is resumed. */
+	Paused,
+	/* Scalability is disabled entirely and all tracking is dropped. */
+	Disabled,
+};
+
 /**
 * Manager class for any data relating to a particular world.
 */
@@ -112,8 +82,8 @@ public:
 	static void OnStartup();
 	static void OnShutdown();
 
-	// Gamethread callback to cleanup references to the given batcher before it gets deleted on the renderthread.
-	static void OnBatcherDestroyed(class NiagaraEmitterInstanceBatcher* InBatcher);
+	// Gamethread callback to cleanup references to the given ComputeDispatchInterface before it gets deleted on the renderthread.
+	static void OnComputeDispatchInterfaceDestroyed(class FNiagaraGpuComputeDispatchInterface* InComputeDispatchInterface);
 
 	static void DestroyAllSystemSimulations(class UNiagaraSystem* System);
 
@@ -124,11 +94,16 @@ public:
 	
 	UNiagaraParameterCollectionInstance* GetParameterCollection(UNiagaraParameterCollection* Collection);
 	void CleanupParameterCollections();
-	TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe> GetSystemSimulation(ETickingGroup TickGroup, UNiagaraSystem* System);
+	FNiagaraSystemSimulationRef GetSystemSimulation(ETickingGroup TickGroup, UNiagaraSystem* System);
 	void DestroySystemSimulation(UNiagaraSystem* System);
-	void DestroySystemInstance(TUniquePtr<FNiagaraSystemInstance>& InPtr);	
+	void DestroySystemInstance(FNiagaraSystemInstancePtr& InPtr);	
+
+#if WITH_EDITOR
+	void OnSystemPostChange(UNiagaraSystem* System);
+#endif
 
 	void MarkSimulationForPostActorWork(FNiagaraSystemSimulation* SystemSimulation);
+	void MarkSimulationsForEndOfFrameWait(FNiagaraSystemSimulation* SystemSimulation);
 
 	void Tick(ETickingGroup TickGroup, float DeltaSeconds, ELevelTick TickType, ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent);
 
@@ -145,6 +120,7 @@ public:
 	void PostReachabilityAnalysis();
 	void PostGarbageCollect();
 	void PreGarbageCollectBeginDestroy();
+	void RefreshOwnerAllowsScalability();
 	
 	template<typename T>
 	const T& ReadGeneratedData()
@@ -189,11 +165,14 @@ public:
 	void CalculateScalabilityState(UNiagaraSystem* System, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, UNiagaraEffectType* EffectType, UNiagaraComponent* Component, bool bIsPreCull, float WorstGlobalBudgetUse, FNiagaraScalabilityState& OutState);
 	void CalculateScalabilityState(UNiagaraSystem* System, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, UNiagaraEffectType* EffectType, FVector Location, bool bIsPreCull, float WorstGlobalBudgetUse, FNiagaraScalabilityState& OutState);
 
-	/*FORCEINLINE_DEBUGGABLE*/ void SortedSignificanceCull(UNiagaraEffectType* EffectType, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, float Significance, int32& EffectTypeInstCount, int32& SystemInstCount, FNiagaraScalabilityState& OutState);
+	/*FORCEINLINE_DEBUGGABLE*/ void SortedSignificanceCull(UNiagaraEffectType* EffectType, UNiagaraComponent* Component, const FNiagaraSystemScalabilitySettings& ScalabilitySettings, float Significance, int32& EffectTypeInstCount, uint16& SystemInstCount, FNiagaraScalabilityState& OutState);
 
 #if DEBUG_SCALABILITY_STATE
 	void DumpScalabilityState();
 #endif
+
+	void DestroyCullProxy(UNiagaraSystem* System);
+	class UNiagaraCullProxyComponent* GetCullProxy(UNiagaraComponent* Component);
 
 	template<typename TAction>
 	void ForAllSystemSimulations(TAction Func);
@@ -205,6 +184,9 @@ public:
 	void PrimePoolForAllSystems();
 	void PrimePool(UNiagaraSystem* System);
 
+	static void InvalidateCachedSystemScalabilityDataForAllWorlds();
+	void InvalidateCachedSystemScalabilityData();
+
 	void SetDebugPlaybackMode(ENiagaraDebugPlaybackMode Mode) { RequestedDebugPlaybackMode = Mode; }
 	ENiagaraDebugPlaybackMode GetDebugPlaybackMode() const { return DebugPlaybackMode; }
 
@@ -212,6 +194,16 @@ public:
 	float GetDebugPlaybackRate() const { return DebugPlaybackRate; }
 
 	class FNiagaraDebugHud* GetNiagaraDebugHud() { return NiagaraDebugHud.Get(); }
+
+	class FNiagaraDeferredMethodQueue& GetDeferredMethodQueue() { return DeferredMethods; }
+
+	/** Is this component in anyway linked to the local player. */
+	static bool IsComponentLocalPlayerLinked(const USceneComponent* Component);
+
+	static void OnRefreshOwnerAllowsScalability();
+
+	NIAGARA_API static void SetScalabilityCullingMode(ENiagaraScalabilityCullingMode NewMode);
+	NIAGARA_API static ENiagaraScalabilityCullingMode GetScalabilityCullingMode() { return ScalabilityCullingMode; }
 
 private:
 	// Callback function registered with global world delegates to instantiate world manager when a game world is created
@@ -244,8 +236,8 @@ private:
 	// Callback to handle any pre GC processing needed.
 	static void OnPreGarbageCollectBeginDestroy();
 		
-	// Gamethread callback to cleanup references to the given batcher before it gets deleted on the renderthread.
-	void OnBatcherDestroyed_Internal(NiagaraEmitterInstanceBatcher* InBatcher);
+	// Gamethread callback to cleanup references to the given ComputeDispatchInterface before it gets deleted on the renderthread.
+	void OnComputeDispatchInterfaceDestroyed_Internal(class FNiagaraGpuComputeDispatchInterface* InComputeDispatchInterface);
 
 	bool CanPreCull(UNiagaraEffectType* EffectType);
 
@@ -269,18 +261,23 @@ private:
 	static FDelegateHandle PostReachabilityAnalysisHandle;
 	static FDelegateHandle PostGCHandle;
 	static FDelegateHandle PreGCBeginDestroyHandle;
+	static FDelegateHandle ViewTargetChangedHandle;
 
 	static TMap<class UWorld*, class FNiagaraWorldManager*> WorldManagers;
 
 	UWorld* World;
 
+	int ActiveNiagaraTickGroup;
+
 	FNiagaraWorldManagerTickFunction TickFunctions[NiagaraNumTickGroups];
 
 	TMap<UNiagaraParameterCollection*, UNiagaraParameterCollectionInstance*> ParameterCollections;
 
-	TMap<UNiagaraSystem*, TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>> SystemSimulations[NiagaraNumTickGroups];
+	TMap<UNiagaraSystem*, FNiagaraSystemSimulationRef> SystemSimulations[NiagaraNumTickGroups];
 
-	TArray<TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>> SimulationsWithPostActorWork;
+	TArray<FNiagaraSystemSimulationRef> SimulationsWithPostActorWork;
+
+	TArray<FNiagaraSystemSimulationRef> SimulationsWithEndOfFrameWait;
 
 	int32 CachedEffectsQuality;
 
@@ -293,12 +290,14 @@ private:
 	TMap<FNDI_GeneratedData::TypeHash, TUniquePtr<FNDI_GeneratedData>> DIGeneratedData;
 
 	/** Instances that have been queued for deletion this frame, serviced in PostActorTick */
-	TArray<TUniquePtr<FNiagaraSystemInstance>> DeferredDeletionQueue;
+	TArray<FNiagaraSystemInstancePtr> DeferredDeletionQueue;
 
 	UPROPERTY(transient)
 	TMap<UNiagaraEffectType*, FNiagaraScalabilityManager> ScalabilityManagers;
 
-	/** True if the app has focus. We prevent some culling if the app doesn't have focus as it can interefre. */
+	FNiagaraDeferredMethodQueue DeferredMethods;
+
+	/** True if the app has focus. We prevent some culling if the app doesn't have focus as it can interfere. */
 	bool bAppHasFocus;
 
 	float WorldLoopTime = 0.0f;
@@ -308,6 +307,11 @@ private:
 	float DebugPlaybackRate = 1.0f;
 
 	TUniquePtr<class FNiagaraDebugHud> NiagaraDebugHud;
+
+	TMap<UNiagaraSystem*, UNiagaraCullProxyComponent*> CullProxyMap;
+
+	/** A global flag for all scalability culling */
+	static ENiagaraScalabilityCullingMode ScalabilityCullingMode;
 };
 
 
@@ -316,7 +320,7 @@ void FNiagaraWorldManager::ForAllSystemSimulations(TAction Func)
 {
 	for (int TG = 0; TG < NiagaraNumTickGroups; ++TG)
 	{
-		for (TPair<UNiagaraSystem*, TSharedRef<FNiagaraSystemSimulation, ESPMode::ThreadSafe>>& SimPair : SystemSimulations[TG])
+		for (TPair<UNiagaraSystem*, FNiagaraSystemSimulationRef>& SimPair : SystemSimulations[TG])
 		{
 			Func(SimPair.Value.Get());
 		}

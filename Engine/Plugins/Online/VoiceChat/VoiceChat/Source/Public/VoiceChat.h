@@ -113,7 +113,7 @@ DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnVoiceChatPlayerVolumeUpdatedDelegate, 
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnVoiceChatRecordSamplesAvailableDelegate, TArrayView<const int16> /* PcmSamples */, int /* SampleRate */, int /* Channels */);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnVoiceChatAfterCaptureAudioReadDelegate, TArrayView<int16> /* PcmSamples */, int /* SampleRate */, int /* Channels */);
 DECLARE_MULTICAST_DELEGATE_FourParams(FOnVoiceChatBeforeCaptureAudioSentDelegate, TArrayView<const int16> /* PcmSamples */, int /* SampleRate */, int /* Channels */, bool /* bIsSpeaking */);
-DECLARE_MULTICAST_DELEGATE_FourParams(FOnVoiceChatBeforeRecvAudioRenderedDelegate, TArrayView<int16> /* PcmSamples */, int /* SampleRate */, int /* Channels */, bool /* bIsSilence */);
+DECLARE_MULTICAST_DELEGATE_SixParams(FOnVoiceChatBeforeRecvAudioRenderedDelegate, TArrayView<int16> /* PcmSamples */, int /* SampleRate */, int /* Channels */, bool /* bIsSilence */, const FString& /*ChannelName*/, const FString& /* PlayerName */);
 
 class IVoiceChatUser
 {
@@ -523,6 +523,24 @@ public:
 	 * @return true if player is muted
 	 */
 	virtual bool IsPlayerMuted(const FString& PlayerName) const = 0;
+
+	/**
+	 * Mute or unmute a player in a given channel.
+	 * Only has effect if the player is currently in the channel, and only until you/they leave the channel.
+	 * i.e. this is expected to be [re]called by OnVoiceChatPlayerAdded delegates.
+	 *
+	 * @param ChannelName Channel in which to mute the player
+	 * @param PlayerName Player to mute in channel
+	 * @param bMuted true if the player should be muted in the specified channel
+	 */
+	virtual void SetChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName, bool bAudioMuted) = 0;
+
+	/**
+	 * @param ChannelName Channel in which the mute state will be checked
+	 * @param PlayerName Player to get the mute state of in channel
+	 * @return true if player is muted
+	 */
+	virtual bool IsChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName) const = 0;
 
 	/**
 	 * Delegate triggered when a player's muted state is updated, usually as a result of calling SetPlayerMuted

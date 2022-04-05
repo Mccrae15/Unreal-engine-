@@ -4,11 +4,13 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -23,79 +25,197 @@ namespace UnrealBuildTool
 		class DependencyInfo
 		{
 			public long LastWriteTimeUtc;
+			public string? ProducedModule;
+			public List<(string Name, string BMI)>? ImportedModules;
 			public List<FileItem> Files;
 
-			public DependencyInfo(long LastWriteTimeUtc, List<FileItem> Files)
+			public DependencyInfo(long LastWriteTimeUtc, string? ProducedModule, List<(string, string)>? ImportedModules, List<FileItem> Files)
 			{
 				this.LastWriteTimeUtc = LastWriteTimeUtc;
+				this.ProducedModule = ProducedModule;
+				this.ImportedModules = ImportedModules;
 				this.Files = Files;
 			}
 
 			public static DependencyInfo Read(BinaryArchiveReader Reader)
 			{
 				long LastWriteTimeUtc = Reader.ReadLong();
-				List<FileItem> Files = Reader.ReadList(() => Reader.ReadCompactFileItem());
-
-				return new DependencyInfo(LastWriteTimeUtc, Files);
+				string? ProducedModule = Reader.ReadString();
+				List<(string, string)>? ImportedModules = Reader.ReadList(() =>
+				{
+					return (Reader.ReadString(), Reader.ReadString());
+				})!;
+				List<FileItem> Files = Reader.ReadList(() => Reader.ReadCompactFileItem())!;
+				return new DependencyInfo(LastWriteTimeUtc, ProducedModule, ImportedModules, Files);
 			}
 
 			public void Write(BinaryArchiveWriter Writer)
 			{
 				Writer.WriteLong(LastWriteTimeUtc);
+				Writer.WriteString(ProducedModule);
+				Writer.WriteList(ImportedModules, (Module) =>
+				{
+					Writer.WriteString(Module.Name);
+					Writer.WriteString(Module.BMI);
+				});
 				Writer.WriteList<FileItem>(Files, File => Writer.WriteCompactFileItem(File));
 			}
 		}
 
-		/// <summary>
-		/// The current file version
-		/// </summary>
-		public const int CurrentVersion = 2;
+		class CachePartition
+		{
+			/// <summary>
+			/// The current file version
+			/// </summary>
+			public const int CurrentVersion = 3;
+
+			/// <summary>
+			/// Location of this dependency cache
+			/// </summary>
+			public FileReference Location;
+
+			/// <summary>
+			/// Directory for files to cache dependencies for.
+			/// </summary>
+			public DirectoryReference BaseDir;
+
+			/// <summary>
+			/// Map from file item to dependency info
+			/// </summary>
+			public ConcurrentDictionary<FileItem, DependencyInfo> DependencyFileToInfo = new ConcurrentDictionary<FileItem, DependencyInfo>();
+
+			/// <summary>
+			/// Whether the cache has been modified and needs to be saved
+			/// </summary>
+			public bool bModified;
+
+			/// <summary>
+			/// Constructs a dependency cache. This method is private; call CppDependencyCache.Create() to create a cache hierarchy for a given project.
+			/// </summary>
+			/// <param name="Location">File to store the cache</param>
+			/// <param name="BaseDir">Base directory for files that this cache should store data for</param>
+			public CachePartition(FileReference Location, DirectoryReference BaseDir)
+			{
+				this.Location = Location;
+				this.BaseDir = BaseDir;
+
+				if (FileReference.Exists(Location))
+				{
+					Read();
+				}
+			}
+
+			/// <summary>
+			/// Reads data for this dependency cache from disk
+			/// </summary>
+			public void Read()
+			{
+				try
+				{
+					using (BinaryArchiveReader Reader = new BinaryArchiveReader(Location))
+					{
+						int Version = Reader.ReadInt();
+						if (Version != CurrentVersion)
+						{
+							Log.TraceLog("Unable to read dependency cache from {0}; version {1} vs current {2}", Location, Version, CurrentVersion);
+							return;
+						}
+
+						int Count = Reader.ReadInt();
+						for (int Idx = 0; Idx < Count; Idx++)
+						{
+							FileItem File = Reader.ReadFileItem()!;
+							DependencyFileToInfo[File] = DependencyInfo.Read(Reader);
+						}
+					}
+				}
+				catch (Exception Ex)
+				{
+					Log.TraceWarning("Unable to read {0}. See log for additional information.", Location);
+					Log.TraceLog("{0}", ExceptionUtils.FormatExceptionDetails(Ex));
+				}
+			}
+
+			/// <summary>
+			/// Writes data for this dependency cache to disk
+			/// </summary>
+			public void Write()
+			{
+				DirectoryReference.CreateDirectory(Location.Directory);
+				using (FileStream Stream = File.Open(Location.FullName, FileMode.Create, FileAccess.Write, FileShare.Read))
+				{
+					using (BinaryArchiveWriter Writer = new BinaryArchiveWriter(Stream))
+					{
+						Writer.WriteInt(CurrentVersion);
+
+						Writer.WriteInt(DependencyFileToInfo.Count);
+						foreach (KeyValuePair<FileItem, DependencyInfo> Pair in DependencyFileToInfo)
+						{
+							Writer.WriteFileItem(Pair.Key);
+							Pair.Value.Write(Writer);
+						}
+					}
+				}
+				bModified = false;
+			}
+		}
 
 		/// <summary>
-		/// Location of this dependency cache
+		/// List of partitions
 		/// </summary>
-		FileReference Location;
-
-		/// <summary>
-		/// Directory for files to cache dependencies for.
-		/// </summary>
-		DirectoryReference BaseDir;
-
-		/// <summary>
-		/// The parent cache.
-		/// </summary>
-		CppDependencyCache Parent;
-
-		/// <summary>
-		/// Map from file item to dependency info
-		/// </summary>
-		ConcurrentDictionary<FileItem, DependencyInfo> DependencyFileToInfo = new ConcurrentDictionary<FileItem, DependencyInfo>();
-
-		/// <summary>
-		/// Whether the cache has been modified and needs to be saved
-		/// </summary>
-		bool bModified;
+		List<CachePartition> Partitions = new List<CachePartition>();
 
 		/// <summary>
 		/// Static cache of all constructed dependency caches
 		/// </summary>
-		static Dictionary<FileReference, CppDependencyCache> Caches = new Dictionary<FileReference, CppDependencyCache>();
+		static Dictionary<FileReference, CachePartition> GlobalPartitions = new Dictionary<FileReference, CachePartition>();
 
 		/// <summary>
 		/// Constructs a dependency cache. This method is private; call CppDependencyCache.Create() to create a cache hierarchy for a given project.
 		/// </summary>
-		/// <param name="Location">File to store the cache</param>
-		/// <param name="BaseDir">Base directory for files that this cache should store data for</param>
-		/// <param name="Parent">The parent cache to use</param>
-		private CppDependencyCache(FileReference Location, DirectoryReference BaseDir, CppDependencyCache Parent)
+		public CppDependencyCache()
 		{
-			this.Location = Location;
-			this.BaseDir = BaseDir;
-			this.Parent = Parent;
+		}
 
-			if (FileReference.Exists(Location))
+		/// <summary>
+		/// Gets the produced module from a dependencies file
+		/// </summary>
+		/// <param name="InputFile">The dependencies file</param>
+		/// <param name="OutModule">The produced module name</param>
+		/// <returns>True if a produced module was found</returns>
+		public bool TryGetProducedModule(FileItem InputFile, [NotNullWhen(true)] out string? OutModule)
+		{
+			DependencyInfo? Info;
+			if (TryGetDependencyInfo(InputFile, out Info) && Info.ProducedModule != null)
 			{
-				Read();
+				OutModule = Info.ProducedModule;
+				return true;
+			}
+			else
+			{
+				OutModule = null;
+				return false;
+			}
+		}
+
+		/// <summary>
+		/// Attempts to get a list of imported modules for the given file
+		/// </summary>
+		/// <param name="InputFile">The dependency file to query</param>
+		/// <param name="OutImportedModules">List of imported modules</param>
+		/// <returns>True if a list of imported modules was obtained</returns>
+		public bool TryGetImportedModules(FileItem InputFile, [NotNullWhen(true)] out List<(string Name, string BMI)>? OutImportedModules)
+		{
+			DependencyInfo? Info;
+			if (TryGetDependencyInfo(InputFile, out Info))
+			{
+				OutImportedModules = Info.ImportedModules;
+				return OutImportedModules != null;
+			}
+			else
+			{
+				OutImportedModules = null;
+				return false;
 			}
 		}
 
@@ -105,22 +225,47 @@ namespace UnrealBuildTool
 		/// <param name="InputFile">File to be read</param>
 		/// <param name="OutDependencyItems">Receives a list of output items</param>
 		/// <returns>True if the input file exists and the dependencies were read</returns>
-		public bool TryGetDependencies(FileItem InputFile, out List<FileItem> OutDependencyItems)
+		public bool TryGetDependencies(FileItem InputFile, [NotNullWhen(true)] out List<FileItem>? OutDependencyItems)
+		{
+			DependencyInfo? Info;
+			if (TryGetDependencyInfo(InputFile, out Info))
+			{
+				OutDependencyItems = Info.Files;
+				return true;
+			}
+			else
+			{
+				OutDependencyItems = null;
+				return false;
+			}
+		}
+
+		/// <summary>
+		/// Attempts to read the dependencies from the given input file
+		/// </summary>
+		/// <param name="InputFile">File to be read</param>
+		/// <param name="OutInfo">The dependency info</param>
+		/// <returns>True if the input file exists and the dependencies were read</returns>
+		private bool TryGetDependencyInfo(FileItem InputFile, [NotNullWhen(true)] out DependencyInfo? OutInfo)
 		{
 			if (!InputFile.Exists)
 			{
-				OutDependencyItems = null;
+				OutInfo = null;
 				return false;
 			}
 
 			try
 			{
-				return TryGetDependenciesInternal(InputFile, out OutDependencyItems);
+				return TryGetDependencyInfoInternal(InputFile, out OutInfo);
+			}
+			catch (BuildException Ex)
+			{
+				throw Ex;
 			}
 			catch (Exception Ex)
 			{
 				Log.TraceLog("Unable to read {0}:\n{1}", InputFile, ExceptionUtils.FormatExceptionDetails(Ex));
-				OutDependencyItems = null;
+				OutInfo = null;
 				return false;
 			}
 		}
@@ -129,30 +274,29 @@ namespace UnrealBuildTool
 		/// Attempts to read dependencies from the given file.
 		/// </summary>
 		/// <param name="InputFile">File to be read</param>
-		/// <param name="OutDependencyItems">Receives a list of output items</param>
+		/// <param name="OutInfo">The dependency info</param>
 		/// <returns>True if the input file exists and the dependencies were read</returns>
-		private bool TryGetDependenciesInternal(FileItem InputFile, out List<FileItem> OutDependencyItems)
+		private bool TryGetDependencyInfoInternal(FileItem InputFile, [NotNullWhen(true)] out DependencyInfo? OutInfo)
 		{
-			if (Parent != null && !InputFile.Location.IsUnderDirectory(BaseDir))
+			foreach(CachePartition Partition in Partitions)
 			{
-				return Parent.TryGetDependencies(InputFile, out OutDependencyItems);
-			}
-			else
-			{
-				DependencyInfo Info;
-				if (DependencyFileToInfo.TryGetValue(InputFile, out Info) && InputFile.LastWriteTimeUtc.Ticks <= Info.LastWriteTimeUtc)
+				if (InputFile.Location.IsUnderDirectory(Partition.BaseDir))
 				{
-					OutDependencyItems = Info.Files;
+					DependencyInfo? Info;
+					if (!Partition.DependencyFileToInfo.TryGetValue(InputFile, out Info) || InputFile.LastWriteTimeUtc.Ticks > Info.LastWriteTimeUtc)
+					{
+						Info = ReadDependencyInfo(InputFile);
+						Partition.DependencyFileToInfo.TryAdd(InputFile, Info);
+						Partition.bModified = true;
+					}
+
+					OutInfo = Info;
 					return true;
 				}
-
-				List<FileItem> DependencyItems = ReadDependenciesFile(InputFile.Location);
-				DependencyFileToInfo.TryAdd(InputFile, new DependencyInfo(InputFile.LastWriteTimeUtc.Ticks, DependencyItems));
-				bModified = true;
-
-				OutDependencyItems = DependencyItems;
-				return true;
 			}
+
+			OutInfo = null;
+			return false;
 		}
 
 		/// <summary>
@@ -165,11 +309,9 @@ namespace UnrealBuildTool
 		/// <param name="TargetType">The target type</param>
 		/// <param name="Architecture">The target architecture</param>
 		/// <returns>Dependency cache hierarchy for the given project</returns>
-		public static CppDependencyCache CreateHierarchy(FileReference ProjectFile, string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, TargetType TargetType, string Architecture)
+		public void Mount(FileReference? ProjectFile, string TargetName, UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, TargetType TargetType, string Architecture)
 		{
-			CppDependencyCache Cache = null;
-
-			if (ProjectFile == null || !UnrealBuildTool.IsEngineInstalled())
+			if (ProjectFile == null || !Unreal.IsEngineInstalled())
 			{
 				string AppName;
 				if (TargetType == TargetType.Program)
@@ -181,17 +323,15 @@ namespace UnrealBuildTool
 					AppName = UEBuildTarget.GetAppNameForTargetType(TargetType);
 				}
 
-				FileReference EngineCacheLocation = FileReference.Combine(UnrealBuildTool.EngineDirectory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architecture), AppName, Configuration.ToString(), "DependencyCache.bin");
-				Cache = FindOrAddCache(EngineCacheLocation, UnrealBuildTool.EngineDirectory, Cache);
+				FileReference EngineCacheLocation = FileReference.Combine(Unreal.EngineDirectory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architecture, false), AppName, Configuration.ToString(), "DependencyCache.bin");
+				FindOrAddPartition(EngineCacheLocation, Unreal.EngineDirectory);
 			}
 
 			if (ProjectFile != null)
 			{
-				FileReference ProjectCacheLocation = FileReference.Combine(ProjectFile.Directory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architecture), TargetName, Configuration.ToString(), "DependencyCache.bin");
-				Cache = FindOrAddCache(ProjectCacheLocation, ProjectFile.Directory, Cache);
+				FileReference ProjectCacheLocation = FileReference.Combine(ProjectFile.Directory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architecture, false), TargetName, Configuration.ToString(), "DependencyCache.bin");
+				FindOrAddPartition(ProjectCacheLocation, ProjectFile.Directory);
 			}
-
-			return Cache;
 		}
 
 		/// <summary>
@@ -199,24 +339,21 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Location">File to store the cache</param>
 		/// <param name="BaseDir">Base directory for files that this cache should store data for</param>
-		/// <param name="Parent">The parent cache to use</param>
 		/// <returns>Reference to a dependency cache with the given settings</returns>
-		static CppDependencyCache FindOrAddCache(FileReference Location, DirectoryReference BaseDir, CppDependencyCache Parent)
+		void FindOrAddPartition(FileReference Location, DirectoryReference BaseDir)
 		{
-			lock (Caches)
+			lock (GlobalPartitions)
 			{
-				CppDependencyCache Cache;
-				if (Caches.TryGetValue(Location, out Cache))
+				if (!Partitions.Any(x => x.Location == Location))
 				{
-					Debug.Assert(Cache.BaseDir == BaseDir);
-					Debug.Assert(Cache.Parent == Parent);
+					CachePartition? Partition;
+					if (!GlobalPartitions.TryGetValue(Location, out Partition))
+					{
+						Partition = new CachePartition(Location, BaseDir);
+						GlobalPartitions.Add(Location, Partition);
+					}
+					Partitions.Add(Partition);
 				}
-				else
-				{
-					Cache = new CppDependencyCache(Location, BaseDir, Parent);
-					Caches.Add(Location, Cache);
-				}
-				return Cache;
 			}
 		}
 
@@ -225,73 +362,20 @@ namespace UnrealBuildTool
 		/// </summary>
 		public static void SaveAll()
 		{
-			Parallel.ForEach(Caches.Values, Cache => { if (Cache.bModified) { Cache.Write(); } });
+			Parallel.ForEach(GlobalPartitions.Values, Cache => { if (Cache.bModified) { Cache.Write(); } });
 		}
 
-		/// <summary>
-		/// Reads data for this dependency cache from disk
-		/// </summary>
-		private void Read()
-		{
-			try
-			{
-				using (BinaryArchiveReader Reader = new BinaryArchiveReader(Location))
-				{
-					int Version = Reader.ReadInt();
-					if (Version != CurrentVersion)
-					{
-						Log.TraceLog("Unable to read dependency cache from {0}; version {1} vs current {2}", Location, Version, CurrentVersion);
-						return;
-					}
-
-					int Count = Reader.ReadInt();
-					for (int Idx = 0; Idx < Count; Idx++)
-					{
-						FileItem File = Reader.ReadFileItem();
-						DependencyFileToInfo[File] = DependencyInfo.Read(Reader);
-					}
-				}
-			}
-			catch (Exception Ex)
-			{
-				Log.TraceWarning("Unable to read {0}. See log for additional information.", Location);
-				Log.TraceLog("{0}", ExceptionUtils.FormatExceptionDetails(Ex));
-			}
-		}
-
-		/// <summary>
-		/// Writes data for this dependency cache to disk
-		/// </summary>
-		private void Write()
-		{
-			DirectoryReference.CreateDirectory(Location.Directory);
-			using (FileStream Stream = File.Open(Location.FullName, FileMode.Create, FileAccess.Write, FileShare.Read))
-			{
-				using (BinaryArchiveWriter Writer = new BinaryArchiveWriter(Stream))
-				{
-					Writer.WriteInt(CurrentVersion);
-
-					Writer.WriteInt(DependencyFileToInfo.Count);
-					foreach (KeyValuePair<FileItem, DependencyInfo> Pair in DependencyFileToInfo)
-					{
-						Writer.WriteFileItem(Pair.Key);
-						Pair.Value.Write(Writer);
-					}
-				}
-			}
-			bModified = false;
-		}
 
 		/// <summary>
 		/// Reads dependencies from the given file.
 		/// </summary>
 		/// <param name="InputFile">The file to read from</param>
 		/// <returns>List of included dependencies</returns>
-		static List<FileItem> ReadDependenciesFile(FileReference InputFile)
+		static DependencyInfo ReadDependencyInfo(FileItem InputFile)
 		{
 			if (InputFile.HasExtension(".d"))
 			{
-				string Text = FileReference.ReadAllText(InputFile);
+				string Text = FileReference.ReadAllText(InputFile.Location);
 
 				List<string> Tokens = new List<string>();
 
@@ -309,7 +393,7 @@ namespace UnrealBuildTool
 
 				if (TokenIdx + 1 >= Tokens.Count || Tokens[TokenIdx + 1] != ":")
 				{
-					throw new BuildException("Unable to parse dependency file");
+					throw new BuildException($"Unable to parse dependency file {InputFile.Location}");
 				}
 
 				TokenIdx += 2;
@@ -327,14 +411,14 @@ namespace UnrealBuildTool
 
 				if (TokenIdx != Tokens.Count)
 				{
-					throw new BuildException("Unable to parse dependency file");
+					throw new BuildException($"Unable to parse dependency file {InputFile.Location}");
 				}
 
-				return NewDependencyFiles;
+				return new DependencyInfo(InputFile.LastWriteTimeUtc.Ticks, null, null, NewDependencyFiles);
 			}
 			else if (InputFile.HasExtension(".txt"))
 			{
-				string[] Lines = FileReference.ReadAllLines(InputFile);
+				string[] Lines = FileReference.ReadAllLines(InputFile.Location);
 
 				HashSet<FileItem> DependencyItems = new HashSet<FileItem>();
 				foreach (string Line in Lines)
@@ -349,7 +433,78 @@ namespace UnrealBuildTool
 						}
 					}
 				}
-				return DependencyItems.ToList();
+				return new DependencyInfo(InputFile.LastWriteTimeUtc.Ticks, null, null, DependencyItems.ToList());
+			}
+			else if (InputFile.HasExtension(".json"))
+			{
+				// https://docs.microsoft.com/en-us/cpp/build/reference/sourcedependencies?view=msvc-160&viewFallbackFrom=vs-2019
+
+				JsonObject Object = JsonObject.Read(InputFile.Location);
+
+				if (!Object.TryGetStringField("Version", out string? Version))
+				{
+					throw new BuildException(
+						$"Dependency file \"{InputFile.Location}\" does not have have a \"Version\" field.");
+				}
+
+				if (!String.Equals(Version, "1.1") &&
+					!String.Equals(Version, "1.0"))
+				{
+					throw new BuildException(
+						$"Dependency file \"{InputFile.Location}\" version (\"{Version}\") is not supported version");
+				}
+
+				JsonObject? Data;
+				if (!Object.TryGetObjectField("Data", out Data))
+				{
+					throw new BuildException("Missing 'Data' field in {0}", InputFile);
+				}
+
+				Data.TryGetStringField("ProvidedModule", out string? ProducedModule);
+
+				List<(string Name, string BMI)>? ImportedModules = null;
+
+				if (String.Equals(Version, "1.1") && !InputFile.HasExtension(".md.json"))
+				{
+					if (Data.TryGetObjectArrayField("ImportedModules", out JsonObject[]? ImportedModulesJson))
+					{
+						if (ImportedModulesJson.Count() > 0)
+						{
+							ImportedModules = new List<(string Name, string BMI)>();
+
+							foreach (JsonObject ImportedModule in ImportedModulesJson)
+							{
+								ImportedModule.TryGetStringField("Name", out string? Name);
+								ImportedModule.TryGetStringField("BMI", out string? BMI);
+
+								ImportedModules.Add((Name!, BMI!));
+							}
+						}
+					}
+				}
+				else
+				{ 
+					if (Data.TryGetStringArrayField("ImportedModules", out string[]? ImportedModuleArray) && ImportedModuleArray.Length > 0)
+					{
+						ImportedModules =
+							new List<(string Name, string BMI)>(ImportedModuleArray.ConvertAll(x => (x, "")));
+					}
+				}
+
+				List<FileItem> Files = new List<FileItem>();
+				{
+					Data.TryGetStringArrayField("Includes", out string[]? Includes);
+
+					if (Includes != null)
+					{
+						foreach (string Include in Includes)
+						{
+							Files.Add(FileItem.GetItemByPath(Include));
+						}
+					}
+				}
+
+				return new DependencyInfo(InputFile.LastWriteTimeUtc.Ticks, ProducedModule, ImportedModules, Files);
 			}
 			else
 			{

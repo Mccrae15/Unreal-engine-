@@ -13,11 +13,11 @@ public:
 	FDisplayClusterWarpBlendMath_WarpMap(const IDisplayClusterRenderTexture& InWarpMap)
 		: Width(InWarpMap.GetWidth())
 		, Height(InWarpMap.GetHeight())
-		, Data((FVector4*)InWarpMap.GetData())
+		, Data((FVector4f*)InWarpMap.GetData())
 	{ }
 
 public:
-	FBox GetAABBox()
+	FBox GetAABBox() const
 	{
 		FBox AABBox = FBox(FVector(FLT_MAX, FLT_MAX, FLT_MAX), FVector(-FLT_MAX, -FLT_MAX, -FLT_MAX));
 
@@ -26,7 +26,7 @@ public:
 		{
 			for (int32 X = 0; X < Width; ++X)
 			{
-				const FVector4& Pts = (Data)[(X + Y * Width)];
+				const FVector4f& Pts = GetPoint(X,Y);
 				if (Pts.W > 0)
 				{
 					AABBox.Min.X = FMath::Min(AABBox.Min.X, Pts.X);
@@ -82,17 +82,17 @@ public:
 		return GetPointIndex(ValidPointX, ValidPointY);
 	}
 
-	int32 GetPointIndex(int32 InX, int32 InY)
+	FORCEINLINE int32 GetPointIndex(int32 InX, int32 InY) const
 	{
 		return InX + InY * Width;
 	}
 
-	const FVector4& GetPoint(int32 InX, int32 InY)
+	FORCEINLINE const FVector4f& GetPoint(int32 InX, int32 InY) const
 	{
 		return Data[GetPointIndex(InX, InY)];
 	}
 
-	const FVector4& GetPoint(int32 PointIndex)
+	FORCEINLINE const FVector4f& GetPoint(int32 PointIndex) const
 	{
 		return Data[PointIndex];
 	}
@@ -127,19 +127,19 @@ public:
 		{
 			for (int32 ItX = 0; ItX < (Width - 2); ++ItX)
 			{
-				const FVector4& Pts0 = GetPoint(ItX, ItY);
-				const FVector4& Pts1 = GetPoint(ItX + 1, ItY);
-				const FVector4& Pts2 = GetPoint(ItX, ItY + 1);
+				const FVector4f& Pts0 = GetPoint(ItX, ItY);
+				const FVector4f& Pts1 = GetPoint(ItX + 1, ItY);
+				const FVector4f& Pts2 = GetPoint(ItX, ItY + 1);
 
 				if (Pts0.W > 0 && Pts1.W > 0 && Pts2.W > 0)
 				{
-					const FVector N1 = Pts1 - Pts0;
-					const FVector N2 = Pts2 - Pts0;
+					const FVector N1 = FVector4(Pts1 - Pts0);
+					const FVector N2 = FVector4(Pts2 - Pts0);
 					const FVector N = FVector::CrossProduct(N2, N1).GetSafeNormal();
 
-					for (int32 i = 0; i < 3; i++)
+					for (int32 AxisIndex = 0; AxisIndex < 3; AxisIndex++)
 					{
-						Nxyz[i] += N[i];
+						Nxyz[AxisIndex] += N[AxisIndex];
 					}
 
 					Ncount++;
@@ -148,9 +148,9 @@ public:
 		}
 
 		double Scale = double(1) / Ncount;
-		for (int32 i = 0; i < 3; i++)
+		for (int32 AxisIndex = 0; AxisIndex < 3; AxisIndex++)
 		{
-			Nxyz[i] *= Scale;
+			Nxyz[AxisIndex] *= Scale;
 		}
 
 		return FVector(Nxyz[0], Nxyz[1], Nxyz[2]).GetSafeNormal();
@@ -158,17 +158,17 @@ public:
 
 	FVector GetSurfaceViewPlane()
 	{
-		const FVector4& Pts0 = GetValidPoint(0, 0);
-		const FVector4& Pts1 = GetValidPoint(Width - 1, 0);
-		const FVector4& Pts2 = GetValidPoint(0, Height - 1);
+		const FVector4f& Pts0 = GetValidPoint(0, 0);
+		const FVector4f& Pts1 = GetValidPoint(Width - 1, 0);
+		const FVector4f& Pts2 = GetValidPoint(0, Height - 1);
 
-		const FVector N1 = Pts1 - Pts0;
-		const FVector N2 = Pts2 - Pts0;
+		const FVector N1 = FVector4(Pts1 - Pts0);
+		const FVector N2 = FVector4(Pts2 - Pts0);
 		return FVector::CrossProduct(N2, N1).GetSafeNormal();
 	}
 
 private:
-	const FVector4& GetValidPoint(int32 InX, int32 InY)
+	const FVector4f& GetValidPoint(int32 InX, int32 InY)
 	{
 		if (!IsValidPoint(InX, InY))
 		{
@@ -183,16 +183,16 @@ private:
 
 	bool FindValidPointInRange(int32 Range)
 	{
-		for (int32 i = -Range; i <= Range; i++)
+		for (int32 RangeIt = -Range; RangeIt <= Range; RangeIt++)
 		{
 			// Top or bottom rows
-			if (IsValid(X0 + i, Y0 - Range) || IsValid(X0 + i, Y0 + Range))
+			if (IsValid(X0 + RangeIt, Y0 - Range) || IsValid(X0 + RangeIt, Y0 + Range))
 			{
 				return true;
 			}
 
 			// Left or Right columns
-			if (IsValid(X0 - Range, Y0 + i) || IsValid(X0 + Range, Y0 + i))
+			if (IsValid(X0 - Range, Y0 + RangeIt) || IsValid(X0 + Range, Y0 + RangeIt))
 			{
 				return true;
 			}
@@ -224,7 +224,7 @@ private:
 private:
 	const int32 Width;
 	const int32 Height;
-	const FVector4* Data;
+	const FVector4f* Data;
 
 	// Internal logic
 	int32 ValidPointX = 0;

@@ -15,7 +15,7 @@
 // WARNING: This should always be the last include in any file that needs it (except .generated.h)
 #include "UObject/UndefineUPropertyMacros.h"
 
-namespace UE4MapProperty_Private
+namespace UEMapProperty_Private
 {
 	/**
 	 * Checks if any of the pairs in the map compare equal to the one passed.
@@ -283,7 +283,7 @@ bool FMapProperty::Identical(const void* A, const void* B, uint32 PortFlags) con
 		return false;
 	}
 
-	return UE4MapProperty_Private::IsPermutation(MapHelperA, MapHelperB, PortFlags);
+	return UEMapProperty_Private::IsPermutation(MapHelperA, MapHelperB, PortFlags);
 }
 
 void FMapProperty::GetPreloadDependencies(TArray<UObject*>& OutDeps)
@@ -331,70 +331,110 @@ void FMapProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 		{
 			CopyValuesInternal(Value, Defaults, 1);
 		}
-		else
-		{
-			MapHelper.EmptyValues();
-		}
 
-		uint8* TempKeyValueStorage = nullptr;
-		ON_SCOPE_EXIT
+		// Delete any explicitly-removed elements
+		int32 NumKeysToRemove = 0;
+		FStructuredArchive::FArray KeysToRemoveArray = Record.EnterArray(SA_FIELD_NAME(TEXT("KeysToRemove")), NumKeysToRemove);
+
+		if (!Defaults || MapHelper.Num() == 0) // Faster loading path when loading into an empty map
 		{
-			if (TempKeyValueStorage)
+			if (NumKeysToRemove)
 			{
+				// Load and discard keys to remove, map is empty
+				void* TempKeyValueStorage = FMemory::Malloc(MapLayout.SetLayout.Size);
+				KeyProp->InitializeValue(TempKeyValueStorage);
+
+				FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
+				for (; NumKeysToRemove; --NumKeysToRemove)
+				{
+					KeyProp->SerializeItem(KeysToRemoveArray.EnterElement(), TempKeyValueStorage);
+				}
+
 				KeyProp->DestroyValue(TempKeyValueStorage);
 				FMemory::Free(TempKeyValueStorage);
 			}
-		};
 
-		// Delete any explicitly-removed keys
-		int32 NumKeysToRemove = 0;
-		FStructuredArchive::FArray KeysToRemoveArray = Record.EnterArray(SA_FIELD_NAME(TEXT("KeysToRemove")), NumKeysToRemove);
-		if (NumKeysToRemove)
-		{
-			TempKeyValueStorage = (uint8*)FMemory::Malloc(MapLayout.SetLayout.Size);
-			KeyProp->InitializeValue(TempKeyValueStorage);
+			int32 NumEntries = 0;
+			FStructuredArchive::FArray EntriesArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Entries")), NumEntries);
 
-			FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
-			for (; NumKeysToRemove; --NumKeysToRemove)
+			// Empty and reserve then deserialize pairs directly into map memory
+			MapHelper.EmptyValues(NumEntries);
+			for (; NumEntries; --NumEntries)
 			{
-				// Read key into temporary storage
-				KeyProp->SerializeItem(KeysToRemoveArray.EnterElement(), TempKeyValueStorage);
+				FStructuredArchive::FRecord EntryRecord = EntriesArray.EnterElement().EnterRecord();
+				int32 Index = MapHelper.AddDefaultValue_Invalid_NeedsRehash();
 
-				// If the key is in the map, remove it
-				if (uint8* PairPtr = MapHelper.FindMapPairPtrFromHash(TempKeyValueStorage))
 				{
-					MapHelper.RemovePair(PairPtr);
+					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
+					KeyProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), MapHelper.GetKeyPtr(Index));
+				}
+				{
+					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ValueProp, this);
+					ValueProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), MapHelper.GetValuePtr(Index));
 				}
 			}
+
+			MapHelper.Rehash();
 		}
-
-		int32 NumEntries = 0;
-		FStructuredArchive::FArray EntriesArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Entries")), NumEntries);
-
-		// Allocate temporary key space if we haven't allocated it already above
-		if (NumEntries != 0 && !TempKeyValueStorage)
+		else // Slower loading path that mutates non-empty map
 		{
-			TempKeyValueStorage = (uint8*)FMemory::Malloc(MapLayout.SetLayout.Size);
-			KeyProp->InitializeValue(TempKeyValueStorage);
-		}
-
-		// Read remaining items into container
-		for (; NumEntries; --NumEntries)
-		{
-			FStructuredArchive::FRecord EntryRecord = EntriesArray.EnterElement().EnterRecord();
-
-			// Read key into temporary storage
+			uint8* TempKeyValueStorage = nullptr;
+			ON_SCOPE_EXIT
 			{
+				if (TempKeyValueStorage)
+				{
+					KeyProp->DestroyValue(TempKeyValueStorage);
+					FMemory::Free(TempKeyValueStorage);
+				}
+			};
+
+			if (NumKeysToRemove)
+			{
+				TempKeyValueStorage = (uint8*)FMemory::Malloc(MapLayout.SetLayout.Size);
+				KeyProp->InitializeValue(TempKeyValueStorage);
+
 				FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
-				KeyProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), TempKeyValueStorage);
+				for (; NumKeysToRemove; --NumKeysToRemove)
+				{
+					// Read key into temporary storage
+					KeyProp->SerializeItem(KeysToRemoveArray.EnterElement(), TempKeyValueStorage);
+
+					// If the key is in the map, remove it
+					if (uint8* PairPtr = MapHelper.FindMapPairPtrFromHash(TempKeyValueStorage))
+					{
+						MapHelper.RemovePair(PairPtr);
+					}
+				}
 			}
 
-			void* ValuePtr = MapHelper.FindOrAdd(TempKeyValueStorage);
+			int32 NumEntries = 0;
+			FStructuredArchive::FArray EntriesArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Entries")), NumEntries);
 
-			// Deserialize value into hash map-owned memory
+			// Allocate temporary key space if we haven't allocated it already above
+			if (NumEntries != 0 && !TempKeyValueStorage)
 			{
-				FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ValueProp, this);
-				ValueProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), ValuePtr);
+				TempKeyValueStorage = (uint8*)FMemory::Malloc(MapLayout.SetLayout.Size);
+				KeyProp->InitializeValue(TempKeyValueStorage);
+			}
+
+			// Read remaining items into container
+			for (; NumEntries; --NumEntries)
+			{
+				FStructuredArchive::FRecord EntryRecord = EntriesArray.EnterElement().EnterRecord();
+
+				// Read key into temporary storage
+				{
+					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, KeyProp, this);
+					KeyProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Key"))), TempKeyValueStorage);
+				}
+
+				void* ValuePtr = MapHelper.FindOrAdd(TempKeyValueStorage);
+
+				// Deserialize value into hash map-owned memory
+				{
+					FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ValueProp, this);
+					ValueProp->SerializeItem(EntryRecord.EnterField(SA_FIELD_NAME(TEXT("Value"))), ValuePtr);
+				}
 			}
 		}
 	}
@@ -888,7 +928,7 @@ void FMapProperty::DestroyValueInternal(void* Data) const
 	FScriptMapHelper MapHelper(this, Data);
 	MapHelper.EmptyValues();
 
-	//@todo UE4 potential double destroy later from this...would be ok for a script map, but still
+	//@todo UE potential double destroy later from this...would be ok for a script map, but still
 	((FScriptMap*)Data)->~FScriptMap();
 }
 
@@ -1175,6 +1215,21 @@ EConvertFromTypeResult FMapProperty::ConvertFromType(const FPropertyTag& Tag, FS
 
 	return EConvertFromTypeResult::UseSerializeItem;
 }
+
+#if WITH_EDITORONLY_DATA
+void FMapProperty::AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const
+{
+	Super::AppendSchemaHash(Builder, bSkipEditorOnly);
+	if (KeyProp)
+	{
+		KeyProp->AppendSchemaHash(Builder, bSkipEditorOnly);
+	}
+	if (ValueProp)
+	{
+		ValueProp->AppendSchemaHash(Builder, bSkipEditorOnly);
+	}
+}
+#endif
 
 void FScriptMapHelper::Rehash()
 {

@@ -20,16 +20,13 @@
 			"Name" : "AESHandlerComponent",
 			"Type" : "Runtime",
 			"LoadingPhase" : "Default",
-			"WhitelistPlatforms":
+			"PlatformAllowList":
 			[
 				"Android",
 				"IOS",
 				"Mac",
-				"Win32",
 				"Win64",
 				"Linux",
-				"PS4",
-				"XboxOne" 
 			]
 		}
 	],
@@ -38,16 +35,13 @@
 		{
 			"Name": "PlatformCrypto",
 			"Enabled": true,
-			"WhitelistPlatforms":
+			"PlatformAllowList":
 			[
 				"Android",
 				"IOS",
 				"Mac",
-				"Win32",
 				"Win64",
 				"Linux",
-				"PS4",
-				"XboxOne" 
 			]
 		}
 	]

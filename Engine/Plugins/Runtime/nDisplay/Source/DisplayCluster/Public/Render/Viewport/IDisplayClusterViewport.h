@@ -24,6 +24,7 @@ public:
 
 public:
 	virtual FString GetId() const = 0;
+	virtual FString GetClusterNodeId() const = 0;
 
 	virtual const FDisplayClusterViewport_RenderSettings&      GetRenderSettings() const = 0;
 	virtual const FDisplayClusterViewport_RenderSettingsICVFX& GetRenderSettingsICVFX() const = 0;
@@ -45,4 +46,7 @@ public:
 	virtual void SetupSceneView(uint32 ContextNum, class UWorld* World, FSceneViewFamily& InViewFamily, FSceneView& InView) const = 0;
 
 	virtual class IDisplayClusterViewportManager& GetOwner() const = 0;
+
+	virtual void SetRenderSettings(const FDisplayClusterViewport_RenderSettings& InRenderSettings) = 0;
+	virtual void SetContexts(TArray<FDisplayClusterViewport_Context>& InContexts) = 0;
 };

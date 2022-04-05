@@ -31,6 +31,10 @@ bool FBlackmagic::Initialize()
 	FPlatformProcess::PushDllDirectory(*DllPath);
 	DllPath = FPaths::Combine(DllPath, VideoIODll);
 
+	//Need to add the path to our dll dependency for cooked game, otherwise it won't be found when launching
+	FString GPUTextureTransferDllPath = FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("MediaIOFramework"))->GetBaseDir(), TEXT("/Binaries/Win64"));
+	FPlatformProcess::PushDllDirectory(*GPUTextureTransferDllPath);
+
 	if (!FPaths::FileExists(DllPath))
 	{
 		UE_LOG(LogBlackmagicMedia, Error, TEXT("Failed to find the binary folder for the dll. Plug-in will not be functional."));
@@ -48,7 +52,7 @@ bool FBlackmagic::Initialize()
 	bCanForceBlackmagicUsage = FParse::Param(FCommandLine::Get(), TEXT("forceblackmagicusage"));
 
 #if !NO_LOGGING
-	BlackmagicDesign::SetLoggingCallbacks(&LogInfo, &LogWarning, &LogError);
+	BlackmagicDesign::SetLoggingCallbacks(&LogInfo, &LogWarning, &LogError, &LogVerbose);
 #endif // !NO_LOGGING
 
 	bInitialized = BlackmagicDesign::ApiInitialization();
@@ -63,7 +67,7 @@ bool FBlackmagic::Initialize()
 	bCanForceBlackmagicUsage = FParse::Param(FCommandLine::Get(), TEXT("forceblackmagicusage"));
 
 #if !NO_LOGGING
-	BlackmagicDesign::SetLoggingCallbacks(&LogInfo, &LogWarning, &LogError);
+	BlackmagicDesign::SetLoggingCallbacks(&LogInfo, &LogWarning, &LogError, &LogVerbose);
 #endif // !NO_LOGGING
 
 	bInitialized = BlackmagicDesign::ApiInitialization();
@@ -89,14 +93,13 @@ bool FBlackmagic::IsInitialized()
 
 void FBlackmagic::Shutdown()
 {
-#if BLACKMAGICMEDIA_DLL_PLATFORM
 	if (bInitialized)
+#if BLACKMAGICMEDIA_DLL_PLATFORM
 	{
 		bInitialized = false;
 		BlackmagicDesign::ApiUninitialization();
-
 #if !NO_LOGGING
-		BlackmagicDesign::SetLoggingCallbacks(nullptr, nullptr, nullptr);
+		BlackmagicDesign::SetLoggingCallbacks(nullptr, nullptr, nullptr, nullptr);
 #endif // !NO_LOGGING
 	}
 
@@ -112,7 +115,7 @@ void FBlackmagic::Shutdown()
 		BlackmagicDesign::ApiUninitialization();
 
 #if !NO_LOGGING
-		BlackmagicDesign::SetLoggingCallbacks(nullptr, nullptr, nullptr);
+		BlackmagicDesign::SetLoggingCallbacks(nullptr, nullptr, nullptr, nullptr);
 #endif // !NO_LOGGING
 	}
 #endif // BLACKMAGICMEDIA_DLL_PLATFORM
@@ -157,5 +160,19 @@ void FBlackmagic::LogError(const TCHAR* InFormat, ...)
 	va_end(Args);
 
 	UE_LOG(LogBlackmagicMedia, Error, TempString);
+#endif // !NO_LOGGING
+}
+
+void FBlackmagic::LogVerbose(const TCHAR* InFormat, ...)
+{
+#if !NO_LOGGING
+	TCHAR TempString[1024];
+	va_list Args;
+
+	va_start(Args, InFormat);
+	FCString::GetVarArgs(TempString, UE_ARRAY_COUNT(TempString), InFormat, Args);
+	va_end(Args);
+
+	UE_LOG(LogBlackmagicMedia, Verbose, TempString);
 #endif // !NO_LOGGING
 }

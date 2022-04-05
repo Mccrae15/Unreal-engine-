@@ -192,3 +192,46 @@ inline uint32 FCrc::Strihash_DEPRECATED(const int32 DataLen, const WIDECHAR* Dat
 	}
 	return Hash;
 }
+
+template <>
+inline uint32 FCrc::Strihash_DEPRECATED(const UTF8CHAR* Data)
+{
+	// We can't utilize StringConv.h here due to circular includes, so do the conversion manually
+
+	int32 Len          = FPlatformString::Strlen(Data);
+	int32 ConvertedLen = FPlatformString::ConvertedLength<WIDECHAR>(Data, Len);
+
+	WIDECHAR* Temp = new WIDECHAR[ConvertedLen];
+
+	WIDECHAR* TempEnd = FPlatformString::Convert(Temp, ConvertedLen, Data, Len);
+	checkf(TempEnd, TEXT("String conversion unsuccessful"));
+
+	// This doesn't work for strings containing characters outside the BMP, but
+	// then neither does the WIDECHAR overload.
+	uint32 Result = FCrc::Strihash_DEPRECATED(ConvertedLen, Temp);
+
+	delete [] Temp;
+
+	return Result;
+}
+
+template <>
+inline uint32 FCrc::Strihash_DEPRECATED(const int32 DataLen, const UTF8CHAR* Data)
+{
+	// We can't utilize StringConv.h here due to circular includes, so do the conversion manually
+
+	int32 ConvertedLen = FPlatformString::ConvertedLength<WIDECHAR>(Data, DataLen);
+
+	WIDECHAR* Temp = new WIDECHAR[ConvertedLen];
+
+	WIDECHAR* TempEnd = FPlatformString::Convert(Temp, ConvertedLen, Data, DataLen);
+	checkf(TempEnd, TEXT("String conversion unsuccessful"));
+
+	// This doesn't work for strings containing characters outside the BMP, but
+	// then neither does the WIDECHAR overload.
+	uint32 Result = FCrc::Strihash_DEPRECATED(ConvertedLen, Temp);
+
+	delete [] Temp;
+
+	return Result;
+}

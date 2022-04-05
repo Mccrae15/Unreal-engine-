@@ -15,8 +15,11 @@ class IOnlinePartyJoinInfo;
 class FOnlineUserPresence;
 class UPartyMember;
 struct FOnlineError;
+class IOnlinePartyRequestToJoinInfo;
 enum class EPartyInvitationRemovedReason : uint8;
 enum class EPlatformIconDisplayRule : uint8;
+enum class ERequestToJoinPartyCompletionResult : int8;
+enum class EPartyRequestToJoinRemovedReason : uint8;
 typedef TSharedRef<const IOnlinePartyJoinInfo> IOnlinePartyJoinInfoConstRef;
 typedef TSharedPtr<const IOnlinePartyJoinInfo> IOnlinePartyJoinInfoConstPtr;
 
@@ -78,8 +81,10 @@ public:
 	bool IsPlayingThisGame() const;
 	
 	virtual bool CanReceiveOfflineInvite() const { return false; }
+	virtual int64 GetInteractionScore() const { return 0;  }
 	virtual int64 GetCustomSortValuePrimary() const { return 0; }
 	virtual int64 GetCustomSortValueSecondary() const { return 0; }
+	virtual int64 GetCustomSortValueTertiary() const { return 0; }
 
 	bool SetUserLocalAttribute(ESocialSubsystem SubsystemType, const FString& AttrName, const FString& AttrValue);
 	bool GetUserAttribute(ESocialSubsystem SubsystemType, const FString& AttrName, FString& OutAttrValue) const;
@@ -93,12 +98,24 @@ public:
 	virtual bool RejectFriendInvite(ESocialSubsystem SocialSubsystem) const;
 	virtual bool EndFriendship(ESocialSubsystem SocialSubsystem) const;
 
+	TMap<FString, FString> GetAnalyticsContext() const { return AnalyticsContext; }
+	void WithContext(const TMap<FString, FString>& InAnalyticsContext, void(*Func)(USocialUser&));
+
 	bool ShowPlatformProfile();
 
 	void HandlePartyInviteReceived(const IOnlinePartyJoinInfo& Invite);
 	void HandlePartyInviteRemoved(const IOnlinePartyJoinInfo& Invite, EPartyInvitationRemovedReason Reason);
 
-	IOnlinePartyJoinInfoConstPtr GetPartyJoinInfo(const FOnlinePartyTypeId& PartyTypeId) const;
+	virtual bool CanRequestToJoin() const { return false; }
+	virtual bool HasRequestedToJoinUs() const { return false; }
+	void HandleRequestToJoinSent(const FDateTime& ExpiresAt);
+	void HandleRequestToJoinReceived(const IOnlinePartyRequestToJoinInfo& Request);
+	void HandleRequestToJoinRemoved(const IOnlinePartyRequestToJoinInfo& Request, EPartyRequestToJoinRemovedReason Reason);
+	void RequestToJoinParty();
+	void AcceptRequestToJoinParty() const;
+	void DismissRequestToJoinParty() const;
+
+	virtual IOnlinePartyJoinInfoConstPtr GetPartyJoinInfo(const FOnlinePartyTypeId& PartyTypeId) const;
 
 	bool HasSentPartyInvite(const FOnlinePartyTypeId& PartyTypeId) const;
 	FJoinPartyResult CheckPartyJoinability(const FOnlinePartyTypeId& PartyTypeId) const;
@@ -107,7 +124,7 @@ public:
 
 	bool HasBeenInvitedToParty(const FOnlinePartyTypeId& PartyTypeId) const;
 	bool CanInviteToParty(const FOnlinePartyTypeId& PartyTypeId) const;
-	bool InviteToParty(const FOnlinePartyTypeId& PartyTypeId) const;
+	bool InviteToParty(const FOnlinePartyTypeId& PartyTypeId, const ESocialPartyInviteMethod InviteMethod = ESocialPartyInviteMethod::Other) const;
 
 	virtual bool BlockUser(ESocialSubsystem Subsystem) const;
 	virtual bool UnblockUser(ESocialSubsystem Subsystem) const;
@@ -168,7 +185,11 @@ protected:
 	virtual void OnPartyInviteRejectedInternal(const FOnlinePartyTypeId& PartyTypeId) const;
 	virtual void HandleSetNicknameComplete(int32 LocalUserNum, const FUniqueNetId& FriendId, const FString& ListName, const FOnlineError& Error);
 	virtual void SetSubsystemId(ESocialSubsystem SubsystemType, const FUniqueNetIdRepl& SubsystemId);
+	virtual void NotifyRequestToJoinSent(const FDateTime& ExpiresAt) {}
+	virtual void NotifyRequestToJoinReceived(const IOnlinePartyRequestToJoinInfo& Request) {}
+	virtual void NotifyRequestToJoinRemoved(const IOnlinePartyRequestToJoinInfo& Request, EPartyRequestToJoinRemovedReason Reason) {}
 	int32 NumPendingQueries = 0;
+	TMap<FString, FString> AnalyticsContext;
 
 	void TryBroadcastInitializationComplete();
 

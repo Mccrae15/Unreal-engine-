@@ -73,7 +73,7 @@ class MEDIAASSETS_API UMediaTexture
 	uint8 NumMips;
 
 	/** Enable new style output (default = false). */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "MediaTexture", meta = (DisplayName = "Enable new style output"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MediaTexture", meta = (DisplayName = "Enable new style output"))
 	bool NewStyleOutput;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MediaTexture", meta = (DisplayName = "Output format (new style)"))
@@ -141,6 +141,13 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Media|MediaTexture")
 	void SetMediaPlayer(UMediaPlayer* NewMediaPlayer);
+	
+	/**
+	 * Creates a new resource for the texture, and updates any cached references to the resource.
+	 * This obviously is just an override to expose to blueprints.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Media|MediaTexture")
+	virtual void UpdateResource() override  { Super::UpdateResource(); }
 
 	/**
 	 * Caches the next available sample time from the queue when last rendering was made
@@ -195,6 +202,8 @@ public:
 	virtual EMaterialValueType GetMaterialType() const override;
 	virtual float GetSurfaceWidth() const override;
 	virtual float GetSurfaceHeight() const override;
+	virtual float GetSurfaceDepth() const override { return 0; }
+	virtual uint32 GetSurfaceArraySize() const override { return 0; }
 	virtual FGuid GetExternalTextureGuid() const override;
 	void SetRenderedExternalTextureGuid(const FGuid& InNewGuid);
 
@@ -237,7 +246,7 @@ protected:
 	 * @see SetMediaPlayer
 	 */
 	UPROPERTY(EditAnywhere, Category="Media")
-	UMediaPlayer* MediaPlayer;
+	TObjectPtr<UMediaPlayer> MediaPlayer;
 
 private:
 
@@ -266,6 +275,9 @@ private:
 
 	/** The previously used sRGB flag. */
 	bool LastSrgb;
+
+	/** True if the texture has been cleared. */
+	bool bIsCleared;
 
 	/** Texture sample queue. */
 	TSharedPtr<FMediaTextureSampleQueue, ESPMode::ThreadSafe> SampleQueue;

@@ -2,7 +2,7 @@
 
 #include "LocalizationTargetDetailCustomization.h"
 #include "LocalizationTargetTypes.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/MessageDialog.h"
 #include "Internationalization/Culture.h"
 #include "Misc/ConfigCacheIni.h"
@@ -541,7 +541,7 @@ void FLocalizationTargetDetailCustomization::OnTargetNameCommitted(const FText& 
 
 			if (TargetNamePropertyHandle.IsValid() && TargetNamePropertyHandle->IsValidHandle())
 			{
-				TargetNamePropertyHandle->NotifyPostChange();
+				TargetNamePropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 			}
 		}
 	}
@@ -761,7 +761,7 @@ void FLocalizationTargetDetailCustomization::RebuildTargetsList()
 
 		for (const FGuid& OtherTargetDependencyGuid : OtherTarget->Settings.TargetDependencies)
 		{
-			ULocalizationTarget** const OtherTargetDependency = TargetSet->TargetObjects.FindByPredicate([OtherTargetDependencyGuid](ULocalizationTarget* SomeLocalizationTarget)->bool{return SomeLocalizationTarget->Settings.Guid == OtherTargetDependencyGuid;});
+			TObjectPtr<ULocalizationTarget>* const OtherTargetDependency = TargetSet->TargetObjects.FindByPredicate([OtherTargetDependencyGuid](ULocalizationTarget* SomeLocalizationTarget)->bool{return SomeLocalizationTarget->Settings.Guid == OtherTargetDependencyGuid;});
 			if (OtherTargetDependency && DoesTargetDependOnUs(*OtherTargetDependency))
 			{
 				return true;
@@ -839,7 +839,7 @@ void FLocalizationTargetDetailCustomization::OnTargetDependencyCheckStateChanged
 
 	if (TargetDependenciesPropertyHandle.IsValid() && TargetDependenciesPropertyHandle->IsValidHandle())
 	{
-		TargetDependenciesPropertyHandle->NotifyPostChange();
+		TargetDependenciesPropertyHandle->NotifyPostChange(State == ECheckBoxState::Checked ? EPropertyChangeType::ArrayAdd : EPropertyChangeType::ArrayRemove);
 	}
 
 	RebuildTargetDependenciesBox();
@@ -1129,7 +1129,7 @@ void FLocalizationTargetDetailCustomization::UpdateTargetFromReports()
 		LocalizationTarget->UpdateStatusFromConflictReport();
 		for (const TSharedPtr<IPropertyHandle>& WordCountPropertyHandle : WordCountPropertyHandles)
 		{
-			WordCountPropertyHandle->NotifyPostChange();
+			WordCountPropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 		}
 	}
 }

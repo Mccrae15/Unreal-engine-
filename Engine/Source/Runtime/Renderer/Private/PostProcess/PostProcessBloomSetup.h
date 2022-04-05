@@ -19,20 +19,7 @@ enum class EBloomQuality : uint32
 
 EBloomQuality GetBloomQuality();
 
-struct FBloomInputs
-{
-	FScreenPassTexture SceneColor;
-
-	const FSceneDownsampleChain* SceneDownsampleChain = nullptr;
-};
-
-struct FBloomOutputs
-{
-	FScreenPassTexture SceneColor;
-	FScreenPassTexture Bloom;
-};
-
-FBloomOutputs AddBloomPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FBloomInputs& Inputs);
+FScreenPassTexture AddGaussianBloomPasses(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FSceneDownsampleChain* SceneDownsampleChain);
 
 struct FBloomSetupInputs
 {

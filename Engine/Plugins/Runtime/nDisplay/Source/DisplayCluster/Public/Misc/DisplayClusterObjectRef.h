@@ -197,6 +197,11 @@ public:
 		return !ComponentName.IsNone() && IsDefinedSceneActor();
 	}
 
+	bool IsSceneComponentValid() const
+	{
+		return ComponentPtr.IsValid() && !ComponentPtr.IsStale();
+	}
+
 	// Return component object ptr.
 	// For killed object ptr, reset and find component new object ptr by name and save to [mutable] ComponentPtr
 	USceneComponent* GetOrFindSceneComponent() const;
@@ -207,7 +212,7 @@ public:
 
 		ResetSceneComponent();
 
-		if (InComponent && SetSceneActor(InComponent->GetOwner()))
+		if (InComponent != nullptr && SetSceneActor(InComponent->GetOwner()))
 		{
 			ComponentName = InComponent->GetFName();
 			ComponentPtr = TWeakObjectPtr<USceneComponent>(InComponent);
@@ -227,13 +232,18 @@ public:
 		ComponentPtr.Reset();
 	}
 
+	bool IsEqualsComponentName(const FName& InComponentName) const
+	{
+		return ComponentName == InComponentName;
+	}
+
 private:
 	// Find component new object ptr by name and save to ComponentPtr
 	FName   ComponentName;
 	mutable TWeakObjectPtr<USceneComponent> ComponentPtr;
 };
 
-USTRUCT()
+USTRUCT(meta = (HideChildren))
 struct DISPLAYCLUSTER_API FDisplayClusterComponentRef
 {
 	GENERATED_BODY()

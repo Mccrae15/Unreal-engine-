@@ -25,6 +25,8 @@
 
 #define LOCTEXT_NAMESPACE "ClothPaintingModule"
 
+const FName PaintModeID = "ClothPaintMode";
+
 IMPLEMENT_MODULE(FClothPaintingModule, ClothPainter);
 
 DECLARE_DELEGATE_OneParam(FOnToggleClothPaintMode, bool);
@@ -135,7 +137,7 @@ void FClothPaintingModule::RegisterMenus()
 					FClothPainterCommands::Get().TogglePaintMode,
 					TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateRaw(this, &FClothPaintingModule::GetPaintToolsButtonText, Context->SkeletalMeshEditor)),
 					TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateRaw(this, &FClothPaintingModule::GetPaintToolsButtonToolTip, Context->SkeletalMeshEditor)),
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.MeshPaintMode.TexturePaint")
+					FSlateIcon(FAppStyle::Get().GetStyleSetName(), "MeshPaint.Brush")
 				));	
 			}
 		}));

@@ -8,9 +8,9 @@
 #include "RHITextureTests.h"
 
 
-BEGIN_DEFINE_SPEC(FAutomationExpectedErrorTest, "System.Automation.RHI", EAutomationTestFlags::EngineFilter | EAutomationTestFlags::ApplicationContextMask)
-END_DEFINE_SPEC(FAutomationExpectedErrorTest)
-void FAutomationExpectedErrorTest::Define()
+BEGIN_DEFINE_SPEC(FAutomationRHITest, "System.Automation.RHI", EAutomationTestFlags::EngineFilter | EAutomationTestFlags::ApplicationContextMask)
+END_DEFINE_SPEC(FAutomationRHITest)
+void FAutomationRHITest::Define()
 {
 	Describe("Test RHI Clear", [this]()
 	{
@@ -48,6 +48,12 @@ void FAutomationExpectedErrorTest::Define()
 		{
 			bool bResult = RunOnRenderThreadSynchronous(FRHITextureTests::Test_RHIClearUAV_Texture3D);
 			TestEqual("Clear Texture3D failed", bResult, 1);
+		});
+
+		It("RHI Formats", [this]()
+		{
+			bool bResult = RunOnRenderThreadSynchronous(FRHITextureTests::Test_RHIFormats);
+			TestEqual("RHI Formats failed", bResult, 1);
 		});
 	});
 

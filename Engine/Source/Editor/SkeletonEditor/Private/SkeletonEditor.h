@@ -10,12 +10,15 @@
 #include "IDetailsView.h"
 #include "ISkeletonEditor.h"
 #include "Containers/ArrayView.h"
+#include "IAnimationSequenceBrowser.h"
 
 class IPersonaToolkit;
 class IPersonaViewport;
 class ISkeletonTree;
 class USkeleton;
 class ISkeletonTreeItem;
+
+struct FToolMenuContext;
 
 namespace SkeletonEditorModes
 {
@@ -29,6 +32,7 @@ namespace SkeletonEditorTabs
 	extern const FName DetailsTab;
 	extern const FName SkeletonTreeTab;
 	extern const FName ViewportTab;
+	extern const FName AssetBrowserTab;
 	extern const FName AnimNotifiesTab;
 	extern const FName CurveNamesTab;
 	extern const FName AdvancedPreviewTab;
@@ -56,6 +60,12 @@ public:
 	virtual FText GetBaseToolkitName() const override;
 	virtual FString GetWorldCentricTabPrefix() const override;
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;
+	virtual void InitToolMenuContext(FToolMenuContext& MenuContext) override;
+
+	virtual IAnimationSequenceBrowser* GetAssetBrowser() const override;
+
+	/** Handle opening a new asset from the asset browser */
+	void HandleOpenNewAsset(UObject* InNewAsset);
 
 	/** FEditorUndoClient interface */
 	virtual void PostUndo(bool bSuccess) override;
@@ -69,7 +79,7 @@ public:
 	/** @return the documentation location for this editor */
 	virtual FString GetDocumentationLink() const override
 	{
-		return FString(TEXT("Engine/Animation/SkeletonEditor"));
+		return FString(TEXT("AnimatingObjects/SkeletalMeshAnimation/Persona/Modes/Skeleton"));
 	}
 
 	/** Get the skeleton tree widget */
@@ -86,6 +96,7 @@ public:
 
 	void HandleDetailsCreated(const TSharedRef<class IDetailsView>& InDetailsView);
 
+	void HandleAnimationSequenceBrowserCreated(const TSharedRef<class IAnimationSequenceBrowser>& InSequenceBrowser);
 private:
 	void ExtendMenu();
 
@@ -135,4 +146,7 @@ private:
 
 	/** Details panel */
 	TSharedPtr<class IDetailsView> DetailsView;
+
+	/** Sequence Browser **/
+	TWeakPtr<class IAnimationSequenceBrowser> SequenceBrowser;
 };

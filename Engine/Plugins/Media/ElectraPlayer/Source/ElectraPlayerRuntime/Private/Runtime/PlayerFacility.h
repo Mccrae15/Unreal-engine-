@@ -40,6 +40,8 @@ namespace Electra
 			DASHFMP4Reader,
 			EntityCache,
 			DRM,
+			H265Decoder,
+			SubtitleDecoder,
 			LastEntry = 255
 		};
 
@@ -101,6 +103,10 @@ namespace Electra
 					return TEXT("Entity cache");
 				case EFacility::DRM:
 					return TEXT("DRM");
+				case EFacility::H265Decoder:
+					return TEXT("H.265 decoder");
+				case EFacility::SubtitleDecoder:
+					return TEXT("Subtitle decoder");
 			}
 			return TEXT("???");
 		}

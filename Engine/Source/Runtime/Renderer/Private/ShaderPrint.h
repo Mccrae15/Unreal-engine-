@@ -12,17 +12,18 @@
 
 #include "RenderGraph.h"
 #include "Templates/RefCounting.h"
+#include "ScreenPass.h"
 
-class FRHICommandListImmediate;
 class FViewInfo;
-struct IPooledRenderTarget;
 
 namespace ShaderPrint
 {
 	// Does the platform support the ShaderPrint system?
-	bool IsSupported(FViewInfo const& View);
+	bool IsSupported(const EShaderPlatform Platform);
 	// Have we enabled the ShaderPrint system?
 	bool IsEnabled();
+	// Call this to know if a view can render this debug information
+	bool IsEnabled(const FViewInfo& View);
 
 	// Accessors for controlling from code: enabling/disabling, font size, and max drawn element
 	void SetEnabled(bool bInEnabled);
@@ -30,9 +31,9 @@ namespace ShaderPrint
 	void SetMaxValueCount(int32 InMaxCount);
 
 	// Allocate the debug print buffer associated with the view
-	void BeginView(FRHICommandListImmediate& RHICmdList, FViewInfo& View);
+	void BeginView(FRDGBuilder& GraphBuilder, FViewInfo& View);
 	// Draw info from the debug print buffer to the given output target
-	void DrawView(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef OutputTexture);
+	void DrawView(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture OutputTexture);
 	// Release the debug print buffer associated with the view
 	void EndView(FViewInfo& View);
 }

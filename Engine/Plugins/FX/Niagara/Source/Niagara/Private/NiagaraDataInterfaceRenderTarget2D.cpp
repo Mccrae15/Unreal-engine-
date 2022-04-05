@@ -9,13 +9,12 @@
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 
-#include "NiagaraEmitterInstanceBatcher.h"
 #include "NiagaraSettings.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraRenderer.h"
-#if WITH_EDITOR
 #include "NiagaraGpuComputeDebug.h"
-#endif
+#include "NiagaraGpuComputeDispatchInterface.h"
+#include "NiagaraGPUProfilerInterface.h"
 #include "NiagaraStats.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceRenderTarget2D"
@@ -33,6 +32,8 @@ const FName UNiagaraDataInterfaceRenderTarget2D::SetSizeFunctionName("SetRenderT
 const FName UNiagaraDataInterfaceRenderTarget2D::GetSizeFunctionName("GetRenderTargetSize");
 const FName UNiagaraDataInterfaceRenderTarget2D::LinearToIndexName("LinearToIndex");
 
+static const FName GNiagaraRenderTarget2DGenerateMipsName("RenderTarget2D::GenerateMips");
+
 FNiagaraVariableBase UNiagaraDataInterfaceRenderTarget2D::ExposedRTVar;
 
 int32 GNiagaraReleaseResourceOnRemove = false;
@@ -40,6 +41,15 @@ static FAutoConsoleVariableRef CVarNiagaraReleaseResourceOnRemove(
 	TEXT("fx.Niagara.RenderTarget.ReleaseResourceOnRemove"),
 	GNiagaraReleaseResourceOnRemove,
 	TEXT("Releases the render target resource once it is removed from the manager list rather than waiting for a GC."),
+	ECVF_Default
+);
+
+//-TEMP: Until we prune data interface on cook this will avoid consuming memory
+int32 GNiagaraRenderTargetIgnoreCookedOut = true;
+static FAutoConsoleVariableRef CVarNiagaraRenderTargetIgnoreCookedOut(
+	TEXT("fx.Niagara.RenderTarget.IgnoreCookedOut"),
+	GNiagaraRenderTargetIgnoreCookedOut,
+	TEXT("Ignores create render targets for cooked out emitter, i.e. ones that are not used by any GPU emitter."),
 	ECVF_Default
 );
 
@@ -58,6 +68,86 @@ static FAutoConsoleVariableRef CVarNiagaraRenderTargetAllowReads(
 	TEXT("Enables read operations to be visible in the UI, very experimental."),
 	ECVF_Default
 );
+
+/*--------------------------------------------------------------------------------------------------------------------------*/
+
+static bool GNiagaraRenderTargetOverrideFormatEnabled = false;
+static ETextureRenderTargetFormat GNiagaraRenderTargetOverrideFormat = ETextureRenderTargetFormat::RTF_RGBA32f;
+
+static FAutoConsoleCommandWithWorldAndArgs GCommandNiagaraRenderTargetOverrideFormat(
+	TEXT("fx.Niagara.RenderTarget.OverrideFormat"),
+	TEXT("Optional global format override for all Niagara render targets"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld*)
+		{
+			static UEnum* TextureRenderTargetFormatEnum = StaticEnum<ETextureRenderTargetFormat>();
+			if ( ensure(TextureRenderTargetFormatEnum) )
+			{
+				if (Args.Num() == 1)
+				{
+					const int32 EnumIndex = TextureRenderTargetFormatEnum->GetIndexByNameString(Args[0]);
+					if (EnumIndex != INDEX_NONE)
+					{
+						GNiagaraRenderTargetOverrideFormatEnabled = true;
+						GNiagaraRenderTargetOverrideFormat = ETextureRenderTargetFormat(EnumIndex);
+					}
+					else
+					{
+						GNiagaraRenderTargetOverrideFormatEnabled = false;
+					}
+				}
+				UE_LOG(LogNiagara, Log, TEXT("Niagara RenderTarget Override is '%s' with format '%s'."), GNiagaraRenderTargetOverrideFormatEnabled ? TEXT("Enabled") : TEXT("Disabled"), *TextureRenderTargetFormatEnum->GetNameStringByIndex(int32(GNiagaraRenderTargetOverrideFormat)));
+			}
+		}
+	)
+);
+
+bool GetRenderTargetFormat(bool bOverrideFormat, ETextureRenderTargetFormat OverrideFormat, ETextureRenderTargetFormat& OutRenderTargetFormat)
+{
+	OutRenderTargetFormat = bOverrideFormat ? OverrideFormat : GetDefault<UNiagaraSettings>()->DefaultRenderTargetFormat.GetValue();
+	EPixelFormat PixelFormat = GetPixelFormatFromRenderTargetFormat(OutRenderTargetFormat);
+	if (GNiagaraRenderTargetOverrideFormatEnabled)
+	{
+		OutRenderTargetFormat = GNiagaraRenderTargetOverrideFormat;
+	}
+
+	// If the format does not support typed store we need to find one that will
+	while ( RHIIsTypedUAVStoreSupported(GetPixelFormatFromRenderTargetFormat(OutRenderTargetFormat)) == false )
+	{
+		static const TPair<ETextureRenderTargetFormat, ETextureRenderTargetFormat> FormatRemapTable[] =
+		{
+			TPairInitializer(RTF_R8,			RTF_R16f),
+			TPairInitializer(RTF_RG8,			RTF_RG16f),
+			TPairInitializer(RTF_RGBA8,			RTF_RGBA16f),
+			TPairInitializer(RTF_RGBA8_SRGB,	RTF_RGBA16f),
+			TPairInitializer(RTF_R16f,			RTF_R32f),
+			TPairInitializer(RTF_RG16f,			RTF_RG32f),
+			TPairInitializer(RTF_RGBA16f,		RTF_RGBA32f),
+			TPairInitializer(RTF_R32f,			RTF_RGBA32f),
+			TPairInitializer(RTF_RG32f,			RTF_RGBA32f),
+			TPairInitializer(RTF_RGBA32f,		RTF_RGBA32f),
+			TPairInitializer(RTF_RGB10A2,		RTF_RGBA32f),
+		};
+
+		const ETextureRenderTargetFormat PreviousFormat = OutRenderTargetFormat;
+		for ( const auto& FormatRemap : FormatRemapTable)
+		{
+			if (FormatRemap.Key == OutRenderTargetFormat)
+			{
+				OutRenderTargetFormat = FormatRemap.Value;
+				break;
+			}
+		}
+		if ( PreviousFormat == OutRenderTargetFormat)
+		{
+			// This is fatal as we failed to find any format that supports typed UAV stores
+			UE_LOG(LogNiagara, Warning, TEXT("Failed to find a render target format that supports UAV store"));
+			return false;
+		}
+	}
+
+	return true;
+}
 
 /*--------------------------------------------------------------------------------------------------------------------------*/
 
@@ -84,7 +174,7 @@ public:
 		OutputParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRenderTarget2D::OutputName + ParameterInfo.DataInterfaceHLSLSymbol));
 
 		InputParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRenderTarget2D::InputName + ParameterInfo.DataInterfaceHLSLSymbol));
-		InputSamplerStateParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRenderTarget2D::InputName + TEXT("SamplerState") + ParameterInfo.DataInterfaceHLSLSymbol));
+		InputSamplerStateParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRenderTarget2D::InputName + ParameterInfo.DataInterfaceHLSLSymbol + TEXT("SamplerState")));
 	}
 
 	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
@@ -108,11 +198,12 @@ public:
 				// FIXME: this transition needs to happen in FNiagaraDataInterfaceProxyRenderTarget2DProxy::PreStage so it doesn't break up the overlap group,
 				// but for some reason it stops working if I move it in there.
 				RHICmdList.Transition(FRHITransitionInfo(OutputUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-				ProxyData->bWasWrittenTo = true;
+				ProxyData->bRebuildMips = true;
+				ProxyData->bWroteThisFrame = true;
 			}
 			else
 			{
-				OutputUAV = Context.Batcher->GetEmptyUAVFromPool(RHICmdList, EPixelFormat::PF_A16B16G16R16, ENiagaraEmptyUAVType::Buffer);
+				OutputUAV = Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, EPixelFormat::PF_A16B16G16R16, ENiagaraEmptyUAVType::Buffer);
 			}
 
 			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputParam.GetUAVIndex(), OutputUAV);
@@ -120,6 +211,8 @@ public:
 
 		if ( InputParam.IsBound() )
 		{
+			ProxyData->bReadThisFrame = true;
+
 			FRHITexture* TextureRHI = ProxyData->TextureRHI;
 			if (!ensureMsgf(!OutputParam.IsUAVBound(), TEXT("NiagaraDIRenderTarget2D(%s) is bound as both read & write, read will be ignored."), *Context.DataInterface->SourceDIName.ToString()))
 			{
@@ -399,6 +492,7 @@ bool UNiagaraDataInterfaceRenderTarget2D::Equals(const UNiagaraDataInterface* Ot
 		OtherTyped->RenderTargetUserParameter == RenderTargetUserParameter &&
 		OtherTyped->Size == Size &&
 		OtherTyped->MipMapGeneration == MipMapGeneration &&
+		OtherTyped->MipMapGenerationType == MipMapGenerationType &&
 		OtherTyped->OverrideRenderTargetFormat == OverrideRenderTargetFormat &&
 		OtherTyped->bInheritUserParameterSettings == bInheritUserParameterSettings &&
 		OtherTyped->bOverrideFormat == bOverrideFormat;
@@ -419,6 +513,7 @@ bool UNiagaraDataInterfaceRenderTarget2D::CopyToInternal(UNiagaraDataInterface* 
 
 	DestinationTyped->Size = Size;
 	DestinationTyped->MipMapGeneration = MipMapGeneration;
+	DestinationTyped->MipMapGenerationType = MipMapGenerationType;
 	DestinationTyped->OverrideRenderTargetFormat = OverrideRenderTargetFormat;
 	DestinationTyped->bInheritUserParameterSettings = bInheritUserParameterSettings;
 	DestinationTyped->bOverrideFormat = bOverrideFormat;
@@ -538,10 +633,17 @@ bool UNiagaraDataInterfaceRenderTarget2D::InitPerInstanceData(void* PerInstanceD
 	FRenderTarget2DRWInstanceData_GameThread* InstanceData = new (PerInstanceData) FRenderTarget2DRWInstanceData_GameThread();
 	SystemInstancesToProxyData_GT.Emplace(SystemInstance->GetId(), InstanceData);
 
+	ETextureRenderTargetFormat RenderTargetFormat;
+	if ( GetRenderTargetFormat(bOverrideFormat, OverrideRenderTargetFormat, RenderTargetFormat) == false )
+	{
+		return false;
+	}
+
 	InstanceData->Size.X = FMath::Clamp<int>(int(float(Size.X) * GNiagaraRenderTargetResolutionMultiplier), 1, GMaxTextureDimensions);
 	InstanceData->Size.Y = FMath::Clamp<int>(int(float(Size.Y) * GNiagaraRenderTargetResolutionMultiplier), 1, GMaxTextureDimensions);
 	InstanceData->MipMapGeneration = MipMapGeneration;
-	InstanceData->Format = bOverrideFormat ? OverrideRenderTargetFormat : GetDefault<UNiagaraSettings>()->DefaultRenderTargetFormat;
+	InstanceData->MipMapGenerationType = MipMapGenerationType;
+	InstanceData->Format = RenderTargetFormat;
 	InstanceData->RTUserParamBinding.Init(SystemInstance->GetInstanceParameters(), RenderTargetUserParameter.Parameter);
 #if WITH_EDITORONLY_DATA
 	InstanceData->bPreviewTexture = bPreviewRenderTarget;
@@ -560,7 +662,7 @@ void UNiagaraDataInterfaceRenderTarget2D::DestroyPerInstanceData(void* PerInstan
 
 	FNiagaraDataInterfaceProxyRenderTarget2DProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyRenderTarget2DProxy>();
 	ENQUEUE_RENDER_COMMAND(FNiagaraDIDestroyInstanceData) (
-		[RT_Proxy, InstanceID=SystemInstance->GetId(), Batcher=SystemInstance->GetBatcher()](FRHICommandListImmediate& CmdList)
+		[RT_Proxy, InstanceID=SystemInstance->GetId()](FRHICommandListImmediate& CmdList)
 		{
 #if STATS
 			if (FRenderTarget2DRWInstanceData_RenderThread* TargetData = RT_Proxy->SystemInstancesToProxyData_RT.Find(InstanceID))
@@ -575,7 +677,8 @@ void UNiagaraDataInterfaceRenderTarget2D::DestroyPerInstanceData(void* PerInstan
 	);
 
 	// Make sure to clear out the reference to the render target if we created one.
-	UTextureRenderTarget2D* ExistingRenderTarget = nullptr;
+	using RenderTargetType = decltype(decltype(ManagedRenderTargets)::ElementType::Value);
+	RenderTargetType ExistingRenderTarget = nullptr;
 	if ( ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && GNiagaraReleaseResourceOnRemove)
 	{
 		ExistingRenderTarget->ReleaseResource();
@@ -619,23 +722,23 @@ bool UNiagaraDataInterfaceRenderTarget2D::RenderVariableToCanvas(FNiagaraSystemI
 		return false;
 	}
 
-	if ( !GT_InstanceData->TargetTexture || !GT_InstanceData->TargetTexture->Resource )
+	if ( !GT_InstanceData->TargetTexture || !GT_InstanceData->TargetTexture->GetResource())
 	{
 		return false;
 	}
 
 	Canvas->DrawTile(
 		DrawRect.Min.X, DrawRect.Min.Y, DrawRect.Width(), DrawRect.Height(),
-		0.0f, 0.0f, 1.0f, 1.0f,
+		0.0f, 1.0f, 1.0f, 0.0f,
 		FLinearColor::White,
-		GT_InstanceData->TargetTexture->Resource,
+		GT_InstanceData->TargetTexture->GetResource(),
 		false
 	);
 
 	return true;
 }
 
-void UNiagaraDataInterfaceRenderTarget2D::SetSize(FVectorVMContext& Context)
+void UNiagaraDataInterfaceRenderTarget2D::SetSize(FVectorVMExternalFunctionContext& Context)
 {
 	// This should only be called from a system or emitter script due to a need for only setting up initially.
 	VectorVM::FUserPtrHandler<FRenderTarget2DRWInstanceData_GameThread> InstData(Context);
@@ -644,11 +747,11 @@ void UNiagaraDataInterfaceRenderTarget2D::SetSize(FVectorVMContext& Context)
 	FNDIOutputParam<FNiagaraBool> OutSuccess(Context);
 
 	extern float GNiagaraRenderTargetResolutionMultiplier;
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		const int SizeX = InSizeX.GetAndAdvance();
 		const int SizeY = InSizeY.GetAndAdvance();
-		const bool bSuccess = (InstData.Get() != nullptr && Context.NumInstances == 1 && SizeX >= 0 && SizeY >= 0);
+		const bool bSuccess = (InstData.Get() != nullptr && Context.GetNumInstances() == 1 && SizeX >= 0 && SizeY >= 0);
 		OutSuccess.SetAndAdvance(bSuccess);
 		if (bSuccess)
 		{
@@ -658,13 +761,13 @@ void UNiagaraDataInterfaceRenderTarget2D::SetSize(FVectorVMContext& Context)
 	}
 }
 
-void UNiagaraDataInterfaceRenderTarget2D::GetSize(FVectorVMContext& Context)
+void UNiagaraDataInterfaceRenderTarget2D::GetSize(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FRenderTarget2DRWInstanceData_GameThread> InstData(Context);
 	VectorVM::FExternalFuncRegisterHandler<int> OutSizeX(Context);
 	VectorVM::FExternalFuncRegisterHandler<int> OutSizeY(Context);
 
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		*OutSizeX.GetDestAndAdvance() = InstData->Size.X;
 		*OutSizeY.GetDestAndAdvance() = InstData->Size.Y;
@@ -682,7 +785,7 @@ bool UNiagaraDataInterfaceRenderTarget2D::PerInstanceTick(void* PerInstanceData,
 	{
 		InstanceData->TargetTexture = UserTargetTexture;
 
-		UTextureRenderTarget2D* ExistingRenderTarget = nullptr;
+		TObjectPtr<UTextureRenderTarget2D> ExistingRenderTarget = nullptr;
 		if (ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && GNiagaraReleaseResourceOnRemove)
 		{
 			ExistingRenderTarget->ReleaseResource();
@@ -700,10 +803,12 @@ bool UNiagaraDataInterfaceRenderTarget2D::PerInstanceTick(void* PerInstanceData,
 			{
 				// We have to take a guess at user intention
 				InstanceData->MipMapGeneration = MipMapGeneration == ENiagaraMipMapGeneration::Disabled ? ENiagaraMipMapGeneration::PostStage : MipMapGeneration;
+				InstanceData->MipMapGenerationType = MipMapGenerationType;
 			}
 			else
 			{
 				InstanceData->MipMapGeneration = ENiagaraMipMapGeneration::Disabled;
+				InstanceData->MipMapGenerationType = ENiagaraMipMapGenerationType::Unfiltered;
 			}
 			InstanceData->Format = InstanceData->TargetTexture->RenderTargetFormat;
 		}
@@ -723,6 +828,12 @@ bool UNiagaraDataInterfaceRenderTarget2D::PerInstanceTickPostSimulate(void* PerI
 #if WITH_EDITORONLY_DATA
 	InstanceData->bPreviewTexture = bPreviewRenderTarget;
 #endif
+
+	//-TEMP: Until we prune data interface on cook this will avoid consuming memory
+	if (GNiagaraRenderTargetIgnoreCookedOut && !IsUsedWithGPUEmitter())
+	{
+		return false;
+	}
 
 	// Do we need to create a new texture?
 	if (!bInheritUserParameterSettings && (InstanceData->TargetTexture == nullptr))
@@ -746,7 +857,7 @@ bool UNiagaraDataInterfaceRenderTarget2D::PerInstanceTickPostSimulate(void* PerI
 			(InstanceData->TargetTexture->RenderTargetFormat != InstanceData->Format) ||
 			!InstanceData->TargetTexture->bCanCreateUAV ||
 			(InstanceData->TargetTexture->bAutoGenerateMips != bAutoGenerateMips) ||
-			!InstanceData->TargetTexture->Resource )
+			!InstanceData->TargetTexture->GetResource())
 		{
 			// resize RT to match what we need for the output
 			InstanceData->TargetTexture->bCanCreateUAV = true;
@@ -770,6 +881,7 @@ bool UNiagaraDataInterfaceRenderTarget2D::PerInstanceTickPostSimulate(void* PerI
 				FRenderTarget2DRWInstanceData_RenderThread* TargetData = &RT_Proxy->SystemInstancesToProxyData_RT.FindOrAdd(RT_InstanceID);
 				TargetData->Size = RT_InstanceData.Size;
 				TargetData->MipMapGeneration = RT_InstanceData.MipMapGeneration;
+				TargetData->MipMapGenerationType = RT_InstanceData.MipMapGenerationType;
 			#if WITH_EDITORONLY_DATA
 				TargetData->bPreviewTexture = RT_InstanceData.bPreviewTexture;
 			#endif
@@ -799,53 +911,53 @@ void FNiagaraDataInterfaceProxyRenderTarget2DProxy::PostStage(FRHICommandList& R
 {
 	if (FRenderTarget2DRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID))
 	{
-		if (ProxyData->bWasWrittenTo && (ProxyData->MipMapGeneration == ENiagaraMipMapGeneration::PostStage))
+		if (ProxyData->bRebuildMips && (ProxyData->MipMapGeneration == ENiagaraMipMapGeneration::PostStage))
 		{
-			ProxyData->bWasWrittenTo = false;
-
-			check(&RHICmdList == &FRHICommandListExecutor::GetImmediateCommandList());
-
-			FMemMark MemMark(FMemStack::Get());
-			FRDGBuilder GraphBuilder(FRHICommandListExecutor::GetImmediateCommandList());
-			TRefCountPtr<IPooledRenderTarget> PoolRenderTarget = CreateRenderTarget(ProxyData->TextureRHI, TEXT("NiagaraRenderTarget2D"));
-			FRDGTextureRef MipOutputTexture = GraphBuilder.RegisterExternalTexture(PoolRenderTarget);
-			FGenerateMips::Execute(GraphBuilder, MipOutputTexture);
-			GraphBuilder.Execute();
+			ProxyData->bRebuildMips = false;
+			FNiagaraGpuProfileScope GpuProfileScope(RHICmdList, Context, GNiagaraRenderTarget2DGenerateMipsName);
+			NiagaraGenerateMips::GenerateMips(RHICmdList, ProxyData->TextureRHI, ProxyData->MipMapGenerationType);
 		}
 	}
 }
 
 void FNiagaraDataInterfaceProxyRenderTarget2DProxy::PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context)
 {
-	if (FRenderTarget2DRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID))
+	FRenderTarget2DRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
+	if (ProxyData == nullptr)
 	{
-		if (ProxyData->bWasWrittenTo && (ProxyData->MipMapGeneration == ENiagaraMipMapGeneration::PostSimulate))
+		return;
+	}
+
+	if (ProxyData->bRebuildMips && (ProxyData->MipMapGeneration == ENiagaraMipMapGeneration::PostSimulate))
+	{
+		FNiagaraGpuProfileScope GpuProfileScope(RHICmdList, Context, GNiagaraRenderTarget2DGenerateMipsName);
+		NiagaraGenerateMips::GenerateMips(RHICmdList, ProxyData->TextureRHI, ProxyData->MipMapGenerationType);
+	}
+
+	// We only need to transfer this frame if it was written to.
+	// If also read then we need to notify that the texture is important for the simulation
+	// We also assume the texture is important for rendering, without discovering renderer bindings we don't really know
+	if (ProxyData->bWroteThisFrame)
+	{
+		Context.ComputeDispatchInterface->MultiGPUResourceModified(RHICmdList, ProxyData->TextureRHI, ProxyData->bReadThisFrame, true);
+	}
+
+	ProxyData->bRebuildMips = false;
+	ProxyData->bReadThisFrame = false;
+	ProxyData->bWroteThisFrame = false;
+
+#if NIAGARA_COMPUTEDEBUG_ENABLED && WITH_EDITORONLY_DATA
+	if (ProxyData->bPreviewTexture)
+	{
+		if (FNiagaraGpuComputeDebug* GpuComputeDebug = Context.ComputeDispatchInterface->GetGpuComputeDebug())
 		{
-			ProxyData->bWasWrittenTo = false;
-
-			check(&RHICmdList == &FRHICommandListExecutor::GetImmediateCommandList());
-
-			FMemMark MemMark(FMemStack::Get());
-			FRDGBuilder GraphBuilder(FRHICommandListExecutor::GetImmediateCommandList());
-			TRefCountPtr<IPooledRenderTarget> PoolRenderTarget = CreateRenderTarget(ProxyData->TextureRHI, TEXT("NiagaraRenderTarget2D"));
-			FRDGTextureRef MipOutputTexture = GraphBuilder.RegisterExternalTexture(PoolRenderTarget);
-			FGenerateMips::Execute(GraphBuilder, MipOutputTexture);
-			GraphBuilder.Execute();
-		}
-
-#if NIAGARA_COMPUTEDEBUG_ENABLED
-		if (ProxyData->bPreviewTexture)
-		{
-			if (FNiagaraGpuComputeDebug* GpuComputeDebug = Context.Batcher->GetGpuComputeDebug())
+			if (FRHITexture* RHITexture = ProxyData->TextureRHI)
 			{
-				if (FRHITexture* RHITexture = ProxyData->TextureRHI)
-				{
-					GpuComputeDebug->AddTexture(RHICmdList, Context.SystemInstanceID, SourceDIName, RHITexture);
-				}
+				GpuComputeDebug->AddTexture(RHICmdList, Context.SystemInstanceID, SourceDIName, RHITexture);
 			}
 		}
-#endif
 	}
+#endif
 }
 
 FIntVector FNiagaraDataInterfaceProxyRenderTarget2DProxy::GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const

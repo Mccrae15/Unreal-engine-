@@ -35,13 +35,12 @@ public:
 	void Construct(const FArguments& Args)
 	{
 		FSlateIcon IconBrush = FSlateIcon(FRenderDocPluginStyle::Get()->GetStyleSetName(), "RenderDocPlugin.CaptureFrameIcon");
-		
+	
 		ChildSlot
 		[
 			SNew(SButton)
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Bottom)
-			.ButtonStyle(FEditorStyle::Get(), "ViewportMenu.Button")
 			.ContentPadding(FMargin(1.0f))
 			.ToolTipText(FRenderDocPluginCommands::Get().CaptureFrameCommand->GetDescription())
 			.OnClicked_Lambda([this]() 
@@ -58,27 +57,11 @@ public:
 };
 
 FRenderDocPluginEditorExtension::FRenderDocPluginEditorExtension(FRenderDocPluginModule* ThePlugin)
-	: LoadedDelegateHandle()
-	, ToolbarExtension()
+	: ToolbarExtension()
 	, ExtensionManager()
 	, ToolbarExtender()
-	, IsEditorInitialized(false)
 {
-	// Defer Level Editor UI extensions until Level Editor has been loaded:
-	if (FModuleManager::Get().IsModuleLoaded("LevelEditor"))
-	{
-		Initialize(ThePlugin);
-	}
-	else
-	{
-		FModuleManager::Get().OnModulesChanged().AddLambda([this, ThePlugin](FName name, EModuleChangeReason reason)
-		{
-			if ((name == "LevelEditor") && (reason == EModuleChangeReason::ModuleLoaded))
-			{
-				Initialize(ThePlugin);
-			}
-		});
-	}
+	Initialize(ThePlugin);
 }
 
 FRenderDocPluginEditorExtension::~FRenderDocPluginEditorExtension()
@@ -112,58 +95,42 @@ void FRenderDocPluginEditorExtension::Initialize(FRenderDocPluginModule* ThePlug
 	FRenderDocPluginStyle::Initialize();
 	FRenderDocPluginCommands::Register();
 
-	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-	TSharedRef<FUICommandList> CommandBindings = LevelEditorModule.GetGlobalLevelEditorActions();
-	ExtensionManager = LevelEditorModule.GetToolBarExtensibilityManager();
-	ToolbarExtender = MakeShareable(new FExtender);
-	ToolbarExtension = ToolbarExtender->AddToolBarExtension("CameraSpeed", EExtensionHook::After, CommandBindings,
-		FToolBarExtensionDelegate::CreateLambda([this, ThePlugin](FToolBarBuilder& ToolbarBuilder)
-	{ 
-		AddToolbarExtension(ToolbarBuilder, ThePlugin); })
-	);
-	ExtensionManager->AddExtender(ToolbarExtender);
+#if WITH_EDITOR
+	if (!IsRunningGame())
+	{
+		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+		TSharedRef<FUICommandList> CommandBindings = LevelEditorModule.GetGlobalLevelEditorActions();
+		ExtensionManager = LevelEditorModule.GetToolBarExtensibilityManager();
+		ToolbarExtender = MakeShareable(new FExtender);
+		ToolbarExtension = ToolbarExtender->AddToolBarExtension("CameraSpeed", EExtensionHook::After, CommandBindings,
+			FToolBarExtensionDelegate::CreateLambda([this, ThePlugin](FToolBarBuilder& ToolbarBuilder)
+				{
+					AddToolbarExtension(ToolbarBuilder, ThePlugin); 
+				})
+		);
+		ExtensionManager->AddExtender(ToolbarExtender);
+	}
+#endif // WITH_EDITOR
 
-	IsEditorInitialized = false;
-	FSlateRenderer* SlateRenderer = FSlateApplication::Get().GetRenderer();
-	LoadedDelegateHandle = SlateRenderer->OnSlateWindowRendered().AddRaw(this, &FRenderDocPluginEditorExtension::OnEditorLoaded);
-}
-
-void FRenderDocPluginEditorExtension::OnEditorLoaded(SWindow& SlateWindow, void* ViewportRHIPtr)
-{
 	// Would be nice to use the preprocessor definition WITH_EDITOR instead, but the user may launch a standalone the game through the editor...
-	if (GEditor == nullptr)
+	if (GEditor != nullptr)
 	{
-		return;
-	}
+		check(FPlayWorldCommands::GlobalPlayWorldActions.IsValid());
 
-	if (IsInGameThread())
-	{
-		FSlateRenderer* SlateRenderer = FSlateApplication::Get().GetRenderer();
-		SlateRenderer->OnSlateWindowRendered().Remove(LoadedDelegateHandle);
-	}
-
-	if (IsEditorInitialized)
-	{
-		return;
-	}
-	IsEditorInitialized = true;
-
-	if(FPlayWorldCommands::GlobalPlayWorldActions.IsValid())
-	{
 		//Register the editor hotkeys
 		FPlayWorldCommands::GlobalPlayWorldActions->MapAction(FRenderDocPluginCommands::Get().CaptureFrameCommand,
-			FExecuteAction::CreateLambda([]() 
-			{	
-				FRenderDocPluginModule& PluginModule = FModuleManager::GetModuleChecked<FRenderDocPluginModule>("RenderDocPlugin");
-				PluginModule.CaptureFrame(nullptr, IRenderCaptureProvider::ECaptureFlags_Launch, FString()); 
-			}),
+			FExecuteAction::CreateLambda([]()
+		{
+			FRenderDocPluginModule& PluginModule = FModuleManager::GetModuleChecked<FRenderDocPluginModule>("RenderDocPlugin");
+			PluginModule.CaptureFrame(nullptr, IRenderCaptureProvider::ECaptureFlags_Launch, FString());
+		}),
 			FCanExecuteAction());
- 	}
 
-	const URenderDocPluginSettings* Settings = GetDefault<URenderDocPluginSettings>();
-	if (Settings->bShowHelpOnStartup)
-	{
-		GEditor->EditorAddModalWindow(SNew(SRenderDocPluginHelpWindow));
+		const URenderDocPluginSettings* Settings = GetDefault<URenderDocPluginSettings>();
+		if (Settings->bShowHelpOnStartup)
+		{
+			GEditor->EditorAddModalWindow(SNew(SRenderDocPluginHelpWindow));
+		}
 	}
 }
 

@@ -79,8 +79,8 @@ public:
 	TManagedArray<int32> CollisionStructureID;
 	TManagedArray<int32> DynamicState;
 	TManagedArray<FSharedImplicit> Implicits;
-	TManagedArray<FVector> InitialAngularVelocity;
-	TManagedArray<FVector> InitialLinearVelocity;
+	TManagedArray<FVector3f> InitialAngularVelocity;
+	TManagedArray<FVector3f> InitialLinearVelocity;
 	TManagedArray<FTransform> MassToLocal;
 	//TManagedArray<TArray<FCollisionFilterData>> ShapeQueryData;
 	//TManagedArray<TArray<FCollisionFilterData>> ShapeSimData;
@@ -88,6 +88,31 @@ public:
 	TManagedArray<bool> SimulatableParticles;
 };
 
+
+class FGeometryCollectioPerFrameData
+{
+public:
+	FGeometryCollectioPerFrameData()
+		: IsWorldTransformDirty(false) {}
+
+	const FTransform& GetWorldTransform() const { return WorldTransform; }
+
+	void SetWorldTransform(const FTransform& InWorldTransform)
+	{
+		if (!WorldTransform.Equals(InWorldTransform))
+		{
+			WorldTransform = InWorldTransform;
+			IsWorldTransformDirty = true;
+		}
+	}
+
+	bool GetIsWorldTransformDirty() const { return IsWorldTransformDirty; }
+	void ResetIsWorldTransformDirty() { IsWorldTransformDirty = false; }
+
+private:
+	FTransform WorldTransform;
+	bool IsWorldTransformDirty;
+};
 
 /**
  * Buffer structure for communicating simulation state between game and physics
@@ -104,42 +129,25 @@ public:
 
 	void InitArrays(const FGeometryDynamicCollection& Other)
 	{
-		// Managed arrays
-		Transforms.Init(Other.Transform);
-		DynamicState.Init(Other.DynamicState);
-		Parent.Init(Other.Parent);
-		Children.Init(Other.Children);
-		SimulationType.Init(Other.SimulationType);
-
-		// Arrays
 		const int32 NumTransforms = Other.NumElements(FGeometryCollection::TransformGroup);
 		DisabledStates.SetNumUninitialized(NumTransforms);
 		GlobalTransforms.SetNumUninitialized(NumTransforms);
 		ParticleToWorldTransforms.SetNumUninitialized(NumTransforms);
+
+		Transforms.SetNumUninitialized(NumTransforms);
+		Parent.SetNumUninitialized(NumTransforms);
+		DynamicState.SetNumUninitialized(NumTransforms);
 	}
 
-	float SolverDt;
-	int32 BaseIndex;
-	int32 NumParticlesAdded;
+	Chaos::FReal SolverDt;
 	TArray<bool> DisabledStates;
 	TArray<FMatrix> GlobalTransforms;
 	TArray<FTransform> ParticleToWorldTransforms;
 
-	TManagedArray<int32> TransformIndex;
-
-	TManagedArray<FTransform> Transforms;
-	TManagedArray<int32> BoneMap;
-	TManagedArray<int32> Parent;
-	TManagedArray<TSet<int32>> Children;
-	TManagedArray<int32> SimulationType;
-	TManagedArray<int32> DynamicState;
-	TManagedArray<float> Mass;
-	TManagedArray<FVector> InertiaTensor;
-
-	TManagedArray<int32> ClusterId;
-
+	TArray<FTransform> Transforms;
+	TArray<int32> Parent;
+	TArray<int32> DynamicState;
+	
 	bool IsObjectDynamic;
 	bool IsObjectLoading;
-
-	FBoxSphereBounds WorldBounds;
 };

@@ -90,6 +90,7 @@ FCoreDelegates::FPakSigningKeysDelegate& FCoreDelegates::GetPakSigningKeysDelega
 FSimpleMulticastDelegate FCoreDelegates::OnShutdownAfterError;
 FSimpleMulticastDelegate FCoreDelegates::OnInit;
 FSimpleMulticastDelegate FCoreDelegates::OnPostEngineInit;
+FSimpleMulticastDelegate FCoreDelegates::OnAllModuleLoadingPhasesComplete;
 FSimpleMulticastDelegate FCoreDelegates::OnFEngineLoopInitComplete;
 FSimpleMulticastDelegate FCoreDelegates::OnExit;
 FSimpleMulticastDelegate FCoreDelegates::OnPreExit;
@@ -192,7 +193,11 @@ FCoreDelegates::FOnGCFinishDestroyTimeExtended FCoreDelegates::OnGCFinishDestroy
 
 FCoreDelegates::FAccesExtraBinaryConfigData FCoreDelegates::AccessExtraBinaryConfigData;
 
+FCoreDelegates::FPreloadPackageShaderMaps FCoreDelegates::PreloadPackageShaderMaps;
+FCoreDelegates::FReleasePreloadedPackageShaderMaps FCoreDelegates::ReleasePreloadedPackageShaderMaps;
 FCoreDelegates::FOnLogVerbosityChanged FCoreDelegates::OnLogVerbosityChanged;
+
+FCoreDelegates::FCreatePackageStore FCoreDelegates::CreatePackageStore;
 
 FCoreDelegates::FApplicationNetworkInitializationChanged FCoreDelegates::ApplicationNetworkInitializationChanged;
 

@@ -4,16 +4,15 @@
 #include "NiagaraRenderer.h"
 #include "NiagaraConstants.h"
 #include "NiagaraRendererComponents.h"
+#include "NiagaraComponent.h"
 #include "Modules/ModuleManager.h"
 #if WITH_EDITOR
 #include "Editor.h"
 #include "Widgets/Images/SImage.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/SWidget.h"
-#include "Styling/SlateBrush.h"
 #include "AssetThumbnail.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Editor.h"
 #endif
 #include "NiagaraSettings.h"
 
@@ -37,7 +36,13 @@ bool UNiagaraComponentRendererProperties::IsConvertible(const FNiagaraTypeDefini
 	if ((SourceType == FNiagaraTypeDefinition::GetColorDef() && TargetType.GetStruct() == GetFColorDef().GetStruct()) ||
 		(SourceType == FNiagaraTypeDefinition::GetVec3Def() && TargetType.GetStruct() == GetFColorDef().GetStruct()) ||
 		(SourceType == FNiagaraTypeDefinition::GetVec3Def() && TargetType.GetStruct() == GetFRotatorDef().GetStruct()) ||
+		(SourceType == FNiagaraTypeDefinition::GetVec2Def() && TargetType.GetStruct() == GetFVector2DDef().GetStruct()) ||
+		(SourceType == FNiagaraTypeDefinition::GetVec3Def() && TargetType.GetStruct() == GetFVectorDef().GetStruct()) ||
+		(SourceType == FNiagaraTypeDefinition::GetVec4Def() && TargetType.GetStruct() == GetFVector4Def().GetStruct()) ||
 		(SourceType == FNiagaraTypeDefinition::GetVec4Def() && TargetType.GetStruct() == GetFColorDef().GetStruct()) ||
+		(SourceType == FNiagaraTypeDefinition::GetQuatDef() && TargetType.GetStruct() == GetFQuatDef().GetStruct()) ||
+		(SourceType == FNiagaraTypeDefinition::GetPositionDef() && TargetType.GetStruct() == GetFVectorDef().GetStruct()) ||
+		(SourceType == FNiagaraTypeDefinition::GetPositionDef() && TargetType.GetStruct() == GetFVector3fDef().GetStruct()) ||
 		(SourceType == FNiagaraTypeDefinition::GetQuatDef() && TargetType.GetStruct() == GetFRotatorDef().GetStruct()))
 	{
 		return true;
@@ -65,6 +70,31 @@ NIAGARA_API FNiagaraTypeDefinition UNiagaraComponentRendererProperties::ToNiagar
 		FStructProperty* StructProperty = (FStructProperty*)Property;
 		if (StructProperty->Struct)
 		{
+			if (StructProperty->Struct->GetFName() == NAME_Vector2D || StructProperty->Struct->GetFName() == NAME_Vector2d) 
+			{
+				return GetFVector2DDef();
+			}
+
+			if (StructProperty->Struct->GetFName() == NAME_Vector || StructProperty->Struct->GetFName() == NAME_Vector3d)
+			{
+				return GetFVectorDef();
+			}
+
+			if (StructProperty->Struct->GetFName() == NAME_Vector4 || StructProperty->Struct->GetFName() == NAME_Vector4d)
+			{
+				return GetFVector4Def();
+			}
+
+			if (StructProperty->Struct->GetFName() == NAME_Quat || StructProperty->Struct->GetFName() == NAME_Quat4d)
+			{
+				return GetFQuatDef();
+			}
+
+			if (StructProperty->Struct->GetFName() == FName("NiagaraPosition"))
+			{
+				return FNiagaraTypeDefinition::GetPositionStruct();
+			}
+
 			return FNiagaraTypeDefinition(StructProperty->Struct);
 		}
 	}
@@ -103,34 +133,64 @@ FNiagaraTypeDefinition UNiagaraComponentRendererProperties::GetFRotatorDef()
 	return FNiagaraTypeDefinition(RotatorStruct);
 }
 
+FNiagaraTypeDefinition UNiagaraComponentRendererProperties::GetFVector2DDef()
+{
+	static UPackage* CoreUObjectPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/CoreUObject"));
+	static UScriptStruct* VectorStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector2D"));
+	return FNiagaraTypeDefinition(VectorStruct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+}
+
+FNiagaraTypeDefinition UNiagaraComponentRendererProperties::GetFVectorDef()
+{
+	static UPackage* CoreUObjectPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/CoreUObject"));
+	static UScriptStruct* VectorStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector"));
+	return FNiagaraTypeDefinition(VectorStruct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+}
+
+FNiagaraTypeDefinition UNiagaraComponentRendererProperties::GetFVector4Def()
+{
+	static UPackage* CoreUObjectPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/CoreUObject"));
+	static UScriptStruct* Vector4Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector4"));
+	return FNiagaraTypeDefinition(Vector4Struct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+}
+
+FNiagaraTypeDefinition UNiagaraComponentRendererProperties::GetFVector3fDef()
+{
+	static UPackage* CoreUObjectPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/CoreUObject"));
+	static UScriptStruct* VectorStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector3f"));
+	return FNiagaraTypeDefinition(VectorStruct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+}
+
+FNiagaraTypeDefinition UNiagaraComponentRendererProperties::GetFQuatDef()
+{
+	static UPackage* CoreUObjectPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/CoreUObject"));
+	static UScriptStruct* Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Quat"));
+	return FNiagaraTypeDefinition(Struct, FNiagaraTypeDefinition::EAllowUnfriendlyStruct::Allow);
+}
+
 TArray<TWeakObjectPtr<UNiagaraComponentRendererProperties>> UNiagaraComponentRendererProperties::ComponentRendererPropertiesToDeferredInit;
 
 UNiagaraComponentRendererProperties::UNiagaraComponentRendererProperties()
-	: ComponentCountLimit(15), bAssignComponentsOnParticleID(true), bOnlyCreateComponentsOnParticleSpawn(true)
+	: ComponentCountLimit(15), bAssignComponentsOnParticleID(true), bOnlyCreateComponentsOnParticleSpawn(true), bOnlyActivateNewlyAquiredComponents(true)
 #if WITH_EDITORONLY_DATA
 	, bVisualizeComponents(true)
 #endif
 	, TemplateComponent(nullptr)
 {
-#if WITH_EDITORONLY_DATA
-	if (GEditor)
-	{
-		GEditor->OnObjectsReplaced().AddUObject(this, &UNiagaraComponentRendererProperties::OnObjectsReplacedCallback);
-	}
+#if WITH_EDITOR
+	FCoreUObjectDelegates::OnObjectsReplaced.AddUObject(this, &UNiagaraComponentRendererProperties::OnObjectsReplacedCallback);
 #endif
 
 	AttributeBindings.Reserve(2);
 	AttributeBindings.Add(&EnabledBinding);
 	AttributeBindings.Add(&RendererVisibilityTagBinding);
+	IsSetterMappingDirty.store(true);
 }
 
 UNiagaraComponentRendererProperties::~UNiagaraComponentRendererProperties()
 {
-#if WITH_EDITORONLY_DATA
-	if (GEditor)
-	{
-		GEditor->OnObjectsReplaced().RemoveAll(this);
-	}
+#if WITH_EDITOR
+	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
 #endif
 }
 
@@ -138,9 +198,40 @@ void UNiagaraComponentRendererProperties::PostLoad()
 {
 	Super::PostLoad();
 	ENiagaraRendererSourceDataMode InSourceMode = ENiagaraRendererSourceDataMode::Particles;
+	
+	const TArray<FNiagaraVariable>& OldTypes = FNiagaraConstants::GetOldPositionTypeVariables();
 	for (FNiagaraComponentPropertyBinding& Binding : PropertyBindings)
 	{
 		Binding.AttributeBinding.PostLoad(InSourceMode);
+
+		// Move old bindings over to new position type 
+		for (FNiagaraVariable OldVarType : OldTypes)
+		{
+			if (Binding.AttributeBinding.GetParamMapBindableVariable() == OldVarType)
+			{
+				FNiagaraVariable NewVarType(FNiagaraTypeDefinition::GetPositionDef(), OldVarType.GetName());
+				Binding.AttributeBinding.Setup(NewVarType, NewVarType, InSourceMode);
+				Binding.PropertyType = FNiagaraTypeDefinition(FNiagaraTypeDefinition::GetVec3Struct());
+				break;
+			}
+		}
+
+#if WITH_EDITOR
+		// check if any of the bound properties was changed (e.g. to a lwc type) and regenerate the bindings if necessary
+		if (!TemplateComponent)
+		{
+			continue;
+		}
+		for (TFieldIterator<FProperty> PropertyIt(TemplateComponent->GetClass()); PropertyIt; ++PropertyIt)
+		{
+			FProperty* Property = *PropertyIt;
+			if (Property && Property->GetFName() == Binding.PropertyName)
+			{
+				Binding.PropertyType = ToNiagaraType(Property);
+				break;
+			}
+		}
+#endif
 	}
 	EnabledBinding.PostLoad(InSourceMode);
 	RendererVisibilityTagBinding.PostLoad(InSourceMode);
@@ -228,10 +319,27 @@ bool FindFunctionParameterDefaultValue(const UFunction* Function, const FPropert
 }
 #endif
 
-void UNiagaraComponentRendererProperties::CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) 
+void UNiagaraComponentRendererProperties::CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData)
 {
 	UpdateSourceModeDerivates(ENiagaraRendererSourceDataMode::Particles);
 }
+
+#if WITH_EDITORONLY_DATA
+bool UNiagaraComponentRendererProperties::IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const
+{
+	if ( InTargetBindingName == GET_MEMBER_NAME_CHECKED(UNiagaraComponentRendererProperties, RendererEnabledBinding) )
+	{
+		if (
+			InSourceForBinding.IsInNameSpace(FNiagaraConstants::UserNamespace) ||
+			InSourceForBinding.IsInNameSpace(FNiagaraConstants::SystemNamespace) ||
+			InSourceForBinding.IsInNameSpace(FNiagaraConstants::EmitterNamespace))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+#endif
 
 void UNiagaraComponentRendererProperties::UpdateSetterFunctions()
 {
@@ -258,7 +366,7 @@ void UNiagaraComponentRendererProperties::UpdateSetterFunctions()
 			{
 				PropertyName.RemoveFromStart("b", ESearchCase::CaseSensitive);
 			}
-			
+
 			static const TArray<FString> SetterPrefixes = {
 				FString("Set"),
 				FString("K2_Set")
@@ -294,7 +402,7 @@ void UNiagaraComponentRendererProperties::UpdateSetterFunctions()
 						FNiagaraTypeDefinition FieldType = ToNiagaraType(Property);
 						if (FieldType != PropertyBinding.PropertyType && FieldType == PropertyBinding.AttributeBinding.GetType())
 						{
-							// we can use the original Niagara value with the setter instead of converting it
+							// we can use the original Niagara value with the setter instead of converting it.
 							Setter.bIgnoreConversion = true;
 						}
 						else if (FieldType != PropertyBinding.PropertyType)
@@ -356,13 +464,16 @@ void UNiagaraComponentRendererProperties::InitCDOPropertiesAfterModuleStartup()
 	}
 }
 
-FNiagaraRenderer* UNiagaraComponentRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent)
+FNiagaraRenderer* UNiagaraComponentRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController)
 {
-	UpdateSetterFunctions();
+	if (IsSetterMappingDirty.exchange(false))
+	{
+		UpdateSetterFunctions();
+	}
 	EmitterPtr = Emitter->GetCachedEmitter();
 
 	FNiagaraRenderer* NewRenderer = new FNiagaraRendererComponents(FeatureLevel, this, Emitter);
-	NewRenderer->Initialize(this, Emitter, InComponent);
+	NewRenderer->Initialize(this, Emitter, InController);
 	return NewRenderer;
 }
 
@@ -378,6 +489,8 @@ void UNiagaraComponentRendererProperties::CreateTemplateComponent()
 	TemplateComponent->SetAbsolute(IsWorldSpace, IsWorldSpace, IsWorldSpace);
 }
 
+#if WITH_EDITOR
+
 void UNiagaraComponentRendererProperties::OnObjectsReplacedCallback(const TMap<UObject*, UObject*>& ReplacementsMap)
 {
 	// When a custom component class is recompiled in the editor, we need to switch to the new template component object
@@ -388,9 +501,11 @@ void UNiagaraComponentRendererProperties::OnObjectsReplacedCallback(const TMap<U
 		{
 			TemplateComponent = Cast<USceneComponent>(*Replacement);
 			UpdateSetterFunctions();
-		}		
+		}
 	}
 }
+
+#endif
 
 bool UNiagaraComponentRendererProperties::HasPropertyBinding(FName PropertyName) const
 {
@@ -423,6 +538,7 @@ void UNiagaraComponentRendererProperties::PostEditChangeProperty(struct FPropert
 			FNiagaraComponentPropertyBinding PositionBinding;
 			PositionBinding.AttributeBinding.Setup(SYS_PARAM_PARTICLES_POSITION, SYS_PARAM_PARTICLES_POSITION);
 			PositionBinding.PropertyName = FName("RelativeLocation");
+			PositionBinding.PropertyType = FNiagaraTypeDefinition(FNiagaraTypeDefinition::GetVec3Struct());
 			PropertyBindings.Add(PositionBinding);
 
 			FNiagaraComponentPropertyBinding ScaleBinding;
@@ -435,7 +551,7 @@ void UNiagaraComponentRendererProperties::PostEditChangeProperty(struct FPropert
 			TemplateComponent = nullptr;
 		}
 	}
-	UpdateSetterFunctions(); // to refresh the default values for the setter parameters
+	IsSetterMappingDirty = true; // to refresh the default values for the setter parameters
 	Super::PostEditChangeProperty(e);
 }
 
@@ -448,7 +564,7 @@ void UNiagaraComponentRendererProperties::GetRendererWidgets(const FNiagaraEmitt
 void UNiagaraComponentRendererProperties::GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const
 {
 	TSharedRef<SWidget> Tooltip = SNew(STextBlock)
-		.Text(FText::Format(LOCTEXT("ComponentRendererTooltip", "Component Renderer ({0})"), TemplateComponent ? 
+		.Text(FText::Format(LOCTEXT("ComponentRendererTooltip", "Component Renderer ({0})"), TemplateComponent ?
 			TemplateComponent->GetClass()->GetDisplayNameText() :
 			FText::FromString("No type selected")));
 	OutWidgets.Add(Tooltip);

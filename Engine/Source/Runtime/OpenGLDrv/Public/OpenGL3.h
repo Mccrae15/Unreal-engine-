@@ -41,7 +41,6 @@ struct FOpenGL3 : public FOpenGLBase
 	static FORCEINLINE bool SupportsVolumeTextureRendering()		{ return bSupportsVolumeTextureRendering; }
 	static FORCEINLINE bool SupportsGenerateMipmap()				{ return true; }
 	static FORCEINLINE bool AmdWorkaround()							{ return bAmdWorkaround; }
-	static FORCEINLINE bool SupportsTessellation()					{ return bSupportsTessellation; }
 	static FORCEINLINE bool SupportsSeparateShaderObjects()			{ return bSupportsSeparateShaderObjects; }
 	static FORCEINLINE bool SupportsBufferStorage()					{ return true; }
 
@@ -754,10 +753,6 @@ struct FOpenGL3 : public FOpenGLBase
 
 	static FORCEINLINE EShaderPlatform GetShaderPlatform()
 	{
-		ERHIFeatureLevel::Type PreviewFeatureLevel;
-		bool bUsePreviewFeatureLevel = RHIGetPreviewFeatureLevel(PreviewFeatureLevel);
-		check(bUsePreviewFeatureLevel);
-		check(PreviewFeatureLevel == ERHIFeatureLevel::ES3_1);
 		return bAndroidGLESCompatibilityMode ? SP_OPENGL_ES3_1_ANDROID : SP_OPENGL_PCES3_1;
 	}
 
@@ -776,6 +771,7 @@ struct FOpenGL3 : public FOpenGLBase
 
 	static FORCEINLINE bool IsAndroidGLESCompatibilityModeEnabled() { return bAndroidGLESCompatibilityMode; }
 
+	static GLenum GetPlatfrom5551Format() { return GL_UNSIGNED_SHORT_1_5_5_5_REV; }
 protected:
 	static GLsizei NextTextureName;
 	static GLuint TextureNamesCache[OPENGL_NAME_CACHE_SIZE];
@@ -787,7 +783,6 @@ protected:
 	static GLint TimestampQueryBits;
 	
 	static bool bDebugContext;
-	static bool bSupportsTessellation;
 	static bool bSupportsSeparateShaderObjects;
 	static bool bAndroidGLESCompatibilityMode;
 };

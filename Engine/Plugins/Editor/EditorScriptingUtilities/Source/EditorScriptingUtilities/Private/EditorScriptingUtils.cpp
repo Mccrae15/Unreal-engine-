@@ -2,6 +2,7 @@
 
 #include "EditorScriptingUtils.h"
 #include "Algo/Count.h"
+#include "Algo/IndexOf.h"
 #include "AssetRegistryModule.h"
 #include "Editor.h"
 #include "Editor/UnrealEdEngine.h"
@@ -202,11 +203,10 @@ namespace EditorScriptingUtils
 
 		// Get asset full name, i.e."PackageName.ObjectName:InnerAssetName.2ndInnerAssetName" from "/Game/Folder/PackageName.ObjectName:InnerAssetName.2ndInnerAssetName"
 		FString AssetFullName;
+		// Get everything after the last slash
+		int32 IndexOfLastSlash = INDEX_NONE;
+		TextPath.FindLastChar('/', IndexOfLastSlash);
 		{
-			// Get everything after the last slash
-			int32 IndexOfLastSlash = INDEX_NONE;
-			TextPath.FindLastChar('/', IndexOfLastSlash);
-
 			FString Folders = TextPath.Left(IndexOfLastSlash);
 			// Test for invalid characters
 			if (!IsAValidPath(Folders, INVALID_LONGPACKAGE_CHARACTERS, OutFailureReason))
@@ -232,8 +232,18 @@ namespace EditorScriptingUtils
 		}
 
 		// Confirm that we have a valid Root Package and get the valid PackagePath /Game/MyFolder/MyAsset
+		int32 IndexOfFirstPeriodAfterLastSlash = Algo::IndexOf(FStringView(TextPath).RightChop(IndexOfLastSlash + 1), TEXT('.'));
 		FString PackagePath;
-		if (!FPackageName::TryConvertFilenameToLongPackageName(TextPath, PackagePath, &OutFailureReason))
+		if (IndexOfFirstPeriodAfterLastSlash != INDEX_NONE)
+		{
+			IndexOfFirstPeriodAfterLastSlash += IndexOfLastSlash + 1;
+			PackagePath = TextPath.Left(IndexOfFirstPeriodAfterLastSlash);
+		}
+		else
+		{
+			PackagePath = TextPath;
+		}
+		if (!FPackageName::TryConvertFilenameToLongPackageName(PackagePath, PackagePath, &OutFailureReason))
 		{
 			return FString();
 		}
@@ -371,12 +381,6 @@ namespace EditorScriptingUtils
 			return FAssetData();
 		}
 
-		if (FEditorFileUtils::IsMapPackageAsset(ObjectPath))
-		{
-			OutFailureReason = FString::Printf(TEXT("The AssetData '%s' is not accessible because it is of type Map/Level."), *ObjectPath);
-			return FAssetData();
-		}
-
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 		FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(*ObjectPath);
 		if (!AssetData.IsValid())
@@ -384,19 +388,13 @@ namespace EditorScriptingUtils
 			OutFailureReason = FString::Printf(TEXT("The AssetData '%s' could not be found in the Content Browser."), *ObjectPath);
 			return FAssetData();
 		}
-
-		// Prevent loading a umap...
-		if (!IsPackageFlagsSupportedForAssetLibrary(AssetData.PackageFlags))
-		{
-			OutFailureReason = FString::Printf(TEXT("The AssetData '%s' is not accessible because it is of type Map/Level."), *ObjectPath);
-			return FAssetData();
-		}
+		
 		return AssetData;
 	}
 
 	bool IsAContentBrowserAsset(UObject* Object, FString& OutFailureReason)
 	{
-		if (Object == nullptr || Object->IsPendingKill())
+		if (!IsValid(Object))
 		{
 			OutFailureReason = TEXT("The Asset is not valid.");
 			return false;
@@ -517,7 +515,7 @@ namespace EditorScriptingUtils
 		}
 
 		UObject* FoundObject = AssetData.GetAsset();
-		if (!FoundObject || FoundObject->IsPendingKill())
+		if (!IsValid(FoundObject))
 		{
 			OutFailureReason = FString::Printf(TEXT("The asset '%s' exists but was not able to be loaded."), *AssetData.ObjectPath.ToString());
 		}

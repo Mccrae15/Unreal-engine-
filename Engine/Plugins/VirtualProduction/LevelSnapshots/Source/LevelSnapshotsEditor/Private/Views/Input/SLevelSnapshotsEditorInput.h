@@ -6,12 +6,13 @@
 #include "Widgets/SCompoundWidget.h"
 
 class FLevelSnapshotsEditorInput;
+class ULevelSnapshotsEditorData;
+class UWorld;
 class SLevelSnapshotsEditorBrowser;
 class SLevelSnapshotsEditorContextPicker;
 class SVerticalBox;
-class UWorld;
 
-struct FLevelSnapshotsEditorViewBuilder;
+struct FSnapshotEditorViewData;
 
 class SLevelSnapshotsEditorInput : public SCompoundWidget
 {
@@ -24,18 +25,16 @@ public:
 
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, const TSharedRef<FLevelSnapshotsEditorInput>& InEditorInput, const TSharedRef<FLevelSnapshotsEditorViewBuilder>& InBuilder);
+	void Construct(const FArguments& InArgs, ULevelSnapshotsEditorData* InEditorData);
 
 	void OpenLevelSnapshotsDialogWithAssetSelected(const FAssetData& InAssetData) const;
 
 private:
+	
 	void OverrideWorld(FSoftObjectPath InNewContextPath);
 
 	FDelegateHandle OnMapOpenedDelegateHandle;
-	
-	TWeakPtr<FLevelSnapshotsEditorInput> EditorInputPtr;
-
-	TWeakPtr<FLevelSnapshotsEditorViewBuilder> BuilderPtr;
+	TWeakObjectPtr<ULevelSnapshotsEditorData> EditorData;
 
 	TSharedPtr<SVerticalBox> EditorInputOuterVerticalBox;
 	TSharedPtr<SLevelSnapshotsEditorContextPicker> EditorContextPickerPtr;

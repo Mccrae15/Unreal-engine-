@@ -81,14 +81,14 @@ void FGroomCacheGroupData::Serialize(FArchive& Ar, int32 Version, EGroomCacheAtt
 	StrandData.Serialize(Ar, Version, Attributes);
 }
 
-FGroomCacheAnimationData::FGroomCacheAnimationData(TArray<FHairGroupData>&& HairGroupData, int32 InVersion, EGroomCacheType Type, EGroomCacheAttributes InAttributes)
+FGroomCacheAnimationData::FGroomCacheAnimationData(TArray<FHairDescriptionGroup>&& HairGroupData, int32 InVersion, EGroomCacheType Type, EGroomCacheAttributes InAttributes)
 : Version(InVersion)
 {
 	Attributes = Type == EGroomCacheType::Strands ? InAttributes : InAttributes & EGroomCacheAttributes::Position;
 
-	for (FHairGroupData& GroupData : HairGroupData)
+	for (FHairDescriptionGroup& GroupData : HairGroupData)
 	{
-		GroupsData.Add(FGroomCacheGroupData(MoveTemp(Type == EGroomCacheType::Strands ? GroupData.Strands.Data : GroupData.Guides.Data)));
+		GroupsData.Add(FGroomCacheGroupData(MoveTemp(Type == EGroomCacheType::Strands ? GroupData.Strands : GroupData.Guides)));
 	}
 }
 

@@ -187,9 +187,11 @@ void FGroomActions::ExecuteRebuild(TArray<TWeakObjectPtr<UGroomAsset>> Objects) 
 					{
 						FGroomHairGroupPreview& OutGroup = GroupsPreview->Groups.AddDefaulted_GetRef();
 						OutGroup.GroupID    = GroupIndex;
-						OutGroup.CurveCount = GroomAsset->HairGroupsData[GroupIndex].Strands.Data.GetNumCurves();
-						OutGroup.GuideCount = GroomAsset->HairGroupsData[GroupIndex].Guides.Data.GetNumCurves();
+						OutGroup.GroupName	= GroomAsset->HairGroupsInfo[GroupIndex].GroupName;
+						OutGroup.CurveCount = GroomAsset->HairGroupsData[GroupIndex].Strands.BulkData.GetNumCurves();
+						OutGroup.GuideCount = GroomAsset->HairGroupsData[GroupIndex].Guides.BulkData.GetNumCurves();
 						OutGroup.InterpolationSettings = GroomAsset->HairGroupsInterpolation[GroupIndex];
+						OutGroup.bHasPrecomputedWeights = false;
 					}
 				}
 				TSharedPtr<SGroomImportOptionsWindow> GroomOptionWindow = SGroomImportOptionsWindow::DisplayRebuildOptions(CurrentOptions, GroupsPreview, Filename);
@@ -436,9 +438,11 @@ void FGroomActions::ExecuteCreateStrandsTextures(TArray<TWeakObjectPtr<UGroomAss
 				case EStrandsTexturesMeshType::Static: StaticMesh = CurrentOptions->StaticMesh; break;
 				case EStrandsTexturesMeshType::Skeletal: SkeletalMesh = CurrentOptions->SkeletalMesh; break;
 				}
+				if (SkeletalMesh == nullptr && StaticMesh == nullptr)
+				{
+					return;
+				}
 				
-				EStrandsTexturesMeshType MeshType = EStrandsTexturesMeshType::Skeletal;
-
 				FStrandsTexturesInfo Info;
 				Info.GroomAsset   = GroomAsset.Get();
 				Info.TracingDirection = SignDirection;
@@ -460,7 +464,6 @@ void FGroomActions::ExecuteCreateStrandsTextures(TArray<TWeakObjectPtr<UGroomAss
 						Info.GroupIndices.Add(GroupIndex);
 					}
 				}
-
 				FStrandsTexturesOutput Output = FGroomTextureBuilder::CreateGroomStrandsTexturesTexture(GroomAsset.Get(), Info.Resolution);
 				if (Output.IsValid())
 				{

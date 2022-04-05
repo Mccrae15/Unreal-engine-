@@ -292,12 +292,6 @@ void FIOSAudioDevice::HandleError(const TCHAR* InLogOutput, bool bTeardown)
 	}
 }
 
-class ICompressedAudioInfo* FIOSAudioDevice::CreateCompressedAudioInfo(USoundWave* SoundWave)
-{
-	return new FADPCMAudioInfo();
-}
-
-
 FAudioEffectsManager* FIOSAudioDevice::CreateEffectsManager()
 {
 	// Create the basic no-op effects manager

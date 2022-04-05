@@ -11,6 +11,8 @@
 #include "Sound/SoundCue.h"
 #include "Sound/SoundSubmixSend.h"
 #include "DSP/SpectrumAnalyzer.h"
+#include "AudioMixer.h"
+#include "AudioMixerTypes.h"
 #include "AudioMixerBlueprintLibrary.generated.h"
 
 class USoundSubmix;
@@ -19,6 +21,8 @@ class USoundSubmix;
 * Called when a load request for a sound has completed.
 */
 DECLARE_DYNAMIC_DELEGATE_TwoParams(FOnSoundLoadComplete, const class USoundWave*, LoadedSoundWave, const bool, WasCancelled);
+
+
 
 UENUM(BlueprintType)
 enum class EMusicalNoteName : uint8
@@ -37,6 +41,173 @@ enum class EMusicalNoteName : uint8
 	B  = 11,
 };
 
+//Duplicate of Audio::EAudioMixerStreamDataFormat::Type, to get around UHT's lack of namespace support
+UENUM()
+enum class EAudioMixerStreamDataFormatType : uint8
+{
+	Unknown,
+	Float,
+	Int16,
+	Unsupported
+};
+
+FString DataFormatAsString(EAudioMixerStreamDataFormatType type);
+
+//A copy of Audio::EAudioMixerChannel::Type to get around UHT's refusal of namespaces
+UENUM()
+enum class EAudioMixerChannelType : uint8
+{
+	FrontLeft,
+	FrontRight,
+	FrontCenter,
+	LowFrequency,
+	BackLeft,
+	BackRight,
+	FrontLeftOfCenter,
+	FrontRightOfCenter,
+	BackCenter,
+	SideLeft,
+	SideRight,
+	TopCenter,
+	TopFrontLeft,
+	TopFrontCenter,
+	TopFrontRight,
+	TopBackLeft,
+	TopBackCenter,
+	TopBackRight,
+	Unknown,
+	ChannelTypeCount,
+	DefaultChannel = FrontLeft
+};
+
+inline const TCHAR* ToString(EAudioMixerChannelType InType)
+{
+	switch (InType)
+	{
+		case EAudioMixerChannelType::FrontLeft:				return TEXT("FrontLeft");
+		case EAudioMixerChannelType::FrontRight:			return TEXT("FrontRight");
+		case EAudioMixerChannelType::FrontCenter:			return TEXT("FrontCenter");
+		case EAudioMixerChannelType::LowFrequency:			return TEXT("LowFrequency");
+		case EAudioMixerChannelType::BackLeft:				return TEXT("BackLeft");
+		case EAudioMixerChannelType::BackRight:				return TEXT("BackRight");
+		case EAudioMixerChannelType::FrontLeftOfCenter:		return TEXT("FrontLeftOfCenter");
+		case EAudioMixerChannelType::FrontRightOfCenter:	return TEXT("FrontRightOfCenter");
+		case EAudioMixerChannelType::BackCenter:			return TEXT("BackCenter");
+		case EAudioMixerChannelType::SideLeft:				return TEXT("SideLeft");
+		case EAudioMixerChannelType::SideRight:				return TEXT("SideRight");
+		case EAudioMixerChannelType::TopCenter:				return TEXT("TopCenter");
+		case EAudioMixerChannelType::TopFrontLeft:			return TEXT("TopFrontLeft");
+		case EAudioMixerChannelType::TopFrontCenter:		return TEXT("TopFrontCenter");
+		case EAudioMixerChannelType::TopFrontRight:			return TEXT("TopFrontRight");
+		case EAudioMixerChannelType::TopBackLeft:			return TEXT("TopBackLeft");
+		case EAudioMixerChannelType::TopBackCenter:			return TEXT("TopBackCenter");
+		case EAudioMixerChannelType::TopBackRight:			return TEXT("TopBackRight");
+		case EAudioMixerChannelType::Unknown:				return TEXT("Unknown");
+
+		default:
+			return TEXT("UNSUPPORTED");
+	}
+}
+
+// Resulting State of SwapAudioOutputDevice call
+UENUM(BlueprintType)
+enum class ESwapAudioOutputDeviceResultState : uint8
+{
+	Failure, 
+	Success, 
+	None,
+};
+
+/**
+ * Out structure for use with AudioMixerBlueprintLibrary::SwapAudioOutputDevice
+ */
+USTRUCT(BlueprintType)
+struct AUDIOMIXER_API FSwapAudioOutputResult
+{
+	GENERATED_USTRUCT_BODY()
+
+	FSwapAudioOutputResult() = default;
+
+	/** ID of the currently set device.  This is the device at the time of the call, NOT the resulting deviceId */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	FString CurrentDeviceId;
+
+	/** ID of the requested device. */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	FString RequestedDeviceId;
+
+	/** Result of the call */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	ESwapAudioOutputDeviceResultState Result = ESwapAudioOutputDeviceResultState::None;
+};
+
+/**
+ * Platform audio output device info, in a Blueprint-readable format
+ */
+USTRUCT(BlueprintType)
+struct AUDIOMIXER_API FAudioOutputDeviceInfo
+{
+	GENERATED_USTRUCT_BODY()
+
+	FAudioOutputDeviceInfo()
+		: Name("")
+		, DeviceId("")
+		, NumChannels(0)
+		, SampleRate(0)
+		, Format(EAudioMixerStreamDataFormatType::Unknown)
+		, bIsSystemDefault(true)
+		, bIsCurrentDevice(false)
+	{};
+
+	FAudioOutputDeviceInfo(const Audio::FAudioPlatformDeviceInfo& InDeviceInfo);
+
+	/** The name of the audio device */
+	UPROPERTY(BlueprintReadOnly, Category="Audio")
+	FString Name;
+
+	/** ID of the device. */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	FString DeviceId;
+
+	/** The number of channels supported by the audio device */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	int32 NumChannels = 0;
+
+	/** The sample rate of the audio device */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	int32 SampleRate = 0;
+
+	/** The data format of the audio stream */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	EAudioMixerStreamDataFormatType Format = EAudioMixerStreamDataFormatType::Unknown;
+
+	/** The output channel array of the audio device */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	TArray<EAudioMixerChannelType> OutputChannelArray;
+
+	/** Whether or not this device is the system default */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	uint8 bIsSystemDefault : 1;
+
+	/** Whether or not this device is the device currently in use */
+	UPROPERTY(BlueprintReadOnly, Category = "Audio")
+	uint8 bIsCurrentDevice : 1;
+};
+
+/**
+ * Called when a list of all available audio devices is retrieved
+ */
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnAudioOutputDevicesObtained, const TArray<FAudioOutputDeviceInfo>&, AvailableDevices);
+
+/**
+ * Called when a list of all available audio devices is retrieved
+ */
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnMainAudioOutputDeviceObtained, const FString&, CurrentDevice);
+
+/**
+ * Called when the system has swapped to another audio output device
+ */
+DECLARE_DYNAMIC_DELEGATE_OneParam(FOnCompletedDeviceSwap, const FSwapAudioOutputResult&, SwapResult);
 
 UCLASS(meta=(ScriptName="AudioMixerLibrary"))
 class AUDIOMIXER_API UAudioMixerBlueprintLibrary : public UBlueprintFunctionLibrary
@@ -44,6 +215,13 @@ class AUDIOMIXER_API UAudioMixerBlueprintLibrary : public UBlueprintFunctionLibr
 	GENERATED_BODY()
 
 public:
+	/**
+	* Returns the device info in a human readable format
+	* @param info - The audio device data to print
+	* @return The data in a string format
+	*/
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Audio Output Device Info To String", CompactNodeTitle = "->", BlueprintAutocast), Category = "Audio")
+	static FString Conv_AudioOutputDeviceInfoToString(const FAudioOutputDeviceInfo& Info);
 
 	/** Adds a submix effect preset to the master submix. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Effects", meta=(WorldContext="WorldContextObject"))
@@ -117,7 +295,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Audio|Analysis", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = 1))
 	static void StartAnalyzingOutput(const UObject* WorldContextObject, USoundSubmix* SubmixToAnalyze = nullptr, EFFTSize FFTSize = EFFTSize::DefaultSize, EFFTPeakInterpolationMethod InterpolationMethod = EFFTPeakInterpolationMethod::Linear, EFFTWindowType WindowType = EFFTWindowType::Hann, float HopSize = 0, EAudioSpectrumType SpectrumType = EAudioSpectrumType::MagnitudeSpectrum);
 
-	/** Start spectrum analysis of the audio output. By leaving the Submix To Stop Analyzing blank, you can analyze the master output of the game. */
+	/** Stop spectrum analysis. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Analysis", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = 1))
 	static void StopAnalyzingOutput(const UObject* WorldContextObject, USoundSubmix* SubmixToStopAnalyzing = nullptr);
 
@@ -125,7 +303,7 @@ public:
 	 *
 	 *  @param InNumSemitones - The number of semitones to represent.
 	 *  @param InStartingMuiscalNote - The name of the first note in the array.
-	 *  @param InStartingOctave - The octave of the first note in the arrya.
+	 *  @param InStartingOctave - The octave of the first note in the array.
 	 *  @param InAttackTimeMsec - The attack time (in milliseconds) to apply to each band's envelope tracker.
 	 *  @param InReleaseTimeMsec - The release time (in milliseconds) to apply to each band's envelope tracker.
 	 */
@@ -153,11 +331,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Audio|Analysis", meta = (AdvancedDisplay = 2))
 	static TArray<FSoundSubmixSpectralAnalysisBandSettings> MakePresetSpectralAnalysisBandSettings(EAudioSpectrumBandPresetType InBandPresetType, int32 InNumBands = 10, int32 InAttackTimeMsec = 10, int32 InReleaseTimeMsec = 10);
 
-	/** Start spectrum analysis of the audio output. By leaving the Submix To Analyze blank, you can analyze the master output of the game. */
+	/** Retrieve the magnitudes for the given frequencies. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Analysis", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = 3))
 	static void GetMagnitudeForFrequencies(const UObject* WorldContextObject, const TArray<float>& Frequencies, TArray<float>& Magnitudes, USoundSubmix* SubmixToAnalyze = nullptr);
 
-	/** Start spectrum analysis of the audio output. By leaving the Submix To Analyze blank, you can analyze the master output of the game. */
+	/** Retrieve the phases for the given frequencies. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Analysis", meta = (WorldContext = "WorldContextObject", AdvancedDisplay = 3))
 	static void GetPhaseForFrequencies(const UObject* WorldContextObject, const TArray<float>& Frequencies, TArray<float>& Phases, USoundSubmix* SubmixToAnalyze = nullptr);
 
@@ -200,4 +378,27 @@ public:
 	/** Queries if the given audio bus is active (and audio can be mixed to it). */
 	UFUNCTION(BlueprintCallable, Category = "Audio|Bus", meta = (WorldContext = "WorldContextObject"))
 	static bool IsAudioBusActive(const UObject* WorldContextObject, UAudioBus* AudioBus);
+
+	/**
+	* Gets information about all audio output devices available in the system
+	* @param OnObtainDevicesEvent - the event to fire when the audio endpoint devices have been retrieved
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject"))
+	static void GetAvailableAudioOutputDevices(const UObject* WorldContextObject, const FOnAudioOutputDevicesObtained& OnObtainDevicesEvent);
+
+	/**
+	* Gets information about the currently used audio output device
+	* @param OnObtainCurrentDeviceEvent - the event to fire when the audio endpoint devices have been retrieved
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject"))
+	static void GetCurrentAudioOutputDeviceName(const UObject* WorldContextObject, const FOnMainAudioOutputDeviceObtained& OnObtainCurrentDeviceEvent);
+
+	/**
+	* Hotswaps to the requested audio output device
+	* @param NewDeviceId - the device Id to swap to
+	* @param OnCompletedDeviceSwap - the event to fire when the audio endpoint devices have been retrieved
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Audio", meta = (WorldContext = "WorldContextObject"))
+	static void SwapAudioOutputDevice(const UObject* WorldContextObject, const FString& NewDeviceId, const FOnCompletedDeviceSwap& OnCompletedDeviceSwap);
 };
+

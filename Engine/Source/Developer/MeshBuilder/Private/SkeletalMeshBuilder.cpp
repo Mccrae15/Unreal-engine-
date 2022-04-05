@@ -60,6 +60,7 @@ FSkeletalMeshBuilder::FSkeletalMeshBuilder()
 
 bool FSkeletalMeshBuilder::Build(const FSkeletalMeshBuildParameters& SkeletalMeshBuildParameters)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FSkeletalMeshBuilder::Build);
 	const int32 LODIndex = SkeletalMeshBuildParameters.LODIndex;
 	USkeletalMesh* SkeletalMesh = SkeletalMeshBuildParameters.SkeletalMesh;
 
@@ -67,7 +68,7 @@ bool FSkeletalMeshBuilder::Build(const FSkeletalMeshBuildParameters& SkeletalMes
 	check(SkeletalMesh->GetImportedModel()->LODModels.IsValidIndex(LODIndex));
 	check(SkeletalMesh->GetLODInfo(LODIndex) != nullptr);
 	
-	FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo(LODIndex);
+	const FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo(LODIndex);
 	//We want to backup in case the LODModel is regenerated, this data is use to validate in the UI if the ddc must be rebuild
 	const FString BackupBuildStringID = SkeletalMesh->GetImportedModel()->LODModels[LODIndex].BuildStringID;
 
@@ -92,7 +93,7 @@ bool FSkeletalMeshBuilder::Build(const FSkeletalMeshBuildParameters& SkeletalMes
 		//Load the imported data
 		SkeletalMesh->LoadLODImportedData(LODIndex, SkeletalMeshImportData);
 
-		TArray<FVector> LODPoints;
+		TArray<FVector3f> LODPoints;
 		TArray<SkeletalMeshImportData::FMeshWedge> LODWedges;
 		TArray<SkeletalMeshImportData::FMeshFace> LODFaces;
 		TArray<SkeletalMeshImportData::FVertInfluence> LODInfluences;
@@ -128,11 +129,22 @@ bool FSkeletalMeshBuilder::Build(const FSkeletalMeshBuildParameters& SkeletalMes
 			Options
 		);
 
-		//Re-Apply the user section changes, the UserSectionsData is map to original section and should match the builded LODModel
-		BuildLODModel.SyncronizeUserSectionsDataArray();
-
 		// Set texture coordinate count on the new model.
 		BuildLODModel.NumTexCoords = NumTextCoord;
+
+		//Cache the vertex/triangle count in the InlineReductionCacheData so we can know if the LODModel need reduction or not.
+		TArray<FInlineReductionCacheData>& InlineReductionCacheDatas = SkeletalMesh->GetImportedModel()->InlineReductionCacheDatas;
+		if (!InlineReductionCacheDatas.IsValidIndex(LODIndex))
+		{
+			InlineReductionCacheDatas.AddDefaulted((LODIndex + 1) - InlineReductionCacheDatas.Num());
+		}
+		if (ensure(InlineReductionCacheDatas.IsValidIndex(LODIndex)))
+		{
+			InlineReductionCacheDatas[LODIndex].SetCacheGeometryInfo(BuildLODModel);
+		}
+
+		//Re-Apply the user section changes, the UserSectionsData is map to original section and should match the builded LODModel
+		BuildLODModel.SyncronizeUserSectionsDataArray();
 
 		//Re-apply the morph target
 		SlowTask.EnterProgressFrame(1.0f, NSLOCTEXT("SkeltalMeshBuilder", "RebuildMorphTarget", "Rebuilding morph targets..."));
@@ -158,29 +170,8 @@ bool FSkeletalMeshBuilder::Build(const FSkeletalMeshBuildParameters& SkeletalMes
 		{
 			SlowTask.EnterProgressFrame(1.0f, NSLOCTEXT("SkeltalMeshBuilder", "RegenerateLOD", "Regenerate LOD..."));
 			//Update the original reduction data since we just build a new LODModel.
-			if (LODInfo->ReductionSettings.BaseLOD == LODIndex && SkeletalMesh->GetImportedModel()->OriginalReductionSourceMeshData.IsValidIndex(LODIndex))
+			if (LODInfo->ReductionSettings.BaseLOD == LODIndex && SkeletalMesh->IsLODImportedDataBuildAvailable(LODIndex))
 			{
-				//Make the copy of the data only once until the ImportedModel change (re-imported)
-				SkeletalMesh->GetImportedModel()->OriginalReductionSourceMeshData[LODIndex]->EmptyBulkData();
-				TMap<FString, TArray<FMorphTargetDelta>> BaseLODMorphTargetData;
-				BaseLODMorphTargetData.Empty(SkeletalMesh->GetMorphTargets().Num());
-				for (UMorphTarget *MorphTarget : SkeletalMesh->GetMorphTargets())
-				{
-					if (!MorphTarget->HasDataForLOD(LODIndex))
-					{
-						continue;
-					}
-					TArray<FMorphTargetDelta>& MorphDeltasArray = BaseLODMorphTargetData.FindOrAdd(MorphTarget->GetFullName());
-					const FMorphTargetLODModel& BaseMorphModel = MorphTarget->MorphLODModels[LODIndex];
-					//Iterate each original morph target source index to fill the NewMorphTargetDeltas array with the TargetMatchData.
-					for (const FMorphTargetDelta& MorphDelta : BaseMorphModel.Vertices)
-					{
-						MorphDeltasArray.Add(MorphDelta);
-					}
-				}
-				//Copy the original SkeletalMesh LODModel
-				SkeletalMesh->GetImportedModel()->OriginalReductionSourceMeshData[LODIndex]->SaveReductionData(BuildLODModel, BaseLODMorphTargetData, SkeletalMesh);
-
 				if (LODIndex == 0)
 				{
 					SkeletalMesh->GetLODInfo(LODIndex)->SourceImportFilename = SkeletalMesh->GetAssetImportData()->GetFirstFilename();
@@ -190,7 +181,7 @@ bool FSkeletalMeshBuilder::Build(const FSkeletalMeshBuildParameters& SkeletalMes
 		}
 		else
 		{
-			if (LODInfo->BonesToRemove.Num() > 0)
+			if (LODInfo->BonesToRemove.Num() > 0 && SkeletalMesh->GetSkeleton())
 			{
 				TArray<FName> BonesToRemove;
 				BonesToRemove.Reserve(LODInfo->BonesToRemove.Num());

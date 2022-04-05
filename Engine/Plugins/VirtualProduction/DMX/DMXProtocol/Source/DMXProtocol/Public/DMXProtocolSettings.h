@@ -35,7 +35,7 @@ public:
 
 	// ~Begin UObject Interface
 	virtual void PostInitProperties() override;
-
+	virtual void PostLoad() override;
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedChainEvent) override;
@@ -98,12 +98,18 @@ public:
 	/** Overrides if send DMX is enabled at runtime */
 	void OverrideReceiveDMXEnabled(bool bEnabled);
 
+	/** Returns an automatic/unique name for an InputPort */
+	FString GetUniqueInputPortName() const;
+
+	/** Returns an automatic/unique name for an OutputPort */
+	FString GetUniqueOutputPortName() const;
+
 private:
-	/** Whether DMX is received from the network. Recalled whenever editor or game starts. */
+	/** Whether DMX is sent to the network. Recalled whenever editor or game starts.  */
 	UPROPERTY(Config, EditAnywhere, Category = "DMX|Communication Settings", Meta = (AllowPrivateAccess = true, DisplayName = "Send DMX by default"))
 	bool bDefaultSendDMXEnabled;
 
-	/** Whether DMX is sent to the network. Recalled whenever editor or game starts.  */
+	/** Whether DMX is received from the network. Recalled whenever editor or game starts. */
 	UPROPERTY(Config, EditAnywhere, Category = "DMX|Communication Settings", Meta = (AllowPrivateAccess = true, DisplayName = "Receive DMX by default"))
 	bool bDefaultReceiveDMXEnabled;
 

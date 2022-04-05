@@ -4,6 +4,11 @@
 
 #include "Editor.h"
 #include "Engine/Selection.h"
+#include "LevelEditor.h"
+#include "LevelEditorViewport.h"
+#include "SLevelViewport.h"
+#include "EditorModeManager.h"
+#include "FractureEditorMode.h"
 
 #include "FractureToolContext.h"
 #include "FractureSelectionTools.h"
@@ -44,6 +49,41 @@ const TSharedPtr<FUICommandInfo>& UFractureActionTool::GetUICommandInfo() const
 	return UICommandInfo;
 }
 
+UFractureActionTool::FModifyContextScope::FModifyContextScope(UFractureActionTool* ActionTool, FFractureToolContext* FractureContext, bool bWantPhysicsUpdate) : ActionTool(ActionTool), FractureContext(FractureContext)
+{
+	check(FractureContext);
+	check(ActionTool);
+	FractureContext->GetFracturedGeometryCollection()->Modify();
+	FractureContext->GetGeometryCollectionComponent()->Modify();
+	bool bHasPhysicsState = FractureContext->GetGeometryCollectionComponent()->HasValidPhysicsState();
+	bNeedPhysicsUpdate = bWantPhysicsUpdate && bHasPhysicsState;
+	if (bNeedPhysicsUpdate)
+	{
+		FractureContext->GetGeometryCollectionComponent()->DestroyPhysicsState();
+	}
+}
+
+UFractureActionTool::FModifyContextScope::~FModifyContextScope()
+{
+	if (bNeedPhysicsUpdate)
+	{
+		FractureContext->GetGeometryCollectionComponent()->RecreatePhysicsState();
+	}
+
+	UFractureEditorMode* FractureMode = Cast<UFractureEditorMode>(GLevelEditorModeTools().GetActiveScriptableMode(UFractureEditorMode::EM_FractureEditorModeId));
+	if (!FractureMode)
+	{
+		return;
+	}
+	TSharedPtr<FModeToolkit> ModeToolkit = FractureMode->GetToolkit().Pin();
+	if (ModeToolkit.IsValid())
+	{
+		FFractureEditorModeToolkit* Toolkit = (FFractureEditorModeToolkit*)ModeToolkit.Get();
+		ActionTool->Refresh(*FractureContext, Toolkit);
+	}
+}
+
+
 bool UFractureActionTool::CanExecute() const
 {
 	return IsGeometryCollectionSelected();
@@ -58,7 +98,10 @@ bool UFractureActionTool::IsGeometryCollectionSelected()
 		AActor* Actor = Cast<AActor>(*Iter);
 		if (Actor)
 		{
-			if (Actor->FindComponentByClass<UGeometryCollectionComponent>())
+			TInlineComponentArray<UGeometryCollectionComponent*> GeometryCollectionComponents;
+			Actor->GetComponents<UGeometryCollectionComponent>(GeometryCollectionComponents, true);
+
+			if (GeometryCollectionComponents.Num() > 0)
 			{
 				return true;
 			}
@@ -128,7 +171,7 @@ void UFractureActionTool::GetSelectedGeometryCollectionComponents(TSet<UGeometry
 	}
 }
 
-void UFractureActionTool::Refresh(FFractureToolContext& Context, FFractureEditorModeToolkit* Toolkit)
+void UFractureActionTool::Refresh(FFractureToolContext& Context, FFractureEditorModeToolkit* Toolkit, bool bClearSelection)
 {
 	UGeometryCollectionComponent* GeometryCollectionComponent = Context.GetGeometryCollectionComponent();
 	TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = Context.GetGeometryCollection();
@@ -139,11 +182,17 @@ void UFractureActionTool::Refresh(FFractureToolContext& Context, FFractureEditor
 	Toolkit->RegenerateHistogram();
 
 	FScopedColorEdit EditBoneColor(GeometryCollectionComponent, true);
-	EditBoneColor.SetSelectedBones(Context.GetSelection());
 
-	FFractureSelectionTools::ToggleSelectedBones(GeometryCollectionComponent, Context.GetSelection(), true);
-
-	Toolkit->UpdateExplodedVectors(GeometryCollectionComponent);
+	if (bClearSelection)
+	{
+		EditBoneColor.ResetBoneSelection();
+		FFractureSelectionTools::ClearSelectedBones(GeometryCollectionComponent);
+	}
+	else
+	{
+		EditBoneColor.SetSelectedBones(Context.GetSelection());
+		FFractureSelectionTools::ToggleSelectedBones(GeometryCollectionComponent, Context.GetSelection(), true, false);
+	}
 
 	GeometryCollectionComponent->MarkRenderDynamicDataDirty();
 	GeometryCollectionComponent->MarkRenderStateDirty();
@@ -155,7 +204,7 @@ void UFractureActionTool::SetOutlinerComponents(TArray<FFractureToolContext>& In
 	TArray<UGeometryCollectionComponent*> Components;
 	for (FFractureToolContext& Context : InContexts)
 	{
-		Components.Add(Context.GetGeometryCollectionComponent());
+		Components.AddUnique(Context.GetGeometryCollectionComponent());
 	}
 	Toolkit->SetOutlinerComponents(Components);
 }
@@ -165,14 +214,6 @@ void UFractureActionTool::ClearProximity(FGeometryCollection* GeometryCollection
 	if (GeometryCollection->HasAttribute("Proximity", FGeometryCollection::GeometryGroup))
 	{
 		GeometryCollection->RemoveAttribute("Proximity", FGeometryCollection::GeometryGroup);
-	}
-}
-
-void UFractureActionTool::GenerateProximityIfNecessary(FGeometryCollection* GeometryCollection)
-{
-	if (!GeometryCollection->HasAttribute("Proximity", FGeometryCollection::GeometryGroup))
-	{
-		FGeometryCollectionProximityUtility::UpdateProximity(GeometryCollection);
 	}
 }
 
@@ -192,22 +233,86 @@ TArray<FFractureToolContext> UFractureActionTool::GetFractureToolContexts() cons
 }
 
 
+void UFractureModalTool::EnumerateVisualizationMapping(const FVisualizationMappings& Mappings, int32 ArrayNum, TFunctionRef<void(int32 Idx, FVector ExplodedVector)> Func) const
+{
+	for (int32 MappingIdx = 0; MappingIdx < Mappings.Mappings.Num(); MappingIdx++)
+	{
+		const FVisualizationMappings::FIndexMapping& Mapping = Mappings.Mappings[MappingIdx];
+		FVector Offset = Mappings.GetExplodedVector(MappingIdx, VisualizedCollections[Mapping.CollectionIdx]);
+		int32 EndIdx = Mappings.GetEndIdx(MappingIdx, ArrayNum);
+		for (int32 Idx = Mapping.StartIdx; Idx < EndIdx; Idx++)
+		{
+			Func(Idx, Offset);
+		}
+	}
+}
+
+
+void UFractureModalTool::OverrideEditorViewFlagsForLineRendering()
+{
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedPtr<ILevelEditor> LevelEditor = LevelEditorModule.GetFirstLevelEditor();
+	if (LevelEditor.IsValid())
+	{
+		TArray<TSharedPtr<SLevelViewport>> Viewports = LevelEditor->GetViewports();
+		for (const TSharedPtr<SLevelViewport>& ViewportWindow : Viewports)
+		{
+			if (ViewportWindow.IsValid())
+			{
+				FEditorViewportClient& Viewport = ViewportWindow->GetAssetViewportClient();
+				Viewport.EnableOverrideEngineShowFlags([](FEngineShowFlags& Flags)
+					{
+						Flags.SetTemporalAA(false);
+						Flags.SetMotionBlur(false);
+					});
+			}
+		}
+	}
+}
+
+void UFractureModalTool::RestoreEditorViewFlags()
+{
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+	TSharedPtr<ILevelEditor> LevelEditor = LevelEditorModule.GetFirstLevelEditor();
+	if (LevelEditor.IsValid())
+	{
+		TArray<TSharedPtr<SLevelViewport>> Viewports = LevelEditor->GetViewports();
+		for (const TSharedPtr<SLevelViewport>& ViewportWindow : Viewports)
+		{
+			if (ViewportWindow.IsValid())
+			{
+				FEditorViewportClient& Viewport = ViewportWindow->GetAssetViewportClient();
+				Viewport.DisableOverrideEngineShowFlags();
+			}
+		}
+	}
+}
+
+void UFractureModalTool::NotifyOfPropertyChangeByTool(UFractureToolSettings* PropertySet) const
+{
+	OnPropertyModifiedDirectlyByTool.Broadcast(PropertySet);
+}
+
+
 void UFractureModalTool::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 {
-	if (InToolkit.IsValid())
+	TSharedPtr<FFractureEditorModeToolkit> ModeToolkit = InToolkit.Pin();
+	if (ModeToolkit.IsValid())
 	{
-		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
+		FFractureEditorModeToolkit* Toolkit = ModeToolkit.Get();
 
 		TArray<FFractureToolContext> FractureContexts = GetFractureToolContexts();
 
 		for (FFractureToolContext& FractureContext : FractureContexts)
 		{
-			FractureContext.GetFracturedGeometryCollection()->Modify();
+			FGeometryCollectionEdit EditCollection(FractureContext.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic, !ExecuteUpdatesShape());
 
 			int32 FirstNewGeometryIndex = ExecuteFracture(FractureContext);
 			
 			if (FirstNewGeometryIndex > INDEX_NONE)
 			{
+				FractureContext.GenerateGuids(FirstNewGeometryIndex);
+
 				// Based on the first new geometry index, generate a list of new transforms generated by the fracture.
 				const TManagedArray<int32>& TransformIndex = FractureContext.GetGeometryCollection()->GetAttribute<int32>("TransformIndex", FGeometryCollection::GeometryGroup);
 				int32 LastGeometryIndex = TransformIndex.Num();
@@ -227,6 +332,21 @@ void UFractureModalTool::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
 
 			FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(FractureContext.GetGeometryCollection().Get(), -1);
 
+			// Update Nanite resource data to correctly reflect modified geometry collection data
+			{
+				FractureContext.GetFracturedGeometryCollection()->ReleaseResources();
+
+				if (FractureContext.GetFracturedGeometryCollection()->EnableNanite)
+				{
+					FractureContext.GetFracturedGeometryCollection()->NaniteData = UGeometryCollection::CreateNaniteData(FractureContext.GetGeometryCollection().Get());
+				}
+				else
+				{
+					FractureContext.GetFracturedGeometryCollection()->NaniteData = MakeUnique<FGeometryCollectionNaniteData>();
+				}
+				FractureContext.GetFracturedGeometryCollection()->InitResources();
+			}
+
 			Refresh(FractureContext, Toolkit);
 		}
 
@@ -240,12 +360,12 @@ bool UFractureModalTool::CanExecute() const
 	{
 		return false;
 	}
-
+	/*
 	if (IsStaticMeshSelected())
 	{
 		return false;
 	}
-
+	*/
 	return true;
 }
 
@@ -254,3 +374,32 @@ void UFractureModalTool::PostEditChangeChainProperty(struct FPropertyChangedChai
 	FractureContextChanged();
 }
 
+
+void UFractureModalTool::OnComponentTransformChangedInternal(USceneComponent* InRootComponent, ETeleportType Teleport)
+{
+	if (UGeometryCollectionComponent* GeomColl = Cast<UGeometryCollectionComponent>(InRootComponent))
+	{
+		bool bIsSel = GeomColl->IsSelected();
+		bool bActorIsSel = GeomColl->GetOwner()->IsSelected();
+		if (bIsSel || bActorIsSel)
+		{
+			OnComponentTransformChanged(GeomColl);
+		}
+	}
+}
+
+
+FVector FVisualizationMappings::GetExplodedVector(int32 MappingIdx, const UGeometryCollectionComponent* CollectionComponent) const
+{
+	int32 BoneIdx = Mappings[MappingIdx].BoneIdx;
+	if (BoneIdx != INDEX_NONE && CollectionComponent)
+	{
+		const FGeometryCollection& Collection = *CollectionComponent->GetRestCollection()->GetGeometryCollection();
+		if (Collection.HasAttribute("ExplodedVector", FGeometryCollection::TransformGroup))
+		{
+			FVector Offset = (FVector)Collection.GetAttribute<FVector3f>("ExplodedVector", FGeometryCollection::TransformGroup)[BoneIdx];
+			return CollectionComponent->GetOwner()->GetActorTransform().TransformVector(Offset);
+		}
+	}
+	return FVector::ZeroVector;
+}

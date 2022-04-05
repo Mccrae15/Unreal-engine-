@@ -63,7 +63,8 @@ void UNiagaraStackParameterStoreEntry::RefreshChildrenInternal(const TArray<UNia
 		if(ValueObjectEntry == nullptr || ValueObjectEntry->GetObject() != ValueObject)
 		{
 			ValueObjectEntry = NewObject<UNiagaraStackObject>(this);
-			ValueObjectEntry->Initialize(CreateDefaultChildRequiredData(), ValueObject.Get(), GetOwnerStackItemEditorDataKey());
+			bool bIsTopLevelObject = false;
+			ValueObjectEntry->Initialize(CreateDefaultChildRequiredData(), ValueObject.Get(), bIsTopLevelObject, GetOwnerStackItemEditorDataKey());
 		}
 		NewChildren.Add(ValueObjectEntry);
 	}
@@ -191,7 +192,7 @@ TArray<UEdGraphPin*> UNiagaraStackParameterStoreEntry::GetOwningPins()
 
 	// search emitter graphs
 	auto EmitterHandles = GetSystemViewModel()->GetSystem().GetEmitterHandles();
-	for (FNiagaraEmitterHandle Handle : EmitterHandles)
+	for (const FNiagaraEmitterHandle& Handle : EmitterHandles)
 	{
 		UNiagaraGraph* EmitterGraph = CastChecked<UNiagaraScriptSource>(Handle.GetInstance()->GraphSource)->NodeGraph;
 		GraphsToCheck.Add(EmitterGraph);
@@ -485,8 +486,8 @@ TSharedPtr<FNiagaraVariable> UNiagaraStackParameterStoreEntry::GetCurrentValueVa
 	if (InputType.GetClass() == nullptr)
 	{
 		FNiagaraVariable DefaultVariable(InputType, ParameterName);
-		const uint8* Data = ParameterStore->GetParameterData(DefaultVariable);
-		DefaultVariable.SetData(Data);
+		DefaultVariable.AllocateData();
+		ParameterStore->CopyParameterData(DefaultVariable, DefaultVariable.GetData());
 		return MakeShared<FNiagaraVariable>(DefaultVariable);
 	}
 	return TSharedPtr<FNiagaraVariable>();

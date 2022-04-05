@@ -14,9 +14,9 @@
 #include "Misc/TimeGuard.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/ScopeLock.h"
+#include "RHI.h"
 #include "RenderCore.h"
 #include "RenderCommandFence.h"
-#include "RHI.h"
 #include "TickableObjectRenderThread.h"
 #include "Stats/StatsData.h"
 #include "HAL/ThreadHeartBeat.h"
@@ -25,11 +25,15 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "ProfilingDebugging/MiscTrace.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "Async/TaskTrace.h"
 
 
 //
 // Globals
 //
+
+FCoreRenderDelegates::FOnFlushRenderingCommandsStart FCoreRenderDelegates::OnFlushRenderingCommandsStart;
+FCoreRenderDelegates::FOnFlushRenderingCommandsEnd FCoreRenderDelegates::OnFlushRenderingCommandsEnd;
 
 UE_TRACE_CHANNEL_DEFINE(RenderCommandsChannel);
 
@@ -235,7 +239,7 @@ FTickableObjectRenderThread::FRenderingThreadTickableObjectsArray FTickableObjec
 void TickHighFrequencyTickables(double CurTime)
 {
 	static double LastHighFreqTime = FPlatformTime::Seconds();
-	float DeltaSecondsHighFreq = CurTime - LastHighFreqTime;
+	float DeltaSecondsHighFreq = float(CurTime - LastHighFreqTime);
 
 	// tick any high frequency rendering thread tickables.
 	for (int32 ObjectIndex = 0; ObjectIndex < FTickableObjectRenderThread::RenderingThreadHighFrequencyTickableObjects.Num(); ObjectIndex++)
@@ -259,7 +263,7 @@ void TickRenderingTickables()
 
 	// calc how long has passed since last tick
 	double CurTime = FPlatformTime::Seconds();
-	float DeltaSeconds = CurTime - LastTickTime;
+	float DeltaSeconds = float(CurTime - LastTickTime);
 		
 	TickHighFrequencyTickables(CurTime);
 
@@ -315,6 +319,7 @@ public:
 #endif
 
 		FMemory::SetupTLSCachesOnCurrentThread();
+		FPlatformProcess::SetupRHIThread();
 		FTaskGraphInterface::Get().AttachToThread(ENamedThreads::RHIThread);
 		FTaskGraphInterface::Get().ProcessThreadUntilRequestReturn(ENamedThreads::RHIThread);
 		FMemory::ClearAndDisableTLSCachesOnCurrentThread();
@@ -329,12 +334,12 @@ public:
 
 	void Start()
 	{
-		Trace::ThreadGroupBegin(TEXT("Render"));
+		UE::Trace::ThreadGroupBegin(TEXT("Render"));
 		Thread = FRunnableThread::Create(this, TEXT("RHIThread"), 512 * 1024, FPlatformAffinity::GetRHIThreadPriority(),
 			FPlatformAffinity::GetRHIThreadMask(), FPlatformAffinity::GetRHIThreadFlags()
 			);
 		check(Thread);
-		Trace::ThreadGroupEnd();
+		UE::Trace::ThreadGroupEnd();
 	}
 };
 
@@ -363,13 +368,17 @@ void RenderingThreadMain( FEvent* TaskGraphBoundSyncEvent )
 #if STATS
 	if (FThreadStats::WillEverCollectData())
 	{
+		FTaskTagScope Scope(ETaskTag::ERenderingThread);
 		FThreadStats::ExplicitFlush(); // flush the stats and set update the scope so we don't flush again until a frame update, this helps prevent fragmentation
 	}
 #endif
 
 	FCoreDelegates::PostRenderingThreadCreated.Broadcast();
 	check(GIsThreadedRendering);
-	FTaskGraphInterface::Get().ProcessThreadUntilRequestReturn(RenderThread);
+	{
+		FTaskTagScope Scope(ETaskTag::ERenderingThread);
+		FTaskGraphInterface::Get().ProcessThreadUntilRequestReturn(RenderThread);
+	}
 	FPlatformMisc::MemoryBarrier();
 	check(!GIsThreadedRendering);
 	FCoreDelegates::PreRenderingThreadDestroyed.Broadcast();
@@ -455,6 +464,8 @@ public:
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		GRenderThreadId = FPlatformTLS::GetCurrentThreadId();
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		FTaskTagScope::SetTagNone();
+		FTaskTagScope Scope(ETaskTag::ERenderingThread);
 
 		// Acquire rendering context ownership on the current thread, unless using an RHI thread, which will be the real owner
 		if (!IsRunningRHIInSeparateThread())
@@ -468,11 +479,18 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	virtual void Exit(void) override
 	{
-		// Release rendering context ownership on the current thread if we had acquired it
-		if (bAcquiredThreadOwnership)
+		// Don't bother with cleanup if we crashed. This prevents an assert in FTaskTagScope caused by the fact that the stack isn't unwound when the
+		// render thread crashes, so the ERenderingThread bit added to ActiveNamedThreads by RenderingThreadMain remains set, and this FTaskTagScope
+		// // thinks we're trying to tag the thread twice.
+		if (GIsRenderingThreadHealthy)
 		{
-			bAcquiredThreadOwnership = false;
-			RHIReleaseThreadOwnership();
+			FTaskTagScope Scope(ETaskTag::ERenderingThread);
+			// Release rendering context ownership on the current thread if we had acquired it
+			if (bAcquiredThreadOwnership)
+			{
+				bAcquiredThreadOwnership = false;
+				RHIReleaseThreadOwnership();
+			}
 		}
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -694,6 +712,7 @@ public:
 	{
 		// note that this task is the first task run on the thread, before GRHIThread_InternalUseOnly is assigned, so we can't check IsInRHIThread()
 
+		FTaskTagScope Scope(ETaskTag::ERhiThread);
 		if (bAcquireOwnership)
 		{
 			GDynamicRHI->RHIAcquireThreadOwnership();
@@ -734,15 +753,17 @@ void StartRenderingThread()
 		}
 		DECLARE_CYCLE_STAT(TEXT("Wait For RHIThread"), STAT_WaitForRHIThread, STATGROUP_TaskGraphTasks);
 
-		FGraphEventRef CompletionEvent = TGraphTask<FOwnershipOfRHIThreadTask>::CreateTask(NULL, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(true, GET_STATID(STAT_WaitForRHIThread));
-		QUICK_SCOPE_CYCLE_COUNTER(STAT_StartRenderingThread);
-		FTaskGraphInterface::Get().WaitUntilTaskCompletes(CompletionEvent, ENamedThreads::GameThread_Local);
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		GRHIThread_InternalUseOnly = FRHIThread::Get().Thread;
 		GRHIThreadId = GRHIThread_InternalUseOnly->GetThreadID();
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		GIsRunningRHIInDedicatedThread_InternalUseOnly = true;
 		GIsRunningRHIInSeparateThread_InternalUseOnly = true;
+
+		FGraphEventRef CompletionEvent = TGraphTask<FOwnershipOfRHIThreadTask>::CreateTask(NULL, ENamedThreads::GameThread).ConstructAndDispatchWhenReady(true, GET_STATID(STAT_WaitForRHIThread));
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_StartRenderingThread);
+		FTaskGraphInterface::Get().WaitUntilTaskCompletes(CompletionEvent, ENamedThreads::GameThread_Local);
+
 		GRHICommandList.LatchBypass();
 	}
 	else if (GUseRHITaskThreads_InternalUseOnly)
@@ -757,12 +778,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	// Create the rendering thread.
 	GRenderingThreadRunnable = new FRenderingThread();
 
-	Trace::ThreadGroupBegin(TEXT("Render"));
+	UE::Trace::ThreadGroupBegin(TEXT("Render"));
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	GRenderingThread = 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		FRunnableThread::Create(GRenderingThreadRunnable, *BuildRenderingThreadName(ThreadCount), 0, FPlatformAffinity::GetRenderingThreadPriority(), FPlatformAffinity::GetRenderingThreadMask(), FPlatformAffinity::GetRenderingThreadFlags());
-	Trace::ThreadGroupEnd();
+	UE::Trace::ThreadGroupEnd();
 
 	// Wait for render thread to have taskgraph bound before we dispatch any tasks for it.
 	((FRenderingThread*)GRenderingThreadRunnable)->TaskGraphBoundSyncEvent->Wait();
@@ -779,9 +800,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	// Create the rendering thread heartbeat
 	GRenderingThreadRunnableHeartbeat = new FRenderingThreadTickHeartbeat();
 
-	Trace::ThreadGroupBegin(TEXT("Render"));
-	GRenderingThreadHeartbeat = FRunnableThread::Create(GRenderingThreadRunnableHeartbeat, *FString::Printf(TEXT("RTHeartBeat %d"), ThreadCount), 16 * 1024, TPri_AboveNormal, FPlatformAffinity::GetRTHeartBeatMask());
-	Trace::ThreadGroupEnd();
+	UE::Trace::ThreadGroupBegin(TEXT("Render"));
+	GRenderingThreadHeartbeat = FRunnableThread::Create(GRenderingThreadRunnableHeartbeat, *FString::Printf(TEXT("RTHeartBeat %d"), ThreadCount), 80 * 1024, TPri_AboveNormal, FPlatformAffinity::GetRTHeartBeatMask());
+	UE::Trace::ThreadGroupEnd();
 
 	ThreadCount++;
 
@@ -789,6 +810,17 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	ResumeTextureStreamingRenderTasks();
 }
 
+static FStopRenderingThread GStopRenderingThreadDelegate;
+
+FDelegateHandle RegisterStopRenderingThreadDelegate(const FStopRenderingThread::FDelegate& InDelegate)
+{
+	return GStopRenderingThreadDelegate.Add(InDelegate);
+}
+
+void UnregisterStopRenderingThreadDelegate(FDelegateHandle InDelegateHandle)
+{
+	GStopRenderingThreadDelegate.Remove(InDelegateHandle);
+}
 
 void StopRenderingThread()
 {
@@ -812,6 +844,8 @@ void StopRenderingThread()
 
 	if( GIsThreadedRendering )
 	{
+		GStopRenderingThreadDelegate.Broadcast();
+
 		// Get the list of objects which need to be cleaned up when the rendering thread is done with them.
 		FPendingCleanupObjects* PendingCleanupObjects = GetPendingCleanupObjects();
 
@@ -893,8 +927,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void CheckRenderingThreadHealth()
 {
-	
-
 	if(!GIsRenderingThreadHealthy)
 	{
 		GErrorHist[0] = 0;
@@ -1114,6 +1146,8 @@ static FAutoConsoleVariableRef CVarTimeoutForBlockOnRenderFence(
  */
 static void GameThreadWaitForTask(const FGraphEventRef& Task, ENamedThreads::Type TriggerThreadIndex = ENamedThreads::ActualRenderingThread, bool bEmptyGameThreadTasks = false)
 {
+	TaskTrace::FWaitingScope WaitingScope(GetTraceIds({ Task }));
+	TRACE_CPUPROFILER_EVENT_SCOPE(GameThreadWaitForTask);
 	SCOPE_TIME_GUARD(TEXT("GameThreadWaitForTask"));
 
 	check(IsInGameThread());
@@ -1246,12 +1280,15 @@ void FRenderCommandFence::Wait(bool bProcessGameThreadTasks) const
 /**
  * Waits for the rendering thread to finish executing all pending rendering commands.  Should only be used from the game thread.
  */
-void FlushRenderingCommands(bool bFlushDeferredDeletes)
+void FlushRenderingCommands()
 {
 	if (!GIsRHIInitialized)
 	{
 		return;
 	}
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(FlushRenderingCommands);
+	FCoreRenderDelegates::OnFlushRenderingCommandsStart.Broadcast();
 	FSuspendRenderingTickables SuspendRenderingTickables;
 
 	// Need to flush GT because render commands from threads other than GT are sent to
@@ -1264,13 +1301,11 @@ void FlushRenderingCommands(bool bFlushDeferredDeletes)
 		FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread_Local);
 	}
 
-	ENQUEUE_RENDER_COMMAND(FlushPendingDeleteRHIResourcesCmd)(
-		[bFlushDeferredDeletes](FRHICommandListImmediate& RHICmdList)
+	ENQUEUE_RENDER_COMMAND(FlushPendingDeleteRHIResourcesCmd)([](FRHICommandListImmediate& RHICmdList)
 	{
-		RHICmdList.ImmediateFlush(
-			bFlushDeferredDeletes ?
-			EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes :
-			EImmediateFlushType::FlushRHIThreadFlushResources);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
+		//double flush to flush out the deferred deletions queued into the ImmediateCmdList
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
 	});
 
 	// Find the objects which may be cleaned up once the rendering thread command queue has been flushed.
@@ -1283,6 +1318,8 @@ void FlushRenderingCommands(bool bFlushDeferredDeletes)
 
 	// Delete the objects which were enqueued for deferred cleanup before the command queue flush.
 	delete PendingCleanupObjects;
+
+	FCoreRenderDelegates::OnFlushRenderingCommandsEnd.Broadcast();
 }
 
 void FlushPendingDeleteRHIResources_GameThread()
@@ -1300,7 +1337,7 @@ void FlushPendingDeleteRHIResources_RenderThread()
 {
 	if (!IsRunningRHIInSeparateThread())
 	{
-		FRHIResource::FlushPendingDeletes();
+		FRHIResource::FlushPendingDeletes(FRHICommandListExecutor::GetImmediateCommandList());
 	}
 }
 
@@ -1336,20 +1373,23 @@ FPendingCleanupObjects::FPendingCleanupObjects()
 
 FPendingCleanupObjects::~FPendingCleanupObjects()
 {
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FPendingCleanupObjects_Destruct);
+	if (CleanupArray.Num())
+	{
+		QUICK_SCOPE_CYCLE_COUNTER(STAT_FPendingCleanupObjects_Destruct);
 
-	const bool bBatchingEnabled = bEnablePendingCleanupObjectsCommandBatching;
-	if (bBatchingEnabled)
-	{
-		StartRenderCommandFenceBundler();
-	}
-	for (int32 ObjectIndex = 0; ObjectIndex < CleanupArray.Num(); ObjectIndex++)
-	{
-		delete CleanupArray[ObjectIndex];
-	}
-	if (bBatchingEnabled)
-	{
-		StopRenderCommandFenceBundler();
+		const bool bBatchingEnabled = bEnablePendingCleanupObjectsCommandBatching;
+		if (bBatchingEnabled)
+		{
+			StartRenderCommandFenceBundler();
+		}
+		for (int32 ObjectIndex = 0; ObjectIndex < CleanupArray.Num(); ObjectIndex++)
+		{
+			delete CleanupArray[ObjectIndex];
+		}
+		if (bBatchingEnabled)
+		{
+			StopRenderCommandFenceBundler();
+		}
 	}
 }
 

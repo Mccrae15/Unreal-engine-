@@ -57,6 +57,14 @@ public:
 	static UDatasmithSceneElement* ConstructDatasmithSceneFromFile(const FString& FilePath);
 
 	/**
+	 * Open an existing Datasmith source from the SourceUri.
+	 * @param	SourceUri Uri of the datasmith scene to open. ie: file://c:/MyFolder/MyFiles.udatasmith
+	 * @return	The opened DatasmithScene, that can be modified and can be imported.
+	 **/
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Datasmith")
+	static UDatasmithSceneElement* ConstructDatasmithSceneFromSourceUri(const FString& SourceUri);
+
+	/**
 	 * Open set of CAD files as actors in a single datasmith scene
 	 * Importing set of files into single DatasmithScene asset(with ImportScene) is supported only for CAD files
 	 * @return	The opened DatasmithScene, that can be modified and can be imported.
@@ -74,7 +82,7 @@ public:
 
 	/**
 	 * Trigger the translation phase, which populates the DatasmithScene.
-	 * note that options should have been set before that.
+	 * note that options should have been set before that and any modification to the scene made prior will be lost.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Datasmith")
 	bool TranslateScene();
@@ -129,7 +137,7 @@ public:
 	void DestroyScene();
 
 private:
-	TUniquePtr<FDatasmithTranslatableSceneSource> SourcePtr; // #ueent_todo move to context
+	TSharedPtr<UE::DatasmithImporter::FExternalSource> ExternalSourcePtr;
 	TUniquePtr<FDatasmithImportContext> ImportContextPtr;
 	bool bTranslated = false;
 

@@ -1,15 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LandscapeEditorObject.h"
+#include "LandscapeDataAccess.h"
 #include "Engine/Texture2D.h"
 #include "HAL/FileManager.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/ConstructorHelpers.h"
 #include "LandscapeEditorModule.h"
 #include "LandscapeRender.h"
+#include "LandscapeImportHelper.h"
 #include "LandscapeMaterialInstanceConstant.h"
 #include "Misc/ConfigCacheIni.h"
 #include "EngineUtils.h"
+#include "Misc/MessageDialog.h"
 
 //#define LOCTEXT_NAMESPACE "LandscapeEditor"
 
@@ -156,15 +159,18 @@ void ULandscapeEditorObject::PostEditChangeProperty(FPropertyChangedEvent& Prope
 
 	if (PropertyChangedEvent.MemberProperty == nullptr ||
 		PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, NewLandscape_Material) ||
-		PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, ImportLandscape_HeightmapFilename))
+		PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, ImportLandscape_HeightmapFilename) ||
+		PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, ImportLandscape_Layers))
 	{
-		RefreshImportLayersList();
+		// In Import/Export tool we need to refresh from the existing material
+		const bool bRefreshFromTarget = ParentMode && ParentMode->CurrentTool && ParentMode->CurrentTool->GetToolName() == FName(TEXT("ImportExport"));
+		RefreshImportLayersList(bRefreshFromTarget);
 	}
 
 	if (PropertyChangedEvent.MemberProperty == nullptr ||
 		PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, PaintingRestriction))
 	{
-		UpdateComponentLayerWhitelist();
+		UpdateComponentLayerAllowList();
 	}
 
 	if (PropertyChangedEvent.MemberProperty == nullptr ||
@@ -535,37 +541,295 @@ bool ULandscapeEditorObject::SetAlphaTexture(UTexture2D* InTexture, EColorChanne
 	return Result;
 }
 
-void ULandscapeEditorObject::ImportLandscapeData()
+void ULandscapeEditorObject::ChooseBestComponentSizeForImport()
 {
-	ILandscapeEditorModule& LandscapeEditorModule = FModuleManager::GetModuleChecked<ILandscapeEditorModule>("LandscapeEditor");
-	const ILandscapeHeightmapFileFormat* HeightmapFormat = LandscapeEditorModule.GetHeightmapFormatByExtension(*FPaths::GetExtension(ImportLandscape_HeightmapFilename, true));
-	
-	if (HeightmapFormat)
+	FLandscapeImportHelper::ChooseBestComponentSizeForImport(ImportLandscape_Width, ImportLandscape_Height, NewLandscape_QuadsPerSection, NewLandscape_SectionsPerComponent, NewLandscape_ComponentCount);
+}
+
+bool ULandscapeEditorObject::UseSingleFileImport() const
+{
+	if (ParentMode)
 	{
-		FLandscapeHeightmapImportData HeightmapImportData = HeightmapFormat->Import(*ImportLandscape_HeightmapFilename, {ImportLandscape_Width, ImportLandscape_Height});
-		ImportLandscape_HeightmapImportResult = HeightmapImportData.ResultCode;
-		ImportLandscape_HeightmapErrorMessage = HeightmapImportData.ErrorMessage;
-		ImportLandscape_Data = MoveTemp(HeightmapImportData.Data);
-	}
-	else if (!ImportLandscape_HeightmapFilename.IsEmpty())
-	{
-		ImportLandscape_HeightmapImportResult = ELandscapeImportResult::Error;
-		ImportLandscape_HeightmapErrorMessage = NSLOCTEXT("LandscapeEditor.NewLandscape", "Import_UnknownFileType", "File type not recognised");
+		return ParentMode->UseSingleFileImport();
 	}
 
+	return true;
+}
+
+void ULandscapeEditorObject::RefreshImports()
+{
+	ClearImportLandscapeData();
+	HeightmapImportDescriptorIndex = 0;
+	HeightmapImportDescriptor.Reset();
+	ImportLandscape_Width = 0;
+	ImportLandscape_Height = 0;
+
+	ImportLandscape_HeightmapImportResult = ELandscapeImportResult::Success;
+	ImportLandscape_HeightmapErrorMessage = FText();
+
+	if (!ImportLandscape_HeightmapFilename.IsEmpty())
+	{
+		ImportLandscape_HeightmapImportResult =
+			FLandscapeImportHelper::GetHeightmapImportDescriptor(ImportLandscape_HeightmapFilename, UseSingleFileImport(), bFlipYAxis, HeightmapImportDescriptor, ImportLandscape_HeightmapErrorMessage);
+		if (ImportLandscape_HeightmapImportResult != ELandscapeImportResult::Error)
+		{
+			ImportLandscape_Width = HeightmapImportDescriptor.ImportResolutions[HeightmapImportDescriptorIndex].Width;
+			ImportLandscape_Height = HeightmapImportDescriptor.ImportResolutions[HeightmapImportDescriptorIndex].Height;
+			ChooseBestComponentSizeForImport();
+			ImportLandscapeData();
+		}
+	}
+
+	RefreshLayerImports();
+}
+
+void ULandscapeEditorObject::RefreshLayerImports()
+{
+	// Make sure to reset import width and height if we don't have a Heightmap to import
+	if (ImportLandscape_HeightmapFilename.IsEmpty())
+	{
+		HeightmapImportDescriptorIndex = 0;
+		ImportLandscape_Width = 0;
+		ImportLandscape_Height = 0;
+	}
+
+	for (FLandscapeImportLayer& UIImportLayer : ImportLandscape_Layers)
+	{
+		RefreshLayerImport(UIImportLayer);
+	}
+}
+
+void ULandscapeEditorObject::RefreshLayerImport(FLandscapeImportLayer& ImportLayer)
+{
+	ImportLayer.ErrorMessage = FText();
+	ImportLayer.ImportResult = ELandscapeImportResult::Success;
+
+	if (!ImportLayer.SourceFilePath.IsEmpty())
+	{
+		if (!ImportLayer.LayerInfo)
+		{
+			ImportLayer.ImportResult = ELandscapeImportResult::Error;
+			ImportLayer.ErrorMessage = NSLOCTEXT("LandscapeEditor.NewLandscape", "Import_LayerInfoNotSet", "Can't import a layer file without a layer info");
+		}
+		else
+		{
+			ImportLayer.ImportResult = FLandscapeImportHelper::GetWeightmapImportDescriptor(ImportLayer.SourceFilePath, UseSingleFileImport(), bFlipYAxis, ImportLayer.LayerName, ImportLayer.ImportDescriptor, ImportLayer.ErrorMessage);
+			if (ImportLayer.ImportResult != ELandscapeImportResult::Error)
+			{
+				if (ImportLandscape_Height != 0 || ImportLandscape_Width != 0)
+				{
+					// Use same import index as Heightmap
+					int32 FoundIndex = INDEX_NONE;
+					for (int32 Index = 0; Index < ImportLayer.ImportDescriptor.FileResolutions.Num(); ++Index)
+					{
+						if (ImportLayer.ImportDescriptor.ImportResolutions[Index] == HeightmapImportDescriptor.ImportResolutions[HeightmapImportDescriptorIndex])
+						{
+							FoundIndex = Index;
+							break;
+						}
+					}
+
+					if (FoundIndex == INDEX_NONE)
+					{
+						ImportLayer.ImportResult = ELandscapeImportResult::Error;
+						ImportLayer.ErrorMessage = NSLOCTEXT("LandscapeEditor.ImportLandscape", "Import_WeightHeightResolutionMismatch", "Weightmap import resolution isn't same as Heightmap resolution.");
+					}
+				}
+			}
+		}
+	}
+}
+
+void ULandscapeEditorObject::OnChangeImportLandscapeResolution(int32 DescriptorIndex)
+{
+	check(DescriptorIndex >= 0 && DescriptorIndex < HeightmapImportDescriptor.ImportResolutions.Num());
+	HeightmapImportDescriptorIndex = DescriptorIndex;
+	ImportLandscape_Width = HeightmapImportDescriptor.ImportResolutions[HeightmapImportDescriptorIndex].Width;
+	ImportLandscape_Height = HeightmapImportDescriptor.ImportResolutions[HeightmapImportDescriptorIndex].Height;
+	ClearImportLandscapeData();
+	ImportLandscapeData();
+	ChooseBestComponentSizeForImport();
+}
+
+void ULandscapeEditorObject::ImportLandscapeData()
+{
+	ImportLandscape_HeightmapImportResult = FLandscapeImportHelper::GetHeightmapImportData(HeightmapImportDescriptor, HeightmapImportDescriptorIndex, ImportLandscape_Data, ImportLandscape_HeightmapErrorMessage);
 	if (ImportLandscape_HeightmapImportResult == ELandscapeImportResult::Error)
 	{
 		ImportLandscape_Data.Empty();
 	}
 }
 
-void ULandscapeEditorObject::RefreshImportLayersList()
+ELandscapeImportResult ULandscapeEditorObject::CreateImportLayersInfo(TArray<FLandscapeImportLayerInfo>& OutImportLayerInfos)
 {
-	UTexture2D* ThumbnailWeightmap = LoadObject<UTexture2D>(NULL, TEXT("/Engine/EditorLandscapeResources/LandscapeThumbnailWeightmap.LandscapeThumbnailWeightmap"), NULL, LOAD_None, NULL);
-	UTexture2D* ThumbnailHeightmap = LoadObject<UTexture2D>(NULL, TEXT("/Engine/EditorLandscapeResources/LandscapeThumbnailHeightmap.LandscapeThumbnailHeightmap"), NULL, LOAD_None, NULL);
+	const int32 QuadsPerComponent = NewLandscape_SectionsPerComponent * NewLandscape_QuadsPerSection;
+	const int32 SizeX = NewLandscape_ComponentCount.X * QuadsPerComponent + 1;
+	const int32 SizeY = NewLandscape_ComponentCount.Y * QuadsPerComponent + 1;
 
-	UMaterialInterface* Material = NewLandscape_Material.Get();
-	TArray<FName> LayerNames = ALandscapeProxy::GetLayersFromMaterial(Material);
+	const uint32 ImportSizeX = ImportLandscape_Width;
+	const uint32 ImportSizeY = ImportLandscape_Height;
+
+	if (ImportLandscape_HeightmapImportResult == ELandscapeImportResult::Error)
+	{
+		// Cancel import
+		return ELandscapeImportResult::Error;
+	}
+
+	OutImportLayerInfos.Reserve(ImportLandscape_Layers.Num());
+
+	// Fill in LayerInfos array and allocate data
+	for (FLandscapeImportLayer& UIImportLayer : ImportLandscape_Layers)
+	{
+		OutImportLayerInfos.Add((const FLandscapeImportLayer&)UIImportLayer); //slicing is fine here
+		FLandscapeImportLayerInfo& ImportLayer = OutImportLayerInfos.Last();
+
+		if (ImportLayer.LayerInfo != nullptr && !ImportLayer.SourceFilePath.IsEmpty())
+		{
+			UIImportLayer.ImportResult = FLandscapeImportHelper::GetWeightmapImportDescriptor(ImportLayer.SourceFilePath, UseSingleFileImport(), bFlipYAxis, ImportLayer.LayerName, UIImportLayer.ImportDescriptor, UIImportLayer.ErrorMessage);
+			if (UIImportLayer.ImportResult == ELandscapeImportResult::Error)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, UIImportLayer.ErrorMessage);
+				return ELandscapeImportResult::Error;
+			}
+
+			// Use same import index as Heightmap
+			int32 FoundIndex = INDEX_NONE;
+			for (int32 Index = 0; Index < UIImportLayer.ImportDescriptor.FileResolutions.Num(); ++Index)
+			{
+				if (UIImportLayer.ImportDescriptor.ImportResolutions[Index] == HeightmapImportDescriptor.ImportResolutions[HeightmapImportDescriptorIndex])
+				{
+					FoundIndex = Index;
+					break;
+				}
+			}
+
+			if (FoundIndex == INDEX_NONE)
+			{
+				UIImportLayer.ImportResult = ELandscapeImportResult::Error;
+				UIImportLayer.ErrorMessage = NSLOCTEXT("LandscapeEditor.NewLandscape", "Import_WeightHeightResolutionMismatch", "Weightmap import resolution isn't same as Heightmap resolution.");
+				FMessageDialog::Open(EAppMsgType::Ok, UIImportLayer.ErrorMessage);
+				return ELandscapeImportResult::Error;
+			}
+
+			UIImportLayer.ImportResult = FLandscapeImportHelper::GetWeightmapImportData(UIImportLayer.ImportDescriptor, FoundIndex, ImportLayer.LayerName, ImportLayer.LayerData, UIImportLayer.ErrorMessage);
+			if (UIImportLayer.ImportResult == ELandscapeImportResult::Error)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, UIImportLayer.ErrorMessage);
+				return ELandscapeImportResult::Error;
+			}
+		}
+	}
+
+	return ELandscapeImportResult::Success;
+}
+
+ELandscapeImportResult ULandscapeEditorObject::CreateNewLayersInfo(TArray<FLandscapeImportLayerInfo>& OutNewLayerInfos)
+{
+	const int32 QuadsPerComponent = NewLandscape_SectionsPerComponent * NewLandscape_QuadsPerSection;
+	const int32 SizeX = NewLandscape_ComponentCount.X * QuadsPerComponent + 1;
+	const int32 SizeY = NewLandscape_ComponentCount.Y * QuadsPerComponent + 1;
+
+	OutNewLayerInfos.Reset(ImportLandscape_Layers.Num());
+
+	// Fill in LayerInfos array and allocate data
+	for (const FLandscapeImportLayer& UIImportLayer : ImportLandscape_Layers)
+	{
+		FLandscapeImportLayerInfo ImportLayer = FLandscapeImportLayerInfo(UIImportLayer.LayerName);
+		ImportLayer.LayerInfo = UIImportLayer.LayerInfo;
+		ImportLayer.SourceFilePath = "";
+		ImportLayer.LayerData = TArray<uint8>();
+		OutNewLayerInfos.Add(MoveTemp(ImportLayer));
+	}
+
+	// Fill the first weight-blended layer to 100%
+	if (FLandscapeImportLayerInfo* FirstBlendedLayer = OutNewLayerInfos.FindByPredicate([](const FLandscapeImportLayerInfo& ImportLayer) { return ImportLayer.LayerInfo && !ImportLayer.LayerInfo->bNoWeightBlend; }))
+	{
+		const int32 DataSize = SizeX * SizeY;
+		FirstBlendedLayer->LayerData.AddUninitialized(DataSize);
+
+		uint8* ByteData = FirstBlendedLayer->LayerData.GetData();
+		FMemory::Memset(ByteData, 255, DataSize);
+	}
+
+	return ELandscapeImportResult::Success;
+}
+
+void ULandscapeEditorObject::InitializeDefaultHeightData(TArray<uint16>& OutData)
+{
+	const int32 QuadsPerComponent = NewLandscape_SectionsPerComponent * NewLandscape_QuadsPerSection;
+	const int32 SizeX = NewLandscape_ComponentCount.X * QuadsPerComponent + 1;
+	const int32 SizeY = NewLandscape_ComponentCount.Y * QuadsPerComponent + 1;
+	const int32 TotalSize = SizeX * SizeY;
+	// Initialize heightmap data
+	OutData.Reset();
+	OutData.AddUninitialized(TotalSize);
+	
+	TArray<uint16> StrideData;
+	StrideData.AddUninitialized(SizeX);
+	// Initialize blank heightmap data
+	for (int32 X = 0; X < SizeX; ++X)
+	{
+		StrideData[X] = LandscapeDataAccess::MidValue;
+	}
+	for (int32 Y = 0; Y < SizeY; ++Y)
+	{
+		FMemory::Memcpy(&OutData[Y * SizeX], StrideData.GetData(), sizeof(uint16) * SizeX);
+	}
+}
+
+void ULandscapeEditorObject::ExpandImportData(TArray<uint16>& OutHeightData, TArray<FLandscapeImportLayerInfo>& OutImportLayerInfos)
+{
+	const TArray<uint16>& ImportData = GetImportLandscapeData();
+	if (ImportData.Num())
+	{
+		const int32 QuadsPerComponent = NewLandscape_SectionsPerComponent * NewLandscape_QuadsPerSection;
+		FLandscapeImportResolution RequiredResolution(NewLandscape_ComponentCount.X * QuadsPerComponent + 1, NewLandscape_ComponentCount.Y * QuadsPerComponent + 1);
+		FLandscapeImportResolution ImportResolution(ImportLandscape_Width, ImportLandscape_Height);
+
+		FLandscapeImportHelper::TransformHeightmapImportData(ImportData, OutHeightData, ImportResolution, RequiredResolution, ELandscapeImportTransformType::ExpandCentered);
+
+		for (int32 LayerIdx = 0; LayerIdx < OutImportLayerInfos.Num(); ++LayerIdx)
+		{
+			TArray<uint8>& OutImportLayerData = OutImportLayerInfos[LayerIdx].LayerData;
+			TArray<uint8> OutLayerData;
+			if (OutImportLayerData.Num())
+			{
+				FLandscapeImportHelper::TransformWeightmapImportData(OutImportLayerData, OutLayerData, ImportResolution, RequiredResolution, ELandscapeImportTransformType::ExpandCentered);
+				OutImportLayerData = MoveTemp(OutLayerData);
+			}
+		}
+	}
+}
+
+void ULandscapeEditorObject::RefreshImportLayersList(bool bRefreshFromTarget)
+{
+	UTexture2D* ThumbnailWeightmap = nullptr;
+	UTexture2D* ThumbnailHeightmap = nullptr;
+		
+	TArray<FName> LayerNames;
+	TArray<ULandscapeLayerInfoObject*> LayerInfoObjs;
+	UMaterialInterface* Material = nullptr;
+	if (bRefreshFromTarget)
+	{
+		LayerNames.Reset(ImportLandscape_Layers.Num());
+		LayerInfoObjs.Reset(ImportLandscape_Layers.Num());
+		Material = ParentMode->GetTargetLandscapeMaterial();
+		for (const TSharedRef<FLandscapeTargetListInfo>& TargetListInfo : ParentMode->GetTargetList())
+		{
+			if (TargetListInfo->TargetType != ELandscapeToolTargetType::Weightmap)
+			{
+				continue;
+			}
+
+			LayerNames.Add(TargetListInfo->LayerName);
+			LayerInfoObjs.Add(TargetListInfo->LayerInfoObj.Get());
+		}
+	}
+	else
+	{
+		Material = NewLandscape_Material.Get();
+		LayerNames = ALandscapeProxy::GetLayersFromMaterial(Material);
+	}
 
 	const TArray<FLandscapeImportLayer> OldLayersList = MoveTemp(ImportLandscape_Layers);
 	ImportLandscape_Layers.Reset(LayerNames.Num());
@@ -576,6 +840,9 @@ void ULandscapeEditorObject::RefreshImportLayersList()
 
 		bool bFound = false;
 		FLandscapeImportLayer NewImportLayer;
+		NewImportLayer.ImportResult = ELandscapeImportResult::Success;
+		NewImportLayer.ErrorMessage = FText();
+
 		for (int32 j = 0; j < OldLayersList.Num(); j++)
 		{
 			if (OldLayersList[j].LayerName == LayerName)
@@ -594,58 +861,39 @@ void ULandscapeEditorObject::RefreshImportLayersList()
 				NewImportLayer.ThumbnailMIC->SetParentEditorOnly(Material);
 				Context.AddMaterialInterface(NewImportLayer.ThumbnailMIC);
 			}
-
-			NewImportLayer.ImportResult = ELandscapeImportResult::Success;
-			NewImportLayer.ErrorMessage = FText();
-
-			if (!NewImportLayer.SourceFilePath.IsEmpty())
-			{
-				if (!NewImportLayer.LayerInfo)
-				{
-					NewImportLayer.ImportResult = ELandscapeImportResult::Error;
-					NewImportLayer.ErrorMessage = NSLOCTEXT("LandscapeEditor.NewLandscape", "Import_LayerInfoNotSet", "Can't import a layer file without a layer info");
-				}
-				else
-				{
-					ILandscapeEditorModule& LandscapeEditorModule = FModuleManager::GetModuleChecked<ILandscapeEditorModule>("LandscapeEditor");
-					const ILandscapeWeightmapFileFormat* WeightmapFormat = LandscapeEditorModule.GetWeightmapFormatByExtension(*FPaths::GetExtension(NewImportLayer.SourceFilePath, true));
-
-					if (WeightmapFormat)
-					{
-						FLandscapeWeightmapInfo WeightmapImportInfo = WeightmapFormat->Validate(*NewImportLayer.SourceFilePath, NewImportLayer.LayerName);
-						NewImportLayer.ImportResult = WeightmapImportInfo.ResultCode;
-						NewImportLayer.ErrorMessage = WeightmapImportInfo.ErrorMessage;
-
-						if (WeightmapImportInfo.ResultCode != ELandscapeImportResult::Error &&
-							!WeightmapImportInfo.PossibleResolutions.Contains(FLandscapeFileResolution{ImportLandscape_Width, ImportLandscape_Height}))
-						{
-							NewImportLayer.ImportResult = ELandscapeImportResult::Error;
-							NewImportLayer.ErrorMessage = NSLOCTEXT("LandscapeEditor.NewLandscape", "Import_LayerSizeMismatch", "Size of the layer file does not match size of heightmap file");
-						}
-					}
-					else
-					{
-						NewImportLayer.ImportResult = ELandscapeImportResult::Error;
-						NewImportLayer.ErrorMessage = NSLOCTEXT("LandscapeEditor.NewLandscape", "Import_UnknownFileType", "File type not recognised");
-					}
-				}
-			}
 		}
 		else
 		{
+			if (!ThumbnailWeightmap)
+			{
+				ThumbnailWeightmap = LoadObject<UTexture2D>(NULL, TEXT("/Engine/EditorLandscapeResources/LandscapeThumbnailWeightmap.LandscapeThumbnailWeightmap"), NULL, LOAD_None, NULL);
+			}
+
+			if (!ThumbnailHeightmap)
+			{
+				ThumbnailHeightmap = LoadObject<UTexture2D>(NULL, TEXT("/Engine/EditorLandscapeResources/LandscapeThumbnailHeightmap.LandscapeThumbnailHeightmap"), NULL, LOAD_None, NULL);
+			}
+
 			NewImportLayer.LayerName = LayerName;
 			NewImportLayer.ThumbnailMIC = ALandscapeProxy::GetLayerThumbnailMIC(Material, LayerName, ThumbnailWeightmap, ThumbnailHeightmap, nullptr);
 		}
+
+		if (bRefreshFromTarget)
+		{
+			NewImportLayer.LayerInfo = LayerInfoObjs[i];
+		}
+
+		RefreshLayerImport(NewImportLayer);
 
 		ImportLandscape_Layers.Add(MoveTemp(NewImportLayer));
 	}
 }
 
-void ULandscapeEditorObject::UpdateComponentLayerWhitelist()
+void ULandscapeEditorObject::UpdateComponentLayerAllowList()
 {
 	if (ParentMode->CurrentToolTarget.LandscapeInfo.IsValid())
 	{
-		ParentMode->CurrentToolTarget.LandscapeInfo->UpdateComponentLayerWhitelist();
+		ParentMode->CurrentToolTarget.LandscapeInfo->UpdateComponentLayerAllowList();
 	}
 }
 

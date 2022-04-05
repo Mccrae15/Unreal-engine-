@@ -1148,15 +1148,15 @@ private:
 	int32 TestCustomVerts(const FOnPaintHandlerParams& InParams)
 	{
 		const float Radius = FMath::Min(InParams.Geometry.GetLocalSize().X, InParams.Geometry.GetLocalSize().Y) * 0.5f;
-		const FVector2D Center = InParams.Geometry.AbsolutePosition + InParams.Geometry.GetLocalSize() * 0.5f;
+		const FVector2D Center = FVector2D(InParams.Geometry.AbsolutePosition) + InParams.Geometry.GetLocalSize() * 0.5f;
 
 		const FSlateBrush* MyBrush = FCoreStyle::Get().GetBrush("ColorWheel.HueValueCircle");
 
 		FSlateResourceHandle Handle = MyBrush->GetRenderingResource();
 		const FSlateShaderResourceProxy* ResourceProxy = Handle.GetResourceProxy();
 
-		FVector2D UVCenter = FVector2D::ZeroVector;
-		FVector2D UVRadius = FVector2D(1,1);
+		FVector2f UVCenter = FVector2f::ZeroVector;
+		FVector2f UVRadius = FVector2f(1,1);
 		if (ResourceProxy != nullptr)
 		{
 			UVRadius = 0.5f * ResourceProxy->SizeUV;
@@ -3981,7 +3981,7 @@ public:
 									. HAlign(HAlign_Center)
 								[
 									SNew(SImage)
-										. Image( FCoreStyle::Get().GetBrush( TEXT("DefaultAppIcon") ) )
+										. Image( FCoreStyle::Get().GetBrush( TEXT("AppIcon") ) )
 								]
 								+ SVerticalBox::Slot()
 									.AutoHeight()
@@ -4004,7 +4004,7 @@ public:
 										+ SHorizontalBox::Slot()
 										.AutoWidth()
 										[
-											SNew(SImage) .Image( FCoreStyle::Get().GetBrush( TEXT("DefaultAppIcon") ) )
+											SNew(SImage) .Image( FCoreStyle::Get().GetBrush( TEXT("AppIcon") ) )
 										]
 										+ SHorizontalBox::Slot()
 										.AutoWidth()
@@ -4251,7 +4251,7 @@ class SFxTest : public SCompoundWidget
 							+SHorizontalBox::Slot() .AutoWidth()
 							[
 								SNew(SImage)
-								.Image(FTestStyle::Get().GetBrush("UE4Icon"))
+								.Image(FTestStyle::Get().GetBrush("UEIcon"))
 							]
 							+SHorizontalBox::Slot() .AutoWidth()
 							[
@@ -4362,7 +4362,7 @@ class SDPIScalingTest : public SCompoundWidget
 
 	ECheckBoxState IsFillChecked() const
 	{
-		const bool bIsFilling = (ScalerSlot->HAlignment == HAlign_Fill);
+		const bool bIsFilling = (ScalerSlot->GetHorizontalAlignment() == HAlign_Fill);
 		return (bIsFilling)
 			? ECheckBoxState::Checked
 			: ECheckBoxState::Unchecked;
@@ -4370,8 +4370,8 @@ class SDPIScalingTest : public SCompoundWidget
 
 	void OnFillChecked(ECheckBoxState InValue)
 	{
-		ScalerSlot->HAlign( (InValue == ECheckBoxState::Checked) ? HAlign_Fill : HAlign_Center );
-		ScalerSlot->VAlign( (InValue == ECheckBoxState::Checked) ? VAlign_Fill : VAlign_Center );
+		ScalerSlot->SetHorizontalAlignment( (InValue == ECheckBoxState::Checked) ? HAlign_Fill : HAlign_Center );
+		ScalerSlot->SetVerticalAlignment( (InValue == ECheckBoxState::Checked) ? VAlign_Fill : VAlign_Center );
 	}
 
 	float DPIScale;
@@ -4717,16 +4717,15 @@ public:
 	{
 		ChildSlot
 			[
-				SNew(SBorder)
+				SNew(SBox)
 				.Padding(15.0f)
-				.BorderImage(FCoreStyle::Get().GetBrush("NotificationList.ItemBackground"))
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					[
 						SNew(SImage)
-						.Image(FTestStyle::Get().GetBrush("UE4Icon"))
+						.Image(FTestStyle::Get().GetBrush("UEIcon"))
 					]
 					+ SHorizontalBox::Slot()
 					.Padding(FMargin(15.0f, 0.0f, 0.0f, 0.0f))
@@ -5561,13 +5560,13 @@ public:
 	virtual void Construct(const FArguments& InArgs) = 0;
 };
 
-namespace
+namespace TestSuiteNS
 {
 	float RotDeg = 0.0f;
 	FScale2D Scale;
 	FShear2D Shear;
 	FQuat2D Rot;
-	FVector2D Offset(0,0);
+	FVector2f Offset(0,0);
 }
 
 class SRenderTransformManipulatorWidgetImpl : public SRenderTransformManipulatorWidget
@@ -5585,7 +5584,7 @@ private:
 		{
 			check(IsInGameThread());
 			Style.SetContentRoot(FPaths::EngineContentDir() / TEXT("Slate"));
-			Style.Set("UE4Icon", new FSlateImageBrush(Style.RootToContentDir(TEXT("Testing/UE4Icon.png")), FVector2D(50, 50)));
+			Style.Set("UEIcon", new FSlateVectorImageBrush(Style.RootToContentDir(TEXT("Starship/Common/unreal.svg")), FVector2D(50, 50)));
 			IsInit = true;
 		}
 		return Style;
@@ -5597,12 +5596,12 @@ private:
  */
 TOptional<FSlateRenderTransform> GetTestRenderTransform()
 {
-	return TransformCast<FSlateRenderTransform>(Concatenate(Shear, Scale, Rot));
+	return TransformCast<FSlateRenderTransform>(Concatenate(TestSuiteNS::Shear, TestSuiteNS::Scale, TestSuiteNS::Rot));
 }
 
 FVector2D GetTestRenderTransformPivot()
 {
-	return Offset;
+	return FVector2D(TestSuiteNS::Offset);
 }
 
 void SRenderTransformManipulatorWidgetImpl::Construct(const FArguments& InArgs)
@@ -5615,7 +5614,7 @@ void SRenderTransformManipulatorWidgetImpl::Construct(const FArguments& InArgs)
 					SAssignNew(ImageWidget, SImage)
 					.RenderTransform_Static(&::GetTestRenderTransform)
 					.RenderTransformPivot_Static(&::GetTestRenderTransformPivot)
-					.Image(GetStyle().GetBrush("UE4Icon"))
+					.Image(GetStyle().GetBrush("UEIcon"))
 				]
 			+ SVerticalBox::Slot().AutoHeight().Padding(4)
 			[
@@ -5629,8 +5628,8 @@ void SRenderTransformManipulatorWidgetImpl::Construct(const FArguments& InArgs)
 						SNew(SSpinBox<float>)
 						.MinValue(0.0f)
 						.MaxValue(360.0f)
-						.OnValueChanged_Static([](float val) { RotDeg = val; Rot = FQuat2D(FMath::DegreesToRadians(val)); })
-						.Value_Static([] { return RotDeg; })
+						.OnValueChanged_Static([](float val) { TestSuiteNS::RotDeg = val; TestSuiteNS::Rot = FQuat2D(FMath::DegreesToRadians(val)); })
+						.Value_Static([] { return TestSuiteNS::RotDeg; })
 					]
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(4)
@@ -5645,8 +5644,8 @@ void SRenderTransformManipulatorWidgetImpl::Construct(const FArguments& InArgs)
 							SNew(SSpinBox<float>)
 							.MinValue(-2.0f)
 							.MaxValue(2.0f)
-							.OnValueChanged_Static([](float val) { Offset.X = val; })
-							.Value_Static([] { return Offset.X; })
+							.OnValueChanged_Static([](float val) { TestSuiteNS::Offset.X = val; })
+							.Value_Static([] { return TestSuiteNS::Offset.X; })
 						]
 				]
 			+ SVerticalBox::Slot().AutoHeight().Padding(4)
@@ -5661,8 +5660,8 @@ void SRenderTransformManipulatorWidgetImpl::Construct(const FArguments& InArgs)
 							SNew(SSpinBox<float>)
 							.MinValue(-2.0f)
 							.MaxValue(2.0f)
-							.OnValueChanged_Static([](float val) { Offset.Y = val; })
-							.Value_Static([] { return Offset.Y; })
+							.OnValueChanged_Static([](float val) { TestSuiteNS::Offset.Y = val; })
+							.Value_Static([] { return TestSuiteNS:: Offset.Y; })
 						]
 				]
 			+ SVerticalBox::Slot().AutoHeight().Padding(4)
@@ -5677,8 +5676,8 @@ void SRenderTransformManipulatorWidgetImpl::Construct(const FArguments& InArgs)
 							SNew(SSpinBox<float>)
 							.MinValue(-10.0f)
 							.MaxValue(10.0f)
-							.OnValueChanged_Static([](float val) { Scale = FScale2D(val, Scale.GetVector().Y); })
-							.Value_Static([] { return Scale.GetVector().X; })
+							.OnValueChanged_Static([](float val) { TestSuiteNS::Scale = FScale2D(val, TestSuiteNS::Scale.GetVector().Y); })
+							.Value_Static([] { return TestSuiteNS::Scale.GetVector().X; })
 						]
 				]
 			+ SVerticalBox::Slot().AutoHeight().Padding(4)
@@ -5693,8 +5692,8 @@ void SRenderTransformManipulatorWidgetImpl::Construct(const FArguments& InArgs)
 							SNew(SSpinBox<float>)
 							.MinValue(-10.0f)
 							.MaxValue(10.0f)
-							.OnValueChanged_Static([](float val) { Scale = FScale2D(Scale.GetVector().X, val); })
-							.Value_Static([] { return Scale.GetVector().Y; })
+							.OnValueChanged_Static([](float val) { TestSuiteNS::Scale = FScale2D(TestSuiteNS::Scale.GetVector().X, val); })
+							.Value_Static([] { return TestSuiteNS::Scale.GetVector().Y; })
 						]
 				]
 			+ SVerticalBox::Slot().AutoHeight().Padding(4)
@@ -5709,8 +5708,8 @@ void SRenderTransformManipulatorWidgetImpl::Construct(const FArguments& InArgs)
 							SNew(SSpinBox<float>)
 							.MinValue(-4.f)
 							.MaxValue(4.f)
-							.OnValueChanged_Static([](float val) { Shear = FShear2D(val, Shear.GetVector().Y); })
-							.Value_Static([] { return Shear.GetVector().X; })
+							.OnValueChanged_Static([](float val) { TestSuiteNS::Shear = FShear2D(val, TestSuiteNS::Shear.GetVector().Y); })
+							.Value_Static([] { return TestSuiteNS::Shear.GetVector().X; })
 						]
 				]
 			+ SVerticalBox::Slot().AutoHeight().Padding(4)
@@ -5725,8 +5724,8 @@ void SRenderTransformManipulatorWidgetImpl::Construct(const FArguments& InArgs)
 							SNew(SSpinBox<float>)
 							.MinValue(-4.f)
 							.MaxValue(4.f)
-							.OnValueChanged_Static([](float val) { Shear = FShear2D(Shear.GetVector().X, val); })
-							.Value_Static([] { return Shear.GetVector().Y; })
+							.OnValueChanged_Static([](float val) { TestSuiteNS::Shear = FShear2D(TestSuiteNS::Shear.GetVector().X, val); })
+							.Value_Static([] { return TestSuiteNS::Shear.GetVector().Y; })
 						]
 				]
 		]
@@ -5760,7 +5759,7 @@ TSharedRef<SDockTab> SpawnTab(const FSpawnTabArgs& Args, FName TabIdentifier)
 					.Padding( 2.0f )
 					[
 						SNew(SImage)
-						.Image( FCoreStyle::Get().GetBrush( TEXT("DefaultAppIcon") ) )
+						.Image( FCoreStyle::Get().GetBrush( TEXT("AppIcon") ) )
 					]
 					+SHorizontalBox::Slot()
 						.AutoWidth()

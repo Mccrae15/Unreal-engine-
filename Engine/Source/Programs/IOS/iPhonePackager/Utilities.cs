@@ -611,7 +611,7 @@ namespace iPhonePackager
 				if (!File.Exists(SourceName))
 				{
 					// fallback to the shared one
-					SourceName = FileOperations.FindPrefixedFile(Config.EngineBuildDirectory, "UE4Game-Info.plist");
+					SourceName = FileOperations.FindPrefixedFile(Config.EngineBuildDirectory, "UnrealGame-Info.plist");
 
 					if (!File.Exists(SourceName))
 					{
@@ -922,7 +922,6 @@ namespace iPhonePackager
 		{
 			if (Environment.OSVersion.Platform == PlatformID.Unix || Environment.OSVersion.Platform == PlatformID.MacOSX)
 			{
-				// From Mono 6, the FriendlyName field cannot be set on Unix so we always parse it out of the Subject.
 				return GetCommonNameFromCert(Cert);
 			}
 			else

@@ -14,11 +14,13 @@
 #include "UObject/UObjectAllocator.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/Class.h"
+#include "UObject/DeferredRegistry.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
 #include "Templates/Casts.h"
 #include "UObject/GCObject.h"
 #include "UObject/LinkerLoad.h"
+#include "UObject/Reload.h"
 #include "Misc/CommandLine.h"
 #include "Interfaces/IPluginManager.h"
 #include "Serialization/LoadTimeTrace.h"
@@ -249,6 +251,13 @@ UPackage* UObjectBase::GetExternalPackageInternal() const
 
 void UObjectBase::SetExternalPackage(UPackage* InPackage)
 {
+	// if we have no outer, consider this a package, packages have themselves as their external package and that shouldn't be added to the object hash
+	if (OuterPrivate == nullptr)
+	{
+		// Just validate that we tried to set ourselves or nothing as our external package which is a no-op. anything else is illegal for package
+		check(GetClass()->IsChildOf(UPackage::StaticClass()) && (InPackage == this || InPackage == nullptr));
+		return;
+	}
 	HashObjectExternalPackage(this, InPackage);
 	if (InPackage)
 	{
@@ -260,6 +269,7 @@ void UObjectBase::SetExternalPackage(UPackage* InPackage)
 	}
 }
 
+#if WITH_EDITOR
 void UObjectBase::SetClass(UClass* NewClass)
 {
 #if STATS || ENABLE_STATNAMEDEVENTS_UOBJECT
@@ -277,7 +287,7 @@ void UObjectBase::SetClass(UClass* NewClass)
 #endif
 	HashObject(this);
 }
-
+#endif
 
 /**
  * Checks to see if the object appears to be valid
@@ -330,8 +340,15 @@ bool UObjectBase::IsValidLowLevelFast(bool bRecursive /*= true*/) const
 	// These should all be non-NULL (except CDO-alignment check which should be 0)
 	if (ClassPrivate == nullptr || ClassPrivate->ClassDefaultObject == nullptr || ((UPTRINT)ClassPrivate->ClassDefaultObject & AlignmentCheck) != 0)
 	{
-		UE_LOG(LogUObjectBase, Error, TEXT("Class pointer is invalid or CDO is invalid."));
-		return false;
+#if WITH_LIVE_CODING
+		// When live coding is re-instancing blueprint generated classes, we have to clear out the default object so it can get 
+		// GC'ed and deleted prior to live coding completing the patching process (of the destructor specifically)
+		if (ClassPrivate == nullptr || !ClassPrivate->HasAnyClassFlags(CLASS_NewerVersionExists))
+#endif
+		{
+			UE_LOG(LogUObjectBase, Error, TEXT("Class pointer is invalid or CDO is invalid."));
+			return false;
+		}
 	}
 	// Avoid infinite recursion so call IsValidLowLevelFast on the class object with bRecirsive = false.
 	if (bRecursive && !ClassPrivate->IsValidLowLevelFast(false))
@@ -534,56 +551,24 @@ void UObjectForceRegistration(UObjectBase* Object, bool bCheckForModuleRelease)
 	}
 }
 
-/**
- * Struct containing the function pointer and package name of a UStruct to be registered with UObject system
- */
-struct FPendingStructRegistrant
-{	
-	class UScriptStruct *(*RegisterFn)();
-	const TCHAR* PackageName;
+// UScriptStruct deferred registration
 
-	FPendingStructRegistrant() {}
-	FPendingStructRegistrant(class UScriptStruct *(*Fn)(), const TCHAR* InPackageName)
-		: RegisterFn(Fn)
-		, PackageName(InPackageName)
-	{
-	}
-	FORCEINLINE bool operator==(const FPendingStructRegistrant& Other) const
-	{
-		return RegisterFn == Other.RegisterFn;
-	}
-};
-
-static TArray<FPendingStructRegistrant>& GetDeferredCompiledInStructRegistration()
+void RegisterCompiledInInfo(class UScriptStruct* (*InOuterRegister)(), const TCHAR* InPackageName, const TCHAR* InName, FStructRegistrationInfo& InInfo, const FStructReloadVersionInfo& InVersionInfo)
 {
-	static TArray<FPendingStructRegistrant> DeferredCompiledInRegistration;
-	return DeferredCompiledInRegistration;
+	check(InOuterRegister);
+	FStructDeferredRegistry::Get().AddRegistration(InOuterRegister, nullptr, InPackageName, InName, InInfo, InVersionInfo, nullptr);
+	NotifyRegistrationEvent(InPackageName, InName, ENotifyRegistrationType::NRT_Struct, ENotifyRegistrationPhase::NRP_Added, (UObject * (*)())(InOuterRegister), false);
 }
 
-TMap<FName, UScriptStruct *(*)()>& GetDynamicStructMap()
+// [DEPRECATED] - Legacy implementation that will be removed later. Also note that dynamic struct types are no longer supported here.
+void UObjectCompiledInDeferStruct(class UScriptStruct* (*InRegister)(), const TCHAR* PackageName, const TCHAR* ObjectName, bool /*bDynamic*/, const TCHAR* /*DynamicPathName*/)
 {
-	static TMap<FName, UScriptStruct *(*)()> DynamicStructMap;
-	return DynamicStructMap;
+	FStructDeferredRegistry& Registry = FStructDeferredRegistry::Get();
+	FStructRegistrationInfo& Info = Registry.MakeDeprecatedInfo(PackageName, ObjectName);
+	Registry.AddRegistration(nullptr, InRegister, PackageName, ObjectName, Info, FStructReloadVersionInfo{}, nullptr);
 }
 
-void UObjectCompiledInDeferStruct(class UScriptStruct *(*InRegister)(), const TCHAR* PackageName, const TCHAR* ObjectName, bool bDynamic, const TCHAR* DynamicPathName)
-{
-	if (!bDynamic)
-	{
-		// we do reregister StaticStruct in hot reload
-		FPendingStructRegistrant Registrant(InRegister, PackageName);
-		checkSlow(!GetDeferredCompiledInStructRegistration().Contains(Registrant));
-		GetDeferredCompiledInStructRegistration().Add(Registrant);
-	}
-	else
-	{
-		GetDynamicStructMap().Add(DynamicPathName, InRegister);
-	}
-	NotifyRegistrationEvent(PackageName, ObjectName, ENotifyRegistrationType::NRT_Struct, ENotifyRegistrationPhase::NRP_Added, (UObject *(*)())(InRegister), bDynamic);
-
-}
-
-class UScriptStruct *GetStaticStruct(class UScriptStruct *(*InRegister)(), UObject* StructOuter, const TCHAR* StructName, SIZE_T Size, uint32 Crc)
+class UScriptStruct *GetStaticStruct(class UScriptStruct *(*InRegister)(), UObject* StructOuter, const TCHAR* StructName)
 {
 	NotifyRegistrationEvent(*StructOuter->GetOutermost()->GetName(), StructName, ENotifyRegistrationType::NRT_Struct, ENotifyRegistrationPhase::NRP_Started);
 	UScriptStruct *Result = (*InRegister)();
@@ -591,53 +576,21 @@ class UScriptStruct *GetStaticStruct(class UScriptStruct *(*InRegister)(), UObje
 	return Result;
 }
 
-/**
- * Struct containing the function pointer and package name of a UEnum to be registered with UObject system
- */
-struct FPendingEnumRegistrant
-{
-	class UEnum *(*RegisterFn)();
-	const TCHAR* PackageName;
+// UEnum deferred registration
 
-	FPendingEnumRegistrant() {}
-	FPendingEnumRegistrant(class UEnum *(*Fn)(), const TCHAR* InPackageName)
-		: RegisterFn(Fn)
-		, PackageName(InPackageName)
-	{
-	}
-	FORCEINLINE bool operator==(const FPendingEnumRegistrant& Other) const
-	{
-		return RegisterFn == Other.RegisterFn;
-	}
-};
-
-// Same thing as GetDeferredCompiledInStructRegistration but for UEnums declared in header files without UClasses.
-static TArray<FPendingEnumRegistrant>& GetDeferredCompiledInEnumRegistration()
+void RegisterCompiledInInfo(class UEnum* (*InOuterRegister)(), const TCHAR* InPackageName, const TCHAR* InName, FEnumRegistrationInfo& InInfo, const FEnumReloadVersionInfo& InVersionInfo)
 {
-	static TArray<FPendingEnumRegistrant> DeferredCompiledInRegistration;
-	return DeferredCompiledInRegistration;
+	check(InOuterRegister);
+	FEnumDeferredRegistry::Get().AddRegistration(InOuterRegister, nullptr, InPackageName, InName, InInfo, InVersionInfo, nullptr);
+	NotifyRegistrationEvent(InPackageName, InName, ENotifyRegistrationType::NRT_Enum, ENotifyRegistrationPhase::NRP_Added, (UObject * (*)())(InOuterRegister), false);
 }
 
-TMap<FName, UEnum *(*)()>& GetDynamicEnumMap()
+// [DEPRECATED] - Legacy implementation that will be removed later. Also note that dynamic enum types are no longer supported here.
+void UObjectCompiledInDeferEnum(class UEnum* (*InRegister)(), const TCHAR* PackageName, const TCHAR* ObjectName, bool /*bDynamic*/, const TCHAR* /*DynamicPathName*/)
 {
-	static TMap<FName, UEnum *(*)()> DynamicEnumMap;
-	return DynamicEnumMap;
-}
-
-void UObjectCompiledInDeferEnum(class UEnum *(*InRegister)(), const TCHAR* PackageName, const TCHAR* ObjectName, bool bDynamic, const TCHAR* DynamicPathName)
-{
-	if (!bDynamic)
-	{
-		// we do reregister StaticStruct in hot reload
-		FPendingEnumRegistrant Registrant(InRegister, PackageName);
-		checkSlow(!GetDeferredCompiledInEnumRegistration().Contains(Registrant));
-		GetDeferredCompiledInEnumRegistration().Add(Registrant);
-	}
-	else
-	{
-		GetDynamicEnumMap().Add(DynamicPathName, InRegister);
-	}
-	NotifyRegistrationEvent(PackageName, ObjectName, ENotifyRegistrationType::NRT_Enum, ENotifyRegistrationPhase::NRP_Added, (UObject *(*)())(InRegister), bDynamic);
+	FEnumDeferredRegistry& Registry = FEnumDeferredRegistry::Get();
+	FEnumRegistrationInfo& Info = Registry.MakeDeprecatedInfo(PackageName, ObjectName);
+	Registry.AddRegistration(InRegister, InRegister, PackageName, ObjectName, Info, FEnumReloadVersionInfo{}, nullptr);
 }
 
 class UEnum *GetStaticEnum(class UEnum *(*InRegister)(), UObject* EnumOuter, const TCHAR* EnumName)
@@ -648,34 +601,17 @@ class UEnum *GetStaticEnum(class UEnum *(*InRegister)(), UObject* EnumOuter, con
 	return Result;
 }
 
-static TArray<class UClass *(*)()>& GetDeferredCompiledInRegistration()
-{
-	static TArray<class UClass *(*)()> DeferredCompiledInRegistration;
-	return DeferredCompiledInRegistration;
-}
+// UClass deferred registration
 
-/** Classes loaded with a module, deferred until we register them all in one go */
-static TArray<FFieldCompiledInInfo*>& GetDeferredClassRegistration()
+// @todo: BP2CPP_remove
+// [DEPRECATED] - No longer in use; will be removed later.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+TMap<FName, FDynamicClassStaticData>& GetDynamicClassMap()
 {
-	static TArray<FFieldCompiledInInfo*> DeferredClassRegistration;
-	return DeferredClassRegistration;
+	static TMap<FName, FDynamicClassStaticData> DynamicClassMap;
+	return DynamicClassMap;
 }
-
-#if WITH_HOT_RELOAD
-/** Map of deferred class registration info (including size and reflection info) */
-static TMap<FName, FFieldCompiledInInfo*>& GetDeferRegisterClassMap()
-{
-	static TMap<FName, FFieldCompiledInInfo*> DeferRegisterClassMap;
-	return DeferRegisterClassMap;
-}
-
-/** Classes that changed during hot-reload and need to be re-instanced */
-static TArray<FFieldCompiledInInfo*>& GetHotReloadClasses()
-{
-	static TArray<FFieldCompiledInInfo*> HotReloadClasses;
-	return HotReloadClasses;
-}
-#endif
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /** Removes prefix from the native class name */
 FString UObjectBase::RemoveClassPrefix(const TCHAR* ClassName)
@@ -690,162 +626,155 @@ FString UObjectBase::RemoveClassPrefix(const TCHAR* ClassName)
 	return NameWithoutPrefix;
 }
 
+void RegisterCompiledInInfo(class UClass* (*InOuterRegister)(), class UClass* (*InInnerRegister)(), const TCHAR* InPackageName, const TCHAR* InName, FClassRegistrationInfo& InInfo, const FClassReloadVersionInfo& InVersionInfo)
+{
+	check(InOuterRegister);
+	check(InInnerRegister);
+	bool bExisting = FClassDeferredRegistry::Get().AddRegistration(InOuterRegister, InInnerRegister, InPackageName, InName, InInfo, InVersionInfo, nullptr);
+#if WITH_RELOAD
+	if (bExisting && !IsReloadActive())
+	{
+		// Class exists, this can only happen during hot-reload or live coding
+		UE_LOG(LogUObjectBase, Fatal, TEXT("Trying to recreate class '%s' outside of hot reload and live coding!"), InName);
+	}
+#endif
+	FString NoPrefix(UObjectBase::RemoveClassPrefix(InName));
+	NotifyRegistrationEvent(InPackageName, *NoPrefix, ENotifyRegistrationType::NRT_Class, ENotifyRegistrationPhase::NRP_Added, (UObject * (*)())(InOuterRegister), false);
+	NotifyRegistrationEvent(InPackageName, *(FString(DEFAULT_OBJECT_PREFIX) + NoPrefix), ENotifyRegistrationType::NRT_ClassCDO, ENotifyRegistrationPhase::NRP_Added, (UObject * (*)())(InOuterRegister), false);
+}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void UClassCompiledInDefer(FFieldCompiledInInfo* ClassInfo, const TCHAR* Name, SIZE_T ClassSize, uint32 Crc)
 {
-	const FName CPPClassName = Name;
-#if WITH_HOT_RELOAD
-	// Check for existing classes
-	TMap<FName, FFieldCompiledInInfo*>& DeferMap = GetDeferRegisterClassMap();
-	FFieldCompiledInInfo** ExistingClassInfo = DeferMap.Find(CPPClassName);
-	ClassInfo->bHasChanged = !ExistingClassInfo || (*ExistingClassInfo)->Size != ClassInfo->Size || (*ExistingClassInfo)->Crc != ClassInfo->Crc;
-	if (ExistingClassInfo)
+	FClassDeferredRegistry& Registry = FClassDeferredRegistry::Get();
+	FClassRegistrationInfo& Info = Registry.MakeDeprecatedInfo(ClassInfo->ClassPackage(), Name);
+	Registry.AddRegistration(nullptr, nullptr, ClassInfo->ClassPackage(), Name, Info, CONSTRUCT_RELOAD_VERSION_INFO(FClassReloadVersionInfo, ClassSize, Crc), ClassInfo);
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+// [DEPRECATED] - Legacy implementation that will be removed later. Also note that dynamic class types are no longer supported here.
+void UObjectCompiledInDefer(UClass *(*InRegister)(), UClass *(*InStaticClass)(), const TCHAR* Name, const TCHAR* PackageName, bool /*bDynamic*/, const TCHAR* /*DynamicPathName*/, void (*InInitSearchableValues)(TMap<FName, FName>&))
+{
+	// Either add all classes if not hot-reloading, or those which have changed
+	FClassDeferredRegistry& ClassRegistry = FClassDeferredRegistry::Get();
+	FClassRegistrationInfo& Info = ClassRegistry.MakeDeprecatedInfo(PackageName, Name);
+
+	// This is slow, but is deprecated.
+	for (FClassDeferredRegistry::FRegistrant& Registrant : ClassRegistry.GetRegistrations())
 	{
-		// Class exists, this can only happen during hot-reload
-		checkf(GIsHotReload, TEXT("Trying to recreate class '%s' outside of hot reload!"), *CPPClassName.ToString());
-
-		// Get the native name
-		FString NameWithoutPrefix = UObjectBase::RemoveClassPrefix(Name);
-		UClass* ExistingClass = FindObjectChecked<UClass>(ANY_PACKAGE, *NameWithoutPrefix);
-
-		if (ClassInfo->bHasChanged)
+		if (Registrant.Info == &Info)
 		{
-			// Rename the old class and move it to transient package
-			ExistingClass->RemoveFromRoot();
-			ExistingClass->ClearFlags(RF_Standalone | RF_Public);
-			ExistingClass->GetDefaultObject()->RemoveFromRoot();
-			ExistingClass->GetDefaultObject()->ClearFlags(RF_Standalone | RF_Public);
-			const FName OldClassRename = MakeUniqueObjectName(GetTransientPackage(), ExistingClass->GetClass(), *FString::Printf(TEXT("HOTRELOADED_%s"), *NameWithoutPrefix));
-			ExistingClass->Rename(*OldClassRename.ToString(), GetTransientPackage());
-			ExistingClass->SetFlags(RF_Transient);
-			ExistingClass->AddToRoot();
-
-			// Make sure enums de-register their names BEFORE we create the new class, otherwise there will be name conflicts
-			TArray<UObject*> ClassSubobjects;
-			GetObjectsWithOuter(ExistingClass, ClassSubobjects);
-			for (auto ClassSubobject : ClassSubobjects)
+#if WITH_RELOAD
+			if (Registrant.bHasChanged)
+#endif
 			{
-				if (auto Enum = dynamic_cast<UEnum*>(ClassSubobject))
-				{
-					Enum->RemoveNamesFromMasterList();
-				}
+				// This will probably need to be moved
+				FString NoPrefix(UObjectBase::RemoveClassPrefix(Name));
+				NotifyRegistrationEvent(PackageName, *NoPrefix, ENotifyRegistrationType::NRT_Class, ENotifyRegistrationPhase::NRP_Added, (UObject * (*)())(InRegister), false);
+				NotifyRegistrationEvent(PackageName, *(FString(DEFAULT_OBJECT_PREFIX) + NoPrefix), ENotifyRegistrationType::NRT_ClassCDO, ENotifyRegistrationPhase::NRP_Added, (UObject * (*)())(InRegister), false);
 			}
+			Registrant.OuterRegisterFn = InRegister;
+			break;
 		}
-		ClassInfo->OldClass = ExistingClass;
-		GetHotReloadClasses().Add(ClassInfo);
-
-		*ExistingClassInfo = ClassInfo;
 	}
-	else
-	{
-		DeferMap.Add(CPPClassName, ClassInfo);
-	}
-#endif
-	// We will either create a new class or update the static class pointer of the existing one
-	GetDeferredClassRegistration().Add(ClassInfo);
 }
 
-TMap<FName, FDynamicClassStaticData>& GetDynamicClassMap()
+// UPackage registration
+
+void RegisterCompiledInInfo(UPackage* (*InOuterRegister)(), const TCHAR* InPackageName, FPackageRegistrationInfo& InInfo, const FPackageReloadVersionInfo& InVersionInfo)
 {
-	static TMap<FName, FDynamicClassStaticData> DynamicClassMap;
-	return DynamicClassMap;
+#if WITH_RELOAD
+	check(InOuterRegister);
+	FPackageDeferredRegistry::Get().AddRegistration(reinterpret_cast<class UPackage* (*)()>(InOuterRegister), nullptr, TEXT(""), InPackageName, InInfo, InVersionInfo, nullptr);
+#endif
 }
 
-void UObjectCompiledInDefer(UClass *(*InRegister)(), UClass *(*InStaticClass)(), const TCHAR* Name, const TCHAR* PackageName, bool bDynamic, const TCHAR* DynamicPathName, void (*InInitSearchableValues)(TMap<FName, FName>&))
+// Multiple registrations
+void RegisterCompiledInInfo(const TCHAR* PackageName, const FClassRegisterCompiledInInfo* ClassInfo, size_t NumClassInfo, const FStructRegisterCompiledInInfo* StructInfo, size_t NumStructInfo, const FEnumRegisterCompiledInInfo* EnumInfo, size_t NumEnumInfo)
 {
-	if (!bDynamic)
+	for (size_t Index = 0; Index < NumClassInfo; ++Index)
 	{
-#if WITH_HOT_RELOAD
-		// Either add all classes if not hot-reloading, or those which have changed
-		TMap<FName, FFieldCompiledInInfo*>& DeferMap = GetDeferRegisterClassMap();
-		if (!GIsHotReload || DeferMap.FindChecked(Name)->bHasChanged)
-#endif
-		{
-			FString NoPrefix(UObjectBase::RemoveClassPrefix(Name));
-			NotifyRegistrationEvent(PackageName, *NoPrefix, ENotifyRegistrationType::NRT_Class, ENotifyRegistrationPhase::NRP_Added, (UObject *(*)())(InRegister), false);
-			NotifyRegistrationEvent(PackageName, *(FString(DEFAULT_OBJECT_PREFIX) + NoPrefix), ENotifyRegistrationType::NRT_ClassCDO, ENotifyRegistrationPhase::NRP_Added, (UObject *(*)())(InRegister), false);
+		const FClassRegisterCompiledInInfo& Info = ClassInfo[Index];
+		RegisterCompiledInInfo(Info.OuterRegister, Info.InnerRegister, PackageName, Info.Name, *Info.Info, Info.VersionInfo);
+	}
 
-			TArray<UClass *(*)()>& DeferredCompiledInRegistration = GetDeferredCompiledInRegistration();
-			checkSlow(!DeferredCompiledInRegistration.Contains(InRegister));
-			DeferredCompiledInRegistration.Add(InRegister);
+	for (size_t Index = 0; Index < NumStructInfo; ++Index)
+	{
+		const FStructRegisterCompiledInInfo& Info = StructInfo[Index];
+		RegisterCompiledInInfo(Info.OuterRegister, PackageName, Info.Name, *Info.Info, Info.VersionInfo);
+		if (Info.CreateCppStructOps != nullptr)
+		{
+			UScriptStruct::DeferCppStructOps(FName(Info.Name), (UScriptStruct::ICppStructOps*)Info.CreateCppStructOps());
 		}
 	}
-	else
+
+	for (size_t Index = 0; Index < NumEnumInfo; ++Index)
 	{
-		FDynamicClassStaticData ClassFunctions;
-		ClassFunctions.ZConstructFn = InRegister;
-		ClassFunctions.StaticClassFn = InStaticClass;
-		if (InInitSearchableValues)
-		{
-			InInitSearchableValues(ClassFunctions.SelectedSearchableValues);
-		}
-		GetDynamicClassMap().Add(FName(DynamicPathName), ClassFunctions);
-
-		FString OriginalPackageName = DynamicPathName;
-		check(OriginalPackageName.EndsWith(Name));
-		OriginalPackageName.RemoveFromEnd(FString(Name));
-		check(OriginalPackageName.EndsWith(TEXT(".")));
-		OriginalPackageName.RemoveFromEnd(FString(TEXT(".")));
-
-		NotifyRegistrationEvent(*OriginalPackageName, Name, ENotifyRegistrationType::NRT_Class, ENotifyRegistrationPhase::NRP_Added, (UObject *(*)())(InRegister), true);
-		NotifyRegistrationEvent(*OriginalPackageName, *(FString(DEFAULT_OBJECT_PREFIX) + Name), ENotifyRegistrationType::NRT_ClassCDO, ENotifyRegistrationPhase::NRP_Added, (UObject *(*)())(InRegister), true);
+		const FEnumRegisterCompiledInInfo& Info = EnumInfo[Index];
+		RegisterCompiledInInfo(Info.OuterRegister, PackageName, Info.Name, *Info.Info, Info.VersionInfo);
 	}
 }
 
 /** Register all loaded classes */
 void UClassRegisterAllCompiledInClasses()
 {
-#if WITH_HOT_RELOAD
+#if WITH_RELOAD
 	TArray<UClass*> AddedClasses;
 #endif
 	SCOPED_BOOT_TIMING("UClassRegisterAllCompiledInClasses");
 
-	TArray<FFieldCompiledInInfo*>& DeferredClassRegistration = GetDeferredClassRegistration();
-	for (const FFieldCompiledInInfo* Class : DeferredClassRegistration)
+	FClassDeferredRegistry& Registry = FClassDeferredRegistry::Get();
+
+	Registry.ProcessChangedObjects();
+
+	for (const FClassDeferredRegistry::FRegistrant& Registrant : Registry.GetRegistrations())
 	{
-		UClass* RegisteredClass = Class->Register();
-#if WITH_HOT_RELOAD
-		if (GIsHotReload && Class->OldClass == nullptr)
+		UClass* RegisteredClass = FClassDeferredRegistry::InnerRegister(Registrant);
+#if WITH_RELOAD
+		if (IsReloadActive() && Registrant.OldSingleton == nullptr)
 		{
 			AddedClasses.Add(RegisteredClass);
 		}
 #endif
 	}
-	DeferredClassRegistration.Empty();
 
-#if WITH_HOT_RELOAD
+#if WITH_RELOAD
 	if (AddedClasses.Num() > 0)
 	{
+		FCoreUObjectDelegates::ReloadAddedClassesDelegate.Broadcast(AddedClasses);
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		FCoreUObjectDelegates::RegisterHotReloadAddedClassesDelegate.Broadcast(AddedClasses);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 #endif
 }
 
-#if WITH_HOT_RELOAD
-/** Re-instance all existing classes that have changed during hot-reload */
-void UClassReplaceHotReloadClasses()
+#if WITH_RELOAD
+/** Re-instance all existing classes that have changed during reload */
+void UClassReplaceReloadClasses()
 {
-	TArray<FFieldCompiledInInfo*>& HotReloadClasses = GetHotReloadClasses();
-
-	if (FCoreUObjectDelegates::RegisterClassForHotReloadReinstancingDelegate.IsBound())
+	for (const FClassDeferredRegistry::FRegistrant& Registrant : FClassDeferredRegistry::Get().GetRegistrations())
 	{
-		for (const FFieldCompiledInInfo* Class : HotReloadClasses)
+		if (Registrant.OldSingleton == nullptr)
 		{
-			check(Class->OldClass);
-
-			UClass* RegisteredClass = nullptr;
-			if (Class->bHasChanged)
-			{
-				RegisteredClass = Class->Register();
-			}
-
-			FCoreUObjectDelegates::RegisterClassForHotReloadReinstancingDelegate.Broadcast(Class->OldClass, RegisteredClass, Class->bHasChanged ? EHotReloadedClassFlags::Changed : EHotReloadedClassFlags::None);
+			continue;
 		}
+
+		UClass* RegisteredClass = nullptr;
+		if (Registrant.bHasChanged)
+		{
+			RegisteredClass = FClassDeferredRegistry::InnerRegister(Registrant);
+		}
+
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		FCoreUObjectDelegates::RegisterClassForHotReloadReinstancingDelegate.Broadcast(Registrant.OldSingleton, RegisteredClass, Registrant.bHasChanged ? EHotReloadedClassFlags::Changed : EHotReloadedClassFlags::None);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FCoreUObjectDelegates::ReinstanceHotReloadedClassesDelegate.Broadcast();
-	HotReloadClasses.Empty();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
-
 #endif
 
 /**
@@ -857,33 +786,30 @@ static void UObjectLoadAllCompiledInDefaultProperties()
 
 	static FName LongEnginePackageName(TEXT("/Script/Engine"));
 
-	TArray<UClass *(*)()>& DeferredCompiledInRegistration = GetDeferredCompiledInRegistration();
+	FClassDeferredRegistry& Registry = FClassDeferredRegistry::Get();
 
-	const bool bHaveRegistrants = DeferredCompiledInRegistration.Num() != 0;
-	if( bHaveRegistrants )
+	if (Registry.HasPendingRegistrations())
 	{
 		SCOPED_BOOT_TIMING("UObjectLoadAllCompiledInDefaultProperties");
 		TArray<UClass*> NewClasses;
 		TArray<UClass*> NewClassesInCoreUObject;
 		TArray<UClass*> NewClassesInEngine;
-		TArray<UClass* (*)()> PendingRegistrants = MoveTemp(DeferredCompiledInRegistration);
-		for (UClass* (*Registrant)() : PendingRegistrants)
-		{
-			UClass* Class = Registrant();
-			UE_LOG(LogUObjectBootstrap, Verbose, TEXT("UObjectLoadAllCompiledInDefaultProperties After Registrant %s %s"), *Class->GetOutermost()->GetName(), *Class->GetName());
-			if (Class->GetOutermost()->GetFName() == GLongCoreUObjectPackageName)
+		Registry.DoPendingOuterRegistrations(true, [&NewClasses, &NewClassesInCoreUObject, &NewClassesInEngine](UClass& Class) -> void
 			{
-				NewClassesInCoreUObject.Add(Class);
-			}
-			else if (Class->GetOutermost()->GetFName() == LongEnginePackageName)
-			{
-				NewClassesInEngine.Add(Class);
-			}
-			else
-			{
-				NewClasses.Add(Class);
-			}
-		}
+				UE_LOG(LogUObjectBootstrap, Verbose, TEXT("UObjectLoadAllCompiledInDefaultProperties After Registrant %s %s"), *Class.GetOutermost()->GetName(), *Class.GetName());
+				if (Class.GetOutermost()->GetFName() == GLongCoreUObjectPackageName)
+				{
+					NewClassesInCoreUObject.Add(&Class);
+				}
+				else if (Class.GetOutermost()->GetFName() == LongEnginePackageName)
+				{
+					NewClassesInEngine.Add(&Class);
+				}
+				else
+				{
+					NewClasses.Add(&Class);
+				}
+			}); 
 		{
 			SCOPED_BOOT_TIMING("CoreUObject Classes");
 			for (UClass* Class : NewClassesInCoreUObject) // we do these first because we assume these never trigger loads
@@ -937,35 +863,18 @@ static void UObjectLoadAllCompiledInStructs()
 {
 	SCOPED_BOOT_TIMING("UObjectLoadAllCompiledInStructs");
 
-	TArray<FPendingEnumRegistrant> PendingEnumRegistrants = MoveTemp(GetDeferredCompiledInEnumRegistration());
-	TArray<FPendingStructRegistrant> PendingStructRegistrants = MoveTemp(GetDeferredCompiledInStructRegistration());
+	FEnumDeferredRegistry& EnumRegistry = FEnumDeferredRegistry::Get();
+	FStructDeferredRegistry& StructRegistry = FStructDeferredRegistry::Get();
 
 	{
 		SCOPED_BOOT_TIMING("UObjectLoadAllCompiledInStructs -  CreatePackages (could be optimized!)");
-		// Load Enums first
-		for (const FPendingEnumRegistrant& EnumRegistrant : PendingEnumRegistrants)
-		{
-			// Make sure the package exists in case it does not contain any UObjects
-			CreatePackage(EnumRegistrant.PackageName);
-		}
-		for (const FPendingStructRegistrant& StructRegistrant : PendingStructRegistrants)
-		{
-			// Make sure the package exists in case it does not contain any UObjects or UEnums
-			CreatePackage(StructRegistrant.PackageName);
-		}
+		EnumRegistry.DoPendingPackageRegistrations();
+		StructRegistry.DoPendingPackageRegistrations();
 	}
 
 	// Load Structs
-
-	for (const FPendingEnumRegistrant& EnumRegistrant : PendingEnumRegistrants)
-	{
-		EnumRegistrant.RegisterFn();
-	}
-
-	for (const FPendingStructRegistrant& StructRegistrant : PendingStructRegistrants)
-	{
-		StructRegistrant.RegisterFn();
-	}
+	EnumRegistry.DoPendingOuterRegistrations(true);
+	StructRegistry.DoPendingOuterRegistrations(true);
 }
 
 void ProcessNewlyLoadedUObjects(FName Package, bool bCanProcessNewlyLoadedObjects)
@@ -984,14 +893,22 @@ void ProcessNewlyLoadedUObjects(FName Package, bool bCanProcessNewlyLoadedObject
 	LLM_SCOPE(ELLMTag::UObject);
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("ProcessNewlyLoadedUObjects"), STAT_ProcessNewlyLoadedUObjects, STATGROUP_ObjectVerbose);
 
+	FPackageDeferredRegistry& PackageRegistry = FPackageDeferredRegistry::Get();
+	FClassDeferredRegistry& ClassRegistry = FClassDeferredRegistry::Get();
+	FStructDeferredRegistry& StructRegistry = FStructDeferredRegistry::Get();
+	FEnumDeferredRegistry& EnumRegistry = FEnumDeferredRegistry::Get();
+
+	PackageRegistry.ProcessChangedObjects(true);
+	StructRegistry.ProcessChangedObjects();
+	EnumRegistry.ProcessChangedObjects();
+
 	UClassRegisterAllCompiledInClasses();
 
-	const TArray<UClass* (*)()>& DeferredCompiledInRegistration = GetDeferredCompiledInRegistration();
-	const TArray<FPendingStructRegistrant>& DeferredCompiledInStructRegistration = GetDeferredCompiledInStructRegistration();
-	const TArray<FPendingEnumRegistrant>& DeferredCompiledInEnumRegistration = GetDeferredCompiledInEnumRegistration();
-
 	bool bNewUObjects = false;
-	while (GFirstPendingRegistrant || DeferredCompiledInRegistration.Num() || DeferredCompiledInStructRegistration.Num() || DeferredCompiledInEnumRegistration.Num())
+	while (GFirstPendingRegistrant ||
+		ClassRegistry.HasPendingRegistrations() ||
+		StructRegistry.HasPendingRegistrations() ||
+		EnumRegistry.HasPendingRegistrations())
 	{
 		bNewUObjects = true;
 		UObjectProcessRegistrants();
@@ -1001,9 +918,24 @@ void ProcessNewlyLoadedUObjects(FName Package, bool bCanProcessNewlyLoadedObject
 
 		UObjectLoadAllCompiledInDefaultProperties();
 	}
-#if WITH_HOT_RELOAD
-	UClassReplaceHotReloadClasses();
+
+#if WITH_RELOAD
+	IReload* Reload = GetActiveReloadInterface();
+	if (Reload != nullptr)
+	{
+		UClassReplaceReloadClasses(); // Legacy
+		PackageRegistry.NotifyReload(*Reload);
+		EnumRegistry.NotifyReload(*Reload);
+		StructRegistry.NotifyReload(*Reload);
+		ClassRegistry.NotifyReload(*Reload);
+		Reload->Reinstance();
+	}
 #endif
+
+	PackageRegistry.EmptyRegistrations();
+	EnumRegistry.EmptyRegistrations();
+	StructRegistry.EmptyRegistrations();
+	ClassRegistry.EmptyRegistrations();
 
 	if (bNewUObjects && !GIsInitialLoad)
 	{
@@ -1064,9 +996,7 @@ void UObjectBaseInit()
 	// FPlatformProperties::RequiresCookedData() will be false. Please note that GIsEditor and FApp::IsGame() are not valid at this point.
 	if (FPlatformProperties::RequiresCookedData())
 	{
-		FString Value;
-		bool bIsCookOnTheFly = FParse::Value(FCommandLine::Get(), TEXT("-filehostip="), Value);
-		if (bIsCookOnTheFly)
+		if (IsRunningCookOnTheFly())
 		{
 			GCreateGCClusters = false;
 		}
@@ -1114,6 +1044,9 @@ void UObjectBaseInit()
 
 	GUObjectAllocator.AllocatePermanentObjectPool(SizeOfPermanentObjectPool);
 	GUObjectArray.AllocateObjectPool(MaxUObjects, MaxObjectsNotConsideredByGC, bPreAllocateUObjectArray);
+
+	void InitNoPendingKill();
+	InitNoPendingKill();
 
 	void InitAsyncThread();
 	InitAsyncThread();
@@ -1235,189 +1168,45 @@ const TCHAR* DebugFullName(UObject* Object)
 	}
 }
 
-#if WITH_HOT_RELOAD
-namespace
-{
-	struct FObjectCompiledInfo
-	{
-		/** Registered struct info (including size and reflection info) */
-		static TMap<TTuple<UObject*, FName>, FObjectCompiledInfo>& GetRegisteredInfo()
-		{
-			static TMap<TTuple<UObject*, FName>, FObjectCompiledInfo> StructOrEnumCompiledInfoMap;
-			return StructOrEnumCompiledInfoMap;
-		}
-
-		FObjectCompiledInfo(SIZE_T InClassSize, uint32 InCrc)
-			: Size(InClassSize)
-			, Crc (InCrc)
-		{
-		}
-
-		SIZE_T Size;
-		uint32 Crc;
-	};
-
-	template <typename TType>
-	TType* FindExistingObjectIfHotReload(UObject* Outer, const TCHAR* Name, SIZE_T Size, uint32 Crc)
-	{
-		TTuple<UObject*, FName> Key(Outer, Name);
-
-		bool bChanged = true;
-		if (FObjectCompiledInfo* Info = FObjectCompiledInfo::GetRegisteredInfo().Find(Key))
-		{
-			// Hot-reloaded struct
-			bChanged = Info->Size != Size || Info->Crc != Crc;
-
-			Info->Size = Size;
-			Info->Crc  = Crc;
-		}
-		else
-		{
-			// New struct
-			FObjectCompiledInfo::GetRegisteredInfo().Add(Key, FObjectCompiledInfo(Size, Crc));
-		}
-
-		if (!GIsHotReload)
-		{
-			return nullptr;
-		}
-
-		TType* Existing = FindObject<TType>(Outer, Name);
-		if (!Existing)
-		{
-			// New type added during hot-reload
-			UE_LOG(LogClass, Log, TEXT("Could not find existing type %s for HotReload. Assuming new"), Name);
-			return nullptr;
-		}
-
-		// Existing type, make sure we destroy the old one if it has changed
-		if (bChanged)
-		{
-			// Make sure the old struct is not used by anything
-			Existing->ClearFlags(RF_Standalone | RF_Public);
-			Existing->RemoveFromRoot();
-			const FName OldRename = MakeUniqueObjectName(GetTransientPackage(), Existing->GetClass(), *FString::Printf(TEXT("HOTRELOADED_%s"), Name));
-			Existing->Rename(*OldRename.ToString(), GetTransientPackage());
-			return nullptr;
-		}
-
-		UE_LOG(LogClass, Log, TEXT("%s HotReload."), Name);
-		return Existing;
-	}
-}
-#endif // WITH_HOT_RELOAD
-
+// @todo: BP2CPP_remove
+// [DEPRECATED] - No longer implemented or in use; will be removed later.
 UScriptStruct* FindExistingStructIfHotReloadOrDynamic(UObject* Outer, const TCHAR* StructName, SIZE_T Size, uint32 Crc, bool bIsDynamic)
 {
-#if WITH_HOT_RELOAD
-	UScriptStruct* Result = FindExistingObjectIfHotReload<UScriptStruct>(Outer, StructName, Size, Crc);
-#else
-	UScriptStruct* Result = nullptr;
-#endif
-	if (!Result && bIsDynamic)
-	{
-		Result = Cast<UScriptStruct>(StaticFindObjectFast(UScriptStruct::StaticClass(), Outer, StructName));
-	}
-	return Result;
+	return nullptr;
 }
 
+// @todo: BP2CPP_remove
+// [DEPRECATED] - No longer implemented or in use; will be removed later.
 UEnum* FindExistingEnumIfHotReloadOrDynamic(UObject* Outer, const TCHAR* EnumName, SIZE_T Size, uint32 Crc, bool bIsDynamic)
 {
-#if WITH_HOT_RELOAD
-	UEnum* Result = FindExistingObjectIfHotReload<UEnum>(Outer, EnumName, Size, Crc);
-#else
-	UEnum* Result = nullptr;
-#endif
-	if (!Result && bIsDynamic)
-	{
-		Result = Cast<UEnum>(StaticFindObjectFast(UEnum::StaticClass(), Outer, EnumName));
-	}
-	return Result;
+	return nullptr;
 }
 
+// @todo: BP2CPP_remove
+// [DEPRECATED] - No longer implemented or in use; will be removed later.
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 UObject* ConstructDynamicType(FName TypePathName, EConstructDynamicType ConstructionSpecifier)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 {
-	UObject* Result = nullptr;
-	if (FDynamicClassStaticData* ClassConstructFn = GetDynamicClassMap().Find(TypePathName))
-	{
-		if (ConstructionSpecifier == EConstructDynamicType::CallZConstructor)
-		{
-			UClass* DynamicClass = ClassConstructFn->ZConstructFn();
-			check(DynamicClass);
-			DynamicClass->AssembleReferenceTokenStream();
-			Result = DynamicClass;
-		}
-		else if (ConstructionSpecifier == EConstructDynamicType::OnlyAllocateClassObject)
-		{
-			Result = ClassConstructFn->StaticClassFn();
-			check(Result);
-		}
-	}
-	else if (UScriptStruct *(**StaticStructFNPtr)() = GetDynamicStructMap().Find(TypePathName))
-	{
-		Result = (*StaticStructFNPtr)();
-	}
-	else if (UEnum *(**StaticEnumFNPtr)() = GetDynamicEnumMap().Find(TypePathName))
-	{
-		Result = (*StaticEnumFNPtr)();
-	}
-	return Result;
+	return nullptr;
 }
 
+// @todo: BP2CPP_remove
+// [DEPRECATED] - No longer implemented or in use; will be removed later.
 FName GetDynamicTypeClassName(FName TypePathName)
 {
-	FName Result = NAME_None;
-	if (GetDynamicClassMap().Find(TypePathName))
-	{
-		Result = UDynamicClass::StaticClass()->GetFName();
-	}
-	else if (GetDynamicStructMap().Find(TypePathName))
-	{
-		Result = UScriptStruct::StaticClass()->GetFName();
-	}
-	else if (GetDynamicEnumMap().Find(TypePathName))
-	{
-		Result = UEnum::StaticClass()->GetFName();
-	}
-	if (false && Result == NAME_None)
-	{
-		UE_LOG(LogUObjectBase, Warning, TEXT("GetDynamicTypeClassName %s not found."), *TypePathName.ToString());
-		UE_LOG(LogUObjectBase, Warning, TEXT("---- classes"));
-		for (auto& Pair : GetDynamicClassMap())
-		{
-			UE_LOG(LogUObjectBase, Warning, TEXT("    %s"), *Pair.Key.ToString());
-		}
-		UE_LOG(LogUObjectBase, Warning, TEXT("---- structs"));
-		for (auto& Pair : GetDynamicStructMap())
-		{
-			UE_LOG(LogUObjectBase, Warning, TEXT("    %s"), *Pair.Key.ToString());
-		}
-		UE_LOG(LogUObjectBase, Warning, TEXT("---- enums"));
-		for (auto& Pair : GetDynamicEnumMap())
-		{
-			UE_LOG(LogUObjectBase, Warning, TEXT("    %s"), *Pair.Key.ToString());
-		}
-		UE_LOG(LogUObjectBase, Fatal, TEXT("GetDynamicTypeClassName %s not found."), *TypePathName.ToString());
-	}
-	UE_CLOG(Result == NAME_None, LogUObjectBase, Warning, TEXT("GetDynamicTypeClassName %s not found."), *TypePathName.ToString());
-	return Result;
+	return NAME_None;
 }
 
+// @todo: BP2CPP_remove
+// [DEPRECATED] - No longer implemented or in use; will be removed later.
 UPackage* FindOrConstructDynamicTypePackage(const TCHAR* PackageName)
 {
-	UPackage* Package = Cast<UPackage>(StaticFindObjectFast(UPackage::StaticClass(), nullptr, PackageName));
-	if (!Package)
-	{
-		Package = CreatePackage(PackageName);
-		if (!GEventDrivenLoaderEnabled)
-		{
-			Package->SetPackageFlags(PKG_CompiledIn);
-		}
-	}
-	check(Package);
-	return Package;
+	return nullptr;
 }
 
+// @todo: BP2CPP_remove
+// [DEPRECATED] - No longer in use; will be removed later.
 TMap<FName, FName>& GetConvertedDynamicPackageNameToTypeName()
 {
 	static TMap<FName, FName> ConvertedDynamicPackageNameToTypeName;

@@ -2,10 +2,11 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -18,11 +19,10 @@ namespace UnrealBuildTool
 		/// Tries to get the directory for an installed Visual Studio version
 		/// </summary>
 		/// <param name="Compiler">The compiler version</param>
-		/// <param name="InstallDir">Receives the install directory on success</param>
 		/// <returns>True if successful</returns>
-		public static bool TryGetVSInstallDir(WindowsCompiler Compiler, out DirectoryReference InstallDir)
+		public static IEnumerable<DirectoryReference>? TryGetVSInstallDirs(WindowsCompiler Compiler)
 		{
-			return WindowsPlatform.TryGetVSInstallDir(Compiler, out InstallDir);
+			return WindowsPlatform.TryGetVSInstallDirs(Compiler);
 		}
 
 		/// <summary>
@@ -51,9 +51,9 @@ namespace UnrealBuildTool
 		/// <param name="OutSdkVersion">Version of SDK</param>
 		/// <param name="OutSdkDir">Path to SDK root folder</param>
 		/// <returns>String with the name</returns>
-		public static bool TryGetWindowsSdkDir(string DesiredVersion, out Version OutSdkVersion, out DirectoryReference OutSdkDir)
+		public static bool TryGetWindowsSdkDir(string DesiredVersion, [NotNullWhen(true)] out Version? OutSdkVersion, [NotNullWhen(true)] out DirectoryReference? OutSdkDir)
 		{
-			VersionNumber vn;
+			VersionNumber? vn;
 			if(WindowsPlatform.TryGetWindowsSdkDir(DesiredVersion, out vn, out OutSdkDir))
 			{
 				OutSdkVersion = new Version(vn.ToString());
@@ -72,15 +72,15 @@ namespace UnrealBuildTool
 			List<KeyValuePair<string, DirectoryReference>> WindowsSdkDirs = new List<KeyValuePair<string, DirectoryReference>>();
 
 			// Add the default directory first
-			VersionNumber Version;
-			DirectoryReference DefaultWindowsSdkDir;
+			VersionNumber? Version;
+			DirectoryReference? DefaultWindowsSdkDir;
 			if (WindowsPlatform.TryGetWindowsSdkDir(null, out Version, out DefaultWindowsSdkDir))
 			{
 				WindowsSdkDirs.Add(new KeyValuePair<string, DirectoryReference>(Version.ToString(), DefaultWindowsSdkDir));
 			}
 
 			// Add all the other directories sorted in reverse order
-			IReadOnlyDictionary<VersionNumber, DirectoryReference> WindowsSdkDirPairs = WindowsPlatform.FindWindowsSdkDirs();
+			IReadOnlyDictionary<VersionNumber, DirectoryReference> WindowsSdkDirPairs = MicrosoftPlatformSDK.FindWindowsSdkDirs();
 			foreach(KeyValuePair<VersionNumber, DirectoryReference> Pair in WindowsSdkDirPairs.OrderByDescending(x => x.Key))
 			{
 				if(!WindowsSdkDirs.Any(x => x.Value == Pair.Value))

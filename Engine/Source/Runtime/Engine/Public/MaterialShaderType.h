@@ -75,7 +75,15 @@ public:
 			const FVertexFactoryType* InVertexFactoryType,
 			const FString& InDebugDescription
 			)
-		: FGlobalShaderType::CompiledShaderInitializerType(InType,InPermutationId,CompilerOutput,InMaterialShaderMapHash,InShaderPipeline,InVertexFactoryType)
+		: FGlobalShaderType::CompiledShaderInitializerType(
+			InType, 
+			nullptr, 
+			InPermutationId,
+			CompilerOutput,
+			InMaterialShaderMapHash,
+			InShaderPipeline,
+			InVertexFactoryType
+			)
 		, UniformExpressionSet(InUniformExpressionSet)
 		, DebugDescription(InDebugDescription)
 		{}
@@ -123,8 +131,8 @@ public:
 		EShaderPlatform Platform,
 		EShaderPermutationFlags PermutationFlags,
 		TArray<TRefCountPtr<FShaderCommonCompileJob>>& NewJobs,
-		const FString& DebugDescription,
-		const FString& DebugExtension
+		const TCHAR* DebugDescription,
+		const TCHAR* DebugExtension
 	) const;
 
 	static void BeginCompileShaderPipeline(
@@ -136,8 +144,8 @@ public:
 		FSharedShaderCompilerEnvironment* MaterialEnvironment,
 		const FShaderPipelineType* ShaderPipeline,
 		TArray<TRefCountPtr<FShaderCommonCompileJob>>& NewJobs,
-		const FString& DebugDescription,
-		const FString& DebugExtension
+		const TCHAR* DebugDescription,
+		const TCHAR* DebugExtension
 	);
 
 	/**
@@ -174,8 +182,8 @@ public:
 struct FMaterialShaderTypes
 {
 	const FShaderPipelineType* PipelineType;
-	const FShaderType* ShaderType[SF_NumGraphicsFrequencies];
-	int32 PermutationId[SF_NumGraphicsFrequencies];
+	const FShaderType* ShaderType[SF_NumFrequencies];
+	int32 PermutationId[SF_NumFrequencies];
 
 	inline FMaterialShaderTypes() : PipelineType(nullptr) { FMemory::Memzero(ShaderType); FMemory::Memzero(PermutationId); }
 
@@ -199,7 +207,7 @@ struct FMaterialShaders
 {
 	const FShaderMapBase* ShaderMap;
 	FShaderPipeline* Pipeline;
-	FShader* Shaders[SF_NumGraphicsFrequencies];
+	FShader* Shaders[SF_NumFrequencies];
 
 	inline FMaterialShaders() : ShaderMap(nullptr), Pipeline(nullptr) { FMemory::Memzero(Shaders); }
 
@@ -230,9 +238,29 @@ struct FMaterialShaders
 		return false;
 	}
 
+	template<typename ShaderType>
+	inline bool TryGetShader(EShaderFrequency InFrequency, TShaderRef<ShaderType>* OutShader) const
+	{
+		FShader* Shader = Shaders[InFrequency];
+		if (Shader)
+		{
+			checkSlow(Shader->GetFrequency() == InFrequency);
+			check(OutShader); // make sure output isn't null, if we have the shader
+			*OutShader = TShaderRef<ShaderType>(static_cast<ShaderType*>(Shader), *ShaderMap);
+			// FTypeLayoutDesc::operator== doesn't work correctly in all cases, when dealing with inline/templated types
+			//checkfSlow(OutShader.GetType()->GetLayout().IsDerivedFrom(StaticGetTypeLayoutDesc<ShaderType>()), TEXT("Invalid cast of shader type '%s' to '%s'"),
+			//	OutShader.GetType()->GetName(),
+			//	StaticGetTypeLayoutDesc<ShaderType>().Name);
+			return true;
+		}
+		return false;
+	}
+
 	template<typename ShaderType> inline bool TryGetVertexShader(TShaderRef<ShaderType>& OutShader) const { return TryGetShader(SF_Vertex, OutShader); }
 	template<typename ShaderType> inline bool TryGetPixelShader(TShaderRef<ShaderType>& OutShader) const { return TryGetShader(SF_Pixel, OutShader); }
 	template<typename ShaderType> inline bool TryGetGeometryShader(TShaderRef<ShaderType>& OutShader) const { return TryGetShader(SF_Geometry, OutShader); }
-	template<typename ShaderType> inline bool TryGetHullShader(TShaderRef<ShaderType>& OutShader) const { return TryGetShader(SF_Hull, OutShader); }
-	template<typename ShaderType> inline bool TryGetDomainShader(TShaderRef<ShaderType>& OutShader) const { return TryGetShader(SF_Domain, OutShader); }
+
+	template<typename ShaderType> inline bool TryGetVertexShader(TShaderRef<ShaderType>* OutShader) const { return TryGetShader(SF_Vertex, OutShader); }
+	template<typename ShaderType> inline bool TryGetPixelShader(TShaderRef<ShaderType>* OutShader) const { return TryGetShader(SF_Pixel, OutShader); }
+	template<typename ShaderType> inline bool TryGetGeometryShader(TShaderRef<ShaderType>* OutShader) const { return TryGetShader(SF_Geometry, OutShader); }
 };

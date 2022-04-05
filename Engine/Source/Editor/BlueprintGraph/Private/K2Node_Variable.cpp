@@ -2,6 +2,7 @@
 
 
 #include "K2Node_Variable.h"
+#include "K2Node_FunctionEntry.h"
 #include "BlueprintCompilationManager.h"
 #include "UObject/UObjectHash.h"
 #include "Components/PrimitiveComponent.h"
@@ -15,6 +16,7 @@
 #include "Styling/SlateIconFinder.h"
 #include "Logging/MessageLog.h"
 #include "SourceCodeNavigation.h"
+#include "Engine/SimpleConstructionScript.h"
 
 #define LOCTEXT_NAMESPACE "K2Node"
 
@@ -30,13 +32,13 @@ void UK2Node_Variable::Serialize(FArchive& Ar)
 	// Fix old content 
 	if(Ar.IsLoading())
 	{
-		if(Ar.UE4Ver() < VER_UE4_VARK2NODE_USE_MEMBERREFSTRUCT)
+		if(Ar.UEVer() < VER_UE4_VARK2NODE_USE_MEMBERREFSTRUCT)
 		{
 			// Copy info into new struct
 			VariableReference.SetDirect(VariableName_DEPRECATED, FGuid(), VariableSourceClass_DEPRECATED, bSelfContext_DEPRECATED);
 		}
 
-		if(Ar.UE4Ver() < VER_UE4_K2NODE_VAR_REFERENCEGUIDS)
+		if(Ar.UEVer() < VER_UE4_K2NODE_VAR_REFERENCEGUIDS)
 		{
 			FGuid VarGuid;
 			
@@ -591,15 +593,18 @@ FText UK2Node_Variable::GetToolTipHeading() const
 	FText IconTag;
 	if ( FProperty const* VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode()) )
 	{
-		if (VariableProperty->HasAllPropertyFlags(CPF_Net | CPF_EditorOnly))
+		const UActorComponent* Component = GetActorComponent(VariableProperty);
+		const bool IsEditorOnly = VariableProperty->HasAnyPropertyFlags(CPF_EditorOnly) || (Component && Component->bIsEditorOnly);
+		const bool IsReplicated = VariableProperty->HasAnyPropertyFlags(CPF_Net) || (Component && Component->GetIsReplicated());
+		if (IsEditorOnly && IsReplicated)
 		{
 			IconTag = LOCTEXT("ReplicatedEditorOnlyVar", "Editor-Only | Replicated");
 		}
-		else if (VariableProperty->HasAnyPropertyFlags(CPF_Net))
+		else if (IsReplicated)
 		{
 			IconTag = LOCTEXT("ReplicatedVar", "Replicated");
 		}
-		else if (VariableProperty->HasAnyPropertyFlags(CPF_EditorOnly))
+		else if (IsEditorOnly)
 		{
 			IconTag = LOCTEXT("EditorOnlyVar", "Editor-Only");
 		}
@@ -646,6 +651,21 @@ void UK2Node_Variable::HandleVariableRenamed(UBlueprint* InBlueprint, UClass* In
 		}
 
 		RenameUserDefinedPin(InOldVarName, InNewVarName);
+	}
+}
+
+void UK2Node_Variable::ReplaceReferences(UBlueprint* InBlueprint, UBlueprint* InReplacementBlueprint, const FMemberReference& InSource, const FMemberReference& InReplacement)
+{
+	if (VariableReference.IsLocalScope() || VariableReference.IsSelfContext())
+	{
+		VariableReference = InReplacement;
+	}
+	else
+	{
+		// Make a copy because ResolveMember is non-const
+		FMemberReference Replacement = InReplacement;
+		const FProperty* ResolvedProperty = Replacement.ResolveMember<FProperty>(InBlueprint);
+		VariableReference.SetFromField<FProperty>(ResolvedProperty, InReplacementBlueprint->GeneratedClass);
 	}
 }
 
@@ -809,16 +829,16 @@ bool UK2Node_Variable::RemapRestrictedLinkReference(FName OldVariableName, FName
 	return bRemapped;
 }
 
-
 FName UK2Node_Variable::GetCornerIcon() const
 {
 	if (const FProperty* VariableProperty = VariableReference.ResolveMember<FProperty>(GetBlueprintClassFromNode()))
 	{
-		if (VariableProperty->HasAllPropertyFlags(CPF_Net))
+		const UActorComponent* Component = GetActorComponent(VariableProperty);
+		if (VariableProperty->HasAllPropertyFlags(CPF_Net) || (Component && Component->GetIsReplicated()))
 		{
 			return TEXT("Graph.Replication.Replicated");
 		}
-		else if (VariableProperty->HasAllPropertyFlags(CPF_EditorOnly))
+		else if (VariableProperty->HasAllPropertyFlags(CPF_EditorOnly) || (Component && Component->bIsEditorOnly))
 		{
 			return TEXT("Graph.Editor.EditorOnlyIcon");
 		}
@@ -829,12 +849,13 @@ FName UK2Node_Variable::GetCornerIcon() const
 
 bool UK2Node_Variable::HasExternalDependencies(TArray<class UStruct*>* OptionalOutput) const
 {
-	UClass* SourceClass = GetVariableSourceClass();
 	UBlueprint* SourceBlueprint = GetBlueprint();
-	bool bResult = (SourceClass && (SourceClass->ClassGeneratedBy != SourceBlueprint));
+	FProperty* VariableProperty = GetPropertyForVariable();
+	UClass* PropertySourceClass = VariableProperty ? VariableProperty->GetOwnerClass() : nullptr;
+	bool bResult = (PropertySourceClass && (PropertySourceClass->ClassGeneratedBy != SourceBlueprint));
 	if (bResult && OptionalOutput)
 	{
-		OptionalOutput->AddUnique(SourceClass);
+		OptionalOutput->AddUnique(PropertySourceClass);
 	}
 
 	// Also include underlying non-native variable types as external dependencies. Otherwise, contextual
@@ -993,8 +1014,10 @@ void UK2Node_Variable::PostPasteNode()
 	{
 		// Local scoped variables should always validate whether they are being placed in the same graph as their scope
 		// ResolveMember will not return nullptr when the graph changes but the Blueprint remains the same.
-		UEdGraph* ScopeGraph = FBlueprintEditorUtils::FindScopeGraph(Blueprint, VariableReference.GetMemberScope(GetBlueprintClassFromNode()));
-		if(ScopeGraph != GetGraph())
+		const UStruct* MemberScope = VariableReference.GetMemberScope(GetBlueprintClassFromNode());
+		UEdGraph* ScopeGraph = FBlueprintEditorUtils::FindScopeGraph(Blueprint, MemberScope);
+		const bool bMemberScopeInvalid = (ScopeGraph && MemberScope && ScopeGraph->GetFName() != MemberScope->GetFName());
+		if(ScopeGraph != GetGraph() || bMemberScopeInvalid)
 		{
 			bInvalidateVariable = true;
 		}
@@ -1010,7 +1033,8 @@ void UK2Node_Variable::PostPasteNode()
 		{
 			UEdGraph* FunctionGraph = FBlueprintEditorUtils::GetTopLevelGraph(GetGraph());
 			FBPVariableDescription* VariableDescription = FBlueprintEditorUtils::FindLocalVariable(Blueprint, FunctionGraph, VariableReference.GetMemberName());
-			if(VariableDescription)
+			bool bFoundParam = FunctionParameterExists(FunctionGraph, VariableReference.GetMemberName());
+			if(VariableDescription || bFoundParam)
 			{
 				VariableReference.SetLocalMember(VariableReference.GetMemberName(), FunctionGraph->GetName(), VariableReference.GetMemberGuid());
 			}
@@ -1096,6 +1120,47 @@ void UK2Node_Variable::JumpToDefinition() const
 
 	// Otherwise, fall back to the inherited behavior
 	Super::JumpToDefinition();
+}
+
+bool UK2Node_Variable::FunctionParameterExists(const UEdGraph* InFunctionGraph, const FName InParameterName)
+{
+	TArray<UK2Node_FunctionEntry*> Entry;
+	InFunctionGraph->GetNodesOfClass<UK2Node_FunctionEntry>(Entry);
+
+	if (ensureMsgf(Entry.Num() == 1, TEXT("Couldn't find a Function Entry node in graph %s"), *InFunctionGraph->GetName()))
+	{
+		check(Entry[0]);
+
+		return Entry[0]->UserDefinedPinExists(InParameterName);
+	}
+
+	return false;
+}
+
+const UActorComponent* UK2Node_Variable::GetActorComponent(const FProperty* VariableProperty) const
+{
+	if (!VariableProperty)
+	{
+		return nullptr;
+	}
+
+	UBlueprint* OwnerBlueprint = GetBlueprint();
+	if(OwnerBlueprint && OwnerBlueprint->SimpleConstructionScript)
+	{
+		if (const AActor* EditorActorInstance = OwnerBlueprint->SimpleConstructionScript->GetComponentEditorActorInstance())
+		{
+			for (const UActorComponent* Component : EditorActorInstance->GetComponents())
+			{
+				if (!Component || Component->GetFName() != VariableProperty->GetFName())
+				{
+					continue;
+				}
+				return Component;
+			}
+		}
+	}
+	
+	return nullptr;
 }
 
 #undef LOCTEXT_NAMESPACE

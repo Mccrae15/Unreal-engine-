@@ -62,7 +62,7 @@ public:
 	FGPUSortBuffers GetSortBuffers();
 
 	/** Retrieve the sorted vertex buffer that results will always be located at. */
-	FRHIVertexBuffer* GetSortedVertexBufferRHI(int32 BufferIndex)
+	FRHIBuffer* GetSortedVertexBufferRHI(int32 BufferIndex)
 	{
 		check((BufferIndex & 0xFFFFFFFE) == 0);
 		return VertexBuffers[BufferIndex];
@@ -74,14 +74,14 @@ public:
 private:
 
 	/** Vertex buffer storage for particle sort keys. */
-	FVertexBufferRHIRef KeyBuffers[2];
+	FBufferRHIRef KeyBuffers[2];
 	/** Shader resource view for particle sort keys. */
 	FShaderResourceViewRHIRef KeyBufferSRVs[2];
 	/** Unordered access view for particle sort keys. */
 	FUnorderedAccessViewRHIRef KeyBufferUAVs[2];
 
 	/** Vertex buffer containing sorted particle vertices. */
-	FVertexBufferRHIRef VertexBuffers[2];
+	FBufferRHIRef VertexBuffers[2];
 	/** Shader resource view for sorting particle vertices. */
 	FShaderResourceViewRHIRef VertexBufferSortSRVs[2];
 	/** Unordered access view for sorting particle vertices. */
@@ -242,7 +242,7 @@ private:
 		~FValueBuffer() { ReleaseRHI(); }
 
 		/** Release the render resources. */
-		void ReleaseRHI() override;
+		void ReleaseRHI() override final;
 
 		/** Used for sorting */
 		FShaderResourceViewRHIRef UInt32SRV;
@@ -435,7 +435,7 @@ public:
 	 *
 	 * @param RHICmdList - The command list to be used.
 	 */
-	void OnPreRender(FRHICommandListImmediate& RHICmdList);
+	void OnPreRender(class FRDGBuilder& GraphBuilder);
 
 	/**
 	 * Callback that needs to be called in the rendering loop, after calls to FFXSystemInterface::PostRenderOpaque() are issued.
@@ -444,13 +444,19 @@ public:
 	 *
 	 * @param RHICmdList - The command list to be used.
 	 */
-	void OnPostRenderOpaque(FRHICommandListImmediate& RHICmdList);
+	void OnPostRenderOpaque(class FRDGBuilder& GraphBuilder);
 
 	/**
 	 * Event to register and receive post-prerender notification.
 	 */	
 	DECLARE_EVENT_OneParam(FGPUSortManager, FPostPreRenderEvent, FRHICommandListImmediate&);
 	FPostPreRenderEvent PostPreRenderEvent;
+
+	/**
+	 * Event to register and receive post-postrender notification.
+	 */
+	DECLARE_EVENT_OneParam(FGPUSortManager, FPostPostRenderEvent, FRHICommandListImmediate&);
+	FPostPreRenderEvent PostPostRenderEvent;
 
 private:
 

@@ -18,10 +18,17 @@ class UNiagaraScriptSource : public UNiagaraScriptSourceBase
 
 	/** Graph for particle update expression */
 	UPROPERTY()
-	class UNiagaraGraph*	NodeGraph = nullptr;
+	TObjectPtr<class UNiagaraGraph>	NodeGraph = nullptr;
+
+	bool bIsCompilationCopy = false;
+	bool bIsReleased = false;
 	
 	// UObject interface
 	virtual void PostLoad() override;
+
+	UNiagaraScriptSource* CreateCompilationCopy(const TArray<ENiagaraScriptUsage>& CompileUsages);
+
+	void ReleaseCompilationCopy();
 
 	// UNiagaraScriptSourceBase interface.
 	//virtual ENiagaraScriptCompileStatus Compile(UNiagaraScript* ScriptOwner, FString& OutGraphLevelErrorMessages) override;
@@ -38,9 +45,11 @@ class UNiagaraScriptSource : public UNiagaraScriptSourceBase
 
 	virtual void PostLoadFromEmitter(UNiagaraEmitter& OwningEmitter) override;
 
+	virtual TMap<FName, UNiagaraDataInterface*> ComputeObjectNameMap(UNiagaraSystem& System, ENiagaraScriptUsage Usage, FGuid UsageId, FString EmitterUniqueName) const override;
+
 	NIAGARAEDITOR_API virtual bool AddModuleIfMissing(FString ModulePath, ENiagaraScriptUsage Usage, bool& bOutFoundModule)override;
 
-	virtual void FixupRenamedParameters(UNiagaraNode* Node, FNiagaraParameterStore& RapidIterationParameters, const TArray<FNiagaraVariable>& OldRapidIterationVariables, const TSet<FName>& ValidRapidIterationParameterNames, const UNiagaraEmitter* Emitter, ENiagaraScriptUsage ScriptUsage) const;
+	virtual void FixupRenamedParameters(UNiagaraNode* Node, FNiagaraParameterStore& RapidIterationParameters, const TArray<FNiagaraVariable>& OldRapidIterationVariables, const UNiagaraEmitter* Emitter, ENiagaraScriptUsage ScriptUsage) const;
 	virtual void CleanUpOldAndInitializeNewRapidIterationParameters(const UNiagaraEmitter* Emitter, ENiagaraScriptUsage ScriptUsage, FGuid ScriptUsageId, FNiagaraParameterStore& RapidIterationParameters) const override;
 	virtual void ForceGraphToRecompileOnNextCheck() override;
 	virtual void RefreshFromExternalChanges() override;
@@ -66,8 +75,10 @@ class UNiagaraScriptSource : public UNiagaraScriptSourceBase
 	/** Rename all graph assignment and map set node pins.
 	 *  Used when synchronizing definitions with source scripts of systems and emitters.
 	 */
-	virtual void RenameGraphAssignmentAndSetNodePins(const FName OldName, const FName NewName);
+	virtual void RenameGraphAssignmentAndSetNodePins(const FName OldName, const FName NewName) override;
 
+	virtual void GetLinkedPositionTypeInputs(const TArray<FNiagaraVariable>& ParametersToCheck, TSet<FNiagaraVariable>& OutLinkedParameters) override;
+	virtual void ChangedLinkedInputTypes(const FNiagaraVariable& ParametersToChange, const FNiagaraTypeDefinition& NewType) override;
 private:
 	void OnGraphChanged(const FEdGraphEditAction &Action);
 	void OnGraphDataInterfaceChanged();

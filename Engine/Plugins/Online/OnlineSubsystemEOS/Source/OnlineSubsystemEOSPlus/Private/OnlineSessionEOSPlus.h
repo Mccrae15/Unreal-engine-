@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "OnlineSessionSettings.h"
 #include "Interfaces/OnlineSessionInterface.h"
 #include "OnlineUserEOSPlus.h"
@@ -92,6 +92,10 @@ PACKAGE_SCOPE:
 	FUniqueNetIdPtr GetEOSNetId(const FString& SourceId);
 	TArray<FUniqueNetIdRef> GetBaseNetIds(const TArray<FUniqueNetIdRef>& Players);
 	TArray<FUniqueNetIdRef> GetEOSNetIds(const TArray<FUniqueNetIdRef>& Players);
+
+	/** Support for platform session invitations, which we delay until login completion */
+	void OnLoginComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId, const FString& Error);
+	TUniqueNetIdMap<TSharedPtr<FOnlineSessionSearchResult>> PendingInviteResultsPerUser;
 
 	/** Reference to the owning EOS plus subsystem */
 	FOnlineSubsystemEOSPlus* EOSPlus;

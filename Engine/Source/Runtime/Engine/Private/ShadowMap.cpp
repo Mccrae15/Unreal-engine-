@@ -12,6 +12,7 @@
 #include "LightMap.h"
 #include "UObject/Package.h"
 #include "Misc/FeedbackContext.h"
+#include "Modules/ModuleManager.h"
 #include "GameFramework/WorldSettings.h"
 
 #if WITH_EDITOR
@@ -39,6 +40,7 @@
 	extern ENGINE_API bool GAllowStreamingLightmaps;
 	extern ENGINE_API float GMaxLightmapRadius;
 #endif
+
 
 UShadowMapTexture2D::UShadowMapTexture2D(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -109,11 +111,11 @@ struct FShadowMapAllocation
 			{
 				// TODO: We currently only support one LOD of static lighting in foliage
 				// Need to create per-LOD instance data to fix that
-				MeshBuildData->PerInstanceLightmapData[InstanceIndex].ShadowmapUVBias = ShadowMap->GetCoordinateBias();
+				MeshBuildData->PerInstanceLightmapData[InstanceIndex].ShadowmapUVBias = FVector2f(ShadowMap->GetCoordinateBias());
 				const int32 RenderIndex = Component->GetRenderIndex(InstanceIndex);
 				if (RenderIndex != INDEX_NONE)
 				{
-					Component->InstanceUpdateCmdBuffer.SetShadowMapData(RenderIndex, MeshBuildData->PerInstanceLightmapData[InstanceIndex].ShadowmapUVBias);
+					Component->InstanceUpdateCmdBuffer.SetShadowMapData(RenderIndex, FVector2D(MeshBuildData->PerInstanceLightmapData[InstanceIndex].ShadowmapUVBias));
 					Component->MarkRenderStateDirty();
 				}
 			}
@@ -308,6 +310,8 @@ void FShadowMapPendingTexture::CreateUObjects()
 
 void FShadowMapPendingTexture::StartEncoding(ULevel* LightingScenario, ITextureCompressorModule* Compressor)
 {
+	FOptionalTaskTagScope Scope(ETaskTag::EParallelGameThread);
+
 	// Create the shadow-map texture.
 	CreateUObjects();
 
@@ -567,14 +571,14 @@ void FShadowMap2D::Serialize(FArchive& Ar)
 		Ar << bChannelValid[Channel];
 	}
 
-	if (Ar.UE4Ver() >= VER_UE4_STATIC_SHADOWMAP_PENUMBRA_SIZE)
+	if (Ar.UEVer() >= VER_UE4_STATIC_SHADOWMAP_PENUMBRA_SIZE)
 	{
 		Ar << InvUniformPenumbraSize;
 	}
 	else if (Ar.IsLoading())
 	{
 		const float LegacyValue = 1.0f / .05f;
-		InvUniformPenumbraSize = FVector4(LegacyValue, LegacyValue, LegacyValue, LegacyValue);
+		InvUniformPenumbraSize = FVector4f(LegacyValue, LegacyValue, LegacyValue, LegacyValue);
 	}
 }
 
@@ -781,7 +785,7 @@ void FShadowMap2D::EncodeTextures(UWorld* InWorld, ULevel* LightingScenario, boo
 				int32 NewTextureSizeY = PackedLightAndShadowMapTextureSize;
 
 				// Assumes identically-sized allocations, fit into the smallest square
-				const int32 AllocationCountX = FMath::CeilToInt(FMath::Sqrt(FMath::DivideAndRoundUp(PendingGroup.Allocations.Num() * MaxHeight, MaxWidth)));
+				const int32 AllocationCountX = FMath::CeilToInt(FMath::Sqrt(static_cast<float>(FMath::DivideAndRoundUp(PendingGroup.Allocations.Num() * MaxHeight, MaxWidth))));
 				const int32 AllocationCountY = FMath::DivideAndRoundUp(PendingGroup.Allocations.Num(), AllocationCountX);
 				const int32 AllocationSizeX = AllocationCountX * MaxWidth;
 				const int32 AllocationSizeY = AllocationCountY * MaxHeight;
@@ -890,7 +894,7 @@ int32 FShadowMap2D::EncodeSingleTexture(ULevel* LightingScenario, FShadowMapPend
 	{
 		FShadowMapAllocation& Allocation = *PendingTexture.Allocations[AllocationIndex];
 		bool bChannelUsed[4] = {0};
-		FVector4 InvUniformPenumbraSize(0, 0, 0, 0);
+		FVector4f InvUniformPenumbraSize(0, 0, 0, 0);
 
 		for (int32 ChannelIndex = 0; ChannelIndex < 4; ChannelIndex++)
 		{
@@ -1210,7 +1214,7 @@ FArchive& operator<<(FArchive& Ar,FShadowMap*& R)
 		if (Ar.IsLoading())
 		{
 			// Dump old Shadowmaps
-			if (Ar.UE4Ver() < VER_UE4_COMBINED_LIGHTMAP_TEXTURES)
+			if (Ar.UEVer() < VER_UE4_COMBINED_LIGHTMAP_TEXTURES)
 			{
 				delete R; // safe because if we're loading we new'd this above
 				R = nullptr;

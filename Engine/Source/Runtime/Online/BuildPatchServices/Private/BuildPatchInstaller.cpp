@@ -7,7 +7,7 @@
 
 #include "BuildPatchInstaller.h"
 #include "IBuildManifestSet.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "HAL/RunnableThread.h"
 #include "Misc/Paths.h"
@@ -434,7 +434,7 @@ namespace BuildPatchServices
 		, InstallerError(FInstallerErrorFactory::Create())
 		, Analytics(MoveTemp(InAnalytics))
 		, InstallerAnalytics(FInstallerAnalyticsFactory::Create(Analytics.Get()))
-		, FileOperationTracker(FFileOperationTrackerFactory::Create(FTicker::GetCoreTicker()))
+		, FileOperationTracker(FFileOperationTrackerFactory::Create(FTSTicker::GetCoreTicker()))
 		, MemoryChunkStoreStatistics(FMemoryChunkStoreStatisticsFactory::Create(FileOperationTracker.Get()))
 		, DiskChunkStoreStatistics(FDiskChunkStoreStatisticsFactory::Create(InstallerAnalytics.Get(), FileOperationTracker.Get()))
 		, DownloadSpeedRecorder(FSpeedRecorderFactory::Create())
@@ -448,7 +448,7 @@ namespace BuildPatchServices
 		, CloudChunkSourceStatistics(FCloudChunkSourceStatisticsFactory::Create(InstallerAnalytics.Get(), &BuildProgress, FileOperationTracker.Get()))
 		, FileConstructorStatistics(FFileConstructorStatisticsFactory::Create(DiskReadSpeedRecorder.Get(), DiskWriteSpeedRecorder.Get(), &BuildProgress, FileOperationTracker.Get()))
 		, VerifierStatistics(FVerifierStatisticsFactory::Create(DiskReadSpeedRecorder.Get(), &BuildProgress, FileOperationTracker.Get()))
-		, DownloadService(FDownloadServiceFactory::Create(FTicker::GetCoreTicker(), HttpManager.Get(), FileSystem.Get(), DownloadServiceStatistics.Get(), InstallerAnalytics.Get()))
+		, DownloadService(FDownloadServiceFactory::Create(FTSTicker::GetCoreTicker(), HttpManager.Get(), FileSystem.Get(), DownloadServiceStatistics.Get(), InstallerAnalytics.Get()))
 		, MessagePump(FMessagePumpFactory::Create())
 		, Controllables()
 	{
@@ -580,7 +580,19 @@ namespace BuildPatchServices
 		{
 			// Start thread!
 			const TCHAR* ThreadName = TEXT("BuildPatchInstallerThread");
-			Thread = FRunnableThread::Create(this, ThreadName);
+
+			// Ideally this would check if we were forkable or a forked child process but there is 
+			// currently no in-engine way to check that.  Since BPS does not currently support
+			// FRunnableThread::ThreadType::Fake or FRunnableThread::ThreadType::Forkable 
+			// this check ends up being equivalent for now.  We most likely *never* want support 
+			// forking while an installer is running.
+			if (FPlatformProcess::SupportsMultithreading() || FForkProcessHelper::IsForkedMultithreadInstance())
+			{
+				Thread = FForkProcessHelper::CreateForkableThread(this, ThreadName);
+				check(Thread != nullptr);
+				check(Thread->GetThreadType() == FRunnableThread::ThreadType::Real);
+			}
+
 			StartDelegate.ExecuteIfBound(AsShared());
 		}
 		return Thread != nullptr;

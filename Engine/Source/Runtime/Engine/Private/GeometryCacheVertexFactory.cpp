@@ -21,7 +21,7 @@ IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FGeometryCacheManualVertexFetchUniformB
 /** Shader parameters for use with TGPUSkinVertexFactory */
 class FGeometryCacheVertexFactoryShaderParameters : public FVertexFactoryShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FGeometryCacheVertexFactoryShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FGeometryCacheVertexFactoryShaderParameters, NonVirtual);
 public:
 
 	/**
@@ -79,12 +79,19 @@ private:
 	LAYOUT_FIELD(FShaderParameter, MotionBlurPositionScale);
 };
 
+IMPLEMENT_TYPE_LAYOUT(FGeometryCacheVertexFactoryShaderParameters);
+
 /*-----------------------------------------------------------------------------
 FGPUSkinPassthroughVertexFactory
 -----------------------------------------------------------------------------*/
 void FGeometryCacheVertexVertexFactory::ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 {
 	Super::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+	const bool bUseGPUScene = UseGPUScene(Parameters.Platform, GetMaxSupportedFeatureLevel(Parameters.Platform)) && GetMaxSupportedFeatureLevel(Parameters.Platform) > ERHIFeatureLevel::ES3_1;
+	const bool bSupportsPrimitiveIdStream = Parameters.VertexFactoryType->SupportsPrimitiveIdStream();
+
+	OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), bSupportsPrimitiveIdStream && bUseGPUScene);
 }
 
 void FGeometryCacheVertexVertexFactory::SetData(const FDataType& InData)
@@ -107,13 +114,12 @@ public:
 
 	virtual void InitRHI() override
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		void* BufferData = nullptr;
-		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(FVector4) * 2, BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
-		FVector4* DummyContents = (FVector4*)BufferData;
-		DummyContents[0] = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
-		DummyContents[1] = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		FRHIResourceCreateInfo CreateInfo(TEXT("DefaultGeometryCacheVertexBuffer"));
+		VertexBufferRHI = RHICreateBuffer(sizeof(FVector4f) * 2, BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
+		FVector4f* DummyContents = (FVector4f*)RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector4f) * 2, RLM_WriteOnly);
+		DummyContents[0] = FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
+		DummyContents[1] = FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
+		RHIUnlockBuffer(VertexBufferRHI);
 
 		SRV = RHICreateShaderResourceView(VertexBufferRHI, sizeof(float), PF_R32_FLOAT);
 	}
@@ -133,13 +139,12 @@ public:
 
 	virtual void InitRHI() override
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		void* BufferData = nullptr;
-		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(FVector4) * 2, BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
-		FVector4* DummyContents = (FVector4*)BufferData;
-		DummyContents[0] = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
-		DummyContents[1] = FVector4(1.0f, 1.0f, 1.0f, 1.0f);
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		FRHIResourceCreateInfo CreateInfo(TEXT("DummyTangentBuffer"));
+		VertexBufferRHI = RHICreateBuffer(sizeof(FVector4f) * 2, BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
+		FVector4f* DummyContents = (FVector4f*)RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector4f) * 2, RLM_WriteOnly);
+		DummyContents[0] = FVector4f(0.0f, 0.0f, 0.0f, 0.0f);
+		DummyContents[1] = FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
+		RHIUnlockBuffer(VertexBufferRHI);
 
 		SRV = RHICreateShaderResourceView(VertexBufferRHI, sizeof(FPackedNormal), PF_R8G8B8A8_SNORM);
 	}
@@ -167,6 +172,7 @@ void FGeometryCacheVertexVertexFactory::InitRHI()
 		{
 			FVertexDeclarationElementList PositionOnlyStreamElements;
 			PositionOnlyStreamElements.Add(AccessStreamComponent(Data.PositionComponent, 0, EVertexInputStreamType::PositionOnly));
+			AddPrimitiveIdStreamElement(EVertexInputStreamType::PositionOnly, PositionOnlyStreamElements, 1, 0xff); // TODO: support instancing on mobile
 			InitDeclaration(PositionOnlyStreamElements, EVertexInputStreamType::PositionOnly);
 		}
 
@@ -174,6 +180,7 @@ void FGeometryCacheVertexVertexFactory::InitRHI()
 			FVertexDeclarationElementList PositionAndNormalOnlyStreamElements;
 			PositionAndNormalOnlyStreamElements.Add(AccessStreamComponent(Data.PositionComponent, 0, EVertexInputStreamType::PositionAndNormalOnly));
 			PositionAndNormalOnlyStreamElements.Add(AccessStreamComponent(Data.TangentBasisComponents[1], 1, EVertexInputStreamType::PositionAndNormalOnly));
+			AddPrimitiveIdStreamElement(EVertexInputStreamType::PositionAndNormalOnly, PositionAndNormalOnlyStreamElements, 2, 0xff); // TODO: support instancing on mobile
 			InitDeclaration(PositionAndNormalOnlyStreamElements, EVertexInputStreamType::PositionAndNormalOnly);
 		}
 	}
@@ -236,6 +243,8 @@ void FGeometryCacheVertexVertexFactory::InitRHI()
 			));
 		}
 	}
+
+	AddPrimitiveIdStreamElement(EVertexInputStreamType::Default, Elements, 13, 0xff); // TODO: support instancing on mobile
 
 	check(Streams.Num() > 0);
 	check(PositionStreamIndex >= 0);
@@ -337,4 +346,10 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FGeometryCacheVertexVertexFactory, SF_Ve
 #if RHI_RAYTRACING
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FGeometryCacheVertexVertexFactory, SF_RayHitGroup, FGeometryCacheVertexFactoryShaderParameters);
 #endif
-IMPLEMENT_VERTEX_FACTORY_TYPE(FGeometryCacheVertexVertexFactory, "/Engine/Private/GeometryCacheVertexFactory.ush", true, false, true, false, true);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FGeometryCacheVertexVertexFactory, "/Engine/Private/GeometryCacheVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsPositionOnly
+	| EVertexFactoryFlags::SupportsRayTracing
+	| EVertexFactoryFlags::SupportsPrimitiveIdStream
+);

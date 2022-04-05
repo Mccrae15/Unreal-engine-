@@ -13,23 +13,17 @@
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraRibbonUniformParameters, "NiagaraRibbonVF");
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraRibbonVFLooseParameters, "NiagaraRibbonVFLooseParameters");
 
-
-class FNiagaraRibbonVertexFactoryShaderParameters : public FVertexFactoryShaderParameters
-{
-	DECLARE_INLINE_TYPE_LAYOUT(FNiagaraRibbonVertexFactoryShaderParameters, NonVirtual);
-public:
-
-};
-
 /**
 * Shader parameters for the beam/trail vertex factory.
 */
-class FNiagaraRibbonVertexFactoryShaderParametersVS : public FNiagaraRibbonVertexFactoryShaderParameters
+class FNiagaraRibbonVertexFactoryShaderParametersVS : public FNiagaraVertexFactoryShaderParametersBase
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FNiagaraRibbonVertexFactoryShaderParametersVS, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FNiagaraRibbonVertexFactoryShaderParametersVS, NonVirtual);
 public:
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
+		FNiagaraVertexFactoryShaderParametersBase::Bind(ParameterMap);
+
 	}
 
 	void GetElementShaderBindings(
@@ -43,7 +37,9 @@ public:
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams) const
 	{
-		FNiagaraRibbonVertexFactory* RibbonVF = (FNiagaraRibbonVertexFactory*)VertexFactory;
+		FNiagaraVertexFactoryShaderParametersBase::GetElementShaderBindings(Scene, View, Shader, InputStreamType, FeatureLevel, VertexFactory, BatchElement, ShaderBindings, VertexStreams);
+
+		const FNiagaraRibbonVertexFactory* RibbonVF = static_cast<const FNiagaraRibbonVertexFactory*>(VertexFactory);
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FNiagaraRibbonUniformParameters>(), RibbonVF->GetRibbonUniformBuffer());
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FNiagaraRibbonVFLooseParameters>(), RibbonVF->LooseParameterUniformBuffer);
 	}
@@ -51,13 +47,15 @@ public:
 private:
 };
 
+IMPLEMENT_TYPE_LAYOUT(FNiagaraRibbonVertexFactoryShaderParametersVS);
+
 
 /**
 * Shader parameters for the beam/trail vertex factory.
 */
-class FNiagaraRibbonVertexFactoryShaderParametersPS : public FNiagaraRibbonVertexFactoryShaderParameters
+class FNiagaraRibbonVertexFactoryShaderParametersPS : public FNiagaraVertexFactoryShaderParametersBase
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FNiagaraRibbonVertexFactoryShaderParametersPS, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FNiagaraRibbonVertexFactoryShaderParametersPS, NonVirtual);
 public:
 	 void GetElementShaderBindings(
 		const FSceneInterface* Scene,
@@ -70,10 +68,14 @@ public:
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams) const
 	{
-		FNiagaraRibbonVertexFactory* RibbonVF = (FNiagaraRibbonVertexFactory*)VertexFactory;
+		FNiagaraVertexFactoryShaderParametersBase::GetElementShaderBindings(Scene, View, Shader, InputStreamType, FeatureLevel, VertexFactory, BatchElement, ShaderBindings, VertexStreams);
+
+		const FNiagaraRibbonVertexFactory* RibbonVF = static_cast<const FNiagaraRibbonVertexFactory*>(VertexFactory);
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FNiagaraRibbonUniformParameters>(), RibbonVF->GetRibbonUniformBuffer());
 	}
 };
+
+IMPLEMENT_TYPE_LAYOUT(FNiagaraRibbonVertexFactoryShaderParametersPS);
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -130,6 +132,9 @@ void FNiagaraRibbonVertexFactory::ModifyCompilationEnvironment(const FVertexFact
 	OutEnvironment.SetDefine(TEXT("NiagaraVFLooseParameters"), TEXT("NiagaraRibbonVFLooseParameters"));
 	
 	OutEnvironment.SetDefine(TEXT("NIAGARA_RIBBON_FACTORY"), TEXT("1"));
+
+	// Ribbons are generated in world space and never have a matrix transform in raytracing, so it is safe to leave them in world space.
+	OutEnvironment.SetDefine(TEXT("RAY_TRACING_DYNAMIC_MESH_IN_WORLD_SPACE"), TEXT("1"));
 }
 
 /**
@@ -181,4 +186,9 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraRibbonVertexFactory, SF_Compute,
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraRibbonVertexFactory, SF_RayHitGroup, FNiagaraRibbonVertexFactoryShaderParametersVS);
 #endif
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraRibbonVertexFactory, SF_Pixel, FNiagaraRibbonVertexFactoryShaderParametersPS);
-IMPLEMENT_VERTEX_FACTORY_TYPE(FNiagaraRibbonVertexFactory, "/Plugin/FX/Niagara/Private/NiagaraRibbonVertexFactory.ush", true, false, true, false, false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FNiagaraRibbonVertexFactory, "/Plugin/FX/Niagara/Private/NiagaraRibbonVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials 
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsRayTracing
+	| EVertexFactoryFlags::SupportsRayTracingDynamicGeometry
+);

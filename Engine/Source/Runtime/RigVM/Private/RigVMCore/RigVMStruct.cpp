@@ -3,6 +3,88 @@
 #include "RigVMCore/RigVMStruct.h"
 #include "UObject/StructOnScope.h"
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool FRigVMUnitNodeCreatedContext::IsValid() const
+{
+	return Reason != ERigVMNodeCreatedReason::Unknown &&
+		AllExternalVariablesDelegate.IsBound() &&
+		CreateExternalVariableDelegate.IsBound() &&
+		BindPinToExternalVariableDelegate.IsBound();
+}
+
+TArray<FRigVMExternalVariable> FRigVMUnitNodeCreatedContext::GetExternalVariables() const
+{
+	TArray<FRigVMExternalVariable> ExternalVariables;
+
+	if (AllExternalVariablesDelegate.IsBound())
+	{
+		ExternalVariables = AllExternalVariablesDelegate.Execute();
+	}
+
+	return ExternalVariables;
+}
+
+FName FRigVMUnitNodeCreatedContext::AddExternalVariable(const FRigVMExternalVariable& InVariableToCreate, FString InDefaultValue)
+{
+	if (CreateExternalVariableDelegate.IsBound())
+	{
+		return CreateExternalVariableDelegate.Execute(InVariableToCreate, InDefaultValue);
+	}
+	return NAME_None;
+}
+
+bool FRigVMUnitNodeCreatedContext::BindPinToExternalVariable(FString InPinPath, FString InVariablePath)
+{
+	if (BindPinToExternalVariableDelegate.IsBound())
+	{
+		const FString NodePinPath = FString::Printf(TEXT("%s.%s"), *NodeName.ToString(), *InPinPath);
+		return BindPinToExternalVariableDelegate.Execute(NodePinPath, InVariablePath);
+	}
+	return false;
+}
+
+FRigVMExternalVariable FRigVMUnitNodeCreatedContext::FindVariable(FName InVariableName) const
+{
+	TArray<FRigVMExternalVariable> ExternalVariables = GetExternalVariables();
+	for (FRigVMExternalVariable ExternalVariable : ExternalVariables)
+	{
+		if (ExternalVariable.Name == InVariableName)
+		{
+			return ExternalVariable;
+		}
+	}
+	return FRigVMExternalVariable();
+}
+
+FName FRigVMUnitNodeCreatedContext::FindFirstVariableOfType(FName InCPPTypeName) const
+{
+	TArray<FRigVMExternalVariable> ExternalVariables = GetExternalVariables();
+	for (FRigVMExternalVariable ExternalVariable : ExternalVariables)
+	{
+		if (ExternalVariable.TypeName == InCPPTypeName)
+		{
+			return ExternalVariable.Name;
+		}
+	}
+	return NAME_None;
+}
+
+FName FRigVMUnitNodeCreatedContext::FindFirstVariableOfType(UObject* InCPPTypeObject) const
+{
+	TArray<FRigVMExternalVariable> ExternalVariables = GetExternalVariables();
+	for (FRigVMExternalVariable ExternalVariable : ExternalVariables)
+	{
+		if (ExternalVariable.TypeObject == InCPPTypeObject)
+		{
+			return ExternalVariable.Name;
+		}
+	}
+	return NAME_None;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 const FName FRigVMStruct::DeprecatedMetaName("Deprecated");
 const FName FRigVMStruct::InputMetaName("Input");
 const FName FRigVMStruct::OutputMetaName("Output");
@@ -19,6 +101,7 @@ const FName FRigVMStruct::CustomWidgetMetaName("CustomWidget");
 const FName FRigVMStruct::ConstantMetaName("Constant");
 const FName FRigVMStruct::TitleColorMetaName("TitleColor");
 const FName FRigVMStruct::NodeColorMetaName("NodeColor");
+const FName FRigVMStruct::IconMetaName("Icon");
 const FName FRigVMStruct::KeywordsMetaName("Keywords");
 const FName FRigVMStruct::PrototypeNameMetaName("PrototypeName");
 const FName FRigVMStruct::ExpandPinByDefaultMetaName("ExpandByDefault");
@@ -351,6 +434,11 @@ FString FRigVMStruct::ExportToFullyQualifiedText(UScriptStruct* InStruct, const 
 	TArray<FString> FieldValues;
 	for (TFieldIterator<FProperty> It(InStruct); It; ++It)
 	{
+		if(It->HasAnyPropertyFlags(CPF_Transient))
+		{
+			continue;
+		}
+		
 		FString PropertyName = It->GetName();
 		const uint8* StructMemberMemoryPtr = It->ContainerPtrToValuePtr<uint8>(InStructMemoryPtr);
 		FString DefaultValue = ExportToFullyQualifiedText(*It, StructMemberMemoryPtr);
@@ -364,6 +452,5 @@ FString FRigVMStruct::ExportToFullyQualifiedText(UScriptStruct* InStruct, const 
 
 	return FString::Printf(TEXT("(%s)"), *FString::Join(FieldValues, TEXT(",")));
 }
-
 
 #endif

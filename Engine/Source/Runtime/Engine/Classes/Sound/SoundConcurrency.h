@@ -24,6 +24,7 @@ using FSoundOwnerObjectID = uint32;
 /** Sound instance (USoundBase) object ID. */
 using FSoundObjectID = uint32;
 
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogAudioConcurrency, Log, All);
 
 UENUM()
 namespace EMaxConcurrentResolutionRule
@@ -93,6 +94,8 @@ private:
 	/**
 	 * Ducking factor to apply per older voice instance (generation), which compounds based on scaling mode
 	 * and (optionally) revives them as they stop according to the provided attack/release times.
+	 * 
+	 * Note: This is not applied until after StopQuietest rules are evaluated, in order to avoid thrashing sounds.
 	 *
 	 * AppliedVolumeScale = Math.Pow(DuckingScale, VoiceGeneration)
 	 */
@@ -231,6 +234,9 @@ class FConcurrencyGroup
 	FConcurrencyObjectID ObjectID;
 	FSoundConcurrencySettings Settings;
 
+	/** When a sound last played on this concurrency group. */
+	float LastTimePlayed = 0.0f;
+
 public:
 	/** Constructor for the max concurrency active sound entry. */
 	FConcurrencyGroup(FConcurrencyGroupID GroupID, const FConcurrencyHandle& ConcurrencyHandle);
@@ -269,6 +275,13 @@ public:
 
 	/** Sorts the active sound if concurrency settings require culling post playback */
 	void CullSoundsDueToMaxConcurrency();
+
+	/** Sets when the last time a sound was played on this concurrency group. */
+	void SetLastTimePlayed(float InLastTimePlayed) { LastTimePlayed = InLastTimePlayed; }
+
+	/** Whether or not a sound would be rate limited if it tried to play right now. */
+	bool CanPlaySoundNow(float InCurrentTime) const;
+
 };
 
 typedef TMap<FConcurrencyGroupID, FConcurrencyGroup*> FConcurrencyGroups;
@@ -285,9 +298,6 @@ struct FSoundInstanceEntry
 
 /** Type for mapping an object id to a concurrency entry. */
 typedef TMap<FConcurrencyObjectID, FConcurrencyGroupID> FConcurrencyMap;
-
-/** Type for mapping concurrency group id to when the group last played. */
-typedef TMap<FConcurrencyGroupID, float> FLastTimePlayedMap;
 
 struct FOwnerConcurrencyMapEntry
 {
@@ -331,8 +341,6 @@ public:
 	void UpdateSoundsToCull();
 
 private: // Methods
-	/** Returns whether or not the sound is rate-limited using retrigger threshold */
-	bool IsRateLimited(const FConcurrencyHandle& InHandle);
 
 	/** Evaluates whether or not the sound can play given the concurrency group's rules. Appends permissible
 	sounds to evict in order for sound to play (if required) and returns the desired concurrency group. */
@@ -364,9 +372,6 @@ private: // Methods
 private: // Data
 	/** Owning audio device ptr for the concurrency manager. */
 	FAudioDevice* AudioDevice;
-
-	/** A map of when a sound last played on the concurrency group. */
-	FLastTimePlayedMap LastTimePlayedMap;
 
 	/** Global concurrency map that maps individual sounds instances to shared USoundConcurrency UObjects. */
 	FConcurrencyMap ConcurrencyMap;

@@ -20,7 +20,7 @@ struct FMovieSceneSkeletalAnimationSectionTemplateParameters : public FMovieScen
 		, SectionEndTime(InSectionEndTime)
 	{}
 
-	float MapTimeToAnimation(FFrameTime InPosition, FFrameRate InFrameRate) const;
+	double MapTimeToAnimation(FFrameTime InPosition, FFrameRate InFrameRate) const;
 
 	UPROPERTY()
 	FFrameNumber SectionStartTime;

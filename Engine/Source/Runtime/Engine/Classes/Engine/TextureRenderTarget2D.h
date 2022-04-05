@@ -166,7 +166,29 @@ class UTextureRenderTarget2D : public UTextureRenderTarget
 	 * @return New UTexture2D object.
 	 */
 	ENGINE_API UTexture2D* ConstructTexture2D(UObject* InOuter, const FString& NewTexName, EObjectFlags InObjectFlags, uint32 Flags=CTF_Default, TArray<uint8>* AlphaOverride=NULL);
+	ENGINE_API ETextureSourceFormat GetTextureFormatForConversionToTexture2D() const;
+
+	/**
+	 * Utility for updating an existing UTexture2D from a TextureRenderTarget2D
+	 * TextureRenderTarget2D must be square and a power of two size.
+	 * @param InTexture2D					Texture which will contain the content of this render target after the call.
+	 * @param InTextureFormat				Format in which the texture should be stored.
+	 * @param Flags				Optional	Various control flags for operation (see EConstructTextureFlags)
+	 * @param AlphaOverride		Optional	If non-null, the values here will become the alpha values in the resulting texture
+	 */
 	ENGINE_API void UpdateTexture2D(UTexture2D* InTexture2D, ETextureSourceFormat InTextureFormat, uint32 Flags = CTF_Default, TArray<uint8>* AlphaOverride = NULL);
+
+	/**
+	 * Utility for updating an existing UTexture2D from a TextureRenderTarget2D
+	 * TextureRenderTarget2D must be square and a power of two size.
+	 * @param InTexture2D				Texture which will contain the content of this render target after the call.
+	 * @param InTextureFormat			Format in which the texture should be stored.
+	 * @param Flags						Various control flags for operation (see EConstructTextureFlags)
+	 * @param AlphaOverride				If non-null, the values here will become the alpha values in the resulting texture
+	 * @param TextureChangingDelegate	If the texture needs to be modified (as it's properties or content will change), this delegate will be called beforehand.
+	 */
+	DECLARE_DELEGATE_OneParam(FTextureChangingDelegate, UTexture2D*);
+	ENGINE_API void UpdateTexture2D(UTexture2D* InTexture2D, ETextureSourceFormat InTextureFormat, uint32 Flags, TArray<uint8>* AlphaOverride, FTextureChangingDelegate TextureChangingDelegate);
 
 	/**
 	 * Updates (resolves) the render target texture immediately.
@@ -175,8 +197,10 @@ class UTextureRenderTarget2D : public UTextureRenderTarget
 	ENGINE_API void UpdateResourceImmediate(bool bClearRenderTarget=true);
 
 	//~ Begin UTexture Interface.
-	virtual float GetSurfaceWidth() const override { return SizeX; }
-	virtual float GetSurfaceHeight() const override { return SizeY; }
+	virtual float GetSurfaceWidth() const override { return (float)SizeX; }
+	virtual float GetSurfaceHeight() const override { return (float)SizeY; }
+	virtual float GetSurfaceDepth() const override { return 0; }
+	virtual uint32 GetSurfaceArraySize() const override { return 0; }
 	ENGINE_API virtual FTextureResource* CreateResource() override;
 	ENGINE_API virtual EMaterialValueType GetMaterialType() const override;
 	//~ End UTexture Interface.

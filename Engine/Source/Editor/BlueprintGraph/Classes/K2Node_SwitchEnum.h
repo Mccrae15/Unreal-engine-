@@ -20,7 +20,7 @@ class UK2Node_SwitchEnum : public UK2Node_Switch, public INodeDependingOnEnumInt
 
 	/** Name of the enum being switched on */
 	UPROPERTY()
-	UEnum* Enum;
+	TObjectPtr<UEnum> Enum;
 
 	/** List of the current entries in the enum */
 	UPROPERTY()
@@ -32,6 +32,7 @@ class UK2Node_SwitchEnum : public UK2Node_Switch, public INodeDependingOnEnumInt
 
 	// INodeDependingOnEnumInterface
 	virtual class UEnum* GetEnum() const override { return Enum; }
+	virtual void ReloadEnum(class UEnum* InEnum) override;
 	virtual bool ShouldBeReconstructedAfterEnumChanged() const override {return true;}
 	// End of INodeDependingOnEnumInterface
 

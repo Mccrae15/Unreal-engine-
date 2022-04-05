@@ -21,8 +21,6 @@
 #include "CanvasItem.h"
 #include "Engine/Canvas.h"
 #include "Engine/DebugCameraController.h"
-#include "UnrealEngine.h"
-#include "Engine/LocalPlayer.h"
 #include "GameFramework/PlayerInput.h"
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
@@ -30,6 +28,7 @@
 #if WITH_EDITOR
 #include "Editor/GameplayDebuggerEdMode.h"
 #include "EditorModeManager.h"
+#include "Editor.h"
 #endif // WITH_EDITOR
 
 UGameplayDebuggerLocalController::UGameplayDebuggerLocalController(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
@@ -41,21 +40,41 @@ UGameplayDebuggerLocalController::UGameplayDebuggerLocalController(const FObject
 	bPrevLocallyEnabled = false;
 	bEnableTextShadow = false;
 	ActiveRowIdx = 0;
+#if WITH_EDITOR
+	bActivateOnPIEEnd = false;
+#endif // WITH_EDITOR
+	if (HasAnyFlags(RF_ClassDefaultObject) == false)
+	{
+		HUDFont = NewObject<UFont>(this, TEXT("HUDFont"), RF_NoFlags, GEngine->GetSmallFont());
+		HUDFont->LegacyFontSize = UGameplayDebuggerUserSettings::GetFontSize(); //FGameplayDebuggerTweakables::FontSize;
+	}
 }
 
 void UGameplayDebuggerLocalController::Initialize(AGameplayDebuggerCategoryReplicator& Replicator, AGameplayDebuggerPlayerManager& Manager)
 {
 	CachedReplicator = &Replicator;
 	CachedPlayerManager = &Manager;
-	bSimulateMode = FGameplayDebuggerAddonBase::IsSimulateInEditor();
+	bSimulateMode = FGameplayDebuggerAddonBase::IsSimulateInEditor() || Replicator.IsEditorWorldReplicator();
 
 	UDebugDrawService::Register(bSimulateMode ? TEXT("DebugAI") : TEXT("Game"), FDebugDrawDelegate::CreateUObject(this, &UGameplayDebuggerLocalController::OnDebugDraw));
 
 #if WITH_EDITOR
+	if (bSimulateMode)
+	{
+		FGameplayDebuggerEdMode::SafeOpenMode();
+	}
+
 	if (GIsEditor)
 	{
 		USelection::SelectionChangedEvent.AddUObject(this, &UGameplayDebuggerLocalController::OnSelectionChanged);
 		USelection::SelectObjectEvent.AddUObject(this, &UGameplayDebuggerLocalController::OnSelectedObject);
+
+		if (Replicator.IsEditorWorldReplicator())
+		{
+			// bind to PIE start and end notifies to hide before pie and re-enable if need be when pie's done
+			FEditorDelegates::BeginPIE.AddUObject(this, &UGameplayDebuggerLocalController::OnBeginPIE);
+			FEditorDelegates::EndPIE.AddUObject(this, &UGameplayDebuggerLocalController::OnEndPIE);
+		}
 	}
 #endif
 
@@ -132,11 +151,14 @@ void UGameplayDebuggerLocalController::OnDebugDraw(class UCanvas* Canvas, class 
 {
 	if (CachedReplicator && CachedReplicator->IsEnabled())
 	{
-		FGameplayDebuggerCanvasContext CanvasContext(Canvas, GEngine->GetSmallFont());
+		FGameplayDebuggerCanvasContext CanvasContext(Canvas, HUDFont);
 		CanvasContext.CursorX = CanvasContext.DefaultX = PaddingLeft;
 		CanvasContext.CursorY = CanvasContext.DefaultY = PaddingTop;
 
 		CanvasContext.FontRenderInfo.bEnableShadow = bEnableTextShadow;
+
+		CanvasContext.PlayerController = CachedReplicator->GetReplicationOwner();
+		CanvasContext.World = CachedReplicator->GetReplicationOwner() ? CachedReplicator->GetReplicationOwner()->GetWorld() : CachedReplicator->GetWorld();
 
 		DrawHeader(CanvasContext);
 
@@ -144,6 +166,8 @@ void UGameplayDebuggerLocalController::OnDebugDraw(class UCanvas* Canvas, class 
 		{
 			RebuildDataPackMap();
 		}
+
+		CachedReplicator->SetViewPoint(Canvas->SceneView->ViewLocation, Canvas->SceneView->ViewRotation.Vector());
 
 		const bool bHasDebugActor = CachedReplicator->HasDebugActor();
 		for (int32 Idx = 0; Idx < NumCategories; Idx++)
@@ -220,9 +244,9 @@ void UGameplayDebuggerLocalController::DrawHeader(FGameplayDebuggerCanvasContext
 	const FString VLogDesc = FString::Printf(TEXT("VLog: {cyan}%s"), CachedReplicator->GetVisLogSyncData().DeviceIDs.Len() > 0
 			? *CachedReplicator->GetVisLogSyncData().DeviceIDs
 			: TEXT("not recording to file"));
-	float VLogSizeX = 0.0f, VLogSizeY = 0.0f;
-	CanvasContext.MeasureString(VLogDesc, VLogSizeX, VLogSizeY);
-	CanvasContext.PrintAt(CanvasContext.Canvas->SizeX - PaddingRight - VLogSizeX, UsePaddingTop + LineHeight, VLogDesc);
+		float VLogSizeX = 0.0f, VLogSizeY = 0.0f;
+		CanvasContext.MeasureString(VLogDesc, VLogSizeX, VLogSizeY);
+		CanvasContext.PrintAt(CanvasContext.Canvas->SizeX - PaddingRight - VLogSizeX, UsePaddingTop + LineHeight, VLogDesc);
 
 	const FString TimestampDesc = FString::Printf(TEXT("Time: %.2fs"), CachedReplicator->GetWorld()->GetTimeSeconds());
 	float TimestampSizeX = 0.0f, TimestampSizeY = 0.0f;
@@ -627,46 +651,31 @@ void UGameplayDebuggerLocalController::OnSelectActorTick()
 	APlayerController* OwnerPC = CachedReplicator ? CachedReplicator->GetReplicationOwner() : nullptr;
 	if (OwnerPC)
 	{
-		FVector CameraLocation;
-		FRotator CameraRotation;
-		if (OwnerPC->Player)
+		FVector ViewLocation = FVector::ZeroVector;
+		FVector ViewDirection = FVector::ForwardVector;
+		if (!CachedReplicator->GetViewPoint(ViewLocation, ViewDirection))
 		{
-			// normal game
-			OwnerPC->GetPlayerViewPoint(CameraLocation, CameraRotation);
-		}
-		else
-		{
-			// spectator mode
-			for (FLocalPlayerIterator It(GEngine, OwnerPC->GetWorld()); It; ++It)
-			{
-				ADebugCameraController* SpectatorPC = Cast<ADebugCameraController>(It->PlayerController);
-				if (SpectatorPC)
-				{
-					SpectatorPC->GetPlayerViewPoint(CameraLocation, CameraRotation);
-					break;
-				}
-			}
+			AGameplayDebuggerPlayerManager::GetViewPoint(*OwnerPC, ViewLocation, ViewDirection);
 		}
 
-		// TODO: move to module's settings
-		const float MaxScanDistance = 25000.0f;
-		const float MinViewDirDot = 0.8f;
+		const UGameplayDebuggerUserSettings* Settings = GetDefault<UGameplayDebuggerUserSettings>();
+		const float MaxScanDistance = Settings->MaxViewDistance;
+		const float MinViewDirDot = FMath::Cos(FMath::DegreesToRadians(Settings->MaxViewAngle));
 
 		AActor* BestCandidate = nullptr;
 		float BestScore = MinViewDirDot;
-		
-		const FVector ViewDir = CameraRotation.Vector();
-		for (APawn* TestPawn  : TActorRange<APawn>(OwnerPC->GetWorld()))
+
+		for (APawn* TestPawn : TActorRange<APawn>(OwnerPC->GetWorld()))
 		{
 			if (!TestPawn->IsHidden() && TestPawn->GetActorEnableCollision() &&
 				!TestPawn->IsA(ASpectatorPawn::StaticClass()) &&
 				TestPawn != OwnerPC->GetPawn())
 			{
-				FVector DirToPawn = (TestPawn->GetActorLocation() - CameraLocation);
+				FVector DirToPawn = (TestPawn->GetActorLocation() - ViewLocation);
 				float DistToPawn = DirToPawn.Size();
 				if (FMath::IsNearlyZero(DistToPawn))
 				{
-					DirToPawn = ViewDir;
+					DirToPawn = ViewDirection;
 					DistToPawn = 1.0f;
 				}
 				else
@@ -674,7 +683,7 @@ void UGameplayDebuggerLocalController::OnSelectActorTick()
 					DirToPawn /= DistToPawn;
 				}
 
-				const float ViewDot = FVector::DotProduct(ViewDir, DirToPawn);
+				const float ViewDot = FVector::DotProduct(ViewDirection, DirToPawn);
 				if (DistToPawn < MaxScanDistance && ViewDot > BestScore)
 				{
 					BestScore = ViewDot;
@@ -719,6 +728,7 @@ FString UGameplayDebuggerLocalController::GetKeyDescriptionLong(const FKey& KeyB
 	return (KeyDisplay == KeyName) ? FString::Printf(TEXT("[%s]"), *KeyDisplay) : FString::Printf(TEXT("%s [%s key])"), *KeyDisplay, *KeyName);
 }
 
+#if WITH_EDITOR
 void UGameplayDebuggerLocalController::OnSelectionChanged(UObject* Object)
 {
 	USelection* Selection = Cast<USelection>(Object);
@@ -752,6 +762,7 @@ void UGameplayDebuggerLocalController::OnSelectedObject(UObject* Object)
 		CachedReplicator->CollectCategoryData(/*bForce=*/true);
 	}
 }
+#endif
 
 void UGameplayDebuggerLocalController::OnCategoriesChanged()
 {
@@ -818,6 +829,28 @@ void UGameplayDebuggerLocalController::RebuildDataPackMap()
 	}
 }
 
+#if WITH_EDITOR
+void UGameplayDebuggerLocalController::OnBeginPIE(const bool bIsSimulating)
+{
+	bActivateOnPIEEnd = bIsLocallyEnabled;
+	if (bIsLocallyEnabled)
+	{
+		ToggleActivation();
+	}
+}
+
+void UGameplayDebuggerLocalController::OnEndPIE(const bool bIsSimulating)
+{
+	if (bActivateOnPIEEnd && !bIsLocallyEnabled)
+	{
+		ToggleActivation();
+	}
+}
+#endif // WITH_EDITOR
+
+//----------------------------------------------------------------------//
+// FGameplayDebuggerConsoleCommands 
+//----------------------------------------------------------------------//
 /**  Helper structure to declare/define console commands in the source file and to access UGameplayDebuggerLocalController protected members */
 struct FGameplayDebuggerConsoleCommands
 {
@@ -831,6 +864,12 @@ private:
 		{
 			Controller = AGameplayDebuggerPlayerManager::GetCurrent(InWorld).GetLocalController(*LocalPC);
 		}
+#if WITH_EDITOR
+		else if (InWorld != nullptr && InWorld->IsGameWorld() == false)
+		{
+			Controller = AGameplayDebuggerPlayerManager::GetCurrent(InWorld).GetEditorController();
+		}
+#endif // WITH_EDITOR
 
 		UE_CLOG(Controller == nullptr, LogConsoleResponse, Error, TEXT("GameplayDebugger not available"));
 		return Controller;
@@ -939,6 +978,28 @@ private:
 		}
 	}
 
+	static void SetFontSize(const TArray<FString>& Args, UWorld* InWorld)
+	{
+		if (Args.Num() != 1)
+		{
+			UE_LOG(LogConsoleResponse, Error, TEXT("Missing \'fontSize\' parameter. Usage: gdt.fontsize <fontSize>"));
+			return;
+		}
+
+		if (!Args[0].IsNumeric())
+		{
+			UE_LOG(LogConsoleResponse, Error, TEXT("Must provide numerical value as \'fontSize\'. Usage: gdt.fontsize <fontSize>"));
+			return;
+		}
+	
+		if (const UGameplayDebuggerLocalController* LocalController = GetController(InWorld))
+		{
+			UGameplayDebuggerUserSettings::SetFontSize(TCString<TCHAR>::Atoi(*Args[0]));
+			check(LocalController->HUDFont);
+			LocalController->HUDFont->LegacyFontSize = UGameplayDebuggerUserSettings::GetFontSize();
+		}
+	}
+
 	/** For legacy command: EnableGDT */
 	static FAutoConsoleCommandWithWorld EnableDebuggerCmd;
 
@@ -949,6 +1010,7 @@ private:
 	static FAutoConsoleCommandWithWorld SelectNextRowCmd;
 	static FAutoConsoleCommandWithWorldAndArgs ToggleCategoryCmd;
 	static FAutoConsoleCommandWithWorldAndArgs EnableCategoryNameCmd;
+	static FAutoConsoleCommandWithWorldAndArgs SetFontSizeCmd;
 };
 
 FAutoConsoleCommandWithWorld FGameplayDebuggerConsoleCommands::EnableDebuggerCmd(
@@ -991,4 +1053,10 @@ FAutoConsoleCommandWithWorldAndArgs FGameplayDebuggerConsoleCommands::EnableCate
 	TEXT("gdt.EnableCategoryName"),
 	TEXT("Enables/disables categories matching given substring. Use: gdt.EnableCategoryName <CategoryNamePart> [Enable]"),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&FGameplayDebuggerConsoleCommands::EnableCategoryName)
+);
+
+FAutoConsoleCommandWithWorldAndArgs FGameplayDebuggerConsoleCommands::SetFontSizeCmd(
+	TEXT("gdt.fontsize"),
+	TEXT("Configures gameplay debugger's font size. Usage: gdt.fontsize <fontSize> (default = 10)"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&FGameplayDebuggerConsoleCommands::SetFontSize)
 );

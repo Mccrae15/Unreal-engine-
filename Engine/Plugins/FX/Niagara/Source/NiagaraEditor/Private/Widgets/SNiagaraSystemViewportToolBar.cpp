@@ -7,6 +7,7 @@
 #include "EditorViewportCommands.h"
 #include "NiagaraEditorSettings.h"
 #include "SEditorViewportToolBarButton.h"
+#include "PreviewProfileController.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraSystemViewportToolBar"
 
@@ -17,7 +18,7 @@
 void SNiagaraSystemViewportToolBar::Construct(const FArguments& InArgs, TSharedPtr<class SNiagaraSystemViewport> InViewport)
 {
 	// we don't want a realtime button here as we create a custom one by extending the left menu
-	SCommonEditorViewportToolbarBase::Construct(SCommonEditorViewportToolbarBase::FArguments().AddRealtimeButton(true), InViewport);
+	SCommonEditorViewportToolbarBase::Construct(SCommonEditorViewportToolbarBase::FArguments().AddRealtimeButton(true).PreviewProfileController(MakeShared<FPreviewProfileController>()), InViewport);
 	Sequencer = InArgs._Sequencer;
 }
 
@@ -102,7 +103,7 @@ void SNiagaraSystemViewportToolBar::ExtendLeftAlignedToolbarSlots(TSharedPtr<SHo
 		SNew(SEditorViewportToolBarButton)
 		.Cursor(EMouseCursor::Default)
 		.ButtonType(EUserInterfaceActionType::Button)
-		.ButtonStyle(&FEditorStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.MenuButtonWarning"))
+		.ButtonStyle(&FEditorStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.WarningButton"))
 		.OnClicked(this, &SNiagaraSystemViewportToolBar::OnSimulationRealtimeWarningClicked)
 		.Visibility(this, &SNiagaraSystemViewportToolBar::GetSimulationRealtimeWarningVisibility)
 		.ToolTipText(LOCTEXT("SimulationRealtimeOff_ToolTip", "This simulation is not updating in real time.  Click to turn on real time."))

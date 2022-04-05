@@ -15,6 +15,12 @@
 class AActor;
 class FImgMediaMipMapInfo;
 
+/** This provides customized editing of SequencePath. */
+USTRUCT()
+struct IMGMEDIA_API FImgMediaSourceCustomizationSequenceProxy
+{
+	GENERATED_BODY()
+};
 
 /**
  * Media source for EXR image sequences.
@@ -55,6 +61,18 @@ public:
 	/** Name of the proxy directory to use. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category=Sequence, AdvancedDisplay)
 	FString ProxyOverride;
+
+	/** If true, then any gaps in the sequence will be filled with blank frames. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Sequence)
+	bool bFillGapsInSequence;
+
+#if WITH_EDITORONLY_DATA
+
+	/** This is only used so we can customize editing of SequencePath. */
+	UPROPERTY(EditAnywhere, Transient, Category = Sequence)
+	FImgMediaSourceCustomizationSequenceProxy SequenceProxy;
+
+#endif // WITH_EDITORONLY_DATA
 
 public:
 
@@ -140,6 +158,7 @@ public:
 
 	//~ IMediaOptions interface
 
+	virtual bool GetMediaOption(const FName& Key, bool DefaultValue) const override;
 	virtual int64 GetMediaOption(const FName& Key, int64 DefaultValue) const override;
 	virtual FString GetMediaOption(const FName& Key, const FString& DefaultValue) const override;
 	virtual TSharedPtr<FDataContainer, ESPMode::ThreadSafe> GetMediaOption(const FName& Key, const TSharedPtr<FDataContainer, ESPMode::ThreadSafe>& DefaultValue) const override;
@@ -152,6 +171,10 @@ public:
 	virtual FString GetUrl() const override;
 	virtual bool Validate() const override;
 
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif // WITH_EDITOR
+
 protected:
 
 	/** Get the full path to the image sequence. */
@@ -160,7 +183,7 @@ protected:
 protected:
 
 	/** The directory that contains the image sequence files. */
-	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category=Sequence)
+	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category=Sequence, meta = (EditCondition = "false", EditConditionHides))
 	FDirectoryPath SequencePath;
 
 	/** MipMapInfo object to handle mip maps. */

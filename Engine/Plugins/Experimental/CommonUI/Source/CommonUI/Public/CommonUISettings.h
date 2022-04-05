@@ -11,9 +11,13 @@
 #include "CommonUITypes.h"
 #include "CommonUIRichTextData.h"
 #include "CommonTextBlock.h"
+#include "GameplayTagContainer.h"
+#include "NativeGameplayTags.h"
 #include "CommonUISettings.generated.h"
 
 class UMaterial;
+
+COMMONUI_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_PlatformTrait_PlayInEditor);
 
 UCLASS(config = Game, defaultconfig)
 class COMMONUI_API UCommonUISettings : public UObject
@@ -26,9 +30,13 @@ public:
 	// Called to load CommonUISetting data, if bAutoLoadData if set to false then game code must call LoadData().
 	void LoadData();
 
+	//~UObject interface
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
+	virtual void PostReloadConfig(FProperty* PropertyThatWasLoaded) override;
+	virtual void PostInitProperties() override;
+	//~End of UObject interface
 
 	// Called by the module startup to auto load CommonUISetting data if bAutoLoadData is true.
 	void AutoLoadData();
@@ -36,6 +44,7 @@ public:
 	UCommonUIRichTextData* GetRichTextData() const;
 	const FSlateBrush& GetDefaultThrobberBrush() const;
 	UObject* GetDefaultImageResourceObject() const;
+	const FGameplayTagContainer& GetPlatformTraits() const;
 
 private:
 
@@ -54,13 +63,23 @@ private:
 	TSoftObjectPtr<UMaterialInterface> DefaultThrobberMaterial;
 
 	/** The Default Data for rich text to show inline icon and others. */
-	UPROPERTY(config, EditAnywhere, Category = "RichText")
+	UPROPERTY(config, EditAnywhere, Category = "RichText", meta=(AllowAbstract=false))
 	TSoftClassPtr<UCommonUIRichTextData> DefaultRichTextDataClass;
+
+	/** The set of traits defined per-platform (e.g., the default input mode, whether or not you can exit the application, etc...) */
+	UPROPERTY(config, EditAnywhere, Category = "Visibility", meta=(Categories="Platform.Trait", ConfigHierarchyEditable))
+	TArray<FGameplayTag> PlatformTraits;
 
 private:
 	void LoadEditorData();
+	void RebuildTraitContainer();
 
 	bool bDefaultDataLoaded;
+
+	// Merged version of PlatformTraits
+	// This is not the config property because there is no direct ini inheritance for structs
+	// (even ones like tag containers that represent a set), unlike arrays
+	FGameplayTagContainer PlatformTraitContainer;
 
 	UPROPERTY(Transient)
 	UObject* DefaultImageResourceObjectInstance;

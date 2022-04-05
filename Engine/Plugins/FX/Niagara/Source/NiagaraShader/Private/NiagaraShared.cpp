@@ -29,6 +29,15 @@ IMPLEMENT_TYPE_LAYOUT(FNiagaraShaderMapContent);
 IMPLEMENT_TYPE_LAYOUT(FNiagaraShaderMapId);
 IMPLEMENT_TYPE_LAYOUT(FNiagaraComputeShaderCompilationOutput);
 
+//* CVars */
+int32 GNiagaraTranslatorFailIfNotSetSeverity = 3;
+static FAutoConsoleVariableRef CVarNiagaraTranslatorSilenceFailIfNotSet(
+	TEXT("fx.Niagara.FailIfNotSetSeverity"),
+	GNiagaraTranslatorFailIfNotSetSeverity,
+	TEXT("The severity of messages emitted by Parameters with Default Mode \"Fail If Not Set\". 3 = Error, 2 = Warning, 1= Log, 0 = Disabled.\n"),
+	ECVF_Default
+);
+
 #if WITH_EDITOR
 	FNiagaraCompilationQueue* FNiagaraCompilationQueue::Singleton = nullptr;
 #endif
@@ -54,25 +63,22 @@ void FNiagaraShaderScript::SetupShaderCompilationEnvironment(
 bool FNiagaraShaderScript::ShouldCache(EShaderPlatform Platform, const FShaderType* ShaderType) const
 {
 	check(ShaderType->GetNiagaraShaderType() != nullptr);
+	if (BaseVMScript)
+	{
+		if (!BaseVMScript->ShouldCompile(Platform))
+		{
+			return false;
+		}
+	}
 	return true;
 }
 
-void FNiagaraShaderScript::ModifyCompilationEnvironment(struct FShaderCompilerEnvironment& OutEnvironment) const
+void FNiagaraShaderScript::ModifyCompilationEnvironment(EShaderPlatform Platform, struct FShaderCompilerEnvironment& OutEnvironment) const
 {
 	if ( BaseVMScript )
 	{
-		BaseVMScript->ModifyCompilationEnvironment(OutEnvironment);
+		BaseVMScript->ModifyCompilationEnvironment(Platform, OutEnvironment);
 	}
-}
-
-bool FNiagaraShaderScript::GetUsesSimulationStages() const
-{
-	return AdditionalDefines.Contains(TEXT("Emitter.UseSimulationStages"));
-}
-
-bool FNiagaraShaderScript::GetUsesOldShaderStages() const
-{
-	return AdditionalDefines.Contains(TEXT("Emitter.UseOldShaderStages"));
 }
 
 bool FNiagaraShaderScript::GetUsesCompressedAttributes() const
@@ -108,7 +114,7 @@ void FNiagaraShaderScript::RemoveOutstandingCompileId(const int32 OldOutstanding
 	check(IsInGameThread());
 	if (0 <= OutstandingCompileShaderMapIds.Remove(OldOutstandingCompileShaderMapId))
 	{
-		UE_LOG(LogShaders, Log, TEXT("RemoveOutstandingCompileId %p %d"), this, OldOutstandingCompileShaderMapId);
+		//UE_LOG(LogShaders, Log, TEXT("RemoveOutstandingCompileId %p %d"), this, OldOutstandingCompileShaderMapId);
 	}
 }
 
@@ -165,11 +171,6 @@ bool FNiagaraShaderScript::IsSame(const FNiagaraShaderMapId& InId) const
 		InId.CompilerVersionID == CompilerVersionId;
 }
 
-int32 FNiagaraShaderScript::PermutationIdToShaderStageIndex(int32 PermutationId) const
-{
-	return ShaderStageToPermutation[PermutationId].Key;
-}
-
 bool FNiagaraShaderScript::IsShaderMapComplete() const
 {
 	if (GameThreadShaderMap == nullptr)
@@ -195,25 +196,6 @@ bool FNiagaraShaderScript::IsShaderMapComplete() const
 		}
 	}
 	return true;
-}
-
-int32 FNiagaraShaderScript::ShaderStageIndexToPermutationId_RenderThread(int32 ShaderStageIndex) const
-{
-	check(IsInRenderingThread());
-	if (CachedData_RenderThread.NumPermutations > 1)
-	{
-		for (int32 i = 0; i < CachedData_RenderThread.ShaderStageToPermutation.Num(); ++i)
-		{
-			const TPair<int32, int32> MinMaxStage = CachedData_RenderThread.ShaderStageToPermutation[i];
-			if ((ShaderStageIndex >= MinMaxStage.Key) && (ShaderStageIndex < MinMaxStage.Value))
-			{
-				return i;
-			}
-		}
-		UE_LOG(LogShaders, Fatal, TEXT("FNiagaraShaderScript::ShaderStageIndexToPermutationId_RenderThread: Failed to map from simulation stage(%d) to permutation id."), ShaderStageIndex);
-	}
-
-	return 0;
 }
 
 void FNiagaraShaderScript::GetDependentShaderTypes(EShaderPlatform Platform, TArray<FShaderType*>& OutShaderTypes) const
@@ -326,7 +308,6 @@ void FNiagaraShaderScript::SerializeShaderMap(FArchive& Ar)
 	bool bCooked = Ar.IsCooking();
 	Ar << bCooked;
 	Ar << NumPermutations;
-	Ar << ShaderStageToPermutation;
 
 	if (Ar.IsLoading())
 	{
@@ -390,6 +371,23 @@ void FNiagaraShaderScript::SerializeShaderMap(FArchive& Ar)
 		}
 	}
 }
+
+#if WITH_EDITOR
+void FNiagaraShaderScript::SaveShaderStableKeys(EShaderPlatform TargetShaderPlatform, FStableShaderKeyAndValue& SaveKeyVal)
+{
+	if (GameThreadShaderMap && GameThreadShaderMap->IsValid())
+	{
+		FString FeatureLevelName;
+		GetFeatureLevelName(FeatureLevel, FeatureLevelName);
+		SaveKeyVal.FeatureLevel = FName(*FeatureLevelName);
+
+		static FName FName_Num(TEXT("Num")); // Niagara resources aren't associated with a quality level, so we use Num which for the materials means "Default"
+		SaveKeyVal.QualityLevel = FName_Num;
+
+		GameThreadShaderMap->SaveShaderStableKeys(TargetShaderPlatform, SaveKeyVal);
+	}
+}
+#endif
 
 void FNiagaraShaderScript::SetScript(UNiagaraScriptBase* InScript, ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InShaderPlatform, const FGuid& InCompilerVersionID,  const TArray<FString>& InAdditionalDefines, const TArray<FString>& InAdditionalVariables,
 		const FNiagaraCompileHash& InBaseCompileHash, const TArray<FNiagaraCompileHash>& InReferencedCompileHashes, 
@@ -476,24 +474,12 @@ void FNiagaraShaderScript::UpdateCachedData_PreCompile()
 {
 	if (BaseVMScript)
 	{
-		NumPermutations = 1;
-		ShaderStageToPermutation.Empty();
-
 		TConstArrayView<FSimulationStageMetaData> SimulationStages = BaseVMScript->GetSimulationStageMetaData();
-
-		// We add the number of simulation stages as Stage 0 is always the particle stage currently
-		NumPermutations += SimulationStages.Num();
-
-		ShaderStageToPermutation.Emplace(0, 1);
-		for (const FSimulationStageMetaData& StageMeta : SimulationStages)
-		{
-			ShaderStageToPermutation.Emplace(StageMeta.MinStage, StageMeta.MaxStage);
-		}
+		NumPermutations = SimulationStages.Num();
 	}
 	else
 	{
 		NumPermutations = 0;
-		ShaderStageToPermutation.Empty();
 	}
 }
 
@@ -539,8 +525,6 @@ void FNiagaraShaderScript::UpdateCachedData_PostCompile(bool bCalledFromSerializ
 	{
 		CachedData.bIsComplete = 0;
 	}
-
-	CachedData.ShaderStageToPermutation = ShaderStageToPermutation;
 
 	if (bCalledFromSerialize)
 	{
@@ -592,11 +576,11 @@ bool FNiagaraShaderScript::CacheShaders(const FNiagaraShaderMapId& ShaderMapId, 
 			FNiagaraShaderMap::LoadFromDerivedDataCache(this, ShaderMapId, ShaderPlatform, GameThreadShaderMap);
 			if (GameThreadShaderMap && GameThreadShaderMap->IsValid())
 			{
-				UE_LOG(LogTemp, Verbose, TEXT("Loaded shader %s for Niagara script %s from DDC"), *GameThreadShaderMap->GetFriendlyName(), *GetFriendlyName());
+				UE_LOG(LogShaders, Verbose, TEXT("Loaded shader %s for Niagara script %s from DDC"), *GameThreadShaderMap->GetFriendlyName(), *GetFriendlyName());
 			}
 			else
 			{
-				UE_LOG(LogTemp, Display, TEXT("Loading shader for Niagara script %s from DDC failed. Shader needs recompile."), *GetFriendlyName());
+				UE_LOG(LogShaders, Display, TEXT("Loading shader for Niagara script %s from DDC failed. Shader needs recompile."), *GetFriendlyName());
 			}
 		}
 	}
@@ -780,6 +764,25 @@ bool FNiagaraShaderScript::BeginCompileShaderMap(
 	UE_LOG(LogShaders, Fatal, TEXT("Compiling of shaders in a build without editordata is not supported."));
 	return false;
 #endif
+}
+
+FNiagaraCompileEventSeverity FNiagaraCVarUtilities::GetCompileEventSeverityForFailIfNotSet()
+{
+	switch (GNiagaraTranslatorFailIfNotSetSeverity) {
+	case 3:
+		return FNiagaraCompileEventSeverity::Error;
+	case 2:
+		return FNiagaraCompileEventSeverity::Warning;
+	case 1:
+		return FNiagaraCompileEventSeverity::Log;
+	default:
+		return FNiagaraCompileEventSeverity::Log;
+	};
+}
+
+bool FNiagaraCVarUtilities::GetShouldEmitMessagesForFailIfNotSet()
+{
+	return GNiagaraTranslatorFailIfNotSetSeverity != 0;
 }
 
 #endif

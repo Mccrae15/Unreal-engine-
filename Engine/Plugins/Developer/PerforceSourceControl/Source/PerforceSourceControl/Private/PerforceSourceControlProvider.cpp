@@ -5,6 +5,7 @@
 #include "HAL/PlatformProcess.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/CommandLine.h"
+#include "Algo/Transform.h"
 #include "Misc/QueuedThreadPool.h"
 #include "Modules/ModuleManager.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
@@ -60,6 +61,23 @@ TSharedRef<FPerforceSourceControlState, ESPMode::ThreadSafe> FPerforceSourceCont
 		// cache an unknown state for this item
 		TSharedRef<FPerforceSourceControlState, ESPMode::ThreadSafe> NewState = MakeShareable( new FPerforceSourceControlState(Filename) );
 		StateCache.Add(Filename, NewState);
+		return NewState;
+	}
+}
+
+TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe> FPerforceSourceControlProvider::GetStateInternal(const FPerforceSourceControlChangelist& InChangelist)
+{
+	TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe>* State = ChangelistsStateCache.Find(InChangelist);
+	if (State != NULL)
+	{
+		// found cached item
+		return (*State);
+	}
+	else
+	{
+		// cache an unknown state for this item
+		TSharedRef<FPerforceSourceControlChangelistState, ESPMode::ThreadSafe> NewState = MakeShareable(new FPerforceSourceControlChangelistState(InChangelist));
+		ChangelistsStateCache.Add(InChangelist, NewState);
 		return NewState;
 	}
 }
@@ -247,19 +265,31 @@ ECommandResult::Type FPerforceSourceControlProvider::GetState( const TArray<FStr
 
 	for( TArray<FString>::TConstIterator It(AbsoluteFiles); It; It++)
 	{
-		TSharedRef<FPerforceSourceControlState, ESPMode::ThreadSafe>* State = StateCache.Find(*It);
-		if(State != NULL)
-		{
-			// found cached item for this file, return that
-			OutState.Add(*State);
-		}
-		else
-		{
-			// cache an unknown state for this item & return that
-			TSharedRef<FPerforceSourceControlState, ESPMode::ThreadSafe> NewState = MakeShareable( new FPerforceSourceControlState(*It) );
-			StateCache.Add(*It, NewState);
-			OutState.Add(NewState);
-		}
+		OutState.Add(GetStateInternal(*It));
+	}
+
+	return ECommandResult::Succeeded;
+}
+
+ECommandResult::Type FPerforceSourceControlProvider::GetState(const TArray<FSourceControlChangelistRef>& InChangelists, TArray<FSourceControlChangelistStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage)
+{
+	if (!IsEnabled())
+	{
+		return ECommandResult::Failed;
+	}
+
+	if (InStateCacheUsage == EStateCacheUsage::ForceUpdate)
+	{
+		TSharedRef<class FUpdatePendingChangelistsStatus, ESPMode::ThreadSafe> UpdatePendingChangelistsOperation = ISourceControlOperation::Create<FUpdatePendingChangelistsStatus>();
+		UpdatePendingChangelistsOperation->SetChangelistsToUpdate(InChangelists);
+
+		ISourceControlProvider::Execute(UpdatePendingChangelistsOperation, EConcurrency::Synchronous);
+	}
+
+	for (FSourceControlChangelistRef Changelist : InChangelists)
+	{
+		FPerforceSourceControlChangelistRef PerforceChangelist = StaticCastSharedRef<FPerforceSourceControlChangelist>(Changelist);
+		OutState.Add(GetStateInternal(PerforceChangelist.Get()));
 	}
 
 	return ECommandResult::Succeeded;
@@ -270,12 +300,31 @@ bool FPerforceSourceControlProvider::RemoveFileFromCache(const FString& Filename
 	return StateCache.Remove(Filename) > 0;
 }
 
+bool FPerforceSourceControlProvider::RemoveChangelistFromCache(const FPerforceSourceControlChangelist& Changelist)
+{
+	return ChangelistsStateCache.Remove(Changelist) > 0;
+}
+
 TArray<FSourceControlStateRef> FPerforceSourceControlProvider::GetCachedStateByPredicate(TFunctionRef<bool(const FSourceControlStateRef&)> Predicate) const
 {
 	TArray<FSourceControlStateRef> Result;
 	for (const auto& CacheItem : StateCache)
 	{
 		FSourceControlStateRef State = CacheItem.Value;
+		if (Predicate(State))
+		{
+			Result.Add(State);
+		}
+	}
+	return Result;
+}
+
+TArray<FSourceControlChangelistStateRef> FPerforceSourceControlProvider::GetCachedStateByPredicate(TFunctionRef<bool(const FSourceControlChangelistStateRef&)> Predicate) const
+{
+	TArray<FSourceControlChangelistStateRef> Result;
+	for (const auto& CacheItem : ChangelistsStateCache)
+	{
+		FSourceControlChangelistStateRef State = CacheItem.Value;
 		if (Predicate(State))
 		{
 			Result.Add(State);
@@ -294,7 +343,7 @@ void FPerforceSourceControlProvider::UnregisterSourceControlStateChanged_Handle(
 	OnSourceControlStateChanged.Remove( Handle );
 }
 
-ECommandResult::Type FPerforceSourceControlProvider::Execute( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate )
+ECommandResult::Type FPerforceSourceControlProvider::Execute( const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InBaseChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate )
 {
 	if(!IsEnabled())
 	{
@@ -302,6 +351,8 @@ ECommandResult::Type FPerforceSourceControlProvider::Execute( const TSharedRef<I
 		InOperationCompleteDelegate.ExecuteIfBound(InOperation, ECommandResult::Failed);
 		return ECommandResult::Failed;
 	}
+
+	TSharedPtr<FPerforceSourceControlChangelist, ESPMode::ThreadSafe> InChangelist = StaticCastSharedPtr<FPerforceSourceControlChangelist>(InBaseChangelist);
 
 	TArray<FString> AbsoluteFiles = SourceControlHelpers::AbsoluteFilenames(InFiles);
 
@@ -322,6 +373,8 @@ ECommandResult::Type FPerforceSourceControlProvider::Execute( const TSharedRef<I
 		return ECommandResult::Failed;
 	}
 
+	FPerforceSourceControlChangelist Changelist = InChangelist ? InChangelist.ToSharedRef().Get() : FPerforceSourceControlChangelist();
+
 	// fire off operation
 	if(InConcurrency == EConcurrency::Synchronous)
 	{
@@ -331,6 +384,7 @@ ECommandResult::Type FPerforceSourceControlProvider::Execute( const TSharedRef<I
 		Command->StatusBranchNames = StatusBranchNames;
 		Command->ContentRoot = ContentRoot;
 		Command->OperationCompleteDelegate = InOperationCompleteDelegate;
+		Command->Changelist = Changelist;
 		return ExecuteSynchronousCommand(*Command, InOperation->GetInProgressString(), true);
 	}
 	else
@@ -341,11 +395,12 @@ ECommandResult::Type FPerforceSourceControlProvider::Execute( const TSharedRef<I
 		Command->StatusBranchNames = StatusBranchNames;
 		Command->ContentRoot = ContentRoot;
 		Command->OperationCompleteDelegate = InOperationCompleteDelegate;
+		Command->Changelist = Changelist;
 		return IssueCommand(*Command, false);
 	}
 }
 
-bool FPerforceSourceControlProvider::CanCancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation ) const
+bool FPerforceSourceControlProvider::CanCancelOperation( const FSourceControlOperationRef& InOperation ) const
 {
 	for (int32 CommandIndex = 0; CommandIndex < CommandQueue.Num(); ++CommandIndex)
 	{
@@ -361,7 +416,7 @@ bool FPerforceSourceControlProvider::CanCancelOperation( const TSharedRef<ISourc
 	return false;
 }
 
-void FPerforceSourceControlProvider::CancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation )
+void FPerforceSourceControlProvider::CancelOperation( const FSourceControlOperationRef& InOperation )
 {
 	for (int32 CommandIndex = 0; CommandIndex < CommandQueue.Num(); ++CommandIndex)
 	{
@@ -392,16 +447,31 @@ bool FPerforceSourceControlProvider::UsesCheckout() const
 
 void FPerforceSourceControlProvider::OutputCommandMessages(const FPerforceSourceControlCommand& InCommand) const
 {
-	FMessageLog SourceControlLog("SourceControl");
-
-	for (int32 ErrorIndex = 0; ErrorIndex < InCommand.ResultInfo.ErrorMessages.Num(); ++ErrorIndex)
+	if (IsInGameThread()) // On the game thread we can use FMessageLog
 	{
-		SourceControlLog.Error(FText::Format(LOCTEXT("OutputCommandMessagesFormatError", "CommandMessage Command: {0}, Error: {1}"), FText::FromName(InCommand.Operation->GetName()), InCommand.ResultInfo.ErrorMessages[ErrorIndex]));
+		FMessageLog SourceControlLog("SourceControl");
+
+		for (int32 ErrorIndex = 0; ErrorIndex < InCommand.ResultInfo.ErrorMessages.Num(); ++ErrorIndex)
+		{
+			SourceControlLog.Error(FText::Format(LOCTEXT("OutputCommandMessagesFormatError", "CommandMessage Command: {0}, Error: {1}"), FText::FromName(InCommand.Operation->GetName()), InCommand.ResultInfo.ErrorMessages[ErrorIndex]));
+		}
+
+		for (int32 InfoIndex = 0; InfoIndex < InCommand.ResultInfo.InfoMessages.Num(); ++InfoIndex)
+		{
+			SourceControlLog.Info(FText::Format(LOCTEXT("OutputCommandMessagesFormatInfo", "CommandMessage Command: {0}, Info: {1}"), FText::FromName(InCommand.Operation->GetName()), InCommand.ResultInfo.InfoMessages[InfoIndex]));
+		}
 	}
-
-	for (int32 InfoIndex = 0; InfoIndex < InCommand.ResultInfo.InfoMessages.Num(); ++InfoIndex)
+	else // On background threads we must log directly as FMessageLog internals cannot be assumed to be thread safe
 	{
-		SourceControlLog.Info(FText::Format(LOCTEXT("OutputCommandMessagesFormatInfo", "CommandMessage Command: {0}, Info: {1}"), FText::FromName(InCommand.Operation->GetName()), InCommand.ResultInfo.InfoMessages[InfoIndex]));
+		for (const FText& Error : InCommand.ResultInfo.ErrorMessages)
+		{
+			UE_LOG(LogSourceControl, Error, TEXT("Command: %s, Error: %s"), *InCommand.Operation->GetName().ToString(), *Error.ToString());
+		}
+
+		for (const FText& Info : InCommand.ResultInfo.InfoMessages)
+		{
+			UE_LOG(LogSourceControl, Log, TEXT("Command: %s, Info: %s"), *InCommand.Operation->GetName().ToString(), *Info.ToString());
+		}
 	}
 }
 
@@ -417,7 +487,7 @@ void FPerforceSourceControlProvider::Tick()
 			CommandQueue.RemoveAt(CommandIndex);
 
 			// update connection state
-			bServerAvailable = !Command.bConnectionDropped || Command.bCancelled;
+			bServerAvailable = Command.bConnectionWasSuccessful && (!Command.bConnectionDropped || Command.bCancelled);
 
 			// let command update the states of any files
 			bStatesUpdated |= Command.Worker->UpdateStates();
@@ -510,6 +580,134 @@ TArray< TSharedRef<ISourceControlLabel> > FPerforceSourceControlProvider::GetLab
 	return Labels;
 }
 
+TArray<FSourceControlChangelistRef> FPerforceSourceControlProvider::GetChangelists( EStateCacheUsage::Type InStateCacheUsage )
+{
+	if (!IsEnabled())
+	{
+		return TArray<FSourceControlChangelistRef>();
+	}
+
+	if (InStateCacheUsage == EStateCacheUsage::ForceUpdate)
+	{
+		TSharedRef<class FUpdatePendingChangelistsStatus, ESPMode::ThreadSafe> UpdatePendingChangelistsOperation = ISourceControlOperation::Create<FUpdatePendingChangelistsStatus>();
+		UpdatePendingChangelistsOperation->SetUpdateAllChangelists(true);
+
+		ISourceControlProvider::Execute(UpdatePendingChangelistsOperation, EConcurrency::Synchronous);
+	}
+
+	TArray<FSourceControlChangelistRef> Changelists;
+	Algo::Transform(ChangelistsStateCache, Changelists, [](const auto& Pair) { return MakeShared<FPerforceSourceControlChangelist, ESPMode::ThreadSafe>(Pair.Key); });
+	return Changelists;
+}
+
+bool FPerforceSourceControlProvider::TryToDownloadFileFromBackgroundThread(const TSharedRef<class FDownloadFile>& InOperation, const TArray<FString>& InFiles)
+{
+	if (!IsEnabled())
+	{
+		return false;
+	}
+
+	TSharedPtr<IPerforceSourceControlWorker, ESPMode::ThreadSafe> Worker = CreateWorker(InOperation->GetName());
+	if (!Worker.IsValid())
+	{
+		// This operation is unsupported by this source control provider
+		FFormatNamedArguments Arguments;
+		Arguments.Add(TEXT("OperationName"), FText::FromName(InOperation->GetName()));
+		Arguments.Add(TEXT("ProviderName"), FText::FromName(GetName()));
+		FText Message = FText::Format(LOCTEXT("UnsupportedOperation", "Operation '{OperationName}' not supported by source control provider '{ProviderName}'"), Arguments);
+
+		InOperation->AddErrorMessge(Message);
+
+		return false;
+	}
+
+	// Note that this method can safely be called from any thread works because we know that
+	// a) We are not executing any delegates.
+	// b) That the FDownloadFile operation does not change the stage of any files in 
+	// source control and so will not affect any cached states.
+	// c) We are not invoking any globals that might touch the slate UI such as FMessageLog
+
+	FPerforceSourceControlCommand Command(InOperation, Worker.ToSharedRef());
+	Command.bAutoDelete = false;
+	Command.Files = SourceControlHelpers::AbsoluteFilenames(InFiles);
+	Command.StatusBranchNames = StatusBranchNames;
+	Command.ContentRoot = ContentRoot;
+
+	// DoWork will use a shared connection, we need to call DoThreadedWork to make sure that 
+	// we use our own connection for this background thread.
+	Command.DoThreadedWork();
+
+	// Sanity check to make sure we are not running a command that modifies the cached states from a background thread
+	check(Command.Worker->UpdateStates() == false);
+
+	OutputCommandMessages(Command);
+	
+	return Command.bCommandSuccessful;
+}
+
+ECommandResult::Type FPerforceSourceControlProvider::SwitchWorkspace(FStringView NewWorkspaceName, FSourceControlResultInfo& OutResultInfo, FString* OutOldWorkspaceName)
+{
+	if (!CommandQueue.IsEmpty())
+	{
+		UE_LOG(LogSourceControl, Log, TEXT("Waiting on pending commands before switching workspace"));
+
+		// Run the busy loop while we wait for any current commands to be cleared.
+		while (!CommandQueue.IsEmpty())
+		{
+			// Tick the command queue and update progress.
+			Tick();
+
+			// Sleep for a bit so we don't busy-wait so much.
+			FPlatformProcess::Sleep(0.01f);
+		}
+	}
+
+	
+	Close();
+
+	// Do not call Init directly as we do not want to save the new workspace name to
+	// the source control settings!
+
+	FPerforceSourceControlModule& PerforceSourceControl = FModuleManager::LoadModuleChecked<FPerforceSourceControlModule>("PerforceSourceControl");
+	const FString OldWorkspaceName = PerforceSourceControl.AccessSettings().GetWorkspace();
+		
+	FPerforceSourceControlSettings& P4Settings = PerforceSourceControl.AccessSettings();
+
+	FString PortName = P4Settings.GetPort();
+	FString UserName = P4Settings.GetUserName();
+	FString ClientSpecName = FString(NewWorkspaceName);
+
+	if (FPerforceConnection::EnsureValidConnection(PortName, UserName, ClientSpecName, P4Settings.GetConnectionInfo()))
+	{
+		P4Settings.SetPort(PortName);
+		P4Settings.SetUserName(UserName);
+		P4Settings.SetWorkspace(ClientSpecName);
+		check(NewWorkspaceName == ClientSpecName);
+
+		bServerAvailable = true;
+
+		if (OutOldWorkspaceName != nullptr)
+		{
+			*OutOldWorkspaceName = OldWorkspaceName;
+		}
+
+		UE_LOG(LogSourceControl, Log, TEXT("Switched workspaces from '%s' to '%s%'"),  *OldWorkspaceName, *ClientSpecName);
+
+		return ECommandResult::Succeeded;
+	}
+	else
+	{
+		FText Message = FText::Format(	LOCTEXT("Perforce_ConnectionFailed", "Failed to re-establish the connection after switching to workspace {0}"),
+										FText::FromString(FString(NewWorkspaceName)));
+		OutResultInfo.ErrorMessages.Add(Message);
+
+		// The connection didn't work so we should try to restore the old workspace name
+		PerforceSourceControl.AccessSettings().SetWorkspace(OldWorkspaceName);
+		
+		return ECommandResult::Failed;
+	}
+}
+
 #if SOURCE_CONTROL_WITH_SLATE
 TSharedRef<class SWidget> FPerforceSourceControlProvider::MakeSettingsWidget() const
 {
@@ -535,6 +733,8 @@ void FPerforceSourceControlProvider::RegisterWorker( const FName& InName, const 
 
 ECommandResult::Type FPerforceSourceControlProvider::ExecuteSynchronousCommand(FPerforceSourceControlCommand& InCommand, const FText& Task, bool bSuppressResponseMsg)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FPerforceSourceControlProvider::ExecuteSynchronousCommand);
+
 	ECommandResult::Type Result = ECommandResult::Failed;
 
 	struct Local

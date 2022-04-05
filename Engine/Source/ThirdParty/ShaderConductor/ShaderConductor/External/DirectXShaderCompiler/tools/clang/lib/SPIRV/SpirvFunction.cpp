@@ -9,28 +9,63 @@
 
 #include "clang/SPIRV/SpirvFunction.h"
 #include "BlockReadableOrder.h"
-#include "clang/SPIRV/SpirvBasicBlock.h"
 #include "clang/SPIRV/SpirvVisitor.h"
 
 namespace clang {
 namespace spirv {
 
-SpirvFunction::SpirvFunction(QualType returnType,
-                             llvm::ArrayRef<QualType> paramTypes,
-                             SourceLocation loc, llvm::StringRef name,
-                             bool isPrecise)
-    : functionId(0), astReturnType(returnType),
-      astParamTypes(paramTypes.begin(), paramTypes.end()), returnType(nullptr),
+SpirvFunction::SpirvFunction(QualType returnType, SourceLocation loc,
+                             llvm::StringRef name, bool isPrecise,
+                             bool isNoInline)
+    : functionId(0), astReturnType(returnType), returnType(nullptr),
       fnType(nullptr), relaxedPrecision(false), precise(isPrecise),
-      containsAlias(false), rvalue(false), functionLoc(loc),
-      functionName(name) {}
+      noInline(isNoInline), containsAlias(false), rvalue(false),
+      functionLoc(loc), functionName(name), isWrapperOfEntry(false),
+      debugScope(nullptr) {}
+
+SpirvFunction::~SpirvFunction() {
+  for (auto *param : parameters)
+    param->releaseMemory();
+  for (auto *var : variables)
+    var->releaseMemory();
+  for (auto *bb : basicBlocks)
+    bb->~SpirvBasicBlock();
+  if (debugScope)
+    debugScope->releaseMemory();
+  for (auto *dd : debugDeclares)
+    dd->releaseMemory();
+}
 
 bool SpirvFunction::invokeVisitor(Visitor *visitor, bool reverseOrder) {
   if (!visitor->visit(this, Visitor::Phase::Init))
     return false;
 
-  for (auto *param : parameters)
-    visitor->visit(param);
+  const bool debugInfoVulkan = visitor->getCodeGenOptions().debugInfoVulkan;
+
+  // When emitting NonSemantic.Shader.DebugInfo.100 the DebugScope and
+  // DebugDeclares must be emitted in the first basic block, otherwise for
+  // OpenCL.DebugInfo.100 we can emit them here.
+  SpirvDebugScope *functionScope = nullptr;
+  llvm::ArrayRef<SpirvDebugDeclare *> functionDebugDeclares;
+  if (debugInfoVulkan) {
+    functionScope = debugScope;
+
+    for (auto *param : parameters) {
+      visitor->visit(param);
+    }
+
+    functionDebugDeclares = debugDeclares;
+  } else {
+    if (debugScope && !visitor->visit(debugScope))
+      return false;
+
+    for (auto *param : parameters) {
+      visitor->visit(param);
+    }
+
+    for (auto *i : debugDeclares)
+      visitor->visit(i);
+  }
 
   // Collect basic blocks in a human-readable order that satisfies SPIR-V
   // validation rules.
@@ -50,13 +85,14 @@ bool SpirvFunction::invokeVisitor(Visitor *visitor, bool reverseOrder) {
     // The first basic block of the function should first visit the function
     // variables.
     if (bb == firstBB) {
-      if (!bb->invokeVisitor(visitor, variables, reverseOrder))
+      if (!bb->invokeVisitor(visitor, variables, functionScope,
+                             functionDebugDeclares, reverseOrder))
         return false;
     }
     // The rest of the basic blocks in the function do not need to visit
     // function variables.
     else {
-      if (!bb->invokeVisitor(visitor, {}, reverseOrder))
+      if (!bb->invokeVisitor(visitor, {}, nullptr, {}, reverseOrder))
         return false;
     }
   }

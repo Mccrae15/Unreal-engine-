@@ -84,6 +84,7 @@ private:
 	TSharedRef<SWidget> ConstructHeaderWidget();
 
 	// ~stack search stuff
+	void UpdateSearchTextFromExternal(FText NewSearchText);
 	void OnSearchTextChanged(const FText& SearchText);
 	FReply ScrollToNextMatch();
 	FReply ScrollToPreviousMatch();
@@ -103,7 +104,6 @@ private:
 	void CollapseAll();
 
 	TSharedRef<SWidget> GetViewOptionsMenu() const;
-	const FSlateBrush* GetViewOptionsIconBrush() const;
 
 	// Drag/Drop
 	FReply OnRowDragDetected(const FGeometry& InGeometry, const FPointerEvent& InPointerEvent, UNiagaraStackEntry* InStackEntry);

@@ -13,6 +13,8 @@
 #include "Misc/StringBuilder.h"
 #include "Modules/ModuleManager.h"
 #include "ProfilingDebugging/MallocProfiler.h"
+#include "HAL/IConsoleManager.h"
+#include "Misc/ConfigCacheIni.h"
 
 /***********************/
 /******** Names ********/
@@ -131,6 +133,11 @@ FString UObjectBaseUtility::GetFullGroupName( bool bStartWithOuter ) const
 /*** Outer & Package ***/
 /***********************/
 
+bool UObjectBaseUtility::IsPackageExternal() const
+{
+	return HasAnyFlags(RF_HasExternalPackage);
+}
+
 void UObjectBaseUtility::DetachExternalPackage()
 {
 	ClearFlags(RF_HasExternalPackage);
@@ -215,10 +222,7 @@ bool UObjectBaseUtility::MarkPackageDirty() const
 			// we explicitly disable the ability to dirty a package or map during load.  Commandlets can still
 			// set the dirty state on load.
 			if( IsRunningCommandlet() || 
-				(GIsEditor && !GIsEditorLoadingPackage && !GIsCookerLoadingPackage && !GIsPlayInEditorWorld && !IsInAsyncLoadingThread()
-#if WITH_HOT_RELOAD
-				&& !GIsHotReload
-#endif // WITH_HOT_RELOAD
+				(GIsEditor && !GIsEditorLoadingPackage && !GIsCookerLoadingPackage && !GIsPlayInEditorWorld && !IsInAsyncLoadingThread() && !IsReloadActive()
 #if WITH_EDITORONLY_DATA
 				&& !Package->bIsCookedForEditor // Cooked packages can't be modified nor marked as dirty
 #endif

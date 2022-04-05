@@ -17,6 +17,7 @@
 #include "Chaos/CastingUtilities.h"
 #include "Chaos/ISpatialAcceleration.h"
 #include "Chaos/PBDCollisionConstraints.h"
+#include "Chaos/GeometryParticles.h"
 #include "Chaos/GeometryQueries.h"
 #include "Chaos/DebugDrawQueue.h"
 
@@ -59,7 +60,7 @@ void FSQAcceleratorUnion::RemoveSQAccelerator(ISQAccelerator* AcceleratorToRemov
 	Accelerators.RemoveSingleSwap(AcceleratorToRemove);	//todo(ocohen): probably want to order these in some optimal way
 }
 
-FChaosSQAccelerator::FChaosSQAccelerator(const Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, float, 3>& InSpatialAcceleration)
+FChaosSQAccelerator::FChaosSQAccelerator(const Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>& InSpatialAcceleration)
 	: SpatialAcceleration(InSpatialAcceleration)
 {}
 
@@ -69,7 +70,7 @@ struct FPreFilterInfo
 	int32 ActorIdx;
 };
 
-void FillHitHelper(ChaosInterface::FLocationHit& Hit, const float Distance, const FVector& WorldPosition, const FVector& WorldNormal, int32 FaceIdx, bool bComputeMTD)
+void FillHitHelper(ChaosInterface::FLocationHit& Hit, const Chaos::FReal Distance, const FVector& WorldPosition, const FVector& WorldNormal, int32 FaceIdx, bool bComputeMTD)
 {
 	Hit.Distance = Distance;
 	Hit.WorldPosition = WorldPosition;
@@ -78,12 +79,12 @@ void FillHitHelper(ChaosInterface::FLocationHit& Hit, const float Distance, cons
 	Hit.FaceIndex = FaceIdx;
 }
 
-void FillHitHelper(ChaosInterface::FOverlapHit& Hit, const float Distance, const FVector& WorldPosition, const FVector& WorldNormal, int32 FaceIdx, bool bComputeMTD)
+void FillHitHelper(ChaosInterface::FOverlapHit& Hit, const Chaos::FReal Distance, const FVector& WorldPosition, const FVector& WorldNormal, int32 FaceIdx, bool bComputeMTD)
 {
 }
 
 template <typename QueryGeometryType, typename TPayload, typename THitType>
-struct TSQVisitor : public Chaos::ISpatialVisitor<TPayload, float>
+struct TSQVisitor : public Chaos::ISpatialVisitor<TPayload, Chaos::FReal>
 {
 	TSQVisitor(const FVector& InStartPoint, const FVector& InDir, ChaosInterface::FSQHitBuffer<ChaosInterface::FRaycastHit>& InHitBuffer, EHitFlags InOutputFlags,
 		const FQueryFilterData& InQueryFilterData, ICollisionQueryFilterCallbackBase& InQueryCallback, const FQueryDebugParams& InDebugParams)
@@ -116,6 +117,7 @@ struct TSQVisitor : public Chaos::ISpatialVisitor<TPayload, float>
 		, OutputFlags(InOutputFlags)
 		, bAnyHit(false)
 		, DebugParams(InDebugParams)
+		, HitFaceNormal(Chaos::FVec3::ZeroVector)
 		, HitBuffer(InHitBuffer)
 		, QueryFilterData(InQueryFilterData)
 #if PHYSICS_INTERFACE_PHYSX
@@ -141,6 +143,7 @@ struct TSQVisitor : public Chaos::ISpatialVisitor<TPayload, float>
 		: HalfExtents(InQueryGeom.BoundingBox().Extents() * 0.5)
 		, bAnyHit(false)
 		, DebugParams(InDebugParams)
+		, HitFaceNormal(Chaos::FVec3::ZeroVector)
 		, HitBuffer(InHitBuffer)
 		, QueryFilterData(InQueryFilterData)
 #if PHYSICS_INTERFACE_PHYSX
@@ -178,7 +181,18 @@ struct TSQVisitor : public Chaos::ISpatialVisitor<TPayload, float>
 
 	virtual const void* GetQueryData() const override
 	{
-		return &QueryFilterData;
+		return &QueryFilterDataConcrete;
+	}
+
+	virtual const void* GetSimData() const override
+	{
+		return nullptr;
+	}
+
+	/** Return a pointer to the payload on which we are querying the acceleration structure */
+	virtual const void* GetQueryPayload() const override
+	{
+		return nullptr;
 	}
 
 private:
@@ -212,7 +226,7 @@ private:
 		const bool bTestShapeBounds =  Shapes.Num() > 1;
 		bool bContinue = true;
 
-		const TRigidTransform<float, 3> ActorTM(GeometryParticle->X(), GeometryParticle->R());
+		const FRigidTransform3 ActorTM(GeometryParticle->X(), GeometryParticle->R());
 		const TAABB<FReal, 3> QueryGeomWorldBounds = QueryGeom ? QueryGeom->BoundingBox().TransformedAABB(StartTM) : TAABB<FReal, 3>(-HalfExtents, HalfExtents);
 
 #if CHAOS_DEBUG_DRAW
@@ -234,14 +248,14 @@ private:
 				else
 				{
 					// Transform to world bounds and get the proper half extent.
-					const FVec3 WorldHalfExtent = QueryGeom ? QueryGeomWorldBounds.Extents() * 0.5f : HalfExtents;
+					const FVec3 WorldHalfExtent = QueryGeom ? QueryGeomWorldBounds.Extents() * 0.5f : FVec3(HalfExtents);
 
 					InflatedWorldBounds = FAABB3(Shape->GetWorldSpaceInflatedShapeBounds().Min() - WorldHalfExtent, Shape->GetWorldSpaceInflatedShapeBounds().Max() + WorldHalfExtent);
 				}
 				if (SQ != ESQType::Overlap)
 				{
 					//todo: use fast raycast
-					float TmpTime;
+					Chaos::FReal TmpTime;
 					FVec3 TmpPos;
 					if (!InflatedWorldBounds.RaycastFast( SQ == ESQType::Raycast ? StartPoint : StartTM.GetLocation(), CurData->Dir, CurData->InvDir, CurData->bParallel, CurData->CurrentLength, CurData->InvCurrentLength, TmpTime, TmpPos))
 					{
@@ -280,8 +294,9 @@ private:
 				bool bHit = false;
 
 				FVec3 WorldPosition, WorldNormal;
-				float Distance = 0;	//not needed but fixes compiler warning for overlap
+				Chaos::FReal Distance = 0;	//not needed but fixes compiler warning for overlap
 				int32 FaceIdx = INDEX_NONE;	//not needed but fixes compiler warning for overlap
+				FVec3 FaceNormal = FVec3::ZeroVector;
 				const bool bComputeMTD = !!((uint16)(OutputFlags.HitFlags & EHitFlags::MTD));
 
 				if (SQ == ESQType::Raycast)
@@ -300,7 +315,7 @@ private:
 				}
 				else if(SQ == ESQType::Sweep && CurData->CurrentLength > 0 && ensure(QueryGeom))
 				{
-					bHit = SweepQuery(*Geom, ActorTM, *QueryGeom, StartTM, CurData->Dir, CurData->CurrentLength, Distance, WorldPosition, WorldNormal, FaceIdx, 0.f, bComputeMTD);
+					bHit = SweepQuery(*Geom, ActorTM, *QueryGeom, StartTM, CurData->Dir, CurData->CurrentLength, Distance, WorldPosition, WorldNormal, FaceIdx, FaceNormal, 0.f, bComputeMTD);
 				}
 				else if ((SQ == ESQType::Overlap || (SQ == ESQType::Sweep && CurData->CurrentLength == 0)) && ensure(QueryGeom))
 				{
@@ -322,39 +337,81 @@ private:
 				if(bHit)
 				{
 					//QUICK_SCOPE_CYCLE_COUNTER(SQNarrowHit);
-					FillHitHelper(Hit, Distance, WorldPosition, WorldNormal, FaceIdx, bComputeMTD);
-
-
-#if PHYSICS_INTERFACE_PHYSX
-					HitType = QueryFilterData.flags & PxQueryFlag::ePOSTFILTER ? QueryCallback.PostFilter(QueryFilterDataConcrete, Hit) : HitType;
-#else
-					HitType = QueryFilterData.flags & FChaosQueryFlag::ePOSTFILTER ? QueryCallback.PostFilter(QueryFilterDataConcrete, Hit) : HitType;
-#endif
-
-					if (HitType != ECollisionQueryHitType::None)
+					
+					bool bAcceptHit = true;
+					if constexpr(SQ == ESQType::Sweep && std::is_same_v<THitType, FSweepHit>)
 					{
-
-						//overlap never blocks
-						const bool bBlocker = (HitType == ECollisionQueryHitType::Block || bAnyHit || HitBuffer.WantsSingleResult());
-						HitBuffer.InsertHit(Hit, bBlocker);
-#if CHAOS_DEBUG_DRAW
-						bHitBufferIncreased = true;
-#endif
-
-						if (bBlocker && SQ != ESQType::Overlap)
+						const THitType* CurrentHit = HitBuffer.GetCurrentHit();
+						if(FaceIdx != INDEX_NONE)
 						{
-							CurData->SetLength(FMath::Max(0.f, Distance));	//Max is needed for MTD which returns negative distance
-							if (CurData->CurrentLength == 0 && (SQ == ESQType::Raycast || HitBuffer.WantsSingleResult()))	//raycasts always fail with distance 0, sweeps only matter if we want multi overlaps
+							if(CurrentHit)
 							{
-								bContinue = false; //initial overlap so nothing will be better than this
-								break;
+								constexpr static FReal CoLocationEpsilon = 1e-6;
+								const FReal DistDelta = FMath::Abs(Distance - CurrentHit->Distance);
+								const int32 OldFace = CurrentHit->FaceIndex;
+
+								if(DistDelta < CoLocationEpsilon && OldFace != INDEX_NONE)
+								{
+									// We already have a face hit from another triangle mesh - see if this one is better (more opposing the sweep)
+									const FReal OldDot = FVec3::DotProduct(CurData->Dir, HitFaceNormal);
+									const FReal NewDot = FVec3::DotProduct(CurData->Dir, FaceNormal);
+
+									if(NewDot < OldDot)
+									{
+										// More opposing
+										HitFaceNormal = FaceNormal;
+									}
+									else
+									{
+										// This hit is co-located but has a worse normal
+										bAcceptHit = false;
+									}
+								}
+							}
+							
+							if(bAcceptHit)
+							{
+								// Record the new face normal
+								HitFaceNormal = FaceNormal;
 							}
 						}
+					}
 
-						if (bAnyHit)
+					if(bAcceptHit)
+					{
+						FillHitHelper(Hit, Distance, WorldPosition, WorldNormal, FaceIdx, bComputeMTD);
+
+#if PHYSICS_INTERFACE_PHYSX
+						HitType = QueryFilterData.flags & PxQueryFlag::ePOSTFILTER ? QueryCallback.PostFilter(QueryFilterDataConcrete, Hit) : HitType;
+#else
+						HitType = QueryFilterData.flags & FChaosQueryFlag::ePOSTFILTER ? QueryCallback.PostFilter(QueryFilterDataConcrete, Hit) : HitType;
+#endif
+
+						if(HitType != ECollisionQueryHitType::None)
 						{
-							bContinue = false;
-							break;
+
+							//overlap never blocks
+							const bool bBlocker = (HitType == ECollisionQueryHitType::Block || bAnyHit || HitBuffer.WantsSingleResult());
+							HitBuffer.InsertHit(Hit, bBlocker);
+#if CHAOS_DEBUG_DRAW
+							bHitBufferIncreased = true;
+#endif
+
+							if(bBlocker && SQ != ESQType::Overlap)
+							{
+								CurData->SetLength(FMath::Max((FReal)0., Distance));	//Max is needed for MTD which returns negative distance
+								if(CurData->CurrentLength == 0 && (SQ == ESQType::Raycast || HitBuffer.WantsSingleResult()))	//raycasts always fail with distance 0, sweeps only matter if we want multi overlaps
+								{
+									bContinue = false; //initial overlap so nothing will be better than this
+									break;
+								}
+							}
+
+							if(bAnyHit)
+							{
+								bContinue = false;
+								break;
+							}
 						}
 					}
 				}
@@ -387,7 +444,7 @@ private:
 		}
 		else if (SQ == ESQType::Overlap)
 		{
-			Chaos::DebugDraw::DrawShape(StartTM, QueryGeom, bHit ? FColor::Red : FColor::Green);
+			Chaos::DebugDraw::DrawShape(StartTM, QueryGeom, Chaos::FShapeOrShapesArray(), bHit ? FColor::Red : FColor::Green);
 		}
 
 		if (Instance.bHasBounds)
@@ -410,6 +467,7 @@ private:
 	FHitFlags OutputFlags;
 	bool bAnyHit;
 	const FQueryDebugParams DebugParams;
+	Chaos::FVec3 HitFaceNormal;
 	ChaosInterface::FSQHitBuffer<THitType>& HitBuffer;
 	const FQueryFilterData& QueryFilterData;
 	const FCollisionFilterData QueryFilterDataConcrete;
@@ -419,7 +477,7 @@ private:
 };
 
 template <typename QueryGeometryType, typename TPayload, typename THitType>
-struct TBPVisitor : public Chaos::ISpatialVisitor<TPayload, float>
+struct TBPVisitor : public Chaos::ISpatialVisitor<TPayload, Chaos::FReal>
 {
 	TBPVisitor(const FTransform& InWorldTM, ChaosInterface::FSQHitBuffer<ChaosInterface::FOverlapHit>& InHitBuffer,
 		const FQueryFilterData& InQueryFilterData, ICollisionQueryFilterCallbackBase& InQueryCallback, const QueryGeometryType& InQueryGeom, const FQueryDebugParams& InDebugParams)
@@ -454,7 +512,18 @@ struct TBPVisitor : public Chaos::ISpatialVisitor<TPayload, float>
 
 	virtual const void* GetQueryData() const override
 	{
-		return &QueryFilterData;
+		return &QueryFilterDataConcrete;
+	}
+
+	virtual const void* GetSimData() const override
+	{
+		return nullptr;
+	}
+	
+	/** Return a pointer to the payload on which we are querying the acceleration structure */
+	virtual const void* GetQueryPayload() const override
+	{
+		return nullptr;
 	}
 
 private:
@@ -527,7 +596,7 @@ void FChaosSQAccelerator::Raycast(const FVector& Start, const FVector& Dir, cons
 }
 
 template <typename QueryGeomType>
-void SweepHelper(const QueryGeomType& QueryGeom,const Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle,float,3>& SpatialAcceleration,const FTransform& StartTM,const FVector& Dir,const float DeltaMagnitude,ChaosInterface::FSQHitBuffer<ChaosInterface::FSweepHit>& HitBuffer,EHitFlags OutputFlags,const FQueryFilterData& QueryFilterData,ICollisionQueryFilterCallbackBase& QueryCallback,const FQueryDebugParams& DebugParams)
+void SweepHelper(const QueryGeomType& QueryGeom,const Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, Chaos::FReal,3>& SpatialAcceleration,const FTransform& StartTM,const FVector& Dir,const float DeltaMagnitude,ChaosInterface::FSQHitBuffer<ChaosInterface::FSweepHit>& HitBuffer,EHitFlags OutputFlags,const FQueryFilterData& QueryFilterData,ICollisionQueryFilterCallbackBase& QueryCallback,const FQueryDebugParams& DebugParams)
 {
 	using namespace Chaos;
 	using namespace ChaosInterface;
@@ -557,7 +626,7 @@ void FChaosSQAccelerator::Sweep(const Chaos::FImplicitObject& QueryGeom, const F
 }
 
 template <typename QueryGeomType>
-void OverlapHelper(const QueryGeomType& QueryGeom, const Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, float, 3>& SpatialAcceleration, const FTransform& GeomPose, ChaosInterface::FSQHitBuffer<ChaosInterface::FOverlapHit>& HitBuffer, const FQueryFilterData& QueryFilterData, ICollisionQueryFilterCallbackBase& QueryCallback, const FQueryDebugParams& DebugParams)
+void OverlapHelper(const QueryGeomType& QueryGeom, const Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>& SpatialAcceleration, const FTransform& GeomPose, ChaosInterface::FSQHitBuffer<ChaosInterface::FOverlapHit>& HitBuffer, const FQueryFilterData& QueryFilterData, ICollisionQueryFilterCallbackBase& QueryCallback, const FQueryDebugParams& DebugParams)
 {
 	using namespace Chaos;
 	using namespace ChaosInterface;
@@ -589,7 +658,7 @@ void FChaosSQAccelerator::Overlap(const Chaos::FImplicitObject& QueryGeom, const
 }
 
 #if WITH_PHYSX
-FChaosSQAcceleratorAdapter::FChaosSQAcceleratorAdapter(const Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, float, 3>& InSpatialAcceleration)
+FChaosSQAcceleratorAdapter::FChaosSQAcceleratorAdapter(const Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>& InSpatialAcceleration)
 	: ChaosSQAccelerator(InSpatialAcceleration)
 {
 }

@@ -55,7 +55,11 @@ namespace EDOFMode
 
 struct FBodyInstnace;
 
-#define USE_BODYINSTANCE_DEBUG_NAMES ((WITH_EDITORONLY_DATA || UE_BUILD_DEBUG || LOOKING_FOR_PERF_ISSUES || CHAOS_CHECKED) && !(UE_BUILD_SHIPPING || UE_BUILD_TEST) && !NO_LOGGING)
+#ifndef CHAOS_DEBUG_NAME
+#define CHAOS_DEBUG_NAME 0
+#endif
+
+#define USE_BODYINSTANCE_DEBUG_NAMES (!NO_LOGGING && CHAOS_DEBUG_NAME)
 
 /** Helper struct to specify spawn behavior */
 struct FInitBodySpawnParams
@@ -92,7 +96,7 @@ struct FInitBodiesHelperBase
 	FPhysicsAggregateHandle Aggregate;
 
 #if USE_BODYINSTANCE_DEBUG_NAMES
-	FString DebugName;
+	TSharedPtr<FString, ESPMode::ThreadSafe> DebugName;
 	TSharedPtr<TArray<ANSICHAR>> PhysXName; // Get rid of ANSICHAR in physics
 #endif
 
@@ -142,7 +146,7 @@ struct FInitBodiesHelperWithData : public FInitBodiesHelperBase
 {
 	FInitBodiesHelperWithData() { check(false); }
 	FInitBodiesHelperWithData(TArray<FBodyInstance*>&& InBodies, TArray<FTransform>&& InTransforms, class UBodySetup* InBodySetup, class UPrimitiveComponent* InPrimitiveComp, FPhysScene* InRBScene, const FInitBodySpawnParams& InSpawnParams, FPhysicsAggregateHandle InAggregate)
-	: FInitBodiesHelperBase(OwnedBodies, OwnedTransforms, InBodySetup, InPrimitiveComp, InRBScene, InSpawnParams, InAggregate), OwnedBodies(MoveTemp(InBodies)), OwnedTransforms(MoveTemp(InTransforms))
+	: FInitBodiesHelperBase(OwnedBodies, OwnedTransforms, InBodySetup, InPrimitiveComp, InRBScene, InSpawnParams, InAggregate), OwnedBodies(MoveTemp(InBodies)), OwnedTransforms(MoveTemp(InTransforms)) //-V1050
 	{
 		//Compute all the needed constants
 		bStatic = bCompileStatic || SpawnParams.bStaticPhysics;
@@ -154,13 +158,13 @@ struct FInitBodiesHelperWithData : public FInitBodiesHelperBase
 	}
 
 	FInitBodiesHelperWithData(const FInitBodiesHelperWithData& InHelper)
-	: FInitBodiesHelperBase(OwnedBodies, OwnedTransforms, InHelper.BodySetup, InHelper.PrimitiveComp, InHelper.PhysScene, InHelper.SpawnParams, InHelper.Aggregate), OwnedBodies(InHelper.OwnedBodies), OwnedTransforms(InHelper.OwnedTransforms)
+	: FInitBodiesHelperBase(OwnedBodies, OwnedTransforms, InHelper.BodySetup, InHelper.PrimitiveComp, InHelper.PhysScene, InHelper.SpawnParams, InHelper.Aggregate), OwnedBodies(InHelper.OwnedBodies), OwnedTransforms(InHelper.OwnedTransforms) //-V1050
 	{
 		ensure(false);
 	}
 
 	FInitBodiesHelperWithData(FInitBodiesHelperWithData&& InHelper)
-	: FInitBodiesHelperBase(OwnedBodies, OwnedTransforms, InHelper.BodySetup, InHelper.PrimitiveComp, InHelper.PhysScene, InHelper.SpawnParams, InHelper.Aggregate), OwnedBodies(MoveTemp(InHelper.OwnedBodies)), OwnedTransforms(MoveTemp(InHelper.OwnedTransforms))
+	: FInitBodiesHelperBase(OwnedBodies, OwnedTransforms, InHelper.BodySetup, InHelper.PrimitiveComp, InHelper.PhysScene, InHelper.SpawnParams, InHelper.Aggregate), OwnedBodies(MoveTemp(InHelper.OwnedBodies)), OwnedTransforms(MoveTemp(InHelper.OwnedTransforms)) //-V1050
 	{
 		//Compute all the needed constants
 		bStatic = bCompileStatic || SpawnParams.bStaticPhysics;
@@ -318,6 +322,13 @@ public:
 	/**	Enable contact modification. Assumes custom contact modification has been provided (see FPhysXContactModifyCallback) */
 	uint8 bContactModification : 1;
 
+	/**
+	 * Remove unnecessary edge collisions to allow smooth sliding over surfaces composed of multiple actors/components.
+	 * This is fairly expensive and should only be enabled on hero objects. 
+	 */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Collision)
+	uint8 bSmoothEdgeCollisions : 1;
+
 	/////////
 	// SIM SETTINGS
 
@@ -431,7 +442,7 @@ protected:
 
 	/**Mass of the body in KG. By default we compute this based on physical material and mass scale.
 	*@see bOverrideMass to set this directly */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Physics, meta = (editcondition = "bOverrideMass", ClampMin = "0.001", UIMin = "0.001", DisplayName = "MassInKg"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Physics, meta = (editcondition = "bOverrideMass", ClampMin = "0.001", UIMin = "0.001", DisplayName = "Mass (kg)"))
 	float MassInKgOverride;
 
 	/** The body setup holding the default body instance and its collision profile. */
@@ -470,7 +481,7 @@ public:
 	FVector COMNudge;
 
 	/** Per-instance scaling of mass */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = Physics)
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category = Physics, meta = (ClampMin = "0.001", UIMin = "0.001"))
 	float MassScale;
 
 	/** Per-instance scaling of inertia (bigger number means  it'll be harder to rotate) */
@@ -509,7 +520,7 @@ protected:
 
 	/**	Allows you to override the PhysicalMaterial to use for simple collision on this body. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Collision)
-	class UPhysicalMaterial* PhysMaterialOverride;
+	TObjectPtr<class UPhysicalMaterial> PhysMaterialOverride;
 
 public:
 	/** The maximum angular velocity for this instance [degrees/s]*/
@@ -751,8 +762,13 @@ public:
 
 	/** Add an impulse to this body */
 	void AddImpulse(const FVector& Impulse, bool bVelChange);
+	
 	/** Add an impulse to this body and a particular world position */
 	void AddImpulseAtPosition(const FVector& Impulse, const FVector& Position);
+
+	/** Add a velocity change impulse to this body and a particular world position */
+	void AddVelocityChangeImpulseAtLocation(const FVector& Impulse, const FVector& Position);
+
 	/** Set the linear velocity of this body */
 	void SetLinearVelocity(const FVector& NewVel, bool bAddToCurrent, bool bAutoWake = true);
 
@@ -773,9 +789,18 @@ public:
 	void SetEnableGravity(bool bGravityEnabled);
 	/** Enables/disables contact modification */
 	void SetContactModification(bool bNewContactModification);
+	/** Enables/disabled smoothed edge collisions */
+	void SetSmoothEdgeCollisionsEnabled(bool bNewSmoothEdgeCollisions);
 
 	/** Enable/disable Continuous Collidion Detection feature */
 	void SetUseCCD(bool bInUseCCD);
+
+	/** Disable/Re-Enable this body in the solver,  when disable, the body won't be part of the simulation ( regardless if it's dynamic or kinematic ) and no collision will occur 
+	* this can be used for performance control situation for example
+	*/
+	void SetPhysicsDisabled(bool bSetDisabled);
+
+	bool IsPhysicsDisabled() const;
 
 private:
 

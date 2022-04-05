@@ -57,6 +57,8 @@ ALevelSequenceActor::ALevelSequenceActor(const FObjectInitializer& Init)
 			SpriteComponent->bHiddenInGame = true;
 		}
 	}
+
+	bIsSpatiallyLoaded = false;
 #endif //WITH_EDITORONLY_DATA
 
 	BindingOverrides = Init.CreateDefaultSubobject<UMovieSceneBindingOverrides>(this, "BindingOverrides");
@@ -65,7 +67,9 @@ ALevelSequenceActor::ALevelSequenceActor(const FObjectInitializer& Init)
 
 	// SequencePlayer must be a default sub object for it to be replicated correctly
 	SequencePlayer = Init.CreateDefaultSubobject<ULevelSequencePlayer>(this, "AnimationPlayer");
-
+	SequencePlayer->OnPlay.AddDynamic(this, &ALevelSequenceActor::ShowBurnin);
+	SequencePlayer->OnPlayReverse.AddDynamic(this, &ALevelSequenceActor::ShowBurnin);
+	SequencePlayer->OnStop.AddDynamic(this, &ALevelSequenceActor::HideBurnin);
 	bOverrideInstanceData = false;
 
 	// The level sequence actor defaults to never ticking by the tick manager because it is ticked separately in LevelTick
@@ -112,6 +116,11 @@ TOptional<EAspectRatioAxisConstraint> ALevelSequenceActor::GetAspectRatioAxisCon
 		AspectRatioAxisConstraint = CameraSettings.AspectRatioAxisConstraint;
 	}
 	return AspectRatioAxisConstraint;
+}
+
+bool ALevelSequenceActor::GetIsReplicatedPlayback() const
+{
+	return bReplicatePlayback;
 }
 
 ULevelSequencePlayer* ALevelSequenceActor::GetSequencePlayer() const
@@ -167,8 +176,6 @@ void ALevelSequenceActor::BeginPlay()
 
 	Super::BeginPlay();
 
-	RefreshBurnIn();
-
 	if (PlaybackSettings.bAutoPlay)
 	{
 		SequencePlayer->Play();
@@ -184,6 +191,10 @@ void ALevelSequenceActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		// of waiting for the UObject to be destroyed by GC.
 		SequencePlayer->Stop();
 
+		SequencePlayer->OnPlay.RemoveAll(this);
+		SequencePlayer->OnPlayReverse.RemoveAll(this);
+		SequencePlayer->OnStop.RemoveAll(this);
+
 		if (UMovieSceneSequenceTickManager* TickManager = SequencePlayer->GetTickManager())
 		{
 			TickManager->UnregisterSequenceActor(this);
@@ -197,7 +208,7 @@ void ALevelSequenceActor::TickFromSequenceTickManager(float DeltaSeconds)
 {
 	if (SequencePlayer)
 	{
-		SequencePlayer->Update(DeltaSeconds);
+		SequencePlayer->UpdateAsync(DeltaSeconds);
 	}
 }
 
@@ -212,23 +223,29 @@ void ALevelSequenceActor::PostLoad()
 		bAutoPlay_DEPRECATED = false;
 	}
 
-	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	// We intentionally do not attempt to load any asset in PostLoad other than by way of LoadPackageAsync
-	// since under some circumstances it is possible for the sequence to only be partially loaded.
-	// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-	UWorld* LocalWorld = GetWorld();
-	if (LevelSequence.IsValid() && LocalWorld && LocalWorld->IsGameWorld())
+#if WITH_EDITORONLY_DATA
+	if (LevelSequence_DEPRECATED.IsValid())
 	{
-		// If we're async loading and we don't have the sequence asset loaded, schedule a load for it
-		ULevelSequence* LevelSequenceAsset = GetSequence();
-		if (!LevelSequenceAsset && IsAsyncLoading())
+		if (!LevelSequenceAsset)
 		{
-			LoadPackageAsync(LevelSequence.GetLongPackageName(), FLoadPackageAsyncDelegate::CreateUObject(this, &ALevelSequenceActor::OnSequenceLoaded));
+			LevelSequenceAsset = Cast<ULevelSequence>(LevelSequence_DEPRECATED.ResolveObject());
+		}
+
+		// If we don't have the sequence asset loaded, schedule a load for it
+		if (LevelSequenceAsset)
+		{
+			LevelSequence_DEPRECATED.Reset();
+		}
+		else
+		{
+			// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+			// We intentionally do not attempt to load any asset in PostLoad other than by way of LoadPackageAsync
+			// since under some circumstances it is possible for the sequence to only be partially loaded.
+			// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+			LoadPackageAsync(LevelSequence_DEPRECATED.GetLongPackageName(), FLoadPackageAsyncDelegate::CreateUObject(this, &ALevelSequenceActor::OnSequenceLoaded));
 		}
 	}
 
-#if WITH_EDITORONLY_DATA
 	// Fix sprite component so that it's attached to the root component. In the past, the sprite component was the root component.
 	UBillboardComponent* SpriteComponent = FindComponentByClass<UBillboardComponent>();
 	if (SpriteComponent && SpriteComponent->GetAttachParent() != RootComponent)
@@ -240,19 +257,14 @@ void ALevelSequenceActor::PostLoad()
 
 ULevelSequence* ALevelSequenceActor::GetSequence() const
 {
-	return Cast<ULevelSequence>(LevelSequence.ResolveObject());
-}
-
-ULevelSequence* ALevelSequenceActor::LoadSequence() const
-{
-	return Cast<ULevelSequence>(LevelSequence.TryLoad());
+	return LevelSequenceAsset;
 }
 
 void ALevelSequenceActor::SetSequence(ULevelSequence* InSequence)
 {
 	if (!SequencePlayer->IsPlaying())
 	{
-		LevelSequence = InSequence;
+		LevelSequenceAsset = InSequence;
 
 		// cbb: should ideally null out the template and player when no sequence is assigned, but that's currently not possible
 		if (InSequence)
@@ -264,29 +276,12 @@ void ALevelSequenceActor::SetSequence(ULevelSequence* InSequence)
 
 void ALevelSequenceActor::InitializePlayer()
 {
-	if (LevelSequence.IsValid() && GetWorld()->IsGameWorld())
+	if (LevelSequenceAsset && GetWorld()->IsGameWorld())
 	{
-		// Attempt to resolve the asset without loading it
-		ULevelSequence* LevelSequenceAsset = GetSequence();
-		if (LevelSequenceAsset)
+		// Level sequence is already loaded. Initialize the player if it's not already initialized with this sequence
+		if (LevelSequenceAsset != SequencePlayer->GetSequence())
 		{
-			// Level sequence is already loaded. Initialize the player if it's not already initialized with this sequence
-			if (LevelSequenceAsset != SequencePlayer->GetSequence())
-			{
-				SequencePlayer->Initialize(LevelSequenceAsset, GetLevel(), PlaybackSettings, CameraSettings);
-			}
-		}
-		else if (!IsAsyncLoading())
-		{
-			LevelSequenceAsset = LoadSequence();
-			if (LevelSequenceAsset != SequencePlayer->GetSequence())
-			{
-				SequencePlayer->Initialize(LevelSequenceAsset, GetLevel(), PlaybackSettings, CameraSettings);
-			}
-		}
-		else
-		{
-			LoadPackageAsync(LevelSequence.GetLongPackageName(), FLoadPackageAsyncDelegate::CreateUObject(this, &ALevelSequenceActor::OnSequenceLoaded));
+			SequencePlayer->Initialize(LevelSequenceAsset, GetLevel(), PlaybackSettings, CameraSettings);
 		}
 	}
 }
@@ -295,11 +290,13 @@ void ALevelSequenceActor::OnSequenceLoaded(const FName& PackageName, UPackage* P
 {
 	if (Result == EAsyncLoadingResult::Succeeded)
 	{
-		ULevelSequence* LevelSequenceAsset = GetSequence();
-		if (SequencePlayer && SequencePlayer->GetSequence() != LevelSequenceAsset)
+#if WITH_EDITORONLY_DATA
+		if (LevelSequence_DEPRECATED.IsValid())
 		{
-			SequencePlayer->Initialize(LevelSequenceAsset, GetLevel(), PlaybackSettings, CameraSettings);
+			LevelSequenceAsset = Cast<ULevelSequence>(LevelSequence_DEPRECATED.ResolveObject());
+			LevelSequence_DEPRECATED.Reset();
 		}
+#endif
 	}
 }
 
@@ -307,22 +304,12 @@ void ALevelSequenceActor::HideBurnin()
 {
 	bShowBurnin = false;
 	RefreshBurnIn();
-
-	if (!BurnInOptions)
-	{
-		UE_LOG(LogLevelSequence, Warning, TEXT("Burnin is not enabled"));
-	}
 }
 
 void ALevelSequenceActor::ShowBurnin()
 {
 	bShowBurnin = true;
 	RefreshBurnIn();
-
-	if (!BurnInOptions || !BurnInOptions->bUseBurnIn)
-	{
-		UE_LOG(LogLevelSequence, Warning, TEXT("Burnin will not be visible because it is not enabled"));
-	}
 }
 
 void ALevelSequenceActor::RefreshBurnIn()
@@ -550,8 +537,6 @@ void ALevelSequenceActor::UpdateObjectFromProxy(FStructOnScope& Proxy, IProperty
 
 bool ALevelSequenceActor::GetReferencedContentObjects(TArray<UObject*>& Objects) const
 {
-	ULevelSequence* LevelSequenceAsset = LoadSequence();
-
 	if (LevelSequenceAsset)
 	{
 		Objects.Add(LevelSequenceAsset);

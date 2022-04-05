@@ -6,9 +6,10 @@
 #include "EditorModeManager.h"
 #include "EdModeInteractiveToolsContext.h"
 #include "InteractiveGizmo.h"
-#include "BaseGizmos/TransformGizmo.h"
-#include "UnrealWidget.h"
+#include "BaseGizmos/CombinedTransformGizmo.h"
+#include "UnrealWidgetFwd.h"
 #include "Utils.h"
+#include "Stats/Stats2.h"
 
 #define LOCTEXT_NAMESPACE "FGizmoEdMode"
 
@@ -23,7 +24,6 @@ UGizmoEdMode::UGizmoEdMode()
 		600
 	);
 	SettingsClass = UGizmoEdModeSettings::StaticClass();
-	ToolsContextClass = UEdModeInteractiveToolsContext::StaticClass();
 
 	AddFactory(NewObject<UDefaultAssetEditorGizmoFactory>());
 }
@@ -49,7 +49,7 @@ void UGizmoEdMode::RecreateGizmo()
 	{
 		if (Factory->CanBuildGizmoForSelection(GetModeManager()))
 		{
-			InteractiveGizmos = Factory->BuildGizmoForSelection(GetModeManager(), ToolsContext->GizmoManager);
+			InteractiveGizmos = Factory->BuildGizmoForSelection(GetModeManager(), GetInteractiveToolsContext()->GizmoManager);
 			LastFactory = &(*Factory);
 			return;
 		}
@@ -62,7 +62,7 @@ void UGizmoEdMode::DestroyGizmo()
 
 	for (UInteractiveGizmo *Gizmo : InteractiveGizmos)
 	{
-		ToolsContext->GizmoManager->DestroyGizmo(Gizmo);
+		GetInteractiveToolsContext()->GizmoManager->DestroyGizmo(Gizmo);
 	}
 
 	InteractiveGizmos.Empty();
@@ -73,7 +73,7 @@ void UGizmoEdMode::Enter()
 	Super::Enter();
 	bNeedInitialGizmos = true;
 	WidgetModeChangedHandle =
-	    GetModeManager()->OnWidgetModeChanged().AddLambda([this](FWidget::EWidgetMode) { RecreateGizmo(); });
+	    GetModeManager()->OnWidgetModeChanged().AddLambda([this](UE::Widget::EWidgetMode) { RecreateGizmo(); });
 	GetModeManager()->SetShowWidget(false);
 }
 
@@ -86,14 +86,10 @@ void UGizmoEdMode::Exit()
 	Super::Exit();
 }
 
-bool UGizmoEdMode::InputKey(FEditorViewportClient* ViewportClient, FViewport* Viewport, FKey Key, EInputEvent Event)
+void UGizmoEdMode::ModeTick(float DeltaTime)
 {
-	return ToolsContext->InputKey(ViewportClient, Viewport, Key, Event);
-}
+	Super::ModeTick(DeltaTime);
 
-void UGizmoEdMode::Tick(FEditorViewportClient* ViewportClient, float DeltaTime)
-{
-	Super::Tick(ViewportClient, DeltaTime);
 	if ( bNeedInitialGizmos )
 	{
 		RecreateGizmo();

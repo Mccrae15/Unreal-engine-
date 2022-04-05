@@ -12,6 +12,7 @@ struct FNiagaraDataSetAccessorTypeInfo;
 template<typename TType>
 struct FNiagaraDataSetAccessor : public FNiagaraDataSetAccessorTypeInfo<TType>::TAccessorBaseClass
 {
+	static_assert(!TIsUECoreVariant<TType, double>::Value, "Double core variant. Must be float type!");
 	FORCEINLINE FNiagaraDataSetAccessor<TType>() {}
 	FORCEINLINE explicit FNiagaraDataSetAccessor<TType>(const FNiagaraDataSet& DataSet, const FName VariableName) { FNiagaraDataSetAccessorTypeInfo<TType>::TAccessorBaseClass::Init(DataSet.GetCompiledData(), VariableName); }
 	FORCEINLINE explicit FNiagaraDataSetAccessor<TType>(const FNiagaraDataSetCompiledData& DataSetCompiledData, const FName VariableName) { FNiagaraDataSetAccessorTypeInfo<TType>::TAccessorBaseClass::Init(DataSetCompiledData, VariableName); }
@@ -23,6 +24,7 @@ struct FNiagaraDataSetAccessor : public FNiagaraDataSetAccessorTypeInfo<TType>::
 template<typename TType>
 struct FNiagaraDataSetReaderFloat
 {
+	static_assert(!TIsUECoreVariant<TType, double>::Value, "Double core variant. Must be float type!");
 	static constexpr bool bSupportsHalf = FNiagaraDataSetAccessorTypeInfo<TType>::bSupportsHalf;
 
 	FORCEINLINE FNiagaraDataSetReaderFloat() {}
@@ -166,6 +168,7 @@ private:
 template<typename TType>
 struct FNiagaraDataSetAccessorFloat
 {
+	static_assert(!TIsUECoreVariant<TType, double>::Value, "Double core variant. Must be float type!");
 	FORCEINLINE FNiagaraDataSetAccessorFloat() {}
 	FORCEINLINE explicit FNiagaraDataSetAccessorFloat(const FNiagaraDataSet& DataSet, const FName VariableName) { Init(DataSet.GetCompiledData(), VariableName); }
 	FORCEINLINE explicit FNiagaraDataSetAccessorFloat(const FNiagaraDataSetCompiledData& DataSetCompiledData, const FName VariableName) { Init(DataSetCompiledData, VariableName); }
@@ -194,8 +197,21 @@ struct FNiagaraDataSetAccessorFloat
 		{
 			bIsFloat = true;
 			ComponentIndex = DataSetCompiledData.VariableLayouts[FloatVariableIndex].FloatComponentStart;
+			return;
 		}
-		else if (FNiagaraDataSetAccessorTypeInfo<TType>::bSupportsHalf)
+
+		if (FNiagaraDataSetAccessorTypeInfo<TType>::bSupportsAlternateType)
+		{
+			const int32 AlternateVariableIndex = DataSetCompiledData.Variables.IndexOfByKey(FNiagaraVariableBase(FNiagaraDataSetAccessorTypeInfo<TType>::GetAlternateType(), VariableName));
+			if (AlternateVariableIndex != INDEX_NONE)
+			{
+				bIsFloat = true;
+				ComponentIndex = DataSetCompiledData.VariableLayouts[AlternateVariableIndex].FloatComponentStart;
+				return;
+			}
+		}
+		
+		if (FNiagaraDataSetAccessorTypeInfo<TType>::bSupportsHalf)
 		{
 			const int32 HalfVariableIndex = DataSetCompiledData.Variables.IndexOfByKey(FNiagaraVariableBase(FNiagaraDataSetAccessorTypeInfo<TType>::GetHalfType(), VariableName));
 			if (HalfVariableIndex != INDEX_NONE)
@@ -225,42 +241,63 @@ struct FNiagaraDataSetAccessorTypeInfo<float>
 	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<float>;
 
 	static constexpr bool bSupportsHalf = true;
+	static constexpr bool bSupportsAlternateType = false;
 	static constexpr int32 NumElements = 1;
 	static const FNiagaraTypeDefinition& GetFloatType() { return FNiagaraTypeDefinition::GetFloatDef(); }
 	static const FNiagaraTypeDefinition& GetHalfType() { return FNiagaraTypeDefinition::GetHalfDef(); }
+	static const FNiagaraTypeDefinition& GetAlternateType() { return FNiagaraTypeDefinition::GetFloatDef(); }
 };
 
 template<>
-struct FNiagaraDataSetAccessorTypeInfo<FVector2D>
+struct FNiagaraDataSetAccessorTypeInfo<FVector2f>
 {
-	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FVector2D>;
+	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FVector2f>;
 
 	static constexpr bool bSupportsHalf = true;
+	static constexpr bool bSupportsAlternateType = false;
 	static constexpr int32 NumElements = 2;
 	static const FNiagaraTypeDefinition& GetFloatType() { return FNiagaraTypeDefinition::GetVec2Def(); }
 	static const FNiagaraTypeDefinition& GetHalfType() { return FNiagaraTypeDefinition::GetHalfVec2Def(); }
+	static const FNiagaraTypeDefinition& GetAlternateType() { return FNiagaraTypeDefinition::GetVec2Def(); }
 };
 
 template<>
-struct FNiagaraDataSetAccessorTypeInfo<FVector>
+struct FNiagaraDataSetAccessorTypeInfo<FVector3f>
 {
-	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FVector>;
+	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FVector3f>;
 
 	static constexpr bool bSupportsHalf = true;
+	static constexpr bool bSupportsAlternateType = false;
 	static constexpr int32 NumElements = 3;
 	static const FNiagaraTypeDefinition& GetFloatType() { return FNiagaraTypeDefinition::GetVec3Def(); }
 	static const FNiagaraTypeDefinition& GetHalfType() { return FNiagaraTypeDefinition::GetHalfVec3Def(); }
+	static const FNiagaraTypeDefinition& GetAlternateType() { return FNiagaraTypeDefinition::GetVec3Def(); }
 };
 
 template<>
-struct FNiagaraDataSetAccessorTypeInfo<FVector4>
+struct FNiagaraDataSetAccessorTypeInfo<FNiagaraPosition>
 {
-	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FVector4>;
+	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FNiagaraPosition>;
 
 	static constexpr bool bSupportsHalf = true;
+	static constexpr bool bSupportsAlternateType = true;
+	static constexpr int32 NumElements = 3;
+	static const FNiagaraTypeDefinition& GetFloatType() { return FNiagaraTypeDefinition::GetPositionDef(); }
+	static const FNiagaraTypeDefinition& GetHalfType() { return FNiagaraTypeDefinition::GetHalfVec3Def(); }
+	static const FNiagaraTypeDefinition& GetAlternateType() { return FNiagaraTypeDefinition::GetVec3Def(); }
+};
+
+template<>
+struct FNiagaraDataSetAccessorTypeInfo<FVector4f>
+{
+	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FVector4f>;
+
+	static constexpr bool bSupportsHalf = true;
+	static constexpr bool bSupportsAlternateType = false;
 	static constexpr int32 NumElements = 4;
 	static const FNiagaraTypeDefinition& GetFloatType() { return FNiagaraTypeDefinition::GetVec4Def(); }
 	static const FNiagaraTypeDefinition& GetHalfType() { return FNiagaraTypeDefinition::GetHalfVec4Def(); }
+	static const FNiagaraTypeDefinition& GetAlternateType() { return FNiagaraTypeDefinition::GetVec4Def(); }
 };
 
 template<>
@@ -269,20 +306,24 @@ struct FNiagaraDataSetAccessorTypeInfo<FLinearColor>
 	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FLinearColor>;
 
 	static constexpr bool bSupportsHalf = false;
+	static constexpr bool bSupportsAlternateType = false;
 	static constexpr int32 NumElements = 4;
 	static const FNiagaraTypeDefinition& GetFloatType() { return FNiagaraTypeDefinition::GetColorDef(); }
 	static const FNiagaraTypeDefinition& GetHalfType() { check(false); return FNiagaraTypeDefinition::GetHalfVec4Def(); }
+	static const FNiagaraTypeDefinition& GetAlternateType() { return FNiagaraTypeDefinition::GetColorDef(); }
 };
 
 template<>
-struct FNiagaraDataSetAccessorTypeInfo<FQuat>
+struct FNiagaraDataSetAccessorTypeInfo<FQuat4f>
 {
-	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FQuat>;
+	using TAccessorBaseClass = FNiagaraDataSetAccessorFloat<FQuat4f>;
 
 	static constexpr bool bSupportsHalf = false;
+	static constexpr bool bSupportsAlternateType = false;
 	static constexpr int32 NumElements = 4;
 	static const FNiagaraTypeDefinition& GetFloatType() { return FNiagaraTypeDefinition::GetQuatDef(); }
 	static const FNiagaraTypeDefinition& GetHalfType() { check(false); return FNiagaraTypeDefinition::GetQuatDef(); }
+	static const FNiagaraTypeDefinition& GetAlternateType() { return FNiagaraTypeDefinition::GetQuatDef(); }
 };
 
 //////////////////////////////////////////////////////////////////////////

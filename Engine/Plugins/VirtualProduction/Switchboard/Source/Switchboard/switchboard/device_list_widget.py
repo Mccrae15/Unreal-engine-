@@ -6,7 +6,7 @@ from PySide2 import QtCore, QtGui, QtWidgets
 
 from switchboard.devices.device_base import Device, DeviceStatus, \
     PluginHeaderWidgets
-from switchboard.devices.device_widget_base import DeviceWidget
+from switchboard.devices.device_widget_base import DeviceWidget, DeviceAutoJoinMUServerUI
 import switchboard.switchboard_widgets as sb_widgets
 
 
@@ -42,8 +42,24 @@ class DeviceListWidget(QtWidgets.QListWidget):
         pass
 
     def contextMenuEvent(self, event):
+
+        item = self.itemAt(event.pos())
+
+        if not item:
+            return
+
+        item_widget = self.itemWidget(item)
+        assert item_widget
+        
+        # No actions for clicking the header widget
+        if isinstance(item_widget, DeviceWidgetHeader):
+            return
+
         device_context_menu = QtWidgets.QMenu(self)
-        device_context_menu.addAction("Remove Device", lambda: self.ask_to_confirm_device_removal(event.pos()))
+
+        device_context_menu.addAction("Remove device", lambda: self.ask_to_confirm_device_removal(event.pos()))
+        item_widget.populate_context_menu(device_context_menu)
+
         device_context_menu.exec_(event.globalPos())
         event.accept()
 
@@ -89,8 +105,8 @@ class DeviceListWidget(QtWidgets.QListWidget):
     def on_open_all_toggled(self, plugin_name, state):
         self.signal_connect_all_plugin_devices_toggled.emit(plugin_name, state)
 
-    def add_header(self, label_name, show_open_button, show_connect_button, show_changelist):
-        header_widget = DeviceWidgetHeader(label_name, show_open_button, show_connect_button, show_changelist)
+    def add_header(self, label_name, show_open_button, show_connect_button, show_changelist, show_autojoin):
+        header_widget = DeviceWidgetHeader(label_name, show_open_button, show_connect_button, show_changelist, show_autojoin)
         header_widget.signal_connect_all_toggled.connect(self.signal_connect_all_plugin_devices_toggled)
         header_widget.signal_open_all_toggled.connect(self.signal_open_all_plugin_devices_toggled)
 
@@ -100,7 +116,22 @@ class DeviceListWidget(QtWidgets.QListWidget):
         self.addItem(device_item)
         self.setItemWidget(device_item, header_widget)
 
+        self.attach_autojoin_button(header_widget, label_name)
         return device_item
+
+    def attach_autojoin_button(self, header_widget, category):
+        if header_widget.autojoin_mu is None:
+            return
+        autojoin = header_widget.autojoin_mu
+
+        def do_set_autojoin():
+            self.set_autojoin_mu(autojoin, category)
+        autojoin.signal_device_widget_autojoin_mu.connect(do_set_autojoin)
+
+    def set_autojoin_mu(self, autojoin_ui, category):
+        is_checked = autojoin_ui.is_autojoin_enabled()
+        for device in self.devices_in_category(category):
+            device.autojoin_mu.set_autojoin_mu(is_checked)
 
     def add_device_widget(self, device: Device):
         category = device.category_name
@@ -109,7 +140,8 @@ class DeviceListWidget(QtWidgets.QListWidget):
             show_open_button = PluginHeaderWidgets.OPEN_BUTTON in header_widget_config
             show_connect_button = PluginHeaderWidgets.CONNECT_BUTTON in header_widget_config
             show_changelist = PluginHeaderWidgets.CHANGELIST_LABEL in header_widget_config
-            self._header_by_category_name[category] = self.add_header(category, show_open_button, show_connect_button, show_changelist)
+            show_autojoin = PluginHeaderWidgets.AUTOJOIN_MU in header_widget_config
+            self._header_by_category_name[category] = self.add_header(category, show_open_button, show_connect_button, show_changelist, show_autojoin)
 
         header_item = self._header_by_category_name[category]
         header_row = self.row(header_item)
@@ -242,7 +274,7 @@ class DeviceWidgetHeader(QtWidgets.QWidget):
     signal_connect_all_toggled = QtCore.Signal(str, bool) # params: plugin_name, toggle_state
     signal_open_all_toggled = QtCore.Signal(str, bool) # params: plugin_name, toggle_state
 
-    def __init__(self, name, show_open_button, show_connect_button, show_changelist, parent=None):
+    def __init__(self, name, show_open_button, show_connect_button, show_changelist, show_autojoin, parent=None):
         super().__init__(parent)
 
         self.name = name
@@ -272,6 +304,13 @@ class DeviceWidgetHeader(QtWidgets.QWidget):
             self.layout.addWidget(self.changelist_label)
             spacer = QtWidgets.QSpacerItem(0, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
             self.layout.addItem(spacer)
+
+        self.autojoin_mu = None
+        if show_autojoin:
+            self.autojoin_mu = DeviceAutoJoinMUServerUI("")
+            self.autojoin_mu_button = self.autojoin_mu.make_button(self)
+            self.autojoin_mu_button.setStyleSheet("padding-right: -6px;")
+            self.layout.addWidget(self.autojoin_mu_button)
 
         self.open_button = None
         if show_open_button:

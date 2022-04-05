@@ -2,8 +2,10 @@
 
 #pragma once
 
+#include "Misc/LargeWorldCoordinates.h"
+
 class UWorld;
-struct FVector;
+UE_DECLARE_LWC_TYPE(Vector, 3);
 class FString;
 struct FColor;
 

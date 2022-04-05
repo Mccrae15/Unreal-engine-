@@ -233,7 +233,7 @@ UObject* USoundFactory::CreateObject
 			// Resource data is required to exist, if it hasn't been loaded yet,
 			// to properly flush compressed data.  This allows the new version
 			// to be auditioned in the editor properly.
-			if (!ExistingSound->ResourceData)
+			if (!ExistingSound->GetResourceData())
 			{
 				if (FAudioDeviceHandle AudioDevice = GEngine->GetMainAudioDevice())
 				{
@@ -361,17 +361,23 @@ UObject* USoundFactory::CreateObject
 		// otherwise create new sound and import raw data.
 		USoundWave* Sound = (bUseExistingSettings && ExistingSound) ? ExistingSound : NewObject<USoundWave>(InParent, Name, Flags, TemplateSoundWave.Get());
 
+		// If we're a multi-channel file, we're going to spoof the behavior of the SoundSurroundFactory
+		int32 ChannelCount = (int32)*WaveInfo.pChannels;
+		check(ChannelCount >0);
+
 		// These get wiped in PostInitProperties by defaults set from Audio Settings,
 		// so set back to template in this specialized case
 		if (TemplateSoundWave.IsValid())
 		{
 			Sound->SoundClassObject = TemplateSoundWave->SoundClassObject;
 			Sound->ConcurrencySet = TemplateSoundWave->ConcurrencySet;
-		}
 
-		// If we're a multi-channel file, we're going to spoof the behavior of the SoundSurroundFactory
-		int32 ChannelCount = (int32)*WaveInfo.pChannels;
-		check(ChannelCount >0);
+			// we do not want to inherit these values from the template, as the data may be incorrect
+			// rather we re-parse them from the incoming file.
+			Sound->NumChannels = 0;
+			Sound->ChannelOffsets.Reset();
+			Sound->ChannelSizes.Reset();
+		}
 
 		int32 SizeOfSample = (*WaveInfo.pBitsPerSample) / 8;
 
@@ -473,23 +479,48 @@ UObject* USoundFactory::CreateObject
 			Sound->RawData.Lock(LOCK_READ_WRITE);
 
 			uint8* LockedData = (uint8*)Sound->RawData.Realloc(TotalSize);
+			int16* LockedDataInt16 = reinterpret_cast<int16*>(LockedData);
+
 			int32 RawDataOffset = 0;
 
 
 			if (bIsAmbiX || bIsFuMa)
 			{
 				check(ChannelCount == 4);
-
 				// Flag that this is an ambisonics file
 				Sound->bIsAmbisonics = true;
 			}
-			for (int32 Chan = 0; Chan < ChannelCount; ++Chan)
+			if (bIsFuMa)
 			{
-				const int32 ChannelSize = RawChannelWaveData[Chan].Num();
-				FMemory::Memcpy(LockedData + RawDataOffset, RawChannelWaveData[Chan].GetData(), ChannelSize);
-				RawDataOffset += ChannelSize;
-			}
+				int32 FuMaChannelIndices[4] = { 0, 2, 3, 1 };
+				const float ScalerPlus3dB = Audio::ConvertToLinear(3.0f);
 
+				for (int32 ChannelIndex : FuMaChannelIndices)
+				{
+					const int32 ChannelSize = RawChannelWaveData[ChannelIndex].Num();
+					FMemory::Memcpy(LockedData + RawDataOffset, RawChannelWaveData[ChannelIndex].GetData(), ChannelSize);
+					RawDataOffset += ChannelSize;
+
+//  TODO: make sure this isn't already being done somewhere else, conversion sounds wrong when gain is applied
+					// scale zeroth channel
+//					if (ChannelIndex == 0)
+//					{
+// 						for (int32 i = 0; i < ChannelSize; ++i)
+// 						{
+// 							LockedData[i] = static_cast<int16>(static_cast<float>(LockedData[i]) * ScalerPlus3dB);
+// 						}
+//					}
+				}
+			}
+			else
+			{
+				for (int32 Chan = 0; Chan < ChannelCount; ++Chan)
+				{
+					const int32 ChannelSize = RawChannelWaveData[Chan].Num();
+					FMemory::Memcpy(LockedData + RawDataOffset, RawChannelWaveData[Chan].GetData(), ChannelSize);
+					RawDataOffset += ChannelSize;
+				}
+			}
 			Sound->RawData.Unlock();
 		}
 		else
@@ -502,12 +533,26 @@ UObject* USoundFactory::CreateObject
 		}
 
 		Sound->Duration = (float)NumFrames / *WaveInfo.pSamplesPerSec;
+		Sound->SetImportedSampleRate(*WaveInfo.pSamplesPerSec);
 		Sound->SetSampleRate(*WaveInfo.pSamplesPerSec);
 		Sound->NumChannels = ChannelCount;
 		Sound->TotalSamples = *WaveInfo.pSamplesPerSec * Sound->Duration;
 
 		// Store the current file path and timestamp for re-import purposes
 		Sound->AssetImportData->Update(CurrentFilename);
+
+		// Setup the cue points
+		Sound->CuePoints.Reset(WaveInfo.WaveCues.Num());
+
+		for (FWaveCue& WaveCue : WaveInfo.WaveCues)
+		{
+			FSoundWaveCuePoint NewCuePoint;
+			NewCuePoint.CuePointID = (int32)WaveCue.CuePointID;
+			NewCuePoint.FrameLength = (int32)WaveCue.SampleLength;
+			NewCuePoint.FramePosition = (int32)WaveCue.Position;
+			NewCuePoint.Label = WaveCue.Label;
+			Sound->CuePoints.Add(NewCuePoint);
+		}
 
 		// Compressed data is now out of date.
 		const bool bRebuildStreamingChunks = FPlatformCompressionUtilities::IsCurrentPlatformUsingStreamCaching();
@@ -538,7 +583,7 @@ UObject* USoundFactory::CreateObject
 			AudioComponent->Play();
 		}
 
-		Sound->bNeedsThumbnailGeneration = true;
+		Sound->SetRedrawThumbnail(true);
 
 		return Sound;
 	}

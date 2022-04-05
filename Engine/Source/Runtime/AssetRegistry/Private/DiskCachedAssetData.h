@@ -47,4 +47,13 @@ public:
 
 		DependencyData.SerializeForCache(Ar);
 	}
+
+	/** Returns the amount of memory allocated by this container, not including sizeof(*this). */
+	SIZE_T GetAllocatedSize() const
+	{
+		SIZE_T Result = 0;
+		Result += AssetDataList.GetAllocatedSize();
+		Result += DependencyData.GetAllocatedSize();
+		return Result;
+	}
 };

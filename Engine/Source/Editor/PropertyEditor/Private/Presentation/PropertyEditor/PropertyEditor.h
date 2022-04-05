@@ -40,11 +40,14 @@ public:
 
 	void RequestRefresh();
 
-	bool SupportsEditConditionToggle() const;
-	void ToggleEditConditionState();
-
 	/**	@return Whether the property is editconst */
 	bool IsEditConst() const;
+
+	/** @return Whether this property should have an edit condition toggle. */
+	bool SupportsEditConditionToggle() const;
+
+	/** Toggle the current state of the edit condition if this SupportsEditConditionToggle() */
+	void ToggleEditConditionState();
 
 	/**	@return Whether the property has a condition which must be met before allowing editing of it's value */
 	bool HasEditCondition() const;
@@ -70,10 +73,6 @@ public:
 	/**	@return Whether the property passes the current filter restrictions. If no there are no filter restrictions false will be returned. */
 	bool DoesPassFilterRestrictions() const;
 
-	void AddPropertyEditorChild( const TSharedRef<FPropertyEditor>& Child );
-	void RemovePropertyEditorChild( const TSharedRef<FPropertyEditor>& Child );
-	const TArray< TSharedRef< FPropertyEditor > >& GetPropertyEditorChildren() const;
-
 	void UseSelected();
 	void AddItem();
 	void AddGivenItem(const FString& InGivenItem);
@@ -87,7 +86,7 @@ public:
 	void OnGetClassesForAssetPicker( TArray<const UClass*>& OutClasses );
 	void OnAssetSelected( const FAssetData& AssetData );
 	void OnActorSelected( AActor* InActor );
-	void OnGetActorFiltersForSceneOutliner( TSharedPtr<SceneOutliner::FOutlinerFilters>& OutFilters );
+	void OnGetActorFiltersForSceneOutliner( TSharedPtr<FSceneOutlinerFilters>& OutFilters );
 	void EditConfigHierarchy();
 
 	/**	In an ideal world we wouldn't expose these */
@@ -113,8 +112,6 @@ private:
 
 private:
 
-	TArray< TSharedRef< FPropertyEditor > >	ChildPropertyEditors;
-
 	/** Property handle for actually reading/writing the value of a property */
 	TSharedPtr< class IPropertyHandle > PropertyHandle;
 
@@ -123,8 +120,4 @@ private:
 	 
 	/** The property view where this widget resides */
 	TSharedRef< class IPropertyUtilities > PropertyUtilities;
-
-	/** Edit condition expression used to determine if this property editor can modify its property */
-	TSharedPtr<FEditConditionExpression> EditConditionExpression;
-	TSharedPtr<FEditConditionContext> EditConditionContext;
 };

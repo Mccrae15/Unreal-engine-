@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -8,32 +9,13 @@ using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using OpenTracing;
+using UnrealBuildBase;
 using UnrealBuildTool;
 
 namespace AutomationTool
 {
-	/// <summary>
-	/// Specifies validation that should be performed on a task parameter.
-	/// </summary>
-	public enum TaskParameterValidationType
-	{
-		/// <summary>
-		/// Allow any valid values for the field type.
-		/// </summary>
-		Default,
-
-		/// <summary>
-		/// A list of tag names separated by semicolons
-		/// </summary>
-		TagList,
-
-		/// <summary>
-		/// A file specification, which may contain tags and wildcards.
-		/// </summary>
-		FileSpec,
-	}
-
 	/// <summary>
 	/// Attribute to mark parameters to a task, which should be read as XML attributes from the script file.
 	/// </summary>
@@ -118,11 +100,7 @@ namespace AutomationTool
 		/// <summary>
 		/// Line number in a source file that this task was declared. Optional; used for log messages.
 		/// </summary>
-		public Tuple<FileReference, int> SourceLocation
-		{
-			get;
-			set;
-		}
+		public BgScriptLocation SourceLocation { get; set; }
 
 		/// <summary>
 		/// Execute this node.
@@ -206,8 +184,19 @@ namespace AutomationTool
 		/// <param name="Prefix">Prefix for metadata entries</param>
 		public virtual void GetTraceMetadata(ITraceSpan Span, string Prefix)
 		{
-			Span.AddMetadata(Prefix + "source.file", SourceLocation.Item1.MakeRelativeTo(CommandUtils.RootDirectory));
-			Span.AddMetadata(Prefix + "source.line", SourceLocation.Item2.ToString());
+			Span.AddMetadata(Prefix + "source.file", SourceLocation.File);
+			Span.AddMetadata(Prefix + "source.line", SourceLocation.LineNumber.ToString());
+		}
+		
+		/// <summary>
+		/// Get properties to include in tracing info
+		/// </summary>
+		/// <param name="Span">The scope to add properties to</param>
+		/// <param name="Prefix">Prefix for metadata entries</param>
+		public virtual void GetTraceMetadata(ISpan Span, string Prefix)
+		{
+			Span.SetTag(Prefix + "source.file", SourceLocation.File);
+			Span.SetTag(Prefix + "source.line", SourceLocation.LineNumber);
 		}
 
 		/// <summary>
@@ -283,7 +272,7 @@ namespace AutomationTool
 		{
 			if(String.IsNullOrEmpty(Name))
 			{
-				return CommandUtils.RootDirectory;
+				return Unreal.RootDirectory;
 			}
 			else if(Path.IsPathRooted(Name))
 			{
@@ -291,7 +280,7 @@ namespace AutomationTool
 			}
 			else
 			{
-				return DirectoryReference.Combine(CommandUtils.RootDirectory, Name);
+				return DirectoryReference.Combine(Unreal.RootDirectory, Name);
 			}
 		}
 

@@ -29,10 +29,10 @@ struct FMappingSet
 	TArray<TSharedRef<IPropertyHandle>> Mappings;
 };
 
-class FActionMappingsNodeBuilder : public IDetailCustomNodeBuilder, public TSharedFromThis<FActionMappingsNodeBuilder>
+class FActionMappingsNodeBuilderEx : public IDetailCustomNodeBuilder, public TSharedFromThis<FActionMappingsNodeBuilderEx>
 {
 public:
-	FActionMappingsNodeBuilder(IDetailLayoutBuilder* InDetailLayoutBuilder, const TSharedPtr<IPropertyHandle>& InPropertyHandle);
+	FActionMappingsNodeBuilderEx(IDetailLayoutBuilder* InDetailLayoutBuilder, const TSharedPtr<IPropertyHandle>& InPropertyHandle);
 
 	/** IDetailCustomNodeBuilder interface */
 	virtual void SetOnRebuildChildren(FSimpleDelegate InOnRebuildChildren) override { OnRebuildChildren = InOnRebuildChildren; }
@@ -58,6 +58,12 @@ private:
 	}
 	/** Makes sure that groups have their expansion set after any rebuilding */
 	void HandleDelayedGroupExpansion();
+
+	/** Returns true if the "Adds Action Mapping" button can be pressed */
+	bool CanAddNewActionMapping() const;
+
+	/** The tooltip attribute for the "Adds Action Mapping" button */
+	FText GetAddNewActionTooltip() const;
 
 private:
 	/** Called to rebuild the children of the detail tree */

@@ -3,11 +3,12 @@
 #pragma once
 
 #include "TraceServices/Model/AnalysisSession.h"
+#include "TraceServices/Model/Threads.h"
 #include "ProfilingDebugging/MiscTrace.h"
 #include "HAL/PlatformAffinity.h"
 #include "Containers/Map.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 class FThreadProvider
@@ -15,8 +16,10 @@ class FThreadProvider
 {
 public:
 	static const FName ProviderName;
-	FThreadProvider(IAnalysisSession& Session);
-	~FThreadProvider();
+
+	explicit FThreadProvider(IAnalysisSession& Session);
+	virtual ~FThreadProvider();
+
 	void AddGameThread(uint32 Id);
 	void AddThread(uint32 Id, const TCHAR* Name, EThreadPriority Priority);
 	void SetThreadPriority(uint32 Id, EThreadPriority Priority);
@@ -48,4 +51,4 @@ private:
 	TArray<FThreadInfoInternal*> SortedThreads;
 };
 
-}
+} // namespace TraceServices

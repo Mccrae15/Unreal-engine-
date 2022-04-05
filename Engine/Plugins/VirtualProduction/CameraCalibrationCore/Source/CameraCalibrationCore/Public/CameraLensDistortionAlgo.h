@@ -10,15 +10,15 @@
 
 struct FGeometry;
 struct FPointerEvent;
-struct FTransform;
 
 struct FDistortionInfo;
 struct FFocalLengthInfo;
 struct FImageCenterInfo;
 
 class ULensDistortionTool;
-class SWidget;
 class ULensModel;
+class UMaterialInterface;
+class SWidget;
 
 /**
  * Defines the interface that any lens distortion algorithm should implement
@@ -49,6 +49,12 @@ public:
 	/** Returns a descriptive name/title of this nodal offset algorithm */
 	virtual FName FriendlyName() const { return TEXT("Invalid Name"); };
 
+	/** Returns the overlay material used by this algo (if any) */
+	virtual UMaterialInterface* GetOverlayMaterial() const { return nullptr; };
+
+	/** Returns true is this algo has enabled an overlay */
+	virtual bool IsOverlayEnabled() const { return false; };
+
 	/** Called when the data sample was saved to the lens file */
 	virtual void OnDistortionSavedToLens() { };
 
@@ -66,6 +72,6 @@ public:
 		return false; 
 	};
 
-	/** Called to present the user with instructions on how to this this algo */
+	/** Called to present the user with instructions on how to use this algo */
 	virtual TSharedRef<SWidget> BuildHelpWidget() { return SNew(STextBlock).Text(FText::FromString(TEXT("Coming soon!"))); };
 };

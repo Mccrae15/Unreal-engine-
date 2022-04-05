@@ -8,6 +8,7 @@
 #include "ThumbnailRendering/ThumbnailManager.h"
 #include "Engine/TextureCube.h"
 #include "Engine/Texture2DArray.h"
+#include "Engine/TextureCubeArray.h"
 #include "Engine/VolumeTexture.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/TextureRenderTarget2DArray.h"
@@ -61,10 +62,12 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 	{
 		return;
 	}
+
+	TSharedPtr<ITextureEditorToolkit> TextureEditorPinned = TextureEditorPtr.Pin();
 	
-	UTexture* Texture = TextureEditorPtr.Pin()->GetTexture();
+	UTexture* Texture = TextureEditorPinned->GetTexture();
 	FVector2D Ratio = FVector2D(GetViewportHorizontalScrollBarRatio(), GetViewportVerticalScrollBarRatio());
-	FVector2D ViewportSize = FVector2D(TextureEditorViewportPtr.Pin()->GetViewport()->GetSizeXY().X, TextureEditorViewportPtr.Pin()->GetViewport()->GetSizeXY().Y);
+	FVector2D ViewportSize = FVector2D(TextureEditorViewportPtr.Pin()->GetViewport()->GetSizeXY());
 	FVector2D ScrollBarPos = GetViewportScrollBarPositions();
 	int32 YOffset = (Ratio.Y > 1.0f)? ((ViewportSize.Y - (ViewportSize.Y / Ratio.Y)) * 0.5f): 0;
 	int32 YPos = YOffset - ScrollBarPos.Y;
@@ -80,6 +83,7 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 	UTexture2D* Texture2D = Cast<UTexture2D>(Texture);
 	UTextureCube* TextureCube = Cast<UTextureCube>(Texture);
 	UTexture2DArray* Texture2DArray = Cast<UTexture2DArray>(Texture);
+	UTextureCubeArray* TextureCubeArray = Cast<UTextureCubeArray>(Texture);
 	UVolumeTexture* VolumeTexture = Cast<UVolumeTexture>(Texture);
 	UTextureRenderTarget2D* TextureRT2D = Cast<UTextureRenderTarget2D>(Texture);
 	UTextureRenderTarget2DArray* TextureRT2DArray = Cast<UTextureRenderTarget2DArray>(Texture);
@@ -87,19 +91,16 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 	UTextureRenderTargetVolume* RTTextureVolume = Cast<UTextureRenderTargetVolume>(Texture);
 
 	// Fully stream in the texture before drawing it.
-	if (Texture2D)
-	{
-		Texture2D->SetForceMipLevelsToBeResident(30.0f);
-		Texture2D->WaitForStreaming();
-	}
+	Texture->SetForceMipLevelsToBeResident(30.0f);
+	Texture->WaitForStreaming();
 
-	TextureEditorPtr.Pin()->PopulateQuickInfo();
+	TextureEditorPinned->PopulateQuickInfo();
 
 	// Figure out the size we need
-	uint32 Width, Height;
-	TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height);
-	const float MipLevel = (float)TextureEditorPtr.Pin()->GetMipLevel();
-	const float LayerIndex = (float)TextureEditorPtr.Pin()->GetLayer();
+	uint32 Width, Height, Depth, ArraySize;;
+	TextureEditorPinned->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
+	const float MipLevel = (float)TextureEditorPinned->GetMipLevel();
+	const float LayerIndex = (float)TextureEditorPinned->GetLayer();
 
 	bool bIsVirtualTexture = false;
 
@@ -107,7 +108,7 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 
 	if (GMaxRHIFeatureLevel >= ERHIFeatureLevel::SM5)
 	{
-		if (TextureCube || RTTextureCube)
+		if (TextureCube || TextureCubeArray || RTTextureCube)
 		{
 			BatchedElementParameters = new FMipLevelBatchedElementParameters(MipLevel, false);
 		}
@@ -117,9 +118,9 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 				Settings.VolumeViewMode == TextureEditorVolumeViewMode_DepthSlices, 
 				FMath::Max<int32>(VolumeTexture->GetSizeZ(), 1), 
 				MipLevel, 
-				(float)TextureEditorPtr.Pin()->GetVolumeOpacity(),
+				(float)TextureEditorPinned->GetVolumeOpacity(),
 				true, 
-				TextureEditorPtr.Pin()->GetVolumeOrientation());
+				TextureEditorPinned->GetVolumeOrientation());
 		}
 		else if (RTTextureVolume)
 		{
@@ -127,9 +128,9 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 				Settings.VolumeViewMode == TextureEditorVolumeViewMode_DepthSlices,
 				FMath::Max<int32>(RTTextureVolume->SizeZ >> RTTextureVolume->GetCachedLODBias(), 1),
 				MipLevel,
-				(float)TextureEditorPtr.Pin()->GetVolumeOpacity(),
+				(float)TextureEditorPinned->GetVolumeOpacity(),
 				true,
-				TextureEditorPtr.Pin()->GetVolumeOrientation());
+				TextureEditorPinned->GetVolumeOrientation());
 		}
 		else if (Texture2D)
 		{
@@ -168,25 +169,25 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 		const int32 CheckerboardSizeY = FMath::Max<int32>(1, CheckerboardTexture->GetSizeY());
 		if (Settings.Background == TextureEditorBackground_CheckeredFill)
 		{
-			Canvas->DrawTile( 0.0f, 0.0f, Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y, 0.0f, 0.0f, (float)Viewport->GetSizeXY().X / CheckerboardSizeX, (float)Viewport->GetSizeXY().Y / CheckerboardSizeY, FLinearColor::White, CheckerboardTexture->Resource);
+			Canvas->DrawTile( 0.0f, 0.0f, Viewport->GetSizeXY().X, Viewport->GetSizeXY().Y, 0.0f, 0.0f, (float)Viewport->GetSizeXY().X / CheckerboardSizeX, (float)Viewport->GetSizeXY().Y / CheckerboardSizeY, FLinearColor::White, CheckerboardTexture->GetResource());
 		}
 		else if (Settings.Background == TextureEditorBackground_Checkered)
 		{
-			Canvas->DrawTile( XPos, YPos, Width, Height, 0.0f, 0.0f, (float)Width / CheckerboardSizeX, (float)Height / CheckerboardSizeY, FLinearColor::White, CheckerboardTexture->Resource);
+			Canvas->DrawTile( XPos, YPos, Width, Height, 0.0f, 0.0f, (float)Width / CheckerboardSizeX, (float)Height / CheckerboardSizeY, FLinearColor::White, CheckerboardTexture->GetResource());
 		}
 	}
 
-	float Exposure = FMath::Pow(2.0f, (float)TextureEditorViewportPtr.Pin()->GetExposureBias());
+	float Exposure = FMath::Pow(2.0f, (float)TextureEditorPinned->GetExposureBias());
 
-	if ( Texture->Resource != nullptr )
+	if ( Texture->GetResource() != nullptr )
 	{
-		FCanvasTileItem TileItem( FVector2D( XPos, YPos ), Texture->Resource, FVector2D( Width, Height ), FLinearColor(Exposure, Exposure, Exposure) );
-		TileItem.BlendMode = TextureEditorPtr.Pin()->GetColourChannelBlendMode();
+		FCanvasTileItem TileItem( FVector2D( XPos, YPos ), Texture->GetResource(), FVector2D( Width, Height ), FLinearColor(Exposure, Exposure, Exposure) );
+		TileItem.BlendMode = TextureEditorPinned->GetColourChannelBlendMode();
 		TileItem.BatchedElementParameters = BatchedElementParameters;
 
 		if (bIsVirtualTexture && Texture->Source.GetNumBlocks() > 1)
 		{
-			// Adjust UVs to display entire UDIM range, acounting for UE4 inverted V-axis
+			// Adjust UVs to display entire UDIM range, accounting for UE inverted V-axis
 			const FIntPoint BlockSize = Texture->Source.GetSizeInBlocks();
 			TileItem.UV0 = FVector2D(0.0f, 1.0f - (float)BlockSize.Y);
 			TileItem.UV1 = FVector2D((float)BlockSize.X, 1.0f);
@@ -205,29 +206,22 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 		// if we are presenting a virtual texture, make the appropriate tiles resident
 		if (bIsVirtualTexture && CVarEnableVTFeedback.GetValueOnAnyThread() != 0)
 		{
-			FVirtualTexture2DResource* VTResource = static_cast<FVirtualTexture2DResource*>(Texture->Resource);
-			const FVector2D ScreenSpaceSize = { (float)Width, (float)Height };
-			
-			// Calculate the rect of the texture that is visible on screen
-			// When the entire texture is visible, we pass -1 as dimensions (VirtualTextureUtils::CalculateVisibleTiles needs to calculate the effective texture size anyway so don't do it twice)
- 			auto ZeroOrAbsolute = [](int32 value) -> int32 { return value >= 0 ? 0 : FMath::Abs(value); };
-			auto GetCorrectDimension = [](int value, int32 viewportSize, int32 TextureSize) -> int32 { return value <= viewportSize ? TextureSize : viewportSize; };
-
-			const float Zoom = 1.0f / TextureEditorPtr.Pin()->GetCustomZoomLevel();
-			const int32 VisibleXPos = FMath::FloorToInt(Zoom * -FMath::Min(0, XPos));
-			const int32 VisibleYPos = FMath::FloorToInt(Zoom * -FMath::Min(0, YPos));
-			
-			const FIntRect VisibleTextureRect = FIntRect(VisibleXPos, VisibleYPos,
-				VisibleXPos + GetCorrectDimension(Zoom * Width, Zoom * ViewportSize.X, VTResource->GetSizeX()),
-				VisibleYPos + GetCorrectDimension(Zoom * Height, Zoom * ViewportSize.Y, VTResource->GetSizeY()));
+			FVirtualTexture2DResource* VTResource = static_cast<FVirtualTexture2DResource*>(Texture->GetResource());
+			const FVector2D ScreenSpaceSize((float)Width, (float)Height);
+			const FVector2D ViewportPositon(-(float)XPos, -(float)YPos);
+			const FVector2D UV0 = TileItem.UV0;
+			const FVector2D UV1 = TileItem.UV1;
 
 			const ERHIFeatureLevel::Type InFeatureLevel = GMaxRHIFeatureLevel;
 			ENQUEUE_RENDER_COMMAND(MakeTilesResident)(
-				[InFeatureLevel, VTResource, ScreenSpaceSize, VisibleTextureRect, MipLevel](FRHICommandListImmediate& RHICmdList)
+				[InFeatureLevel, VTResource, ScreenSpaceSize, ViewportPositon, ViewportSize, UV0, UV1, MipLevel](FRHICommandListImmediate& RHICmdList)
 			{
 				// AcquireAllocatedVT() must happen on render thread
-				GetRendererModule().RequestVirtualTextureTilesForRegion(VTResource->AcquireAllocatedVT(), ScreenSpaceSize, VisibleTextureRect, MipLevel);
-				GetRendererModule().LoadPendingVirtualTextureTiles(RHICmdList, InFeatureLevel);
+				IAllocatedVirtualTexture* AllocatedVT = VTResource->AcquireAllocatedVT();
+
+				IRendererModule& RenderModule = GetRendererModule();
+				RenderModule.RequestVirtualTextureTilesForRegion(AllocatedVT, ScreenSpaceSize, ViewportPositon, ViewportSize, UV0, UV1, MipLevel);
+				RenderModule.LoadPendingVirtualTextureTiles(RHICmdList, InFeatureLevel);
 			});
 		}
 	}
@@ -239,7 +233,7 @@ void FTextureEditorViewportClient::Draw(FViewport* Viewport, FCanvas* Canvas)
 		const FIntPoint SizeOnMip = { Texture2D->GetSizeX() >> Mip,Texture2D->GetSizeY() >> Mip };
 		const uint64 NumPixels = static_cast<uint64>(SizeOnMip.X) * SizeOnMip.Y;
 
-		const FVirtualTexture2DResource* Resource = (FVirtualTexture2DResource*)Texture2D->Resource;
+		const FVirtualTexture2DResource* Resource = (FVirtualTexture2DResource*)Texture2D->GetResource();
 		const FIntPoint PhysicalTextureSize = Resource->GetPhysicalTextureSize(0u);
 		const uint64 NumPhysicalPixels = static_cast<uint64>(PhysicalTextureSize.X) * PhysicalTextureSize.Y;
 
@@ -312,9 +306,8 @@ bool FTextureEditorViewportClient::InputAxis(FViewport* Viewport, int32 Controll
 		{
 			TSharedPtr<STextureEditorViewport> EditorViewport = TextureEditorViewportPtr.Pin();
 
-			uint32 Height = 1;
-			uint32 Width = 1;
-			TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height);
+			uint32 Width, Height, Depth, ArraySize;
+			TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
 
 			if (Key == EKeys::MouseY)
 			{
@@ -386,10 +379,21 @@ void FTextureEditorViewportClient::ModifyCheckerboardTextureColors()
 
 FText FTextureEditorViewportClient::GetDisplayedResolution() const
 {
-	uint32 Height = 1;
-	uint32 Width = 1;
-	TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height);
-	return FText::Format( NSLOCTEXT("TextureEditor", "DisplayedResolution", "Displayed: {0}x{1}"), FText::AsNumber( FMath::Max((uint32)1, Width) ), FText::AsNumber( FMath::Max((uint32)1, Height)) );
+	// Zero is the default size 
+	uint32 Height, Width, Depth, ArraySize;
+	TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
+	if (Depth > 0)
+	{
+		return FText::Format(NSLOCTEXT("TextureEditor", "DisplayedResolutionThreeDimension", "Displayed: {0}x{1}x{2}"), FText::AsNumber(FMath::Max((uint32)1, Width)), FText::AsNumber(FMath::Max((uint32)1, Height)), FText::AsNumber(Depth));
+	}
+	else if (ArraySize > 0)
+	{
+		return FText::Format(NSLOCTEXT("TextureEditor", "DisplayedResolution", "Displayed: {0}x{1}*{2}"), FText::AsNumber(FMath::Max((uint32)1, Width)), FText::AsNumber(FMath::Max((uint32)1, Height)), FText::AsNumber(ArraySize));
+	}
+	else
+	{
+		return FText::Format(NSLOCTEXT("TextureEditor", "DisplayedResolutionTwoDimension", "Displayed: {0}x{1}"), FText::AsNumber(FMath::Max((uint32)1, Width)), FText::AsNumber(FMath::Max((uint32)1, Height)));
+	}
 }
 
 
@@ -400,7 +404,8 @@ float FTextureEditorViewportClient::GetViewportVerticalScrollBarRatio() const
 	float WidgetHeight = 1.0f;
 	if (TextureEditorViewportPtr.Pin()->GetVerticalScrollBar().IsValid())
 	{
-		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height);
+		uint32 Depth, ArraySize;
+		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
 
 		WidgetHeight = TextureEditorViewportPtr.Pin()->GetViewport()->GetSizeXY().Y;
 	}
@@ -416,7 +421,8 @@ float FTextureEditorViewportClient::GetViewportHorizontalScrollBarRatio() const
 	float WidgetWidth = 1.0f;
 	if (TextureEditorViewportPtr.Pin()->GetHorizontalScrollBar().IsValid())
 	{
-		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height);
+		uint32 Depth, ArraySize;
+		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
 
 		WidgetWidth = TextureEditorViewportPtr.Pin()->GetViewport()->GetSizeXY().X;
 	}
@@ -470,14 +476,14 @@ FVector2D FTextureEditorViewportClient::GetViewportScrollBarPositions() const
 	FVector2D Positions = FVector2D::ZeroVector;
 	if (TextureEditorViewportPtr.Pin()->GetVerticalScrollBar().IsValid() && TextureEditorViewportPtr.Pin()->GetHorizontalScrollBar().IsValid())
 	{
-		uint32 Width, Height;
+		uint32 Width, Height, Depth, ArraySize;
 		UTexture* Texture = TextureEditorPtr.Pin()->GetTexture();
 		float VRatio = GetViewportVerticalScrollBarRatio();
 		float HRatio = GetViewportHorizontalScrollBarRatio();
 		float VDistFromBottom = TextureEditorViewportPtr.Pin()->GetVerticalScrollBar()->DistanceFromBottom();
 		float HDistFromBottom = TextureEditorViewportPtr.Pin()->GetHorizontalScrollBar()->DistanceFromBottom();
 	
-		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height);
+		TextureEditorPtr.Pin()->CalculateTextureDimensions(Width, Height, Depth, ArraySize);
 
 		if ((TextureEditorViewportPtr.Pin()->GetVerticalScrollBar()->GetVisibility() == EVisibility::Visible) && VDistFromBottom < 1.0f)
 		{
@@ -505,11 +511,11 @@ void FTextureEditorViewportClient::DestroyCheckerboardTexture()
 {
 	if (CheckerboardTexture)
 	{
-		if (CheckerboardTexture->Resource)
+		if (CheckerboardTexture->GetResource())
 		{
 			CheckerboardTexture->ReleaseResource();
 		}
-		CheckerboardTexture->MarkPendingKill();
+		CheckerboardTexture->MarkAsGarbage();
 		CheckerboardTexture = NULL;
 	}
 }

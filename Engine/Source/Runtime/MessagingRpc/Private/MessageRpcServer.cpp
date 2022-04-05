@@ -30,12 +30,12 @@ FMessageRpcServer::FMessageRpcServer(const FString& InDebugName, const TSharedRe
 FMessageRpcServer::FMessageRpcServer(FMessageEndpointBuilder&& InEndpointBuilder)
 {
 	MessageEndpoint = InEndpointBuilder.WithCatchall(this, &FMessageRpcServer::HandleMessage);
-	TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FMessageRpcServer::HandleTicker), MESSAGE_RPC_TICK_DELAY);
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FMessageRpcServer::HandleTicker), MESSAGE_RPC_TICK_DELAY);
 }
 
 FMessageRpcServer::~FMessageRpcServer()
 {
-	FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 }
 
 
@@ -115,7 +115,7 @@ void FMessageRpcServer::ProcessRequest(const TSharedRef<IMessageContext, ESPMode
 	else
 	{
 		// notify caller that call was not handled
-		MessageEndpoint->Send(new FMessageRpcUnhandled(Message->CallId), Context->GetSender());
+		MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FMessageRpcUnhandled>(Message->CallId), Context->GetSender());
 	}
 }
 
@@ -126,7 +126,7 @@ void FMessageRpcServer::SendProgress(const FGuid& CallId, const FReturnInfo& Ret
 	const TSharedPtr<IAsyncTask>& Task = ReturnInfo.Task;
 
 	MessageEndpoint->Send(
-		new FMessageRpcProgress(
+		FMessageEndpoint::MakeMessage<FMessageRpcProgress>(
 			CallId,
 			Progress.IsValid() ? Progress->GetCompletion().Get(-1.0f) : -1.0f,
 			Progress.IsValid() ? Progress->GetStatusText() : FText::GetEmpty()

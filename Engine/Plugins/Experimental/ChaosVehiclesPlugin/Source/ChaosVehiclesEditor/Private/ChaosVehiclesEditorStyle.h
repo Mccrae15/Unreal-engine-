@@ -3,8 +3,9 @@
 #pragma once
 #include "Styling/SlateStyle.h"
 #include "Styling/SlateStyleRegistry.h"
+#include "Styling/SlateStyleMacros.h"
 
-class FChaosVehiclesEditorStyle : public FSlateStyleSet
+class FChaosVehiclesEditorStyle final : public FSlateStyleSet
 {
 public:
 	FChaosVehiclesEditorStyle() : FSlateStyleSet("ChaosVehiclesEditorStyle")
@@ -16,8 +17,8 @@ public:
 		SetContentRoot(FPaths::EnginePluginsDir() / TEXT("Experimental/ChaosVehiclesPlugin/Resources"));
 #endif
 
-		Set("ClassIcon.ChaosVehicles", new FSlateImageBrush(RootToContentDir(TEXT("ChaosVehicles_16x.png")), Icon16x16));
-		Set("ClassThumbnail.ChaosVehicles", new FSlateImageBrush(RootToContentDir(TEXT("ChaosVehicles_64x.png")), Icon64x64));
+		Set("ClassIcon.ChaosVehicles", new IMAGE_BRUSH("ChaosVehicles_16x", Icon16x16));
+		Set("ClassThumbnail.ChaosVehicles", new IMAGE_BRUSH("ChaosVehicles_64x", Icon64x64));
 
 		FSlateStyleRegistry::RegisterSlateStyle(*this);
 	}

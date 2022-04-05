@@ -34,14 +34,14 @@ public:
 	FString GetCfgHost() const;
 	const FString& GetPreviewImagePath() const;
 	bool IsFixedAspectRatio() const;
-	bool IsMaster() const;
+	bool IsPrimary() const;
 
-	virtual FDelegateHandle RegisterOnPreviewImageChanged(const FOnPreviewImageChangedDelegate& Delegate);
-	virtual void UnregisterOnPreviewImageChanged(FDelegateHandle DelegateHandle);
+	FDelegateHandle RegisterOnPreviewImageChanged(const FOnPreviewImageChangedDelegate& Delegate);
+	void UnregisterOnPreviewImageChanged(FDelegateHandle DelegateHandle);
 
 	//~ Begin UDisplayClusterConfiguratorBaseNode Interface
 	virtual bool IsNodeVisible() const override;
-	virtual bool IsNodeEnabled() const override;
+	virtual bool IsNodeUnlocked() const override;
 	virtual bool CanNodeOverlapSiblings() const override { return false; }
 	virtual bool CanNodeExceedParentBounds() const override;
 

@@ -36,6 +36,7 @@ public:
 	virtual ~FPlaylistReaderMP4();
 
 	virtual void Close() override;
+	virtual void HandleOnce() override;
 
 	/**
 	 * Returns the type of playlist format.
@@ -105,6 +106,7 @@ private:
 
 	IPlayerSessionServices*									PlayerSessionServices = nullptr;
 	FString													MasterPlaylistURL;
+	FString													URLFragment;
 	FMediaEvent												WorkerThreadQuitSignal;
 	bool													bIsWorkerThreadStarted = false;
 
@@ -188,6 +190,12 @@ void FPlaylistReaderMP4::Close()
 	StopWorkerThread();
 }
 
+void FPlaylistReaderMP4::HandleOnce()
+{
+	// No-op. This class is using a dedicated thread to read data from the stream
+	// which can stall at any moment and thus not lend itself to a tickable instance.
+}
+
 void FPlaylistReaderMP4::StartWorkerThread()
 {
 	check(!bIsWorkerThreadStarted);
@@ -245,7 +253,11 @@ void FPlaylistReaderMP4::LogMessage(IInfoLog::ELevel Level, const FString& Messa
 
 void FPlaylistReaderMP4::LoadAndParse(const FString& URL)
 {
-	MasterPlaylistURL = URL;
+	FURL_RFC3986 UrlParser;
+	UrlParser.Parse(URL);
+	MasterPlaylistURL = UrlParser.Get(true, false);
+	URLFragment = UrlParser.GetFragment();
+
 	StartWorkerThread();
 }
 
@@ -325,6 +337,7 @@ void FPlaylistReaderMP4::ReadNextChunk(int64 InFromOffset, int64 ChunkSize)
 	Request->Parameters.Range.SetEndIncluding(LastByte);
 	Request->ReceiveBuffer = ReceiveBuffer;
 	Request->ProgressListener = ProgressListener;
+	Request->ResponseCache = PlayerSessionServices->GetHTTPResponseCache();
 	PlayerSessionServices->GetHTTPManager()->AddRequest(Request, false);
 }
 
@@ -360,10 +373,15 @@ void FPlaylistReaderMP4::WorkerThread()
 				}
 
 				// Prepare the tracks in the stream that are of a supported codec.
-				parseError = MP4Parser->PrepareTracks(TSharedPtrTS<const IParserISO14496_12>());
+				parseError = MP4Parser->PrepareTracks(PlayerSessionServices, TSharedPtrTS<const IParserISO14496_12>());
 				if (parseError == UEMEDIA_ERROR_OK)
 				{
 					Manifest = MakeSharedTS<FManifestMP4Internal>(PlayerSessionServices);
+
+					TArray<FURL_RFC3986::FQueryParam> URLFragmentComponents;
+					FURL_RFC3986::GetQueryParams(URLFragmentComponents, URLFragment, false);	// The fragment is already URL escaped, so no need to do it again.
+					Manifest->SetURLFragmentComponents(MoveTemp(URLFragmentComponents));
+
 					FErrorDetail err = Manifest->Build(MP4Parser, MasterPlaylistURL, ConnectionInfo);
 
 					// Notify that the "variant playlists" are ready. There are no variants in an mp4, but this is the trigger that the playlists are all set up and are good to go now.

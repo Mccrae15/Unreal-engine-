@@ -3,6 +3,8 @@
 #include "FoliageEditUtility.h"
 #include "FoliageType.h"
 #include "InstancedFoliage.h"
+#include "InstancedFoliageActor.h"
+#include "EngineUtils.h"
 #include "LevelUtils.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Framework/Notifications/NotificationManager.h"
@@ -38,18 +40,7 @@ UFoliageType* FFoliageEditUtility::SaveFoliageTypeObject(UFoliageType* InFoliage
 		if (SaveFoliageTypeDialog->ShowModal() != EAppReturnType::Cancel)
 		{
 			PackageName = SaveFoliageTypeDialog->GetFullAssetPath().ToString();
-			UPackage* Package = CreatePackage( *PackageName);
-
-			// We should not save a copy of this duplicate into the transaction buffer as it's an asset
-			InFoliageType->ClearFlags(RF_Transactional);
-			TypeToSave = Cast<UFoliageType>(StaticDuplicateObject(InFoliageType, Package, *FPackageName::GetLongPackageAssetName(PackageName)));
-			InFoliageType->SetFlags(RF_Transactional);
-
-			TypeToSave->SetFlags(RF_Standalone | RF_Public | RF_Transactional);
-			TypeToSave->Modify();
-
-			// Notify the asset registry
-			FAssetRegistryModule::AssetCreated(TypeToSave);
+			TypeToSave = DuplicateFoliageTypeToNewPackage(PackageName, InFoliageType);
 		}
 	}
 	else
@@ -75,46 +66,57 @@ UFoliageType* FFoliageEditUtility::SaveFoliageTypeObject(UFoliageType* InFoliage
 	return TypeToSave;
 }
 
+UFoliageType* FFoliageEditUtility::DuplicateFoliageTypeToNewPackage(const FString& InPackageName, UFoliageType* InFoliageType)
+{
+	UPackage* Package = CreatePackage(*InPackageName);
+	UFoliageType* TypeToSave = nullptr;
+
+	// We should not save a copy of this duplicate into the transaction buffer as it's an asset. Save and restore Transactional flag
+	EObjectFlags Transactional = InFoliageType->HasAnyFlags(RF_Transactional) ? RF_Transactional : RF_NoFlags;
+	
+	InFoliageType->ClearFlags(Transactional);
+	TypeToSave = Cast<UFoliageType>(StaticDuplicateObject(InFoliageType, Package, *FPackageName::GetLongPackageAssetName(InPackageName)));
+	InFoliageType->SetFlags(Transactional);
+
+	TypeToSave->SetFlags(RF_Standalone | RF_Public | Transactional);
+	TypeToSave->Modify();
+
+	// Notify the asset registry
+	FAssetRegistryModule::AssetCreated(TypeToSave);
+	
+	return TypeToSave;
+}
+
 void FFoliageEditUtility::ReplaceFoliageTypeObject(UWorld* InWorld, UFoliageType* OldType, UFoliageType* NewType)
 {
 	FScopedTransaction Transaction(NSLOCTEXT("UnrealEd", "FoliageMode_ReplaceSettingsObject", "Foliage Editing: Replace Settings Object"));
 
-	// Collect set of all available foliage types
-	ULevel* CurrentLevel = InWorld->GetCurrentLevel();
-	const int32 NumLevels = InWorld->GetNumLevels();
-
-	for (int32 LevelIdx = 0; LevelIdx < NumLevels; ++LevelIdx)
+	for (TActorIterator<AInstancedFoliageActor> It(InWorld); It; ++It)
 	{
-		ULevel* Level = InWorld->GetLevel(LevelIdx);
-		if (Level && Level->bIsVisible)
+		AInstancedFoliageActor* IFA = *It;
+		IFA->Modify();
+		TUniqueObj<FFoliageInfo> OldInfo;
+		if (IFA->RemoveFoliageInfoAndCopyValue(OldType, OldInfo))
 		{
-			AInstancedFoliageActor* IFA = AInstancedFoliageActor::GetInstancedFoliageActorForLevel(Level);
-			if (IFA)
+			// Old component needs to go
+			if (OldInfo->IsInitialized())
 			{
-				IFA->Modify();
-				TUniqueObj<FFoliageInfo> OldInfo;
-				IFA->FoliageInfos.RemoveAndCopyValue(OldType, OldInfo);
+				OldInfo->Uninitialize();
+			}
 
-				// Old component needs to go
-				if (OldInfo->IsInitialized())
-				{
-					OldInfo->Uninitialize();
-				}
-				
-				// Append instances if new foliage type is already exists in this actor
-				// Otherwise just replace key entry for instances
-				TUniqueObj<FFoliageInfo>* NewInfo = IFA->FoliageInfos.Find(NewType);
-				if (NewInfo)
-				{
-					(*NewInfo)->Instances.Append(OldInfo->Instances);
-					(*NewInfo)->ReallocateClusters(IFA, NewType);
-				}
-				else
-				{
-					// Make sure if type changes we have proper implementation
-					TUniqueObj<FFoliageInfo>& NewFoliageInfo = IFA->FoliageInfos.Add(NewType, MoveTemp(OldInfo));
-					NewFoliageInfo->ReallocateClusters(IFA, NewType);
-				}
+			// Append instances if new foliage type is already exists in this actor
+			// Otherwise just replace key entry for instances
+			FFoliageInfo* NewInfo = IFA->FindInfo(NewType);
+			if (NewInfo)
+			{
+				NewInfo->Instances.Append(OldInfo->Instances);
+				NewInfo->ReallocateClusters(NewType);
+			}
+			else
+			{
+				// Make sure if type changes we have proper implementation
+				TUniqueObj<FFoliageInfo>& NewFoliageInfo = IFA->AddFoliageInfo(NewType, MoveTemp(OldInfo));
+				NewFoliageInfo->ReallocateClusters(NewType);
 			}
 		}
 	}
@@ -188,7 +190,7 @@ void FFoliageEditUtility::MoveActorFoliageInstancesToLevel(ULevel* InTargetLevel
 					{
 						// Restore previous selection for move operation
 						FFoliageInfo* MeshInfo = IFA->FindInfo(NewFoliageType);
-						MeshInfo->SelectInstances(IFA, true, PreviousSelectionArray);
+						MeshInfo->SelectInstances(true, PreviousSelectionArray);
 					}
 				}
 			}

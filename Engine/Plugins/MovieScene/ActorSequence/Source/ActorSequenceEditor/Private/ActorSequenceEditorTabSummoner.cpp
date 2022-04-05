@@ -13,11 +13,14 @@
 #include "EditorUndoClient.h"
 #include "Widgets/Images/SImage.h"
 #include "Editor.h"
+#include "LevelEditor.h"
 #include "ScopedTransaction.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Application/SlateApplication.h"
 #include "ActorSequenceEditorStyle.h"
+#include "UObject/ObjectSaveContext.h"
+#include "SSubobjectEditor.h"
 
 #define LOCTEXT_NAMESPACE "ActorSequenceEditorSummoner"
 
@@ -197,6 +200,15 @@ public:
 	{
 		if (Sequencer.IsValid())
 		{
+			if (OnGlobalTimeChangedHandle.IsValid())
+			{
+				Sequencer->OnGlobalTimeChanged().Remove(OnGlobalTimeChangedHandle);
+			}
+			if (OnSelectionChangedHandle.IsValid())
+			{
+				Sequencer->GetSelectionChangedObjectGuids().Remove(OnSelectionChangedHandle);
+			}
+
 			FLevelEditorSequencerIntegration::Get().RemoveSequencer(Sequencer.ToSharedRef());
 			Sequencer->Close();
 			Sequencer = nullptr;
@@ -214,7 +226,7 @@ public:
 
 		GEditor->UnregisterForUndo(this);
 		GEditor->OnBlueprintPreCompile().Remove(OnBlueprintPreCompileHandle);
-		FCoreUObjectDelegates::OnObjectSaved.Remove(OnObjectSavedHandle);
+		FCoreUObjectDelegates::OnObjectPreSave.Remove(OnObjectSavedHandle);
 	}
 
 	~SActorSequenceEditorWidgetImpl()
@@ -224,9 +236,7 @@ public:
 	
 	TSharedRef<SDockTab> SpawnCurveEditorTab(const FSpawnTabArgs&)
 	{
-		const FSlateIcon SequencerGraphIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "GenericCurveEditor.TabIcon");
 		return SNew(SDockTab)
-			.Icon(SequencerGraphIcon.GetIcon())
 			.Label(NSLOCTEXT("Sequencer", "SequencerMainGraphEditorTitle", "Sequencer Curves"))
 			[
 				SNullWidget::NullWidget
@@ -236,18 +246,20 @@ public:
 	void Construct(const FArguments&, TWeakPtr<FBlueprintEditor> InBlueprintEditor)
 	{
 		OnBlueprintPreCompileHandle = GEditor->OnBlueprintPreCompile().AddSP(this, &SActorSequenceEditorWidgetImpl::OnBlueprintPreCompile);
-		OnObjectSavedHandle = FCoreUObjectDelegates::OnObjectSaved.AddSP(this, &SActorSequenceEditorWidgetImpl::OnObjectPreSave);
+		OnObjectSavedHandle = FCoreUObjectDelegates::OnObjectPreSave.AddSP(this, &SActorSequenceEditorWidgetImpl::OnObjectPreSave);
 
 		WeakBlueprintEditor = InBlueprintEditor;
 
 		{
 			const FName CurveEditorTabName = FName(TEXT("SequencerGraphEditor"));
+			const FSlateIcon SequencerGraphIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "GenericCurveEditor.TabIcon");
 			if (WeakBlueprintEditor.IsValid() && !WeakBlueprintEditor.Pin()->GetTabManager()->HasTabSpawner(CurveEditorTabName))
 			{
 				// Register an empty tab to spawn the Curve Editor in so that layouts restore properly.
 				WeakBlueprintEditor.Pin()->GetTabManager()->RegisterTabSpawner(CurveEditorTabName,
 					FOnSpawnTab::CreateSP(this, &SActorSequenceEditorWidgetImpl::SpawnCurveEditorTab))
-					.SetMenuType(ETabSpawnerMenuType::Type::Hidden);
+					.SetMenuType(ETabSpawnerMenuType::Type::Hidden)
+					.SetIcon(SequencerGraphIcon);
 			}
 		}
 
@@ -394,12 +406,87 @@ public:
 		Sequencer = FModuleManager::LoadModuleChecked<ISequencerModule>("Sequencer").CreateSequencer(SequencerInitParams);
 		Content->SetContent(Sequencer->GetSequencerWidget());
 
+		OnGlobalTimeChangedHandle = Sequencer->OnGlobalTimeChanged().AddSP(this, &SActorSequenceEditorWidgetImpl::OnGlobalTimeChanged);
+		OnSelectionChangedHandle = Sequencer->GetSelectionChangedObjectGuids().AddSP(this, &SActorSequenceEditorWidgetImpl::OnSelectionChanged);
+
 		FLevelEditorSequencerIntegrationOptions Options;
 		Options.bRequiresLevelEvents = true;
 		Options.bRequiresActorEvents = false;
 		Options.bForceRefreshDetails = false;
 
 		FLevelEditorSequencerIntegration::Get().AddSequencer(Sequencer.ToSharedRef(), Options);
+	
+		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+		LevelEditorModule.OnMapChanged().AddRaw(this, &SActorSequenceEditorWidgetImpl::HandleMapChanged);
+	}
+
+	void HandleMapChanged(UWorld* NewWorld, EMapChangeType MapChangeType)
+	{
+		if ((MapChangeType == EMapChangeType::LoadMap || MapChangeType == EMapChangeType::NewMap || MapChangeType == EMapChangeType::TearDownWorld))
+		{
+			Close();
+		}
+	}
+
+	void Refresh()
+	{
+		TSharedPtr<FBlueprintEditor> BlueprintEditor = WeakBlueprintEditor.Pin();
+		if (!BlueprintEditor.IsValid() || !BlueprintEditor->GetSubobjectViewport().IsValid() || !BlueprintEditor->GetSubobjectEditor().IsValid())
+		{
+			return;
+		}
+
+		UMovieScene* MovieScene = Sequencer->GetFocusedMovieSceneSequence()->GetMovieScene();
+		if (!MovieScene)
+		{
+			return;
+		}
+
+		AActor* PreviewActor = GetPreviewActor();
+
+		bool bNeedsUpdate = false;
+		for (int32 Index = 0; Index < MovieScene->GetPossessableCount(); ++Index)
+		{
+			FMovieScenePossessable& Possessable = MovieScene->GetPossessable(Index);
+			for (TWeakObjectPtr<> WeakObject : Sequencer->FindBoundObjects(Possessable.GetGuid(), Sequencer->GetFocusedTemplateID()))
+			{
+				if (UObject* Object = WeakObject.Get())
+				{
+					FSubobjectEditorTreeNodePtrType TreeNode = BlueprintEditor->GetSubobjectEditor()->FindSlateNodeForObject(Object);
+
+					if (TreeNode.IsValid())
+					{
+						const FSubobjectData* Data = TreeNode->GetDataSource();
+				
+						const USceneComponent* Instance = Cast<USceneComponent>(Data->FindComponentInstanceInActor(PreviewActor));
+						USceneComponent* Template = const_cast<USceneComponent*>(Cast<USceneComponent>(Data->GetObject()));
+
+						if (Instance && Template)
+						{
+							Template->SetRelativeLocation_Direct(Instance->GetRelativeLocation());
+							Template->SetRelativeRotation_Direct(Instance->GetRelativeRotation());
+							Template->SetRelativeScale3D_Direct(Instance->GetRelativeScale3D());
+							bNeedsUpdate = true;
+						}
+					}
+				}
+			}
+		}
+
+		if (bNeedsUpdate)
+		{
+			BlueprintEditor->UpdateSubobjectPreview(true);
+		}
+	}
+
+	void OnSelectionChanged(TArray<FGuid> GuidsChanged)
+	{
+		Refresh();
+	}
+
+	void OnGlobalTimeChanged()
+	{
+		Refresh();
 	}
 
 	void OnSequencerReceivedFocus()
@@ -410,7 +497,7 @@ public:
 		}
 	}
 
-	void OnObjectPreSave(UObject* InObject)
+	void OnObjectPreSave(UObject* InObject, FObjectPreSaveContext SaveContext)
 	{
 		TSharedPtr<FBlueprintEditor> BlueprintEditor = WeakBlueprintEditor.Pin();
 		if (Sequencer.IsValid() && BlueprintEditor.IsValid() && InObject && InObject == BlueprintEditor->GetBlueprintObj())
@@ -546,6 +633,9 @@ private:
 	FDelegateHandle OnObjectSavedHandle;
 
 	FDelegateHandle OnSequenceChangedHandle;
+
+	FDelegateHandle OnSelectionChangedHandle;
+	FDelegateHandle OnGlobalTimeChangedHandle;
 };
 
 void SActorSequenceEditorWidget::Construct(const FArguments&, TWeakPtr<FBlueprintEditor> InBlueprintEditor)

@@ -6,10 +6,9 @@
 #include "FractureEditorCommands.h"
 #include "FractureToolContext.h"
 
-#include "AutoClusterFracture.h"
-
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
+#include "GeometryCollection/GeometryCollectionProximityUtility.h"
 #include "GeometryCollection/GeometryCollectionAlgo.h"
 #include "Math/NumericLimits.h"
 
@@ -17,7 +16,7 @@
 
 
 UFractureToolAutoCluster::UFractureToolAutoCluster(const FObjectInitializer& ObjInit)
-	: Super(ObjInit)
+  : Super(ObjInit) 
 {
 	AutoClusterSettings = NewObject<UFractureAutoClusterSettings>(GetTransientPackage(), UFractureAutoClusterSettings::StaticClass());
 	AutoClusterSettings->OwnerTool = this;
@@ -27,18 +26,18 @@ UFractureToolAutoCluster::UFractureToolAutoCluster(const FObjectInitializer& Obj
 // UFractureTool Interface
 FText UFractureToolAutoCluster::GetDisplayText() const
 {
-	return FText(NSLOCTEXT("FractureAutoCluster", "FractureToolAutoCluster", "Auto"));
+	return FText(NSLOCTEXT("FractureAutoCluster", "FractureToolAutoCluster", "Auto")); 
 }
 
 
 FText UFractureToolAutoCluster::GetTooltipText() const
 {
-	return FText(NSLOCTEXT("FractureAutoCluster", "FractureToolAutoClusterToolTip", "Automatically group together pieces of a fractured mesh (based on your settings) and assign them within the Geometry Collection."));
+	return FText(NSLOCTEXT("FractureAutoCluster", "FractureToolAutoClusterToolTip", "Automatically group together pieces of a fractured mesh (based on your settings) and assign them within the Geometry Collection.")); 
 }
 
-FText UFractureToolAutoCluster::GetApplyText() const
-{
-	return FText(NSLOCTEXT("FractureAutoCluster", "ExecuteAutoCluster", "Auto Cluster"));
+FText UFractureToolAutoCluster::GetApplyText() const 
+{ 
+	return FText(NSLOCTEXT("FractureAutoCluster", "ExecuteAutoCluster", "Auto Cluster")); 
 }
 
 FSlateIcon UFractureToolAutoCluster::GetToolIcon() const
@@ -47,16 +46,16 @@ FSlateIcon UFractureToolAutoCluster::GetToolIcon() const
 }
 
 
-TArray<UObject*> UFractureToolAutoCluster::GetSettingsObjects() const
+TArray<UObject*> UFractureToolAutoCluster::GetSettingsObjects() const 
 {
-	TArray<UObject*> AllSettings;
+	TArray<UObject*> AllSettings; 
 	AllSettings.Add(AutoClusterSettings);
 	return AllSettings;
 }
 
-void UFractureToolAutoCluster::RegisterUICommand(FFractureEditorCommands* BindingContext)
+void UFractureToolAutoCluster::RegisterUICommand( FFractureEditorCommands* BindingContext )
 {
-	UI_COMMAND_EXT(BindingContext, UICommandInfo, "AutoCluster", "Auto", "Auto Cluster", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND_EXT( BindingContext, UICommandInfo, "AutoCluster", "Auto", "Automatically group pieces of a fractured mesh into a specified number of clusters.", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	BindingContext->AutoCluster = UICommandInfo;
 }
 
@@ -67,55 +66,65 @@ void UFractureToolAutoCluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InTo
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
 		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
-
+		
 		for (FFractureToolContext& Context : Contexts)
 		{
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+
 			Context.ConvertSelectionToClusterNodes();
 			FGeometryCollection* GeometryCollection = Context.GetGeometryCollection().Get();
 
 			int32 StartTransformCount = GeometryCollection->Transform.Num();
 
-			if (AutoClusterSettings->AutoClusterMode < EFractureAutoClusterMode::Voronoi)
+			for (const int32 ClusterIndex : Context.GetSelection())
 			{
-				UAutoClusterFractureCommand::ClusterChildBonesOfASingleMesh(Context.GetGeometryCollectionComponent(), AutoClusterSettings->AutoClusterMode, AutoClusterSettings->SiteCount);
-			}
-			else
-			{
-				for (const int32 ClusterIndex : Context.GetSelection())
+				FVoronoiPartitioner VoronoiPartition(GeometryCollection, ClusterIndex);
+				VoronoiPartition.KMeansPartition(AutoClusterSettings->SiteCount);
+				if (VoronoiPartition.GetPartitionCount() == 0)
 				{
-					FVoronoiPartitioner VoronoiPartition(GeometryCollection, ClusterIndex);
-					VoronoiPartition.KMeansPartition(AutoClusterSettings->SiteCount);
-
-					if (AutoClusterSettings->bEnforceConnectivity)
-					{
-						GenerateProximityIfNecessary(GeometryCollection);
-						VoronoiPartition.SplitDisconnectedPartitions(GeometryCollection);
-					}
-
-					int32 PartitionCount = VoronoiPartition.GetPartitionCount();
-					int32 NewClusterIndexStart = GeometryCollection->AddElements(PartitionCount, FGeometryCollection::TransformGroup);
-
-					for (int32 Index = 0; Index < PartitionCount; ++Index)
-					{
-
-						TArray<int32> NewCluster = VoronoiPartition.GetPartition(Index);
-
-						int32 NewClusterIndex = NewClusterIndexStart + Index;
-						GeometryCollection->Parent[NewClusterIndex] = ClusterIndex;
-						GeometryCollection->Children[ClusterIndex].Add(NewClusterIndex);
-						GeometryCollection->BoneName[NewClusterIndex] = "ClusterBone";
-						GeometryCollection->Children[NewClusterIndex] = TSet<int32>(NewCluster);
-						GeometryCollection->SimulationType[NewClusterIndex] = FGeometryCollection::ESimulationTypes::FST_Clustered;
-						GeometryCollection->Transform[NewClusterIndex] = FTransform::Identity;
-						GeometryCollectionAlgo::ParentTransforms(GeometryCollection, NewClusterIndex, NewCluster);
-					}
-					FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(GeometryCollection, ClusterIndex);
-					FGeometryCollectionClusteringUtility::RecursivelyUpdateChildBoneNames(ClusterIndex, GeometryCollection->Children, GeometryCollection->BoneName);
-					FGeometryCollectionClusteringUtility::ValidateResults(GeometryCollection);
+					continue;
 				}
+
+				if (AutoClusterSettings->bEnforceConnectivity)
+				{
+					FGeometryCollectionProximityUtility ProximityUtility(GeometryCollection);
+					ProximityUtility.UpdateProximity();
+					VoronoiPartition.SplitDisconnectedPartitions(GeometryCollection);
+				}
+					
+				int32 PartitionCount = VoronoiPartition.GetPartitionCount();
+				int32 NewClusterIndexStart = GeometryCollection->AddElements(PartitionCount, FGeometryCollection::TransformGroup);
+
+				bool bHasEmptyClusters = false;
+
+				for (int32 Index = 0; Index < PartitionCount; ++Index)
+				{
+						
+					TArray<int32> NewCluster = VoronoiPartition.GetPartition(Index);
+					if (NewCluster.Num() == 0)
+					{
+						bHasEmptyClusters = true;
+					}
+
+					int32 NewClusterIndex = NewClusterIndexStart + Index;
+					GeometryCollection->Parent[NewClusterIndex] = ClusterIndex;
+					GeometryCollection->Children[ClusterIndex].Add(NewClusterIndex);
+					GeometryCollection->BoneName[NewClusterIndex] = "ClusterBone";
+					GeometryCollection->Children[NewClusterIndex] = TSet<int32>(NewCluster);
+					GeometryCollection->SimulationType[NewClusterIndex] = FGeometryCollection::ESimulationTypes::FST_Clustered;
+					GeometryCollection->Transform[NewClusterIndex] = FTransform::Identity;
+					GeometryCollectionAlgo::ParentTransforms(GeometryCollection, NewClusterIndex, NewCluster);
+				}
+				if (bHasEmptyClusters)
+				{
+					FGeometryCollectionClusteringUtility::RemoveDanglingClusters(GeometryCollection);
+				}
+				FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(GeometryCollection, ClusterIndex);
+				FGeometryCollectionClusteringUtility::RecursivelyUpdateChildBoneNames(ClusterIndex, GeometryCollection->Children, GeometryCollection->BoneName);
+				FGeometryCollectionClusteringUtility::ValidateResults(GeometryCollection);
 			}
 
-			//Context.GenerateGuids(StartTransformCount);
+			Context.GenerateGuids(StartTransformCount);
 
 			Refresh(Context, Toolkit);
 		}
@@ -152,7 +161,7 @@ void FVoronoiPartitioner::SplitDisconnectedPartitions(FGeometryCollection* Geome
 {
 	Visited.Init(false, TransformIndices.Num());
 	GenerateConnectivity(GeometryCollection);
-
+	
 	for (int32 PartitionIndex = 0; PartitionIndex < PartitionCount; ++PartitionIndex)
 	{
 		int32 FirstElementInPartitionIndex = Partitions.Find(PartitionIndex);
@@ -210,7 +219,7 @@ TArray<int32> FVoronoiPartitioner::GetPartition(int32 PartitionIndex) const
 
 void FVoronoiPartitioner::GenerateConnectivity(const FGeometryCollection* GeometryCollection)
 {
-
+	
 	Connectivity.SetNum(TransformIndices.Num());
 
 	const TManagedArray<int32>& Levels = GeometryCollection->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
@@ -275,17 +284,17 @@ FBox FVoronoiPartitioner::GenerateBounds(const FGeometryCollection* GeometryColl
 		const TManagedArray<FTransform>& Transforms = GeometryCollection->Transform;
 		const TManagedArray<int32>& Parents = GeometryCollection->Parent;
 		FTransform GlobalTransform = GeometryCollectionAlgo::GlobalMatrix(Transforms, Parents, TransformIndex);
-
+		
 		int32 GeometryIndex = GeometryCollection->TransformToGeometryIndex[TransformIndex];
 		int32 VertexStart = GeometryCollection->VertexStart[GeometryIndex];
 		int32 VertexCount = GeometryCollection->VertexCount[GeometryIndex];
-		const TManagedArray<FVector>& GCVertices = GeometryCollection->Vertex;
+		const TManagedArray<FVector3f>& GCVertices = GeometryCollection->Vertex;
 
 		TArray<FVector> Vertices;
 		Vertices.SetNum(VertexCount);
 		for (int32 VertexOffset = 0; VertexOffset < VertexCount; ++VertexOffset)
 		{
-			Vertices[VertexOffset] = GlobalTransform.TransformPosition(GCVertices[VertexStart + VertexOffset]);
+			Vertices[VertexOffset] = GlobalTransform.TransformPosition((FVector)GCVertices[VertexStart + VertexOffset]);
 		}
 
 		return FBox(Vertices);
@@ -318,7 +327,7 @@ void FVoronoiPartitioner::InitializePartitions()
 
 	// Set initial partition centers as selects from the vertex set
 	PartitionCenters.SetNum(PartitionCount);
-	int32 TransformStride = FMath::Max(1, FMath::FloorToInt(float(TransformIndices.Num()) / float(PartitionCount)));
+	int32 TransformStride = FMath::Max(1,FMath::FloorToInt(float(TransformIndices.Num()) / float(PartitionCount)));
 	for (int32 PartitionIndex = 0; PartitionIndex < PartitionCount; ++PartitionIndex)
 	{
 		PartitionCenters[PartitionIndex] = Centroids[TransformStride * PartitionIndex];
@@ -327,7 +336,11 @@ void FVoronoiPartitioner::InitializePartitions()
 	// At beginning, all nodes belong to first partition.
 	Partitions.Init(0, TransformIndices.Num());
 	PartitionSize.Init(0, PartitionCount);
-	PartitionSize[0] = TransformIndices.Num();
+
+	if (PartitionCount > 0)
+	{
+		PartitionSize[0] = TransformIndices.Num();
+	}
 }
 
 bool FVoronoiPartitioner::Refine()
@@ -354,7 +367,10 @@ bool FVoronoiPartitioner::Refine()
 	// Recalculate partition centers
 	for (int32 PartitionIndex = 0; PartitionIndex < PartitionCount; ++PartitionIndex)
 	{
-		PartitionCenters[PartitionIndex] = FVector(0.0f, 0.0f, 0.0f);
+		if (PartitionSize[PartitionIndex] > 0)
+		{
+			PartitionCenters[PartitionIndex] = FVector(0.0f, 0.0f, 0.0f);
+		}
 	}
 
 	for (int32 Index = 0; Index < Partitions.Num(); ++Index)
@@ -364,8 +380,10 @@ bool FVoronoiPartitioner::Refine()
 
 	for (int32 PartitionIndex = 0; PartitionIndex < PartitionCount; ++PartitionIndex)
 	{
-		check(PartitionSize[PartitionIndex] > 0);
-		PartitionCenters[PartitionIndex] /= float(PartitionSize[PartitionIndex]);
+		if (PartitionSize[PartitionIndex] > 0)
+		{
+			PartitionCenters[PartitionIndex] /= float(PartitionSize[PartitionIndex]);
+		}
 	}
 
 	return true;
@@ -389,6 +407,6 @@ int32 FVoronoiPartitioner::FindClosestPartitionCenter(const FVector& Location) c
 	check(ClosestPartition > INDEX_NONE);
 	return ClosestPartition;
 }
-
+	
 #undef LOCTEXT_NAMESPACE
 

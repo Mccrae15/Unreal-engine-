@@ -84,13 +84,14 @@ namespace GeometryCollectionTest
 		ECollisionTypeEnum CollisionType = ECollisionTypeEnum::Chaos_Surface_Volumetric;
 		ESimplicialType SimplicialType = ESimplicialType::Chaos_Simplicial_Sphere;
 		EImplicitTypeEnum ImplicitType = EImplicitTypeEnum::Chaos_Implicit_Sphere;
+		float CollisionParticleFraction = 1.0f;
 		EInitialVelocityTypeEnum InitialVelocityType = EInitialVelocityTypeEnum::Chaos_Initial_Velocity_None;
 		TArray<FTransform> NestedTransforms;
 		bool EnableClustering = true;
 		FTransform GeomTransform = FTransform::Identity;
 		TSharedPtr<FGeometryCollection> RestCollection = nullptr;
 		int32 MaxClusterLevel = 100;
-		TArray<FReal> DamageThreshold = { 1000.0 };
+		TArray<float> DamageThreshold = { 1000.0 };
 		Chaos::FClusterCreationParameters::EConnectionMethod ClusterConnectionMethod = Chaos::FClusterCreationParameters::EConnectionMethod::PointImplicit;
 		bool RemoveOnFractureEnabled = false;
 		int32 CollisionGroup = 0;

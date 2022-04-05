@@ -2,16 +2,28 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
+#include "Containers/Array.h"
+#include "Containers/Map.h"
+#include "Containers/Set.h"
+#include "Containers/UnrealString.h"
+#include "Delegates/Delegate.h"
+#include "HAL/Platform.h"
+#include "HAL/PlatformMisc.h"
 #include "Interfaces/ITargetDevice.h"
+#include "Internationalization/Text.h"
+#include "Templates/SharedPointer.h"
+#include "UObject/NameTypes.h"
+
+class FConfigCacheIni;
+class IDeviceManagerCustomPlatformWidgetCreator;
+class IPlugin;
+struct FDataDrivenPlatformInfo;
 
 namespace PlatformInfo
 {
 	// Forward declare type from DesktopPlatform rather than add an include dependency to everything using ITargetPlatform
-	struct FPlatformInfo;
+	struct FTargetPlatformInfo;
 }
-
-class IDeviceManagerCustomPlatformWidgetCreator;
 
 /**
  * Enumerates features that may be supported by target platforms.
@@ -45,9 +57,6 @@ enum class ETargetPlatformFeatures
 	/** Connect and disconnect devices through the SDK. */
 	SdkConnectDisconnect,
 
-	/** GPU tesselation. */
-	Tessellation,
-
 	/** Texture streaming. */
 	TextureStreaming,
 
@@ -68,9 +77,6 @@ enum class ETargetPlatformFeatures
 
 	/* Should split paks into smaller sized paks */
 	ShouldSplitPaksIntoSmallerSizes,
-
-	/* The platform uses software rasterization of the scene for primitive occlusion */
-	SoftwareOcclusion,
 
 	/* The platform supports half float vertex format */
 	HalfFloatVertexFormat,
@@ -93,6 +99,12 @@ enum class ETargetPlatformFeatures
 	/* Can we use the virtual texture streaming system on this platform. */
 	VirtualTextureStreaming,
 
+	/** Lumen Global Illumination. */
+	LumenGI,
+
+	/** The platform supports hardware LZ decompression */
+	HardwareLZDecompression,
+
 	/* The platform makes use of extra cook-time file region metadata in its packaging process. */
 	CookFileRegionMetadata,
 };
@@ -102,6 +114,13 @@ enum class EPlatformAuthentication
 	Never,
 	Possible,
 	Always,
+};
+
+enum class EOfflineBVHMode
+{
+	Disabled,
+	MaximizePerformance,
+	MinimizeMemory,
 };
 
 /**
@@ -211,9 +230,19 @@ public:
 	virtual bool RequiresTempTarget(bool bProjectHasCode, EBuildConfiguration Configuration, bool bRequiresAssetNativization, FText& OutReason) const = 0;
 
 	/**
-	 * Returns the information about this platform
+	 * Returns the information about this target platform
 	 */
-	virtual const PlatformInfo::FPlatformInfo& GetPlatformInfo() const = 0;
+	virtual const PlatformInfo::FTargetPlatformInfo& GetTargetPlatformInfo() const = 0;
+
+	/**
+	 * Returns the information about the platform as a whole
+	 */
+	virtual const FDataDrivenPlatformInfo& GetPlatformInfo() const = 0;
+
+	/**
+	 * Returns the config system object usable by this TargetPlatform. It should not be modified in anyway
+	 */
+	virtual FConfigCacheIni* GetConfigSystem() const = 0;
 
 	/**
 	 * Gets the platform's INI name (so an offline tool can load the INI for the given target platform).
@@ -221,6 +250,11 @@ public:
 	 * @see PlatformName
 	 */
 	virtual FString IniPlatformName() const = 0;
+
+	/**
+	 * Gets the name of the device profile to use when cooking this TargetPlatform
+	 */
+	virtual FString CookingDeviceProfileName() const = 0;
 
 	/**
 	 * Enables/Disable the device check
@@ -282,6 +316,15 @@ public:
 	virtual bool HasEditorOnlyData() const = 0;
 
 	/**
+	 * Checks whether this platform will allow editor objects to be cooked, as opposed to editoronly properties. This will allow a
+	 * target platform to cook editoronly objects, but as if they were being cooked for a client. This is useful for a cooked editor
+	 * scenario, where every pacakge is cooked, editor and game alike.
+	 *
+	 * @return true if this platform allows editor objects to be cooked, false otherwise.
+	 */
+	virtual bool AllowsEditorObjects() const = 0;
+
+	/**
 	 * Checks whether this platform is only a client (and must connect to a server to run).
 	 *
 	 * @return true if this platform must connect to a server.
@@ -311,6 +354,11 @@ public:
 	 * @return true if this platform has no graphics or audio, etc, false otherwise.
 	 */
 	virtual bool IsServerOnly() const = 0;
+
+	/**
+	 * Checks whether this platform is enabled for the given plugin in the currently active project.
+	 */
+	virtual bool IsEnabledForPlugin(const IPlugin& Plugin) const = 0;
 
 	/**
 	* Checks whether this platform supports shader compilation over XGE interface.
@@ -371,6 +419,14 @@ public:
 	virtual bool SupportsBuildTarget( EBuildTargetType TargetType ) const = 0;
 
 	/**
+	 * Return the TargetType this platform uses at runtime.
+	 * Some TargetPlatforms like CookedEditors need to cook with one type, like Client, but then will run as an Editor.
+	 * Decisions made based solely on the cook type may cause data mismatches if the runtime type is different.
+	 * This is also useful for knowing what plugins will be enabled at runtime.
+	 */
+	virtual EBuildTargetType GetRuntimePlatformType() const = 0;
+
+	/**
 	 * Checks whether the target platform supports the specified feature.
 	 *
 	 * @param Feature The feature to check.
@@ -418,6 +474,11 @@ public:
 	virtual bool UsesRayTracing() const = 0;
 
 	/**
+	* Gets static mesh offline BVH mode
+	*/
+	virtual EOfflineBVHMode GetStaticMeshOfflineBVHMode() const = 0;
+
+	/**
 	* Gets whether the platform will use SH2 instead of SH3 for sky irradiance.
 	*/
 	virtual bool ForcesSimpleSkyDiffuse() const = 0;
@@ -445,6 +506,20 @@ public:
 	 */
 	virtual bool UsesMobileAmbientOcclusion() const = 0;
 
+	/**
+	* Gets the shader formats this platform can use.
+	*
+	* @param OutFormats Will contain the shader formats.
+	*/
+	virtual void GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const = 0;
+
+	/**
+	* Gets the shader formats that have been selected for this target platform
+	*
+	* @param OutFormats Will contain the shader formats.
+	*/
+	virtual void GetAllTargetedShaderFormats(TArray<FName>& OutFormats) const = 0;
+
 #if WITH_ENGINE
 	/**
 	 * Gets the format to use for a particular body setup.
@@ -461,18 +536,11 @@ public:
 	virtual void GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const = 0;
 
 	/**
-	 * Gets the shader formats this platform can use.
-	 *
-	 * @param OutFormats Will contain the shader formats.
+	 * Gets a list of modules that may contain the GetAllTargetedShaderFormats. This is optional -
+	 * if any required shader format isn't found in this list, then it will use the old path
+	 * of loading all shader format modules to gather all available shader formats
 	 */
-	virtual void GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const = 0;
-
-	/**
-	* Gets the shader formats that have been selected for this target platform
-	*
-	* @param OutFormats Will contain the shader formats.
-	*/
-	virtual void GetAllTargetedShaderFormats(TArray<FName>& OutFormats) const = 0;
+	virtual void GetShaderFormatModuleHints(TArray<FName>& OutModuleNames) const = 0;
 
 	/**
 	 * Gets the format to use for a particular texture.
@@ -489,6 +557,13 @@ public:
 	 * @param OutFormats will contain all the texture formats which are possible for this platform
 	 */
 	virtual void GetAllTextureFormats( TArray<FName>& OutFormats ) const = 0;
+
+	/**
+	 * Gets a list of modules that may contain the GetAllTextureFormats. This is optional -
+	 * if any required texture format isn't found in this list, then it will use the old path
+	 * of loading all texture format modules to gather all available texture formats
+	 */
+	virtual void GetTextureFormatModuleHints(TArray<FName>& OutModuleNames) const = 0;
 
 	/**
 	 * Platforms that support multiple texture compression variants 
@@ -514,7 +589,10 @@ public:
 		int32 SourceFormat,
 		bool bAllowCompression, bool bNoAlpha,
 		bool bSupportDX11TextureFormats, int32 TextureCompressionSettings) const = 0;
-
+	
+	//whether R5G6B5 and B5G5R5A1 is supported
+	virtual bool SupportsLQCompressionTextureFormat() const = 0;
+	
 	/**
 	 * Gets the format to use for a particular piece of audio.
 	 *
@@ -529,6 +607,27 @@ public:
 	* @param output array of all the formats
 	*/
 	virtual void GetAllWaveFormats( TArray<FName>& OutFormats ) const = 0;
+
+	/**
+	 * Gets a list of modules that may contain the GetAllWaveFormats. This is optional -
+	 * if any required audio format isn't found in this list, then it will use the old path
+	 * of loading all audio format modules to gather all available audio formats
+	 */
+	virtual void GetWaveFormatModuleHints(TArray<FName>& OutModuleNames) const = 0;
+
+	/**
+	 * Checks whether if this platform wants AV data (defaults to !IsServerOnly(), which is the standard reason why we don't want AV data)
+	 * Used so that custom target platforms can remove AV data, but is not a server-only platform
+	 *
+	 * @return true if this platform allows AV data to be cooked, false otherwise.
+	 */
+	virtual bool AllowAudioVisualData() const = 0;
+
+	/**
+	 * Checks if this Target will want to load this object (generally used to mark an object to not be cooked for this target,
+	 * as called by ConditionallyExcludeObjectForTarget)
+	 */
+	virtual bool AllowObject(const class UObject* Object) const = 0;
 
 	/**
 	 * Gets the texture LOD settings used by this platform.
@@ -570,22 +669,6 @@ public:
 	 * Returns true if the platform is part of a family of variants
 	 */
 	virtual bool SupportsVariants() const = 0;
-
-	/**
-	 * Gets the variant display name of this platform.
-	 * eg. For Android: "ASTC", "ETC2", ...
-	 *
-	 * @return FText display name for this platform variant.
-	 */
-	virtual FText GetVariantDisplayName() const = 0;
-
-	/**
-	 * Gets the variant title of this platform family
-	 * eg. For Android: "Texture Format"
-	 *
-	 * @return FText title for what variants mean to this family of platforms.
-	 */
-	virtual FText GetVariantTitle() const = 0;
 
 	/**
 	 * Gets the variant priority of this platform
@@ -640,19 +723,29 @@ public:
 	 */
 	virtual bool CopyFileToTarget(const FString& DeviceId, const FString& HostFilename, const FString& TargetFilename, const TMap<FString,FString>& CustomPlatformData) = 0;
 
+	/**
+	 * Gets a list of package names to cook when cooking this platform
+	 */
+	virtual void GetExtraPackagesToCook(TArray<FName>& PackageNames) const = 0;
+
+	/**
+	 * Initializes the host platform to support target devices (may be called multiple times after an SDK is installed while running)
+	 */
+	virtual bool InitializeHostPlatform() = 0;
+
 public:
 
 	/**
 	 * Gets an event delegate that is executed when a new target device has been discovered.
 	 */
 	DECLARE_EVENT_OneParam(ITargetPlatform, FOnTargetDeviceDiscovered, ITargetDeviceRef /*DiscoveredDevice*/);
-	virtual FOnTargetDeviceDiscovered& OnDeviceDiscovered() = 0;
+	static TARGETPLATFORM_API FOnTargetDeviceDiscovered& OnDeviceDiscovered();
 
 	/**
 	 * Gets an event delegate that is executed when a target device has been lost, i.e. disconnected or timed out.
 	 */
 	DECLARE_EVENT_OneParam(ITargetPlatform, FOnTargetDeviceLost, ITargetDeviceRef /*LostDevice*/);
-	virtual FOnTargetDeviceLost& OnDeviceLost() = 0;
+	static TARGETPLATFORM_API FOnTargetDeviceLost& OnDeviceLost();
 
 public:
 

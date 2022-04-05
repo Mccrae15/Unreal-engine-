@@ -17,7 +17,7 @@
 #include "ClearQuad.h"
 #include "PostProcess/PostProcessing.h"
 #include "PostProcess/SceneFilterRendering.h"
-#include "Raytracing/RaytracingOptions.h"
+#include "RayTracing/RaytracingOptions.h"
 #include "BlueNoise.h"
 #include "SceneTextureParameters.h"
 #include "RayTracingDefinitions.h"
@@ -33,7 +33,7 @@ static TAutoConsoleVariable<int32> CVarRayTracingGlobalIllumination(
 	TEXT(" 0: ray tracing global illumination off \n")
 	TEXT(" 1: ray tracing global illumination enabled (brute force) \n")
 	TEXT(" 2: ray tracing global illumination enabled (final gather)"),
-	ECVF_RenderThreadSafe
+	ECVF_RenderThreadSafe | ECVF_Scalability
 );
 
 static int32 GRayTracingGlobalIlluminationSamplesPerPixel = -1;
@@ -265,7 +265,7 @@ static void SetupLightParameters(
 	{
 		FPathTracingLight& DestLight = Lights[LightCount];
 
-		DestLight.Color = FVector(1.0f, 1.0f, 1.0f);
+		DestLight.Color = FVector3f::OneVector;
 		DestLight.Flags = SkyLight->bTransmission ? PATHTRACER_FLAG_TRANSMISSION_MASK : 0;
 		// SkyLight does not have a LightingChannelMask
 		DestLight.Flags |= PATHTRACER_FLAG_LIGHTING_CHANNEL_MASK;
@@ -285,7 +285,7 @@ static void SetupLightParameters(
 
 		FPathTracingLight& DestLight = Lights[LightCount]; // don't increment LightCount yet -- we might still skip this light
 
-		FLightShaderParameters LightShaderParameters;
+		FLightRenderParameters LightShaderParameters;
 		Light.LightSceneInfo->Proxy->GetLightShaderParameters(LightShaderParameters);
 
 		uint32 Transmission = Light.LightSceneInfo->Proxy->Transmission();
@@ -306,7 +306,7 @@ static void SetupLightParameters(
 			if (CVarRayTracingGlobalIlluminationDirectionalLight.GetValueOnRenderThread() == 0) continue;
 
 			DestLight.Normal = LightShaderParameters.Direction;
-			DestLight.Color = LightShaderParameters.Color;
+			DestLight.Color = FVector3f(LightShaderParameters.Color);
 			DestLight.Flags |= PATHTRACING_LIGHT_DIRECTIONAL;
 			break;
 		}
@@ -314,13 +314,13 @@ static void SetupLightParameters(
 		{
 			if (CVarRayTracingGlobalIlluminationRectLight.GetValueOnRenderThread() == 0) continue;
 
-			DestLight.Position = LightShaderParameters.Position;
+			DestLight.TranslatedWorldPosition = FVector3f(LightShaderParameters.WorldPosition + View.ViewMatrices.GetPreViewTranslation());
 			DestLight.Normal = -LightShaderParameters.Direction;
-			DestLight.dPdu = FVector::CrossProduct(LightShaderParameters.Direction, LightShaderParameters.Tangent);
+			DestLight.dPdu = FVector3f::CrossProduct(LightShaderParameters.Direction, LightShaderParameters.Tangent);
 			DestLight.dPdv = LightShaderParameters.Tangent;
-			DestLight.Color = LightShaderParameters.Color;
-			DestLight.Dimensions = FVector(2.0f * LightShaderParameters.SourceRadius, 2.0f * LightShaderParameters.SourceLength, 0.0f);
-			DestLight.Shaping = FVector2D(LightShaderParameters.RectLightBarnCosAngle, LightShaderParameters.RectLightBarnLength);
+			DestLight.Color = FVector3f(LightShaderParameters.Color);
+			DestLight.Dimensions = FVector3f(2.0f * LightShaderParameters.SourceRadius, 2.0f * LightShaderParameters.SourceLength, 0.0f);
+			DestLight.Shaping = FVector2f(LightShaderParameters.RectLightBarnCosAngle, LightShaderParameters.RectLightBarnLength);
 			DestLight.Flags |= PATHTRACING_LIGHT_RECT;
 			break;
 		}
@@ -329,11 +329,11 @@ static void SetupLightParameters(
 		{
 			if (CVarRayTracingGlobalIlluminationPointLight.GetValueOnRenderThread() == 0) continue;
 
-			DestLight.Position = LightShaderParameters.Position;
+			DestLight.TranslatedWorldPosition = FVector3f(LightShaderParameters.WorldPosition + View.ViewMatrices.GetPreViewTranslation());
 			// #dxr_todo: UE-72556 define these differences from Lit..
-			DestLight.Color = LightShaderParameters.Color;
+			DestLight.Color = FVector3f(LightShaderParameters.Color);
 			float SourceRadius = 0.0; // LightShaderParameters.SourceRadius causes too much noise for little pay off at this time
-			DestLight.Dimensions = FVector(SourceRadius, 0.0, 0.0);
+			DestLight.Dimensions = FVector3f(SourceRadius, 0.0, 0.0);
 			DestLight.Flags |= PATHTRACING_LIGHT_POINT;
 			break;
 		}
@@ -341,12 +341,12 @@ static void SetupLightParameters(
 		{
 			if (CVarRayTracingGlobalIlluminationSpotLight.GetValueOnRenderThread() == 0) continue;
 
-			DestLight.Position = LightShaderParameters.Position;
+			DestLight.TranslatedWorldPosition = FVector3f(LightShaderParameters.WorldPosition + View.ViewMatrices.GetPreViewTranslation());
 			DestLight.Normal = -LightShaderParameters.Direction;
 			// #dxr_todo: UE-72556 define these differences from Lit..
-			DestLight.Color = LightShaderParameters.Color;
+			DestLight.Color = FVector3f(LightShaderParameters.Color);
 			float SourceRadius = 0.0; // LightShaderParameters.SourceRadius causes too much noise for little pay off at this time
-			DestLight.Dimensions = FVector(SourceRadius, 0.0, 0.0);
+			DestLight.Dimensions = FVector3f(SourceRadius, 0.0, 0.0);
 			DestLight.Shaping = LightShaderParameters.SpotAngles;
 			DestLight.Flags |= PATHTRACING_LIGHT_SPOT;
 			break;
@@ -380,13 +380,22 @@ bool ShouldRenderRayTracingGlobalIllumination(const FViewInfo& View)
 		return false;
 	}
 
-	const int32 CVarRayTracingGlobalIlluminationValue = CVarRayTracingGlobalIllumination.GetValueOnRenderThread();
+	if (View.FinalPostProcessSettings.DynamicGlobalIlluminationMethod != EDynamicGlobalIlluminationMethod::RayTraced)
+	{
+		return false;
+	}
 
+	if (!View.ViewState)
+	{
+		return false;
+	}
+
+    const int32 CVarRayTracingGlobalIlluminationValue = CVarRayTracingGlobalIllumination.GetValueOnRenderThread();
 	const bool bEnabled = CVarRayTracingGlobalIlluminationValue >= 0
 		? CVarRayTracingGlobalIlluminationValue > 0
 		: View.FinalPostProcessSettings.RayTracingGIType > ERayTracingGlobalIlluminationType::Disabled;
 
-	return ShouldRenderRayTracingEffect(bEnabled);
+	return ShouldRenderRayTracingEffect(bEnabled, ERayTracingPipelineCompatibilityFlags::FullPipeline, &View);
 }
 
 bool IsFinalGatherEnabled(const FViewInfo& View)
@@ -446,8 +455,6 @@ class FGlobalIlluminationRGS : public FGlobalShader
 		SHADER_PARAMETER(uint32, SceneLightCount)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FPathTracingSkylight, SkylightParameters)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SSProfilesTexture)
-		SHADER_PARAMETER_SAMPLER(SamplerState, TransmissionProfilesLinearSampler)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -514,8 +521,6 @@ class FRayTracingGlobalIlluminationCreateGatherPointsRGS : public FGlobalShader
 
 		// Shading data
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SSProfilesTexture)
-		SHADER_PARAMETER_SAMPLER(SamplerState, TransmissionProfilesLinearSampler)
 
 		SHADER_PARAMETER(FIntPoint, GatherPointsResolution)
 		SHADER_PARAMETER(FIntPoint, TileAlignedResolution)
@@ -524,7 +529,7 @@ class FRayTracingGlobalIlluminationCreateGatherPointsRGS : public FGlobalShader
 		// Output
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<GatherPoints>, RWGatherPointsBuffer)
 		// Optional indirection buffer used for sorted materials
-		SHADER_PARAMETER_RDG_BUFFER_UAV(StructuredBuffer<FDeferredMaterialPayload>, MaterialBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FDeferredMaterialPayload>, MaterialBuffer)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -533,7 +538,7 @@ IMPLEMENT_GLOBAL_SHADER(FRayTracingGlobalIlluminationCreateGatherPointsRGS, "/En
 // Auxillary gather point data for reprojection
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FGatherPointData, )
 	SHADER_PARAMETER(uint32, Count)
-	SHADER_PARAMETER_ARRAY(FMatrix, ViewMatrices, [MAXIMUM_GATHER_POINTS_PER_PIXEL])
+	SHADER_PARAMETER_ARRAY(FMatrix44f, ViewMatrices, [MAXIMUM_GATHER_POINTS_PER_PIXEL])
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FGatherPointData, "GatherPointData");
 
@@ -581,8 +586,6 @@ class FRayTracingGlobalIlluminationCreateGatherPointsTraceRGS : public FGlobalSh
 
 		// Shading data
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SSProfilesTexture)
-		SHADER_PARAMETER_SAMPLER(SamplerState, TransmissionProfilesLinearSampler)
 
 		SHADER_PARAMETER(FIntPoint, GatherPointsResolution)
 		SHADER_PARAMETER(FIntPoint, TileAlignedResolution)
@@ -591,7 +594,7 @@ class FRayTracingGlobalIlluminationCreateGatherPointsTraceRGS : public FGlobalSh
 		// Output
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<GatherPoints>, RWGatherPointsBuffer)
 		// Optional indirection buffer used for sorted materials
-		SHADER_PARAMETER_RDG_BUFFER_UAV(StructuredBuffer<FDeferredMaterialPayload>, MaterialBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FDeferredMaterialPayload>, MaterialBuffer)
 		END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -636,8 +639,6 @@ class FRayTracingGlobalIlluminationFinalGatherRGS : public FGlobalShader
 
 		// Shading data
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SSProfilesTexture)
-		SHADER_PARAMETER_SAMPLER(SamplerState, TransmissionProfilesLinearSampler)
 
 		// Gather points
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<GatherPoints>, GatherPointsBuffer)
@@ -714,6 +715,11 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingGlobalIllumination(const FV
 
 void FDeferredShadingSceneRenderer::PrepareRayTracingGlobalIlluminationDeferredMaterial(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
+	if (!ShouldRenderRayTracingGlobalIllumination(View))
+	{
+		return;
+	}
+
 	const bool bSortMaterials = CVarRayTracingGlobalIlluminationFinalGatherSortMaterials.GetValueOnRenderThread() != 0;
 	int EnableTransmission = CVarRayTracingGlobalIlluminationEnableTransmission.GetValueOnRenderThread();
 
@@ -831,8 +837,6 @@ void CopyGatherPassParameters(
 	NewParameters->SkylightParameters = PassParameters.SkylightParameters;
 
 	NewParameters->SceneTextures = PassParameters.SceneTextures;
-	NewParameters->SSProfilesTexture = PassParameters.SSProfilesTexture;
-	NewParameters->TransmissionProfilesLinearSampler = PassParameters.TransmissionProfilesLinearSampler;
 
 	NewParameters->GatherPointsResolution = PassParameters.GatherPointsResolution;
 	NewParameters->TileAlignedResolution = PassParameters.TileAlignedResolution;
@@ -872,8 +876,6 @@ void CopyGatherPassParameters(
 	NewParameters->SkylightParameters = PassParameters.SkylightParameters;
 
 	NewParameters->SceneTextures = PassParameters.SceneTextures;
-	NewParameters->SSProfilesTexture = PassParameters.SSProfilesTexture;
-	NewParameters->TransmissionProfilesLinearSampler = PassParameters.TransmissionProfilesLinearSampler;
 
 	NewParameters->GatherPointsResolution = PassParameters.GatherPointsResolution;
 	NewParameters->TileAlignedResolution = PassParameters.TileAlignedResolution;
@@ -936,21 +938,12 @@ void FDeferredShadingSceneRenderer::RayTracingGlobalIlluminationCreateGatherPoin
 	PassParameters->RenderTileOffsetY = 0;
 
 	// Global
-	PassParameters->TLAS = View.RayTracingScene.RayTracingSceneRHI->GetShaderResourceView();
+	PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 
 	// Light data
 	SetupLightParameters(Scene, View, GraphBuilder, &PassParameters->SceneLights, &PassParameters->SceneLightCount, &PassParameters->SkylightParameters);
 	PassParameters->SceneTextures = SceneTextures;
-
-	// Shading data
-	TRefCountPtr<IPooledRenderTarget> SubsurfaceProfileRT((IPooledRenderTarget*)GetSubsufaceProfileTexture_RT(GraphBuilder.RHICmdList));
-	if (!SubsurfaceProfileRT)
-	{
-		SubsurfaceProfileRT = GSystemTextures.BlackDummy;
-	}
-	PassParameters->SSProfilesTexture = GraphBuilder.RegisterExternalTexture(SubsurfaceProfileRT);
-	PassParameters->TransmissionProfilesLinearSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	// Output
 	FIntPoint DispatchResolution = FIntPoint::DivideAndRoundUp(View.ViewRect.Size(), UpscaleFactor);
@@ -992,9 +985,9 @@ void FDeferredShadingSceneRenderer::RayTracingGlobalIlluminationCreateGatherPoin
 			RDG_EVENT_NAME("GatherPoints %d%d", GatherPointsResolution.X, GatherPointsResolution.Y),
 			GatherPassParameters,
 			ERDGPassFlags::Compute,
-			[GatherPassParameters, this, &View, RayGenerationShader, GatherPointsResolution](FRHICommandList& RHICmdList)
+			[GatherPassParameters, this, &View, RayGenerationShader, GatherPointsResolution](FRHIRayTracingCommandList& RHICmdList)
 		{
-			FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+			FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 			FRayTracingShaderBindingsWriter GlobalResources;
 			SetShaderParameters(GlobalResources, RayGenerationShader, *GatherPassParameters);
 			RHICmdList.RayTraceDispatch(View.RayTracingMaterialPipeline, RayGenerationShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, GatherPointsResolution.X, GatherPointsResolution.Y);
@@ -1035,14 +1028,14 @@ void FDeferredShadingSceneRenderer::RayTracingGlobalIlluminationCreateGatherPoin
 				RDG_EVENT_NAME("GlobalIlluminationRayTracingGatherMaterials %dx%d", TileAlignedResolution.X, TileAlignedResolution.Y),
 				GatherPassParameters,
 				ERDGPassFlags::Compute,
-				[GatherPassParameters, this, &View, RayGenerationShader, TileAlignedResolution](FRHICommandList& RHICmdList)
+				[GatherPassParameters, this, &View, RayGenerationShader, TileAlignedResolution](FRHIRayTracingCommandList& RHICmdList)
 			{
 				FRayTracingPipelineState* Pipeline = View.RayTracingMaterialGatherPipeline;
 
 				FRayTracingShaderBindingsWriter GlobalResources;
 				SetShaderParameters(GlobalResources, RayGenerationShader, *GatherPassParameters);
 
-				FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+				FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 				RHICmdList.RayTraceDispatch(Pipeline, RayGenerationShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, TileAlignedResolution.X, TileAlignedResolution.Y);
 			});
 		}
@@ -1074,9 +1067,9 @@ void FDeferredShadingSceneRenderer::RayTracingGlobalIlluminationCreateGatherPoin
 				RDG_EVENT_NAME("GlobalIlluminationRayTracingShadeMaterials %d", DeferredMaterialBufferNumElements),
 				GatherPassParameters,
 				ERDGPassFlags::Compute,
-				[GatherPassParameters, this, &View, RayGenerationShader, DeferredMaterialBufferNumElements](FRHICommandList& RHICmdList)
+				[GatherPassParameters, this, &View, RayGenerationShader, DeferredMaterialBufferNumElements](FRHIRayTracingCommandList& RHICmdList)
 			{
-				FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+				FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 				FRayTracingShaderBindingsWriter GlobalResources;
 				SetShaderParameters(GlobalResources, RayGenerationShader, *GatherPassParameters);
 
@@ -1158,23 +1151,16 @@ void FDeferredShadingSceneRenderer::RenderRayTracingGlobalIlluminationFinalGathe
 	GatherPointData.Count = SamplesPerPixel;
 	for (int ViewHistoryIndex = 0; ViewHistoryIndex < MAXIMUM_GATHER_POINTS_PER_PIXEL; ViewHistoryIndex++)
 	{
-		GatherPointData.ViewMatrices[ViewHistoryIndex] = View.ViewState->GatherPointsViewHistory[ViewHistoryIndex];
+		GatherPointData.ViewMatrices[ViewHistoryIndex] = FMatrix44f(View.ViewState->GatherPointsViewHistory[ViewHistoryIndex]);			// LWC_TODO: Precision
 	}
 	PassParameters->GatherPointData = CreateUniformBufferImmediate(GatherPointData, EUniformBufferUsage::UniformBuffer_SingleDraw);
 
 	// Scene data
-	PassParameters->TLAS = View.RayTracingScene.RayTracingSceneRHI->GetShaderResourceView();
+	PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 
 	// Shading data
 	PassParameters->SceneTextures = SceneTextures;
-	TRefCountPtr<IPooledRenderTarget> SubsurfaceProfileRT((IPooledRenderTarget*)GetSubsufaceProfileTexture_RT(GraphBuilder.RHICmdList));
-	if (!SubsurfaceProfileRT)
-	{
-		SubsurfaceProfileRT = GSystemTextures.BlackDummy;
-	}
-	PassParameters->SSProfilesTexture = GraphBuilder.RegisterExternalTexture(SubsurfaceProfileRT);
-	PassParameters->TransmissionProfilesLinearSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	// Gather points
 	PassParameters->GatherPointsResolution = FIntPoint(SceneViewState->GatherPointsResolution.X, SceneViewState->GatherPointsResolution.Y);
@@ -1195,9 +1181,9 @@ void FDeferredShadingSceneRenderer::RenderRayTracingGlobalIlluminationFinalGathe
 		RDG_EVENT_NAME("GlobalIlluminationRayTracing %dx%d", RayTracingResolution.X, RayTracingResolution.Y),
 		PassParameters,
 		ERDGPassFlags::Compute,
-		[PassParameters, this, &View, RayGenerationShader, RayTracingResolution](FRHICommandList& RHICmdList)
+		[PassParameters, this, &View, RayGenerationShader, RayTracingResolution](FRHIRayTracingCommandList& RHICmdList)
 	{
-		FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+		FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 
 		FRayTracingShaderBindingsWriter GlobalResources;
 		SetShaderParameters(GlobalResources, RayGenerationShader, *PassParameters);
@@ -1257,19 +1243,10 @@ void FDeferredShadingSceneRenderer::RenderRayTracingGlobalIlluminationBruteForce
 	PassParameters->UseFireflySuppression = CVarRayTracingGlobalIlluminationFireflySuppression.GetValueOnRenderThread() != 0;
 	PassParameters->DiffuseThreshold = GRayTracingGlobalIlluminationDiffuseThreshold;
 	PassParameters->NextEventEstimationSamples = GRayTracingGlobalIlluminationNextEventEstimationSamples;
-	PassParameters->TLAS = View.RayTracingScene.RayTracingSceneRHI->GetShaderResourceView();
+	PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 	SetupLightParameters(Scene, View, GraphBuilder, &PassParameters->SceneLights, &PassParameters->SceneLightCount, &PassParameters->SkylightParameters);
 	PassParameters->SceneTextures = SceneTextures;
-
-	// TODO: should be converted to RDG
-	TRefCountPtr<IPooledRenderTarget> SubsurfaceProfileRT((IPooledRenderTarget*) GetSubsufaceProfileTexture_RT(GraphBuilder.RHICmdList));
-	if (!SubsurfaceProfileRT)
-	{
-		SubsurfaceProfileRT = GSystemTextures.BlackDummy;
-	}
-	PassParameters->SSProfilesTexture = GraphBuilder.RegisterExternalTexture(SubsurfaceProfileRT);
-	PassParameters->TransmissionProfilesLinearSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	PassParameters->RWGlobalIlluminationUAV = GraphBuilder.CreateUAV(OutDenoiserInputs->Color);
 	PassParameters->RWGlobalIlluminationRayDistanceUAV = GraphBuilder.CreateUAV(OutDenoiserInputs->RayHitDistance);
 	PassParameters->RenderTileOffsetX = 0;
@@ -1289,9 +1266,9 @@ void FDeferredShadingSceneRenderer::RenderRayTracingGlobalIlluminationBruteForce
 			RDG_EVENT_NAME("GlobalIlluminationRayTracing %dx%d", RayTracingResolution.X, RayTracingResolution.Y),
 			PassParameters,
 			ERDGPassFlags::Compute,
-			[PassParameters, this, &View, RayGenerationShader, RayTracingResolution](FRHICommandList& RHICmdList)
+			[PassParameters, this, &View, RayGenerationShader, RayTracingResolution](FRHIRayTracingCommandList& RHICmdList)
 		{
-			FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+			FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 
 			FRayTracingShaderBindingsWriter GlobalResources;
 			SetShaderParameters(GlobalResources, RayGenerationShader, *PassParameters);
@@ -1325,9 +1302,9 @@ void FDeferredShadingSceneRenderer::RenderRayTracingGlobalIlluminationBruteForce
 					RDG_EVENT_NAME("GlobalIlluminationRayTracing %dx%d (tile %dx%d)", DispatchSizeX, DispatchSizeY, X, Y),
 					TilePassParameters,
 					ERDGPassFlags::Compute,
-					[TilePassParameters, this, &View, RayGenerationShader, DispatchSizeX, DispatchSizeY](FRHICommandList& RHICmdList)
+					[TilePassParameters, this, &View, RayGenerationShader, DispatchSizeX, DispatchSizeY](FRHIRayTracingCommandList& RHICmdList)
 				{
-					FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+					FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 
 					FRayTracingShaderBindingsWriter GlobalResources;
 					SetShaderParameters(GlobalResources, RayGenerationShader, *TilePassParameters);

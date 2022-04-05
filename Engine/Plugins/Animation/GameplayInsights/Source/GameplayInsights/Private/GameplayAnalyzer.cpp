@@ -1,10 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayAnalyzer.h"
+#include "TraceServices/Utils.h"
 #include "TraceServices/Model/AnalysisSession.h"
 #include "GameplayProvider.h"
 
-FGameplayAnalyzer::FGameplayAnalyzer(Trace::IAnalysisSession& InSession, FGameplayProvider& InGameplayProvider)
+FGameplayAnalyzer::FGameplayAnalyzer(TraceServices::IAnalysisSession& InSession, FGameplayProvider& InGameplayProvider)
 	: Session(InSession)
 	, GameplayProvider(InGameplayProvider)
 {
@@ -14,20 +15,24 @@ void FGameplayAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 {
 	auto& Builder = Context.InterfaceBuilder;
 
+	Builder.RouteEvent(RouteId_RecordingInfo, "Object", "RecordingInfo");
 	Builder.RouteEvent(RouteId_Class, "Object", "Class");
 	Builder.RouteEvent(RouteId_Object, "Object", "Object");
 	Builder.RouteEvent(RouteId_ObjectEvent, "Object", "ObjectEvent");
+	Builder.RouteEvent(RoutId_ObjectLifetimeBegin, "Object", "ObjectLifetimeBegin");
+	Builder.RouteEvent(RoutId_ObjectLifetimeEnd, "Object", "ObjectLifetimeEnd");
+	Builder.RouteEvent(RouteId_PawnPossess, "Object", "PawnPossess");
 	Builder.RouteEvent(RouteId_World, "Object", "World");
+	Builder.RouteEvent(RouteId_View, "Object", "View");
 	Builder.RouteEvent(RouteId_ClassPropertyStringId, "Object", "ClassPropertyStringId");
-	Builder.RouteEvent(RouteId_ClassProperty, "Object", "ClassProperty");
 	Builder.RouteEvent(RouteId_PropertiesStart, "Object", "PropertiesStart");
 	Builder.RouteEvent(RouteId_PropertiesEnd, "Object", "PropertiesEnd");
-	Builder.RouteEvent(RouteId_PropertyValue, "Object", "PropertyValue");
+	Builder.RouteEvent(RouteId_PropertyValue, "Object", "PropertyValue2");
 }
 
 bool FGameplayAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
 {
-	Trace::FAnalysisSessionEditScope _(Session);
+	TraceServices::FAnalysisSessionEditScope _(Session);
 
 	const auto& EventData = Context.EventData;
 	switch (RouteId)
@@ -42,35 +47,95 @@ bool FGameplayAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCont
 		GameplayProvider.AppendWorld(Id, PIEInstanceId, Type, NetMode, bIsSimulating);
 		break;
 	}
+	case RouteId_RecordingInfo:
+	{
+		uint64 WorldId = EventData.GetValue<uint64>("WorldId");
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		uint32 RecordingIndex = EventData.GetValue<uint32>("RecordingIndex");
+		uint32 FrameIndex = EventData.GetValue<uint32>("FrameIndex");
+		double ElapsedTime = EventData.GetValue<double>("ElapsedTime");
+		GameplayProvider.AppendRecordingInfo(WorldId, Context.EventTime.AsSeconds(Cycle), RecordingIndex, FrameIndex, ElapsedTime);
+		break;
+	}
 	case RouteId_Class:
 	{
-		const TCHAR* ClassNameAndPathName = reinterpret_cast<const TCHAR*>(EventData.GetAttachment());
-		const TCHAR* ClassName = ClassNameAndPathName;
-		int32 ClassNameStringLength = EventData.GetValue<int32>("ClassNameStringLength");
-		const TCHAR* ClassPathName = ClassNameAndPathName + ClassNameStringLength;
+		FString ClassName, ClassPathName;
+		if (EventData.GetString("Name", ClassName))
+		{
+			EventData.GetString("Path", ClassPathName);
+		}
+		else
+		{
+			const TCHAR* ClassNameAndPathName = reinterpret_cast<const TCHAR*>(EventData.GetAttachment());
+			ClassName = ClassNameAndPathName;
+			int32 ClassNameStringLength = EventData.GetValue<int32>("ClassNameStringLength");
+			ClassPathName = ClassNameAndPathName + ClassNameStringLength;
+		}
+
 		uint64 Id = EventData.GetValue<uint64>("Id");
 		uint64 SuperId = EventData.GetValue<uint64>("SuperId");
-		GameplayProvider.AppendClass(Id, SuperId, ClassName, ClassPathName);
+		GameplayProvider.AppendClass(Id, SuperId, *ClassName, *ClassPathName);
 		break;
 	}
 	case RouteId_Object:
 	{
-		const TCHAR* ObjectNameAndPathName = reinterpret_cast<const TCHAR*>(EventData.GetAttachment());
-		const TCHAR* ObjectName = ObjectNameAndPathName;
-		int32 NameStringLength = EventData.GetValue<int32>("ObjectNameStringLength");
-		const TCHAR* ObjectPathName = ObjectNameAndPathName + NameStringLength;
+		FString ObjectName, ObjectPathName;
+		if (EventData.GetString("Name", ObjectName))
+		{
+			EventData.GetString("Path", ObjectPathName);
+		}
+		else
+		{
+			const TCHAR* ObjectNameAndPathName = reinterpret_cast<const TCHAR*>(EventData.GetAttachment());
+			ObjectName = ObjectNameAndPathName;
+			int32 NameStringLength = EventData.GetValue<int32>("ObjectNameStringLength");
+			ObjectPathName = ObjectNameAndPathName + NameStringLength;
+		}
 		uint64 Id = EventData.GetValue<uint64>("Id");
 		uint64 OuterId = EventData.GetValue<uint64>("OuterId");
 		uint64 ClassId = EventData.GetValue<uint64>("ClassId");
-		GameplayProvider.AppendObject(Id, OuterId, ClassId, ObjectName, ObjectPathName);
+		GameplayProvider.AppendObject(Id, OuterId, ClassId, *ObjectName, *ObjectPathName);
 		break;
 	}
 	case RouteId_ObjectEvent:
 	{
 		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
 		uint64 Id = EventData.GetValue<uint64>("Id");
-		const TCHAR* Event = reinterpret_cast<const TCHAR*>(EventData.GetAttachment());
-		GameplayProvider.AppendObjectEvent(Id, Context.EventTime.AsSeconds(Cycle), Event);
+		FString Event = TraceServices::FTraceAnalyzerUtils::LegacyAttachmentString<TCHAR>("Event", Context);
+		GameplayProvider.AppendObjectEvent(Id, Context.EventTime.AsSeconds(Cycle), *Event);
+		break;
+	}
+	case RoutId_ObjectLifetimeBegin:
+	{
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		uint64 Id = EventData.GetValue<uint64>("Id");
+		GameplayProvider.AppendObjectLifetimeBegin(Id, Context.EventTime.AsSeconds(Cycle));
+		break;
+	}
+	case RoutId_ObjectLifetimeEnd:
+	{
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		uint64 Id = EventData.GetValue<uint64>("Id");
+		GameplayProvider.AppendObjectLifetimeEnd(Id, Context.EventTime.AsSeconds(Cycle));
+		break;
+	}
+	case RouteId_PawnPossess:
+	{
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		uint64 ControllerId = EventData.GetValue<uint64>("ControllerId");
+		uint64 PawnId = EventData.GetValue<uint64>("PawnId");
+		GameplayProvider.AppendPawnPossess(ControllerId, PawnId, Context.EventTime.AsSeconds(Cycle));
+		break;
+	}
+	case RouteId_View:
+	{
+		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
+		uint64 PlayerId = EventData.GetValue<uint64>("PlayerId");
+		FVector Position( EventData.GetValue<double>("PosX"), EventData.GetValue<double>("PosY"), EventData.GetValue<double>("PosZ"));
+		FRotator Rotation( EventData.GetValue<float>("Pitch"), EventData.GetValue<float>("Yaw"), EventData.GetValue<float>("Roll"));
+		float Fov = EventData.GetValue<float>("Fov");
+		float AspectRatio  = EventData.GetValue<float>("AspectRatio");
+		GameplayProvider.AppendView(PlayerId, Context.EventTime.AsSeconds(Cycle), Position, Rotation, Fov, AspectRatio);
 		break;
 	}
 	case RouteId_ClassPropertyStringId:
@@ -78,16 +143,6 @@ bool FGameplayAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCont
 		uint32 Id = EventData.GetValue<uint32>("Id");
 		FStringView Value; EventData.GetString("Value", Value);
 		GameplayProvider.AppendClassPropertyStringId(Id, Value);
-		break;
-	}
-	case RouteId_ClassProperty:
-	{
-		uint64 ClassId = EventData.GetValue<uint64>("ClassId");
-		int32 Id = EventData.GetValue<int32>("Id");
-		int32 ParentId = EventData.GetValue<int32>("ParentId");
-		uint32 TypeId = EventData.GetValue<uint32>("TypeId");
-		uint32 KeyId = EventData.GetValue<uint32>("KeyId");
-		GameplayProvider.AppendClassProperty(ClassId, Id, ParentId, TypeId, KeyId);
 		break;
 	}
 	case RouteId_PropertiesStart:
@@ -108,9 +163,12 @@ bool FGameplayAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventCont
 	{
 		uint64 Cycle = EventData.GetValue<uint64>("Cycle");
 		uint64 ObjectId = EventData.GetValue<uint64>("ObjectId");
-		int32 PropertyId = EventData.GetValue<int32>("PropertyId");
+		int32 ParentId = EventData.GetValue<int32>("ParentId");
+		uint32 TypeId = EventData.GetValue<uint32>("TypeId");
+		uint32 KeyId = EventData.GetValue<uint32>("KeyId");
+
 		FStringView Value; EventData.GetString("Value", Value);
-		GameplayProvider.AppendPropertyValue(ObjectId, Context.EventTime.AsSeconds(Cycle), Cycle, PropertyId, Value);
+		GameplayProvider.AppendPropertyValue(ObjectId, Context.EventTime.AsSeconds(Cycle), Cycle, ParentId, TypeId, KeyId, Value);
 		break;
 	}
 	}

@@ -374,8 +374,6 @@ void FDatasmithMaterialExpressions::GetTextureSamplersFunc(UMaterialFunction* Ma
 	ExpressionInputs.Add(&Attrib->OpacityMask);
 	ExpressionInputs.Add(&Attrib->Normal);
 	ExpressionInputs.Add(&Attrib->WorldPositionOffset);
-	ExpressionInputs.Add(&Attrib->WorldDisplacement);
-	ExpressionInputs.Add(&Attrib->TessellationMultiplier);
 	ExpressionInputs.Add(&Attrib->SubsurfaceColor);
 	ExpressionInputs.Add(&Attrib->ClearCoat);
 	ExpressionInputs.Add(&Attrib->ClearCoatRoughness);
@@ -924,8 +922,6 @@ EMaterialProperty FDatasmithMaterialExpressions::DatasmithTextureSlotToMaterialP
 	case EDatasmithTextureSlot::OPACITYMASK:			return MP_OpacityMask;
 	case EDatasmithTextureSlot::NORMAL:					return MP_Normal;
 	case EDatasmithTextureSlot::WORLDPOSITIONOFFSET:	return MP_WorldPositionOffset;
-	case EDatasmithTextureSlot::DISPLACE:				return MP_WorldDisplacement;
-	case EDatasmithTextureSlot::TESSELLATIONMULTIPLIER:	return MP_TessellationMultiplier;
 	case EDatasmithTextureSlot::SUBSURFACECOLOR:		return MP_SubsurfaceColor;
 	case EDatasmithTextureSlot::COATSPECULAR:			return MP_CustomData0;
 	case EDatasmithTextureSlot::COATROUGHNESS:			return MP_CustomData1;
@@ -988,12 +984,6 @@ FExpressionInput* FDatasmithMaterialExpressions::GetMaterialOrFunctionSlot( UObj
 		case EDatasmithTextureSlot::WORLDPOSITIONOFFSET:
 			ExpressionInput = &Attrib->WorldPositionOffset;
 			break;
-		case EDatasmithTextureSlot::DISPLACE:
-			ExpressionInput = &Attrib->WorldDisplacement;
-			break;
-		case EDatasmithTextureSlot::TESSELLATIONMULTIPLIER:
-			ExpressionInput = &Attrib->TessellationMultiplier;
-			break;
 		case EDatasmithTextureSlot::SUBSURFACECOLOR:
 			ExpressionInput = &Attrib->SubsurfaceColor;
 			break;
@@ -1034,7 +1024,9 @@ void FDatasmithMaterialExpressions::ConnectToSlot(UMaterialExpression* ToBeConne
 
 	UMaterialFunction* Func = Cast< UMaterialFunction >( UnrealMatOrFunc );
 
-	if ((Slot == EDatasmithTextureSlot::METALLIC || Slot == EDatasmithTextureSlot::SPECULAR || Slot == EDatasmithTextureSlot::ROUGHNESS || Slot == EDatasmithTextureSlot::DISPLACE) && !ToBeConnected->IsA< UMaterialExpressionConstant >() && InputChannel == 0)
+	if ((Slot == EDatasmithTextureSlot::METALLIC || Slot == EDatasmithTextureSlot::SPECULAR || Slot == EDatasmithTextureSlot::ROUGHNESS)
+	  && !ToBeConnected->IsA< UMaterialExpressionConstant >()
+	  && InputChannel == 0)
 	{
 		if (UnrealMaterial != nullptr)
 		{
@@ -1057,12 +1049,6 @@ void FDatasmithMaterialExpressions::ConnectToSlot(UMaterialExpression* ToBeConne
 			break;
 		case EDatasmithTextureSlot::OPACITYMASK:
 			UnrealMaterial->BlendMode = EBlendMode::BLEND_Masked;
-			break;
-		case EDatasmithTextureSlot::DISPLACE:
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			UnrealMaterial->bEnableCrackFreeDisplacement = 1;
-			UnrealMaterial->D3D11TessellationMode = EMaterialTessellationMode::MTM_FlatTessellation;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			break;
 		}
 	}
@@ -2129,68 +2115,6 @@ void FDatasmithMaterialExpressions::CreateParallaxOffset(UObject* UnrealMatOrFun
 	}
 }
 
-void FDatasmithMaterialExpressions::ModulateDisplacement(UObject* UnrealMatOrFunc, double Amount, int32 SubDivisions)
-{
-	UMaterial* UnrealMaterial = Cast< UMaterial >( UnrealMatOrFunc );
-
-	UMaterialFunction* Func = Cast< UMaterialFunction >( UnrealMatOrFunc );
-
-	UMaterialExpressionMakeMaterialAttributes* Attrib = nullptr;
-	if (Func)
-	{
-		Attrib = FindOrAddAttributesFromMatFunc(Func);
-	}
-
-	UMaterialExpression* ToBeConnected = nullptr;
-	if (UnrealMaterial)
-	{
-		ToBeConnected = UnrealMaterial->WorldDisplacement.Expression;
-	}
-
-	if (Attrib)
-	{
-		ToBeConnected = Attrib->WorldDisplacement.Expression;
-	}
-
-	if (ToBeConnected == nullptr)
-	{
-		return;
-	}
-
-	UMaterialExpression* VertexWsExpr = CreateMaterialExpression<UMaterialExpressionVertexNormalWS>(UnrealMatOrFunc);
-
-	UMaterialExpression* SubDivExpr = Constant(UnrealMatOrFunc, SubDivisions);
-
-	if (UnrealMaterial)
-	{
-		UnrealMaterial->TessellationMultiplier.Expression = SubDivExpr;
-	}
-
-	if (Attrib)
-	{
-		Attrib->TessellationMultiplier.Expression = SubDivExpr;
-	}
-
-	UMaterialExpression* MultiplyWs = Multiply(UnrealMatOrFunc, ToBeConnected, 0.0, VertexWsExpr, 0.0);
-
-	if (ToBeConnected->Outputs.Num() > 1) // use red in case of colored Texture
-	{
-		ToBeConnected->ConnectExpression(MultiplyWs->GetInput(0), 1);
-	}
-
-	UMaterialExpression* multiplyamount = Multiply(UnrealMatOrFunc, MultiplyWs, 0.0, nullptr, Amount);
-
-	if (UnrealMaterial)
-	{
-		UnrealMaterial->WorldDisplacement.Expression = multiplyamount;
-	}
-
-	if (Attrib)
-	{
-		Attrib->WorldDisplacement.Expression = multiplyamount;
-	}
-}
-
 void FDatasmithMaterialExpressions::CreateDatasmithMaterialHelper(UPackage* Package, const TSharedPtr< IDatasmithShaderElement >& ShaderElement, const FDatasmithAssetsImportContext& AssetsContext,
 																UObject* UnrealMaterial)
 {
@@ -2205,7 +2129,6 @@ void FDatasmithMaterialExpressions::CreateDatasmithMaterialHelper(UPackage* Pack
 	UTexture* EmissiveTexture = FDatasmithImporterUtils::FindAsset< UTexture >( AssetsContext, ShaderElement->GetEmitTexture() );
 	UTexture* RefraTexture = FDatasmithImporterUtils::FindAsset< UTexture >( AssetsContext, ShaderElement->GetTransparencyTexture() );
 	UTexture* MaskTexture = FDatasmithImporterUtils::FindAsset< UTexture >( AssetsContext, ShaderElement->GetMaskTexture() );
-	UTexture* DisplaceTexture = FDatasmithImporterUtils::FindAsset< UTexture >( AssetsContext, ShaderElement->GetDisplaceTexture() );
 	UTexture* MetalTexture = FDatasmithImporterUtils::FindAsset< UTexture >( AssetsContext, ShaderElement->GetMetalTexture() );
 
 	// roughness
@@ -2509,17 +2432,6 @@ void FDatasmithMaterialExpressions::CreateDatasmithMaterialHelper(UPackage* Pack
 	}
 
 	ModulateNormalAmount(UnrealMaterial, ShaderElement->GetBumpAmount());
-
-	// Displace mapping
-	if (AddCompExpression(ShaderElement->GetDisplaceComp(), UnrealMaterial, EDatasmithTextureSlot::DISPLACE, AssetsContext) == nullptr)
-	{
-		if (DisplaceTexture != nullptr)
-		{
-			AddTextureExpression(DisplaceTexture, ShaderElement->GetDisplaceTextureSampler(), 0.0, 0.0, UnrealMaterial, EDatasmithTextureSlot::DISPLACE);
-		}
-	}
-
-	ModulateDisplacement(UnrealMaterial, ShaderElement->GetDisplace(), ShaderElement->GetDisplaceSubDivision());
 }
 
 UMaterialExpressionMaterialFunctionCall* FDatasmithMaterialExpressions::BlendFunctions(UMaterial* UnrealMaterial, const FDatasmithAssetsImportContext& AssetsContext,
@@ -3242,7 +3154,18 @@ void FDatasmithMaterialExpressions::CreateUEPbrMaterialGraph(const TSharedPtr< I
 	}
 
 	ConnectExpression( MaterialElement.ToSharedRef(), MaterialExpressions, MaterialElement->GetNormal().GetExpression(), GetMaterialOrFunctionSlot( UnrealMaterialOrFunction, EDatasmithTextureSlot::NORMAL ), MaterialElement->GetNormal().GetOutputIndex() );
-	ConnectExpression( MaterialElement.ToSharedRef(), MaterialExpressions, MaterialElement->GetWorldDisplacement().GetExpression(), GetMaterialOrFunctionSlot( UnrealMaterialOrFunction, EDatasmithTextureSlot::DISPLACE ), MaterialElement->GetWorldDisplacement().GetOutputIndex() );
+
+	if ( MaterialElement->GetShadingModel() == EDatasmithShadingModel::ClearCoat )
+	{
+		if ( MaterialElement->GetClearCoat().GetExpression() )
+		{
+			ConnectExpression(MaterialElement.ToSharedRef(), MaterialExpressions, MaterialElement->GetClearCoat().GetExpression(), GetMaterialOrFunctionSlot(UnrealMaterialOrFunction, EDatasmithTextureSlot::COATSPECULAR), MaterialElement->GetClearCoat().GetOutputIndex());
+		}
+		if (MaterialElement->GetClearCoatRoughness().GetExpression())
+		{
+			ConnectExpression(MaterialElement.ToSharedRef(), MaterialExpressions, MaterialElement->GetClearCoatRoughness().GetExpression(), GetMaterialOrFunctionSlot(UnrealMaterialOrFunction, EDatasmithTextureSlot::COATROUGHNESS), MaterialElement->GetClearCoat().GetOutputIndex());
+		}
+	}
 
 	// Connect expressions to any UMaterialExpressionCustomOutput since these aren't part of the predefined material outputs
 	for ( int32 ExpressionIndex = 0; ExpressionIndex < MaterialElement->GetExpressionsCount(); ++ExpressionIndex )
@@ -3348,6 +3271,7 @@ UMaterialInterface* FDatasmithMaterialExpressions::CreateUEPbrMaterial(UPackage*
 	UnrealMaterial->TwoSided = MaterialElement->GetTwoSided();
 	UnrealMaterial->BlendMode = GetUEPbrImportBlendMode(MaterialElement, AssetsContext);
 	UnrealMaterial->OpacityMaskClipValue = MaterialElement->GetOpacityMaskClipValue();
+	UnrealMaterial->TranslucencyLightingMode = static_cast<ETranslucencyLightingMode>(MaterialElement->GetTranslucencyLightingMode());
 
 	CreateUEPbrMaterialGraph(MaterialElement, AssetsContext, UnrealMaterial);
 
@@ -3381,14 +3305,6 @@ UMaterialInterface* FDatasmithMaterialExpressions::CreateUEPbrMaterial(UPackage*
 		{
 			UnrealMaterial->TranslucencyLightingMode = ETranslucencyLightingMode::TLM_Surface;
 		}
-	}
-
-	if ( MaterialElement->GetWorldDisplacement().GetExpression() )
-	{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		UnrealMaterial->bEnableCrackFreeDisplacement = 1;
-		UnrealMaterial->D3D11TessellationMode = EMaterialTessellationMode::MTM_FlatTessellation;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	UnrealMaterial->UpdateCachedExpressionData();

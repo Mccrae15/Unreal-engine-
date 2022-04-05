@@ -6,7 +6,8 @@
 #include "Modules/ModuleInterface.h"
 #include "Modules/ModuleManager.h"
 
-#define DATASMITHWIRETRANSLATOR_MODULE_NAME TEXT("DatasmithWireTranslator")
+namespace UE_DATASMITHWIRETRANSLATOR_NAMESPACE
+{
 
 /**
  * Datasmith Translator for .wire files.
@@ -17,12 +18,12 @@ public:
 
     static FDatasmithWireTranslatorModule& Get()
     {
-        return FModuleManager::LoadModuleChecked< FDatasmithWireTranslatorModule >(DATASMITHWIRETRANSLATOR_MODULE_NAME);
-    }
+        return FModuleManager::LoadModuleChecked< FDatasmithWireTranslatorModule >(PREPROCESSOR_TO_STRING(UE_DATASMITHWIRETRANSLATOR_MODULE_NAME));
+	}
 
     static bool IsAvailable()
     {
-        return FModuleManager::Get().IsModuleLoaded(DATASMITHWIRETRANSLATOR_MODULE_NAME);
+        return FModuleManager::Get().IsModuleLoaded(PREPROCESSOR_TO_STRING(UE_DATASMITHWIRETRANSLATOR_MODULE_NAME));
     }
 
 	virtual void StartupModule() override;
@@ -34,3 +35,5 @@ public:
 private:
 	FString TempDir;
 };
+
+}

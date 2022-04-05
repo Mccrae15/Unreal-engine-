@@ -42,5 +42,6 @@ private:
 	bool ContainsCluster() const;
 	bool ContainsRigid() const;
 	bool ContainsEmbedded() const;
+	bool ContainsInstance() const;
 	
 };

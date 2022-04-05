@@ -5,6 +5,7 @@
 #include "WaterVertexFactory.h"
 #include "WaterInstanceDataBuffer.h"
 #include "WaterSubsystem.h"
+#include "WaterUtils.h"
 #include "SceneManagement.h"
 #include "Engine/Engine.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -39,7 +40,7 @@ static TAutoConsoleVariable<int32> CVarWaterMeshShowWireframeAtBaseHeight(
 	ECVF_RenderThreadSafe
 );
 
-static TAutoConsoleVariable<int32> CVarWaterMeshEnableRendering(
+TAutoConsoleVariable<int32> CVarWaterMeshEnableRendering(
 	TEXT("r.Water.WaterMesh.EnableRendering"),
 	1,
 	TEXT("Turn off all water rendering from within the scene proxy"),
@@ -76,16 +77,6 @@ static TAutoConsoleVariable<int32> CVarWaterMeshPreAllocStagingInstanceMemory(
 
 // ----------------------------------------------------------------------------------
 
-bool IsWaterMeshRenderingEnabled_RenderThread()
-{
-	return IsWaterEnabled(/*bIsRenderThread = */true)
-		&& IsWaterMeshEnabled(/*bIsRenderThread = */true)
-		&& !!CVarWaterMeshEnableRendering.GetValueOnRenderThread();
-}
-
-
-// ----------------------------------------------------------------------------------
-
 FWaterMeshSceneProxy::FWaterMeshSceneProxy(UWaterMeshComponent* Component)
 	: FPrimitiveSceneProxy(Component)
 	, MaterialRelevance(Component->GetWaterMaterialRelevance(GetScene().GetFeatureLevel()))
@@ -106,7 +97,7 @@ FWaterMeshSceneProxy::FWaterMeshSceneProxy(UWaterMeshComponent* Component)
 	WaterVertexFactories.Reserve(WaterQuadTree.GetTreeDepth());
 	for (uint8 i = 0; i < WaterQuadTree.GetTreeDepth(); i++)
 	{
-		WaterVertexFactories.Add(new WaterVertexFactoryType(GetScene().GetFeatureLevel(), NumQuads, LODScale, FVector2D(WaterQuadTree.GetBounds().GetCenter())));
+		WaterVertexFactories.Add(new WaterVertexFactoryType(GetScene().GetFeatureLevel(), NumQuads, LODScale));
 		BeginInitResource(WaterVertexFactories.Last());
 
 		NumQuads /= 2;
@@ -126,11 +117,7 @@ FWaterMeshSceneProxy::FWaterMeshSceneProxy(UWaterMeshComponent* Component)
 
 	WaterMeshUserDataBuffers = new WaterMeshUserDataBuffersType(WaterInstanceDataBuffers);
 
-	// Far distance mesh
-	FarDistanceWaterInstanceData = Component->GetFarDistanceInstanceData();
-	FarDistanceMaterial = Component->FarDistanceMaterial;
-
-	FarDistanceMaterialIndex = WaterQuadTree.BuildMaterialIndices(FarDistanceMaterial);
+	WaterQuadTree.BuildMaterialIndices();
 }
 
 FWaterMeshSceneProxy::~FWaterMeshSceneProxy()
@@ -168,7 +155,7 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 	}
 #endif // WITH_WATER_SELECTION_SUPPORT
 
-	if (WaterQuadTree.GetNodeCount() == 0 || DensityCount == 0 || !IsWaterMeshRenderingEnabled_RenderThread())
+	if (WaterQuadTree.GetNodeCount() == 0 || DensityCount == 0 || !FWaterUtils::IsWaterMeshRenderingEnabled(/*bIsRenderThread = */true))
 	{
 		return;
 	}
@@ -187,9 +174,6 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 	}
 
 	const int32 NumBuckets = WaterQuadTree.GetWaterMaterials().Num() * DensityCount;
-	const int32 NumFarInstances = FarDistanceWaterInstanceData.Streams[0].Num();
-	const bool bHasFarWaterMesh = FarDistanceMaterial && NumFarInstances > 0;
-	const int32 FarBucketIndex = FarDistanceMaterialIndex * DensityCount + DensityCount - 1;
 
 	TArray<FWaterQuadTree::FTraversalOutput, TInlineAllocator<4>> WaterInstanceDataPerView;
 
@@ -245,6 +229,7 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 			TraversalDesc.ForceCollapseDensityLevel = ForceCollapseDensityLevel;
 			TraversalDesc.Frustum = View->ViewFrustum;
 			TraversalDesc.ObserverPosition = ObserverPosition;
+			TraversalDesc.PreViewTranslation = View->ViewMatrices.GetPreViewTranslation();
 			TraversalDesc.LODScale = LODScale;
 			TraversalDesc.bLODMorphingEnabled = !!CVarWaterMeshLODMorphEnabled.GetValueOnRenderThread();
 
@@ -257,14 +242,6 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 			WaterQuadTree.BuildWaterTileInstanceData(TraversalDesc, WaterInstanceData);
 
 			HistoricalMaxViewInstanceCount = FMath::Max(HistoricalMaxViewInstanceCount, WaterInstanceData.InstanceCount);
-
-			// Add far distance mesh data to the instance tile data to have it render instanced together with the qater quad tree and possibly merge if it has the same material
-			if (bHasFarWaterMesh)
-			{
-				check(FarDistanceMaterialIndex != INDEX_NONE);
-				WaterInstanceData.BucketInstanceCounts[FarBucketIndex] += NumFarInstances;
-				WaterInstanceData.InstanceCount += NumFarInstances;
-			}
 		}
 	}
 
@@ -314,14 +291,16 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 
 					TRACE_CPUPROFILER_EVENT_SCOPE(DensityBucket);
 
-					FMaterialRenderProxy* MaterialRenderProxy = (WireframeMaterialInstance != nullptr) ? WireframeMaterialInstance : WaterQuadTree.GetWaterMaterials()[MaterialIndex];
+					const FMaterialRenderProxy* MaterialRenderProxy = (WireframeMaterialInstance != nullptr) ? WireframeMaterialInstance : WaterQuadTree.GetWaterMaterials()[MaterialIndex];
 					check (MaterialRenderProxy != nullptr);
-					const FMaterial* BucketMaterial = MaterialRenderProxy->GetMaterialNoFallback(GetScene().GetFeatureLevel());
 
-					// If the material is not ready for render, just skip :
-					if (BucketMaterial == nullptr)
+					bool bUseForDepthPass = false;
+
+					// If there's a valid material, use that to figure out the depth pass status
+					if (const FMaterial* BucketMaterial = MaterialRenderProxy->GetMaterialNoFallback(GetScene().GetFeatureLevel()))
 					{
-						continue;
+						// Preemptively turn off depth rendering for this mesh batch if the material doesn't need it
+						bUseForDepthPass = !BucketMaterial->GetShadingModels().HasShadingModel(MSM_SingleLayerWater) && BucketMaterial->GetBlendMode() != EBlendMode::BLEND_Translucent;
 					}
 
 					bMaterialDrawn = true;
@@ -339,7 +318,7 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 						Mesh.bUseForMaterial = true;
 						Mesh.CastShadow = false;
 						// Preemptively turn off depth rendering for this mesh batch if the material doesn't need it
-						Mesh.bUseForDepthPass = !BucketMaterial->GetShadingModels().HasShadingModel(MSM_SingleLayerWater) && BucketMaterial->GetBlendMode() != EBlendMode::BLEND_Translucent;
+						Mesh.bUseForDepthPass = bUseForDepthPass;
 						Mesh.bUseAsOccluder = false;
 
 #if WITH_WATER_SELECTION_SUPPORT
@@ -350,7 +329,7 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 						Mesh.Elements.SetNumZeroed(1);
 
 						{
-							TRACE_CPUPROFILER_EVENT_SCOPE("Setup batch element");
+							TRACE_CPUPROFILER_EVENT_SCOPE_STR("Setup batch element");
 
 							// Set up one mesh batch element
 							FMeshBatchElement& BatchElement = Mesh.Elements[0];
@@ -377,12 +356,14 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 							INC_DWORD_STAT(STAT_WaterDrawCalls);
 							INC_DWORD_STAT_BY(STAT_WaterTilesDrawn, InstanceCount);
 
-							TRACE_CPUPROFILER_EVENT_SCOPE("Collector.AddMesh");
+							TRACE_CPUPROFILER_EVENT_SCOPE(Collector.AddMesh);
 
 							Collector.AddMesh(ViewIndex, Mesh);
 						}
 					}
 
+					// Note : we're repurposing the BucketInstanceCounts array here for storing the actual offset in the buffer. This means that effectively from this point on, BucketInstanceCounts doesn't actually 
+					//  contain the number of instances anymore : 
 					WaterInstanceData.BucketInstanceCounts[BucketIndex] = InstanceDataOffset;
 					InstanceDataOffset += InstanceCount;
 				}
@@ -399,17 +380,6 @@ void FWaterMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*
 				for (int32 StreamIdx = 0; StreamIdx < WaterInstanceDataBuffersType::NumBuffers; ++StreamIdx)
 				{
 					WaterInstanceDataBuffers->GetBufferMemory(StreamIdx)[WriteIndex] = Data.Data[StreamIdx];
-				}
-			}
-
-			if (bHasFarWaterMesh)
-			{
-				check(FarDistanceWaterInstanceData.Streams[1].Num() == NumFarInstances);
-				const int32 WriteStartOffset = WaterInstanceData.BucketInstanceCounts[FarBucketIndex];
-
-				for (int32 StreamIdx = 0; StreamIdx < WaterInstanceDataBuffersType::NumBuffers; ++StreamIdx)
-				{
-					FMemory::Memcpy(WaterInstanceDataBuffers->GetBufferMemory(StreamIdx) + WriteStartOffset, FarDistanceWaterInstanceData.Streams[StreamIdx].GetData(), NumFarInstances * sizeof(FVector4));
 				}
 			}
 		}

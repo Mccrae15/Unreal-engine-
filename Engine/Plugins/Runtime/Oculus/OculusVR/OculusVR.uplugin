@@ -10,12 +10,11 @@
 	"DocsURL": "https://developer.oculus.com/documentation/unreal/latest/concepts/unreal-engine/",
 	"MarketplaceURL": "",
 	"SupportURL": "https://forums.oculusvr.com/developer/categories/unreal",
-	"EnabledByDefault": true,
+	"EnabledByDefault": false,
 	"CanContainContent": true,
 	"IsBetaVersion": false,
 	"Installed": false,
 	"SupportedTargetPlatforms": [
-		"Win32",
 		"Win64",
 		"Android"
 	],
@@ -24,9 +23,8 @@
 			"Name": "OculusHMD",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
-				"Win32",
 				"Android"
 			]
 		},
@@ -34,9 +32,8 @@
 			"Name": "OculusInput",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
-				"Win32",
 				"Android"
 			]
 		},
@@ -44,9 +41,17 @@
 			"Name": "OculusMR",
 			"Type": "Runtime",
 			"LoadingPhase": "PostEngineInit",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
-				"Win32",
+				"Android"
+			]
+		},
+		{
+			"Name": "OculusOpenXRHMD",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit",
+			"PlatformAllowList": [
+				"Win64",
 				"Android"
 			]
 		},
@@ -54,7 +59,7 @@
 			"Name": "OculusEditor",
 			"Type": "Editor",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64"
 			]
 		}
@@ -62,6 +67,10 @@
 	"Plugins": [
 		{
 			"Name": "ProceduralMeshComponent",
+			"Enabled": true
+		},
+		{
+			"Name": "OpenXR",
 			"Enabled": true
 		}
 	]

@@ -85,21 +85,38 @@ HRESULT __attribute__ ((constructor)) DllMain() {
   return InitMaybeFail();
 }
 
+// UE Change Begin: Allow to manually shutdown compiler to avoid dangling mutex on Linux.
+#if defined(DXC_EXPLICIT_DLLSHUTDOWN)
+void DllShutdown() {
+  static bool shutdown;
+  assert(!shutdown && "DllShutdown already called for libdxcompiler.so");
+  if (!shutdown) {
+    DxcSetThreadMallocToDefault();
+    ::hlsl::options::cleanupHlslOptTable();
+    ::llvm::sys::fs::CleanupPerThreadFileSystem();
+    ::llvm::llvm_shutdown();
+    DxcClearThreadMalloc();
+    DxcCleanupThreadMalloc();
+    shutdown = true;
+  }
+}
+#else
 void __attribute__ ((destructor)) DllShutdown() {
   DxcSetThreadMallocToDefault();
   ::hlsl::options::cleanupHlslOptTable();
   ::llvm::sys::fs::CleanupPerThreadFileSystem();
-  //::llvm::llvm_shutdown(); //WORKAROUND: causes deadlocks on exit
+  ::llvm::llvm_shutdown();
   DxcClearThreadMalloc();
   DxcCleanupThreadMalloc();
 }
+#endif // DXC_EXPLICIT_DLLSHUTDOWN
+// UE Change End: Allow to manually shutdown compiler to avoid dangling mutex on Linux.
 #else // LLVM_ON_UNIX
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD Reason, LPVOID reserved) {
   BOOL result = TRUE;
   if (Reason == DLL_PROCESS_ATTACH) {
     EventRegisterMicrosoft_Windows_DXCompiler_API();
     DxcEtw_DXCompilerInitialization_Start();
-    DisableThreadLibraryCalls(hinstDLL);
     HRESULT hr = InitMaybeFail();
     DxcEtw_DXCompilerInitialization_Stop(hr);
     result = SUCCEEDED(hr) ? TRUE : FALSE;

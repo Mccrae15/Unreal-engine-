@@ -376,7 +376,7 @@ void SConversationDiff::OnSelectionChanged(FSharedDiffOnGraph Item, ESelectInfo:
 				{
 					// This is a sub-node, we need to find our parent node in the graph
 					// todo: work out why BTNode->ParentNode is always null
-					UEdGraphNode** ParentNodePtr = NodeGraph->Nodes.FindByPredicate([BTNode](UEdGraphNode* PotentialParentNode) -> bool
+					TObjectPtr<UEdGraphNode>* ParentNodePtr = NodeGraph->Nodes.FindByPredicate([BTNode](UEdGraphNode* PotentialParentNode) -> bool
 					{
 						UConversationGraphNode* BTPotentialParentNode = Cast<UConversationGraphNode>(PotentialParentNode);
 						return BTPotentialParentNode && (BTPotentialParentNode->SubNodes.Contains(BTNode));
@@ -449,7 +449,8 @@ void SConversationDiff::FConversationDiffPanel::GeneratePanel(UEdGraph* Graph, U
 		];
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>( "PropertyEditor" );
-	FDetailsViewArgs DetailsViewArgs( false, false, true, FDetailsViewArgs::ObjectsUseNameArea, false );
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::ObjectsUseNameArea;
 	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Hide;
 	DetailsView = PropertyEditorModule.CreateDetailView( DetailsViewArgs );
 	DetailsView->SetObject(nullptr);

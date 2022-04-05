@@ -332,7 +332,7 @@ float UAISense_Sight::Update()
 
 						auto HitResultActorIsOwnedByTargetActor = [&HitResult, TargetActor]()
 						{
-							AActor* HitResultActor = HitResult.Actor.Get();
+							AActor* HitResultActor = HitResult.HitObjectHandle.FetchActor();
 							return (HitResultActor ? HitResultActor->IsOwnedBy(TargetActor) : false);
 						};
 

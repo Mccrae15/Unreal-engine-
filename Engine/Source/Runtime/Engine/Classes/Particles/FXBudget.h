@@ -38,7 +38,10 @@ public:
 	 **/
 	static FFXTimeData GetAdjustedUsage();
 	/** Returns the highest single adjusted usage value. */
-	static float GetWorstAdjustedUsage();
+	FORCEINLINE static float GetWorstAdjustedUsage() { return WorstAdjustedUsage; }
+	FORCEINLINE static void SetWorstAdjustedUsage(float NewAdjustedUsage){ WorstAdjustedUsage = NewAdjustedUsage; }
+
+	static void Reset();
 
 	static TSharedPtr<FParticlePerfStatsListener_FXBudget, ESPMode::ThreadSafe> StatsListener;
 
@@ -49,6 +52,7 @@ public:
 	static bool bEnabled;
 
 	static FFXTimeData AdjustedUsage;
+	static float WorstAdjustedUsage;
 
 private:
 	static void OnEnabledChangedInternal();
@@ -64,5 +68,7 @@ public:
 	FORCEINLINE static float GetWorstAdjustedUsage() { return 0.0f; }
 	FORCEINLINE static bool Enabled() { return false; }
 	FORCEINLINE static void SetEnabled(bool bInEnabled) { }
+
+	FORCEINLINE static void Reset(){}
 };
 #endif

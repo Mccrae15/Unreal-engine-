@@ -22,7 +22,7 @@
 			RunUAT.bat BuildGraph -Script=Engine/Build/Graph/Examples/BuildEditorAndTools.xml -Target="Submit To Perforce For UGS" -P4 -Submit
 			
 		Other options:
-			-set:EditorTarget=<TargetName>		Specifies the editor target to be built (defaults to UE4Editor)
+			-set:EditorTarget=<TargetName>		Specifies the editor target to be built (defaults to UnrealEditor)
 			-set:UProjectPath=<ProjectPath>		Specifies the uproject path to pass as -Project in the compile args (defaults to none)
 			-set:GameTargets=<TargetName>		Specifies the game targets to be built (defaults to none)
 			-set:TargetPlatforms=<A>;<B>;<C>... Specifies the target platforms to build the game for (defaults to Win64)
@@ -30,21 +30,24 @@
 			-set:Licensee=true/false			Whether to mark the changelist number as being from a licensee Perforce server (this prevents conflicts with Epic CL's being a higher number)
 			-set:Versioned=true/false			Whether to embed version information in the compiled binaries. This is true by default for build machines.
 			-set:ArchiveStream=<Path>			Stream that will contain zip file of the compiled binaries, for use by UnrealGameSync.
+			-set:ArchiveName=<ArchiveName>		Names of archive to generate instead of using the GameTarget, when the GameTarget may be UnrealEditor and result in a clash.
 			-set:ForceSubmit=true/false			Whether to force submit to happen even if another change has been submitted (resolves in favor of local files)
 	-->
 
-	<Option Name="EditorTarget" Restrict="[^ ]+" DefaultValue="UE4Editor" Description="Name of the editor target to be built"/>
+	<Option Name="EditorTarget" Restrict="[^ ]+" DefaultValue="UnrealEditor" Description="Name of the editor target to be built"/>
 	<Option Name="UProjectPath" Restrict="[^ ]*" DefaultValue="" Description="Optional Uproject path to include in the arguments"/>
-	<Option Name="GameTargets" Restrict="[^ ]*" DefaultValue="" Description="Names of game targets to build separated by semicolons, eg. UE4Client;UE4Server"/>
-	<Option Name="TargetPlatforms" Restrict="[^ ]*" DefaultValue="Win64" Description="List of the target platforms to build for, separated by semicolons, eg. Win64;Win32;Android"/>
+	<Option Name="GameTargets" Restrict="[^ ]*" DefaultValue="" Description="Names of game targets to build separated by semicolons, eg. UnrealClient;UnrealServer"/>
+	<Option Name="TargetPlatforms" Restrict="[^ ]*" DefaultValue="Win64" Description="List of the target platforms to build for, separated by semicolons, eg. Win64;Android"/>
 	<Option Name="OutputDir" DefaultValue="$(RootDir)\LocalBuilds\$(EditorTarget)Binaries" Description ="Output directory for compiled binaries"/>
 	<Option Name="Licensee" Restrict="true|false" DefaultValue="true" Description="Whether to treat the changelist number as being from a licensee Perforce server"/>
 	<Option Name="Versioned" Restrict="true|false" DefaultValue="$(IsBuildMachine)" Description="Whether to embed changelist number into binaries"/>
 	<Option Name="ArchiveStream" Restrict="(?://.*)?" DefaultValue="" Description="Stream path that will contain zip file of the compiled binaries, for use by UnrealGameSync"/>
 	<Option Name="ForceSubmit" Restrict="true|false" DefaultValue="false" Description="Forces the submit to happen even if another change has been submitted (resolves in favor of local files)"/>
+	<Option Name="ArchiveName" Restrict="[^ ]*" DefaultValue="$(EditorTarget)" Description="Names of archive to generate instead of using the GameTarget, when the GameTarget may be UnrealEditor and result in a clash"/>
 	<Option Name="SymbolStorePath" DefaultValue="" Description ="Output directory for symbol storage"/>
 
 	<EnvVar Name="COMPUTERNAME"/>
+	<EnvVar Name="P4CLIENT"/>
 	
 	<Agent Name="Default Agent" Type="CompileWin64">
 	
@@ -122,11 +125,8 @@
 			<Property Name="ArchiveDir" Value="$(RootDir)\LocalBuilds\ArchiveForUGS"/>
 			<Delete Files="$(ArchiveDir)\..."/>
 
-			<!-- Tag required files from UAT and UBT that will already have been built -->
-			<Tag Files="Engine/Source/Programs/AutomationTool/..." Filter="*.csproj" With="#UAT Projects"/>
-			<Tag Files="Engine/Platforms/..." Filter="*.Automation.csproj" With="#UAT Projects"/>
-			<Tag Files="$(RootDir)/.../Build/Scripts/..." Filter="*.Automation.csproj" With="#UAT Projects"/>
-			<CsCompile Project="#UAT Projects" Configuration="Development" Platform="AnyCPU"  Properties="EngineDir=$(RootDir)/Engine" Tag="#ArchiveFiles" EnumerateOnly="true"/>
+			<!-- Tag AutomationTool build folder recursively -->
+			<Tag Files="Engine/Binaries/DotNET/AutomationTool/..." With="#ArchiveBinaries"/>
 			
 			<!-- Write a text file marker indicating that we're using precompiled binaries -->
 			<Spawn Exe="cmd.exe" Arguments="/C echo. &gt;&quot;$(RootDir)/Engine/Build/PrecompiledBinaries.txt&quot;"/>
@@ -149,10 +149,12 @@
 
 			<!-- Create the zip file and submit it to Perforce -->
 			<Property Name="ArchivePerforceDir" Value="$(ArchiveDir)\Perforce"/>
-			<Property Name="ArchiveFile" Value="$(ArchivePerforceDir)\$(EscapedBranch)-Editor.zip"/>
+			<Property Name="ArchiveFile" Value="$(ArchivePerforceDir)\$(EscapedBranch)-$(ArchiveName).zip"/>
 			<Zip FromDir="$(ArchiveStagingDir)" ZipFile="$(ArchiveFile)"/>
 			<Warning Message="The 'ArchiveStream' argument is not set. Binaries will not be submitted." If="'$(ArchiveStream)' == ''"/>
-			<Submit Description="[CL $(CodeChange)] Updated binaries" Files="$(ArchiveFile)" FileType="binary+FS32" Workspace="$(COMPUTERNAME)_ArchiveForUGS" Stream="$(ArchiveStream)" RootDir="$(ArchivePerforceDir)" Force="$(ForceSubmit)" If="'$(ArchiveStream)' != ''"/>
+			<Property Name="SubmitClient" Value="$(COMPUTERNAME)_ArchiveForUGS"/>
+			<Property Name="SubmitClient" Value="$(P4CLIENT)_ArchiveForUGS" If="'$(P4CLIENT)' != ''"/>
+			<Submit Description="[CL $(CodeChange)] Updated binaries" Files="$(ArchiveFile)" FileType="binary+FS32" Workspace="$(SubmitClient)" Stream="$(ArchiveStream)" RootDir="$(ArchivePerforceDir)" Force="$(ForceSubmit)" If="'$(ArchiveStream)' != ''"/>
 		</Node>
 		
 	</Agent>

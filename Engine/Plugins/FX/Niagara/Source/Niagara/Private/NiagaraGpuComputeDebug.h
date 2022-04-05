@@ -16,9 +16,9 @@ struct FNiagaraSimulationDebugDrawData
 {
 	struct FGpuLine
 	{
-		FVector	Start;
-		FVector	End;
-		uint32	Color;
+		FVector3f	Start;
+		FVector3f	End;
+		uint32		Color;
 	};
 
 	bool				bRequiresUpdate = true;
@@ -73,7 +73,7 @@ public:
 	void AddAttributeTexture(FRHICommandList& RHICmdList, FNiagaraSystemInstanceID SystemInstanceID, FName SourceName, FRHITexture* Texture, FIntVector4 NumTextureAttributes, FIntVector4 AttributeIndices, FVector2D PreviewDisplayRange = FVector2D::ZeroVector);
 
 	// Get Debug draw buffers for a system instance
-	FNiagaraSimulationDebugDrawData* GetSimulationDebugDrawData(FNiagaraSystemInstanceID SystemInstanceID, bool bRequiresGpuBuffers);
+	FNiagaraSimulationDebugDrawData* GetSimulationDebugDrawData(FNiagaraSystemInstanceID SystemInstanceID, bool bRequiresGpuBuffers, uint32 OverrideMaxDebugLines = 0);
 
 	// Force remove debug draw data
 	void RemoveSimulationDebugDrawData(FNiagaraSystemInstanceID SystemInstanceID);

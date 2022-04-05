@@ -13,6 +13,7 @@ namespace Audio
 {
 	FDecodingSoundSource::FDecodingSoundSource(FAudioDevice* AudioDevice, const FSourceDecodeInit& InitData)
 		: Handle(InitData.Handle)
+		, AudioDeviceID(0)
 		, SoundWave(InitData.SoundWave)
 		, MixerBuffer(nullptr)
 		, SampleRate(INDEX_NONE)
@@ -22,6 +23,11 @@ namespace Audio
 		SourceInfo.VolumeParam.Init();
 		SourceInfo.VolumeParam.SetValue(InitData.VolumeScale);
 		SourceInfo.PitchScale = InitData.PitchScale;
+
+		if (nullptr != AudioDevice)
+		{
+			AudioDeviceID = AudioDevice->DeviceID;
+		}
 
 		MixerBuffer = FMixerBuffer::Init(AudioDevice, InitData.SoundWave, true);
 	}
@@ -57,7 +63,17 @@ namespace Audio
 		bool bIsValid = false;
 		{
 			FScopeLock Lock(&MixerSourceBufferCritSec);
-			MixerSourceBuffer = FMixerSourceBuffer::Create(InSampleRate, *MixerBuffer, *SoundWave, LoopingMode, bIsSeeking, bForceSyncDecode);
+
+			FMixerSourceBufferInitArgs Args;
+			Args.AudioDeviceID = AudioDeviceID;
+			Args.SampleRate = InSampleRate;
+			Args.Buffer = MixerBuffer;
+			Args.SoundWave = SoundWave;
+			Args.LoopingMode = LoopingMode;
+			Args.bIsSeeking = bIsSeeking;
+			Args.bForceSyncDecode = bForceSyncDecode;
+			MixerSourceBuffer = FMixerSourceBuffer::Create(Args);
+
 			bIsValid = MixerSourceBuffer.IsValid();
 		}
 
@@ -268,7 +284,7 @@ namespace Audio
 		}
 	}
 
-	void FDecodingSoundSource::GetAudioBufferInternal(const int32 InNumFrames, const int32 InNumChannels, AlignedFloatBuffer& OutAudioBuffer)
+	void FDecodingSoundSource::GetAudioBufferInternal(const int32 InNumFrames, const int32 InNumChannels, FAlignedFloatBuffer& OutAudioBuffer)
 	{
 #if AUDIO_SOURCE_DECODER_DEBUG
 		int32 SampleIndex = 0;
@@ -354,7 +370,7 @@ namespace Audio
 #endif
 	}
 
-	bool FDecodingSoundSource::GetAudioBuffer(const int32 InNumFrames, const int32 InNumChannels, AlignedFloatBuffer& OutAudioBuffer)
+	bool FDecodingSoundSource::GetAudioBuffer(const int32 InNumFrames, const int32 InNumChannels, FAlignedFloatBuffer& OutAudioBuffer)
 	{
 		FScopeTryLock Lock(&MixerSourceBufferCritSec);
 
@@ -675,7 +691,7 @@ namespace Audio
 	}
 
 
-	bool FSoundSourceDecoder::GetSourceBuffer(const FDecodingSoundSourceHandle& InHandle, const int32 NumOutFrames, const int32 NumOutChannels, AlignedFloatBuffer& OutAudioBuffer)
+	bool FSoundSourceDecoder::GetSourceBuffer(const FDecodingSoundSourceHandle& InHandle, const int32 NumOutFrames, const int32 NumOutChannels, FAlignedFloatBuffer& OutAudioBuffer)
 	{
 		check(InHandle.Id != INDEX_NONE);
 		FScopeLock Lock(&DecodingSourcesCritSec);

@@ -68,16 +68,19 @@ void AWaterBodyIsland::GetBrushRenderDependencies(TSet<UObject*>& OutDependencie
 
 void AWaterBodyIsland::UpdateHeight()
 {
-	const int32 NumSplinePoints = SplineComp->GetNumberOfSplinePoints();
-
-	const float ActorZ = GetActorLocation().Z;
-
-	for (int32 PointIndex = 0; PointIndex < NumSplinePoints; ++PointIndex)
+	if (SplineComp)
 	{
-		FVector WorldLoc = SplineComp->GetLocationAtSplinePoint(PointIndex, ESplineCoordinateSpace::World);
+		const int32 NumSplinePoints = SplineComp->GetNumberOfSplinePoints();
 
-		WorldLoc.Z = ActorZ;
-		SplineComp->SetLocationAtSplinePoint(PointIndex, WorldLoc, ESplineCoordinateSpace::World);
+		const float ActorZ = GetActorLocation().Z;
+
+		for (int32 PointIndex = 0; PointIndex < NumSplinePoints; ++PointIndex)
+		{
+			FVector WorldLoc = SplineComp->GetLocationAtSplinePoint(PointIndex, ESplineCoordinateSpace::World);
+
+			WorldLoc.Z = ActorZ;
+			SplineComp->SetLocationAtSplinePoint(PointIndex, WorldLoc, ESplineCoordinateSpace::World);
+		}
 	}
 }
 
@@ -86,9 +89,14 @@ void AWaterBodyIsland::Destroyed()
 	Super::Destroyed();
 
 	// No need for water bodies to keep a pointer to ourselves, even if a lazy one :
-	for (AWaterBody* WaterBody : TActorRange<AWaterBody>(GetWorld()))
+	// Use a TObjectRange here instead of the Manager for each because it may not be valid
+	UWorld* World = GetWorld();
+	for (UWaterBodyComponent* WaterBodyComponent : TObjectRange<UWaterBodyComponent>())
 	{
-		WaterBody->RemoveIsland(this);
+		if (WaterBodyComponent && WaterBodyComponent->GetWorld() == World)
+		{
+			WaterBodyComponent->RemoveIsland(this);
+		}
 	}
 }
 
@@ -157,50 +165,54 @@ void AWaterBodyIsland::PostLoad()
 }
 
 #if WITH_EDITOR
-void AWaterBodyIsland::UpdateOverlappingWaterBodies()
+void AWaterBodyIsland::UpdateOverlappingWaterBodyComponents()
 {
 	TArray<FOverlapResult> Overlaps;
 
-	FCollisionShape OverlapShape;
-	// Expand shape in Z to ensure we get overlaps for islands slighty above or below water level
-	OverlapShape.SetBox(SplineComp->Bounds.BoxExtent+FVector(0,0,10000));
-	GetWorld()->OverlapMultiByObjectType(Overlaps, SplineComp->Bounds.Origin, FQuat::Identity, FCollisionObjectQueryParams::AllObjects, OverlapShape);
+	if (SplineComp)
+	{
+		FCollisionShape OverlapShape;
+		// Expand shape in Z to ensure we get overlaps for islands slighty above or below water level
+		OverlapShape.SetBox((FVector3f)SplineComp->Bounds.BoxExtent+FVector3f(0,0,10000));
+		GetWorld()->OverlapMultiByObjectType(Overlaps, SplineComp->Bounds.Origin, FQuat::Identity, FCollisionObjectQueryParams::AllObjects, OverlapShape);
+	}
 
 	// Find any new overlapping bodies and notify them that this island influences them
-	TSet<AWaterBody*> ExistingOverlappingBodies;
-	TSet<TWeakObjectPtr<AWaterBody>> NewOverlappingBodies;
+	TSet<UWaterBodyComponent*> ExistingOverlappingBodies;
+	TSet<TWeakObjectPtr<UWaterBodyComponent>> NewOverlappingBodies;
 
 	TLazyObjectPtr<AWaterBodyIsland> LazyThis(this);
 
-	// Fixup overlapping bodies 
-	for (AWaterBody* WaterBody : TActorRange<AWaterBody>(GetWorld()))
+	// Fixup overlapping bodies
+	UWaterSubsystem::ForEachWaterBodyComponent(GetWorld(), [LazyThis, &ExistingOverlappingBodies](UWaterBodyComponent* WaterBodyComponent)
 	{
-		if (WaterBody->ContainsIsland(LazyThis))
+		if (WaterBodyComponent->ContainsIsland(LazyThis))
 		{
-			ExistingOverlappingBodies.Add(WaterBody);
+			ExistingOverlappingBodies.Add(WaterBodyComponent);
 		}
-	}
+		return true;
+	});
 
 	for (const FOverlapResult& Result : Overlaps)
 	{
-		AWaterBody* WaterBody = Cast<AWaterBody>(Result.Actor);
-		if (WaterBody)
+		if (AWaterBody* WaterBody = Result.OverlapObjectHandle.FetchActor<AWaterBody>())
 		{
-			NewOverlappingBodies.Add(WaterBody);
+			UWaterBodyComponent* WaterBodyComponent = WaterBody->GetWaterBodyComponent();
+			NewOverlappingBodies.Add(WaterBodyComponent);
 			// If the water body is not already overlapping then notify
-			if (!ExistingOverlappingBodies.Contains(WaterBody))
+			if (!ExistingOverlappingBodies.Contains(WaterBodyComponent))
 			{
-				WaterBody->AddIsland(this);
+				WaterBodyComponent->AddIsland(this);
 			}
 		}
 	}
 
 	// Find existing bodies that are no longer overlapping and remove them
-	for (AWaterBody* ExistingBody : ExistingOverlappingBodies)
+	for (UWaterBodyComponent* ExistingBodyComponent : ExistingOverlappingBodies)
 	{
-		if (ExistingBody && !NewOverlappingBodies.Contains(ExistingBody))
+		if (ExistingBodyComponent && !NewOverlappingBodies.Contains(ExistingBodyComponent))
 		{
-			ExistingBody->RemoveIsland(this);
+			ExistingBodyComponent->RemoveIsland(this);
 		}
 	}
 }
@@ -230,7 +242,7 @@ void AWaterBodyIsland::UpdateAll()
 {
 	UpdateHeight();
 
-	UpdateOverlappingWaterBodies();
+	UpdateOverlappingWaterBodyComponents();
 
 	OnWaterBodyIslandChanged(/*bShapeOrPositionChanged*/true, /*bWeightmapSettingsChanged*/true);
 
@@ -260,7 +272,7 @@ void AWaterBodyIsland::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	bool bWeightmapSettingsChanged = false;
-	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(AWaterBody, LayerWeightmapSettings))
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UWaterBodyComponent, LayerWeightmapSettings))
 	{
 		bWeightmapSettingsChanged = true;
 	}
@@ -272,7 +284,7 @@ void AWaterBodyIsland::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 
 void AWaterBodyIsland::OnSplineDataChanged()
 {
-	UpdateOverlappingWaterBodies();
+	UpdateOverlappingWaterBodyComponents();
 
 	OnWaterBodyIslandChanged(/* bShapeOrPositionChanged = */true, /* bWeightmapSettingsChanged = */false);
 }

@@ -191,10 +191,10 @@ void UModel::Serialize( FArchive& Ar )
 
 	Ar << Bounds;
 
-	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_BSP_UNDO_FIX )
+	if (Ar.IsLoading() && Ar.UEVer() < VER_UE4_BSP_UNDO_FIX )
 	{
-		TTransArray<FVector> OldVectors(this);
-		TTransArray<FVector> OldPoints(this);
+		TTransArray<FVector3f> OldVectors(this);
+		TTransArray<FVector3f> OldPoints(this);
 		TTransArray<FBspNode> OldNodes(this);
 		OldVectors.BulkSerialize(Ar);
 		OldPoints.BulkSerialize(Ar);
@@ -218,7 +218,7 @@ void UModel::Serialize( FArchive& Ar )
 		}
 	}
 	
-	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_BSP_UNDO_FIX )
+	if (Ar.IsLoading() && Ar.UEVer() < VER_UE4_BSP_UNDO_FIX )
 	{
 		TTransArray<FBspSurf> OldSurfs(this);
 		TTransArray<FVert> OldVerts(this);
@@ -235,7 +235,7 @@ void UModel::Serialize( FArchive& Ar )
 		Verts.BulkSerialize(Ar);
 	}
 
-	if( Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_REMOVE_ZONES_FROM_MODEL)
+	if( Ar.IsLoading() && Ar.UEVer() < VER_UE4_REMOVE_ZONES_FROM_MODEL)
 	{
 		int32 NumZones;
 		Ar << NumSharedSides << NumZones;
@@ -254,7 +254,7 @@ void UModel::Serialize( FArchive& Ar )
 #if WITH_EDITOR
 	bool bHasEditorOnlyData = !Ar.IsFilterEditorOnly();
 	
-	if ( Ar.UE4Ver() < VER_UE4_REMOVE_UNUSED_UPOLYS_FROM_UMODEL )
+	if ( Ar.UEVer() < VER_UE4_REMOVE_UNUSED_UPOLYS_FROM_UMODEL )
 	{
 		bHasEditorOnlyData = true;
 	}
@@ -269,7 +269,7 @@ void UModel::Serialize( FArchive& Ar )
 #else
 	bool bHasEditorOnlyData = !Ar.IsFilterEditorOnly();
 	
-	if ( Ar.UE4Ver() < VER_UE4_REMOVE_UNUSED_UPOLYS_FROM_UMODEL )
+	if ( Ar.UEVer() < VER_UE4_REMOVE_UNUSED_UPOLYS_FROM_UMODEL )
 	{
 		bHasEditorOnlyData = true;
 	}
@@ -289,7 +289,7 @@ void UModel::Serialize( FArchive& Ar )
 
 	Ar << RootOutside << Linked;
 
-	if(Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_REMOVE_ZONES_FROM_MODEL)
+	if(Ar.IsLoading() && Ar.UEVer() < VER_UE4_REMOVE_ZONES_FROM_MODEL)
 	{
 		TArray<int32> DummyPortalNodes;
 		DummyPortalNodes.BulkSerialize( Ar );
@@ -345,7 +345,7 @@ void UModel::CalculateUniqueVertCount()
 				bool bAlreadyAdded(false);
 				for(int32 UniqueIndex(0); UniqueIndex < UniquePoints.Num(); ++UniqueIndex)
 				{
-					if(Polys->Element[PolyIndex].Vertices[VertIndex] == UniquePoints[UniqueIndex])
+					if((FVector)Polys->Element[PolyIndex].Vertices[VertIndex] == UniquePoints[UniqueIndex])
 					{
 						bAlreadyAdded = true;
 						break;
@@ -354,7 +354,7 @@ void UModel::CalculateUniqueVertCount()
 
 				if(!bAlreadyAdded)
 				{
-					UniquePoints.Push(Polys->Element[PolyIndex].Vertices[VertIndex]);
+					UniquePoints.Push((FVector)Polys->Element[PolyIndex].Vertices[VertIndex]);
 				}
 			}
 		}
@@ -392,8 +392,8 @@ void UModel::PostLoad()
 #if WITH_EDITOR
 		if (ABrush* Owner = Cast<ABrush>(GetOuter()))
 		{
-			OwnerLocationWhenLastBuilt = Owner->GetActorLocation();
-			OwnerScaleWhenLastBuilt = Owner->GetActorScale();
+			OwnerLocationWhenLastBuilt = (FVector3f)Owner->GetActorLocation();
+			OwnerScaleWhenLastBuilt = (FVector3f)Owner->GetActorScale();
 			OwnerRotationWhenLastBuilt = Owner->GetActorRotation();
 			bCachedOwnerTransformValid = true;
 		}
@@ -585,12 +585,6 @@ bool UModel::Modify( bool bAlwaysMarkDirty/*=false*/ )
 
 	return bSavedToTransactionBuffer;
 }
-
-void UModel::PreEditChange(FProperty*)
-{
-	// Do not call Super! Override PreEditChange to keep the same behavior as the Modify which change the default of `bAlwaysMarkDirty`...
-	Modify(false);
-}
 #endif
 
 //
@@ -706,7 +700,7 @@ void UModel::BuildBound()
 		TArray<FVector> NewPoints;
 		for( int32 i=0; i<Polys->Element.Num(); i++ )
 			for( int32 j=0; j<Polys->Element[i].Vertices.Num(); j++ )
-				NewPoints.Add(Polys->Element[i].Vertices[j]);
+				NewPoints.Add((FVector)Polys->Element[i].Vertices[j]);
 		Bounds = FBoxSphereBounds( NewPoints.GetData(), NewPoints.Num() );
 	}
 }
@@ -716,7 +710,7 @@ void UModel::Transform( ABrush* Owner )
 	check(Owner);
 
 	for( int32 i=0; i<Polys->Element.Num(); i++ )
-		Polys->Element[i].Transform(Owner->GetActorLocation());
+		Polys->Element[i].Transform((FVector3f)Owner->GetActorLocation());
 
 }
 
@@ -798,8 +792,8 @@ FVector UModel::GetCenter()
 		for(uint32 VertexIndex = 0;VertexIndex < NumVerts;VertexIndex++)
 		{
 			const FVert& Vert = Verts[Node.iVertPool + VertexIndex];
-			const FVector& Position = Points[Vert.pVertex];
-			Center += Position;
+			const FVector3f& Position = Points[Vert.pVertex];
+			Center += (FVector)Position;
 			Cnt++;
 		}
 	}
@@ -841,20 +835,20 @@ int32 UModel::BuildVertexBuffers()
 		{
 			FBspNode& Node = Nodes[NodeIndex];
 			FBspSurf& Surf = Surfs[Node.iSurf];
-			const FVector& TextureBase = Points[Surf.pBase];
-			const FVector& TextureX = Vectors[Surf.vTextureU];
-			const FVector& TextureY = Vectors[Surf.vTextureV];
+			const FVector3f& TextureBase = Points[Surf.pBase];
+			const FVector3f& TextureX = Vectors[Surf.vTextureU];
+			const FVector3f& TextureY = Vectors[Surf.vTextureV];
 
 			// Use the texture coordinates and normal to create an orthonormal tangent basis.
-			FVector TangentX = TextureX;
-			FVector TangentY = TextureY;
-			FVector TangentZ = Vectors[Surf.vNormal];
-			FVector::CreateOrthonormalBasis(TangentX,TangentY,TangentZ);
+			FVector3f TangentX = TextureX;
+			FVector3f TangentY = TextureY;
+			FVector3f TangentZ = Vectors[Surf.vNormal];
+			FVector3f::CreateOrthonormalBasis(TangentX,TangentY,TangentZ);
 
 			for(uint32 VertexIndex = 0;VertexIndex < Node.NumVertices;VertexIndex++)
 			{
 				const FVert& Vert = Verts[Node.iVertPool + VertexIndex];
-				const FVector& Position = Points[Vert.pVertex];
+				const FVector3f& Position = Points[Vert.pVertex];
 				DestVertex->Position = Position;
 				DestVertex->TexCoord.X = ((Position - TextureBase) | TextureX) / UModel::GetGlobalBSPTexelScale();
 				DestVertex->TexCoord.Y = ((Position - TextureBase) | TextureY) / UModel::GetGlobalBSPTexelScale();
@@ -863,7 +857,7 @@ int32 UModel::BuildVertexBuffers()
 				DestVertex->TangentZ = TangentZ;
 
 				// store the sign of the determinant in TangentZ.W
-				DestVertex->TangentZ.W = GetBasisDeterminantSign( TangentX, TangentY, TangentZ );
+				DestVertex->TangentZ.W = GetBasisDeterminantSign((FVector)TangentX, (FVector)TangentY, (FVector)TangentZ );
 
 				DestVertex++;
 			}
@@ -873,7 +867,7 @@ int32 UModel::BuildVertexBuffers()
 				for(int32 VertexIndex = Node.NumVertices - 1;VertexIndex >= 0;VertexIndex--)
 				{
 					const FVert& Vert = Verts[Node.iVertPool + VertexIndex];
-					const FVector& Position = Points[Vert.pVertex];
+					const FVector3f& Position = Points[Vert.pVertex];
 					DestVertex->Position = Position;
 					DestVertex->TexCoord.X = ((Position - TextureBase) | TextureX) / UModel::GetGlobalBSPTexelScale();
 					DestVertex->TexCoord.Y = ((Position - TextureBase) | TextureY) / UModel::GetGlobalBSPTexelScale();
@@ -882,7 +876,7 @@ int32 UModel::BuildVertexBuffers()
 					DestVertex->TangentZ = -TangentZ;
 
 					// store the sign of the determinant in TangentZ.W
-					DestVertex->TangentZ.W = GetBasisDeterminantSign( TangentX, TangentY, -TangentZ );
+					DestVertex->TangentZ.W = GetBasisDeterminantSign((FVector)TangentX, (FVector)TangentY, (FVector)-TangentZ );
 
 					DestVertex++;
 				}

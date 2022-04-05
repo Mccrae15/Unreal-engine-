@@ -8,6 +8,8 @@
 #include "Framework/Text/TextRunRenderer.h"
 #include "Framework/Text/TextLineHighlight.h"
 #include "Framework/Text/IRun.h"
+#include "Styling/SlateTypes.h"
+
 #include "TextLayout.generated.h"
 
 #define TEXT_LAYOUT_DEBUG 0
@@ -46,21 +48,6 @@ namespace ETextJustify
 	};
 }
 
-/**
- * The different methods that can be used if a word is too long to be broken by the default line-break iterator.
- */
-UENUM(BlueprintType)
-enum class ETextTransformPolicy : uint8
-{
-	/** No transform, just use the given text as-is */
-	None = 0,
-
-	/** Convert the text to lowercase for display */
-	ToLower,
-
-	/** Convert the text to uppercase for display */
-	ToUpper,
-};
 
 /** 
  * The different methods that can be used if a word is too long to be broken by the default line-break iterator.
@@ -424,6 +411,8 @@ public:
 	FORCEINLINE ETextFlowDirection GetTextFlowDirection() const { return TextFlowDirection; }
 	void SetTextFlowDirection( const ETextFlowDirection InTextFlowDirection );
 
+	void SetTextOverflowPolicy(const TOptional<ETextOverflowPolicy> InTextOverflowPolicy);
+
 	FORCEINLINE FMargin GetMargin() const { return Margin; }
 	void SetMargin( const FMargin& InMargin );
 
@@ -448,9 +437,6 @@ public:
 		TSharedRef<FString> Text;
 		TArray<TSharedRef<IRun>> Runs;
 	};
-
-	UE_DEPRECATED(4.11, "Please use the version of AddLine that takes an FNewLineData parameter.")
-	void AddLine( const TSharedRef< FString >& Text, const TArray< TSharedRef< IRun > >& Runs );
 
 	void AddLine( const FNewLineData& NewLine );
 
@@ -762,4 +748,8 @@ protected:
 
 	/** Information given to use by our an external source (typically our owner widget) to help identify who owns this text layout in the case of an error */
 	TAttribute<FString> DebugSourceInfo;
+
+	/** Override for the text overflow policy. If unset, the style is used */
+	TOptional<ETextOverflowPolicy> TextOverflowPolicyOverride;
+
 };

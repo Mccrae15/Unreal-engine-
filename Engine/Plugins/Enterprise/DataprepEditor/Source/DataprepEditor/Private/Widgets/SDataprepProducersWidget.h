@@ -16,7 +16,7 @@
 class FUICommandList;
 class UDataprepContentProducer;
 class UDataprepAssetProducers;
-struct FDataprepDetailsViewColumnSizeData;
+class FDetailColumnSizeData;
 
 class FContentProducerEntry
 {
@@ -56,9 +56,9 @@ public:
 	SLATE_BEGIN_ARGS(SDataprepProducersTableRow) {}
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTableView, const TSharedRef<FContentProducerEntry>& InNode, TSharedRef< FDataprepDetailsViewColumnSizeData > InColumnSizeData);
+	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTableView, const TSharedRef<FContentProducerEntry>& InNode, TSharedRef< FDetailColumnSizeData > InColumnSizeData);
 
-	TSharedRef<SWidget> GetInputMainWidget( TSharedRef< FDataprepDetailsViewColumnSizeData > ColumnSizeData );
+	TSharedRef<SWidget> GetInputMainWidget( TSharedRef< FDetailColumnSizeData > ColumnSizeData );
 
 	TSharedPtr<FContentProducerEntry> GetDisplayNode() const
 	{
@@ -76,7 +76,7 @@ public:
 	SLATE_BEGIN_ARGS(SDataprepProducersTreeView) {}
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, UDataprepAssetProducers* InAssetProducersPtr, TSharedRef< FDataprepDetailsViewColumnSizeData > InColumnSizeData );
+	void Construct(const FArguments& InArgs, UDataprepAssetProducers* InAssetProducersPtr, TSharedRef< FDetailColumnSizeData > InColumnSizeData );
 
 	int32 GetDisplayIndexOfNode(FContentProducerEntryRef InNode);
 
@@ -94,7 +94,7 @@ private:
 private:
 	TWeakObjectPtr<UDataprepAssetProducers> AssetProducersPtr;
 	TArray<FContentProducerEntryRef> RootNodes;
-	TSharedPtr< FDataprepDetailsViewColumnSizeData > ColumnSizeData;
+	TSharedPtr< FDetailColumnSizeData > ColumnSizeData;
 };
 
 /** Delegates for producers import */
@@ -106,9 +106,9 @@ class SDataprepProducersWidget : public SCompoundWidget
 public:
 
 	SLATE_BEGIN_ARGS(SDataprepProducersWidget) {}
-	SLATE_ARGUMENT(TSharedPtr< FDataprepDetailsViewColumnSizeData >, ColumnSizeData)
-	SLATE_ARGUMENT(FDataprepImportProducers, DataprepImportProducersDelegate) 
-	SLATE_ARGUMENT(FDataprepImportProducersEnabled, DataprepImportProducersEnabledDelegate)
+		SLATE_ARGUMENT(TSharedPtr< FDetailColumnSizeData >, ColumnSizeData)
+		SLATE_ARGUMENT(FDataprepImportProducers, DataprepImportProducersDelegate) 
+		SLATE_ARGUMENT(FDataprepImportProducersEnabled, DataprepImportProducersEnabledDelegate)
 	SLATE_END_ARGS()
 
 	~SDataprepProducersWidget();

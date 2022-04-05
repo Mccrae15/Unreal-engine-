@@ -25,6 +25,7 @@ static const uint32 kGridSubdivisionY = 16;
  * Internal intermediary structure derived from FLensDistortionCameraModel by the game thread
  * to hand to the render thread.
  */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 struct FCompiledCameraModel
 {
 	/** Orignal camera model that has generated this compiled model. */
@@ -89,22 +90,22 @@ public:
 		const FCompiledCameraModel& CompiledCameraModel,
 		const FIntPoint& DisplacementMapResolution)
 	{
-		FVector2D PixelUVSizeValue(
+		FVector2f PixelUVSizeValue(
 			1.f / float(DisplacementMapResolution.X), 1.f / float(DisplacementMapResolution.Y));
-		FVector RadialDistortionCoefsValue(
+		FVector3f RadialDistortionCoefsValue(
 			CompiledCameraModel.OriginalCameraModel.K1,
 			CompiledCameraModel.OriginalCameraModel.K2,
 			CompiledCameraModel.OriginalCameraModel.K3);
-		FVector2D TangentialDistortionCoefsValue(
+		FVector2f TangentialDistortionCoefsValue(
 			CompiledCameraModel.OriginalCameraModel.P1,
 			CompiledCameraModel.OriginalCameraModel.P2);
 
 		SetShaderValue(RHICmdList, ShaderRHI, PixelUVSize, PixelUVSizeValue);
-		SetShaderValue(RHICmdList, ShaderRHI, DistortedCameraMatrix, CompiledCameraModel.DistortedCameraMatrix);
-		SetShaderValue(RHICmdList, ShaderRHI, UndistortedCameraMatrix, CompiledCameraModel.UndistortedCameraMatrix);
+		SetShaderValue(RHICmdList, ShaderRHI, DistortedCameraMatrix, FVector4f(CompiledCameraModel.DistortedCameraMatrix));
+		SetShaderValue(RHICmdList, ShaderRHI, UndistortedCameraMatrix, FVector4f(CompiledCameraModel.UndistortedCameraMatrix));
 		SetShaderValue(RHICmdList, ShaderRHI, RadialDistortionCoefs, RadialDistortionCoefsValue);
 		SetShaderValue(RHICmdList, ShaderRHI, TangentialDistortionCoefs, TangentialDistortionCoefsValue);
-		SetShaderValue(RHICmdList, ShaderRHI, OutputMultiplyAndAdd, CompiledCameraModel.OutputMultiplyAndAdd);
+		SetShaderValue(RHICmdList, ShaderRHI, OutputMultiplyAndAdd, FVector2f(CompiledCameraModel.OutputMultiplyAndAdd));
 	}
 
 private:
@@ -199,7 +200,7 @@ static void DrawUVDisplacementToRenderTarget_RenderThread(
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 		// Update viewport.
 		RHICmdList.SetViewport(
@@ -322,7 +323,7 @@ void FLensDistortionCameraModel::DrawUVDisplacementToRenderTarget(
 
 	if (!OutputRenderTarget)
 	{
-		FMessageLog("Blueprint").Warning(LOCTEXT("LensDistortionCameraModel_DrawUVDisplacementToRenderTarget", "DrawUVDisplacementToRenderTarget: Output render target is required."));
+		FMessageLog("Blueprint").Warning(LOCTEXT("LensDistortionCameraModel_OutputTargetRequired", "DrawUVDisplacementToRenderTarget: Output render target is required."));
 		return;
 	}
 
@@ -354,7 +355,7 @@ void FLensDistortionCameraModel::DrawUVDisplacementToRenderTarget(
 
 	if (FeatureLevel < ERHIFeatureLevel::SM5)
 	{
-		FMessageLog("Blueprint").Warning(LOCTEXT("LensDistortionCameraModel_DrawUVDisplacementToRenderTarget", "DrawUVDisplacementToRenderTarget: Requires RHIFeatureLevel::SM5 which is unavailable."));
+		FMessageLog("Blueprint").Warning(LOCTEXT("LensDistortionCameraModel_SM5Unavailable", "DrawUVDisplacementToRenderTarget: Requires RHIFeatureLevel::SM5 which is unavailable."));
 		return;
 	}
 
@@ -370,5 +371,5 @@ void FLensDistortionCameraModel::DrawUVDisplacementToRenderTarget(
 		}
 	);
 }
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #undef LOCTEXT_NAMESPACE

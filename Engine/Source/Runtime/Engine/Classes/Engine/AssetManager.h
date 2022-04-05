@@ -18,6 +18,7 @@ DECLARE_LOG_CATEGORY_EXTERN(LogAssetManager, Log, All);
 struct FPrimaryAssetTypeData;
 struct FPrimaryAssetData;
 struct FPrimaryAssetRulesCustomOverride;
+namespace UE::Cook { class ICookInfo; }
 
 /** Delegate called when acquiring resources/chunks for assets, first parameter will be true if all resources were acquired, false if any failed.
 	Second parameter will contain a list of chunks not yet downloaded */
@@ -97,10 +98,18 @@ public:
 	/** Single path wrapper */
 	virtual int32 ScanPathForPrimaryAssets(FPrimaryAssetType PrimaryAssetType, const FString& Path, UClass* BaseClass, bool bHasBlueprintClasses, bool bIsEditorOnly = false, bool bForceSynchronousScan = true);
 	
-	/** Call this before many calls to ScanPaths to improve load performance. It will defer expensive updates until StopBulkScanning is called */
-	virtual void StartBulkScanning();
-	virtual void StopBulkScanning();
+	/** Call before many calls to ScanPaths to improve load performance. Match each call with PopBulkScanning(). */
+	void PushBulkScanning();
+	void PopBulkScanning();
 
+protected:
+	/** Should only be called from PushBulkScanning() and override */
+	virtual void StartBulkScanning();
+	/** Should only be called from PopBulkScanning() and override */
+	virtual void StopBulkScanning();
+	bool IsBulkScanning() const { return NumBulkScanRequests > 0 ; }
+
+public:
 	/** 
 	 * Adds or updates a Dynamic asset, which is a runtime-specified asset that has no on disk representation, so has no FAssetData. But it can have bundle state and a path.
 	 *
@@ -312,7 +321,7 @@ public:
 	virtual TSharedPtr<FStreamableHandle> PreloadPrimaryAssets(const TArray<FPrimaryAssetId>& AssetsToLoad, const TArray<FName>& LoadBundles, bool bLoadRecursive, FStreamableDelegate DelegateToCall = FStreamableDelegate(), TAsyncLoadPriority Priority = FStreamableManager::DefaultAsyncLoadPriority);
 
 	/** Quick wrapper to async load some non primary assets with the primary streamable manager. This will not auto release the handle, release it if needed */
-	virtual TSharedPtr<FStreamableHandle> LoadAssetList(const TArray<FSoftObjectPath>& AssetList, FStreamableDelegate DelegateToCall = FStreamableDelegate(), TAsyncLoadPriority Priority = FStreamableManager::DefaultAsyncLoadPriority, const FString& DebugName = TEXT("LoadAssetList"));
+	virtual TSharedPtr<FStreamableHandle> LoadAssetList(const TArray<FSoftObjectPath>& AssetList, FStreamableDelegate DelegateToCall = FStreamableDelegate(), TAsyncLoadPriority Priority = FStreamableManager::DefaultAsyncLoadPriority, const FString& DebugName = FStreamableHandle::HandleDebugName_AssetList);
 
 	/** Returns a single AssetBundleInfo, matching Scope and Name */
 	virtual FAssetBundleEntry GetAssetBundleEntry(const FPrimaryAssetId& BundleScope, FName BundleName) const;
@@ -469,13 +478,31 @@ public:
 	/** Loads the redirector maps */
 	virtual void LoadRedirectorMaps();
 
+	/** Refresh the entire set of asset data, can call from editor when things have changed dramatically. Will only refresh if force is true or it thinks something has changed */
+	virtual void RefreshPrimaryAssetDirectory(bool bForceRefresh = false);
+
+	/** Invalidate cached asset data so it knows to rescan when needed */
+	virtual void InvalidatePrimaryAssetDirectory();
+
+	/** Warn about this primary asset id being missing, but only if this is the first time this session */
+	virtual void WarnAboutInvalidPrimaryAsset(const FPrimaryAssetId& PrimaryAssetId, const FString& Message) const;
+
+	/** Helper function to write out asset reports */
+	virtual bool WriteCustomReport(FString FileName, TArray<FString>& FileLines) const;
+
 #if WITH_EDITOR
 	// EDITOR ONLY FUNCTIONALITY
 
 	/** Gets package names to add to the cook, and packages to never cook even if in startup set memory or referenced */
+	virtual void ModifyCook(TConstArrayView<const ITargetPlatform*> TargetPlatforms, TArray<FName>& PackagesToCook,
+		TArray<FName>& PackagesToNeverCook);
+	UE_DEPRECATED(5.0, "Use version that takes TargetPlatforms instead")
 	virtual void ModifyCook(TArray<FName>& PackagesToCook, TArray<FName>& PackagesToNeverCook);
 
 	/** Gets package names to add to a DLC cook*/
+	virtual void ModifyDLCCook(const FString& DLCName, TConstArrayView<const ITargetPlatform*> TargetPlatforms,
+		TArray<FName>& PackagesToCook, TArray<FName>& PackagesToNeverCook);
+	UE_DEPRECATED(5.0, "Use version that takes TargetPlatforms instead")
 	virtual void ModifyDLCCook(const FString& DLCName, TArray<FName>& PackagesToCook, TArray<FName>& PackagesToNeverCook);
 
 	/** Returns whether or not a specific UPackage should be cooked for the provied TargetPlatform */
@@ -484,8 +511,11 @@ public:
 	/** Returns cook rule for a package name using Management rules, games should override this to take into account their individual workflows */
 	virtual EPrimaryAssetCookRule GetPackageCookRule(FName PackageName) const;
 
-	/** Returns true if the specified asset package can be cooked, will error and return false if it is disallowed */
+	UE_DEPRECATED(5.0, "Use version that takes ICookInfo instead")
 	virtual bool VerifyCanCookPackage(FName PackageName, bool bLogError = true) const;
+
+	/** Returns true if the specified asset package can be cooked, will error and return false if it is disallowed */
+	virtual bool VerifyCanCookPackage(UE::Cook::ICookInfo* CookInfo, FName PackageName, bool bLogError = true) const;
 
 	/** 
 	 * For a given package and platform, return what Chunks it should be assigned to, games can override this as needed. Returns false if no information found 
@@ -519,9 +549,6 @@ public:
 
 	/** Returns the list of chunks assigned to the list of primary assets, which is usually a manager list. This is called by GetPackageChunkIds */
 	virtual bool GetPrimaryAssetSetChunkIds(const TSet<FPrimaryAssetId>& PrimaryAssetSet, const class ITargetPlatform* TargetPlatform, TArrayView<const int32> ExistingChunkList, TArray<int32>& OutChunkList) const;
-
-	/** Refresh the entire set of asset data, can call from editor when things have changed dramatically. Will only refresh if force is true or it thinks something has changed */
-	virtual void RefreshPrimaryAssetDirectory(bool bForceRefresh = false);
 
 	/** Resets all asset manager data, called in the editor to reinitialize the config */
 	virtual void ReinitializeFromConfig();
@@ -580,8 +607,8 @@ protected:
 	/** Internal helper function that attempts to get asset data from the specified path; Accounts for possibility of blueprint classes ending in _C */
 	virtual void GetAssetDataForPathInternal(class IAssetRegistry& AssetRegistry, const FString& AssetPath, OUT FAssetData& OutAssetData) const;
 
-	/** Updates the asset data cached on the name data */
-	virtual void UpdateCachedAssetData(const FPrimaryAssetId& PrimaryAssetId, const FAssetData& NewAssetData, bool bAllowDuplicates);
+	/** Updates the asset data cached on the name data; returns false if the asset is not a valid primary asset. */
+	virtual bool TryUpdateCachedAssetData(const FPrimaryAssetId& PrimaryAssetId, const FAssetData& NewAssetData, bool bAllowDuplicates);
 
 	/** Returns the NameData for a specific type/name pair */
 	FPrimaryAssetData* GetNameData(const FPrimaryAssetId& PrimaryAssetId, bool bCheckRedirector = true);
@@ -592,9 +619,6 @@ protected:
 
 	/** Called when an internal load handle finishes, handles setting to pending state */
 	virtual void OnAssetStateChangeCompleted(FPrimaryAssetId PrimaryAssetId, TSharedPtr<FStreamableHandle> BoundHandle, FStreamableDelegate WrappedDelegate);
-
-	/** Helper function to write out asset reports */
-	virtual bool WriteCustomReport(FString FileName, TArray<FString>& FileLines) const;
 
 	/** Scans all asset types specified in DefaultGame */
 	virtual void ScanPrimaryAssetTypesFromConfig();
@@ -640,7 +664,7 @@ protected:
 	virtual void OnInMemoryAssetDeleted(UObject *Object);
 
 	/** Called when object is saved */
-	virtual void OnObjectPreSave(UObject* Object);
+	virtual void OnObjectPreSave(UObject* Object, FObjectPreSaveContext SaveContext);
 
 	/** When asset is renamed */
 	virtual void OnAssetRenamed(const FAssetData& NewData, const FString& OldPath);
@@ -653,9 +677,6 @@ protected:
 
 	/** Called after PIE ends, resets loading state */
 	virtual void EndPIE(bool bStartSimulate);
-
-	/** Invalidate cached asset data so it knows to rescan when needed */
-	virtual void InvalidatePrimaryAssetDirectory();
 
 	/** Copy of the asset state before PIE was entered, return to that when PIE completes */
 	TMap<FPrimaryAssetId, TArray<FName>> PrimaryAssetStateBeforePIE;
@@ -675,6 +696,9 @@ protected:
 
 	/** Cached map of asset bundles, global and per primary asset */
 	TMap<FPrimaryAssetId, TSharedPtr<FAssetBundleData, ESPMode::ThreadSafe>> CachedAssetBundles;
+
+	/** List of assets we have warned about being missing */
+	mutable TSet<FPrimaryAssetId> WarningInvalidAssets;
 
 	/** List of directories that have already been synchronously scanned */
 	mutable TArray<FString> AlreadyScannedDirectories;
@@ -712,7 +736,7 @@ protected:
 
 	/** List of UObjects that are being kept from being GCd, derived from the asset type map. Arrays are currently more efficient than Sets */
 	UPROPERTY()
-	TArray<UObject*> ObjectReferenceList;
+	TArray<TObjectPtr<UObject>> ObjectReferenceList;
 
 	/** True if we are running a build that is already scanning assets globally so we can perhaps avoid scanning paths synchronously */
 	UPROPERTY()
@@ -738,9 +762,12 @@ protected:
 	UPROPERTY()
 	bool bOnlyCookProductionAssets;
 
-	/** True if we are currently in bulk scanning mode */
+	/** Suppresses bOnlyCookProductionAssets based on the AllowsEditorObjects() property of the TargetPlatforms being cooked. */
+	bool bTargetPlatformsAllowEditorObjects;
+
+	/** >0 if we are currently in bulk scanning mode */
 	UPROPERTY()
-	bool bIsBulkScanning;
+	int32 NumBulkScanRequests;
 
 	/** True if asset data is current, if false it will need to rescan before PIE */
 	UPROPERTY()
@@ -797,5 +824,10 @@ private:
 
 	mutable class IAssetRegistry* CachedAssetRegistry;
 	mutable const class UAssetManagerSettings* CachedSettings;
+	UE_DEPRECATED(5.0, "Only used for deprecation support, do not use directly.")
+	mutable UE::Cook::ICookInfo* DeprecationSupportCookInfo = nullptr;
+	UE_DEPRECATED(5.0, "Only used for deprecation support, do not use directly.")
+	mutable TConstArrayView<const ITargetPlatform*> DeprecationSupportTargetPlatforms;
+
 	friend struct FCompiledAssetManagerSearchRules;
 };

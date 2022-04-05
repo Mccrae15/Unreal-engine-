@@ -2,6 +2,9 @@
 
 #include "EntitySystem/TrackInstance/MovieSceneTrackInstance.h"
 #include "EntitySystem/BuiltInComponentTypes.h"
+#include "EntitySystem/MovieSceneEntitySystemLinker.h"
+#include "Evaluation/PreAnimatedState/MovieScenePreAnimatedCaptureSource.h"
+#include "Evaluation/PreAnimatedState/MovieScenePreAnimatedCaptureSources.inl"
 #include "Algo/Sort.h"
 
 void UMovieSceneTrackInstance::Initialize(UObject* InAnimatedObject, UMovieSceneEntitySystemLinker* InLinker)
@@ -11,7 +14,7 @@ void UMovieSceneTrackInstance::Initialize(UObject* InAnimatedObject, UMovieScene
 	AnimatedObject = InAnimatedObject;
 	bIsMasterTrackInstance = (InAnimatedObject == nullptr);
 
-	Linker = InLinker;
+	PrivateLinker = InLinker;
 
 	OnInitialize();
 }
@@ -23,21 +26,46 @@ void UMovieSceneTrackInstance::Animate()
 
 void UMovieSceneTrackInstance::Destroy()
 {
+	using namespace UE::MovieScene;
+
 	if (bIsMasterTrackInstance || !UE::MovieScene::FBuiltInComponentTypes::IsBoundObjectGarbage(AnimatedObject))
 	{
 		OnDestroyed();
+	}
+
+	FPreAnimatedTrackInstanceInputCaptureSources* InputMetaData = PrivateLinker->PreAnimatedState.GetTrackInstanceInputMetaData();
+	if (InputMetaData)
+	{
+		for (const FMovieSceneTrackInstanceInput& Input : Inputs)
+		{
+			InputMetaData->StopTrackingCaptureSource(Input);
+		}
+	}
+
+	FPreAnimatedTrackInstanceCaptureSources* TrackInstanceMetaData = PrivateLinker->PreAnimatedState.GetTrackInstanceMetaData();
+	if (TrackInstanceMetaData)
+	{
+		TrackInstanceMetaData->StopTrackingCaptureSource(this);
 	}
 }
 
 void UMovieSceneTrackInstance::UpdateInputs(TArray<FMovieSceneTrackInstanceInput>&& InNewInputs)
 {
+	using namespace UE::MovieScene;
+
 	Algo::Sort(InNewInputs);
 
-	// Fast path if they are the same
+	// Fast path if they are the same - this includes checking whether bInputHasBeenProcessed is the
+	// same on all pre/post inputs, which technically should never happen for us to have gotten this far
 	if (Inputs == InNewInputs)
 	{
+		// We still call OnBegin/EndUpdateInputs since some of them must have been invalidated for us to get this far
+		OnBeginUpdateInputs();
+		OnEndUpdateInputs();
 		return;
 	}
+
+	FPreAnimatedTrackInstanceInputCaptureSources* InputMetaData = PrivateLinker->PreAnimatedState.GetTrackInstanceInputMetaData();
 
 	// We know they are different in some way - now 
 	OnBeginUpdateInputs();
@@ -50,8 +78,22 @@ void UMovieSceneTrackInstance::UpdateInputs(TArray<FMovieSceneTrackInstanceInput
 
 	for ( ; OldIndex < OldNum || NewIndex < NewNum; )
 	{
-		while (OldIndex < OldNum && NewIndex < NewNum && Inputs[OldIndex] == InNewInputs[NewIndex])
+		while (OldIndex < OldNum && NewIndex < NewNum && Inputs[OldIndex].IsSameInput(InNewInputs[NewIndex]))
 		{
+			if (!InNewInputs[NewIndex].bInputHasBeenProcessed)
+			{
+				// This input is the same as one already existing in the track instance
+				// But it is being reimported - remove it and add it again
+				OnInputRemoved(Inputs[OldIndex]);
+				if (InputMetaData)
+				{
+					InputMetaData->StopTrackingCaptureSource(Inputs[OldIndex]);
+				}
+
+				InNewInputs[NewIndex].bInputHasBeenProcessed = true;
+				OnInputAdded(InNewInputs[NewIndex]);
+			}
+
 			++OldIndex;
 			++NewIndex;
 		}
@@ -66,11 +108,18 @@ void UMovieSceneTrackInstance::UpdateInputs(TArray<FMovieSceneTrackInstanceInput
 			{
 				// Out with the old
 				OnInputRemoved(Inputs[OldIndex]);
+				if (InputMetaData)
+				{
+					InputMetaData->StopTrackingCaptureSource(Inputs[OldIndex]);
+				}
 				++OldIndex;
 			}
 			else
 			{
 				// and in with the new
+				FScopedPreAnimatedCaptureSource CaptureSource(PrivateLinker, InNewInputs[NewIndex]);
+
+				InNewInputs[NewIndex].bInputHasBeenProcessed = true;
 				OnInputAdded(InNewInputs[NewIndex]);
 				++NewIndex;
 			}
@@ -79,11 +128,16 @@ void UMovieSceneTrackInstance::UpdateInputs(TArray<FMovieSceneTrackInstanceInput
 		{
 			// Out with the old
 			OnInputRemoved(Inputs[OldIndex]);
+			if (InputMetaData)
+			{
+				InputMetaData->StopTrackingCaptureSource(Inputs[OldIndex]);
+			}
 			++OldIndex;
 		}
 		else if (ensure(NewIndex < NewNum))
 		{
 			// and in with the new
+			InNewInputs[NewIndex].bInputHasBeenProcessed = true;
 			OnInputAdded(InNewInputs[NewIndex]);
 			++NewIndex;
 		}

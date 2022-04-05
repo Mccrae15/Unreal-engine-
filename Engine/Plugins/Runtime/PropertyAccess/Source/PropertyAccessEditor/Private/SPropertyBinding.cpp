@@ -25,15 +25,18 @@
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Algo/Transform.h"
 #include "Widgets/Layout/SSpacer.h"
+#include "UObject/UObjectIterator.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 
 #define LOCTEXT_NAMESPACE "PropertyBinding"
 
 /////////////////////////////////////////////////////
 // SPropertyBinding
 
-void SPropertyBinding::Construct(const FArguments& InArgs, UBlueprint* InBlueprint)
+void SPropertyBinding::Construct(const FArguments& InArgs, UBlueprint* InBlueprint, const TArray<FBindingContextStruct>& InBindingContextStructs)
 {
 	Blueprint = InBlueprint;
+	BindingContextStructs = InBindingContextStructs;
 
 	Args = InArgs._Args;
 	PropertyName = Args.Property != nullptr ? Args.Property->GetFName() : NAME_None;
@@ -45,38 +48,34 @@ void SPropertyBinding::Construct(const FArguments& InArgs, UBlueprint* InBluepri
 		+ SHorizontalBox::Slot()
 		.FillWidth(1.0f)
 		[
-			SNew(SBox)
-			.MaxDesiredWidth(200.0f)
+			SNew(SComboButton)
+			.ToolTipText(this, &SPropertyBinding::GetCurrentBindingToolTipText)
+			.OnGetMenuContent(this, &SPropertyBinding::OnGenerateDelegateMenu)
+			.ContentPadding(1)
+			.ButtonContent()
 			[
-				SNew(SComboButton)
-				.ToolTipText(this, &SPropertyBinding::GetCurrentBindingText)
-				.OnGetMenuContent(this, &SPropertyBinding::OnGenerateDelegateMenu)
-				.ContentPadding(1)
-				.ButtonContent()
+				SNew(SHorizontalBox)
+				.Clipping(EWidgetClipping::ClipToBounds)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
 				[
-					SNew(SHorizontalBox)
-					.Clipping(EWidgetClipping::ClipToBounds)
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
+					SNew(SBox)
+					.HeightOverride(16.0f)
 					[
-						SNew(SBox)
-						.HeightOverride(16.0f)
-						[
-							SNew(SImage)
-							.Image(this, &SPropertyBinding::GetCurrentBindingImage)
-							.ColorAndOpacity(this, &SPropertyBinding::GetCurrentBindingColor)
-						]
+						SNew(SImage)
+						.Image(this, &SPropertyBinding::GetCurrentBindingImage)
+						.ColorAndOpacity(this, &SPropertyBinding::GetCurrentBindingColor)
 					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					.Padding(4, 0, 0, 0)
-					[
-						SNew(STextBlock)
-						.Text(this, &SPropertyBinding::GetCurrentBindingText)
-						.Font(IDetailLayoutBuilder::GetDetailFont())
-					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(4, 0, 0, 0)
+				[
+					SNew(STextBlock)
+					.Text(this, &SPropertyBinding::GetCurrentBindingText)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
 				]
 			]
 		]
@@ -92,13 +91,13 @@ void SPropertyBinding::Construct(const FArguments& InArgs, UBlueprint* InBluepri
 			.ToolTipText(LOCTEXT("GotoFunction", "Goto Function"))
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("PropertyWindow.Button_Browse"))
+				.Image(FEditorStyle::GetBrush("Icons.Search"))
 			]
 		]
 	];
 }
 
-bool SPropertyBinding::IsClassBlackListed(UClass* InClass) const
+bool SPropertyBinding::IsClassDenied(UClass* InClass) const
 {
 	if(Args.OnCanBindToClass.IsBound() && Args.OnCanBindToClass.Execute(InClass))
 	{
@@ -108,9 +107,9 @@ bool SPropertyBinding::IsClassBlackListed(UClass* InClass) const
 	return true;
 }
 
-bool SPropertyBinding::IsFieldFromBlackListedClass(FFieldVariant Field) const
+bool SPropertyBinding::IsFieldFromDeniedClass(FFieldVariant Field) const
 {
-	return IsClassBlackListed(Field.GetOwnerClass());
+	return IsClassDenied(Field.GetOwnerClass());
 }
 
 template <typename Predicate>
@@ -118,42 +117,70 @@ void SPropertyBinding::ForEachBindableFunction(UClass* FromClass, Predicate Pred
 {
 	if(Args.OnCanBindFunction.IsBound())
 	{
-		// Walk up class hierarchy for native functions and properties
-		for ( TFieldIterator<UFunction> FuncIt(FromClass, EFieldIteratorFlags::IncludeSuper); FuncIt; ++FuncIt )
+		auto CheckBindableClass = [this, &Pred](UClass* InBindableClass)
 		{
-			UFunction* Function = *FuncIt;
-
-			// Stop processing functions after reaching a base class that it doesn't make sense to go beyond.
-			if ( IsFieldFromBlackListedClass(Function) )
+			// Walk up class hierarchy for native functions and properties
+			for ( TFieldIterator<UFunction> FuncIt(InBindableClass, EFieldIteratorFlags::IncludeSuper); FuncIt; ++FuncIt )
 			{
-				break;
-			}
+				UFunction* Function = *FuncIt;
 
-			// Only allow binding pure functions if we're limited to pure function bindings.
-			if ( Args.bGeneratePureBindings && !Function->HasAnyFunctionFlags(FUNC_Const | FUNC_BlueprintPure) )
-			{
-				continue;
-			}
-
-			// Only bind to functions that are callable from blueprints
-			if ( !UEdGraphSchema_K2::CanUserKismetCallFunction(Function) )
-			{
-				continue;
-			}
-
-			bool bValidObjectFunction = false;
-			if(Args.bAllowUObjectFunctions)
-			{
-				FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(Function->GetReturnProperty());
-				if(ObjectPropertyBase != nullptr && Function->NumParms == 1)
+				// Stop processing functions after reaching a base class that it doesn't make sense to go beyond.
+				if ( IsFieldFromDeniedClass(Function) )
 				{
-					bValidObjectFunction = true;
+					break;
+				}
+
+				// Only allow binding pure functions if we're limited to pure function bindings.
+				if ( Args.bGeneratePureBindings && !Function->HasAnyFunctionFlags(FUNC_Const | FUNC_BlueprintPure) )
+				{
+					continue;
+				}
+
+				// Only bind to functions that are callable from blueprints
+				if ( !UEdGraphSchema_K2::CanUserKismetCallFunction(Function) )
+				{
+					continue;
+				}
+
+				bool bValidObjectFunction = false;
+				if(Args.bAllowUObjectFunctions)
+				{
+					FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(Function->GetReturnProperty());
+					if(ObjectPropertyBase != nullptr && Function->NumParms == 1)
+					{
+						bValidObjectFunction = true;
+					}
+				}
+
+				bool bValidStructFunction = false;
+				if(Args.bAllowStructFunctions)
+				{
+					FStructProperty* StructProperty = CastField<FStructProperty>(Function->GetReturnProperty());
+					if(StructProperty != nullptr && Function->NumParms == 1)
+					{
+						bValidStructFunction = true;
+					}
+				}
+
+				if(bValidObjectFunction || bValidStructFunction || Args.OnCanBindFunction.Execute(Function))
+				{
+					Pred(FFunctionInfo(Function));
 				}
 			}
+		};
 
-			if(bValidObjectFunction || Args.OnCanBindFunction.Execute(Function))
+		CheckBindableClass(FromClass);
+
+		if(Args.bAllowFunctionLibraryBindings)
+		{
+			// Iterate function libraries
+			for (TObjectIterator<UClass> ClassIt; ClassIt; ++ClassIt)
 			{
-				Pred(FFunctionInfo(Function));
+				UClass* TestClass = *ClassIt;
+				if (TestClass->IsChildOf(UBlueprintFunctionLibrary::StaticClass()) && (!TestClass->HasAnyClassFlags(CLASS_Abstract)))
+				{
+					CheckBindableClass(TestClass);
+				}
 			}
 		}
 	}
@@ -164,25 +191,33 @@ void SPropertyBinding::ForEachBindableProperty(UStruct* InStruct, Predicate Pred
 {
 	if(Args.OnCanBindProperty.IsBound())
 	{
-		UBlueprintGeneratedClass* SkeletonClass = Cast<UBlueprintGeneratedClass>(Blueprint->SkeletonGeneratedClass);
+		UBlueprintGeneratedClass* SkeletonClass = Blueprint ? Cast<UBlueprintGeneratedClass>(Blueprint->SkeletonGeneratedClass) : nullptr;
 
 		for ( TFieldIterator<FProperty> PropIt(InStruct, EFieldIteratorFlags::IncludeSuper); PropIt; ++PropIt )
 		{
 			FProperty* Property = *PropIt;
 
 			// Stop processing properties after reaching the stopped base class
-			if ( IsFieldFromBlackListedClass(Property) )
+			if ( IsFieldFromDeniedClass(Property) )
 			{
 				break;
 			}
 
-			if ( !UEdGraphSchema_K2::CanUserKismetAccessVariable(Property, SkeletonClass, UEdGraphSchema_K2::CannotBeDelegate) )
+			if (Args.OnCanAcceptPropertyOrChildren.IsBound() && Args.OnCanAcceptPropertyOrChildren.Execute(Property) == false)
 			{
 				continue;
 			}
 
+			if (SkeletonClass)
+			{
+				if (!UEdGraphSchema_K2::CanUserKismetAccessVariable(Property, SkeletonClass, UEdGraphSchema_K2::CannotBeDelegate))
+				{
+					continue;
+				}
+			}
+
 			// Also ignore advanced properties
-			if ( Property->HasAnyPropertyFlags(CPF_AdvancedDisplay | CPF_EditorOnly) )
+			if (Property->HasAnyPropertyFlags(CPF_AdvancedDisplay | CPF_EditorOnly))
 			{
 				continue;
 			}
@@ -192,10 +227,132 @@ void SPropertyBinding::ForEachBindableProperty(UStruct* InStruct, Predicate Pred
 	}
 }
 
+bool SPropertyBinding::HasBindableProperties(UStruct* InStruct) const
+{
+	TSet<UStruct*> VisitedStructs;
+	return HasBindablePropertiesRecursive(InStruct, VisitedStructs, 0);
+}
+
+bool SPropertyBinding::HasBindablePropertiesRecursive(UStruct* InStruct, TSet<UStruct*>& VisitedStructs, const int32 RecursionDepth) const
+{
+	if (VisitedStructs.Contains(InStruct))
+	{
+		// If we have visited this struct already and it had bindable properties, it has been accounted for already.
+		// Returning false to allow early exit.
+		return false;
+	}
+	VisitedStructs.Add(InStruct);
+	
+	// Arbitrary cut off to avoid infinite loops.
+	if (RecursionDepth > 10)
+	{
+		return false;
+	}
+	
+	int32 BindableCount = 0;
+	ForEachBindableProperty(InStruct, [this, &BindableCount, &VisitedStructs, RecursionDepth] (FProperty* Property)
+	{
+		FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property);
+
+		if(Args.OnCanBindProperty.Execute(Property))
+		{
+			BindableCount++;
+			return;
+		}
+
+		if(Args.bAllowArrayElementBindings && ArrayProperty != nullptr && Args.OnCanBindProperty.Execute(ArrayProperty->Inner))
+		{
+			BindableCount++;
+			return;
+		}
+
+		FProperty* InnerProperty = Property;
+		if(Args.bAllowArrayElementBindings && ArrayProperty != nullptr)
+		{
+			InnerProperty = ArrayProperty->Inner;
+		}
+
+		FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(InnerProperty);
+		FStructProperty* StructProperty = CastField<FStructProperty>(InnerProperty);
+
+		UStruct* Struct = nullptr;
+		UClass* Class = nullptr;
+
+		if ( ObjectProperty )
+		{
+			Struct = Class = ObjectProperty->PropertyClass;
+		}
+		else if ( StructProperty )
+		{
+			Struct = StructProperty->Struct;
+		}
+
+		// Recurse into a struct, except if it is the same type as the one we're binding.
+		if (Struct && HasBindablePropertiesRecursive(Struct, VisitedStructs, RecursionDepth + 1))
+		{
+			if (Class)
+			{
+				// Ignore any subobject properties that are not bindable.
+				// Also ignore any class that is explicitly on the deny list.
+				if ( IsClassDenied(Class) || (Args.OnCanBindToSubObjectClass.IsBound() && Args.OnCanBindToSubObjectClass.Execute(Class)))
+				{
+					return;
+				}
+			}
+
+			if (Args.bAllowArrayElementBindings && ArrayProperty != nullptr)
+			{
+				BindableCount++;
+			}
+			else if (Args.bAllowStructMemberBindings)
+			{
+				BindableCount++;
+			}
+		}
+	});
+
+	if(UClass* Class = Cast<UClass>(InStruct))
+	{
+		ForEachBindableFunction(Class, [this, &BindableCount, &VisitedStructs, RecursionDepth](const FFunctionInfo& Info)
+		{
+			FProperty* ReturnProperty = Info.Function->GetReturnProperty();
+			
+			// We can get here if we accept non-leaf UObject functions, so if so we need to check the return value for compatibility
+			if(!Args.bAllowUObjectFunctions || Args.OnCanBindProperty.Execute(ReturnProperty))
+			{
+				BindableCount++;
+			}
+
+			// Only show bindable subobjects, structs and variables if we're generating pure bindings.
+			if(Args.bGeneratePureBindings)
+			{
+				if(FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(ReturnProperty))
+				{
+					HasBindablePropertiesRecursive(ObjectPropertyBase->PropertyClass, VisitedStructs, RecursionDepth + 1);
+				}
+				else if(FStructProperty* StructProperty = CastField<FStructProperty>(ReturnProperty))
+				{
+					HasBindablePropertiesRecursive(StructProperty->Struct, VisitedStructs, RecursionDepth + 1);
+				}
+			}
+		});
+	}
+	
+	return BindableCount > 0;
+}
+
 TSharedRef<SWidget> SPropertyBinding::OnGenerateDelegateMenu()
 {
+	// The menu itself is be searchable.
+	const bool bSearchableMenu = true;
+
+	// The menu are generated through reflection and sometime the API exposes some recursivity (think about a Widget returning it parent which is also a Widget). Just by reflection
+	// it is not possible to determine when the root object is reached. It needs a kind of simulation which is not implemented. Also, even if the recursivity was correctly handled, the possible
+	// permutations tend to grow exponentially. Until a clever solution is found, the simple approach is to disable recursively searching those menus. User can still search the current one though.
+	const bool bRecursivelySearchableMenu = false;
+
 	const bool bInShouldCloseWindowAfterMenuSelection = true;
-	FMenuBuilder MenuBuilder(bInShouldCloseWindowAfterMenuSelection, nullptr, Args.MenuExtender);
+	FMenuBuilder MenuBuilder(bInShouldCloseWindowAfterMenuSelection, nullptr, Args.MenuExtender, /*bCloseSelfOnly*/false, &FCoreStyle::Get(), bSearchableMenu, NAME_None, bRecursivelySearchableMenu);
 
 	MenuBuilder.BeginSection("BindingActions", LOCTEXT("Bindings", "Bindings"));
 
@@ -224,10 +381,62 @@ TSharedRef<SWidget> SPropertyBinding::OnGenerateDelegateMenu()
 	// Properties
 	{
 		// Get the current skeleton class, think header for the blueprint.
-		UBlueprintGeneratedClass* SkeletonClass = Cast<UBlueprintGeneratedClass>(Blueprint->SkeletonGeneratedClass);
+		UBlueprintGeneratedClass* SkeletonClass = Blueprint ? Cast<UBlueprintGeneratedClass>(Blueprint->SkeletonGeneratedClass) : nullptr;
 
-		TArray<TSharedPtr<FBindingChainElement>> BindingChain;
-		FillPropertyMenu(MenuBuilder, SkeletonClass, BindingChain);
+		if (SkeletonClass)
+		{
+			TArray<TSharedPtr<FBindingChainElement>> BindingChain;
+			FillPropertyMenu(MenuBuilder, SkeletonClass, BindingChain);
+		}
+	}
+
+	if (BindingContextStructs.Num() > 0)
+	{
+		auto MakeContextStructWidget = [this](const FBindingContextStruct& ContextStruct)
+		{
+			FText DisplayText = ContextStruct.DisplayText.IsEmpty() ? ContextStruct.Struct->GetDisplayNameText() : ContextStruct.DisplayText;
+			FText ToolTipText = ContextStruct.TooltipText.IsEmpty() ? DisplayText : ContextStruct.TooltipText;
+
+			return SNew(SHorizontalBox)
+				.ToolTipText(ToolTipText)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SSpacer)
+					.Size(FVector2D(18.0f, 0.0f))
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(1.0f, 0.0f)
+				[
+					SNew(SImage)
+					.Image(ContextStruct.Icon)
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(4.0f, 0.0f)
+				[
+					SNew(STextBlock)
+					.Text(DisplayText)
+				];
+		};
+
+		for (int32 i = 0; i < BindingContextStructs.Num(); i++)
+		{
+			FBindingContextStruct& ContextStruct = BindingContextStructs[i];
+			if (HasBindableProperties(ContextStruct.Struct))
+			{
+				// Make first chain element representing the index in the context array.
+				TArray<TSharedPtr<FBindingChainElement>> BindingChain;
+				BindingChain.Emplace(MakeShared<FBindingChainElement>(nullptr, i));
+
+				MenuBuilder.AddSubMenu(
+					MakeContextStructWidget(ContextStruct),
+					FNewMenuDelegate::CreateSP(this, &SPropertyBinding::FillPropertyMenu, ContextStruct.Struct, BindingChain));
+			}
+		}
 	}
 
 	FDisplayMetrics DisplayMetrics;
@@ -322,6 +531,23 @@ void SPropertyBinding::FillPropertyMenu(FMenuBuilder& MenuBuilder, UStruct* InOw
 		FEdGraphPinType PinType;
 		Schema->ConvertPropertyToPinType(InProperty, PinType);
 
+		FText PropertyDisplayName;
+		if(InProperty->IsNative())
+		{
+			if(const FString* ScriptNamePtr = InProperty->FindMetaData("ScriptName"))
+			{
+				PropertyDisplayName = FText::FromString(*ScriptNamePtr);
+			}
+			else
+			{
+				PropertyDisplayName = FText::FromString(InProperty->GetName());
+			}
+		}
+		else
+		{
+			PropertyDisplayName = FText::FromString(InProperty->GetDisplayNameText().ToString());
+		}
+		
 		return SNew(SHorizontalBox)
 			.ToolTipText(InProperty->GetToolTipText())
 			+SHorizontalBox::Slot()
@@ -345,7 +571,7 @@ void SPropertyBinding::FillPropertyMenu(FMenuBuilder& MenuBuilder, UStruct* InOw
 			.Padding(4.0f, 0.0f)
 			[
 				SNew(STextBlock)
-				.Text(FText::FromName(InProperty->GetFName()))
+				.Text(PropertyDisplayName)
 			];
 	};
 
@@ -398,49 +624,61 @@ void SPropertyBinding::FillPropertyMenu(FMenuBuilder& MenuBuilder, UStruct* InOw
 	//---------------------------------------
 	// Function Bindings
 
-	if ( UClass* OwnerClass = Cast<UClass>(InOwnerStruct) )
+	if (Args.bAllowFunctionBindings)
 	{
-		static FName FunctionIcon(TEXT("GraphEditor.Function_16x"));
-
-		MenuBuilder.BeginSection("Functions", LOCTEXT("Functions", "Functions"));
+		if ( UClass* OwnerClass = Cast<UClass>(InOwnerStruct) )
 		{
-			ForEachBindableFunction(OwnerClass, [this, &InBindingChain, &MenuBuilder, &MakeFunctionWidget] (const FFunctionInfo& Info) 
+			static FName FunctionIcon(TEXT("GraphEditor.Function_16x"));
+
+			MenuBuilder.BeginSection("Functions", LOCTEXT("Functions", "Functions"));
 			{
-				TArray<TSharedPtr<FBindingChainElement>> NewBindingChain(InBindingChain);
-				NewBindingChain.Emplace(MakeShared<FBindingChainElement>(Info.Function));
-
-				FProperty* ReturnProperty = Info.Function->GetReturnProperty();
-				// We can get here if we accept non-leaf UObject functions, so if so we need to check the return value for compatibility
-				if(!Args.bAllowUObjectFunctions || Args.OnCanBindProperty.Execute(ReturnProperty))
+				ForEachBindableFunction(OwnerClass, [this, &InBindingChain, &MenuBuilder, &MakeFunctionWidget] (const FFunctionInfo& Info) 
 				{
-					MenuBuilder.AddMenuEntry(
-						FUIAction(FExecuteAction::CreateSP(this, &SPropertyBinding::HandleAddBinding, NewBindingChain)),
-						MakeFunctionWidget(Info));
-				}
+					TArray<TSharedPtr<FBindingChainElement>> NewBindingChain(InBindingChain);
+					NewBindingChain.Emplace(MakeShared<FBindingChainElement>(Info.Function));
 
-				// Only show bindable subobjects and variables if we're generating pure bindings.
-				if(Args.bGeneratePureBindings)
-				{
-					if(FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(ReturnProperty))
+					FProperty* ReturnProperty = Info.Function->GetReturnProperty();
+					// We can get here if we accept non-leaf UObject functions, so if so we need to check the return value for compatibility
+					if(!Args.bAllowUObjectFunctions || Args.OnCanBindProperty.Execute(ReturnProperty))
 					{
-						MenuBuilder.AddSubMenu(
-							MakeFunctionWidget(Info),
-							FNewMenuDelegate::CreateSP(this, &SPropertyBinding::FillPropertyMenu, static_cast<UStruct*>(ObjectPropertyBase->PropertyClass), NewBindingChain));
+						MenuBuilder.AddMenuEntry(
+							FUIAction(FExecuteAction::CreateSP(this, &SPropertyBinding::HandleAddBinding, NewBindingChain)),
+							MakeFunctionWidget(Info));
 					}
-				}
-			});
+
+					// Only show bindable subobjects, structs and variables if we're generating pure bindings.
+					if(Args.bGeneratePureBindings)
+					{
+						if(FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(ReturnProperty))
+						{
+							if (HasBindableProperties(ObjectPropertyBase->PropertyClass))
+							{
+								MenuBuilder.AddSubMenu(
+									MakeFunctionWidget(Info),
+									FNewMenuDelegate::CreateSP(this, &SPropertyBinding::FillPropertyMenu, static_cast<UStruct*>(ObjectPropertyBase->PropertyClass), NewBindingChain));
+							}
+						}
+						else if(FStructProperty* StructProperty = CastField<FStructProperty>(ReturnProperty))
+						{
+							if (HasBindableProperties(StructProperty->Struct))
+							{
+								MenuBuilder.AddSubMenu(
+									MakeFunctionWidget(Info),
+									FNewMenuDelegate::CreateSP(this, &SPropertyBinding::FillPropertyMenu, static_cast<UStruct*>(StructProperty->Struct), NewBindingChain));
+							}
+						}
+					}
+				});
+			}
+			MenuBuilder.EndSection(); //Functions
 		}
-		MenuBuilder.EndSection(); //Functions
 	}
 
 	//---------------------------------------
 	// Property Bindings
 
-	// Get the current skeleton class, think header for the blueprint.
-	UBlueprintGeneratedClass* SkeletonClass = Cast<UBlueprintGeneratedClass>(Blueprint->SkeletonGeneratedClass);
-
 	// Only show bindable subobjects and variables if we're generating pure bindings.
-	if ( Args.bGeneratePureBindings )
+	if ( Args.bGeneratePureBindings && Args.bAllowPropertyBindings )
 	{
 		FProperty* BindingProperty = nullptr;
 		if(Args.BindableSignature != nullptr)
@@ -456,9 +694,21 @@ void SPropertyBinding::FillPropertyMenu(FMenuBuilder& MenuBuilder, UStruct* InOw
 		// to look for bindings that we don't support
 		if ( Args.OnCanBindProperty.IsBound() && Args.OnCanBindProperty.Execute(BindingProperty) )
 		{
+			UStruct* BindingStruct = nullptr;
+			FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(BindingProperty);
+			FStructProperty* StructProperty = CastField<FStructProperty>(BindingProperty);
+			if (ObjectProperty)
+			{
+				BindingStruct = ObjectProperty->PropertyClass;
+			}
+			else if (StructProperty)
+			{
+				BindingStruct = StructProperty->Struct;
+			}
+
 			MenuBuilder.BeginSection("Properties", LOCTEXT("Properties", "Properties"));
 			{
-				ForEachBindableProperty(InOwnerStruct, [this, &InBindingChain, &MenuBuilder, &MakeArrayElementPropertyWidget, &MakePropertyWidget, &MakePropertyEntry, &MakeArrayElementEntry] (FProperty* Property) 
+				ForEachBindableProperty(InOwnerStruct, [this, &InBindingChain, BindingStruct, &MenuBuilder, &MakeArrayElementPropertyWidget, &MakePropertyWidget, &MakePropertyEntry, &MakeArrayElementEntry] (FProperty* Property)
 				{
 					TArray<TSharedPtr<FBindingChainElement>> NewBindingChain(InBindingChain);
 					NewBindingChain.Emplace(MakeShared<FBindingChainElement>(Property));
@@ -500,34 +750,38 @@ void SPropertyBinding::FillPropertyMenu(FMenuBuilder& MenuBuilder, UStruct* InOw
 						Struct = StructProperty->Struct;
 					}
 
-					if ( Struct )
+					// Recurse into a struct if it has some properties we can bind to.
+					if (Struct)
 					{
-						if ( Class )
+						if (Class)
 						{
 							// Ignore any subobject properties that are not bindable.
-							// Also ignore any class that is explicitly on the black list.
-							if ( IsClassBlackListed(Class) || (Args.OnCanBindToSubObjectClass.IsBound() && Args.OnCanBindToSubObjectClass.Execute(Class)))
+							// Also ignore any class that is explicitly on the deny list.
+							if ( IsClassDenied(Class) || (Args.OnCanBindToSubObjectClass.IsBound() && Args.OnCanBindToSubObjectClass.Execute(Class)))
 							{
 								return;
 							}
 						}
 
-						if(Args.bAllowArrayElementBindings && ArrayProperty != nullptr)
+						if (HasBindableProperties(Struct))
 						{
-							TArray<TSharedPtr<FBindingChainElement>> NewArrayElementBindingChain(InBindingChain);
-							NewArrayElementBindingChain.Emplace(MakeShared<FBindingChainElement>(Property));
-							NewArrayElementBindingChain.Last()->ArrayIndex = 0;
+							if (Args.bAllowArrayElementBindings && ArrayProperty != nullptr)
+							{
+								TArray<TSharedPtr<FBindingChainElement>> NewArrayElementBindingChain(InBindingChain);
+								NewArrayElementBindingChain.Emplace(MakeShared<FBindingChainElement>(Property));
+								NewArrayElementBindingChain.Last()->ArrayIndex = 0;
 
-							MenuBuilder.AddSubMenu(
-								MakeArrayElementPropertyWidget(ArrayProperty->Inner, NewArrayElementBindingChain),
-								FNewMenuDelegate::CreateSP(this, &SPropertyBinding::FillPropertyMenu, Struct, NewArrayElementBindingChain)
-								);
-						}
-						else
-						{
-							MenuBuilder.AddSubMenu(
-								MakePropertyWidget(Property),
-								FNewMenuDelegate::CreateSP(this, &SPropertyBinding::FillPropertyMenu, Struct, NewBindingChain));
+								MenuBuilder.AddSubMenu(
+									MakeArrayElementPropertyWidget(ArrayProperty->Inner, NewArrayElementBindingChain),
+									FNewMenuDelegate::CreateSP(this, &SPropertyBinding::FillPropertyMenu, Struct, NewArrayElementBindingChain)
+									);
+							}
+							else if (Args.bAllowStructMemberBindings)
+							{
+								MenuBuilder.AddSubMenu(
+									MakePropertyWidget(Property),
+									FNewMenuDelegate::CreateSP(this, &SPropertyBinding::FillPropertyMenu, Struct, NewBindingChain));
+							}
 						}
 					}
 				});
@@ -563,6 +817,16 @@ FText SPropertyBinding::GetCurrentBindingText() const
 	}
 
 	return LOCTEXT("Bind", "Bind");
+}
+
+FText SPropertyBinding::GetCurrentBindingToolTipText() const
+{
+	if(Args.CurrentBindingToolTipText.IsSet())
+	{
+		return Args.CurrentBindingToolTipText.Get();
+	}
+
+	return GetCurrentBindingText();
 }
 
 FSlateColor SPropertyBinding::GetCurrentBindingColor() const
@@ -623,6 +887,11 @@ void SPropertyBinding::HandleSetBindingArrayIndex(int32 InArrayIndex, ETextCommi
 
 void SPropertyBinding::HandleCreateAndAddBinding()
 {
+	if (!Blueprint)
+	{
+		return;
+	}
+
 	const FScopedTransaction Transaction(LOCTEXT("CreateDelegate", "Create Binding"));
 
 	Blueprint->Modify();
@@ -635,7 +904,7 @@ void SPropertyBinding::HandleCreateAndAddBinding()
 		WidgetName = Args.OnGenerateBindingName.Execute();
 	}
 
-	FString Post = PropertyName != NAME_None ? PropertyName.ToString() : TEXT("");
+	FString Post = (PropertyName != NAME_None) ? PropertyName.ToString() : FString();
 	Post.RemoveFromStart(TEXT("On"));
 	Post.RemoveFromEnd(TEXT("Event"));
 
@@ -653,6 +922,8 @@ void SPropertyBinding::HandleCreateAndAddBinding()
 	UFunction* Function = Blueprint->SkeletonGeneratedClass->FindFunctionByName(FunctionGraph->GetFName());
 	check(Function);
 
+	Args.OnNewFunctionBindingCreated.ExecuteIfBound(FunctionGraph, Function);
+	
 	// Add the binding to the blueprint
 	TArray<TSharedPtr<FBindingChainElement>> BindingPath;
 	BindingPath.Emplace(MakeShared<FBindingChainElement>(Function));

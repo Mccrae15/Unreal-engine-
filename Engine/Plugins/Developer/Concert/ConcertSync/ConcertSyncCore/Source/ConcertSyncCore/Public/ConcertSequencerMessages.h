@@ -6,6 +6,7 @@
 #include "UObject/Object.h"
 #include "UObject/Class.h"
 #include "Misc/QualifiedFrameTime.h"
+#include "Math/Range.h"
 #include "ConcertSequencerMessages.generated.h"
 
 
@@ -41,6 +42,9 @@ struct FConcertSequencerState
 	/** The current status of the sequencer player */
 	UPROPERTY()
 	EConcertMovieScenePlayerStatus PlayerStatus;
+
+	UPROPERTY()
+	FFrameNumberRange PlaybackRange;
 
 	/** The current playback speed */
 	UPROPERTY()
@@ -78,7 +82,10 @@ struct FConcertSequencerCloseEvent
 	FString SequenceObjectPath;
 
 	UPROPERTY()
-	bool bMasterClose = false;
+	bool bControllerClose = false;
+
+	UPROPERTY()
+	int32 EditorsWithSequencerOpened = -1;
 };
 
 /**
@@ -104,4 +111,20 @@ struct FConcertSequencerStateSyncEvent
 
 	UPROPERTY()
 	TArray<FConcertSequencerState> SequencerStates;
+};
+
+/**
+ * An event that represents a time changes on the sequencer. This can happen via take recorder
+ * which will shift the active take _if_ Start At Timecode is enabled.
+ */
+USTRUCT()
+struct FConcertSequencerTimeAdjustmentEvent
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FFrameNumber PlaybackStartFrame;
+
+	UPROPERTY()
+	FString SequenceObjectPath;
 };

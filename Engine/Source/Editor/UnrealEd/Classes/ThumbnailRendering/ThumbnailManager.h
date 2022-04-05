@@ -17,6 +17,7 @@
 #include "ThumbnailManager.generated.h"
 
 class FViewport;
+class FAssetThumbnailPool;
 
 /**
  * Types of primitives for drawing thumbnails of resources.
@@ -67,7 +68,7 @@ struct FThumbnailRenderingInfo
 	 * The instance of the renderer class
 	 */
 	UPROPERTY()
-	class UThumbnailRenderer* Renderer;
+	TObjectPtr<class UThumbnailRenderer> Renderer;
 
 public:
 	FThumbnailRenderingInfo()
@@ -82,32 +83,6 @@ UCLASS(config=Editor)
 class UThumbnailManager : public UObject
 {
 	GENERATED_UCLASS_BODY()
-
-protected:
-	/**
-	 * The array of thumbnail rendering information entries. Each type that supports
-	 * thumbnail rendering has an entry in here.
-	 */
-	UPROPERTY(config)
-	TArray<struct FThumbnailRenderingInfo> RenderableThumbnailTypes;
-
-	/**
-	 * Determines whether the initialization function is needed or not
-	 */
-	bool bIsInitialized;
-
-	// The following members are present for performance optimizations
-	
-	/**
-	 * Whether to update the map or not (GC usually causes this)
-	 */
-	bool bMapNeedsUpdate;
-
-	/**
-	 * This holds a map of object type to render info entries
-	 */
-	TMap<UClass*, FThumbnailRenderingInfo*> RenderInfoMap;
-
 public:
 	/**
 	 * The render info to share across all object types when the object doesn't
@@ -118,28 +93,28 @@ public:
 
 	// All these meshes/materials/textures are preloaded via default properties
 	UPROPERTY(Transient)
-	class UStaticMesh* EditorCube;
+	TObjectPtr<class UStaticMesh> EditorCube;
 
 	UPROPERTY(Transient)
-	class UStaticMesh* EditorSphere;
+	TObjectPtr<class UStaticMesh> EditorSphere;
 
 	UPROPERTY(Transient)
-	class UStaticMesh* EditorCylinder;
+	TObjectPtr<class UStaticMesh> EditorCylinder;
 
 	UPROPERTY(Transient)
-	class UStaticMesh* EditorPlane;
+	TObjectPtr<class UStaticMesh> EditorPlane;
 
 	UPROPERTY(Transient)
-	class UStaticMesh* EditorSkySphere;
+	TObjectPtr<class UStaticMesh> EditorSkySphere;
 
 	UPROPERTY(Transient)
-	class UMaterial* FloorPlaneMaterial;
+	TObjectPtr<class UMaterial> FloorPlaneMaterial;
 
 	UPROPERTY(Transient)
-	class UTextureCube* AmbientCubemap;
+	TObjectPtr<class UTextureCube> AmbientCubemap;
 
 	UPROPERTY(Transient)
-	class UTexture2D* CheckerboardTexture;
+	TObjectPtr<class UTexture2D> CheckerboardTexture;
 
 public:
 	//~ Begin UObject Interface
@@ -175,11 +150,25 @@ public:
 	 */
 	UNREALED_API virtual void UnregisterCustomRenderer(UClass* Class);
 
-
-
-
-
+	/** 
+	 * Returns the thumbnail pool which should be used for most thumbnails in the editor. 
+	 * Unless you are rendering a huge amount of thumbnails at once this shared pool should be used
+	 */
+	UNREALED_API TSharedPtr<FAssetThumbnailPool> GetSharedThumbnailPool() const { return SharedThumbnailPool; }
 protected:
+	/**
+	 * The array of thumbnail rendering information entries. Each type that supports
+	 * thumbnail rendering has an entry in here.
+	 */
+	UPROPERTY(config)
+	TArray<struct FThumbnailRenderingInfo> RenderableThumbnailTypes;
+
+	/**
+	 * This holds a map of object type to render info entries
+	 */
+	TMap<UClass*, FThumbnailRenderingInfo*> RenderInfoMap;
+
+
 	/**
 	 * Holds the name of the thumbnail manager singleton class to instantiate
 	 */
@@ -190,6 +179,21 @@ protected:
 	 * Manager responsible for configuring and rendering thumbnails
 	 */
 	static class UThumbnailManager* ThumbnailManagerSingleton;
+
+	/** Thumbnail pool used for most thumbnails in the editor */
+	TSharedPtr<FAssetThumbnailPool> SharedThumbnailPool;
+
+	/**
+	 * Determines whether the initialization function is needed or not
+	 */
+	bool bIsInitialized;
+
+	// The following members are present for performance optimizations
+
+	/**
+	 * Whether to update the map or not (GC usually causes this)
+	 */
+	bool bMapNeedsUpdate;
 
 public:
 	/** Returns the thumbnail manager and creates it if missing */

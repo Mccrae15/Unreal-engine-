@@ -10,7 +10,9 @@
 #include "IElectraPlayerRuntimeModule.h"
 #include "IElectraPlayerPluginModule.h"
 #include "IElectraMetadataSample.h"
+#include "IElectraSubtitleSample.h"
 
+#include "MediaSubtitleDecoderOutput.h"
 #include "MediaMetaDataDecoderOutput.h"
 
 using namespace Electra;
@@ -83,7 +85,7 @@ FElectraPlayerPlugin::~FElectraPlayerPlugin()
 {
 	CallbackPointerLock.Lock();
 	EventSink = nullptr;
-	OptionInterface = nullptr;
+	OptionInterface.Reset();
 	CallbackPointerLock.Unlock();
 	if (Player.IsValid())
 	{
@@ -101,12 +103,12 @@ class FElectraBinarySample : public IElectraBinarySample
 {
 public:
 	virtual ~FElectraBinarySample() = default;
-	virtual const void* GetData() override						{ return Metadata->GetData(); }
-	virtual uint32 GetSize() const override						{ return Metadata->GetSize(); }
-	virtual FGuid GetGUID() const override						{ return IElectraBinarySample::GetSampleTypeGUID(); }
-	virtual const FString& GetSchemeIdUri() const override		{ return Metadata->GetSchemeIdUri(); }
-	virtual const FString& GetValue() const override			{ return Metadata->GetValue(); }
-	virtual const FString& GetID() const override				{ return Metadata->GetID(); }
+	virtual const void* GetData() override							{ return Metadata->GetData(); }
+	virtual uint32 GetSize() const override							{ return Metadata->GetSize(); }
+	virtual FGuid GetGUID() const override							{ return IElectraBinarySample::GetSampleTypeGUID(); }
+	virtual const FString& GetSchemeIdUri() const override			{ return Metadata->GetSchemeIdUri(); }
+	virtual const FString& GetValue() const override				{ return Metadata->GetValue(); }
+	virtual const FString& GetID() const override					{ return Metadata->GetID(); }
 
 	virtual EDispatchedMode GetDispatchedMode() const override
 	{
@@ -162,7 +164,59 @@ public:
 		return Duration;
 	}
 
+	virtual TOptional<FMediaTimeStamp> GetTrackBaseTime() const	override
+	{ 
+		TOptional<FMediaTimeStamp> ms;
+		TOptional<FDecoderTimeStamp> ts = Metadata->GetTime(); 
+		if (ts.IsSet())
+		{
+			ms = FMediaTimeStamp(ts.GetValue().Time, ts.GetValue().SequenceIndex);
+		}
+		return ms;
+	}
+
 	IMetaDataDecoderOutputPtr Metadata;
+};
+
+//-----------------------------------------------------------------------------
+
+class FElectraSubtitleSample : public IElectraSubtitleSample
+{
+public:
+	virtual FGuid GetGUID() const override
+	{ 
+		return IElectraSubtitleSample::GetSampleTypeGUID(); 
+	}
+
+	virtual FMediaTimeStamp GetTime() const override
+	{ 
+		FDecoderTimeStamp ts = Subtitle->GetTime(); 
+		return FMediaTimeStamp(ts.Time, ts.SequenceIndex);
+	}
+	
+	virtual FTimespan GetDuration() const override
+	{
+		return Subtitle->GetDuration();
+	}
+
+	virtual TOptional<FVector2D> GetPosition() const override
+	{
+		return TOptional<FVector2D>();
+	}
+	
+	virtual FText GetText() const override
+	{
+		FUTF8ToTCHAR cnv((const ANSICHAR*)Subtitle->GetData().GetData(), Subtitle->GetData().Num());
+		FString UTF8Text(cnv.Length(), cnv.Get());
+		return FText::FromString(UTF8Text);
+	}
+	
+	virtual EMediaOverlaySampleType GetType() const override
+	{
+		return EMediaOverlaySampleType::Subtitle;
+	}
+
+	ISubtitleDecoderOutputPtr Subtitle;
 };
 
 //-----------------------------------------------------------------------------
@@ -173,69 +227,76 @@ Electra::FVariantValue FElectraPlayerPlugin::FPlayerAdapterDelegate::QueryOption
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
 	if (PinnedHost.IsValid())
 	{
-		FScopeLock lock(&PinnedHost->CallbackPointerLock);
-		if (PinnedHost->OptionInterface)
+		PinnedHost->CallbackPointerLock.Lock();
+		TSharedPtr<IElectraSafeMediaOptionInterface, ESPMode::ThreadSafe> SafeOptionInterface = PinnedHost->OptionInterface.Pin();
+		PinnedHost->CallbackPointerLock.Unlock();
+		if (SafeOptionInterface.IsValid())
 		{
-			switch (Type)
+			IElectraSafeMediaOptionInterface::FScopedLock SafeLock(SafeOptionInterface);
+			IMediaOptions *SafeOptions = SafeOptionInterface->GetMediaOptionInterface();
+			if (SafeOptions)
 			{
-				case EOptionType::MaxVerticalStreamResolution:
+				switch (Type)
 				{
-					static const FName MaxResolutionOptionKey = TEXT("MaxResolutionForMediaStreaming");
-					return FVariantValue((int64)PinnedHost->OptionInterface->GetMediaOption(MaxResolutionOptionKey, (int64)0));
-				}
-
-				case EOptionType::MaxBandwidthForStreaming:
-				{
-					static const FName MaxBandwidthOptionKey = TEXT("ElectraMaxStreamingBandwidth");
-					return FVariantValue((int64)PinnedHost->OptionInterface->GetMediaOption(MaxBandwidthOptionKey, (int64)0));
-				}
-
-				case EOptionType::PlayListData:
-				{
-					static const FName PlaylistOptionKey = TEXT("ElectraGetPlaylistData");
-					if (PinnedHost->OptionInterface->HasMediaOption(PlaylistOptionKey))
+					case EOptionType::MaxVerticalStreamResolution:
 					{
-						check(Param.IsType(FVariantValue::EDataType::TypeFString));
-						return FVariantValue(PinnedHost->OptionInterface->GetMediaOption(PlaylistOptionKey, Param.GetFString()));
+						static const FName MaxResolutionOptionKey = TEXT("MaxResolutionForMediaStreaming");
+						return FVariantValue((int64)SafeOptions->GetMediaOption(MaxResolutionOptionKey, (int64)0));
 					}
-					break;
-				}
 
-				case EOptionType::LicenseKeyData:
-				{
-					static const FName LicenseKeyDataOptionKey = TEXT("ElectraGetLicenseKeyData");
-					if (PinnedHost->OptionInterface->HasMediaOption(LicenseKeyDataOptionKey))
+					case EOptionType::MaxBandwidthForStreaming:
 					{
-						check(Param.IsType(FVariantValue::EDataType::TypeFString));
-						return FVariantValue(PinnedHost->OptionInterface->GetMediaOption(LicenseKeyDataOptionKey, Param.GetFString()));
+						static const FName MaxBandwidthOptionKey = TEXT("ElectraMaxStreamingBandwidth");
+						return FVariantValue((int64)SafeOptions->GetMediaOption(MaxBandwidthOptionKey, (int64)0));
 					}
-					break;
-				}
 
-				case EOptionType::PlaystartPosFromSeekPositions:
-				{
-					static const FName PlaystartOptionKey = TEXT("ElectraGetPlaystartPosFromSeekPositions");
-					if (PinnedHost->OptionInterface->HasMediaOption(PlaystartOptionKey))
+					case EOptionType::PlayListData:
 					{
-						check(Param.IsType(FVariantValue::EDataType::TypeSharedPointer));
-
-						TSharedPtr<TArray<FTimespan>, ESPMode::ThreadSafe> PosArray = Param.GetSharedPointer<TArray<FTimespan>>();
-						if (PosArray.IsValid())
+						static const FName PlaylistOptionKey = TEXT("ElectraGetPlaylistData");
+						if (SafeOptions->HasMediaOption(PlaylistOptionKey))
 						{
-							TSharedPtr<FElectraSeekablePositions, ESPMode::ThreadSafe> Res = StaticCastSharedPtr<FElectraSeekablePositions, IMediaOptions::FDataContainer, ESPMode::ThreadSafe>(PinnedHost->OptionInterface->GetMediaOption(PlaystartOptionKey, MakeShared<FElectraSeekablePositions, ESPMode::ThreadSafe>(*PosArray)));
-							if (Res.IsValid() && Res->Data.Num())
-							{
-								return FVariantValue(int64(Res->Data[0].GetTicks())); // return HNS
-							}
+							check(Param.IsType(FVariantValue::EDataType::TypeFString));
+							return FVariantValue(SafeOptions->GetMediaOption(PlaylistOptionKey, Param.GetFString()));
 						}
-						return FVariantValue();
+						break;
 					}
-					break;
-				}
 
-				default:
-				{
-					break;
+					case EOptionType::LicenseKeyData:
+					{
+						static const FName LicenseKeyDataOptionKey = TEXT("ElectraGetLicenseKeyData");
+						if (SafeOptions->HasMediaOption(LicenseKeyDataOptionKey))
+						{
+							check(Param.IsType(FVariantValue::EDataType::TypeFString));
+							return FVariantValue(SafeOptions->GetMediaOption(LicenseKeyDataOptionKey, Param.GetFString()));
+						}
+						break;
+					}
+
+					case EOptionType::PlaystartPosFromSeekPositions:
+					{
+						static const FName PlaystartOptionKey = TEXT("ElectraGetPlaystartPosFromSeekPositions");
+						if (SafeOptions->HasMediaOption(PlaystartOptionKey))
+						{
+							check(Param.IsType(FVariantValue::EDataType::TypeSharedPointer));
+
+							TSharedPtr<TArray<FTimespan>, ESPMode::ThreadSafe> PosArray = Param.GetSharedPointer<TArray<FTimespan>>();
+							if (PosArray.IsValid())
+							{
+								TSharedPtr<FElectraSeekablePositions, ESPMode::ThreadSafe> Res = StaticCastSharedPtr<FElectraSeekablePositions, IMediaOptions::FDataContainer, ESPMode::ThreadSafe>(SafeOptions->GetMediaOption(PlaystartOptionKey, MakeShared<FElectraSeekablePositions, ESPMode::ThreadSafe>(*PosArray)));
+								if (Res.IsValid() && Res->Data.Num())
+								{
+									return FVariantValue(int64(Res->Data[0].GetTicks())); // return HNS
+								}
+							}
+							return FVariantValue();
+						}
+						break;
+					}
+
+					default:
+					{
+						break;
+					}
 				}
 			}
 		}
@@ -284,6 +345,19 @@ void FElectraPlayerPlugin::FPlayerAdapterDelegate::OnAudioFlush()
 }
 
 
+void FElectraPlayerPlugin::FPlayerAdapterDelegate::OnSubtitleFlush()
+{
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
+	{
+		TRange<FTimespan> AllTime(FTimespan::MinValue(), FTimespan::MaxValue());
+		TSharedPtr<IMediaOverlaySample, ESPMode::ThreadSafe> FlushSample;
+		while (PinnedHost->GetSamples().FetchSubtitle(AllTime, FlushSample))
+		{ }
+	}
+}
+
+
 void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentVideoFrame(const FVideoDecoderOutputPtr & InVideoFrame)
 {
 	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
@@ -304,6 +378,17 @@ void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentAudioFrame(const IAudi
 		TSharedRef<FElectraPlayerAudioSample, ESPMode::ThreadSafe> AudioSample = PinnedHost->OutputAudioPool.AcquireShared();
 		AudioSample->Initialize(InAudioFrame);
 		PinnedHost->MediaSamples->AddAudio(AudioSample);
+	}
+}
+
+void FElectraPlayerPlugin::FPlayerAdapterDelegate::PresentSubtitleSample(const ISubtitleDecoderOutputPtr& InSubtitleSample)
+{
+	TSharedPtr<FElectraPlayerPlugin, ESPMode::ThreadSafe> PinnedHost = Host.Pin();
+	if (PinnedHost.IsValid())
+	{
+		TSharedRef<FElectraSubtitleSample, ESPMode::ThreadSafe> SubtitleSample = MakeShared<FElectraSubtitleSample, ESPMode::ThreadSafe>();
+		SubtitleSample->Subtitle = InSubtitleSample;
+		PinnedHost->MediaSamples->AddSubtitle(SubtitleSample);
 	}
 }
 
@@ -404,10 +489,11 @@ bool FElectraPlayerPlugin::Open(const FString& Url, const IMediaOptions* Options
 
 bool FElectraPlayerPlugin::Open(const FString& Url, const IMediaOptions* Options, const FMediaPlayerOptions* InPlayerOptions)
 {
-	// Remember the option interface to poll for changes during playback.
+	// Get the safe option interface to poll for changes during playback.
 	CallbackPointerLock.Lock();
-	OptionInterface = Options;
+	OptionInterface = StaticCastSharedPtr<IElectraSafeMediaOptionInterface>(Options->GetMediaOption(TEXT("GetSafeMediaOptions"), TSharedPtr<IElectraSafeMediaOptionInterface, ESPMode::ThreadSafe>()));
 	CallbackPointerLock.Unlock();
+	UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: Options@%p"), this, Options);
 
 	IElectraPlayerInterface::FPlaystartOptions LocalPlaystartOptions;
 
@@ -416,12 +502,19 @@ bool FElectraPlayerPlugin::Open(const FString& Url, const IMediaOptions* Options
 	{
 		LocalPlaystartOptions.TimeOffset = InPlayerOptions->SeekTime;
 		LocalPlaystartOptions.InitialAudioTrackAttributes.TrackIndexOverride = InPlayerOptions->Tracks.Audio;
+		LocalPlaystartOptions.InitialSubtitleTrackAttributes.TrackIndexOverride = InPlayerOptions->Tracks.Subtitle;
 	}
 	FString InitialAudioLanguage = Options->GetMediaOption(TEXT("InitialAudioLanguage"), FString());
 	if (InitialAudioLanguage.Len())
 	{
 		LocalPlaystartOptions.InitialAudioTrackAttributes.Language_ISO639 = InitialAudioLanguage;
 		UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: Asking for initial audio language \"%s\""), this, *InitialAudioLanguage);
+	}
+	FString InitialSubtitleLanguage = Options->GetMediaOption(TEXT("InitialSubtitleLanguage"), FString());
+	if (InitialSubtitleLanguage.Len())
+	{
+		LocalPlaystartOptions.InitialSubtitleTrackAttributes.Language_ISO639 = InitialSubtitleLanguage;
+		UE_LOG(LogElectraPlayerPlugin, Log, TEXT("[%p] IMediaPlayer::Open: Asking for initial subtitle language \"%s\""), this, *InitialSubtitleLanguage);
 	}
 	bool bNoPreloading = Options->GetMediaOption(TEXT("ElectraNoPreloading"), (bool)false);
 	if (bNoPreloading)
@@ -433,6 +526,15 @@ bool FElectraPlayerPlugin::Open(const FString& Url, const IMediaOptions* Options
 
 	// Set up options to initialize the internal player with.
 	Electra::FParamDict PlayerOptions;
+	const TCHAR * const OptionsByString[] = { TEXT("excluded_codecs_video"), TEXT("excluded_codecs_audio"), TEXT("excluded_codecs_subtitles"), TEXT("preferred_codecs_video"), TEXT("preferred_codecs_audio"),TEXT("preferred_codecs_subtitles") };
+	for(auto &StringOption : OptionsByString)
+	{
+		FString Value = Options->GetMediaOption(StringOption, FString());
+		if (Value.Len())
+		{
+			PlayerOptions.Set(StringOption, Electra::FVariantValue(Value));
+		}
+	}
 
 	// Check for one-time initialization options that can't be changed during playback.
 	int64 InitialStreamBitrate = Options->GetMediaOption(TEXT("ElectraInitialBitrate"), (int64)-1);
@@ -532,7 +634,7 @@ bool FElectraPlayerPlugin::Open(const TSharedRef<FArchive, ESPMode::ThreadSafe>&
 void FElectraPlayerPlugin::Close()
 {
 	CallbackPointerLock.Lock();
-	OptionInterface = nullptr;
+	OptionInterface.Reset();
 	CallbackPointerLock.Unlock();
 	Player->CloseInternal(true);
 }
@@ -558,6 +660,8 @@ bool FElectraPlayerPlugin::GetPlayerFeatureFlag(EFeatureFlag flag) const
 		case EFeatureFlag::AllowShutdownOnClose:
 			return Player->IsKillAfterCloseAllowed();
 		case EFeatureFlag::UsePlaybackTimingV2:
+			return true;
+		case EFeatureFlag::PlayerUsesInternalFlushOnSeek:
 			return true;
 		default:
 			break;

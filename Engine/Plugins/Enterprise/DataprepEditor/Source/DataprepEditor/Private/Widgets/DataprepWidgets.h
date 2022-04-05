@@ -22,6 +22,7 @@ class UDataprepParameterizableObject;
 
 struct FAssetData;
 class UDataprepStringFilterMatchingArray;
+class FDetailColumnSizeData;
 
 namespace DataprepWidgetUtils
 {
@@ -53,15 +54,6 @@ namespace DataprepWidgetUtils
 	};
 }
 
-struct FDataprepDetailsViewColumnSizeData
-{
-	TAttribute<float> LeftColumnWidth;
-	TAttribute<float> RightColumnWidth;
-	SSplitter::FOnSlotResized OnWidthChanged;
-
-	void SetColumnWidth(float InWidth) { OnWidthChanged.ExecuteIfBound(InWidth); }
-};
-
 enum class EDataprepCategory 
 { 
 	Producers, 
@@ -76,9 +68,9 @@ class SDataprepCategoryWidget : public STableRow< TSharedPtr< EDataprepCategory 
 public:
 
 	SLATE_BEGIN_ARGS(SDataprepCategoryWidget) {}
-	SLATE_ARGUMENT(TSharedPtr< FDataprepDetailsViewColumnSizeData >, ColumnSizeData)
-	SLATE_ARGUMENT(FText, Title)
-	SLATE_ARGUMENT(TSharedPtr< SWidget >, TitleDetail)
+		SLATE_ARGUMENT(FText, Title)
+		SLATE_ARGUMENT(TSharedPtr< SWidget >, TitleDetail)
+		SLATE_ARGUMENT(TSharedPtr< FDetailColumnSizeData >, ColumnSizeData)
 	SLATE_END_ARGS()
 
 	void Construct( const FArguments& InArgs, TSharedRef< SWidget > InContent, const TSharedRef<STableViewBase>& InOwnerTableView );
@@ -104,11 +96,11 @@ public:
 		, _ColumnPadding(false)
 		, _ResizableColumn(true)
 		{}
-		SLATE_ARGUMENT(TSharedPtr<FDataprepDetailsViewColumnSizeData>, ColumnSizeData)
 		SLATE_ARGUMENT(UObject*, Object)
 		SLATE_ARGUMENT(float, Spacing)
 		SLATE_ARGUMENT(bool, ColumnPadding)
 		SLATE_ARGUMENT(bool, ResizableColumn)
+		SLATE_ARGUMENT(TSharedPtr< FDetailColumnSizeData >, ColumnSizeData)
 	SLATE_END_ARGS()
 
 public:
@@ -122,6 +114,10 @@ public:
 
 	// FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SDataprepDetailsView");
+	}
 	// End of FGCObject interface
 
 	static int32 GetDesiredWidth() { return DesiredWidth; }
@@ -158,17 +154,6 @@ private:
 	 */
 	void CreateDefaultWidget(int32 Index, TSharedPtr< SWidget >& NameWidget, TSharedPtr< SWidget >& ValueWidget, float LeftPadding, const FDataprepParameterizationContext& ParameterizationContext, bool bAddExpander = false, bool bChildNode = false );
 
-	/** Callback used by all splitters in the details view, so that they move in sync */
-	void OnLeftColumnResized(float InNewWidth)
-	{
-		// This has to be bound or the splitter will take it upon itself to determine the size
-		// We do nothing here because it is handled by the column size data
-	}
-
-	float OnGetLeftColumnWidth() const { return 1.0f - ColumnWidth; }
-	float OnGetRightColumnWidth() const { return ColumnWidth; }
-	void OnSetColumnWidth(float InWidth) { ColumnWidth = InWidth < 0.5f ? 0.5f : InWidth; }
-
 	/** Callback to track property changes on array properties */
 	void OnPropertyChanged( const struct FPropertyChangedEvent& InEvent );
 
@@ -203,11 +188,8 @@ private:
 	/** Delegate handle to track when a object was transacted */
 	FDelegateHandle OnObjectTransactedHandle;
 
-	/** Relative width to control splitters. */
-	float ColumnWidth;
-
 	/** Points to the currently used column size data. Can be provided via argument as well. */
-	TSharedPtr< FDataprepDetailsViewColumnSizeData > ColumnSizeData;
+	TSharedPtr< FDetailColumnSizeData > ColumnSizeData;
 
 	/** If there is a new object to display on the next tick */
 	uint8 bRefreshObjectToDisplay : 1;
@@ -266,7 +248,7 @@ class SDataprepInstanceParentWidget : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SDataprepInstanceParentWidget) {}
-		SLATE_ARGUMENT(TSharedPtr< FDataprepDetailsViewColumnSizeData >, ColumnSizeData)
+		SLATE_ARGUMENT(TSharedPtr< FDetailColumnSizeData >, ColumnSizeData)
 		SLATE_ARGUMENT(UDataprepAssetInstance*, DataprepInstance)
 	SLATE_END_ARGS()
 
@@ -293,7 +275,7 @@ private:
 	TWeakObjectPtr<UDataprepAssetInstance> DataprepInstancePtr;
 
 	/** Helps sync column resizing with another part of the UI */
-	TSharedPtr< FDataprepDetailsViewColumnSizeData > ColumnSizeData;
+	TSharedPtr< FDetailColumnSizeData > ColumnSizeData;
 
 	/** Relative width to control splitters. */
 	float ColumnWidth;

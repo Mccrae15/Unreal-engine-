@@ -38,7 +38,7 @@ void FMovieSceneSpawnable::CopyObjectTemplate(UObject& InSourceObject, UMovieSce
 	if (ObjectTemplate)
 	{
 		ObjectTemplate->Rename(*MakeUniqueObjectName(MovieSceneSequence.GetMovieScene(), ObjectTemplate->GetClass(), "ExpiredSpawnable").ToString());
-		ObjectTemplate->MarkPendingKill();
+		ObjectTemplate->MarkAsGarbage();
 		ObjectTemplate = nullptr;
 	}
 
@@ -72,12 +72,12 @@ FName FMovieSceneSpawnable::GetNetAddressableName(IMovieScenePlayer& Player, FMo
 	// Actor / player Name
 	if (AActor* OuterActor = PlayerObject->GetTypedOuter<AActor>())
 	{
-		AddressableName.Append('_');
+		AddressableName.AppendChar(TEXT('_'));
 		OuterActor->GetFName().AppendString(AddressableName);
 	}
 	else
 	{
-		AddressableName.Append('_');
+		AddressableName.AppendChar(TEXT('_'));
 		PlayerObject->GetFName().AppendString(AddressableName);
 	}
 

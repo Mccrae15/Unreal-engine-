@@ -86,7 +86,7 @@ public:
 	UNiagaraScript* GetInputFunctionCallInitialScript() const;
 
 	/** Gets the current value mode */
-	EValueMode GetValueMode();
+	EValueMode GetValueMode() const;
 
 	/** Gets the type of this input. */
 	const FNiagaraTypeDefinition& GetInputType() const;
@@ -109,12 +109,14 @@ public:
 	virtual FText GetPasteTransactionText(const UNiagaraClipboardContent* ClipboardContent) const override;
 	virtual void Paste(const UNiagaraClipboardContent* ClipboardContent, FText& OutPasteWarning) override;
 	virtual bool HasOverridenContent() const override;
-
+	
 	/** Gets the tooltip that should be shown for the value of this input. */
 	FText GetValueToolTip() const;
 
 	/** Gets the tooltip that should be shown for the value of this input. */
 	FText GetCollapsedStateText() const;
+
+	void SetSummaryViewDisiplayName(TOptional<FText> InDisplayName);
 
 	/** Gets the path of parameter handles from the owning module to the function call which owns this input. */
 	const TArray<FNiagaraParameterHandle>& GetInputParameterHandlePath() const;
@@ -128,8 +130,8 @@ public:
 	/** Sets the value of this input to a linked parameter handle. */
 	void SetLinkedValueHandle(const FNiagaraParameterHandle& InParameterHandle);
 
-	/** Gets the current set of available parameter handles which can be assigned to this input. */
-	void GetAvailableParameterHandles(TArray<FNiagaraParameterHandle>& AvailableParameterHandles) const;
+	/** Gets the current set of available parameter handles which can be assigned to this input. Optionally returns possible conversion scripts. */
+	void GetAvailableParameterHandles(TArray<FNiagaraParameterHandle>& AvailableParameterHandles, TMap<FNiagaraVariable, UNiagaraScript*>& AvailableConversionHandles, bool bIncludeConversionScripts = true) const;
 
 	/** Gets the function node form the script graph if the current value mode is DefaultFunction. */
 	UNiagaraNodeFunctionCall* GetDefaultFunctionNode() const;
@@ -212,6 +214,9 @@ public:
 	/** Gets a multicast delegate which is called whenever the value on this input changes. */
 	FOnValueChanged& OnValueChanged();
 
+	/** Gets the variable that serves as an edit condition for this input. */
+	TOptional<FNiagaraVariable> GetEditConditionVariable() const;
+	
 	/** Gets whether or not this input has an associated edit condition input. */
 	bool GetHasEditCondition() const;
 
@@ -244,6 +249,13 @@ public:
 
 	/** Gets whether or not this input is filtered from search results and appearing in stack due to visibility metadata*/
 	bool GetShouldPassFilterForVisibleCondition() const;
+	
+	TArray<UNiagaraScript*> GetPossibleConversionScripts(const FNiagaraTypeDefinition& FromType) const;
+	static TArray<UNiagaraScript*> GetPossibleConversionScripts(const FNiagaraTypeDefinition& FromType, const FNiagaraTypeDefinition& ToType);
+
+	void SetLinkedInputViaConversionScript(const FName& LinkedInputName, const FNiagaraTypeDefinition& FromType);
+	void SetLinkedInputViaConversionScript(const FNiagaraVariable& LinkedInput, UNiagaraScript* ConversionScript);
+	void SetClipboardContentViaConversionScript(const UNiagaraClipboardFunctionInput& ClipboardFunctionInput);
 
 	void ChangeScriptVersion(FGuid NewScriptVersion);
 
@@ -253,12 +265,20 @@ public:
 
 	bool IsScratchDynamicInput() const;
 
-	virtual bool IsSemanticChild() const;
+	bool ShouldDisplayInline() const;
+	
+	TArray<UNiagaraStackFunctionInput*> GetChildInputs() const;
+
+	TOptional<FNiagaraVariableMetaData> GetInputMetaData() const;
+	
+	virtual bool IsSemanticChild() const override;
 	void SetSemanticChild(bool IsSemanticChild);
 
 	//~ UNiagaraStackEntry interface
 	virtual void GetSearchItems(TArray<FStackSearchItem>& SearchItems) const override;
-	virtual bool HasFrontDivider() const override;
+
+	TOptional<FNiagaraVariableMetaData> GetMetadata() const;
+	TOptional<FGuid> GetMetadataGuid() const;
 
 protected:
 	//~ UNiagaraStackEntry interface
@@ -346,7 +366,9 @@ private:
 	/** Handles the message manager refreshing messages. */
 	void OnMessageManagerRefresh(const TArray<TSharedRef<const INiagaraMessage>>& NewMessages);
 
-	TArray<UNiagaraStackFunctionInput*> GetChildInputs() const;
+	void GetCurrentChangeIds(FGuid& OutOwningGraphChangeId, FGuid& OutFunctionGraphChangeId) const;
+
+	UNiagaraScript* FindConversionScript(const FNiagaraTypeDefinition& FromType, TMap<FNiagaraTypeDefinition, UNiagaraScript*>& ConversionScriptCache, bool bIncludeConversionScripts) const;
 
 private:
 	/** The module function call which owns this input entry. NOTE: This input might not be an input to the module function
@@ -367,6 +389,9 @@ private:
 
 	/** The meta data for this input, defined in the owning function's script. */
 	TOptional<FNiagaraVariableMetaData> InputMetaData;
+
+	// Stack issues generated when updating from metadata.
+	TArray<FStackIssue> InputMetaDataIssues;
 
 	/** A unique key for this input for looking up editor only UI data. */
 	FString StackEditorDataKey;
@@ -392,6 +417,7 @@ private:
 
 	/** Optional override for the display name*/
 	TOptional<FText> DisplayNameOverride;
+	TOptional<FText> SummaryViewDisplayNameOverride;
 
 	/** The default value for this input defined in the defining script. */
 	FInputValues DefaultInputValues;
@@ -451,7 +477,7 @@ private:
 
 	/** An input condition handler for the visible condition. */
 	FNiagaraStackFunctionInputCondition VisibleCondition;
-
+	
 	/** Whether or not to show an inline control for the edit condition input. */
 	bool bShowEditConditionInline;
 
@@ -471,4 +497,10 @@ private:
 
 	// If true then this stack entry is the semantic child of another stack entry
 	bool bIsSemanticChild = false;
+
+	// The value of the change id for the graph which owns the function call that owns this input as of the last refresh.
+	TOptional<FGuid> LastOwningGraphChangeId;
+
+	// The value of the change id for the called graph of the function call which owns this input as of the last refresh.
+	TOptional<FGuid> LastFunctionGraphChangeId;
 };

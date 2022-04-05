@@ -315,7 +315,7 @@ void UVCamOutputRemoteSession::OnTouchEventOutsideUMG(const FVector2D& InViewpor
 				else
 #endif
 				{
-					LastViewportTouchResult.GetActor()->NotifyActorOnClicked();
+					LastViewportTouchResult.GetHitObjectHandle().FetchActor()->NotifyActorOnClicked();
 				}
 			}
 		}

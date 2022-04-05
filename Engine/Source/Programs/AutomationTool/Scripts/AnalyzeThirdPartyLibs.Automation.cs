@@ -165,12 +165,10 @@ class AnalyzeThirdPartyLibs : BuildCommand
 
 		// Make a list of platforms
 		List<PlatformLibraryInfo> Platforms = new List<PlatformLibraryInfo>();
-		Platforms.Add(new PlatformLibraryInfo("Windows", "Windows", "Win32", "Win64", "VS20"));
+		Platforms.Add(new PlatformLibraryInfo("Windows", "Windows", "Win64", "VS20"));
 		Platforms.Add(new PlatformLibraryInfo("Mac", "Osx", "Mac"));
 		Platforms.Add(new PlatformLibraryInfo("iOS", "IOS"));
 		Platforms.Add(new PlatformLibraryInfo("Android", "Android"));
-		Platforms.Add(new PlatformLibraryInfo("PS4", "PS4"));
-		Platforms.Add(new PlatformLibraryInfo("XB1", "XBoxOne"));
 		Platforms.Add(new PlatformLibraryInfo("Linux", "Linux"));
 
 		Platforms.Add(new PlatformLibraryInfo("VS2013", "VS2013", "vs12"));

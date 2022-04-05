@@ -56,10 +56,13 @@ FActorPositionTraceResult FActorPositioning::TraceWorldForPosition(const FViewpo
 /** Check to see if the specified hit result should be ignored from actor positioning calculations for the specified scene view */
 bool IsHitIgnored(const FHitResult& InHit, const FSceneView& InSceneView)
 {
-	const auto* Actor = InHit.GetActor();
+	// We're using the SceneProxy and ViewRelevance here, we should execute from the render thread but since
+	// we're also accessing UObjects, the game thread should be blocked during this call.
+	check(IsInParallelRenderingThread());
+	const FActorInstanceHandle& HitObjHandle = InHit.HitObjectHandle;
 	
 	// Try and find a primitive component for the hit
-	const UPrimitiveComponent* PrimitiveComponent = Actor ? Cast<UPrimitiveComponent>(Actor->GetRootComponent()) : nullptr;
+	const UPrimitiveComponent* PrimitiveComponent = Cast<UPrimitiveComponent>(HitObjHandle.GetRootComponent());
 
 	if (!PrimitiveComponent)
 	{
@@ -76,7 +79,7 @@ bool IsHitIgnored(const FHitResult& InHit, const FSceneView& InSceneView)
 	}
 
 	// Ignore volumes and shapes
-	if (Actor && Actor->IsA(AVolume::StaticClass()))
+	if (HitObjHandle.DoesRepresentClass(AVolume::StaticClass()))
 	{
 		return true;
 	}
@@ -88,6 +91,7 @@ bool IsHitIgnored(const FHitResult& InHit, const FSceneView& InSceneView)
 	// Only use this component if it is visible in the specified scene views
 	bool bIsRenderedOnScreen = false;
 	bool bIgnoreTranslucentPrimitive = false;
+	const bool bConsiderInvisibleComponentForPlacement = PrimitiveComponent->bConsiderForActorPlacementWhenHidden;
 	{				
 		if (PrimitiveComponent && PrimitiveComponent->SceneProxy)
 		{
@@ -98,7 +102,7 @@ bool IsHitIgnored(const FHitResult& InHit, const FSceneView& InSceneView)
 		}
 	}
 
-	return !bIsRenderedOnScreen || bIgnoreTranslucentPrimitive;
+	return (!bIsRenderedOnScreen && !bConsiderInvisibleComponentForPlacement) || bIgnoreTranslucentPrimitive;
 }
 
 FActorPositionTraceResult FActorPositioning::TraceWorldForPosition(const UWorld& InWorld, const FSceneView& InSceneView, const FVector& RayStart, const FVector& RayEnd, const TArray<AActor*>* IgnoreActors)
@@ -116,17 +120,27 @@ FActorPositionTraceResult FActorPositioning::TraceWorldForPosition(const UWorld&
 	if ( InWorld.LineTraceMultiByObjectType(Hits, RayStart, RayEnd, FCollisionObjectQueryParams(FCollisionObjectQueryParams::InitType::AllObjects), Param) )
 	{
 		{
-			// Filter out anything that should be ignored
-			FSuspendRenderingThread SuspendRendering(false);
-			Hits.RemoveAll([&](const FHitResult& Hit){
-				return IsHitIgnored(Hit, InSceneView);
-			});
+			// Send IsHitIgnored on the render thread since we're accessing view relevance
+			ENQUEUE_RENDER_COMMAND(TraceWorldForPosition_FilterHitsByViewRelevance)(
+				[&Hits, &InSceneView](FRHICommandListImmediate& RHICmdList)
+				{
+					// Filter out anything that should be ignored
+					Hits.RemoveAll([&InSceneView](const FHitResult& Hit){
+						return IsHitIgnored(Hit, InSceneView);
+					});
+				}
+			);
+			
+			// We need the result to come back before continuing
+			FRenderCommandFence Fence;
+			Fence.BeginFence();
+			Fence.Wait();
 		}
 
 		// Go through all hits and find closest
 		float ClosestHitDistanceSqr = TNumericLimits<float>::Max();
 
-		for (const auto& Hit : Hits)
+		for (const FHitResult& Hit : Hits)
 		{
 			const float DistanceToHitSqr = (Hit.ImpactPoint - RayStart).SizeSquared();
 			if (DistanceToHitSqr < ClosestHitDistanceSqr)
@@ -135,7 +149,7 @@ FActorPositionTraceResult FActorPositioning::TraceWorldForPosition(const UWorld&
 				Results.Location = Hit.Location;
 				Results.SurfaceNormal = Hit.Normal.GetSafeNormal();
 				Results.State = FActorPositionTraceResult::HitSuccess;
-				Results.HitActor = Hit.Actor;
+				Results.HitActor = Hit.HitObjectHandle.GetManagingActor();
 			}
 		}
 	}
@@ -145,41 +159,39 @@ FActorPositionTraceResult FActorPositioning::TraceWorldForPosition(const UWorld&
 
 FTransform FActorPositioning::GetCurrentViewportPlacementTransform(const AActor& Actor, bool bSnap, const FViewportCursorLocation* InCursor)
 {
-	FVector Collision = Actor.GetPlacementExtent();
-	const UActorFactory* Factory = GEditor->FindActorFactoryForActorClass(Actor.GetClass());
-
-	// Get cursor origin and direction in world space.
-	FViewportCursorLocation CursorLocation = InCursor ? *InCursor : GCurrentLevelEditingViewportClient->GetCursorWorldLocationFromMousePos();
-	const auto CursorPos = CursorLocation.GetCursorPos();
-
 	FTransform ActorTransform = FTransform::Identity;
-
-	if (CursorLocation.GetViewportType() == LVT_Perspective && !GCurrentLevelEditingViewportClient->Viewport->GetHitProxy( CursorPos.X, CursorPos.Y ))
+	if (GCurrentLevelEditingViewportClient)
 	{
-		ActorTransform.SetTranslation(GetActorPositionInFrontOfCamera(Actor, CursorLocation.GetOrigin(), CursorLocation.GetDirection()));
-	}
-	else
-	{
-		const FSnappedPositioningData PositioningData = FSnappedPositioningData(GCurrentLevelEditingViewportClient, GEditor->ClickLocation, GEditor->ClickPlane)
-			.DrawSnapHelpers(true)
-			.UseFactory(Factory)
-			.UsePlacementExtent(Actor.GetPlacementExtent());
+		// Get cursor origin and direction in world space.
+		FViewportCursorLocation CursorLocation = InCursor ? *InCursor : GCurrentLevelEditingViewportClient->GetCursorWorldLocationFromMousePos();
+		const auto CursorPos = CursorLocation.GetCursorPos();
 
-		ActorTransform = bSnap ? GetSnappedSurfaceAlignedTransform(PositioningData) : GetSurfaceAlignedTransform(PositioningData);
-
-		if (GetDefault<ULevelEditorViewportSettings>()->SnapToSurface.bEnabled)
+		if (CursorLocation.GetViewportType() == LVT_Perspective && !GCurrentLevelEditingViewportClient->Viewport->GetHitProxy(CursorPos.X, CursorPos.Y))
 		{
-			// HACK: If we are aligning rotation to surfaces, we have to factor in the inverse of the actor's rotation and translation so that the resulting transform after SpawnActor is correct.
-
-			if (auto* RootComponent = Actor.GetRootComponent())
-			{
-				RootComponent->UpdateComponentToWorld();
-			}
-
-			FVector OrigActorScale3D = ActorTransform.GetScale3D();
-			ActorTransform = Actor.GetTransform().Inverse() * ActorTransform;
-			ActorTransform.SetScale3D(OrigActorScale3D);
+			ActorTransform.SetTranslation(GetActorPositionInFrontOfCamera(Actor, CursorLocation.GetOrigin(), CursorLocation.GetDirection()));
+			return ActorTransform;
 		}
+	}
+
+	const FSnappedPositioningData PositioningData = FSnappedPositioningData(nullptr, GEditor->ClickLocation, GEditor->ClickPlane)
+		.DrawSnapHelpers(true)
+		.UseFactory(GEditor->FindActorFactoryForActorClass(Actor.GetClass()))
+		.UsePlacementExtent(Actor.GetPlacementExtent());
+
+	ActorTransform = bSnap ? GetSnappedSurfaceAlignedTransform(PositioningData) : GetSurfaceAlignedTransform(PositioningData);
+
+	if (GetDefault<ULevelEditorViewportSettings>()->SnapToSurface.bEnabled)
+	{
+		// HACK: If we are aligning rotation to surfaces, we have to factor in the inverse of the actor's rotation and translation so that the resulting transform after SpawnActor is correct.
+
+		if (auto* RootComponent = Actor.GetRootComponent())
+		{
+			RootComponent->UpdateComponentToWorld();
+		}
+
+		FVector OrigActorScale3D = ActorTransform.GetScale3D();
+		ActorTransform = Actor.GetTransform().Inverse() * ActorTransform;
+		ActorTransform.SetScale3D(OrigActorScale3D);
 	}
 
 	return ActorTransform;
@@ -221,7 +233,8 @@ FTransform FActorPositioning::GetSurfaceAlignedTransform(const FPositioningData&
 	// Choose the largest location offset of the various options (global viewport settings, collision, factory offset)
 	const ULevelEditorViewportSettings* ViewportSettings = GetDefault<ULevelEditorViewportSettings>();
 	const float SnapOffsetExtent = (ViewportSettings->SnapToSurface.bEnabled) ? (ViewportSettings->SnapToSurface.SnapOffsetExtent) : (0.0f);
-	const float CollisionOffsetExtent = FVector::BoxPushOut(Data.SurfaceNormal, Data.PlacementExtent);
+	const FVector PlacementExtent = (Data.ActorFactory && !Data.ActorFactory->bUsePlacementExtent) ? FVector::ZeroVector : Data.PlacementExtent;
+	const float CollisionOffsetExtent = FVector::BoxPushOut(Data.SurfaceNormal, PlacementExtent);
 
 	FVector LocationOffset = Data.SurfaceNormal * FMath::Max(SnapOffsetExtent, CollisionOffsetExtent);
 	if (Data.ActorFactory && LocationOffset.SizeSquared() < Data.ActorFactory->SpawnPositionOffset.SizeSquared())

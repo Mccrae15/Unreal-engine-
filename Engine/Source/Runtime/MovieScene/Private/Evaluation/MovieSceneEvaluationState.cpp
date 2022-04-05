@@ -73,9 +73,12 @@ FGuid FMovieSceneObjectCache::FindObjectId(UObject& InObject, IMovieScenePlayer&
 		return FGuid();
 	}
 
-	// @todo: Currently we nuke the entire object cache when attempting to find an object's ID to ensure that we do a 
-	// complete lookup from scratch. This is required for UMG as it interchanges content slots without notifying sequencer.
-	Clear(Player);
+	if (!bReentrantUpdate)
+	{
+		// @todo: Currently we delete the entire object cache when attempting to find an object's ID to ensure that we do a 
+		// complete lookup from scratch. This is required for UMG as it interchanges content slots without notifying sequencer.
+		Clear(Player);
+	}
 
 	return FindCachedObjectId(InObject, Player);
 }
@@ -278,6 +281,8 @@ void FMovieSceneObjectCache::SetSequence(UMovieSceneSequence& InSequence, FMovie
 
 void FMovieSceneObjectCache::UpdateBindings(const FGuid& InGuid, IMovieScenePlayer& Player)
 {
+	TGuardValue<bool> ReentrancyGuard(bReentrantUpdate, true);
+
 	// Invalidate existing bindings, we're going to rebuild them.
 	FBoundObjects* Bindings = &BoundObjects.FindOrAdd(InGuid);
 	Bindings->Objects.Reset();
@@ -341,7 +346,23 @@ void FMovieSceneObjectCache::UpdateBindings(const FGuid& InGuid, IMovieScenePlay
 					}
 
 					TArray<UObject*, TInlineAllocator<1>> FoundObjects;
-					Player.ResolveBoundObjects(InGuid, SequenceID, *Sequence, ResolutionContext, FoundObjects);
+					
+					if (Possessable->GetSpawnableObjectBindingID().IsValid())
+					{
+						for (TWeakObjectPtr<> BoundObject : Possessable->GetSpawnableObjectBindingID().ResolveBoundObjects(SequenceID, Player))
+						{
+							if (BoundObject.IsValid())
+							{
+								FoundObjects.Add(BoundObject.Get());
+							}
+						}
+					}
+					else
+					{
+						Player.ResolveBoundObjects(InGuid, SequenceID, *Sequence, ResolutionContext, FoundObjects);
+					}
+					
+					Bindings = BoundObjects.Find(InGuid);
 					for (UObject* Object : FoundObjects)
 					{
 						Bindings->Objects.Add(Object);
@@ -351,7 +372,23 @@ void FMovieSceneObjectCache::UpdateBindings(const FGuid& InGuid, IMovieScenePlay
 			else
 			{
 				TArray<UObject*, TInlineAllocator<1>> FoundObjects;
-				Player.ResolveBoundObjects(InGuid, SequenceID, *Sequence, ResolutionContext, FoundObjects);
+
+				if (Possessable->GetSpawnableObjectBindingID().IsValid())
+				{
+					for (TWeakObjectPtr<> BoundObject : Possessable->GetSpawnableObjectBindingID().ResolveBoundObjects(SequenceID, Player))
+					{
+						if (BoundObject.IsValid())
+						{
+							FoundObjects.Add(BoundObject.Get());
+						}
+					}				
+				}
+				else
+				{
+					Player.ResolveBoundObjects(InGuid, SequenceID, *Sequence, ResolutionContext, FoundObjects);
+				}
+				
+				Bindings = BoundObjects.Find(InGuid);
 				for (UObject* Object : FoundObjects)
 				{
 					Bindings->Objects.Add(Object);

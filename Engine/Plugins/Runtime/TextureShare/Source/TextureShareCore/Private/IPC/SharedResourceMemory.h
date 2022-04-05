@@ -4,7 +4,6 @@
 
 #include "CoreMinimal.h"
 #include "SharedResourceContainers.h"
-#include "SharedResourceInterprocessEvent.h"
 #include "Containers/TextureShareCoreEnums.h"
 #include "Windows/WindowsPlatformProcess.h"
 
@@ -87,85 +86,36 @@ namespace TextureShareItem
 
 	protected:
 		/** Lock that guards access to the memory region */
-		static FPlatformProcess::FSemaphore* ProcessMutex;
+		static FPlatformProcess::FSemaphore * ProcessMutex;
 		/** Low-level memory region */
-		static FPlatformMemory::FSharedMemoryRegion* ProcessMemory;
+		static FPlatformMemory::FSharedMemoryRegion * ProcessMemory;
 		/** Lock that guard access to shared textures */
 		FTextureMutex TextureMutex[ELimits::MaxTextureShareItemTexturesCount];
 
-		/** Sync shared memory changes */
-		FTextureShareEventWin ReadEvent;
-		FTextureShareEventWin WriteEvent;
-
-	private:
-		bool LockProcessMutex(uint32 MaxMillisecondsToWait)
-		{
-			// acquire
-			if (ProcessMutex)
-			{
-				if (!MaxMillisecondsToWait)
-				{
-					ProcessMutex->Lock();
-				}
-				else
-				{
-					if (!ProcessMutex->TryLock(MaxMillisecondsToWait * 1000000ULL))	// 1ms = 10^6 ns
-					{
-						return false;
-					}
-				}
-
-				return true;
-			}
-
-			return false;
-		}
-
-		void UnlockProcessMutex()
-		{
-			if (ProcessMutex)
-			{
-				// relinquish
-				ProcessMutex->Unlock();
-			}
-		}
-
 	public:
-		FSharedResourceMemory(ETextureShareProcess InProcessType, const FString& SharedResourceName)
-			: ReadEvent(FString::Printf(TEXT("Global\\TextureShareDataEvent%d_%s"), (uint8)((InProcessType == ETextureShareProcess::Client) ? ETextureShareProcess::Server : ETextureShareProcess::Client), *SharedResourceName))
-			, WriteEvent(FString::Printf(TEXT("Global\\TextureShareDataEvent%d_%s"), (uint8)InProcessType, *SharedResourceName))
+		FSharedResourceMemory()
 		{
-			for (int32 TextureIndex = 0; TextureIndex < ELimits::MaxTextureShareItemTexturesCount; TextureIndex++)
+			for (int i = 0; i < ELimits::MaxTextureShareItemTexturesCount; i++)
 			{ 
-				TextureMutex[TextureIndex] = FTextureMutex();
+				TextureMutex[i] = FTextureMutex(); 
 			}
-
-			// initialize sync events for shared memory changes
-			WriteEvent.Create();
-			ReadEvent.Create();
 		}
 
 		virtual ~FSharedResourceMemory()
 		{
-			for (int32 TextureIndex = 0; TextureIndex < ELimits::MaxTextureShareItemTexturesCount; TextureIndex++)
+			for (int i = 0; i < ELimits::MaxTextureShareItemTexturesCount; i++)
 			{
-				ReleaseTextureMutex(TextureIndex, false);
+				ReleaseTextureMutex(i, false);
 			}
 		}
 
-		bool WaitReadDataEvent(uint32 WaitTime, const bool bIgnoreThreadIdleStats = false)
-		{
-			// Waiting for remote process data change
-			return ReadEvent.Wait(WaitTime, bIgnoreThreadIdleStats);
-		}
-
-		bool InitializeTextureMutex(int32 TextureIndex, const FString& TextureName)
+		bool InitializeTextureMutex(int TextureIndex, const FString& TextureName)
 		{
 			check(TextureIndex >= 0 && TextureIndex < MaxTextureShareItemTexturesCount);
 			return TextureMutex[TextureIndex].Initialize(TextureName);
 		}
 
-		void ReleaseTextureMutex(int32 TextureIndex, bool bDeleteISO)
+		void ReleaseTextureMutex(int TextureIndex, bool bDeleteISO)
 		{
 			check(TextureIndex >= 0 && TextureIndex < MaxTextureShareItemTexturesCount);
 			TextureMutex[TextureIndex].Release(bDeleteISO);
@@ -173,19 +123,19 @@ namespace TextureShareItem
 
 		void ReleaseTexturesMutex(bool bDeleteISO)
 		{
-			for (int32 TextureIndex = 0; TextureIndex < ELimits::MaxTextureShareItemTexturesCount; ++TextureIndex)
+			for (int TextureIndex = 0; TextureIndex < ELimits::MaxTextureShareItemTexturesCount; ++TextureIndex)
 			{
 				TextureMutex[TextureIndex].Release(bDeleteISO);
 			}
 		}
 
-		bool LockTextureMutex(int32 TextureIndex, uint32 MaxMillisecondsToWait)
+		bool LockTextureMutex(int TextureIndex, uint32 MaxMillisecondsToWait)
 		{
 			check(TextureIndex >= 0 && TextureIndex < MaxTextureShareItemTexturesCount);
 			return TextureMutex[TextureIndex].Lock(MaxMillisecondsToWait);
 		}
 
-		void UnlockTextureMutex(int32 TextureIndex)
+		void UnlockTextureMutex(int TextureIndex)
 		{
 			check(TextureIndex >= 0 && TextureIndex < MaxTextureShareItemTexturesCount);
 			TextureMutex[TextureIndex].Unlock();
@@ -193,7 +143,7 @@ namespace TextureShareItem
 
 		void UnlockTexturesMutex()
 		{
-			for (int32 TextureIndex = 0; TextureIndex < ELimits::MaxTextureShareItemTexturesCount; ++TextureIndex)
+			for (int TextureIndex = 0; TextureIndex < ELimits::MaxTextureShareItemTexturesCount; ++TextureIndex)
 			{
 				TextureMutex[TextureIndex].Unlock();
 			}
@@ -203,7 +153,7 @@ namespace TextureShareItem
 		static void ReleaseProcessMemory();
 
 		/** update session header. Call inside locked mutex */
-		void WriteSessionProcessState_LockedMutex(ETextureShareProcess ProcessType, ESharedResourceProcessState ProcessState, int32 SessionIndex, const FString& SessionName)
+		void WriteSessionProcessState_LockedMutex(ETextureShareProcess ProcessType, ESharedResourceProcessState ProcessState, int SessionIndex, const FString& SessionName)
 		{
 			FSharedResourceSessionHeader SessionHeader;
 			SIZE_T HeaderOffset = sizeof(FSharedResourceSessionHeader)*SessionIndex;
@@ -233,53 +183,73 @@ namespace TextureShareItem
 			FMemory::Memcpy(((char*)ProcessMemory->GetAddress()) + HeaderOffset, &SessionHeader, sizeof(SessionHeader));
 		}
 
-		bool DisconnectSession(ETextureShareProcess ProcessType, int32 SessionIndex, uint32 MaxMillisecondsToWait)
+		bool DisconnectSession(ETextureShareProcess ProcessType, int SessionIndex, uint32 MaxMillisecondsToWait)
 		{
+			check(ProcessMutex);
 			check(ProcessMemory);
 			if (SessionIndex < 0 || SessionIndex>= MaxTextureShareItemSessionsCount)
 			{
 				return false;
 			}
 
-			if (!LockProcessMutex(MaxMillisecondsToWait))
+			// acquire
+			if (!MaxMillisecondsToWait)
 			{
-				return false;
+				ProcessMutex->Lock();
+			}
+			else
+			{
+				if (!ProcessMutex->TryLock(MaxMillisecondsToWait * 1000000ULL))	// 1ms = 10^6 ns
+				{
+					return false;
+				}
 			}
 
 			WriteSessionProcessState_LockedMutex(ProcessType, ESharedResourceProcessState::Undefined, SessionIndex, FString());
-			UnlockProcessMutex();
-
+			ProcessMutex->Unlock();
 			return true;
 		}
 
-		int32 ConnectSession(const ETextureShareProcess InProcessType, const FString& SessionName, uint32 MaxMillisecondsToWait)
+		int ConnectSession(ETextureShareProcess& InOutProcessType, const FString& SessionName, uint32 MaxMillisecondsToWait)
 		{
-			if (!ProcessMemory || !LockProcessMutex(MaxMillisecondsToWait))
+			if (!ProcessMemory || !ProcessMutex)
 			{
 				return -1;
 			}
 
-			int32 FreeSessionIndex = -1;
+			// acquire
+			if (!MaxMillisecondsToWait)
+			{
+				ProcessMutex->Lock();
+			}
+			else
+			{
+				if (!ProcessMutex->TryLock(MaxMillisecondsToWait * 1000000ULL))	// 1ms = 10^6 ns
+				{
+					return -1;
+				}
+			}
+
+			int FreeSessionIndex = -1;
 			FSharedResourceSessionHeader SessionHeader[MaxTextureShareItemSessionsCount];
 			FMemory::Memcpy(&SessionHeader[0], ((char*)ProcessMemory->GetAddress()), sizeof(SessionHeader));
 
-			for (int32 SessionIndexIt = 0; SessionIndexIt < MaxTextureShareItemSessionsCount; SessionIndexIt++)
+			for (int i = 0; i < MaxTextureShareItemSessionsCount; i++)
 			{
 				// Save free session index:
-				if (SessionHeader[SessionIndexIt].IsFreeSession())
+				if (SessionHeader[i].IsFreeSession())
 				{
-					FreeSessionIndex = (FreeSessionIndex<0) ? SessionIndexIt : FreeSessionIndex;
+					FreeSessionIndex = (FreeSessionIndex<0) ? i : FreeSessionIndex;
 				}
 				else
 				{
 					// Search exist session by name:
-					if (!FPlatformString::Stricmp(SessionHeader[SessionIndexIt].SessionName, *SessionName))
+					if (!FPlatformString::Stricmp(SessionHeader[i].SessionName, *SessionName))
 					{
 						// Connect to exist session
-						WriteSessionProcessState_LockedMutex(InProcessType, ESharedResourceProcessState::Used, SessionIndexIt, SessionName);
-						UnlockProcessMutex();
-
-						return SessionIndexIt;
+						WriteSessionProcessState_LockedMutex(InOutProcessType, ESharedResourceProcessState::Used, i, SessionName);
+						ProcessMutex->Unlock();
+						return i;
 					}
 				}
 			}
@@ -288,55 +258,63 @@ namespace TextureShareItem
 			if (FreeSessionIndex >=0)
 			{
 				// Connect to new session
-				WriteSessionProcessState_LockedMutex(InProcessType, ESharedResourceProcessState::Used, FreeSessionIndex, SessionName);
+				WriteSessionProcessState_LockedMutex(InOutProcessType, ESharedResourceProcessState::Used, FreeSessionIndex, SessionName);
 			}
 
-			UnlockProcessMutex();
-
+			// relinquish
+			ProcessMutex->Unlock();
 			return FreeSessionIndex;
 		}
 
 		bool WriteData(const void* SrcDataPtr, SIZE_T DataOffset, SIZE_T DataSize, uint32 MaxMillisecondsToWait)
 		{
+			check(ProcessMutex);
 			check(ProcessMemory);
 			check(SrcDataPtr);
 			check(DataSize);
 
-			if (!LockProcessMutex(MaxMillisecondsToWait))
+			// acquire
+			if (!MaxMillisecondsToWait)
 			{
-				return false;
+				ProcessMutex->Lock();
+			}
+			else
+			{
+				if (!ProcessMutex->TryLock(MaxMillisecondsToWait * 1000000ULL))	// 1ms = 10^6 ns
+				{
+					return false;
+				}
 			}
 
 			// we have exclusive ownership now!
 			FMemory::Memcpy(((char*)ProcessMemory->GetAddress()) + DataOffset, SrcDataPtr, DataSize);
-
-			// Send signal to remote process after data change
-			WriteEvent.Trigger();
-
-			UnlockProcessMutex();
-
+			ProcessMutex->Unlock();
 			return true;
 		}
 
 		bool ReadData(void* DstDataPtr, SIZE_T DataOffset, SIZE_T DataSize, uint32 MaxMillisecondsToWait)
 		{
+			check(ProcessMutex);
 			check(ProcessMemory);
 			check(DstDataPtr);
 			check(DataSize);
 
-			if (!LockProcessMutex(MaxMillisecondsToWait))
+			// acquire
+			if (!MaxMillisecondsToWait)
 			{
-				return false;
+				ProcessMutex->Lock();
+			}
+			else
+			{
+				if (!ProcessMutex->TryLock(MaxMillisecondsToWait * 1000000ULL))	// 1ms = 10^6 ns
+				{
+					return false;
+				}
 			}
 
 			// we have exclusive ownership now!
 			FMemory::Memcpy(DstDataPtr, ((char*)ProcessMemory->GetAddress()) + DataOffset, DataSize);
-
-			// Resetting the write signal of the remote process after reading the data
-			ReadEvent.Reset();
-
-			UnlockProcessMutex();
-
+			ProcessMutex->Unlock();
 			return true;
 		}
 	};

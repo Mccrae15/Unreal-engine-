@@ -12,12 +12,10 @@
 #include "SceneRendering.h"
 #include "SystemTextures.h"
 
-IMPLEMENT_TYPE_LAYOUT(ShaderPrint::FShaderParametersLegacy);
-
 namespace ShaderPrint
 {
 	// Console variables
-	static TAutoConsoleVariable<int32> CVarEnable(
+	TAutoConsoleVariable<int32> CVarEnable(
 		TEXT("r.ShaderPrintEnable"),
 		0,
 		TEXT("ShaderPrint debugging toggle.\n"),
@@ -25,7 +23,7 @@ namespace ShaderPrint
 
 	static TAutoConsoleVariable<int32> CVarFontSize(
 		TEXT("r.ShaderPrintFontSize"),
-		16,
+		8,
 		TEXT("ShaderPrint font size.\n"),
 		ECVF_Cheat | ECVF_RenderThreadSafe);
 
@@ -47,6 +45,8 @@ namespace ShaderPrint
 		TEXT("ShaderPrint output buffer size.\n"),
 		ECVF_Cheat | ECVF_RenderThreadSafe);
 
+	static uint32 GCharacterRequestCount = 0;
+	static bool GShaderPrintEnableOverride = false;
 
 	// Structure used by shader buffers to store values and symbols
 	struct ShaderPrintItem
@@ -56,17 +56,35 @@ namespace ShaderPrint
 		int32 Type;
 	};
 
+	// Empty buffer for binding when ShaderPrint is disabled
+	class FEmptyBuffer : public FBufferWithRDG
+	{
+	public:
+		void InitRHI() override
+		{
+			if (!Buffer.IsValid())
+			{
+				FRHICommandList* UnusedCmdList = new FRHICommandList(FRHIGPUMask::All());
+				GetPooledFreeBuffer(*UnusedCmdList, FRDGBufferDesc::CreateStructuredDesc(sizeof(ShaderPrintItem), 1), Buffer, TEXT("EmptyShaderPrintValueBuffer"));
+				delete UnusedCmdList;
+				UnusedCmdList = nullptr;
+			}
+		}
+	};
+
+	FBufferWithRDG* GEmptyBuffer = new TGlobalResource<FEmptyBuffer>();
+
 	// Get value buffer size
 	// Note that if the ShaderPrint system is disabled we still want to bind a minimal buffer
-	int32 GetMaxValueCount()
+	static int32 GetMaxValueCount()
 	{
-		int32 MaxValueCount = FMath::Max(CVarMaxValueCount.GetValueOnRenderThread(), 0);
+		int32 MaxValueCount = FMath::Max(CVarMaxValueCount.GetValueOnRenderThread() + int32(GCharacterRequestCount), 0);
 		return IsEnabled() ? MaxValueCount : 0;
 	}
 
 	// Get symbol buffer size
 	// This is some multiple of the value buffer size to allow for maximum value->symbol expansion
-	int32 GetMaxSymbolCount()
+	static int32 GetMaxSymbolCount()
 	{
 		return GetMaxValueCount() * 12;
 	}
@@ -76,72 +94,29 @@ namespace ShaderPrint
 	typedef TUniformBufferRef<FUniformBufferParameters> FUniformBufferRef;
 
 	// Fill the uniform buffer parameters
-	void SetUniformBufferParameters(FViewInfo const& View, FUniformBufferParameters& OutParameters)
-	{
-		const float FontWidth = (float)FMath::Max(CVarFontSize.GetValueOnRenderThread(), 1) / (float)FMath::Max(View.UnconstrainedViewRect.Size().X, 1);
-		const float FontHeight = (float)FMath::Max(CVarFontSize.GetValueOnRenderThread(), 1) / (float)FMath::Max(View.UnconstrainedViewRect.Size().Y, 1);
-		const float SpaceWidth = (float)FMath::Max(CVarFontSpacingX.GetValueOnRenderThread(), 1) / (float)FMath::Max(View.UnconstrainedViewRect.Size().X, 1);
-		const float SpaceHeight = (float)FMath::Max(CVarFontSpacingY.GetValueOnRenderThread(), 1) / (float)FMath::Max(View.UnconstrainedViewRect.Size().Y, 1);
-
-		OutParameters.FontSize = FVector4(FontWidth, FontHeight, SpaceWidth + FontWidth, SpaceHeight + FontHeight);
-
-		OutParameters.MaxValueCount = GetMaxValueCount();
-		OutParameters.MaxSymbolCount = GetMaxSymbolCount();
-	}
-
 	// Return a uniform buffer with values filled and with single frame lifetime
-	FUniformBufferRef CreateUniformBuffer(FViewInfo const& View)
-	{
-		FUniformBufferParameters Parameters;
-		SetUniformBufferParameters(View, Parameters);
-		return FUniformBufferRef::CreateUniformBufferImmediate(Parameters, UniformBuffer_SingleFrame);
+	static FUniformBufferRef CreateUniformBuffer(const FShaderPrintData& Data)
+	{		
+		FUniformBufferParameters Out;
+		Out.FontSize = Data.FontSize;
+		Out.Resolution = Data.OutputRect.Size();
+		Out.MaxValueCount = Data.MaxValueCount;
+		Out.MaxSymbolCount = Data.MaxSymbolCount;
+		return FUniformBufferRef::CreateUniformBufferImmediate(Out, UniformBuffer_SingleFrame);
 	}
 
 	// Fill the FShaderParameters parameters
-	void SetParameters(FViewInfo const& View, FShaderParameters& OutParameters)
+	void SetParameters(FRDGBuilder& GraphBuilder, const FViewInfo & View, FShaderParameters& OutParameters)
 	{
-		OutParameters.UniformBufferParameters = CreateUniformBuffer(View);
-		OutParameters.RWValuesBuffer = View.ShaderPrintValueBuffer.UAV;
+		OutParameters.UniformBufferParameters = CreateUniformBuffer(View.ShaderPrintData);
+		OutParameters.RWValuesBuffer = GraphBuilder.CreateUAV(View.ShaderPrintData.ShaderPrintValueBuffer);
 	}
 
-	// FShaderParametersLegacy implementation
-	void FShaderParametersLegacy::Bind(FShaderParameterMap const& ParameterMap)
+	// Fill the FShaderParameters parameters
+	void SetParameters(FRDGBuilder& GraphBuilder, const FShaderPrintData& Data, FShaderParameters& OutParameters)
 	{
-		UniformBufferParameter.Bind(ParameterMap, TEXT("ShaderPrint"));
-		ValuesBufferParameter.Bind(ParameterMap, TEXT("ValuesBuffer"));
-	}
-
-	template<typename TShaderRHIParamRef>
-	void SetShaderParameters(FShaderParametersLegacy const* P, FRHICommandListImmediate& RHICmdList, TShaderRHIParamRef ShaderRHI, FViewInfo const& View)
-	{
-		SetUniformBufferParameter(RHICmdList, ShaderRHI, P->UniformBufferParameter, CreateUniformBuffer(View));
-		P->ValuesBufferParameter.SetBuffer(RHICmdList, ShaderRHI, View.ShaderPrintValueBuffer);
-	}
-
-	void FShaderParametersLegacy::SetParameters(FRHICommandListImmediate& RHICmdList, FRHIVertexShader* ShaderRHI, FViewInfo const& View)
-	{
-		SetShaderParameters(this, RHICmdList, ShaderRHI, View);
-	}
-
-	void FShaderParametersLegacy::SetParameters(FRHICommandListImmediate& RHICmdList, FRHIPixelShader* ShaderRHI, FViewInfo const& View)
-	{
-		SetShaderParameters(this, RHICmdList, ShaderRHI, View);
-	}
-
-	void FShaderParametersLegacy::SetParameters(FRHICommandListImmediate& RHICmdList, FRHIComputeShader* ShaderRHI, FViewInfo const& View)
-	{
-		SetShaderParameters(this, RHICmdList, ShaderRHI, View);
-	}
-
-	void FShaderParametersLegacy::UnsetUAV(FRHICommandListImmediate& RHICmdList, FRHIComputeShader* ShaderRHI)
-	{
-		ValuesBufferParameter.UnsetUAV(RHICmdList, ShaderRHI);
-	}
-
-	FArchive& operator<<(FArchive& Ar, FShaderParametersLegacy& P)
-	{
-		Ar << P.UniformBufferParameter << P.ValuesBufferParameter;
-		return Ar;
+		OutParameters.UniformBufferParameters = CreateUniformBuffer(Data);
+		OutParameters.RWValuesBuffer = GraphBuilder.CreateUAV(Data.ShaderPrintValueBuffer);
 	}
 
 	// Supported platforms
@@ -150,14 +125,16 @@ namespace ShaderPrint
 		return RHISupportsComputeShaders(InShaderPlatform) && !IsHlslccShaderPlatform(InShaderPlatform);
 	}
 
-	bool IsSupported(FViewInfo const& View)
-	{
-		return IsSupported(View.GetShaderPlatform());
-	}
-
 	void SetEnabled(bool bInEnabled)
 	{
-		CVarEnable->Set(bInEnabled);
+		if (IsInGameThread())
+		{
+			CVarEnable->Set(bInEnabled);
+		}
+		else
+		{
+			GShaderPrintEnableOverride = bInEnabled;
+		}
 	}
 
 	void SetFontSize(int32 InFontSize)
@@ -170,9 +147,19 @@ namespace ShaderPrint
 		CVarMaxValueCount->Set(FMath::Max(256, InMaxCount));
 	}	
 
+	void RequestSpaceForCharacters(uint32 MaxElementCount)
+	{
+		GCharacterRequestCount += MaxElementCount;
+	}
+
 	bool IsEnabled()
 	{
-		return CVarEnable.GetValueOnAnyThread() != 0;
+		return CVarEnable.GetValueOnAnyThread() != 0 || GShaderPrintEnableOverride;
+	}
+
+	bool IsEnabled(const FViewInfo& View)
+	{
+		return IsEnabled() && IsSupported(View.GetShaderPlatform());
 	}
 
 	// Shader to initialize the output value buffer
@@ -183,7 +170,7 @@ namespace ShaderPrint
 		SHADER_USE_PARAMETER_STRUCT(FShaderInitValueBufferCS, FGlobalShader);
 
 		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-			SHADER_PARAMETER_UAV(RWStructuredBuffer<ShaderPrintItem>, RWValuesBuffer)
+			SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<ShaderPrintItem>, RWValuesBuffer)
 		END_SHADER_PARAMETER_STRUCT()
 
 		static bool ShouldCompilePermutation(FGlobalShaderPermutationParameters const& Parameters)
@@ -203,7 +190,7 @@ namespace ShaderPrint
 
 		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 			SHADER_PARAMETER_STRUCT_REF(FUniformBufferParameters, UniformBufferParameters)
-			SHADER_PARAMETER_SRV(StructuredBuffer<ShaderPrintItem>, ValuesBuffer)
+			SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<ShaderPrintItem>, ValuesBuffer)
 			SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<ShaderPrintItem>, RWSymbolsBuffer)
 			SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, RWIndirectDispatchArgsBuffer)
 		END_SHADER_PARAMETER_STRUCT()
@@ -225,9 +212,9 @@ namespace ShaderPrint
 
 		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 			SHADER_PARAMETER_STRUCT_REF(FUniformBufferParameters, UniformBufferParameters)
-			SHADER_PARAMETER_SRV(StructuredBuffer<ShaderPrintItem>, ValuesBuffer)
+			SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<ShaderPrintItem>, ValuesBuffer)
 			SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<ShaderPrintItem>, RWSymbolsBuffer)
-			SHADER_PARAMETER_RDG_BUFFER(StructuredBuffer<uint>, IndirectDispatchArgsBuffer)
+			RDG_BUFFER_ACCESS(IndirectDispatchArgsBuffer, ERHIAccess::IndirectArgs)
 		END_SHADER_PARAMETER_STRUCT()
 
 		static bool ShouldCompilePermutation(FGlobalShaderPermutationParameters const& Parameters)
@@ -263,14 +250,19 @@ namespace ShaderPrint
 	class FShaderDrawSymbols : public FGlobalShader
 	{
 	public:
-		SHADER_USE_PARAMETER_STRUCT(FShaderDrawSymbols, FGlobalShader);
+		FShaderDrawSymbols()
+		{}
+
+		FShaderDrawSymbols(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+			: FGlobalShader(Initializer)
+		{}
 
 		BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 			RENDER_TARGET_BINDING_SLOTS()
 			SHADER_PARAMETER_STRUCT_REF(FUniformBufferParameters, UniformBufferParameters)
 			SHADER_PARAMETER_TEXTURE(Texture2D, MiniFontTexture)
 			SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<ShaderPrintItem>, SymbolsBuffer)
-			SHADER_PARAMETER_RDG_BUFFER(StructuredBuffer<uint>, IndirectDrawArgsBuffer)
+			RDG_BUFFER_ACCESS(IndirectDrawArgsBuffer, ERHIAccess::IndirectArgs)
 		END_SHADER_PARAMETER_STRUCT()
 
 		static bool ShouldCompilePermutation(FGlobalShaderPermutationParameters const& Parameters)
@@ -281,79 +273,83 @@ namespace ShaderPrint
 
 	class FShaderDrawSymbolsVS : public FShaderDrawSymbols
 	{
-	public:
 		DECLARE_GLOBAL_SHADER(FShaderDrawSymbolsVS);
-
-		FShaderDrawSymbolsVS()
-		{}
-
-		FShaderDrawSymbolsVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-			: FShaderDrawSymbols(Initializer)
-		{}
+		SHADER_USE_PARAMETER_STRUCT(FShaderDrawSymbolsVS, FShaderDrawSymbols);
 	};
 
 	IMPLEMENT_GLOBAL_SHADER(FShaderDrawSymbolsVS, "/Engine/Private/ShaderPrintDraw.usf", "DrawSymbolsVS", SF_Vertex);
 
 	class FShaderDrawSymbolsPS : public FShaderDrawSymbols
 	{
-	public:
 		DECLARE_GLOBAL_SHADER(FShaderDrawSymbolsPS);
-
-		FShaderDrawSymbolsPS()
-		{}
-
-		FShaderDrawSymbolsPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
-			: FShaderDrawSymbols(Initializer)
-		{}
+		SHADER_USE_PARAMETER_STRUCT(FShaderDrawSymbolsPS, FShaderDrawSymbols);
 	};
 
 	IMPLEMENT_GLOBAL_SHADER(FShaderDrawSymbolsPS, "/Engine/Private/ShaderPrintDraw.usf", "DrawSymbolsPS", SF_Pixel);
 
-	void BeginView(FRHICommandListImmediate& RHICmdList, FViewInfo& View)
+	void BeginView(FRDGBuilder& GraphBuilder, FViewInfo& View)
 	{
-		if (!IsSupported(View))
+		TRACE_CPUPROFILER_EVENT_SCOPE(ShaderPrint::BeginView);
+
+		View.ShaderPrintData = FShaderPrintData();
+		if (!IsSupported(View.GetShaderPlatform()))
 		{
+			return;
+		}
+
+		const FIntPoint ViewSize(FMath::Max(View.UnconstrainedViewRect.Size().X, 1), FMath::Max(View.UnconstrainedViewRect.Size().Y, 1));
+
+		float FontSize = float(FMath::Max(CVarFontSize.GetValueOnRenderThread(), 1)) * View.Family->DebugDPIScale;
+		float FontSpacingX = float(FMath::Max(CVarFontSpacingX.GetValueOnRenderThread(), 1)) * View.Family->DebugDPIScale;
+		float FontSpacingY = float(FMath::Max(CVarFontSpacingY.GetValueOnRenderThread(), 1)) * View.Family->DebugDPIScale;
+
+		const float FontWidth = FontSize / float(ViewSize.X);
+		const float FontHeight = FontSize / float(ViewSize.Y);
+		const float SpaceWidth = FontSpacingX / float(ViewSize.X);
+		const float SpaceHeight = FontSpacingY / float(ViewSize.Y);
+		View.ShaderPrintData.FontSize = FVector4f(FontWidth, FontHeight, SpaceWidth + FontWidth, SpaceHeight + FontHeight);
+		View.ShaderPrintData.OutputRect = View.UnconstrainedViewRect;
+		View.ShaderPrintData.MaxValueCount = GetMaxValueCount();
+		View.ShaderPrintData.MaxSymbolCount = GetMaxSymbolCount();
+		GCharacterRequestCount = 0;
+
+		// Early out if system is disabled
+		// Note that we still bind a dummy ShaderPrintValueBuffer 
+		// This is in case some debug shader code is still active (we don't want an unbound buffer!)
+		if (!IsEnabled())
+		{
+			View.ShaderPrintData.ShaderPrintValueBuffer = GraphBuilder.RegisterExternalBuffer(GEmptyBuffer->Buffer);
 			return;
 		}
 
 		// Initialize output buffer and store in the view info
 		// Values buffer contains Count + 1 elements. The first element is only used as a counter.
-		View.ShaderPrintValueBuffer.Initialize(sizeof(ShaderPrintItem), GetMaxValueCount() + 1, 0U, TEXT("ShaderPrintValueBuffer"));
-
-		// Early out if system is disabled
-		// Note that we still prepared a minimal ShaderPrintValueBuffer 
-		// This is in case some debug shader code is still active (we don't want an unbound buffer!)
-		if (!IsEnabled())
-		{
-			return;
-		}
-
-		SCOPED_DRAW_EVENT(RHICmdList, ShaderPrintBeginView);
+		View.ShaderPrintData.ShaderPrintValueBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(ShaderPrintItem), View.ShaderPrintData.MaxValueCount + 1), TEXT("ShaderPrintValueBuffer"));
 
 		// Clear the output buffer internal counter ready for use
 		const ERHIFeatureLevel::Type FeatureLevel = View.GetFeatureLevel();
 		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(FeatureLevel);
-
 		TShaderMapRef< FShaderInitValueBufferCS > ComputeShader(GlobalShaderMap);
 
-		FShaderInitValueBufferCS::FParameters Parameters;
-		Parameters.RWValuesBuffer = View.ShaderPrintValueBuffer.UAV;
+		auto* PassParameters = GraphBuilder.AllocParameters<FShaderInitValueBufferCS::FParameters>();
+		PassParameters->RWValuesBuffer = GraphBuilder.CreateUAV(View.ShaderPrintData.ShaderPrintValueBuffer);
 
-		FComputeShaderUtils::Dispatch(RHICmdList, ComputeShader, Parameters, FIntVector(1, 1, 1));
+		FComputeShaderUtils::AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("ShaderPrint::BeginView"),
+			ComputeShader,
+			PassParameters,
+			FIntVector(1, 1, 1));
 	}
 
-	void DrawView(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef OutputTexture)
+	void DrawView(FRDGBuilder& GraphBuilder, const FViewInfo& View, FScreenPassTexture OutputTexture)
 	{
-		check(OutputTexture);
+		check(OutputTexture.IsValid());
 
-		RDG_EVENT_SCOPE(GraphBuilder, "ShaderPrintDrawView");
+		RDG_EVENT_SCOPE(GraphBuilder, "ShaderPrint::DrawView");
 
-		FRHIUnorderedAccessView* ShaderPrintValueBufferUAV = View.ShaderPrintValueBuffer.UAV;
-		AddPass(GraphBuilder, [ShaderPrintValueBufferUAV](FRHICommandList& RHICmdList)
-		{
-			RHICmdList.Transition(FRHITransitionInfo(ShaderPrintValueBufferUAV, ERHIAccess::UAVMask, ERHIAccess::SRVMask));
-		});
-
+		const FIntRect Viewport = OutputTexture.ViewRect;
+	
 		// Initialize graph managed resources
 		// Symbols buffer contains Count + 1 elements. The first element is only used as a counter.
 		FRDGBufferRef SymbolBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(ShaderPrintItem), GetMaxSymbolCount() + 1), TEXT("ShaderPrintSymbolBuffer"));
@@ -361,10 +357,10 @@ namespace ShaderPrint
 		FRDGBufferRef IndirectDrawArgsBuffer = GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateIndirectDesc(5), TEXT("ShaderPrintIndirectDrawArgs"));
 
 		// Non graph managed resources
-		FUniformBufferRef UniformBuffer = CreateUniformBuffer(View);
-		FTextureRHIRef FontTexture = GEngine->MiniFontTexture != nullptr ? GEngine->MiniFontTexture->Resource->TextureRHI : GSystemTextures.BlackDummy->GetRenderTargetItem().ShaderResourceTexture;;
+		FUniformBufferRef UniformBuffer = CreateUniformBuffer(View.ShaderPrintData);
+		FRDGBufferSRVRef ValuesBuffer = GraphBuilder.CreateSRV(View.ShaderPrintData.ShaderPrintValueBuffer);
+		FTextureRHIRef FontTexture = GSystemTextures.AsciiTexture->GetRenderTargetItem().ShaderResourceTexture;
 
-		FShaderResourceViewRHIRef ValuesBuffer = View.ShaderPrintValueBuffer.SRV;
 		const ERHIFeatureLevel::Type FeatureLevel = View.GetFeatureLevel();
 		FGlobalShaderMap* GlobalShaderMap = GetGlobalShaderMap(FeatureLevel);
 
@@ -381,7 +377,7 @@ namespace ShaderPrint
 
 			FComputeShaderUtils::AddPass(
 				GraphBuilder, 
-				RDG_EVENT_NAME("BuildIndirectDispatchArgs"), 
+				RDG_EVENT_NAME("ShaderPrint::BuildIndirectDispatchArgs"), 
 				ComputeShader, PassParameters,
 				FIntVector(1, 1, 1));
 		}
@@ -399,7 +395,7 @@ namespace ShaderPrint
 
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
-				RDG_EVENT_NAME("BuildSymbolBuffer"),
+				RDG_EVENT_NAME("ShaderPrint::BuildSymbolBuffer"),
 				ComputeShader, PassParameters,
 				IndirectDispatchArgsBuffer, 0);
 		}
@@ -416,7 +412,7 @@ namespace ShaderPrint
 
 			FComputeShaderUtils::AddPass(
 				GraphBuilder,
-				RDG_EVENT_NAME("BuildIndirectDrawArgs"),
+				RDG_EVENT_NAME("ShaderPrint::BuildIndirectDrawArgs"),
 				ComputeShader, PassParameters,
 				FIntVector(1, 1, 1));
 		}
@@ -428,20 +424,21 @@ namespace ShaderPrint
 			TShaderMapRef< FShaderDrawSymbolsPS > PixelShader(GlobalShaderMap);
 
 			SHADER::FParameters* PassParameters = GraphBuilder.AllocParameters<SHADER::FParameters>();
-			PassParameters->RenderTargets[0] = FRenderTargetBinding(OutputTexture, ERenderTargetLoadAction::ELoad);
+			PassParameters->RenderTargets[0] = FRenderTargetBinding(OutputTexture.Texture, ERenderTargetLoadAction::ELoad);
 			PassParameters->UniformBufferParameters = UniformBuffer;
 			PassParameters->MiniFontTexture = FontTexture;
 			PassParameters->SymbolsBuffer = GraphBuilder.CreateSRV(SymbolBuffer);
 			PassParameters->IndirectDrawArgsBuffer = IndirectDrawArgsBuffer;
 
 			GraphBuilder.AddPass(
-				RDG_EVENT_NAME("DrawSymbols"),
+				RDG_EVENT_NAME("ShaderPrint::DrawSymbols"),
 				PassParameters,
 				ERDGPassFlags::Raster,
-				[VertexShader, PixelShader, PassParameters](FRHICommandListImmediate& RHICmdListImmediate)
+				[VertexShader, PixelShader, PassParameters, Viewport](FRHICommandList& RHICmdList)
 			{
+				
 				FGraphicsPipelineStateInitializer GraphicsPSOInit;
-				RHICmdListImmediate.ApplyCachedRenderTargets(GraphicsPSOInit);
+				RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
 				GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
 				GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
@@ -449,18 +446,19 @@ namespace ShaderPrint
 				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-				SetGraphicsPipelineState(RHICmdListImmediate, GraphicsPSOInit);
+				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
-				SetShaderParameters(RHICmdListImmediate, VertexShader, VertexShader.GetVertexShader(), *PassParameters);
-				SetShaderParameters(RHICmdListImmediate, PixelShader, PixelShader.GetPixelShader(), *PassParameters);
+				RHICmdList.SetViewport(Viewport.Min.X, Viewport.Min.Y, 0.0f, Viewport.Max.X, Viewport.Max.Y, 1.0f);
+				SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), *PassParameters);
+				SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), *PassParameters);
 
-				RHICmdListImmediate.DrawIndexedPrimitiveIndirect(GTwoTrianglesIndexBuffer.IndexBufferRHI, PassParameters->IndirectDrawArgsBuffer->GetIndirectRHICallBuffer(), 0);
+				RHICmdList.DrawIndexedPrimitiveIndirect(GTwoTrianglesIndexBuffer.IndexBufferRHI, PassParameters->IndirectDrawArgsBuffer->GetIndirectRHICallBuffer(), 0);
 			});
 		}
 	}
 
 	void EndView(FViewInfo& View)
 	{
-		View.ShaderPrintValueBuffer.Release();
+		View.ShaderPrintData = FShaderPrintData();
 	}
 }

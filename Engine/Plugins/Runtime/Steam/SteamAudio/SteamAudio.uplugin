@@ -20,18 +20,18 @@
 			"Name" : "SteamAudio",
 			"Type" : "Runtime",
 			"LoadingPhase" : "PreDefault",
-			"WhitelistPlatforms" :
+			"PlatformAllowList" :
 			[
-				"Win32", "Win64", "Android"
+				"Win64", "Android"
 			]
 		},
 		{
 			"Name" : "SteamAudioEditor",
 			"Type" : "Editor",
 			"LoadingPhase" : "PostEngineInit",
-			"WhitelistPlatforms" :
+			"PlatformAllowList" :
 			[
-				"Win32", "Win64"
+				"Win64"
 			]
 		}
 	]

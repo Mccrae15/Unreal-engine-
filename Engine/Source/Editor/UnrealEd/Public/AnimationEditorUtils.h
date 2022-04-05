@@ -24,6 +24,8 @@ class UAnimSequence;
 class UEdGraph;
 class UPoseWatch;
 class UEdGraphNode;
+class UAnimBlueprintGeneratedClass;
+class UAnimGraphNode_Base;
 
 /** dialog to prompt users to decide an animation asset name */
 class SCreateAnimationAssetDlg : public SWindow
@@ -192,11 +194,19 @@ namespace AnimationEditorUtils
 	// Is the supplied UEdGraph an Animation Graph
 	UNREALED_API bool IsAnimGraph(UEdGraph* Graph);
 
+	int32 GetPoseWatchNodeLinkID(UPoseWatch* PoseWatch, OUT UAnimBlueprintGeneratedClass*& AnimBPGenClass);
 	UNREALED_API void SetPoseWatch(UPoseWatch* PoseWatch, UAnimBlueprint* AnimBlueprintIfKnown = nullptr);
 	UNREALED_API UPoseWatch* FindPoseWatchForNode(const UEdGraphNode* Node, UAnimBlueprint* AnimBlueprintIfKnown=nullptr);
-	UNREALED_API void MakePoseWatchForNode(UAnimBlueprint* AnimBlueprint, UEdGraphNode* Node, FColor PoseWatchColour);
+	UNREALED_API UPoseWatch* MakePoseWatchForNode(UAnimBlueprint* AnimBlueprint, UEdGraphNode* Node);
 	UNREALED_API void RemovePoseWatch(UPoseWatch* PoseWatch, UAnimBlueprint* AnimBlueprintIfKnown=nullptr);
-	UNREALED_API void UpdatePoseWatchColour(UPoseWatch* PoseWatch, FColor NewPoseWatchColour);
+	UNREALED_API void RemovePoseWatchFromNode(UEdGraphNode* Node, UAnimBlueprint* AnimBlueprint);
+	UNREALED_API void RemovePoseWatchesFromGraph(UAnimBlueprint* AnimBlueprint, class UEdGraph* Graph);
+
+	// Delegate fired when a pose watch is added or removed
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPoseWatchesChanged, UAnimBlueprint* /*InAnimBlueprint*/, UEdGraphNode* /*InNode*/);
+	UNREALED_API FOnPoseWatchesChanged& OnPoseWatchesChanged();
+
+	UNREALED_API void SetupDebugLinkedAnimInstances(UAnimBlueprint* InAnimBlueprint, UObject* InRootObjectBeingDebugged);
 
 	//////////////////////////////////////////////////////////////////////////////////////////
 
@@ -244,7 +254,7 @@ namespace AnimationEditorUtils
 							{
 								ObjectToDelete->ClearFlags(RF_Standalone | RF_Public);
 								ObjectToDelete->RemoveFromRoot();
-								ObjectToDelete->MarkPendingKill();
+								ObjectToDelete->MarkAsGarbage();
 							}
 							CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 						}

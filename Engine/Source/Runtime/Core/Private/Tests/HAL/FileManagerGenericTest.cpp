@@ -8,7 +8,7 @@
 
 #include "Containers/UnrealString.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/StringBuilder.h"
 
@@ -51,7 +51,7 @@ void FArchiveFileReaderGenericTest::TestInternalPrecache()
 	uint32 BufferSize = 1024;
 	TArray<uint8> UnusedBytes;
 	UnusedBytes.SetNumUninitialized(BufferSize);
-	TUniquePtr<FArchiveFileReaderGeneric> Reader(new FArchiveFileReaderGeneric(ReadHandle.Get(), *TestFileName, FileSize, BufferSize));
+	TUniquePtr<FArchiveFileReaderGeneric> Reader(new FArchiveFileReaderGeneric(ReadHandle.Release(), *TestFileName, FileSize, BufferSize));
 	TestEqual(TEXT("Initial Pos should be 0"), Reader->Pos, 0LL);
 	TestEqual(TEXT("Size should be what was passed in"), Reader->Size, FileSize);
 	TestEqual(TEXT("BufferSize should be what was passed in"), Reader->BufferSize, BufferSize);

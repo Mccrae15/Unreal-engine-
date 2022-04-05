@@ -28,31 +28,6 @@ extern TAutoConsoleVariable<float> CVarCheckpointSaveMaxMSPerFrameOverride;
 
 CSV_DECLARE_CATEGORY_EXTERN(Demo);
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-FScopedPacketManager::FScopedPacketManager(UNetConnection& InConnection, TArray<FQueuedDemoPacket>& InPackets, const uint32 InSeenLevelIndex) :
-	Connection(InConnection),
-	Packets(InPackets),
-	SeenLevelIndex(InSeenLevelIndex)
-{
-	FReplayHelper::FlushNetChecked(Connection);
-	StartPacketCount = Packets.Num();
-}
-
-FScopedPacketManager::~FScopedPacketManager()
-{
-	FReplayHelper::FlushNetChecked(Connection);
-	AssociatePacketsWithLevel();
-}
-
-void FScopedPacketManager::AssociatePacketsWithLevel()
-{
-	for (int32 i = StartPacketCount; i < Packets.Num(); i++)
-	{
-		Packets[i].SeenLevelIndex = SeenLevelIndex;
-	}
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 FReplayHelper::FReplayHelper()
 	: CurrentLevelIndex(0)
 	, DemoFrameNum(0)
@@ -70,6 +45,7 @@ FReplayHelper::FReplayHelper()
 	, bRecordMapChanges(false)
 	, CheckpointSaveMaxMSPerFrame(0)
 	, NumLevelsAddedThisFrame(0)
+	, bPendingCheckpointRequest(false)
 {
 }
 
@@ -108,6 +84,11 @@ void FReplayHelper::SetPlaybackNetworkVersions(FArchive& Ar)
 {
 	Ar.SetEngineNetVer(PlaybackDemoHeader.EngineNetworkProtocolVersion);
 	Ar.SetGameNetVer(PlaybackDemoHeader.GameNetworkProtocolVersion);
+	Ar.SetUEVer(PlaybackDemoHeader.PackageVersionUE);
+	Ar.SetLicenseeUEVer(PlaybackDemoHeader.PackageVersionLicenseeUE);
+	// Base archives only store FEngineVersionBase, but the header stores FEngineVersion.
+	// This will slice off the branch name and anything else stored in FEngineVersion.
+	Ar.SetEngineVer(PlaybackDemoHeader.EngineVersion);
 }
 
 void FReplayHelper::SetPlaybackNetworkVersions(UNetConnection* Connection)
@@ -116,6 +97,9 @@ void FReplayHelper::SetPlaybackNetworkVersions(UNetConnection* Connection)
 	{
 		Connection->EngineNetworkProtocolVersion = PlaybackDemoHeader.EngineNetworkProtocolVersion;
 		Connection->GameNetworkProtocolVersion = PlaybackDemoHeader.GameNetworkProtocolVersion;
+		Connection->SetPackageVersionUE(PlaybackDemoHeader.PackageVersionUE);
+		Connection->SetPackageVersionLicenseeUE(PlaybackDemoHeader.PackageVersionLicenseeUE);
+		Connection->SetEngineVersion(PlaybackDemoHeader.EngineVersion);
 	}
 }
 
@@ -138,7 +122,8 @@ void FReplayHelper::StartRecording(UNetConnection* Connection)
 {
 	World = Connection ? Connection->GetWorld() : nullptr;
 
-	bHasLevelStreamingFixes = !!CVarWithLevelStreamingFixes.GetValueOnAnyThread();
+	// World Partition needs bHasLevelStreamingFixes to be true
+	bHasLevelStreamingFixes = !!CVarWithLevelStreamingFixes.GetValueOnAnyThread() || World->IsPartitionedWorld();
 	bHasDeltaCheckpoints = !!CVarWithDeltaCheckpoints.GetValueOnAnyThread() && ReplayStreamer->IsCheckpointTypeSupported(EReplayCheckpointType::Delta);
 	bHasGameSpecificFrameData = !!CVarWithGameSpecificFrameData.GetValueOnAnyThread();
 
@@ -554,7 +539,7 @@ void FReplayHelper::SaveCheckpoint(UNetConnection* Connection)
 						AActor* Actor = NetworkObjectInfo->Actor;
 
 						// check to see if it should replicate at all
-						bool bCheckpointActor = Actor && !Actor->IsPendingKill() && ((Actor->GetRemoteRole() != ROLE_None || Actor->GetTearOff()) && (Actor == Connection->PlayerController || Cast<APlayerController>(Actor) == nullptr));
+						bool bCheckpointActor = IsValid(Actor) && ((Actor->GetRemoteRole() != ROLE_None || Actor->GetTearOff()) && (Actor == Connection->PlayerController || Cast<APlayerController>(Actor) == nullptr));
 						
 						// now look for an open channel
 						bCheckpointActor = bCheckpointActor && ActorChannelMap.Contains(NetworkObjectInfo->Actor);
@@ -643,6 +628,8 @@ void FReplayHelper::SaveCheckpoint(UNetConnection* Connection)
 	CheckpointSaveContext.TotalCheckpointActors = CheckpointSaveContext.PendingCheckpointActors.Num();
 
 	LastCheckpointTime = DemoCurrentTime;
+
+	bPendingCheckpointRequest = false;
 
 	if (bDeltaCheckpoint)
 	{
@@ -779,7 +766,7 @@ void FReplayHelper::TickCheckpoint(UNetConnection* Connection)
 				// if we have replicated all checkpointactors, move on to the next state
 				if (CheckpointSaveContext.PendingCheckpointActors.Num() == 0)
 				{
-					CheckpointSaveContext.CheckpointSaveState = ECheckpointSaveState::SerializeDeletedStartupActors;
+					CheckpointSaveContext.CheckpointSaveState = ECheckpointSaveState::CacheDeletedActors;
 
 					Connection->SetReserveDestroyedChannels(false);
 					Connection->SetIgnoreReservedChannels(false);
@@ -787,13 +774,13 @@ void FReplayHelper::TickCheckpoint(UNetConnection* Connection)
 			}
 			break;
 
-			case ECheckpointSaveState::SerializeDeletedStartupActors:
+			case ECheckpointSaveState::CacheDeletedActors:
 			{
-				// Postpone execution of this state if we have used to much of our alloted time, this value can be tweaked based on profiling
-				const double RequiredRatioFor_SerializeDeletedStartupActors = 0.6;
-				if ((bExecuteNextState = ShouldExecuteState(Params, CurrentTime, RequiredRatioFor_SerializeDeletedStartupActors)) == true)
+				// Postpone execution of this state if we have used too much of our alloted time, this value can be tweaked based on profiling
+				const double RequiredRatioFor_CacheDeletedActors = 0.6;
+				if ((bExecuteNextState = ShouldExecuteState(Params, CurrentTime, RequiredRatioFor_CacheDeletedActors)) == true)
 				{
-					SCOPED_NAMED_EVENT(FReplayHelper_SerializeDeletedStartupActors, FColor::Green);
+					SCOPED_NAMED_EVENT(FReplayHelper_CacheDeletedActors, FColor::Green);
 
 					//
 					// We're done saving this checkpoint, now we need to write out all data for it.
@@ -809,22 +796,61 @@ void FReplayHelper::TickCheckpoint(UNetConnection* Connection)
 
 					*CheckpointArchive << CurrentLevelIndex;
 
-					// Save deleted startup actors
+					CacheDeletedActors(Connection);
+					CheckpointSaveContext.CheckpointSaveState = ECheckpointSaveState::SerializeDeletedStartupActors;
+				}
+			}
+			break;
+
+			case ECheckpointSaveState::SerializeDeletedStartupActors:
+			{
+				SCOPED_NAMED_EVENT(FReplayHelper_SerializeDeletedStartupActors, FColor::Green);
+
+				// Postpone execution of this state if we have used to much of our alloted time, this value can be tweaked based on profiling
+				bExecuteNextState = SerializeDeletedStartupActors(Connection, Params, CheckpointArchive);
+				if (bExecuteNextState)
+				{
 					if (bDeltaCheckpoint)
 					{
-						WriteDeletedStartupActors(Connection, *CheckpointArchive, CheckpointSaveContext.DeltaCheckpointData.DestroyedNetStartupActors);
-						CheckpointSaveContext.DeltaCheckpointData.DestroyedNetStartupActors.Empty();
-
-						*CheckpointArchive << CheckpointSaveContext.DeltaCheckpointData.DestroyedDynamicActors;
-						CheckpointSaveContext.DeltaCheckpointData.DestroyedDynamicActors.Empty();
-
-						*CheckpointArchive << CheckpointSaveContext.DeltaCheckpointData.ChannelsToClose;
-						CheckpointSaveContext.DeltaCheckpointData.ChannelsToClose.Empty();
+						CheckpointSaveContext.NextAmortizedItem = 0;
+						CheckpointSaveContext.CheckpointSaveState = ECheckpointSaveState::SerializeDeltaDynamicDestroyed;
 					}
 					else
 					{
-						WriteDeletedStartupActors(Connection, *CheckpointArchive, DeletedNetStartupActors);
+						CheckpointSaveContext.CheckpointSaveState = ECheckpointSaveState::CacheNetGuids;
 					}
+				}
+			}
+			break;
+
+			case ECheckpointSaveState::SerializeDeltaDynamicDestroyed:
+			{
+				SCOPED_NAMED_EVENT(FReplayHelper_SerializeDeltaDynamicDestroyed, FColor::Green);
+
+				// Postpone execution of this state if we have used to much of our alloted time, this value can be tweaked based on profiling
+				bExecuteNextState = SerializeDeltaDynamicDestroyed(Connection, Params, CheckpointArchive);
+				if (bExecuteNextState)
+				{
+					CheckpointSaveContext.NextAmortizedItem = 0;
+					CheckpointSaveContext.DeltaCheckpointData.ChannelsToClose.GenerateKeyArray(CheckpointSaveContext.DeltaChannelCloseKeys);
+
+					CheckpointSaveContext.CheckpointSaveState = ECheckpointSaveState::SerializeDeltaClosedChannels;
+				}
+			}
+			break;
+
+			case ECheckpointSaveState::SerializeDeltaClosedChannels:
+			{
+				SCOPED_NAMED_EVENT(FReplayHelper_SerializeDeltaClosedChannels, FColor::Green);
+
+				// Postpone execution of this state if we have used to much of our alloted time, this value can be tweaked based on profiling
+				bExecuteNextState = SerializeDeltaClosedChannels(Connection, Params, CheckpointArchive);
+				if (bExecuteNextState)
+				{
+					CheckpointSaveContext.DeltaCheckpointData.RecordingDeletedNetStartupActors.Empty();
+					CheckpointSaveContext.DeltaCheckpointData.DestroyedDynamicActors.Empty();
+					CheckpointSaveContext.DeltaCheckpointData.ChannelsToClose.Empty();
+					CheckpointSaveContext.DeltaChannelCloseKeys.Empty();
 
 					CheckpointSaveContext.CheckpointSaveState = ECheckpointSaveState::CacheNetGuids;
 				}
@@ -834,7 +860,7 @@ void FReplayHelper::TickCheckpoint(UNetConnection* Connection)
 			case ECheckpointSaveState::CacheNetGuids:
 			{
 				// Postpone execution of this state if we have used too much of our alloted time, this value can be tweaked based on profiling
-				const double RequiredRatioFor_CacheNetGuids = 0.8;
+				const double RequiredRatioFor_CacheNetGuids = 0.6;
 				if ((bExecuteNextState = ShouldExecuteState(Params, CurrentTime, RequiredRatioFor_CacheNetGuids)) == true)
 				{
 					SCOPED_NAMED_EVENT(FReplayHelper_CacheNetGuids, FColor::Green);
@@ -956,21 +982,21 @@ bool FReplayHelper::SerializeGuidCache(UNetConnection* Connection, const FRepAct
 {
 	check(Connection);
 
-	if (CheckpointSaveContext.NextNetGuidForRecording == 0) // is the first iteration?
+	if (CheckpointSaveContext.NextAmortizedItem == 0) // is the first iteration?
 	{
 		CheckpointSaveContext.NetGuidsCountPos = CheckpointArchive->Tell();
-		*CheckpointArchive << CheckpointSaveContext.NextNetGuidForRecording;
+		*CheckpointArchive << CheckpointSaveContext.NextAmortizedItem;
 	}
 
 	const double StartTime = FPlatformTime::Seconds();
 	const double Deadline = Params.StartCheckpointTime + Params.CheckpointMaxUploadTimePerFrame;
 
-	check(CheckpointSaveContext.NetGuidCacheSnapshot.Num() == 0 || CheckpointSaveContext.NetGuidCacheSnapshot.IsValidIndex(CheckpointSaveContext.NextNetGuidForRecording));
+	check(CheckpointSaveContext.NetGuidCacheSnapshot.Num() == 0 || CheckpointSaveContext.NetGuidCacheSnapshot.IsValidIndex(CheckpointSaveContext.NextAmortizedItem));
 
-	for (; CheckpointSaveContext.NextNetGuidForRecording != CheckpointSaveContext.NetGuidCacheSnapshot.Num(); ++CheckpointSaveContext.NextNetGuidForRecording)
+	while (CheckpointSaveContext.NextAmortizedItem < CheckpointSaveContext.NetGuidCacheSnapshot.Num())
 	{
-		FNetworkGUID& NetworkGUID = CheckpointSaveContext.NetGuidCacheSnapshot[CheckpointSaveContext.NextNetGuidForRecording].NetGuid;
-		FNetGuidCacheObject& CacheObject = CheckpointSaveContext.NetGuidCacheSnapshot[CheckpointSaveContext.NextNetGuidForRecording].NetGuidCacheObject;
+		FNetworkGUID& NetworkGUID = CheckpointSaveContext.NetGuidCacheSnapshot[CheckpointSaveContext.NextAmortizedItem].NetGuid;
+		FNetGuidCacheObject& CacheObject = CheckpointSaveContext.NetGuidCacheSnapshot[CheckpointSaveContext.NextAmortizedItem].NetGuidCacheObject;
 
 		const UObject* Object = CacheObject.Object.Get();
 
@@ -1013,13 +1039,15 @@ bool FReplayHelper::SerializeGuidCache(UNetConnection* Connection, const FRepAct
 			++CheckpointSaveContext.NumNetGuidsForRecording;
 		}
 
+		++CheckpointSaveContext.NextAmortizedItem;
+
 		if (Params.CheckpointMaxUploadTimePerFrame > 0 && (FPlatformTime::Seconds() >= Deadline))
 		{
 			break;
 		}
 	}
 
-	const bool bCompleted = CheckpointSaveContext.NextNetGuidForRecording == CheckpointSaveContext.NetGuidCacheSnapshot.Num();
+	const bool bCompleted = (CheckpointSaveContext.NextAmortizedItem == CheckpointSaveContext.NetGuidCacheSnapshot.Num());
 	if (bCompleted)
 	{
 		FArchivePos Pos = CheckpointArchive->Tell();
@@ -1028,7 +1056,124 @@ bool FReplayHelper::SerializeGuidCache(UNetConnection* Connection, const FRepAct
 		CheckpointArchive->Seek(Pos);
 	}
 
-	UE_LOG(LogDemo, Log, TEXT("Checkpoint. SerializeGuidCache: %i/%i (total %i), took %.3f (%.3f)"), CheckpointSaveContext.NextNetGuidForRecording, CheckpointSaveContext.NetGuidCacheSnapshot.Num(), CheckpointSaveContext.NumNetGuidsForRecording, FPlatformTime::Seconds() - Params.StartCheckpointTime, FPlatformTime::Seconds() - StartTime);
+	UE_LOG(LogDemo, Log, TEXT("Checkpoint. SerializeGuidCache: %i/%i (total %i), took %.3f (%.3f)"), CheckpointSaveContext.NextAmortizedItem, CheckpointSaveContext.NetGuidCacheSnapshot.Num(), CheckpointSaveContext.NumNetGuidsForRecording, FPlatformTime::Seconds() - Params.StartCheckpointTime, FPlatformTime::Seconds() - StartTime);
+
+	return bCompleted;
+}
+
+bool FReplayHelper::SerializeDeletedStartupActors(UNetConnection* Connection, const FRepActorsCheckpointParams& Params, FArchive* CheckpointArchive)
+{
+	check(Connection);
+
+	const bool bDeltaCheckpoint = HasDeltaCheckpoints();
+
+	const TArray<FString>& DeletedActors = bDeltaCheckpoint ? CheckpointSaveContext.DeltaCheckpointData.RecordingDeletedNetStartupActors : CheckpointSaveContext.CheckpointDeletedNetStartupActors;
+
+	if (CheckpointSaveContext.NextAmortizedItem == 0)
+	{
+		int32 DeletedCount = DeletedActors.Num();
+		*CheckpointArchive << DeletedCount;
+	}
+
+	const double StartTime = FPlatformTime::Seconds();
+	const double Deadline = Params.StartCheckpointTime + Params.CheckpointMaxUploadTimePerFrame;
+
+	check(DeletedActors.Num() == 0 || DeletedActors.IsValidIndex(CheckpointSaveContext.NextAmortizedItem));
+
+	while (CheckpointSaveContext.NextAmortizedItem < DeletedActors.Num())
+	{
+		FString DeletedActorPath = DeletedActors[CheckpointSaveContext.NextAmortizedItem];
+
+		GEngine->NetworkRemapPath(Connection, DeletedActorPath, false);
+
+		*CheckpointArchive << DeletedActorPath;
+
+		++CheckpointSaveContext.NextAmortizedItem;
+
+		if (Params.CheckpointMaxUploadTimePerFrame > 0 && (FPlatformTime::Seconds() >= Deadline))
+		{
+			break;
+		}
+	}
+
+	const bool bCompleted = (CheckpointSaveContext.NextAmortizedItem == DeletedActors.Num());
+
+	UE_LOG(LogDemo, Log, TEXT("Checkpoint. SerializeDeletedStartupActors: %i/%i, took %.3f (%.3f)"), CheckpointSaveContext.NextAmortizedItem, DeletedActors.Num(), FPlatformTime::Seconds() - Params.StartCheckpointTime, FPlatformTime::Seconds() - StartTime);
+
+	return bCompleted;
+}
+
+bool FReplayHelper::SerializeDeltaDynamicDestroyed(UNetConnection* Connection, const FRepActorsCheckpointParams& Params, FArchive* CheckpointArchive)
+{
+	check(Connection);
+
+	int32 TotalCount = CheckpointSaveContext.DeltaCheckpointData.DestroyedDynamicActors.Num();
+
+	if (CheckpointSaveContext.NextAmortizedItem == 0)
+	{
+		*CheckpointArchive << TotalCount;
+	}
+
+	const double StartTime = FPlatformTime::Seconds();
+	const double Deadline = Params.StartCheckpointTime + Params.CheckpointMaxUploadTimePerFrame;
+
+	check(TotalCount == 0 || CheckpointSaveContext.DeltaCheckpointData.DestroyedDynamicActors.IsValidId(FSetElementId::FromInteger(CheckpointSaveContext.NextAmortizedItem)));
+
+	while (CheckpointSaveContext.NextAmortizedItem < TotalCount)
+	{
+		FNetworkGUID DestroyedActorGUID = CheckpointSaveContext.DeltaCheckpointData.DestroyedDynamicActors[FSetElementId::FromInteger(CheckpointSaveContext.NextAmortizedItem)];
+		*CheckpointArchive << DestroyedActorGUID;
+
+		++CheckpointSaveContext.NextAmortizedItem;
+
+		if (Params.CheckpointMaxUploadTimePerFrame > 0 && (FPlatformTime::Seconds() >= Deadline))
+		{
+			break;
+		}
+	}
+
+	const bool bCompleted = (CheckpointSaveContext.NextAmortizedItem == TotalCount);
+
+	UE_LOG(LogDemo, Log, TEXT("Checkpoint. SerializeDeltaDynamicDestroyed: %i/%i, took %.3f (%.3f)"), CheckpointSaveContext.NextAmortizedItem, TotalCount, FPlatformTime::Seconds() - Params.StartCheckpointTime, FPlatformTime::Seconds() - StartTime);
+
+	return bCompleted;
+}
+
+bool FReplayHelper::SerializeDeltaClosedChannels(UNetConnection* Connection, const FRepActorsCheckpointParams& Params, FArchive* CheckpointArchive)
+{
+	check(Connection);
+
+	int32 TotalCount = CheckpointSaveContext.DeltaChannelCloseKeys.Num();
+
+	if (CheckpointSaveContext.NextAmortizedItem == 0)
+	{
+		*CheckpointArchive << TotalCount;
+	}
+
+	const double StartTime = FPlatformTime::Seconds();
+	const double Deadline = Params.StartCheckpointTime + Params.CheckpointMaxUploadTimePerFrame;
+
+	check(TotalCount == 0 || CheckpointSaveContext.DeltaChannelCloseKeys.IsValidIndex(CheckpointSaveContext.NextAmortizedItem));
+
+	while (CheckpointSaveContext.NextAmortizedItem < TotalCount)
+	{
+		FNetworkGUID CloseGUID = CheckpointSaveContext.DeltaChannelCloseKeys[CheckpointSaveContext.NextAmortizedItem];
+		EChannelCloseReason CloseReason = CheckpointSaveContext.DeltaCheckpointData.ChannelsToClose[CloseGUID];
+
+		*CheckpointArchive << CloseGUID;
+		*CheckpointArchive << CloseReason;
+
+		++CheckpointSaveContext.NextAmortizedItem;
+
+		if (Params.CheckpointMaxUploadTimePerFrame > 0 && (FPlatformTime::Seconds() >= Deadline))
+		{
+			break;
+		}
+	}
+
+	const bool bCompleted = (CheckpointSaveContext.NextAmortizedItem == TotalCount);
+
+	UE_LOG(LogDemo, Log, TEXT("Checkpoint. SerializeDeltaClosedChannels: %i/%i, took %.3f (%.3f)"), CheckpointSaveContext.NextAmortizedItem, TotalCount, FPlatformTime::Seconds() - Params.StartCheckpointTime, FPlatformTime::Seconds() - StartTime);
 
 	return bCompleted;
 }
@@ -1160,33 +1305,67 @@ void FReplayHelper::SaveExternalData(UNetConnection* Connection, FArchive& Ar)
 	check(Connection && Connection->Driver);
 
 	SCOPED_NAMED_EVENT(FReplayHelper_SaveExternalData, FColor::Blue);
-	for (auto It = ObjectsWithExternalData.CreateIterator(); It; ++It)
+	for (TPair<TWeakObjectPtr<UObject>, FNetworkGUID>& Pair : ObjectsWithExternalDataMap)
 	{
-		FReplayExternalOutData& Element = *It;
-		if (UObject* Object = Element.Object.Get())
+		if (UObject* Object = Pair.Key.Get())
 		{
-			FRepChangedPropertyTracker* PropertyTracker = Connection->Driver->RepChangedPropertyTrackerMap.FindChecked(Object).Get();
-
-			uint32 ExternalDataNumBits = PropertyTracker->ExternalDataNumBits;
-			if (ExternalDataNumBits > 0)
+			if (FExternalDataWrapper* ExternalData = ExternalDataMap.Find(Object))
 			{
-				// Save payload size (in bits)
-				Ar.SerializeIntPacked(ExternalDataNumBits);
+				if (ExternalData->NumBits > 0)
+				{
+					FNetworkGUID NetworkGUID = ExternalData->NetGUID;
+					if (!NetworkGUID.IsValid())
+					{
+						// try the lookup again, it may not have been registered when the data was added
+						NetworkGUID = Connection->Driver->GuidCache->NetGUIDLookup.FindRef(Object);
+					}
 
-				// Save GUID
-				Ar << Element.GUID;
+					if (NetworkGUID.IsValid())
+					{
+						// Save payload size (in bits)
+						uint32 NumBits = ExternalData->NumBits;
+						Ar.SerializeIntPacked(NumBits);
 
-				// Save payload
-				Ar.Serialize(PropertyTracker->ExternalData.GetData(), PropertyTracker->ExternalData.Num());
+						// Save GUID
+						Ar << NetworkGUID;
 
-				PropertyTracker->ExternalData.Empty();
-				PropertyTracker->ExternalDataNumBits = 0;
+						// Save payload
+						Ar.Serialize(ExternalData->Data.GetData(), ExternalData->Data.Num());
+					}
+					else
+					{
+						UE_LOG(LogDemo, Warning, TEXT("SaveExternalData: Discarding external data for object with no net guid: %s"), *GetNameSafe(Object));
+					}
+				}
+			}
+			else
+			{
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				FRepChangedPropertyTracker* PropertyTracker = Connection->Driver->RepChangedPropertyTrackerMap.FindChecked(Object).Get();
+
+				uint32 ExternalDataNumBits = PropertyTracker->ExternalDataNumBits;
+				if (ExternalDataNumBits > 0)
+				{
+					// Save payload size (in bits)
+					Ar.SerializeIntPacked(ExternalDataNumBits);
+
+					// Save GUID
+					Ar << Pair.Value;
+
+					// Save payload
+					Ar.Serialize(PropertyTracker->ExternalData.GetData(), PropertyTracker->ExternalData.Num());
+
+					PropertyTracker->ExternalData.Empty();
+					PropertyTracker->ExternalDataNumBits = 0;
+				}
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			}
 		}
 	}
 
 	// Reset external out datas
-	ObjectsWithExternalData.Reset();
+	ObjectsWithExternalDataMap.Reset();
+	ExternalDataMap.Reset();
 
 	uint32 StopCount = 0;
 	Ar.SerializeIntPacked(StopCount);
@@ -1222,7 +1401,7 @@ void FReplayHelper::CacheNetGuids(UNetConnection* Connection)
 
 		// initialize NetGuidCache serialization
 		CheckpointSaveContext.NetGuidCacheSnapshot.Reset();
-		CheckpointSaveContext.NextNetGuidForRecording = 0;
+		CheckpointSaveContext.NextAmortizedItem = 0;
 		CheckpointSaveContext.NumNetGuidsForRecording = 0;
 
 		for (auto It = Connection->Driver->GuidCache->ObjectLookup.CreateIterator(); It; ++It)
@@ -1247,6 +1426,28 @@ void FReplayHelper::CacheNetGuids(UNetConnection* Connection)
 		}
 
 		UE_LOG(LogDemo, Verbose, TEXT("CacheNetGuids: %d, %.1f ms"), NumValues, (FPlatformTime::Seconds() - StartTime) * 1000);
+	}
+}
+
+void FReplayHelper::CacheDeletedActors(UNetConnection* Connection)
+{
+	if (Connection && Connection->Driver)
+	{
+		const double StartTime = FPlatformTime::Seconds();
+
+		// initialize serialization
+		CheckpointSaveContext.CheckpointDeletedNetStartupActors.Reset();
+		CheckpointSaveContext.NextAmortizedItem = 0;
+
+		const bool bDeltaCheckpoint = HasDeltaCheckpoints();
+
+		// delta entries already copied into CheckpointSaveContext.DeltaCheckpointData
+		if (!bDeltaCheckpoint)
+		{
+			CheckpointSaveContext.CheckpointDeletedNetStartupActors.Append(RecordingDeletedNetStartupActors);
+		}
+
+		UE_LOG(LogDemo, Verbose, TEXT("CacheDeletedActors: %d, %.1f ms"), bDeltaCheckpoint ? CheckpointSaveContext.DeltaCheckpointData.RecordingDeletedNetStartupActors.Num() : CheckpointSaveContext.CheckpointDeletedNetStartupActors.Num(), (FPlatformTime::Seconds() - StartTime) * 1000);
 	}
 }
 
@@ -1292,7 +1493,7 @@ bool FReplayHelper::ReplicateCheckpointActor(AActor* ToReplicate, UNetConnection
 			ActorChannel->ConditionalCleanUp(false, EChannelCloseReason::Dormancy);
 		}
 
-		UpdateExternalDataForActor(Connection, ToReplicate);
+		UpdateExternalDataForObject(Connection, ToReplicate);
 
 		const double CheckpointTime = FPlatformTime::Seconds();
 
@@ -1340,11 +1541,12 @@ void FReplayHelper::LoadExternalData(FArchive& Ar, const float TimeSeconds)
 	}
 }
 
-bool FReplayHelper::UpdateExternalDataForActor(UNetConnection* Connection, AActor* Actor)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+bool FReplayHelper::UpdateExternalDataForObject(UNetConnection* Connection, UObject* OwningObject)
 {
 	check(Connection && Connection->Driver);
 
-	UNetDriver::FRepChangedPropertyTrackerWrapper* PropertyTrackerWrapper = Connection->Driver->RepChangedPropertyTrackerMap.Find(Actor);
+	UNetDriver::FRepChangedPropertyTrackerWrapper* PropertyTrackerWrapper = Connection->Driver->RepChangedPropertyTrackerMap.Find(OwningObject);
 	if (PropertyTrackerWrapper == nullptr)
 	{
 		return false;
@@ -1357,20 +1559,55 @@ bool FReplayHelper::UpdateExternalDataForActor(UNetConnection* Connection, AActo
 		return false;
 	}
 
-	if (FNetworkGUID* NetworkGUID = Connection->Driver->GuidCache->NetGUIDLookup.Find(Actor))
+	if (FNetworkGUID* NetworkGUID = Connection->Driver->GuidCache->NetGUIDLookup.Find(OwningObject))
 	{
-		ObjectsWithExternalData.Add({ Actor, *NetworkGUID });
+		ObjectsWithExternalDataMap.Add(OwningObject, *NetworkGUID);
 
 		return true;
 	}
 	else
 	{
+		UE_LOG(LogDemo, Warning, TEXT("UpdateExternalDataForObject: Discarding external data for object with no net guid: %s"), *GetNameSafe(OwningObject));
+
 		// Clear external data if the actor has never replicated yet (and doesn't have a net guid)
 		PropertyTracker->ExternalData.Reset();
 		PropertyTracker->ExternalDataNumBits = 0;
 
 		return false;
 	}
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+// only allow one chunk of data per object at a time (first wins), when recording ticks it will store/clear it
+bool FReplayHelper::SetExternalDataForObject(UNetConnection* Connection, UObject* OwningObject, const uint8* Src, const int32 NumBits)
+{
+	check(Connection && Connection->Driver);
+
+	// It's fine if we don't find the guid, we may replicate the actor later this frame which will register it
+	FNetworkGUID NetworkGUID = Connection->Driver->GuidCache->NetGUIDLookup.FindRef(OwningObject);
+
+	if (!ExternalDataMap.Contains(OwningObject))
+	{
+		ObjectsWithExternalDataMap.Add(OwningObject, NetworkGUID);
+
+		FExternalDataWrapper ExternalData;
+		ExternalData.NetGUID = NetworkGUID;
+		ExternalData.NumBits = NumBits;
+
+		const int32 NumBytes = (NumBits + 7) >> 3;
+
+		ExternalData.Data.AddUninitialized(NumBytes);
+		FMemory::Memcpy(ExternalData.Data.GetData(), Src, NumBytes);
+
+		ExternalDataMap.Emplace(OwningObject, MoveTemp(ExternalData));
+		return true;
+	}
+	else
+	{
+		UE_LOG(LogDemo, Warning, TEXT("SetExternalDataForObject: Discarding external data for object, already exists: %s"), *GetNameSafe(OwningObject));
+	}
+
+	return false;
 }
 
 void FReplayHelper::Serialize(FArchive& Ar)
@@ -1411,7 +1648,8 @@ void FReplayHelper::Serialize(FArchive& Ar)
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LevelStatusIndexByLevel", LevelStatusIndexByLevel.CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("SeenLevelStatuses", SeenLevelStatuses.CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("LevelsPendingFastForward", LevelsPendingFastForward.CountBytes(Ar));
-		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ObjectsWithExternalData", ObjectsWithExternalData.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ObjectsWithExternalDataMap", ObjectsWithExternalDataMap.CountBytes(Ar));
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("ExternalDataMap", ExternalDataMap.CountBytes(Ar));
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("CheckpointSaveContext", CheckpointSaveContext.CountBytes(Ar));
 
 		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("QueuedDemoPackets",
@@ -1446,9 +1684,17 @@ void FReplayHelper::Serialize(FArchive& Ar)
 			}
 		);
 
-		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("DeletedNetStartupActors",
-			DeletedNetStartupActors.CountBytes(Ar);
-			for (FString& ActorString : DeletedNetStartupActors)
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("RecordingDeletedNetStartupActors",
+			RecordingDeletedNetStartupActors.CountBytes(Ar);
+			for (FString& ActorString : RecordingDeletedNetStartupActors)
+			{
+				Ar << ActorString;
+			}
+		);
+
+		GRANULAR_NETWORK_MEMORY_TRACKING_TRACK("RecordingDeletedNetStartupActors",
+			RecordingDeletedNetStartupActors.CountBytes(Ar);
+			for (FString& ActorString : RecordingDeletedNetStartupActors)
 			{
 				Ar << ActorString;
 			}
@@ -1813,12 +2059,7 @@ bool FReplayHelper::ShouldSaveCheckpoint() const
 {
 	const double CHECKPOINT_DELAY = CVarCheckpointUploadDelayInSeconds.GetValueOnAnyThread();
 
-	if (DemoCurrentTime - LastCheckpointTime > CHECKPOINT_DELAY)
-	{
-		return true;
-	}
-
-	return false;
+	return (bPendingCheckpointRequest || ((DemoCurrentTime - LastCheckpointTime) > CHECKPOINT_DELAY));
 }
 
 float FReplayHelper::GetCheckpointSaveMaxMSPerFrame() const
@@ -1904,33 +2145,17 @@ void FReplayHelper::AddOrUpdateEvent(const FString& Name, const FString& Group, 
 
 void FReplayHelper::ReadDeletedStartupActors(UNetConnection* Connection, FArchive& Ar, TSet<FString>& DeletedStartupActors)
 {
-	TSet<FString> TempSet;
-	Ar << TempSet;
+	TArray<FString> TempList;
+	Ar << TempList;
 
-	DeletedStartupActors.Reserve(TempSet.Num());
+	DeletedStartupActors.Reserve(TempList.Num());
 
-	for (FString& Path : TempSet)
+	for (FString& Path : TempList)
 	{
 		GEngine->NetworkRemapPath(Connection, Path, true);
 
 		DeletedStartupActors.Emplace(MoveTemp(Path));
 	}
-}
-
-void FReplayHelper::WriteDeletedStartupActors(UNetConnection* Connection, FArchive& Ar, const TSet<FString>& DeletedStartupActors)
-{
-	TSet<FString> TempSet;
-	TempSet.Reserve(DeletedStartupActors.Num());
-
-	// intentionally copying to avoid destroying the TSet hash
-	for (FString Path : DeletedStartupActors)
-	{
-		GEngine->NetworkRemapPath(Connection, Path, false);
-
-		TempSet.Emplace(MoveTemp(Path));
-	}
-
-	Ar << TempSet;
 }
 
 void FReplayHelper::SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InProvider)
@@ -1961,4 +2186,9 @@ const TCHAR* LexToString(EReplayHeaderFlags Flag)
 		check(false);
 		return TEXT("Unknown");
 	}
+}
+
+void FReplayHelper::RequestCheckpoint()
+{
+	bPendingCheckpointRequest = true;
 }

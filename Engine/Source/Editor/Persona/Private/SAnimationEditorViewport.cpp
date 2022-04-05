@@ -163,6 +163,14 @@ void SAnimationEditorViewport::BindCommands()
 
 	FShowFlagMenuCommands::Get().BindCommands(*CommandList, Client);
 	FBufferVisualizationMenuCommands::Get().BindCommands(*CommandList, Client);
+
+	if (TSharedPtr<SAnimationEditorViewportTabBody> TabBody = TabBodyPtr.Pin())
+	{
+		if (TSharedPtr<FAssetEditorToolkit> ParentAssetEditor = TabBody->GetAssetEditorToolkit())
+		{
+			CommandList->Append(ParentAssetEditor->GetToolkitCommands());
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -207,7 +215,18 @@ bool SAnimationEditorViewportTabBody::CanUseGizmos() const
 			return true;
 		}
 	}
-
+	
+	if (LevelViewportClient.IsValid())
+	{
+		if(const FEditorModeTools* ModeTools = LevelViewportClient->GetModeTools())
+		{
+			if(ModeTools->UsesTransformWidget())
+			{
+				return true;
+			}
+		}
+	}
+	
 	return false;
 }
 
@@ -225,7 +244,7 @@ FText SAnimationEditorViewportTabBody::GetDisplayString() const
 {
 	class UDebugSkelMeshComponent* Component = GetPreviewScene()->GetPreviewMeshComponent();
 	TSharedPtr<IEditableSkeleton> EditableSkeleton = GetPreviewScene()->GetPersonaToolkit()->GetEditableSkeleton();
-	FName TargetSkeletonName = EditableSkeleton.IsValid() ? EditableSkeleton->GetSkeleton().GetFName() : NAME_None;
+	FName TargetSkeletonName = (EditableSkeleton.IsValid() && EditableSkeleton->IsSkeletonValid()) ? EditableSkeleton->GetSkeleton().GetFName() : NAME_None;
 
 	FText DefaultText;
 
@@ -318,7 +337,7 @@ TSharedRef<IPinnedCommandList> SAnimationEditorViewportTabBody::GetPinnedCommand
 	return ViewportWidget->GetViewportToolbar()->GetPinnedCommandList().ToSharedRef();
 }
 
-TWeakPtr<SWidget> SAnimationEditorViewportTabBody::AddNotification(TAttribute<EMessageSeverity::Type> InSeverity, TAttribute<bool> InCanBeDismissed, const TSharedRef<SWidget>& InNotificationWidget)
+TWeakPtr<SWidget> SAnimationEditorViewportTabBody::AddNotification(TAttribute<EMessageSeverity::Type> InSeverity, TAttribute<bool> InCanBeDismissed, const TSharedRef<SWidget>& InNotificationWidget, FPersonaViewportNotificationOptions InOptions)
 {
 	TSharedPtr<SBorder> ContainingWidget = nullptr;
 	TWeakPtr<SWidget> WeakNotificationWidget = InNotificationWidget;
@@ -333,17 +352,14 @@ TWeakPtr<SWidget> SAnimationEditorViewportTabBody::AddNotification(TAttribute<EM
 		return FMargin(0.0f);
 	};
 
-	auto GetVisibility = [WeakNotificationWidget]()
+	TAttribute<EVisibility> GetVisibility(EVisibility::Visible);
+	
+	if (InOptions.OnGetVisibility.IsSet())
 	{
-		if(WeakNotificationWidget.IsValid())
-		{
-			return WeakNotificationWidget.Pin()->GetVisibility();
-		}
-
-		return EVisibility::Collapsed;
-	};
-
-	auto GetBrushForSeverity = [InSeverity]()
+		GetVisibility = InOptions.OnGetVisibility;
+	}
+	
+	TAttribute<const FSlateBrush*> GetBrushForSeverity = TAttribute<const FSlateBrush*>::Create([InSeverity]()
 	{
 		switch(InSeverity.Get())
 		{
@@ -357,7 +373,12 @@ TWeakPtr<SWidget> SAnimationEditorViewportTabBody::AddNotification(TAttribute<EM
 		case EMessageSeverity::Info:
 			return FEditorStyle::GetBrush("AnimViewport.Notification.Message");
 		}
-	};
+	});
+
+	if (InOptions.OnGetBrushOverride.IsSet())
+	{
+		GetBrushForSeverity = InOptions.OnGetBrushOverride;
+	}
 
 	TSharedPtr<SHorizontalBox> BodyBox = nullptr;
 
@@ -367,8 +388,8 @@ TWeakPtr<SWidget> SAnimationEditorViewportTabBody::AddNotification(TAttribute<EM
 	.Padding(MakeAttributeLambda(GetPadding))
 	[
 		SAssignNew(ContainingWidget, SBorder)
-		.Visibility_Lambda(GetVisibility)
-		.BorderImage_Lambda(GetBrushForSeverity)
+		.Visibility(GetVisibility)
+		.BorderImage(GetBrushForSeverity)
 		[
 			SAssignNew(BodyBox, SHorizontalBox)
 			+SHorizontalBox::Slot()
@@ -411,17 +432,31 @@ TWeakPtr<SWidget> SAnimationEditorViewportTabBody::AddNotification(TAttribute<EM
 	return ContainingWidget;
 }
 
-void SAnimationEditorViewportTabBody::AddToolbarExtender(FName MenuToExtend, FMenuExtensionDelegate MenuBuilderDelegate)
-{
-	return ViewportWidget->ViewportToolbar->AddMenuExtender(MenuToExtend, MenuBuilderDelegate);
-}
-
 void SAnimationEditorViewportTabBody::RemoveNotification(const TWeakPtr<SWidget>& InContainingWidget)
 {
 	if(InContainingWidget.IsValid())
 	{
 		ViewportNotificationsContainer->RemoveSlot(InContainingWidget.Pin().ToSharedRef());
 	}
+}
+
+
+void SAnimationEditorViewportTabBody::AddToolbarExtender(FName MenuToExtend, FMenuExtensionDelegate MenuBuilderDelegate)
+{
+	return ViewportWidget->ViewportToolbar->AddMenuExtender(MenuToExtend, MenuBuilderDelegate);
+}
+
+void SAnimationEditorViewportTabBody::AddOverlayWidget(TSharedRef<SWidget> InOverlaidWidget)
+{
+	ViewportWidget->ViewportOverlay->AddSlot()
+	[
+		InOverlaidWidget
+	];
+}
+
+void SAnimationEditorViewportTabBody::RemoveOverlayWidget(TSharedRef<SWidget> InOverlaidWidget)
+{
+	ViewportWidget->ViewportOverlay->RemoveSlot(InOverlaidWidget);
 }
 
 void SAnimationEditorViewportTabBody::RefreshViewport()
@@ -807,6 +842,13 @@ void SAnimationEditorViewportTabBody::BindCommands()
 		FCanExecuteAction(),
 		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsShowingSockets));
 
+	// Show transform attributes
+	CommandList.MapAction(
+		ViewportShowMenuCommands.ShowAttributes,
+		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::OnShowAttributes),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsShowingAttributes));
+
 	// Set bone drawing mode
 	CommandList.BeginGroup(TEXT("BoneDrawingMode"));
 
@@ -827,6 +869,18 @@ void SAnimationEditorViewportTabBody::BindCommands()
 		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::OnSetBoneDrawMode, (int32)EBoneDrawMode::SelectedAndParents),
 		FCanExecuteAction(),
 		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsBoneDrawModeSet, (int32)EBoneDrawMode::SelectedAndParents));
+
+	CommandList.MapAction(
+		ViewportShowMenuCommands.ShowBoneDrawSelectedAndChildren,
+		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::OnSetBoneDrawMode, (int32)EBoneDrawMode::SelectedAndChildren),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsBoneDrawModeSet, (int32)EBoneDrawMode::SelectedAndChildren));
+
+	CommandList.MapAction(
+		ViewportShowMenuCommands.ShowBoneDrawSelectedAndParentsAndChildren,
+		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::OnSetBoneDrawMode, (int32)EBoneDrawMode::SelectedAndParentsAndChildren),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsBoneDrawModeSet, (int32)EBoneDrawMode::SelectedAndParentsAndChildren));
 
 	CommandList.MapAction(
 		ViewportShowMenuCommands.ShowBoneDrawAll,
@@ -915,6 +969,21 @@ void SAnimationEditorViewportTabBody::BindCommands()
 
 	CommandList.BeginGroup(TEXT("LOD"));
 
+	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+
+	if (PreviewComponent)
+	{
+		//LOD Debug
+		CommandList.MapAction(
+			ViewportLODMenuCommands.LODDebug,
+			FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::OnSetLODTrackDebuggedInstance),
+			FCanExecuteAction::CreateLambda([PreviewComponent]() { return (bool)PreviewComponent->PreviewInstance->GetDebugSkeletalMeshComponent(); }),
+			FIsActionChecked::CreateLambda([PreviewComponent]() { return PreviewComponent->IsTrackingAttachedLOD(); }),
+			FIsActionButtonVisible::CreateLambda([PreviewComponent]() { return (bool)PreviewComponent->PreviewInstance->GetDebugSkeletalMeshComponent() ; }));
+
+		PreviewComponent->RegisterOnDebugForceLODChangedDelegate(FOnDebugForceLODChanged::CreateSP(this, &SAnimationEditorViewportTabBody::OnDebugForcedLODChanged));
+	}
+
 	//LOD Auto
 	CommandList.MapAction( 
 		ViewportLODMenuCommands.LODAuto,
@@ -968,11 +1037,27 @@ void SAnimationEditorViewportTabBody::BindCommands()
 		FCanExecuteAction(),
 		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsAudioAttenuationEnabled));
 
+	CommandList.BeginGroup(TEXT("RootMotion"));
+
 	CommandList.MapAction(
-		ViewportShowMenuCommands.ProcessRootMotion,
-		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::OnTogglePreviewRootMotion),
-		FCanExecuteAction(),
-		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsPreviewingRootMotion));
+		ViewportShowMenuCommands.DoNotProcessRootMotion,
+		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::SetProcessRootMotionMode, EProcessRootMotionMode::Ignore),
+		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::CanUseProcessRootMotionMode, EProcessRootMotionMode::Ignore),
+		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsProcessRootMotionModeSet, EProcessRootMotionMode::Ignore));
+
+	CommandList.MapAction(
+		ViewportShowMenuCommands.ProcessRootMotionLoopAndReset,
+		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::SetProcessRootMotionMode, EProcessRootMotionMode::LoopAndReset),
+		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::CanUseProcessRootMotionMode, EProcessRootMotionMode::LoopAndReset),
+		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsProcessRootMotionModeSet, EProcessRootMotionMode::LoopAndReset));
+
+	CommandList.MapAction(
+		ViewportShowMenuCommands.ProcessRootMotionLoop,
+		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::SetProcessRootMotionMode, EProcessRootMotionMode::Loop),
+		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::CanUseProcessRootMotionMode, EProcessRootMotionMode::Loop),
+		FIsActionChecked::CreateSP(this, &SAnimationEditorViewportTabBody::IsProcessRootMotionModeSet, EProcessRootMotionMode::Loop));
+
+	CommandList.EndGroup();
 
 	CommandList.MapAction(
 		ViewportShowMenuCommands.DisablePostProcessBlueprint,
@@ -1019,6 +1104,9 @@ void SAnimationEditorViewportTabBody::BindCommands()
 	CommandList.MapAction(
 		FEditorViewportCommands::Get().FocusViewportToSelection,
 		FExecuteAction::CreateSP(this, &SAnimationEditorViewportTabBody::HandleFocusCamera));
+
+	TSharedPtr<FUICommandList> ToolkitCommandList = ConstCastSharedRef<FUICommandList>(GetAssetEditorToolkit()->GetToolkitCommands());
+	ToolkitCommandList->Append(UICommandList->AsShared());
 }
 
 void SAnimationEditorViewportTabBody::OnSetTurnTableSpeed(int32 SpeedIndex)
@@ -1307,6 +1395,23 @@ bool SAnimationEditorViewportTabBody::IsShowingSockets() const
 {
 	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
 	return PreviewComponent != NULL && PreviewComponent->bDrawSockets;
+}
+
+void SAnimationEditorViewportTabBody::OnShowAttributes()
+{
+	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+	if (PreviewComponent)
+	{
+		PreviewComponent->bDrawAttributes = !PreviewComponent->bDrawAttributes;
+		PreviewComponent->MarkRenderStateDirty();
+		RefreshViewport();
+	}
+}
+
+bool SAnimationEditorViewportTabBody::IsShowingAttributes() const
+{
+	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+	return PreviewComponent != NULL && PreviewComponent->bDrawAttributes;
 }
 
 void SAnimationEditorViewportTabBody::OnToggleAutoAlignFloor()
@@ -1627,6 +1732,7 @@ void SAnimationEditorViewportTabBody::UpdateScrubPanel(UAnimationAsset* AnimAsse
 					.ViewInputMin(this, &SAnimationEditorViewportTabBody::GetViewMinInput)
 					.ViewInputMax(this, &SAnimationEditorViewportTabBody::GetViewMaxInput)
 					.bAllowZoom(true)
+					.bDisplayAnimScrubBarEditing(false)
 				];
 		}
 	}
@@ -1708,7 +1814,24 @@ int32 SAnimationEditorViewportTabBody::GetLODSelection() const
 
 bool SAnimationEditorViewportTabBody::IsLODModelSelected(int32 LODSelectionType) const
 {
+	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+	if (PreviewComponent && PreviewComponent->IsTrackingAttachedLOD())
+	{
+		return false;
+	}
+
 	return GetLODSelection() == LODSelectionType;
+}
+
+bool SAnimationEditorViewportTabBody::IsTrackingAttachedMeshLOD() const
+{
+	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+	if (PreviewComponent)
+	{
+		return PreviewComponent->IsTrackingAttachedLOD();
+	}
+
+	return false;
 }
 
 void SAnimationEditorViewportTabBody::OnSetLODModel(int32 LODSelectionType)
@@ -1718,9 +1841,18 @@ void SAnimationEditorViewportTabBody::OnSetLODModel(int32 LODSelectionType)
 	if( PreviewComponent )
 	{
 		LODSelection = LODSelectionType;
-		PreviewComponent->SetForcedLOD(LODSelectionType);
-		PopulateUVChoices();
-		GetPreviewScene()->BroadcastOnSelectedLODChanged();
+		PreviewComponent->SetDebugForcedLOD(LODSelectionType);
+		PreviewComponent->bTrackAttachedInstanceLOD = false;
+	}
+}
+
+void SAnimationEditorViewportTabBody::OnSetLODTrackDebuggedInstance()
+{
+	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+
+	if (PreviewComponent)
+	{
+		PreviewComponent->bTrackAttachedInstanceLOD = true;
 	}
 }
 
@@ -1732,6 +1864,17 @@ void SAnimationEditorViewportTabBody::OnLODModelChanged()
 	{
 		LODSelection = PreviewComponent->GetForcedLOD();
 		PopulateUVChoices();
+	}
+}
+
+void SAnimationEditorViewportTabBody::OnDebugForcedLODChanged()
+{
+	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+
+	if (PreviewComponent)
+	{
+		PopulateUVChoices();
+		GetPreviewScene()->BroadcastOnSelectedLODChanged();
 	}
 }
 
@@ -1819,24 +1962,27 @@ bool SAnimationEditorViewportTabBody::IsAudioAttenuationEnabled() const
 	return GetAnimationViewportClient()->IsUsingAudioAttenuation();
 }
 
-void SAnimationEditorViewportTabBody::OnTogglePreviewRootMotion()
+void SAnimationEditorViewportTabBody::SetProcessRootMotionMode(EProcessRootMotionMode Mode)
 {
-	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
-
-	if (PreviewComponent)
+	if (UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent())
 	{
-		PreviewComponent->SetPreviewRootMotion(!PreviewComponent->GetPreviewRootMotion());
+		PreviewComponent->SetProcessRootMotionMode(Mode);
 	}
 }
 
-bool SAnimationEditorViewportTabBody::IsPreviewingRootMotion() const
+bool SAnimationEditorViewportTabBody::IsProcessRootMotionModeSet(EProcessRootMotionMode Mode) const
 {
-	UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+	const UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent();
+	return PreviewComponent ? (PreviewComponent->GetProcessRootMotionMode() == Mode) : false;
+}
 
-	if (PreviewComponent)
+bool SAnimationEditorViewportTabBody::CanUseProcessRootMotionMode(EProcessRootMotionMode Mode) const
+{
+	if(const UDebugSkelMeshComponent* PreviewComponent = GetPreviewScene()->GetPreviewMeshComponent())
 	{
-		return PreviewComponent->GetPreviewRootMotion();
+		return PreviewComponent->CanUseProcessRootMotionMode(Mode);
 	}
+
 	return false;
 }
 
@@ -2125,7 +2271,8 @@ void SAnimationEditorViewportTabBody::AddRecordingNotification()
 					.Text(LOCTEXT("AnimViewportStopRecordingButtonLabel", "Stop"))
 				]
 			]
-		]
+		],
+		FPersonaViewportNotificationOptions(TAttribute<EVisibility>::Create(GetRecordingStateStateVisibility))
 	);
 }
 
@@ -2295,7 +2442,8 @@ void SAnimationEditorViewportTabBody::AddPostProcessNotification()
 					.Text(LOCTEXT("EditPostProcessAnimBPButtonText", "Edit"))
 				]
 			]
-		]
+		],
+		FPersonaViewportNotificationOptions(TAttribute<EVisibility>::Create(GetVisibility))
 	);
 }
 
@@ -2344,7 +2492,8 @@ void SAnimationEditorViewportTabBody::AddMinLODNotification()
 				.Text(LOCTEXT("MinLODNotification", "Min LOD applied"))
 				.TextStyle(FEditorStyle::Get(), "AnimViewport.MessageText")
 			]
-		]
+		],
+		FPersonaViewportNotificationOptions(TAttribute<EVisibility>::Create(GetMinLODNotificationVisibility))
 	);
 }
 
@@ -2404,7 +2553,8 @@ void SAnimationEditorViewportTabBody::AddSkinWeightProfileNotification()
 				.Text_Lambda(GetSkinWeightProfileNotificationText)
 				.TextStyle(FEditorStyle::Get(), "AnimViewport.MessageText")
 			]
-		]
+		],
+		FPersonaViewportNotificationOptions(TAttribute<EVisibility>::Create(GetSkinWeightProfileNotificationVisibility))
 	);
 }
 

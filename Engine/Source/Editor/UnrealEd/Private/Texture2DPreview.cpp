@@ -61,7 +61,7 @@ public:
 		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && !IsConsolePlatform(Parameters.Platform);
 	}
 
-	void SetParameters(FRHICommandList& RHICmdList, const FTexture* TextureValue, const FMatrix& ColorWeightsValue, float GammaValue, float MipLevel, float LayerIndex, bool bIsNormalMap, bool bIsSingleVTPhysicalSpace, bool bIsVirtualTexture, bool bIsTextureArray)
+	void SetParameters(FRHICommandList& RHICmdList, const FTexture* TextureValue, const FMatrix44f& ColorWeightsValue, float GammaValue, float MipLevel, float LayerIndex, bool bIsNormalMap, bool bIsSingleVTPhysicalSpace, bool bIsVirtualTexture, bool bIsTextureArray)
 	{
 		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 		if (bIsVirtualTexture)
@@ -100,7 +100,7 @@ public:
 		}
 		
 		SetShaderValue(RHICmdList, ShaderRHI,ColorWeights,ColorWeightsValue);
-		FVector4 PackedParametersValue(GammaValue, MipLevel, bIsNormalMap ? 1.0 : -1.0f, bIsSingleVTPhysicalSpace ? 0 : LayerIndex);
+		FVector4f PackedParametersValue(GammaValue, MipLevel, bIsNormalMap ? 1.0 : -1.0f, bIsSingleVTPhysicalSpace ? 0 : LayerIndex);
 		SetShaderValue(RHICmdList, ShaderRHI, PackedParameters, PackedParametersValue);
 
 		// Store slice count for texture array
@@ -157,8 +157,9 @@ void FBatchedElementTexture2DPreviewParameters::BindShaders(
 		GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
 	}
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, EApplyRendertargetOption::ForceApply);
+	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 	VertexShader->SetParameters(RHICmdList, InTransform);
-	PixelShader->SetParameters(RHICmdList, Texture, ColorWeights, InGamma, MipLevel, LayerIndex, bIsNormalMap, bIsSingleVTPhysicalSpace, bIsVirtualTexture, bIsTextureArray);
+	PixelShader->SetParameters(RHICmdList, Texture, FMatrix44f(ColorWeights), InGamma, MipLevel, LayerIndex, bIsNormalMap, bIsSingleVTPhysicalSpace, bIsVirtualTexture, bIsTextureArray);
 }

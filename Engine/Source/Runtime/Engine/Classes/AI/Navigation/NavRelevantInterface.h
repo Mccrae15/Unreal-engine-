@@ -56,7 +56,10 @@ struct ENGINE_API FNavigationRelevantData : public TSharedFromThis<FNavigationRe
 	/** Gathers per instance data for navigation geometry in a specified area box */
 	FNavDataPerInstanceTransformDelegate NavDataPerInstanceTransformDelegate;
 
-	/** called to check if hosted geometry should be used for given FNavDataConfig. If not set then "true" is assumed. */
+	/** called to check if hosted geometry should be used for given FNavDataConfig. If not set then "true" is assumed.
+	 *  Might want to set bUseVirtualGeometryFilteringAndDirtying to true in the Navmesh class you are excluding geometry from.
+	 *  This will improve cpu performance by stopping the navmesh from dirtying tiles requested by actors being excluded by this delegate.
+	 */
 	FFilterNavDataDelegate ShouldUseGeometryDelegate;
 
 	/** additional modifiers: areas and external links */
@@ -89,8 +92,8 @@ struct ENGINE_API FNavigationRelevantData : public TSharedFromThis<FNavigationRe
 	FORCEINLINE bool NeedAnyPendingLazyModifiersGathering() const { return bPendingLazyModifiersGathering || bPendingChildLazyModifiersGathering; }
 	FORCEINLINE bool SupportsGatheringGeometrySlices() const { return bSupportsGatheringGeometrySlices; }
 	FORCEINLINE bool IsEmpty() const { return !HasGeometry() && !HasModifiers(); }
-	FORCEINLINE uint32 GetAllocatedSize() const { return CollisionData.GetAllocatedSize() + VoxelData.GetAllocatedSize() + Modifiers.GetAllocatedSize(); }
-	FORCEINLINE uint32 GetGeometryAllocatedSize() const { return CollisionData.GetAllocatedSize() + VoxelData.GetAllocatedSize(); }
+	FORCEINLINE SIZE_T GetAllocatedSize() const { return CollisionData.GetAllocatedSize() + VoxelData.GetAllocatedSize() + Modifiers.GetAllocatedSize(); }
+	FORCEINLINE SIZE_T GetGeometryAllocatedSize() const { return CollisionData.GetAllocatedSize() + VoxelData.GetAllocatedSize(); }
 	FORCEINLINE int32 GetDirtyFlag() const
 	{
 		return ((HasGeometry() || IsPendingLazyGeometryGathering() || Modifiers.GetMaskFillCollisionUnderneathForNavmesh()) ? ENavigationDirtyFlag::Geometry : 0) |

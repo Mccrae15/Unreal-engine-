@@ -2,9 +2,23 @@
 
 #pragma once
 
+#include "AudioDeviceManager.h"
 #include "CoreMinimal.h"
 #include "Containers/Queue.h"
 #include "Templates/Function.h"
+
+
+// Parameters used for constructing a new ISoundGenerator.
+struct FSoundGeneratorInitParams
+{
+	Audio::FDeviceId AudioDeviceID;
+	float SampleRate = 0.0f;
+	int32 NumChannels = 0;
+	int32 NumFramesPerCallback = 0;
+	uint64 InstanceID = 0;
+	bool bIsPreviewSound = false;
+	FString GraphName;
+};
 
 class ENGINE_API ISoundGenerator
 {
@@ -23,6 +37,9 @@ public:
 
 	// Optional. Called on audio generator thread right when the generator ends generating.
 	virtual void OnEndGenerate() {}
+
+	// Optional. Can be overridden to end the sound when generating is finished.
+	virtual bool IsFinished() const { return false; }
 
 	// Retrieves the next buffer of audio from the generator, called from the audio mixer
 	int32 GetNextBuffer(float* OutAudio, int32 NumSamples, bool bRequireNumberSamples = false);

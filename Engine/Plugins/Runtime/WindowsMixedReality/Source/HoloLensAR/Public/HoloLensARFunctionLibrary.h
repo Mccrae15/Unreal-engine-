@@ -10,8 +10,8 @@
 #include "HoloLensARFunctionLibrary.generated.h"
 
 /** A function library that provides static/Blueprint functions for HoloLensAR.*/
-UCLASS()
-class HOLOLENSAR_API UHoloLensARFunctionLibrary : public UBlueprintFunctionLibrary
+UCLASS(Deprecated, meta = (DeprecationMessage = "WMR has been deprecated, please use the Microsoft OpenXR plugin from the Marketplace."))
+class HOLOLENSAR_API UDEPRECATED_HoloLensARFunctionLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
@@ -89,25 +89,25 @@ public:
 	 * Turn the camera on.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "HoloLensAR", meta = (Keywords = "hololensar wmr ar all", DeprecatedFunction, DeprecationMessage = "Use ToggleARCapture"))
-	static bool StartCameraCapture();
+	static void StartCameraCapture();
 
 	/**
 	 * Turn the camera off.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "HoloLensAR", meta = (Keywords = "hololensar wmr ar all", DeprecatedFunction, DeprecationMessage = "Use ToggleARCapture"))
-	static bool StopCameraCapture();
+	static void StopCameraCapture();
 	
 	/**
 	 * Start looking for QRCodes.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "HoloLensAR", meta = (Keywords = "hololensar wmr ar all", DeprecatedFunction, DeprecationMessage = "Use ToggleARCapture"))
-	static bool StartQRCodeCapture();
+	static void StartQRCodeCapture();
 
 	/**
 	 * Stop looking for QRCodes.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "HoloLensAR", meta = (Keywords = "hololensar wmr ar all", DeprecatedFunction, DeprecationMessage = "Use ToggleARCapture"))
-	static bool StopQRCodeCapture();
+	static void StopQRCodeCapture();
 	
 	/**
 	 * Show on screen system keyboard.

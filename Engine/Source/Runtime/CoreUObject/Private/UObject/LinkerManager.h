@@ -110,6 +110,9 @@ public:
 	// FSelfRegisteringExec interface
 	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 
+	/** Reset only the linker exports associated with this package. */
+	void ResetLinkerExports(UPackage* InPackage);
+
 	/** Empty the loaders */
 	void ResetLoaders(UObject* InPkg);
 
@@ -147,7 +150,7 @@ private:
 #if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 	/** List of all the existing linker loaders **/
 	FCriticalSection LiveLinkersCritical;
-	TArray<FLinkerLoad*> LiveLinkers;
+	TSet<FLinkerLoad*> LiveLinkers;
 #endif
 	
 	/** List of loaders that have new imports **/

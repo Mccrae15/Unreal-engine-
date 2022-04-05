@@ -2,17 +2,18 @@
 
 #include "DatasmithWireTranslator.h"
 
+#include "CADOptions.h"
 #include "Containers/List.h"
 #include "DatasmithImportOptions.h"
 #include "DatasmithSceneFactory.h"
 #include "DatasmithTranslator.h"
 #include "DatasmithUtils.h"
+#include "HAL/ConsoleManager.h"
 #include "DatasmithWireTranslatorModule.h"
 #include "IDatasmithSceneElements.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "OpenModelUtils.h"
-#include "Utility/DatasmithMeshHelper.h"
 
 #include "StaticMeshDescription.h"
 #include "StaticMeshOperations.h"
@@ -25,9 +26,17 @@
 #include "Modules/ModuleManager.h"
 #endif
 
-#include "AliasCoretechWrapper.h" // requires CoreTech as public dependency
+#include "AliasBrepConverter.h"
+#include "AliasModelToCADKernelConverter.h"
+#include "AliasModelToCoretechConverter.h" // requires CoreTech as public dependency
+#include "AliasModelToTechSoftConverter.h" // requires Techsoft as public dependency
 #include "CADInterfacesModule.h"
-#include "CoreTechParametricSurfaceExtension.h"
+#include "CoreTechSurfaceExtension.h"
+#include "CoreTechSurfaceHelper.h"
+
+#if PLATFORM_WINDOWS
+#include "Windows/AllowWindowsPlatformTypes.h"
+#endif
 
 #ifdef USE_OPENMODEL
 #include <AlChannel.h>
@@ -56,81 +65,83 @@ DEFINE_LOG_CATEGORY_STATIC(LogDatasmithWireTranslator, Log, All);
 
 #define LOCTEXT_NAMESPACE "DatasmithWireTranslator"
 
+#define WRONG_VERSION_TEXT "Unsupported version of Alias detected. Please upgrade to Alias 2021.3 (or later version)."
 #define CAD_INTERFACE_UNAVAILABLE "CAD Interface module is unavailable. Meshing will be done by Alias."
+
+namespace UE_DATASMITHWIRETRANSLATOR_NAMESPACE
+{
 
 #ifdef USE_OPENMODEL
 
-using namespace OpenModelUtils;
-using namespace CADLibrary;
-
+const uint64 LibAliasNext_Version = 17881307937833405;
 const uint64 LibAlias2022_2_0_Version = 7881307937833405;
 const uint64 LibAlias2022_1_0_Version = 7881303642865885;
 const uint64 LibAlias2022_0_1_Version = 7881299347964005;
 const uint64 LibAlias2021_3_2_Version = 7599833027117059;
 const uint64 LibAlias2021_3_1_Version = 7599824433840131;
 const uint64 LibAlias2021_3_0_Version = 7599824424206339;
+const uint64 LibAlias2021_Version = 7599824377020416;
+const uint64 LibAlias2020_Version = 7318349414924288;
+const uint64 LibAlias2019_Version = 5000000000000000;
 
+#if defined(OPEN_MODEL_2020)
+const uint64 LibAliasVersionMin = LibAlias2019_Version;
+const uint64 LibAliasVersionMax = LibAlias2021_3_0_Version;
+const FString AliasVersionChar = TEXT("AliasStudio 2020, Model files");
+#elif defined(OPEN_MODEL_2021_3)
+const uint64 LibAliasVersionMin = LibAlias2021_3_0_Version;
+const uint64 LibAliasVersionMax = LibAlias2022_0_1_Version;
+const FString  AliasVersionChar = TEXT("AliasStudio 2021.3, Model files");
+#elif defined(OPEN_MODEL_2022)
+const uint64 LibAliasVersionMin = LibAlias2022_0_1_Version;
+const uint64 LibAliasVersionMax = LibAlias2022_1_0_Version;
+const FString AliasVersionChar = TEXT("AliasStudio 2022, Model files");
+#elif defined(OPEN_MODEL_2022_1)
+const uint64 LibAliasVersionMin = LibAlias2022_1_0_Version;
+const uint64 LibAliasVersionMax = LibAlias2022_2_0_Version;
+const FString AliasVersionChar = TEXT("AliasStudio 2022.1, Model files");
+#elif defined(OPEN_MODEL_2022_2)
+const uint64 LibAliasVersionMin = LibAlias2022_2_0_Version;
+const uint64 LibAliasVersionMax = LibAliasNext_Version;
+const FString AliasVersionChar = TEXT("AliasStudio 2022.2, Model files");
+#endif
 
 class BodyData
 {
 public:
-	BodyData(const char* InShaderName, const char* InLayerName, bool bInCadData)
+	BodyData(const FString& InShaderName, const FString& InLayerName, bool bInCadData)
 		: bCadData(bInCadData)
 	{
 		ShaderName = InShaderName;
 		LayerName = InLayerName;
 	};
 
-	TArray<AlDagNode*> ShellSet;
+	TArray<TSharedPtr<AlDagNode>> ShellSet;
 	FString ShaderName;
 	FString LayerName;
 	FString Label;
 	bool bCadData = true;
 
 	// Generates BodyData's unique id from AlDagNode objects
-	FString GetUUID(const FString& ParentUUID)
+	uint32 GetUuid(const uint32& ParentUuid)
 	{
-		if(ShellSet.Num() == 0)
+		if (ShellSet.Num() == 0)
 		{
-			return ParentUUID;
+			return ParentUuid;
 		}
 
-		auto GetLongPersistentID = []( AlDagNode& DagNode ) -> int64
+		if (ShellSet.Num() > 1)
 		{
-			union {
-				int a[2];
-				int64 b;
-			} Value;
-
-			Value.b = -1;
-
-			AlPersistentID* PersistentID = nullptr;
-			DagNode.persistentID( PersistentID );
-
-			if( PersistentID != nullptr )
-			{
-				int Dummy;
-				PersistentID->id( Value.a[0], Value.a[1], Dummy, Dummy );
-			}
-
-			return Value.b;
-		};
-
-		if(ShellSet.Num() > 1)
-		{
-			ShellSet.Sort([&](AlDagNode& A, AlDagNode& B)
-			{
-				return GetLongPersistentID( A ) < GetLongPersistentID( B );
-			});
+			ShellSet.Sort([&](const TSharedPtr<AlDagNode>& NodeA, const TSharedPtr<AlDagNode>& NodeB) { return OpenModelUtils::GetAlDagNodeUuid(NodeA) < OpenModelUtils::GetAlDagNodeUuid(NodeB); });
 		}
 
-		FString Buffer;
-		for(AlDagNode* DagNode : ShellSet)
+		uint32 BodyUUID = 0;
+		for (const TSharedPtr<AlDagNode>& DagNode : ShellSet)
 		{
-			Buffer += FString::Printf(TEXT("%016lx"), GetLongPersistentID( *DagNode ) );
+			BodyUUID = HashCombine(BodyUUID, OpenModelUtils::GetAlDagNodeUuid(DagNode));
 		}
 
-		return GetUEUUIDFromAIPersistentID( ParentUUID, Buffer );
+		return HashCombine(ParentUuid, BodyUUID);
 	}
 };
 
@@ -170,7 +181,22 @@ public:
 		DatasmithScene->SetVendor(TEXT("Autodesk"));
 		DatasmithScene->SetProductName(TEXT("Alias Tools"));
 
-		if (AliasFileVersion < LibAlias2021_3_1_Version)
+		if (AliasFileVersion < LibAlias2020_Version)
+		{
+			DatasmithScene->SetExporterSDKVersion(TEXT("2019"));
+			DatasmithScene->SetProductVersion(TEXT("Alias 2019"));
+		}
+		else if (AliasFileVersion < LibAlias2021_Version)
+		{
+			DatasmithScene->SetExporterSDKVersion(TEXT("2020"));
+			DatasmithScene->SetProductVersion(TEXT("Alias 2020"));
+		}
+		else if (AliasFileVersion < LibAlias2021_3_0_Version)
+		{
+			DatasmithScene->SetExporterSDKVersion(TEXT("2021.0"));
+			DatasmithScene->SetProductVersion(TEXT("Alias 2021.0"));
+		}
+		else if (AliasFileVersion < LibAlias2021_3_1_Version)
 		{
 			DatasmithScene->SetExporterSDKVersion(TEXT("2021.3.0"));
 			DatasmithScene->SetProductVersion(TEXT("Alias 2021.3.0"));
@@ -185,7 +211,7 @@ public:
 			DatasmithScene->SetExporterSDKVersion(TEXT("2021.3.2"));
 			DatasmithScene->SetProductVersion(TEXT("Alias 2021.3.2"));
 		}
-		else if (AliasFileVersion  < LibAlias2022_1_0_Version)
+		else if (AliasFileVersion < LibAlias2022_1_0_Version)
 		{
 			DatasmithScene->SetExporterSDKVersion(TEXT("2022"));
 			DatasmithScene->SetProductVersion(TEXT("Alias 2022"));
@@ -201,65 +227,77 @@ public:
 			DatasmithScene->SetProductVersion(TEXT("Alias 2022.2"));
 		}
 
-		LocalSession = FAliasCoretechWrapper::GetSharedSession();
+		CADLibrary::FImportParameters ImportParameters(0.01, 1);
+		if(CADLibrary::FImportParameters::bGDisableCADKernelTessellation)
+		{
+			if (CADLibrary::FImportParameters::GCADLibrary == TEXT("KernelIO"))
+			{
+				TSharedRef<FAliasModelToCoretechConverter> AliasToCoretechConverter = MakeShared<FAliasModelToCoretechConverter>(TEXT("Al2CTSharedSession"), ImportParameters);
+				CADModelConverter = AliasToCoretechConverter;
+				AliasBRepConverter = AliasToCoretechConverter;
+			}
+			else if (CADLibrary::FImportParameters::GCADLibrary == TEXT("TechSoft"))
+			{
+				TSharedRef<FAliasModelToTechSoftConverter> AliasToTechSoftConverter = MakeShared<FAliasModelToTechSoftConverter>(ImportParameters);
+				CADModelConverter = AliasToTechSoftConverter;
+				AliasBRepConverter = AliasToTechSoftConverter;
+			}
+		}
+		else
+		{
+			TSharedRef<FAliasModelToCADKernelConverter> AliasToCADKernelConverter = MakeShared<FAliasModelToCADKernelConverter>(ImportParameters);
+			CADModelConverter = AliasToCADKernelConverter;
+			AliasBRepConverter = AliasToCADKernelConverter;
+		}
 	}
 
 	~FWireTranslatorImpl()
 	{
-		for (AlDagNode* Node : AlDagNodeArray)
-		{
-			delete Node;
-		}
 		AlUniverse::deleteAll();
-		LocalSession.Reset();
 	}
 
 	bool Read();
-	TOptional<FMeshDescription> GetMeshDescription(TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters);
+	TOptional<FMeshDescription> GetMeshDescription(TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& OutMeshParameters);
 	TOptional<FMeshDescription> GetMeshDescription(TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters, TSharedRef<BodyData> BodyTemp);
 
 	void SetTessellationOptions(const FDatasmithTessellationOptions& Options);
 	void SetOutputPath(const FString& Path) { OutputPath = Path; }
 
-	CADLibrary::FImportParameters& GetImportParameters()
-	{
-		return LocalSession->GetImportParameters();
-	}
-
+	bool LoadStaticMesh(const TSharedRef<IDatasmithMeshElement> MeshElement, FDatasmithMeshElementPayload& OutMeshPayload, const FDatasmithTessellationOptions& InTessellationOptions);
 
 private:
 
 	struct FDagNodeInfo
 	{
-		FString UEuuid;  // Use for actor name
+		uint32 Uuid;  // Use for actor name
 		FString Label;
-		TSharedPtr< IDatasmithActorElement > ActorElement;
+		TSharedPtr<IDatasmithActorElement> ActorElement;
 	};
 
 	bool GetDagLeaves();
 	bool GetShader();
-	bool RecurseDagForLeaves(AlDagNode* DagNode, const FDagNodeInfo& ParentInfo);
-	bool RecurseDagForLeavesNoMerge(AlDagNode* DagNode, const FDagNodeInfo& ParentInfo);
-	bool ProcessAlGroupNode(AlGroupNode& GroupNode, const FDagNodeInfo& ParentInfo);
-	bool ProcessAlShellNode(AlDagNode& GroupNode, const FDagNodeInfo& ParentInfo, const char* ShaderName);
-	bool ProcessBodyNode(TSharedRef<BodyData> Body, const FDagNodeInfo& ParentInfo);
-	TSharedPtr< IDatasmithMeshElement > FindOrAddMeshElement(TSharedRef<BodyData> Body, const FDagNodeInfo& ParentInfo);
-	TSharedPtr< IDatasmithMeshElement > FindOrAddMeshElement(AlDagNode& ShellNode, const FDagNodeInfo& ParentInfo, const char* ShaderName);
-	void GetDagNodeInfo(AlDagNode& GroupNode, const FDagNodeInfo& ParentInfo, FDagNodeInfo& CurrentNodeInfo);
-	void GetDagNodeInfo(TSharedRef<BodyData> CurrentNode, const FDagNodeInfo& ParentInfo, FDagNodeInfo& CurrentNodeInfo);
-	void GetDagNodeMeta(AlDagNode& CurrentNode, TSharedPtr< IDatasmithActorElement > ActorElement);
+	bool RecurseDagForLeaves(const TSharedPtr<AlDagNode>& DagNode, const FDagNodeInfo& ParentInfo);
+	bool RecurseDagForLeavesNoMerge(const TSharedPtr<AlDagNode>& DagNode, const FDagNodeInfo& ParentInfo);
+	bool ProcessAlGroupNode(AlDagNode& GroupNode, const FDagNodeInfo& ParentInfo);
+	bool ProcessAlShellNode(const TSharedPtr<AlDagNode>& ShellNode, const FDagNodeInfo& ParentInfo, const FString& ShaderName);
+	bool ProcessBodyNode(const TSharedPtr<BodyData>& Body, const FDagNodeInfo& ParentInfo);
+	TSharedPtr<IDatasmithMeshElement> FindOrAddMeshElement(const TSharedPtr<BodyData>& Body, const FDagNodeInfo& ParentInfo);
+	TSharedPtr<IDatasmithMeshElement> FindOrAddMeshElement(const TSharedPtr<AlDagNode>& ShellNode, const FDagNodeInfo& ParentInfo, const FString& ShaderName);
+	void GetDagNodeInfo(const TSharedPtr<AlDagNode>& GroupNode, const FDagNodeInfo& ParentInfo, FDagNodeInfo& CurrentNodeInfo);
+	void GetDagNodeInfo(const TSharedPtr<BodyData>& CurrentNode, const FDagNodeInfo& ParentInfo, FDagNodeInfo& CurrentNodeInfo);
+	void GetDagNodeMeta(const AlDagNode& InDagNode, TSharedPtr<IDatasmithActorElement> OutActorElement);
 
 	TOptional<FMeshDescription> GetMeshOfShellNode(AlDagNode& DagNode, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters);
-	TOptional<FMeshDescription> GetMeshOfNodeMesh(AlMeshNode& DagNode, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters, AlMatrix4x4* AlMeshInvGlobalMatrix = nullptr);
+	TOptional<FMeshDescription> GetMeshOfNodeMesh(AlDagNode& DagNode, CADLibrary::FMeshParameters& MeshParameters, AlMatrix4x4* AlMeshInvGlobalMatrix = nullptr);
 	TOptional<FMeshDescription> GetMeshOfShellBody(TSharedRef<BodyData> DagNode, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters);
 	TOptional<FMeshDescription> GetMeshOfMeshBody(TSharedRef<BodyData> DagNode, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters);
 
-	void AddNodeInBodySet(AlDagNode& DagNode, const char* ShaderName, TMap<uint32, TSharedPtr<BodyData>>& ShellToProcess, bool bIsAPatch, uint32 MaxSize);
+	void AddNodeInBodyGroup(TSharedPtr<AlDagNode>& DagNode, const FString& ShaderName, TMap<uint32, TSharedPtr<BodyData>>& ShellToProcess, bool bIsAPatch, uint32 MaxSize);
 
 	TOptional<FMeshDescription> MeshDagNodeWithExternalMesher(AlDagNode& DagNode, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters);
 	TOptional<FMeshDescription> MeshDagNodeWithExternalMesher(TSharedRef<BodyData> DagNode, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters);
 
- 	TOptional< FMeshDescription > ImportMesh(AlMesh& Mesh, CADLibrary::FMeshParameters& MeshParameters);
+	TOptional<FMeshDescription> ImportMesh(AlMesh& Mesh, CADLibrary::FMeshParameters& MeshParameters);
 
 	FORCEINLINE bool IsTransparent(FColor& TransparencyColor)
 	{
@@ -301,15 +339,15 @@ private:
 		case AlShadingFields::kFLD_SHADING_COMMON_GLOW_INTENSITY:
 			GlowIntensity = Value;
 			return true;
-		default :
+		default:
 			return false;
 		}
 	}
 
-	void AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
-	void AddAlLambertParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
-	void AddAlLightSourceParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
-	void AddAlPhongParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
+	void AddAlBlinnParameters(const TUniquePtr<AlShader>& Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
+	void AddAlLambertParameters(const TUniquePtr<AlShader>& Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
+	void AddAlLightSourceParameters(const TUniquePtr<AlShader>& Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
+	void AddAlPhongParameters(const TUniquePtr<AlShader>& Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement);
 
 private:
 	TSharedRef<IDatasmithScene> DatasmithScene;
@@ -318,25 +356,21 @@ private:
 	FString OutputPath;
 	FString SceneFullPath;
 
-	FDatasmithTessellationOptions TessellationOptions;
 	// Hash value of the scene file used to check if the file has been modified for re-import
 	uint32 SceneFileHash;
 
-	AlDagNode* AlRootNode;
+	TSharedPtr<AlDagNode> AlRootNode;
 
 	/** Table of correspondence between mesh identifier and associated Datasmith mesh element */
-	TMap< uint32, TSharedPtr< IDatasmithMeshElement > > ShellUUIDToMeshElementMap;
-	TMap< FString, TSharedPtr< IDatasmithMeshElement > > BodyToMeshElementMap;
-
-	/** All DagNode to delete */
-	TArray<AlDagNode*> AlDagNodeArray;
+	TMap<uint32, TSharedPtr<IDatasmithMeshElement>> ShellUuidToMeshElementMap;
+	TMap<uint32, TSharedPtr<IDatasmithMeshElement>> BodyUuidToMeshElementMap;
 
 	/** Datasmith mesh elements to OpenModel objects */
-	TMap< IDatasmithMeshElement*, AlDagNode* > MeshElementToAlDagNodeMap;
+	TMap<IDatasmithMeshElement*, TSharedPtr<AlDagNode>> MeshElementToAlDagNodeMap;
 
-	TMap< IDatasmithMeshElement*, TSharedPtr<BodyData>> MeshElementToBodyMap;
+	TMap<IDatasmithMeshElement*, TSharedPtr<BodyData>> MeshElementToBodyMap;
 
-	TMap <FString, TSharedPtr< IDatasmithMaterialIDElement >> ShaderNameToUEMaterialId;
+	TMap<FString, TSharedPtr<IDatasmithMaterialIDElement>> ShaderNameToUEMaterialId;
 
 	// start section information
 	int32 FileVersion;
@@ -349,12 +383,17 @@ private:
 	// If > 0, then the archive is corrupt.
 	int32 NumCRCErrors;
 
-	TSharedPtr<FAliasCoretechWrapper> LocalSession;
+	FDatasmithTessellationOptions TessellationOptions;
+
+	TSharedPtr<CADLibrary::ICADModelConverter> CADModelConverter;
+	TSharedPtr<IAliasBRepConverter> AliasBRepConverter;
+
 };
 
 void FWireTranslatorImpl::SetTessellationOptions(const FDatasmithTessellationOptions& Options)
 {
 	TessellationOptions = Options;
+	CADModelConverter->SetImportParameters(Options.ChordTolerance, Options.MaxEdgeLength, Options.NormalTolerance, (CADLibrary::EStitchingTechnique) Options.StitchingTechnique);
 	SceneFileHash = HashCombine(Options.GetHash(), GetSceneFileHash(SceneFullPath, SceneName));
 }
 
@@ -367,8 +406,6 @@ bool FWireTranslatorImpl::Read()
 	{
 		return false;
 	}
-
-	LocalSession->SetImportParameters(TessellationOptions.ChordTolerance, TessellationOptions.MaxEdgeLength, TessellationOptions.NormalTolerance, (CADLibrary::EStitchingTechnique) TessellationOptions.StitchingTechnique, true);
 
 	AlRetrieveOptions options;
 	AlUniverse::retrieveOptions(options);
@@ -389,7 +426,7 @@ bool FWireTranslatorImpl::Read()
 	return true;
 }
 
-void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
+void FWireTranslatorImpl::AddAlBlinnParameters(const TUniquePtr<AlShader>& Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
 {
 	// Default values for a Blinn material
 	FColor Color(145, 148, 153);
@@ -405,7 +442,7 @@ void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDat
 	double SpecularRolloff = 0.5;
 
 	AlList* List = Shader->fields();
-	for (AlShadingFieldItem* Item = static_cast<AlShadingFieldItem *>(List->first()); Item; Item = Item->nextField())
+	for (AlShadingFieldItem* Item = static_cast<AlShadingFieldItem*>(List->first()); Item; Item = Item->nextField())
 	{
 		double Value = 0.0f;
 		statusCode ErrorCode = Shader->parameter(Item->field(), Value);
@@ -428,7 +465,7 @@ void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDat
 			Gloss = Value;
 			break;
 		case AlShadingFields::kFLD_SHADING_BLINN_SPECULAR_R:
-			SpecularColor.R = (uint8) (255.f * Value);
+			SpecularColor.R = (uint8)(255.f * Value);
 			break;
 		case AlShadingFields::kFLD_SHADING_BLINN_SPECULAR_G:
 			SpecularColor.G = (uint8)(255.f * Value);;
@@ -666,14 +703,14 @@ void FWireTranslatorImpl::AddAlBlinnParameters(AlShader *Shader, TSharedRef<IDat
 		MaterialElement->GetOpacity().SetExpression(Divide);
 		MaterialElement->SetParentLabel(TEXT("M_DatasmithAliasBlinnTransparent"));
 	}
-	else 
+	else
 	{
 		MaterialElement->SetParentLabel(TEXT("M_DatasmithAliasBlinn"));
 	}
 
 }
 
-void FWireTranslatorImpl::AddAlLambertParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
+void FWireTranslatorImpl::AddAlLambertParameters(const TUniquePtr<AlShader>& Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
 {
 	// Default values for a Lambert material
 	FColor Color(145, 148, 153);
@@ -683,7 +720,7 @@ void FWireTranslatorImpl::AddAlLambertParameters(AlShader *Shader, TSharedRef<ID
 	double GlowIntensity = 0.0;
 
 	AlList* List = Shader->fields();
-	for (AlShadingFieldItem* Item = static_cast<AlShadingFieldItem *>(List->first()); Item; Item = Item->nextField())
+	for (AlShadingFieldItem* Item = static_cast<AlShadingFieldItem*>(List->first()); Item; Item = Item->nextField())
 	{
 		double Value = 0.0f;
 		statusCode ErrorCode = Shader->parameter(Item->field(), Value);
@@ -832,7 +869,7 @@ void FWireTranslatorImpl::AddAlLambertParameters(AlShader *Shader, TSharedRef<ID
 
 }
 
-void FWireTranslatorImpl::AddAlLightSourceParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
+void FWireTranslatorImpl::AddAlLightSourceParameters(const TUniquePtr<AlShader>& Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
 {
 	// Default values for a LightSource material
 	FColor Color(145, 148, 153);
@@ -841,7 +878,7 @@ void FWireTranslatorImpl::AddAlLightSourceParameters(AlShader *Shader, TSharedRe
 	double GlowIntensity = 0.0;
 
 	AlList* List = Shader->fields();
-	for (AlShadingFieldItem* Item = static_cast<AlShadingFieldItem *>(List->first()); Item; Item = Item->nextField())
+	for (AlShadingFieldItem* Item = static_cast<AlShadingFieldItem*>(List->first()); Item; Item = Item->nextField())
 	{
 		double Value = 0.0f;
 		statusCode ErrorCode = Shader->parameter(Item->field(), Value);
@@ -958,7 +995,7 @@ void FWireTranslatorImpl::AddAlLightSourceParameters(AlShader *Shader, TSharedRe
 
 }
 
-void FWireTranslatorImpl::AddAlPhongParameters(AlShader *Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
+void FWireTranslatorImpl::AddAlPhongParameters(const TUniquePtr<AlShader>& Shader, TSharedRef<IDatasmithUEPbrMaterialElement> MaterialElement)
 {
 	// Default values for a Phong material
 	FColor Color(145, 148, 153);
@@ -973,7 +1010,7 @@ void FWireTranslatorImpl::AddAlPhongParameters(AlShader *Shader, TSharedRef<IDat
 	double Reflectivity = 0.5;
 
 	AlList* List = Shader->fields();
-	for (AlShadingFieldItem* Item = static_cast<AlShadingFieldItem *>(List->first()); Item; Item = Item->nextField())
+	for (AlShadingFieldItem* Item = static_cast<AlShadingFieldItem*>(List->first()); Item; Item = Item->nextField())
 	{
 		double Value = 0.0f;
 		statusCode ErrorCode = Shader->parameter(Item->field(), Value);
@@ -1214,10 +1251,9 @@ void FWireTranslatorImpl::AddAlPhongParameters(AlShader *Shader, TSharedRef<IDat
 // Make material
 bool FWireTranslatorImpl::GetShader()
 {
-	AlShader *Shader = AlUniverse::firstShader();
-	while (Shader)
+	for (TUniquePtr<AlShader> Shader(AlUniverse::firstShader()); Shader.IsValid(); Shader = TUniquePtr<AlShader>(AlUniverse::nextShader(Shader.Get())))
 	{
-		FString ShaderName = Shader->name();
+		FString ShaderName = UTF8_TO_TCHAR(Shader->name());
 		FString ShaderModelName = Shader->shadingModel();
 
 		uint32 ShaderUUID = fabs((float)(int32)GetTypeHash(*ShaderName));
@@ -1246,12 +1282,8 @@ bool FWireTranslatorImpl::GetShader()
 
 		DatasmithScene->AddMaterial(MaterialElement);
 
-		TSharedPtr< IDatasmithMaterialIDElement > MaterialIDElement = FDatasmithSceneFactory::CreateMaterialId(MaterialElement->GetName());
+		TSharedPtr<IDatasmithMaterialIDElement> MaterialIDElement = FDatasmithSceneFactory::CreateMaterialId(MaterialElement->GetName());
 		ShaderNameToUEMaterialId.Add(*ShaderName, MaterialIDElement);
-
-		AlShader *CurrentShader = Shader;
-		Shader = AlUniverse::nextShader(Shader);
-		delete CurrentShader;
 	}
 	return true;
 }
@@ -1261,71 +1293,71 @@ bool FWireTranslatorImpl::GetShader()
 bool FWireTranslatorImpl::GetDagLeaves()
 {
 	FDagNodeInfo RootContainer;
-	AlRootNode = AlUniverse::firstDagNode();
-	AlDagNodeArray.Add(AlRootNode);
+	AlRootNode = TSharedPtr<AlDagNode>(AlUniverse::firstDagNode());
+	if (!AlRootNode.IsValid())
+	{
+		return false;
+	}
 	return RecurseDagForLeaves(AlRootNode, RootContainer);
 }
 
 
-void FWireTranslatorImpl::GetDagNodeMeta(AlDagNode& CurrentNode, TSharedPtr< IDatasmithActorElement > ActorElement)
+void FWireTranslatorImpl::GetDagNodeMeta(const AlDagNode& InDagNode, TSharedPtr<IDatasmithActorElement> OutActorElement)
 {
-	AlLayer* layer = CurrentNode.layer();
-	if (layer != nullptr)
+	AlLayer* LayerPtr = InDagNode.layer();
+	if (LayerPtr)
 	{
-		FString LayerName = CurrentNode.layer()->name();
-		ActorElement->SetLayer(*LayerName);
+		TUniquePtr<AlLayer> Layer(LayerPtr);
+		FString LayerName = UTF8_TO_TCHAR(Layer->name());
+		OutActorElement->SetLayer(*LayerName);
+	}
+}
+
+void FWireTranslatorImpl::GetDagNodeInfo(const TSharedPtr<AlDagNode>& CurrentNode, const FDagNodeInfo& ParentInfo, FDagNodeInfo& CurrentNodeInfo)
+{
+
+	CurrentNodeInfo.Label = UTF8_TO_TCHAR(CurrentNode->name());
+	uint32 ThisGroupNodeUuid = OpenModelUtils::GetAlDagNodeUuid(CurrentNode);
+	CurrentNodeInfo.Uuid = HashCombine(ParentInfo.Uuid, ThisGroupNodeUuid);
+}
+
+void FWireTranslatorImpl::GetDagNodeInfo(const TSharedPtr<BodyData>& CurrentNode, const FDagNodeInfo& ParentInfo, FDagNodeInfo& CurrentNodeInfo)
+{
+	CurrentNodeInfo.Label = ParentInfo.Label;
+	CurrentNode->Label = CurrentNodeInfo.Label;
+	CurrentNodeInfo.Uuid = CurrentNode->GetUuid(ParentInfo.Uuid);
+}
+
+bool FWireTranslatorImpl::ProcessAlGroupNode(AlDagNode& GroupNode, const FDagNodeInfo& ParentInfo)
+{
+	AlGroupNode* AlGroup = GroupNode.asGroupNodePtr();
+	if (!AlIsValid(AlGroup))
+	{
+		return false;
 	}
 
-    // TODO import other Meta
+	AlDagNode* AlChildPtr = AlGroup->childNode();
+	if (!AlIsValid(AlChildPtr))
+	{
+		return false;
+	}
 
-}
+	TSharedPtr<AlDagNode> ChildNode(AlChildPtr);
 
-
-void FWireTranslatorImpl::GetDagNodeInfo(AlDagNode& CurrentNode, const FDagNodeInfo& ParentInfo, FDagNodeInfo& CurrentNodeInfo)
-{
-	CurrentNodeInfo.Label = CurrentNode.name();
-
-	AlPersistentID* GroupNodeId = nullptr;
-	CurrentNode.persistentID(GroupNodeId);
-
-	FString ThisGroupNodeID( GetPersistentIDString(GroupNodeId) );
-
-    // Limit length of UUID by combining hash of parent UUID and container's UUID if ParentUuid is not empty
-	CurrentNodeInfo.UEuuid = GetUEUUIDFromAIPersistentID(ParentInfo.UEuuid, ThisGroupNodeID);
-}
-
-void FWireTranslatorImpl::GetDagNodeInfo(TSharedRef<BodyData> CurrentNode, const FDagNodeInfo& ParentInfo, FDagNodeInfo& CurrentNodeInfo)
-{
-	CurrentNodeInfo.Label = ParentInfo.Label; // +TEXT(" ") + CurrentNode->LayerName + TEXT(" ") + CurrentNode->ShaderName;
-	CurrentNode->Label = CurrentNodeInfo.Label;
-
-	// Limit length of UUID by combining hash of parent UUID and container's UUID if ParentUuid is not empty
-	CurrentNodeInfo.UEuuid = GetUEUUIDFromAIPersistentID( ParentInfo.UEuuid, CurrentNode->GetUUID( ParentInfo.UEuuid ) );
-}
-
-
-bool FWireTranslatorImpl::ProcessAlGroupNode(AlGroupNode& GroupNode, const FDagNodeInfo& ParentInfo)
-{
 	FDagNodeInfo ThisGroupNodeInfo;
+	GetDagNodeInfo(ChildNode, ParentInfo, ThisGroupNodeInfo);
 
-	GetDagNodeInfo(GroupNode, ParentInfo, ThisGroupNodeInfo);
-
-	ThisGroupNodeInfo.ActorElement = FDatasmithSceneFactory::CreateActor(*ThisGroupNodeInfo.UEuuid);
+	ThisGroupNodeInfo.ActorElement = FDatasmithSceneFactory::CreateActor(*OpenModelUtils::UuidToString(ThisGroupNodeInfo.Uuid));
 	ThisGroupNodeInfo.ActorElement->SetLabel(*ThisGroupNodeInfo.Label);
 	GetDagNodeMeta(GroupNode, ThisGroupNodeInfo.ActorElement);
 
-	AlDagNode * ChildNode = GroupNode.childNode();
-	if (AlIsValid(ChildNode) == TRUE)
-	{
-		AlDagNodeArray.Add(ChildNode);
-		RecurseDagForLeaves(ChildNode, ThisGroupNodeInfo);
-	}
+	RecurseDagForLeaves(ChildNode, ThisGroupNodeInfo);
 
 	// add the resulting actor to the scene
-	if (IsValidActor(ThisGroupNodeInfo.ActorElement))
+	if (OpenModelUtils::IsValidActor(ThisGroupNodeInfo.ActorElement))
 	{
 		// Apply local transform to actor element
-		SetActorTransform(ThisGroupNodeInfo.ActorElement, GroupNode);
+		OpenModelUtils::SetActorTransform(ThisGroupNodeInfo.ActorElement, GroupNode);
 
 		if (ParentInfo.ActorElement.IsValid())
 		{
@@ -1340,98 +1372,84 @@ bool FWireTranslatorImpl::ProcessAlGroupNode(AlGroupNode& GroupNode, const FDagN
 	return true;
 }
 
-TSharedPtr< IDatasmithMeshElement > FWireTranslatorImpl::FindOrAddMeshElement(TSharedRef<BodyData> Body, const FDagNodeInfo& NodeInfo)
+TSharedPtr<IDatasmithMeshElement> FWireTranslatorImpl::FindOrAddMeshElement(const TSharedPtr<BodyData>& Body, const FDagNodeInfo& NodeInfo)
 {
-	TSharedPtr< IDatasmithMeshElement >* MeshElementPtr = BodyToMeshElementMap.Find( NodeInfo.UEuuid );
+	TSharedPtr<IDatasmithMeshElement>* MeshElementPtr = BodyUuidToMeshElementMap.Find(NodeInfo.Uuid);
 	if (MeshElementPtr != nullptr)
 	{
 		return *MeshElementPtr;
 	}
-	
-	TSharedPtr< IDatasmithMeshElement > MeshElement = FDatasmithSceneFactory::CreateMesh( *NodeInfo.UEuuid );
+
+	TSharedPtr<IDatasmithMeshElement> MeshElement = FDatasmithSceneFactory::CreateMesh(*OpenModelUtils::UuidToString(NodeInfo.Uuid));
 	MeshElement->SetLabel(*NodeInfo.Label);
 	MeshElement->SetLightmapSourceUV(-1);
 
 	if (*Body->ShaderName)
 	{
-		TSharedPtr< IDatasmithMaterialIDElement > MaterialElement = ShaderNameToUEMaterialId[Body->ShaderName];
+		TSharedPtr<IDatasmithMaterialIDElement> MaterialElement = ShaderNameToUEMaterialId[Body->ShaderName];
 		MeshElement->SetMaterial(MaterialElement->GetName(), 0);
 	}
 
 	DatasmithScene->AddMesh(MeshElement);
 
-	ShellUUIDToMeshElementMap.Add(FCString::Atoi(*NodeInfo.UEuuid), MeshElement);
+	ShellUuidToMeshElementMap.Add(NodeInfo.Uuid, MeshElement);
 	MeshElementToBodyMap.Add(MeshElement.Get(), Body);
 
-	BodyToMeshElementMap.Add( NodeInfo.UEuuid, MeshElement );
+	BodyUuidToMeshElementMap.Add(NodeInfo.Uuid, MeshElement);
 
 	return MeshElement;
 }
 
-TSharedPtr< IDatasmithMeshElement > FWireTranslatorImpl::FindOrAddMeshElement(AlDagNode& ShellNode, const FDagNodeInfo& ParentInfo, const char* ShaderName)
+TSharedPtr<IDatasmithMeshElement> FWireTranslatorImpl::FindOrAddMeshElement(const TSharedPtr<AlDagNode>& ShellNode, const FDagNodeInfo& ShellNodeInfo, const FString& ShaderName)
 {
-	uint32 ShellUUID = GetUUIDFromAIPersistentID(ShellNode);
+	uint32 ShellUuid = OpenModelUtils::GetAlDagNodeUuid(ShellNode);
 
 	// Look if geometry has not been already processed, return it if found
-	TSharedPtr< IDatasmithMeshElement >* MeshElementPtr = ShellUUIDToMeshElementMap.Find(ShellUUID);
+	TSharedPtr<IDatasmithMeshElement>* MeshElementPtr = ShellUuidToMeshElementMap.Find(ShellUuid);
 	if (MeshElementPtr != nullptr)
 	{
 		return *MeshElementPtr;
 	}
 
-	FDagNodeInfo MeshInfo;
-	GetDagNodeInfo(ShellNode, ParentInfo, MeshInfo);
-
-	TSharedPtr< IDatasmithMeshElement > MeshElement = FDatasmithSceneFactory::CreateMesh(*MeshInfo.UEuuid);
-	MeshElement->SetLabel(*MeshInfo.Label);
+	TSharedPtr<IDatasmithMeshElement> MeshElement = FDatasmithSceneFactory::CreateMesh(*OpenModelUtils::UuidToString(ShellNodeInfo.Uuid));
+	MeshElement->SetLabel(*ShellNodeInfo.Label);
 	MeshElement->SetLightmapSourceUV(-1);
 
-	// TODO
-	// Get bounding box saved by GPure
-	double BoundingBox[8][4];
-	ShellNode.boundingBox(BoundingBox);
-	//float BoundingBox[6];
-	//FString Buffer = GetStringAttribute(GeomID, TEXT("UE_MESH_BBOX"));
-	//if (FString::ToHexBlob(Buffer, (uint8*)BoundingBox, sizeof(BoundingBox)))
-	//{
-	//	MeshElement->SetDimensions(BoundingBox[3] - BoundingBox[0], BoundingBox[4] - BoundingBox[1], BoundingBox[5] - BoundingBox[2], 0.0f);
-	//}
-
-	// Set MeshElement FileHash used for re-import task 
+	// Set MeshElement FileHash used for re-import task
 	FMD5 MD5; // unique Value that define the mesh
 	MD5.Update(reinterpret_cast<const uint8*>(&SceneFileHash), sizeof SceneFileHash);
 	// MeshActor Name
-	MD5.Update(reinterpret_cast<const uint8*>(&ShellUUID), sizeof ShellUUID);
+	MD5.Update(reinterpret_cast<const uint8*>(&ShellUuid), sizeof ShellUuid);
 	FMD5Hash Hash;
 	Hash.Set(MD5);
 	MeshElement->SetFileHash(Hash);
 
-	if (ShaderName)
+	if (ShaderName.Len())
 	{
-		TSharedPtr< IDatasmithMaterialIDElement > MaterialElement = ShaderNameToUEMaterialId[FString(ShaderName)];
+		TSharedPtr<IDatasmithMaterialIDElement> MaterialElement = ShaderNameToUEMaterialId[ShaderName];
 		MeshElement->SetMaterial(MaterialElement->GetName(), 0);
 	}
 
 	DatasmithScene->AddMesh(MeshElement);
 
-	ShellUUIDToMeshElementMap.Add(ShellUUID, MeshElement);
-	MeshElementToAlDagNodeMap.Add(MeshElement.Get(), &ShellNode);
+	ShellUuidToMeshElementMap.Add(ShellUuid, MeshElement);
+	MeshElementToAlDagNodeMap.Add(MeshElement.Get(), ShellNode);
 
 	return MeshElement;
 }
 
-bool FWireTranslatorImpl::ProcessAlShellNode(AlDagNode& ShellNode, const FDagNodeInfo& ParentInfo, const char* ShaderName)
+bool FWireTranslatorImpl::ProcessAlShellNode(const TSharedPtr<AlDagNode>& ShellNode, const FDagNodeInfo& ParentInfo, const FString& ShaderName)
 {
 	FDagNodeInfo ShellInfo;
 	GetDagNodeInfo(ShellNode, ParentInfo, ShellInfo);
 
-	TSharedPtr< IDatasmithMeshElement > MeshElement = FindOrAddMeshElement(ShellNode, ShellInfo, ShaderName);
+	TSharedPtr<IDatasmithMeshElement> MeshElement = FindOrAddMeshElement(ShellNode, ShellInfo, ShaderName);
 	if (!MeshElement.IsValid())
 	{
 		return false;
 	}
 
-	TSharedPtr< IDatasmithMeshActorElement > ActorElement = FDatasmithSceneFactory::CreateMeshActor(*ShellInfo.UEuuid);
+	TSharedPtr<IDatasmithMeshActorElement> ActorElement = FDatasmithSceneFactory::CreateMeshActor(*OpenModelUtils::UuidToString(ShellInfo.Uuid));
 	if (!ActorElement.IsValid())
 	{
 		return false;
@@ -1441,15 +1459,16 @@ bool FWireTranslatorImpl::ProcessAlShellNode(AlDagNode& ShellNode, const FDagNod
 	ActorElement->SetStaticMeshPathName(MeshElement->GetName());
 	ShellInfo.ActorElement = ActorElement;
 
-	GetDagNodeMeta(ShellNode, ActorElement);
+	GetDagNodeMeta(*ShellNode, ActorElement);
 
-	SetActorTransform(ShellInfo.ActorElement, ShellNode);
+	OpenModelUtils::SetActorTransform(ShellInfo.ActorElement, *ShellNode);
 
 	// Apply materials on the current part
-	if (ShaderName)
+	if (ShaderName.Len())
 	{
-		TSharedPtr< IDatasmithMaterialIDElement > MaterialIDElement = ShaderNameToUEMaterialId[FString(ShaderName)];
-		if (MaterialIDElement.IsValid()) {
+		const TSharedPtr<IDatasmithMaterialIDElement>& MaterialIDElement = ShaderNameToUEMaterialId[ShaderName];
+		if (MaterialIDElement.IsValid())
+		{
 			for (int32 Index = 0; Index < MeshElement->GetMaterialSlotCount(); ++Index)
 			{
 				MaterialIDElement->SetId(MeshElement->GetMaterialSlotAt(Index)->GetId());
@@ -1458,7 +1477,7 @@ bool FWireTranslatorImpl::ProcessAlShellNode(AlDagNode& ShellNode, const FDagNod
 		}
 	}
 
-	if (ActorElement.IsValid() && IsValidActor(ActorElement))
+	if (ActorElement.IsValid() && OpenModelUtils::IsValidActor(ActorElement))
 	{
 		if (ParentInfo.ActorElement.IsValid())
 		{
@@ -1472,8 +1491,13 @@ bool FWireTranslatorImpl::ProcessAlShellNode(AlDagNode& ShellNode, const FDagNod
 	return true;
 }
 
-bool FWireTranslatorImpl::ProcessBodyNode(TSharedRef<BodyData> Body, const FDagNodeInfo& ParentInfo)
+bool FWireTranslatorImpl::ProcessBodyNode(const TSharedPtr<BodyData>& Body, const FDagNodeInfo& ParentInfo)
 {
+	if (!Body.IsValid())
+	{
+		return false;
+	}
+
 	if (Body->ShellSet.Num() == 1)
 	{
 		return RecurseDagForLeavesNoMerge(Body->ShellSet[0], ParentInfo);
@@ -1482,13 +1506,13 @@ bool FWireTranslatorImpl::ProcessBodyNode(TSharedRef<BodyData> Body, const FDagN
 	FDagNodeInfo ShellInfo;
 	GetDagNodeInfo(Body, ParentInfo, ShellInfo);
 
-	TSharedPtr< IDatasmithMeshElement > MeshElement = FindOrAddMeshElement(Body, ShellInfo);
+	TSharedPtr<IDatasmithMeshElement> MeshElement = FindOrAddMeshElement(Body, ShellInfo);
 	if (!MeshElement.IsValid())
 	{
 		return false;
 	}
 
-	TSharedPtr< IDatasmithMeshActorElement > ActorElement = FDatasmithSceneFactory::CreateMeshActor(*ShellInfo.UEuuid);
+	TSharedPtr<IDatasmithMeshActorElement> ActorElement = FDatasmithSceneFactory::CreateMeshActor(*OpenModelUtils::UuidToString(ShellInfo.Uuid));
 	if (!ActorElement.IsValid())
 	{
 		return false;
@@ -1505,7 +1529,7 @@ bool FWireTranslatorImpl::ProcessBodyNode(TSharedRef<BodyData> Body, const FDagN
 	//// Apply materials on the current part
 	if (*Body->ShaderName)
 	{
-		TSharedPtr< IDatasmithMaterialIDElement > MaterialIDElement = ShaderNameToUEMaterialId[FString(*Body->ShaderName)];
+		TSharedPtr<IDatasmithMaterialIDElement> MaterialIDElement = ShaderNameToUEMaterialId[FString(*Body->ShaderName)];
 		if (MaterialIDElement.IsValid()) {
 			for (int32 Index = 0; Index < MeshElement->GetMaterialSlotCount(); ++Index)
 			{
@@ -1515,7 +1539,7 @@ bool FWireTranslatorImpl::ProcessBodyNode(TSharedRef<BodyData> Body, const FDagN
 		}
 	}
 
-	if (ActorElement.IsValid() && IsValidActor(ActorElement))
+	if (ActorElement.IsValid() && OpenModelUtils::IsValidActor(ActorElement))
 	{
 		if (ParentInfo.ActorElement.IsValid())
 		{
@@ -1529,21 +1553,21 @@ bool FWireTranslatorImpl::ProcessBodyNode(TSharedRef<BodyData> Body, const FDagN
 	return true;
 }
 
-AlDagNode * GetNextNode(AlDagNode * DagNode)
+TSharedPtr<AlDagNode> GetNextNode(const TSharedPtr<AlDagNode>& DagNode)
 {
 	// Grab the next sibling before deleting the node.
-	AlDagNode * SiblingNode = DagNode->nextNode();
+	AlDagNode* SiblingNode = DagNode->nextNode();
 	if (AlIsValid(SiblingNode))
 	{
-		return SiblingNode;
+		return TSharedPtr<AlDagNode>(SiblingNode);
 	}
 	else
 	{
-		return NULL;
+		return TSharedPtr<AlDagNode>();
 	}
 }
 
-bool IsHidden(AlDagNode * DagNode)
+bool IsHidden(const TSharedPtr<AlDagNode>& DagNode)
 {
 	/*
 	AlObjectType objectType = DagNode->type();
@@ -1574,34 +1598,37 @@ bool IsHidden(AlDagNode * DagNode)
 }
 
 
-uint32 getBodySetId(const char* ShaderName, const char* LayerName, bool bCadData)
+uint32 GetBodyGroupUuid(const FString& ShaderName, const FString& LayerName, bool bCadData)
 {
-	uint32 UUID = HashCombine(GetTypeHash(ShaderName), GetTypeHash(bCadData));
-	UUID = HashCombine(GetTypeHash(LayerName), UUID);
-	return UUID;
+	uint32 Uuid = HashCombine(GetTypeHash(ShaderName), GetTypeHash(bCadData));
+	Uuid = HashCombine(GetTypeHash(LayerName), Uuid);
+	return Uuid;
 }
 
-uint32 getNumOfPatch(AlShell& Shell)
+uint32 GetPatchCount(const TUniquePtr<AlShell>& Shell)
 {
-	uint32 NbFace = 0;
-	AlTrimRegion *TrimRegion = Shell.firstTrimRegion();
-	while (TrimRegion)
+	uint32 PatchCount = 0;
+	TUniquePtr<AlTrimRegion> TrimRegion(Shell->firstTrimRegion());
+	while (TrimRegion.IsValid())
 	{
-		NbFace++;
-		TrimRegion = TrimRegion->nextRegion();
+		PatchCount++;
+		TrimRegion = TUniquePtr<AlTrimRegion>(TrimRegion->nextRegion());
 	}
-	return NbFace;
+	return PatchCount;
 }
 
-void FWireTranslatorImpl::AddNodeInBodySet(AlDagNode& DagNode, const char* ShaderName, TMap<uint32, TSharedPtr<BodyData>>& ShellToProcess, bool bIsAPatch, uint32 MaxSize)
+void FWireTranslatorImpl::AddNodeInBodyGroup(TSharedPtr<AlDagNode>& DagNode, const FString& ShaderName, TMap<uint32, TSharedPtr<BodyData>>& ShellToProcess, bool bIsAPatch, uint32 MaxSize)
 {
-	const char* LayerName = nullptr;
-	if (AlLayer* Layer = DagNode.layer())
+	FString LayerName;
+
+	AlLayer* LayerPtr = DagNode->layer();
+	if (AlIsValid(LayerPtr))
 	{
-		LayerName = Layer->name();
+		const TUniquePtr<AlLayer> Layer(LayerPtr);
+		LayerName = UTF8_TO_TCHAR(Layer->name());
 	}
 
-	uint32 SetId = getBodySetId(ShaderName, LayerName, bIsAPatch);
+	uint32 SetId = GetBodyGroupUuid(ShaderName, LayerName, bIsAPatch);
 
 	TSharedPtr<BodyData> Body;
 	if (TSharedPtr<BodyData>* PBody = ShellToProcess.Find(SetId))
@@ -1615,128 +1642,134 @@ void FWireTranslatorImpl::AddNodeInBodySet(AlDagNode& DagNode, const char* Shade
 		BodyRef->ShellSet.Reserve(MaxSize);
 		Body = BodyRef;
 	}
-	Body->ShellSet.Add(&DagNode);
+	Body->ShellSet.Add(DagNode);
 }
 
-bool FWireTranslatorImpl::RecurseDagForLeaves(AlDagNode* FirstDagNode, const FDagNodeInfo& ParentInfo)
+bool FWireTranslatorImpl::RecurseDagForLeaves(const TSharedPtr<AlDagNode>& FirstDagNode, const FDagNodeInfo& ParentInfo)
 {
 	if (TessellationOptions.StitchingTechnique != EDatasmithCADStitchingTechnique::StitchingSew)
 	{
 		return RecurseDagForLeavesNoMerge(FirstDagNode, ParentInfo);
 	}
 
-	AlDagNode* DagNode = FirstDagNode;
+	TSharedPtr<AlDagNode> DagNode = FirstDagNode;
 	uint32 MaxSize = 0;
 	while (DagNode)
 	{
 		MaxSize++;
-		AlDagNode* NextDagNode = GetNextNode(DagNode);
-		if(DagNode != FirstDagNode) 
-		{
-			delete DagNode;
-		}
-		DagNode = NextDagNode;
+		DagNode = GetNextNode(DagNode);
 	}
 
 	DagNode = FirstDagNode;
 
-	TSet<AlDagNode*> UnProcessedNodes;
 	TMap<uint32, TSharedPtr<BodyData>> ShellToProcess;
 
 	const char* ShaderName = nullptr;
 
 	while (DagNode)
 	{
-		// Filter invalid nodes.
-		if (AlIsValid(DagNode) && !IsHidden(DagNode))
+		// Filter visible nodes.
+		if (!IsHidden(DagNode))
 		{
 			AlObjectType objectType = DagNode->type();
 
 			// Process the current node.
 			switch (objectType)
 			{
-
+				// Push all leaf nodes into 'leaves'
 			case kShellNodeType:
 			{
 				AlShellNode* ShellNode = DagNode->asShellNodePtr();
-				AlShell* Shell = ShellNode->shell();
-				uint32 NbPatch = getNumOfPatch(*Shell);
+				if (!AlIsValid(ShellNode))
+				{
+					break;
+				}
 
-				if (AlShader* Shader = Shell->firstShader())
+				AlShell* ShellPtr = ShellNode->shell();
+				if (!AlIsValid(ShellPtr))
+				{
+					break;
+				}
+
+				TUniquePtr<AlShell> Shell(ShellPtr);
+				uint32 NbPatch = GetPatchCount(Shell);
+
+				TUniquePtr<AlShader> Shader(Shell->firstShader());
+				if (Shader.IsValid())
 				{
 					ShaderName = Shader->name();
 				}
 
 				if (NbPatch == 1)
 				{
-					AddNodeInBodySet(*DagNode, ShaderName, ShellToProcess, true, MaxSize);
+					AddNodeInBodyGroup(DagNode, ShaderName, ShellToProcess, true, MaxSize);
 				}
 				else
 				{
-					ProcessAlShellNode(*DagNode, ParentInfo, ShaderName);
+					ProcessAlShellNode(DagNode, ParentInfo, ShaderName);
 				}
 				break;
 			}
-
 			case kSurfaceNodeType:
 			{
 				AlSurfaceNode* SurfaceNode = DagNode->asSurfaceNodePtr();
-				AlSurface* Surface = SurfaceNode->surface();
-				if (AlShader* Shader = Surface->firstShader())
+				TUniquePtr<AlSurface> Surface(SurfaceNode->surface());
+				if (Surface.IsValid())
 				{
-					ShaderName = Shader->name();
+					TUniquePtr<AlShader> Shader(Surface->firstShader());
+					if (Shader.IsValid())
+					{
+						ShaderName = Shader->name();
+					}
 				}
-				AddNodeInBodySet(*DagNode, ShaderName, ShellToProcess, true, MaxSize);
+				AddNodeInBodyGroup(DagNode, ShaderName, ShellToProcess, true, MaxSize);
 				break;
 			}
 
 			case kMeshNodeType:
 			{
 				AlMeshNode* MeshNode = DagNode->asMeshNodePtr();
-				AlMesh* Mesh = MeshNode->mesh();
-				if (AlShader* Shader = Mesh->firstShader())
+				TUniquePtr<AlMesh> Mesh(MeshNode->mesh());
+				if (Mesh.IsValid())
 				{
-					ShaderName = Shader->name();
+					TUniquePtr<AlShader> Shader(Mesh->firstShader());
+					if (Shader.IsValid())
+					{
+						ShaderName = Shader->name();
+					}
 				}
-				AddNodeInBodySet(*DagNode, ShaderName, ShellToProcess, false, MaxSize);
+				AddNodeInBodyGroup(DagNode, ShaderName, ShellToProcess, false, MaxSize);
 				break;
 			}
 
 			// Traverse down through groups
 			case kGroupNodeType:
 			{
-				AlGroupNode* GroupNode = DagNode->asGroupNodePtr();
-				if (AlIsValid(GroupNode))
-				{
-					ProcessAlGroupNode(*GroupNode, ParentInfo);
-				}
+				ProcessAlGroupNode(*DagNode, ParentInfo);
 				break;
 			}
-
 			default:
 			{
 				break;
 			}
+
 			}
 		}
 
 		DagNode = GetNextNode(DagNode);
-		AlDagNodeArray.Add(DagNode);
-
 	}
 
-	for (auto Body : ShellToProcess)
+	for (const TPair<uint32, TSharedPtr<BodyData>>& Body : ShellToProcess)
 	{
 		ProcessBodyNode(Body.Value.ToSharedRef(), ParentInfo);
 	}
 	return true;
 }
 
-bool FWireTranslatorImpl::RecurseDagForLeavesNoMerge(AlDagNode* FirstDagNode, const FDagNodeInfo& ParentInfo)
+bool FWireTranslatorImpl::RecurseDagForLeavesNoMerge(const TSharedPtr<AlDagNode>& FirstDagNode, const FDagNodeInfo& ParentInfo)
 {
-	AlDagNode* DagNode = FirstDagNode;
+	TSharedPtr<AlDagNode> DagNode = FirstDagNode;
 
-	TSet<AlDagNode*> UnProcessedNodes;
 	TMap<uint32, BodyData> ShellToProcess;
 
 	const char* ShaderName = nullptr;
@@ -1744,60 +1777,65 @@ bool FWireTranslatorImpl::RecurseDagForLeavesNoMerge(AlDagNode* FirstDagNode, co
 	DagNode = FirstDagNode;
 	while (DagNode)
 	{
-		if (AlIsValid(DagNode) && !IsHidden(DagNode))
+		if (!IsHidden(DagNode))
 		{
 			// Process the current node.
 			AlObjectType objectType = DagNode->type();
 			switch (objectType)
 			{
-
+				// Push all leaf nodes into 'leaves'
 			case kShellNodeType:
 			{
 				AlShellNode* ShellNode = DagNode->asShellNodePtr();
-				AlShell* Shell = ShellNode->shell();
-				if (AlShader* Shader = Shell->firstShader())
+				TUniquePtr<AlShell> Shell(ShellNode->shell());
+				if (Shell.IsValid())
 				{
-					ShaderName = Shader->name();
-				}
+					TUniquePtr<AlShader> Shader(Shell->firstShader());
+					if (Shader.IsValid())
+					{
+						ShaderName = Shader->name();
+					}
 
-				ProcessAlShellNode(*DagNode, ParentInfo, ShaderName);
+					ProcessAlShellNode(DagNode, ParentInfo, ShaderName);
+				}
 				break;
 			}
-
 			case kSurfaceNodeType:
 			{
 				AlSurfaceNode* SurfaceNode = DagNode->asSurfaceNodePtr();
-				AlSurface* Surface = SurfaceNode->surface();
-				if (AlShader* Shader = Surface->firstShader())
+				TUniquePtr<AlSurface> Surface(SurfaceNode->surface());
+				if (Surface.IsValid())
 				{
-					ShaderName = Shader->name();
+					TUniquePtr<AlShader> Shader(Surface->firstShader());
+					if (Shader.IsValid())
+					{
+						ShaderName = Shader->name();
+					}
 				}
-
-				ProcessAlShellNode(*DagNode, ParentInfo, ShaderName);
+				ProcessAlShellNode(DagNode, ParentInfo, ShaderName);
 				break;
 			}
 
 			case kMeshNodeType:
 			{
 				AlMeshNode* MeshNode = DagNode->asMeshNodePtr();
-				AlMesh* Mesh = MeshNode->mesh();
-				if (AlShader* Shader = Mesh->firstShader())
+				TUniquePtr<AlMesh> Mesh(MeshNode->mesh());
+				if (Mesh.IsValid())
 				{
-					ShaderName = Shader->name();
+					TUniquePtr<AlShader> Shader(Mesh->firstShader());
+					if (Shader.IsValid())
+					{
+						ShaderName = Shader->name();
+					}
 				}
-
-				ProcessAlShellNode(*DagNode, ParentInfo, ShaderName);
+				ProcessAlShellNode(DagNode, ParentInfo, ShaderName);
 				break;
 			}
 
 			// Traverse down through groups
 			case kGroupNodeType:
 			{
-				AlGroupNode* GroupNode = DagNode->asGroupNodePtr();
-				if (AlIsValid(GroupNode))
-				{
-					ProcessAlGroupNode(*GroupNode, ParentInfo);
-				}
+				ProcessAlGroupNode(*DagNode, ParentInfo);
 				break;
 			}
 
@@ -1807,93 +1845,79 @@ bool FWireTranslatorImpl::RecurseDagForLeavesNoMerge(AlDagNode* FirstDagNode, co
 			}
 
 			}
-		}
 
-		DagNode = GetNextNode(DagNode);
-		AlDagNodeArray.Add(DagNode);
+			DagNode = GetNextNode(DagNode);
+		}
 	}
 	return true;
 }
 
 TOptional<FMeshDescription> FWireTranslatorImpl::MeshDagNodeWithExternalMesher(AlDagNode& DagNode, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters)
 {
-	LocalSession->ClearData();
-
 	// Wire unit is cm
-	LocalSession->SetSceneUnit(0.01);
-
-	FString Filename = DagNode.name();
+	CADModelConverter->InitializeProcess(0.01);
 
 	EAliasObjectReference ObjectReference = EAliasObjectReference::LocalReference;
 
 	if (MeshParameters.bIsSymmetric)
 	{
-		// All actors of a Alias symmetric layer are defined in the world Reference i.e. they have identity transform. So Mesh actor has to be defined in the world reference. 
+		// All actors of a Alias symmetric layer are defined in the world Reference i.e. they have identity transform. So Mesh actor has to be defined in the world reference.
 		ObjectReference = EAliasObjectReference::WorldReference;
 	}
 
-	TArray<AlDagNode*> DagNodeSet;
-	DagNodeSet.Add(&DagNode);
-	LocalSession->AddBRep(DagNodeSet, ObjectReference);
+	AliasBRepConverter->AddBRep(DagNode, ObjectReference);
 
-	Filename += TEXT(".ct");
+	CADModelConverter->RepairTopology();
 
-	FString FilePath = FPaths::Combine(OutputPath, Filename);
-	if (LocalSession->SaveBrep(FilePath))
-	{
-		MeshElement->SetFile(*FilePath);
-	}
+	CADModelConverter->SaveModel(*OutputPath, MeshElement);
 
 	FMeshDescription MeshDescription;
 	DatasmithMeshHelper::PrepareAttributeForStaticMesh(MeshDescription);
 
-	LocalSession->Tessellate(MeshDescription, MeshParameters);
+	CADModelConverter->Tessellate(MeshParameters, MeshDescription);
 
 	return MoveTemp(MeshDescription);
 }
 
 TOptional<FMeshDescription> FWireTranslatorImpl::MeshDagNodeWithExternalMesher(TSharedRef<BodyData> Body, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters)
 {
-	LocalSession->ClearData();
-
 	// Wire unit is cm
-	LocalSession->SetSceneUnit(0.01);
+	CADModelConverter->InitializeProcess(0.01);
 
 	EAliasObjectReference ObjectReference = EAliasObjectReference::LocalReference;
 	if (MeshParameters.bIsSymmetric)
 	{
-		// All actors of a Alias symmetric layer are defined in the world Reference i.e. they have identity transform. So Mesh actor has to be defined in the world reference. 
+		// All actors of a Alias symmetric layer are defined in the world Reference i.e. they have identity transform. So Mesh actor has to be defined in the world reference.
 		ObjectReference = EAliasObjectReference::WorldReference;
 	}
-	else if (GetImportParameters().StitchingTechnique == StitchingSew)
+	else if (TessellationOptions.StitchingTechnique != EDatasmithCADStitchingTechnique::StitchingSew)
 	{
 		// In the case of StitchingSew, AlDagNode children of a GroupNode are merged together. To be merged, they have to be defined in the reference of parent GroupNode.
 		ObjectReference = EAliasObjectReference::ParentReference;
 	}
 
-	LocalSession->AddBRep(Body->ShellSet, ObjectReference);
-
-	FString Filename = Body->Label + TEXT(".ct");
-
-	FString FilePath = FPaths::Combine(OutputPath, Filename);
-	if (LocalSession->SaveBrep(FilePath))
+	for (const TSharedPtr<AlDagNode>& DagNode : Body->ShellSet)
 	{
-		MeshElement->SetFile(*FilePath);
+		AliasBRepConverter->AddBRep(*DagNode, ObjectReference);
 	}
+
+	CADModelConverter->RepairTopology();
+
+	CADModelConverter->SaveModel(*OutputPath, MeshElement);
 
 	FMeshDescription MeshDescription;
 	DatasmithMeshHelper::PrepareAttributeForStaticMesh(MeshDescription);
 
-	LocalSession->Tessellate(MeshDescription, MeshParameters);
+	CADModelConverter->Tessellate(MeshParameters, MeshDescription);
 
 	return MoveTemp(MeshDescription);
 }
 
 TOptional<FMeshDescription> FWireTranslatorImpl::GetMeshOfShellNode(AlDagNode& DagNode, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters)
 {
-	if (LocalSession->IsSessionValid())
+	if (CADModelConverter->IsSessionValid())
 	{
-		TOptional< FMeshDescription > UEMesh = MeshDagNodeWithExternalMesher(DagNode, MeshElement, MeshParameters);
+		TOptional<FMeshDescription> UEMesh = MeshDagNodeWithExternalMesher(DagNode, MeshElement, MeshParameters);
 		return UEMesh;
 	}
 	else
@@ -1901,23 +1925,21 @@ TOptional<FMeshDescription> FWireTranslatorImpl::GetMeshOfShellNode(AlDagNode& D
 		AlMatrix4x4 AlMatrix;
 		DagNode.inverseGlobalTransformationMatrix(AlMatrix);
 		// TODO: the best way, should be to don't have to apply inverse global transform to the generated mesh
-		AlDagNode *TesselatedNode = TesselateDagLeaf(&DagNode, ETesselatorType::Fast, TessellationOptions.ChordTolerance);
-		if (TesselatedNode != nullptr)
+		TSharedPtr<AlDagNode> TesselatedNode = OpenModelUtils::TesselateDagLeaf(DagNode, ETesselatorType::Fast, TessellationOptions.ChordTolerance);
+		if (TesselatedNode.IsValid())
 		{
 			// Get the meshes from the dag nodes. Note that removing the mesh's DAG.
 			// will also removes the meshes, so we have to do it later.
-			TOptional< FMeshDescription > UEMesh = GetMeshOfNodeMesh(*(TesselatedNode->asMeshNodePtr()), MeshElement, MeshParameters, &AlMatrix);
-			delete TesselatedNode;
+			TOptional<FMeshDescription> UEMesh = GetMeshOfNodeMesh(*TesselatedNode, MeshParameters, &AlMatrix);
 			return UEMesh;
 		}
 	}
-	return TOptional< FMeshDescription >();
+	return TOptional<FMeshDescription>();
 }
-
 
 TOptional<FMeshDescription> FWireTranslatorImpl::GetMeshOfShellBody(TSharedRef<BodyData> Body, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters)
 {
-	TOptional< FMeshDescription > UEMesh = MeshDagNodeWithExternalMesher(Body, MeshElement, MeshParameters);
+	TOptional<FMeshDescription> UEMesh = MeshDagNodeWithExternalMesher(Body, MeshElement, MeshParameters);
 	return UEMesh;
 }
 
@@ -1928,59 +1950,79 @@ TOptional<FMeshDescription> FWireTranslatorImpl::GetMeshOfMeshBody(TSharedRef<Bo
 	MeshDescription.Empty();
 	bool True = true;
 
-	for (auto DagNode : Body->ShellSet)
+	for (const TSharedPtr<AlDagNode>& DagNode : Body->ShellSet)
 	{
 		AlMeshNode* MeshNode = DagNode->asMeshNodePtr();
-		AlMesh* Mesh = MeshNode->mesh();
-		if (Mesh)
+		if (!AlIsValid(MeshNode))
 		{
-			TransferAlMeshToMeshDescription(*Mesh, MeshDescription, MeshParameters, True, true);
+			continue;
 		}
+
+		AlMesh* MeshPtr = MeshNode->mesh();
+		if (!AlIsValid(MeshPtr))
+		{
+			continue;
+		}
+
+		TUniquePtr<AlMesh> Mesh(MeshPtr);
+		OpenModelUtils::TransferAlMeshToMeshDescription(*MeshPtr, MeshDescription, MeshParameters, True, true);
 	}
 
 	return MoveTemp(MeshDescription);
 }
 
-TOptional<FMeshDescription> FWireTranslatorImpl::GetMeshOfNodeMesh(AlMeshNode& MeshNode, TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters, AlMatrix4x4* AlMeshInvGlobalMatrix)
+TOptional<FMeshDescription> FWireTranslatorImpl::GetMeshOfNodeMesh(AlDagNode& TesselatedNode, CADLibrary::FMeshParameters& MeshParameters, AlMatrix4x4* AlMeshInvGlobalMatrix)
 {
-	AlMesh* Mesh = MeshNode.mesh();
-	if (AlIsValid(Mesh))
+	AlMeshNode* MeshNode = TesselatedNode.asMeshNodePtr();
+	if (!AlIsValid(MeshNode))
 	{
-		if (AlMeshInvGlobalMatrix != nullptr)
-		{
-			Mesh->transform(*AlMeshInvGlobalMatrix);
-		}
-		return ImportMesh(*Mesh, MeshParameters);
+		return TOptional<FMeshDescription>();
 	}
-	return TOptional< FMeshDescription >();
-}
 
+	AlMesh* Mesh = MeshNode->mesh();
+	if (!AlIsValid(Mesh))
+	{
+		return TOptional<FMeshDescription>();
+	}
+
+	TUniquePtr<AlMesh> SharedMesh(Mesh);
+	if (AlMeshInvGlobalMatrix != nullptr)
+	{
+		SharedMesh->transform(*AlMeshInvGlobalMatrix);
+	}
+
+	return ImportMesh(*Mesh, MeshParameters);
+}
 
 TOptional<FMeshDescription> FWireTranslatorImpl::GetMeshDescription(TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters, TSharedRef<BodyData> Body)
 {
-	if(Body->ShellSet.Num() == 0 )
+	if (Body->ShellSet.Num() == 0)
 	{
-		return TOptional< FMeshDescription >();
+		return TOptional<FMeshDescription>();
 	}
 
-	AlDagNode& DagNode = *Body->ShellSet[0];
-
-	if (DagNode.layer() && DagNode.layer()->isSymmetric())
+	TSharedPtr<AlDagNode> DagNode = Body->ShellSet[0];
+	AlLayer* LayerPtr = DagNode->layer();
+	if (AlIsValid(LayerPtr))
 	{
-		MeshParameters.bIsSymmetric = true;
-		double Normal[3], Origin[3];
-		DagNode.layer()->symmetricNormal(Normal[0], Normal[1], Normal[2]);
-		DagNode.layer()->symmetricOrigin(Origin[0], Origin[1], Origin[2]);
+		const TUniquePtr<AlLayer> Layer(LayerPtr);
+		if (LayerPtr->isSymmetric())
+		{
+			MeshParameters.bIsSymmetric = true;
+			double Normal[3], Origin[3];
+			LayerPtr->symmetricNormal(Normal[0], Normal[1], Normal[2]);
+			LayerPtr->symmetricOrigin(Origin[0], Origin[1], Origin[2]);
 
-		MeshParameters.SymmetricOrigin.X = (float)Origin[0];
-		MeshParameters.SymmetricOrigin.Y = (float)Origin[1];
-		MeshParameters.SymmetricOrigin.Z = (float)Origin[2];
-		MeshParameters.SymmetricNormal.X = (float)Normal[0];
-		MeshParameters.SymmetricNormal.Y = (float)Normal[1];
-		MeshParameters.SymmetricNormal.Z = (float)Normal[2];
+			MeshParameters.SymmetricOrigin.X = (float)Origin[0];
+			MeshParameters.SymmetricOrigin.Y = (float)Origin[1];
+			MeshParameters.SymmetricOrigin.Z = (float)Origin[2];
+			MeshParameters.SymmetricNormal.X = (float)Normal[0];
+			MeshParameters.SymmetricNormal.Y = (float)Normal[1];
+			MeshParameters.SymmetricNormal.Z = (float)Normal[2];
+		}
 	}
 
-	if(Body->bCadData)
+	if (Body->bCadData)
 	{
 		return GetMeshOfShellBody(Body, MeshElement, MeshParameters);
 	}
@@ -1990,19 +2032,17 @@ TOptional<FMeshDescription> FWireTranslatorImpl::GetMeshDescription(TSharedRef<I
 	}
 }
 
-
 TOptional<FMeshDescription> FWireTranslatorImpl::GetMeshDescription(TSharedRef<IDatasmithMeshElement> MeshElement, CADLibrary::FMeshParameters& MeshParameters)
 {
-	AlDagNode ** DagNodeTemp = MeshElementToAlDagNodeMap.Find(&MeshElement.Get());
-	if (DagNodeTemp == nullptr || *DagNodeTemp == nullptr)
+	TSharedPtr<AlDagNode>* DagNodeTemp = MeshElementToAlDagNodeMap.Find(&MeshElement.Get());
+	if (DagNodeTemp == nullptr || !DagNodeTemp->IsValid())
 	{
 		TSharedPtr<BodyData>* BodyTemp = MeshElementToBodyMap.Find(&MeshElement.Get());
-		if (BodyTemp != nullptr && (*BodyTemp).IsValid())
+		if (BodyTemp != nullptr && BodyTemp->IsValid())
 		{
 			return GetMeshDescription(MeshElement, MeshParameters, (*BodyTemp).ToSharedRef());
 		}
-
-		return TOptional< FMeshDescription >();
+		return TOptional<FMeshDescription>();
 	}
 
 	AlDagNode& DagNode = **DagNodeTemp;
@@ -2014,53 +2054,73 @@ TOptional<FMeshDescription> FWireTranslatorImpl::GetMeshDescription(TSharedRef<I
 		DagNode.getSurfaceOrientation(bAlOrientation);
 		MeshParameters.bNeedSwapOrientation = (bool)bAlOrientation;
 
-		if (DagNode.layer() && DagNode.layer()->isSymmetric())
+		AlLayer* LayerPtr = DagNode.layer();
+		if (AlIsValid(LayerPtr))
 		{
-			MeshParameters.bIsSymmetric = true;
-			double Normal[3], Origin[3];
-			DagNode.layer()->symmetricNormal(Normal[0], Normal[1], Normal[2]);
-			DagNode.layer()->symmetricOrigin(Origin[0], Origin[1], Origin[2]);
+			const TUniquePtr<AlLayer> Layer(LayerPtr);
+			if (LayerPtr->isSymmetric())
+			{
+				MeshParameters.bIsSymmetric = true;
+				double Normal[3], Origin[3];
+				LayerPtr->symmetricNormal(Normal[0], Normal[1], Normal[2]);
+				LayerPtr->symmetricOrigin(Origin[0], Origin[1], Origin[2]);
 
-			MeshParameters.SymmetricOrigin.X = (float)Origin[0];
-			MeshParameters.SymmetricOrigin.Y = (float)Origin[1];
-			MeshParameters.SymmetricOrigin.Z = (float)Origin[2];
-			MeshParameters.SymmetricNormal.X = (float)Normal[0];
-			MeshParameters.SymmetricNormal.Y = (float)Normal[1];
-			MeshParameters.SymmetricNormal.Z = (float)Normal[2];
+				MeshParameters.SymmetricOrigin.X = (float)Origin[0];
+				MeshParameters.SymmetricOrigin.Y = (float)Origin[1];
+				MeshParameters.SymmetricOrigin.Z = (float)Origin[2];
+				MeshParameters.SymmetricNormal.X = (float)Normal[0];
+				MeshParameters.SymmetricNormal.Y = (float)Normal[1];
+				MeshParameters.SymmetricNormal.Z = (float)Normal[2];
+			}
 		}
 	}
 
 	switch (objectType)
 	{
-		case kShellNodeType:
-		case kSurfaceNodeType:
-		{
-			return GetMeshOfShellNode(DagNode, MeshElement, MeshParameters);
-			break;
-		}
-
-		case kMeshNodeType:
-		{
-			return GetMeshOfNodeMesh(*(DagNode.asMeshNodePtr()), MeshElement, MeshParameters);
-			break;
-		}
+	case kShellNodeType:
+	case kSurfaceNodeType:
+	{
+		return GetMeshOfShellNode(DagNode, MeshElement, MeshParameters);
+		break;
 	}
 
-	return TOptional< FMeshDescription >();
+	case kMeshNodeType:
+	{
+		return GetMeshOfNodeMesh(DagNode, MeshParameters);
+		break;
+	}
+
+	default:
+		break;
+	}
+
+	return TOptional<FMeshDescription>();
 }
 
 
 // Note that Alias file unit is cm like UE
-TOptional< FMeshDescription > FWireTranslatorImpl::ImportMesh(AlMesh& CurrentMesh, CADLibrary::FMeshParameters& MeshParameters)
+TOptional<FMeshDescription> FWireTranslatorImpl::ImportMesh(AlMesh& InMesh, CADLibrary::FMeshParameters& InMeshParameters)
 {
 
 	FMeshDescription MeshDescription;
 	DatasmithMeshHelper::PrepareAttributeForStaticMesh(MeshDescription);
-	bool True = true;
-	TransferAlMeshToMeshDescription(CurrentMesh, MeshDescription, MeshParameters, True);
+	bool bMerge = true;
+	OpenModelUtils::TransferAlMeshToMeshDescription(InMesh, MeshDescription, InMeshParameters, bMerge);
 
 	return MoveTemp(MeshDescription);
 }
+
+bool FWireTranslatorImpl::LoadStaticMesh(const TSharedRef<IDatasmithMeshElement> MeshElement, FDatasmithMeshElementPayload& OutMeshPayload, const FDatasmithTessellationOptions& InTessellationOptions)
+{
+	CADLibrary::FMeshParameters MeshParameters;
+	if (TOptional<FMeshDescription> Mesh = GetMeshDescription(MeshElement, MeshParameters))
+	{
+		OutMeshPayload.LodMeshes.Add(MoveTemp(Mesh.GetValue()));
+		CADModelConverter->AddSurfaceDataForMesh(MeshElement->GetFile(), MeshParameters, InTessellationOptions, OutMeshPayload);
+	}
+	return OutMeshPayload.LodMeshes.Num() > 0;
+}
+
 
 #endif
 
@@ -2079,18 +2139,29 @@ void FDatasmithWireTranslator::Initialize(FDatasmithTranslatorCapabilities& OutC
 	if (GIsEditor && !GEditor->PlayWorld && !GIsPlayInEditorWorld)
 	{
 #ifdef USE_OPENMODEL
-		if (FPlatformProcess::GetDllHandle(TEXT("libalias_api.dll")))
+ 		static void* DllHandle = FPlatformProcess::GetDllHandle(TEXT("libalias_api.dll"));
+ 		if (DllHandle)
 		{
 			// Check installed version of Alias Tools because binaries before 2021.3 are not compatible with Alias 2022
 			uint64 FileVersion = FPlatformMisc::GetFileVersion(TEXT("libalias_api.dll"));
 
-			if (FileVersion < LibAlias2021_3_0_Version)
+#ifdef OPEN_MODEL_2020
+			if (LibAlias2020_Version < FileVersion && FileVersion < LibAlias2021_Version)
 			{
+				UE_LOG(LogDatasmithWireTranslator, Warning, TEXT(WRONG_VERSION_TEXT));
 				OutCapabilities.bIsEnabled = false;
 				return;
 			}
+#endif
 
-			OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("wire"), TEXT("AliasStudio 2022, Model files") });
+			if (LibAliasVersionMin <= FileVersion && FileVersion < LibAliasVersionMax)
+			{
+				OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("wire"), *AliasVersionChar });
+				OutCapabilities.bIsEnabled = true;
+				return;
+			}
+
+			OutCapabilities.bIsEnabled = false;
 			return;
 		}
 #endif
@@ -2140,31 +2211,30 @@ void FDatasmithWireTranslator::UnloadScene()
 bool FDatasmithWireTranslator::LoadStaticMesh(const TSharedRef<IDatasmithMeshElement> MeshElement, FDatasmithMeshElementPayload& OutMeshPayload)
 {
 #ifdef USE_OPENMODEL
-	CADLibrary::FImportParameters& ImportParameters = Translator->GetImportParameters();
-	CADLibrary::FMeshParameters MeshParameters;
-	if (TOptional< FMeshDescription > Mesh = Translator->GetMeshDescription(MeshElement, MeshParameters))
+	if (Translator)
 	{
-		OutMeshPayload.LodMeshes.Add(MoveTemp(Mesh.GetValue()));
-
-		DatasmithCoreTechParametricSurfaceData::AddCoreTechSurfaceDataForMesh(MeshElement, ImportParameters, MeshParameters, GetCommonTessellationOptions(), OutMeshPayload);
+		return Translator->LoadStaticMesh(MeshElement, OutMeshPayload, GetCommonTessellationOptions());
 	}
-	return OutMeshPayload.LodMeshes.Num() > 0;
-#else
-	return false;
 #endif
+	return false;
 }
 
 void FDatasmithWireTranslator::SetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options)
 {
 #ifdef USE_OPENMODEL
-	FDatasmithCoreTechTranslator::SetSceneImportOptions(Options);
+	FParametricSurfaceTranslator::SetSceneImportOptions(Options);
 
 	if (Translator)
 	{
-		Translator->SetTessellationOptions( GetCommonTessellationOptions() );
+		Translator->SetTessellationOptions(GetCommonTessellationOptions());
 	}
 #endif
 }
 
+} // namespace
+
 #undef LOCTEXT_NAMESPACE // "DatasmithWireTranslator"
 
+#if PLATFORM_WINDOWS
+#include "Windows/HideWindowsPlatformTypes.h"
+#endif

@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -8,7 +9,8 @@ using System.Threading.Tasks;
 using UnrealBuildTool;
 using AutomationTool;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using OpenTracing;
 
 namespace AutomationTool
 {
@@ -20,7 +22,7 @@ namespace AutomationTool
 		/// <summary>
 		/// The target to compile.
 		/// </summary>
-		[TaskParameter]
+		[TaskParameter(Optional=true)]
 		public string Target;
 
 		/// <summary>
@@ -38,7 +40,7 @@ namespace AutomationTool
 		/// <summary>
 		/// The project to compile with.
 		/// </summary>
-		[TaskParameter(Optional = true)]
+		[TaskParameter(Optional = true, ValidationType = TaskParameterValidationType.FileSpec)]
 		public string Project;
 
 		/// <summary>
@@ -80,12 +82,12 @@ namespace AutomationTool
 		/// <summary>
 		/// List of targets to compile. As well as the target specifically added for this task, additional compile tasks may be merged with it.
 		/// </summary>
-		List<UE4Build.BuildTarget> Targets = new List<UE4Build.BuildTarget>();
+		List<UnrealBuild.BuildTarget> Targets = new List<UnrealBuild.BuildTarget>();
 
 		/// <summary>
 		/// Mapping of receipt filename to its corresponding tag name
 		/// </summary>
-		Dictionary<UE4Build.BuildTarget, string> TargetToTagName = new Dictionary<UE4Build.BuildTarget,string>();
+		Dictionary<UnrealBuild.BuildTarget, string> TargetToTagName = new Dictionary<UnrealBuild.BuildTarget,string>();
 
 		/// <summary>
 		/// Whether to allow using XGE for this job
@@ -135,7 +137,7 @@ namespace AutomationTool
 			bAllowXGE &= Parameters.AllowXGE;
 			bAllowParallelExecutor &= Parameters.AllowParallelExecutor;
 
-			UE4Build.BuildTarget Target = new UE4Build.BuildTarget { TargetName = Parameters.Target, Platform = Parameters.Platform, Config = Parameters.Configuration, UprojectPath = String.IsNullOrEmpty(Parameters.Project)? null : new FileReference(Parameters.Project), UBTArgs = "-nobuilduht " + (Parameters.Arguments ?? ""), Clean = Parameters.Clean };
+			UnrealBuild.BuildTarget Target = new UnrealBuild.BuildTarget { TargetName = Parameters.Target, Platform = Parameters.Platform, Config = Parameters.Configuration, UprojectPath = CompileTask.FindProjectFile(), UBTArgs = "-nobuilduht " + (Parameters.Arguments ?? ""), Clean = Parameters.Clean };
 			if(!String.IsNullOrEmpty(Parameters.Tag))
 			{
 				TargetToTagName.Add(Target, Parameters.Tag);
@@ -155,20 +157,20 @@ namespace AutomationTool
 		public void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// Create the agenda
-            UE4Build.BuildAgenda Agenda = new UE4Build.BuildAgenda();
+			UnrealBuild.BuildAgenda Agenda = new UnrealBuild.BuildAgenda();
 			Agenda.Targets.AddRange(Targets);
 
 			// Build everything
-			Dictionary<UE4Build.BuildTarget, BuildManifest> TargetToManifest = new Dictionary<UE4Build.BuildTarget,BuildManifest>();
-            UE4Build Builder = new UE4Build(Job.OwnerCommand);
+			Dictionary<UnrealBuild.BuildTarget, BuildManifest> TargetToManifest = new Dictionary<UnrealBuild.BuildTarget,BuildManifest>();
+			UnrealBuild Builder = new UnrealBuild(Job.OwnerCommand);
 
 			bool bCanUseParallelExecutor = (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 && bAllowParallelExecutor);	// parallel executor is only available on Windows as of 2016-09-22
 			Builder.Build(Agenda, InDeleteBuildProducts: null, InUpdateVersionFiles: false, InForceNoXGE: !bAllowXGE, InUseParallelExecutor: bCanUseParallelExecutor, InTargetToManifest: TargetToManifest);
 
-			UE4Build.CheckBuildProducts(Builder.BuildProductFiles);
+			UnrealBuild.CheckBuildProducts(Builder.BuildProductFiles);
 
 			// Tag all the outputs
-			foreach(KeyValuePair<UE4Build.BuildTarget, string> TargetTagName in TargetToTagName)
+			foreach(KeyValuePair<UnrealBuild.BuildTarget, string> TargetTagName in TargetToTagName)
 			{
 				BuildManifest Manifest;
 				if(!TargetToManifest.TryGetValue(TargetTagName.Key, out Manifest))
@@ -200,12 +202,45 @@ namespace AutomationTool
 		public CompileTaskParameters Parameters;
 
 		/// <summary>
+		/// Resolved path to Project file
+		/// </summary>
+		public FileReference ProjectFile = null;
+
+		/// <summary>
 		/// Construct a compile task
 		/// </summary>
 		/// <param name="Parameters">Parameters for this task</param>
 		public CompileTask(CompileTaskParameters Parameters)
 		{
 			this.Parameters = Parameters;
+		}
+
+		/// <summary>
+		/// Resolve the path to the project file
+		/// </summary>
+		public FileReference FindProjectFile()
+		{
+			FileReference ProjectFile = null;
+
+			// Resolve the full path to the project file
+			if(!String.IsNullOrEmpty(Parameters.Project))
+			{
+				if(Parameters.Project.EndsWith(".uproject", StringComparison.OrdinalIgnoreCase))
+				{
+					ProjectFile = CustomTask.ResolveFile(Parameters.Project);
+				}
+				else
+				{
+					ProjectFile = NativeProjects.EnumerateProjectFiles().FirstOrDefault(x => x.GetFileNameWithoutExtension().Equals(Parameters.Project, StringComparison.OrdinalIgnoreCase));
+				}
+
+				if(ProjectFile == null || !FileReference.Exists(ProjectFile))
+				{
+					throw new BuildException("Unable to resolve project '{0}'", Parameters.Project);
+				}
+			}
+
+			return ProjectFile;
 		}
 
 		/// <summary>
@@ -216,6 +251,10 @@ namespace AutomationTool
 		/// <param name="TagNameToFileSet">Mapping from tag names to the set of files they include</param>
 		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
+			//
+			// Don't do any logic here. You have to do it in the ctor or a getter
+			//  otherwise you break the ParallelExecutor pathway, which doesn't call this function!
+			//
 			GetExecutor().Execute(Job, BuildProducts, TagNameToFileSet);
 		}
 
@@ -244,6 +283,25 @@ namespace AutomationTool
 			if (Parameters.Project != null)
 			{
 				Span.AddMetadata(Prefix + "target.project", Parameters.Project);
+			}
+		}
+		
+		/// <summary>
+		/// Get properties to include in tracing info
+		/// </summary>
+		/// <param name="Span">The span to add metadata to</param>
+		/// <param name="Prefix">Prefix for all metadata keys</param>
+		public override void GetTraceMetadata(ISpan Span, string Prefix)
+		{
+			base.GetTraceMetadata(Span, Prefix);
+
+			Span.SetTag(Prefix + "target.name", Parameters.Target);
+			Span.SetTag(Prefix + "target.config", Parameters.Configuration.ToString());
+			Span.SetTag(Prefix + "target.platform", Parameters.Platform.ToString());
+
+			if (Parameters.Project != null)
+			{
+				Span.SetTag(Prefix + "target.project", Parameters.Project);
 			}
 		}
 

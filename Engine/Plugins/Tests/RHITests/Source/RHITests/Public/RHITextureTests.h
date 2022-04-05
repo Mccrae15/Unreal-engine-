@@ -13,17 +13,18 @@ public:
 	{
 		bool bResult0, bResult1;
 		{
+			RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+
 			// Test clear whole resource to zero
 			for (uint32 Mip = 0; Mip < TextureRHI->GetNumMips(); ++Mip)
 			{
-				RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::Unknown, ERHIAccess::ERWNoBarrier));
 				FUnorderedAccessViewRHIRef MipUAV = RHICreateUnorderedAccessView(TextureRHI, Mip);
 
 				ValueType ZerosValue;
 				FMemory::Memset(&ZerosValue, 0, sizeof(ZerosValue));
 				(RHICmdList.*ClearPtr)(MipUAV, ZerosValue);
 			}
-			RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::Unknown, ERHIAccess::CopySrc));
+			RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
 
 			auto VerifyMip = [&](void* Ptr, uint32 MipWidth, uint32 MipHeight, uint32 Width, uint32 Height, uint32 CurrentMipIndex, uint32 CurrentSliceIndex, bool bShouldBeZero)
 			{
@@ -69,7 +70,7 @@ public:
 			RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 			FUnorderedAccessViewRHIRef SpecificMipUAV = RHICreateUnorderedAccessView(TextureRHI, MipIndex);
 			(RHICmdList.*ClearPtr)(SpecificMipUAV, ClearValue);
-			RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::Unknown, ERHIAccess::CopySrc));
+			RHICmdList.Transition(FRHITransitionInfo(TextureRHI, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
 			bResult1 = VerifyTextureContents(*FString::Printf(TEXT("%s - clear mip %d to (%s)"), *TestName, MipIndex, *ClearValueToString(ClearValue)), RHICmdList, TextureRHI,
 				[&](void* Ptr, uint32 MipWidth, uint32 MipHeight, uint32 Width, uint32 Height, uint32 CurrentMipIndex, uint32 CurrentSliceIndex)
 			{
@@ -77,7 +78,7 @@ public:
 			});
 		}
 
-		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 
 		return bResult0 && bResult1;
 	}
@@ -89,7 +90,7 @@ public:
 		FString TestName = FString::Printf(TEXT("Test_RHIClearUAV_Texture2D (%dx%d, %d Slice(s), %d Mip(s)) - %s"), Width, Height, NumMips, NumSlices, *ClearValueToString(ClearValue));
 
 		{
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(*TestName);
 			FTextureRHIRef Texture;
 			if (NumSlices == 1)
 			{
@@ -105,7 +106,7 @@ public:
 				RUN_TEST(RunTest_UAVClear_Texture(RHICmdList, *TestName, Texture.GetReference(), Mip, ClearValue, ClearPtr, TestValue));
 			}
 		}
-		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 
 		return bResult;
 	}
@@ -153,7 +154,7 @@ public:
 		// 0.8499  = 0x3f59930c | 0x3acc
 		// 0.00145 = 0x3abe0ded | 0x15f0
 		// 0.417   = 0x3ed58106 | 0x36ac
-		const FVector4 ClearValueFloat(0.2345f, 0.8499f, 0.417f, 0.00145f);
+		const FVector4f ClearValueFloat(0.2345f, 0.8499f, 0.417f, 0.00145f);
 		const FUintVector4 ClearValueUint32(0x01234567, 0x89abcdef, 0x8899aabb, 0xccddeeff);
 
 		RUN_TEST(Test_RHIClearUAV_Texture2D_Impl(RHICmdList, PF_FloatRGBA, ClearValueFloat, &FRHICommandListImmediate::ClearUAVFloat, { 0x81, 0x33, 0xcc, 0x3a, 0xac, 0x36, 0xf0, 0x15 }));
@@ -170,7 +171,7 @@ public:
 		bool bResult = true;
 
 		{
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(*TestName);
 			FTexture3DRHIRef Texture = RHICreateTexture3D(Width, Height, Depth, Format, NumMips, TexCreate_UAV | TexCreate_ShaderResource, CreateInfo);
 
 			for (uint32 Mip = 0; Mip < NumMips; ++Mip)
@@ -178,7 +179,7 @@ public:
 				RUN_TEST(RunTest_UAVClear_Texture(RHICmdList, *TestName, Texture.GetReference(), Mip, ClearValue, ClearPtr, TestValue));
 			}
 		}
-		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 
 		return bResult;
 	}
@@ -221,11 +222,101 @@ public:
 		// 0.8499  = 0x3f59930c | 0x3acc
 		// 0.00145 = 0x3abe0ded | 0x15f0
 		// 0.417   = 0x3ed58106 | 0x36ac
-		const FVector4 ClearValueFloat(0.2345f, 0.8499f, 0.417f, 0.00145f);
+		const FVector4f ClearValueFloat(0.2345f, 0.8499f, 0.417f, 0.00145f);
 		const FUintVector4 ClearValueUint32(0x01234567, 0x89abcdef, 0x8899aabb, 0xccddeeff);
 
 		RUN_TEST(Test_RHIClearUAV_Texture3D_Impl(RHICmdList, PF_FloatRGBA, ClearValueFloat, &FRHICommandListImmediate::ClearUAVFloat, { 0x81, 0x33, 0xcc, 0x3a, 0xac, 0x36, 0xf0, 0x15 }));
 		RUN_TEST(Test_RHIClearUAV_Texture3D_Impl(RHICmdList, PF_R32_UINT, ClearValueUint32, &FRHICommandListImmediate::ClearUAVUint, { 0x67, 0x45, 0x23, 0x01 }));
+
+		return bResult;
+	}
+
+	static bool Test_RHIFormat_WithParams(FRHICommandListImmediate& RHICmdList, EPixelFormat ResourceFormat, EPixelFormat SRVFormat, EPixelFormat UAVFormat, ETextureCreateFlags Flags)
+	{
+		const uint32 Width = 32;
+		const uint32 Height = 32;
+
+		bool bResult = true;
+		FString TestName = FString::Printf(TEXT("Test_RHIFormat (%s, %s, %s, %d)"), GPixelFormats[ResourceFormat].Name, GPixelFormats[SRVFormat].Name, GPixelFormats[UAVFormat].Name, Flags);
+		{
+			FRHIResourceCreateInfo CreateInfo(*TestName);
+
+			FTextureRHIRef Texture;
+			Texture = RHICreateTexture2D(Width, Height, ResourceFormat, 1, 1, Flags, CreateInfo);
+			bResult = (Texture != nullptr);
+
+			if (Texture && SRVFormat != PF_Unknown)
+			{
+				FRHITextureSRVCreateInfo ViewInfo(0, 1, SRVFormat);
+				FShaderResourceViewRHIRef SRV = RHICreateShaderResourceView(Texture, ViewInfo);
+				bResult = (SRV != nullptr);
+			}
+
+			// TODO
+			if (Texture && UAVFormat != PF_Unknown)
+			{
+				//RHICreateUnorderedAccessView(Texture, 0, UAVFormat);
+			}
+		}
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
+
+		if (bResult)
+		{
+			UE_LOG(LogRHIUnitTestCommandlet, Display, TEXT("Test passed. \"%s\""), *TestName);
+		}
+
+		return bResult;
+	}
+
+	static bool Test_RHIFormat_RenderTargetFormat(FRHICommandListImmediate& RHICmdList, EPixelFormat Format, bool bAllowUAV)
+	{
+		bool bResult = true;
+		if (EnumHasAnyFlags(GPixelFormats[Format].Capabilities, EPixelFormatCapabilities::RenderTarget))
+		{
+			RUN_TEST(Test_RHIFormat_WithParams(RHICmdList, Format, PF_Unknown, PF_Unknown, TexCreate_RenderTargetable));
+			RUN_TEST(Test_RHIFormat_WithParams(RHICmdList, Format, Format, PF_Unknown, TexCreate_RenderTargetable | TexCreate_ShaderResource));
+			if (bAllowUAV)
+			{
+				RUN_TEST(Test_RHIFormat_WithParams(RHICmdList, Format, PF_Unknown, Format, TexCreate_RenderTargetable | TexCreate_UAV));
+				RUN_TEST(Test_RHIFormat_WithParams(RHICmdList, Format, Format, Format, TexCreate_RenderTargetable | TexCreate_ShaderResource | TexCreate_UAV));
+			}
+		}
+		else
+		{
+			UE_LOG(LogRHIUnitTestCommandlet, Display, TEXT("Skipping test for lack of format support. \"Test_RHIFormat_RenderTargetFormat (%s)\""), GPixelFormats[Format].Name);
+		}
+		return bResult;
+	}
+
+	static bool Test_RHIFormat_DepthFormat(FRHICommandListImmediate& RHICmdList, EPixelFormat ResourceFormat)
+	{
+		bool bResult = true;
+		if (EnumHasAnyFlags(GPixelFormats[ResourceFormat].Capabilities, EPixelFormatCapabilities::DepthStencil))
+		{
+			RUN_TEST(Test_RHIFormat_WithParams(RHICmdList, ResourceFormat, PF_Unknown, PF_Unknown, TexCreate_DepthStencilTargetable));
+			RUN_TEST(Test_RHIFormat_WithParams(RHICmdList, ResourceFormat, ResourceFormat, PF_Unknown, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource));
+
+			if (ResourceFormat == PF_DepthStencil)
+			{
+				RUN_TEST(Test_RHIFormat_WithParams(RHICmdList, ResourceFormat, PF_X24_G8, PF_Unknown, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource));
+			}
+		}
+		else
+		{
+			UE_LOG(LogRHIUnitTestCommandlet, Display, TEXT("Skipping test for lack of format support. \"Test_RHIFormat_DepthFormat (%s)\""), GPixelFormats[ResourceFormat].Name);
+		}
+		return bResult;
+	}
+
+	static bool Test_RHIFormats(FRHICommandListImmediate& RHICmdList)
+	{
+		bool bResult = true;
+		RUN_TEST(Test_RHIFormat_RenderTargetFormat(RHICmdList, PF_R32_FLOAT, true));
+
+		RUN_TEST(Test_RHIFormat_DepthFormat(RHICmdList, PF_DepthStencil));
+		RUN_TEST(Test_RHIFormat_DepthFormat(RHICmdList, PF_ShadowDepth));
+		RUN_TEST(Test_RHIFormat_DepthFormat(RHICmdList, PF_R32_FLOAT));
+		RUN_TEST(Test_RHIFormat_DepthFormat(RHICmdList, PF_D24));
 
 		return bResult;
 	}

@@ -631,7 +631,7 @@ static bool OnlineExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 					}
 					else if (FParse::Command(&Cmd, TEXT("STATS")))
 					{
-						(new FTestStatsInterface(SubName))->Test(InWorld);
+						(new FTestStatsInterface(SubName))->Test(InWorld, Cmd);
 						bWasHandled = true;
 					}
 					else if (FParse::Command(&Cmd, TEXT("PRESENCE")))
@@ -817,7 +817,13 @@ void FOnlineSubsystemBPCallHelper::QueryIDFromPlayerController(APlayerController
 {
 	UserID.Reset();
 
-	if (APlayerState* PlayerState = (PlayerController != NULL) ? PlayerController->PlayerState : NULL)
+	APlayerState* PlayerState = nullptr;
+	if (PlayerController != nullptr)
+	{
+		PlayerState = ToRawPtr(PlayerController->PlayerState);
+	}
+
+	if (PlayerState != nullptr)
 	{
 		UserID = PlayerState->GetUniqueId().GetUniqueNetId();
 		if (!UserID.IsValid())

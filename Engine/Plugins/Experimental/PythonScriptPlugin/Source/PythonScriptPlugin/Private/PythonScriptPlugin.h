@@ -6,6 +6,7 @@
 #include "IPythonScriptPlugin.h"
 #include "PyUtil.h"
 #include "PyPtr.h"
+#include "Containers/Ticker.h"
 #include "Misc/CoreMisc.h"
 #include "HAL/IConsoleManager.h"
 #include "Framework/Commands/InputChord.h"
@@ -42,10 +43,8 @@ public:
 	virtual bool Exec(const TCHAR* Input) override;
 	virtual bool AllowHotKeyClose() const override;
 	virtual bool AllowMultiLine() const override;
-	virtual FInputChord GetHotKey() const override
-	{
-		return FInputChord();
-	}
+	virtual FInputChord GetHotKey() const override;
+
 private:
 	IPythonScriptPlugin* PythonScriptPlugin;
 };
@@ -68,10 +67,8 @@ public:
 	virtual bool Exec(const TCHAR* Input) override;
 	virtual bool AllowHotKeyClose() const override;
 	virtual bool AllowMultiLine() const override;
-	virtual FInputChord GetHotKey() const override
-	{
-		return FInputChord();
-	}
+	virtual FInputChord GetHotKey() const override;
+
 private:
 	IPythonScriptPlugin* PythonScriptPlugin;
 };
@@ -173,6 +170,10 @@ private:
 
 	void OnContentPathDismounted(const FString& InAssetPath, const FString& InFilesystemPath);
 
+	static void RegisterModulePaths(const FString& InFilesystemPath);
+
+	static void UnregisterModulePaths(const FString& InFilesystemPath);
+
 	static bool IsDeveloperModeEnabled();
 
 	void OnAssetRenamed(const FAssetData& Data, const FString& OldName);
@@ -195,8 +196,8 @@ private:
 	FPythonCommandExecutor CmdExec;
 	FPythonREPLCommandExecutor CmdREPLExec;
 	IPythonCommandMenu* CmdMenu;
-	FDelegateHandle TickHandle;
-	FDelegateHandle ModuleDelayedHandle;
+	FTSTicker::FDelegateHandle TickHandle;
+	FTSTicker::FDelegateHandle ModuleDelayedHandle;
 
 	PyUtil::FPyApiBuffer PyProgramName;
 	PyUtil::FPyApiBuffer PyHomePath;

@@ -8,8 +8,9 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
+using UnrealBuildBase;
 
 [Help("Builds PhysX/APEX libraries using CMake build system.")]
 [Help("TargetLibs", "Specify a list of target libraries to build, separated by '+' characters (eg. -TargetLibs=PhysX+APEX). Default is PhysX+APEX+NvCloth.")]
@@ -46,14 +47,14 @@ public sealed class BuildPhysX : BuildCommand
 
 	public abstract class TargetPlatform : CommandUtils
 	{
-		public virtual DirectoryReference CMakeRootDirectory { get { return DirectoryReference.Combine(RootDirectory, "Engine", "Extras", "ThirdPartyNotUE", "CMake"); } }
-		public static DirectoryReference PhysX3RootDirectory = DirectoryReference.Combine(RootDirectory, "Engine/Source/ThirdParty/PhysX3");
-		public static DirectoryReference ThirdPartySourceDirectory = DirectoryReference.Combine(RootDirectory, "Engine/Source/ThirdParty");
+		public virtual DirectoryReference CMakeRootDirectory { get { return DirectoryReference.Combine(Unreal.RootDirectory, "Engine", "Extras", "ThirdPartyNotUE", "CMake"); } }
+		public static DirectoryReference PhysX3RootDirectory = DirectoryReference.Combine(Unreal.RootDirectory, "Engine/Source/ThirdParty/PhysX3");
+		public static DirectoryReference ThirdPartySourceDirectory = DirectoryReference.Combine(Unreal.RootDirectory, "Engine/Source/ThirdParty");
 		public static DirectoryReference PxSharedRootDirectory = DirectoryReference.Combine(PhysX3RootDirectory, "PxShared");
 
 		public DirectoryReference PlatformEngineRoot => IsPlatformExtension
-			? DirectoryReference.Combine(RootDirectory, "Engine", "Platforms", Platform.ToString())
-			: DirectoryReference.Combine(RootDirectory, "Engine");
+			? DirectoryReference.Combine(Unreal.RootDirectory, "Engine", "Platforms", Platform.ToString())
+			: DirectoryReference.Combine(Unreal.RootDirectory, "Engine");
 
 		public DirectoryReference OutputBinaryDirectory => DirectoryReference.Combine(PlatformEngineRoot, "Binaries/ThirdParty/PhysX3", IsPlatformExtension ? "" : Platform.ToString(), PlatformBuildSubdirectory ?? "");
 		public DirectoryReference OutputLibraryDirectory => DirectoryReference.Combine(PlatformEngineRoot, "Source/ThirdParty/PhysX3/Lib", IsPlatformExtension ? "" : Platform.ToString(), PlatformBuildSubdirectory ?? "");
@@ -80,7 +81,7 @@ public sealed class BuildPhysX : BuildCommand
 				{ PhysXTargetLib.NvCloth, "Engine/Source/ThirdParty/PhysX3/NvCloth/compiler/cmake/common" },
 			};
 
-			return DirectoryReference.Combine(RootDirectory, SourcePathMap[TargetLib]);
+			return DirectoryReference.Combine(Unreal.RootDirectory, SourcePathMap[TargetLib]);
 		}
 
 		protected DirectoryReference GetTargetLibPlatformCMakeDirectory(PhysXTargetLib TargetLib) =>
@@ -309,32 +310,28 @@ public sealed class BuildPhysX : BuildCommand
 
 		public virtual bool UseMsBuild { get; }
 
-		public MSBuildTargetPlatform(string CompilerName = "VS2015")
+		public MSBuildTargetPlatform(string CompilerName = "VS2019")
 		{
 			this.CompilerName = CompilerName;
 			switch (CompilerName)
 			{
-				case "VS2015":
-					Compiler = WindowsCompiler.VisualStudio2015_DEPRECATED;
-					VisualStudioName = "Visual Studio 14 2015";
-					break;
-				case "VS2017":
-					Compiler = WindowsCompiler.VisualStudio2017;
-					VisualStudioName = "Visual Studio 15 2017";
-					break;
 				case "VS2019":
 					Compiler = WindowsCompiler.VisualStudio2019;
 					VisualStudioName = "Visual Studio 16 2019";
+					break;
+				case "VS2022":
+					Compiler = WindowsCompiler.VisualStudio2022;
+					VisualStudioName = "Visual Studio 17 2022";
 					break;
 				default:
 					throw new BuildException("Unknown windows compiler specified: {0}", CompilerName);
 			}
 
-			DirectoryReference VSPath;
-			if (!WindowsExports.TryGetVSInstallDir(Compiler, out VSPath))
+			IEnumerable<DirectoryReference> VSPaths;
+			if (null == (VSPaths = WindowsExports.TryGetVSInstallDirs(Compiler)))
 				throw new BuildException("Failed to get Visual Studio install directory");
 
-			MsDevExe = FileReference.Combine(VSPath, "Common7", "IDE", "Devenv.com").FullName;
+			MsDevExe = FileReference.Combine(VSPaths.First(), "Common7", "IDE", "Devenv.com").FullName;
 			MsBuildExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "MSBuild", "14.0", "Bin", "MSBuild.exe");
 		}
 
@@ -477,7 +474,7 @@ public sealed class BuildPhysX : BuildCommand
 		var TargetPlatforms = new Dictionary<string, TargetPlatform>();
 
 		// Grab all the non-abstract subclasses of TargetPlatform from the executing assembly.
-		var AvailablePlatformTypes = from Assembly in AppDomain.CurrentDomain.GetAssemblies()
+		var AvailablePlatformTypes = from Assembly in ScriptManager.AllScriptAssemblies
 									 from Type in Assembly.GetTypes()
 									 where !Type.IsAbstract && Type.IsSubclassOf(typeof(TargetPlatform)) && !Type.IsAbstract
 									 select Type;
@@ -600,24 +597,21 @@ public sealed class BuildPhysX : BuildCommand
 
 	private void SetupBuildEnvironment()
 	{
-		if (!Utils.IsRunningOnMono)
+		// ================================================================================
+		// ThirdPartyNotUE
+		// NOTE: these are Windows executables
+		if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 		{
-			// ================================================================================
-			// ThirdPartyNotUE
-			// NOTE: these are Windows executables
-			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
-			{
-				DirectoryReference ThirdPartyNotUERootDirectory = DirectoryReference.Combine(RootDirectory, "Engine/Extras/ThirdPartyNotUE");
-				string CMakePath = DirectoryReference.Combine(ThirdPartyNotUERootDirectory, "CMake/bin").FullName;
-				string MakePath = DirectoryReference.Combine(ThirdPartyNotUERootDirectory, "GNU_Make/make-3.81/bin").FullName;
+			DirectoryReference ThirdPartyNotUERootDirectory = DirectoryReference.Combine(Unreal.RootDirectory, "Engine/Extras/ThirdPartyNotUE");
+			string CMakePath = DirectoryReference.Combine(ThirdPartyNotUERootDirectory, "CMake/bin").FullName;
+			string MakePath = DirectoryReference.Combine(ThirdPartyNotUERootDirectory, "GNU_Make/make-3.81/bin").FullName;
 
-				string PrevPath = Environment.GetEnvironmentVariable("PATH");
-				// mixing bundled make and cygwin make is no good. Try to detect and remove cygwin paths.
-				string PathWithoutCygwin = RemoveOtherMakeAndCygwinFromPath(PrevPath);
-				Environment.SetEnvironmentVariable("PATH", CMakePath + ";" + MakePath + ";" + PathWithoutCygwin);
-				Environment.SetEnvironmentVariable("PATH", CMakePath + ";" + MakePath + ";" + Environment.GetEnvironmentVariable("PATH"));
-				LogInformation("set {0}={1}", "PATH", Environment.GetEnvironmentVariable("PATH"));
-			}
+			string PrevPath = Environment.GetEnvironmentVariable("PATH");
+			// mixing bundled make and cygwin make is no good. Try to detect and remove cygwin paths.
+			string PathWithoutCygwin = RemoveOtherMakeAndCygwinFromPath(PrevPath);
+			Environment.SetEnvironmentVariable("PATH", CMakePath + ";" + MakePath + ";" + PathWithoutCygwin);
+			Environment.SetEnvironmentVariable("PATH", CMakePath + ";" + MakePath + ";" + Environment.GetEnvironmentVariable("PATH"));
+			LogInformation("set {0}={1}", "PATH", Environment.GetEnvironmentVariable("PATH"));
 		}
 	}
 
@@ -919,12 +913,10 @@ class BuildPhysX_Android : BuildPhysX.MakefileTargetPlatform
 		NDKDirectory = NDKDirectory.Replace("\"", "");
 
 		string AndroidAPILevel = "android-19";
-		string AndroidABI = "armeabi-v7a";
+		string AndroidABI = "arm64-v8a";
 		switch (Architecture)
 		{
-			case "armv7": AndroidAPILevel = "android-19"; AndroidABI = "armeabi-v7a"; break;
 			case "arm64": AndroidAPILevel = "android-21"; AndroidABI = "arm64-v8a";   break;
-			case "x86":   AndroidAPILevel = "android-19"; AndroidABI = "x86";         break;
 			case "x64":   AndroidAPILevel = "android-21"; AndroidABI = "x86_64";      break;
 		}
 		return " -DANDROID_NDK=\"" + NDKDirectory + "\" -DCMAKE_MAKE_PROGRAM=\"" + NDKDirectory + "\\prebuilt\\windows-x86_64\\bin\\make.exe\" -DANDROID_NATIVE_API_LEVEL=\"" + AndroidAPILevel + "\" -DANDROID_ABI=\"" + AndroidABI + "\" -DANDROID_STL=c++_shared" +
@@ -964,8 +956,8 @@ class BuildPhysX_Linux : BuildPhysX.MakefileTargetPlatform
 		this.GeneratedDebugSymbols = new Dictionary<string, bool>();
 	}
 
-	private static DirectoryReference DumpSymsPath = DirectoryReference.Combine(RootDirectory, "Engine/Binaries/Linux/dump_syms");
-	private static DirectoryReference BreakpadSymbolEncoderPath = DirectoryReference.Combine(RootDirectory, "Engine/Binaries/Linux/BreakpadSymbolEncoder");
+	private static DirectoryReference DumpSymsPath = DirectoryReference.Combine(Unreal.RootDirectory, "Engine/Binaries/Linux/dump_syms");
+	private static DirectoryReference BreakpadSymbolEncoderPath = DirectoryReference.Combine(Unreal.RootDirectory, "Engine/Binaries/Linux/BreakpadSymbolEncoder");
 
 	public string Architecture { get; private set; }
 
@@ -1000,11 +992,11 @@ class BuildPhysX_Linux : BuildPhysX.MakefileTargetPlatform
 	{
 		string ThirdPartySourceDirectoryNormal = ThirdPartySourceDirectory.ToNormalizedPath();
 
-		string CxxFlags = "\"-I " + ThirdPartySourceDirectoryNormal + "/Linux/LibCxx/include -I " + ThirdPartySourceDirectoryNormal + "/Linux/LibCxx/include/c++/v1\"";
+		string CxxFlags = "\"-I " + ThirdPartySourceDirectoryNormal + "/Unix/LibCxx/include -I " + ThirdPartySourceDirectoryNormal + "/Unix/LibCxx/include/c++/v1\"";
 		string CxxLinkerFlags = "\"-stdlib=libc++ -nodefaultlibs -Wl,--build-id -L " 
-			+ ThirdPartySourceDirectoryNormal + "/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu/ " 
-			+ ThirdPartySourceDirectoryNormal + "/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu/libc++.a " 
-			+ ThirdPartySourceDirectoryNormal + "/Linux/LibCxx/lib/Linux/x86_64-unknown-linux-gnu/libc++abi.a -lm -lc -lgcc_s\"";
+			+ ThirdPartySourceDirectoryNormal + "/Unix/LibCxx/lib/Unix/x86_64-unknown-linux-gnu/ " 
+			+ ThirdPartySourceDirectoryNormal + "/Unix/LibCxx/lib/Unix/x86_64-unknown-linux-gnu/libc++.a " 
+			+ ThirdPartySourceDirectoryNormal + "/Unix/LibCxx/lib/Unix/x86_64-unknown-linux-gnu/libc++abi.a -lm -lc -lgcc_s\"";
 
 		return "-DCMAKE_CXX_FLAGS=" + CxxFlags + " -DCMAKE_EXE_LINKER_FLAGS=" + CxxLinkerFlags + " -DCAMKE_MODULE_LINKER_FLAGS=" + CxxLinkerFlags + " -DCMAKE_SHARED_LINKER_FLAGS=" + CxxLinkerFlags + " ";
 	}
@@ -1359,34 +1351,6 @@ abstract class BuildPhysX_WindowsCommon : BuildPhysX.MSBuildTargetPlatform
 			case BuildPhysX.PhysXTargetLib.NvCloth: return true;
 			case BuildPhysX.PhysXTargetLib.PhysX: return true;
 			default: return false;
-		}
-	}
-}
-
-class BuildPhysX_Win32 : BuildPhysX_WindowsCommon
-{
-	public BuildPhysX_Win32(string Compiler = "VS2015")
-		: base(Compiler)
-	{ }
-
-	public override UnrealTargetPlatform Platform => UnrealTargetPlatform.Win32;
-
-	public override Dictionary<string, string> BuildSuffix => new Dictionary<string, string>()
-	{
-		{ "debug",   "DEBUG_x86"   },
-		{ "checked", "CHECKED_x86" },
-		{ "profile", "PROFILE_x86" },
-		{ "release", "_x86"        }
-	};
-
-	public override string GetAdditionalCMakeArguments(BuildPhysX.PhysXTargetLib TargetLib, string TargetConfiguration)
-	{
-		switch (TargetLib)
-		{
-			case BuildPhysX.PhysXTargetLib.APEX:	return " -AWin32";
-			case BuildPhysX.PhysXTargetLib.NvCloth: return " -AWin32 -DNV_CLOTH_ENABLE_CUDA=0 -DNV_CLOTH_ENABLE_DX11=0";
-			case BuildPhysX.PhysXTargetLib.PhysX:   return " -AWin32";
-			default: throw new ArgumentException("TargetLib");
 		}
 	}
 }

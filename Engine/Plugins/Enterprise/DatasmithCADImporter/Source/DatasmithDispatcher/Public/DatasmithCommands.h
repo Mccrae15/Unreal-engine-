@@ -86,7 +86,7 @@ protected:
 	virtual void SerializeImpl(FArchive&) override;
 
 public:
-	CADLibrary::FFileDescription JobFileDescription;
+	CADLibrary::FFileDescriptor JobFileDescription;
 	int32 JobIndex = -1;
 };
 
@@ -99,7 +99,7 @@ protected:
 	virtual void SerializeImpl(FArchive&) override;
 
 public:
-	TArray<CADLibrary::FFileDescription> ExternalReferences;
+	TArray<CADLibrary::FFileDescriptor> ExternalReferences;
 	FString SceneGraphFileName;
 	FString GeomFileName;
 	ETaskState ProcessResult = ETaskState::Unknown;
@@ -109,6 +109,15 @@ public:
 class FImportParametersCommand : public ICommand
 {
 public:
+	FImportParametersCommand(const CADLibrary::FImportParameters& InImportParameters)
+		: ImportParameters(InImportParameters)
+	{
+	}
+
+	FImportParametersCommand()
+	{
+	}
+
 	virtual ECommandId GetType() const override { return ECommandId::ImportParams; }
 
 protected:

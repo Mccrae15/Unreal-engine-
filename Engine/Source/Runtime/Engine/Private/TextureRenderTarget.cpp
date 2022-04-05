@@ -28,12 +28,12 @@ UTextureRenderTarget::UTextureRenderTarget(const FObjectInitializer& ObjectIniti
 FTextureRenderTargetResource* UTextureRenderTarget::GetRenderTargetResource()
 {
 	check(IsInRenderingThread() || 
-		(IsInParallelRenderingThread() && (!Resource || Resource->IsInitialized()))); // we allow this in parallel, but only if the resource is initialized...otherwise it might be a race on intialization
+		(IsInParallelRenderingThread() && (!GetResource() || GetResource()->IsInitialized()))); // we allow this in parallel, but only if the resource is initialized...otherwise it might be a race on intialization
 	FTextureRenderTargetResource* Result = NULL;
-	if( Resource &&
-		Resource->IsInitialized() )
+	if (GetResource() &&
+		GetResource()->IsInitialized() )
 	{
-		Result = static_cast<FTextureRenderTargetResource*>( Resource );
+		Result = static_cast<FTextureRenderTargetResource*>(GetResource());
 	}
 	return Result;
 }
@@ -42,7 +42,7 @@ FTextureRenderTargetResource* UTextureRenderTarget::GetRenderTargetResource()
 FTextureRenderTargetResource* UTextureRenderTarget::GameThread_GetRenderTargetResource()
 {
 	check( IsInGameThread() );
-	return static_cast< FTextureRenderTargetResource*>( Resource );
+	return static_cast< FTextureRenderTargetResource*>(GetResource());
 }
 
 
@@ -74,6 +74,7 @@ bool FTextureRenderTargetResource::IsSupportedFormat( EPixelFormat Format )
 	case PF_A16B16G16R16:
 	case PF_FloatRGB:
 	case PF_FloatRGBA: // for exporting materials to .obj/.mtl
+	case PF_FloatR11G11B10: //Pixel inspector for Reading HDR Color
 	case PF_A2B10G10R10: //Pixel inspector for normal buffer
 	case PF_DepthStencil: //Pixel inspector for depth and stencil buffer
 	case PF_G16:// for heightmaps

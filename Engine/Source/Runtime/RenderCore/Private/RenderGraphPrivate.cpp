@@ -39,6 +39,23 @@ FAutoConsoleVariableRef CVarRDGDebugFlushGPU(
 	}),
 	ECVF_RenderThreadSafe);
 
+int32 GRDGDebugExtendResourceLifetimes = 0;
+FAutoConsoleVariableRef CVarRDGDebugExtendResourceLifetimes(
+	TEXT("r.RDG.Debug.ExtendResourceLifetimes"),
+	GRDGDebugExtendResourceLifetimes,
+	TEXT("Extends the resource lifetimes of resources (or a specific resource filter specified by r.RDG.Debug.ResourceFilter) ")
+	TEXT("so that they cannot overlap memory with any other resource within the graph. Useful to debug if transient aliasing is causing issues.\n")
+	TEXT(" 0: disabled (default);\n")
+	TEXT(" 1: enabled;\n"),
+	ECVF_RenderThreadSafe);
+
+int32 GRDGDebugDisableTransientResources = 0;
+FAutoConsoleVariableRef CVarRDGDebugDisableTransientResource(
+	TEXT("r.RDG.Debug.DisableTransientResources"),
+	GRDGDebugDisableTransientResources,
+	TEXT("Filters out transient resources from the transient allocator. Use r.rdg.debug.resourcefilter to specify the filter. Defaults to all resources if enabled."),
+	ECVF_RenderThreadSafe);
+
 int32 GRDGDumpGraph = 0;
 FAutoConsoleVariableRef CVarDumpGraph(
 	TEXT("r.RDG.DumpGraph"),
@@ -86,12 +103,6 @@ FAutoConsoleVariableRef CVarRDGOverlapUAVs(
 	TEXT("RDG will overlap UAV work when requested; if disabled, UAV barriers are always inserted."),
 	ECVF_RenderThreadSafe);
 
-int32 GRDGExtendResourceLifetimes = 0;
-FAutoConsoleVariableRef CVarRDGExtendResourceLifetimes(
-	TEXT("r.RDG.ExtendResourceLifetimes"), GRDGExtendResourceLifetimes,
-	TEXT("RDG will extend resource lifetimes to the full length of the graph. Increases memory usage."),
-	ECVF_RenderThreadSafe);
-
 int32 GRDGTransitionLog = 0;
 FAutoConsoleVariableRef CVarRDGTransitionLog(
 	TEXT("r.RDG.TransitionLog"), GRDGTransitionLog,
@@ -103,14 +114,23 @@ FAutoConsoleVariableRef CVarRDGTransitionLog(
 
 TAutoConsoleVariable<FString> CVarRDGDebugGraphFilter(
 	TEXT("r.RDG.Debug.GraphFilter"), TEXT(""),
-	TEXT("Filters certain debug events to a specific graph.\n"),
+	TEXT("Filters certain debug events to a specific graph. Set to 'None' to reset.\n"),
 	ECVF_Default);
 
 FString GRDGDebugGraphFilterName;
 
+inline FString GetDebugFilterString(const FString& InputString)
+{
+	if (!InputString.Compare(TEXT("None"), ESearchCase::IgnoreCase))
+	{
+		return {};
+	}
+	return InputString;
+}
+
 FAutoConsoleVariableSink CVarRDGDebugGraphSink(FConsoleCommandDelegate::CreateLambda([]()
 {
-	GRDGDebugGraphFilterName = CVarRDGDebugGraphFilter.GetValueOnGameThread();
+	GRDGDebugGraphFilterName = GetDebugFilterString(CVarRDGDebugGraphFilter.GetValueOnGameThread());
 }));
 
 inline bool IsDebugAllowed(const FString& FilterString, const TCHAR* Name)
@@ -120,13 +140,21 @@ inline bool IsDebugAllowed(const FString& FilterString, const TCHAR* Name)
 		return true;
 	}
 
-	const bool bFound = FCString::Strifind(Name, *FilterString) != nullptr;
-	if (!bFound)
+	const bool bInverted = FilterString[0] == '!';
+	if (FilterString.Len() == 1 && bInverted)
 	{
-		return false;
+		return true;
 	}
 
-	return FilterString[0] != TEXT('!');
+	const TCHAR* FilterStringRaw = *FilterString;
+
+	if (bInverted)
+	{
+		FilterStringRaw++;
+	}
+
+	const bool bFound = FCString::Strifind(Name, FilterStringRaw) != nullptr;
+	return bFound ^ bInverted;
 }
 
 bool IsDebugAllowedForGraph(const TCHAR* GraphName)
@@ -136,14 +164,14 @@ bool IsDebugAllowedForGraph(const TCHAR* GraphName)
 
 TAutoConsoleVariable<FString> CVarRDGDebugPassFilter(
 	TEXT("r.RDG.Debug.PassFilter"), TEXT(""),
-	TEXT("Filters certain debug events to specific passes.\n"),
+	TEXT("Filters certain debug events to specific passes. Set to 'None' to reset.\n"),
 	ECVF_Default);
 
 FString GRDGDebugPassFilterName;
 
 FAutoConsoleVariableSink CVarRDGDebugPassSink(FConsoleCommandDelegate::CreateLambda([]()
 {
-	GRDGDebugPassFilterName = CVarRDGDebugPassFilter.GetValueOnGameThread();
+	GRDGDebugPassFilterName = GetDebugFilterString(CVarRDGDebugPassFilter.GetValueOnGameThread());
 }));
 
 bool IsDebugAllowedForPass(const TCHAR* PassName)
@@ -153,14 +181,14 @@ bool IsDebugAllowedForPass(const TCHAR* PassName)
 
 TAutoConsoleVariable<FString> CVarRDGDebugResourceFilter(
 	TEXT("r.RDG.Debug.ResourceFilter"), TEXT(""),
-	TEXT("Filters certain debug events to a specific resource.\n"),
+	TEXT("Filters certain debug events to a specific resource. Set to 'None' to reset.\n"),
 	ECVF_Default);
 
 FString GRDGDebugResourceFilterName;
 
 FAutoConsoleVariableSink CVarRDGDebugResourceSink(FConsoleCommandDelegate::CreateLambda([]()
 {
-	GRDGDebugResourceFilterName = CVarRDGDebugResourceFilter.GetValueOnGameThread();
+	GRDGDebugResourceFilterName = GetDebugFilterString(CVarRDGDebugResourceFilter.GetValueOnGameThread());
 }));
 
 bool IsDebugAllowedForResource(const TCHAR* ResourceName)
@@ -168,26 +196,31 @@ bool IsDebugAllowedForResource(const TCHAR* ResourceName)
 	return IsDebugAllowed(GRDGDebugResourceFilterName, ResourceName);
 }
 
-FLinearColor GetClobberColor()
+static float GetClobberValue()
 {
 	switch (GRDGClobberResources)
 	{
 	case 1:
-		return FLinearColor(1000, 1000, 1000, 1000);
+		return 1000.0f;
 	case 2:
-		return FLinearColor(NAN, NAN, NAN, NAN);
+		return NAN;
 	case 3:
-		return FLinearColor(INFINITY, INFINITY, INFINITY, INFINITY);
-	case 4:
-		return FLinearColor(0, 0, 0, 0);
-	default:
-		return FLinearColor::Black;
+		return INFINITY;
 	}
+	return 0.0f;
+}
+
+FLinearColor GetClobberColor()
+{
+	float ClobberValue = GetClobberValue();
+	return FLinearColor(ClobberValue, ClobberValue, ClobberValue, ClobberValue);
 }
 
 uint32 GetClobberBufferValue()
 {
-	return 1000;
+	float ClobberValue = GetClobberValue();
+	uint32 ClobberValueUint = reinterpret_cast<const uint32*>(&ClobberValue)[0];
+	return ClobberValueUint;
 }
 
 float GetClobberDepth()
@@ -235,6 +268,8 @@ void EmitRDGWarning(const FString& WarningMessage)
 	}
 }
 
+bool GRDGAllowRHIAccess = false;
+
 #endif
 
 int32 GRDGAsyncCompute = 1;
@@ -275,6 +310,103 @@ FAutoConsoleVariableRef CVarRDGMergeRenderPasses(
 	TEXT(" 1:on(default);\n"),
 	ECVF_RenderThreadSafe);
 
+int32 GRDGTransientAllocator = 1;
+FAutoConsoleVariableRef CVarRDGUseTransientAllocator(
+	TEXT("r.RDG.TransientAllocator"), GRDGTransientAllocator,
+	TEXT("RDG will use the RHITransientResourceAllocator to allocate all transient resources.")
+	TEXT(" 0: disables the transient allocator;")
+	TEXT(" 1: enables the transient allocator (default);")
+	TEXT(" 2: enables the transient allocator for resources with FastVRAM flag only"),
+	ECVF_RenderThreadSafe);
+
+int32 GRDGTransientExtractedResources = 1;
+FAutoConsoleVariableRef CVarRDGTransientExtractedResource(
+	TEXT("r.RDG.TransientExtractedResources"), GRDGTransientExtractedResources,
+	TEXT("RDG will allocate extracted resources as transient, unless explicitly marked non-transient by the user.")
+	TEXT(" 0: disables external transient resources;")
+	TEXT(" 1: enables external transient resources (default);")
+	TEXT(" 2: force enables all external transient resources (not recommended);"),
+	ECVF_RenderThreadSafe);
+
+int32 GRDGParallelExecute = 1;
+FAutoConsoleVariableRef CVarRDGParallelExecute(
+	TEXT("r.RDG.ParallelExecute"), GRDGParallelExecute,
+	TEXT("Whether to enable parallel execution of passes when supported.")
+	TEXT(" 0: off;")
+	TEXT(" 1: on (default)"),
+	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* Variable)
+	{
+		if (Variable->GetInt())
+		{
+			if (GRDGParallelExecutePassMax <= 1)
+			{
+				GRDGParallelExecutePassMax = 1;
+			}
+
+			if (GRDGParallelExecutePassMin < GRDGParallelExecutePassMax)
+			{
+				GRDGParallelExecutePassMin = GRDGParallelExecutePassMax;
+			}
+		}
+	}),
+	ECVF_RenderThreadSafe);
+
+int32 GRDGParallelExecutePassMin = 1;
+FAutoConsoleVariableRef CVarRDGParallelExecutePassMin(
+	TEXT("r.RDG.ParallelExecute.PassMin"), GRDGParallelExecutePassMin,
+	TEXT("The minimum span of contiguous passes eligible for parallel execution for the span to be offloaded to a task."),
+	ECVF_RenderThreadSafe);
+
+int32 GRDGParallelExecutePassMax = 32;
+FAutoConsoleVariableRef CVarRDGParallelExecutePassMax(
+	TEXT("r.RDG.ParallelExecute.PassMax"), GRDGParallelExecutePassMax,
+	TEXT("The maximum span of contiguous passes eligible for parallel execution for the span to be offloaded to a task."),
+	ECVF_RenderThreadSafe);
+
+// Fix for random GPU crashes on draw indirects on multiple IHVs. Force all indirect arg buffers as non transient (see UE-115982)
+int32 GRDGTransientIndirectArgBuffers = 0;
+FAutoConsoleVariableRef CVarRDGIndirectArgBufferTransientAllocated(
+	TEXT("r.RDG.TransientAllocator.IndirectArgumentBuffers"), GRDGTransientIndirectArgBuffers,
+	TEXT("Whether indirect argument buffers should use transient resource allocator. Default: 0"),
+	ECVF_RenderThreadSafe);
+
+int32 GRDGParallelExecuteStress = 0;
+FAutoConsoleVariableRef CVarRDGDebugParallelExecute(
+	TEXT("r.RDG.ParallelExecuteStress"),
+	GRDGParallelExecuteStress,
+	TEXT("Stress tests the parallel execution path by launching one task per pass. Render pass merging is also disabled."),
+	FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* Variable)
+	{
+		static int32 GRDGMergeRenderPassesHistory = GRDGMergeRenderPasses;
+		static int32 GRDGParallelExecutePassMinHistory = GRDGParallelExecutePassMin;
+		static int32 GRDGParallelExecutePassMaxHistory = GRDGParallelExecutePassMax;
+
+		const int32 CurrentValue = Variable->GetInt();
+
+		if (GRDGParallelExecuteStress == CurrentValue)
+		{
+			return;
+		}
+
+		if (CurrentValue)
+		{
+			GRDGMergeRenderPassesHistory = GRDGMergeRenderPasses;
+			GRDGParallelExecutePassMinHistory = GRDGParallelExecutePassMin;
+			GRDGParallelExecutePassMaxHistory = GRDGParallelExecutePassMax;
+
+			GRDGMergeRenderPasses = 0;
+			GRDGParallelExecutePassMin = 1;
+			GRDGParallelExecutePassMax = 1;
+		}
+		else
+		{
+			GRDGMergeRenderPasses = GRDGMergeRenderPassesHistory;
+			GRDGParallelExecutePassMin = GRDGParallelExecutePassMinHistory;
+			GRDGParallelExecutePassMax = GRDGParallelExecutePassMaxHistory;
+		}
+	}),
+	ECVF_RenderThreadSafe);
+
 #if CSV_PROFILER
 int32 GRDGVerboseCSVStats = 0;
 FAutoConsoleVariableRef CVarRDGVerboseCSVStats(
@@ -288,28 +420,51 @@ FAutoConsoleVariableRef CVarRDGVerboseCSVStats(
 
 #if STATS
 int32 GRDGStatPassCount = 0;
+int32 GRDGStatPassWithParameterCount = 0;
 int32 GRDGStatPassCullCount = 0;
 int32 GRDGStatPassDependencyCount = 0;
 int32 GRDGStatRenderPassMergeCount = 0;
 int32 GRDGStatTextureCount = 0;
+int32 GRDGStatTextureReferenceCount = 0;
 int32 GRDGStatBufferCount = 0;
+int32 GRDGStatBufferReferenceCount = 0;
+int32 GRDGStatViewCount = 0;
+int32 GRDGStatTransientTextureCount = 0;
+int32 GRDGStatTransientBufferCount = 0;
 int32 GRDGStatTransitionCount = 0;
+int32 GRDGStatAliasingCount = 0;
 int32 GRDGStatTransitionBatchCount = 0;
 int32 GRDGStatMemoryWatermark = 0;
 
 DEFINE_STAT(STAT_RDG_PassCount);
+DEFINE_STAT(STAT_RDG_PassWithParameterCount);
 DEFINE_STAT(STAT_RDG_PassCullCount);
 DEFINE_STAT(STAT_RDG_RenderPassMergeCount);
 DEFINE_STAT(STAT_RDG_PassDependencyCount);
 DEFINE_STAT(STAT_RDG_TextureCount);
+DEFINE_STAT(STAT_RDG_TextureReferenceCount);
+DEFINE_STAT(STAT_RDG_TextureReferenceAverage);
 DEFINE_STAT(STAT_RDG_BufferCount);
+DEFINE_STAT(STAT_RDG_BufferReferenceCount);
+DEFINE_STAT(STAT_RDG_BufferReferenceAverage);
+DEFINE_STAT(STAT_RDG_ViewCount);
+DEFINE_STAT(STAT_RDG_TransientTextureCount);
+DEFINE_STAT(STAT_RDG_TransientBufferCount);
 DEFINE_STAT(STAT_RDG_TransitionCount);
+DEFINE_STAT(STAT_RDG_AliasingCount);
 DEFINE_STAT(STAT_RDG_TransitionBatchCount);
+DEFINE_STAT(STAT_RDG_SetupTime);
 DEFINE_STAT(STAT_RDG_CompileTime);
+DEFINE_STAT(STAT_RDG_ExecuteTime);
 DEFINE_STAT(STAT_RDG_CollectResourcesTime);
 DEFINE_STAT(STAT_RDG_CollectBarriersTime);
 DEFINE_STAT(STAT_RDG_ClearTime);
+DEFINE_STAT(STAT_RDG_FlushRHIResources);
 DEFINE_STAT(STAT_RDG_MemoryWatermark);
+#endif
+
+#if RDG_EVENTS != RDG_EVENTS_NONE
+int32 GRDGEmitEvents = 0;
 #endif
 
 void InitRenderGraph()
@@ -325,6 +480,11 @@ void InitRenderGraph()
 		GRDGDebug = 1;
 	}
 
+	if (FParse::Param(FCommandLine::Get(), TEXT("rdgdebugextendresourcelifetimes")))
+	{
+		GRDGDebugExtendResourceLifetimes = 1;
+	}
+
 	if (FParse::Param(FCommandLine::Get(), TEXT("rdgtransitionlog")))
 	{
 		// Set to -1 to specify infinite number of frames.
@@ -332,7 +492,7 @@ void InitRenderGraph()
 	}
 
 	int32 BreakpointValue = 0;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgbreakpoint"), BreakpointValue))
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgbreakpoint="), BreakpointValue))
 	{
 		GRDGBreakpoint = BreakpointValue;
 	}
@@ -342,55 +502,62 @@ void InitRenderGraph()
 		GRDGClobberResources = 1;
 	}
 
+	int32 TransientAllocatorValue = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgtransientallocator="), TransientAllocatorValue))
+	{
+		GRDGTransientAllocator = TransientAllocatorValue;
+	}
+
 	int32 CullPassesValue = 0;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgcullpasses"), CullPassesValue))
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgcullpasses="), CullPassesValue))
 	{
 		GRDGCullPasses = CullPassesValue;
 	}
 
+	int32 ParallelExecuteValue = 0;
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgparallelxecute="), ParallelExecuteValue))
+	{
+		GRDGParallelExecute = ParallelExecuteValue;
+	}
+
 	int32 MergeRenderPassesValue = 0;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgmergerenderpasses"), MergeRenderPassesValue))
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgmergerenderpasses="), MergeRenderPassesValue))
 	{
 		GRDGMergeRenderPasses = MergeRenderPassesValue;
 	}
 
 	int32 OverlapUAVsValue = 0;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgoverlapuavs"), OverlapUAVsValue))
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgoverlapuavs="), OverlapUAVsValue))
 	{
 		GRDGOverlapUAVs = OverlapUAVsValue;
 	}
 
-	if (FParse::Param(FCommandLine::Get(), TEXT("rdgextendresourcelifetimes")))
-	{
-		GRDGExtendResourceLifetimes = 1;
-	}
-
 	int32 DumpGraphValue = 0;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdumpgraph"), DumpGraphValue))
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdumpgraph="), DumpGraphValue))
 	{
 		CVarDumpGraph->Set(DumpGraphValue);
 	}
 
 	int32 AsyncComputeValue = 0;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgasynccompute"), AsyncComputeValue))
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgasynccompute="), AsyncComputeValue))
 	{
 		CVarRDGAsyncCompute->Set(AsyncComputeValue);
 	}
 
 	FString GraphFilter;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebuggraphfilter"), GraphFilter))
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebuggraphfilter="), GraphFilter))
 	{
 		CVarRDGDebugGraphFilter->Set(*GraphFilter);
 	}
 
 	FString PassFilter;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebugpassfilter"), PassFilter))
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebugpassfilter="), PassFilter))
 	{
 		CVarRDGDebugPassFilter->Set(*PassFilter);
 	}
 
 	FString ResourceFilter;
-	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebugresourcefilter"), ResourceFilter))
+	if (FParse::Value(FCommandLine::Get(), TEXT("rdgdebugresourcefilter="), ResourceFilter))
 	{
 		CVarRDGDebugResourceFilter->Set(*ResourceFilter);
 	}

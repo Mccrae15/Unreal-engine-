@@ -42,16 +42,24 @@ struct FMeshMaterialShaderPermutationParameters : public FMaterialShaderPermutat
 
 struct FVertexFactoryShaderPermutationParameters
 {
+	const FShaderType* ShaderType;
+	const FVertexFactoryType* VertexFactoryType;
+	FMaterialShaderParameters MaterialParameters;
 	EShaderPlatform Platform;
 	EShaderPermutationFlags Flags;
-	FMaterialShaderParameters MaterialParameters;
-	const FVertexFactoryType* VertexFactoryType;
 
-	FVertexFactoryShaderPermutationParameters(EShaderPlatform InPlatform, const FMaterialShaderParameters& InMaterialParameters, const FVertexFactoryType* InVertexFactoryType, EShaderPermutationFlags InFlags)
-		: Platform(InPlatform)
-		, Flags(InFlags)
-		, MaterialParameters(InMaterialParameters)
+	FVertexFactoryShaderPermutationParameters(
+		EShaderPlatform InPlatform,
+		const FMaterialShaderParameters& InMaterialParameters, 
+		const FVertexFactoryType* InVertexFactoryType,
+		const FShaderType* InShaderType,
+		EShaderPermutationFlags InFlags
+		)
+		: ShaderType(InShaderType)
 		, VertexFactoryType(InVertexFactoryType)
+		, MaterialParameters(InMaterialParameters)
+		, Platform(InPlatform)
+		, Flags(InFlags)
 	{}
 };
 

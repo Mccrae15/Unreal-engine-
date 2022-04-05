@@ -14,14 +14,18 @@ class RENDERER_API FRayTracingMeshProcessor
 {
 public:
 
-	FRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, const FScene* InScene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassProcessorRenderState InPassDrawRenderState)
+	FRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, const FScene* InScene, const FSceneView* InViewIfDynamicMeshCommand, FMeshPassProcessorRenderState InPassDrawRenderState, ERayTracingMeshCommandsMode InRayTracingMeshCommandsMode)
 		:
 		CommandContext(InCommandContext),
 		Scene(InScene),
 		ViewIfDynamicMeshCommand(InViewIfDynamicMeshCommand),
 		FeatureLevel(InScene ? InScene->GetFeatureLevel() : ERHIFeatureLevel::SM5),
-		PassDrawRenderState(InPassDrawRenderState)
-	{}
+		PassDrawRenderState(InPassDrawRenderState),
+		RayTracingMeshCommandsMode(InRayTracingMeshCommandsMode)
+	{
+		PassDrawRenderState.SetBlendState(TStaticBlendState<CW_RGBA, BO_Add, BF_One, BF_One, BO_Add, BF_Zero, BF_One>::GetRHI());
+		PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI());
+	}
 
 	virtual ~FRayTracingMeshProcessor() = default;
 
@@ -33,16 +37,15 @@ protected:
 	const FSceneView* ViewIfDynamicMeshCommand;
 	ERHIFeatureLevel::Type FeatureLevel;
 	FMeshPassProcessorRenderState PassDrawRenderState;
+	ERayTracingMeshCommandsMode RayTracingMeshCommandsMode;
 
-	virtual void Process(
+	virtual bool Process(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
 		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
 		const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
 		const FMaterial& RESTRICT MaterialResource,
-		FMaterialShadingModelField ShadingModels,
-		const FUniformLightMapPolicy& RESTRICT LightMapPolicy,
-		const typename FUniformLightMapPolicy::ElementDataType& RESTRICT LightMapElementData);
+		const FUniformLightMapPolicy& RESTRICT LightMapPolicy);
 
 	template<typename PassShadersType, typename ShaderElementDataType>
 	void BuildRayTracingMeshCommands(
@@ -61,12 +64,18 @@ protected:
 
 		FRayTracingMeshCommand SharedCommand;
 
-		SharedCommand.SetShaders(PassShaders.GetUntypedShaders());
+		if (GRHISupportsRayTracingShaders)
+		{
+			SharedCommand.SetShaders(PassShaders.GetUntypedShaders());
+		}
+
 		SharedCommand.InstanceMask = ComputeBlendModeMask(MaterialResource.GetBlendMode());
 		SharedCommand.bCastRayTracedShadows = MeshBatch.CastRayTracedShadow && MaterialResource.CastsRayTracedShadows();
-		SharedCommand.bOpaque = MaterialResource.GetBlendMode() == EBlendMode::BLEND_Opaque;
+		SharedCommand.bOpaque = MaterialResource.GetBlendMode() == EBlendMode::BLEND_Opaque && !(VertexFactory->GetType()->SupportsRayTracingProceduralPrimitive() && FDataDrivenShaderPlatformInfo::GetSupportsRayTracingProceduralPrimitive(GMaxRHIShaderPlatform));
 		SharedCommand.bDecal = MaterialResource.GetMaterialDomain() == EMaterialDomain::MD_DeferredDecal;
+		SharedCommand.bIsSky = MaterialResource.IsSky();
 		SharedCommand.bTwoSided = MaterialResource.IsTwoSided();
+		SharedCommand.bIsTranslucent = MaterialResource.GetBlendMode() == EBlendMode::BLEND_Translucent;
 
 		FVertexInputStreamArray VertexStreams;
 		VertexFactory->GetStreams(ERHIFeatureLevel::SM5, EVertexInputStreamType::Default, VertexStreams);
@@ -95,11 +104,28 @@ protected:
 				}
 
 				RayTracingMeshCommand.GeometrySegmentIndex = uint32(MeshBatch.SegmentIndex) + BatchElementIndex;
-
+				RayTracingMeshCommand.bIsTranslucent = MeshBatch.IsTranslucent(MaterialResource.GetFeatureLevel());
 				CommandContext->FinalizeCommand(RayTracingMeshCommand);
 			}
 		}
 	}
+
+private:
+	bool ProcessPathTracing(
+		const FMeshBatch& RESTRICT MeshBatch,
+		uint64 BatchElementMask,
+		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
+		const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
+		const FMaterial& RESTRICT MaterialResource);
+
+	bool TryAddMeshBatch(
+		const FMeshBatch& RESTRICT MeshBatch,
+		uint64 BatchElementMask,
+		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
+		int32 StaticMeshId,
+		const FMaterialRenderProxy& MaterialRenderProxy,
+		const FMaterial& Material
+	);
 };
 
 class RENDERER_API FHiddenMaterialHitGroup : public FGlobalShader
@@ -133,7 +159,6 @@ class FRayTracingLocalShaderBindingWriter
 public:
 
 	FRayTracingLocalShaderBindingWriter()
-		: ParameterMemory(0)
 	{}
 
 	FRayTracingLocalShaderBindingWriter(const FRayTracingLocalShaderBindingWriter&) = delete;

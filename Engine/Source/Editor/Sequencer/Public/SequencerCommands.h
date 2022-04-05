@@ -286,12 +286,6 @@ public:
 	/** Remove selected nodes from folder. */
 	TSharedPtr< FUICommandInfo > RemoveFromFolder;
 
-	/** Bake transform. */
-	TSharedPtr< FUICommandInfo > BakeTransform;
-
-	/** Sync sections using source timecode. */
-	TSharedPtr< FUICommandInfo > SyncSectionsUsingSourceTimecode;
-
 	/** Turns the range slider on and off. */
 	TSharedPtr< FUICommandInfo > ToggleShowRangeSlider;
 
@@ -315,6 +309,12 @@ public:
 
 	/** Toggles whether or not snap to key times while scrubbing. */
 	TSharedPtr< FUICommandInfo > ToggleSnapPlayTimeToKeys;
+
+	/** Toggles whether or not snap to section bounds while scrubbing. */
+	TSharedPtr< FUICommandInfo > ToggleSnapPlayTimeToSections;
+
+	/** Toggles whether or not snap to markers while scrubbing. */
+	TSharedPtr< FUICommandInfo > ToggleSnapPlayTimeToMarkers;
 
 	/** Toggles whether or not the play time should snap to the selected interval. */
 	TSharedPtr< FUICommandInfo > ToggleSnapPlayTimeToInterval;
@@ -379,8 +379,8 @@ public:
 	/** Restores all animated state for the current sequence. */
 	TSharedPtr< FUICommandInfo > RestoreAnimatedState;
 
-	/** Attempts to fix broken actor references. */
-	TSharedPtr< FUICommandInfo > FixActorReferences;
+	/** Attempts to fix possessables whose object class don't match the object class of their currently bound objects. */
+	TSharedPtr< FUICommandInfo > FixPossessableObjectClass;
 
 	/** Rebinds all possessable references with their current bindings. */
 	TSharedPtr< FUICommandInfo > RebindPossessableReferences;

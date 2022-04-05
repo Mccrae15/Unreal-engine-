@@ -50,6 +50,17 @@ inline const TCHAR* LexToString(EPlatformMemorySizeBucket Bucket)
 	return TEXT("Unknown");
 }
 
+enum class EMemcpyCachePolicy : uint8
+{
+	// Writes to destination memory are cache-visible (default).
+	// This should be used if copy results are immediately accessed by CPU.
+	StoreCached,
+
+	// Writes to destination memory bypass cache (avoiding pollution).
+	// Optimizes for large copies that aren't read from soon after.
+	StoreUncached,
+};
+
 /** 
  * Struct used to hold common memory constants for all platforms.
  * These values don't change over the entire life of the executable.
@@ -136,6 +147,16 @@ struct CORE_API FGenericPlatformMemoryStats : public FPlatformMemoryConstants
 	/** The peak amount of virtual memory used by the process. */
 	uint64 PeakUsedVirtual;
 	
+	/** Memory pressure states, useful for platforms in which the available memory estimate
+	 	may not take in to account memory reclaimable from closing inactive processes or resorting to swap. */
+	enum class EMemoryPressureStatus : uint8 
+	{ 
+		Unknown,
+		Nominal, 
+		Critical, // high risk of OOM conditions
+	};
+	EMemoryPressureStatus GetMemoryPressureStatus();
+
 	/** Default constructor, clears all variables. */
 	FGenericPlatformMemoryStats();
 
@@ -151,6 +172,8 @@ struct CORE_API FGenericPlatformMemoryStats : public FPlatformMemoryConstants
 	};
 
 	TArray<FPlatformSpecificStat> GetPlatformSpecificStats() const;
+
+	uint64 GetAvailablePhysical(bool bExcludeExtraDevMemory) const;
 };
 
 
@@ -168,7 +191,10 @@ struct FPlatformMemoryStats;
 #define __FMemory_Alloca_Func alloca
 #endif
 
-#define FMemory_Alloca(Size )((Size==0) ? 0 : (void*)(((PTRINT)__FMemory_Alloca_Func(Size + 15) + 15) & ~15))
+#define FMemory_Alloca(Size) ((Size==0) ? 0 : (void*)(((PTRINT)__FMemory_Alloca_Func(Size + 15) + 15) & ~15))
+
+ // Version that supports alignment requirement. However since the old alignment was always forced to be 16, this continues to enforce a min alignment of 16 but allows a larger value.
+#define FMemory_Alloca_Aligned(Size, Alignment) ((Size==0) ? 0 : ((Alignment <= 16) ? FMemory_Alloca(Size) : (void*)(((PTRINT)__FMemory_Alloca_Func(Size + Alignment-1) + Alignment-1) & ~(Alignment-1))))
 
 /** Generic implementation for most platforms, these tend to be unused and unimplemented. */
 struct CORE_API FGenericPlatformMemory
@@ -280,7 +306,7 @@ struct CORE_API FGenericPlatformMemory
 	/** Initializes platform memory specific constants. */
 	static void Init();
 	
-	static CA_NO_RETURN void OnOutOfMemory(uint64 Size, uint32 Alignment);
+	[[noreturn]] static void OnOutOfMemory(uint64 Size, uint32 Alignment);
 
 	/** Initializes the memory pools, should be called by the init function. */
 	static void SetupMemoryPools();
@@ -541,6 +567,13 @@ struct CORE_API FGenericPlatformMemory
 	/** On some platforms memcpy optimized for big blocks that avoid L2 cache pollution are available */
 	static FORCEINLINE void* StreamingMemcpy(void* Dest, const void* Src, SIZE_T Count)
 	{
+		return memcpy( Dest, Src, Count );
+	}
+
+	/** On some platforms memcpy can be distributed over multiple threads for throughput. */
+	static FORCEINLINE void* ParallelMemcpy(void* Dest, const void* Src, SIZE_T Count, EMemcpyCachePolicy Policy = EMemcpyCachePolicy::StoreCached)
+	{
+		(void)Policy;
 		return memcpy( Dest, Src, Count );
 	}
 

@@ -32,8 +32,8 @@
 namespace FEnvironmentQueryHelper
 {
 	static const FString StatFileDescription = LOCTEXT("FileTypeDescription", "EQS Stat File").ToString();
-	static const FString LoadFileTypes = FString::Printf(TEXT("%s (*.ue4eqs)|*.ue4eqs"), *StatFileDescription);
-	static const FString SaveFileTypes = FString::Printf(TEXT("%s (*.ue4eqs)|*.ue4eqs"), *StatFileDescription);
+	static const FString LoadFileTypes = FString::Printf(TEXT("%s (*.ue_eqs)|*.ue_eqs"), *StatFileDescription);
+	static const FString SaveFileTypes = FString::Printf(TEXT("%s (*.ue_eqs)|*.ue_eqs"), *StatFileDescription);
 }
 
 const FName FEnvironmentQueryEditor::EQSUpdateGraphTabId(TEXT("EnvironmentQueryEditor_UpdateGraph"));
@@ -95,17 +95,10 @@ void FEnvironmentQueryEditor::InitEnvironmentQueryEditor( const EToolkitMode::Ty
 	Query = InScript;
 	check(Query != NULL);
 
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout( "Standalone_EnvironmentQuery_Layout" )
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout( "Standalone_EnvironmentQuery_Layout_v2" )
 	->AddArea
 	(
 		FTabManager::NewPrimaryArea() ->SetOrientation(Orient_Vertical)
-		->Split
-		(
-			FTabManager::NewStack()
-			->SetSizeCoefficient(0.1f)
-			->AddTab(GetToolbarTabId(), ETabState::OpenedTab) 
-			->SetHideTabWell( true )
-		)
 		->Split
 		(
 			FTabManager::NewSplitter() ->SetOrientation(Orient_Horizontal)
@@ -250,7 +243,6 @@ TSharedRef<SDockTab> FEnvironmentQueryEditor::SpawnTab_Properties(const FSpawnTa
 	CreateInternalWidgets();
 
 	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
-		.Icon( FEditorStyle::GetBrush("SoundClassEditor.Tabs.Properties") )
 		.Label(NSLOCTEXT("EnvironmentQueryEditor", "PropertiesTab", "Details"))
 		[
 			DetailsView.ToSharedRef()
@@ -268,7 +260,6 @@ TSharedRef<SDockTab> FEnvironmentQueryEditor::SpawnTab_Profiler(const FSpawnTabA
 		.OnDataChanged(FSimpleDelegate::CreateSP(this, &FEnvironmentQueryEditor::OnStatsDataChange));
 
 	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("SoundClassEditor.Tabs.Properties"))
 		.Label(NSLOCTEXT("EnvironmentQueryEditor", "ProfilerTab", "Profiler"))
 		[
 			ProfilerView.ToSharedRef()
@@ -321,9 +312,10 @@ void FEnvironmentQueryEditor::OnSelectedNodesChanged(const TSet<class UObject*>&
 void FEnvironmentQueryEditor::CreateInternalWidgets()
 {
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>( "PropertyEditor" );
-	const FDetailsViewArgs DetailsViewArgs( false, false, true, FDetailsViewArgs::ObjectsUseNameArea, false );
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 	DetailsView = PropertyEditorModule.CreateDetailView( DetailsViewArgs );
-	DetailsView->SetObject( NULL );
+	DetailsView->SetObject( nullptr );
 	DetailsView->OnFinishedChangingProperties().AddSP(this, &FEnvironmentQueryEditor::OnFinishedChangingProperties);
 }
 
@@ -399,10 +391,12 @@ void FEnvironmentQueryEditor::OnSaveStats()
 			);
 	}
 
+#if USE_EQS_DEBUGGER
 	if (bSaved && SaveFilenames.Num() > 0 && SaveFilenames[0].IsEmpty() == false)
 	{
 		FEQSDebugger::SaveStats(SaveFilenames[0]);
 	}
+#endif
 }
 
 void FEnvironmentQueryEditor::OnLoadStats()
@@ -424,6 +418,7 @@ void FEnvironmentQueryEditor::OnLoadStats()
 			);
 	}
 
+#if USE_EQS_DEBUGGER
 	if (bOpened && OpenFilenames.Num() > 0 && OpenFilenames[0].IsEmpty() == false)
 	{
 		FEQSDebugger::LoadStats(OpenFilenames[0]);
@@ -433,6 +428,7 @@ void FEnvironmentQueryEditor::OnLoadStats()
 			ProfilerView->ForceUpdate();
 		}
 	}
+#endif
 }
 
 void FEnvironmentQueryEditor::OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent)

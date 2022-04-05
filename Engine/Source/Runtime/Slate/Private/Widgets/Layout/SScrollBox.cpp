@@ -4,17 +4,17 @@
 #include "Rendering/DrawElements.h"
 #include "Types/SlateConstants.h"
 #include "Layout/LayoutUtils.h"
-#include "Widgets/SBoxPanel.h"
 #include "Widgets/SOverlay.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/Images/SImage.h"
 
 
-SScrollBox::FSlot& SScrollBox::Slot()
+SScrollBox::FSlot::FSlotArguments SScrollBox::Slot()
 {
-	return *(new SScrollBox::FSlot());
+	return FSlot::FSlotArguments(MakeUnique<FSlot>());
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void SScrollPanel::Construct(const FArguments& InArgs, const TArray<SScrollBox::FSlot*>& InSlots)
 {
 	PhysicalOffset = 0;
@@ -24,11 +24,26 @@ void SScrollPanel::Construct(const FArguments& InArgs, const TArray<SScrollBox::
 		Children.Add(InSlots[SlotIndex]);
 	}
 	Orientation = InArgs._Orientation;
+	BackPadScrolling = InArgs._BackPadScrolling;
+	FrontPadScrolling = InArgs._FrontPadScrolling;
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+
+void SScrollPanel::Construct(const FArguments& InArgs, TArray<SScrollBox::FSlot::FSlotArguments> InSlots)
+{
+	PhysicalOffset = 0;
+	Children.AddSlots(MoveTemp(InSlots));
+	Orientation = InArgs._Orientation;
+	BackPadScrolling = InArgs._BackPadScrolling;
+	FrontPadScrolling = InArgs._FrontPadScrolling;
 }
 
 void SScrollPanel::OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const
 {
-	float CurChildOffset = -PhysicalOffset;
+	float ScrollPadding = Orientation == Orient_Vertical ? AllottedGeometry.GetLocalSize().Y : AllottedGeometry.GetLocalSize().X;
+	float CurChildOffset = -PhysicalOffset; 
+	CurChildOffset += BackPadScrolling ? ScrollPadding : 0;
 
 	for (int32 SlotIndex = 0; SlotIndex < Children.Num(); ++SlotIndex)
 	{
@@ -61,22 +76,27 @@ FVector2D SScrollPanel::ComputeDesiredSize(float) const
 			if (Orientation == Orient_Vertical)
 			{
 				ThisDesiredSize.X = FMath::Max(ChildDesiredSize.X, ThisDesiredSize.X);
-				ThisDesiredSize.Y += ChildDesiredSize.Y + ThisSlot.SlotPadding.Get().GetTotalSpaceAlong<Orient_Vertical>();
+				ThisDesiredSize.Y += ChildDesiredSize.Y + ThisSlot.GetPadding().GetTotalSpaceAlong<Orient_Vertical>();
 			}
 			else
 			{
-				ThisDesiredSize.X += ChildDesiredSize.X + ThisSlot.SlotPadding.Get().GetTotalSpaceAlong<Orient_Horizontal>();
+				ThisDesiredSize.X += ChildDesiredSize.X + ThisSlot.GetPadding().GetTotalSpaceAlong<Orient_Horizontal>();
 				ThisDesiredSize.Y = FMath::Max(ChildDesiredSize.Y, ThisDesiredSize.Y);
 			}
 		}
 	}
+
+	FVector2D::FReal ScrollPadding = Orientation == Orient_Vertical ? GetTickSpaceGeometry().GetLocalSize().Y : GetTickSpaceGeometry().GetLocalSize().X;
+	FVector2D::FReal& SizeSideToPad = Orientation == Orient_Vertical ? ThisDesiredSize.Y : ThisDesiredSize.X;
+	SizeSideToPad += BackPadScrolling ? ScrollPadding : 0;
+	SizeSideToPad += FrontPadScrolling ? ScrollPadding : 0;
 
 	return ThisDesiredSize;
 }
 
 float SScrollPanel::ArrangeChildVerticalAndReturnOffset(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren, const SScrollBox::FSlot& ThisSlot, float CurChildOffset) const
 {
-	const FMargin& ThisPadding = ThisSlot.SlotPadding.Get();
+	const FMargin& ThisPadding = ThisSlot.GetPadding();
 	const FVector2D& WidgetDesiredSize = ThisSlot.GetWidget()->GetDesiredSize();
 	const float ThisSlotDesiredHeight = WidgetDesiredSize.Y + ThisPadding.GetTotalSpaceAlong<Orient_Vertical>();
 
@@ -90,7 +110,7 @@ float SScrollPanel::ArrangeChildVerticalAndReturnOffset(const FGeometry& Allotte
 
 float SScrollPanel::ArrangeChildHorizontalAndReturnOffset(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren, const SScrollBox::FSlot& ThisSlot, float CurChildOffset) const
 {
-	const FMargin& ThisPadding = ThisSlot.SlotPadding.Get();
+	const FMargin& ThisPadding = ThisSlot.GetPadding();
 	const FVector2D& WidgetDesiredSize = ThisSlot.GetWidget()->GetDesiredSize();
 	const float ThisSlotDesiredWidth = WidgetDesiredSize.X + ThisPadding.GetTotalSpaceAlong<Orient_Horizontal>();
 
@@ -104,6 +124,7 @@ float SScrollPanel::ArrangeChildHorizontalAndReturnOffset(const FGeometry& Allot
 
 SScrollBox::SScrollBox()
 {
+	VerticalScrollBarSlot = nullptr;
 	bClippingProxy = true;
 }
 
@@ -128,6 +149,8 @@ void SScrollBox::Construct( const FArguments& InArgs )
 	ConsumeMouseWheel = InArgs._ConsumeMouseWheel;
 	TickScrollDelta = 0;
 	AllowOverscroll = InArgs._AllowOverscroll;
+	BackPadScrolling = InArgs._BackPadScrolling;
+	FrontPadScrolling = InArgs._FrontPadScrolling;
 	bAnimateWheelScrolling = InArgs._AnimateWheelScrolling;
 	WheelScrollMultiplier = InArgs._WheelScrollMultiplier;
 	NavigationScrollPadding = InArgs._NavigationScrollPadding;
@@ -149,16 +172,18 @@ void SScrollBox::Construct( const FArguments& InArgs )
 		ScrollBar = ConstructScrollBar();
 		ScrollBar->SetDragFocusCause(InArgs._ScrollBarDragFocusCause);
 		ScrollBar->SetThickness(InArgs._ScrollBarThickness);
-		ScrollBar->SetPadding(InArgs._ScrollBarPadding);
 		ScrollBar->SetUserVisibility(InArgs._ScrollBarVisibility);
 		ScrollBar->SetScrollBarAlwaysVisible(InArgs._ScrollBarAlwaysVisible);
+		ScrollBarSlotPadding = InArgs._ScrollBarPadding;
 
 		bScrollBarIsExternal = false;
 	}
 
-	SAssignNew(ScrollPanel, SScrollPanel, InArgs.Slots)
+	SAssignNew(ScrollPanel, SScrollPanel, MoveTemp(const_cast<TArray<FSlot::FSlotArguments>&>(InArgs._Slots)))
 		.Clipping(InArgs._Clipping)
-		.Orientation(Orientation);
+		.Orientation(Orientation)
+		.BackPadScrolling(BackPadScrolling)
+		.FrontPadScrolling(FrontPadScrolling);
 
 	if (Orientation == Orient_Vertical)
 	{
@@ -228,10 +253,13 @@ void SScrollBox::ConstructVerticalLayout()
 		]
 	];
 
+	VerticalScrollBarSlot = nullptr;
 	if (!bScrollBarIsExternal)
 	{
 		PanelAndScrollbar->AddSlot()
+		.Padding(ScrollBarSlotPadding)
 		.AutoWidth()
+		.Expose(VerticalScrollBarSlot)
 		[
 			ScrollBar.ToSharedRef()
 		];
@@ -281,37 +309,29 @@ void SScrollBox::ConstructHorizontalLayout()
 		]
 	];
 
+	HorizontalScrollBarSlot = nullptr;
 	if (!bScrollBarIsExternal)
 	{
 		PanelAndScrollbar->AddSlot()
-			.AutoHeight()
-			[
-				ScrollBar.ToSharedRef()
-			];
+		.Padding(ScrollBarSlotPadding)
+		.AutoHeight()
+		.Expose(HorizontalScrollBarSlot)
+		[
+			ScrollBar.ToSharedRef()
+		];
 	}
 }
 
 /** Adds a slot to SScrollBox */
-SScrollBox::FSlot& SScrollBox::AddSlot()
+SScrollBox::FScopedWidgetSlotArguments SScrollBox::AddSlot()
 {
-	SScrollBox::FSlot& NewSlot = *new SScrollBox::FSlot();
-	ScrollPanel->Children.Add( &NewSlot );
-
-	return NewSlot;
+	return FScopedWidgetSlotArguments{ MakeUnique<FSlot>(), ScrollPanel->Children, INDEX_NONE };
 }
 
 /** Removes a slot at the specified location */
 void SScrollBox::RemoveSlot( const TSharedRef<SWidget>& WidgetToRemove )
 {
-	TPanelChildren<SScrollBox::FSlot>& Children = ScrollPanel->Children;
-	for( int32 SlotIndex=0; SlotIndex < Children.Num(); ++SlotIndex )
-	{
-		if ( Children[SlotIndex].GetWidget() == WidgetToRemove )
-		{
-			Children.RemoveAt(SlotIndex);
-			return;
-		}
-	}
+	ScrollPanel->Children.Remove(WidgetToRemove);
 }
 
 void SScrollBox::ClearChildren()
@@ -350,7 +370,7 @@ float SScrollBox::GetViewOffsetFraction() const
 	const float ContentSize = GetScrollComponentFromVector(ScrollPanel->GetDesiredSize());
 
 	const float ViewFraction = GetViewFraction();
-	return FMath::Clamp<float>( DesiredScrollOffset/ContentSize, 0.0, 1.0 - ViewFraction );
+	return FMath::Clamp( DesiredScrollOffset/ContentSize, 0.f, 1.f - ViewFraction );
 }
 
 void SScrollBox::SetScrollOffset( float NewScrollOffset )
@@ -465,6 +485,11 @@ EOrientation SScrollBox::GetOrientation()
 	return Orientation;
 }
 
+void SScrollBox::SetNavigationDestination(const EDescendantScrollDestination NewNavigationDestination)
+{
+	NavigationDestination = NewNavigationDestination;
+}
+
 void SScrollBox::SetConsumeMouseWheel(EConsumeMouseWheel NewConsumeMouseWheel)
 {
 	ConsumeMouseWheel = NewConsumeMouseWheel;
@@ -513,7 +538,22 @@ void SScrollBox::SetScrollBarThickness(FVector2D InThickness)
 
 void SScrollBox::SetScrollBarPadding(const FMargin& InPadding)
 {
-	ScrollBar->SetPadding(InPadding);
+	ScrollBarSlotPadding = InPadding;
+
+	if (Orientation == Orient_Vertical)
+	{
+		if (VerticalScrollBarSlot)
+		{
+			VerticalScrollBarSlot->SetPadding(ScrollBarSlotPadding);
+		}
+	}
+	else
+	{
+		if (HorizontalScrollBarSlot)
+		{
+			HorizontalScrollBarSlot->SetPadding(ScrollBarSlotPadding);
+		}
+	}
 }
 
 void SScrollBox::SetScrollBarRightClickDragAllowed(bool bIsAllowed)
@@ -1011,7 +1051,7 @@ void SScrollBox::OnFocusChanging(const FWeakWidgetPath& PreviousFocusPath, const
 {
 	if (ScrollWhenFocusChanges != EScrollWhenFocusChanges::NoScroll)
 	{
-		if (NewWidgetPath.IsValid() && NewWidgetPath.ContainsWidget(SharedThis(this)))
+		if (NewWidgetPath.IsValid() && NewWidgetPath.ContainsWidget(this))
 		{
 			ScrollDescendantIntoView(NewWidgetPath.GetLastWidget(), ScrollWhenFocusChanges == EScrollWhenFocusChanges::AnimatedScroll ? true : false, NavigationDestination, NavigationScrollPadding);
 		}

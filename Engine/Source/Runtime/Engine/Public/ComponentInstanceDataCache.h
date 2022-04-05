@@ -17,6 +17,7 @@ enum class ECacheApplyPhase
 {
 	PostSimpleConstructionScript,	// After the simple construction script has been run
 	PostUserConstructionScript,		// After the user construction script has been run
+	NonConstructionScript			// Not called during the construction script process
 };
 
 UENUM()
@@ -103,7 +104,7 @@ protected:
 
 	/** The template used to create the source component */
 	UPROPERTY()
-	const UObject* SourceComponentTemplate;
+	TObjectPtr<const UObject> SourceComponentTemplate;
 
 	/** The method that was used to create the source component */
 	UPROPERTY() 
@@ -130,7 +131,7 @@ protected:
 
 	// Referenced objects in component instance saved properties
 	UPROPERTY()
-	TArray<UObject*> ReferencedObjects;
+	TArray<TObjectPtr<UObject>> ReferencedObjects;
 
 	// Referenced names in component instance saved properties
 	UPROPERTY()

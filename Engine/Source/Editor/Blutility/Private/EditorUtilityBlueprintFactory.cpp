@@ -15,6 +15,9 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Kismet2/SClassPickerDialog.h"
 #include "EditorUtilityWidget.h"
+#include "EditorUtilityActor.h"
+#include "EditorUtilityObject.h"
+#include "AssetActionUtility.h"
 
 class FBlutilityBlueprintFactoryFilter : public IClassViewerFilter
 {
@@ -74,9 +77,13 @@ bool UEditorUtilityBlueprintFactory::ConfigureProperties()
 	Options.bShowUnloadedBlueprints = true;
 	Options.bEditorClassesOnly = true;
 
+	Options.ExtraPickerCommonClasses.Add(AEditorUtilityActor::StaticClass());
+	Options.ExtraPickerCommonClasses.Add(UEditorUtilityObject::StaticClass());
+	Options.ExtraPickerCommonClasses.Add(UAssetActionUtility::StaticClass());
+
 	TSharedPtr< FBlutilityBlueprintFactoryFilter > Filter = MakeShareable(new FBlutilityBlueprintFactoryFilter);
 	Filter->DisallowedChildOfClasses.Add(UEditorUtilityWidget::StaticClass());
-	Options.ClassFilter = Filter;
+	Options.ClassFilters.Add(Filter.ToSharedRef());
 
 	const FText TitleText = NSLOCTEXT("EditorFactories", "CreateBlueprintOptions", "Pick Parent Class");
 	UClass* ChosenClass = NULL;

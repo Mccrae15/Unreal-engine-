@@ -31,7 +31,10 @@ public:
 
 	// Begin UAnimNotify interface
 	virtual FString GetNotifyName_Implementation() const override;
+
+	UE_DEPRECATED(5.0, "Please use the other Notify function instead")
 	virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation) override;
+	virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation, const FAnimNotifyEventReference& EventReference) override;
 #if WITH_EDITOR
 	virtual void ValidateAssociatedAssets() override;
 #endif
@@ -39,7 +42,7 @@ public:
 
 	// Particle System to Spawn
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="AnimNotify", meta=(DisplayName="Particle System"))
-	UParticleSystem* PSTemplate;
+	TObjectPtr<UParticleSystem> PSTemplate;
 
 	// Location offset from the socket
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="AnimNotify")

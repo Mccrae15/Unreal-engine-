@@ -16,6 +16,7 @@
 #include "OSCManager.h"
 #include "OSCServer.h"
 #include "SGenlockProviderTab.h"
+#include "STimecodeProviderTab.h"
 #include "Textures/SlateIcon.h"
 #include "VPSettings.h"
 #include "VPUtilitiesEditorSettings.h"
@@ -38,15 +39,8 @@ void FVPUtilitiesEditorModule::StartupModule()
 	CustomUIHandler.Reset(NewObject<UVPCustomUIHandler>());
 	CustomUIHandler->Init();
 
-	{
-		const IWorkspaceMenuStructure& MenuStructure = WorkspaceMenu::GetMenuStructure();
-		TSharedRef<FWorkspaceItem> MediaBrowserGroup = MenuStructure.GetDeveloperToolsMiscCategory()->GetParent()->AddGroup(
-			LOCTEXT("WorkspaceMenu_VirtualProductionCategory", "Virtual Production"),
-			FSlateIcon(),
-			true);
-
-		SGenlockProviderTab::RegisterNomadTabSpawner(MediaBrowserGroup);
-	}
+	SGenlockProviderTab::RegisterNomadTabSpawner(WorkspaceMenu::GetMenuStructure().GetLevelEditorVirtualProductionCategory());
+	STimecodeProviderTab::RegisterNomadTabSpawner();
 
 	RegisterSettings();
 
@@ -59,6 +53,7 @@ void FVPUtilitiesEditorModule::StartupModule()
 void FVPUtilitiesEditorModule::ShutdownModule()
 {
 	UnregisterSettings();
+	STimecodeProviderTab::UnregisterNomadTabSpawner();
 	SGenlockProviderTab::UnregisterNomadTabSpawner();
 
 	if (UObjectInitialized())
@@ -90,6 +85,7 @@ const FPlacementCategoryInfo* FVPUtilitiesEditorModule::GetVirtualProductionPlac
 		{
 			FPlacementCategoryInfo Info(
 				LOCTEXT("VirtualProductionCategoryName", "Virtual Production"),
+				FSlateIcon(FVPUtilitiesEditorStyle::GetStyleSetName(), "PlacementBrowser.Icons.VirtualProduction"),
 				PlacementModeCategoryHandle,
 				TEXT("PMVirtualProduction"),
 				25
@@ -127,11 +123,11 @@ void FVPUtilitiesEditorModule::RegisterSettings()
 	FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>("LevelEditor");
 	if (LevelEditorModule != nullptr)
 	{
-		FLevelEditorModule::FStatusBarItem Item;
+		FLevelEditorModule::FTitleBarItem Item;
 		Item.Label = LOCTEXT("VPRolesLabel", "VP Roles: ");
 		Item.Value = MakeAttributeLambda([]() { return FText::FromString(GetMutableDefault<UVPSettings>()->GetRoles().ToStringSimple()); });
 		Item.Visibility = MakeAttributeLambda([]() { return GetMutableDefault<UVPSettings>()->bShowRoleInEditor ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed; });
-		LevelEditorModule->AddStatusBarItem(VPRoleNotificationBarIdentifier, Item);
+		LevelEditorModule->AddTitleBarItem(VPRoleNotificationBarIdentifier, Item);
 	}
 }
 
@@ -147,7 +143,7 @@ void FVPUtilitiesEditorModule::UnregisterSettings()
 	FLevelEditorModule* LevelEditorModule = FModuleManager::GetModulePtr<FLevelEditorModule>("LevelEditor");
 	if (LevelEditorModule != nullptr)
 	{
-		LevelEditorModule->RemoveStatusBarItem(VPRoleNotificationBarIdentifier);
+		LevelEditorModule->RemoveTitleBarItem(VPRoleNotificationBarIdentifier);
 	}
 }
 
@@ -186,8 +182,8 @@ void FVPUtilitiesEditorModule::InitializeOSCServer()
 	{
 		if (ListenerPath.IsValid())
 		{
-			UObject* Object = ListenerPath.TryLoad();
-			if (Object && !Object->IsPendingKillOrUnreachable() && GEditor)
+			UObject* Object = GetValid(ListenerPath.TryLoad());
+			if (Object && GEditor)
 			{
 				GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>()->TryRun(Object);
 			}

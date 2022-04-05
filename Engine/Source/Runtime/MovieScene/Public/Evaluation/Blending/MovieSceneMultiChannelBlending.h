@@ -307,7 +307,10 @@ namespace MovieScene
 	}
 	inline void MultiChannelFromData(const FEulerTransform& In, 	TMultiChannelValue<float, 9>& Out)
 	{
-		Out = { In.Location.X, In.Location.Y, In.Location.Z, In.Rotation.Roll, In.Rotation.Pitch, In.Rotation.Yaw, In.Scale.X, In.Scale.Y, In.Scale.Z };
+		FVector Translation = In.Location;
+		FVector Scale = In.Scale;
+		FRotator3d Rotation = FRotator3d(In.Rotation);
+		Out = { Translation.X, Translation.Y, Translation.Z, Rotation.Roll, Rotation.Pitch, Rotation.Yaw, Scale.X, Scale.Y, Scale.Z };
 	}
 	inline void MultiChannelFromData(const FLinearColor& In, TMultiChannelValue<float, 4>& Out)
 	{

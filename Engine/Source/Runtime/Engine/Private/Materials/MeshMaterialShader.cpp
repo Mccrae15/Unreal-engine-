@@ -27,8 +27,8 @@ static void PrepareMeshMaterialShaderCompileJob(EShaderPlatform Platform,
 	const FMaterial* Material,
 	FSharedShaderCompilerEnvironment* MaterialEnvironment,
 	const FShaderPipelineType* ShaderPipeline,
-	FString DebugDescription,
-	FString DebugExtension,
+	const TCHAR* DebugDescription,
+	const TCHAR* DebugExtension,
 	FShaderCompileJob* NewJob)
 {
 	const FShaderCompileJobKey& Key = NewJob->Key;
@@ -38,12 +38,14 @@ static void PrepareMeshMaterialShaderCompileJob(EShaderPlatform Platform,
 	NewJob->Input.SharedEnvironment = MaterialEnvironment;
 	FShaderCompilerEnvironment& ShaderEnvironment = NewJob->Input.Environment;
 	ShaderEnvironment.TargetPlatform = MaterialEnvironment->TargetPlatform;
+	NewJob->bIsDefaultMaterial = Material->IsDefaultMaterial();
+	NewJob->bIsGlobalShader = false;
 
 	const FMaterialShaderParameters MaterialParameters(Material);
 
 	// apply the vertex factory changes to the compile environment
 	check(VertexFactoryType);
-	VertexFactoryType->ModifyCompilationEnvironment(FVertexFactoryShaderPermutationParameters(Platform, MaterialParameters, VertexFactoryType, PermutationFlags), ShaderEnvironment);
+	VertexFactoryType->ModifyCompilationEnvironment(FVertexFactoryShaderPermutationParameters(Platform, MaterialParameters, VertexFactoryType, ShaderType, PermutationFlags), ShaderEnvironment);
 
 	Material->SetupExtaCompilationSettings(Platform, NewJob->Input.ExtraSettings);
 
@@ -92,8 +94,8 @@ void FMeshMaterialShaderType::BeginCompileShader(
 	FSharedShaderCompilerEnvironment* MaterialEnvironment,
 	const FVertexFactoryType* VertexFactoryType,
 	TArray<FShaderCommonCompileJobPtr>& NewJobs,
-	FString DebugDescription,
-	FString DebugExtension) const
+	const TCHAR* DebugDescription,
+	const TCHAR* DebugExtension) const
 {
 	FShaderCompileJob* NewJob = GShaderCompilingManager->PrepareShaderCompileJob(ShaderMapId, FShaderCompileJobKey(this, VertexFactoryType, PermutationId), Priority);
 	if (NewJob)
@@ -114,8 +116,8 @@ void FMeshMaterialShaderType::BeginCompileShaderPipeline(
 	const FVertexFactoryType* VertexFactoryType,
 	const FShaderPipelineType* ShaderPipeline,
 	TArray<FShaderCommonCompileJobPtr>& NewJobs,
-	FString DebugDescription,
-	FString DebugExtension)
+	const TCHAR* DebugDescription,
+	const TCHAR* DebugExtension)
 {
 	check(ShaderPipeline);
 	UE_LOG(LogShaders, Verbose, TEXT("	Pipeline: %s"), ShaderPipeline->GetName());
@@ -181,9 +183,9 @@ bool FMeshMaterialShaderType::ShouldCompilePermutation(EShaderPlatform Platform,
 	return FShaderType::ShouldCompilePermutation(FMeshMaterialShaderPermutationParameters(Platform, MaterialParameters, VertexFactoryType, PermutationId, Flags));
 }
 
-bool FMeshMaterialShaderType::ShouldCompileVertexFactoryPermutation(const FVertexFactoryType* VertexFactoryType, EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, EShaderPermutationFlags Flags)
+bool FMeshMaterialShaderType::ShouldCompileVertexFactoryPermutation(EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, const FVertexFactoryType* VertexFactoryType, const FShaderType* ShaderType, EShaderPermutationFlags Flags)
 {
-	return VertexFactoryType->ShouldCache(FVertexFactoryShaderPermutationParameters(Platform, MaterialParameters, VertexFactoryType, Flags));
+	return VertexFactoryType->ShouldCache(FVertexFactoryShaderPermutationParameters(Platform, MaterialParameters, VertexFactoryType, ShaderType, Flags));
 }
 
 bool FMeshMaterialShaderType::ShouldCompilePipeline(const FShaderPipelineType* ShaderPipelineType, EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, const FVertexFactoryType* VertexFactoryType, EShaderPermutationFlags Flags)
@@ -197,6 +199,21 @@ bool FMeshMaterialShaderType::ShouldCompilePipeline(const FShaderPipelineType* S
 			return false;
 		}
 	}
+	return true;
+}
+
+bool FMeshMaterialShaderType::ShouldCompileVertexFactoryPipeline(const FShaderPipelineType* ShaderPipelineType, EShaderPlatform Platform, const FMaterialShaderParameters& MaterialParameters, const FVertexFactoryType* VertexFactoryType, EShaderPermutationFlags Flags)
+{
+	for (const FShaderType* ShaderType : ShaderPipelineType->GetStages())
+	{
+		checkSlow(ShaderType->GetMeshMaterialShaderType());
+
+		if (!VertexFactoryType->ShouldCache(FVertexFactoryShaderPermutationParameters(Platform, MaterialParameters, VertexFactoryType, ShaderType, Flags)))
+		{
+			return false;
+		}
+	}
+
 	return true;
 }
 
@@ -233,11 +250,10 @@ void FMeshMaterialShaderMap::LoadMissingShadersFromMemory(
 	}
 
 	// Try to find necessary FShaderPipelineTypes in memory
-	const bool bHasTessellation = Material->GetTessellationMode() != MTM_NoTessellation;
 	for (TLinkedList<FShaderPipelineType*>::TIterator ShaderPipelineIt(FShaderPipelineType::GetTypeList());ShaderPipelineIt;ShaderPipelineIt.Next())
 	{
 		const FShaderPipelineType* PipelineType = *ShaderPipelineIt;
-		if (PipelineType && PipelineType->IsMeshMaterialTypePipeline() && !HasShaderPipeline(PipelineType) && PipelineType->HasTessellation() == bHasTessellation)
+		if (PipelineType && PipelineType->IsMeshMaterialTypePipeline() && !HasShaderPipeline(PipelineType))
 		{
 			auto& Stages = PipelineType->GetStages();
 			int32 NumShaders = 0;

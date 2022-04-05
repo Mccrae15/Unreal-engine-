@@ -1,6 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "TrackEditors/SubTrackEditorBase.h"
+#include "FrameNumberDisplayFormat.h"
+#include "FrameNumberNumericInterface.h"
+#include "SequencerSettings.h"
 #include "Tracks/MovieSceneCinematicShotTrack.h"
 #include "Tracks/MovieSceneSubTrack.h"
 
@@ -109,12 +112,27 @@ FSubSectionPainterResult FSubSectionPainterUtil::PaintSection(TSharedPtr<const I
         FFrameTime CurrentTime = Sequencer->GetLocalTime().Time;
         if (SectionRange.Contains(CurrentTime.FrameNumber))
         {
-            UMovieScene* SubSequenceMovieScene = SectionObject.GetSequence()->GetMovieScene();
+            const UMovieScene* SubSequenceMovieScene = SectionObject.GetSequence()->GetMovieScene();
             const FFrameRate DisplayRate = SubSequenceMovieScene->GetDisplayRate();
             const FFrameRate TickResolution = SubSequenceMovieScene->GetTickResolution();
-            const FFrameNumber CurrentFrameNumber = ConvertFrameTime(CurrentTime * SectionObject.OuterToInnerTransform(), TickResolution, DisplayRate).FloorToFrame();
+			const FFrameTime HintFrameTime = CurrentTime * SectionObject.OuterToInnerTransform();
 
-            DrawFrameNumberHint(InPainter, CurrentTime, CurrentFrameNumber.Value);
+			// Get the desired frame display format and zero padding from
+			// the sequencer settings, if possible.
+			TAttribute<EFrameNumberDisplayFormats> DisplayFormatAttr(EFrameNumberDisplayFormats::Frames);
+			TAttribute<uint8> ZeroPadFrameNumbersAttr(0u);
+			if (const USequencerSettings* SequencerSettings = Sequencer->GetSequencerSettings())
+			{
+				DisplayFormatAttr.Set(SequencerSettings->GetTimeDisplayFormat());
+				ZeroPadFrameNumbersAttr.Set(SequencerSettings->GetZeroPadFrames());
+			}
+
+			const TAttribute<FFrameRate> TickResolutionAttr(TickResolution);
+			const TAttribute<FFrameRate> DisplayRateAttr(DisplayRate);
+
+			const FFrameNumberInterface FrameNumberInterface(DisplayFormatAttr, ZeroPadFrameNumbersAttr, TickResolutionAttr, DisplayRateAttr);
+
+			DrawFrameTimeHint(InPainter, CurrentTime, HintFrameTime, &FrameNumberInterface);
         }
     }
 
@@ -273,6 +291,7 @@ FSubSectionEditorUtil::FSubSectionEditorUtil(UMovieSceneSubSection& InSection)
     : SectionObject(InSection)
     , InitialStartOffsetDuringResize(0)
     , InitialStartTimeDuringResize(0)
+	, PreviousTimeScale(1.f)
 {
 }
 
@@ -380,6 +399,20 @@ FFrameNumber FSubSectionEditorUtil::SlipSection(FFrameNumber SlipTime)
 
     return SlipTime;
 }
+
+void FSubSectionEditorUtil::BeginDilateSection()
+{
+    FMovieSceneSectionParameters& SectionParameters = SectionObject.Parameters;
+	PreviousTimeScale = SectionParameters.TimeScale;
+}
+
+void FSubSectionEditorUtil::DilateSection(const TRange<FFrameNumber>& NewRange, float DilationFactor)
+{
+    FMovieSceneSectionParameters& SectionParameters = SectionObject.Parameters;
+	SectionParameters.TimeScale = PreviousTimeScale / DilationFactor;
+	SectionObject.SetRange(NewRange);
+}
+
 
 bool FSubTrackEditorUtil::CanAddSubSequence(const UMovieSceneSequence* CurrentSequence, const UMovieSceneSequence& SubSequence)
 {

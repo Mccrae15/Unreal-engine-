@@ -30,7 +30,7 @@ struct SCurveEditorTableRow : SMultiColumnTableRow<FCurveEditorTreeItemID>
 		TSharedPtr<FCurveEditor> CurveEditor = WeakCurveEditor.Pin();
 
 		const bool bIsMatch = CurveEditor.IsValid() && ( CurveEditor->GetTree()->GetFilterState(TreeItemID) == ECurveEditorTreeFilterState::Match );
-		return bIsMatch ? FSlateColor::UseForeground() : FSlateColor::UseSubduedForeground();
+		return bIsMatch ? GetForegroundBasedOnSelection() : FSlateColor::UseSubduedForeground();
 	}
 
 	virtual TSharedRef<SWidget> GenerateWidgetForColumn(const FName& InColumnName) override
@@ -101,6 +101,7 @@ void SCurveEditorTree::Construct(const FArguments& InArgs, TSharedPtr<FCurveEdit
 		.OnGenerateRow(this, &SCurveEditorTree::GenerateRow)
 		.OnSetExpansionRecursive(this, &SCurveEditorTree::SetItemExpansionRecursive)
 		.OnMouseButtonDoubleClick(InArgs._OnMouseButtonDoubleClick)
+		.OnTreeViewScrolled(InArgs._OnTreeViewScrolled)
 		.OnSelectionChanged_Lambda(
 			[this](TListTypeTraits<FCurveEditorTreeItemID>::NullableType InItemID, ESelectInfo::Type Type)
 			{

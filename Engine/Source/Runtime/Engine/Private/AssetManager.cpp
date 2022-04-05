@@ -8,8 +8,11 @@
 #include "Containers/StringView.h"
 #include "Engine/Engine.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/ICookInfo.h"
 #include "Interfaces/IPluginManager.h"
+#include "MoviePlayerProxy.h"
 #include "UObject/ConstructorHelpers.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectHash.h"
 #include "Misc/FileHelper.h"
 #include "Misc/ScopedSlowTask.h"
@@ -17,7 +20,7 @@
 #include "Misc/StringBuilder.h"
 #include "Serialization/MemoryReader.h"
 #include "AssetRegistryState.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "IPlatformFilePak.h"
 #include "Stats/StatsMisc.h"
 #include "String/Find.h"
@@ -213,6 +216,47 @@ const FString UAssetManager::DynamicSearchRootsVirtualPath = TEXT("$DynamicSearc
 FSimpleMulticastDelegate UAssetManager::OnCompletedInitialScanDelegate;
 FSimpleMulticastDelegate UAssetManager::OnAssetManagerCreatedDelegate;
 
+// Allow StartInitialLoading() bulk scan to continue past FinishInitialLoading() to cover:
+// 1. Loading in subclass FinishInitialLoading() override after calling base FinishInitialLoading() 
+// 2. Plugin loading in OnPostEngine callback, e.g. UDataRegistrySubsystem::LoadAllRegistries()
+// 
+// Bulk scanning should stop before the early GC when loading the first map, to ensure
+// RebuildObjectReferenceList() stops INI-referenced UClasses from being GCed.
+//
+// Ideally some future asset manager refactoring can get rid of this complexity / hack.
+static class FInitialBulkScanHelper
+{
+	UAssetManager* Scanner = nullptr;
+
+public:
+	void StartOnce(UAssetManager* Manager)
+	{
+		if (Scanner == nullptr)
+		{
+			Manager->PushBulkScanning();
+			Scanner = Manager;
+		}
+	}
+
+	void StopOnce()
+	{
+		if (Scanner)
+		{
+			Scanner->PopBulkScanning();
+		}
+		else
+		{
+			Scanner = reinterpret_cast<UAssetManager*>(8); // Avoid starting bulk scan after OnPostEngineInit
+		}
+	}
+}
+GInitialBulkScan;
+
+// OnPostEngineInit fires in reverse order, register early to get a late callback
+static FDelayedAutoRegisterHelper GInitialBulkScanStopper(EDelayedRegisterRunPhase::StartOfEnginePreInit,
+	[] { FCoreDelegates::OnPostEngineInit.AddLambda([] { GInitialBulkScan.StopOnce(); }); } );
+
+
 UAssetManager::UAssetManager()
 {
 	bIsGlobalAsyncScanEnvironment = false;
@@ -220,7 +264,8 @@ UAssetManager::UAssetManager()
 	bShouldUseSynchronousLoad = false;
 	bIsLoadingFromPakFiles = false;
 	bShouldAcquireMissingChunksOnLoad = false;
-	bIsBulkScanning = false;
+	bTargetPlatformsAllowEditorObjects = false;
+	NumBulkScanRequests = 0;
 	bIsManagementDatabaseCurrent = false;
 	bIsPrimaryAssetDirectoryCurrent = false;
 	bUpdateManagementDatabaseAfterScan = false;
@@ -252,7 +297,7 @@ void UAssetManager::PostInitProperties()
 
 		FEditorDelegates::PreBeginPIE.AddUObject(this, &UAssetManager::PreBeginPIE);
 		FEditorDelegates::EndPIE.AddUObject(this, &UAssetManager::EndPIE);
-		FCoreUObjectDelegates::OnObjectSaved.AddUObject(this, &UAssetManager::OnObjectPreSave);
+		FCoreUObjectDelegates::OnObjectPreSave.AddUObject(this, &UAssetManager::OnObjectPreSave);
 
 		// In editor builds guess the type/name if allowed
 		bShouldGuessTypeAndName = Settings.bShouldGuessTypeAndNameInEditor;
@@ -489,7 +534,10 @@ int32 UAssetManager::SearchAssetRegistryPaths(TArray<FAssetData>& OutAssetDataLi
 	{
 		return 0;
 	}
-
+	if (Rules.AssetScanPaths.IsEmpty())
+	{
+		return 0;
+	}
 	TArray<FString> Directories, PackageNames;
 	TArray<FString> ScanPaths = Rules.AssetScanPaths;
 	// Add path info
@@ -826,6 +874,11 @@ int32 UAssetManager::ScanPathsForPrimaryAssets(FPrimaryAssetType PrimaryAssetTyp
 	// Now add to map or update as needed
 	for (FAssetData& Data : AssetDataList)
 	{
+		if (!Data.IsTopLevelAsset())
+		{
+			// Only TopLevelAssets can be PrimaryAssets
+			continue;
+		}
 		FPrimaryAssetId PrimaryAssetId = ExtractPrimaryAssetIdFromData(Data, PrimaryAssetType);
 
 		// Remove invalid or wrong type assets
@@ -854,10 +907,10 @@ int32 UAssetManager::ScanPathsForPrimaryAssets(FPrimaryAssetType PrimaryAssetTyp
 
 		NumAdded++;
 
-		UpdateCachedAssetData(PrimaryAssetId, Data, false);
+		TryUpdateCachedAssetData(PrimaryAssetId, Data, false);
 	}
 
-	if (!bIsBulkScanning)
+	if (!IsBulkScanning())
 	{
 		RebuildObjectReferenceList();
 	}
@@ -865,28 +918,38 @@ int32 UAssetManager::ScanPathsForPrimaryAssets(FPrimaryAssetType PrimaryAssetTyp
 	return NumAdded;
 }
 
+void UAssetManager::PushBulkScanning()
+{
+	if (++NumBulkScanRequests == 1)
+	{
+		StartBulkScanning();
+	}
+}
+
+void UAssetManager::PopBulkScanning()
+{
+	ensure(NumBulkScanRequests > 0);
+	if (--NumBulkScanRequests == 0)
+	{
+		StopBulkScanning();
+	}
+}
+
 void UAssetManager::StartBulkScanning()
 {
-	// TODO switch to an int and support nesting
-	if (ensure(!bIsBulkScanning))
-	{
-		bIsBulkScanning = true;
-		NumberOfSpawnedNotifications = 0;
-		bOldTemporaryCachingMode = GetAssetRegistry().GetTemporaryCachingMode();
-		// Go into temporary caching mode to speed up class queries
-		GetAssetRegistry().SetTemporaryCachingMode(true);
-	}
+	check(IsBulkScanning());
+
+	NumberOfSpawnedNotifications = 0;
+	bOldTemporaryCachingMode = GetAssetRegistry().GetTemporaryCachingMode();
+	// Go into temporary caching mode to speed up class queries
+	GetAssetRegistry().SetTemporaryCachingMode(true);
 }
 
 void UAssetManager::StopBulkScanning()
 {
-	if (ensure(bIsBulkScanning))
-	{
-		bIsBulkScanning = false;
+	check(!IsBulkScanning());
 
-		// Leave temporary caching mode
-		GetAssetRegistry().SetTemporaryCachingMode(bOldTemporaryCachingMode);
-	}
+	GetAssetRegistry().SetTemporaryCachingMode(bOldTemporaryCachingMode);
 	
 	RebuildObjectReferenceList();
 }
@@ -904,10 +967,12 @@ bool UAssetManager::RegisterSpecificPrimaryAsset(const FPrimaryAssetId& PrimaryA
 		return false;
 	}
 
-	// If we got this far, it will succeed but might warn
-	UpdateCachedAssetData(PrimaryAssetId, NewAssetData, false);
+	if (!TryUpdateCachedAssetData(PrimaryAssetId, NewAssetData, false))
+	{
+		return false;
+	}
 
-	if (!bIsBulkScanning)
+	if (!IsBulkScanning())
 	{
 		RebuildObjectReferenceList();
 	}
@@ -919,32 +984,39 @@ bool UAssetManager::RegisterSpecificPrimaryAsset(const FPrimaryAssetId& PrimaryA
 enum class EAssetDataCanBeSubobject { Yes, No };
 
 template<EAssetDataCanBeSubobject ScanForSubobject>
-FSoftObjectPath ToSoftObjectPath(const FAssetData& AssetData);
+bool TryToSoftObjectPath(const FAssetData& AssetData, FSoftObjectPath& OutSoftObjectPath);
 
-void UAssetManager::UpdateCachedAssetData(const FPrimaryAssetId& PrimaryAssetId, const FAssetData& NewAssetData, bool bAllowDuplicates)
+bool UAssetManager::TryUpdateCachedAssetData(const FPrimaryAssetId& PrimaryAssetId, const FAssetData& NewAssetData, bool bAllowDuplicates)
 {
 	check(PrimaryAssetId.IsValid());
 
 	const TSharedRef<FPrimaryAssetTypeData>* FoundType = AssetTypeMap.Find(PrimaryAssetId.PrimaryAssetType);
 
-	if (ensure(FoundType))
+	if (!ensure(FoundType))
+	{
+		return false;
+	}
+	else
 	{
 		FPrimaryAssetTypeData& TypeData = FoundType->Get();
 
 		FPrimaryAssetData* OldData = TypeData.AssetMap.Find(PrimaryAssetId.PrimaryAssetName);
 
-		FSoftObjectPath NewAssetPath = ToSoftObjectPath<EAssetDataCanBeSubobject::No>(NewAssetData);
+		FSoftObjectPath NewAssetPath;
+		if (!TryToSoftObjectPath<EAssetDataCanBeSubobject::No>(NewAssetData, NewAssetPath))
+		{
+			UE_LOG(LogAssetManager, Warning, TEXT("Tried to add primary asset %s, but it is not a TopLevelAsset and so cannot be a primary asset"),
+				*NewAssetData.ObjectPath.ToString())
+			return false;
+		}
 
 		ensure(NewAssetPath.IsAsset());
 
 		if (OldData && OldData->AssetPtr.ToSoftObjectPath() != NewAssetPath)
 		{
-			UE_LOG(LogAssetManager, Warning, TEXT("Found Duplicate PrimaryAssetID %s, this must be resolved before saving. Path %s is replacing path %s"), *PrimaryAssetId.ToString(), *OldData->AssetPtr.ToString(), *NewAssetPath.ToString());
-			// Don't ensure for editor only types, this will not cause an actual game problem
-			if (!bAllowDuplicates && !TypeData.Info.bIsEditorOnly)
-			{
-				ensureMsgf(!OldData, TEXT("Found Duplicate PrimaryAssetID %s! Path %s is replacing path %s"), *PrimaryAssetId.ToString(), *OldData->AssetPtr.ToString(), *NewAssetPath.ToString());
-			}
+			UE_LOG(LogAssetManager, Warning, 
+				TEXT("Found duplicate PrimaryAssetID %s, path %s conflicts with existing path %s. Two different primary assets can not have the same type and name."), 
+				*PrimaryAssetId.ToString(), *OldData->AssetPtr.ToString(), *NewAssetPath.ToString());
 
 #if WITH_EDITOR
 			if (GIsEditor)
@@ -952,7 +1024,7 @@ void UAssetManager::UpdateCachedAssetData(const FPrimaryAssetId& PrimaryAssetId,
 				const int MaxNotificationsPerFrame = 5;
 				if (NumberOfSpawnedNotifications++ < MaxNotificationsPerFrame)
 				{
-					FNotificationInfo Info(FText::Format(LOCTEXT("DuplicateAssetId", "Duplicate Asset ID {0} used by {1} and {2}, you must delete or rename one!"),
+					FNotificationInfo Info(FText::Format(LOCTEXT("DuplicateAssetId", "Duplicate Asset ID {0} used by both {1} and {2}, rename one to avoid a conflict."),
 						FText::FromString(PrimaryAssetId.ToString()), FText::FromString(OldData->AssetPtr.ToSoftObjectPath().GetLongPackageName()), FText::FromString(NewAssetPath.GetLongPackageName())));
 					Info.ExpireDuration = 30.0f;
 
@@ -963,7 +1035,13 @@ void UAssetManager::UpdateCachedAssetData(const FPrimaryAssetId& PrimaryAssetId,
 					}
 				}
 			}
+			else
 #endif
+			// Don't ensure for editor only types as they will not cause an actual game problem
+			if (!bAllowDuplicates && !TypeData.Info.bIsEditorOnly)
+			{
+				ensureMsgf(!OldData, TEXT("Found Duplicate PrimaryAssetID %s! Path %s conflicts with existing path %s"), *PrimaryAssetId.ToString(), *OldData->AssetPtr.ToString(), *NewAssetPath.ToString());
+			}
 		}
 
 		FPrimaryAssetData& NameData = TypeData.AssetMap.FindOrAdd(PrimaryAssetId.PrimaryAssetName);
@@ -981,7 +1059,7 @@ void UAssetManager::UpdateCachedAssetData(const FPrimaryAssetId& PrimaryAssetId,
 			LocalAssetRegistry.SetPrimaryAssetIdForObjectPath(NameData.AssetDataPath, PrimaryAssetId);
 		}
 
-		if (bIsBulkScanning)
+		if (IsBulkScanning())
 		{
 			// Do a partial update, add to the path->asset map
 			AssetPathMap.Add(NewAssetPath.GetAssetPathName(), PrimaryAssetId);
@@ -1023,6 +1101,7 @@ void UAssetManager::UpdateCachedAssetData(const FPrimaryAssetId& PrimaryAssetId,
 			CachedAssetBundles.Remove(PrimaryAssetId);
 		}
 	}
+	return true;
 }
 
 int32 UAssetManager::ScanPathForPrimaryAssets(FPrimaryAssetType PrimaryAssetType, const FString& Path, UClass* BaseClass, bool bHasBlueprintClasses, bool bIsEditorOnly, bool bForceSynchronousScan)
@@ -1075,7 +1154,7 @@ bool UAssetManager::AddDynamicAsset(const FPrimaryAssetId& PrimaryAssetId, const
 
 	NameData.AssetPtr = FSoftObjectPtr(AssetPath);
 
-	if (bIsBulkScanning && AssetPath.IsValid())
+	if (IsBulkScanning() && AssetPath.IsValid())
 	{
 		// Do a partial update, add to the path->asset map
 		AssetPathMap.Add(AssetPath.GetAssetPathName(), PrimaryAssetId);
@@ -1213,11 +1292,11 @@ bool UAssetManager::GetPrimaryAssetData(const FPrimaryAssetId& PrimaryAssetId, F
 
 	if (NameData)
 	{
-		const FAssetData* CachedAssetData = GetAssetRegistry().GetCachedAssetDataForObjectPath(NameData->AssetDataPath);
+		FAssetData CachedAssetData = GetAssetRegistry().GetAssetByObjectPath(NameData->AssetDataPath, false /* bIncludeOnlyOnDiskAssets */);
 
-		if (CachedAssetData && CachedAssetData->IsValid())
+		if (CachedAssetData.IsValid())
 		{
-			AssetData = *CachedAssetData;
+			AssetData = MoveTemp(CachedAssetData);
 			return true;
 		}
 	}
@@ -1236,12 +1315,12 @@ bool UAssetManager::GetPrimaryAssetDataList(FPrimaryAssetType PrimaryAssetType, 
 
 		for (const TPair<FName, FPrimaryAssetData>& Pair : TypeData.AssetMap)
 		{
-			const FAssetData* CachedAssetData = Registry.GetCachedAssetDataForObjectPath(Pair.Value.AssetDataPath);
+			FAssetData CachedAssetData = Registry.GetAssetByObjectPath(Pair.Value.AssetDataPath, false /* bIncludeOnlyOnDiskAssets */);
 
-			if (CachedAssetData && CachedAssetData->IsValid())
+			if (CachedAssetData.IsValid())
 			{
 				bAdded = true;
-				AssetDataList.Add(*CachedAssetData);
+				AssetDataList.Add(MoveTemp(CachedAssetData));
 			}
 		}
 	}
@@ -1459,9 +1538,18 @@ TSharedPtr<FStreamableHandle> UAssetManager::ChangeBundleStateForPrimaryAssets(c
 	TArray<TSharedPtr<FStreamableHandle> > NewHandles, ExistingHandles;
 	TArray<FPrimaryAssetId> NewAssets;
 	TSharedPtr<FStreamableHandle> ReturnHandle;
-
+	int32 MoviePlayerNumAssets = 0;
 	for (const FPrimaryAssetId& PrimaryAssetId : AssetsToChange)
 	{
+		MoviePlayerNumAssets++;
+		// Call the blocking tick every 500 assets.
+		if (MoviePlayerNumAssets >= 500)
+		{
+			MoviePlayerNumAssets = 0;
+			//UE_LOG(LogTemp, Warning, TEXT("pooo %d"), MoviePlayerNumAssets);
+			FMoviePlayerProxy::BlockingTick();
+		}
+
 		FPrimaryAssetData* NameData = GetNameData(PrimaryAssetId);
 
 		if (NameData)
@@ -1536,26 +1624,6 @@ TSharedPtr<FStreamableHandle> UAssetManager::ChangeBundleStateForPrimaryAssets(c
 				}
 			}
 
-			TSharedPtr<FStreamableHandle> NewHandle;
-
-			FString DebugName = PrimaryAssetId.ToString();
-
-			if (NewBundleState.Num() > 0)
-			{
-				DebugName += TEXT(" (");
-
-				for (int32 i = 0; i < NewBundleState.Num(); i++)
-				{
-					if (i != 0)
-					{
-						DebugName += TEXT(", ");
-					}
-					DebugName += NewBundleState[i].ToString();
-				}
-
-				DebugName += TEXT(")");
-			}
-
 			if (PathsToLoad.Num() == 0)
 			{
 				// New state has no assets to load. Set the CurrentState's bundles and clear the handle
@@ -1564,7 +1632,28 @@ TSharedPtr<FStreamableHandle> UAssetManager::ChangeBundleStateForPrimaryAssets(c
 				continue;
 			}
 
-			NewHandle = LoadAssetList(PathsToLoad.Array(), FStreamableDelegate(), Priority, DebugName);
+			TSharedPtr<FStreamableHandle> NewHandle;
+
+			TStringBuilder<1024> DebugName;
+			PrimaryAssetId.AppendString(DebugName);
+
+			if (NewBundleState.Num() > 0)
+			{
+				DebugName << TEXT(" (");
+
+				for (int32 Index = 0; Index < NewBundleState.Num(); Index++)
+				{
+					if (Index > 0)
+					{
+						DebugName << TEXT(", ");
+					}
+					NewBundleState[Index].AppendString(DebugName);
+				}
+
+				DebugName << TEXT(")");
+			}
+
+			NewHandle = LoadAssetList(PathsToLoad.Array(), FStreamableDelegate(), Priority, FString(DebugName.Len(), DebugName.ToString()));
 
 			if (!NewHandle.IsValid())
 			{
@@ -1592,7 +1681,7 @@ TSharedPtr<FStreamableHandle> UAssetManager::ChangeBundleStateForPrimaryAssets(c
 		}
 		else
 		{
- 			UE_LOG(LogAssetManager, Verbose, TEXT("%s - UAssetManager::ChangeBundleStateForPrimaryAssets found no NameData for this primary asset."), *PrimaryAssetId.ToString());
+			WarnAboutInvalidPrimaryAsset(PrimaryAssetId, TEXT("ChangeBundleStateForPrimaryAssets failed to find NameData"));
 		}
 	}
 
@@ -1689,32 +1778,37 @@ bool UAssetManager::GetPrimaryAssetLoadSet(TSet<FSoftObjectPath>& OutAssetLoadSe
 			OutAssetLoadSet.Append(Entry.BundleAssets);
 		}
 	}
+	else
+	{
+		WarnAboutInvalidPrimaryAsset(PrimaryAssetId, TEXT("GetPrimaryAssetLoadSet failed to find NameData"));
+	}
 	return NameData != nullptr;
 }
 
 TSharedPtr<FStreamableHandle> UAssetManager::PreloadPrimaryAssets(const TArray<FPrimaryAssetId>& AssetsToLoad, const TArray<FName>& LoadBundles, bool bLoadRecursive, FStreamableDelegate DelegateToCall, TAsyncLoadPriority Priority)
 {
 	TSet<FSoftObjectPath> PathsToLoad;
-	FString DebugName;
+	TStringBuilder<256> DebugName;
 	TSharedPtr<FStreamableHandle> ReturnHandle;
 
 	for (const FPrimaryAssetId& PrimaryAssetId : AssetsToLoad)
 	{
 		if (GetPrimaryAssetLoadSet(PathsToLoad, PrimaryAssetId, LoadBundles, bLoadRecursive))
 		{
-			if (DebugName.IsEmpty())
+			if (DebugName.Len() == 0)
 			{
-				DebugName += TEXT("Preloading ");
+				DebugName << FStreamableHandle::HandleDebugName_Preloading;
+				DebugName << TEXT(" ");
 			}
 			else
 			{
-				DebugName += TEXT(", ");
+				DebugName << TEXT(", ");
 			}
-			DebugName += PrimaryAssetId.ToString();
+			DebugName << PrimaryAssetId.ToString();
 		}
 	}
 
-	ReturnHandle = LoadAssetList(PathsToLoad.Array(), MoveTemp(DelegateToCall), Priority, DebugName);
+	ReturnHandle = LoadAssetList(PathsToLoad.Array(), MoveTemp(DelegateToCall), Priority, FString(*DebugName));
 
 	if (!ensureMsgf(ReturnHandle.IsValid(), TEXT("Requested preload of Primary Asset with no referenced assets! DebugName:%s"), *DebugName))
 	{
@@ -1887,6 +1981,10 @@ int32 UAssetManager::UnloadPrimaryAssets(const TArray<FPrimaryAssetId>& AssetsTo
 				NameData->CurrentState.Reset(true);
 				NameData->PendingState.Reset(true);
 			}
+		}
+		else
+		{
+			WarnAboutInvalidPrimaryAsset(PrimaryAssetId, TEXT("UnloadPrimaryAssets failed to find NameData"));
 		}
 	}
 
@@ -2142,6 +2240,10 @@ void UAssetManager::AcquireResourcesForPrimaryAssetList(const TArray<FPrimaryAss
 				}
 			}
 		}
+		else
+		{
+			WarnAboutInvalidPrimaryAsset(PrimaryAssetId, TEXT("AcquireResourcesForPrimaryAssetList failed to find NameData"));
+		}
 	}
 
 	AcquireResourcesForAssetList(PathsToLoad.Array(), MoveTemp(CompleteDelegate), Priority);
@@ -2254,8 +2356,8 @@ bool UAssetManager::OnAssetRegistryAvailableAfterInitialization(FName InName, FA
 		
 		{
 			TArray<uint8> Bytes;
-			FString Filename = FPaths::ProjectDir() / (TEXT("AssetRegistry") + InName.ToString()) + TEXT(".bin");
-			if (FPaths::FileExists(*Filename) && FFileHelper::LoadFileToArray(Bytes, *Filename))
+			const FString Filename = FPaths::ProjectDir() / (TEXT("AssetRegistry") + InName.ToString()) + TEXT(".bin");
+			if (FPaths::FileExists(Filename) && FFileHelper::LoadFileToArray(Bytes, *Filename))
 			{
 				bLoaded = true;
 				FMemoryReader Ar(Bytes);
@@ -2280,7 +2382,7 @@ bool UAssetManager::OnAssetRegistryAvailableAfterInitialization(FName InName, FA
 					if (!bPathExclusionsExists || !IsPathExcludedFromScan(AssetData.PackageName.ToString()))
 					{
 						FPrimaryAssetId PrimaryAssetId = AssetData.GetPrimaryAssetId();
-						if (PrimaryAssetId.IsValid())
+						if (PrimaryAssetId.IsValid() && AssetData.IsTopLevelAsset())
 						{
 							TSharedRef<FPrimaryAssetTypeData>* FoundType = AssetTypeMap.Find(PrimaryAssetId.PrimaryAssetType);
 							if (FoundType)
@@ -2312,8 +2414,10 @@ bool UAssetManager::OnAssetRegistryAvailableAfterInitialization(FName InName, FA
 										}
 
 										// Check exclusion path
-										UpdateCachedAssetData(PrimaryAssetId, AssetData, false);
-										bRebuildReferenceList = true;
+										if (TryUpdateCachedAssetData(PrimaryAssetId, AssetData, false))
+										{
+											bRebuildReferenceList = true;
+										}
 									}
 								}
 							}
@@ -2647,32 +2751,42 @@ static bool ContainsSubobjectDelimiter(FName Name)
 }
 
 template<EAssetDataCanBeSubobject ScanForSubobject>
-FSoftObjectPath ToSoftObjectPath(const FAssetData& AssetData)
+bool TryToSoftObjectPath(const FAssetData& AssetData, FSoftObjectPath& OutObjectPath)
 {
 	if (!AssetData.IsValid())
 	{
-		return FSoftObjectPath();
+		OutObjectPath = FSoftObjectPath();
+		return false;
 	}
 	else if (EndsWithBlueprint(AssetData.AssetClass))
 	{
 		TStringBuilder<256> AssetPath;
 		AssetPath << AssetData.ObjectPath << TEXT("_C");
-		return FSoftObjectPath(FStringView(AssetPath));
+		OutObjectPath = FSoftObjectPath(FStringView(AssetPath));
+		return true;
 	}
 	else if (ScanForSubobject == EAssetDataCanBeSubobject::Yes)
 	{
-		return FSoftObjectPath(AssetData.ObjectPath);
+		OutObjectPath = FSoftObjectPath(AssetData.ObjectPath);
+		return true;
 	}
 	else
 	{
-		check(!ContainsSubobjectDelimiter(AssetData.ObjectPath));
-		return FSoftObjectPath(AssetData.ObjectPath, /* no subobject */ FString());
+		if (ContainsSubobjectDelimiter(AssetData.ObjectPath))
+		{
+			OutObjectPath = FSoftObjectPath();
+			return false;
+		}
+		OutObjectPath = FSoftObjectPath(AssetData.ObjectPath, /* no subobject */ FString());
+		return true;
 	}
 }
 
 FSoftObjectPath UAssetManager::GetAssetPathForData(const FAssetData& AssetData) const
 {
-	return ToSoftObjectPath<EAssetDataCanBeSubobject::Yes>(AssetData);
+	FSoftObjectPath Result;
+	TryToSoftObjectPath<EAssetDataCanBeSubobject::Yes>(AssetData, Result);
+	return Result;
 }
 
 void UAssetManager::GetAssetDataForPathInternal(IAssetRegistry& AssetRegistry, const FString& AssetPath, OUT FAssetData& OutAssetData) const
@@ -2975,8 +3089,8 @@ bool UAssetManager::ShouldScanPrimaryAssetType(FPrimaryAssetTypeInfo& TypeInfo) 
 
 	if (bBaseClassWasLoaded)
 	{
-		// Had to load a class, leave temporary caching mode for future scans
-		GetAssetRegistry().SetTemporaryCachingMode(false);
+		// Had to load a class, mark that the temporary cache needs to be updated
+		GetAssetRegistry().SetTemporaryCachingModeInvalidated();
 	}
 
 	return bIsValid;
@@ -2988,8 +3102,9 @@ void UAssetManager::ScanPrimaryAssetTypesFromConfig()
 	IAssetRegistry& AssetRegistry = GetAssetRegistry();
 	const UAssetManagerSettings& Settings = GetSettings();
 
-	StartBulkScanning();
+	PushBulkScanning();
 
+	double LastPumpTime = FPlatformTime::Seconds();
 	for (FPrimaryAssetTypeInfo TypeInfo : Settings.PrimaryAssetTypesToScan)
 	{
 		// This function also fills out runtime data on the copy
@@ -3004,10 +3119,14 @@ void UAssetManager::ScanPrimaryAssetTypesFromConfig()
 
 		SetPrimaryAssetTypeRules(TypeInfo.PrimaryAssetType, TypeInfo.Rules);
 
-		FPlatformApplicationMisc::PumpMessages(IsInGameThread());
+		if (FPlatformTime::Seconds() > (LastPumpTime + 0.033f))
+		{
+			FPlatformApplicationMisc::PumpMessages(IsInGameThread());
+			LastPumpTime = FPlatformTime::Seconds();
+		}
 	}
 
-	StopBulkScanning();
+	PopBulkScanning();
 }
 
 void UAssetManager::ScanPrimaryAssetRulesFromConfig()
@@ -3264,6 +3383,8 @@ bool UAssetManager::GetPackageManagers(FName PackageName, bool bRecurseToParents
 
 void UAssetManager::StartInitialLoading()
 {
+	GInitialBulkScan.StartOnce(this);
+
 	ScanPrimaryAssetTypesFromConfig();
 
 	OnAssetManagerCreatedDelegate.Broadcast();
@@ -3344,6 +3465,77 @@ FString UAssetManager::GetNormalizedPackagePath(const FString& InPath, bool bInc
 	return MoveTemp(ReturnPath);
 }
 
+void UAssetManager::WarnAboutInvalidPrimaryAsset(const FPrimaryAssetId& PrimaryAssetId, const FString& Message) const
+{
+	if (!WarningInvalidAssets.Contains(PrimaryAssetId))
+	{
+		WarningInvalidAssets.Add(PrimaryAssetId);
+
+		const UAssetManagerSettings& Settings = GetSettings();
+		if (Settings.bShouldWarnAboutInvalidAssets)
+		{
+			const TSharedRef<FPrimaryAssetTypeData>* FoundType = AssetTypeMap.Find(PrimaryAssetId.PrimaryAssetType);
+
+			if (FoundType)
+			{
+				UE_LOG(LogAssetManager, Warning, TEXT("Invalid Primary Asset Id %s: %s"), *PrimaryAssetId.ToString(), *Message);
+			}
+			else
+			{
+				UE_LOG(LogAssetManager, Warning, TEXT("Invalid Primary Asset Type %s: %s"), *PrimaryAssetId.ToString(), *Message);
+			}
+		}
+	}
+}
+
+void UAssetManager::InvalidatePrimaryAssetDirectory()
+{
+	bIsPrimaryAssetDirectoryCurrent = false;
+}
+
+void UAssetManager::RefreshPrimaryAssetDirectory(bool bForceRefresh)
+{
+	WarningInvalidAssets.Reset();
+
+	if (bForceRefresh || !bIsPrimaryAssetDirectoryCurrent)
+	{
+		PushBulkScanning();
+
+		for (TPair<FName, TSharedRef<FPrimaryAssetTypeData>>& TypePair : AssetTypeMap)
+		{
+			FPrimaryAssetTypeData& TypeData = TypePair.Value.Get();
+
+			// Rescan the runtime data, the class may have gotten changed by hot reload or config changes
+			bool bIsValid, bBaseClassWasLoaded;
+			TypeData.Info.FillRuntimeData(bIsValid, bBaseClassWasLoaded);
+
+			if (bBaseClassWasLoaded)
+			{
+				// Had to load a class, mark that the temporary cache needs to be updated
+				GetAssetRegistry().SetTemporaryCachingModeInvalidated();
+			}
+
+			if (!bIsValid)
+			{
+				continue;
+			}
+
+			if (TypeData.Info.AssetScanPaths.Num())
+			{
+				// Clear old data if this type has actual scan paths
+				TypeData.AssetMap.Reset();
+
+				// Rescan all assets. We don't force synchronous here as in the editor it was already loaded async
+				ScanPathsForPrimaryAssets(TypePair.Key, TypeData.Info.AssetScanPaths, TypeData.Info.AssetBaseClassLoaded, TypeData.Info.bHasBlueprintClasses, TypeData.Info.bIsEditorOnly, false);
+			}
+		}
+
+		PopBulkScanning();
+
+		PostInitialAssetScan();
+	}
+}
+
 #if WITH_EDITOR
 
 EAssetSetManagerResult::Type UAssetManager::ShouldSetManager(const FAssetIdentifier& Manager, const FAssetIdentifier& Source, const FAssetIdentifier& Target, EAssetRegistryDependencyType::Type DependencyType, EAssetSetManagerFlags::Type Flags) const
@@ -3410,7 +3602,7 @@ EAssetSetManagerResult::Type UAssetManager::ShouldSetManager(const FAssetIdentif
 
 void UAssetManager::OnAssetRegistryFilesLoaded()
 {
-	StartBulkScanning();
+	PushBulkScanning();
 
 	for (TPair<FName, TSharedRef<FPrimaryAssetTypeData>>& TypePair : AssetTypeMap)
 	{
@@ -3425,7 +3617,7 @@ void UAssetManager::OnAssetRegistryFilesLoaded()
 		}
 	}
 
-	StopBulkScanning();
+	PopBulkScanning();
 
 	PostInitialAssetScan();
 }
@@ -3681,8 +3873,38 @@ void UAssetManager::ApplyPrimaryAssetLabels()
 	// PostLoad in PrimaryAssetLabel sets PrimaryAssetRules overrides
 }
 
+void UAssetManager::ModifyCook(TConstArrayView<const ITargetPlatform*> TargetPlatforms, TArray<FName>& PackagesToCook, TArray<FName>& PackagesToNeverCook)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	DeprecationSupportTargetPlatforms = TargetPlatforms;
+	ModifyCook(PackagesToCook, PackagesToNeverCook);
+	DeprecationSupportTargetPlatforms = TConstArrayView<const ITargetPlatform*>();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
 void UAssetManager::ModifyCook(TArray<FName>& PackagesToCook, TArray<FName>& PackagesToNeverCook)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	TConstArrayView<const ITargetPlatform*> TargetPlatforms = DeprecationSupportTargetPlatforms;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+
+	check(TargetPlatforms.Num() > 0);
+	bTargetPlatformsAllowEditorObjects = TargetPlatforms[0]->AllowsEditorObjects();
+	for (const ITargetPlatform* TargetPlatform : TargetPlatforms.Slice(1,TargetPlatforms.Num() - 1))
+	{
+		if (TargetPlatform->AllowsEditorObjects() != bTargetPlatformsAllowEditorObjects)
+		{
+			const ITargetPlatform* PlatformThatDoesNotAllow =
+				bTargetPlatformsAllowEditorObjects ? TargetPlatform : TargetPlatforms[0];
+			UE_LOG(LogAssetManager, Error,
+				TEXT("Cooking platform %s and %s in a single cook is not supported, because they have different values for AllowsEditorObjects. ")
+				TEXT("This cook session will use AllowsEditorObjects = true, which will add packages to platform % s that should not be present."),
+				*TargetPlatforms[0]->PlatformName(), *TargetPlatform->PlatformName(),
+				*PlatformThatDoesNotAllow->PlatformName());
+			bTargetPlatformsAllowEditorObjects = true;
+			break;
+		}
+	}
 	// Make sure management database is set up
 	UpdateManagementDatabase();
 
@@ -3731,7 +3953,7 @@ void UAssetManager::ModifyCook(TArray<FName>& PackagesToCook, TArray<FName>& Pac
 
 			// Treat DevAlwaysCook as AlwaysCook, may get excluded in VerifyCanCookPackage
 			bool bAlwaysCook = (CookRule == EPrimaryAssetCookRule::AlwaysCook || CookRule == EPrimaryAssetCookRule::DevelopmentAlwaysCook);
-			bool bCanCook = VerifyCanCookPackage(PackageName, false);
+			bool bCanCook = VerifyCanCookPackage(nullptr, PackageName, false);
 
 			if (bAlwaysCook && bCanCook && !TypeInfo.bIsEditorOnly)
 			{
@@ -3747,8 +3969,22 @@ void UAssetManager::ModifyCook(TArray<FName>& PackagesToCook, TArray<FName>& Pac
 	}
 }
 
+void UAssetManager::ModifyDLCCook(const FString& DLCName, TConstArrayView<const ITargetPlatform*> TargetPlatforms,
+	TArray<FName>& PackagesToCook, TArray<FName>& PackagesToNeverCook)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	DeprecationSupportTargetPlatforms = TargetPlatforms;
+	ModifyDLCCook(DLCName, PackagesToCook, PackagesToNeverCook);
+	DeprecationSupportTargetPlatforms = TConstArrayView<const ITargetPlatform*>();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
 void UAssetManager::ModifyDLCCook(const FString& DLCName, TArray<FName>& PackagesToCook, TArray<FName>& PackagesToNeverCook)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	TConstArrayView<const ITargetPlatform*> TargetPlatforms = DeprecationSupportTargetPlatforms;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+
 	UE_LOG(LogAssetManager, Display, TEXT("ModifyDLCCook: Scanning Plugin Directory %s for assets, and adding them to the cook list"), *DLCName);
 	FString DLCPath;
 	FString ExternalMountPointName;
@@ -3816,24 +4052,58 @@ EPrimaryAssetCookRule UAssetManager::GetPackageCookRule(FName PackageName) const
 	return BestRules.CookRule;
 }
 
+static FString GetInstigatorChainString(UE::Cook::ICookInfo* CookInfo, FName PackageName)
+{
+	if (!CookInfo)
+	{
+		return FString(TEXT("<NoCookInfo>"));
+	}
+	TArray<UE::Cook::FInstigator> Chain = CookInfo->GetInstigatorChain(PackageName);
+	TStringBuilder<1024> Result;
+	bool bFirst = true;
+	for (const UE::Cook::FInstigator& Instigator : Chain)
+	{
+		Result << (bFirst ? TEXT("") : TEXT(" <- "));
+		bFirst = false;
+		Result << TEXT("{ ") << Instigator.ToString() << TEXT(" }");
+	}
+	return FString(Result);
+};
+
+bool UAssetManager::VerifyCanCookPackage(UE::Cook::ICookInfo* CookInfo, FName PackageName, bool bLogError) const
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	DeprecationSupportCookInfo = CookInfo;
+	bool bResult = VerifyCanCookPackage(PackageName, bLogError);
+	DeprecationSupportCookInfo = nullptr;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+	return bResult;
+}
+
 bool UAssetManager::VerifyCanCookPackage(FName PackageName, bool bLogError) const
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	UE::Cook::ICookInfo* CookInfo = DeprecationSupportCookInfo;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 	bool bRetVal = true;
 	EPrimaryAssetCookRule CookRule = UAssetManager::Get().GetPackageCookRule(PackageName);
 	if (CookRule == EPrimaryAssetCookRule::NeverCook)
 	{
 		if (bLogError)
 		{
-			UE_LOG(LogAssetManager, Error, TEXT("Package %s is set to NeverCook, but something is trying to cook it!"), *PackageName.ToString());
+			UE_LOG(LogAssetManager, Error, TEXT("Package %s is set to NeverCook, but something is trying to cook it! Instigators: %s"),
+				*PackageName.ToString(), *GetInstigatorChainString(CookInfo, PackageName));
 		}
 		
 		bRetVal = false;
 	}
-	else if ((CookRule == EPrimaryAssetCookRule::DevelopmentCook || CookRule == EPrimaryAssetCookRule::DevelopmentAlwaysCook) && bOnlyCookProductionAssets)
+	else if ((CookRule == EPrimaryAssetCookRule::DevelopmentCook || CookRule == EPrimaryAssetCookRule::DevelopmentAlwaysCook)
+		&& bOnlyCookProductionAssets && !bTargetPlatformsAllowEditorObjects)
 	{
 		if (bLogError)
 		{
-			UE_LOG(LogAssetManager, Warning, TEXT("Package %s is set to Development, but bOnlyCookProductionAssets is true!"), *PackageName.ToString());
+			UE_LOG(LogAssetManager, Warning, TEXT("Package %s is set to Development, but bOnlyCookProductionAssets is true! Instigators: %s"),
+				*PackageName.ToString(), *GetInstigatorChainString(CookInfo, PackageName));
 		}
 
 		bRetVal = false;
@@ -3961,52 +4231,6 @@ void UAssetManager::EndPIE(bool bStartSimulate)
 	}
 }
 
-void UAssetManager::InvalidatePrimaryAssetDirectory()
-{
-	bIsPrimaryAssetDirectoryCurrent = false;
-}
-
-void UAssetManager::RefreshPrimaryAssetDirectory(bool bForceRefresh)
-{
-	if (bForceRefresh || !bIsPrimaryAssetDirectoryCurrent)
-	{
-		StartBulkScanning();
-
-		for (TPair<FName, TSharedRef<FPrimaryAssetTypeData>>& TypePair : AssetTypeMap)
-		{
-			FPrimaryAssetTypeData& TypeData = TypePair.Value.Get();
-
-			// Rescan the runtime data, the class may have gotten changed by hot reload or config changes
-			bool bIsValid, bBaseClassWasLoaded;
-			TypeData.Info.FillRuntimeData(bIsValid, bBaseClassWasLoaded);
-
-			if (bBaseClassWasLoaded)
-			{
-				// Had to load a class, leave temporary caching mode for future scans
-				GetAssetRegistry().SetTemporaryCachingMode(false);
-			}
-
-			if (!bIsValid)
-			{
-				continue;
-			}
-
-			if (TypeData.Info.AssetScanPaths.Num())
-			{
-				// Clear old data
-				TypeData.AssetMap.Reset();
-
-				// Rescan all assets. We don't force synchronous here as in the editor it was already loaded async
-				ScanPathsForPrimaryAssets(TypePair.Key, TypeData.Info.AssetScanPaths, TypeData.Info.AssetBaseClassLoaded, TypeData.Info.bHasBlueprintClasses, TypeData.Info.bIsEditorOnly, false);
-			}
-		}
-
-		StopBulkScanning();
-
-		PostInitialAssetScan();
-	}
-}
-
 void UAssetManager::ReinitializeFromConfig()
 {
 	// We specifically do not reset AssetRuleOverrides as those can be set by something other than inis
@@ -4059,7 +4283,7 @@ void UAssetManager::OnInMemoryAssetCreated(UObject *Object)
 
 			GetAssetDataForPathInternal(AssetRegistry, Object->GetPathName(), NewAssetData);
 
-			if (NewAssetData.IsValid())
+			if (NewAssetData.IsValid() && NewAssetData.IsTopLevelAsset())
 			{
 				// Make sure it's in a valid path
 				bool bFoundPath = false;
@@ -4075,9 +4299,10 @@ void UAssetManager::OnInMemoryAssetCreated(UObject *Object)
 				if (bFoundPath)
 				{
 					// Add or update asset data
-					UpdateCachedAssetData(PrimaryAssetId, NewAssetData, true);
-
-					RebuildObjectReferenceList();
+					if (TryUpdateCachedAssetData(PrimaryAssetId, NewAssetData, true))
+					{
+						RebuildObjectReferenceList();
+					}
 				}
 			}
 		}
@@ -4097,7 +4322,7 @@ void UAssetManager::OnInMemoryAssetDeleted(UObject *Object)
 	RemovePrimaryAssetId(PrimaryAssetId);
 }
 
-void UAssetManager::OnObjectPreSave(UObject* Object)
+void UAssetManager::OnObjectPreSave(UObject* Object, FObjectPreSaveContext SaveContext)
 {
 	// If this is in the asset manager dictionary, make sure it actually has a primary asset id that matches
 	const bool bIsAssetOrClass = Object->IsAsset() || Object->IsA(UClass::StaticClass()); 
@@ -4192,7 +4417,7 @@ void UAssetManager::RefreshAssetData(UObject* ChangedObject)
 
 		if (ensure(NewData.IsValid()))
 		{
-			UpdateCachedAssetData(PrimaryAssetId, NewData, false);
+			TryUpdateCachedAssetData(PrimaryAssetId, NewData, false);
 		}
 	}
 	else
@@ -4273,7 +4498,7 @@ void UAssetManager::InitializeAssetBundlesFromMetadata_Recursive(const UStruct* 
 		}
 		else if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(Property))
 		{
-			if (ObjectProperty->PropertyFlags & CPF_InstancedReference || ObjectProperty->HasMetaData(IncludeAssetBundlesName))
+			if (ObjectProperty->PropertyFlags & CPF_InstancedReference || ObjectProperty->GetOwnerProperty()->HasMetaData(IncludeAssetBundlesName))
 			{
 				UObject* const* ObjectPtr = reinterpret_cast<UObject* const*>(PropertyValue);
 				if (ObjectPtr && *ObjectPtr)

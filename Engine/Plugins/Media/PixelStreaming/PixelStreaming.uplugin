@@ -18,16 +18,16 @@
 		{
 			"Name": "PixelStreaming",
 			"Type": "Runtime",
-			"LoadingPhase": "PostDefault",
-			"WhitelistPlatforms": [ "Win32", "Win64", "Linux" ],
-			"BlacklistTargets": [ "Server" ]
+			"LoadingPhase": "PreDefault",
+			"PlatformAllowList": [ "Win64", "Linux" ],
+			"TargetDenyList": [ "Server" ]
 		}
 	],
 	"Plugins": [
 		{
 			"Name": "WmfMedia",
 			"Enabled": true,
-			"BlacklistPlatforms": [ "Linux" ]
+			"PlatformDenyList": [ "Linux" ]
 		},
 		{
 			"Name": "HardwareEncoders",

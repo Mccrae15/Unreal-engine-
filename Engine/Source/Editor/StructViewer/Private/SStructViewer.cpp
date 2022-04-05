@@ -9,7 +9,6 @@
 #include "Misc/ScopedSlowTask.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectIterator.h"
-#include "Misc/HotReloadInterface.h"
 #include "Misc/TextFilterExpressionEvaluator.h"
 
 #include "Editor.h"
@@ -183,8 +182,8 @@ private:
 	/** Callback registered to the Asset Registry to be notified when an asset is removed. */
 	void RemoveAsset(const FAssetData& InRemovedAssetData);
 
-	/** Called when hot reload has finished */
-	void OnHotReload(bool bWasTriggeredAutomatically);
+	/** Called when reload has finished */
+	void OnReloadComplete(EReloadCompleteReason Reason);
 
 	/** Called when modules are loaded or unloaded */
 	void OnModulesChanged(FName ModuleThatChanged, EModuleChangeReason ReasonForChange);
@@ -794,9 +793,8 @@ FStructHierarchy::FStructHierarchy()
 	AssetRegistryModule.Get().OnAssetAdded().AddRaw(this, &FStructHierarchy::AddAsset);
 	AssetRegistryModule.Get().OnAssetRemoved().AddRaw(this, &FStructHierarchy::RemoveAsset);
 
-	// Register to have Populate called when doing a Hot Reload.
-	IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>("HotReload");
-	HotReloadSupport.OnHotReload().AddRaw(this, &FStructHierarchy::OnHotReload);
+	// Register to have Populate called when doing a Reload.
+	FCoreUObjectDelegates::ReloadCompleteDelegate.AddRaw(this, &FStructHierarchy::OnReloadComplete);
 
 	FModuleManager::Get().OnModulesChanged().AddRaw(this, &FStructHierarchy::OnModulesChanged);
 
@@ -813,12 +811,8 @@ FStructHierarchy::~FStructHierarchy()
 		AssetRegistryModule.Get().OnAssetAdded().RemoveAll(this);
 		AssetRegistryModule.Get().OnAssetRemoved().RemoveAll(this);
 
-		// Unregister to have Populate called when doing a Hot Reload.
-		if (FModuleManager::Get().IsModuleLoaded("HotReload"))
-		{
-			IHotReloadInterface& HotReloadSupport = FModuleManager::GetModuleChecked<IHotReloadInterface>("HotReload");
-			HotReloadSupport.OnHotReload().RemoveAll(this);
-		}
+		// Unregister to have Populate called when doing a Reload.
+		FCoreUObjectDelegates::ReloadCompleteDelegate.RemoveAll(this);
 	}
 
 	FModuleManager::Get().OnModulesChanged().RemoveAll(this);
@@ -872,13 +866,15 @@ void FStructHierarchy::PopulateStructHierarchy()
 		DataNodes.Add(nullptr, StructRootNode);
 
 		TSet<const UScriptStruct*> Visited;
+		UPackage* TransientPackage = GetTransientPackage();
 
 		// Go through all of the structs and see if they should be added to the list.
 		for (TObjectIterator<UScriptStruct> StructIt; StructIt; ++StructIt)
 		{
 			const UScriptStruct* CurrentStruct = *StructIt;
-			if (Visited.Contains(CurrentStruct))
+			if (Visited.Contains(CurrentStruct) || CurrentStruct->GetOutermost() == TransientPackage)
 			{
+				// Skip transient structs as they are dead leftovers from user struct editing
 				continue;
 			}
 
@@ -927,7 +923,11 @@ void FStructHierarchy::PopulateStructHierarchy()
 
 		for (const FAssetData& UserDefinedStructData : UserDefinedStructsList)
 		{
-			StructRootNode->AddChild(MakeShared<FStructViewerNodeData>(UserDefinedStructData));
+			if (!UserDefinedStructData.IsAssetLoaded())
+			{
+				// If the asset is loaded it was added by the object iterator
+				StructRootNode->AddChild(MakeShared<FStructViewerNodeData>(UserDefinedStructData));
+			}
 		}
 	}
 
@@ -983,14 +983,20 @@ void FStructHierarchy::AddAsset(const FAssetData& InAddedAssetData)
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 	if (!AssetRegistryModule.Get().IsLoadingAssets())
 	{
-		// Make sure that the node does not already exist. There is a bit of double adding going on at times and this prevents it.
-		if (!FindNodeByStructPath(InAddedAssetData.ObjectPath))
-		{
-			// User defined structs are always root level structs
-			StructRootNode->AddChild(MakeShared<FStructViewerNodeData>(InAddedAssetData));
+		// Only handle structs
+		UClass* AssetClass = InAddedAssetData.GetClass();
 
-			// All Viewers must repopulate.
-			PopulateStructViewerDelegate.Broadcast();
+		if (AssetClass && AssetClass->IsChildOf(UScriptStruct::StaticClass()))
+		{
+			// Make sure that the node does not already exist. There is a bit of double adding going on at times and this prevents it.
+			if (!FindNodeByStructPath(InAddedAssetData.ObjectPath))
+			{
+				// User defined structs are always root level structs
+				StructRootNode->AddChild(MakeShared<FStructViewerNodeData>(InAddedAssetData));
+
+				// All Viewers must repopulate.
+				PopulateStructViewerDelegate.Broadcast();
+			}
 		}
 	}
 }
@@ -1004,7 +1010,7 @@ void FStructHierarchy::RemoveAsset(const FAssetData& InRemovedAssetData)
 	}
 }
 
-void FStructHierarchy::OnHotReload(bool bWasTriggeredAutomatically)
+void FStructHierarchy::OnReloadComplete(EReloadCompleteReason Reason)
 {
 	DirtyStructHierarchy();
 }

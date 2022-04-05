@@ -44,8 +44,7 @@
 #include "IXRInput.h"
 #include "GameFramework/TouchInterface.h"
 #include "DisplayDebugHelpers.h"
-#include "Matinee/InterpTrackInstDirector.h"
-#include "Matinee/MatineeActor.h"
+#include "MoviePlayerProxy.h"
 #include "Engine/ActorChannel.h"
 #include "GameFramework/PawnMovementComponent.h"
 #include "GameFramework/SpectatorPawn.h"
@@ -66,6 +65,7 @@
 #include "Engine/NetworkObjectList.h"
 #include "GameFramework/GameSession.h"
 #include "GameMapsSettings.h"
+#include "Particles/EmitterCameraLensEffectBase.h"
 
 DEFINE_LOG_CATEGORY(LogPlayerController);
 
@@ -128,6 +128,10 @@ APlayerController::APlayerController(const FObjectInitializer& ObjectInitializer
 	bForceFeedbackEnabled = true;
 	ForceFeedbackScale = 1.f;
 
+	bEnableStreamingSource = true;
+	bStreamingSourceShouldActivate = true;
+	bStreamingSourceShouldBlockOnSlowStreaming = true;
+
 	bAutoManageActiveCameraTarget = true;
 	bRenderPrimitiveComponents = true;
 	SmoothTargetViewRotationSpeed = 20.f;
@@ -135,7 +139,7 @@ APlayerController::APlayerController(const FObjectInitializer& ObjectInitializer
 
 	bIsPlayerController = true;
 	bIsLocalPlayerController = false;
-	bDisableHaptics = false;
+	bDisableHaptics = false;	
 
 	ClickEventKeys.Add(EKeys::LeftMouseButton);
 
@@ -182,7 +186,7 @@ bool APlayerController::DestroyNetworkActorHandled()
 	UNetConnection* C = Cast<UNetConnection>(Player);
 	if (C)
 	{
-		if (C->Channels[0] && C->State != USOCK_Closed)
+		if (C->Channels[0] && C->GetConnectionState() != USOCK_Closed)
 		{
 			C->bPendingDestroy = true;
 			C->Channels[0]->Close(EChannelCloseReason::Destroyed);
@@ -427,19 +431,13 @@ void APlayerController::CleanUpAudioComponents()
 
 AActor* APlayerController::GetViewTarget() const
 {
-	return PlayerCameraManager ? PlayerCameraManager->GetViewTarget() : NULL;
+	AActor* CameraManagerViewTarget = PlayerCameraManager ? PlayerCameraManager->GetViewTarget() : NULL;
+
+	return CameraManagerViewTarget ? CameraManagerViewTarget : const_cast<APlayerController*>(this);
 }
 
 void APlayerController::SetViewTarget(class AActor* NewViewTarget, struct FViewTargetTransitionParams TransitionParams)
 {
-	// if we're being controlled by a director track, update it with the new viewtarget 
-	// so it returns to the proper viewtarget when it finishes.
-	UInterpTrackInstDirector* const Director = GetControllingDirector();
-	if (Director)
-	{
-		Director->OldViewTarget = NewViewTarget;
-	}
-
 	if (PlayerCameraManager)
 	{
 		PlayerCameraManager->SetViewTarget(NewViewTarget, TransitionParams);
@@ -533,24 +531,6 @@ ACameraActor* APlayerController::GetAutoActivateCameraForPlayer() const
 	return NULL;
 }
 
-
-
-void APlayerController::SetControllingDirector(UInterpTrackInstDirector* NewControllingDirector, bool bClientSimulatingViewTarget)
-{
-	ControllingDirTrackInst = NewControllingDirector;
-
-	if (PlayerCameraManager != NULL)
-	{
-		PlayerCameraManager->bClientSimulatingViewTarget = (NewControllingDirector != NULL) ? bClientSimulatingViewTarget : false;
-	}
-}
-
-
-UInterpTrackInstDirector* APlayerController::GetControllingDirector()
-{
-	return ControllingDirTrackInst;
-}
-
 /// @cond DOXYGEN_WARNINGS
 
 bool APlayerController::ServerNotifyLoadedWorld_Validate(FName WorldPackageName)
@@ -567,7 +547,7 @@ void APlayerController::ServerNotifyLoadedWorld_Implementation(FName WorldPackag
 
 	// Only valid for calling, for PC's in the process of seamless traveling
 	// NOTE: SeamlessTravelCount tracks client seamless travel, through the serverside gameplay code; this should not be replaced.
-	if (CurWorld != NULL && CurWorld->IsServer() && SeamlessTravelCount > 0 && LastCompletedSeamlessTravelCount < SeamlessTravelCount)
+	if (CurWorld != NULL && !CurWorld->IsNetMode(NM_Client) && SeamlessTravelCount > 0 && LastCompletedSeamlessTravelCount < SeamlessTravelCount)
 	{
 		// Update our info on what world the client is in
 		UNetConnection* const Connection = Cast<UNetConnection>(Player);
@@ -601,8 +581,16 @@ bool APlayerController::HasClientLoadedCurrentWorld()
 	if (Connection != NULL)
 	{
 		// NOTE: To prevent exploits, child connections must not use the parent connections ClientWorldPackageName value at all.
-
-		return (Connection->GetClientWorldPackageName() == GetWorld()->GetOutermost()->GetFName());
+		bool bInCorrectWorld = (Connection->GetClientWorldPackageName() == GetWorld()->GetOutermost()->GetFName());
+		if (SeamlessTravelCount > 0)
+		{
+			// In the case where seamless travel has occurred, make sure the client has actually completed the travel
+			return bInCorrectWorld && (LastCompletedSeamlessTravelCount == SeamlessTravelCount);
+		}
+		else
+		{
+			return bInCorrectWorld;
+		}
 	}
 	else
 	{
@@ -666,20 +654,6 @@ void APlayerController::InitInputSystem()
 	UWorld* World = GetWorld();
 	check(World);
 	World->PersistentLevel->PushPendingAutoReceiveInput(this);
-
-	// add the player to any matinees running so that it gets in on any cinematics already running, etc
-	// (already done on server in PostLogin())
-	if (GetLocalRole() < ROLE_Authority)
-	{
-		TArray<AMatineeActor*> AllMatineeActors;
-		World->GetMatineeActors(AllMatineeActors);
-
-		// tell them all to add this PC to any running Director tracks
-		for (int32 i = 0; i < AllMatineeActors.Num(); i++)
-		{
-			AllMatineeActors[i]->AddPlayerToDirectorTracks(this);
-		}
-	}
 
 	// setup optional touchscreen interface
 	CreateTouchInterface();
@@ -751,7 +725,7 @@ void APlayerController::ClientRestart_Implementation(APawn* NewPawn)
 	AcknowledgePossession(GetPawn());
 
 	GetPawn()->Controller = this;
-	GetPawn()->PawnClientRestart();
+	GetPawn()->DispatchRestart(true);
 	
 	if (GetLocalRole() < ROLE_Authority)
 	{
@@ -808,7 +782,7 @@ void APlayerController::OnPossess(APawn* PawnToPossess)
 		// We're really just trying to avoid calling Restart() multiple times.
 		if (!IsLocalPlayerController())
 		{
-			GetPawn()->Restart();
+			GetPawn()->DispatchRestart(false);
 		}
 
 		ClientRestart(GetPawn());
@@ -862,7 +836,7 @@ void APlayerController::PostLoad()
 {
 	Super::PostLoad();
 
-	if (GetLinkerUE4Version() < VER_UE4_SPLIT_TOUCH_AND_CLICK_ENABLES)
+	if (GetLinkerUEVersion() < VER_UE4_SPLIT_TOUCH_AND_CLICK_ENABLES)
 	{
 		bEnableTouchEvents = bEnableClickEvents;
 	}
@@ -961,7 +935,7 @@ void APlayerController::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
 
-	if ( !IsPendingKill() && (GetNetMode() != NM_Client) )
+	if ( IsValid(this) && (GetNetMode() != NM_Client) )
 	{
 		// create a new player replication info
 		InitPlayerState();
@@ -1038,6 +1012,8 @@ void APlayerController::ServerShortTimeout_Implementation()
 
 void APlayerController::AddCheats(bool bForce)
 {
+	// Cheat manager is completely disabled in shipping by default
+#if UE_WITH_CHEAT_MANAGER
 	UWorld* World = GetWorld();
 	check(World);
 
@@ -1053,17 +1029,18 @@ void APlayerController::AddCheats(bool bForce)
 		CheatManager = NewObject<UCheatManager>(this, CheatClass);
 		CheatManager->InitCheatManager();
 	}
+#endif
 }
 
 void APlayerController::EnableCheats()
 {
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	// In non-shipping builds this can be called to enable cheats in multiplayer and override AllowCheats
+#if !UE_BUILD_SHIPPING
 	AddCheats(true);
 #else
 	AddCheats();
 #endif
 }
-
 
 void APlayerController::SpawnDefaultHUD()
 {
@@ -1627,8 +1604,32 @@ void APlayerController::ClientSetCameraFade_Implementation(bool bEnableFading, F
 
 /// @endcond
 
+namespace UE_NETWORK_PHYSICS
+{
+	int32 NumRedundantCmds=3;
+	FAutoConsoleVariableRef CVarNumRedundantCmds(TEXT("np2.NumRedundantCmds"), NumRedundantCmds, TEXT("Number of redundant user cmds to send per frame"));
+
+#if (UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	int32 EnableDebugRPC=0;
+#else
+	int32 EnableDebugRPC=1;
+#endif
+	FAutoConsoleVariableRef CVarEnableDebugRPC(TEXT("np2.EnableDebugRPC"), EnableDebugRPC, TEXT("Sends extra debug information to clients about server side input buffering"));
+}
+
 void APlayerController::SendClientAdjustment()
 {
+	if (ServerFrameInfo.LastProcessedInputFrame != INDEX_NONE && ServerFrameInfo.LastProcessedInputFrame != ServerFrameInfo.LastSentLocalFrame)
+	{
+		ServerFrameInfo.LastSentLocalFrame = ServerFrameInfo.LastProcessedInputFrame;		
+		ClientRecvServerAckFrame(ServerFrameInfo.LastProcessedInputFrame, ServerFrameInfo.LastLocalFrame, ServerFrameInfo.QuantizedTimeDilation);
+
+		if (UE_NETWORK_PHYSICS::EnableDebugRPC)
+		{
+			ClientRecvServerAckFrameDebug(InputBuffer.HeadFrame() - ServerFrameInfo.LastProcessedInputFrame, ServerFrameInfo.TargetNumBufferedCmds);
+		}
+	}
+
 	if (AcknowledgedPawn != GetPawn() && !GetSpectatorPawn())
 	{
 		return;
@@ -1645,6 +1646,55 @@ void APlayerController::SendClientAdjustment()
 			NetworkPredictionInterface->SendClientAdjustment();
 		}
 	}
+}
+
+void APlayerController::PushClientInput(int32 InRecvClientInputFrame, TArray<uint8>& Data)
+{
+	InputBuffer.Write(InRecvClientInputFrame) = MoveTemp(Data);
+
+	// Do the RPC right here, including the redundant send. This should probably be time based and managed somewhere else like in Tick eventually
+	for (int32 Frame = FMath::Max(1, InRecvClientInputFrame-UE_NETWORK_PHYSICS::NumRedundantCmds+1); Frame <= InRecvClientInputFrame; ++Frame)
+	{
+		ServerRecvClientInputFrame(Frame, InputBuffer.Get(Frame));
+	}
+}
+
+void APlayerController::ServerRecvClientInputFrame_Implementation(int32 InRecvClientInputFrame, const TArray<uint8>& Data)
+{
+	if (InRecvClientInputFrame < 0)
+	{
+		return;
+	}
+
+	for (int32 DroppedFrame = InputBuffer.HeadFrame()+1; DroppedFrame < InRecvClientInputFrame && DroppedFrame > 0; ++DroppedFrame)
+	{
+		UE_LOG(LogPlayerController, Warning, TEXT( "ClientInput Gap in frames (Dropped). %s [%s]. DroppedFrame: %d. RecvFrame: %d. LastProcessInputFrame: %d" ), *GetName(), PlayerState ? *PlayerState->GetPlayerName() : TEXT("???"), DroppedFrame, InRecvClientInputFrame, ServerFrameInfo.LastProcessedInputFrame);
+		ServerFrameInfo.LastProcessedInputFrame++; // Ehh lets try this for now
+		InputBuffer.Write(DroppedFrame) = InputBuffer.Get(DroppedFrame-1);
+	}
+
+	InputBuffer.Write(InRecvClientInputFrame) = MoveTemp(const_cast<TArray<uint8>&>(Data));
+
+	if (ServerFrameInfo.LastProcessedInputFrame < InputBuffer.TailFrame())
+	{
+		// At this point, things are pretty bad and we are going to drop commands. 
+		// We still need guards client side to not send too many commands
+		UE_LOG(LogPlayerController, Warning, TEXT( "ClientInput buffer overflow. %s [%s]. RecvFrame: %d. LastProcessInputFrame: %d." ), *GetName(), PlayerState ? *PlayerState->GetPlayerName() : TEXT("???"), InRecvClientInputFrame, ServerFrameInfo.LastProcessedInputFrame);
+		ServerFrameInfo.LastProcessedInputFrame = (InputBuffer.TailFrame() + InputBuffer.HeadFrame()) / 2;
+	}
+}
+
+void APlayerController::ClientRecvServerAckFrame_Implementation(int32 LastProcessedInputFrame, int32 RecvServerFrameNumber, int8 TimeDilation)
+{
+	ClientFrameInfo.LastRecvServerFrame = RecvServerFrameNumber;
+	ClientFrameInfo.LastProcessedInputFrame = LastProcessedInputFrame;
+	ClientFrameInfo.QuantizedTimeDilation = TimeDilation;
+}
+
+void APlayerController::ClientRecvServerAckFrameDebug_Implementation(uint8 NumBuffered, float TargetNumBufferedCmds)
+{
+	ClientFrameInfo.LastRecvInputFrame = ClientFrameInfo.LastProcessedInputFrame + NumBuffered;
+	ClientFrameInfo.TargetNumBufferedCmds = TargetNumBufferedCmds;
 }
 
 /// @cond DOXYGEN_WARNINGS
@@ -1983,12 +2033,12 @@ bool APlayerController::GetHitResultUnderFinger(ETouchIndex::Type FingerIndex, E
 	bool bHit = false;
 	if (PlayerInput)
 	{
-		FVector2D TouchPosition;
+		FVector2f TouchPosition;
 		bool bIsPressed = false;
 		GetInputTouchState(FingerIndex, TouchPosition.X, TouchPosition.Y, bIsPressed);
 		if (bIsPressed)
 		{
-			bHit = GetHitResultAtScreenPosition(TouchPosition, TraceChannel, bTraceComplex, HitResult);
+			bHit = GetHitResultAtScreenPosition(FVector2D(TouchPosition), TraceChannel, bTraceComplex, HitResult);
 		}
 	}
 
@@ -2005,12 +2055,12 @@ bool APlayerController::GetHitResultUnderFingerByChannel(ETouchIndex::Type Finge
 	bool bHit = false;
 	if (PlayerInput)
 	{
-		FVector2D TouchPosition;
+		FVector2f TouchPosition;
 		bool bIsPressed = false;
 		GetInputTouchState(FingerIndex, TouchPosition.X, TouchPosition.Y, bIsPressed);
 		if (bIsPressed)
 		{
-			bHit = GetHitResultAtScreenPosition(TouchPosition, TraceChannel, bTraceComplex, HitResult);
+			bHit = GetHitResultAtScreenPosition(FVector2D(TouchPosition), TraceChannel, bTraceComplex, HitResult);
 		}
 	}
 
@@ -2027,12 +2077,12 @@ bool APlayerController::GetHitResultUnderFingerForObjects(ETouchIndex::Type Fing
 	bool bHit = false;
 	if (PlayerInput)
 	{
-		FVector2D TouchPosition;
+		FVector2f TouchPosition;
 		bool bIsPressed = false;
 		GetInputTouchState(FingerIndex, TouchPosition.X, TouchPosition.Y, bIsPressed);
 		if (bIsPressed)
 		{
-			bHit = GetHitResultAtScreenPosition(TouchPosition, ObjectTypes, bTraceComplex, HitResult);
+			bHit = GetHitResultAtScreenPosition(FVector2D(TouchPosition), ObjectTypes, bTraceComplex, HitResult);
 		}
 	}
 
@@ -2078,7 +2128,7 @@ bool APlayerController::ProjectWorldLocationToScreenWithDistance(FVector WorldLo
 	{
 		// get the projection data
 		FSceneViewProjectionData ProjectionData;
-		if (LP->GetProjectionData(LP->ViewportClient->Viewport, eSSP_FULL, /*out*/ ProjectionData))
+		if (LP->GetProjectionData(LP->ViewportClient->Viewport, /*out*/ ProjectionData))
 		{
 			FVector2D ScreenPosition2D;
 			FMatrix const ViewProjectionMatrix = ProjectionData.ComputeViewProjectionMatrix();
@@ -2234,85 +2284,108 @@ void APlayerController::FlushPressedKeys()
 
 bool APlayerController::InputKey(FKey Key, EInputEvent EventType, float AmountDepressed, bool bGamepad)
 {
+	FInputKeyParams Params;
+	Params.Key = Key;
+	Params.Event = EventType;
+	Params.Delta.X = AmountDepressed;
+	Params.bIsGamepadOverride = bGamepad;
 	
-	if (GEngine->XRSystem.IsValid())
+	return InputKey(Params);
+}
+
+bool APlayerController::InputKey(const FInputKeyParams& Params)
+{
+	bool bResult = false;
+
+	// Any analog values can simply be passed to the UPlayerInput
+	if(Params.Key.IsAnalog())
 	{
-		auto XRInput = GEngine->XRSystem->GetXRInput();
-		if (XRInput && XRInput->HandleInputKey(PlayerInput, Key, EventType, AmountDepressed, bGamepad))
+		if(PlayerInput)
 		{
-			return true;
+			bResult = PlayerInput->InputKey(Params);
 		}
 	}
-
-	bool bResult = false;
-	if (PlayerInput)
+	// But we need special case XR handling for non-analog values...
+	else
 	{
-		bResult = PlayerInput->InputKey(Key, EventType, AmountDepressed, bGamepad);
-		if (bEnableClickEvents && (ClickEventKeys.Contains(Key) || ClickEventKeys.Contains(EKeys::AnyKey)))
+		if (GEngine->XRSystem.IsValid())
 		{
-			FVector2D MousePosition;
-			UGameViewportClient* ViewportClient = CastChecked<ULocalPlayer>(Player)->ViewportClient;
-			if (ViewportClient && ViewportClient->GetMousePosition(MousePosition))
+			auto XRInput = GEngine->XRSystem->GetXRInput();
+			if (XRInput && XRInput->HandleInputKey(PlayerInput, Params.Key, Params.Event, Params.Delta.X, Params.IsGamepad()))
 			{
-				UPrimitiveComponent* ClickedPrimitive = NULL;
-				if (bEnableMouseOverEvents)
+				return true;
+			}
+		}
+
+		if (PlayerInput)
+		{
+			bResult = PlayerInput->InputKey(Params);
+			if (bEnableClickEvents && (ClickEventKeys.Contains(Params.Key) || ClickEventKeys.Contains(EKeys::AnyKey)))
+			{
+				FVector2D MousePosition;
+				UGameViewportClient* ViewportClient = CastChecked<ULocalPlayer>(Player)->ViewportClient;
+				if (ViewportClient && ViewportClient->GetMousePosition(MousePosition))
 				{
-					ClickedPrimitive = CurrentClickablePrimitive.Get();
-				}
-				else
-				{
-					FHitResult HitResult;
-					const bool bHit = GetHitResultAtScreenPosition(MousePosition, CurrentClickTraceChannel, true, HitResult);
-					if (bHit)
+					UPrimitiveComponent* ClickedPrimitive = nullptr;
+					if (bEnableMouseOverEvents)
 					{
-						ClickedPrimitive = HitResult.Component.Get();
+						ClickedPrimitive = CurrentClickablePrimitive.Get();
 					}
-				}
-				if( GetHUD() )
-				{
-					if (GetHUD()->UpdateAndDispatchHitBoxClickEvents(MousePosition, EventType))
+					else
 					{
-						ClickedPrimitive = NULL;
+						FHitResult HitResult;
+						const bool bHit = GetHitResultAtScreenPosition(MousePosition, CurrentClickTraceChannel, true, HitResult);
+						if (bHit)
+						{
+							ClickedPrimitive = HitResult.Component.Get();
+						}
 					}
-				}
-
-				if (ClickedPrimitive)
-				{
-					switch(EventType)
+					if(GetHUD())
 					{
-					case IE_Pressed:
-					case IE_DoubleClick:
-						ClickedPrimitive->DispatchOnClicked(Key);
-						break;
-
-					case IE_Released:
-						ClickedPrimitive->DispatchOnReleased(Key);
-						break;
-
-					case IE_Axis:
-					case IE_Repeat:
-						break;
+						if (GetHUD()->UpdateAndDispatchHitBoxClickEvents(MousePosition, Params.Event))
+						{
+							ClickedPrimitive = nullptr;
+						}
 					}
-				}
 
-				bResult = true;
+					if (ClickedPrimitive)
+					{
+						switch(Params.Event)
+						{
+						case IE_Pressed:
+						case IE_DoubleClick:
+							ClickedPrimitive->DispatchOnClicked(Params.Key);
+							break;
+
+						case IE_Released:
+							ClickedPrimitive->DispatchOnReleased(Params.Key);
+							break;
+
+						case IE_Axis:
+						case IE_Repeat:
+							break;
+						}
+					}
+
+					bResult = true;
+				}
 			}
 		}
 	}
-
+	
 	return bResult;
 }
 
 bool APlayerController::InputAxis(FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad)
 {
-	bool bResult = false;
-	
-	if (PlayerInput)
-	{
-		bResult = PlayerInput->InputAxis(Key, Delta, DeltaTime, NumSamples, bGamepad);
-	}
+	FInputKeyParams Params;
+	Params.Key = Key;
+	Params.Delta = FVector(static_cast<double>(Delta), 0.0, 0.0);
+	Params.NumSamples = NumSamples;
+	Params.DeltaTime = DeltaTime;
+	Params.bIsGamepadOverride = bGamepad;
 
-	return bResult;
+	return InputKey(Params);
 }
 
 bool APlayerController::InputTouch(uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, float Force, FDateTime DeviceTimestamp, uint32 TouchpadIndex)
@@ -2452,8 +2525,8 @@ void APlayerController::SetupInputComponent()
 
 	if (UInputDelegateBinding::SupportsInputDelegate(GetClass()))
 	{
-		InputComponent->bBlockInput = bBlockInput;
-		UInputDelegateBinding::BindInputDelegates(GetClass(), InputComponent);
+		InputComponent->bBlockInput = bBlockInput;		
+		UInputDelegateBinding::BindInputDelegatesWithSubojects(this, InputComponent);
 	}
 }
 
@@ -2843,6 +2916,81 @@ void APlayerController::ClientSetSpectatorWaiting_Implementation(bool bWaiting)
 	if (IsInState(NAME_Spectating))
 	{
 		bPlayerIsWaiting = true;
+	}
+}
+
+float APlayerController::GetDeprecatedInputYawScale() const
+{
+	if (GetDefault<UInputSettings>()->bEnableLegacyInputScales)
+	{
+		return InputYawScale_DEPRECATED;
+	}
+	else
+	{
+		UE_LOG(LogPlayerController, Warning, TEXT("Attempting to access legacy input scales without the setting enabled! See UInputSettings::bEnableLegacyInputScales."));
+		return 1.0f;
+	}
+}
+
+float APlayerController::GetDeprecatedInputPitchScale() const
+{
+	if (GetDefault<UInputSettings>()->bEnableLegacyInputScales)
+	{
+		return InputPitchScale_DEPRECATED;
+	}
+	else
+	{
+		UE_LOG(LogPlayerController, Warning, TEXT("Attempting to access legacy input scales without the setting enabled! See UInputSettings::bEnableLegacyInputScales."));
+		return 1.0f;
+	}
+}
+
+float APlayerController::GetDeprecatedInputRollScale() const
+{
+	if (GetDefault<UInputSettings>()->bEnableLegacyInputScales)
+	{
+		return InputRollScale_DEPRECATED;
+	}
+	else
+	{
+		UE_LOG(LogPlayerController, Warning, TEXT("Attempting to access legacy input scales without the setting enabled! See UInputSettings::bEnableLegacyInputScales."));
+		return 1.0f;
+	}
+}
+
+void APlayerController::SetDeprecatedInputYawScale(float NewValue)
+{
+	if (GetDefault<UInputSettings>()->bEnableLegacyInputScales)
+	{
+		InputYawScale_DEPRECATED = NewValue;
+	}
+	else
+	{
+		UE_LOG(LogPlayerController, Warning, TEXT("Attempting to access legacy input scales without the setting enabled! See UInputSettings::bEnableLegacyInputScales."));
+	}
+}
+
+void APlayerController::SetDeprecatedInputPitchScale(float NewValue)
+{
+	if (GetDefault<UInputSettings>()->bEnableLegacyInputScales)
+	{
+		InputPitchScale_DEPRECATED = NewValue;
+	}
+	else
+	{
+		UE_LOG(LogPlayerController, Warning, TEXT("Attempting to access legacy input scales without the setting enabled! See UInputSettings::bEnableLegacyInputScales."));
+	}
+}
+
+void APlayerController::SetDeprecatedInputRollScale(float NewValue)
+{
+	if (GetDefault<UInputSettings>()->bEnableLegacyInputScales)
+	{
+		InputRollScale_DEPRECATED = NewValue;
+	}
+	else
+	{
+		UE_LOG(LogPlayerController, Warning, TEXT("Attempting to access legacy input scales without the setting enabled! See UInputSettings::bEnableLegacyInputScales."));
 	}
 }
 
@@ -3400,6 +3548,11 @@ void APlayerController::GameplayUnmutePlayer(const FUniqueNetIdRepl& PlayerNetId
 	}
 }
 
+void APlayerController::GameplayUnmuteAllPlayers()
+{
+	MuteList.GameplayUnmuteAllPlayers(this);
+}
+
 /// @cond DOXYGEN_WARNINGS
 
 void APlayerController::ServerMutePlayer_Implementation(FUniqueNetIdRepl PlayerId)
@@ -3409,12 +3562,7 @@ void APlayerController::ServerMutePlayer_Implementation(FUniqueNetIdRepl PlayerI
 
 bool APlayerController::ServerMutePlayer_Validate(FUniqueNetIdRepl PlayerId)
 {
-	if (!PlayerId.IsValid())
-	{
-		return false;
-	}
-
-	return true;
+	return PlayerId.IsValid();
 }
 
 void APlayerController::ServerUnmutePlayer_Implementation(FUniqueNetIdRepl PlayerId)
@@ -3424,44 +3572,84 @@ void APlayerController::ServerUnmutePlayer_Implementation(FUniqueNetIdRepl Playe
 
 bool APlayerController::ServerUnmutePlayer_Validate(FUniqueNetIdRepl PlayerId)
 {
-	if (!PlayerId.IsValid())
-	{
-		return false;
-	}
-
-	return true;
+	return PlayerId.IsValid();
 }
 
 void APlayerController::ClientMutePlayer_Implementation(FUniqueNetIdRepl PlayerId)
 {
-	MuteList.ClientMutePlayer(this, PlayerId);
+	// Use the local player to determine the controller id
+	ULocalPlayer* LP = Cast<ULocalPlayer>(Player);
+	UWorld* World = GetWorld();
+
+	if (LP != NULL && World)
+	{
+		// Have the voice subsystem mute this player
+		UOnlineEngineInterface::Get()->MuteRemoteTalker(World, LP->GetControllerId(), PlayerId, false);
+	}
 }
 
 void APlayerController::ClientUnmutePlayer_Implementation(FUniqueNetIdRepl PlayerId)
 {
-	MuteList.ClientUnmutePlayer(this, PlayerId);
+	// Use the local player to determine the controller id
+	ULocalPlayer* LP = Cast<ULocalPlayer>(Player);
+	UWorld* World = GetWorld();
+
+	if (LP != NULL && World)
+	{
+		// Have the voice subsystem unmute this player
+		UOnlineEngineInterface::Get()->UnmuteRemoteTalker(World, LP->GetControllerId(), PlayerId, false);
+	}
+}
+
+void APlayerController::ClientUnmutePlayers_Implementation(const TArray<FUniqueNetIdRepl>& PlayerIds)
+{
+	ULocalPlayer* LP = Cast<ULocalPlayer>(Player);
+	UWorld* World = GetWorld();
+
+	// Use the local player to determine the controller id
+	if (LP != NULL && World)
+	{
+		for (const FUniqueNetIdRepl& UnmuteId : PlayerIds)
+		{
+			if (UnmuteId.IsValid())
+			{
+				// Have the voice subsystem mute this player
+				UOnlineEngineInterface::Get()->UnmuteRemoteTalker(World, LP->GetControllerId(), UnmuteId, false);
+			}
+		}
+	}
+}
+
+void APlayerController::ServerBlockPlayer_Implementation(FUniqueNetIdRepl PlayerId)
+{
+	MuteList.ServerBlockPlayer(this, PlayerId);
+}
+
+bool APlayerController::ServerBlockPlayer_Validate(FUniqueNetIdRepl PlayerId)
+{
+	return PlayerId.IsValid() && PlayerState->GetUniqueId().IsValid();
+}
+
+void APlayerController::ServerUnblockPlayer_Implementation(FUniqueNetIdRepl PlayerId)
+{
+	MuteList.ServerUnblockPlayer(this, PlayerId);
+}
+
+bool APlayerController::ServerUnblockPlayer_Validate(FUniqueNetIdRepl PlayerId)
+{
+	return PlayerId.IsValid() && PlayerState->GetUniqueId().IsValid();
 }
 
 /// @endcond
 
 APlayerController* APlayerController::GetPlayerControllerForMuting(const FUniqueNetIdRepl& PlayerNetId)
 {
-	return GetPlayerControllerFromNetId(GetWorld(), *PlayerNetId.GetUniqueNetId());
+	return GetPlayerControllerFromNetId(GetWorld(), PlayerNetId);
 }
 
 bool APlayerController::IsPlayerMuted(const FUniqueNetId& PlayerId)
 {
 	return MuteList.IsPlayerMuted(PlayerId);
-}
-
-void APlayerController::NotifyDirectorControl(bool bNowControlling, AMatineeActor* CurrentMatinee)
-{
-	// matinee is done, make sure client syncs up viewtargets, since we were ignoring
-	// ClientSetViewTarget during the matinee.
-	if (!bNowControlling && (GetNetMode() == NM_Client) && PlayerCameraManager && PlayerCameraManager->bClientSimulatingViewTarget)
-	{
-		ServerVerifyViewTarget();
-	}
 }
 
 /// @cond DOXYGEN_WARNINGS
@@ -3758,23 +3946,6 @@ void APlayerController::K2_ClientPlayForceFeedback(class UForceFeedbackEffect* F
 	ClientPlayForceFeedback(ForceFeedbackEffect, Params);
 }
 
-void APlayerController::ClientPlayForceFeedback(class UForceFeedbackEffect* ForceFeedbackEffect, bool bLooping, bool bIgnoreTimeDilation, FName Tag)
-{
-	FForceFeedbackParameters Params;
-	Params.Tag = Tag;
-	Params.bLooping = bLooping;
-	Params.bIgnoreTimeDilation = bIgnoreTimeDilation;
-	ClientPlayForceFeedback(ForceFeedbackEffect, Params);
-}
-
-void APlayerController::ClientPlayForceFeedback(class UForceFeedbackEffect* ForceFeedbackEffect, bool bLooping, FName Tag)
-{
-	FForceFeedbackParameters Params;
-	Params.Tag = Tag;
-	Params.bLooping = bLooping;
-	ClientPlayForceFeedback(ForceFeedbackEffect, Params);
-}
-
 void APlayerController::ClientStopForceFeedback_Implementation( UForceFeedbackEffect* ForceFeedbackEffect, FName Tag)
 {
 	if (ForceFeedbackEffect == NULL && Tag == NAME_None)
@@ -4033,6 +4204,11 @@ void APlayerController::PlayHapticEffect(UHapticFeedbackEffect_Base* HapticEffec
 		case EControllerHand::Gun:
 			ActiveHapticEffect_Gun.Reset();
 			ActiveHapticEffect_Gun = MakeShareable(new FActiveHapticFeedbackEffect(HapticEffect, Scale, bLoop));
+			break;
+		case EControllerHand::HMD:
+			ActiveHapticEffect_HMD.Reset();
+			ActiveHapticEffect_HMD = MakeShareable(new FActiveHapticFeedbackEffect(HapticEffect, Scale, bLoop));
+			break;
 		default:
 			UE_LOG(LogPlayerController, Warning, TEXT("Invalid hand specified (%d) for haptic feedback effect %s"), (int32)Hand, *HapticEffect->GetName());
 			break;
@@ -4078,6 +4254,10 @@ void APlayerController::SetHapticsByValue(const float Frequency, const float Amp
 	else if (Hand == EControllerHand::Gun)
 	{
 		ActiveHapticEffect_Gun.Reset();
+	}
+	else if (Hand == EControllerHand::HMD)
+	{
+		ActiveHapticEffect_HMD.Reset();
 	}
 	else
 	{
@@ -4149,6 +4329,8 @@ void APlayerController::ProcessForceFeedbackAndHaptics(const float DeltaTime, co
 	bool bLeftHapticsNeedUpdate = false;
 	bool bRightHapticsNeedUpdate = false;
 	bool bGunHapticsNeedUpdate = false;
+	FHapticFeedbackValues HMDHaptics;
+	bool bHMDHapticsNeedUpdate = false;
 
 	// Always process feedback by default, but if the game is paused then only static
 	// effects that are flagged to play while paused will play
@@ -4247,6 +4429,16 @@ void APlayerController::ProcessForceFeedbackAndHaptics(const float DeltaTime, co
 
 				bGunHapticsNeedUpdate = true;
 			}
+			if (ActiveHapticEffect_HMD.IsValid())
+			{
+				const bool bPlaying = ActiveHapticEffect_HMD->Update(DeltaTime, HMDHaptics);
+				if (!bPlaying)
+				{
+					ActiveHapticEffect_HMD->bLoop ? ActiveHapticEffect_HMD->Restart() : ActiveHapticEffect_HMD.Reset();
+				}
+
+				bHMDHapticsNeedUpdate = true;
+			}
 		}
 	}
 
@@ -4284,6 +4476,10 @@ void APlayerController::ProcessForceFeedbackAndHaptics(const float DeltaTime, co
 					if (bGunHapticsNeedUpdate)
 					{
 						InputInterface->SetHapticFeedbackValues(ControllerId, (int32)EControllerHand::Gun, GunHaptics);
+					}
+					if (bHMDHapticsNeedUpdate)
+					{
+						InputInterface->SetHapticFeedbackValues(ControllerId, (int32)EControllerHand::HMD, HMDHaptics);
 					}
 				}
 			}
@@ -4348,11 +4544,20 @@ void APlayerController::ClientStopCameraAnim_Implementation(UCameraAnim* AnimToS
 	}
 }
 
+
+void APlayerController::ClientSpawnGenericCameraLensEffect_Implementation(TSubclassOf<class AActor> LensEffectEmitterClass)
+{
+	if (PlayerCameraManager != NULL)
+	{
+		PlayerCameraManager->AddGenericCameraLensEffect(*LensEffectEmitterClass);
+	}
+}
+
 void APlayerController::ClientSpawnCameraLensEffect_Implementation( TSubclassOf<AEmitterCameraLensEffectBase> LensEffectEmitterClass )
 {
 	if (PlayerCameraManager != NULL)
 	{
-		PlayerCameraManager->AddCameraLensEffect(LensEffectEmitterClass);
+		PlayerCameraManager->AddGenericCameraLensEffect(*LensEffectEmitterClass);
 	}
 }
 
@@ -4419,6 +4624,8 @@ void APlayerController::GetLifetimeReplicatedProps(TArray< FLifetimeProperty > &
 
 void APlayerController::SetPlayer( UPlayer* InPlayer )
 {
+	FMoviePlayerProxyBlock MoviePlayerBlock;
+
 	check(InPlayer!=NULL);
 
 	const bool bIsSameLevel = InPlayer->PlayerController && (InPlayer->PlayerController->GetLevel() == GetLevel());
@@ -4571,7 +4778,7 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 		// Clear axis inputs from previous frame.
 		RotationInput = FRotator::ZeroRotator;
 
-		if (!IsPendingKill())
+		if (IsValid(this))
 		{
 			Tick(DeltaSeconds);	// perform any tick functions unique to an actor subclass
 		}
@@ -4589,7 +4796,7 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 		// force physics update for clients that aren't sending movement updates in a timely manner 
 		// this prevents cheats associated with artificially induced ping spikes
 		// skip updates if pawn lost autonomous proxy role (e.g. TurnOff() call)
-		if (GetPawn() && !GetPawn()->IsPendingKill() && GetPawn()->GetRemoteRole() == ROLE_AutonomousProxy && GetPawn()->IsReplicatingMovement())
+		if (IsValid(GetPawn()) && GetPawn()->GetRemoteRole() == ROLE_AutonomousProxy && GetPawn()->IsReplicatingMovement())
 		{
 			UMovementComponent* PawnMovement = GetPawn()->GetMovementComponent();
 			INetworkPredictionInterface* NetworkPredictionInterface = Cast<INetworkPredictionInterface>(PawnMovement);
@@ -4707,7 +4914,7 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 			PlayerTick(DeltaSeconds);
 		}
 
-		if (IsPendingKill())
+		if (!IsValid(this))
 		{
 			return;
 		}
@@ -4738,7 +4945,7 @@ void APlayerController::TickActor( float DeltaSeconds, ELevelTick TickType, FAct
 		}
 	}
 
-	if (!IsPendingKill())
+	if (IsValid(this))
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(Tick);
 		Tick(DeltaSeconds);	// perform any tick functions unique to an actor subclass
@@ -4909,7 +5116,7 @@ ASpectatorPawn* APlayerController::SpawnSpectatorPawn()
 				{
 					SpawnedSpectator->SetReplicates(false); // Client-side only
 					SpawnedSpectator->PossessedBy(this);
-					SpawnedSpectator->PawnClientRestart();
+					SpawnedSpectator->DispatchRestart(true);
 					if (SpawnedSpectator->PrimaryActorTick.bStartWithTickEnabled)
 					{
 						SpawnedSpectator->SetActorTickEnabled(true);
@@ -5103,18 +5310,18 @@ bool APlayerController::PopInputComponent(UInputComponent* InInputComponent)
 }
 
 void APlayerController::AddPitchInput(float Val)
-{
-	RotationInput.Pitch += !IsLookInputIgnored() ? Val * InputPitchScale : 0.f;
+{	
+	RotationInput.Pitch += !IsLookInputIgnored() ? Val * (GetDefault<UInputSettings>()->bEnableLegacyInputScales ? InputPitchScale_DEPRECATED : 1.0f) : 0.0f;
 }
 
 void APlayerController::AddYawInput(float Val)
 {
-	RotationInput.Yaw += !IsLookInputIgnored() ? Val * InputYawScale : 0.f;
+	RotationInput.Yaw += !IsLookInputIgnored() ? Val * (GetDefault<UInputSettings>()->bEnableLegacyInputScales ? InputYawScale_DEPRECATED : 1.0f) : 0.0f;
 }
 
 void APlayerController::AddRollInput(float Val)
 {
-	RotationInput.Roll += !IsLookInputIgnored() ? Val * InputRollScale : 0.f;
+	RotationInput.Roll += !IsLookInputIgnored() ? Val * (GetDefault<UInputSettings>()->bEnableLegacyInputScales ? InputRollScale_DEPRECATED : 1.0f) : 0.0f;
 }
 
 bool APlayerController::IsInputKeyDown(const FKey Key) const
@@ -5164,6 +5371,13 @@ void APlayerController::GetInputTouchState(ETouchIndex::Type FingerIndex, float&
 		bIsCurrentlyPressed = false;
 	}
 }
+void APlayerController::GetInputTouchState(ETouchIndex::Type FingerIndex, double& LocationX, double& LocationY, bool& bIsCurrentlyPressed) const
+{
+	float X = (float)LocationX, Y = (float)LocationY;
+	GetInputTouchState(FingerIndex, X, Y, bIsCurrentlyPressed);
+	LocationX = X;
+	LocationY = Y;
+}
 
 void APlayerController::GetInputMotionState(FVector& Tilt, FVector& RotationRate, FVector& Gravity, FVector& Acceleration) const
 {
@@ -5198,6 +5412,17 @@ bool APlayerController::GetMousePosition(float& LocationX, float& LocationY) con
 
 	return bGotMousePosition;
 }
+bool APlayerController::GetMousePosition(double& LocationX, double& LocationY) const
+{
+	float X, Y;
+	if(GetMousePosition(X, Y))
+	{
+		LocationX = X;
+		LocationY = Y;
+		return true;
+	}
+	return false;
+}
 
 void APlayerController::GetInputMouseDelta(float& DeltaX, float& DeltaY) const
 {
@@ -5210,6 +5435,14 @@ void APlayerController::GetInputMouseDelta(float& DeltaX, float& DeltaY) const
 	{
 		DeltaX = DeltaY = 0.f;
 	}
+}
+
+void APlayerController::GetInputMouseDelta(double& DeltaX, double& DeltaY) const
+{
+	float DX, DY;
+	GetInputMouseDelta(DX, DY);
+	DeltaX = DX;
+	DeltaY = DY;
 }
 
 void APlayerController::GetInputAnalogStickState(EControllerAnalogStick::Type WhichStick, float& StickX, float& StickY) const
@@ -5237,6 +5470,13 @@ void APlayerController::GetInputAnalogStickState(EControllerAnalogStick::Type Wh
 	{
 		StickX = StickY = 0.f;
 	}
+}
+void APlayerController::GetInputAnalogStickState(EControllerAnalogStick::Type WhichStick, double& StickX, double& StickY) const
+{
+	float DX, DY;
+	GetInputMouseDelta(DX, DY);
+	StickX = DX;
+	StickY = DY;
 }
 
 void APlayerController::EnableInput(class APlayerController* PlayerController)

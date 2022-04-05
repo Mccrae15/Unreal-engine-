@@ -5,7 +5,7 @@ using System.IO;
 
 public class Expat : ModuleRules
 {
-	protected virtual string ExpatVersion			{ get { return "expat-2.2.0"; } }
+	protected virtual string ExpatVersion			{ get { return "expat-2.2.10"; } }
 
 	protected virtual string IncRootDirectory		{ get { return ModuleDirectory; } }
 	protected virtual string LibRootDirectory		{ get { return ModuleDirectory; } }
@@ -25,23 +25,22 @@ public class Expat : ModuleRules
 		{
 			string LibraryPath = Path.Combine(ExpatPackagePath, "Android", ConfigName);
 			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "arm64", "libexpat.a"));
-			PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "armv7", "libexpat.a"));
 		}
 		else if (Target.Platform == UnrealTargetPlatform.IOS)
 		{
 			PublicAdditionalLibraries.Add(Path.Combine(ExpatPackagePath, "IOS", ConfigName, "libexpat.a"));
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+		else if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			if (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT)
 			{
 				string LibraryPath = Path.Combine(ExpatPackagePath, Target.Platform.ToString(), "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), "Debug");
-				PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "expatd.lib"));
+				PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "libexpatdMD.lib"));
 			}
 			else
 			{
 				string LibraryPath = Path.Combine(ExpatPackagePath, Target.Platform.ToString(), "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), "Release");
-				PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "expat.lib"));
+				PublicAdditionalLibraries.Add(Path.Combine(LibraryPath, "libexpatMD.lib"));
 			}
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
@@ -50,7 +49,7 @@ public class Expat : ModuleRules
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			PublicAdditionalLibraries.Add(Path.Combine(ExpatPackagePath, "Linux/" + Target.Architecture, ConfigName, "libexpat.a"));
+			PublicAdditionalLibraries.Add(Path.Combine(ExpatPackagePath, "Unix/" + Target.Architecture, ConfigName, "libexpat.a"));
 		}
 	}
 }

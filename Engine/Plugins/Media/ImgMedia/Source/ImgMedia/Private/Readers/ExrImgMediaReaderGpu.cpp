@@ -66,7 +66,7 @@ namespace {
 			OutputResolution,
 			OutputResolution,
 			PipelineState.VertexShader,
-			EStereoscopicPass::eSSP_FULL,
+			INDEX_NONE,
 			false,
 			DrawRectangleFlags);
 	}
@@ -102,7 +102,7 @@ FExrImgMediaReaderGpu::~FExrImgMediaReaderGpu()
 				// Check if fence has signaled.
 				check(!MemoryPoolItem->bWillBeSignaled || MemoryPoolItem->Fence->Poll());
 				{
-					RHIUnlockStructuredBuffer(MemoryPoolItem->BufferRef);
+					RHIUnlockBuffer(MemoryPoolItem->BufferRef);
 					delete MemoryPoolItem;
 				}
 			}
@@ -124,6 +124,12 @@ FExrImgMediaReaderGpu::~FExrImgMediaReaderGpu()
 
 bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, int32 MipLevel, const FImgMediaTileSelection& InTileSelection, TSharedPtr<FImgMediaFrame, ESPMode::ThreadSafe> OutFrame)
 {
+	// Fall back to cpu?
+	if (bFallBackToCPU)
+	{
+		return FExrImgMediaReader::ReadFrame(FrameId, MipLevel, InTileSelection, OutFrame);
+	}
+
 	TSharedPtr<FImgMediaLoader, ESPMode::ThreadSafe> Loader = LoaderPtr.Pin();
 	if (Loader.IsValid() == false)
 	{
@@ -174,7 +180,7 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, int32 MipLevel, const FImgM
 			{
 				// Get for our frame/mip level.
 				const FString& ImagePath = Loader->GetImagePath(FrameId, CurrentMipLevel);
-				bool bResult = false;
+				EReadResult ReadResult = Fail;
 				
 				const SIZE_T BufferSize = GetBufferSize(Dim, NumChannels);
 				FStructuredBufferPoolItemSharedPtr& BufferData = BufferDataArray[CurrentMipLevel];
@@ -182,14 +188,30 @@ bool FExrImgMediaReaderGpu::ReadFrame(int32 FrameId, int32 MipLevel, const FImgM
 				uint16* MipDataPtr = static_cast<uint16*>(BufferData->MappedBuffer);
 
 #if READ_IN_CHUNKS
-				bResult = ReadInChunks(MipDataPtr, ImagePath, FrameId, Dim, BufferSize, PixelSize, NumChannels);
+				ReadResult = ReadInChunks(MipDataPtr, ImagePath, FrameId, Dim, BufferSize, PixelSize, NumChannels);
 #else
-				bResult = FExrReader::GenerateTextureData(MipDataPtr, ImagePath, Dim.X, Dim.Y, PixelSize, NumChannels);
+
+				bool bResult = FExrReader::GenerateTextureData(MipDataPtr, ImagePath, Dim.X, Dim.Y, PixelSize, NumChannels);
+				ReadResult = bResult ? Success : Fail;
 #endif
 
-				if (!bResult)
+				if (ReadResult == Fail)
 				{
-					return false;
+					// Check if we have a compressed file.
+					FRgbaInputFile InputFileMip(ImagePath);
+					FImgMediaFrameInfo Info;
+					if (GetInfo(InputFileMip, Info))
+					{
+						if (Info.CompressionName != "Uncompressed")
+						{
+							UE_LOG(LogImgMedia, Error, TEXT("GPU Reader cannot read compressed file %s."), *ImagePath);
+							UE_LOG(LogImgMedia, Error, TEXT("Compressed and uncompressed files should not be mixed in a single sequence."));
+						}
+					}
+
+					// Fall back to CPU.
+					bFallBackToCPU = true;
+					return FExrImgMediaReader::ReadFrame(FrameId, MipLevel, InTileSelection, OutFrame);
 				}
 			}
 
@@ -288,9 +310,9 @@ void FExrImgMediaReaderGpu::OnTick()
 /* FExrImgMediaReaderGpu implementation
  *****************************************************************************/
 
-bool FExrImgMediaReaderGpu::ReadInChunks(uint16* Buffer, const FString& ImagePath, int32 FrameId, const FIntPoint& Dim, int32 BufferSize, int32 PixelSize, int32 NumChannels)
+FExrImgMediaReaderGpu::EReadResult FExrImgMediaReaderGpu::ReadInChunks(uint16* Buffer, const FString& ImagePath, int32 FrameId, const FIntPoint& Dim, int32 BufferSize, int32 PixelSize, int32 NumChannels)
 {
-	bool bResult = true;
+	EReadResult bResult = Success;
 
 	// Chunks are of 16 MB
 	const int32 ChunkSize = 0xF42400;
@@ -303,7 +325,7 @@ bool FExrImgMediaReaderGpu::ReadInChunks(uint16* Buffer, const FString& ImagePat
 
 	if (!ChunkReader.OpenExrAndPrepareForPixelReading(ImagePath, Dim.X, Dim.Y, PixelSize, NumChannels))
 	{
-		return false;
+		return Fail;
 	}
 
 	for (int32 Row = 0; Row <= NumChunks; Row++)
@@ -320,14 +342,14 @@ bool FExrImgMediaReaderGpu::ReadInChunks(uint16* Buffer, const FString& ImagePat
 			if (CanceledFrames.Remove(FrameId) > 0)
 			{
 				UE_LOG(LogImgMedia, Warning, TEXT("Reader %p: Canceling Frame %i At chunk # %i"), this, FrameId, Row);
-				bResult = false;
+				bResult = Cancelled;
 				break;
 			}
 		}
 
 		if (!ChunkReader.ReadExrImageChunk(reinterpret_cast<char*>(Buffer) + CurrentBufferPos, Step))
 		{
-			bResult = false;
+			bResult = Fail;
 			break;
 		}
 		CurrentBufferPos += Step;
@@ -335,7 +357,7 @@ bool FExrImgMediaReaderGpu::ReadInChunks(uint16* Buffer, const FString& ImagePat
 
 	if (!ChunkReader.CloseExrFile())
 	{
-		return false;
+		return Fail;
 	}
 
 	return bResult;
@@ -354,7 +376,7 @@ SIZE_T FExrImgMediaReaderGpu::GetBufferSize(const FIntPoint& Dim, int32 NumChann
 FStructuredBufferPoolItemSharedPtr FExrImgMediaReaderGpu::AllocateGpuBufferFromPool(uint32 AllocSize, bool bWait)
 {
 	// This function is attached to the shared pointer and is used to return any allocated memory to staging pool.
-	auto BufferDeleter = [AllocSize, this](FStructuredBufferPoolItem* ObjectToDelete) {
+	auto BufferDeleter = [AllocSize](FStructuredBufferPoolItem* ObjectToDelete) {
 		ReturnGpuBufferToStagingPool(AllocSize, ObjectToDelete);
 	};
 
@@ -377,15 +399,16 @@ FStructuredBufferPoolItemSharedPtr FExrImgMediaReaderGpu::AllocateGpuBufferFromP
 		volatile bool bInitDone = false;
 		{
 			AllocatedBuffer = MakeShareable(new FStructuredBufferPoolItem(), MoveTemp(BufferDeleter));
+			AllocatedBuffer->Reader = AsShared();
 
 			// Allocate and unlock the structured buffer on render thread.
 			ENQUEUE_RENDER_COMMAND(CreatePooledBuffer)([AllocatedBuffer, AllocSize, &bInitDone, this, bWait](FRHICommandListImmediate& RHICmdList)
 			{
 				FScopeLock ScopeLock(&AllocatorCriticalSecion);
 				SCOPED_DRAW_EVENT(RHICmdList, FExrImgMediaReaderGpu_AllocateBuffer);
-				FRHIResourceCreateInfo CreateInfo;
-				AllocatedBuffer->BufferRef = RHICreateStructuredBuffer(sizeof(uint16) * 2., AllocSize, BUF_ShaderResource | BUF_Dynamic | BUF_FastVRAM | BUF_Transient, CreateInfo);
-				AllocatedBuffer->MappedBuffer = static_cast<uint16*>(RHILockStructuredBuffer(AllocatedBuffer->BufferRef, 0, AllocSize, RLM_WriteOnly));
+				FRHIResourceCreateInfo CreateInfo(TEXT("FExrImgMediaReaderGpu"));
+				AllocatedBuffer->BufferRef = RHICreateStructuredBuffer(sizeof(uint16) * 2., AllocSize, BUF_ShaderResource | BUF_Dynamic | BUF_FastVRAM, CreateInfo);
+				AllocatedBuffer->MappedBuffer = static_cast<uint16*>(RHILockBuffer(AllocatedBuffer->BufferRef, 0, AllocSize, RLM_WriteOnly));
 				AllocatedBuffer->Fence = RHICreateGPUFence(TEXT("BufferNoLongerInUseFence"));
 				if (bWait)
 				{
@@ -408,25 +431,27 @@ FStructuredBufferPoolItemSharedPtr FExrImgMediaReaderGpu::AllocateGpuBufferFromP
 
 void FExrImgMediaReaderGpu::ReturnGpuBufferToStagingPool(uint32 AllocSize, FStructuredBufferPoolItem* Buffer)
 {
+	TSharedPtr< FExrImgMediaReaderGpu, ESPMode::ThreadSafe> Reader = Buffer->Reader.Pin();
+
 	// If reader is being deleted, we don't need to return the memory into staging buffer and instead should delete it.
-	if (bIsShuttingDown)
+	if ((Reader.IsValid() == false) || (Reader->bIsShuttingDown))
 	{
-		ENQUEUE_RENDER_COMMAND(DeletePooledBuffers)([this, Buffer](FRHICommandListImmediate& RHICmdList)
+		ENQUEUE_RENDER_COMMAND(DeletePooledBuffers)([Buffer](FRHICommandListImmediate& RHICmdList)
 		{
 			SCOPED_DRAW_EVENT(RHICmdList, FExrImgMediaReaderGpu_ReleaseBuffer);
 
 			// By this point we don't need a lock because the destructor was already called and it 
 			// is guaranteed that this buffer is no longer used anywhere else.
-			RHIUnlockStructuredBuffer(Buffer->BufferRef);
+			RHIUnlockBuffer(Buffer->BufferRef);
 			delete Buffer;
 		});
 	}
 	else
 	{
-		FScopeLock ScopeLock(&AllocatorCriticalSecion);
+		FScopeLock ScopeLock(&Reader->AllocatorCriticalSecion);
 
 		// We don't need to process this pooled buffer if the Reader is being destroyed.
-		StagingMemoryPool.Add(AllocSize, Buffer);
+		Reader->StagingMemoryPool.Add(AllocSize, Buffer);
 	}
 
 }

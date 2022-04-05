@@ -19,7 +19,8 @@ class IAudioDecoderOutput;
 using IAudioDecoderOutputPtr = TSharedPtr<IAudioDecoderOutput, ESPMode::ThreadSafe>;
 class IMetaDataDecoderOutput;
 using IMetaDataDecoderOutputPtr = TSharedPtr<IMetaDataDecoderOutput, ESPMode::ThreadSafe>;
-
+class ISubtitleDecoderOutput;
+using ISubtitleDecoderOutputPtr = TSharedPtr<ISubtitleDecoderOutput, ESPMode::ThreadSafe>;
 
 namespace Electra
 {
@@ -52,6 +53,8 @@ public:
 	void OnVideoFlush();
 	void OnAudioDecoded(const IAudioDecoderOutputPtr& DecoderOutput);
 	void OnAudioFlush();
+	void OnSubtitleDecoded(ISubtitleDecoderOutputPtr DecoderOutput);
+	void OnSubtitleFlush();
 
 	void OnVideoRenderingStarted();
 	void OnVideoRenderingStopped();
@@ -95,6 +98,7 @@ public:
 
 	bool IsLooping() const override;
 	bool SetLooping(bool bLooping) override;
+	int32 GetLoopCount() const override;
 
 	FTimespan GetTime() const override;
 	FTimespan GetDuration() const override;
@@ -102,10 +106,14 @@ public:
 	bool IsLive() const override;
 	FTimespan GetSeekableDuration() const override;
 
+	void SetPlaybackRange(const FPlaybackRange& InPlaybackRange) override;
+	void GetPlaybackRange(FPlaybackRange& OutPlaybackRange) const override;
+
 	float GetRate() const override;
 	bool SetRate(float Rate) override;
 
 	bool Seek(const FTimespan& Time) override;
+	void SetFrameAccurateSeekMode(bool bEnableFrameAccuracy) override;
 
 	bool GetAudioTrackFormat(int32 TrackIndex, int32 FormatIndex, FAudioTrackFormat& OutFormat) const override;
 	bool GetVideoTrackFormat(int32 TrackIndex, int32 FormatIndex, FVideoTrackFormat& OutFormat) const override;
@@ -119,7 +127,13 @@ public:
 	FString GetTrackName(EPlayerTrackType TrackType, int32 TrackIndex) const override;
 	bool SelectTrack(EPlayerTrackType TrackType, int32 TrackIndex) override;
 
+	int32 GetNumVideoStreams(int32 TrackIndex) const override;
+	bool GetVideoStreamFormat(FVideoStreamFormat& OutFormat, int32 InTrackIndex, int32 InStreamIndex) const override;
+	bool GetActiveVideoStreamFormat(FVideoStreamFormat& OutFormat) const override;
+
 	void NotifyOfOptionChange() override;
+
+	void SuspendOrResumeDecoders(bool bSuspend) override;
 
 private:
 	DECLARE_DELEGATE_TwoParams(FOnMediaPlayerEventReceivedDelegate, TSharedPtrTS<IAdaptiveStreamingPlayerAEMSEvent> /*InEvent*/, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode /*InDispatchMode*/);
@@ -134,6 +148,26 @@ private:
 		{ EventReceivedDelegate.ExecuteIfBound(InEvent, InDispatchMode); }
 		FOnMediaPlayerEventReceivedDelegate EventReceivedDelegate;
 	};
+
+	DECLARE_DELEGATE_OneParam(FOnMediaPlayerSubtitleReceivedDelegate, ISubtitleDecoderOutputPtr);
+	DECLARE_DELEGATE(FOnMediaPlayerSubtitleFlushDelegate);
+	class FSubtitleEventReceiver : public IAdaptiveStreamingPlayerSubtitleReceiver
+	{
+	public:
+		virtual ~FSubtitleEventReceiver() = default;
+		FOnMediaPlayerSubtitleReceivedDelegate& GetSubtitleReceivedDelegate()
+		{ return SubtitleReceivedDelegate; }
+		FOnMediaPlayerSubtitleFlushDelegate& GetSubtitleFlushDelegate()
+		{ return SubtitleFlushDelegate; }
+	private:
+		virtual void OnMediaPlayerSubtitleReceived(ISubtitleDecoderOutputPtr Subtitle) override
+		{ SubtitleReceivedDelegate.ExecuteIfBound(Subtitle); }
+		virtual void OnMediaPlayerFlushSubtitles() override
+		{ SubtitleFlushDelegate.ExecuteIfBound(); }		 
+		FOnMediaPlayerSubtitleReceivedDelegate SubtitleReceivedDelegate;
+		FOnMediaPlayerSubtitleFlushDelegate SubtitleFlushDelegate;
+	};
+
 
 
 	struct FPlayerMetricEventBase
@@ -153,6 +187,7 @@ private:
 			LicenseKey,
 			DataAvailabilityChange,
 			VideoQualityChange,
+			CodecFormatChange,
 			PrerollStart,
 			PrerollEnd,
 			PlaybackStart,
@@ -161,6 +196,7 @@ private:
 			PlaybackEnded,
 			JumpInPlayPosition,
 			PlaybackStopped,
+			SeekCompleted,
 			Error,
 			LogMessage,
 			DroppedVideoFrame,
@@ -229,6 +265,11 @@ private:
 		int32 PreviousBitrate;
 		bool bIsDrasticDownswitch;
 	};
+	struct FPlayerMetricEvent_CodecFormatChange : public FPlayerMetricEventBase
+	{
+		FPlayerMetricEvent_CodecFormatChange(const FStreamCodecInformation& InNewDecodingFormat) : FPlayerMetricEventBase(EType::CodecFormatChange), NewDecodingFormat(InNewDecodingFormat) {}
+		FStreamCodecInformation NewDecodingFormat;
+	};
 	struct FPlayerMetricEvent_JumpInPlayPosition : public FPlayerMetricEventBase
 	{
 		FPlayerMetricEvent_JumpInPlayPosition(const FTimeValue& InToNewTime, const FTimeValue& InFromTime, Metrics::ETimeJumpReason InTimejumpReason) : FPlayerMetricEventBase(EType::JumpInPlayPosition), ToNewTime(InToNewTime), FromTime(InFromTime), TimejumpReason(InTimejumpReason) {}
@@ -254,8 +295,10 @@ private:
 
 	bool PresentVideoFrame(const FVideoDecoderOutputPtr& InVideoFrame);
 	bool PresentAudioFrame(const IAudioDecoderOutputPtr& DecoderOutput);
+	bool PresentSubtitle(const ISubtitleDecoderOutputPtr& DecoderOutput);
 
 	void PlatformNotifyOfOptionChange();
+	void PlatformSuspendOrResumeDecoders(bool bSuspend);
 
 	void OnMediaPlayerEventReceived(TSharedPtrTS<IAdaptiveStreamingPlayerAEMSEvent> InEvent, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode InDispatchMode);
 
@@ -286,6 +329,8 @@ private:
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_DataAvailabilityChange>(DataAvailability)); }
 	virtual void ReportVideoQualityChange(int32 NewBitrate, int32 PreviousBitrate, bool bIsDrasticDownswitch) override
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_VideoQualityChange>(NewBitrate, PreviousBitrate, bIsDrasticDownswitch)); }
+	virtual void ReportDecodingFormatChange(const FStreamCodecInformation& NewDecodingFormat) override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_CodecFormatChange>(NewDecodingFormat)); }
 	virtual void ReportPrerollStart() override
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::PrerollStart)); }
 	virtual void ReportPrerollEnd() override
@@ -302,6 +347,8 @@ private:
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_JumpInPlayPosition>(ToNewTime, FromTime, TimejumpReason)); }
 	virtual void ReportPlaybackStopped() override
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::PlaybackStopped)); }
+	virtual void ReportSeekCompleted() override
+	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEventBase>(FPlayerMetricEventBase::EType::SeekCompleted)); }
 	virtual void ReportError(const FString& ErrorReason) override
 	{ DeferredPlayerEvents.Enqueue(MakeSharedTS<FPlayerMetricEvent_Error>(ErrorReason)); }
 	virtual void ReportLogMessage(IInfoLog::ELevel InLogLevel, const FString& InLogMessage, int64 InPlayerWallclockMilliseconds) override
@@ -330,14 +377,50 @@ private:
 	// Contains number of audio tracks available to expose it later.
 	int32											NumTracksAudio;
 	int32											NumTracksVideo;
+	int32											NumTracksSubtitle;
 	int32											SelectedQuality;
 	int32											SelectedVideoTrackIndex;
 	mutable int32									SelectedAudioTrackIndex;
+	mutable int32									SelectedSubtitleTrackIndex;
 	mutable bool									bAudioTrackIndexDirty;
+	mutable bool									bSubtitleTrackIndexDirty;
 
 	bool											bInitialSeekPerformed;
 
+	FPlaybackRange									CurrentPlaybackRange;
+	TOptional<bool>									bFrameAccurateSeeking;
+	TOptional<bool>									bEnableLooping;
+
+	TOptional<FVideoStreamFormat>					CurrentlyActiveVideoStreamFormat;
+
 	FIntPoint										LastPresentedFrameDimension;
+
+
+	struct FPlayerState
+	{
+		TOptional<float>		IntendedPlayRate;
+		float					CurrentPlayRate = 0.0f;
+
+		TAtomic<EPlayerState>	State;
+		TAtomic<EPlayerStatus>	Status;
+
+		bool					bUseInternal = false;
+
+		void Reset()
+		{
+			IntendedPlayRate.Reset();
+			CurrentPlayRate = 0.0f;
+			State = EPlayerState::Closed;
+			Status = EPlayerStatus::None;
+		}
+
+		float GetRate() const;
+		EPlayerState GetState() const;
+		EPlayerStatus GetStatus() const;
+
+		void SetIntendedPlayRate(float InIntendedRate);
+		void SetPlayRateFromPlayer(float InCurrentPlayerPlayRate);
+	};
 
 
 	/** Media player Guid */
@@ -351,9 +434,7 @@ private:
 	/** Option interface **/
 	FPlaystartOptions								PlaystartOptions;
 
-	/**  */
-	TAtomic<EPlayerState>							State;
-	TAtomic<EPlayerStatus>							Status;
+	FPlayerState									PlayerState;
 
 	TAtomic<bool>									bPlayerHasClosed;
 	TAtomic<bool>									bHasPendingError;
@@ -364,6 +445,8 @@ private:
 	TQueue<IElectraPlayerAdapterDelegate::EPlayerEvent>	DeferredEvents;
 	TQueue<TSharedPtrTS<FPlayerMetricEventBase>>	DeferredPlayerEvents;
 	TSharedPtrTS<FAEMSEventReceiver>				MediaPlayerEventReceiver;
+	TSharedPtrTS<FSubtitleEventReceiver>			MediaPlayerSubtitleReceiver;
+
 
 	/** The URL of the currently opened media. */
 	FString											MediaUrl;
@@ -382,7 +465,7 @@ private:
 		static void DoCloseAsync(TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> && Player, TSharedPtr<IAsyncResourceReleaseNotifyContainer, ESPMode::ThreadSafe> AsyncDestructNotification);
 	};
 
-	FCriticalSection												PlayerLock;
+	mutable FCriticalSection										PlayerLock;
 	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe>			CurrentPlayer;
 	FEvent*															WaitForPlayerDestroyedEvent;
 
@@ -664,6 +747,7 @@ private:
 	void HandlePlayerEventLicenseKey(const Metrics::FLicenseKeyStats& LicenseKeyStats);
 	void HandlePlayerEventDataAvailabilityChange(const Metrics::FDataAvailabilityChange& DataAvailability);
 	void HandlePlayerEventVideoQualityChange(int32 NewBitrate, int32 PreviousBitrate, bool bIsDrasticDownswitch);
+	void HandlePlayerEventCodecFormatChange(const Electra::FStreamCodecInformation& NewDecodingFormat);
 	void HandlePlayerEventPrerollStart();
 	void HandlePlayerEventPrerollEnd();
 	void HandlePlayerEventPlaybackStart();
@@ -672,11 +756,11 @@ private:
 	void HandlePlayerEventPlaybackEnded();
 	void HandlePlayerEventJumpInPlayPosition(const FTimeValue& ToNewTime, const FTimeValue& FromTime, Metrics::ETimeJumpReason TimejumpReason);
 	void HandlePlayerEventPlaybackStopped();
+	void HandlePlayerEventSeekCompleted();
 	void HandlePlayerEventError(const FString& ErrorReason);
 	void HandlePlayerEventLogMessage(IInfoLog::ELevel InLogLevel, const FString& InLogMessage, int64 InPlayerWallclockMilliseconds);
 	void HandlePlayerEventDroppedVideoFrame();
 	void HandlePlayerEventDroppedAudioFrame();
-
 };
 
 ENUM_CLASS_FLAGS(FElectraPlayer::EPlayerStatus);

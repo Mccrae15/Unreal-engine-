@@ -19,6 +19,52 @@ class UEnvQueryManager;
 class UEnvQueryOption;
 class UEnvQueryTest;
 
+//----------------------------------------------------------------------//
+// FEnvQueryManagerConfig
+//----------------------------------------------------------------------//
+
+/** Wrapper to hold config variables */
+USTRUCT()
+struct FEnvQueryManagerConfig
+{
+	GENERATED_BODY()
+
+public:
+
+	/** how long are we allowed to test per update, in seconds. */
+	UPROPERTY(config)
+	float MaxAllowedTestingTime = 0.003f;
+
+	/** whether we update EQS queries based on:
+	running a test on one query and move to the next (breadth) - default behavior,
+	or test an entire query before moving to the next one (depth). */
+	UPROPERTY(config)
+	bool bTestQueriesUsingBreadth = false;
+
+	/** if greater than zero, we will warn once when the number of queries is greater than or equal to this number, and log the queries out */
+	UPROPERTY(config)
+	int32 QueryCountWarningThreshold = 200;
+
+	/** how often (in seconds) we will warn about the number of queries (allows us to catch multiple occurrences in a session) */
+	UPROPERTY(config)
+	double QueryCountWarningInterval = 60.0f;
+
+	/** Maximum EQS execution duration (in seconds) before a warning is reported. */
+	UPROPERTY(config)
+	double ExecutionTimeWarningSeconds = 0.025f;
+
+	/** Maximum EQS Query FinishDelegate duration (in seconds) before a warning is reported. */
+	UPROPERTY(config)
+	double HandlingResultTimeWarningSeconds = 0.025f;
+
+	/** Maximum EQS Generator duration (in seconds) before a warning is reported. */
+	UPROPERTY(config)
+	double GenerationTimeWarningSeconds = 0.01f;
+
+public:
+	FString ToString() const;
+};
+
 /** wrapper for easy query execution */
 USTRUCT()
 struct AIMODULE_API FEnvQueryRequest
@@ -33,6 +79,10 @@ struct AIMODULE_API FEnvQueryRequest
 	// use when owner is different from finish delegate binding
 	FEnvQueryRequest(const UEnvQuery* Query, UObject* RequestOwner) : QueryTemplate(Query), Owner(RequestOwner), World(NULL) {}
 
+	// set names param indicated by Param. If Param is configured to read values from a blackboard then BlackboardComponent
+	// is expected to be non-null (the function will fail a check otherwise).
+	FEnvQueryRequest& SetDynamicParam(const FAIDynamicParam& Param, const UBlackboardComponent* BlackboardComponent = nullptr);
+
 	// set named params
 	FORCEINLINE FEnvQueryRequest& SetFloatParam(FName ParamName, float Value) { NamedParams.Add(ParamName, Value); return *this; }
 	FORCEINLINE FEnvQueryRequest& SetIntParam(FName ParamName, int32 Value) { NamedParams.Add(ParamName, *((float*)&Value)); return *this; }
@@ -44,12 +94,12 @@ struct AIMODULE_API FEnvQueryRequest
 	FORCEINLINE FEnvQueryRequest& SetWorldOverride(UWorld* InWorld) { World = InWorld; return *this; }
 
 	template< class UserClass >	
-	FORCEINLINE int32 Execute(EEnvQueryRunMode::Type Mode, UserClass* InObj, typename FQueryFinishedSignature::TUObjectMethodDelegate< UserClass >::FMethodPtr InMethod)
+	FORCEINLINE int32 Execute(EEnvQueryRunMode::Type Mode, UserClass* InObj, typename FQueryFinishedSignature::TMethodPtr< UserClass > InMethod)
 	{
 		return Execute(Mode, FQueryFinishedSignature::CreateUObject(InObj, InMethod));
 	}
 	template< class UserClass >	
-	FORCEINLINE int32 Execute(EEnvQueryRunMode::Type Mode, UserClass* InObj, typename FQueryFinishedSignature::TUObjectMethodDelegate_Const< UserClass >::FMethodPtr InMethod)
+	FORCEINLINE int32 Execute(EEnvQueryRunMode::Type Mode, UserClass* InObj, typename FQueryFinishedSignature::TConstMethodPtr< UserClass > InMethod)
 	{
 		return Execute(Mode, FQueryFinishedSignature::CreateUObject(InObj, InMethod));
 	}
@@ -59,15 +109,15 @@ protected:
 
 	/** query to run */
 	UPROPERTY()
-	const UEnvQuery* QueryTemplate;
+	TObjectPtr<const UEnvQuery> QueryTemplate;
 
 	/** querier */
 	UPROPERTY()
-	UObject* Owner;
+	TObjectPtr<UObject> Owner;
 
 	/** world */
 	UPROPERTY()
-	UWorld* World;
+	TObjectPtr<UWorld> World;
 
 	/** list of named params */
 	TMap<FName, float> NamedParams;
@@ -83,7 +133,7 @@ struct FEnvQueryInstanceCache
 
 	/** query template, duplicated in manager's world */
 	UPROPERTY()
-	UEnvQuery* Template = nullptr;
+	TObjectPtr<UEnvQuery> Template = nullptr;
 
 	/** instance to duplicate */
 	FEnvQueryInstance Instance;
@@ -165,6 +215,7 @@ class AIMODULE_API UEnvQueryManager : public UAISubsystem, public FSelfRegisteri
 	// FTickableGameObject begin
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
+	virtual bool IsTickableInEditor() const override { return true; }
 	// FTickableGameObject end
 
 	/** execute query */
@@ -235,6 +286,9 @@ class AIMODULE_API UEnvQueryManager : public UAISubsystem, public FSelfRegisteri
 	virtual bool Exec(UWorld* Inworld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 	//~ End FExec Interface
 
+	/** Configure config variables during runtime */
+	void Configure(const FEnvQueryManagerConfig& NewConfig);
+
 protected:
 	friend UEnvQueryInstanceBlueprintWrapper;
 	TSharedPtr<FEnvQueryInstance> FindQueryInstance(const int32 QueryID);
@@ -267,10 +321,10 @@ protected:
 
 	/** local cache of context objects for managing BP based objects */
 	UPROPERTY(transient)
-	TArray<UEnvQueryContext*> LocalContexts;
+	TArray<TObjectPtr<UEnvQueryContext>> LocalContexts;
 
 	UPROPERTY()
-	TArray<UEnvQueryInstanceBlueprintWrapper*> GCShieldedWrappers;
+	TArray<TObjectPtr<UEnvQueryInstanceBlueprintWrapper>> GCShieldedWrappers;
 
 	/** local contexts mapped by class names */
 	TMap<FName, UEnvQueryContext*> LocalContextMap;
@@ -299,6 +353,17 @@ protected:
 	UPROPERTY(config)
 	double QueryCountWarningInterval;
 
+	/** Maximum EQS execution duration (in seconds) before a warning is reported. */
+	UPROPERTY(config)
+	double ExecutionTimeWarningSeconds = 0.025f;
+
+	/** Maximum EQS Query FinishDelegate duration (in seconds) before a warning is reported. */
+	UPROPERTY(config)
+	double HandlingResultTimeWarningSeconds = 0.025f;
+
+	/** Maximum EQS Generator duration (in seconds) before a warning is reported. */
+	UPROPERTY(config)
+	double GenerationTimeWarningSeconds = 0.01f;
 private:
 
 	/** create and bind delegates in instance */

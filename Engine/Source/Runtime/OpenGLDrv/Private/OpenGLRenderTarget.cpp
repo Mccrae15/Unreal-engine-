@@ -129,7 +129,7 @@ GLuint FOpenGLDynamicRHI::GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTarge
 	glBindFramebuffer(GL_FRAMEBUFFER, Framebuffer);
 	VERIFY_GL(glBindFramebuffer)
 
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
 	static const auto CVarMobileMultiView = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("vr.MobileMultiView"));
 
 	// Allocate mobile multi-view frame buffer if enabled and supported.
@@ -197,18 +197,17 @@ GLuint FOpenGLDynamicRHI::GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTarge
 			switch (RenderTarget->Target)
 			{
 			case GL_TEXTURE_2D:
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
 			case GL_TEXTURE_EXTERNAL_OES:
 #endif
 			case GL_TEXTURE_2D_MULTISAMPLE:
 			{
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
 				FOpenGLTexture2D* RenderTarget2D = (FOpenGLTexture2D*)RenderTarget;
 				const uint32 NumSamplesTileMem = RenderTarget2D->GetNumSamplesTileMem();
 				if (NumSamplesTileMem > 1 && glFramebufferTexture2DMultisampleEXT)
 				{
 					// GL_EXT_multisampled_render_to_texture requires GL_COLOR_ATTACHMENT0
-					check(RenderTargetIndex == 0);
 					glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + RenderTargetIndex, RenderTarget->Target, RenderTarget->GetResource(), MipmapLevels[RenderTargetIndex], NumSamplesTileMem);
 					VERIFY_GL(glFramebufferTexture2DMultisampleEXT);
 				}
@@ -236,19 +235,18 @@ GLuint FOpenGLDynamicRHI::GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTarge
 			switch( RenderTarget->Target )
 			{
 			case GL_TEXTURE_2D:
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
 			case GL_TEXTURE_EXTERNAL_OES:
 #endif
 			case GL_TEXTURE_2D_MULTISAMPLE:
 			{
 				check(ArrayIndices[RenderTargetIndex] == 0);
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
 				FOpenGLTexture2D* RenderTarget2D = (FOpenGLTexture2D*)RenderTarget;
 				const uint32 NumSamplesTileMem = RenderTarget2D->GetNumSamplesTileMem();
 				if (NumSamplesTileMem > 1 && glFramebufferTexture2DMultisampleEXT)
 				{
 					// GL_EXT_multisampled_render_to_texture requires GL_COLOR_ATTACHMENT0
-					check(RenderTargetIndex == 0);
 					glFramebufferTexture2DMultisampleEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + RenderTargetIndex, RenderTarget->Target, RenderTarget->GetResource(), MipmapLevels[RenderTargetIndex], NumSamplesTileMem);
 					VERIFY_GL(glFramebufferTexture2DMultisampleEXT);
 				}
@@ -284,7 +282,7 @@ GLuint FOpenGLDynamicRHI::GetOpenGLFramebuffer(uint32 NumSimultaneousRenderTarge
 		switch (DepthStencilTarget->Target)
 		{
 		case GL_TEXTURE_2D:
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
 		case GL_TEXTURE_EXTERNAL_OES:
 #endif
 		case GL_TEXTURE_2D_MULTISAMPLE:
@@ -474,9 +472,7 @@ void FOpenGLDynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FR
 			&& SrcRect.Size() == DestRect.Size()
 			&& SrcRect.Width() > 0
 			&& SrcRect.Height() > 0
-#if PLATFORM_ANDROID
 			&& SourceTexture->Target == DestTexture->Target // glCopyImageSubData() doesn't like copying from a texture to a renderbuffer on Android
-#endif
 			;
 		
 		if ( !bTrueBlit || !FOpenGL::SupportsCopyImage() )
@@ -547,7 +543,7 @@ void FOpenGLDynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FR
 	
 		// For CPU readback resolve targets we should issue the resolve to the internal PBO immediately.
 		// This makes any subsequent locking of that texture much cheaper as it won't have to stall on a pixel pack op.
-		bool bLockableTarget = DestTextureRHI->GetTexture2D() && (DestTextureRHI->GetFlags() & TexCreate_CPUReadback) && !(DestTextureRHI->GetFlags() & (TexCreate_RenderTargetable|TexCreate_DepthStencilTargetable)) && !DestTextureRHI->IsMultisampled();
+		bool bLockableTarget = DestTextureRHI->GetTexture2D() && EnumHasAnyFlags(DestTextureRHI->GetFlags(), TexCreate_CPUReadback) && !EnumHasAnyFlags(DestTextureRHI->GetFlags(), TexCreate_RenderTargetable|TexCreate_DepthStencilTargetable) && !DestTextureRHI->IsMultisampled();
 		if(bLockableTarget && !ResolveParams.Rect.IsValid())
 		{
 			FOpenGLTexture2D* DestTex = (FOpenGLTexture2D*)DestTexture;
@@ -796,7 +792,7 @@ void FOpenGLDynamicRHI::ReadSurfaceDataRaw(FOpenGLContextState& ContextState, FR
 
 		FMemory::Free( FloatBGRAData );
 	}
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
 	else
 	{
 		// Flip texture data only for render targets, textures loaded from disk have Attachment set to 0 and don't need flipping.
@@ -1162,7 +1158,15 @@ void FOpenGLDynamicRHI::RHIBeginRenderPass(const FRHIRenderPassInfo& InInfo, con
 		BeginOcclusionQueryBatch(InInfo.NumOcclusionQueries);
 	}
 
-#if PLATFORM_ANDROID && !PLATFORM_LUMIN && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
+	if (RenderPassInfo.SubpassHint == ESubpassHint::DeferredShadingSubpass &&
+		FOpenGL::SupportsPixelLocalStorage())
+	{
+		glEnable(GL_SHADER_PIXEL_LOCAL_STORAGE_EXT);
+	}
+#endif
+
+#if PLATFORM_ANDROID
 	if (FAndroidOpenGL::RequiresAdrenoTilingModeHint())
 	{
 		FAndroidOpenGL::EnableAdrenoTilingModeHint(FCString::Strcmp(InName, TEXT("SceneColorRendering")) == 0);
@@ -1211,6 +1215,14 @@ void FOpenGLDynamicRHI::RHIEndRenderPass()
 	FRHIRenderTargetView RTV(nullptr, ERenderTargetLoadAction::ENoAction);
 	FRHIDepthRenderTargetView DepthRTV(nullptr, ERenderTargetLoadAction::ENoAction, ERenderTargetStoreAction::ENoAction);
 	SetRenderTargets(1, &RTV, &DepthRTV);
+
+#if PLATFORM_ANDROID
+	if (RenderPassInfo.SubpassHint == ESubpassHint::DeferredShadingSubpass &&
+		FOpenGL::SupportsPixelLocalStorage())
+	{
+		glDisable(GL_SHADER_PIXEL_LOCAL_STORAGE_EXT);
+	}
+#endif
 }
 
 void FOpenGLDynamicRHI::RHINextSubpass()

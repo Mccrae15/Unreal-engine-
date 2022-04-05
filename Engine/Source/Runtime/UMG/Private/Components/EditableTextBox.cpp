@@ -5,6 +5,7 @@
 #include "Engine/Font.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Styling/UMGCoreStyle.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -12,6 +13,10 @@
 // UEditableTextBox
 
 static FEditableTextBoxStyle* DefaultEditableTextBoxStyle = nullptr;
+
+#if WITH_EDITOR
+static FEditableTextBoxStyle* EditorEditableTextBoxStyle = nullptr;
+#endif 
 
 UEditableTextBox::UEditableTextBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -37,17 +42,35 @@ UEditableTextBox::UEditableTextBox(const FObjectInitializer& ObjectInitializer)
 	SelectAllTextOnCommit = false;
 	AllowContextMenu = true;
 	VirtualKeyboardDismissAction = EVirtualKeyboardDismissAction::TextChangeOnDismiss;
+	OverflowPolicy = ETextOverflowPolicy::Clip;
 
 	if (DefaultEditableTextBoxStyle == nullptr)
 	{
-		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
-		DefaultEditableTextBoxStyle = new FEditableTextBoxStyle(FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox"));
+		DefaultEditableTextBoxStyle = new FEditableTextBoxStyle(FUMGCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox"));
 
-		// Unlink UMG default colors from the editor settings colors.
+		// Unlink UMG default colors.
 		DefaultEditableTextBoxStyle->UnlinkColors();
 	}
 
 	WidgetStyle = *DefaultEditableTextBoxStyle;
+
+#if WITH_EDITOR 
+	if (EditorEditableTextBoxStyle == nullptr)
+	{
+		EditorEditableTextBoxStyle = new FEditableTextBoxStyle(FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox"));
+
+		// Unlink UMG Editor colors from the editor settings colors.
+		EditorEditableTextBoxStyle->UnlinkColors();
+	}
+
+	if (IsEditorWidget())
+	{
+		WidgetStyle = *EditorEditableTextBoxStyle;
+
+		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
+		PostEditChange();
+	}
+#endif // WITH_EDITOR
 
 #if WITH_EDITORONLY_DATA
 	AccessibleBehavior = ESlateAccessibleBehavior::Auto;
@@ -79,7 +102,8 @@ TSharedRef<SWidget> UEditableTextBox::RebuildWidget()
 		.VirtualKeyboardOptions(VirtualKeyboardOptions)
 		.VirtualKeyboardTrigger(VirtualKeyboardTrigger)
 		.VirtualKeyboardDismissAction(VirtualKeyboardDismissAction)
-		.Justification(Justification);
+		.Justification(Justification)
+		.OverflowPolicy(OverflowPolicy);
 
 	return MyEditableTextBlock.ToSharedRef();
 }
@@ -105,6 +129,7 @@ void UEditableTextBox::SynchronizeProperties()
 	MyEditableTextBlock->SetAllowContextMenu(AllowContextMenu);
 	MyEditableTextBlock->SetVirtualKeyboardDismissAction(VirtualKeyboardDismissAction);
 	MyEditableTextBlock->SetJustification(Justification);
+	MyEditableTextBlock->SetOverflowPolicy(OverflowPolicy);
 
 	ShapedTextOptions.SynchronizeShapedTextProperties(*MyEditableTextBlock);
 }
@@ -134,6 +159,15 @@ void UEditableTextBox::SetHintText(FText InText)
 	if (MyEditableTextBlock.IsValid())
 	{
 		MyEditableTextBlock->SetHintText(HintText);
+	}
+}
+
+void UEditableTextBox::SetForegroundColor(FLinearColor color)
+{
+	WidgetStyle.ForegroundColor = color;
+	if ( MyEditableTextBlock.IsValid() )
+	{
+		MyEditableTextBlock->SetForegroundColor(color);
 	}
 }
 
@@ -190,6 +224,15 @@ void UEditableTextBox::SetJustification(ETextJustify::Type InJustification)
 	}
 }
 
+void UEditableTextBox::SetTextOverflowPolicy(ETextOverflowPolicy InOverflowPolicy)
+{
+	OverflowPolicy = InOverflowPolicy;
+	if (MyEditableTextBlock.IsValid())
+	{
+		MyEditableTextBlock->SetOverflowPolicy(InOverflowPolicy);
+	}
+}
+
 void UEditableTextBox::HandleOnTextChanged(const FText& InText)
 {
 	Text = InText;
@@ -206,7 +249,7 @@ void UEditableTextBox::PostLoad()
 {
 	Super::PostLoad();
 
-	if ( GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
+	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
 	{
 		if ( Style_DEPRECATED != nullptr )
 		{
@@ -220,7 +263,7 @@ void UEditableTextBox::PostLoad()
 		}
 	}
 
-	if (GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_OVERRIDES)
+	if (GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_OVERRIDES)
 	{
 		if (Font_DEPRECATED.HasValidFont())
 		{

@@ -15,8 +15,8 @@
 
 BEGIN_SHADER_PARAMETER_STRUCT(FPathTracingLightGrid, RENDERER_API)
 	SHADER_PARAMETER(uint32, SceneInfiniteLightCount)
-	SHADER_PARAMETER(FVector, SceneLightsBoundMin)
-	SHADER_PARAMETER(FVector, SceneLightsBoundMax)
+	SHADER_PARAMETER(FVector3f, SceneLightsTranslatedBoundMin)
+	SHADER_PARAMETER(FVector3f, SceneLightsTranslatedBoundMax)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, LightGrid)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<uint>, LightGridData)
 	SHADER_PARAMETER(unsigned, LightGridResolution)
@@ -28,18 +28,16 @@ class FLightmapRayTracingMeshProcessor : public FRayTracingMeshProcessor
 {
 public:
 	FLightmapRayTracingMeshProcessor(FRayTracingMeshCommandContext* InCommandContext, FMeshPassProcessorRenderState InPassDrawRenderState)
-		: FRayTracingMeshProcessor(InCommandContext, nullptr, nullptr, InPassDrawRenderState)
+		: FRayTracingMeshProcessor(InCommandContext, nullptr, nullptr, InPassDrawRenderState, ERayTracingMeshCommandsMode::PATH_TRACING) // NOTE: RayTracingMeshCommandsMode does not really matter here since Process is overridden
 	{}
 
-	virtual void Process(
+	virtual bool Process(
 		const FMeshBatch& RESTRICT MeshBatch,
 		uint64 BatchElementMask,
 		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
 		const FMaterialRenderProxy& RESTRICT MaterialRenderProxy,
 		const FMaterial& RESTRICT MaterialResource,
-		FMaterialShadingModelField ShadingModels,
-		const FUniformLightMapPolicy& RESTRICT LightMapPolicy,
-		const typename FUniformLightMapPolicy::ElementDataType& RESTRICT LightMapElementData) override;
+		const FUniformLightMapPolicy& RESTRICT LightMapPolicy) override;
 };
 
 class FLightmapPathTracingRGS : public FGlobalShader
@@ -122,8 +120,8 @@ class FVolumetricLightmapPathTracingRGS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(uint32, FrameNumber)
-		SHADER_PARAMETER(FVector4, VolumeMin)
-		SHADER_PARAMETER(FVector4, VolumeSize)
+		SHADER_PARAMETER(FVector4f, VolumeMin)
+		SHADER_PARAMETER(FVector4f, VolumeSize)
 		SHADER_PARAMETER(FIntVector, IndirectionTextureDim)
 		SHADER_PARAMETER(int32, NumTotalBricks)
 		SHADER_PARAMETER(int32, BrickBatchOffset)
@@ -156,7 +154,7 @@ class FVolumetricLightmapPathTracingRGS : public FGlobalShader
 		// Subsurface data
 		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 
-		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FLightShaderParameters>, LightShaderParametersArray)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FLightShaderConstants>, LightShaderParametersArray)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -181,7 +179,7 @@ class FStationaryLightShadowTracingRGS : public FGlobalShader
 		SHADER_PARAMETER_SRV(Buffer<int>, LightTypeArray)
 		SHADER_PARAMETER_SRV(Buffer<int>, ChannelIndexArray)
 		SHADER_PARAMETER_SRV(Buffer<int>, LightSampleIndexArray)
-		SHADER_PARAMETER_SRV(StructuredBuffer<FLightShaderParameters>, LightShaderParametersArray)
+		SHADER_PARAMETER_SRV(StructuredBuffer<FLightShaderConstants>, LightShaderParametersArray)
 		SHADER_PARAMETER_SRV(StructuredBuffer<FGPUTileDescription>, BatchedTiles)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, GBufferWorldPosition)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, GBufferWorldNormal)

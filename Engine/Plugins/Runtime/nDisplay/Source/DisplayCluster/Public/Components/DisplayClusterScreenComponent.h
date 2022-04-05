@@ -11,7 +11,7 @@
 /**
  * Simple projection policy screen component
  */
-UCLASS(ClassGroup = (DisplayCluster), meta = (BlueprintSpawnableComponent, DisplayName = "NDisplay Screen"))
+UCLASS(ClassGroup = (DisplayCluster), meta = (BlueprintSpawnableComponent, DisplayName = "NDisplay Screen"), HideCategories=(StaticMesh, Materials, ComponentTick, Physics, Collision, Lighting, Navigation, VirtualTexture, ComponentReplication, Cooking, LOD, MaterialParameters, HLOD, RayTracing, TextureStreaming, Mobile))
 class DISPLAYCLUSTER_API UDisplayClusterScreenComponent
 	: public UStaticMeshComponent
 {
@@ -41,7 +41,7 @@ protected:
 
 #if WITH_EDITORONLY_DATA
 protected:
-	friend class FDisplayClusterConfiguratorScreenDetailCustomization;
+	friend class FDisplayClusterConfiguratorScreenDetailsCustomization;
 
 	/** Adjust the size of the screen. */
 	UPROPERTY(EditDefaultsOnly, Category = "Screen Size", meta = (DisplayName = "Size", AllowPreserveRatio))

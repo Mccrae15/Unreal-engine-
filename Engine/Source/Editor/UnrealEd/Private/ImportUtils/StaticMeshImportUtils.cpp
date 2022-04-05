@@ -42,7 +42,7 @@ static FORCEINLINE bool AreEqual(float a, float b)
 }
 
 /** Returns 1 if vectors are parallel OR anti-parallel */
-static FORCEINLINE bool AreParallel(const FVector& a, const FVector& b)
+static FORCEINLINE bool AreParallel(const FVector3f& a, const FVector3f& b)
 {
 	float Dot = a | b;
 
@@ -59,13 +59,13 @@ static FORCEINLINE bool AreParallel(const FVector& a, const FVector& b)
 /** Utility struct used in AddBoxGeomFromTris. */
 struct FPlaneInfo
 {
-	FVector Normal;
+	FVector3f Normal;
 	int32 DistCount;
 	float PlaneDist[2];
 
 	FPlaneInfo()
 	{
-		Normal = FVector::ZeroVector;
+		Normal = FVector3f::ZeroVector;
 		DistCount = 0;
 		PlaneDist[0] = 0.f;
 		PlaneDist[1] = 0.f;
@@ -74,17 +74,17 @@ struct FPlaneInfo
 
 struct FMeshConnectivityVertex
 {
-	FVector				Position;
+	FVector3f				Position;
 	TArray<int32>		Triangles;
 
 	/** Constructor */
-	FMeshConnectivityVertex( const FVector &v )
+	FMeshConnectivityVertex( const FVector3f &v )
 		: Position( v )
 	{
 	}
 
 	/** Check if this vertex is in the same place as given point */
-	FORCEINLINE bool IsSame( const FVector &v )
+	FORCEINLINE bool IsSame( const FVector3f &v )
 	{
 		const float eps = 0.01f;
 		return v.Equals( Position, eps );
@@ -126,7 +126,7 @@ public:
 
 public:
 	/** Add vertex to connectivity information */
-	int32 AddVertex( const FVector &v )
+	int32 AddVertex( const FVector3f &v )
 	{
 		// Try to find existing vertex
 		// TODO: should use hash map
@@ -144,7 +144,7 @@ public:
 	}
 
 	/** Add triangle to connectivity information */
-	int32 AddTriangle( const FVector &a, const FVector &b, const FVector &c )
+	int32 AddTriangle( const FVector3f &a, const FVector3f &b, const FVector3f &c )
 	{
 		// Map vertices
 		int32 VertexA = AddVertex( a );
@@ -263,7 +263,7 @@ private:
 	}
 };
 
-bool StaticMeshImportUtils::DecomposeUCXMesh( const TArray<FVector>& CollisionVertices, const TArray<int32>& CollisionFaceIdx, UBodySetup* BodySetup )
+bool StaticMeshImportUtils::DecomposeUCXMesh( const TArray<FVector3f>& CollisionVertices, const TArray<int32>& CollisionFaceIdx, UBodySetup* BodySetup )
 {
 	// We keep no ref to this Model, so it will be GC'd at some point after the import.
 	auto TempModel = NewObject<UModel>();
@@ -274,9 +274,9 @@ bool StaticMeshImportUtils::DecomposeUCXMesh( const TArray<FVector>& CollisionVe
 	// Send triangles to connectivity builder
 	for(int32 x = 0;x < CollisionFaceIdx.Num();x += 3)
 	{
-		const FVector &VertexA = CollisionVertices[ CollisionFaceIdx[x + 2] ];
-		const FVector &VertexB = CollisionVertices[ CollisionFaceIdx[x + 1] ];
-		const FVector &VertexC = CollisionVertices[ CollisionFaceIdx[x + 0] ];
+		const FVector3f &VertexA = CollisionVertices[ CollisionFaceIdx[x + 2] ];
+		const FVector3f &VertexB = CollisionVertices[ CollisionFaceIdx[x + 1] ];
+		const FVector3f &VertexC = CollisionVertices[ CollisionFaceIdx[x + 0] ];
 		ConnectivityBuilder.AddTriangle( VertexA, VertexB, VertexC );
 	}
 
@@ -303,9 +303,9 @@ bool StaticMeshImportUtils::DecomposeUCXMesh( const TArray<FVector>& CollisionVe
 			Poly->iLink = j / 3;
 
 			// Add vertices
-			new( Poly->Vertices ) FVector( ConnectivityBuilder.Vertices[ Triangle.Vertices[0] ].Position );
-			new( Poly->Vertices ) FVector( ConnectivityBuilder.Vertices[ Triangle.Vertices[1] ].Position );
-			new( Poly->Vertices ) FVector( ConnectivityBuilder.Vertices[ Triangle.Vertices[2] ].Position );
+			new( Poly->Vertices ) FVector3f( ConnectivityBuilder.Vertices[ Triangle.Vertices[0] ].Position );
+			new( Poly->Vertices ) FVector3f( ConnectivityBuilder.Vertices[ Triangle.Vertices[1] ].Position );
+			new( Poly->Vertices ) FVector3f( ConnectivityBuilder.Vertices[ Triangle.Vertices[2] ].Position );
 
 			// Update polygon normal
 			Poly->CalcNormal(1);
@@ -405,11 +405,11 @@ bool StaticMeshImportUtils::AddBoxGeomFromTris( const TArray<FPoly>& Tris, FKAgg
 
 	FMatrix BoxTM = FMatrix::Identity;
 
-	BoxTM.SetAxis(0, Planes[0].Normal);
-	BoxTM.SetAxis(1, Planes[1].Normal);
+	BoxTM.SetAxis(0, (FVector)Planes[0].Normal);
+	BoxTM.SetAxis(1, (FVector)Planes[1].Normal);
 
 	// ensure valid TM by cross-product
-	FVector ZAxis = Planes[0].Normal ^ Planes[1].Normal;
+	FVector3f ZAxis = Planes[0].Normal ^ Planes[1].Normal;
 
 	if( !AreParallel(ZAxis, Planes[2].Normal) )
 	{
@@ -417,15 +417,15 @@ bool StaticMeshImportUtils::AddBoxGeomFromTris( const TArray<FPoly>& Tris, FKAgg
 		return false;
 	}
 
-	BoxTM.SetAxis(2, ZAxis);
+	BoxTM.SetAxis(2, (FVector)ZAxis);
 
 	// OBB centre == AABB centre.
 	FBox Box(ForceInit);
 	for(int32 i=0; i<Tris.Num(); i++)
 	{
-		Box += Tris[i].Vertices[0];
-		Box += Tris[i].Vertices[1];
-		Box += Tris[i].Vertices[2];
+		Box += (FVector)Tris[i].Vertices[0];
+		Box += (FVector)Tris[i].Vertices[1];
+		Box += (FVector)Tris[i].Vertices[2];
 	}
 
 	BoxTM.SetOrigin( Box.GetCenter() );
@@ -449,7 +449,7 @@ bool StaticMeshImportUtils::AddBoxGeomFromTris( const TArray<FPoly>& Tris, FKAgg
  *	It checks that the AABB is square, and that all vertices are either at the
  *	centre, or within 5% of the radius distance away.
  */
-bool StaticMeshImportUtils::AddSphereGeomFromVerts( const TArray<FVector>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName )
+bool StaticMeshImportUtils::AddSphereGeomFromVerts( const TArray<FVector3f>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName )
 {
 	if(Verts.Num() == 0)
 	{
@@ -460,7 +460,7 @@ bool StaticMeshImportUtils::AddSphereGeomFromVerts( const TArray<FVector>& Verts
 
 	for(int32 i=0; i<Verts.Num(); i++)
 	{
-		Box += Verts[i];
+		Box += (FVector)Verts[i];
 	}
 
 	FVector Center, Extents;
@@ -482,7 +482,7 @@ bool StaticMeshImportUtils::AddSphereGeomFromVerts( const TArray<FVector>& Verts
 	float MinR = BIG_NUMBER;
 	for(int32 i=0; i<Verts.Num(); i++)
 	{
-		FVector CToV = Verts[i] - Center;
+		FVector3f CToV = Verts[i] - (FVector3f)Center;
 		float RSqr = CToV.SizeSquared();
 
 		MaxR = FMath::Max(RSqr, MaxR);
@@ -512,14 +512,14 @@ bool StaticMeshImportUtils::AddSphereGeomFromVerts( const TArray<FVector>& Verts
 	return true;
 }
 
-bool StaticMeshImportUtils::AddCapsuleGeomFromVerts(const TArray<FVector>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName)
+bool StaticMeshImportUtils::AddCapsuleGeomFromVerts(const TArray<FVector3f>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName)
 {
 	if (Verts.Num() < 3)
 	{
 		return false;
 	}
 
-	FVector AxisStart, AxisEnd;
+	FVector3f AxisStart, AxisEnd;
 	float MaxDistSqr = 0.f;
 
 	for (int32 IndexA = 0; IndexA < Verts.Num() - 1; IndexA++)
@@ -541,12 +541,12 @@ bool StaticMeshImportUtils::AddCapsuleGeomFromVerts(const TArray<FVector>& Verts
 	{
 		float MaxRadius = 0.f;
 
-		const FVector LineOrigin = AxisStart;
-		const FVector LineDir = (AxisEnd - AxisStart).GetSafeNormal();
+		const FVector3f LineOrigin = AxisStart;
+		const FVector3f LineDir = (AxisEnd - AxisStart).GetSafeNormal();
 
 		for (int32 IndexA = 0; IndexA < Verts.Num() - 1; IndexA++)
 		{
-			float DistToAxis = FMath::PointDistToLine(Verts[IndexA], LineDir, LineOrigin);
+			float DistToAxis = FMath::PointDistToLine((FVector)Verts[IndexA], (FVector)LineDir, (FVector)LineOrigin);
 			if (DistToAxis > MaxRadius)
 			{
 				MaxRadius = DistToAxis;
@@ -557,8 +557,8 @@ bool StaticMeshImportUtils::AddCapsuleGeomFromVerts(const TArray<FVector>& Verts
 		{
 			// Allocate capsule in array
 			FKSphylElem SphylElem;
-			SphylElem.Center = 0.5f * (AxisStart + AxisEnd);
-			SphylElem.Rotation = FQuat::FindBetweenVectors(FVector(0,0,1), LineDir).Rotator(); // Get quat that takes you from z axis to desired axis
+			SphylElem.Center = 0.5f * (FVector)(AxisStart + AxisEnd);
+			SphylElem.Rotation = FQuat::FindBetweenVectors(FVector(0,0,1), (FVector)LineDir).Rotator(); // Get quat that takes you from z axis to desired axis
 			SphylElem.Radius = MaxRadius;
 			SphylElem.Length = FMath::Max(FMath::Sqrt(MaxDistSqr) - (2.f * MaxRadius), 0.f); // subtract two radii from total length to get segment length (ensure > 0)
 			AggGeom->SphylElems.Add(SphylElem);
@@ -571,7 +571,7 @@ bool StaticMeshImportUtils::AddCapsuleGeomFromVerts(const TArray<FVector>& Verts
 
 
 /** Utility for adding one convex hull from the given verts */
-bool StaticMeshImportUtils::AddConvexGeomFromVertices( const TArray<FVector>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName )
+bool StaticMeshImportUtils::AddConvexGeomFromVertices( const TArray<FVector3f>& Verts, FKAggregateGeom* AggGeom, const TCHAR* ObjName )
 {
 	if(Verts.Num() == 0)
 	{
@@ -579,7 +579,7 @@ bool StaticMeshImportUtils::AddConvexGeomFromVertices( const TArray<FVector>& Ve
 	}
 
 	FKConvexElem* ConvexElem = new(AggGeom->ConvexElems) FKConvexElem();
-	ConvexElem->VertexData = Verts;
+	ConvexElem->VertexData = LWC::ConvertArrayType<FVector>(Verts);	// LWC_TODO: Perf pessimization
 	ConvexElem->UpdateElemBox();
 
 	return true;
@@ -724,18 +724,18 @@ TSharedPtr<FExistingStaticMeshData> StaticMeshImportUtils::SaveExistingStaticMes
 
 	ExistingMeshDataPtr->ExistingBodySetup = ExistingMesh->GetBodySetup();
 
-	ExistingMeshDataPtr->LpvBiasMultiplier = ExistingMesh->LpvBiasMultiplier;
 	ExistingMeshDataPtr->bHasNavigationData = ExistingMesh->bHasNavigationData;
 	ExistingMeshDataPtr->LODGroup = ExistingMesh->LODGroup;
 	ExistingMeshDataPtr->MinLOD = ExistingMesh->GetMinLOD();
+	ExistingMeshDataPtr->QualityLevelMinLOD = ExistingMesh->GetQualityLevelMinLOD();
 
 	ExistingMeshDataPtr->ExistingGenerateMeshDistanceField = ExistingMesh->bGenerateMeshDistanceField;
 	ExistingMeshDataPtr->ExistingLODForCollision = ExistingMesh->LODForCollision;
 	ExistingMeshDataPtr->ExistingDistanceFieldSelfShadowBias = ExistingMesh->DistanceFieldSelfShadowBias;
 	ExistingMeshDataPtr->ExistingSupportUniformlyDistributedSampling = ExistingMesh->bSupportUniformlyDistributedSampling;
 	ExistingMeshDataPtr->ExistingAllowCpuAccess = ExistingMesh->bAllowCPUAccess;
-	ExistingMeshDataPtr->ExistingPositiveBoundsExtension = ExistingMesh->GetPositiveBoundsExtension();
-	ExistingMeshDataPtr->ExistingNegativeBoundsExtension = ExistingMesh->GetNegativeBoundsExtension();
+	ExistingMeshDataPtr->ExistingPositiveBoundsExtension = (FVector3f)ExistingMesh->GetPositiveBoundsExtension();
+	ExistingMeshDataPtr->ExistingNegativeBoundsExtension = (FVector3f)ExistingMesh->GetNegativeBoundsExtension();
 
 	UFbxStaticMeshImportData* ImportData = Cast<UFbxStaticMeshImportData>(ExistingMesh->AssetImportData);
 	if (ImportData && ExistingMeshDataPtr->UseMaterialNameSlotWorkflow)
@@ -788,6 +788,7 @@ void StaticMeshImportUtils::RestoreExistingMeshSettings(const FExistingStaticMes
 	}
 	NewMesh->LODGroup = ExistingMesh->LODGroup;
 	NewMesh->SetMinLOD(ExistingMesh->MinLOD);
+	NewMesh->SetQualityLevelMinLOD(ExistingMesh->QualityLevelMinLOD);
 	int32 ExistingNumLods = ExistingMesh->ExistingLODData.Num();
 	int32 CurrentNumLods = NewMesh->GetNumSourceModels();
 	if (LODIndex == INDEX_NONE)
@@ -1253,7 +1254,6 @@ void StaticMeshImportUtils::RestoreExistingMeshData(const TSharedPtr<const FExis
 		}
 	}
 
-	NewMesh->LpvBiasMultiplier = ExistingMeshDataPtr->LpvBiasMultiplier;
 	NewMesh->bHasNavigationData = ExistingMeshDataPtr->bHasNavigationData;
 	NewMesh->LODGroup = ExistingMeshDataPtr->LODGroup;
 
@@ -1262,8 +1262,8 @@ void StaticMeshImportUtils::RestoreExistingMeshData(const TSharedPtr<const FExis
 	NewMesh->DistanceFieldSelfShadowBias = ExistingMeshDataPtr->ExistingDistanceFieldSelfShadowBias;
 	NewMesh->bSupportUniformlyDistributedSampling = ExistingMeshDataPtr->ExistingSupportUniformlyDistributedSampling;
 	NewMesh->bAllowCPUAccess = ExistingMeshDataPtr->ExistingAllowCpuAccess;
-	NewMesh->SetPositiveBoundsExtension(ExistingMeshDataPtr->ExistingPositiveBoundsExtension);
-	NewMesh->SetNegativeBoundsExtension(ExistingMeshDataPtr->ExistingNegativeBoundsExtension);
+	NewMesh->SetPositiveBoundsExtension((FVector)ExistingMeshDataPtr->ExistingPositiveBoundsExtension);
+	NewMesh->SetNegativeBoundsExtension((FVector)ExistingMeshDataPtr->ExistingNegativeBoundsExtension);
 
 	NewMesh->ComplexCollisionMesh = ExistingMeshDataPtr->ExistingComplexCollisionMesh;
 }

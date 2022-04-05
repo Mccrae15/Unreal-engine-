@@ -16,14 +16,12 @@
 #include "NiagaraSystemScriptViewModel.h"
 #include "EditorStyleSet.h"
 #include "Widgets/Layout/SScrollBox.h"
-#include "UObject/UObjectGlobals.h"
 #include "UObject/Class.h"
-#include "UObject/Package.h"
-#include "SequencerSettings.h"
 #include "NiagaraSystem.h"
 #include "NiagaraEditorStyle.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "NiagaraEditorUtilities.h"
+#include "Widgets/NiagaraHLSLSyntaxHighlighter.h"
 #include "Widgets/Docking/SDockTab.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraGeneratedCodeView"
@@ -35,6 +33,7 @@ void SNiagaraGeneratedCodeView::Construct(const FArguments& InArgs, TSharedRef<F
 	TabState = 0;
 	ScriptEnum = StaticEnum<ENiagaraScriptUsage>();
 	ensure(ScriptEnum);
+	SyntaxHighlighter = FNiagaraHLSLSyntaxHighlighter::Create();
 
 	SystemViewModel = InSystemViewModel;
 	SystemViewModel->GetSelectionViewModel()->OnEmitterHandleIdSelectionChanged().AddSP(this, &SNiagaraGeneratedCodeView::SystemSelectionChanged);
@@ -84,7 +83,7 @@ void SNiagaraGeneratedCodeView::Construct(const FArguments& InArgs, TSharedRef<F
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
 			.IsFocusable(false)
-			.ToolTipText(LOCTEXT("UpToolTip", "Focus to next found search term"))
+			.ToolTipText(LOCTEXT("UpToolTip", "Focus to previous found search term"))
 			.OnClicked(this, &SNiagaraGeneratedCodeView::SearchUpClicked)
 			.Content()
 			[
@@ -233,8 +232,7 @@ FReply SNiagaraGeneratedCodeView::SearchDownClicked()
 			CurrentFoundTextEntry = 0;
 		}
 	}
-	
-	GeneratedCode[TabState].Text->AdvanceSearch(true);
+	GeneratedCode[TabState].Text->AdvanceSearch(false);
 
 	SetSearchMofN();
 
@@ -251,7 +249,7 @@ FReply SNiagaraGeneratedCodeView::SearchUpClicked()
 			CurrentFoundTextEntry = ActiveFoundTextEntries.Num() - 1;
 		}
 	}
-	GeneratedCode[TabState].Text->AdvanceSearch(false);
+	GeneratedCode[TabState].Text->AdvanceSearch(true);
 	
 	SetSearchMofN();
 
@@ -277,7 +275,6 @@ void SNiagaraGeneratedCodeView::DoSearch(const FText& InFilterText)
 	const FText OldText = GeneratedCode[TabState].Text->GetSearchText();
 	GeneratedCode[TabState].Text->SetSearchText(InFilterText);
 	GeneratedCode[TabState].Text->BeginSearch(InFilterText, ESearchCase::IgnoreCase, false);
-	InFilterText.ToString();
 
 	FString SearchString = InFilterText.ToString();
 	ActiveFoundTextEntries.Empty();
@@ -290,13 +287,20 @@ void SNiagaraGeneratedCodeView::DoSearch(const FText& InFilterText)
 	ActiveFoundTextEntries.Empty();
 	for (int32 i = 0; i < GeneratedCode[TabState].HlslByLines.Num(); i++)
 	{
-		int32 LastPos = INDEX_NONE;
-		int32 FoundPos = GeneratedCode[TabState].HlslByLines[i].Find(SearchString, ESearchCase::IgnoreCase, ESearchDir::FromStart, LastPos);
-		while (FoundPos != INDEX_NONE)
+		const FString& Line = GeneratedCode[TabState].HlslByLines[i];
+		int32 FoundPos = Line.Find(SearchString, ESearchCase::IgnoreCase);
+		while (FoundPos != INDEX_NONE && ActiveFoundTextEntries.Num() < 1000) // guard against a runaway loop
 		{
 			ActiveFoundTextEntries.Add(FTextLocation(i, FoundPos));
-			LastPos = FoundPos + 1;
-			FoundPos = GeneratedCode[TabState].HlslByLines[i].Find(SearchString, ESearchCase::IgnoreCase, ESearchDir::FromStart, LastPos);
+			int32 LastPos = FoundPos + SearchString.Len();
+			if (LastPos < Line.Len())
+			{
+				FoundPos = Line.Find(SearchString, ESearchCase::IgnoreCase, ESearchDir::FromStart, LastPos);
+			}
+			else
+			{
+				FoundPos = INDEX_NONE;
+			}
 		}
 	}
 
@@ -522,11 +526,8 @@ void SNiagaraGeneratedCodeView::UpdateUI_Internal()
 						SAssignNew(GeneratedCode[i].Text, SMultiLineEditableTextBox)
 						.ClearTextSelectionOnFocusLoss(false)
 						.IsReadOnly(true)
-						.TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.CodeView.Hlsl.Normal")
-						.BackgroundColor(FLinearColor::Black)
+						.Marshaller(SyntaxHighlighter)
 						.SearchText(this, &SNiagaraGeneratedCodeView::GetSearchText)
-						.HScrollBar(GeneratedCode[i].HorizontalScrollBar)
-						.VScrollBar(GeneratedCode[i].VerticalScrollBar)
 					]
 					+ SHorizontalBox::Slot()
 					.AutoWidth()

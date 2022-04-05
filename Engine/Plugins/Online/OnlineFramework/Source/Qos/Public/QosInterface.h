@@ -32,6 +32,18 @@ public:
 	 */
 	void BeginQosEvaluation(UWorld* World, const TSharedPtr<IAnalyticsProvider>& AnalyticsProvider, const FSimpleDelegate& OnComplete);
 
+	DECLARE_MULTICAST_DELEGATE(FOnQosEvalCompleteDelegate);
+
+	/**
+	 * Get the delegate that is invoked when the current/next QoS evaluation completes.
+	 */
+	FOnQosEvalCompleteDelegate& OnQosEvalComplete();
+
+	/**
+	 * Returns true if Qos is in the process of being evaluated
+	 */
+	bool IsQosEvaluationInProgress() const;
+
 	/**
 	 * Get the region ID for this instance, checking ini and commandline overrides.
 	 *
@@ -119,6 +131,10 @@ protected:
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FQosInterface");
+	}
 
 private:
 

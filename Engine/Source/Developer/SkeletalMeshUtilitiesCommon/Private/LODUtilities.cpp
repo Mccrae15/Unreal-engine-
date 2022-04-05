@@ -8,6 +8,7 @@
 #include "Components/SkinnedMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/MorphTarget.h"
+#include "UObject/GarbageCollection.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkeletalMeshLODModel.h"
 #include "GenericQuadTree.h"
@@ -373,23 +374,20 @@ void FLODUtilities::RemoveLOD(FSkeletalMeshUpdateContext& UpdateContext, int32 D
 				SkeletalMesh->SaveLODImportedData(FirstDepLODIndex, ToRemovedLODImportData);
 
 				//Manage the override original reduction source mesh data
-				if (SkelMeshModel->OriginalReductionSourceMeshData.IsValidIndex(FirstDepLODIndex) && SkelMeshModel->OriginalReductionSourceMeshData[FirstDepLODIndex])
+				if (SkelMeshModel->InlineReductionCacheDatas.IsValidIndex(FirstDepLODIndex))
 				{
 					if(SkeletalMesh->IsLODImportedDataBuildAvailable(DesiredLOD))
 					{
-						//Empty the OriginalReductionSourceMeshData it will be recreate when we will rebuild the asset
-						SkelMeshModel->OriginalReductionSourceMeshData[FirstDepLODIndex]->EmptyBulkData();
+						//The inline reduction cache data will be recache by the build
+						SkelMeshModel->InlineReductionCacheDatas[FirstDepLODIndex].SetCacheGeometryInfo(MAX_uint32, MAX_uint32);
 					}
-					//If we are modifying an old asset we have to duplicate the original reduction source mesh data from the source model
-					else if(SkelMeshModel->OriginalReductionSourceMeshData.IsValidIndex(DesiredLOD) &&
-						SkelMeshModel->OriginalReductionSourceMeshData[DesiredLOD] &&
-						!SkelMeshModel->OriginalReductionSourceMeshData[DesiredLOD]->IsEmpty())
+					else if(SkelMeshModel->InlineReductionCacheDatas.IsValidIndex(DesiredLOD))
 					{
 						//If there is no build copy the one from the DesiredLOD
-						FSkeletalMeshLODModel LODModel;
-						TMap<FString, TArray<FMorphTargetDelta>> BaseLODMorphTargetData;
-						SkelMeshModel->OriginalReductionSourceMeshData[DesiredLOD]->LoadReductionData(LODModel, BaseLODMorphTargetData, SkeletalMesh);
-						SkelMeshModel->OriginalReductionSourceMeshData[FirstDepLODIndex]->SaveReductionData(LODModel, BaseLODMorphTargetData, SkeletalMesh);
+						uint32 CacheVertexCount = 0;
+						uint32 CacheTriangleCount = 0;
+						SkelMeshModel->InlineReductionCacheDatas[DesiredLOD].GetCacheGeometryInfo(CacheVertexCount, CacheTriangleCount);
+						SkelMeshModel->InlineReductionCacheDatas[FirstDepLODIndex].SetCacheGeometryInfo(CacheVertexCount, CacheTriangleCount);
 					}
 				}
 
@@ -417,7 +415,7 @@ void FLODUtilities::RemoveLOD(FSkeletalMeshUpdateContext& UpdateContext, int32 D
 		{
 			if (MorphTarget->HasDataForLOD(DesiredLOD))
 			{
-				MorphTarget->MorphLODModels.RemoveAt(DesiredLOD);
+				MorphTarget->GetMorphLODModels().RemoveAt(DesiredLOD);
 			}
 		}
 
@@ -555,16 +553,16 @@ bool PointInTriangle(const FVector2D& A, const FVector2D& B, const FVector2D& C,
 }
 
 /** Given three direction vectors, indicates if A and B are on the same 'side' of Vec. */
-bool VectorsOnSameSide(const FVector& Vec, const FVector& A, const FVector& B, const float SameSideDotProductEpsilon)
+bool VectorsOnSameSide(const FVector3f& Vec, const FVector3f& A, const FVector3f& B, const float SameSideDotProductEpsilon)
 {
-	const FVector CrossA = Vec ^ A;
-	const FVector CrossB = Vec ^ B;
+	const FVector CrossA = FVector(Vec ^ A);
+	const FVector CrossB = FVector(Vec ^ B);
 	float DotWithEpsilon = SameSideDotProductEpsilon + (CrossA | CrossB);
 	return !FMath::IsNegativeFloat(DotWithEpsilon);
 }
 
 /** Util to see if P lies within triangle created by A, B and C. */
-bool PointInTriangle(const FVector& A, const FVector& B, const FVector& C, const FVector& P)
+bool PointInTriangle(const FVector3f& A, const FVector3f& B, const FVector3f& C, const FVector3f& P)
 {
 	// Cross product indicates which 'side' of the vector the point is on
 	// If its on the same side as the remaining vert for all edges, then its inside.	
@@ -577,34 +575,34 @@ bool PointInTriangle(const FVector& A, const FVector& B, const FVector& C, const
 	return false;
 }
 
-FVector GetBaryCentric(const FVector& Point, const FVector& A, const FVector& B, const FVector& C)
+FVector3f GetBaryCentric(const FVector3f& Point, const FVector3f& A, const FVector3f& B, const FVector3f& C)
 {
 	// Compute the normal of the triangle
-	const FVector TriNorm = (B - A) ^ (C - A);
+	const FVector3f TriNorm = (B - A) ^ (C - A);
 
 	//check collinearity of A,B,C
 	if (TriNorm.SizeSquared() <= SMALL_NUMBER)
 	{
-		float DistA = FVector::DistSquared(Point, A);
-		float DistB = FVector::DistSquared(Point, B);
-		float DistC = FVector::DistSquared(Point, C);
+		float DistA = FVector3f::DistSquared(Point, A);
+		float DistB = FVector3f::DistSquared(Point, B);
+		float DistC = FVector3f::DistSquared(Point, C);
 		if(DistA <= DistB && DistA <= DistC)
 		{
-			return FVector(1.0f, 0.0f, 0.0f);
+			return FVector3f(1.0f, 0.0f, 0.0f);
 		}
 		if (DistB <= DistC)
 		{
-			return FVector(0.0f, 1.0f, 0.0f);
+			return FVector3f(0.0f, 1.0f, 0.0f);
 		}
-		return FVector(0.0f, 0.0f, 1.0f);
+		return FVector3f(0.0f, 0.0f, 1.0f);
 	}
-	return FMath::ComputeBaryCentric2D(Point, A, B, C);
+	return (FVector3f)FMath::ComputeBaryCentric2D((FVector)Point, (FVector)A, (FVector)B, (FVector)C);
 }
 
 struct FTriangleElement
 {
 	FBox2D UVsBound;
-	FBox PositionBound;
+	FBoxCenterAndExtent PositionBound;
 	TArray<FSoftSkinVertex> Vertices;
 	TArray<uint32> Indexes;
 	uint32 TriangleIndex;
@@ -615,7 +613,7 @@ bool FindTriangleUVMatch(const FVector2D& TargetUV, const TArray<FTriangleElemen
 	for (uint32 TriangleIndex : QuadTreeTriangleResults)
 	{
 		const FTriangleElement& TriangleElement = Triangles[TriangleIndex];
-		if (PointInTriangle(TriangleElement.Vertices[0].UVs[0], TriangleElement.Vertices[1].UVs[0], TriangleElement.Vertices[2].UVs[0], TargetUV))
+		if (PointInTriangle(FVector2D(TriangleElement.Vertices[0].UVs[0]), FVector2D(TriangleElement.Vertices[1].UVs[0]), FVector2D(TriangleElement.Vertices[2].UVs[0]), TargetUV))
 		{
 			MatchTriangleIndexes.Add(TriangleIndex);
 		}
@@ -630,7 +628,7 @@ bool FindTrianglePositionMatch(const FVector& Position, const TArray<FTriangleEl
 	{
 		uint32 TriangleIndex = Triangle.TriangleIndex;
 		const FTriangleElement& TriangleElement = Triangles[TriangleIndex];
-		if (PointInTriangle(TriangleElement.Vertices[0].Position, TriangleElement.Vertices[1].Position, TriangleElement.Vertices[2].Position, Position))
+		if (PointInTriangle((FVector3f)TriangleElement.Vertices[0].Position, (FVector3f)TriangleElement.Vertices[1].Position, (FVector3f)TriangleElement.Vertices[2].Position, (FVector3f)Position))
 		{
 			MatchTriangleIndexes.Add(TriangleIndex);
 		}
@@ -686,8 +684,8 @@ void ProjectTargetOnBase(const TArray<FSoftSkinVertex>& BaseVertices, const TArr
 				const FSoftSkinVertex& BaseVertex = BaseVertices[CornerIndice];
 				TriangleElement.Indexes.Add(CornerIndice);
 				TriangleElement.Vertices.Add(BaseVertex);
-				TriangleElement.UVsBound += BaseVertex.UVs[0];
-				BaseMeshPositionBound += BaseVertex.Position;
+				TriangleElement.UVsBound += FVector2D(BaseVertex.UVs[0]);
+				BaseMeshPositionBound += (FVector)BaseVertex.Position;
 			}
 			BaseMeshUVBound += TriangleElement.UVsBound;
 			TriangleElement.TriangleIndex = Triangles.Num();
@@ -716,7 +714,7 @@ void ProjectTargetOnBase(const TArray<FSoftSkinVertex>& BaseVertices, const TArr
 		QuadTreeTriangleResults.Reserve(Triangles.Num() / 10); //Reserve 10% to speed up the query
 		for (uint32 TargetVertexIndex = 0; TargetVertexIndex < (uint32)TargetVertices.Num(); ++TargetVertexIndex)
 		{
-			FVector2D TargetUV = TargetVertices[TargetVertexIndex].UVs[0];
+			FVector2D TargetUV = FVector2D(TargetVertices[TargetVertexIndex].UVs[0]);
 			//Reset the last data without flushing the memmery allocation
 			QuadTreeTriangleResults.Reset();
 			const uint32 FullTargetIndex = TargetSections[SectionIndex].BaseVertexIndex + TargetVertexIndex;
@@ -745,7 +743,7 @@ void ProjectTargetOnBase(const TArray<FSoftSkinVertex>& BaseVertices, const TArr
 			auto GetDistancePointToBaseTriangle = [&Triangles, &TargetVertices, &TargetVertexIndex](const uint32 BaseTriangleIndex)->float
 			{
 				FTriangleElement& CandidateTriangle = Triangles[BaseTriangleIndex];
-				return FVector::DistSquared(FMath::ClosestPointOnTriangleToPoint(TargetVertices[TargetVertexIndex].Position, CandidateTriangle.Vertices[0].Position, CandidateTriangle.Vertices[1].Position, CandidateTriangle.Vertices[2].Position), TargetVertices[TargetVertexIndex].Position);
+				return FVector::DistSquared(FMath::ClosestPointOnTriangleToPoint((FVector)TargetVertices[TargetVertexIndex].Position, (FVector)CandidateTriangle.Vertices[0].Position, (FVector)CandidateTriangle.Vertices[1].Position, (FVector)CandidateTriangle.Vertices[2].Position), (FVector)TargetVertices[TargetVertexIndex].Position);
 			};
 
 			auto FailSafeUnmatchVertex = [&GetDistancePointToBaseTriangle, &QuadTreeTriangleResults](uint32 &OutIndexMatch)->bool
@@ -817,8 +815,8 @@ void ProjectTargetOnBase(const TArray<FSoftSkinVertex>& BaseVertices, const TArr
 				check(FoundIndexMatch != INDEX_NONE);
 				FTriangleElement& BestTriangle = Triangles[FoundIndexMatch];
 				//Found the surface area of the 3 barycentric triangles from the UVs
-				FVector BarycentricWeight;
-				BarycentricWeight = GetBaryCentric(FVector(TargetUV, 0.0f), FVector(BestTriangle.Vertices[0].UVs[0], 0.0f), FVector(BestTriangle.Vertices[1].UVs[0], 0.0f), FVector(BestTriangle.Vertices[2].UVs[0], 0.0f));
+				FVector3f BarycentricWeight;
+				BarycentricWeight = GetBaryCentric(FVector3f(FVector2f(TargetUV), 0.0f), FVector3f(BestTriangle.Vertices[0].UVs[0], 0.0f), FVector3f(BestTriangle.Vertices[1].UVs[0], 0.0f), FVector3f(BestTriangle.Vertices[2].UVs[0], 0.0f));	// LWC_TODO: Precision loss
 				//Fill the target match
 				for (int32 Corner = 0; Corner < 3; ++Corner)
 				{
@@ -839,15 +837,8 @@ void ProjectTargetOnBase(const TArray<FSoftSkinVertex>& BaseVertices, const TArr
 	}
 }
 
-void CreateLODMorphTarget(USkeletalMesh* SkeletalMesh, FReductionBaseSkeletalMeshBulkData* ReductionBaseSkeletalMeshBulkData, int32 SourceLOD, int32 DestinationLOD, const TMap<UMorphTarget *, TMap<uint32, uint32>>& PerMorphTargetBaseIndexToMorphTargetDelta, const TMap<uint32, TArray<uint32>>& BaseMorphIndexToTargetIndexList, const TArray<FSoftSkinVertex>& TargetVertices, const TArray<FTargetMatch>& TargetMatchData)
+void CreateLODMorphTarget(USkeletalMesh* SkeletalMesh, const FInlineReductionDataParameter& InlineReductionDataParameter, int32 SourceLOD, int32 DestinationLOD, const TMap<UMorphTarget *, TMap<uint32, uint32>>& PerMorphTargetBaseIndexToMorphTargetDelta, const TMap<uint32, TArray<uint32>>& BaseMorphIndexToTargetIndexList, const TArray<FSoftSkinVertex>& TargetVertices, const TArray<FTargetMatch>& TargetMatchData)
 {
-	TMap<FString, TArray<FMorphTargetDelta>> BaseLODMorphTargetData;
-	if (ReductionBaseSkeletalMeshBulkData != nullptr)
-	{
-		FSkeletalMeshLODModel TempBaseLODModel;
-		ReductionBaseSkeletalMeshBulkData->LoadReductionData(TempBaseLODModel, BaseLODMorphTargetData, SkeletalMesh);
-	}
-
 	FSkeletalMeshModel* SkeletalMeshModel = SkeletalMesh->GetImportedModel();
 	const FSkeletalMeshLODModel& TargetLODModel = SkeletalMeshModel->LODModels[DestinationLOD];
 
@@ -859,9 +850,9 @@ void CreateLODMorphTarget(USkeletalMesh* SkeletalMesh, FReductionBaseSkeletalMes
 		{
 			continue;
 		}
-		bool bUseBaseMorphDelta = SourceLOD == DestinationLOD && BaseLODMorphTargetData.Contains(MorphTarget->GetFullName());
+		bool bUseBaseMorphDelta = SourceLOD == DestinationLOD && InlineReductionDataParameter.bIsDataValid && InlineReductionDataParameter.InlineOriginalSrcMorphTargetData.Contains(MorphTarget->GetFullName());
 
-		const TArray<FMorphTargetDelta> *BaseMorphDeltas = bUseBaseMorphDelta ? BaseLODMorphTargetData.Find(MorphTarget->GetFullName()) : nullptr;
+		const TArray<FMorphTargetDelta> *BaseMorphDeltas = bUseBaseMorphDelta ? InlineReductionDataParameter.InlineOriginalSrcMorphTargetData.Find(MorphTarget->GetFullName()) : nullptr;
 		if (BaseMorphDeltas == nullptr || BaseMorphDeltas->Num() <= 0)
 		{
 			bUseBaseMorphDelta = false;
@@ -870,8 +861,8 @@ void CreateLODMorphTarget(USkeletalMesh* SkeletalMesh, FReductionBaseSkeletalMes
 		const TMap<uint32, uint32>& BaseIndexToMorphTargetDelta = PerMorphTargetBaseIndexToMorphTargetDelta[MorphTarget];
 		TArray<FMorphTargetDelta> NewMorphTargetDeltas;
 		TSet<uint32> CreatedTargetIndex;
-		TMap<FVector, TArray<uint32>> MorphTargetPerPosition;
-		const FMorphTargetLODModel& BaseMorphModel = MorphTarget->MorphLODModels[SourceLOD];
+		TMap<FVector3f, TArray<uint32>> MorphTargetPerPosition;
+		const FMorphTargetLODModel& BaseMorphModel = MorphTarget->GetMorphLODModels()[SourceLOD];
 		//Iterate each original morph target source index to fill the NewMorphTargetDeltas array with the TargetMatchData.
 		const TArray<FMorphTargetDelta>& Vertices = bUseBaseMorphDelta ? *BaseMorphDeltas : BaseMorphModel.Vertices;
 		for (uint32 MorphDeltaIndex = 0; MorphDeltaIndex < (uint32)(Vertices.Num()); ++MorphDeltaIndex)
@@ -891,23 +882,23 @@ void CreateLODMorphTarget(USkeletalMesh* SkeletalMesh, FReductionBaseSkeletalMes
 					continue;
 				}
 				CreatedTargetIndex.Add(TargetIndex);
-				const FVector& SearchPosition = TargetVertices[TargetIndex].Position;
+				const FVector3f& SearchPosition = TargetVertices[TargetIndex].Position;
 				FMorphTargetDelta MatchMorphDelta;
 				MatchMorphDelta.SourceIdx = TargetIndex;
 
 				const FTargetMatch& TargetMatch = TargetMatchData[TargetIndex];
 
 				//Find the Position/tangent delta for the MatchMorphDelta using the barycentric weight
-				MatchMorphDelta.PositionDelta = FVector(0.0f);
-				MatchMorphDelta.TangentZDelta = FVector(0.0f);
+				MatchMorphDelta.PositionDelta = FVector3f::ZeroVector;
+				MatchMorphDelta.TangentZDelta = FVector3f::ZeroVector;
 				for (int32 Corner = 0; Corner < 3; ++Corner)
 				{
 					const uint32* BaseMorphTargetIndexPtr = BaseIndexToMorphTargetDelta.Find(TargetMatch.Indices[Corner]);
 					if (BaseMorphTargetIndexPtr != nullptr && Vertices.IsValidIndex(*BaseMorphTargetIndexPtr))
 					{
 						const FMorphTargetDelta& BaseMorphTargetDelta = Vertices[*BaseMorphTargetIndexPtr];
-						FVector BasePositionDelta = !BaseMorphTargetDelta.PositionDelta.ContainsNaN() ? BaseMorphTargetDelta.PositionDelta : FVector(0.0f);
-						FVector BaseTangentZDelta = !BaseMorphTargetDelta.TangentZDelta.ContainsNaN() ? BaseMorphTargetDelta.TangentZDelta : FVector(0.0f);
+						FVector3f BasePositionDelta = !BaseMorphTargetDelta.PositionDelta.ContainsNaN() ? BaseMorphTargetDelta.PositionDelta : FVector3f(0.0f);
+						FVector3f BaseTangentZDelta = !BaseMorphTargetDelta.TangentZDelta.ContainsNaN() ? BaseMorphTargetDelta.TangentZDelta : FVector3f(0.0f);
 						MatchMorphDelta.PositionDelta += BasePositionDelta * TargetMatch.BarycentricWeight[Corner];
 						MatchMorphDelta.TangentZDelta += BaseTangentZDelta * TargetMatch.BarycentricWeight[Corner];
 					}
@@ -921,8 +912,8 @@ void CreateLODMorphTarget(USkeletalMesh* SkeletalMesh, FReductionBaseSkeletalMes
 				if (MorphTargetsIndexUsingPosition != nullptr)
 				{
 					//Get the maximum position/tangent delta for the existing matched morph delta
-					FVector PositionDelta = MatchMorphDelta.PositionDelta;
-					FVector TangentZDelta = MatchMorphDelta.TangentZDelta;
+					FVector3f PositionDelta = MatchMorphDelta.PositionDelta;
+					FVector3f TangentZDelta = MatchMorphDelta.TangentZDelta;
 					for (uint32 ExistingMorphTargetIndex : *MorphTargetsIndexUsingPosition)
 					{
 						const FMorphTargetDelta& ExistingMorphDelta = NewMorphTargetDeltas[ExistingMorphTargetIndex];
@@ -984,10 +975,10 @@ void FLODUtilities::ClearGeneratedMorphTarget(USkeletalMesh* SkeletalMesh, int32
 
 		//if (MorphTarget->MorphLODModels[TargetLOD].bGeneratedByEngine)
 		{
-			MorphTarget->MorphLODModels[TargetLOD].Reset();
+			MorphTarget->GetMorphLODModels()[TargetLOD].Reset();
 
 			// if this is the last one, we can remove empty ones
-			if (TargetLOD == MorphTarget->MorphLODModels.Num() - 1)
+			if (TargetLOD == MorphTarget->GetMorphLODModels().Num() - 1)
 			{
 				MorphTarget->RemoveEmptyMorphTargets();
 			}
@@ -995,7 +986,7 @@ void FLODUtilities::ClearGeneratedMorphTarget(USkeletalMesh* SkeletalMesh, int32
 	}
 }
 
-void FLODUtilities::ApplyMorphTargetsToLOD(USkeletalMesh* SkeletalMesh, int32 SourceLOD, int32 DestinationLOD)
+void FLODUtilities::ApplyMorphTargetsToLOD(USkeletalMesh* SkeletalMesh, int32 SourceLOD, int32 DestinationLOD, const FInlineReductionDataParameter& InlineReductionDataParameter)
 {
 	check(SkeletalMesh);
 	FSkeletalMeshModel* SkeletalMeshResource = SkeletalMesh->GetImportedModel();
@@ -1009,8 +1000,7 @@ void FLODUtilities::ApplyMorphTargetsToLOD(USkeletalMesh* SkeletalMesh, int32 So
 	}
 
 	FSkeletalMeshLODModel& SourceLODModel = SkeletalMeshResource->LODModels[SourceLOD];
-	FReductionBaseSkeletalMeshBulkData* ReductionBaseSkeletalMeshBulkData = nullptr;
-	bool bReduceBaseLOD = DestinationLOD == SourceLOD && SkeletalMeshResource->OriginalReductionSourceMeshData.IsValidIndex(SourceLOD) && !SkeletalMeshResource->OriginalReductionSourceMeshData[SourceLOD]->IsEmpty();
+	bool bReduceBaseLOD = DestinationLOD == SourceLOD && InlineReductionDataParameter.bIsDataValid;
 	if (!bReduceBaseLOD && SourceLOD == DestinationLOD)
 	{
 		//Abort remapping of morph target since the data is missing
@@ -1032,20 +1022,7 @@ void FLODUtilities::ApplyMorphTargetsToLOD(USkeletalMesh* SkeletalMesh, int32 So
 		return;
 	}
 
-	if (bReduceBaseLOD)
-	{
-		ReductionBaseSkeletalMeshBulkData = SkeletalMeshResource->OriginalReductionSourceMeshData[SourceLOD];
-	}
-
-	FSkeletalMeshLODModel TempBaseLODModel;
-	TMap<FString, TArray<FMorphTargetDelta>> TempBaseLODMorphTargetData;
-	if (bReduceBaseLOD)
-	{
-		check(ReductionBaseSkeletalMeshBulkData != nullptr);
-		ReductionBaseSkeletalMeshBulkData->LoadReductionData(TempBaseLODModel, TempBaseLODMorphTargetData, SkeletalMesh);
-	}
-
-	const FSkeletalMeshLODModel& BaseLODModel = bReduceBaseLOD ? TempBaseLODModel : SkeletalMeshResource->LODModels[SourceLOD];
+	const FSkeletalMeshLODModel& BaseLODModel = bReduceBaseLOD ? InlineReductionDataParameter.InlineOriginalSrcModel : SkeletalMeshResource->LODModels[SourceLOD];
 	const FSkeletalMeshLODInfo* BaseLODInfo = SkeletalMesh->GetLODInfo(SourceLOD);
 	const FSkeletalMeshLODModel& TargetLODModel = SkeletalMeshResource->LODModels[DestinationLOD];
 	const FSkeletalMeshLODInfo* TargetLODInfo = SkeletalMesh->GetLODInfo(DestinationLOD);
@@ -1102,7 +1079,12 @@ void FLODUtilities::ApplyMorphTargetsToLOD(USkeletalMesh* SkeletalMesh, int32 So
 		}
 	}
 	//We should have match all the target sections
-	check(!TargetSectionMatchBaseIndex.Contains(INDEX_NONE));
+	if (TargetSectionMatchBaseIndex.Contains(INDEX_NONE))
+	{
+		//This case is not fatal but need attention.
+		//Because of the chunking its possible a generated LOD end up with more sections.
+		UE_ASSET_LOG(LogLODUtilities, Display, SkeletalMesh, TEXT("FLODUtilities::ApplyMorphTargetsToLOD: The target contain more section then the source. Extra sections will not be affected by morph targets remap"));
+	}
 	TArray<FSoftSkinVertex> BaseVertices;
 	TArray<FSoftSkinVertex> TargetVertices;
 	BaseLODModel.GetVertices(BaseVertices);
@@ -1140,15 +1122,15 @@ void FLODUtilities::ApplyMorphTargetsToLOD(USkeletalMesh* SkeletalMesh, int32 So
 			continue;
 		}
 
-		bool bUseTempMorphDelta = SourceLOD == DestinationLOD && bReduceBaseLOD && TempBaseLODMorphTargetData.Contains(MorphTarget->GetFullName());
-		const TArray<FMorphTargetDelta> *TempMorphDeltas = bUseTempMorphDelta ? TempBaseLODMorphTargetData.Find(MorphTarget->GetFullName()) : nullptr;
+		bool bUseTempMorphDelta = SourceLOD == DestinationLOD && bReduceBaseLOD && InlineReductionDataParameter.InlineOriginalSrcMorphTargetData.Contains(MorphTarget->GetFullName());
+		const TArray<FMorphTargetDelta> *TempMorphDeltas = bUseTempMorphDelta ? InlineReductionDataParameter.InlineOriginalSrcMorphTargetData.Find(MorphTarget->GetFullName()) : nullptr;
 		if (TempMorphDeltas == nullptr || TempMorphDeltas->Num() <= 0)
 		{
 			bUseTempMorphDelta = false;
 		}
 
 		TMap<uint32, uint32>& BaseIndexToMorphTargetDelta = PerMorphTargetBaseIndexToMorphTargetDelta.FindOrAdd(MorphTarget);
-		const FMorphTargetLODModel& BaseMorphModel = MorphTarget->MorphLODModels[SourceLOD];
+		const FMorphTargetLODModel& BaseMorphModel = MorphTarget->GetMorphLODModels()[SourceLOD];
 		const TArray<FMorphTargetDelta>& Vertices = bUseTempMorphDelta ? *TempMorphDeltas : BaseMorphModel.Vertices;
 		for (uint32 MorphDeltaIndex = 0; MorphDeltaIndex < (uint32)(Vertices.Num()); ++MorphDeltaIndex)
 		{
@@ -1172,11 +1154,13 @@ void FLODUtilities::ApplyMorphTargetsToLOD(USkeletalMesh* SkeletalMesh, int32 So
 		}
 	}
 	//Create the target morph target
-	CreateLODMorphTarget(SkeletalMesh, ReductionBaseSkeletalMeshBulkData, SourceLOD, DestinationLOD, PerMorphTargetBaseIndexToMorphTargetDelta, BaseMorphIndexToTargetIndexList, TargetVertices, TargetMatchData);
+	CreateLODMorphTarget(SkeletalMesh, InlineReductionDataParameter, SourceLOD, DestinationLOD, PerMorphTargetBaseIndexToMorphTargetDelta, BaseMorphIndexToTargetIndexList, TargetVertices, TargetMatchData);
 }
 
 void FLODUtilities::SimplifySkeletalMeshLOD( USkeletalMesh* SkeletalMesh, int32 DesiredLOD, const ITargetPlatform* TargetPlatform, bool bRestoreClothing /*= false*/, FThreadSafeBool* OutNeedsPackageDirtied/*= nullptr*/)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FLODUtilities::SimplifySkeletalMeshLOD);
+
 	IMeshReductionModule& ReductionModule = FModuleManager::Get().LoadModuleChecked<IMeshReductionModule>("MeshReductionInterface");
 	IMeshReduction* MeshReduction = ReductionModule.GetSkeletalMeshReductionInterface();
 	if (!MeshReduction)
@@ -1191,14 +1175,15 @@ void FLODUtilities::SimplifySkeletalMeshLOD( USkeletalMesh* SkeletalMesh, int32 
 	if (DesiredLOD == 0
 		&& SkeletalMesh->GetLODInfo(DesiredLOD) != nullptr
 		&& SkeletalMesh->GetLODInfo(DesiredLOD)->bHasBeenSimplified
-		&& (!SkeletalMesh->GetImportedModel()->OriginalReductionSourceMeshData.IsValidIndex(0) || SkeletalMesh->GetImportedModel()->OriginalReductionSourceMeshData[0]->IsEmpty()))
+		&& !SkeletalMesh->GetImportedModel()->InlineReductionCacheDatas.IsValidIndex(0))
 	{
 		//The base LOD was reduce and there is no valid data, we cannot regenerate this lod it must be re-import before
 		FFormatNamedArguments Args;
 		Args.Add(TEXT("SkeletalMeshName"), FText::FromString(SkeletalMesh->GetName()));
 		Args.Add(TEXT("LODIndex"), FText::AsNumber(DesiredLOD));
 		FText Message = FText::Format(NSLOCTEXT("UnrealEd", "MeshSimp_GenerateLODCannotGenerateMissingData", "Cannot generate LOD {LODIndex} for skeletal mesh '{SkeletalMeshName}'. This LOD must be re-import to create the necessary data"), Args);
-		if (FApp::IsUnattended())
+
+		if (FApp::IsUnattended() || !IsInGameThread())
 		{
 			UE_LOG(LogLODUtilities, Warning, TEXT("%s"), *(Message.ToString()));
 		}
@@ -1227,6 +1212,8 @@ void FLODUtilities::SimplifySkeletalMeshLOD( USkeletalMesh* SkeletalMesh, int32 
 		FLODUtilities::UnbindClothingAndBackup(SkeletalMesh, ClothingBindings, DesiredLOD);
 	}
 
+	FInlineReductionDataParameter InlineReductionDataParameter;
+
 	if (SkeletalMesh->GetLODInfo(DesiredLOD) != nullptr)
 	{
 		FSkeletalMeshModel* SkeletalMeshResource = SkeletalMesh->GetImportedModel();
@@ -1235,78 +1222,79 @@ void FLODUtilities::SimplifySkeletalMeshLOD( USkeletalMesh* SkeletalMesh, int32 
 		//We must save the original reduction data, special case when we reduce inline we save even if its already simplified
 		if (SkeletalMeshResource->LODModels.IsValidIndex(DesiredLOD) && (!SkeletalMesh->GetLODInfo(DesiredLOD)->bHasBeenSimplified || DesiredLOD == Settings.BaseLOD))
 		{
-			//Caller should not call this in multithread if the LOD was never simplified or if its doing inline reduction
-			check(IsInGameThread());
 
 			FSkeletalMeshLODModel& SrcModel = SkeletalMeshResource->LODModels[DesiredLOD];
-			while (DesiredLOD >= SkeletalMeshResource->OriginalReductionSourceMeshData.Num())
+			if (!SkeletalMeshResource->InlineReductionCacheDatas.IsValidIndex(DesiredLOD))
 			{
-				FReductionBaseSkeletalMeshBulkData *EmptyReductionData = new FReductionBaseSkeletalMeshBulkData();
-				SkeletalMeshResource->OriginalReductionSourceMeshData.Add(EmptyReductionData);
+				//We should not do that in a worker thread, the serialization of the SkeletalMeshResource is suppose to allocate the correct number of inline data caches
+				//If the user add LOD in person editor, the simplification will be call in the game thread, see FLODUtilities::RegenerateLOD
+				if (!ensure(IsInGameThread()))
+				{
+					UE_ASSET_LOG(LogLODUtilities, Error, SkeletalMesh, TEXT("FLODUtilities::SimplifySkeletalMeshLOD: InlineReductionCacheDatas was not added in the game thread."));
+				}
+				SkeletalMeshResource->InlineReductionCacheDatas.AddDefaulted((DesiredLOD + 1) - SkeletalMeshResource->InlineReductionCacheDatas.Num());
 			}
-			check(SkeletalMeshResource->OriginalReductionSourceMeshData.IsValidIndex(DesiredLOD));
-			//Make the copy of the data only once until the ImportedModel change (re-imported)
-			if (SkeletalMeshResource->OriginalReductionSourceMeshData[DesiredLOD]->IsEmpty())
+			check(SkeletalMeshResource->InlineReductionCacheDatas.IsValidIndex(DesiredLOD));
+			SkeletalMeshResource->InlineReductionCacheDatas[DesiredLOD].SetCacheGeometryInfo(SrcModel);
+
+			InlineReductionDataParameter.InlineOriginalSrcMorphTargetData.Empty(SkeletalMesh->GetMorphTargets().Num());
+			for (UMorphTarget* MorphTarget : SkeletalMesh->GetMorphTargets())
 			{
-				TMap<FString, TArray<FMorphTargetDelta>> BaseLODMorphTargetData;
-				BaseLODMorphTargetData.Empty(SkeletalMesh->GetMorphTargets().Num());
-				for (UMorphTarget *MorphTarget : SkeletalMesh->GetMorphTargets())
+				if (!MorphTarget->HasDataForLOD(DesiredLOD))
 				{
-					if (!MorphTarget->HasDataForLOD(DesiredLOD))
-					{
-						continue;
-					}
-					TArray<FMorphTargetDelta>& MorphDeltasArray = BaseLODMorphTargetData.FindOrAdd(MorphTarget->GetFullName());
-					const FMorphTargetLODModel& BaseMorphModel = MorphTarget->MorphLODModels[DesiredLOD];
-					//Iterate each original morph target source index to fill the NewMorphTargetDeltas array with the TargetMatchData.
-					for (const FMorphTargetDelta& MorphDelta : BaseMorphModel.Vertices)
-					{
-						MorphDeltasArray.Add(MorphDelta);
-					}
+					continue;
 				}
-				
-				//Copy the original SkeletalMesh LODModel
-				// Unbind clothing before saving the original data, we must not restore clothing to do inline reduction
+				TArray<FMorphTargetDelta>& MorphDeltasArray = InlineReductionDataParameter.InlineOriginalSrcMorphTargetData.FindOrAdd(MorphTarget->GetFullName());
+				const FMorphTargetLODModel& BaseMorphModel = MorphTarget->GetMorphLODModels()[DesiredLOD];
+				//Iterate each original morph target source index to fill the NewMorphTargetDeltas array with the TargetMatchData.
+				int32 NumDeltas = 0;
+				const FMorphTargetDelta* BaseDeltaArray = MorphTarget->GetMorphTargetDelta(DesiredLOD, NumDeltas);
+				for (int32 DeltaIndex = 0; DeltaIndex < NumDeltas; DeltaIndex++)
 				{
-					TArray<ClothingAssetUtils::FClothingAssetMeshBinding> TemporaryRemoveClothingBindings;
-					FLODUtilities::UnbindClothingAndBackup(SkeletalMesh, TemporaryRemoveClothingBindings, DesiredLOD);
-
-					SkeletalMeshResource->OriginalReductionSourceMeshData[DesiredLOD]->SaveReductionData(SrcModel, BaseLODMorphTargetData, SkeletalMesh);
-
-					if (TemporaryRemoveClothingBindings.Num() > 0)
-					{
-						FLODUtilities::RestoreClothingFromBackup(SkeletalMesh, TemporaryRemoveClothingBindings, DesiredLOD);
-					}
+					MorphDeltasArray.Add(BaseDeltaArray[DeltaIndex]);
 				}
+			}
 
-				if (DesiredLOD == 0)
+			// Copy the original SkeletalMesh LODModel
+			// Unbind clothing before saving the original data, we must not restore clothing to do inline reduction
+			{
+				TArray<ClothingAssetUtils::FClothingAssetMeshBinding> TemporaryRemoveClothingBindings;
+				FLODUtilities::UnbindClothingAndBackup(SkeletalMesh, TemporaryRemoveClothingBindings, DesiredLOD);
+
+				FSkeletalMeshLODModel::CopyStructure(&InlineReductionDataParameter.InlineOriginalSrcModel, &SrcModel);
+
+				if (TemporaryRemoveClothingBindings.Num() > 0)
 				{
-					SkeletalMesh->GetLODInfo(DesiredLOD)->SourceImportFilename = SkeletalMesh->GetAssetImportData()->GetFirstFilename();
+					FLODUtilities::RestoreClothingFromBackup(SkeletalMesh, TemporaryRemoveClothingBindings, DesiredLOD);
 				}
+			}
+			InlineReductionDataParameter.bIsDataValid = true;
+
+			if (DesiredLOD == 0)
+			{
+				SkeletalMesh->GetLODInfo(DesiredLOD)->SourceImportFilename = SkeletalMesh->GetAssetImportData()->GetFirstFilename();
 			}
 		}
 	}
-	
 
 	if (MeshReduction->ReduceSkeletalMesh(SkeletalMesh, DesiredLOD, TargetPlatform))
 	{
 		check(SkeletalMesh->GetLODNum() >= 1);
 
-		auto ApplyMorphTargetOption = [&SkeletalMesh, &DesiredLOD]()
+		//Manage morph target after the reduction. either apply to the reduce LOD or clear them all
 		{
 			FSkeletalMeshOptimizationSettings& ReductionSettings = SkeletalMesh->GetLODInfo(DesiredLOD)->ReductionSettings;
 			//Apply morph to the new LOD. Force it if we reduce the base LOD, base LOD must apply the morph target
 			if (ReductionSettings.bRemapMorphTargets)
 			{
-				ApplyMorphTargetsToLOD(SkeletalMesh, ReductionSettings.BaseLOD, DesiredLOD);
+				ApplyMorphTargetsToLOD(SkeletalMesh, ReductionSettings.BaseLOD, DesiredLOD, InlineReductionDataParameter);
 			}
 			else
 			{
 				ClearGeneratedMorphTarget(SkeletalMesh, DesiredLOD);
 			}
-		};
+		}
 
-		ApplyMorphTargetOption();
 		if (IsInGameThread())
 		{
 			SkeletalMesh->MarkPackageDirty();
@@ -1322,7 +1310,15 @@ void FLODUtilities::SimplifySkeletalMeshLOD( USkeletalMesh* SkeletalMesh, int32 
 		FFormatNamedArguments Args;
 		Args.Add(TEXT("SkeletalMeshName"), FText::FromString(SkeletalMesh->GetName()));
 		const FText Message = FText::Format(NSLOCTEXT("UnrealEd", "MeshSimp_GenerateLODFailed_F", "An error occurred while simplifying the geometry for mesh '{SkeletalMeshName}'.  Consider adjusting simplification parameters and re-simplifying the mesh."), Args);
-		FMessageDialog::Open(EAppMsgType::Ok, Message);
+
+		if (FApp::IsUnattended() || !IsInGameThread())
+		{
+			UE_LOG(LogLODUtilities, Warning, TEXT("%s"), *(Message.ToString()));
+		}
+		else
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, Message);
+		}
 	}
 
 	//Put back the clothing for the DesiredLOD
@@ -1355,57 +1351,12 @@ void FLODUtilities::SimplifySkeletalMeshLOD(FSkeletalMeshUpdateContext& UpdateCo
 	}
 }
 
-bool FLODUtilities::RestoreSkeletalMeshLODImportedData(USkeletalMesh* SkeletalMesh, int32 LodIndex)
+bool FLODUtilities::RestoreSkeletalMeshLODImportedData_DEPRECATED(USkeletalMesh* SkeletalMesh, int32 LodIndex)
 {
-	if (!SkeletalMesh->GetImportedModel()->OriginalReductionSourceMeshData.IsValidIndex(LodIndex) || SkeletalMesh->GetImportedModel()->OriginalReductionSourceMeshData[LodIndex]->IsEmpty())
-	{
-		//There is nothing to restore
-		return false;
-	}
-
-	FScopedSkeletalMeshPostEditChange ScopedPostEditChange(SkeletalMesh);
-
-	// Unbind LodIndex existing clothing assets before restoring the LOD
-	TArray<ClothingAssetUtils::FClothingAssetMeshBinding> ClothingBindings;
-	FLODUtilities::UnbindClothingAndBackup(SkeletalMesh, ClothingBindings);
-
-	FSkeletalMeshLODModel ImportedBaseLODModel;
-	TMap<FString, TArray<FMorphTargetDelta>> ImportedBaseLODMorphTargetData;
-	SkeletalMesh->GetImportedModel()->OriginalReductionSourceMeshData[LodIndex]->LoadReductionData(ImportedBaseLODModel, ImportedBaseLODMorphTargetData, SkeletalMesh);
-	{
-		if (!SkeletalMesh->IsLODImportedDataBuildAvailable(LodIndex))
-		{
-			ImportedBaseLODModel.UpdateChunkedSectionInfo(SkeletalMesh->GetName());
-		}
-		//When we restore a LOD we destroy the LODMaterialMap (user manual section material slot assignation)
-		FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo(LodIndex);
-		LODInfo->LODMaterialMap.Empty();
-		LODInfo->bHasBeenSimplified = false;
-		//Copy the SkeletalMeshLODModel
-		FSkeletalMeshLODModel::CopyStructure(&(SkeletalMesh->GetImportedModel()->LODModels[LodIndex]), &ImportedBaseLODModel);
-		//Copy the morph target deltas
-		bool bInitMorphTargetData = false;
-		for (UMorphTarget *MorphTarget : SkeletalMesh->GetMorphTargets())
-		{
-			if (!ImportedBaseLODMorphTargetData.Contains(MorphTarget->GetFullName()))
-			{
-				continue;
-			}
-			TArray<FMorphTargetDelta>& ImportedDeltas = ImportedBaseLODMorphTargetData[MorphTarget->GetFullName()];
-
-			MorphTarget->PopulateDeltas(ImportedDeltas, LodIndex, SkeletalMesh->GetImportedModel()->LODModels[LodIndex].Sections, false, false);
-			bInitMorphTargetData |= SkeletalMesh->RegisterMorphTarget(MorphTarget, false);
-		}
-		SkeletalMesh->InitMorphTargetsAndRebuildRenderData();
-		
-		//Empty the bulkdata since we restore it
-		SkeletalMesh->GetImportedModel()->OriginalReductionSourceMeshData[LodIndex]->EmptyBulkData();
-
-		//Put back the clothing for the restore LOD
-		FLODUtilities::RestoreClothingFromBackup(SkeletalMesh, ClothingBindings);
-	}
-
-	return true;
+	const bool bThisFunctionIsDeprecated = true;
+	ensure(!bThisFunctionIsDeprecated);
+	UE_ASSET_LOG(LogLODUtilities, Error, SkeletalMesh, TEXT("FLODUtilities::RestoreSkeletalMeshLODImportedData_DEPRECATED: This function is deprecated."));
+	return false;
 }
 
 void FLODUtilities::RefreshLODChange(const USkeletalMesh* SkeletalMesh)
@@ -1619,23 +1570,25 @@ void MatchVertexIndexUsingPosition(
 		const SkeletalMeshImportData::FTriangle& Triangle = ImportDataDest.Faces[FaceIndexDest];
 		FTriangleElement TriangleElement;
 		TriangleElement.UVsBound.Init();
-		TriangleElement.PositionBound.Init();
+
+		FBox TrianglePositionBound;
+		TrianglePositionBound.Init();
 
 		for (int32 Corner = 0; Corner < 3; ++Corner)
 		{
 			const uint32 WedgeIndexDest = Triangle.WedgeIndex[Corner];
 			const uint32 VertexIndexDest = ImportDataDest.Wedges[WedgeIndexDest].VertexIndex;
-			const FVector2D UVsDest = ImportDataDest.Wedges[WedgeIndexDest].UVs[0];
 			TriangleElement.Indexes.Add(WedgeIndexDest);
 			FSoftSkinVertex SoftSkinVertex;
 			SoftSkinVertex.Position = ImportDataDest.Points[VertexIndexDest];
 			SoftSkinVertex.UVs[0] = ImportDataDest.Wedges[WedgeIndexDest].UVs[0];
 			TriangleElement.Vertices.Add(SoftSkinVertex);
-			TriangleElement.UVsBound += SoftSkinVertex.UVs[0];
-			TriangleElement.PositionBound += SoftSkinVertex.Position;
-			BaseMeshPositionBound += SoftSkinVertex.Position;
+			TriangleElement.UVsBound += FVector2D(SoftSkinVertex.UVs[0]);
+			TrianglePositionBound += (FVector)SoftSkinVertex.Position;
+			BaseMeshPositionBound += (FVector)SoftSkinVertex.Position;
 		}
-		BaseMeshPositionBound += TriangleElement.PositionBound;
+		BaseMeshPositionBound += TrianglePositionBound;
+		TriangleElement.PositionBound = FBoxCenterAndExtent(TrianglePositionBound);
 		TriangleElement.TriangleIndex = FaceIndexDest;
 		TrianglesDest.Add(TriangleElement);
 	}
@@ -1655,10 +1608,10 @@ void MatchVertexIndexUsingPosition(
 
 	//This lambda store a source vertex index -> source wedge index destination triangle.
 	//It use a barycentric function to determine the impact on the 3 corner of the triangle.
-	auto AddMatchTriangle = [&ImportDataDest, &TrianglesDest, &VertexIndexSrcToVertexIndexDestMatches](const FTriangleElement& BestTriangle, const FVector& Position, const uint32 VertexIndexSrc)
+	auto AddMatchTriangle = [&ImportDataDest, &TrianglesDest, &VertexIndexSrcToVertexIndexDestMatches](const FTriangleElement& BestTriangle, const FVector3f& Position, const uint32 VertexIndexSrc)
 	{
 		//Found the surface area of the 3 barycentric triangles from the UVs
-		FVector BarycentricWeight;
+		FVector3f BarycentricWeight;
 		BarycentricWeight = GetBaryCentric(Position, BestTriangle.Vertices[0].Position, BestTriangle.Vertices[1].Position, BestTriangle.Vertices[2].Position);
 		//Fill the match
 		VertexMatchNameSpace::FVertexMatchResult& VertexMatchDest = VertexIndexSrcToVertexIndexDestMatches.FindOrAdd(VertexIndexSrc);
@@ -1682,12 +1635,12 @@ void MatchVertexIndexUsingPosition(
 
 	for (int32 VertexIndexSrc : VertexIndexToMatchWithPositions)
 	{
-		FVector PositionSrc = ImportDataSrc.Points[VertexIndexSrc];
+		FVector3f PositionSrc = ImportDataSrc.Points[VertexIndexSrc];
 		OcTreeTriangleResults.Reset();
 
 		//Use the OcTree to find closest triangle
 		FVector Extent(DistanceThreshold, DistanceThreshold, DistanceThreshold);
-		FBoxCenterAndExtent CurBox(PositionSrc, Extent);
+		FBoxCenterAndExtent CurBox((FVector)PositionSrc, Extent);
 		
 		while (OcTreeTriangleResults.Num() <= 0)
 		{
@@ -1704,14 +1657,14 @@ void MatchVertexIndexUsingPosition(
 				//Extend must not be bigger then the whole mesh, its acceptable to have error at this point
 				break;
 			}
-			CurBox = FBox(PositionSrc - Extent, PositionSrc + Extent);
+			CurBox = FBox((FVector)PositionSrc - Extent, (FVector)PositionSrc + Extent);
 		}
 
 		//Get the 3D distance between a point and a destination triangle
 		auto GetDistanceSrcPointToDestTriangle = [&TrianglesDest, &PositionSrc](const uint32 DestTriangleIndex)->float
 		{
 			FTriangleElement& CandidateTriangle = TrianglesDest[DestTriangleIndex];
-			return FVector::DistSquared(FMath::ClosestPointOnTriangleToPoint(PositionSrc, CandidateTriangle.Vertices[0].Position, CandidateTriangle.Vertices[1].Position, CandidateTriangle.Vertices[2].Position), PositionSrc);
+			return FVector::DistSquared(FMath::ClosestPointOnTriangleToPoint((FVector)PositionSrc, (FVector)CandidateTriangle.Vertices[0].Position, (FVector)CandidateTriangle.Vertices[1].Position, (FVector)CandidateTriangle.Vertices[2].Position), (FVector)PositionSrc);
 		};
 
 		//Brute force finding of closest triangle using 3D position
@@ -1738,7 +1691,7 @@ void MatchVertexIndexUsingPosition(
 		{
 			TArray<uint32> MatchTriangleIndexes;
 			uint32 FoundIndexMatch = INDEX_NONE;
-			if (!FindTrianglePositionMatch(PositionSrc, TrianglesDest, OcTreeTriangleResults, MatchTriangleIndexes))
+			if (!FindTrianglePositionMatch((FVector)PositionSrc, TrianglesDest, OcTreeTriangleResults, MatchTriangleIndexes))
 			{
 				//There is no Position match possible, use brute force fail safe
 				if (!FailSafeUnmatchVertex(FoundIndexMatch))
@@ -1815,7 +1768,7 @@ bool FLODUtilities::UpdateAlternateSkinWeights(USkeletalMesh* SkeletalMeshDest, 
 	return UpdateAlternateSkinWeights(LODModelDest, ImportDataDest, SkeletalMeshDest, SkeletalMeshDest->GetRefSkeleton(), ProfileNameDest, LODIndexDest, OverlappingThresholds, ShouldImportNormals, ShouldImportTangents, bUseMikkTSpace, bComputeWeightedNormals);
 }
 
-bool FLODUtilities::UpdateAlternateSkinWeights(FSkeletalMeshLODModel& LODModelDest, FSkeletalMeshImportData& ImportDataDest, USkeletalMesh* SkeletalMeshDest, FReferenceSkeleton& RefSkeleton, const FName& ProfileNameDest, int32 LODIndexDest, FOverlappingThresholds OverlappingThresholds, bool ShouldImportNormals, bool ShouldImportTangents, bool bUseMikkTSpace, bool bComputeWeightedNormals)
+bool FLODUtilities::UpdateAlternateSkinWeights(FSkeletalMeshLODModel& LODModelDest, FSkeletalMeshImportData& ImportDataDest, USkeletalMesh* SkeletalMeshDest, const FReferenceSkeleton& RefSkeleton, const FName& ProfileNameDest, int32 LODIndexDest, FOverlappingThresholds OverlappingThresholds, bool ShouldImportNormals, bool ShouldImportTangents, bool bUseMikkTSpace, bool bComputeWeightedNormals)
 {
 	//Ensure log message only once
 	bool bNoMatchMsgDone = false;
@@ -1857,15 +1810,15 @@ bool FLODUtilities::UpdateAlternateSkinWeights(FSkeletalMeshLODModel& LODModelDe
 	VertIndexAndZ.Reserve(VertexNumberDest);
 	for (int32 VertexIndex = 0; VertexIndex < VertexNumberDest; ++VertexIndex)
 	{
-		new(VertIndexAndZ)FIndexAndZ(VertexIndex, ImportDataDest.Points[VertexIndex]);
+		new(VertIndexAndZ)FIndexAndZ(VertexIndex, (FVector)ImportDataDest.Points[VertexIndex]);
 	}
 	// Sort the vertices by z value
 	VertIndexAndZ.Sort(FCompareIndexAndZ());
 	
-	auto FindSimilarPosition = [&VertIndexAndZ, &ImportDataDest](const FVector& Position, TArray<int32>& PositionMatches, const float ComparisonThreshold)
+	auto FindSimilarPosition = [&VertIndexAndZ, &ImportDataDest](const FVector3f& Position, TArray<int32>& PositionMatches, const float ComparisonThreshold)
 	{
 		PositionMatches.Reset();
-		FIndexAndZ PositionZ = FIndexAndZ(0, Position);
+		FIndexAndZ PositionZ = FIndexAndZ(0, (FVector)Position);
 		// Search for duplicates, quickly!
 		for (int32 i = 0; i < VertIndexAndZ.Num(); i++)
 		{
@@ -1878,7 +1831,7 @@ bool FLODUtilities::UpdateAlternateSkinWeights(FSkeletalMeshLODModel& LODModelDe
 				break;
 			}
 
-			const FVector& PositionA = ImportDataDest.Points[VertIndexAndZ[i].Index];
+			const FVector3f& PositionA = ImportDataDest.Points[VertIndexAndZ[i].Index];
 			if (PointsEqual(PositionA, Position, ComparisonThreshold))
 			{
 				PositionMatches.Add(VertIndexAndZ[i].Index);
@@ -1887,11 +1840,11 @@ bool FLODUtilities::UpdateAlternateSkinWeights(FSkeletalMeshLODModel& LODModelDe
 	};
 
 	//Create a map linking all similar Position of destination vertex index
-	TMap<FVector, TArray<uint32>> PositionToVertexIndexDest;
+	TMap<FVector3f, TArray<uint32>> PositionToVertexIndexDest;
 	PositionToVertexIndexDest.Reserve(VertexNumberSrc);
 	for (int32 VertexIndex = 0; VertexIndex < VertexNumberDest; ++VertexIndex)
 	{
-		const FVector& Position = ImportDataDest.Points[VertexIndex];
+		const FVector3f& Position = ImportDataDest.Points[VertexIndex];
 		TArray<uint32>& VertexIndexArray = PositionToVertexIndexDest.FindOrAdd(Position);
 		VertexIndexArray.Add(VertexIndex);
 	}
@@ -1904,10 +1857,23 @@ bool FLODUtilities::UpdateAlternateSkinWeights(FSkeletalMeshLODModel& LODModelDe
 	TSortedMap<uint32, VertexMatchNameSpace::FVertexMatchResult> VertexIndexSrcToVertexIndexDestMatches;
 	VertexIndexSrcToVertexIndexDestMatches.Reserve(VertexNumberSrc);
 	TArray<uint32> VertexIndexToMatchWithPositions;
+
+	auto FindWedgeIndexesUsingVertexIndex = [](const FSkeletalMeshImportData& ImportData, const int32 VertexIndex, TArray<int32>& OutWedgeIndexes)
+	{
+		for (int32 WedgeIndex = 0; WedgeIndex < ImportData.Wedges.Num(); ++WedgeIndex)
+		{
+			const SkeletalMeshImportData::FVertex& Wedge = ImportData.Wedges[WedgeIndex];
+			if (Wedge.VertexIndex == VertexIndex)
+			{
+				OutWedgeIndexes.Add(WedgeIndex);
+			}
+		}
+	};
+
 	// Match all source vertex with destination vertex
 	for (int32 VertexIndexSrc = 0; VertexIndexSrc < PointNumberSrc; ++VertexIndexSrc)
 	{
-		const FVector& PositionSrc = ImportDataSrc.Points[VertexIndexSrc];
+		const FVector3f& PositionSrc = ImportDataSrc.Points[VertexIndexSrc];
 		
 		TArray<int32> SimilarDestinationVertex;
 		FindSimilarPosition(PositionSrc, SimilarDestinationVertex, KINDA_SMALL_NUMBER);
@@ -1921,10 +1887,46 @@ bool FLODUtilities::UpdateAlternateSkinWeights(FSkeletalMeshLODModel& LODModelDe
 		{
 			//We have a direct match
 			VertexMatchNameSpace::FVertexMatchResult& VertexMatchDest = VertexIndexSrcToVertexIndexDestMatches.Add(VertexIndexSrc);
+
+			TArray<int32> SrcWedgeIndexes;
+			FindWedgeIndexesUsingVertexIndex(ImportDataSrc, VertexIndexSrc, SrcWedgeIndexes);
+
+			//Check if we have a point that is perfectly matching (position, UV, material and vertex color). Because normals and tangent are on the triangles we do not test those.
 			for (int32 MatchDestinationIndex = 0; MatchDestinationIndex < SimilarDestinationVertex.Num(); ++MatchDestinationIndex)
 			{
-				VertexMatchDest.VertexIndexes.Add(SimilarDestinationVertex[MatchDestinationIndex]);
-				VertexMatchDest.Ratios.Add(1.0f);
+				int32 VertexIndexDest = SimilarDestinationVertex[MatchDestinationIndex];
+				TArray<int32> DestWedgeIndexes;
+				FindWedgeIndexesUsingVertexIndex(ImportDataDest, VertexIndexDest, DestWedgeIndexes);
+				for (int32 IndexDest = 0; IndexDest < DestWedgeIndexes.Num(); ++IndexDest)
+				{
+					int32 DestWedgeIndex = DestWedgeIndexes[IndexDest];
+					const SkeletalMeshImportData::FVertex& WedgeDest = ImportDataDest.Wedges[DestWedgeIndex];
+					for (int32 IndexSrc = 0; IndexSrc < SrcWedgeIndexes.Num(); ++IndexSrc)
+					{
+						int32 SrcWedgeIndex = SrcWedgeIndexes[IndexSrc];
+						const SkeletalMeshImportData::FVertex& WedgeSrc = ImportDataSrc.Wedges[SrcWedgeIndex];
+						//Wedge == operator test: material, vertex color and UVs
+						if (WedgeDest == WedgeSrc)
+						{
+							VertexMatchDest.VertexIndexes.Add(SimilarDestinationVertex[MatchDestinationIndex]);
+							VertexMatchDest.Ratios.Add(1.0f);
+							break;
+						}
+					}
+					if (VertexMatchDest.VertexIndexes.Num() > 0)
+					{
+						break;
+					}
+				}
+			}
+			//If there is no direct match, simply put everything
+			if (VertexMatchDest.VertexIndexes.Num() == 0)
+			{
+				for (int32 MatchDestinationIndex = 0; MatchDestinationIndex < SimilarDestinationVertex.Num(); ++MatchDestinationIndex)
+				{
+					VertexMatchDest.VertexIndexes.Add(SimilarDestinationVertex[MatchDestinationIndex]);
+					VertexMatchDest.Ratios.Add(1.0f);
+				}
 			}
 		}
 	}
@@ -2109,7 +2111,7 @@ bool FLODUtilities::UpdateAlternateSkinWeights(FSkeletalMeshLODModel& LODModelDe
 	//Prepare the build data to rebuild the asset with the alternate influences
 	//The chunking can be different when we have alternate influences
 	//Grab the build data from ImportDataDest
-	TArray<FVector> LODPointsDest;
+	TArray<FVector3f> LODPointsDest;
 	TArray<SkeletalMeshImportData::FMeshWedge> LODWedgesDest;
 	TArray<SkeletalMeshImportData::FMeshFace> LODFacesDest;
 	TArray<SkeletalMeshImportData::FVertInfluence> LODInfluencesDest;
@@ -2318,6 +2320,8 @@ void FLODUtilities::RegenerateDependentLODs(USkeletalMesh* SkeletalMesh, int32 L
 		check(MeshReduction->IsSupported());
 
 		FScopedSkeletalMeshPostEditChange ScopedPostEditChange(SkeletalMesh);
+
+		if (IsInGameThread())
 		{
 			FFormatNamedArguments Args;
 			Args.Add(TEXT("DesiredLOD"), LODIndex);
@@ -2325,9 +2329,9 @@ void FLODUtilities::RegenerateDependentLODs(USkeletalMesh* SkeletalMesh, int32 L
 			const FText StatusUpdate = FText::Format(NSLOCTEXT("UnrealEd", "MeshSimp_GeneratingDependentLODs_F", "Generating All Dependent LODs from LOD {DesiredLOD} for {SkeletalMeshName}..."), Args);
 			GWarn->BeginSlowTask(StatusUpdate, true);
 		}
+
 		for (const auto& Kvp : Dependencies)
 		{
-			SkeletalMesh->Modify();
 			int32 MaxDependentLODIndex = 0;
 			//Use a TQueue which is thread safe, this Queue will be fill by some delegate call from other threads
 			TQueue<FSkeletalMeshLODModel*> LODModelReplaceByReduction;
@@ -2343,58 +2347,41 @@ void FLODUtilities::RegenerateDependentLODs(USkeletalMesh* SkeletalMesh, int32 L
 
 				const FSkeletalMeshLODInfo* LODInfo = SkeletalMesh->GetLODInfo(DependentLODIndex);
 				check(LODInfo);
+				
 				LODInfo->ReductionSettings.OnDeleteLODModelDelegate.BindLambda([&LODModelReplaceByReduction](FSkeletalMeshLODModel* ReplacedLODModel)
 				{
 					LODModelReplaceByReduction.Enqueue(ReplacedLODModel);
 				});
 			}
 
-			// Load the BulkData for all dependent LODs; this has to be done on the main thread since it requires access to the Linker and FLinkerLoad::Serialize is not threadsafe
-			{
-				FSkeletalMeshModel* SkeletalMeshResource = SkeletalMesh->GetImportedModel();
-				if (SkeletalMeshResource)
-				{
-					FSkeletalMeshLODModel** LODModels = SkeletalMeshResource->LODModels.GetData();
-					const int32 NumLODModels = SkeletalMeshResource->LODModels.Num();
-					for (int32 DependentLODIndex : DependentLODs)
-					{
-						if (DependentLODIndex < NumLODModels)
-						{
-							SkeletalMesh->ForceBulkDataResident(DependentLODIndex);
-						}
-					}
-				}
-			}
-
 			SkeletalMesh->ReserveLODImportData(MaxDependentLODIndex);
 			//Reduce all dependent LODs
 			FThreadSafeBool bNeedsPackageDirtied(false);
-			TBitArray<> CanReduceLODInParallel;
-			CanReduceLODInParallel.Init(true, SkeletalMesh->GetLODNum());
-			//Reduce the LODs which need to save the OriginalReductionSourceMeshData in the main thread, bulkdata are not multithread safe.
-			for (int32 DependentLODIndex : DependentLODs)
-			{
-				const FSkeletalMeshLODInfo* DepLODInfo = SkeletalMesh->GetLODInfo(DependentLODIndex);
-				if (!DepLODInfo || (!DepLODInfo->bHasBeenSimplified || DependentLODIndex == DepLODInfo->ReductionSettings.BaseLOD))
-				{
-					CanReduceLODInParallel[DependentLODIndex] = false;
-					FLODUtilities::SimplifySkeletalMeshLOD(SkeletalMesh, DependentLODIndex, TargetPlatform, false, &bNeedsPackageDirtied);
-				}
-			}
 			
-			//Reduce LODs in parallel
-			ParallelFor(DependentLODs.Num(), [&DependentLODs, &SkeletalMesh, &bNeedsPackageDirtied, &CanReduceLODInParallel, &TargetPlatform](int32 IterationIndex)
+			//Adjust the InlineReductionCacheDatas before simplifying dependent LODs
+			if (SkeletalMesh->GetImportedModel()->InlineReductionCacheDatas.Num() < LODNumber)
 			{
+				SkeletalMesh->GetImportedModel()->InlineReductionCacheDatas.AddDefaulted(LODNumber - SkeletalMesh->GetImportedModel()->InlineReductionCacheDatas.Num());
+			}
+			else if (SkeletalMesh->GetImportedModel()->InlineReductionCacheDatas.Num() > LODNumber)
+			{
+				//If we have too much entry simply shrink the array to valid LODModel size
+				SkeletalMesh->GetImportedModel()->InlineReductionCacheDatas.SetNum(LODNumber);
+			}
+
+			// Reduce LODs in parallel (reduction is multithread safe)
+			const bool bHasAccessToLockedProperties = !FSkeletalMeshAsyncBuildScope::ShouldWaitOnLockedProperties(SkeletalMesh);
+			ParallelFor(DependentLODs.Num(), [&DependentLODs, &SkeletalMesh, &bNeedsPackageDirtied, bHasAccessToLockedProperties, &TargetPlatform](int32 IterationIndex)
+			{
+				TUniquePtr<FSkeletalMeshAsyncBuildScope> AsyncBuildScope(bHasAccessToLockedProperties ? MakeUnique<FSkeletalMeshAsyncBuildScope>(SkeletalMesh) : nullptr);
+
 				check(DependentLODs.IsValidIndex(IterationIndex));
 				int32 DependentLODIndex = DependentLODs[IterationIndex];
-				if (CanReduceLODInParallel[DependentLODIndex])
-				{
-					check(SkeletalMesh->GetLODInfo(DependentLODIndex)); //We cannot add a LOD when reducing with multi thread, so check we already have one
-					FLODUtilities::SimplifySkeletalMeshLOD(SkeletalMesh, DependentLODIndex, TargetPlatform, false, &bNeedsPackageDirtied);
-				}
-			});
+				check(SkeletalMesh->GetLODInfo(DependentLODIndex)); //We cannot add a LOD when reducing with multi thread, so check we already have one
+				FLODUtilities::SimplifySkeletalMeshLOD(SkeletalMesh, DependentLODIndex, TargetPlatform, false, &bNeedsPackageDirtied);
+			}, IsInGameThread() ? EParallelForFlags::None : EParallelForFlags::ForceSingleThread);
 
-			if (bNeedsPackageDirtied)
+			if (bNeedsPackageDirtied && IsInGameThread())
 			{
 				SkeletalMesh->MarkPackageDirty();
 			}
@@ -2422,7 +2409,10 @@ void FLODUtilities::RegenerateDependentLODs(USkeletalMesh* SkeletalMesh, int32 L
 			check(LODModelReplaceByReduction.IsEmpty());
 		}
 
-		GWarn->EndSlowTask();
+		if (IsInGameThread())
+		{
+			GWarn->EndSlowTask();
+		}
 	}
 }
 
@@ -2432,9 +2422,9 @@ void FLODUtilities::RegenerateDependentLODs(USkeletalMesh* SkeletalMesh, int32 L
 
 struct FMeshDataBundle
 {
-	TArray< FVector > Vertices;
+	TArray< FVector3f > Vertices;
 	TArray< uint32 > Indices;
-	TArray< FVector2D > UVs;
+	TArray< FVector2f > UVs;
 	TArray< uint32 > SmoothingGroups;
 	TArray<SkeletalMeshImportData::FTriangle> Faces;
 };
@@ -2465,10 +2455,10 @@ static void ConvertImportDataToMeshData(const FSkeletalMeshImportData& ImportDat
 class FAsyncImportMorphTargetWork : public FNonAbandonableTask
 {
 public:
-	FAsyncImportMorphTargetWork(FSkeletalMeshLODModel* InLODModel, const FReferenceSkeleton& InRefSkeleton, const FSkeletalMeshImportData& InBaseImportData, TArray<FVector>&& InMorphLODPoints,
-		TArray< FMorphTargetDelta >& InMorphDeltas, TArray<uint32>& InBaseIndexData, TArray< uint32 >& InBaseWedgePointIndices,
+	FAsyncImportMorphTargetWork(FSkeletalMeshLODModel* InLODModel, const FReferenceSkeleton& InRefSkeleton, const FSkeletalMeshImportData& InBaseImportData, TArray<FVector3f>&& InMorphLODPoints,
+		TArray< FMorphTargetDelta >& InMorphDeltas, TArray<uint32>& InBaseIndexData, const TArray< uint32 >& InBaseWedgePointIndices,
 		TMap<uint32, uint32>& InWedgePointToVertexIndexMap, const FOverlappingCorners& InOverlappingCorners,
-		const TSet<uint32> InModifiedPoints, const TMultiMap< int32, int32 >& InWedgeToFaces, const FMeshDataBundle& InMeshDataBundle, const TArray<FVector>& InTangentZ,
+		const TSet<uint32> InModifiedPoints, const TMultiMap< int32, int32 >& InWedgeToFaces, const FMeshDataBundle& InMeshDataBundle, const TArray<FVector3f>& InTangentZ,
 		bool InShouldImportNormals, bool InShouldImportTangents, bool InbUseMikkTSpace, const FOverlappingThresholds InThresholds)
 		: LODModel(InLODModel)
 		, RefSkeleton(InRefSkeleton)
@@ -2495,7 +2485,7 @@ public:
 	//Decompress the shape points data
 	void DecompressData()
 	{
-		const TArray<FVector>& BaseMeshPoints = BaseImportData.Points;
+		const TArray<FVector3f>& BaseMeshPoints = BaseImportData.Points;
 		MorphLODPoints = BaseMeshPoints;
 		int32 ModifiedPointIndex = 0;
 		for (uint32 PointIndex : ModifiedPoints)
@@ -2514,6 +2504,7 @@ public:
 		WasProcessed.AddZeroed(MeshDataBundle.Indices.Num());
 
 		TArray< int32 > WedgeFaces;
+		TArray< int32 > OtherWedgeFaces;
 		TArray< int32 > OverlappingWedgesDummy;
 		TArray< int32 > OtherOverlappingWedgesDummy;
 
@@ -2524,7 +2515,7 @@ public:
 
 			if (ModifiedPoints.Find(PointIdx) != nullptr)
 			{
-				TangentZ[WedgeIdx] = FVector::ZeroVector;
+				TangentZ[WedgeIdx] = FVector3f::ZeroVector;
 
 				const TArray<int32>& OverlappingWedges = FindIncludingNoOverlapping(OverlappingCorners, WedgeIdx, OverlappingWedgesDummy);
 
@@ -2546,13 +2537,13 @@ public:
 						{
 							int32 WedgeIndex = MeshDataBundle.Faces[FaceIndex].WedgeIndex[CornerIndex];
 
-							TangentZ[WedgeIndex] = FVector::ZeroVector;
+							TangentZ[WedgeIndex] = FVector3f::ZeroVector;
 
 							const TArray<int32>& OtherOverlappingWedges = FindIncludingNoOverlapping(OverlappingCorners, WedgeIndex, OtherOverlappingWedgesDummy);
 
 							for (const int32 OtherDupVert : OtherOverlappingWedges)
 							{
-								TArray< int32 > OtherWedgeFaces;
+								OtherWedgeFaces.Reset();
 								WedgeToFaces.MultiFind(OtherDupVert, OtherWedgeFaces);
 
 								for (const int32 OtherFaceIndex : OtherWedgeFaces)
@@ -2561,7 +2552,7 @@ public:
 									{
 										int32 OtherWedgeIndex = MeshDataBundle.Faces[OtherFaceIndex].WedgeIndex[OtherCornerIndex];
 
-										TangentZ[OtherWedgeIndex] = FVector::ZeroVector;
+										TangentZ[OtherWedgeIndex] = FVector3f::ZeroVector;
 									}
 								}
 							}
@@ -2613,8 +2604,8 @@ public:
 					uint32 BasePointIdx = BaseWedgePointIndices[BaseVertIdx];
 					if (MeshDataBundle.Vertices.IsValidIndex(BasePointIdx) && MorphLODPoints.IsValidIndex(BasePointIdx))
 					{
-						FVector BasePosition = MeshDataBundle.Vertices[BasePointIdx];
-						FVector TargetPosition = MorphLODPoints[BasePointIdx];
+						FVector BasePosition = (FVector)MeshDataBundle.Vertices[BasePointIdx];
+						FVector TargetPosition = (FVector)MorphLODPoints[BasePointIdx];
 
 						FVector PositionDelta = TargetPosition - BasePosition;
 
@@ -2624,8 +2615,8 @@ public:
 
 						if (VertexIdx != nullptr)
 						{
-							FVector BaseNormal = BaseTangentZ[*VertexIdx];
-							FVector TargetNormal = TangentZ[*VertexIdx];
+							FVector BaseNormal = (FVector)BaseTangentZ[*VertexIdx];
+							FVector TargetNormal = (FVector)TangentZ[*VertexIdx];
 
 							NormalDeltaZ = TargetNormal - BaseNormal;
 						}
@@ -2640,9 +2631,9 @@ public:
 							// create a new entry
 							FMorphTargetDelta NewVertex;
 							// position delta
-							NewVertex.PositionDelta = PositionDelta;
+							NewVertex.PositionDelta = (FVector3f)PositionDelta;
 							// normal delta
-							NewVertex.TangentZDelta = NormalDeltaZ;
+							NewVertex.TangentZDelta = (FVector3f)NormalDeltaZ;
 							// index of base mesh vert this entry is to modify
 							NewVertex.SourceIdx = BaseVertIdx;
 
@@ -2689,14 +2680,14 @@ private:
 	// @todo not thread safe
 	const FReferenceSkeleton& RefSkeleton;
 	const FSkeletalMeshImportData& BaseImportData;
-	const TArray<FVector> CompressMorphLODPoints;
-	TArray<FVector> MorphLODPoints;
+	const TArray<FVector3f> CompressMorphLODPoints;
+	TArray<FVector3f> MorphLODPoints;
 
 	IMeshUtilities* MeshUtilities;
 
 	TArray< FMorphTargetDelta >& MorphTargetDeltas;
 	TArray< uint32 >& BaseIndexData;
-	TArray< uint32 >& BaseWedgePointIndices;
+	const TArray< uint32 >& BaseWedgePointIndices;
 	TMap<uint32, uint32>& WedgePointToVertexIndexMap;
 
 	const FOverlappingCorners& OverlappingCorners;
@@ -2704,8 +2695,8 @@ private:
 	const TMultiMap< int32, int32 >& WedgeToFaces;
 	const FMeshDataBundle& MeshDataBundle;
 
-	const TArray<FVector>& BaseTangentZ;
-	TArray<FVector> TangentZ;
+	const TArray<FVector3f>& BaseTangentZ;
+	TArray<FVector3f> TangentZ;
 	bool ShouldImportNormals;
 	bool ShouldImportTangents;
 	bool bUseMikkTSpace;
@@ -2737,17 +2728,8 @@ void FLODUtilities::BuildMorphTargets(USkeletalMesh* BaseSkelMesh, FSkeletalMesh
 	FOverlappingCorners OverlappingVertices;
 	MeshUtilities.CalculateOverlappingCorners(MeshDataBundle.Vertices, MeshDataBundle.Indices, false, OverlappingVertices);
 
-	TArray<FVector> TangentZ;
+	TArray<FVector3f> TangentZ;
 	MeshUtilities.CalculateNormals(MeshDataBundle.Vertices, MeshDataBundle.Indices, MeshDataBundle.UVs, MeshDataBundle.SmoothingGroups, TangentOptions, TangentZ);
-
-	TArray< uint32 > BaseWedgePointIndices;
-	if (BaseLODModel.RawPointIndices.GetBulkDataSize())
-	{
-		BaseWedgePointIndices.Empty(BaseLODModel.RawPointIndices.GetElementCount());
-		BaseWedgePointIndices.AddUninitialized(BaseLODModel.RawPointIndices.GetElementCount());
-		FMemory::Memcpy(BaseWedgePointIndices.GetData(), BaseLODModel.RawPointIndices.Lock(LOCK_READ_ONLY), BaseLODModel.RawPointIndices.GetBulkDataSize());
-		BaseLODModel.RawPointIndices.Unlock();
-	}
 
 	TArray<uint32> BaseIndexData = BaseLODModel.IndexBuffer;
 
@@ -2783,6 +2765,12 @@ void FLODUtilities::BuildMorphTargets(USkeletalMesh* BaseSkelMesh, FSkeletalMesh
 	int32 ShapeIndex = 0;
 	int32 TotalShapeCount = BaseImportData.MorphTargetNames.Num();
 
+	TMap<FName, UMorphTarget*> ExistingMorphTargets;
+	for (UMorphTarget* MorphTarget : BaseSkelMesh->GetMorphTargets())
+	{
+		ExistingMorphTargets.Add(MorphTarget->GetFName(), MorphTarget);
+	}
+
 	// iterate through shapename, and create morphtarget
 	for (int32 MorphTargetIndex = 0; MorphTargetIndex < BaseImportData.MorphTargetNames.Num(); ++MorphTargetIndex)
 	{
@@ -2797,10 +2785,13 @@ void FLODUtilities::BuildMorphTargets(USkeletalMesh* BaseSkelMesh, FSkeletalMesh
 				{
 					PendingWork.RemoveAt(TaskIndex);
 					++NumCompleted;
-					FFormatNamedArguments Args;
-					Args.Add(TEXT("NumCompleted"), NumCompleted);
-					Args.Add(TEXT("NumTasks"), TotalShapeCount);
-					GWarn->StatusUpdate(NumCompleted, TotalShapeCount, FText::Format(LOCTEXT("ImportingMorphTargetStatus", "Importing Morph Target: {NumCompleted} of {NumTasks}"), Args));
+					if (IsInGameThread())
+					{
+						FFormatNamedArguments Args;
+						Args.Add(TEXT("NumCompleted"), NumCompleted);
+						Args.Add(TEXT("NumTasks"), TotalShapeCount);
+						GWarn->StatusUpdate(NumCompleted, TotalShapeCount, FText::Format(LOCTEXT("ImportingMorphTargetStatus", "Importing Morph Target: {NumCompleted} of {NumTasks}"), Args));
+					}
 				}
 			}
 			CurrentNumTasks = PendingWork.Num();
@@ -2814,20 +2805,41 @@ void FLODUtilities::BuildMorphTargets(USkeletalMesh* BaseSkelMesh, FSkeletalMesh
 		FSkeletalMeshImportData& ShapeImportData = BaseImportData.MorphTargets[MorphTargetIndex];
 		TSet<uint32>& ModifiedPoints = BaseImportData.MorphTargetModifiedPoints[MorphTargetIndex];
 
-		// See if this morph target already exists.
-		UMorphTarget * MorphTarget = FindObject<UMorphTarget>(BaseSkelMesh, *ShapeName);
-		// we only create new one for LOD0, otherwise don't create new one
-		if (!MorphTarget)
+		bool bNeedToClearAsyncFlag = false;
+		UMorphTarget* MorphTarget = nullptr;
 		{
-			if (LODIndex == 0)
+			FName ObjectName = *ShapeName;
+			MorphTarget = ExistingMorphTargets.FindRef(ObjectName);
+
+			// we only create new one for LOD0, otherwise don't create new one
+			if (!MorphTarget)
 			{
-				MorphTarget = NewObject<UMorphTarget>(BaseSkelMesh, FName(*ShapeName));
-			}
-			else
-			{
-				/*AddTokenizedErrorMessage(FTokenizedMessage::Create(EMessageSeverity::Error, FText::Format(FText::FromString("Could not find the {0} morphtarget for LOD {1}. \
-					Make sure the name for morphtarget matches with LOD 0"), FText::FromString(ShapeName), FText::FromString(FString::FromInt(LODIndex)))),
-					FFbxErrors::SkeletalMesh_LOD_MissingMorphTarget);*/
+				if (LODIndex == 0)
+				{
+					if (!IsInGameThread())
+					{
+						//TODO remove this code when overriding a UObject will be allow outside of the game thread
+						//We currently need to avoid overriding an existing asset outside of the game thread
+						UObject* ExistingMorphTarget = StaticFindObject(UMorphTarget::StaticClass(), BaseSkelMesh, *ShapeName);
+						if (ExistingMorphTarget)
+						{
+							//make sure the object is not standalone or transactional
+							ExistingMorphTarget->ClearFlags(RF_Standalone | RF_Transactional);
+							//Move this object in the transient package
+							ExistingMorphTarget->Rename(nullptr, GetTransientPackage(), REN_ForceNoResetLoaders | REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
+							ExistingMorphTarget = nullptr;
+						}
+						bNeedToClearAsyncFlag = true;
+					}
+					FGCScopeGuard GCScopeGuard;
+					MorphTarget = NewObject<UMorphTarget>(BaseSkelMesh, ObjectName);
+				}
+				else
+				{
+					/*AddTokenizedErrorMessage(FTokenizedMessage::Create(EMessageSeverity::Error, FText::Format(FText::FromString("Could not find the {0} morphtarget for LOD {1}. \
+						Make sure the name for morphtarget matches with LOD 0"), FText::FromString(ShapeName), FText::FromString(FString::FromInt(LODIndex)))),
+						FFbxErrors::SkeletalMesh_LOD_MissingMorphTarget);*/
+				}
 			}
 		}
 
@@ -2839,13 +2851,19 @@ void FLODUtilities::BuildMorphTargets(USkeletalMesh* BaseSkelMesh, FSkeletalMesh
 			TArray< FMorphTargetDelta >* Deltas = Results[NewMorphDeltasIdx];
 
 			FAsyncTask<FAsyncImportMorphTargetWork>* NewWork = new FAsyncTask<FAsyncImportMorphTargetWork>(&BaseLODModel, BaseSkelMesh->GetRefSkeleton(), BaseImportData,
-				MoveTemp(ShapeImportData.Points), *Deltas, BaseIndexData, BaseWedgePointIndices, WedgePointToVertexIndexMap, OverlappingVertices, MoveTemp(ModifiedPoints), WedgeToFaces, MeshDataBundle, TangentZ,
+				MoveTemp(ShapeImportData.Points), *Deltas, BaseIndexData, BaseLODModel.GetRawPointIndices(), WedgePointToVertexIndexMap, OverlappingVertices, MoveTemp(ModifiedPoints), WedgeToFaces, MeshDataBundle, TangentZ,
 				ShouldImportNormals, ShouldImportTangents, bUseMikkTSpace, Thresholds);
 			PendingWork.Add(NewWork);
 
 			NewWork->StartBackgroundTask(GLargeThreadPool);
 			CurrentNumTasks++;
 			NumTasks++;
+
+			if (bNeedToClearAsyncFlag)
+			{
+				const EInternalObjectFlags AsyncFlags = EInternalObjectFlags::Async | EInternalObjectFlags::AsyncLoading;
+				MorphTarget->ClearInternalFlags(AsyncFlags);
+			}
 		}
 
 		++ShapeIndex;
@@ -2858,10 +2876,13 @@ void FLODUtilities::BuildMorphTargets(USkeletalMesh* BaseSkelMesh, FSkeletalMesh
 
 		++NumCompleted;
 
-		FFormatNamedArguments Args;
-		Args.Add(TEXT("NumCompleted"), NumCompleted);
-		Args.Add(TEXT("NumTasks"), TotalShapeCount);
-		GWarn->StatusUpdate(NumCompleted, NumTasks, FText::Format(LOCTEXT("ImportingMorphTargetStatus", "Importing Morph Target: {NumCompleted} of {NumTasks}"), Args));
+		if (IsInGameThread())
+		{
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("NumCompleted"), NumCompleted);
+			Args.Add(TEXT("NumTasks"), TotalShapeCount);
+			GWarn->StatusUpdate(NumCompleted, NumTasks, FText::Format(LOCTEXT("ImportingMorphTargetStatus", "Importing Morph Target: {NumCompleted} of {NumTasks}"), Args));
+		}
 	}
 
 	bool bNeedToInvalidateRegisteredMorph = false;
@@ -2869,10 +2890,13 @@ void FLODUtilities::BuildMorphTargets(USkeletalMesh* BaseSkelMesh, FSkeletalMesh
 	// This has to happen on a single thread since the skeletal meshes' bulk data is locked and cant be accessed by multiple threads simultaneously
 	for (int32 Index = 0; Index < MorphTargets.Num(); Index++)
 	{
-		FFormatNamedArguments Args;
-		Args.Add(TEXT("NumCompleted"), Index + 1);
-		Args.Add(TEXT("NumTasks"), MorphTargets.Num());
-		GWarn->StatusUpdate(Index + 1, MorphTargets.Num(), FText::Format(LOCTEXT("BuildingMorphTargetRenderDataStatus", "Building Morph Target Render Data: {NumCompleted} of {NumTasks}"), Args));
+		if (IsInGameThread())
+		{
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("NumCompleted"), Index + 1);
+			Args.Add(TEXT("NumTasks"), MorphTargets.Num());
+			GWarn->StatusUpdate(Index + 1, MorphTargets.Num(), FText::Format(LOCTEXT("BuildingMorphTargetRenderDataStatus", "Building Morph Target Render Data: {NumCompleted} of {NumTasks}"), Args));
+		}
 
 		UMorphTarget* MorphTarget = MorphTargets[Index];
 		MorphTarget->PopulateDeltas(*Results[Index], LODIndex, BaseLODModel.Sections, ShouldImportNormals == false, false, Thresholds.MorphThresholdPosition);
@@ -2885,6 +2909,10 @@ void FLODUtilities::BuildMorphTargets(USkeletalMesh* BaseSkelMesh, FSkeletalMesh
 
 		delete Results[Index];
 		Results[Index] = nullptr;
+
+		// We might have created new MorphTarget in an async thread, so we need to remove the async flag so they can get
+		// garbage collected in the future now that their references are properly setup and reachable by the GC.
+		MorphTarget->ClearInternalFlags(EInternalObjectFlags::Async);
 	}
 
 	if (bNeedToInvalidateRegisteredMorph)
@@ -2911,7 +2939,7 @@ void FLODUtilities::UnbindClothingAndBackup(USkeletalMesh* SkeletalMesh, TArray<
 	}
 	FSkeletalMeshLODModel& LODModel = SkeletalMesh->GetImportedModel()->LODModels[LODIndex];
 	//Store the clothBinding
-	ClothingAssetUtils::GetMeshClothingAssetBindings(SkeletalMesh, ClothingBindings, LODIndex);
+	ClothingAssetUtils::GetAllLodMeshClothingAssetBindings(SkeletalMesh, ClothingBindings, LODIndex);
 	//Unbind the Cloth for this LOD before we reduce it, we will put back the cloth after the reduction, if it still match the sections
 	for (ClothingAssetUtils::FClothingAssetMeshBinding& Binding : ClothingBindings)
 	{
@@ -3276,17 +3304,8 @@ bool FLODUtilities::StripLODGeometry(USkeletalMesh* SkeletalMesh, const int32 LO
 			return true;
 		};
 
-		TArray< uint32 > SoftVertexIndexToImportDataPointIndex;
-		if (LODModel.RawPointIndices.GetBulkDataSize())
-		{
-			SoftVertexIndexToImportDataPointIndex.Empty(LODModel.RawPointIndices.GetElementCount());
-			SoftVertexIndexToImportDataPointIndex.AddUninitialized(LODModel.RawPointIndices.GetElementCount());
-			FMemory::Memcpy(SoftVertexIndexToImportDataPointIndex.GetData(), LODModel.RawPointIndices.Lock(LOCK_READ_ONLY), LODModel.RawPointIndices.GetBulkDataSize());
-			LODModel.RawPointIndices.Unlock();
-		}
+		const TArray< uint32 >& SoftVertexIndexToImportDataPointIndex = LODModel.GetRawPointIndices();
 
-		
-		
 		TMap<uint64, TArray<int32>> OptimizedFaceFinder;
 		
 		auto GetMatchFaceIndex = [&OptimizedFaceFinder, &ImportedData](const int32 FaceVertexA, const int32 FaceVertexB, int32 FaceVertexC)->int32
@@ -3340,9 +3359,9 @@ bool FLODUtilities::StripLODGeometry(USkeletalMesh* SkeletalMesh, const int32 LO
 			LODModel.GetSectionFromVertexIndex(VertexIndexC, SectionIndex, SectionVertexIndexC);
 			FSkelMeshSection& Section = LODModel.Sections[SectionIndex];
 			//Get the UV triangle, add the small number that will act like threshold when converting the UV into pixel coordinate.
-			FVector2D UvA = Section.SoftVertices[SectionVertexIndexA].UVs[0] + KINDA_SMALL_NUMBER;
-			FVector2D UvB = Section.SoftVertices[SectionVertexIndexB].UVs[0] + KINDA_SMALL_NUMBER;
-			FVector2D UvC = Section.SoftVertices[SectionVertexIndexC].UVs[0] + KINDA_SMALL_NUMBER;
+			FVector2D UvA = FVector2D(Section.SoftVertices[SectionVertexIndexA].UVs[0]) + KINDA_SMALL_NUMBER;
+			FVector2D UvB = FVector2D(Section.SoftVertices[SectionVertexIndexB].UVs[0]) + KINDA_SMALL_NUMBER;
+			FVector2D UvC = FVector2D(Section.SoftVertices[SectionVertexIndexC].UVs[0]) + KINDA_SMALL_NUMBER;
 
 			if (ShouldStripTriangle(UvA, UvB, UvC))
 			{

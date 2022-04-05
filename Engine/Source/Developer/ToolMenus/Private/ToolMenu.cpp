@@ -12,16 +12,17 @@
 
 UToolMenu::UToolMenu() :
 	MenuType(EMultiBoxType::Menu)
+	, bShouldCleanupContextOnDestroy(true)
 	, bShouldCloseWindowAfterMenuSelection(true)
 	, bCloseSelfOnly(false)
-	, bSearchable(false)
+	, bSearchable(true)
 	, bToolBarIsFocusable(false)
 	, bToolBarForceSmallIcons(false)
 	, bRegistered(false)
 	, bIsRegistering(false)
 	, bExtendersEnabled(true)
 	, StyleSet(&FCoreStyle::Get())
-	, MaxHeight(INT_MAX)
+	, MaxHeight(1000.f)
 {
 }
 
@@ -32,6 +33,30 @@ void UToolMenu::InitMenu(const FToolMenuOwner InOwner, FName InName, FName InPar
 	MenuParent = InParent;
 	MenuType = InType;
 }
+
+FReply UToolMenu::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	for (int32 i = 0; i < Sections.Num(); ++i)
+	{
+		for (FToolMenuEntry& Entry : Sections[i].Blocks)
+		{
+			if (Entry.Type == EMultiBlockType::ToolBarButton
+				&& Entry.IsCommandKeybindOnly())
+			{
+				if (Entry.CommandAcceptsInput(InKeyEvent))
+				{
+					if (Entry.TryExecuteToolUIAction(Context))
+					{
+						return FReply::Handled();
+					}
+				}
+			}
+		}
+	}
+	return FReply::Unhandled();
+}
+
+
 
 void UToolMenu::InitGeneratedCopy(const UToolMenu* Source, const FName InMenuName, const FToolMenuContext* InContext)
 {
@@ -224,6 +249,11 @@ void UToolMenu::AddDynamicSectionScript(const FName SectionName, UToolMenuSectio
 void UToolMenu::AddMenuEntryObject(UToolMenuEntryScript* InObject)
 {
 	FindOrAddSection(InObject->Data.Section).AddEntryObject(InObject);
+
+	if (MenuType == EMultiBoxType::MenuBar || MenuType == EMultiBoxType::ToolBar)
+	{
+		UToolMenus::Get()->RefreshAllWidgets();
+	}
 }
 
 UToolMenu* UToolMenu::AddSubMenuScript(const FName InOwner, const FName SectionName, const FName InName, const FText& InLabel, const FText& InToolTip)
@@ -475,6 +505,16 @@ void UToolMenu::UpdateMenuCustomizationFromMultibox(const TSharedRef<const FMult
 			EntryOrderForSection.Names.Add(Block->GetExtensionHook());
 		}
 	}
+}
+
+void UToolMenu::OnMenuDestroyed()
+{
+	if (bShouldCleanupContextOnDestroy && !SubMenuParent)
+	{
+		Context.CleanupObjects();
+	}
+
+	//Empty();
 }
 
 TArray<const UToolMenu*> UToolMenu::GetSubMenuChain() const

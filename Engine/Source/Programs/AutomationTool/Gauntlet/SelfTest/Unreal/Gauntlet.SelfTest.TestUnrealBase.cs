@@ -8,7 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
 
 namespace Gauntlet.SelfTest
@@ -70,19 +70,16 @@ namespace Gauntlet.SelfTest
 			UsesSharedBuildType = false;
 			DevkitName = "Default";
 
-			//BuildPath = FindValidBuild(GameName);
-
+			string BuildPath = Gauntlet.Globals.Params.ParseValue("Build", null);
 
 			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 			{
-				BuildPath = @"P:\Builds\Fortnite\++Fortnite+Main-CL-3874645";
-				SupportedClientPlatforms = new[] { UnrealTargetPlatform.Win64, UnrealTargetPlatform.PS4, UnrealTargetPlatform.Android, UnrealTargetPlatform.XboxOne };
+				IEnumerable<UnrealTargetPlatform> SupportedDevices = Gauntlet.Utils.InterfaceHelpers.FindImplementations<IDeviceBuildSupport>().Select(D => D.GetPlatform() ?? UnrealTargetPlatform.Win64);
+				SupportedClientPlatforms = SupportedDevices.Append(UnrealTargetPlatform.Win64).Distinct().ToArray();
 				SupportedServerPlatforms = new[] { UnrealTargetPlatform.Win64, UnrealTargetPlatform.Linux };
-
 			}
 			else
 			{
-				BuildPath = @"/Volumes/Root/Builds/Fortnite/++Fortnite+Release-3.3-CL-3942182";
 				SupportedClientPlatforms = new[] { UnrealTargetPlatform.Mac };
 				SupportedServerPlatforms = new[] { UnrealTargetPlatform.Mac };
 			}

@@ -189,17 +189,62 @@ namespace CrossCompiler
 		return Ar;
 	}
 
+#pragma warning(push)
+#pragma warning(error : 4596)
+	struct FShaderBindingInOutMask
+	{
+		uint32 Bitmask = 0;
+
+		/** Maximum value for a valid index in this bitmask. */
+		static constexpr int32 MaxIndex = (sizeof(decltype(FShaderBindingInOutMask::Bitmask)) * 8u) - 1u;
+
+		/** Index to mark the binding of a depth-stencil output resource. */
+		static constexpr int32 DepthStencilMaskIndex = MaxIndex;
+
+		/** Sets the specified bitfield in this bitmask and validates its index boundary. */
+		FORCEINLINE void EnableField(int32 Index)
+		{
+			ensure(Index >= 0 && Index <= FShaderBindingInOutMask::MaxIndex);
+			Bitmask |= (1u << Index);
+		}
+
+		/** Returns whether the specified bitfield in this bitmask is set and validates its index boundary. */
+		FORCEINLINE bool IsFieldEnabled(int32 Index) const
+		{
+			ensure(Index >= 0 && Index <= FShaderBindingInOutMask::MaxIndex);
+			return (Bitmask & (1u << Index)) != 0;
+		}
+
+		friend bool operator == (const FShaderBindingInOutMask& Lhs, const FShaderBindingInOutMask& Rhs)
+		{
+			return Lhs.Bitmask == Rhs.Bitmask;
+		}
+
+		friend bool operator != (const FShaderBindingInOutMask& Lhs, const FShaderBindingInOutMask& Rhs)
+		{
+			return !(Lhs == Rhs);
+		}
+	};
+#pragma warning(pop)
+
+	inline FArchive& operator<<(FArchive& Ar, FShaderBindingInOutMask& BindingInOutMask)
+	{
+		Ar << BindingInOutMask.Bitmask;
+		return Ar;
+	}
+
 	struct FShaderBindings
 	{
 		TArray<TArray<FPackedArrayInfo>>	PackedUniformBuffers;
 		TArray<FPackedArrayInfo>			PackedGlobalArrays;
 		FShaderCompilerResourceTable		ShaderResourceTable;
 
-		uint16	InOutMask;
-		uint8	NumSamplers;
-		uint8	NumUniformBuffers;
-		uint8	NumUAVs;
-		bool	bHasRegularUniformBuffers;
+		FShaderBindingInOutMask	InOutMask;
+		uint8					NumSamplers;
+		uint8					NumUniformBuffers;
+		uint8					NumUAVs;
+		uint8					NumAccelerationStructures;
+		bool					bHasRegularUniformBuffers;
 	};
 
 	// Information for copying members from uniform buffers to packed

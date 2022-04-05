@@ -18,11 +18,17 @@
 #include "Misc/ITransaction.h"
 #include "Engine/Level.h"
 
+#if WITH_EDITOR
+#include "WorldPartition/DataLayer/ActorDataLayer.h"
+#include "Folder.h"
+#endif
+
+#include "WorldPartition/WorldPartitionActorDescType.h"
+
 #include "Actor.generated.h"
 
 class AActor;
 class AController;
-class AMatineeActor;
 class APawn;
 class APlayerController;
 class UActorChannel;
@@ -32,16 +38,42 @@ class UPrimitiveComponent;
 struct FAttachedActorInfo;
 struct FNetViewer;
 struct FNetworkObjectInfo;
+class UDataLayer;
+class AWorldDataLayers;
+class UActorFolder;
+
+// By default, debug and development builds (even cooked) will keep actor labels. Manually define this if you want to make a local build
+// that keep actor labels for Test or Shipping builds.
+#define ACTOR_HAS_LABELS (UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT || WITH_PROFILEGPU)
 
 /** Chooses a method for actors to update overlap state (objects it is touching) on initialization, currently only used during level streaming. */
 UENUM(BlueprintType)
 enum class EActorUpdateOverlapsMethod : uint8
 {
-	UseConfigDefault,	// Use the default value specified by the native class or config value.
-	AlwaysUpdate,		// Always update overlap state on initialization.
-	OnlyUpdateMovable,	// Only update if root component has Movable mobility.
-	NeverUpdate			// Never update overlap state on initialization.
+	// Use the default value specified by the native class or config value.
+	UseConfigDefault,
+	// Always update overlap state on initialization.
+	AlwaysUpdate,
+	// Only update if root component has Movable mobility.
+	OnlyUpdateMovable,
+	// Never update overlap state on initialization.
+	NeverUpdate
 };
+
+#if WITH_EDITORONLY_DATA
+/** Enum defining how actor will be placed in the partition */
+UENUM()
+enum class UE_DEPRECATED(5.0, "EActorGridPlacement is deprecated.") EActorGridPlacement : uint8
+{
+	// Actor uses its bounds to determine in which runtime cells it's going to be placed.
+	Bounds,
+	// Actor uses its location to determine in which runtime cells it's going to be placed.
+	Location,
+	// Actor is always loaded (not placed in the grid), also affects editor.
+	AlwaysLoaded,
+	None UMETA(Hidden)
+};
+#endif
 
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogActor, Log, Warning);
 
@@ -67,13 +99,12 @@ DECLARE_DYNAMIC_MULTICAST_SPARSE_DELEGATE_TwoParams(FActorEndPlaySignature, AAct
 
 DECLARE_DELEGATE_SixParams(FMakeNoiseDelegate, AActor*, float /*Loudness*/, class APawn*, const FVector&, float /*MaxRange*/, FName /*Tag*/);
 
-#if !UE_BUILD_SHIPPING
-DECLARE_DELEGATE_RetVal_ThreeParams(bool, FOnProcessEvent, AActor*, UFunction*, void*);
+#if WITH_EDITOR
+DECLARE_EVENT_TwoParams(AActor, FActorOnPackagingModeChanged, AActor*, bool /* bExternal */);
 #endif
 
-#if WITH_EDITOR
-/** Annotation for actor selection.  This must be in engine instead of editor for ::IsSelected to work */
-extern ENGINE_API FUObjectAnnotationSparseBool GSelectedActorAnnotation;
+#if !UE_BUILD_SHIPPING
+DECLARE_DELEGATE_RetVal_ThreeParams(bool, FOnProcessEvent, AActor*, UFunction*, void*);
 #endif
 
 /**
@@ -124,8 +155,8 @@ public:
  * - AActor::BeginPlay: Called when the level starts ticking, only during actual gameplay.
  *                      This normally happens right after PostInitializeComponents but can be delayed for networked or child actors.
  *
- * @see https://docs.unrealengine.com/latest/INT/Programming/UnrealArchitecture/Actors/
- * @see https://docs.unrealengine.com/en-us/Programming/UnrealArchitecture/Actors/ActorLifecycle
+ * @see https://docs.unrealengine.com/Programming/UnrealArchitecture/Actors
+ * @see https://docs.unrealengine.com/Programming/UnrealArchitecture/Actors/ActorLifecycle
  * @see UActorComponent
  */
 UCLASS(BlueprintType, Blueprintable, config=Engine, meta=(ShortTooltip="An Actor is an object that can be placed or spawned in the world."))
@@ -151,7 +182,7 @@ public:
 	/**
 	 * Primary Actor tick function, which calls TickActor().
 	 * Tick functions can be configured to control whether ticking is enabled, at what time during a frame the update occurs, and to set up tick dependencies.
-	 * @see https://docs.unrealengine.com/latest/INT/API/Runtime/Engine/Engine/FTickFunction/
+	 * @see https://docs.unrealengine.com/API/Runtime/Engine/Engine/FTickFunction
 	 * @see AddTickPrerequisiteActor(), AddTickPrerequisiteComponent()
 	 */
 	UPROPERTY(EditDefaultsOnly, Category=Tick)
@@ -182,10 +213,16 @@ private:
 	 * If true, replicate movement/location related properties.
 	 * Actor must also be set to replicate.
 	 * @see SetReplicates()
-	 * @see https://docs.unrealengine.com/latest/INT/Gameplay/Networking/Replication/
+	 * @see https://docs.unrealengine.com/InteractiveExperiences/Networking/Actors
 	 */
 	UPROPERTY(ReplicatedUsing=OnRep_ReplicateMovement, Category=Replication, EditDefaultsOnly)
 	uint8 bReplicateMovement:1;    
+
+	UPROPERTY(EditDefaultsOnly, Category = Replication)
+	uint8 bCallPreReplication:1;
+
+	UPROPERTY(EditDefaultsOnly, Category = Replication)
+	uint8 bCallPreReplicationForReplay:1;
 
 	/**
 	 * Allows us to only see this Actor in the Editor, and not in the actual game.
@@ -201,7 +238,26 @@ private:
 	UPROPERTY()
 	uint8 bForceNetAddressable:1;
 
+#if WITH_EDITORONLY_DATA
+	/**
+	 * Whether this actor belongs to a level instance which is currently being edited.
+	 */
+	UPROPERTY(Transient)
+	uint8 bIsInEditingLevelInstance:1;
+#endif
+
+	/** If true, PreReplication will be called on this actor before each potential replication. */
+	bool ShouldCallPreReplication() const;
+
+	/** If true, PreReplicationForReplay will be called on this actor before each potential replication. */
+	bool ShouldCallPreReplicationForReplay() const;
+
 public:
+	/** Set whether or not we should make calls to PreReplication. */
+	void SetCallPreReplication(bool bCall);
+
+	/** Set whether or not we should make calls to PreReplicationForReplay. */
+	void SetCallPreReplicationForReplay(bool bCall);
 
 	/** If true, this actor is no longer replicated to new clients, and is "torn off" (becomes a ROLE_Authority) on clients to which it was being replicated. */
 	bool GetTearOff() const
@@ -209,8 +265,16 @@ public:
 		return bTearOff;
 	}
 
+#if WITH_EDITOR
+	/** If true, the actor belongs to a level instance which is currently being edited. */
+	virtual bool IsInEditingLevelInstance() const
+	{
+		return bIsInEditingLevelInstance;
+	}
+#endif
+
 	/** Networking - Server - TearOff this actor to stop replication to clients. Will set bTearOff to true. */
-	UFUNCTION(BlueprintCallable, Category=Replication)
+	UFUNCTION(BlueprintCallable, Category=Networking)
 	virtual void TearOff();
 
 	/**
@@ -293,8 +357,8 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Actor)
 	uint8 bIgnoresOriginShifting:1;
 
-	/** If true, and if World setting has bEnableHierarchicalLOD equal to true, then it will generate LODActor from groups of clustered Actor */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadWrite, Category=LOD, meta=(DisplayName="Include Actor for HLOD Mesh generation"))
+	/** Whether this actor should be considered or not during HLOD generation. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=HLOD, meta=(DisplayName="Include Actor in HLOD"))
 	uint8 bEnableAutoLODGeneration:1;
 
 	/** Whether this actor is editor-only. Use with care, as if this actor is referenced by anything else that reference will be NULL in cooked builds */
@@ -463,16 +527,16 @@ public:
 	 * Properties flagged for replication will update on clients if they change on the server.
 	 * Internally changes the RemoteRole property and handles the cases where the actor needs to be added to the network actor list.
 	 * @param bInReplicates Whether this Actor replicates to network clients.
-	 * @see https://docs.unrealengine.com/latest/INT/Gameplay/Networking/Replication/
+	 * @see https://docs.unrealengine.com/InteractiveExperiences/Networking/Actors
 	 */
-	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category=Replication)
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category=Networking)
 	void SetReplicates(bool bInReplicates);
 
 	/**
 	 * Set whether this actor's movement replicates to network clients.
 	 * @param bInReplicateMovement Whether this Actor's movement replicates to clients.
 	 */
-	UFUNCTION(BlueprintCallable, Category=Replication)
+	UFUNCTION(BlueprintCallable, Category=Networking)
 	virtual void SetReplicateMovement(bool bInReplicateMovement);
 
 	/** Sets whether or not this Actor is an autonomous proxy, which is an actor on a network client that is controlled by a user on that client. */
@@ -482,11 +546,11 @@ public:
 	void CopyRemoteRoleFrom(const AActor* CopyFromActor);
 
 	/** Returns how much control the local machine has over this actor. */
-	UFUNCTION(BlueprintCallable, Category=Replication)
+	UFUNCTION(BlueprintCallable, Category=Networking)
 	ENetRole GetLocalRole() const { return Role; }
 
 	/** Returns how much control the remote machine has over this actor. */
-	UFUNCTION(BlueprintCallable, Category=Replication)
+	UFUNCTION(BlueprintCallable, Category=Networking)
 	ENetRole GetRemoteRole() const;
 
 	/**
@@ -515,7 +579,22 @@ public:
 	 */
 	float CreationTime;
 
-private:
+protected:
+#if WITH_EDITORONLY_DATA
+	/** @deprecated Use bIsSpatiallyLoaded instead */
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UPROPERTY()
+	EActorGridPlacement GridPlacement_DEPRECATED;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	/** 
+	 * Determine in which partition grid this actor will be placed in the partition (if the world is partitioned).
+	 * If None, the decision will be left to the partition.
+	 */
+	UPROPERTY(EditAnywhere, Category=WorldPartition)
+	FName RuntimeGrid;
+#endif
+
 	/**
 	 * Used for replicating attachment of this actor's RootComponent to another actor.
 	 * This is filled in via GatherCurrentMovement() when the RootComponent has an AttachParent.
@@ -528,7 +607,7 @@ private:
 	 * @see SetOwner(), GetOwner()
 	 */
 	UPROPERTY(ReplicatedUsing=OnRep_Owner)
-	AActor* Owner;
+	TObjectPtr<AActor> Owner;
 
 #if WITH_EDITOR
 	/**
@@ -580,7 +659,7 @@ public:
 
 	/** Component that handles input for this actor, if input is enabled. */
 	UPROPERTY(DuplicateTransient)
-	class UInputComponent* InputComponent;
+	TObjectPtr<class UInputComponent> InputComponent;
 
 	/** Square of the max distance from the client's viewpoint that this actor is relevant and will be replicated. */
 	UPROPERTY(BlueprintReadOnly, EditDefaultsOnly, Category=Replication)
@@ -655,7 +734,7 @@ public:
 private:
 	/** Pawn responsible for damage and other gameplay events caused by this actor. */
 	UPROPERTY(BlueprintReadWrite, ReplicatedUsing=OnRep_Instigator, meta=(ExposeOnSpawn=true, AllowPrivateAccess=true), Category=Actor)
-	class APawn* Instigator;
+	TObjectPtr<class APawn> Instigator;
 
 public:
 	/** Called on clients when Instigator is replicated. */
@@ -664,12 +743,12 @@ public:
 
 	/** Array of all Actors whose Owner is this actor, these are not necessarily spawned by UChildActorComponent */
 	UPROPERTY(Transient)
-	TArray<AActor*> Children;
+	TArray<TObjectPtr<AActor>> Children;
 
 protected:
 	/** The component that defines the transform (location, rotation, scale) of this Actor in the world, all other components must be attached to this one somehow */
-	UPROPERTY(BlueprintGetter=K2_GetRootComponent, Category="Utilities|Transformation")
-	USceneComponent* RootComponent;
+	UPROPERTY(BlueprintGetter=K2_GetRootComponent, Category="Transformation")
+	TObjectPtr<USceneComponent> RootComponent;
 
 #if WITH_EDITORONLY_DATA
 	/** Local space pivot offset for the actor, only used in the editor */
@@ -677,12 +756,39 @@ protected:
 	FVector PivotOffset;
 #endif
 
-	/** The matinee actors that control this actor. */
-	UPROPERTY(Transient)
-	TArray<class AMatineeActor*> ControllingMatineeActors;
-
 	/** Handle for efficient management of LifeSpanExpired timer */
 	FTimerHandle TimerHandle_LifeSpanExpired;
+
+public:
+#if WITH_EDITOR
+	/** Return the HLOD layer that should include this actor. */
+	class UHLODLayer* GetHLODLayer() const;
+
+	/** Specify in which HLOD layer this actor should be included. */
+	void SetHLODLayer(class UHLODLayer* InHLODLayer);
+
+	/** Gets the property name for HLODLayer. */
+	static const FName GetHLODLayerPropertyName() { return GET_MEMBER_NAME_CHECKED(AActor, HLODLayer); }
+#endif
+
+	/** Specify a RayTracingGroupId for this actors. Components with invalid RayTracingGroupId will inherit the actors. */
+	UFUNCTION(BlueprintCallable, Category = RayTracing)
+	void SetRayTracingGroupId(int32 InRaytracingGroupId);
+	
+	/** Return the RayTracingGroupId for this actor. */
+	UFUNCTION(BlueprintCallable, Category = RayTracing)
+	int32 GetRayTracingGroupId() const;
+
+private:
+#if WITH_EDITORONLY_DATA
+	/** The UHLODLayer in which this actor should be included. */
+	UPROPERTY(EditAnywhere, Category = HLOD, meta = (DisplayName = "HLOD Layer"))
+	TObjectPtr<class UHLODLayer> HLODLayer;
+#endif
+
+	/** The RayTracingGroupId this actor and its components belong to. (For components that did not specify any) */
+	UPROPERTY()
+	int32 RayTracingGroupId;
 
 public:
 	/** Return the value of bAllowReceiveTickEventOnDedicatedServer, indicating whether the Blueprint ReceiveTick() event will occur on dedicated servers. */
@@ -692,7 +798,7 @@ public:
 	FORCEINLINE bool IsRunningUserConstructionScript() const { return bRunningUserConstructionScript; }
 
 	/** Layers the actor belongs to.  This is outside of the editoronly data to allow hiding of LD-specified layers at runtime for profiling. */
-	UPROPERTY()
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Actor)
 	TArray< FName > Layers;
 
 private:
@@ -710,14 +816,26 @@ private:
 protected:
 	/**
 	 * The GUID for this actor.
+	 *
+	 * Note: Don't use VisibleAnywhere here to avoid getting the CPF_Edit flag and get this property reset when resetting to defaults.
+	 *       See FActorDetails::AddActorCategory and EditorUtilities::CopySingleProperty for details.
 	 */
-	UPROPERTY(VisibleAnywhere, AdvancedDisplay, Category=Actor, NonPIEDuplicateTransient, TextExportTransient, NonTransactional)
+	UPROPERTY(BluePrintReadOnly, AdvancedDisplay, Category=Actor, NonPIEDuplicateTransient, TextExportTransient, NonTransactional)
 	FGuid ActorGuid;
 
+	/** DataLayers the actor belongs to.*/
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = DataLayers)
+	TArray<FActorDataLayer> DataLayers;
+
+	TArray<FActorDataLayer> PreEditChangeDataLayers;
+
 public:
+	/** The copy/paste id used to remap actors during copy operations */
+	uint32 CopyPasteId;
+
 	/** The editor-only group this actor is a part of. */
 	UPROPERTY(Transient)
-	AActor* GroupActor;
+	TObjectPtr<AActor> GroupActor;
 
 	/** The scale to apply to any billboard components in editor builds (happens in any WITH_EDITOR build, including non-cooked games). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Rendering, meta=(DisplayName="Editor Billboard Scale"))
@@ -736,32 +854,94 @@ public:
 	 */
 	void SetPackageExternal(bool bExternal, bool bShouldDirty = true);
 
+	/**
+	 * Determine how this actor should be referenced by the level when external (saved in its own package).
+	 / @return true if the level should keep a reference to the actor even if it's saved in its own package.
+	 */
+	virtual bool ShouldLevelKeepRefIfExternal() const { return false; }
+
+	FActorOnPackagingModeChanged OnPackagingModeChanged;
+
+
+	/** Returns this actor's current target runtime grid. */
+	virtual FName GetRuntimeGrid() const { return RuntimeGrid; }
+
+	/** Sets this actor's current target runtime grid. */
+	void SetRuntimeGrid(FName InRuntimeGrid) { RuntimeGrid = InRuntimeGrid; }
+
+	/** Gets the property name for RuntimeGrid. */
+	static const FName GetRuntimeGridPropertyName()	{ return GET_MEMBER_NAME_CHECKED(AActor, RuntimeGrid); }
+
 	/** Returns this actor's current Guid. Actor Guids are only available in development builds. */
 	inline const FGuid& GetActorGuid() const { return ActorGuid; }
-#endif // WITH_EDITOR
+
+	/** Returns true if actor location should be locked. */
+	virtual bool IsLockLocation() const { return bLockLocation; }
+
+	/** Set the bLockLocation flag */
+	void SetLockLocation(bool bInLockLocation) { bLockLocation = bInLockLocation; }
+
+	/** Called on actor which initiated the PIE session */
+	virtual void OnPlayFromHere();
+
+	bool CanPlayFromHere() const { return bCanPlayFromHere; }
+
+	/**
+	 * Creates an uninitialized actor descriptor from this actor. Meant to be called on the class CDO.
+	 */
+	virtual TUniquePtr<class FWorldPartitionActorDesc> CreateClassActorDesc() const;
 
 public:
 	/**
-	 * Get the actor packaging mode.
-	 * @return true if the actor is packaged in an external package different than its level package
+	 * Creates an initialized actor descriptor from this actor.
 	 */
-	bool IsPackageExternal() const
-	{
-		return HasAnyFlags(RF_HasExternalPackage);
-	}
+	TUniquePtr<class FWorldPartitionActorDesc> CreateActorDesc() const;
 
-#if WITH_EDITORONLY_DATA
+	/**
+	 * Creates an uninitialized actor descriptor from a specific class.
+	 */
+	static TUniquePtr<class FWorldPartitionActorDesc> StaticCreateClassActorDesc(const TSubclassOf<AActor>& ActorClass);
+#endif // WITH_EDITOR
+
 private:
+#if WITH_EDITORONLY_DATA
 	/**
 	 * The friendly name for this actor, displayed in the editor.  You should always use AActor::GetActorLabel() to access the actual label to display,
 	 * and call AActor::SetActorLabel() or FActorLabelUtilities::SetActorLabelUnique() to change the label.  Never set the label directly.
 	 */
 	UPROPERTY()
 	mutable FString ActorLabel;
+#endif
 
-	/** The folder path of this actor in the world (empty=root, / separated)*/
+#if !WITH_EDITOR && ACTOR_HAS_LABELS
+	FString ActorLabel;
+#endif
+
+public:
+	const FString GetActorNameOrLabel() const
+	{
+#if WITH_EDITORONLY_DATA || (!WITH_EDITOR && ACTOR_HAS_LABELS)
+		if (!ActorLabel.IsEmpty())
+		{
+			return ActorLabel;
+		}
+#endif
+		return GetName();
+	}
+
+#if WITH_EDITORONLY_DATA
+private:
+	/** 
+	 * The folder path of this actor in the world.
+	 * If the actor's level uses the actor folder objects feature, the path is computed using FolderGuid.
+	 * If not, it contains the actual path (empty=root, / separated).
+	 */
 	UPROPERTY()
 	FName FolderPath;
+
+	/** If the actor's level uses the actor folder objects feature, contains the actor folder unique identifier (invalid=root). */
+	UPROPERTY()
+	FGuid FolderGuid;
 
 public:
 	/** Whether this actor is hidden within the editor viewport. */
@@ -780,14 +960,17 @@ public:
 	UPROPERTY(Transient)
 	uint8 bHiddenEdLevel:1;
 
+	/** If true during PostEditMove the construction script will be run every time. If false it will only run when the drag finishes. */
+	uint8 bRunConstructionScriptOnDrag:1;
+
+	/** Default expansion state for this actor. Some actors have attached children that we may not want to automatically expand by default */
+	uint8 bDefaultOutlinerExpansionState : 1;
+
+protected:
 	/** If true, prevents the actor from being moved in the editor viewport. */
 	UPROPERTY()
 	uint8 bLockLocation:1;
 
-	/** If true during PostEditMove the construction script will be run every time. If false it will only run when the drag finishes. */
-	uint8 bRunConstructionScriptOnDrag:1;
-
-protected:
 	/** Is the actor label editable by the user? */
 	UPROPERTY()
 	uint8 bActorLabelEditable:1; 
@@ -804,10 +987,25 @@ protected:
 	UPROPERTY(EditDefaultsOnly, AdvancedDisplay, Category=Cooking, meta=(DisplayName="Generate Optimized Blueprint Component Data"))
 	uint8 bOptimizeBPComponentData:1;
 
+	/** Whether the actor can be used as a PlayFromHere origin (OnPlayFromHere() will be called on that actor) */
+	UPROPERTY()
+	uint8 bCanPlayFromHere : 1;
+
+	/** 
+	 * Determine if this actor is spatially loaded when placed in a partitioned world.
+	 *	If true, this actor will be loaded when in the range of any streaming sources and if (1) in no data layers, or (2) one or more of its data layers are enabled.
+	 *	If false, this actor will be loaded if (1) in no data layers, or (2) one or more of its data layers are enabled.
+	 */
+	UPROPERTY(EditAnywhere, Category=WorldPartition)
+	uint8 bIsSpatiallyLoaded : 1;
+
 private:
 	/** Whether this actor is temporarily hidden within the editor; used for show/hide/etc functionality w/o dirtying the actor. */
 	UPROPERTY(Transient)
 	uint8 bHiddenEdTemporary:1;
+
+	UPROPERTY(Transient)
+	uint8 bForceExternalActorLevelReferenceForPIE : 1;
 #endif // WITH_EDITORONLY_DATA
 
 	/** Set while actor is being constructed. Used to ensure that construction is not re-entrant. */
@@ -943,6 +1141,26 @@ public:
 		return Cast<T>(GetInstigatorController());
 	}
 
+#if WITH_EDITOR
+	//~=============================================================================
+	// DataLayers functions.
+	bool AddDataLayer(const UDataLayer* DataLayer);
+	bool RemoveDataLayer(const UDataLayer* DataLayer);
+	bool RemoveAllDataLayers();
+	bool ContainsDataLayer(const UDataLayer* DataLayer) const;
+	virtual bool SupportsDataLayer() const { return true; }
+	bool HasDataLayers() const;
+	bool HasValidDataLayers() const;
+	bool HasAllDataLayers(const TArray<const UDataLayer*>& DataLayers) const;
+	bool HasAnyOfDataLayers(const TArray<FName>& DataLayerNames) const;
+	TArray<FName> GetDataLayerNames() const;
+	TArray<const UDataLayer*> GetDataLayerObjects() const;
+	TArray<const UDataLayer*> GetDataLayerObjects(const AWorldDataLayers* WorldDataLayers) const;
+	bool IsPropertyChangedAffectingDataLayers(FPropertyChangedEvent& PropertyChangedEvent) const;
+	bool IsValidForDataLayer() const;
+	void FixupDataLayers(bool bRevertChangesOnLockedDataLayer = false);
+	static const FName GetDataLayersPropertyName() { return GET_MEMBER_NAME_CHECKED(AActor, DataLayers); }
+#endif
 
 	//~=============================================================================
 	// General functions.
@@ -951,7 +1169,7 @@ public:
 	 * Get the actor-to-world transform.
 	 * @return The transform that transforms from actor space to world space.
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetActorTransform", ScriptName = "GetActorTransform"), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get Actor Transform", ScriptName = "GetActorTransform"), Category="Transformation")
 	const FTransform& GetTransform() const
 	{
 		return ActorToWorld();
@@ -964,7 +1182,7 @@ public:
 	}
 
 	/** Returns the location of the RootComponent of this Actor */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetActorLocation", ScriptName = "GetActorLocation", Keywords="position"), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get Actor Location", ScriptName = "GetActorLocation", Keywords="position"), Category="Transformation")
 	FVector K2_GetActorLocation() const;
 
 	/** 
@@ -979,23 +1197,23 @@ public:
 	 * @param SweepHitResult	The hit result from the move if swept.
 	 * @return	Whether the location was successfully set (if not swept), or whether movement occurred at all (if swept).
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "SetActorLocation", ScriptName = "SetActorLocation", Keywords="position"), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Set Actor Location", ScriptName = "SetActorLocation", Keywords="position"), Category="Transformation")
 	bool K2_SetActorLocation(FVector NewLocation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 
 	/** Returns rotation of the RootComponent of this Actor. */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "GetActorRotation", ScriptName = "GetActorRotation"), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Get Actor Rotation", ScriptName = "GetActorRotation"), Category="Transformation")
 	FRotator K2_GetActorRotation() const;
 
 	/** Get the forward (X) vector (length 1.0) from this Actor, in world space.  */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category = "Transformation")
 	FVector GetActorForwardVector() const;
 
 	/** Get the up (Z) vector (length 1.0) from this Actor, in world space.  */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category = "Transformation")
 	FVector GetActorUpVector() const;
 
 	/** Get the right (Y) vector (length 1.0) from this Actor, in world space.  */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category = "Transformation")
 	FVector GetActorRightVector() const;
 
 	/**
@@ -1005,15 +1223,15 @@ public:
 	 * @param	BoxExtent					Set to half the actor's size in 3d space
 	 * @param	bIncludeFromChildActors		If true then recurse in to ChildActor components 
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(DisplayName = "GetActorBounds"))
-	void GetActorBounds(bool bOnlyCollidingComponents, FVector& Origin, FVector& BoxExtent, bool bIncludeFromChildActors = false) const;
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(DisplayName = "Get Actor Bounds"))
+	virtual void GetActorBounds(bool bOnlyCollidingComponents, FVector& Origin, FVector& BoxExtent, bool bIncludeFromChildActors = false) const;
 
 	/** Returns the RootComponent of this Actor */
 	UFUNCTION(BlueprintGetter)
 	USceneComponent* K2_GetRootComponent() const;
 
 	/** Returns velocity (in cm/s (Unreal Units/second) of the rootcomponent if it is either using physics or has an associated MovementComponent */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	virtual FVector GetVelocity() const;
 
 	/** 
@@ -1040,7 +1258,7 @@ public:
 	 *			If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 * @return	Whether the rotation was successfully set.
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "SetActorRotation", ScriptName = "SetActorRotation"), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Set Actor Rotation", ScriptName = "SetActorRotation"), Category="Transformation")
 	bool K2_SetActorRotation(FRotator NewRotation, bool bTeleportPhysics);
 	
 	/**
@@ -1069,7 +1287,7 @@ public:
 	 * @param SweepHitResult	The hit result from the move if swept.
 	 * @return	Whether the rotation was successfully set.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetActorLocationAndRotation", ScriptName="SetActorLocationAndRotation"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set Actor Location And Rotation", ScriptName="SetActorLocationAndRotation"))
 	bool K2_SetActorLocationAndRotation(FVector NewLocation, FRotator NewRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	
 	/** 
@@ -1090,39 +1308,39 @@ public:
 	bool SetActorLocationAndRotation(FVector NewLocation, const FQuat& NewRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
 	/** Set the Actor's world-space scale. */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	void SetActorScale3D(FVector NewScale3D);
 
 	/** Returns the Actor's world-space scale. */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Orientation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	FVector GetActorScale3D() const;
 
 	/** Returns the distance from this Actor to OtherActor. */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category = "Transformation")
 	float GetDistanceTo(const AActor* OtherActor) const;
 
 	/** Returns the squared distance from this Actor to OtherActor. */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category = "Transformation")
 	float GetSquaredDistanceTo(const AActor* OtherActor) const;
 
 	/** Returns the distance from this Actor to OtherActor, ignoring Z. */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category = "Transformation")
 	float GetHorizontalDistanceTo(const AActor* OtherActor) const;
 
 	/** Returns the squared distance from this Actor to OtherActor, ignoring Z. */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category = "Transformation")
 	float GetSquaredHorizontalDistanceTo(const AActor* OtherActor) const;
 
 	/** Returns the distance from this Actor to OtherActor, ignoring XY. */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category = "Transformation")
 	float GetVerticalDistanceTo(const AActor* OtherActor) const;
 
 	/** Returns the dot product from this Actor to OtherActor. Returns -2.0 on failure. Returns 0.0 for coincidental actors. */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category = "Transformation")
 	float GetDotProductTo(const AActor* OtherActor) const;
 
 	/** Returns the dot product from this Actor to OtherActor, ignoring Z. Returns -2.0 on failure. Returns 0.0 for coincidental actors. */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category = "Transformation")
 	float GetHorizontalDotProductTo(const AActor* OtherActor) const;
 
 	/**
@@ -1137,7 +1355,7 @@ public:
 	 *							If CCD is on and not teleporting, this will affect objects along the entire swept volume.
 	 * @param SweepHitResult	The hit result from the move if swept.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddActorWorldOffset", ScriptName="AddActorWorldOffset", Keywords="location position"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Actor World Offset", ScriptName="AddActorWorldOffset", Keywords="location position"))
 	void K2_AddActorWorldOffset(FVector DeltaLocation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddActorWorldOffset(FVector DeltaLocation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -1152,18 +1370,18 @@ public:
 	 *							If CCD is on and not teleporting, this will affect objects along the entire swept volume.
 	 * @param SweepHitResult	The hit result from the move if swept.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddActorWorldRotation", ScriptName="AddActorWorldRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Actor World Rotation", ScriptName="AddActorWorldRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
 	void K2_AddActorWorldRotation(FRotator DeltaRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddActorWorldRotation(FRotator DeltaRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 	void AddActorWorldRotation(const FQuat& DeltaRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
 	/** Adds a delta to the transform of this actor in world space. Ignores scale and sets it to (1,1,1). */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddActorWorldTransform", ScriptName="AddActorWorldTransform"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Actor World Transform", ScriptName="AddActorWorldTransform"))
 	void K2_AddActorWorldTransform(const FTransform& DeltaTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddActorWorldTransform(const FTransform& DeltaTransform, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
 	/** Adds a delta to the transform of this actor in world space. Scale is unchanged. */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Transformation", meta = (DisplayName = "AddActorWorldTransformKeepScale", ScriptName = "AddActorWorldTransformKeepScale"))
+	UFUNCTION(BlueprintCallable, Category = "Transformation", meta = (DisplayName = "Add Actor World Transform Keep Scale", ScriptName = "AddActorWorldTransformKeepScale"))
 	void K2_AddActorWorldTransformKeepScale(const FTransform& DeltaTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddActorWorldTransformKeepScale(const FTransform& DeltaTransform, bool bSweep = false, FHitResult* OutSweepHitResult = nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -1177,7 +1395,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire swept volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetActorTransform", ScriptName="SetActorTransform"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set Actor Transform", ScriptName="SetActorTransform"))
 	bool K2_SetActorTransform(const FTransform& NewTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	bool SetActorTransform(const FTransform& NewTransform, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -1191,7 +1409,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire swept volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddActorLocalOffset", ScriptName="AddActorLocalOffset", Keywords="location position"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Actor Local Offset", ScriptName="AddActorLocalOffset", Keywords="location position"))
 	void K2_AddActorLocalOffset(FVector DeltaLocation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddActorLocalOffset(FVector DeltaLocation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -1205,7 +1423,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire swept volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddActorLocalRotation", ScriptName="AddActorLocalRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Actor Local Rotation", ScriptName="AddActorLocalRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
 	void K2_AddActorLocalRotation(FRotator DeltaRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddActorLocalRotation(FRotator DeltaRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 	void AddActorLocalRotation(const FQuat& DeltaRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
@@ -1220,7 +1438,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire swept volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="AddActorLocalTransform", ScriptName="AddActorLocalTransform"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Add Actor Local Transform", ScriptName="AddActorLocalTransform"))
 	void K2_AddActorLocalTransform(const FTransform& NewTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void AddActorLocalTransform(const FTransform& NewTransform, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -1234,7 +1452,7 @@ public:
 	 *								If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *								If CCD is on and not teleporting, this will affect objects along the entire swept volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetActorRelativeLocation", ScriptName="SetActorRelativeLocation"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set Actor Relative Location", ScriptName="SetActorRelativeLocation"))
 	void K2_SetActorRelativeLocation(FVector NewRelativeLocation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetActorRelativeLocation(FVector NewRelativeLocation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -1248,7 +1466,7 @@ public:
 	 *								If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *								If CCD is on and not teleporting, this will affect objects along the entire swept volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetActorRelativeRotation", ScriptName="SetActorRelativeRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set Actor Relative Rotation", ScriptName="SetActorRelativeRotation", AdvancedDisplay="bSweep,SweepHitResult,bTeleport"))
 	void K2_SetActorRelativeRotation(FRotator NewRelativeRotation, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetActorRelativeRotation(FRotator NewRelativeRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 	void SetActorRelativeRotation(const FQuat& NewRelativeRotation, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
@@ -1263,7 +1481,7 @@ public:
 	 *							If false, physics velocity is updated based on the change in position (affecting ragdoll parts).
 	 *							If CCD is on and not teleporting, this will affect objects along the entire swept volume.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation", meta=(DisplayName="SetActorRelativeTransform", ScriptName="SetActorRelativeTransform"))
+	UFUNCTION(BlueprintCallable, Category="Transformation", meta=(DisplayName="Set Actor Relative Transform", ScriptName="SetActorRelativeTransform"))
 	void K2_SetActorRelativeTransform(const FTransform& NewRelativeTransform, bool bSweep, FHitResult& SweepHitResult, bool bTeleport);
 	void SetActorRelativeTransform(const FTransform& NewRelativeTransform, bool bSweep=false, FHitResult* OutSweepHitResult=nullptr, ETeleportType Teleport = ETeleportType::None);
 
@@ -1271,11 +1489,11 @@ public:
 	 * Set the actor's RootComponent to the specified relative scale 3d
 	 * @param NewRelativeScale	New scale to set the actor's RootComponent to
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	void SetActorRelativeScale3D(FVector NewRelativeScale);
 
 	/** Return the actor's relative scale 3d */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Orientation")
+	UFUNCTION(BlueprintCallable, Category="Transformation")
 	FVector GetActorRelativeScale3D() const;
 
 	/**
@@ -1294,7 +1512,7 @@ public:
 	bool GetActorEnableCollision() const;
 
 	/** Destroy the actor */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "Delete", DisplayName = "DestroyActor", ScriptName = "DestroyActor"))
+	UFUNCTION(BlueprintCallable, Category="Actor", meta=(Keywords = "Delete", DisplayName = "Destroy Actor", ScriptName = "DestroyActor"))
 	virtual void K2_DestroyActor();
 
 	/** Returns whether this actor has network authority */
@@ -1336,7 +1554,7 @@ public:
 	 * @param bDeferredFinish				Whether or not to immediately complete the creation and registration process for this component. Will be false if there are expose on spawn properties being set
 	 */
 	UFUNCTION(BlueprintCallable, meta=(ScriptNoExport, BlueprintInternalUseOnly = "true", InternalUseParam="bDeferredFinish"))
-	UActorComponent* AddComponentByClass(TSubclassOf<UActorComponent> Class, bool bManualAttachment, const FTransform& RelativeTransform, bool bDeferredFinish);
+	UActorComponent* AddComponentByClass(UPARAM(meta = (AllowAbstract = "false")) TSubclassOf<UActorComponent> Class, bool bManualAttachment, const FTransform& RelativeTransform, bool bDeferredFinish);
 
 	/** 
 	 * Completes the creation of a new actor component. Called either from blueprint after
@@ -1351,13 +1569,9 @@ public:
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly="true"))
 	void FinishAddComponent(UActorComponent* Component, bool bManualAttachment, const FTransform& RelativeTransform);
 
-	UE_DEPRECATED(4.17, "Use UActorComponent::DestroyComponent() instead")
-	UFUNCTION(BlueprintCallable, meta=(DeprecatedFunction, DeprecationMessage = "Use Component.DestroyComponent instead", BlueprintProtected = "true", DisplayName = "DestroyComponent", ScriptName = "DestroyComponent"))
-	void K2_DestroyComponent(UActorComponent* Component);
-
 	/** DEPRECATED - Use AttachToComponent() instead */
 	UE_DEPRECATED(4.17, "Use AttachToComponent() instead.")
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "AttachRootComponentTo (Deprecated)", ScriptNoExport, AttachLocationType = "KeepRelativeOffset"), Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "AttachRootComponentTo (Deprecated)", ScriptNoExport, AttachLocationType = "KeepRelativeOffset"), Category = "Transformation")
 	void K2_AttachRootComponentTo(USceneComponent* InParent, FName InSocketName = NAME_None, EAttachLocation::Type AttachLocationType = EAttachLocation::KeepRelativeOffset, bool bWeldSimulatedBodies = true);
 
 	/**
@@ -1369,7 +1583,7 @@ public:
 	 * @param ScaleRule					How to handle scale when attaching.
 	 * @param bWeldSimulatedBodies		Whether to weld together simulated physics bodies.
 	 */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "AttachActorToComponent", ScriptName = "AttachToComponent", bWeldSimulatedBodies = true), Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Attach Actor To Component", ScriptName = "AttachToComponent", bWeldSimulatedBodies = true), Category = "Transformation")
 	void K2_AttachToComponent(USceneComponent* Parent, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies);
 
 	/**
@@ -1382,7 +1596,7 @@ public:
 
 	/** DEPRECATED - Use AttachToActor() instead */
 	UE_DEPRECATED(4.17, "Use AttachToActor() instead.")
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "AttachRootComponentToActor (Deprecated)", ScriptNoExport, AttachLocationType = "KeepRelativeOffset"), Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "AttachRootComponentToActor (Deprecated)", ScriptNoExport, AttachLocationType = "KeepRelativeOffset"), Category = "Transformation")
 	void K2_AttachRootComponentToActor(AActor* InParentActor, FName InSocketName = NAME_None, EAttachLocation::Type AttachLocationType = EAttachLocation::KeepRelativeOffset, bool bWeldSimulatedBodies = true);
 
 	/**
@@ -1402,16 +1616,12 @@ public:
 	 * @param ScaleRule					How to handle scale when attaching.
 	 * @param bWeldSimulatedBodies		Whether to weld together simulated physics bodies.
 	 */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "AttachActorToActor", ScriptName = "AttachToActor", bWeldSimulatedBodies=true), Category = "Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Attach Actor To Actor", ScriptName = "AttachToActor", bWeldSimulatedBodies=true), Category = "Transformation")
 	void K2_AttachToActor(AActor* ParentActor, FName SocketName, EAttachmentRule LocationRule, EAttachmentRule RotationRule, EAttachmentRule ScaleRule, bool bWeldSimulatedBodies);
-
-	UE_DEPRECATED(4.17, "Use AttachToComponent() with EAttachLocation::SnapToTarget option instead")
-	UFUNCTION(BlueprintCallable, meta=(DeprecatedFunction, DeprecationMessage = "Use AttachRootComponentTo with EAttachLocation::SnapToTarget option instead", DisplayName = "SnapActorTo", ScriptNoExport), Category="Utilities|Transformation")
-	void SnapRootComponentTo(AActor* InParentActor, FName InSocketName);
 
 	/** DEPRECATED - Use DetachFromActor() instead */
 	UE_DEPRECATED(4.17, "Use DetachFromActor() instead")
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "DetachActorFromActor (Deprecated)", ScriptNoExport), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "DetachActorFromActor (Deprecated)", ScriptNoExport), Category="Transformation")
 	void DetachRootComponentFromParent(bool bMaintainWorldPosition = true);
 
 	/** 
@@ -1420,7 +1630,7 @@ public:
 	 * @param  RotationRule				How to handle rotation when detaching.
 	 * @param  ScaleRule				How to handle scale when detaching.
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "DetachFromActor", ScriptName = "DetachFromActor"), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Detach From Actor", ScriptName = "DetachFromActor"), Category="Transformation")
 	void K2_DetachFromActor(EDetachmentRule LocationRule = EDetachmentRule::KeepRelative, EDetachmentRule RotationRule = EDetachmentRule::KeepRelative, EDetachmentRule ScaleRule = EDetachmentRule::KeepRelative);
 
 	/** 
@@ -1437,7 +1647,7 @@ public:
 	void DetachAllSceneComponents(class USceneComponent* InParentComponent, const FDetachmentTransformRules& DetachmentRules);
 
 	/** See if this actor's Tags array contains the supplied name tag */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Actor")
 	bool ActorHasTag(FName Tag) const;
 
 
@@ -1448,7 +1658,7 @@ public:
 	 * Get ActorTimeDilation - this can be used for input control or speed control for slomo.
 	 * We don't want to scale input globally because input can be used for UI, which do not care for TimeDilation.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities|Time")
+	UFUNCTION(BlueprintCallable, Category="Actor")
 	float GetActorTimeDilation() const;
 
 	/**
@@ -1457,32 +1667,28 @@ public:
 	float GetActorTimeDilation(const UWorld& ActorWorld) const;
 
 	/** Make this actor tick after PrerequisiteActor. This only applies to this actor's tick function; dependencies for owned components must be set up separately if desired. */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "dependency"))
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick", meta=(Keywords = "dependency"))
 	virtual void AddTickPrerequisiteActor(AActor* PrerequisiteActor);
 
 	/** Make this actor tick after PrerequisiteComponent. This only applies to this actor's tick function; dependencies for owned components must be set up separately if desired. */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "dependency"))
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick", meta=(Keywords = "dependency"))
 	virtual void AddTickPrerequisiteComponent(UActorComponent* PrerequisiteComponent);
 
 	/** Remove tick dependency on PrerequisiteActor. */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "dependency"))
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick", meta=(Keywords = "dependency"))
 	virtual void RemoveTickPrerequisiteActor(AActor* PrerequisiteActor);
 
 	/** Remove tick dependency on PrerequisiteComponent. */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "dependency"))
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick", meta=(Keywords = "dependency"))
 	virtual void RemoveTickPrerequisiteComponent(UActorComponent* PrerequisiteComponent);
 	
 	/** Gets whether this actor can tick when paused. */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick")
 	bool GetTickableWhenPaused();
 
 	/** Sets whether this actor can tick when paused. */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick")
 	void SetTickableWhenPaused(bool bTickableWhenPaused);
-
-	UE_DEPRECATED(4.17, "Use UPrimitiveComponent::CreateAndSetMaterialInstanceDynamic() instead.")
-	UFUNCTION(BlueprintCallable, meta=(DeprecatedFunction, DeprecationMessage="Use PrimitiveComponent.CreateAndSetMaterialInstanceDynamic instead.", BlueprintProtected = "true"), Category="Rendering|Material")
-	class UMaterialInstanceDynamic* MakeMIDForMaterial(class UMaterialInterface* Parent);
 
 	/** The number of seconds (in game time) since this Actor was created, relative to Get Game Time In Seconds. */
 	UFUNCTION(BlueprintPure, Category=Actor)
@@ -1662,11 +1868,11 @@ public:
 	void ReceiveHit(class UPrimitiveComponent* MyComp, AActor* Other, class UPrimitiveComponent* OtherComp, bool bSelfMoved, FVector HitLocation, FVector HitNormal, FVector NormalImpulse, const FHitResult& Hit);
 
 	/** Set the lifespan of this actor. When it expires the object will be destroyed. If requested lifespan is 0, the timer is cleared and the actor will not be destroyed. */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "delete destroy"))
+	UFUNCTION(BlueprintCallable, Category="Actor", meta=(Keywords = "delete destroy"))
 	virtual void SetLifeSpan( float InLifespan );
 
 	/** Get the remaining lifespan of this actor. If zero is returned the actor lives forever. */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "delete destroy"))
+	UFUNCTION(BlueprintCallable, Category="Actor", meta=(Keywords = "delete destroy"))
 	virtual float GetLifeSpan() const;
 
 	/**
@@ -1715,13 +1921,30 @@ public:
 	virtual bool IsEditorOnly() const override;
 	virtual bool IsAsset() const override;
 
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveRootContext instead.")
 	virtual bool PreSaveRoot(const TCHAR* InFilename) override;
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPostSaveRootContext instead.")
 	virtual void PostSaveRoot(bool bCleanupIsRequired) override;
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
+	virtual void PreSave(const ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext) override;
+	virtual void PostSaveRoot(FObjectPostSaveRootContext ObjectSaveContext) override;
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
+
+	/** Used to check if Actor is the main actor of a package (currently Child Actors are not) */
+	bool IsMainPackageActor() const;
+
+	static AActor* FindActorInPackage(UPackage* InPackage);
 
 #if WITH_EDITOR
 	virtual bool Modify(bool bAlwaysMarkDirty = true) override;
+	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+	virtual void GetExternalActorExtendedAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	virtual bool NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const;
 	virtual void PreEditChange(FProperty* PropertyThatWillChange) override;
+	virtual bool CanEditChange(const FProperty* InProperty) const;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PreEditUndo() override;
 	virtual void PostEditUndo() override;
@@ -1729,11 +1952,21 @@ public:
 	virtual void PostTransacted(const FTransactionObjectEvent& TransactionEvent) override;
 	virtual bool IsSelectedInEditor() const override;
 
+	/** Defines if preview should be shown when you select an actor, but none of its children */
+	virtual bool IsDefaultPreviewEnabled() const
+	{
+		return true;
+	}
+
+	/** Used to know if actor supports some editor operations. (Delete, Replace) */
+	virtual bool IsUserManaged() const { return true; }
+
 	/** When selected can this actor be deleted? */
-	virtual bool CanDeleteSelectedActor(FText& OutReason) const { return true; }
+	virtual bool CanDeleteSelectedActor(FText& OutReason) const;
 
 	/** Does this actor supports external packaging? */
-	virtual bool SupportsExternalPackaging() const { return true; }
+	virtual bool SupportsExternalPackaging() const;
+#endif
 
 	/** Internal struct used to store information about an actor's components during reconstruction */
 	struct FActorRootComponentReconstructionData
@@ -1765,6 +1998,18 @@ public:
 		friend FArchive& operator<<(FArchive& Ar, FActorRootComponentReconstructionData& RootComponentData);
 	};
 
+	struct FActorTransactionAnnotationData
+	{
+		TWeakObjectPtr<const AActor> Actor;
+		FComponentInstanceDataCache ComponentInstanceData;
+
+		bool bRootComponentDataCached;
+		FActorRootComponentReconstructionData RootComponentData;
+
+		friend ENGINE_API FArchive& operator<<(FArchive& Ar, FActorTransactionAnnotationData& ActorTransactionAnnotationData);
+	};
+
+#if WITH_EDITOR
 	/** Internal struct to track currently active transactions */
 	class FActorTransactionAnnotation : public ITransactionObjectAnnotation
 	{
@@ -1784,11 +2029,7 @@ public:
 
 		bool HasInstanceData() const;
 
-		TWeakObjectPtr<const AActor> Actor;
-		FComponentInstanceDataCache ComponentInstanceData;
-
-		bool bRootComponentDataCached;
-		FActorRootComponentReconstructionData RootComponentData;
+		FActorTransactionAnnotationData ActorTransactionAnnotationData;
 
 	private:
 		FActorTransactionAnnotation();
@@ -1809,6 +2050,9 @@ public:
 #endif // WITH_EDITOR
 	//~ End UObject Interface
 
+#if WITH_EDITOR
+	virtual bool CanEditChangeComponent(const UActorComponent* Component, const FProperty* InProperty) const { return true; }
+#endif
 
 	//~=============================================================================
 	// Property Replication
@@ -1845,31 +2089,31 @@ public:
 	/** Returns the transform of the RootComponent of this Actor*/ 
 	FORCEINLINE const FTransform& GetActorTransform() const
 	{
-		return TemplateGetActorTransform(RootComponent);
+		return TemplateGetActorTransform(ToRawPtr(RootComponent));
 	}
 
 	/** Returns the location of the RootComponent of this Actor*/ 
 	FORCEINLINE FVector GetActorLocation() const
 	{
-		return TemplateGetActorLocation(RootComponent);
+		return TemplateGetActorLocation(ToRawPtr(RootComponent));
 	}
 
 	/** Returns the rotation of the RootComponent of this Actor */
 	FORCEINLINE FRotator GetActorRotation() const
 	{
-		return TemplateGetActorRotation(RootComponent);
+		return TemplateGetActorRotation(ToRawPtr(RootComponent));
 	}
 
 	/** Returns the scale of the RootComponent of this Actor */
 	FORCEINLINE FVector GetActorScale() const
 	{
-		return TemplateGetActorScale(RootComponent);
+		return TemplateGetActorScale(ToRawPtr(RootComponent));
 	}
 
 	/** Returns the quaternion of the RootComponent of this Actor */
 	FORCEINLINE FQuat GetActorQuat() const
 	{
-		return TemplateGetActorQuat(RootComponent);
+		return TemplateGetActorQuat(ToRawPtr(RootComponent));
 	}
 
 #if WITH_EDITOR
@@ -1884,6 +2128,16 @@ public:
 	{
 		return PivotOffset;
 	}
+
+	/**
+	 * Returns the location and the bounding box of all components that make up this Actor.
+	 *
+	 * This function differs from GetActorBounds because it will return a valid origin and an empty extent if this actor
+	 * doesn't have primitive components.
+	 *
+	 * @see GetActorBounds()
+	 */
+	virtual FBox GetStreamingBounds() const;
 #endif
 
 
@@ -1900,6 +2154,9 @@ public:
 
 	/** Indicates whether this actor should participate in level bounds calculations */
 	virtual bool IsLevelBoundsRelevant() const { return bRelevantForLevelBounds; }
+
+	/** Indicates whether this actor contributes to the HLOD generation. */
+	virtual bool IsHLODRelevant() const;
 
 	/** 
 	 * Set LOD Parent component for all of our components, normally associated with an ALODActor. 
@@ -1933,6 +2190,9 @@ public:
 	/** Called by MirrorActors to perform a mirroring operation on the actor */
 	virtual void EditorApplyMirror(const FVector& MirrorScale, const FVector& PivotLocation);	
 
+	/** Get underlying actors */
+	virtual void EditorGetUnderlyingActors(TSet<AActor*>& OutUnderlyingActors) const;
+
 	/** Returns true if the actor is hidden upon editor startup/by default, false if it is not */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Actor Editing")
 	bool IsHiddenEdAtStartup() const
@@ -1942,7 +2202,7 @@ public:
 
 	/** Returns true if this actor is hidden in the editor viewports, also checking temporary flags. */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Actor Editing")
-	bool IsHiddenEd() const;
+	virtual bool IsHiddenEd() const;
 
 	/**
 	 * Explicitly sets whether or not this actor is hidden in the editor for the duration of the current editor session
@@ -1950,6 +2210,45 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category="Editor Scripting | Actor Editing")
 	virtual void SetIsTemporarilyHiddenInEditor( bool bIsHidden );
+
+	/** Changes bHiddenEdLayer flag and returns true if flag changed. */
+	virtual bool SetIsHiddenEdLayer(bool bIsHiddenEdLayer);
+
+	/** Returns true if the actor supports modifications to its Layers property */
+	virtual bool SupportsLayers() const;
+
+	/** Returns if level should keep a reference to the external actor for PIE (used for always loaded actors). */
+	bool IsForceExternalActorLevelReferenceForPIE() const
+	{
+		return bForceExternalActorLevelReferenceForPIE;
+	}
+
+	void SetForceExternalActorLevelReferenceForPIE(bool bValue)
+	{
+		if (ensure(IsPackageExternal()))
+		{
+			bForceExternalActorLevelReferenceForPIE = bValue;
+		}
+	}
+
+	/** Returns true if this actor is spatially loaded. */
+	bool GetIsSpatiallyLoaded() const { return bIsSpatiallyLoaded; }
+	
+	/** Set if this actor should be spatially loaded or not. */
+	void SetIsSpatiallyLoaded(bool bInIsSpatiallyLoaded)
+	{
+		if (bIsSpatiallyLoaded != bInIsSpatiallyLoaded)
+		{
+			check(CanChangeIsSpatiallyLoadedFlag());
+			bIsSpatiallyLoaded = bInIsSpatiallyLoaded;
+		}
+	}
+
+	/** Returns true if this actor allows changing the spatially loaded flag.  */
+	virtual bool CanChangeIsSpatiallyLoadedFlag() const { return true; }
+
+	/** Gets the property name for bIsSpatiallyLoaded. */
+	static const FName GetIsSpatiallyLoadedPropertyName() { return GET_MEMBER_NAME_CHECKED(AActor, bIsSpatiallyLoaded); }
 
 	/**
 	 * Returns whether or not this actor was explicitly hidden in the editor for the duration of the current editor session
@@ -1964,13 +2263,16 @@ public:
 
 	/** Returns true if this actor can EVER be selected in a level in the editor.  Can be overridden by specific actors to make them unselectable. */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Actor Editing")
-	virtual bool IsSelectable() const { return true; }
+	virtual bool IsSelectable() const;
 
 	/** Returns true if this actor should be shown in the scene outliner */
 	virtual bool IsListedInSceneOutliner() const;
 
 	/** Returns true if this actor is allowed to be attached to the given actor */
 	virtual bool EditorCanAttachTo(const AActor* InParent, FText& OutReason) const;
+
+	/** Returns the actor attachement parent that should be used in editor */
+	virtual AActor* GetSceneOutlinerParent() const;
 
 	/** Called before editor copy, true allow export */
 	virtual bool ShouldExport() { return true; }
@@ -1996,16 +2298,20 @@ public:
 	 */
 	virtual void CheckForDeprecated();
 
+	/** Returns this actor's default label (does not include any numeric suffix).  Actor labels are only available in development builds. */
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Actor Editing", meta = (KeyWords = "Display Name"))
+	virtual FString GetDefaultActorLabel() const;
+
 	/** Returns this actor's current label.  Actor labels are only available in development builds. */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Actor Editing")
-	const FString& GetActorLabel() const;
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Actor Editing", meta = (KeyWords = "Display Name"))
+	const FString& GetActorLabel(bool bCreateIfNone = true) const;
 
 	/**
 	 * Assigns a new label to this actor.  Actor labels are only available in development builds.
 	 * @param	NewActorLabel	The new label string to assign to the actor.  If empty, the actor will have a default label.
 	 * @param	bMarkDirty		If true the actor's package will be marked dirty for saving.  Otherwise it will not be.  You should pass false for this parameter if dirtying is not allowed (like during loads)
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Actor Editing")
+	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Actor Editing", meta = (KeyWords = "Display Name"))
 	void SetActorLabel( const FString& NewActorLabel, bool bMarkDirty = true );
 
 	/** Advanced - clear the actor label. */
@@ -2019,7 +2325,22 @@ public:
 
 	/** Returns this actor's folder path. Actor folder paths are only available in development builds. */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Actor Editing")
-	const FName& GetFolderPath() const;
+	FName GetFolderPath() const;
+
+	/** Returns actor folder guid. If level is not using actor folder objects, returns an invalid guid. */
+	FGuid GetFolderGuid() const;
+
+	/** Returns the actor's folder root object. Null, is interpreted as the actor's world. */
+	FFolder::FRootObject GetFolderRootObject() const;
+	
+	/** Detects and fixes invalid actor folder */
+	void FixupActorFolder();
+
+	/** Creates or updates actor's folder object if necessary. Returns false if an error occured while creating folder. */
+	bool CreateOrUpdateActorFolder();
+
+	/** Returns a FFolder that contains the actor  folder path and its folder root object. */
+	FFolder GetFolder() const;
 
 	/**
 	 * Assigns a new folder to this actor. Actor folder paths are only available in development builds.
@@ -2127,22 +2448,22 @@ public:
 	 * This only modifies the tick function on actor itself
 	 * @param	bEnabled	Whether it should be enabled or not
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick")
 	void SetActorTickEnabled(bool bEnabled);
 
 	/**  Returns whether this actor has tick enabled or not	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick")
 	bool IsActorTickEnabled() const;
 
 	/** 
 	 * Sets the tick interval of this actor's primary tick function. Will not enable a disabled tick function. Takes effect on next tick. 
 	 * @param TickInterval	The rate at which this actor should be ticking
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick")
 	void SetActorTickInterval(float TickInterval);
 
 	/**  Returns the tick interval of this actor's primary tick function */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick")
 	float GetActorTickInterval() const;
 
 	/**
@@ -2202,7 +2523,7 @@ protected:
 	void SyncReplicatedPhysicsSimulation();
 
 public:
-	/**
+	/** 
 	 * Set the owner of this Actor, used primarily for network replication. 
 	 * @param NewOwner	The Actor who takes over ownership of this Actor
 	 */
@@ -2255,9 +2576,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Collision", meta=(UnsafeDuringActorConstruction="true"))
 	bool IsOverlappingActor(const AActor* Other) const;
 
-	/** Returns whether a MatineeActor is currently controlling this Actor */
-	bool IsMatineeControlled() const;
-
 	/** See if the root component has ModifyFrequency of MF_Static */
 	bool IsRootComponentStatic() const;
 
@@ -2267,6 +2585,8 @@ public:
 	/** See if the root component has Mobility of EComponentMobility::Movable */
 	bool IsRootComponentMovable() const;
 
+	/** Get the physics volume that is currently applied to this Actor (there can only ever be one) */
+	virtual APhysicsVolume* GetPhysicsVolume() const;
 
 	//~=============================================================================
 	// Actor ticking
@@ -2349,17 +2669,6 @@ public:
 	/** Allow actors to initialize themselves on the C++ side after all of their components have been initialized, only called during gameplay */
 	virtual void PostInitializeComponents();
 
-	/**
-	 * Adds a controlling matinee actor for use during matinee playback
-	 * @param InMatineeActor	The matinee actor which controls this actor
-	 */
-	void AddControllingMatineeActor( AMatineeActor& InMatineeActor );
-
-	/**
-	 * Removes a controlling matinee actor
-	 * @param InMatineeActor	The matinee actor which currently controls this actor
-	 */
-	void RemoveControllingMatineeActor( AMatineeActor& InMatineeActor );
 
 	/** Dispatches ReceiveHit virtual and OnComponentHit delegate */
 	virtual void DispatchPhysicsCollisionHit(const struct FRigidBodyCollisionInfo& MyInfo, const struct FRigidBodyCollisionInfo& OtherInfo, const FCollisionImpactData& RigidCollisionData);
@@ -2414,6 +2723,29 @@ public:
 	/** Returns whether this Actor was spawned by a child actor component */
 	UFUNCTION(BlueprintCallable, Category="Actor")
 	bool IsChildActor() const;
+
+	/** Returns whether this actor can select its attached actors */
+	virtual bool IsSelectionParentOfAttachedActors() const;
+
+	/** Returns whether this Actor is part of another's actor selection */
+	virtual bool IsSelectionChild() const;
+
+	/** Returns immediate selection parent */
+	virtual AActor* GetSelectionParent() const;
+
+	/** Returns top most selection parent */
+	virtual AActor* GetRootSelectionParent() const;
+
+	/** Returns if actor or selection parent is selected */
+	bool IsActorOrSelectionParentSelected() const;
+
+	/** Push Selection to actor */
+	virtual void PushSelectionToProxies();
+
+#if WITH_EDITOR
+	/** Push Foundation Editing state to primitive scene proxy */
+	virtual void PushLevelInstanceEditingStateToProxies(bool bInEditingState);
+#endif
 
 	/** 
 	 * Returns a list of all actors spawned by our Child Actor Components, including children of children. 
@@ -2490,7 +2822,7 @@ public:
 	 */
 	inline bool IsPendingKillPending() const
 	{
-		return bActorIsBeingDestroyed || IsPendingKill();
+		return bActorIsBeingDestroyed || !IsValidChecked(this);
 	}
 
 	/** Invalidate lighting cache with default options. */
@@ -2525,7 +2857,7 @@ public:
 	 * @param DestRotation The target rotation at the destination
 	 * @return true if the actor has been successfully moved, or false if it couldn't fit.
 	 */
-	UFUNCTION(BlueprintCallable, meta=( DisplayName="Teleport", ScriptName="Teleport", Keywords = "Move Position" ), Category="Utilities|Transformation")
+	UFUNCTION(BlueprintCallable, meta=( DisplayName="Teleport", ScriptName="Teleport", Keywords = "Move Position" ), Category="Transformation")
 	bool K2_TeleportTo( FVector DestLocation, FRotator DestRotation );
 
 	/** Called from TeleportTo() when teleport succeeds */
@@ -2560,7 +2892,12 @@ public:
 	bool IsInLevel(const class ULevel *TestLevel) const;
 
 	/** Return the ULevel that this Actor is part of. */
+	UFUNCTION(BlueprintCallable, Category=Level)
 	ULevel* GetLevel() const;
+
+	/** Return the FTransform of the level this actor is a part of. */
+	UFUNCTION(BlueprintCallable, Category=Level)
+	FTransform GetLevelTransform() const;
 
 	/**	Do anything needed to clear out cross level references; Called from ULevel::PreSave	 */
 	virtual void ClearCrossLevelReferences();
@@ -2596,6 +2933,9 @@ public:
 
 	/** Reset private properties to defaults, and all FRandomStream structs in this Actor, so they will start their sequence of random numbers again. */
 	void ResetPropertiesForConstruction();
+
+	/** Returns true if the actor's class has a non trivial user construction script. */
+	bool HasNonTrivialUserConstructionScript() const;
 
 	/** Rerun construction scripts, destroying all autogenerated components; will attempt to preserve the root component location. */
 	virtual void RerunConstructionScripts();
@@ -2661,25 +3001,25 @@ public:
 	void CheckComponentInstanceName(const FName InName);
 
 	/** Walk up the attachment chain from RootComponent until we encounter a different actor, and return it. If we are not attached to a component in a different actor, returns nullptr */
-	UFUNCTION(BlueprintPure, Category = "Utilities")
+	UFUNCTION(BlueprintPure, Category = "Actor")
 	AActor* GetAttachParentActor() const;
 
 	/** Walk up the attachment chain from RootComponent until we encounter a different actor, and return the socket name in the component. If we are not attached to a component in a different actor, returns NAME_None */
-	UFUNCTION(BlueprintPure, Category = "Utilities")
+	UFUNCTION(BlueprintPure, Category = "Actor")
 	FName GetAttachParentSocketName() const;
 
 	/** Call a functor for Actors which are attached directly to a component in this actor. Functor should return true to carry on, false to abort. */
 	void ForEachAttachedActors(TFunctionRef<bool(class AActor*)> Functor) const;
 	
 	/** Find all Actors which are attached directly to a component in this actor */
-	UFUNCTION(BlueprintPure, Category = "Utilities")
-	void GetAttachedActors(TArray<AActor*>& OutActors, bool bResetArray = true) const;
+	UFUNCTION(BlueprintPure, Category = "Actor")
+	void GetAttachedActors(TArray<AActor*>& OutActors, bool bResetArray = true, bool bRecursivelyIncludeAttachedActors = false) const;
 
 	/**
 	 * Sets the ticking group for this actor.
 	 * @param NewTickGroup the new value to assign
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities", meta=(Keywords = "dependency"))
+	UFUNCTION(BlueprintCallable, Category="Actor|Tick", meta=(Keywords = "dependency"))
 	void SetTickGroup(ETickingGroup NewTickGroup);
 
 	/** Called when this actor is explicitly being destroyed during gameplay or in the editor, not called during level streaming or gameplay ending */
@@ -2826,7 +3166,7 @@ public:
 	 * @param Tolerance  How many seconds ago the actor last render time can be and still count as having been "recently" rendered.
 	 * @return Whether this actor was recently rendered.
 	 */
-	UFUNCTION(Category="Rendering", BlueprintCallable, meta=(DisplayName="WasActorRecentlyRendered", Keywords="scene visible"))
+	UFUNCTION(Category="Rendering", BlueprintCallable, meta=(DisplayName="Was Actor Recently Rendered", Keywords="scene visible"))
 	bool WasRecentlyRendered(float Tolerance = 0.2) const;
 
 	/** Returns the most recent time any of this actor's components were rendered */
@@ -2909,7 +3249,7 @@ public:
 	bool IsInPersistentLevel(bool bIncludeLevelStreamingPersistent = false) const;
 
 	/** Getter for the cached world pointer, will return null if the actor is not actually spawned in a level */
-	virtual UWorld* GetWorld() const override;
+	virtual UWorld* GetWorld() const override final;
 
 	/** Get the timer instance from the actors world */
 	class FTimerManager& GetWorldTimerManager() const;
@@ -2942,7 +3282,7 @@ public:
 	 * Currently returns an array of UActorComponent which must be cast to the correct type.
 	 * This intended to only be used by blueprints. Use GetComponents() in C++.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Actor", meta = (ComponentClass = "ActorComponent", DisplayName = "GetComponentsByClass", ScriptName = "GetComponentsByClass", DeterminesOutputType = "ComponentClass"))
+	UFUNCTION(BlueprintCallable, Category = "Actor", meta = (ComponentClass = "ActorComponent", DisplayName = "Get Components By Class", ScriptName = "GetComponentsByClass", DeterminesOutputType = "ComponentClass"))
 	TArray<UActorComponent*> K2_GetComponentsByClass(TSubclassOf<UActorComponent> ComponentClass) const;
 
 	/** Gets all the components that inherit from the given class with a given tag. */
@@ -3162,7 +3502,7 @@ public:
 	 */
 	void RemoveOwnedComponent(UActorComponent* Component);
 
-#if DO_CHECK
+#if DO_CHECK || USING_CODE_ANALYSIS
 	/** Utility function for validating that a component is correctly in its Owner's OwnedComponents array */
 	bool OwnsComponent(UActorComponent* Component) const;
 #endif
@@ -3209,12 +3549,12 @@ private:
 
 	/** Array of ActorComponents that have been added by the user on a per-instance basis. */
 	UPROPERTY(Instanced)
-	TArray<UActorComponent*> InstanceComponents;
+	TArray<TObjectPtr<UActorComponent>> InstanceComponents;
 
 public:
 	/** Array of ActorComponents that are created by blueprints and serialized per-instance. */
 	UPROPERTY(TextExportTransient, NonTransactional)
-	TArray<UActorComponent*> BlueprintCreatedComponents;
+	TArray<TObjectPtr<UActorComponent>> BlueprintCreatedComponents;
 
 	/** Adds a component to the instance components array */
 	void AddInstanceComponent(UActorComponent* Component);
@@ -3227,7 +3567,6 @@ public:
 
 	/** Returns the instance components array */
 	const TArray<UActorComponent*>& GetInstanceComponents() const;
-
 
 	//~=============================================================================
 	// Navigation/AI related functions
@@ -3293,9 +3632,6 @@ public:
 	FRenderCommandFence DetachFence;
 
 private:
-	/** Sets the friendly actor label and name */
-	void SetActorLabelInternal(const FString& NewActorLabelDirty, bool bMakeGloballyUniqueFName, bool bMarkDirty);
-
 	/** Helper that already assumes the Hit info is reversed, and avoids creating a temp FHitResult if possible. */
 	void InternalDispatchBlockingHit(UPrimitiveComponent* MyComp, UPrimitiveComponent* OtherComp, bool bSelfMoved, FHitResult const& Hit);
 
@@ -3309,8 +3645,14 @@ private:
 	friend struct FActorParentComponentSetter;
 	friend struct FSetActorWantsDestroyDuringBeginPlay;
 #if WITH_EDITOR
+	bool IsActorFolderValid() const;
+	void SetFolderPathInternal(const FName& InNewFolderPath, bool bInBroadcastChange = true);
+	void SetFolderGuidInternal(const FGuid& InFolderGuid, bool bInBroadcastChange = true);
+	UActorFolder* GetActorFolder(bool bSkipDeleted = true) const;
+
 	friend struct FSetActorHiddenInSceneOutliner;
 	friend struct FSetActorGuid;
+	friend struct FSetActorSelectable;
 #endif
 
 	// Static helpers for accessing functions on SceneComponent.
@@ -3550,6 +3892,7 @@ private:
 
 	friend UWorld;
 	friend class FFoliageHelper;
+	friend class ULevelInstanceSubsystem;
 };
 
 struct FSetActorGuid
@@ -3559,8 +3902,10 @@ private:
 	{
 		InActor->ActorGuid = InActorGuid;
 	}
-	friend class ULevelStreamingFoundationInstance;
-	friend UWorld;
+	friend class UWorld;
+	friend class UEngine;
+	friend class UExternalActorsCommandlet;
+	friend class UWorldPartitionConvertCommandlet;
 };
 #endif
 
@@ -3568,7 +3913,7 @@ private:
 template <typename ExecuteTickLambda>
 void FActorComponentTickFunction::ExecuteTickHelper(UActorComponent* Target, bool bTickInEditor, float DeltaTime, ELevelTick TickType, const ExecuteTickLambda& ExecuteTickFunc)
 {
-	if (Target && !Target->IsPendingKillOrUnreachable())
+	if (Target && IsValidChecked(Target) && !Target->IsUnreachable())
 	{
 		FScopeCycleCounterUObject ComponentScope(Target);
 		FScopeCycleCounterUObject AdditionalScope(Target->AdditionalStatObject());
@@ -3619,17 +3964,17 @@ FORCEINLINE_DEBUGGABLE USceneComponent* AActor::K2_GetRootComponent() const
 
 FORCEINLINE_DEBUGGABLE FVector AActor::GetActorForwardVector() const
 {
-	return TemplateGetActorForwardVector(RootComponent);
+	return TemplateGetActorForwardVector(ToRawPtr(RootComponent));
 }
 
 FORCEINLINE_DEBUGGABLE FVector AActor::GetActorUpVector() const
 {
-	return TemplateGetActorUpVector(RootComponent);
+	return TemplateGetActorUpVector(ToRawPtr(RootComponent));
 }
 
 FORCEINLINE_DEBUGGABLE FVector AActor::GetActorRightVector() const
 {
-	return TemplateGetActorRightVector(RootComponent);
+	return TemplateGetActorRightVector(ToRawPtr(RootComponent));
 }
 
 
@@ -3715,6 +4060,13 @@ FORCEINLINE_DEBUGGABLE bool AActor::IsNetMode(ENetMode Mode) const
 	}
 #endif
 }
+
+#if WITH_EDITOR
+/** Callback for editor actor selection. This must be in engine instead of editor for AActor::IsSelectedInEditor to work */
+extern ENGINE_API TFunction<bool(const AActor*)> GIsActorSelectedInEditor;
+#endif
+
+DEFINE_ACTORDESC_TYPE(AActor, FWorldPartitionActorDesc);
 
 //////////////////////////////////////////////////////////////////////////
 // Macro to hide common Transform functions in native code for classes where they don't make sense.

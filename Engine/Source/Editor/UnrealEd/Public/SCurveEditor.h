@@ -185,6 +185,7 @@ public:
 		, _HideUI(true)
 		, _AllowZoomOutput(true)
 		, _AlwaysDisplayColorCurves(false)
+		, _AlwaysHideGradientEditor(false)
 		, _ZoomToFitVertical(true)
 		, _ZoomToFitHorizontal(true)
 		, _ShowZoomButtons(true)
@@ -216,6 +217,7 @@ public:
 		SLATE_ARGUMENT( bool, HideUI )
 		SLATE_ARGUMENT( bool, AllowZoomOutput )
 		SLATE_ARGUMENT( bool, AlwaysDisplayColorCurves )
+		SLATE_ARGUMENT( bool, AlwaysHideGradientEditor )
 		SLATE_ARGUMENT( bool, ZoomToFitVertical )
 		SLATE_ARGUMENT( bool, ZoomToFitHorizontal )
 		SLATE_ARGUMENT( bool, ShowZoomButtons )
@@ -243,7 +245,7 @@ public:
 	UNREALED_API void SetZoomToFit(bool bNewZoomToFitVertical, bool bNewZoomToFitHorizontal);
 
 	/** Get the currently edited curve */
-	FCurveOwnerInterface* GetCurveOwner() const;
+	UNREALED_API FCurveOwnerInterface* GetCurveOwner() const;
 
 	/** Construct an object of type UCurveFactory and return it's reference*/
 	UNREALED_API UCurveFactory* GetCurveFactory( );
@@ -265,6 +267,10 @@ public:
 	 * @param Ar The archive to serialize with
 	 */
 	UNREALED_API virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
+	UNREALED_API virtual FString GetReferencerName() const override
+	{
+		return TEXT("SCurveEditor");
+	}
 
 	/** Gets a list of the commands handled by this control */
 	UNREALED_API TSharedPtr<FUICommandList> GetCommands();
@@ -596,7 +602,7 @@ private:
 	// End of FEditorUndoClient
 
 	bool AreCurvesVisible() const { return bAlwaysDisplayColorCurves || bAreCurvesVisible.Get(); }
-	bool IsGradientEditorVisible() const { return bIsGradientEditorVisible; }
+	bool IsGradientEditorVisible() const { return !bAlwaysHideGradientEditor && bIsGradientEditorVisible; }
 	bool IsLinearColorCurve() const;
 
 	bool IsCurveSelectable(TSharedPtr<FCurveViewModel> CurveViewModel) const;
@@ -689,6 +695,8 @@ private:
 	bool				bAllowZoomOutput;
 	/** If we always show the color curves or allow the user to toggle this */
 	bool				bAlwaysDisplayColorCurves;
+	/** If we always hide the gradient editor */
+	bool				bAlwaysHideGradientEditor;
 
 	/** Whether or not to draw the numbers for the input grid. */
 	bool bDrawInputGridNumbers;

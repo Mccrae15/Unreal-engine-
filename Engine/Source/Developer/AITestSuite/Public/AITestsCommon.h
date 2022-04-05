@@ -28,7 +28,7 @@ private:
 
 namespace FAITestHelpers
 {
-	UWorld* GetWorld();
+	AITESTSUITE_API UWorld* GetWorld();
 	static const float TickInterval = 1.f / 30;
 
 	void UpdateFrameCounter();
@@ -48,9 +48,9 @@ protected:
 	{}
 
 	template<typename ClassToSpawn>
-	ClassToSpawn* NewAutoDestroyObject()
+	ClassToSpawn* NewAutoDestroyObject(UObject* Outer = GetTransientPackage())
 	{
-		ClassToSpawn* ObjectInstance = NewObject<ClassToSpawn>();
+		ClassToSpawn* ObjectInstance = NewObject<ClassToSpawn>(Outer);
 		ObjectInstance->AddToRoot();
 		SpawnedObjects.Add(ObjectInstance);
 		return ObjectInstance;
@@ -111,9 +111,9 @@ DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(AITESTSUITE_API, FAITest
 		{ \
 			/* call the instant-test code */ \
 			bSuccess = TestInstance->InstantTest(); \
-			/* tear down */ \
-			TestInstance->TearDown(); \
 		}\
+		/* tear down */ \
+		TestInstance->TearDown(); \
 		delete TestInstance; \
 		return bSuccess; \
 	} 
@@ -153,15 +153,15 @@ DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(AITESTSUITE_API, FAITest
 //----------------------------------------------------------------------//
 // Specific test types
 //----------------------------------------------------------------------//
-template<class TComponent>
+template<class FReal>
 struct FAITest_SimpleComponentBasedTest : public FAITestBase
 {
 	FTestLogger<int32> Logger;
-	TComponent* Component;
+	FReal* Component;
 
 	FAITest_SimpleComponentBasedTest()
 	{
-		Component = NewAutoDestroyObject<TComponent>();
+		Component = NewAutoDestroyObject<FReal>();
 	}
 
 	virtual void SetTestRunner(FAutomationTestBase& AutomationTestInstance) override
@@ -170,7 +170,7 @@ struct FAITest_SimpleComponentBasedTest : public FAITestBase
 		Logger.TestRunner = TestRunner;
 	}
 
-	virtual ~FAITest_SimpleComponentBasedTest()
+	virtual ~FAITest_SimpleComponentBasedTest() override
 	{
 		GetTestRunner().TestTrue(TEXT("Not all expected values has been logged"), Logger.ExpectedValues.Num() == 0 || Logger.ExpectedValues.Num() == Logger.LoggedValues.Num());
 	}

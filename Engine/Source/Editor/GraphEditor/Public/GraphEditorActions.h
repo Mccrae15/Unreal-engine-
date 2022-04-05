@@ -95,6 +95,7 @@ public:
 
 	// Find references
 	TSharedPtr< FUICommandInfo > FindReferences;
+	GRAPHEDITOR_API TSharedPtr< FUICommandInfo > GetFindReferences() const { return FindReferences; }
 	TSharedPtr< FUICommandInfo > FindAndReplaceReferences;
 
 	// Jumps to the definition of the selected node (or otherwise focuses something interesting about that node, e.g., the inner graph for a collapsed graph)
@@ -111,31 +112,6 @@ public:
 	TSharedPtr< FUICommandInfo > ResetPinToDefaultValue;
 	TSharedPtr< FUICommandInfo > SelectAllInputNodes;
 	TSharedPtr< FUICommandInfo > SelectAllOutputNodes;
-
-	// SkeletalControl specific commands
-	TSharedPtr< FUICommandInfo > SelectBone;
-	// Blend list options
-	TSharedPtr< FUICommandInfo > AddBlendListPin;
-	TSharedPtr< FUICommandInfo > RemoveBlendListPin;
-
-	// options for sequence/evaluator converter
-	TSharedPtr< FUICommandInfo > ConvertToSeqEvaluator;
-	TSharedPtr< FUICommandInfo > ConvertToSeqPlayer;
-
-	// options for blendspace sequence/evaluator converter
-	TSharedPtr< FUICommandInfo > ConvertToBSEvaluator;
-	TSharedPtr< FUICommandInfo > ConvertToBSPlayer;
-
-	// options for aimoffset converter
-	TSharedPtr< FUICommandInfo > ConvertToAimOffsetLookAt;
-	TSharedPtr< FUICommandInfo > ConvertToAimOffsetSimple;
-
-	// options for sequence/evaluator converter
-	TSharedPtr< FUICommandInfo > ConvertToPoseBlender;
-	TSharedPtr< FUICommandInfo > ConvertToPoseByName;
-
-	// option for opening the asset related to the graph node
-	TSharedPtr< FUICommandInfo > OpenRelatedAsset;
 
 	//create a comment node
 	TSharedPtr< FUICommandInfo > CreateComment;

@@ -23,15 +23,28 @@ When a new version or revision of the SPIR-V specification is published,
 the SPIR-V Working Group will push new commits onto master, updating
 the files under [include](include).
 
-The SPIR-V XML registry file is updated by Khronos whenever a new enum range is allocated.
+[The SPIR-V XML registry file](include/spirv/spir-v.xml)
+is updated by Khronos whenever a new enum range is allocated.
 
 Pull requests can be made to
 - request allocation of new enum ranges in the XML registry file
+- register a new magic number for a SPIR-V generator
 - reserve specific tokens in the JSON grammar
+
+### Registering a SPIR-V Generator Magic Number
+
+Tools that generate SPIR-V should use a magic number in the SPIR-V to help identify the
+generator.
+
+Care should be taken to follow existing precedent in populating the details of reserved tokens.
+This includes:
+- keeping generator numbers in numeric order
+- filling out all the existing fields
 
 ### Reserving tokens in the JSON grammar
 
-Care should be taken to follow existing precedent in populating the details of reserved tokens. This includes:
+Care should be taken to follow existing precedent in populating the details of reserved tokens.
+This includes:
 - pointing to what extension has more information, when possible
 - keeping enumerants in numeric order
 - when there are aliases, listing the preferred spelling first
@@ -127,10 +140,21 @@ and can be used to test a PR, or even to include the results in the PR.
 This is not required though.
 
 The header-generation project is under the `tools/buildHeaders` directory.
-Use CMake to build the project, in a `build` subdirectory (under `tools/buildHeaders`).
+Use CMake to build and install the project, in a `build` subdirectory (under `tools/buildHeaders`).
 There is then a bash script at `bin/makeHeaders` that shows how to use the built
 header-generator binary to generate the headers from the JSON grammar.
 (Execute `bin/makeHeaders` from the `tools/buildHeaders` directory.)
+Here's a complete example:
+
+```
+cd tools/buildHeaders
+mkdir build
+cd build
+cmake ..
+cmake --build . --target install
+cd ..
+./bin/makeHeaders
+```
 
 Notes:
 - this generator is used in a broader context within Khronos to generate the specification,

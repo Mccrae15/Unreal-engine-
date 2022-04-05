@@ -20,6 +20,10 @@ public class DatasmithUE4ArchiCADTarget : TargetRules
 
 		ExtraModuleNames.AddRange( new string[] { "DatasmithCore", "DatasmithExporter"} );
 
+		if (Target.Platform == UnrealTargetPlatform.Mac)
+		{
+		}
+
 		bBuildDeveloperTools = false;
 		bUseMallocProfiler = false;
 		bBuildWithEditorOnlyData = true;

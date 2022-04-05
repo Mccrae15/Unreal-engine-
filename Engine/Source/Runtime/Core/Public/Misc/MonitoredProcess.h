@@ -56,7 +56,7 @@ public:
 	FMonitoredProcess( const FString& InURL, const FString& InParams, const FString& InWorkingDir, bool InHidden, bool InCreatePipes = true );
 
 	/** Destructor. */
-	~FMonitoredProcess();
+	virtual ~FMonitoredProcess();
 
 public:
 
@@ -96,7 +96,7 @@ public:
 	bool Update();
 
 	/** Launches the process. */
-	bool Launch();
+	virtual bool Launch();
 
 	/**
 	 * Sets the sleep interval to be used in the main thread loop.
@@ -187,21 +187,21 @@ protected:
 	 */
 	void ProcessOutput( const FString& Output );
 
-private:
+protected:
 	void TickInternal();
 
 
 	// Whether the process is being canceled. */
-	bool Canceling;
+	bool Canceling = false;
 
 	// Holds the time at which the process ended. */
 	FDateTime EndTime;
 
 	// Whether the window of the process should be hidden. */
-	bool Hidden;
+	bool Hidden = false;
 
 	// Whether to kill the entire process tree when cancelling this process. */
-	bool KillTree;
+	bool KillTree = false;
 
 	// Holds the command line parameters. */
 	FString Params;
@@ -210,16 +210,16 @@ private:
 	FProcHandle ProcessHandle;
 
 	// Holds the read pipe. */
-	void* ReadPipe;
+	void* ReadPipe = nullptr;
 
 	// Holds the return code. */
-	int ReturnCode;
+	int ReturnCode = 0;
 
 	// Holds the time at which the process started. */
-	FDateTime StartTime;
+	FDateTime StartTime { 0 };
 
 	// Holds the monitoring thread object. */
-	FRunnableThread* Thread;
+	FRunnableThread* Thread = nullptr;
 
 	// Is the thread running? 
 	TSAN_ATOMIC(bool) bIsRunning;
@@ -231,18 +231,18 @@ private:
 	FString WorkingDir;
 
 	// Holds the write pipe. */
-	void* WritePipe;
+	void* WritePipe = nullptr;
 
 	// Holds if we should create pipes
-	bool bCreatePipes;
+	bool bCreatePipes = false;
 
 	// Sleep interval to use
-	float SleepInterval;
+	float SleepInterval = 0.01f;
 
 	// Buffered output text which does not contain a newline
 	FString OutputBuffer;
 
-private:
+protected:
 
 	// Holds a delegate that is executed when the process has been canceled. */
 	FSimpleDelegate CanceledDelegate;
@@ -252,4 +252,51 @@ private:
 
 	// Holds a delegate that is executed when a monitored process produces output. */
 	FOnMonitoredProcessOutput OutputDelegate;
+};
+
+
+class CORE_API FSerializedUATProcess : public FMonitoredProcess
+{
+public:
+	/**
+	 * Get the host-platform-specific path to the UAT running script
+	 */
+	static FString GetUATPath();
+
+public:
+	FSerializedUATProcess(const FString& RunUATCommandline);
+
+	/**
+	 * Run UAT, serially with other FSerializedUATProcess objects. Because the actual call is delayed, this will
+	 * always return true, and the LaunchFailedDelegate will be called later if an error happens
+	 */
+	virtual bool Launch() override;
+
+	/**
+	 * Returns a delegate that is executed when the process has been canceled.
+	 *
+	 * @return The delegate.
+	 */
+	FSimpleDelegate& OnLaunchFailed()
+	{
+		return LaunchFailedDelegate;
+	}
+
+
+private:
+
+	bool LaunchNext();
+	bool LaunchInternal();
+	static void CancelQueue();
+
+	// When this one completes, run the next in line
+	FSerializedUATProcess* NextProcessToRun = nullptr;
+
+	// Holds a delegate that is executed when the process fails to launch (delayed, in a thread). Used in place of the return value
+	// of Launch in the parent class, since it's async
+	FSimpleDelegate LaunchFailedDelegate;
+
+	static FCriticalSection Serializer;
+	static bool bHasSucceededOnce;
+	static FSerializedUATProcess* HeadProcess;
 };

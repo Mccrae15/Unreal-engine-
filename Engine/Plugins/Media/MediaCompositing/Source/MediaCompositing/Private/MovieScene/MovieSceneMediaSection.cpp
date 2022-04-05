@@ -2,6 +2,7 @@
 
 #include "MovieSceneMediaSection.h"
 #include "MovieScene.h"
+#include "Misc/FrameRate.h"
 
 #define LOCTEXT_NAMESPACE "MovieSceneMediaSection"
 
@@ -18,6 +19,7 @@ namespace
 
 UMovieSceneMediaSection::UMovieSceneMediaSection(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
+	, bLooping(true)
 {
 #if WITH_EDITORONLY_DATA
 	ThumbnailReferenceOffset = 0.f;
@@ -72,6 +74,15 @@ UMovieSceneSection* UMovieSceneMediaSection::SplitSection(FQualifiedFrameTime Sp
 TOptional<FFrameTime> UMovieSceneMediaSection::GetOffsetTime() const
 {
 	return TOptional<FFrameTime>(StartFrameOffset);
+}
+
+void UMovieSceneMediaSection::MigrateFrameTimes(FFrameRate SourceRate, FFrameRate DestinationRate)
+{
+	if (StartFrameOffset.Value > 0)
+	{
+		FFrameNumber NewStartFrameOffset = ConvertFrameTime(FFrameTime(StartFrameOffset), SourceRate, DestinationRate).FloorToFrame();
+		StartFrameOffset = NewStartFrameOffset;
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

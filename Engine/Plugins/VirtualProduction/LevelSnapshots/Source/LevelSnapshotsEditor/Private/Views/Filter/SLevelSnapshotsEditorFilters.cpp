@@ -6,9 +6,7 @@
 #include "Data/FilteredResults.h"
 #include "Data/Filters/LevelSnapshotsFilterPreset.h"
 #include "Data/LevelSnapshotsEditorData.h"
-#include "LevelSnapshotsEditorFilters.h"
 #include "LevelSnapshotsEditorStyle.h"
-#include "TempInterfaces/ILevelSnapshotsEditorView.h"
 #include "Widgets/Filter/SFavoriteFilterList.h"
 #include "Widgets/SLevelSnapshotsEditorFilterRow.h"
 #include "Widgets/Filter/SSaveAndLoadFilters.h"
@@ -23,8 +21,7 @@
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/SBoxPanel.h"
-#include "Widgets/Views/STableRow.h"
-#include "Widgets/Views/STreeView.h"
+#include "SPrimaryButton.h"
 
 #define LOCTEXT_NAMESPACE "LevelSnapshotsEditor"
 
@@ -86,7 +83,7 @@ SLevelSnapshotsEditorFilters::~SLevelSnapshotsEditorFilters()
 	}
 }
 
-void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, const TSharedRef<FLevelSnapshotsEditorFilters>& InFilters)
+void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, ULevelSnapshotsEditorData* EditorData)
 {
 	struct Local
 	{
@@ -117,9 +114,7 @@ void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, const TSh
 		}
 	};
 	
-	
-	FiltersModelPtr = InFilters;
-	EditorDataPtr = InFilters->GetBuilder()->EditorDataPtr;
+	EditorDataPtr = EditorData;
 
 	// Create a property view
 	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
@@ -167,9 +162,8 @@ void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, const TSh
 				.AutoWidth()
 				.Padding(0.f, 0.f, 2.f, 0.f)
 				[
-					SNew(SButton)
-					.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
-					.ForegroundColor(FSlateColor::UseForeground())
+					SNew(SPrimaryButton)
+					.Text(LOCTEXT("UpdateResults", "Refresh Results"))
 					.IsEnabled_Lambda([this]() 
 					{
 						return EditorDataPtr->IsFilterDirty() && EditorDataPtr->GetActiveSnapshot();
@@ -181,19 +175,6 @@ void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, const TSh
 						FText(LOCTEXT("RefreshResultsTooltip_CleanState", "Results are up to date, no refresh required."));
 					})
 					.OnClicked(this, &SLevelSnapshotsEditorFilters::OnClickUpdateResultsView)
-					[
-						SNew(SHorizontalBox)
-						+SHorizontalBox::Slot()
-							.AutoWidth()
-							.VAlign(VAlign_Center)
-						[
-							SNew(STextBlock)
-							.Justification(ETextJustify::Center)
-							.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-							.Text(FEditorFontGlyphs::Plus)
-							.Text(LOCTEXT("UpdateResults", "Refresh Results"))
-						]
-					]
 				]
 
 				// Save and load
@@ -207,14 +188,15 @@ void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, const TSh
             // Favorite filters
             + SVerticalBox::Slot()
             .AutoHeight()
+            .Padding(5.f, 0.f)
             .HAlign(HAlign_Fill)
             [
-				SAssignNew(FavoriteList, SFavoriteFilterList, InFilters->GetBuilder()->EditorDataPtr->GetFavoriteFilters(), GetEditorData())
+				SAssignNew(FavoriteList, SFavoriteFilterList, EditorData->GetFavoriteFilters(), GetEditorData())
             ]
 
             // Rows 
             +SVerticalBox::Slot()
-				.Padding(FMargin(0.f, 10.f, 0.f, 0.f))
+				.Padding(FMargin(5.f, 10.f, 5.f, 0.f))
             [
 				SNew(SScrollBox)
                 .Orientation(Orient_Vertical)
@@ -232,7 +214,7 @@ void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, const TSh
 
                     // Add button
                     + SVerticalBox::Slot()
-                    .Padding(5.f, 10.f)
+                    .Padding(0.f, 10.f)
                     .AutoHeight()
                     [
                         SNew(SButton)
@@ -288,11 +270,6 @@ void SLevelSnapshotsEditorFilters::Construct(const FArguments& InArgs, const TSh
 ULevelSnapshotsEditorData* SLevelSnapshotsEditorFilters::GetEditorData() const
 {
 	return EditorDataPtr.IsValid() ? EditorDataPtr.Get() : nullptr;
-}
-
-TSharedPtr<FLevelSnapshotsEditorFilters> SLevelSnapshotsEditorFilters::GetFiltersModel() const
-{
-	return FiltersModelPtr.Pin();
 }
 
 const TSharedPtr<IDetailsView>& SLevelSnapshotsEditorFilters::GetFilterDetailsView() const

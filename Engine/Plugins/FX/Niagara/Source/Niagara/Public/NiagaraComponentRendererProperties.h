@@ -2,13 +2,11 @@
 
 #pragma once
 
+#include <atomic>
 #include "CoreMinimal.h"
 #include "NiagaraCommon.h"
 #include "NiagaraRendererProperties.h"
 #include "Components/PointLightComponent.h"
-#include "Engine/EngineTypes.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/UnrealType.h"
 #include "NiagaraComponentRendererProperties.generated.h"
 
 class FNiagaraEmitterInstance;
@@ -46,7 +44,7 @@ struct FNiagaraPropertySetter
 {
 	UFunction* Function;
 	bool bIgnoreConversion = false;
-	
+
 };
 
 UCLASS(editinlinenew, MinimalAPI, meta = (DisplayName = "Component Renderer"))
@@ -67,7 +65,7 @@ public:
 	static void InitCDOPropertiesAfterModuleStartup();
 
 	//~ UNiagaraRendererProperties interface
-	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent) override;
+	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) override;
 	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() override { return nullptr; }
 	virtual bool IsSimTargetSupported(ENiagaraSimTarget InSimTarget) const override { return (InSimTarget == ENiagaraSimTarget::CPUSim); };
 	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const override {};
@@ -109,6 +107,16 @@ public:
 	 * limit was reached) then it will be blocked from spawning a component on subsequent frames. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Component Rendering", meta = (EditCondition = "bAssignComponentsOnParticleID"))
 	bool bOnlyCreateComponentsOnParticleSpawn;
+	
+	/** 
+	If true then components will only be activated when newly acquired. e.g. on particle spawn or when the particle enables/disables the component.
+	If false, components will be always kept active while they are used by an enabled particle.
+	This can be useful for component types that can internally activate and deactivate during their lifetimes while still being used by an enabled particle.
+	For example NiagaraComponents that deactivate/reactivate according to scalability settings.
+	This setting is only valid when bAssignComponentsOnParticleID is true.
+	*/
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Component Rendering", meta = (EditCondition = "bAssignComponentsOnParticleID"))
+	bool bOnlyActivateNewlyAquiredComponents;
 
 #if WITH_EDITORONLY_DATA
 
@@ -124,7 +132,7 @@ public:
 
 	/** The object template used to create new components at runtime. */
 	UPROPERTY(Export, Instanced, EditAnywhere, Category = "Component Properties")
-	USceneComponent* TemplateComponent;
+	TObjectPtr<USceneComponent> TemplateComponent;
 
 	UPROPERTY()
 	TArray<FNiagaraComponentPropertyBinding> PropertyBindings;
@@ -135,9 +143,18 @@ public:
 	NIAGARA_API static FNiagaraTypeDefinition ToNiagaraType(FProperty* Property);
 	static FNiagaraTypeDefinition GetFColorDef();
 	static FNiagaraTypeDefinition GetFRotatorDef();
+	static FNiagaraTypeDefinition GetFVector2DDef();
+	static FNiagaraTypeDefinition GetFVectorDef();
+	static FNiagaraTypeDefinition GetFVector4Def();
+	static FNiagaraTypeDefinition GetFVector3fDef();
+	static FNiagaraTypeDefinition GetFQuatDef();
 
 	virtual void CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData) override;
-	
+
+#if WITH_EDITORONLY_DATA
+	virtual bool IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const override;
+#endif
+
 	virtual bool NeedsSystemPostTick() const override { return true; }
 	virtual bool NeedsSystemCompletion() const override { return true; }
 
@@ -156,6 +173,11 @@ private:
 
 	bool HasPropertyBinding(FName PropertyName) const;
 
+#if WITH_EDITOR
 	/** Callback for whenever any blueprint components are reinstanced */
 	void OnObjectsReplacedCallback(const TMap<UObject*, UObject*>& ReplacementsMap);
+
+#endif
+
+	std::atomic_bool IsSetterMappingDirty;
 };

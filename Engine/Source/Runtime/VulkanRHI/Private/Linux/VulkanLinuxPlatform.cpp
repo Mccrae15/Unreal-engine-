@@ -2,12 +2,11 @@
 
 #include "VulkanLinuxPlatform.h"
 #include "../VulkanRHIPrivate.h"
+#include "../VulkanRayTracing.h"
 #include <dlfcn.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
 #include "Linux/LinuxPlatformApplicationMisc.h"
-
-
 
 // Vulkan function pointers
 #define DEFINE_VK_ENTRYPOINTS(Type,Func) Type VulkanDynamicAPI::Func = NULL;
@@ -152,18 +151,38 @@ void FVulkanLinuxPlatform::GetInstanceExtensions(TArray<const ANSICHAR*>& OutExt
 {
 	EnsureSDLIsInited();
 
-	// we don't hardcode the extensions in Linux, we query SDL
-	static TArray<const ANSICHAR*> CachedLinuxExtensions;
-	if (CachedLinuxExtensions.Num() == 0)
+	// We only support Xlib and Wayland, so check the video driver and hardcode each.
+	// See FVulkanLinuxPlatform::IsSupported for the one other spot where support is hardcoded!
+	//
+	// Long-term, it'd be nice to replace dlopen with SDL_Vulkan_LoadLibrary so we can use
+	// SDL_Vulkan_GetInstanceExtensions, but this requires moving vkGetDeviceProcAddr out of
+	// the base entry points and allocating vkInstance to get all the non-global functions.
+	//
+	// Previously there was an Epic extension called SDL_Vulkan_GetRequiredInstanceExtensions,
+	// but this effectively did what we're doing here (including depending on Xlib without a
+	// fallback for xcb-only situations). Hardcoding is actually _better_ because the extension
+	// broke the SDL_dynapi function table, making third-party SDL updates much harder to do.
+
+	const char *SDLDriver = SDL_GetCurrentVideoDriver();
+	if (SDLDriver == NULL)
 	{
-		uint32_t Count = 0;
-		auto RequiredExtensions = SDL_Vulkan_GetRequiredInstanceExtensions(&Count);
-		for (int32 i = 0; i < Count; i++)
-		{
-			CachedLinuxExtensions.Add(RequiredExtensions[i]);
-		}
+		// This should never happen if EnsureSDLIsInited passed!
+		return;
 	}
-	OutExtensions.Append(CachedLinuxExtensions);
+
+	OutExtensions.Add(VK_KHR_SURFACE_EXTENSION_NAME);
+	if (strcmp(SDLDriver, "x11") == 0)
+	{
+		OutExtensions.Add("VK_KHR_xlib_surface");
+	}
+	else if (strcmp(SDLDriver, "wayland") == 0)
+	{
+		OutExtensions.Add("VK_KHR_wayland_surface");
+	}
+	else
+	{
+		UE_LOG(LogRHI, Warning, TEXT("Could not detect SDL video driver!"));
+	}
 }
 
 void FVulkanLinuxPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions)
@@ -177,6 +196,16 @@ void FVulkanLinuxPlatform::GetDeviceExtensions(EGpuVendorId VendorId, TArray<con
 #if VULKAN_SUPPORTS_DEDICATED_ALLOCATION
 	OutExtensions.Add(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
 	OutExtensions.Add(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_RENDERPASS2
+	OutExtensions.Add(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+
+	// Fragment shading rate depends on renderpass2.
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+	OutExtensions.Add(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+#endif
+
 #endif
 
 	if (GGPUCrashDebuggingEnabled)
@@ -230,6 +259,23 @@ void FVulkanLinuxPlatform::WriteCrashMarker(const FOptionalVulkanDeviceExtension
 			int32 LastIndex = Entries.Num() - 1;
 			uint32 Value = Entries[LastIndex];
 			VulkanDynamicAPI::vkCmdSetCheckpointNV(CmdBuffer, (void*)(size_t)Value);
+		}
+	}
+}
+
+void FVulkanLinuxPlatform::CheckDeviceDriver(uint32 DeviceIndex, EGpuVendorId VendorId, const VkPhysicalDeviceProperties& Props)
+{
+	if (VendorId == EGpuVendorId::Nvidia)
+	{
+		UNvidiaDriverVersion NvidiaVersion;
+		static_assert(sizeof(NvidiaVersion) == sizeof(Props.driverVersion), "Mismatched Nvidia pack driver version!");
+		NvidiaVersion.Packed = Props.driverVersion;
+
+		if ((NvidiaVersion.Major < 472) || ((NvidiaVersion.Major == 472) && (NvidiaVersion.Minor < 62)))
+		{
+			UE_LOG(LogVulkanRHI, Warning, TEXT("Nvidia drivers < 472.61.01 do not support Nanite/Lumen in Vulkan."));
+			extern TAutoConsoleVariable<int32> GRHIAllow64bitShaderAtomicsCvar;
+			GRHIAllow64bitShaderAtomicsCvar->SetWithCurrentPriority(0);
 		}
 	}
 }

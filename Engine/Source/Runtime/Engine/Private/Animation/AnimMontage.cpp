@@ -7,6 +7,7 @@
 #include "Animation/AnimMontage.h"
 #include "UObject/LinkerLoad.h"
 #include "UObject/Package.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectThreadContext.h"
 #include "Animation/AssetMappingTable.h"
 #include "Animation/AnimSequence.h"
@@ -38,11 +39,17 @@ namespace MontageFNames
 UAnimMontage::UAnimMontage(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	BlendModeIn = EMontageBlendMode::Standard;
+	BlendModeOut = EMontageBlendMode::Standard;
+
 	BlendIn.SetBlendTime(0.25f);
 	BlendOut.SetBlendTime(0.25f);
 	BlendOutTriggerTime = -1.f;
 	bEnableAutoBlendOut = true;
 	SyncSlotIndex = 0;
+
+	BlendProfileIn = nullptr;
+	BlendProfileOut = nullptr;
 
 	BlendInTime_DEPRECATED = -1.f;
 	BlendOutTime_DEPRECATED = -1.f;
@@ -108,14 +115,14 @@ bool UAnimMontage::IsWithinPos(int32 FirstIndex, int32 SecondIndex, float Curren
 	{
 		// @todo anim, I don't know if using SequenceLength is better or BIG_NUMBER
 		// I don't think that'd matter. 
-		EndTime = SequenceLength;
+		EndTime = GetPlayLength();
 	}
 
 	// since we do range of [StartTime, EndTime) (excluding EndTime) 
 	// there is blindspot of when CurrentTime becomes >= SequenceLength
 	// include that frame if CurrentTime gets there. 
 	// Otherwise, we continue to use [StartTime, EndTime)
-	if (CurrentTime >= SequenceLength)
+	if (CurrentTime >= GetPlayLength())
 	{
 		return (StartTime <= CurrentTime && EndTime >= CurrentTime);
 	}
@@ -173,7 +180,7 @@ float UAnimMontage::GetSectionTimeLeftFromPos(float Position)
 		}
 		else
 		{
-			return (SequenceLength - Position);
+			return (GetPlayLength() - Position);
 		}
 	}
 
@@ -230,7 +237,7 @@ bool UAnimMontage::IsValidSectionIndex(int32 SectionIndex) const
 void UAnimMontage::GetSectionStartAndEndTime(int32 SectionIndex, float& OutStartTime, float& OutEndTime) const
 {
 	OutStartTime = 0.f;
-	OutEndTime = SequenceLength;
+	OutEndTime = GetPlayLength();	
 	if ( IsValidSectionIndex(SectionIndex) )
 	{
 		OutStartTime = GetAnimCompositeSection(SectionIndex).GetTime();		
@@ -245,7 +252,7 @@ void UAnimMontage::GetSectionStartAndEndTime(int32 SectionIndex, float& OutStart
 float UAnimMontage::GetSectionLength(int32 SectionIndex) const
 {
 	float StartTime = 0.f;
-	float EndTime = SequenceLength;
+	float EndTime = GetPlayLength();
 	if ( IsValidSectionIndex(SectionIndex) )
 	{
 		StartTime = GetAnimCompositeSection(SectionIndex).GetTime();		
@@ -337,9 +344,17 @@ void UAnimMontage::UnregisterOnMontageChanged(void* Unregister)
 
 void UAnimMontage::PreSave(const class ITargetPlatform* TargetPlatform)
 {
-	BakeTimeStretchCurve();
-
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UAnimMontage::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+#if WITH_EDITOR
+	BakeTimeStretchCurve();
+#endif // WITH_EDITOR
+	Super::PreSave(ObjectSaveContext);
 }
 
 void UAnimMontage::PostLoad()
@@ -353,11 +368,10 @@ void UAnimMontage::PostLoad()
 		Track.ValidateSegmentTimes();
 
 		const float CurrentCalculatedLength = CalculateSequenceLength();
-
-		if(CurrentCalculatedLength != SequenceLength)
+		if(CurrentCalculatedLength != GetPlayLength())		
 		{
 			UE_LOG(LogAnimMontage, Display, TEXT("UAnimMontage::PostLoad: The actual sequence length for %s does not match the length stored in the asset, please resave the asset."), *GetFullName());
-			SequenceLength = CurrentCalculatedLength;
+			SetCompositeLength(CurrentCalculatedLength);
 		}
 	}
 
@@ -418,7 +432,7 @@ void UAnimMontage::PostLoad()
 			if ( SlotAnimTracks[I].AnimTrack.AnimSegments.Num() > 0 )
 			{
 				UAnimSequenceBase* SequenceBase = SlotAnimTracks[I].AnimTrack.AnimSegments[0].AnimReference;
-				if (SequenceBase && SequenceBase->GetSkeleton() != MySkeleton )
+				if (SequenceBase && !MySkeleton->IsCompatible(SequenceBase->GetSkeleton()))
 				{
 					SlotAnimTracks[I].AnimTrack.AnimSegments[0].AnimReference = nullptr;
 					MarkPackageDirty();
@@ -462,7 +476,7 @@ void UAnimMontage::PostLoad()
 	}
 
 	// Convert BranchingPoints to AnimNotifies.
-	if (GetLinker() && (GetLinker()->UE4Ver() < VER_UE4_MONTAGE_BRANCHING_POINT_REMOVAL) )
+	if (GetLinker() && (GetLinker()->UEVer() < VER_UE4_MONTAGE_BRANCHING_POINT_REMOVAL) )
 	{
 		ConvertBranchingPointsToAnimNotifies();
 	}
@@ -1114,7 +1128,7 @@ void UAnimMontage::RefreshParentAssetData()
 			UAnimSequenceBase* TargetReference = Cast<UAnimSequenceBase>(AssetMappingTable->GetMappedAsset(SourceReference));
 			Segment.AnimReference = TargetReference;
 
-			float LengthChange = FMath::IsNearlyZero(SourceReference->SequenceLength) ? 0.f : TargetReference->SequenceLength / SourceReference->SequenceLength;
+			float LengthChange = FMath::IsNearlyZero(SourceReference->GetPlayLength()) ? 0.f : TargetReference->GetPlayLength() / SourceReference->GetPlayLength();
 			float RateChange = FMath::IsNearlyZero(SourceReference->RateScale) ? 0.f : FMath::Abs(TargetReference->RateScale / SourceReference->RateScale);
 			float TotalRateChange = FMath::IsNearlyZero(RateChange)? 0.f : (LengthChange / RateChange);
 			Segment.AnimPlayRate *= TotalRateChange;
@@ -1142,12 +1156,13 @@ void UAnimMontage::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotify
 	//if (ensure (Context.IsLeader()))
 	if ((Context.IsLeader()))
 	{
+		check(Instance.DeltaTimeRecord);
 		const float CurrentTime = Instance.Montage.CurrentPosition;
-		const float PreviousTime = Instance.Montage.PreviousPosition;
-		const float MoveDelta = Instance.Montage.MoveDelta;
+		const float PreviousTime = Instance.DeltaTimeRecord->GetPrevious();
+		const float MoveDelta = Instance.DeltaTimeRecord->Delta;
 
 		Context.SetLeaderDelta(MoveDelta);
-		Context.SetPreviousAnimationPositionRatio(PreviousTime / SequenceLength);
+		Context.SetPreviousAnimationPositionRatio(PreviousTime / GetPlayLength());
 
 		if (MoveDelta != 0.f)
 		{
@@ -1158,7 +1173,7 @@ void UAnimMontage::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotify
 
 				if (MarkerTickRecord->IsValid(Instance.bLooping))
 				{
-					MarkerTickContext.SetMarkerSyncStartPosition(GetMarkerSyncPositionfromMarkerIndicies(MarkerTickRecord->PreviousMarker.MarkerIndex, MarkerTickRecord->NextMarker.MarkerIndex, PreviousTime));
+					MarkerTickContext.SetMarkerSyncStartPosition(GetMarkerSyncPositionFromMarkerIndicies(MarkerTickRecord->PreviousMarker.MarkerIndex, MarkerTickRecord->NextMarker.MarkerIndex, PreviousTime, nullptr));
 
 				}
 				else
@@ -1167,14 +1182,14 @@ void UAnimMontage::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotify
 					FMarkerPair PreviousMarker;
 					FMarkerPair NextMarker;
 					GetMarkerIndicesForTime(PreviousTime, false, MarkerTickContext.GetValidMarkerNames(), PreviousMarker, NextMarker);
-					MarkerTickContext.SetMarkerSyncStartPosition(GetMarkerSyncPositionfromMarkerIndicies(PreviousMarker.MarkerIndex, NextMarker.MarkerIndex, PreviousTime));
+					MarkerTickContext.SetMarkerSyncStartPosition(GetMarkerSyncPositionFromMarkerIndicies(PreviousMarker.MarkerIndex, NextMarker.MarkerIndex, PreviousTime, nullptr));
 				}
 
 				// @todo this won't work well once we start jumping
 				// only thing is that passed markers won't work in this frame. To do that, I have to figure out how it jumped from where to where, 
 				GetMarkerIndicesForTime(CurrentTime, false, MarkerTickContext.GetValidMarkerNames(), MarkerTickRecord->PreviousMarker, MarkerTickRecord->NextMarker);
 				bRecordNeedsResetting = false; // we have updated it now, no need to reset
-				MarkerTickContext.SetMarkerSyncEndPosition(GetMarkerSyncPositionfromMarkerIndicies(MarkerTickRecord->PreviousMarker.MarkerIndex, MarkerTickRecord->NextMarker.MarkerIndex, CurrentTime));
+				MarkerTickContext.SetMarkerSyncEndPosition(GetMarkerSyncPositionFromMarkerIndicies(MarkerTickRecord->PreviousMarker.MarkerIndex, MarkerTickRecord->NextMarker.MarkerIndex, CurrentTime, nullptr));
 
 				MarkerTickContext.MarkersPassedThisTick = *Instance.Montage.MarkersPassedThisTick;
 
@@ -1193,7 +1208,7 @@ void UAnimMontage::TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotify
 			}
 		}
 
-		Context.SetAnimationPositionRatio(CurrentTime / SequenceLength);
+		Context.SetAnimationPositionRatio(CurrentTime / GetPlayLength());
 	}
 
 	if (bRecordNeedsResetting && Instance.MarkerTickRecord)
@@ -1244,12 +1259,12 @@ void UAnimMontage::CollectMarkers()
 
 void UAnimMontage::GetMarkerIndicesForTime(float CurrentTime, bool bLooping, const TArray<FName>& ValidMarkerNames, FMarkerPair& OutPrevMarker, FMarkerPair& OutNextMarker) const
 {
-	MarkerData.GetMarkerIndicesForTime(CurrentTime, bLooping, ValidMarkerNames, OutPrevMarker, OutNextMarker, SequenceLength);
+	MarkerData.GetMarkerIndicesForTime(CurrentTime, bLooping, ValidMarkerNames, OutPrevMarker, OutNextMarker, GetPlayLength());
 }
 
-FMarkerSyncAnimPosition UAnimMontage::GetMarkerSyncPositionfromMarkerIndicies(int32 PrevMarker, int32 NextMarker, float CurrentTime) const
+FMarkerSyncAnimPosition UAnimMontage::GetMarkerSyncPositionFromMarkerIndicies(int32 PrevMarker, int32 NextMarker, float CurrentTime, const UMirrorDataTable* MirrorTable) const
 {
-	return MarkerData.GetMarkerSyncPositionfromMarkerIndicies(PrevMarker, NextMarker, CurrentTime, SequenceLength);
+	return MarkerData.GetMarkerSyncPositionFromMarkerIndicies(PrevMarker, NextMarker, CurrentTime, GetPlayLength(), MirrorTable);
 }
 
 void UAnimMontage::InvalidateRecursiveAsset()
@@ -1283,6 +1298,17 @@ bool UAnimMontage::ContainRecursive(TArray<UAnimCompositeBase*>& CurrentAccumula
 	return false;
 }
 
+void UAnimMontage::SetCompositeLength(float InLength)
+{
+#if WITH_EDITOR	
+	Controller->SetPlayLength(InLength);
+#else
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SetSequenceLength(InLength);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif	
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////////
 // MontageInstance
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -1299,9 +1325,10 @@ FAnimMontageInstance::FAnimMontageInstance()
 	, bInterrupted(false)
 	, PreviousWeight(0.f)
 	, NotifyWeight(0.f)
-	, DeltaMoved(0.f)
-	, PreviousPosition(0.f)
+	, BlendStartAlpha(0.0f)
 	, SyncGroupName(NAME_None)
+	, ActiveBlendProfile(nullptr)
+	, ActiveBlendProfileMode(EBlendProfileMode::TimeFactor)
 	, DisableRootMotionCount(0)
 	, MontageSyncLeader(NULL)
 	, MontageSyncUpdateFrameCounter(INDEX_NONE)
@@ -1321,9 +1348,10 @@ FAnimMontageInstance::FAnimMontageInstance(UAnimInstance * InAnimInstance)
 	, bInterrupted(false)
 	, PreviousWeight(0.f)
 	, NotifyWeight(0.f)
-	, DeltaMoved(0.f)
-	, PreviousPosition(0.f)
+	, BlendStartAlpha(0.0f)
 	, SyncGroupName(NAME_None)
+	, ActiveBlendProfile(nullptr)
+	, ActiveBlendProfileMode(EBlendProfileMode::TimeFactor)
 	, DisableRootMotionCount(0)
 	, MontageSyncLeader(NULL)
 	, MontageSyncUpdateFrameCounter(INDEX_NONE)
@@ -1332,18 +1360,49 @@ FAnimMontageInstance::FAnimMontageInstance(UAnimInstance * InAnimInstance)
 
 void FAnimMontageInstance::Play(float InPlayRate)
 {
+	FMontageBlendSettings BlendInSettings;
+
+	// Fill settings from our Montage asset
+	if (Montage)
+	{
+		BlendInSettings.Blend = Montage->BlendIn;
+		BlendInSettings.BlendMode = Montage->BlendModeIn;
+		BlendInSettings.BlendProfile = Montage->BlendProfileIn;
+}
+
+	Play(InPlayRate, BlendInSettings);
+}
+
+void FAnimMontageInstance::Play(float InPlayRate, const FMontageBlendSettings& BlendInSettings)
+{
 	bPlaying = true;
 	PlayRate = InPlayRate;
 
 	// if this doesn't exist, nothing works
 	check(Montage);
 	
+	// Inertialization
+	FAlphaBlendArgs BlendInArgs = BlendInSettings.Blend;
+	if (AnimInstance.IsValid() && BlendInSettings.BlendMode == EMontageBlendMode::Inertialization)
+	{
+		const float InertialBlendDuration = BlendInArgs.BlendTime;
+		// Request new inertialization for new montage's group name
+		// If there is an existing inertialization request, we overwrite that here.
+		AnimInstance->RequestMontageInertialization(Montage, InertialBlendDuration);
+
+		// When using inertialization, we need to instantly blend in.
+		BlendInArgs.BlendTime = 0.0f;
+	}
+
 	// set blend option
 	float CurrentWeight = Blend.GetBlendedValue();
-	InitializeBlend(Montage->BlendIn);	
-	Blend.SetBlendTime(Montage->BlendIn.GetBlendTime() * DefaultBlendTimeMultiplier);
+	InitializeBlend(FAlphaBlend(BlendInArgs));
+	BlendStartAlpha = Blend.GetAlpha();
+	Blend.SetBlendTime(BlendInArgs.BlendTime * DefaultBlendTimeMultiplier);
 	Blend.SetValueRange(CurrentWeight, 1.f);
 	bEnableAutoBlendOut = Montage->bEnableAutoBlendOut;
+
+	ActiveBlendProfile = BlendInSettings.BlendProfile;
 }
 
 void FAnimMontageInstance::InitializeBlend(const FAlphaBlend& InAlphaBlend)
@@ -1353,7 +1412,7 @@ void FAnimMontageInstance::InitializeBlend(const FAlphaBlend& InAlphaBlend)
 	Blend.SetBlendTime(InAlphaBlend.GetBlendTime());
 }
 
-void FAnimMontageInstance::Stop(const FAlphaBlend& InBlendOut, bool bInterrupt)
+void FAnimMontageInstance::Stop(const FMontageBlendSettings& InBlendOutSettings, bool bInterrupt)
 {
 	if (Montage)
 	{
@@ -1371,10 +1430,20 @@ void FAnimMontageInstance::Stop(const FAlphaBlend& InBlendOut, bool bInterrupt)
 	// if it hasn't stopped, stop now
 	if (IsStopped() == false)
 	{
+		// If we are using Inertial Blend, blend time should be 0 to instantly stop the montage.
+		FAlphaBlendArgs BlendOutArgs = InBlendOutSettings.Blend;
+		const bool bShouldInertialize = InBlendOutSettings.BlendMode == EMontageBlendMode::Inertialization;
+		BlendOutArgs.BlendTime = bShouldInertialize ? 0.0f : BlendOutArgs.BlendTime;
+
 		// do not use default Montage->BlendOut 
 		// depending on situation, the BlendOut time can change 
-		InitializeBlend(InBlendOut);
+		InitializeBlend(FAlphaBlend(BlendOutArgs));
+		BlendStartAlpha = Blend.GetAlpha();
 		Blend.SetDesiredValue(0.f);
+		Blend.Update(0.0f);
+
+		// Only change the active blend profile if the montage isn't stopped. This is to prevent pops on a sudden blend profile switch
+		ActiveBlendProfile = InBlendOutSettings.BlendProfile;
 
 		if(Montage)
 		{
@@ -1383,6 +1452,12 @@ void FAnimMontageInstance::Stop(const FAlphaBlend& InBlendOut, bool bInterrupt)
 				// Let AnimInstance know we are being stopped.
 				Inst->OnMontageInstanceStopped(*this);
 				Inst->QueueMontageBlendingOutEvent(FQueuedMontageBlendingOutEvent(Montage, bInterrupted, OnMontageBlendingOutStarted));
+
+				if (bShouldInertialize)
+				{
+					// Send the inertial blend request to the anim instance
+					Inst->RequestMontageInertialization(Montage, InBlendOutSettings.Blend.BlendTime);
+				}
 			}
 		}
 	}
@@ -1391,12 +1466,13 @@ void FAnimMontageInstance::Stop(const FAlphaBlend& InBlendOut, bool bInterrupt)
 		// it is already stopped, but new montage blendtime is shorter than what 
 		// I'm blending out, that means this needs to readjust blendtime
 		// that way we don't accumulate old longer blendtime for newer montage to play
-		if (InBlendOut.GetBlendTime() < Blend.GetBlendTime())
+		if (InBlendOutSettings.Blend.BlendTime < Blend.GetBlendTime())
 		{
 			// I don't know if also using inBlendOut is better than
 			// currently set up blend option, but it might be worse to switch between 
 			// blending out, but it is possible options in the future
-			Blend.SetBlendTime(InBlendOut.GetBlendTime());
+			Blend.SetBlendTime(InBlendOutSettings.Blend.BlendTime);
+			BlendStartAlpha = Blend.GetAlpha();
 			// have to call this again to restart blending with new blend time
 			// we don't change blend options
 			Blend.SetDesiredValue(0.f);
@@ -1419,6 +1495,21 @@ void FAnimMontageInstance::Stop(const FAlphaBlend& InBlendOut, bool bInterrupt)
 	}
 }
 
+void FAnimMontageInstance::Stop(const FAlphaBlend& InBlendOut, bool bInterrupt/*=true*/)
+{
+	FMontageBlendSettings BlendOutSettings;
+	BlendOutSettings.Blend = InBlendOut;
+
+	// Fill our other settings from the montage asset
+	if (Montage)
+	{
+		BlendOutSettings.BlendMode = Montage->BlendModeOut;
+		BlendOutSettings.BlendProfile = Montage->BlendProfileOut;
+	}
+
+	Stop(BlendOutSettings, bInterrupt);
+}
+
 void FAnimMontageInstance::Pause()
 {
 	bPlaying = false;
@@ -1434,6 +1525,7 @@ void FAnimMontageInstance::Initialize(class UAnimMontage * InMontage)
 	{
 		Montage = InMontage;
 		SetPosition(0.f);
+		BlendStartAlpha = 0.0f;
 		// initialize Blend
 		Blend.SetValueRange(0.f, 1.0f);
 		RefreshNextPrevSections();
@@ -1529,6 +1621,7 @@ void FAnimMontageInstance::Terminate()
 	Blend.SetCustomCurve(NULL);
 	Blend.SetBlendOption(EAlphaBlendOption::Linear);
 
+	ActiveBlendProfile = nullptr;
 	Montage = nullptr;
 
 	UE_LOG(LogAnimMontage, Verbose, TEXT("Terminating: AnimMontage: %s"), *GetNameSafe(OldMontage));
@@ -1747,6 +1840,7 @@ void FAnimMontageInstance::MontageSync_PerformSyncToLeader()
 	}
 }
 
+
 void FAnimMontageInstance::UpdateWeight(float DeltaTime)
 {
 	if ( IsValid() )
@@ -1755,6 +1849,11 @@ void FAnimMontageInstance::UpdateWeight(float DeltaTime)
 
 		// update weight
 		Blend.Update(DeltaTime);
+
+		if (Blend.GetBlendTimeRemaining() < 0.0001f)
+		{
+			ActiveBlendProfile = nullptr;
+		}
 
 		// Notify weight is max of previous and current as notify could have come
 		// from any point between now and last tick
@@ -2209,8 +2308,7 @@ void FAnimMontageInstance::Advance(float DeltaTime, struct FRootMotionMovementPa
 		{
 			const bool bExtractRootMotion = (OutRootMotionParams != nullptr) && Montage->HasRootMotion();
 			
-			DeltaMoved = 0.f;
-			PreviousPosition = Position;
+			DeltaTimeRecord.Set(Position, 0.f);
 
 			bDidUseMarkerSyncThisTick = CanUseMarkerSync();
 			if (bDidUseMarkerSyncThisTick)
@@ -2251,7 +2349,7 @@ void FAnimMontageInstance::Advance(float DeltaTime, struct FRootMotionMovementPa
 				}
 
 				const float SubStepDeltaMove = MontageSubStepper.GetDeltaMove();
-				DeltaMoved += SubStepDeltaMove;
+				DeltaTimeRecord.Delta += SubStepDeltaMove;
 				const bool bPlayingForward = MontageSubStepper.GetbPlayingForward();
 
 				// If current section is last one, check to trigger a blend out and if it hasn't stopped yet, see if we should stop
@@ -2430,26 +2528,27 @@ void FAnimMontageInstance::HandleEvents(float PreviousTrackPos, float CurrentTra
 	// now get active Notifies based on how it advanced
 	if (AnimInstance.IsValid())
 	{
-		TArray<FAnimNotifyEventReference> NotitfyRefs;
 		TMap<FName, TArray<FAnimNotifyEventReference>> NotifyMap;
-
+		FAnimTickRecord TickRecord;
+		FAnimNotifyContext NotifyContext(TickRecord);
 		// We already break up AnimMontage update to handle looping, so we guarantee that PreviousPos and CurrentPos are contiguous.
-		Montage->GetAnimNotifiesFromDeltaPositions(PreviousTrackPos, CurrentTrackPos, NotitfyRefs);
+		Montage->GetAnimNotifiesFromDeltaPositions(PreviousTrackPos, CurrentTrackPos, NotifyContext);
 
 		// For Montage only, remove notifies marked as 'branching points'. They are not queued and are handled separately.
-		Montage->FilterOutNotifyBranchingPoints(NotitfyRefs);
+		Montage->FilterOutNotifyBranchingPoints(NotifyContext.ActiveNotifies);
 
 		// now trigger notifies for all animations within montage
 		// we'll do this for all slots for now
 		for (auto SlotTrack = Montage->SlotAnimTracks.CreateIterator(); SlotTrack; ++SlotTrack)
 		{
 			TArray<FAnimNotifyEventReference>& MapNotifies = NotifyMap.FindOrAdd(SlotTrack->SlotName);
-
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			SlotTrack->AnimTrack.GetAnimNotifiesFromTrackPositions(PreviousTrackPos, CurrentTrackPos, MapNotifies);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 
 		// Queue all these notifies.
-		AnimInstance->NotifyQueue.AddAnimNotifies(NotitfyRefs, NotifyWeight);
+		AnimInstance->NotifyQueue.AddAnimNotifies(NotifyContext.ActiveNotifies, NotifyWeight);
 		AnimInstance->NotifyQueue.AddAnimNotifies(NotifyMap, NotifyWeight);
 	}
 
@@ -2611,129 +2710,6 @@ void FAnimMontageInstance::BranchingPointEventHandler(const FBranchingPointMarke
 	}
 }
 
-UAnimMontage* FAnimMontageInstance::InitializeMatineeControl(FName SlotName, UAnimInstance* AnimInstance, UAnimSequenceBase* InAnimSequence, bool bLooping)
-{
-	UAnimMontage* MontageToPlay = Cast<UAnimMontage>(InAnimSequence);
-
-	if (UAnimSingleNodeInstance* SingleNodeInst = Cast<UAnimSingleNodeInstance>(AnimInstance))
-	{
-		// Single node anim instance
-		if (SingleNodeInst->GetCurrentAsset() != InAnimSequence)
-		{
-			SingleNodeInst->SetAnimationAsset(InAnimSequence, bLooping);
-			SingleNodeInst->SetPosition(0.0f);
-		}
-
-		if (SingleNodeInst->IsLooping() != bLooping)
-		{
-			SingleNodeInst->SetLooping(bLooping);
-		}
-
-		return MontageToPlay;
-	}
-	else if (UAnimInstance* AnimInst = AnimInstance)
-	{
-		UAnimMontage* PreviousMontage = nullptr;
-
-		if (MontageToPlay)
-		{
-			if (!AnimInst->Montage_IsPlaying(MontageToPlay))
-			{
-				// Will reuse an existing montage instance for this montage, if one already exists
-				AnimInst->Montage_Play(MontageToPlay, 0.f);
-			}
-
-			return MontageToPlay;
-		}
-
-		// We need to attempt find an existing slot animation
-		for (FAnimMontageInstance* MontageInstance : AnimInst->MontageInstances)
-		{
-			if (!MontageInstance || !MontageInstance->IsActive())
-			{
-				continue;
-			}
-
-			// Try and find an anim track for the desired slot
-			UAnimMontage* ThisMontage = MontageInstance->Montage;
-			const FAnimTrack* AnimTrack = ( ThisMontage && ThisMontage->GetOuter() == GetTransientPackage() ) ? ThisMontage->GetAnimationData(SlotName) : nullptr;
-			if (!AnimTrack)
-			{
-				continue;
-			}
-
-			// Try and find our asset on this track
-			if (AnimTrack->AnimSegments.Num() == 1 && AnimTrack->AnimSegments[0].AnimReference == InAnimSequence)
-			{
-				// We've already found an active animation in this slot that's playing our animation. Use that.
-				return ThisMontage;
-			}
-
-			// Something animating this slot that's not us - set weight to be 0 on this slot
-			MontageInstance->Blend.SetDesiredValue(0.f);
-			MontageInstance->Blend.SetAlpha(1.f);
-		}
-
-		return AnimInst->PlaySlotAnimationAsDynamicMontage(InAnimSequence, SlotName, 0.0f, 0.0f, 0.f, 1);
-	}
-
-	return nullptr;
-}
-
-UAnimMontage* FAnimMontageInstance::SetMatineeAnimPositionInner(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, UAnimSequenceBase* InAnimSequence, float InPosition, bool bLooping)
-{
-	if (SkeletalMeshComponent)
-	{
-		return SetMatineeAnimPositionInner(SlotName, SkeletalMeshComponent->GetAnimInstance(), InAnimSequence, InPosition, bLooping);
-	}
-
-	return nullptr;
-}
-
-UAnimMontage* FAnimMontageInstance::SetMatineeAnimPositionInner(FName SlotName, UAnimInstance* AnimInstance, UAnimSequenceBase* InAnimSequence, float InPosition, bool bLooping)
-{
-	UAnimMontage* PlayingMontage = InitializeMatineeControl(SlotName, AnimInstance, InAnimSequence, bLooping);
-	UAnimInstance* AnimInst = AnimInstance;
-	if (UAnimSingleNodeInstance* SingleNodeInst = Cast<UAnimSingleNodeInstance>(AnimInst))
-	{
-		if (SingleNodeInst->GetCurrentTime() != InPosition)
-		{
-			SingleNodeInst->SetPosition(InPosition);
-		}
-	}
-	else if (PlayingMontage && AnimInst)
-	{
-		FAnimMontageInstance* AnimMontageInst = AnimInst->GetActiveInstanceForMontage(PlayingMontage);
-		if (!AnimMontageInst)
-		{
-			UE_LOG(LogSkeletalMesh, Warning, TEXT("Unable to set animation position for montage on slot name: %s"), *SlotName.ToString());
-			return nullptr;
-		}
-
-		// ensure full weighting to this instance
-		AnimMontageInst->Blend.SetDesiredValue(1.f);
-		AnimMontageInst->Blend.SetAlpha(1.f);
-
-		AnimMontageInst->SetNextPositionWithEvents(InPosition);
-	}
-	else
-	{
-		UE_LOG(LogSkeletalMesh, Warning, TEXT("Invalid animation configuration when attempting to set animation possition with : %s"), *InAnimSequence->GetName());
-	}
-
-	return PlayingMontage;
-}
-
-UAnimMontage* FAnimMontageInstance::PreviewMatineeSetAnimPositionInner(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, UAnimSequenceBase* InAnimSequence, float InPosition, bool bLooping, bool bFireNotifies, float DeltaTime)
-{
-	if (SkeletalMeshComponent)
-	{
-		return PreviewMatineeSetAnimPositionInner(SlotName, SkeletalMeshComponent, SkeletalMeshComponent->GetAnimInstance(), InAnimSequence, InPosition, bLooping, bFireNotifies, DeltaTime);
-	}
-
-	return nullptr;
-}
-
 UAnimMontage* FAnimMontageInstance::PreviewSequencerMontagePosition(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, int32& InOutInstanceId, UAnimSequenceBase* InAnimSequence, float InFromPosition, float InToPosition, float Weight, bool bLooping, bool bFireNotifies, bool bPlaying)
 {
 	if (SkeletalMeshComponent)
@@ -2742,81 +2718,6 @@ UAnimMontage* FAnimMontageInstance::PreviewSequencerMontagePosition(FName SlotNa
 	}
 
 	return nullptr;
-}
-
-UAnimMontage* FAnimMontageInstance::PreviewMatineeSetAnimPositionInner(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, UAnimInstance* AnimInstance, UAnimSequenceBase* InAnimSequence, float InPosition, bool bLooping, bool bFireNotifies, float DeltaTime)
-{
-	// Codepath for updating an animation when the skeletal mesh component is not going to be ticked (ie in editor)
-	UAnimMontage* PlayingMontage = InitializeMatineeControl(SlotName, AnimInstance, InAnimSequence, bLooping);
-
-	UAnimInstance* AnimInst = AnimInstance;
-
-	FAnimMontageInstance* MontageInstanceToUpdate = AnimInst && PlayingMontage ? AnimInst->GetActiveInstanceForMontage(PlayingMontage) : nullptr;
-	float PreviousPosition = InPosition;
-
-	if (UAnimSingleNodeInstance* SingleNodeInst = Cast<UAnimSingleNodeInstance>(AnimInst))
-	{
-		PreviousPosition = SingleNodeInst->GetCurrentTime();
-
-		// If we're playing a montage, we fire notifies explicitly below (rather than allowing the single node instance to do it)
-		const bool bFireNotifiesHere = bFireNotifies && PlayingMontage == nullptr;
-
-		if (DeltaTime == 0.f)
-		{
-			const float PreviousTime = InPosition;
-			SingleNodeInst->SetPositionWithPreviousTime(InPosition, PreviousTime, bFireNotifiesHere);
-		}
-		else
-		{
-			SingleNodeInst->SetPosition(InPosition, bFireNotifiesHere);
-		}
-	}
-	else if (MontageInstanceToUpdate)
-	{
-		// ensure full weighting to this instance
-		MontageInstanceToUpdate->Blend.SetDesiredValue(1.f);
-		MontageInstanceToUpdate->Blend.SetAlpha(1.f);
-
-		PreviousPosition = AnimInst->Montage_GetPosition(PlayingMontage);
-		AnimInst->Montage_SetPosition(PlayingMontage, InPosition);
-	}
-	else
-	{
-		UE_LOG(LogSkeletalMesh, Warning, TEXT("Invalid animation configuration when attempting to set animation possition with : %s"), *InAnimSequence->GetName());
-	}
-
-	// Now force the animation system to update, if we have a montage instance
-	if (MontageInstanceToUpdate)
-	{
-		AnimInst->UpdateAnimation(DeltaTime, false);
-
-		// since we don't advance montage in the tick, we manually have to handle notifies
-		MontageInstanceToUpdate->HandleEvents(PreviousPosition, InPosition, NULL);
-
-		if (!bFireNotifies)
-		{
-			AnimInst->NotifyQueue.Reset(SkeletalMeshComponent);
-		}
-
-		// Allow the proxy to update (this also filters unfiltered notifies)
-		if (AnimInst->NeedsUpdate())
-		{
-			AnimInst->ParallelUpdateAnimation();
-		}
-
-		// Explicitly call post update (also triggers notifies)
-		AnimInst->PostUpdateAnimation();
-	}
-
-	// Update space bases so new animation position has an effect.
-	SkeletalMeshComponent->RefreshBoneTransforms();
-	SkeletalMeshComponent->RefreshSlaveComponents();
-	SkeletalMeshComponent->UpdateComponentToWorld();
-	SkeletalMeshComponent->FinalizeBoneTransform();
-	SkeletalMeshComponent->MarkRenderTransformDirty();
-	SkeletalMeshComponent->MarkRenderDynamicDataDirty();
-
-	return PlayingMontage;
 }
 
 UAnimMontage* FAnimMontageInstance::SetSequencerMontagePosition(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, int32& InOutInstanceId, UAnimSequenceBase* InAnimSequence, float InFromPosition, float InToPosition, float Weight, bool bLooping, bool bPlaying)
@@ -2856,6 +2757,7 @@ UAnimMontage* FAnimMontageInstance::SetSequencerMontagePosition(FName SlotName, 
 			// ensure full weighting to this instance
 			MontageInstanceToUpdate->Blend.SetDesiredValue(Weight);
 			MontageInstanceToUpdate->Blend.SetAlpha(Weight);
+			MontageInstanceToUpdate->BlendStartAlpha = MontageInstanceToUpdate->Blend.GetAlpha();
 			
 			if (bInPlaying)
 			{
@@ -2906,6 +2808,15 @@ UAnimMontage* FAnimMontageInstance::PreviewSequencerMontagePosition(FName SlotNa
 
 UAnimMontage* UAnimMontage::CreateSlotAnimationAsDynamicMontage(UAnimSequenceBase* Asset, FName SlotNodeName, float BlendInTime, float BlendOutTime, float InPlayRate, int32 LoopCount, float BlendOutTriggerTime, float InTimeToStartMontageAt)
 {
+	FMontageBlendSettings BlendInSettings(BlendInTime);
+	FMontageBlendSettings BlendOutSettings(BlendOutTime);
+
+	// InTimeToStartMontageAt is an unused argument. Keeping it to avoid changing public api.
+	return CreateSlotAnimationAsDynamicMontage_WithBlendSettings(Asset, SlotNodeName, BlendInSettings, BlendOutSettings, InPlayRate, LoopCount, BlendOutTriggerTime);
+}
+
+UAnimMontage* UAnimMontage::CreateSlotAnimationAsDynamicMontage_WithBlendSettings(UAnimSequenceBase* Asset, FName SlotNodeName, const FMontageBlendSettings& BlendInSettings, const FMontageBlendSettings& BlendOutSettings, float InPlayRate, int32 LoopCount, float InBlendOutTriggerTime)
+{
 	// create temporary montage and play
 	bool bValidAsset = Asset && !Asset->IsA(UAnimMontage::StaticClass());
 	if (!bValidAsset)
@@ -2939,23 +2850,32 @@ UAnimMontage* UAnimMontage::CreateSlotAnimationAsDynamicMontage(UAnimSequenceBas
 	FAnimSegment NewSegment;
 	NewSegment.AnimReference = Asset;
 	NewSegment.AnimStartTime = 0.f;
-	NewSegment.AnimEndTime = Asset->SequenceLength;
+	NewSegment.AnimEndTime = Asset->GetPlayLength();
 	NewSegment.AnimPlayRate = 1.f;
 	NewSegment.StartPos = 0.f;
 	NewSegment.LoopingCount = LoopCount;
-	NewMontage->SequenceLength = NewSegment.GetLength();
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+    NewMontage->SequenceLength = NewSegment.GetLength();
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	NewTrack.AnimTrack.AnimSegments.Add(NewSegment);
 
 	FCompositeSection NewSection;
 	NewSection.SectionName = TEXT("Default");
-	NewSection.LinkSequence(Asset, Asset->SequenceLength);
+	NewSection.LinkSequence(Asset, Asset->GetPlayLength());
 	NewSection.SetTime(0.0f);
 
 	// add new section
 	NewMontage->CompositeSections.Add(NewSection);
-	NewMontage->BlendIn.SetBlendTime(BlendInTime);
-	NewMontage->BlendOut.SetBlendTime(BlendOutTime);
-	NewMontage->BlendOutTriggerTime = BlendOutTriggerTime;
+
+	NewMontage->BlendIn = FAlphaBlend(BlendInSettings.Blend);
+	NewMontage->BlendModeIn = BlendInSettings.BlendMode;
+	NewMontage->BlendProfileIn = BlendInSettings.BlendProfile;
+
+	NewMontage->BlendOut = FAlphaBlend(BlendOutSettings.Blend);
+	NewMontage->BlendModeOut = BlendOutSettings.BlendMode;
+	NewMontage->BlendProfileOut = BlendOutSettings.BlendProfile;
+
+	NewMontage->BlendOutTriggerTime = InBlendOutTriggerTime;
 	return NewMontage;
 }
 
@@ -2965,12 +2885,13 @@ bool FAnimMontageInstance::CanUseMarkerSync() const
 	return SyncGroupName != NAME_None && IsStopped() && Blend.IsComplete() == false;
 }
 
+#if WITH_EDITOR
 void UAnimMontage::BakeTimeStretchCurve()
 {
 	TimeStretchCurve.Reset();
 
 	// See if Montage is hosting a curve named 'TimeStretchCurveName'
-	FFloatCurve* TimeStretchFloatCurve = nullptr;
+	const FFloatCurve* TimeStretchFloatCurve = nullptr;
 	if (const USkeleton* MySkeleton = GetSkeleton())
 	{
 		if (const FSmartNameMapping* CurveNameMapping = MySkeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName))
@@ -2978,7 +2899,7 @@ void UAnimMontage::BakeTimeStretchCurve()
 			const USkeleton::AnimCurveUID CurveUID = CurveNameMapping->FindUID(TimeStretchCurveName);
 			if (CurveUID != SmartName::MaxUID)
 			{
-				TimeStretchFloatCurve = (FFloatCurve*)(GetCurveData().GetCurveData(CurveUID));
+				TimeStretchFloatCurve = GetDataModel()->FindFloatCurve(FAnimationCurveIdentifier(CurveUID, ERawCurveTrackTypes::RCT_Float));
 			}
 		}
 	}
@@ -2988,5 +2909,25 @@ void UAnimMontage::BakeTimeStretchCurve()
 		return;
 	}
 	
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	TimeStretchCurve.BakeFromFloatCurve(*TimeStretchFloatCurve, SequenceLength);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
+#endif // WITH_EDITOR
+
+FMontageBlendSettings::FMontageBlendSettings()
+	: BlendProfile(nullptr)
+	, BlendMode(EMontageBlendMode::Standard)
+{}
+
+FMontageBlendSettings::FMontageBlendSettings(float BlendTime)
+	: BlendProfile(nullptr)
+	, Blend(BlendTime)
+	, BlendMode(EMontageBlendMode::Standard)
+{}
+
+FMontageBlendSettings::FMontageBlendSettings(const FAlphaBlendArgs& BlendArgs)
+	: BlendProfile(nullptr)
+	, Blend(BlendArgs)
+	, BlendMode(EMontageBlendMode::Standard)
+{}

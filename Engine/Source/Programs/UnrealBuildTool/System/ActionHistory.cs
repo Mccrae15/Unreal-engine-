@@ -9,7 +9,8 @@ using System.Linq;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Security.Cryptography;
 using System.Text;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -77,7 +78,7 @@ namespace UnrealBuildTool
 						return;
 					}
 
-					OutputItemToAttributeHash = new ConcurrentDictionary<FileItem, byte[]>(Reader.ReadDictionary(() => Reader.ReadFileItem(), () => Reader.ReadFixedSizeByteArray(HashLength)));
+					OutputItemToAttributeHash = new ConcurrentDictionary<FileItem, byte[]>(Reader.ReadDictionary(() => Reader.ReadFileItem()!, () => Reader.ReadFixedSizeByteArray(HashLength))!);
 				}
 			}
 			catch(Exception Ex)
@@ -154,7 +155,7 @@ namespace UnrealBuildTool
 				}
 				else
 				{
-					byte[] OldHash;
+					byte[]? OldHash;
 					if (OutputItemToAttributeHash.TryGetValue(File, out OldHash))
 					{
 						if (CompareHashes(NewHash, OldHash))
@@ -196,7 +197,7 @@ namespace UnrealBuildTool
 				AppName = UEBuildTarget.GetAppNameForTargetType(TargetType);
 			}
 
-			return FileReference.Combine(UnrealBuildTool.EngineDirectory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architecture), AppName, "ActionHistory.bin");
+			return FileReference.Combine(Unreal.EngineDirectory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architecture, false), AppName, "ActionHistory.bin");
 		}
 
 		/// <summary>
@@ -209,7 +210,7 @@ namespace UnrealBuildTool
 		/// <returns>Path to the project action history</returns>
 		public static FileReference GetProjectLocation(FileReference ProjectFile, string TargetName, UnrealTargetPlatform Platform, string Architecture)
 		{
-			return FileReference.Combine(ProjectFile.Directory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architecture), TargetName, "ActionHistory.dat");
+			return FileReference.Combine(ProjectFile.Directory, UEBuildTarget.GetPlatformIntermediateFolder(Platform, Architecture, false), TargetName, "ActionHistory.dat");
 		}
 
 		/// <summary>
@@ -223,7 +224,7 @@ namespace UnrealBuildTool
 		/// <returns>Dependency cache hierarchy for the given project</returns>
 		public static IEnumerable<FileReference> GetFilesToClean(FileReference ProjectFile, string TargetName, UnrealTargetPlatform Platform, TargetType TargetType, string Architecture)
 		{
-			if(ProjectFile == null || !UnrealBuildTool.IsEngineInstalled())
+			if(ProjectFile == null || !Unreal.IsEngineInstalled())
 			{
 				yield return GetEngineLocation(TargetName, Platform, TargetType, Architecture);
 			}
@@ -399,7 +400,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		public ActionHistory()
 		{
-			Partitions.Add(new ActionHistoryPartition(UnrealBuildTool.EngineDirectory));
+			Partitions.Add(new ActionHistoryPartition(Unreal.EngineDirectory));
 		}
 
 		/// <summary>

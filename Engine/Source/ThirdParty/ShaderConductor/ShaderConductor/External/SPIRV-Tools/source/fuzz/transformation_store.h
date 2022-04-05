@@ -15,9 +15,9 @@
 #ifndef SOURCE_FUZZ_TRANSFORMATION_STORE_H_
 #define SOURCE_FUZZ_TRANSFORMATION_STORE_H_
 
-#include "source/fuzz/fact_manager.h"
 #include "source/fuzz/protobufs/spirvfuzz_protobufs.h"
 #include "source/fuzz/transformation.h"
+#include "source/fuzz/transformation_context.h"
 #include "source/opt/ir_context.h"
 
 namespace spvtools {
@@ -25,15 +25,24 @@ namespace fuzz {
 
 class TransformationStore : public Transformation {
  public:
-  explicit TransformationStore(const protobufs::TransformationStore& message);
+  explicit TransformationStore(protobufs::TransformationStore message);
 
   TransformationStore(
-      uint32_t pointer_id, uint32_t value_id,
+      uint32_t pointer_id, bool is_atomic, uint32_t memory_scope,
+      uint32_t memory_semantics, uint32_t value_id,
       const protobufs::InstructionDescriptor& instruction_to_insert_before);
 
   // - |message_.pointer_id| must be the id of a pointer
   // - The pointer type must not have read-only storage class
   // - The pointer must not be OpConstantNull or OpUndef
+  // - |message_.is_atomic| must be true if want to work with OpAtomicStore.
+  // - If |is_atomic| is true then |message_memory_scope_id| must be the id of
+  //   an OpConstant 32 bit integer instruction with the value
+  //   SpvScopeInvocation.
+  // - If |is_atomic| is true then |message_.memory_semantics_id| must be the id
+  //   of an OpConstant 32 bit integer instruction with the values
+  //   SpvMemorySemanticsWorkgroupMemoryMask or
+  //   SpvMemorySemanticsUniformMemoryMask.
   // - |message_.value_id| must be an instruction result id that has the same
   //   type as the pointee type of |message_.pointer_id|
   // - |message_.instruction_to_insert_before| must identify an instruction
@@ -42,14 +51,18 @@ class TransformationStore : public Transformation {
   //   to dominance rules)
   // - Either the insertion point must be in a dead block, or it must be known
   //   that the pointee value of |message_.pointer_id| is irrelevant
-  bool IsApplicable(opt::IRContext* context,
-                    const FactManager& fact_manager) const override;
+  bool IsApplicable(
+      opt::IRContext* ir_context,
+      const TransformationContext& transformation_context) const override;
 
   // Adds an instruction of the form:
   //   OpStore |pointer_id| |value_id|
   // before the instruction identified by
   // |message_.instruction_to_insert_before|.
-  void Apply(opt::IRContext* context, FactManager* fact_manager) const override;
+  void Apply(opt::IRContext* ir_context,
+             TransformationContext* transformation_context) const override;
+
+  std::unordered_set<uint32_t> GetFreshIds() const override;
 
   protobufs::Transformation ToMessage() const override;
 

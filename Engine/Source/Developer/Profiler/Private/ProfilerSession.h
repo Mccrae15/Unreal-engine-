@@ -15,6 +15,8 @@
 #include "Stats/StatsData.h"
 #include "ProfilerStream.h"
 
+#if STATS
+
 class FFPSAnalyzer;
 class FProfilerGroup;
 class IDataProvider;
@@ -1055,7 +1057,7 @@ protected:
 	FTickerDelegate OnTick;
 
 	/** Handle to the registered OnTick. */
-	FDelegateHandle OnTickHandle;
+	FTSTicker::FDelegateHandle OnTickHandle;
 
 	/** The data provider which holds all the collected profiler samples. */
 	TSharedRef<IDataProvider> DataProvider;
@@ -1116,3 +1118,5 @@ public:
 	/** Provides analysis of the frame rate */
 	TSharedRef<FFPSAnalyzer> FPSAnalyzer;
 };
+
+#endif // STATS

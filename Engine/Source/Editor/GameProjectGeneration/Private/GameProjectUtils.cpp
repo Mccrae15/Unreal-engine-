@@ -6,7 +6,7 @@
 #include "UObject/Class.h"
 #include "FeaturePackContentSource.h"
 #include "TemplateProjectDefs.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
@@ -91,84 +91,15 @@
 TWeakPtr<SNotificationItem> GameProjectUtils::UpdateGameProjectNotification = NULL;
 TWeakPtr<SNotificationItem> GameProjectUtils::WarningProjectNameNotification = NULL;
 
-bool GameProjectUtils::bUseAudioMixerForAllPlatforms = false;
-
 constexpr const TCHAR GameProjectUtils::IncludePathFormatString[];
-
-struct FAudioDefaultPlatformSettings
-{
-	FString Name;
-	FAudioPlatformSettings Settings;
-	const TCHAR* ConfigSectionName;
-	bool bUseAudioMixer;
-	FString HardwareOcclusionPlugin;
-	FString HardwareReverbPlugin;
-	FString HardwareSpatializationPlugin;
-
-	FAudioDefaultPlatformSettings(const TCHAR* InConfigSectionName)
-		: ConfigSectionName(InConfigSectionName)
-		, bUseAudioMixer(false)
-	{
-	}
-};
 
 namespace
 {
-	TMap<FString, FAudioDefaultPlatformSettings> GetAudioPlatformProjectDefaultSettings()
-	{
-		TMap<FString, FAudioDefaultPlatformSettings> DefaultProjectSettings;
-
-		// If bUseAudioMixerForAllPlatforms is set to false, uncomment the following line to enable
-		// the new audio mixer on specific platform. Ex. for Windows:
-		// WindowsSettings.bUseAudioMixer = true;
-
-		FAudioDefaultPlatformSettings AndroidSettings(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"));
-		AndroidSettings.Settings.MaxChannels = 12;
-		DefaultProjectSettings.Add(TEXT("Android"), AndroidSettings);
-
-		FAudioDefaultPlatformSettings IOSSettings(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"));
-		IOSSettings.Settings.MaxChannels = 16;
-		DefaultProjectSettings.Add(TEXT("IOS"), IOSSettings);
-
-		FAudioDefaultPlatformSettings LinuxSettings(TEXT("/Script/LinuxTargetPlatform.LinuxTargetSettings"));
-		LinuxSettings.Settings.MaxChannels = 16;
-		DefaultProjectSettings.Add(TEXT("Linux"), LinuxSettings);
-
-		FAudioDefaultPlatformSettings MacSettings(TEXT("/Script/MacTargetPlatform.MacTargetSettings"));
-		DefaultProjectSettings.Add(TEXT("Mac"), MacSettings);
-
-		FAudioDefaultPlatformSettings PS4Settings(TEXT("/Script/PS4PlatformEditor.PS4TargetSettings"));
-		PS4Settings.Settings.CallbackBufferFrameSize = 256;
-		PS4Settings.Settings.NumBuffers = 7;
-		PS4Settings.Settings.NumSourceWorkers = 4;
-		PS4Settings.HardwareSpatializationPlugin = TEXT("Audio3D");
-		DefaultProjectSettings.Add(TEXT("PS4"), PS4Settings);
-
-		FAudioDefaultPlatformSettings SwitchSettings(TEXT("/Script/SwitchRuntimeSettings.SwitchRuntimeSettings"));
-		SwitchSettings.Settings.MaxChannels = 16;
-		DefaultProjectSettings.Add(TEXT("Switch"), SwitchSettings);
-
-		FAudioDefaultPlatformSettings WindowsSettings(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"));
-		WindowsSettings.Settings.CallbackBufferFrameSize = 256;
-		WindowsSettings.Settings.NumBuffers = 7;
-		DefaultProjectSettings.Add(TEXT("Windows"), WindowsSettings);
-
-		FAudioDefaultPlatformSettings XBoxSettings(TEXT("/Script/XboxOnePlatformEditor.XboxOneTargetSettings"));
-		XBoxSettings.Settings.CallbackBufferFrameSize = 256;
-		XBoxSettings.Settings.NumBuffers = 7;
-		DefaultProjectSettings.Add(TEXT("XboxOne"), XBoxSettings);
-
-
-		return MoveTemp(DefaultProjectSettings);
-	}
-
 	// @todo: This is currently not called from anywhere as this approach does not work for binary builds.
 	/** Set the state of XR plugins in OutProject based on the flags in InProjectInfo. */
 	void SetXRPluginStates(const FProjectInformation& InProjectInfo, FProjectDescriptor& OutProject)
 	{
 		static const FString XRPlugins[] = {
-			TEXT("MagicLeapMedia"),
-			TEXT("MagicLeap"),
 			TEXT("OculusVR"),
 			TEXT("SteamVR") };
 
@@ -187,6 +118,41 @@ namespace
 				OutProject.Plugins[Index].bEnabled = false;
 			}
 		}
+	}
+
+	/** Get the configuration values for enabling Lumen by default. */
+	void AddLumenConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues)
+	{
+		// Required for Lumen's Software Ray Tracing support
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/Engine.RendererSettings"),
+			TEXT("r.GenerateMeshDistanceFields"),
+			TEXT("True"),
+			true /* ShouldReplaceExistingValue */);
+
+		// Enable Lumen Global Illumination by default
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/Engine.RendererSettings"),
+			TEXT("r.DynamicGlobalIlluminationMethod"),
+			TEXT("1"),
+			true /* ShouldReplaceExistingValue */);
+
+		// Enable Lumen Reflections by default
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/Engine.RendererSettings"),
+			TEXT("r.ReflectionMethod"),
+			TEXT("1"),
+			true /* ShouldReplaceExistingValue */);
+	}
+
+	void AddNewProjectDefaultShadowConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues)
+	{
+		// Enable support for virtual shadow maps by default for new projects
+		ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+			TEXT("/Script/Engine.RendererSettings"),
+			TEXT("r.Shadow.Virtual.Enable"),
+			TEXT("1"),
+			true /* ShouldReplaceExistingValue */);
 	}
 
 	/** Get the configuration values for raytracing if enabled. */
@@ -235,6 +201,19 @@ namespace
 				TEXT("/Script/EngineSettings.GameMapsSettings"),
 				TEXT("GameDefaultMap"),
 				DefaultMap,
+				true /* ShouldReplaceExistingValue */);
+		}
+	}
+
+	/** Get the configuration values for enabling WorldPartition by default. */
+	void AddWorldPartitionConfigValues(const FProjectInformation& InProjectInfo, TArray<FTemplateConfigValue>& ConfigValues)
+	{
+		if (InProjectInfo.bIsBlankTemplate)
+		{
+			ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+				TEXT("/Script/WorldPartitionEditor.WorldPartitionEditorSettings"),
+				TEXT("CommandletClass"),
+				TEXT("Class'/Script/UnrealEd.WorldPartitionConvertCommandlet'"),
 				true /* ShouldReplaceExistingValue */);
 		}
 	}
@@ -652,12 +631,6 @@ bool GameProjectUtils::IsValidProjectFileForCreation(const FString& ProjectFile,
 		return false;
 	}
 
-	if (NameContainsUnderscoreAndXB1Installed(BaseProjectFile))
-	{
-		OutFailReason = LOCTEXT( "ProjectNameContainsIllegalCharactersOnXB1", "Project names may not contain an underscore when the Xbox One XDK is installed." );
-		return false;
-	}
-
 	if ( !FPaths::ValidatePath(FPaths::GetPath(ProjectFile), &OutFailReason) )
 	{
 		return false;
@@ -742,12 +715,6 @@ bool GameProjectUtils::OpenProject(const FString& ProjectFile, FText& OutFailRea
 		return false;
 	}
 
-	if (NameContainsUnderscoreAndXB1Installed(BaseProjectFile))
-	{
-		OutFailReason = LOCTEXT( "ProjectNameContainsIllegalCharactersOnXB1", "Project names may not contain an underscore when the Xbox One XDK is installed." );
-		return false;
-	}
-
 	if ( !FPaths::ValidatePath(FPaths::GetPath(ProjectFile), &OutFailReason) )
 	{
 		return false;
@@ -785,7 +752,7 @@ bool GameProjectUtils::OpenCodeIDE(const FString& ProjectFile, FText& OutFailRea
 	else
 	{
 		SolutionFolder = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*FPaths::RootDir());
-		SolutionFilenameWithoutExtension = TEXT("UE4");
+		SolutionFilenameWithoutExtension = TEXT("UE5");
 	}
 
 	if (!FSourceCodeNavigation::OpenProjectSolution(FPaths::Combine(SolutionFolder, SolutionFilenameWithoutExtension)))
@@ -877,19 +844,19 @@ bool GameProjectUtils::CreateProject(const FProjectInformation& InProjectInfo, F
 
 		if (InProjectInfo.TargetedHardware.IsSet())
 		{
-			UEnum* HardwareClassEnum = StaticEnum<EHardwareClass::Type>();
+			UEnum* HardwareClassEnum = StaticEnum<EHardwareClass>();
 			if (HardwareClassEnum != nullptr)
 			{
-				EventAttributes.Add(FAnalyticsEventAttribute(TEXT("HardwareClass"), HardwareClassEnum->GetNameStringByValue(InProjectInfo.TargetedHardware.GetValue())));
+				EventAttributes.Add(FAnalyticsEventAttribute(TEXT("HardwareClass"), HardwareClassEnum->GetNameStringByValue(static_cast<int32>(InProjectInfo.TargetedHardware.GetValue()))));
 			}
 		}
 
 		if (InProjectInfo.DefaultGraphicsPerformance.IsSet())
 		{
-			UEnum* GraphicsPresetEnum = StaticEnum<EGraphicsPreset::Type>();
+			UEnum* GraphicsPresetEnum = StaticEnum<EGraphicsPreset>();
 			if (GraphicsPresetEnum != nullptr)
 			{
-				EventAttributes.Add(FAnalyticsEventAttribute(TEXT("GraphicsPreset"), GraphicsPresetEnum->GetNameStringByValue(InProjectInfo.DefaultGraphicsPerformance.GetValue())));
+				EventAttributes.Add(FAnalyticsEventAttribute(TEXT("GraphicsPreset"), GraphicsPresetEnum->GetNameStringByValue(static_cast<int32>(InProjectInfo.DefaultGraphicsPerformance.GetValue()))));
 			}
 		}
 
@@ -1285,7 +1252,13 @@ bool GameProjectUtils::IsValidBaseClassForCreation_Internal(const UClass* InClas
 
 GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject(const FString& NewClassName, const FString& NewClassPath, const FModuleContextInfo& ModuleInfo, const FNewClassInfo ParentClassInfo, const TSet<FString>& DisallowedHeaderNames, FString& OutHeaderFilePath, FString& OutCppFilePath, FText& OutFailReason)
 {
-	const EAddCodeToProjectResult Result = AddCodeToProject_Internal(NewClassName, NewClassPath, ModuleInfo, ParentClassInfo, DisallowedHeaderNames, OutHeaderFilePath, OutCppFilePath, OutFailReason);
+	EReloadStatus OutReloadStatus;
+	return AddCodeToProject(NewClassName, NewClassPath, ModuleInfo, ParentClassInfo, DisallowedHeaderNames, OutHeaderFilePath, OutCppFilePath, OutFailReason, OutReloadStatus);
+}
+
+GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject(const FString& NewClassName, const FString& NewClassPath, const FModuleContextInfo& ModuleInfo, const FNewClassInfo ParentClassInfo, const TSet<FString>& DisallowedHeaderNames, FString& OutHeaderFilePath, FString& OutCppFilePath, FText& OutFailReason, EReloadStatus& OutReloadStatus)
+{
+	const EAddCodeToProjectResult Result = AddCodeToProject_Internal(NewClassName, NewClassPath, ModuleInfo, ParentClassInfo, DisallowedHeaderNames, OutHeaderFilePath, OutCppFilePath, OutFailReason, OutReloadStatus);
 
 	if( FEngineAnalytics::IsAvailable() )
 	{
@@ -1431,6 +1404,23 @@ TOptional<FGuid> GameProjectUtils::GenerateProjectFromScratch(const FProjectInfo
 		{
 			Project.Modules.Add(FModuleDescriptor(*StartupModuleNames[Idx]));
 		}
+		
+		//=====================================================================
+		// Explicitly enable Modeling Mode plugin in Blank Template,
+		// with AllowList=Editor flags. In 5.0 the Modeling Mode plugin
+		// cannot be enabledByDefault in the .uplugin file due to 
+		// dependent Runtime modules that should not be included in all
+		// game builds. So, In 5.0 the plugin is explicitly enabled here
+		// for Blank projects. The uplugin-level issue is expected to 
+		// be resolved in 5.1, at which point this code block will be deleted
+		//=====================================================================
+		TSharedPtr<IPlugin> ModelingModePlugin = IPluginManager::Get().FindPlugin(TEXT("ModelingToolsEditorMode"));
+		if ( ModelingModePlugin.IsValid() )
+		{
+			FPluginReferenceDescriptor ModelingModeDescriptor(ModelingModePlugin->GetName(), true);
+			ModelingModeDescriptor.TargetAllowList.Add(EBuildTargetType::Editor);
+			Project.Plugins.Add(ModelingModeDescriptor);
+		}
 
 		Project.bIsEnterpriseProject = InProjectInfo.bIsEnterpriseProject;
 
@@ -1572,6 +1562,11 @@ static bool SaveConfigValues(const FProjectInformation& InProjectInfo, const TAr
 	}
 
 	return true;
+}
+
+static FString GetReplacePlaceholder(int Idx)
+{
+	return FString::Printf(TEXT("{{{REPLACE:%d}}}"), Idx);
 }
 
 TOptional<FGuid> GameProjectUtils::CreateProjectFromTemplate(const FProjectInformation& InProjectInfo, FText& OutFailReason, FText& OutFailLog, TArray<FString>* OutCreatedFiles)
@@ -1747,11 +1742,23 @@ TOptional<FGuid> GameProjectUtils::CreateProjectFromTemplate(const FProjectInfor
 			FString FileContents;
 			if ( FFileHelper::LoadFileToString(FileContents, *FileToFix) )
 			{
-				for ( const FTemplateReplacement& Replacement : TemplateDefs->ReplacementsInFiles )
+				// Substitute strings in two passes to avoid situations where patterns may match the replaced strings.
+				for (int Idx = 0; Idx < TemplateDefs->ReplacementsInFiles.Num(); Idx++)
 				{
-					if ( Replacement.Extensions.Contains( FPaths::GetExtension(FileToFix) ) )
+					const FTemplateReplacement& Replacement = TemplateDefs->ReplacementsInFiles[Idx];
+					if (Replacement.Extensions.Contains(FPaths::GetExtension(FileToFix)))
 					{
-						FileContents = FileContents.Replace(*Replacement.From, *Replacement.To, Replacement.bCaseSensitive ? ESearchCase::CaseSensitive : ESearchCase::IgnoreCase);
+						FString Placeholder = GetReplacePlaceholder(Idx);
+						FileContents.ReplaceInline(*Replacement.From, *Placeholder, Replacement.bCaseSensitive ? ESearchCase::CaseSensitive : ESearchCase::IgnoreCase);
+					}
+				}
+				for (int Idx = 0; Idx < TemplateDefs->ReplacementsInFiles.Num(); Idx++)
+				{
+					const FTemplateReplacement& Replacement = TemplateDefs->ReplacementsInFiles[Idx];
+					if (Replacement.Extensions.Contains(FPaths::GetExtension(FileToFix)))
+					{
+						FString Placeholder = GetReplacePlaceholder(Idx);
+						FileContents.ReplaceInline(*Placeholder, *Replacement.To, ESearchCase::CaseSensitive);
 					}
 				}
 
@@ -1778,9 +1785,11 @@ TOptional<FGuid> GameProjectUtils::CreateProjectFromTemplate(const FProjectInfor
 
 	AddHardwareConfigValues(InProjectInfo, ConfigValuesToSet);
 
+	AddLumenConfigValues(InProjectInfo, ConfigValuesToSet);
 	AddRaytracingConfigValues(InProjectInfo, ConfigValuesToSet);
-
+	AddNewProjectDefaultShadowConfigValues(InProjectInfo, ConfigValuesToSet);
 	AddDefaultMapConfigValues(InProjectInfo, ConfigValuesToSet);
+	AddWorldPartitionConfigValues(InProjectInfo, ConfigValuesToSet);
 	
 	TemplateDefs->AddConfigValues(ConfigValuesToSet, TemplateName, ProjectName, InProjectInfo.bShouldGenerateCode);
 
@@ -1793,7 +1802,7 @@ TOptional<FGuid> GameProjectUtils::CreateProjectFromTemplate(const FProjectInfor
 		const FString ClassRedirectString = FString::Printf(TEXT("(OldClassName=\"%s\",NewClassName=\"%s\")"), *Rename.Key, *Rename.Value);
 		ConfigValuesToSet.Emplace(TEXT("DefaultEngine.ini"), TEXT("/Script/Engine.Engine"), TEXT("+ActiveClassRedirects"), *ClassRedirectString, /*InShouldReplaceExistingValue=*/false);
 	}
-	
+
 	SlowTask.EnterProgressFrame();
 
 	if (!SaveConfigValues(InProjectInfo, ConfigValuesToSet, OutFailReason))
@@ -1942,34 +1951,6 @@ bool GameProjectUtils::NameContainsOnlyLegalCharacters(const FString& TestName, 
 	return !bContainsIllegalCharacters;
 }
 
-bool GameProjectUtils::NameContainsUnderscoreAndXB1Installed(const FString& TestName)
-{
-	// disabled for now so people with the SDK installed can use the editor
-	return false;
-
-	bool bContainsIllegalCharacters = false;
-
-	// Only allow alphanumeric characters in the project name
-	for ( int32 CharIdx = 0 ; CharIdx < TestName.Len() ; ++CharIdx )
-	{
-		const FString& Char = TestName.Mid( CharIdx, 1 );
-		if ( Char == TEXT("_") )
-		{
-			const ITargetPlatform* Platform = GetTargetPlatformManager()->FindTargetPlatform(TEXT("XboxOne"));
-			if (Platform)
-			{
-				FString NotInstalledDocLink;
-				if (Platform->IsSdkInstalled(true, NotInstalledDocLink))
-				{
-					bContainsIllegalCharacters = true;
-				}
-			}
-		}
-	}
-
-	return bContainsIllegalCharacters;
-}
-
 bool GameProjectUtils::ProjectFileExists(const FString& ProjectFile)
 {
 	return FPlatformFileManager::Get().GetPlatformFile().FileExists(*ProjectFile);
@@ -2013,7 +1994,7 @@ void GameProjectUtils::AddHardwareConfigValues(const FProjectInformation& InProj
 {
 	if (InProjectInfo.TargetedHardware.IsSet())
 	{
-		UEnum* HardwareClassEnum = StaticEnum<EHardwareClass::Type>();
+		UEnum* HardwareClassEnum = StaticEnum<EHardwareClass>();
 		if (HardwareClassEnum != nullptr)
 		{
 			FString TargetHardwareString;
@@ -2032,7 +2013,7 @@ void GameProjectUtils::AddHardwareConfigValues(const FProjectInformation& InProj
 
 	if (InProjectInfo.DefaultGraphicsPerformance.IsSet())
 	{
-		UEnum* GraphicsPresetEnum = StaticEnum<EGraphicsPreset::Type>();
+		UEnum* GraphicsPresetEnum = StaticEnum<EGraphicsPreset>();
 		if (GraphicsPresetEnum != nullptr)
 		{
 			FString GraphicsPresetString;
@@ -2048,6 +2029,13 @@ void GameProjectUtils::AddHardwareConfigValues(const FProjectInformation& InProj
 			}
 		}
 	}
+
+	// New projects always have DX12 by default on Windows
+	ConfigValues.Emplace(TEXT("DefaultEngine.ini"),
+		TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"),
+		TEXT("DefaultGraphicsRHI"),
+		TEXT("DefaultGraphicsRHI_DX12"),
+		false /* ShouldReplaceExistingValue */);
 }
 
 bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectInfo, TArray<FString>& OutCreatedFiles, FText& OutFailReason, FGuid& OutProjectID)
@@ -2062,12 +2050,9 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 		const FString DefaultEngineIniFilename = ProjectConfigPath / TEXT("DefaultEngine.ini");
 		FString FileContents;
 
-		if(bUseAudioMixerForAllPlatforms)
-		{
-			FileContents += LINE_TERMINATOR;
-			FileContents += TEXT("[Audio]") LINE_TERMINATOR;
-			FileContents += TEXT("UseAudioMixer=True") LINE_TERMINATOR;
-		}
+		FileContents += LINE_TERMINATOR;
+		FileContents += TEXT("[Audio]") LINE_TERMINATOR;
+		FileContents += TEXT("UseAudioMixer=True") LINE_TERMINATOR;
 
 		if (InProjectInfo.bForceExtendedLuminanceRange)
 		{
@@ -2112,7 +2097,10 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 
 		TArray<FTemplateConfigValue> ConfigValuesToSet;
 		AddHardwareConfigValues(InProjectInfo, ConfigValuesToSet);
+		AddLumenConfigValues(InProjectInfo, ConfigValuesToSet);
+		AddNewProjectDefaultShadowConfigValues(InProjectInfo, ConfigValuesToSet);
 		AddRaytracingConfigValues(InProjectInfo, ConfigValuesToSet);
+		AddWorldPartitionConfigValues(InProjectInfo, ConfigValuesToSet);
 
 		if (!SaveConfigValues(InProjectInfo, ConfigValuesToSet, OutFailReason))
 		{
@@ -2167,71 +2155,6 @@ bool GameProjectUtils::GenerateConfigFiles(const FProjectInformation& InProjectI
 
 bool GameProjectUtils::GeneratePlatformConfigFiles(const FProjectInformation& InProjectInfo, FText& OutFailReason)
 {
-	TMap<FString, FAudioDefaultPlatformSettings> ProjectDefaults = GetAudioPlatformProjectDefaultSettings();
-
-	static const FAudioPlatformSettings DefaultSettings;
-
-	for (TPair<FString, FAudioDefaultPlatformSettings>& SettingsPair : ProjectDefaults)
-	{
-		FString FileContents;
-
-		if (bUseAudioMixerForAllPlatforms || SettingsPair.Value.bUseAudioMixer)
-		{
-			FileContents += TEXT("[Audio]") LINE_TERMINATOR;
-			FileContents += TEXT("UseAudioMixer=True") LINE_TERMINATOR;
-			FileContents += LINE_TERMINATOR;
-		}
-
-		const FString& PlatformName = SettingsPair.Key;
-		const FAudioPlatformSettings& PlatformSettings = SettingsPair.Value.Settings;
-
-		FileContents += TEXT("[") + FString(SettingsPair.Value.ConfigSectionName) + TEXT("]") + LINE_TERMINATOR;
-
-		if (DefaultSettings.SampleRate == PlatformSettings.SampleRate)
-		{
-			FileContents += TEXT(";");
-		}
-		FileContents += TEXT("AudioSampleRate=") + FString::Printf(TEXT("%d"), PlatformSettings.SampleRate) + LINE_TERMINATOR;
-
-		if (DefaultSettings.MaxChannels == PlatformSettings.MaxChannels)
-		{
-			FileContents += TEXT(";");
-		}
-		FileContents += TEXT("AudioMaxChannels=") + FString::Printf(TEXT("%d"), PlatformSettings.MaxChannels) + LINE_TERMINATOR;
-
-		if (DefaultSettings.CallbackBufferFrameSize == PlatformSettings.CallbackBufferFrameSize)
-		{
-			FileContents += TEXT(";");
-		}
-		FileContents += TEXT("AudioCallbackBufferFrameSize=") + FString::Printf(TEXT("%d"), PlatformSettings.CallbackBufferFrameSize) + LINE_TERMINATOR;
-
-		if (DefaultSettings.NumBuffers == PlatformSettings.NumBuffers)
-		{
-			FileContents += TEXT(";");
-		}
-		FileContents += TEXT("AudioNumBuffersToEnqueue=") + FString::Printf(TEXT("%d"), PlatformSettings.NumBuffers) + LINE_TERMINATOR;
-
-		if (DefaultSettings.NumSourceWorkers == PlatformSettings.NumSourceWorkers)
-		{
-			FileContents += TEXT(";");
-		}
-		FileContents += TEXT("AudioNumSourceWorkers=") + FString::Printf(TEXT("%d"), PlatformSettings.NumSourceWorkers) + LINE_TERMINATOR;
-
-		FileContents += LINE_TERMINATOR;
-		FileContents += TEXT("; Audio Plugins (must be enabled in .uproject") LINE_TERMINATOR;
-		FileContents += TEXT("; ReverbPlugin=") + SettingsPair.Value.HardwareReverbPlugin + LINE_TERMINATOR;
-		FileContents += TEXT("; OcclusionPlugin=") + SettingsPair.Value.HardwareOcclusionPlugin + LINE_TERMINATOR;
-		FileContents += TEXT("; SpatializationPlugin=") + SettingsPair.Value.HardwareSpatializationPlugin + LINE_TERMINATOR;
-
-		const FString NewProjectFolder = FPaths::GetPath(InProjectInfo.ProjectFilename);
-		const FString ProjectConfigPath = NewProjectFolder / TEXT("Platforms") / PlatformName / TEXT("Config");
-		const FString PlatformEngineIniFilename = ProjectConfigPath / PlatformName + TEXT("Engine.ini");
-		if (!WriteOutputFile(PlatformEngineIniFilename, FileContents, OutFailReason))
-		{
-			return false;
-		}
-	}
-
 	return true;
 }
 
@@ -2818,6 +2741,7 @@ GameProjectUtils::EProjectDuplicateResult GameProjectUtils::DuplicateProjectForU
 				TEXT("Saved/Autosaves"),
 				TEXT("Saved/Backup"),
 				TEXT("Saved/Cooked"),
+				TEXT("Saved/Config"),
 				TEXT("Saved/HardwareSurvey"),
 				TEXT("Saved/Logs"),
 				TEXT("Saved/StagedBuilds"),
@@ -3952,7 +3876,7 @@ TArray<FString> GameProjectUtils::GetRequiredAdditionalDependencies(const FNewCl
 	return Out;
 }
 
-GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Internal(const FString& NewClassName, const FString& NewClassPath, const FModuleContextInfo& ModuleInfo, const FNewClassInfo ParentClassInfo, const TSet<FString>& DisallowedHeaderNames, FString& OutHeaderFilePath, FString& OutCppFilePath, FText& OutFailReason)
+GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Internal(const FString& NewClassName, const FString& NewClassPath, const FModuleContextInfo& ModuleInfo, const FNewClassInfo ParentClassInfo, const TSet<FString>& DisallowedHeaderNames, FString& OutHeaderFilePath, FString& OutCppFilePath, FText& OutFailReason, EReloadStatus& OutReloadStatus)
 {
 	if ( !ParentClassInfo.IsSet() )
 	{
@@ -4117,13 +4041,24 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Int
 
 	OutHeaderFilePath = NewHeaderFilename;
 	OutCppFilePath = NewCppFilename;
+	OutReloadStatus = EReloadStatus::NotReloaded;
 
 #if WITH_LIVE_CODING
 	ILiveCodingModule* LiveCoding = FModuleManager::GetModulePtr<ILiveCodingModule>(LIVE_CODING_MODULE_NAME);
 	if (LiveCoding != nullptr && LiveCoding->IsEnabledForSession())
 	{
-		OutFailReason = LOCTEXT("FailedToCompileLiveCodingEnabled", "Adding classes dynamically is not allowed with Live Coding enabled.");
-		return EAddCodeToProjectResult::FailedToHotReload;
+		if (!bProjectHadCodeFiles)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("LiveCodingNoSources", "Project now includes sources, please close the editor and build from your IDE."));
+			return EAddCodeToProjectResult::Succeeded;
+		}
+
+		if (LiveCoding->AutomaticallyCompileNewClasses())
+		{
+			LiveCoding->Compile(ELiveCodingCompileFlags::None, nullptr);
+			OutReloadStatus = EReloadStatus::Reloaded;
+		}
+		return EAddCodeToProjectResult::Succeeded;
 	}
 #endif
 
@@ -4133,7 +4068,7 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Int
 		const FString GameModuleName = FApp::GetProjectName();
 		check(ModuleInfo.ModuleName == GameModuleName);
 
-		// Because this project previously didn't have any code, the UBT target name will just be UE4Editor. Now that we've
+		// Because this project previously didn't have any code, the UBT target name will just be UnrealEditor. Now that we've
 		// added some code, the target name will be changed to match the editor target for the new source. 
 		FString NewUBTTargetName = GameModuleName + TEXT("Editor");
 		FPlatformMisc::SetUBTTargetName(*NewUBTTargetName);
@@ -4147,6 +4082,7 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Int
 
 		// Notify that we've created a brand new module
 		FSourceCodeNavigation::AccessOnNewModuleAdded().Broadcast(*GameModuleName);
+		OutReloadStatus = EReloadStatus::Reloaded;
 	}
 	else if (GetDefault<UEditorPerProjectUserSettings>()->bAutomaticallyHotReloadNewClasses)
 	{
@@ -4185,13 +4121,14 @@ GameProjectUtils::EAddCodeToProjectResult GameProjectUtils::AddCodeToProject_Int
 			else
 			{
 				// Perform a regular unload, then reload
-				if (!HotReloadSupport.RecompileModule(ModuleFName, *GWarn, ERecompileModuleFlags::ReloadAfterRecompile | ERecompileModuleFlags::FailIfGeneratedCodeChanges))
+				if (!HotReloadSupport.RecompileModule(ModuleFName, *GWarn, ERecompileModuleFlags::ReloadAfterRecompile))
 				{
 					OutFailReason = FText::Format(LOCTEXT("FailedToCompileModuleFmt", "Failed to automatically compile the '{0}' module."), FText::FromString(ModuleInfo.ModuleName));
 					return EAddCodeToProjectResult::FailedToHotReload;
 				}
 			}
 		}
+		OutReloadStatus = EReloadStatus::Reloaded;
 	}
 
 	return EAddCodeToProjectResult::Succeeded;

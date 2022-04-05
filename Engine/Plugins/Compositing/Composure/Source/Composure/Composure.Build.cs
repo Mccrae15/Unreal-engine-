@@ -48,6 +48,7 @@ namespace UnrealBuildTool.Rules
 					new string[]
                     {
 						"ActorLayerUtilities",
+						"EditorFramework",
 						"EditorStyle",
 						"Slate",
 						"SlateCore",

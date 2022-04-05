@@ -58,6 +58,10 @@
 	#define COMPILE_DIRECTIONAL_KERNEL 0
 #endif
 
+#ifndef COMPILE_RAW_EXPERIMENTAL_KERNEL
+	#define COMPILE_RAW_EXPERIMENTAL_KERNEL 0
+#endif
+
 
 //------------------------------------------------------- STRUCTURES
 
@@ -357,6 +361,11 @@ void SetBilateralPreset(uint BilateralPresetId, inout FSSDKernelConfig KernelCon
 	{
 		// Spherical harmonic encode directionality, so only reject based on world position.
 		KernelConfig.BilateralSettings[0] = BILATERAL_POSITION_BASED(2);
+	}
+	else if (BilateralPresetId == BILATERAL_PRESET_PROBE_HIERARCHY)
+	{
+		// Diffuse & specular bilateral component.
+		KernelConfig.BilateralSettings[0] = BILATERAL_POSITION_BASED(1) | BILATERAL_SHADING_MODEL;
 	}
 	else if (BilateralPresetId == BILATERAL_PRESET_AO)
 	{
@@ -1190,80 +1199,84 @@ void AccumulateSquareKernel(
 	if (KernelConfig.bUnroll)
 	{
 		UNROLL for (int x = -KernelRadius; x <= KernelRadius; x++)
-		UNROLL for (int y = -KernelRadius; y <= KernelRadius; y++)
 		{
-			const bool bIsKernelCenterSample = x == 0 && y == 0;
-
-			if (bIsKernelCenterSample && !KernelConfig.bSampleKernelCenter) continue;
-
-			float2 SampleOffset = float2(x, y);
-			if (KernelConfig.SampleSet == SAMPLE_SET_3X3_SOBEK2018)
+			UNROLL for (int y = -KernelRadius; y <= KernelRadius; y++)
 			{
-				SampleOffset = mul(float2x2(float2(2, -1), float2(1, 2)), SampleOffset);
-			}
+				const bool bIsKernelCenterSample = x == 0 && y == 0;
+
+				if (bIsKernelCenterSample && !KernelConfig.bSampleKernelCenter) continue;
+
+				float2 SampleOffset = float2(x, y);
+				if (KernelConfig.SampleSet == SAMPLE_SET_3X3_SOBEK2018)
+				{
+					SampleOffset = mul(float2x2(float2(2, -1), float2(1, 2)), SampleOffset);
+				}
 			
-			float2 SampleBufferUV = KernelConfig.BufferUV + (SampleOffset * KernelConfig.KernelSpreadFactor) * KernelConfig.BufferSizeAndInvSize.zw;
+				float2 SampleBufferUV = KernelConfig.BufferUV + (SampleOffset * KernelConfig.KernelSpreadFactor) * KernelConfig.BufferSizeAndInvSize.zw;
 		
-			float KernelWeight = 1;
-			if (KernelConfig.SampleSet == SAMPLE_SET_5X5_WAVELET)
-			{
-				KernelWeight = 
-					kWaveletFilterWeights5x5[abs(x)] *
-					kWaveletFilterWeights5x5[abs(y)] *
-					rcp(kWaveletFilterWeights5x5[0] * kWaveletFilterWeights5x5[0]);
-			}
+				float KernelWeight = 1;
+				if (KernelConfig.SampleSet == SAMPLE_SET_5X5_WAVELET)
+				{
+					KernelWeight = 
+						kWaveletFilterWeights5x5[abs(x)] *
+						kWaveletFilterWeights5x5[abs(y)] *
+						rcp(kWaveletFilterWeights5x5[0] * kWaveletFilterWeights5x5[0]);
+				}
 
-			SampleAndAccumulateMultiplexedSignals(
-				KernelConfig,
-				SignalBuffer0,
-				SignalBuffer1,
-				SignalBuffer2,
-				SignalBuffer3,
-				/* inout */ UncompressedAccumulators,
-				/* inout */ CompressedAccumulators,
-				SampleBufferUV,
-				KernelWeight,
-				/* bForceSample = */ bIsKernelCenterSample && KernelConfig.bForceKernelCenterAccumulation);
+				SampleAndAccumulateMultiplexedSignals(
+					KernelConfig,
+					SignalBuffer0,
+					SignalBuffer1,
+					SignalBuffer2,
+					SignalBuffer3,
+					/* inout */ UncompressedAccumulators,
+					/* inout */ CompressedAccumulators,
+					SampleBufferUV,
+					KernelWeight,
+					/* bForceSample = */ bIsKernelCenterSample && KernelConfig.bForceKernelCenterAccumulation);
+			}
 		}
 	}
 	else
 	{
-		// TODO(Denoiser): lattency hiding of this is terrible.
+		// TODO(Denoiser): latency hiding of this is terrible.
 		LOOP for (int x = -KernelRadius; x <= KernelRadius; x++)
-		LOOP for (int y = -KernelRadius; y <= KernelRadius; y++)
 		{
-			const bool bIsKernelCenterSample = x == 0 && y == 0;
-
-			if (bIsKernelCenterSample && !KernelConfig.bSampleKernelCenter) continue;
-
-			float2 SampleOffset = float2(x, y);
-			if (KernelConfig.SampleSet == SAMPLE_SET_3X3_SOBEK2018)
+			LOOP for (int y = -KernelRadius; y <= KernelRadius; y++)
 			{
-				SampleOffset = mul(float2x2(float2(2, -1), float2(1, 2)), SampleOffset);
-			}
+				const bool bIsKernelCenterSample = x == 0 && y == 0;
+
+				if (bIsKernelCenterSample && !KernelConfig.bSampleKernelCenter) continue;
+
+				float2 SampleOffset = float2(x, y);
+				if (KernelConfig.SampleSet == SAMPLE_SET_3X3_SOBEK2018)
+				{
+					SampleOffset = mul(float2x2(float2(2, -1), float2(1, 2)), SampleOffset);
+				}
 			
-			float2 SampleBufferUV = KernelConfig.BufferUV + (SampleOffset * KernelConfig.KernelSpreadFactor) * KernelConfig.BufferSizeAndInvSize.zw;
+				float2 SampleBufferUV = KernelConfig.BufferUV + (SampleOffset * KernelConfig.KernelSpreadFactor) * KernelConfig.BufferSizeAndInvSize.zw;
 		
-			float KernelWeight = 1;
-			if (KernelConfig.SampleSet == SAMPLE_SET_5X5_WAVELET)
-			{
-				KernelWeight = 
-					kWaveletFilterWeights5x5[abs(x)] *
-					kWaveletFilterWeights5x5[abs(y)] *
-					rcp(kWaveletFilterWeights5x5[0] * kWaveletFilterWeights5x5[0]);
-			}
+				float KernelWeight = 1;
+				if (KernelConfig.SampleSet == SAMPLE_SET_5X5_WAVELET)
+				{
+					KernelWeight = 
+						kWaveletFilterWeights5x5[abs(x)] *
+						kWaveletFilterWeights5x5[abs(y)] *
+						rcp(kWaveletFilterWeights5x5[0] * kWaveletFilterWeights5x5[0]);
+				}
 
-			SampleAndAccumulateMultiplexedSignals(
-				KernelConfig,
-				SignalBuffer0,
-				SignalBuffer1,
-				SignalBuffer2,
-				SignalBuffer3,
-				/* inout */ UncompressedAccumulators,
-				/* inout */ CompressedAccumulators,
-				SampleBufferUV,
-				KernelWeight,
-				/* bForceSample = */ bIsKernelCenterSample && KernelConfig.bForceKernelCenterAccumulation);
+				SampleAndAccumulateMultiplexedSignals(
+					KernelConfig,
+					SignalBuffer0,
+					SignalBuffer1,
+					SignalBuffer2,
+					SignalBuffer3,
+					/* inout */ UncompressedAccumulators,
+					/* inout */ CompressedAccumulators,
+					SampleBufferUV,
+					KernelWeight,
+					/* bForceSample = */ bIsKernelCenterSample && KernelConfig.bForceKernelCenterAccumulation);
+			}
 		}
 	}
 } // AccumulateSquareKernel()
@@ -1448,7 +1461,7 @@ void AccumulateSquare3x3Kernel(
 			/* bForceSample = */ false);
 	}
 
-	static const float2 SampleOffsetArray[5] = {
+	static const float2 SampleOffsetArray[4] = {
 		float2(-1.0,  0.0),
 		float2( 0.0, -1.0),
 		float2(-1.0, 1.0),
@@ -2202,6 +2215,470 @@ void ConvolveDirectionalRect(
 
 #endif // COMPILE_DIRECTIONAL_KERNEL
 
+//------------------------------------------------------- RAW EXPERIMENTAL KERNEL TO TRY
+
+#if COMPILE_RAW_EXPERIMENTAL_KERNEL
+
+#if 0
+static const float2 SampleArray4x4x8[128] = {
+	float2(0.000000, 0.000000),
+	float2(1.000000, 0.000000),
+	float2(0.000000, 1.000000),
+	float2(2.000000, 1.000000),
+	float2(-1.000000, 2.000000),
+	float2(-1.000000, 1.000000),
+	float2(1.000000, 2.000000),
+	float2(1.000000, 1.000000),
+	float2(0.000000, 0.000000),
+	float2(-2.000000, 0.000000),
+	float2(-1.000000, 1.000000),
+	float2(0.000000, 2.000000),
+	float2(-1.000000, 2.000000),
+	float2(-1.000000, -1.000000),
+	float2(0.000000, 1.000000),
+	float2(-1.000000, 0.000000),
+	float2(0.000000, 0.000000),
+	float2(1.000000, -1.000000),
+	float2(1.000000, 2.000000),
+	float2(0.000000, 1.000000),
+	float2(0.000000, 2.000000),
+	float2(0.000000, -1.000000),
+	float2(-1.000000, -1.000000),
+	float2(2.000000, 1.000000),
+	float2(0.000000, 0.000000),
+	float2(-2.000000, 0.000000),
+	float2(-1.000000, -1.000000),
+	float2(0.000000, 2.000000),
+	float2(1.000000, -1.000000),
+	float2(1.000000, 2.000000),
+	float2(-1.000000, 2.000000),
+	float2(-1.000000, 0.000000),
+	float2(0.000000, 0.000000),
+	float2(0.000000, 1.000000),
+	float2(2.000000, 0.000000),
+	float2(-1.000000, -1.000000),
+	float2(1.000000, -1.000000),
+	float2(0.000000, -1.000000),
+	float2(-3.000000, 0.000000),
+	float2(-1.000000, 1.000000),
+	float2(0.000000, 0.000000),
+	float2(0.000000, -1.000000),
+	float2(0.000000, 1.000000),
+	float2(-2.000000, 0.000000),
+	float2(-1.000000, -1.000000),
+	float2(2.000000, 1.000000),
+	float2(1.000000, 0.000000),
+	float2(2.000000, 0.000000),
+	float2(0.000000, 0.000000),
+	float2(0.000000, 2.000000),
+	float2(2.000000, 2.000000),
+	float2(1.000000, 0.000000),
+	float2(-1.000000, 1.000000),
+	float2(-2.000000, 0.000000),
+	float2(1.000000, -1.000000),
+	float2(-1.000000, 2.000000),
+	float2(0.000000, 0.000000),
+	float2(-1.000000, 0.000000),
+	float2(-2.000000, 0.000000),
+	float2(-2.000000, 1.000000),
+	float2(1.000000, 2.000000),
+	float2(-3.000000, 0.000000),
+	float2(-2.000000, 2.000000),
+	float2(0.000000, -2.000000),
+	float2(0.000000, 0.000000),
+	float2(-1.000000, 1.000000),
+	float2(1.000000, -1.000000),
+	float2(0.000000, -2.000000),
+	float2(-1.000000, 0.000000),
+	float2(1.000000, -2.000000),
+	float2(1.000000, 0.000000),
+	float2(2.000000, 0.000000),
+	float2(0.000000, 0.000000),
+	float2(-2.000000, 0.000000),
+	float2(-1.000000, 0.000000),
+	float2(-2.000000, 2.000000),
+	float2(-1.000000, 2.000000),
+	float2(1.000000, 0.000000),
+	float2(0.000000, 3.000000),
+	float2(0.000000, 2.000000),
+	float2(0.000000, 0.000000),
+	float2(0.000000, 1.000000),
+	float2(1.000000, -2.000000),
+	float2(-1.000000, 0.000000),
+	float2(0.000000, 2.000000),
+	float2(-1.000000, 1.000000),
+	float2(1.000000, 1.000000),
+	float2(-2.000000, 1.000000),
+	float2(0.000000, 0.000000),
+	float2(-2.000000, 0.000000),
+	float2(-1.000000, 1.000000),
+	float2(-2.000000, 2.000000),
+	float2(1.000000, -2.000000),
+	float2(-3.000000, 0.000000),
+	float2(-1.000000, 0.000000),
+	float2(0.000000, -2.000000),
+	float2(0.000000, 0.000000),
+	float2(-1.000000, 0.000000),
+	float2(2.000000, 0.000000),
+	float2(1.000000, 0.000000),
+	float2(-1.000000, 1.000000),
+	float2(-2.000000, -2.000000),
+	float2(2.000000, 1.000000),
+	float2(0.000000, -2.000000),
+	float2(0.000000, 0.000000),
+	float2(-1.000000, 0.000000),
+	float2(-2.000000, -2.000000),
+	float2(-1.000000, 2.000000),
+	float2(1.000000, 2.000000),
+	float2(2.000000, 0.000000),
+	float2(1.000000, 1.000000),
+	float2(1.000000, 0.000000),
+	float2(0.000000, 0.000000),
+	float2(0.000000, -1.000000),
+	float2(1.000000, -1.000000),
+	float2(-1.000000, 1.000000),
+	float2(0.000000, 1.000000),
+	float2(1.000000, 1.000000),
+	float2(-2.000000, 0.000000),
+	float2(2.000000, -1.000000),
+	float2(0.000000, 0.000000),
+	float2(0.000000, -2.000000),
+	float2(-1.000000, -2.000000),
+	float2(-2.000000, 0.000000),
+	float2(1.000000, -2.000000),
+	float2(-1.000000, 0.000000),
+	float2(1.000000, 0.000000),
+	float2(-1.000000, 1.000000),
+}; // SampleArray4x4x8
+
+#else
+
+static const float2 SampleArray4x4x16[256] = {
+	float2(0.000000, 0.000000),
+	float2(-1.000000, -1.000000),
+	float2(1.000000, -1.000000),
+	float2(-1.000000, 0.000000),
+	float2(0.000000, -1.000000),
+	float2(1.000000, 0.000000),
+	float2(-2.000000, 1.000000),
+	float2(2.000000, -1.000000),
+	float2(1.000000, 1.000000),
+	float2(-1.000000, -2.000000),
+	float2(2.000000, 0.000000),
+	float2(0.000000, 1.000000),
+	float2(0.000000, 2.000000),
+	float2(2.000000, 2.000000),
+	float2(2.000000, -2.000000),
+	float2(1.000000, 2.000000),
+	float2(0.000000, 0.000000),
+	float2(-1.000000, 0.000000),
+	float2(2.000000, 3.000000),
+	float2(-1.000000, -2.000000),
+	float2(1.000000, -2.000000),
+	float2(0.000000, -1.000000),
+	float2(1.000000, -1.000000),
+	float2(1.000000, 0.000000),
+	float2(0.000000, 1.000000),
+	float2(-2.000000, -2.000000),
+	float2(-2.000000, 1.000000),
+	float2(0.000000, 2.000000),
+	float2(-1.000000, 1.000000),
+	float2(1.000000, 1.000000),
+	float2(-1.000000, -1.000000),
+	float2(2.000000, -1.000000),
+	float2(0.000000, 0.000000),
+	float2(1.000000, -1.000000),
+	float2(-1.000000, 3.000000),
+	float2(-1.000000, -2.000000),
+	float2(0.000000, -1.000000),
+	float2(1.000000, -2.000000),
+	float2(-1.000000, 0.000000),
+	float2(-2.000000, -1.000000),
+	float2(2.000000, 2.000000),
+	float2(-2.000000, 1.000000),
+	float2(0.000000, 2.000000),
+	float2(1.000000, 1.000000),
+	float2(1.000000, 0.000000),
+	float2(0.000000, 1.000000),
+	float2(2.000000, 0.000000),
+	float2(-1.000000, 1.000000),
+	float2(0.000000, 0.000000),
+	float2(0.000000, -1.000000),
+	float2(0.000000, 1.000000),
+	float2(-2.000000, 1.000000),
+	float2(1.000000, -2.000000),
+	float2(-3.000000, 0.000000),
+	float2(0.000000, -2.000000),
+	float2(-2.000000, 2.000000),
+	float2(-1.000000, 2.000000),
+	float2(1.000000, -1.000000),
+	float2(2.000000, 3.000000),
+	float2(-2.000000, 0.000000),
+	float2(0.000000, 2.000000),
+	float2(-1.000000, 1.000000),
+	float2(1.000000, 1.000000),
+	float2(-1.000000, -1.000000),
+	float2(0.000000, 0.000000),
+	float2(-1.000000, 0.000000),
+	float2(2.000000, -1.000000),
+	float2(-1.000000, -1.000000),
+	float2(-1.000000, 2.000000),
+	float2(1.000000, -1.000000),
+	float2(-3.000000, 0.000000),
+	float2(1.000000, 2.000000),
+	float2(2.000000, -2.000000),
+	float2(0.000000, -1.000000),
+	float2(0.000000, 1.000000),
+	float2(0.000000, -2.000000),
+	float2(1.000000, 1.000000),
+	float2(2.000000, 0.000000),
+	float2(2.000000, 1.000000),
+	float2(-1.000000, 1.000000),
+	float2(0.000000, 0.000000),
+	float2(-2.000000, 0.000000),
+	float2(1.000000, 0.000000),
+	float2(0.000000, -2.000000),
+	float2(2.000000, -1.000000),
+	float2(-2.000000, 2.000000),
+	float2(-1.000000, 0.000000),
+	float2(2.000000, 2.000000),
+	float2(3.000000, 1.000000),
+	float2(0.000000, 2.000000),
+	float2(1.000000, -1.000000),
+	float2(-1.000000, 2.000000),
+	float2(0.000000, 1.000000),
+	float2(-1.000000, -1.000000),
+	float2(1.000000, 1.000000),
+	float2(1.000000, 2.000000),
+	float2(0.000000, 0.000000),
+	float2(0.000000, 1.000000),
+	float2(2.000000, 0.000000),
+	float2(1.000000, 2.000000),
+	float2(-1.000000, 2.000000),
+	float2(-1.000000, 0.000000),
+	float2(0.000000, 2.000000),
+	float2(3.000000, 1.000000),
+	float2(-1.000000, -1.000000),
+	float2(-2.000000, -3.000000),
+	float2(2.000000, 3.000000),
+	float2(1.000000, 0.000000),
+	float2(2.000000, 2.000000),
+	float2(1.000000, 1.000000),
+	float2(1.000000, -1.000000),
+	float2(0.000000, -1.000000),
+	float2(0.000000, 0.000000),
+	float2(1.000000, -1.000000),
+	float2(-2.000000, 1.000000),
+	float2(-1.000000, 2.000000),
+	float2(-1.000000, 0.000000),
+	float2(-3.000000, 0.000000),
+	float2(-2.000000, -1.000000),
+	float2(-1.000000, 1.000000),
+	float2(0.000000, -1.000000),
+	float2(0.000000, 2.000000),
+	float2(1.000000, 1.000000),
+	float2(0.000000, 1.000000),
+	float2(-1.000000, -1.000000),
+	float2(-2.000000, 2.000000),
+	float2(-2.000000, 0.000000),
+	float2(1.000000, 2.000000),
+	float2(0.000000, 0.000000),
+	float2(2.000000, -1.000000),
+	float2(1.000000, -1.000000),
+	float2(0.000000, 2.000000),
+	float2(-1.000000, -2.000000),
+	float2(0.000000, 1.000000),
+	float2(1.000000, 2.000000),
+	float2(-1.000000, 1.000000),
+	float2(2.000000, 2.000000),
+	float2(-3.000000, 0.000000),
+	float2(-2.000000, 0.000000),
+	float2(-1.000000, -1.000000),
+	float2(-1.000000, 0.000000),
+	float2(-4.000000, -1.000000),
+	float2(2.000000, 1.000000),
+	float2(1.000000, 1.000000),
+	float2(0.000000, 0.000000),
+	float2(1.000000, 2.000000),
+	float2(0.000000, 1.000000),
+	float2(-1.000000, 0.000000),
+	float2(1.000000, 0.000000),
+	float2(-1.000000, 2.000000),
+	float2(0.000000, 3.000000),
+	float2(2.000000, -2.000000),
+	float2(-2.000000, 1.000000),
+	float2(-1.000000, 1.000000),
+	float2(0.000000, 2.000000),
+	float2(1.000000, -1.000000),
+	float2(-2.000000, 0.000000),
+	float2(1.000000, 1.000000),
+	float2(-2.000000, -1.000000),
+	float2(0.000000, -2.000000),
+	float2(0.000000, 0.000000),
+	float2(-1.000000, 1.000000),
+	float2(1.000000, -1.000000),
+	float2(-1.000000, -2.000000),
+	float2(0.000000, -2.000000),
+	float2(0.000000, 1.000000),
+	float2(1.000000, 2.000000),
+	float2(2.000000, -1.000000),
+	float2(1.000000, 0.000000),
+	float2(0.000000, -1.000000),
+	float2(-1.000000, -1.000000),
+	float2(-2.000000, 0.000000),
+	float2(-2.000000, 1.000000),
+	float2(-1.000000, 0.000000),
+	float2(1.000000, 1.000000),
+	float2(-2.000000, -2.000000),
+	float2(0.000000, 0.000000),
+	float2(-1.000000, -2.000000),
+	float2(-3.000000, 0.000000),
+	float2(1.000000, -1.000000),
+	float2(0.000000, -2.000000),
+	float2(-2.000000, 1.000000),
+	float2(-1.000000, -1.000000),
+	float2(-1.000000, 1.000000),
+	float2(0.000000, 1.000000),
+	float2(-2.000000, 2.000000),
+	float2(1.000000, 1.000000),
+	float2(-2.000000, -1.000000),
+	float2(-1.000000, -4.000000),
+	float2(1.000000, -2.000000),
+	float2(0.000000, -1.000000),
+	float2(-2.000000, 0.000000),
+	float2(0.000000, 0.000000),
+	float2(0.000000, 1.000000),
+	float2(2.000000, 1.000000),
+	float2(2.000000, 0.000000),
+	float2(-1.000000, 2.000000),
+	float2(-2.000000, -2.000000),
+	float2(0.000000, 2.000000),
+	float2(3.000000, 1.000000),
+	float2(-3.000000, 2.000000),
+	float2(-1.000000, -1.000000),
+	float2(1.000000, 0.000000),
+	float2(-1.000000, -2.000000),
+	float2(1.000000, -1.000000),
+	float2(1.000000, 1.000000),
+	float2(0.000000, -1.000000),
+	float2(-1.000000, 0.000000),
+	float2(0.000000, 0.000000),
+	float2(1.000000, -1.000000),
+	float2(-2.000000, 1.000000),
+	float2(-1.000000, -1.000000),
+	float2(0.000000, -2.000000),
+	float2(0.000000, 2.000000),
+	float2(0.000000, 3.000000),
+	float2(1.000000, 1.000000),
+	float2(3.000000, 1.000000),
+	float2(0.000000, 1.000000),
+	float2(3.000000, -2.000000),
+	float2(2.000000, 1.000000),
+	float2(1.000000, -3.000000),
+	float2(2.000000, -2.000000),
+	float2(1.000000, -2.000000),
+	float2(-2.000000, 2.000000),
+	float2(0.000000, 0.000000),
+	float2(1.000000, 0.000000),
+	float2(1.000000, -1.000000),
+	float2(0.000000, -1.000000),
+	float2(-1.000000, 2.000000),
+	float2(-2.000000, 1.000000),
+	float2(-1.000000, 0.000000),
+	float2(-1.000000, -1.000000),
+	float2(0.000000, 1.000000),
+	float2(1.000000, 1.000000),
+	float2(2.000000, 3.000000),
+	float2(2.000000, 0.000000),
+	float2(-1.000000, 1.000000),
+	float2(1.000000, -2.000000),
+	float2(0.000000, -2.000000),
+	float2(-2.000000, -2.000000),
+	float2(0.000000, 0.000000),
+	float2(-2.000000, 1.000000),
+	float2(0.000000, -1.000000),
+	float2(-1.000000, 1.000000),
+	float2(1.000000, -3.000000),
+	float2(0.000000, 2.000000),
+	float2(0.000000, 3.000000),
+	float2(0.000000, 1.000000),
+	float2(-2.000000, 0.000000),
+	float2(1.000000, -1.000000),
+	float2(-2.000000, -1.000000),
+	float2(-2.000000, -2.000000),
+	float2(-1.000000, 0.000000),
+	float2(-1.000000, -1.000000),
+	float2(1.000000, 0.000000),
+	float2(1.000000, -2.000000),
+}; // SampleArray4x4x16
+
+
+#endif
+
+void ConvolveRawExperimentalKernel(
+	FSSDKernelConfig KernelConfig,
+	FSSDTexture2D SignalBuffer0,
+	FSSDTexture2D SignalBuffer1,
+	FSSDTexture2D SignalBuffer2,
+	FSSDTexture2D SignalBuffer3,
+	inout FSSDSignalAccumulatorArray UncompressedAccumulators,
+	inout FSSDCompressedSignalAccumulatorArray CompressedAccumulators)
+{
+	// Accumulate the center of the kernel.
+	if (KernelConfig.bSampleKernelCenter && !KernelConfig.bDescOrder)
+	{
+		SampleAndAccumulateCenterSampleAsItsOwnCluster(
+			KernelConfig,
+			SignalBuffer0,
+			SignalBuffer1,
+			SignalBuffer2,
+			SignalBuffer3,
+			/* inout */ UncompressedAccumulators,
+			/* inout */ CompressedAccumulators);
+	}
+
+	const uint TileSize = 4;
+	const uint SampleCount = 16;
+
+	uint2 PixelCoord = uint2(KernelConfig.BufferUV * View.BufferSizeAndInvSize.xy) % TileSize;
+
+	LOOP
+	for (uint SampleId = 1; SampleId < SampleCount; SampleId++)
+	{
+		uint MagicIndex = SampleId + SampleCount * (PixelCoord.x + TileSize * PixelCoord.y);
+		
+		float2 SampleOffset = SampleArray4x4x16[MagicIndex];
+		float2 SampleBufferUV = KernelConfig.BufferUV + (SampleOffset * KernelConfig.KernelSpreadFactor) * KernelConfig.BufferSizeAndInvSize.zw;
+		
+		SampleAndAccumulateMultiplexedSignals(
+			KernelConfig,
+			SignalBuffer0,
+			SignalBuffer1,
+			SignalBuffer2,
+			SignalBuffer3,
+			/* inout */ UncompressedAccumulators,
+			/* inout */ CompressedAccumulators,
+			SampleBufferUV,
+			/* KernelWeight = */ 1.0,
+			/* bForceSample = */ false);
+	}
+	
+	// Accumulate the center of the kernel.
+	if (KernelConfig.bSampleKernelCenter && KernelConfig.bDescOrder)
+	{
+		SampleAndAccumulateCenterSampleAsItsOwnCluster(
+			KernelConfig,
+			SignalBuffer0,
+			SignalBuffer1,
+			SignalBuffer2,
+			SignalBuffer3,
+			/* inout */ UncompressedAccumulators,
+			/* inout */ CompressedAccumulators);
+	}
+}
+
+#endif // COMPILE_RAW_EXPERIMENTAL_KERNEL
+
 
 //------------------------------------------------------- MAIN ENTRY POINTS
 
@@ -2365,4 +2842,17 @@ void AccumulateKernel(
 			/* inout */ CompressedAccumulators);
 	}
 #endif // COMPILE_DIRECTIONAL_KERNEL
+#if COMPILE_RAW_EXPERIMENTAL_KERNEL
+	else if (KernelConfig.SampleSet == SAMPLE_SET_RAW_EXPERIMENTAL_KERNEL)
+	{
+		ConvolveRawExperimentalKernel(
+			KernelConfig,
+			SignalBuffer0,
+			SignalBuffer1,
+			SignalBuffer2,
+			SignalBuffer3,
+			/* inout */ UncompressedAccumulators,
+			/* inout */ CompressedAccumulators);
+	}
+#endif
 } // AccumulateKernel()

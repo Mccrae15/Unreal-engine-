@@ -117,8 +117,12 @@ public:
 	* @return An array of take recorder sources to be removed. Likely to match the same list as PreRecording. Can be an empty list
 	* if no additional sources are required by this source.
 	*/
-	virtual TArray<UTakeRecorderSource*> PostRecording(class ULevelSequence* InSequence, class ULevelSequence* InMasterSequence) { return TArray<UTakeRecorderSource*>(); }
+	virtual TArray<UTakeRecorderSource*> PostRecording(class ULevelSequence* InSequence, class ULevelSequence* InMasterSequence, const bool bCancelled) { return TArray<UTakeRecorderSource*>(); }
 
+	/*
+	 * This is called on all sources after post recording. There should not be any dependencies between sources at this point.
+	 */
+	virtual void FinalizeRecording() {}
 
 	/**
 	* This allows a Source to return an array of dynamically spawned settings objects for that source.

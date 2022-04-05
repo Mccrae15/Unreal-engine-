@@ -15,6 +15,8 @@
 #include "RHI.h"
 #include "RenderResource.h"
 #include "HitProxies.h"
+#include "RenderGraphDefinitions.h"
+#include "Elements/Framework/TypedElementListFwd.h"
 
 class FCanvas;
 class FViewport;
@@ -28,8 +30,15 @@ class FRenderTarget
 {
 public:
 
-	// Destructor
-	virtual ~FRenderTarget(){}
+	/**
+	 * Default constructor
+	 */
+	ENGINE_API FRenderTarget() {};
+
+	/**
+	 * Destructor
+	 */
+	ENGINE_API virtual ~FRenderTarget() {};
 
 	/**
 	* Accessor for the surface RHI when setting this render target
@@ -37,6 +46,11 @@ public:
 	*/
 	ENGINE_API virtual const FTexture2DRHIRef& GetRenderTargetTexture() const;
 	ENGINE_API virtual FUnorderedAccessViewRHIRef GetRenderTargetUAV() const;
+
+	/**
+	 * Returns a valid RDG texture for this render target.
+	 */
+	ENGINE_API virtual FRDGTextureRef GetRenderTargetTexture(FRDGBuilder& GraphBuilder) const;
 
 	// Properties.
 	virtual FIntPoint GetSizeXY() const = 0;
@@ -118,12 +132,6 @@ public:
 
 	virtual class FViewport* GetViewport() = 0;
 	virtual void ResizeFrame(uint32 NewSizeX,uint32 NewSizeY,EWindowMode::Type NewWindowMode) = 0;
-
-	UE_DEPRECATED(4.13, "The version of FViewportFrame::ResizeFrame that takes a position is deprecated (the position was never used). Please use the version that doesn't take a position instead.")
-	void ResizeFrame(uint32 NewSizeX, uint32 NewSizeY, EWindowMode::Type NewWindowMode, int32, int32)
-	{
-		ResizeFrame(NewSizeX, NewSizeY, NewWindowMode);
-	}
 };
 
 /**
@@ -184,6 +192,11 @@ struct ENGINE_API FScreenshotRequest
 	 */
 	static TArray<FColor>* GetHighresScreenshotMaskColorArray();
 
+	/**
+	 * Extents of array returned by function above
+	 */
+	static FIntPoint& GetHighresScreenshotMaskExtents();
+
 	static FOnScreenshotRequestProcessed& OnScreenshotRequestProcessed()
 	{
 		return ScreenshotProcessedDelegate;
@@ -202,6 +215,7 @@ private:
 	static FString Filename;
 	static bool bShowUI;
 	static TArray<FColor> HighresScreenshotMaskColorArray;
+	static FIntPoint HighresScreenshotMaskExtents;
 };
 
 // @param bAutoType true: automatically choose GB/MB/KB/... false: always use MB for easier comparisons
@@ -492,6 +506,18 @@ public:
 	ENGINE_API void GetActorsAndModelsInHitProxy(FIntRect InRect, TSet<AActor*>& OutActors, TSet<UModel*>& OutModels);
 
 	/**
+	 * Returns the dominant element handle at a given point.  If X,Y are outside the client area of the viewport, returns an invalid handle.
+	 */
+	ENGINE_API FTypedElementHandle GetElementHandleAtPoint(int32 X, int32 Y);
+
+	/**
+	 * Returns all element handles found within a specified region.
+	 * InRect must be entirely within the viewport's client area.
+	 * If the hit proxies are not cached, this will call ViewportClient->Draw with a hit-testing canvas.
+	 */
+	ENGINE_API void GetElementHandlesInRect(FIntRect InRect, FTypedElementListRef OutElementHandles);
+
+	/**
 	 * Retrieves the interface to the viewport's frame, if it has one.
 	 * @return The viewport's frame interface.
 	 */
@@ -623,6 +649,15 @@ protected:
 	 * Take a high-resolution screenshot and save to disk.
 	 */
 	void HighResScreenshot();
+
+private:
+
+	/**
+	 * Enumerate all valid hit proxies found within a specified region.
+	 * InRect must be entirely within the viewport's client area.
+	 * If the hit proxies are not cached, this will call ViewportClient->Draw with a hit-testing canvas.
+	 */
+	void EnumerateHitProxiesInRect(FIntRect InRect, TFunctionRef<bool(HHitProxy*)> InCallback);
 
 protected:
 
@@ -1184,11 +1219,11 @@ public:
 	{
 		FTexture2DRHIRef ShaderResourceTextureRHI;
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FDummyViewport"));
 		RHICreateTargetableShaderResource2D( SizeX, SizeY, PF_A2B10G10R10, 1, TexCreate_None, TexCreate_RenderTargetable, false, CreateInfo, RenderTargetTextureRHI, ShaderResourceTextureRHI );
 	}
 
-	// @todo UE4 DLL: Without these functions we get unresolved linker errors with FRenderResource
+	// @todo DLL: Without these functions we get unresolved linker errors with FRenderResource
 	virtual void InitRHI() override{}
 	virtual void ReleaseRHI() override{}
 	virtual void InitResource() override{ FViewport::InitResource(); }

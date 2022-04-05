@@ -15,10 +15,9 @@
 			"Name": "OnlineSubsystemTencent",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": 
+			"PlatformAllowList": 
 			[
 				"Linux",
-				"Win32",
 				"Win64"
 			]
 		}

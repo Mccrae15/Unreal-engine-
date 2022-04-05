@@ -6,7 +6,10 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "Engine/Blueprint.h"
+#include "Kismet2/Breakpoint.h"
+#include "Kismet2/WatchedPin.h"
 #include "Engine/DeveloperSettings.h"
+#include "Kismet2/KismetDebugUtilities.h"
 #include "BlueprintEditorSettings.generated.h"
 
 UENUM()
@@ -16,10 +19,38 @@ enum ESaveOnCompile
 	SoC_SuccessOnly UMETA(DisplayName="On Success Only"),
 	SoC_Always UMETA(DisplayName = "Always"),
 };
- 
+
+/** Blueprint Editor settings that are different for each
+*	blueprint.
+*	See FKismetDebugUtilities for helper functions
+*/
+USTRUCT()
+struct BLUEPRINTGRAPH_API FPerBlueprintSettings 
+{
+	GENERATED_BODY()
+	
+	UPROPERTY()
+	TArray<FBlueprintBreakpoint> Breakpoints;
+
+	UPROPERTY()
+	TArray<FBlueprintWatchedPin> WatchedPins;
+
+	bool operator==(const FPerBlueprintSettings& Other) const
+	{
+		return Breakpoints == Other.Breakpoints && WatchedPins == Other.WatchedPins;
+	}
+};
+
+template<> struct TStructOpsTypeTraits<FPerBlueprintSettings> : public TStructOpsTypeTraitsBase2<FPerBlueprintSettings>
+{
+	enum
+	{
+		WithIdenticalViaEquality = true
+	};
+};
+
 UCLASS(config=EditorPerProjectUserSettings)
-class BLUEPRINTGRAPH_API UBlueprintEditorSettings
-	:	public UObject
+class BLUEPRINTGRAPH_API UBlueprintEditorSettings : public UDeveloperSettings
 {
 	GENERATED_UCLASS_BODY()
 
@@ -67,10 +98,6 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=Workflow)
 	bool bFlattenFavoritesMenus;
 
-	/** If enabled, then placed cast nodes will default to their "pure" form (meaning: without execution pins). */
-	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category=Experimental, meta=(DisplayName="Default to Using Pure Cast Nodes"))
-	bool bFavorPureCastNodes;
-
 	/** If enabled, then you'll be able to directly connect arbitrary object pins together (a pure cast node will be injected automatically). */
 	UPROPERTY(EditAnywhere, config, Category=Workflow)
 	bool bAutoCastObjectConnections;
@@ -79,6 +106,106 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=Workflow)
 	bool bShowViewportOnSimulate;
 
+	/** If set will spawn default "ghost" event nodes in new Blueprints, modifiable in the [DefaultEventNodes] section of EditorPerProjectUserSettings */
+	UPROPERTY(EditAnywhere, config, Category = Workflow)
+	bool bSpawnDefaultBlueprintNodes;
+
+	/** If set will exclude components added in a Blueprint class Construction Script from the component details view */
+	UPROPERTY(EditAnywhere, config, Category = Workflow)
+	bool bHideConstructionScriptComponentsInDetailsView;
+
+	/** If set, the global Find in Blueprints command (CTRL-SHIFT-F) will be hosted in a standalone tab. This tab can remain open after the Blueprint Editor context is closed. */
+	UE_DEPRECATED(5.0, "This is now the default behavior (true). As a result, this flag is no longer used/exposed, and it will eventually be removed.")
+	UPROPERTY(config)
+	bool bHostFindInBlueprintsInGlobalTab;
+
+	/** If set, double clicking on a call function node will attempt to navigate an open C++ editor to the native source definition */
+	UPROPERTY(EditAnywhere, config, Category = Workflow)
+	bool bNavigateToNativeFunctionsFromCallNodes;
+
+	/** Double click to navigate up to the parent graph */
+	UPROPERTY(config, EditAnywhere, Category = Workflow)
+	bool bDoubleClickNavigatesToParent;
+
+	/** Allows for pin types to be promoted to others, i.e. float to double */
+	UPROPERTY(config, EditAnywhere, Category = Workflow)
+	bool bEnableTypePromotion;
+
+	/** If a pin type is within this list, then it will never be marked as a possible promotable function. */
+	UPROPERTY(config, EditAnywhere, Category = Workflow, meta=(EditCondition="bEnableTypePromotion"))
+	TSet<FName> TypePromotionPinDenyList;
+
+	/** How to handle previously-set breakpoints on reload. */
+	UPROPERTY(config, EditAnywhere, Category = Workflow)
+	EBlueprintBreakpointReloadMethod BreakpointReloadMethod;
+
+	/** If enabled, pin tooltips during PIE will be interactive */
+	UPROPERTY(config, EditAnywhere, Category = Workflow)
+	bool bEnablePinValueInspectionTooltips;
+
+// Experimental
+public:
+	/** Whether to enable namespace importing and filtering features in the Blueprint editor */
+	UPROPERTY(config, EditAnywhere, Category = Experimental)
+	bool bEnableNamespaceEditorFeatures;
+
+	/** Whether to enable namespace filtering features in the Blueprint editor */
+	// @todo_namespaces - Remove this if/when dependent code is changed to utilize the single setting above.
+	UPROPERTY(Transient)
+	bool bEnableNamespaceFilteringFeatures;
+
+	/** Whether to enable namespace importing features in the Blueprint editor */
+	// @todo_namespaces - Remove this if/when dependent code is changed to utilize the single setting above.
+	UPROPERTY(Transient)
+	bool bEnableNamespaceImportingFeatures;
+
+	// The list of namespaces to always expose in any Blueprint (local per-user)
+	UPROPERTY(EditAnywhere, config, Category = Experimental, meta = (EditCondition = "bEnableNamespaceEditorFeatures"))
+	TArray<FString> NamespacesToAlwaysInclude;
+
+	/** If enabled, then placed cast nodes will default to their "pure" form (meaning: without execution pins). */
+	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category = Experimental, meta = (DisplayName = "Default to Using Pure Cast Nodes"))
+	bool bFavorPureCastNodes;
+
+	// Compiler Settings
+public:
+	/** Determines when to save Blueprints post-compile */
+	UPROPERTY(EditAnywhere, config, Category = Compiler)
+	TEnumAsByte<ESaveOnCompile> SaveOnCompile;
+
+	/** When enabled, if a blueprint has compiler errors, then the graph will jump and focus on the first node generating an error */
+	UPROPERTY(EditAnywhere, config, Category = Compiler)
+	bool bJumpToNodeErrors;
+
+	/** If enabled, nodes can be explicitly disabled via context menu when right-clicking on impure nodes in the Blueprint editor. Disabled nodes will not be compiled, but also will not break existing connections. */
+	UPROPERTY(EditAnywhere, config, Category = Experimental, AdvancedDisplay)
+	bool bAllowExplicitImpureNodeDisabling;
+
+	// Developer Settings
+public:
+	/** If enabled, tooltips on action menu items will show the associated action's signature id (can be used to setup custom favorites menus).*/
+	UPROPERTY(EditAnywhere, config, Category = DeveloperTools)
+	bool bShowActionMenuItemSignatures;
+
+	/** If enabled, blueprint nodes in the event graph will display with unique names rather than their display name. */
+	UPROPERTY(EditAnywhere, config, Category = DeveloperTools, meta = (DisplayName = "Display Unique Names for Blueprint Nodes"))
+	bool bBlueprintNodeUniqueNames;
+
+	// Perf Settings
+public:
+	/** If enabled, additional details will be displayed in the Compiler Results tab after compiling a blueprint. */
+	UPROPERTY(EditAnywhere, config, Category = Performance)
+	bool bShowDetailedCompileResults;
+
+	/** Minimum event time threshold used as a filter when additional details are enabled for display in the Compiler Results tab. A value of zero means that all events will be included in the final summary. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = Performance, DisplayName = "Compile Event Results Threshold (ms)", meta = (ClampMin = "0", UIMin = "0"))
+	int32 CompileEventDisplayThresholdMs;
+
+	/** The node template cache is used to speed up blueprint menuing. This determines the peak data size for that cache. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category = Performance, DisplayName = "Node-Template Cache Cap (MB)", meta = (ClampMin = "0", UIMin = "0"))
+	float NodeTemplateCacheCapMB;
+
+public:
 	/** If set we'll show the inherited variables in the My Blueprint view. */
 	UPROPERTY(config)
 	bool bShowInheritedVariables;
@@ -99,22 +226,6 @@ public:
 	UPROPERTY(config)
 	bool bShowAccessSpecifier;
 
-	/** If set will spawn default "ghost" event nodes in new Blueprints, modifiable in the [DefaultEventNodes] section of EditorPerProjectUserSettings */
-	UPROPERTY(EditAnywhere, config, Category=Workflow)
-	bool bSpawnDefaultBlueprintNodes;
-
-	/** If set will exclude components added in a Blueprint class Construction Script from the component details view */
-	UPROPERTY(EditAnywhere, config, Category=Workflow)
-	bool bHideConstructionScriptComponentsInDetailsView;
-
-	/** If set, the global Find in Blueprints command (CTRL-SHIFT-F) will be hosted in a standalone tab. This tab can remain open after the Blueprint Editor context is closed. */
-	UPROPERTY(EditAnywhere, config, Category=Workflow)
-	bool bHostFindInBlueprintsInGlobalTab;
-	
-	/** If set, double clicking on a call function node will attempt to navigate an open C++ editor to the native source definition */
-	UPROPERTY(EditAnywhere, config, Category=Workflow)
-	bool bNavigateToNativeFunctionsFromCallNodes;
-
 	/** Blueprint bookmark database */
 	UPROPERTY(config)
 	TMap<FGuid, FEditedDocumentInfo> Bookmarks;
@@ -122,6 +233,10 @@ public:
 	/** Blueprint bookmark nodes (for display) */
 	UPROPERTY(config)
 	TArray<FBPEditorBookmarkNode> BookmarkNodes;
+
+	/** Maps Blueprint path to settings such as breakpoints */
+	UPROPERTY(config)
+	TMap<FString, FPerBlueprintSettings> PerBlueprintSettings;
 
 	/** If enabled, comment nodes will be included in the tree view display in the Bookmarks tab. */
 	UPROPERTY(config)
@@ -135,51 +250,20 @@ public:
 	UPROPERTY(config)
 	TMap<int32, FEditedDocumentInfo> GraphEditorQuickJumps;
 
-// Compiler Settings
-public:
-	/** Determines when to save Blueprints post-compile */
-	UPROPERTY(EditAnywhere, config, Category=Compiler)
-	TEnumAsByte<ESaveOnCompile> SaveOnCompile;
-
-	/** When enabled, if a blueprint has compiler errors, then the graph will jump and focus on the first node generating an error */
-	UPROPERTY(EditAnywhere, config, Category=Compiler)
-	bool bJumpToNodeErrors;
-
-	/** If enabled, nodes can be explicitly disabled via context menu when right-clicking on impure nodes in the Blueprint editor. Disabled nodes will not be compiled, but also will not break existing connections. */
-	UPROPERTY(EditAnywhere, config, Category=Experimental, AdvancedDisplay)
-	bool bAllowExplicitImpureNodeDisabling;
-
-// Developer Settings
-public:
-	/** If enabled, tooltips on action menu items will show the associated action's signature id (can be used to setup custom favorites menus).*/
-	UPROPERTY(EditAnywhere, config, Category=DeveloperTools)
-	bool bShowActionMenuItemSignatures;
-
-	/** If enabled, blueprint nodes in the event graph will display with unique names rather than their display name. */
-	UPROPERTY(EditAnywhere, config, Category = DeveloperTools, meta = (DisplayName = "Display Unique Names for Blueprint Nodes"))
-	bool bBlueprintNodeUniqueNames;
-
-public:
-	// The list of namespaces to always expose in any Blueprint (local per-user)
-	UPROPERTY(EditAnywhere, config, Category = Experimental)
-	TArray<FString> NamespacesToAlwaysInclude;
-
-// Perf Settings
-public:
-	/** If enabled, additional details will be displayed in the Compiler Results tab after compiling a blueprint. */
-	UPROPERTY(EditAnywhere, config, Category=Performance)
-	bool bShowDetailedCompileResults;
-
-	/** Minimum event time threshold used as a filter when additional details are enabled for display in the Compiler Results tab. A value of zero means that all events will be included in the final summary. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category=Performance, DisplayName="Compile Event Results Threshold (ms)", meta=(ClampMin="0", UIMin="0"))
-	int32 CompileEventDisplayThresholdMs;
-
-	/** The node template cache is used to speed up blueprint menuing. This determines the peak data size for that cache. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, config, Category=Performance, DisplayName="Node-Template Cache Cap (MB)", meta=(ClampMin="0", UIMin="0"))
-	float NodeTemplateCacheCapMB;
+	/**
+	 * Any blueprint deriving from one of these base classes will be allowed to recompile during Play-in-Editor
+	 * (This setting exists both as an editor preference and project setting, and will be allowed if listed in either place) 
+	 */
+	UPROPERTY(EditAnywhere, config, Category=Play, meta=(AllowAbstract))
+	TArray<TSoftClassPtr<UObject>> BaseClassesToAllowRecompilingDuringPlayInEditor;
 
 protected:
 	//~ Begin UObject Interface
+	virtual void PostInitProperties();
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 	//~ End UObject Interface
+	
+	void OnAssetRenamed(FAssetData const& AssetInfo, const FString& InOldName);
+	
+	void OnAssetRemoved(UObject* Object);
 };

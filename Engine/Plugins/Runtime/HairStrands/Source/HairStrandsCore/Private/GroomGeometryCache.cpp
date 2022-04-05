@@ -16,7 +16,7 @@
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-FHairStrandsProjectionMeshData::Section ConvertMeshSection(const FCachedGeometry::Section& In)
+FHairStrandsProjectionMeshData::Section ConvertMeshSection(const FCachedGeometry::Section& In, const FTransform& InLocalToWorld)
 {
 	FHairStrandsProjectionMeshData::Section Out;
 	Out.IndexBuffer = In.IndexBuffer;
@@ -33,15 +33,16 @@ FHairStrandsProjectionMeshData::Section ConvertMeshSection(const FCachedGeometry
 	Out.NumVertices= In.NumVertices;
 	Out.SectionIndex = In.SectionIndex;
 	Out.LODIndex = In.LODIndex;
+	Out.LocalToWorld = InLocalToWorld;
 	return Out;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 static void BuildBoneMatrices(USkeletalMeshComponent* SkeletalMeshComponent, const FSkeletalMeshLODRenderData& LODData,
-	const uint32 LODIndex, TArray<uint32>& MatrixOffsets, TArray<FVector4>& BoneMatrices)
+	const uint32 LODIndex, TArray<uint32>& MatrixOffsets, TArray<FVector4f>& BoneMatrices)
 {
-	TArray<FMatrix> BoneTransforms;
+	TArray<FMatrix44f> BoneTransforms;
 	SkeletalMeshComponent->GetCurrentRefToLocalMatrices(BoneTransforms, LODIndex);
 
 	MatrixOffsets.SetNum(LODData.GetNumVertices());
@@ -81,18 +82,18 @@ static void BuildBoneMatrices(USkeletalMeshComponent* SkeletalMeshComponent, con
 		FSkeletalMeshLODRenderData& LODData = RenderData->LODRenderData[LODIndex];
 
 		TArray<uint32> MatrixOffsets;
-		TArray<FVector4> BoneMatrices;
+		TArray<FVector4f> BoneMatrices;
 		BuildBoneMatrices(SkeletalMeshComponent, LODData, LODIndex, MatrixOffsets, BoneMatrices);
 
-		FRDGBufferRef DeformedPositionsBuffer	= GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(float), LODData.StaticVertexBuffers.PositionVertexBuffer.GetNumVertices() * 3), TEXT("HairStrandsSkinnedDeformedPositions"));
-		FRDGBufferRef BoneMatricesBuffer		= CreateStructuredBuffer(GraphBuilder, TEXT("HairStrandsSkinnedBoneMatrices"), sizeof(float) * 4, BoneMatrices.Num(), BoneMatrices.GetData(), sizeof(float) * 4 * BoneMatrices.Num());
-		FRDGBufferRef MatrixOffsetsBuffer		= CreateStructuredBuffer(GraphBuilder, TEXT("HairStrandsSkinnedMatrixOffsets"), sizeof(uint32), MatrixOffsets.Num(), MatrixOffsets.GetData(), sizeof(uint32) * MatrixOffsets.Num());
+		FRDGBufferRef DeformedPositionsBuffer	= GraphBuilder.CreateBuffer(FRDGBufferDesc::CreateBufferDesc(sizeof(float), LODData.StaticVertexBuffers.PositionVertexBuffer.GetNumVertices() * 3), TEXT("Hair.SkinnedDeformedPositions"));
+		FRDGBufferRef BoneMatricesBuffer		= CreateStructuredBuffer(GraphBuilder, TEXT("Hair.SkinnedBoneMatrices"), sizeof(float) * 4, BoneMatrices.Num(), BoneMatrices.GetData(), sizeof(float) * 4 * BoneMatrices.Num());
+		FRDGBufferRef MatrixOffsetsBuffer		= CreateStructuredBuffer(GraphBuilder, TEXT("Hair.SkinnedMatrixOffsets"), sizeof(uint32), MatrixOffsets.Num(), MatrixOffsets.GetData(), sizeof(uint32) * MatrixOffsets.Num());
 
 		AddSkinUpdatePass(GraphBuilder, ShaderMap, SkeletalMeshComponent->GetSkinWeightBuffer(LODIndex), LODData, BoneMatricesBuffer, MatrixOffsetsBuffer, DeformedPositionsBuffer);
 
 		CachedGeometry.DeformedPositionBuffer = DeformedPositionsBuffer;
 		FRDGBufferSRVRef DeformedPositionSRV = GraphBuilder.CreateSRV(DeformedPositionsBuffer, PF_R32_FLOAT);
-
+		CachedGeometry.LocalToWorld = SkeletalMeshComponent->SceneProxy ? FTransform(SkeletalMeshComponent->SceneProxy->GetLocalToWorld()) : FTransform();
 		for (int32 SectionIdx = 0; SectionIdx < LODData.RenderSections.Num(); ++SectionIdx)
 		{
 			FCachedGeometry::Section CachedSection;
@@ -141,7 +142,7 @@ static void BuildBoneMatrices(USkeletalMeshComponent* SkeletalMeshComponent, con
 
 			 // PositionBuffer depends on CurrentPositionBufferIndex and on if the cache has motion vectors
 			 const uint32 PositionIndex = (TrackProxy->CurrentPositionBufferIndex == -1 || bHasMotionVectors) ? 0 : TrackProxy->CurrentPositionBufferIndex % 2;
-
+			 CachedGeometry.LocalToWorld = FTransform(SceneProxy->GetLocalToWorld());
 			 for (int32 SectionIdx = 0; SectionIdx < TrackProxy->MeshData->BatchesInfo.Num(); ++SectionIdx)
 			 {
 				const FGeometryCacheMeshBatchInfo& BatchInfo = TrackProxy->MeshData->BatchesInfo[SectionIdx];
@@ -156,7 +157,7 @@ static void BuildBoneMatrices(USkeletalMeshComponent* SkeletalMeshComponent, con
 				{
 					CachedSection.IndexBuffer = RHICreateShaderResourceView(TrackProxy->IndexBuffer.IndexBufferRHI);
 				}
-				CachedSection.TotalIndexCount = TrackProxy->IndexBuffer.NumIndices;
+				CachedSection.TotalIndexCount = TrackProxy->IndexBuffer.NumValidIndices;
 				CachedSection.UVsChannelCount = 1;
 				CachedSection.NumPrimitives = BatchInfo.NumTriangles;
 				CachedSection.NumVertices = TrackProxy->MeshData->Positions.Num();

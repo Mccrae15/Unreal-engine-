@@ -15,6 +15,7 @@
 #include "Containers/UnrealString.h"
 #include "Logging/LogMacros.h"
 #include "HAL/MallocAnsi.h"
+#include "HAL/MallocMimalloc.h"
 #include "HAL/MallocJemalloc.h"
 #include "HAL/MallocBinned.h"
 #include "HAL/MallocBinned2.h"
@@ -62,6 +63,14 @@ bool CORE_API GTimeEnsures = true;
 
 // Allows settings a specific signal to maintain its default handler rather then ignoring the signal
 int32 CORE_API GSignalToDefault = 0;
+
+// Allows setting crash handler stack size
+uint64 CORE_API GCrashHandlerStackSize = 0;
+
+// Due to dotnet not allowing any files marked as LOCK_EX to be opened for read only or copied, this allows us to
+// to disable the locking mechanics. https://github.com/dotnet/runtime/issues/34126
+// Default to true, can be disabled with -noexclusivelockonwrite
+bool GAllowExclusiveLockOnWrite = true;
 
 #if UE_SERVER
 // Scale factor for how much we would like to increase or decrease the memory pool size
@@ -141,6 +150,13 @@ class FMalloc* FUnixPlatformMemory::BaseAllocator()
 	}
 	else
 	{
+		// Mimalloc is now the default allocator for editor and programs because it has shown
+		// both great performance and as much as half the memory usage of TBB after
+		// heavy editor workloads. See CL 15887498 description for benchmarks.
+#if (WITH_EDITORONLY_DATA || IS_PROGRAM) && PLATFORM_SUPPORTS_MIMALLOC && MIMALLOC_ALLOCATOR_ALLOWED
+		AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
+#endif
+
 		// Allow overriding on the command line.
 		// We get here before main due to global ctors, so need to do some hackery to get command line args
 		if (FILE* CmdLineFile = fopen("/proc/self/cmdline", "r"))
@@ -158,6 +174,7 @@ class FMalloc* FUnixPlatformMemory::BaseAllocator()
 #endif // PLATFORM_SUPPORTS_JEMALLOC
 				if (FCStringAnsi::Stricmp(Arg, "-ansimalloc") == 0)
 				{
+					// see FPlatformMisc::GetProcessDiagnostics()
 					AllocatorToUse = EMemoryAllocatorToUse::Ansi;
 					break;
 				}
@@ -167,6 +184,14 @@ class FMalloc* FUnixPlatformMemory::BaseAllocator()
 					AllocatorToUse = EMemoryAllocatorToUse::Binned;
 					break;
 				}
+
+#if PLATFORM_SUPPORTS_MIMALLOC && MIMALLOC_ALLOCATOR_ALLOWED
+				if (FCStringAnsi::Stricmp(Arg, "-mimalloc") == 0)
+				{
+					AllocatorToUse = EMemoryAllocatorToUse::Mimalloc;
+					break;
+				}
+#endif
 
 				if (FCStringAnsi::Stricmp(Arg, "-binnedmalloc2") == 0)
 				{
@@ -194,6 +219,11 @@ class FMalloc* FUnixPlatformMemory::BaseAllocator()
 					GTimeEnsures = false;
 				}
 
+				if (FCStringAnsi::Stricmp(Arg, "-noexclusivelockonwrite") == 0)
+				{
+					GAllowExclusiveLockOnWrite = false;
+				}
+
 				const char SignalToDefaultCmd[] = "-sigdfl=";
 				if (const char* Cmd = FCStringAnsi::Stristr(Arg, SignalToDefaultCmd))
 				{
@@ -206,6 +236,12 @@ class FMalloc* FUnixPlatformMemory::BaseAllocator()
 					}
 
 					GSignalToDefault = FMath::Max(SignalToDefault, 0);
+				}
+
+				const char CrashHandlerStackSize[] = "-crashhandlerstacksize=";
+				if (const char* Cmd = FCStringAnsi::Stristr(Arg, CrashHandlerStackSize))
+				{
+					GCrashHandlerStackSize = FCStringAnsi::Atoi64(Cmd + sizeof(CrashHandlerStackSize) - 1);
 				}
 
 				const char FileMapCacheCmd[] = "-filemapcachesize=";
@@ -224,6 +260,7 @@ class FMalloc* FUnixPlatformMemory::BaseAllocator()
 #if WITH_MALLOC_STOMP
 				if (FCStringAnsi::Stricmp(Arg, "-stompmalloc") == 0)
 				{
+					// see FPlatformMisc::GetProcessDiagnostics()
 					AllocatorToUse = EMemoryAllocatorToUse::Stomp;
 					break;
 				}
@@ -273,6 +310,12 @@ class FMalloc* FUnixPlatformMemory::BaseAllocator()
 		Allocator = new FMallocJemalloc();
 		break;
 #endif // PLATFORM_SUPPORTS_JEMALLOC
+
+#if PLATFORM_SUPPORTS_MIMALLOC && MIMALLOC_ALLOCATOR_ALLOWED && PLATFORM_BUILDS_MIMALLOC
+	case EMemoryAllocatorToUse::Mimalloc:
+		Allocator = new FMallocMimalloc();
+		break;
+#endif
 
 	case EMemoryAllocatorToUse::Binned2:
 		Allocator = new FMallocBinned2();
@@ -602,7 +645,11 @@ void FUnixPlatformMemory::FPlatformVirtualMemoryBlock::Decommit(size_t InOffset,
 	check(InOffset >= 0 && InSize >= 0 && InOffset + InSize <= GetActualSize() && Ptr);
 	if (!LIKELY(GMemoryRangeDecommitIsNoOp))
 	{
-		madvise(((uint8*)Ptr) + InOffset, InSize, MADV_DONTNEED);
+		if (madvise(((uint8*)Ptr) + InOffset, InSize, MADV_DONTNEED) != 0)
+		{
+			// we can ran out of VMAs here too!
+			FPlatformMemory::OnOutOfMemory(InSize, 0);
+		}
 	}
 }
 
@@ -781,37 +828,80 @@ FPlatformMemoryStats FUnixPlatformMemory::GetStats()
 
 FExtendedPlatformMemoryStats FUnixPlatformMemory::GetExtendedStats()
 {
-	FExtendedPlatformMemoryStats MemoryStats;
+	const ANSICHAR Shared_CleanStr[] = "Shared_Clean:";
+	const ANSICHAR Shared_DirtyStr[] = "Shared_Dirty:";
+	const ANSICHAR Private_CleanStr[] = "Private_Clean:";
+	const ANSICHAR Private_DirtyStr[] = "Private_Dirty:";
+	FExtendedPlatformMemoryStats MemoryStats = { 0 };
 
-	// More /proc "API" :/
-	MemoryStats.Shared_Clean = 0;
-	MemoryStats.Shared_Dirty = 0;
-	MemoryStats.Private_Clean = 0;
-	MemoryStats.Private_Dirty = 0;
-	if (FILE* ProcSMaps = fopen("/proc/self/smaps", "r"))
+	// ~ 1.06ms per call on my Threadripper 3990X w/ Debian Testing 5.15.0-2-amd64
+	if (FILE* ProcSMapsRollup = fopen("/proc/self/smaps_rollup", "r"))
+	{
+		struct
+		{
+			const ANSICHAR* Name;
+			uint32 NameLen;
+			SIZE_T* Addr;
+		} SMapsFields[] =
+		{
+			{ Shared_CleanStr,  sizeof(Shared_CleanStr) - 1,  &MemoryStats.Shared_Clean },
+			{ Shared_DirtyStr,  sizeof(Shared_DirtyStr) - 1,  &MemoryStats.Shared_Dirty },
+			{ Private_CleanStr, sizeof(Private_CleanStr) - 1, &MemoryStats.Private_Clean },
+			{ Private_DirtyStr, sizeof(Private_DirtyStr) - 1, &MemoryStats.Private_Dirty },
+		};
+		const uint32 NumFields = UE_ARRAY_COUNT(SMapsFields);
+		uint32 FieldsFound = 0;
+
+		while (FieldsFound < NumFields)
+		{
+			ANSICHAR LineBuffer[256];
+			ANSICHAR *Line = fgets(LineBuffer, UE_ARRAY_COUNT(LineBuffer), ProcSMapsRollup);
+
+			if (Line == nullptr)
+			{
+				// eof or an error
+				break;
+			}
+
+			for (uint32 i = 0; i < NumFields; i++)
+			{
+				if (!FCStringAnsi::Strncmp(SMapsFields[i].Name, Line, SMapsFields[i].NameLen))
+				{
+					*SMapsFields[i].Addr = atoll(Line + SMapsFields[i].NameLen) * 1024ULL;
+					FieldsFound++;
+					break;
+				}
+			}
+		}
+
+		fclose(ProcSMapsRollup);
+	}
+	// ~ 6.8ms per call on my Threadripper 3990X w/ Debian Testing 5.15.0-2-amd64 in TestPAL.
+	// Potentially far higher though.
+	else if (FILE* ProcSMaps = fopen("/proc/self/smaps", "r"))
 	{
 		do
 		{
-			char LineBuffer[256] = { 0 };
-			char *Line = fgets(LineBuffer, UE_ARRAY_COUNT(LineBuffer), ProcSMaps);
+			ANSICHAR LineBuffer[256] = { 0 };
+			ANSICHAR *Line = fgets(LineBuffer, UE_ARRAY_COUNT(LineBuffer), ProcSMaps);
 			if (Line == nullptr)
 			{
 				break;	// eof or an error
 			}
 
-			if (strstr(Line, "Shared_Clean:") == Line)
+			if (strstr(Line, Shared_CleanStr) == Line)
 			{
 				MemoryStats.Shared_Clean += UnixPlatformMemory::GetBytesFromStatusLine(Line);
 			}
-			else if (strstr(Line, "Shared_Dirty:") == Line)
+			else if (strstr(Line, Shared_DirtyStr) == Line)
 			{
 				MemoryStats.Shared_Dirty += UnixPlatformMemory::GetBytesFromStatusLine(Line);
 			}
-			if (strstr(Line, "Private_Clean:") == Line)
+			if (strstr(Line, Private_CleanStr) == Line)
 			{
 				MemoryStats.Private_Clean += UnixPlatformMemory::GetBytesFromStatusLine(Line);
 			}
-			else if (strstr(Line, "Private_Dirty:") == Line)
+			else if (strstr(Line, Private_DirtyStr) == Line)
 			{
 				MemoryStats.Private_Dirty += UnixPlatformMemory::GetBytesFromStatusLine(Line);
 			}
@@ -867,12 +957,13 @@ const FPlatformMemoryConstants& FUnixPlatformMemory::GetConstants()
 
 #endif // PLATFORM_FREEBSD
 
-		MemoryConstants.TotalPhysicalGB = (MemoryConstants.TotalPhysical + 1024ULL * 1024ULL * 1024ULL - 1) / 1024ULL / 1024ULL / 1024ULL;
-
 		MemoryConstants.PageSize = sysconf(_SC_PAGESIZE);
 		MemoryConstants.BinnedPageSize = FMath::Max((SIZE_T)65536, MemoryConstants.PageSize);
 		MemoryConstants.BinnedAllocationGranularity = MemoryConstants.PageSize;
 		MemoryConstants.OsAllocationGranularity = MemoryConstants.PageSize;
+
+		MemoryConstants.TotalPhysicalGB = (MemoryConstants.TotalPhysical + 1024ULL * 1024ULL * 1024ULL - 1) / 1024ULL / 1024ULL / 1024ULL;
+		MemoryConstants.AddressLimit = FPlatformMath::RoundUpToPowerOfTwo64(MemoryConstants.TotalPhysical);
 	}
 
 	return MemoryConstants;	
@@ -1013,45 +1104,50 @@ bool FUnixPlatformMemory::UnmapNamedSharedMemoryRegion(FSharedMemoryRegion * Mem
 
 void FUnixPlatformMemory::OnOutOfMemory(uint64 Size, uint32 Alignment)
 {
-	// Update memory stats before we enter the crash handler.
-	OOMAllocationSize = Size;
-	OOMAllocationAlignment = Alignment;
-
-	// only call this code one time - if already OOM, abort
-	if (bIsOOM)
+	auto HandleOOM = [&]()
 	{
-		return;
-	}
-	bIsOOM = true;
+		// Update memory stats before we enter the crash handler.
+		OOMAllocationSize = Size;
+		OOMAllocationAlignment = Alignment;
 
-	FMalloc* Prev = GMalloc;
-	FPlatformMallocCrash::Get().SetAsGMalloc();
+		bIsOOM = true;
 
-	FPlatformMemoryStats PlatformMemoryStats = FPlatformMemory::GetStats();
+		const int ErrorMsgSize = 256;
+		TCHAR ErrorMsg[ErrorMsgSize];
+		FPlatformMisc::GetSystemErrorMessage(ErrorMsg, ErrorMsgSize, 0);
 
-	UE_LOG(LogMemory, Warning, TEXT("MemoryStats:")\
-		TEXT("\n\tAvailablePhysical %llu")\
-		TEXT("\n\t AvailableVirtual %llu")\
-		TEXT("\n\t     UsedPhysical %llu")\
-		TEXT("\n\t PeakUsedPhysical %llu")\
-		TEXT("\n\t      UsedVirtual %llu")\
-		TEXT("\n\t  PeakUsedVirtual %llu"),
-		(uint64)PlatformMemoryStats.AvailablePhysical,
-		(uint64)PlatformMemoryStats.AvailableVirtual,
-		(uint64)PlatformMemoryStats.UsedPhysical,
-		(uint64)PlatformMemoryStats.PeakUsedPhysical,
-		(uint64)PlatformMemoryStats.UsedVirtual,
-		(uint64)PlatformMemoryStats.PeakUsedVirtual);
-	if (GWarn)
-	{
-		Prev->DumpAllocatorStats(*GWarn);
-	}
+		FMalloc* Prev = GMalloc;
+		FPlatformMallocCrash::Get().SetAsGMalloc();
 
-	// let any registered handlers go
-	FCoreDelegates::GetOutOfMemoryDelegate().Broadcast();
+		FPlatformMemoryStats PlatformMemoryStats = FPlatformMemory::GetStats();
 
-	UE_LOG(LogMemory, Fatal, TEXT("Ran out of memory allocating %llu bytes with alignment %u"), Size, Alignment);
-	// unreachable
+		UE_LOG(LogMemory, Warning, TEXT("MemoryStats:")\
+			TEXT("\n\tAvailablePhysical %llu")\
+			TEXT("\n\t AvailableVirtual %llu")\
+			TEXT("\n\t     UsedPhysical %llu")\
+			TEXT("\n\t PeakUsedPhysical %llu")\
+			TEXT("\n\t      UsedVirtual %llu")\
+			TEXT("\n\t  PeakUsedVirtual %llu"),
+			(uint64)PlatformMemoryStats.AvailablePhysical,
+			(uint64)PlatformMemoryStats.AvailableVirtual,
+			(uint64)PlatformMemoryStats.UsedPhysical,
+			(uint64)PlatformMemoryStats.PeakUsedPhysical,
+			(uint64)PlatformMemoryStats.UsedVirtual,
+			(uint64)PlatformMemoryStats.PeakUsedVirtual);
+		if (GWarn)
+		{
+			Prev->DumpAllocatorStats(*GWarn);
+		}
+
+		// let any registered handlers go
+		FCoreDelegates::GetOutOfMemoryDelegate().Broadcast();
+
+		// ErrorMsg might be unrelated to OoM error in some cases as the code that calls OnOutOfMemory could have called other system functions that modified errno
+		UE_LOG(LogMemory, Fatal, TEXT("Ran out of memory allocating %llu bytes with alignment %u. Last error msg: %s."), Size, Alignment, ErrorMsg);
+	};
+	
+	UE_CALL_ONCE(HandleOOM);
+	FPlatformProcess::SleepInfinite(); // Unreachable
 }
 
 /**

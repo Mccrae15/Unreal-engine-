@@ -173,6 +173,11 @@ ECommandResult::Type FPlasticSourceControlProvider::GetState( const TArray<FStri
 	return ECommandResult::Succeeded;
 }
 
+ECommandResult::Type FPlasticSourceControlProvider::GetState(const TArray<FSourceControlChangelistRef>& InChangelists, TArray<FSourceControlChangelistStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage)
+{
+	return ECommandResult::Failed;
+}
+
 TArray<FSourceControlStateRef> FPlasticSourceControlProvider::GetCachedStateByPredicate(TFunctionRef<bool(const FSourceControlStateRef&)> Predicate) const
 {
 	TArray<FSourceControlStateRef> Result;
@@ -202,7 +207,7 @@ void FPlasticSourceControlProvider::UnregisterSourceControlStateChanged_Handle( 
 	OnSourceControlStateChanged.Remove( Handle );
 }
 
-ECommandResult::Type FPlasticSourceControlProvider::Execute( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate )
+ECommandResult::Type FPlasticSourceControlProvider::Execute( const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate )
 {
 	if(!bWorkspaceFound && !(InOperation->GetName() == "Connect") && !(InOperation->GetName() == "MakeWorkspace"))
 	{
@@ -245,12 +250,12 @@ ECommandResult::Type FPlasticSourceControlProvider::Execute( const TSharedRef<IS
 	}
 }
 
-bool FPlasticSourceControlProvider::CanCancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation ) const
+bool FPlasticSourceControlProvider::CanCancelOperation( const FSourceControlOperationRef& InOperation ) const
 {
 	return false;
 }
 
-void FPlasticSourceControlProvider::CancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation )
+void FPlasticSourceControlProvider::CancelOperation( const FSourceControlOperationRef& InOperation )
 {
 }
 
@@ -380,6 +385,11 @@ TArray< TSharedRef<ISourceControlLabel> > FPlasticSourceControlProvider::GetLabe
 {
 	TArray< TSharedRef<ISourceControlLabel> > Tags;
 	return Tags;
+}
+
+TArray<FSourceControlChangelistRef> FPlasticSourceControlProvider::GetChangelists( EStateCacheUsage::Type InStateCacheUsage )
+{
+	return TArray<FSourceControlChangelistRef>();
 }
 
 #if SOURCE_CONTROL_WITH_SLATE

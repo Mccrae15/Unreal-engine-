@@ -48,14 +48,16 @@ public:
 	virtual bool IsMessageSelected(const TSharedRef<class FTokenizedMessage>& Message) const override;
 	virtual void ClearSelectedMessages() override;
 	virtual void InvertSelectedMessages() override;
-	virtual FText GetSelectedMessagesAsText() const override;
-	virtual FText GetAllMessagesAsText() const override;
+	virtual FString GetSelectedMessagesAsString() const override;
+	virtual FString GetAllMessagesAsString() const override;
 	virtual const FName& GetName() const override;
 	virtual void SetLabel( const FText& InLogLabel ) override;
 	virtual const FText& GetLabel() const override;
 	virtual const TArray< TSharedRef< class FMessageFilter> >& GetMessageFilters() const override;
 	virtual void ExecuteToken( const TSharedRef<class IMessageToken>& Token ) const override;
 	virtual void NewPage( const FText& Title ) override;
+	virtual void SetCurrentPage( const FText& Title ) override;
+	virtual void SetCurrentPage( const uint32 InOldPageIndex ) override;
 	virtual void NotifyIfAnyMessages( const FText& Message, EMessageSeverity::Type SeverityFilter = EMessageSeverity::Info, bool bForce = false ) override;
 	virtual void Open() override;
 	virtual int32 NumMessages( EMessageSeverity::Type SeverityFilter ) override;
@@ -105,6 +107,12 @@ public:
 
 	/** Get whether we should show pages or not */
 	bool GetShowPages() const;
+
+	/** Set whether we should scroll to the bottom when messages are added */
+	void SetScrollToBottom(bool bInScrollToBottom);
+
+	/** Get whether we should scroll to the bottom when messages are added */
+	bool GetScrollToBottom() const;
 
 	/** Set whether we should show allow the user to clear the log. */
 	void SetAllowClear(bool bInAllowClear);
@@ -157,6 +165,7 @@ private:
 		, bShowPages( InitializationOptions.bShowPages )
 		, bAllowClear( InitializationOptions.bAllowClear )
 		, bDiscardDuplicates( InitializationOptions.bDiscardDuplicates )
+		, bScrollToBottom( InitializationOptions.bScrollToBottom )
 		, MaxPageCount( InitializationOptions.MaxPageCount )
 		, bShowInLogWindow( InitializationOptions.bShowInLogWindow )
 		, CurrentPageIndex( 0 )
@@ -196,6 +205,9 @@ private:
 
 	/** Whether to check for duplicate messages & discard them */
 	bool bDiscardDuplicates;
+
+	/** Whether to scroll to the bottom when messages are added */
+	bool bScrollToBottom;
 
 	/** The limit on the number of displayed pages for this listing */
 	uint32 MaxPageCount;

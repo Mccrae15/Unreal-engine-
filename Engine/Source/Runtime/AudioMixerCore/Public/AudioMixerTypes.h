@@ -6,22 +6,6 @@
 
 namespace Audio {
 
-	namespace EAudioMixerPlatformApi
-	{
-		enum Type
-		{
-			XAudio2, 	// Windows, XBoxOne
-			AudioOut, 	// PS4
-			CoreAudio, 	// Mac
-			AudioUnit, 	// iOS
-			SDL2,		// Linux
-			OpenSLES, 	// Android
-			Switch, 	// Switch
-			Other,      // Generic output type.
-			Null		// Unknown/not Supported
-		};
-	}
-
 	namespace EAudioMixerStreamDataFormat
 	{
 		enum Type
@@ -58,6 +42,17 @@ namespace Audio {
 		};
 	}
 
+	// Indicates a platform-specific format
+	static FName NAME_PLATFORM_SPECIFIC(TEXT("PLATFORM_SPECIFIC"));
+
+	// Supported on all platforms:
+	static FName NAME_BINKA(TEXT("BINKA"));
+	static FName NAME_ADPCM(TEXT("ADPCM"));
+	static FName NAME_PCM(TEXT("PCM"));
+
+	// Not yet supported on all platforms as a selectable option so is included under "platform specific" enumeration for now. 
+	static FName NAME_OGG(TEXT("OGG"));
+	static FName NAME_OPUS(TEXT("OPUS"));
 }
 
 struct AUDIOMIXERCORE_API FAudioPlatformSettings
@@ -71,7 +66,7 @@ struct AUDIOMIXERCORE_API FAudioPlatformSettings
 	/** The number of buffers to keep enqueued. More buffers increases latency, but can compensate for variable compute availability in audio callbacks on some platforms. */
 	int32 NumBuffers;
 
-	/** The max number of channels to limit for this platform. The max channels used will be the minimum of this value and the global audio quality settings. A value of 0 will not apply a platform channel count max. */
+	/** The max number of channels (simultaneous voices) to use as the limit for this platform. If given a value of 0, it will use the value from the active Global Audio Quality Settings */
 	int32 MaxChannels;
 
 	/** The number of workers to use to compute source audio. Will only use up to the max number of sources. Will evenly divide sources to each source worker. */
@@ -115,7 +110,7 @@ struct AUDIOMIXERCORE_API FAudioPlatformSettings
 		: SampleRate(48000)
 		, CallbackBufferFrameSize(1024)
 		, NumBuffers(2)
-		, MaxChannels(32)
+		, MaxChannels(0) // This needs to be 0 to indicate it's not overridden from the audio settings object, which is the default used on all platforms
 		, NumSourceWorkers(0)
 	{
 	}

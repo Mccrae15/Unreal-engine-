@@ -335,6 +335,8 @@ void SDataprepEditorViewport::UpdateScene()
 	// Gather all static meshes used by actors in PreviewWorld
 	TArray< UStaticMeshComponent* > SceneMeshComponents = DataprepEditor3DPreviewUtils::GetComponentsFromWorld<UStaticMeshComponent>( WorldToPreview );
 
+	bCanShowNaniteFallbackMenu = false;
+
 	if(SceneMeshComponents.Num() > 0)
 	{
 		int32 InvalidStaticMeshesCount = 0;
@@ -393,6 +395,8 @@ void SDataprepEditorViewport::UpdateScene()
 					const UStaticMesh* StaticMesh = SceneMeshComponent->GetStaticMesh();
 					const FTransform& ComponentToWorldTransform = SceneMeshComponent->GetComponentTransform();
 					SceneBounds += StaticMesh->GetExtendedBounds().GetBox().TransformBy( ComponentToWorldTransform );
+
+					bCanShowNaniteFallbackMenu |= StaticMesh->NaniteSettings.bEnabled;
 				}
 			}
 
@@ -443,6 +447,8 @@ void SDataprepEditorViewport::UpdateScene()
 
 						FComponentReregisterContext ReregisterContext( PreviewMeshComponent );
 						PreviewMeshComponent->SetStaticMesh( StaticMesh );
+
+						PreviewMeshComponent->bDisplayNaniteFallbackMesh = bShowNaniteFallbackMenuChecked && StaticMesh->NaniteSettings.bEnabled;
 
 						FTransform ComponentToWorldTransform = SceneMeshComponent->GetComponentTransform();
 
@@ -608,6 +614,8 @@ void SDataprepEditorViewport::UpdateOverlayText()
 
 	TSet<UStaticMesh*> StaticMeshes;
 
+	int32 NaniteTrianglesCount = 0;
+	int32 NaniteVerticesCount = 0;
 	int32 TrianglesCount = 0;
 	int32 VerticesCount = 0;
 	for( const TWeakObjectPtr< UStaticMeshComponent >& PreviewMeshComponent : PreviewMeshComponents )
@@ -615,17 +623,57 @@ void SDataprepEditorViewport::UpdateOverlayText()
 		if(UStaticMeshComponent* MeshComponent = PreviewMeshComponent.Get())
 		{
 			UStaticMesh* StaticMesh = MeshComponent->GetStaticMesh();
-			TrianglesCount += StaticMesh->GetRenderData()->LODResources[0].GetNumTriangles();
-			VerticesCount += StaticMesh->GetRenderData()->LODResources[0].GetNumVertices();
+
+			FStaticMeshLODResources& LODResource = StaticMesh->GetRenderData()->LODResources[0];
+
+			if (StaticMesh->NaniteSettings.bEnabled && StaticMesh->HasValidNaniteData())
+			{
+				const Nanite::FResources& Resources = StaticMesh->GetRenderData()->NaniteResources;
+				if (Resources.RootData.Num() > 0)
+				{
+					NaniteTrianglesCount += bShowNaniteFallbackMenuChecked ? LODResource.GetNumTriangles() : Resources.NumInputTriangles;
+					NaniteVerticesCount += bShowNaniteFallbackMenuChecked ? LODResource.GetNumVertices() : Resources.NumInputVertices;
+				}
+			}
+			else
+			{
+				TrianglesCount += LODResource.GetNumTriangles();
+				VerticesCount += LODResource.GetNumVertices();
+			}
 			StaticMeshes.Add(StaticMesh);
 		}
 	}
 
-	TextItems.Add(FOverlayTextItem(
-		FText::Format(LOCTEXT( "Triangles_F", "#Triangles:  {0}"), FText::AsNumber(TrianglesCount))));
+	if (NaniteTrianglesCount > 0)
+	{
+		static FText ShowingNaniteFallback = LOCTEXT("ShowingNaniteFallback", "(Showing Fallback)");
+
+		TextItems.Add(FOverlayTextItem(
+			FText::Format(LOCTEXT("NaniteEnabled", "Nanite Enabled {0}"), bShowNaniteFallbackMenuChecked ? ShowingNaniteFallback : FText::GetEmpty())));
+
+		if (bShowNaniteFallbackMenuChecked)
+		{
+			TextItems.Add(FOverlayTextItem(
+				FText::Format(LOCTEXT("Fallback_Triangles", "#Fallback_Triangles: {0}"), FText::AsNumber(NaniteTrianglesCount))));
+
+			TextItems.Add(FOverlayTextItem(
+				FText::Format(LOCTEXT("Fallback_Vertices", "#Fallback_Vertices: {0}"), FText::AsNumber(NaniteVerticesCount))));
+		}
+		else
+		{
+			TextItems.Add(FOverlayTextItem(
+				FText::Format(LOCTEXT("Nanite_Triangles", "#Nanite_Triangles: {0}"), FText::AsNumber(NaniteTrianglesCount))));
+
+			TextItems.Add(FOverlayTextItem(
+				FText::Format(LOCTEXT("Nanite_Vertices", "#Nanite_Vertices: {0}"), FText::AsNumber(NaniteVerticesCount))));
+		}
+	}
 
 	TextItems.Add(FOverlayTextItem(
-		FText::Format(LOCTEXT( "Vertices_F", "#Vertices:  {0}"), FText::AsNumber(VerticesCount))));
+		FText::Format(LOCTEXT("Triangles_F", "#Triangles: {0}"), FText::AsNumber(TrianglesCount))));
+
+	TextItems.Add(FOverlayTextItem(
+		FText::Format(LOCTEXT("Vertices_F", "#Vertices: {0}"), FText::AsNumber(VerticesCount))));
 
 	FVector SceneExtents = SceneBounds.GetExtent();
 	TextItems.Add(FOverlayTextItem(
@@ -697,7 +745,14 @@ void SDataprepEditorViewport::BindCommands()
 		Commands.SetShowBounds,
 		FExecuteAction::CreateSP( EditorViewportClientRef, &FEditorViewportClient::ToggleShowBounds ),
 		FCanExecuteAction(),
-		FIsActionChecked::CreateSP( EditorViewportClientRef, &FEditorViewportClient::IsSetShowBoundsChecked ) );
+		FIsActionChecked::CreateSP(EditorViewportClientRef, &FEditorViewportClient::IsSetShowBoundsChecked ) );
+
+	CommandList->MapAction(
+		Commands.SetShowNaniteFallback,
+		FExecuteAction::CreateSP(this, &SDataprepEditorViewport::ToggleShowNaniteFallback),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &SDataprepEditorViewport::IsSetShowNaniteFallbackChecked),
+		FIsActionButtonVisible::CreateSP(this, &SDataprepEditorViewport::IsShowNaniteFallbackVisible));
 
 	CommandList->MapAction(
 		Commands.ApplyOriginalMaterial,
@@ -1219,7 +1274,8 @@ void SDataprepEditorViewport::LoadDefaultSettings()
 		AssetViewerProfileIndex = DefaultSettings->Profiles.Num();
 
 		DefaultSettings->Profiles.Add( Profile );
-		DefaultSettings->Save();
+		const bool bWarnIfFail = false;
+		DefaultSettings->Save(bWarnIfFail);
 	}
 
 	// Update the profile with the settings for the project
@@ -1252,6 +1308,26 @@ void SDataprepEditorViewport::LoadDefaultSettings()
 			}
 		}
 	}
+}
+
+void SDataprepEditorViewport::SetShowNaniteFallback(bool bShow)
+{
+	bShowNaniteFallbackMenuChecked = bShow;
+
+	for (const TWeakObjectPtr< UStaticMeshComponent >& PreviewMeshComponentPtr : PreviewMeshComponents)
+	{
+		if (UCustomStaticMeshComponent* PreviewMeshComponent = Cast<UCustomStaticMeshComponent>(PreviewMeshComponentPtr.Get()))
+		{
+			const UStaticMesh* StaticMesh = PreviewMeshComponent->GetStaticMesh();
+			if (StaticMesh && StaticMesh->NaniteSettings.bEnabled)
+			{
+				PreviewMeshComponent->bDisplayNaniteFallbackMesh = bShowNaniteFallbackMenuChecked && StaticMesh->NaniteSettings.bEnabled;
+				PreviewMeshComponent->MarkRenderStateDirty();
+			}
+		}
+	}
+
+	UpdateOverlayText();
 }
 
 //
@@ -1412,6 +1488,7 @@ TSharedRef<SWidget> SDataprepEditorViewportToolbar::GenerateShowMenu() const
 	{
 		ShowMenuBuilder.AddMenuEntry(FDataprepEditorViewportCommands::Get().SetShowGrid);
 		ShowMenuBuilder.AddMenuEntry(FDataprepEditorViewportCommands::Get().SetShowBounds);
+		ShowMenuBuilder.AddMenuEntry(FDataprepEditorViewportCommands::Get().SetShowNaniteFallback);
 	}
 
 	// #ueent_remark: Look at SAnimViewportToolBar::GenerateShowMenu in SAnimViewportToolBar.cpp for adding ShowFlagFilter to the Show menu
@@ -1545,8 +1622,9 @@ void SDataprepEditorViewport::ToggleShowOrientedBox()
 void FDataprepEditorViewportCommands::RegisterCommands()
 {
 	// Show menu
-	UI_COMMAND(SetShowGrid, "Grid", "Displays the viewport grid.", EUserInterfaceActionType::ToggleButton, FInputChord());
-	UI_COMMAND(SetShowBounds, "Bounds", "Toggles display of the bounds of the selected component.", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND(SetShowGrid, "Grid", "Displays the viewport grid.", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Control, EKeys::G));
+	UI_COMMAND(SetShowBounds, "Bounds", "Toggles display of the bounds of the selected component.", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Control, EKeys::B));
+	UI_COMMAND(SetShowNaniteFallback, "Nanite Fallback", "Toggles the display of the Nanite fallback mesh.", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Control, EKeys::N));
 
 	// Rendering Material
 	UI_COMMAND(ApplyOriginalMaterial, "None", "Display all meshes with original materials.", EUserInterfaceActionType::RadioButton, FInputChord());
@@ -1576,8 +1654,15 @@ FPrimitiveSceneProxy* UCustomStaticMeshComponent::CreateSceneProxy()
 		return nullptr;
 	}
 
+	// Do not overwrite proxy if Nanite supported and there is built Nanite data for the static mesh
+	// #ueent_todo: Track changes to Nanite::FSceneProxy code in case wireframe display is supported
+	if (ShouldCreateNaniteProxy() && !bDisplayNaniteFallbackMesh)
+	{
+		return UStaticMeshComponent::CreateSceneProxy();
+	}
+
 	const FStaticMeshLODResourcesArray& LODResources = GetStaticMesh()->GetRenderData()->LODResources;
-	if (LODResources.Num() == 0	|| LODResources[FMath::Clamp<int32>(GetStaticMesh()->GetMinLOD().Default, 0, LODResources.Num()-1)].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() == 0)
+	if (LODResources.Num() == 0	|| LODResources[FMath::Clamp<int32>(GetStaticMesh()->GetDefaultMinLOD(), 0, LODResources.Num()-1)].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() == 0)
 	{
 		return nullptr;
 	}
@@ -1635,18 +1720,19 @@ namespace DataprepEditor3DPreviewUtils
 			//Cache the BuildSettings and update them before building the meshes.
 			for (UStaticMesh* StaticMesh : BuiltMeshes)
 			{
-				TArray<FStaticMeshSourceModel>& SourceModels = StaticMesh->GetSourceModels();
+				int32 NumSourceModels = StaticMesh->GetNumSourceModels();
 				TArray<FMeshBuildSettings> BuildSettings;
-				BuildSettings.Reserve(SourceModels.Num());
+				BuildSettings.Reserve(NumSourceModels);
 
-				for (FStaticMeshSourceModel& SourceModel : SourceModels)
+				for (int32 LodIndex = 0; LodIndex < NumSourceModels; LodIndex++)
 				{
+					FStaticMeshSourceModel& SourceModel = StaticMesh->GetSourceModel(LodIndex);
+
 					BuildSettings.Add(SourceModel.BuildSettings);
 
 					SourceModel.BuildSettings.bGenerateLightmapUVs = false;
 					SourceModel.BuildSettings.bRecomputeNormals = false;
 					SourceModel.BuildSettings.bRecomputeTangents = false;
-					SourceModel.BuildSettings.bBuildAdjacencyBuffer = false;
 					SourceModel.BuildSettings.bBuildReversedIndexBuffer = false;
 				}
 
@@ -1667,11 +1753,11 @@ namespace DataprepEditor3DPreviewUtils
 				UStaticMesh* StaticMesh = BuiltMeshes[Index];
 				TArray<FMeshBuildSettings>& PrevBuildSettings = StaticMeshesSettings[Index];
 
-				TArray<FStaticMeshSourceModel>& SourceModels = StaticMesh->GetSourceModels();
+				int32 NumSourceModels = StaticMesh->GetNumSourceModels();
 
-				for(int32 SourceModelIndex = 0; SourceModelIndex < SourceModels.Num(); ++SourceModelIndex)
+				for(int32 SourceModelIndex = 0; SourceModelIndex < NumSourceModels; ++SourceModelIndex)
 				{
-					SourceModels[SourceModelIndex].BuildSettings = PrevBuildSettings[SourceModelIndex];
+					StaticMesh->GetSourceModel(SourceModelIndex).BuildSettings = PrevBuildSettings[SourceModelIndex];
 				}
 
 				for ( FStaticMeshLODResources& LODResources : StaticMesh->GetRenderData()->LODResources )

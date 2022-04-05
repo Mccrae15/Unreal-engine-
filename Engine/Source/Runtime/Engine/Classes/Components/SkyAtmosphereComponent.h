@@ -199,9 +199,11 @@ class USkyAtmosphereComponent : public USceneComponent
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	ENGINE_API void SetHeightFogContribution(float NewValue);
 
-
-	UFUNCTION(BlueprintCallable, Category = "Utilities", meta = (DisplayName = "Get Atmosphere Transmitance On Ground At Planet Top (Experimental)", Experimental))
+	UFUNCTION(BlueprintCallable, Category = "Utilities", meta = (DisplayName = "Get Atmosphere Transmitance On Ground At Planet Top"))
 	ENGINE_API FLinearColor GetAtmosphereTransmitanceOnGroundAtPlanetTop(UDirectionalLightComponent* DirectionalLight);
+
+	// This is used to position the SkyAtmosphere similarly to the deprecated AtmosphericFog component
+	void SetPositionToMatchDeprecatedAtmosphericFog();
 
 protected:
 	//~ Begin UActorComponent Interface.
@@ -253,6 +255,11 @@ private:
 	void UpdateStaticLightingGUIDs();
 
 	void SendRenderTransformCommand();
+
+protected:
+	// When true, this means that this SkyAtmosphere is use as replacement for the deprecated AtmosphericFogComponent as a parent class. 
+	// This is used to adapt the serialisation.
+	bool bIsAtmosphericFog = false;
 };
 
 
@@ -260,7 +267,7 @@ private:
  * A placeable actor that represents a planet atmosphere material and simulates sky and light scattering within it.
  * @see https://docs.unrealengine.com/en-US/Engine/Actors/FogEffects/SkyAtmosphere/index.html
  */
-UCLASS(showcategories = (Movement, Rendering, "Utilities|Transformation", "Input|MouseInput", "Input|TouchInput"), ClassGroup = Fog, hidecategories = (Info, Object, Input), MinimalAPI)
+UCLASS(showcategories = (Movement, Rendering, Transformation, DataLayers, "Input|MouseInput", "Input|TouchInput"), ClassGroup = Fog, hidecategories = (Info, Object, Input), MinimalAPI)
 class ASkyAtmosphere : public AInfo
 {
 	GENERATED_UCLASS_BODY()
@@ -268,15 +275,18 @@ class ASkyAtmosphere : public AInfo
 private:
 
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = Atmosphere, meta = (AllowPrivateAccess = "true"))
-	class USkyAtmosphereComponent* SkyAtmosphereComponent;
+	TObjectPtr<class USkyAtmosphereComponent> SkyAtmosphereComponent;
 
 #if WITH_EDITORONLY_DATA
 	/** Arrow component to indicate default sun rotation */
 	UPROPERTY()
-	class UArrowComponent* ArrowComponent;
+	TObjectPtr<class UArrowComponent> ArrowComponent;
 #endif
 
 public:
+#if WITH_EDITOR
+	virtual bool SupportsDataLayer() const override { return true; }
+#endif
 
 	/** Returns SkyAtmosphereComponent subobject */
 	ENGINE_API USkyAtmosphereComponent* GetComponent() const { return SkyAtmosphereComponent; }

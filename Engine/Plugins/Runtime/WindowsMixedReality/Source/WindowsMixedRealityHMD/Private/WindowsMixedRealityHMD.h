@@ -31,7 +31,7 @@
 
 DECLARE_LOG_CATEGORY_EXTERN(LogWmrHmd, Log, All);
 
-#define eSSP_THIRD_CAMERA_EYE 3
+#define eSSE_THIRD_CAMERA_EYE 3
 
 namespace WindowsMixedReality
 {
@@ -39,7 +39,7 @@ namespace WindowsMixedReality
 	class WINDOWSMIXEDREALITYHMD_API FWindowsMixedRealityHMD
 		: public FHeadMountedDisplayBase
 		, public FXRRenderTargetManager
-		, public FSceneViewExtensionBase
+		, public FHMDSceneViewExtension
 	{
 	public:
 
@@ -52,7 +52,7 @@ namespace WindowsMixedReality
 		virtual int32 GetXRSystemFlags() const override
 		{
 			int32 XRFlags = EXRSystemFlags::IsHeadMounted;
-			if (!UWindowsMixedRealityFunctionLibrary::IsDisplayOpaque())
+			if (!UDEPRECATED_WindowsMixedRealityFunctionLibrary::IsDisplayOpaque())
 			{
 				XRFlags |= EXRSystemFlags::IsAR;
 			}
@@ -91,7 +91,7 @@ namespace WindowsMixedReality
 			int32 DeviceId,
 			FQuat& CurrentOrientation,
 			FVector& CurrentPosition) override;
-		virtual bool GetRelativeEyePose(int32 DeviceId, EStereoscopicPass Eye, FQuat& OutOrientation, FVector& OutPosition) override;
+		virtual bool GetRelativeEyePose(int32 DeviceId, int32 ViewIndex, FQuat& OutOrientation, FVector& OutPosition) override;
 
 		virtual class IHeadMountedDisplay* GetHMDDevice() override
 		{
@@ -136,10 +136,10 @@ namespace WindowsMixedReality
 		virtual bool IsStereoEnabled() const override;
 		virtual bool EnableStereo(bool stereo = true) override;
 		virtual void AdjustViewRect(
-			EStereoscopicPass StereoPass,
+			int32 ViewIndex,
 			int32& X, int32& Y,
 			uint32& SizeX, uint32& SizeY) const override;
-		virtual FMatrix GetStereoProjectionMatrix(const enum EStereoscopicPass StereoPassType) const override;
+		virtual FMatrix GetStereoProjectionMatrix(const int32 ViewIndex) const override;
 		virtual IStereoRenderTargetManager* GetRenderTargetManager() override { return this; }
 		virtual class IStereoLayers* GetStereoLayers() override;
 
@@ -154,35 +154,19 @@ namespace WindowsMixedReality
 				: 1;
 		}
 
-		virtual EStereoscopicPass GetViewPassForIndex(bool bStereoRequested, uint32 ViewIndex) const override
+		virtual EStereoscopicPass GetViewPassForIndex(bool bStereoRequested, int32 ViewIndex) const override
 		{
 			if (!bStereoRequested)
 				return EStereoscopicPass::eSSP_FULL;
 
-			return static_cast<EStereoscopicPass>(eSSP_LEFT_EYE + ViewIndex);
-		}
-
-		virtual uint32 GetViewIndexForPass(EStereoscopicPass StereoPassType) const override
-		{
-			switch (StereoPassType)
-			{
-			case eSSP_LEFT_EYE:
-			case eSSP_FULL:
-				return 0;
-
-			case eSSP_RIGHT_EYE:
-				return 1;
-
-			default:
-				return StereoPassType - eSSP_LEFT_EYE;
-			}
+			return ViewIndex == EStereoscopicEye::eSSE_LEFT_EYE ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
 		}
 
 		virtual bool HasHiddenAreaMesh() const override;
-		virtual void DrawHiddenAreaMesh_RenderThread(FRHICommandList& RHICmdList, EStereoscopicPass StereoPass) const override;
+		virtual void DrawHiddenAreaMesh(FRHICommandList& RHICmdList, int32 ViewIndex) const override;
 
 		virtual bool HasVisibleAreaMesh() const override;
-		virtual void DrawVisibleAreaMesh_RenderThread(FRHICommandList& RHICmdList, EStereoscopicPass StereoPass) const override;
+		virtual void DrawVisibleAreaMesh(FRHICommandList& RHICmdList, int32 ViewIndex) const override;
 
 		// Spectator screen Hooks.
 		virtual FIntRect GetFullFlatEyeRect_RenderThread(FTexture2DRHIRef EyeTexture) const override;
@@ -201,7 +185,6 @@ namespace WindowsMixedReality
 		virtual void PreRenderViewFamily_RenderThread(
 			FRHICommandListImmediate& RHICmdList,
 			FSceneViewFamily& InViewFamily) override { }
-		virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const;
 
 		void CreateHMDDepthTexture(FRHICommandListImmediate& RHICmdList);
 
@@ -290,7 +273,7 @@ namespace WindowsMixedReality
 
 		// Inherited via FXRRenderTargetManager
 		virtual void GetEyeRenderParams_RenderThread(
-			const struct FRenderingCompositePassContext& Context,
+			const struct FHeadMountedDisplayPassContext& Context,
 			FVector2D& EyeToSrcUVScaleValue,
 			FVector2D& EyeToSrcUVOffsetValue) const override;
 		virtual FIntPoint GetIdealRenderTargetSize() const override;
@@ -395,7 +378,7 @@ namespace WindowsMixedReality
 		virtual void DisconnectRemoteXRDevice() override;
 
 		// Remoting
-		EXRDeviceConnectionResult::Type ConnectToRemoteHoloLens(const wchar_t* ip, unsigned int bitrate, bool isHoloLens1, unsigned int port=0, bool listen=false);
+		EXRDeviceConnectionResult::Type ConnectToRemoteHoloLens(const wchar_t* ip, unsigned int bitrate, unsigned int port=0, bool listen=false);
 		void DisconnectFromRemoteHoloLens();
 	private:
 #if WITH_WINDOWS_MIXED_REALITY
@@ -405,7 +388,6 @@ namespace WindowsMixedReality
 		{
 			FString ip;
 			unsigned int bitrate;
-			bool isHoloLens1;
 			unsigned int port;
 			bool listen;
 		};

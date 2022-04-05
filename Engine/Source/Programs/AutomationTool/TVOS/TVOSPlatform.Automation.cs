@@ -7,7 +7,7 @@ using System.IO;
 using AutomationTool;
 using UnrealBuildTool;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 public class TVOSPlatform : IOSPlatform
 {
@@ -17,13 +17,13 @@ public class TVOSPlatform : IOSPlatform
 		TargetIniPlatformType = UnrealTargetPlatform.IOS;
 	}
 
-	public override bool PrepForUATPackageOrDeploy(UnrealTargetConfiguration Config, FileReference ProjectFile, string InProjectName, DirectoryReference InProjectDirectory, string InExecutablePath, DirectoryReference InEngineDir, bool bForDistribution, string CookFlavor, bool bIsDataDeploy, bool bCreateStubIPA, bool bIsUE4Game)
+	public override bool PrepForUATPackageOrDeploy(UnrealTargetConfiguration Config, FileReference ProjectFile, string InProjectName, DirectoryReference InProjectDirectory, string InExecutablePath, DirectoryReference InEngineDir, bool bForDistribution, string CookFlavor, bool bIsDataDeploy, bool bCreateStubIPA, bool bIsUEGame)
 	{
 		string TargetName = Path.GetFileNameWithoutExtension(InExecutablePath).Split("-".ToCharArray())[0];
 		FileReference TargetReceiptFileName;
-		if (bIsUE4Game)
+		if (bIsUEGame)
 		{
-			TargetReceiptFileName = TargetReceipt.GetDefaultPath(InEngineDir, "UE4Game", UnrealTargetPlatform.TVOS, Config, "");
+			TargetReceiptFileName = TargetReceipt.GetDefaultPath(InEngineDir, "UnrealGame", UnrealTargetPlatform.TVOS, Config, "");
 		}
 		else
 		{
@@ -37,24 +37,24 @@ public class TVOSPlatform : IOSPlatform
 		TVOSExports.GetProvisioningData(InProject, bDistribution, out MobileProvision, out SigningCertificate, out Team, out bAutomaticSigning);
     }
 
-	public override bool DeployGeneratePList(FileReference ProjectFile, UnrealTargetConfiguration Config, DirectoryReference ProjectDirectory, bool bIsUE4Game, string GameName, bool bIsClient, string ProjectName, DirectoryReference InEngineDir, DirectoryReference AppDirectory, string InExecutablePath, out bool bSupportsPortrait, out bool bSupportsLandscape, out bool bSkipIcons)
+	public override bool DeployGeneratePList(FileReference ProjectFile, UnrealTargetConfiguration Config, DirectoryReference ProjectDirectory, bool bIsUEGame, string GameName, bool bIsClient, string ProjectName, DirectoryReference InEngineDir, DirectoryReference AppDirectory, string InExecutablePath, out bool bSupportsPortrait, out bool bSupportsLandscape)
 	{
 		string TargetName = Path.GetFileNameWithoutExtension(InExecutablePath).Split("-".ToCharArray())[0];
 		FileReference TargetReceiptFileName;
-		if (bIsUE4Game)
+		if (bIsUEGame)
 		{
-			TargetReceiptFileName = TargetReceipt.GetDefaultPath(InEngineDir, "UE4Game", UnrealTargetPlatform.TVOS, Config, "");
+			TargetReceiptFileName = TargetReceipt.GetDefaultPath(InEngineDir, "UnrealGame", UnrealTargetPlatform.TVOS, Config, "");
 		}
 		else
 		{
 			TargetReceiptFileName = TargetReceipt.GetDefaultPath(ProjectDirectory, TargetName, UnrealTargetPlatform.TVOS, Config, "");
 		}
-		return TVOSExports.GeneratePList(ProjectFile, Config, ProjectDirectory, bIsUE4Game, GameName, bIsClient, ProjectName, InEngineDir, AppDirectory, TargetReceiptFileName, out bSupportsPortrait, out bSupportsLandscape, out bSkipIcons);
+		return TVOSExports.GeneratePList(ProjectFile, Config, ProjectDirectory, bIsUEGame, GameName, bIsClient, ProjectName, InEngineDir, AppDirectory, TargetReceiptFileName, out bSupportsPortrait, out bSupportsLandscape);
 	}
 
     public override string GetCookPlatform(bool bDedicatedServer, bool bIsClientOnly)
 	{
-		return "TVOS";
+		return bIsClientOnly ? "TVOSClient" : "TVOS";
 	}
 
     public override void GetFilesToDeployOrStage(ProjectParams Params, DeploymentContext SC)
@@ -91,8 +91,10 @@ public class TVOSPlatform : IOSPlatform
             // copy the plist (only if code signing, as it's protected by the code sign blob in the executable and can't be modified independently)
             if (GetCodeSignDesirability(Params))
             {
-                DirectoryReference SourcePath = DirectoryReference.Combine((SC.IsCodeBasedProject ? SC.ProjectRoot : SC.EngineRoot), "Intermediate", "TVOS");
-                FileReference TargetPListFile = FileReference.Combine(SourcePath, (SC.IsCodeBasedProject ? SC.ShortProjectName : "UE4Game") + "-Info.plist");
+				// this would be FooClient when making a client-only build
+				string TargetName = SC.StageExecutables[0].Split("-".ToCharArray())[0];
+				DirectoryReference SourcePath = DirectoryReference.Combine((SC.IsCodeBasedProject ? SC.ProjectRoot : SC.EngineRoot), "Intermediate", "TVOS");
+                FileReference TargetPListFile = FileReference.Combine(SourcePath, (SC.IsCodeBasedProject ? TargetName : "UnrealGame") + "-Info.plist");
                 //				if (!File.Exists(TargetPListFile))
                 {
                     // ensure the plist, entitlements, and provision files are properly copied
@@ -111,8 +113,23 @@ public class TVOSPlatform : IOSPlatform
 
                     bool bSupportsPortrait = false;
                     bool bSupportsLandscape = false;
-                    bool bSkipIcons = false;
-                    DeployGeneratePList(SC.RawProjectPath, TargetConfiguration, (SC.IsCodeBasedProject ? SC.ProjectRoot : SC.EngineRoot), !SC.IsCodeBasedProject, (SC.IsCodeBasedProject ? SC.ShortProjectName : "UE4Game"), Params.Client, SC.ShortProjectName, SC.EngineRoot, DirectoryReference.Combine((SC.IsCodeBasedProject ? SC.ProjectRoot : SC.EngineRoot), "Binaries", "TVOS", "Payload", (SC.IsCodeBasedProject ? SC.ShortProjectName : "UE4Game") + ".app"), SC.StageExecutables[0], out bSupportsPortrait, out bSupportsLandscape, out bSkipIcons);
+                    DeployGeneratePList(
+						SC.RawProjectPath,
+						TargetConfiguration,
+						(SC.IsCodeBasedProject ? SC.ProjectRoot : SC.EngineRoot),
+						!SC.IsCodeBasedProject,
+						(SC.IsCodeBasedProject ? SC.StageExecutables[0] : "UnrealGame"),
+						Params.Client,
+						SC.ShortProjectName,
+						SC.EngineRoot,
+						DirectoryReference.Combine((SC.IsCodeBasedProject ? SC.ProjectRoot : SC.EngineRoot),
+						"Binaries",
+						"TVOS",
+						"Payload",
+						(SC.IsCodeBasedProject ? SC.ShortProjectName : "UnrealGame") + ".app"),
+						SC.StageExecutables[0],
+						out bSupportsPortrait,
+						out bSupportsLandscape);
                 }
 
 

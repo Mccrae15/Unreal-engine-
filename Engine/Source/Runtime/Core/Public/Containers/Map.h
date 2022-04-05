@@ -5,6 +5,7 @@
 #include "CoreTypes.h"
 
 #include "Algo/Reverse.h"
+#include "Containers/ContainerElementTypeCompatibility.h"
 #include "Containers/Set.h"
 #include "Containers/UnrealString.h"
 #include "Misc/AssertionMacros.h"
@@ -14,6 +15,7 @@
 #include "Templates/Tuple.h"
 #include "Templates/UnrealTemplate.h"
 #include "Templates/UnrealTypeTraits.h"
+#include <type_traits>
 
 #define ExchangeB(A,B) {bool T=A; A=B; B=T;}
 
@@ -136,7 +138,7 @@ class TMapBase
 	friend struct TContainerTraits<TMapBase>;
 
 public:
-	static const bool SupportsFreezeMemoryImage = TAllocatorTraits<SetAllocator>::SupportsFreezeMemoryImage;
+	static constexpr bool SupportsFreezeMemoryImage = TAllocatorTraits<SetAllocator>::SupportsFreezeMemoryImage;
 
 	typedef typename TTypeTraits<KeyType  >::ConstPointerType KeyConstPointerType;
 	typedef typename TTypeTraits<KeyType  >::ConstInitType    KeyInitType;
@@ -264,6 +266,17 @@ public:
 	FORCEINLINE void Reserve(int32 Number)
 	{
 		Pairs.Reserve(Number);
+	}
+
+	/**
+	 * Returns true if the map is empty and contains no elements. 
+	 *
+	 * @returns True if the map is empty.
+	 * @see Num
+	 */
+	bool IsEmpty() const
+	{
+		return Pairs.IsEmpty();
 	}
 
 	/** @return The number of elements in the map. */
@@ -1127,8 +1140,8 @@ template <typename AllocatorType, typename InDerivedType = void>
 class TScriptMap;
 
 /** A TMapBase specialization that only allows a single value associated with each key.*/
-template<typename KeyType, typename ValueType, typename SetAllocator /*= FDefaultSetAllocator*/, typename KeyFuncs /*= TDefaultMapHashableKeyFuncs<KeyType,ValueType,false>*/>
-class TMap : public TSortableMapBase<KeyType, ValueType, SetAllocator, KeyFuncs>
+template<typename InKeyType, typename InValueType, typename SetAllocator /*= FDefaultSetAllocator*/, typename KeyFuncs /*= TDefaultMapHashableKeyFuncs<KeyType,ValueType,false>*/>
+class TMap : public TSortableMapBase<InKeyType, InValueType, SetAllocator, KeyFuncs>
 {
 	friend struct TContainerTraits<TMap>;
 
@@ -1138,6 +1151,11 @@ class TMap : public TSortableMapBase<KeyType, ValueType, SetAllocator, KeyFuncs>
 	static_assert(!KeyFuncs::bAllowDuplicateKeys, "TMap cannot be instantiated with a KeyFuncs which allows duplicate keys");
 
 public:
+	typedef InKeyType      KeyType;
+	typedef InValueType    ValueType;
+	typedef SetAllocator   SetAllocatorType;
+	typedef KeyFuncs       KeyFuncsType;
+
 	typedef TSortableMapBase<KeyType, ValueType, SetAllocator, KeyFuncs> Super;
 	typedef typename Super::KeyInitType KeyInitType;
 	typedef typename Super::KeyConstPointerType KeyConstPointerType;
@@ -1211,13 +1229,30 @@ public:
 	{
 		const FSetElementId PairId = Super::Pairs.FindId(Key);
 		if (!PairId.IsValidId())
+		{
 			return false;
+		}
 
 		OutRemovedValue = MoveTempIfPossible(Super::Pairs[PairId].Value);
 		Super::Pairs.Remove(PairId);
 		return true;
 	}
 	
+	/** See RemoveAndCopyValue() and class documentation section on ByHash() functions */
+	template<typename ComparableKey>
+	FORCEINLINE bool RemoveAndCopyValueByHash(uint32 KeyHash, const ComparableKey& Key, ValueType& OutRemovedValue)
+	{
+		const FSetElementId PairId = Super::Pairs.FindIdByHash(KeyHash, Key);
+		if (!PairId.IsValidId())
+		{
+			return false;
+		}
+
+		OutRemovedValue = MoveTempIfPossible(Super::Pairs[PairId].Value);
+		Super::Pairs.Remove(PairId);
+		return true;
+	}
+
 	/**
 	 * Find a pair with the specified key, removes it from the map, and returns the value part of the pair.
 	 *
@@ -1282,9 +1317,10 @@ namespace Freeze
 	}
 
 	template <typename KeyType, typename ValueType, typename SetAllocator, typename KeyFuncs>
-	void IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TMap<KeyType, ValueType, SetAllocator, KeyFuncs>& Object, void* OutDst)
+	uint32 IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TMap<KeyType, ValueType, SetAllocator, KeyFuncs>& Object, void* OutDst)
 	{
 		Object.CopyUnfrozen(Context, OutDst);
+		return sizeof(Object);
 	}
 
 	template <typename KeyType, typename ValueType, typename SetAllocator, typename KeyFuncs>
@@ -1616,9 +1652,10 @@ namespace Freeze
 	}
 
 	template <typename KeyType, typename ValueType, typename SetAllocator, typename KeyFuncs>
-	void IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TMultiMap<KeyType, ValueType, SetAllocator, KeyFuncs>& Object, void* OutDst)
+	uint32 IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TMultiMap<KeyType, ValueType, SetAllocator, KeyFuncs>& Object, void* OutDst)
 	{
 		Object.CopyUnfrozen(Context, OutDst);
+		return sizeof(Object);
 	}
 
 	template <typename KeyType, typename ValueType, typename SetAllocator, typename KeyFuncs>
@@ -1671,6 +1708,11 @@ public:
 	bool IsValidIndex(int32 Index) const
 	{
 		return Pairs.IsValidIndex(Index);
+	}
+
+	bool IsEmpty() const
+	{
+		return Pairs.IsEmpty();
 	}
 
 	int32 Num() const
@@ -1855,6 +1897,16 @@ struct TIsZeroConstructType<TScriptMap<AllocatorType>>
 {
 	enum { Value = true };
 };
+
+/**
+ * Traits class which determines whether or not a type is a TMap.
+ */
+template <typename T> struct TIsTMap { enum { Value = false }; };
+
+template <typename KeyType, typename ValueType, typename SetAllocator, typename KeyFuncs> struct TIsTMap<               TMap<KeyType, ValueType, SetAllocator, KeyFuncs>> { enum { Value = true }; };
+template <typename KeyType, typename ValueType, typename SetAllocator, typename KeyFuncs> struct TIsTMap<const          TMap<KeyType, ValueType, SetAllocator, KeyFuncs>> { enum { Value = true }; };
+template <typename KeyType, typename ValueType, typename SetAllocator, typename KeyFuncs> struct TIsTMap<      volatile TMap<KeyType, ValueType, SetAllocator, KeyFuncs>> { enum { Value = true }; };
+template <typename KeyType, typename ValueType, typename SetAllocator, typename KeyFuncs> struct TIsTMap<const volatile TMap<KeyType, ValueType, SetAllocator, KeyFuncs>> { enum { Value = true }; };
 
 class FScriptMap : public TScriptMap<FDefaultSetAllocator, FScriptMap>
 {

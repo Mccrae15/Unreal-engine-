@@ -21,6 +21,7 @@ UBackgroundBlur::UBackgroundBlur(const FObjectInitializer& ObjectInitializer)
 	, BlurStrength(0.f)
 	, bOverrideAutoRadiusCalculation(false)
 	, BlurRadius(0)
+	, CornerRadius(0,0,0,0)
 	, LowQualityFallbackBrush(FSlateNoResource())
 {
 	bIsVariable = false;
@@ -65,6 +66,7 @@ void UBackgroundBlur::SynchronizeProperties()
 		MyBackgroundBlur->SetBlurRadius(bOverrideAutoRadiusCalculation ? BlurRadius : TOptional<int32>());
 		MyBackgroundBlur->SetBlurStrength(BlurStrength);
 		MyBackgroundBlur->SetLowQualityBackgroundBrush(&LowQualityFallbackBrush);
+		MyBackgroundBlur->SetCornerRadius(CornerRadius);
 	}
 }
 
@@ -146,6 +148,15 @@ void UBackgroundBlur::SetBlurStrength(float InStrength)
 	}
 }
 
+void UBackgroundBlur::SetCornerRadius(FVector4 InCornerRadius)
+{
+	CornerRadius = InCornerRadius;
+	if (MyBackgroundBlur.IsValid())
+	{
+		MyBackgroundBlur->SetCornerRadius(InCornerRadius);
+	}
+}
+
 void UBackgroundBlur::SetLowQualityFallbackBrush(const FSlateBrush& InBrush)
 {
 	LowQualityFallbackBrush = InBrush;
@@ -181,7 +192,7 @@ void UBackgroundBlur::PostLoad()
 
 				// We don't want anyone considering this panel slot for anything, so mark it pending kill.  Otherwise
 				// it will confuse the pass we do when doing template validation when it finds it outered to the blur widget.
-				PanelSlot->MarkPendingKill();
+				PanelSlot->MarkAsGarbage();
 			}
 		}
 	}

@@ -121,7 +121,7 @@ void UDecalComponent::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	if (Ar.UE4Ver() < VER_UE4_DECAL_SIZE)
+	if (Ar.UEVer() < VER_UE4_DECAL_SIZE)
 	{
 		DecalSize = FVector(1.0f, 1.0f, 1.0f);
 	}
@@ -131,6 +131,21 @@ bool UDecalComponent::IsPostLoadThreadSafe() const
 {
 	return true;
 }
+
+#if WITH_EDITOR
+bool UDecalComponent::GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty)
+{
+	if(ElementIndex == 0)
+	{
+		OutOwner = this;
+		OutPropertyPath = GET_MEMBER_NAME_STRING_CHECKED(UDecalComponent, DecalMaterial);
+		OutProperty = UDecalComponent::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UDecalComponent, DecalMaterial));
+		return true;
+	}
+
+	return false;
+}
+#endif // WITH_EDITOR
 
 void UDecalComponent::SetLifeSpan(const float LifeSpan)
 {

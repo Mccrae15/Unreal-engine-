@@ -61,7 +61,7 @@ public:
 	virtual TSharedRef<SWidget> GetCustomOutlinerContent() override;
 	virtual TSharedPtr<SWidget> GetAdditionalOutlinerLabel() override;
 	virtual FText GetDisplayName() const override;
-	virtual FLinearColor GetDisplayNameColor() const override;
+	virtual FSlateColor GetDisplayNameColor() const override;
 	virtual FText GetDisplayNameToolTipText() const override;
 	virtual const FSlateBrush* GetIconBrush() const override;
 	virtual const FSlateBrush* GetIconOverlayBrush() const override;
@@ -84,7 +84,6 @@ protected:
 
 	void AddSpawnOwnershipMenu(FMenuBuilder& MenuBuilder);
 	void AddSpawnLevelMenu(FMenuBuilder& MenuBuilder);
-	void AddAssignActorMenu(FMenuBuilder& MenuBuilder);
 	void AddTagMenu(FMenuBuilder& MenuBuilder);
 	void AddChangeClassMenu(FMenuBuilder& MenuBuilder);
 

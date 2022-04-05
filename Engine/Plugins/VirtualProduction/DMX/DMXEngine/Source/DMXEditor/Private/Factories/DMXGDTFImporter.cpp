@@ -10,7 +10,7 @@
 #include "Interfaces/IMainFrameModule.h"
 #include "Modules/ModuleManager.h"
 #include "ObjectTools.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManagerGeneric.h"
 #include "Misc/FileHelper.h"
 #include "PackageTools.h"
@@ -418,9 +418,16 @@ UDMXImportGDTF* FDMXGDTFImporter::CreateGDTFDesctription()
                         {
                             for (const FXmlNode* DMXChannelNode : DMXChannelsNode->GetChildrenNodes())
                             {
-                                FDMXImportGDTFDMXChannel ImportDMXChannel;
+								FDMXImportGDTFDMXChannel ImportDMXChannel;
+
+								// Ignore Channels that do not specify a valid offset.
+								// E.g. 'Robe Lighting s.r.o.@Robin 800X LEDWash.gdtf' specifies virtual Dimmer channels that have no offset and cannot be accessed.
+								if (!ImportDMXChannel.ParseOffset(DMXChannelNode->GetAttribute("Offset")))
+								{
+									continue;
+								}
+
                                 LexTryParseString(ImportDMXChannel.DMXBreak, *DMXChannelNode->GetAttribute("DMXBreak"));
-                                ImportDMXChannel.ParseOffset(DMXChannelNode->GetAttribute("Offset"));
                                 ImportDMXChannel.Default = FDMXImportGDTFDMXValue(DMXChannelNode->GetAttribute("Default"));
                                 ImportDMXChannel.Highlight = FDMXImportGDTFDMXValue(DMXChannelNode->GetAttribute("Highlight"));
                                 ImportDMXChannel.Geometry = FName(*DMXChannelNode->GetAttribute("Geometry"));
@@ -554,7 +561,7 @@ bool FDMXGDTFImporter::ParseXML()
     int32 EndXMLStringIndex = CharString.Find(EndXMLString, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
     FString ResultXMLString = CharString.Mid(BeginXMLStringIndex, EndXMLStringIndex - BeginXMLStringIndex + EndXMLString.Len());
 
-    // @TODO. UE4 XML Parser can't handle symbol < or > inside attribute and just break the parsing
+    // @TODO. UE5 XML Parser can't handle symbol < or > inside attribute and just break the parsing
     // This small algorithm remove < and > from the XML line
     TArray<FString> XMLStringLines;
     ResultXMLString.ParseIntoArrayLines(XMLStringLines, /*bCullEmpty*/false);

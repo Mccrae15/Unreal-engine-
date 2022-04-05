@@ -164,6 +164,21 @@ namespace PhysicsInterfaceTypes
 	typedef TArray<FPhysicsShapeHandle, TInlineAllocator<NumInlinedPxShapeElements>> FInlineShapeArray;
 }
 
+
+// LINEAR CCPT
+UENUM()
+enum EConstraintPlasticityType
+{
+	/** */
+	CCPT_Free	UMETA(DisplayName = "Free"),
+	/** */
+	CCPT_Shrink	UMETA(DisplayName = "Shirnk"),
+	/** */
+	CCPT_Grow	UMETA(DisplayName = "Grow"),
+
+	CCPT_MAX,
+};
+
 // LINEAR DOF
 UENUM()
 enum ELinearConstraintMotion
@@ -193,7 +208,6 @@ namespace Chaos
 
 	class FPerParticleGravity;
 
-	class FPBDSpringConstraints;
 	class FConvex;
 	class FCapsule;
 
@@ -361,8 +375,13 @@ public:
 	static void AttachShape(const FPhysicsActorHandle& InActor,const FPhysicsShapeHandle& InNewShape);
 	static void DetachShape(const FPhysicsActorHandle& InActor,FPhysicsShapeHandle& InShape,bool bWakeTouching = true);
 
+	static void SetSmoothEdgeCollisionsEnabled(const FPhysicsActorHandle& InActor, const bool bSmoothEdgeCollisionsEnabled);
+
 	static void AddDisabledCollisionsFor_AssumesLocked(const TMap<FPhysicsActorHandle, TArray< FPhysicsActorHandle > >& InMap);
 	static void RemoveDisabledCollisionsFor_AssumesLocked(TArray< FPhysicsActorHandle > & InPhysicsActors);
+
+	static void SetDisabled(const FPhysicsActorHandle& InPhysicsActor, bool bSetDisabled);
+	static bool IsDisabled(const FPhysicsActorHandle& InPhysicsActor);
 
 	static void SetActorUserData_AssumesLocked(FPhysicsActorHandle& InActorReference,FPhysicsUserData* InUserData);
 
@@ -405,7 +424,9 @@ public:
 	static FVector GetAngularVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference);
 	static void SetAngularVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference,const FVector& InNewVelocity,bool bAutoWake = true);
 	static float GetMaxAngularVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference);
-	static void SetMaxAngularVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference,float InMaxAngularVelocity);
+	static float GetMaxLinearVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference);
+	static void SetMaxAngularVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference,float InMaxAngularVelocityRadians);
+	static void SetMaxLinearVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference, float InMaxLinearVelocity);
 
 	static float GetMaxDepenetrationVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference);
 	static void SetMaxDepenetrationVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference,float InMaxDepenetrationVelocity);
@@ -420,6 +441,7 @@ public:
 
 	static FVector GetLocalInertiaTensor_AssumesLocked(const FPhysicsActorHandle& InActorReference);
 	static FBox GetBounds_AssumesLocked(const FPhysicsActorHandle& InActorReference);
+	static FBox GetBounds_AssumesLocked(const FPhysicsActorHandle& InActorReference, const FTransform& InTransform);
 
 	static void SetLinearDamping_AssumesLocked(const FPhysicsActorHandle& InActorReference,float InDamping);
 	static void SetAngularDamping_AssumesLocked(const FPhysicsActorHandle& InActorReference,float InDamping);
@@ -429,6 +451,7 @@ public:
 	static void AddVelocity_AssumesLocked(const FPhysicsActorHandle& InActorReference,const FVector& InForce);
 	static void AddAngularVelocityInRadians_AssumesLocked(const FPhysicsActorHandle& InActorReference,const FVector& InTorque);
 	static void AddImpulseAtLocation_AssumesLocked(const FPhysicsActorHandle& InActorReference,const FVector& InImpulse,const FVector& InLocation);
+	static void AddVelocityChangeImpulseAtLocation_AssumesLocked(const FPhysicsActorHandle& InActorReference, const FVector& InVelocityDelta, const FVector& InLocation);
 	static void AddRadialImpulse_AssumesLocked(const FPhysicsActorHandle& InActorReference,const FVector& InOrigin,float InRadius,float InStrength,ERadialImpulseFalloff InFalloff,bool bInVelChange);
 
 	static bool IsGravityEnabled_AssumesLocked(const FPhysicsActorHandle& InActorReference);
@@ -474,10 +497,12 @@ public:
 
 	static void SetCanVisualize(const FPhysicsConstraintHandle& InConstraintRef,bool bInCanVisualize);
 	static void SetCollisionEnabled(const FPhysicsConstraintHandle& InConstraintRef,bool bInCollisionEnabled);
-	static void SetProjectionEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInProjectionEnabled,float InLinearAlpah = 1.0f,float InAngularAlpha = 0.0f);
+	static void SetProjectionEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInProjectionEnabled,float InLinearAlpha = 1.0f,float InAngularAlpha = 0.0f);
+	static void SetShockPropagationEnabled_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, bool bInShockPropagationEnabled, float InShockPropagationAlpha);
 	static void SetParentDominates_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,bool bInParentDominates);
 	static void SetBreakForces_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef,float InLinearBreakForce,float InAngularBreakForce);
-	static void SetPlasticityLimits_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float InLinearPlasticityLimit, float InAngularPlasticityLimit);
+	static void SetPlasticityLimits_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float InLinearPlasticityLimit, float InAngularPlasticityLimit, EConstraintPlasticityType InLinearPlasticityType);
+	static void SetContactTransferScale_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float InContactTransferScale);
 	static void SetLocalPose(const FPhysicsConstraintHandle& InConstraintRef, const FTransform& InPose, EConstraintFrame::Type InFrame);
 
 	static void SetDrivePosition(const FPhysicsConstraintHandle& InConstraintRef,const FVector& InPosition);

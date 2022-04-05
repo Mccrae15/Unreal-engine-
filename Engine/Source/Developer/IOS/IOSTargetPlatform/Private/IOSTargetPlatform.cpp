@@ -19,6 +19,7 @@
 #endif
 #if WITH_ENGINE
 #include "Engine/TextureCube.h"
+#include "Sound/SoundWave.h"
 #include "TextureResource.h"
 #include "AudioCompressionSettings.h"
 #endif
@@ -26,26 +27,18 @@
 /* FIOSTargetPlatform structors
  *****************************************************************************/
 
-FIOSTargetPlatform::FIOSTargetPlatform(bool bInIsTVOS, bool bInIsClientOnly)
-	: bIsTVOS(bInIsTVOS)
-	, bIsClientOnly(bInIsClientOnly)
+FIOSTargetPlatform::FIOSTargetPlatform(bool bInIsTVOS, bool bIsClientOnly)
+	// override the ini name up in the base classes, which will go into the FTargetPlatformInfo
+	: TNonDesktopTargetPlatformBase(bIsClientOnly, nullptr, bInIsTVOS ? TEXT("TVOS") : nullptr)
+	, bIsTVOS(bInIsTVOS)
 	, bDistanceField(false)
 {
-    if (bIsTVOS)
-    {
-        this->PlatformInfo = PlatformInfo::FindPlatformInfo("TVOS");
-    }
 #if WITH_ENGINE
-	FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *IniPlatformName());
 	TextureLODSettings = nullptr; // TextureLODSettings are registered by the device profile.
-	StaticMeshLODSettings.Initialize(EngineSettings);
-	EngineSettings.GetBool(TEXT("/Script/Engine.RendererSettings"), TEXT("r.DistanceFields"), bDistanceField);
+	StaticMeshLODSettings.Initialize(this);
+	GetConfigSystem()->GetBool(TEXT("/Script/Engine.RendererSettings"), TEXT("r.DistanceFields"), bDistanceField, GEngineIni);
 #endif // #if WITH_ENGINE
 
-	// Initialize Ticker for device discovery
-	TickDelegate = FTickerDelegate::CreateRaw(this, &FIOSTargetPlatform::HandleTicker);
-	TickDelegateHandle = FTicker::GetCoreTicker().AddTicker(TickDelegate, 10.0f);
-	
 	// initialize the connected device detector
 	DeviceHelper.OnDeviceConnected().AddRaw(this, &FIOSTargetPlatform::HandleDeviceConnected);
 	DeviceHelper.OnDeviceDisconnected().AddRaw(this, &FIOSTargetPlatform::HandleDeviceDisconnected);
@@ -55,7 +48,6 @@ FIOSTargetPlatform::FIOSTargetPlatform(bool bInIsTVOS, bool bInIsClientOnly)
 
 FIOSTargetPlatform::~FIOSTargetPlatform()
 {
-	FTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
 }
 
 
@@ -243,7 +235,7 @@ int32 FIOSTargetPlatform::CheckRequirements(bool bProjectHasCode, EBuildConfigur
 	OutTutorialPath = FString("/Engine/Tutorial/Installation/InstallingXCodeTutorial.InstallingXCodeTutorial");
     // shell to certtool
 #else
-	if (!FInstalledPlatformInfo::Get().IsValidPlatform(GetPlatformInfo().BinaryFolderName, EProjectType::Code))
+	if (!FInstalledPlatformInfo::Get().IsValidPlatform(GetPlatformInfo().UBTPlatformString, EProjectType::Code))
 	{
 		if (bProjectHasCode)
 		{
@@ -345,41 +337,6 @@ int32 FIOSTargetPlatform::CheckRequirements(bool bProjectHasCode, EBuildConfigur
 }
 
 
-/* FIOSTargetPlatform implementation
- *****************************************************************************/
-
-void FIOSTargetPlatform::PingNetworkDevices()
-{
-    //Only put this here in case we put in auto-detection of missing stats
-    QUICK_SCOPE_CYCLE_COUNTER(STAT_FIOSTargetPlatform_PingNetworkDevices);
-
-	// disabled for now because we find IOS devices from the USB, this is a relic from ULD, but it may be needed in the future
-/*	if (!MessageEndpoint.IsValid())
-	{
-		MessageEndpoint = FMessageEndpoint::Builder("FIOSTargetPlatform")
-			.Handling<FIOSLaunchDaemonPong>(this, &FIOSTargetPlatform::HandlePongMessage);
-	}
-
-	if (MessageEndpoint.IsValid())
-	{
-		MessageEndpoint->Publish(new FIOSLaunchDaemonPing(), EMessageScope::Network);
-	}
-
-	// remove disconnected & timed out devices
-	FDateTime Now = FDateTime::UtcNow();
-
-	for (auto DeviceIt = Devices.CreateIterator(); DeviceIt; ++DeviceIt)
-	{
-		FIOSTargetDevicePtr Device = DeviceIt->Value;
-
-		if (Now > Device->LastPinged + FTimespan::FromSeconds(60.0))
-		{
-			DeviceIt.RemoveCurrent();
-			DeviceLostEvent.Broadcast(Device.ToSharedRef());
-		}
-	}*/
-}
-
 
 /* FIOSTargetPlatform callbacks
  *****************************************************************************/
@@ -404,7 +361,7 @@ void FIOSTargetPlatform::HandlePongMessage( const FIOSLaunchDaemonPong& Message,
 		Device->SetDeviceEndpoint(Context->GetSender());
 		Device->SetIsSimulated(Message.DeviceID.Contains(TEXT("Simulator")));
 
-		DeviceDiscoveredEvent.Broadcast(Device.ToSharedRef());
+		OnDeviceDiscovered().Broadcast(Device.ToSharedRef());
 	}
 
 	Device->LastPinged = FDateTime::UtcNow();
@@ -419,7 +376,7 @@ void FIOSTargetPlatform::HandleDeviceConnected(const FIOSLaunchDaemonPong& Messa
 	
 	if (!Device.IsValid())
 	{
-		if ((Message.DeviceType.Contains(TEXT("AppleTV")) && bIsTVOS) || (!Message.DeviceType.Contains(TEXT("AppleTV")) && !bIsTVOS))
+	if ((Message.DeviceType.Contains(TEXT("AppleTV")) && bIsTVOS) || (!Message.DeviceType.Contains(TEXT("AppleTV")) && !bIsTVOS))
 		{
 			Device = MakeShareable(new FIOSTargetDevice(*this));
 
@@ -428,10 +385,11 @@ void FIOSTargetPlatform::HandleDeviceConnected(const FIOSLaunchDaemonPong& Messa
 			Device->SetFeature(ETargetDeviceFeatures::PowerOff, Message.bCanPowerOff);
 			Device->SetDeviceId(DeviceId);
 			Device->SetDeviceName(Message.DeviceName);
+			Device->SetAuthorized(Message.bIsAuthorized);
 			Device->SetDeviceType(Message.DeviceType);
 			Device->SetIsSimulated(Message.DeviceID.Contains(TEXT("Simulator")));
 
-			DeviceDiscoveredEvent.Broadcast(Device.ToSharedRef());
+			OnDeviceDiscovered().Broadcast(Device.ToSharedRef());
 		}
 		else
 		{
@@ -453,16 +411,9 @@ void FIOSTargetPlatform::HandleDeviceDisconnected(const FIOSLaunchDaemonPong& Me
 	
 	if (Device.IsValid())
 	{
-		DeviceLostEvent.Broadcast(Device.ToSharedRef());
+		OnDeviceLost().Broadcast(Device.ToSharedRef());
 		Devices.Remove(DeviceId);
 	}
-}
-
-bool FIOSTargetPlatform::HandleTicker(float DeltaTime)
-{
-	PingNetworkDevices();
-
-	return true;
 }
 
 
@@ -490,26 +441,12 @@ static bool SupportsMetalMRT()
 	return bSupportsMetalMRT;
 }
 
-static bool CookPVRTC()
+static bool SupportsA8Devices()
 {
-	// default to using PVRTC
-	bool bCookPVRTCTextures = true;
-	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bCookPVRTCTextures"), bCookPVRTCTextures, GEngineIni);
-	return bCookPVRTCTextures;
-}
-
-static bool CookASTC()
-{
-	// default to not using ASTC
-	bool bCookASTCTextures = true;
-	GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bCookASTCTextures"), bCookASTCTextures, GEngineIni);
-	return bCookASTCTextures;
-}
-
-static bool SupportsSoftwareOcclusion()
-{
-	static auto* CVarMobileAllowSoftwareOcclusion = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.AllowSoftwareOcclusion"));
-	return CVarMobileAllowSoftwareOcclusion->GetValueOnAnyThread() != 0;
+    // default to NOT supporting A8 devices
+    bool bSupportAppleA8 = false;
+    GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bSupportAppleA8"), bSupportAppleA8, GEngineIni);
+    return bSupportAppleA8;
 }
 
 static bool SupportsLandscapeMeshLODStreaming()
@@ -543,9 +480,6 @@ bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) cons
 		case ETargetPlatformFeatures::HighQualityLightmaps:
 			return SupportsMetalMRT();
 
-		case ETargetPlatformFeatures::SoftwareOcclusion:
-			return SupportsSoftwareOcclusion();
-
 		case ETargetPlatformFeatures::VirtualTextureStreaming:
 			return UsesVirtualTextures();
 
@@ -562,21 +496,6 @@ bool FIOSTargetPlatform::SupportsFeature( ETargetPlatformFeatures Feature ) cons
 	return TTargetPlatformBase<FIOSPlatformProperties>::SupportsFeature(Feature);
 }
 
-
-#if WITH_ENGINE
-
-void FIOSTargetPlatform::GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const
-{
-	static auto* MobileShadingPathCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.ShadingPath"));
-	const bool bMobileDeferredShading = (MobileShadingPathCvar->GetValueOnAnyThread() == 1);
-
-	if (SupportsMetalMRT() || bMobileDeferredShading)
-	{
-		OutFormats.Add(FName(TEXT("FullHDR")));
-	}
-
-	OutFormats.Add(FName(TEXT("EncodedHDR")));
-}
 
 void FIOSTargetPlatform::GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const
 {
@@ -618,18 +537,35 @@ void FIOSTargetPlatform::GetAllTargetedShaderFormats( TArray<FName>& OutFormats 
 	GetAllPossibleShaderFormats(OutFormats);
 }
 
-// we remap some of the defaults (with PVRTC and ASTC formats)
+
+#if WITH_ENGINE
+
+void FIOSTargetPlatform::GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const
+{
+	static auto* MobileShadingPathCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.ShadingPath"));
+	const bool bMobileDeferredShading = (MobileShadingPathCvar->GetValueOnAnyThread() == 1);
+
+	if (SupportsMetalMRT() || bMobileDeferredShading)
+	{
+		OutFormats.Add(FName(TEXT("FullHDR")));
+	}
+
+	OutFormats.Add(FName(TEXT("EncodedHDR")));
+}
+
+
+// we remap some of the defaults
 static FName FormatRemap[] =
 {
-	// original				PVRTC						ASTC
-	FName(TEXT("DXT1")),	FName(TEXT("PVRTC2")),		FName(TEXT("ASTC_RGB")),
-	FName(TEXT("DXT5")),	FName(TEXT("PVRTC4")),		FName(TEXT("ASTC_RGBA")),
-	FName(TEXT("DXT5n")),	FName(TEXT("PVRTCN")),		FName(TEXT("ASTC_NormalAG")),
-	FName(TEXT("BC5")),		FName(TEXT("PVRTCN")),		FName(TEXT("ASTC_NormalRG")),
-	FName(TEXT("AutoDXT")),	FName(TEXT("AutoPVRTC")),	FName(TEXT("ASTC_RGBAuto")),
-	FName(TEXT("BC4")),		FName(TEXT("G8")),			FName(TEXT("G8")),
-	FName(TEXT("BC6H")),	FName(TEXT("PVRTC2")),		FName(TEXT("ASTC_RGB")), 
-	FName(TEXT("BC7")),		FName(TEXT("AutoPVRTC")),	FName(TEXT("ASTC_RGBAuto"))
+	// original				ASTC
+	FName(TEXT("AutoDXT")),	FName(TEXT("ASTC_RGBAuto")),
+	FName(TEXT("DXT1")),	FName(TEXT("ASTC_RGB")),
+	FName(TEXT("DXT5")),	FName(TEXT("ASTC_RGBA")),
+	FName(TEXT("DXT5n")),	FName(TEXT("ASTC_NormalAG")),
+	FName(TEXT("BC5")),		FName(TEXT("ASTC_NormalRG")),
+	FName(TEXT("BC4")),		FName(TEXT("G8")),
+	FName(TEXT("BC6H")),	FName(TEXT("ASTC_RGB")), 
+	FName(TEXT("BC7")),		FName(TEXT("ASTC_RGBAuto"))
 };
 static FName NameBGRA8(TEXT("BGRA8"));
 static FName NameG8 = FName(TEXT("G8"));
@@ -638,23 +574,10 @@ void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TAr
 {
 	check(Texture);
 
-	static FName NamePOTERROR(TEXT("POTERROR"));
-
 	const int32 NumLayers = Texture->Source.GetNumLayers();
-
-	if (Texture->bForcePVRTC4 && CookPVRTC())
-	{
-		TArray<FName> NamesPVRTC4;
-		TArray<FName> NamesPVRTCN;
-		NamesPVRTC4.Init(FName(TEXT("PVRTC4")), NumLayers);
-		NamesPVRTCN.Init(FName(TEXT("PVRTCN")), NumLayers);
-
-		OutFormats.AddUnique(NamesPVRTC4);
-		OutFormats.AddUnique(NamesPVRTCN);
-		return;
-	}
-
-	TArray<FName> TextureFormatNames;
+	
+	TArray<FName>& TextureFormatNames = OutFormats.AddDefaulted_GetRef();
+	TextureFormatNames.Reserve(NumLayers);
 
 	// forward rendering only needs one channel for shadow maps
 	if (Texture->LODGroup == TEXTUREGROUP_Shadowmap && !SupportsMetalMRT())
@@ -663,64 +586,34 @@ void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TAr
 	}
 
 	// if we didn't assign anything specially, then use the defaults
-    bool bIncludePVRTC = !bIsTVOS && CookPVRTC();
-    bool bIncludeASTC = bIsTVOS || CookASTC();
 	if (TextureFormatNames.Num() == 0)
 	{
-        int32 BlockSize = 4;
-        if (!Texture->bForcePVRTC4 && !bIncludePVRTC && bIncludeASTC)
-        {
-            BlockSize = 1;
-        }
-		GetDefaultTextureFormatNamePerLayer(TextureFormatNames, this, Texture, EngineSettings, true, false, BlockSize);
+        int32 BlockSize = 1;
+		// Compressed volume textures require MTLGPUFamilyApple3 or later
+		// min spec for TVOS is AppleTV HD which is MTLGPUFamilyApple2 (A8)
+		bool bSupportCompressedVolumeTexture = !bIsTVOS && !SupportsA8Devices();
+		GetDefaultTextureFormatNamePerLayer(TextureFormatNames, this, Texture, true, bSupportCompressedVolumeTexture, BlockSize);
 	}
 
-	// include the formats we want (use ASTC first so that it is preferred at runtime if they both exist and it's supported)
-	if (bIncludeASTC)
+	// include the formats we want
+	for (FName& TextureFormatName : TextureFormatNames)
 	{
-		TArray<FName> TextureFormatNamesASTC(TextureFormatNames);
-		for (FName& TextureFormatName : TextureFormatNamesASTC)
+		if (TextureFormatName == NameBGRA8 || 
+			TextureFormatName == NameG8)
 		{
-			for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 3)
+			continue;
+		}
+
+		for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 2)
+		{
+			if (TextureFormatName == FormatRemap[RemapIndex])
 			{
-				if (TextureFormatName == FormatRemap[RemapIndex])
-				{
-					TextureFormatName = FormatRemap[RemapIndex + 2];
-					break;
-				}
+				TextureFormatName = FormatRemap[RemapIndex + 1];
+				break;
 			}
 		}
-		OutFormats.AddUnique(TextureFormatNamesASTC);
 	}
-
-	if (bIncludePVRTC)
-	{
-		TArray<FName> TextureFormatNamesPVRTC(TextureFormatNames);
-		for (FName& TextureFormatName : TextureFormatNamesPVRTC)
-		{
-			for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 3)
-			{
-				if (TextureFormatName == FormatRemap[RemapIndex])
-				{
-					// handle non-power of 2 textures
-					if (!Texture->Source.IsPowerOfTwo() && Texture->PowerOfTwoMode == ETexturePowerOfTwoSetting::None)
-					{
-						// option 1: Uncompress, but users will get very large textures unknowingly
-						// TextureFormatName = NameBGRA8;
-						// option 2: Use an "error message" texture so they see it in game
-						TextureFormatName = NamePOTERROR;
-					}
-					else
-					{
-						TextureFormatName = FormatRemap[RemapIndex + 1];
-					}
-					break;
-				}
-			}
-		}
-		OutFormats.AddUnique(TextureFormatNamesPVRTC);
-	}
-
+		
 	for (FName& TextureFormatName : OutFormats.Last())
 	{
 		if (Texture->IsA(UTextureCube::StaticClass()))
@@ -742,30 +635,18 @@ void FIOSTargetPlatform::GetTextureFormats( const UTexture* Texture, TArray< TAr
 void FIOSTargetPlatform::GetAllTextureFormats(TArray<FName>& OutFormats) const 
 {
 	bool bFoundRemap = false;
-	bool bIncludePVRTC = !bIsTVOS && CookPVRTC();
-	bool bIncludeASTC = bIsTVOS || CookASTC();
 
 	GetAllDefaultTextureFormats(this, OutFormats, false);
 
-	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 3)
+	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 2)
 	{
 		OutFormats.Remove(FormatRemap[RemapIndex+0]);
 	}
 
-	// include the formats we want (use ASTC first so that it is preferred at runtime if they both exist and it's supported)
-	if (bIncludeASTC)
+	// include the formats we want
+	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 2)
 	{
-		for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 3)
-		{
-			OutFormats.AddUnique(FormatRemap[RemapIndex + 2]);
-		}
-	}
-	if (bIncludePVRTC)
-	{
-		for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(FormatRemap); RemapIndex += 3)
-		{
-			OutFormats.AddUnique(FormatRemap[RemapIndex + 1]);
-		}
+		OutFormats.AddUnique(FormatRemap[RemapIndex + 1]);
 	}
 }
 
@@ -784,10 +665,6 @@ FName FIOSTargetPlatform::FinalizeVirtualTextureLayerFormat(FName Format) const
 		{ { FName(TEXT("ASTC_RGBAuto")) },		{ NameAutoETC2 } },
 		{ { FName(TEXT("ASTC_NormalAG")) },		{ NameETC2_RGB } },
 		{ { FName(TEXT("ASTC_NormalRG")) },		{ NameETC2_RGB } },
-		{ { FName(TEXT("PVRTC2")) },			{ NameETC2_RGB } },
-		{ { FName(TEXT("PVRTC4")) },			{ NameETC2_RGBA } },
-		{ { FName(TEXT("PVRTCN")) },			{ NameETC2_RGB } },
-		{ { FName(TEXT("AutoPVRTC")) },			{ NameAutoETC2 } }
 	};
 
 	for (int32 RemapIndex = 0; RemapIndex < UE_ARRAY_COUNT(ETCRemap); RemapIndex++)
@@ -806,18 +683,21 @@ const UTextureLODSettings& FIOSTargetPlatform::GetTextureLODSettings() const
 	return *TextureLODSettings;
 }
 
-
-FName FIOSTargetPlatform::GetWaveFormat( const class USoundWave* Wave ) const
+FName FIOSTargetPlatform::GetWaveFormat( const USoundWave* Wave ) const
 {
-	static FName NAME_ADPCM(TEXT("ADPCM"));
-	return NAME_ADPCM;
+	FName FormatName = Audio::ToName(Wave->GetSoundAssetCompressionType());
+	if (FormatName == Audio::NAME_PLATFORM_SPECIFIC)
+	{
+			FormatName = Audio::NAME_ADPCM;
+	}
+	return FormatName;
 }
-
 
 void FIOSTargetPlatform::GetAllWaveFormats(TArray<FName>& OutFormat) const
 {
-	static FName NAME_ADPCM(TEXT("ADPCM"));
-	OutFormat.Add(NAME_ADPCM);
+	OutFormat.Add(Audio::NAME_ADPCM);
+	OutFormat.Add(Audio::NAME_PCM);
+	OutFormat.Add(Audio::NAME_BINKA);
 }
 
 #endif // WITH_ENGINE

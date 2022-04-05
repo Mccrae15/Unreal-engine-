@@ -57,6 +57,15 @@ public:
 	virtual void SetThreadPriority( EThreadPriority NewPriority ) = 0;
 
 	/**
+	* Changes the thread affinity of the currently running thread
+	*
+	* @param ThreadAffinityMask The thread affinity to change to (can be 0 to keep previously set affinity mask)
+	* @param ProcessorGroup The thread group to change to
+	* @return returns true if the affinity changed, false if affinity did not change
+	*/
+	virtual bool SetThreadAffinity( const FThreadAffinity& Affinity ) { return false; };
+
+	/**
 	 * Tells the thread to either pause execution or resume depending on the
 	 * passed in value.
 	 *
@@ -78,6 +87,23 @@ public:
 
 	/** Halts the caller until this thread is has completed its work. */
 	virtual void WaitForCompletion() = 0;
+
+	/** List of unique thread types we can create */
+	enum class ThreadType
+	{
+		// Regular thread that executes the runnable object in it's own context
+		Real,
+		// Fake threads are created for a single threaded environment and are always executed from the main tick
+		Fake,
+		// Forkable threads will behave like fake threads for the master process, but will become real threads on forked processes
+		Forkable,
+	};
+
+	/** Returns the type of thread this is */
+	virtual FRunnableThread::ThreadType GetThreadType() const
+	{
+		return ThreadType::Real;
+	}
 
 	/**
 	 * Thread ID for this thread 
@@ -156,27 +182,11 @@ protected:
 	/** The Affinity to run the thread with. */
 	uint64 ThreadAffinityMask;
 
-	/** An array of FTlsAutoCleanup based instances that needs to be deleted before the thread will die. */
-	TArray<FTlsAutoCleanup*> TlsInstances;
-
 	/** The priority to run the thread at. */
 	EThreadPriority ThreadPriority;
 
 	/** ID set during thread creation. */
 	uint32 ThreadID;
-
-protected:
-
-	/** List of unique thread types we can create */
-	enum class ThreadType
-	{
-		// Regular thread that executes the runnable object in it's own context
-		Real,
-		// Fake threads are created for a single threaded environment and are always executed from the main tick
-		Fake,
-		// Forkable threads will behave like fake threads for the master process, but will become real threads on forked processes
-		Forkable,
-	};
 
 private:
 
@@ -185,12 +195,6 @@ private:
 
 	/** Used by the thread manager to tick threads in single-threaded mode */
 	virtual void Tick() {}
-
-	/** Returns the type of thread this is */
-	virtual FRunnableThread::ThreadType GetThreadType() const
-	{
-		return ThreadType::Real;
-	}
 
 	/**
 	 * Called on the forked process when the forkable thread can create a real thread

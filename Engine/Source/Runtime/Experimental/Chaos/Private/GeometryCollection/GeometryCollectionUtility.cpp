@@ -9,6 +9,7 @@
 
 #include "CoreMinimal.h"
 #include "Templates/SharedPointer.h"
+#include "Chaos/Real.h"
 
 DEFINE_LOG_CATEGORY_STATIC(FGeometryCollectionUtilityLogging, Log, All);
 
@@ -27,11 +28,11 @@ namespace GeometryCollection
 		int NumNewParticles = 1; // 1 particle for this geometry structure
 		int ParticlesIndex = RestCollection->AddElements(NumNewParticles, FGeometryCollection::TransformGroup);
 
-		TManagedArray<FVector>& Vertices = RestCollection->Vertex;
-		TManagedArray<FVector>&  Normals = RestCollection->Normal;
-		TManagedArray<FVector>&  TangentU = RestCollection->TangentU;
-		TManagedArray<FVector>&  TangentV = RestCollection->TangentV;
-		TManagedArray<FVector2D>&  UVs = RestCollection->UV;
+		TManagedArray<FVector3f>& Vertices = RestCollection->Vertex;
+		TManagedArray<FVector3f>&  Normals = RestCollection->Normal;
+		TManagedArray<FVector3f>&  TangentU = RestCollection->TangentU;
+		TManagedArray<FVector3f>&  TangentV = RestCollection->TangentV;
+		TManagedArray<TArray<FVector2f>>& UVs = RestCollection->UVs;
 		TManagedArray<FLinearColor>&  Colors = RestCollection->Color;
 		TManagedArray<FIntVector>&  Indices = RestCollection->Indices;
 		TManagedArray<bool>&  Visible = RestCollection->Visible;
@@ -47,32 +48,33 @@ namespace GeometryCollection
 
 		// set the vertex information
 		int32 Index = 0;
-		Vertices[0] = FVector(-Scale.X / 2.f, -Scale.Y / 2.f, -Scale.Z / 2.f);
-		Vertices[1] = FVector(+Scale.X / 2.f, -Scale.Y / 2.f, -Scale.Z / 2.f);
-		Vertices[2] = FVector(-Scale.X / 2.f, +Scale.Y / 2.f, -Scale.Z / 2.f);
-		Vertices[3] = FVector(+Scale.X / 2.f, +Scale.Y / 2.f, -Scale.Z / 2.f);
-		Vertices[4] = FVector(-Scale.X / 2.f, -Scale.Y / 2.f, +Scale.Z / 2.f);
-		Vertices[5] = FVector(+Scale.X / 2.f, -Scale.Y / 2.f, +Scale.Z / 2.f);
-		Vertices[6] = FVector(-Scale.X / 2.f, +Scale.Y / 2.f, +Scale.Z / 2.f);
-		Vertices[7] = FVector(+Scale.X / 2.f, +Scale.Y / 2.f, +Scale.Z / 2.f);
+		FVector3f Scale3f = FVector3f(Scale);	// LWC_TODO: Precision loss - Not significant as everything it applies to is already float.
+		Vertices[0] = FVector3f(-Scale3f.X / 2.f, -Scale3f.Y / 2.f, -Scale3f.Z / 2.f);
+		Vertices[1] = FVector3f(+Scale3f.X / 2.f, -Scale3f.Y / 2.f, -Scale3f.Z / 2.f);
+		Vertices[2] = FVector3f(-Scale3f.X / 2.f, +Scale3f.Y / 2.f, -Scale3f.Z / 2.f);
+		Vertices[3] = FVector3f(+Scale3f.X / 2.f, +Scale3f.Y / 2.f, -Scale3f.Z / 2.f);
+		Vertices[4] = FVector3f(-Scale3f.X / 2.f, -Scale3f.Y / 2.f, +Scale3f.Z / 2.f);
+		Vertices[5] = FVector3f(+Scale3f.X / 2.f, -Scale3f.Y / 2.f, +Scale3f.Z / 2.f);
+		Vertices[6] = FVector3f(-Scale3f.X / 2.f, +Scale3f.Y / 2.f, +Scale3f.Z / 2.f);
+		Vertices[7] = FVector3f(+Scale3f.X / 2.f, +Scale3f.Y / 2.f, +Scale3f.Z / 2.f);
 
-		Normals[0] = FVector(-1.f, -1.f, -1.f).GetSafeNormal();
-		Normals[1] = FVector(1.f, -1.f, -1.f).GetSafeNormal();
-		Normals[2] = FVector(-1.f, 1.f, -1.f).GetSafeNormal();
-		Normals[3] = FVector(1.f, 1.f, -1.f).GetSafeNormal();
-		Normals[4] = FVector(-1.f, -1.f, 1.f).GetSafeNormal();
-		Normals[5] = FVector(1.f, -1.f, 1.f).GetSafeNormal();
-		Normals[6] = FVector(-1.f, 1.f, 1.f).GetSafeNormal();
-		Normals[7] = FVector(1.f, 1.f, 1.f).GetSafeNormal();
+		Normals[0] = FVector3f(-1.f, -1.f, -1.f).GetSafeNormal();
+		Normals[1] = FVector3f(1.f, -1.f, -1.f).GetSafeNormal();
+		Normals[2] = FVector3f(-1.f, 1.f, -1.f).GetSafeNormal();
+		Normals[3] = FVector3f(1.f, 1.f, -1.f).GetSafeNormal();
+		Normals[4] = FVector3f(-1.f, -1.f, 1.f).GetSafeNormal();
+		Normals[5] = FVector3f(1.f, -1.f, 1.f).GetSafeNormal();
+		Normals[6] = FVector3f(-1.f, 1.f, 1.f).GetSafeNormal();
+		Normals[7] = FVector3f(1.f, 1.f, 1.f).GetSafeNormal();
 
-		UVs[0] = FVector2D(0, 0);
-		UVs[1] = FVector2D(1, 0);
-		UVs[2] = FVector2D(0, 1);
-		UVs[3] = FVector2D(1, 1);
-		UVs[4] = FVector2D(0, 0);
-		UVs[5] = FVector2D(1, 0);
-		UVs[6] = FVector2D(0, 1);
-		UVs[7] = FVector2D(1, 1);
+		UVs[0].Add(FVector2f(0, 0));
+		UVs[1].Add(FVector2f(1, 0));
+		UVs[2].Add(FVector2f(0, 1));
+		UVs[3].Add(FVector2f(1, 1));
+		UVs[4].Add(FVector2f(0, 0));
+		UVs[5].Add(FVector2f(1, 0));
+		UVs[6].Add(FVector2f(0, 1));
+		UVs[7].Add(FVector2f(1, 1));
 
 		Colors[0] = FLinearColor::White;
 		Colors[1] = FLinearColor::White;
@@ -121,8 +123,8 @@ namespace GeometryCollection
 			FIntVector Tri = Indices[IndexIdx];
 			for (int idx = 0; idx < 3; idx++)
 			{
-				const FVector Normal = Normals[Tri[idx]];
-				const FVector Edge = (Vertices[Tri[(idx + 1) % 3]] - Vertices[Tri[idx]]);
+				const FVector3f Normal = Normals[Tri[idx]];
+				const FVector3f Edge = (Vertices[Tri[(idx + 1) % 3]] - Vertices[Tri[idx]]);
 				TangentU[Tri[idx]] = (Edge ^ Normal).GetSafeNormal();
 				TangentV[Tri[idx]] = (Normal ^ TangentU[Tri[idx]]).GetSafeNormal();
 			}
@@ -154,7 +156,7 @@ namespace GeometryCollection
 	{
 		check(RestCollectionIn.IsValid());
 
-		float domain = 10;
+		float domain = 10.f;
 		FVector Stack(domain);
 		float numElements = powf(domain, 3);
 
@@ -166,16 +168,16 @@ namespace GeometryCollection
 		FVector MinCorner = -Length * Expansion / 2.f * Stackf;
 
 
-		for (int32 i = 0; i < Stack[0]; ++i)
+		for (int32 i = 0; i < FMath::TruncToInt(Stack[0]); ++i)
 		{
-			for (int32 j = 0; j < Stack[1]; ++j)
+			for (int32 j = 0; j < FMath::TruncToInt(Stack[1]); ++j)
 			{
-				for (int32 k = 0; k < Stack[2]; ++k)
+				for (int32 k = 0; k < FMath::TruncToInt(Stack[2]); ++k)
 				{
 					FVector Delta(j % 2 == 1 ? Length / 2.f : 0.f, 0.f, j % 2 == 1 ? Length / 2.f : 0.f);
-					FVector CenterOfMass = FVector(MinCorner[0] + Expansion * Length * i + Length * (Expansion / 2.f),
-						MinCorner[0] + Expansion * Length * j + Length * (Expansion / 2.f),
-						MinCorner[0] + Expansion * Length * k + Length * (Expansion / 2.f)) + Delta;
+					FVector CenterOfMass = FVector(MinCorner[0] + Expansion * Length * static_cast<Chaos::FReal>(i) + Length * (Expansion / 2.f),
+						MinCorner[0] + Expansion * Length * static_cast<Chaos::FReal>(j) + Length * (Expansion / 2.f),
+						MinCorner[0] + Expansion * Length * static_cast<Chaos::FReal>(k) + Length * (Expansion / 2.f)) + Delta;
 					TSharedPtr<FGeometryCollection> Element = MakeCubeElement(FTransform(CenterOfMass), FVector(Length) );
 					RestCollectionIn->AppendGeometry(*Element);
 				}
@@ -191,18 +193,18 @@ namespace GeometryCollection
 
 		TManagedArray<int32>& VertexCount = Collection->VertexCount;
 		TManagedArray<int32>& VertexStart = Collection->VertexStart;
-		TManagedArray<FVector> & Vertex = Collection->Vertex;
+		TManagedArray<FVector3f> & Vertex = Collection->Vertex;
 		
 		TArray<int32> ReverseMap;
 		GeometryCollectionAlgo::BuildTransformGroupToGeometryGroupMap(*Collection, ReverseMap);
 
 		for (int32 i = VertexStart[ReverseMap[TransformIndex0]]; i < VertexStart[ReverseMap[TransformIndex0]] + VertexCount[ReverseMap[TransformIndex0]]; i++)
 		{
-			Vertex[i] += FVector(1, 0, 0);
+			Vertex[i] += FVector3f(1, 0, 0);
 		}
 		for (int32 i = VertexStart[ReverseMap[TransformIndex1]]; i < VertexStart[ReverseMap[TransformIndex1]] + VertexCount[ReverseMap[TransformIndex1]]; i++)
 		{
-			Vertex[i] -= FVector(1, 0, 0);
+			Vertex[i] -= FVector3f(1, 0, 0);
 		}
 
 		TManagedArray<FString> & Names = Collection->BoneName;
@@ -259,7 +261,7 @@ namespace GeometryCollection
 					TManagedArray<int32>& TransformToGeometryIndex = Collection->TransformToGeometryIndex;
 					// vertices group
 					TManagedArray<int32> & BoneMap = Collection->BoneMap;
-					TManagedArray<FVector> & Vertex = Collection->Vertex;
+					TManagedArray<FVector3f> & Vertex = Collection->Vertex;
 					// faces
 					TManagedArray<FIntVector> & FaceIndices = Collection->Indices;
 
@@ -302,8 +304,8 @@ namespace GeometryCollection
 					}
 
 					// build vertex summary information
-					TArray<FVector> Center;
-					Center.Init(FVector(0), GeometryIndices.Num());
+					TArray<FVector3f> Center;
+					Center.Init(FVector3f(0), GeometryIndices.Num());
 					int CurrentParticleIndex = FGeometryCollection::Invalid;
 					for (int vdx = 0; vdx < Vertex.Num(); vdx++)
 					{
@@ -322,7 +324,7 @@ namespace GeometryCollection
 						if (ParticleIndex == CurrentParticleIndex)
 						{
 							VertexCount[GeometryIndex]++;
-							BoundingBox[GeometryIndex] += Vertex[vdx];
+							BoundingBox[GeometryIndex] += FVector(Vertex[vdx]);
 						}
 						// ensure contiguous particle indices
 						// @todo(ContigiousVertices) : Files on disk are not contiguous, so until they are fixed just use the first set of vertices.
@@ -336,7 +338,7 @@ namespace GeometryCollection
 					{
 						if (VertexCount[GeometryIndex])
 						{
-							Center[GeometryIndex] /= VertexCount[GeometryIndex];
+							Center[GeometryIndex] /= static_cast<Chaos::FRealSingle>(VertexCount[GeometryIndex]);
 						}
 					}
 
@@ -371,7 +373,7 @@ namespace GeometryCollection
 					for (int vdx = 0; vdx < Vertex.Num(); vdx++)
 					{
 						int32 GeometryIndex = ReverseMap[BoneMap[vdx]]; // double indexing safe due to check in previous loop.
-						float Delta = (Center[GeometryIndex] - Vertex[vdx]).Size();
+						Chaos::FRealSingle Delta = (Center[GeometryIndex] - Vertex[vdx]).Size();
 						InnerRadius[GeometryIndex] = FMath::Min(InnerRadius[GeometryIndex], Delta);
 						OuterRadius[GeometryIndex] = FMath::Max(OuterRadius[GeometryIndex], Delta);
 					}
@@ -382,12 +384,12 @@ namespace GeometryCollection
 						int vdx = FaceIndices[fdx][0];
 						int32 GeometryIndex = ReverseMap[BoneMap[vdx]]; // double indexing safe due to check in previous loop.
 
-						FVector Centroid(0);
+						FVector3f Centroid(0);
 						for (int e = 0; e < 3; e++)
 						{
 							Centroid += Vertex[FaceIndices[fdx][e]];
 						}
-						Centroid /= 3;
+						Centroid /= 3.0f;
 
 						float Delta = (Center[GeometryIndex] - Centroid).Size();
 						InnerRadius[GeometryIndex] = FMath::Min(InnerRadius[GeometryIndex], Delta);
@@ -402,7 +404,7 @@ namespace GeometryCollection
 						for (int e = 0; e < 3; e++)
 						{
 							int i = e, j = (e + 1) % 3;
-							FVector Edge = Vertex[FaceIndices[fdx][i]] + 0.5*(Vertex[FaceIndices[fdx][j]] - Vertex[FaceIndices[fdx][i]]);
+							FVector3f Edge = Vertex[FaceIndices[fdx][i]] + 0.5*(Vertex[FaceIndices[fdx][j]] - Vertex[FaceIndices[fdx][i]]);
 							float Delta = (Center[GeometryIndex] - Edge).Size();
 							InnerRadius[GeometryIndex] = FMath::Min(InnerRadius[GeometryIndex], Delta);
 							OuterRadius[GeometryIndex] = FMath::Max(OuterRadius[GeometryIndex], Delta);
@@ -440,6 +442,27 @@ namespace GeometryCollection
 
 			// Reindex will update everything else that is required
 			Collection->ReindexMaterials();
+		}
+	}
+
+
+	void GenerateTemporaryGuids(FTransformCollection* Collection, int32 StartIdx, bool bForceInit)
+	{
+		bool bNeedsInit = false;
+		if (!Collection->HasAttribute("GUID", FTransformCollection::TransformGroup))
+		{
+			FManagedArrayCollection::FConstructionParameters Params(FName(""), false);
+			Collection->AddAttribute<FGuid>("GUID", FTransformCollection::TransformGroup, Params);
+			bNeedsInit = true;
+		}
+
+		if (bNeedsInit || bForceInit)
+		{
+			TManagedArray<FGuid>& Guids = Collection->GetAttribute<FGuid>("GUID", FTransformCollection::TransformGroup);
+			for (int32 Idx = StartIdx; Idx < Guids.Num(); ++Idx)
+			{
+				Guids[Idx] = FGuid::NewGuid();
+			}
 		}
 	}
 

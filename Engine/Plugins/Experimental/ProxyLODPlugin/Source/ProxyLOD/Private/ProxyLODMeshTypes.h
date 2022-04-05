@@ -16,9 +16,9 @@
 
 #include "ProxyLODThreadedWrappers.h"
 #include "ProxyLODVertexTypes.h"
+#include "ProxyLODOpenVDB.h"
 
 THIRD_PARTY_INCLUDES_START
-#include <openvdb/openvdb.h>
 #include <vector>
 THIRD_PARTY_INCLUDES_END
 
@@ -103,20 +103,20 @@ struct FMixedPolyMesh
 struct FVertexDataMesh
 {
 	TArray<uint32>    Indices;
-	TArray<FVector>   Points;
+	TArray<FVector3f>   Points;
 
-	TArray<FVector>   Normal;
-	TArray<FVector>   Tangent;
-	TArray<FVector>   BiTangent;
+	TArray<FVector3f>   Normal;
+	TArray<FVector3f>   Tangent;
+	TArray<FVector3f>   BiTangent;
 
 	// Optional. Used for ray shooting when transfering materials.
-	TArray<FVector>   TransferNormal;
+	TArray<FVector3f>   TransferNormal;
 
 	// stores information about the tangentspace
 	// 1 = right handed.  -1 left handed
 	TArray<int32>     TangentHanded;
 
-	TArray<FVector2D> UVs;
+	TArray<FVector2f> UVs;
 
 	// Per-face frequency
 	TArray<FColor>    FaceColors;
@@ -156,7 +156,7 @@ public:
 	openvdb::Vec3I GetFace(int32 FaceNumber) const;
 	
 	// Get an array of positions only.
-	void GetPosArray(std::vector<FVector>& PosArray) const;
+	void GetPosArray(std::vector<FVector3f>& PosArray) const;
 	
 
 	// This method is for testing only.  Not designed for perf.
@@ -234,7 +234,7 @@ private:
 	//Cache data
 	void InitializeCacheData();
 	uint32 TriangleCount;
-	TVertexAttributesConstRef<FVector> VertexPositions;
+	TVertexAttributesConstRef<FVector3f> VertexPositions;
 	// Local version of the index array.  The FMeshDescription doesn't really have one.
 	TArray<FVertexInstanceID> IndexBuffer;
 
@@ -272,11 +272,36 @@ ENUM_CLASS_FLAGS(ERawPolyValues);
 class FMeshDescriptionArrayAdapter
 {
 public:
+	// OpenVDB MeshDataAdapter Interface
+	
+	// Total number of polygons managed by this class.
+	size_t polygonCount() const
+	{
+		return PolyCount;
+	}
 
+	// Total number of points (positions) managed by this class
+	size_t pointCount() const
+	{
+		return PointCount;
+	}
+
+	// Vertex count for polygon n: currently FMeshDescription is just triangles.
+	size_t vertexCount(size_t n) const
+	{
+		return 3;
+	}
+
+	// Return position pos in local grid index space for polygon (face number) n and vertex (conrner number) v
+	void getIndexSpacePoint(size_t FaceNumber, size_t CornerNumber, openvdb::Vec3d& pos) const;
+
+public:
 	FMeshDescriptionArrayAdapter(const TArray<FMeshMergeData>& InMergeDataArray, const openvdb::math::Transform::Ptr InTransform);
 	FMeshDescriptionArrayAdapter(const TArray<const FMeshMergeData*>& InMergeDataPtrArray);
+	FMeshDescriptionArrayAdapter(const TArray<const FInstancedMeshMergeData*>& InMergeDataPtrArray);
 	FMeshDescriptionArrayAdapter(const TArray<FMeshMergeData>& InMergeDataArray);
-
+	FMeshDescriptionArrayAdapter(const TArray<FInstancedMeshMergeData>& InMergeDataArray);
+	
 	// copy constructor 
 	FMeshDescriptionArrayAdapter(const FMeshDescriptionArrayAdapter& other);
 
@@ -284,12 +309,7 @@ public:
 	~FMeshDescriptionArrayAdapter();
 	
 	// Return position for polygon (face number) n and vertex (corner number) v
-	void getWorldSpacePoint(size_t FaceNumber, size_t CornerNumber, openvdb::Vec3d& pos) const;
-
-
-	// Return position pos in local grid index space for polygon (face number) n and vertex (conrner number) v
-	void getIndexSpacePoint(size_t FaceNumber, size_t CornerNumber, openvdb::Vec3d& pos) const;
-	
+	void GetWorldSpacePoint(size_t FaceNumber, size_t CornerNumber, openvdb::Vec3d& pos) const;
 
 	// Access to the FMeshMergeData data elements in the array.
 	const FMeshMergeData& GetMeshMergeData(uint32 Idx) const;
@@ -312,11 +332,11 @@ public:
 		int32   FaceMaterialIndex;
 
 		uint32  FaceSmoothingMask;
-		FVector VertexPositions[3];
+		FVector3f VertexPositions[3];
 
-		FVector   WedgeTangentX[3];
-		FVector   WedgeTangentY[3];
-		FVector   WedgeTangentZ[3];
+		FVector3f   WedgeTangentX[3];
+		FVector3f   WedgeTangentY[3];
+		FVector3f   WedgeTangentZ[3];
 
 		FVector2D WedgeTexCoords[MAX_MESH_TEXTURE_COORDS_MD][3];
 
@@ -328,23 +348,25 @@ public:
 	public:
 		FMeshDescriptionAttributesGetter(const FMeshDescription* MeshDescription)
 		{
-			VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-			VertexInstanceNormals = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-			VertexInstanceTangents = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
-			VertexInstanceBinormalSigns = MeshDescription->VertexInstanceAttributes().GetAttributesRef<float>(MeshAttribute::VertexInstance::BinormalSign);
-			VertexInstanceColors = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector4>(MeshAttribute::VertexInstance::Color);
-			VertexInstanceUVs = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
+			FStaticMeshConstAttributes Attributes(*MeshDescription);
+
+			VertexPositions = Attributes.GetVertexPositions();
+			VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+			VertexInstanceTangents = Attributes.GetVertexInstanceTangents();
+			VertexInstanceBinormalSigns = Attributes.GetVertexInstanceBinormalSigns();
+			VertexInstanceColors = Attributes.GetVertexInstanceColors();
+			VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
 			TriangleCount = MeshDescription->Triangles().Num();
 			FaceSmoothingMasks.AddZeroed(TriangleCount);
 			FStaticMeshOperations::ConvertHardEdgesToSmoothGroup(*MeshDescription, FaceSmoothingMasks);
 		}
-		TVertexAttributesConstRef<FVector> VertexPositions;
-		TVertexInstanceAttributesConstRef<FVector> VertexInstanceNormals;
-		TVertexInstanceAttributesConstRef<FVector> VertexInstanceTangents;
+		TVertexAttributesConstRef<FVector3f> VertexPositions;
+		TVertexInstanceAttributesConstRef<FVector3f> VertexInstanceNormals;
+		TVertexInstanceAttributesConstRef<FVector3f> VertexInstanceTangents;
 		TVertexInstanceAttributesConstRef<float> VertexInstanceBinormalSigns;
-		TVertexInstanceAttributesConstRef<FVector4> VertexInstanceColors;
-		TVertexInstanceAttributesConstRef<FVector2D> VertexInstanceUVs;
+		TVertexInstanceAttributesConstRef<FVector4f> VertexInstanceColors;
+		TVertexInstanceAttributesConstRef<FVector2f> VertexInstanceUVs;
 		int32 TriangleCount;
 		TArray<uint32> FaceSmoothingMasks;
 	};
@@ -354,12 +376,13 @@ public:
 	* 
 	* @param FaceNumber          The triangle Id when treating all the meshes as a single mesh
 	* @param OutMeshIdx          The Id of the actual mesh that owns this poly
+	* @param OutInstanceIdx      The instance index, if any, or INDEX_NONE
 	* @param OutLocalFaceNumber  The Id within that mesh of this poly
 	* @param RawPolyValues       Reduce computations by specifying which values will be used from FRawPoly.
 	*
 	* @return  A copy of the raw mesh data associated with this poly.
 	*/
-	FMeshDescriptionArrayAdapter::FRawPoly GetRawPoly(const size_t FaceNumber, int32& OutMeshIdx, int32& OutLocalFaceNumber, const ERawPolyValues RawPolyValues = ERawPolyValues::All ) const;
+	FMeshDescriptionArrayAdapter::FRawPoly GetRawPoly(const size_t FaceNumber, int32& OutMeshIdx, int32& OutInstanceIdx, int32& OutLocalFaceNumber, const ERawPolyValues RawPolyValues = ERawPolyValues::All ) const;
 	
 	/**
 	* Returns a copy of the data associated with this poly in the form of a struct.
@@ -370,30 +393,6 @@ public:
 	* @return  A copy of the raw mesh data associated with this poly.
 	*/
 	FMeshDescriptionArrayAdapter::FRawPoly GetRawPoly(const size_t FaceNumber, const ERawPolyValues RawPolyValues = ERawPolyValues::All ) const;
-
-	/**
-	* Total number of polygons managed by this class.
-	*/
-	size_t polygonCount() const 
-	{ 
-		return PolyCount; 
-	}
-
-	/** 
-	* Total number of points (positions) managed by this class
-	*/
-	size_t pointCount() const 
-	{ 
-		return PointCount; 
-	}
-
-	/**
-	* Vertex count for polygon n: currently FMeshDescription is just triangles.
-	*/
-	size_t vertexCount(size_t n) const 
-	{ 
-		return 3; 
-	}
 
 	/**
 	* The transform used to map between the physical space of the mesh and the voxel space.
@@ -416,9 +415,12 @@ public:
 	}
 
 protected:
-	void Construct(int32 MeshCount, TFunctionRef<const FMeshMergeData* (uint32 Index)> GetMeshFunction);
+	void SetupInstances(int32 MeshCount, TFunctionRef<const FInstancedMeshMergeData* (uint32 Index)> GetMeshFunction);
 
-	const FMeshDescription& GetRawMesh(const size_t FaceNumber, int32& MeshIdx, int32& LocalFaceNumber, const FMeshDescriptionAttributesGetter** OutAttributesGetter) const;
+	void Construct(int32 MeshCount, TFunctionRef<const FMeshMergeData* (uint32 Index)> GetMeshFunction);
+	void Construct(int32 MeshCount, TFunctionRef<const FMeshMergeData* (uint32 Index)> GetMeshFunction, TFunctionRef<int32(uint32 Index)> GetInstanceCountFunction);
+
+	const FMeshDescription& GetRawMesh(const size_t FaceNumber, int32& MeshIdx, int32& InstanceIdx, int32& LocalFaceNumber, const FMeshDescriptionAttributesGetter** OutAttributesGetter) const;
 
 	void ComputeAABB(ProxyLOD::FBBox& InOutBBox);
 protected:
@@ -432,6 +434,8 @@ protected:
 
 	std::vector<size_t>                      PolyOffsetArray;
 	std::vector<FMeshDescription*>           RawMeshArray;
+	TArray<TArray<FTransform>>               InstancesTransformArray;
+	TArray<TArray<FMatrix>>                  InstancesAdjointTArray;
 
 	// Use TArray because we need SetNumUninitialized
 	TArray<FMeshDescriptionAttributesGetter> RawMeshArrayData;
@@ -496,7 +500,7 @@ public:
 		* @return FRawyPoly  Stuct holding all the data associated with the closest poly in the reference geometry.
 		*/
 		FMeshDescriptionArrayAdapter::FRawPoly  Get(const openvdb::Vec3d& WorldPos, bool& bSuccess) const;
-		FMeshDescriptionArrayAdapter::FRawPoly  Get(const FVector& WorldPos, bool& bSuccess) const
+		FMeshDescriptionArrayAdapter::FRawPoly  Get(const FVector3f& WorldPos, bool& bSuccess) const
 		{
 			return this->Get(openvdb::Vec3d(WorldPos.X, WorldPos.Y, WorldPos.Z), bSuccess);
 		}
@@ -640,7 +644,7 @@ openvdb::Vec3I TAOSMesh<SimplifierVertexType>::GetFace(int32 FaceNumber) const
 }
 
 template <typename SimplifierVertexType>
-void TAOSMesh<SimplifierVertexType>::GetPosArray(std::vector<FVector>& PosArray) const
+void TAOSMesh<SimplifierVertexType>::GetPosArray(std::vector<FVector3f>& PosArray) const
 {
 	// resize the target array
 	PosArray.resize(NumVertexes);
@@ -648,7 +652,7 @@ void TAOSMesh<SimplifierVertexType>::GetPosArray(std::vector<FVector>& PosArray)
 	// copy the data over.
 	ProxyLOD::Parallel_For(ProxyLOD::FUIntRange(0, NumVertexes), [this, &PosArray](const ProxyLOD::FUIntRange& Range)
 	{
-		FVector* Pos = PosArray.data();
+		FVector3f* Pos = PosArray.data();
 		FPositionNormalVertex* VertexArray = this->Vertexes;
 
 

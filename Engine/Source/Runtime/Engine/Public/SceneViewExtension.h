@@ -15,7 +15,7 @@
  *  SCENE VIEW EXTENSIONS
  *  -----------------------------------------------------------------------------------------------
  *
- *  This system lets you hook various aspects of UE4 rendering.
+ *  This system lets you hook various aspects of UE rendering.
  *  To create a view extension, it is advisable to inherit
  *  from FSceneViewExtensionBase, which implements the
  *  ISceneViewExtension interface.
@@ -108,6 +108,8 @@ public:
 	};
 
 public:
+	ENGINE_API ISceneViewExtension() {}
+	
 	virtual ~ISceneViewExtension() {}
 
 	/**
@@ -138,12 +140,14 @@ public:
     /**
      * Called on render thread at the start of rendering.
      */
-    virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) = 0;
+	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) {};
+	virtual ENGINE_API void PreRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily);
 
 	/**
      * Called on render thread at the start of rendering, for each view, after PreRenderViewFamily_RenderThread call.
      */
-    virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) = 0;
+	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) {};
+	virtual ENGINE_API void PreRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView);
 
 	/**
 	 * Called right after Base Pass rendering finished
@@ -164,11 +168,13 @@ public:
 	 * Allows to render content after the 3D content scene, useful for debugging
 	 */
 	virtual void PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) {}
+	virtual ENGINE_API void PostRenderViewFamily_RenderThread(FRDGBuilder& GraphBuilder, FSceneViewFamily& InViewFamily);
 
 	/**
 	 * Allows to render content after the 3D content scene, useful for debugging
 	 */
 	virtual void PostRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) {}
+	virtual ENGINE_API void PostRenderView_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView);
 
 	/**
      * Called to determine view extensions priority in relation to other view extensions, higher comes first
@@ -180,21 +186,6 @@ public:
 	 */
 	UE_DEPRECATED(4.27, "Deprecated. Please use IsActiveThisFrame by passing an FSceneViewExtensionContext parameter")
 	virtual bool IsActiveThisFrame(class FViewport* InViewport) const { return true; }
-
-	/**
-	 * Called right before late latching on all view extensions
-	 */
-	virtual void PreLateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) {};
-
-	/**
-	 * Called to apply late latching per viewFamily
-	 */
-	virtual void LateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) {};
-
-	/**
-	 * Called to apply late latching per view
-	 */
-	virtual void LateLatchingView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily, FSceneView& View) {};
 
 	/**
 	 * Returning false disables the extension for the current frame in the given context. This will be queried each frame to determine if the extension wants to run.
@@ -250,9 +241,21 @@ public:
 	FWorldSceneViewExtension(const FAutoRegister& AutoReg, UWorld* InWorld);
 protected:
 	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const override;
+	UWorld* GetWorld() const { return World.Get(); }
 private:
 	/** The world of this view extension. */
 	TWeakObjectPtr<UWorld> World;
+};
+
+/** Scene View Extension which is enabled for all HMDs to unify IsActiveThisFrame_Internal. */
+class ENGINE_API FHMDSceneViewExtension : public FSceneViewExtensionBase
+{
+public:
+	FHMDSceneViewExtension(const FAutoRegister& AutoReg) : FSceneViewExtensionBase(AutoReg)
+	{
+	}
+protected:
+	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const override;
 };
 
 using FSceneViewExtensionRef = TSharedRef<ISceneViewExtension, ESPMode::ThreadSafe>;

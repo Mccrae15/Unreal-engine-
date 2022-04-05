@@ -18,13 +18,15 @@
 #include "BonePose.h"
 #include "Containers/ArrayView.h"
 
-class UBlendSpaceBase;
+class UBlendSpace;
 class USkeletalMeshComponent;
+class UMirrorDataTable;
 struct FA2CSPose;
 struct FA2Pose;
 struct FInputBlendPose;
 struct FAnimationPoseData;
-struct FStackCustomAttributes;
+
+namespace UE { namespace Anim { struct FStackAttributeContainer; }}
 
 typedef TArray<FTransform> FTransformArrayA2;
 
@@ -41,7 +43,7 @@ namespace ETransformBlendMode
 }
 
 template<int32>
-FORCEINLINE void BlendTransform(const FTransform& Source, FTransform& Dest, const float BlendWeight);
+ENGINE_API void BlendTransform(const FTransform& Source, FTransform& Dest, const float BlendWeight);
 
 template<>
 FORCEINLINE void BlendTransform<ETransformBlendMode::Overwrite>(const FTransform& Source, FTransform& Dest, const float BlendWeight)
@@ -57,16 +59,36 @@ FORCEINLINE void BlendTransform<ETransformBlendMode::Accumulate>(const FTransfor
 	Dest.AccumulateWithShortestRotation(Source, VBlendWeight);
 }
 
-FORCEINLINE void BlendCurves(const TArrayView<const FBlendedCurve> SourceCurves, const TArrayView<const float> SourceWeights, FBlendedCurve& OutCurve);
+ENGINE_API void BlendCurves(const TArrayView<const FBlendedCurve> SourceCurves, const TArrayView<const float> SourceWeights, FBlendedCurve& OutCurve);
+void ENGINE_API BlendCurves(const TArrayView<const FBlendedCurve* const> SourceCurves, const TArrayView<const float> SourceWeights, FBlendedCurve& OutCurve);
+
 
 /////////////////////////////////////////////////////////
-/** Interface used to provide interpolation indices for per bone blends
-  *
+/** 
+  * Interface used to provide interpolation indices for per bone blends
   */
 class ENGINE_API IInterpolationIndexProvider
 {
 public:
-	virtual int32 GetPerBoneInterpolationIndex(int32 BoneIndex, const FBoneContainer& RequiredBones) const = 0;
+	~IInterpolationIndexProvider() = default;
+	
+	struct FPerBoneInterpolationData
+	{
+		virtual ~FPerBoneInterpolationData() {}
+	};
+
+	// There may be times when the implementation can pre-calculate data needed for GetPerBoneInterpolationIndex, as the
+	// latter is often called multiple times whilst iterating over a skeleton.
+	virtual TSharedPtr<FPerBoneInterpolationData> GetPerBoneInterpolationData(const USkeleton* Skeleton) const { return nullptr; }
+
+	UE_DEPRECATED(5.0, "Please use the overload that takes a FCompactPoseBoneIndex")
+	virtual int32 GetPerBoneInterpolationIndex(
+		int32 BoneIndex, const FBoneContainer& RequiredBones, const FPerBoneInterpolationData* Data) const;
+
+	// Implementation should return the index into the PerBoneBlendData array that would be required when looking
+	// up/blending BoneIndex. This call will be passed the results of GetPerBoneInterpolationData, so the two functions
+	// should be matched.
+	virtual int32 GetPerBoneInterpolationIndex(const FCompactPoseBoneIndex& InCompactPoseBoneIndex, const FBoneContainer& RequiredBones, const FPerBoneInterpolationData* Data) const = 0;
 };
 
 /** In AnimationRunTime Library, we extract animation data based on Skeleton hierarchy, not ref pose hierarchy. 
@@ -102,7 +124,7 @@ public:
 	static void BlendPosesTogether(
 		TArrayView<const FCompactPose> SourcePoses,
 		TArrayView<const FBlendedCurve> SourceCurves,
-		TArrayView<const FStackCustomAttributes> SourceAttributes,
+		TArrayView<const UE::Anim::FStackAttributeContainer> SourceAttributes,
 		TArrayView<const float> SourceWeights,
 		FAnimationPoseData& OutAnimationPoseData);
 
@@ -129,7 +151,7 @@ public:
 	static void BlendPosesTogether(
 		TArrayView<const FCompactPose> SourcePoses,
 		TArrayView<const FBlendedCurve> SourceCurves,
-		TArrayView<const FStackCustomAttributes> SourceAttributes,
+		TArrayView<const UE::Anim::FStackAttributeContainer> SourceAttributes,
 		TArrayView<const float> SourceWeights,
 		TArrayView<const int32> SourceWeightsIndices,
 		/*out*/ FAnimationPoseData& OutPoseData
@@ -155,7 +177,7 @@ public:
 	static void BlendPosesTogetherIndirect(
 		TArrayView<const FCompactPose* const> SourcePoses,
 		TArrayView<const FBlendedCurve* const> SourceCurves,
-		TArrayView<const FStackCustomAttributes* const> SourceAttributes,
+		TArrayView<const UE::Anim::FStackAttributeContainer* const> SourceAttributes,
 		TArrayView<const float> SourceWeights,
 		FAnimationPoseData& OutPoseData);
 
@@ -227,7 +249,7 @@ public:
 	static void BlendPosesTogetherPerBone(
 		TArrayView<const FCompactPose> SourcePoses,
 		TArrayView<const FBlendedCurve> SourceCurves,
-		TArrayView<const FStackCustomAttributes> SourceAttributes,
+		TArrayView<const UE::Anim::FStackAttributeContainer> SourceAttributes,
 		const IInterpolationIndexProvider* InterpolationIndexProvider,
 		TArrayView<const FBlendSampleData> BlendSampleDataCache,
 		/*out*/ FAnimationPoseData& OutAnimationPoseData);
@@ -253,7 +275,7 @@ public:
 	static void BlendPosesTogetherPerBone(
 		TArrayView<const FCompactPose> SourcePoses,
 		TArrayView<const FBlendedCurve> SourceCurves,
-		TArrayView<const FStackCustomAttributes> SourceAttributes,
+		TArrayView<const UE::Anim::FStackAttributeContainer> SourceAttributes,
 		const IInterpolationIndexProvider* InterpolationIndexProvider,
 		TArrayView<const FBlendSampleData> BlendSampleDataCache,
 		TArrayView<const int32> BlendSampleDataCacheIndices,
@@ -271,7 +293,7 @@ public:
 	static void BlendPosesTogetherPerBoneInMeshSpace(
 		TArrayView<FCompactPose> SourcePoses,
 		TArrayView<const FBlendedCurve> SourceCurves,
-		const UBlendSpaceBase* BlendSpace,
+		const UBlendSpace* BlendSpace,
 		TArrayView<const FBlendSampleData> BlendSampleDataCache,
 		/*out*/ FCompactPose& ResultPose,
 		/*out*/ FBlendedCurve& ResultCurve);
@@ -279,8 +301,8 @@ public:
 	static void BlendPosesTogetherPerBoneInMeshSpace(
 		TArrayView< FCompactPose> SourcePoses,
 		TArrayView<const FBlendedCurve> SourceCurves,
-		TArrayView<const FStackCustomAttributes> SourceAttributes,	
-		const UBlendSpaceBase* BlendSpace,
+		TArrayView<const UE::Anim::FStackAttributeContainer> SourceAttributes,	
+		const UBlendSpace* BlendSpace,
 		TArrayView<const FBlendSampleData> BlendSampleDataCache,
 		/*out*/ FAnimationPoseData& OutAnimationPoseData);
 
@@ -322,8 +344,8 @@ public:
 		const TArray<FCompactPose>& BlendPoses,
 		FBlendedCurve& BaseCurve,
 		const TArray<FBlendedCurve>& BlendCurves,
-		FStackCustomAttributes& CustomAttributes,
-		const TArray<FStackCustomAttributes>& BlendAttributes,
+		UE::Anim::FStackAttributeContainer& CustomAttributes,
+		const TArray<UE::Anim::FStackAttributeContainer>& BlendAttributes,
 		FAnimationPoseData& OutAnimationPoseData,
 		TArray<FPerBoneBlendWeight>& BoneBlendWeights,
 		EBlendPosesPerBoneFilterFlags blendFlags,
@@ -332,8 +354,8 @@ public:
 	static void UpdateDesiredBoneWeight(const TArray<FPerBoneBlendWeight>& SrcBoneBlendWeights, TArray<FPerBoneBlendWeight>& TargetBoneBlendWeights, const TArray<float>& BlendWeights);
 
 	/**
-	 *	Create Mast Weight for skeleton joints, not per mesh or per required bones
-	 *  You'll have to filter properly with correct mesh joint or required boens
+	 *	Create Mask Weight for skeleton joints, not per mesh or per required bones
+	 *  You'll have to filter properly with correct mesh joint or required bones
 	 *  The depth should not change based on LOD or mesh or skeleton
 	 *	They still should contain same depth
 	 */
@@ -341,6 +363,15 @@ public:
 			TArray<FPerBoneBlendWeight>& BoneBlendWeights,
 			const TArray<FInputBlendPose>& BlendFilters, 
 			const USkeleton* Skeleton);
+
+	/**
+	 *	Create Mask Weight for skeleton joints, not per mesh or per required bones
+	 *  Individual alphas are read from a BlendProfile using a BlendMask mode
+	 */
+	static void CreateMaskWeights(
+		TArray<FPerBoneBlendWeight>& BoneBlendWeights,
+		const TArray<class UBlendProfile*>& BlendMasks,
+		const USkeleton* Skeleton);
 
 	static void CombineWithAdditiveAnimations(
 		int32 NumAdditivePoses,
@@ -431,6 +462,51 @@ public:
 	UE_DEPRECATED(4.26.0, "Please use BlendTransform() for weighted blending")
 	static void BlendTransformsByWeight(FTransform& OutTransform, const TArray<FTransform>& Transforms, const TArray<float>& Weights);
 
+	/**
+	 * Mirror (swap) curves with the specified MirrorDataTable.
+	 * Partial mirroring is supported,  and curves with two entries (Right->Left and Left->Right) will be swapped while 
+	 * curves with a single entry will be overwritten
+	 *
+	 * @param	Curves			The Curves which are swapped
+	 * @param	MirrorDataTable	A UMirrorDataTable specifying which curves to swap
+	 */
+	static void MirrorCurves(FBlendedCurve& Curves, const UMirrorDataTable& MirrorDataTable);
+
+	/**
+	 * Mirror a vector across the specified mirror axis 
+	 * @param	V			The vector to mirror
+	 * @param	MirrorAxis	The axis to mirror across
+	 * @return				The vector mirrored across the specified axis
+	 */
+	static FVector MirrorVector(const FVector& V, EAxis::Type MirrorAxis);
+
+	/** 
+	 * Mirror a quaternion across the specified mirror axis 
+	 * @param	Q			The quaternion to mirror
+	 * @param	MirrorAxis	The axis to mirror across
+	 * @return				The quaternion mirrored across the specified axis
+	 */
+	static FQuat MirrorQuat(const FQuat& Q, EAxis::Type MirrorAxis);
+
+	/** 
+	 * Mirror a pose with the specified MirrorDataTable.  
+	 * This method computes the required compact mirror pose and component space reference rotations each call
+	 * and should not be used for repeated calculations
+	 * 
+	 * @param	Pose			The pose which is mirrored in place
+	 * @param	MirrorDataTable	A UMirrorDataTable for the same Skeleton as the Pose 
+	 */
+	static void MirrorPose(FCompactPose& Pose, const UMirrorDataTable& MirrorDataTable);
+
+	/** Mirror Pose using cached mirror bones and components space arrays.   
+	 * 
+	 * @param	Pose						The pose which is mirrored in place
+	 * @param	MirrorAxis					The axis that all bones are mirrored across 
+	 * @param	CompactPoseMirrorBones		Compact array of bone indices. Each index contains the bone to mirror or -1 to indicate mirroring should not apply to that bone.
+	 * @param	ComponentSpaceRefRotations	Compoenent space rotations of the reference pose for each bone. 
+	 */
+	static void MirrorPose(FCompactPose& Pose, EAxis::Type MirrorAxis, const TArray<FCompactPoseBoneIndex>& CompactPoseMirrorBones, const TCustomBoneIndexArray<FQuat, FCompactPoseBoneIndex>& ComponentSpaceRefRotations);
+
 	/** 
 	 * Advance CurrentTime to CurrentTime + MoveDelta. 
 	 * It will handle wrapping if bAllowLooping is true
@@ -447,11 +523,14 @@ public:
 	static void ApplyWeightToTransform(const FBoneContainer& RequiredBones, /*inout*/ FTransformArrayA2& Atoms, float Weight);
 
 	/** 
-	 * Get Key Indices (start/end with alpha from start) with input parameter Time, NumFrames
+	 * Get Key Indices (start/end with alpha from start) with input parameter Time, NumKeys
 	 * from % from StartKeyIndex, meaning (CurrentKeyIndex(float)-StartKeyIndex)/(EndKeyIndex-StartKeyIndex)
-	 * by this Start-End, it will be between 0-(NumFrames-1), not number of Pos/Rot key tracks 
+	 * by this Start-End, it will be between 0-(NumKeys-1), not number of Pos/Rot key tracks 
+	 * The FramesPerSecond parameter must be the sample rate of the animation data, for example 30.
+	 * If the FramesPerSecond parameter is set to 0 or negative, it will automatically calculate the FramesPerSecond based on the sequence length and number of frames.
+	 * The reason why you can provide a FramesPerSecond value is because this can be slightly more accurate than calculating it, in case super high precision is needed.
 	 **/
-	static void GetKeyIndicesFromTime(int32& OutKeyIndex1, int32& OutKeyIndex2, float& OutAlpha, const float Time, const int32 NumFrames, const float SequenceLength);
+	static void GetKeyIndicesFromTime(int32& OutKeyIndex1, int32& OutKeyIndex2, float& OutAlpha, const double Time, const int32 NumKeys, const double SequenceLength, double FramesPerSecond=-1.0);
 
 	/** 
 	 *	Utility for taking an array of bone indices and ensuring that all parents are present 
@@ -472,9 +551,6 @@ public:
 	 */
 	static void ConvertCSTransformToBoneSpace(const FTransform& ComponentTransform, FCSPose<FCompactPose>& MeshBases, FTransform& InOutCSBoneTM, FCompactPoseBoneIndex BoneIndex, EBoneControlSpace Space);
 
-	UE_DEPRECATED(4.16, "Please use the ConvertCSTransformToBoneSpace with a transform as the first argument")
-	static void ConvertCSTransformToBoneSpace(USkeletalMeshComponent* SkelComp, FCSPose<FCompactPose>& MeshBases, FTransform& InOutCSBoneTM, FCompactPoseBoneIndex BoneIndex, EBoneControlSpace Space);
-
 	/** 
 	 * Convert a FTransform in a specified bone space to ComponentSpace.
 	 * @param	ComponentTransform	The transform of the component. Only used if Space == BCS_WorldSpace
@@ -485,9 +561,6 @@ public:
 	 */
 	static void ConvertBoneSpaceTransformToCS(const FTransform& ComponentTransform, FCSPose<FCompactPose>& MeshBases, FTransform& InOutBoneSpaceTM, FCompactPoseBoneIndex BoneIndex, EBoneControlSpace Space);
 
-	UE_DEPRECATED(4.16, "Please use the ConvertBoneSpaceTransformToCS with a transform as the first argument")
-	static void ConvertBoneSpaceTransformToCS(USkeletalMeshComponent* SkelComp, FCSPose<FCompactPose>& MeshBases, FTransform& InOutBoneSpaceTM, FCompactPoseBoneIndex BoneIndex, EBoneControlSpace Space);
-
 	// FA2Pose/FA2CSPose Interfaces for template functions
 	static FTransform GetSpaceTransform(FA2Pose& Pose, int32 Index);
 	static FTransform GetSpaceTransform(FA2CSPose& Pose, int32 Index);
@@ -495,8 +568,8 @@ public:
 	static void SetSpaceTransform(FA2CSPose& Pose, int32 Index, FTransform& NewTransform);
 	// space bases
 	static FTransform GetComponentSpaceTransformRefPose(const FReferenceSkeleton& RefSkeleton, int32 BoneIndex);
-	static FTransform GetComponentSpaceTransform(const FReferenceSkeleton& RefSkeleton, const TArray<FTransform> &BoneSpaceTransforms, int32 BoneIndex);
-	static void FillUpComponentSpaceTransforms(const FReferenceSkeleton& RefSkeleton, const TArray<FTransform> &BoneSpaceTransforms, TArray<FTransform> &ComponentSpaceTransforms);
+	static FTransform GetComponentSpaceTransform(const FReferenceSkeleton& RefSkeleton, const TArrayView<const FTransform> &BoneSpaceTransforms, int32 BoneIndex);
+	static void FillUpComponentSpaceTransforms(const FReferenceSkeleton& RefSkeleton, const TArrayView<const FTransform> &BoneSpaceTransforms, TArray<FTransform> &ComponentSpaceTransforms);
 	static void MakeSkeletonRefPoseFromMesh(const USkeletalMesh* InMesh, const USkeleton* InSkeleton, TArray<FTransform>& OutBoneBuffer);
 
 	/**
@@ -529,16 +602,15 @@ public:
 	/**
 	* Retarget a single bone transform, to apply right after extraction.
 	*
-	* @param	MySkeleton			Skeleton this is retargeting
+	* @param	SourceSkeleton		Skeleton from which this is retargeting
 	* @param	RetargetSource		Retarget Source for the retargeting
-	* @param	BoneTransform		BoneTransform to read/write from.
-	* @param	SkeletonBoneIndex	Bone Index in USkeleton.
-	* @param	BoneIndex			Bone Index in Bone Transform array.
-	* @param	RequiredBones		BoneContainer
+	* @param	BoneTransform		BoneTransform to read/write from
+	* @param	SkeletonBoneIndex	Source Bone Index in SourceSkeleton
+	* @param	BoneIndex			Target Bone Index in Bone Transform array
+	* @param	RequiredBones		BoneContainer to which this is retargeting
 	*/
-	static void RetargetBoneTransform(const USkeleton* MySkeleton, const FName& RetargetSource, FTransform& BoneTransform, const int32 SkeletonBoneIndex, const FCompactPoseBoneIndex& BoneIndex, const FBoneContainer& RequiredBones, const bool bIsBakedAdditive);
+	static void RetargetBoneTransform(const USkeleton* SourceSkeleton, const FName& RetargetSource, FTransform& BoneTransform, const int32 SkeletonBoneIndex, const FCompactPoseBoneIndex& BoneIndex, const FBoneContainer& RequiredBones, const bool bIsBakedAdditive);
 	static void RetargetBoneTransform(const USkeleton* MySkeleton, const FName& SourceName, const TArray<FTransform>& RetargetTransforms, FTransform& BoneTransform, const int32 SkeletonBoneIndex, const FCompactPoseBoneIndex& BoneIndex, const FBoneContainer& RequiredBones, const bool bIsBakedAdditive);
-
 	/** 
 	 * Calculate distance how close two strings are. 
 	 * By close, it calculates how many operations to transform First to Second 
@@ -549,3 +621,12 @@ public:
 };
 
 ENUM_CLASS_FLAGS(FAnimationRuntime::EBlendPosesPerBoneFilterFlags);
+
+// Support ISPC enable/disable in non-shipping builds
+#if !INTEL_ISPC
+const bool bAnim_Runtime_ISPC_Enabled = false;
+#elif UE_BUILD_SHIPPING
+const bool bAnim_Runtime_ISPC_Enabled = true;
+#else
+extern bool bAnim_Runtime_ISPC_Enabled;
+#endif

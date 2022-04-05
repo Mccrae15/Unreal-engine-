@@ -53,6 +53,8 @@
 #include "NiagaraEditorModule.h"
 #include "NiagaraComponent.h"
 
+#if WITH_NIAGARA_DEBUGGER
+
 #define LOCTEXT_NAMESPACE "NiagaraDebugHUDCustomization"
 
 void FNiagaraDebugHUDVariableCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> StructPropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
@@ -762,3 +764,5 @@ void FNiagaraDebugHUDSettingsDetailsCustomization::CustomizeDetails(class IDetai
 }
 
 #undef LOCTEXT_NAMESPACE
+
+#endif

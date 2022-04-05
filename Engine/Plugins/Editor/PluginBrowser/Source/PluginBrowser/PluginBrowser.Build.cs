@@ -22,6 +22,7 @@ namespace UnrealBuildTool.Rules
 					"PluginUtils",
 					"EditorStyle",
 					"Projects",
+					"EditorFramework",
 					"UnrealEd",
 					"PropertyEditor",
 					"SharedSettingsWidgets",
@@ -30,6 +31,9 @@ namespace UnrealBuildTool.Rules
 					"MainFrame",
                     "UATHelper",
                     "AssetTools",
+					"Json",
+					"ToolWidgets",
+					"EditorWidgets",
 				}
 			);
 

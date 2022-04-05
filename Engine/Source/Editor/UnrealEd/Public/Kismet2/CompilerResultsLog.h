@@ -299,7 +299,8 @@ public:
 	UEdGraphPin* FindSourcePin(UEdGraphPin* PossiblyDuplicatedPin);
 	const UEdGraphPin* FindSourcePin(const UEdGraphPin* PossiblyDuplicatedPin) const;
 	
-	void Append(FCompilerResultsLog const& Other);
+	/** Copy errors from an existing log into this one, and optionally write out to log if it was suppressed the first time */
+	void Append(FCompilerResultsLog const& Other, bool bWriteToSystemLog = false);
 
 	/** Begin a new compiler event */
 	void BeginEvent(const TCHAR* InName);
@@ -440,9 +441,11 @@ public:
 #if STATS
 #define BP_SCOPED_COMPILER_EVENT_STAT(Stat) \
 	SCOPE_CYCLE_COUNTER(Stat); \
+	TRACE_CPUPROFILER_EVENT_SCOPE(Stat); \
 	FScopedCompilerEvent PREPROCESSOR_JOIN(ScopedCompilerEvent,__LINE__)(GET_STATDESCRIPTION(Stat))
 #else
 #define BP_SCOPED_COMPILER_EVENT_STAT(Stat) \
+	TRACE_CPUPROFILER_EVENT_SCOPE(Stat); \
 	FScopedCompilerEvent PREPROCESSOR_JOIN(ScopedCompilerEvent,__LINE__)(ANSI_TO_TCHAR(#Stat))
 #endif
 #endif	//#if WITH_EDITOR

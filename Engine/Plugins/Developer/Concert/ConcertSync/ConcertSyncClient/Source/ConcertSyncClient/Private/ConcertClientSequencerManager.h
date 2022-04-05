@@ -20,6 +20,11 @@ class ISequencer;
 class FConcertClientWorkspace;
 struct FSequencerInitParams;
 
+struct FSequencePlayer
+{
+	TWeakObjectPtr<ALevelSequenceActor> Actor;
+};
+
 /**
  * Sequencer manager that is held by the client sync module that keeps track of open sequencer UIs, regardless of whether a session is open or not
  * Events are registered to client sessions that will then operate on any tracked sequencer UIs
@@ -82,6 +87,13 @@ public:
 	virtual bool IsSequencerRemoteOpenEnabled() const override;
 
 	/**
+	 * Checks the CVar to see if we are allowed to forcefully close the player on game instances.
+	 *
+	 * @return true if we should always close a sequence player on a -game instance.
+	 */
+	bool ShouldAlwaysCloseGameSequencerPlayer() const;
+
+	/**
 	 * Set the remote open option in Multi-User
 	 * which open sequencer for other user when this option is enabled on both user machines.
 	 * 
@@ -97,9 +109,9 @@ private:
 	enum class EPlaybackMode
 	{
 		/** This sequencer's time should be propagated to the collaboration server */
-		Master,
+		Controller,
 		/** This sequencer's time should be updated in response to an event from the collaboration server */
-		Slave,
+		Agent,
 		/** To our knowledge, no sequencer is playing back, and this sequencer will both send and receive transport events */
 		Undefined
 	};
@@ -121,6 +133,17 @@ private:
 	};
 
 private:
+	/**
+	 * Returns true if we can send the provided sequencer event onto the server.
+	 */
+	bool CanSendSequencerEvent(const FString& ObjectPath) const;
+
+	/**
+	 * Delegate function called when we have entered into a reload state. We need to know when we are in a asset reload
+	 * so that we can properly reload the sequence player.
+	 */
+	void HandleAssetReload(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent);
+
 	/**
 	 * Called when a sequencer closes.
 	 *
@@ -161,6 +184,13 @@ private:
 	void OnSyncEvent(const FConcertSessionContext& InEventContext, const FConcertSequencerStateSyncEvent& InEvent);
 
 	/**
+	 * Called on receipt of time adjustment event.
+	 * @param InEventContext             The context for the current session.
+	 * @param InEvent                    The sequencer time adjustment event.
+	 */
+	void OnTimeAdjustmentEvent(const FConcertSessionContext& InEventContext, const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent);
+
+	/**
 	 * Called when the global time has been changed for the specified Sequencer
 	 *
 	 * @param InSequencer                 The sequencer that has just updated its time
@@ -180,7 +210,7 @@ private:
 	void OnEndFrame();
 
 	/**
-	 * Apply a Sequencer open event 
+	 * Apply a Sequencer open event
 	 *
 	 * @param SequenceObjectPath	The sequence to open
 	 */
@@ -189,12 +219,12 @@ private:
 	/**
 	 * Create a new sequence player to be used in -game instances.
 	 *
-	 * @param SequenceObjectPath	The sequence to open
+	 * @param SequenceObjectPath	The object path for the Level Sequence object we are creating.
 	 */
 	void CreateNewSequencePlayerIfNotExists(const FString& SequenceObjectPath);
 
 	/**
-	 * Apply a Sequencer event 
+	 * Apply a Sequencer event
 	 *
 	 * @param PendingState	The pending state to apply
 	 */
@@ -221,12 +251,27 @@ private:
 	 */
 	void ApplyCloseToPlayers(const FConcertSequencerCloseEvent& InEvent);
 
-
-	/** Apply CloseEvent to Open sequencers and players.
+	/**
+	 * Apply CloseEvent to Open sequencers and players.
 	 *
 	 * @param PendingClose  The close event state.
 	 */
 	void ApplyTransportCloseEvent(const FConcertSequencerCloseEvent& PendingClose);
+
+	/**
+	 * Apply a sequencer time adjustment event.
+	 */
+	void ApplyTimeAdjustmentEvent(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent);
+
+	/**
+	 * Apply a sequencer time adjustment to players.
+	 */
+	void ApplyTimeAdjustmentPlayers(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent);
+
+	/**
+	 * Apply a sequencer time adjustment to sequencers.
+	 */
+	void ApplyTimeAdjustmentSequencers(const FConcertSequencerTimeAdjustmentEvent& TimeAdjustmentEvent);
 
 	/**
 	 * Gather all the currently open sequencer UIs that have the specified path as their root sequence
@@ -234,7 +279,7 @@ private:
 	 * @param InSequenceObjectPath        The full path to the root asset to gather sequences for
 	 * @return An array containing all the entries that apply to the supplied sequence path
 	 */
-	TArray<FOpenSequencerData*, TInlineAllocator<1>> GatherRootSequencersByState(const FConcertSequencerState& InSequenceObjectPath);
+	TArray<FOpenSequencerData*, TInlineAllocator<1>> GatherRootSequencersByState(const FString& InSequenceObjectPath);
 
 	/**
 	 * Get the amount of latency compensation to apply to time-synchronization sensitive interactions
@@ -243,10 +288,17 @@ private:
 
 	/** FGCObject interface*/
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FConcertClientSequencerManager");
+	}
 
 private:
-	/** Called by the MovieScene object when the property changes of the object. */
-	void OnPlayerSignatureChanged();
+	/** Destroy the given sequence player with corresponding actor. */
+	void DestroyPlayer(FSequencePlayer& Player, ALevelSequenceActor* LevelSequenceActor);
+
+	/** Indicates if this sequence player can be closed. */
+	bool CanClose(const FConcertSequencerCloseEvent& InEvent) const;
 
 	/** Pointer to the sync client that owns us. */
 	IConcertSyncClient* OwnerSyncClient;
@@ -255,22 +307,29 @@ private:
 	TArray<FConcertSequencerState> PendingSequencerEvents;
 
 	/** List of pending sequencer open events to apply at end of frame. */
-	TArray<FConcertSequencerCloseEvent> PendingSequenceCloseEvents;
+	TArray<FString> PendingSequenceOpenEvents;
 
 	/** List of pending sequencer open events to apply at end of frame. */
-	TArray<FString> PendingSequenceOpenEvents;
+	TArray<FConcertSequencerCloseEvent> PendingSequenceCloseEvents;
+
+	/** List of pending time adjustment events. */
+	TArray<FConcertSequencerTimeAdjustmentEvent> PendingTimeAdjustmentEvents;
+
+	/**
+	 * List of pending sequence players that are scheduled for destruction. The first member of the tuple is the key /
+	 * level sequence player we a removing.  The second member tuple is the soft object path name of the replacement
+	 * level sequence when it is recreated.
+	 */
+	TArray<TTuple<FName,FString>> PendingDestroy;
+
+	/** List of pending sequence players that are scheduled for creation. */
+	TArray<FString> PendingCreate;
 
 	/** Map of all currently opened Root Sequence State in a session, locally opened or not. */
 	TMap<FName, FConcertSequencerState> SequencerStates;
 
 	/** List of all locally opened sequencer. */
 	TArray<FOpenSequencerData> OpenSequencers;
-
-	struct FSequencePlayer
-	{
-		TWeakObjectPtr<ALevelSequenceActor> Actor;
-		FDelegateHandle						SignatureChangedHandle;
-	};
 
 	/** Map of opened sequence players, if not in editor mode. */
 	TMap<FName, FSequencePlayer> SequencePlayers;

@@ -2,13 +2,17 @@
 
 #include "GameplayProvider.h"
 
+#include "Model/AsyncEnumerateTask.h"
+
 FName FGameplayProvider::ProviderName("GameplayProvider");
 
 #define LOCTEXT_NAMESPACE "GameplayProvider"
 
-FGameplayProvider::FGameplayProvider(Trace::IAnalysisSession& InSession)
+FGameplayProvider::FGameplayProvider(TraceServices::IAnalysisSession& InSession)
 	: Session(InSession)
 	, EndPlayEvent(nullptr)
+	, PawnPossession(InSession.GetLinearAllocator())
+	, ObjectLifetimes(InSession.GetLinearAllocator())
 	, bHasAnyData(false)
 	, bHasObjectProperties(false)
 {
@@ -87,6 +91,19 @@ void FGameplayProvider::EnumerateObjects(TFunctionRef<void(const FObjectInfo&)> 
 	{
 		Callback(ObjectInfo);
 	}
+}
+
+void FGameplayProvider::EnumerateObjects(double StartTime, double EndTime, TFunctionRef<void(const FObjectInfo&)> Callback) const
+{
+	Session.ReadAccessCheck();
+
+	ObjectLifetimes.EnumerateEvents(StartTime, EndTime,
+		[this, Callback](double InStartTime, double InEndTime, uint32 InDepth, const FObjectExistsMessage& ExistsMessage)
+		{
+			checkSlow(ObjectIdToIndexMap.Contains(ExistsMessage.ObjectId));
+			Callback(ObjectInfos[ObjectIdToIndexMap[ExistsMessage.ObjectId]]);
+			return TraceServices::EEventEnumerate::Continue;
+		});
 }
 
 const FClassInfo* FGameplayProvider::FindClassInfo(uint64 InClassId) const
@@ -274,6 +291,36 @@ void FGameplayProvider::AppendObject(uint64 InObjectId, uint64 InOuterId, uint64
 	}
 }
 
+void FGameplayProvider::AppendObjectLifetimeBegin(uint64 InObjectId, double InTime)
+{
+	Session.WriteAccessCheck();
+	bHasAnyData = true;
+
+	if (InObjectId)
+	{
+		FObjectExistsMessage Message;
+		Message.ObjectId = InObjectId;
+		ActiveObjectLifetimes.Add(InObjectId, ObjectLifetimes.AppendBeginEvent(InTime, Message));
+	}
+}
+
+void FGameplayProvider::AppendObjectLifetimeEnd(uint64 InObjectId, double InTime)
+{
+	Session.WriteAccessCheck();
+	bHasAnyData = true;
+
+	if (const uint64 *FoundIndex = ActiveObjectLifetimes.Find(InObjectId))
+	{
+		ObjectLifetimes.EndEvent(*FoundIndex, InTime);
+		ActiveObjectLifetimes.Remove(InObjectId);
+	}
+
+	if(int32* ObjectInfoIndex = ObjectIdToIndexMap.Find(InObjectId))
+	{
+		OnObjectEndPlayDelegate.Broadcast(InObjectId, InTime, ObjectInfos[*ObjectInfoIndex]);
+	}
+}
+
 void FGameplayProvider::AppendObjectEvent(uint64 InObjectId, double InTime, const TCHAR* InEventName)
 {
 	Session.WriteAccessCheck();
@@ -286,7 +333,7 @@ void FGameplayProvider::AppendObjectEvent(uint64 InObjectId, double InTime, cons
 		EndPlayEvent = Session.StoreString(TEXT("EndPlay"));
 	}
 
-	TSharedPtr<Trace::TPointTimeline<FObjectEventMessage>> Timeline;
+	TSharedPtr<TraceServices::TPointTimeline<FObjectEventMessage>> Timeline;
 	uint32* IndexPtr = ObjectIdToEventTimelines.Find(InObjectId);
 	if(IndexPtr != nullptr)
 	{
@@ -294,7 +341,7 @@ void FGameplayProvider::AppendObjectEvent(uint64 InObjectId, double InTime, cons
 	}
 	else
 	{
-		Timeline = MakeShared<Trace::TPointTimeline<FObjectEventMessage>>(Session.GetLinearAllocator());
+		Timeline = MakeShared<TraceServices::TPointTimeline<FObjectEventMessage>>(Session.GetLinearAllocator());
 		ObjectIdToEventTimelines.Add(InObjectId, EventTimelines.Num());
 		EventTimelines.Add(Timeline.ToSharedRef());
 	}
@@ -312,6 +359,75 @@ void FGameplayProvider::AppendObjectEvent(uint64 InObjectId, double InTime, cons
 	}
 
 	Timeline->AppendEvent(InTime, Message);
+
+	Session.UpdateDurationSeconds(InTime);
+}
+
+void FGameplayProvider::AppendPawnPossess(uint64 InControllerId, uint64 InPawnId, double InTime)
+{
+	Session.WriteAccessCheck();
+	bHasAnyData = true;
+
+	// End any active controller attachment interval for this controller
+	if (const uint64 *FoundIndex = ActivePawnPossession.Find(InControllerId))
+	{
+		PawnPossession.EndEvent(*FoundIndex, InTime);
+		ActivePawnPossession.Remove(InControllerId);
+	}
+	
+	if (InPawnId)
+	{
+		FPawnPossessMessage Message;
+		Message.ControllerId = InControllerId;
+		Message.PawnId = InPawnId;
+		ActivePawnPossession.Add(InControllerId, PawnPossession.AppendBeginEvent(InTime, Message));
+	}
+}
+
+uint64 FGameplayProvider::FindPossessingController(uint64 PawnId, double Time) const
+{
+	uint64 ControllerId = 0;
+	PawnPossession.EnumerateEvents(Time,Time,[&ControllerId, PawnId](double StartTime,double EndTime, const FPawnPossessMessage Message)
+	{
+		if (Message.PawnId == PawnId)
+		{
+			ControllerId = Message.ControllerId;
+			return TraceServices::EEventEnumerate::Stop;
+		}
+		return TraceServices::EEventEnumerate::Continue;
+	});
+	return ControllerId;
+}
+
+void FGameplayProvider::ReadViewTimeline(TFunctionRef<void(const IGameplayProvider::ViewTimeline&)> Callback) const
+{
+	Session.ReadAccessCheck();
+
+	if (ViewTimeline.IsValid())
+	{
+		Callback(*ViewTimeline);
+	}
+}
+
+void FGameplayProvider::AppendView(uint64 InPlayerId, double InTime, const FVector& InPosition, const FRotator& InRotation, float InFov, float InAspectRatio)
+{
+	Session.WriteAccessCheck();
+
+	if (!ViewTimeline.IsValid())
+	{
+		ViewTimeline = MakeShared<TraceServices::TPointTimeline<FViewMessage>>(Session.GetLinearAllocator());
+	}
+
+	bHasAnyData = true;
+
+	FViewMessage Message;
+	Message.PlayerId = InPlayerId;
+	Message.Position = InPosition;
+	Message.Rotation = InRotation;
+	Message.Fov = InFov;
+	Message.AspectRatio = InAspectRatio;
+
+	ViewTimeline->AppendEvent(InTime, Message);
 
 	Session.UpdateDurationSeconds(InTime);
 }
@@ -336,6 +452,42 @@ void FGameplayProvider::AppendWorld(uint64 InObjectId, int32 InPIEInstanceId, ui
 	}
 }
 
+void FGameplayProvider::AppendRecordingInfo(uint64 InWorldId, double InProfileTime, uint32 InRecordingIndex, uint32 InFrameIndex, double InElapsedTime)
+{
+	Session.WriteAccessCheck();
+
+	FRecordingInfoMessage NewRecordingInfo;
+	NewRecordingInfo.WorldId = InWorldId;
+	NewRecordingInfo.ProfileTime = InProfileTime;
+	NewRecordingInfo.RecordingIndex = InRecordingIndex;
+	NewRecordingInfo.FrameIndex = InFrameIndex;
+	NewRecordingInfo.ElapsedTime = InElapsedTime;
+
+	if(TSharedRef<TraceServices::TPointTimeline<FRecordingInfoMessage>>* ExistingRecording = Recordings.Find(InRecordingIndex))
+	{
+		(*ExistingRecording)->AppendEvent(InProfileTime, NewRecordingInfo);
+	}
+	else
+	{
+		TSharedPtr<TraceServices::TPointTimeline<FRecordingInfoMessage>> NewRecording = MakeShared<TraceServices::TPointTimeline<FRecordingInfoMessage>>(Session.GetLinearAllocator());
+		NewRecording->AppendEvent(InProfileTime, NewRecordingInfo);
+		Recordings.Add(InRecordingIndex, NewRecording.ToSharedRef());
+	}
+}
+
+
+const FGameplayProvider::RecordingInfoTimeline* FGameplayProvider::GetRecordingInfo(uint32 RecordingId) const  
+{
+	Session.ReadAccessCheck();
+
+	if(const TSharedRef<TraceServices::TPointTimeline<FRecordingInfoMessage>>* Recording = Recordings.Find(RecordingId))
+	{
+		return &(*Recording).Get();
+	}
+
+	return nullptr;
+}
+
 void FGameplayProvider::AppendClassPropertyStringId(uint32 InStringId, const FStringView& InString)
 {
 	Session.WriteAccessCheck();
@@ -345,26 +497,6 @@ void FGameplayProvider::AppendClassPropertyStringId(uint32 InStringId, const FSt
 	const TCHAR* StoredString = Session.StoreString(InString);
 
 	PropertyStrings.Add(InStringId, StoredString);
-}
-
-void FGameplayProvider::AppendClassProperty(uint64 InClassId, int32 InId, int32 InParentId, uint32 InTypeStringId, uint32 InKeyStringId)
-{
-	Session.WriteAccessCheck();
-
-	bHasAnyData = true;
-
-	if(int32* ClassInfoIndexPtr = ClassIdToIndexMap.Find(InClassId))
-	{
-		FClassInfo& ClassInfo = ClassInfos[*ClassInfoIndexPtr];
-
-		// Resize to accommodate this property if required
-		ClassInfo.Properties.SetNum(FMath::Max(ClassInfo.Properties.Num(), InId + 1));
-
-		FClassPropertyInfo& PropertyInfo = ClassInfo.Properties[InId];
-		PropertyInfo.ParentId = InParentId;
-		PropertyInfo.TypeStringId = InTypeStringId;
-		PropertyInfo.KeyStringId = InKeyStringId;
-	}
 }
 
 void FGameplayProvider::AppendPropertiesStart(uint64 InObjectId, double InTime, uint64 InEventId)
@@ -383,7 +515,7 @@ void FGameplayProvider::AppendPropertiesStart(uint64 InObjectId, double InTime, 
 	else
 	{
 		Storage = MakeShared<FObjectPropertiesStorage>();
-		Storage->Timeline = MakeShared<Trace::TIntervalTimeline<FObjectPropertiesMessage>>(Session.GetLinearAllocator());
+		Storage->Timeline = MakeShared<TraceServices::TIntervalTimeline<FObjectPropertiesMessage>>(Session.GetLinearAllocator());
 		ObjectIdToPropertiesStorage.Add(InObjectId, PropertiesStorage.Num());
 		PropertiesStorage.Add(Storage.ToSharedRef());
 	}
@@ -412,7 +544,7 @@ void FGameplayProvider::AppendPropertiesEnd(uint64 InObjectId, double InTime)
 	else
 	{
 		Storage = MakeShared<FObjectPropertiesStorage>();
-		Storage->Timeline = MakeShared<Trace::TIntervalTimeline<FObjectPropertiesMessage>>(Session.GetLinearAllocator());
+		Storage->Timeline = MakeShared<TraceServices::TIntervalTimeline<FObjectPropertiesMessage>>(Session.GetLinearAllocator());
 		ObjectIdToPropertiesStorage.Add(InObjectId, PropertiesStorage.Num());
 		PropertiesStorage.Add(Storage.ToSharedRef());
 	}
@@ -426,7 +558,7 @@ void FGameplayProvider::AppendPropertiesEnd(uint64 InObjectId, double InTime)
 	}
 }
 
-void FGameplayProvider::AppendPropertyValue(uint64 InObjectId, double InTime, uint64 InEventId, int32 InPropertyId, const FStringView& InValue)
+void FGameplayProvider::AppendPropertyValue(uint64 InObjectId, double InTime, uint64 InEventId, int32 InParentId, uint32 InTypeStringId, uint32 InKeyStringId, const FStringView& InValue)
 {
 	Session.WriteAccessCheck();
 
@@ -442,7 +574,7 @@ void FGameplayProvider::AppendPropertyValue(uint64 InObjectId, double InTime, ui
 	else
 	{
 		Storage = MakeShared<FObjectPropertiesStorage>();
-		Storage->Timeline = MakeShared<Trace::TIntervalTimeline<FObjectPropertiesMessage>>(Session.GetLinearAllocator());
+		Storage->Timeline = MakeShared<TraceServices::TIntervalTimeline<FObjectPropertiesMessage>>(Session.GetLinearAllocator());
 		ObjectIdToPropertiesStorage.Add(InObjectId, PropertiesStorage.Num());
 		PropertiesStorage.Add(Storage.ToSharedRef());
 	}
@@ -450,9 +582,11 @@ void FGameplayProvider::AppendPropertyValue(uint64 InObjectId, double InTime, ui
 	if(Storage->OpenEventId == InEventId)
 	{
 		FObjectPropertyValue& Message = Storage->Values.AddDefaulted_GetRef();
-		Message.PropertyId = InPropertyId;
 		Message.Value = Session.StoreString(InValue);
 		Message.ValueAsFloat = FCString::Atof(Message.Value);
+		Message.ParentId = InParentId;
+		Message.TypeStringId = InTypeStringId;
+		Message.KeyStringId = InKeyStringId; 
 
 		Storage->OpenEvent.PropertyValueEndIndex = Storage->Values.Num();
 	}

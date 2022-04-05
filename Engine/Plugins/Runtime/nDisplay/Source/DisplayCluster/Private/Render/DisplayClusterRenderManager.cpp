@@ -29,6 +29,8 @@
 #include "Render/Projection/IDisplayClusterProjectionPolicy.h"
 #include "Render/Synchronization/IDisplayClusterRenderSyncPolicyFactory.h"
 
+#include "Render/Containers/DisplayClusterRender_MeshComponent.h"
+
 #include "Render/Presentation/DisplayClusterPresentationNative.h"
 
 #include "Render/Synchronization/DisplayClusterRenderSyncPolicyFactoryInternal.h"
@@ -102,6 +104,10 @@ bool FDisplayClusterRenderManager::StartSession(UDisplayClusterConfigurationData
 	// Create synchronization object
 	UE_LOG(LogDisplayClusterRender, Log, TEXT("Instantiating synchronization policy object..."));
 	SyncPolicy = CreateRenderSyncPolicy();
+	if (SyncPolicy)
+	{
+		SyncPolicy->Initialize();
+	}
 
 	// Instantiate render device
 	TSharedPtr<IDisplayClusterRenderDevice, ESPMode::ThreadSafe> NewRenderDevice;
@@ -307,28 +313,28 @@ bool FDisplayClusterRenderManager::RegisterSynchronizationPolicyFactory(const FS
 		SyncPolicyFactories.Emplace(InSyncPolicyType, InFactory);
 	}
 
-	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registered factory for syncrhonization policy: %s"), *InSyncPolicyType);
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Registered factory for synchronization policy: %s"), *InSyncPolicyType);
 
 	return true;
 }
 
 bool FDisplayClusterRenderManager::UnregisterSynchronizationPolicyFactory(const FString& InSyncPolicyType)
 {
-	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistering factory for syncrhonization policy: %s"), *InSyncPolicyType);
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistering factory for synchronization policy: %s"), *InSyncPolicyType);
 
 	{
 		FScopeLock Lock(&CritSecInternals);
 
 		if (!SyncPolicyFactories.Contains(InSyncPolicyType))
 		{
-			UE_LOG(LogDisplayClusterRender, Warning, TEXT("A factory for '%s' syncrhonization policy not found"), *InSyncPolicyType);
+			UE_LOG(LogDisplayClusterRender, Warning, TEXT("A factory for '%s' synchronization policy not found"), *InSyncPolicyType);
 			return false;
 		}
 
 		SyncPolicyFactories.Remove(InSyncPolicyType);
 	}
 
-	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistered factory for syncrhonization policy: %s"), *InSyncPolicyType);
+	UE_LOG(LogDisplayClusterRender, Log, TEXT("Unregistered factory for synchronization policy: %s"), *InSyncPolicyType);
 
 	return true;
 }
@@ -470,6 +476,11 @@ void FDisplayClusterRenderManager::GetRegisteredPostProcess(TArray<FString>& Out
 {
 	FScopeLock Lock(&CritSecInternals);
 	PostProcessFactories.GetKeys(OutPostProcessIDs);
+}
+
+TSharedPtr<IDisplayClusterRender_MeshComponent, ESPMode::ThreadSafe> FDisplayClusterRenderManager::CreateMeshComponent() const
+{
+	return MakeShared<FDisplayClusterRender_MeshComponent, ESPMode::ThreadSafe>();
 }
 
 IDisplayClusterViewportManager* FDisplayClusterRenderManager::GetViewportManager() const

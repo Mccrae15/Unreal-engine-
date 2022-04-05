@@ -14,9 +14,11 @@
 class FNiagaraWorldManager;
 class FNiagaraSystemInstance;
 class FNiagaraSystemSimulation;
-class NiagaraEmitterInstanceBatcher;
+class FNiagaraGpuComputeDispatchInterface;
 class FNiagaraGPUSystemTick;
 class FNiagaraSystemGpuComputeProxy;
+
+using FNiagaraSystemInstancePtr = TSharedPtr<FNiagaraSystemInstance, ESPMode::ThreadSafe>;
 
 struct FNiagaraSystemInstanceFinalizeRef
 {
@@ -131,6 +133,7 @@ public:
 	void UnbindParameters(bool bFromComplete = false);
 
 	FORCEINLINE FNiagaraParameterStore& GetInstanceParameters() { return InstanceParameters; }
+	FNiagaraLWCConverter GetLWCConverter(bool bLocalSpaceEmitter = false) const;
 
 	FORCEINLINE uint32 GetParameterIndex(bool PreviousFrame = false) const
 	{
@@ -159,6 +162,7 @@ public:
 	bool RequiresDepthBuffer() const;
 	bool RequiresEarlyViewData() const;
 	bool RequiresViewUniformBuffer() const;
+	bool RequiresRayTracingScene() const;
 
 	/** Requests the the simulation be reset on the next tick. */
 	void Reset(EResetMode Mode);
@@ -228,10 +232,17 @@ public:
 	FORCEINLINE TArray<TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> > &GetEmitters() { return Emitters; }
 	FORCEINLINE const TArray<TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe> >& GetEmitters() const { return Emitters; }
 	FORCEINLINE const FBox& GetLocalBounds() const { return LocalBounds;  }
+	FORCEINLINE const FVector3f& GetLWCTile() const { return LWCTile;  }
 	TConstArrayView<FNiagaraEmitterExecutionIndex> GetEmitterExecutionOrder() const;
+
+	FORCEINLINE void SetSystemFixedBounds(const FBox& InLocalBounds) { FixedBounds_GT = InLocalBounds; }
+	FBox GetSystemFixedBounds() const;
+	void SetEmitterFixedBounds(FName EmitterName, const FBox& InLocalBounds);
+	FBox GetEmitterFixedBounds(FName EmitterName) const;
 
 	FNiagaraEmitterInstance* GetEmitterByID(FGuid InID);
 
+	void SetForceSolo(bool bForceSolo);
 	FORCEINLINE bool IsSolo() const { return bSolo; }
 
 	FORCEINLINE bool NeedsGPUTick() const { return ActiveGPUEmitterCount > 0 /*&& Component->IsRegistered()*/ && !IsComplete();}
@@ -330,12 +341,12 @@ public:
 	/** Dumps information about the instances tick to the log */
 	void DumpTickInfo(FOutputDevice& Ar);
 
-	NiagaraEmitterInstanceBatcher* GetBatcher() const { return Batcher; }
+	FNiagaraGpuComputeDispatchInterface* GetComputeDispatchInterface() const { return ComputeDispatchInterface; }
 
-	static bool AllocateSystemInstance(TUniquePtr<FNiagaraSystemInstance>& OutSystemInstanceAllocation, UWorld& InWorld, UNiagaraSystem& InAsset,
+	static bool AllocateSystemInstance(FNiagaraSystemInstancePtr& OutSystemInstanceAllocation, UWorld& InWorld, UNiagaraSystem& InAsset,
 		FNiagaraUserRedirectionParameterStore* InOverrideParameters = nullptr, USceneComponent* InAttachComponent = nullptr,
 		ENiagaraTickBehavior InTickBehavior = ENiagaraTickBehavior::UsePrereqs, bool bInPooled = false);
-	static bool DeallocateSystemInstance(TUniquePtr<FNiagaraSystemInstance>& SystemInstanceAllocation);
+	static bool DeallocateSystemInstance(FNiagaraSystemInstancePtr& SystemInstanceAllocation);
 	/*void SetHasGPUEmitters(bool bInHasGPUEmitters) { bHasGPUEmitters = bInHasGPUEmitters; }*/
 	bool HasGPUEmitters() { return bHasGPUEmitters;  }
 
@@ -347,7 +358,8 @@ public:
 	FNiagaraDataSet* GetEventDataSet(FName EmitterName, FName EventName) const;
 	void ClearEventDataSets();
 
-	FORCEINLINE void SetLODDistance(float InLODDistance, float InMaxLODDistance);
+	FORCEINLINE void SetLODDistance(float InLODDistance, float InMaxLODDistance, bool bOverride);
+	FORCEINLINE void ClearLODDistance();
 
 	const FString& GetCrashReporterTag()const;
 
@@ -390,6 +402,8 @@ public:
 	int32 GetRandomSeedOffset() const { return RandomSeedOffset; }
 
 private:
+	void DumpStalledInfo();
+
 	void DestroyDataInterfaceInstanceData();
 
 	/** Builds the emitter simulations. */
@@ -405,6 +419,9 @@ private:
 
 	/** Call PrepareForSImulation on each data source from the simulations and determine which need per-tick updates.*/
 	void InitDataInterfaces();
+
+	/** The LWC tile of this system instance, used to offset all local simulation relative to the origin */
+	FVector3f LWCTile = FVector3f::ZeroVector;
 
 	/** Index of this instance in the system simulation. */
 	int32 SystemInstanceIndex;
@@ -431,6 +448,9 @@ private:
 
 	/** The tick count of the System instance. */
 	int32 TickCount;
+
+	/** Random seed used for system simulation random number generation. */
+	int32 RandomSeed;
 
 	/** A system-wide offset to permute the deterministic random seed (allows for variance among multiple instances while still being deterministic) */
 	int32 RandomSeedOffset;
@@ -508,6 +528,7 @@ private:
 	uint32 bAlreadyBound : 1;
 
 	uint32 bLODDistanceIsValid : 1;
+	uint32 bLODDistanceIsOverridden : 1;
 
 	/** True if the system instance is pooled. Prevents unbinding of parameters on completing the system */
 	uint32 bPooled : 1;
@@ -531,6 +552,10 @@ private:
 	/** Time since we last forced a bounds update. */
 	float TimeSinceLastForceUpdateTransform;
 
+	/** Optional user specified bounds. */
+	FBox FixedBounds_GT;
+	FBox FixedBounds_CNC;
+
 	/** Current calculated local bounds. */
 	FBox LocalBounds;
 
@@ -540,7 +565,7 @@ private:
 	/** Copy of simulations internal state so that it can be passed to emitters etc. */
 	ENiagaraExecutionState ActualExecutionState;
 
-	NiagaraEmitterInstanceBatcher* Batcher = nullptr;
+	FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface = nullptr;
 	TUniquePtr<FNiagaraSystemGpuComputeProxy> SystemGpuComputeProxy;
 
 	/** Tag we feed into crash reporter for this instance. */
@@ -593,9 +618,18 @@ public:
 	FInstanceParameters GatheredInstanceParameters;
 };
 
-FORCEINLINE void FNiagaraSystemInstance::SetLODDistance(float InLODDistance, float InMaxLODDistance)
+FORCEINLINE void FNiagaraSystemInstance::SetLODDistance(float InLODDistance, float InMaxLODDistance, bool bOverride)
 {
+	bLODDistanceIsOverridden = bOverride;
 	bLODDistanceIsValid = true;
 	LODDistance = InLODDistance; 
 	MaxLODDistance = InMaxLODDistance;
+}
+
+FORCEINLINE void FNiagaraSystemInstance::ClearLODDistance()
+{
+	bLODDistanceIsOverridden = false;
+	bLODDistanceIsValid = false;
+	LODDistance = 0.0f;
+	MaxLODDistance = 1.0f;
 }

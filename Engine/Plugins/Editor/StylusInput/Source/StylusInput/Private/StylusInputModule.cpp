@@ -6,6 +6,7 @@
 #include "Framework/Docking/TabManager.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "Logging/LogMacros.h"
+#include "Misc/App.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/SWindow.h"
 #include "WorkspaceMenuStructure.h"
@@ -36,6 +37,11 @@ TSharedPtr<IStylusInputInterfaceInternal> CreateStylusInputInterface() { return 
 
 void UStylusInputSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
+	if (FApp::IsUnattended() || IsRunningCommandlet())
+	{
+		return;
+	}
+
 	Super::Initialize(Collection);
 
 	UE_LOG(LogStylusInput, Log, TEXT("Initializing StylusInput subsystem."));
@@ -55,7 +61,8 @@ void UStylusInputSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		FOnSpawnTab::CreateUObject(this, &UStylusInputSubsystem::OnSpawnPluginTab))
 		.SetDisplayName(LOCTEXT("DebugTabTitle", "Stylus Input Debug"))
 		.SetTooltipText(LOCTEXT("DebugTabTooltip", "Debug panel to display current values of stylus inputs."))
-		.SetGroup(MenuStructure.GetDeveloperToolsMiscCategory());
+		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "StylusInputDebug.TabIcon"))
+		.SetGroup(MenuStructure.GetDeveloperToolsDebugCategory());
 }
 
 void UStylusInputSubsystem::Deinitialize()
@@ -99,6 +106,8 @@ void UStylusInputSubsystem::RemoveMessageHandler(IStylusMessageHandler& InHandle
 
 void UStylusInputSubsystem::Tick(float DeltaTime)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UStylusInputSubsystem::Tick);
+
 	if (InputInterface.IsValid())
 	{
 		InputInterface->Tick();

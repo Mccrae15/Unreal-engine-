@@ -29,6 +29,9 @@ class IVirtualTexture;
 struct FTexturePlatformData;
 class FStreamableTextureResource;
 class FTexture2DResource;
+class FTexture3DResource;
+class FTexture2DArrayResource;
+class FVirtualTexture2DResource;
 
 /** Maximum number of slices in texture source art. */
 #define MAX_TEXTURE_SOURCE_SLICES 6
@@ -60,17 +63,21 @@ struct FTexture2DMipMap
 	ENGINE_API void Serialize(FArchive& Ar, UObject* Owner, int32 MipIndex);
 
 #if WITH_EDITORONLY_DATA
-	/** Key if stored in the derived data cache. */
-	FString DerivedDataKey;
-
 	/** The file region type appropriate for this mip's pixel format. */
 	EFileRegionType FileRegionType = EFileRegionType::None;
+
+	/** Whether this mip is stored in the derived data cache. */
+	bool bPagedToDerivedData = false;
+
+	bool IsPagedToDerivedData() const { return bPagedToDerivedData; }
+	void SetPagedToDerivedData(bool InValue) { bPagedToDerivedData = InValue; }
 
 	/**
 	 * Place mip-map data in the derived data cache associated with the provided
 	 * key.
 	 */
-	uint32 StoreInDerivedDataCache(const FString& InDerivedDataKey, const FStringView& TextureName);
+	int64 StoreInDerivedDataCache(const FString& InDerivedDataKey, const FStringView& TextureName, bool bReplaceExistingDDC);
+
 #endif // #if WITH_EDITORONLY_DATA
 };
 
@@ -84,12 +91,23 @@ public:
 	FTextureResource() {}
 	virtual ~FTextureResource() {}
 
+	/**
+	* Returns true if the resource is proxying another one.
+	*/
+	virtual bool IsProxy() const { return false; }
+
 	// Dynamic cast methods.
 	ENGINE_API virtual FTexture2DResource* GetTexture2DResource() { return nullptr; }
+	ENGINE_API virtual FTexture3DResource* GetTexture3DResource() { return nullptr; }
+	ENGINE_API virtual FTexture2DArrayResource* GetTexture2DArrayResource() { return nullptr; }
 	ENGINE_API virtual FStreamableTextureResource* GetStreamableTextureResource() { return nullptr; }
+	ENGINE_API virtual FVirtualTexture2DResource* GetVirtualTexture2DResource() { return nullptr; }
 	// Dynamic cast methods (const).
 	ENGINE_API virtual const FTexture2DResource* GetTexture2DResource() const { return nullptr; }
+	ENGINE_API virtual const FTexture3DResource* GetTexture3DResource() const { return nullptr; }
+	ENGINE_API virtual const FTexture2DArrayResource* GetTexture2DArrayResource() const { return nullptr; }
 	ENGINE_API virtual const FStreamableTextureResource* GetStreamableTextureResource() const { return nullptr; }
+	ENGINE_API virtual const FVirtualTexture2DResource* GetVirtualTexture2DResource() const { return nullptr; }
 
 	// Current mip count. We use "current" to specify that it is not computed from SizeX() which is the size when fully streamed in.
 	FORCEINLINE int32 GetCurrentMipCount() const
@@ -105,6 +123,16 @@ public:
 	FORCEINLINE FRHITexture2D* GetTexture2DRHI() const
 	{
 		return TextureRHI.IsValid() ? TextureRHI->GetTexture2D() : nullptr;
+	}
+
+	FORCEINLINE FRHITexture3D* GetTexture3DRHI() const
+	{
+		return TextureRHI.IsValid() ? TextureRHI->GetTexture3D() : nullptr;
+	}
+
+	FORCEINLINE FRHITexture2DArray* GetTexture2DArrayRHI() const
+	{
+		return TextureRHI.IsValid() ? TextureRHI->GetTexture2DArray() : nullptr;
 	}
 
 	void SetTextureReference(FRHITextureReference* TextureReference)
@@ -131,6 +159,11 @@ public:
 
 	virtual void InitRHI() override;
 	virtual void ReleaseRHI() override;
+	
+	// Dynamic cast methods.
+	ENGINE_API virtual FVirtualTexture2DResource* GetVirtualTexture2DResource() { return this; }
+	// Dynamic cast methods (const).
+	ENGINE_API virtual const FVirtualTexture2DResource* GetVirtualTexture2DResource() const { return this; }
 
 #if WITH_EDITOR
 	void InitializeEditorResources(class IVirtualTexture* InVirtualTexture);
@@ -571,10 +604,10 @@ private:
 };
 
 /** Gets the name of a format for the given LayerIndex */
-ENGINE_API FName GetDefaultTextureFormatName( const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, int32 LayerIndex, const class FConfigFile& EngineSettings, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture = false, int32 BlockSize = 4);
+ENGINE_API FName GetDefaultTextureFormatName( const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, int32 LayerIndex, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture = false, int32 BlockSize = 4);
 
 /** Gets an array of format names for each layer in the texture */
-ENGINE_API void GetDefaultTextureFormatNamePerLayer(TArray<FName>& OutFormatNames, const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, const class FConfigFile& EngineSettings, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture = false, int32 BlockSize = 4);
+ENGINE_API void GetDefaultTextureFormatNamePerLayer(TArray<FName>& OutFormatNames, const class ITargetPlatform* TargetPlatform, const class UTexture* Texture, bool bSupportDX11TextureFormats, bool bSupportCompressedVolumeTexture = false, int32 BlockSize = 4);
 
 // returns all the texture formats which can be returned by GetDefaultTextureFormatName
 ENGINE_API void GetAllDefaultTextureFormats( const class ITargetPlatform* TargetPlatform, TArray<FName>& OutFormats, bool bSupportDX11TextureFormats);

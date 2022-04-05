@@ -20,8 +20,6 @@
 #include "Windows/HideWindowsPlatformTypes.h"
 #pragma warning(pop)
 
-#include "Async/Async.h"
-
 
 // TEMPORARY DIAGNOSTICS START
 static TAutoConsoleVariable<int32> CVarNvidiaSyncDiagnosticsInit(
@@ -107,15 +105,6 @@ namespace DisplayClusterRenderSyncPolicyNvidia_Data_Windows
 FDisplayClusterRenderSyncPolicyNvidia::FDisplayClusterRenderSyncPolicyNvidia(const TMap<FString, FString>& Parameters)
 	: FDisplayClusterRenderSyncPolicyBase(Parameters)
 {
-	const NvAPI_Status NvApiResult = NvAPI_Initialize();
-	if (NvApiResult != NVAPI_OK)
-	{
-		UE_LOG(LogDisplayClusterRenderSync, Error, TEXT("NvAPI_Initialize() failed, error 0x%x"), NvApiResult);
-	}
-	else
-	{
-		bNvApiInitialized = true;
-	}
 }
 
 FDisplayClusterRenderSyncPolicyNvidia::~FDisplayClusterRenderSyncPolicyNvidia()
@@ -136,6 +125,26 @@ FDisplayClusterRenderSyncPolicyNvidia::~FDisplayClusterRenderSyncPolicyNvidia()
 	}
 }
 
+bool FDisplayClusterRenderSyncPolicyNvidia::Initialize()
+{
+	if (!Super::Initialize())
+	{
+		return false;
+	}
+
+	const NvAPI_Status NvApiResult = NvAPI_Initialize();
+	if (NvApiResult != NVAPI_OK)
+	{
+		UE_LOG(LogDisplayClusterRenderSync, Error, TEXT("NvAPI_Initialize() failed, error 0x%x"), NvApiResult);
+	}
+	else
+	{
+		bNvApiInitialized = true;
+	}
+
+	return bNvApiInitialized;
+}
+
 bool FDisplayClusterRenderSyncPolicyNvidia::SynchronizeClusterRendering(int32& InOutSyncInterval)
 {
 	using namespace DisplayClusterRenderSyncPolicyNvidia_Data_Windows;
@@ -143,13 +152,13 @@ bool FDisplayClusterRenderSyncPolicyNvidia::SynchronizeClusterRendering(int32& I
 	// Initialize barriers at first call
 	if (!bNvApiBarrierSet)
 	{
-		bNvDiagInit    = (CVarNvidiaSyncDiagnosticsInit.GetValueOnRenderThread() != 0);
-		bNvDiagPresent = (CVarNvidiaSyncDiagnosticsPresent.GetValueOnRenderThread() != 0);
+		bNvDiagInit       = (CVarNvidiaSyncDiagnosticsInit.GetValueOnRenderThread() != 0);
+		bNvDiagPresent    = (CVarNvidiaSyncDiagnosticsPresent.GetValueOnRenderThread() != 0);
 		bNvDiagWaitQueue  = (CVarNvidiaSyncDiagnosticsWaitQueue.GetValueOnRenderThread() != 0);
 		bNvDiagCompletion = (CVarNvidiaSyncDiagnosticsCompletion.GetValueOnRenderThread() != 0);
 
 		NvPresentBarrierCountLimit = CVarNvidiaPresentBarrierCountLimit.GetValueOnRenderThread();
-		NvCompletionCountLimit = CVarNvidiaCompletionCountLimit.GetValueOnRenderThread();
+		NvCompletionCountLimit     = CVarNvidiaCompletionCountLimit.GetValueOnRenderThread();
 
 
 		UE_LOG(LogDisplayClusterRenderSync, Log, 
@@ -287,7 +296,7 @@ bool FDisplayClusterRenderSyncPolicyNvidia::InitializeNvidiaSwapLock()
 	// Set frame latency
 	if (DXGISwapChain->SetMaximumFrameLatency(1) != S_OK)
 	{
-		UE_LOG(LogDisplayClusterRenderSync, Error, TEXT("Couldn't set maximum frame latency"));
+		UE_LOG(LogDisplayClusterRenderSync, Warning, TEXT("Couldn't set maximum frame latency"));
 	}
 
 	NvU32 MaxGroups = 0;
@@ -317,34 +326,30 @@ bool FDisplayClusterRenderSyncPolicyNvidia::InitializeNvidiaSwapLock()
 	// Here we initialize NVIDIA sync on the same frame interval on the timescale
 	if (bNvDiagInit)
 	{
-		IDXGIOutput* DXOutput = nullptr;
-		DXGISwapChain->GetContainingOutput(&DXOutput);
-		if (DXOutput)
-		{
-			UE_LOG(LogDisplayClusterRenderSync, VeryVerbose, TEXT("NVAPI DIAG: init start"));
 
-			// Align all the threads on the same timeline. It's very likely all the nodes got free on the same side of a potential
-			// upcoming V-blank. Normally, the barrier synchronization takes up to 500 microseconds which is about 3% of frame time.
-			// So the probability of a situation where some nodes left the barrier before V-blank while others after is really low.
-			// However, it's still possible. And cluster restart should likely be successfull.
-			SyncBarrierRenderThread();
+		UE_LOG(LogDisplayClusterRenderSync, VeryVerbose, TEXT("NVAPI DIAG: init start"));
 
-			// Assuming all the nodes in the right place and have some time before V-blank. Let's wait untill it happend.
-			DXOutput->WaitForVBlank();
+		// Align all the threads on the same timeline. It's very likely all the nodes got free on the same side of a potential
+		// upcoming V-blank. Normally, the barrier synchronization takes up to 500 microseconds which is about 3% of frame time.
+		// So the probability of a situation where some nodes left the barrier before V-blank while others after is really low.
+		// However, it's still possible. And cluster restart should likely be successfull.
+		SyncBarrierRenderThread();
 
-			// We don't really know either we're at the very beginning of V-blank interval or in the end. Let's spend some time
-			// on the barrier to let V-blank interval over.
-			SyncBarrierRenderThread();
+		// Assuming all the nodes in the right place and have some time before V-blank. Let's wait untill it happend.
+		WaitForVBlank();
 
-			// Yes, the task scheduler can break the logic above by allocating CPU resources to this thread like 20ms later which
-			// makes us behind of the next V-blank for 60Hz output. And we probably should play around thread priorities to reduce
-			// probability of that. But hope we're good here. Usually the systems that use NVIDIA sync approach have a lot of CPU
-			// cores and don't run any other applications that compete for CPU.
-			// Moreover, we will initialize NVIDIA sync for all cluster nodes before presenting first frame. So the initialization
-			// process should be fine anyway.
+		// We don't really know either we're at the very beginning of V-blank interval or in the end. Let's spend some time
+		// on the barrier to let V-blank interval over.
+		SyncBarrierRenderThread();
 
-			UE_LOG(LogDisplayClusterRenderSync, VeryVerbose, TEXT("NVAPI DIAG: init end"));
-		}
+		// Yes, the task scheduler can break the logic above by allocating CPU resources to this thread like 20ms later which
+		// makes us behind of the next V-blank for 60Hz output. And we probably should play around thread priorities to reduce
+		// probability of that. But hope we're good here. Usually the systems that use NVIDIA sync approach have a lot of CPU
+		// cores and don't run any other applications that compete for CPU.
+		// Moreover, we will initialize NVIDIA sync for all cluster nodes before presenting first frame. So the initialization
+		// process should be fine anyway.
+
+		UE_LOG(LogDisplayClusterRenderSync, VeryVerbose, TEXT("NVAPI DIAG: init end"));
 	}
 
 	// Join swap group

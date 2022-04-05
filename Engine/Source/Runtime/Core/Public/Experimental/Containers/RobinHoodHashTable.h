@@ -84,13 +84,18 @@ public:
 		return Index != INDEX_NONE;
 	}
 
+	inline bool operator==(FHashElementId InHashElementId) const
+	{
+		return Index == InHashElementId.Index;
+	}
+
 private:
 	int32 Index;
 };
 
 namespace RobinHoodHashTable_Private
 {
-	template<typename HashMapAllocator>
+	template<typename AllocatorType>
 	class TFreeList
 	{
 		using IndexType = int32;
@@ -101,7 +106,8 @@ namespace RobinHoodHashTable_Private
 			IndexType End;
 		};
 
-		TArray<FSpan, HashMapAllocator> FreeList;
+		TArray<FSpan, AllocatorType> FreeList;
+		int32 NumElements = 0;
 
 	public:
 		TFreeList()
@@ -111,6 +117,8 @@ namespace RobinHoodHashTable_Private
 
 		void Push(IndexType NodeIndex)
 		{
+			++NumElements;
+
 			//find the index that points to our right side node
 			int Index = 1; //exclude the dummy
 			int Size = FreeList.Num() - 1;
@@ -128,7 +136,7 @@ namespace RobinHoodHashTable_Private
 			}
 
 			//small size array optimization
-			int ArrayEnd = Index + Size;
+			int ArrayEnd = FMath::Min(Index + Size + 1, FreeList.Num());
 			while (Index < ArrayEnd)
 			{
 				if (FreeList[Index].Start < NodeIndex)
@@ -165,6 +173,8 @@ namespace RobinHoodHashTable_Private
 
 		IndexType Pop()
 		{
+			--NumElements;
+
 			FSpan& Span = FreeList.Last();
 			IndexType Index = Span.Start;
 			checkSlow(Index != INDEX_NONE);
@@ -180,17 +190,30 @@ namespace RobinHoodHashTable_Private
 			}
 		}
 
+		bool Contains(IndexType Index) const
+		{
+			for (int i = FreeList.Num() - 1; i > -0; i--)
+			{
+				const FSpan& Span = FreeList[i];
+				if (Index >= Span.Start && Index <= Span.End)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
 		void Empty()
 		{
 			FreeList.Reset(1);
 			//push a dummy
 			FreeList.Push(FSpan{ INDEX_NONE, INDEX_NONE });
+			NumElements = 0;
 		}
 
 		int Num() const
 		{
-			//includes one dummy
-			return FreeList.Num() - 1;
+			return NumElements;
 		}
 
 		SIZE_T GetAllocatedSize() const
@@ -224,6 +247,12 @@ namespace RobinHoodHashTable_Private
 		inline FindValueType FindImpl()
 		{
 			return &Pair.Value;
+		}
+
+		template<typename DeducedValueType>
+		inline void Update(DeducedValueType&& InValue)
+		{
+			Pair.Value = Forward<DeducedValueType>(InValue);
 		}
 
 		inline ElementType& GetElement()
@@ -279,6 +308,7 @@ namespace RobinHoodHashTable_Private
 	class TRobinHoodHashTable
 	{
 	protected:
+		using InlineOneAllocatorType = TInlineAllocator<1, HashMapAllocator>;
 		using KeyValueType = RobinHoodHashTable_Private::TKeyValue<KeyType, ValueType>;
 		using FindValueType = typename KeyValueType::FindValueType;
 		using ElementType = typename KeyValueType::ElementType;
@@ -336,6 +366,9 @@ namespace RobinHoodHashTable_Private
 				FreeList.Push(Index);
 				Hashes[Index] = FHashType();
 				KeyVals[Index].~KeyValueType();
+#if RUN_HASHTABLE_CONCURENCY_CHECKS
+				memset(&KeyVals[Index], 0, sizeof(KeyValueType));
+#endif
 				CHECK_CONCURRENT_ACCESS(FPlatformAtomics::InterlockedDecrement(&ConcurrentReaders) == 0);
 				CHECK_CONCURRENT_ACCESS(FPlatformAtomics::InterlockedDecrement(&ConcurrentWriters) == 0);
 				//TODO shrink KeyValue Array.
@@ -345,13 +378,28 @@ namespace RobinHoodHashTable_Private
 				// - remove the entry from the FreeList (probably remove the entire span at the end of iteration, as its tail would need to be moved)
 			}
 
+			inline bool Contains(IndexType Index) const
+			{
+				return Index < (IndexType)KeyVals.Num() && !FreeList.Contains(Index);
+			}
+
 			inline const KeyValueType& Get(IndexType Index) const
 			{
+				CHECK_CONCURRENT_ACCESS(ConcurrentWriters == 0);
+				CHECK_CONCURRENT_ACCESS(FPlatformAtomics::InterlockedIncrement(&ConcurrentReaders) >= 1);
+				CHECK_CONCURRENT_ACCESS(Contains(Index));
+				CHECK_CONCURRENT_ACCESS(FPlatformAtomics::InterlockedDecrement(&ConcurrentReaders) >= 0);
+				CHECK_CONCURRENT_ACCESS(ConcurrentWriters == 0);
 				return KeyVals[Index];
 			}
 
 			inline KeyValueType& Get(IndexType Index)
 			{
+				CHECK_CONCURRENT_ACCESS(ConcurrentWriters == 0);
+				CHECK_CONCURRENT_ACCESS(FPlatformAtomics::InterlockedIncrement(&ConcurrentReaders) >= 1);
+				CHECK_CONCURRENT_ACCESS(Contains(Index));
+				CHECK_CONCURRENT_ACCESS(FPlatformAtomics::InterlockedDecrement(&ConcurrentReaders) >= 0);
+				CHECK_CONCURRENT_ACCESS(ConcurrentWriters == 0);
 				return KeyVals[Index];
 			}
 
@@ -414,6 +462,7 @@ namespace RobinHoodHashTable_Private
 				KeyVals.SetNumUnsafeInternal(0);
 				KeyVals.Empty();
 				FreeList.Empty();
+				Hashes.Empty();
 			}
 
 			void Reserve(SizeType ReserveNum)
@@ -427,7 +476,7 @@ namespace RobinHoodHashTable_Private
 #endif
 			TArray<KeyValueType, HashMapAllocator> KeyVals;
 			TArray<FHashType, HashMapAllocator> Hashes;
-			TFreeList<HashMapAllocator> FreeList;
+			TFreeList<InlineOneAllocatorType> FreeList;
 		};
 
 		inline IndexType ModTableSize(IndexType HashValue) const
@@ -480,9 +529,9 @@ namespace RobinHoodHashTable_Private
 			}
 		}
 
-	protected:
-		template<typename DeducedKeyType, typename DeducedValueType>
-		inline FHashElementId FindOrAddIdByHash(FHashType HashValue, DeducedKeyType&& Key, DeducedValueType&& Val, bool& bIsAlreadyInMap)
+	private:
+		template<bool UpdateValue, typename DeducedKeyType, typename DeducedValueType>
+		inline FHashElementId FindOrUpdateIdByHashInternal(FHashType HashValue, DeducedKeyType&& Key, DeducedValueType&& Val, bool& bIsAlreadyInMap)
 		{
 			CHECK_CONCURRENT_ACCESS(FPlatformAtomics::InterlockedIncrement(&ConcurrentWriters) == 1);
 			CHECK_CONCURRENT_ACCESS(FPlatformAtomics::InterlockedIncrement(&ConcurrentReaders) == 1);
@@ -499,6 +548,10 @@ namespace RobinHoodHashTable_Private
 						CHECK_CONCURRENT_ACCESS(FPlatformAtomics::InterlockedDecrement(&ConcurrentReaders) == 0);
 						CHECK_CONCURRENT_ACCESS(FPlatformAtomics::InterlockedDecrement(&ConcurrentWriters) == 0);
 						bIsAlreadyInMap = true;
+						if constexpr (UpdateValue)
+						{
+							KeyValueData.Get(IndexData[BucketIndex]).Update(Forward<DeducedValueType>(Val));
+						}
 						return IndexData[BucketIndex];
 					}
 				}
@@ -508,8 +561,8 @@ namespace RobinHoodHashTable_Private
 
 			if ((KeyValueData.Num() * LoadFactorQuotient) >= (SizePow2Minus1 * LoadFactorDivisor))
 			{
-				TArray<IndexType> IndexDataOld = MoveTemp(IndexData);
-				TArray<FHashType> HashDataOld = MoveTemp(HashData);
+				TArray<IndexType, InlineOneAllocatorType> IndexDataOld = MoveTemp(IndexData);
+				TArray<FHashType, InlineOneAllocatorType> HashDataOld = MoveTemp(HashData);
 				IndexType OldSizePow2Minus1 = SizePow2Minus1;
 				SizePow2Minus1 = SizePow2Minus1 * 2 + 1;
 				MaximumDistance = 0;
@@ -537,6 +590,13 @@ namespace RobinHoodHashTable_Private
 			return FHashElementId(InsertIndex);
 		}
 
+	protected:
+		template<typename DeducedKeyType, typename DeducedValueType>
+		inline FHashElementId FindOrAddIdByHash(FHashType HashValue, DeducedKeyType&& Key, DeducedValueType&& Val, bool& bIsAlreadyInMap)
+		{
+			return FindOrUpdateIdByHashInternal<false>(HashValue, Forward<DeducedKeyType>(Key), Forward<DeducedValueType>(Val), bIsAlreadyInMap);
+		}
+
 		template<typename DeducedKeyType, typename DeducedValueType>
 		inline FHashElementId FindOrAddId(DeducedKeyType&& Key, DeducedValueType&& Val, bool& bIsAlreadyInMap)
 		{
@@ -548,6 +608,26 @@ namespace RobinHoodHashTable_Private
 		inline FindValueType FindOrAdd(DeducedKeyType&& Key, DeducedValueType&& Val, bool& bIsAlreadyInMap)
 		{
 			FHashElementId Id = FindOrAddId(Forward<DeducedKeyType>(Key), Forward<DeducedValueType>(Val), bIsAlreadyInMap);
+			return KeyValueData.Get(Id.GetIndex()).FindImpl();
+		}
+
+		template<typename DeducedKeyType, typename DeducedValueType>
+		inline FHashElementId UpdateIdByHash(FHashType HashValue, DeducedKeyType&& Key, DeducedValueType&& Val, bool& bIsAlreadyInMap)
+		{
+			return FindOrUpdateIdByHashInternal<true>(HashValue, Forward<DeducedKeyType>(Key), Forward<DeducedValueType>(Val), bIsAlreadyInMap);
+		}
+
+		template<typename DeducedKeyType, typename DeducedValueType>
+		inline FHashElementId UpdateId(DeducedKeyType&& Key, DeducedValueType&& Val, bool& bIsAlreadyInMap)
+		{
+			FHashType HashValue = ComputeHash(Key);
+			return UpdateIdByHash(HashValue, Forward<DeducedKeyType>(Key), Forward<DeducedValueType>(Val), bIsAlreadyInMap);
+		}
+
+		template<typename DeducedKeyType, typename DeducedValueType>
+		inline FindValueType Update(DeducedKeyType&& Key, DeducedValueType&& Val, bool& bIsAlreadyInMap)
+		{
+			FHashElementId Id = UpdateId(Forward<DeducedKeyType>(Key), Forward<DeducedValueType>(Val), bIsAlreadyInMap);
 			return KeyValueData.Get(Id.GetIndex()).FindImpl();
 		}
 
@@ -628,7 +708,7 @@ namespace RobinHoodHashTable_Private
 		}
 
 	public:
-		inline FHashType ComputeHash(const KeyType& Key) const
+		inline static FHashType ComputeHash(const KeyType& Key)
 		{
 			typename FHashType::IntType HashValue = Hasher::GetKeyHash(Key);
 			constexpr typename FHashType::IntType HashBits = (~(1 << (sizeof(typename FHashType::IntType) * 8 - 1)));
@@ -675,6 +755,11 @@ namespace RobinHoodHashTable_Private
 			{
 				State = Data.Next(State);
 				return *this;
+			}
+
+			inline FHashElementId GetElementId() const
+			{
+				return FHashElementId(State.Index);
 			}
 		};
 
@@ -729,6 +814,11 @@ namespace RobinHoodHashTable_Private
 				State = Data.Next(State);
 				return *this;
 			}
+
+			inline FHashElementId GetElementId() const
+			{
+				return FHashElementId(State.Index);
+			}
 		};
 
 		inline FConstIteratorType begin() const
@@ -748,7 +838,7 @@ namespace RobinHoodHashTable_Private
 
 		inline int32 Num() const
 		{
-			return KeyValueData.Num();
+			return (int32)KeyValueData.Num();
 		}
 
 		inline IndexType GetMaxIndex() const
@@ -764,6 +854,11 @@ namespace RobinHoodHashTable_Private
 		inline const ElementType& GetByElementId(FHashElementId Id) const
 		{
 			return KeyValueData.Get(Id.GetIndex()).GetElement();
+		}
+
+		inline bool ContainsElementId(FHashElementId Id) const
+		{
+			return KeyValueData.Contains(Id.GetIndex());
 		}
 
 		inline FHashElementId FindIdByHash(const FHashType HashValue, const KeyType& ComparableKey) const
@@ -806,7 +901,7 @@ namespace RobinHoodHashTable_Private
 			FHashElementId Id = FindIdByHash(HashValue, Key);
 			if (Id.IsValid())
 			{
-				return KeyValueData.GetByElementId(Id).FindImpl();
+				return KeyValueData.Get(Id.GetIndex()).FindImpl();
 			}
 
 			return nullptr;
@@ -817,7 +912,7 @@ namespace RobinHoodHashTable_Private
 			FHashElementId Id = FindId(Key);
 			if (Id.IsValid())
 			{
-				return KeyValueData.GetByElementId(Id).FindImpl();
+				return KeyValueData.Get(Id.GetIndex()).FindImpl();
 			}
 
 			return nullptr;
@@ -872,8 +967,8 @@ namespace RobinHoodHashTable_Private
 
 			if (bIsFoundInMap && (KeyValueData.Num() * LoadFactorQuotient * 4) < (SizePow2Minus1 * LoadFactorDivisor))
 			{
-				TArray<IndexType> IndexDataOld = MoveTemp(IndexData);
-				TArray<FHashType> HashDataOld = MoveTemp(HashData);
+				TArray<IndexType, InlineOneAllocatorType> IndexDataOld = MoveTemp(IndexData);
+				TArray<FHashType, InlineOneAllocatorType> HashDataOld = MoveTemp(HashData);
 				IndexType OldSizePow2Minus1 = SizePow2Minus1;
 				SizePow2Minus1 = SizePow2Minus1 / 2;
 				MaximumDistance = 0;
@@ -900,7 +995,7 @@ namespace RobinHoodHashTable_Private
 		bool Remove(const KeyType& Key)
 		{
 			const FHashType HashValue = ComputeHash(Key);
-			return RemoveByHash(HashValue);
+			return RemoveByHash(HashValue, Key);
 		}
 
 		inline bool RemoveByElementId(FHashElementId Id)
@@ -928,8 +1023,8 @@ namespace RobinHoodHashTable_Private
 
 			if (bIsFoundInMap && (KeyValueData.Num() * LoadFactorQuotient * 4) < (SizePow2Minus1 * LoadFactorDivisor))
 			{
-				TArray<IndexType> IndexDataOld = MoveTemp(IndexData);
-				TArray<FHashType> HashDataOld = MoveTemp(HashData);
+				TArray<IndexType, InlineOneAllocatorType> IndexDataOld = MoveTemp(IndexData);
+				TArray<FHashType, InlineOneAllocatorType> HashDataOld = MoveTemp(HashData);
 				IndexType OldSizePow2Minus1 = SizePow2Minus1;
 				SizePow2Minus1 = SizePow2Minus1 / 2;
 				MaximumDistance = 0;
@@ -987,8 +1082,8 @@ namespace RobinHoodHashTable_Private
 
 				if (NewSizePow2Minus1 > SizePow2Minus1)
 				{
-					TArray<IndexType> IndexDataOld = MoveTemp(IndexData);
-					TArray<FHashType> HashDataOld = MoveTemp(HashData);
+					TArray<IndexType, InlineOneAllocatorType> IndexDataOld = MoveTemp(IndexData);
+					TArray<FHashType, InlineOneAllocatorType> HashDataOld = MoveTemp(HashData);
 					IndexType OldSizePow2Minus1 = SizePow2Minus1;
 					SizePow2Minus1 = NewSizePow2Minus1;
 					MaximumDistance = 0;
@@ -1014,8 +1109,8 @@ namespace RobinHoodHashTable_Private
 	private:
 		FData KeyValueData;
 
-		TArray<IndexType, HashMapAllocator> IndexData;
-		TArray<FHashType, HashMapAllocator> HashData;
+		TArray<IndexType, InlineOneAllocatorType> IndexData;
+		TArray<FHashType, InlineOneAllocatorType> HashData;
 
 		IndexType SizePow2Minus1 = 0;
 		IndexType MaximumDistance = 0;
@@ -1175,6 +1270,138 @@ public:
 	{
 		bool bIsAlreadyInMap;
 		return Base::FindOrAdd(MoveTemp(Key), MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateIdByHash(FHashType HashValue, const KeyType& Key, const ValueType& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::UpdateIdByHash(HashValue, Key, Val, bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateIdByHash(FHashType HashValue, const KeyType& Key, ValueType&& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::UpdateIdByHash(HashValue, Key, MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateIdByHash(FHashType HashValue, KeyType&& Key, const ValueType& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::UpdateIdByHash(HashValue, MoveTemp(Key), Val, bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateIdByHash(FHashType HashValue, KeyType&& Key, ValueType&& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::UpdateIdByHash(HashValue, MoveTemp(Key), MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateId(const KeyType& Key, const ValueType& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::UpdateId(Key, Val, bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateId(const KeyType& Key, ValueType&& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::UpdateId(Key, MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateId(KeyType&& Key, const ValueType& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::UpdateId(MoveTemp(Key), Val);
+	}
+
+	FHashElementId UpdateId(KeyType&& Key, ValueType&& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::UpdateId(MoveTemp(Key), MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FindValueType Update(const KeyType& Key, const ValueType& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::Update(Key, Val, bIsAlreadyInMap);
+	}
+
+	FindValueType Update(const KeyType& Key, ValueType&& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::Update(Key, MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FindValueType Update(KeyType&& Key, const ValueType& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::Update(MoveTemp(Key), Val, bIsAlreadyInMap);
+	}
+
+	FindValueType Update(KeyType&& Key, ValueType&& Val, bool& bIsAlreadyInMap)
+	{
+		return Base::Update(MoveTemp(Key), MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateIdByHash(FHashType HashValue, const KeyType& Key, const ValueType& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::UpdateIdByHash(HashValue, Key, Val, bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateIdByHash(FHashType HashValue, const KeyType& Key, ValueType&& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::UpdateIdByHash(HashValue, Key, MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateIdByHash(FHashType HashValue, KeyType&& Key, const ValueType& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::UpdateIdByHash(HashValue, MoveTemp(Key), Val, bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateIdByHash(FHashType HashValue, KeyType&& Key, ValueType&& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::UpdateIdByHash(HashValue, MoveTemp(Key), MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateId(const KeyType& Key, const ValueType& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::UpdateId(Key, Val, bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateId(const KeyType& Key, ValueType&& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::UpdateId(Key, MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FHashElementId UpdateId(KeyType&& Key, const ValueType& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::UpdateId(MoveTemp(Key), Val);
+	}
+
+	FHashElementId UpdateId(KeyType&& Key, ValueType&& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::UpdateId(MoveTemp(Key), MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FindValueType Update(const KeyType& Key, const ValueType& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::Update(Key, Val, bIsAlreadyInMap);
+	}
+
+	FindValueType Update(const KeyType& Key, ValueType&& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::Update(Key, MoveTemp(Val), bIsAlreadyInMap);
+	}
+
+	FindValueType Update(KeyType&& Key, const ValueType& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::Update(MoveTemp(Key), Val, bIsAlreadyInMap);
+	}
+
+	FindValueType Update(KeyType&& Key, ValueType&& Val)
+	{
+		bool bIsAlreadyInMap;
+		return Base::Update(MoveTemp(Key), MoveTemp(Val), bIsAlreadyInMap);
 	}
 };
 

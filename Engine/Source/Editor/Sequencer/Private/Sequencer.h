@@ -137,9 +137,9 @@ public:
 	 */
 	void SetSelectionRange(TRange<FFrameNumber> Range);
 	
-	virtual void SetSelectionRangeEnd() override;
+	virtual void SetSelectionRangeEnd(FFrameTime EndFrame) override;
 
-	virtual void SetSelectionRangeStart() override;
+	virtual void SetSelectionRangeStart(FFrameTime StartFrame) override;
 
 	/** Clear and reset the selection range. */
 	void ClearSelectionRange();
@@ -226,6 +226,9 @@ public:
 		return bPerspectiveViewportCameraCutEnabled;
 	}
 
+	/** Gets the list of bindings for camera objects. */
+	virtual void GetCameraObjectBindings(TArray<FGuid>& OutBindingIDs) override;
+
 	/**
 	 * Pops the current focused movie scene from the stack.  The parent of this movie scene will be come the focused one
 	 */
@@ -260,12 +263,6 @@ public:
 
 	/** Shrink time*/
 	void ShrinkTime(FFrameTime InDeltaTime);
-
-	/** Bake transform */
-	void BakeTransform();
-
-	/** Sync using source timecode */
-	void SyncSectionsUsingSourceTimecode();
 
 	/**
 	 * @return Movie scene tools used by the sequencer
@@ -379,7 +376,7 @@ public:
 	 * @param TargetObjectGuid	Object to be targeted on dropping
 	 * @return					If true, this asset should be consumed
 	 */
-	virtual bool OnHandleAssetDropped( UObject* DroppedAsset, const FGuid& TargetObjectGuid );
+	bool OnHandleAssetDropped( UObject* DroppedAsset, const FGuid& TargetObjectGuid );
 	
 	/**
 	 * Called to delete all moviescene data from a node
@@ -387,7 +384,7 @@ public:
 	 * @param NodeToBeDeleted	Node with data that should be deleted
 	 * @return true if anything was deleted, otherwise false.
 	 */
-	virtual bool OnRequestNodeDeleted( TSharedRef<const FSequencerDisplayNode> NodeToBeDeleted, const bool bKeepState );
+	bool OnRequestNodeDeleted( TSharedRef<const FSequencerDisplayNode> NodeToBeDeleted, const bool bKeepState );
 
 	/** Zooms to the edges of all currently selected sections and keys. */
 	void ZoomToFit();
@@ -496,7 +493,7 @@ public:
 	EPlaybackMode::Type GetPlaybackMode() const;
 
 	/** @return The toolkit that this sequencer is hosted in (if any) */
-	TSharedPtr<IToolkitHost> GetToolkitHost() const { return ToolkitHost.Pin(); }
+	virtual TSharedPtr<IToolkitHost> GetToolkitHost() const override { return ToolkitHost.Pin(); }
 
 	const FSequencerHostCapabilities& GetHostCapabilities() const { return HostCapabilities; }
 
@@ -521,16 +518,10 @@ public:
 	FText GetNavigateForwardTooltip() const;
 	FText GetNavigateBackwardTooltip() const;
 
-	/** Called when a user executes the assign actor to track menu item */
-	void AssignActor(FMenuBuilder& MenuBuilder, FGuid ObjectBinding);
-	FGuid DoAssignActor(AActor*const* InActors, int32 NumActors, FGuid ObjectBinding);
-
 	/** Called when a user executes the assign selected to track menu item */
 	void AddActorsToBinding(FGuid ObjectBinding, const TArray<AActor*>& InActors);
 	void ReplaceBindingWithActors(FGuid ObjectBinding, const TArray<AActor*>& InActors);
 	void RemoveActorsFromBinding(FGuid ObjectBinding, const TArray<AActor*>& InActors);
-	void RemoveAllBindings(FGuid ObjectBinding);
-	void RemoveInvalidBindings(FGuid ObjectBinding);
 
 	/** Called when a user executes the delete node menu item */
 	void DeleteNode(TSharedRef<FSequencerDisplayNode> NodeToBeDeleted, const bool bKeepState);
@@ -659,8 +650,9 @@ public:
 	/** Called when a new camera is added. Locks the viewport to the NewCamera. */
 	void NewCameraAdded(ACameraActor* NewCamera, FGuid CameraGuid);
 
-	/** Attempts to automatically fix up broken actor references in the current scene. */
-	void FixActorReferences();
+	/** Attempts to automatically fix up possessables whose object class don't match the object class of their currently bound objects */
+	void FixPossessableObjectClass();
+	void FixPossessableObjectClassInternal(UMovieSceneSequence* Sequence, FMovieSceneSequenceIDRef SequenceID);
 
 	/** Rebinds all possessable references in the current sequence to update them to the latest referencing mechanism. */
 	void RebindPossessableReferences();
@@ -674,9 +666,6 @@ public:
 
 	/** Exports the animation to a camera anim asset. */
 	void ExportToCameraAnim();
-
-	/** */
-	void ShowReadOnlyError() const;
 
 public:
 	
@@ -758,9 +747,9 @@ public:
 	virtual FQualifiedFrameTime GetLocalTime() const override;
 	virtual FQualifiedFrameTime GetGlobalTime() const override;
 	virtual uint32 GetLocalLoopIndex() const override;
-	virtual void SetLocalTime(FFrameTime Time, ESnapTimeMode SnapTimeMode = ESnapTimeMode::STM_None) override;
-	virtual void SetLocalTimeDirectly(FFrameTime NewTime) override;
-	virtual void SetGlobalTime(FFrameTime Time) override;
+	virtual void SetLocalTime(FFrameTime Time, ESnapTimeMode SnapTimeMode = ESnapTimeMode::STM_None, bool bEvaluate = true) override;
+	virtual void SetLocalTimeDirectly(FFrameTime NewTime, bool bEvaluate = true) override;
+	virtual void SetGlobalTime(FFrameTime Time, bool bEvaluate = true) override;
 	virtual void PlayTo(FMovieSceneSequencePlaybackParams PlaybackParams) override;
 	virtual void RestorePlaybackSpeed() override;
 	virtual void SnapToClosestPlaybackSpeed() override;
@@ -770,6 +759,7 @@ public:
 	virtual void SetPerspectiveViewportPossessionEnabled(bool bEnabled) override;
 	virtual void SetPerspectiveViewportCameraCutEnabled(bool bEnabled) override;
 	virtual void RenderMovie(const TArray<UMovieSceneCinematicShotSection*>& InSections) const override;
+	virtual void RecreateCurveEditor() override;
 	virtual void EnterSilentMode() override;
 	virtual void ExitSilentMode() override;
 	virtual bool IsInSilentMode() const override { return SilentModeCount != 0; }
@@ -795,7 +785,7 @@ public:
 	virtual void GetSelectedTracks(TArray<UMovieSceneTrack*>& OutSelectedTracks) override;
 	virtual void GetSelectedSections(TArray<UMovieSceneSection*>& OutSelectedSections) override;
 	virtual void GetSelectedFolders(TArray<UMovieSceneFolder*>& OutSelectedFolders) override;
-	virtual void GetSelectedKeyAreas(TArray<const IKeyArea*>& OutSelectedKeyAreas)  override;
+	virtual void GetSelectedKeyAreas(TArray<const IKeyArea*>& OutSelectedKeyAreas, bool bIncludeSelectedKeys = true)  override;
 	virtual void GetSelectedObjects(TArray<FGuid>& OutObjects) override;
 	virtual void SelectObject(FGuid ObjectBinding) override;
 	virtual void SelectTrack(UMovieSceneTrack* Track) override;
@@ -842,13 +832,16 @@ public:
 	virtual bool IsReadOnly() const override;
 	virtual void ExternalSelectionHasChanged() override { SynchronizeSequencerSelectionWithExternalSelection(); }
 	virtual void ObjectImplicitlyAdded(UObject* InObject) const override;
+	virtual void ObjectImplicitlyRemoved(UObject* InObject) const override;
+
 	/** Access the user-supplied settings object */
 	virtual USequencerSettings* GetSequencerSettings() const override { return Settings; }
 	virtual void SetSequencerSettings(USequencerSettings* InSettings) override { Settings = InSettings; }
 	virtual TSharedPtr<class ITimeSlider> GetTopTimeSliderWidget() const override;
 	virtual void ResetTimeController() override;
-	virtual void SetFilterOn(const FText& InName, bool bOn) override;
-
+	virtual void SetTrackFilterEnabled(const FText& InTrackFilterName, bool bEnabled) override;
+	virtual bool IsTrackFilterEnabled(const FText& InTrackFilterName) const override;
+	virtual TArray<FText> GetTrackFilterNames() const override;
 
 public:
 
@@ -898,19 +891,20 @@ protected:
 	 * Called to get the nearest key
 	 *
 	 * @param InTime The time to get the nearest key to
-	 * @param bSearchAllTracks If true this will search all tracks for a potential nearest.
-	 *						 False will return keys only from the currently selected track.
+	 * @param NearestKeyOption (ie. search keys/markers/all tracks)
 	 * @return NearestKey
 	 */
-	FFrameNumber OnGetNearestKey(FFrameTime InTime, bool bSearchAllTracks);
+	FFrameNumber OnGetNearestKey(FFrameTime InTime, ENearestKeyOption NearestKeyOption);
 
 	/**
 	 * Called when the scrub position is changed by the user
 	 * This will stop any playback from happening
 	 *
 	 * @param NewScrubPosition	The new scrub position
+	 * @param bScrubbing If scrubbing
+	 * @param bEvaluate  Do evaluate sequencer after changing time
 	 */
-	void OnScrubPositionChanged( FFrameTime NewScrubPosition, bool bScrubbing );
+	void OnScrubPositionChanged( FFrameTime NewScrubPosition, bool bScrubbing, bool bEvaluate);
 
 	/** Called when the user has begun scrubbing */
 	void OnBeginScrubbing();
@@ -952,7 +946,7 @@ protected:
 	void OnScrubPositionParentChanged(FMovieSceneSequenceID InScrubPositionParent);
 
 	/** Exports sequence to a FBX file */
-	void ExportFBXInternal(const FString& Filename, TArray<FGuid>& Bindings);
+	void ExportFBXInternal(const FString& Filename, const TArray<FGuid>& Bindings, const TArray<UMovieSceneTrack*>& MasterTracks);
 
 protected:
 
@@ -1220,6 +1214,9 @@ private:
 	/** Active customizations. */
 	TArray<TUniquePtr<ISequencerCustomization>> ActiveCustomizations;
 
+	/** Active customization callbacks */
+	TArray<FOnSequencerPaste> OnPaste;
+
 	TWeakObjectPtr<UMovieSceneSequence> RootSequence;
 	FMovieSceneRootEvaluationTemplateInstance RootTemplateInstance;
 
@@ -1382,7 +1379,7 @@ private:
 	FOnActivateSequence OnActivateSequenceEvent;
 
 	/** Delegate for Curve Display Changed Event from the Curve Editor, which we than pass to the FOnCurveDisplayChanged delegate */
-	void OnCurveModelDisplayChanged(FCurveModel *InCurveModel, bool bDisplayed);
+	void OnCurveModelDisplayChanged(FCurveModel *InCurveModel, bool bDisplayed, const FCurveEditor* InCurveEditor);
 
 	int32 SilentModeCount;
 
@@ -1498,6 +1495,6 @@ private:
 
 	TOptional<FMovieSceneSequenceID> ScrubPositionParent;
 	/** Cache of all bound cameras in the sequence hierarchy */
-	TSet<AActor*> CachedCameraActors;
+	TMap<AActor*, FGuid> CachedCameraActors;
 	uint32 LastKnownStateSerial = 0;
 };

@@ -77,10 +77,10 @@ void USynthComponentMoto::GetRPMRange(float& OutMinRPM, float& OutMaxRPM)
 			FRichCurve* DecelRichCurve = Settings->DecelerationSource->RPMCurve.GetRichCurve();
 			if (AccelRichCurve && DecelRichCurve)
 			{
-				FVector2D AccelRPMRange;
+				FVector2f AccelRPMRange;
 				AccelRichCurve->GetValueRange(AccelRPMRange.X, AccelRPMRange.Y);
 
-				FVector2D DecelRPMRange;
+				FVector2f DecelRPMRange;
 				DecelRichCurve->GetValueRange(DecelRPMRange.X, DecelRPMRange.Y);
 
 				RPMRange = { FMath::Max(AccelRPMRange.X, DecelRPMRange.X), FMath::Min(AccelRPMRange.Y, DecelRPMRange.Y) };
@@ -117,7 +117,7 @@ FMotoSynthRuntimeSettings* USynthComponentMoto::GetSettingsToUse()
 	return Settings;
 }
 
-ISoundGeneratorPtr USynthComponentMoto::CreateSoundGenerator(int32 InSampleRate, int32 InNumChannels)
+ISoundGeneratorPtr USynthComponentMoto::CreateSoundGenerator(const FSoundGeneratorInitParams& InParams)
 {
 	if (!FMotoSynthEngine::IsMotoSynthEngineEnabled())
 	{
@@ -134,7 +134,7 @@ ISoundGeneratorPtr USynthComponentMoto::CreateSoundGenerator(int32 InSampleRate,
  
  		if (FMotoSynthEngine* MS = static_cast<FMotoSynthEngine*>(MotoSynthEngine.Get()))
  		{
- 			MS->Init(InSampleRate);
+ 			MS->Init(InParams.SampleRate);
  
 			uint32 AccelDataID = Settings->AccelerationSource->GetDataID();
 			uint32 DecelDataID = Settings->DecelerationSource->GetDataID();

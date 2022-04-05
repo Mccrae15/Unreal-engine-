@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PlatformMediaSource.h"
+
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/SequencerObjectVersion.h"
 #include "UObject/MediaFrameWorkObjectVersion.h"
 #include "Modules/ModuleManager.h"
@@ -14,14 +16,23 @@
 
 void UPlatformMediaSource::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UPlatformMediaSource::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
 #if WITH_EDITORONLY_DATA
 	// Do this only if we are cooking (aka: have a target platform)
+	const ITargetPlatform* TargetPlatform = ObjectSaveContext.GetTargetPlatform();
 	if (TargetPlatform)
 	{
-		UMediaSource** PlatformMediaSource = PlatformMediaSources.Find(TargetPlatform->IniPlatformName());
+		TObjectPtr<UMediaSource>* PlatformMediaSource = PlatformMediaSources.Find(TargetPlatform->IniPlatformName());
 		MediaSource = (PlatformMediaSource != nullptr) ? *PlatformMediaSource : nullptr;
 	}
 #endif
+	Super::PreSave(ObjectSaveContext);
 }
 
 /* UMediaSource interface
@@ -76,7 +87,7 @@ void UPlatformMediaSource::Serialize(FArchive& Ar)
 			if (Ar.IsLoading() && MediaCustomVersion < FMediaFrameworkObjectVersion::SerializeGUIDsInPlatformMediaSourceInsteadOfPlainNames)
 			{
 				// Load old data version
-				TMap<FString, UMediaSource*> OldPlatformMediaSources;
+				decltype(PlatformMediaSources) OldPlatformMediaSources;
 
 				Ar << OldPlatformMediaSources;
 
@@ -189,7 +200,7 @@ UMediaSource* UPlatformMediaSource::GetMediaSource() const
 {
 #if WITH_EDITORONLY_DATA
 	const FString RunningPlatformName(FPlatformProperties::IniPlatformName());
-	UMediaSource*const* PlatformMediaSource = PlatformMediaSources.Find(RunningPlatformName);
+	TObjectPtr<UMediaSource> const* PlatformMediaSource = PlatformMediaSources.Find(RunningPlatformName);
 
 	if (PlatformMediaSource == nullptr)
 	{
@@ -205,6 +216,19 @@ UMediaSource* UPlatformMediaSource::GetMediaSource() const
 
 /* IMediaOptions interface
  *****************************************************************************/
+
+FName UPlatformMediaSource::GetDesiredPlayerName() const
+{
+	UMediaSource* PlatformMediaSource = GetMediaSource();
+
+	if (PlatformMediaSource != nullptr)
+	{
+		return PlatformMediaSource->GetDesiredPlayerName();
+	}
+
+	return Super::GetDesiredPlayerName();
+}
+
 
 bool UPlatformMediaSource::GetMediaOption(const FName& Key, bool DefaultValue) const
 {

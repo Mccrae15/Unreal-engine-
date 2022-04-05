@@ -9,13 +9,16 @@
 #include "HAL/FileManager.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Misc/AssetRegistryInterface.h"
-#include "Misc/ConfigCacheIni.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/PathViews.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
+#include "SaveContext.h"
 #include "Serialization/BulkData.h"
-#include "Serialization/BulkDataManifest.h"
+#include "Serialization/EditorBulkData.h"
 #include "Serialization/LargeMemoryWriter.h"
+#include "Serialization/PackageWriter.h"
 #include "UObject/AsyncWorkSequence.h"
 #include "UObject/Class.h"
 #include "UObject/GCScopeLock.h"
@@ -24,13 +27,15 @@
 #include "UObject/LinkerSave.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectRedirector.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
-#include "UObject/UnrealType.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectThreadContext.h"
+#include "UObject/UnrealType.h"
 
 DEFINE_LOG_CATEGORY(LogSavePackage);
+UE_TRACE_CHANNEL_DEFINE(SaveTimeChannel);
 
 #if ENABLE_COOK_STATS
 #include "ProfilingDebugging/ScopedTimers.h"
@@ -167,38 +172,113 @@ void FArchiveObjectCrc32NonEditorProperties::Serialize(void* Data, int64 Length)
 
 static FThreadSafeCounter OutstandingAsyncWrites;
 
+
+// Initialization for GIsSavingPackage
+bool GIsSavingPackage = false;
+
+namespace UE
+{
+	bool IsSavingPackage(UObject* InOuter)
+	{
+		if (InOuter == nullptr)
+		{
+			return GIsSavingPackage;
+		}
+		return InOuter->GetPackage()->HasAnyPackageFlags(PKG_IsSaving);
+	}
+}
+
 namespace SavePackageUtilities
 {
 const FName NAME_World("World");
 const FName NAME_Level("Level");
 const FName NAME_PrestreamPackage("PrestreamPackage");
 
-void GetBlueprintNativeCodeGenReplacement(UObject* InObj, UClass*& ObjClass, UObject*& ObjOuter, FName& ObjName, const ITargetPlatform* TargetPlatform)
+// Switch to SavePackage to Save2, 0:disabled, 1: enabled for cook, 2: enabled for uncooked, 3: enabled everywhere
+static TAutoConsoleVariable<int32> CVarEnablePackageNewSave(TEXT("SavePackage.EnableNewSave"), 3, TEXT("Enable new package save mechanism over the old one."));
+
+/**
+* A utility that records the state of a package's files before we start moving and overwriting them. 
+* This provides an easy way for us to restore the original state of the package incase of failures 
+* while saving.
+*/
+class FPackageBackupUtility
 {
-#if WITH_EDITOR
-	if (const IBlueprintNativeCodeGenCore* Coordinator = IBlueprintNativeCodeGenCore::Get())
+public:
+	FPackageBackupUtility(const FPackagePath& InPackagePath)
+		: PackagePath(InPackagePath)
 	{
-		const FCompilerNativizationOptions& NativizationOptions = Coordinator->GetNativizationOptionsForPlatform(TargetPlatform);
-		if (UClass* ReplacedClass = Coordinator->FindReplacedClassForObject(InObj, NativizationOptions))
+
+	}
+
+	/** 
+	* Record a file that has been moved. These will need to be moved back to
+	* restore the package.
+	*/
+	void RecordMovedFile( const FString& OriginalPath, const FString& NewLocation)
+	{
+		MovedOriginalFiles.Emplace(OriginalPath, NewLocation);
+	}
+
+	/** 
+	* Record a newly created file that did not exist before. These will need
+	* deleting to restore the package.
+	*/
+	void RecordNewFile(const FString& NewLocation)
+	{
+		NewFiles.Add(NewLocation);
+	}
+
+	/** Restores the package to it's original state */
+	void RestorePackage()
+	{
+		IFileManager& FileSystem = IFileManager::Get();
+
+		UE_LOG(LogSavePackage, Verbose, TEXT("Restoring package '%s'"), *PackagePath.GetDebugName());
+
+		// First we should delete any new file that has been saved for the package
+		for (const FString& Entry : NewFiles)
 		{
-			ObjClass = ReplacedClass;
+			if (!FileSystem.Delete(*Entry))
+			{
+				UE_LOG(LogSavePackage, Error, TEXT("Failed to delete newly added file '%s' when trying to restore the package state and the package could be unstable, please revert in source control!"), *Entry);
+			}
 		}
-		if (UObject* ReplacedOuter = Coordinator->FindReplacedNameAndOuter(InObj, /*out*/ObjName, NativizationOptions))
+
+		// Now we can move back the original files
+		for (const TPair<FString, FString>& Entry : MovedOriginalFiles)
 		{
-			ObjOuter = ReplacedOuter;
+			if (!FileSystem.Move(*Entry.Key, *Entry.Value))
+			{
+				UE_LOG(LogSavePackage, Error, TEXT("Failed to restore package '%s', the file '%s' is in an incorrect state and the package could be unstable, please revert in source control!"), *PackagePath.GetDebugName(), *Entry.Key);
+			}
 		}
 	}
-#endif
-}
 
-void IncrementOutstandingAsyncWrites()
-{
-	OutstandingAsyncWrites.Increment();
-}
+	/** Deletes the backed up files once they are no longer required. */
+	void DiscardBackupFiles()
+	{
+		IFileManager& FileSystem = IFileManager::Get();
 
-void DecrementOutstandingAsyncWrites()
+		// Note that we do not warn if we fail to delete a backup file as that is probably
+		// the least of the users problems at the moment.
+		for (const TPair<FString, FString>& Entry : MovedOriginalFiles)
+		{
+			FileSystem.Delete(*Entry.Value, /*RequireExists*/false, /*EvenReadOnly*/true);
+		}
+	}
+
+private:
+	const FPackagePath& PackagePath;
+
+	TArray<FString> NewFiles;
+	TArray<TPair<FString, FString>> MovedOriginalFiles;	
+};
+
+bool IsNewSaveEnabled(bool bForCooking)
 {
-	OutstandingAsyncWrites.Decrement();
+	int32 EnableNewSave = CVarEnablePackageNewSave.GetValueOnAnyThread();
+	return (bForCooking && (EnableNewSave & 1) != 0) || (!bForCooking && (EnableNewSave & 2) != 0);
 }
 
 bool HasUnsaveableOuter(UObject* InObj, UPackage* InSavingPackage)
@@ -208,14 +288,14 @@ bool HasUnsaveableOuter(UObject* InObj, UPackage* InSavingPackage)
 	{
 		if (Obj->GetClass()->HasAnyClassFlags(CLASS_Deprecated) && !Obj->HasAnyFlags(RF_ClassDefaultObject))
 		{
-			if (!InObj->IsPendingKill() && InObj->GetOutermost() == InSavingPackage)
+			if (IsValid(InObj) && InObj->GetOutermost() == InSavingPackage)
 			{
 				UE_LOG(LogSavePackage, Warning, TEXT("%s has a deprecated outer %s, so it will not be saved"), *InObj->GetFullName(), *Obj->GetFullName());
 			}
 			return true; 
 		}
 
-		if(Obj->IsPendingKill())
+		if(!IsValid(Obj))
 		{
 			return true;
 		}
@@ -271,8 +351,7 @@ void CheckObjectPriorToSave(FArchiveUObject& Ar, UObject* InObj, UPackage* InSav
 		InObj->SetFlags(RF_Transient);
 	}
 
-	if ( InObj->HasAnyFlags(RF_ClassDefaultObject)
-		&& (InObj->GetClass()->ClassGeneratedBy == nullptr || !InObj->GetClass()->HasAnyFlags(RF_Transient)) )
+	if ( InObj->HasAnyFlags(RF_ClassDefaultObject) && (InObj->GetClass()->IsNative() || !InObj->GetClass()->HasAnyFlags(RF_Transient)) )
 	{
 		// if this is the class default object, make sure it's not
 		// marked transient for any reason, as we need it to be saved
@@ -290,11 +369,14 @@ void CheckObjectPriorToSave(FArchiveUObject& Ar, UObject* InObj, UPackage* InSav
  */
 EObjectMark GetExcludedObjectMarksForTargetPlatform(const class ITargetPlatform* TargetPlatform)
 {
-	EObjectMark ObjectMarks = OBJECTMARK_NOMARKS;
+	// we always want to exclude NotForTargetPlatform (in other words, later on, the target platform
+	// can mark an object as NotForTargetPlatform, and then this will exlude that object and anything
+	// inside it, from being saved out)
+	EObjectMark ObjectMarks = OBJECTMARK_NotForTargetPlatform;
 
 	if (TargetPlatform)
 	{
-		if (!TargetPlatform->HasEditorOnlyData())
+		if (!TargetPlatform->AllowsEditorObjects())
 		{
 			ObjectMarks = (EObjectMark)(ObjectMarks | OBJECTMARK_EditorOnly);
 		}
@@ -335,7 +417,7 @@ void ConditionallyExcludeObjectForTarget(UObject* Obj, EObjectMark ExcludedObjec
 	};
 
 	// MarksToProcess is a superset of marks retrieved from UPackage::GetExcludedObjectMarksForTargetPlatform
-	const uint32 MarksToProcess = OBJECTMARK_EditorOnly | OBJECTMARK_NotForClient | OBJECTMARK_NotForServer | OBJECTMARK_KeepForTargetPlatform;
+	const uint32 MarksToProcess = OBJECTMARK_INHERITEDMARKS;
 	check((ExcludedObjectMarks & ~MarksToProcess) == 0);
 
 	EObjectMark CurrentMarks = OBJECTMARK_NOMARKS;
@@ -350,35 +432,16 @@ void ConditionallyExcludeObjectForTarget(UObject* Obj, EObjectMark ExcludedObjec
 	UObject* ObjOuter = Obj->GetOuter();
 	UClass* ObjClass = Obj->GetClass();
 
-	// if TargetPlatorm != nullptr then we are cooking
-	if (TargetPlatform)
-	{
-		// Check for nativization replacement
-		if (const IBlueprintNativeCodeGenCore* Coordinator = IBlueprintNativeCodeGenCore::Get())
-		{
-			const FCompilerNativizationOptions& NativizationOptions = Coordinator->GetNativizationOptionsForPlatform(TargetPlatform);
-			FName UnusedName;
-			if (UClass* ReplacedClass = Coordinator->FindReplacedClassForObject(Obj, NativizationOptions))
-			{
-				ObjClass = ReplacedClass;
-			}
-			if (UObject* ReplacedOuter = Coordinator->FindReplacedNameAndOuter(Obj, /*out*/UnusedName, NativizationOptions))
-			{
-				ObjOuter = ReplacedOuter;
-			}
-		}
-	}
-
 	EObjectMark NewMarks = CurrentMarks;
 
 	// Recurse into parents, then compute inherited marks
 	ConditionallyExcludeObjectForTarget(ObjClass, ExcludedObjectMarks, TargetPlatform);
-	InheritMarks(NewMarks, ObjClass, OBJECTMARK_EditorOnly | OBJECTMARK_NotForClient | OBJECTMARK_NotForServer);
+	InheritMarks(NewMarks, ObjClass, OBJECTMARK_INHERITEDMARKS);
 
 	if (ObjOuter)
 	{
 		ConditionallyExcludeObjectForTarget(ObjOuter, ExcludedObjectMarks, TargetPlatform);
-		InheritMarks(NewMarks, ObjOuter, OBJECTMARK_EditorOnly | OBJECTMARK_NotForClient | OBJECTMARK_NotForServer);
+		InheritMarks(NewMarks, ObjOuter, OBJECTMARK_INHERITEDMARKS);
 	}
 
 	// Check parent struct if we have one
@@ -387,7 +450,7 @@ void ConditionallyExcludeObjectForTarget(UObject* Obj, EObjectMark ExcludedObjec
 	{
 		UObject* SuperStruct = ThisStruct->GetSuperStruct();
 		ConditionallyExcludeObjectForTarget(SuperStruct, ExcludedObjectMarks, TargetPlatform);
-		InheritMarks(NewMarks, SuperStruct, OBJECTMARK_EditorOnly | OBJECTMARK_NotForClient | OBJECTMARK_NotForServer);
+		InheritMarks(NewMarks, SuperStruct, OBJECTMARK_INHERITEDMARKS);
 	}
 
 	// Check archetype, this may not have been covered in the case of components
@@ -395,7 +458,7 @@ void ConditionallyExcludeObjectForTarget(UObject* Obj, EObjectMark ExcludedObjec
 	if (Archetype)
 	{
 		ConditionallyExcludeObjectForTarget(Archetype, ExcludedObjectMarks, TargetPlatform);
-		InheritMarks(NewMarks, Archetype, OBJECTMARK_EditorOnly | OBJECTMARK_NotForClient | OBJECTMARK_NotForServer);
+		InheritMarks(NewMarks, Archetype, OBJECTMARK_INHERITEDMARKS);
 	}
 
 	if (!Obj->HasAnyFlags(RF_ClassDefaultObject))
@@ -416,9 +479,21 @@ void ConditionallyExcludeObjectForTarget(UObject* Obj, EObjectMark ExcludedObjec
 			NewMarks = (EObjectMark)(NewMarks | OBJECTMARK_NotForServer);
 		}
 
-		if ((!(NewMarks & OBJECTMARK_NotForServer) || !(NewMarks & OBJECTMARK_NotForClient)) && TargetPlatform && !Obj->NeedsLoadForTargetPlatform(TargetPlatform))
+		bool bCheckTargetPlatform = false;
+		if (TargetPlatform != nullptr)
 		{
-			NewMarks = (EObjectMark)(NewMarks | OBJECTMARK_NotForClient | OBJECTMARK_NotForServer);
+			// NotForServer && NotForClient implies EditorOnly
+			const bool bIsEditorOnlyObject = (NewMarks & OBJECTMARK_NotForServer) && (NewMarks & OBJECTMARK_NotForClient);
+			const bool bTargetAllowsEditorObjects = TargetPlatform->AllowsEditorObjects();
+
+			// no need to query the target platform if the object is editoronly and the targetplatform doesn't allow editor objects 
+			// @note: this was done in large part fo avoid a warning in SceneComponentNeedsLoadForTarget() caused by editor only object
+			// that contains non-editoronly inners, but that warning should probably allow for this valid setup
+			bCheckTargetPlatform = !bIsEditorOnlyObject || bTargetAllowsEditorObjects;
+		}
+		if (bCheckTargetPlatform && (!Obj->NeedsLoadForTargetPlatform(TargetPlatform) || !TargetPlatform->AllowObject(Obj)))
+		{
+			NewMarks = (EObjectMark)(NewMarks | OBJECTMARK_NotForTargetPlatform);
 		}
 	}
 
@@ -426,12 +501,6 @@ void ConditionallyExcludeObjectForTarget(UObject* Obj, EObjectMark ExcludedObjec
 	if ((NewMarks & OBJECTMARK_NotForClient) && (NewMarks & OBJECTMARK_NotForServer))
 	{
 		NewMarks = (EObjectMark)(NewMarks | OBJECTMARK_EditorOnly);
-	}
-
-	// If not excluded after a full set of tests, it is implicitly a keep
-	if (NewMarks == 0)
-	{
-		NewMarks = OBJECTMARK_KeepForTargetPlatform;
 	}
 
 	// If our marks are different than original, set them on the object
@@ -448,14 +517,52 @@ void ConditionallyExcludeObjectForTarget(UObject* Obj, EObjectMark ExcludedObjec
  * @param	BadObjects	array of objects that are considered "bad" (e.g. non- RF_Public, in different map package, ...)
  * @return	UObject that is considered the most likely culprit causing them to be referenced or NULL
  */
-void FindMostLikelyCulprit(TArray<UObject*> BadObjects, UObject*& MostLikelyCulprit, const FProperty*& PropertyRef)
+void FindMostLikelyCulprit(const TArray<UObject*>& BadObjects, UObject*& MostLikelyCulprit, FString& OutReferencer, FSaveContext* InOptionalSaveContext)
 {
-	MostLikelyCulprit = nullptr;
+	UObject* ArchetypeCulprit = nullptr;
+	UObject* ReferencedCulprit = nullptr;
+	const FProperty* ReferencedCulpritReferencer = nullptr;
+
+	auto IsObjectIncluded = [InOptionalSaveContext](UObject* InObject)
+	{
+		// if we passed in a SaveContext use that to validate if the object is an import or an export instead of marks
+		if (InOptionalSaveContext)
+		{
+			return InOptionalSaveContext->IsIncluded(InObject);
+		}
+		return InObject->HasAnyMarks(EObjectMark(OBJECTMARK_TagExp | OBJECTMARK_TagImp));
+	};
 
 	// Iterate over all objects that are marked as unserializable/ bad and print out their referencers.
 	for (int32 BadObjIndex = 0; BadObjIndex < BadObjects.Num(); BadObjIndex++)
 	{
 		UObject* Obj = BadObjects[BadObjIndex];
+
+		// SavePackage adds references to the class archetype manually; if this type is a class archetype and it is private, mark it as an error
+		// for that reason rather than checking references. Class archetypes must be public since instances of their class in other packages can refer to them
+		if (Obj->HasAnyFlags(RF_ArchetypeObject | RF_DefaultSubObject | RF_ClassDefaultObject))
+		{
+			UE_LOG(LogSavePackage, Warning, TEXT("%s is a private Archetype object"), *Obj->GetFullName());
+			TArray<const TCHAR*> Flags;
+			auto AddFlagIfPresent = [&Flags, Obj](EObjectFlags InFlag, const TCHAR* Descriptor)
+			{
+				if (Obj->HasAnyFlags(InFlag))
+				{
+					Flags.Add(Descriptor);
+				}
+			};
+			AddFlagIfPresent(RF_ArchetypeObject, TEXT("RF_ArchetypeObject"));
+			AddFlagIfPresent(RF_ClassDefaultObject, TEXT("RF_ClassDefaultObject"));
+			AddFlagIfPresent(RF_DefaultSubObject, TEXT("RF_DefaultSubObject"));
+			UE_LOG(LogSavePackage, Warning, TEXT("\tThis object is an archetype (flags include %s) but is private. This is a code error from the generator of the object. All archetype objects must be public."),
+				*FString::Join(Flags, TEXT("|")));
+
+			if (ArchetypeCulprit == nullptr)
+			{
+				ArchetypeCulprit = Obj;
+			}
+			continue;
+		}
 
 		UE_LOG(LogSavePackage, Warning, TEXT("\r\nReferencers of %s:"), *Obj->GetFullName());
 
@@ -466,7 +573,7 @@ void FindMostLikelyCulprit(TArray<UObject*> BadObjects, UObject*& MostLikelyCulp
 			for (int32 i = 0; i < Refs.ExternalReferences.Num(); i++)
 			{
 				UObject* RefObj = Refs.ExternalReferences[i].Referencer;
-				if (RefObj->HasAnyMarks(EObjectMark(OBJECTMARK_TagExp | OBJECTMARK_TagImp)))
+				if (IsObjectIncluded(RefObj))
 				{
 					if (RefObj->GetFName() == NAME_PersistentLevel || RefObj->GetClass()->GetFName() == NAME_World)
 					{
@@ -479,12 +586,32 @@ void FindMostLikelyCulprit(TArray<UObject*> BadObjects, UObject*& MostLikelyCulp
 					{
 						const FProperty* Prop = Refs.ExternalReferences[i].ReferencingProperties[j];
 						UE_LOG(LogSavePackage, Warning, TEXT("\t\t%i) %s"), j, *Prop->GetFullName());
-						PropertyRef = Prop;
+						ReferencedCulpritReferencer = Prop;
 					}
 
-					MostLikelyCulprit = Obj;
+					// Later ReferencedCulprits are higher priority than earlier culprits. TODO: Not sure if this is an intentional behavior or if they choice was arbitrary.
+					ReferencedCulprit = Obj;
 				}
 			}
+		}
+	}
+
+	if (ArchetypeCulprit)
+	{
+		// ArchetypeCulprits are the most likely to be the problem; they are definitely a problem
+		MostLikelyCulprit = ArchetypeCulprit;
+		OutReferencer = TEXT("Referenced because it is an archetype object");
+	}
+	else
+	{
+		MostLikelyCulprit = ReferencedCulprit; // Might be null, in which case we didn't find one
+		if (ReferencedCulpritReferencer)
+		{
+			OutReferencer = *ReferencedCulpritReferencer->GetName();
+		}
+		else
+		{
+			OutReferencer = TEXT("Unknown property");
 		}
 	}
 }
@@ -507,6 +634,113 @@ void AddFileToHash(FString const& Filename, FMD5& Hash)
 		Position += ReadNum;
 	}
 	delete Ar;
+}
+
+ESavePackageResult FinalizeTempOutputFiles(const FPackagePath& PackagePath, const FSavePackageOutputFileArray& OutputFiles, const bool bComputeHash, const FDateTime& FinalTimeStamp, TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence)
+{
+	UE_LOG(LogSavePackage, Log,  TEXT("Moving output files for package: %s"), *PackagePath.GetDebugName());
+
+	IFileManager& FileSystem = IFileManager::Get();
+	FPackageBackupUtility OriginalPackageState(PackagePath);
+
+	UE_LOG(LogSavePackage, Verbose, TEXT("Moving existing files to the temp directory"));
+
+	TArray<bool, TInlineAllocator<4>> CanFileBeMoved;
+	CanFileBeMoved.SetNum(OutputFiles.Num());
+
+	// First check if any of the target files that already exist are read only still, if so we can fail the 
+	// whole thing before we try to move any files
+	for (int32 Index = 0; Index < OutputFiles.Num(); ++Index)
+	{	
+		const FSavePackageOutputFile& File = OutputFiles[Index];
+
+		if (File.FileMemoryBuffer.IsValid())
+		{
+			ensureMsgf(false, TEXT("FinalizeTempOutputFiles does not handle async saving files! (%s)"), *PackagePath.GetDebugName());
+			return ESavePackageResult::Error;
+		}
+
+		if (!File.TempFilePath.IsEmpty())
+		{
+			FFileStatData FileStats = FileSystem.GetStatData(*File.TargetPath);
+			if (FileStats.bIsValid && FileStats.bIsReadOnly)
+			{
+				UE_LOG(LogSavePackage, Error, TEXT("Cannot remove '%s' as it is read only!"), *File.TargetPath);
+				return ESavePackageResult::Error;
+			}
+			CanFileBeMoved[Index] = FileStats.bIsValid;
+		}
+		else
+		{
+			CanFileBeMoved[Index] = false;
+		}
+	}
+
+	// Now we need to move all of the files that we are going to overwrite (if any) so that we 
+	// can restore them if anything goes wrong.
+	for (int32 Index = 0; Index < OutputFiles.Num(); ++Index)
+	{
+		if (CanFileBeMoved[Index]) 
+		{
+			const FSavePackageOutputFile& File = OutputFiles[Index];
+
+			const FString BaseFilename = FPaths::GetBaseFilename(File.TargetPath);
+			const FString TempFilePath = FPaths::CreateTempFilename(*FPaths::ProjectSavedDir(), *BaseFilename.Left(32));
+
+			if (FileSystem.Move(*TempFilePath, *File.TargetPath))
+			{
+				OriginalPackageState.RecordMovedFile(File.TargetPath, TempFilePath);
+			}
+			else
+			{
+				UE_LOG(LogSavePackage, Warning, TEXT("Failed to move '%s' to temp directory"), *File.TargetPath);
+				OriginalPackageState.RestorePackage();
+
+				return ESavePackageResult::Error;
+			}
+		}
+	}
+
+	// Now attempt to move the new files from the temp location to the final location
+	for (const FSavePackageOutputFile& File : OutputFiles)
+	{
+		if (!File.TempFilePath.IsEmpty()) // Only try to move output files that were saved to temp files
+		{
+			UE_LOG(LogSavePackage, Log, TEXT("Moving '%s' to '%s'"), *File.TempFilePath, *File.TargetPath);
+
+			if (FileSystem.Move(*File.TargetPath, *File.TempFilePath))
+			{
+				OriginalPackageState.RecordNewFile(File.TargetPath);
+			}
+			else
+			{
+				UE_LOG(LogSavePackage, Warning, TEXT("Failed to move '%s' from temp directory"), *File.TargetPath);
+				OriginalPackageState.RestorePackage();
+
+				return ESavePackageResult::Error;
+			}
+
+			if (FinalTimeStamp != FDateTime::MinValue())
+			{
+				FileSystem.SetTimeStamp(*File.TargetPath, FinalTimeStamp);
+			}
+
+			if (bComputeHash)
+			{
+				UE::SavePackageUtilities::IncrementOutstandingAsyncWrites();
+				AsyncWriteAndHashSequence.AddWork([NewPath = File.TargetPath](FMD5& State)
+				{
+					SavePackageUtilities::AddFileToHash(NewPath, State);
+					UE::SavePackageUtilities::DecrementOutstandingAsyncWrites();
+				});
+			}
+		}
+	}
+
+	// Finally we can clean up the temp files as we do not need to restore them (failure to delete them will not be considered an error)
+	OriginalPackageState.DiscardBackupFiles();
+
+	return ESavePackageResult::Success;
 }
 
 void WriteToFile(const FString& Filename, const uint8* InDataPtr, int64 InDataSize)
@@ -544,10 +778,7 @@ void AsyncWriteFile(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, FLargeM
 			State.Update(Data.Get(), DataSize);
 		}
 
-		if (EnumHasAnyFlags(Options, EAsyncWriteOptions::WriteFileToDisk))
-		{
-			WriteToFile(OutputFilename, Data.Get(), DataSize);
-		}
+		WriteToFile(OutputFilename, Data.Get(), DataSize);
 
 		if (FileRegions.Num() > 0)
 		{
@@ -562,44 +793,10 @@ void AsyncWriteFile(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, FLargeM
 	});
 }
 
-void AsyncWriteFileWithSplitExports(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, FLargeMemoryPtr Data, const int64 DataSize, const int64 HeaderSize, const TCHAR* Filename, EAsyncWriteOptions Options, TArrayView<const FFileRegion> InFileRegions)
+void AsyncWriteFile(TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, EAsyncWriteOptions Options, FSavePackageOutputFile& File)
 {
-	OutstandingAsyncWrites.Increment();
-	FString OutputFilename(Filename);
-	AsyncWriteAndHashSequence.AddWork([Data = MoveTemp(Data), DataSize, HeaderSize, OutputFilename = MoveTemp(OutputFilename), Options, FileRegions = TArray<FFileRegion>(InFileRegions)](FMD5& State) mutable
-	{
-		if (EnumHasAnyFlags(Options, EAsyncWriteOptions::ComputeHash))
-		{
-			State.Update(Data.Get(), DataSize);
-		}
-
-		if (EnumHasAnyFlags(Options, EAsyncWriteOptions::WriteFileToDisk))
-		{
-			// Write .uasset file
-			WriteToFile(OutputFilename, Data.Get(), HeaderSize);
-
-			// Write .uexp file
-			const FString FilenameExports = FPaths::ChangeExtension(OutputFilename, TEXT(".uexp"));
-			WriteToFile(FilenameExports, Data.Get() + HeaderSize, DataSize - HeaderSize);
-
-			if (FileRegions.Num() > 0)
-			{
-				// Adjust regions so they are relative to the start of the uexp file
-				for (FFileRegion& Region : FileRegions)
-				{
-					Region.Offset -= HeaderSize;
-				}
-
-				TArray<uint8> Memory;
-				FMemoryWriter Ar(Memory);
-				FFileRegion::SerializeFileRegions(Ar, FileRegions);
-
-				WriteToFile(FilenameExports + FFileRegion::RegionsFileExtension, Memory.GetData(), Memory.Num());
-			}
-		}
-
-		OutstandingAsyncWrites.Decrement();
-	});
+	checkf(File.TempFilePath.IsEmpty(), TEXT("AsyncWriteFile does not handle temp files!"));
+	AsyncWriteFile(AsyncWriteAndHashSequence, FLargeMemoryPtr(File.FileMemoryBuffer.Release()), File.DataSize, *File.TargetPath, Options, File.FileRegions);
 }
 
 /** For a CDO get all of the subobjects templates nested inside it or it's class */
@@ -626,8 +823,143 @@ void GetCDOSubobjects(UObject* CDO, TArray<UObject*>& Subobjects)
 		}
 	}
 }
-
 } // end namespace SavePackageUtilities
+
+namespace UE::SavePackageUtilities
+{
+
+bool IsUpdatingLoadedPath(bool bIsCooking, const FPackagePath& TargetPackagePath, uint32 SaveFlags)
+{
+#if WITH_EDITOR
+	return !bIsCooking &&							// Do not update the loadedpath if we're cooking
+		TargetPackagePath.IsMountedPath() &&		// Do not update the loadedpath if the new path is not a viable mounted path
+		!(SaveFlags & SAVE_BulkDataByReference) &&	// Do not update the loadedpath if it's an EditorDomainSave. TODO: Change the name of this flag.
+		!(SaveFlags & SAVE_FromAutosave);			// Do not update the loadedpath if it's an autosave.
+#else
+	return false; // Saving when not in editor never updates the LoadedPath
+#endif
+}
+
+bool IsProceduralSave(bool bIsCooking, const FPackagePath& TargetPackagePath, uint32 SaveFlags)
+{
+#if WITH_EDITOR
+	return bIsCooking ||							// Cooking is a procedural save
+		(SaveFlags & SAVE_BulkDataByReference);		// EditorDomainSave is a procedural save. TODO: Change the name of this flag.
+#else
+	return false; // Saving when not in editor never has user changes
+#endif
+}
+
+void CallPreSave(UObject* Object, FObjectSaveContextData& ObjectSaveContext)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	Object->PreSave(ObjectSaveContext.TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+
+	FObjectPreSaveContext ObjectPreSaveContext(ObjectSaveContext);
+	ObjectSaveContext.bBaseClassCalled = false;
+	ObjectSaveContext.NumRefPasses = 0;
+	Object->PreSave(ObjectPreSaveContext);
+	if (!ObjectSaveContext.bBaseClassCalled)
+	{
+		UE_LOG(LogSavePackage, Warning, TEXT("Class %s did not call Super::PreSave"), *Object->GetClass()->GetName());
+	}
+	// When we deprecate PreSave, and need to take different actions based on the PreSave, remove this bAllowPreSave variable
+	constexpr bool bAllowPreSave = true;
+	if (!bAllowPreSave && ObjectSaveContext.NumRefPasses > 1)
+	{
+		UE_LOG(LogSavePackage, Warning, TEXT("Class %s overrides the deprecated PreSave function"), *Object->GetClass()->GetName());
+	}
+}
+
+void CallPreSaveRoot(UObject* Object, FObjectSaveContextData& ObjectSaveContext)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	bool bLegacyNeedsCleanup = Object->PreSaveRoot(*ObjectSaveContext.TargetFilename);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+
+	ObjectSaveContext.bCleanupRequired = false;
+	Object->PreSaveRoot(FObjectPreSaveRootContext(ObjectSaveContext));
+	ObjectSaveContext.bCleanupRequired |= bLegacyNeedsCleanup;
+}
+
+void CallPostSaveRoot(UObject* Object, FObjectSaveContextData& ObjectSaveContext, bool bNeedsCleanup)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	Object->PostSaveRoot(bNeedsCleanup);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+
+	ObjectSaveContext.bCleanupRequired = bNeedsCleanup;
+	Object->PostSaveRoot(FObjectPostSaveRootContext(ObjectSaveContext));
+}
+
+EObjectFlags NormalizeTopLevelFlags(EObjectFlags TopLevelFlags, bool bIsCooking)
+{
+	// if we aren't cooking and top level flags aren't empty, add RF_HasExternalPackage to them to catch external packages data
+	if (TopLevelFlags != RF_NoFlags && !bIsCooking)
+	{
+		TopLevelFlags |= RF_HasExternalPackage;
+	}
+	return TopLevelFlags;
+}
+
+void IncrementOutstandingAsyncWrites()
+{
+	OutstandingAsyncWrites.Increment();
+}
+
+void DecrementOutstandingAsyncWrites()
+{
+	OutstandingAsyncWrites.Decrement();
+}
+
+void ResetCookStats()
+{
+#if ENABLE_COOK_STATS
+	FSavePackageStats::NumPackagesSaved = 0;
+#endif
+}
+
+int32 GetNumPackagesSaved()
+{
+#if ENABLE_COOK_STATS
+	return FSavePackageStats::NumPackagesSaved;
+#else
+	return 0;
+#endif
+}
+
+} // end namespace UE::SavePackageUtilities
+
+FObjectSaveContextData::FObjectSaveContextData(UPackage* Package, const ITargetPlatform* InTargetPlatform, const TCHAR* InTargetFilename, uint32 InSaveFlags)
+{
+	Set(Package, InTargetPlatform, InTargetFilename, InSaveFlags);
+}
+
+FObjectSaveContextData::FObjectSaveContextData(UPackage* Package, const ITargetPlatform* InTargetPlatform, const FPackagePath& TargetPath, uint32 InSaveFlags)
+{
+	Set(Package, InTargetPlatform, TargetPath, InSaveFlags);
+}
+
+void FObjectSaveContextData::Set(UPackage* Package, const ITargetPlatform* InTargetPlatform, const TCHAR* InTargetFilename, uint32 InSaveFlags)
+{
+	FPackagePath PackagePath(FPackagePath::FromLocalPath(InTargetFilename));
+	if (PackagePath.GetHeaderExtension() == EPackageExtension::Unspecified)
+	{
+		PackagePath.SetHeaderExtension(EPackageExtension::EmptyString);
+	}
+	Set(Package, InTargetPlatform, PackagePath, InSaveFlags);
+}
+
+void FObjectSaveContextData::Set(UPackage* Package, const ITargetPlatform* InTargetPlatform, const FPackagePath& TargetPath, uint32 InSaveFlags)
+{
+	TargetFilename = TargetPath.GetLocalFullPath();
+	TargetPlatform = InTargetPlatform;
+	SaveFlags = InSaveFlags;
+	OriginalPackageFlags = Package ? Package->GetPackageFlags() : 0;
+	bProceduralSave = UE::SavePackageUtilities::IsProceduralSave(InTargetPlatform != nullptr, TargetPath, InSaveFlags);
+	bUpdatingLoadedPath = UE::SavePackageUtilities::IsUpdatingLoadedPath(InTargetPlatform != nullptr, TargetPath, InSaveFlags);
+}
 
 bool IsEditorOnlyObject(const UObject* InObject, bool bCheckRecursive, bool bCheckMarks)
 {
@@ -714,6 +1046,49 @@ bool IsEditorOnlyObject(const UObject* InObject, bool bCheckRecursive, bool bChe
 	return false;
 }
 
+bool FObjectImportSortHelper::operator()(const FObjectImport& A, const FObjectImport& B) const
+{
+	int32 Result = 0;
+	if (A.XObject == nullptr)
+	{
+		Result = 1;
+	}
+	else if (B.XObject == nullptr)
+	{
+		Result = -1;
+	}
+	else
+	{
+		const FString* FullNameA = ObjectToFullNameMap.Find(A.XObject);
+		const FString* FullNameB = ObjectToFullNameMap.Find(B.XObject);
+		checkSlow(FullNameA);
+		checkSlow(FullNameB);
+
+		Result = FCString::Stricmp(**FullNameA, **FullNameB);
+	}
+
+	return Result < 0;
+}
+
+void FObjectImportSortHelper::SortImports(FLinkerSave* Linker)
+{
+	TArray<FObjectImport>& Imports = Linker->ImportMap;
+	ObjectToFullNameMap.Reserve(Linker->ImportMap.Num());
+	for (int32 ImportIndex = 0; ImportIndex < Linker->ImportMap.Num(); ImportIndex++)
+	{
+		const FObjectImport& Import = Linker->ImportMap[ImportIndex];
+		if (Import.XObject)
+		{
+			ObjectToFullNameMap.Add(Import.XObject, Import.XObject->GetFullName());
+		}
+	}
+
+	if (Linker->ImportMap.Num())
+	{
+		Sort(&Linker->ImportMap[0], Linker->ImportMap.Num(), *this);
+	}
+}
+
 bool FObjectExportSortHelper::operator()(const FObjectExport& A, const FObjectExport& B) const
 {
 	int32 Result = 0;
@@ -727,202 +1102,33 @@ bool FObjectExportSortHelper::operator()(const FObjectExport& A, const FObjectEx
 	}
 	else
 	{
-		if (bUseFObjectFullName)
-		{
-			const FObjectFullName* FullNameA = ObjectToObjectFullNameMap.Find(A.Object);
-			const FObjectFullName* FullNameB = ObjectToObjectFullNameMap.Find(B.Object);
-			checkSlow(FullNameA);
-			checkSlow(FullNameB);
+		const FString* FullNameA = ObjectToFullNameMap.Find(A.Object);
+		const FString* FullNameB = ObjectToFullNameMap.Find(B.Object);
+		checkSlow(FullNameA);
+		checkSlow(FullNameB);
 
-			if (FullNameA->ClassName != FullNameB->ClassName)
-			{
-				Result = FCString::Stricmp(*FullNameA->ClassName.ToString(), *FullNameB->ClassName.ToString());
-			}
-			else
-			{
-				int Num = FMath::Min(FullNameA->Path.Num(), FullNameB->Path.Num());
-				for (int I = 0; I < Num; ++I)
-				{
-					if (FullNameA->Path[I] != FullNameB->Path[I])
-					{
-						Result = FCString::Stricmp(*FullNameA->Path[I].ToString(), *FullNameB->Path[I].ToString());
-						break;
-					}
-				}
-				if (Result == 0)
-				{
-					Result = FullNameA->Path.Num() - FullNameB->Path.Num();
-				}
-			}
-		}
-		else
-		{
-			const FString* FullNameA = ObjectToFullNameMap.Find(A.Object);
-			const FString* FullNameB = ObjectToFullNameMap.Find(B.Object);
-			checkSlow(FullNameA);
-			checkSlow(FullNameB);
-
-			Result = FCString::Stricmp(**FullNameA, **FullNameB);
-		}
+		Result = FCString::Stricmp(**FullNameA, **FullNameB);
 	}
 
 	return Result < 0;
 }
 
-FObjectExportSortHelper::FObjectFullName::FObjectFullName(const UObject* Object, const UObject* Root)
+void FObjectExportSortHelper::SortExports(FLinkerSave* Linker)
 {
-	ClassName = Object->GetClass()->GetFName();
-	const UObject* Current = Object;
-	while (Current != nullptr && Current != Root)
+	ObjectToFullNameMap.Reserve(Linker->ExportMap.Num());
+
+	for ( int32 ExportIndex = 0; ExportIndex < Linker->ExportMap.Num(); ExportIndex++ )
 	{
-		Path.Insert(Current->GetFName(), 0);
-		Current = Current->GetOuter();
-	}
-}
-
-FObjectExportSortHelper::FObjectFullName::FObjectFullName(FObjectFullName&& InFullName)
-{
-	ClassName = InFullName.ClassName;
-	Swap(Path, InFullName.Path);
-}
-
-void FObjectExportSortHelper::SortExports( FLinkerSave* Linker, FLinkerLoad* LinkerToConformTo, bool InbUseFObjectFullName)
-{
-	bUseFObjectFullName = InbUseFObjectFullName;
-
-	if (bUseFObjectFullName)
-	{
-		ObjectToObjectFullNameMap.Reserve(Linker->ExportMap.Num());
-	}
-	else
-	{
-		ObjectToFullNameMap.Reserve(Linker->ExportMap.Num());
-	}
-
-	int32 SortStartPosition=0;
-	if ( LinkerToConformTo )
-	{
-		// build a map of object full names to the index into the new linker's export map prior to sorting.
-		// we need to do a little trickery here to generate an object path name that will match what we'll get back
-		// when we call GetExportFullName on the LinkerToConformTo's exports, due to localized packages and forced exports.
-		const FString LinkerName = Linker->LinkerRoot->GetName();
-		const FString PathNamePrefix = LinkerName + TEXT(".");
-
-		// Populate object to current index map.
-		TMap<FString,int32> OriginalExportIndexes;
-		OriginalExportIndexes.Reserve(Linker->ExportMap.Num());
-		for( int32 ExportIndex=0; ExportIndex < Linker->ExportMap.Num(); ExportIndex++ )
+		const FObjectExport& Export = Linker->ExportMap[ExportIndex];
+		if (Export.Object)
 		{
-			const FObjectExport& Export = Linker->ExportMap[ExportIndex];
-			if( Export.Object )
-			{
-				// get the path name for this object; if the object is contained within the package we're saving,
-				// we don't want the returned path name to contain the package name since we'll be adding that on
-				// to ensure that forced exports have the same outermost name as the non-forced exports
-				FString ObjectPathName = Export.Object != Linker->LinkerRoot
-					? Export.Object->GetPathName(Linker->LinkerRoot)
-					: LinkerName;
-						
-				FString ExportFullName = Export.Object->GetClass()->GetName() + TEXT(" ") + PathNamePrefix + ObjectPathName;
-
-				// Set the index (key) in the map to the index of this object into the export map.
-				OriginalExportIndexes.Add( *ExportFullName, ExportIndex );
-				if (bUseFObjectFullName)
-				{
-					FObjectFullName ObjectFullName(Export.Object, Linker->LinkerRoot);
-					ObjectToObjectFullNameMap.Add(Export.Object, MoveTemp(ObjectFullName)); 
-				}
-				else
-				{
-					ObjectToFullNameMap.Add(Export.Object, *ExportFullName);
-				}
-			}
-		}
-
-		// backup the existing export list so we can empty the linker's actual list
-		TArray<FObjectExport> OldExportMap = Linker->ExportMap;
-		Linker->ExportMap.Empty(Linker->ExportMap.Num());
-
-		// this array tracks which exports from the new package exist in the old package
-		TArray<uint8> Used;
-		Used.AddZeroed(OldExportMap.Num());
-
-		for( int32 i = 0; i<LinkerToConformTo->ExportMap.Num(); i++ )
-		{
-			// determine whether the new version of the package contains this export from the old package
-			FString ExportFullName = LinkerToConformTo->GetExportFullName(i, *LinkerName);
-			int32* OriginalExportPosition = OriginalExportIndexes.Find( *ExportFullName );
-			if( OriginalExportPosition )
-			{
-				// this export exists in the new package as well,
-				// create a copy of the FObjectExport located at the original index and place it
-				// into the matching position in the new package's export map
-				FObjectExport* NewExport = new(Linker->ExportMap) FObjectExport( OldExportMap[*OriginalExportPosition] );
-				check(NewExport->Object == OldExportMap[*OriginalExportPosition].Object);
-				Used[ *OriginalExportPosition ] = 1;
-			}
-			else
-			{
-
-				// this export no longer exists in the new package; to ensure that the _LinkerIndex matches, add an empty entry to pad the list
-				new(Linker->ExportMap)FObjectExport( nullptr );
-				UE_LOG(LogSavePackage, Log, TEXT("No matching export found in new package for original export %i: %s"), i, *ExportFullName);
-			}
-		}
-
-
-
-		SortStartPosition = LinkerToConformTo->ExportMap.Num();
-		for( int32 i=0; i<Used.Num(); i++ )
-		{
-			if( !Used[i] )
-			{
-				// the FObjectExport located at pos "i" in the original export table did not
-				// exist in the old package - add it to the end of the export table
-				new(Linker->ExportMap) FObjectExport( OldExportMap[i] );
-			}
-		}
-
-#if DO_GUARD_SLOW
-
-		// sanity-check: make sure that all exports which existed in the linker before we sorted exist in the linker's export map now
-		{
-			TSet<UObject*> ExportObjectList;
-			for( int32 ExportIndex=0; ExportIndex<Linker->ExportMap.Num(); ExportIndex++ )
-			{
-				ExportObjectList.Add(Linker->ExportMap[ExportIndex].Object);
-			}
-
-			for( int32 OldExportIndex=0; OldExportIndex<OldExportMap.Num(); OldExportIndex++ )
-			{
-				check(ExportObjectList.Contains(OldExportMap[OldExportIndex].Object));
-			}
-		}
-#endif
-	}
-	else
-	{
-		for ( int32 ExportIndex = 0; ExportIndex < Linker->ExportMap.Num(); ExportIndex++ )
-		{
-			const FObjectExport& Export = Linker->ExportMap[ExportIndex];
-			if ( Export.Object )
-			{
-				if (bUseFObjectFullName)
-				{
-					FObjectFullName ObjectFullName(Export.Object, nullptr);
-					ObjectToObjectFullNameMap.Add(Export.Object, MoveTemp(ObjectFullName));
-				}
-				else
-				{
-					ObjectToFullNameMap.Add(Export.Object, Export.Object->GetFullName());
-				}
-			}
+			ObjectToFullNameMap.Add(Export.Object, Export.Object->GetFullName());
 		}
 	}
 
-	if ( SortStartPosition < Linker->ExportMap.Num() )
+	if (Linker->ExportMap.Num())
 	{
-		Sort( &Linker->ExportMap[SortStartPosition], Linker->ExportMap.Num() - SortStartPosition, *this );
+		Sort(&Linker->ExportMap[0], Linker->ExportMap.Num(), *this);
 	}
 }
 
@@ -1121,6 +1327,16 @@ void FEDLCookChecker::FEDLNodeData::AppendPathName(const FEDLCookChecker& Owner,
 	Name.AppendString(Result);
 }
 
+FName FEDLCookChecker::FEDLNodeData::GetPackageName(const FEDLCookChecker& Owner) const
+{
+	if (ParentID != NodeIDInvalid)
+	{
+		// @todo ExternalPackages: We need to store ExternalPackage pointers on the Node and return that
+		return Owner.Nodes[ParentID].GetPackageName(Owner);
+	}
+	return Name;
+}
+
 void FEDLCookChecker::FEDLNodeData::Merge(FEDLCookChecker::FEDLNodeData&& Other)
 {
 	check(ObjectEvent == Other.ObjectEvent);
@@ -1148,7 +1364,7 @@ FEDLCookChecker::FEDLCookChecker()
 
 void FEDLCookChecker::SetActiveIfNeeded()
 {
-	bIsActive = IsEventDrivenLoaderEnabledInCookedBuilds() && !FParse::Param(FCommandLine::Get(), TEXT("DisableEDLCookChecker"));
+	bIsActive = !FParse::Param(FCommandLine::Get(), TEXT("DisableEDLCookChecker"));
 }
 
 void FEDLCookChecker::Reset()
@@ -1187,7 +1403,7 @@ void FEDLCookChecker::AddExport(UObject* Export)
 		Nodes[SerializeID].bIsExport = true;
 		FEDLNodeID CreateID = FindOrAddNode(FEDLNodeHash(Export, EObjectEvent::Create));
 		Nodes[CreateID].bIsExport = true;
-		AddDependency(SerializeID, CreateID); // every export must be created before it can be serialize...these arcs are implicit and not listed in any table.
+		AddDependency(SerializeID, CreateID); // every export must be created before it can be serialized...these arcs are implicit and not listed in any table.
 	}
 }
 
@@ -1200,6 +1416,15 @@ void FEDLCookChecker::AddArc(UObject* DepObject, bool bDepIsSerialize, UObject* 
 		AddDependency(ExportID, DepID);
 	}
 }
+
+void FEDLCookChecker::AddPackageWithUnknownExports(FName LongPackageName)
+{
+	if (bIsActive)
+	{
+		PackagesWithUnknownExports.Add(LongPackageName);
+	}
+}
+
 
 void FEDLCookChecker::AddDependency(FEDLNodeID SourceID, FEDLNodeID TargetID)
 {
@@ -1341,6 +1566,20 @@ void FEDLCookChecker::Merge(FEDLCookChecker&& Other)
 		Other.NodePrereqs.Empty();
 		Other.Nodes.Empty();
 	}
+
+	if (PackagesWithUnknownExports.Num() == 0)
+	{
+		Swap(PackagesWithUnknownExports, Other.PackagesWithUnknownExports);
+	}
+	else
+	{
+		PackagesWithUnknownExports.Reserve(Other.PackagesWithUnknownExports.Num());
+		for (FName PackageName : Other.PackagesWithUnknownExports)
+		{
+			PackagesWithUnknownExports.Add(PackageName);
+		}
+		Other.PackagesWithUnknownExports.Empty();
+	}
 }
 
 void FEDLCookChecker::Verify(bool bFullReferencesExpected)
@@ -1373,6 +1612,14 @@ void FEDLCookChecker::Verify(bool bFullReferencesExpected)
 			{
 				if (NodeData.bIsExport)
 				{
+					// The node is an export; imports of it are valid
+					continue;
+				}
+
+				if (Accumulator.PackagesWithUnknownExports.Contains(NodeData.GetPackageName(Accumulator)))
+				{
+					// The node is an object in a package that exists, but for which we do not know the exports
+					// because e.g. it was iteratively skipped in the current cook. Suppress warnings about it
 					continue;
 				}
 
@@ -1412,6 +1659,9 @@ void FEDLCookChecker::Verify(bool bFullReferencesExpected)
 FCriticalSection FEDLCookChecker::CookCheckerInstanceCritical;
 TArray<FEDLCookChecker*> FEDLCookChecker::CookCheckerInstances;
 
+namespace UE::SavePackageUtilities
+{
+
 void StartSavingEDLCookInfoForVerification()
 {
 	FEDLCookChecker::StartSavingEDLCookInfoForVerification();
@@ -1422,8 +1672,16 @@ void VerifyEDLCookInfo(bool bFullReferencesExpected)
 	FEDLCookChecker::Verify(bFullReferencesExpected);
 }
 
-FScopedSavingFlag::FScopedSavingFlag(bool InSavingConcurrent)
+void EDLCookInfoAddIterativelySkippedPackage(FName LongPackageName)
+{
+	FEDLCookChecker::Get().AddPackageWithUnknownExports(LongPackageName);
+}
+
+}
+
+FScopedSavingFlag::FScopedSavingFlag(bool InSavingConcurrent, UPackage* InSavedPackage)
 	: bSavingConcurrent(InSavingConcurrent)
+	, SavedPackage(InSavedPackage)
 {
 	check(!IsGarbageCollecting());
 
@@ -1442,6 +1700,12 @@ FScopedSavingFlag::FScopedSavingFlag(bool InSavingConcurrent)
 	{
 		GIsSavingPackage = true;
 	}
+
+	// Mark the package as being saved 
+	if (SavedPackage)
+	{
+		SavedPackage->SetPackageFlags(PKG_IsSaving);
+	}
 }
 
 FScopedSavingFlag::~FScopedSavingFlag()
@@ -1458,31 +1722,12 @@ FScopedSavingFlag::~FScopedSavingFlag()
 	{
 		FGCCSyncObject::Get().UnlockAsync();
 	}
-}
 
-FSavePackageDiffSettings::FSavePackageDiffSettings(bool bDiffing)
-	: MaxDiffsToLog(5)
-	, bIgnoreHeaderDiffs(false)
-	, bSaveForDiff(false)
-{
-	if (bDiffing)
+	if (SavedPackage)
 	{
-		GConfig->GetInt(TEXT("CookSettings"), TEXT("MaxDiffsToLog"), MaxDiffsToLog, GEditorIni);
-		// Command line override for MaxDiffsToLog
-		FParse::Value(FCommandLine::Get(), TEXT("MaxDiffstoLog="), MaxDiffsToLog);
-
-		GConfig->GetBool(TEXT("CookSettings"), TEXT("IgnoreHeaderDiffs"), bIgnoreHeaderDiffs, GEditorIni);
-		// Command line override for IgnoreHeaderDiffs
-		if (bIgnoreHeaderDiffs)
-		{
-			bIgnoreHeaderDiffs = !FParse::Param(FCommandLine::Get(), TEXT("HeaderDiffs"));
-		}
-		else
-		{
-			bIgnoreHeaderDiffs = FParse::Param(FCommandLine::Get(), TEXT("IgnoreHeaderDiffs"));
-		}
-		bSaveForDiff = FParse::Param(FCommandLine::Get(), TEXT("SaveForDiff"));
+		SavedPackage->ClearPackageFlags(PKG_IsSaving);
 	}
+
 }
 
 FCanSkipEditorReferencedPackagesWhenCooking::FCanSkipEditorReferencedPackagesWhenCooking()
@@ -1509,7 +1754,7 @@ void SaveThumbnails(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::
 
 #if WITH_EDITORONLY_DATA
 	// Do we have any thumbnails to save?
-	if( !(Linker->Summary.PackageFlags & PKG_FilterEditorOnly) && InOuter->HasThumbnailMap() )
+	if( !(Linker->Summary.GetPackageFlags() & PKG_FilterEditorOnly) && InOuter->HasThumbnailMap() )
 	{
 		const FThumbnailMap& PackageThumbnailMap = InOuter->GetThumbnailMap();
 
@@ -1523,16 +1768,24 @@ void SaveThumbnails(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::
 			FObjectExport& Export = Linker->ExportMap[i];
 			if( Export.Object )
 			{
-				const FName ObjectFullName( *Export.Object->GetFullName() );
-				const FObjectThumbnail* ObjectThumbnail = PackageThumbnailMap.Find( ObjectFullName );
+				const FName ObjectFullName( *Export.Object->GetFullName(), FNAME_Find );
+				const FObjectThumbnail* ObjectThumbnail = nullptr;
+				// If the FName does not exist, then we know it is not in the map and do not need to search
+				if (!ObjectFullName.IsNone())
+				{
+					ObjectThumbnail = PackageThumbnailMap.Find(ObjectFullName);
+				}
 		
 				// if we didn't find the object via full name, try again with ??? as the class name, to support having
 				// loaded old packages without going through the editor (ie cooking old packages)
 				if (ObjectThumbnail == nullptr)
 				{
 					// can't overwrite ObjectFullName, so that we add it properly to the map
-					FName OldPackageStyleObjectFullName = FName(*FString::Printf(TEXT("??? %s"), *Export.Object->GetPathName()));
-					ObjectThumbnail = PackageThumbnailMap.Find(OldPackageStyleObjectFullName);
+					FName OldPackageStyleObjectFullName = FName(*FString::Printf(TEXT("??? %s"), *Export.Object->GetPathName()), FNAME_Find);
+					if (!OldPackageStyleObjectFullName.IsNone())
+					{
+						ObjectThumbnail = PackageThumbnailMap.Find(OldPackageStyleObjectFullName);
+					}
 				}
 				if( ObjectThumbnail != nullptr )
 				{
@@ -1611,117 +1864,319 @@ void SaveThumbnails(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::
 	// if content browser isn't enabled, clear the thumbnail map so we're not using additional memory for nothing
 	if ( !GIsEditor || IsRunningCommandlet() )
 	{
-		InOuter->ThumbnailMap.Reset();
+		InOuter->SetThumbnailMap(nullptr);
 	}
 #endif
 }
 
-void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Filename, const ITargetPlatform* TargetPlatform,
-				  FSavePackageContext* SavePackageContext, const bool bTextFormat, const bool bDiffing, const bool bComputeHash, TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, int64& TotalPackageSizeUncompressed)
+class FLargeMemoryWriterWithRegions : public FLargeMemoryWriter
+{
+public:
+	FLargeMemoryWriterWithRegions()
+		: FLargeMemoryWriter(0, /* IsPersistent */ true)
+	{}
+
+	TArray<FFileRegion> FileRegions;
+};
+
+ESavePackageResult AppendAdditionalData(FLinkerSave& Linker, int64& InOutDataStartOffset, FSavePackageContext* SavePackageContext)
+{
+	if (Linker.AdditionalDataToAppend.Num() == 0)
+	{
+		return ESavePackageResult::Success;
+	}
+
+	IPackageWriter* PackageWriter = SavePackageContext ? SavePackageContext->PackageWriter : nullptr;
+	if (PackageWriter)
+	{
+		bool bDeclareRegionForEachAdditionalFile = SavePackageContext->PackageWriterCapabilities.bDeclareRegionForEachAdditionalFile;
+		FLargeMemoryWriterWithRegions DataArchive;
+		for (FLinkerSave::AdditionalDataCallback& Callback : Linker.AdditionalDataToAppend)
+		{
+			int64 RegionStart = DataArchive.Tell();
+			Callback(Linker, DataArchive, InOutDataStartOffset + RegionStart);
+			int64 RegionEnd = DataArchive.Tell();
+			if (RegionEnd != RegionStart && bDeclareRegionForEachAdditionalFile)
+			{
+				DataArchive.FileRegions.Add(FFileRegion(RegionStart, RegionEnd - RegionStart, EFileRegionType::None));
+			}
+		}
+		IPackageWriter::FLinkerAdditionalDataInfo DataInfo{ Linker.LinkerRoot->GetFName() };
+		int64 DataSize = DataArchive.TotalSize();
+		FIoBuffer DataBuffer = FIoBuffer(FIoBuffer::AssumeOwnership, DataArchive.ReleaseOwnership(), DataSize);
+		PackageWriter->WriteLinkerAdditionalData(DataInfo, DataBuffer, DataArchive.FileRegions);
+		InOutDataStartOffset += DataSize;
+	}
+	else
+	{
+		int64 LinkerStart = Linker.Tell();
+		FArchive& Ar = Linker;
+		for (FLinkerSave::AdditionalDataCallback& Callback : Linker.AdditionalDataToAppend)
+		{
+			Callback(Linker, Linker, Linker.Tell());
+		}
+		InOutDataStartOffset += Linker.Tell() - LinkerStart;
+	}
+
+	Linker.AdditionalDataToAppend.Empty();
+
+	// Note that we currently have no failure condition here, but we return a ESavePackageResult
+	// in case one needs to be added in future code.
+	return ESavePackageResult::Success;
+}
+
+ESavePackageResult CreatePayloadSidecarFile(FLinkerSave& Linker, const FPackagePath& PackagePath, const bool bSaveToMemory, FSavePackageOutputFileArray& AdditionalPackageFiles, FSavePackageContext* SavePackageContext)
+{
+	if (Linker.SidecarDataToAppend.IsEmpty())
+	{
+		return ESavePackageResult::Success;
+	}
+
+	// Note since we only allow sidecar file generation when saving a package and not when cooking 
+	// we know that we don't need to generate the hash or check if we should write the file, since those 
+	// operations are cooking only. However we still accept the parameters and check against them for 
+	// safety in case someone tries to add support in the future.
+	// We could add support but it is difficult to test and would be better left for a proper clean up pass
+	// once we enable SavePackage2 only. 
+	checkf(!Linker.IsCooking(), TEXT("Cannot write a sidecar file during cooking! (%s)"), *PackagePath.GetDebugName());
+	IPackageWriter* PackageWriter = SavePackageContext ? SavePackageContext->PackageWriter : nullptr;
+
+	FLargeMemoryWriter Ar(0, true /* bIsPersistent */);
+
+	uint32 VersionNumber = UE::Serialization::FTocEntry::PayloadSidecarFileVersion;
+	Ar << VersionNumber;
+
+	int64 TocPosition = Ar.Tell();
+
+	TArray<UE::Serialization::FTocEntry> TableOfContents;
+	TableOfContents.SetNum(Linker.SidecarDataToAppend.Num());
+
+	// First we write an empty table of contents to the file to reserve the space
+	Ar << TableOfContents;
+
+	int32 Index = 0;
+	for (FLinkerSave::FSidecarStorageInfo& Info : Linker.SidecarDataToAppend)
+	{
+		// Fill out the entry to the table of contents
+		TableOfContents[Index].Identifier = Info.Identifier;
+		TableOfContents[Index].OffsetInFile = Ar.Tell();
+		TableOfContents[Index].UncompressedSize = Info.Payload.GetRawSize();
+
+		Index++;
+
+		// Now write the payload to the archive
+		for (const FSharedBuffer& Buffer : Info.Payload.GetCompressed().GetSegments())
+		{
+			// Const cast because FArchive requires a non-const pointer!
+			Ar.Serialize(const_cast<void*>(Buffer.GetData()), static_cast<int64>(Buffer.GetSize()));
+		}
+
+		// Reset each payload reference after it has been written to the archive, this could
+		// potentially release memory and keep our high water mark down.
+		Info.Payload.Reset();
+	}
+
+	// Now write out the table of contents again but with valid data
+	int64 EndPos = Ar.Tell();
+	Ar.Seek(TocPosition);
+	Ar << TableOfContents;
+	Ar.Seek(EndPos); 
+
+	const int64 DataSize = Ar.TotalSize();
+	checkf(DataSize > 0, TEXT("The archive should not be empty at this point!"));
+
+	FString TargetFilePath = PackagePath.GetLocalFullPath(EPackageSegment::PayloadSidecar);
+
+	if (PackageWriter)
+	{
+		IPackageWriter::FAdditionalFileInfo SidecarSegmentInfo;
+		SidecarSegmentInfo.OutputPackageName = SidecarSegmentInfo.InputPackageName = PackagePath.GetPackageFName();
+		SidecarSegmentInfo.Filename = TargetFilePath;
+		FIoBuffer FileData(FIoBuffer::AssumeOwnership, Ar.ReleaseOwnership(), DataSize);
+		PackageWriter->WriteAdditionalFile(SidecarSegmentInfo, FileData);
+	}
+	else if (bSaveToMemory)
+	{
+		AdditionalPackageFiles.Emplace(MoveTemp(TargetFilePath), FLargeMemoryPtr(Ar.ReleaseOwnership()), TArray<FFileRegion>(), DataSize);
+	}
+	else
+	{
+		const FString BaseFilename = FPaths::GetBaseFilename(TargetFilePath);
+		FString TempFilePath = FPaths::CreateTempFilename(*FPaths::ProjectSavedDir(), *BaseFilename.Left(32));
+			
+		SavePackageUtilities::WriteToFile(TempFilePath, Ar.GetData(), DataSize); // TODO: Check the error handling here!
+		UE_LOG(LogSavePackage, Verbose, TEXT("Saved '%s' as temp file '%s'"), *TargetFilePath, *TempFilePath);
+
+		AdditionalPackageFiles.Emplace(MoveTemp(TargetFilePath), MoveTemp(TempFilePath), DataSize);		
+	}
+
+	Linker.SidecarDataToAppend.Empty();
+
+	return ESavePackageResult::Success;
+}
+
+ESavePackageResult SaveBulkData(FLinkerSave* Linker, int64& InOutStartOffset, const UPackage* InOuter, const TCHAR* Filename, const ITargetPlatform* TargetPlatform,
+				  FSavePackageContext* SavePackageContext, uint32 SaveFlags, const bool bTextFormat, const bool bComputeHash,
+				  TAsyncWorkSequence<FMD5>& AsyncWriteAndHashSequence, int64& TotalPackageSizeUncompressed, bool bIsOptionalRealm)
 {
 	// Now we write all the bulkdata that is supposed to be at the end of the package
 	// and fix up the offset
-	const int64 StartOfBulkDataArea = Linker->Tell();
-	Linker->Summary.BulkDataStartOffset = StartOfBulkDataArea;
+	IPackageWriter* PackageWriter = SavePackageContext != nullptr ? SavePackageContext->PackageWriter : nullptr;
+	Linker->Summary.BulkDataStartOffset = InOutStartOffset;
 
-	check(!bTextFormat || Linker->BulkDataToAppend.Num() == 0);
-
-	if (!bTextFormat && Linker->BulkDataToAppend.Num() > 0)
+	if (Linker->BulkDataToAppend.Num() == 0)
 	{
-		COOK_STAT(FScopedDurationTimer SaveTimer(FSavePackageStats::SerializeBulkDataTimeSec));
+		return ESavePackageResult::Success;;
+	}
+	check(!bTextFormat);
 
-		FScopedSlowTask BulkDataFeedback(Linker->BulkDataToAppend.Num());
+	COOK_STAT(FScopedDurationTimer SaveTimer(FSavePackageStats::SerializeBulkDataTimeSec));
 
-		class FLargeMemoryWriterWithRegions : public FLargeMemoryWriter
+	FScopedSlowTask BulkDataFeedback((float)Linker->BulkDataToAppend.Num());
+
+	TUniquePtr<FLargeMemoryWriterWithRegions> BulkArchive;
+	TUniquePtr<FLargeMemoryWriterWithRegions> OptionalBulkArchive;
+	TUniquePtr<FLargeMemoryWriterWithRegions> MappedBulkArchive;
+
+	const bool bSeparateSegmentsEnabled = Linker->IsCooking();
+
+	int64 LinkerStart = 0;
+	if (PackageWriter || bSeparateSegmentsEnabled)
+	{
+		BulkArchive.Reset(new FLargeMemoryWriterWithRegions);
+		if (bSeparateSegmentsEnabled)
 		{
-		public:
-			FLargeMemoryWriterWithRegions()
-				: FLargeMemoryWriter(0, /* IsPersistent */ true)
-			{}
-
-			TArray<FFileRegion> FileRegions;
-		};
-
-		TUniquePtr<FLargeMemoryWriterWithRegions> BulkArchive;
-		TUniquePtr<FLargeMemoryWriterWithRegions> OptionalBulkArchive;
-		TUniquePtr<FLargeMemoryWriterWithRegions> MappedBulkArchive;
-
-		uint32 ExtraBulkDataFlags = 0;
-
-		static const struct FUseSeparateBulkDataFiles
-		{
-			bool bEnable = false;
-
-			FUseSeparateBulkDataFiles()
-			{
-				GConfig->GetBool(TEXT("Core.System"), TEXT("UseSeperateBulkDataFiles"), /* out */ bEnable, GEngineIni);
-
-				if (IsEventDrivenLoaderEnabledInCookedBuilds())
-				{
-					// Always split bulk data when splitting cooked files
-					bEnable = true;
-				}
-			}
-		} ShouldUseSeparateBulkDataFiles;
-
-		const bool bShouldUseSeparateBulkFile = ShouldUseSeparateBulkDataFiles.bEnable && Linker->IsCooking();
-
-		if (bShouldUseSeparateBulkFile)
-		{
-			ExtraBulkDataFlags = BULKDATA_PayloadInSeperateFile;
-
-			BulkArchive.Reset(new FLargeMemoryWriterWithRegions);
 			OptionalBulkArchive.Reset(new FLargeMemoryWriterWithRegions);
 			MappedBulkArchive.Reset(new FLargeMemoryWriterWithRegions);
 		}
+	}
+	else
+	{
+		LinkerStart = Linker->Tell();
+	}
+	bool bRequestSaveByReference = SaveFlags & SAVE_BulkDataByReference;
 
-		// If we are not allowing BulkData to go to the IoStore and we will be saving the BulkData to a separate file then 
-		// we cannot manipulate the offset as we cannot 'fix' it at runtime with the AsyncLoader2
-		// 
-		// We should remove the manipulated offset entirely, at least for separate files but for now we need to leave it to
-		// prevent larger patching sizes.
-		if (SavePackageContext != nullptr && SavePackageContext->bForceLegacyOffsets == false && bShouldUseSeparateBulkFile)
+	bool bAlignBulkData = false;
+	bool bDeclareSpecialRegions = false;
+	bool bDeclareRegionForEachAdditionalFile = false;
+	int64 BulkDataAlignment = 0;
+
+	if (TargetPlatform)
+	{
+		bAlignBulkData = TargetPlatform->SupportsFeature(ETargetPlatformFeatures::MemoryMappedFiles);
+		bDeclareSpecialRegions = TargetPlatform->SupportsFeature(ETargetPlatformFeatures::CookFileRegionMetadata);
+		BulkDataAlignment = TargetPlatform->GetMemoryMappingAlignment();
+	}
+	if (PackageWriter)
+	{
+		bDeclareRegionForEachAdditionalFile = SavePackageContext->PackageWriterCapabilities.bDeclareRegionForEachAdditionalFile;
+	}
+
+	if (bRequestSaveByReference)
+	{
+		const TCHAR* FailureReason = nullptr;
+		if (Linker->bUpdatingLoadedPath)
 		{
-			ExtraBulkDataFlags |= BULKDATA_NoOffsetFixUp;
+			FailureReason = TEXT("SAVE_BulkDataByReference is incompatible with bUpdatingLoadedPath");
+		}
+		if (FailureReason)
+		{
+			UE_LOG(LogSavePackage, Error, TEXT("SaveBulkData failed for %s: %s."), Filename, FailureReason);
+			return ESavePackageResult::Error;
+		}
+	}
+
+	for (FLinkerSave::FBulkDataStorageInfo& BulkDataStorageInfo : Linker->BulkDataToAppend)
+	{
+		BulkDataFeedback.EnterProgressFrame();
+
+		// Set bulk data flags to what they were during initial serialization (they might have changed after that)
+		uint32 BulkDataFlags = BulkDataStorageInfo.BulkDataFlags;
+		FUntypedBulkData* BulkData = BulkDataStorageInfo.BulkData;
+		checkf(BulkDataFlags& BULKDATA_PayloadAtEndOfFile, TEXT("Inlined BulkData data should not have been added to BulkDataToAppend"));
+
+		const bool bBulkItemIsOptional = (BulkDataFlags & BULKDATA_OptionalPayload) != 0;
+		bool bBulkItemIsMapped = bAlignBulkData && ((BulkDataFlags & BULKDATA_MemoryMappedPayload) != 0);
+
+		if (bBulkItemIsMapped && bBulkItemIsOptional)
+		{
+			UE_LOG(LogSavePackage, Warning, TEXT("%s has bulk data that is both mapped and optional. This is not currently supported. Will not be mapped."), Filename);
+			BulkDataFlags &= ~BULKDATA_MemoryMappedPayload;
+			bBulkItemIsMapped = false;
+		}
+		if (bBulkItemIsMapped && bRequestSaveByReference)
+		{
+			UE_LOG(LogSavePackage, Warning, TEXT("%s has bulk data that is mapped, but the save method is SAVE_BulkDataByReference.")
+				TEXT("This is not currently supported. Will not be mapped."), Filename);
+			BulkDataFlags &= ~BULKDATA_MemoryMappedPayload;
+			bBulkItemIsMapped = false;
 		}
 
-		bool bAlignBulkData = false;
-		bool bUseFileRegions = false;
-		int64 BulkDataAlignment = 0;
-
-		if (TargetPlatform)
+		enum ESaveLocation
 		{
-			bAlignBulkData = TargetPlatform->SupportsFeature(ETargetPlatformFeatures::MemoryMappedFiles);
-			bUseFileRegions = TargetPlatform->SupportsFeature(ETargetPlatformFeatures::CookFileRegionMetadata);
-			BulkDataAlignment = TargetPlatform->GetMemoryMappingAlignment();
+			Invalid,
+			EndOfPackage,
+			SeparateSegment,
+			Reference,
+			SeparateArchiveAtEndOfPackage,
+		};
+		ESaveLocation SaveLocation = ESaveLocation::Invalid;
+		auto CanSaveByReference = [](FUntypedBulkData* BulkData)
+		{
+			return BulkData->GetBulkDataOffsetInFile() != INDEX_NONE &&
+				// We don't support yet loading from a separate file
+				!BulkData->IsInSeparateFile() &&
+				// It is possible to have a BulkData marked as optional without putting it into a separate file, and we
+				// assume that if BulkData is optional and in a separate file, then it is in the BulkDataOptional
+				// segment. Rather than changing that assumption to support optional ExternalResource bulkdata, we
+				// instead require that optional inlined/endofpackagedata BulkDatas can not be read from an
+				// ExternalResource and must remain inline.
+				!BulkData->IsOptional() &&
+				// Inline or end-of-package-file data can only be loaded from the workspace domain package file if the
+				// archive used by the bulk data was actually from the package file; BULKDATA_LazyLoadable is set by
+				// Serialize iff that is the case										
+				(BulkData->GetBulkDataFlags() & BULKDATA_LazyLoadable);
+		};
+		if (bRequestSaveByReference && CanSaveByReference(BulkData))
+		{
+			SaveLocation = ESaveLocation::Reference;
+		}
+		else if (bSeparateSegmentsEnabled)
+		{
+			SaveLocation = ESaveLocation::SeparateSegment;
+		}
+		else if (PackageWriter)
+		{
+			SaveLocation = ESaveLocation::SeparateArchiveAtEndOfPackage;
+		}
+		else
+		{
+			SaveLocation = ESaveLocation::EndOfPackage;
 		}
 
-		uint16 BulkDataIndex = 1;
-		for (FLinkerSave::FBulkDataStorageInfo& BulkDataStorageInfo : Linker->BulkDataToAppend)
+		int64 BulkDataOffsetInFile;
+		int64 BulkDataSizeOnDisk;
+		if (SaveLocation == ESaveLocation::Reference)
 		{
-			BulkDataFeedback.EnterProgressFrame();
+			BulkDataFlags |= BULKDATA_PayloadInSeperateFile | BULKDATA_WorkspaceDomainPayload;
+			BulkDataFlags |= BULKDATA_NoOffsetFixUp; // We don't use legacy offset fixups when referencing
+			BulkDataFlags &= ~BULKDATA_MemoryMappedPayload; // We don't support memory mapping from referenced
 
-			// Set bulk data flags to what they were during initial serialization (they might have changed after that)
-			const uint32 OldBulkDataFlags = BulkDataStorageInfo.BulkData->GetBulkDataFlags();
-			uint32 ModifiedBulkDataFlags = BulkDataStorageInfo.BulkDataFlags | ExtraBulkDataFlags;
-			const bool bBulkItemIsOptional = (ModifiedBulkDataFlags & BULKDATA_OptionalPayload) != 0;
-			bool bBulkItemIsMapped = bAlignBulkData && ((ModifiedBulkDataFlags & BULKDATA_MemoryMappedPayload) != 0);
-
-			if (bBulkItemIsMapped && bBulkItemIsOptional)
-			{
-				UE_LOG(LogSavePackage, Warning, TEXT("%s has bulk data that is both mapped and optional. This is not currently supported. Will not be mapped."), Filename);
-				ModifiedBulkDataFlags &= ~BULKDATA_MemoryMappedPayload;
-				bBulkItemIsMapped = false;
-			}
-
-			BulkDataStorageInfo.BulkData->ClearBulkDataFlags(0xFFFFFFFF);
-			BulkDataStorageInfo.BulkData->SetBulkDataFlags(ModifiedBulkDataFlags);
-
+			BulkDataOffsetInFile = BulkData->GetBulkDataOffsetInFile();
+			BulkDataSizeOnDisk = BulkData->GetBulkDataSizeOnDisk();
+		}
+		else
+		{
 			TArray<FFileRegion>* TargetRegions = &Linker->FileRegions;
 			FArchive* TargetArchive = Linker;
-
-			if (bShouldUseSeparateBulkFile)
+			if (SaveLocation == ESaveLocation::SeparateSegment)
 			{
+				BulkDataFlags |= BULKDATA_PayloadInSeperateFile;
+				// OffsetFixup is not useful when bulkdata is in separate segments.
+				// It is also not supported if we are using IoStore, which always uses SeparateSegments, because 
+				// the Linker's Summary.BulkDataStartOffset information is not available when loading with AsyncLoader2.
+				BulkDataFlags |= BULKDATA_NoOffsetFixUp;
+
 				if (bBulkItemIsOptional)
 				{
 					TargetArchive = OptionalBulkArchive.Get();
@@ -1738,6 +2193,12 @@ void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Fil
 					TargetRegions = &BulkArchive->FileRegions;
 				}
 			}
+			else if (SaveLocation == ESaveLocation::SeparateArchiveAtEndOfPackage)
+			{
+				TargetArchive = BulkArchive.Get();
+				TargetRegions = &BulkArchive->FileRegions;
+			}
+
 			check(TargetArchive && TargetRegions);
 
 			// Pad archive for proper alignment for memory mapping
@@ -1771,144 +2232,163 @@ void SaveBulkData(FLinkerSave* Linker, const UPackage* InOuter, const TCHAR* Fil
 			}
 
 			const int64 BulkStartOffset = TargetArchive->Tell();
+			BulkData->SerializeBulkData(*TargetArchive, BulkData->Lock(LOCK_READ_ONLY), static_cast<EBulkDataFlags>(BulkDataFlags));
+			BulkData->Unlock();
+			const int64 BulkEndOffset = TargetArchive->Tell();
 
-			int64 StoredBulkStartOffset = (ModifiedBulkDataFlags & BULKDATA_NoOffsetFixUp) == 0 ? BulkStartOffset - StartOfBulkDataArea : BulkStartOffset;
-
-			BulkDataStorageInfo.BulkData->SerializeBulkData(*TargetArchive, BulkDataStorageInfo.BulkData->Lock(LOCK_READ_ONLY));
-
-			int64 BulkEndOffset = TargetArchive->Tell();
-			const int64 LinkerEndOffset = Linker->Tell();
-
-			int64 SizeOnDisk = BulkEndOffset - BulkStartOffset;
-
-			Linker->Seek(BulkDataStorageInfo.BulkDataFlagsPos);
-			*Linker << ModifiedBulkDataFlags;
-
-			Linker->Seek(BulkDataStorageInfo.BulkDataOffsetInFilePos);
-			*Linker << StoredBulkStartOffset;
-
-			Linker->Seek(BulkDataStorageInfo.BulkDataSizeOnDiskPos);
-			if (ModifiedBulkDataFlags & BULKDATA_Size64Bit)
+			BulkDataOffsetInFile = BulkStartOffset;
+			if (SaveLocation == ESaveLocation::SeparateArchiveAtEndOfPackage)
 			{
-				*Linker << SizeOnDisk;
+				// BulkDatas are written in a separate archive that is appended onto the exports archive;
+				// the input BulkStartOffset is relative to the beginning of this separate archive.
+				// But records of the BulkData's offset needs to instead be relative to the beginning of the exports archive.
+				// We have to do this to distinguish them from inline bulkdatas in the exports segment
+				BulkDataOffsetInFile += Linker->Summary.BulkDataStartOffset;
 			}
-			else
+			if ((BulkDataFlags & BULKDATA_NoOffsetFixUp) == 0)
 			{
-				check(SizeOnDisk < (1LL << 31));
-				int32 SizeOnDiskAsInt32 = SizeOnDisk;
-				*Linker << SizeOnDiskAsInt32;
+				// The runtime will add in the Summary.BulkDataStartOffset, so we subtract it here.
+				// This allows the decoupling of the values written into the package from the size of the exports section.
+				BulkDataOffsetInFile -= Linker->Summary.BulkDataStartOffset;
 			}
+			BulkDataSizeOnDisk = BulkEndOffset - BulkStartOffset;
 
-			if (SavePackageContext != nullptr && SavePackageContext->BulkDataManifest != nullptr)
+			bool bDeclareBecauseSpecial = bDeclareSpecialRegions && BulkDataStorageInfo.BulkDataFileRegionType != EFileRegionType::None;
+			if ((bDeclareRegionForEachAdditionalFile || bDeclareBecauseSpecial) && BulkDataSizeOnDisk > 0)
 			{
-				auto BulkDataTypeFromFlags = [](uint32 BulkDataFlags)
-				{
-					if (BulkDataFlags & BULKDATA_MemoryMappedPayload)
-					{
-						return FPackageStoreBulkDataManifest::EBulkdataType::MemoryMapped;
-					}
-
-					if (BulkDataFlags & BULKDATA_OptionalPayload)
-					{
-						return FPackageStoreBulkDataManifest::EBulkdataType::Optional;
-					}
-
-					return FPackageStoreBulkDataManifest::EBulkdataType::Normal;
-				};
-
-				const FPackageStoreBulkDataManifest::EBulkdataType Type = BulkDataTypeFromFlags(BulkDataStorageInfo.BulkDataFlags);
-
-				SavePackageContext->BulkDataManifest->AddFileAccess(Filename, Type, StoredBulkStartOffset, BulkStartOffset, SizeOnDisk);
+				TargetRegions->Add(FFileRegion(BulkStartOffset, BulkDataSizeOnDisk, BulkDataStorageInfo.BulkDataFileRegionType));
 			}
-
-			if (bUseFileRegions && BulkDataStorageInfo.BulkDataFileRegionType != EFileRegionType::None && SizeOnDisk > 0)
-			{
-				TargetRegions->Add(FFileRegion(BulkStartOffset, SizeOnDisk, BulkDataStorageInfo.BulkDataFileRegionType));
-			}
-
-			Linker->Seek(LinkerEndOffset);
-
-			// Restore BulkData flags to before serialization started
-			BulkDataStorageInfo.BulkData->ClearBulkDataFlags(0xFFFFFFFF);
-			BulkDataStorageInfo.BulkData->SetBulkDataFlags(OldBulkDataFlags);
-			BulkDataStorageInfo.BulkData->Unlock();
 		}
 
-		if (BulkArchive)
+		const int64 SavedLinkerOffset = Linker->Tell();
+		Linker->Seek(BulkDataStorageInfo.BulkDataFlagsPos);
+		*Linker << BulkDataFlags;
+		Linker->Seek(BulkDataStorageInfo.BulkDataSizeOnDiskPos);
+		SerializeBulkDataSizeInt(*Linker, BulkDataSizeOnDisk, static_cast<EBulkDataFlags>(BulkDataFlags));
+		Linker->Seek(BulkDataStorageInfo.BulkDataOffsetInFilePos);
+		*Linker << BulkDataOffsetInFile;
+		Linker->Seek(SavedLinkerOffset);
+
+#if WITH_EDITOR
+		// If we are overwriting the LoadedPath for the current package, the bulk data flags and location need to be updated to match
+		// the values set in the package on disk.
+		if (Linker->bUpdatingLoadedPath)
 		{
-			check(OptionalBulkArchive);
-			check(MappedBulkArchive);
+			BulkData->SetFlagsFromDiskWrittenValues(static_cast<EBulkDataFlags>(BulkDataFlags), BulkDataOffsetInFile,
+				BulkDataSizeOnDisk, Linker->Summary.BulkDataStartOffset);
+		}
+#endif
+	}
 
-			const bool bWriteBulkToDisk = !bDiffing;
-
-			if (SavePackageContext != nullptr && SavePackageContext->PackageStoreWriter != nullptr && bWriteBulkToDisk)
+	if (BulkArchive)
+	{
+		if (PackageWriter)
+		{
+			auto AddSizeAndConvertToIoBuffer = [&TotalPackageSizeUncompressed](FLargeMemoryWriter* Writer)
 			{
-				auto AddSizeAndConvertToIoBuffer = [&TotalPackageSizeUncompressed](FLargeMemoryWriter* Writer)
-				{
-					const int64 TotalSize = Writer->TotalSize();
-					TotalPackageSizeUncompressed += TotalSize;
-					return FIoBuffer(FIoBuffer::AssumeOwnership, Writer->ReleaseOwnership(), TotalSize);
-				};
+				const int64 TotalSize = Writer->TotalSize();
+				TotalPackageSizeUncompressed += TotalSize;
+				return FIoBuffer(FIoBuffer::AssumeOwnership, Writer->ReleaseOwnership(), TotalSize);
+			};
 
-				FPackageStoreWriter::FBulkDataInfo BulkInfo;
-				BulkInfo.PackageName = InOuter->GetFName();
-				BulkInfo.LooseFilePath = Filename;
-				BulkInfo.BulkdataType = FPackageStoreWriter::FBulkDataInfo::Standard;
-
-				SavePackageContext->PackageStoreWriter->WriteBulkdata(BulkInfo, AddSizeAndConvertToIoBuffer(BulkArchive.Get()), BulkArchive->FileRegions);
-
-				BulkInfo.BulkdataType = FPackageStoreWriter::FBulkDataInfo::Optional;
-				SavePackageContext->PackageStoreWriter->WriteBulkdata(BulkInfo, AddSizeAndConvertToIoBuffer(OptionalBulkArchive.Get()), OptionalBulkArchive->FileRegions);
-
-				BulkInfo.BulkdataType = FPackageStoreWriter::FBulkDataInfo::Mmap;
-				SavePackageContext->PackageStoreWriter->WriteBulkdata(BulkInfo, AddSizeAndConvertToIoBuffer(MappedBulkArchive.Get()), MappedBulkArchive->FileRegions);
+			IPackageWriter::FBulkDataInfo BulkInfo;
+			BulkInfo.InputPackageName = InOuter->GetFName();
+			// Adjust the OutputPackageName and LooseFilePath if needed
+			if (bIsOptionalRealm)
+			{
+				// Optional output have the form PackagePath.o.ext
+				FString OutputPackageName = BulkInfo.InputPackageName.ToString() + FPackagePath::GetOptionalSegmentExtensionModifier();
+				BulkInfo.OutputPackageName = *OutputPackageName;
+				BulkInfo.LooseFilePath = FPathViews::ChangeExtension(Filename, TEXT("o.") + FPaths::GetExtension(Filename));
+				BulkInfo.MultiOutputIndex = 1;
 			}
 			else
 			{
-				auto WriteBulkData = [&](FLargeMemoryWriterWithRegions* Archive, const TCHAR* BulkFileExtension)
-				{
-					if (const int64 DataSize = Archive->TotalSize())
-					{
-						TotalPackageSizeUncompressed += DataSize;
-
-						if (bComputeHash || bWriteBulkToDisk)
-						{
-							FLargeMemoryPtr DataPtr(Archive->ReleaseOwnership());
-
-							const FString ArchiveFilename = FPaths::ChangeExtension(Filename, BulkFileExtension);
-
-							EAsyncWriteOptions WriteOptions(EAsyncWriteOptions::None);
-							if (bComputeHash)
-							{
-								WriteOptions |= EAsyncWriteOptions::ComputeHash;
-							}
-							if (bWriteBulkToDisk)
-							{
-								WriteOptions |= EAsyncWriteOptions::WriteFileToDisk;
-							}
-							SavePackageUtilities::AsyncWriteFile(AsyncWriteAndHashSequence, MoveTemp(DataPtr), DataSize, *ArchiveFilename, WriteOptions, Archive->FileRegions);
-						}
-					}
-				};
-
-				WriteBulkData(BulkArchive.Get(), TEXT(".ubulk"));			// Regular separate bulk data file
-				WriteBulkData(OptionalBulkArchive.Get(), TEXT(".uptnl"));	// Optional bulk data
-				WriteBulkData(MappedBulkArchive.Get(), TEXT(".m.ubulk"));	// Memory-mapped bulk data
+				BulkInfo.OutputPackageName = BulkInfo.InputPackageName;
+				BulkInfo.LooseFilePath = Filename;
 			}
+			FPackageId PackageId = FPackageId::FromName(BulkInfo.OutputPackageName);
+				
+			if (BulkArchive->TotalSize())
+			{
+				BulkInfo.ChunkId = CreateIoChunkId(PackageId.Value(), 0, EIoChunkType::BulkData);
+				BulkInfo.BulkDataType = bSeparateSegmentsEnabled ?
+					IPackageWriter::FBulkDataInfo::BulkSegment : IPackageWriter::FBulkDataInfo::AppendToExports;
+				BulkInfo.LooseFilePath = FPathViews::ChangeExtension(BulkInfo.LooseFilePath, LexToString(EPackageExtension::BulkDataDefault));
+					
+				PackageWriter->WriteBulkData(BulkInfo, AddSizeAndConvertToIoBuffer(BulkArchive.Get()), BulkArchive->FileRegions);
+			}
+			if (OptionalBulkArchive && OptionalBulkArchive->TotalSize())
+			{
+				checkf(!bIsOptionalRealm, TEXT("OptionalBulkData is currently unsupported with optional package multi output"));
+				BulkInfo.ChunkId = CreateIoChunkId(PackageId.Value(), 0, EIoChunkType::OptionalBulkData);
+				BulkInfo.BulkDataType = IPackageWriter::FBulkDataInfo::Optional;
+				BulkInfo.LooseFilePath = FPathViews::ChangeExtension(BulkInfo.LooseFilePath, LexToString(EPackageExtension::BulkDataOptional));
+				PackageWriter->WriteBulkData(BulkInfo, AddSizeAndConvertToIoBuffer(OptionalBulkArchive.Get()), OptionalBulkArchive->FileRegions);
+			}
+			if (MappedBulkArchive && MappedBulkArchive->TotalSize())
+			{
+				checkf(!bIsOptionalRealm, TEXT("MemoryMappedBulkData is currently unsupported with optional package multi output"));
+				BulkInfo.ChunkId = CreateIoChunkId(PackageId.Value(), 0, EIoChunkType::MemoryMappedBulkData);
+				BulkInfo.BulkDataType = IPackageWriter::FBulkDataInfo::Mmap;
+				BulkInfo.LooseFilePath = FPathViews::ChangeExtension(BulkInfo.LooseFilePath, LexToString(EPackageExtension::BulkDataMemoryMapped));
+				PackageWriter->WriteBulkData(BulkInfo, AddSizeAndConvertToIoBuffer(MappedBulkArchive.Get()), MappedBulkArchive->FileRegions);
+			}
+		}
+		else
+		{
+			checkf(!bIsOptionalRealm, TEXT("Package optional package multi output is unsupported without a PackageWriter"));
+			auto WriteBulkData = [&](FLargeMemoryWriterWithRegions* Archive, const TCHAR* BulkFileExtension)
+			{
+				if (const int64 DataSize = Archive ? Archive->TotalSize() : 0)
+				{
+					TotalPackageSizeUncompressed += DataSize;
+
+					FLargeMemoryPtr DataPtr(Archive->ReleaseOwnership());
+
+					const FString ArchiveFilename = FPaths::ChangeExtension(Filename, BulkFileExtension);
+
+					EAsyncWriteOptions WriteOptions(EAsyncWriteOptions::None);
+					if (bComputeHash)
+					{
+						WriteOptions |= EAsyncWriteOptions::ComputeHash;
+					}
+					SavePackageUtilities::AsyncWriteFile(AsyncWriteAndHashSequence, MoveTemp(DataPtr), DataSize, *ArchiveFilename, WriteOptions, Archive->FileRegions);
+				}
+			};
+
+			WriteBulkData(BulkArchive.Get(), LexToString(EPackageExtension::BulkDataDefault));
+			WriteBulkData(OptionalBulkArchive.Get(), LexToString(EPackageExtension::BulkDataOptional));
+			WriteBulkData(MappedBulkArchive.Get(), LexToString(EPackageExtension::BulkDataMemoryMapped));
+		}
+	}
+
+	if (!bSeparateSegmentsEnabled)
+	{
+		if (PackageWriter)
+		{
+			check(BulkArchive.IsValid() && LinkerStart == 0);
+			InOutStartOffset += BulkArchive->TotalSize();
+		}
+		else
+		{
+			check(!BulkArchive.IsValid() && LinkerStart > 0);
+			InOutStartOffset += Linker->Tell() - LinkerStart;
 		}
 	}
 
 	Linker->BulkDataToAppend.Empty();
+	return ESavePackageResult::Success;
 }
 
 void SaveWorldLevelInfo(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchive::FRecord Record)
 {
 	Linker->Summary.WorldTileInfoDataOffset = 0;
 	
-	if(InOuter->WorldTileInfo.IsValid())
+	if(FWorldTileInfo* WorldTileInfo = InOuter->GetWorldTileInfo())
 	{
 		Linker->Summary.WorldTileInfoDataOffset = Linker->Tell();
-		Record << SA_VALUE(TEXT("WorldLevelInfo"), *(InOuter->WorldTileInfo));
+		Record << SA_VALUE(TEXT("WorldLevelInfo"), *WorldTileInfo);
 	}
 }
 
@@ -1916,6 +2396,8 @@ void SaveWorldLevelInfo(UPackage* InOuter, FLinkerSave* Linker, FStructuredArchi
 
 void UPackage::WaitForAsyncFileWrites()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UPackage::WaitForAsyncFileWrites);
+
 	while (OutstandingAsyncWrites.GetValue())
 	{
 		FPlatformProcess::Sleep(0.0f);
@@ -1944,8 +2426,8 @@ bool UPackage::IsEmptyPackage(UPackage* Package, const UObject* LastReferencer)
 				return false;
 			}
 			return true;
-		// Don't consider transient, class default or pending kill objects
-		}, false, RF_Transient | RF_ClassDefaultObject, EInternalObjectFlags::PendingKill);
+		// Don't consider transient, class default or garbage objects
+		}, false, RF_Transient | RF_ClassDefaultObject, EInternalObjectFlags::Garbage);
 		return bIsEmpty;
 	}
 
@@ -1985,7 +2467,7 @@ namespace AssetRegistry
 
 		// Collect the tag map
 		TArray<UObject*> AssetObjects;
-		if (!(Linker->Summary.PackageFlags & PKG_FilterEditorOnly))
+		if (!(Linker->Summary.GetPackageFlags() & PKG_FilterEditorOnly))
 		{
 			// Find any exports which are not in the tag map
 			for (int32 i = 0; i < Linker->ExportMap.Num(); i++)
@@ -2009,6 +2491,7 @@ namespace AssetRegistry
 
 			TArray<UObject::FAssetRegistryTag> SourceTags;
 			Object->GetAssetRegistryTags(SourceTags);
+			Object->GetExternalActorExtendedAssetRegistryTags(SourceTags);
 
 			TArray<UObject::FAssetRegistryTag> Tags;
 			for (UObject::FAssetRegistryTag& SourceTag : SourceTags)

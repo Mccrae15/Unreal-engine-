@@ -9,6 +9,7 @@
 #include "EngineDefines.h"
 #include "Misc/MessageDialog.h"
 #include "Containers/IndirectArray.h"
+#include "Containers/UnrealString.h"
 #include "Stats/Stats.h"
 #include "Async/AsyncWork.h"
 #include "Misc/ConfigCacheIni.h"
@@ -25,6 +26,7 @@
 #include "AnimEncoding.h"
 #include "Factories/Factory.h"
 #include "Factories/FbxSkeletalMeshImportData.h"
+#include "Animation/AnimationSettings.h"
 #include "Animation/MorphTarget.h"
 #include "PhysicsAssetUtils.h"
 #include "Rendering/SkeletalMeshModel.h"
@@ -144,7 +146,7 @@ struct FSkeletalMeshVertPosOctreeSemantics
 	 */
 	FORCEINLINE static FBoxCenterAndExtent GetBoundingBox(const FSoftSkinVertex& Element)
 	{
-		return FBoxCenterAndExtent(Element.Position, FVector::ZeroVector);
+		return FBoxCenterAndExtent((FVector)Element.Position, FVector::ZeroVector);
 	}
 
 	/**
@@ -183,7 +185,7 @@ void RemapSkeletalMeshVertexColorToImportData(const USkeletalMesh* SkeletalMesh,
 	for (int32 WedgeIndex = 0; WedgeIndex < WedgeNumber; ++WedgeIndex)
 	{
 		SkeletalMeshImportData::FVertex& Wedge = SkelMeshImportData->Wedges[WedgeIndex];
-		const FVector& Position = SkelMeshImportData->Points[Wedge.VertexIndex];
+		const FVector& Position = (FVector)SkelMeshImportData->Points[Wedge.VertexIndex];
 		Bounds += Position;
 	}
 
@@ -192,7 +194,7 @@ void RemapSkeletalMeshVertexColorToImportData(const USkeletalMesh* SkeletalMesh,
 	for (int32 SkinVertexIndex = 0; SkinVertexIndex < Vertices.Num(); ++SkinVertexIndex)
 	{
 		const FSoftSkinVertex& SkinVertex = Vertices[SkinVertexIndex];
-		Bounds += SkinVertex.Position;
+		Bounds += (FVector)SkinVertex.Position;
 	}
 
 	TSKCVertPosOctree VertPosOctree(Bounds.GetCenter(), Bounds.GetExtent().GetMax());
@@ -204,7 +206,7 @@ void RemapSkeletalMeshVertexColorToImportData(const USkeletalMesh* SkeletalMesh,
 		VertPosOctree.AddElement(SkinVertex);
 	}
 
-	TMap<int32, FVector> WedgeIndexToNormal;
+	TMap<int32, FVector3f> WedgeIndexToNormal;
 	WedgeIndexToNormal.Reserve(WedgeNumber);
 	for (int32 FaceIndex = 0; FaceIndex < SkelMeshImportData->Faces.Num(); ++FaceIndex)
 	{
@@ -220,9 +222,9 @@ void RemapSkeletalMeshVertexColorToImportData(const USkeletalMesh* SkeletalMesh,
 	for (int32 WedgeIndex = 0; WedgeIndex < WedgeNumber; ++WedgeIndex)
 	{
 		SkeletalMeshImportData::FVertex& Wedge = SkelMeshImportData->Wedges[WedgeIndex];
-		const FVector& Position = SkelMeshImportData->Points[Wedge.VertexIndex];
-		const FVector2D UV = Wedge.UVs[0];
-		const FVector& Normal = WedgeIndexToNormal.FindChecked(WedgeIndex);
+		const FVector& Position = (FVector)SkelMeshImportData->Points[Wedge.VertexIndex];
+		const FVector2f UV = Wedge.UVs[0];
+		const FVector3f& Normal = WedgeIndexToNormal.FindChecked(WedgeIndex);
 
 		TArray<FSoftSkinVertex> PointsToConsider;
 		VertPosOctree.FindNearbyElements(Position, [&PointsToConsider](const FSoftSkinVertex& Vertex)
@@ -239,8 +241,8 @@ void RemapSkeletalMeshVertexColorToImportData(const USkeletalMesh* SkeletalMesh,
 			for (int32 ConsiderationIndex = 0; ConsiderationIndex < PointsToConsider.Num(); ++ConsiderationIndex)
 			{
 				const FSoftSkinVertex& SkinVertex = PointsToConsider[ConsiderationIndex];
-				const FVector2D& SkinVertexUV = SkinVertex.UVs[0];
-				const float UVDistanceSqr = FVector2D::DistSquared(UV, SkinVertexUV);
+				const FVector2f& SkinVertexUV = SkinVertex.UVs[0];
+				const float UVDistanceSqr = FVector2f::DistSquared(UV, SkinVertexUV);
 				if (UVDistanceSqr < MinUVDistance)
 				{
 					MinUVDistance = FMath::Min(MinUVDistance, UVDistanceSqr);
@@ -455,7 +457,7 @@ void FFbxImporter::SkinControlPointsToPose(FSkeletalMeshImportData& ImportData, 
 		int32 StartPointIndex = ExistPointNum - VertexCount;
 		for(int32 ControlPointsIndex = 0 ; ControlPointsIndex < VertexCount ;ControlPointsIndex++ )
 		{
-			ImportData.Points[ControlPointsIndex+StartPointIndex] = Converter.ConvertPos(MeshMatrix.MultT(VertexArray[ControlPointsIndex]));
+			ImportData.Points[ControlPointsIndex+StartPointIndex] = (FVector3f)Converter.ConvertPos(MeshMatrix.MultT(VertexArray[ControlPointsIndex]));
 		}
 		
 	}
@@ -761,13 +763,35 @@ bool UnFbx::FFbxImporter::IsUnrealBone(FbxNode* Link)
 			AttrType == FbxNodeAttribute::eMesh ||
 			AttrType == FbxNodeAttribute::eNull )
 		{
-			return true;
+			return !IsUnrealTransformAttribute(Link);
 		}
 	}
 	
 	return false;
 }
 
+bool UnFbx::FFbxImporter::IsUnrealTransformAttribute(FbxNode* Link)
+{
+	FbxNodeAttribute* Attr = Link->GetNodeAttribute();
+	if (Attr)
+	{
+		FbxNodeAttribute::EType AttrType = Attr->GetAttributeType();
+		if (AttrType == FbxNodeAttribute::eNull)
+		{
+			FString AttributeName = FSkeletalMeshImportData::FixupBoneName(MakeName(Link->GetName()));
+
+			for (const FString& TransformAttributeName : UAnimationSettings::Get()->TransformAttributeNames)
+			{
+				if (AttributeName.MatchesWildcard(TransformAttributeName, ESearchCase::IgnoreCase))
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
 
 void UnFbx::FFbxImporter::RecursiveBuildSkeleton(FbxNode* Link, TArray<FbxNode*>& OutSortedLinks)
 {
@@ -779,6 +803,10 @@ void UnFbx::FFbxImporter::RecursiveBuildSkeleton(FbxNode* Link, TArray<FbxNode*>
 		{
 			RecursiveBuildSkeleton(Link->GetChild(ChildIndex),OutSortedLinks);
 		}
+	}
+	else if (IsUnrealTransformAttribute(Link))
+	{
+		OutSortedLinks.Add(Link);
 	}
 }
 
@@ -1253,20 +1281,20 @@ bool UnFbx::FFbxImporter::ImportBones(TArray<FbxNode*>& NodeArray, FSkeletalMesh
 			}
 		}
 
-		JointMatrix.Transform.SetTranslation(Converter.ConvertPos(LocalLinkT));
-		JointMatrix.Transform.SetRotation(Converter.ConvertRotToQuat(LocalLinkQ));
-		JointMatrix.Transform.SetScale3D(Converter.ConvertScale(LocalLinkS));
+		JointMatrix.Transform.SetTranslation(FVector3f(Converter.ConvertPos(LocalLinkT)));
+		JointMatrix.Transform.SetRotation(FQuat4f(Converter.ConvertRotToQuat(LocalLinkQ)));
+		JointMatrix.Transform.SetScale3D(FVector3f(Converter.ConvertScale(LocalLinkS)));
 	}
 	
 	//In case we do a scene import we need a relative to skeletal mesh transform instead of a global
 	if (ImportOptions->bImportScene && !ImportOptions->bTransformVertexToAbsolute)
 	{
 		FbxAMatrix GlobalSkeletalNodeFbx = Scene->GetAnimationEvaluator()->GetNodeGlobalTransform(SkeletalMeshNode, 0);
-		FTransform GlobalSkeletalNode;
-		GlobalSkeletalNode.SetFromMatrix(Converter.ConvertMatrix(GlobalSkeletalNodeFbx.Inverse()));
+		FTransform3f GlobalSkeletalNode;
+		GlobalSkeletalNode.SetFromMatrix(FMatrix44f(Converter.ConvertMatrix(GlobalSkeletalNodeFbx.Inverse())));
 
 		SkeletalMeshImportData::FBone& RootBone = ImportData.RefBonesBinary[RootIdx];
-		FTransform& RootTransform = RootBone.BonePos.Transform;
+		FTransform3f& RootTransform = RootBone.BonePos.Transform;
 		RootTransform.SetFromMatrix(RootTransform.ToMatrixWithScale() * GlobalSkeletalNode.ToMatrixWithScale());
 	}
 
@@ -1274,10 +1302,10 @@ bool UnFbx::FFbxImporter::ImportBones(TArray<FbxNode*>& NodeArray, FSkeletalMesh
 	{
 		FbxAMatrix FbxAddedMatrix;
 		BuildFbxMatrixForImportTransform(FbxAddedMatrix, TemplateData);
-		FMatrix AddedMatrix = Converter.ConvertMatrix(FbxAddedMatrix);
+		FMatrix44f AddedMatrix = FMatrix44f(Converter.ConvertMatrix(FbxAddedMatrix));
 
 		SkeletalMeshImportData::FBone& RootBone = ImportData.RefBonesBinary[RootIdx];
-		FTransform& RootTransform = RootBone.BonePos.Transform;
+		FTransform3f& RootTransform = RootBone.BonePos.Transform;
 		RootTransform.SetFromMatrix(RootTransform.ToMatrixWithScale() * AddedMatrix);
 	}
 	
@@ -1422,9 +1450,24 @@ bool UnFbx::FFbxImporter::FillSkeletalMeshImportPoints(FSkeletalMeshImportData* 
 {
 	FbxMesh* FbxMesh = Node->GetMesh();
 
+	// Extract the name.
+	FString MeshName = MakeName(FbxMesh->GetName());
+	if (MeshName.IsEmpty())
+	{
+		MeshName = MakeName(Node->GetName());
+	}
+
+	// Add the mesh info
+	OutData->MeshInfos.AddDefaulted();
+	SkeletalMeshImportData::FMeshInfo& MeshInfo = OutData->MeshInfos.Last();
+	MeshInfo.Name = *MeshName;
+
 	const int32 ControlPointsCount = FbxMesh->GetControlPointsCount();
 	const int32 ExistPointNum = OutData->Points.Num();
 	OutData->Points.AddUninitialized(ControlPointsCount);
+	
+	MeshInfo.StartImportedVertex = ExistPointNum;
+	MeshInfo.NumVertices = ControlPointsCount;
 
 	// Construct the matrices for the conversion from right handed to left handed system
 	FbxAMatrix TotalMatrix = ComputeSkeletalMeshTotalMatrix(Node, RootNode);
@@ -1458,7 +1501,7 @@ bool UnFbx::FFbxImporter::FillSkeletalMeshImportPoints(FSkeletalMeshImportData* 
 			ConvertedPosition = FVector::ZeroVector;
 		}
 
-		OutData->Points[ ControlPointsIndex + ExistPointNum ] = ConvertedPosition;
+		OutData->Points[ ControlPointsIndex + ExistPointNum ] = (FVector3f)ConvertedPosition;
 	}
 
 	if (bInvalidPositionFound)
@@ -1474,7 +1517,7 @@ bool UnFbx::FFbxImporter::FillSkeletalMeshImportPoints(FSkeletalMeshImportData* 
 bool UnFbx::FFbxImporter::GatherPointsForMorphTarget(FSkeletalMeshImportData* OutData, TArray<FbxNode*>& NodeArray, TArray< FbxShape* >* FbxShapeArray, TSet<uint32>& ModifiedPoints)
 {
 	check(OutData);
-	TArray<FVector> CompressPoints;
+	TArray<FVector3f> CompressPoints;
 	CompressPoints.Reserve(OutData->Points.Num());
 	FSkeletalMeshImportData NewImportData = *OutData;
 	NewImportData.Points.Empty();
@@ -1629,7 +1672,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 	USkeletalMesh* ExistingSkelMesh = nullptr;
 	if ( !ImportSkeletalMeshArgs.FbxShapeArray  )
 	{
-		UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), ImportSkeletalMeshArgs.InParent, ImportSkeletalMeshArgs.Name, false, false, RF_NoFlags, EInternalObjectFlags::PendingKill);
+		UObject* ExistingObject = StaticFindObjectFast(UObject::StaticClass(), ImportSkeletalMeshArgs.InParent, ImportSkeletalMeshArgs.Name, false, false, RF_NoFlags, EInternalObjectFlags::Garbage);
 		ExistingSkelMesh = Cast<USkeletalMesh>(ExistingObject);
 
 		if (!ExistingSkelMesh && ExistingObject)
@@ -1737,8 +1780,8 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 	
 
 	// Create initial bounding box based on expanded version of reference pose for meshes without physics assets. Can be overridden by artist.
-	FBox BoundingBox(SkelMeshImportDataPtr->Points.GetData(), SkelMeshImportDataPtr->Points.Num());
-	const FVector BoundingBoxSize = BoundingBox.GetSize();
+	FBox3f BoundingBox(SkelMeshImportDataPtr->Points.GetData(), SkelMeshImportDataPtr->Points.Num());
+	const FVector3f BoundingBoxSize = BoundingBox.GetSize();
 
 	if (SkelMeshImportDataPtr->Points.Num() > 2 && BoundingBoxSize.X < THRESH_POINTS_ARE_SAME && BoundingBoxSize.Y < THRESH_POINTS_ARE_SAME && BoundingBoxSize.Z < THRESH_POINTS_ARE_SAME)
 	{
@@ -1748,8 +1791,8 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 
 	FSkeletalMeshBuildSettings BuildOptions;
 	//Make sure the build option change in the re-import ui is reconduct
-	BuildOptions.bBuildAdjacencyBuffer = true;
 	BuildOptions.bUseFullPrecisionUVs = false;
+	BuildOptions.bUseBackwardsCompatibleF16TruncUVs = false;
 	BuildOptions.bUseHighPrecisionTangentBasis = false;
 	BuildOptions.bRecomputeNormals = !ImportOptions->ShouldImportNormals() || !SkelMeshImportDataPtr->bHasNormals;
 	BuildOptions.bRecomputeTangents = !ImportOptions->ShouldImportTangents() || !SkelMeshImportDataPtr->bHasTangents;
@@ -1770,10 +1813,10 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 		FSkeletalMeshLODInfo* LODInfoPtr = ExistingSkelMesh->GetLODInfo(SafeReimportLODIndex);
 		if (LODInfoPtr)
 		{
-			//Adjacency buffer, full precision UV and High precision tangent cannot be change in the re-import options, it must not be change from the original data.
-			BuildOptions.bBuildAdjacencyBuffer = LODInfoPtr->BuildSettings.bBuildAdjacencyBuffer;
+			// Full precision UV and High precision tangent cannot be change in the re-import options, it must not be change from the original data.
 			BuildOptions.bUseFullPrecisionUVs = LODInfoPtr->BuildSettings.bUseFullPrecisionUVs;
 			BuildOptions.bUseHighPrecisionTangentBasis = LODInfoPtr->BuildSettings.bUseHighPrecisionTangentBasis;
+			BuildOptions.bUseBackwardsCompatibleF16TruncUVs = LODInfoPtr->BuildSettings.bUseBackwardsCompatibleF16TruncUVs;
 
 			//Copy all the build option to reflect any change in the setting using the re-import UI
 			LODInfoPtr->BuildSettings = BuildOptions;
@@ -1850,7 +1893,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 	NewLODInfo.ReductionSettings.MaxDeviationPercentage = 0.0f;
 	NewLODInfo.LODHysteresis = 0.02f;
 
-	SkeletalMesh->SetImportedBounds(FBoxSphereBounds(BoundingBox));
+	SkeletalMesh->SetImportedBounds(FBoxSphereBounds((FBox)BoundingBox));
 
 	// Store whether or not this mesh has vertex colors
 	SkeletalMesh->SetHasVertexColors(SkelMeshImportDataPtr->bHasVertexColors);
@@ -1859,9 +1902,21 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 	// Pass the number of texture coordinate sets to the LODModel.  Ensure there is at least one UV coord
 	LODModel.NumTexCoords = FMath::Max<uint32>(1, SkelMeshImportDataPtr->NumTexCoords);
 
+	// Copy mesh infos into the LOD model.
+	LODModel.ImportedMeshInfos.Empty();
+	LODModel.ImportedMeshInfos.Reserve(SkelMeshImportDataPtr->MeshInfos.Num());
+	for (const SkeletalMeshImportData::FMeshInfo& MeshInfo : SkelMeshImportDataPtr->MeshInfos)
+	{
+		LODModel.ImportedMeshInfos.AddDefaulted();
+		FSkelMeshImportedMeshInfo& LODMeshInfo = LODModel.ImportedMeshInfos.Last();
+		LODMeshInfo.Name = MeshInfo.Name;
+		LODMeshInfo.NumVertices = MeshInfo.NumVertices;
+		LODMeshInfo.StartImportedVertex = MeshInfo.StartImportedVertex;
+	}
+
 	if(ImportSkeletalMeshArgs.bCreateRenderData )
 	{
-		TArray<FVector> LODPoints;
+		TArray<FVector3f> LODPoints;
 		TArray<SkeletalMeshImportData::FMeshWedge> LODWedges;
 		TArray<SkeletalMeshImportData::FMeshFace> LODFaces;
 		TArray<SkeletalMeshImportData::FVertInfluence> LODInfluences;
@@ -1882,6 +1937,17 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 			TArray<FName> WarningNames;
 			// Create actual rendering data.
 			bBuildSuccess = MeshUtilities.BuildSkeletalMesh(ImportedResource->LODModels[ImportLODModelIndex], SkeletalMesh->GetPathName(), SkeletalMesh->GetRefSkeleton(), LODInfluences, LODWedges, LODFaces, LODPoints, LODPointToRawMap, LegacyBuildOptions, &WarningMessages, &WarningNames);
+
+			//Cache the vertex/triangle count in the InlineReductionCacheData so we can know if the LODModel need reduction or not.
+			TArray<FInlineReductionCacheData>& InlineReductionCacheDatas = ImportedResource->InlineReductionCacheDatas;
+			if (!InlineReductionCacheDatas.IsValidIndex(ImportLODModelIndex))
+			{
+				InlineReductionCacheDatas.AddDefaulted((ImportLODModelIndex + 1) - InlineReductionCacheDatas.Num());
+			}
+			if (ensure(InlineReductionCacheDatas.IsValidIndex(ImportLODModelIndex)))
+			{
+				InlineReductionCacheDatas[ImportLODModelIndex].SetCacheGeometryInfo(ImportedResource->LODModels[ImportLODModelIndex]);
+			}
 
 			// temporary hack of message/names, should be one token or a struct
 			if (WarningMessages.Num() > 0 && WarningNames.Num() == WarningMessages.Num())
@@ -1910,7 +1976,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 
 		if( !bBuildSuccess )
 		{
-			SkeletalMesh->MarkPendingKill();
+			SkeletalMesh->MarkAsGarbage();
 			return NULL;
 		}
 		
@@ -1937,7 +2003,10 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 					MaterialIndex = SkeletalMesh->GetLODInfo(0)->LODMaterialMap[SectionIndex];
 				}
 
-				ImportSkeletalMeshArgs.ImportMeshSectionsData->SectionOriginalMaterialName.Add(Materials[MaterialIndex].ImportedMaterialSlotName);
+				if (ensure(Materials.IsValidIndex(MaterialIndex)))
+				{
+					ImportSkeletalMeshArgs.ImportMeshSectionsData->SectionOriginalMaterialName.Add(Materials[MaterialIndex].ImportedMaterialSlotName);
+				}
 			}
 		}
 
@@ -2051,7 +2120,7 @@ USkeletalMesh* UnFbx::FFbxImporter::ImportSkeletalMesh(FImportSkeletalMeshArgs &
 							{
 								FAssetData& CurAssetData = SkeletalMeshAssetData[AssetId];
 								const USkeletalMesh* ExtraSkeletalMesh = Cast<USkeletalMesh>(CurAssetData.GetAsset());
-								if (SkeletalMesh != ExtraSkeletalMesh && ExtraSkeletalMesh && ExtraSkeletalMesh->IsPendingKill() == false)
+								if (SkeletalMesh != ExtraSkeletalMesh && IsValid(ExtraSkeletalMesh))
 								{
 									// merge still can fail, then print message box
 									if (Skeleton->MergeAllBonesToBoneTree(ExtraSkeletalMesh) == false)
@@ -2368,7 +2437,6 @@ USkeletalMesh* UnFbx::FFbxImporter::ReimportSkeletalMesh(USkeletalMesh* Mesh, UF
 			if (!Mesh->IsLODImportedDataBuildAvailable(0))
 			{
 				//Set the build settings
-				LODInfo->BuildSettings.bBuildAdjacencyBuffer = true;
 				LODInfo->BuildSettings.bComputeWeightedNormals = SKImportData->bComputeWeightedNormals;
 				LODInfo->BuildSettings.bRecomputeNormals = SKImportData->NormalImportMethod == EFBXNormalImportMethod::FBXNIM_ComputeNormals;
 				LODInfo->BuildSettings.bRecomputeTangents = SKImportData->NormalImportMethod != EFBXNormalImportMethod::FBXNIM_ImportNormalsAndTangents;
@@ -3395,6 +3463,8 @@ bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& 
 	int32 ExistWedgesNum = ImportData.Wedges.Num();
 	SkeletalMeshImportData::FVertex TmpWedges[3];
 
+	bool bUnsupportedSmoothingGroupErrorDisplayed = false;
+	bool bFaceMaterialIndexInconsistencyErrorDisplayed = false;
 	for( int32 TriangleIndex = ExistFaceNum, LocalIndex = 0 ; TriangleIndex < ExistFaceNum+TriangleCount ; TriangleIndex++, LocalIndex++ )
 	{
 
@@ -3414,9 +3484,10 @@ bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& 
 					int32 lSmoothingIndex = (SmoothingReferenceMode == FbxLayerElement::eDirect) ? LocalIndex : SmoothingInfo->GetIndexArray().GetAt(LocalIndex);
 					Triangle.SmoothingGroups = SmoothingInfo->GetDirectArray().GetAt(lSmoothingIndex);
 				}
-				else
+				else if(!bUnsupportedSmoothingGroupErrorDisplayed)
 				{
 					AddTokenizedErrorMessage(FTokenizedMessage::Create(EMessageSeverity::Warning, FText::Format(LOCTEXT("FbxSkeletaLMeshimport_Unsupportingsmoothinggroup", "Unsupported Smoothing group mapping mode on mesh '{0}'"), FText::FromString(Mesh->GetName()))), FFbxErrors::Generic_Mesh_UnsupportingSmoothingGroup);
+					bUnsupportedSmoothingGroupErrorDisplayed = true;
 				}
 			}
 		}
@@ -3448,18 +3519,18 @@ bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& 
 				{
 					TempValue = LayerElementTangent->GetDirectArray().GetAt(TangentMapIndex);
 					TempValue = TotalMatrixForNormal.MultT(TempValue);
-					Triangle.TangentX[ UnrealVertexIndex ] = Converter.ConvertDir(TempValue);
+					Triangle.TangentX[ UnrealVertexIndex ] = (FVector3f)Converter.ConvertDir(TempValue);
 					Triangle.TangentX[ UnrealVertexIndex ].Normalize();
 
 					TempValue = LayerElementBinormal->GetDirectArray().GetAt(TangentMapIndex);
 					TempValue = TotalMatrixForNormal.MultT(TempValue);
-					Triangle.TangentY[ UnrealVertexIndex ] = -Converter.ConvertDir(TempValue);
+					Triangle.TangentY[ UnrealVertexIndex ] = (FVector3f)-Converter.ConvertDir(TempValue);
 					Triangle.TangentY[ UnrealVertexIndex ].Normalize();
 				}
 
 				TempValue = LayerElementNormal->GetDirectArray().GetAt(NormalValueIndex);
 				TempValue = TotalMatrixForNormal.MultT(TempValue);
-				Triangle.TangentZ[ UnrealVertexIndex ] = Converter.ConvertDir(TempValue);
+				Triangle.TangentZ[ UnrealVertexIndex ] = (FVector3f)Converter.ConvertDir(TempValue);
 				Triangle.TangentZ[ UnrealVertexIndex ].Normalize();
 			
 			}
@@ -3468,9 +3539,9 @@ bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& 
 				int32 NormalIndex;
 				for( NormalIndex = 0; NormalIndex < 3; ++NormalIndex )
 				{
-					Triangle.TangentX[ NormalIndex ] = FVector::ZeroVector;
-					Triangle.TangentY[ NormalIndex ] = FVector::ZeroVector;
-					Triangle.TangentZ[ NormalIndex ] = FVector::ZeroVector;
+					Triangle.TangentX[ NormalIndex ] = FVector3f::ZeroVector;
+					Triangle.TangentY[ NormalIndex ] = FVector3f::ZeroVector;
+					Triangle.TangentZ[ NormalIndex ] = FVector3f::ZeroVector;
 				}
 			}
 		}
@@ -3496,7 +3567,11 @@ bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& 
 						int32 Index = LayerElementMaterial->GetIndexArray().GetAt(LocalIndex);							
 						if (!MaterialMapping.IsValidIndex(Index))
 						{
-							AddTokenizedErrorMessage(FTokenizedMessage::Create(EMessageSeverity::Warning, LOCTEXT("FbxSkeletaLMeshimport_MaterialIndexInconsistency", "Face material index inconsistency - forcing to 0")), FFbxErrors::Generic_Mesh_MaterialIndexInconsistency);
+							if (!bFaceMaterialIndexInconsistencyErrorDisplayed)
+							{
+								AddTokenizedErrorMessage(FTokenizedMessage::Create(EMessageSeverity::Warning, LOCTEXT("FbxSkeletaLMeshimport_MaterialIndexInconsistency", "Face material index inconsistency - forcing to 0")), FFbxErrors::Generic_Mesh_MaterialIndexInconsistency);
+								bFaceMaterialIndexInconsistencyErrorDisplayed = true;
+							}
 						}
 						else
 						{
@@ -3511,7 +3586,11 @@ bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& 
 			// because we don't import material for morph, so the ImportData.Materials contains zero material
 			if ( !FbxShape && (Triangle.MatIndex < 0 ||  Triangle.MatIndex >= FbxMaterials.Num() ) )
 			{
-				AddTokenizedErrorMessage(FTokenizedMessage::Create(EMessageSeverity::Warning, LOCTEXT("FbxSkeletaLMeshimport_MaterialIndexInconsistency", "Face material index inconsistency - forcing to 0")), FFbxErrors::Generic_Mesh_MaterialIndexInconsistency);
+				if (!bFaceMaterialIndexInconsistencyErrorDisplayed)
+				{
+					AddTokenizedErrorMessage(FTokenizedMessage::Create(EMessageSeverity::Warning, LOCTEXT("FbxSkeletaLMeshimport_MaterialIndexInconsistency", "Face material index inconsistency - forcing to 0")), FFbxErrors::Generic_Mesh_MaterialIndexInconsistency);
+					bFaceMaterialIndexInconsistencyErrorDisplayed = true;
+				}
 				Triangle.MatIndex = 0;
 			}
 		}
@@ -3622,7 +3701,7 @@ bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& 
 		{
 			for (int32 VertexIndex = 0; VertexIndex < 3; VertexIndex++)
 			{
-				const FVector VertexPosition = ImportData.Points[TmpWedges[VertexIndex].VertexIndex];
+				const FVector VertexPosition = (FVector)ImportData.Points[TmpWedges[VertexIndex].VertexIndex];
 				const FColor* PaintedColor = ExistingVertexColorData.Find(VertexPosition);
 				
 				// try to match this wedge current vertex with one that existed in the previous mesh.
@@ -3646,7 +3725,7 @@ bool UnFbx::FFbxImporter::FillSkelMeshImporterFromFbx( FSkeletalMeshImportData& 
 			ImportData.Wedges[w].MatIndex = TmpWedges[VertexIndex].MatIndex;
 			ImportData.Wedges[w].Color = TmpWedges[VertexIndex].Color;
 			ImportData.Wedges[w].Reserved = 0;
-			FMemory::Memcpy( ImportData.Wedges[w].UVs, TmpWedges[VertexIndex].UVs, sizeof(FVector2D)*MAX_TEXCOORDS );
+			FMemory::Memcpy( ImportData.Wedges[w].UVs, TmpWedges[VertexIndex].UVs, sizeof(FVector2f)*MAX_TEXCOORDS );
 			
 			Triangle.WedgeIndex[VertexIndex] = w;
 		}
@@ -3799,6 +3878,7 @@ void UnFbx::FFbxImporter::InsertNewLODToBaseSkeletalMesh(USkeletalMesh* InSkelet
 							const FSkelMeshSection& ExistSection = ExistLODModel.Sections[ExistSectionIndex];
 							//We found a match, restore the data
 							NewSection.bCastShadow = ExistSection.bCastShadow;
+							NewSection.bVisibleInRayTracing = ExistSection.bVisibleInRayTracing;
 							NewSection.bRecomputeTangent = ExistSection.bRecomputeTangent;
 							NewSection.RecomputeTangentsVertexMaskChannel = ExistSection.RecomputeTangentsVertexMaskChannel;
 							NewSection.bDisabled = ExistSection.bDisabled;
@@ -3811,6 +3891,7 @@ void UnFbx::FFbxImporter::InsertNewLODToBaseSkeletalMesh(USkeletalMesh* InSkelet
 								FSkelMeshSourceSectionUserData& UserSectionData = NewLODModel.UserSectionsData.FindOrAdd(ParentOriginalSectionIndex);
 								UserSectionData.bDisabled = NewSection.bDisabled;
 								UserSectionData.bCastShadow = NewSection.bCastShadow;
+								UserSectionData.bVisibleInRayTracing = NewSection.bVisibleInRayTracing;
 								UserSectionData.bRecomputeTangent = NewSection.bRecomputeTangent;					
 								UserSectionData.RecomputeTangentsVertexMaskChannel = NewSection.RecomputeTangentsVertexMaskChannel;
 								UserSectionData.GenerateUpToLodIndex = NewSection.GenerateUpToLodIndex;
@@ -4159,7 +4240,7 @@ bool UnFbx::FFbxImporter::ImportSkeletalMeshLOD(USkeletalMesh* InSkeletalMesh, U
 		BaseSkeletalMesh->GetRefSkeleton().EnsureParentsExistAndSort(NewLODModel.ActiveBoneIndices);
 	}
 	// To be extra-nice, we apply the difference between the root transform of the meshes to the verts.
-	FMatrix LODToBaseTransform = InSkeletalMesh->GetRefPoseMatrix(0).InverseFast() * BaseSkeletalMesh->GetRefPoseMatrix(0);
+	FMatrix44f LODToBaseTransform = FMatrix44f(InSkeletalMesh->GetRefPoseMatrix(0).InverseFast() * BaseSkeletalMesh->GetRefPoseMatrix(0));
 
 	for (int32 SectionIndex = 0; SectionIndex < NewLODModel.Sections.Num(); SectionIndex++)
 	{
@@ -4223,6 +4304,7 @@ bool UnFbx::FFbxImporter::ImportSkeletalMeshLOD(USkeletalMesh* InSkeletalMesh, U
 					{
 						//Set the value and exit
 						ImportedSection.bCastShadow = ExistingSection.bCastShadow;
+						ImportedSection.bVisibleInRayTracing = ExistingSection.bVisibleInRayTracing;
 						ImportedSection.bRecomputeTangent = ExistingSection.bRecomputeTangent;
 						ImportedSection.RecomputeTangentsVertexMaskChannel = ExistingSection.RecomputeTangentsVertexMaskChannel;
 						break;
@@ -4232,6 +4314,7 @@ bool UnFbx::FFbxImporter::ImportSkeletalMeshLOD(USkeletalMesh* InSkeletalMesh, U
 				{
 					//Set the value and exit
 					ImportedSection.bCastShadow = ExistingSection.bCastShadow;
+					ImportedSection.bVisibleInRayTracing = ExistingSection.bVisibleInRayTracing;
 					ImportedSection.bRecomputeTangent = ExistingSection.bRecomputeTangent;
 					ImportedSection.RecomputeTangentsVertexMaskChannel = ExistingSection.RecomputeTangentsVertexMaskChannel;
 					break;

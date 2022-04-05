@@ -62,6 +62,8 @@ namespace ConcertSyncClientUtil
 		EGetObjectResultFlags Flags;
 	};
 
+	bool UserIsEditing();
+
 	bool CanPerformBlockingAction(const bool bBlockDuringInteraction = true);
 
 	void UpdatePendingKillState(UObject* InObj, const bool bIsPendingKill);
@@ -86,7 +88,7 @@ namespace ConcertSyncClientUtil
 
 	void FlushPackageLoading(const FName InPackageName);
 
-	void FlushPackageLoading(const FString& InPackageName);
+	void FlushPackageLoading(const FString& InPackageName, bool bForceBulkDataLoad = true);
 
 	void HotReloadPackages(TArrayView<const FName> InPackageNames);
 

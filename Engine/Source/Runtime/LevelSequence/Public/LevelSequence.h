@@ -30,7 +30,7 @@ public:
 
 	/** Pointer to the movie scene that controls this animation. */
 	UPROPERTY()
-	UMovieScene* MovieScene;
+	TObjectPtr<UMovieScene> MovieScene;
 
 public:
 
@@ -46,6 +46,7 @@ public:
 	virtual void BindPossessableObject(const FGuid& ObjectId, UObject& PossessedObject, UObject* Context) override;
 	virtual bool CanPossessObject(UObject& Object, UObject* InPlaybackContext) const override;
 	virtual void LocateBoundObjects(const FGuid& ObjectId, UObject* Context, TArray<UObject*, TInlineAllocator<1>>& OutObjects) const override;
+	virtual FGuid FindBindingFromObject(UObject* InObject, UObject* Context) const override;
 	virtual void GatherExpiredObjects(const FMovieSceneObjectCache& InObjectCache, TArray<FGuid>& OutInvalidIDs) const override;
 	virtual UMovieScene* GetMovieScene() const override;
 	virtual UObject* GetParentObject(UObject* Object) const override;
@@ -58,6 +59,7 @@ public:
 	virtual bool CanAnimateObject(UObject& InObject) const override;
 	virtual UObject* CreateDirectorInstance(IMovieScenePlayer& Player, FMovieSceneSequenceID SequenceID) override;
 	virtual void PostLoad() override;
+	virtual void PostInitProperties() override;
 	virtual bool Rename(const TCHAR* NewName = nullptr, UObject* NewOuter = nullptr, ERenameFlags Flags = REN_None) override;
 
 
@@ -91,6 +93,8 @@ public:
 	 */
 	UBlueprint* GetDirectorBlueprint() const;
 
+	FString GetDirectorBlueprintName() const;
+
 protected:
 
 	virtual FGuid CreatePossessable(UObject* ObjectToPossess) override;
@@ -123,7 +127,7 @@ protected:
 
 	/** A pointer to the director blueprint that generates this sequence's DirectorClass. */
 	UPROPERTY()
-	UBlueprint* DirectorBlueprint;
+	TObjectPtr<UBlueprint> DirectorBlueprint;
 
 #endif
 
@@ -132,7 +136,7 @@ protected:
 	 * Director instances are allocated on-demand one per sequence during evaluation and are used by event tracks for triggering events.
 	 */
 	UPROPERTY()
-	UClass* DirectorClass;
+	TObjectPtr<UClass> DirectorClass;
 
 public:
 	/**
@@ -144,7 +148,7 @@ public:
 	UObject* FindMetaDataByClass(TSubclassOf<UObject> InClass) const
 	{
 #if WITH_EDITORONLY_DATA
-		UObject* const* Found = MetaDataObjects.FindByPredicate([InClass](UObject* In) { return In && In->GetClass() == InClass; });
+		auto const* Found = MetaDataObjects.FindByPredicate([InClass](UObject* In) { return In && In->GetClass() == InClass; });
 		return Found ? CastChecked<UObject>(*Found) : nullptr;
 #endif
 		return nullptr;
@@ -218,7 +222,7 @@ public:
 	MetaDataType* FindMetaData() const
 	{
 		UClass* PredicateClass = MetaDataType::StaticClass();
-		UObject* const* Found = MetaDataObjects.FindByPredicate([PredicateClass](UObject* In){ return In && In->GetClass() == PredicateClass; });
+		auto const* Found = MetaDataObjects.FindByPredicate([PredicateClass](UObject* In){ return In && In->GetClass() == PredicateClass; });
 		return Found ? CastChecked<MetaDataType>(*Found) : nullptr;
 	}
 
@@ -267,12 +271,12 @@ private:
 
 	/** Array of meta-data objects associated with this level sequence. Each pointer may implement the ILevelSequenceMetaData interface in order to hook into default ULevelSequence functionality. */
 	UPROPERTY()
-	TArray<UObject*> MetaDataObjects;
+	TArray<TObjectPtr<UObject>> MetaDataObjects;
 
 #endif
 
 protected:
 	/** Array of user data stored with the asset */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = Animation)
-	TArray<UAssetUserData*> AssetUserData;
+	TArray<TObjectPtr<UAssetUserData>> AssetUserData;
 };

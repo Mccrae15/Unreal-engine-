@@ -11,6 +11,7 @@
 #include "DragDrop/DMXPixelMappingDragDropOp.h"
 #include "Views/SDMXPixelMappingHierarchyView.h"
 #include "ScopedTransaction.h"
+#include "Styling/AppStyle.h"
 
 void SDMXPixelMappingHierarchyItem::Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTableView, TSharedPtr<FDMXPixelMappingHierarchyItemWidgetModel> InModel, TSharedPtr<SDMXPixelMappingHierarchyView> InHierarchyView)
 {
@@ -22,7 +23,7 @@ void SDMXPixelMappingHierarchyItem::Construct(const FArguments& InArgs, const TS
 	STableRow<FDMXPixelMappingHierarchyItemWidgetModelPtr>::Construct(
 		STableRow<FDMXPixelMappingHierarchyItemWidgetModelPtr>::FArguments()
 		.Padding(0.0f)
-		.Style(FEditorStyle::Get(), "UMGEditor.PaletteHeader")
+		.Style(&FAppStyle::Get().GetWidgetStyle<FTableRowStyle>("SimpleTableView.Row"))
 		.OnDragDetected(this, &SDMXPixelMappingHierarchyItem::OnDraggingWidget)
 		.OnDrop(this, &SDMXPixelMappingHierarchyItem::OnDropWidget)
 		.Content()
@@ -105,23 +106,43 @@ FReply SDMXPixelMappingHierarchyItem::OnDropWidget(const FDragDropEvent& InDragD
 					NewParent = Destination->GetParent();
 				}
 
-				if (NewParent)
+				const bool bOldParentIsNewParent = NewParent == Source->GetParent();
+				if (NewParent && !bOldParentIsNewParent)
 				{
+					// Add to the new parent
 					NewParent->Modify();
 					Source->Modify();
 					NewParent->AddChild(Source);
 
+					// Remove from the old parent
 					if (Source->GetParent())
 					{
 						Source->GetParent()->Modify();
 						Source->GetParent()->RemoveChild(Source);
 					}
 
+					// Adopt location and size of new parent if required
+					if (UDMXPixelMappingOutputComponent* ParentOutputComponent = Cast<UDMXPixelMappingOutputComponent>(NewParent))
+					{
+						if (UDMXPixelMappingOutputComponent* ChildOutputComponent = Cast<UDMXPixelMappingOutputComponent>(Source))
+						{
+							if (!ChildOutputComponent->IsOverParent())
+							{
+								const FVector2D ParentSize = ParentOutputComponent->GetSize();
+								const FVector2D ChildSize = ChildOutputComponent->GetSize();
+								const FVector2D NewChildSize = FVector2D(FMath::Min(ParentSize.X, ChildSize.X), FMath::Min(ParentSize.Y, ChildSize.Y));
+								ChildOutputComponent->SetSize(NewChildSize);
+
+								ChildOutputComponent->SetPosition(ParentOutputComponent->GetPosition());
+							}
+						}
+					}
+
 					HierarchyView->RequestComponentRedraw(NewParent);
 					HierarchyView->RequestRebuildTree();
 				}
 			}
-		}		
+		}
 	}
 	return FReply::Unhandled();
 }

@@ -47,8 +47,6 @@ enum class EDatasmithTextureSlot
 	OPACITYMASK,
 	NORMAL,
 	WORLDPOSITIONOFFSET,
-	DISPLACE,
-	TESSELLATIONMULTIPLIER,
 	SUBSURFACECOLOR,
 	COATSPECULAR,
 	COATROUGHNESS,
@@ -145,7 +143,6 @@ private:
 	static void CreateDatasmithMaterialCoat(const FDatasmithAssetsImportContext& AssetsContext, const TSharedPtr< IDatasmithShaderElement >& ShaderElement, UObject* UnrealMaterial);
 	static void ModulateNormalAmount(UObject* UnrealMatOrFunc, double Amount);
 	static void CreateParallaxOffset(UObject* UnrealMatOrFunc, UMaterialExpressionTextureObject* TextureObject, FDatasmithTextureSampler UV, float Amount);
-	static void ModulateDisplacement(UObject* UnrealMatOrFunc, double Amount, int32 SubDivisions);
 	static UMaterialExpressionMaterialFunctionCall* BlendFunctions(UMaterial* UnrealMaterial, const FDatasmithAssetsImportContext& AssetsContext, const TSharedPtr< IDatasmithShaderElement >& ShaderTop,
 																   UMaterialExpressionMaterialFunctionCall* CallTop, UMaterialExpressionMaterialFunctionCall* CallBase, UMaterialFunction* BlendFunc);
 

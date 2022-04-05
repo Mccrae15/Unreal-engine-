@@ -12,6 +12,7 @@
 #include "UObject/Object.h"
 #include "Animation/AnimLinkableElement.h"
 #include "Animation/AnimTypes.h"
+#include "Animation/BlendProfile.h"
 #include "Animation/Skeleton.h"
 #include "Animation/AnimationAsset.h"
 #include "AlphaBlend.h"
@@ -23,6 +24,7 @@ class UAnimInstance;
 class UAnimMontage;
 class UAnimSequence;
 class USkeletalMeshComponent;
+
 
 /**
  * Section data for each track. Reference of data will be stored in the child class for the way they want
@@ -51,7 +53,7 @@ struct FCompositeSection : public FAnimLinkableElement
 	 * You can query by GetMetaData function
 	 */
 	UPROPERTY(Category=Section, Instanced, EditAnywhere)
-	TArray<class UAnimMetaData*> MetaData;
+	TArray<TObjectPtr<class UAnimMetaData>> MetaData;
 
 public:
 	FCompositeSection()
@@ -121,6 +123,15 @@ namespace EAnimNotifyEventType
 		End,
 	};
 }
+
+UENUM()
+enum class EMontageBlendMode : uint8
+{
+	//Uses standard weight based blend
+	Standard,
+	//Uses inertialization. Requires an inertialization node somewhere in the graph after any slot node used by this montage.
+	Inertialization,
+};
 
 /** AnimNotifies marked as BranchingPoints will create these markers on their Begin/End times.
 	They create stopping points when the Montage is being ticked to dispatch events. */
@@ -279,6 +290,31 @@ private:
 	float GetCurrSectionStartPosition_Target() const;
 };
 
+/**
+* Montage blend settings. Can be used to overwrite default Montage settings on Play/Stop
+*/
+USTRUCT(BlueprintType)
+struct ENGINE_API FMontageBlendSettings
+{
+	GENERATED_BODY()
+
+	FMontageBlendSettings();
+	FMontageBlendSettings(float BlendTime);
+	FMontageBlendSettings(const FAlphaBlendArgs& BlendArgs);
+
+	/** Blend Profile to use for this blend */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (DisplayAfter = "Blend"))
+	TObjectPtr<UBlendProfile> BlendProfile;
+
+	/** AlphaBlend options (time, curve, etc.) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (DisplayAfter = "BlendMode"))
+	FAlphaBlendArgs Blend;
+
+	/** Type of blend mode (Standard vs Inertial) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend")
+	EMontageBlendMode BlendMode;
+};
+
 USTRUCT()
 struct ENGINE_API FAnimMontageInstance
 {
@@ -288,7 +324,7 @@ struct ENGINE_API FAnimMontageInstance
 
 	// Montage reference
 	UPROPERTY()
-	class UAnimMontage* Montage;
+	TObjectPtr<class UAnimMontage> Montage;
 
 	// delegates
 	FOnMontageEnded OnMontageEnded;
@@ -300,6 +336,9 @@ struct ENGINE_API FAnimMontageInstance
 	// Blend Time multiplier to allow extending and narrowing blendtimes
 	UPROPERTY(transient)
 	float DefaultBlendTimeMultiplier;
+
+	// transient value of time position and delta in the last frame known
+	FDeltaTimeRecord DeltaTimeRecord;
 
 	// marker tick record
 	FMarkerTickRecord MarkerTickRecord;
@@ -356,14 +395,15 @@ private:
 	//                          - we spawn all notifies
 	float NotifyWeight;
 
-	// transient value of Delta Moved in the last frame known
-	float DeltaMoved;
-
-	// transient value of previous position before move
-	float PreviousPosition;
+	// The current start linear alpha value of the blend. This is not stored inside the FAlphaBlend struct.
+	float BlendStartAlpha;
 
 	// sync group name
 	FName SyncGroupName;
+
+	// Active blend profile.
+	UBlendProfile* ActiveBlendProfile;
+	EBlendProfileMode ActiveBlendProfileMode;
 
 	/**
 	 * Optional evaluation range to use next update (ignoring the real delta time).
@@ -407,6 +447,10 @@ public:
 	void SetWeight(float InValue) { Blend.SetAlpha(InValue); }
 	/** Set the Desired Weight */
 	void SetDesiredWeight(float InValue) { Blend.SetDesiredValue(InValue); }
+
+	/** Get the current blend info. */
+	const FAlphaBlend& GetBlend() const { return Blend; }
+
 private:
 	/** Followers this Montage will synchronize */
 	TArray<struct FAnimMontageInstance*> MontageSyncFollowers;
@@ -434,8 +478,17 @@ public:
 	FAnimMontageInstance(UAnimInstance * InAnimInstance);
 
 	//~ Begin montage instance Interfaces
+
+	// Blend in with the supplied play rate. Other blend settings will come from the Montage asset.
 	void Play(float InPlayRate = 1.f);
+	// Blend in with the supplied blend settings
+	void Play(float InPlayRate, const FMontageBlendSettings& BlendInSettings);
+
+	// Blend out with the supplied FAlphaBlend. Other blend settings will come from the Montage asset.
 	void Stop(const FAlphaBlend& InBlendOut, bool bInterrupt=true);
+	// Blend out with the supplied blend settings
+	void Stop(const FMontageBlendSettings& InBlendOutSettings, bool bInterrupt=true);
+
 	void Pause();
 	void Initialize(class UAnimMontage * InMontage);
 
@@ -462,9 +515,12 @@ public:
 	int32 GetInstanceID() const { return InstanceID; }
 	float GetPosition() const { return Position; };
 	float GetPlayRate() const { return PlayRate; }
-	float GetDeltaMoved() const { return DeltaMoved; }
-	float GetPreviousPosition() const { return PreviousPosition;  }
+	float GetDeltaMoved() const { return DeltaTimeRecord.Delta; }
+	float GetPreviousPosition() const { return DeltaTimeRecord.GetPrevious();  }
+	float GetBlendStartAlpha() const { return BlendStartAlpha; }
 	const FAnimMontageInstance* GetMontageSyncLeader() const { return MontageSyncLeader; } 
+	const UBlendProfile* GetActiveBlendProfile() const { return ActiveBlendProfile; }
+	const EBlendProfileMode GetActiveBlendProfileMode() const { return ActiveBlendProfileMode; }
 
 	/** 
 	 * Setters
@@ -529,20 +585,11 @@ private:
 	float GetRemainingPlayTimeToSectionEnd(const FMontageSubStepper& MontageSubStepper) const;
 
 public:
-	/** static functions that are used by matinee functionality */
-	static UAnimMontage* SetMatineeAnimPositionInner(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, UAnimSequenceBase* InAnimSequence, float InPosition, bool bLooping);
-	static UAnimMontage* PreviewMatineeSetAnimPositionInner(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, UAnimSequenceBase* InAnimSequence, float InPosition, bool bLooping, bool bFireNotifies, float DeltaTime);
-	
-	static UAnimMontage* SetMatineeAnimPositionInner(FName SlotName, UAnimInstance* AnimInstance, UAnimSequenceBase* InAnimSequence, float InPosition, bool bLooping);
-	static UAnimMontage* PreviewMatineeSetAnimPositionInner(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, UAnimInstance* AnimInstance, UAnimSequenceBase* InAnimSequence, float InPosition, bool bLooping, bool bFireNotifies, float DeltaTime);
-	
 	/** static functions that are used by sequencer montage support*/
 	static UAnimMontage* SetSequencerMontagePosition(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, int32& InOutInstanceId, UAnimSequenceBase* InAnimSequence, float InFromPosition, float InToPosition, float Weight, bool bLooping, bool bPlaying);
 	static UAnimMontage* PreviewSequencerMontagePosition(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, int32& InOutInstanceId, UAnimSequenceBase* InAnimSequence, float InFromPosition, float InToPosition, float Weight, bool bLooping, bool bFireNotifies, bool bPlaying);
 	static UAnimMontage* SetSequencerMontagePosition(FName SlotName, UAnimInstance* AnimInstance, int32& InOutInstanceId, UAnimSequenceBase* InAnimSequence, float InFromPosition, float InToPosition, float Weight, bool bLooping, bool bPlaying);
 	static UAnimMontage* PreviewSequencerMontagePosition(FName SlotName, USkeletalMeshComponent* SkeletalMeshComponent, UAnimInstance* AnimInstance, int32& InOutInstanceId, UAnimSequenceBase* InAnimSequence, float InFromPosition, float InToPosition, float Weight, bool bLooping, bool bFireNotifies, bool bPlaying);
-private:
-	static UAnimMontage* InitializeMatineeControl(FName SlotName, UAnimInstance* AnimInstance, UAnimSequenceBase* InAnimSequence, bool bLooping);
 };
 
 /* 
@@ -560,6 +607,12 @@ class UAnimMontage : public UAnimCompositeBase
 	GENERATED_UCLASS_BODY()
 
 	friend struct FAnimMontageInstance;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = BlendOption)
+	EMontageBlendMode BlendModeIn;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = BlendOption)
+	EMontageBlendMode BlendModeOut;
 
 	/** Blend in option. */
 	UPROPERTY(EditAnywhere, Category=BlendOption)
@@ -580,6 +633,15 @@ class UAnimMontage : public UAnimCompositeBase
 	 * >=0 means using 'SequenceEnd - BlendOutTriggerTime' to trigger blend out. */
 	UPROPERTY(EditAnywhere, Category = BlendOption)
 	float BlendOutTriggerTime;
+
+	UFUNCTION(BlueprintPure, Category = "Montage")
+	FAlphaBlendArgs GetBlendInArgs() const { return FAlphaBlendArgs(BlendIn); }
+
+	UFUNCTION(BlueprintPure, Category = "Montage")
+	FAlphaBlendArgs GetBlendOutArgs() const { return FAlphaBlendArgs(BlendOut); }
+
+	UFUNCTION(BlueprintPure, Category = "Montage")
+	float GetDefaultBlendInTime() const { return BlendIn.GetBlendTime(); }
 
 	UFUNCTION(BlueprintCallable, Category = "Montage")
 	float GetDefaultBlendOutTime() const { return BlendOut.GetBlendTime(); }
@@ -619,6 +681,14 @@ class UAnimMontage : public UAnimCompositeBase
 	UPROPERTY(EditAnywhere, Category = BlendOption)
 	bool bEnableAutoBlendOut;
 
+	/** The blend profile to use. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = BlendOption, meta = (UseAsBlendProfile = true))
+	TObjectPtr<UBlendProfile> BlendProfileIn;
+
+	/** The blend profile to use. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = BlendOption, meta = (UseAsBlendProfile = true))
+	TObjectPtr<UBlendProfile> BlendProfileOut;
+
 	/** Root Bone will be locked to that position when extracting root motion. DEPRECATED in 4.5 root motion is controlled by anim sequences **/
 	UPROPERTY()
 	TEnumAsByte<ERootMotionRootLock::Type> RootMotionRootLock;
@@ -626,7 +696,7 @@ class UAnimMontage : public UAnimCompositeBase
 #if WITH_EDITORONLY_DATA
 	/** Preview Base pose for additive BlendSpace **/
 	UPROPERTY(EditAnywhere, Category = AdditiveSettings)
-	UAnimSequence* PreviewBasePose;
+	TObjectPtr<UAnimSequence> PreviewBasePose;
 #endif // WITH_EDITORONLY_DATA
 
 	// Add new slot track to this montage
@@ -638,7 +708,11 @@ class UAnimMontage : public UAnimCompositeBase
 public:
 	//~ Begin UObject Interface
 	virtual void PostLoad() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 
 	// Gets the sequence length of the montage by calculating it from the lengths of the segments in the montage
 	ENGINE_API float CalculateSequenceLength();
@@ -654,7 +728,9 @@ public:
 	virtual EAnimEventTriggerOffsets::Type CalculateOffsetForNotify(float NotifyDisplayTime) const override;
 #endif // WITH_EDITOR
 	virtual void GetMarkerIndicesForTime(float CurrentTime, bool bLooping, const TArray<FName>& ValidMarkerNames, FMarkerPair& OutPrevMarker, FMarkerPair& OutNextMarker) const override;
-	virtual FMarkerSyncAnimPosition GetMarkerSyncPositionfromMarkerIndicies(int32 PrevMarker, int32 NextMarker, float CurrentTime) const override;
+	UE_DEPRECATED(5.0, "Use other GetMarkerSyncPositionfromMarkerIndicies signature")
+    virtual FMarkerSyncAnimPosition GetMarkerSyncPositionfromMarkerIndicies(int32 PrevMarker, int32 NextMarker, float CurrentTime) const { return UAnimMontage::GetMarkerSyncPositionFromMarkerIndicies(PrevMarker, NextMarker, CurrentTime, nullptr); }
+	virtual FMarkerSyncAnimPosition GetMarkerSyncPositionFromMarkerIndicies(int32 PrevMarker, int32 NextMarker, float CurrentTime, const UMirrorDataTable* MirrorTable) const override;
 	virtual void TickAssetPlayer(FAnimTickRecord& Instance, struct FAnimNotifyQueue& NotifyQueue, FAnimAssetTickContext& Context) const override;
 	virtual TArray<FName>* GetUniqueMarkerNames() override { return &MarkerData.UniqueMarkerNames; }
 	virtual void RefreshCacheData() override;
@@ -700,6 +776,7 @@ public:
 	ENGINE_API FName GetSectionName(int32 SectionIndex) const;
 
 	/** @return true if valid section */
+	UFUNCTION(BlueprintCallable, Category = "Montage")
 	ENGINE_API bool IsValidSectionName(FName InSectionName) const;
 
 	// @todo document
@@ -724,7 +801,7 @@ public:
 	ENGINE_API const TArray<class UAnimMetaData*> GetSectionMetaData(FName SectionName, bool bIncludeSequence=true, FName SlotName = NAME_None);
 
 	/** Get Section Index from CurrentTime with PosWithinCompositeSection */
-	int32 GetAnimCompositeSectionIndexFromPos(float CurrentTime, float& PosWithinCompositeSection) const;
+	ENGINE_API int32 GetAnimCompositeSectionIndexFromPos(float CurrentTime, float& PosWithinCompositeSection) const;
 
 	/** Return time left to end of section from given position. -1.f if not a valid position */
 	ENGINE_API float GetSectionTimeLeftFromPos(float Position);
@@ -840,22 +917,30 @@ public:
 	//~Begin UAnimCompositeBase Interface
 	virtual void InvalidateRecursiveAsset() override;
 	virtual bool ContainRecursive(TArray<UAnimCompositeBase*>& CurrentAccumulatedList) override;
+	virtual void SetCompositeLength(float InLength) override;
 	//~End UAnimCompositeBase Interface
 
 	/** Utility function to create dynamic montage from AnimSequence */
 	ENGINE_API static UAnimMontage* CreateSlotAnimationAsDynamicMontage(UAnimSequenceBase* Asset, FName SlotNodeName, float BlendInTime = 0.25f, float BlendOutTime = 0.25f, float InPlayRate = 1.f, int32 LoopCount = 1, float BlendOutTriggerTime = -1.f, float InTimeToStartMontageAt = 0.f);
 
+	/** Utility function to create dynamic montage from AnimSequence with blend in settings */
+	UFUNCTION(BlueprintCallable, Category = "Animation")
+	static ENGINE_API UAnimMontage* CreateSlotAnimationAsDynamicMontage_WithBlendSettings(UAnimSequenceBase* Asset, FName SlotNodeName, const FMontageBlendSettings& BlendInSettings, const FMontageBlendSettings& BlendOutSettings, float InPlayRate = 1.f, int32 LoopCount = 1, float InBlendOutTriggerTime = -1.f);
+
 	//~Begin Time Stretch Curve
 public:
+
+	/** Time stretch curve will only be used when the montage has a non-default play rate  */
 	UPROPERTY(EditAnywhere, Category = TimeStretchCurve)
 	FTimeStretchCurve TimeStretchCurve;
 
-	/** Name of optional TimeStretchCurveName to look for in Montage. */
+	/** Name of optional TimeStretchCurveName to look for in Montage. Time stretch curve will only be used when the montage has a non-default play rate */
 	UPROPERTY(EditAnywhere, Category = TimeStretchCurve)
 	FName TimeStretchCurveName;
 
 private:
+#if WITH_EDITOR
 	void BakeTimeStretchCurve();
 	//~End Time Stretch Curve
-
+#endif // WITH_EDITOR
 };

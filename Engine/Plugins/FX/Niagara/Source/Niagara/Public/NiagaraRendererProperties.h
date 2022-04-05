@@ -14,6 +14,7 @@
 #include "NiagaraRendererProperties.generated.h"
 
 class FNiagaraRenderer;
+class FNiagaraSystemInstanceController;
 class UMaterial;
 class UMaterialInterface;
 class FNiagaraEmitterInstance;
@@ -165,6 +166,7 @@ class NIAGARA_API UNiagaraRendererProperties : public UNiagaraMergeable
 public:
 	UNiagaraRendererProperties()		
 		: bIsEnabled(true)
+		, bAllowInCullProxies(true)
 		, bMotionBlurEnabled_DEPRECATED(true)
 	{
 	}
@@ -177,7 +179,7 @@ public:
 #endif
 	//UObject Interface End
 	
-	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent) PURE_VIRTUAL ( UNiagaraRendererProperties::CreateEmitterRenderer, return nullptr;);
+	virtual FNiagaraRenderer* CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController) PURE_VIRTUAL ( UNiagaraRendererProperties::CreateEmitterRenderer, return nullptr;);
 	virtual class FNiagaraBoundsCalculator* CreateBoundsCalculator() PURE_VIRTUAL(UNiagaraRendererProperties::CreateBoundsCalculator, return nullptr;);
 	virtual void GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const PURE_VIRTUAL(UNiagaraRendererProperties::GetUsedMaterials,);
 
@@ -192,7 +194,7 @@ public:
 	virtual void GetAssetTagsForContext(const UObject* InAsset, const TArray<const UNiagaraRendererProperties*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const;
 
 	/** In the case that we need parameters bound in that aren't Particle variables, these should be set up here so that the data is appropriately populated after the simulation.*/
-	virtual bool PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore) { return false; }	
+	virtual bool PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore);
 
 #if WITH_EDITORONLY_DATA
 
@@ -261,8 +263,15 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Motion Blur")
 	ENiagaraRendererMotionVectorSetting MotionVectorSetting;
 
+	/** Optional bool binding to dynamically enable / disable the renderer. */
+	UPROPERTY(EditAnywhere, Category = "Bindings")
+	FNiagaraVariableAttributeBinding RendererEnabledBinding;
+
 	UPROPERTY()
 	bool bIsEnabled;
+
+	UPROPERTY(EditAnywhere, Category = "Scalability")
+	bool bAllowInCullProxies;
 
 protected:
 	UPROPERTY()
@@ -276,5 +285,8 @@ protected:
 #if WITH_EDITORONLY_DATA
 	/** returns the variable associated with the supplied binding if it should be bound given the current settings of the RendererProperties. */
 	virtual FNiagaraVariable GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const;
+
+	/** utility function that can be used to fix up old vec3 bindings into position bindings. */
+	static void ChangeToPositionBinding(FNiagaraVariableAttributeBinding& Binding);
 #endif
 };

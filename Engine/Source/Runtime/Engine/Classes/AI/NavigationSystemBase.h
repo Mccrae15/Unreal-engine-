@@ -23,7 +23,7 @@ class UNavAreaBase;
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogNavigation, Warning, All);
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogNavigationDataBuild, Log, All);
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogNavLink, Warning, All);
-ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogAStar, Warning, All);
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogAStar, Display, All);
 
 UENUM()
 enum class FNavigationSystemRunMode : uint8
@@ -54,7 +54,7 @@ class ENGINE_API FNavigationLockContext
 {
 public:
 	FNavigationLockContext(ENavigationLockReason::Type Reason = ENavigationLockReason::Unknown, bool bApplyLock = true)
-		: MyWorld(NULL), LockReason(Reason), bSingleWorld(false), bIsLocked(false)
+		: MyWorld(NULL), LockReason((uint8)Reason), bSingleWorld(false), bIsLocked(false)
 	{
 		if (bApplyLock)
 		{
@@ -63,7 +63,7 @@ public:
 	}
 
 	FNavigationLockContext(UWorld* InWorld, ENavigationLockReason::Type Reason = ENavigationLockReason::Unknown, bool bApplyLock = true)
-		: MyWorld(InWorld), LockReason(Reason), bSingleWorld(true), bIsLocked(false)
+		: MyWorld(InWorld), LockReason((uint8)Reason), bSingleWorld(true), bIsLocked(false)
 	{
 		if (bApplyLock)
 		{
@@ -202,6 +202,7 @@ namespace FNavigationSystem
 	DECLARE_DELEGATE_RetVal_OneParam(INavigationDataInterface*, FNavDataForActorSignature, const AActor& /*Actor*/);
 	DECLARE_DELEGATE_RetVal(TSubclassOf<AActor>, FNavDataClassFetchSignature);
 	DECLARE_DELEGATE_TwoParams(FWorldBoolBasedSignature, UWorld& /*World*/, const bool /*bShow*/);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnNavigationInitDoneSignature, const UNavigationSystemBase&);
 }
 
 
@@ -239,6 +240,21 @@ public:
 
 	UE_DEPRECATED(4.20, "GetMainNavData is deprecated. Use FNavigationSystem::GetCurrent<UNavigationSystemV1>()->GetDefaultNavDataInstance instead")
 	INavigationDataInterface* GetMainNavData(int) { return nullptr; }
+
+	virtual void SetBuildBounds(const FBox& Bounds) PURE_VIRTUAL(UNavigationSystemBase::SetBuildBounds, );
+
+	virtual FBox GetNavigableWorldBounds() const PURE_VIRTUAL(UNavigationSystemBase::GetNavigableWorldBounds, return FBox(ForceInit););
+	
+	virtual bool ContainsNavData(const FBox& Bounds) const PURE_VIRTUAL(UNavigationSystemBase::ContainsNavData, return false;);
+	virtual FBox ComputeNavDataBounds() const PURE_VIRTUAL(UNavigationSystemBase::GetNavigableWorldBounds, return FBox(ForceInit););
+	
+	virtual void AddNavigationDataChunk(class ANavigationDataChunkActor& DataChunkActor) {}
+	virtual void RemoveNavigationDataChunk(class ANavigationDataChunkActor& DataChunkActor) {}
+	virtual void FillNavigationDataChunkActor(const FBox& QueryBounds, class ANavigationDataChunkActor& DataChunkActor, FBox& OutTilesBounds) {}
+
+	virtual bool IsWorldInitDone() const PURE_VIRTUAL(UNavigationSystemBase::IsWorldInitDone, return false;);
+
+	static FNavigationSystem::FOnNavigationInitDoneSignature& OnNavigationInitDoneStaticDelegate();
 
 protected:
 	/**	Sets the Transform the Navigation System will use when converting from FromCoordType

@@ -17,7 +17,7 @@
 #include "PostProcess/SceneFilterRendering.h"
 #include "PipelineStateCache.h"
 #include "RayTracing/RaytracingOptions.h"
-#include "Raytracing/RaytracingLighting.h"
+#include "RayTracing/RayTracingLighting.h"
 
 
 static TAutoConsoleVariable<int32> CVarRayTracingTranslucency(
@@ -26,7 +26,7 @@ static TAutoConsoleVariable<int32> CVarRayTracingTranslucency(
 	TEXT("-1: Value driven by postprocess volume (default) \n")
 	TEXT(" 0: ray tracing translucency off (use raster) \n")
 	TEXT(" 1: ray tracing translucency enabled"),
-	ECVF_RenderThreadSafe);
+	ECVF_RenderThreadSafe | ECVF_Scalability);
 
 static float GRayTracingTranslucencyMaxRoughness = -1;
 static FAutoConsoleVariableRef CVarRayTracingTranslucencyMaxRoughness(
@@ -112,7 +112,7 @@ FRayTracingPrimaryRaysOptions GetRayTracingTranslucencyOptions(const FViewInfo& 
 {
 	FRayTracingPrimaryRaysOptions Options;
 
-	Options.bEnabled = ShouldRenderRayTracingEffect(CVarRayTracingTranslucency.GetValueOnRenderThread() != 0);
+	Options.bEnabled = ShouldRenderRayTracingEffect(CVarRayTracingTranslucency.GetValueOnRenderThread() != 0, ERayTracingPipelineCompatibilityFlags::FullPipeline, &View);
 	Options.SamplerPerPixel = GRayTracingTranslucencySamplesPerPixel >= 0 ? GRayTracingTranslucencySamplesPerPixel : View.FinalPostProcessSettings.RayTracingTranslucencySamplesPerPixel;
 	Options.ApplyHeightFog = GRayTracingTranslucencyHeightFog;
 	Options.PrimaryRayBias = GRayTracingTranslucencyPrimaryRayBias;
@@ -138,7 +138,7 @@ bool ShouldRenderRayTracingTranslucency(const FViewInfo& View)
 		? bViewWithRaytracingTranslucency
 		: RayTracingTranslucencyMode != 0;
 
-	return ShouldRenderRayTracingEffect(bTranslucencyEnabled);
+	return ShouldRenderRayTracingEffect(bTranslucencyEnabled, ERayTracingPipelineCompatibilityFlags::FullPipeline, &View);
 }
 #endif // RHI_RAYTRACING
 
@@ -147,6 +147,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingTranslucency(FRDGBuilder& Gr
 	if (!ShouldRenderTranslucency(ETranslucencyPass::TPT_StandardTranslucency)
 		&& !ShouldRenderTranslucency(ETranslucencyPass::TPT_TranslucencyAfterDOF)
 		&& !ShouldRenderTranslucency(ETranslucencyPass::TPT_TranslucencyAfterDOFModulate)
+		&& !ShouldRenderTranslucency(ETranslucencyPass::TPT_TranslucencyAfterMotionBlur)
 		&& !ShouldRenderTranslucency(ETranslucencyPass::TPT_AllTranslucency)
 		)
 	{

@@ -87,6 +87,7 @@ public:
 	virtual FText GetToolTipHeading() const override;
 	virtual void GetNodeAttributes(TArray<TKeyValuePair<FString, FString>>& OutNodeAttributes) const override;
 	virtual void HandleVariableRenamed(UBlueprint* InBlueprint, UClass* InVariableClass, UEdGraph* InGraph, const FName& InOldVarName, const FName& InNewVarName) override;
+	virtual void ReplaceReferences(UBlueprint* InBlueprint, UBlueprint* InReplacementBlueprint, const FMemberReference& InSource, const FMemberReference& InReplacement) override;
 	virtual bool ReferencesVariable(const FName& InVarName, const UStruct* InScope) const override;
 	//~ End K2Node Interface
 
@@ -187,5 +188,15 @@ protected:
 	 * @return 
 	 */
 	FBPVariableDescription const* GetBlueprintVarDescription() const;
+
+	/**
+	 * Utility function to retrieve actor component for variable property.
+	 *
+	 * @return Found UActorComponent for the FProperty, else nullptr
+	 */
+	const UActorComponent* GetActorComponent(const FProperty* VariableProperty) const;
+
+	/** Returns whether a Function Graph contains a parameter with the given name */
+	static bool FunctionParameterExists(const UEdGraph* InFunctionGraph, const FName InParameterName);
 };
 

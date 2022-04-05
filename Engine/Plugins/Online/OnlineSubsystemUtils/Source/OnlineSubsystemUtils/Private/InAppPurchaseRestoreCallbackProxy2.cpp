@@ -22,8 +22,15 @@ void UInAppPurchaseRestoreCallbackProxy2::Trigger(const TArray<FInAppPurchasePro
 	bWasSuccessful = false;
 	bool bFailedToEvenSubmit = true;
 
-	WorldPtr = (PlayerController != nullptr) ? PlayerController->GetWorld() : nullptr;
-	if (APlayerState* PlayerState = (PlayerController != nullptr) ? PlayerController->PlayerState : nullptr)
+	WorldPtr = nullptr;
+	APlayerState* PlayerState = nullptr;
+	if (PlayerController != nullptr)
+	{
+		WorldPtr = PlayerController->GetWorld();
+		PlayerState = ToRawPtr(PlayerController->PlayerState);
+	}
+
+	if (PlayerState != nullptr)
 	{
 		if (IOnlineSubsystem* const OnlineSub = IOnlineSubsystem::IsLoaded() ? IOnlineSubsystem::Get() : nullptr)
 		{
@@ -32,6 +39,7 @@ void UInAppPurchaseRestoreCallbackProxy2::Trigger(const TArray<FInAppPurchasePro
 			{
 				bFailedToEvenSubmit = false;
 
+				check(PlayerController);
 				PurchasingPlayer = (*PlayerController->GetLocalPlayer()->GetUniqueNetIdFromCachedControllerId()).AsShared();
 				PurchaseInterface->QueryReceipts(*PurchasingPlayer, true, FOnQueryReceiptsComplete::CreateUObject(this, &UInAppPurchaseRestoreCallbackProxy2::OnQueryReceiptsComplete));
 			}

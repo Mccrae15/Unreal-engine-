@@ -22,6 +22,10 @@
 #define REFLECTION_COMPOSITE_SUPPORT_SKYLIGHT_BLEND 0
 #include "ReflectionEnvironmentComposite.ush"
 
+#if STRATA_ENABLED
+#define STRATA_INLINE_SHADING 0
+#include "Strata/StrataEvaluation.ush"
+#endif
 
 Texture2D ScreenSpaceReflectionsTexture;
 SamplerState ScreenSpaceReflectionsSampler;
@@ -37,11 +41,8 @@ struct SingleLayerWaterCompositeOutput
 	float  Clip;
 };
 
-SingleLayerWaterCompositeOutput SingleLayerWaterComposite(float2 BufferUV, float2 ScreenPosition)
+SingleLayerWaterCompositeOutput SingleLayerWaterComposite(float2 BufferUV, float2 ScreenPosition, float4 SvPosition)
 {
-	// Sample scene textures.
-	FGBufferData GBuffer = GetGBufferDataFromSceneTextures(BufferUV);
-	uint ShadingModelID = GBuffer.ShadingModelID;
 	// No AO or DFAO
 
 	const float3 OneThird3 = float3(1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f);
@@ -53,11 +54,78 @@ SingleLayerWaterCompositeOutput SingleLayerWaterComposite(float2 BufferUV, float
 
 	float3 TransmittanceToScene = 1.0f;
 
-#if USE_PREEXPOSURE
-	const float PreExposure = View.PreExposure;
-#else
-	const float PreExposure = 1.f;
-#endif
+#if STRATA_ENABLED
+
+	// Water do nto read the classification data to avoid running it a second time when water is enabled.
+	FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(SvPosition.xy, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+	FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+	if (StrataPixelHeader.BSDFCount > 0 && IsSingleLayerWater(StrataPixelHeader))
+	{
+		float DeviceZ = SampleDeviceZFromSceneTextures(BufferUV);
+		float SceneDepth = ConvertFromDeviceZ(DeviceZ);
+
+		const float2 SceneNoWaterUV = clamp(BufferUV, SceneNoWaterMinMaxUV.xy, SceneNoWaterMinMaxUV.zw);
+
+		float OpaqueDepth = SceneNoWaterDepthTexture.SampleLevel(SceneNoWaterDepthSampler, SceneNoWaterUV, 0).x * SINGLE_LAYER_WATER_DEPTH_SCALE;
+		float WaterDepth = SceneDepth;
+
+		float DeltaDepth = CameraIsUnderWater ? WaterDepth : OpaqueDepth - WaterDepth;	// Inverted depth
+		if (DeltaDepth > 0.0)
+		{
+			const FStrataBSDF SLWaterBSDF = UnpackStrataBSDFIn(Strata.MaterialTextureArray, StrataAddressing, StrataPixelHeader);
+			const float3 WorldNormal = StrataGetBSDFSharedBasis(StrataPixelHeader, SLWaterBSDF, StrataAddressing)[2];
+			const float3 F0 = ComputeF0(SLW_SPECULAR(SLWaterBSDF), SLW_BASECOLOR(SLWaterBSDF), SLW_METALLIC(SLWaterBSDF));
+			const float Roughness = SLW_ROUGHNESS(SLWaterBSDF);
+			const float SafeRoughness = MakeRoughnessSafe(SLW_ROUGHNESS(SLWaterBSDF));
+
+			// Compute the sky reflection contribution
+			float3 Reflection = 0.0f;
+
+			// TODO MAKE COMMON WITH ReflectionEnvironment?
+			float3 WorldPosition = mul(float4(ScreenPosition * WaterDepth, WaterDepth, 1), LWCHackToFloat(PrimaryView.ScreenToWorld)).xyz;
+			float3 CameraToPixel = normalize(WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin));
+			float3 ReflectionVector = reflect(CameraToPixel, WorldNormal);
+			float IndirectIrradiance = 0.0;
+			float IndirectSpecularOcclusion = 1.0f;
+			float3 ExtraIndirectSpecular = 0;
+			uint CaptureDataStartIndex = 0;
+			uint NumCulledReflectionCaptures = 0;
+			//
+			float3 N = WorldNormal;
+			float3 V = -CameraToPixel;
+			float3 R = 2 * dot(V, N) * N - V;
+			float NoV = saturate(dot(N, V));
+			// Point lobe in off-specular peak direction
+			R = GetOffSpecularPeakReflectionDir(N, R, SafeRoughness);
+			const bool bCompositeSkylight = true;
+			Reflection += View.PreExposure * CompositeReflectionCapturesAndSkylight(
+				1,
+				WorldPosition,
+				R,
+				SafeRoughness,
+				IndirectIrradiance,
+				IndirectSpecularOcclusion,
+				ExtraIndirectSpecular,
+				NumCulledReflectionCaptures,
+				CaptureDataStartIndex,
+				0,
+				bCompositeSkylight);
+
+			// Then combine reflection with SSR
+			float4 SSR = Texture2DSample(ScreenSpaceReflectionsTexture, ScreenSpaceReflectionsSampler, BufferUV);
+			Reflection = SSR.rgb + Reflection * (1 - SSR.a);
+
+			const float3 BSDFCoverage = 1.0f;	// Since the SLW BSDF is always isolated and composited onto the strata material buffer, this is assumed to be 1 here.
+
+			// The specular over the water in completely in the hand of the user. We do not fade out metalness for instance.
+			float3 EnvBrdfValue = BSDFCoverage * EnvBRDF(SLW_SPECULAR(SLWaterBSDF), SafeRoughness, saturate(NoV));
+
+#else // STRATA_ENABLED
+
+	// Sample scene textures.
+	FGBufferData GBuffer = GetGBufferDataFromSceneTextures(BufferUV);
+	uint ShadingModelID = GBuffer.ShadingModelID;
+
 	if (ShadingModelID == SHADINGMODELID_SINGLELAYERWATER)
 	{
 		const float2 SceneNoWaterUV = clamp(BufferUV, SceneNoWaterMinMaxUV.xy, SceneNoWaterMinMaxUV.zw);
@@ -72,14 +140,14 @@ SingleLayerWaterCompositeOutput SingleLayerWaterComposite(float2 BufferUV, float
 			float3 Reflection = 0.0f;
 
 			// TODO MAKE COMMON WITH ReflectionEnvironment?
-			float3 WorldPosition = mul(float4(ScreenPosition * GBuffer.Depth, GBuffer.Depth, 1), View.ScreenToWorld).xyz;
-			float3 CameraToPixel = normalize(WorldPosition - View.WorldCameraOrigin);
+			float3 WorldPosition = mul(float4(ScreenPosition * GBuffer.Depth, GBuffer.Depth, 1), LWCHackToFloat(PrimaryView.ScreenToWorld)).xyz;
+			float3 CameraToPixel = normalize(WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin));
 			float3 ReflectionVector = reflect(CameraToPixel, GBuffer.WorldNormal);
 			float IndirectIrradiance = 0.0;// GBuffer.IndirectIrradiance;
 			float IndirectSpecularOcclusion = 1.0f;
 			float3 ExtraIndirectSpecular = 0;
 			uint CaptureDataStartIndex = 0;
-			uint NumCulledReflectionCaptures = 0;
+			uint NumCulledReflectionCaptures = ForwardLightData.NumReflectionCaptures;
 			//
 			float3 N = GBuffer.WorldNormal;
 			float3 V = -CameraToPixel;
@@ -88,7 +156,7 @@ SingleLayerWaterCompositeOutput SingleLayerWaterComposite(float2 BufferUV, float
 			// Point lobe in off-specular peak direction
 			R = GetOffSpecularPeakReflectionDir(N, R, GBuffer.Roughness);
 			const bool bCompositeSkylight = true;
-			Reflection += PreExposure * CompositeReflectionCapturesAndSkylight(
+			Reflection += View.PreExposure * CompositeReflectionCapturesAndSkylight(
 				1,
 				WorldPosition,
 				R,
@@ -107,8 +175,11 @@ SingleLayerWaterCompositeOutput SingleLayerWaterComposite(float2 BufferUV, float
 
 			// Apply the BRDF reflection integral to reflection. 
 			// BRDF/Fresnel is already applied for the under water part in the scene.
-			float3 EnvBrdf = EnvBRDF(GBuffer.SpecularColor, GBuffer.Roughness, NoV);
-			Reflection *= EnvBrdf;
+			float3 EnvBrdfValue = EnvBRDF(GBuffer.SpecularColor, GBuffer.Roughness, NoV);
+
+#endif // STRATA_ENABLED
+
+			Reflection *= EnvBrdfValue;
 
 			// Soft fading near shor to avoid seeing triangles.
 			const float ShoreOpacity = saturate(DeltaDepth * 0.02f);
@@ -117,7 +188,7 @@ SingleLayerWaterCompositeOutput SingleLayerWaterComposite(float2 BufferUV, float
 			// Apply transmittance to reflection if under water
 			if (CameraIsUnderWater)
 			{
-				TransmittanceToScene *= 1.0 - EnvBrdf;
+				TransmittanceToScene *= 1.0 - EnvBrdfValue;
 
 				// Using default under water material: compute transmittance and scattering
 				float3 WaterMediumScattering = 0.0f;
@@ -178,9 +249,15 @@ void WaterTileCatergorisationCS(uint3 ThreadId : SV_DispatchThreadID, uint3 Grou
 			{
 				uint2 PixelPos = (ThreadId.xy + uint2(i, j)) + View.ViewRectMin.xy;
 				float2 BufferUV = (PixelPos + 0.5f) * View.BufferSizeAndInvSize.zw;
-				FGBufferData GBuffer = GetGBufferDataFromSceneTextures(BufferUV);
 
+			#if STRATA_ENABLED
+				FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+				FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+				bContainsWater = bContainsWater || (StrataPixelHeader.BSDFCount > 0 && IsSingleLayerWater(StrataPixelHeader));
+			#else
+				FGBufferData GBuffer = GetGBufferDataFromSceneTextures(BufferUV);
 				bContainsWater = bContainsWater || GBuffer.ShadingModelID == SHADINGMODELID_SINGLELAYERWATER;
+			#endif
 			}
 		}
 		if (bContainsWater)
@@ -198,8 +275,15 @@ void WaterTileCatergorisationCS(uint3 ThreadId : SV_DispatchThreadID, uint3 Grou
 	{
 		uint2 PixelPos = ThreadId.xy + View.ViewRectMin.xy;
 		float2 BufferUV = (PixelPos + 0.5f) * View.BufferSizeAndInvSize.zw;
+
+	#if STRATA_ENABLED
+		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+		FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+		bContainsWater = bContainsWater || (StrataPixelHeader.BSDFCount > 0 && IsSingleLayerWater(StrataPixelHeader));
+	#else
 		FGBufferData GBuffer = GetGBufferDataFromSceneTextures(BufferUV);
-		bContainsWater = GBuffer.ShadingModelID == SHADINGMODELID_SINGLELAYERWATER;
+		bContainsWater = bContainsWater || GBuffer.ShadingModelID == SHADINGMODELID_SINGLELAYERWATER;
+	#endif
 	}
 
 	const int LinearIndex = GroupThreadId.y * WORK_TILE_SIZE + GroupThreadId.x;
@@ -280,7 +364,7 @@ void SingleLayerWaterCompositePS(
 	float2 ScreenPosition = SvPositionToScreenPosition(SvPosition).xy;
 
 	// TODO use dual source blending to apply TransmittanceToScene
-	SingleLayerWaterCompositeOutput Result = SingleLayerWaterComposite(BufferUV, ScreenPosition);
+	SingleLayerWaterCompositeOutput Result = SingleLayerWaterComposite(BufferUV, ScreenPosition, SvPosition);
 
 	clip(Result.Clip); // Since this shader does not write to depth or stencil it should still benefit from EarlyZ (See AMD depth-in-depth documentation)
 	OutColor = Result.LuminanceTransmittance;
@@ -307,8 +391,14 @@ void WaterRefractionCopyPS(
 	float2 BufferUV = SVPosition.xy * SVPositionToSourceTextureUV;
 
 #if DOWNSAMPLE_COLOR
-	// Downsample and average all 2x2 quads
-	OutSceneColor.xyz = Texture2DSampleLevel(SceneColorCopyDownsampleTexture, SceneColorCopyDownsampleSampler, BufferUV, 0).xyz;
+	#if DOWNSAMPLE_REFRACTION || !SUPPORTS_INDEPENDENT_SAMPLERS
+		// Downsample and average all 2x2 quads
+		OutSceneColor.xyz = Texture2DSampleLevel(SceneColorCopyDownsampleTexture, SceneColorCopyDownsampleSampler, BufferUV, 0).xyz;
+	#else
+		// Use the depth point sampler when not downsampling color
+		OutSceneColor.xyz = Texture2DSampleLevel(SceneColorCopyDownsampleTexture, SceneDepthCopyDownsampleSampler, BufferUV, 0).xyz;
+	#endif
+
 	OutSceneColor.w = 1.0f;
 #endif
 

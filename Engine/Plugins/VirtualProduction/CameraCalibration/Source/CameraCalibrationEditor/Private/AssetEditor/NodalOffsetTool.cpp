@@ -6,7 +6,7 @@
 #include "CameraCalibrationStepsController.h"
 #include "CameraCalibrationSubsystem.h"
 #include "CameraCalibrationTypes.h"
-#include "LensDistortionTool.h"
+#include "ImageCenterTool.h"
 #include "LiveLinkCameraController.h"
 #include "Misc/MessageDialog.h"
 #include "ScopedTransaction.h"
@@ -17,6 +17,21 @@
 void UNodalOffsetTool::Initialize(TWeakPtr<FCameraCalibrationStepsController> InCameraCalibrationStepController)
 {
 	CameraCalibrationStepsController = InCameraCalibrationStepController;
+
+	UCameraCalibrationSubsystem* Subsystem = GEngine->GetEngineSubsystem<UCameraCalibrationSubsystem>();
+	check(Subsystem);
+
+	for (const FName& AlgoName : Subsystem->GetCameraNodalOffsetAlgos())
+	{
+		TSubclassOf<UCameraNodalOffsetAlgo> AlgoClass = Subsystem->GetCameraNodalOffsetAlgo(AlgoName);
+		const UCameraNodalOffsetAlgo* Algo = CastChecked<UCameraNodalOffsetAlgo>(AlgoClass->GetDefaultObject());
+
+		// If the algo uses an overlay material, create a new MID to use with that algo
+		if (UMaterialInterface* OverlayMaterial = Algo->GetOverlayMaterial())
+		{
+			AlgoOverlayMIDs.Add(Algo->FriendlyName(), UMaterialInstanceDynamic::Create(OverlayMaterial, GetTransientPackage()));
+		}
+	}
 }
 
 void UNodalOffsetTool::Shutdown()
@@ -51,6 +66,21 @@ bool UNodalOffsetTool::OnViewportClicked(const FGeometry& MyGeometry, const FPoi
 	return NodalOffsetAlgo->OnViewportClicked(MyGeometry, MouseEvent);
 }
 
+bool UNodalOffsetTool::OnViewportInputKey(const FKey& InKey, const EInputEvent& InEvent)
+{
+	if (!bIsActive)
+	{
+		return false;
+	}
+
+	if (!NodalOffsetAlgo)
+	{
+		return false;
+	}
+
+	return NodalOffsetAlgo->OnViewportInputKey(InKey, InEvent);
+}
+
 TSharedRef<SWidget> UNodalOffsetTool::BuildUI()
 {
 	return SNew(SNodalOffsetToolPanel, this);
@@ -58,7 +88,7 @@ TSharedRef<SWidget> UNodalOffsetTool::BuildUI()
 
 bool UNodalOffsetTool::DependsOnStep(UCameraCalibrationStep* Step) const
 {
-	return !!Cast<ULensDistortionTool>(Step);
+	return !!Cast<UImageCenterTool>(Step);
 }
 
 void UNodalOffsetTool::Activate()
@@ -113,11 +143,24 @@ void UNodalOffsetTool::SetNodalOffsetAlgo(const FName& AlgoName)
 	NodalOffsetAlgo = NewObject<UCameraNodalOffsetAlgo>(
 		GetTransientPackage(),
 		AlgoClass,
-		MakeUniqueObjectName(GetTransientPackage(), AlgoClass));
+		MakeUniqueObjectName(GetTransientPackage(), AlgoClass),
+		RF_Transactional);
 
 	if (NodalOffsetAlgo)
 	{
 		NodalOffsetAlgo->Initialize(this);
+	}
+
+	// Set the tool overlay pass' material to the MID associate with the current algo
+	if (CameraCalibrationStepsController.IsValid())
+	{
+		TSharedPtr<FCameraCalibrationStepsController> StepsController = CameraCalibrationStepsController.Pin();
+		StepsController->SetOverlayEnabled(false);
+
+		if (UMaterialInstanceDynamic* OverlayMID = GetOverlayMID())
+		{
+			StepsController->SetOverlayMaterial(OverlayMID);
+		}
 	}
 }
 
@@ -133,6 +176,7 @@ void UNodalOffsetTool::OnSaveCurrentNodalOffset()
 		return;
 	}
 
+	const FText TitleInfo = LOCTEXT("NodalOffsetInfo", "Nodal Offset Calibration Info");
 	const FText TitleError = LOCTEXT("NodalOffsetError", "Nodal Offset Calibration Error");
 
 	UCameraNodalOffsetAlgo* Algo = GetNodalOffsetAlgo();
@@ -155,6 +199,20 @@ void UNodalOffsetTool::OnSaveCurrentNodalOffset()
 	{
 		FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage, &TitleError);
 		return;
+	}
+
+	// Show reprojection error
+	{
+		FFormatOrderedArguments Arguments;
+		Arguments.Add(FText::FromString(FString::Printf(TEXT("%.2f"), ReprojectionError)));
+
+		const FText Message = FText::Format(LOCTEXT("ReprojectionError", "RMS Reprojection Error: {0} pixels"), Arguments);
+
+		// Allow the user to cancel adding to the LUT if the reprojection error is unacceptable.
+		if (FMessageDialog::Open(EAppMsgType::OkCancel, Message, &TitleInfo) != EAppReturnType::Ok)
+		{
+			return;
+		}
 	}
 
 	ULensFile* LensFile = CameraCalibrationStepsController.Pin()->GetLensFile();
@@ -192,6 +250,16 @@ FCameraCalibrationStepsController* UNodalOffsetTool::GetCameraCalibrationStepsCo
 bool UNodalOffsetTool::IsActive() const
 {
 	return bIsActive;
+}
+
+UMaterialInstanceDynamic* UNodalOffsetTool::GetOverlayMID() const
+{
+	return AlgoOverlayMIDs.FindRef(NodalOffsetAlgo->FriendlyName()).Get();
+}
+
+bool UNodalOffsetTool::IsOverlayEnabled() const
+{
+	return NodalOffsetAlgo->IsOverlayEnabled();
 }
 
 #undef LOCTEXT_NAMESPACE

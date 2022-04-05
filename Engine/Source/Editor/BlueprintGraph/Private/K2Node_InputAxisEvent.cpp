@@ -30,7 +30,7 @@ void UK2Node_InputAxisEvent::Serialize(FArchive& Ar)
 
 	if(Ar.IsLoading())
 	{
-		if(Ar.UE4Ver() < VER_UE4_K2NODE_EVENT_MEMBER_REFERENCE && EventSignatureName_DEPRECATED.IsNone() && EventSignatureClass_DEPRECATED == nullptr)
+		if(Ar.UEVer() < VER_UE4_K2NODE_EVENT_MEMBER_REFERENCE && EventSignatureName_DEPRECATED.IsNone() && EventSignatureClass_DEPRECATED == nullptr)
 		{
 			EventReference.SetExternalDelegateMember(TEXT("InputAxisHandlerDynamicSignature__DelegateSignature"));
 		}
@@ -41,7 +41,7 @@ void UK2Node_InputAxisEvent::PostLoad()
 {
 	Super::PostLoad();
 
-	if (GetLinkerUE4Version() < VER_UE4_BLUEPRINT_INPUT_BINDING_OVERRIDES)
+	if (GetLinkerUEVersion() < VER_UE4_BLUEPRINT_INPUT_BINDING_OVERRIDES)
 	{
 		// Don't change existing behaviors
 		bOverrideParentBinding = false;
@@ -123,7 +123,10 @@ bool UK2Node_InputAxisEvent::IsCompatibleWithGraph(const UEdGraph* TargetGraph) 
 	UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(TargetGraph);
 	if (Blueprint && Blueprint->SkeletonGeneratedClass)
 	{
-		bIsCompatible = Blueprint->ParentClass->IsChildOf(AActor::StaticClass());
+		UEdGraphSchema_K2 const* K2Schema = Cast<UEdGraphSchema_K2>(TargetGraph->GetSchema());
+		bool const bIsConstructionScript = (K2Schema != nullptr) ? UEdGraphSchema_K2::IsConstructionScript(TargetGraph) : false;
+		
+		bIsCompatible = Blueprint && Blueprint->SupportsInputEvents() && !bIsConstructionScript;
 	}
 
 	return bIsCompatible && Super::IsCompatibleWithGraph(TargetGraph);

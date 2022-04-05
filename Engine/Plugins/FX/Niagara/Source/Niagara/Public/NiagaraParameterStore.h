@@ -25,6 +25,21 @@ struct FNiagaraBoundParameter
 
 };
 
+USTRUCT()
+struct FNiagaraPositionSource
+{
+	GENERATED_USTRUCT_BODY()
+
+	FNiagaraPositionSource() : Value(FVector::ZeroVector) {}
+	FNiagaraPositionSource(FName InName, FVector InValue) : Name(InName), Value(InValue) {}
+	
+	UPROPERTY()
+	FName Name;
+	
+	UPROPERTY()
+	FVector Value;
+};
+
 typedef TArray<FNiagaraBoundParameter> FNiagaraBoundParameterArray;
 
 //Binding from one parameter store to another.
@@ -112,7 +127,6 @@ private:
 	bool BindParameters(FNiagaraParameterStore* DestStore, FNiagaraParameterStore* SrcStore, const FNiagaraBoundParameterArray* BoundParameters = nullptr);
 };
 
-
 USTRUCT()
 struct FNiagaraVariableWithOffset : public FNiagaraVariableBase
 {
@@ -120,8 +134,8 @@ struct FNiagaraVariableWithOffset : public FNiagaraVariableBase
 
 	// Those constructor enforce that there are no data allocated.
 	FORCEINLINE FNiagaraVariableWithOffset() : Offset(INDEX_NONE) {}
-	FORCEINLINE FNiagaraVariableWithOffset(const FNiagaraVariableWithOffset& InRef) : FNiagaraVariableBase(InRef.GetType(), InRef.GetName()), Offset(InRef.Offset) {}
-	FORCEINLINE FNiagaraVariableWithOffset(const FNiagaraVariableBase& InVariable, int32 InOffset) : FNiagaraVariableBase(InVariable.GetType(), InVariable.GetName()), Offset(InOffset) {}
+	FORCEINLINE FNiagaraVariableWithOffset(const FNiagaraVariableWithOffset& InRef) : FNiagaraVariableBase(InRef.GetType(), InRef.GetName()), Offset(InRef.Offset), StructConverter(InRef.StructConverter) {}
+	FORCEINLINE FNiagaraVariableWithOffset(const FNiagaraVariableBase& InVariable, int32 InOffset, const FNiagaraLwcStructConverter& InStructConverter) : FNiagaraVariableBase(InVariable.GetType(), InVariable.GetName()), Offset(InOffset), StructConverter(InStructConverter) {}
 
 	bool Serialize(FArchive& Ar);
 #if WITH_EDITORONLY_DATA
@@ -130,6 +144,9 @@ struct FNiagaraVariableWithOffset : public FNiagaraVariableBase
 
 	UPROPERTY()
 	int32 Offset;
+
+	UPROPERTY()
+	FNiagaraLwcStructConverter StructConverter;
 };
 
 template<>
@@ -162,11 +179,11 @@ struct NIAGARA_API FNiagaraParameterStore
 private:
 	/** Owner of this store. Used to provide an outer to data interfaces in this store. */
 	UPROPERTY(Transient)
-	UObject* Owner;
+	TObjectPtr<UObject> Owner;
 	
 #if WITH_EDITORONLY_DATA
 	/** Map from parameter defs to their offset in the data table or the data interface. TODO: Separate out into a layout and instance class to reduce duplicated data for this?  */
-	UPROPERTY()
+	UPROPERTY(meta=(DeprecatedProperty))
 	TMap<FNiagaraVariable, int32> ParameterOffsets;
 #endif // WITH_EDITORONLY_DATA
 
@@ -181,12 +198,16 @@ private:
 	
 	/** Data interfaces for this script. Possibly overridden with externally owned interfaces. Also indexed by ParameterOffsets. */
 	UPROPERTY()
-	TArray<UNiagaraDataInterface*> DataInterfaces;
+	TArray<TObjectPtr<UNiagaraDataInterface>> DataInterfaces;
 
 	/** UObjects referenced by this store. Also indexed by ParameterOffsets.*/
 	UPROPERTY()
-	TArray<UObject*> UObjects;
+	TArray<TObjectPtr<UObject>> UObjects;
 
+	/** Holds position type source data to be later converted to LWC format. We use an array here instead of a map to save some memory and because linear search is faster with the few elements in here. */
+	UPROPERTY()
+	TArray<FNiagaraPositionSource> OriginalPositionData;	
+	
 	/** Bindings between this parameter store and others we push data into when we tick. */
 	typedef TPair<FNiagaraParameterStore*, FNiagaraParameterStoreBinding> BindingPair;
 	TArray<BindingPair> Bindings;
@@ -201,12 +222,19 @@ private:
 	/** Marks our UObjects as dirty. They will be pushed to any bound stores on tick if true. */
 	uint32 bUObjectsDirty : 1;
 
+	uint32 bPositionDataDirty : 1; 
+
 	/** Uniquely identifies the current layout of this parameter store for detecting layout changes. */
 	uint32 LayoutVersion;
 
 #if WITH_EDITOR
 	FOnChanged OnChangedDelegate;
 #endif
+
+	void SetPositionData(const FName& Name, const FVector& Position);
+	bool HasPositionData(const FName& Name) const;
+	const FVector* GetPositionData(const FName& Name) const;
+	void RemovePositionData(const FName& Name);
 
 public:
 	FNiagaraParameterStore();
@@ -233,10 +261,12 @@ public:
 	FORCEINLINE uint32 GetParametersDirty() const { return bParametersDirty; }
 	FORCEINLINE uint32 GetInterfacesDirty() const { return bInterfacesDirty; }
 	FORCEINLINE uint32 GetUObjectsDirty() const { return bUObjectsDirty; }
+	FORCEINLINE uint32 GetPositionDataDirty() const { return bPositionDataDirty; }
 
 	FORCEINLINE void MarkParametersDirty() { bParametersDirty = true; }
 	FORCEINLINE void MarkInterfacesDirty() { bInterfacesDirty = true; }
 	FORCEINLINE void MarkUObjectsDirty() { bUObjectsDirty = true; }
+	FORCEINLINE void MarkPositionDataDirty() { bPositionDataDirty = true; }
 
 	FORCEINLINE uint32 GetLayoutVersion() const { return LayoutVersion; }
 
@@ -267,6 +297,8 @@ public:
 	virtual bool AddParameter(const FNiagaraVariable& Param, bool bInitialize = true, bool bTriggerRebind = true, int32* OutOffset = nullptr);
 
 #if WITH_EDITORONLY_DATA
+	virtual void ConvertParameterType(const FNiagaraVariable& ExistingParam, const FNiagaraTypeDefinition& NewType);
+	
 	template<typename BufferType>
 	void AddConstantBuffer()
 	{
@@ -282,6 +314,9 @@ public:
 
 	/** Renames the passed parameter. */
 	virtual void RenameParameter(const FNiagaraVariableBase& Param, FName NewName);
+
+	/** Changes the type of the passed parameter. */
+	virtual void ChangeParameterType(const FNiagaraVariableBase& Param, const FNiagaraTypeDefinition& NewType);
 
 	/** Removes all parameters from this store and releases any data. */
 	virtual void Empty(bool bClearBindings = true);
@@ -309,7 +344,7 @@ public:
 	FORCEINLINE int32 Num() const {return SortedParameterOffsets.Num(); }
 	FORCEINLINE bool IsEmpty() const { return SortedParameterOffsets.Num() == 0; }
 
-	void SanityCheckData(bool bInitInterfaces = true);
+	virtual void SanityCheckData(bool bInitInterfaces = true);
 
 	// Called to initially set up the parameter store to *exactly* match the input store (other than any bindings and the internal name of it).
 	virtual void InitFromSource(const FNiagaraParameterStore* SrcStore, bool bNotifyAsDirty);
@@ -320,6 +355,8 @@ public:
 		const int32* Off = FindParameterOffset(Parameter);
 		return Off ? *Off : (int32)INDEX_NONE;
 	}
+	
+	virtual const FNiagaraVariableWithOffset* FindParameterVariable(const FNiagaraVariable& Parameter, bool IgnoreType = false) const;
 
 	/** Gets the typed parameter data. */
 	template<typename T>
@@ -361,6 +398,12 @@ public:
 		return nullptr;
 	}
 
+	/** Copies the data stored for the given variable to the target pointer. This method automatically converts custom struct data back to lwc types.
+	 * Just using the raw parameter store pointer via IndexOf() will be wrong if the target struct contains a lwc type like FVector.
+	 * Returns true if the data was copied, false if the parameter could not be found in the store.
+	 */
+	bool CopyParameterData(const FNiagaraVariable& Parameter, uint8* DestinationData) const;
+
 	/** Returns the data interface at the passed offset. */
 	FORCEINLINE UNiagaraDataInterface* GetDataInterface(int32 Offset)const
 	{
@@ -380,6 +423,9 @@ public:
 		checkSlow(!Interface || Parameter.GetType().GetClass() == Interface->GetClass());
 		return Interface;
 	}
+
+	/** Returns a struct converter for the given variable, if the store contains the variable and it's a LWC type. */
+	FNiagaraLwcStructConverter GetStructConverter(const FNiagaraVariable& Parameter) const;
 
 	/** Returns the associated FNiagaraVariable for the passed data interface if it exists in the store. Null if not.*/
 	const FNiagaraVariableBase* FindVariable(const UNiagaraDataInterface* Interface) const;
@@ -439,6 +485,11 @@ public:
 			{
 				DestStore.SetUObject(GetUObject(SrcIndex), DestIndex);
 			}
+			else if (Parameter.GetType() == FNiagaraTypeDefinition::GetPositionDef())
+			{
+				const FVector* SourceVector = GetPositionParameterValue(Parameter.GetName());
+				DestStore.SetPositionParameterValue(SourceVector ? *SourceVector : FVector::ZeroVector, Parameter.GetName());
+			}
 			else
 			{
 				DestStore.SetParameterData(GetParameterData(SrcIndex), DestIndex, Parameter.GetSizeInBytes());
@@ -465,10 +516,21 @@ public:
 
 	FString ToString() const;
 
+	virtual bool SetPositionParameterValue(const FVector& InValue, const FName& ParamName, bool bAdd=false);
+	virtual const FVector* GetPositionParameterValue(const FName& ParamName) const;
+	void ResolvePositions(FNiagaraLWCConverter LwcConverter);
+
 	template<typename T>
 	FORCEINLINE_DEBUGGABLE bool SetParameterValue(const T& InValue, const FNiagaraVariable& Param, bool bAdd=false)
 	{
 		check(Param.GetSizeInBytes() == sizeof(T));
+#if WITH_EDITOR
+		ensure(FNiagaraTypeHelper::IsLWCType(Param.GetType()) == false);
+		if (Param.GetType() == FNiagaraTypeDefinition::GetPositionDef())
+		{
+			check(HasPositionData(Param.GetName()));
+		}
+#endif
 		int32 Offset = IndexOf(Param);
 		if (Offset != INDEX_NONE)
 		{
@@ -510,50 +572,7 @@ public:
 		OnParameterChange();
 	}
 
-	template<typename T>
-	FORCEINLINE_DEBUGGABLE void SetParameterDataTyped(const uint8* Data, int32 Offset)
-	{
-		checkSlow(Data != nullptr);
-		checkSlow((Offset + sizeof(T)) <= ParameterData.Num());
-		uint8* Dest = GetParameterData_Internal(Offset);
-		*((T*)Dest) = *((T*)Data);
-		OnParameterChange();
-	}
-
-	FORCEINLINE_DEBUGGABLE bool SetParameterData(const uint8* Data, const FNiagaraVariable& Param, bool bAdd = false)
-	{
-		checkSlow(Data != nullptr);
-		int32 Offset = IndexOf(Param);
-		if (Offset != INDEX_NONE)
-		{
-			checkSlow(!Param.IsDataInterface());
-			uint8* Dest = GetParameterData_Internal(Offset);
-			if (Dest != Data)
-			{
-				FMemory::Memcpy(Dest, Data, Param.GetSizeInBytes());
-			}
-			OnParameterChange();
-			return true;
-		}
-		else
-		{
-			if (bAdd)
-			{
-				bool bInitInterfaces = false;
-				bool bTriggerRebind = false;
-				AddParameter(Param, bInitInterfaces, bTriggerRebind, &Offset);
-				check(Offset != INDEX_NONE);
-				uint8* Dest = GetParameterData_Internal(Offset);
-				if (Dest != Data)
-				{
-					FMemory::Memcpy(Dest, Data, Param.GetSizeInBytes());
-				}
-				OnLayoutChange();
-				return true;
-			}
-		}
-		return false;
-	}
+	bool SetParameterData(const uint8* Data, FNiagaraVariable Param, bool bAdd = false);
 
 	FORCEINLINE_DEBUGGABLE void SetDataInterface(UNiagaraDataInterface* InInterface, int32 Offset)
 	{
@@ -653,9 +672,28 @@ protected:
 	void SetParameterDataArray(const TArray<uint8>& InParameterDataArray, bool bNotifyAsDirty = true);
 	void SetDataInterfaces(const TArray<UNiagaraDataInterface*>& InDataInterfaces, bool bNotifyAsDirty = true);
 	void SetUObjects(const TArray<UObject*>& InUObjects, bool bNotifyAsDirty = true);
+	void SetOriginalPositionData(const TArray<FNiagaraPositionSource>& InOriginalPositionData);
 
 	friend struct FNiagaraParameterStoreToDataSetBinding;    // this should be the only class calling SetParameterByOffset
 };
+
+template<>
+FORCEINLINE bool FNiagaraParameterStore::SetParameterValue(const FVector3d& InValue, const FNiagaraVariable& Param, bool bAdd)
+{
+	return SetParameterValue((FVector3f)InValue, Param, bAdd);
+}
+
+template<>
+FORCEINLINE bool FNiagaraParameterStore::SetParameterValue(const FVector4d& InValue, const FNiagaraVariable& Param, bool bAdd)
+{
+	return SetParameterValue((FVector4f)InValue, Param, bAdd);
+}
+
+template<>
+FORCEINLINE bool FNiagaraParameterStore::SetParameterValue(const FQuat4d& InValue, const FNiagaraVariable& Param, bool bAdd)
+{
+	return SetParameterValue((FQuat4f)InValue, Param, bAdd);
+}
 
 FORCEINLINE_DEBUGGABLE void FNiagaraParameterStore::Tick()
 {
@@ -908,6 +946,8 @@ Does no tracking of lifetimes etc so users are responsible for safety.
 template<typename T>
 struct FNiagaraParameterDirectBinding
 {
+	static_assert(!TIsUECoreVariant<T, double>::Value, "Double core variant. Must be float type!");
+
 	mutable T* ValuePtr;
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
 	FNiagaraParameterStore* BoundStore;
@@ -961,9 +1001,9 @@ struct FNiagaraParameterDirectBinding
 };
 
 template<>
-struct FNiagaraParameterDirectBinding<FMatrix>
+struct FNiagaraParameterDirectBinding<FMatrix44f>
 {
-	mutable FMatrix* ValuePtr;
+	mutable FMatrix44f* ValuePtr;
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
 	FNiagaraParameterStore* BoundStore;
 	FNiagaraVariable BoundVariable;
@@ -977,49 +1017,49 @@ struct FNiagaraParameterDirectBinding<FMatrix>
 #endif
 	{}
 
-	FMatrix* Init(FNiagaraParameterStore& InStore, const FNiagaraVariable& DestVariable)
+	FMatrix44f* Init(FNiagaraParameterStore& InStore, const FNiagaraVariable& DestVariable)
 	{
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
 		BoundStore = &InStore;
 		BoundVariable = DestVariable;
 		LayoutVersion = BoundStore->GetLayoutVersion();
 #endif
-		check(DestVariable.GetSizeInBytes() == sizeof(FMatrix));
-		ValuePtr = (FMatrix*)InStore.GetParameterData(DestVariable);
+		check(DestVariable.GetSizeInBytes() == sizeof(FMatrix44f));
+		ValuePtr = (FMatrix44f*)InStore.GetParameterData(DestVariable);
 		return ValuePtr;
 	}
 
-	FORCEINLINE void SetValue(const FMatrix& InValue)
+	FORCEINLINE void SetValue(const FMatrix44f& InValue)
 	{
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
-		checkSlow(BoundVariable.GetSizeInBytes() == sizeof(FMatrix));
+		checkSlow(BoundVariable.GetSizeInBytes() == sizeof(FMatrix44f));
 		checkfSlow(LayoutVersion == BoundStore->GetLayoutVersion(), TEXT("This binding is invalid, its bound parameter store's layout was changed since it was created"));
 #endif
 		if (ValuePtr)
 		{
-			FMemory::Memcpy(ValuePtr, &InValue, sizeof(FMatrix));//Temp annoyance until we fix the alignment issues with parameter stores.
+			FMemory::Memcpy(ValuePtr, &InValue, sizeof(FMatrix44f));//Temp annoyance until we fix the alignment issues with parameter stores.
 		}
 	}
 
-	FORCEINLINE FMatrix GetValue()const
+	FORCEINLINE FMatrix44f GetValue()const
 	{
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
-		checkSlow(BoundVariable.GetSizeInBytes() == sizeof(FMatrix));
+		checkSlow(BoundVariable.GetSizeInBytes() == sizeof(FMatrix44f));
 		checkfSlow(LayoutVersion == BoundStore->GetLayoutVersion(), TEXT("This binding is invalid, its bound parameter store's layout was changed since it was created"));
 #endif
-		FMatrix Ret;
+		FMatrix44f Ret;
 		if (ValuePtr)
 		{
-			FMemory::Memcpy(&Ret, ValuePtr, sizeof(FMatrix));//Temp annoyance until we fix the alignment issues with parameter stores.
+			FMemory::Memcpy(&Ret, ValuePtr, sizeof(FMatrix44f));//Temp annoyance until we fix the alignment issues with parameter stores.
 		}
 		return Ret;
 	}
 };
 
 template<>
-struct FNiagaraParameterDirectBinding<FVector4>
+struct FNiagaraParameterDirectBinding<FVector4f>
 {
-	mutable FVector4* ValuePtr;
+	mutable FVector4f* ValuePtr;
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
 	FNiagaraParameterStore* BoundStore;
 	FNiagaraVariable BoundVariable;
@@ -1033,49 +1073,49 @@ struct FNiagaraParameterDirectBinding<FVector4>
 #endif
 	{}
 
-	FVector4* Init(FNiagaraParameterStore& InStore, const FNiagaraVariable& DestVariable)
+	FVector4f* Init(FNiagaraParameterStore& InStore, const FNiagaraVariable& DestVariable)
 	{
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
 		BoundStore = &InStore;
 		BoundVariable = DestVariable;
 		LayoutVersion = BoundStore->GetLayoutVersion();
 #endif
-		check(DestVariable.GetSizeInBytes() == sizeof(FVector4));
-		ValuePtr = (FVector4*)InStore.GetParameterData(DestVariable);
+		check(DestVariable.GetSizeInBytes() == sizeof(FVector4f));
+		ValuePtr = (FVector4f*)InStore.GetParameterData(DestVariable);
 		return ValuePtr;
 	}
 
-	FORCEINLINE void SetValue(const FVector4& InValue)
+	FORCEINLINE void SetValue(const FVector4f& InValue)
 	{
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
-		checkSlow(BoundVariable.GetSizeInBytes() == sizeof(FVector4));
+		checkSlow(BoundVariable.GetSizeInBytes() == sizeof(FVector4f));
 		checkfSlow(LayoutVersion == BoundStore->GetLayoutVersion(), TEXT("This binding is invalid, its bound parameter store's layout was changed since it was created"));
 #endif
 		if (ValuePtr)
 		{
-			FMemory::Memcpy(ValuePtr, &InValue, sizeof(FVector4));//Temp annoyance until we fix the alignment issues with parameter stores.
+			FMemory::Memcpy(ValuePtr, &InValue, sizeof(FVector4f));//Temp annoyance until we fix the alignment issues with parameter stores.
 		}
 	}
 
-	FORCEINLINE FVector4 GetValue()const
+	FORCEINLINE FVector4f GetValue()const
 	{
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
-		check(BoundVariable.GetSizeInBytes() == sizeof(FVector4));
+		check(BoundVariable.GetSizeInBytes() == sizeof(FVector4f));
 		checkfSlow(LayoutVersion == BoundStore->GetLayoutVersion(), TEXT("This binding is invalid, its bound parameter store's layout was changed since it was created"));
 #endif
-		FVector4 Ret;
+		FVector4f Ret;
 		if (ValuePtr)
 		{
-			FMemory::Memcpy(&Ret, ValuePtr, sizeof(FVector4));//Temp annoyance until we fix the alignment issues with parameter stores.
+			FMemory::Memcpy(&Ret, ValuePtr, sizeof(FVector4f));//Temp annoyance until we fix the alignment issues with parameter stores.
 		}
 		return Ret;
 	}
 };
 
 template<>
-struct FNiagaraParameterDirectBinding<FQuat>
+struct FNiagaraParameterDirectBinding<FQuat4f>
 {
-	mutable FQuat* ValuePtr;
+	mutable FQuat4f* ValuePtr;
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
 	FNiagaraParameterStore* BoundStore;
 	FNiagaraVariable BoundVariable;
@@ -1089,40 +1129,40 @@ struct FNiagaraParameterDirectBinding<FQuat>
 #endif
 	{}
 
-	FQuat* Init(FNiagaraParameterStore& InStore, const FNiagaraVariable& DestVariable)
+	FQuat4f* Init(FNiagaraParameterStore& InStore, const FNiagaraVariable& DestVariable)
 	{
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
 		BoundStore = &InStore;
 		BoundVariable = DestVariable;
 		LayoutVersion = BoundStore->GetLayoutVersion();
 #endif
-		check(DestVariable.GetSizeInBytes() == sizeof(FQuat));
-		ValuePtr = (FQuat*)InStore.GetParameterData(DestVariable);
+		check(DestVariable.GetSizeInBytes() == sizeof(FQuat4f));
+		ValuePtr = (FQuat4f*)InStore.GetParameterData(DestVariable);
 		return ValuePtr;
 	}
 
-	FORCEINLINE void SetValue(const FQuat& InValue)
+	FORCEINLINE void SetValue(const FQuat4f& InValue)
 	{
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
-		checkSlow(BoundVariable.GetSizeInBytes() == sizeof(FQuat));
+		checkSlow(BoundVariable.GetSizeInBytes() == sizeof(FQuat4f));
 		checkfSlow(LayoutVersion == BoundStore->GetLayoutVersion(), TEXT("This binding is invalid, its bound parameter store's layout was changed since it was created"));
 #endif
 		if (ValuePtr)
 		{
-			FMemory::Memcpy(ValuePtr, &InValue, sizeof(FQuat));//Temp annoyance until we fix the alignment issues with parameter stores.
+			FMemory::Memcpy(ValuePtr, &InValue, sizeof(FQuat4f));//Temp annoyance until we fix the alignment issues with parameter stores.
 		}
 	}
 
-	FORCEINLINE FQuat GetValue()const
+	FORCEINLINE FQuat4f GetValue()const
 	{
 #if NIAGARA_VALIDATE_DIRECT_BINDINGS
-		checkSlow(BoundVariable.GetSizeInBytes() == sizeof(FQuat));
+		checkSlow(BoundVariable.GetSizeInBytes() == sizeof(FQuat4f));
 		checkfSlow(LayoutVersion == BoundStore->GetLayoutVersion(), TEXT("This binding is invalid, its bound parameter store's layout was changed since it was created"));
 #endif
-		FQuat Ret;
+		FQuat4f Ret;
 		if (ValuePtr)
 		{
-			FMemory::Memcpy(&Ret, ValuePtr, sizeof(FQuat));//Temp annoyance until we fix the alignment issues with parameter stores.
+			FMemory::Memcpy(&Ret, ValuePtr, sizeof(FQuat4f));//Temp annoyance until we fix the alignment issues with parameter stores.
 		}
 		return Ret;
 	}
@@ -1264,7 +1304,7 @@ struct FNiagaraParameterDirectBinding<UObject*>
 	}
 
 	template<class TObjectType>
-	FORCEINLINE TObjectType* GetValue() const
+	FORCEINLINE TObjectType* GetValueOrDefault(TObjectType* DefaultValue) const
 	{
 		if (UObjectOffset != INDEX_NONE)
 		{
@@ -1273,6 +1313,12 @@ struct FNiagaraParameterDirectBinding<UObject*>
 
 			return Cast<TObjectType>(BoundStore->GetUObject(UObjectOffset));
 		}
-		return nullptr;
+		return DefaultValue;
+	}
+
+	template<class TObjectType>
+	FORCEINLINE TObjectType* GetValue() const
+	{
+		return GetValueOrDefault<TObjectType>(nullptr);
 	}
 };

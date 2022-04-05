@@ -71,7 +71,7 @@ void UEditorEngine::LaunchNewProcess(const FRequestPlaySessionParams& InParams, 
 
 	if (InParams.GameModeOverride)
 	{
-		UnrealURLParams += FString::Printf(TEXT("?game=%s"), *InParams.GameModeOverride->GetName());
+		UnrealURLParams += FString::Printf(TEXT("?game=%s"), *InParams.GameModeOverride->GetPathName());
 	}
 
 	if (bIsDedicatedServer)
@@ -197,13 +197,6 @@ void UEditorEngine::LaunchNewProcess(const FRequestPlaySessionParams& InParams, 
 	if (InParams.AdditionalStandaloneCommandLineParameters.IsSet())
 	{
 		CommandLine += FString::Printf(TEXT(" %s"), *InParams.AdditionalStandaloneCommandLineParameters.GetValue());
-	}
-
-	// Mobile uses its own set of command line arguments that can be passed. Mobile can be previewed both in-process and
-	// standalone, so we need two separate sets of arguments right now.
-	if (InParams.EditorPlaySettings->AdditionalLaunchParametersForMobile.Len() > 0)
-	{
-		CommandLine += FString::Printf(TEXT(" %s"), *InParams.EditorPlaySettings->AdditionalLaunchParametersForMobile);
 	}
 
 	// Allow servers to override which port they are launched on.

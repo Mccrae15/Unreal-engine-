@@ -93,6 +93,11 @@ public:
 	 */
 	virtual void ShutdownModule() override
 	{
+		if (GUnrealEd)
+		{
+			GUnrealEd->UnregisterComponentVisualizer(UProceduralFoliageComponent::StaticClass()->GetFName());
+		}
+
 		FFoliageEditCommands::Unregister();
 
 		FEditorModeRegistry::Get().UnregisterMode(FBuiltinEditorModes::EM_Foliage);
@@ -216,6 +221,16 @@ public:
 		FEdModeFoliage* FoliageMode = (FEdModeFoliage*)GLevelEditorModeTools().GetActiveMode(FBuiltinEditorModes::EM_Foliage);
 
 		FoliageMode->MoveSelectedFoliageToLevel(InTargetLevel);
+	}
+
+	virtual void UpdateMeshList() override
+	{
+		FEditorModeTools& EditorModeTools = GLevelEditorModeTools(); 
+		if (EditorModeTools.IsModeActive(FBuiltinEditorModes::EM_Foliage))
+		{
+			FEdModeFoliage* FoliageMode = (FEdModeFoliage*)EditorModeTools.GetActiveMode(FBuiltinEditorModes::EM_Foliage);
+			FoliageMode->PopulateFoliageMeshList();
+		}
 	}
 
 	virtual bool CanMoveSelectedFoliageToLevel(ULevel* InTargetLevel) const override

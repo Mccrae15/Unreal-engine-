@@ -461,16 +461,18 @@ void FAssetTypeActions_SkeletalMesh::GetActions(const TArray<UObject*>& InObject
 			"CreateSkeletalMeshSubmenu",
 			LOCTEXT("CreateSkeletalMeshSubmenu", "Create"),
 			LOCTEXT("CreateSkeletalMeshSubmenu_ToolTip", "Create related assets"),
-			FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_SkeletalMesh::FillCreateMenu, Meshes),
+			FNewToolMenuDelegate::CreateSP(this, &FAssetTypeActions_SkeletalMesh::FillCreateMenu, Meshes),
 			false,
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.AssetActions.CreateAnimAsset")
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.AssetActions.CreateAnimAsset")
 			);
 
 	Section.AddSubMenu(
 		"SkeletalMesh_LODImport",	
 		LOCTEXT("SkeletalMesh_LODImport", "Import LOD"),
 		LOCTEXT("SkeletalMesh_LODImportTooltip", "Select which LODs to import."),
-		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_SkeletalMesh::GetLODMenu, Meshes)
+		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_SkeletalMesh::GetLODMenu, Meshes),
+		false,
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.LOD")
 		);
 	
 #if WITH_APEX_CLOTHING
@@ -487,24 +489,29 @@ void FAssetTypeActions_SkeletalMesh::GetActions(const TArray<UObject*>& InObject
 		"SkeletonSubmenu",
 		LOCTEXT("SkeletonSubmenu", "Skeleton"),
 		LOCTEXT("SkeletonSubmenu_ToolTip", "Skeleton related actions"),
-		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_SkeletalMesh::FillSkeletonMenu, Meshes)
+		FNewMenuDelegate::CreateSP(this, &FAssetTypeActions_SkeletalMesh::FillSkeletonMenu, Meshes),
+		false,
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.SkeletalMesh")
 	);
 }
 
-void FAssetTypeActions_SkeletalMesh::FillCreateMenu(FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<USkeletalMesh>> Meshes) const
+void FAssetTypeActions_SkeletalMesh::FillCreateMenu(UToolMenu* Menu, TArray<TWeakObjectPtr<USkeletalMesh>> Meshes) const
 {
-	MenuBuilder.BeginSection("CreatePhysicsAsset", LOCTEXT("CreatePhysicsAssetMenuHeading", "Physics Asset"));
 	{
-		MenuBuilder.AddSubMenu(
+		FToolMenuSection& Section = Menu->AddSection("CreatePhysicsAsset", LOCTEXT("CreatePhysicsAssetMenuHeading", "Physics Asset"));
+		Section.AddSubMenu(
+			"NewPhysicsAssetMenu",
 			LOCTEXT("SkeletalMesh_NewPhysicsAssetMenu", "Physics Asset"),
 			LOCTEXT("SkeletalMesh_NewPhysicsAssetMenu_ToolTip", "Options for creating new physics assets from the selected meshes."),
 			FNewMenuDelegate::CreateSP(const_cast<FAssetTypeActions_SkeletalMesh*>(this), &FAssetTypeActions_SkeletalMesh::GetPhysicsAssetMenu, Meshes));
 	}
-	MenuBuilder.EndSection();
 
 	TArray<TWeakObjectPtr<UObject>> Objects;
 	Algo::Transform(Meshes, Objects, [](const TWeakObjectPtr<USkeletalMesh>& SkelMesh) { return SkelMesh; });
-	AnimationEditorUtils::FillCreateAssetMenu(MenuBuilder, Objects, FAnimAssetCreated::CreateSP(this, &FAssetTypeActions_SkeletalMesh::OnAssetCreated));
+	Menu->AddDynamicSection(NAME_None, FNewToolMenuDelegateLegacy::CreateLambda([this, Objects](FMenuBuilder& MenuBuilder, UToolMenu* Menu)
+	{
+		AnimationEditorUtils::FillCreateAssetMenu(MenuBuilder, Objects, FAnimAssetCreated::CreateSP(this, &FAssetTypeActions_SkeletalMesh::OnAssetCreated));
+	}));
 }
 
 void FAssetTypeActions_SkeletalMesh::OpenAssetEditor( const TArray<UObject*>& InObjects, TSharedPtr<IToolkitHost> EditWithinLevelEditor )
@@ -603,13 +610,17 @@ EVisibility FAssetTypeActions_SkeletalMesh::GetThumbnailSkinningOverlayVisibilit
 	UObject* Obj = AssetData.GetAsset();
 	if(USkeletalMesh* SkeletalMesh = Cast<USkeletalMesh>(Obj))
 	{
-		UAssetImportData* GenericImportData = SkeletalMesh->GetAssetImportData();
-		if (GenericImportData != nullptr)
+		// Don't block on asset compilation just for overlay, the thumbnail is refreshed anyway once the compilation is complete.
+		if (!SkeletalMesh->IsCompiling())
 		{
-			UFbxSkeletalMeshImportData* ImportData = Cast<UFbxSkeletalMeshImportData>(GenericImportData);
-			if (ImportData != nullptr && ImportData->LastImportContentType == EFBXImportContentType::FBXICT_Geometry)
+			UAssetImportData* GenericImportData = SkeletalMesh->GetAssetImportData();
+			if (GenericImportData != nullptr)
 			{
-				return EVisibility::HitTestInvisible;
+				UFbxSkeletalMeshImportData* ImportData = Cast<UFbxSkeletalMeshImportData>(GenericImportData);
+				if (ImportData != nullptr && ImportData->LastImportContentType == EFBXImportContentType::FBXICT_Geometry)
+				{
+					return EVisibility::HitTestInvisible;
+				}
 			}
 		}
 	}
@@ -673,6 +684,7 @@ void FAssetTypeActions_SkeletalMesh::GetLODMenu(class FMenuBuilder& MenuBuilder,
 	check(Objects.Num() > 0);
 	//Use the first object
 	USkeletalMesh* SkeletalMesh = Objects[0].Get();
+
 	int32 LODMax = SkeletalMesh->GetLODNum();
 	for(int32 LOD = 1; LOD <= LODMax; ++LOD)
 	{
@@ -708,6 +720,11 @@ void FAssetTypeActions_SkeletalMesh::ExecuteNewPhysicsAsset(TArray<TWeakObjectPt
 		auto Object = (*ObjIt).Get();
 		if ( Object )
 		{
+			if (Object->GetOutermost()->bIsCookedForEditor)
+			{
+				FAssetNotifications::CannotEditCookedAsset(Object);
+				continue;
+			}
 			if(UObject* PhysicsAsset = UPhysicsAssetFactory::CreatePhysicsAssetFromMesh(NAME_None, nullptr, Object, bSetAssetToMesh))
 			{
 				CreatedObjects.Add(PhysicsAsset);
@@ -735,6 +752,12 @@ void FAssetTypeActions_SkeletalMesh::ExecuteNewSkeleton(TArray<TWeakObjectPtr<US
 
 		if ( Object )
 		{
+			if (Object->GetOutermost()->bIsCookedForEditor)
+			{
+				FAssetNotifications::CannotEditCookedAsset(Object);
+				return;
+			}
+
 			// Determine an appropriate name
 			FString Name;
 			FString PackagePath;
@@ -755,6 +778,11 @@ void FAssetTypeActions_SkeletalMesh::ExecuteNewSkeleton(TArray<TWeakObjectPtr<US
 			auto Object = (*ObjIt).Get();
 			if ( Object )
 			{
+				if (Object->GetOutermost()->bIsCookedForEditor)
+				{
+					FAssetNotifications::CannotEditCookedAsset(Object);
+					continue;
+				}
 				// Determine an appropriate name
 				FString Name;
 				FString PackageName;
@@ -818,10 +846,16 @@ void FAssetTypeActions_SkeletalMesh::ExecuteFindSkeleton(TArray<TWeakObjectPtr<U
 
 void FAssetTypeActions_SkeletalMesh::ExecuteImportMeshLOD(UObject* Mesh, int32 LOD)
 {
+	if (Mesh->GetOutermost()->bIsCookedForEditor)
+	{
+		FAssetNotifications::CannotEditCookedAsset(Mesh);
+		return;
+	}
+
 	if (LOD == 0)
 	{
 		//re-import of the asset
-		TArray<UObject *> AssetArray;
+		TArray<UObject*> AssetArray;
 		AssetArray.Add(Mesh);
 		FReimportManager::Instance()->ValidateAllSourceFileAndReimport(AssetArray);
 	}
@@ -852,7 +886,7 @@ void FAssetTypeActions_SkeletalMesh::FillSkeletonMenu(FMenuBuilder& MenuBuilder,
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SkeletalMesh_NewSkeleton", "Create Skeleton"),
 		LOCTEXT("SkeletalMesh_NewSkeletonTooltip", "Creates a new skeleton for each of the selected meshes."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "AssetIcons.Skeleton"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "AssetIcons.Skeleton"),
 		FUIAction(
 			FExecuteAction::CreateSP(const_cast<FAssetTypeActions_SkeletalMesh*>(this), &FAssetTypeActions_SkeletalMesh::ExecuteNewSkeleton, Meshes),
 			FCanExecuteAction()
@@ -862,7 +896,7 @@ void FAssetTypeActions_SkeletalMesh::FillSkeletonMenu(FMenuBuilder& MenuBuilder,
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SkeletalMesh_AssignSkeleton", "Assign Skeleton"),
 		LOCTEXT("SkeletalMesh_AssignSkeletonTooltip", "Assigns a skeleton to the selected meshes."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.AssetActions.AssignSkeleton"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.AssetActions.AssignSkeleton"),
 		FUIAction(
 			FExecuteAction::CreateSP(const_cast<FAssetTypeActions_SkeletalMesh*>(this), &FAssetTypeActions_SkeletalMesh::ExecuteAssignSkeleton, Meshes),
 			FCanExecuteAction()
@@ -872,7 +906,7 @@ void FAssetTypeActions_SkeletalMesh::FillSkeletonMenu(FMenuBuilder& MenuBuilder,
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SkeletalMesh_FindSkeleton", "Find Skeleton"),
 		LOCTEXT("SkeletalMesh_FindSkeletonTooltip", "Finds the skeleton used by the selected meshes in the content browser."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "Persona.AssetActions.FindSkeleton"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.AssetActions.FindSkeleton"),
 		FUIAction(
 			FExecuteAction::CreateSP(const_cast<FAssetTypeActions_SkeletalMesh*>(this), &FAssetTypeActions_SkeletalMesh::ExecuteFindSkeleton, Meshes),
 			FCanExecuteAction()
@@ -882,6 +916,12 @@ void FAssetTypeActions_SkeletalMesh::FillSkeletonMenu(FMenuBuilder& MenuBuilder,
 
 void FAssetTypeActions_SkeletalMesh::AssignSkeletonToMesh(USkeletalMesh* SkelMesh) const
 {
+	if (!SkelMesh || SkelMesh->GetOutermost()->bIsCookedForEditor)
+	{
+		FAssetNotifications::CannotEditCookedAsset(SkelMesh);
+		return;
+	}
+
 	// Create a skeleton asset from the selected skeletal mesh. Defaults to being in the same package/group as the skeletal mesh.
 	TSharedRef<SWindow> WidgetWindow = SNew(SWindow)
 		.Title(LOCTEXT("ChooseSkeletonWindowTitle", "Choose Skeleton"))

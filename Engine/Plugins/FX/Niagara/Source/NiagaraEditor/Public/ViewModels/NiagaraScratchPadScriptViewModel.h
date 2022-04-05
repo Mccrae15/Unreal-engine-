@@ -38,6 +38,10 @@ protected:
 	//~ End NiagaraParameterDefinitionsSubscriberViewModel Interface
 
 public:
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FNiagaraScratchPadScriptViewModel");
+	}
 
 	UNiagaraScript* GetOriginalScript() const;
 

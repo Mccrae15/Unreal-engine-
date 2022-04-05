@@ -4,8 +4,8 @@
 #include "HAL/UnrealMemory.h"
 #include "Math/UnrealMath.h"
 
-namespace Trace
-{
+namespace UE {
+namespace Trace {
 
 ////////////////////////////////////////////////////////////////////////////////
 FStreamReader::~FStreamReader()
@@ -32,9 +32,28 @@ void FStreamReader::Advance(uint32 Size)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+int32 FStreamReader::GetRemaining() const
+{
+	return int32(PTRINT(End - Cursor));
+}
+
+////////////////////////////////////////////////////////////////////////////////
 bool FStreamReader::IsEmpty() const
 {
 	return Cursor >= End;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool FStreamReader::Backtrack(const uint8* To)
+{
+	uint32 BacktrackedCursor = uint32(UPTRINT(To - Buffer));
+	if (BacktrackedCursor > End)
+	{
+		return false;
+	}
+
+	Cursor = BacktrackedCursor;
+	return true;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -81,7 +100,7 @@ void FStreamBuffer::Consolidate()
 
 	if (DemandHint >= BufferSize)
 	{
-		const uint32 GrowthSizeMask = (8 << 10) - 1;
+		const uint32 GrowthSizeMask = (64 << 10) - 1;
 		BufferSize = (DemandHint + GrowthSizeMask + 1) & ~GrowthSizeMask;
 		Buffer = (uint8*)FMemory::Realloc(Buffer, BufferSize);
 	}
@@ -103,3 +122,4 @@ void FStreamBuffer::Consolidate()
 }
 
 } // namespace Trace
+} // namespace UE

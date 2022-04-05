@@ -45,6 +45,10 @@ public class Niagara : ModuleRules
             }
         );
 
+		PrivateIncludePathModuleNames.AddRange(
+			new string[] {
+				"DerivedDataCache",
+			});
 
         PrivateIncludePaths.AddRange(
             new string[] {
@@ -52,21 +56,12 @@ public class Niagara : ModuleRules
             })
         ;
 
-        // If we're compiling with the engine, then add Core's engine dependencies
-        if (Target.bCompileAgainstEngine == true)
-        {
-            if (!Target.bBuildRequiresCookedData)
-            {
-                DynamicallyLoadedModuleNames.AddRange(new string[] { "DerivedDataCache" });
-            }
-        }
-
-
         if (Target.bBuildEditor == true)
         {
             PrivateDependencyModuleNames.AddRange(
                 new string[] {
                 "TargetPlatform",
+				"EditorFramework",
                 "UnrealEd",
 				"SlateCore",
 				"Slate"

@@ -4,7 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "ISourceControlOperation.h"
+#include "ISourceControlChangelist.h"
 #include "ISourceControlState.h"
+#include "ISourceControlChangelistState.h"
 #include "Features/IModularFeature.h"
 
 #ifndef SOURCE_CONTROL_WITH_SLATE
@@ -62,8 +64,7 @@ namespace ECommandResult
 DECLARE_DELEGATE_TwoParams(FSourceControlOperationComplete, const FSourceControlOperationRef&, ECommandResult::Type);
 
 /** Delegate used by providers to create source control operations */
-typedef TSharedRef<class ISourceControlOperation, ESPMode::ThreadSafe> FOperationSharedRef;
-DECLARE_DELEGATE_RetVal(FOperationSharedRef, FGetSourceControlOperation);
+DECLARE_DELEGATE_RetVal(FSourceControlOperationRef, FGetSourceControlOperation);
 
 /** Delegate called when the state of an item (or group of items) has changed. */
 DECLARE_MULTICAST_DELEGATE(FSourceControlStateChanged);
@@ -145,22 +146,36 @@ public:
 	 * @param	InStateCacheUsage	Whether to use the state cache or to force a (synchronous) state retrieval.
 	 * @return the result of the operation.
 	 */
-	virtual ECommandResult::Type GetState( const TArray<FString>& InFiles, TArray< TSharedRef<ISourceControlState, ESPMode::ThreadSafe> >& OutState, EStateCacheUsage::Type InStateCacheUsage ) = 0;
+	virtual ECommandResult::Type GetState( const TArray<FString>& InFiles, TArray<FSourceControlStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage ) = 0;
 
 	/**
 	 * Helper overload for state retrieval, see GetState().
 	 */
-	SOURCECONTROL_API virtual ECommandResult::Type GetState( const TArray<UPackage*>& InPackages, TArray< TSharedRef<ISourceControlState, ESPMode::ThreadSafe> >& OutState, EStateCacheUsage::Type InStateCacheUsage );
+	SOURCECONTROL_API virtual ECommandResult::Type GetState( const TArray<UPackage*>& InPackages, TArray<FSourceControlStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage );
 
 	/**
 	 * Helper overload for state retrieval, see GetState().
 	 */
-	SOURCECONTROL_API virtual TSharedPtr<ISourceControlState, ESPMode::ThreadSafe> GetState( const FString& InFile, EStateCacheUsage::Type InStateCacheUsage );
+	SOURCECONTROL_API virtual FSourceControlStatePtr GetState( const FString& InFile, EStateCacheUsage::Type InStateCacheUsage );
 
 	/**
 	 * Helper overload for state retrieval, see GetState().
 	 */
-	SOURCECONTROL_API virtual TSharedPtr<ISourceControlState, ESPMode::ThreadSafe> GetState( const UPackage* InPackage, EStateCacheUsage::Type InStateCacheUsage );
+	SOURCECONTROL_API virtual FSourceControlStatePtr GetState( const UPackage* InPackage, EStateCacheUsage::Type InStateCacheUsage );
+
+	/**
+	 * Get the state of each of the passed-in changelists. State may be cached for faster queries. Note states can be NULL!
+	 * @param	InChangelists		The changelists to retrieve state for.
+	 * @param	OutState			The states of the changelists. This will be empty if the operation fails. Note states can be NULL!
+	 * @param	InStateCacheUsage	Whether to use the state cache or to force a (synchronous) state retrieval.
+	 * @return the result of the operation.
+	 */
+	virtual ECommandResult::Type GetState( const TArray<FSourceControlChangelistRef>& InChangelists, TArray<FSourceControlChangelistStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage ) = 0;
+
+	/**
+	 * Helper overload for state retrieval, see GetState().
+	 */
+	SOURCECONTROL_API virtual FSourceControlChangelistStatePtr GetState( const FSourceControlChangelistRef& InChangelist, EStateCacheUsage::Type InStateCacheUsage );
 
 	/**
 	 * Get all cached source control state objects for which the supplied predicate returns true
@@ -180,45 +195,56 @@ public:
 	/**
 	 * Attempt to execute an operation on the passed-in files (if any are required).
 	 * @param	InOperation						The operation to perform.
+	 * @param	InChangelist                    The changelist to operate on, can be null.
 	 * @param	InFiles							The files to operate on.
 	 * @param	InConcurrency					How to execute the operation, blocking or asynchronously on another thread.
 	 * @param	InOperationCompleteDelegate		Delegate to call when the operation is completed. This is called back internal to this call when executed on the main thread, or from Tick() when queued for asynchronous execution. If the provider is not enabled or if the command is not suported the delegate is immediately called with ECommandResult::Failed.
 	 * @return the result of the operation.
 	 */
-	virtual ECommandResult::Type Execute( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() ) = 0;
+	virtual ECommandResult::Type Execute( const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() ) = 0;
 
 	/**
 	 * Helper overload for operation execution, see Execute().
 	 */
-	SOURCECONTROL_API virtual ECommandResult::Type Execute( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() );
+	SOURCECONTROL_API virtual ECommandResult::Type Execute(const FSourceControlOperationRef& InOperation, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete());
 
 	/**
 	 * Helper overload for operation execution, see Execute().
 	 */
-	SOURCECONTROL_API virtual ECommandResult::Type Execute( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const UPackage* InPackage, const EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() );
+	SOURCECONTROL_API virtual ECommandResult::Type Execute( const FSourceControlOperationRef& InOperation, const EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() );
 
 	/**
 	 * Helper overload for operation execution, see Execute().
 	 */
-	SOURCECONTROL_API virtual ECommandResult::Type Execute( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const FString& InFile, const EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() );
+	SOURCECONTROL_API virtual ECommandResult::Type Execute( const FSourceControlOperationRef& InOperation, const UPackage* InPackage, const EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() );
 
 	/**
 	 * Helper overload for operation execution, see Execute().
 	 */
-	SOURCECONTROL_API virtual ECommandResult::Type Execute( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const TArray<UPackage*>& InPackages, const EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() );
+	SOURCECONTROL_API virtual ECommandResult::Type Execute( const FSourceControlOperationRef& InOperation, const FString& InFile, const EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() );
+
+	/**
+	 * Helper overload for operation execution, see Execute().
+	 */
+	SOURCECONTROL_API virtual ECommandResult::Type Execute( const FSourceControlOperationRef& InOperation, const TArray<UPackage*>& InPackages, const EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete() );
+
+	/**
+	 * Helper overload for operation execution, see Execute().
+	*/
+	SOURCECONTROL_API virtual ECommandResult::Type Execute( const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const EConcurrency::Type InConcurrency = EConcurrency::Synchronous, const FSourceControlOperationComplete& InOperationCompleteDelegate = FSourceControlOperationComplete());
 
 	/**
 	 * Check to see if we can cancel an operation.
 	 * @param	InOperation		The operation to check.
 	 * @return true if the operation was cancelled.
 	 */
-	virtual bool CanCancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation ) const = 0;
+	virtual bool CanCancelOperation( const FSourceControlOperationRef& InOperation ) const = 0;
 
 	/**
 	 * Attempt to cancel an operation in progress.
 	 * @param	InOperation		The operation to attempt to cancel.
 	 */
-	virtual void CancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation ) = 0;
+	virtual void CancelOperation( const FSourceControlOperationRef& InOperation ) = 0;
 
 	/**
 	 * Get a label matching the passed-in name.
@@ -233,6 +259,46 @@ public:
 	 * @return an array of labels matching the spec.
 	 */
 	virtual TArray< TSharedRef<class ISourceControlLabel> > GetLabels( const FString& InMatchingSpec ) const = 0;
+
+	virtual TArray<FSourceControlChangelistRef> GetChangelists( EStateCacheUsage::Type InStateCacheUsage ) = 0;
+
+	/**
+	 * Executes the FDownloadFile operation, but unlike the ::Execute method this can be called from a background thread, this
+	 * works because FDownloadFile is thread safe and it does not change the state of source control.
+	 * NOTE: This is only intended for use by the virtualization module and will be deprecated at some point in the future when
+	 * thread safety is built into the system.
+	 * NOTE: This is only implemented for the perforce source control provider with no plans to extend this to other providers.
+	 * 
+	 * @param InOperation The download operation to be executed.
+	 * @param InFile The depot path of a file to download.
+	 * @return True if the operation was a success, otherwise false.
+	 */
+	SOURCECONTROL_API bool TryToDownloadFileFromBackgroundThread(const TSharedRef<class FDownloadFile>& InOperation, const FString& InFile);
+
+	/**
+	 * Executes the FDownloadFile operation, but unlike the ::Execute method this can be called from a background thread, this
+	 * works because FDownloadFile is thread safe and it does not change the state of source control.
+	 * NOTE: This is only intended for use by the virtualization module and will be deprecated at some point in the future when
+	 * thread safety is built into the system.
+	 * NOTE: This is only implemented for the perforce source control provider with no plans to extend this to other providers.
+	 *
+	 * @param InOperation The download operation to be executed.
+	 * @param InFile An array of depot paths for the files to download.
+	 * @return True if the operation was a success, otherwise false.
+	 */
+	SOURCECONTROL_API virtual bool TryToDownloadFileFromBackgroundThread(const TSharedRef<class FDownloadFile>& InOperation, const TArray<FString>& InFiles);
+
+	/**
+	 * Used to switch the provider from one workspace to another. 
+	 * NOTE: This concept is currently only implemented for the perforce source control provider.
+	 * 
+	 * @param NewWorkspaceName			The name of the workspace to switch to
+	 * @param ResultInfo[out]			Errors and info messages generated will be written here
+	 * @param OutOldWorkspaceName[out]	The name of the previous workspace will be written to this FString if the pointer is valid (optional)
+	 * 
+	 * @return The result of the operation.
+	 */
+	SOURCECONTROL_API virtual ECommandResult::Type SwitchWorkspace(FStringView NewWorkspaceName, FSourceControlResultInfo& OutResultInfo, FString* OutOldWorkspaceName);
 
 	/**
 	 * Whether the provider uses local read-only state to signal whether a file is editable.

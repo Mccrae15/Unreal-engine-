@@ -33,6 +33,7 @@ class FMaterialShaderType;
 class FNiagaraShaderType;
 class FOpenColorIOShaderType;
 class FMeshMaterialShaderType;
+class FComputeKernelShaderType;
 class FShader;
 class FShaderMapBase;
 class FShaderPipelineType;
@@ -41,6 +42,10 @@ class FVertexFactoryType;
 class FShaderParametersMetadata;
 class FShaderMapPointerTable;
 struct FShaderCompilerOutput;
+struct FShaderCompiledShaderInitializerType;
+
+UE_DEPRECATED(4.26, "FShadereCompiledShaderInitializerType is deprecated. Use FShaderCompiledShaderInitializerType.")
+typedef FShaderCompiledShaderInitializerType FShadereCompiledShaderInitializerType;
 
 /** Define a shader permutation uniquely according to its type, and permutation id.*/
 template<typename MetaShaderType>
@@ -270,9 +275,9 @@ protected:
 	explicit FShaderMapResource(EShaderPlatform InPlatform, int32 NumShaders);
 	virtual ~FShaderMapResource();
 
-	uint32 GetAllocatedSize() const
+	SIZE_T GetAllocatedSize() const
 	{
-		uint32 Size = NumRHIShaders * sizeof(std::atomic<FRHIShader*>);
+		SIZE_T Size = NumRHIShaders * sizeof(std::atomic<FRHIShader*>);
 #if RHI_RAYTRACING
 		Size += RayTracingMaterialLibraryIndices.GetAllocatedSize();
 #endif
@@ -339,12 +344,16 @@ public:
 	};
 #endif // WITH_EDITORONLY_DATA
 
-	RENDERCORE_API ~FShaderMapResourceCode();
+	RENDERCORE_API FShaderMapResourceCode() {}
+	RENDERCORE_API FShaderMapResourceCode(const FShaderMapResourceCode& Other);
+    RENDERCORE_API ~FShaderMapResourceCode();
 
 	RENDERCORE_API void Finalize();
 
 	RENDERCORE_API void Serialize(FArchive& Ar, bool bLoadedByCookedMaterial);
 #if WITH_EDITORONLY_DATA
+	RENDERCORE_API void NotifyShadersCompiled(FName FormatName);
+	UE_DEPRECATED(5.0, "NotifyShadersCompiled should be called")
 	RENDERCORE_API void NotifyShadersCooked(const ITargetPlatform* TargetPlatform);
 #endif // WITH_EDITORONLY_DATA
 
@@ -354,7 +363,7 @@ public:
 
 	int32 FindShaderIndex(const FSHAHash& InHash) const;
 
-	RENDERCORE_API void AddShaderCode(EShaderFrequency InFrequency, const FSHAHash& InHash, TConstArrayView<uint8> InCode);
+	RENDERCORE_API void AddShaderCode(EShaderFrequency InFrequency, const FSHAHash& InHash, const FShaderCode& InCode);
 #if WITH_EDITORONLY_DATA
 	RENDERCORE_API void AddPlatformDebugData(TConstArrayView<uint8> InPlatformDebugData);
 #endif
@@ -393,8 +402,8 @@ public:
 
 	virtual FShaderMapPointerTable* Clone() const { return new FShaderMapPointerTable(*this); }
 
-	virtual void SaveToArchive(FArchive& Ar, void* FrozenContent, bool bInlineShaderResources) const;
-	virtual void LoadFromArchive(FArchive& Ar, void* FrozenContent, bool bInlineShaderResources, bool bLoadedByCookedMaterial);
+	virtual void SaveToArchive(FArchive& Ar, const FPlatformTypeLayoutParameters& LayoutParams, const void* FrozenObject) const override;
+	virtual bool LoadFromArchive(FArchive& Ar, const FPlatformTypeLayoutParameters& LayoutParams, void* FrozenObject) override;
 
 	TPtrTable<FShaderType> ShaderTypes;
 	TPtrTable<FVertexFactoryType> VFTypes;
@@ -428,7 +437,7 @@ public:
 			TokenBits.AddZeroed();
 		}
 
-		uint8 Token = InValue;
+		uint8 Token;
 
 		// Anything that does not fit in 4 bits needs to go into FullLengths, with a special token value of 0
 		// InValue == 0 also should go into FullLengths, because its Token value is also 0
@@ -436,6 +445,10 @@ public:
 		{
 			Token = 0;
 			FullLengths.Add(InValue);
+		}
+		else
+		{
+			Token = (uint8)InValue;
 		}
 
 		const uint32 Shift = (NumTokens % 8) * 4;
@@ -624,21 +637,7 @@ enum class EShaderPermutationFlags : uint32
 };
 ENUM_CLASS_FLAGS(EShaderPermutationFlags);
 
-inline EShaderPermutationFlags GetCurrentShaderPermutationFlags()
-{
-	EShaderPermutationFlags Result = EShaderPermutationFlags::None;
-#if WITH_EDITORONLY_DATA
-	Result |= EShaderPermutationFlags::HasEditorOnlyData;
-#endif
-	return Result;
-}
-
-inline EShaderPermutationFlags GetShaderPermutationFlags(const FPlatformTypeLayoutParameters& LayoutParams)
-{
-	EShaderPermutationFlags Result = EShaderPermutationFlags::None;
-	if (LayoutParams.WithEditorOnly()) Result |= EShaderPermutationFlags::HasEditorOnlyData;
-	return Result;
-}
+RENDERCORE_API EShaderPermutationFlags GetShaderPermutationFlags(const FPlatformTypeLayoutParameters& LayoutParams);
 
 struct FShaderPermutationParameters
 {
@@ -658,34 +657,6 @@ struct FShaderPermutationParameters
 		, Flags(InFlags)
 	{}
 };
-
-struct FShaderCompiledShaderInitializerType
-{
-	const FShaderType* Type;
-	FShaderTarget Target;
-	const TArray<uint8>& Code;
-	const FShaderParameterMap& ParameterMap;
-	const FSHAHash& OutputHash;
-	FSHAHash MaterialShaderMapHash;
-	const FShaderPipelineType* ShaderPipeline;
-	const FVertexFactoryType* VertexFactoryType;
-	uint32 NumInstructions;
-	uint32 NumTextureSamplers;
-	uint32 CodeSize;
-	int32 PermutationId;
-
-	RENDERCORE_API FShaderCompiledShaderInitializerType(
-		const FShaderType* InType,
-		int32 InPermutationId,
-		const FShaderCompilerOutput& CompilerOutput,
-		const FSHAHash& InMaterialShaderMapHash,
-		const FShaderPipelineType* InShaderPipeline,
-		const FVertexFactoryType* InVertexFactoryType
-	);
-};
-
-UE_DEPRECATED(4.26, "FShadereCompiledShaderInitializerType is deprecated. Use FShaderCompiledShaderInitializerType.")
-typedef FShaderCompiledShaderInitializerType FShadereCompiledShaderInitializerType;
 
 namespace Freeze
 {
@@ -735,6 +706,9 @@ public:
 	const FSHAHash& GetVertexFactoryHash() const;
 	
 	const FSHAHash& GetOutputHash() const;
+
+	/** Returns an identifier suitable for deterministic sorting of shaders between sessions. */
+	uint32 GetSortKey() const { return SortKey; }
 
 	void Finalize(const FShaderMapResourceCode* Code);
 
@@ -856,6 +830,9 @@ private:
 	/** The number of instructions the shader takes to execute. */
 	LAYOUT_FIELD(uint32, NumInstructions);
 
+	/** Truncated version of OutputHash, intended for sorting. Not suitable for unique shader identification. */
+	LAYOUT_FIELD(uint32, SortKey);
+
 	/** Number of texture samplers the shader uses. */
 	LAYOUT_FIELD_EDITORONLY(uint32, NumTextureSamplers);
 
@@ -931,20 +908,20 @@ public:
 	{
 		return static_cast<FRHIVertexShader*>(GetRHIShaderBase(SF_Vertex));
 	}
+	/** @return the shader's mesh shader */
+	inline FRHIMeshShader* GetMeshShader() const
+	{
+		return static_cast<FRHIMeshShader*>(GetRHIShaderBase(SF_Mesh));
+	}
+	/** @return the shader's aplification shader */
+	inline FRHIAmplificationShader* GetAmplificationShader() const
+	{
+		return static_cast<FRHIAmplificationShader*>(GetRHIShaderBase(SF_Amplification));
+	}
 	/** @return the shader's pixel shader */
 	inline FRHIPixelShader* GetPixelShader() const
 	{
 		return static_cast<FRHIPixelShader*>(GetRHIShaderBase(SF_Pixel));
-	}
-	/** @return the shader's hull shader */
-	inline FRHIHullShader* GetHullShader() const
-	{
-		return static_cast<FRHIHullShader*>(GetRHIShaderBase(SF_Hull));
-	}
-	/** @return the shader's domain shader */
-	inline FRHIDomainShader* GetDomainShader() const
-	{
-		return static_cast<FRHIDomainShader*>(GetRHIShaderBase(SF_Domain));
 	}
 	/** @return the shader's geometry shader */
 	inline FRHIGeometryShader* GetGeometryShader() const
@@ -1029,7 +1006,17 @@ public:
 		MeshMaterial,
 		Niagara,
 		OCIO,
+		ComputeKernel,
 		NumShaderTypes,
+	};
+
+	/**
+	 * Derived FShaderTypes should derive from this class to pass params to FShader constructor
+	 */
+	class FParameters
+	{
+	public:
+		virtual ~FParameters(){}
 	};
 
 	typedef class FShader* (*ConstructSerializedType)();
@@ -1141,6 +1128,14 @@ public:
 	FORCEINLINE FOpenColorIOShaderType* GetOpenColorIOShaderType()
 	{
 		return (ShaderTypeForDynamicCast == EShaderTypeForDynamicCast::OCIO) ? reinterpret_cast<FOpenColorIOShaderType*>(this) : nullptr;
+	}
+	FORCEINLINE const FComputeKernelShaderType* GetComputeKernelShaderType() const
+	{
+		return (ShaderTypeForDynamicCast == EShaderTypeForDynamicCast::ComputeKernel) ? reinterpret_cast<const FComputeKernelShaderType*>(this) : nullptr;
+	}
+	FORCEINLINE FComputeKernelShaderType* GetComputeKernelShaderType()
+	{
+		return (ShaderTypeForDynamicCast == EShaderTypeForDynamicCast::ComputeKernel) ? reinterpret_cast<FComputeKernelShaderType*>(this) : nullptr;
 	}
 
 	FORCEINLINE const FGlobalShaderType* AsGlobalShaderType() const
@@ -1275,7 +1270,7 @@ private:
 
 protected:
 	/** Tracks what platforms ReferencedUniformBufferStructsCache has had declarations cached for. */
-	mutable FThreadSafeBool bCachedUniformBufferStructDeclarations;
+	mutable std::atomic<EShaderPlatform> CachedUniformBufferPlatform;
 
 	/**
 	* Cache of referenced uniform buffer includes.
@@ -1284,6 +1279,33 @@ protected:
 	*/
 	mutable TMap<const TCHAR*, FCachedUniformBufferDeclaration> ReferencedUniformBufferStructsCache;
 
+};
+
+struct FShaderCompiledShaderInitializerType
+{
+	const FShaderType* Type;
+	const FShaderType::FParameters* Parameters;
+	FShaderTarget Target;
+	const TArray<uint8>& Code;
+	const FShaderParameterMap& ParameterMap;
+	const FSHAHash& OutputHash;
+	FSHAHash MaterialShaderMapHash;
+	const FShaderPipelineType* ShaderPipeline;
+	const FVertexFactoryType* VertexFactoryType;
+	uint32 NumInstructions;
+	uint32 NumTextureSamplers;
+	uint32 CodeSize;
+	int32 PermutationId;
+
+	RENDERCORE_API FShaderCompiledShaderInitializerType(
+		const FShaderType* InType,
+		const FShaderType::FParameters* InParameters,
+		int32 InPermutationId,
+		const FShaderCompilerOutput& CompilerOutput,
+		const FSHAHash& InMaterialShaderMapHash,
+		const FShaderPipelineType* InShaderPipeline,
+		const FVertexFactoryType* InVertexFactoryType
+	);
 };
 
 #define SHADER_DECLARE_VTABLE(ShaderClass) \
@@ -1425,15 +1447,14 @@ public:
 	// Set bShouldOptimizeUnusedOutputs to false if the FShaders will point to the individual shaders in the map
 	FShaderPipelineType(
 		const TCHAR* InName,
-		const FShaderType* InVertexShader,
-		const FShaderType* InHullShader,
-		const FShaderType* InDomainShader,
-		const FShaderType* InGeometryShader,
+		const FShaderType* InVertexOrMeshShader,
+		const FShaderType* InGeometryOrAmplificationShader,
 		const FShaderType* InPixelShader,
+		bool bInIsMeshPipeline,
 		bool bInShouldOptimizeUnusedOutputs);
 	~FShaderPipelineType();
 
-	FORCEINLINE bool HasTessellation() const { return AllStages[SF_Domain] != nullptr; }
+	FORCEINLINE bool HasMeshShader() const { return AllStages[SF_Mesh] != nullptr; }
 	FORCEINLINE bool HasGeometry() const { return AllStages[SF_Geometry] != nullptr; }
 	FORCEINLINE bool HasPixelShader() const { return AllStages[SF_Pixel] != nullptr; }
 
@@ -1485,6 +1506,8 @@ public:
 	/** Calculates a Hash based on this shader pipeline type stages' source code and includes */
 	const FSHAHash& GetSourceHash(EShaderPlatform ShaderPlatform) const;
 
+	bool ShouldCompilePermutation(const FShaderPermutationParameters& Parameters) const;
+
 protected:
 	const TCHAR* const Name;
 	FName TypeName;
@@ -1507,28 +1530,23 @@ protected:
 #if !UE_BUILD_DOCS
 // Vertex+Pixel
 #define IMPLEMENT_SHADERPIPELINE_TYPE_VSPS(PipelineName, VertexShaderType, PixelShaderType, bRemoveUnused)	\
-	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, nullptr, nullptr, nullptr, &PixelShaderType::StaticType, bRemoveUnused);
+	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, nullptr, &PixelShaderType::StaticType, false, bRemoveUnused);
 // Only VS
 #define IMPLEMENT_SHADERPIPELINE_TYPE_VS(PipelineName, VertexShaderType, bRemoveUnused)	\
-	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, nullptr, nullptr, nullptr, nullptr, bRemoveUnused);
+	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, nullptr, nullptr, false, bRemoveUnused);
 // Vertex+Geometry+Pixel
 #define IMPLEMENT_SHADERPIPELINE_TYPE_VSGSPS(PipelineName, VertexShaderType, GeometryShaderType, PixelShaderType, bRemoveUnused)	\
-	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, nullptr, nullptr, &GeometryShaderType::StaticType, &PixelShaderType::StaticType, bRemoveUnused);
+	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, &GeometryShaderType::StaticType, &PixelShaderType::StaticType, false, bRemoveUnused);
 // Vertex+Geometry
 #define IMPLEMENT_SHADERPIPELINE_TYPE_VSGS(PipelineName, VertexShaderType, GeometryShaderType, bRemoveUnused)	\
-	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, nullptr, nullptr, &GeometryShaderType::StaticType, nullptr, bRemoveUnused);
-// Vertex+Hull+Domain+Pixel
-#define IMPLEMENT_SHADERPIPELINE_TYPE_VSHSDSPS(PipelineName, VertexShaderType, HullShaderType, DomainShaderType, PixelShaderType, bRemoveUnused)	\
-	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, &HullShaderType::StaticType, &DomainShaderType::StaticType, nullptr, &PixelShaderType::StaticType, bRemoveUnused);
-// Vertex+Hull+Domain+Geometry+Pixel
-#define IMPLEMENT_SHADERPIPELINE_TYPE_VSHSDSGSPS(PipelineName, VertexShaderType, HullShaderType, DomainShaderType, GeometryShaderType, PixelShaderType, bRemoveUnused)	\
-	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, &HullShaderType::StaticType, &DomainShaderType::StaticType, &GeometryShaderType::StaticType, &PixelShaderType::StaticType, bRemoveUnused);
-// Vertex+Hull+Domain
-#define IMPLEMENT_SHADERPIPELINE_TYPE_VSHSDS(PipelineName, VertexShaderType, HullShaderType, DomainShaderType, bRemoveUnused)	\
-	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, &HullShaderType::StaticType, &DomainShaderType::StaticType, nullptr, nullptr, bRemoveUnused);
-// Vertex+Hull+Domain+Geometry
-#define IMPLEMENT_SHADERPIPELINE_TYPE_VSHSDSGS(PipelineName, VertexShaderType, HullShaderType, DomainShaderType, GeometryShaderType, bRemoveUnused)	\
-	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, &HullShaderType::StaticType, &DomainShaderType::StaticType, &GeometryShaderType::StaticType, nullptr, bRemoveUnused);
+	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &VertexShaderType::StaticType, &GeometryShaderType::StaticType, nullptr, false, bRemoveUnused);
+
+// Mesh+Pixel
+#define IMPLEMENT_SHADERPIPELINE_TYPE_MSPS(PipelineName, MeshShaderType, PixelShaderType, bRemoveUnused)	\
+	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &MeshShaderType::StaticType, nullptr, &PixelShaderType::StaticType, true, bRemoveUnused);
+// Mesh+Amplification+Pixel
+#define IMPLEMENT_SHADERPIPELINE_TYPE_MSASPS(PipelineName, MeshShaderType, AmplificationShaderType, PixelShaderType, bRemoveUnused)	\
+	static FShaderPipelineType PipelineName(TEXT(PREPROCESSOR_TO_STRING(PipelineName)), &MeshShaderType::StaticType, &AmplificationShaderType::StaticType, &PixelShaderType::StaticType, true, bRemoveUnused);
 #endif
 
 /** Encapsulates a dependency on a shader type and saved state from that shader type. */
@@ -1819,7 +1837,7 @@ public:
 	/** Destructor ensures pipelines cleared up. */
 	~FShaderMapContent()
 	{
-		Empty(nullptr);
+		Empty();
 	}
 
 	EShaderPlatform GetShaderPlatform() const { return Platform; }
@@ -1927,7 +1945,7 @@ public:
 	}
 
 	/** clears out all shaders and deletes shader pipelines held in the map */
-	void Empty(const FPointerTableBase* PointerTable);
+	void Empty();
 
 	inline FShaderPipeline* GetShaderPipeline(const FHashedName& PipelineTypeName) const
 	{
@@ -1950,7 +1968,7 @@ public:
 	void UpdateHash(FSHA1& Hasher) const;
 
 protected:
-	void EmptyShaderPipelines(const FPointerTableBase* PointerTable);
+	void EmptyShaderPipelines();
 
 	using FMemoryImageHashTable = THashTable<FMemoryImageAllocator>;
 
@@ -1963,50 +1981,47 @@ protected:
 	LAYOUT_FIELD(TEnumAsByte<EShaderPlatform>, Platform);
 };
 
-namespace Freeze
-{
-	inline void CleanupObject(FShaderMapContent* Object, const FPointerTableBase* PtrTable)
-	{
-		Object->Empty(PtrTable);
-	}
-}
-
 class RENDERCORE_API FShaderMapBase
 {
 public:
 	virtual ~FShaderMapBase();
 
 	FShaderMapResourceCode* GetResourceCode();
-	void CopyResourceCode(const FShaderMapResourceCode& Source);
 
 	inline FShaderMapResource* GetResource() const { return Resource; }
 	inline FShaderMapResource* GetResourceChecked() const { check(Resource); return Resource; }
 	inline const FShaderMapPointerTable& GetPointerTable() const { check(PointerTable); return *PointerTable; }
-	inline const FShaderMapContent* GetContent() const { return Content; }
+	inline const FShaderMapContent* GetContent() const { return Content.Object; }
 	inline FShaderMapContent* GetMutableContent()
 	{
 		UnfreezeContent();
-		return Content;
+		return Content.Object;
 	}
 
-	inline EShaderPlatform GetShaderPlatform() const { return Content ? Content->GetShaderPlatform() : SP_NumPlatforms; }
-	inline uint32 GetFrozenContentSize() const { return FrozenContentSize; }
+	inline EShaderPlatform GetShaderPlatform() const { return Content.Object ? Content.Object->GetShaderPlatform() : SP_NumPlatforms; }
+	inline uint32 GetFrozenContentSize() const { return Content.FrozenSize; }
 
-	void AssignContent(FShaderMapContent* InContent);
+	void AssignContent(TMemoryImageObject<FShaderMapContent> InContent);
 
+	void FinalizeContent();
 	void UnfreezeContent();
 	bool Serialize(FArchive& Ar, bool bInlineShaderResources, bool bLoadedByCookedMaterial, bool bInlineShaderCode=false);
+
+	EShaderPermutationFlags GetPermutationFlags() const
+	{
+		return PermutationFlags;
+	}
 
 	FString ToString() const;
 
 #if WITH_EDITOR
 	inline void GetOutdatedTypes(TArray<const FShaderType*>& OutdatedShaderTypes, TArray<const FShaderPipelineType*>& OutdatedShaderPipelineTypes, TArray<const FVertexFactoryType*>& OutdatedFactoryTypes) const
 	{
-		Content->GetOutdatedTypes(*this, OutdatedShaderTypes, OutdatedShaderPipelineTypes, OutdatedFactoryTypes);
+		Content.Object->GetOutdatedTypes(*this, OutdatedShaderTypes, OutdatedShaderPipelineTypes, OutdatedFactoryTypes);
 	}
 	void SaveShaderStableKeys(EShaderPlatform TargetShaderPlatform, const struct FStableShaderKeyAndValue& SaveKeyVal)
 	{
-		Content->SaveShaderStableKeys(*this, TargetShaderPlatform, SaveKeyVal);
+		Content.Object->SaveShaderStableKeys(*this, TargetShaderPlatform, SaveKeyVal);
 	}
 
 	/** Associates a shadermap with an asset (note: one shadermap can be used by several assets, e.g. MIs). 
@@ -2029,27 +2044,29 @@ public:
 #endif // WITH_EDITOR
 
 protected:
-	explicit FShaderMapBase(const FTypeLayoutDesc& InContentTypeLayout);
+	FShaderMapBase();
 
-	void AssignAndFreezeContent(const FShaderMapContent* InContent);
+	void AssignCopy(const FShaderMapBase& Source);
+
 	void InitResource();
 	void DestroyContent();
 
 protected:
+	virtual const FTypeLayoutDesc& GetContentTypeDesc() const = 0;
 	virtual FShaderMapPointerTable* CreatePointerTable() const = 0;
+	virtual void PostFinalizeContent() { }
 
 private:
 #if WITH_EDITOR
 	/** List of the assets that are using this shadermap. This is only available in the editor (cooker) to influence ordering of shader libraries. */
 	FShaderMapAssetPaths AssociatedAssets;
 #endif
-	const FTypeLayoutDesc& ContentTypeLayout;
 	TRefCountPtr<FShaderMapResource> Resource;
 	TRefCountPtr<FShaderMapResourceCode> Code;
 	FShaderMapPointerTable* PointerTable;
-	FShaderMapContent* Content;
-	uint32 FrozenContentSize;
+	TMemoryImageObject<FShaderMapContent> Content;
 	uint32 NumFrozenShaders;
+	EShaderPermutationFlags PermutationFlags;
 };
 
 template<typename ContentType, typename PointerTableType = FShaderMapPointerTable>
@@ -2066,12 +2083,11 @@ public:
 		check(LocalContent);
 		LocalContent->Finalize(this->GetResourceCode());
 		LocalContent->Validate(*this);
-		this->AssignAndFreezeContent(LocalContent);
-		this->InitResource();
+		FShaderMapBase::FinalizeContent();
 	}
 
 protected:
-	TShaderMap() : FShaderMapBase(StaticGetTypeLayoutDesc<ContentType>()) {}
+	virtual const FTypeLayoutDesc& GetContentTypeDesc() const final override { return StaticGetTypeLayoutDesc<ContentType>(); }
 	virtual FShaderMapPointerTable* CreatePointerTable() const final override { return new PointerTableType(); }
 };
 
@@ -2246,7 +2262,8 @@ public:
 		else
 		{
 			// Appending to the archive, track the size of this serialization
-			History.AddValue(Length);
+			check(Length >= 0 && Length <= TNumericLimits<uint32>::Max());
+			History.AddValue((uint32)Length);
 		}
 		HistoryTraversalState.StepForward();
 		
@@ -2323,7 +2340,7 @@ extern RENDERCORE_API void DispatchComputeShader(
 extern RENDERCORE_API void DispatchIndirectComputeShader(
 	FRHIComputeCommandList& RHICmdList,
 	FShader* Shader,
-	FRHIVertexBuffer* ArgumentBuffer,
+	FRHIBuffer* ArgumentBuffer,
 	uint32 ArgumentOffset);
 
 inline void DispatchComputeShader(
@@ -2336,7 +2353,10 @@ inline void DispatchComputeShader(
 	DispatchComputeShader(RHICmdList, Shader.GetShader(), ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 }
 
-/** Returns whether DirectXShaderCompiler (DXC) is enabled for the specified shader platform. See console variables "r.OpenGL.ForceDXC", "r.Vulkan.ForceDXC", and "r.D3D.ForceDXC". */
+/** Returns whether the platform is using emulated uniform buffers */
+extern RENDERCORE_API bool IsUsingEmulatedUniformBuffers(EShaderPlatform Platform);
+
+/** Returns whether DirectXShaderCompiler (DXC) is enabled for the specified shader platform. See console variables "r.OpenGL.ForceDXC", "r.D3D.ForceDXC". */
 extern RENDERCORE_API bool IsDxcEnabledForPlatform(EShaderPlatform Platform);
 
 /** Appends to KeyString for all shaders. */

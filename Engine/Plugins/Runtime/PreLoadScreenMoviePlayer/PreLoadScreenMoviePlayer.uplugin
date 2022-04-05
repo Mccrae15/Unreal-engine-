@@ -19,12 +19,11 @@
 			"Name": "PreLoadScreenMoviePlayer",
 			"Type": "RuntimeNoCommandlet",
 			"LoadingPhase": "PreEarlyLoadingScreen",
-			"WhitelistPlatforms": 
+			"PlatformAllowList": 
 			[
         "Android",
         "IOS",
-        "Win64",
-        "Win32"
+        "Win64"
 			]
 		}
 	]

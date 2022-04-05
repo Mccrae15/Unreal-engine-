@@ -25,8 +25,8 @@ UChaosVehicleWheel::UChaosVehicleWheel(const FObjectInitializer& ObjectInitializ
 	WheelWidth = 20.0f;
 	//bAutoAdjustCollisionSize = true;
 	//WheelMass = 20.0f;
-	LongitudinalFrictionForceMultiplier = 1.0f;
-	LateralFrictionForceMultiplier = 2.0f;
+	FrictionForceMultiplier = 2.0f;
+	CorneringStiffness = 1000.0f;
 	SideSlipModifier = 1.0f;
 	SlipThreshold = 20.0f;
 	SkidThreshold = 20.0f;
@@ -44,7 +44,7 @@ UChaosVehicleWheel::UChaosVehicleWheel(const FObjectInitializer& ObjectInitializ
 	SuspensionMaxRaise = 10.0f;
 	SuspensionMaxDrop = 10.0f;
 	SuspensionDampingRatio = 0.5f;
-	SuspensionSmoothing = 6;
+	SuspensionSmoothing = 0;
 	WheelLoadRatio = 0.5f;
 	RollbarScaling = 0.15f;
 	SweepType = ESweepType::SimpleSweep;
@@ -53,37 +53,56 @@ UChaosVehicleWheel::UChaosVehicleWheel(const FObjectInitializer& ObjectInitializ
 
 FChaosVehicleManager* UChaosVehicleWheel::GetVehicleManager() const
 {
-	UWorld* World = GEngine->GetWorldFromContextObject(VehicleSim, EGetWorldErrorMode::LogAndReturnNull);
+	UWorld* World = GEngine->GetWorldFromContextObject(VehicleComponent, EGetWorldErrorMode::LogAndReturnNull);
 	return World ? FChaosVehicleManager::GetVehicleManagerFromScene(World->GetPhysicsScene()) : nullptr;
 }
 
 
 float UChaosVehicleWheel::GetSteerAngle() const
 {
-	check(VehicleSim && VehicleSim->PhysicsVehicle());
-	return VehicleSim->PhysicsVehicle()->Wheels[WheelIndex].GetSteeringAngle();
+	check(VehicleComponent && VehicleComponent->PhysicsVehicleOutput());
+	return VehicleComponent->PhysicsVehicleOutput()->Wheels[WheelIndex].SteeringAngle;
 }
 
 float UChaosVehicleWheel::GetRotationAngle() const
 {
-	check(VehicleSim && VehicleSim->PhysicsVehicle());
-	float RotationAngle = -1.0f * FMath::RadiansToDegrees(VehicleSim->PhysicsVehicle()->Wheels[WheelIndex].GetAngularPosition());
+	check(VehicleComponent && VehicleComponent->PhysicsVehicleOutput());
+	float RotationAngle = -1.0f * FMath::RadiansToDegrees(VehicleComponent->PhysicsVehicleOutput()->Wheels[WheelIndex].AngularPosition);
 	ensure(!FMath::IsNaN(RotationAngle));
-
 	return RotationAngle;
+}
+
+float UChaosVehicleWheel::GetRotationAngularVelocity() const
+{
+	check(VehicleComponent && VehicleComponent->PhysicsVehicleOutput());
+	float RotationAngularVelocity = -1.0f * FMath::RadiansToDegrees(VehicleComponent->PhysicsVehicleOutput()->Wheels[WheelIndex].AngularVelocity);
+	ensure(!FMath::IsNaN(RotationAngularVelocity));
+	return RotationAngularVelocity;
+}
+
+
+float UChaosVehicleWheel::GetWheelRadius() const
+{
+	check(VehicleComponent && VehicleComponent->PhysicsVehicleOutput());
+	return VehicleComponent->PhysicsVehicleOutput()->Wheels[WheelIndex].WheelRadius;
+}
+
+float UChaosVehicleWheel::GetWheelAngularVelocity() const
+{
+	check(VehicleComponent && VehicleComponent->PhysicsVehicleOutput());
+	return VehicleComponent->PhysicsVehicleOutput()->Wheels[WheelIndex].AngularVelocity;
 }
 
 float UChaosVehicleWheel::GetSuspensionOffset() const
 {
-	check(VehicleSim && VehicleSim->PhysicsVehicle());
-	Chaos::FSimpleSuspensionSim& SimSuspension = VehicleSim->PhysicsVehicle()->Suspension[WheelIndex];
-	return SimSuspension.GetSuspensionOffset();
+	check(VehicleComponent && VehicleComponent->PhysicsVehicleOutput());
+	return VehicleComponent->GetSuspensionOffset(WheelIndex);
 }
 
 bool UChaosVehicleWheel::IsInAir() const
 {
-	check(VehicleSim && VehicleSim->PhysicsVehicle());
-	return !VehicleSim->PhysicsVehicle()->Wheels[WheelIndex].InContact();
+	check(VehicleComponent && VehicleComponent->PhysicsVehicleOutput());
+	return !VehicleComponent->PhysicsVehicleOutput()->Wheels[WheelIndex].InContact;
 }
 
 
@@ -92,7 +111,7 @@ void UChaosVehicleWheel::Init( UChaosWheeledVehicleMovementComponent* InVehicleS
 	check(InVehicleSim);
 	check(InVehicleSim->Wheels.IsValidIndex(InWheelIndex));
 
-	VehicleSim = InVehicleSim;
+	VehicleComponent = InVehicleSim;
 	WheelIndex = InWheelIndex;
 
 //#if WITH_PHYSX_VEHICLES
@@ -119,7 +138,7 @@ void UChaosVehicleWheel::Shutdown()
 
 FChaosWheelSetup& UChaosVehicleWheel::GetWheelSetup()
 {
-	return VehicleSim->WheelSetups[WheelIndex];
+	return VehicleComponent->WheelSetups[WheelIndex];
 }
 
 void UChaosVehicleWheel::Tick( float DeltaTime )
@@ -138,10 +157,10 @@ FVector UChaosVehicleWheel::GetPhysicsLocation()
 
 void UChaosVehicleWheel::PostEditChangeProperty( FPropertyChangedEvent& PropertyChangedEvent )
 {
-	Super::PostEditChangeProperty( PropertyChangedEvent );
-
 	// Trigger a runtime rebuild of the Physics vehicle
 	FChaosVehicleManager::VehicleSetupTag++;
+
+	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
 #endif //WITH_EDITOR

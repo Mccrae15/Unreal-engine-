@@ -8,6 +8,9 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Animation/AnimNode_SequencePlayer.h"
 #include "AnimGraphNode_SequencePlayer.h"
+#include "Styling/StyleColors.h"
+#include "SLevelOfDetailBranchNode.h"
+#include "Widgets/Layout/SSpacer.h"
 
 /////////////////////////////////////////////////////
 // SGraphNodeSequencePlayer
@@ -20,7 +23,15 @@ void SGraphNodeSequencePlayer::Construct(const FArguments& InArgs, UAnimGraphNod
 
 	this->UpdateGraphNode();
 
+	CachedSyncGroupName = NAME_None;
+
 	SAnimationGraphNode::Construct(SAnimationGraphNode::FArguments(), InNode);
+
+	RegisterActiveTimer(1.0f / 60.0f, FWidgetActiveTimerDelegate::CreateLambda([this](double InCurrentTime, float InDeltaTime)
+	{
+		UpdateGraphSyncLabel();
+		return EActiveTimerReturnType::Continue;
+	}));
 }
 
 void SGraphNodeSequencePlayer::GetNodeInfoPopups(FNodeInfoContext* Context, TArray<FGraphInformationPopupInfo>& Popups) const
@@ -63,22 +74,40 @@ void SGraphNodeSequencePlayer::UpdateGraphNode()
 	SGraphNode::UpdateGraphNode();
 }
 
-void SGraphNodeSequencePlayer::CreateBelowWidgetControls(TSharedPtr<SVerticalBox> MainBox)
+void SGraphNodeSequencePlayer::CreateBelowPinControls(TSharedPtr<SVerticalBox> MainBox)
 {
-	FLinearColor Yellow(0.9f, 0.9f, 0.125f);
+	SAnimationGraphNode::CreateBelowPinControls(MainBox);
 
-	MainBox->AddSlot()
+	auto UseLowDetailNode = [this]()
+	{
+		return GetCurrentLOD() <= EGraphRenderingLOD::LowDetail;
+	};
+	
+	// Insert above the error reporting bar (but above the tag/functions)
+	MainBox->InsertSlot(FMath::Max(0, MainBox->NumSlots() - DebugSliderSlotReverseIndex))
 	.AutoHeight()
 	.VAlign( VAlign_Fill )
-	.Padding(FMargin(0, 4, 0, 0))
+	.Padding(FMargin(4.0f, 0.0f))
 	[
-		SNew(SSlider)
-		.ToolTipText(this, &SGraphNodeSequencePlayer::GetPositionTooltip)
-		.Visibility(this, &SGraphNodeSequencePlayer::GetSliderVisibility)
-		.Value(this, &SGraphNodeSequencePlayer::GetSequencePositionRatio)
-		.OnValueChanged(this, &SGraphNodeSequencePlayer::SetSequencePositionRatio)
-		.Locked(false)
-		.SliderHandleColor(Yellow)
+		SNew(SLevelOfDetailBranchNode)
+		.UseLowDetailSlot_Lambda(UseLowDetailNode)
+		.LowDetail()
+		[
+			SNew(SSpacer)
+			.Size(FVector2D(16.0f, 16.f))
+		]
+		.HighDetail()
+		[
+			SNew(SSlider)
+			.Style(&FEditorStyle::Get().GetWidgetStyle<FSliderStyle>("AnimBlueprint.AssetPlayerSlider"))
+			.ToolTipText(this, &SGraphNodeSequencePlayer::GetPositionTooltip)
+			.Visibility(this, &SGraphNodeSequencePlayer::GetSliderVisibility)
+			.Value(this, &SGraphNodeSequencePlayer::GetSequencePositionRatio)
+			.OnValueChanged(this, &SGraphNodeSequencePlayer::SetSequencePositionRatio)
+			.Locked(false)
+			.SliderHandleColor(FStyleColors::White)
+			.SliderBarColor(FStyleColors::Foreground)
+		]
 	];
 }
 
@@ -168,10 +197,47 @@ void SGraphNodeSequencePlayer::SetSequencePositionRatio(float NewRatio)
 {
 	if(FAnimNode_SequencePlayer* SequencePlayer = GetSequencePlayer())
 	{
-		if (SequencePlayer->Sequence != NULL)
+		UAnimSequenceBase* Sequence = SequencePlayer->GetSequence();
+		if (Sequence != NULL)
 		{
-			const float NewTime = NewRatio * SequencePlayer->Sequence->SequenceLength;
+			const float NewTime = NewRatio * Sequence->GetPlayLength();
 			SequencePlayer->SetAccumulatedTime(NewTime);
+		}
+	}
+}
+
+void SGraphNodeSequencePlayer::UpdateGraphSyncLabel()
+{
+	if (UAnimGraphNode_SequencePlayer* VisualSequencePlayer = Cast<UAnimGraphNode_SequencePlayer>(GraphNode))
+	{
+		FName CurrentSyncGroupName = NAME_None;
+
+		if (UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(GraphNode)))
+		{
+			if(UAnimBlueprintGeneratedClass* GeneratedClass = AnimBlueprint->GetAnimBlueprintGeneratedClass())
+			{
+				if (UObject* ActiveObject = AnimBlueprint->GetObjectBeingDebugged())
+				{
+					if(VisualSequencePlayer->Node.GetGroupMethod() == EAnimSyncMethod::Graph)
+					{
+						int32 NodeIndex = GeneratedClass->GetNodeIndexFromGuid(VisualSequencePlayer->NodeGuid);
+						if(NodeIndex != INDEX_NONE)
+						{
+							if(const FName* SyncGroupNamePtr = GeneratedClass->GetAnimBlueprintDebugData().NodeSyncsThisFrame.Find(NodeIndex))
+							{
+								CurrentSyncGroupName = *SyncGroupNamePtr;
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if(CachedSyncGroupName != CurrentSyncGroupName)
+		{
+			// Invalidate the node title so we can dynamically display the sync group gleaned from the graph
+			VisualSequencePlayer->OnNodeTitleChangedEvent().Broadcast();
+			CachedSyncGroupName = CurrentSyncGroupName;
 		}
 	}
 }

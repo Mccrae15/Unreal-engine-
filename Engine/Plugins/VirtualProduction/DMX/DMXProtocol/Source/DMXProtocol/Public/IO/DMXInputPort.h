@@ -41,8 +41,16 @@ protected:
 public:
 	virtual ~FDMXInputPort();
 
-	/** Updates the Port to use the config of the InputPortConfig. Makes the config valid if it's invalid. */
-	void UpdateFromConfig(FDMXInputPortConfig& InputPortConfig);
+	/** Creates a dmx input port config that corresponds to the port */
+	FDMXInputPortConfig MakeInputPortConfig() const;
+
+	/** 
+	 * Updates the Port to use the config of the InputPortConfig. Makes the config valid if it's invalid. 
+	 *
+	 * @param InOutInputPortConfig					The config that is applied. May be changed to a valid config.
+	 * @param bForceUpdateRegistrationWithProtocol	Optional: Forces the port to update its registration with the protocol (useful for runtime changes)
+	 */
+	void UpdateFromConfig(FDMXInputPortConfig& InOutInputPortConfig, bool bForceUpdateRegistrationWithProtocol = false);
 
 	//~ Begin DMXPort Interface 
 	virtual bool IsRegistered() const override;
@@ -66,7 +74,11 @@ public:
 	/** Clears all buffers */
 	void ClearBuffers();
 
+	/** Thread-safe: Pushes a DMX Signal into the buffer */
+	void InputDMXSignal(const FDMXSignalSharedRef& DMXSignal);
+
 	/** Single Producer thread-safe: Pushes a DMX Signal into the buffer (For protocol only) */
+	UE_DEPRECATED(5.0, "Input ports now support multiple producers. Use InputDMXSignal instead.")
 	void SingleProducerInputDMXSignal(const FDMXSignalSharedRef& DMXSignal);
 
 	/** Gets the last signal received in specified local universe. Returns false if no signal was received. Game-Thread only */
@@ -100,11 +112,8 @@ private:
 	/** Called to set if receive DMX should be enabled */
 	void OnSetReceiveDMXEnabled(bool bEnabled);
 
-	/** Returns the port config that corresponds to the guid of this port. */
-	FDMXInputPortConfig* FindInputPortConfigChecked() const;
-
 	/** The default buffer, which is being read on tick */
-	TQueue<FDMXSignalSharedPtr> DefaultInputQueue;
+	TQueue<FDMXSignalSharedPtr, EQueueMode::Mpsc> DefaultInputQueue;
 
 	/** According to DMXProtcolSettings, true if DMX should be received */
 	bool bReceiveDMXEnabled = false;

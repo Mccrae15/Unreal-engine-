@@ -40,13 +40,13 @@ void FRawIndexBuffer::InitRHI()
 	if( Size > 0 )
 	{
 		// Create the index buffer.
-		FRHIResourceCreateInfo CreateInfo;
-		void* Buffer = nullptr;
-		IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint16),Size,BUF_Static,CreateInfo, Buffer);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FRawIndexBuffer"));
+		IndexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint16), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
-		// Initialize the buffer.		
-		FMemory::Memcpy(Buffer,Indices.GetData(),Size);
-		RHIUnlockIndexBuffer(IndexBufferRHI);
+		// Initialize the buffer.
+		void* Buffer = RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
+		FMemory::Memcpy(Buffer, Indices.GetData(), Size);
+		RHIUnlockBuffer(IndexBufferRHI);
 	}
 }
 
@@ -100,11 +100,12 @@ void FRawIndexBuffer16or32::InitRHI()
 	if (Size > 0)
 	{
 		// Create the index buffer.
-		FRHIResourceCreateInfo CreateInfo;
-		void* Buffer = nullptr;
-		IndexBufferRHI = RHICreateAndLockIndexBuffer(IndexStride,Size,BUF_Static,CreateInfo, Buffer);
-		
+		FRHIResourceCreateInfo CreateInfo(TEXT("FRawIndexBuffer"));
+		IndexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_IndexBuffer, IndexStride, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+
 		// Initialize the buffer.		
+		void* Buffer = RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
+
 		if (b32Bit)
 		{
 			FMemory::Memcpy(Buffer, Indices.GetData(), Size);
@@ -118,7 +119,7 @@ void FRawIndexBuffer16or32::InitRHI()
 			}
 		}
 		
-		RHIUnlockIndexBuffer(IndexBufferRHI);
+		RHIUnlockBuffer(IndexBufferRHI);
 	}
 
 	// Undo/redo can destroy and recreate the render resources for UModels without rebuilding the
@@ -315,21 +316,25 @@ FIndexArrayView FRawStaticIndexBuffer::GetArrayView() const
 }
 
 template <bool bRenderThread>
-FIndexBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Internal()
+FBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Internal()
 {
 	const uint32 IndexStride = b32Bit ? sizeof(uint32) : sizeof(uint16);
 	const uint32 SizeInBytes = IndexStorage.Num();
 
 	if (GetNumIndices() > 0)
 	{
+		extern ENGINE_API bool DoSkeletalMeshIndexBuffersNeedSRV();
+		bool bSRV = DoSkeletalMeshIndexBuffersNeedSRV();
+
 		// When bAllowCPUAccess is true, the meshes is likely going to be used for Niagara to spawn particles on mesh surface.
 		// And it can be the case for CPU *and* GPU access: no differenciation today. That is why we create a SRV in this case.
 		// This also avoid setting lots of states on all the members of all the different buffers used by meshes. Follow up: https://jira.it.epicgames.net/browse/UE-69376.
-		bool bSRV = IndexStorage.GetAllowCPUAccess();
-		uint32 BufferFlags = BUF_Static | (bSRV ? BUF_ShaderResource : BUF_None);
+		bSRV |= IndexStorage.GetAllowCPUAccess();
+
+		const EBufferUsageFlags BufferFlags = BUF_Static | (bSRV ? BUF_ShaderResource : BUF_None);
 
 		// Create the index buffer.
-		FRHIResourceCreateInfo CreateInfo(&IndexStorage);
+		FRHIResourceCreateInfo CreateInfo(Is32Bit() ? TEXT("FRawStaticIndexBuffer32") : TEXT("FRawStaticIndexBuffer16"), &IndexStorage);
 		CreateInfo.bWithoutNativeResource = !SizeInBytes;
 		if (bRenderThread)
 		{
@@ -343,12 +348,12 @@ FIndexBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Internal()
 	return nullptr;
 }
 
-FIndexBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_RenderThread()
+FBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_RenderThread()
 {
 	return CreateRHIBuffer_Internal<true>();
 }
 
-FIndexBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Async()
+FBufferRHIRef FRawStaticIndexBuffer::CreateRHIBuffer_Async()
 {
 	return CreateRHIBuffer_Internal<false>();
 }
@@ -371,6 +376,7 @@ void FRawStaticIndexBuffer::CopyRHIForStreaming(const FRawStaticIndexBuffer& Oth
 
 void FRawStaticIndexBuffer::InitRHI()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRawStaticIndexBuffer::InitRHI);
 	IndexBufferRHI = CreateRHIBuffer_RenderThread();
 }
 
@@ -378,7 +384,7 @@ void FRawStaticIndexBuffer::Serialize(FArchive& Ar, bool bNeedsCPUAccess)
 {
 	IndexStorage.SetAllowCPUAccess(bNeedsCPUAccess);
 
-	if (Ar.UE4Ver() < VER_UE4_SUPPORT_32BIT_STATIC_MESH_INDICES)
+	if (Ar.UEVer() < VER_UE4_SUPPORT_32BIT_STATIC_MESH_INDICES)
 	{
 		TResourceArray<uint16,INDEXBUFFER_ALIGNMENT> LegacyIndices;
 

@@ -26,6 +26,7 @@ public class CameraShakePreviewer : ModuleRules
 				"PropertyEditor",
 				"Slate",
 				"ToolMenus",
+				"EditorFramework",
 				"UnrealEd",
 			}
 		);

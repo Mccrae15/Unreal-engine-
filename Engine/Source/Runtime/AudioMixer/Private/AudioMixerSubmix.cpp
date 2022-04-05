@@ -6,6 +6,7 @@
 #include "AudioMixerDevice.h"
 #include "AudioMixerSourceVoice.h"
 #include "AudioThread.h"
+#include "DSP/FloatArrayMath.h"
 #include "Sound/SoundEffectPreset.h"
 #include "Sound/SoundEffectSubmix.h"
 #include "Sound/SoundModulationDestination.h"
@@ -13,6 +14,7 @@
 #include "Sound/SoundSubmixSend.h"
 #include "Misc/ScopeTryLock.h"
 #include "ProfilingDebugging/CsvProfiler.h"
+#include "AudioLinkLog.h"
 
 // Link to "Audio" profiling category
 CSV_DECLARE_CATEGORY_MODULE_EXTERN(AUDIOMIXERCORE_API, Audio);
@@ -31,6 +33,14 @@ FAutoConsoleVariableRef CVarBypassAllSubmixEffects(
 	BypassAllSubmixEffectsCVar,
 	TEXT("When set to 1, all submix effects will be bypassed.\n")
 	TEXT("1: Submix Effects are disabled."),
+	ECVF_Default);
+
+static int32 LogSubmixEnablementCVar = 0;
+FAutoConsoleVariableRef CVarLogSubmixEnablement(
+	TEXT("au.LogSubmixAutoDisable"),
+	LogSubmixEnablementCVar,
+	TEXT("Enables logging of submix disable and enable state.\n")
+	TEXT("1: Submix enablement logging is on. 0: Submix enablement/disablement logging is off."),
 	ECVF_Default);
 
 // Define profiling categories for submixes. 
@@ -179,10 +189,13 @@ namespace Audio
 		, NumSubmixEffects(0)
 		, bIsRecording(false)
 		, bIsBackgroundMuted(false)
+		, bAutoDisable(true)
+		, bIsSilent(false)
+		, bIsCurrentlyDisabled(false)
+		, AutoDisableTime(0.1)
+		, SilenceTimeStartSeconds(-1.0)
 		, bIsSpectrumAnalyzing(false)
 	{
-		EnvelopeFollowers.Reset();
-		EnvelopeFollowers.AddDefaulted(AUDIO_MIXER_MAX_OUTPUT_CHANNELS);
 	}
 
 	FMixerSubmix::~FMixerSubmix()
@@ -206,6 +219,8 @@ namespace Audio
 		check(IsInAudioThread());
 		if (InSoundSubmix != nullptr)
 		{
+			SubmixName = InSoundSubmix->GetName();
+
 			// This is a first init and needs to be synchronous
 			if (!OwningSubmixObject.IsValid())
 			{
@@ -229,40 +244,58 @@ namespace Audio
 		// Loop through the submix's presets and make new instances of effects in the same order as the presets
 		ClearSoundEffectSubmixes();
 
+		// Copy any base data
+		bAutoDisable = OwningSubmixObject->bAutoDisable;
+		AutoDisableTime = (double)OwningSubmixObject->AutoDisableTime;
+		bIsSilent = false;
+		bIsCurrentlyDisabled = false;
+		SilenceTimeStartSeconds = -1.0;
+
+		if (MixerDevice->IsModulationPluginEnabled() && MixerDevice->ModulationInterface.IsValid())
+		{
+			VolumeMod.Init(MixerDevice->DeviceID, FName("Volume"), false /* bInIsBuffered */, true /* bInValueLinear */);
+			WetLevelMod.Init(MixerDevice->DeviceID, FName("Volume"), false /* bInIsBuffered */, true /* bInValueLinear */);
+			DryLevelMod.Init(MixerDevice->DeviceID, FName("Volume"), false /* bInIsBuffered */, true /* bInValueLinear */);
+		}
 
 		if (const USoundSubmix* SoundSubmix = Cast<const USoundSubmix>(OwningSubmixObject))
 		{
-			CurrentOutputVolume = FMath::Clamp(SoundSubmix->OutputVolume, 0.0f, 1.0f);
-			TargetOutputVolume = CurrentOutputVolume;
+			VolumeModBaseDb = FMath::Clamp(SoundSubmix->OutputVolumeModulation.Value, MIN_VOLUME_DECIBELS, 0.0f);
+			WetModBaseDb = FMath::Clamp(SoundSubmix->WetLevelModulation.Value, MIN_VOLUME_DECIBELS, 0.0f);
+			DryModBaseDb = FMath::Clamp(SoundSubmix->DryLevelModulation.Value, MIN_VOLUME_DECIBELS, 0.0f);
 
-			// Set the initialized output volume
-			CurrentWetLevel = FMath::Clamp(SoundSubmix->WetLevel, 0.0f, 1.0f);
-			TargetWetLevel = CurrentWetLevel;
+			TargetOutputVolume = Audio::ConvertToLinear(VolumeModBaseDb);
+			TargetWetLevel = Audio::ConvertToLinear(WetModBaseDb);
+			TargetDryLevel = Audio::ConvertToLinear(DryModBaseDb);
 
-			CurrentDryLevel = FMath::Clamp(SoundSubmix->DryLevel, 0.0f, 1.0f);
-			TargetDryLevel = CurrentDryLevel;
+			CurrentOutputVolume = TargetOutputVolume;
+			CurrentDryLevel = TargetDryLevel;
+			CurrentWetLevel = TargetWetLevel;
 
-			if (MixerDevice->IsModulationPluginEnabled() && MixerDevice->ModulationInterface.IsValid())
+			if(MixerDevice->IsModulationPluginEnabled() && MixerDevice->ModulationInterface.IsValid())
 			{
-				VolumeMod.Init(MixerDevice->DeviceID, FName("Volume"), false /* bInIsBuffered */, true /* bInValueLinear */);
-				VolumeModBase = SoundSubmix->OutputVolumeModulation.Value;
-
-				WetLevelMod.Init(MixerDevice->DeviceID, FName("Volume"), false /* bInIsBuffered */, true /* bInValueLinear */);
-				WetModBase = SoundSubmix->WetLevelModulation.Value;
-
-				DryLevelMod.Init(MixerDevice->DeviceID, FName("Volume"), false /* bInIsBuffered */, true /* bInValueLinear */);
-				DryModBase = SoundSubmix->DryLevelModulation.Value;
-
 				USoundModulatorBase* VolumeModulator = SoundSubmix->OutputVolumeModulation.Modulator;
 				USoundModulatorBase* WetLevelModulator = SoundSubmix->WetLevelModulation.Modulator;
 				USoundModulatorBase* DryLevelModulator = SoundSubmix->DryLevelModulation.Modulator;
 
+				// Queue this up to happen after submix init, when the mixer device has finished being added to the device manager
 				SubmixCommand([this, VolumeModulator, WetLevelModulator, DryLevelModulator]()
 				{
 					UpdateModulationSettings(VolumeModulator, WetLevelModulator, DryLevelModulator);
 				});
 			}
-
+			if (SoundSubmix->AudioLinkSettings)
+			{
+				if (IAudioLinkFactory* LinkFactory = IAudioLinkFactory::FindFactory(SoundSubmix->AudioLinkSettings->GetFactoryName()))
+				{
+					AudioLinkInstance = LinkFactory->CreateSubmixAudioLink({ SoundSubmix, MixerDevice, SoundSubmix->AudioLinkSettings });
+				}
+				else
+				{
+					UE_LOG(LogAudioLink, Warning, TEXT("Failed to Find AudioLink Factory '%s'"), *SoundSubmix->AudioLinkSettings->GetFactoryName().GetPlainNameString());
+				}
+			}
+			
 			FScopeLock ScopeLock(&EffectChainMutationCriticalSection);
 			{
     			NumSubmixEffects = 0;
@@ -377,9 +410,9 @@ namespace Audio
 		}
 	}
 
-	void FMixerSubmix::DownmixBuffer(const int32 InChannels, const AlignedFloatBuffer& InBuffer, const int32 OutChannels, AlignedFloatBuffer& OutNewBuffer)
+	void FMixerSubmix::DownmixBuffer(const int32 InChannels, const FAlignedFloatBuffer& InBuffer, const int32 OutChannels, FAlignedFloatBuffer& OutNewBuffer)
 	{
-		Audio::AlignedFloatBuffer MixdownGainsMap;
+		Audio::FAlignedFloatBuffer MixdownGainsMap;
 		Audio::FMixerDevice::Get2DChannelMap(false, InChannels, OutChannels, false, MixdownGainsMap);
 		Audio::DownmixBuffer(InChannels, OutChannels, InBuffer, OutNewBuffer, MixdownGainsMap.GetData());
 	}
@@ -626,16 +659,22 @@ namespace Audio
 			FadeInfo.EffectChain.Reset();
 		}
 
-		// Unregister these source effect instances from their owning USoundEffectInstance on the next audio thread tick.
-		// If the audio thread isn't currently active (ex. suspended), unregister immediately
-		const ENamedThreads::Type UnregistrationThread = IsAudioThreadRunning() ? ENamedThreads::AudioThread : ENamedThreads::GameThread;
-		AsyncTask(UnregistrationThread, [SubmixEffects = MoveTemp(SubmixEffectsToReset)]() mutable
+		// Unregister these source effect instances from their owning USoundEffectInstance on the audio thread.
+		// Have to pass to Game Thread prior to processing on AudioThread to avoid race condition with GC
+		// (RunCommandOnAudioThread is not safe to call from any thread other than the GameThread).
+		if (!SubmixEffectsToReset.IsEmpty())
 		{
-			for (TSoundEffectSubmixPtr& SubmixPtr : SubmixEffects)
+			AsyncTask(ENamedThreads::GameThread, [GTSubmixEffects = MoveTemp(SubmixEffectsToReset)]() mutable
 			{
-				USoundEffectPreset::UnregisterInstance(SubmixPtr);
-			}
-		});
+				FAudioThread::RunCommandOnAudioThread([ATSubmixEffects = MoveTemp(GTSubmixEffects)]() mutable
+				{
+					for (const TSoundEffectSubmixPtr& SubmixPtr : ATSubmixEffects)
+					{
+						USoundEffectPreset::UnregisterInstance(SubmixPtr);
+					}
+				});
+			});
+		}
 
 		NumSubmixEffects = 0;
 		EffectChains.Reset();
@@ -704,7 +743,7 @@ namespace Audio
 		});
 	}
 
-	void FMixerSubmix::MixBufferDownToMono(const AlignedFloatBuffer& InBuffer, int32 NumInputChannels, AlignedFloatBuffer& OutBuffer)
+	void FMixerSubmix::MixBufferDownToMono(const FAlignedFloatBuffer& InBuffer, int32 NumInputChannels, FAlignedFloatBuffer& OutBuffer)
 	{
 		check(NumInputChannels > 0);
 
@@ -738,12 +777,6 @@ namespace Audio
 			FChildSubmixInfo& ChildSubmix = Iter.Value;
 			SetupSoundfieldEncodingForChild(ChildSubmix);
 		}
-
-		if ((ChildSubmixes.Num() > 0) && !SoundfieldStreams.Factory->ShouldEncodeAllStreamsIndependently(*SoundfieldStreams.Settings))
-		{
-			FAudioPluginInitializationParams InitParams = GetInitializationParamsForSoundfieldStream();
-			SoundfieldStreams.DownmixedChildrenEncoder = SoundfieldStreams.Factory->CreateEncoderStream(InitParams, *SoundfieldStreams.Settings);
-		}
 	}
 
 	void FMixerSubmix::SetupSoundfieldEncodingForChild(FChildSubmixInfo& InChild)
@@ -764,6 +797,16 @@ namespace Audio
 			{
 				// If the child submix is of a soundfield format that needs to be transcoded, set up a transcoder.
 				InChild.Transcoder = GetTranscoderForChildSubmix(SubmixPtr);
+			}
+
+			// see if we need to initialize our child submix encoder
+			const bool bNeedsDownmixedChildEncoder = !SoundfieldStreams.DownmixedChildrenEncoder.IsValid();
+			const bool bUsingUniqueEncoderForEachChildSubmix = !SoundfieldStreams.Factory->ShouldEncodeAllStreamsIndependently(*SoundfieldStreams.Settings);
+
+			if (bNeedsDownmixedChildEncoder && bUsingUniqueEncoderForEachChildSubmix)
+			{
+				FAudioPluginInitializationParams InitParams = GetInitializationParamsForSoundfieldStream();
+				SoundfieldStreams.DownmixedChildrenEncoder = SoundfieldStreams.Factory->CreateEncoderStream(InitParams, *SoundfieldStreams.Settings);
 			}
 
 			// If neither of these are true, either we are downmixing all child audio and encoding it once, or
@@ -830,8 +873,9 @@ namespace Audio
 			if (!ChildSubmixSharedPtr->IsSoundfieldSubmix())
 			{
 				// Reset the output scratch buffer so that we can call ProcessAudio on the ChildSubmix with it:
-				ScratchBuffer.Reset(NumSamples);
-				ScratchBuffer.AddZeroed(NumSamples);
+				ScratchBuffer.Reset(ChildSubmixSharedPtr->NumSamples);
+				ScratchBuffer.AddZeroed(ChildSubmixSharedPtr->NumSamples);
+				
 
 				// If this is true, the Soundfield Factory explicitly requested that a seperate encoder stream was set up for every
 				// non-soundfield child submix.
@@ -1021,9 +1065,100 @@ namespace Audio
 		return OwningSubmixObject.IsValid();
 	}
 
-	void FMixerSubmix::ProcessAudio(AlignedFloatBuffer& OutAudioBuffer)
+	bool FMixerSubmix::IsRenderingAudio() const
+	{
+		// If we're told to not auto-disable we act as if we're always rendering audio
+		if (!bAutoDisable)
+		{
+			return true;
+		}
+
+		// If this submix is not rendering any sources directly and silence has been detected, we need to check it's children submixes
+		if (MixerSourceVoices.Num() == 0 && SilenceTimeStartSeconds >= 0.0)
+		{
+			// Use the audio clock to check against the disablement timeout
+			double AudioClock = MixerDevice->GetAudioClock();
+			double TimeSinceSilent = AudioClock - SilenceTimeStartSeconds;
+
+			// If we're past the threshold for disablement, do one last check of any child submixes. Maybe they are now rendering audio.
+			if (TimeSinceSilent > AutoDisableTime)
+			{
+				for (auto& ChildSubmixEntry : ChildSubmixes)
+				{
+					TSharedPtr<Audio::FMixerSubmix, ESPMode::ThreadSafe> ChildSubmix = ChildSubmixEntry.Value.SubmixPtr.Pin();
+
+					// If any of the submix's children are rendering audio then this submix is also rendering audio
+					if (ChildSubmix && ChildSubmix->IsRenderingAudio())
+					{
+						return true;
+					}
+				}
+
+				// We're past the auto-disablement threshold and no child submixes are rendering audio, we're now silent
+				return false;
+			}
+		}
+		return true;
+	}
+
+	void FMixerSubmix::SetAutoDisable(bool bInAutoDisable)
+	{
+		bAutoDisable = bInAutoDisable;
+	}
+
+	void FMixerSubmix::SetAutoDisableTime(float InAutoDisableTime)
+	{
+		AutoDisableTime = InAutoDisableTime;
+	}
+
+	void FMixerSubmix::ProcessAudio(FAlignedFloatBuffer& OutAudioBuffer)
 	{
 		AUDIO_MIXER_CHECK_AUDIO_PLAT_THREAD(MixerDevice);
+
+		// Handle channel count change.
+		if (NumChannels != MixerDevice->GetNumDeviceChannels())
+		{
+			// Device format may change channels if device is hot swapped
+			NumChannels = MixerDevice->GetNumDeviceChannels();
+
+			if (IsSoundfieldSubmix())
+			{
+				// Update decoder to match parent stream format.
+				SetupSoundfieldStreamForParent();
+			}
+		}
+
+		// If we hit this, it means that platform info gave us an invalid NumChannel count.
+		if (!ensure(NumChannels != 0 && NumChannels <= AUDIO_MIXER_MAX_OUTPUT_CHANNELS))
+		{
+			return;
+		}
+
+		// As an optimization, early out if we're set to auto-disable and we're not rendering audio
+		if (bAutoDisable && !IsRenderingAudio())
+		{
+			if (!bIsCurrentlyDisabled)
+			{
+				bIsCurrentlyDisabled = true;
+
+				UE_CLOG(LogSubmixEnablementCVar == 1, LogAudioMixer, Display,
+					TEXT("Submix Disabled. Num Sources: %d, Time Silent: %.2f, Disablement Threshold: %.2f, Submix Name: %s"), 
+					MixerSourceVoices.Num(),
+					(float)(MixerDevice->GetAudioClock() - SilenceTimeStartSeconds),
+					AutoDisableTime,
+					*SubmixName);
+			}
+
+			// Even though we're silent, broadcast the buffer to any listeners (will be a silent buffer)
+			SendAudioToSubmixBufferListeners(OutAudioBuffer);
+			return;
+		}
+
+		if (bIsCurrentlyDisabled)
+		{
+			bIsCurrentlyDisabled = false;
+			UE_CLOG(LogSubmixEnablementCVar == 1, LogAudioMixer, Display, TEXT("Submix Re-Enabled: %s"), *SubmixName);
+		}
 
 		// If this is a Soundfield Submix, process our soundfield and decode it to a OutAudioBuffer.
 		if (IsSoundfieldSubmix())
@@ -1068,16 +1203,7 @@ namespace Audio
 			// Pump pending command queues. For Soundfield Submixes this occurs in ProcessAudio(ISoundfieldAudioPacket&).
 			PumpCommandQueue();
 		}
-
-		// Device format may change channels if device is hot swapped
-		NumChannels = MixerDevice->GetNumDeviceChannels();
-
-		// If we hit this, it means that platform info gave us an invalid NumChannel count.
-		if (!ensure(NumChannels != 0 && NumChannels <= AUDIO_MIXER_MAX_OUTPUT_CHANNELS))
-		{
-			return;
-		}
-
+	
 		const int32 NumOutputFrames = OutAudioBuffer.Num() / NumChannels;
 		NumSamples = NumChannels * NumOutputFrames;
 
@@ -1089,7 +1215,7 @@ namespace Audio
 		// Mix all submix audio into this submix's input scratch buffer
 		{
 			CSV_SCOPED_TIMING_STAT(Audio, SubmixChildren);
-			SCOPE_CYCLE_COUNTER(STAT_AudioMixerSubmixChildren);
+			CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_AudioMixerSubmixChildren, (ChildSubmixes.Num() > 0));
 
 			// First loop this submix's child submixes mixing in their output into this submix's dry/wet buffers.
 			TArray<uint32> ToRemove;
@@ -1101,7 +1227,10 @@ namespace Audio
 				// forcibly deleted in editor, so submix validity (in addition to pointer validity) is checked before processing
 				if (ChildSubmix.IsValid() && ChildSubmix->IsValid())
 				{
-					ChildSubmix->ProcessAudio(InputBuffer);
+					if (ChildSubmix->IsRenderingAudio())
+					{
+						ChildSubmix->ProcessAudio(InputBuffer);
+					}
 				}
 				else
 				{
@@ -1117,7 +1246,7 @@ namespace Audio
 
 		{
 			CSV_SCOPED_TIMING_STAT(Audio, SubmixSource);
-			SCOPE_CYCLE_COUNTER(STAT_AudioMixerSubmixSource);
+			CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_AudioMixerSubmixSource, (MixerSourceVoices.Num() > 0));
 
 			// Loop through this submix's sound sources
 			for (const auto& MixerSourceVoiceIter : MixerSourceVoices)
@@ -1133,26 +1262,20 @@ namespace Audio
 		DryChannelBuffer.Reset();
 
 		// Update Dry Level using modulator
-		float ModulatedDryLevelStart = CurrentDryLevel;
-		float ModulatedDryLevelEnd = TargetDryLevel;
-
-		const bool bUseModulation = MixerDevice->IsModulationPluginEnabled() && MixerDevice->ModulationInterface.IsValid();
-
-		if (bUseModulation)
+		if (MixerDevice->IsModulationPluginEnabled() && MixerDevice->ModulationInterface.IsValid())
 		{
-			const float PreModulation = DryLevelMod.GetValue();
-			DryLevelMod.ProcessControl(DryModBase);
-			const float PostModulation = DryLevelMod.GetValue();
-
-			if (DryLevelMod.IsActive())
-			{
-				ModulatedDryLevelStart *= DryLevelMod.GetHasProcessed() ? PreModulation : PostModulation;
-				ModulatedDryLevelEnd *= PostModulation;
-			}
+			DryLevelMod.ProcessControl(DryModBaseDb);
+			TargetDryLevel = DryLevelMod.GetValue();
+		}
+		else
+		{
+			TargetDryLevel = Audio::ConvertToLinear(DryModBaseDb);
 		}
 
+		TargetDryLevel *= DryLevelModifier;
+
 		// Check if we need to allocate a dry buffer. This is stored here before effects processing. We mix in with wet buffer after effects processing.
-		if (!FMath::IsNearlyEqual(ModulatedDryLevelStart, ModulatedDryLevelEnd) || !FMath::IsNearlyZero(ModulatedDryLevelStart))
+		if (!FMath::IsNearlyEqual(TargetDryLevel, CurrentDryLevel) || !FMath::IsNearlyZero(CurrentDryLevel))
 		{
 			DryChannelBuffer.Append(InputBuffer);
 		}
@@ -1180,9 +1303,11 @@ namespace Audio
 				InputData.ListenerTransforms = MixerDevice->GetListenerTransforms();
 				InputData.AudioClock = MixerDevice->GetAudioClock();
 
-				SubmixChainMixBuffer.Reset(NumSamples);
-				SubmixChainMixBuffer.AddZeroed(NumSamples);
 				bool bProcessedAnEffect = false;
+
+				// Zero and resize buffer holding mix of current effect chains
+				SubmixChainMixBuffer.Reset(NumSamples);
+				SubmixChainMixBuffer.SetNumZeroed(NumSamples);
 
 				for (int32 EffectChainIndex = EffectChains.Num() - 1; EffectChainIndex >= 0; --EffectChainIndex)
 				{
@@ -1205,14 +1330,17 @@ namespace Audio
 					}
 
 					// Prepare the scratch buffer for effect chain processing
-					EffectChainOutputBuffer.SetNumUninitialized(NumSamples);
+					EffectChainOutputBuffer.Reset();
+					EffectChainOutputBuffer.AddZeroed(NumSamples);
 
 					bProcessedAnEffect |= GenerateEffectChainAudio(InputData, InputBuffer, FadeInfo.EffectChain, EffectChainOutputBuffer);
 
+					// Mix effect chain output into SubmixChainMixBuffer
 					float StartFadeVolume = FadeInfo.FadeVolume.GetValue();
 					FadeInfo.FadeVolume.Update(DeltaTimeSec);
 					float EndFadeVolume = FadeInfo.FadeVolume.GetValue();
 
+					// Mix this effect chain with other effect chains.
 					MixInBufferFast(EffectChainOutputBuffer, SubmixChainMixBuffer, StartFadeVolume, EndFadeVolume);
 				}
 
@@ -1223,32 +1351,28 @@ namespace Audio
 				}
 
 				// Update Wet Level using modulator
-				float ModulatedWetLevelStart = CurrentWetLevel;
-				float ModulatedWetLevelEnd = TargetWetLevel;
-
-				if (bUseModulation)
+				if (MixerDevice->IsModulationPluginEnabled() && MixerDevice->ModulationInterface.IsValid())
 				{
-					const float PreModulation = WetLevelMod.GetValue();
-					WetLevelMod.ProcessControl(WetModBase);
-					const float PostModulation = WetLevelMod.GetValue();
-
-					if (WetLevelMod.IsActive())
-					{
-						ModulatedWetLevelStart *= WetLevelMod.GetHasProcessed() ? PreModulation : PostModulation;
-						ModulatedWetLevelEnd *= PostModulation;
-					}
+					WetLevelMod.ProcessControl(WetModBaseDb);
+					TargetWetLevel = WetLevelMod.GetValue();
+				}
+				else
+				{
+					TargetWetLevel = Audio::ConvertToLinear(WetModBaseDb);
 				}
 
+				TargetWetLevel *= WetLevelModifier;
+
 				// Apply the wet level here after processing effects. 
-				if (!FMath::IsNearlyEqual(ModulatedWetLevelEnd, ModulatedWetLevelStart) || !FMath::IsNearlyEqual(ModulatedWetLevelStart, 1.0f))
+				if (!FMath::IsNearlyEqual(TargetWetLevel, CurrentWetLevel) || !FMath::IsNearlyEqual(CurrentWetLevel, 1.0f))
 				{
-					if (FMath::IsNearlyEqual(ModulatedWetLevelEnd, ModulatedWetLevelStart))
+					if (FMath::IsNearlyEqual(TargetWetLevel, CurrentWetLevel))
 					{
-						MultiplyBufferByConstantInPlace(InputBuffer, ModulatedWetLevelEnd);
+						MultiplyBufferByConstantInPlace(InputBuffer, TargetWetLevel);
 					}
 					else
 					{
-						FadeBufferFast(InputBuffer, ModulatedWetLevelStart, ModulatedWetLevelEnd);
+						FadeBufferFast(InputBuffer, CurrentWetLevel, TargetWetLevel);
 						CurrentWetLevel = TargetWetLevel;
 					}
 				}
@@ -1259,14 +1383,14 @@ namespace Audio
 		if (DryChannelBuffer.Num() > 0)
 		{
 			// If we've already set the volume, only need to multiply by constant
-			if (FMath::IsNearlyEqual(ModulatedDryLevelEnd, ModulatedDryLevelStart))
+			if (FMath::IsNearlyEqual(TargetDryLevel, CurrentDryLevel))
 			{
-				MultiplyBufferByConstantInPlace(DryChannelBuffer, ModulatedDryLevelEnd);
+				MultiplyBufferByConstantInPlace(DryChannelBuffer, TargetDryLevel);
 			}
 			else
 			{
 				// To avoid popping, we do a fade on the buffer to the target volume
-				FadeBufferFast(DryChannelBuffer, ModulatedDryLevelStart, ModulatedDryLevelEnd);
+				FadeBufferFast(DryChannelBuffer, CurrentDryLevel, TargetDryLevel);
 				CurrentDryLevel = TargetDryLevel;
 			}
 			MixInBufferFast(DryChannelBuffer, InputBuffer);
@@ -1311,53 +1435,51 @@ namespace Audio
 			FScopeLock EnvelopeScopeLock(&EnvelopeCriticalSection);
 			FMemory::Memset(EnvelopeValues, sizeof(float) * AUDIO_MIXER_MAX_OUTPUT_CHANNELS);
 
-			for (int32 ChannelIndex = 0; ChannelIndex < NumChannels; ++ChannelIndex)
+			if (NumChannels > 0)
 			{
-				// Get the envelope follower for the channel
-				FEnvelopeFollower& EnvFollower = EnvelopeFollowers[ChannelIndex];
-
-				// Track the last sample
-				for (int32 SampleIndex = ChannelIndex; SampleIndex < BufferSamples; SampleIndex += NumChannels)
+				const int32 NumFrames = BufferSamples / NumChannels;
+				if (EnvelopeFollower.GetNumChannels() != NumChannels)
 				{
-					const float SampleValue = AudioBufferPtr[SampleIndex];
-					EnvFollower.ProcessAudio(SampleValue);
+					EnvelopeFollower.SetNumChannels(NumChannels);
 				}
 
-				EnvelopeValues[ChannelIndex] = EnvFollower.GetCurrentValue();
+				EnvelopeFollower.ProcessAudio(AudioBufferPtr, NumFrames);
+				const TArray<float>& EnvValues = EnvelopeFollower.GetEnvelopeValues();
+
+				check(EnvValues.Num() == NumChannels);
+
+				FMemory::Memcpy(EnvelopeValues, EnvValues.GetData(), sizeof(float) * NumChannels);
+				Audio::ArrayClampInPlace(MakeArrayView(EnvelopeValues, NumChannels), 0.f, 1.f);
 			}
 
 			EnvelopeNumChannels = NumChannels;
 		}
 
 		// Update output volume using modulator
-		float ModulatedOutputVolumeStart = CurrentOutputVolume;
-		float ModulatedOutputVolumeEnd = TargetOutputVolume;
-
-		if (bUseModulation)
+		if (MixerDevice->IsModulationPluginEnabled() && MixerDevice->ModulationInterface.IsValid())
 		{
-			const float PreModulation = VolumeMod.GetValue();
-			VolumeMod.ProcessControl(VolumeModBase);
-			const float PostModulation = VolumeMod.GetValue();
-
-			if (VolumeMod.IsActive())
-			{
-				ModulatedOutputVolumeStart *= VolumeMod.GetHasProcessed() ? PreModulation : PostModulation;
-				ModulatedOutputVolumeEnd *= PostModulation;
-			}
+			VolumeMod.ProcessControl(VolumeModBaseDb);
+			TargetOutputVolume = VolumeMod.GetValue();
+		}
+		else
+		{
+			TargetOutputVolume = Audio::ConvertToLinear(VolumeModBaseDb);
 		}
 
+		TargetOutputVolume *= VolumeModifier;
+
 		// Now apply the output volume
-		if (!FMath::IsNearlyEqual(ModulatedOutputVolumeEnd, ModulatedOutputVolumeStart) || !FMath::IsNearlyEqual(ModulatedOutputVolumeStart, 1.0f))
+		if (!FMath::IsNearlyEqual(TargetOutputVolume, CurrentOutputVolume) || !FMath::IsNearlyEqual(CurrentOutputVolume, 1.0f))
 		{
 			// If we've already set the output volume, only need to multiply by constant
-			if (FMath::IsNearlyEqual(ModulatedOutputVolumeEnd, ModulatedOutputVolumeStart))
+			if (FMath::IsNearlyEqual(TargetOutputVolume, CurrentOutputVolume))
 			{
-				Audio::MultiplyBufferByConstantInPlace(InputBuffer, ModulatedOutputVolumeEnd);
+				Audio::MultiplyBufferByConstantInPlace(InputBuffer, TargetOutputVolume);
 			}
 			else
 			{
 				// To avoid popping, we do a fade on the buffer to the target volume
-				Audio::FadeBufferFast(InputBuffer, ModulatedOutputVolumeStart, ModulatedOutputVolumeEnd);
+				Audio::FadeBufferFast(InputBuffer, CurrentOutputVolume, TargetOutputVolume);
 				CurrentOutputVolume = TargetOutputVolume;
 			}
 		}
@@ -1365,8 +1487,41 @@ namespace Audio
 		// Mix the audio buffer of this submix with the audio buffer of the output buffer (i.e. with other submixes)
 		Audio::MixInBufferFast(InputBuffer, OutAudioBuffer);
 
+		// Once we've finished rendering submix audio, check if the output buffer is silent if we are auto-disabling
+		if (bAutoDisable)
+		{
+			// Extremely cheap silent buffer detection: as soon as we hit a sample which isn't silent, we flag we're not silent
+			bool bIsNowSilent = true;
+			for (float& SampleValue : OutAudioBuffer)
+			{
+				// As soon as we hit a non-silent sample, we're not silent
+				if (SampleValue > SMALL_NUMBER)
+				{
+					bIsNowSilent = false;
+					break;
+				}
+			}
+
+			// If this is the first time we're silent track when it happens
+			if (bIsNowSilent && !bIsSilent)
+			{
+				bIsSilent = true;
+				SilenceTimeStartSeconds = MixerDevice->GetAudioClock();
+			}
+			else
+			{
+				bIsSilent = false;
+				SilenceTimeStartSeconds = -1.0;
+			}
+		}
+
+		SendAudioToSubmixBufferListeners(OutAudioBuffer);
+	}
+
+	void FMixerSubmix::SendAudioToSubmixBufferListeners(FAlignedFloatBuffer& OutAudioBuffer)
+	{
 		// Now loop through any buffer listeners and feed the listeners the result of this audio callback
-		if(const USoundSubmix* SoundSubmix = Cast<const USoundSubmix>(OwningSubmixObject))
+		if (const USoundSubmix* SoundSubmix = Cast<const USoundSubmix>(OwningSubmixObject))
 		{
 			CSV_SCOPED_TIMING_STAT(Audio, SubmixBufferListeners);
 			SCOPE_CYCLE_COUNTER(STAT_AudioMixerSubmixBufferListeners);
@@ -1384,14 +1539,15 @@ namespace Audio
 		}
 	}
 
-	bool FMixerSubmix::GenerateEffectChainAudio(FSoundEffectSubmixInputData& InputData, AlignedFloatBuffer& InAudioBuffer, TArray<FSoundEffectSubmixPtr>& InEffectChain, AlignedFloatBuffer& OutBuffer)
+	bool FMixerSubmix::GenerateEffectChainAudio(FSoundEffectSubmixInputData& InputData, const FAlignedFloatBuffer& InAudioBuffer, TArray<FSoundEffectSubmixPtr>& InEffectChain, FAlignedFloatBuffer& OutBuffer)
 	{
-		// Reset the output scratch buffer
-		ScratchBuffer.Reset(NumSamples);
-		ScratchBuffer.AddZeroed(NumSamples);
+		checkf(InAudioBuffer.Num() == OutBuffer.Num(), TEXT("Processing effect chain audio must not alter the number of samples in a buffer. Buffer size mismatch InAudioBuffer[%d] != OutBuffer[%d]"), InAudioBuffer.Num(), OutBuffer.Num());
+
+		// Use the scratch buffer to hold the wet audio. For the first effect in the effect chain, this is the InAudioBuffer. 
+		ScratchBuffer = InAudioBuffer;
 
 		FSoundEffectSubmixOutputData OutputData;
-		OutputData.AudioBuffer = &ScratchBuffer;
+		OutputData.AudioBuffer = &OutBuffer;
 		OutputData.NumChannels = NumChannels;
 
 		const int32 NumOutputFrames = OutBuffer.Num() / NumChannels;
@@ -1407,41 +1563,45 @@ namespace Audio
 
 			// Check to see if we need to down-mix our audio before sending to the submix effect
 			const uint32 ChannelCountOverride = SubmixEffect->GetDesiredInputChannelCountOverride();
+			bool bCurrentEffectProcessedAudio = false;
 
 			if (ChannelCountOverride != INDEX_NONE && ChannelCountOverride != NumChannels)
 			{
 				// Perform the down-mix operation with the down-mixed scratch buffer
 				DownmixedBuffer.SetNumUninitialized(NumOutputFrames * ChannelCountOverride);
-				DownmixBuffer(NumChannels, InAudioBuffer, ChannelCountOverride, DownmixedBuffer);
+				DownmixBuffer(NumChannels, ScratchBuffer, ChannelCountOverride, DownmixedBuffer);
 
 				InputData.NumChannels = ChannelCountOverride;
 				InputData.AudioBuffer = &DownmixedBuffer;
-				SubmixEffect->ProcessAudio(InputData, OutputData);
+				bCurrentEffectProcessedAudio = SubmixEffect->ProcessAudio(InputData, OutputData);
 			}
 			else
 			{
 				// If we're not down-mixing, then just pass in the current wet buffer and our channel count is the same as the output channel count
 				InputData.NumChannels = NumChannels;
-				InputData.AudioBuffer = &InAudioBuffer;
-				SubmixEffect->ProcessAudio(InputData, OutputData);
+				InputData.AudioBuffer = &ScratchBuffer;
+				bCurrentEffectProcessedAudio = SubmixEffect->ProcessAudio(InputData, OutputData);
 			}
 
-			// Copy the output to the input
-			FMemory::Memcpy((void*)InAudioBuffer.GetData(), (void*)OutputData.AudioBuffer->GetData(), sizeof(float) * NumSamples);
-
-			// Mix in the dry signal directly
-			const float DryLevel = SubmixEffect->GetDryLevel();
-			if (DryLevel > 0.0f)
+			if (bCurrentEffectProcessedAudio)
 			{
-				MixInBufferFast(InAudioBuffer, ScratchBuffer, DryLevel);
-			}
+				// Mix in the dry signal directly
+				const float DryLevel = SubmixEffect->GetDryLevel();
+				if (DryLevel > 0.0f)
+				{
+					MixInBufferFast(ScratchBuffer, *OutputData.AudioBuffer, DryLevel);
+				}
+				// Copy the output to the input
+				FMemory::Memcpy((void*)ScratchBuffer.GetData(), (void*)OutputData.AudioBuffer->GetData(), sizeof(float) * NumSamples);
 
-			bProcessedAnEffect = true;
+				bProcessedAnEffect = true;
+			}
 		}
 
-		if (bProcessedAnEffect)
+		if (!bProcessedAnEffect)
 		{
-			FMemory::Memcpy((void*)OutBuffer.GetData(), (void*)InAudioBuffer.GetData(), sizeof(float) * NumSamples);
+			// If no effects were processed pass through the input audio to the output buffer.
+			OutBuffer = InAudioBuffer;
 		}
 
 		return bProcessedAnEffect;
@@ -1491,7 +1651,7 @@ namespace Audio
 		// Mix all source sends into OutputAudio.
 		{
 			CSV_SCOPED_TIMING_STAT(Audio, SubmixSoundfieldSources);
-			SCOPE_CYCLE_COUNTER(STAT_AudioMixerSubmixSoundfieldSources);
+			CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_AudioMixerSubmixSoundfieldSources, (MixerSourceVoices.Num() > 0));
 
 			check(SoundfieldStreams.Mixer.IsValid());
 
@@ -1522,7 +1682,7 @@ namespace Audio
 		// Run soundfield processors.
 		{
 			CSV_SCOPED_TIMING_STAT(Audio, SubmixSoundfieldProcessors);
-			SCOPE_CYCLE_COUNTER(STAT_AudioMixerSubmixSoundfieldProcessors);
+			CONDITIONAL_SCOPE_CYCLE_COUNTER(STAT_AudioMixerSubmixSoundfieldProcessors, (SoundfieldStreams.EffectProcessors.Num() > 0));
 
 			for (auto& EffectData : SoundfieldStreams.EffectProcessors)
 			{
@@ -1859,7 +2019,7 @@ namespace Audio
 		bIsRecording = true;
 	}
 
-	AlignedFloatBuffer& FMixerSubmix::OnStopRecordingOutput(float& OutNumChannels, float& OutSampleRate)
+	FAlignedFloatBuffer& FMixerSubmix::OnStopRecordingOutput(float& OutNumChannels, float& OutSampleRate)
 	{
 		FScopeLock ScopedLock(&RecordingCriticalSection);
 		bIsRecording = false;
@@ -1907,11 +2067,17 @@ namespace Audio
 	{
 		if (!bIsEnvelopeFollowing)
 		{
+			FEnvelopeFollowerInitParams EnvelopeFollowerInitParams;
+			EnvelopeFollowerInitParams.SampleRate = GetSampleRate(); 
+			EnvelopeFollowerInitParams.NumChannels = NumChannels; 
+			EnvelopeFollowerInitParams.AttackTimeMsec = static_cast<float>(AttackTime);
+			EnvelopeFollowerInitParams.ReleaseTimeMsec = static_cast<float>(ReleaseTime);
+			EnvelopeFollower.Init(EnvelopeFollowerInitParams);
+
 			// Zero out any previous envelope values which may have been in the array before starting up
 			for (int32 ChannelIndex = 0; ChannelIndex < AUDIO_MIXER_MAX_OUTPUT_CHANNELS; ++ChannelIndex)
 			{
 				EnvelopeValues[ChannelIndex] = 0.0f;
-				EnvelopeFollowers[ChannelIndex].Init(GetSampleRate(), AttackTime, ReleaseTime);
 			}
 
 			bIsEnvelopeFollowing = true;
@@ -2014,7 +2180,12 @@ namespace Audio
 						DelegateInfo.SpectrumBandExtractor->AddBand(NewExtractorBandSettings);
 
 						FSpectralAnalysisBandInfo NewBand;
-						NewBand.EnvelopeFollower.Init(DelegateInfo.DelegateSettings.UpdateRate, BandSettings.AttackTimeMsec, BandSettings.ReleaseTimeMsec);
+
+						FInlineEnvelopeFollowerInitParams EnvelopeFollowerInitParams;
+						EnvelopeFollowerInitParams.SampleRate = DelegateInfo.DelegateSettings.UpdateRate;
+						EnvelopeFollowerInitParams.AttackTimeMsec = static_cast<float>(BandSettings.AttackTimeMsec);
+						EnvelopeFollowerInitParams.ReleaseTimeMsec = static_cast<float>(BandSettings.ReleaseTimeMsec);
+						NewBand.EnvelopeFollower.Init(EnvelopeFollowerInitParams);
 					
 						DelegateInfo.SpectralBands.Add(NewBand);
 					}
@@ -2124,31 +2295,31 @@ namespace Audio
 
 	void FMixerSubmix::SetOutputVolume(float InOutputVolume)
 	{
-		TargetOutputVolume = FMath::Clamp(InOutputVolume, 0.0f, 1.0f);
+		VolumeModifier = FMath::Clamp(InOutputVolume, 0.0f, 1.0f);
 	}
 
 	void FMixerSubmix::SetDryLevel(float InDryLevel)
 	{
-		TargetDryLevel = FMath::Clamp(InDryLevel, 0.0f, 1.0f);
+		DryLevelModifier = FMath::Clamp(InDryLevel, 0.0f, 1.0f);
 	}
 
 	void FMixerSubmix::SetWetLevel(float InWetLevel)
 	{
-		TargetWetLevel = FMath::Clamp(InWetLevel, 0.0f, 1.0f);
+		WetLevelModifier = FMath::Clamp(InWetLevel, 0.0f, 1.0f);
 	}
 
 	void FMixerSubmix::UpdateModulationSettings(USoundModulatorBase* InOutputModulator, USoundModulatorBase* InWetLevelModulator, USoundModulatorBase* InDryLevelModulator)
 	{
-		VolumeMod.UpdateModulator_RenderThread(InOutputModulator);
-		WetLevelMod.UpdateModulator_RenderThread(InWetLevelModulator);
-		DryLevelMod.UpdateModulator_RenderThread(InDryLevelModulator);
+		VolumeMod.UpdateModulator(InOutputModulator);
+		WetLevelMod.UpdateModulator(InWetLevelModulator);
+		DryLevelMod.UpdateModulator(InDryLevelModulator);
 	}
 
-	void FMixerSubmix::SetModulationBaseLevels(float InVolumeModBase, float InWetModBase, float InDryModBase)
+	void FMixerSubmix::SetModulationBaseLevels(float InVolumeModBaseDb, float InWetModBaseDb, float InDryModBaseDb)
 	{
-		VolumeModBase = InVolumeModBase;
-		WetModBase = InWetModBase;
-		DryModBase = InDryModBase;
+		VolumeModBaseDb = InVolumeModBaseDb;
+		WetModBaseDb = InWetModBaseDb;
+		DryModBaseDb = InDryModBaseDb;
 	}
 
 	void FMixerSubmix::BroadcastDelegates()
@@ -2223,7 +2394,8 @@ namespace Audio
 							if (ensure(ResultIndex < DelegateInfo.SpectralBands.Num()))
 							{
 								FSpectralAnalysisBandInfo& BandInfo = DelegateInfo.SpectralBands[ResultIndex];
-								SpectralResults[ResultIndex] = BandInfo.EnvelopeFollower.ProcessAudioNonClamped(SpectralResults[ResultIndex]);
+
+								SpectralResults[ResultIndex] = BandInfo.EnvelopeFollower.ProcessSample(SpectralResults[ResultIndex]);
 							}
 						}
 

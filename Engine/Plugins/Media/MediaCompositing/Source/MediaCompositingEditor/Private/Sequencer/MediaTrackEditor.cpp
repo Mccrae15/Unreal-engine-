@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "MediaTrackEditor.h"
+#include "Sequencer/MediaTrackEditor.h"
 
 #include "ContentBrowserModule.h"
 #include "EditorStyleSet.h"
@@ -96,6 +96,7 @@ TSharedPtr<SWidget> FMediaTrackEditor::BuildOutlinerEditWidget(const FGuid& Obje
 			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 			AssetPickerConfig.Filter.bRecursiveClasses = true;
 			AssetPickerConfig.Filter.ClassNames.Add(UMediaSource::StaticClass()->GetFName());
+			AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
 		}
 
 		FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
@@ -158,12 +159,11 @@ TSharedRef<ISequencerSection> FMediaTrackEditor::MakeSectionInterface(UMovieScen
 	return MakeShared<FMediaThumbnailSection>(*CastChecked<UMovieSceneMediaSection>(&SectionObject), ThumbnailPool, GetSequencer());
 }
 
-
-bool FMediaTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
-{
-	return InSequence && InSequence->IsA(ULevelSequence::StaticClass());
+bool FMediaTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const 
+{    
+	ETrackSupport TrackSupported = InSequence ? InSequence->IsTrackSupported(UMovieSceneMediaTrack::StaticClass()) : ETrackSupport::NotSupported;    
+	return (InSequence && InSequence->IsA(ULevelSequence::StaticClass())) || TrackSupported == ETrackSupport::Supported; 
 }
-
 
 bool FMediaTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> TrackClass) const
 {

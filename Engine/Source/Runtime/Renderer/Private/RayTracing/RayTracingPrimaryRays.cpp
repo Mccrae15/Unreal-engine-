@@ -13,7 +13,7 @@
 #include "RHIResources.h"
 #include "PostProcess/PostProcessing.h"
 #include "RayTracing/RaytracingOptions.h"
-#include "Raytracing/RaytracingLighting.h"
+#include "RayTracing/RayTracingLighting.h"
 
 DECLARE_GPU_STAT(RayTracingPrimaryRays);
 
@@ -24,9 +24,8 @@ class FRayTracingPrimaryRaysRGS : public FGlobalShader
 
 	class FDenoiserOutput : SHADER_PERMUTATION_BOOL("DIM_DENOISER_OUTPUT");
 	class FEnableTwoSidedGeometryForShadowDim : SHADER_PERMUTATION_BOOL("ENABLE_TWO_SIDED_GEOMETRY");
-	class FMissShaderLighting : SHADER_PERMUTATION_BOOL("DIM_MISS_SHADER_LIGHTING");
 
-	using FPermutationDomain = TShaderPermutationDomain<FDenoiserOutput, FEnableTwoSidedGeometryForShadowDim, FMissShaderLighting>;
+	using FPermutationDomain = TShaderPermutationDomain<FDenoiserOutput, FEnableTwoSidedGeometryForShadowDim>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(int32, SamplesPerPixel)
@@ -46,7 +45,7 @@ class FRayTracingPrimaryRaysRGS : public FGlobalShader
 
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_SRV(StructuredBuffer<FRTLightingData>, LightDataBuffer)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SSProfilesTexture)
+		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FRaytracingLightDataPacked, LightDataPacked)
@@ -71,14 +70,17 @@ IMPLEMENT_GLOBAL_SHADER(FRayTracingPrimaryRaysRGS, "/Engine/Private/RayTracing/R
 
 void FDeferredShadingSceneRenderer::PrepareRayTracingTranslucency(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
+	// Translucency and primary ray tracing requires the full ray tracing pipeline with material bindings.
+	if (!ShouldRenderRayTracingEffect(ERayTracingPipelineCompatibilityFlags::FullPipeline))
+	{
+		return;
+	}
+
 	// Declare all RayGen shaders that require material closest hit shaders to be bound.
 	// NOTE: Translucency shader may be used for primary ray debug view mode.
-	if (GetRayTracingTranslucencyOptions(View).bEnabled || View.RayTracingRenderMode == ERayTracingRenderMode::RayTracingDebug)
+	if (GetRayTracingTranslucencyOptions(View).bEnabled || View.Family->EngineShowFlags.RayTracingDebug)
 	{
 		FRayTracingPrimaryRaysRGS::FPermutationDomain PermutationVector;
-
-		const bool bLightingMissShader = CanUseRayTracingLightingMissShader(View.GetShaderPlatform());
-		PermutationVector.Set<FRayTracingPrimaryRaysRGS::FMissShaderLighting>(bLightingMissShader);
 
 		PermutationVector.Set<FRayTracingPrimaryRaysRGS::FEnableTwoSidedGeometryForShadowDim>(EnableRayTracingShadowTwoSidedGeometry());
 
@@ -97,9 +99,8 @@ void FDeferredShadingSceneRenderer::RenderRayTracingPrimaryRaysView(
 	float ResolutionFraction,
 	ERayTracingPrimaryRaysFlag Flags)
 {
-	FSceneRenderTargets& SceneContext = FSceneRenderTargets::Get(GraphBuilder.RHICmdList);
-
-	FSceneTextureParameters SceneTextures = GetSceneTextureParameters(GraphBuilder);
+	const FSceneTextures& SceneTextures = FSceneTextures::Get(GraphBuilder);
+	const FSceneTextureParameters SceneTextureParameters = GetSceneTextureParameters(GraphBuilder, SceneTextures);
 
 	int32 UpscaleFactor = int32(1.0f / ResolutionFraction);
 	ensure(ResolutionFraction == 1.0 / UpscaleFactor);
@@ -107,9 +108,9 @@ void FDeferredShadingSceneRenderer::RenderRayTracingPrimaryRaysView(
 	FIntPoint RayTracingResolution = FIntPoint::DivideAndRoundUp(View.ViewRect.Size(), UpscaleFactor);
 
 	{
-		FRDGTextureDesc Desc = Translate(SceneContext.GetSceneColor()->GetDesc());
+		FRDGTextureDesc Desc = SceneTextures.Color.Target->Desc;
 		Desc.Format = PF_FloatRGBA;
-		Desc.Flags &= ~(TexCreate_FastVRAM | TexCreate_Transient);
+		Desc.Flags &= ~(TexCreate_FastVRAM);
 		Desc.Flags |= TexCreate_UAV;
 		Desc.Extent /= UpscaleFactor;
 
@@ -143,48 +144,43 @@ void FDeferredShadingSceneRenderer::RenderRayTracingPrimaryRaysView(
 	PassParameters->MaxNormalBias = GetRaytracingMaxNormalBias();
 	PassParameters->ShouldUsePreExposure = View.Family->EngineShowFlags.Tonemapper;
 	PassParameters->PrimaryRayFlags = (uint32)Flags;
-	PassParameters->TLAS = View.RayTracingScene.RayTracingSceneRHI->GetShaderResourceView();
+	PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
 	PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 	PassParameters->LightDataPacked = View.RayTracingLightData.UniformBuffer;
 	PassParameters->LightDataBuffer = View.RayTracingLightData.LightBufferSRV;
 
-	PassParameters->SceneTextures = SceneTextures;
+	PassParameters->SceneTextures = SceneTextureParameters;
 
-	FRDGTextureRef SceneColorTexture = GraphBuilder.RegisterExternalTexture(SceneContext.GetSceneColor(), TEXT("SceneColor"));
-	PassParameters->SceneColorTexture = SceneColorTexture;
+	PassParameters->SceneColorTexture = SceneTextures.Color.Resolve;
 
 	PassParameters->ReflectionStruct = CreateReflectionUniformBuffer(View, EUniformBufferUsage::UniformBuffer_SingleFrame);
 	PassParameters->FogUniformParameters = CreateFogUniformBuffer(GraphBuilder, View);
 
 	PassParameters->ColorOutput = GraphBuilder.CreateUAV(*InOutColorTexture);
 	PassParameters->RayHitDistanceOutput = GraphBuilder.CreateUAV(*InOutRayHitDistanceTexture);
-
-	// TODO: should be converted to RDG
-	PassParameters->SSProfilesTexture = GraphBuilder.RegisterExternalTexture(View.RayTracingSubSurfaceProfileTexture);
-
-	const bool bMissShaderLighting = CanUseRayTracingLightingMissShader(View.GetShaderPlatform());
+	PassParameters->SSProfilesTexture = View.RayTracingSubSurfaceProfileTexture;
 
 	FRayTracingPrimaryRaysRGS::FPermutationDomain PermutationVector;
 	PermutationVector.Set<FRayTracingPrimaryRaysRGS::FEnableTwoSidedGeometryForShadowDim>(EnableRayTracingShadowTwoSidedGeometry());
-	PermutationVector.Set< FRayTracingPrimaryRaysRGS::FMissShaderLighting>(bMissShaderLighting);
 
 	auto RayGenShader = View.ShaderMap->GetShader<FRayTracingPrimaryRaysRGS>(PermutationVector);
 
 	ClearUnusedGraphResources(RayGenShader, PassParameters);
 
+	RDG_GPU_STAT_SCOPE(GraphBuilder, RayTracingPrimaryRays);
+
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("RayTracingPrimaryRays %dx%d", RayTracingResolution.X, RayTracingResolution.Y),
 		PassParameters,
 		ERDGPassFlags::Compute,
-		[PassParameters, this, &View, RayGenShader, RayTracingResolution](FRHICommandList& RHICmdList)
+		[PassParameters, this, &View, RayGenShader, RayTracingResolution](FRHIRayTracingCommandList& RHICmdList)
 	{
-		SCOPED_GPU_STAT(RHICmdList, RayTracingPrimaryRays);
-	FRayTracingPipelineState* Pipeline = View.RayTracingMaterialPipeline;
+		FRayTracingPipelineState* Pipeline = View.RayTracingMaterialPipeline;
 
 		FRayTracingShaderBindingsWriter GlobalResources;
 		SetShaderParameters(GlobalResources, RayGenShader, *PassParameters);
 
-		FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+		FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 		RHICmdList.RayTraceDispatch(Pipeline, RayGenShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, RayTracingResolution.X, RayTracingResolution.Y);
 	});
 }

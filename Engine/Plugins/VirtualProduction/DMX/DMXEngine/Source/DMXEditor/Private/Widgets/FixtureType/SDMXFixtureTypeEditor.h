@@ -5,29 +5,28 @@
 #include "Widgets/SDMXEntityEditor.h"
 
 #include "CoreMinimal.h"
-#include "Widgets/SDMXEntityList.h"
 
 class FDMXEditor;
-class SDMXEntityInspector;
+class FDMXFixtureTypeSharedData;
+class SDMXFixtureModeEditor;
+class SDMXFixtureTypeTree;
+
 struct FPropertyChangedEvent;
+class IDetailsView;
 
-
-/** Editor for Fixture Types */
+/** The whole editor for Fixture Types */
 class SDMXFixtureTypeEditor
 	: public SDMXEntityEditor
 {
 public:
 	SLATE_BEGIN_ARGS(SDMXFixtureTypeEditor)
-		: _DMXEditor(nullptr)
 	{}
-
-		SLATE_ARGUMENT(TWeakPtr<FDMXEditor>, DMXEditor)
 
 	SLATE_END_ARGS()
 
 public:
 	/** Constructs this widget */
-	void Construct(const FArguments& InArgs);
+	void Construct(const FArguments& InArgs, const TSharedRef<FDMXEditor>& InDMXEditor);
 
 	/** Begin SDMXEntityEditorTab interface */
 	void RequestRenameOnNewEntity(const UDMXEntity* InEntity, ESelectInfo::Type SelectionType);
@@ -36,32 +35,22 @@ public:
 	TArray<UDMXEntity*> GetSelectedEntities() const;
 	/** ~End SDMXEntityEditorTab interface */
 
-protected:
-	/** Callback for when entities list selection changes */
-	virtual void OnSelectionUpdated(TArray<UDMXEntity*> InSelectedEntities);
+private:
+	/** Called when fixture types were selected */
+	void OnFixtureTypesSelected();
 
-	/** Callback for when some property has changed in the inspector */
-	virtual void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
+	/** Generates a details view for the Fixture Type Details */
+	TSharedRef<IDetailsView> GenerateFixtureTypeDetailsView() const;
 
-protected:
+	/** Tree of Fixture Types */
+	TSharedPtr<SDMXFixtureTypeTree> FixtureTypeTree;
+
+	/** Details View for the selected Fixture Type */
+	TSharedPtr<IDetailsView> FixtureTypeDetailsView;
+
+	/** Shared Data for Fixture Types */
+	TSharedPtr<FDMXFixtureTypeSharedData> FixtureTypeSharedData;
+
 	/** Pointer back to the DMXEditor tool that owns us */
-	TWeakPtr<FDMXEditor> DMXEditor;
-
-	/** List of Fixture Types */
-	TSharedPtr<SDMXEntityList> EntityList;
-
-	/** Inspector for the selected Fixture(s) Settings */
-	TSharedPtr<SDMXEntityInspector> FixtureSettingsInspector;
-
-	/** Inspector for Modes */
-	TSharedPtr<SDMXEntityInspector> ModesInspector;
-
-	/** Inspector for the selected mode's properties */
-	TSharedPtr<SDMXEntityInspector> ModePropertiesInspector;
-
-	/** Inspector for the selected Fixture(s) functions */
-	TSharedPtr<SDMXEntityInspector> FunctionsInspector;
-
-	/** Inspector for the selected function's properties */
-	TSharedPtr<SDMXEntityInspector> FunctionPropertiesInspector;
+	TWeakPtr<FDMXEditor> WeakDMXEditor;
 }; 

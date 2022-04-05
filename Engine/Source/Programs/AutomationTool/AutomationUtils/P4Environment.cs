@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace AutomationTool
 {
@@ -42,7 +42,7 @@ namespace AutomationTool
 		}
 
 		/// <summary>
-		/// The current branch containing UAT. This may be a depot path (eg. //depot/UE4) or the name of a stream (eg. //UE4/Main).
+		/// The current branch containing UAT. This may be a depot path (e.g. //depot/UE4) or the name of a stream (e.g. //UE5/Main).
 		/// </summary>
 		public string Branch
 		{
@@ -51,39 +51,12 @@ namespace AutomationTool
 		}
 
 		/// <summary>
-		/// Path to the root of the branch as a client path (//MyClient/UE4).
+		/// Path to the root of the branch as a client path (//MyClient/UE).
 		/// </summary>
 		public string ClientRoot
 		{
 			get;
 			private set;
-		}
-
-		/// <summary>
-		/// The Perforce host and port number (eg. perforce:1666)
-		/// </summary>
-		[Obsolete("The P4Port property has been deprecated in 4.18. Use the ServerAndPort property instead.")]
-		public string P4Port
-		{
-			get { return ServerAndPort; }
-		}
-
-		/// <summary>
-		/// Root directory of the current branch
-		/// </summary>
-		[Obsolete("The BuildRootP4 property has been deprecated in 4.18. Use the Branch property instead.")]
-		public string BuildRootP4
-		{
-			get { return Branch; }
-		}
-
-		/// <summary>
-		/// Escaped branch name
-		/// </summary>
-		[Obsolete("The BuildRootEscaped property has been deprecated in 4.18. Use the CommandUtils.EscapePath(P4Env.Branch) instead.")]
-		public string BuildRootEscaped
-		{
-			get { return CommandUtils.EscapePath(BuildRootP4); }
 		}
 
 		/// <summary>
@@ -103,15 +76,6 @@ namespace AutomationTool
 			{
 				ChangelistInternal = value;
 			}
-		}
-
-		/// <summary>
-		/// Deprecated accessor for the current changelist as a string.
-		/// </summary>
-		[Obsolete("The ChangelistString property has been deprecated in 4.18. Use the integer Changelist property instead.")]
-		public string ChangelistString
-		{
-			get { return Changelist.ToString(); }
 		}
 
 		/// <summary>
@@ -331,7 +295,7 @@ namespace AutomationTool
 		/// Detects current user name.
 		/// </summary>
 		/// <returns></returns>
-		private static string DetectUserName(P4Connection Connection)
+		public static string DetectUserName(P4Connection Connection)
 		{
 			var UserName = String.Empty;
 			var P4Result = Connection.P4("info", AllowSpew: false);

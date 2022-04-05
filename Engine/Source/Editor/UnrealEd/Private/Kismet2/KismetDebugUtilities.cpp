@@ -23,7 +23,8 @@
 #include "WatchPointViewer.h"
 #include "Animation/AnimBlueprintGeneratedClass.h"
 #include "UnrealEdGlobals.h"
-#include "Engine/Breakpoint.h"
+#include "Kismet2/Breakpoint.h"
+#include "Kismet2/WatchedPin.h"
 #include "ActorEditorUtils.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node.h"
@@ -40,6 +41,7 @@
 #include "AnimGraphNode_Base.h"
 #include "UObject/UnrealType.h"
 #include "AnimationGraphSchema.h"
+#include "BlueprintEditorSettings.h"
 
 #define LOCTEXT_NAMESPACE "BlueprintDebugging"
 
@@ -234,7 +236,7 @@ void FKismetDebugUtilities::OnScriptException(const UObject* ActiveObject, const
 		UWorld* WorldBeingDebugged = BlueprintObj->GetWorldBeingDebugged();
 		const FString& PathToDebug = BlueprintObj->GetObjectPathToDebug();
 		
-		if (ObjectBeingDebugged == nullptr)
+		if (ObjectBeingDebugged == nullptr && !PathToDebug.IsEmpty())
 		{
 			// Check if we need to update the object being debugged
 			UObject* ObjectToDebug = FindObjectSafe<UObject>(nullptr, *PathToDebug);
@@ -270,17 +272,6 @@ void FKismetDebugUtilities::OnScriptException(const UObject* ActiveObject, const
 				TSharedRef<FTokenizedMessage> Message = FTokenizedMessage::Create(EMessageSeverity::Error);
 				Message->AddToken(FTextToken::Create(FText::Format(LOCTEXT("RuntimeErrorMessageFmt", "Blueprint Runtime Error: \"{0}\"."), Info.GetDescription())));
 
-				Message->AddToken(FTextToken::Create(LOCTEXT("RuntimeErrorBlueprintObjectLabel", "Blueprint: ")));
-				Message->AddToken(FUObjectToken::Create(BlueprintObj, FText::FromString(BlueprintObj->GetName()))
-					->OnMessageTokenActivated(FOnMessageTokenActivated::CreateStatic(&Local::OnMessageLogLinkActivated))
-				);
-
-				// NOTE: StackFrame.Node is not a blueprint node like you may think ("Node" has some legacy meaning)
-				Message->AddToken(FTextToken::Create(LOCTEXT("RuntimeErrorBlueprintFunctionLabel", "Function: ")));
-				Message->AddToken(FUObjectToken::Create(StackFrame.Node, StackFrame.Node->GetDisplayNameText())
-					->OnMessageTokenActivated(FOnMessageTokenActivated::CreateStatic(&Local::OnMessageLogLinkActivated))
-				);
-
 #if WITH_EDITORONLY_DATA // to protect access to GeneratedClass->DebugData
 				UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(ClassContainingCode);
 				if ((GeneratedClass != nullptr) && GeneratedClass->DebugData.IsValid())
@@ -289,18 +280,30 @@ void FKismetDebugUtilities::OnScriptException(const UObject* ActiveObject, const
 					// if instead, there is a node we can point to...
 					if (BlueprintNode != nullptr)
 					{
-						Message->AddToken(FTextToken::Create(LOCTEXT("RuntimeErrorBlueprintGraphLabel", "Graph: ")));
-						Message->AddToken(FUObjectToken::Create(BlueprintNode->GetGraph(), FText::FromString(GetNameSafe(BlueprintNode->GetGraph())))
+						Message->AddToken(FTextToken::Create(LOCTEXT("RuntimeErrorBlueprintNodeLabel", "Node: ")));
+						Message->AddToken(FUObjectToken::Create(BlueprintNode, BlueprintNode->GetNodeTitle(ENodeTitleType::ListView))
 							->OnMessageTokenActivated(FOnMessageTokenActivated::CreateStatic(&Local::OnMessageLogLinkActivated))
 						);
 
-						Message->AddToken(FTextToken::Create(LOCTEXT("RuntimeErrorBlueprintNodeLabel", "Node: ")));
-						Message->AddToken(FUObjectToken::Create(BlueprintNode, BlueprintNode->GetNodeTitle(ENodeTitleType::ListView))
+						Message->AddToken(FTextToken::Create(LOCTEXT("RuntimeErrorBlueprintGraphLabel", "Graph: ")));
+						Message->AddToken(FUObjectToken::Create(BlueprintNode->GetGraph(), FText::FromString(GetNameSafe(BlueprintNode->GetGraph())))
 							->OnMessageTokenActivated(FOnMessageTokenActivated::CreateStatic(&Local::OnMessageLogLinkActivated))
 						);
 					}
 				}
 #endif // WITH_EDITORONLY_DATA
+
+				// NOTE: StackFrame.Node is not a blueprint node like you may think ("Node" has some legacy meaning)
+				Message->AddToken(FTextToken::Create(LOCTEXT("RuntimeErrorBlueprintFunctionLabel", "Function: ")));
+				Message->AddToken(FUObjectToken::Create(StackFrame.Node, StackFrame.Node->GetDisplayNameText())
+					->OnMessageTokenActivated(FOnMessageTokenActivated::CreateStatic(&Local::OnMessageLogLinkActivated))
+				);
+
+				Message->AddToken(FTextToken::Create(LOCTEXT("RuntimeErrorBlueprintObjectLabel", "Blueprint: ")));
+				Message->AddToken(FUObjectToken::Create(BlueprintObj, FText::FromString(BlueprintObj->GetName()))
+					->OnMessageTokenActivated(FOnMessageTokenActivated::CreateStatic(&Local::OnMessageLogLinkActivated))
+				);
+
 				FMessageLog("PIE").AddMessage(Message);
 			}
 			bForceToCurrentObject = true;
@@ -662,12 +665,12 @@ void FKismetDebugUtilities::AttemptToBreakExecution(UBlueprint* BlueprintObj, co
 		// Find the breakpoint object for the node, assuming we hit one
 		if (Info.GetType() == EBlueprintExceptionType::Breakpoint)
 		{
-			UBreakpoint* Breakpoint = FKismetDebugUtilities::FindBreakpointForNode(BlueprintObj, NodeStoppedAt);
+			FBlueprintBreakpoint* Breakpoint = FindBreakpointForNode(NodeStoppedAt, BlueprintObj);
 
 			if (Breakpoint != NULL)
 			{
 				Data.MostRecentBreakpointInstructionPointer = NodeStoppedAt;
-				FKismetDebugUtilities::UpdateBreakpointStateWhenHit(Breakpoint, BlueprintObj);
+				UpdateBreakpointStateWhenHit(NodeStoppedAt, BlueprintObj);
 					
 				//@TODO: K2: DEBUGGING: Debug print text can go eventually
 				UE_LOG(LogBlueprintDebug, Warning, TEXT("Hit breakpoint on node '%s', from offset %d"), *(NodeStoppedAt->GetDescriptiveCompiledName()), DebugOpcodeOffset);
@@ -732,7 +735,6 @@ void FKismetDebugUtilities::AttemptToBreakExecution(UBlueprint* BlueprintObj, co
 		Data.LastExceptionMessage = Info.GetDescription();
 		FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(NodeStoppedAt);
 		CallStackViewer::UpdateDisplayedCallstack(ScriptStack);
-		WatchViewer::UpdateInstancedWatchDisplay();
 		FSlateApplication::Get().EnterDebuggingMode();
 	}
 }
@@ -784,20 +786,110 @@ bool FKismetDebugUtilities::IsSingleStepping()
 		|| Data.TargetGraphStackDepth != INDEX_NONE; 
 }
 
+FPerBlueprintSettings* FKismetDebugUtilities::GetPerBlueprintSettings(const UBlueprint* Blueprint)
+{
+	UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
+	check(Settings);
+	return Settings->PerBlueprintSettings.Find(Blueprint->GetPathName());
+}
+
+TArray<FBlueprintBreakpoint>* FKismetDebugUtilities::GetBreakpoints(const UBlueprint* Blueprint)
+{
+	FPerBlueprintSettings* Settings = GetPerBlueprintSettings(Blueprint);
+
+	// return nullptr if there's no breakpoints associated w/ this blueprint
+	return (!Settings || Settings->Breakpoints.IsEmpty()) ?
+		nullptr :
+		&Settings->Breakpoints;
+}
+
+TArray<FBlueprintWatchedPin>* FKismetDebugUtilities::GetWatchedPins(const UBlueprint* Blueprint)
+{
+	FPerBlueprintSettings* Settings = GetPerBlueprintSettings(Blueprint);
+
+	// return nullptr if there's no breakpoints associated w/ this blueprint
+	return (!Settings || Settings->WatchedPins.IsEmpty()) ?
+		nullptr :
+		&Settings->WatchedPins;
+}
+
+void FKismetDebugUtilities::SaveBlueprintEditorSettings()
+{
+	UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
+	check(Settings);
+	Settings->SaveConfig();
+}
+
+void FKismetDebugUtilities::CleanupBreakpoints(const UBlueprint* Blueprint)
+{
+	RemoveBreakpointsByPredicate(
+		Blueprint,
+		[Blueprint](const FBlueprintBreakpoint& Breakpoint)
+		{
+			if (Breakpoint.GetLocation() == nullptr)
+			{
+				UE_LOG(LogBlueprintDebug, Display, TEXT("Encountered a blueprint breakpoint in %s without an associated node. The blueprint breakpoint has been removed"), *Blueprint->GetPathName());
+				return true;
+			}
+			return false;
+		}
+	);
+}
+
+void FKismetDebugUtilities::CleanupWatches(const UBlueprint* Blueprint)
+{
+	RemovePinWatchesByPredicate(
+		Blueprint,
+		[Blueprint](const UEdGraphPin* Pin)->bool
+		{
+			if(Pin)
+			{
+				if(UEdGraphNode* Node = Pin->GetOwningNode())
+				{
+					if(UEdGraph* Graph = Node->GetGraph())
+					{
+						TArray<UEdGraph*> BPGraphs;
+						Blueprint->GetAllGraphs(BPGraphs);
+						if(BPGraphs.Contains(Graph))
+						{
+							return false;
+						}
+					}
+				}
+			}
+			return true;
+		}
+	);
+}
+
+void FKismetDebugUtilities::RemoveEmptySettings(const FString& BlueprintPath)
+{
+	UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
+	check(Settings);
+	if(FPerBlueprintSettings *PerBlueprintSettings =
+		Settings->PerBlueprintSettings.Find(BlueprintPath))
+	{
+		// if all settings data is default, we can remove it from the map
+		if(*PerBlueprintSettings == FPerBlueprintSettings())
+		{
+			Settings->PerBlueprintSettings.Remove(BlueprintPath);
+		}
+		SaveBlueprintEditorSettings();
+	}
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Breakpoint
 
 // Is the node a valid breakpoint target? (i.e., the node is impure and ended up generating code)
-bool FKismetDebugUtilities::IsBreakpointValid(UBreakpoint* Breakpoint)
+bool FKismetDebugUtilities::IsBreakpointValid(const FBlueprintBreakpoint& Breakpoint)
 {
-	check(Breakpoint);
-
 	// Breakpoints on impure nodes in a macro graph are always considered valid
-	UBlueprint* Blueprint = Cast<UBlueprint>(Breakpoint->GetOuter());
-	if (Blueprint && Blueprint->BlueprintType == BPTYPE_MacroLibrary)
+	UK2Node* K2Node = Cast<UK2Node>(Breakpoint.GetLocation());
+	if (K2Node)
 	{
-		UK2Node* K2Node = Cast<UK2Node>(Breakpoint->Node);
-		if (K2Node)
+		UBlueprint* Blueprint = Cast<UBlueprint>(K2Node->GetOuter()->GetOuter());
+		if (Blueprint && Blueprint->BlueprintType == BPTYPE_MacroLibrary)
 		{
 			return K2Node->IsA<UK2Node_MacroInstance>()
 				|| (!K2Node->IsNodePure() && !K2Node->IsA<UK2Node_Tunnel>());
@@ -805,88 +897,102 @@ bool FKismetDebugUtilities::IsBreakpointValid(UBreakpoint* Breakpoint)
 	}
 
 	TArray<uint8*> InstallSites;
-	FKismetDebugUtilities::GetBreakpointInstallationSites(Breakpoint, InstallSites);
+	GetBreakpointInstallationSites(Breakpoint, InstallSites);
 	return InstallSites.Num() > 0;
 }
 
 // Set the node that the breakpoint should focus on
-void FKismetDebugUtilities::SetBreakpointLocation(UBreakpoint* Breakpoint, UEdGraphNode* NewNode)
+void FKismetDebugUtilities::SetBreakpointLocation(FBlueprintBreakpoint& Breakpoint, UEdGraphNode* NewNode)
 {
-	if (NewNode != Breakpoint->Node)
+	if (NewNode != Breakpoint.Node)
 	{
 		// Uninstall it from the old site if needed
-		FKismetDebugUtilities::SetBreakpointInternal(Breakpoint, false);
+		SetBreakpointInternal(Breakpoint, false);
 
 		// Make the new site accurate
-		Breakpoint->Node = NewNode;
-		FKismetDebugUtilities::SetBreakpointInternal(Breakpoint, Breakpoint->bEnabled);
+		Breakpoint.Node = NewNode;
+		SetBreakpointInternal(Breakpoint, Breakpoint.bEnabled);
 	}
 }
 
-// Set or clear the enabled flag for the breakpoint
-void FKismetDebugUtilities::SetBreakpointEnabled(UBreakpoint* Breakpoint, bool bIsEnabled)
+void FKismetDebugUtilities::SetBreakpointEnabled(FBlueprintBreakpoint& Breakpoint, bool bIsEnabled)
 {
-	if (Breakpoint->bStepOnce && !bIsEnabled)
+	if (Breakpoint.bStepOnce && !bIsEnabled)
 	{
 		// Want to be disabled, but the single-stepping is keeping it enabled
 		bIsEnabled = true;
-		Breakpoint->bStepOnce_WasPreviouslyDisabled = true;
+		Breakpoint.bStepOnce_WasPreviouslyDisabled = true;
 	}
 
-	Breakpoint->bEnabled = bIsEnabled;
-	FKismetDebugUtilities::SetBreakpointInternal(Breakpoint, Breakpoint->bEnabled);
+	Breakpoint.bEnabled = bIsEnabled;
+	SetBreakpointInternal(Breakpoint, Breakpoint.bEnabled);
+	SaveBlueprintEditorSettings();
+}
+
+// Set or clear the enabled flag for the breakpoint
+void FKismetDebugUtilities::SetBreakpointEnabled(const UEdGraphNode* OwnerNode, const UBlueprint* OwnerBlueprint, bool bIsEnabled)
+{
+	if(FBlueprintBreakpoint* Breakpoint = FindBreakpointForNode(OwnerNode, OwnerBlueprint))
+	{
+		SetBreakpointEnabled(*Breakpoint, bIsEnabled);
+	}
 }
 
 // Sets this breakpoint up as a single-step breakpoint (will disable or delete itself after one go if the breakpoint wasn't already enabled)
-void FKismetDebugUtilities::SetBreakpointEnabledForSingleStep(UBreakpoint* Breakpoint, bool bDeleteAfterStep)
+void FKismetDebugUtilities::SetBreakpointEnabledForSingleStep(FBlueprintBreakpoint& Breakpoint, bool bDeleteAfterStep)
 {
-	Breakpoint->bStepOnce = true;
-	Breakpoint->bStepOnce_RemoveAfterHit = bDeleteAfterStep;
-	Breakpoint->bStepOnce_WasPreviouslyDisabled = !Breakpoint->bEnabled;
+	Breakpoint.bStepOnce = true;
+	Breakpoint.bStepOnce_RemoveAfterHit = bDeleteAfterStep;
+	Breakpoint.bStepOnce_WasPreviouslyDisabled = !Breakpoint.bEnabled;
 
-	FKismetDebugUtilities::SetBreakpointEnabled(Breakpoint, true);
+	SetBreakpointEnabled(Breakpoint, true);
 }
 
-void FKismetDebugUtilities::ReapplyBreakpoint(UBreakpoint* Breakpoint)
+void FKismetDebugUtilities::ReapplyBreakpoint(FBlueprintBreakpoint& Breakpoint)
 {
-	FKismetDebugUtilities::SetBreakpointInternal(Breakpoint, Breakpoint->IsEnabled());
+	SetBreakpointInternal(Breakpoint, Breakpoint.IsEnabled());
 }
 
-void FKismetDebugUtilities::StartDeletingBreakpoint(UBreakpoint* Breakpoint, UBlueprint* OwnerBlueprint)
+void FKismetDebugUtilities::RemoveBreakpointFromNode(const UEdGraphNode* OwnerNode, const UBlueprint* OwnerBlueprint)
 {
 #if WITH_EDITORONLY_DATA
-	checkSlow(OwnerBlueprint->Breakpoints.Contains(Breakpoint));
-	OwnerBlueprint->Breakpoints.Remove(Breakpoint);
-	OwnerBlueprint->MarkPackageDirty();
-
-	FKismetDebugUtilities::SetBreakpointLocation(Breakpoint, NULL);
+	RemoveBreakpointsByPredicate(
+		OwnerBlueprint,
+		[OwnerNode](const FBlueprintBreakpoint& Breakpoint)
+		{
+			return Breakpoint.GetLocation() == OwnerNode;
+		}
+	);
 #endif	//#if WITH_EDITORONLY_DATA
 }
 
 // Update the internal state of the breakpoint when it got hit
-void FKismetDebugUtilities::UpdateBreakpointStateWhenHit(UBreakpoint* Breakpoint, UBlueprint* OwnerBlueprint)
+void FKismetDebugUtilities::UpdateBreakpointStateWhenHit(const UEdGraphNode* OwnerNode, const UBlueprint* OwnerBlueprint)
 {
-	// Handle single-step breakpoints
-	if (Breakpoint->bStepOnce)
+	if (FBlueprintBreakpoint* Breakpoint = FindBreakpointForNode(OwnerNode, OwnerBlueprint))
 	{
-		Breakpoint->bStepOnce = false;
+		// Handle single-step breakpoints
+		if (Breakpoint->bStepOnce)
+		{
+			Breakpoint->bStepOnce = false;
 
-		if (Breakpoint->bStepOnce_RemoveAfterHit)
-		{
-			FKismetDebugUtilities::StartDeletingBreakpoint(Breakpoint, OwnerBlueprint);
-		}
-		else if (Breakpoint->bStepOnce_WasPreviouslyDisabled)
-		{
-			FKismetDebugUtilities::SetBreakpointEnabled(Breakpoint, false);
+			if (Breakpoint->bStepOnce_RemoveAfterHit)
+			{
+				RemoveBreakpointFromNode(Breakpoint->GetLocation(), OwnerBlueprint);
+			}
+			else if (Breakpoint->bStepOnce_WasPreviouslyDisabled)
+			{
+				SetBreakpointEnabled(*Breakpoint, false);
+			}
 		}
 	}
 }
 
 // Install/uninstall the breakpoint into/from the script code for the generated class that contains the node
-void FKismetDebugUtilities::SetBreakpointInternal(UBreakpoint* Breakpoint, bool bShouldBeEnabled)
+void FKismetDebugUtilities::SetBreakpointInternal(FBlueprintBreakpoint& Breakpoint, bool bShouldBeEnabled)
 {
 	TArray<uint8*> InstallSites;
-	FKismetDebugUtilities::GetBreakpointInstallationSites(Breakpoint, InstallSites);
+	GetBreakpointInstallationSites(Breakpoint, InstallSites);
 
 	for (int i = 0; i < InstallSites.Num(); ++i)
 	{
@@ -898,21 +1004,21 @@ void FKismetDebugUtilities::SetBreakpointInternal(UBreakpoint* Breakpoint, bool 
 }
 
 // Returns the installation site(s); don't cache these pointers!
-void FKismetDebugUtilities::GetBreakpointInstallationSites(UBreakpoint* Breakpoint, TArray<uint8*>& InstallSites)
+void FKismetDebugUtilities::GetBreakpointInstallationSites(const FBlueprintBreakpoint& Breakpoint, TArray<uint8*>& InstallSites)
 {
 	InstallSites.Empty();
 
 #if WITH_EDITORONLY_DATA
-	if (Breakpoint->Node != NULL)
+	if (Breakpoint.Node != NULL)
 	{
-		UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNode(Breakpoint->Node);
+		UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNode(Breakpoint.GetLocation());
 
 		if ((Blueprint != NULL) && (Blueprint->GeneratedClass != NULL))
 		{
 			if (UBlueprintGeneratedClass* Class = Cast<UBlueprintGeneratedClass>(*Blueprint->GeneratedClass))
 			{
 				// Find the insertion point from the debugging data
-				Class->GetDebugData().FindBreakpointInjectionSites(Breakpoint->Node, InstallSites);
+				Class->GetDebugData().FindBreakpointInjectionSites(Breakpoint.GetLocation(), InstallSites);
 			}
 		}
 	}
@@ -967,54 +1073,161 @@ void FKismetDebugUtilities::GetValidBreakpointLocations(const UK2Node_MacroInsta
 	}
 }
 
-// Finds a breakpoint for a given node if it exists, or returns NULL
-UBreakpoint* FKismetDebugUtilities::FindBreakpointForNode(UBlueprint* Blueprint, const UEdGraphNode* Node, bool bCheckSubLocations)
+void FKismetDebugUtilities::CreateBreakpoint(const UBlueprint* Blueprint, UEdGraphNode* Node, bool bIsEnabled)
 {
-	// iterate backwards so we can remove invalid breakpoints as we go
-	for (int32 Index = Blueprint->Breakpoints.Num()-1; Index >= 0; --Index)
+	UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
+	check(Settings);
+	FPerBlueprintSettings &BlueprintSettings = Settings->PerBlueprintSettings.FindOrAdd(Blueprint->GetPathName());
+
+	// ensure that this node doesn't already contain a breakpoint
+	checkSlow(!BlueprintSettings.Breakpoints.ContainsByPredicate(
+		[Node](const FBlueprintBreakpoint& Other)
+		{
+			return Other.Node == Node;
+		}
+	));
+	
+	BlueprintSettings.Breakpoints.Emplace();
+	SetBreakpointEnabled(BlueprintSettings.Breakpoints.Top(), bIsEnabled);
+	SetBreakpointLocation(BlueprintSettings.Breakpoints.Top(), Node);
+	SaveBlueprintEditorSettings();
+}
+
+void FKismetDebugUtilities::ForeachBreakpoint(const UBlueprint* Blueprint,
+	const TFunctionRef<void(FBlueprintBreakpoint&)> Task)
+{
+	if(TArray<FBlueprintBreakpoint>* Breakpoints = GetBreakpoints(Blueprint))
 	{
-		UBreakpoint* Breakpoint = Blueprint->Breakpoints[Index];
-		if (Breakpoint == nullptr)
+		for(FBlueprintBreakpoint& Breakpoint : *Breakpoints)
 		{
-			Blueprint->Breakpoints.RemoveAtSwap(Index);
-			Blueprint->MarkPackageDirty();
-			UE_LOG(LogBlueprintDebug, Warning, TEXT("Encountered an invalid blueprint breakpoint in %s (this should not happen... if you know how your blueprint got in this state, then please notify the Engine-Blueprints team)"), *Blueprint->GetPathName());
-			continue;
+			Task(Breakpoint);
 		}
+	}
+}
 
-		const UEdGraphNode* BreakpointLocation = Breakpoint->GetLocation();
-		if (BreakpointLocation == nullptr)
+void FKismetDebugUtilities::RemoveBreakpointsByPredicate(const UBlueprint* Blueprint,
+                                                         const TFunctionRef<bool(const FBlueprintBreakpoint&)> Predicate)
+{
+	if(TArray<FBlueprintBreakpoint>* Breakpoints = GetBreakpoints(Blueprint))
+	{
+		// notify the debugger of the breakpoints being removed
+		for(FBlueprintBreakpoint& Breakpoint : *Breakpoints)
 		{
-			Blueprint->Breakpoints.RemoveAtSwap(Index);
-			Blueprint->MarkPackageDirty();
-			UE_LOG(LogBlueprintDebug, Display, TEXT("Encountered a blueprint breakpoint in %s without an associated node. The blueprint breakpoint has been removed"), *Blueprint->GetPathName());
-			continue;
-		}
-
-		// Return this breakpoint if the location matches the given node
-		if (BreakpointLocation == Node)
-		{
-			return Breakpoint;
-		}
-		else if (bCheckSubLocations)
-		{
-			// If this breakpoint is set on a macro instance node, check the set of valid breakpoint locations. If we find a
-			// match in the returned set, return the breakpoint that's set on the macro instance node. This allows breakpoints
-			// to be set and hit on macro instance nodes contained in a macro graph that will be expanded during compile.
-			const UK2Node_MacroInstance* MacroInstanceNode = Cast<UK2Node_MacroInstance>(BreakpointLocation);
-			if (MacroInstanceNode)
+			if(Predicate(Breakpoint))
 			{
-				TArray<const UEdGraphNode*> ValidBreakpointLocations;
-				GetValidBreakpointLocations(MacroInstanceNode, ValidBreakpointLocations);
-				if (ValidBreakpointLocations.Contains(Node))
-				{
-					return Breakpoint;
-				}
+				SetBreakpointLocation(Breakpoint, nullptr);
+			}
+		}
+
+		// remove the breakpoints from the data
+		if(Breakpoints->RemoveAllSwap(Predicate, false))
+		{
+			if(Breakpoints->IsEmpty())
+			{
+				// keeps the ini file clean by removing empty arrays
+				ClearBreakpoints(Blueprint);
+			}
+			SaveBlueprintEditorSettings();
+		}
+	}
+}
+
+FBlueprintBreakpoint* FKismetDebugUtilities::FindBreakpointByPredicate(const UBlueprint* Blueprint,
+                                                              const TFunctionRef<bool(const FBlueprintBreakpoint&)> Predicate)
+{
+	if(TArray<FBlueprintBreakpoint>* Breakpoints = GetBreakpoints(Blueprint))
+	{
+		for(FBlueprintBreakpoint& Breakpoint : *Breakpoints)
+		{
+			if(Predicate(Breakpoint))
+			{
+				return &Breakpoint;
 			}
 		}
 	}
+	return nullptr;
+}
 
-	return NULL;
+// Finds a breakpoint for a given node if it exists, or returns NULL
+FBlueprintBreakpoint* FKismetDebugUtilities::FindBreakpointForNode(const UEdGraphNode* OwnerNode, const UBlueprint* OwnerBlueprint,
+                                                          bool bCheckSubLocations)
+{
+	// remove expired data from deleted nodes and such
+	CleanupBreakpoints(OwnerBlueprint);
+
+	// find breakpoint
+	return FindBreakpointByPredicate(
+		OwnerBlueprint,
+		[OwnerNode, bCheckSubLocations](const FBlueprintBreakpoint &Breakpoint)
+		{
+			UEdGraphNode* BreakpointLoaction = Breakpoint.GetLocation();
+			// Return this breakpoint if the location matches the given node
+			if (BreakpointLoaction == OwnerNode)
+			{
+				return true;
+			}
+			if (bCheckSubLocations)
+			{
+				// If this breakpoint is set on a macro instance node, check the set of valid breakpoint locations. If we find a
+				// match in the returned set, return the breakpoint that's set on the macro instance node. This allows breakpoints
+				// to be set and hit on macro instance nodes contained in a macro graph that will be expanded during compile.
+				const UK2Node_MacroInstance* MacroInstanceNode = Cast<UK2Node_MacroInstance>(BreakpointLoaction);
+				if (MacroInstanceNode)
+				{
+					TArray<const UEdGraphNode*> ValidBreakpointLocations;
+					GetValidBreakpointLocations(MacroInstanceNode, ValidBreakpointLocations);
+					if (ValidBreakpointLocations.Contains(OwnerNode))
+					{
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+	);
+}
+
+void FKismetDebugUtilities::RestoreBreakpointsOnLoad(const UBlueprint* Blueprint)
+{
+	if (!Blueprint)
+	{
+		return;
+	}
+
+#if WITH_EDITORONLY_DATA
+	// Remove stale breakpoints
+	RemoveBreakpointsByPredicate(
+		Blueprint,
+		[Blueprint](const FBlueprintBreakpoint& Breakpoint)
+		{
+			const UEdGraphNode* const Location = Breakpoint.GetLocation();
+			return !Location || Location->GetTypedOuter<UPackage>()->GetPersistentGuid() != Blueprint->GetTypedOuter<UPackage>()->GetPersistentGuid();
+		}
+	);
+#endif
+
+	// Restore breakpoints based on preferred method
+	const UBlueprintEditorSettings* BlueprintEditorSettings = GetDefault<UBlueprintEditorSettings>();
+	switch (BlueprintEditorSettings->BreakpointReloadMethod)
+	{
+	case EBlueprintBreakpointReloadMethod::RestoreAllAndDisable:
+		ForeachBreakpoint(
+			Blueprint,
+			[](FBlueprintBreakpoint& Breakpoint)
+			{
+				SetBreakpointEnabled(Breakpoint, false);
+			}
+		);
+		break;
+
+	case EBlueprintBreakpointReloadMethod::DiscardAll:
+		ClearBreakpoints(Blueprint);
+		break;
+
+	case EBlueprintBreakpointReloadMethod::RestoreAll:
+	default:
+		break;
+	}
 }
 
 bool FKismetDebugUtilities::HasDebuggingData(const UBlueprint* Blueprint)
@@ -1024,6 +1237,60 @@ bool FKismetDebugUtilities::HasDebuggingData(const UBlueprint* Blueprint)
 
 //////////////////////////////////////////////////////////////////////////
 // Blueprint utils
+
+void FKismetDebugUtilities::PostDuplicateBlueprint(UBlueprint* SrcBlueprint, UBlueprint* DupBlueprint, const TArray<UEdGraphNode*>& DupNodes)
+{
+	// Duplicate Breakpoints from the source blueprint
+	if (TArray<FBlueprintBreakpoint>* Breakpoints = GetBreakpoints(SrcBlueprint))
+	{
+		for (FBlueprintBreakpoint& Breakpoint : *Breakpoints)
+		{
+			if (UEdGraphNode* Location = Breakpoint.GetLocation())
+			{
+				UEdGraphNode* const* NewLocation = DupNodes.FindByPredicate(
+					[Location](const UEdGraphNode* Node) -> bool
+					{
+						return Node->NodeGuid == Location->NodeGuid;
+					}
+				);
+				if (NewLocation)
+				{
+					CreateBreakpoint(DupBlueprint, *NewLocation, Breakpoint.IsEnabled());
+				}
+			}
+		}
+	}
+
+	// Duplicate Watched Pins
+	if (TArray<FBlueprintWatchedPin>* WatchedPins = GetWatchedPins(SrcBlueprint))
+	{
+		for (FBlueprintWatchedPin& WatchedPin : *WatchedPins)
+		{
+			if (UEdGraphPin* Pin = WatchedPin.Get())
+			{
+				UEdGraphNode* const* NewOwningNode = DupNodes.FindByPredicate(
+					[Pin](const UEdGraphNode* Node) -> bool
+					{
+						return Node->NodeGuid == Pin->GetOwningNode()->NodeGuid;
+					}
+				);
+
+				if (NewOwningNode)
+				{
+					if (const UEdGraphPin* NewPin = (*NewOwningNode)->FindPin(Pin->PinName))
+					{
+						AddPinWatch(DupBlueprint, NewPin);
+					}
+				}
+			}
+		}
+	}
+}
+
+bool FKismetDebugUtilities::BlueprintHasBreakpoints(const UBlueprint* Blueprint)
+{
+	return GetBreakpoints(Blueprint) != nullptr;
+}
 
 // Looks thru the debugging data for any class variables associated with the node
 FProperty* FKismetDebugUtilities::FindClassPropertyForPin(UBlueprint* Blueprint, const UEdGraphPin* Pin)
@@ -1057,31 +1324,45 @@ FProperty* FKismetDebugUtilities::FindClassPropertyForNode(UBlueprint* Blueprint
 }
 
 
-void FKismetDebugUtilities::ClearBreakpoints(UBlueprint* Blueprint)
+void FKismetDebugUtilities::ClearBreakpoints(const UBlueprint* Blueprint)
 {
-	for (int32 BreakpointIndex = 0; BreakpointIndex < Blueprint->Breakpoints.Num(); ++BreakpointIndex)
-	{
-		UBreakpoint* Breakpoint = Blueprint->Breakpoints[BreakpointIndex];
-		FKismetDebugUtilities::SetBreakpointLocation(Breakpoint, NULL);
-	}
+	ClearBreakpointsForPath(Blueprint->GetPathName());
+}
 
-	Blueprint->Breakpoints.Empty();
-	Blueprint->MarkPackageDirty();
+
+void FKismetDebugUtilities::ClearBreakpointsForPath(const FString& BlueprintPath)
+{	
+	UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
+	check(Settings);
+	if(FPerBlueprintSettings *PerBlueprintSettings =
+		Settings->PerBlueprintSettings.Find(BlueprintPath))
+	{
+		for(FBlueprintBreakpoint& Breakpoint : PerBlueprintSettings->Breakpoints)
+		{
+			// notify debugger that the breakpont has been removed
+			SetBreakpointLocation(Breakpoint, nullptr);	
+		}
+		PerBlueprintSettings->Breakpoints.Empty();
+		
+		RemoveEmptySettings(BlueprintPath);
+        
+		SaveBlueprintEditorSettings();
+	}
 }
 
 FKismetDebugUtilities::FOnWatchedPinsListChanged FKismetDebugUtilities::WatchedPinsListChangedEvent;
 
-bool FKismetDebugUtilities::CanWatchPin(const UBlueprint* Blueprint, const UEdGraphPin* Pin)
+bool FKismetDebugUtilities::CanWatchPin(const UBlueprint* Blueprint, const UEdGraphPin* Pin, const TArray<FName>& InPathToProperty)
 {
 	// Forward to schema
-	if(const UEdGraphNode* Node = Pin->GetOwningNode())
+	if (const UEdGraphNode* Node = Pin->GetOwningNode())
 	{
-		if(const UAnimationGraphSchema* AnimationGraphSchema = Cast<UAnimationGraphSchema>(Node->GetSchema()))
+		if (const UAnimationGraphSchema* AnimationGraphSchema = Cast<UAnimationGraphSchema>(Node->GetSchema()))
 		{
 			// Anim graphs need to respect whether they have a binding as they are effectively unlinked
-			bool bHasBinding = false; 
+			bool bHasBinding = false;
 
-			if(UAnimGraphNode_Base* AnimGraphNode = Cast<UAnimGraphNode_Base>(Pin->GetOwningNode()))
+			if (UAnimGraphNode_Base* AnimGraphNode = Cast<UAnimGraphNode_Base>(Pin->GetOwningNode()))
 			{
 				// Compare FName without number to make sure we catch array properties that are split into multiple pins
 				FName ComparisonName = Pin->GetFName();
@@ -1098,9 +1379,9 @@ bool FKismetDebugUtilities::CanWatchPin(const UBlueprint* Blueprint, const UEdGr
 			// We allow input pins to be watched only if they have bindings, otherwise we need to follow to output pins
 			const bool bNotAnInputOrBound = (Pin->Direction != EGPD_Input) || bHasBinding;
 
-			return !AnimationGraphSchema->IsMetaPin(*Pin) && bNotAnInputOrBound && !IsPinBeingWatched(Blueprint, Pin);
+			return !AnimationGraphSchema->IsMetaPin(*Pin) && bNotAnInputOrBound && !IsPinBeingWatched(Blueprint, Pin, InPathToProperty);
 		}
-		else if(const UEdGraphSchema_K2* K2Schema = Cast<UEdGraphSchema_K2>(Node->GetSchema()))
+		else if (const UEdGraphSchema_K2* K2Schema = Cast<UEdGraphSchema_K2>(Node->GetSchema()))
 		{
 			UEdGraph* Graph = Pin->GetOwningNode()->GetGraph();
 
@@ -1110,71 +1391,207 @@ bool FKismetDebugUtilities::CanWatchPin(const UBlueprint* Blueprint, const UEdGr
 			//@TODO: Make watching a schema-allowable/denyable thing
 			const bool bCanWatchThisGraph = true;
 
-			return bCanWatchThisGraph && !K2Schema->IsMetaPin(*Pin) && bNotAnInput && !IsPinBeingWatched(Blueprint, Pin);
+			return bCanWatchThisGraph && !K2Schema->IsMetaPin(*Pin) && bNotAnInput && !IsPinBeingWatched(Blueprint, Pin, InPathToProperty);
 		}
 	}
 
 	return false;
-	
 }
 
-bool FKismetDebugUtilities::IsPinBeingWatched(const UBlueprint* Blueprint, const UEdGraphPin* Pin)
+bool FKismetDebugUtilities::IsPinBeingWatched(const UBlueprint* Blueprint, const UEdGraphPin* Pin, const TArray<FName>& InPathToProperty)
 {
-	return Blueprint->WatchedPins.Contains(const_cast<UEdGraphPin*>(Pin));
-}
-
-void FKismetDebugUtilities::RemovePinWatch(UBlueprint* Blueprint, const UEdGraphPin* Pin)
-{
-	UEdGraphPin* NonConstPin = const_cast<UEdGraphPin*>(Pin);
-	Blueprint->WatchedPins.Remove(NonConstPin);
-	Blueprint->MarkPackageDirty();
-	Blueprint->PostEditChange();
-	WatchedPinsListChangedEvent.Broadcast(Blueprint);
-}
-
-void FKismetDebugUtilities::TogglePinWatch(UBlueprint* Blueprint, const UEdGraphPin* Pin)
-{
-	int32 ExistingWatchIndex = Blueprint->WatchedPins.Find(const_cast<UEdGraphPin*>(Pin));
-
-	if (ExistingWatchIndex != INDEX_NONE)
+	if (TArray<FBlueprintWatchedPin>* WatchedPins = GetWatchedPins(Blueprint))
 	{
-		FKismetDebugUtilities::RemovePinWatch(Blueprint, Pin);
+		for (const FBlueprintWatchedPin& WatchedPin : *WatchedPins)
+		{
+			if (WatchedPin.Get() == Pin && WatchedPin.GetPathToProperty() == InPathToProperty)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool FKismetDebugUtilities::DoesPinHaveWatches(const UBlueprint* Blueprint, const UEdGraphPin* Pin)
+{
+	if (TArray<FBlueprintWatchedPin>* WatchedPins = GetWatchedPins(Blueprint))
+	{
+		for (const FBlueprintWatchedPin& WatchedPin : *WatchedPins)
+		{
+			if (WatchedPin.Get() == Pin)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool FKismetDebugUtilities::RemovePinWatch(const UBlueprint* Blueprint, const UEdGraphPin* Pin, const TArray<FName>& InPathToProperty)
+{
+	return RemovePinPropertyWatchesByPredicate(
+		Blueprint,
+		[Pin, &InPathToProperty](const FBlueprintWatchedPin& Other)
+		{
+			return Other.Get()->PinId == Pin->PinId && Other.GetPathToProperty() == InPathToProperty;
+		}
+	);
+}
+
+void FKismetDebugUtilities::AddPinWatch(const UBlueprint* Blueprint, FBlueprintWatchedPin&& WatchedPin)
+{
+	UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
+	check(Settings);
+	FPerBlueprintSettings& BlueprintSettings = Settings->PerBlueprintSettings.FindOrAdd(Blueprint->GetPathName());
+
+	BlueprintSettings.WatchedPins.Emplace(MoveTemp(WatchedPin));
+
+	SaveBlueprintEditorSettings();
+	WatchedPinsListChangedEvent.Broadcast(const_cast<UBlueprint*>(Blueprint));
+}
+
+void FKismetDebugUtilities::TogglePinWatch(const UBlueprint* Blueprint, const UEdGraphPin* Pin)
+{
+	if (IsPinBeingWatched(Blueprint, Pin))
+	{
+		RemovePinWatch(Blueprint, Pin);
 	}
 	else
 	{
-		Blueprint->WatchedPins.Add(const_cast<UEdGraphPin*>(Pin));
-		Blueprint->MarkPackageDirty();
-		Blueprint->PostEditChange();
+		AddPinWatch(Blueprint, Pin);
 	}
-
-	WatchedPinsListChangedEvent.Broadcast(Blueprint);
 }
 
-void FKismetDebugUtilities::ClearPinWatches(UBlueprint* Blueprint)
+void FKismetDebugUtilities::ClearPinWatches(const UBlueprint* Blueprint)
 {
-	Blueprint->WatchedPins.Empty();
-	Blueprint->MarkPackageDirty();
-	Blueprint->PostEditChange();
+	UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
+	check(Settings);
+	if(FPerBlueprintSettings *PerBlueprintSettings =
+		Settings->PerBlueprintSettings.Find(Blueprint->GetPathName()))
+	{
+		PerBlueprintSettings->WatchedPins.Empty();
+		
+		RemoveEmptySettings(Blueprint->GetPathName());
+        		
+        SaveBlueprintEditorSettings();
+        WatchedPinsListChangedEvent.Broadcast(const_cast<UBlueprint*>(Blueprint));
+	}
+}
 
-	WatchedPinsListChangedEvent.Broadcast(Blueprint);
+bool FKismetDebugUtilities::BlueprintHasPinWatches(const UBlueprint* Blueprint)
+{
+	return GetWatchedPins(Blueprint) != nullptr;
+}
+
+void FKismetDebugUtilities::ForeachPinWatch(const UBlueprint* Blueprint, TFunctionRef<void(UEdGraphPin*)> Task)
+{
+	if(TArray<FBlueprintWatchedPin>* WatchedPins = GetWatchedPins(Blueprint))
+	{
+		for(FBlueprintWatchedPin& WatchedPin : *WatchedPins)
+		{
+			if (UEdGraphPin* Pin = WatchedPin.Get())
+			{
+				Task(Pin);
+			}
+		}
+	}
+}
+
+void FKismetDebugUtilities::ForeachPinPropertyWatch(const UBlueprint* Blueprint, TFunctionRef<void(FBlueprintWatchedPin&)> Task)
+{
+	if (TArray<FBlueprintWatchedPin>* WatchedPins = GetWatchedPins(Blueprint))
+	{
+		for (FBlueprintWatchedPin& WatchedPin : *WatchedPins)
+		{
+			Task(WatchedPin);
+		}
+	}
+}
+
+bool FKismetDebugUtilities::RemovePinWatchesByPredicate(const UBlueprint* Blueprint,
+	const TFunctionRef<bool(const UEdGraphPin*)> Predicate)
+{
+	auto ModifiedPedicate = [Predicate](FBlueprintWatchedPin& WatchedPin)
+	{
+		const UEdGraphPin* Pin = WatchedPin.Get();
+		return Pin && Predicate(Pin);
+	};
+	
+	if(TArray<FBlueprintWatchedPin>* WatchedPins = GetWatchedPins(Blueprint))
+	{
+		if(WatchedPins->RemoveAllSwap(ModifiedPedicate, false))
+		{
+			if(WatchedPins->IsEmpty())
+			{
+				// keeps the ini file clean by removing empty arrays
+				ClearPinWatches(Blueprint);
+			}
+			SaveBlueprintEditorSettings();
+			WatchedPinsListChangedEvent.Broadcast(const_cast<UBlueprint*>(Blueprint));
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FKismetDebugUtilities::RemovePinPropertyWatchesByPredicate(const UBlueprint* Blueprint, const TFunctionRef<bool(const FBlueprintWatchedPin&)> Predicate)
+{
+	auto ModifiedPedicate = [Predicate](FBlueprintWatchedPin& WatchedPin)
+	{
+		const UEdGraphPin* Pin = WatchedPin.Get();
+		return Pin && Predicate(WatchedPin);
+	};
+
+	if (TArray<FBlueprintWatchedPin>* WatchedPins = GetWatchedPins(Blueprint))
+	{
+		if (WatchedPins->RemoveAllSwap(ModifiedPedicate, false))
+		{
+			if (WatchedPins->IsEmpty())
+			{
+				// keeps the ini file clean by removing empty arrays
+				ClearPinWatches(Blueprint);
+			}
+			SaveBlueprintEditorSettings();
+			WatchedPinsListChangedEvent.Broadcast(const_cast<UBlueprint*>(Blueprint));
+			return true;
+		}
+	}
+	return false;
+}
+
+UEdGraphPin* FKismetDebugUtilities::FindPinWatchByPredicate(const UBlueprint* Blueprint,
+	const TFunctionRef<bool(const UEdGraphPin*)> Predicate)
+{
+	if(TArray<FBlueprintWatchedPin>* WatchedPins = GetWatchedPins(Blueprint))
+	{
+		for(FBlueprintWatchedPin& WatchedPin : *WatchedPins)
+		{
+			UEdGraphPin* Pin = WatchedPin.Get();
+			if(Pin && Predicate(Pin))
+			{
+				return Pin;
+			}
+		}
+	}
+	return nullptr;
 }
 
 // Gets the watched tooltip for a specified site
 FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::GetWatchText(FString& OutWatchText, UBlueprint* Blueprint, UObject* ActiveObject, const UEdGraphPin* WatchPin)
 {
-	FProperty* PropertyToDebug = nullptr;
-	void* DataPtr = nullptr;
-	void* DeltaPtr = nullptr;
+	const FProperty* PropertyToDebug = nullptr;
+	const void* DataPtr = nullptr;
+	const void* DeltaPtr = nullptr;
 	UObject* ParentObj = nullptr;
-	bool bShouldUseContainerOffset = false;
 	TArray<UObject*> SeenObjects;
-	FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, WatchPin, PropertyToDebug, DataPtr, DeltaPtr, ParentObj, SeenObjects, &bShouldUseContainerOffset);
+	bool bIsDirectPtr = false;
+	FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, WatchPin, PropertyToDebug, DataPtr, DeltaPtr, ParentObj, SeenObjects, &bIsDirectPtr);
 
 	if (Result == FKismetDebugUtilities::EWatchTextResult::EWTR_Valid)
 	{
-		// If this came from an array property we need to avoid using ExportText_InContainer in order to properly 
-		// calculate the internal offset
-		if(bShouldUseContainerOffset)
+		// If this came from an out parameter it isn't in a property container, so must be accessed directly
+		if (bIsDirectPtr)
 		{
 			PropertyToDebug->ExportText_Direct(/*inout*/ OutWatchText, DataPtr, DeltaPtr, ParentObj, PPF_PropertyWindow | PPF_BlueprintDebugView);
 		}
@@ -1187,24 +1604,92 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::GetWatchText(FStr
 	return Result;
 }
 
-FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::GetDebugInfo(FDebugInfo& OutDebugInfo, UBlueprint* Blueprint, UObject* ActiveObject, const UEdGraphPin* WatchPin)
+bool FKismetDebugUtilities::CanInspectPinValue(const UEdGraphPin* Pin)
 {
-	FProperty* PropertyToDebug = nullptr;
-	void* DataPtr = nullptr;
-	void* DeltaPtr = nullptr;
+	const UBlueprintEditorSettings* BlueprintEditorSettings = GetDefault<UBlueprintEditorSettings>();
+	if (!BlueprintEditorSettings->bEnablePinValueInspectionTooltips)
+	{
+		return false;
+	}
+
+	// Can't inspect the value on an invalid pin object.
+	if (!Pin || Pin->IsPendingKill())
+	{
+		return false;
+	}
+
+	// Can't inspect the value on an orphaned pin object.
+	if (Pin->bOrphanedPin)
+	{
+		return false;
+	}
+
+	// Can't inspect the value on an unknown pin object or if the owning node is disabled.
+	const UEdGraphNode* OwningNode = Pin->GetOwningNodeUnchecked();
+	if (!OwningNode || !OwningNode->IsNodeEnabled())
+	{
+		return false;
+	}
+
+	// Can't inspect exec pins or delegate pins; their values are not defined.
+	// Disallow non-K2 Schemas (like ControlRig)
+	const UEdGraphSchema_K2* K2Schema = Cast<UEdGraphSchema_K2>(OwningNode->GetSchema());
+	if (!K2Schema || !K2Schema->CanShowDataTooltipForPin(*Pin))
+	{
+		return false;
+	}
+
+	// Can't inspect the value if there is no active debug context.
+	const UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNode(OwningNode);
+	if (!Blueprint || !Blueprint->GetObjectBeingDebugged())
+	{
+		return false;
+	}
+
+	// Can't inspect if a debug object isn't selected
+	const UObject* Object = Blueprint->GetObjectBeingDebugged();
+	if (!Object)
+	{
+		return false;
+	}
+
+	// Can't inspect if not in PIE
+	const UWorld* OwningWorld = Object->GetTypedOuter<UWorld>();
+	if (!OwningWorld || !(OwningWorld->IsPlayInEditor() || OwningWorld->IsPreviewWorld()))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::GetDebugInfo(TSharedPtr<FPropertyInstanceInfo> &OutDebugInfo, UBlueprint* Blueprint, UObject* ActiveObject, const UEdGraphPin* WatchPin)
+{
+	const void* DataPtr = nullptr;
+	const void* DeltaPtr = nullptr;
 	UObject* ParentObj = nullptr;
 	TArray<UObject*> SeenObjects;
-	FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, WatchPin, PropertyToDebug, DataPtr, DeltaPtr, ParentObj, SeenObjects);
+	bool bIsDirectPtr = false;
+	const FProperty* Property = nullptr;
+	FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, WatchPin, Property, DataPtr, DeltaPtr, ParentObj, SeenObjects, &bIsDirectPtr);
 
 	if (Result == FKismetDebugUtilities::EWatchTextResult::EWTR_Valid)
 	{
-		GetDebugInfo_InContainer(0, OutDebugInfo, PropertyToDebug, DataPtr);
+		// If this came from an out parameter it isn't in a property container, so must be accessed directly
+		if (bIsDirectPtr)
+		{
+			GetDebugInfoInternal(OutDebugInfo, Property, DataPtr);
+		}
+		else
+		{
+			GetDebugInfo_InContainer(0, OutDebugInfo, Property, DataPtr);
+		}
 	}
 
 	return Result;
 }
 
-FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData(UBlueprint* Blueprint, UObject* ActiveObject, const UEdGraphPin* WatchPin, FProperty*& OutProperty, void*& OutData, void*& OutDelta, UObject*& OutParent, TArray<UObject*>& SeenObjects, bool* OutbShouldUseContainerOffset /* = nullptr */)
+FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData(UBlueprint* Blueprint, UObject* ActiveObject, const UEdGraphPin* WatchPin, const FProperty*& OutProperty, const void*& OutData, const void*& OutDelta, UObject*& OutParent, TArray<UObject*>& SeenObjects, bool* bOutIsDirectPtr /* = nullptr */)
 {
 	FKismetDebugUtilitiesData& Data = FKismetDebugUtilitiesData::Get();
 
@@ -1254,7 +1739,7 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 								// otherwise the output param won't show any data since the return node hasn't executed when we stop here
 								if (WatchPin->LinkedTo.Num() == 1)
 								{
-									return FindDebuggingData(Blueprint, ActiveObject, WatchPin->LinkedTo[0], OutProperty, OutData, OutDelta, OutParent, SeenObjects, OutbShouldUseContainerOffset);
+									return FindDebuggingData(Blueprint, ActiveObject, WatchPin->LinkedTo[0], OutProperty, OutData, OutDelta, OutParent, SeenObjects, bOutIsDirectPtr);
 								}
 								else if (!WatchPin->LinkedTo.Num())
 								{
@@ -1264,13 +1749,11 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 								}
 							}
 
-							// If this is an out container property then a different offset must be used when exporting this property 
-							// to text. Only container properties are effected by this because ExportText_InContainer adds an extra 
-							// 8 byte offset, which  would point to the container's first element, not the container itself. 
-							const bool bIsContainer = OutParmRec->Property->IsA<FArrayProperty>() || OutParmRec->Property->IsA<FSetProperty>() || OutParmRec->Property->IsA<FMapProperty>();
-							if (PropertyBase == nullptr && OutbShouldUseContainerOffset && bIsContainer)
+							if (PropertyBase == nullptr && bOutIsDirectPtr)
 							{
-								*OutbShouldUseContainerOffset = true;
+								// Flag to caller that PropertyBase points directly at the data, not at the
+								// base of a property container (so don't apply property's Offset_Internal)
+								*bOutIsDirectPtr = true;
 								PropertyBase = OutParmRec->PropAddr;
 							}
 							break;
@@ -1321,11 +1804,11 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 #endif // USE_UBER_GRAPH_PERSISTENT_FRAME
 
 			// see if our WatchPin is on a animation node & if so try to get its property info
-			UAnimBlueprintGeneratedClass* AnimBlueprintGeneratedClass = Cast<UAnimBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+			const UAnimBlueprintGeneratedClass* AnimBlueprintGeneratedClass = Cast<UAnimBlueprintGeneratedClass>(Blueprint->GeneratedClass);
 			if (!PropertyBase && AnimBlueprintGeneratedClass)
 			{
 				// are we linked to an anim graph node?
-				FProperty* LinkedProperty = Property;
+				const FProperty* LinkedProperty = Property;
 				const UAnimGraphNode_Base* Node = Cast<UAnimGraphNode_Base>(WatchPin->GetOuter());
 				if (Node == nullptr && WatchPin->LinkedTo.Num() > 0)
 				{
@@ -1337,14 +1820,39 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 
 				if (Node && LinkedProperty)
 				{
-					FStructProperty* NodeStructProperty = CastField<FStructProperty>(FKismetDebugUtilities::FindClassPropertyForNode(Blueprint, Node));
-					if (NodeStructProperty)
+					// In case the property was folded its value has to be retrieved from the Mutable data struct on the instance rather than from the Anim Node itself
+					if (const TFieldPath<const FProperty>* FoldedPropertyPathPtr = AnimBlueprintGeneratedClass->AnimBlueprintDebugData.NodeToFoldedPropertyMap.Find(LinkedProperty))
 					{
+						const FProperty* FoldedProperty = FoldedPropertyPathPtr->Get();						
+						const UStruct* FoldedPropertyStruct = FoldedProperty ? FoldedProperty->GetOwnerStruct() : nullptr;
+
+						if(FoldedPropertyStruct && FoldedPropertyStruct->IsChildOf(FAnimBlueprintMutableData::StaticStruct()))
+						{
+							const FAnimBlueprintMutableData* MutableData = AnimBlueprintGeneratedClass->GetMutableNodeData(Cast<const UObject>(ActiveObject));
+						
+							if(bOutIsDirectPtr && MutableData)
+							{
+								const void* ValuePtr = FoldedProperty->ContainerPtrToValuePtr<void>(MutableData);
+								OutProperty = FoldedProperty;
+								OutData = ValuePtr;
+								OutDelta = ValuePtr;
+								OutParent = nullptr;
+										
+								// Flag to caller that OutData points directly at the data, not at the
+								// base of a property container (so don't apply property's Offset_Internal)
+								*bOutIsDirectPtr = true;
+								
+								return EWTR_Valid;
+							}
+						}
+					}
+					else if (FStructProperty* NodeStructProperty = CastField<FStructProperty>(FKismetDebugUtilities::FindClassPropertyForNode(Blueprint, Node)))
+					{						
 						for (const FStructPropertyPath& NodeProperty : AnimBlueprintGeneratedClass->GetAnimNodeProperties())
 						{
 							if (NodeProperty.Get() == NodeStructProperty)
 							{
-								void* NodePtr = NodeProperty->ContainerPtrToValuePtr<void>(ActiveObject);
+								const void* NodePtr = NodeProperty->ContainerPtrToValuePtr<void>(ActiveObject);
 								OutProperty = LinkedProperty;
 								OutData = NodePtr;
 								OutDelta = NodePtr;
@@ -1366,16 +1874,16 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 					UEdGraphPin* SelfPin = WatchNode->FindPin(TEXT("self"));
 					if (SelfPin && SelfPin != WatchPin)
 					{
-						FProperty* SelfPinProperty = nullptr;
-						void* SelfPinData = nullptr;
-						void* SelfPinDelta = nullptr;
+						const FProperty* SelfPinProperty = nullptr;
+						const void* SelfPinData = nullptr;
+						const void* SelfPinDelta = nullptr;
 						UObject* SelfPinParent = nullptr;
 						SeenObjects.AddUnique(ActiveObject);
 						FKismetDebugUtilities::EWatchTextResult Result = FindDebuggingData(Blueprint, ActiveObject, SelfPin, SelfPinProperty, SelfPinData, SelfPinDelta, SelfPinParent, SeenObjects);
-						FObjectPropertyBase* SelfPinPropertyBase = CastField<FObjectPropertyBase>(SelfPinProperty);
+						const FObjectPropertyBase* SelfPinPropertyBase = CastField<const FObjectPropertyBase>(SelfPinProperty);
 						if (Result == EWTR_Valid && SelfPinPropertyBase != nullptr)
 						{
-							void* PropertyValue = SelfPinProperty->ContainerPtrToValuePtr<void>(SelfPinData);
+							const void* PropertyValue = SelfPinProperty->ContainerPtrToValuePtr<void>(SelfPinData);
 							UObject* TempActiveObject = SelfPinPropertyBase->GetObjectPropertyValue(PropertyValue);
 							if (TempActiveObject && TempActiveObject != ActiveObject)
 							{
@@ -1414,34 +1922,42 @@ FKismetDebugUtilities::EWatchTextResult FKismetDebugUtilities::FindDebuggingData
 	}
 }
 
-void FKismetDebugUtilities::GetDebugInfo_InContainer(int32 Index, FDebugInfo& DebugInfo, FProperty* Property, const void* Data)
+void FKismetDebugUtilities::GetDebugInfo_InContainer(int32 Index, TSharedPtr<FPropertyInstanceInfo> &DebugInfo, const FProperty* Property, const void* Data)
 {
 	GetDebugInfoInternal(DebugInfo, Property, Property->ContainerPtrToValuePtr<void>(Data, Index));
 }
 
-void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, FProperty* Property, const void* PropertyValue)
+void FKismetDebugUtilities::GetDebugInfoInternal(TSharedPtr<FPropertyInstanceInfo> &DebugInfo, const FProperty* Property, const void* PropertyValue)
 {
-	if (Property == nullptr)
+	TMap<FPropertyInstanceInfo::FPropertyInstance, TSharedPtr<FPropertyInstanceInfo>> VisitedNodes;
+	DebugInfo = FPropertyInstanceInfo::FindOrMake({Property, PropertyValue}, VisitedNodes);
+}
+
+FPropertyInstanceInfo::FPropertyInstanceInfo(FPropertyInstance PropertyInstance) :
+	Name(FText::FromString(PropertyInstance.Property->GetName())),
+	DisplayName(PropertyInstance.Property->GetDisplayNameText()),
+	Type(UEdGraphSchema_K2::TypeToText(PropertyInstance.Property)),
+	Property(PropertyInstance.Property)
+{
+	const FProperty* ResolvedProperty = Property.Get();
+	check(ResolvedProperty);
+	if (PropertyInstance.Value == nullptr)
 	{
 		return;
 	}
 
-	DebugInfo.Type = UEdGraphSchema_K2::TypeToText(Property);
-	DebugInfo.DisplayName = Property->GetDisplayNameText();
-
-	FByteProperty* ByteProperty = CastField<FByteProperty>(Property);
-	if (ByteProperty)
+	if (const FByteProperty* ByteProperty = CastField<FByteProperty>(ResolvedProperty))
 	{
 		UEnum* Enum = ByteProperty->GetIntPropertyEnum();
 		if (Enum)
 		{
-			if (Enum->IsValidEnumValue(*(const uint8*)PropertyValue))
+			if (Enum->IsValidEnumValue(*(const uint8*)PropertyInstance.Value))
 			{
-				DebugInfo.Value = Enum->GetDisplayNameTextByValue(*(const uint8*)PropertyValue);
+				Value = Enum->GetDisplayNameTextByValue(*(const uint8*)PropertyInstance.Value);
 			}
 			else
 			{
-				DebugInfo.Value = FText::FromString(TEXT("(INVALID)"));
+				Value = FText::FromString(TEXT("(INVALID)"));
 			}
 
 			return;
@@ -1450,118 +1966,211 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, FPropert
 		// if there is no Enum we need to fall through and treat this as a FNumericProperty
 	}
 
-	FNumericProperty* NumericProperty = CastField<FNumericProperty>(Property);
-	if (NumericProperty)
+	if (const FNumericProperty* NumericProperty = CastField<FNumericProperty>(ResolvedProperty))
 	{
-		DebugInfo.Value = FText::FromString(NumericProperty->GetNumericPropertyValueToString(PropertyValue));
+		Value = FText::FromString(NumericProperty->GetNumericPropertyValueToString(PropertyInstance.Value));
 		return;
 	}
-
-	FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property);
-	if (BoolProperty)
+	else if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(ResolvedProperty))
 	{
 		const FCoreTexts& CoreTexts = FCoreTexts::Get();
 
-		DebugInfo.Value = BoolProperty->GetPropertyValue(PropertyValue) ? CoreTexts.True : CoreTexts.False;
+		Value = BoolProperty->GetPropertyValue(PropertyInstance.Value) ? CoreTexts.True : CoreTexts.False;
 		return;
 	}
-
-	FNameProperty* NameProperty = CastField<FNameProperty>(Property);
-	if (NameProperty)
+	else if (const FNameProperty* NameProperty = CastField<FNameProperty>(ResolvedProperty))
 	{
-		DebugInfo.Value = FText::FromName(*(FName*)PropertyValue);
+		Value = FText::FromName(*(FName*)PropertyInstance.Value);
 		return;
 	}
-
-	FTextProperty* TextProperty = CastField<FTextProperty>(Property);
-	if (TextProperty)
+	else if (const FTextProperty* TextProperty = CastField<FTextProperty>(ResolvedProperty))
 	{
-		DebugInfo.Value = TextProperty->GetPropertyValue(PropertyValue);
+		Value = TextProperty->GetPropertyValue(PropertyInstance.Value);
 		return;
 	}
-
-	FStrProperty* StringProperty = CastField<FStrProperty>(Property);
-	if (StringProperty)
+	else if (const FStrProperty* StringProperty = CastField<FStrProperty>(ResolvedProperty))
 	{
-		DebugInfo.Value = FText::FromString(StringProperty->GetPropertyValue(PropertyValue));
+		Value = FText::FromString(StringProperty->GetPropertyValue(PropertyInstance.Value));
 		return;
 	}
-
-	FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property);
-	if (ArrayProperty)
+	else if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(ResolvedProperty))
 	{
 		checkSlow(ArrayProperty->Inner);
 
-		FScriptArrayHelper ArrayHelper(ArrayProperty, PropertyValue);
+		FScriptArrayHelper ArrayHelper(ArrayProperty, PropertyInstance.Value);
 
-		DebugInfo.Value = FText::Format(LOCTEXT("ArraySize", "Num={0}"), FText::AsNumber(ArrayHelper.Num()));
-
-		for (int32 i = 0; i < ArrayHelper.Num(); i++)
-		{
-			FDebugInfo ArrayDebugInfo;
-
-			uint8* PropData = ArrayHelper.GetRawPtr(i);
-			GetDebugInfoInternal(ArrayDebugInfo, ArrayProperty->Inner, PropData);
-			// overwrite the display name with the array index for the current element
-			ArrayDebugInfo.DisplayName = FText::Format(LOCTEXT("ArrayIndexName", "[{0}]"), FText::AsNumber(i));
-			DebugInfo.Children.Add(ArrayDebugInfo);
-		}
-
+		Value = FText::Format(LOCTEXT("ArraySize", "Num={0}"), FText::AsNumber(ArrayHelper.Num()));
 		return;
 	}
-
-	FStructProperty* StructProperty = CastField<FStructProperty>(Property);
-	if (StructProperty)
+	else if (const FStructProperty* StructProperty = CastField<FStructProperty>(ResolvedProperty))
 	{
 		FString WatchText;
-		StructProperty->ExportTextItem(WatchText, PropertyValue, PropertyValue, nullptr, PPF_PropertyWindow | PPF_BlueprintDebugView, nullptr);
-		DebugInfo.Value = FText::FromString(WatchText);
-
-		for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
-		{
-			FDebugInfo StructDebugInfo;
-			GetDebugInfoInternal(StructDebugInfo, *It, It->ContainerPtrToValuePtr<void>(PropertyValue, 0));
-
-			DebugInfo.Children.Add(StructDebugInfo);
-		}
-
+		StructProperty->ExportTextItem(WatchText, PropertyInstance.Value, PropertyInstance.Value, nullptr, PPF_PropertyWindow | PPF_BlueprintDebugView, nullptr);
+		Value = FText::FromString(WatchText);
 		return;
 	}
-
-	FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property);
-	if (EnumProperty)
+	else if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(ResolvedProperty))
 	{
 		FNumericProperty* LocalUnderlyingProp = EnumProperty->GetUnderlyingProperty();
 		UEnum* Enum = EnumProperty->GetEnum();
 
-		int64 Value = LocalUnderlyingProp->GetSignedIntPropertyValue(PropertyValue);
+		int64 NumValue = LocalUnderlyingProp->GetSignedIntPropertyValue(PropertyInstance.Value);
 
 		// if the value is the max value (the autogenerated *_MAX value), export as "INVALID", unless we're exporting text for copy/paste (for copy/paste,
 		// the property text value must actually match an entry in the enum's names array)
 		if (Enum)
 		{
-			if (Enum->IsValidEnumValue(Value))
+			if (Enum->IsValidEnumValue(NumValue))
 			{
-				DebugInfo.Value = Enum->GetDisplayNameTextByValue(Value);
+				Value = Enum->GetDisplayNameTextByValue(NumValue);
 			}
 			else
 			{
-				DebugInfo.Value = LOCTEXT("Invalid", "(INVALID)");
+				Value = LOCTEXT("Invalid", "(INVALID)");
 			}
 		}
 		else
 		{
-			DebugInfo.Value = FText::AsNumber(Value);
+			Value = FText::AsNumber(NumValue);
+		}
+
+		return;
+	}
+	else if (const FMapProperty* MapProperty = CastField<FMapProperty>(ResolvedProperty))
+	{
+		FScriptMapHelper MapHelper(MapProperty, PropertyInstance.Value);
+		Value = FText::Format(LOCTEXT("MapSize", "Num={0}"), FText::AsNumber(MapHelper.Num()));
+		return;
+	}
+	else if (const FSetProperty* SetProperty = CastField<FSetProperty>(ResolvedProperty))
+	{
+		FScriptSetHelper SetHelper(SetProperty, PropertyInstance.Value);
+		Value = FText::Format(LOCTEXT("SetSize", "Num={0}"), FText::AsNumber(SetHelper.Num()));
+		return;
+	}
+	else if (const FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(ResolvedProperty))
+	{
+		Object = ObjectPropertyBase->GetObjectPropertyValue(PropertyInstance.Value);
+		if (Object.IsValid())
+		{
+			Value = FText::FromString(Object->GetFullName());
+		}
+		else
+		{
+			Value = FText::FromString(TEXT("None"));
+		}
+
+		return;
+	}
+	else if (const FDelegateProperty* DelegateProperty = CastField<FDelegateProperty>(ResolvedProperty))
+	{
+		if (DelegateProperty->SignatureFunction)
+		{
+			Value = DelegateProperty->SignatureFunction->GetDisplayNameText();
+		}
+		else
+		{
+			Value = LOCTEXT("NoFunc", "(No bound function)");
+		}
+
+		return;
+	}
+	else if (const FMulticastDelegateProperty* MulticastDelegateProperty = CastField<FMulticastDelegateProperty>(ResolvedProperty))
+	{
+		if (MulticastDelegateProperty->SignatureFunction)
+		{
+			Value = MulticastDelegateProperty->SignatureFunction->GetDisplayNameText();
+		}
+		else
+		{
+			Value = LOCTEXT("NoFunc", "(No bound function)");
+		}
+
+		return;
+	}
+	else if (const FInterfaceProperty* InterfaceProperty = CastField<FInterfaceProperty>(ResolvedProperty))
+	{
+		const FScriptInterface* InterfaceData = StaticCast<const FScriptInterface*>(PropertyInstance.Value);
+		Object = InterfaceData->GetObject();
+		
+		if (Object.IsValid())
+		{
+			Value = FText::FromString(Object->GetFullName());
+		}
+		else
+		{
+			Value = FText::FromString(TEXT("None"));
 		}
 
 		return;
 	}
 
-	FMapProperty* MapProperty = CastField<FMapProperty>(Property);
-	if (MapProperty)
+	ensureMsgf(false, TEXT("Failed to identify property type. This function may need to be exanded to include it: %s"), *ResolvedProperty->GetClass()->GetName());
+}
+
+TSharedPtr<FPropertyInstanceInfo> FPropertyInstanceInfo::FindOrMake(FPropertyInstance PropertyInstance,
+	TMap<FPropertyInstance, TSharedPtr<FPropertyInstanceInfo>>& VisitedNodes)
+{
+	if(TSharedPtr<FPropertyInstanceInfo>* Found = VisitedNodes.Find(PropertyInstance))
 	{
-		FScriptMapHelper MapHelper(MapProperty, PropertyValue);
-		DebugInfo.Value = FText::Format(LOCTEXT("MapSize", "Num={0}"), FText::AsNumber(MapHelper.Num()));
+		return *Found;
+	}
+	
+	// wait to populate children until after inserting into VisitedNodes.
+	// this way we will catch circular references
+	TSharedPtr<FPropertyInstanceInfo> DebugInfo = VisitedNodes.Add(
+		PropertyInstance,
+		MakeShared<FPropertyInstanceInfo>(PropertyInstance)
+	);
+
+	DebugInfo->PopulateChildren(PropertyInstance, VisitedNodes);
+	return DebugInfo;
+}
+
+void FPropertyInstanceInfo::PopulateChildren(FPropertyInstance PropertyInstance,
+	TMap<FPropertyInstance, TSharedPtr<FPropertyInstanceInfo>>& VisitedNodes)
+{
+	check(PropertyInstance.Property);
+	if (PropertyInstance.Value == nullptr)
+	{
+		return;
+	}
+
+	if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property.Get()))
+	{
+		checkSlow(ArrayProperty->Inner);
+
+		FScriptArrayHelper ArrayHelper(ArrayProperty, PropertyInstance.Value);
+		for (int32 i = 0; i < ArrayHelper.Num(); i++)
+		{
+			FPropertyInstance ChildProperty = {
+				ArrayProperty->Inner,
+				ArrayHelper.GetRawPtr(i)
+			};
+			const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
+			
+			// overwrite the display name with the array index for the current element
+			ChildInfo->DisplayName = FText::Format(LOCTEXT("ArrayIndexName", "[{0}]"), FText::AsNumber(i));
+			ChildInfo->bIsInContainer = true;
+			Children.Add(ChildInfo);
+		}
+	}
+	else if (const FStructProperty* StructProperty = CastField<FStructProperty>(Property.Get()))
+	{
+		for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
+		{
+			FPropertyInstance ChildProperty = {
+				*It,
+				It->ContainerPtrToValuePtr<void>(PropertyInstance.Value, 0)
+			};
+			const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
+			
+			Children.Add(ChildInfo);
+		}
+	}
+	else if (const FMapProperty* MapProperty = CastField<FMapProperty>(Property.Get()))
+	{
+		FScriptMapHelper MapHelper(MapProperty, PropertyInstance.Value);
 		uint8* PropData = MapHelper.GetPairPtr(0);
 
 		int32 Index = 0;
@@ -1569,31 +2178,33 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, FPropert
 		{
 			if (MapHelper.IsValidIndex(Index))
 			{
-				FDebugInfo ChildInfo;
-
-				GetDebugInfoInternal(ChildInfo, MapProperty->ValueProp, PropData + MapProperty->MapLayout.ValueOffset);
-
-				// use the info from the ValueProp and then overwrite the name with the KeyProp data
+				FPropertyInstance ChildProperty = {
+					MapProperty->ValueProp,
+					PropData + MapProperty->MapLayout.ValueOffset
+				};
+				const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
+				
 				FString NameStr = TEXT("[");
-				MapProperty->KeyProp->ExportTextItem(NameStr, PropData, nullptr, nullptr, PPF_PropertyWindow | PPF_BlueprintDebugView | PPF_Delimited, nullptr);
+				MapProperty->KeyProp->ExportTextItem(
+					NameStr,
+					PropData,
+					nullptr,
+					nullptr,
+					PPF_PropertyWindow | PPF_BlueprintDebugView | PPF_Delimited,
+					nullptr
+				);
 				NameStr += TEXT("] ");
-
-				ChildInfo.DisplayName = FText::FromString(NameStr);
-
-				DebugInfo.Children.Add(ChildInfo);
-
+				ChildInfo->DisplayName = FText::FromString(NameStr);
+				ChildInfo->bIsInContainer = true;
+				
+				Children.Add(ChildInfo);
 				--Count;
 			}
 		}
-
-		return;
 	}
-
-	FSetProperty* SetProperty = CastField<FSetProperty>(Property);
-	if (SetProperty)
+	else if (const FSetProperty* SetProperty = CastField<FSetProperty>(Property.Get()))
 	{
-		FScriptSetHelper SetHelper(SetProperty, PropertyValue);
-		DebugInfo.Value = FText::Format(LOCTEXT("SetSize", "Num={0}"), FText::AsNumber(SetHelper.Num()));
+		FScriptSetHelper SetHelper(SetProperty, PropertyInstance.Value);
 		uint8* PropData = SetHelper.GetElementPtr(0);
 
 		int32 Index = 0;
@@ -1601,68 +2212,110 @@ void FKismetDebugUtilities::GetDebugInfoInternal(FDebugInfo& DebugInfo, FPropert
 		{
 			if (SetHelper.IsValidIndex(Index))
 			{
-				FDebugInfo ChildInfo;
-				GetDebugInfoInternal(ChildInfo, SetProperty->ElementProp, PropData);
+				FPropertyInstance ChildProperty = {
+					SetProperty->ElementProp,
+					PropData
+				};
+				const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
+				
+				ChildInfo->DisplayName = FText::Format(LOCTEXT("SetIndexName", "[{0}]"), FText::AsNumber(Index));
+				ChildInfo->bIsInContainer = true;
 
-				// members of sets don't have their own names
-				ChildInfo.DisplayName = FText::GetEmpty();
-
-				DebugInfo.Children.Add(ChildInfo);
+				Children.Add(ChildInfo);
 
 				--Count;
 			}
 		}
-
-		return;
 	}
-
-	FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(Property);
-	if (ObjectPropertyBase)
+	else if (const FObjectPropertyBase* ObjectPropertyBase = CastField<FObjectPropertyBase>(Property.Get()))
 	{
-		UObject* Obj = ObjectPropertyBase->GetObjectPropertyValue(PropertyValue);
-		if (Obj != nullptr)
+		if (UObject* Obj = ObjectPropertyBase->GetObjectPropertyValue(PropertyInstance.Value))
 		{
-			DebugInfo.Value = FText::FromString(Obj->GetFullName());
+			for (TFieldIterator<FProperty> It(Obj->GetClass()); It; ++It)
+			{
+				if(It->HasAllPropertyFlags(CPF_BlueprintVisible))
+				{
+					FPropertyInstance ChildProperty = {
+						*It,
+						It->ContainerPtrToValuePtr<void*>(Obj)
+					};
+					const TSharedPtr<FPropertyInstanceInfo> ChildInfo = FindOrMake(ChildProperty, VisitedNodes);
+					Children.Add(ChildInfo);
+				}
+			}
+		}
+	}
+}
+
+
+TSharedPtr<FPropertyInstanceInfo> FPropertyInstanceInfo::ResolvePathToProperty(const TArray<FName>& InPathToProperty)
+{
+	const auto FindChildInPropertyInfo = [](FPropertyInstanceInfo* InPropertyInfo, const FName& InChildName) -> TSharedPtr<FPropertyInstanceInfo>*
+	{
+		if (InPropertyInfo)
+		{
+			const FString ChildNameStr = InChildName.ToString();
+			const FProperty* Prop = InPropertyInfo->Property.Get();
+
+			if (Prop->IsA<FSetProperty>() || Prop->IsA<FArrayProperty>() || Prop->IsA<FMapProperty>())
+			{
+				return InPropertyInfo->Children.FindByPredicate(
+					[&ChildNameStr](const TSharedPtr<FPropertyInstanceInfo>& Child)
+					{
+						// Display name for Container Element Properties is just their index
+						return Child->DisplayName.ToString() == ChildNameStr;
+					}
+				);
+			}
+			else
+			{
+				return InPropertyInfo->Children.FindByPredicate(
+					[&ChildNameStr](const TSharedPtr<FPropertyInstanceInfo>& Child)
+					{
+						return Child->Property->GetAuthoredName() == ChildNameStr;
+					}
+				);
+			}
+		}
+		return nullptr;
+	};
+
+	TSharedPtr<FPropertyInstanceInfo> ThisDebugInfo = nullptr;
+	for (const FName& ChildName : InPathToProperty)
+	{
+		TSharedPtr<FPropertyInstanceInfo>* FoundChild = ThisDebugInfo.IsValid() ? FindChildInPropertyInfo(ThisDebugInfo.Get(), ChildName) : FindChildInPropertyInfo(this, ChildName);
+
+		if (FoundChild)
+		{
+			ThisDebugInfo = *FoundChild;
 		}
 		else
 		{
-			DebugInfo.Value = FText::FromString(TEXT("None"));
+			return nullptr;
 		}
-
-		return;
 	}
 
-	FDelegateProperty* DelegateProperty = CastField<FDelegateProperty>(Property);
-	if (DelegateProperty)
+	return ThisDebugInfo;
+}
+
+FString FPropertyInstanceInfo::GetWatchText() const
+{
+	const FProperty* Prop = Property.Get();
+	if (Prop)
 	{
-		if (DelegateProperty->SignatureFunction)
+		if (Prop->IsA<FSetProperty>() || Prop->IsA<FArrayProperty>() || Prop->IsA<FMapProperty>())
 		{
-			DebugInfo.Value = DelegateProperty->SignatureFunction->GetDisplayNameText();
-		}
-		else
-		{
-			DebugInfo.Value = LOCTEXT("NoFunc", "(No bound function)");
-		}
+			FString WatchText;
+			for (const TSharedPtr<FPropertyInstanceInfo>& ContainerElement : Children)
+			{
+				WatchText.Append(FText::Format(LOCTEXT("WatchTextFmt", "{0} {1}\n"), ContainerElement->DisplayName, ContainerElement->Value).ToString());
+			}
 
-		return;
+			return WatchText;
+		}
 	}
 
-	FMulticastDelegateProperty* MulticastDelegateProperty = CastField<FMulticastDelegateProperty>(Property);
-	if (MulticastDelegateProperty)
-	{
-		if (MulticastDelegateProperty->SignatureFunction)
-		{
-			DebugInfo.Value = MulticastDelegateProperty->SignatureFunction->GetDisplayNameText();
-		}
-		else
-		{
-			DebugInfo.Value = LOCTEXT("NoFunc", "(No bound function)");
-		}
-
-		return;
-	}
-
-	ensure(false);
+	return Value.ToString();
 }
 
 FText FKismetDebugUtilities::GetAndClearLastExceptionMessage()

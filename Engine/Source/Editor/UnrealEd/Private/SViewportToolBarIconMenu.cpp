@@ -8,12 +8,13 @@
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Widgets/Input/SButton.h"
 #include "EditorStyleSet.h"
+#include "Styling/ToolBarStyle.h"
 
 void SViewportToolBarIconMenu::Construct( const FArguments& InArgs )
 {
 	ParentToolBar = InArgs._ParentToolBar;
 
-	const FName ButtonStyle = FEditorStyle::Join(InArgs._Style.Get(), ".Button");
+	const FToolBarStyle& ViewportToolbarStyle = FAppStyle::Get().GetWidgetStyle<FToolBarStyle>(InArgs._Style.Get());
 
 	const FSlateIcon& Icon = InArgs._Icon.Get();
 
@@ -22,7 +23,7 @@ void SViewportToolBarIconMenu::Construct( const FArguments& InArgs )
 	.OnGetMenuContent( InArgs._OnGetMenuContent )
 	[
 		SNew(SButton)
-		.ButtonStyle( FEditorStyle::Get(), ButtonStyle )
+		.ButtonStyle(&ViewportToolbarStyle.ButtonStyle)
 		.ContentPadding( FMargin( 5.0f, 0.0f ) )
 		.OnClicked(this, &SViewportToolBarIconMenu::OnMenuClicked)
 		[
@@ -59,32 +60,8 @@ void SViewportToolBarIconMenu::Construct( const FArguments& InArgs )
 				.VAlign(VAlign_Top)
 				[
 					SNew(STextBlock)
-					.TextStyle( FEditorStyle::Get(), FEditorStyle::Join( InArgs._Style.Get(), ".Label" ) )
+					.TextStyle(&ViewportToolbarStyle.LabelStyle)
 					.Text(InArgs._Label)
-				]
-				+SVerticalBox::Slot()
-				.AutoHeight()
-				.VAlign(VAlign_Bottom)
-				[
-					SNew(SHorizontalBox)
-					+SHorizontalBox::Slot()
-					.FillWidth(1.0f)
-
-					+SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew( SBox )
-						.WidthOverride( 4 )
-						.HeightOverride( 4 )
-						[
-							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("ComboButton.Arrow"))
-							.ColorAndOpacity(FLinearColor::Black)
-						]
-					]
-
-					+SHorizontalBox::Slot()
-					.FillWidth(1.0f)
 				]
 			]
 		]

@@ -8,11 +8,12 @@ public class CommonInput : ModuleRules
 	{
 		PublicDependencyModuleNames.AddRange(
 			new string[]
-			{
+            {
                 "Core",
                 "CoreUObject",
                 "Engine",
-                "InputCore"
+                "InputCore",
+				"DeveloperSettings"
             }
 		);
 
@@ -21,6 +22,7 @@ public class CommonInput : ModuleRules
 			{
                 "SlateCore",
 				"Slate",
+				"ApplicationCore",
                 "EngineSettings"
             }
 		);
@@ -36,6 +38,7 @@ public class CommonInput : ModuleRules
         {
             PublicDependencyModuleNames.AddRange(
                 new string[] {
+					"EditorFramework",
                     "UnrealEd",
                 }
             );
@@ -46,15 +49,13 @@ public class CommonInput : ModuleRules
 		{
 			PublicDefinitions.Add("UE_COMMONINPUT_PLATFORM_TYPE = " + CommonUIPlatform);
 		}
+
+		PrivateDependencyModuleNames.Add("GeForceNOWWrapper");
 	}
 
 	static public string ToCommonUIPlatform(UnrealTargetPlatform TargetPlatform)
 	{
 		if (TargetPlatform == UnrealTargetPlatform.Win64)
-		{
-			return "PC";
-		}
-		else if (TargetPlatform == UnrealTargetPlatform.Win32)
 		{
 			return "PC";
 		}

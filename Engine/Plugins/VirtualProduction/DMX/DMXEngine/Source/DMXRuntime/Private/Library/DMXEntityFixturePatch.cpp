@@ -5,9 +5,9 @@
 #include "DMXConversions.h"
 #include "DMXProtocolConstants.h"
 #include "DMXRuntimeLog.h"
+#include "DMXRuntimeUtils.h"
 #include "DMXStats.h"
 #include "DMXTypes.h"
-#include "DMXUtils.h"
 #include "Interfaces/IDMXProtocol.h"
 #include "IO/DMXInputPort.h"
 #include "IO/DMXOutputPort.h"
@@ -24,6 +24,8 @@ DECLARE_CYCLE_STAT(TEXT("FixturePatch cache values"), STAT_DMXFixturePatchCacheV
 
 #define LOCTEXT_NAMESPACE "DMXEntityFixturePatch"
 
+FDMXOnFixturePatchChangedDelegate UDMXEntityFixturePatch::OnFixturePatchChangedDelegate;
+
 UDMXEntityFixturePatch::UDMXEntityFixturePatch()
 	: UniverseID(1)
 	, bAutoAssignAddress(true)
@@ -36,11 +38,82 @@ UDMXEntityFixturePatch::UDMXEntityFixturePatch()
 #endif // WITH_EDITORONLY_DATA
 {}
 
+UDMXEntityFixturePatch* UDMXEntityFixturePatch::CreateFixturePatchInLibrary(FDMXEntityFixturePatchConstructionParams ConstructionParams, const FString& DesiredName, bool bMarkDMXLibraryDirty)
+{
+	UDMXEntityFixtureType* FixtureType = ConstructionParams.FixtureTypeRef.GetFixtureType();
+
+	if (ensureMsgf(FixtureType, TEXT("Cannot create Fixture Patch when Fixture Type is invalid.")))
+	{
+		UDMXLibrary* DMXLibrary = FixtureType->GetParentLibrary();
+		if (ensureMsgf(DMXLibrary, TEXT("Cannot create Fixture Patch when Fixture Type's DMX Library is invalid.")))
+		{
+#if WITH_EDITOR
+			if (bMarkDMXLibraryDirty)
+			{
+				DMXLibrary->Modify();
+				DMXLibrary->PreEditChange(UDMXLibrary::StaticClass()->FindPropertyByName(UDMXLibrary::GetEntitiesPropertyName()));
+			}
+#endif
+
+			FString EntityName = FDMXRuntimeUtils::FindUniqueEntityName(DMXLibrary, UDMXEntityFixturePatch::StaticClass(), DesiredName);
+
+			UDMXEntityFixturePatch* NewFixturePatch = NewObject<UDMXEntityFixturePatch>(DMXLibrary, UDMXEntityFixturePatch::StaticClass(), NAME_None, RF_Transactional);
+			NewFixturePatch->SetName(EntityName);
+			NewFixturePatch->SetFixtureType(FixtureType);
+			NewFixturePatch->SetUniverseID(ConstructionParams.UniverseID);
+			NewFixturePatch->SetStartingChannel(ConstructionParams.StartingAddress);
+			NewFixturePatch->SetActiveModeIndex(ConstructionParams.ActiveMode);
+
+			return NewFixturePatch;
+
+#if WITH_EDITOR
+			if (bMarkDMXLibraryDirty)
+			{
+				DMXLibrary->PostEditChange();
+			}
+#endif
+		}
+	}
+
+	return nullptr;
+}
+
+void UDMXEntityFixturePatch::RemoveFixturePatchFromLibrary(FDMXEntityFixturePatchRef FixturePatchRef)
+{
+	if (UDMXEntityFixturePatch* FixturePatch = FixturePatchRef.GetFixturePatch())
+	{
+		if (UDMXLibrary* DMXLibrary = FixturePatch->GetParentLibrary())
+		{
+			FixturePatch->SetFixtureType(nullptr);
+
+			DMXLibrary->Modify();
+			FixturePatch->Modify();
+			FixturePatch->Destroy();
+		}
+	}
+}
+
+#if WITH_EDITOR
+bool UDMXEntityFixturePatch::Modify(bool bAlwaysMarkDirty)
+{
+	if (UDMXLibrary* DMXLibrary = ParentLibrary.Get())
+	{
+		return DMXLibrary->Modify(bAlwaysMarkDirty) && Super::Modify(bAlwaysMarkDirty);
+	}
+
+	return Super::Modify(bAlwaysMarkDirty);
+}
+#endif // WITH_EDITOR
+
 void UDMXEntityFixturePatch::PostInitProperties()
 {
 	Super::PostInitProperties();
 
-	RebuildCache();
+	if (!HasAnyFlags(RF_ClassDefaultObject))
+	{
+		UDMXEntityFixtureType::GetOnFixtureTypeChanged().AddUObject(this, &UDMXEntityFixturePatch::OnFixtureTypeChanged);
+		RebuildCache();
+	}
 }
 
 void UDMXEntityFixturePatch::PostLoad()
@@ -55,18 +128,30 @@ void UDMXEntityFixturePatch::PostEditChangeProperty(FPropertyChangedEvent& Prope
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	FName PropertyName = PropertyChangedEvent.GetPropertyName();
-
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
 		RebuildCache();
+		OnFixturePatchChangedDelegate.Broadcast(this);
+	}
+}
+#endif // WITH_EDITOR
+
+#if WITH_EDITOR
+void UDMXEntityFixturePatch::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedChainEvent)
+{
+	Super::PostEditChangeChainProperty(PropertyChangedChainEvent);
+
+	if (PropertyChangedChainEvent.ChangeType != EPropertyChangeType::Interactive)
+	{
+		RebuildCache();
+		OnFixturePatchChangedDelegate.Broadcast(this);
 	}
 }
 #endif // WITH_EDITOR
 
 void UDMXEntityFixturePatch::Tick(float DeltaTime)
 {
-	bool bDataChanged = UpdateCache();
+	const bool bDataChanged = UpdateCache();
 
 	// Broadcast data changes
 	if (bDataChanged)
@@ -103,6 +188,11 @@ TStatId UDMXEntityFixturePatch::GetStatId() const
 	RETURN_QUICK_DECLARE_CYCLE_STAT(FDMXInputPort, STATGROUP_Tickables);
 }
 
+FDMXOnFixturePatchChangedDelegate& UDMXEntityFixturePatch::GetOnFixturePatchChanged()
+{
+	return OnFixturePatchChangedDelegate;
+}
+
 void UDMXEntityFixturePatch::SendDMX(TMap<FDMXAttributeName, int32> AttributeMap)
 {		
 	const FDMXFixtureMode* ModePtr = GetActiveMode();
@@ -117,24 +207,26 @@ void UDMXEntityFixturePatch::SendDMX(TMap<FDMXAttributeName, int32> AttributeMap
 	{
 		for (const FDMXFixtureFunction& Function : ModePtr->Functions)
 		{
-			const FDMXAttributeName FunctionAttr = Function.Attribute;
+			const FDMXAttributeName& FunctionAttr = Function.Attribute;
 			if (FunctionAttr == Elem.Key)
 			{
-				if (!UDMXEntityFixtureType::IsFunctionInModeRange(Function, *ModePtr, GetStartingChannel() - 1))
+				const int32 LastFunctionChannel = Function.Channel + Function.GetNumChannels() - 1;
+				const bool bLastChannelExceedsChannelSpan = LastFunctionChannel > ModePtr->ChannelSpan;
+				const bool bLastChannelExceedsUniverseSize = LastFunctionChannel + GetStartingChannel() - 1 > DMX_MAX_ADDRESS;
+
+				if (!bLastChannelExceedsChannelSpan && !bLastChannelExceedsUniverseSize)
 				{
-					continue;
-				}
+					const int32 Channel = Function.Channel + GetStartingChannel() - 1;
 
-				const int32 Channel = Function.Channel + GetStartingChannel() - 1;
+					uint32 ChannelValue = 0;
+					uint8* ChannelValueBytes = reinterpret_cast<uint8*>(&ChannelValue);
+					UDMXEntityFixtureType::FunctionValueToBytes(Function, Elem.Value, ChannelValueBytes);
 
-				uint32 ChannelValue = 0;
-				uint8* ChannelValueBytes = reinterpret_cast<uint8*>(&ChannelValue);
-				UDMXEntityFixtureType::FunctionValueToBytes(Function, Elem.Value, ChannelValueBytes);
-
-				const uint8 NumBytesInSignalFormat = UDMXEntityFixtureType::NumChannelsToOccupy(Function.DataType);
-				for (uint8 ChannelIt = 0; ChannelIt < NumBytesInSignalFormat; ++ChannelIt)
-				{
-					DMXChannelToValueMap.Add(Channel + ChannelIt, ChannelValueBytes[ChannelIt]);
+					const uint8 NumBytesInSignalFormat = FDMXConversions::GetSizeOfSignalFormat(Function.DataType);
+					for (uint8 ChannelIt = 0; ChannelIt < NumBytesInSignalFormat; ++ChannelIt)
+					{
+						DMXChannelToValueMap.Add(Channel + ChannelIt, ChannelValueBytes[ChannelIt]);
+					}
 				}
 			}
 		}
@@ -227,9 +319,9 @@ bool UDMXEntityFixturePatch::IsValidEntity(FText& OutReason) const
 {
 	OutReason = FText::GetEmpty();
 
-	if (ParentFixtureTypeTemplate == nullptr)
+	if (!ParentFixtureTypeTemplate)
 	{
-		OutReason = LOCTEXT("InvalidReason_NullParentTemplate", "Fixture Template is null");
+		OutReason = LOCTEXT("InvalidReason_NullParentTemplate", "Fixture Type is null");
 	}
 	else if ((GetStartingChannel() + GetChannelSpan() - 1) > DMX_UNIVERSE_SIZE)
 	{
@@ -246,28 +338,29 @@ bool UDMXEntityFixturePatch::IsValidEntity(FText& OutReason) const
 			FText::FromString(ParentFixtureTypeTemplate->GetDisplayName())
 		);
 	}	
-	else
+	else if (!ParentFixtureTypeTemplate->Modes.IsValidIndex(ActiveMode))
 	{
-		int32 IdxExistingFunction = ParentFixtureTypeTemplate->Modes.IndexOfByPredicate([](const FDMXFixtureMode& Mode) {
-			return 
-				Mode.Functions.Num() > 0 ||
-				Mode.FixtureMatrixConfig.CellAttributes.Num() > 0;
-			});
-
-		if (IdxExistingFunction == INDEX_NONE)
-		{
-			OutReason = FText::Format(
-				LOCTEXT("InvalidReason_NoFunctionsDefined", "'{0}' cannot be assigned as its parent Fixture Type '{1}' does not define any Functions."),
-				FText::FromString(GetDisplayName()),
-				FText::FromString(ParentFixtureTypeTemplate->GetDisplayName()));
-		}
-		else if (GetChannelSpan() == 0)
-		{
-			OutReason = FText::Format(
-				LOCTEXT("InvalidReason_ParentChannelSpanIsZero", "'{0}' cannot be assigned as its parent Fixture Type '{1}' overrides channel span with 0."),
-				FText::FromString(GetDisplayName()),
-				FText::FromString(ParentFixtureTypeTemplate->GetDisplayName()));
-		}
+		OutReason = FText::Format(
+			LOCTEXT("InvalidReason_NoActiveModes", "'{0}' cannot be assigned as its parent Fixture Type '{1}' does no longer contain Active Mode."),
+			FText::FromString(GetDisplayName()),
+			FText::FromString(ParentFixtureTypeTemplate->GetDisplayName())
+		);
+	}
+	else if (
+		ParentFixtureTypeTemplate->Modes[ActiveMode].Functions.Num() == 0 && 
+		ParentFixtureTypeTemplate->Modes[ActiveMode].FixtureMatrixConfig.CellAttributes.Num() == 0)
+	{
+		OutReason = FText::Format(
+			LOCTEXT("InvalidReason_NoFunctionsDefined", "'{0}' cannot be assigned as its parent Fixture Type '{1}' does not define any Functions in the Active Mode."),
+			FText::FromString(GetDisplayName()),
+			FText::FromString(ParentFixtureTypeTemplate->GetDisplayName()));
+	}
+	else if (GetChannelSpan() == 0)
+	{
+		OutReason = FText::Format(
+			LOCTEXT("InvalidReason_ParentChannelSpanIsZero", "'{0}' cannot be assigned as its parent Fixture Type '{1}' overrides channel span with 0."),
+			FText::FromString(GetDisplayName()),
+			FText::FromString(ParentFixtureTypeTemplate->GetDisplayName()));
 	}
 
 	return OutReason.IsEmpty();
@@ -303,15 +396,15 @@ const FDMXFixtureMode* UDMXEntityFixturePatch::GetActiveMode() const
 
 void UDMXEntityFixturePatch::SetFixtureType(UDMXEntityFixtureType* NewFixtureType)
 {
-	if (NewFixtureType && NewFixtureType != ParentFixtureTypeTemplate)
+	if (!IsValid(NewFixtureType))
+	{
+		ParentFixtureTypeTemplate = nullptr;
+	}
+	else if (NewFixtureType && NewFixtureType != ParentFixtureTypeTemplate)
 	{
 		ParentFixtureTypeTemplate = NewFixtureType;
 		
 		ActiveMode = ParentFixtureTypeTemplate->Modes.Num() > 0 ? 0 : INDEX_NONE;
-	}
-	else
-	{
-		ParentFixtureTypeTemplate = nullptr;
 	}
 
 	RebuildCache();
@@ -335,6 +428,20 @@ void UDMXEntityFixturePatch::SetAutoStartingAddress(int32 NewAutoStartingAddress
 void UDMXEntityFixturePatch::SetManualStartingAddress(int32 NewManualStartingAddress)
 {
 	ManualStartingAddress = NewManualStartingAddress;
+
+	RebuildCache();
+}
+
+void UDMXEntityFixturePatch::SetStartingChannel(int32 NewStartingChannel)
+{
+	if (NewStartingChannel == AutoStartingAddress && ManualStartingAddress == NewStartingChannel)
+	{
+		return;
+	}
+
+	bAutoAssignAddress = false;
+	AutoStartingAddress = NewStartingChannel;
+	ManualStartingAddress = NewStartingChannel;
 
 	RebuildCache();
 }
@@ -368,6 +475,8 @@ bool UDMXEntityFixturePatch::SetActiveModeIndex(int32 NewActiveModeIndex)
 		if (ParentFixtureTypeTemplate->Modes.IsValidIndex(NewActiveModeIndex))
 		{
 			ActiveMode = NewActiveModeIndex;
+			RebuildCache();
+
 			return true;
 		}
 	}
@@ -387,7 +496,7 @@ TArray<FDMXAttributeName> UDMXEntityFixturePatch::GetAllAttributesInActiveMode()
 	TArray<FDMXAttributeName> AttributeNames;
 	for (const FDMXFixtureFunction& Function : Cache.GetFunctions())
 	{
-		if (UDMXEntityFixtureType::GetFunctionLastChannel(Function) <= Cache.GetChannelSpan())
+		if (Function.GetLastChannel() <= Cache.GetChannelSpan())
 		{
 			AttributeNames.Add(Function.Attribute.GetName());
 		}
@@ -403,7 +512,7 @@ TMap<FDMXAttributeName, FDMXFixtureFunction> UDMXEntityFixturePatch::GetAttribut
 
 	for (const FDMXFixtureFunction& Function : Cache.GetFunctions())
 	{
-		if (UDMXEntityFixtureType::GetFunctionLastChannel(Function) <= Cache.GetChannelSpan())
+		if (Function.GetLastChannel() <= Cache.GetChannelSpan())
 		{
 			FunctionMap.Add(Function.Attribute.GetName(), Function);
 		}
@@ -419,7 +528,7 @@ TMap<FDMXAttributeName, int32> UDMXEntityFixturePatch::GetAttributeDefaultMap() 
 
 	for (const FDMXFixtureFunction& Function : Cache.GetFunctions())
 	{
-		if (UDMXEntityFixtureType::GetFunctionLastChannel(Function) <= Cache.GetChannelSpan())
+		if (Function.GetLastChannel() <= Cache.GetChannelSpan())
 		{
 			DefaultValueMap.Add(Function.Attribute, Function.DefaultValue);
 		}
@@ -435,7 +544,7 @@ TMap<FDMXAttributeName, int32> UDMXEntityFixturePatch::GetAttributeChannelAssign
 
 	for (const FDMXFixtureFunction& Function : Cache.GetFunctions())
 	{
-		if (UDMXEntityFixtureType::GetFunctionLastChannel(Function) <= Cache.GetChannelSpan())
+		if (Function.GetLastChannel() <= Cache.GetChannelSpan())
 		{
 			ChannelMap.Add(Function.Attribute, Function.Channel + GetStartingChannel() - 1);
 		}
@@ -451,7 +560,7 @@ TMap<FDMXAttributeName, EDMXFixtureSignalFormat> UDMXEntityFixturePatch::GetAttr
 
 	for (const FDMXFixtureFunction& Function : Cache.GetFunctions())
 	{
-		if (UDMXEntityFixtureType::GetFunctionLastChannel(Function) <= Cache.GetChannelSpan())
+		if (Function.GetLastChannel() <= Cache.GetChannelSpan())
 		{
 			FormatMap.Add(Function.Attribute, Function.DataType);
 		}
@@ -467,7 +576,7 @@ TMap<FDMXAttributeName, int32> UDMXEntityFixturePatch::ConvertRawMapToAttributeM
 
 	for (const FDMXFixtureFunction& Function : Cache.GetFunctions())
 	{
-		if (UDMXEntityFixtureType::GetFunctionLastChannel(Function) <= Cache.GetChannelSpan())
+		if (Function.GetLastChannel() <= Cache.GetChannelSpan())
 		{
 			const int32 FunctionStartingChannel = Function.Channel + (GetStartingChannel() - 1);
 
@@ -475,7 +584,7 @@ TMap<FDMXAttributeName, int32> UDMXEntityFixturePatch::ConvertRawMapToAttributeM
 			if (RawMap.Contains(FunctionStartingChannel))
 			{
 				const uint8& RawValue(RawMap.FindRef(Function.Channel));
-				const uint8 ChannelsToAdd = UDMXEntityFixtureType::NumChannelsToOccupy(Function.DataType);
+				const uint8 ChannelsToAdd = FDMXConversions::GetSizeOfSignalFormat(Function.DataType);
 
 				TArray<uint8, TFixedAllocator<4>> Bytes;
 				for (uint8 ChannelIt = 0; ChannelIt < ChannelsToAdd; ChannelIt++)
@@ -500,19 +609,21 @@ TMap<int32, uint8> UDMXEntityFixturePatch::ConvertAttributeMapToRawMap(const TMa
 	TMap<int32, uint8> RawMap;
 	RawMap.Reserve(FunctionMap.Num());
 
-	for (const TPair<FDMXAttributeName, int32>& Elem : FunctionMap)
+	for (const TPair<FDMXAttributeName, int32>& AttributeNameValuePair : FunctionMap)
 	{
 		// Search for a function with Attribute == Elem.Key.Attribute
-		const FDMXFixtureFunction* FunctionPtr = Cache.GetFunctions().FindByPredicate([&Elem](const FDMXFixtureFunction& Function) {
-			return Elem.Key == Function.Attribute;
+		const FDMXFixtureFunction* FunctionPtr = Cache.GetFunctions().FindByPredicate([&AttributeNameValuePair](const FDMXFixtureFunction& Function) {
+			return AttributeNameValuePair.Key == Function.Attribute;
 		});
 
 		// Also check for the Function being in the valid range for the Active Mode's channel span
-		if (FunctionPtr != nullptr && UDMXEntityFixtureType::GetFunctionLastChannel(*FunctionPtr) <= Cache.GetChannelSpan())
+		if (FunctionPtr && FunctionPtr->GetLastChannel() <= Cache.GetChannelSpan())
 		{
 			const int32 FunctionStartingChannel = FunctionPtr->Channel + (GetStartingChannel() - 1);
-			const uint8 NumChannels = UDMXEntityFixtureType::NumChannelsToOccupy(FunctionPtr->DataType);
-			const uint32 Value = UDMXEntityFixtureType::ClampValueToDataType(FunctionPtr->DataType, Elem.Value);
+			const uint8 NumChannels = FDMXConversions::GetSizeOfSignalFormat(FunctionPtr->DataType);
+
+			const uint32 SafeValue = FMath::Max(0, AttributeNameValuePair.Value);
+			const uint32 ClampedValue = FDMXConversions::ClampValueBySignalFormat(SafeValue, FunctionPtr->DataType);
 
 			// To avoid branching in the loop, we'll decide before it on which byte to start
 			// and which direction to go, depending on the Function's bit endianness.
@@ -521,7 +632,7 @@ TMap<int32, uint8> UDMXEntityFixturePatch::ConvertAttributeMapToRawMap(const TMa
 
 			for (uint8 ByteOffset = 0; ByteOffset < NumChannels; ++ByteOffset)
 			{
-				const uint8 ChannelVal = (Value >> (8 * ByteOffset)) & 0xFF;
+				const uint8 ChannelVal = (ClampedValue >> (8 * ByteOffset)) & 0xFF;
 
 				const int32 FinalChannel = FunctionStartingChannel + ByteIndex;
 				RawMap.Add(FinalChannel, ChannelVal);
@@ -573,7 +684,7 @@ TMap<FDMXAttributeName, int32> UDMXEntityFixturePatch::ConvertToValidMap(const T
 		});
 
 		// Also check for the Function being in the valid range for the Active Mode's channel span
-		if (FunctionPtr && UDMXEntityFixtureType::GetFunctionLastChannel(*FunctionPtr) <= Cache.GetChannelSpan())
+		if (FunctionPtr && FunctionPtr->GetLastChannel() <= Cache.GetChannelSpan())
 		{
 			ValidMap.Add(Elem.Key, Elem.Value);
 		}
@@ -682,9 +793,10 @@ bool UDMXEntityFixturePatch::SendMatrixCellValue(const FIntPoint& CellCoordinate
 			int32 AttributeOffset = 0;
 			for (const FDMXFixtureCellAttribute& CellAttribute : Cache.GetCellAttributes())
 			{
-				if (CellAttribute.Attribute.Name == Attribute && Value >= 0)
+				if (CellAttribute.Attribute.Name == Attribute)
 				{
-					TArray<uint8> ByteArray = FDMXConversions::UnsignedInt32ToByteArray(Value, CellAttribute.DataType, CellAttribute.bUseLSBMode);
+					const uint32 SafeValue = FMath::Max(0, Value);
+					TArray<uint8> ByteArray = FDMXConversions::UnsignedInt32ToByteArray(SafeValue, CellAttribute.DataType, CellAttribute.bUseLSBMode);
 
 					TMap<int32, uint8> DMXChannelToValueMap;
 					DMXChannelToValueMap.Reserve(ByteArray.Num());
@@ -741,7 +853,7 @@ bool UDMXEntityFixturePatch::SendMatrixCellValueWithAttributeMap(const FIntPoint
 		}
 
 		const int32 FirstChannel = InAttributeNameChannelMap[Attribute];
-		const int32 LastChannel = FirstChannel + UDMXEntityFixtureType::NumChannelsToOccupy(CellAttribute.DataType) - 1;
+		const int32 LastChannel = FirstChannel + FDMXConversions::GetSizeOfSignalFormat(CellAttribute.DataType) - 1;
 
 		TArray<uint8> ByteArr;
 		ByteArr.AddZeroed(4);
@@ -788,7 +900,7 @@ bool UDMXEntityFixturePatch::SendNormalizedMatrixCellValue(const FIntPoint& Cell
 
 		Value = FMath::Clamp(Value, 0.0f, 1.0f);
 
-		const uint32 UnsignedIntValue = UDMXEntityFixtureType::GetDataTypeMaxValue(ExistingAttribute.DataType) * Value;
+		const uint32 UnsignedIntValue = FDMXConversions::GetSignalFormatMaxValue(ExistingAttribute.DataType) * Value;
 		const int32  IntValue = FMath::Clamp(UnsignedIntValue, static_cast<uint32>(0), static_cast<uint32>(TNumericLimits<int32>::Max()));
 	
 		SendMatrixCellValue(CellCoordinate, Attribute, IntValue);
@@ -894,20 +1006,20 @@ bool UDMXEntityFixturePatch::GetMatrixProperties(FDMXFixtureMatrix& MatrixProper
 {
 	if (!ParentFixtureTypeTemplate)
 	{
-		UE_LOG(DMXEntityFixturePatchLog, Error, TEXT("Fixture Patch %s has no parent fixture type assigned"), *Name);
-		return false;
-	}
-
-	if (!ParentFixtureTypeTemplate->bFixtureMatrixEnabled)
-	{
-		UE_LOG(DMXEntityFixturePatchLog, Error, TEXT("Fixture Patch %s is not a Matrix Fixture"), *Name);
+		UE_LOG(DMXEntityFixturePatchLog, Warning, TEXT("'Get Matrix Properties' failed, Fixture Patch %s has no parent fixture type assigned"), *Name);
 		return false;
 	}
 
 	const FDMXFixtureMode* ModePtr = GetActiveMode();
 	if (!ModePtr)
 	{
-		UE_LOG(DMXEntityFixturePatchLog, Error, TEXT("Invalid active Mode in Fixture Patch %s"), *Name);
+		UE_LOG(DMXEntityFixturePatchLog, Warning, TEXT("'Get Matrix Properties' failed, Invalid active Mode in Fixture Patch %s"), *Name);
+		return false;
+	}
+
+	if (!ModePtr->bFixtureMatrixEnabled)
+	{
+		UE_LOG(DMXEntityFixturePatchLog, Warning, TEXT("'Get Matrix Properties' failed, Fixture Patch %s is not a Matrix Fixture"), *Name);
 		return false;
 	}
 
@@ -983,13 +1095,22 @@ bool UDMXEntityFixturePatch::GetAllMatrixCells(TArray<FDMXCell>& Cells)
 	return false;
 }
 
+void UDMXEntityFixturePatch::OnFixtureTypeChanged(const UDMXEntityFixtureType* FixtureType)
+{	
+	if (ParentFixtureTypeTemplate == FixtureType)
+	{
+		ValidateActiveMode();
+		RebuildCache();
+	}
+}
+
 const FDMXFixtureMatrix* UDMXEntityFixturePatch::GetFixtureMatrix() const
 {
 	if (ParentFixtureTypeTemplate)
 	{
-		if (ParentFixtureTypeTemplate->bFixtureMatrixEnabled)
+		if (const FDMXFixtureMode* ModePtr = GetActiveMode())
 		{
-			if (const FDMXFixtureMode* ModePtr = GetActiveMode())
+			if (ModePtr->bFixtureMatrixEnabled)
 			{
 				return &ModePtr->FixtureMatrixConfig;
 			}

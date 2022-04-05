@@ -40,6 +40,11 @@ namespace Gauntlet
 		public virtual bool HasWarnings { get; protected set; }
 
 		/// <summary>
+		/// Returns reason for the test cancellation
+		/// </summary>
+		public virtual string CancellationReason { get; protected set; }
+
+		/// <summary>
 		/// Returns true if the test was cancelled
 		/// </summary>
 		public virtual bool WasCancelled { get; protected set; }
@@ -67,6 +72,12 @@ namespace Gauntlet
 		/// </summary>
 		/// <returns></returns>
 		public abstract TestResult GetTestResult();
+
+		/// <summary>
+		/// Set the test result value of the test.
+		/// </summary>
+		/// <param name="testResult">New result that the Test should have.</param>
+		public abstract void SetTestResult(TestResult testResult);
 
 		/// <summary>
 		/// Summarize the result of the test
@@ -102,6 +113,7 @@ namespace Gauntlet
 		protected void MarkTestStarted()
 		{
 			InnerStatus = TestStatus.InProgress;
+			SetTestResult(TestResult.Invalid);
 		}
 
 		/// <summary>
@@ -160,13 +172,23 @@ namespace Gauntlet
 		}
 
 		/// <summary>
+		/// Sets Cancellation Reason.
+		/// </summary>
+		/// <param name="InReason"></param>
+		/// <returns></returns>
+		public virtual void SetCancellationReason(string InReason)
+		{
+			CancellationReason = InReason;
+		}
+
+		/// <summary>
 		/// Called after the test is completed and shutdown
 		/// </summary>
-		/// <param name="WasCancelled"></param>
+		/// <param name="InReason"></param>
 		/// <returns></returns>
-		public virtual void StopTest(bool InWasCancelled)
+		public virtual void StopTest(StopReason InReason)
 		{
-			WasCancelled = InWasCancelled;
+			WasCancelled = InReason != StopReason.Completed;
 		}
 
 		/// <summary>

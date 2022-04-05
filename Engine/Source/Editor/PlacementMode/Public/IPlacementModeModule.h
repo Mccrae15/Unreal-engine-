@@ -11,11 +11,10 @@
 #include "Modules/ModuleManager.h"
 #include "ActorFactories/ActorFactory.h"
 #include "ActorPlacementInfo.h"
-#include "IPlacementMode.h"
 #include "GameFramework/Volume.h"
 #include "Editor.h"
 
-class FBlacklistNames;
+class FNamePermissionList;
 
 /**
  * Struct that defines an identifier for a particular placeable item in this module.
@@ -44,13 +43,22 @@ private:
  */
 struct FPlacementCategoryInfo
 {
-	FPlacementCategoryInfo(FText InDisplayName, FName InHandle, FString InTag, int32 InSortOrder = 0, bool bInSortable = true)
-		: DisplayName(InDisplayName), UniqueHandle(InHandle), SortOrder(InSortOrder), TagMetaData(MoveTemp(InTag)), bSortable(bInSortable)
+	FPlacementCategoryInfo(FText InDisplayName, FSlateIcon InDisplayIcon, FName InHandle, FString InTag, int32 InSortOrder = 0, bool bInSortable = true)
+		: DisplayName(InDisplayName), DisplayIcon(InDisplayIcon), UniqueHandle(InHandle), SortOrder(InSortOrder), TagMetaData(MoveTemp(InTag)), bSortable(bInSortable)
 	{
 	}
 
+	FPlacementCategoryInfo(FText InDisplayName, FName InHandle, FString InTag, int32 InSortOrder = 0, bool bInSortable = true)
+		: DisplayName(InDisplayName), DisplayIcon(), UniqueHandle(InHandle), SortOrder(InSortOrder), TagMetaData(MoveTemp(InTag)), bSortable(bInSortable)
+	{
+	}
+
+
 	/** This category's display name */
 	FText DisplayName;
+
+	/** This category's representative icon */
+	FSlateIcon DisplayIcon;
 
 	/** A unique name for this category */
 	FName UniqueHandle;
@@ -103,6 +111,7 @@ struct FPlaceableItem
 		UClass& InAssetClass,
 		const FAssetData& InAssetData,
 		FName InClassThumbnailBrushOverride = NAME_None,
+		FName InClassIconBrushOverride = NAME_None,
 		TOptional<FLinearColor> InAssetTypeColorOverride = TOptional<FLinearColor>(),
 		TOptional<int32> InSortOrder = TOptional<int32>(),
 		TOptional<FText> InDisplayName = TOptional<FText>()
@@ -110,6 +119,7 @@ struct FPlaceableItem
 		: Factory(GEditor->FindActorFactoryByClass(&InAssetClass))
 		, AssetData(InAssetData)
 		, ClassThumbnailBrushOverride(InClassThumbnailBrushOverride)
+		, ClassIconBrushOverride(InClassIconBrushOverride)
 		, bAlwaysUseGenericThumbnail(true)
 		, AssetTypeColorOverride(InAssetTypeColorOverride)
 		, SortOrder(InSortOrder)
@@ -128,25 +138,8 @@ struct FPlaceableItem
 		const bool bIsVolume = Class && Class->IsChildOf<AVolume>();
 		const bool bIsShape = Class ? false : AssetData.GetClass()->IsChildOf(UStaticMesh::StaticClass());
 
-		// Use the factory unless its a volume or shape.  Those need custom names as the factory that spawns them does not properly represent what is being spawned.
-		if (Factory && !bIsVolume && !bIsShape) 
-		{
-			if (!Factory->NewActorClassName.IsEmpty())
-			{
-				NativeName = Factory->NewActorClassName;
-			}
-			else if (Factory->NewActorClass)
-			{
-				Factory->NewActorClass->GetName(NativeName);
-			}
-			else
-			{
-				NativeName = Factory->GetName();
-			}
-
-			DisplayName = Factory->GetDisplayName();
-		}
-		else if (Class)
+		// Use the class unless its a volume or shape.  Those need custom names as the factory that spawns them does not properly represent what is being spawned.
+		if (Class && !bIsVolume && !bIsShape)
 		{
 			Class->GetName(NativeName);
 			DisplayName = Class->GetDisplayNameText();
@@ -188,6 +181,9 @@ public:
 	/** Optional override for the thumbnail brush (passed to FClassIconFinder::FindThumbnailForClass in the form ClassThumbnail.<override>) */
 	FName ClassThumbnailBrushOverride;
 
+	/** Optional override for the small icon brush */
+	FName ClassIconBrushOverride;
+
 	/** Whether to always use the generic thumbnail for this item or not */
 	bool bAlwaysUseGenericThumbnail;
 
@@ -209,6 +205,7 @@ struct FBuiltInPlacementCategories
 	static FName RecentlyPlaced()	{ static FName Name("RecentlyPlaced");	return Name; }
 	static FName Basic()			{ static FName Name("Basic");			return Name; }
 	static FName Lights()			{ static FName Name("Lights");			return Name; }
+	static FName Shapes()			{ static FName Name("Shapes");			return Name; }
 	static FName Visual()			{ static FName Name("Visual");			return Name; }
 	static FName Volumes()			{ static FName Name("Volumes");			return Name; }
 	static FName AllClasses()		{ static FName Name("AllClasses");		return Name; }
@@ -257,51 +254,37 @@ public:
 	/**
 	 * @return the event that is broadcast whenever the user facing list of placement mode categories gets modified
 	 */
-	DECLARE_EVENT(IPlacementMode, FOnPlacementModeCategoryListChanged);
+	DECLARE_EVENT(IPlacementModeModule, FOnPlacementModeCategoryListChanged);
 	virtual FOnPlacementModeCategoryListChanged& OnPlacementModeCategoryListChanged() = 0;
 
 	/**
 	 * @return the event that is broadcast whenever a placement mode category is refreshed
 	 */
-	DECLARE_EVENT_OneParam( IPlacementMode, FOnPlacementModeCategoryRefreshed, FName /*CategoryName*/ );
+	DECLARE_EVENT_OneParam( IPlacementModeModule, FOnPlacementModeCategoryRefreshed, FName /*CategoryName*/ );
 	virtual FOnPlacementModeCategoryRefreshed& OnPlacementModeCategoryRefreshed() = 0;
 
 	/**
 	 * @return the event that is broadcast whenever the list of recently placed assets changes
 	 */
-	DECLARE_EVENT_OneParam( IPlacementMode, FOnRecentlyPlacedChanged, const TArray< FActorPlacementInfo >& /*NewRecentlyPlaced*/ );
+	DECLARE_EVENT_OneParam( IPlacementModeModule, FOnRecentlyPlacedChanged, const TArray< FActorPlacementInfo >& /*NewRecentlyPlaced*/ );
 	virtual FOnRecentlyPlacedChanged& OnRecentlyPlacedChanged() = 0;
 
 	/**
 	 * @return the event that is broadcast whenever the list of all placeable assets changes
 	 */
-	DECLARE_EVENT( IPlacementMode, FOnAllPlaceableAssetsChanged );
+	DECLARE_EVENT( IPlacementModeModule, FOnAllPlaceableAssetsChanged );
 	virtual FOnAllPlaceableAssetsChanged& OnAllPlaceableAssetsChanged() = 0;
 
 	/**
 	 * @return the event that is broadcast whenever the filtering of placeable items changes (system filtering, not user filtering)
 	 */
-	DECLARE_EVENT(IPlacementMode, FOnPlaceableItemFilteringChanged);
+	DECLARE_EVENT(IPlacementModeModule, FOnPlaceableItemFilteringChanged);
 	virtual FOnPlaceableItemFilteringChanged& OnPlaceableItemFilteringChanged() = 0;
-
-	/**
-	 * @return the event that is broadcast whenever a placement mode enters a placing session
-	 */
-	DECLARE_EVENT_OneParam( IPlacementMode, FOnStartedPlacingEvent, const TArray< UObject* >& /*Assets*/ );
-	virtual FOnStartedPlacingEvent& OnStartedPlacing() = 0;
-	virtual void BroadcastStartedPlacing( const TArray< UObject* >& Assets ) = 0;
-
-	/**
-	 * @return the event that is broadcast whenever a placement mode exits a placing session
-	 */
-	DECLARE_EVENT_OneParam( IPlacementMode, FOnStoppedPlacingEvent, bool /*bWasSuccessfullyPlaced*/ );
-	virtual FOnStoppedPlacingEvent& OnStoppedPlacing() = 0;
-	virtual void BroadcastStoppedPlacing( bool bWasSuccessfullyPlaced ) = 0;
 
 	/**
 	 * Creates the placement browser widget
 	 */
-	virtual TSharedRef<SWidget> CreatePlacementModeBrowser() = 0;
+	virtual TSharedRef<SWidget> CreatePlacementModeBrowser(TSharedRef<SDockTab> ParentTab) = 0;
 
 public:
 
@@ -328,11 +311,11 @@ public:
 	 */
 	virtual const FPlacementCategoryInfo* GetRegisteredPlacementCategory(FName UniqueHandle) const = 0;
 
-	/** Placement categories blacklist */
-	virtual TSharedRef<FBlacklistNames>& GetCategoryBlacklist() = 0;
+	/** Placement categories deny list */
+	virtual TSharedRef<FNamePermissionList>& GetCategoryPermissionList() = 0;
 
 	/**
-	 * Get all placement categories that aren't blacklisted, sorted by SortOrder
+	 * Get all placement categories that aren't denied, sorted by SortOrder
 	 *
 	 * @param OutCategories	The array to populate with registered category information
 	 */

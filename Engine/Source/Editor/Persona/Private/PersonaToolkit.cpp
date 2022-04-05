@@ -27,6 +27,11 @@ FPersonaToolkit::FPersonaToolkit()
 {
 }
 
+FPersonaToolkit::~FPersonaToolkit()
+{
+	PreviewScene.Reset();
+}
+
 static void FindCounterpartAssets(const UObject* InAsset, TWeakObjectPtr<USkeleton>& OutSkeleton, USkeletalMesh*& OutMesh)
 {
 	const USkeleton* CounterpartSkeleton = OutSkeleton.Get();
@@ -36,7 +41,7 @@ static void FindCounterpartAssets(const UObject* InAsset, TWeakObjectPtr<USkelet
 	OutMesh = const_cast<USkeletalMesh*>(CounterpartMesh);
 }
 
-void FPersonaToolkit::Initialize(UObject* InAsset)
+void FPersonaToolkit::Initialize(UObject* InAsset, USkeleton* InSkeleton)
 {
 	Asset = InAsset;
 	InitialAssetClass = Asset->GetClass();
@@ -45,6 +50,8 @@ void FPersonaToolkit::Initialize(UObject* InAsset)
 	{
 		Mesh = PreviewMeshInterface->GetPreviewMesh();
 	}
+
+	Skeleton = InSkeleton;
 }
 
 void FPersonaToolkit::Initialize(USkeleton* InSkeleton)
@@ -211,7 +218,7 @@ void FPersonaToolkit::SetAnimationAsset(class UAnimationAsset* InAnimationAsset)
 {
 	if (InAnimationAsset != nullptr)
 	{
-		check(InAnimationAsset->GetSkeleton() == Skeleton);
+		check(Skeleton->IsCompatible(InAnimationAsset->GetSkeleton()));
 	}
 
 	AnimationAsset = InAnimationAsset;
@@ -329,10 +336,10 @@ void FPersonaToolkit::SetPreviewMesh(class USkeletalMesh* InSkeletalMesh, bool b
 			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(AssetToReopen);
 			return;
 		}
-
-		// if it's here, it allows to replace 
-		GetPreviewScene()->SetPreviewMesh(InSkeletalMesh, false);
 	}
+
+	// if it's here, it allows to replace 
+	GetPreviewScene()->SetPreviewMesh(InSkeletalMesh, false);
 }
 
 void FPersonaToolkit::SetPreviewAnimationBlueprint(UAnimBlueprint* InAnimBlueprint)

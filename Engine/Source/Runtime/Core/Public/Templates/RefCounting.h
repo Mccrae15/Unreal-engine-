@@ -76,6 +76,8 @@ class CORE_API FRefCountedObject
 public:
 	FRefCountedObject(): NumRefs(0) {}
 	virtual ~FRefCountedObject() { check(!NumRefs); }
+	FRefCountedObject(const FRefCountedObject& Rhs) = delete;
+	FRefCountedObject& operator=(const FRefCountedObject& Rhs) = delete;
 	uint32 AddRef() const
 	{
 		return uint32(++NumRefs);
@@ -105,6 +107,8 @@ class CORE_API FThreadSafeRefCountedObject
 public:
 	FThreadSafeRefCountedObject() : NumRefs(0) {}
 	virtual ~FThreadSafeRefCountedObject() { check(NumRefs.GetValue() == 0); }
+	FThreadSafeRefCountedObject(const FThreadSafeRefCountedObject& Rhs) = delete;
+	FThreadSafeRefCountedObject& operator=(const FThreadSafeRefCountedObject& Rhs) = delete;
 	uint32 AddRef() const
 	{
 		return uint32(NumRefs.Increment());
@@ -193,16 +197,19 @@ public:
 
 	TRefCountPtr& operator=(ReferencedType* InReference)
 	{
-		// Call AddRef before Release, in case the new reference is the same as the old reference.
-		ReferencedType* OldReference = Reference;
-		Reference = InReference;
-		if(Reference)
+		if (Reference != InReference)
 		{
-			Reference->AddRef();
-		}
-		if(OldReference)
-		{
-			OldReference->Release();
+			// Call AddRef before Release, in case the new reference is the same as the old reference.
+			ReferencedType* OldReference = Reference;
+			Reference = InReference;
+			if (Reference)
+			{
+				Reference->AddRef();
+			}
+			if (OldReference)
+			{
+				OldReference->Release();
+			}
 		}
 		return *this;
 	}
@@ -229,6 +236,20 @@ public:
 			{
 				OldReference->Release();
 			}
+		}
+		return *this;
+	}
+
+	template<typename MoveReferencedType>
+	TRefCountPtr& operator=(TRefCountPtr<MoveReferencedType>&& InPtr)
+	{
+		// InPtr is a different type (or we would have called the other operator), so we need not test &InPtr != this
+		ReferencedType* OldReference = Reference;
+		Reference = InPtr.Reference;
+		InPtr.Reference = nullptr;
+		if (OldReference)
+		{
+			OldReference->Release();
 		}
 		return *this;
 	}

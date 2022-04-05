@@ -40,6 +40,18 @@ public:
 		}
 		return DSetsKey;
 	}
+	
+	bool HasVolatileResources() const
+	{
+		for (const FVulkanDescriptorSetWriter& Writer : DSWriter)
+		{
+			if (Writer.bHasVolatileResources)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
 
 	inline void MarkDirty(bool bDirty)
 	{
@@ -47,7 +59,7 @@ public:
 		bIsDSetsKeyDirty |= bDirty;
 	}
 
-	inline void SetStorageBuffer(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanStructuredBuffer* StructuredBuffer)
+	inline void SetStorageBuffer(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanResourceMultiBuffer* StructuredBuffer)
 	{
 		check(StructuredBuffer && (StructuredBuffer->GetBufferUsageFlags() & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) == VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 		MarkDirty(DSWriter[DescriptorSet].WriteStorageBuffer(BindingIndex, StructuredBuffer->GetCurrentAllocation(), StructuredBuffer->GetOffset(), StructuredBuffer->GetCurrentSize()));
@@ -67,7 +79,16 @@ public:
 	inline void SetTexture(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanTextureBase* TextureBase, VkImageLayout Layout)
 	{
 		check(TextureBase && TextureBase->PartialView);
-		MarkDirty(DSWriter[DescriptorSet].WriteImage(BindingIndex, *TextureBase->PartialView, Layout));
+
+		// If the texture doesn't support sampling, then we read it through a UAV
+		if (TextureBase->Surface.SupportsSampling())
+		{
+			MarkDirty(DSWriter[DescriptorSet].WriteImage(BindingIndex, *TextureBase->PartialView, Layout));
+		}
+		else
+		{
+			MarkDirty(DSWriter[DescriptorSet].WriteStorageImage(BindingIndex, *TextureBase->PartialView, Layout));
+		}
 	}
 
 	inline void SetSRVBufferViewState(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanBufferView* View)
@@ -93,7 +114,7 @@ public:
 	}
 
 	template<bool bDynamic>
-	inline void SetUniformBuffer(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanRealUniformBuffer* UniformBuffer)
+	inline void SetUniformBuffer(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanUniformBuffer* UniformBuffer)
 	{
 /*
 		if ((UniformBuffersWithDataMask[DescriptorSet] & (1ULL << (uint64)BindingIndex)) != 0)
@@ -110,6 +131,12 @@ public:
 		}
 	}
 
+#if VULKAN_RHI_RAYTRACING
+	inline void SetAccelerationStructure(uint8 DescriptorSet, uint32 BindingIndex, VkAccelerationStructureKHR AccelerationStructure)
+	{
+		MarkDirty(DSWriter[DescriptorSet].WriteAccelerationStructure(BindingIndex, AccelerationStructure));
+	}
+#endif // VULKAN_RHI_RAYTRACING
 
 protected:
 	void Reset()
@@ -173,9 +200,9 @@ public:
 		PackedUniformBuffers.SetPackedGlobalParameter(BufferIndex, ByteOffset, NumBytes, NewValue, PackedUniformBuffersDirty);
 	}
 
-	inline void SetUniformBufferConstantData(uint32 BindingIndex, const TArray<uint8>& ConstantData, const FVulkanUniformBuffer* SrcBuffer)
+	inline void SetUniformBufferConstantData(uint32 BindingIndex, const TArray<uint8>& ConstantData)
 	{
-		PackedUniformBuffers.SetEmulatedUniformBufferIntoPacked(BindingIndex, ConstantData, SrcBuffer, PackedUniformBuffersDirty);
+		PackedUniformBuffers.SetEmulatedUniformBufferIntoPacked(BindingIndex, ConstantData, PackedUniformBuffersDirty);
 	}
 
 	bool UpdateDescriptorSets(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer)
@@ -232,12 +259,12 @@ public:
 		PackedUniformBuffers[Stage].SetPackedGlobalParameter(BufferIndex, ByteOffset, NumBytes, NewValue, PackedUniformBuffersDirty[Stage]);
 	}
 
-	inline void SetUniformBufferConstantData(uint8 Stage, uint32 BindingIndex, const TArray<uint8>& ConstantData, const FVulkanUniformBuffer* SrcBuffer)
+	inline void SetUniformBufferConstantData(uint8 Stage, uint32 BindingIndex, const TArray<uint8>& ConstantData)
 	{
-		PackedUniformBuffers[Stage].SetEmulatedUniformBufferIntoPacked(BindingIndex, ConstantData, SrcBuffer, PackedUniformBuffersDirty[Stage]);
+		PackedUniformBuffers[Stage].SetEmulatedUniformBufferIntoPacked(BindingIndex, ConstantData, PackedUniformBuffersDirty[Stage]);
 	}
 
-	inline void SetDynamicUniformBuffer(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanRealUniformBuffer* UniformBuffer)
+	inline void SetDynamicUniformBuffer(uint8 DescriptorSet, uint32 BindingIndex, const FVulkanUniformBuffer* UniformBuffer)
 	{
 		ensure(0);
 /*
@@ -315,11 +342,6 @@ static inline bool UpdatePackedUniformBuffers(VkDeviceSize UBOffsetAlignment, co
 
 			// get location in the ring buffer to use
 			FMemory::Memcpy(CPURingBufferBase + RingBufferOffset, StagedUniformBuffer.GetData(), UBSize);
-
-			if (UniformBufferUploader->bEnableUniformBufferPatching)
-			{
-				PackedUniformBuffers.RecordUniformBufferPatch(UniformBufferUploader->GetUniformBufferPatchInfo(), UniformBufferUploader->UniformBufferPatchingFrameNumber, PackedUBIndex, CPURingBufferBase + RingBufferOffset);
-			}
 
 			if (bIsDynamic)
 			{

@@ -36,6 +36,18 @@ public:
 	 * @return	true if the image was decompressed successfully, otherwise false if an error occurred
 	 */
 	virtual bool DecompressImage( const TArray< uint8 >& InCompressedData, const int32 InWidth, const int32 InHeight, TArray< uint8 >& OutUncompressedData ) = 0;
+
+	/** Get name of compressor
+	 * 
+	 * @return Name of thumbnail compressor
+	 */
+	virtual FName GetThumbnailCompressorName() const = 0;
+
+	/** Is lossless compression
+	 * 
+	 * @return true if compression is lossless
+	 */
+	virtual bool IsLosslessCompression() const = 0;
 };
 
 
@@ -52,15 +64,18 @@ public:
 	 *
 	 * @param	InThumbnailCompressor	A class derived from FThumbnailCompressionInterface.
 	 */
-	static void SetThumbnailCompressor( FThumbnailCompressionInterface* InThumbnailCompressor )
+	static void SetThumbnailCompressors( FThumbnailCompressionInterface* InPNGThumbnailCompressor, 
+		FThumbnailCompressionInterface* InJPEGThumbnailCompressor)
 	{
-		ThumbnailCompressor = InThumbnailCompressor;
+		PNGThumbnailCompressor = InPNGThumbnailCompressor;
+		JPEGThumbnailCompressor = InJPEGThumbnailCompressor;
 	}
 
 private:
 
 	/** Static: Thumbnail compressor. */
-	static FThumbnailCompressionInterface* ThumbnailCompressor;
+	static FThumbnailCompressionInterface* PNGThumbnailCompressor;
+	static FThumbnailCompressionInterface* JPEGThumbnailCompressor;
 
 public:
 
@@ -136,6 +151,12 @@ public:
 	{
 		return ImageWidth == 0 || ImageHeight == 0;
 	}
+
+	/** Returns thumbnail compressor used on current compressed image data. */
+	FThumbnailCompressionInterface* GetCompressor() const;
+
+	/** Returns thumbnail compressor that would be used on current uncompressed image data. */
+	FThumbnailCompressionInterface* ChooseNewCompressor() const;
 
 	/** Returns uncompressed image data, decompressing it on demand if needed. */
 	const TArray< uint8 >& GetUncompressedImageData() const;
@@ -227,6 +248,9 @@ private:
 
 	/** Whether the thumbnail has a backup on disk*/
 	bool bLoadedFromDisk;
+
+	/** Whether compressed data is JPEG (else PNG) */
+	bool bIsJPEG;
 
 	/** Whether this was saved AFTER custom-thumbnails for shared thumbnail asset types was supported */
 	bool bCreatedAfterCustomThumbForSharedTypesEnabled;

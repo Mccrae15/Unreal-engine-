@@ -55,8 +55,8 @@ public:
 	FORCEINLINE const UFieldSystem* GetFieldSystem() const { return FieldSystem; }
 
 	/** Field system asset to be used to store the construction fields */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = "Field", meta = (ToolTip = "Field system asset to be used to store the construction fields"))
-	UFieldSystem* FieldSystem;
+	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = "Field", meta = (ToolTip = "Field system asset to be used to store the construction fields. This asset is not required anymore and will be deprecated soon."))
+	TObjectPtr<UFieldSystem> FieldSystem;
 
 	/** If enabled the field will be pushed to the world fields and will be available to materials and niagara */
 	UPROPERTY(EditAnywhere, Category = "Field", meta = (ToolTip = "If enabled the field will be pushed to the world fields and will be available to materials and niagara"))
@@ -192,8 +192,6 @@ public:
 	*    for examples of how to recreate variations of the above generic
 	*    fields using field networks
 	*
-	*    (https://wiki.it.epicgames.net/display/~Brice.Criswell/Fields)
-	*
 	*    @param Enabled Is this force enabled for evaluation.
 	*    @param Target Type of field supported by the solver.
 	*    @param MetaData Meta data used to assist in evaluation
@@ -217,8 +215,6 @@ public:
 	*    the component is destroyed or until the RemovePersistenFields function is called. See documentation,
 	*    for examples of how to recreate variations of the above generic
 	*    fields using field networks
-	*
-	*    (https://wiki.it.epicgames.net/display/~Brice.Criswell/Fields)
 	*
 	*    @param Enabled Is this force enabled for evaluation.
 	*    @param Target Type of field supported by the solver.
@@ -251,8 +247,6 @@ public:
 	*    construction script to setup some particles properties (anchors...). See documentation,
 	*    for examples of how to recreate variations of the above generic
 	*    fields using field networks
-	*
-	*    (https://wiki.it.epicgames.net/display/~Brice.Criswell/Fields)
 	*
 	*    @param Enabled Is this force enabled for evaluation.
 	*    @param Target Type of field supported by the solver.

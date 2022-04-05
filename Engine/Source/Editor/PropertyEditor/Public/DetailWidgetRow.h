@@ -3,15 +3,19 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Misc/Attribute.h"
+#include "IDetailPropertyRow.h"
+#include "PropertyHandle.h"
+#include "Framework/Commands/UIAction.h"
 #include "Layout/Visibility.h"
+#include "Misc/Attribute.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SWidget.h"
-#include "Framework/Commands/UIAction.h"
 #include "Widgets/Layout/SSpacer.h"
-#include "PropertyHandle.h"
+#include "DetailCategoryBuilder.h"
 
 class FDetailWidgetRow;
+class FResetToDefaultOverride;
+class IDetailDragDropHandler;
 
 /** Widget declaration for custom widgets in a widget row */
 class FDetailWidgetDecl
@@ -24,15 +28,24 @@ public:
 		, VerticalAlignment( InVAlign )
 		, MinWidth( InMinWidth )
 		, MaxWidth( InMaxWidth )
-		, ParentDecl( InParentDecl )
+		, ParentDecl( &InParentDecl )
 	{
+	}
 
+	FDetailWidgetDecl( class FDetailWidgetRow& InParentDecl, const FDetailWidgetDecl& Other )
+		: Widget( Other.Widget )
+		, HorizontalAlignment( Other.HorizontalAlignment )
+		, VerticalAlignment( Other.VerticalAlignment )
+		, MinWidth( Other.MinWidth )
+		, MaxWidth( Other.MaxWidth )
+		, ParentDecl( &InParentDecl )
+	{
 	}
 
 	FDetailWidgetRow& operator[]( TSharedRef<SWidget> InWidget )
 	{
 		Widget = InWidget;
-		return ParentDecl;
+		return *ParentDecl;
 	}
 
 	FDetailWidgetDecl& VAlign( EVerticalAlignment InAlignment )
@@ -68,7 +81,7 @@ private:
 
 		void Construct( const FArguments& InArgs )
 		{
-			Visibility = EVisibility::Collapsed;
+			SetVisibility(EVisibility::Collapsed);
 		}
 
 	};
@@ -79,7 +92,7 @@ public:
 	TOptional<float> MinWidth;
 	TOptional<float> MaxWidth;
 private:
-	class FDetailWidgetRow& ParentDecl;
+	class FDetailWidgetRow* ParentDecl;
 };
 
 
@@ -88,15 +101,16 @@ static FName InvalidDetailWidgetName = TEXT("SInvalidDetailWidget");
 /**
  * Represents a single row of custom widgets in a details panel 
  */
-class FDetailWidgetRow
+class FDetailWidgetRow : public IDetailLayoutRow
 {
 public:
 	PROPERTYEDITOR_API const static float DefaultValueMinWidth;
 	PROPERTYEDITOR_API const static float DefaultValueMaxWidth;
 
 	FDetailWidgetRow()
-		: NameWidget( *this, 0.0f, 0.0f, HAlign_Fill, VAlign_Center )
-		, ValueWidget( *this, DefaultValueMinWidth, DefaultValueMaxWidth, HAlign_Left, VAlign_Fill )
+		: NameWidget( *this, 0.0f, 0.0f, HAlign_Left, VAlign_Center )
+		, ValueWidget( *this, DefaultValueMinWidth, DefaultValueMaxWidth, HAlign_Left, VAlign_Center )
+		, ExtensionWidget( *this, 0.0f, 0.0f, HAlign_Right, VAlign_Center)
 		, WholeRowWidget( *this, 0.0f, 0.0f, HAlign_Fill, VAlign_Fill )
 		, VisibilityAttr( EVisibility::Visible )
 		, IsEnabledAttr( true )
@@ -104,10 +118,35 @@ public:
 		, CopyMenuAction()
 		, PasteMenuAction()
 		, RowTagName()
-		, DiffersFromDefaultAttr( false )
 	{
 	}
-	
+	FDetailWidgetRow& operator=(const FDetailWidgetRow& Other)
+	{
+		NameWidget = FDetailWidgetDecl(*this, Other.NameWidget);
+		ValueWidget = FDetailWidgetDecl(*this, Other.ValueWidget);
+		ExtensionWidget = FDetailWidgetDecl(*this, Other.ExtensionWidget);
+		WholeRowWidget = FDetailWidgetDecl(*this, Other.WholeRowWidget);
+		VisibilityAttr = Other.VisibilityAttr;
+		IsEnabledAttr = Other.IsEnabledAttr;
+		IsValueEnabledAttr = Other.IsValueEnabledAttr;
+		FilterTextString = Other.FilterTextString;
+		CopyMenuAction = Other.CopyMenuAction;
+		PasteMenuAction = Other.PasteMenuAction;
+		CustomMenuItems = Other.CustomMenuItems;
+		RowTagName = Other.RowTagName;
+		CustomResetToDefault = Other.CustomResetToDefault;
+		EditConditionValue = Other.EditConditionValue;
+		OnEditConditionValueChanged = Other.OnEditConditionValueChanged;
+		CustomDragDropHandler = Other.CustomDragDropHandler;
+		PropertyHandles = Other.PropertyHandles;
+		return *this;
+	}
+
+	virtual ~FDetailWidgetRow() {}
+
+	/** IDetailLayoutRow interface */
+	virtual FName GetRowName() const override { return RowTagName; }
+
 	/**
 	 * Assigns content to the entire row
 	 */
@@ -142,6 +181,14 @@ public:
 	}
 
 	/**
+     * Assigns content to the extension (right) slot
+	 */
+	FDetailWidgetDecl& ExtensionContent()
+	{
+		return ExtensionWidget;
+	}
+
+	/**
 	 * Sets a string which should be used to filter the content when a user searches
 	 */
 	FDetailWidgetRow& FilterString( const FText& InFilterString )
@@ -160,11 +207,20 @@ public:
 	}
 
 	/**
-	 * Sets the visibility of the entire row
+	 * Sets the enabled state of the entire row
 	 */
 	FDetailWidgetRow& IsEnabled( const TAttribute<bool>& InIsEnabled )
 	{
 		IsEnabledAttr = InIsEnabled;
+		return *this;
+	}
+
+    /**
+     * Sets the enabled state of the value widget only
+     */
+	FDetailWidgetRow& IsValueEnabled( const TAttribute<bool>& InIsEnabled )
+	{
+		IsValueEnabledAttr = InIsEnabled;
 		return *this;
 	}
 
@@ -205,6 +261,11 @@ public:
 		return ValueWidget.Widget->GetType() != InvalidDetailWidgetName;
 	}
 
+	bool HasExtensionContent() const
+	{
+		return ExtensionWidget.Widget->GetType() != InvalidDetailWidgetName;
+	}
+
 	/**
 	 * @return true if the row has columns, false if it spans the entire row
 	 */
@@ -239,9 +300,28 @@ public:
 	/**
 	* Sets flag to indicate if property value differs from the default
 	*/
-	FDetailWidgetRow& DiffersFromDefault(const TAttribute<bool>& InDiffersFromDefaultAttr)
+	FDetailWidgetRow& OverrideResetToDefault(const FResetToDefaultOverride& InResetToDefaultOverride)
 	{
-		DiffersFromDefaultAttr = InDiffersFromDefaultAttr;
+		CustomResetToDefault = InResetToDefaultOverride;
+		return *this;
+	}
+
+	/** 
+	 * Override the edit condition.
+	 */ 
+	FDetailWidgetRow& EditCondition(TAttribute<bool> InEditConditionValue, FOnBooleanValueChanged InOnEditConditionValueChanged)
+	{
+		EditConditionValue = InEditConditionValue;
+		OnEditConditionValueChanged = InOnEditConditionValueChanged;
+		return *this;
+	}
+	
+	/**
+	 * Sets a handler for the row to be a source or target of drag-and-drop operations.
+	 */
+	FDetailWidgetRow& DragDropHandler(TSharedPtr<IDetailDragDropHandler> InDragDropHandler)
+	{
+		CustomDragDropHandler = InDragDropHandler;
 		return *this;
 	}
 
@@ -264,12 +344,16 @@ public:
 	FDetailWidgetDecl NameWidget;
 	/** Value column content */
 	FDetailWidgetDecl ValueWidget;
+	/** Extension (right) column content */
+	FDetailWidgetDecl ExtensionWidget;
 	/** Whole row content */
 	FDetailWidgetDecl WholeRowWidget;
 	/** Visibility of the row */
 	TAttribute<EVisibility> VisibilityAttr;
 	/** IsEnabled of the row */
 	TAttribute<bool> IsEnabledAttr;
+    /** IsEnabled of the value widget only */
+	TAttribute<bool> IsValueEnabledAttr;
 	/** String to filter with */
 	FText FilterTextString;
 	/** Action for coping data on this row */
@@ -293,11 +377,16 @@ public:
 	};
 	/** Custom Action on this row */
 	TArray<FCustomMenuData> CustomMenuItems;
-
 	/* Tag to identify this row */
 	FName RowTagName;
-	/* Flag to track if property has been modified from default */
-	TAttribute<bool> DiffersFromDefaultAttr;
+	/** Custom reset to default handler */
+	TOptional<FResetToDefaultOverride> CustomResetToDefault;
+	/** Custom edit condition value. */
+	TAttribute<bool> EditConditionValue;
+	/** Custom edit condition value changed handler. */
+	FOnBooleanValueChanged OnEditConditionValueChanged;
+	/** Custom handler for drag-and-drop of the row */
+	TSharedPtr<IDetailDragDropHandler> CustomDragDropHandler;
 	/* All property handle that this custom widget represent */
 	TArray<TSharedPtr<IPropertyHandle>> PropertyHandles;
 };

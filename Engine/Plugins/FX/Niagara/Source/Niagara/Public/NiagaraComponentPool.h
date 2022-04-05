@@ -19,7 +19,7 @@ struct FNCPoolElement
 	GENERATED_BODY()
 
 	UPROPERTY(transient)
-	UNiagaraComponent* Component;
+	TObjectPtr<UNiagaraComponent> Component;
 
 	float LastUsedTime;
 
@@ -83,7 +83,7 @@ class NIAGARA_API UNiagaraComponentPool : public UObject
 
 private:
 	UPROPERTY()
-	TMap<UNiagaraSystem*, FNCPool> WorldParticleSystemPools;
+	TMap<TObjectPtr<UNiagaraSystem>, FNCPool> WorldParticleSystemPools;
 
 	float LastParticleSytemPoolCleanTime;
 public:

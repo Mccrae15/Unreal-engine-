@@ -124,6 +124,12 @@
 ///
 /// Language | API
 /// -------- | -------------------------------------
+/// C        | @ref GfnGetClientInfo
+///
+/// @copydoc GfnGetClientInfo
+///
+/// Language | API
+/// -------- | -------------------------------------
 /// C        | @ref GfnRegisterStreamStatusCallback
 ///
 /// @copydoc GfnRegisterStreamStatusCallback
@@ -187,6 +193,25 @@
 /// C        | @ref GfnAppReady
 ///
 /// @copydoc GfnAppReady
+///
+/// Language | API
+/// -------- | -------------------------------------
+/// C        | @ref GfnSetActionZone
+///
+/// @copydoc GfnSetActionZone
+///
+/// Language | API
+/// -------- | -------------------------------------
+/// C        | @ref GfnRegisterClientInfoCallback
+///
+/// @copydoc GfnRegisterClientInfoCallback
+/// 
+/// Language | API
+/// -------- | -------------------------------------
+/// C        | @ref GfnRegisterNetworkStatusCallback
+///
+/// @copydoc GfnRegisterNetworkStatusCallback
+/// 
 
 #include "GfnRuntimeSdk_CAPI.h"
 
@@ -223,7 +248,28 @@ extern "C"
     ///                                     in this scenario.
     /// @retval gfnDllNotPresent          - GFN SDK Library could not be found.
     /// @retval gfnAPINotFound            - The API was not found in the GFN SDK Library
-    GfnRuntimeError GfnInitializeSdk(GfnDisplayLanguage language, const wchar_t* dllPath);
+    GfnRuntimeError GfnInitializeSdk(GfnDisplayLanguage language);
+
+    /// @par Description
+    /// Loads the GFN SDK dynamic library from the given path and calls @ref gfnInitializeRuntimeSdk.
+    ///
+    /// @par Environment
+    /// Cloud and Client
+    ///
+    /// @par Usage
+    /// Call as soon as possible during application startup.
+    ///
+    /// @param language                   - Language to use for any UI, such as GFN download and install progress dialogs.
+    ///                                     Defaults to system language if not defined.
+    /// @param sdkLibraryPath             - Fully-quantified path to GFN SDK Library including the name GfnRuntimeSdk.dll,
+    ///                                     note that dll cannot be renamed to any other string.
+    /// @retval gfnSuccess                - If the SDK was initialized and all SDK features are available.
+    /// @retval gfnInitSuccessClientOnly  - If the SDK was initialized, but only client-side functionality is available, such as
+    ///                                     calls to gfnStartStream. By definition, gfnIsRunningInCloud is expected to return false
+    ///                                     in this scenario.
+    /// @retval gfnDllNotPresent          - GFN SDK Library could not be found.
+    /// @retval gfnAPINotFound            - The API was not found in the GFN SDK Library
+    GfnRuntimeError GfnInitializeSdkFromPath(GfnDisplayLanguage language, const wchar_t* sdkLibraryPath);
 
     ///
     /// @par Description
@@ -346,7 +392,7 @@ extern "C"
 
     ///
     /// @par Description
-    /// Gets user’s client country code using ISO 3166-1 Alpha-2 country code.
+    /// Gets user's client country code using ISO 3166-1 Alpha-2 country code.
     ///
     /// @par Environment
     /// Cloud
@@ -365,6 +411,25 @@ extern "C"
     /// @retval gfnAPINotFound           - The API was not found in the GFN SDK Library
     GfnRuntimeError GfnGetClientCountryCode(char* countryCode, unsigned int length);
 
+    ///
+    /// @par Description
+    /// Gets user's client data.
+    ///
+    /// @par Environment
+    /// Cloud
+    ///
+    /// @par Usage
+    /// Call this during application start or from the platform client in order to get
+    /// the data on the user's client.
+    ///
+    /// @param[out] clientInfo           - A structure to hold clientInfo data
+    ///
+    /// @retval gfnSuccess               - On success
+    /// @retval gfnInvalidParameter      - NULL pointer passed in
+    /// @retval gfnCallWrongEnvironment  - If called in a client environment
+    /// @retval gfnDllNotPresent         - GFN SDK Library could not be found.
+    /// @retval gfnAPINotFound           - The API was not found in the GFN SDK Library
+        GfnRuntimeError GfnGetClientInfo(GfnClientInfo* clientInfo);
     ///
     /// @par Description
     /// Calls @ref GfnGetCustomData to retrieves custom data passed in by the client in the
@@ -747,6 +812,17 @@ extern "C"
 
     ///
     /// @par Description
+    /// Registers an application callback with GFN to be called when client info changes
+    ///
+    /// @param clientInfoCallback       - Function pointer to application code to call when GFN client data changes
+    ///
+    /// @retval gfnSuccess              - On success when running in a GFN environment
+    /// @retval gfnDllNotPresent        - GFN SDK Library could not be found.
+    /// @retval gfnAPINotFound          - The API was not found in the GFN SDK Library
+    GfnRuntimeError GfnRegisterClientInfoCallback(ClientInfoCallbackSig clientInfoCallback, void* userContext);
+
+    ///
+    /// @par Description
     /// Calls @ref GfnAppReady to notify GFN that an application is ready to be displayed.
     ///
     /// @par Environment
@@ -764,6 +840,29 @@ extern "C"
     /// @retval gfnAPINotFound           - The API was not found in the GFN SDK Library
     GfnRuntimeError GfnAppReady(bool success, const char * status);
 
+    ///
+    /// @par Description
+    /// Sends Active zone coordinates to GFN Client
+    ///
+    /// @par Environment
+    /// Cloud
+    ///
+    /// @par Usage
+    /// Use to invoke special events on the client from the GFN cloud environment
+    ///
+    /// @param type                 - Populated with relevant GfnActionType
+    /// @param id                   - unique unsigned int type identifier for this event
+    /// @param zone                 - Optional zone coordinates relevant to type specified
+    ///
+    /// @retval gfnSuccess              - Call was successful
+    /// @retval gfnInputExpected        - Expected zone to have a value
+    /// @retval gfnComError             - There was SDK internal communication error
+    /// @retval gfnInitFailure          - SDK was not initialized
+    /// @retval gfnInvalidParameter     - Invalid parameters provided
+    /// @retval gfnThrottled            - API call was throttled for exceeding limit
+    /// @retval gfnUnhandledException   - API ran into an unhandled error and caught an exception before it returned to client code
+    /// @return Otherwise, appropriate error code
+    GfnRuntimeError GfnSetActionZone(GfnActionType type, unsigned int id, GfnRect* zone);
     /// @}
 #ifdef __cplusplus
     } // extern "C"

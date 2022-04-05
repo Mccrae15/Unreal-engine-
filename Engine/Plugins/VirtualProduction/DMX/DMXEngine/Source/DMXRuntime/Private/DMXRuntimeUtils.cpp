@@ -2,9 +2,75 @@
 
 #include "DMXRuntimeUtils.h"
 
+#include "Library/DMXLibrary.h"
 #include "Library/DMXEntityFixturePatch.h"
 
+
 #define LOCTEXT_NAMESPACE "FDMXRuntimeUtils"
+
+FString FDMXRuntimeUtils::GenerateUniqueNameFromExisting(const TSet<FString>& InExistingNames, const FString& InBaseName)
+{
+	if (!InBaseName.IsEmpty() && !InExistingNames.Contains(InBaseName))
+	{
+		return InBaseName;
+	}
+
+	FString FinalName;
+	FString BaseName;
+
+	int32 Index = 0;
+	if (InBaseName.IsEmpty())
+	{
+		BaseName = TEXT("Default name");
+	}
+	else
+	{
+		// If there's an index at the end of the name, start from there
+		FDMXRuntimeUtils::GetNameAndIndexFromString(InBaseName, BaseName, Index);
+	}
+
+	int32 Count = (Index == 0) ? 1 : Index;
+	FinalName = BaseName;
+	// Add Count to the BaseName, increasing Count, until it's a non-existent name
+	do
+	{
+		// Calculate the number of digits in the number, adding 2 (1 extra to correctly count digits, another to account for the '_' that will be added to the name
+		int32 CountLength = Count > 0 ? (int32)FGenericPlatformMath::LogX(10.0f, Count) + 2 : 2;
+
+		// If the length of the final string will be too long, cut off the end so we can fit the number
+		if (CountLength + BaseName.Len() >= NAME_SIZE)
+		{
+			BaseName = BaseName.Left(NAME_SIZE - CountLength - 1);
+		}
+
+		FinalName = FString::Printf(TEXT("%s_%d"), *BaseName, Count);
+		++Count;
+	} while (InExistingNames.Contains(FinalName));
+
+	return FinalName;
+}
+
+FString FDMXRuntimeUtils::FindUniqueEntityName(const UDMXLibrary* InLibrary, TSubclassOf<UDMXEntity> InEntityClass, const FString& InBaseName /*= TEXT("")*/)
+{
+	check(InLibrary);
+
+	// Get existing names for the current entity type
+	TSet<FString> EntityNames;
+	InLibrary->ForEachEntityOfType(InEntityClass, [&EntityNames](UDMXEntity* Entity)
+		{
+			EntityNames.Add(Entity->GetDisplayName());
+		});
+
+	FString BaseName = InBaseName;
+
+	// If no base name was set, use the entity class name as base
+	if (BaseName.IsEmpty())
+	{
+		BaseName = *InEntityClass->GetName();
+	}
+
+	return FDMXRuntimeUtils::GenerateUniqueNameFromExisting(EntityNames, BaseName);
+}
 
 bool FDMXRuntimeUtils::GetNameAndIndexFromString(const FString& InString, FString& OutName, int32& OutIndex)
 {

@@ -19,7 +19,10 @@ struct CORE_API FMapErrors
     static FLazyName MatchingLightGUID;
  
     /**  Actor */
-    
+
+	/** {Actor} has same GUID as {Actor} (Duplicate and replace the orig with the new one): Duplicate and replace the original with the new one. */
+    static FLazyName MatchingActorGUID;
+
 	/** {Actor} : Large actor casts a shadow and will cause an extreme performance hit unless bUseBooleanEnvironmentShadowing is set to true: A large actor has been set to cast shadows - this will cause extreme performance issues and should have bUseBooleanEnvironmentShadowing set to true. */
     static FLazyName ActorLargeShadowCaster;
 
@@ -105,16 +108,19 @@ struct CORE_API FMapErrors
 
     /**  Landscape */
 
-	/** {LandscapeComponent} : Fixed up deleted layer weightmap: **TODO** */
+	/** {LandscapeComponent} : Fixed up deleted layer weightmap: */
     static FLazyName FixedUpDeletedLayerWeightmap;
     
-	/** {LandscapeComponent} : Fixed up incorrect layer weightmap texture index: **TODO** */
+	/** {LandscapeComponent} : Fixed up incorrect layer weightmap texture index: */
     static FLazyName FixedUpIncorrectLayerWeightmap;
     
-	/** Fixed up shared weightmap texture for layer {Layer} in component {Component} (shares with {Name}): **TODO** */
+	/** {LandscapeComponent} : Fixed up invalid material instances for a landscape component when its weightmap allocations don't match the material's layer configuration : */
+	static FLazyName FixedUpInvalidLandscapeMaterialInstances;
+
+	/** Fixed up shared weightmap texture for layer {Layer} in component {Component} (shares with {Name}): */
     static FLazyName FixedUpSharedLayerWeightmap;
 
-	/** Landscape ({ProxyName}) has overlapping render components at location ({X, Y}): **TODO** */
+	/** Landscape ({ProxyName}) has overlapping render components at location ({X, Y}): */
 	static FLazyName LandscapeComponentPostLoad_Warning;
 
 
@@ -223,9 +229,6 @@ struct CORE_API FMapErrors
 
 	/** {LODActor} : NoActor is assigned. We recommend to delete this actor. */
 	static FLazyName LODActorNoActorFound;
-
-	/** Hierarchical LOD System is disabled, unable to build LOD actors */
-	static FLazyName HLODSystemNotEnabled;
 
 	/** Virtual Textures */
 

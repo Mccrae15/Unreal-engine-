@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "Net/OnlineEngineInterface.h"
 #include "OnlineEngineInterfaceImpl.generated.h"
 
@@ -28,7 +28,7 @@ public:
 	virtual void ShutdownOnlineSubsystem(FName OnlineIdentifier) override;
 	virtual void DestroyOnlineSubsystem(FName OnlineIdentifier) override;
 	virtual FName GetDefaultOnlineSubsystemName() const override;
-	virtual bool IsCompatibleUniqueNetId(const FUniqueNetId& InUniqueNetId) const override;
+	virtual bool IsCompatibleUniqueNetId(const FUniqueNetIdWrapper& InUniqueNetId) const override;
 
 	/**
 	 * Utils
@@ -60,10 +60,10 @@ private:
 	 */
 public:
 
-	virtual FUniqueNetIdPtr CreateUniquePlayerId(const FString& Str, FName Type) override;
-	virtual FUniqueNetIdPtr GetUniquePlayerId(UWorld* World, int32 LocalUserNum, FName Type) override;
+	virtual FUniqueNetIdWrapper CreateUniquePlayerIdWrapper(const FString& Str, FName Type) override;
+	virtual FUniqueNetIdWrapper GetUniquePlayerIdWrapper(UWorld* World, int32 LocalUserNum, FName Type) override;
 
-	virtual FString GetPlayerNickname(UWorld* World, const FUniqueNetId& UniqueId) override;
+	virtual FString GetPlayerNickname(UWorld* World, const FUniqueNetIdWrapper& UniqueId) override;
 	virtual bool GetPlayerPlatformNickname(UWorld* World, int32 LocalUserNum, FString& OutNickname) override;
 
 	virtual bool AutoLogin(UWorld* World, int32 LocalUserNum, const FOnlineAutoLoginComplete& InCompletionDelegate) override;
@@ -86,9 +86,9 @@ public:
 	virtual bool GetSessionJoinability(UWorld* World, FName SessionName, FJoinabilitySettings& OutSettings) override;
 	virtual void UpdateSessionJoinability(UWorld* World, FName SessionName, bool bPublicSearchable, bool bAllowInvites, bool bJoinViaPresence, bool bJoinViaPresenceFriendsOnly) override;
 
-	virtual void RegisterPlayer(UWorld* World, FName SessionName, const FUniqueNetId& UniqueId, bool bWasInvited) override;
-	virtual void UnregisterPlayer(UWorld* World, FName SessionName, const FUniqueNetId& UniqueId) override;
-	virtual void UnregisterPlayers(UWorld* World, FName SessionName, const TArray< FUniqueNetIdRef >& Players) override;
+	virtual void RegisterPlayer(UWorld* World, FName SessionName, const FUniqueNetIdWrapper& UniqueId, bool bWasInvited) override;
+	virtual void UnregisterPlayer(UWorld* World, FName SessionName, const FUniqueNetIdWrapper& UniqueId) override;
+	virtual void UnregisterPlayers(UWorld* World, FName SessionName, const TArray<FUniqueNetIdWrapper>& Players) override;
 
 	virtual bool GetResolvedConnectString(UWorld* World, FName SessionName, FString& URL) override;
 
@@ -114,8 +114,8 @@ public:
 	virtual void StopNetworkedVoice(UWorld* World, uint8 LocalUserNum) override;
 	virtual void ClearVoicePackets(UWorld* World) override;
 
-	virtual bool MuteRemoteTalker(UWorld* World, uint8 LocalUserNum, const FUniqueNetId& PlayerId, bool bIsSystemWide) override;
-	virtual bool UnmuteRemoteTalker(UWorld* World, uint8 LocalUserNum, const FUniqueNetId& PlayerId, bool bIsSystemWide) override;
+	virtual bool MuteRemoteTalker(UWorld* World, uint8 LocalUserNum, const FUniqueNetIdWrapper& PlayerId, bool bIsSystemWide) override;
+	virtual bool UnmuteRemoteTalker(UWorld* World, uint8 LocalUserNum, const FUniqueNetIdWrapper& PlayerId, bool bIsSystemWide) override;
 
 	virtual int32 GetNumLocalTalkers(UWorld* World) override;
 
@@ -127,10 +127,8 @@ public:
 	virtual void ShowLeaderboardUI(UWorld* World, const FString& CategoryName) override;
 	virtual void ShowAchievementsUI(UWorld* World, int32 LocalUserNum) override;
 	virtual void BindToExternalUIOpening(const FOnlineExternalUIChanged& Delegate) override;
-#ifdef OSS_ADDED_SHOW_WEB
 	virtual void ShowWebURL(const FString& CurrentURL, const UOnlineEngineInterface::FShowWebUrlParams& ShowParams, const FOnlineShowWebUrlClosed& CompletionDelegate) override;
 	virtual bool CloseWebURL() override;
-#endif
 
 private:
 
@@ -164,6 +162,5 @@ private:
 	/** Mapping of delegate handles for each online Login() call while in flight */
 	TMap<FName, FDelegateHandle> OnLoginPIECompleteDelegateHandlesForPIEInstances;
 	void OnPIELoginComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId, const FString& Error, FName OnlineIdentifier, FOnlineAutoLoginComplete InCompletionDelegate);
-
 };
 

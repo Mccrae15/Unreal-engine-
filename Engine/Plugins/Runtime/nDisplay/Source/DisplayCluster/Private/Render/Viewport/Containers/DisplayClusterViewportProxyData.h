@@ -8,12 +8,12 @@
 #include "Render/Viewport/Containers/DisplayClusterViewport_OverscanSettings.h"
 
 class IDisplayClusterProjectionPolicy;
-class FDisplayClusterTextureResource;
-class FDisplayClusterRenderTargetResource;
+class FDisplayClusterViewportTextureResource;
+class FDisplayClusterViewportRenderTargetResource;
 class FDisplayClusterViewport;
 class FDisplayClusterViewportProxy;
 class FDisplayClusterViewport_Context;
-
+class IDisplayClusterRender_MeshComponent;
 
 //
 // Container for data exchange game->render threads
@@ -29,6 +29,8 @@ public:
 private:
 	FDisplayClusterViewportProxy* DstViewportProxy;
 
+	TSharedPtr<IDisplayClusterRender_MeshComponent, ESPMode::ThreadSafe> RemapMesh;
+
 	FDisplayClusterViewport_OverscanSettings     OverscanSettings;
 
 	// Viewport render params
@@ -43,19 +45,19 @@ private:
 	TArray<FDisplayClusterViewport_Context>      Contexts;
 
 	// View family render to this resources
-	TArray<FDisplayClusterRenderTargetResource*> RenderTargets;
+	TArray<FDisplayClusterViewportRenderTargetResource*> RenderTargets;
 
 	// Projection policy output resources
-	TArray<FDisplayClusterTextureResource*> OutputFrameTargetableResources;
-	TArray<FDisplayClusterTextureResource*> AdditionalFrameTargetableResources;
+	TArray<FDisplayClusterViewportTextureResource*> OutputFrameTargetableResources;
+	TArray<FDisplayClusterViewportTextureResource*> AdditionalFrameTargetableResources;
 
 #if WITH_EDITOR
 	FTextureRHIRef OutputPreviewTargetableResource;
 #endif
 
 	// unique viewport resources
-	TArray<FDisplayClusterTextureResource*> InputShaderResources;
-	TArray<FDisplayClusterTextureResource*> AdditionalTargetableResources;
-	TArray<FDisplayClusterTextureResource*> MipsShaderResources;
+	TArray<FDisplayClusterViewportTextureResource*> InputShaderResources;
+	TArray<FDisplayClusterViewportTextureResource*> AdditionalTargetableResources;
+	TArray<FDisplayClusterViewportTextureResource*> MipsShaderResources;
 };
 

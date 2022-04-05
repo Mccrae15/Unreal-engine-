@@ -32,11 +32,14 @@ public:
 		CS_Fail,
 	};
 
-	/** Sets the text for message element */
-	virtual void SetText( const TAttribute< FText >& InText ) = 0;
+	/** Sets the text for the notification element */
+	virtual void SetText(const TAttribute< FText >& InText) = 0;
+	
+	/** Sets the subtext the notification item. Sub text is used for longer text and is a smaller font */
+	virtual void SetSubText(const TAttribute<FText>& InSubText) = 0;
 
 	/** Sets the text and delegate for the hyperlink */
-	virtual void SetHyperlink( const FSimpleDelegate& InHyperlink, const TAttribute< FText >& InHyperlinkText = TAttribute< FText >() ) = 0;
+	virtual void SetHyperlink(const FSimpleDelegate& InHyperlink, const TAttribute< FText >& InHyperlinkText = TAttribute< FText >()) = 0;
 
 	/** Sets the ExpireDuration */
 	virtual void SetExpireDuration(float ExpireDuration) = 0;
@@ -107,9 +110,10 @@ struct FNotificationInfo
 	 *
 	 * @param	InText	Text string to display for this notification
 	 */
-	FNotificationInfo( const FText& InText )
+	FNotificationInfo(const FText& InText)
 		: ContentWidget(),
 		Text(InText),
+		SubText(),
 		ButtonDetails(),
 		Image(nullptr),
 		FadeInDuration(0.5f),
@@ -118,7 +122,7 @@ struct FNotificationInfo
 		bUseThrobber(true),
 		bUseSuccessFailIcons(true),
 		bUseLargeFont(true),
-		WidthOverride(),
+		WidthOverride(320.0f),
 		bFireAndForget(true),
 		CheckBoxState(ECheckBoxState::Unchecked),
 		CheckBoxStateChanged(),
@@ -136,6 +140,7 @@ struct FNotificationInfo
 	FNotificationInfo(TSharedPtr<INotificationWidget> InContentWidget)
 		: ContentWidget(InContentWidget),
 		Text(),
+		SubText(),
 		ButtonDetails(),
 		Image(nullptr),
 		FadeInDuration(0.5f),
@@ -144,7 +149,7 @@ struct FNotificationInfo
 		bUseThrobber(false),
 		bUseSuccessFailIcons(false),
 		bUseLargeFont(false),
-		WidthOverride(),
+		WidthOverride(320.0f),
 		bFireAndForget(true),
 		CheckBoxState(ECheckBoxState::Unchecked),
 		CheckBoxStateChanged(),
@@ -157,8 +162,11 @@ struct FNotificationInfo
 	/** If set, overrides the entire content of the notification with this widget */
 	TSharedPtr<INotificationWidget> ContentWidget;
 
-	/** The text displayed in this text block */
-	FText Text;
+	/** The text displayed in this notification. Suitable for short notifications and titles. */
+	TAttribute<FText> Text;
+
+	/** Optional subtext displayed in this notification. Subtext is smaller than the default text field and is better for long descriptions.*/
+	TAttribute<FText> SubText;
 
 	/** Setup information for the buttons on the notification */ 
 	TArray<FNotificationButtonInfo> ButtonDetails;
@@ -191,19 +199,22 @@ struct FNotificationInfo
 	bool bFireAndForget;
 
 	/** When set this will display a check box on the notification; handles getting the current check box state */
-	TAttribute< ECheckBoxState > CheckBoxState;
+	TAttribute<ECheckBoxState> CheckBoxState;
 
 	/** When set this will display a check box on the notification; handles setting the new check box state */
 	FOnCheckStateChanged CheckBoxStateChanged;
 
 	/** Text to display for the check box message */
-	TAttribute< FText > CheckBoxText;
+	TAttribute<FText> CheckBoxText;
 
 	/** When set this will display as a hyperlink on the right side of the notification. */
 	FSimpleDelegate Hyperlink;
 
 	/** Text to display for the hyperlink message */
-	TAttribute< FText > HyperlinkText;
+	TAttribute<FText> HyperlinkText;
+
+	/** A specific window to put the notification in. If this is null, the root window of the application will be used */
+	TSharedPtr<SWindow> ForWindow;
 
 	/** True if we should throttle the editor while the notification is transitioning and performance is poor, to make sure the user can see the animation */
 	bool bAllowThrottleWhenFrameRateIsLow;
@@ -222,8 +233,6 @@ class SLATE_API SNotificationList
 public:
 
 	SLATE_BEGIN_ARGS( SNotificationList ){}
-		/** Sets the font used to draw the text */
-		SLATE_ATTRIBUTE(FSlateFontInfo, Font)
 	SLATE_END_ARGS()
 	
 	/**
@@ -256,9 +265,6 @@ protected:
 
 	/** The parent window of this list. */
 	TWeakPtr<SWindow> ParentWindowPtr;
-
-	/** Holds passed in font */
-	TAttribute<FSlateFontInfo> Font;
 
 	/** Flag to auto-destroy this list. */
 	bool bDone;

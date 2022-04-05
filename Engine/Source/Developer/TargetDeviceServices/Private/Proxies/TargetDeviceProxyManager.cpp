@@ -25,7 +25,7 @@ FTargetDeviceProxyManager::FTargetDeviceProxyManager()
 	if (MessageEndpoint.IsValid())
 	{
 		TickDelegate = FTickerDelegate::CreateRaw(this, &FTargetDeviceProxyManager::HandleTicker);
-		TickDelegateHandle = FTicker::GetCoreTicker().AddTicker(TickDelegate, TARGET_DEVICE_SERVICES_PING_INTERVAL);
+		TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(TickDelegate, TARGET_DEVICE_SERVICES_PING_INTERVAL);
 
 		SendPing();
 	}
@@ -34,7 +34,7 @@ FTargetDeviceProxyManager::FTargetDeviceProxyManager()
 
 FTargetDeviceProxyManager::~FTargetDeviceProxyManager()
 {
-	FTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
 	FMessageEndpoint::SafeRelease(MessageEndpoint);
 }
 
@@ -148,9 +148,8 @@ void FTargetDeviceProxyManager::SendPing()
 			Proxy.Value->AddTimeout(Timeout);
 		}
 
-		// message is going to be deleted by FMemory::Free() (see FMessageContext destructor), so allocate it with Malloc
-		void* Memory = FMemory::Malloc(sizeof(FTargetDeviceServicePing), alignof(FTargetDeviceServicePing));
-		MessageEndpoint->Publish(new (Memory) FTargetDeviceServicePing(FPlatformProcess::UserName(false)), EMessageScope::Network);
+		// send to only this process, as we no longer want to send out pings to the local network and get another machine's list of devices
+		MessageEndpoint->Publish(FMessageEndpoint::MakeMessage<FTargetDeviceServicePing>(FPlatformProcess::UserName(false)), EMessageScope::Process);
 	}
 }
 

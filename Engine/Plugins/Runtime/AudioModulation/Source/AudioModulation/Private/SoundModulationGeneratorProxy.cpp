@@ -9,16 +9,36 @@ namespace AudioModulation
 {
 	const FGeneratorId InvalidGeneratorId = INDEX_NONE;
 
-	FModulatorGeneratorProxy::FModulatorGeneratorProxy(const FModulationGeneratorSettings& InSettings, FAudioModulationSystem& InModSystem)
-		: TModulatorProxyRefType(InSettings.GetName(), InSettings.GetId(), InModSystem)
-		, Generator(InSettings.Generator)
+	const Audio::FModulationParameter& FModulationGeneratorSettings::GetOutputParameter() const
 	{
+		// For now, all generators are normalized values (0, 1).
+		return Audio::GetModulationParameter({ });
 	}
 
-	FModulatorGeneratorProxy& FModulatorGeneratorProxy::operator =(const FModulationGeneratorSettings& InSettings)
+	Audio::FModulatorTypeId FModulationGeneratorSettings::Register(Audio::FModulatorHandleId HandleId, IAudioModulationManager& InModulation) const
 	{
-		Generator = InSettings.Generator;
+		FAudioModulationSystem& ModSystem = static_cast<FAudioModulationManager&>(InModulation).GetSystem();
+		return ModSystem.RegisterModulator(HandleId, *this);
+	}
+
+	FModulatorGeneratorProxy::FModulatorGeneratorProxy(FModulationGeneratorSettings&& InSettings, FAudioModulationSystem& InModSystem)
+		: TModulatorProxyRefType(InSettings.GetName(), InSettings.GetId(), InModSystem)
+		, Generator(MoveTemp(InSettings.Generator))
+	{
+		Generator->Init(InModSystem.GetAudioDeviceId());
+	}
+
+	FModulatorGeneratorProxy& FModulatorGeneratorProxy::operator =(FModulationGeneratorSettings&& InSettings)
+	{
+		if (ensure(InSettings.Generator.IsValid()))
+		{
+			Generator->UpdateGenerator(MoveTemp(InSettings.Generator));
+		}
+		else
+		{
+			Generator.Reset();
+		}
+
 		return *this;
 	}
-
 } // namespace AudioModulation

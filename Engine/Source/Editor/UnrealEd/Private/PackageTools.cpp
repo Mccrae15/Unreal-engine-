@@ -2,6 +2,7 @@
 
 
 #include "PackageTools.h"
+#include "Algo/Transform.h"
 #include "BlueprintCompilationManager.h"
 #include "UObject/PackageReload.h"
 #include "Misc/MessageDialog.h"
@@ -38,6 +39,7 @@
 #include "FileHelpers.h"
 
 #include "Framework/Notifications/NotificationManager.h"
+#include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
 #include "AssetData.h"
@@ -55,17 +57,75 @@
 
 #include "ShaderCompiler.h"
 #include "DistanceFieldAtlas.h"
+#include "MeshCardRepresentation.h"
 #include "AssetToolsModule.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Misc/AutomationTest.h"
+
 
 #define LOCTEXT_NAMESPACE "PackageTools"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPackageTools, Log, All);
 
 /** State passed to RestoreStandaloneOnReachableObjects. */
-UPackage* UPackageTools::PackageBeingUnloaded = nullptr;
-TMap<UObject*, UObject*> UPackageTools::ObjectsThatHadFlagsCleared;
+TSet<UPackage*>* UPackageTools::PackagesBeingUnloaded = nullptr;
+TSet<UObject*> UPackageTools::ObjectsThatHadFlagsCleared;
 FDelegateHandle UPackageTools::ReachabilityCallbackHandle;
+
+namespace
+{
+
+/** 
+ * Utility function that checks each UObject inside of the given UPackage to see if it is waiting 
+ * on async compilation.
+ * 
+ * @return true if the package contains at least one UObject that has compilation work running, otherwise false.
+ */
+static bool IsPackageCompiling(const UPackage* Package)
+{
+	bool bIsCompiling = false;
+	ForEachObjectWithPackage(Package, [&bIsCompiling](const UObject* Object)
+	{
+		const IInterface_AsyncCompilation* AsyncCompilationIF = Cast<IInterface_AsyncCompilation>(Object);
+		if (AsyncCompilationIF != nullptr && AsyncCompilationIF->IsCompiling())
+		{
+			bIsCompiling = true;
+			return false;
+		}
+		else
+		{
+			return true;
+		}
+	});
+
+	return bIsCompiling;
+}
+
+/**
+ * Utility function that checks all of the provided packages to see if any
+ * of them contain assets that currently have async compilation work running.
+ * If there are assets that are waiting on async compilation work then we 
+ * wait on all currently outstanding work to finish before returning.
+ */
+static void FlushAsyncCompilation(const TSet<UPackage*>& PackagesToUnload)
+{
+	bool bHasAsyncCompilationWork = false;
+	for (const UPackage* Package : PackagesToUnload)
+	{
+		if (IsPackageCompiling(Package))
+		{
+			bHasAsyncCompilationWork = true;
+			break;
+		}
+	}
+
+	if (bHasAsyncCompilationWork)
+	{
+		FAssetCompilingManager::Get().FinishAllCompilation();
+	}
+}
+
+}
 
 UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -84,15 +144,20 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 	{
 		check(GIsEditor);
 
-		ForEachObjectWithPackage(PackageBeingUnloaded, [](UObject* Object)
+		if (PackagesBeingUnloaded && ObjectsThatHadFlagsCleared.Num() > 0)
 		{
-			if ( ObjectsThatHadFlagsCleared.Find(Object) )
+			for (UPackage* PackageBeingUnloaded : *PackagesBeingUnloaded)
 			{
-				Object->SetFlags(RF_Standalone);
+				ForEachObjectWithPackage(PackageBeingUnloaded, [](UObject* Object)
+				{
+					if (ObjectsThatHadFlagsCleared.Contains(Object))
+					{
+						Object->SetFlags(RF_Standalone);
+					}
+					return true;
+				}, true, RF_NoFlags, EInternalObjectFlags::Unreachable);
 			}
-			return true;
-		},
-		true, RF_NoFlags, EInternalObjectFlags::Unreachable);
+		}
 	}
 
 	/**
@@ -264,29 +329,38 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 		return bResult;
 	}
 
-
-	bool UPackageTools::UnloadPackages( const TArray<UPackage*>& TopLevelPackages, FText& OutErrorMessage )
+	bool UPackageTools::UnloadPackages(const TArray<UPackage*>& TopLevelPackages, FText& OutErrorMessage, bool bUnloadDirtyPackages)
 	{
+		// Early out if no package is provided
+		if (TopLevelPackages.IsEmpty())
+		{
+			return true;
+		}
+
 		bool bResult = false;
 
 		// Get outermost packages, in case groups were selected.
-		TArray<UPackage*> PackagesToUnload;
+		TSet<UPackage*> PackagesToUnload;
 
 		// Split the set of selected top level packages into packages which are dirty (and thus cannot be unloaded)
 		// and packages that are not dirty (and thus can be unloaded).
 		TArray<UPackage*> DirtyPackages;
-		for ( int32 PackageIndex = 0 ; PackageIndex < TopLevelPackages.Num() ; ++PackageIndex )
+		for (UPackage* TopLevelPackage : TopLevelPackages)
 		{
-			UPackage* Package = TopLevelPackages[PackageIndex];
-			if( Package != NULL )
+			if (TopLevelPackage)
 			{
-				if ( Package->IsDirty() )
+				if (!bUnloadDirtyPackages && TopLevelPackage->IsDirty())
 				{
-					DirtyPackages.Add( Package );
+					DirtyPackages.Add(TopLevelPackage);
 				}
 				else
 				{
-					PackagesToUnload.AddUnique( Package->GetOutermost() ? Package->GetOutermost() : Package );
+					UPackage* PackageToUnload = TopLevelPackage->GetOutermost();
+					if (!PackageToUnload)
+					{
+						PackageToUnload = TopLevelPackage;
+					}
+					PackagesToUnload.Add(PackageToUnload);
 				}
 			}
 		}
@@ -295,13 +369,13 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 		if ( DirtyPackages.Num() > 0 )
 		{
 			FString DirtyPackagesList;
-			for ( int32 PackageIndex = 0 ; PackageIndex < DirtyPackages.Num() ; ++PackageIndex )
+			for (UPackage* DirtyPackage : DirtyPackages)
 			{
-				DirtyPackagesList += FString::Printf( TEXT("\n    %s"), *DirtyPackages[PackageIndex]->GetName() );
+				DirtyPackagesList += FString::Printf(TEXT("\n    %s"), *(DirtyPackage->GetName()));
 			}
 
 			FFormatNamedArguments Args;
-			Args.Add( TEXT("DirtyPackages"),FText::FromString( DirtyPackagesList ) );
+			Args.Add(TEXT("DirtyPackages"), FText::FromString(DirtyPackagesList));
 
 			OutErrorMessage = FText::Format( NSLOCTEXT("UnrealEd", "UnloadDirtyPackagesList", "The following assets have been modified and cannot be unloaded:{DirtyPackages}\nSaving these assets will allow them to be unloaded."), Args );
 		}
@@ -340,7 +414,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			}
 		}
 
-		if ( PackagesToUnload.Num() > 0 )
+		if (PackagesToUnload.Num() > 0)
 		{
 			const FScopedBusyCursor BusyCursor;
 
@@ -351,46 +425,47 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			// Remove potential references to to-be deleted objects from the GB selection set.
 			GEditor->GetSelectedObjects()->DeselectAll();
 
-			// Set the callback for restoring RF_Standalone post reachability analysis.
-			// GC will call this function before purging objects, allowing us to restore RF_Standalone
-			// to any objects that have not been marked RF_Unreachable.
-			ReachabilityCallbackHandle = FCoreUObjectDelegates::PostReachabilityAnalysis.AddStatic(RestoreStandaloneOnReachableObjects);
-
 			bool bScriptPackageWasUnloaded = false;
 
 			GWarn->BeginSlowTask( NSLOCTEXT("UnrealEd", "Unloading", "Unloading"), true );
 
 			// First add all packages to unload to the root set so they don't get garbage collected while we are operating on them
 			TArray<UPackage*> PackagesAddedToRoot;
-			for ( int32 PackageIndex = 0 ; PackageIndex < PackagesToUnload.Num() ; ++PackageIndex )
+			for (UPackage* PackageToUnload : PackagesToUnload)
 			{
-				UPackage* Pkg = PackagesToUnload[PackageIndex];
-				if ( !Pkg->IsRooted() )
+				if (!PackageToUnload->IsRooted())
 				{
-					Pkg->AddToRoot();
-					PackagesAddedToRoot.Add(Pkg);
+					PackageToUnload->AddToRoot();
+					PackagesAddedToRoot.Add(PackageToUnload);
 				}
 			}
 
-			// Now try to clean up assets in all packages to unload.
-			for ( int32 PackageIndex = 0 ; PackageIndex < PackagesToUnload.Num() ; ++PackageIndex )
-			{
-				PackageBeingUnloaded = PackagesToUnload[PackageIndex];
+			// We need to make sure that there is no async compilation work running for the packages that we are about to unload
+			// so that it is safe to call ::ResetLoaders
+			FlushAsyncCompilation(PackagesToUnload);
 
-				GWarn->StatusUpdate( PackageIndex, PackagesToUnload.Num(), FText::Format(NSLOCTEXT("UnrealEd", "Unloadingf", "Unloading {0}..."), FText::FromString(PackageBeingUnloaded->GetName()) ) );
+			// Now try to clean up assets in all packages to unload.
+			int32 PackageIndex = 0;
+			for (UPackage* PackageBeingUnloaded : PackagesToUnload)
+			{
+				GWarn->StatusUpdate(PackageIndex++, PackagesToUnload.Num(), FText::Format(NSLOCTEXT("UnrealEd", "Unloadingf", "Unloading {0}..."), FText::FromString(PackageBeingUnloaded->GetName()) ) );
 
 				// Flush all pending render commands, as unloading the package may invalidate render resources.
 				FlushRenderingCommands();
 
-				// Close any open asset editors
-				ForEachObjectWithPackage(PackageBeingUnloaded, [](UObject* Obj)
+				TArray<UObject*> ObjectsInPackage;
+
+				// Can't use ForEachObjectWithPackage here as closing the editor may modify UObject hash tables (known case: renaming objects)
+				GetObjectsWithPackage(PackageBeingUnloaded, ObjectsInPackage, false);
+				// Close any open asset editors.
+				for (UObject* Obj : ObjectsInPackage)
 				{
 					if (Obj->IsAsset())
 					{
 						GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(Obj);
 					}
-					return true;
-				}, false);
+				}
+				ObjectsInPackage.Reset();
 
 				PackageBeingUnloaded->bHasBeenFullyLoaded = false;
 				PackageBeingUnloaded->ClearFlags(RF_WasLoaded);
@@ -399,26 +474,47 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 					bScriptPackageWasUnloaded = true;
 				}
 
+				GetObjectsWithPackage(PackageBeingUnloaded, ObjectsInPackage, true, RF_Transient, EInternalObjectFlags::Garbage);
+				// Notify any Blueprints that are about to be unloaded, and destroy any leftover worlds.
+				for (UObject* Obj : ObjectsInPackage)
+				{
+					if (UBlueprint* BP = Cast<UBlueprint>(Obj))
+					{
+						BP->ClearEditorReferences();
+					}
+					if (UWorld* World = Cast<UWorld>(Obj))
+					{
+						if (World->bIsWorldInitialized)
+						{
+							World->CleanupWorld();
+						}
+					}
+				}
+				ObjectsInPackage.Reset();
+
 				// Clear RF_Standalone flag from objects in the package to be unloaded so they get GC'd.
 				{
-					TArray<UObject*> ObjectsInPackage;
 					GetObjectsWithPackage(PackageBeingUnloaded, ObjectsInPackage);
 					for ( UObject* Object : ObjectsInPackage )
 					{
 						if (Object->HasAnyFlags(RF_Standalone))
 						{
 							Object->ClearFlags(RF_Standalone);
-							ObjectsThatHadFlagsCleared.Add(Object, Object);
+							ObjectsThatHadFlagsCleared.Add(Object);
 						}
 					}
+					ObjectsInPackage.Reset();
 				}
 
-				// Reset loaders
+				// Calling ::ResetLoaders now will force any bulkdata objects still attached to the FLinkerLoad to load
+				// their payloads into memory. If we don't call this now, then the version that will be called during
+				// garbage collection will cause the bulkdata objects to be invalidated rather than loading the payloads 
+				// into memory.
+				// This might seem odd, but if the package we are unloading is being renamed, then the inner UObjects will
+				// be moved to the newly named package rather than being garbage collected and so we need to make sure that
+				// their bulkdata objects remain valid, otherwise renamed packages will not save correctly and cease to function.
 				ResetLoaders(PackageBeingUnloaded);
 
-				// Collect garbage.
-				CollectGarbage( GARBAGE_COLLECTION_KEEPFLAGS );
-				
 				if( PackageBeingUnloaded->IsDirty() )
 				{
 					// The package was marked dirty as a result of something that happened above (e.g callbacks in CollectGarbage).  
@@ -427,15 +523,26 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 				}
 
 				// Cleanup.
-				ObjectsThatHadFlagsCleared.Empty();
-				PackageBeingUnloaded = NULL;
 				bResult = true;
 			}
+
+			// Set the callback for restoring RF_Standalone post reachability analysis.
+			// GC will call this function before purging objects, allowing us to restore RF_Standalone
+			// to any objects that have not been marked RF_Unreachable.
+			ReachabilityCallbackHandle = FCoreUObjectDelegates::PostReachabilityAnalysis.AddStatic(RestoreStandaloneOnReachableObjects);
+
+			PackagesBeingUnloaded = &PackagesToUnload;
+
+			// Collect garbage.
+			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+
+			ObjectsThatHadFlagsCleared.Empty();
+			PackagesBeingUnloaded = nullptr;
 			
 			// Now remove from root all the packages we added earlier so they may be GCed if possible
-			for ( int32 PackageIndex = 0 ; PackageIndex < PackagesAddedToRoot.Num() ; ++PackageIndex )
+			for (UPackage* PackageAddedToRoot : PackagesAddedToRoot)
 			{
-				PackagesAddedToRoot[PackageIndex]->RemoveFromRoot();
+				PackageAddedToRoot->RemoveFromRoot();
 			}
 			PackagesAddedToRoot.Empty();
 
@@ -447,9 +554,9 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			// Clear the standalone flag on metadata objects that are going to be GC'd below.
 			// This resolves the circular dependency between metadata and packages.
 			TArray<TWeakObjectPtr<UMetaData>> PackageMetaDataWithClearedStandaloneFlag;
-			for ( UPackage* PackageToUnload : PackagesToUnload )
+			for (UPackage* PackageToUnload : PackagesToUnload)
 			{
-				UMetaData* PackageMetaData = PackageToUnload ? PackageToUnload->MetaData : nullptr;
+				UMetaData* PackageMetaData = PackageToUnload ? PackageToUnload->GetMetaData() : nullptr;
 				if ( PackageMetaData && PackageMetaData->HasAnyFlags(RF_Standalone) )
 				{
 					PackageMetaData->ClearFlags(RF_Standalone);
@@ -483,7 +590,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 	{
 		FText ErrorMessage;
 		const bool bResult = ReloadPackages(TopLevelPackages, ErrorMessage, EReloadPackagesInteractionMode::Interactive);
-		
+
 		if (!ErrorMessage.IsEmpty())
 		{
 			FMessageDialog::Open(EAppMsgType::Ok, ErrorMessage);
@@ -499,133 +606,197 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 	}
 
 
-	bool UPackageTools::ReloadPackages( const TArray<UPackage*>& TopLevelPackages, FText& OutErrorMessage, const EReloadPackagesInteractionMode InteractionMode )
+	namespace UE::PackageTools::Private
 	{
-		bool bResult = false;
-
-		FTextBuilder ErrorMessageBuilder;
-
-		// Split the set of selected top level packages into packages which are dirty or in-memory (and thus cannot be reloaded) and packages that are not dirty (and thus can be reloaded).
-		TArray<UPackage*> PackagesToReload;
+	struct FFilteredPackages
+	{
+		void Add(UPackage* RealPackage)
 		{
-			TArray<UPackage*> DirtyPackages;
-			TArray<UPackage*> InMemoryPackages;
-			for (UPackage* TopLevelPackage : TopLevelPackages)
+			if (RealPackage->HasAnyPackageFlags(PKG_InMemoryOnly))
 			{
-				if (TopLevelPackage)
-				{
-					// Get outermost packages, in case groups were selected.
-					UPackage* RealPackage = TopLevelPackage->GetOutermost() ? TopLevelPackage->GetOutermost() : TopLevelPackage;
-
-					if (RealPackage->HasAnyPackageFlags(PKG_InMemoryOnly))
-					{
-						InMemoryPackages.AddUnique(RealPackage);
-					}
-					else if (RealPackage->IsDirty())
-					{
-						DirtyPackages.AddUnique(RealPackage);
-					}
-					else
-					{
-						PackagesToReload.AddUnique(RealPackage);
-					}
-				}
-
-				// How should we handle locally dirty packages?
-				if (DirtyPackages.Num() > 0)
-				{
-					EAppReturnType::Type ReloadDirtyPackagesResult = EAppReturnType::No;
-
-					// Ask the user whether dirty packages should be reloaded.
-					if (InteractionMode == EReloadPackagesInteractionMode::Interactive)
-					{
-						FTextBuilder ReloadDirtyPackagesMsgBuilder;
-						ReloadDirtyPackagesMsgBuilder.AppendLine(NSLOCTEXT("UnrealEd", "ShouldReloadDirtyPackagesHeader", "The following packages have been modified:"));
-						{
-							ReloadDirtyPackagesMsgBuilder.Indent();
-							for (UPackage* DirtyPackage : DirtyPackages)
-							{
-								ReloadDirtyPackagesMsgBuilder.AppendLine(DirtyPackage->GetFName());
-							}
-							ReloadDirtyPackagesMsgBuilder.Unindent();
-						}
-						ReloadDirtyPackagesMsgBuilder.AppendLine(NSLOCTEXT("UnrealEd", "ShouldReloadDirtyPackagesFooter", "Would you like to reload these packages? This will revert any changes you have made."));
-
-						ReloadDirtyPackagesResult = FMessageDialog::Open(EAppMsgType::YesNo, ReloadDirtyPackagesMsgBuilder.ToText());
-					}
-					else if (InteractionMode == EReloadPackagesInteractionMode::AssumePositive)
-					{
-						ReloadDirtyPackagesResult = EAppReturnType::Yes;
-					}
-
-					if (ReloadDirtyPackagesResult == EAppReturnType::Yes)
-					{
-						for (UPackage* DirtyPackage : DirtyPackages)
-						{
-							DirtyPackage->SetDirtyFlag(false);
-							PackagesToReload.AddUnique(DirtyPackage);
-						}
-						DirtyPackages.Reset();
-					}
-				}
+				InMemoryPackages.AddUnique(RealPackage);
 			}
-
-			// Inform the user that dirty packages won't be reloaded.
-			if (DirtyPackages.Num() > 0)
+			else if (RealPackage->IsDirty())
 			{
-				if (!ErrorMessageBuilder.IsEmpty())
-				{
-					ErrorMessageBuilder.AppendLine();
-				}
-
-				ErrorMessageBuilder.AppendLine(NSLOCTEXT("UnrealEd", "Error_ReloadDirtyPackagesHeader", "The following packages have been modified and cannot be reloaded:"));
-				{
-					ErrorMessageBuilder.Indent();
-					for (UPackage* DirtyPackage : DirtyPackages)
-					{
-						ErrorMessageBuilder.AppendLine(DirtyPackage->GetFName());
-					}
-					ErrorMessageBuilder.Unindent();
-				}
-				ErrorMessageBuilder.AppendLine(NSLOCTEXT("UnrealEd", "Error_ReloadDirtyPackagesFooter", "Saving these packages will allow them to be reloaded."));
+				DirtyPackages.AddUnique(RealPackage);
 			}
-
-			// Inform the user that in-memory packages won't be reloaded.
-			if (InMemoryPackages.Num() > 0)
+			else
 			{
-				if (!ErrorMessageBuilder.IsEmpty())
-				{
-					ErrorMessageBuilder.AppendLine();
-				}
-
-				ErrorMessageBuilder.AppendLine(NSLOCTEXT("UnrealEd", "Error_ReloadInMemoryPackagesHeader", "The following packages are in-memory only and cannot be reloaded:"));
-				{
-					ErrorMessageBuilder.Indent();
-					for (UPackage* InMemoryPackage : InMemoryPackages)
-					{
-						ErrorMessageBuilder.AppendLine(InMemoryPackage->GetFName());
-					}
-					ErrorMessageBuilder.Unindent();
-				}
+				PackagesToReload.AddUnique(RealPackage);
 			}
 		}
 
-		// Get the current world.
-		TWeakObjectPtr<UWorld> CurrentWorld;
+		void Remove(UPackage* InPackage)
+		{
+			PackagesToReload.Remove(InPackage);
+		}
+
+		bool Contains(UPackage* InPackage) const
+		{
+			return PackagesToReload.Contains(InPackage);
+		}
+
+		TArray<UPackage*> PackagesToReload;
+		TArray<UPackage*> DirtyPackages;
+		TArray<UPackage*> InMemoryPackages;
+	};
+
+	FFilteredPackages GetPackagesToReload(const TArray<UPackage*>& TopLevelPackages)
+	{
+		FFilteredPackages Filtered;
+		Algo::TransformIf(TopLevelPackages, Filtered,
+						  [](UPackage* TopLevelPackage) {return TopLevelPackage;},
+						  [](UPackage* TopLevelPackage)
+						  {
+							  return TopLevelPackage;
+						  });
+		return Filtered;
+	}
+
+	void PromptUserForDirtyPackages(FFilteredPackages& Filtered, const EReloadPackagesInteractionMode InteractionMode)
+	{
+		// How should we handle locally dirty packages?
+		if (Filtered.DirtyPackages.Num() == 0)
+		{
+			return;
+		}
+
+		EAppReturnType::Type ReloadDirtyPackagesResult = EAppReturnType::No;
+
+		// Ask the user whether dirty packages should be reloaded.
+		if (InteractionMode == EReloadPackagesInteractionMode::Interactive)
+		{
+			FTextBuilder ReloadDirtyPackagesMsgBuilder;
+			ReloadDirtyPackagesMsgBuilder.AppendLine(NSLOCTEXT("UnrealEd", "ShouldReloadDirtyPackagesHeader", "The following packages have been modified:"));
+			{
+				ReloadDirtyPackagesMsgBuilder.Indent();
+				for (UPackage* DirtyPackage : Filtered.DirtyPackages)
+				{
+					ReloadDirtyPackagesMsgBuilder.AppendLine(DirtyPackage->GetFName());
+				}
+				ReloadDirtyPackagesMsgBuilder.Unindent();
+			}
+			ReloadDirtyPackagesMsgBuilder.AppendLine(NSLOCTEXT("UnrealEd", "ShouldReloadDirtyPackagesFooter", "Would you like to reload these packages? This will revert any changes you have made."));
+
+			ReloadDirtyPackagesResult = FMessageDialog::Open(EAppMsgType::YesNo, ReloadDirtyPackagesMsgBuilder.ToText());
+		}
+		else if (InteractionMode == EReloadPackagesInteractionMode::AssumePositive)
+		{
+			ReloadDirtyPackagesResult = EAppReturnType::Yes;
+		}
+
+		if (ReloadDirtyPackagesResult == EAppReturnType::Yes)
+		{
+			for (UPackage* DirtyPackage : Filtered.DirtyPackages)
+			{
+				DirtyPackage->SetDirtyFlag(false);
+				Filtered.PackagesToReload.AddUnique(DirtyPackage);
+			}
+			Filtered.DirtyPackages.Reset();
+		}
+	}
+
+	void InformUserAboutDirtyPackages(const FFilteredPackages& Filtered, FTextBuilder& ErrorMessageBuilder)
+	{
+		if (Filtered.DirtyPackages.Num() == 0)
+		{
+			return;
+		}
+		// Inform the user that dirty packages won't be reloaded.
+		if (!ErrorMessageBuilder.IsEmpty())
+		{
+			ErrorMessageBuilder.AppendLine();
+		}
+
+		ErrorMessageBuilder.AppendLine(NSLOCTEXT("UnrealEd", "Error_ReloadDirtyPackagesHeader", "The following packages have been modified and cannot be reloaded:"));
+		{
+			ErrorMessageBuilder.Indent();
+			for (UPackage* DirtyPackage : Filtered.DirtyPackages)
+			{
+				ErrorMessageBuilder.AppendLine(DirtyPackage->GetFName());
+			}
+			ErrorMessageBuilder.Unindent();
+		}
+		ErrorMessageBuilder.AppendLine(NSLOCTEXT("UnrealEd", "Error_ReloadDirtyPackagesFooter", "Saving these packages will allow them to be reloaded."));
+	}
+
+	void InformUsersAboutInMemoryPackages(const FFilteredPackages& Filtered, FTextBuilder& ErrorMessageBuilder)
+	{
+		if (Filtered.InMemoryPackages.Num() == 0)
+		{
+			return;
+		}
+		if (!ErrorMessageBuilder.IsEmpty())
+		{
+			ErrorMessageBuilder.AppendLine();
+		}
+		ErrorMessageBuilder.AppendLine(NSLOCTEXT("UnrealEd", "Error_ReloadInMemoryPackagesHeader", "The following packages are in-memory only and cannot be reloaded:"));
+		{
+			ErrorMessageBuilder.Indent();
+			for (UPackage* InMemoryPackage : Filtered.InMemoryPackages)
+			{
+				ErrorMessageBuilder.AppendLine(InMemoryPackage->GetFName());
+			}
+			ErrorMessageBuilder.Unindent();
+		}
+	}
+
+	struct FScopedTrackFilteredPackages
+	{
+		FScopedTrackFilteredPackages(FFilteredPackages& InFiltered) :
+			Filtered(InFiltered)
+		{
+			Algo::Transform(Filtered.PackagesToReload, WeakPackagesToReload, [](UPackage* InPackage) -> TWeakObjectPtr<UPackage> { return InPackage; });
+		}
+
+		~FScopedTrackFilteredPackages()
+		{
+			Filtered.PackagesToReload.Reset();
+			Algo::TransformIf(WeakPackagesToReload, Filtered.PackagesToReload,
+							  [](TWeakObjectPtr<UPackage> InPackage) {return InPackage.IsValid();},
+							  [](TWeakObjectPtr<UPackage> InPackage) -> UPackage* {return InPackage.Get();});
+
+		}
+
+		TArray<TWeakObjectPtr<UPackage>> WeakPackagesToReload;
+		FFilteredPackages& Filtered;
+	};
+
+	TWeakObjectPtr<UWorld> GetCurrentWorld()
+	{
 		if (GIsEditor)
 		{
 			if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World())
 			{
-				CurrentWorld = EditorWorld;
+				return EditorWorld;
 			}
 		}
 		else if (UGameEngine* GameEngine = Cast<UGameEngine>(GEngine))
 		{
 			if (UWorld* GameWorld = GameEngine->GetGameWorld())
 			{
-				CurrentWorld = GameWorld;
+				return GameWorld;
 			}
 		}
+		return nullptr;
+	}
+
+	}
+
+	bool UPackageTools::ReloadPackages( const TArray<UPackage*>& TopLevelPackages, FText& OutErrorMessage, const EReloadPackagesInteractionMode InteractionMode )
+	{
+		bool bResult = false;
+
+		FTextBuilder ErrorMessageBuilder;
+
+		using namespace UE::PackageTools::Private;
+		FFilteredPackages Filtered = GetPackagesToReload(TopLevelPackages);
+
+		PromptUserForDirtyPackages(Filtered, InteractionMode);
+		InformUserAboutDirtyPackages(Filtered, ErrorMessageBuilder);
+		InformUsersAboutInMemoryPackages(Filtered, ErrorMessageBuilder);
+
+		TWeakObjectPtr<UWorld> CurrentWorld = GetCurrentWorld();
 
 		// Check to see if we need to reload the current world.
 		FName WorldNameToReload;
@@ -635,44 +806,25 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			// Is the current world being reloaded? If so, we just reset the current world and load it again at the end rather than let it go through ReloadPackage 
 			// (which doesn't work for the current world due to some assumptions about worlds, and their lifetimes).
 			// We also need to skip the build data package as that will also be destroyed by the transition.
-			if (PackagesToReload.Contains(CurrentWorldPtr->GetOutermost()))
+			if (Filtered.Contains(CurrentWorldPtr->GetOutermost()))
 			{
 				// Cache this so we can reload the world later
 				WorldNameToReload = *CurrentWorldPtr->GetPathName();
 
 				// Remove the world package from the reload list
-				PackagesToReload.Remove(CurrentWorldPtr->GetOutermost());
-
-				// Remove the level build data package from the reload list as creating a new map will unload build data for the current world
-				for (int32 LevelIndex = 0; LevelIndex < CurrentWorldPtr->GetNumLevels(); ++LevelIndex)
-				{
-					ULevel* Level = CurrentWorldPtr->GetLevel(LevelIndex);
-					if (Level->MapBuildData)
-					{
-						PackagesToReload.Remove(Level->MapBuildData->GetOutermost());
-					}
-				}
-
-				// Remove any streaming levels from the reload list as creating a new map will unload streaming levels for the current world
-				for (ULevelStreaming* StreamingLevel : CurrentWorldPtr->GetStreamingLevels())
-				{
-					if (StreamingLevel->IsLevelLoaded())
-					{
-						UPackage* StreamingLevelPackage = StreamingLevel->GetLoadedLevel()->GetOutermost();
-						PackagesToReload.Remove(StreamingLevelPackage);
-					}
-				}
+				Filtered.Remove(CurrentWorldPtr->GetOutermost());
 
 				// Unload the current world
 				if (GIsEditor)
 				{
+					FScopedTrackFilteredPackages TrackPackages(Filtered);
 					const bool bPromptForSave = InteractionMode == UPackageTools::EReloadPackagesInteractionMode::Interactive;
 					GEditor->CreateNewMapForEditing(bPromptForSave);
 				}
 				else if (UGameEngine* GameEngine = Cast<UGameEngine>(GEngine))
 				{
 					// Outside of the editor we need to keep the packages alive to stop the world transition from GC'ing them
-					TGCObjectsScopeGuard<UPackage> KeepPackagesAlive(PackagesToReload);
+					TGCObjectsScopeGuard<UPackage> KeepPackagesAlive(Filtered.PackagesToReload);
 
 					FString LoadMapError;
 					GameEngine->LoadMap(GameEngine->GetWorldContextFromWorldChecked(CurrentWorldPtr), FURL(TEXT("/Engine/Maps/Templates/Template_Default")), nullptr, LoadMapError);
@@ -688,7 +840,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 
 					Level->ReleaseRenderingResources();
 
-					if (PackagesToReload.Contains(Level->GetOutermost()))
+					if (Filtered.Contains(Level->GetOutermost()))
 					{
 						for (ULevelStreaming* StreamingLevel : CurrentWorldPtr->GetStreamingLevels())
 						{
@@ -705,6 +857,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			}
 		}
 
+		TArray<UPackage*>& PackagesToReload = Filtered.PackagesToReload;
 		if (PackagesToReload.Num() > 0)
 		{
 			const FScopedBusyCursor BusyCursor;
@@ -826,15 +979,22 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 		{
 			GEngine->NotifyToolsOfObjectReplacement(InPackageReloadedEvent->GetRepointedObjects());
 
-			// Notify any Blueprints that are about to be unloaded.
-			ForEachObjectWithPackage(InPackageReloadedEvent->GetOldPackage(), [&](UObject* InObject)
+			// Notify any Blueprints that are about to be unloaded, and destroy any leftover worlds.
+			ForEachObjectWithPackage(InPackageReloadedEvent->GetOldPackage(), [](UObject* InObject)
 			{
 				if (UBlueprint* BP = Cast<UBlueprint>(InObject))
 				{
 					BP->ClearEditorReferences();
 				}
+				if (UWorld* World = Cast<UWorld>(InObject))
+				{
+					if (World->bIsWorldInitialized)
+					{
+						World->CleanupWorld();
+					}
+				}
 				return true;
-			}, false, RF_Transient, EInternalObjectFlags::PendingKill);
+			}, true, RF_Transient, EInternalObjectFlags::Garbage);
 		}
 
 		if (InPackageReloadPhase == EPackageReloadPhase::OnPackageFixup)
@@ -914,9 +1074,13 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 					continue;
 				}
 
-				FPropertyChangedEvent PropertyEvent(nullptr, EPropertyChangeType::Redirected);
-				ObjectReferencerPtr->PostEditChangeProperty(PropertyEvent);
-
+				if (!ObjectReferencerPtr->GetClass()->HasAnyClassFlags(CLASS_NewerVersionExists))
+				{
+					// Calling PostEditChangeProperty on an actor with an outdated class will trigger a check() during construction scripts.
+					FPropertyChangedEvent PropertyEvent(nullptr, EPropertyChangeType::Redirected);
+					ObjectReferencerPtr->PostEditChangeProperty(PropertyEvent);
+				}
+				
 				// We need to recompile any Blueprints that had properties changed to make sure their generated class is up-to-date and has no lingering references to the old objects
 				UBlueprint* BlueprintToRecompile = nullptr;
 				if (UBlueprint* BlueprintReferencer = Cast<UBlueprint>(ObjectReferencerPtr))
@@ -973,28 +1137,77 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			{
 				FScopedSlowTask CompilingBlueprintsSlowTask(BlueprintsToRecompileThisBatch.Num(), NSLOCTEXT("UnrealEd", "CompilingBlueprints", "Compiling Blueprints"));
 
+				// Gather up all loaded BP assets.
 				TArray<UObject*> BPs;
 				GetObjectsOfClass(UBlueprint::StaticClass(), BPs);
+
+				// Keeps track of BPs with a dependent cache set that's ready to be repopulated.
+				TSet<UBlueprint*> BPsWithResetDependentCache;
+				BPsWithResetDependentCache.Reserve(BPs.Num());
+
+				// Rebuild the dependency/dependent cache sets for each loaded BP.
 				for (UObject* BP : BPs)
 				{
 					UBlueprint* AsBP = CastChecked<UBlueprint>(BP);
-					AsBP->bCachedDependenciesUpToDate = false;
-					FBlueprintEditorUtils::EnsureCachedDependenciesUpToDate(AsBP);
-					for (TWeakObjectPtr<UBlueprint> Dependent : AsBP->CachedDependents)
+
+					// If this BP has been replaced, clear its dependency cache, but don't rebuild it.
+					if (AsBP->HasAnyFlags(RF_NewerVersionExists))
 					{
-						if (UBlueprint* StillAlive = Dependent.Get())
-						{
-							StillAlive->CachedDependencies.Add(AsBP);
-						}
+						AsBP->CachedDependencies.Empty();
+						AsBP->CachedUDSDependencies.Empty();
+						AsBP->bCachedDependenciesUpToDate = true;
+
+						// Also clear out its dependent cache, as there will no longer be any dependencies on it.
+						AsBP->CachedDependents.Empty();
+						BPsWithResetDependentCache.Add(AsBP);
 					}
-					for (TWeakObjectPtr<UBlueprint> Dependent : AsBP->CachedDependencies)
+					else
 					{
-						if (UBlueprint* StillAlive = Dependent.Get())
+						// Rebuild the dependency cache for the this BP.
+						AsBP->bCachedDependenciesUpToDate = false;
+						FBlueprintEditorUtils::EnsureCachedDependenciesUpToDate(AsBP);
+					}
+
+					// For each cached dependency, add this BP into its dependent cache set. Note that replaced
+					// BPs won't have any dependencies, and so will not be included in any dependent cache sets.
+					TSet<TWeakObjectPtr<UBlueprint>> LocalCopy_CachedDependencies = AsBP->CachedDependencies;
+					for (const TWeakObjectPtr<UBlueprint>& DependencyPtr : LocalCopy_CachedDependencies)
+					{
+						if (UBlueprint* Dependency = DependencyPtr.Get())
 						{
-							StillAlive->CachedDependents.Add(AsBP);
+							// Ensure that the dependency's cached dependent set has been cleared before we start adding to it.
+							if (!BPsWithResetDependentCache.Contains(Dependency))
+							{
+								Dependency->CachedDependents.Empty();
+								BPsWithResetDependentCache.Add(Dependency);
+							}
+
+							Dependency->CachedDependents.Add(AsBP);
+						}
+						else
+						{
+							// Remove any entries that cannot be resolved. Not likely, but just in case.
+							AsBP->CachedDependencies.Remove(DependencyPtr);
 						}
 					}
 				}
+
+				// Clear out remaining dependent cache sets that weren't already covered above (those not considered as a dependency and/or any replaced BPs).
+				if (BPs.Num() > BPsWithResetDependentCache.Num())
+				{
+					for (UObject* BP : BPs)
+					{
+						UBlueprint* AsBP = CastChecked<UBlueprint>(BP);
+						if (!BPsWithResetDependentCache.Contains(AsBP))
+						{
+							AsBP->CachedDependents.Empty();
+							BPsWithResetDependentCache.Add(AsBP);
+						}
+					}
+				}
+
+				// Sanity check that all BPs have reset their dependent cache sets, to assert that there are no stale references left behind.
+				check(BPs.Num() == BPsWithResetDependentCache.Num());
 
 				for (UBlueprint* BlueprintToRecompile : BlueprintsToRecompileThisBatch)
 				{
@@ -1016,6 +1229,10 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			if (GDistanceFieldAsyncQueue)
 			{
 				GDistanceFieldAsyncQueue->ProcessAsyncTasks();
+			}
+			if (GCardRepresentationAsyncQueue)
+			{
+				GCardRepresentationAsyncQueue->ProcessAsyncTasks();
 			}
 		}
 	}
@@ -1158,7 +1375,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 	bool UPackageTools::IsPackageExternal(const UPackage& Package)
 	{
 		FString FileString;
-		FPackageName::DoesPackageExist(Package.GetName(), NULL, &FileString);
+		FPackageName::DoesPackageExist(Package.GetName(), &FileString);
 
 		return IsPackagePathExternal( FileString );
 	}
@@ -1185,7 +1402,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 	bool UPackageTools::IsSingleAssetPackage(const FString& PackageName)
 	{
 		FString PackageFileName;
-		if ( FPackageName::DoesPackageExist(PackageName, NULL, &PackageFileName) )
+		if ( FPackageName::DoesPackageExist(PackageName, &PackageFileName) )
 		{
 			return FPaths::GetExtension(PackageFileName, /*bIncludeDot=*/true) == FPackageName::GetAssetPackageExtension();
 		}
@@ -1199,8 +1416,27 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 	{
 		FString SanitizedName = ObjectTools::SanitizeInvalidChars(InPackageName, INVALID_LONGPACKAGE_CHARACTERS);
 
-		// Remove double-slashes
-		SanitizedName.ReplaceInline(TEXT("//"), TEXT("/"));
+		// Coalesce multiple contiguous slashes into a single slash
+		int32 CharIndex = 0;
+		while (CharIndex < SanitizedName.Len())
+		{
+			if (SanitizedName[CharIndex] == TEXT('/'))
+			{
+				int32 SlashCount = 1;
+				while (CharIndex + SlashCount < SanitizedName.Len() &&
+					   SanitizedName[CharIndex + SlashCount] == TEXT('/'))
+				{
+					SlashCount++;
+				}
+
+				if (SlashCount > 1)
+				{
+					SanitizedName.RemoveAt(CharIndex + 1, SlashCount - 1, false);
+				}
+			}
+
+			CharIndex++;
+		}
 
 		return SanitizedName;
 	}
@@ -1227,7 +1463,7 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 			}
 			else if (NumberOfAssets > 1)
 			{
-				// this shouldn't happen in UE4
+				// this shouldn't happen 
 				bShouldGenerateUniquePackageName = true;
 			}
 
@@ -1263,6 +1499,47 @@ UPackageTools::UPackageTools(const FObjectInitializer& ObjectInitializer)
 
 		return nullptr;
 	}
+
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPackageToolsAutomationTest, "Editor.PackageTools.UnitTests", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FPackageToolsAutomationTest::RunTest(const FString& Parameters)
+{
+	struct FTest
+	{
+		FString Input;
+		FString Output;
+	};
+
+	TArray<FTest> TestStrings =
+	{
+		{ TEXT("/Game/Blah/Boo"), TEXT("/Game/Blah/Boo") },
+		{ TEXT("/Game/Blah//Double"), TEXT("/Game/Blah/Double") },
+		{ TEXT(""), TEXT("") },
+		{ TEXT("/Game/Trailing/"), TEXT("/Game/Trailing/") },
+		{ TEXT("/Game/TrailingDouble//"), TEXT("/Game/TrailingDouble/") },
+		{ TEXT("/Game/Blah///Multiple"), TEXT("/Game/Blah/Multiple") },
+		{ TEXT("/Game/Blah///Multiple///"), TEXT("/Game/Blah/Multiple/") }
+	};
+
+	bool bSuccess = true;
+	for (const FTest& TestString : TestStrings)
+	{
+		FString Result = UPackageTools::SanitizePackageName(TestString.Input);
+		if (Result != TestString.Output)
+		{
+			AddError(FString::Printf(TEXT("SanitizePackageName failed (result = %s, expected = %s)"), *Result, *TestString.Output));
+			bSuccess = false;
+		}
+	}
+
+	return bSuccess;
+}
+
+#endif // WITH_DEV_AUTOMATION_TESTS
+
 
 #undef LOCTEXT_NAMESPACE
 

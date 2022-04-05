@@ -272,30 +272,16 @@ id<MTLDevice> GMetalDevice = nil;
 	if (!bIsInitialized)
 	{
 		// look up what the device can support
-		const float NativeScale = [[UIScreen mainScreen] scale];
-
-		// look up the CVar for the scale factor
-		static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.MobileContentScaleFactor"));
-		float RequestedContentScaleFactor = CVar->GetFloat();
-
-		FString CmdLineCSF;
-		if (FParse::Value(FCommandLine::Get(), TEXT("mcsf="), CmdLineCSF, false))
-		{
-			RequestedContentScaleFactor = FCString::Atof(*CmdLineCSF);
-		}
-
+		const float Scale = [[UIScreen mainScreen] scale];
+		const float NativeScale = self.window.screen.nativeScale;
+		const float RequestedContentScaleFactor = [[IOSAppDelegate GetDelegate] GetMobileContentScaleFactor];
+		
+		UE_LOG(LogIOS, Log, TEXT("RequestedContentScaleFactor %f to nativeScale which is = (s:%f, ns:%f, csf:%f"), RequestedContentScaleFactor, Scale, NativeScale, self.contentScaleFactor);
 		// 0 means to leave the scale alone, use native
 		if (RequestedContentScaleFactor == 0.0f)
 		{
-            if ([self.window.screen respondsToSelector:@selector(nativeScale)])
-            {
-                self.contentScaleFactor = self.window.screen.nativeScale;
-                UE_LOG(LogIOS, Log, TEXT("Setting contentScaleFactor to nativeScale which is = %f"), self.contentScaleFactor);
-            }
-            else
-            {
-                UE_LOG(LogIOS, Log, TEXT("Leaving contentScaleFactor alone, with scale = %f"), NativeScale);
-            }
+			self.contentScaleFactor = NativeScale;
+			UE_LOG(LogIOS, Log, TEXT("Setting contentScaleFactor to nativeScale which is = %f"), self.contentScaleFactor);
 		}
 		else
 		{
@@ -304,9 +290,7 @@ id<MTLDevice> GMetalDevice = nil;
 			UE_LOG(LogIOS, Log, TEXT("Setting contentScaleFactor to %0.4f (optimal = %0.4f)"), self.contentScaleFactor, NativeScale);
 		}
 
-
-		// handle Metal or GL sizing
-#if HAS_METAL
+		// TODO: bIsUsingMetal is always true. Remove it.
 		if (bIsUsingMetal)
 		{
 			CAMetalLayer* MetalLayer = (CAMetalLayer*)self.layer;
@@ -315,10 +299,9 @@ id<MTLDevice> GMetalDevice = nil;
 			DrawableSize.height *= self.contentScaleFactor;
 			MetalLayer.drawableSize = DrawableSize;
 		}
-#endif
 
 		bIsInitialized = true;
-	}    
+	}
 	return true;
 }
 
@@ -328,7 +311,7 @@ id<MTLDevice> GMetalDevice = nil;
 - (void)layoutSubviews
 {
 #if !PLATFORM_TVOS
-	auto orientation = [[UIApplication sharedApplication] statusBarOrientation];
+    auto orientation = [self.window.windowScene interfaceOrientation];
 	FIOSApplication::OrientationChanged(orientation);
 #endif
 }
@@ -538,16 +521,11 @@ self.accessibilityElements = @[Window.accessibilityContainer];
 	TArray<TouchInput> TouchesArray;
 	for (UITouch* Touch in Touches)
 	{
-#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 140000
-        // ignore mouse-produced touches, these will be handled by FIOSInputInterface
-        if (@available(iOS 14, *))
+		// ignore mouse-produced touches, these will be handled by FIOSInputInterface
+        if ( Touch.type == UITouchTypeIndirectPointer ) // Requires UIApplicationSupportsIndirectInputEvents:true in plist
         {
-            if ( Touch.type == UITouchTypeIndirectPointer ) // Requires UIApplicationSupportsIndirectInputEvents:true in plist
-            {
-                continue;
-            }
+            continue;
         }
-#endif
 		// get info from the touch
 		CGPoint Loc = [Touch locationInView:self];
 		CGPoint PrevLoc = [Touch previousLocationInView:self];
@@ -888,18 +866,15 @@ self.accessibilityElements = @[Window.accessibilityContainer];
 	return nil;
 }
 
-// UE 4.25 note: type UITextWritingDirection is deprecated and the new type NSWritingDirection used from Xcode 11 but we need to 
-// continue to use UITextWritingDirection for now in order to maintain compatibility with Xcode 9 and 10.
-
-- (UITextWritingDirection)baseWritingDirectionForPosition:(UITextPosition *)position inDirection:(UITextStorageDirection)direction
+- (NSWritingDirection)baseWritingDirectionForPosition:(UITextPosition *)position inDirection:(UITextStorageDirection)direction
 {
 	REPORT_EVENT;
 	// assume left to right for now
-	return UITextWritingDirectionLeftToRight;
+	return NSWritingDirectionLeftToRight;
 }
 
 
-- (void)setBaseWritingDirection:(UITextWritingDirection)writingDirection forRange:(UITextRange *)range
+- (void)setBaseWritingDirection:(NSWritingDirection)writingDirection forRange:(UITextRange *)range
 {
 	// @todo keyboard: This is called
 }

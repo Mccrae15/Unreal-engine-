@@ -14,6 +14,8 @@ struct PLANARCUT_API FNoiseSettings
 	float Frequency = .1;
 	int32 Octaves = 4;
 	float PointSpacing = 1;
+	float Lacunarity = 2;
+	float Persistence = .5;
 };
 
 // auxiliary structure for FPlanarCells to carry material info
@@ -142,7 +144,8 @@ struct PLANARCUT_API FPlanarCells
  * @param Collection		The collection to be cut
  * @param TransformIdx		Which transform inside the collection to cut
  * @param Grout				Separation to leave between cutting cells
- * @param CollisionSampleSpacing	Target spacing between collision sample vertices	
+ * @param CollisionSampleSpacing	Target spacing between collision sample vertices
+ * @param RandomSeed				Seed to be used for random noise displacement
  * @param TransformCollection		Optional transform of the whole geometry collection; if unset, defaults to Identity
  * @param bIncludeOutsideCellInOutput	If true, geometry that was not inside any of the cells (e.g. was outside of the bounds of all cutting geometry) will still be included in the output; if false, it will be discarded.
  * @param CheckDistanceAcrossOutsideCellForProximity	If > 0, when a plane is neighboring the "outside" cell, instead of setting proximity to the outside cell, the algo will sample a point this far outside the cell in the normal direction of the plane to see if there is actually a non-outside cell there.  (Useful for bricks w/out mortar)
@@ -154,6 +157,7 @@ int32 PLANARCUT_API CutWithPlanarCells(
 	int32 TransformIdx,
 	double Grout,
 	double CollisionSampleSpacing,
+	int32 RandomSeed,
 	const TOptional<FTransform>& TransformCollection = TOptional<FTransform>(),
 	bool bIncludeOutsideCellInOutput = true,
 	float CheckDistanceAcrossOutsideCellForProximity = 0,
@@ -168,6 +172,7 @@ int32 PLANARCUT_API CutWithPlanarCells(
  * @param TransformIndices	Which transform groups inside the collection to cut
  * @param Grout				Separation to leave between cutting cells
  * @param CollisionSampleSpacing	Target spacing between collision sample vertices
+ * @param RandomSeed				Seed to be used for random noise displacement
  * @param TransformCollection		Optional transform of the whole geometry collection; if unset, defaults to Identity
  * @param bIncludeOutsideCellInOutput	If true, geometry that was not inside any of the cells (e.g. was outside of the bounds of all cutting geometry) will still be included in the output; if false, it will be discarded.
  * @param CheckDistanceAcrossOutsideCellForProximity	If > 0, when a plane is neighboring the "outside" cell, instead of setting proximity to the outside cell, the algo will sample a point this far outside the cell in the normal direction of the plane to see if there is actually a non-outside cell there.  (Useful for bricks w/out mortar)
@@ -179,6 +184,7 @@ int32 PLANARCUT_API CutMultipleWithPlanarCells(
 	const TArrayView<const int32>& TransformIndices,
 	double Grout,
 	double CollisionSampleSpacing,
+	int32 RandomSeed,
 	const TOptional<FTransform>& TransformCollection = TOptional<FTransform>(),
 	bool bIncludeOutsideCellInOutput = true,
 	float CheckDistanceAcrossOutsideCellForProximity = 0,  // TODO: < this param does nothing in the new mode; is only needed in special cases that aren't possible in the UI currently
@@ -194,6 +200,7 @@ int32 PLANARCUT_API CutMultipleWithPlanarCells(
  * @param TransformIndices	Which transform groups inside the collection to cut
  * @param Grout				Separation to leave between cutting cells
  * @param CollisionSampleSpacing	Target spacing between collision sample vertices
+ * @param RandomSeed				Seed to be used for random noise displacement
  * @param TransformCollection		Optional transform of the whole geometry collection; if unset, defaults to Identity
  * @return	index of first new geometry in the Output GeometryCollection, or -1 if no geometry was added
  */
@@ -204,22 +211,108 @@ int32 PLANARCUT_API CutMultipleWithMultiplePlanes(
 	const TArrayView<const int32>& TransformIndices,
 	double Grout,
 	double CollisionSampleSpacing,
+	int32 RandomSeed,
 	const TOptional<FTransform>& TransformCollection = TOptional<FTransform>(),
 	bool bSetDefaultInternalMaterialsFromCollection = true
+);
+
+
+/**
+ * Populate an array of transform indices w/ those that are smaller than a threshold volume
+ *
+ * @param Collection			The collection to be processed
+ * @param TransformIndices		The transform indices to process, or empty if all should be processed
+ * @param OutVolumes			Output array, to be filled w/ volumes of geometry; 1:1 w/ TransformIndices array
+ * @param ScalePerDimension		Scale to apply per dimension (e.g. 1/100 converts volume from centimeters^3 to meters^3)
+ */
+void PLANARCUT_API FindBoneVolumes(
+	FGeometryCollection& Collection,
+	const TArrayView<const int32>& TransformIndices,
+	TArray<double>& OutVolumes,
+	double ScalePerDimension = .01
+);
+
+/**
+ * Populate an array of transform indices w/ those that are smaller than a threshold volume
+ *
+ * @param Collection			The collection to be processed
+ * @param TransformIndices		The transform indices to process, or empty if all should be processed
+ * @param Volumes				Volumes of geometry; 1:1 w/ TransformIndices array
+ * @param MinVolume				Geometry smaller than this quantity will be chosen
+ * @param OutSmallBones			Output array, to be filled with transform indices for small pieces of geometry
+ */
+void PLANARCUT_API FindSmallBones(
+	FGeometryCollection& Collection,
+	const TArrayView<const int32>& TransformIndices,
+	const TArrayView<const double>& Volumes,
+	double MinVolume,
+	TArray<int32>& OutSmallBones
+);
+
+/**
+ * Populate an array of transform indices w/ those that match a custom volume-based filter
+ *
+ * @param Collection			The collection to be processed
+ * @param TransformIndices		The transform indices to process, or empty if all should be processed
+ * @param Volumes				Volumes of geometry; 1:1 w/ TransformIndices array
+ * @param Filter				Geometry for which the volume filter returns true will be chosen
+ * @param OutSmallBones			Output array, to be filled with transform indices for small pieces of geometry
+ */
+void PLANARCUT_API FilterBonesByVolume(
+	FGeometryCollection& Collection,
+	const TArrayView<const int32>& TransformIndices,
+	const TArrayView<const double>& Volumes,
+	TFunctionRef<bool(double Volume, int32 BoneIdx)> Filter,
+	TArray<int32>& OutSmallBones
+);
+
+namespace UE
+{
+	namespace PlanarCut
+	{
+		enum ENeighborSelectionMethod
+		{
+			LargestNeighbor,
+			NearestCenter
+		};
+	}
+}
+
+
+/**
+ * Merge chosen geometry into neighboring geometry.
+ *
+ * @param Collection				The collection to be processed
+ * @param TransformIndices			The transform indices to process, or empty if all should be processed
+ * @param Volumes					Volumes of geometry; 1:1 w/ TransformIndices array
+ * @param MinVolume					If merged small geometry is larger than this, it will not require further merging
+ * @param SmallTransformIndices		Transform indices of pieces that we want to merge
+ * @param bUnionJoinedPieces		Try to 'union' the merged pieces, removing internal triangles and connecting the shared cut boundary
+ * @param NeighborSelectionMethod	How to choose which neighbor to merge to
+ */
+int32 PLANARCUT_API MergeBones(
+	FGeometryCollection& Collection,
+	const TArrayView<const int32>& TransformIndices,
+	const TArrayView<const double>& Volumes,
+	double MinVolume,
+	const TArrayView<const int32>& SmallTransformIndices,
+	bool bUnionJoinedPieces,
+	UE::PlanarCut::ENeighborSelectionMethod NeighborSelectionMethod
 );
 
 /**
  * Recompute normals and tangents of selected geometry, optionally restricted to faces with odd or given material IDs (i.e. to target internal faces)
  *
  * @param bOnlyTangents		If true, leave normals unchanged and only recompute tangent&bitangent vectors
+ * @param bMakeSharpEdges	If true, recompute the normal topology to split normals at 'sharp' edges
+ * @param SharpAngleDegrees	If bMakeSharpEdges, edges w/ adjacent triangle normals deviating by more than this threshold will be sharp edges (w/ split normals)
  * @param Collection		The Geometry Collection to be updated
  * @param TransformIndices	Which transform groups on the Geometry Collection to be updated.  If empty, all groups are updated.
  * @param bOnlyOddMaterials	If true, restrict recomputation to odd-numbered material IDs
  * @param WhichMaterials	If non-empty, restrict recomputation to only the listed material IDs
  */
-void PLANARCUT_API RecomputeNormalsAndTangents(bool bOnlyTangents, FGeometryCollection& Collection, const TArrayView<const int32>& TransformIndices = TArrayView<const int32>(),
+void PLANARCUT_API RecomputeNormalsAndTangents(bool bOnlyTangents, bool bMakeSharpEdges, float SharpAngleDegrees, FGeometryCollection& Collection, const TArrayView<const int32>& TransformIndices = TArrayView<const int32>(),
 	bool bOnlyOddMaterials = true, const TArrayView<const int32>& WhichMaterials = TArrayView<const int32>());
-
 /**
  * Scatter additional vertices (w/ no associated triangle) as needed to satisfy minimum point spacing
  * 
@@ -267,6 +360,7 @@ void PLANARCUT_API ConvertToMeshDescription(
 	FTransform& TransformOut,
 	bool bCenterPivot,
 	FGeometryCollection& Collection,
+	const TManagedArray<FTransform>& BoneTransforms,
 	const TArrayView<const int32>& TransformIndices
 );
 

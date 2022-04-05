@@ -7,8 +7,8 @@
 #include "Templates/UniquePtr.h"
 #include "Trace/DataStream.h"
 
-namespace Trace
-{
+namespace UE {
+namespace Trace {
 
 class IInDataStream;
 
@@ -18,6 +18,7 @@ class TRACEANALYSIS_API FStoreClient
 public:
 	struct TRACEANALYSIS_API FStatus
 	{
+		FAnsiStringView	GetStoreDir() const;
 		uint32			GetRecorderPort() const;
 		uint32			GetChangeSerial() const;
 	};
@@ -39,7 +40,7 @@ public:
 	};
 	
 						~FStoreClient() = default;
-	static FStoreClient*Connect(const TCHAR* Host, uint32 Port);
+	static FStoreClient*Connect(const TCHAR* Host, uint32 Port=0);
 	void				operator delete (void* Addr);
 	bool				IsValid() const;
 	uint32				GetStoreAddress() const;
@@ -58,6 +59,7 @@ public:
 		uint32			GetId() const;
 		uint32			GetTraceId() const;
 		uint32			GetIpAddress() const;
+		uint32			GetControlPort() const;
 	};
 	uint32				GetSessionCount() const;
 	const FSessionInfo* GetSessionInfo(uint32 Index) const;
@@ -86,3 +88,4 @@ private:
 };
 
 } // namespace Trace
+} // namespace UE

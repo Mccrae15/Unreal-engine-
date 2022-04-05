@@ -4,6 +4,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "EditorStyleSet.h"
 #include "MaterialEditorActions.h"
+#include "PreviewProfileController.h"
 
 #define LOCTEXT_NAMESPACE "MaterialEditorViewportToolBar"
 
@@ -17,7 +18,7 @@ void SMaterialEditorViewportPreviewShapeToolBar::Construct(const FArguments& InA
 	FToolBarBuilder ToolbarBuilder(InViewport->GetCommandList(), FMultiBoxCustomization::None, nullptr, bForceSmallIcons);
 
 	// Use a custom style
-	ToolbarBuilder.SetStyle(&FEditorStyle::Get(), "ViewportMenu");
+	ToolbarBuilder.SetStyle(&FEditorStyle::Get(), "LegacyViewportMenu");
 	ToolbarBuilder.SetLabelVisibility(EVisibility::Collapsed);
 	ToolbarBuilder.SetIsFocusable(false);
 	
@@ -37,8 +38,6 @@ void SMaterialEditorViewportPreviewShapeToolBar::Construct(const FArguments& InA
 	[
 		SNew(SBorder)
 		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
-		// Color and opacity is changed based on whether or not the mouse cursor is hovering over the toolbar area
-		.ColorAndOpacity(this, &SViewportToolBar::OnGetColorAndOpacity)
 		.ForegroundColor(FEditorStyle::GetSlateColor(DefaultForegroundName))
 		.HAlign(HAlign_Right)
 		[
@@ -54,7 +53,7 @@ void SMaterialEditorViewportPreviewShapeToolBar::Construct(const FArguments& InA
 
 void SMaterialEditorViewportToolBar::Construct(const FArguments& InArgs, TSharedPtr<class SMaterialEditor3DPreviewViewport> InViewport)
 {
-	SCommonEditorViewportToolbarBase::Construct(SCommonEditorViewportToolbarBase::FArguments(), InViewport);
+	SCommonEditorViewportToolbarBase::Construct(SCommonEditorViewportToolbarBase::FArguments().PreviewProfileController(MakeShared<FPreviewProfileController>()), InViewport);
 }
 
 TSharedRef<SWidget> SMaterialEditorViewportToolBar::GenerateShowMenu() const

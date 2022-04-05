@@ -126,14 +126,41 @@ public:
 	bool ConvertMeshComponent( const UMeshComponent* Component, const FString& PrimPath );
 
 	UFUNCTION( BlueprintCallable, Category = "Component conversion" )
-	bool ConvertCineCameraComponent( const UCineCameraComponent* Component, const FString& PrimPath );
+	bool ConvertCineCameraComponent( const UCineCameraComponent* Component, const FString& PrimPath, float TimeCode = 3.402823466e+38F );
 
 	UFUNCTION( BlueprintCallable, Category = "Component conversion" )
-	bool ConvertInstancedFoliageActor( const AInstancedFoliageActor* Actor, const FString& PrimPath, float TimeCode = 3.402823466e+38F );
+	bool ConvertInstancedFoliageActor( const AInstancedFoliageActor* Actor, const FString& PrimPath, ULevel* InstancesLevel = nullptr, float TimeCode = 3.402823466e+38F );
 
 	UFUNCTION( BlueprintCallable, Category = "Component conversion" )
 	bool ConvertLandscapeProxyActorMesh( const ALandscapeProxy* Actor, const FString& PrimPath, int32 LowestLOD, int32 HighestLOD, float TimeCode = 3.402823466e+38F );
 
 	UFUNCTION( BlueprintCallable, Category = "Component conversion" )
 	bool ConvertLandscapeProxyActorMaterial( ALandscapeProxy* Actor, const FString& PrimPath, const TArray<FPropertyEntry>& PropertiesToBake, const FIntPoint& DefaultTextureSize, const FDirectoryPath& TexturesDir, float TimeCode = 3.402823466e+38F );
+
+public:
+	/**
+	 * Traverses the context's stage and authors material binding attributes for all `unrealMaterials` that were baked into USD material assets.
+	 * @param LayerToAuthorIn - File path to the layer where the material binding opinions are authored
+	 * @param BakedMaterials - Maps from material path names to file paths where they were baked
+	 *                         Example: { "/Game/MyMaterials/Red.Red": "C:/MyFolder/Red.usda" }
+	 * @param bIsAssetLayer - True when we're exporting a single mesh/animation asset. False when we're exporting a level. Dictates minor behaviors
+	 *                        when authoring the material binding relationships, e.g. whether we author them inside variants or not
+	 * @param bUsePayload - Should be True if the Stage was exported using payload files to store the actual Mesh prims. Also dictates minor
+	 *                      behaviors when authoring the material binding relationships.
+	 * @param bRemoveUnrealMaterials - Whether to remove the `unrealMaterial` attributes after replacing them with material bindings.
+	 *                                 Important because the `unrealMaterial` attributes will be used as a higher priority when determining material assignments on import
+	 */
+	UFUNCTION( BlueprintCallable, Category = "Conversion utils" )
+	void ReplaceUnrealMaterialsWithBaked( const FFilePath& LayerToAuthorIn, const TMap<FString, FString>& BakedMaterials, bool bIsAssetLayer, bool bUsePayload, bool bRemoveUnrealMaterials );
+
+	/**
+	 * Clears any opinions for the 'unreal' render context surface output of MaterialPrim within LayerToAuthorIn.
+	 * If LayerToAuthorIn is empty it will clear opinions from all layers of the stage's layer stack.
+	 *
+	 * @param Primpath - Path to the prim pxr::UsdShadeMaterial schema to update the 'unreal' surface output of (e.g. "/Root/MyCube/Red")
+	 * @param LayerToAuthorIn - Layer to clear the opinions in. Can be the empty string to clear opinions from all layers in the layer stack
+	 * @return Whether we successfully cleared the opinions or not
+	 */
+	UFUNCTION( BlueprintCallable, Category = "Conversion utils" )
+	bool RemoveUnrealSurfaceOutput( const FString& PrimPath, const FFilePath& LayerToAuthorIn );
 };

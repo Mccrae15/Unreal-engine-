@@ -13,9 +13,7 @@
 #include "EOSSettings.h"
 #include "EOSShared.h"
 #include "IEOSSDKManager.h"
-#include "EOSVoiceChatFactory.h"
-#include "EOSVoiceChatUser.h"
-#include "VoiceChatErrors.h"
+#include "SocketSubsystemEOSUtils_OnlineSubsystemEOS.h"
 
 #include "Features/IModularFeatures.h"
 #include "Misc/App.h"
@@ -28,6 +26,13 @@
 // Missing defines
 #define EOS_ENCRYPTION_KEY_MAX_LENGTH 64
 #define EOS_ENCRYPTION_KEY_MAX_BUFFER_LEN (EOS_ENCRYPTION_KEY_MAX_LENGTH + 1)
+
+#if WITH_EOS_RTC
+
+#include "EOSVoiceChatFactory.h"
+#include "EOSVoiceChatUser.h"
+#include "VoiceChatResult.h"
+#include "VoiceChatErrors.h"
 
 /** Class that blocks login/logout for the OSS EOS managed IVoiceChatUser interfaces. */
 class FOnlineSubsystemEOSVoiceChatUserWrapper : public IVoiceChatUser
@@ -90,6 +95,8 @@ public:
 	virtual FOnVoiceChatPlayerTalkingUpdatedDelegate& OnVoiceChatPlayerTalkingUpdated() override { return VoiceChatUser.OnVoiceChatPlayerTalkingUpdated(); }
 	virtual void SetPlayerMuted(const FString& PlayerName, bool bMuted) override { VoiceChatUser.SetPlayerMuted(PlayerName, bMuted); }
 	virtual bool IsPlayerMuted(const FString& PlayerName) const override { return VoiceChatUser.IsPlayerMuted(PlayerName); }
+	virtual void SetChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName, bool bMuted) override { VoiceChatUser.SetChannelPlayerMuted(ChannelName, PlayerName, bMuted); }
+	virtual bool IsChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName) const override { return VoiceChatUser.IsChannelPlayerMuted(ChannelName, PlayerName); }
 	virtual FOnVoiceChatPlayerMuteUpdatedDelegate& OnVoiceChatPlayerMuteUpdated() override { return VoiceChatUser.OnVoiceChatPlayerMuteUpdated(); }
 	virtual void SetPlayerVolume(const FString& PlayerName, float Volume) override { VoiceChatUser.SetPlayerVolume(PlayerName, Volume); }
 	virtual float GetPlayerVolume(const FString& PlayerName) const override { return VoiceChatUser.GetPlayerVolume(PlayerName); }
@@ -113,6 +120,8 @@ public:
 
 	FEOSVoiceChatUser& VoiceChatUser;
 };
+
+#endif // WITH_EOS_RTC
 
 /** Class that holds the strings for the call duration */
 struct FEOSPlatformOptions :
@@ -142,10 +151,10 @@ struct FEOSPlatformOptions :
 
 FPlatformEOSHelpersPtr FOnlineSubsystemEOS::EOSHelpersPtr;
 
-bool FCallbackBase::bShouldCancelAllCallbacks = false;
-
 void FOnlineSubsystemEOS::ModuleInit()
 {
+	LLM_SCOPE(ELLMTag::RealTimeCommunications);
+
 	EOSHelpersPtr = MakeShareable(new FPlatformEOSHelpers());
 
 	const FName EOSSharedModuleName = TEXT("EOSShared");
@@ -163,7 +172,7 @@ void FOnlineSubsystemEOS::ModuleInit()
 	EOS_EResult InitResult = EOSSDKManager->Initialize();
 	if (InitResult != EOS_EResult::EOS_Success)
 	{
-		UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemEOS: failed to initialize the EOS SDK with result code (%s)"), ANSI_TO_TCHAR(EOS_EResult_ToString(InitResult)));
+		UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemEOS: failed to initialize the EOS SDK with result code (%d)"), InitResult);
 		return;
 	}
 }
@@ -217,7 +226,7 @@ bool FOnlineSubsystemEOS::PlatformCreate()
 	PlatformOptions.Flags = IsRunningGame() ? OverlayFlags : EOS_PF_DISABLE_OVERLAY;
 	// Make the cache directory be in the user's writable area
 
-	const FString CacheDir = EOSHelpersPtr->PlatformCreateCacheDir(ArtifactName, EOSSettings.CacheDir);
+	const FString CacheDir = EOSSDKManager->GetCacheDirBase() / ArtifactName / EOSSettings.CacheDir;
 	FCStringAnsi::Strncpy(PlatformOptions.CacheDirectoryAnsi, TCHAR_TO_UTF8(*CacheDir), EOS_OSS_STRING_BUFFER_LENGTH);
 	FCStringAnsi::Strncpy(PlatformOptions.EncryptionKeyAnsi, TCHAR_TO_UTF8(*ArtifactSettings.EncryptionKey), EOS_ENCRYPTION_KEY_MAX_BUFFER_LEN);
 
@@ -340,12 +349,6 @@ bool FOnlineSubsystemEOS::Init()
 		UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemEOS: failed to init EOS platform, couldn't get achievements handle"));
 		return false;
 	}
-	P2PHandle = EOS_Platform_GetP2PInterface(*EOSPlatformHandle);
-	if (P2PHandle == nullptr)
-	{
-		UE_LOG_ONLINE(Error, TEXT("FOnlineSubsystemEOS: failed to init EOS platform, couldn't get p2p handle"));
-		return false;
-	}
 	// Disable ecom if not part of EGS
 	if (bWasLaunchedByEGS)
 	{
@@ -370,9 +373,26 @@ bool FOnlineSubsystemEOS::Init()
 		return false;
 	}
 
-	SocketSubsystem = MakeShareable(new FSocketSubsystemEOS(this));
+	SocketSubsystem = MakeShareable(new FSocketSubsystemEOS(EOSPlatformHandle, MakeShareable(new FSocketSubsystemEOSUtils_OnlineSubsystemEOS(*this))));
+	check(SocketSubsystem);
 	FString ErrorMessage;
-	SocketSubsystem->Init(ErrorMessage);
+	if (!SocketSubsystem->Init(ErrorMessage))
+	{
+		UE_LOG_ONLINE(Warning, TEXT("[FOnlineSubsystemEOS::Init] Unable to initialize Socket Subsystem. Error=[%s]"), *ErrorMessage);
+	}
+
+	// We set the product id
+	FString ArtifactName;
+	FParse::Value(FCommandLine::Get(), TEXT("EpicApp="), ArtifactName);
+	FEOSArtifactSettings ArtifactSettings;
+	if (UEOSSettings::GetSettingsForArtifact(ArtifactName, ArtifactSettings))
+	{
+		ProductId = ArtifactSettings.ProductId;
+	}
+	else
+	{
+		UE_LOG_ONLINE(Warning, TEXT("[FOnlineSubsystemEOS::Init] Failed to find artifact settings object for artifact (%s). ProductIdAnsi not set."), *ArtifactName);
+	}
 
 	UserManager = MakeShareable(new FUserManagerEOS(this));
 	SessionInterfacePtr = MakeShareable(new FOnlineSessionEOS(this));
@@ -394,10 +414,20 @@ bool FOnlineSubsystemEOS::Shutdown()
 {
 	UE_LOG_ONLINE(VeryVerbose, TEXT("FOnlineSubsystemEOS::Shutdown()"));
 
+	// EOS-22677 workaround: Make sure tick is called at least once before shutting down.
+	if (EOSPlatformHandle)
+	{
+		EOS_Platform_Tick(*EOSPlatformHandle);
+	}
+
 	FCallbackBase::CancelAllCallbacks();
 	StopTicker();
-	FOnlineSubsystemImpl::Shutdown();
-	SocketSubsystem->Shutdown();
+
+	if (SocketSubsystem)
+	{
+		SocketSubsystem->Shutdown();
+		SocketSubsystem = nullptr;
+	}
 
 	// Release our ref to the interfaces. May still exist since they can be aggregated
 	UserManager = nullptr;
@@ -408,7 +438,8 @@ bool FOnlineSubsystemEOS::Shutdown()
 	StoreInterfacePtr = nullptr;
 	TitleFileInterfacePtr = nullptr;
 	UserCloudInterfacePtr = nullptr;
-	
+
+#if WITH_EOS_RTC
 	for (TPair<FUniqueNetIdRef, FOnlineSubsystemEOSVoiceChatUserWrapperRef>& Pair : LocalVoiceChatUsers)
 	{
 		FOnlineSubsystemEOSVoiceChatUserWrapperRef& VoiceChatUserWrapper = Pair.Value;
@@ -416,10 +447,11 @@ bool FOnlineSubsystemEOS::Shutdown()
 	}
 	LocalVoiceChatUsers.Reset();
 	VoiceChatInterface = nullptr;
-	
+#endif
+
 	EOSPlatformHandle = nullptr;
 
-	return true;
+	return FOnlineSubsystemImpl::Shutdown();
 }
 
 bool FOnlineSubsystemEOS::Tick(float DeltaTime)
@@ -467,6 +499,37 @@ bool FOnlineSubsystemEOS::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice&
 	return bWasHandled;
 }
 
+void FOnlineSubsystemEOS::ReloadConfigs(const TSet<FString>& ConfigSections)
+{
+	UE_LOG_ONLINE(Verbose, TEXT("FOnlineSubsystemEOS::ReloadConfigs"));
+
+	// There is currently no granular reloading, so just restart the subsystem to pick up new config.
+	const bool bWasInitialized = EOSPlatformHandle != nullptr;
+	const bool bConfigChanged = ConfigSections.Find(GetDefault<UEOSSettings>()->GetClass()->GetPathName()) != nullptr;
+	const bool bRestartRequired = bWasInitialized && bConfigChanged;
+
+	if (bRestartRequired)
+	{
+		UE_LOG_ONLINE(Verbose, TEXT("FOnlineSubsystemEOS::ReloadConfigs: Restarting subsystem to pick up changes."));
+		PreUnload();
+		Shutdown();
+	}
+
+	// Notify user code so that overrides may be applied.
+	TriggerOnConfigChangedDelegates(ConfigSections);
+
+	// Reload config objects.
+	if (bConfigChanged)
+	{
+		GetMutableDefault<UEOSSettings>()->ReloadConfig();
+	}
+
+	if (bRestartRequired)
+	{
+		Init();
+	}
+}
+
 FString FOnlineSubsystemEOS::GetAppId() const
 {
 	return TEXT("");
@@ -491,7 +554,6 @@ FOnlineSubsystemEOS::FOnlineSubsystemEOS(FName InInstanceName) :
 	, LeaderboardsHandle(nullptr)
 	, MetricsHandle(nullptr)
 	, AchievementsHandle(nullptr)
-	, P2PHandle(nullptr)
 	, EcomHandle(nullptr)
 	, TitleStorageHandle(nullptr)
 	, PlayerDataStorageHandle(nullptr)
@@ -627,15 +689,18 @@ IVoiceChatUser* FOnlineSubsystemEOS::GetVoiceChatUserInterface(const FUniqueNetI
 FEOSVoiceChatUser* FOnlineSubsystemEOS::GetEOSVoiceChatUserInterface(const FUniqueNetId& LocalUserId)
 {
 	FEOSVoiceChatUser* Result = nullptr;
+#if WITH_EOS_RTC
 	if (IVoiceChatUser* Wrapper = GetVoiceChatUserInterface(LocalUserId))
 	{
 		Result = &static_cast<FOnlineSubsystemEOSVoiceChatUserWrapper*>(Wrapper)->VoiceChatUser;
 	}
+#endif
 	return Result;
 }
 
 void FOnlineSubsystemEOS::ReleaseVoiceChatUserInterface(const FUniqueNetId& LocalUserId)
 {
+#if WITH_EOS_RTC
 	if (VoiceChatInterface)
 	{
 		if (FOnlineSubsystemEOSVoiceChatUserWrapperRef* WrapperPtr = LocalVoiceChatUsers.Find(LocalUserId.AsShared()))
@@ -644,6 +709,7 @@ void FOnlineSubsystemEOS::ReleaseVoiceChatUserInterface(const FUniqueNetId& Loca
 			LocalVoiceChatUsers.Remove(LocalUserId.AsShared());
 		}
 	}
+#endif
 }
 
-#endif
+#endif // WITH_EOS_SDK

@@ -154,18 +154,8 @@ void FGeneratedWrappedDynamicMethodsMixinBase::AddDynamicMethodImpl(FGeneratedWr
 
 const FGeneratedWrappedOperatorSignature& FGeneratedWrappedOperatorSignature::OpTypeToSignature(const EGeneratedWrappedOperatorType InOpType)
 {
-#if PY_MAJOR_VERSION >= 3
-	const TCHAR* BoolFuncName = TEXT("__bool__");
-	const TCHAR* DivideFuncName = TEXT("__truediv__");
-	const TCHAR* InlineDivideFuncName = TEXT("__truediv__");
-#else	// PY_MAJOR_VERSION >= 3
-	const TCHAR* BoolFuncName = TEXT("__nonzero__");
-	const TCHAR* DivideFuncName = TEXT("__div__");
-	const TCHAR* InlineDivideFuncName = TEXT("__idiv__");
-#endif	// PY_MAJOR_VERSION >= 3
-
 	static const FGeneratedWrappedOperatorSignature OperatorSignatures[(int32)EGeneratedWrappedOperatorType::Num] = {
-		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::Bool,				TEXT("bool"),	BoolFuncName,			EType::Bool,	EType::None),
+		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::Bool,				TEXT("bool"),	TEXT("__bool__"),		EType::Bool,	EType::None),
 		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::Equal,			TEXT("=="),		TEXT("__eq__"),			EType::Bool,	EType::Any),
 		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::NotEqual,			TEXT("!="),		TEXT("__ne__"),			EType::Bool,	EType::Any),
 		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::Less,				TEXT("<"),		TEXT("__lt__"),			EType::Bool,	EType::Any),
@@ -178,8 +168,8 @@ const FGeneratedWrappedOperatorSignature& FGeneratedWrappedOperatorSignature::Op
 		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::InlineSubtract,	TEXT("-="),		TEXT("__isub__"),		EType::Struct,	EType::Any),
 		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::Multiply,			TEXT("*"),		TEXT("__mul__"),		EType::Any,		EType::Any),
 		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::InlineMultiply,	TEXT("*="),		TEXT("__imul__"),		EType::Struct,	EType::Any),
-		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::Divide,			TEXT("/"),		DivideFuncName,			EType::Any,		EType::Any),
-		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::InlineDivide,		TEXT("/="),		InlineDivideFuncName,	EType::Struct,	EType::Any),
+		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::Divide,			TEXT("/"),		TEXT("__truediv__"),	EType::Any,		EType::Any),
+		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::InlineDivide,		TEXT("/="),		TEXT("__truediv__"),	EType::Struct,	EType::Any),
 		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::Modulus,			TEXT("%"),		TEXT("__mod__"),		EType::Any,		EType::Any),
 		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::InlineModulus,	TEXT("%="),		TEXT("__imod__"),		EType::Struct,	EType::Any),
 		FGeneratedWrappedOperatorSignature(EGeneratedWrappedOperatorType::And,				TEXT("&"),		TEXT("__and__"),		EType::Any,		EType::Any),
@@ -1475,25 +1465,21 @@ bool IsScriptExposedFunction(const UFunction* InFunc)
 
 bool HasScriptExposedFields(const UStruct* InStruct)
 {
-	for (TFieldIterator<const UField> FieldIt(InStruct); FieldIt; ++FieldIt)
+	for (TFieldIterator<const UFunction> FieldIt(InStruct); FieldIt; ++FieldIt)
 	{
-		if (const UFunction* Func = Cast<const UFunction>(*FieldIt))
+		const UFunction* Func = *FieldIt;
+		if (IsScriptExposedFunction(Func))
 		{
-			if (IsScriptExposedFunction(Func))
-			{
-				return true;
-			}
+			return true;
 		}
 	}
 
-	for (TFieldIterator<const FField> FieldIt(InStruct); FieldIt; ++FieldIt)
+	for (TFieldIterator<const FProperty> FieldIt(InStruct); FieldIt; ++FieldIt)
 	{
-		if (const FProperty* Prop = CastField<const FProperty>(*FieldIt))
+		const FProperty* Prop = *FieldIt;
+		if (IsScriptExposedProperty(Prop))
 		{
-			if (IsScriptExposedProperty(Prop))
-			{
-				return true;
-			}
+			return true;
 		}
 	}
 
@@ -1572,6 +1558,51 @@ bool IsDeprecatedFunction(const UFunction* InFunc, FString* OutDeprecationMessag
 	}
 
 	return false;
+}
+
+void GetExportedInterfacesForClass_Recursive(const UClass* InInterface, TSet<const UClass*>& InOutProcessedInterfaces, TArray<const UClass*>& InOutExportedInterfaces)
+{
+	check(InInterface->HasAnyClassFlags(CLASS_Interface));
+
+	{
+		bool bAlreadyProcessed = false;
+		InOutProcessedInterfaces.Add(InInterface, &bAlreadyProcessed);
+		if (bAlreadyProcessed)
+		{
+			return;
+		}
+	}
+
+	if (!ShouldExportClass(InInterface))
+	{
+		return;
+	}
+
+	InOutExportedInterfaces.Add(InInterface);
+
+	for (UClass* SuperClass = InInterface->GetSuperClass(); 
+		SuperClass && SuperClass->HasAnyClassFlags(CLASS_Interface); 
+		SuperClass = SuperClass->GetSuperClass()
+		)
+	{
+		GetExportedInterfacesForClass_Recursive(SuperClass, InOutProcessedInterfaces, InOutExportedInterfaces);
+	}
+
+	for (const FImplementedInterface& Interface : InInterface->Interfaces)
+	{
+		GetExportedInterfacesForClass_Recursive(Interface.Class, InOutProcessedInterfaces, InOutExportedInterfaces);
+	}
+}
+
+TArray<const UClass*> GetExportedInterfacesForClass(const UClass* InClass)
+{
+	TSet<const UClass*> ProcessedInterfaces;
+	TArray<const UClass*> ExportedInterfaces;
+	for (const FImplementedInterface& Interface : InClass->Interfaces)
+	{
+		GetExportedInterfacesForClass_Recursive(Interface.Class, ProcessedInterfaces, ExportedInterfaces);
+	}
+	return ExportedInterfaces;
 }
 
 bool ShouldExportClass(const UClass* InClass)

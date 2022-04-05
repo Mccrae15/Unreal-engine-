@@ -163,7 +163,7 @@ void UParticleModuleColor::SpawnEx(FParticleEmitterInstance* Owner, int32 Offset
 {
 	SPAWN_INIT;
 	{
-		FVector ColorVec	= StartColor.GetValue(Owner->EmitterTime, Owner->Component, 0, InRandomStream);
+		FVector3f ColorVec	= (FVector3f)StartColor.GetValue(Owner->EmitterTime, Owner->Component, 0, InRandomStream);
 		float	Alpha		= StartAlpha.GetValue(Owner->EmitterTime, Owner->Component, InRandomStream);
 		Particle_SetColorFromVector(ColorVec, Alpha, Particle.Color);
 		Particle.BaseColor	= Particle.Color;
@@ -354,12 +354,12 @@ void UParticleModuleColorOverLife::Spawn(FParticleEmitterInstance* Owner, int32 
 	SPAWN_INIT;
 	FVector ColorVec	= ColorOverLife.GetValue(Particle.RelativeTime, Owner->Component);
 	float	fAlpha		= AlphaOverLife.GetValue(Particle.RelativeTime, Owner->Component);
-	Particle.Color.R	 = ColorVec.X;
-	Particle.BaseColor.R = ColorVec.X;
-	Particle.Color.G	 = ColorVec.Y;
-	Particle.BaseColor.G = ColorVec.Y;
-	Particle.Color.B	 = ColorVec.Z;
-	Particle.BaseColor.B = ColorVec.Z;
+	Particle.Color.R	 = UE_REAL_TO_FLOAT(ColorVec.X);
+	Particle.BaseColor.R = UE_REAL_TO_FLOAT(ColorVec.X);
+	Particle.Color.G	 = UE_REAL_TO_FLOAT(ColorVec.Y);
+	Particle.BaseColor.G = UE_REAL_TO_FLOAT(ColorVec.Y);
+	Particle.Color.B	 = UE_REAL_TO_FLOAT(ColorVec.Z);
+	Particle.BaseColor.B = UE_REAL_TO_FLOAT(ColorVec.Z);
 	Particle.Color.A	 = fAlpha;
 	Particle.BaseColor.A = fAlpha;
 }
@@ -397,9 +397,9 @@ void UParticleModuleColorOverLife::Update(FParticleEmitterInstance* Owner, int32
 			fAlpha = AlphaOverLife.GetValue(Particle.RelativeTime, Owner->Component);
 			FPlatformMisc::Prefetch(ParticleData, (ParticleIndices[i+1] * ParticleStride));
 			FPlatformMisc::Prefetch(ParticleData, (ParticleIndices[i+1] * ParticleStride) + PLATFORM_CACHE_LINE_SIZE);
-			Particle.Color.R = ColorVec.X;
-			Particle.Color.G = ColorVec.Y;
-			Particle.Color.B = ColorVec.Z;
+			Particle.Color.R = UE_REAL_TO_FLOAT(ColorVec.X);
+			Particle.Color.G = UE_REAL_TO_FLOAT(ColorVec.Y);
+			Particle.Color.B = UE_REAL_TO_FLOAT(ColorVec.Z);
 			Particle.Color.A = fAlpha;
 		}
 		END_UPDATE_LOOP;
@@ -551,9 +551,9 @@ void UParticleModuleColorScaleOverLife::Spawn(FParticleEmitterInstance* Owner, i
 		fAlpha		= AlphaScaleOverLife.GetValue(Particle.RelativeTime, Owner->Component);
 	}
 
-	Particle.Color.R *= ColorVec.X;
-	Particle.Color.G *= ColorVec.Y;
-	Particle.Color.B *= ColorVec.Z;
+	Particle.Color.R *= UE_REAL_TO_FLOAT(ColorVec.X);
+	Particle.Color.G *= UE_REAL_TO_FLOAT(ColorVec.Y);
+	Particle.Color.B *= UE_REAL_TO_FLOAT(ColorVec.Z);
 	Particle.Color.A *= fAlpha;
 }
 
@@ -561,7 +561,7 @@ void UParticleModuleColorScaleOverLife::Update(FParticleEmitterInstance* Owner, 
 { 
 	const FRawDistribution* FastColorScaleOverLife = ColorScaleOverLife.GetFastRawDistribution();
 	const FRawDistribution* FastAlphaScaleOverLife = AlphaScaleOverLife.GetFastRawDistribution();
-	FVector ColorVec;
+	FVector3f ColorVec;	// LWC_TODO: WRONG? Force ColorVec to floats for serialization. Particle.Color is FVector. Update to FVector3f also?
 	float	fAlpha;
 	if( FastColorScaleOverLife && FastAlphaScaleOverLife )
 	{
@@ -598,7 +598,7 @@ void UParticleModuleColorScaleOverLife::Update(FParticleEmitterInstance* Owner, 
 		if (bEmitterTime)
 		{
 			BEGIN_UPDATE_LOOP;
-				ColorVec = ColorScaleOverLife.GetValue(Owner->EmitterTime, Owner->Component);
+				ColorVec = FVector3f(ColorScaleOverLife.GetValue(Owner->EmitterTime, Owner->Component));
 				fAlpha = AlphaScaleOverLife.GetValue(Owner->EmitterTime, Owner->Component);
 				Particle.Color.R *= ColorVec.X;
 				Particle.Color.G *= ColorVec.Y;
@@ -609,7 +609,7 @@ void UParticleModuleColorScaleOverLife::Update(FParticleEmitterInstance* Owner, 
 		else
 		{
 			BEGIN_UPDATE_LOOP;
-				ColorVec = ColorScaleOverLife.GetValue(Particle.RelativeTime, Owner->Component);
+				ColorVec = FVector3f(ColorScaleOverLife.GetValue(Particle.RelativeTime, Owner->Component));
 				fAlpha = AlphaScaleOverLife.GetValue(Particle.RelativeTime, Owner->Component);
 				Particle.Color.R *= ColorVec.X;
 				Particle.Color.G *= ColorVec.Y;

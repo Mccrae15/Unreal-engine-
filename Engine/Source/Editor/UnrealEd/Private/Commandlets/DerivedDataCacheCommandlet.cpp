@@ -8,6 +8,7 @@ DerivedDataCacheCommandlet.cpp: Commandlet for DDC maintenence
 #include "UObject/UObjectIterator.h"
 #include "UObject/Package.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/PackageAccessTrackingOps.h"
 #include "Misc/PackageName.h"
 #include "PackageHelperFunctions.h"
 #include "DerivedDataCacheInterface.h"
@@ -16,12 +17,24 @@ DerivedDataCacheCommandlet.cpp: Commandlet for DDC maintenence
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "ShaderCompiler.h"
 #include "DistanceFieldAtlas.h"
+#include "MeshCardRepresentation.h"
 #include "Misc/RedirectCollector.h"
 #include "Engine/Texture.h"
 #include "CookOnTheSide/CookOnTheFlyServer.h"
 #include "Algo/RemoveIf.h"
 #include "Algo/Transform.h"
+#include "Algo/StableSort.h"
 #include "Settings/ProjectPackagingSettings.h"
+#include "Editor.h"
+#include "EditorWorldUtils.h"
+#include "AssetCompilingManager.h"
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionHelpers.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
+#include "LevelInstance/LevelInstanceSubsystem.h"
+#include "CollectionManagerModule.h"
+#include "ICollectionManager.h"
+#include "CollectionManagerTypes.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDerivedDataCacheCommandlet, Log, All);
 
@@ -122,61 +135,65 @@ void UDerivedDataCacheCommandlet::MaybeMarkPackageAsAlreadyLoaded(UPackage* Pack
 	}
 }
 
-static void WaitForCurrentShaderCompilationToFinish(bool& bInOutHadActivity)
+static void WaitForCompilationToFinish(bool& bInOutHadActivity)
 {
-	if (GShaderCompilingManager->IsCompiling())
+	auto LogStatus =
+		[](IAssetCompilingManager* CompilingManager)
 	{
-		bInOutHadActivity = true;
-		int32 CachedShaderCount = GShaderCompilingManager->GetNumRemainingJobs();
-		if (CachedShaderCount > 0)
+		int32 AssetCount = CompilingManager->GetNumRemainingAssets();
+		if (AssetCount > 0)
 		{
-			UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Waiting for %d shaders to finish."), CachedShaderCount);
+			UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Waiting for %d %s to finish."), AssetCount, *FText::Format(CompilingManager->GetAssetNameFormat(), FText::AsNumber(AssetCount)).ToString());
 		}
-		int32 NumCompletedShadersSinceLastLog = 0;
-		while (GShaderCompilingManager->IsCompiling())
+		else
 		{
-			const int32 CurrentShaderCount = GShaderCompilingManager->GetNumRemainingJobs();
-			NumCompletedShadersSinceLastLog += (CachedShaderCount - CurrentShaderCount);
-			CachedShaderCount = CurrentShaderCount;
+			UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Done waiting for %s to finish."), *FText::Format(CompilingManager->GetAssetNameFormat(), FText::AsNumber(100)).ToString());
+		}
+	};
 
-			if (NumCompletedShadersSinceLastLog >= 1000)
+	while (FAssetCompilingManager::Get().GetNumRemainingAssets() > 0)
+	{
+		for (IAssetCompilingManager* CompilingManager : FAssetCompilingManager::Get().GetRegisteredManagers())
+		{
+			int32 CachedAssetCount = CompilingManager->GetNumRemainingAssets();
+			if (CachedAssetCount)
 			{
-				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Waiting for %d shaders to finish."), CachedShaderCount);
-				NumCompletedShadersSinceLastLog = 0;
+				bInOutHadActivity = true;
+				LogStatus(CompilingManager);
+				int32 NumCompletedAssetsSinceLastLog = 0;
+				while (CompilingManager->GetNumRemainingAssets() > 0)
+				{
+					const int32 CurrentAssetCount = CompilingManager->GetNumRemainingAssets();
+					NumCompletedAssetsSinceLastLog += (CachedAssetCount - CurrentAssetCount);
+					CachedAssetCount = CurrentAssetCount;
+
+					if (NumCompletedAssetsSinceLastLog >= 1000)
+					{
+						LogStatus(CompilingManager);
+						NumCompletedAssetsSinceLastLog = 0;
+					}
+
+					// Process any asynchronous Asset compile results that are ready, limit execution time
+					FAssetCompilingManager::Get().ProcessAsyncTasks(true);
+				}
+
+				LogStatus(CompilingManager);
 			}
-
-			// Process any asynchronous shader compile results that are ready, limit execution time
-			GShaderCompilingManager->ProcessAsyncResults(true, false);
-			GDistanceFieldAsyncQueue->ProcessAsyncTasks();
 		}
-		GShaderCompilingManager->FinishAllCompilation(); // Final blocking check as IsCompiling() may be non-deterministic
-		UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Done waiting for shaders to finish."));
 	}
-
-	// these shouldn't be predicated on whether the shaders were being compiled
-	GDistanceFieldAsyncQueue->BlockUntilAllBuildsComplete();
 }
-
-static void WaitForCurrentTextureBuildingToFinish(bool& bInOutHadActivity)
-{
-	for (TObjectIterator<UTexture> Texture; Texture; ++Texture)
-	{
-		Texture->FinishCachePlatformData();
-	}
-};
 
 static void PumpAsync(bool* bInOutHadActivity = nullptr)
 {
 	bool bHadActivity = false;
-	WaitForCurrentShaderCompilationToFinish(bHadActivity);
-	WaitForCurrentTextureBuildingToFinish(bHadActivity);
+	WaitForCompilationToFinish(bHadActivity);
 	if (bInOutHadActivity)
 	{
 		*bInOutHadActivity = *bInOutHadActivity || bHadActivity;
 	}
 }
 
-void UDerivedDataCacheCommandlet::CacheLoadedPackages(UPackage* CurrentPackage, uint8 PackageFilter, const TArray<ITargetPlatform*>& Platforms)
+void UDerivedDataCacheCommandlet::CacheLoadedPackages(UPackage* CurrentPackage, uint8 PackageFilter, const TArray<ITargetPlatform*>& Platforms, TSet<FName>& OutNewProcessedPackages)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(UDerivedDataCacheCommandlet::CacheLoadedPackages);
 
@@ -205,10 +222,12 @@ void UDerivedDataCacheCommandlet::CacheLoadedPackages(UPackage* CurrentPackage, 
 				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Processing %s"), *NewPackageName.ToString());
 
 				ProcessedPackages.Add(NewPackageName);
+				OutNewProcessedPackages.Add(NewPackageName);
 				NewPackageIt.RemoveCurrent();
 
 				ObjectsWithOuter.Reset();
 				GetObjectsWithOuter(NewPackage, ObjectsWithOuter, true /* bIncludeNestedObjects */, RF_ClassDefaultObject /* ExclusionFlags */);
+				UE_TRACK_REFERENCING_PACKAGE_SCOPED(NewPackage, PackageAccessTrackingOps::NAME_CookerBuildObject);
 				for (UObject* Object : ObjectsWithOuter)
 				{
 					for (auto Platform : Platforms)
@@ -238,7 +257,7 @@ bool UDerivedDataCacheCommandlet::ProcessCachingObjects(const TArray<ITargetPlat
 	bool bHadActivity = false;
 	if (CachingObjects.Num() > 0)
 	{
-		PumpAsync();
+		FAssetCompilingManager::Get().ProcessAsyncTasks(true);
 
 		double CurrentTime = FPlatformTime::Seconds();
 		for (auto It = CachingObjects.CreateIterator(); It; ++It)
@@ -248,12 +267,20 @@ bool UDerivedDataCacheCommandlet::ProcessCachingObjects(const TArray<ITargetPlat
 			{
 				UObject* Object = It->Key;
 				bool bIsFinished = true;
-
-				for (auto Platform : Platforms)
+				const IInterface_AsyncCompilation* Interface_AsyncCompilation = Cast<IInterface_AsyncCompilation>(Object);
+				if (Interface_AsyncCompilation && Interface_AsyncCompilation->IsCompiling())
 				{
-					// IsCachedCookedPlatformDataLoaded can be quite slow for some objects
-					// Do not call it if bIsFinished is already false
-					bIsFinished = bIsFinished && Object->IsCachedCookedPlatformDataLoaded(Platform);
+					bIsFinished = false;
+				}
+
+				{
+					UE_TRACK_REFERENCING_PACKAGE_SCOPED(Object->GetPackage(), PackageAccessTrackingOps::NAME_CookerBuildObject);
+					for (auto Platform : Platforms)
+					{
+						// IsCachedCookedPlatformDataLoaded can be quite slow for some objects
+						// Do not call it if bIsFinished is already false
+						bIsFinished = bIsFinished && Object->IsCachedCookedPlatformDataLoaded(Platform);
+					}
 				}
 
 				if (bIsFinished)
@@ -297,7 +324,7 @@ void UDerivedDataCacheCommandlet::FinishCachingObjects(const TArray<ITargetPlatf
 			if (CurrentTime - LastActivityTime >= DDCCommandletMaxWaitSeconds)
 			{
 				UObject* Object = CachingObjects.CreateIterator()->Key;
-				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Timed out for %.2lfs waiting for %d objects to finish caching. First object: %s."),
+				UE_LOG(LogDerivedDataCacheCommandlet, Error, TEXT("Timed out for %.2lfs waiting for %d objects to finish caching. First object: %s."),
 					DDCCommandletMaxWaitSeconds, CachingObjects.Num(), *Object->GetFullName());
 				break;
 			}
@@ -316,6 +343,39 @@ void UDerivedDataCacheCommandlet::FinishCachingObjects(const TArray<ITargetPlatf
 	FinishCacheTime += FPlatformTime::Seconds() - FinishCacheTimeStart;
 }
 
+void UDerivedDataCacheCommandlet::CacheWorldPackages(UWorld* World, uint8 PackageFilter, const TArray<ITargetPlatform*>& Platforms, TSet<FName>& OutNewProcessedPackages)
+{
+	// Setup the world
+	UWorld::InitializationValues IVS;
+	IVS.RequiresHitProxies(false);
+	IVS.ShouldSimulatePhysics(false);
+	IVS.EnableTraceCollision(false);
+	IVS.CreateNavigation(false);
+	IVS.CreateAISystem(false);
+	IVS.AllowAudioPlayback(false);
+	IVS.CreatePhysicsScene(true);
+	FScopedEditorWorld EditorWorld(World, IVS);
+
+	// If the world is partitioned
+	bool bResult = true;
+	if (World->HasSubsystem<UWorldPartitionSubsystem>())
+	{
+		// Ensure the world has a valid world partition.
+		UWorldPartition* WorldPartition = World->GetWorldPartition();
+		check(WorldPartition);
+
+		FWorldPartitionHelpers::ForEachActorWithLoading(WorldPartition, [this, PackageFilter, &Platforms, &OutNewProcessedPackages](const FWorldPartitionActorDesc* ActorDesc)
+		{
+			if (AActor* Actor = ActorDesc->GetActor())
+			{
+				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Loaded actor %s"), *Actor->GetName());
+				CacheLoadedPackages(Actor->GetPackage(), PackageFilter, Platforms, OutNewProcessedPackages);
+			}
+			return true;
+		});
+	}
+}
+
 int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 {
 	// Avoid putting those directly in the constructor because we don't
@@ -328,6 +388,7 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 
 	bool bFillCache = Switches.Contains("FILL");   // do the equivalent of a "loadpackage -all" to fill the DDC
 	bool bStartupOnly = Switches.Contains("STARTUPONLY");   // regardless of any other flags, do not iterate packages
+	const bool bDryRun = Switches.Contains("DRYRUN");   // build a list of stuff to process but don't start loading any packages
 
 	// Subsets for parallel processing
 	uint32 SubsetMod = 0;
@@ -346,7 +407,6 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 		FCoreUObjectDelegates::PackageCreatedForLoad.AddUObject(this, &UDerivedDataCacheCommandlet::MaybeMarkPackageAsAlreadyLoaded);
 
 		Tokens.Empty(2);
-		Tokens.Add(FString("*") + FPackageName::GetAssetPackageExtension());
 
 		FString MapList;
 		if(FParse::Value(*Params, TEXT("Map="), MapList))
@@ -362,8 +422,72 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 				StartIdx = EndIdx + 1;
 			}
 		}
-		else
+
+		// support MapIniSection parameter
 		{
+			TArray<FString> MapIniSections;
+			FString SectionStr;
+			if (FParse::Value(*Params, TEXT("MAPINISECTION="), SectionStr))
+			{
+				if (SectionStr.Contains(TEXT("+")))
+				{
+					TArray<FString> Sections;
+					SectionStr.ParseIntoArray(Sections, TEXT("+"), true);
+					for (int32 Index = 0; Index < Sections.Num(); Index++)
+					{
+						MapIniSections.Add(Sections[Index]);
+					}
+				}
+				else
+				{
+					MapIniSections.Add(SectionStr);
+				}
+
+				TArray<FString> MapsFromIniSection;
+				for (const FString& MapIniSection : MapIniSections)
+				{
+					GEditor->LoadMapListFromIni(*MapIniSection, MapsFromIniSection);
+				}
+
+				Tokens += MapsFromIniSection;
+			}
+		}
+
+		TArray<FString> CommandLinePackageNames;
+
+		// Allow adding collections to the list of packages to process
+		if (FString CollectionArg; FParse::Value(*Params, TEXT("COLLECTION="), CollectionArg))
+		{
+			ICollectionManager& CollectionManager = FModuleManager::LoadModuleChecked<FCollectionManagerModule>("CollectionManager").Get();
+
+			TArray<FString> Collections;
+			CollectionArg.ParseIntoArray(Collections, TEXT("+"));
+			for (const FString& CollectionName : Collections)
+			{
+				TArray<FCollectionNameType> FoundCollections;
+				CollectionManager.GetCollections(*CollectionName, FoundCollections);
+				if (FoundCollections.Num() == 0)
+				{
+					UE_LOG(LogDerivedDataCacheCommandlet, Error, TEXT("Found no collections for command line argument %s"), *CollectionName);
+					continue;
+				}
+
+				TArray<FName> FoundAssets;
+				CollectionManager.GetAssetsInCollection(*CollectionName, ECollectionShareType::CST_All, FoundAssets, ECollectionRecursionFlags::SelfAndChildren);
+				Tokens.Reserve(Tokens.Num() + FoundAssets.Num());
+				for (FName AssetName : FoundAssets)
+				{
+					CommandLinePackageNames.Add(FPackageName::ObjectPathToPackageName(AssetName.ToString()));
+				}
+			}
+		}
+
+		// Add defaults if we haven't specifically found anything on the command line 
+		if (Tokens.IsEmpty() && CommandLinePackageNames.IsEmpty())
+		{
+			UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Adding default search tokens for all assets and maps"));
+
+			Tokens.Add(FString("*") + FPackageName::GetAssetPackageExtension());
 			Tokens.Add(FString("*") + FPackageName::GetMapPackageExtension());
 		}
 
@@ -404,6 +528,7 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 			FilesInPath.Append(TokenFiles);
 		}
 
+
 		TArray<TPair<FString, FName>> PackagePaths;
 		PackagePaths.Reserve(FilesInPath.Num());
 		for (FString& Filename : FilesInPath)
@@ -412,10 +537,34 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 			FString FailureReason;
 			if (!FPackageName::TryConvertFilenameToLongPackageName(Filename, PackageName, &FailureReason))
 			{
-				UE_LOG(LogDerivedDataCacheCommandlet, Warning, TEXT("Unable to resolve filename %s to package name because: %s"), *Filename, *FailureReason);
+				UE_LOG(LogDerivedDataCacheCommandlet, Error, TEXT("Unable to resolve filename %s to package name because: %s"), *Filename, *FailureReason);
 				continue;
 			}
 			PackagePaths.Emplace(MoveTemp(Filename), FName(*PackageName));
+		}
+
+		if (!CommandLinePackageNames.IsEmpty())
+		{
+			if (!NormalizePackageNames(CommandLinePackageNames, Unused, TEXT(""), PackageFilter))
+			{
+				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Failed to normalize command line package names"));
+			}
+			else
+			{
+				for( const FString& PackageName : CommandLinePackageNames )
+				{
+					FString Filename;
+					if (FPackageName::DoesPackageExist(PackageName, &Filename))
+					{
+						PackagePaths.Emplace(MoveTemp(Filename), FName(*PackageName));
+					}
+					else
+					{
+						UE_LOG(LogDerivedDataCacheCommandlet, Warning, TEXT("Unable to resolve filename from package name %s"), *PackageName);
+						continue;
+					}
+				}
+			}
 		}
 
 		// Respect settings that instruct us not to enumerate some paths
@@ -452,6 +601,20 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 			PackagePaths.SetNum(NewNum);
 		}
 
+		if (PackagePaths.Num() == 0)
+		{
+			UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("No packages found to load from command line arguments."));
+		}
+		else
+		{
+			UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("%d packages to load from command line arguments"), PackagePaths.Num());
+			for( int32 Index=0; Index < PackagePaths.Num(); ++Index)
+			{
+				const TPair<FString, FName>& Pair = PackagePaths[Index];
+				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT(" %d) %s"), Index + 1, *Pair.Get<1>().ToString());
+			}
+		}
+
 		ITargetPlatformManagerModule* TPM = GetTargetPlatformManager();
 		const TArray<ITargetPlatform*>& Platforms = TPM->GetActiveTargetPlatforms();
 
@@ -472,41 +635,103 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 		int32 NumProcessedSinceLastGC = 0;
 		bool bLastPackageWasMap = false;
 
-		if (PackagePaths.Num() == 0)
-		{
-			UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("No packages found to load."));
-		}
-		else
-		{
-			UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("%d packages to load..."), PackagePaths.Num());
-		}
-
-		// Gather the list of packages to process
+		// Mark command-line packages as already discovered so we don't double-add from soft refs and can avoid loading packages on other shards
 		PackagesToProcess.Empty(PackagePaths.Num());
 		for (int32 PackageIndex = PackagePaths.Num() - 1; PackageIndex >= 0; PackageIndex--)
 		{
 			PackagesToProcess.Add(PackagePaths[PackageIndex].Get<1>());
 		}
 
-		// Process each package
-		for (int32 PackageIndex = PackagePaths.Num() - 1; PackageIndex >= 0; PackageIndex-- )
+		// Add all soft object references from no asset in particular to the packages to be processed, before filtering in the case of distributed work
 		{
-			TPair<FString, FName>& PackagePath = PackagePaths[PackageIndex];
-			const FString& Filename = PackagePath.Get<0>();
-			FName PackageFName = PackagePath.Get<1>();
-			check(!ProcessedPackages.Contains(PackageFName));
-
-			// If work is distributed, skip packages that are meant to be process by other machines
-			if (bDoSubset)
+			int32 StartingPackageCount = PackagePaths.Num();
+			TSet<FName> SoftReferencedPackages;
+			GRedirectCollector.ProcessSoftObjectPathPackageList(NAME_None, false, SoftReferencedPackages);
+			for (FName SoftRefName : SoftReferencedPackages)
 			{
-				FString PackageName = PackageFName.ToString();
-				if (FCrc::StrCrc_DEPRECATED(*PackageName.ToUpper()) % SubsetMod != SubsetTarget)
+				if (PackagesToProcess.Contains(SoftRefName))
 				{
 					continue;
 				}
+
+				FString SoftRefFilename;
+				if (FPackageName::DoesPackageExist(SoftRefName.ToString(), &SoftRefFilename))
+				{
+					PackagePaths.Push(TPair<FString, FName>(SoftRefFilename, SoftRefName));
+					PackagesToProcess.Add(SoftRefName);
+				}
 			}
 
-			UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Loading (%d) %s"), FilesInPath.Num() - PackageIndex, *Filename);
+			if (StartingPackageCount == PackagePaths.Num())
+			{
+				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("No packages found to load from startup soft references."));
+			}
+			else
+			{
+				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("%d packages to load from startup soft references"), PackagePaths.Num() - StartingPackageCount);
+				for (int32 Index = StartingPackageCount; Index < PackagePaths.Num(); ++Index)
+				{
+					const TPair<FString, FName>& Pair = PackagePaths[Index];
+					UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT(" %d) %s"), Index + 1 - StartingPackageCount, *Pair.Get<1>().ToString());
+				}
+			}
+		}
+
+		// Sort maps to the end of the list of packages to process to maximize the chance of sharded instances populating the DDC from individual packages.
+		Algo::StableSortBy(PackagePaths, 
+			[](TPair<FString, FName>& Pair){ return Pair.Get<0>().EndsWith(FPackageName::GetMapPackageExtension()); },
+			TLess<bool>()
+		);
+
+		// If work is distributed, skip packages that are meant to be process by other machines
+		// Do this before the main loop so that we don't filter soft refs that we enqueue 
+		if (bDoSubset)
+		{
+			PackagePaths.RemoveAll([SubsetMod, SubsetTarget](const TPair<FString, FName>& P) {
+				FName PackageFName = P.Value;
+
+				FString PackageName = PackageFName.ToString();
+				if (FCrc::StrCrc_DEPRECATED(*PackageName.ToUpper()) % SubsetMod != SubsetTarget)
+				{
+					return true;
+				}
+				return false;
+			});
+
+			if (PackagePaths.Num() == 0)
+			{
+				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("No packages to process after subset split!"));
+			}
+			else
+			{
+				UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("%d packages to load after subset split"), PackagePaths.Num());
+				for (int32 Index = 0; Index < PackagePaths.Num(); ++Index)
+				{
+					const TPair<FString, FName>& Pair = PackagePaths[Index];
+					UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT(" %d) %s"), Index + 1, *Pair.Get<1>().ToString());
+				}
+			}
+		}
+
+		if (bDryRun)
+		{
+			PackagePaths.Empty();
+		}
+
+		// Process each package
+		int32 PackageOrder = 0;
+		while( PackagePaths.Num())
+		{
+			TTuple<FString, FName> PackagePath = PackagePaths.Pop();
+			const FString& Filename = PackagePath.Get<0>();
+			FName PackageFName = PackagePath.Get<1>();
+			if (ProcessedPackages.Contains(PackageFName))
+			{
+				// Soft refs may be queued, then processed as a hard ref from something else.
+				continue;
+			}
+
+			UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("Loading (%d) %s"), ++PackageOrder, *Filename);
 
 			UPackage* Package = LoadPackage(NULL, *Filename, LOAD_None);
 			if (Package == NULL)
@@ -520,17 +745,57 @@ int32 UDerivedDataCacheCommandlet::Main( const FString& Params )
 				NumProcessedSinceLastGC++;
 			}
 
-			// even if the load failed this could be the first time through the loop so it might have all the startup packages to resolve
-			GRedirectCollector.ResolveAllSoftObjectPaths();
-
 			// Find any new packages and cache all the objects in each package
-			CacheLoadedPackages(Package, PackageFilter, Platforms);
+			TSet<FName> NewProcessedPackages;
+			CacheLoadedPackages(Package, PackageFilter, Platforms, NewProcessedPackages);
+
+			// Ensure we load maps to process all their referenced packages in case they are using world partition.
+			if (bLastPackageWasMap)
+			{
+				if (UWorld* World = UWorld::FindWorldInPackage(Package))
+				{
+					CacheWorldPackages(World, PackageFilter, Platforms, NewProcessedPackages);
+				}
+			}
+
+			// Queue up soft references of each package we just processed
+			NewProcessedPackages.Add(NAME_None); // Always check for more references from non-asset systems each step
+			for( FName NewProcessedPackage : NewProcessedPackages)
+			{
+				TSet<FName> SoftReferencedPackages;
+				GRedirectCollector.ProcessSoftObjectPathPackageList(NewProcessedPackage, false, SoftReferencedPackages);
+				for (FName SoftRefName : SoftReferencedPackages)
+				{
+					// Packages may already be enqueued on this or another machine 
+					if (!PackagesToProcess.Contains(SoftRefName) && !ProcessedPackages.Contains(SoftRefName))
+					{
+						PackagesToProcess.Add(SoftRefName);
+						FString SoftRefFilename;
+						if (FPackageName::DoesPackageExist(SoftRefName.ToString(), &SoftRefFilename))
+						{
+							UE_LOG(LogDerivedDataCacheCommandlet, Log, TEXT("Queueing soft reference '%s' for later processing"), *SoftRefName.ToString());
+							PackagePaths.Push(TPair<FString, FName>(SoftRefFilename, SoftRefName));
+						}
+						else
+						{
+							UE_LOG(LogDerivedDataCacheCommandlet, Warning, TEXT("Failed to find soft reference '%s'"), *SoftRefName.ToString());
+						}
+					}
+					else
+					{
+						UE_LOG(LogDerivedDataCacheCommandlet, Verbose, TEXT("Skipping soft reference '%s': %s, %s "), 
+							PackagesToProcess.Contains(SoftRefName) ? TEXT("ALREADY QUEUED") : TEXT("NOT QUEUED"),
+							ProcessedPackages.Contains(SoftRefName) ? TEXT("ALREADY PROCESSED") : TEXT("NOT PROCESSED")
+						);
+					}
+				}
+			}
 
 			// Perform a GC if conditions are met
-			if (NumProcessedSinceLastGC >= GCInterval || PackageIndex < 0 || bLastPackageWasMap)
+			if (NumProcessedSinceLastGC >= GCInterval || PackagePaths.IsEmpty() || bLastPackageWasMap)
 			{
 				const double StartGCTime = FPlatformTime::Seconds();
-				if (NumProcessedSinceLastGC >= GCInterval || PackageIndex < 0)
+				if (NumProcessedSinceLastGC >= GCInterval || PackagePaths.IsEmpty())
 				{
 					UE_LOG(LogDerivedDataCacheCommandlet, Display, TEXT("GC (Full)..."));
 					CollectGarbage(RF_NoFlags);

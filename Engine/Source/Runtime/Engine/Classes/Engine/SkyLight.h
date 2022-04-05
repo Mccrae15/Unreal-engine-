@@ -7,7 +7,7 @@
 #include "GameFramework/Info.h"
 #include "SkyLight.generated.h"
 
-UCLASS(ClassGroup=Lights, hidecategories=(Input,Collision,Replication,Info), showcategories=("Rendering", "Input|MouseInput", "Input|TouchInput"), ComponentWrapperClass, ConversionRoot, Blueprintable)
+UCLASS(ClassGroup=Lights, hidecategories=(Input,Collision,Replication,Info), showcategories=(Rendering, DataLayers, "Input|MouseInput", "Input|TouchInput"), ComponentWrapperClass, ConversionRoot, Blueprintable)
 class ENGINE_API ASkyLight : public AInfo
 {
 	GENERATED_UCLASS_BODY()
@@ -17,8 +17,11 @@ class ENGINE_API ASkyLight : public AInfo
 private:
 	/** @todo document */
 	UPROPERTY(Category = Light, VisibleAnywhere, BlueprintReadOnly, meta = (ExposeFunctionCategories = "Light,Rendering,Rendering|Components|SkyLight", AllowPrivateAccess = "true"))
-	class USkyLightComponent* LightComponent;
+	TObjectPtr<class USkyLightComponent> LightComponent;
 public:
+#if WITH_EDITOR
+	virtual bool SupportsDataLayer() const override { return true; }
+#endif
 
 	/** replicated copy of LightComponent's bEnabled property */
 	UPROPERTY(replicatedUsing=OnRep_bEnabled)

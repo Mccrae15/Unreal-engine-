@@ -29,6 +29,8 @@
 #include "Widgets/SVerticalResizeBox.h"
 
 
+#if WITH_NIAGARA_DEBUGGER
+
 #define LOCTEXT_NAMESPACE "NiagaraOutlinerCustomization"
 
 //////////////////////////////////////////////////////////////////////////
@@ -171,8 +173,12 @@ void SNiagaraOutlinerTree::Construct(const FArguments& InArgs, TSharedPtr<FNiaga
 	{
 		FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
+		FDetailsViewArgs ViewArgs;
+		ViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+		ViewArgs.bAllowSearch = false;
+		ViewArgs.bHideSelectionTip = true;
 		SelectedItemDetails = PropertyEditorModule.CreateStructureDetailView(
-			FDetailsViewArgs(false, false, false, FDetailsViewArgs::HideNameArea, true),
+			ViewArgs,
 			FStructureDetailsViewArgs(),
 			nullptr);
 
@@ -885,7 +891,7 @@ TSharedRef<SWidget> FNiagaraOutlinerTreeWorldItem::GetHeaderWidget()
 				[
 					SNew(SNiagaraOutlinerTreeItemHeaderDataWidget<FText>, Outliner->ViewSettings)
 					.ToolTipText(LOCTEXT("WorldHeaderTooltip_WorldType", "World Type"))
-					.Data(FText::FromString(ToString((EWorldType::Type)Data->WorldType)))
+					.Data(FText::FromString(LexToString((EWorldType::Type)Data->WorldType)))
 				];
 
 			Box->AddSlot()
@@ -1087,7 +1093,7 @@ TSharedRef<SWidget> FNiagaraOutlinerTreeSystemItem::GetHeaderWidget()
 				[
 					SNew(SNiagaraOutlinerTreeItemHeaderDataWidget<FNiagaraOutlinerTimingData>, Outliner->ViewSettings)
 					//.LabelText(LOCTEXT("SystemMaxPerFrameTime", "Frame Max"))
-					.ToolTipText(LOCTEXT("SystemMaxPerFrameTimeToolTip", "Max frame time for all instances of this System."))
+					.ToolTipText(LOCTEXT("AllInstancesMaxFrameTimeToolTip", "Max frame time for all instances of this System."))
 					.Data(Data->MaxPerFrameTime)
 					.MinDesiredWidth(50)
 				];
@@ -1167,6 +1173,18 @@ TSharedRef<SWidget> FNiagaraOutlinerTreeComponentItem::GetHeaderWidget()
 						SNew(SNiagaraOutlinerTreeItemHeaderDataWidget<FText>, Outliner->ViewSettings)
 						.ToolTipText(LOCTEXT("UninitializedSystemInstanceTooltip", "Internal data for component is uninitialized. Likely as it has yet to be activated."))
 						.Data(LOCTEXT("UninitializedSystemInstanceValue", "Uninitialized"))
+					];
+			}
+			else if (Data->bUsingCullProxy)
+			{
+				//This instance is using it's cull proxy.
+				Box->AddSlot()
+					.AutoWidth()
+					.Padding(FMargin(HeaderPadding, 0.0f, HeaderPadding, 0.0f))
+					[
+						SNew(SNiagaraOutlinerTreeItemHeaderDataWidget<FText>, Outliner->ViewSettings)
+						.ToolTipText(LOCTEXT("CullProxyToolTipText", "This instance is not simulating. Instead it's using a cull proxy to maintain visuals while limiting it's cost."))
+						.Data(LOCTEXT("CullProxyInstanceValue", "Cull Proxy"))
 					];
 			}
 			else
@@ -1407,6 +1425,19 @@ void FNiagaraOutlinerEmitterInstanceDetailsCustomization::CustomizeHeader(TShare
 
 void FNiagaraOutlinerEmitterInstanceDetailsCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> StructPropertyHandle, class IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& StructCustomizationUtils)
 {
+	FNiagaraEditorModule& NiagaraEditorModule = FModuleManager::GetModuleChecked<FNiagaraEditorModule>("NiagaraEditor");
+
+	uint32 NumChildren = 0;
+	StructPropertyHandle->GetNumChildren(NumChildren);
+
+	for (uint32 ChildNum = 0; ChildNum < NumChildren; ++ChildNum)
+	{
+		TSharedPtr<IPropertyHandle> ChildProperty = StructPropertyHandle->GetChildHandle(ChildNum);
+
+		ChildBuilder.AddProperty(ChildProperty.ToSharedRef());
+	}
 }
 
 #undef LOCTEXT_NAMESPACE
+
+#endif // WITH_NIAGARA_DEBUGGER

@@ -61,10 +61,6 @@ TAutoConsoleVariable<int32> GMaxDebugTextStringsPerActorCVar(
 	128,
 	TEXT("The maximum number of debug strings that can be attached to a given actor (<=0 : no limit)"));
 
-const FColor AHUD::WhiteColor(255, 255, 255, 255);
-const FColor AHUD::GreenColor(0, 255, 0, 255);
-const FColor AHUD::RedColor(255, 0, 0, 255);
-
 AHUD::AHUD(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -196,14 +192,14 @@ void AHUD::PostRender()
 
 				for (int32 FingerIndex = 0; FingerIndex < EKeys::NUM_TOUCH_KEYS; ++FingerIndex)
 				{
-					FVector2D TouchLocation;
+					FVector2f TouchLocation;
 					bool bPressed = false;
 
 					GetOwningPlayerController()->GetInputTouchState((ETouchIndex::Type)FingerIndex, TouchLocation.X, TouchLocation.Y, bPressed);
 
 					if (bPressed)
 					{
-						ContactPoints.Add(TouchLocation);
+						ContactPoints.Add((FVector2D)TouchLocation);
 					}
 				}
 
@@ -445,7 +441,7 @@ void AHUD::ShowDebugInfo(float& YL, float& YPos)
 			DisplayDebugManager.DrawString(FString::Printf(TEXT("Showing Debug for %s, Press [PageUp] and [PageDown] to cycle between targets."), *GetNameSafe(ShowDebugTargetActor)));
 		}
 
-		if (ShowDebugTargetActor && !ShowDebugTargetActor->IsPendingKill())
+		if (IsValid(ShowDebugTargetActor))
 		{
 			// Draw box around Actor being debugged.
 #if ENABLE_DRAW_DEBUG
@@ -496,7 +492,7 @@ AActor* AHUD::GetCurrentDebugTargetActor()
 		bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, CamLoc, CamRot.Vector() * 100000.f + CamLoc, ECC_WorldDynamic, TraceParams);
 		if (bHit)
 		{
-			AActor* HitActor = Hit.Actor.Get();
+			AActor* HitActor = Hit.HitObjectHandle.FetchActor();
 			if (HitActor && ((ShowDebugTargetDesiredClass == nullptr) || HitActor->IsA(ShowDebugTargetDesiredClass)))
 			{
 				DebugTargetActor = HitActor;
@@ -505,7 +501,7 @@ AActor* AHUD::GetCurrentDebugTargetActor()
 
 		// If we hit something new, return this.
 		// Otherwise fall back to our last successful hit.
-		return DebugTargetActor ? DebugTargetActor : ShowDebugTargetActor;
+		return DebugTargetActor ? DebugTargetActor : ToRawPtr(ShowDebugTargetActor);
 	}
 	else
 	{
@@ -525,7 +521,7 @@ AActor* AHUD::GetCurrentDebugTargetActor()
 void AHUD::AddActorToDebugList(AActor* InActor, TArray<AActor*>& InOutList, UWorld* InWorld)
 {
 	// Only consider actors that are visible, not destroyed and in the same world.
-	if (InActor && !InActor->IsPendingKill() && (InActor->GetWorld() == InWorld) && InActor->WasRecentlyRendered())
+	if (IsValid(InActor) && (InActor->GetWorld() == InWorld) && InActor->WasRecentlyRendered())
 	{
 		InOutList.AddUnique(InActor);
 	}
@@ -974,7 +970,7 @@ void AHUD::DrawTexture(UTexture* Texture, float ScreenX, float ScreenY, float Sc
 {
 	if (IsCanvasValid_WarnIfNot() && Texture)
 	{
-		FCanvasTileItem TileItem(FVector2D(ScreenX, ScreenY), Texture->Resource, FVector2D(ScreenW, ScreenH) * Scale, FVector2D(TextureU, TextureV), FVector2D(TextureU + TextureUWidth, TextureV + TextureVHeight), Color);
+		FCanvasTileItem TileItem(FVector2D(ScreenX, ScreenY), Texture->GetResource(), FVector2D(ScreenW, ScreenH) * Scale, FVector2D(TextureU, TextureV), FVector2D(TextureU + TextureUWidth, TextureV + TextureVHeight), Color);
 		TileItem.Rotation = FRotator(0, Rotation, 0);
 		TileItem.PivotPoint = RotPivot;
 		if (bScalePosition)
@@ -990,7 +986,7 @@ void AHUD::DrawTextureSimple(UTexture* Texture, float ScreenX, float ScreenY, fl
 {
 	if (IsCanvasValid_WarnIfNot() && Texture)
 	{
-		FCanvasTileItem TileItem(FVector2D(ScreenX, ScreenY), Texture->Resource, FLinearColor::White);
+		FCanvasTileItem TileItem(FVector2D(ScreenX, ScreenY), Texture->GetResource(), FLinearColor::White);
 		if (bScalePosition)
 		{
 			TileItem.Position *= Scale;
@@ -1014,11 +1010,12 @@ void AHUD::DrawMaterialTriangle(UMaterialInterface* Material, FVector2D V0_Pos, 
 		Canvas->DrawItem(TriangleItem);
 	}
 }
-FVector AHUD::Project(FVector Location) const
+
+FVector AHUD::Project(FVector Location, bool bClampToZeroPlane) const
 {
 	if (IsCanvasValid_WarnIfNot())
 	{
-		return Canvas->Project(Location);
+		return Canvas->Project(Location, bClampToZeroPlane);
 	}
 	return FVector(0, 0, 0);
 }
@@ -1081,23 +1078,23 @@ void AHUD::GetActorsInSelectionRectangle(TSubclassOf<class AActor> ClassFilter, 
 		for (uint8 BoundsPointItr = 0; BoundsPointItr < 8; BoundsPointItr++)
 		{
 			// Project vert into screen space.
-			const FVector ProjectedWorldLocation = Project(BoxCenter + (BoundsPointMapping[BoundsPointItr] * BoxExtents));
-			// Add to 2D bounding box
-			ActorBox2D += FVector2D(ProjectedWorldLocation.X, ProjectedWorldLocation.Y);
+			const FVector ProjectedWorldLocation = Project(BoxCenter + (BoundsPointMapping[BoundsPointItr] * BoxExtents), true);
+			// Add to 2D bounding box if point is on the front side of the camera
+			if (ProjectedWorldLocation.Z > 0.f)
+			{
+				ActorBox2D += FVector2D(ProjectedWorldLocation.X, ProjectedWorldLocation.Y);
+			}
 		}
-
-		//Selection Box must fully enclose the Projected Actor Bounds
-		if (bActorMustBeFullyEnclosed)
+		// Only consider actor boxes that have valid points inside
+		if (ActorBox2D.bIsValid)
 		{
-			if (SelectionRectangle.IsInside(ActorBox2D))
+			//Selection Box must fully enclose the Projected Actor Bounds
+			if (bActorMustBeFullyEnclosed && SelectionRectangle.IsInside(ActorBox2D))
 			{
 				OutActors.Add(EachActor);
 			}
-		}
-		//Partial Intersection with Projected Actor Bounds
-		else
-		{
-			if (SelectionRectangle.Intersect(ActorBox2D))
+			//Partial Intersection with Projected Actor Bounds
+			else if (SelectionRectangle.Intersect(ActorBox2D))
 			{
 				OutActors.Add(EachActor);
 			}

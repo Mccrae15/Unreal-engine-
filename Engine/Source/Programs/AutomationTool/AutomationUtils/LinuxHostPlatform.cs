@@ -7,18 +7,19 @@ using System.Text;
 using System.Diagnostics;
 using System.IO;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace AutomationTool
 {
 	class LinuxHostPlatform : HostPlatform
 	{
-		static string CachedMsBuildTool = "";
+		static string CachedFrameworkMsbuildTool = "";
 
-		public override string GetMsBuildExe()
+		public override string GetFrameworkMsbuildExe()
 		{
 			// As of 5.0 mono comes with msbuild which performs better. If that's installed then use it
-			if (string.IsNullOrEmpty(CachedMsBuildTool))
+			if (string.IsNullOrEmpty(CachedFrameworkMsbuildTool))
 			{
 				int Value;
 				bool CanUseMsBuild = (int.TryParse(Environment.GetEnvironmentVariable("UE_USE_SYSTEM_MONO"), out Value) &&
@@ -27,15 +28,25 @@ namespace AutomationTool
 
 				if (CanUseMsBuild)
 				{
-					CachedMsBuildTool = "msbuild";
+					CachedFrameworkMsbuildTool = "msbuild";
 				}
 				else
 				{
-					CachedMsBuildTool = "xbuild";
+					CachedFrameworkMsbuildTool = "xbuild";
 				}
 			}
 
-			return CachedMsBuildTool;
+			return CachedFrameworkMsbuildTool;
+		}
+
+		public override FileReference GetDotnetExe()
+		{
+			return FileReference.Combine(Unreal.EngineDirectory, @"Binaries\ThirdParty\DotNet\Linux\dotnet");
+		}
+
+		public override string GetDotnetMsbuildExe()
+		{
+			return "../../ThirdParty/DotNet/Linux/dotnet";
 		}
 
 		public override string RelativeBinariesFolder
@@ -43,27 +54,27 @@ namespace AutomationTool
 			get { return @"Engine/Binaries/Linux/"; }
 		}
 
-		public override string GetUE4ExePath(string UE4Exe)
+		public override string GetUnrealExePath(string UnrealExe)
 		{
-			if(Path.IsPathRooted(UE4Exe))
+			if(Path.IsPathRooted(UnrealExe))
 			{
-				return CommandUtils.CombinePaths(UE4Exe);
+				return CommandUtils.CombinePaths(UnrealExe);
 			}
 
-			int CmdExeIndex = UE4Exe.IndexOf("-Cmd.exe");
+			int CmdExeIndex = UnrealExe.IndexOf("-Cmd.exe");
 			if (CmdExeIndex != -1)
 			{
-				UE4Exe = UE4Exe.Substring (0, CmdExeIndex);
+				UnrealExe = UnrealExe.Substring (0, CmdExeIndex);
 			}
 			else
 			{
-				CmdExeIndex = UE4Exe.IndexOf (".exe");
+				CmdExeIndex = UnrealExe.IndexOf (".exe");
 				if (CmdExeIndex != -1)
 				{
-					UE4Exe = UE4Exe.Substring (0, CmdExeIndex);
+					UnrealExe = UnrealExe.Substring (0, CmdExeIndex);
 				}
 			}
-			return CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, RelativeBinariesFolder, UE4Exe);
+			return CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, RelativeBinariesFolder, UnrealExe);
 		}
 
 		public override string LocalBuildsLogFolder
@@ -74,7 +85,7 @@ namespace AutomationTool
 
 		public override string P4Exe
 		{
-			get { return "/usr/bin/p4"; }
+			get { return "p4"; }
 		}
 
 		public override Process CreateProcess(string AppName)
@@ -117,6 +128,12 @@ namespace AutomationTool
 					AppName = AppName.Replace("-Cmd.exe", "");
 					AppName = AppName.Replace(".exe", "");
 				}
+				// some of our C# applications are converted to dotnet core, do not run those via mono
+				// they are instead assumed to produce a host executable that can just be run
+				else if (AppName.Contains("UnrealBuildTool") || AppName.Contains("AutomationTool"))
+				{
+					Options &= ~CommandUtils.ERunOptions.AppMustExist;
+				}
 				else
 				{
 					// It's a C# app, so run it with Mono
@@ -130,20 +147,6 @@ namespace AutomationTool
 		public override void SetConsoleCtrlHandler(ProcessManager.CtrlHandlerDelegate Handler)
 		{
 			// @todo: add mono support
-		}
-
-		public override bool IsScriptModuleSupported(string ModuleName)
-		{
-			// @todo: add more unsupported modules here
-			if (ModuleName.StartsWith("Gauntlet", StringComparison.OrdinalIgnoreCase))
-			{
-				return false;
-			}
-			if (ModuleName.StartsWith("PS4", StringComparison.OrdinalIgnoreCase))
-			{
-				return false;
-			}
-			return true;
 		}
 
 		public override UnrealTargetPlatform HostEditorPlatform

@@ -136,7 +136,7 @@ void UAnimSet::ResetAnimSet()
 		UAnimSequence* AnimSeq = Sequences[i];
 		if( AnimSeq )
 		{
-			AnimSeq->RecycleAnimSequence();
+			AnimSeq->ResetAnimation();
 		}
 	}
 	Sequences.Empty();
@@ -148,7 +148,7 @@ void UAnimSet::ResetAnimSet()
 	for(TObjectIterator<USkeletalMeshComponent> It;It;++It)
 	{
 		USkeletalMeshComponent* SkelComp = *It;
-		if(!SkelComp->IsPendingKill() && !SkelComp->IsTemplate())
+		if(IsValid(SkelComp) && !SkelComp->IsTemplate())
 		{
 			SkelComp->InitAnim(true);
 		}
@@ -164,7 +164,7 @@ bool UAnimSet::RemoveAnimSequenceFromAnimSet(UAnimSequence* AnimSeq)
 	if( SequenceIndex != INDEX_NONE )
 	{
 		// Handle reference clean up properly
-		AnimSeq->RecycleAnimSequence();
+		AnimSeq->ResetAnimation();
 		// Remove from array
 		Sequences.RemoveAt(SequenceIndex, 1);
 		if( GIsEditor )
@@ -188,13 +188,13 @@ void UAnimSet::ClearAllAnimSetLinkupCaches()
 	for(TObjectIterator<UObject> It;It;++It)
 	{
 		UAnimSet* AnimSet = Cast<UAnimSet>(*It);
-		if(AnimSet && !AnimSet->IsPendingKill() && !AnimSet->IsTemplate())
+		if(IsValid(AnimSet) && !AnimSet->IsTemplate())
 		{
 			AnimSets.Add(AnimSet);
 		}
 
 		USkeletalMeshComponent* SkelComp = Cast<USkeletalMeshComponent>(*It);
-		if(SkelComp && !SkelComp->IsPendingKill() && !SkelComp->IsTemplate())
+		if(IsValid(SkelComp) && !SkelComp->IsTemplate())
 		{
 			SkelComps.Add(SkelComp);
 		}

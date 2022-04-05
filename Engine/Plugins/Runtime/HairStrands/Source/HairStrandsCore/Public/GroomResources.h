@@ -11,23 +11,112 @@
 #include "HairStrandsInterface.h"
 #include "HairStrandsMeshProjection.h"
 
+#define STRANDS_PROCEDURAL_INTERSECTOR_MAX_SPLITS 4
+
 inline uint32 GetBufferTotalNumBytes(const FRDGExternalBuffer& In) 
 {
 	return In.Buffer ? In.Buffer->Desc.GetTotalNumBytes() : 0;
 }
 
-/* Render buffers for root deformation for dynamic meshes */
-struct FHairStrandsRestRootResource : public FRenderResource
+enum class EHairStrandsResourcesType : uint8
+{
+	Guides,		// Guides used for simulation
+	Strands,	// Rendering strands 
+	Cards		// Guides used for deforming the cards geometry (which is different from the simulation guides)
+};
+
+enum class EHairStrandsAllocationType : uint8
+{
+	Immediate,	// Resources are allocated immediately
+	Deferred	// Resources allocation is deferred to first usage
+};
+
+/* Hair resource name - Allow more precise resource name for debug purpose. Enabled with HAIR_RESOURCE_DEBUG_NAME */
+#define HAIR_RESOURCE_DEBUG_NAME 0
+struct FHairResourceName
+{
+	FHairResourceName() = default;
+#if HAIR_RESOURCE_DEBUG_NAME
+	FHairResourceName(const FName& In) : AssetName(In) {}
+	FHairResourceName(const FName& In, int32 InGroupIndex) : AssetName(In), GroupIndex(InGroupIndex) {}
+	FHairResourceName(const FName& In, int32 InGroupIndex, int32 InLODIndex) : AssetName(In), GroupIndex(InGroupIndex), LODIndex(InLODIndex) {}
+
+	FName AssetName;
+	int32 GroupIndex = -1;
+	int32 LODIndex = -1;
+	TArray<FString> Names;
+#else
+	FHairResourceName(const FName& In) {}
+	FHairResourceName(const FName& In, int32 InGroupIndex) {}
+	FHairResourceName(const FName& In, int32 InGroupIndex, int32 InLODIndex) {}
+#endif
+};
+
+enum class EHairResourceLoadingType : uint8
+{
+	Async,
+	Sync
+};
+
+enum class EHairResourceStatus : uint8
+{
+	None = 0,
+	Loading = 1,
+	Valid = 2
+};
+
+FORCEINLINE EHairResourceStatus  operator& (EHairResourceStatus A, EHairResourceStatus B) { return static_cast<EHairResourceStatus>(static_cast<uint8>(A) & static_cast<uint8>(B)); }
+FORCEINLINE EHairResourceStatus  operator| (EHairResourceStatus A, EHairResourceStatus B) { return static_cast<EHairResourceStatus>(static_cast<uint8>(A) | static_cast<uint8>(B)); }
+FORCEINLINE EHairResourceStatus& operator|=(EHairResourceStatus&A, EHairResourceStatus B) { return A=A|B; }
+FORCEINLINE bool operator! (EHairResourceStatus A) { return static_cast<uint8>(A) != 0; }
+
+EHairResourceLoadingType GetHairResourceLoadingType(EHairGeometryType InGeometryType, int32 InLODIndex);
+
+/* Hair resouces which whom allocation can be deferred */
+struct FHairCommonResource : public FRenderResource
 {
 	/** Build the hair strands resource */
-	FHairStrandsRestRootResource(const FHairStrandsRootData& RootData);
-	FHairStrandsRestRootResource(const FHairStrandsDatas* HairStrandsDatas, uint32 LODCount, const TArray<uint32>& NumSamples);
+	FHairCommonResource(EHairStrandsAllocationType AllocationType, const FHairResourceName& InResourceName, bool bUseRenderGraph=true);
 
-	/* Init the buffer */
+	/* Init/Release buffers (FRenderResource) */
 	virtual void InitRHI() override;
-
-	/* Release the buffer */
 	virtual void ReleaseRHI() override;
+
+	/* Init/Release buffers (FHairCommonResource) */
+	void Allocate(FRDGBuilder& GraphBuilder, EHairResourceLoadingType LoadingType);
+	void Allocate(FRDGBuilder& GraphBuilder, EHairResourceLoadingType LoadingType, EHairResourceStatus& Status);
+	void AllocateLOD(FRDGBuilder& GraphBuilder, int32 LODIndex, EHairResourceLoadingType LoadingType, EHairResourceStatus& Status);
+
+	void StreamInData();
+	void StreamInLODData(int32 LODIndex);
+
+	virtual void InternalAllocate() {}
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) {}
+	virtual void InternalAllocateLOD(FRDGBuilder& GraphBuilder, int32 LODIndex) {}
+	virtual void InternalRelease() {}
+	virtual bool InternalIsDataLoaded() { return true; }
+	virtual bool InternalIsLODDataLoaded(int32 LODIndex) { return true; }
+
+	bool bUseRenderGraph = true;
+	bool bIsInitialized = false;
+	EHairStrandsAllocationType AllocationType = EHairStrandsAllocationType::Deferred;
+
+	/* Store (precis) debug name */
+	FHairResourceName ResourceName;
+};
+
+/* Render buffers for root deformation for dynamic meshes */
+struct FHairStrandsRestRootResource : public FHairCommonResource
+{
+	/** Build the hair strands resource */
+	FHairStrandsRestRootResource(FHairStrandsRootBulkData& BulkData, EHairStrandsResourcesType CurveType, const FHairResourceName& ResourceName);
+
+	/* Init/Release buffers */
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) override;
+	virtual void InternalAllocateLOD(FRDGBuilder& GraphBuilder, int32 LODIndex) override;
+	virtual void InternalRelease() override;
+	virtual bool InternalIsDataLoaded() override;
+	virtual bool InternalIsLODDataLoaded(int32 LODIndex) override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairStrandsRestRootResource"); }
@@ -39,8 +128,6 @@ struct FHairStrandsRestRootResource : public FRenderResource
 	uint32 GetResourcesSize() const 
 	{
 		uint32 Total = 0;
-		Total += GetBufferTotalNumBytes(RootNormalBuffer);
-		Total += GetBufferTotalNumBytes(RootNormalBuffer);
 		Total += GetBufferTotalNumBytes(VertexToCurveIndexBuffer);
 		for (const FLOD& LOD : LODs)
 		{
@@ -56,8 +143,6 @@ struct FHairStrandsRestRootResource : public FRenderResource
 		return Total;
 	}
 
-	FRDGExternalBuffer RootPositionBuffer;
-	FRDGExternalBuffer RootNormalBuffer;
 	FRDGExternalBuffer VertexToCurveIndexBuffer;
 
 	struct FLOD
@@ -90,21 +175,22 @@ struct FHairStrandsRestRootResource : public FRenderResource
 	TArray<FLOD> LODs;
 
 	/* Store CPU data for root info & root binding */
-	FHairStrandsRootData RootData;
+	FHairStrandsRootBulkData& BulkData;
+
+	/* Type of curves */
+	const EHairStrandsResourcesType CurveType;
 };
 
 /* Render buffers for root deformation for dynamic meshes */
-struct FHairStrandsDeformedRootResource : public FRenderResource
+struct FHairStrandsDeformedRootResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
-	FHairStrandsDeformedRootResource();
-	FHairStrandsDeformedRootResource(const FHairStrandsRestRootResource* InRestResources);
+	FHairStrandsDeformedRootResource(EHairStrandsResourcesType CurveType, const FHairResourceName& ResourceName);
+	FHairStrandsDeformedRootResource(const FHairStrandsRestRootResource* InRestResources, EHairStrandsResourcesType CurveType, const FHairResourceName& ResourceName);
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/Release buffers */
+	virtual void InternalAllocateLOD(FRDGBuilder& GraphBuilder, int32 LODIndex) override;
+	virtual void InternalRelease() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairStrandsDeformedRootResource"); }
@@ -156,61 +242,77 @@ struct FHairStrandsDeformedRootResource : public FRenderResource
 
 	/* Last update MeshLODIndex */
 	int32 MeshLODIndex = -1;
+
+	/* Type of curves */
+	const EHairStrandsResourcesType CurveType;
 };
 
 /* Render buffers that will be used for rendering */
-struct FHairStrandsRestResource : public FRenderResource
+struct FHairStrandsRestResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
-	FHairStrandsRestResource(const FHairStrandsDatas::FRenderData& HairStrandRenderData, const FVector& PositionOffset);
+	FHairStrandsRestResource(FHairStrandsBulkData& InBulkData, EHairStrandsResourcesType CurveType, const FHairResourceName& ResourceName);
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/Release buffers */
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) override;
+	virtual void InternalRelease() override;
+	virtual bool InternalIsDataLoaded() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairStrandsResource"); }
+
+	FRDGExternalBuffer GetTangentBuffer(class FRDGBuilder& GraphBuilder, class FGlobalShaderMap* ShaderMap);
+	
+	FVector GetPositionOffset() const { return BulkData.GetPositionOffset(); }
 
 	/* Return the memory size for GPU resources */
 	uint32 GetResourcesSize() const
 	{
 		uint32 Total = 0;
-		Total += GetBufferTotalNumBytes(RestPositionBuffer);
-		Total += GetBufferTotalNumBytes(AttributeBuffer);
+		Total += GetBufferTotalNumBytes(PositionBuffer);
+		Total += GetBufferTotalNumBytes(PositionOffsetBuffer);
+		Total += GetBufferTotalNumBytes(TangentBuffer);
+		Total += GetBufferTotalNumBytes(Attribute0Buffer);
+		Total += GetBufferTotalNumBytes(Attribute1Buffer);
 		Total += GetBufferTotalNumBytes(MaterialBuffer);
 		return Total;
 	}
 
 	/* Strand hair rest position buffer */
-	FRDGExternalBuffer  RestPositionBuffer;
+	FRDGExternalBuffer  PositionBuffer;
+
+	/* Strand hair rest offset position buffer */
+	FRDGExternalBuffer  PositionOffsetBuffer;
+
+	/* Strand hair tangent buffer (non-allocated unless used for static geometry) */
+	FRDGExternalBuffer TangentBuffer;
 
 	/* Strand hair attribute buffer */
-	FRDGExternalBuffer AttributeBuffer;
+	FRDGExternalBuffer Attribute0Buffer;
+
+	/* Strand hair attribute buffer */
+	FRDGExternalBuffer Attribute1Buffer;
 
 	/* Strand hair material buffer */
 	FRDGExternalBuffer MaterialBuffer;
-	
-	/* Position offset as the rest positions are expressed in relative coordinate (16bits) */
-	FVector PositionOffset = FVector::ZeroVector;
 
 	/* Reference to the hair strands render data */
-	const FHairStrandsDatas::FRenderData& RenderData;
+	FHairStrandsBulkData& BulkData;
 
-	inline uint32 GetVertexCount() const { return RenderData.Positions.Num() / FHairStrandsPositionFormat::ComponentCount; }
+	/* Type of curves */
+	const EHairStrandsResourcesType CurveType;
+
+	inline uint32 GetVertexCount() const { return BulkData.PointCount; }
 };
 
-struct FHairStrandsDeformedResource : public FRenderResource
+struct FHairStrandsDeformedResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
-	FHairStrandsDeformedResource(const FHairStrandsDatas::FRenderData& HairStrandRenderData, bool bInitializeData, bool bDynamic, const FVector& InDefaultOffset);
+	FHairStrandsDeformedResource(FHairStrandsBulkData& BulkData, EHairStrandsResourcesType CurveType, const FHairResourceName& ResourceName);
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/Release buffers */
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) override;
+	virtual void InternalRelease() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairStrandsDeformedResource"); }
@@ -238,18 +340,19 @@ struct FHairStrandsDeformedResource : public FRenderResource
 	FVector PositionOffset[2] = {FVector::ZeroVector, FVector::ZeroVector};
 
 	/* Reference to the hair strands render data */
-	const FHairStrandsDatas::FRenderData& RenderData;
-
-	/* Whether the GPU data should be initialized with the asset data or not */
-	const bool bInitializedData = false;
+	FHairStrandsBulkData& BulkData;
 
 	/* Whether the GPU data should be initialized with the asset data or not */
 	uint32 CurrentIndex = 0;
 
-	/* Whether the underlying resource is dynamic not (single or double buffer allocated) */
-	const bool bDynamic = true; 
-	bool bInitializedTangent = true;
-	FVector DefaultOffset = FVector::ZeroVector;
+	/* Track the view which has update the formed position. This is used when rendering the same 
+	   instance accross several editor viewport (not views of the same viewport), to prevent 
+	   incorrect motion vector, as editor viewport are refresh not on the same tick, but with a 
+	   throttling mechanism which make the updates not coherent. */
+	uint32 UniqueViewIDs[2] = { 0, 0 };
+
+	/* Type of curves */
+	const EHairStrandsResourcesType CurveType;
 
 	enum EFrameType
 	{
@@ -258,25 +361,26 @@ struct FHairStrandsDeformedResource : public FRenderResource
 	};
 
 	// Helper accessors
-	inline uint32 GetIndex(EFrameType T) const					{ return (!bDynamic || T == EFrameType::Current) ? CurrentIndex : 1u - CurrentIndex; }
+	inline uint32 GetIndex(EFrameType T) const					{ return T == EFrameType::Current ? CurrentIndex : 1u - CurrentIndex; }
 	inline FRDGExternalBuffer& GetBuffer(EFrameType T)			{ return DeformedPositionBuffer[GetIndex(T)];  }
 	inline FVector& GetPositionOffset(EFrameType T)				{ return PositionOffset[GetIndex(T)]; }
 	inline FRDGExternalBuffer& GetPositionOffsetBuffer(EFrameType T) { return DeformedOffsetBuffer[GetIndex(T)]; }
 	inline const FVector& GetPositionOffset(EFrameType T) const { return PositionOffset[GetIndex(T)]; }
 	inline void SetPositionOffset(EFrameType T, const FVector& Offset)  { PositionOffset[GetIndex(T)] = Offset; }
-	inline void SwapBuffer()									{ if (bDynamic) { CurrentIndex = 1u - CurrentIndex; } }
-	bool NeedsToUpdateTangent();
+	inline void SwapBuffer()									{ CurrentIndex = 1u - CurrentIndex; }
+	inline uint32& GetUniqueViewID(EFrameType T)				{ return UniqueViewIDs[GetIndex(T)]; }
+	inline uint32 GetUniqueViewID(EFrameType T) const			{ return UniqueViewIDs[GetIndex(T)]; }
+	//bool NeedsToUpdateTangent();
 };
 
-struct FHairStrandsClusterCullingResource : public FRenderResource
+struct FHairStrandsClusterCullingResource : public FHairCommonResource
 {
-	FHairStrandsClusterCullingResource(const FHairStrandsClusterCullingData& Data);
+	FHairStrandsClusterCullingResource(FHairStrandsClusterCullingBulkData& Data, const FHairResourceName& ResourceName);
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/Release buffers */
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) override;
+	virtual void InternalRelease() override;
+	virtual bool InternalIsDataLoaded() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairStrandsClusterResource"); }
@@ -302,19 +406,18 @@ struct FHairStrandsClusterCullingResource : public FRenderResource
 	/* Concatenated data for each cluster: list of VertexId pointed to by ClusterInfoBuffer */
 	FRDGExternalBuffer ClusterVertexIdBuffer;
 
-	const FHairStrandsClusterCullingData Data;
+	FHairStrandsClusterCullingBulkData& BulkData;
 };
 
-struct FHairStrandsInterpolationResource : public FRenderResource
+struct FHairStrandsInterpolationResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
-	FHairStrandsInterpolationResource(const FHairStrandsInterpolationDatas::FRenderData& InterpolationRenderData, const FHairStrandsDatas& SimDatas);
-
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	FHairStrandsInterpolationResource(FHairStrandsInterpolationBulkData& InBulkData, const FHairResourceName& ResourceName);
+	
+	/* Init/Release buffers */
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) override;
+	virtual void InternalRelease() override;
+	virtual bool InternalIsDataLoaded() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairStrandsInterplationResource"); }
@@ -323,36 +426,35 @@ struct FHairStrandsInterpolationResource : public FRenderResource
 	uint32 GetResourcesSize() const
 	{
 		uint32 Total = 0;
+		Total += GetBufferTotalNumBytes(InterpolationBuffer);
 		Total += GetBufferTotalNumBytes(Interpolation0Buffer);
 		Total += GetBufferTotalNumBytes(Interpolation1Buffer);
 		Total += GetBufferTotalNumBytes(SimRootPointIndexBuffer);
 		return Total;
 	}
 
+	bool UseSingleGuide() const { return InterpolationBuffer.Buffer != nullptr; }
+
+	FRDGExternalBuffer InterpolationBuffer;
 	FRDGExternalBuffer Interpolation0Buffer;
 	FRDGExternalBuffer Interpolation1Buffer;
-
-	// For debug purpose only (should be remove once all hair simulation is correctly handled)
 	FRDGExternalBuffer SimRootPointIndexBuffer;
-	TArray<FHairStrandsRootIndexFormat::Type> SimRootPointIndex;
 
 	/* Reference to the hair strands interpolation render data */
-	const FHairStrandsInterpolationDatas::FRenderData& RenderData;
+	FHairStrandsInterpolationBulkData& BulkData;
 };
 
 #if RHI_RAYTRACING
-struct FHairStrandsRaytracingResource : public FRenderResource
+struct FHairStrandsRaytracingResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
-	FHairStrandsRaytracingResource(const FHairStrandsDatas& HairStrandsDatas);
-	FHairStrandsRaytracingResource(const FHairCardsDatas& InData);
-	FHairStrandsRaytracingResource(const FHairMeshesDatas& InData);
+	FHairStrandsRaytracingResource(const FHairStrandsBulkData& InData, const FHairResourceName& ResourceName);
+	FHairStrandsRaytracingResource(const FHairCardsBulkData& InData, const FHairResourceName& ResourceName);
+	FHairStrandsRaytracingResource(const FHairMeshesBulkData& InData, const FHairResourceName& ResourceName);
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/Release buffers */
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) override;
+	virtual void InternalRelease() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairStrandsRaytracingResource"); }
@@ -362,13 +464,18 @@ struct FHairStrandsRaytracingResource : public FRenderResource
 	{
 		uint32 Total = 0;
 		Total += GetBufferTotalNumBytes(PositionBuffer);
+		Total += GetBufferTotalNumBytes(IndexBuffer);
 		return Total;
 	}
 
 	FRDGExternalBuffer PositionBuffer;
+	FRDGExternalBuffer IndexBuffer;
 	FRayTracingGeometry RayTracingGeometry;
 	uint32 VertexCount = 0;
+	uint32 IndexCount = 0;
+	bool bOwnBuffers = false;
 	bool bIsRTGeometryInitialized = false;
+	bool bProceduralPrimitive = false;
 };
 #endif
 
@@ -389,20 +496,20 @@ public:
 	virtual void InitRHI() override;
 };
 
+struct FHairCardsBulkData;
+
 /* Render buffers that will be used for rendering */
-struct FHairCardsRestResource : public FRenderResource
+struct FHairCardsRestResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
-	FHairCardsRestResource(const FHairCardsDatas::FRenderData& HairCardsRenderData, uint32 VertexCount, uint32 PrimitiveCount);
+	FHairCardsRestResource(const FHairCardsBulkData& InBulkData, const FHairResourceName& ResourceName);
 
 	virtual void InitResource() override;
 	virtual void ReleaseResource() override;
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/release buffers */
+	virtual void InternalAllocate() override;
+	virtual void InternalRelease() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairCardsResource"); }
@@ -411,50 +518,53 @@ struct FHairCardsRestResource : public FRenderResource
 	uint32 GetResourcesSize() const
 	{
 		uint32 Total = 0;
-		Total += RenderData.Positions.GetAllocatedSize();
-		Total += RenderData.Normals.GetAllocatedSize();
-		Total += RenderData.Indices.GetAllocatedSize();
-		Total += RenderData.UVs.GetAllocatedSize();
+		Total += BulkData.Positions.GetAllocatedSize();
+		Total += BulkData.Normals.GetAllocatedSize();
+		Total += BulkData.Indices.GetAllocatedSize();
+		Total += BulkData.UVs.GetAllocatedSize();
+		Total += BulkData.Materials.GetAllocatedSize();
 		return Total;
 	}
+
+	uint32 GetVertexCount() const { return BulkData.GetNumVertices();  }
+	uint32 GetPrimitiveCount() const { return BulkData.GetNumTriangles(); }
 
 	/* Strand hair rest position buffer */
 	FHairCardsVertexBuffer RestPositionBuffer;
 	FHairCardIndexBuffer RestIndexBuffer;
-	uint32 VertexCount;
-	uint32 PrimitiveCount;
 	bool bInvertUV = false;
 
 	FHairCardsVertexBuffer NormalsBuffer;
 	FHairCardsVertexBuffer UVsBuffer;
+	FHairCardsVertexBuffer MaterialsBuffer;
 
-	FSamplerStateRHIRef DepthSampler;
-	FSamplerStateRHIRef TangentSampler;
-	FSamplerStateRHIRef CoverageSampler;
-	FSamplerStateRHIRef AttributeSampler;
-	FSamplerStateRHIRef AuxilaryDataSampler;
+	FSamplerStateRHIRef DepthSampler = nullptr;
+	FSamplerStateRHIRef TangentSampler = nullptr;
+	FSamplerStateRHIRef CoverageSampler = nullptr;
+	FSamplerStateRHIRef AttributeSampler = nullptr;
+	FSamplerStateRHIRef AuxilaryDataSampler = nullptr;
+	FSamplerStateRHIRef MaterialSampler = nullptr;
 
 	FTextureReferenceRHIRef	DepthTexture = nullptr;
 	FTextureReferenceRHIRef	CoverageTexture = nullptr;
 	FTextureReferenceRHIRef	TangentTexture = nullptr;
 	FTextureReferenceRHIRef	AttributeTexture = nullptr;
 	FTextureReferenceRHIRef	AuxilaryDataTexture = nullptr;
+	FTextureReferenceRHIRef	MaterialTexture = nullptr;
 
 	/* Reference to the hair strands render data */
-	const FHairCardsDatas::FRenderData& RenderData;
+	const FHairCardsBulkData& BulkData;
 };
 
 /* Render buffers that will be used for rendering */
-struct FHairCardsProceduralResource : public FRenderResource
+struct FHairCardsProceduralResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
 	FHairCardsProceduralResource(const FHairCardsProceduralDatas::FRenderData& HairCardsRenderData, const FIntPoint& AtlasResolution, const FHairCardsVoxel& InVoxel);
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/release buffers */
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) override;
+	virtual void InternalRelease() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairCardsResource"); }
@@ -486,16 +596,14 @@ struct FHairCardsProceduralResource : public FRenderResource
 	const FHairCardsProceduralDatas::FRenderData& RenderData;
 };
 
-struct FHairCardsDeformedResource : public FRenderResource
+struct FHairCardsDeformedResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
-	FHairCardsDeformedResource(const FHairCardsDatas::FRenderData& HairStrandRenderData, bool bInitializeData, bool bDynamic);
+	FHairCardsDeformedResource(const FHairCardsBulkData& BulkData, bool bInitializeData, const FHairResourceName& ResourceName);
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/release buffers */
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) override;
+	virtual void InternalRelease() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairCardsDeformedResource"); }
@@ -511,17 +619,13 @@ struct FHairCardsDeformedResource : public FRenderResource
 
 	/* Strand hair deformed position buffer (previous and current) */
 	FRDGExternalBuffer DeformedPositionBuffer[2];
+	FRDGExternalBuffer DeformedNormalBuffer;
 
 	/* Reference to the hair strands render data */
-	const FHairCardsDatas::FRenderData& RenderData;
+	const FHairCardsBulkData& BulkData;
 
 	/* Whether the GPU data should be initialized with the asset data or not */
 	const bool bInitializedData = false;
-
-	const bool bDynamic = true;
-
-	/* Whether the GPU data should be initialized with the asset data or not */
-	uint32 CurrentIndex = 0;
 
 	enum EFrameType
 	{
@@ -530,10 +634,11 @@ struct FHairCardsDeformedResource : public FRenderResource
 	};
 
 	// Helper accessors
-	inline uint32 GetIndex(EFrameType T)				{ return (!bDynamic || T == EFrameType::Current) ? CurrentIndex : 1u - CurrentIndex; }
+	inline uint32 GetIndex(EFrameType T)				{ return T == EFrameType::Current ? 0u : 1u; }
 	inline FRDGExternalBuffer& GetBuffer(EFrameType T)	{ return DeformedPositionBuffer[GetIndex(T)];  }
-	inline void SwapBuffer()							{ if (bDynamic) { CurrentIndex = 1u - CurrentIndex; } }
 };
+
+struct FHairCardsInterpolationBulkData;
 
 /** Hair cards points interpolation attributes */
 struct HAIRSTRANDSCORE_API FHairCardsInterpolationDatas
@@ -547,33 +652,31 @@ struct HAIRSTRANDSCORE_API FHairCardsInterpolationDatas
 	/** Get the number of interpolated points */
 	uint32 Num() const { return PointsSimCurvesVertexIndex.Num(); }
 
-	/** Simulation curve indices, ordered by closest influence */
+	/** Simulation curve indices */
 	TArray<int32> PointsSimCurvesIndex;
 
-	/** Closest vertex indices on simulation curve, ordered by closest influence */
+	/** Closest vertex indices on simulation curve */
 	TArray<int32> PointsSimCurvesVertexIndex;
 
-	/** Lerp value between the closest vertex indices and the next one, ordered by closest influence */
+	/** Lerp value between the closest vertex indices and the next one */
 	TArray<float> PointsSimCurvesVertexLerp;
-
-	struct FRenderData
-	{
-		TArray<FHairCardsInterpolationFormat::Type> Interpolation;
-	} RenderData;
 };
 
-FArchive& operator<<(FArchive& Ar, FHairCardsInterpolationDatas& CardInterpData);
+struct HAIRSTRANDSCORE_API FHairCardsInterpolationBulkData
+{
+	TArray<FHairCardsInterpolationFormat::Type> Interpolation;
 
-struct FHairCardsInterpolationResource : public FRenderResource
+	void Serialize(FArchive& Ar);
+};
+
+struct FHairCardsInterpolationResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
-	FHairCardsInterpolationResource(const FHairCardsInterpolationDatas::FRenderData& InterpolationRenderData);
+	FHairCardsInterpolationResource(FHairCardsInterpolationBulkData& InBulkData, const FHairResourceName& ResourceName);
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/release buffers */
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) override;
+	virtual void InternalRelease() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairCardsInterplationResource"); }
@@ -589,26 +692,24 @@ struct FHairCardsInterpolationResource : public FRenderResource
 	FRDGExternalBuffer InterpolationBuffer;
 
 	/* Reference to the hair strands interpolation render data */
-	const FHairCardsInterpolationDatas::FRenderData& RenderData;
+	FHairCardsInterpolationBulkData& BulkData;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Meshes
 
 /* Render buffers that will be used for rendering */
-struct FHairMeshesRestResource : public FRenderResource
+struct FHairMeshesRestResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
-	FHairMeshesRestResource(const FHairMeshesDatas::FRenderData& HairMeshesRenderData, uint32 VertexCount, uint32 PrimitiveCount);
+	FHairMeshesRestResource(const FHairMeshesBulkData& BulkData, const FHairResourceName& ResourceName);
 
 	virtual void InitResource() override;
 	virtual void ReleaseResource() override;
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/release buffers */
+	virtual void InternalAllocate() override;
+	virtual void InternalRelease() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairMeshesRestResource"); }
@@ -617,50 +718,51 @@ struct FHairMeshesRestResource : public FRenderResource
 	uint32 GetResourcesSize() const
 	{
 		uint32 Total = 0;
-		Total += RenderData.Positions.GetAllocatedSize();
-		Total += RenderData.Normals.GetAllocatedSize();
-		Total += RenderData.Indices.GetAllocatedSize();
-		Total += RenderData.UVs.GetAllocatedSize();
+		Total += BulkData.Positions.GetAllocatedSize();
+		Total += BulkData.Normals.GetAllocatedSize();
+		Total += BulkData.Indices.GetAllocatedSize();
+		Total += BulkData.UVs.GetAllocatedSize();
 		return Total;
 	}
 
+	uint32 GetVertexCount() const { return BulkData.GetNumVertices(); }
+	uint32 GetPrimitiveCount() const { return BulkData.GetNumTriangles(); }
+
 	/* Strand hair rest position buffer */
 	FHairCardsVertexBuffer RestPositionBuffer;
-	FHairCardIndexBuffer IndexBuffer;
-	uint32 VertexCount;
-	uint32 PrimitiveCount;
+	FHairCardIndexBuffer IndexBuffer;	
 
 	FHairCardsVertexBuffer NormalsBuffer;
 	FHairCardsVertexBuffer UVsBuffer;
 
-	FSamplerStateRHIRef DepthSampler;
-	FSamplerStateRHIRef TangentSampler;
-	FSamplerStateRHIRef CoverageSampler;
-	FSamplerStateRHIRef AttributeSampler;
-	FSamplerStateRHIRef AuxilaryDataSampler;
+	FSamplerStateRHIRef DepthSampler = nullptr;
+	FSamplerStateRHIRef TangentSampler = nullptr;
+	FSamplerStateRHIRef CoverageSampler = nullptr;
+	FSamplerStateRHIRef AttributeSampler = nullptr;
+	FSamplerStateRHIRef AuxilaryDataSampler = nullptr;
+	FSamplerStateRHIRef MaterialSampler = nullptr;
 
 	FTextureReferenceRHIRef	DepthTexture = nullptr;
 	FTextureReferenceRHIRef	CoverageTexture = nullptr;
 	FTextureReferenceRHIRef	TangentTexture = nullptr;
 	FTextureReferenceRHIRef	AttributeTexture = nullptr;
 	FTextureReferenceRHIRef	AuxilaryDataTexture = nullptr;
+	FTextureReferenceRHIRef	MaterialTexture = nullptr;
 
 	/* Reference to the hair strands render data */
-	const FHairMeshesDatas::FRenderData& RenderData;
+	const FHairMeshesBulkData& BulkData;
 };
 
 
 /* Render buffers that will be used for rendering */
-struct FHairMeshesDeformedResource : public FRenderResource
+struct FHairMeshesDeformedResource : public FHairCommonResource
 {
 	/** Build the hair strands resource */
-	FHairMeshesDeformedResource(const FHairMeshesDatas::FRenderData& HairMeshesRenderData, bool bInInitializedData, bool bDynamic);
+	FHairMeshesDeformedResource(const FHairMeshesBulkData& InBulkData, bool bInInitializedData, const FHairResourceName& ResourceName);
 
-	/* Init the buffer */
-	virtual void InitRHI() override;
-
-	/* Release the buffer */
-	virtual void ReleaseRHI() override;
+	/* Init/release buffers */
+	virtual void InternalAllocate(FRDGBuilder& GraphBuilder) override;
+	virtual void InternalRelease() override;
 
 	/* Get the resource name */
 	virtual FString GetFriendlyName() const override { return TEXT("FHairMeshesDeformedResource"); }
@@ -678,11 +780,10 @@ struct FHairMeshesDeformedResource : public FRenderResource
 	FRDGExternalBuffer DeformedPositionBuffer[2];
 
 	/* Reference to the hair strands render data */
-	const FHairMeshesDatas::FRenderData& RenderData;
+	const FHairMeshesBulkData& BulkData;
 
 	/* Whether the GPU data should be initialized with the asset data or not */
 	const bool bInitializedData = false;
-	const bool bDynamic = true;
 
 	/* Whether the GPU data should be initialized with the asset data or not */
 	uint32 CurrentIndex = 0;
@@ -694,12 +795,12 @@ struct FHairMeshesDeformedResource : public FRenderResource
 	};
 
 	// Helper accessors
-	inline uint32 GetIndex(EFrameType T) { return (!bDynamic || T == EFrameType::Current) ? CurrentIndex : 1u - CurrentIndex; }
+	inline uint32 GetIndex(EFrameType T) { return T == EFrameType::Current ? CurrentIndex : 1u - CurrentIndex; }
 	inline FRDGExternalBuffer& GetBuffer(EFrameType T) { return DeformedPositionBuffer[GetIndex(T)]; }
-	inline void SwapBuffer() { if (bDynamic) { CurrentIndex = 1u - CurrentIndex; } }
+	inline void SwapBuffer() { CurrentIndex = 1u - CurrentIndex; }
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Debug data (used for debug visalization but also for texture generation)
-void CreateHairStrandsDebugDatas(const FHairStrandsDatas& InData, float WorldVoxelSize, FHairStrandsDebugDatas& Out);
+void CreateHairStrandsDebugDatas(const FHairStrandsDatas& InData, FHairStrandsDebugDatas& Out);
 void CreateHairStrandsDebugResources(class FRDGBuilder& GraphBuilder, const FHairStrandsDebugDatas* In, FHairStrandsDebugDatas::FResources* Out);

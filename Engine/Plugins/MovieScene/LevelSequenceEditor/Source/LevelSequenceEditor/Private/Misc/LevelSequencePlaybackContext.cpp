@@ -4,6 +4,7 @@
 #include "Misc/LevelSequenceEditorSettings.h"
 #include "LevelSequenceActor.h"
 #include "LevelSequencePlayer.h"
+#include "Engine/NetDriver.h"
 #include "Engine/World.h"
 
 #include "Delegates/Delegate.h"
@@ -73,7 +74,7 @@ private:
 		}
 		else
 		{
-			return FEditorStyle::GetBrush("LevelViewport.NoViewportBorder");
+			return FStyleDefaults::GetNoBrush();
 		}
 	}
 
@@ -166,6 +167,12 @@ FLevelSequencePlaybackContext::FLevelSequencePlaybackContext(ULevelSequence* InL
 	FEditorDelegates::PostPIEStarted.AddRaw(this, &FLevelSequencePlaybackContext::OnPieEvent);
 	FEditorDelegates::PrePIEEnded.AddRaw(this, &FLevelSequencePlaybackContext::OnPieEvent);
 	FEditorDelegates::EndPIE.AddRaw(this, &FLevelSequencePlaybackContext::OnPieEvent);
+
+	if (GEngine)
+	{
+		GEngine->OnWorldAdded().AddRaw(this, &FLevelSequencePlaybackContext::OnWorldListChanged);
+		GEngine->OnWorldDestroyed().AddRaw(this, &FLevelSequencePlaybackContext::OnWorldListChanged);
+	}
 }
 
 FLevelSequencePlaybackContext::~FLevelSequencePlaybackContext()
@@ -176,6 +183,12 @@ FLevelSequencePlaybackContext::~FLevelSequencePlaybackContext()
 	FEditorDelegates::PostPIEStarted.RemoveAll(this);
 	FEditorDelegates::PrePIEEnded.RemoveAll(this);
 	FEditorDelegates::EndPIE.RemoveAll(this);
+
+	if (GEngine)
+	{
+		GEngine->OnWorldAdded().RemoveAll(this);
+		GEngine->OnWorldDestroyed().RemoveAll(this);
+	}
 }
 
 void FLevelSequencePlaybackContext::OnPieEvent(bool)
@@ -184,6 +197,11 @@ void FLevelSequencePlaybackContext::OnPieEvent(bool)
 }
 
 void FLevelSequencePlaybackContext::OnMapChange(uint32)
+{
+	WeakCurrentContext = nullptr;
+}
+
+void FLevelSequencePlaybackContext::OnWorldListChanged(UWorld*)
 {
 	WeakCurrentContext = nullptr;
 }
@@ -266,7 +284,8 @@ FLevelSequencePlaybackContext::FContextAndClient FLevelSequencePlaybackContext::
 		if (Context.WorldType == EWorldType::PIE)
 		{
 			UWorld* ThisWorld = Context.World();
-			if (bIsPIEValid && bAllowPlaybackContextBinding && RecordingWorld != ThisWorld)
+			const bool bIsServerWorld = (ThisWorld && ThisWorld->GetNetDriver() && ThisWorld->GetNetDriver()->IsServer());
+			if (bIsPIEValid && bAllowPlaybackContextBinding && RecordingWorld != ThisWorld && !bIsServerWorld)
 			{
 				TArray<ALevelSequenceActor*> LevelSequenceActors;
 				UE::MovieScene::FindLevelSequenceActors(ThisWorld, InLevelSequence, LevelSequenceActors);
@@ -323,18 +342,19 @@ void SLevelSequenceContextPicker::Construct(const FArguments& InArgs)
 	[
 		SNew(SBorder)
 		.BorderImage(this, &SLevelSequenceContextPicker::GetBorderBrush)
-		.Padding(0.0f)
+		.Padding(FMargin(4.f, 0.f))
 		[
 			SNew(SComboButton)
 			.ContentPadding(0)
 			.ForegroundColor(FSlateColor::UseForeground())
-			.ButtonStyle(FEditorStyle::Get(), "ToggleButton")
+			.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
 			.OnGetMenuContent(this, &SLevelSequenceContextPicker::BuildWorldPickerMenu)
 			.ToolTipText(FText::Format(LOCTEXT("WorldPickerTextFomrat", "'{0}': The world context and playback client that sequencer should be bound to, and playback within."), GetCurrentContextAndClientText()))
 			.ButtonContent()
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("SceneOutliner.World"))
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.Image(FAppStyle::Get().GetBrush("Icons.World"))
 			]
 		]
 	];
@@ -366,7 +386,7 @@ FText SLevelSequenceContextPicker::GetWorldDescription(const UWorld* World)
 		switch(World->GetNetMode())
 		{
 		case NM_Client:
-			PostFix = FText::Format(LOCTEXT("ClientPostfixFormat", " (Client {0})"), FText::AsNumber(World->GetOutermost()->PIEInstanceID - 1));
+			PostFix = FText::Format(LOCTEXT("ClientPostfixFormat", " (Client {0})"), FText::AsNumber(World->GetOutermost()->GetPIEInstanceID() - 1));
 			break;
 		case NM_DedicatedServer:
 		case NM_ListenServer:

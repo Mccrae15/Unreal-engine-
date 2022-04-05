@@ -5,34 +5,21 @@
 #include "NiagaraCommon.h"
 
 class FNiagaraSystemInstance;
-class NiagaraEmitterInstanceBatcher;
+class FNiagaraGpuComputeDispatchInterface;
 struct FNiagaraComputeExecutionContext;
 class FNiagaraGPUInstanceCountManager;
 class FNiagaraGPUSystemTick;
 
-namespace ENiagaraGpuComputeTickStage
-{
-	enum Type
-	{
-		PreInitViews,
-		PostInitViews,
-		PostOpaqueRender,
-		Max,
-		First = PreInitViews,
-		Last = PostOpaqueRender,
-	};
-};
-
 class FNiagaraSystemGpuComputeProxy
 {
-	friend class NiagaraEmitterInstanceBatcher;
+	friend class FNiagaraGpuComputeDispatch;
 
 public:
 	FNiagaraSystemGpuComputeProxy(FNiagaraSystemInstance* OwnerInstance);
 	~FNiagaraSystemGpuComputeProxy();
 
-	void AddToBatcher(NiagaraEmitterInstanceBatcher* Batcher);
-	void RemoveFromBatcher(NiagaraEmitterInstanceBatcher* Batcher, bool bDeleteProxy);
+	void AddToRenderThread(FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface);
+	void RemoveFromRenderThread(FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, bool bDeleteProxy);
 
 	FNiagaraSystemInstanceID GetSystemInstanceID() const { return SystemInstanceID; }
 	ENiagaraGpuComputeTickStage::Type GetComputeTickStage() const { return ComputeTickStage; }
@@ -43,11 +30,14 @@ public:
 	bool RequiresDepthBuffer() const { return bRequiresDepthBuffer; }
 	bool RequiresEarlyViewData() const { return bRequiresEarlyViewData; }
 	bool RequiresViewUniformBuffer() const { return bRequiresViewUniformBuffer; }
+	bool RequiresRayTracingScene() const { return bRequiresRayTracingScene; }
+	FVector3f GetSystemLWCTile() const { return SystemLWCTile; }
 
 private:
 	FNiagaraSystemInstance*						DebugOwnerInstance = nullptr;
-	NiagaraEmitterInstanceBatcher*				DebugOwnerBatcher = nullptr;
-	int32										BatcherIndex = INDEX_NONE;
+	FNiagaraGpuComputeDispatchInterface*		DebugOwnerComputeDispatchInterface = nullptr;
+	int32										ComputeDispatchIndex = INDEX_NONE;
+	FVector3f									SystemLWCTile;
 
 	FNiagaraSystemInstanceID					SystemInstanceID = FNiagaraSystemInstanceID();
 	ENiagaraGpuComputeTickStage::Type			ComputeTickStage = ENiagaraGpuComputeTickStage::PostOpaqueRender;
@@ -55,6 +45,9 @@ private:
 	uint32										bRequiresDepthBuffer : 1;
 	uint32										bRequiresEarlyViewData : 1;
 	uint32										bRequiresViewUniformBuffer : 1;
+	uint32										bRequiresRayTracingScene : 1;
+
+	FShaderResourceViewRHIRef					StaticFloatBuffer;
 
 	TArray<FNiagaraComputeExecutionContext*>	ComputeContexts;
 	TArray<FNiagaraGPUSystemTick>				PendingTicks;

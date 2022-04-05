@@ -9,6 +9,8 @@
 #include "MoviePipelineQueue.h"
 #include "MoviePipelineUtils.h"
 #include "MoviePipelineSetting.h"
+#include "MovieRenderPipelineCoreModule.h"
+#include "GenericPlatform/GenericPlatformProcess.h"
 
 #define LOCTEXT_NAMESPACE "MoviePipelineMasterConfig"
 
@@ -38,6 +40,12 @@ void UMoviePipelineMasterConfig::InitializeTransientSettings()
 	// Now remove any from the list that we already have a user setting for
 	for (const UMoviePipelineSetting* ExistingSetting : GetUserSettings())
 	{
+		if (!ExistingSetting)
+		{
+			UE_LOG(LogMovieRenderPipeline, Error, TEXT("Null setting found in config: %s - Did you disable a plugin that contained this setting?"), *GetNameSafe(this));
+			continue;
+		}
+
 		AllSettingClasses.RemoveSwap(ExistingSetting->GetClass());
 	}
 
@@ -94,12 +102,14 @@ void UMoviePipelineMasterConfig::GetFormatArguments(FMoviePipelineFormatArgs& In
 	{
 		FString LevelName = TEXT("Level Name");
 		FString SequenceName = TEXT("Sequence Name");
+		FString JobName = TEXT("Job Name");
 		double FrameRate = 0.0;
 
 		if (InOutFormatArgs.InJob)
 		{
 			LevelName = InOutFormatArgs.InJob->Map.GetAssetName();
 			SequenceName = InOutFormatArgs.InJob->Sequence.GetAssetName();
+			JobName = InOutFormatArgs.InJob->JobName;
 			
 			// FrameRate is a combination of Output Settings and Sequence so we do it here instead of in OutputSetting
 			FrameRate = GetEffectiveFrameRate(Cast<ULevelSequence>(InOutFormatArgs.InJob->Sequence.TryLoad())).AsDecimal();
@@ -107,13 +117,14 @@ void UMoviePipelineMasterConfig::GetFormatArguments(FMoviePipelineFormatArgs& In
 
 		InOutFormatArgs.FilenameArguments.Add(TEXT("level_name"), LevelName);
 		InOutFormatArgs.FilenameArguments.Add(TEXT("sequence_name"), SequenceName);
+		InOutFormatArgs.FilenameArguments.Add(TEXT("job_name"), JobName);
 		InOutFormatArgs.FilenameArguments.Add(TEXT("frame_rate"), FString::SanitizeFloat(FrameRate));
 
 		InOutFormatArgs.FileMetadata.Add(TEXT("unreal/levelName"), LevelName);
 		InOutFormatArgs.FileMetadata.Add(TEXT("unreal/sequenceName"), SequenceName);
+		InOutFormatArgs.FileMetadata.Add(TEXT("unreal/jobName"), JobName);
 		InOutFormatArgs.FileMetadata.Add(TEXT("unreal/frameRate"), FString::SanitizeFloat(FrameRate));
 
-		
 		// Normally these are filled when resolving the file name by the job (so that the time is shared), but stub them in here so
 		// they show up in the UI with a value.
 		FDateTime CurrentTime = FDateTime::Now();
@@ -122,6 +133,7 @@ void UMoviePipelineMasterConfig::GetFormatArguments(FMoviePipelineFormatArgs& In
 		InOutFormatArgs.FilenameArguments.Add(TEXT("month"), CurrentTime.ToString(TEXT("%m")));
 		InOutFormatArgs.FilenameArguments.Add(TEXT("day"), CurrentTime.ToString(TEXT("%d")));
 		InOutFormatArgs.FilenameArguments.Add(TEXT("time"), CurrentTime.ToString(TEXT("%H.%M.%S")));
+		InOutFormatArgs.FilenameArguments.Add(TEXT("job_author"), FPlatformProcess::UserName(false));
 		
 		// Let the output state fill out some too, since its the keeper of the information.
 		UMoviePipelineOutputSetting* OutputSettings = FindSetting<UMoviePipelineOutputSetting>();
@@ -191,71 +203,6 @@ TRange<FFrameNumber> UMoviePipelineMasterConfig::GetEffectivePlaybackRange(const
 	return InSequence->GetMovieScene()->GetPlaybackRange();
 }
 
-
-/*bool UMoviePipelineShotConfig::ValidateConfig(TArray<FText>& OutValidationErrors) const{
-	bool bValidPipeline = true;
-	OutValidationErrors.Reset();
-	
-	// Check that we have a sequence to render
-	if(!Sequence.IsValid())
-	{
-		OutValidationErrors.Add(LOCTEXT("InvalidInputSequence", "No sequence to render has been specified."));
-		bValidPipeline = false;
-	}
-	
-	// Check that we have a valid output resolution
-	if(OutputResolution.X == 0 || OutputResolution.Y == 0)
-	{
-		OutValidationErrors.Add(LOCTEXT("InvalidOutputResolution", "Output Resolution must be greater than zero."));
-		bValidPipeline = false;
-	}
-	
-	// Check for a non-zero framerate
-	if(OutputFrameRate.AsDecimal() == 0.0)
-	{
-		OutValidationErrors.Add(LOCTEXT("InvalidOutputFrameRate", "Output FrameRate must be greater than zero."));
-		bValidPipeline = false;
-	}
-	
-	// Output Directory can probably be ignored. The folder path you output to may not exist yet anyways.
-	
-	// Give each setting a chance to validate the pipeline
-	for(const UMoviePipelineSetting* Setting : Settings)
-	{
-		bValidPipeline &= Setting->ValidatePipeline(OutValidationErrors);
-	}
-	
-	// ToDo-MoviePipeline: Reflect over all settings classes and make sure all required classes have been added.
-	// ToDo-MoviePipeline: Scan for any shots/sections that don't start on whole frames issue warning.
-	
-	// Give each Input Buffer a chance to validate the pipeline
-	for(const UMoviePipelineRenderPass* InputBuffer : InputBuffers)
-	{
-		bValidPipeline &= InputBuffer->ValidatePipeline(OutValidationErrors);
-	}
-	
-	// Give each output container a chance to validate the pipeline
-	for(const UMoviePipelineOutput* OutputContainer : OutputContainers)
-	{
-		bValidPipeline &= OutputContainer->ValidatePipeline(OutValidationErrors);
-	}
-
-	// Ensure we have at least one input buffer and one output buffer.
-	if (InputBuffers.Num() == 0)
-	{
-		OutValidationErrors.Add(LOCTEXT("NoInputBuffer", "Must specify at least one Input Buffer to capture."));
-		bValidPipeline = false;
-	}
-
-	if (OutputContainers.Num() == 0)
-	{
-		OutValidationErrors.Add(LOCTEXT("NoOutputContainer", "Must specify at least one Output Container to write to."));
-		bValidPipeline = false;
-	}
-	
-	return bValidPipeline;
-}*/
-
 UMoviePipelineMasterConfig::UMoviePipelineMasterConfig()
 {
 	// Always add at least the output settings block since having a framerate/directory/etc. is critical.
@@ -277,6 +224,12 @@ TArray<UMoviePipelineSetting*> UMoviePipelineMasterConfig::GetAllSettings(const 
 	// User settings were explicitly added by the user via the UI or scripting.
 	for (UMoviePipelineSetting* Setting : GetUserSettings())
 	{
+		if (!Setting)
+		{
+			UE_LOG(LogMovieRenderPipeline, Error, TEXT("Null setting found in config: %s - Did you disable a plugin that contained this setting?"), *GetNameSafe(this));
+			continue;
+		}
+
 		if (bIncludeDisabledSettings || Setting->IsEnabled())
 		{
 			OutSettings.Add(Setting);

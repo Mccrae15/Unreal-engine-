@@ -33,7 +33,7 @@ static TMap<EARObjectClassification, FLinearColor> ClassificationColors =
 	{ EARObjectClassification::Door, FLinearColor::Red },
 };
 
-template <class TComponent>
+template <class FReal>
 void NotifyDebugModeUpdated()
 {
 #if AR_DEBUG_MODE
@@ -42,7 +42,7 @@ void NotifyDebugModeUpdated()
 		return;
 	}
 	
-	for (TObjectIterator<TComponent> ComponentItr; ComponentItr; ++ComponentItr)
+	for (TObjectIterator<FReal> ComponentItr; ComponentItr; ++ComponentItr)
 	{
 		auto Component = *ComponentItr;
 		if (Component->GetOwner())
@@ -574,7 +574,8 @@ void UARMeshComponent::UpdateVisualization_Implementation()
 	}
 }
 
-void FAccumulatedNormal::CalculateVertexNormals(TArray<FAccumulatedNormal>& AccumulatedNormals, const TArray<FVector>& Vertices, const TArray<MRMESH_INDEX_TYPE>& Indices, TArray<FPackedNormal>& OutTangentData, FVector MeshCenter, float PositionScale)
+template<typename VertexType>
+void FAccumulatedNormal::CalculateVertexNormals(TArray<FAccumulatedNormal>& AccumulatedNormals, const TArray<VertexType>& Vertices, const TArray<MRMESH_INDEX_TYPE>& Indices, TArray<FPackedNormal>& OutTangentData, FVector MeshCenter, float PositionScale)
 {
 	SCOPE_CYCLE_COUNTER(STAT_CalculateVertexNormals);
 	
@@ -592,9 +593,9 @@ void FAccumulatedNormal::CalculateVertexNormals(TArray<FAccumulatedNormal>& Accu
 		};
 		const FVector Verts[3] =
 		{
-			Vertices[VertIndices[0]] * PositionScale,
-			Vertices[VertIndices[1]] * PositionScale,
-			Vertices[VertIndices[2]] * PositionScale
+			(FVector)Vertices[VertIndices[0]] * PositionScale,
+			(FVector)Vertices[VertIndices[1]] * PositionScale,
+			(FVector)Vertices[VertIndices[2]] * PositionScale
 		};
 		auto FaceNormal = (Verts[0] - Verts[1]) ^ (Verts[2] - Verts[0]);
 		FaceNormal.Normalize();
@@ -625,13 +626,16 @@ void FAccumulatedNormal::CalculateVertexNormals(TArray<FAccumulatedNormal>& Accu
 		
 		// We don't have UV info to calculate the correct tangent here
 		// so juse use an arbitrary vector to get a tangent perpendicular to the normal...
-		const auto Cross = (MeshCenter - Vertices[Index]) ^ AccumulatedNormal.Normal;
+		const auto Cross = (MeshCenter - (FVector)Vertices[Index]) ^ AccumulatedNormal.Normal;
 		auto Tangent = (AccumulatedNormal.Normal ^ Cross);
 		Tangent.Normalize();
 		OutTangentData[2 * Index + 0] = FPackedNormal(Tangent);
 		OutTangentData[2 * Index + 1] = FPackedNormal(AccumulatedNormal.Normal);
 	}
 }
+// instantiate for FVector3d and FVector3f
+template void FAccumulatedNormal::CalculateVertexNormals<FVector3d>(TArray<FAccumulatedNormal>& AccumulatedNormals, const TArray<FVector3d>& Vertices, const TArray<MRMESH_INDEX_TYPE>& Indices, TArray<FPackedNormal>& OutTangentData, FVector MeshCenter, float PositionScale);
+template void FAccumulatedNormal::CalculateVertexNormals<FVector3f>(TArray<FAccumulatedNormal>& AccumulatedNormals, const TArray<FVector3f>& Vertices, const TArray<MRMESH_INDEX_TYPE>& Indices, TArray<FPackedNormal>& OutTangentData, FVector MeshCenter, float PositionScale);
 
 void UARFaceComponent::UpdateVisualization_Implementation()
 {

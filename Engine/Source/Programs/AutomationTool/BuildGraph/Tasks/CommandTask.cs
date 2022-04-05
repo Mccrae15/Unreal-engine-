@@ -9,7 +9,8 @@ using AutomationTool;
 using UnrealBuildTool;
 using System.Xml;
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace BuildGraph.Tasks
 {
@@ -77,7 +78,7 @@ namespace BuildGraph.Tasks
 			FileReference TelemetryFile = null;
 			if (Parameters.MergeTelemetryWithPrefix != null)
 			{
-				TelemetryFile = FileReference.Combine(CommandUtils.RootDirectory, "Engine", "Intermediate", "UAT", "Telemetry.json");
+				TelemetryFile = FileReference.Combine(Unreal.RootDirectory, "Engine", "Intermediate", "UAT", "Telemetry.json");
 				DirectoryReference.CreateDirectory(TelemetryFile.Directory);
 			}
 
@@ -89,15 +90,16 @@ namespace BuildGraph.Tasks
 			}
 			if (Parameters.Arguments == null || (!Parameters.Arguments.CaseInsensitiveContains("-submit") && !Parameters.Arguments.CaseInsensitiveContains("-nosubmit")))
 			{
-				if(GlobalCommandLine.Submit.IsSet)
+				if(GlobalCommandLine.Submit)
 				{
 					CommandLine.Append("-submit ");
 				}
-				if(GlobalCommandLine.NoSubmit.IsSet)
+				if(GlobalCommandLine.NoSubmit)
 				{
 					CommandLine.Append("-nosubmit ");
 				}
 			}
+			CommandLine.Append("-NoCompile ");
 			CommandLine.Append(Parameters.Name);
 			if (!String.IsNullOrEmpty(Parameters.Arguments))
 			{

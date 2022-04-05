@@ -26,6 +26,7 @@ LandscapeRender.h: New terrain rendering
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
 #include "StaticMeshResources.h"
+#include "SceneViewExtension.h"
 
 // This defines the number of border blocks to surround terrain by when generating lightmaps
 #define TERRAIN_PATCH_EXPAND_SCALAR	1
@@ -88,25 +89,25 @@ LANDSCAPE_API extern UMaterialInterface* GLandscapeDirtyMaterial;
 
 /** The uniform shader parameters for a landscape draw call. */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeUniformShaderParameters, LANDSCAPE_API)
-SHADER_PARAMETER(int32, ComponentBaseX)
-SHADER_PARAMETER(int32, ComponentBaseY)
-SHADER_PARAMETER(int32, SubsectionSizeVerts)
-SHADER_PARAMETER(int32, NumSubsections)
-SHADER_PARAMETER(int32, LastLOD)
-SHADER_PARAMETER(FVector4, HeightmapUVScaleBias)
-SHADER_PARAMETER(FVector4, WeightmapUVScaleBias)
-SHADER_PARAMETER(FVector4, LandscapeLightmapScaleBias)
-SHADER_PARAMETER(FVector4, SubsectionSizeVertsLayerUVPan)
-SHADER_PARAMETER(FVector4, SubsectionOffsetParams)
-SHADER_PARAMETER(FVector4, LightmapSubsectionOffsetParams)
-	SHADER_PARAMETER(FVector4, BlendableLayerMask)
-SHADER_PARAMETER(FMatrix, LocalToWorldNoScaling)
-SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
-SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
-SHADER_PARAMETER_TEXTURE(Texture2D, NormalmapTexture)
-SHADER_PARAMETER_SAMPLER(SamplerState, NormalmapTextureSampler)
-SHADER_PARAMETER_TEXTURE(Texture2D, XYOffsetmapTexture)
-SHADER_PARAMETER_SAMPLER(SamplerState, XYOffsetmapTextureSampler)
+	SHADER_PARAMETER(int32, ComponentBaseX)
+	SHADER_PARAMETER(int32, ComponentBaseY)
+	SHADER_PARAMETER(int32, SubsectionSizeVerts)
+	SHADER_PARAMETER(int32, NumSubsections)
+	SHADER_PARAMETER(int32, LastLOD)
+    SHADER_PARAMETER(FVector4f, HeightmapUVScaleBias)
+    SHADER_PARAMETER(FVector4f, WeightmapUVScaleBias)
+    SHADER_PARAMETER(FVector4f, LandscapeLightmapScaleBias)
+    SHADER_PARAMETER(FVector4f, SubsectionSizeVertsLayerUVPan)
+    SHADER_PARAMETER(FVector4f, SubsectionOffsetParams)
+    SHADER_PARAMETER(FVector4f, LightmapSubsectionOffsetParams)
+	SHADER_PARAMETER(FVector4f, BlendableLayerMask)
+	SHADER_PARAMETER(FMatrix44f, LocalToWorldNoScaling)
+	SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
+	SHADER_PARAMETER_TEXTURE(Texture2D, NormalmapTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, NormalmapTextureSampler)
+	SHADER_PARAMETER_TEXTURE(Texture2D, XYOffsetmapTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, XYOffsetmapTextureSampler)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeVertexFactoryMVFParameters, LANDSCAPE_API)
@@ -115,17 +116,15 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 typedef TUniformBufferRef<FLandscapeVertexFactoryMVFParameters> FLandscapeVertexFactoryMVFUniformBufferRef;
 
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeSectionLODUniformParameters, )
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeSectionLODUniformParameters, LANDSCAPE_API)
+	SHADER_PARAMETER(int32, LandscapeIndex)
 	SHADER_PARAMETER(FIntPoint, Min)
 	SHADER_PARAMETER(FIntPoint, Size)
-	SHADER_PARAMETER_SRV(Buffer<float>, SectionLOD)
 	SHADER_PARAMETER_SRV(Buffer<float>, SectionLODBias)
-	SHADER_PARAMETER_SRV(Buffer<float>, SectionTessellationFalloffC)
-	SHADER_PARAMETER_SRV(Buffer<float>, SectionTessellationFalloffK)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeFixedGridUniformShaderParameters, LANDSCAPE_API)
-	SHADER_PARAMETER(FVector4, LodValues)
+	SHADER_PARAMETER(FVector4f, LodValues)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 /* Data needed for the landscape vertex factory to set the render state for an individual batch element */
@@ -136,6 +135,7 @@ struct FLandscapeBatchElementParams
 #endif
 	const TUniformBuffer<FLandscapeUniformShaderParameters>* LandscapeUniformShaderParametersResource;
 	const TArray<TUniformBuffer<FLandscapeFixedGridUniformShaderParameters>>* FixedGridUniformShaderParameters;
+	FUniformBufferRHIRef LandscapeSectionLODUniformParameters;
 	const FLandscapeComponentSceneProxy* SceneProxy;
 	int32 CurrentLOD;
 };
@@ -206,8 +206,7 @@ public:
 
 	// FRenderResource interface.
 	virtual void InitRHI() override;
-
-	static bool SupportsTessellationShaders() { return true; }
+	virtual void ReleaseResource() override final { FVertexFactory::ReleaseResource(); }
 
 	/**
 	 * An implementation of the interface used by TSynchronizedResource to update the resource with new data from the game thread.
@@ -266,7 +265,7 @@ struct FLandscapeVertex
 //
 // FLandscapeVertexBuffer
 //
-class FLandscapeVertexBuffer : public FVertexBuffer
+class FLandscapeVertexBuffer final : public FVertexBuffer
 {
 	ERHIFeatureLevel::Type FeatureLevel;
 	int32 NumVertices;
@@ -296,19 +295,6 @@ public:
 	virtual void InitRHI() override;
 };
 
-
-//
-// FLandscapeSharedAdjacencyIndexBuffer
-//
-class FLandscapeSharedAdjacencyIndexBuffer
-{
-public:
-	FLandscapeSharedAdjacencyIndexBuffer(class FLandscapeSharedBuffers* SharedBuffer);
-	virtual ~FLandscapeSharedAdjacencyIndexBuffer();
-
-	TArray<FIndexBuffer*> IndexBuffers; // For tessellation
-};
-
 //
 // FLandscapeSharedBuffers
 //
@@ -334,8 +320,6 @@ public:
 	FLandscapeVertexBuffer* VertexBuffer;
 	FIndexBuffer** IndexBuffers;
 	FLandscapeIndexRanges* IndexRanges;
-	FLandscapeSharedAdjacencyIndexBuffer* AdjacencyIndexBuffers;
-	FOccluderIndexArraySP OccluderIndicesSP;
 	bool bUse32BitIndices;
 #if WITH_EDITOR
 	FIndexBuffer* GrassIndexBuffer;
@@ -346,12 +330,10 @@ public:
 	TArray<FIndexBuffer*> ZeroOffsetIndexBuffers;
 #endif
 
-	FLandscapeSharedBuffers(int32 SharedBuffersKey, int32 SubsectionSizeQuads, int32 NumSubsections, ERHIFeatureLevel::Type FeatureLevel, bool bRequiresAdjacencyInformation, int32 NumOcclusionVertices);
+	FLandscapeSharedBuffers(int32 SharedBuffersKey, int32 SubsectionSizeQuads, int32 NumSubsections, ERHIFeatureLevel::Type FeatureLevel);
 
 	template <typename INDEX_TYPE>
-	void CreateIndexBuffers(ERHIFeatureLevel::Type InFeatureLevel, bool bRequiresAdjacencyInformation);
-
-	void CreateOccluderIndexBuffer(int32 NumOcclderVertices);
+	void CreateIndexBuffers(ERHIFeatureLevel::Type InFeatureLevel);
 	
 #if WITH_EDITOR
 	template <typename INDEX_TYPE>
@@ -362,137 +344,32 @@ public:
 };
 
 //
-// FLandscapeNeighborInfo
+// FLandscapeSectionInfo
 //
 
-class FLandscapeNeighborInfo
+class FLandscapeSectionInfo : public TIntrusiveLinkedList<FLandscapeSectionInfo>
 {
 public:
-	static const int8 NEIGHBOR_COUNT = 4;
+	FLandscapeSectionInfo(const UWorld* InWorld, const FGuid& InLandscapeGuid, const FIntPoint& InSectionBase);
+	virtual ~FLandscapeSectionInfo() = default;
 
-	// Key to uniquely identify the landscape to find the correct render proxy map
-	class FLandscapeKey
-	{
-		const UWorld* World;
-		const FGuid Guid;
-	public:
-		FLandscapeKey(const UWorld* InWorld, const FGuid& InGuid)
-			: World(InWorld)
-			, Guid(InGuid)
-		{}
+	void RegisterSection();
+	void UnregisterSection();
 
-		friend inline uint32 GetTypeHash(const FLandscapeKey& InLandscapeKey)
-		{
-			return HashCombine(GetTypeHash(InLandscapeKey.World), GetTypeHash(InLandscapeKey.Guid));
-		}
-
-		friend bool operator==(const FLandscapeKey& A, const FLandscapeKey& B)
-		{
-			return A.World == B.World && A.Guid == B.Guid;
-		}
-	};
-
-	const FLandscapeNeighborInfo* GetNeighbor(int32 Index) const
-	{
-		if (Index < NEIGHBOR_COUNT)
-		{
-			return Neighbors[Index];
-		}
-
-		return nullptr;
-	}
-
-	UTexture2D*				HeightmapTexture; // PC : Heightmap, Mobile : Weightmap
-
-protected:
-
-	virtual const ULandscapeComponent* GetLandscapeComponent() const { return nullptr; }
-
-	// Map of currently registered landscape proxies, used to register with our neighbors
-	static TMap<FLandscapeKey, TMap<FIntPoint, const FLandscapeNeighborInfo*> > SharedSceneProxyMap;
-
-	// For neighbor lookup
-	FLandscapeKey			LandscapeKey;
-	FIntPoint				ComponentBase;
-
-	// Pointer to our neighbor's scene proxies in NWES order (nullptr if there is currently no neighbor)
-	mutable const FLandscapeNeighborInfo* Neighbors[NEIGHBOR_COUNT];
-
-	
-	// Data we need to be able to access about our neighbor
-	int8					ForcedLOD;
-	int8					LODBias;
-	bool					bRegistered;
-
-	friend class FLandscapeComponentSceneProxy;
+	virtual float ComputeLODForView(const FSceneView& InView) const = 0;
+	virtual float ComputeLODBias() const = 0;
+	virtual int32 GetSectionPriority() const { return INDEX_NONE; }
 
 public:
-	FLandscapeNeighborInfo(const UWorld* InWorld, const FGuid& InGuid, const FIntPoint& InComponentBase, UTexture2D* InHeightmapTexture, int8 InForcedLOD, int8 InLODBias)
-	: HeightmapTexture(InHeightmapTexture)
-	, LandscapeKey(InWorld, InGuid)
-	, ComponentBase(InComponentBase)
-	, ForcedLOD(InForcedLOD)
-	, LODBias(InLODBias)
-	, bRegistered(false)
-	{
-		//       -Y       
-		//    - - 0 - -   
-		//    |       |   
-		// -X 1   P   2 +X
-		//    |       |   
-		//    - - 3 - -   
-		//       +Y       
-
-		Neighbors[0] = nullptr;
-		Neighbors[1] = nullptr;
-		Neighbors[2] = nullptr;
-		Neighbors[3] = nullptr;
-	}
-
-	void RegisterNeighbors(FLandscapeComponentSceneProxy* SceneProxy = nullptr);
-	void UnregisterNeighbors(FLandscapeComponentSceneProxy* SceneProxy = nullptr);
+	uint32		LandscapeKey;
+	FIntPoint	ComponentBase;
+	bool		bRegistered;
 };
-
-
-class FNullLandscapeRenderSystemResources : public FRenderResource
-{
-public:
-
-	FVertexBufferRHIRef SectionLODBuffer;
-	FShaderResourceViewRHIRef SectionLODSRV;
-	TUniformBufferRef<FLandscapeSectionLODUniformParameters> UniformBuffer;
-
-	virtual void InitRHI() override
-	{
-		TResourceArray<float> ResourceBuffer;
-		ResourceBuffer.Add(0.0f);
-		FRHIResourceCreateInfo CreateInfo(&ResourceBuffer);
-		SectionLODBuffer = RHICreateVertexBuffer(ResourceBuffer.GetResourceDataSize(), BUF_ShaderResource | BUF_Static, CreateInfo);
-		SectionLODSRV = RHICreateShaderResourceView(SectionLODBuffer, sizeof(float), PF_R32_FLOAT);
-
-		FLandscapeSectionLODUniformParameters Parameters;
-		Parameters.Size = FIntPoint(1, 1);
-		Parameters.SectionLOD = SectionLODSRV;
-		Parameters.SectionLODBias = SectionLODSRV;
-		Parameters.SectionTessellationFalloffC = SectionLODSRV;
-		Parameters.SectionTessellationFalloffK = SectionLODSRV;
-		UniformBuffer = TUniformBufferRef<FLandscapeSectionLODUniformParameters>::CreateUniformBufferImmediate(Parameters, UniformBuffer_MultiFrame);
-	}
-
-	virtual void ReleaseRHI() override
-	{
-		SectionLODBuffer.SafeRelease();
-		SectionLODSRV.SafeRelease();
-		UniformBuffer.SafeRelease();
-	}
-};
-
-extern TGlobalResource<FNullLandscapeRenderSystemResources> GNullLandscapeRenderSystemResources;
-
-extern RENDERER_API TAutoConsoleVariable<float> CVarStaticMeshLODDistanceScale;
 
 struct FLandscapeRenderSystem
 {
+	typedef uint32 FViewKey;
+
 	struct LODSettingsComponent
 	{
 		float LOD0ScreenSizeSquared;
@@ -527,217 +404,179 @@ struct FLandscapeRenderSystem
 		}
 	}
 
-	int32 NumRegisteredEntities;
-	int32 NumEntitiesWithTessellation;
+	static TBitArray<> LandscapeIndexAllocator;
+
+	int32 LandscapeIndex;
 
 	FIntPoint Min;
 	FIntPoint Size;
 
-	struct SystemTessellationFalloffSettings // Global settings on the render system, not as a component of an entity
-	{
-		bool UseTessellationComponentScreenSizeFalloff;
-		float TessellationComponentSquaredScreenSize;
-		float TessellationComponentScreenSizeFalloff;
-	} TessellationFalloffSettings;
-
-	TArray<LODSettingsComponent> SectionLODSettings;
-	TResourceArray<float> SectionLODValues;
 	TResourceArray<float> SectionLODBiases;
-	TResourceArray<float> SectionTessellationFalloffC;
-	TResourceArray<float> SectionTessellationFalloffK;
-	TArray<FVector4> SectionOriginAndRadius;
-	TArray<FLandscapeComponentSceneProxy*> SceneProxies;
-	TArray<uint8> SectionCurrentFirstLODIndices;
+	TArray<FLandscapeSectionInfo*> SectionInfos;
+	int32 ReferenceCount;
 
-	FVertexBufferRHIRef SectionLODBuffer;
-	FShaderResourceViewRHIRef SectionLODSRV;
-	FVertexBufferRHIRef SectionLODBiasBuffer;
+	FBufferRHIRef SectionLODBiasBuffer;
 	FShaderResourceViewRHIRef SectionLODBiasSRV;
-	FVertexBufferRHIRef SectionTessellationFalloffCBuffer;
-	FShaderResourceViewRHIRef SectionTessellationFalloffCSRV;
-	FVertexBufferRHIRef SectionTessellationFalloffKBuffer;
-	FShaderResourceViewRHIRef SectionTessellationFalloffKSRV;
 
-	TUniformBufferRef<FLandscapeSectionLODUniformParameters> UniformBuffer;
+	FUniformBufferRHIRef SectionLODUniformBuffer;
 
-	FCriticalSection CachedValuesCS;
-	TMap<const FSceneView*, TResourceArray<float>> CachedSectionLODValues;
-	TMap<const FSceneView*, TResourceArray<float>> CachedSectionTessellationFalloffC;
-	TMap<const FSceneView*, TResourceArray<float>> CachedSectionTessellationFalloffK;
-	const FSceneView* CachedView;
+	TMap<FViewKey, TResourceArray<float>> CachedSectionLODValues;
 
-	TMap<const FSceneView*, FGraphEventRef> PerViewParametersTasks;
 	FGraphEventRef FetchHeightmapLODBiasesEventRef;
+	
+	FLandscapeRenderSystem();
+	~FLandscapeRenderSystem();
 
-	struct FComputeSectionPerViewParametersTask
+	static void CreateResources(FLandscapeSectionInfo* SectionInfo);
+	static void DestroyResources(FLandscapeSectionInfo* SectionInfo);
+
+	static void RegisterSection(FLandscapeSectionInfo* SectionInfo);
+	static void UnregisterSection(FLandscapeSectionInfo* SectionInfo);
+
+	int32 GetSectionLinearIndex(FIntPoint InSectionBase) const
 	{
-		FLandscapeRenderSystem& RenderSystem;
-		const FSceneView* ViewPtrAsIdentifier;
-		int32 ViewLODOverride;
-		float ViewLODDistanceFactor;
-		bool ViewEngineShowFlagCollisionPawn;
-		bool ViewEngineShowFlagCollisionVisibility;
-		FVector ViewOrigin;
-		FMatrix ViewProjectionMatrix;
-
-		FComputeSectionPerViewParametersTask(FLandscapeRenderSystem& InRenderSystem, const FSceneView* InView);
-
-		FORCEINLINE TStatId GetStatId() const
-		{
-			RETURN_QUICK_DECLARE_CYCLE_STAT(FComputeSectionPerViewParametersTask, STATGROUP_TaskGraphTasks);
-		}
-
-		ENamedThreads::Type GetDesiredThread()
-		{
-			return ENamedThreads::AnyNormalThreadNormalTask;
-		}
-
-		static ESubsequentsMode::Type GetSubsequentsMode()
-		{
-			return ESubsequentsMode::TrackSubsequents;
-		}
-
-		void AnyThreadTask()
-		{
-			RenderSystem.ComputeSectionPerViewParameters(
-				ViewPtrAsIdentifier, ViewLODOverride, ViewLODDistanceFactor, 
-				ViewEngineShowFlagCollisionPawn, ViewEngineShowFlagCollisionVisibility, 
-				ViewOrigin, ViewProjectionMatrix);
-		}
-
-		void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
-		{
-			AnyThreadTask();
-		}
-	};
-
-	struct FGetSectionLODBiasesTask
-	{
-		FLandscapeRenderSystem& RenderSystem;
-
-		FGetSectionLODBiasesTask(FLandscapeRenderSystem& InRenderSystem)
-			: RenderSystem(InRenderSystem)
-		{
-		}
-
-		FORCEINLINE TStatId GetStatId() const
-		{
-			RETURN_QUICK_DECLARE_CYCLE_STAT(FGetSectionLODBiasesTask, STATGROUP_TaskGraphTasks);
-		}
-
-		ENamedThreads::Type GetDesiredThread()
-		{
-			return ENamedThreads::AnyNormalThreadNormalTask;
-		}
-
-		static ESubsequentsMode::Type GetSubsequentsMode()
-		{
-			return ESubsequentsMode::TrackSubsequents;
-		}
-
-		void AnyThreadTask()
-		{
-			RenderSystem.FetchHeightmapLODBiases();
-		}
-
-		void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
-		{
-			AnyThreadTask();
-		}
-	};
-
-	FLandscapeRenderSystem()
-		: NumRegisteredEntities(0)
-		, NumEntitiesWithTessellation(0)
-		, Min(MAX_int32, MAX_int32)
-		, Size(EForceInit::ForceInitToZero)
-		, CachedView(nullptr)
-	{
-		SectionLODValues.SetAllowCPUAccess(true);
-		SectionLODBiases.SetAllowCPUAccess(true);
-		SectionTessellationFalloffC.SetAllowCPUAccess(true);
-		SectionTessellationFalloffK.SetAllowCPUAccess(true);
-	}
-
-	void RegisterEntity(FLandscapeComponentSceneProxy* SceneProxy);
-
-	void UnregisterEntity(FLandscapeComponentSceneProxy* SceneProxy);
-
-	int32 GetComponentLinearIndex(FIntPoint ComponentBase)
-	{
-		return (ComponentBase.Y - Min.Y) * Size.X + ComponentBase.X - Min.X;
+		return (InSectionBase.Y - Min.Y) * Size.X + InSectionBase.X - Min.X;
 	}
 	void ResizeAndMoveTo(FIntPoint NewMin, FIntPoint NewSize);
 
-	void SetSectionLODSettings(FIntPoint ComponentBase, LODSettingsComponent LODSettings)
+	void SetSectionInfo(FIntPoint InSectionBase, FLandscapeSectionInfo* InSectionInfo)
 	{
-		SectionLODSettings[GetComponentLinearIndex(ComponentBase)] = LODSettings;
+		SectionInfos[GetSectionLinearIndex(InSectionBase)] = InSectionInfo;
 	}
 
-	void SetSectionOriginAndRadius(FIntPoint ComponentBase, FVector4 OriginAndRadius)
+	FLandscapeSectionInfo* GetSectionInfo(FIntPoint InSectionBase)
 	{
-		SectionOriginAndRadius[GetComponentLinearIndex(ComponentBase)] = OriginAndRadius;
+		return SectionInfos[GetSectionLinearIndex(InSectionBase)];
 	}
 
-	void SetSceneProxy(FIntPoint ComponentBase, FLandscapeComponentSceneProxy* SceneProxy)
+	float GetSectionLODValue(const FSceneView& SceneView, FIntPoint InSectionBase) const
 	{
-		SceneProxies[GetComponentLinearIndex(ComponentBase)] = SceneProxy;
+		return CachedSectionLODValues[SceneView.GetViewKey()][GetSectionLinearIndex(InSectionBase)];
 	}
 
-	float GetSectionLODValue(FIntPoint ComponentBase)
+	float GetSectionLODBias(FIntPoint InSectionBase) const
 	{
-		return SectionLODValues[GetComponentLinearIndex(ComponentBase)];
+		return SectionLODBiases[GetSectionLinearIndex(InSectionBase)];
 	}
 
-	float GetSectionLODBias(FIntPoint ComponentBase)
-	{
-		return SectionLODBiases[GetComponentLinearIndex(ComponentBase)];
-	}
+	const TResourceArray<float>& ComputeSectionsLODForView(const FSceneView& InView);
 
-	void ComputeSectionPerViewParameters(
-		const FSceneView* ViewPtrAsIdentifier,
-		int32 ViewLODOverride,
-		float ViewLODDistanceFactor,
-		bool bDrawCollisionPawn,
-		bool bDrawCollisionCollision,
-		FVector ViewOrigin,
-		FMatrix ViewProjectionMarix);
-
-	void PrepareView(const FSceneView* View);
-
-	void BeginRenderView(const FSceneView* View);
+	void BeginRender();
 
 	void BeginFrame();
 
 	void FetchHeightmapLODBiases();
 
-	void RecreateBuffers(const FSceneView* InView = nullptr);
+	void UpdateBuffers();
 
 	void EndFrame();
+
+	void WaitForTasksCompletion();
+
+private:
+	void CreateResources_Internal(FLandscapeSectionInfo* InSectionInfo);
+	void DestroyResources_Internal(FLandscapeSectionInfo* InSectionInfo);
 };
 
-extern TMap<FLandscapeNeighborInfo::FLandscapeKey, FLandscapeRenderSystem*> LandscapeRenderSystems;
+
+//
+// FLandscapeSceneViewExtension
+//
+class FLandscapeSceneViewExtension : public FSceneViewExtensionBase
+{
+public:
+	FLandscapeSceneViewExtension(const FAutoRegister& AutoReg);
+	virtual ~FLandscapeSceneViewExtension();
+
+	void BeginFrame_RenderThread();
+	void EndFrame_RenderThread();
+
+	virtual void SetupViewFamily(FSceneViewFamily& InViewFamily) override {}
+	virtual void SetupView(FSceneViewFamily& InViewFamily, FSceneView& InView) override {}
+	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override {}
+
+	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
+	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
+
+private:
+	FBufferRHIRef LandscapeLODDataBuffer;
+	FBufferRHIRef LandscapeIndirectionBuffer;
+};
+
+
+//
+// FLandscapeVisibilityHelper
+//
+class FLandscapeVisibilityHelper
+{
+public:
+	void Init(UPrimitiveComponent* LandscapeComponent, FPrimitiveSceneProxy* ProxyIn);
+	bool OnAddedToWorld();
+	bool OnRemoveFromWorld();
+	bool ShouldBeVisible() const { return !bRequiresVisibleLevelToRender || bIsComponentLevelVisible; }
+	bool RequiresVisibleLevelToRender() const { return bRequiresVisibleLevelToRender; }
+private:
+	bool bRequiresVisibleLevelToRender = false;
+	bool bIsComponentLevelVisible = false;
+};
+
+//
+// FLandscapeDebugOptions
+//
+struct LANDSCAPE_API FLandscapeDebugOptions
+{
+	FLandscapeDebugOptions();
+
+	enum eCombineMode
+	{
+		eCombineMode_Default = 0,
+		eCombineMode_CombineAll = 1,
+		eCombineMode_Disabled = 2
+	};
+
+	bool bShowPatches;
+	bool bDisableStatic;
+	eCombineMode CombineMode;
+
+private:
+	FAutoConsoleCommand PatchesConsoleCommand;
+	FAutoConsoleCommand StaticConsoleCommand;
+	FAutoConsoleCommand CombineConsoleCommand;
+
+	void Patches();
+	void Static();
+	void Combine(const TArray<FString>& Args);
+};
+
+LANDSCAPE_API extern FLandscapeDebugOptions GLandscapeDebugOptions;
 
 //
 // FLandscapeMeshProxySceneProxy
 //
 class FLandscapeMeshProxySceneProxy final : public FStaticMeshSceneProxy
 {
-	TArray<FLandscapeNeighborInfo> ProxyNeighborInfos;
 public:
 	SIZE_T GetTypeHash() const override;
 
-	FLandscapeMeshProxySceneProxy(UStaticMeshComponent* InComponent, const FGuid& InGuid, const TArray<FIntPoint>& InProxyComponentBases, int8 InProxyLOD);
+	FLandscapeMeshProxySceneProxy(UStaticMeshComponent* InComponent, const FGuid& InLandscapeGuid, const TArray<FIntPoint>& InProxySectionsBases, int8 InProxyLOD);
 	virtual void CreateRenderThreadResources() override;
 	virtual void DestroyRenderThreadResources() override;
-	virtual void OnLevelAddedToWorld() override;
-};
+	virtual bool OnLevelAddedToWorld_RenderThread() override;
+	virtual void OnLevelRemovedFromWorld_RenderThread() override;
 
+private:
+	void RegisterSections();
+	void UnregisterSections();
+
+	FLandscapeVisibilityHelper VisibilityHelper;
+
+	TArray<TUniquePtr<FLandscapeSectionInfo>> ProxySectionsInfos;
+};
 
 //
 // FLandscapeComponentSceneProxy
 //
-class FLandscapeComponentSceneProxy : public FPrimitiveSceneProxy, public FLandscapeNeighborInfo
+class LANDSCAPE_API FLandscapeComponentSceneProxy : public FPrimitiveSceneProxy, public FLandscapeSectionInfo
 {
 	friend class FLandscapeSharedBuffers;
 
@@ -797,12 +636,10 @@ public:
 	// Reference counted vertex and index buffer shared among all landscape scene proxies of the same component size
 	// Key is the component size and number of subsections.
 	// Also being reused by GPULightmass currently to save mem
-	static LANDSCAPE_API TMap<uint32, FLandscapeSharedBuffers*> SharedBuffersMap;
+	static TMap<uint32, FLandscapeSharedBuffers*> SharedBuffersMap;
 
 protected:
 	int8						MaxLOD;		// Maximum LOD level, user override possible
-	bool						UseTessellationComponentScreenSizeFalloff:1;	// Tell if we should apply a Tessellation falloff
-	bool						bRequiresAdjacencyInformation:1;
 	int8						NumWeightmapLayerAllocations;
 	uint8						StaticLightingLOD;
 	float						WeightmapSubsectionOffset;
@@ -813,10 +650,6 @@ protected:
 	int32						LastVirtualTextureLOD;
 	float						ComponentMaxExtend; 		// The max extend value in any axis
 	float						ComponentSquaredScreenSizeToUseSubSections; // Size at which we start to draw in sub lod if LOD are different per sub section
-	float						MinValidLOD;							// Min LOD Taking into account LODBias
-	float						MaxValidLOD;							// Max LOD Taking into account LODBias
-	float						TessellationComponentSquaredScreenSize;	// Screen size of the component at which we start to apply tessellation
-	float						TessellationComponentScreenSizeFalloff;	// Min Component screen size before we start applying the tessellation falloff
 
 	FLandscapeRenderSystem::LODSettingsComponent LODSettings;
 
@@ -856,7 +689,7 @@ protected:
 	TArray<FLandscapeBatchElementParams> GrassBatchParams;
 #endif
 
-	FVector4 WeightmapScaleBias;
+	FVector4f WeightmapScaleBias;
 	TArray<UTexture2D*> WeightmapTextures;
 
 	UTexture2D* VisibilityWeightmapTexture;
@@ -865,9 +698,10 @@ protected:
 #if WITH_EDITOR
 	TArray<FLinearColor> LayerColors;
 #endif
+	UTexture2D* HeightmapTexture; // PC : Heightmap, Mobile : Weightmap
 	UTexture2D* NormalmapTexture; // PC : Heightmap, Mobile : Weightmap
 	UTexture2D* BaseColorForGITexture;
-	FVector4 HeightmapScaleBias;
+	FVector4f HeightmapScaleBias;
 	float HeightmapSubsectionOffsetU;
 	float HeightmapSubsectionOffsetV;
 
@@ -883,17 +717,11 @@ protected:
 	/** All available materials for non mobile, including LOD Material, Tessellation generated materials*/
 	TArray<UMaterialInterface*> AvailableMaterials;
 
-	/** A cache to know if the material stored in AvailableMaterials[X] has tessellation enabled */
-	TBitArray<> MaterialHasTessellationEnabled;
-
 	// FLightCacheInterface
 	TUniquePtr<FLandscapeLCI> ComponentLightInfo;
 
 	/** Mapping between LOD and Material Index*/
 	TArray<int8> LODIndexToMaterialIndex;
-	
-	/** Mapping between Material Index to associated generated disabled Tessellation Material*/
-	TArray<int8> MaterialIndexToDisabledTessellationMaterial;
 	
 	/** Mapping between Material Index to Static Mesh Batch */
 	TArray<int8> MaterialIndexToStaticMeshBatchLOD;
@@ -929,14 +757,15 @@ protected:
 	// Cached versions of these
 	FMatrix					WorldToLocal;
 
+	FLandscapeVisibilityHelper VisibilityHelper;
+
 protected:
 	virtual ~FLandscapeComponentSceneProxy();
 	
-	virtual const ULandscapeComponent* GetLandscapeComponent() const { return LandscapeComponent; }
 	int8 GetLODFromScreenSize(float InScreenSizeSquared, float InViewLODScale) const;
 
 	bool GetMeshElementForVirtualTexture(int32 InLodIndex, ERuntimeVirtualTextureMaterialType MaterialType, UMaterialInterface* InMaterialInterface, FMeshBatch& OutMeshBatch, TArray<FLandscapeBatchElementParams>& OutStaticBatchParamArray) const;
-	template<class ArrayType> bool GetStaticMeshElement(int32 LODIndex, bool bForToolMesh, bool bForcedLOD, FMeshBatch& MeshBatch, ArrayType& OutStaticBatchParamArray) const;
+	template<class ArrayType> bool GetStaticMeshElement(int32 LODIndex, bool bForToolMesh, FMeshBatch& MeshBatch, ArrayType& OutStaticBatchParamArray) const;
 	
 	virtual void ApplyMeshElementModifier(FMeshBatchElement& InOutMeshElement, int32 InLodIndex) const {}
 
@@ -948,7 +777,6 @@ public:
 	virtual void ApplyWorldOffset(FVector InOffset) override;
 	virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
-	virtual int32 CollectOccluderElements(FOccluderElementsCollector& Collector) const override;
 	virtual uint32 GetMemoryFootprint() const override { return(sizeof(*this) + GetAllocatedSize()); }
 	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
 	virtual bool CanBeOccluded() const override;
@@ -956,7 +784,8 @@ public:
 	virtual void OnTransformChanged() override;
 	virtual void CreateRenderThreadResources() override;
 	virtual void DestroyRenderThreadResources() override;
-	virtual void OnLevelAddedToWorld() override;
+	virtual bool OnLevelAddedToWorld_RenderThread() override;
+	virtual void OnLevelRemovedFromWorld_RenderThread() override;
 	
 	friend class ULandscapeComponent;
 	friend class FLandscapeVertexFactoryVertexShaderParameters;
@@ -973,14 +802,11 @@ public:
 #endif
 
 	// FLandcapeSceneProxy
-	void ChangeTessellationComponentScreenSize_RenderThread(float InTessellationComponentScreenSize);
 	void ChangeComponentScreenSizeToUseSubSections_RenderThread(float InComponentScreenSizeToUseSubSections);
-	void ChangeUseTessellationComponentScreenSizeFalloff_RenderThread(bool InUseTessellationComponentScreenSizeFalloff);
-	void ChangeTessellationComponentScreenSizeFalloff_RenderThread(float InTessellationComponentScreenSizeFalloff);
 
 	virtual bool HeightfieldHasPendingStreaming() const override;
 
-	virtual void GetHeightfieldRepresentation(UTexture2D*& OutHeightmapTexture, UTexture2D*& OutDiffuseColorTexture, UTexture2D*& OutVisibilityTexture, FHeightfieldComponentDescription& OutDescription) override;
+	virtual void GetHeightfieldRepresentation(UTexture2D*& OutHeightmapTexture, UTexture2D*& OutDiffuseColorTexture, UTexture2D*& OutVisibilityTexture, FHeightfieldComponentDescription& OutDescription) const override;
 
 	virtual void GetLCIs(FLCIArray& LCIs) override;
 
@@ -990,8 +816,13 @@ public:
 
 #if RHI_RAYTRACING
 	virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances) override final;
+	virtual bool HasRayTracingRepresentation() const override { return true; }
 	virtual bool IsRayTracingRelevant() const override { return true; }
 #endif
+
+	// FLandscapeSceneInfo interface
+	virtual float ComputeLODForView(const FSceneView& InView) const override;
+	virtual float ComputeLODBias() const override;
 };
 
 class FLandscapeDebugMaterialRenderProxy : public FMaterialRenderProxy
@@ -1008,6 +839,7 @@ public:
 	/** Initialization constructor. */
 	FLandscapeDebugMaterialRenderProxy(const FMaterialRenderProxy* InParent, const UTexture2D* TexR, const UTexture2D* TexG, const UTexture2D* TexB,
 		const FLinearColor& InR, const FLinearColor& InG, const FLinearColor& InB) :
+		FMaterialRenderProxy(InParent->GetMaterialName()),
 		Parent(InParent),
 		RedTexture(TexR),
 		GreenTexture(TexG),
@@ -1028,59 +860,48 @@ public:
 		return Parent->GetFallback(InFeatureLevel);
 	}
 
-	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
+	virtual bool GetParameterValue(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, FMaterialParameterValue& OutValue, const FMaterialRenderContext& Context) const
 	{
-		if (ParameterInfo.Name == FName(TEXT("Landscape_RedMask")))
+		switch (Type)
 		{
-			*OutValue = R;
-			return true;
+		case EMaterialParameterType::Vector:
+			if (ParameterInfo.Name == FName(TEXT("Landscape_RedMask")))
+			{
+				OutValue = R;
+				return true;
+			}
+			else if (ParameterInfo.Name == FName(TEXT("Landscape_GreenMask")))
+			{
+				OutValue = G;
+				return true;
+			}
+			else if (ParameterInfo.Name == FName(TEXT("Landscape_BlueMask")))
+			{
+				OutValue = B;
+				return true;
+			}
+			break;
+		case EMaterialParameterType::Texture:
+			if (ParameterInfo.Name == FName(TEXT("Landscape_RedTexture")))
+			{
+				OutValue = RedTexture;
+				return true;
+			}
+			else if (ParameterInfo.Name == FName(TEXT("Landscape_GreenTexture")))
+			{
+				OutValue = GreenTexture;
+				return true;
+			}
+			else if (ParameterInfo.Name == FName(TEXT("Landscape_BlueTexture")))
+			{
+				OutValue = BlueTexture;
+				return true;
+			}
+			break;
+		default:
+			break;
 		}
-		else if (ParameterInfo.Name == FName(TEXT("Landscape_GreenMask")))
-		{
-			*OutValue = G;
-			return true;
-		}
-		else if (ParameterInfo.Name == FName(TEXT("Landscape_BlueMask")))
-		{
-			*OutValue = B;
-			return true;
-		}
-		else
-		{
-			return Parent->GetVectorValue(ParameterInfo, OutValue, Context);
-		}
-	}
-	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
-	{
-		return Parent->GetScalarValue(ParameterInfo, OutValue, Context);
-	}
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const UTexture** OutValue, const FMaterialRenderContext& Context) const override
-	{
-		// NOTE: These should be returning black textures when NULL. The material will
-		// use a white texture if they are.
-		if (ParameterInfo.Name == FName(TEXT("Landscape_RedTexture")))
-		{
-			*OutValue = RedTexture;
-			return true;
-		}
-		else if (ParameterInfo.Name == FName(TEXT("Landscape_GreenTexture")))
-		{
-			*OutValue = GreenTexture;
-			return true;
-		}
-		else if (ParameterInfo.Name == FName(TEXT("Landscape_BlueTexture")))
-		{
-			*OutValue = BlueTexture;
-			return true;
-		}
-		else
-		{
-			return Parent->GetTextureValue(ParameterInfo, OutValue, Context);
-		}
-	}
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const
-	{
-		return Parent->GetTextureValue(ParameterInfo, OutValue, Context);
+		return Parent->GetParameterValue(Type, ParameterInfo, OutValue, Context);
 	}
 };
 
@@ -1092,6 +913,7 @@ public:
 
 	/** Initialization constructor. */
 	FLandscapeSelectMaterialRenderProxy(const FMaterialRenderProxy* InParent, const UTexture2D* InTexture) :
+		FMaterialRenderProxy(InParent->GetMaterialName()),
 		Parent(InParent),
 		SelectTexture(InTexture)
 	{}
@@ -1105,37 +927,29 @@ public:
 	{
 		return Parent->GetFallback(InFeatureLevel);
 	}
-	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
+
+	virtual bool GetParameterValue(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, FMaterialParameterValue& OutValue, const FMaterialRenderContext& Context) const
 	{
-		if (ParameterInfo.Name == FName(TEXT("HighlightColor")))
+		switch (Type)
 		{
-			*OutValue = FLinearColor(1.f, 0.5f, 0.5f);
-			return true;
+		case EMaterialParameterType::Vector:
+			if (ParameterInfo.Name == FName(TEXT("HighlightColor")))
+			{
+				OutValue = FLinearColor(1.f, 0.5f, 0.5f);
+				return true;
+			}
+			break;
+		case EMaterialParameterType::Texture:
+			if (ParameterInfo.Name == FName(TEXT("SelectedData")))
+			{
+				OutValue = SelectTexture;
+				return true;
+			}
+			break;
+		default:
+			break;
 		}
-		else
-		{
-			return Parent->GetVectorValue(ParameterInfo, OutValue, Context);
-		}
-	}
-	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
-	{
-		return Parent->GetScalarValue(ParameterInfo, OutValue, Context);
-	}
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const UTexture** OutValue, const FMaterialRenderContext& Context) const override
-	{
-		if (ParameterInfo.Name == FName(TEXT("SelectedData")))
-		{
-			*OutValue = SelectTexture;
-			return true;
-		}
-		else
-		{
-			return Parent->GetTextureValue(ParameterInfo, OutValue, Context);
-		}
-	}
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const
-	{
-		return Parent->GetTextureValue(ParameterInfo, OutValue, Context);
+		return Parent->GetParameterValue(Type, ParameterInfo, OutValue, Context);
 	}
 };
 
@@ -1148,6 +962,7 @@ public:
 
 	/** Initialization constructor. */
 	FLandscapeMaskMaterialRenderProxy(const FMaterialRenderProxy* InParent, const UTexture2D* InTexture, const bool InbInverted) :
+		FMaterialRenderProxy(InParent->GetMaterialName()),
 		Parent(InParent),
 		SelectTexture(InTexture),
 		bInverted(InbInverted)
@@ -1162,34 +977,29 @@ public:
 	{
 		return Parent->GetFallback(InFeatureLevel);
 	}
-	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
+	
+	virtual bool GetParameterValue(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, FMaterialParameterValue& OutValue, const FMaterialRenderContext& Context) const
 	{
-		return Parent->GetVectorValue(ParameterInfo, OutValue, Context);
-	}
-	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
-	{
-		if (ParameterInfo.Name == FName(TEXT("bInverted")))
+		switch (Type)
 		{
-			*OutValue = bInverted;
-			return true;
+		case EMaterialParameterType::Scalar:
+			if (ParameterInfo.Name == FName(TEXT("bInverted")))
+			{
+				OutValue = (float)bInverted;
+				return true;
+			}
+			break;
+		case EMaterialParameterType::Texture:
+			if (ParameterInfo.Name == FName(TEXT("SelectedData")))
+			{
+				OutValue = SelectTexture;
+				return true;
+			}
+			break;
+		default:
+			break;
 		}
-		return Parent->GetScalarValue(ParameterInfo, OutValue, Context);
-	}
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const UTexture** OutValue, const FMaterialRenderContext& Context) const override
-	{
-		if (ParameterInfo.Name == FName(TEXT("SelectedData")))
-		{
-			*OutValue = SelectTexture;
-			return true;
-		}
-		else
-		{
-			return Parent->GetTextureValue(ParameterInfo, OutValue, Context);
-		}
-	}
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const
-	{
-		return Parent->GetTextureValue(ParameterInfo, OutValue, Context);
+		return Parent->GetParameterValue(Type, ParameterInfo, OutValue, Context);
 	}
 };
 
@@ -1202,7 +1012,8 @@ class FLandscapeLayerUsageRenderProxy : public FMaterialRenderProxy
 	float Rotation;
 public:
 	FLandscapeLayerUsageRenderProxy(const FMaterialRenderProxy* InParent, int32 InComponentSizeVerts, const TArray<FLinearColor>& InLayerColors, float InRotation)
-	: Parent(InParent)
+	: FMaterialRenderProxy(InParent->GetMaterialName())
+	, Parent(InParent)
 	, ComponentSizeVerts(InComponentSizeVerts)
 	, LayerColors(InLayerColors)
 	, Rotation(InRotation)
@@ -1217,7 +1028,8 @@ public:
 	{
 		return Parent->GetFallback(InFeatureLevel);
 	}
-	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
+	
+	virtual bool GetParameterValue(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, FMaterialParameterValue& OutValue, const FMaterialRenderContext& Context) const
 	{
 		static FName ColorNames[] =
 		{
@@ -1239,41 +1051,39 @@ public:
 			FName(TEXT("Color15"))
 		};
 
-		for (int32 i = 0; i < UE_ARRAY_COUNT(ColorNames) && i < LayerColors.Num(); i++)
+		switch (Type)
 		{
-			if (ParameterInfo.Name == ColorNames[i])
+		case EMaterialParameterType::Vector:
+			for (int32 i = 0; i < UE_ARRAY_COUNT(ColorNames) && i < LayerColors.Num(); i++)
 			{
-				*OutValue = LayerColors[i];
+				if (ParameterInfo.Name == ColorNames[i])
+				{
+					OutValue = LayerColors[i];
+					return true;
+				}
+			}
+			break;
+		case EMaterialParameterType::Scalar:
+			if (ParameterInfo.Name == FName(TEXT("Rotation")))
+			{
+				OutValue = Rotation;
 				return true;
 			}
+			else if (ParameterInfo.Name == FName(TEXT("NumStripes")))
+			{
+				OutValue = (float)LayerColors.Num();
+				return true;
+			}
+			else if (ParameterInfo.Name == FName(TEXT("ComponentSizeVerts")))
+			{
+				OutValue = (float)ComponentSizeVerts;
+				return true;
+			}
+			break;
+		default:
+			break;
 		}
-		return Parent->GetVectorValue(ParameterInfo, OutValue, Context);
-	}
-	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
-	{
-		if (ParameterInfo.Name == FName(TEXT("Rotation")))
-		{
-			*OutValue = Rotation;
-			return true;
-		}
-		if (ParameterInfo.Name == FName(TEXT("NumStripes")))
-		{
-			*OutValue = LayerColors.Num();
-			return true;
-		}
-		if (ParameterInfo.Name == FName(TEXT("ComponentSizeVerts")))
-		{
-			*OutValue = ComponentSizeVerts;
-			return true;
-		}		
-		return Parent->GetScalarValue(ParameterInfo, OutValue, Context);
-	}
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const UTexture** OutValue, const FMaterialRenderContext& Context) const override
-	{
-		return Parent->GetTextureValue(ParameterInfo, OutValue, Context);
-	}
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const
-	{
-		return Parent->GetTextureValue(ParameterInfo, OutValue, Context);
+
+		return Parent->GetParameterValue(Type, ParameterInfo, OutValue, Context);
 	}
 };

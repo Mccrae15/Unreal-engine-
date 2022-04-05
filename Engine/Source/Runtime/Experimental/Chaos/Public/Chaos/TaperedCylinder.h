@@ -229,10 +229,10 @@ namespace Chaos
 			}
 			auto Plane1Intersection = MPlane1.FindClosestIntersection(StartPoint, EndPoint, Thickness);
 			if (Plane1Intersection.Second)
-				Intersections.Add(MakePair((Plane1Intersection.First - StartPoint).Size(), Plane1Intersection.First));
+				Intersections.Add(MakePair((FReal)(Plane1Intersection.First - StartPoint).Size(), Plane1Intersection.First));
 			auto Plane2Intersection = MPlane2.FindClosestIntersection(StartPoint, EndPoint, Thickness);
 			if (Plane2Intersection.Second)
-				Intersections.Add(MakePair((Plane2Intersection.First - StartPoint).Size(), Plane2Intersection.First));
+				Intersections.Add(MakePair((FReal)(Plane2Intersection.First - StartPoint).Size(), Plane2Intersection.First));
 			Intersections.Sort([](const Pair<FReal, FVec3>& Elem1, const Pair<FReal, FVec3>& Elem2) { return Elem1.First < Elem2.First; });
 			for (const auto& Elem : Intersections)
 			{
@@ -261,7 +261,7 @@ namespace Chaos
 			const FReal R1R1 = MRadius1 * MRadius1;
 			const FReal R2R2 = MRadius2 * MRadius2;
 			const FReal R1R2 = MRadius1 * MRadius2;
-			return FVec3(0, 0, MHeight*(R1R1 + 2.*R1R2 + 3.*R2R2) / 4.*(R1R1 + R1R2 + R2R2));
+			return FVec3(0, 0, static_cast<FReal>(MHeight*(R1R1 + 2.*R1R2 + 3.*R2R2) / 4.*(R1R1 + R1R2 + R2R2)));
 		}
 		FVec3 GetAxis() const { return (MPlane2.X() - MPlane1.X()).GetSafeNormal(); }
 
@@ -304,12 +304,12 @@ namespace Chaos
 			const FReal R1R2 = R1 * R2;
 			const FReal R2R2 = R2 * R2;
 
-			const FReal Num1 = 2. * HH * (R1R1 + 3. * R1R2 + 6. * R2R2); // 2H^2 * (R1^2 + 3R1R2 + 6R2^2)
-			const FReal Num2 = 3. * (R1R1 * R1R1 + R1R1 * R1R2 + R1R2 * R1R2 + R1R2 * R2R2 + R2R2 * R2R2); // 3 * (R1^4 + R1^3R2 + R1^2R2^2 + R1R2^3 + R2^4)
+			const FReal Num1 = static_cast<FReal>(2. * HH * (R1R1 + 3. * R1R2 + 6. * R2R2)); // 2H^2 * (R1^2 + 3R1R2 + 6R2^2)
+			const FReal Num2 = static_cast<FReal>(3. * (R1R1 * R1R1 + R1R1 * R1R2 + R1R2 * R1R2 + R1R2 * R2R2 + R2R2 * R2R2)); // 3 * (R1^4 + R1^3R2 + R1^2R2^2 + R1R2^3 + R2^4)
 			const FReal Den1 = PI * (R1R1 + R1R2 + R2R2); // PI * (R1^2 + R1R2 + R2^2)
 
-			const FReal Diag12 = Mass * (Num1 + Num2) / (20. * Den1);
-			const FReal Diag3 = Mass * Num2 / (10. * Den1);
+			const FReal Diag12 = Mass * (Num1 + Num2) / (static_cast<FReal>(20.) * Den1);
+			const FReal Diag3 = Mass * Num2 / (static_cast<FReal>(10.) * Den1);
 
 			return FMatrix33(Diag12, Diag12, Diag3);
 		}
@@ -330,15 +330,35 @@ namespace Chaos
 			return HashCombine(PlaneHashes, PropertyHash);
 		}
 
+#if INTEL_ISPC && !UE_BUILD_SHIPPING
+		// See PerParticlePBDCollisionConstraint.cpp
+		// ISPC code has matching structs for interpreting FImplicitObjects.
+		// This is used to verify that the structs stay the same.
+		struct FISPCDataVerifier
+		{
+			static constexpr int32 OffsetOfMPlane1() { return offsetof(FTaperedCylinder, MPlane1); }
+			static constexpr int32 SizeOfMPlane1() { return sizeof(FTaperedCylinder::MPlane1); }
+			static constexpr int32 OffsetOfMPlane2() { return offsetof(FTaperedCylinder, MPlane2); }
+			static constexpr int32 SizeOfMPlane2() { return sizeof(FTaperedCylinder::MPlane2); }
+			static constexpr int32 OffsetOfMHeight() { return offsetof(FTaperedCylinder, MHeight); }
+			static constexpr int32 SizeOfMHeight() { return sizeof(FTaperedCylinder::MHeight); }
+			static constexpr int32 OffsetOfMRadius1() { return offsetof(FTaperedCylinder, MRadius1); }
+			static constexpr int32 SizeOfMRadius1() { return sizeof(FTaperedCylinder::MRadius1); }
+			static constexpr int32 OffsetOfMRadius2() { return offsetof(FTaperedCylinder, MRadius2); }
+			static constexpr int32 SizeOfMRadius2() { return sizeof(FTaperedCylinder::MRadius2); }
+		};
+		friend FISPCDataVerifier;
+#endif // #if INTEL_ISPC && !UE_BUILD_SHIPPING
+
 	private:
 		//Phi is distance from closest point on plane1
 		FReal GetRadius(const FReal& Phi) const
 		{
 			const FReal Alpha = Phi / MHeight;
-			return MRadius1 * (1. - Alpha) + MRadius2 * Alpha;
+			return MRadius1 * (static_cast<FReal>(1.) - Alpha) + MRadius2 * Alpha;
 		}
 
-		TPlane<FReal, 3> MPlane1, MPlane2;
+		TPlaneConcrete<FReal, 3> MPlane1, MPlane2;
 		FReal MHeight, MRadius1, MRadius2;
 		FAABB3 MLocalBoundingBox;
 	};
@@ -482,8 +502,8 @@ namespace Chaos
 				const FReal AllArea = CylArea + Cap1Area + Cap2Area;
 				if (AllArea > KINDA_SMALL_NUMBER)
 				{
-					NumPointsEndCap1 = static_cast<int32>(round(Cap1Area / AllArea * NumPoints));
-					NumPointsEndCap2 = static_cast<int32>(round(Cap2Area / AllArea * NumPoints));
+					NumPointsEndCap1 = static_cast<int32>(round(Cap1Area / AllArea * static_cast<FReal>(NumPoints)));
+					NumPointsEndCap2 = static_cast<int32>(round(Cap2Area / AllArea * static_cast<FReal>(NumPoints)));
 					NumPointsCylinder = NumPoints - NumPointsEndCap1 - NumPointsEndCap2;
 				}
 				else
@@ -527,18 +547,18 @@ namespace Chaos
 			}
 			else
 			{
-				static const FReal Increment = PI * (1.0 + sqrt(5));
+				static const FRealSingle Increment = PI * (1.0f + FMath::Sqrt(5.0f));
 				for (int32 i = 0; i < NumPointsCylinder; i++)
 				{
 					// In the 2D sphere (disc) case, we vary R so it increases monotonically,
 					// which spreads points out across the disc:
 					//     const FReal R = FMath::Sqrt((0.5 + Index) / NumPoints) * Radius;
 					// But we're mapping to a cylinder, which means we want to keep R constant.
-					const FReal R = FMath::Lerp(Radius1, Radius2, static_cast<FReal>(i) / (NumPointsCylinder - 1));
-					const FReal Theta = Increment * (0.5 + i + SpiralSeed);
+					const FReal R = FMath::Lerp(Radius1, Radius2, static_cast<FReal>(i) / static_cast<FReal>(NumPointsCylinder - 1));
+					const FReal Theta = Increment * (0.5f + static_cast<FReal>(i + SpiralSeed));
 
 					// Map polar coordinates to Cartesian, and vary Z by [-HalfHeight, HalfHeight].
-					const FReal Z = FMath::LerpStable(-HalfHeight, HalfHeight, static_cast<FReal>(i) / (NumPointsCylinder - 1));
+					const FReal Z = FMath::LerpStable(-HalfHeight, HalfHeight, static_cast<FReal>(i) / static_cast<FReal>(NumPointsCylinder - 1));
 					Points[i + Offset] =
 					    FVec3(
 					        R * FMath::Cos(Theta),

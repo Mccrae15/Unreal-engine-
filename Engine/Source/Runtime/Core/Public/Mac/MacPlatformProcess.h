@@ -238,10 +238,12 @@ struct CORE_API FMacPlatformProcess : public FGenericPlatformProcess
 	static FString GenerateApplicationPath( const FString& AppName, EBuildConfiguration BuildConfiguration);
 	static const TCHAR* GetModuleExtension();
 	static const TCHAR* GetBinariesSubdirectory();
+	static const FString GetModulesDirectory();
 	static bool CanLaunchURL(const TCHAR* URL);
 	static void LaunchURL(const TCHAR* URL, const TCHAR* Parms, FString* Error);
 	static FString GetGameBundleId();
-	static FProcHandle CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void * PipeReadChild = nullptr);
+	static FProcHandle CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild = nullptr );
+	static FProcHandle CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild, void* PipeStdErrChild );
 	static FProcHandle OpenProcess(uint32 ProcessID);
 	static bool IsProcRunning( FProcHandle & ProcessHandle );
 	static void WaitForProc( FProcHandle & ProcessHandle );
@@ -252,16 +254,16 @@ struct CORE_API FMacPlatformProcess : public FGenericPlatformProcess
 	static bool IsApplicationRunning( uint32 ProcessId );
 	static FString GetApplicationName( uint32 ProcessId );
 	static bool IsSandboxedApplication();
-	static void LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms = NULL, ELaunchVerb::Type Verb = ELaunchVerb::Open );
+	static bool LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms = NULL, ELaunchVerb::Type Verb = ELaunchVerb::Open, bool bPromptToOpenOnFailure = true);
 	static void ExploreFolder( const TCHAR* FilePath );
 	static FRunnableThread* CreateRunnableThread();
 	static void ClosePipe( void* ReadPipe, void* WritePipe );
-	static bool CreatePipe( void*& ReadPipe, void*& WritePipe );
+	static bool CreatePipe(void*& ReadPipe, void*& WritePipe, bool bWritePipeLocal = false);
 	static FString ReadPipe( void* ReadPipe );
 	static bool ReadPipeToArray(void* ReadPipe, TArray<uint8> & Output);
 	static bool WritePipe(void* WritePipe, const FString& Message, FString* OutWritten = nullptr);
 	static bool WritePipe(void* WritePipe, const uint8* Data, const int32 DataLength, int32* OutDataLength = nullptr);
-	static bool ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory = NULL);
+	static bool ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory = NULL, bool bShouldEndWithParentProcess = false);
 	static void SetThreadAffinityMask(uint64 AffinityMask);
 
 	// Mac specific

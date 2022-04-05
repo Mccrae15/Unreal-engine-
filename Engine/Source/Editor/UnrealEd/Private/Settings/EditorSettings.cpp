@@ -67,6 +67,9 @@ void UEditorSettings::PostEditChangeProperty( struct FPropertyChangedEvent& Prop
 		if (GlobalLocalDDCPath.Path.IsEmpty())
 		{
 			FPlatformMisc::DeleteStoredValue(TEXT("Epic Games"), TEXT("GlobalDataCachePath"), TEXT("UE-LocalDataCachePath"));
+			
+			// empty registry key means use environment, so re-fetch it now
+			GlobalLocalDDCPath.Path = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-LocalDataCachePath"));
 		}
 		else
 		{
@@ -78,6 +81,9 @@ void UEditorSettings::PostEditChangeProperty( struct FPropertyChangedEvent& Prop
 		if (GlobalSharedDDCPath.Path.IsEmpty())
 		{
 			FPlatformMisc::DeleteStoredValue(TEXT("Epic Games"), TEXT("GlobalDataCachePath"), TEXT("UE-SharedDataCachePath"));
+			
+			// empty registry key means use environment, so re-fetch it now
+			GlobalSharedDDCPath.Path = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-SharedDataCachePath"));
 		}
 		else
 		{
@@ -89,6 +95,9 @@ void UEditorSettings::PostEditChangeProperty( struct FPropertyChangedEvent& Prop
 		if (GlobalS3DDCPath.Path.IsEmpty())
 		{
 			FPlatformMisc::DeleteStoredValue(TEXT("Epic Games"), TEXT("GlobalDataCachePath"), TEXT("UE-S3DataCachePath"));
+			
+			// empty registry key means use environment, so re-fetch it now
+			GlobalS3DDCPath.Path = FPlatformMisc::GetEnvironmentVariable(TEXT("UE-S3DataCachePath"));
 		}
 		else
 		{
@@ -113,6 +122,8 @@ void UEditorSettings::LoadScalabilityBenchmark()
 		GConfig->GetInt(Section, TEXT("ViewDistanceQuality"), Temporary.ViewDistanceQuality, GEditorSettingsIni);
 		GConfig->GetInt(Section, TEXT("AntiAliasingQuality"), Temporary.AntiAliasingQuality, GEditorSettingsIni);
 		GConfig->GetInt(Section, TEXT("ShadowQuality"), Temporary.ShadowQuality, GEditorSettingsIni);
+		GConfig->GetInt(Section, TEXT("GlobalIlluminationQuality"), Temporary.GlobalIlluminationQuality, GEditorSettingsIni);
+		GConfig->GetInt(Section, TEXT("ReflectionQuality"), Temporary.ReflectionQuality, GEditorSettingsIni);
 		GConfig->GetInt(Section, TEXT("PostProcessQuality"), Temporary.PostProcessQuality, GEditorSettingsIni);
 		GConfig->GetInt(Section, TEXT("TextureQuality"), Temporary.TextureQuality, GEditorSettingsIni);
 		GConfig->GetInt(Section, TEXT("EffectsQuality"), Temporary.EffectsQuality, GEditorSettingsIni);
@@ -137,6 +148,8 @@ void UEditorSettings::AutoApplyScalabilityBenchmark()
 	GConfig->SetInt(Section, TEXT("ViewDistanceQuality"), Temporary.ViewDistanceQuality, GEditorSettingsIni);
 	GConfig->SetInt(Section, TEXT("AntiAliasingQuality"), Temporary.AntiAliasingQuality, GEditorSettingsIni);
 	GConfig->SetInt(Section, TEXT("ShadowQuality"), Temporary.ShadowQuality, GEditorSettingsIni);
+	GConfig->SetInt(Section, TEXT("GlobalIlluminationQuality"), Temporary.GlobalIlluminationQuality, GEditorSettingsIni);
+	GConfig->SetInt(Section, TEXT("ReflectionQuality"), Temporary.ReflectionQuality, GEditorSettingsIni);
 	GConfig->SetInt(Section, TEXT("PostProcessQuality"), Temporary.PostProcessQuality, GEditorSettingsIni);
 	GConfig->SetInt(Section, TEXT("TextureQuality"), Temporary.TextureQuality, GEditorSettingsIni);
 	GConfig->SetInt(Section, TEXT("EffectsQuality"), Temporary.EffectsQuality, GEditorSettingsIni);

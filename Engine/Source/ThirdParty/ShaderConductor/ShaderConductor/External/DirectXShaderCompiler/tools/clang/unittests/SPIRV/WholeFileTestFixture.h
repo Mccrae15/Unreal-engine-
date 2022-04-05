@@ -21,7 +21,7 @@ namespace spirv {
 ///
 ///    // Comments...
 ///    // More comments...
-///    // Run: %dxc -T ps_6_0 -E main
+///    // RUN: %dxc -T ps_6_0 -E main
 ///    ...
 ///    <HLSL code goes here>
 ///    ...
@@ -50,8 +50,6 @@ public:
                         bool runSpirvValidation = true);
 
   WholeFileTest() : targetEnv(SPV_ENV_VULKAN_1_0) {}
-
-  void useVulkan1p1() { targetEnv = SPV_ENV_VULKAN_1_1; }
 
 private:
   /// \brief Reads in the given input file.

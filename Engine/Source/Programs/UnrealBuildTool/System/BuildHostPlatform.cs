@@ -7,7 +7,7 @@ using System.Text;
 using System.IO;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -32,27 +32,7 @@ namespace UnrealBuildTool
 	/// </summary>
 	public abstract class BuildHostPlatform
 	{
-		private static BuildHostPlatform CurrentPlatform;
-		private static bool bIsMac = File.Exists("/System/Library/CoreServices/SystemVersion.plist");
-
-		/// <summary>
-		/// Returns the name of platform UBT is running on. Internal use only. If you need access this this enum, use BuildHostPlatform.Current.Platform */
-		/// </summary>
-		private static UnrealTargetPlatform GetRuntimePlatform()
-		{
-			PlatformID Platform = Environment.OSVersion.Platform;
-			switch (Platform)
-			{
-				case PlatformID.Win32NT:
-					return UnrealTargetPlatform.Win64;
-				case PlatformID.Unix:
-					return bIsMac ? UnrealTargetPlatform.Mac : UnrealTargetPlatform.Linux;
-				case PlatformID.MacOSX:
-					return UnrealTargetPlatform.Mac;
-				default:
-					throw new BuildException("Unhandled runtime platform " + Platform);
-			}
-		}
+		private static BuildHostPlatform? CurrentPlatform;
 
 		/// <summary>
 		/// Host platform singleton.
@@ -63,18 +43,21 @@ namespace UnrealBuildTool
 			{
 				if (CurrentPlatform == null)
 				{
-					UnrealTargetPlatform RuntimePlatform = GetRuntimePlatform();
-					if (RuntimePlatform == UnrealTargetPlatform.Win64)
+					if (RuntimePlatform.IsWindows)
 					{
 						CurrentPlatform = new WindowsBuildHostPlatform();
 					}
-					else if (RuntimePlatform == UnrealTargetPlatform.Mac)
+					else if (RuntimePlatform.IsMac)
 					{
 						CurrentPlatform = new MacBuildHostPlatform();
 					}
-					else if (RuntimePlatform == UnrealTargetPlatform.Linux)
+					else if (RuntimePlatform.IsLinux)
 					{
 						CurrentPlatform = new LinuxBuildHostPlatform();
+					}
+					else
+					{
+						throw new NotImplementedException();
 					}
 				}
 				return CurrentPlatform;
@@ -177,7 +160,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="Name">Name of the process to get information for.</param>
 		/// <returns></returns>
-		public virtual ProcessInfo GetProcessByName(string Name)
+		public virtual ProcessInfo? GetProcessByName(string Name)
 		{
 			ProcessInfo[] AllProcess = GetProcesses();
 			foreach (ProcessInfo Info in AllProcess)
@@ -249,7 +232,7 @@ namespace UnrealBuildTool
 
 		public override FileReference Shell
 		{
-			get { return new FileReference(Environment.GetEnvironmentVariable("COMSPEC")); }
+			get { return new FileReference(Environment.GetEnvironmentVariable("COMSPEC")!); }
 		}
 
 		public override ShellType ShellType
@@ -260,6 +243,9 @@ namespace UnrealBuildTool
 		internal override IEnumerable<ProjectFileFormat> GetDefaultProjectFileFormats()
 		{
 			yield return ProjectFileFormat.VisualStudio;
+			#if __VPROJECT_AVAILABLE__
+				yield return ProjectFileFormat.VProject;
+			#endif
 		}
 	}
 
@@ -288,21 +274,20 @@ namespace UnrealBuildTool
 		{
 			List<ProcessInfo> Result = new List<ProcessInfo>();
 
+			string TempFile = Path.Combine("/var/tmp", Path.GetTempFileName());
 			ProcessStartInfo StartInfo = new ProcessStartInfo();
-			StartInfo.FileName = "ps";
-			StartInfo.Arguments = "-eaw -o pid,comm";
+			StartInfo.FileName = "/bin/sh";
+			StartInfo.Arguments = "-c \"ps -eaw -o pid,comm > " + TempFile + "\"";
 			StartInfo.CreateNoWindow = true;
-			StartInfo.UseShellExecute = false;
-			StartInfo.RedirectStandardOutput = true;
 
 			Process Proc = new Process();
 			Proc.StartInfo = StartInfo;
 			try
 			{
 				Proc.Start();
-				for (string Line = Proc.StandardOutput.ReadLine(); Line != null; Line = Proc.StandardOutput.ReadLine())
+				foreach (string FileLine in File.ReadAllLines(TempFile))
 				{
-					Line = Line.Trim();
+					string Line = FileLine.Trim();
 					int PIDEnd = Line.IndexOf(' ');
 					string PIDString = Line.Substring(0, PIDEnd);
 					if (PIDString != "PID")
@@ -321,6 +306,7 @@ namespace UnrealBuildTool
 						catch { }
 					}
 				}
+				File.Delete(TempFile);
 				Proc.WaitForExit();
 			}
 			catch { }
@@ -363,7 +349,7 @@ namespace UnrealBuildTool
 		}
 		private void ProcessVMMapOutput(Process Proc, HashSet<string> Modules)
 		{
-			for (string Line = Proc.StandardOutput.ReadLine(); Line != null; Line = Proc.StandardOutput.ReadLine())
+			for (string? Line = Proc.StandardOutput.ReadLine(); Line != null; Line = Proc.StandardOutput.ReadLine())
 			{
 				Line = Line.Trim();
 				if (Line.EndsWith(".dylib"))
@@ -383,6 +369,9 @@ namespace UnrealBuildTool
 		internal override IEnumerable<ProjectFileFormat> GetDefaultProjectFileFormats()
 		{
 			yield return ProjectFileFormat.XCode;
+			#if __VPROJECT_AVAILABLE__
+				yield return ProjectFileFormat.VProject;
+			#endif
 		}
 	}
 
@@ -431,10 +420,9 @@ namespace UnrealBuildTool
 		{
 			yield return ProjectFileFormat.Make;
 			yield return ProjectFileFormat.VisualStudioCode;
-			yield return ProjectFileFormat.KDevelop;
-			yield return ProjectFileFormat.QMake;
-			yield return ProjectFileFormat.CMake;
-			yield return ProjectFileFormat.CodeLite;
+			#if __VPROJECT_AVAILABLE__
+				yield return ProjectFileFormat.VProject;
+			#endif
 		}
 	}
 }

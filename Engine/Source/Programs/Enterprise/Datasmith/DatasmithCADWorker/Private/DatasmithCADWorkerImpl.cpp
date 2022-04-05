@@ -2,7 +2,8 @@
 
 #include "DatasmithCADWorkerImpl.h"
 
-#include "CoreTechFileParser.h"
+#include "CADFileReader.h"
+#include "CADOptions.h"
 #include "DatasmithCommands.h"
 #include "DatasmithDispatcherConfig.h"
 
@@ -120,71 +121,69 @@ void FDatasmithCADWorkerImpl::ProcessCommand(const FImportParametersCommand& Imp
 	ImportParameters = ImportParametersCommand.ImportParameters;
 }
 
-uint64 DefineMaximumAllowedDuration(const CADLibrary::FFileDescription& FileDescription, CADLibrary::FImportParameters ImportParameters)
+uint64 DefineMaximumAllowedDuration(const CADLibrary::FFileDescriptor& FileDescriptor)
 {
-	FFileStatData FileStatData = IFileManager::Get().GetStatData(*FileDescription.Path);
+	FFileStatData FileStatData = IFileManager::Get().GetStatData(*FileDescriptor.GetSourcePath());
 	double MaxTimePerMb = 5e-6;
-	double SafetyCoeficient = (ImportParameters.StitchingTechnique == CADLibrary::EStitchingTechnique::StitchingNone) ? 5 : 15;
-	uint64 MinMaximumAllowedDuration = (ImportParameters.StitchingTechnique == CADLibrary::EStitchingTechnique::StitchingNone) ? 30 : 90;
-	
-	if (FileDescription.Extension.StartsWith(TEXT("sld"))) // SW
+	double SafetyCoeficient = 5;
+
+	CADLibrary::ECADFormat Format = FileDescriptor.GetFileFormat();
+	switch (Format)
 	{
+	case CADLibrary::ECADFormat::SOLIDWORKS:
+	case CADLibrary::ECADFormat::CATIA_3DXML:
 		MaxTimePerMb = 1e-5;
-	}
-	else if (FileDescription.Extension == TEXT("3dxml") || FileDescription.Extension == TEXT("3drep")) // Catia V5 CGR
-	{
-		MaxTimePerMb = 1e-5;
-	}
-	else if (FileDescription.Extension == TEXT("cgr")) 
-	{
+		break;
+	case CADLibrary::ECADFormat::CATIA_CGR:
 		MaxTimePerMb = 5e-7;
-	}
-	else if (FileDescription.Extension.StartsWith(TEXT("ig"))) // Iges
-	{
+		break;
+	case CADLibrary::ECADFormat::IGES:
 		MaxTimePerMb = 1e-6;
+		break;
+	default:
+		break;
 	}
 
 	uint64 MaximumDuration = ((double)FileStatData.FileSize) * MaxTimePerMb * SafetyCoeficient;
-	return FMath::Max(MaximumDuration, MinMaximumAllowedDuration);
+	return FMath::Max(MaximumDuration, (uint64)30);
 }
-
 
 void FDatasmithCADWorkerImpl::ProcessCommand(const FRunTaskCommand& RunTaskCommand)
 {
-	const CADLibrary::FFileDescription& FileToProcess = RunTaskCommand.JobFileDescription;
-	UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("Process %s %s"), *FileToProcess.Name, *FileToProcess.Configuration);
+	CADLibrary::FFileDescriptor FileToProcess = RunTaskCommand.JobFileDescription;
+	UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("Process %s %s"), *FileToProcess.GetFileName(), *FileToProcess.GetConfiguration());
 
 	FCompletedTaskCommand CompletedTask;
 
 	bProcessIsRunning = true;
-	int64 MaxDuration = DefineMaximumAllowedDuration(FileToProcess, ImportParameters);
-
+	int64 MaxDuration = DefineMaximumAllowedDuration(FileToProcess);
 	FThread TimeCheckerThread = FThread(TEXT("TimeCheckerThread"), [&]() { CheckDuration(FileToProcess, MaxDuration); });
 
-	CADLibrary::FCoreTechFileParser FileParser(ImportParameters, EnginePluginsPath, CachePath);
-	CADLibrary::ECoreTechParsingResult ProcessResult = FileParser.ProcessFile(FileToProcess);
+	CADLibrary::FCADFileReader FileReader(ImportParameters, FileToProcess, EnginePluginsPath, CachePath);
+	ETaskState ProcessResult = FileReader.ProcessFile();
 
 	bProcessIsRunning = false;
 	TimeCheckerThread.Join();
-
+	
 	CompletedTask.ProcessResult = ProcessResult;
 
 	if (CompletedTask.ProcessResult == ETaskState::ProcessOk)
 	{
-		CompletedTask.ExternalReferences = FileParser.GetExternalRefSet();
-		CompletedTask.SceneGraphFileName = FileParser.GetSceneGraphFile();
-		CompletedTask.GeomFileName = FileParser.GetMeshFileName();
-		CompletedTask.WarningMessages = FileParser.GetWarningMessages();
+		const CADLibrary::FCADFileData& CADFileData = FileReader.GetCADFileData();
+		CompletedTask.ExternalReferences = CADFileData.GetExternalRefSet();
+		CompletedTask.SceneGraphFileName = CADFileData.GetSceneGraphFileName();
+		CompletedTask.GeomFileName = CADFileData.GetMeshFileName();
+		CompletedTask.WarningMessages = CADFileData.GetWarningMessages();
 	}
 
 	CommandIO.SendCommand(CompletedTask, Config::SendCommandTimeout_s);
 
-	UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("End of Process %s %s saved in %s"), *FileToProcess.Name, *FileToProcess.Configuration, *CompletedTask.GeomFileName);
+	UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("End of Process %s %s saved in %s"), *FileToProcess.GetFileName(), *FileToProcess.GetConfiguration(), *CompletedTask.GeomFileName);
 }
 
-void FDatasmithCADWorkerImpl::CheckDuration(const CADLibrary::FFileDescription& FileToProcess, const int64 MaxDuration)
+void FDatasmithCADWorkerImpl::CheckDuration(const CADLibrary::FFileDescriptor& FileToProcess, const int64 MaxDuration)
 {
-	if (!ImportParameters.bEnableTimeControl)
+	if (!ImportParameters.bGEnableTimeControl)
 	{
 		return;
 	}
@@ -192,12 +191,12 @@ void FDatasmithCADWorkerImpl::CheckDuration(const CADLibrary::FFileDescription& 
 	const uint64 StartTime = FPlatformTime::Cycles64();
 	const uint64 MaxCycles = MaxDuration / FPlatformTime::GetSecondsPerCycle64() + StartTime;
 
-	while(bProcessIsRunning)
+	while (bProcessIsRunning)
 	{
 		FPlatformProcess::Sleep(0.1f);
 		if (FPlatformTime::Cycles64() > MaxCycles)
 		{
-			UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("Time exceeded to process %s %s. The maximum allowed duration is %ld s"), *FileToProcess.Name, *FileToProcess.Configuration, MaxDuration);
+			UE_LOG(LogDatasmithCADWorker, Verbose, TEXT("Time exceeded to process %s %s. The maximum allowed duration is %ld s"), *FileToProcess.GetFileName(), *FileToProcess.GetConfiguration(), MaxDuration);
 			FPlatformMisc::RequestExit(true);
 		}
 	}

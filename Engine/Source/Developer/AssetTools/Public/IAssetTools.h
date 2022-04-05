@@ -22,8 +22,8 @@ class IClassTypeActions;
 class UFactory;
 class UAssetImportTask;
 class UAdvancedCopyCustomization;
-class FBlacklistNames;
-class FBlacklistPaths;
+class FNamePermissionList;
+class FPathPermissionList;
 
 UENUM()
 enum class EAssetRenameResult : uint8
@@ -34,6 +34,16 @@ enum class EAssetRenameResult : uint8
 	Success,
 	/** The asset rename is still pending, likely due to outstanding asset discovery */
 	Pending,
+};
+
+UENUM()
+enum class ERedirectFixupMode
+{
+	// Remove fully fixed up redirectors after the fixup process is done
+	DeleteFixedUpRedirectors,
+
+	// Leave the redirectors around even if no longer locally referenced
+	LeaveFixedUpRedirectors
 };
 
 USTRUCT(BlueprintType)
@@ -107,15 +117,20 @@ struct FAdvancedCopyParams
 {
 	GENERATED_USTRUCT_BODY()
 
-	bool bShouldForceSave;
-	bool bCopyOverAllDestinationOverlaps;
-	bool bGenerateUniqueNames;
-	bool bShouldSuppressUI;
-	bool bShouldCheckForDependencies;
+	bool bShouldForceSave = false;
+	bool bCopyOverAllDestinationOverlaps = false;
+	bool bShouldSuppressUI = false;
+	bool bShouldCheckForDependencies = false;
 
+	UE_DEPRECATED(5.0, "This function has been deprecated, use GetSelectedPackageOrFolderNames")
 	const TArray<FName>& GetSelectedPackageNames() const
 	{
-		return SelectedPackageNames;
+		return SelectedPackageOrFolderNames;
+	}
+
+	const TArray<FName>& GetSelectedPackageOrFolderNames() const
+	{
+		return SelectedPackageOrFolderNames;
 	}
 
 	const FString& GetDropLocationForAdvancedCopy() const
@@ -133,13 +148,12 @@ struct FAdvancedCopyParams
 		CustomizationsToUse.Add(InCustomization);
 	}
 
-	FAdvancedCopyParams(TArray<FName> InSelectedPackageNames, FString InDropLocationForAdvancedCopy)
+	FAdvancedCopyParams(TArray<FName> InSelectedPackageOrFolderNames, FString InDropLocationForAdvancedCopy)
 		: bShouldForceSave(false)
 		, bCopyOverAllDestinationOverlaps(true)
-		, bGenerateUniqueNames(false)
 		, bShouldSuppressUI(false)
 		, bShouldCheckForDependencies(true)
-		, SelectedPackageNames(InSelectedPackageNames)
+		, SelectedPackageOrFolderNames(InSelectedPackageOrFolderNames)
 		, DropLocationForAdvancedCopy(InDropLocationForAdvancedCopy)
 	{
 	}
@@ -147,10 +161,9 @@ struct FAdvancedCopyParams
 	FAdvancedCopyParams() {}
 
 private:
-	TArray<FName> SelectedPackageNames;
+	TArray<FName> SelectedPackageOrFolderNames;
 	TArray<UAdvancedCopyCustomization*> CustomizationsToUse;
 	FString DropLocationForAdvancedCopy;
-
 };
 
 UINTERFACE(MinimalApi, BlueprintType, meta = (CannotImplementInterfaceInBlueprint))
@@ -220,11 +233,7 @@ public:
 
 	/** Opens an asset picker dialog and creates an asset with the specified name and path */
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Asset Tools")
-	virtual UObject* CreateAssetWithDialog(const FString& AssetName, const FString& PackagePath, UClass* AssetClass, UFactory* Factory, FName CallingContext = NAME_None) = 0;
-
-	/** Opens an asset picker dialog and creates an asset with the chosen path */
-	UE_DEPRECATED(4.17, "This version of CreateAsset has been deprecated.  Use CreateAssetWithDialog instead")
-	virtual UObject* CreateAsset(UClass* AssetClass, UFactory* Factory, FName CallingContext = NAME_None) = 0;
+	virtual UObject* CreateAssetWithDialog(const FString& AssetName, const FString& PackagePath, UClass* AssetClass, UFactory* Factory, FName CallingContext = NAME_None, const bool bCallConfigureProperties = true) = 0;
 
 	/** Opens an asset picker dialog and creates an asset with the path chosen in the dialog */
 	virtual UObject* CreateAssetWithDialog(UClass* AssetClass, UFactory* Factory, FName CallingContext = NAME_None) = 0;
@@ -271,9 +280,6 @@ public:
 	/** Event issued at the end of the rename process */
 	virtual FAssetPostRenameEvent& OnAssetPostRename() = 0;
 
-	UE_DEPRECATED(4.17, "This version of ImportAssets has been deprecated.  Use ImportAssetsWithDialog instead")
-	virtual TArray<UObject*> ImportAssets(const FString& DestinationPath) = 0;
-
 	/**
 	 * Opens a file open dialog to choose files to import to the destination path.
 	 *
@@ -284,15 +290,24 @@ public:
 	virtual TArray<UObject*> ImportAssetsWithDialog(const FString& DestinationPath) = 0;
 
 	/**
+	 * Opens a file open dialog to choose files to import to the destination path.
+	 * It differ from ImportAssetsWithDialog by allowing an async import when it's available
+	 *
+	 * @param DestinationPath	Path to import files to
+	 */
+	virtual void ImportAssetsWithDialogAsync(const FString& DestinationPath) = 0;
+
+	/**
 	 * Imports the specified files to the destination path.
 	 *
 	 * @param Files				Files to import
 	 * @param DestinationPath	destination path for imported files
 	 * @param ChosenFactory		Specific factory to use for object creation
 	 * @param bSyncToBrowser	If true sync content browser to first imported asset after import
+	 * @param bAllowAsyncImport	This allow the import code to use a async importer if enabled. (Note doing so will ignore the ChosenFactory arguments (If you want a async import prefer the InterchangeManager api))
 	 * @return list of successfully imported assets
 	 */
-	virtual TArray<UObject*> ImportAssets(const TArray<FString>& Files, const FString& DestinationPath, UFactory* ChosenFactory = NULL, bool bSyncToBrowser = true, TArray<TPair<FString, FString>>* FilesAndDestinations = nullptr) const = 0;
+	virtual TArray<UObject*> ImportAssets(const TArray<FString>& Files, const FString& DestinationPath, UFactory* ChosenFactory = NULL, bool bSyncToBrowser = true, TArray<TPair<FString, FString>>* FilesAndDestinations = nullptr, bool bAllowAsyncImport = false) const = 0;
 
 	/**
 	 * Imports assets using data specified completely up front.  Does not ever ask any questions of the user or show any modal error messages
@@ -388,7 +403,7 @@ public:
 	 * Fix up references to the specified redirectors.
 	 * @param bCheckoutDialogPrompt indicates whether to prompt the user with files checkout dialog or silently attempt to checkout all necessary files.
 	 */
-	virtual void FixupReferencers(const TArray<UObjectRedirector*>& Objects, bool bCheckoutDialogPrompt = true) const = 0;
+	virtual void FixupReferencers(const TArray<UObjectRedirector*>& Objects, bool bCheckoutDialogPrompt = true, ERedirectFixupMode FixupMode = ERedirectFixupMode::DeleteFixedUpRedirectors) const = 0;
 
 	/** Returns whether redirectors are being fixed up. */
 	virtual bool IsFixupReferencersInProgress() const = 0;
@@ -434,20 +449,24 @@ public:
 	/** Find all supported asset factories. */
 	virtual TArray<UFactory*> GetNewAssetFactories() const = 0;
 
-	/** Get asset class blacklist for content browser and other systems */
-	virtual TSharedRef<FBlacklistNames>& GetAssetClassBlacklist() = 0;
+	/** Get asset class permission list for content browser and other systems */
+	virtual TSharedRef<FNamePermissionList>& GetAssetClassPermissionList() = 0;
 
-	/** Get folder blacklist for content browser and other systems */
-	virtual TSharedRef<FBlacklistPaths>& GetFolderBlacklist() = 0;
+	/** Get folder permission list for content browser and other systems */
+	virtual TSharedRef<FPathPermissionList>& GetFolderPermissionList() = 0;
 
-	/** Get writable folder blacklist for content browser and other systems */
-	virtual TSharedRef<FBlacklistPaths>& GetWritableFolderBlacklist() = 0;
+	/** Get writable folder permission list for content browser and other systems */
+	virtual TSharedRef<FPathPermissionList>& GetWritableFolderPermissionList() = 0;
 
 	/** Returns true if all in list pass writable folder filter */
 	virtual bool AllPassWritableFolderFilter(const TArray<FString>& InPaths) const = 0;
 
 	/** Show notification that writable folder filter blocked an action */
 	virtual void NotifyBlockedByWritableFolderFilter() const = 0;
+
+	/** Syncs the primary content browser to the specified assets, whether or not it is locked. Most syncs that come from AssetTools -feel- like they came from the content browser, so this is okay. */
+	virtual void SyncBrowserToAssets(const TArray<UObject*>& AssetsToSync) = 0;
+	virtual void SyncBrowserToAssets(const TArray<FAssetData>& AssetsToSync) = 0;
 };
 
 UCLASS(transient)

@@ -44,6 +44,7 @@ public:
 	virtual int32 Flush() override;
 	virtual int32 DequeueInputBuffer(int32 InTimeoutUsec) override;
 	virtual int32 QueueInputBuffer(int32 InBufferIndex, const void* InAccessUnitData, int32 InAccessUnitSize, int64 InTimestampUSec) override;
+	virtual int32 QueueEOSInputBuffer(int32 InBufferIndex, int64 InTimestampUSec) override;
 	virtual int32 GetOutputFormatInfo(FOutputFormatInfo& OutFormatInfo, int32 InOutputBufferIndex) override;
 	virtual int32 DequeueOutputBuffer(FOutputBufferInfo& OutBufferInfo, int32 InTimeoutUsec) override;
 	virtual int32 GetOutputBufferAndRelease(void*& OutBufferDataPtr, int32 OutBufferDataSize, const FOutputBufferInfo& InOutBufferInfo) override;
@@ -51,7 +52,7 @@ public:
 private:
 	static FName GetClassName()
 	{
-		return FName("com/epicgames/ue4/ElectraAudioDecoderAAC");
+		return FName("com/epicgames/unreal/ElectraAudioDecoderAAC");
 	}
 
 	jfieldID FindField(JNIEnv* JEnv, jclass InClass, const ANSICHAR* InFieldName, const ANSICHAR* InFieldType, bool bIsOptional)
@@ -70,6 +71,91 @@ private:
 		return RawBuffer;
 	}
 
+	template<typename ReturnType>
+	ReturnType CallMethodNoVerify(FJavaClassMethod Method, ...);
+
+	template<>
+	void CallMethodNoVerify<void>(FJavaClassMethod Method, ...)
+	{
+		JNIEnv*	JEnv = AndroidJavaEnv::GetJavaEnv();
+		va_list Params;
+		va_start(Params, Method);
+		JEnv->CallVoidMethodV(Object, Method.Method, Params);
+		va_end(Params);
+	}
+
+	template<>
+	bool CallMethodNoVerify<bool>(FJavaClassMethod Method, ...)
+	{
+		JNIEnv*	JEnv = AndroidJavaEnv::GetJavaEnv();
+		va_list Params;
+		va_start(Params, Method);
+		bool RetVal = JEnv->CallBooleanMethodV(Object, Method.Method, Params);
+		va_end(Params);
+		return RetVal;
+	}
+
+	template<>
+	int CallMethodNoVerify<int>(FJavaClassMethod Method, ...)
+	{
+		JNIEnv*	JEnv = AndroidJavaEnv::GetJavaEnv();
+		va_list Params;
+		va_start(Params, Method);
+		int RetVal = JEnv->CallIntMethodV(Object, Method.Method, Params);
+		va_end(Params);
+		return RetVal;
+	}
+
+	template<>
+	jobject CallMethodNoVerify<jobject>(FJavaClassMethod Method, ...)
+	{
+		JNIEnv*	JEnv = AndroidJavaEnv::GetJavaEnv();
+		va_list Params;
+		va_start(Params, Method);
+		jobject val = JEnv->CallObjectMethodV(Object, Method.Method, Params);
+		va_end(Params);
+		jobject RetVal = JEnv->NewGlobalRef(val);
+		JEnv->DeleteLocalRef(val);
+		return RetVal;
+	}
+
+	template<>
+	jobjectArray CallMethodNoVerify<jobjectArray>(FJavaClassMethod Method, ...)
+	{
+		JNIEnv*	JEnv = AndroidJavaEnv::GetJavaEnv();
+		va_list Params;
+		va_start(Params, Method);
+		jobject val = JEnv->CallObjectMethodV(Object, Method.Method, Params);
+		va_end(Params);
+		jobjectArray RetVal = (jobjectArray)JEnv->NewGlobalRef(val);
+		JEnv->DeleteLocalRef(val);
+		return RetVal;
+	}
+
+	template<>
+	int64 CallMethodNoVerify<int64>(FJavaClassMethod Method, ...)
+	{
+		JNIEnv*	JEnv = AndroidJavaEnv::GetJavaEnv();
+		va_list Params;
+		va_start(Params, Method);
+		int64 RetVal = JEnv->CallLongMethodV(Object, Method.Method, Params);
+		va_end(Params);
+		return RetVal;
+	}
+
+	template<>
+	FString CallMethodNoVerify<FString>(FJavaClassMethod Method, ...)
+	{
+		JNIEnv*	JEnv = AndroidJavaEnv::GetJavaEnv();
+		va_list Params;
+		va_start(Params, Method);
+		jstring RetVal = static_cast<jstring>(
+			JEnv->CallObjectMethodV(Object, Method.Method, Params));
+		va_end(Params);
+		auto Result = FJavaHelper::FStringFromLocalRef(JEnv, RetVal);
+		return Result;
+	}
+
 	// Java methods
 	FJavaClassMethod	CreateDecoderFN;
 	FJavaClassMethod	ReleaseDecoderFN;
@@ -78,6 +164,7 @@ private:
 	FJavaClassMethod	FlushFN;
 	FJavaClassMethod	DequeueInputBufferFN;
 	FJavaClassMethod	QueueInputBufferFN;
+	FJavaClassMethod	QueueEOSInputBufferFN;
 	FJavaClassMethod	GetOutputFormatInfoFN;
 	FJavaClassMethod	DequeueOutputBufferFN;
 	FJavaClassMethod	GetOutputBufferAndReleaseFN;
@@ -128,14 +215,15 @@ FAndroidJavaAACAudioDecoder::FAndroidJavaAACAudioDecoder()
 	, FlushFN(GetClassMethod("Flush", "()I"))
 	, DequeueInputBufferFN(GetClassMethod("DequeueInputBuffer", "(I)I"))
 	, QueueInputBufferFN(GetClassMethod("QueueInputBuffer", "(IJ[B)I"))
-	, GetOutputFormatInfoFN(GetClassMethod("GetOutputFormatInfo", "(I)Lcom/epicgames/ue4/ElectraAudioDecoderAAC$FOutputFormatInfo;"))
-	, DequeueOutputBufferFN(GetClassMethod("DequeueOutputBuffer", "(I)Lcom/epicgames/ue4/ElectraAudioDecoderAAC$FOutputBufferInfo;"))
+	, QueueEOSInputBufferFN(GetClassMethod("QueueEOSInputBuffer", "(IJ)I"))
+	, GetOutputFormatInfoFN(GetClassMethod("GetOutputFormatInfo", "(I)Lcom/epicgames/unreal/ElectraAudioDecoderAAC$FOutputFormatInfo;"))
+	, DequeueOutputBufferFN(GetClassMethod("DequeueOutputBuffer", "(I)Lcom/epicgames/unreal/ElectraAudioDecoderAAC$FOutputBufferInfo;"))
 	, GetOutputBufferAndReleaseFN(GetClassMethod("GetOutputBufferAndRelease", "(I)[B"))
 {
 	JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
 
 	// Get field IDs for FOutputFormatInfo class members
-	jclass localOutputFormatInfoClass = AndroidJavaEnv::FindJavaClass("com/epicgames/ue4/ElectraAudioDecoderAAC$FOutputFormatInfo");
+	jclass localOutputFormatInfoClass = AndroidJavaEnv::FindJavaClass("com/epicgames/unreal/ElectraAudioDecoderAAC$FOutputFormatInfo");
 	FOutputFormatInfoClass = (jclass)JEnv->NewGlobalRef(localOutputFormatInfoClass);
 	JEnv->DeleteLocalRef(localOutputFormatInfoClass);
 	FOutputFormatInfo_SampleRate     = FindField(JEnv, FOutputFormatInfoClass, "SampleRate", "I", false);
@@ -143,7 +231,7 @@ FAndroidJavaAACAudioDecoder::FAndroidJavaAACAudioDecoder()
 	FOutputFormatInfo_BytesPerSample = FindField(JEnv, FOutputFormatInfoClass, "BytesPerSample", "I", false);
 
 	// Get field IDs for FOutputBufferInfo class members
-	jclass localOutputBufferInfoClass = AndroidJavaEnv::FindJavaClass("com/epicgames/ue4/ElectraAudioDecoderAAC$FOutputBufferInfo");
+	jclass localOutputBufferInfoClass = AndroidJavaEnv::FindJavaClass("com/epicgames/unreal/ElectraAudioDecoderAAC$FOutputBufferInfo");
 	FOutputBufferInfoClass = (jclass)JEnv->NewGlobalRef(localOutputBufferInfoClass);
 	JEnv->DeleteLocalRef(localOutputBufferInfoClass);
 	FOutputBufferInfo_BufferIndex   		= FindField(JEnv, FOutputBufferInfoClass, "BufferIndex", "I", false);
@@ -193,11 +281,12 @@ int32 FAndroidJavaAACAudioDecoder::InitializeDecoder(const MPEG::FAACDecoderConf
 	}
 
 	// Create one
+	const uint8 NumChannelsForConfig[16] = { 0, 1, 2, 3, 4, 5, 6, 7, 0, 0, 0, 7, 8, 0, 8, 0 };
 	JNIEnv*	JEnv = AndroidJavaEnv::GetJavaEnv();
 	jbyteArray  CSD			= MakeJavaByteArray(InParsedConfigurationRecord.GetCodecSpecificData().GetData(), InParsedConfigurationRecord.GetCodecSpecificData().Num());
-	int 		NumChannels = (int) InParsedConfigurationRecord.ChannelConfiguration;
+	int 		NumChannels = (int) InParsedConfigurationRecord.PSSignal == 1 ? 2 : NumChannelsForConfig[InParsedConfigurationRecord.ChannelConfiguration];
 	int			SampleRate  = (int)(InParsedConfigurationRecord.ExtSamplingFrequency ? InParsedConfigurationRecord.ExtSamplingFrequency : InParsedConfigurationRecord.SamplingRate);
-	int32 result = CallMethod<int>(CreateDecoderFN, NumChannels, SampleRate, CSD);
+	int32 result = CallMethodNoVerify<int>(CreateDecoderFN, NumChannels, SampleRate, CSD);
 	JEnv->DeleteLocalRef(CSD);
 	if (JEnv->ExceptionCheck())
 	{
@@ -223,7 +312,7 @@ int32 FAndroidJavaAACAudioDecoder::ReleaseDecoder()
 {
 	if (bHaveDecoder)
 	{
-		int32 result = CallMethod<int>(ReleaseDecoderFN);
+		int32 result = CallMethodNoVerify<int>(ReleaseDecoderFN);
 		JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
 		if (JEnv->ExceptionCheck())
 		{
@@ -247,7 +336,7 @@ int32 FAndroidJavaAACAudioDecoder::Start()
 {
 	if (bHaveDecoder && !bIsStarted)
 	{
-		int32 result = CallMethod<int>(StartFN);
+		int32 result = CallMethodNoVerify<int>(StartFN);
 		JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
 		if (JEnv->ExceptionCheck())
 		{
@@ -275,7 +364,7 @@ int32 FAndroidJavaAACAudioDecoder::Stop()
 {
 	if (bHaveDecoder && bIsStarted)
 	{
-		int32 result = CallMethod<int>(StopFN);
+		int32 result = CallMethodNoVerify<int>(StopFN);
 		JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
 		if (JEnv->ExceptionCheck())
 		{
@@ -304,7 +393,7 @@ int32 FAndroidJavaAACAudioDecoder::Flush()
 	// Synchronously operating decoders must be in the started state to be flushed.
 	if (bHaveDecoder && bIsStarted)
 	{
-		int32 result = CallMethod<int>(FlushFN);
+		int32 result = CallMethodNoVerify<int>(FlushFN);
 		JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
 		if (JEnv->ExceptionCheck())
 		{
@@ -329,7 +418,7 @@ int32 FAndroidJavaAACAudioDecoder::DequeueInputBuffer(int32 InTimeoutUsec)
 {
 	if (bHaveDecoder)
 	{
-		int32 result = CallMethod<int>(DequeueInputBufferFN, InTimeoutUsec);
+		int32 result = CallMethodNoVerify<int>(DequeueInputBufferFN, InTimeoutUsec);
 		JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
 		if (JEnv->ExceptionCheck())
 		{
@@ -359,7 +448,7 @@ int32 FAndroidJavaAACAudioDecoder::QueueInputBuffer(int32 InBufferIndex, const v
 	{
 		JNIEnv*	JEnv = AndroidJavaEnv::GetJavaEnv();
 		jbyteArray  InData = MakeJavaByteArray((const uint8*)InAccessUnitData, InAccessUnitSize);
-		int32 result = CallMethod<int>(QueueInputBufferFN, InBufferIndex, (jlong)InTimestampUSec, InData);
+		int32 result = CallMethodNoVerify<int>(QueueInputBufferFN, InBufferIndex, (jlong)InTimestampUSec, InData);
 		JEnv->DeleteLocalRef(InData);
 		if (JEnv->ExceptionCheck())
 		{
@@ -367,6 +456,32 @@ int32 FAndroidJavaAACAudioDecoder::QueueInputBuffer(int32 InBufferIndex, const v
 			JEnv->ExceptionClear();
 		}
 		return result;
+	}
+	return 1;
+}
+
+
+//-----------------------------------------------------------------------------
+/**
+ * Queues end of stream for the buffer with a previously dequeued (calling DequeueInputBuffer()) index.
+ *
+ * @param InBufferIndex Index of the buffer to put the EOS flag into and enqueue for decoding (see DequeueInputBuffer()).
+ * @param InTimestampUSec Timestamp the previous data had. Can be 0.
+ *
+ * @return 0 if successful, 1 on error.
+ */
+int32 FAndroidJavaAACAudioDecoder::QueueEOSInputBuffer(int32 InBufferIndex, int64 InTimestampUSec)
+{
+	if (bHaveDecoder)
+	{
+		JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
+		int32 result = CallMethodNoVerify<int>(QueueEOSInputBufferFN, InBufferIndex, (jlong)InTimestampUSec);
+		if (JEnv->ExceptionCheck())
+		{
+			JEnv->ExceptionDescribe();
+			JEnv->ExceptionClear();
+		}
+		return result ? 1 : 0;
 	}
 	return 1;
 }
@@ -525,6 +640,9 @@ public:
 	{ return -1; }
 
 	virtual int32 QueueInputBuffer(int32 InBufferIndex, const void* InAccessUnitData, int32 InAccessUnitSize, int64 InTimestampUSec) override
+	{ return 1; }
+
+	virtual int32 QueueEOSInputBuffer(int32 InBufferIndex, int64 InTimestampUSec) override
 	{ return 1; }
 
 	virtual int32 GetOutputFormatInfo(FOutputFormatInfo& OutFormatInfo, int32 InOutputBufferIndex) override

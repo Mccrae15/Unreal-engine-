@@ -21,6 +21,9 @@ struct FDisplayClusterRenderFrameSettings
 	// Postprocess can use full size backbuffer. This disables Frame RTT size optimization
 	bool bShouldUseFullSizeFrameTargetableResource = false;
 
+	// Enable Post Process for preview rendering
+	bool bPreviewEnablePostProcess = false;
+
 	// Preview RTT size multiplier
 	float PreviewRenderTargetRatioMult = 1.f;
 
@@ -50,6 +53,20 @@ struct FDisplayClusterRenderFrameSettings
 
 	// Render in Editor mode
 	bool bIsRenderingInEditor = false;
+
+	// Configuration used to render preview
+	bool bIsPreviewRendering = false;
+
+	// Allow mGPU in editor mode
+	bool bAllowMultiGPURenderingInEditor = false;
+	int32 PreviewMinGPUIndex = 0;
+	int32 PreviewMaxGPUIndex = 0;
+
+	// The maximum dimension of any texture for preview
+	int32 PreviewMaxTextureDimension = 2048;
+
+	// Performance: Stereoscopic rendering uses a single viewfamily(RTT) for both eyes
+	bool bEnableStereoscopicRenderingOptimization = false;
 
 	// Performance: Allow merge multiple viewports on single RTT with atlasing (required for bAllowViewFamilyMergeOptimization)
 	bool bAllowRenderTargetAtlasing = false;

@@ -2,12 +2,12 @@
 
 #include "Widgets/SLevelSnapshotsEditorFilterList.h"
 
-#include "ConjunctionFilter.h"
+#include "Data/Filters/ConjunctionFilter.h"
 #include "LevelSnapshotsEditorStyle.h"
-#include "SCreateNewFilterWidget.h"
-#include "SLevelSnapshotsEditorFilter.h"
-#include "Components/HorizontalBox.h"
+#include "Widgets/Filter/SCreateNewFilterWidget.h"
+#include "Widgets/SLevelSnapshotsEditorFilter.h"
 
+#include "Components/HorizontalBox.h"
 #include "Widgets/Layout/SWrapBox.h"
 
 #define LOCTEXT_NAMESPACE "LevelSnapshotsEditor"
@@ -111,7 +111,7 @@ void SLevelSnapshotsEditorFilterList::AddChild(UNegatableFilter* AddedFilter, bo
 	const TSharedRef<SCreateNewFilterWidget> AddFilterWidgetAsRef = AddFilterWidget.ToSharedRef();
 	FilterBox->RemoveSlot(AddFilterWidgetAsRef);
 	FilterBox->AddSlot()
-		.Padding(3, 3)
+		.Padding(3, 1)
 		[
 			SNew(SLevelSnapshotsEditorFilter, AddedFilter, EditorData.Get())
 				.OnClickRemoveFilter(SLevelSnapshotsEditorFilter::FOnClickRemoveFilter::CreateSP(this, &SLevelSnapshotsEditorFilterList::OnClickRemoveFilter))

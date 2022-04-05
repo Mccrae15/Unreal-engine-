@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2020 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2022 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -40,12 +40,6 @@ SDL_bool X11_Vulkan_CreateSurface(_THIS,
                                   SDL_Window *window,
                                   VkInstance instance,
                                   VkSurfaceKHR *surface);
-
-/* EG BEGIN */
-#ifdef SDL_WITH_EPIC_EXTENSIONS
-extern char** X11_Vulkan_GetRequiredInstanceExtensions(_THIS, unsigned int* count);
-#endif /* SDL_WITH_EPIC_EXTENSIONS */
-/* EG END */
 
 #endif
 

@@ -9,6 +9,10 @@ public class AJA : ModuleRules
 	{
 		Type = ModuleType.External;
 
+		string EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
+		string MediaIOFrameworkBinaryPath = Path.Combine(EngineDir, "Plugins", "Media", "MediaIOFramework", "Binaries", Target.Platform.ToString());
+		string GPUTextureTransferLibName = "GPUTextureTransferLib";
+
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			PublicDefinitions.Add("AJAMEDIA_DLL_PLATFORM=1");
@@ -16,7 +20,7 @@ public class AJA : ModuleRules
 			string AjaLibDir = Path.Combine(ModuleDirectory, "../../../Binaries/ThirdParty/Win64");
 
 			string LibraryName = "AJA";
-			bool bHaveDebugLib = false;// File.Exists(Path.Combine(AjaLibDir, "AJAd.dll"));
+			bool bHaveDebugLib = File.Exists(Path.Combine(AjaLibDir, "AJAd.dll"));
 			if (bHaveDebugLib && Target.Configuration == UnrealTargetConfiguration.Debug)
 			{
 				LibraryName = "AJAd";
@@ -32,6 +36,7 @@ public class AJA : ModuleRules
 
 			PublicDelayLoadDLLs.Add(LibraryName + ".dll");
 			RuntimeDependencies.Add(Path.Combine(AjaLibDir, LibraryName + ".dll"));
+			RuntimeDependencies.Add(Path.Combine(MediaIOFrameworkBinaryPath, GPUTextureTransferLibName + ".dll"));
 		}
 		else
 		{

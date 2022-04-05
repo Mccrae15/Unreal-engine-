@@ -2,14 +2,13 @@
 
 #pragma once
 
-
 #include "HAL/Thread.h"
 #include "HAL/Platform.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
 #include "HAL/ThreadSafeBool.h"
 #include "HAL/ThreadSafeCounter.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "HAL/CriticalSection.h"
 
@@ -17,6 +16,7 @@
 
 #include "WebRTCLogging.h"
 #include "Utils.h"
+#include "ToStringExtensions.h"
 
 // Engine
 
@@ -73,9 +73,9 @@
 #include "Framework/Application/SlateUser.h"
 
 #if PLATFORM_WINDOWS || PLATFORM_XBOXONE
-#include "Windows/WindowsPlatformMisc.h"
+	#include "Windows/WindowsPlatformMisc.h"
 #elif PLATFORM_LINUX
-#include "Linux/LinuxPlatformMisc.h"
+	#include "Linux/LinuxPlatformMisc.h"
 #endif
 
 #include "Internationalization/Internationalization.h"

@@ -11,6 +11,9 @@
 #include "Framework/Commands/UICommandInfo.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBox.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+
+class SBorder;
 
 /**
  * Tool bar button MultiBlock
@@ -54,6 +57,9 @@ public:
 	virtual void CreateMenuEntry(class FMenuBuilder& MenuBuilder) const override;
 	virtual bool HasIcon() const override;
 
+	/** Set optional delegate to customize when a menu appears instead of the widget, such as in toolbars */
+	void SetCustomMenuDelegate( FNewMenuDelegate& InOnFillMenuDelegate);
+
 private:
 
 	/** FMultiBlock private interface */
@@ -84,6 +90,9 @@ private:
 
 	/** Whether this toolbar should always use small icons, regardless of the current settings */
 	bool bForceSmallIcons;
+
+	/** Optional delegate to customize when a menu appears instead of the widget, such as in toolbars */
+	FNewMenuDelegate CustomMenuDelegate;
 };
 
 
@@ -103,7 +112,7 @@ public:
 		, _TutorialHighlightName(NAME_None)
 		{}
 
-		SLATE_ARGUMENT( TOptional< EVisibility >, LabelVisibility )
+		SLATE_ARGUMENT( TOptional<EVisibility>, LabelVisibility )
 		SLATE_ARGUMENT( bool, IsFocusable )
 		SLATE_ARGUMENT( bool, ForceSmallIcons )
 		SLATE_ARGUMENT( FName, TutorialHighlightName )
@@ -141,7 +150,7 @@ protected:
 	 *
 	 * @return ECheckBoxState::Checked if it should be checked, ECheckBoxState::Unchecked if not.
 	 */
-	ECheckBoxState OnIsChecked() const;
+	ECheckBoxState GetCheckState() const;
 
 	/**
 	 * Called by Slate to determine if this button is enabled
@@ -158,17 +167,36 @@ protected:
 	EVisibility GetBlockVisibility() const;
 
 private:
-
 	/** Called by Slate to determine whether icons/labels are visible */
 	EVisibility GetIconVisibility(bool bIsASmallIcon) const;
-	
+
 	/** Gets the icon brush for the toolbar block widget */
 	const FSlateBrush* GetIconBrush() const;
+
+	const FSlateBrush* GetOverlayIconBrush() const;
+
+	/** Gets the icon brush for the toolbar block widget */
+	const FSlateBrush* GetNormalIconBrush() const;
 	const FSlateBrush* GetSmallIconBrush() const;
 
-private:
+	FSlateColor GetIconForegroundColor() const;
 
-	TAttribute< EVisibility > LabelVisibility;
+	/** Gets the brush for the left side options block (the side with the clickable toolbar button */
+	const FSlateBrush* GetOptionsBlockLeftBrush() const;
+
+	/** Gets the brush for the right side options block (the side with the options dropdown */
+	const FSlateBrush* GetOptionsBlockRightBrush() const;
+
+	EVisibility GetOptionsSeparatorVisibility() const;
+private:
+	/** Overrides the visibility of the of label. This is used to set up the LabelVisibility attribute */
+	TOptional<EVisibility> LabelVisibilityOverride;
+
+	/** Controls the visibility of the of label, defaults to GetIconVisibility */
+	TAttribute<EVisibility> LabelVisibility;
+
+	TSharedPtr<SBorder> ButtonBorder;
+	TSharedPtr<SBorder> OptionsBorder;
 
 	/** Whether ToolBar will have Focusable buttons. */
 	bool bIsFocusable;

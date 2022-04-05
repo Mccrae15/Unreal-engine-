@@ -48,7 +48,7 @@ public:
 protected:
 	/** Camera this object is associated with. */
 	UPROPERTY(transient, BlueprintReadOnly, Category = CameraModifier)
-	class APlayerCameraManager* CameraOwner;
+	TObjectPtr<class APlayerCameraManager> CameraOwner;
 
 	/** When blending in, alpha proceeds from 0 to 1 over this time */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = CameraModifier)
@@ -61,6 +61,9 @@ protected:
 	/** Current blend alpha. */
 	UPROPERTY(transient, BlueprintReadOnly, Category = CameraModifier)
 	float Alpha;
+
+	UFUNCTION()
+	void OnCameraOwnerDestroyed(AActor* InOwner);
 
 protected:
 	/** @return Returns the ideal blend alpha for this modifier. Interpolation will seek this value. */

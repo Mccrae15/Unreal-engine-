@@ -123,8 +123,8 @@ struct FNDIChaosDestruction_InstanceData
 
 struct FNiagaraDIChaosDestruction_GPUData
 {
-	TArray<FVector> PositionArray;
-	TArray<FVector> VelocityArray;
+	TArray<FVector3f> PositionArray;
+	TArray<FVector3f> VelocityArray;
 	TArray<float> ExtentMinArray;
 	TArray<float> ExtentMaxArray;
 	TArray<float> VolumeArray;
@@ -216,8 +216,8 @@ struct FNiagaraDIChaosDestruction_GPUData
 
 struct FNiagaraDIChaosDestruction_InstanceDataToPassToRT
 {
-	TArray<FVector>* PositionArray;
-	TArray<FVector>* VelocityArray;
+	TArray<FVector3f>* PositionArray;
+	TArray<FVector3f>* VelocityArray;
 	TArray<float>* ExtentMinArray;
 	TArray<float>* ExtentMaxArray;
 	TArray<float>* VolumeArray;
@@ -357,7 +357,7 @@ public:
 
 	/* Chaos Solver */
 	UPROPERTY(EditAnywhere, Category = "Solver", meta = (DisplayName = "Chaos Solver"))
-	TSet<AChaosSolverActor*> ChaosSolverActorSet;
+	TSet<TObjectPtr<AChaosSolverActor>> ChaosSolverActorSet;
 
 	/* */
 	UPROPERTY(EditAnywhere, Category = "Solver Data", meta = (DisplayName = "Data Source"))
@@ -443,6 +443,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Spawn Settings - Thresholds to Spawn", meta = (DisplayName = "Min/Max LocationZ To Spawn Particles", UIMin = 0.0))
 	FVector2D LocationZToSpawnMinMax;
 
+	/* Min Linear Speed to generate trailing particles */
+	UPROPERTY(EditAnywhere, Category = "Spawn Settings - Trailing - Thresholds to Spawn", meta = (DisplayName = "Min Speed To Spawn Trailing Particles", UIMin = 0.0))
+	float TrailMinSpeedToSpawn;
+
 	/**
 	* Sorting method to sort the collision data
 	*/
@@ -474,19 +478,19 @@ public:
 	int32 MaxDataPerCell;
 
 	/* Materials Filter */
-	UPROPERTY(EditAnywhere, Category = "Breaking Data Settings", meta = (DisplayName = "Apply Materials Filter"))
+	UPROPERTY(EditAnywhere, Category = "Data Settings", meta = (DisplayName = "Apply Materials Filter"))
 	bool bApplyMaterialsFilter;
 
 	/* TODO: Explanatory comment */
-	UPROPERTY(EditAnywhere, Category = "Breaking Data Settings", meta = (DisplayName = "Breaking Filtered Materials", EditCondition = bApplyMaterialsFilter))
-	TSet<UPhysicalMaterial*> ChaosBreakingMaterialSet;
+	UPROPERTY(EditAnywhere, Category = "Data Settings", meta = (DisplayName = "Filtered Materials", EditCondition = bApplyMaterialsFilter))
+	TSet<TObjectPtr<UPhysicalMaterial>> ChaosBreakingMaterialSet;
 
 	/* TODO: Explanatory comment */
-	UPROPERTY(EditAnywhere, Category = "Breaking Data Settings", meta = (DisplayName = "Get External Breaking Mesh and Physical Data"))
+	UPROPERTY(EditAnywhere, Category = "Data Settings", meta = (DisplayName = "Get External Breaking Mesh and Physical Data"))
 	bool bGetExternalBreakingData;
 
 	/* TODO: Explanatory comment */
-	UPROPERTY(VisibleAnywhere, Category = "Trailing Data Settings", meta = (DisplayName = "Get External Trailing Mesh and Physical Data"))
+	UPROPERTY(VisibleAnywhere, Category = "Data Settings", meta = (DisplayName = "Get External Trailing Mesh and Physical Data"))
 	bool bGetExternalTrailingData;
 
 	/* Random displacement value for the particle spawn position */
@@ -566,64 +570,64 @@ public:
 	//----------------------------------------------------------------------------
 	// EXPOSED FUNCTIONS
 	template<typename ParticleIDParamType>
-	void GetPosition(FVectorVMContext& Context);
+	void GetPosition(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetNormal(FVectorVMContext& Context);
+	void GetNormal(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetVelocity(FVectorVMContext& Context);
+	void GetVelocity(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetAngularVelocity(FVectorVMContext& Context);
+	void GetAngularVelocity(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetExtentMin(FVectorVMContext& Context);
+	void GetExtentMin(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetExtentMax(FVectorVMContext& Context);
+	void GetExtentMax(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetVolume(FVectorVMContext& Context);
+	void GetVolume(FVectorVMExternalFunctionContext& Context);
 
 	template<typename TimeParamType>
-	void GetParticleIdsToSpawnAtTime(FVectorVMContext& Context);
+	void GetParticleIdsToSpawnAtTime(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetPointType(FVectorVMContext& Context);
+	void GetPointType(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetColor(FVectorVMContext& Context);
+	void GetColor(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetSolverTime(FVectorVMContext& Context);
+	void GetSolverTime(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetDensity(FVectorVMContext& Context);
+	void GetDensity(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetFriction(FVectorVMContext& Context);
+	void GetFriction(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetRestitution(FVectorVMContext& Context);
+	void GetRestitution(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetSize(FVectorVMContext& Context);
+	void GetSize(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetTransform(FVectorVMContext& Context);
+	void GetTransform(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetSurfaceType(FVectorVMContext& Context);
+	void GetSurfaceType(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetCollisionData(FVectorVMContext& Context);
+	void GetCollisionData(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetBreakingData(FVectorVMContext& Context);
+	void GetBreakingData(FVectorVMExternalFunctionContext& Context);
 
 	template<typename ParticleIDParamType>
-	void GetTrailingData(FVectorVMContext& Context);
+	void GetTrailingData(FVectorVMExternalFunctionContext& Context);
 
 	// Sort predicates to sort data
 	inline static bool CollisionDataSortByMassPredicateMaxToMin(const Chaos::FCollidingDataExt& Lhs, const Chaos::FCollidingDataExt& Rhs)
@@ -758,6 +762,9 @@ protected:
 	TArray<Chaos::FCollidingDataExt> CollisionEvents;
 	TArray<Chaos::FBreakingDataExt> BreakingEvents;
 	TArray<Chaos::FTrailingDataExt> TrailingEvents;
+
+	// Saving GeometryCollectionComponents from breaking for trailing
+	TSet<UGeometryCollectionComponent*> GeometryCollectionComponentsFromBreaking;
 };
 
 struct FNiagaraDataInterfaceProxyChaosDestruction : public FNiagaraDataInterfaceProxy
@@ -770,7 +777,7 @@ struct FNiagaraDataInterfaceProxyChaosDestruction : public FNiagaraDataInterface
 
 	void CreatePerInstanceData(const FNiagaraSystemInstanceID& SystemInstance);
 
-	void DestroyInstanceData(NiagaraEmitterInstanceBatcher* Batcher, const FNiagaraSystemInstanceID& SystemInstance);
+	void DestroyInstanceData(const FNiagaraSystemInstanceID& SystemInstance);
 
 	float SolverTime;
 	int32 LastSpawnedPointID;

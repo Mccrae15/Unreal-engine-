@@ -13,6 +13,7 @@
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "EditorStyleSet.h"
 #include "NiagaraEditorUtilities.h"
+#include "ThumbnailRendering/ThumbnailManager.h"
 
 #define LOCTEXT_NAMESPACE "SNiagaraAssetSelector"
 
@@ -24,7 +25,7 @@ FText SNiagaraAssetPickerList::UncategorizedCategory = LOCTEXT("Uncategorized", 
 
 void SNiagaraAssetPickerList::Construct(const FArguments& InArgs, UClass* AssetClass)
 {
-	AssetThumbnailPool = MakeShareable(new FAssetThumbnailPool(24));
+	AssetThumbnailPool = MakeShareable(new FAssetThumbnailPool(48));
 
 	OnTemplateAssetActivated = InArgs._OnTemplateAssetActivated;
 	ViewOptions = InArgs._ViewOptions;
@@ -42,7 +43,8 @@ void SNiagaraAssetPickerList::Construct(const FArguments& InArgs, UClass* AssetC
 	.bLibraryOnly(this, &SNiagaraAssetPickerList::GetLibraryCheckBoxState)
 	.OnLibraryOnlyChanged(this, &SNiagaraAssetPickerList::LibraryCheckBoxStateChanged)
 	.OnSourceFiltersChanged(this, &SNiagaraAssetPickerList::TriggerRefresh)
-	.OnTabActivated(this, &SNiagaraAssetPickerList::TriggerRefreshFromTabs);
+	.OnTabActivated(this, &SNiagaraAssetPickerList::TriggerRefreshFromTabs)
+	.Class(AssetClass);
 	
 	if(!ViewOptions.GetAddLibraryOnlyCheckbox())
 	{
@@ -139,16 +141,30 @@ TArray<FText> SNiagaraAssetPickerList::OnGetCategoriesForItem(const FAssetData& 
 
 	auto AddUserDefinedCategory = [&Categories, &Item]() {
 		FText UserDefinedCategory;
-		bool bFoundCategoryTag = Item.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraEmitter, Category), UserDefinedCategory);
-
-		if (bFoundCategoryTag == false)
+		
+		if(Item.GetClass() == UNiagaraEmitter::StaticClass())
 		{
-			if (Item.IsAssetLoaded())
+			bool bFoundCategoryTag = Item.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraEmitter, Category), UserDefinedCategory);
+			
+			if (bFoundCategoryTag == false && Item.IsAssetLoaded())
 			{
 				UNiagaraEmitter* EmitterAsset = Cast<UNiagaraEmitter>(Item.GetAsset());
 				if (EmitterAsset != nullptr)
 				{
 					UserDefinedCategory = EmitterAsset->Category;
+				}
+			}
+		}
+		else if(Item.GetClass() == UNiagaraSystem::StaticClass())
+		{
+			bool bFoundCategoryTag = Item.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraSystem, Category), UserDefinedCategory);
+
+			if (bFoundCategoryTag == false && Item.IsAssetLoaded())
+			{
+				UNiagaraSystem* SystemAsset = Cast<UNiagaraSystem>(Item.GetAsset());
+				if (SystemAsset != nullptr)
+				{
+					UserDefinedCategory = SystemAsset->Category;
 				}
 			}
 		}
@@ -164,22 +180,10 @@ TArray<FText> SNiagaraAssetPickerList::OnGetCategoriesForItem(const FAssetData& 
 	};
 
 	auto AddLibraryCategory = [&Categories, &Item, this]() {
-		bool bInLibrary = false;
-		bool bFoundLibraryTag = Item.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraEmitter, bExposeToLibrary), bInLibrary);
+		
+		bool bInLibrary = FNiagaraEditorUtilities::IsScriptAssetInLibrary(Item);
 
-		if (bFoundLibraryTag == false)
-		{
-			if (Item.IsAssetLoaded())
-			{
-				UNiagaraEmitter* EmitterAsset = Cast<UNiagaraEmitter>(Item.GetAsset());
-				if (EmitterAsset != nullptr)
-				{
-					bInLibrary = EmitterAsset->bExposeToLibrary;
-				}
-			}
-		}
-
-		if (bFoundLibraryTag && bInLibrary)
+		if (bInLibrary)
 		{
 			Categories.Add(LibraryCategory);
 		}
@@ -329,6 +333,7 @@ const int32 ThumbnailSize = 72;
 TSharedRef<SWidget> SNiagaraAssetPickerList::OnGenerateWidgetForItem(const FAssetData& Item)
 {
 	TSharedRef<FAssetThumbnail> AssetThumbnail = MakeShared<FAssetThumbnail>(Item, ThumbnailSize, ThumbnailSize, AssetThumbnailPool);
+	
 	FAssetThumbnailConfig ThumbnailConfig;
 	ThumbnailConfig.bAllowFadeIn = false;
 	
@@ -389,24 +394,11 @@ TSharedRef<SWidget> SNiagaraAssetPickerList::OnGenerateWidgetForItem(const FAsse
 			bIsTemplate = TemplateSpecification == ENiagaraScriptTemplateSpecification::Template;
 		}
 
-		bool bFoundLibraryTag = Item.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraEmitter, bExposeToLibrary), bInLibrary);
-
-		if (bFoundLibraryTag == false)
-		{
-			if (Item.IsAssetLoaded())
-			{
-				UNiagaraEmitter* EmitterAsset = static_cast<UNiagaraEmitter*>(Item.GetAsset());
-				if (EmitterAsset != nullptr)
-				{
-					bInLibrary = EmitterAsset->bExposeToLibrary;
-				}
-			}
-		}
-
+		bInLibrary = FNiagaraEditorUtilities::IsScriptAssetInLibrary(Item);
 
 		if (TabOptions.GetOnlyShowTemplates()
 			|| (bFoundTemplateScriptTag && bIsTemplate)
-			|| (bFoundLibraryTag && bInLibrary))
+			|| (bInLibrary))
 		{
 			return
 				SNew(SHorizontalBox)
@@ -472,10 +464,12 @@ bool SNiagaraAssetPickerList::DoesItemPassCustomFilter(const FAssetData& Item)
 
 	if (bLibraryOnly == true)
 	{
-		bool bInLibrary = false;
-		Item.GetTagValue(GET_MEMBER_NAME_CHECKED(UNiagaraEmitter, bExposeToLibrary), bInLibrary);
+		bool bInLibrary = FNiagaraEditorUtilities::IsScriptAssetInLibrary(Item);
 		bDoesPassFilter &= bInLibrary;
 	}
+
+	// filter out any explicitly hidden assets
+	bDoesPassFilter &= FNiagaraEditorUtilities::GetScriptAssetVisibility(Item) != ENiagaraScriptLibraryVisibility::Hidden; 
 
 	ENiagaraScriptTemplateSpecification ActiveTab = ENiagaraScriptTemplateSpecification::None;
 	if(FilterBox->GetActiveTemplateTab(ActiveTab))

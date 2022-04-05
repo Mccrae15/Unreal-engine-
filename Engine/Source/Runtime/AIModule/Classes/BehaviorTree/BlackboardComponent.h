@@ -84,14 +84,6 @@ public:
 	/** resume observer change notifications and, optionally, process the queued observation list */
 	void ResumeObserverNotifications(bool bSendQueuedObserverNotifications);
 
-	/** pause change notifies and add them to queue */
-	UE_DEPRECATED(4.15, "Please call PauseObserverUpdates.")
-	void PauseUpdates();
-
-	/** resume change notifies and process queued list */
-	UE_DEPRECATED(4.15, "Please call ResumeObserverNotifications.")
-	void ResumeUpdates();
-
 	/** @return associated behavior tree component */
 	UBrainComponent* GetBrainComponent() const;
 
@@ -233,18 +225,18 @@ protected:
 
 	/** cached behavior tree component */
 	UPROPERTY(transient)
-	UBrainComponent* BrainComp;
+	TObjectPtr<UBrainComponent> BrainComp;
 
 	/** data asset defining entries. Will be used as part of InitializeComponent 
 	 *	call provided BlackboardAsset hasn't been already set (via a InitializeBlackboard 
 	 *	call). */
 	UPROPERTY(EditDefaultsOnly, Category = AI)
-	UBlackboardData* DefaultBlackboardAsset;
+	TObjectPtr<UBlackboardData> DefaultBlackboardAsset;
 
 	/** internal use, current BB asset being used. Will be made private in the future */
 	UE_DEPRECATED_FORGAME(4.26, "Directly accessing BlackboardAsset is not longer supported. Use DefaultBlackboardAsset or InitializeBlackboard to set it and GetBlackboardAsset to retrieve it")
 	UPROPERTY(transient)
-	UBlackboardData* BlackboardAsset;
+	TObjectPtr<UBlackboardData> BlackboardAsset;
 
 	/** memory block holding all values */
 	TArray<uint8> ValueMemory;
@@ -254,7 +246,7 @@ protected:
 
 	/** instanced keys with custom data allocations */
 	UPROPERTY(transient)
-	TArray<UBlackboardKeyType*> KeyInstances;
+	TArray<TObjectPtr<UBlackboardKeyType>> KeyInstances;
 
 protected:
 	struct FOnBlackboardChangeNotificationInfo
@@ -363,7 +355,7 @@ bool UBlackboardComponent::SetValue(FBlackboard::FKey KeyID, typename TDataClass
 					if (OtherBlackboard != nullptr && ShouldSyncWithBlackboard(*OtherBlackboard))
 					{
 						UBlackboardData* const OtherBlackboardAsset = OtherBlackboard->GetBlackboardAsset();
-						const int32 OtherKeyID = OtherBlackboardAsset ? OtherBlackboardAsset->GetKeyID(EntryInfo->EntryName) : FBlackboard::InvalidKey;
+						const FBlackboard::FKey OtherKeyID = OtherBlackboardAsset ? OtherBlackboardAsset->GetKeyID(EntryInfo->EntryName) : FBlackboard::InvalidKey;
 						if (OtherKeyID != FBlackboard::InvalidKey)
 						{
 							UBlackboardKeyType* OtherKeyOb = EntryInfo->KeyType->HasInstance() ? OtherBlackboard->KeyInstances[OtherKeyID] : EntryInfo->KeyType;

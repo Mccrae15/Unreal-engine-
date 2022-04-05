@@ -9,6 +9,15 @@
 namespace Insights
 {
 
+INSIGHTS_IMPLEMENT_RTTI(ITreeNodeGrouping)
+INSIGHTS_IMPLEMENT_RTTI(FTreeNodeGrouping)
+INSIGHTS_IMPLEMENT_RTTI(FTreeNodeGroupingFlat)
+INSIGHTS_IMPLEMENT_RTTI(FTreeNodeGroupingByUniqueValue)
+INSIGHTS_IMPLEMENT_RTTI(FTreeNodeGroupingByNameFirstLetter)
+INSIGHTS_IMPLEMENT_RTTI(FTreeNodeGroupingByType)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// FTreeNodeGrouping
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FTreeNodeGrouping::FTreeNodeGrouping(const FText& InShortName, const FText& InTitleName, const FText& InDescription, const FName InBrushName, const FSlateBrush* InIcon)
@@ -22,23 +31,83 @@ FTreeNodeGrouping::FTreeNodeGrouping(const FText& InShortName, const FText& InTi
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+void FTreeNodeGrouping::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, std::atomic<bool>& bCancelGrouping) const
+{
+	TMap<FName, FTableTreeNodePtr> GroupMap;
+
+	ParentGroup.ClearChildren();
+
+	for (FTableTreeNodePtr NodePtr : Nodes)
+	{
+		if (bCancelGrouping)
+		{
+			return;
+		}
+
+		if (NodePtr->IsGroup())
+		{
+			ParentGroup.AddChildAndSetGroupPtr(NodePtr);
+			continue;
+		}
+
+		FTableTreeNodePtr GroupPtr = nullptr;
+
+		FTreeNodeGroupInfo GroupInfo = GetGroupForNode(NodePtr);
+		FTableTreeNodePtr* GroupPtrPtr = GroupMap.Find(GroupInfo.Name);
+		if (!GroupPtrPtr)
+		{
+			GroupPtr = MakeShared<FTableTreeNode>(GroupInfo.Name, InParentTable);
+			GroupPtr->SetExpansion(GroupInfo.IsExpanded);
+			ParentGroup.AddChildAndSetGroupPtr(GroupPtr);
+			GroupMap.Add(GroupInfo.Name, GroupPtr);
+		}
+		else
+		{
+			GroupPtr = *GroupPtrPtr;
+		}
+
+		GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// FTreeNodeGroupingFlat
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 FTreeNodeGroupingFlat::FTreeNodeGroupingFlat()
 	: FTreeNodeGrouping(
 		LOCTEXT("Grouping_Flat_ShortName", "All"),
 		LOCTEXT("Grouping_Flat_TitleName", "Flat (All)"),
 		LOCTEXT("Grouping_Flat_Desc", "Creates a single group. Includes all items."),
-		TEXT("Profiler.FiltersAndPresets.GroupNameIcon"), //TODO: "Icons.Grouping.Flat"
+		TEXT("Icons.Group.TreeItem"),
 		nullptr)
 {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FTreeNodeGroupInfo FTreeNodeGroupingFlat::GetGroupForNode(const FBaseTreeNodePtr InNode) const
+void FTreeNodeGroupingFlat::GroupNodes(const TArray<FTableTreeNodePtr>& Nodes, FTableTreeNode& ParentGroup, TWeakPtr<FTable> InParentTable, std::atomic<bool>& bCancelGrouping) const
 {
-	return { FName(TEXT("All")), true };
+	ParentGroup.ClearChildren(1);
+
+	FTableTreeNodePtr GroupPtr = MakeShared<FTableTreeNode>(FName(TEXT("All")), InParentTable);
+	GroupPtr->SetExpansion(true);
+	ParentGroup.AddChildAndSetGroupPtr(GroupPtr);
+
+	GroupPtr->ClearChildren(Nodes.Num());
+	for (FTableTreeNodePtr NodePtr : Nodes)
+	{
+		if (bCancelGrouping)
+		{
+			return;
+		}
+
+		GroupPtr->AddChildAndSetGroupPtr(NodePtr);
+	}
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// FTreeNodeGroupingByUniqueValue
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FTreeNodeGroupingByUniqueValue::FTreeNodeGroupingByUniqueValue(TSharedRef<FTableColumn> InColumnRef)
@@ -46,7 +115,7 @@ FTreeNodeGroupingByUniqueValue::FTreeNodeGroupingByUniqueValue(TSharedRef<FTable
 		InColumnRef->GetTitleName(),
 		FText::Format(LOCTEXT("Grouping_ByUniqueValue_TitleNameFmt", "Unique Values - {0}"), InColumnRef->GetTitleName()),
 		LOCTEXT("Grouping_ByUniqueValue_Desc", "Creates a group for each unique value."),
-		TEXT("Profiler.FiltersAndPresets.Group1NameIcon"), //TODO: "Icons.Grouping.ByName"
+		TEXT("Icons.Group.TreeItem"),
 		nullptr)
 	, ColumnRef(InColumnRef)
 {
@@ -57,9 +126,33 @@ FTreeNodeGroupingByUniqueValue::FTreeNodeGroupingByUniqueValue(TSharedRef<FTable
 FTreeNodeGroupInfo FTreeNodeGroupingByUniqueValue::GetGroupForNode(const FBaseTreeNodePtr InNode) const
 {
 	FTableTreeNodePtr TableTreeNodePtr = StaticCastSharedPtr<FTableTreeNode>(InNode);
-	return { FName(*ColumnRef->GetValueAsText(*TableTreeNodePtr).ToString()), false };
+	FText ValueAsText = ColumnRef->GetValueAsText(*TableTreeNodePtr);
+	FStringView GroupName(ValueAsText.ToString());
+	if (GroupName.Len() >= NAME_SIZE)
+	{
+		GroupName = FStringView(GroupName.GetData(), NAME_SIZE - 1);
+	}
+	return { FName(GroupName, 0), false };
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// TTreeNodeGroupingByUniqueValue specializations
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+template<> bool TTreeNodeGroupingByUniqueValue<bool>::GetValue(const FTableCellValue& CellValue) { return CellValue.Bool; }
+template<> int64 TTreeNodeGroupingByUniqueValue<int64>::GetValue(const FTableCellValue& CellValue) { return CellValue.Int64; }
+template<> float TTreeNodeGroupingByUniqueValue<float>::GetValue(const FTableCellValue& CellValue) { return CellValue.Float; }
+template<> double TTreeNodeGroupingByUniqueValue<double>::GetValue(const FTableCellValue& CellValue) { return CellValue.Double; }
+template<> const TCHAR* TTreeNodeGroupingByUniqueValue<const TCHAR*>::GetValue(const FTableCellValue& CellValue) { return CellValue.CString; }
+
+template<>
+FText TTreeNodeGroupingByUniqueValue<const TCHAR*>::GetValueAsText(const FTableColumn& Column, const FTableTreeNode& Node)
+{
+	return Column.GetValueAsText(Node);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// FTreeNodeGroupingByNameFirstLetter
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FTreeNodeGroupingByNameFirstLetter::FTreeNodeGroupingByNameFirstLetter()
@@ -67,7 +160,7 @@ FTreeNodeGroupingByNameFirstLetter::FTreeNodeGroupingByNameFirstLetter()
 		LOCTEXT("Grouping_ByName_ShortName", "Name"),
 		LOCTEXT("Grouping_ByName_TitleName", "Name (First Letter)"),
 		LOCTEXT("Grouping_ByName_Desc", "Creates a group for each first letter of node names."),
-		TEXT("Profiler.FiltersAndPresets.Group1NameIcon"), //TODO: "Icons.Grouping.ByName"
+		TEXT("Icons.Group.TreeItem"),
 		nullptr)
 {
 }
@@ -80,13 +173,15 @@ FTreeNodeGroupInfo FTreeNodeGroupingByNameFirstLetter::GetGroupForNode(const FBa
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// FTreeNodeGroupingByType
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FTreeNodeGroupingByType::FTreeNodeGroupingByType()
 	: FTreeNodeGrouping(
 		LOCTEXT("Grouping_ByTypeName_ShortName", "TypeName"),
 		LOCTEXT("Grouping_ByTypeName_TitleName", "TypeName"),
 		LOCTEXT("Grouping_ByTypeName_Desc", "Creates a group for each node type."),
-		TEXT("Profiler.FiltersAndPresets.StatTypeIcon"), //TODO
+		TEXT("Icons.Group.TreeItem"),
 		nullptr)
 {
 }

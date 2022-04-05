@@ -39,6 +39,7 @@ public:
 		uint32			DiscardSmallBandwidthSamplesLess;
 		uint32			FudgeSmallBandwidthSamplesLess;
 		uint32			FudgeSmallBandwidthSamplesFactor;
+		bool			bRebufferingJustResumesLoading;
 	};
 
 	//! Create an instance of this class
@@ -62,8 +63,15 @@ public:
 	//! Sets the initial bandwidth, either from guessing, past history or a current measurement.
 	virtual void SetBandwidth(int64 bitsPerSecond) = 0;
 
-	//! Sets a forced bitrate for the next segment fetch only.
-	virtual void SetForcedNextBandwidth(int64 bitsPerSecond) = 0;
+	//! Sets a forced bitrate for the next segment fetches until the given duration of playable content has been received.
+	virtual void SetForcedNextBandwidth(int64 bitsPerSecond, double minBufferTimeBeforePlayback) = 0;
+
+	struct FBufferingQuality
+	{
+		TOptional<double> BandwidthScaleFactor;
+		TOptional<int64> AbsoluteBandwidth;
+	};
+	virtual void SwitchBufferingQuality(const FBufferingQuality& InQualityChange) = 0;
 
 	struct FBlacklistedStream
 	{
@@ -138,6 +146,7 @@ public:
 	virtual void ReportPlaybackEnded() = 0;
 	virtual void ReportJumpInPlayPosition(const FTimeValue& ToNewTime, const FTimeValue& FromTime, Metrics::ETimeJumpReason TimejumpReason) = 0;
 	virtual void ReportPlaybackStopped() = 0;
+	virtual void ReportSeekCompleted() = 0;
 	virtual void ReportError(const FString& ErrorReason) = 0;
 	virtual void ReportLogMessage(IInfoLog::ELevel LogLevel, const FString& LogMessage, int64 PlayerWallclockMilliseconds) = 0;
 	virtual void ReportDroppedVideoFrame() = 0;

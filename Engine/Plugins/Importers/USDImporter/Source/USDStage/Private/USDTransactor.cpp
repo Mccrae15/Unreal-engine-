@@ -228,7 +228,8 @@ namespace UsdUtils
 
 					// If the prim is the root, this is a stage info change, and PropertyName is actually a metadata key, so
 					// it's not possible (or required) to know its SdfValueTypeName to e.g. undo/redo the creation of the property
-					if ( !Prim.IsPseudoRoot() && ConvertedAttributeChange.PropertyName != TEXT( "kind" ) && !ConvertedAttributeChange.PropertyName.IsEmpty() )
+					if ( !Prim.IsPseudoRoot() && ConvertedAttributeChange.PropertyName != TEXT( "kind" ) && !ConvertedAttributeChange.PropertyName.IsEmpty() &&
+						 !ConvertedChange.Flags.bDidRemoveProperty && !ConvertedChange.Flags.bDidRemovePropertyWithOnlyRequiredFields )
 					{
 						if ( UE::FUsdAttribute Attribute = Prim.GetAttribute( *ConvertedAttributeChange.PropertyName ) )
 						{
@@ -1035,7 +1036,7 @@ void UUsdTransactor::Update( const UsdUtils::FObjectChangesByPath& NewInfoChange
 	// In case we close a stage in the same transaction where the actor is destroyed - our UE::FUsdStage could turn invalid at any point otherwise
 	// Not much else we can do as this will get to us before the StageActor's destructor/Destroyed are called
 	AUsdStageActor* StageActorPtr = StageActor.Get();
-	if ( !StageActorPtr || StageActorPtr->IsActorBeingDestroyed() || StageActorPtr->IsPendingKillOrUnreachable() )
+	if ( !StageActorPtr || StageActorPtr->IsActorBeingDestroyed() )
 	{
 		return;
 	}

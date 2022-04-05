@@ -19,7 +19,7 @@ enum class ESystemGestureBehavior : uint8
 	SwapMaterial
 };
 
-static const FQuat HandRootFixupRotation = FQuat(-0.5f, -0.5f, 0.5f, 0.5f);
+OCULUSINPUT_API extern const FQuat HandRootFixupRotation;
 
 UCLASS(Blueprintable, meta = (BlueprintSpawnableComponent), ClassGroup = OculusHand)
 class OCULUSINPUT_API UOculusHandComponent : public UPoseableMeshComponent
@@ -49,7 +49,7 @@ public:
 
 	/** Material that gets applied to the hands when the system gesture is active */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "HandProperties")
-	class UMaterialInterface* SystemGestureMaterial;
+	TObjectPtr<class UMaterialInterface> SystemGestureMaterial;
 
 	/** Whether or not to initialize physics capsules on the skeletal mesh */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "HandProperties")
@@ -61,7 +61,7 @@ public:
 
 	/** Material override for the runtime skeletal mesh */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "HandProperties")
-	class UMaterialInterface* MaterialOverride;
+	TObjectPtr<class UMaterialInterface> MaterialOverride;
 
 	/** Bone mapping for custom hand skeletal meshes */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "CustomSkeletalMesh")

@@ -79,6 +79,7 @@ public:
 public:
 	TSharedPtr<FUICommandInfo> SetShowGrid;
 	TSharedPtr<FUICommandInfo> SetShowBounds;
+	TSharedPtr<FUICommandInfo> SetShowNaniteFallback;
 
 	TSharedPtr<FUICommandInfo> ApplyOriginalMaterial;
 	TSharedPtr<FUICommandInfo> ApplyBackFaceMaterial;
@@ -307,6 +308,18 @@ private:
 	/** Returns true if the given primitive component is part of the selection set */
 	bool IsComponentSelected(const UPrimitiveComponent* PrimitiveComponent);
 
+	/** Sets the show Nanite flag */
+	void SetShowNaniteFallback(bool bShow);
+
+	/** Callback for toggling the show Nanite flag. */
+	void ToggleShowNaniteFallback() { SetShowNaniteFallback(!bShowNaniteFallbackMenuChecked); }
+
+	/** Callback for checking the Nanite show flag. */
+	bool IsSetShowNaniteFallbackChecked() const { return bShowNaniteFallbackMenuChecked; }
+
+	/** Callback for checking whether the Nanite show entry should be displayed. */
+	bool IsShowNaniteFallbackVisible() const { return bCanShowNaniteFallbackMenu; }
+
 private:
 	/** The scene for this viewport */
 	TSharedPtr< FAdvancedPreviewScene > PreviewScene;
@@ -394,6 +407,9 @@ private:
 #ifdef VIEWPORT_EXPERIMENTAL
 	bool bShowOrientedBox;
 #endif
+
+	bool bCanShowNaniteFallbackMenu = false;
+	bool bShowNaniteFallbackMenuChecked = false;
 
 	friend FDataprepEditorViewportClient;
 };

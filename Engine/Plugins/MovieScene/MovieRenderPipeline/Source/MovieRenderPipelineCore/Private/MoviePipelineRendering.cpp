@@ -32,6 +32,8 @@
 #include "LandscapeProxy.h"
 #include "EngineModule.h"
 #include "DistanceFieldAtlas.h"
+#include "MeshCardRepresentation.h"
+#include "AssetCompilingManager.h"
 #include "ShaderCompiler.h"
 #include "EngineUtils.h"
 
@@ -64,8 +66,8 @@ void UMoviePipeline::SetupRenderingPipelineForShot(UMoviePipelineExecutorShot* I
 
 	// Figure out how big each sub-region (tile) is.
 	FIntPoint BackbufferResolution = FIntPoint(
-		FMath::CeilToInt(OutputResolution.X / HighResSettings->TileCount),
-		FMath::CeilToInt(OutputResolution.Y / HighResSettings->TileCount));
+		FMath::CeilToInt((float)OutputResolution.X / (float)HighResSettings->TileCount),
+		FMath::CeilToInt((float)OutputResolution.Y / (float)HighResSettings->TileCount));
 
 	// Then increase each sub-region by the overlap amount.
 	BackbufferResolution = HighResSettings->CalculatePaddedBackbufferSize(BackbufferResolution);
@@ -83,10 +85,10 @@ void UMoviePipeline::SetupRenderingPipelineForShot(UMoviePipelineExecutorShot* I
 	// Note how many tiles we wish to render with.
 	BackbufferTileCount = FIntPoint(HighResSettings->TileCount, HighResSettings->TileCount);
 
+	const ERHIFeatureLevel::Type FeatureLevel = GetWorld()->FeatureLevel;
+
 	// Initialize our render pass. This is a copy of the settings to make this less coupled to the Settings UI.
-	MoviePipeline::FMoviePipelineRenderPassInitSettings RenderPassInitSettings;
-	RenderPassInitSettings.BackbufferResolution = BackbufferResolution;
-	RenderPassInitSettings.TileCount = BackbufferTileCount;
+	const MoviePipeline::FMoviePipelineRenderPassInitSettings RenderPassInitSettings(FeatureLevel, BackbufferResolution, BackbufferTileCount);
 
 	// Code expects at least a 1x1 tile.
 	ensure(RenderPassInitSettings.TileCount.X > 0 && RenderPassInitSettings.TileCount.Y > 0);
@@ -99,7 +101,7 @@ void UMoviePipeline::SetupRenderingPipelineForShot(UMoviePipelineExecutorShot* I
 		NumOutputPasses++;
 	}
 
-	UE_LOG(LogMovieRenderPipeline, Log, TEXT("Finished setting up rendering for shot. Shot has %d Passes."), NumOutputPasses);
+	UE_LOG(LogMovieRenderPipeline, Log, TEXT("Finished setting up rendering for shot. Shot has %d Passes. Total resolution: (%dx%d) Individual tile resolution: (%dx%d). Tile count: (%dx%d)"), NumOutputPasses, OutputResolution.X, OutputResolution.Y, BackbufferResolution.X, BackbufferResolution.Y, BackbufferTileCount.X, BackbufferTileCount.Y);
 }
 
 void UMoviePipeline::TeardownRenderingPipelineForShot(UMoviePipelineExecutorShot* InShot)
@@ -291,7 +293,7 @@ void UMoviePipeline::RenderFrame()
 
 				// Now to check if we have to force it off (at which point we warn the user).
 				bool bMultipleTiles = (TileCount.X > 1) || (TileCount.Y > 1);
-				if (bMultipleTiles && AntiAliasingMethod == EAntiAliasingMethod::AAM_TemporalAA)
+				if (bMultipleTiles && IsTemporalAccumulationBasedMethod(AntiAliasingMethod))
 				{
 					// Temporal Anti-Aliasing isn't supported when using tiled rendering because it relies on having history, and
 					// the tiles use the previous tile as the history which is incorrect. 
@@ -346,7 +348,7 @@ void UMoviePipeline::RenderFrame()
 					SpatialShiftY = r * FMath::Sin(Theta);
 				}
 
-				FIntPoint BackbufferResolution = FIntPoint(FMath::CeilToInt(OutputResolution.X / OriginalTileCount.X), FMath::CeilToInt(OutputResolution.Y / OriginalTileCount.Y));
+				FIntPoint BackbufferResolution = FIntPoint(FMath::CeilToInt((float)OutputResolution.X / (float)OriginalTileCount.X), FMath::CeilToInt((float)OutputResolution.Y / (float)OriginalTileCount.Y));
 				FIntPoint TileResolution = BackbufferResolution;
 
 				// Apply size padding.
@@ -387,9 +389,6 @@ void UMoviePipeline::RenderFrame()
 					SampleState.OverlappedSubpixelShift = FVector2D(0.5f - SpatialShiftX, 0.5f - SpatialShiftY);
 				}
 				SampleState.OverscanPercentage = FMath::Clamp(CameraSettings->OverscanPercentage, 0.0f, 1.0f);
-				SampleState.WeightFunctionX.InitHelper(SampleState.OverlappedPad.X, SampleState.TileSize.X, SampleState.OverlappedPad.X);
-				SampleState.WeightFunctionY.InitHelper(SampleState.OverlappedPad.Y, SampleState.TileSize.Y, SampleState.OverlappedPad.Y);
-
 				// Render each output pass
 				for (UMoviePipelineRenderPass* RenderPass : InputBuffers)
 				{
@@ -464,11 +463,13 @@ void UMoviePipeline::OnSampleRendered(TUniquePtr<FImagePixelData>&& OutputSample
 
 	FImagePixelDataPayload* InFrameData = OutputSample->GetPayload<FImagePixelDataPayload>();
 	TileImageTask->Format = EImageFormat::EXR;
-	TileImageTask->CompressionQuality = 100;
+	TileImageTask->CompressionQuality = (int32)EImageCompressionQuality::Default;
 
-	FString OutputName = FString::Printf(TEXT("/%s_SS_%d_TS_%d_TileX_%d_TileY_%d.%d.jpeg"),
-		*InFrameData->PassIdentifier.Name, InFrameData->SampleState.SpatialSampleIndex, InFrameData->SampleState.TemporalSampleIndex,
-		InFrameData->SampleState.TileIndexes.X, InFrameData->SampleState.TileIndexes.Y, InFrameData->SampleState.OutputState.OutputFrameNumber);
+	FString OutputName = InFrameData->Debug_OverrideFilename.IsEmpty() ?
+		FString::Printf(TEXT("/%s_SS_%d_TS_%d_TileX_%d_TileY_%d.%d.exr"),
+			*InFrameData->PassIdentifier.Name, InFrameData->SampleState.SpatialSampleIndex, InFrameData->SampleState.TemporalSampleIndex,
+			InFrameData->SampleState.TileIndexes.X, InFrameData->SampleState.TileIndexes.Y, InFrameData->SampleState.OutputState.OutputFrameNumber)
+		: InFrameData->Debug_OverrideFilename;
 
 	FString OutputDirectory = OutputSettings->OutputDirectory.Path;
 	FString OutputPath = OutputDirectory + OutputName;
@@ -483,67 +484,21 @@ void UMoviePipeline::OnSampleRendered(TUniquePtr<FImagePixelData>&& OutputSample
 
 void UMoviePipeline::FlushAsyncEngineSystems()
 {
-	// Flush Level Streaming. This solves the problem where levels that are not controlled
+	QUICK_SCOPE_CYCLE_COUNTER(STAT_MoviePipelineFlushAsyncEngineSystems);
+
+	// Flush Block until Level Streaming completes. This solves the problem where levels that are not controlled
 	// by the Sequencer Level Visibility track are marked for Async Load by a gameplay system.
 	// This will register any new actors/components that were spawned during this frame. This needs 
 	// to be done before the shader compiler is flushed so that we compile shaders for any newly
 	// spawned component materials.
 	if (GetWorld())
 	{
-		GetWorld()->FlushLevelStreaming(EFlushLevelStreamingType::Full);
+		GetWorld()->BlockTillLevelStreamingCompleted();
 	}
 
-	// Now we can flush the shader compiler. ToDo: This should probably happen right before SendAllEndOfFrameUpdates() is normally called
-	if (GShaderCompilingManager)
-	{
-		bool bDidWork = false;
-		int32 NumShadersToCompile = GShaderCompilingManager->GetNumRemainingJobs();
-		if (NumShadersToCompile > 0)
-		{
-			UE_LOG(LogMovieRenderPipeline, Log, TEXT("[%d] Starting build for %d shaders."), GFrameCounter, NumShadersToCompile);
-		}
-
-		while (GShaderCompilingManager->GetNumRemainingJobs() > 0 || GShaderCompilingManager->HasShaderJobs())
-		{
-			UE_LOG(LogMovieRenderPipeline, Log, TEXT("[%d] Waiting for %d shaders [Has Shader Jobs: %d] to finish compiling..."), GFrameCounter, GShaderCompilingManager->GetNumRemainingJobs(), GShaderCompilingManager->HasShaderJobs());
-			GShaderCompilingManager->ProcessAsyncResults(false, true);
-
-			// Sleep for 1 second and then check again. This way we get an indication of progress as this works.
-			FPlatformProcess::Sleep(1.f);
-			bDidWork = true;
-		}
-
-		if (bDidWork)
-		{
-			UE_LOG(LogMovieRenderPipeline, Log, TEXT("[%d] Done building %d shaders."), GFrameCounter, NumShadersToCompile);
-		}
-	}
-
-	// Flush the Mesh Distance Field builder as well.
-	if (GDistanceFieldAsyncQueue)
-	{
-		bool bDidWork = false;
-		int32 NumDistanceFieldsToBuild = GDistanceFieldAsyncQueue->GetNumOutstandingTasks();
-		if (NumDistanceFieldsToBuild > 0)
-		{
-			UE_LOG(LogMovieRenderPipeline, Log, TEXT("[%d] Starting build for %d mesh distance fields."), GFrameCounter, NumDistanceFieldsToBuild);
-		}
-
-		while (GDistanceFieldAsyncQueue->GetNumOutstandingTasks() > 0)
-		{
-			UE_LOG(LogMovieRenderPipeline, Log, TEXT("[%d] Waiting for %d Mesh Distance Fields to finish building..."), GFrameCounter, GDistanceFieldAsyncQueue->GetNumOutstandingTasks());
-			GDistanceFieldAsyncQueue->ProcessAsyncTasks();
-
-			// Sleep for 1 second and then check again. This way we get an indication of progress as this works.
-			FPlatformProcess::Sleep(1.f);
-			bDidWork = true;
-		}
-
-		if (bDidWork)
-		{
-			UE_LOG(LogMovieRenderPipeline, Log, TEXT("[%d] Done building %d Mesh Distance Fields."), GFrameCounter, NumDistanceFieldsToBuild);
-		}
-	}
+	// Flush all assets still being compiled asynchronously.
+	// A progressbar is already in place so the user can get feedback while waiting for everything to settle.
+	FAssetCompilingManager::Get().FinishAllCompilation();
 
 	// Flush grass
 	if (CurrentShotIndex < ActiveShotList.Num())

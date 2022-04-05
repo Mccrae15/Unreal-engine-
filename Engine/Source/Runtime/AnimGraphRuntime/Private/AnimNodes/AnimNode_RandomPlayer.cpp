@@ -6,6 +6,7 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimTrace.h"
+#include "Animation/AnimSyncScope.h"
 
 FAnimNode_RandomPlayer::FAnimNode_RandomPlayer()
     : CurrentPlayDataIndex(0)
@@ -128,10 +129,10 @@ void FAnimNode_RandomPlayer::Update_AnyThread(const FAnimationUpdateContext& Con
 
 	// If we looped around, adjust the previous play time to always be before the current playtime,
 	// since we can assume modulo. This makes the crossing check for the start time a lot simpler.
-	float AdjustedPreviousPlayTime = CurrentData->PreviousPlayTime;
+	float AdjustedPreviousPlayTime = CurrentData->DeltaTimeRecord.GetPrevious();
 	if (CurrentData->CurrentPlayTime < AdjustedPreviousPlayTime)
 	{
-		AdjustedPreviousPlayTime -= CurrentSequence->SequenceLength;
+		AdjustedPreviousPlayTime -= CurrentSequence->GetPlayLength();
 	}
 
 	// Did we cross the play start time? Decrement the loop counter. Once we're on the last loop, we can
@@ -171,10 +172,10 @@ void FAnimNode_RandomPlayer::Update_AnyThread(const FAnimationUpdateContext& Con
 				float AmountPlayedSoFar = CurrentData->CurrentPlayTime - CurrentData->PlayStartTime;
 				if (AmountPlayedSoFar < 0.0f)
 				{
-					AmountPlayedSoFar += CurrentSequence->SequenceLength;
+					AmountPlayedSoFar += CurrentSequence->GetPlayLength();
 				}
 
-				float TimeRemaining = CurrentSequence->SequenceLength - AmountPlayedSoFar;
+				float TimeRemaining = CurrentSequence->GetPlayLength() - AmountPlayedSoFar;
 
 				if (TimeRemaining <= NextSequenceEntry.BlendIn.GetBlendTime() || bHasLooped)
 				{
@@ -218,8 +219,8 @@ void FAnimNode_RandomPlayer::Update_AnyThread(const FAnimationUpdateContext& Con
 	}
 
 	// Cache time to detect loops
-	CurrentData->PreviousPlayTime = CurrentData->CurrentPlayTime;
-	NextData->PreviousPlayTime = NextData->CurrentPlayTime;
+	CurrentData->DeltaTimeRecord.SetPrevious(CurrentData->CurrentPlayTime);
+	NextData->DeltaTimeRecord.SetPrevious(NextData->CurrentPlayTime);
 
 	if (bAdvanceToNextEntry)
 	{
@@ -230,22 +231,23 @@ void FAnimNode_RandomPlayer::Update_AnyThread(const FAnimationUpdateContext& Con
 		NextData = &GetPlayData(ERandomDataIndexType::Next);
 	}
 
-	FAnimInstanceProxy* AnimProxy = Context.AnimInstanceProxy;
-	FAnimGroupInstance* SyncGroup;
-	FAnimTickRecord& TickRecord = AnimProxy->CreateUninitializedTickRecord(SyncGroup, NAME_None);
-	AnimProxy->MakeSequenceTickRecord(
-	    TickRecord, CurrentData->Entry->Sequence, true, CurrentData->PlayRate,
-	    CurrentData->BlendWeight, CurrentData->CurrentPlayTime, CurrentData->MarkerTickRecord);
-	
+	FAnimTickRecord TickRecord(CurrentData->Entry->Sequence, true, CurrentData->PlayRate, CurrentData->BlendWeight, CurrentData->CurrentPlayTime, CurrentData->MarkerTickRecord);
+	TickRecord.DeltaTimeRecord = &CurrentData->DeltaTimeRecord;
+	TickRecord.GatherContextData(Context);
+
+	UE::Anim::FAnimSyncGroupScope& SyncScope = Context.GetMessageChecked<UE::Anim::FAnimSyncGroupScope>();
+	SyncScope.AddTickRecord(TickRecord, UE::Anim::FAnimSyncParams(), UE::Anim::FAnimSyncDebugInfo(Context));
+
 	TRACE_ANIM_TICK_RECORD(Context, TickRecord);
 
 	if (FAnimationRuntime::HasWeight(NextData->BlendWeight))
 	{
-		FAnimTickRecord& NextTickRecord = AnimProxy->CreateUninitializedTickRecord(SyncGroup, NAME_None);
-		AnimProxy->MakeSequenceTickRecord(
-		    NextTickRecord, NextData->Entry->Sequence, true, NextData->PlayRate,
-		    NextData->BlendWeight, NextData->CurrentPlayTime, NextData->MarkerTickRecord);
-			
+		FAnimTickRecord NextTickRecord(NextData->Entry->Sequence, true, NextData->PlayRate, NextData->BlendWeight, NextData->CurrentPlayTime, NextData->MarkerTickRecord);
+		NextTickRecord.DeltaTimeRecord = &NextData->DeltaTimeRecord;
+		NextTickRecord.GatherContextData(Context);
+
+		SyncScope.AddTickRecord(NextTickRecord, UE::Anim::FAnimSyncParams(), UE::Anim::FAnimSyncDebugInfo(Context));
+
 		TRACE_ANIM_TICK_RECORD(Context, NextTickRecord);
 	}
 
@@ -276,7 +278,7 @@ void FAnimNode_RandomPlayer::Evaluate_AnyThread(FPoseContext& Output)
 		// Start Blending
 		FCompactPose Poses[2];
 		FBlendedCurve Curves[2];
-		FStackCustomAttributes Attributes[2];
+		UE::Anim::FStackAttributeContainer Attributes[2];
 		float Weights[2];
 
 		const FBoneContainer& RequiredBone = AnimProxy->GetRequiredBones();
@@ -291,12 +293,11 @@ void FAnimNode_RandomPlayer::Evaluate_AnyThread(FPoseContext& Output)
 
 		UAnimSequence* NextSequence = NextData.Entry->Sequence;
 
-
 		FAnimationPoseData CurrentPoseData(Poses[0], Curves[0], Attributes[0]);
 		FAnimationPoseData NextPoseData(Poses[1], Curves[1], Attributes[1]);
 
-		CurrentSequence->GetAnimationPose(CurrentPoseData, FAnimExtractContext(CurrentData.CurrentPlayTime, AnimProxy->ShouldExtractRootMotion()));
-		NextSequence->GetAnimationPose(NextPoseData, FAnimExtractContext(NextData.CurrentPlayTime, AnimProxy->ShouldExtractRootMotion()));
+		CurrentSequence->GetAnimationPose(CurrentPoseData, FAnimExtractContext(CurrentData.CurrentPlayTime, AnimProxy->ShouldExtractRootMotion(), CurrentData.DeltaTimeRecord, CurrentData.RemainingLoops > 0));
+		NextSequence->GetAnimationPose(NextPoseData, FAnimExtractContext(NextData.CurrentPlayTime, AnimProxy->ShouldExtractRootMotion(), NextData.DeltaTimeRecord, NextData.RemainingLoops > 0));
 
 		FAnimationPoseData AnimationPoseData(Output);
 		FAnimationRuntime::BlendPosesTogether(Poses, Curves, Attributes, Weights, AnimationPoseData);
@@ -305,7 +306,7 @@ void FAnimNode_RandomPlayer::Evaluate_AnyThread(FPoseContext& Output)
 	{
 		// Single animation, no blending needed.
 		FAnimationPoseData AnimationPoseData(Output);
-		CurrentSequence->GetAnimationPose(AnimationPoseData, FAnimExtractContext(CurrentData.CurrentPlayTime, Output.AnimInstanceProxy->ShouldExtractRootMotion()));
+		CurrentSequence->GetAnimationPose(AnimationPoseData, FAnimExtractContext(CurrentData.CurrentPlayTime, Output.AnimInstanceProxy->ShouldExtractRootMotion(), CurrentData.DeltaTimeRecord, CurrentData.RemainingLoops > 0));
 	}
 }
 
@@ -370,7 +371,7 @@ void FAnimNode_RandomPlayer::InitPlayData(FRandomAnimPlayData& Data, int32 Valid
 
 	Data.PlayStartTime = 0.0f;
 	Data.CurrentPlayTime = 0.0f;
-	Data.PreviousPlayTime = 0.0f;
+	Data.DeltaTimeRecord = FDeltaTimeRecord();
 	Data.MarkerTickRecord.Reset();
 }
 

@@ -50,7 +50,12 @@ FTemplateSequenceEditorToolkit::~FTemplateSequenceEditorToolkit()
 
 	if (FModuleManager::Get().IsModuleLoaded(TEXT("LevelEditor")))
 	{
-		auto& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
+		FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
+		
+		// @todo remove when world-centric mode is added
+		LevelEditorModule.AttachSequencer(SNullWidget::NullWidget, nullptr);
+		FLevelEditorSequencerIntegration::Get().RemoveSequencer(Sequencer.ToSharedRef());
+
 		LevelEditorModule.OnMapChanged().RemoveAll(this);
 	}
 
@@ -119,8 +124,7 @@ void FTemplateSequenceEditorToolkit::Initialize(const EToolkitMode::Type Mode, c
 
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 
-	// Reopen the scene outliner so that is refreshed with the sequencer info column
-	if (Sequencer->GetSequencerSettings()->GetShowOutlinerInfoColumn())
+	// Reopen the scene outliner so that is refreshed with the sequencer columns
 	{
 		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 		if (LevelEditorTabManager->FindExistingLiveTab(FName("LevelEditorSceneOutliner")).IsValid())

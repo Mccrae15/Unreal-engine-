@@ -26,15 +26,18 @@ public:
 		, Variability(0.0f)
 	{}
 
-	/** Center of generated pattern */
-	UPROPERTY(EditAnywhere, Category = RadialVoronoi)
+	/** Center of generated pattern. Only used when "Use Gizmo" is disabled */
+	UPROPERTY(EditAnywhere, Category = RadialVoronoi, meta = (EditCondition = "!bPositionedByGizmo", HideEditConditionToggle))
 	FVector Center;
 
-	/** Normal to plane in which sites are generated */
-	UPROPERTY(EditAnywhere, Category = RadialVoronoi)
+	/** Normal to plane in which sites are generated. Only used when "Use Gizmo" is disabled */
+	UPROPERTY(EditAnywhere, Category = RadialVoronoi, meta = (EditCondition = "!bPositionedByGizmo", HideEditConditionToggle))
 	FVector Normal;
 
-	/** Pattern radius */
+	UPROPERTY()
+	bool bPositionedByGizmo = true;
+
+	/** Pattern radius (in cm) */
 	UPROPERTY(EditAnywhere, Category = RadialVoronoi, meta = (DisplayName = "Radius", UIMin = "0.0", ClampMin = "0.0"))
 	float Radius;
 
@@ -46,11 +49,11 @@ public:
 	UPROPERTY(EditAnywhere, Category = RadialVoronoi, meta = (DisplayName = "Radial Steps", UIMin = "1", UIMax = "50", ClampMin = "1"))
 	int RadialSteps;
 
-	/** Angle offset at each radial step */
-	UPROPERTY(EditAnywhere, Category = RadialVoronoi, meta = (DisplayName = "Angle Offset", UIMin = "0.0", ClampMin = "0.0"))
+	/** Angle offset at each radial step (in degrees) */
+	UPROPERTY(EditAnywhere, Category = RadialVoronoi, meta = (DisplayName = "Angle Offset"))
 	float AngleOffset;
 
-	/** Randomness of sites distribution */
+	/** Amount to randomly displace each Voronoi site (in cm) */
 	UPROPERTY(EditAnywhere, Category = RadialVoronoi, meta = (DisplayName = "Variability", UIMin = "0.0", ClampMin = "0.0"))
 	float Variability;
 };
@@ -69,12 +72,26 @@ public:
 	virtual FText GetTooltipText() const override;
 	virtual FSlateIcon GetToolIcon() const override;
 	virtual TArray<UObject*> GetSettingsObjects() const override;
+	virtual void SelectedBonesChanged() override;
 
 	virtual void RegisterUICommand( FFractureEditorCommands* BindingContext ) override;
 
 	// Radial Voronoi Fracture Input Settings
 	UPROPERTY(EditAnywhere, Category = Uniform)
-	UFractureRadialSettings* RadialSettings;
+	TObjectPtr<UFractureRadialSettings> RadialSettings;
+
+	UPROPERTY(EditAnywhere, Category = Uniform)
+	TObjectPtr<UFractureTransformGizmoSettings> GizmoSettings;
+
+	virtual void Setup() override;
+	virtual void Shutdown() override;
+
+	virtual void UpdateUseGizmo(bool bUseGizmo) override
+	{
+		Super::UpdateUseGizmo(bUseGizmo);
+		RadialSettings->bPositionedByGizmo = bUseGizmo;
+		NotifyOfPropertyChangeByTool(RadialSettings);
+	}
 
 protected:
 	void GenerateVoronoiSites(const FFractureToolContext& Context, TArray<FVector>& Sites) override;

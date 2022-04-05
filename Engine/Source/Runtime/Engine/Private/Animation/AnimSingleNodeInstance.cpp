@@ -6,7 +6,7 @@
 =============================================================================*/ 
 
 #include "Animation/AnimSingleNodeInstance.h"
-#include "Animation/BlendSpaceBase.h"
+#include "Animation/BlendSpace.h"
 #include "Animation/BlendSpace.h"
 #include "Animation/AnimSingleNodeInstanceProxy.h"
 
@@ -48,7 +48,7 @@ void UAnimSingleNodeInstance::SetAnimationAsset(class UAnimationAsset* NewAsset,
 		else if (CurrentAsset != nullptr)
 		{
 			// if we have an asset, make sure their skeleton matches, otherwise, null it
-			if (MeshComponent->SkeletalMesh->GetSkeleton() != CurrentAsset->GetSkeleton())
+			if (!MeshComponent->SkeletalMesh->GetSkeleton()->IsCompatible(CurrentAsset->GetSkeleton()))
 			{
 				// clear asset since we do not have matching skeleton
 				CurrentAsset = nullptr;
@@ -232,6 +232,19 @@ void UAnimSingleNodeInstance::Montage_Advance(float DeltaTime)
 	}
 }
 
+void UAnimSingleNodeInstance::SetMirrorDataTable(const UMirrorDataTable* MirrorDataTable)
+{
+	FAnimSingleNodeInstanceProxy& Proxy = GetProxyOnGameThread<FAnimSingleNodeInstanceProxy>();
+	Proxy.SetMirrorDataTable(MirrorDataTable);
+}
+
+const UMirrorDataTable* UAnimSingleNodeInstance::GetMirrorDataTable()
+{
+	FAnimSingleNodeInstanceProxy& Proxy = GetProxyOnGameThread<FAnimSingleNodeInstanceProxy>();
+	return Proxy.GetMirrorDataTable();
+}
+
+
 void UAnimSingleNodeInstance::PlayAnim(bool bIsLooping, float InPlayRate, float InStartPosition)
 {
 	SetPlaying(true);
@@ -350,14 +363,15 @@ void UAnimSingleNodeInstance::SetPositionWithPreviousTime(float InPosition, floa
 		UAnimSequenceBase * SequenceBase = Cast<UAnimSequenceBase> (CurrentAsset);
 		if (SequenceBase)
 		{
+			FAnimTickRecord TickRecord;
+			FAnimNotifyContext NotifyContext(TickRecord);
 			NotifyQueue.Reset(GetSkelMeshComponent());
 
-			TArray<FAnimNotifyEventReference> Notifies;
-			SequenceBase->GetAnimNotifiesFromDeltaPositions(InPreviousTime, Proxy.GetCurrentTime(), Notifies);
-			if ( Notifies.Num() > 0 )
+			SequenceBase->GetAnimNotifiesFromDeltaPositions(InPreviousTime, Proxy.GetCurrentTime(), NotifyContext);
+			if ( NotifyContext.ActiveNotifies.Num() > 0 )
 			{
 				// single node instance only has 1 asset at a time
-				NotifyQueue.AddAnimNotifies(Notifies, 1.0f);
+				NotifyQueue.AddAnimNotifies(NotifyContext.ActiveNotifies, 1.0f);
 			}
 
 			TriggerAnimNotifies(0.f);
@@ -375,9 +389,14 @@ void UAnimSingleNodeInstance::SetPosition(float InPosition, bool bFireNotifies)
 	SetPositionWithPreviousTime(InPosition, PreviousTime, bFireNotifies);
 }
 
-void UAnimSingleNodeInstance::SetBlendSpaceInput(const FVector& InBlendInput)
+void UAnimSingleNodeInstance::SetBlendSpacePosition(const FVector& InPosition)
 {
-	GetProxyOnGameThread<FAnimSingleNodeInstanceProxy>().SetBlendSpaceInput(InBlendInput);
+	GetProxyOnGameThread<FAnimSingleNodeInstanceProxy>().SetBlendSpacePosition(InPosition);
+}
+
+void UAnimSingleNodeInstance::GetBlendSpaceState(FVector& OutPosition, FVector& OutFilteredPosition) const
+{
+	GetProxyOnGameThread<FAnimSingleNodeInstanceProxy>().GetBlendSpaceState(OutPosition, OutFilteredPosition);
 }
 
 float UAnimSingleNodeInstance::GetLength()
@@ -386,14 +405,14 @@ float UAnimSingleNodeInstance::GetLength()
 	{
 		if (UBlendSpace* BlendSpace = Cast<UBlendSpace>(CurrentAsset))
 		{
-			return BlendSpace->AnimLength;
+			// Blend space length is normalized to 1 when getting and setting
+			return 1.0f;
 		}
 		else if (UAnimSequenceBase* SequenceBase = Cast<UAnimSequenceBase>(CurrentAsset))
 		{
-			return SequenceBase->SequenceLength;
+			return SequenceBase->GetPlayLength();
 		}
 	}
-
 	return 0.f;
 }
 
@@ -402,21 +421,37 @@ void UAnimSingleNodeInstance::StepForward()
 	if (UAnimSequenceBase* Sequence = Cast<UAnimSequenceBase>(CurrentAsset))
 	{
 		FAnimSingleNodeInstanceProxy& Proxy = GetProxyOnGameThread<FAnimSingleNodeInstanceProxy>();
-		const FAnimKeyHelper Helper(Sequence->SequenceLength, Sequence->GetNumberOfFrames());
-		float KeyLength = Helper.TimePerKey() + SMALL_NUMBER;
-		float Fraction = (Proxy.GetCurrentTime()+KeyLength)/Sequence->SequenceLength;
-		int32 Frames = (float)Helper.LastKey() * Fraction;
+
+		const FFrameRate& FrameRate = Sequence->GetSamplingFrameRate();
+		const FFrameNumber LastSequenceFrameNumber = FrameRate.AsFrameTime(Sequence->GetPlayLength()).RoundToFrame();
+		
+		// Step forward a small amount and ceil to the next frame number 
+		FFrameNumber StepToFrame = FrameRate.AsFrameTime(Proxy.GetCurrentTime() + KINDA_SMALL_NUMBER).CeilToFrame();		
 		if (IsLooping())
 		{
-			int32 PreviousFrame = (float)Helper.LastKey() * (Proxy.GetCurrentTime() / Sequence->SequenceLength);
-			Frames = (PreviousFrame == Helper.LastKey()) ? 0 : Frames;
+			// Wrap around to start of the sequence
+			StepToFrame %= (LastSequenceFrameNumber + 1);
 		}
-		else
+
+		StepToFrame.Value = FMath::Clamp<int32>(StepToFrame.Value, 0, LastSequenceFrameNumber.Value);
+
+		SetPosition(FrameRate.AsSeconds(StepToFrame));
+	}
+	else if (UBlendSpace* BlendSpace = Cast<UBlendSpace>(CurrentAsset))
+	{
+		// BlendSpace combines animations so there's no such thing as a frame. However, 1/30 is a sensible/common rate.
+		FAnimSingleNodeInstanceProxy& Proxy = GetProxyOnGameThread<FAnimSingleNodeInstanceProxy>();
+		float Length = Proxy.GetBlendSpaceLength();
+		if (Length > 0.0f)
 		{
-			Frames = FMath::Clamp<int32>(Frames, 0, Helper.LastKey());
+			const float FixedFrameRate = 30.0f;
+			float NormalizedDt = 1.0f / (FixedFrameRate * Length);
+			float NormalizedTime = Proxy.GetCurrentTime() + NormalizedDt;
+			NormalizedTime = IsLooping() ? 
+				FMath::Wrap(NormalizedTime, 0.0f, 1.0f) : FMath::Clamp(NormalizedTime, 0.0f, 1.0f);
+			SetPosition(NormalizedTime);
 		}
-		SetPosition(Frames*KeyLength);
-	}	
+	}
 }
 
 void UAnimSingleNodeInstance::StepBackward()
@@ -425,19 +460,35 @@ void UAnimSingleNodeInstance::StepBackward()
 	{
 		FAnimSingleNodeInstanceProxy& Proxy = GetProxyOnGameThread<FAnimSingleNodeInstanceProxy>();
 
-		const FAnimKeyHelper Helper(Sequence->SequenceLength, Sequence->GetNumberOfFrames());
-		float KeyLength = Helper.TimePerKey() + SMALL_NUMBER;
-		float Fraction = (Proxy.GetCurrentTime()-KeyLength)/Sequence->SequenceLength;
-		int32 Frames = (float)Helper.LastKey() * Fraction;
+		const FFrameRate& FrameRate = Sequence->GetSamplingFrameRate();
+		const FFrameNumber LastSequenceFrameNumber = FrameRate.AsFrameTime(Sequence->GetPlayLength()).RoundToFrame();
+
+		// Step backwards a small amount and floor to the previous frame number 
+		FFrameNumber StepToFrame = FrameRate.AsFrameTime(Proxy.GetCurrentTime() - KINDA_SMALL_NUMBER).FloorToFrame();
 		if (IsLooping())
 		{
-			Frames = (Frames < 0) ? Helper.LastKey() : Frames;
+			// Wrap around to end of sequence
+			StepToFrame = StepToFrame.Value < 0 ? LastSequenceFrameNumber : StepToFrame;
 		}
-		else
+
+		StepToFrame.Value = FMath::Clamp<int32>(StepToFrame.Value, 0, LastSequenceFrameNumber.Value);
+
+		SetPosition(FrameRate.AsSeconds(StepToFrame));
+	}
+	else if (UBlendSpace* BlendSpace = Cast<UBlendSpace>(CurrentAsset))
+	{
+		// BlendSpace combines animations so there's no such thing as a frame. However, 1/30 is a sensible/common rate.
+		FAnimSingleNodeInstanceProxy& Proxy = GetProxyOnGameThread<FAnimSingleNodeInstanceProxy>();
+		float Length = Proxy.GetBlendSpaceLength();
+		if (Length > 0.0f)
 		{
-			Frames = FMath::Clamp<int32>(Frames, 0, Helper.LastKey());
+			const float FixedFrameRate = 30.0f;
+			float NormalizedDt = 1.0f / (FixedFrameRate * Length);
+			float NormalizedTime = Proxy.GetCurrentTime() - NormalizedDt;
+			NormalizedTime = IsLooping() ? 
+				FMath::Wrap(NormalizedTime, 0.0f, 1.0f) : FMath::Clamp(NormalizedTime, 0.0f, 1.0f);
+			SetPosition(NormalizedTime);
 		}
-		SetPosition(Frames * KeyLength);
 	}
 }
 
@@ -448,7 +499,7 @@ FAnimInstanceProxy* UAnimSingleNodeInstance::CreateAnimInstanceProxy()
 
 FVector UAnimSingleNodeInstance::GetFilterLastOutput()
 {
-	if (UBlendSpaceBase* Blendspace = Cast<UBlendSpaceBase>(CurrentAsset))
+	if (UBlendSpace* Blendspace = Cast<UBlendSpace>(CurrentAsset))
 	{
 		FAnimSingleNodeInstanceProxy& Proxy = GetProxyOnGameThread<FAnimSingleNodeInstanceProxy>();
 		return Proxy.GetFilterLastOutput();

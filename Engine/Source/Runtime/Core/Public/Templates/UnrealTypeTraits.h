@@ -13,6 +13,7 @@
 #include "Misc/AssertionMacros.h"
 #include "Templates/AndOrNot.h"
 #include "Templates/AreTypesEqual.h"
+#include "Templates/EnableIf.h"
 #include "Templates/IsArithmetic.h"
 #include "Templates/IsEnum.h"
 #include "Templates/RemoveCV.h"
@@ -20,8 +21,16 @@
 #include "Templates/Models.h"
 
 #include "Templates/IsPODType.h"
+#include "Templates/IsUECoreType.h"
 #include "Templates/IsTriviallyCopyConstructible.h"
 
+/*-----------------------------------------------------------------------------
+	Readability macro for enable_if in template definitions. Usage:
+
+	template<typename T, TEMPLATE_REQUIRES(TIsFloatingPoint<T>)>
+	void FloatingPointOnlyPlease(T In) {}
+ -----------------------------------------------------------------------------*/
+#define TEMPLATE_REQUIRES(...) typename TEnableIf<__VA_ARGS__, int>::type = 0
 
 /*-----------------------------------------------------------------------------
  * Macros to abstract the presence of certain compiler intrinsic type traits 
@@ -56,9 +65,9 @@ struct TIsDerivedFrom
 	public:
 	// Test the derived type pointer. If it inherits from BaseType, the Test( BaseType* ) 
 	// will be chosen. If it does not, Test( ... ) will be chosen.
-	static const bool Value = sizeof(Test( DerivedTypePtr() )) == sizeof(Yes);
+	static constexpr bool Value = sizeof(Test( DerivedTypePtr() )) == sizeof(Yes);
 
-	static const bool IsDerived = Value;
+	static constexpr bool IsDerived = Value;
 };
 
 /**
@@ -86,14 +95,6 @@ struct TNthTypeFromParameterPack<0, T, OtherTypes...>
 };
 
 /**
- * TIsCharType
- */
-template<typename T> struct TIsCharType           { enum { Value = false }; };
-template<>           struct TIsCharType<ANSICHAR> { enum { Value = true  }; };
-template<>           struct TIsCharType<UCS2CHAR> { enum { Value = true  }; };
-template<>           struct TIsCharType<WIDECHAR> { enum { Value = true  }; };
-
-/**
  * TFormatSpecifier, only applies to numeric types
  */
 template<typename T> 
@@ -113,10 +114,9 @@ struct TFormatSpecifier
 template<> \
 struct TFormatSpecifier<type> \
 {  \
-	FORCEINLINE static const TCHAR (&GetFormatSpecifier())[5] \
+	FORCEINLINE static decltype(auto) GetFormatSpecifier() \
 	{ \
-		static const TCHAR Spec[5] = TEXT(format); \
-		return Spec; \
+		return TEXT(format); \
 	} \
 };
 

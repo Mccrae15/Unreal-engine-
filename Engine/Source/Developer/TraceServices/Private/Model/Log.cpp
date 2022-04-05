@@ -5,7 +5,7 @@
 #include "AnalysisServicePrivate.h"
 #include "Common/FormatArgs.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 const FName FLogProvider::ProviderName("LogProvider");
@@ -42,7 +42,7 @@ FLogProvider::FLogProvider(IAnalysisSession& InSession)
 		AddColumn(&FLogMessageInternal::Message, TEXT("Message"));
 }
 
-FLogCategory& FLogProvider::GetCategory(uint64 CategoryPointer)
+FLogCategoryInfo& FLogProvider::GetCategory(uint64 CategoryPointer)
 {
 	Session.WriteAccessCheck();
 	if (CategoryMap.Contains(CategoryPointer))
@@ -51,7 +51,9 @@ FLogCategory& FLogProvider::GetCategory(uint64 CategoryPointer)
 	}
 	else
 	{
-		FLogCategory& Category = Categories.PushBack();
+		FLogCategoryInfo& Category = Categories.PushBack();
+		Category.Name = TEXT("N/A");
+		Category.DefaultVerbosity = ELogVerbosity::All;
 		CategoryMap.Add(CategoryPointer, &Category);
 		return Category;
 	}
@@ -93,7 +95,7 @@ uint64 FLogProvider::GetMessageCount() const
 	return Messages.Num();
 }
 
-bool FLogProvider::ReadMessage(uint64 Index, TFunctionRef<void(const FLogMessage &)> Callback) const
+bool FLogProvider::ReadMessage(uint64 Index, TFunctionRef<void(const FLogMessageInfo&)> Callback) const
 {
 	Session.ReadAccessCheck();
 	if (Index >= Messages.Num())
@@ -104,7 +106,7 @@ bool FLogProvider::ReadMessage(uint64 Index, TFunctionRef<void(const FLogMessage
 	return true;
 }
 
-void FLogProvider::EnumerateMessages(double IntervalStart, double IntervalEnd, TFunctionRef<void(const FLogMessage&)> Callback) const
+void FLogProvider::EnumerateMessages(double IntervalStart, double IntervalEnd, TFunctionRef<void(const FLogMessageInfo&)> Callback) const
 {
 	Session.ReadAccessCheck();
 	if (IntervalStart > IntervalEnd)
@@ -122,7 +124,7 @@ void FLogProvider::EnumerateMessages(double IntervalStart, double IntervalEnd, T
 	}
 }
 
-void FLogProvider::EnumerateMessagesByIndex(uint64 Start, uint64 End, TFunctionRef<void(const FLogMessage &)> Callback) const
+void FLogProvider::EnumerateMessagesByIndex(uint64 Start, uint64 End, TFunctionRef<void(const FLogMessageInfo&)> Callback) const
 {
 	Session.ReadAccessCheck();
 	uint64 Count = Messages.Num();
@@ -144,10 +146,10 @@ void FLogProvider::EnumerateMessagesByIndex(uint64 Start, uint64 End, TFunctionR
 	}
 }
 
-void FLogProvider::ConstructMessage(uint64 Index, TFunctionRef<void(const FLogMessage &)> Callback) const
+void FLogProvider::ConstructMessage(uint64 Index, TFunctionRef<void(const FLogMessageInfo&)> Callback) const
 {
 	const FLogMessageInternal& InternalMessage = Messages[Index];
-	FLogMessage Message;
+	FLogMessageInfo Message;
 	Message.Index = Index;
 	Message.Time = InternalMessage.Time;
 	Message.Category = InternalMessage.Spec->Category;
@@ -158,7 +160,7 @@ void FLogProvider::ConstructMessage(uint64 Index, TFunctionRef<void(const FLogMe
 	Callback(Message);
 }
 
-void FLogProvider::EnumerateCategories(TFunctionRef<void(const FLogCategory &)> Callback) const
+void FLogProvider::EnumerateCategories(TFunctionRef<void(const FLogCategoryInfo&)> Callback) const
 {
 	Session.ReadAccessCheck();
 	for (auto Iterator = Categories.GetIteratorFromItem(0); Iterator; ++Iterator)
@@ -172,4 +174,10 @@ const ILogProvider& ReadLogProvider(const IAnalysisSession& Session)
 	return *Session.ReadProvider<ILogProvider>(FLogProvider::ProviderName);
 }
 
+void FormatString(TCHAR* OutputString, uint32 OutputStringCount, const TCHAR* FormatString, const uint8* FormatArgs)
+{
+	TCHAR* TempBuffer = (TCHAR*)FMemory_Alloca(OutputStringCount * sizeof(TCHAR));
+	FFormatArgsHelper::Format(OutputString, OutputStringCount - 1, TempBuffer, OutputStringCount - 1, FormatString, FormatArgs);
 }
+
+} // namespace TraceServices

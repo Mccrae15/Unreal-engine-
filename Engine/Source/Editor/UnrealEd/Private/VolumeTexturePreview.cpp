@@ -72,14 +72,14 @@ public:
 		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5) && !IsConsolePlatform(Parameters.Platform);
 	}
 	
-	void SetParameters(FRHICommandList& RHICmdList, const FTexture* TextureValue, int32 SizeZ, const FMatrix& ColorWeightsValue, float GammaValue, float MipLevel, float Opacity, const FRotator& TraceOrientation)
+	void SetParameters(FRHICommandList& RHICmdList, const FTexture* TextureValue, int32 SizeZ, const FMatrix44f& ColorWeightsValue, float GammaValue, float MipLevel, float Opacity, const FRotator& TraceOrientation)
 	{
 		FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
 		SetTextureParameter(RHICmdList, ShaderRHI, InTexture, InTextureSampler, TextureValue);
 		if (GEditor && GEditor->Bad)
 		{
-			SetTextureParameter(RHICmdList, ShaderRHI, BadTexture, BadTextureSampler, GEditor->Bad->Resource);
+			SetTextureParameter(RHICmdList, ShaderRHI, BadTexture, BadTextureSampler, GEditor->Bad->GetResource());
 		}
 		else
 		{
@@ -88,29 +88,29 @@ public:
 		SetShaderValue(RHICmdList, ShaderRHI,ColorWeights,ColorWeightsValue);
 
 		const int32 MipSizeZ = MipLevel >= 0 ? FMath::Max<int32>(SizeZ >> FMath::FloorToInt(MipLevel), 1) : SizeZ;
-		FVector4 PackedParametersValue(GammaValue, MipLevel, (float)MipSizeZ, Opacity);
+		FVector4f PackedParametersValue(GammaValue, MipLevel, (float)MipSizeZ, Opacity);
 		SetShaderValue(RHICmdList, ShaderRHI, PackedParameters, PackedParametersValue);
 
 		int32 NumTilesX = 0;
 		int32 NumTilesY = 0;
 		GetBestFitForNumberOfTiles(MipSizeZ, NumTilesX, NumTilesY);
-		SetShaderValue(RHICmdList, ShaderRHI, NumTilesPerSideParameter, FVector4((float)NumTilesX, (float)NumTilesY, 0 ,0));
+		SetShaderValue(RHICmdList, ShaderRHI, NumTilesPerSideParameter, FVector4f((float)NumTilesX, (float)NumTilesY, 0 ,0));
 
 		SetShaderValue(RHICmdList, ShaderRHI,TextureComponentReplicate,TextureValue->bGreyScaleFormat ? FLinearColor(1,0,0,0) : FLinearColor(0,0,0,0));
 		SetShaderValue(RHICmdList, ShaderRHI,TextureComponentReplicateAlpha,TextureValue->bGreyScaleFormat ? FLinearColor(1,0,0,0) : FLinearColor(0,0,0,1));
 
-		const FVector TextureDimension((float)TextureValue->GetSizeX(), (float)TextureValue->GetSizeY(), (float)SizeZ);
+		const FVector3f TextureDimension((float)TextureValue->GetSizeX(), (float)TextureValue->GetSizeY(), (float)SizeZ);
 		const float OneOverMinDimension = 1.f / FMath::Max(TextureDimension.GetMin(), 1.f);
-		SetShaderValue(RHICmdList, ShaderRHI, TraceVolumeScalingParameter, FVector4(
+		SetShaderValue(RHICmdList, ShaderRHI, TraceVolumeScalingParameter, FVector4f(
 				TextureDimension.X * OneOverMinDimension, 
 				TextureDimension.Y * OneOverMinDimension, 
 				TextureDimension.Z * OneOverMinDimension, 
 				TextureDimension.GetMax() * OneOverMinDimension * .5f) // Extent
 			);
 
-		SetShaderValue(RHICmdList, ShaderRHI, TextureDimensionParameter, FVector(TextureDimension.X, TextureDimension.Y, TextureDimension.Z));
+		SetShaderValue(RHICmdList, ShaderRHI, TextureDimensionParameter, FVector3f(TextureDimension.X, TextureDimension.Y, TextureDimension.Z));
 
-		SetShaderValue(RHICmdList, ShaderRHI, TraceViewMatrixParameter, FMatrix(FRotationMatrix::Make(TraceOrientation)));
+		SetShaderValue(RHICmdList, ShaderRHI, TraceViewMatrixParameter, FMatrix44f(FRotationMatrix::Make(TraceOrientation)));
 	}
 
 private:
@@ -184,7 +184,7 @@ void FBatchedElementVolumeTexturePreviewParameters::BindShaders(
 		GraphicsPSOInit.BlendState = TStaticBlendState<CW_RGB, BO_Add, BF_One, BF_InverseSourceAlpha, BO_Add, BF_Zero, BF_One>::GetRHI();
 	}
 
-	FMatrix ColorWeights = InColorWeights;
+	FMatrix44f ColorWeights = FMatrix44f(InColorWeights);
 	if (!bViewModeAsDepthSlices && ColorWeights.M[3][3] == 0)
 	{
 		const float XWeight = ColorWeights.M[0][0] + ColorWeights.M[1][0] + ColorWeights.M[2][0];
@@ -196,7 +196,8 @@ void FBatchedElementVolumeTexturePreviewParameters::BindShaders(
 		ColorWeights.M[3][2] = ZWeight * OneOverWeightSum;
 	}
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, EApplyRendertargetOption::ForceApply);
+	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 	VertexShader->SetParameters(RHICmdList, InTransform);
 	PixelShader->SetParameters(RHICmdList, Texture, SizeZ, ColorWeights, InGamma, MipLevel, Opacity, TraceOrientation);

@@ -45,6 +45,10 @@ protected:
 	* them being collected
 	*/
 	void		AddReferencedObjects(FReferenceCollector& Collector) override;
+	FString		GetReferencerName() const override
+	{
+		return TEXT("FGauntletModuleImpl");
+	}
 
 	/** Handler for PostMapChange delegate */
 	void		InnerPostMapChange(UWorld* World);
@@ -69,7 +73,7 @@ protected:
 private:
 
 	/** Handle to our tick callback */
-	FDelegateHandle					TickHandle;
+	FTSTicker::FDelegateHandle					TickHandle;
 
 	/** Currently active controllers */
 	TArray<UGauntletTestController*>	Controllers;
@@ -142,7 +146,7 @@ void FGauntletModuleImpl::OnPostEngineInit()
 	FParse::Value(FCommandLine::Get(), TEXT("gauntlet.tickrate="), kTickRate);
 
 
-	FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([this, kTickRate](float TimeDelta)
+	TickHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([this, kTickRate](float TimeDelta)
 	{
 		// ticker passes in frame-delta, not tick delta...
 		InnerTick(kTickRate);
@@ -153,15 +157,17 @@ void FGauntletModuleImpl::OnPostEngineInit()
 
 void FGauntletModuleImpl::ShutdownModule()
 {
+	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
 	FCoreUObjectDelegates::PreLoadMap.RemoveAll(this);
 	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
 
 	if (TickHandle.IsValid())
 	{
-		FTicker::GetCoreTicker().RemoveTicker(TickHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+		TickHandle.Reset();
 	}
 
-	UE_LOG(LogGauntlet, Display, TEXT("Gauntlet Shutdown"));
+	UE_LOG(LogGauntlet, Log, TEXT("Gauntlet Shutdown"));
 
 }
 

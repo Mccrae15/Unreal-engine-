@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "PerforceSourceControlPrivate.h"
 #include "PerforceSourceControlCommand.h"
+#include "Memory/SharedBuffer.h"
 
 /** A map containing result of running Perforce command */
 class FP4Record : public TMap<FString, FString >
@@ -68,18 +69,43 @@ public:
 	{
 		const bool bStandardDebugOutput=true;
 		const bool bAllowRetry=true;
-		return RunCommand(InCommand, InParameters, OutRecordSet, OutErrorMessage, InIsCancelled, OutConnectionDropped, bStandardDebugOutput, bAllowRetry);
+		TOptional<FSharedBuffer> UnsetDataBuffer;
+
+		return RunCommand(InCommand, InParameters, OutRecordSet, UnsetDataBuffer, OutErrorMessage, InIsCancelled, OutConnectionDropped, bStandardDebugOutput, bAllowRetry);
+	}
+
+	bool RunCommand(const FString& InCommand, const TArray<FString>& InParameters, FP4RecordSet& OutRecordSet, TOptional<FSharedBuffer>& OutData, TArray<FText>& OutErrorMessage, FOnIsCancelled InIsCancelled, bool& OutConnectionDropped)
+	{
+		const bool bStandardDebugOutput = true;
+		const bool bAllowRetry = true;
+		return RunCommand(InCommand, InParameters, OutRecordSet, OutData, OutErrorMessage, InIsCancelled, OutConnectionDropped, bStandardDebugOutput, bAllowRetry);
 	}
 
 	/**
 	 * Runs internal perforce command, catches exceptions, returns results
 	 */
-	bool RunCommand(const FString& InCommand, const TArray<FString>& InParameters, FP4RecordSet& OutRecordSet, TArray<FText>& OutErrorMessage, FOnIsCancelled InIsCancelled, bool& OutConnectionDropped, const bool bInStandardDebugOutput, const bool bInAllowRetry);
+	bool RunCommand(const FString& InCommand, const TArray<FString>& InParameters, FP4RecordSet& OutRecordSet, TOptional<FSharedBuffer>& OutData, TArray<FText>& OutErrorMessage, FOnIsCancelled InIsCancelled, bool& OutConnectionDropped, const bool bInStandardDebugOutput, const bool bInAllowRetry);
 
 	/**
 	 * Creates a changelist with the specified description
 	 */
-	int32 CreatePendingChangelist(const FText &Description, FOnIsCancelled InIsCancelled, TArray<FText>& OutErrorMessages);
+	int32 CreatePendingChangelist(const FText &Description, const TArray<FString>& InFiles, FOnIsCancelled InIsCancelled, TArray<FText>& OutErrorMessages);
+
+	/**
+	 * Edits a changelist with a new description
+	 */
+	int32 EditPendingChangelist(const FText& NewDescription, int32 ChangelistNumber, FOnIsCancelled InIsCancelled, TArray<FText>& OutErrorMessages);
+
+	/** 
+	 * Creates a workspace based on the spec provided via the WorkspaceSpec.
+	 * 
+	 * @param WorkspaceSpec		The specification of the workspace to create
+	 * @param InIsCancelled		Delegate allowing the cancelling of the command if needed
+	 * @param OutErrorMessages	An array that will be filled with all errors encountered during the command
+	 * 
+	 * @return Returns true if no errors were encountered, otherwise false
+	 */
+	bool CreateWorkspace(FStringView WorkspaceSpec, FOnIsCancelled InIsCancelled, TArray<FText>& OutErrorMessages);
 
 	/**
 	 * Attempt to login - some servers will require this 
@@ -94,11 +120,16 @@ public:
 	 */
 	void EstablishConnection(const FPerforceConnectionInfo& InConnectionInfo);
 
+	/** 
+	 * Return the user of the connection
+	 * 
+	 * @return The current perforce user, this will be blank if the connect failed.
+	 */
+	FString GetUser();
+
 public:
-#if USE_P4_API
 	/** Perforce API client object */
 	ClientApi P4Client;
-#endif
 
 	/** The current root for the client workspace */
 	FString ClientRoot;

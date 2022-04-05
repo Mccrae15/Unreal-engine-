@@ -104,6 +104,19 @@ const FRigVMPrototype* FRigVMRegistry::FindPrototype(UScriptStruct* InStruct, co
 	return FindPrototype(Notation);
 }
 
+FRigVMFunction FRigVMRegistry::FindFunctionInfo(const TCHAR* InName) const
+{
+	for (const FRigVMFunction& Function : Functions)
+	{
+		if (FCString::Strcmp(Function.Name, InName) == 0)
+		{
+			return Function;
+		}
+	} 
+
+	return FRigVMFunction();
+}
+
 const TArray<FRigVMFunction>& FRigVMRegistry::GetFunctions() const
 {
 	return Functions;

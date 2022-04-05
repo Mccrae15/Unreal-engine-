@@ -235,27 +235,32 @@ namespace Chaos
 		 * Multiple a vector by a matrix: C = L.R
 		 * If L is a rotation matrix, then this will return R rotated by that rotation.
 		 */
-		inline FVec3 Multiply(const FMatrix33& LIn, const FVec3& R)
+		inline FVec3 Multiply(const FMatrix33& L, const FVec3& R)
 		{
-			// @todo(ccaulfield): optimize: remove transposes and use simd etc
-			FMatrix33 L = LIn.GetTransposed();
-
+			// @todo(chaos): optimize: use simd
 			return FVec3(
-			    L.M[0][0] * R.X + L.M[0][1] * R.Y + L.M[0][2] * R.Z,
-			    L.M[1][0] * R.X + L.M[1][1] * R.Y + L.M[1][2] * R.Z,
-			    L.M[2][0] * R.X + L.M[2][1] * R.Y + L.M[2][2] * R.Z);
+			    L.M[0][0] * R.X + L.M[1][0] * R.Y + L.M[2][0] * R.Z,
+			    L.M[0][1] * R.X + L.M[1][1] * R.Y + L.M[2][1] * R.Z,
+			    L.M[0][2] * R.X + L.M[1][2] * R.Y + L.M[2][2] * R.Z);
 		}
 
-		inline FVec4 Multiply(const FMatrix44& LIn, const FVec4& R)
+		inline TVec3<FRealSingle> Multiply(const TMatrix33<FRealSingle>& L, const TVec3<FRealSingle>& R)
 		{
-			// @todo(ccaulfield): optimize: remove transposes and use simd etc
-			FMatrix44 L = LIn.GetTransposed();
+			// @todo(chaos): optimize: use simd
+			return TVec3<FRealSingle>(
+				L.M[0][0] * R.X + L.M[1][0] * R.Y + L.M[2][0] * R.Z,
+				L.M[0][1] * R.X + L.M[1][1] * R.Y + L.M[2][1] * R.Z,
+				L.M[0][2] * R.X + L.M[1][2] * R.Y + L.M[2][2] * R.Z);
+		}
 
+		inline FVec4 Multiply(const FMatrix44& L, const FVec4& R)
+		{
+			// @todo(chaos): optimize: use simd
 			return FVec4(
-				L.M[0][0] * R.X + L.M[0][1] * R.Y + L.M[0][2] * R.Z + L.M[0][3] * R.W,
-				L.M[1][0] * R.X + L.M[1][1] * R.Y + L.M[1][2] * R.Z + L.M[1][3] * R.W,
-				L.M[2][0] * R.X + L.M[2][1] * R.Y + L.M[2][2] * R.Z + L.M[2][3] * R.W,
-				L.M[3][0] * R.X + L.M[3][1] * R.Y + L.M[3][2] * R.Z + L.M[3][3] * R.W
+				L.M[0][0] * R.X + L.M[1][0] * R.Y + L.M[2][0] * R.Z + L.M[3][0] * R.W,
+				L.M[0][1] * R.X + L.M[1][1] * R.Y + L.M[2][1] * R.Z + L.M[3][1] * R.W,
+				L.M[0][2] * R.X + L.M[1][2] * R.Y + L.M[2][2] * R.Z + L.M[3][2] * R.W,
+				L.M[0][3] * R.X + L.M[1][3] * R.Y + L.M[2][3] * R.Z + L.M[3][3] * R.W
 				);
 		}
 
@@ -298,6 +303,21 @@ namespace Chaos
 			    V[2] * (V[2] * M.M[0][0] - V[0] * M.M[2][0]) - V[0] * (V[2] * M.M[2][0] - V[0] * M.M[2][2]) + Im,
 			    -V[1] * (V[2] * M.M[0][0] - V[0] * M.M[2][0]) + V[0] * (V[2] * M.M[1][0] - V[0] * M.M[2][1]),
 			    -V[1] * (-V[1] * M.M[0][0] + V[0] * M.M[1][0]) + V[0] * (-V[1] * M.M[1][0] + V[0] * M.M[1][1]) + Im);
+		}
+		
+		/**
+		 * Calculate the matrix diagonal that maps a constraint position error to constraint position and rotation corrections.
+		*/
+		template<class T>
+		TVec3<T> ComputeDiagonalJointFactorMatrix(const TVec3<T>& V, const PMatrix<T, 3, 3>& M, const T& Im)
+		{
+			// Rigid objects rotational contribution to the impulse.
+			// Vx*M*VxT+Im
+			check(Im > FLT_MIN);
+			return TVec3<T>(
+				-V[2] * (-V[2] * M.M[1][1] + V[1] * M.M[2][1]) + V[1] * (-V[2] * M.M[2][1] + V[1] * M.M[2][2]) + Im,
+				 V[2] * (V[2] * M.M[0][0] - V[0] * M.M[2][0]) - V[0] * (V[2] * M.M[2][0] - V[0] * M.M[2][2]) + Im,
+				-V[1] * (-V[1] * M.M[0][0] + V[0] * M.M[1][0]) + V[0] * (-V[1] * M.M[1][0] + V[0] * M.M[1][1]) + Im);
 		}
 
 		/**
@@ -463,6 +483,23 @@ namespace Chaos
 			return ScaledInertia;
 		}
 
+		// Compute the box size that would generate the given (diagonal) inertia
+		inline FVec3 BoxSizeFromInertia(const FVec3& Inertia, const FReal Mass)
+		{
+			// System of 3 equations in X^2, Y^2, Z^2
+			// Inertia.X = 1/12 M (Size.Y^2 + Size.Z^2)
+			// Inertia.Y = 1/12 M (Size.Z^2 + Size.X^2)
+			// Inertia.Z = 1/12 M (Size.X^2 + Size.Y^2)
+			if (Mass > 0)
+			{
+				const FVec3 S = Inertia * 12.0f / Mass;
+				const FMatrix33 R = FMatrix33(-0.5f, 0.5f, 0.5f, 0.5f, -0.5f, 0.5f, 0.5f, 0.5f, -0.5f);
+				const FVec3 XYZSq = R * S;
+				return FVec3(FMath::Sqrt(XYZSq.X), FMath::Sqrt(XYZSq.Y), FMath::Sqrt(XYZSq.Z));
+			}
+			return FVec3(0);
+		}
+
 		// Replacement for FMath::Wrap that works for integers and returns a value in [Begin, End).
 		// Note: this implementation uses a loop to bring the value into range - it should not be used if the value is much larger than the range.
 		inline int32 WrapIndex(int32 V, int32 Begin, int32 End)
@@ -496,6 +533,7 @@ namespace Chaos
 			const FReal C = FVec3::DotProduct(D1, R);
 			const FReal E = FVec3::DotProduct(D2, D2);
 			const FReal F = FVec3::DotProduct(D2, R);
+			constexpr FReal Min = 0, Max = 1;
 
 			S = 0.0f;
 			T = 0.0f;
@@ -507,12 +545,12 @@ namespace Chaos
 			else if (A <= Epsilon)
 			{
 				// First segment (only) is a point
-				T = FMath::Clamp(F / E, 0.0f, 1.0f);
+				T = FMath::Clamp<FReal>(F / E, Min, Max);
 			}
 			else if (E <= Epsilon)
 			{
 				// Second segment (only) is a point
-				S = FMath::Clamp(-C / A, 0.0f, 1.0f);
+				S = FMath::Clamp<FReal>(-C / A, Min, Max);
 			}
 			else
 			{
@@ -520,24 +558,67 @@ namespace Chaos
 				const FReal Denom = A * E - B * B;
 				if (Denom != 0.0f)
 				{
-					S = FMath::Clamp((B * F - C * E) / Denom, 0.0f, 1.0f);
+					S = FMath::Clamp<FReal>((B * F - C * E) / Denom, Min, Max);
 				}
 				T = (B * S + F) / E;
 
 				if (T < 0.0f)
 				{
-					S = FMath::Clamp(-C / A, 0.0f, 1.0f);
+					S = FMath::Clamp<FReal>(-C / A, Min, Max);
 					T = 0.0f;
 				}
 				else if (T > 1.0f)
 				{
-					S = FMath::Clamp((B - C) / A, 0.0f, 1.0f);
+					S = FMath::Clamp<FReal>((B - C) / A, Min, Max);
 					T = 1.0f;
 				}
 			}
 
 			C1 = P1 + S * D1;
 			C2 = P2 + T * D2;
+		}
+
+		template<typename T>
+		inline T ClosestTimeOnLineSegment(const TVec3<T>& Point, const TVec3<T>& StartPoint, const TVec3<T>& EndPoint)
+		{
+			const TVec3<T> Segment = EndPoint - StartPoint;
+			const TVec3<T> VectToPoint = Point - StartPoint;
+
+			// See if closest point is before StartPoint
+			const T Dot1 = TVec3<T>::DotProduct(VectToPoint, Segment);
+			if (Dot1 <= 0)
+			{
+				return T(0);
+			}
+
+			// See if closest point is beyond EndPoint
+			const T Dot2 = TVec3<T>::DotProduct(Segment, Segment);
+			if (Dot2 <= Dot1)
+			{
+				return T(1);
+			}
+
+			// Closest Point is within segment
+			return Dot1 / Dot2;
+		}
+
+		/**
+		 * @brief The distance from Start to the sphere along the vector Dir. Returns numeric max if no intersection.
+		*/
+		template<typename T>
+		inline T RaySphereIntersectionDistance(const TVec3<T>& RayStart, const TVec3<T>& RayDir, const TVec3<T>& SpherePos, const T SphereRadius)
+		{
+			const TVec3<T> EO = SpherePos - RayStart;
+			const T V = TVec3<T>::DotProduct(RayDir, EO);
+			const T Disc = SphereRadius * SphereRadius - (TVec3<T>::DotProduct(EO, EO) - V * V);
+			if (Disc >= 0)
+			{
+				return (V - FMath::Sqrt(Disc));
+			}
+			else
+			{
+				return TNumericLimits<T>::Max();
+			}
 		}
 
 

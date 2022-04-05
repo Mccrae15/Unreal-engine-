@@ -28,12 +28,16 @@ class UAnimBlueprintFactory : public UFactory
 
 	// The kind of skeleton that animation graphs compiled from the blueprint will animate
 	UPROPERTY(EditAnywhere, Category=AnimBlueprintFactory)
-	class USkeleton* TargetSkeleton;
+	TObjectPtr<class USkeleton> TargetSkeleton;
 
 	// The preview mesh to use with this animation blueprint
 	UPROPERTY(EditAnywhere, Category=AnimBlueprintFactory)
-	class USkeletalMesh* PreviewSkeletalMesh;
+	TObjectPtr<class USkeletalMesh> PreviewSkeletalMesh;
 
+	// Whether the created blueprint should be a template with no target skeleton
+	UPROPERTY(EditAnywhere, Category=AnimBlueprintFactory)
+	bool bTemplate;
+	
 	//~ Begin UFactory Interface
 	virtual bool ConfigureProperties() override;
 	virtual UObject* FactoryCreateNew(UClass* Class, UObject* InParent, FName Name, EObjectFlags Flags, UObject* Context, FFeedbackContext* Warn, FName CallingContext) override;

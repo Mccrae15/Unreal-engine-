@@ -14,6 +14,7 @@
 #include "IMeshPaintComponentAdapter.h"
 #include "MeshPaintHelpers.h"
 #include "MeshVertexPaintingTool.h"
+#include "Tools/LegacyEdModeInterfaces.h"
 #include "MeshPaintMode.generated.h"
 
 class UMeshVertexPaintingToolProperties;
@@ -22,12 +23,13 @@ class UMeshTexturePaintingToolProperties;
 class UMeshPaintModeSettings;
 class IMeshPaintComponentAdapter;
 class UMeshComponent;
+class UMeshToolManager;
 
 /**
  * Mesh paint Mode.  Extends editor viewports with the ability to paint data on meshes
  */
 UCLASS()
-class UMeshPaintMode : public UEdMode
+class UMeshPaintMode : public UEdMode, public ILegacyEdModeViewportInterface
 {
 public:
 	GENERATED_BODY()
@@ -43,6 +45,7 @@ public:
 	virtual void Exit() override;
 	virtual void CreateToolkit() override;
 	virtual void Tick(FEditorViewportClient* ViewportClient, float DeltaTime) override;
+	virtual bool HandleClick(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy, const FViewportClick& Click) override;
 	static FName MeshPaintMode_Color;
 	static FName MeshPaintMode_Texture;
 	static FName MeshPaintMode_Weights;
@@ -65,16 +68,22 @@ public:
 protected:
 
 	/** Binds UI commands to actions for the mesh paint mode */
-	virtual void BindCommands();
+	virtual void BindCommands() override;
 
 	// UEdMode interface
 	virtual void OnToolStarted(UInteractiveToolManager* Manager, UInteractiveTool* Tool) override;
 	virtual void OnToolEnded(UInteractiveToolManager* Manager, UInteractiveTool* Tool) override;
 	virtual void ActorSelectionChangeNotify() override;
 	virtual void ActivateDefaultTool() override;
-	virtual void UpdateOnPaletteChange() override;
+	virtual void UpdateOnPaletteChange(FName NewPalette);
 	// end UEdMode Interface
 	void UpdateSelectedMeshes();
+
+	void CheckSelectionForTexturePaintCompat(const TArray<UMeshComponent*>& CurrentMeshComponents);
+	
+
+	void UpdateOnMaterialChange(bool bInvalidateHitProxies);
+	void OnObjectsReplaced(const TMap<UObject*, UObject*>& InOldToNewInstanceMap);
 	void OnResetViewMode();
 	void FillWithVertexColor();
 	void PropagateVertexColorsToAsset();
@@ -100,13 +109,18 @@ protected:
 	void CommitAllPaintedTextures();
 	int32 GetNumberOfPendingPaintChanges();
 	void OnVertexPaintFinished();
+
 protected:
 	UPROPERTY(Transient)
-	UMeshPaintModeSettings* ModeSettings;
+	TObjectPtr<UMeshPaintModeSettings> ModeSettings;
+
+
 	// End vertex paint state
 	FGetSelectedMeshComponents MeshComponentDelegate;
 	uint32 CachedVertexDataSize;
 	bool bRecacheVertexDataSize;
+
+	FDelegateHandle PaletteChangedHandle;
 
 };
 

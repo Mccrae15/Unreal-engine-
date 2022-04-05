@@ -5,6 +5,7 @@
 =============================================================================*/ 
 
 #include "PhysicsEngine/PhysicsAsset.h"
+#include "Animation/MirrorDataTable.h"
 #include "UObject/FrameworkObjectVersion.h"
 #include "Serialization/ObjectWriter.h"
 #include "Serialization/ObjectReader.h"
@@ -24,9 +25,18 @@
 bool bUseRBANForDefaultPhysicsAssetSolverType = false;
 FAutoConsoleVariableRef CVarUseRBANForDefaultPhysicsAssetSolverType(TEXT("p.Chaos.UseRBANForDefaultPhysicsAssetSolverType"), bUseRBANForDefaultPhysicsAssetSolverType, TEXT("Boolean to use RBAN for default physics asset solver type (false by default)"));
 
+FPhysicsAssetSolverSettings::FPhysicsAssetSolverSettings()
+	: PositionIterations(6)
+	, VelocityIterations(1)
+	, ProjectionIterations(1)
+	, CullDistance(3.0f)
+	, MaxDepenetrationVelocity(0.0f)
+	, FixedTimeStep(0.0f)
+{
+}
+
 FSolverIterations::FSolverIterations()
-	: FixedTimeStep(0)
-	, SolverIterations(3)
+	: SolverIterations(3)
 	, JointIterations(2)
 	, CollisionIterations(2)
 	, SolverPushOutIterations(1)
@@ -356,17 +366,17 @@ FBox UPhysicsAsset::CalcAABB(const USkinnedMeshComponent* MeshComp, const FTrans
 					// @TODO: Maybe CalcAABB should handle that inside and never return a reversed FBox
 					if (BodySetupBounds.Min.X > BodySetupBounds.Max.X)
 					{
-						Swap<float>(BodySetupBounds.Min.X, BodySetupBounds.Max.X);
+						Swap(BodySetupBounds.Min.X, BodySetupBounds.Max.X);
 					}
 
 					if (BodySetupBounds.Min.Y > BodySetupBounds.Max.Y)
 					{
-						Swap<float>(BodySetupBounds.Min.Y, BodySetupBounds.Max.Y);
+						Swap(BodySetupBounds.Min.Y, BodySetupBounds.Max.Y);
 					}
 
 					if (BodySetupBounds.Min.Z > BodySetupBounds.Max.Z)
 					{
-						Swap<float>(BodySetupBounds.Min.Z, BodySetupBounds.Max.Z);
+						Swap(BodySetupBounds.Min.Z, BodySetupBounds.Max.Z);
 					}
 
 					Box += BodySetupBounds;
@@ -389,7 +399,7 @@ FBox UPhysicsAsset::CalcAABB(const USkinnedMeshComponent* MeshComp, const FTrans
 
 	if(BoxSize.GetMin() < MinBoundSize)
 	{
-		const FVector ExpandByDelta ( FMath::Max(0.f, MinBoundSize - BoxSize.X), FMath::Max(0.f, MinBoundSize - BoxSize.Y), FMath::Max(0.f, MinBoundSize - BoxSize.Z) );
+		const FVector ExpandByDelta ( FMath::Max<FVector::FReal>(0, MinBoundSize - BoxSize.X), FMath::Max<FVector::FReal>(0, MinBoundSize - BoxSize.Y), FMath::Max<FVector::FReal>(0, MinBoundSize - BoxSize.Z) );
 		Box = Box.ExpandBy(ExpandByDelta * 0.5f);	//expand by applies to both directions with GetSize applies to total size so divide by 2
 	}
 
@@ -503,6 +513,20 @@ int32 UPhysicsAsset::FindConstraintIndex(FName ConstraintName)
 	return INDEX_NONE;
 }
 
+int32 UPhysicsAsset::FindConstraintIndex(FName Bone1Name, FName Bone2Name)
+{
+	for (int32 i = 0; i < ConstraintSetup.Num(); i++)
+	{
+		if (ConstraintSetup[i]->DefaultInstance.ConstraintBone1 == Bone1Name &&
+			ConstraintSetup[i]->DefaultInstance.ConstraintBone2 == Bone2Name)
+		{
+			return i;
+		}
+	}
+
+	return INDEX_NONE;
+}
+
 FName UPhysicsAsset::FindConstraintBoneName(int32 ConstraintIndex)
 {
 	if ( (ConstraintIndex < 0) || (ConstraintIndex >= ConstraintSetup.Num()) )
@@ -510,54 +534,42 @@ FName UPhysicsAsset::FindConstraintBoneName(int32 ConstraintIndex)
 		return NAME_None;
 	}
 
-	return ConstraintSetup[ConstraintIndex]->DefaultInstance.JointName;
+	return ConstraintSetup[ConstraintIndex]->DefaultInstance.GetChildBoneName();
 }
 
-int32 UPhysicsAsset::FindMirroredBone(class USkeletalMesh* skelMesh, int32 BoneIndex)
+int32 UPhysicsAsset::FindMirroredBone(USkeletalMesh* SkelMesh,  int32 BoneIndex)
 {
-	if (BoneIndex == INDEX_NONE)
+	if (SkelMesh)
 	{
-		return INDEX_NONE;
-	}
-	//we try to find the mirroed bone using several approaches. The first is to look for the same name but with _R instead of _L or vise versa
-	FName BoneName = skelMesh->GetRefSkeleton().GetBoneName(BoneIndex);
-	FString BoneNameString = BoneName.ToString();
-
-	bool bIsLeft = BoneNameString.Find("_L", ESearchCase::IgnoreCase, ESearchDir::FromEnd) == (BoneNameString.Len() - 2);	//has _L at the end
-	bool bIsRight = BoneNameString.Find("_R", ESearchCase::IgnoreCase, ESearchDir::FromEnd) == (BoneNameString.Len() - 2);	//has _R at the end
-	bool bMirrorConvention = bIsLeft || bIsRight;
-
-	//if the bone follows our left right naming convention then let's try and find its mirrored bone
-	int32 BoneIndexMirrored = INDEX_NONE;
-	if (bMirrorConvention)
-	{
-		FString BoneNameMirrored = BoneNameString.LeftChop(2);
-		BoneNameMirrored.Append(bIsLeft ? "_R" : "_L");
-
-		BoneIndexMirrored = skelMesh->GetRefSkeleton().FindBoneIndex(FName(*BoneNameMirrored));
+		FName BoneName = SkelMesh->GetRefSkeleton().GetBoneName(BoneIndex);
+		FName MirrorName = UMirrorDataTable::GetSettingsMirrorName(BoneName);
+		return SkelMesh->GetRefSkeleton().FindBoneIndex(MirrorName); 
 	}
 
-	return BoneIndexMirrored;
+	return INDEX_NONE; 
 }
 
 void UPhysicsAsset::GetBodyIndicesBelow(TArray<int32>& OutBodyIndices, FName InBoneName, USkeletalMesh* SkelMesh, bool bIncludeParent /*= true*/)
 {
 	int32 BaseIndex = SkelMesh->GetRefSkeleton().FindBoneIndex(InBoneName);
 
-	// Iterate over all other bodies, looking for 'children' of this one
-	for(int32 i=0; i<SkeletalBodySetups.Num(); i++)
+	if (BaseIndex != INDEX_NONE)
 	{
-		UBodySetup* BS = SkeletalBodySetups[i];
-		if (!ensure(BS))
+		// Iterate over all other bodies, looking for 'children' of this one
+		for (int32 i = 0; i < SkeletalBodySetups.Num(); i++)
 		{
-			continue;
-		}
-		FName TestName = BS->BoneName;
-		int32 TestIndex = SkelMesh->GetRefSkeleton().FindBoneIndex(TestName);
+			UBodySetup* BS = SkeletalBodySetups[i];
+			if (!ensure(BS))
+			{
+				continue;
+			}
+			FName TestName = BS->BoneName;
+			int32 TestIndex = SkelMesh->GetRefSkeleton().FindBoneIndex(TestName);
 
-		if( (bIncludeParent && TestIndex == BaseIndex) || SkelMesh->GetRefSkeleton().BoneIsChildOf(TestIndex, BaseIndex))
-		{
-			OutBodyIndices.Add(i);
+			if ((bIncludeParent && TestIndex == BaseIndex) || SkelMesh->GetRefSkeleton().BoneIsChildOf(TestIndex, BaseIndex))
+			{
+				OutBodyIndices.Add(i);
+			}
 		}
 	}
 }
@@ -656,7 +668,7 @@ void SanitizeProfilesHelper(const TArray<T*>& SetupInstances, const TArray<FName
 		if(PropertyChangedEvent.ChangeType != EPropertyChangeType::Unspecified && PropertyChangedEvent.ChangeType != EPropertyChangeType::ArrayRemove)
 		{
 			int32 CollisionCount = 0;
-			FName NewName = PostProfiles[ArrayIdx] == NAME_None ? FName(TEXT("New")) : PostProfiles[ArrayIdx];
+			FName NewName = (PostProfiles[ArrayIdx] == NAME_None) ? FName(TEXT("New")) : PostProfiles[ArrayIdx];
 			const FString NewNameNoNumber = NewName.ToString();
 			while(PreProfiles.Contains(NewName))
 			{
@@ -853,6 +865,65 @@ USkeletalMesh* UPhysicsAsset::GetPreviewMesh() const
 	return nullptr;
 #endif
 }
+
+#if WITH_EDITOR
+FConstraintInstanceAccessor UPhysicsAsset::GetConstraintInstanceAccessorByIndex(int32 ConstraintIndex)
+{
+	if (ConstraintIndex == INDEX_NONE || ConstraintIndex >= ConstraintSetup.Num())
+	{
+		return FConstraintInstanceAccessor();
+	}
+
+	if (ConstraintSetup[ConstraintIndex])
+	{
+		// Implementation note: Any changes on the constraint must be propagated from the instance to its profile
+		return FConstraintInstanceAccessor(this, ConstraintIndex, [this, ConstraintIndex]() {
+			ConstraintSetup[ConstraintIndex]->UpdateProfileInstance(); });
+	}
+
+	return FConstraintInstanceAccessor();
+}
+
+FConstraintInstanceAccessor UPhysicsAsset::GetConstraintByName(FName ConstraintName)
+{
+	return GetConstraintInstanceAccessorByIndex(FindConstraintIndex(ConstraintName));
+}
+
+FConstraintInstanceAccessor UPhysicsAsset::GetConstraintByBoneNames(FName Bone1Name, FName Bone2Name)
+{
+	return GetConstraintInstanceAccessorByIndex(FindConstraintIndex(Bone1Name, Bone2Name));
+}
+
+void UPhysicsAsset::GetConstraints(bool bIncludesTerminated, TArray<FConstraintInstanceAccessor>& OutConstraints)
+{
+	for (int32 i = 0; i < ConstraintSetup.Num(); ++i)
+	{
+		if (ConstraintSetup[i])
+		{
+			if (bIncludesTerminated || ConstraintSetup[i]->DefaultInstance.IsTerminated())
+			{
+				// Implementation note: Any changes on the constraint must be propagated from the instance to its profile
+				OutConstraints.Emplace(this, i, [this, i]() {
+					ConstraintSetup[i]->UpdateProfileInstance();
+					});
+			}
+		}
+	}
+}
+
+FConstraintInstance* UPhysicsAsset::GetConstraintInstanceByIndex(uint32 Index)
+{
+	if (Index < (uint32)ConstraintSetup.Num())
+	{
+		if (ConstraintSetup[Index])
+		{
+			return &ConstraintSetup[Index]->DefaultInstance;
+		}
+	}
+
+	return nullptr;
+}
+#endif
 
 void UPhysicsAsset::SetPreviewMesh(USkeletalMesh* PreviewMesh, bool bMarkAsDirty/*=true*/)
 {

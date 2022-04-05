@@ -6,7 +6,7 @@
 #include "Common/SlabAllocator.h"
 #include "Model/Tables.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 class FAnalysisSessionLock;
@@ -16,7 +16,7 @@ struct FNetProfilerGameInstanceInternal
 {
 	FNetProfilerGameInstance Instance;
 
-	TPagedArray<Trace::FNetProfilerObjectInstance>* Objects;
+	TPagedArray<FNetProfilerObjectInstance>* Objects;
 	TArray<uint32, TInlineAllocator<128>> Connections;
 	uint32 ObjectsChangeCount;
 };
@@ -48,8 +48,6 @@ class FNetProfilerProvider
 	: public INetProfilerProvider
 {
 public:
-	static const FName ProviderName;
-
 	explicit FNetProfilerProvider(IAnalysisSession& InSession);
 	virtual ~FNetProfilerProvider();
 
@@ -59,17 +57,17 @@ public:
 
 	uint32 AddNetProfilerEventType(uint32 NameIndex, uint32 Level);
 
-	Trace::FNetProfilerGameInstanceInternal& CreateGameInstance();
-	Trace::FNetProfilerGameInstanceInternal* EditGameInstance(uint32 GameInstanceIndex);
+	FNetProfilerGameInstanceInternal& CreateGameInstance();
+	FNetProfilerGameInstanceInternal* EditGameInstance(uint32 GameInstanceIndex);
 
-	Trace::FNetProfilerConnectionInternal& CreateConnection(uint32 GameInstanceIndex);
-	Trace::FNetProfilerConnectionInternal* EditConnection(uint32 ConnectionIndex);
-	Trace::FNetProfilerConnectionData& EditConnectionData(uint32 ConnectionIndex, ENetProfilerConnectionMode Mode);
+	FNetProfilerConnectionInternal& CreateConnection(uint32 GameInstanceIndex);
+	FNetProfilerConnectionInternal* EditConnection(uint32 ConnectionIndex);
+	FNetProfilerConnectionData& EditConnectionData(uint32 ConnectionIndex, ENetProfilerConnectionMode Mode);
 
 	void EditPacketDeliveryStatus(uint32 ConnectionIndex, ENetProfilerConnectionMode Mode, uint32 SequenceNumber, ENetProfilerDeliveryStatus DeliveryStatus);
 
-	Trace::FNetProfilerObjectInstance& CreateObject(uint32 GameInstanceIndex);
-	Trace::FNetProfilerObjectInstance* EditObject(uint32 GameInstanceIndex, uint32 ObjectIndex);
+	FNetProfilerObjectInstance& CreateObject(uint32 GameInstanceIndex);
+	FNetProfilerObjectInstance* EditObject(uint32 GameInstanceIndex, uint32 ObjectIndex);
 
 	// INetProfilerProvider Interface
 
@@ -140,4 +138,4 @@ private:
 	TTableLayout<FNetProfilerAggregatedStats> AggregatedStatsTableLayout;
 };
 
-}
+} // namespace TraceServices

@@ -16,116 +16,16 @@
 
 #include "TextureShareStrings.h"
 
-//////////////////////////////////////////////////////////////////////////////////////////////
-static bool ImplFindTextureShare(bool bIsInRenderingThread, const TArray<TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>>& InTextureShares, const FString& ShareName, TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& OutTextureShare)
+FTextureShareModule::FTextureShareModule()
+	: ShareCoreAPI(ITextureShareCore::Get())
 {
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> const* DesiredShare = InTextureShares.FindByPredicate([ShareName](const TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& ShareIt)
-	{
-		return ShareIt.IsValid() && ShareIt->Equals(ShareName);
-	});
-
-	if (DesiredShare)
-	{
-		OutTextureShare = *DesiredShare;
-		return true;
-	}
-
-	return false;
+	DisplayManager = MakeShareable(new FTextureShareDisplayManager(*this));
+	UE_LOG(LogTextureShare, Log, TEXT("TextureShare module has been instantiated"));
 }
 
-static bool ImplFindTextureShare(bool bIsInRenderingThread, const TArray<TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>>& InTextureShares, const TSharedPtr<ITextureShareItem>& ShareItem, TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& OutTextureShare)
+FTextureShareModule::~FTextureShareModule()
 {
-	if (ShareItem.IsValid() && ShareItem->IsValid())
-	{
-		TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> const* DesiredShare = InTextureShares.FindByPredicate([ShareItem](const TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& ShareIt)
-		{
-			return ShareIt.IsValid() && ShareIt->Equals(ShareItem);
-		});
-
-		if (DesiredShare)
-		{
-			OutTextureShare = *DesiredShare;
-			return true;
-		}
-	}
-
-	return false;
-}
-
-static bool ImplFindTextureShare(bool bIsInRenderingThread, const TArray<TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>>& InTextureShares, int32 InStereoscopicPass, TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& OutTextureShare)
-{
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> const* DesiredShare = InTextureShares.FindByPredicate([bIsInRenderingThread, InStereoscopicPass](const TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& ShareIt)
-	{
-		if (ShareIt.IsValid())
-		{
-			const FTextureShareInstanceData& ShareData = bIsInRenderingThread ? ShareIt->GetDataConstRef_RenderThread() : ShareIt->GetDataConstRef();
-			return ShareData.StereoscopicPass == InStereoscopicPass;
-		}
-
-		return false;
-	});
-
-	if (DesiredShare)
-	{
-		OutTextureShare = *DesiredShare;
-		return true;
-	}
-
-	return false;
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////
-// Impl RenderThread
-//////////////////////////////////////////////////////////////////////////////////////////////
-static void ImplCreateTextureShareProxy_RenderThread(TArray<TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>>& InOutTextureSharesProxy, const TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& InShareInstance)
-{
-	InOutTextureSharesProxy.Add(InShareInstance);
-}
-
-static void ImplReleaseTextureShareProxy_RenderThread(TArray<TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>>& InOutTextureSharesProxy, const FString& ReleasedShareName)
-{
-	for (int32 Index = 0; Index < InOutTextureSharesProxy.Num(); Index++)
-	{
-		const TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& Instance = InOutTextureSharesProxy[Index];
-		if(Instance.IsValid() && Instance->Equals(ReleasedShareName))
-		{
-			InOutTextureSharesProxy[Index].Reset();
-			InOutTextureSharesProxy.RemoveAt(Index);
-			return;
-		}
-	}
-}
-
-static void ImplUpdateTextureSharesProxy_RenderThread(TArray<TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>>& InOutTextureSharesProxy, TMap<FString, FTextureShareInstanceData>& InNewProxyData)
-{
-	// Update exist and collect removed proxy:
-	TArray<TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>> ReleasedProxy;
-	for (TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& It : InOutTextureSharesProxy)
-	{
-		FTextureShareInstanceData* const NewData = InNewProxyData.Find(It->ShareName);
-
-		if (NewData)
-		{
-			It->UpdateData_RenderThread(*NewData);
-		}
-		else
-		{
-			ReleasedProxy.Add(It);
-		}
-	}
-
-	// Release
-	for (TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& TextureShareInstanceIt : ReleasedProxy)
-	{
-		int32 InstanceIndex = InOutTextureSharesProxy.Find(TextureShareInstanceIt);
-		TextureShareInstanceIt.Reset();
-
-		if (InstanceIndex != INDEX_NONE)
-		{
-			InOutTextureSharesProxy[InstanceIndex].Reset();
-			InOutTextureSharesProxy.RemoveAt(InstanceIndex);
-		}
-	}
+	UE_LOG(LogTextureShare, Log, TEXT("TextureShare module has been destroyed"));
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -138,31 +38,50 @@ void FTextureShareModule::StartupModule()
 
 void FTextureShareModule::ShutdownModule()
 {
+	ReleaseSharedResources();
 	UE_LOG(LogTextureShare, Log, TEXT("TextureShare module shutdown"));
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////////
-// FTextureShareModule
-//////////////////////////////////////////////////////////////////////////////////////////////
-FTextureShareModule::FTextureShareModule()
+void FTextureShareModule::ReleaseSharedResources()
 {
-	DisplayManager = MakeShareable(new FTextureShareDisplayManager(*this));
-	UE_LOG(LogTextureShare, Log, TEXT("TextureShare module has been instantiated"));
+	FScopeLock lock(&DataGuard);
+
+	TextureShareSceneContextCallback.Empty();
+	DisplayManager->EndSceneSharing();
+
+	ShareCoreAPI.ReleaseLib();
 }
 
-FTextureShareModule::~FTextureShareModule()
+//////////////////////////////////////////////////////////////////////////////////////////////
+// IModuleInterface
+//////////////////////////////////////////////////////////////////////////////////////////////
+void FTextureShareModule::RemoveSceneContextCallback(const FString& ShareName)
 {
-	UE_LOG(LogTextureShare, Log, TEXT("TextureShare module has been destroyed"));
-}
+	TextureShareSceneContextCallback.Remove(ShareName.ToLower());
 
-bool FTextureShareModule::LinkSceneContextToShare(const TSharedPtr<ITextureShareItem>& ShareItem, int StereoscopicPass, bool bIsEnabled)
-{
-	check(IsInGameThread());
-
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-	if (FindTextureShare(ShareItem, TextureShareInstance))
+	if (TextureShareSceneContextCallback.Num() == 0)
 	{
-		TextureShareInstance->LinkSceneContext(bIsEnabled ? StereoscopicPass : -1, DisplayManager);
+		DisplayManager->EndSceneSharing();
+	}
+}
+
+bool FTextureShareModule::LinkSceneContextToShare(const TSharedPtr<ITextureShareItem>& ShareItem, int StereoViewIndex, bool bIsEnabled)
+{
+	if (ShareItem.IsValid() && ShareItem->IsValid() )
+	{
+		FScopeLock lock(&DataGuard);
+		FString ShareName = ShareItem->GetName();
+
+		if (bIsEnabled)
+		{
+			TextureShareSceneContextCallback.Emplace(ShareName.ToLower(), StereoViewIndex);
+			DisplayManager->BeginSceneSharing();
+		}
+		else
+		{
+			RemoveSceneContextCallback(ShareName);
+		}
+
 		return true;
 	}
 
@@ -170,65 +89,65 @@ bool FTextureShareModule::LinkSceneContextToShare(const TSharedPtr<ITextureShare
 	return false;
 }
 
-bool FTextureShareModule::SetBackbufferRect(int StereoscopicPass, const FIntRect* BackbufferRect)
+bool FTextureShareModule::SetBackbufferRect(int StereoViewIndex, const FIntRect* BackbufferRect)
 {
-	check(IsInGameThread());
-
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-	if (FindTextureShare(StereoscopicPass, TextureShareInstance))
+	if (BackbufferRect == nullptr)
 	{
-		TextureShareInstance->SetRTTRect(BackbufferRect);
+		// Remove
+		if (BackbufferRects.Contains(StereoViewIndex))
+		{
+			BackbufferRects.Remove(StereoViewIndex);
+			return true;
+		}
+	}
+	else
+	{
+		BackbufferRects.Emplace(StereoViewIndex, *BackbufferRect);
 		return true;
 	}
 
-	// Share not exist
+	//@ todo handle error
 	return false;
 }
+
+ETextureShareDevice FTextureShareModule::GetTextureShareDeviceType() const
+{
+	FString RHIName = GDynamicRHI->GetName();
+	if (RHIName == TEXT("D3D11"))
+	{
+		return ETextureShareDevice::D3D11;
+	}
+	else
+		if (RHIName == TEXT("D3D12"))
+		{
+			return ETextureShareDevice::D3D12;
+		}
+
+	return ETextureShareDevice::Undefined;
+};
 
 bool FTextureShareModule::CreateShare(const FString& ShareName, const FTextureShareSyncPolicy& SyncMode, ETextureShareProcess Process, float SyncWaitTime)
 {
-	check(IsInGameThread());
+	FScopeLock lock(&DataGuard);
 
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> NewInstance;
-	if (FTextureShareInstance::Create(NewInstance, ShareName, SyncMode, Process))
-	{
-		TextureShares.Add(NewInstance);
+	TSharedPtr<ITextureShareItem> ShareItem;
+	ETextureShareDevice ShareDevice = GetTextureShareDeviceType();
 
-		ENQUEUE_RENDER_COMMAND(CreateTextureSharesProxy)(
-			[TextureShareModule = this, NewProxyInstance = NewInstance](FRHICommandListImmediate& RHICmdList)
-		{
-			ImplCreateTextureShareProxy_RenderThread(TextureShareModule->TextureSharesProxy, NewProxyInstance);
-		});
-
-		return true;
-	}
-
-	return false;
+	return ShareCoreAPI.CreateTextureShareItem(ShareName, Process, SyncMode, ShareDevice, ShareItem, SyncWaitTime);
 }
 
 bool FTextureShareModule::ReleaseShare(const FString& ShareName)
 {
-	check(IsInGameThread());
-
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-	if (FindTextureShare(ShareName, TextureShareInstance))
+	if (ShareCoreAPI.ReleaseTextureShareItem(ShareName))
 	{
-		int32 InstanceIndex = TextureShares.Find(TextureShareInstance);
-		TextureShareInstance.Reset();
+		FScopeLock lock(&DataGuard);
 
-		if (InstanceIndex != INDEX_NONE)
+		RemoveSceneContextCallback(ShareName);
+
+		if (TextureShareSceneContextCallback.Num() == 0)
 		{
-			TextureShares[InstanceIndex].Reset();
-			TextureShares.RemoveAt(InstanceIndex);
+			DisplayManager->EndSceneSharing();
 		}
-
-		FString ReleasedShareName = ShareName;
-		ENQUEUE_RENDER_COMMAND(CreateTextureSharesProxy)(
-			[TextureShareModule = this, ReleasedShareName](FRHICommandListImmediate& RHICmdList)
-		{
-			ImplReleaseTextureShareProxy_RenderThread(TextureShareModule->TextureSharesProxy, ReleasedShareName);
-		});
-
 		return true;
 	}
 
@@ -237,97 +156,163 @@ bool FTextureShareModule::ReleaseShare(const FString& ShareName)
 
 bool FTextureShareModule::GetShare(const FString& ShareName, TSharedPtr<ITextureShareItem>& OutShareItem) const
 {
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-	if (IsInGameThread()?FindTextureShare(ShareName, TextureShareInstance): FindTextureShare_RenderThread(ShareName, TextureShareInstance))
+	return ShareCoreAPI.GetTextureShareItem(ShareName, OutShareItem);
+}
+
+void FTextureShareModule::OnResolvedSceneColor_RenderThread(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures, class FSceneViewFamily& ViewFamily)
+{
+	FScopeLock lock(&DataGuard);
+
+	if (ViewFamily.Views.Num() > 0)
 	{
-		OutShareItem = TextureShareInstance->GetTextureShareItem();
-		return true;
+	{
+		int32 StereoViewIndex = ViewFamily.Views[0]->StereoViewIndex;
+		// Send SceneContext callback for all registered shares:
+		for (auto& It : TextureShareSceneContextCallback)
+		{
+			if (It.Value == (int)StereoViewIndex)
+			{
+				SendSceneContext_RenderThread(GraphBuilder, It.Key, SceneTextures, ViewFamily);
+			}
+		}
+	}
+}
+}
+
+void FTextureShareModule::OnPostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, class FSceneViewFamily& ViewFamily)
+{
+	FScopeLock lock(&DataGuard);
+	
+	if (ViewFamily.Views.Num() > 0)
+	{
+	{
+		int32 StereoViewIndex = ViewFamily.Views[0]->StereoViewIndex;
+		// Send PostRender callback for all registered shares:
+		for (auto& It : TextureShareSceneContextCallback)
+		{
+			if (It.Value == (int)StereoViewIndex)
+			{
+				SendPostRender_RenderThread(RHICmdList, It.Key, ViewFamily);
+			}
+		}
+	}
+}
+}
+
+bool FTextureShareModule::RegisterTexture(const TSharedPtr<ITextureShareItem>& ShareItem, const FString& InTextureName, const FIntPoint& InSize, EPixelFormat InFormat, ETextureShareSurfaceOp OperationType)
+{
+	if(ShareItem.IsValid())
+	{
+		return ShareItem->RegisterTexture(InTextureName.ToLower(), InSize, ETextureShareFormat::Format_EPixel, InFormat, OperationType);
 	}
 
 	return false;
 }
 
-void FTextureShareModule::UpdateTextureSharesProxy()
-{
-	check(IsInGameThread());
+BEGIN_SHADER_PARAMETER_STRUCT(FSendTextureParameters, )
+	RDG_TEXTURE_ACCESS(Texture, ERHIAccess::CopySrc)
+END_SHADER_PARAMETER_STRUCT()
 
-	// Get new proxy data updates
-	TMap<FString, FTextureShareInstanceData>* NewProxyData = new TMap<FString, FTextureShareInstanceData>();
-	for (TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& It : TextureShares)
+bool FTextureShareModule::SendSceneContext_RenderThread(FRDGBuilder& GraphBuilder, const FString& ShareName, const FSceneTextures& SceneTextures, class FSceneViewFamily& ViewFamily)
+{
+	TSharedPtr<ITextureShareItem> ShareItem;
+	if (ShareCoreAPI.GetTextureShareItem(ShareName, ShareItem) && ShareItem.IsValid() && ShareItem->IsValid())
 	{
-		if (It->IsValid())
+		if (ShareItem->BeginFrame_RenderThread())
 		{
-			NewProxyData->Add(It->ShareName, It->GetDataConstRef());
+			//@todo: Add additional information from ViewFamily
+			if (ViewFamily.Views.Num() > 0)
+			{
+				const FSceneView* View = ViewFamily.Views[0];
+
+				// Complete additional frame data
+				{
+					FTextureShareAdditionalData AdditionalData;
+					{
+						AdditionalData.FrameNumber = ViewFamily.FrameNumber;
+
+						AdditionalData.PrjMatrix = View->ViewMatrices.GetProjectionMatrix();
+						AdditionalData.ViewMatrix = View->ViewMatrices.GetViewMatrix();
+
+						//@todo: Add more info
+					}
+					ShareItem->SetLocalAdditionalData(AdditionalData);
+				}
+			}
+
+#if WITH_MGPU
+			if (ViewFamily.bMultiGPUForkAndJoin)
+			{
+				if (ViewFamily.Views.Num() > 0)
+				{
+					// Setup GPU index for all shared scene textures
+					const FSceneView* SceneView = ViewFamily.Views[0];
+					ShareItem->SetDefaultGPUIndex(SceneView->GPUMask.GetFirstIndex());
+				}
+			}
+#endif
+
+			const auto AddSendTexturePass = [&](const TCHAR* ShareName, FRDGTextureRef Texture)
+			{
+				if (!HasBeenProduced(Texture))
+				{
+					return;
+				}
+
+				FSendTextureParameters* PassParameters = GraphBuilder.AllocParameters<FSendTextureParameters>();
+				PassParameters->Texture = Texture;
+
+				GraphBuilder.AddPass(
+					RDG_EVENT_NAME("SendTexture_%s", Texture->Name),
+					PassParameters,
+					ERDGPassFlags::Copy | ERDGPassFlags::NeverCull,
+					[this, Texture, ShareItem, ShareName](FRHICommandListImmediate& RHICmdList)
+				{
+					SendTexture_RenderThread(RHICmdList, ShareItem, ShareName, Texture->GetRHI());
+				});
+			};
+
+			AddSendTexturePass(TextureShareStrings::texture_name::SceneColor, SceneTextures.Color.Resolve);
+
+			AddSendTexturePass(TextureShareStrings::texture_name::SceneDepth, SceneTextures.Depth.Resolve);
+			AddSendTexturePass(TextureShareStrings::texture_name::SmallDepthZ, SceneTextures.SmallDepth);
+
+			AddSendTexturePass(TextureShareStrings::texture_name::GBufferA, SceneTextures.GBufferA);
+			AddSendTexturePass(TextureShareStrings::texture_name::GBufferB, SceneTextures.GBufferB);
+			AddSendTexturePass(TextureShareStrings::texture_name::GBufferC, SceneTextures.GBufferC);
+			AddSendTexturePass(TextureShareStrings::texture_name::GBufferD, SceneTextures.GBufferD);
+			AddSendTexturePass(TextureShareStrings::texture_name::GBufferE, SceneTextures.GBufferE);
+			AddSendTexturePass(TextureShareStrings::texture_name::GBufferF, SceneTextures.GBufferF);
+
+			//@todo: Add more textures
+
+			return true;
 		}
 	}
 
-	// send updates to renderthread
-	ENQUEUE_RENDER_COMMAND(UpdateTextureSharesProxy)(
-		[TextureShareModule = this, NewProxyData = NewProxyData](FRHICommandListImmediate& RHICmdList)
-	{
-		ImplUpdateTextureSharesProxy_RenderThread(TextureShareModule->TextureSharesProxy, *NewProxyData);
-		delete NewProxyData;
-	});
+	return false;
 }
 
-void FTextureShareModule::OnBeginRenderViewFamily(FSceneViewFamily& InViewFamily)
+bool FTextureShareModule::SendPostRender_RenderThread(FRHICommandListImmediate& RHICmdList, const FString& ShareName, class FSceneViewFamily& ViewFamily)
 {
-	check(IsInGameThread());
-
-	if (InViewFamily.Views.Num() > 0)
+	TSharedPtr<ITextureShareItem> ShareItem;
+	if (ShareCoreAPI.GetTextureShareItem(ShareName, ShareItem) && ShareItem.IsValid() && ShareItem->IsValid() && ShareItem->IsLocalFrameLocked())
 	{
-		EStereoscopicPass StereoscopicPass = InViewFamily.Views[0]->StereoPass;
-
-		TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-		if (FindTextureShare(StereoscopicPass, TextureShareInstance))
+		if (ViewFamily.RenderTarget && ViewFamily.Views.Num() > 0)
 		{
-			TextureShareInstance->HandleBeginNewFrame();
+			// Get backbuffer texture
+			FTexture2DRHIRef BackBufferTexture = ViewFamily.RenderTarget->GetRenderTargetTexture();
+
+			//@todo Get rect from ViewFamily (check ViewFamily.Views[0]->UnconstrainedViewRect?, etc)
+			// Use custom backbuffer viewport rect, defined by SetBackbufferRect()
+			int32 StereoViewIndex = ViewFamily.Views[0]->StereoViewIndex;
+
+			// Send rect of backbuffer texture
+			SendTexture_RenderThread(RHICmdList, ShareItem, TextureShareStrings::texture_name::BackBuffer, BackBufferTexture.GetReference(), BackbufferRects.Find(StereoViewIndex));
 		}
-	}
 
-	// Always update texture shares proxy list before viewfamily render
-	UpdateTextureSharesProxy();
-}
-
-void FTextureShareModule::OnResolvedSceneColor_RenderThread(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext, class FSceneViewFamily& ViewFamily)
-{
-	check(IsInRenderingThread());
-
-	if (ViewFamily.Views.Num() > 0)
-	{
-		EStereoscopicPass StereoscopicPass = ViewFamily.Views[0]->StereoPass;
-
-		TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-		if (FindTextureShare_RenderThread(StereoscopicPass, TextureShareInstance))
-		{
-			TextureShareInstance->SendSceneContext_RenderThread(RHICmdList, SceneContext, ViewFamily);
-		}
-	}
-}
-
-void FTextureShareModule::OnPostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, class FSceneViewFamily& ViewFamily)
-{
-	check(IsInRenderingThread());
-
-	if (ViewFamily.Views.Num() > 0)
-	{
-		EStereoscopicPass StereoscopicPass = ViewFamily.Views[0]->StereoPass;
-
-		TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-		if (FindTextureShare_RenderThread(StereoscopicPass, TextureShareInstance))
-		{
-			TextureShareInstance->SendPostRender_RenderThread(RHICmdList, ViewFamily);
-		}
-	}
-}
-
-bool FTextureShareModule::RegisterTexture(const TSharedPtr<ITextureShareItem>& ShareItem, const FString& InTextureName, const FIntPoint& InSize, EPixelFormat InFormat, ETextureShareSurfaceOp OperationType)
-{
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-	bool bIsExist = IsInGameThread() ? FindTextureShare(ShareItem, TextureShareInstance) : FindTextureShare_RenderThread(ShareItem, TextureShareInstance);
-	if(bIsExist)
-	{
-		return TextureShareInstance->RegisterTexture(InTextureName, InSize, InFormat, OperationType);
+		ShareItem->EndFrame_RenderThread();
+		return true;
 	}
 
 	return false;
@@ -335,12 +320,23 @@ bool FTextureShareModule::RegisterTexture(const TSharedPtr<ITextureShareItem>& S
 
 bool FTextureShareModule::SendTexture_RenderThread(FRHICommandListImmediate& RHICmdList, const TSharedPtr<ITextureShareItem>& ShareItem, const FString& InTextureName, FRHITexture* RHITexture, const FIntRect* SrcTextureRect)
 {
-	check(IsInRenderingThread());
-
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-	if (FindTextureShare_RenderThread(ShareItem, TextureShareInstance))
+	if (ShareItem.IsValid() && ShareItem->IsValid())
 	{
-		return TextureShareInstance->SendTexture_RenderThread(RHICmdList, InTextureName, RHITexture, SrcTextureRect);
+		FString TextureName = InTextureName.ToLower();
+		if (ShareItem->IsRemoteTextureUsed(TextureName))
+		{
+			if (RHITexture && RHITexture->IsValid())
+			{
+				// register size+format, then send texture
+				FIntVector InSize = RHITexture->GetSizeXYZ();
+				FIntPoint  SrcRectSize = SrcTextureRect ? SrcTextureRect->Size() : FIntPoint(InSize.X, InSize.Y);
+
+				if (RegisterTexture(ShareItem, TextureName, SrcRectSize, RHITexture->GetFormat(), ETextureShareSurfaceOp::Write))
+				{
+					return WriteToShare_RenderThread(RHICmdList, ShareItem, TextureName, RHITexture, SrcTextureRect);
+				}
+			}
+		}
 	}
 
 	return false;
@@ -348,88 +344,61 @@ bool FTextureShareModule::SendTexture_RenderThread(FRHICommandListImmediate& RHI
 
 bool FTextureShareModule::WriteToShare_RenderThread(FRHICommandListImmediate& RHICmdList, const TSharedPtr<ITextureShareItem>& ShareItem, const FString& InTextureName, FRHITexture* SrcTexture, const FIntRect* SrcTextureRect)
 {
-	check(IsInRenderingThread());
-
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-	if (FindTextureShare_RenderThread(ShareItem, TextureShareInstance))
+	bool bResult = false;
+	if (ShareItem.IsValid())
 	{
-		TextureShareInstance->WriteToShare_RenderThread(RHICmdList, InTextureName, SrcTexture, SrcTextureRect);
+		FTexture2DRHIRef SharedRHITexture;
+		FString TextureName = InTextureName.ToLower();
+		if (ShareItem->LockRHITexture_RenderThread(TextureName, SharedRHITexture))
+		{
+			bool bIsFormatResampleRequired = ShareItem->IsFormatResampleRequired(SharedRHITexture, SrcTexture);
+			bResult = FTextureShareRHI::WriteToShareTexture_RenderThread(RHICmdList, SrcTexture, SharedRHITexture, SrcTextureRect, bIsFormatResampleRequired);
+			ShareItem->TransferTexture_RenderThread(RHICmdList, TextureName);
+			ShareItem->UnlockTexture_RenderThread(TextureName);
+		}
 	}
 
-	return false;
+	return bResult;
 }
 
 bool FTextureShareModule::ReceiveTexture_RenderThread(FRHICommandListImmediate& RHICmdList, const TSharedPtr<ITextureShareItem>& ShareItem, const FString& TextureName, FRHITexture* RHITexture, const FIntRect* DstTextureRect)
 {
-	check(IsInRenderingThread());
-
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-	if (FindTextureShare_RenderThread(ShareItem, TextureShareInstance))
+	if (RHITexture && RHITexture->IsValid())
 	{
-		TextureShareInstance->ReceiveTexture_RenderThread(RHICmdList, TextureName, RHITexture, DstTextureRect);
-	}
+		// register size+format, then receive texture
+		FIntVector InSize = RHITexture->GetSizeXYZ();
+		FIntPoint  DstRectSize = DstTextureRect ? DstTextureRect->Size() : FIntPoint(InSize.X, InSize.Y);
 
+		if (RegisterTexture(ShareItem, TextureName, DstRectSize, RHITexture->GetFormat(), ETextureShareSurfaceOp::Read))
+		{
+			return ReadFromShare_RenderThread(RHICmdList, ShareItem, TextureName, RHITexture, DstTextureRect);
+		}
+	}
 	return false;
 }
 
 bool FTextureShareModule::ReadFromShare_RenderThread(FRHICommandListImmediate& RHICmdList, const TSharedPtr<ITextureShareItem>& ShareItem, const FString& InTextureName, FRHITexture* DstTexture, const FIntRect* DstTextureRect)
 {
-	check(IsInRenderingThread());
+	bool bResult = false;
 
-	TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe> TextureShareInstance;
-	if (FindTextureShare_RenderThread(ShareItem, TextureShareInstance))
+	if (ShareItem.IsValid())
 	{
-		TextureShareInstance->ReadFromShare_RenderThread(RHICmdList, InTextureName, DstTexture, DstTextureRect);
-	}
-
-	return false;
+		FTexture2DRHIRef SharedRHITexture;
+		FString TextureName = InTextureName.ToLower();
+		if (ShareItem->LockRHITexture_RenderThread(TextureName, SharedRHITexture))
+		{
+			bool bIsFormatResampleRequired = ShareItem->IsFormatResampleRequired(SharedRHITexture, DstTexture);
+			ShareItem->TransferTexture_RenderThread(RHICmdList, TextureName);
+			bResult = FTextureShareRHI::ReadFromShareTexture_RenderThread(RHICmdList, SharedRHITexture, DstTexture, DstTextureRect, bIsFormatResampleRequired);
+			ShareItem->UnlockTexture_RenderThread(TextureName);
+		}
+	} 
+	return bResult;
 }
 
 void FTextureShareModule::CastTextureShareBPSyncPolicy(const FTextureShareBPSyncPolicy& InSyncPolicy, FTextureShareSyncPolicy& OutSyncPolicy)
 {
 	OutSyncPolicy = *InSyncPolicy;
-}
-
-bool FTextureShareModule::FindTextureShare(const FString& ShareName, TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& OutTextureShare) const
-{
-	check(IsInGameThread());
-
-	return ImplFindTextureShare(false, TextureShares, ShareName, OutTextureShare);
-}
-
-bool FTextureShareModule::FindTextureShare(const TSharedPtr<ITextureShareItem>& ShareItem, TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& OutTextureShare) const
-{
-	check(IsInGameThread());
-
-	return ImplFindTextureShare(false, TextureShares, ShareItem, OutTextureShare);
-}
-
-bool FTextureShareModule::FindTextureShare(int32 InStereoscopicPass, TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& OutTextureShare) const
-{
-	check(IsInGameThread());
-
-	return ImplFindTextureShare(false, TextureShares, InStereoscopicPass, OutTextureShare);
-}
-
-bool FTextureShareModule::FindTextureShare_RenderThread(const FString& ShareName, TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& OutTextureShare) const
-{
-	check(IsInRenderingThread());
-
-	return ImplFindTextureShare(true, TextureSharesProxy, ShareName, OutTextureShare);
-}
-
-bool FTextureShareModule::FindTextureShare_RenderThread(const TSharedPtr<ITextureShareItem>& ShareItem, TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& OutTextureShare) const
-{
-	check(IsInRenderingThread());
-
-	return ImplFindTextureShare(true, TextureSharesProxy, ShareItem, OutTextureShare);
-}
-
-bool FTextureShareModule::FindTextureShare_RenderThread(int32 InStereoscopicPass, TSharedPtr<FTextureShareInstance, ESPMode::ThreadSafe>& OutTextureShare) const
-{
-	check(IsInRenderingThread());
-
-	return ImplFindTextureShare(true, TextureSharesProxy, InStereoscopicPass, OutTextureShare);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////

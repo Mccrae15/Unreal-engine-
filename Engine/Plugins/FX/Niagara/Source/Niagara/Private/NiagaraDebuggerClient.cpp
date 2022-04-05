@@ -42,12 +42,12 @@ FNiagaraDebuggerClient::FNiagaraDebuggerClient()
 	InstanceName = FApp::GetInstanceName();
 	UE_LOG(LogNiagaraDebuggerClient, Log, TEXT("Niagara Debugger Client Initialized | Session: %s | Instance: %s (%s)."), *SessionId.ToString(), *InstanceId.ToString(), *InstanceName);
 
-	TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FNiagaraDebuggerClient::Tick));
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FNiagaraDebuggerClient::Tick));
 }
 
 FNiagaraDebuggerClient::~FNiagaraDebuggerClient()
 {
-	FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 
 	CloseConnection();
 }
@@ -62,7 +62,7 @@ void FNiagaraDebuggerClient::UpdateClientInfo()
 {
 	if (MessageEndpoint.IsValid() && Connection.IsValid())
 	{
-		FNiagaraSimpleClientInfo* NewInfo = new FNiagaraSimpleClientInfo();
+		FNiagaraSimpleClientInfo* NewInfo = FMessageEndpoint::MakeMessage<FNiagaraSimpleClientInfo>();
 
 		for (TObjectIterator<UNiagaraSystem> It; It; ++It)
 		{
@@ -84,7 +84,7 @@ void FNiagaraDebuggerClient::UpdateClientInfo()
 		for (TObjectIterator<UNiagaraComponent> It; It; ++It)
 		{
 			UNiagaraComponent* Comp = *It;
-			if (Comp)
+			if (IsValid(Comp) && !Comp->HasAnyFlags(EObjectFlags::RF_ClassDefaultObject))
 			{
 				NewInfo->Components.AddUnique(Comp->GetName());
 				Actors.Add(Comp->GetOwner());
@@ -93,9 +93,9 @@ void FNiagaraDebuggerClient::UpdateClientInfo()
 
 		for (AActor* Actor : Actors)
 		{
-			if (Actor)
+			if (IsValid(Actor) && !Actor->HasAnyFlags(EObjectFlags::RF_ClassDefaultObject))
 			{
-				NewInfo->Actors.Add(Actor->GetName());
+				NewInfo->Actors.AddUnique(Actor->GetActorNameOrLabel());
 			}
 		}
 
@@ -119,7 +119,7 @@ void FNiagaraDebuggerClient::HandleConnectionRequestMessage(const FNiagaraDebugg
 		
 		//Accept the connection and inform the debugger we have done so with an accepted message.
 		Connection = Context->GetSender();
-		MessageEndpoint->Send(new FNiagaraDebuggerAcceptConnection(SessionId, InstanceId), EMessageFlags::Reliable, nullptr, TArrayBuilder<FMessageAddress>().Add(Connection), FTimespan::Zero(), FDateTime::MaxValue());
+		MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FNiagaraDebuggerAcceptConnection>(SessionId, InstanceId), EMessageFlags::Reliable, nullptr, TArrayBuilder<FMessageAddress>().Add(Connection), FTimespan::Zero(), FDateTime::MaxValue());
 		
 		//Also send an initial update of the client info.
 		UpdateClientInfo();		
@@ -158,20 +158,24 @@ void FNiagaraDebuggerClient::HandleDebugHUDSettingsMessage(const FNiagaraDebugHU
 		UE_LOG(LogNiagaraDebuggerClient, Log, TEXT("Received updated DebugHUD settings. | Session: %s | Instance: %s (%s)."), *SessionId.ToString(), *InstanceId.ToString(), *InstanceName);
 
 		//Pass along the new settings.
-		auto ApplySettingsToWorldMan = [&Message](FNiagaraWorldManager& WorldMan)
-		{
-			WorldMan.GetNiagaraDebugHud()->UpdateSettings(Message);
+		auto ApplySettingsToWorldMan =
+			[&Message](FNiagaraWorldManager& WorldMan)
+			{
+				WorldMan.GetNiagaraDebugHud()->UpdateSettings(Message);
 
-			//TODO: Move these to just take direct from the debug hud per worldman?
-			//Possbly move the debug hud itself to the debugger client rather than having one per world man and they all share global state.
-			WorldMan.SetDebugPlaybackMode(Message.PlaybackMode);
-			WorldMan.SetDebugPlaybackRate(Message.bPlaybackRateEnabled ? Message.PlaybackRate : 1.0f);
-		};
+				//TODO: Move these to just take direct from the debug hud per worldman?
+				//Possibly move the debug hud itself to the debugger client rather than having one per world man and they all share global state.
+				const ENiagaraDebugPlaybackMode PlaybackMode = Message.IsEnabled() ? Message.PlaybackMode : ENiagaraDebugPlaybackMode::Play;
+				const float PlaybackRate = Message.IsEnabled() && Message.bPlaybackRateEnabled ? Message.PlaybackRate : 1.0f;
+				WorldMan.SetDebugPlaybackMode(PlaybackMode);
+				WorldMan.SetDebugPlaybackRate(PlaybackRate);
+			};
 
 		FNiagaraWorldManager::ForAllWorldManagers(ApplySettingsToWorldMan);
 			
 		//TODO: Move usage to come direct from settings struct instead of this CVar.
-		ExecuteConsoleCommand(*FString::Printf(TEXT("fx.Niagara.Debug.GlobalLoopTime %.3f"), Message.bLoopTimeEnabled && Message.PlaybackMode == ENiagaraDebugPlaybackMode::Loop ? Message.LoopTime : 0.0f), true);
+		const float GlobalLoopTime = Message.IsEnabled() && Message.bLoopTimeEnabled && Message.PlaybackMode == ENiagaraDebugPlaybackMode::Loop ? Message.LoopTime : 0.0f;
+		ExecuteConsoleCommand(*FString::Printf(TEXT("fx.Niagara.Debug.GlobalLoopTime %.3f"), GlobalLoopTime), true);
 	}
 }
 void FNiagaraDebuggerClient::HandleRequestSimpleClientInfoMessage(const FNiagaraRequestSimpleClientInfoMessage& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
@@ -212,7 +216,7 @@ void FNiagaraDebuggerClient::HandleOutlinerSettingsMessage(const FNiagaraOutline
 				{
 					OutlinerCountdown = Message.CaptureDelayFrames;
 					UE_LOG(LogNiagaraDebuggerClient, Log, TEXT("Recieved request to capture outliner data. Capturing in %u frames. | Session: %s | Instance: %s (%s)."), Message.CaptureDelayFrames, *SessionId.ToString(), *InstanceId.ToString(), *InstanceName);
-					FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FNiagaraDebuggerClient::UpdateOutliner));
+					FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FNiagaraDebuggerClient::UpdateOutliner));
 				}
 			}
 			else
@@ -231,7 +235,7 @@ void FNiagaraDebuggerClient::CloseConnection()
 {
 	if (MessageEndpoint.IsValid() && Connection.IsValid())
 	{
-		MessageEndpoint->Send(new FNiagaraDebuggerConnectionClosed(SessionId, InstanceId), EMessageFlags::Reliable, nullptr, TArrayBuilder<FMessageAddress>().Add(Connection), FTimespan::Zero(), FDateTime::MaxValue());
+		MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FNiagaraDebuggerConnectionClosed>(SessionId, InstanceId), EMessageFlags::Reliable, nullptr, TArrayBuilder<FMessageAddress>().Add(Connection), FTimespan::Zero(), FDateTime::MaxValue());
 	}
 
 	OnConnectionClosed();
@@ -284,7 +288,7 @@ bool FNiagaraDebuggerClient::UpdateOutliner(float DeltaSeconds)
 	OutlinerCountdown = 0;
 	if(ensure(Connection.IsValid()))
 	{
-		FNiagaraDebuggerOutlinerUpdate* Message = new FNiagaraDebuggerOutlinerUpdate();
+		FNiagaraDebuggerOutlinerUpdate* Message = FMessageEndpoint::MakeMessage<FNiagaraDebuggerOutlinerUpdate>();
 	
 		//Gather all high level state data to pass to the outliner in the debugger.
 		//TODO: Move out to somewhere neater and add more info.
@@ -346,30 +350,46 @@ bool FNiagaraDebuggerClient::UpdateOutliner(float DeltaSeconds)
 				FNiagaraOutlinerSystemInstanceData& InstData = Instances.SystemInstances.AddDefaulted_GetRef();
 				InstData.ComponentName = Comp->GetPathName();
 
-				if (FNiagaraSystemInstance* Inst = Comp->GetSystemInstance())
+				if (FNiagaraSystemInstanceControllerPtr InstController = Comp->GetSystemInstanceController())
 				{
-					InstData.ActualExecutionState = Inst->GetActualExecutionState();
-					InstData.RequestedExecutionState = Inst->GetRequestedExecutionState();
+					InstData.ActualExecutionState = InstController->GetActualExecutionState();
+					InstData.RequestedExecutionState = InstController->GetRequestedExecutionState();
 
 					InstData.ScalabilityState = Comp->DebugCachedScalabilityState;
-					InstData.bPendingKill = Comp->IsPendingKillOrUnreachable();
+					InstData.bPendingKill = !IsValidChecked(Comp) || Comp->IsUnreachable();
+					InstData.bUsingCullProxy = Comp->IsUsingCullProxy();
 
 					InstData.PoolMethod = Comp->PoolingMethod;
 
-					InstData.Emitters.Reserve(Inst->GetEmitters().Num());
-					for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& EmitterInst : Inst->GetEmitters())
+					// TODO: need to be able to access at least a shadow copy of per-emitter execution state and num particles. For now, we'll just allow unsafe access
+					if (FNiagaraSystemInstance* Inst = InstController->GetSystemInstance_Unsafe())
 					{
-						FNiagaraOutlinerEmitterInstanceData& EmitterData = InstData.Emitters.AddDefaulted_GetRef();
-						if (EmitterInst->GetCachedEmitter())
-						{
-							//TODO: This is a bit wasteful to copy the name into each instance data. Though we can't rely on the debugger side data matchin the actul running data on the device.
-							//We need to build a shared representation of the asset data from the client that we then reference from this per instance data.
-							EmitterData.EmitterName = EmitterInst->GetCachedEmitter()->GetUniqueEmitterName();
-							EmitterData.SimTarget = EmitterInst->GetCachedEmitter()->SimTarget;
-							//Move all above to a shared asset representation.
+						InstData.TickGroup = Inst->CalculateTickGroup();
 
-							EmitterData.ExecState = EmitterInst->GetExecutionState();
-							EmitterData.NumParticles = EmitterInst->GetNumParticles();
+						InstData.bIsSolo = Inst->IsSolo();
+						InstData.bRequiresDistanceFieldData = Inst->RequiresDistanceFieldData();
+						InstData.bRequiresDepthBuffer = Inst->RequiresDepthBuffer();
+						InstData.bRequiresEarlyViewData = Inst->RequiresEarlyViewData();
+						InstData.bRequiresViewUniformBuffer = Inst->RequiresViewUniformBuffer();
+						InstData.bRequiresRayTracingScene = Inst->RequiresRayTracingScene();
+
+						InstData.Emitters.Reserve(Inst->GetEmitters().Num());
+						for (TSharedRef<FNiagaraEmitterInstance, ESPMode::ThreadSafe>& EmitterInst : Inst->GetEmitters())
+						{
+							FNiagaraOutlinerEmitterInstanceData& EmitterData = InstData.Emitters.AddDefaulted_GetRef();
+							if (UNiagaraEmitter* NiagaraEmitter = EmitterInst->GetCachedEmitter())
+							{
+								//TODO: This is a bit wasteful to copy the name into each instance data. Though we can't rely on the debugger side data matchin the actul running data on the device.
+								//We need to build a shared representation of the asset data from the client that we then reference from this per instance data.
+								EmitterData.EmitterName = NiagaraEmitter->GetUniqueEmitterName();
+								EmitterData.SimTarget = NiagaraEmitter->SimTarget;
+								//Move all above to a shared asset representation.
+
+								EmitterData.ExecState = EmitterInst->GetExecutionState();
+								EmitterData.NumParticles = EmitterInst->GetNumParticles();
+
+								EmitterData.bRequiresPersistentIDs = NiagaraEmitter->RequiresPersistentIDs();
+							}
 						}
 					}
 				}

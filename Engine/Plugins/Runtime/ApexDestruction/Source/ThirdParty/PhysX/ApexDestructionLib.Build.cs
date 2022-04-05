@@ -64,24 +64,6 @@ public class ApexDestructionLib : ModuleRules
             }
 
         }
-        else if (Target.Platform == UnrealTargetPlatform.Win32)
-        {
-            PublicAdditionalLibraries.Add(Path.Combine(ApexLibDir, "Win32", "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), String.Format("APEXFramework{0}_x86.lib", LibrarySuffix)));
-            PublicDelayLoadDLLs.Add(String.Format("APEXFramework{0}_x86.dll", LibrarySuffix));
-
-            string[] RuntimeDependenciesX86 =
-            {
-                "APEX_Destructible{0}_x86.dll",
-            };
-
-            string ApexBinariesDir = String.Format("$(EngineDir)/Binaries/ThirdParty/PhysX3/Win32/VS{0}/", Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
-            foreach (string RuntimeDependency in RuntimeDependenciesX86)
-            {
-                string FileName = ApexBinariesDir + String.Format(RuntimeDependency, LibrarySuffix);
-                RuntimeDependencies.Add(FileName, StagedFileType.NonUFS);
-                RuntimeDependencies.Add(Path.ChangeExtension(FileName, ".pdb"), StagedFileType.DebugNonUFS);
-            }
-        }
         else if (Target.Platform == UnrealTargetPlatform.HoloLens)
         {
             string Arch = Target.WindowsPlatform.GetArchitectureSubpath();
@@ -121,7 +103,7 @@ public class ApexDestructionLib : ModuleRules
         {
             if (Target.Architecture.StartsWith("x86_64"))
             {
-				string PhysXBinariesDir = Target.UEThirdPartyBinariesDirectory + "PhysX3/Linux/" + Target.Architecture;
+				string PhysXBinariesDir = Target.UEThirdPartyBinariesDirectory + "PhysX3/Unix/" + Target.Architecture;
 				string LibraryPath = PhysXBinariesDir + String.Format("/libAPEX_Destructible{0}.so", LibrarySuffix);
 				PublicAdditionalLibraries.Add(LibraryPath);
 				RuntimeDependencies.Add(LibraryPath);

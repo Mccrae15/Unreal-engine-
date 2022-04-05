@@ -8,8 +8,11 @@ D3D12RHICommon.h: Common D3D12 RHI definitions for Windows.
 
 DECLARE_STATS_GROUP(TEXT("D3D12RHI"), STATGROUP_D3D12RHI, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("D3D12RHI: Memory"), STATGROUP_D3D12Memory, STATCAT_Advanced);
+DECLARE_STATS_GROUP(TEXT("D3D12RHI: Memory Details"), STATGROUP_D3D12MemoryDetails, STATCAT_Advanced);
+DECLARE_STATS_GROUP(TEXT("D3D12RHI: Resources"), STATGROUP_D3D12Resources, STATCAT_Advanced);
+DECLARE_STATS_GROUP(TEXT("D3D12RHI: Buffer Details"), STATGROUP_D3D12BufferDetails, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("D3D12RHI: Pipeline State (PSO)"), STATGROUP_D3D12PipelineState, STATCAT_Advanced);
-DECLARE_STATS_GROUP(TEXT("D3D12RHI: Descriptor Heap (GPU visible)"), STATGROUP_D3D12DescriptorHeap, STATCAT_Advanced);
+DECLARE_STATS_GROUP(TEXT("D3D12RHI: Descriptor Heap (GPU Visible)"), STATGROUP_D3D12DescriptorHeap, STATCAT_Advanced);
 
 #include "Windows/WindowsHWrapper.h"
 #include "D3D12RHI.h"
@@ -20,9 +23,11 @@ class FD3D12Device;
 // Defines a unique command queue type within a FD3D12Device (owner by the command list managers).
 enum class ED3D12CommandQueueType
 {
-	Default,
+	Direct = 0,
 	Copy,
-	Async
+	Async,
+
+	Count,
 };
 
 class FD3D12AdapterChild
@@ -296,7 +301,7 @@ private:
 	struct FLinkedObjects
 	{
 		FLinkedObjects() 
-			: Objects(nullptr)
+			: Objects(InPlace, nullptr)
 		{}
 
 		FRHIGPUMask GPUMask;

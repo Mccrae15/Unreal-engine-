@@ -513,6 +513,14 @@ public:
 	virtual EBuildConfiguration GetBuildConfiguration( ) const = 0;
 
 	/**
+	 * Gets the build target.
+	 *
+	 * @Return Target name to build/run (it would match a .Target.cs file)
+	 * @see SetBuildTarget
+	 */
+	virtual const FString& GetBuildTarget() const = 0;
+
+	/**
 	 * Gets the build configuration name of the cooker.
 	 *
 	 * @return Cook configuration name.
@@ -1017,10 +1025,17 @@ public:
 	virtual void SetBuildConfiguration( EBuildConfiguration Configuration ) = 0;
 
 	/**
+	 * Sets the build target.
+	 *
+	 * @param TargetName The target name to set (it would match a .Target.cs file)
+	 * @see GetBuildTarget
+	 */
+	virtual void SetBuildTarget( const FString& TargetName ) = 0;
+	/**
 	 * Sets the build configuration of the cooker.
 	 *
 	 * @param Configuration The cooker's build configuration to set.
-	 * @see GetBuildConfigurationName
+	 * @see GetCookConfiguration
 	 */
 	virtual void SetCookConfiguration( EBuildConfiguration Configuration ) = 0;
 
@@ -1304,6 +1319,19 @@ public:
 	virtual bool IsUsingIoStore() const = 0;
 
 	/**
+	 * Sets whether to use the Zen storage server
+	 * @param bUseZenStore Whether to use the Zen storage server
+	 */
+	virtual void SetUseZenStore(bool bUseZenStore) = 0;
+
+	/**
+	 * Using Zen storage server or not.
+	 *
+	 * @return true if using Zen storage server
+	 */
+	virtual bool IsUsingZenStore() const = 0;
+
+	/**
 	 * Sets whether to make a binary config file during packaging
 	 * @param bMakeBinaryConfig Whether to make a binary config file during staging
 	 */
@@ -1314,6 +1342,16 @@ public:
 	 * @return true to make binary config file
 	 */
 	virtual bool MakeBinaryConfig() const = 0;
+
+	/**
+	 * Sets whether or not the flash image/software on the device should attempt to be updated before running
+	 */
+	virtual void SetShouldUpdateDeviceFlash(bool bInShouldUpdateFlash) = 0;
+
+	/**
+	 * Whether or not the flash image/software on the device should attempt to be updated before running
+	 */
+	virtual bool ShouldUpdateDeviceFlash() const = 0;
 
 public:
 

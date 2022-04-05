@@ -62,6 +62,17 @@
 
 #define LOCTEXT_NAMESPACE "ContentBrowser"
 
+namespace ContentBrowserUtils
+{
+	/** Converts a virtual path such as /All/Plugins -> /Plugins or /All/Game -> /Game */
+	FString ConvertVirtualPathToInvariantPathString(const FString& VirtualPath)
+	{
+		FName ConvertedPath;
+		IContentBrowserDataModule::Get().GetSubsystem()->TryConvertVirtualPath(FName(VirtualPath), ConvertedPath);
+		return ConvertedPath.ToString();
+	}
+}
+
 class SContentBrowserPopup : public SCompoundWidget
 {
 public:
@@ -468,6 +479,62 @@ FText ContentBrowserUtils::GetExploreFolderText()
 	return FText::Format(NSLOCTEXT("GenericPlatform", "ShowInFileManager", "Show in {FileManagerName}"), Args);
 }
 
+void ContentBrowserUtils::ExploreFolders(const TArray<FContentBrowserItem>& InItems, const TSharedRef<SWidget>& InParentContent)
+{
+	TArray<FString> ExploreItems;
+
+	for (const FContentBrowserItem& SelectedItem : InItems)
+	{
+		FString ItemFilename;
+		if (SelectedItem.GetItemPhysicalPath(ItemFilename))
+		{
+			const bool bExists = SelectedItem.IsFile() ? FPaths::FileExists(ItemFilename) : FPaths::DirectoryExists(ItemFilename);
+			if (bExists)
+			{
+				ExploreItems.Add(IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*ItemFilename));
+			}
+		}
+	}
+
+	const int32 BatchSize = 10;
+	const FText FileManagerName = FPlatformMisc::GetFileManagerName();
+	const bool bHasMultipleBatches = ExploreItems.Num() > BatchSize;
+	for (int32 i = 0; i < ExploreItems.Num(); ++i)
+	{
+		bool bIsBatchBoundary = (i % BatchSize) == 0;
+		if (bHasMultipleBatches && bIsBatchBoundary)
+		{
+			int32 RemainingCount = ExploreItems.Num() - i;
+			int32 NextCount = FMath::Min(BatchSize, RemainingCount);
+			FText Prompt = FText::Format(LOCTEXT("ExecuteExploreConfirm", "Show {0} {0}|plural(one=item,other=items) in {1}?\nThere {2}|plural(one=is,other=are) {2} remaining."), NextCount, FileManagerName, RemainingCount);
+			if (FMessageDialog::Open(EAppMsgType::YesNo, Prompt) != EAppReturnType::Yes)
+			{
+				return;
+			}
+		}
+
+		FPlatformProcess::ExploreFolder(*ExploreItems[i]);
+	}
+}
+
+bool ContentBrowserUtils::CanExploreFolders(const TArray<FContentBrowserItem>& InItems)
+{
+	for (const FContentBrowserItem& SelectedItem : InItems)
+	{
+		FString ItemFilename;
+		if (SelectedItem.GetItemPhysicalPath(ItemFilename))
+		{
+			const bool bExists = SelectedItem.IsFile() ? FPaths::FileExists(ItemFilename) : FPaths::DirectoryExists(ItemFilename);
+			if (bExists)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 template <typename OutputContainerType>
 void ConvertLegacySelectionToVirtualPathsImpl(TArrayView<const FAssetData> InAssets, TArrayView<const FString> InFolders, const bool InUseFolderPaths, OutputContainerType& OutVirtualPaths)
 {
@@ -506,7 +573,7 @@ void ContentBrowserUtils::ConvertLegacySelectionToVirtualPaths(TArrayView<const 
 	ConvertLegacySelectionToVirtualPathsImpl(InAssets, InFolders, InUseFolderPaths, OutVirtualPaths);
 }
 
-void ContentBrowserUtils::AppendAssetFilterToContentBrowserFilter(const FARFilter& InAssetFilter, const TSharedPtr<FBlacklistNames>& InAssetClassBlacklist, const TSharedPtr<FBlacklistPaths>& InFolderBlacklist, FContentBrowserDataFilter& OutDataFilter)
+void ContentBrowserUtils::AppendAssetFilterToContentBrowserFilter(const FARFilter& InAssetFilter, const TSharedPtr<FNamePermissionList>& InAssetClassPermissionList, const TSharedPtr<FPathPermissionList>& InFolderPermissionList, FContentBrowserDataFilter& OutDataFilter)
 {
 	if (InAssetFilter.ObjectPaths.Num() > 0 || InAssetFilter.TagsAndValues.Num() > 0 || InAssetFilter.bIncludeOnlyOnDiskAssets)
 	{
@@ -516,16 +583,16 @@ void ContentBrowserUtils::AppendAssetFilterToContentBrowserFilter(const FARFilte
 		ObjectFilter.bOnDiskObjectsOnly = InAssetFilter.bIncludeOnlyOnDiskAssets;
 	}
 
-	if (InAssetFilter.PackageNames.Num() > 0 || InAssetFilter.PackagePaths.Num() > 0 || (InFolderBlacklist && InFolderBlacklist->HasFiltering()))
+	if (InAssetFilter.PackageNames.Num() > 0 || InAssetFilter.PackagePaths.Num() > 0 || (InFolderPermissionList && InFolderPermissionList->HasFiltering()))
 	{
 		FContentBrowserDataPackageFilter& PackageFilter = OutDataFilter.ExtraFilters.FindOrAddFilter<FContentBrowserDataPackageFilter>();
 		PackageFilter.PackageNamesToInclude = InAssetFilter.PackageNames;
 		PackageFilter.PackagePathsToInclude = InAssetFilter.PackagePaths;
 		PackageFilter.bRecursivePackagePathsToInclude = InAssetFilter.bRecursivePaths;
-		PackageFilter.PathBlacklist = InFolderBlacklist;
+		PackageFilter.PathPermissionList = InFolderPermissionList;
 	}
 
-	if (InAssetFilter.ClassNames.Num() > 0 || (InAssetClassBlacklist && InAssetClassBlacklist->HasFiltering()))
+	if (InAssetFilter.ClassNames.Num() > 0 || (InAssetClassPermissionList && InAssetClassPermissionList->HasFiltering()))
 	{
 		FContentBrowserDataClassFilter& ClassFilter = OutDataFilter.ExtraFilters.FindOrAddFilter<FContentBrowserDataClassFilter>();
 		ClassFilter.ClassNamesToInclude = InAssetFilter.ClassNames;
@@ -535,11 +602,39 @@ void ContentBrowserUtils::AppendAssetFilterToContentBrowserFilter(const FARFilte
 			ClassFilter.ClassNamesToExclude = InAssetFilter.RecursiveClassesExclusionSet.Array();
 			ClassFilter.bRecursiveClassNamesToExclude = false;
 		}
-		ClassFilter.ClassBlacklist = InAssetClassBlacklist;
+		ClassFilter.ClassPermissionList = InAssetClassPermissionList;
 	}
 }
 
-bool ContentBrowserUtils::CanDeleteFromAssetView(TWeakPtr<SAssetView> AssetView)
+TSharedPtr<FPathPermissionList> ContentBrowserUtils::GetCombinedFolderPermissionList(const TSharedPtr<FPathPermissionList>& FolderPermissionList, const TSharedPtr<FPathPermissionList>& WritableFolderPermissionList)
+{
+	TSharedPtr<FPathPermissionList> CombinedFolderPermissionList;
+
+	const bool bHidingFolders = FolderPermissionList && FolderPermissionList->HasFiltering();
+	const bool bHidingReadOnlyFolders = WritableFolderPermissionList && WritableFolderPermissionList->HasFiltering();
+	if (bHidingFolders || bHidingReadOnlyFolders)
+	{
+		CombinedFolderPermissionList = MakeShared<FPathPermissionList>();
+
+		if (bHidingReadOnlyFolders && bHidingFolders)
+		{
+			FPathPermissionList IntersectedFilter = FolderPermissionList->CombinePathFilters(*WritableFolderPermissionList.Get());
+			CombinedFolderPermissionList->Append(IntersectedFilter);
+		}
+		else if (bHidingReadOnlyFolders)
+		{
+			CombinedFolderPermissionList->Append(*WritableFolderPermissionList);
+		}
+		else if (bHidingFolders)
+		{
+			CombinedFolderPermissionList->Append(*FolderPermissionList);
+		}
+	}
+
+	return CombinedFolderPermissionList;
+}
+
+bool ContentBrowserUtils::CanDeleteFromAssetView(TWeakPtr<SAssetView> AssetView, FText* OutErrorMsg)
 {
 	if (TSharedPtr<SAssetView> AssetViewPin = AssetView.Pin())
 	{
@@ -548,24 +643,24 @@ bool ContentBrowserUtils::CanDeleteFromAssetView(TWeakPtr<SAssetView> AssetView)
 		bool bCanDelete = false;
 		for (const FContentBrowserItem& SelectedItem : SelectedItems)
 		{
-			bCanDelete |= SelectedItem.CanDelete();
+			bCanDelete |= SelectedItem.CanDelete(OutErrorMsg);
 		}
 		return bCanDelete;
 	}
 	return false;
 }
 
-bool ContentBrowserUtils::CanRenameFromAssetView(TWeakPtr<SAssetView> AssetView)
+bool ContentBrowserUtils::CanRenameFromAssetView(TWeakPtr<SAssetView> AssetView, FText* OutErrorMsg)
 {
 	if (TSharedPtr<SAssetView> AssetViewPin = AssetView.Pin())
 	{
 		const TArray<FContentBrowserItem> SelectedItems = AssetViewPin->GetSelectedItems();
-		return SelectedItems.Num() == 1 && SelectedItems[0].CanRename(nullptr) && !AssetViewPin->IsThumbnailEditMode();
+		return SelectedItems.Num() == 1 && SelectedItems[0].CanRename(nullptr, OutErrorMsg) && !AssetViewPin->IsThumbnailEditMode();
 	}
 	return false;
 }
 
-bool ContentBrowserUtils::CanDeleteFromPathView(TWeakPtr<SPathView> PathView)
+bool ContentBrowserUtils::CanDeleteFromPathView(TWeakPtr<SPathView> PathView, FText* OutErrorMsg)
 {
 	if (TSharedPtr<SPathView> PathViewPin = PathView.Pin())
 	{
@@ -574,50 +669,43 @@ bool ContentBrowserUtils::CanDeleteFromPathView(TWeakPtr<SPathView> PathView)
 		bool bCanDelete = false;
 		for (const FContentBrowserItem& SelectedItem : SelectedItems)
 		{
-			bCanDelete |= SelectedItem.CanDelete();
+			bCanDelete |= SelectedItem.CanDelete(OutErrorMsg);
 		}
 		return bCanDelete;
 	}
 	return false;
 }
 
-bool ContentBrowserUtils::CanRenameFromPathView(TWeakPtr<SPathView> PathView)
+bool ContentBrowserUtils::CanRenameFromPathView(TWeakPtr<SPathView> PathView, FText* OutErrorMsg)
 {
 	if (TSharedPtr<SPathView> PathViewPin = PathView.Pin())
 	{
 		const TArray<FContentBrowserItem> SelectedItems = PathViewPin->GetSelectedFolderItems();
-		return SelectedItems.Num() == 1 && SelectedItems[0].CanRename(nullptr);
+		return SelectedItems.Num() == 1 && SelectedItems[0].CanRename(nullptr, OutErrorMsg);
 	}
 	return false;
 }
 
 bool ContentBrowserUtils::IsFavoriteFolder(const FString& FolderPath)
 {
-	return FContentBrowserSingleton::Get().FavoriteFolderPaths.Contains(FolderPath);
+	return FContentBrowserSingleton::Get().FavoriteFolderPaths.Contains(ConvertVirtualPathToInvariantPathString(FolderPath));
 }
 
 void ContentBrowserUtils::AddFavoriteFolder(const FString& FolderPath, bool bFlushConfig /*= true*/)
 {
-	FContentBrowserSingleton::Get().FavoriteFolderPaths.AddUnique(FolderPath);
+	FContentBrowserSingleton::Get().FavoriteFolderPaths.AddUnique(ConvertVirtualPathToInvariantPathString(FolderPath));
 }
 
 void ContentBrowserUtils::RemoveFavoriteFolder(const FString& FolderPath, bool bFlushConfig /*= true*/)
 {
-	TArray<FString> FoldersToRemove;
-	FoldersToRemove.Add(FolderPath);
-	
+	FString InvariantFolder = ConvertVirtualPathToInvariantPathString(FolderPath);
+
 	// Find and remove any subfolders
-	for (const FString& FavoritePath : FContentBrowserSingleton::Get().FavoriteFolderPaths)
+	FContentBrowserSingleton::Get().FavoriteFolderPaths.RemoveAll([&InvariantFolder](const FString& FavoritePath)
 	{
-		if (FavoritePath.StartsWith(FolderPath + TEXT("/")))
-		{
-			FoldersToRemove.Add(FavoritePath);
-		}
-	}
-	for (const FString& FolderToRemove : FoldersToRemove)
-	{
-		FContentBrowserSingleton::Get().FavoriteFolderPaths.Remove(FolderToRemove);
-	}
+		return FavoritePath.StartsWith(InvariantFolder) && (FavoritePath.Len() <= InvariantFolder.Len() || FavoritePath[InvariantFolder.Len()] == TEXT('/'));
+	});
+
 	if (bFlushConfig)
 	{
 		GConfig->Flush(false, GEditorPerProjectIni);

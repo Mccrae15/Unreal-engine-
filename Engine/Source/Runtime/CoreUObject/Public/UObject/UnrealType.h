@@ -24,6 +24,7 @@
 #include "UObject/LazyObjectPtr.h"
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/ObjectPtr.h"
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/PropertyTag.h"
 #include "UObject/ScriptInterface.h"
@@ -36,6 +37,7 @@
 // WARNING: This should always be the last include in any file that needs it (except .generated.h)
 #include "UObject/UndefineUPropertyMacros.h"
 
+class FBlake3;
 class UPropertyWrapper;
 
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogType, Log, All);
@@ -93,7 +95,82 @@ enum class EPropertyObjectReferenceType : uint32
 };
 ENUM_CLASS_FLAGS(EPropertyObjectReferenceType);
 
-namespace UE4Property_Private { class FProperty_DoNotUse; }
+namespace UEProperty_Private { class FProperty_DoNotUse; }
+
+/**
+ * Helper class that calculates the maximum stack entry size required by Garbage Collector Token Stream for each class 
+ */
+class COREUOBJECT_API FGCStackSizeHelper
+{
+	int32 MaxStackSize = 0;
+	/** Current property stack. Includes properties nested inside of struct member variables */
+	TArray<const FProperty*> PropertyStack;
+	
+public:
+
+	FGCStackSizeHelper() = default;
+	FGCStackSizeHelper(const FGCStackSizeHelper& Other) = delete;
+	FGCStackSizeHelper& operator=(const FGCStackSizeHelper& Other) = delete;
+
+	~FGCStackSizeHelper()
+	{
+		// Sanity check to make sure every Push() was followed by a Pop()
+		check(PropertyStack.Num() == 0);
+	}
+
+	void Push(const FProperty* InProperty)
+	{
+		PropertyStack.Push(InProperty);
+		MaxStackSize = FMath::Max(PropertyStack.Num(), MaxStackSize);
+	}
+
+	void Pop()
+	{
+		PropertyStack.Pop();
+	}
+
+	const TArray<const FProperty*>& GetPropertyStack() const
+	{
+		return PropertyStack;
+	}
+
+	/** Converts the interal property stack to a string representing the current property path (Member.StructMember.InnerStructMember) */
+	FString GetPropertyPath() const;
+
+	/** 
+	 * Converts a property path constructed with GetPropertyPath() to an array of properties (from the outermost to the innermost) *
+	 * @param ObjectClass Class that defines the outermost property
+	 * @param InPropertyPath Property path
+	 * @param OutProperties resulting array
+	 * @returns true if the conversion was successful, false otherwise
+	 */
+	static bool ConvertPathToProperties(UClass* ObjectClass, const FName& InPropertyPath, TArray<FProperty*>& OutProperties);
+
+	int32 GetMaxStackSize() const
+	{
+		return MaxStackSize;
+	}
+};
+
+/** Helper class to push and pop FGCStackSizeHelper stack inside of the current scope */
+class FGCStackSizeHelperScope
+{
+	FGCStackSizeHelper& StackSizeHelper;
+public:
+	explicit FGCStackSizeHelperScope(FGCStackSizeHelper& InHelper, FProperty* InProperty)
+		: StackSizeHelper(InHelper)
+	{		
+		StackSizeHelper.Push(InProperty);
+	}
+
+	FGCStackSizeHelperScope(const FGCStackSizeHelperScope& Other) = delete;
+	FGCStackSizeHelperScope& operator=(const FGCStackSizeHelperScope& Other) = delete;
+
+	~FGCStackSizeHelperScope()
+	{		
+		StackSizeHelper.Pop();
+	}
+};
 
 //
 // An UnrealScript variable.
@@ -195,7 +272,7 @@ private:
 
 protected:
 	friend class FMapProperty;
-	friend class UE4Property_Private::FProperty_DoNotUse;
+	friend class UEProperty_Private::FProperty_DoNotUse;
 
 	/** Set the alignment offset for this property - added for FMapProperty */
 	void SetOffset_Internal(int32 NewOffset);
@@ -350,6 +427,21 @@ public:
 		PortFlags |= EPropertyPortFlags::PPF_UseDeprecatedProperties; // Imports should always process deprecated properties
 		return ImportText_Internal( Buffer, Data, PortFlags, OwnerObject, ErrorText );
 	}
+
+#if WITH_EDITORONLY_DATA
+	/**
+	 * Updates the given HashBuilder with name and type information of this Property.
+	 * Contract: the hashed data is different from any property that serializes differently in Tagged Property Serialization.
+	 * If necessary to follow the contract, subclasses should override and add further information after calling
+	 * Super::AppendSchemaHash. e.g. FStructProperty needs to append the schema hash of its UStruct.
+	 * 
+	 * @param HashBuilder The builder to Update with property information
+	 * @param bSkipEditorOnly Used by subclasses with sub- properties that may be editor-only.
+	 *                        If true, sub- properties that are editor-only should not be appended to the hash.
+	 *                        This property's base data is appended without regard for bSkipEditorOnly.
+	 */
+	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const;
+#endif
 protected:
 	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const PURE_VIRTUAL(FProperty::ImportText,return NULL;);
 public:
@@ -364,7 +456,7 @@ private:
 
 	FORCEINLINE void* ContainerVoidPtrToValuePtrInternal(void* ContainerPtr, int32 ArrayIndex) const
 	{
-		check(ArrayIndex < ArrayDim);
+		checkf((ArrayIndex >= 0) && (ArrayIndex < ArrayDim), TEXT("Array index out of bounds: %i from an array of size %i"), ArrayIndex, ArrayDim);
 		check(ContainerPtr);
 
 		if (0)
@@ -378,7 +470,7 @@ private:
 
 	FORCEINLINE void* ContainerUObjectPtrToValuePtrInternal(UObject* ContainerPtr, int32 ArrayIndex) const
 	{
-		check(ArrayIndex < ArrayDim);
+		checkf((ArrayIndex >= 0) && (ArrayIndex < ArrayDim), TEXT("Array index out of bounds: %i from an array of size %i"), ArrayIndex, ArrayDim);
 		check(ContainerPtr);
 
 		// in the future, these checks will be tested if the property is supposed be from a UClass
@@ -758,7 +850,7 @@ public:
 	 * Emits tokens used by realtime garbage collection code to passed in ReferenceTokenStream. The offset emitted is relative
 	 * to the passed in BaseOffset which is used by e.g. arrays of structs.
 	 */
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps);
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper);
 
 	FORCEINLINE int32 GetSize() const
 	{
@@ -886,7 +978,7 @@ public:
 	static const TCHAR* ReadToken( const TCHAR* Buffer, FStringBuilderBase& Out, bool DottedNames = false);
 };
 
-namespace UE4Property_Private
+namespace UEProperty_Private
 {
 	/** FProperty methods FOR INTERNAL USE ONLY -- only authorized users should be making use of this. -- DO NOT USE! */
 	class FProperty_DoNotUse
@@ -1593,6 +1685,9 @@ class COREUOBJECT_API FByteProperty : public TProperty_Numeric<uint8>
 	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText ) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+#if WITH_EDITORONLY_DATA
+	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
+#endif
 	// End of FProperty interface
 
 	// FNumericProperty interface.
@@ -1812,7 +1907,7 @@ class COREUOBJECT_API FUInt64Property : public TProperty_Numeric<uint64>
 	Aliases for implicitly-sized integer properties.
 -----------------------------------------------------------------------------*/
 
-namespace UE4Types_Private
+namespace UETypes_Private
 {
 	template <typename IntType> struct TIntegerPropertyMapping;
 
@@ -1826,8 +1921,8 @@ namespace UE4Types_Private
 	template <> struct TIntegerPropertyMapping<uint64> { typedef FUInt64Property Type; };
 }
 
-typedef UE4Types_Private::TIntegerPropertyMapping<signed int>::Type UUnsizedIntProperty;
-typedef UE4Types_Private::TIntegerPropertyMapping<unsigned int>::Type UUnsizedFIntProperty;
+typedef UETypes_Private::TIntegerPropertyMapping<signed int>::Type UUnsizedIntProperty;
+typedef UETypes_Private::TIntegerPropertyMapping<unsigned int>::Type UUnsizedFIntProperty;
 
 
 /*-----------------------------------------------------------------------------
@@ -1892,7 +1987,16 @@ class COREUOBJECT_API FDoubleProperty : public TProperty_Numeric<double>
 #endif // WITH_EDITORONLY_DATA
 };
 
+// Note: Stub only. Used to provide FNativeClassHeaderGenerator::PropertyNew with a way to track an as yet unaliased FFloatProperty/FDoubleProperty within the header tool, which will be resolved to the correct type at run time.
+class COREUOBJECT_API FLargeWorldCoordinatesRealProperty : public TProperty_Numeric<double>
+{
+	DECLARE_FIELD(FLargeWorldCoordinatesRealProperty, TProperty_Numeric<double>, CASTCLASS_FLargeWorldCoordinatesRealProperty)
 
+	FLargeWorldCoordinatesRealProperty(FFieldVariant InOwner, const FName& InName, EObjectFlags InObjectFlags)
+		: TProperty_Numeric(InOwner, InName, InObjectFlags)
+	{
+	}
+};
 
 /*-----------------------------------------------------------------------------
 	FBoolProperty.
@@ -1963,6 +2067,9 @@ public:
 	virtual void InitializeValueInternal( void* Dest ) const override;
 	virtual int32 GetMinAlignment() const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+#if WITH_EDITORONLY_DATA
+	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
+#endif
 	// End of FProperty interface
 
 	// Emulate the CPP type API, see TPropertyTypeFundamentals
@@ -2146,6 +2253,9 @@ public:
 	// Returns the qualified export path for a given object, parent, and export root scope
 	static FString GetExportPath(const UObject* Object, const UObject* Parent, const UObject* ExportRootScope, const uint32 PortFlags);
 
+	// Helper method for sharing code with FObjectPtrProperty even though one doesn't inherit from the other
+	static bool StaticIdentical(UObject* A, UObject* B, uint32 PortFlags);
+
 	virtual UObject* LoadObjectPropertyValue(const void* PropertyValueAddress) const
 	{
 		return GetObjectPropertyValue(PropertyValueAddress);
@@ -2180,10 +2290,11 @@ public:
 	FORCEINLINE void SetPropertyClass(UClass* NewPropertyClass) { PropertyClass = NewPropertyClass; }
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
 
+	virtual void CheckValidObject(void* Value) const;
+
 protected:
 	virtual bool AllowCrossLevel() const;
-
-	virtual void CheckValidObject(void* Value) const;
+	virtual bool AllowObjectTypeReinterpretationTo(const FObjectPropertyBase* Other) const;
 	// End of FObjectPropertyBase interface
 };
 
@@ -2269,7 +2380,7 @@ class COREUOBJECT_API FObjectProperty : public TFObjectPropertyBase<UObject*>
 
 	// FProperty interface
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual const TCHAR* ImportText_Internal(const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
 
@@ -2283,6 +2394,47 @@ public:
 	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const override;
 	virtual FString GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& InnerNativeTypeName)  const override;
 	// End of FObjectPropertyBase interface
+};
+
+//
+// Describes a reference variable to another object which may be nil.
+//
+class COREUOBJECT_API FObjectPtrProperty : public FObjectProperty
+{
+	DECLARE_FIELD(FObjectPtrProperty, FObjectProperty, CASTCLASS_FObjectPtrProperty)
+
+	using Super::Super;
+
+#if WITH_EDITORONLY_DATA
+	explicit FObjectPtrProperty(UField* InField)
+		: FObjectProperty(InField)
+	{
+	}
+#endif // WITH_EDITORONLY_DATA
+
+	// UHT interface
+	virtual FString GetCPPMacroType( FString& ExtendedTypeText ) const  override;
+	virtual FString GetCPPType( FString* ExtendedTypeText, uint32 CPPExportFlags ) const override;
+	// End of UHT interface
+
+	// FProperty interface
+	virtual bool SameType(const FProperty* Other) const override;
+	virtual bool Identical(const void* A, const void* B, uint32 PortFlags) const override;
+	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
+	// End of FProperty interface
+
+	// Helper method for sharing code with FClassPtrProperty even though one doesn't inherit from the other
+	static void StaticSerializeItem(const FObjectPropertyBase* ObjectProperty, FStructuredArchive::FSlot Slot, void* Value, void const* Defaults);
+
+	// FObjectProperty interface
+	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const override;
+	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const override;
+	virtual bool AllowCrossLevel() const override;
+	virtual bool AllowObjectTypeReinterpretationTo(const FObjectPropertyBase* Other) const override;
+private:
+	virtual uint32 GetValueTypeHashInternal(const void* Src) const override;
+public:
+	// End of FObjectProperty interface
 };
 
 //
@@ -2318,7 +2470,7 @@ class COREUOBJECT_API FWeakObjectProperty : public TFObjectPropertyBase<FWeakObj
 
 	// FProperty interface
 	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 private:
 	virtual uint32 GetValueTypeHashInternal(const void* Src) const override;
 public:
@@ -2366,7 +2518,7 @@ class COREUOBJECT_API FLazyObjectProperty : public TFObjectPropertyBase<FLazyObj
 	virtual FName GetID() const override;
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 	virtual void SerializeItem( FStructuredArchive::FSlot Slot, void* Value, void const* Defaults ) const override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	// End of FProperty interface
 
 	// FObjectProperty interface
@@ -2414,7 +2566,7 @@ class COREUOBJECT_API FSoftObjectProperty : public TFObjectPropertyBase<FSoftObj
 	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	// End of FProperty interface
 
 	// FObjectProperty interface
@@ -2499,6 +2651,9 @@ public:
 	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
+#if WITH_EDITORONLY_DATA
+	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
+#endif
 	// End of FProperty interface
 
 	virtual FString GetCPPTypeCustom(FString* ExtendedTypeText, uint32 CPPExportFlags, const FString& InnerNativeTypeName)  const override;
@@ -2517,6 +2672,42 @@ public:
 #else
 	FORCEINLINE void SetMetaClass(UClass* NewMetaClass) { MetaClass = NewMetaClass; }
 #endif // USE_CIRCULAR_DEPENDENCY_LOAD_DEFERRING
+};
+
+//
+// Describes a reference variable to another object which may be nil.
+//
+class COREUOBJECT_API FClassPtrProperty : public FClassProperty
+{
+	DECLARE_FIELD(FClassPtrProperty, FClassProperty, CASTCLASS_FClassPtrProperty)
+
+	using Super::Super;
+
+#if WITH_EDITORONLY_DATA
+	explicit FClassPtrProperty(UField* InField)
+		: FClassProperty(InField)
+	{
+	}
+#endif // WITH_EDITORONLY_DATA
+
+	// UHT interface
+	virtual FString GetCPPMacroType( FString& ExtendedTypeText ) const  override;
+	virtual FString GetCPPType( FString* ExtendedTypeText, uint32 CPPExportFlags ) const override;
+	// End of UHT interface
+
+	// FProperty interface
+	virtual bool SameType(const FProperty* Other) const override;
+	virtual bool Identical(const void* A, const void* B, uint32 PortFlags) const override;
+	virtual void SerializeItem(FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
+	// End of FProperty interface
+
+	// FObjectProperty interface
+	virtual UObject* GetObjectPropertyValue(const void* PropertyValueAddress) const override;
+	virtual void SetObjectPropertyValue(void* PropertyValueAddress, UObject* Value) const override;
+private:
+	virtual uint32 GetValueTypeHashInternal(const void* Src) const override;
+public:
+	// End of FObjectProperty interface
 };
 
 /*-----------------------------------------------------------------------------
@@ -2637,15 +2828,19 @@ public:
 	virtual bool Identical( const void* A, const void* B, uint32 PortFlags ) const override;
 	virtual void SerializeItem( FStructuredArchive::FSlot Slot, void* Value, void const* Defaults) const override;
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
+	virtual bool SupportsNetSharedSerialization() const override { return false; }
 	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
 	virtual bool SameType(const FProperty* Other) const override;
+#if WITH_EDITORONLY_DATA
+	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
+#endif
 	// End of FProperty interface
 
 	// UObject interface
 	virtual void Serialize( FArchive& Ar ) override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual void BeginDestroy() override;
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	// End of UObject interface
@@ -2869,7 +3064,7 @@ public:
 	virtual bool PassCPPArgsByRef() const override;
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
 
@@ -2887,6 +3082,9 @@ public:
 
 	/** Called by ImportTextItem, but can also be used by a non-ArrayProperty whose ArrayDim is > 1. ArrayHelper should be supplied by ArrayProperties and nullptr for fixed-size arrays. */
 	static const TCHAR* ImportTextInnerItem(const TCHAR* Buffer, const FProperty* Inner, void* Data, int32 PortFlags, UObject* OwnerObject, FScriptArrayHelper* ArrayHelper = nullptr, FOutputDevice* ErrorText = (FOutputDevice*)GWarn);
+#if WITH_EDITORONLY_DATA
+	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
+#endif
 
 private:
 	FORCEINLINE void SetElementSize()
@@ -2989,7 +3187,7 @@ public:
 	virtual bool PassCPPArgsByRef() const override;
 	virtual void InstanceSubobjects(void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph) override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
 	// End of FProperty interface
@@ -3031,6 +3229,19 @@ public:
 	{
 		return WithScriptMap(InMap, [this, Index](auto* Map) { return (uint8*)Map->GetData(Index, MapLayout); });
 	}
+
+	const FProperty* GetKeyProperty() const
+	{
+		return KeyProp;
+	}
+
+	const FProperty* GetValueProperty() const
+	{
+		return ValueProp;
+	}
+#if WITH_EDITORONLY_DATA
+	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
+#endif
 };
 
 // need to break this out a different type so that the DECLARE_CASTED_CLASS_INTRINSIC macro can digest the comma
@@ -3088,7 +3299,7 @@ public:
 	virtual bool PassCPPArgsByRef() const override;
 	virtual void InstanceSubobjects(void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph) override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
 	// End of FProperty interface
@@ -3133,6 +3344,9 @@ public:
 		FScriptSet* Set = (FScriptSet*)InSet;
 		return (uint8*)Set->GetData(Index, SetLayout);
 	}
+#if WITH_EDITORONLY_DATA
+	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
+#endif
 };
 
 /**
@@ -3162,7 +3376,7 @@ public:
 	 *	@param	InArray: pointer to raw memory that corresponds to this array. This can be NULL, and sometimes is, but in that case almost all operations will crash.
 	**/
 	FORCEINLINE FScriptArrayHelper(const FArrayProperty* InProperty, const void* InArray)
-		: FScriptArrayHelper(Internal, InProperty->Inner, InArray, InProperty->Inner->ElementSize, InProperty->ArrayFlags)
+		: FScriptArrayHelper(Internal, InProperty->Inner, InArray, InProperty->Inner->ElementSize, InProperty->Inner->GetMinAlignment(), InProperty->ArrayFlags)
 	{
 	}
 
@@ -3220,10 +3434,7 @@ public:
 		check(Count>=0);
 		checkSlow(Num() >= 0); 
 		EmptyValues(Count);
-		if (Count)
-		{
-			AddValues(Count);
-		}
+		AddValues(Count);
 	}
 	/**
 	*	Empty the array, then add uninitialized values to a given size.
@@ -3234,10 +3445,7 @@ public:
 		check(Count>=0);
 		checkSlow(Num() >= 0); 
 		EmptyValues(Count);
-		if (Count)
-		{
-			AddUninitializedValues(Count);
-		}
+		AddUninitializedValues(Count);
 	}
 	/**
 	*	Expand the array, if needed, so that the given index is valid
@@ -3299,9 +3507,9 @@ public:
 	**/
 	int32 AddUninitializedValues(int32 Count)
 	{
-		check(Count>0);
+		check(Count>=0);
 		checkSlow(Num() >= 0);
-		const int32 OldNum = WithScriptArray([this, Count](auto* Array) { return Array->Add(Count, ElementSize); });
+		const int32 OldNum = WithScriptArray([this, Count](auto* Array) { return Array->Add(Count, ElementSize, ElementAlignment); });
 		return OldNum;
 	}
 	/**
@@ -3319,9 +3527,9 @@ public:
 	**/
 	void InsertValues( int32 Index, int32 Count = 1)
 	{
-		check(Count>0);
+		check(Count>=0);
 		check(Index>=0 && Index <= Num());
-		WithScriptArray([this, Index, Count](auto* Array) { Array->Insert(Index, Count, ElementSize); });
+		WithScriptArray([this, Index, Count](auto* Array) { Array->Insert(Index, Count, ElementSize, ElementAlignment); });
 		ConstructItems(Index, Count);
 	}
 	/**
@@ -3338,7 +3546,7 @@ public:
 		}
 		if (OldNum || Slack)
 		{
-			WithScriptArray([this, Slack](auto* Array) { Array->Empty(Slack, ElementSize); });
+			WithScriptArray([this, Slack](auto* Array) { Array->Empty(Slack, ElementSize, ElementAlignment); });
 		}
 	}
 	/**
@@ -3348,10 +3556,10 @@ public:
 	**/
 	void RemoveValues(int32 Index, int32 Count = 1)
 	{
-		check(Count>0);
+		check(Count>=0);
 		check(Index>=0 && Index + Count <= Num());
 		DestructItems(Index, Count);
-		WithScriptArray([this, Index, Count](auto* Array) { Array->Remove(Index, Count, ElementSize); });
+		WithScriptArray([this, Index, Count](auto* Array) { Array->Remove(Index, Count, ElementSize, ElementAlignment); });
 	}
 
 	/**
@@ -3361,7 +3569,7 @@ public:
 	**/
 	void ClearValues(int32 Index, int32 Count = 1)
 	{
-		check(Count>0);
+		check(Count>=0);
 		check(Index>=0);
 		ClearItems(Index, Count);
 	}
@@ -3384,7 +3592,7 @@ public:
 	void MoveAssign(void* InOtherArray)
 	{
 		checkSlow(InOtherArray);
-		WithScriptArray([this, InOtherArray](auto* Array) { Array->MoveAssign(*static_cast<decltype(Array)>(InOtherArray), ElementSize); });
+		WithScriptArray([this, InOtherArray](auto* Array) { Array->MoveAssign(*static_cast<decltype(Array)>(InOtherArray), ElementSize, ElementAlignment); });
 	}
 
 	/**
@@ -3406,13 +3614,14 @@ public:
 
 	static FScriptArrayHelper CreateHelperFormInnerProperty(const FProperty* InInnerProperty, const void *InArray, EArrayPropertyFlags InArrayFlags = EArrayPropertyFlags::None)
 	{
-		return FScriptArrayHelper(Internal, InInnerProperty, InArray, InInnerProperty->ElementSize, InArrayFlags);
+		return FScriptArrayHelper(Internal, InInnerProperty, InArray, InInnerProperty->ElementSize, InInnerProperty->GetMinAlignment(), InArrayFlags);
 	}
 
 private:
-	FScriptArrayHelper(EInternal, const FProperty* InInnerProperty, const void* InArray, int32 InElementSize, EArrayPropertyFlags InArrayFlags)
+	FScriptArrayHelper(EInternal, const FProperty* InInnerProperty, const void* InArray, int32 InElementSize, uint32 InElementAlignment, EArrayPropertyFlags InArrayFlags)
 		: InnerProperty(InInnerProperty)
 		, ElementSize(InElementSize)
+		, ElementAlignment(InElementAlignment)
 		, ArrayFlags(InArrayFlags)
 	{
 		//@todo, we are casting away the const here
@@ -3436,20 +3645,23 @@ private:
 	**/
 	void ConstructItems(int32 Index, int32 Count)
 	{
-		checkSlow(Count > 0);
+		checkSlow(Count >= 0);
 		checkSlow(Index >= 0); 
 		checkSlow(Index <= Num());
 		checkSlow(Index + Count <= Num());
-		uint8 *Dest = GetRawPtr(Index);
-		if (InnerProperty->PropertyFlags & CPF_ZeroConstructor)
+		if (Count > 0)
 		{
-			FMemory::Memzero(Dest, Count * ElementSize);
-		}
-		else
-		{
-			for (int32 LoopIndex = 0 ; LoopIndex < Count; LoopIndex++, Dest += ElementSize)
+			uint8* Dest = GetRawPtr(Index);
+			if (InnerProperty->PropertyFlags & CPF_ZeroConstructor)
 			{
-				InnerProperty->InitializeValue(Dest);
+				FMemory::Memzero(Dest, Count * ElementSize);
+			}
+			else
+			{
+				for (int32 LoopIndex = 0; LoopIndex < Count; LoopIndex++, Dest += ElementSize)
+				{
+					InnerProperty->InitializeValue(Dest);
+				}
 			}
 		}
 	}
@@ -3462,14 +3674,17 @@ private:
 	{
 		if (!(InnerProperty->PropertyFlags & (CPF_IsPlainOldData | CPF_NoDestructor)))
 		{
-			checkSlow(Count > 0);
+			checkSlow(Count >= 0);
 			checkSlow(Index >= 0); 
 			checkSlow(Index < Num());
 			checkSlow(Index + Count <= Num());
-			uint8 *Dest = GetRawPtr(Index);
-			for (int32 LoopIndex = 0 ; LoopIndex < Count; LoopIndex++, Dest += ElementSize)
+			if (Count > 0)
 			{
-				InnerProperty->DestroyValue(Dest);
+				uint8* Dest = GetRawPtr(Index);
+				for (int32 LoopIndex = 0; LoopIndex < Count; LoopIndex++, Dest += ElementSize)
+				{
+					InnerProperty->DestroyValue(Dest);
+				}
 			}
 		}
 	}
@@ -3480,20 +3695,23 @@ private:
 	**/
 	void ClearItems(int32 Index, int32 Count)
 	{
-		checkSlow(Count > 0);
+		checkSlow(Count >= 0);
 		checkSlow(Index >= 0); 
 		checkSlow(Index < Num());
 		checkSlow(Index + Count <= Num());
-		uint8 *Dest = GetRawPtr(Index);
-		if ((InnerProperty->PropertyFlags & (CPF_ZeroConstructor | CPF_NoDestructor)) == (CPF_ZeroConstructor | CPF_NoDestructor))
+		if (Count > 0)
 		{
-			FMemory::Memzero(Dest, Count * ElementSize);
-		}
-		else
-		{
-			for (int32 LoopIndex = 0; LoopIndex < Count; LoopIndex++, Dest += ElementSize)
+			uint8* Dest = GetRawPtr(Index);
+			if ((InnerProperty->PropertyFlags & (CPF_ZeroConstructor | CPF_NoDestructor)) == (CPF_ZeroConstructor | CPF_NoDestructor))
 			{
-				InnerProperty->ClearValue(Dest);
+				FMemory::Memzero(Dest, Count * ElementSize);
+			}
+			else
+			{
+				for (int32 LoopIndex = 0; LoopIndex < Count; LoopIndex++, Dest += ElementSize)
+				{
+					InnerProperty->ClearValue(Dest);
+				}
 			}
 		}
 	}
@@ -3505,6 +3723,7 @@ private:
 		FFreezableScriptArray* FreezableArray;
 	};
 	int32 ElementSize;
+	uint32 ElementAlignment;
 	EArrayPropertyFlags ArrayFlags;
 };
 
@@ -4903,16 +5122,13 @@ public:
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
 	virtual int32 GetMinAlignment() const override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
+#if WITH_EDITORONLY_DATA
+	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
+#endif
 	// End of FProperty interface
-
-	UE_DEPRECATED(4.14, "Use UScriptStruct::ImportText instead")
-	static const TCHAR* ImportText_Static(UScriptStruct* InStruct, const FString& InName, const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText);
-	
-	UE_DEPRECATED(4.14, "Use UScriptStruct::ExportText instead")
-	static void ExportTextItem_Static(class UScriptStruct* InStruct, FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope);
 
 	bool UseBinaryOrNativeSerialization(const FArchive& Ar) const;
 
@@ -4987,9 +5203,12 @@ public:
 	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 	virtual const TCHAR* ImportText_Internal( const TCHAR* Buffer, void* Data, int32 PortFlags, UObject* OwnerObject, FOutputDevice* ErrorText ) const override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
 	virtual bool SameType(const FProperty* Other) const override;
+#if WITH_EDITORONLY_DATA
+	virtual void AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const override;
+#endif
 	// End of FProperty interface
 };
 
@@ -5042,7 +5261,7 @@ public:
 	virtual bool NetSerializeItem( FArchive& Ar, UPackageMap* Map, void* Data, TArray<uint8> * MetaData = NULL ) const override;
 	virtual void ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const override;
 	virtual bool ContainsObjectReference(TArray<const FStructProperty*>& EncounteredStructProps, EPropertyObjectReferenceType InReferenceType = EPropertyObjectReferenceType::Strong) const override;
-	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps) override;
+	virtual void EmitReferenceInfo(UClass& OwnerClass, int32 BaseOffset, TArray<const FStructProperty*>& EncounteredStructProps, FGCStackSizeHelper& StackSizeHelper) override;
 	virtual void InstanceSubobjects( void* Data, void const* DefaultData, UObject* Owner, struct FObjectInstancingGraph* InstanceGraph ) override;
 	virtual bool SameType(const FProperty* Other) const override;
 	virtual EConvertFromTypeResult ConvertFromType(const FPropertyTag& Tag, FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct) override;
@@ -5506,24 +5725,38 @@ TFieldIterator.
 -----------------------------------------------------------------------------*/
 
 /** TFieldIterator construction flags */
+enum class EFieldIterationFlags : uint8
+{
+	None = 0,
+	IncludeSuper = 1<<0,		// Include super class
+	IncludeDeprecated = 1<<1,	// Include deprecated properties
+	IncludeInterfaces = 1<<2,	// Include interfaces
+
+	IncludeAll = IncludeSuper | IncludeDeprecated | IncludeInterfaces,
+
+	Default = IncludeSuper | IncludeDeprecated,
+};
+ENUM_CLASS_FLAGS(EFieldIterationFlags);
+
+/** Old-style TFieldIterator construction flags */
 namespace EFieldIteratorFlags
 {
 	enum SuperClassFlags
 	{
-		ExcludeSuper = 0,	// Exclude super class
-		IncludeSuper		// Include super class
+		ExcludeSuper = (uint8)EFieldIterationFlags::None,
+		IncludeSuper = (uint8)EFieldIterationFlags::IncludeSuper,
 	};
 
 	enum DeprecatedPropertyFlags
 	{
-		ExcludeDeprecated = 0,	// Exclude deprecated properties
-		IncludeDeprecated		// Include deprecated properties
+		ExcludeDeprecated = (uint8)EFieldIterationFlags::None,
+		IncludeDeprecated = (uint8)EFieldIterationFlags::IncludeDeprecated,
 	};
 
 	enum InterfaceClassFlags
 	{
-		ExcludeInterfaces = 0,	// Exclude interfaces
-		IncludeInterfaces		// Include interfaces
+		ExcludeInterfaces = (uint8)EFieldIterationFlags::None,
+		IncludeInterfaces = (uint8)EFieldIterationFlags::IncludeInterfaces,
 	};
 }
 
@@ -5568,18 +5801,24 @@ private:
 	const bool bIncludeInterface;
 
 public:
-	TFieldIterator(const UStruct*                               InStruct,
-	               EFieldIteratorFlags::SuperClassFlags         InSuperClassFlags      = EFieldIteratorFlags::IncludeSuper,
-	               EFieldIteratorFlags::DeprecatedPropertyFlags InDeprecatedFieldFlags = EFieldIteratorFlags::IncludeDeprecated,
-	               EFieldIteratorFlags::InterfaceClassFlags     InInterfaceFieldFlags  = EFieldIteratorFlags::ExcludeInterfaces)
+	TFieldIterator(const UStruct* InStruct, EFieldIterationFlags InIterationFlags = EFieldIterationFlags::Default)
 		: Struct            ( InStruct )
 		, Field             ( InStruct ? GetChildFieldsFromStruct<typename T::BaseFieldClass>(InStruct) : NULL )
 		, InterfaceIndex    ( -1 )
-		, bIncludeSuper     ( InSuperClassFlags      == EFieldIteratorFlags::IncludeSuper )
-		, bIncludeDeprecated( InDeprecatedFieldFlags == EFieldIteratorFlags::IncludeDeprecated )
-		, bIncludeInterface ( InInterfaceFieldFlags  == EFieldIteratorFlags::IncludeInterfaces && InStruct && InStruct->IsA(UClass::StaticClass()) )
+		, bIncludeSuper     ( EnumHasAnyFlags(InIterationFlags, EFieldIterationFlags::IncludeSuper) )
+		, bIncludeDeprecated( EnumHasAnyFlags(InIterationFlags, EFieldIterationFlags::IncludeDeprecated) )
+		, bIncludeInterface ( EnumHasAnyFlags(InIterationFlags, EFieldIterationFlags::IncludeInterfaces) && InStruct && InStruct->IsA(UClass::StaticClass()) )
 	{
 		IterateToNext();
+	}
+
+	/** Legacy version taking the flags as 3 separate values */
+	TFieldIterator(const UStruct*                               InStruct,
+	               EFieldIteratorFlags::SuperClassFlags         InSuperClassFlags,
+	               EFieldIteratorFlags::DeprecatedPropertyFlags InDeprecatedFieldFlags = EFieldIteratorFlags::IncludeDeprecated,
+	               EFieldIteratorFlags::InterfaceClassFlags     InInterfaceFieldFlags  = EFieldIteratorFlags::ExcludeInterfaces)
+		: TFieldIterator(InStruct, (EFieldIterationFlags)(InSuperClassFlags | InDeprecatedFieldFlags | InInterfaceFieldFlags))
+	{
 	}
 
 	/** conversion to "bool" returning true if the iterator is valid. */
@@ -5684,11 +5923,17 @@ protected:
 template <typename T>
 struct TFieldRange
 {
+	TFieldRange(const UStruct* InStruct, EFieldIterationFlags InIterationFlags = EFieldIterationFlags::Default)
+		: Begin(InStruct, InIterationFlags)
+	{
+	}
+
+	/** Legacy version taking the flags as 3 separate values */
 	TFieldRange(const UStruct*                               InStruct,
-	            EFieldIteratorFlags::SuperClassFlags         InSuperClassFlags      = EFieldIteratorFlags::IncludeSuper,
+	            EFieldIteratorFlags::SuperClassFlags         InSuperClassFlags,
 	            EFieldIteratorFlags::DeprecatedPropertyFlags InDeprecatedFieldFlags = EFieldIteratorFlags::IncludeDeprecated,
 	            EFieldIteratorFlags::InterfaceClassFlags     InInterfaceFieldFlags  = EFieldIteratorFlags::ExcludeInterfaces)
-		: Begin(InStruct, InSuperClassFlags, InDeprecatedFieldFlags, InInterfaceFieldFlags)
+		: TFieldRange(InStruct, (EFieldIterationFlags)(InSuperClassFlags | InDeprecatedFieldFlags | InInterfaceFieldFlags))
 	{
 	}
 
@@ -5738,7 +5983,7 @@ T* FindField( const UStruct* Owner, const TCHAR* FieldName )
 }
 
 template <class T> 
-typename TEnableIf<TIsDerivedFrom<T, UField>::IsDerived, T*>::Type FindUField(const UStruct* Owner, FName FieldName)
+typename TEnableIf<TIsDerivedFrom<T, UField>::IsDerived, T*>::Type FindUField(const UStruct* Owner, FName FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
 {
 	static_assert(sizeof(T) > 0, "T must not be an incomplete type");
 
@@ -5749,7 +5994,7 @@ typename TEnableIf<TIsDerivedFrom<T, UField>::IsDerived, T*>::Type FindUField(co
 	}
 
 	// Search by comparing FNames (INTs), not strings
-	for (TFieldIterator<T>It(Owner); It; ++It)
+	for (TFieldIterator<T>It(Owner, IterationFlags); It; ++It)
 	{
 		if (It->GetFName() == FieldName)
 		{
@@ -5762,17 +6007,17 @@ typename TEnableIf<TIsDerivedFrom<T, UField>::IsDerived, T*>::Type FindUField(co
 }
 
 template <class T> 
-typename TEnableIf<TIsDerivedFrom<T, UField>::IsDerived, T*>::Type FindUField(const UStruct* Owner, const TCHAR* FieldName)
+typename TEnableIf<TIsDerivedFrom<T, UField>::IsDerived, T*>::Type FindUField(const UStruct* Owner, const TCHAR* FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
 {
 	static_assert(sizeof(T) > 0, "T must not be an incomplete type");
 
 	// lookup the string name in the Name hash
 	FName Name(FieldName, FNAME_Find);
-	return FindUField<T>(Owner, Name);
+	return FindUField<T>(Owner, Name, IterationFlags);
 }
 
 template <class T>
-typename TEnableIf<TIsDerivedFrom<T, FField>::IsDerived, T*>::Type FindFProperty(const UStruct* Owner, FName FieldName)
+typename TEnableIf<TIsDerivedFrom<T, FField>::IsDerived, T*>::Type FindFProperty(const UStruct* Owner, FName FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
 {
 	static_assert(sizeof(T) > 0, "T must not be an incomplete type");
 
@@ -5783,7 +6028,7 @@ typename TEnableIf<TIsDerivedFrom<T, FField>::IsDerived, T*>::Type FindFProperty
 	}
 
 	// Search by comparing FNames (INTs), not strings
-	for (TFieldIterator<T>It(Owner); It; ++It)
+	for (TFieldIterator<T>It(Owner, IterationFlags); It; ++It)
 	{
 		if (It->GetFName() == FieldName)
 		{
@@ -5796,33 +6041,33 @@ typename TEnableIf<TIsDerivedFrom<T, FField>::IsDerived, T*>::Type FindFProperty
 }
 
 template <class T>
-typename TEnableIf<TIsDerivedFrom<T, FField>::IsDerived, T*>::Type FindFProperty(const UStruct* Owner, const TCHAR* FieldName)
+typename TEnableIf<TIsDerivedFrom<T, FField>::IsDerived, T*>::Type FindFProperty(const UStruct* Owner, const TCHAR* FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
 {
 	static_assert(sizeof(T) > 0, "T must not be an incomplete type");
 
 	// lookup the string name in the Name hash
 	FName Name(FieldName, FNAME_Find);
-	return FindFProperty<T>(Owner, Name);
+	return FindFProperty<T>(Owner, Name, IterationFlags);
 }
 
 /** Finds FProperties or UFunctions and UEnums */
-inline FFieldVariant FindUFieldOrFProperty(const UStruct* Owner, FName FieldName)
+inline FFieldVariant FindUFieldOrFProperty(const UStruct* Owner, FName FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
 {
 	// Look for properties first as they're most often the runtime thing higher level code wants to find
-	FFieldVariant Result = FindFProperty<FProperty>(Owner, FieldName);
+	FFieldVariant Result = FindFProperty<FProperty>(Owner, FieldName, IterationFlags);
 	if (!Result)
 	{
-		Result = FindUField<UField>(Owner, FieldName);
+		Result = FindUField<UField>(Owner, FieldName, IterationFlags);
 	}
 	return Result;
 }
 
 /** Finds FProperties or UFunctions and UEnums */
-inline FFieldVariant FindUFieldOrFProperty(const UStruct* Owner, const TCHAR* FieldName)
+inline FFieldVariant FindUFieldOrFProperty(const UStruct* Owner, const TCHAR* FieldName, EFieldIterationFlags IterationFlags = EFieldIterationFlags::Default)
 {
 	// lookup the string name in the Name hash
 	FName Name(FieldName, FNAME_Find);
-	return FindUFieldOrFProperty(Owner, Name);
+	return FindUFieldOrFProperty(Owner, Name, IterationFlags);
 }
 
 /**
@@ -5880,17 +6125,9 @@ public:
 	 * @param InRecursionFlags	Rather to recurse into container and struct properties
 	 * @param InDeprecatedPropertyFlags	Rather to iterate over deprecated properties
 	 */
-	FPropertyValueIterator(FFieldClass* InPropertyClass, const UStruct* InStruct, const void* InStructValue,
+	COREUOBJECT_API FPropertyValueIterator(FFieldClass* InPropertyClass, const UStruct* InStruct, const void* InStructValue,
 		EPropertyValueIteratorFlags						InRecursionFlags = EPropertyValueIteratorFlags::FullRecursion,
-		EFieldIteratorFlags::DeprecatedPropertyFlags	InDeprecatedPropertyFlags = EFieldIteratorFlags::IncludeDeprecated)
-		: PropertyClass(InPropertyClass)
-		, RecursionFlags(InRecursionFlags)
-		, DeprecatedPropertyFlags(InDeprecatedPropertyFlags)
-		, bSkipRecursionOnce(false)
-	{
-		PropertyIteratorStack.Emplace(InStruct, InStructValue, InDeprecatedPropertyFlags);
-		IterateToNext();
-	}
+		EFieldIteratorFlags::DeprecatedPropertyFlags	InDeprecatedPropertyFlags = EFieldIteratorFlags::IncludeDeprecated);
 
 	/** Invalid iterator, start with empty stack */
 	FPropertyValueIterator()
@@ -5967,54 +6204,81 @@ public:
 	COREUOBJECT_API void GetPropertyChain(TArray<const FProperty*>& PropertyChain) const;
 
 private:
+	enum EPropertyValueFlags : uint8
+	{
+		IsMatch = 0x01,
+
+		ContainerMask = 0xF0,
+		IsArray = 0x10,
+		IsMap = 0x20,
+		IsSet = 0x40,
+		IsStruct = 0x80,
+	};
+
 	struct FPropertyValueStackEntry
 	{
-		/** Field iterator within a UStruct */
-		TFieldIterator<const FProperty> FieldIterator;
-
-		/** Address of owning UStruct */
-		const void* StructValue;
+		/** Address of owning UStruct or FProperty container */
+		const void* Owner = nullptr;
 		
 		/** List of current root property+value pairs for the current top level FProperty */
-		TArray<BasePairType> ValueArray;
+		typedef TPair<BasePairType, uint8> BasePairAndFlags;
+		typedef TArray<BasePairAndFlags, TInlineAllocator<8>> FValueArrayType;
+		FValueArrayType ValueArray;
 
 		/** Current position inside ValueArray */
-		int32 ValueIndex;
+		int32 ValueIndex = -1;
+
+		/** Next position inside ValueArray */
+		int32 NextValueIndex = 0;
+
+		FPropertyValueStackEntry(const void* InValue)
+			: Owner(InValue)
+		{}
 
 		FPropertyValueStackEntry(const UStruct* InStruct, const void* InValue, EFieldIteratorFlags::DeprecatedPropertyFlags InDeprecatedPropertyFlags)
-			: FieldIterator(InStruct, EFieldIteratorFlags::IncludeSuper, InDeprecatedPropertyFlags, EFieldIteratorFlags::ExcludeInterfaces)
-			, StructValue(InValue)
-			, ValueIndex(0)
+			: Owner(InValue)
 		{}
 
 		FORCEINLINE friend bool operator==(const FPropertyValueStackEntry& Lhs, const FPropertyValueStackEntry& Rhs)
 		{
-			return Lhs.ValueIndex == Rhs.ValueIndex && Lhs.FieldIterator == Rhs.FieldIterator && Lhs.StructValue == Rhs.StructValue;
+			return Lhs.Owner == Rhs.Owner && Lhs.ValueIndex == Rhs.ValueIndex;
 		}
 
 		FORCEINLINE const BasePairType& GetPropertyValue() const
 		{
 			// Index has to be valid to get this far
-			return ValueArray[ValueIndex];
+			return ValueArray[ValueIndex].Key;
 		}
 	};
 
-	/** Internal stack, one per UStruct */
-	TArray<FPropertyValueStackEntry> PropertyIteratorStack;
+	/** Internal stack, one per continer/struct */
+	TArray<FPropertyValueStackEntry, TInlineAllocator<8>> PropertyIteratorStack;
 
 	/** Property type that is explicitly checked for */
-	FFieldClass* PropertyClass;
+	FFieldClass* PropertyClass = nullptr;
 
-	/** Whether to recurse into containers and StructProperties */
+	/** Whether to recurse into containers/structs */
 	const EPropertyValueIteratorFlags RecursionFlags;
 
 	/** Inherits to child field iterator */
 	const EFieldIteratorFlags::DeprecatedPropertyFlags DeprecatedPropertyFlags;
 
 	/** If true, next iteration will skip recursing into containers/structs */
-	bool bSkipRecursionOnce;
+	bool bSkipRecursionOnce = false;
 
-	/** Goes to the next Property/value pair. Returns true if next value is valid */
+	/** If true, all properties will be matched without checking IsA(PropertyClass) */
+	bool bMatchAll = false;
+
+	/** Returns EPropertyValueFlags to describe if this Property is a match and/or a container/struct */
+	uint8 GetPropertyValueFlags(const FProperty* Property);
+
+	/** Fills the Entry.ValueArray with all relevant properties found in Struct */
+	void FillStructProperties(const UStruct* Struct, FPropertyValueStackEntry& Entry);
+
+	/**
+	 * Goes to the next Property/value pair.
+	 * Returns false on a match or out of properties, true when iteration should continue
+	 */
 	bool NextValue(EPropertyValueIteratorFlags RecursionFlags);
 
 	/** Iterates to next property being checked for or until reaching the end of the structure */

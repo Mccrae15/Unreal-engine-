@@ -46,6 +46,7 @@ void FSocialUserList::InitializeList()
 		break;
 	case ESocialRelationship::PartyInvite:
 		OwnerToolkit->OnPartyInviteReceived().AddSP(this, &FSocialUserList::HandlePartyInviteReceived);
+		OwnerToolkit->OnPartyInviteRemoved().AddSP(this, &FSocialUserList::HandlePartyInviteRemoved);
 		break;
 	case ESocialRelationship::Friend:
 		OwnerToolkit->OnFriendshipEstablished().AddSP(this, &FSocialUserList::HandleFriendshipEstablished);
@@ -56,6 +57,10 @@ void FSocialUserList::InitializeList()
 		break;
 	case ESocialRelationship::SuggestedFriend:
 		OwnerToolkit->OnFriendshipEstablished().AddSP(this, &FSocialUserList::HandleFriendshipEstablished);
+		break;
+	case ESocialRelationship::JoinRequest:
+		OwnerToolkit->OnPartyRequestToJoinReceived().AddSP(this, &FSocialUserList::HandleRequestToJoinReceived);
+		OwnerToolkit->OnPartyRequestToJoinRemoved().AddSP(this, &FSocialUserList::HandleRequestToJoinRemoved);
 		break;
 	}
 
@@ -101,12 +106,12 @@ void FSocialUserList::SetAllowAutoUpdate(bool bIsEnabled)
 
 	if (AutoUpdateRequests == 0 && UpdateTickerHandle.IsValid())
 	{
-		FTicker::GetCoreTicker().RemoveTicker(UpdateTickerHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(UpdateTickerHandle);
 		UpdateTickerHandle.Reset();
 	}
 	else if (bIsEnabled && !UpdateTickerHandle.IsValid())
 	{
-		UpdateTickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FSocialUserList::HandleAutoUpdateList), AutoUpdatePeriod);
+		UpdateTickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateSP(this, &FSocialUserList::HandleAutoUpdateList), AutoUpdatePeriod);
 	}
 }
 
@@ -149,6 +154,12 @@ void FSocialUserList::HandleOwnerToolkitReset()
 void FSocialUserList::HandlePartyInviteReceived(USocialUser& InvitingUser)
 {
 	TryAddUser(InvitingUser);
+	UpdateListInternal();
+}
+
+void FSocialUserList::HandlePartyInviteRemoved(USocialUser& InvitingUser)
+{
+	TryRemoveUser(InvitingUser);
 	UpdateListInternal();
 }
 
@@ -237,6 +248,18 @@ void FSocialUserList::HandleUserGameSpecificStatusChanged(USocialUser* User)
 	UpdateNow();
 }
 
+void FSocialUserList::HandleRequestToJoinReceived(USocialUser& SocialUser, IOnlinePartyRequestToJoinInfoConstRef Request)
+{
+	TryAddUser(SocialUser);
+	UpdateListInternal();
+}
+
+void FSocialUserList::HandleRequestToJoinRemoved(USocialUser& SocialUser, IOnlinePartyRequestToJoinInfoConstRef Request, EPartyRequestToJoinRemovedReason Reason)
+{
+	TryRemoveUser(SocialUser);
+	UpdateListInternal();
+}
+
 void FSocialUserList::MarkUserAsDirty(USocialUser& User)
 {
 	// Save this dirtied user for re-evaluation during the next update
@@ -273,7 +296,7 @@ void FSocialUserList::TryAddUserFast(USocialUser& User)
 		else if (!bCanAdd && ListConfig.RelevantSubsystems.Contains(RelationshipSubsystem))
 		{
 			// Even if the user does not qualify for the list now due to presence filters, we still want to know about any changes to their presence to reevaluate
-			if (HasPresenceFilters() && !User.OnUserPresenceChanged().IsBoundToObject(this))
+			if ((HasPresenceFilters() || ListConfig.OnCustomFilterUser.IsBound()) && !User.OnUserPresenceChanged().IsBoundToObject(this))
 			{
 				User.OnUserPresenceChanged().AddSP(this, &FSocialUserList::HandleUserPresenceChanged, &User);
 			}
@@ -453,8 +476,14 @@ bool FSocialUserList::EvaluatePresenceFlag(bool bPresenceValue, ESocialUserState
 // encapsulates UserList sorting comparator and supporting data needed
 struct FUserSortData
 {
-	FUserSortData(USocialUser* InUser, EOnlinePresenceState::Type InStatus, bool InPlayingThisGame, FString InDisplayName, int64 InCustomSortValuePrimary, int64 InCustomSortValueSecondary)
-		: User(InUser), OnlineStatus(InStatus), PlayingThisGame(InPlayingThisGame), DisplayName(MoveTemp(InDisplayName)), CustomSortValuePrimary(InCustomSortValuePrimary), CustomSortValueSecondary(InCustomSortValueSecondary)
+	FUserSortData(USocialUser* InUser, EOnlinePresenceState::Type InStatus, bool InPlayingThisGame, FString InDisplayName, int64 InCustomSortValuePrimary, int64 InCustomSortValueSecondary, int64 InCustomSortValueTertiary)
+		: User(InUser)
+		, OnlineStatus(InStatus)
+		, PlayingThisGame(InPlayingThisGame)
+		, DisplayName(MoveTemp(InDisplayName))
+		, CustomSortValuePrimary(InCustomSortValuePrimary)
+		, CustomSortValueSecondary(InCustomSortValueSecondary)
+		, CustomSortValueTertiary(InCustomSortValueTertiary) 
 	{ }
 
 	USocialUser* User;
@@ -463,6 +492,7 @@ struct FUserSortData
 	FString DisplayName;
 	int64 CustomSortValuePrimary;
 	int64 CustomSortValueSecondary;
+	int64 CustomSortValueTertiary;
 
 	bool operator<(const FUserSortData& OtherSortData) const
 	{
@@ -475,7 +505,14 @@ struct FUserSortData
 				{
 					if (CustomSortValueSecondary == OtherSortData.CustomSortValueSecondary)
 					{
-						return DisplayName < OtherSortData.DisplayName;
+						if (CustomSortValueTertiary == OtherSortData.CustomSortValueTertiary)
+						{
+							return DisplayName < OtherSortData.DisplayName;
+						}
+						else
+						{
+							return CustomSortValueTertiary > OtherSortData.CustomSortValueTertiary;
+						}
 					}
 					else
 					{
@@ -585,7 +622,7 @@ void FSocialUserList::UpdateListInternal()
 
 				Algo::Transform(Users, SortedData, [](USocialUser* const User) -> FUserSortData
 				{
-					return FUserSortData(User, User->GetOnlineStatus(), User->IsPlayingThisGame(), User->GetDisplayName(), User->GetCustomSortValuePrimary(), User->GetCustomSortValueSecondary());
+					return FUserSortData(User, User->GetOnlineStatus(), User->IsPlayingThisGame(), User->GetDisplayName(), User->GetCustomSortValuePrimary(), User->GetCustomSortValueSecondary(), User->GetCustomSortValueTertiary());
 				});
 
 				Algo::Sort(SortedData);
@@ -611,12 +648,14 @@ void FSocialUserList::UpdateListInternal()
 
 void FSocialUserList::HandlePartyJoined(USocialParty& Party)
 {
+	Party.OnPartyLeft().AddSP(this, &FSocialUserList::HandlePartyLeft, &Party);
 	Party.OnPartyMemberCreated().AddSP(this, &FSocialUserList::HandlePartyMemberCreated);
 
 	for (UPartyMember* PartyMember : Party.GetPartyMembers())
 	{
 		if (PartyMember)
 		{
+			PartyMember->OnLeftParty().AddSP(this, &FSocialUserList::HandlePartyMemberLeft, PartyMember, true);
 			MarkPartyMemberAsDirty(*PartyMember);
 		}
 	}
@@ -624,20 +663,41 @@ void FSocialUserList::HandlePartyJoined(USocialParty& Party)
 	UpdateNow();
 }
 
+void FSocialUserList::HandlePartyLeft(EMemberExitedReason Reason, USocialParty* LeftParty)
+{
+	if (LeftParty)
+	{
+		for (UPartyMember* ExistingMember : LeftParty->GetPartyMembers())
+		{
+			HandlePartyMemberLeft(EMemberExitedReason::Left, ExistingMember, false);
+		}
+
+		LeftParty->OnPartyLeft().RemoveAll(this);
+		LeftParty->OnPartyMemberCreated().RemoveAll(this);
+
+		UpdateNow();
+	}
+}
+
 void FSocialUserList::HandlePartyMemberCreated(UPartyMember& Member)
 {
-	Member.OnLeftParty().AddSP(this, &FSocialUserList::HandlePartyMemberLeft, &Member);
+	Member.OnLeftParty().AddSP(this, &FSocialUserList::HandlePartyMemberLeft, &Member, true);
 	MarkPartyMemberAsDirty(Member);
 	UpdateNow();
 }
 
-void FSocialUserList::HandlePartyMemberLeft(EMemberExitedReason Reason, UPartyMember* Member)
+void FSocialUserList::HandlePartyMemberLeft(EMemberExitedReason Reason, UPartyMember* Member, bool bUpdateNow)
 {
 	if (ensure(Member))
 	{
+		Member->OnLeftParty().RemoveAll(this);
 		MarkPartyMemberAsDirty(*Member);
+
+		if (bUpdateNow)
+		{
+			UpdateNow();
+		}
 	}
-	UpdateNow();
 }
 
 USocialUser* FSocialUserList::FindOwnersRelationshipTo(UPartyMember& TargetPartyMember) const
@@ -658,8 +718,7 @@ void FSocialUserList::MarkPartyMemberAsDirty(UPartyMember& PartyMember)
 	// will have their own set of relationships (e.g. muted, blocked) to each of the other players.
 	if (OwnerToolkit.IsValid())
 	{
-		USocialUser* const PartyMemberSocialUser = FindOwnersRelationshipTo(PartyMember);
-		if (ensure(PartyMemberSocialUser))
+		if (USocialUser* const PartyMemberSocialUser = FindOwnersRelationshipTo(PartyMember))
 		{
 			MarkUserAsDirty(*PartyMemberSocialUser);
 		}

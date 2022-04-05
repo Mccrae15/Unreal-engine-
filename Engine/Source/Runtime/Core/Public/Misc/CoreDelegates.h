@@ -10,6 +10,7 @@
 #include "Math/IntVector.h"
 #include "Misc/AES.h"
 #include "GenericPlatform/GenericPlatformFile.h"
+#include "Async/TaskGraphInterfaces.h"
 
 class AActor;
 class Error;
@@ -247,6 +248,9 @@ public:
 	// Called at the end of UEngine::Init, right before loading PostEngineInit modules for both normal execution and commandlets
 	static FSimpleMulticastDelegate OnPostEngineInit;
 
+	// Called after all modules have been loaded for all phases
+	static FSimpleMulticastDelegate OnAllModuleLoadingPhasesComplete;
+
 	// Called at the very end of engine initialization, right before the engine starts ticking. This is not called for commandlets
 	static FSimpleMulticastDelegate OnFEngineLoopInitComplete;
 
@@ -259,7 +263,7 @@ public:
 	// Called before the engine exits. Separate from OnPreExit as OnEnginePreExit occurs before shutting down any core modules.
 	static FSimpleMulticastDelegate OnEnginePreExit;
 
-	/** Delegate for gathering up additional localization paths that are unknown to the UE4 core (such as plugins) */
+	/** Delegate for gathering up additional localization paths that are unknown to the engine core (such as plugins) */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FGatherAdditionalLocResPathsDelegate, TArray<FString>&);
 	static FGatherAdditionalLocResPathsDelegate GatherAdditionalLocResPathsCallback;
 
@@ -477,11 +481,11 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FPlatformChangedLaptopMode, EConvertibleLaptopMode);
 	static FPlatformChangedLaptopMode PlatformChangedLaptopMode;
 
-	/** Sent when the platform needs the user to fix headset tracking on startup (PS4 Morpheus only) */
+	/** Sent when the platform needs the user to fix headset tracking on startup (Most platforms do not need this.) */
 	DECLARE_MULTICAST_DELEGATE(FVRHeadsetTrackingInitializingAndNeedsHMDToBeTrackedDelegate);
 	static FVRHeadsetTrackingInitializingAndNeedsHMDToBeTrackedDelegate VRHeadsetTrackingInitializingAndNeedsHMDToBeTrackedDelegate;
 
-	/** Sent when the platform finds that needed headset tracking on startup has completed (PS4 Morpheus only) */
+	/** Sent when the platform finds that needed headset tracking on startup has completed (Most platforms do not need this.) */
 	DECLARE_MULTICAST_DELEGATE(FVRHeadsetTrackingInitializedDelegate);
 	static FVRHeadsetTrackingInitializedDelegate VRHeadsetTrackingInitializedDelegate;
 
@@ -581,7 +585,7 @@ public:
 	DECLARE_DELEGATE_RetVal(bool, FIsLoadingMovieCurrentlyPlaying)
 	static FIsLoadingMovieCurrentlyPlaying IsLoadingMovieCurrentlyPlaying;
 
-	// Callback to allow user code to prevent url from being launched from FPlatformProcess::LaunchURL. Used to apply http whitelist
+	// Callback to allow user code to prevent url from being launched from FPlatformProcess::LaunchURL. Used to apply http allow list
 	// Return true for to launch the url
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FShouldLaunchUrl, const TCHAR* /* URL */);
 	static FShouldLaunchUrl ShouldLaunchUrl;
@@ -618,9 +622,17 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FAccesExtraBinaryConfigData, FExtraBinaryConfigData&);
 	static FAccesExtraBinaryConfigData AccessExtraBinaryConfigData;
 
+	using FAttachShaderReadRequestFunc = TFunctionRef<class FIoRequest(const class FIoChunkId&, FGraphEventRef)>;
+	DECLARE_DELEGATE_TwoParams(FPreloadPackageShaderMaps, TArrayView<const FSHAHash>, FAttachShaderReadRequestFunc);
+	static FPreloadPackageShaderMaps PreloadPackageShaderMaps;
+	DECLARE_DELEGATE_OneParam(FReleasePreloadedPackageShaderMaps, TArrayView<const FSHAHash>);
+	static FReleasePreloadedPackageShaderMaps ReleasePreloadedPackageShaderMaps;
 	/** Called when the verbosity of a log category is changed */
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnLogVerbosityChanged, const FLogCategoryName& /* CategoryName */, ELogVerbosity::Type /* OldVerbosity */, ELogVerbosity::Type /* NewVerbosity */);
 	static FOnLogVerbosityChanged OnLogVerbosityChanged;
+
+	DECLARE_DELEGATE_RetVal(TSharedPtr<class IPackageStore>, FCreatePackageStore);
+	static FCreatePackageStore CreatePackageStore;
 
 private:
 

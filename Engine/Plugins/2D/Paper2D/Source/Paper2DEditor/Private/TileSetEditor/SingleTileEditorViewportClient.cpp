@@ -16,6 +16,7 @@
 
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "UnrealWidget.h"
 
 #define LOCTEXT_NAMESPACE "TileSetEditor"
 
@@ -34,13 +35,13 @@ FSingleTileEditorViewportClient::FSingleTileEditorViewportClient(UPaperTileSet* 
 	SetRealtime(true);
 
 	// The tile map editor fully supports mode tools and isn't doing any incompatible stuff with the Widget
-	Widget->SetUsesEditorModeTools(ModeTools);
+	Widget->SetUsesEditorModeTools(ModeTools.Get());
 
 	DrawHelper.bDrawGrid = GetDefault<UTileSetEditorSettings>()->bShowGridByDefault;
 	DrawHelper.bDrawPivot = false;
 
 	PreviewScene = &OwnedPreviewScene;
-	((FAssetEditorModeManager*)ModeTools)->SetPreviewScene(PreviewScene);
+	((FAssetEditorModeManager*)ModeTools.Get())->SetPreviewScene(PreviewScene);
 
 	EngineShowFlags.DisableAdvancedFeatures();
 	EngineShowFlags.SetCompositeEditorPrimitives(true);
@@ -295,10 +296,9 @@ int32 FSingleTileEditorViewportClient::GetTileIndex() const
 void FSingleTileEditorViewportClient::ActivateEditMode(TSharedPtr<FUICommandList> InCommandList)
 {
 	// Activate the sprite geometry edit mode
-	//@TODO: ModeTools->SetToolkitHost(SpriteEditorPtr.Pin()->GetToolkitHost());
 	ModeTools->SetDefaultMode(FSpriteGeometryEditMode::EM_SpriteGeometry);
 	ModeTools->ActivateDefaultMode();
-	ModeTools->SetWidgetMode(FWidget::WM_Translate);
+	ModeTools->SetWidgetMode(UE::Widget::WM_Translate);
 
 	FSpriteGeometryEditMode* GeometryEditMode = ModeTools->GetActiveModeTyped<FSpriteGeometryEditMode>(FSpriteGeometryEditMode::EM_SpriteGeometry);
 	check(GeometryEditMode);

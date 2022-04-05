@@ -1,9 +1,3 @@
-//
-// This file was copied from //depot/rs1_xbox_rel_1610/xbox/drivers/Graphics/Pix3/PixEvt/inc/pix3.h#6
-//
-// To refresh: run 'UpdateFromXbox -latest'
-//
-
 /*==========================================================================;
  *
  *  Copyright (C) Microsoft Corporation.  All Rights Reserved.
@@ -20,27 +14,25 @@
 #include <sal.h>
 
 #ifndef __cplusplus
-#error "Only C++ files can include pix.h. C is not supported."
+#error "Only C++ files can include pix3.h. C is not supported."
 #endif
 
-#if defined(XBOX) || defined(_XBOX_ONE) || defined(_DURANGO)
-#include "pix3_xbox.h"
-#else
-#include "pix3_win.h"
+#if !defined(USE_PIX_SUPPORTED_ARCHITECTURE)
+#if defined(_M_X64) || defined(USE_PIX_ON_ALL_ARCHITECTURES) || defined(_M_ARM64)
+#define USE_PIX_SUPPORTED_ARCHITECTURE
+#endif
 #endif
 
-//
-// The PIX event/marker APIs compile to nothing on retail builds and on x86 builds
-//
-#if (!defined(USE_PIX)) && ((defined(_DEBUG) || DBG || (defined(PROFILE) && !defined(FASTCAP)) || defined(PROFILE_BUILD)) && !defined(i386) && defined(_AMD64_) && !defined(_PREFAST_))
+#if !defined(USE_PIX)
+#if defined(USE_PIX_SUPPORTED_ARCHITECTURE) && (defined(_DEBUG) || DBG || defined(PROFILE) || defined(PROFILE_BUILD)) && !defined(_PREFAST_)
 #define USE_PIX
 #endif
+#endif
 
-// This warning no longer applies, since PIX is supported on native HL2. Commenting out this warning until we 
-// get an updated header from Microsoft.
-//#if defined(USE_PIX) && !defined(_AMD64_)
-//#pragma message("Warning: Pix markers are only supported on AMD64")
-//#endif
+#if defined(USE_PIX) && !defined(USE_PIX_SUPPORTED_ARCHITECTURE)
+#pragma message("Warning: Pix markers are only supported on AMD64 and ARM64")
+#endif
+
 
 // These flags are used by both PIXBeginCapture and PIXGetCaptureState
 #define PIX_CAPTURE_TIMING                  (1 << 0)
@@ -52,49 +44,90 @@
 #define PIX_CAPTURE_SYSTEM_MONITOR_COUNTERS (1 << 6)
 #define PIX_CAPTURE_VIDEO                   (1 << 7)
 #define PIX_CAPTURE_AUDIO                   (1 << 8)
+#define PIX_CAPTURE_RESERVED                (1 << 15)
 
-typedef union PIXCaptureParameters
+union PIXCaptureParameters
 {
+    enum PIXCaptureStorage
+    {
+        Memory = 0,
+    };
+
     struct GpuCaptureParameters
     {
-        PVOID reserved;
+        PCWSTR FileName;
     } GpuCaptureParameters;
 
     struct TimingCaptureParameters
     {
+        PCWSTR FileName;
+        UINT32 MaximumToolingMemorySizeMb;
+        PIXCaptureStorage CaptureStorage;
+
+        BOOL CaptureGpuTiming;
+
         BOOL CaptureCallstacks;
-        PWSTR FileName;
+        BOOL CaptureCpuSamples;
+        UINT32 CpuSamplesPerSecond;
+
+        BOOL CaptureFileIO;
+
+        BOOL CaptureVirtualAllocEvents;
+        BOOL CaptureHeapAllocEvents;
+        BOOL CaptureXMemEvents; // Xbox only
+        BOOL CapturePixMemEvents; // Xbox only
     } TimingCaptureParameters;
+};
 
-} PIXCaptureParameters, *PPIXCaptureParameters;
+typedef PIXCaptureParameters* PPIXCaptureParameters;
 
+#if defined(XBOX) || defined(_XBOX_ONE) || defined(_DURANGO) || defined(_GAMING_XBOX) || defined(_GAMING_XBOX_SCARLETT)
+#include "pix3_xbox.h"
+#else
+#include "pix3_win.h"
+#endif
 
+#if defined(USE_PIX_SUPPORTED_ARCHITECTURE) && (defined(USE_PIX) || defined(USE_PIX_RETAIL))
 
-#if defined (USE_PIX) && defined(_AMD64_)
+#define PIX_EVENTS_ARE_TURNED_ON
 
 #include "PIXEventsCommon.h"
-#include "PIXEventsGenerated.h"
+#include "PIXEvents.h"
 
+#ifdef USE_PIX
 // Starts a programmatically controlled capture.
 // captureFlags uses the PIX_CAPTURE_* family of flags to specify the type of capture to take
-extern "C" HRESULT WINAPI PIXBeginCapture(DWORD captureFlags, _In_opt_ const PPIXCaptureParameters captureParameters);
+extern "C" HRESULT WINAPI PIXBeginCapture2(DWORD captureFlags, _In_opt_ const PPIXCaptureParameters captureParameters);
+inline HRESULT PIXBeginCapture(DWORD captureFlags, _In_opt_ const PPIXCaptureParameters captureParameters) { return PIXBeginCapture2(captureFlags, captureParameters); }
 
 // Stops a programmatically controlled capture
 //  If discard == TRUE, the captured data is discarded
 //  If discard == FALSE, the captured data is saved
+//  discard parameter is not supported on Windows
 extern "C" HRESULT WINAPI PIXEndCapture(BOOL discard);
 
 extern "C" DWORD WINAPI PIXGetCaptureState();
 
 extern "C" void WINAPI PIXReportCounter(_In_ PCWSTR name, float value);
 
-#else
+#endif // USE_PIX
+
+#endif // (USE_PIX_SUPPORTED_ARCHITECTURE) && (USE_PIX || USE_PIX_RETAIL)
+
+#if !defined(USE_PIX_SUPPORTED_ARCHITECTURE) || !defined(USE_PIX)
 
 // Eliminate these APIs when not using PIX
+inline HRESULT PIXBeginCapture2(DWORD, _In_opt_ const PIXCaptureParameters*) { return S_OK; }
 inline HRESULT PIXBeginCapture(DWORD, _In_opt_ const PIXCaptureParameters*) { return S_OK; }
 inline HRESULT PIXEndCapture(BOOL) { return S_OK; }
+inline HRESULT PIXGpuCaptureNextFrames(PCWSTR, UINT32) { return S_OK; }
+inline HRESULT PIXSetTargetWindow(HWND) { return S_OK; }
+inline HMODULE PIXLoadLatestWinPixGpuCapturerLibrary() { return nullptr; }
 inline DWORD PIXGetCaptureState() { return 0; }
 inline void PIXReportCounter(_In_ PCWSTR, float) {}
+inline void PIXNotifyWakeFromFenceSignal(_In_ HANDLE) {}
+
+#if !defined(USE_PIX_RETAIL)
 
 inline void PIXBeginEvent(UINT64, _In_ PCSTR, ...) {}
 inline void PIXBeginEvent(UINT64, _In_ PCWSTR, ...) {}
@@ -106,16 +139,23 @@ inline void PIXSetMarker(UINT64, _In_ PCSTR, ...) {}
 inline void PIXSetMarker(UINT64, _In_ PCWSTR, ...) {}
 inline void PIXSetMarker(void*, UINT64, _In_ PCSTR, ...) {}
 inline void PIXSetMarker(void*, UINT64, _In_ PCWSTR, ...) {}
+inline void PIXBeginRetailEvent(void*, UINT64, _In_ PCSTR, ...) {}
+inline void PIXBeginRetailEvent(void*, UINT64, _In_ PCWSTR, ...) {}
+inline void PIXEndRetailEvent(void*) {}
+inline void PIXSetRetailMarker(void*, UINT64, _In_ PCSTR, ...) {}
+inline void PIXSetRetailMarker(void*, UINT64, _In_ PCWSTR, ...) {}
 inline void PIXScopedEvent(UINT64, _In_ PCSTR, ...) {}
 inline void PIXScopedEvent(UINT64, _In_ PCWSTR, ...) {}
 inline void PIXScopedEvent(void*, UINT64, _In_ PCSTR, ...) {}
 inline void PIXScopedEvent(void*, UINT64, _In_ PCWSTR, ...) {}
 
+#endif // !USE_PIX_RETAIL
+
 // don't show warnings about expressions with no effect
 #pragma warning(disable:4548)
 #pragma warning(disable:4555)
 
-#endif // USE_PIX
+#endif // !USE_PIX_SUPPORTED_ARCHITECTURE || !USE_PIX
 
 // Use these functions to specify colors to pass as metadata to a PIX event/marker API.
 // Use PIX_COLOR() to specify a particular color for an event.

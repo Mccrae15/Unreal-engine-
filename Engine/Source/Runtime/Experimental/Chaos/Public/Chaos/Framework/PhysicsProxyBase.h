@@ -6,7 +6,7 @@
 #include "UObject/GCObject.h"
 #include "Chaos/Core.h"
 
-enum class EPhysicsProxyType
+enum class EPhysicsProxyType : uint32
 {
 	NoneType = 0,
 	StaticMeshType = 1,
@@ -15,7 +15,8 @@ enum class EPhysicsProxyType
 	SkeletalMeshType = 4,
 	JointConstraintType = 8,	//left gap when removed some types in case these numbers actually matter to someone, should remove
 	SuspensionConstraintType = 9,
-	SingleParticleProxy
+	SingleParticleProxy,
+	Count
 };
 
 namespace Chaos
@@ -40,14 +41,15 @@ struct CHAOS_API FProxyTimestamp
 class CHAOS_API IPhysicsProxyBase
 {
 public:
-	IPhysicsProxyBase(EPhysicsProxyType InType)
+	IPhysicsProxyBase(EPhysicsProxyType InType, UObject* InOwner)
 		: Solver(nullptr)
+		, Owner(InOwner)
 		, DirtyIdx(INDEX_NONE)
 		, Type(InType)
 		, SyncTimestamp(new FProxyTimestamp)
 	{}
 
-	virtual UObject* GetOwner() const = 0;
+	UObject* GetOwner() const { return Owner; }
 
 	template< class SOLVER_TYPE>
 	SOLVER_TYPE* GetSolver() const { return static_cast<SOLVER_TYPE*>(Solver); }
@@ -58,7 +60,7 @@ public:
 	template< class SOLVER_TYPE = Chaos::FPhysicsSolver>
 	void SetSolver(SOLVER_TYPE* InSolver) { Solver = InSolver; }
 
-	EPhysicsProxyType GetType() { return Type; }
+	EPhysicsProxyType GetType() const { return Type; }
 
 	//todo: remove this
 	virtual void* GetHandleUnsafe() const { check(false); return nullptr; }
@@ -71,6 +73,10 @@ public:
 
 	TSharedPtr<FProxyTimestamp,ESPMode::ThreadSafe> GetSyncTimestamp() const { return SyncTimestamp; }
 
+	bool IsInitialized() const { return InitializedOnStep != INDEX_NONE; }
+	void SetInitialized(const int32 InitializeStep) { InitializedOnStep = InitializeStep; }
+	int32 GetInitializedStep() const { return InitializedOnStep; }
+
 
 protected:
 	// Ensures that derived classes can successfully call this destructor
@@ -79,6 +85,7 @@ protected:
 	
 	/** The solver that owns the solver object */
 	Chaos::FPhysicsSolverBase* Solver;
+	UObject* Owner;
 
 private:
 	int32 DirtyIdx;
@@ -86,6 +93,7 @@ protected:
 	/** Proxy type */
 	EPhysicsProxyType Type;
 	TSharedPtr<FProxyTimestamp,ESPMode::ThreadSafe> SyncTimestamp;
+	int32 InitializedOnStep = INDEX_NONE;
 };
 
 struct PhysicsProxyWrapper

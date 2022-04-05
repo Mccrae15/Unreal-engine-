@@ -18,6 +18,7 @@ namespace UnrealBuildTool.Rules
 					"Core",
 					"CoreUObject",
 					"DesktopPlatform",
+					"EditorFramework",
 					"EditorStyle",
 					"EditorScriptingUtilities",
 					"Engine",
@@ -25,6 +26,9 @@ namespace UnrealBuildTool.Rules
 					"FreeImage",
 					"HTTP",
 					"InputCore",
+					"InterchangeCore",
+					"InterchangeEngine",
+					"InterchangeNodes",
 					"Json",
 					"Landscape",
 					"LandscapeEditor",
@@ -46,12 +50,11 @@ namespace UnrealBuildTool.Rules
 					"SlateCore",
 					"SourceControl",
 					"StaticMeshDescription",
-					"StaticMeshEditorExtension",
 					"ToolMenus",
 					"UnrealEd",
 					"VariantManager",
 					"VariantManagerContent",
-                }
+				}
 			);
 
 			PublicDependencyModuleNames.AddRange(
@@ -59,11 +62,13 @@ namespace UnrealBuildTool.Rules
 				{
 					"DataprepCore",
 					"DatasmithContent",
-                    "DatasmithCore",
+					"DatasmithCore",
 					"DatasmithTranslator",
-                    "DatasmithContentEditor",
+					"DatasmithContentEditor",
+					"DirectLinkExtension",
+					"ExternalSource",
 				}
 			);
-        }
-    }
+		}
+	}
 }

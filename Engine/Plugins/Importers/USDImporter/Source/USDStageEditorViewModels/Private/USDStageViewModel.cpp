@@ -99,6 +99,9 @@ void FUsdStageViewModel::NewStage( const TCHAR* FilePath )
 
 void FUsdStageViewModel::OpenStage( const TCHAR* FilePath )
 {
+
+	UsdUtils::StartMonitoringErrors();
+
 	if ( !UsdStageActor.IsValid() )
 	{
 		IUsdStageModule& UsdStageModule = FModuleManager::GetModuleChecked< IUsdStageModule >( TEXT("USDStage") );
@@ -126,6 +129,13 @@ void FUsdStageViewModel::ReloadStage()
 #if USE_USD_SDK
 	UE::FUsdStage Stage = UsdStageActor->GetOrLoadUsdStage();
 	pxr::UsdStageRefPtr UsdStage = pxr::UsdStageRefPtr( Stage );
+
+	// Can't reload from disk something that doesn't exist on disk yet
+	// (actually USD will let us do this but it seems to just clear the anonymous layers instead)
+	if ( Stage.GetRootLayer().IsAnonymous() )
+	{
+		return;
+	}
 
 	if ( UsdStage )
 	{
@@ -160,6 +170,30 @@ void FUsdStageViewModel::ReloadStage()
 #endif // #if USE_USD_SDK
 }
 
+void FUsdStageViewModel::ResetStage()
+{
+#if USE_USD_SDK
+	if ( !UsdStageActor.IsValid() )
+	{
+		return;
+	}
+
+	UE::FUsdStage Stage = UsdStageActor->GetOrLoadUsdStage();
+	pxr::UsdStageRefPtr UsdStage = pxr::UsdStageRefPtr( Stage );
+
+	if ( UsdStage )
+	{
+		FScopedUsdAllocs Allocs;
+
+		UsdStage->GetSessionLayer()->Clear();
+
+		UsdStage->SetEditTarget( UsdStage->GetEditTargetForLocalLayer( UsdStage->GetRootLayer() ) );
+
+		UsdStage->MuteAndUnmuteLayers( {}, UsdStage->GetMutedLayers() );
+	}
+#endif // #if USE_USD_SDK
+}
+
 void FUsdStageViewModel::CloseStage()
 {
 	if ( AUsdStageActor* StageActor = UsdStageActor.Get() )
@@ -179,7 +213,17 @@ void FUsdStageViewModel::SaveStage()
 
 			UsdUtils::StartMonitoringErrors();
 
-			pxr::UsdStageRefPtr( UsdStage )->Save();
+			// Save layers manually instead of calling UsdStage::Save(). This is roughly the same implementation anyway, except
+			// that UsdStage::Save() will ignore a layer if it also happens to be added as a sublayer to a session layer, and
+			// we want to ensure we always save dirty layers when we hit SaveStage
+			for ( const pxr::SdfLayerHandle& Handle : pxr::UsdStageRefPtr{ UsdStage }->GetUsedLayers() )
+			{
+				if ( !Handle->IsAnonymous() && Handle->IsDirty() )
+				{
+					Handle->Save();
+				}
+			}
+
 			UsdViewModelImpl::SaveUEStateLayer( UsdStage );
 
 			UsdUtils::ShowErrorsAndStopMonitoring(LOCTEXT("USDSaveError", "Failed to save current USD Stage!\nCheck the Output Log for details."));
@@ -242,13 +286,18 @@ void FUsdStageViewModel::ImportStage()
 		// Preload some settings according to USDStage options. These will overwrite whatever is loaded from config
 		ImportContext.ImportOptions->PurposesToImport = StageActor->PurposesToLoad;
 		ImportContext.ImportOptions->RenderContextToImport = StageActor->RenderContext;
-		ImportContext.ImportOptions->ImportTime = StageActor->GetTime();
 		ImportContext.ImportOptions->StageOptions.MetersPerUnit = UsdUtils::GetUsdStageMetersPerUnit( UsdStage );
 		ImportContext.ImportOptions->StageOptions.UpAxis = UsdUtils::GetUsdStageUpAxisAsEnum( UsdStage );
 		ImportContext.bReadFromStageCache = true; // So that we import whatever the user has open right now, even if the file has changes
 
 		const FString RootPath = UsdStage.GetRootLayer().GetRealPath();
-		const FString StageName = FPaths::GetBaseFilename( RootPath );
+		FString StageName = FPaths::GetBaseFilename( RootPath );
+
+		// Provide a StageName when importing transient stages as this is used for the content folder name and actor label
+		if ( UsdStage.GetRootLayer().IsAnonymous() && RootPath.IsEmpty() )
+		{
+			StageName = TEXT("TransientStage");
+		}
 
 		const bool bIsAutomated = false;
 		if ( ImportContext.Init( StageName, RootPath, TEXT("/Game/"), RF_Public | RF_Transactional, bIsAutomated ) )
@@ -258,7 +307,14 @@ void FUsdStageViewModel::ImportStage()
 			// Let the importer reuse our assets, but force it to spawn new actors and components always
 			// This allows a different setting for asset/component collapsing, and doesn't require modifying the PrimTwins
 			ImportContext.AssetCache = StageActor->GetAssetCache();
+			ImportContext.LevelSequenceHelper.SetAssetCache( StageActor->GetAssetCache() );
 			ImportContext.MaterialToPrimvarToUVIndex = StageActor->GetMaterialToPrimvarToUVIndex();
+
+			ImportContext.TargetSceneActorAttachParent = StageActor->GetRootComponent()->GetAttachParent();
+			ImportContext.TargetSceneActorTargetTransform = StageActor->GetActorTransform();
+
+			// Pass the stage directly too in case we're importing a transient stage with no filepath
+			ImportContext.Stage = UsdStage;
 
 			UUsdStageImporter* USDImporter = IUsdStageImporterModule::Get().GetImporter();
 			USDImporter->ImportFromFile(ImportContext);

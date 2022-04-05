@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/AST/OperationKinds.h"
 #include "clang/Sema/SemaInternal.h"
 #include "TreeTransform.h"
 #include "clang/AST/ASTConsumer.h"
@@ -2722,6 +2723,27 @@ Sema::PerformObjectMemberConversion(Expr *From,
   }
 
   CXXCastPath BasePath;
+  // HLSL Change Begin
+  // When converting ConstantBuffer or TextureBuffers to 
+  // TextureBuffer
+  if (getLangOpts().HLSL) {
+    if (auto TSTy = dyn_cast<TemplateSpecializationType>(FromRecordType)) {
+      if (TSTy->getTemplateName().getAsTemplateDecl()->getName() ==
+              "ConstantBuffer" ||
+          TSTy->getTemplateName().getAsTemplateDecl()->getName() ==
+              "TextureBuffer") {
+        auto FirstArg = TSTy->getArgs()[0];
+        if (FirstArg.getKind() == TemplateArgument::Type &&
+            FirstArg.getAsType() == DestRecordType) {
+          return ImpCastExprToType(From, DestType, CK_FlatConversion, VK,
+                                   &BasePath);
+        }
+      }
+    }
+  }
+
+  // HLSL Change End.
+  
   if (CheckDerivedToBaseConversion(FromRecordType, DestRecordType,
                                    FromLoc, FromRange, &BasePath,
                                    IgnoreAccess))
@@ -2739,8 +2761,17 @@ bool Sema::UseArgumentDependentLookup(const CXXScopeSpec &SS,
     return false;
 
   // Never if a scope specifier was provided.
-  if (SS.isSet())
-    return false;
+  if (SS.isSet()) {
+    // HLSL Change begins
+    // We want to be able to have intrinsics inside the "vk" namespace.
+    const bool isVkNamespace =
+        SS.getScopeRep() && SS.getScopeRep()->getAsNamespace() &&
+        SS.getScopeRep()->getAsNamespace()->getName() == "vk";
+
+    if (!isVkNamespace)
+    // HLSL Change ends
+      return false;
+  }
 
   // Only in C++ or ObjC++.
   if (!getLangOpts().CPlusPlus)
@@ -4116,6 +4147,16 @@ Sema::ActOnArraySubscriptExpr(Scope *S, Expr *base, SourceLocation lbLoc,
     if (result.isInvalid()) return ExprError();
     idx = result.get();
   }
+
+  // HLSL Change Starts - Check for subscript access of out indices
+  // Disallow component access for out indices for DXIL path. We still allow
+  // this in SPIR-V path.
+  if (getLangOpts().HLSL && !getLangOpts().SPIRV &&
+      base->getType()->isRecordType() && IsExprAccessingOutIndicesArray(base)) {
+    Diag(lbLoc, diag::err_hlsl_out_indices_array_incorrect_access);
+    return ExprError();
+  }
+  // HLSL Change Ends
 
   // Build an unanalyzed expression if either operand is type-dependent.
   if (getLangOpts().CPlusPlus &&
@@ -9441,7 +9482,10 @@ bool CheckForModifiableLvalue(Expr *E, SourceLocation Loc, Sema &S) { // HLSL Ch
   assert(!E->hasPlaceholderType(BuiltinType::PseudoObject));
   // HLSL Change Starts - check const for array subscript operator for HLSL vector/matrix
   if (S.Context.getLangOpts().HLSL && E->getStmtClass() == Stmt::CXXOperatorCallExprClass) {
-      // check if it's a vector or matrix
+    // check if it's a vector or matrix
+    const CXXOperatorCallExpr *expr = cast<CXXOperatorCallExpr>(E);
+    QualType qt = expr->getArg(0)->getType();
+    if ((hlsl::IsMatrixType(&S, qt) || hlsl::IsVectorType(&S, qt)))
       return HLSLCheckForModifiableLValue(E, Loc, S);
   }
   // HLSL Change Ends
@@ -10348,7 +10392,12 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
 
   // HLSL Change Starts
   // Handle HLSL binary operands differently
-  if (getLangOpts().HLSL) {
+  if (getLangOpts().HLSL &&
+          (!getLangOpts().EnableOperatorOverloading ||
+           !hlsl::IsUserDefinedRecordType(LHSExpr->getType())) ||
+      !hlsl::DoesTypeDefineOverloadedOperator(
+          LHSExpr->getType(), clang::BinaryOperator::getOverloadedOperator(Opc),
+          RHSExpr->getType())) {
     hlsl::CheckBinOpForHLSL(*this, OpLoc, Opc, LHS, RHS, ResultTy, CompLHSTy, CompResultTy);
     if (!ResultTy.isNull() && Opc == BO_Comma) {
       // In C/C++, the RHS value kind should propagate. In HLSL, it should yield an r-value.
@@ -10824,10 +10873,20 @@ ExprResult Sema::BuildBinOp(Scope *S, SourceLocation OpLoc,
     RHSExpr = resolvedRHS.get();
   }
 
-  // HLSL Change: bypass binary operator overload work, which isn't supported in any case;
-  // otherwise more extensive changes need to be done to add HLSL-specific behavior to
-  // be considered when building overload candidate sets
-  if (getLangOpts().CPlusPlus && !getLangOpts().HLSL) {
+  // HLSL Change: The condition of this if-statement must be false for the
+  // binary operator overloading for HLSL-specific resource types because they
+  // must be handled by the following CreateBuiltinBinOp(). If it is a
+  // user-defined type with operator overloading methods, we know it is not a
+  // binary operator overloading for a HLSL-specific resource type. This
+  // if-statement condition does not perfectly checks all the cases, but it
+  // simply checks whether it is a user-defined type with operator overloading
+  // methods or not.
+  if (getLangOpts().CPlusPlus &&
+      (!getLangOpts().HLSL || getLangOpts().EnableOperatorOverloading) &&
+      hlsl::IsUserDefinedRecordType(LHSExpr->getType()) &&
+      hlsl::DoesTypeDefineOverloadedOperator(
+          LHSExpr->getType(), clang::BinaryOperator::getOverloadedOperator(Opc),
+          RHSExpr->getType())) {
     // If either expression is type-dependent, always build an
     // overloaded op.
     if (LHSExpr->isTypeDependent() || RHSExpr->isTypeDependent())

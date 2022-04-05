@@ -28,23 +28,34 @@ Pass::Status StripReflectInfoPass::Process() {
 
   std::vector<Instruction*> to_remove;
 
+  // UE Change Begin: Remove all GOOGLE reflection extensions in this pass
+  auto MustRemoveDecoration = [](uint32_t decoration) {
+    return decoration == SpvDecorationHlslSemanticGOOGLE ||
+           decoration == SpvDecorationUserTypeGOOGLE;
+  };
+  // UE Change End: Remove all GOOGLE reflection extensions in this pass
+
   bool other_uses_for_decorate_string = false;
   for (auto& inst : context()->module()->annotations()) {
     switch (inst.opcode()) {
       case SpvOpDecorateStringGOOGLE:
-        if (inst.GetSingleWordInOperand(1) == SpvDecorationHlslSemanticGOOGLE) {
+        // UE Change Begin: Remove all GOOGLE reflection extensions in this pass
+        if (MustRemoveDecoration(inst.GetSingleWordInOperand(1))) {
           to_remove.push_back(&inst);
         } else {
           other_uses_for_decorate_string = true;
         }
+        // UE Change End: Remove all GOOGLE reflection extensions in this pass
         break;
 
       case SpvOpMemberDecorateStringGOOGLE:
-        if (inst.GetSingleWordInOperand(2) == SpvDecorationHlslSemanticGOOGLE) {
+        // UE Change Begin: Remove all GOOGLE reflection extensions in this pass
+        if (MustRemoveDecoration(inst.GetSingleWordInOperand(2))) {
           to_remove.push_back(&inst);
         } else {
           other_uses_for_decorate_string = true;
         }
+        // UE Change End: Remove all GOOGLE reflection extensions in this pass
         break;
 
       case SpvOpDecorateId:
@@ -64,6 +75,10 @@ Pass::Status StripReflectInfoPass::Process() {
         reinterpret_cast<const char*>(&inst.GetInOperand(0).words[0]);
     if (0 == std::strcmp(ext_name, "SPV_GOOGLE_hlsl_functionality1")) {
       to_remove.push_back(&inst);
+    // UE Change Begin: Remove all GOOGLE reflection extensions in this pass
+    } else if (0 == std::strcmp(ext_name, "SPV_GOOGLE_user_type")) {
+      to_remove.push_back(&inst);
+    // UE Change End: Remove all GOOGLE reflection extensions in this pass
     } else if (!other_uses_for_decorate_string &&
                0 == std::strcmp(ext_name, "SPV_GOOGLE_decorate_string")) {
       to_remove.push_back(&inst);
@@ -75,7 +90,11 @@ Pass::Status StripReflectInfoPass::Process() {
   // clear all debug data now if it hasn't been cleared already, to remove any
   // remaining OpString that may have been referenced by non-semantic extinsts
   for (auto& dbg : context()->debugs1()) to_remove.push_back(&dbg);
-  for (auto& dbg : context()->debugs2()) to_remove.push_back(&dbg);
+  // UE Change Begin: OpName is required in UE
+  for (auto& dbg : context()->debugs2()) {
+    if (dbg.opcode() != SpvOpName) to_remove.push_back(&dbg);
+  }
+  // UE Change Begin: OpName is required in UE
   for (auto& dbg : context()->debugs3()) to_remove.push_back(&dbg);
   for (auto& dbg : context()->ext_inst_debuginfo()) to_remove.push_back(&dbg);
 

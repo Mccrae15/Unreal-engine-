@@ -49,8 +49,9 @@ private:
 	FName& GetMaterialSlotName(int32 GroupIndex);
 	const FName& GetMaterialSlotName(int32 GroupIndex) const;
 	int32 GetGroupCount() const;
-	
-	void AddNewGroupButton(IDetailCategoryBuilder& StrandsGroupFilesCategory, FProperty* Property);
+	FName GetGroupName(int32 GroupIndex) const;
+
+	void AddNewGroupButton(IDetailCategoryBuilder& StrandsGroupFilesCategory, FProperty* Property, const FText& HeaderText);
 
 	void ApplyChanges();
 	void SetMaterialSlot(int32 GroupIndex, int32 MaterialIndex);
@@ -72,7 +73,7 @@ private:
 	void OnResetToBaseClicked(TSharedPtr<IPropertyHandle> PropertyHandle);
 	TSharedRef<SWidget> CreateMaterialSwatch(const TSharedPtr<FAssetThumbnailPool>& ThumbnailPool, int32 GroupIndex);
 
-	TSharedRef<SWidget> MakeGroupNameCustomization(int32 GroupIndex);
+	TSharedRef<SWidget> MakeGroupNameCustomization(int32 GroupIndex, const FLinearColor& GroupColor);
 	TSharedRef<SWidget> MakeGroupNameButtonCustomization(int32 GroupIndex, FProperty* Property);
 
 	FReply OnRemoveLODClicked(int32 GroupIndex, int32 LODIndex, FProperty* Property);
@@ -82,6 +83,7 @@ private:
 	FReply OnRefreshCards(int32 GroupIndex, FProperty* Property);
 	FReply OnSaveCards(int32 GroupIndex, FProperty* Property);
 
+	void ExpandStructForLOD(TSharedRef<IPropertyHandle>& PropertyHandle, IDetailChildrenBuilder& ChildrenBuilder, int32 GroupIndex, int32 LODIndex, bool bOverrideReset);
 	void ExpandStruct(TSharedPtr<IPropertyHandle>& PropertyHandle, IDetailChildrenBuilder& ChildrenBuilder, int32 GroupIndex, int32 LODIndex, bool bOverrideReset);
 	void ExpandStruct(TSharedRef<IPropertyHandle>& PropertyHandle, IDetailChildrenBuilder& ChildrenBuilder, int32 GroupIndex, int32 LODIndex, bool bOverrideReset);
 	void AddPropertyWithCustomReset(TSharedPtr<IPropertyHandle>& PropertyHandle, IDetailChildrenBuilder& Builder, int32 GroupIndex, int32 LODIndex);

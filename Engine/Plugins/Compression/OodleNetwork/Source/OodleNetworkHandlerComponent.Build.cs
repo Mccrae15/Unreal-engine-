@@ -6,7 +6,7 @@ using UnrealBuildTool;
 
 public class OodleNetworkHandlerComponent : ModuleRules 
 {
-	protected virtual string OodleVersion { get { return "2.9.0"; } }
+	protected virtual string OodleVersion { get { return "2.9.5"; } }
 
 	// Platform Extensions need to override these
 	protected virtual string LibRootDirectory { get { return ModuleDirectory; } }
@@ -46,12 +46,7 @@ public class OodleNetworkHandlerComponent : ModuleRules
 
 		bool bSkipLibrarySetup = false;
 
-        if (Target.Platform == UnrealTargetPlatform.Win32)
-        {
-			ReleaseLib = "oo2net_win32.lib";
-			DebugLib = "oo2net_win32_debug.lib";
-        }
-		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
+        if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 		{
 			ReleaseLib = "oo2net_win64.lib";
 			DebugLib = "oo2net_win64_debug.lib";
@@ -67,7 +62,7 @@ public class OodleNetworkHandlerComponent : ModuleRules
 			ReleaseLib = "liboo2netlinux64.a";
 			DebugLib = "liboo2netlinux64_dbg.a";
 		}
-		else if (Target.Platform == UnrealTargetPlatform.LinuxAArch64)
+		else if (Target.Platform == UnrealTargetPlatform.LinuxArm64)
 		{
 			ReleaseLib = "liboo2netlinuxarm64.a";
 			DebugLib = "liboo2netlinuxarm64_dbg.a";

@@ -85,6 +85,18 @@ FMemoryTagList::~FMemoryTagList()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+FMemoryTag* FMemoryTagList::GetTagById(FMemoryTrackerId InTrackerId, FMemoryTagId InTagId) const
+{
+	const TMap<FMemoryTagId, FMemoryTag*>* TagsMapPtr = TrackersAndTagsMap.Find(InTrackerId);
+	if (TagsMapPtr)
+	{
+		return TagsMapPtr->FindRef(InTagId);
+	}
+	return nullptr;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void FMemoryTagList::Reset()
 {
 	for (FMemoryTag* TagPtr : Tags)
@@ -92,7 +104,7 @@ void FMemoryTagList::Reset()
 		delete TagPtr;
 	}
 	Tags.Reset();
-	TagIdMap.Reset();
+	TrackersAndTagsMap.Reset();
 
 	LastTraceSerialNumber = 0;
 	SerialNumber = 0;
@@ -125,48 +137,62 @@ void FMemoryTagList::UpdateInternal()
 {
 	bool bUpdated = false;
 
-	TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 	if (Session.IsValid())
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
-		const Trace::IMemoryProvider& MemoryProvider = Trace::ReadMemoryProvider(*Session.Get());
-
-		const int32 TraceSerialNumber = MemoryProvider.GetTagSerial();
-		if (LastTraceSerialNumber != TraceSerialNumber)
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+		const TraceServices::IMemoryProvider* MemoryProvider = TraceServices::ReadMemoryProvider(*Session.Get());
+		if (MemoryProvider)
 		{
-			LastTraceSerialNumber = TraceSerialNumber;
-			++SerialNumber;
-			bUpdated = true;
-
-			MemoryProvider.EnumerateTags([this](const Trace::FMemoryTag& TraceTag)
+			const int32 TraceSerialNumber = MemoryProvider->GetTagSerial();
+			if (LastTraceSerialNumber != TraceSerialNumber)
 			{
-				static_assert(FMemoryTag::InvalidTagId == static_cast<FMemoryTagId>(Trace::FMemoryTag::InvalidTagId), "Memory TagId type mismatch!");
-				FMemoryTagId TagId = static_cast<FMemoryTagId>(TraceTag.Id);
+				LastTraceSerialNumber = TraceSerialNumber;
+				++SerialNumber;
+				bUpdated = true;
 
-				FMemoryTag* TagPtr = TagIdMap.FindRef(TagId);
-				if (!TagPtr)
+				MemoryProvider->EnumerateTags([this](const TraceServices::FMemoryTagInfo& TraceTag)
 				{
-					TagPtr = new FMemoryTag();
+					static_assert(FMemoryTag::InvalidTagId == static_cast<FMemoryTagId>(TraceServices::FMemoryTagInfo::InvalidTagId), "Memory TagId type mismatch!");
+					FMemoryTagId TagId = static_cast<FMemoryTagId>(TraceTag.Id);
 
-					FMemoryTag& Tag = *TagPtr;
-					Tag.Index = Tags.Num();
-					Tag.Id = TagId;
-					Tag.ParentId = static_cast<FMemoryTagId>(TraceTag.ParentId);
-					Tag.StatName = TraceTag.Name;
-					Tag.StatFullName = Tag.StatName;
-					Tag.Trackers = TraceTag.Trackers;
-					Tag.SetColorAuto();
+					uint64 TrackerFlags = TraceTag.Trackers;
+					int32 TrackerId = 0;
+					while (TrackerFlags != 0)
+					{
+						if (TrackerFlags & 1)
+						{
+							TMap<FMemoryTagId, FMemoryTag*>& TagsMap = TrackersAndTagsMap.FindOrAdd(Insights::FMemoryTrackerId(TrackerId));
+							FMemoryTag* TagPtr = TagsMap.FindRef(TagId);
+							if (!TagPtr)
+							{
+								TagPtr = new FMemoryTag();
 
-					Tags.Add(TagPtr);
-					TagIdMap.Add(TagId, TagPtr);
-				}
-				else
-				{
-					TagPtr->Trackers = TraceTag.Trackers;
-				}
-			});
+								FMemoryTag& Tag = *TagPtr;
+								Tag.Index = Tags.Num();
+								Tag.Id = TagId;
+								Tag.ParentId = static_cast<FMemoryTagId>(TraceTag.ParentId);
+								Tag.StatName = TraceTag.Name;
+								Tag.StatFullName = TraceTag.Name;
+								Tag.TrackerId = Insights::FMemoryTrackerId(TrackerId);
+								Tag.SetColorAuto();
 
-			ensure(Tags.Num() == MemoryProvider.GetTagCount());
+								// Skip the parent prefix if it is already included in the name.
+								int32 CharIndex;
+								if (Tag.StatName.FindLastChar(TEXT('/'), CharIndex))
+								{
+									Tag.StatName = Tag.StatName.RightChop(CharIndex + 1);
+								}
+
+								Tags.Add(TagPtr);
+								TagsMap.Add(TagId, TagPtr);
+							}
+						}
+						TrackerFlags >>= 1;
+						++TrackerId;
+					}
+				});
+			}
 		}
 	}
 

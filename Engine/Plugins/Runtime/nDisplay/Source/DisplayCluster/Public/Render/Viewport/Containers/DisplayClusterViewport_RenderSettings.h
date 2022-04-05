@@ -36,27 +36,39 @@ public:
 	// Skip rendering for this viewport
 	bool bSkipRendering = false;
 
+	// Freeze viewport resources, skip rendering internal viewport resources. But still use it for final compositing
+	bool bFreezeRendering = false;
+
+	// Render alpha channel from input texture to warp output
+	bool bWarpBlendRenderAlphaChannel = false;
+
+	// Read viewport pixels for preview (this flag is cleared at the end of the frame)
+	bool bPreviewReadPixels = false;
+
 	// Useful to render some viewports in mono, then copied to stereo backbuffers identical image
 	bool bForceMono = false;
 
 	// Performance, Multi-GPU: Asign GPU for viewport rendering. The Value '-1' used to default gpu mapping
-	int GPUIndex = -1;
+	int32 GPUIndex = -1;
 
 	// Performance, Multi-GPU: Customize GPU for stereo mode second view (EYE_RIGHT)
-	int StereoGPUIndex = -1;
+	int32 StereoGPUIndex = -1;
 
 	// Allow ScreenPercentage 
 	float BufferRatio = 1;
 
-	// Performance: Render to scale RTT, resolved with shader to viewport (Custom value)
+	// Performance: Render target base resolution multiplier
 	float RenderTargetRatio = 1;
 
+	// Performance: Render target adaptive resolution multiplier
+	float RenderTargetAdaptRatio = 1;
+
 	// Viewport can overlap each other on backbuffer. This value uses to sorting order
-	int OverlapOrder = 0;
+	int32 OverlapOrder = 0;
 
 	// Performance: Support special frame builder mode - merge viewports to single viewfamily by group num
 	// [not implemented yet] Experimental
-	int RenderFamilyGroup = -1;
+	int32 RenderFamilyGroup = -1;
 
 	// Special capture modes (chromakey, lightcard) change RTT format and render flags
 	EDisplayClusterViewportCaptureMode CaptureMode = EDisplayClusterViewportCaptureMode::Default;
@@ -71,10 +83,17 @@ public:
 		bVisible = true;
 		bEnable = true;
 		bSkipRendering = false;
+		bFreezeRendering = false;
+		bWarpBlendRenderAlphaChannel = false;
 
 		CaptureMode = EDisplayClusterViewportCaptureMode::Default;
 
 		OverrideViewportId.Empty();
+	}
+
+	inline void FinishUpdateSettings()
+	{
+		bPreviewReadPixels = false;
 	}
 
 	inline const FString& GetParentViewportId() const

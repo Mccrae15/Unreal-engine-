@@ -12,7 +12,6 @@
 #include "WorkspaceMenuStructureModule.h"
 #include "TraceServices/ITraceServicesModule.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "Trace/StoreService.h"
 #include "Trace/StoreClient.h"
 #include "Stats/Stats.h"
 
@@ -22,6 +21,7 @@
 
 #if WITH_ENGINE
 #include "Engine/Engine.h"
+#include "ProfilingDebugging/TraceAuxiliary.h"
 #endif
 
 
@@ -33,7 +33,7 @@ const FName FNetworkPredictionInsightsModule::InsightsTabName("NetworkPrediction
 
 void FNetworkPredictionInsightsModule::StartupModule()
 {
-	IModularFeatures::Get().RegisterModularFeature(Trace::ModuleFeatureName, &NetworkPredictionTraceModule);
+	IModularFeatures::Get().RegisterModularFeature(TraceServices::ModuleFeatureName, &NetworkPredictionTraceModule);
 
 	FNetworkPredictionInsightsManager::Initialize();
 	IUnrealInsightsModule& UnrealInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
@@ -44,13 +44,13 @@ void FNetworkPredictionInsightsModule::StartupModule()
 	// (only SetUnrealInsightsLayoutIni which is extending the layouts of pre made individual tabs, not the the overall session layout)
 	if (!GIsEditor)
 	{
-		TickerHandle = FTicker::GetCoreTicker().AddTicker(TEXT("NetworkPredictionInsights"), 0.0f, [&UnrealInsightsModule](float DeltaTime)
+		TickerHandle = FTSTicker::GetCoreTicker().AddTicker(TEXT("NetworkPredictionInsights"), 0.0f, [&UnrealInsightsModule](float DeltaTime)
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_FNetworkPredictionInsightsModule_Tick);
 			auto SessionPtr = UnrealInsightsModule.GetAnalysisSession();
 			if (SessionPtr.IsValid())
 			{
-				Trace::FAnalysisSessionReadScope SessionReadScope(*SessionPtr.Get());
+				TraceServices::FAnalysisSessionReadScope SessionReadScope(*SessionPtr.Get());
 				if (const INetworkPredictionProvider* NetworkPredictionProvider = ReadNetworkPredictionProvider(*SessionPtr.Get()))
 				{
 					auto NetworkPredictionTraceVersion = NetworkPredictionProvider->GetNetworkPredictionTraceVersion();
@@ -101,13 +101,15 @@ void FNetworkPredictionInsightsModule::StartupModule()
 			IUnrealInsightsModule& UnrealInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
 			if (!UnrealInsightsModule.GetStoreClient())
 			{
+#if WITH_TRACE_STORE
+				UE_LOG(LogCore, Display, TEXT("NetworkPredictionInsights module auto-connecting to internal trace server..."));
 				// Create the Store Service.
 				FString StoreDir = FPaths::ProjectSavedDir() / TEXT("TraceSessions");
-				Trace::FStoreService::FDesc StoreServiceDesc;
+				UE::Trace::FStoreService::FDesc StoreServiceDesc;
 				StoreServiceDesc.StoreDir = *StoreDir;
 				StoreServiceDesc.RecorderPort = 0; // Let system decide port
 				StoreServiceDesc.ThreadCount = 2;
-				StoreService = TSharedPtr<Trace::FStoreService>(Trace::FStoreService::Create(StoreServiceDesc));
+				StoreService = TSharedPtr<UE::Trace::FStoreService>(UE::Trace::FStoreService::Create(StoreServiceDesc));
 
 				FCoreDelegates::OnPreExit.AddLambda([this]() {
 					StoreService.Reset();
@@ -115,7 +117,15 @@ void FNetworkPredictionInsightsModule::StartupModule()
 
 				// Connect to our newly created store and setup the insights module
 				ensure(UnrealInsightsModule.ConnectToStore(TEXT("localhost"), StoreService->GetPort()));
-				Trace::SendTo(TEXT("localhost"), StoreService->GetRecorderPort());
+				UE::Trace::SendTo(TEXT("localhost"), StoreService->GetRecorderPort());
+#else
+				UE_LOG(LogCore, Display, TEXT("NetworkPredictionInsights module auto-connecting to local trace server..."));
+				UnrealInsightsModule.ConnectToStore(TEXT("127.0.0.1"));
+				const bool bConnected = FTraceAuxiliary::Start(
+					FTraceAuxiliary::EConnectionType::Network,
+					TEXT("127.0.0.1"),
+					nullptr);
+#endif // WITH_TRACE_STORE
 
 				UnrealInsightsModule.CreateSessionViewer(false);
 				UnrealInsightsModule.StartAnalysisForLastLiveSession();
@@ -132,9 +142,9 @@ void FNetworkPredictionInsightsModule::ShutdownModule()
 		FCoreDelegates::OnFEngineLoopInitComplete.Remove(StoreServiceHandle);
 	}
 
-	FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 
-	IModularFeatures::Get().UnregisterModularFeature(Trace::ModuleFeatureName, &NetworkPredictionTraceModule);
+	IModularFeatures::Get().UnregisterModularFeature(TraceServices::ModuleFeatureName, &NetworkPredictionTraceModule);
 }
 
 IMPLEMENT_MODULE(FNetworkPredictionInsightsModule, NetworkPredictionInsights);

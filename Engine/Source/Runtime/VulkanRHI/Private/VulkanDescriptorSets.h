@@ -67,6 +67,9 @@ struct FDescriptorSetRemappingInfo
 		TArray<VkDescriptorType>	Types;
 		uint16						NumImageInfos = 0;
 		uint16						NumBufferInfos = 0;
+#if VULKAN_RHI_RAYTRACING
+		uint8						NumAccelerationStructures = 0;
+#endif // VULKAN_RHI_RAYTRACING
 	};
 	TArray<FSetInfo>	SetInfos;
 
@@ -124,6 +127,9 @@ struct FDescriptorSetRemappingInfo
 			int32 SetInfosNums = SetInfos[SetInfosIndex].Types.Num();
 			if (SetInfos[SetInfosIndex].NumBufferInfos != In.SetInfos[SetInfosIndex].NumBufferInfos ||
 				SetInfos[SetInfosIndex].NumImageInfos != In.SetInfos[SetInfosIndex].NumImageInfos ||
+#if VULKAN_RHI_RAYTRACING
+				SetInfos[SetInfosIndex].NumAccelerationStructures != In.SetInfos[SetInfosIndex].NumAccelerationStructures ||
+#endif // VULKAN_RHI_RAYTRACING
 				SetInfosNums != In.SetInfos[SetInfosIndex].Types.Num() ||
 				(SetInfosNums != 0 && FMemory::Memcmp(SetInfos[SetInfosIndex].Types.GetData(), In.SetInfos[SetInfosIndex].Types.GetData(), sizeof(VkDescriptorType) * SetInfosNums)))
 			{
@@ -273,12 +279,27 @@ class FVulkanDescriptorSetsLayoutInfo
 public:
 	FVulkanDescriptorSetsLayoutInfo()
 	{
-		FMemory::Memzero(LayoutTypes);
+		// Add expected descriptor types
+		for (uint32 i = VK_DESCRIPTOR_TYPE_BEGIN_RANGE; i <= VK_DESCRIPTOR_TYPE_END_RANGE; ++i)
+		{
+			LayoutTypes.Add(static_cast<VkDescriptorType>(i), 0);
+		}
+
+#if VULKAN_RHI_RAYTRACING
+		LayoutTypes.Add(VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 0);
+#endif
 	}
 
 	inline uint32 GetTypesUsed(VkDescriptorType Type) const
 	{
-		return LayoutTypes[Type];
+		if (LayoutTypes.Contains(Type))
+		{
+			return LayoutTypes[Type];
+		}
+		else
+		{
+			return 0;
+		}
 	}
 
 	struct FSetLayout
@@ -331,7 +352,7 @@ public:
 	void ProcessBindingsForStage(VkShaderStageFlagBits StageFlags, ShaderStage::EStage DescSetStage, const FVulkanShaderHeader& CodeHeader, FUniformBufferGatherInfo& OutUBGatherInfo) const;
 
 	template<bool bIsCompute>
-	void FinalizeBindings(const FUniformBufferGatherInfo& UBGatherInfo, const TArrayView<FRHISamplerState*>& ImmutableSamplers);
+	void FinalizeBindings(const FVulkanDevice& Device, const FUniformBufferGatherInfo& UBGatherInfo, const TArrayView<FRHISamplerState*>& ImmutableSamplers);
 
 	void GenerateHash(const TArrayView<FRHISamplerState*>& ImmutableSamplers);
 
@@ -375,14 +396,14 @@ public:
 
 	void CopyFrom(const FVulkanDescriptorSetsLayoutInfo& Info)
 	{
-		FMemory::Memcpy(LayoutTypes, Info.LayoutTypes, sizeof(LayoutTypes));
+		LayoutTypes = Info.LayoutTypes;
 		Hash = Info.Hash;
 		TypesUsageID = Info.TypesUsageID;
 		SetLayouts = Info.SetLayouts;
 		RemappingInfo = Info.RemappingInfo;
 	}
 
-	inline const uint32* GetLayoutTypes() const
+	inline const TMap<VkDescriptorType, uint32>& GetLayoutTypes() const
 	{
 		return LayoutTypes;
 	}
@@ -394,11 +415,11 @@ public:
 
 	inline bool HasInputAttachments() const
 	{
-		return LayoutTypes[VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT] > 0;
+		return GetTypesUsed(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) > 0;
 	}
 
 protected:
-	uint32 LayoutTypes[VK_DESCRIPTOR_TYPE_RANGE_SIZE];
+	TMap<VkDescriptorType, uint32> LayoutTypes;
 	TArray<FSetLayout> SetLayouts;
 
 	uint32 Hash = 0;
@@ -674,6 +695,10 @@ struct FVulkanDescriptorSetWriteContainer
 	TArray<VkDescriptorImageInfo> DescriptorImageInfo;
 	TArray<VkDescriptorBufferInfo> DescriptorBufferInfo;
 	TArray<VkWriteDescriptorSet> DescriptorWrites;
+#if VULKAN_RHI_RAYTRACING
+	TArray<VkAccelerationStructureKHR> AccelerationStructures;
+	TArray<VkWriteDescriptorSetAccelerationStructureKHR> AccelerationStructureWrites;
+#endif // VULKAN_RHI_RAYTRACING
 	TArray<uint8> BindingToDynamicOffsetMap;
 };
 
@@ -722,6 +747,11 @@ public:
 	{
 		//OutDescriptorSet = RemappingUBInfos[Stage][ParameterIndex].Remapping.NewDescriptorSet;
 		return RemappingInfo->StageInfos[0].Globals;
+	}
+	
+	inline VkDescriptorType GetDescriptorType(uint8 DescriptorSet, int32 DescriptorIndex) const
+	{
+		return RemappingInfo->SetInfos[DescriptorSet].Types[DescriptorIndex];
 	}
 
 	inline bool IsInitialized() const
@@ -788,6 +818,11 @@ public:
 		return RemappingInfo->StageInfos[Stage].Globals;
 	}
 
+	inline VkDescriptorType GetDescriptorType(uint8 DescriptorSet, int32 DescriptorIndex) const
+	{
+		return RemappingInfo->SetInfos[DescriptorSet].Types[DescriptorIndex];
+	}
+
 	inline bool IsInitialized() const
 	{
 		return bInitialized;
@@ -843,7 +878,7 @@ public:
 		return DescriptorSetLayout.GetHash();
 	}
 
-	void PatchSpirvBindings(TArray<uint32>& Spirv, EShaderFrequency Frequency, const FVulkanShaderHeader& CodeHeader, VkShaderStageFlagBits InStageFlag) const;
+	void PatchSpirvBindings(FVulkanShader::FSpirvCode& SpirvCode, EShaderFrequency Frequency, const FVulkanShaderHeader& CodeHeader, VkShaderStageFlagBits InStageFlag) const;
 
 protected:
 	FVulkanDescriptorSetsLayout	DescriptorSetLayout;
@@ -871,6 +906,9 @@ protected:
 	friend class FVulkanComputePipeline;
 	friend class FVulkanGfxPipeline;
 	friend class FVulkanPipelineStateCacheManager;
+#if VULKAN_RHI_RAYTRACING
+	friend class FVulkanRayTracingPipelineState;
+#endif
 };
 
 class FVulkanGfxLayout : public FVulkanLayout
@@ -920,6 +958,22 @@ protected:
 	FVulkanComputePipelineDescriptorInfo		ComputePipelineDescriptorInfo;
 	friend class FVulkanPipelineStateCacheManager;
 };
+
+#if VULKAN_RHI_RAYTRACING
+class FVulkanRayTracingLayout : public FVulkanLayout
+{
+public:
+	FVulkanRayTracingLayout(FVulkanDevice* InDevice)
+		: FVulkanLayout(InDevice)
+	{
+	}
+
+	virtual bool IsGfxLayout() const final override
+	{
+		return false;
+	}
+};
+#endif // VULKAN_RHI_RAYTRACING
 
 // This class encapsulates updating VkWriteDescriptorSet structures (but doesn't own them), and their flags for dirty ranges; it is intended
 // to be used to access a sub-region of a long array of VkWriteDescriptorSet (ie FVulkanDescriptorSetWriteContainer)
@@ -1025,6 +1079,44 @@ public:
 		return WriteBufferView<VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER>(DescriptorIndex, View);
 	}
 
+
+#if VULKAN_RHI_RAYTRACING
+	bool WriteAccelerationStructure(uint32 DescriptorIndex, VkAccelerationStructureKHR InAccelerationStructure)
+	{
+		checkf(!UseVulkanDescriptorCache(), TEXT("Descriptor cache path for WriteAccelerationStructure() is not implemented"));
+
+		check(DescriptorIndex < NumWrites);
+		SetWritten(DescriptorIndex);
+
+		check(WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
+
+		// Find the acceleration structure extension in the generic VkWriteDescriptorSet.
+		const VkWriteDescriptorSetAccelerationStructureKHR* FoundWrite = nullptr;
+		const VkBaseInStructure* Cursor = reinterpret_cast<const VkBaseInStructure*>(WriteDescriptors[DescriptorIndex].pNext);
+		while (Cursor)
+		{
+			if (Cursor->sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR)
+			{
+				FoundWrite = reinterpret_cast<const VkWriteDescriptorSetAccelerationStructureKHR*>(Cursor);
+				break;
+			}
+			Cursor = Cursor->pNext;
+		}
+
+		checkf(FoundWrite,
+			TEXT("Expected to find a VkWriteDescriptorSetAccelerationStructureKHR that's needed to bind an acceleration structure descriptor. ")
+			TEXT("Possibly something went wrong in SetupDescriptorWrites()."));
+
+		checkf(FoundWrite->accelerationStructureCount == 1, TEXT("Acceleration structure write operation is expected to contain exactly one descriptor"));
+
+		VkAccelerationStructureKHR& AccelerationStructure = *const_cast<VkAccelerationStructureKHR*>(FoundWrite->pAccelerationStructures);
+
+		bool bChanged = CopyAndReturnNotEqual(AccelerationStructure, InAccelerationStructure);
+
+		return bChanged;
+	}
+#endif // VULKAN_RHI_RAYTRACING
+
 	void ClearBufferView(uint32 DescriptorIndex)
 	{
 		BufferViewReferences[DescriptorIndex] = nullptr;
@@ -1046,11 +1138,15 @@ protected:
 		SetWritten(DescriptorIndex);		
 		if (DescriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
 		{
-			check(WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC);
+			checkf(WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+				TEXT("DescriptorType mismatch at index %d: called WriteBuffer<%d> and was expecting %d."), 
+				DescriptorIndex, (uint32)DescriptorType, (uint32)WriteDescriptors[DescriptorIndex].descriptorType);
 		}
 		else
 		{
-			check(WriteDescriptors[DescriptorIndex].descriptorType == DescriptorType);
+			checkf(WriteDescriptors[DescriptorIndex].descriptorType == DescriptorType,
+				TEXT("DescriptorType mismatch at index %d: called WriteBuffer<%d> and was expecting %d."),
+				DescriptorIndex, (uint32)DescriptorType, (uint32)WriteDescriptors[DescriptorIndex].descriptorType);
 		}
 		VkDescriptorBufferInfo* BufferInfo = const_cast<VkDescriptorBufferInfo*>(WriteDescriptors[DescriptorIndex].pBufferInfo);
 		check(BufferInfo);
@@ -1103,7 +1199,9 @@ protected:
 		SetWritten(DescriptorIndex);
 		if (DescriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
 		{
-			check(WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+			checkf(WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE || WriteDescriptors[DescriptorIndex].descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				TEXT("DescriptorType mismatch at index %d: called WriteTextureView<%d> and was expecting %d."),
+				DescriptorIndex, (uint32)DescriptorType, (uint32)WriteDescriptors[DescriptorIndex].descriptorType);
 			ensureMsgf(Layout == VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR ||
 				  Layout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL ||
 				  Layout == VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL ||
@@ -1113,7 +1211,9 @@ protected:
 		}
 		else
 		{
-			check(WriteDescriptors[DescriptorIndex].descriptorType == DescriptorType);
+			checkf(WriteDescriptors[DescriptorIndex].descriptorType == DescriptorType,
+				TEXT("DescriptorType mismatch at index %d: called WriteTextureView<%d> and was expecting %d."),
+				DescriptorIndex, (uint32)DescriptorType, (uint32)WriteDescriptors[DescriptorIndex].descriptorType);
 		}
 		VkDescriptorImageInfo* ImageInfo = const_cast<VkDescriptorImageInfo*>(WriteDescriptors[DescriptorIndex].pImageInfo);
 		check(ImageInfo);
@@ -1150,12 +1250,17 @@ protected:
 	bool WriteBufferView(uint32 DescriptorIndex, const FVulkanBufferView* View)
 	{
 		check(DescriptorIndex < NumWrites);
-		check(WriteDescriptors[DescriptorIndex].descriptorType == DescriptorType);
+		checkf(WriteDescriptors[DescriptorIndex].descriptorType == DescriptorType, 
+			TEXT("DescriptorType mismatch at index %d: called WriteBufferView<%d> and was expecting %d."), 
+			DescriptorIndex, (uint32)DescriptorType, (uint32)WriteDescriptors[DescriptorIndex].descriptorType);
 		SetWritten(DescriptorIndex);
 		WriteDescriptors[DescriptorIndex].pTexelBufferView = &View->View;
 		BufferViewReferences[DescriptorIndex] = View;
-		
-		if (UseVulkanDescriptorCache())
+		const bool bVolatile = View->bVolatile;
+
+		bHasVolatileResources|= bVolatile;
+				
+		if (!bVolatile && UseVulkanDescriptorCache())
 		{
 			bool bChanged = false;
 			FVulkanHashableDescriptorInfo& HashableInfo = HashableDescriptorInfos[DescriptorIndex];
@@ -1190,11 +1295,16 @@ protected:
 	FVulkanHashableDescriptorInfo* HashableDescriptorInfos;
 	mutable FVulkanDSetKey Key;
 	mutable bool bIsKeyDirty;
+	bool bHasVolatileResources = false;
 
 	uint32 SetupDescriptorWrites(const TArray<VkDescriptorType>& Types,
 		FVulkanHashableDescriptorInfo* InHashableDescriptorInfos,
 		VkWriteDescriptorSet* InWriteDescriptors, VkDescriptorImageInfo* InImageInfo,
 		VkDescriptorBufferInfo* InBufferInfo, uint8* InBindingToDynamicOffsetMap,
+#if VULKAN_RHI_RAYTRACING
+		VkWriteDescriptorSetAccelerationStructureKHR* InAccelerationStructuresWriteDescriptors,
+		VkAccelerationStructureKHR* InAccelerationStructures,
+#endif // VULKAN_RHI_RAYTRACING
 		const FVulkanSamplerState& DefaultSampler, const FVulkanTextureView& DefaultImageView);
 
 	friend class FVulkanCommonPipelineDescriptorState;
@@ -1204,26 +1314,18 @@ protected:
 #if VULKAN_VALIDATE_DESCRIPTORS_WRITTEN
 	TArray<uint32, TInlineAllocator<2> > WrittenMask;
 	TArray<uint32, TInlineAllocator<2> > BaseWrittenMask;
-
+#endif
 	void CheckAllWritten();
 	void Reset();
 	void SetWritten(uint32 DescriptorIndex);
 	void SetWrittenBase(uint32 DescriptorIndex);
 	void InitWrittenMasks(uint32 NumDescriptorWrites);
-#else
-	void Reset(){}
-	void CheckAllWritten() {}
-	void SetWritten(uint32 DescriptorIndex) {}
-	void SetWrittenBase(uint32 DescriptorIndex){}
-	void InitWrittenMasks(uint32 NumDescriptorWrites){}
-#endif
-
 };
 
 class FVulkanGenericDescriptorPool : FNoncopyable
 {
 public:
-	FVulkanGenericDescriptorPool(FVulkanDevice* InDevice, uint32 InMaxDescriptorSets);
+	FVulkanGenericDescriptorPool(FVulkanDevice* InDevice, uint32 InMaxDescriptorSets, const float PoolSizes[VK_DESCRIPTOR_TYPE_RANGE_SIZE]);
 	~FVulkanGenericDescriptorPool();
 
 	FVulkanDevice* GetDevice() const
@@ -1243,6 +1345,8 @@ private:
 	FVulkanDevice* const Device;
 	const uint32 MaxDescriptorSets;
 	VkDescriptorPool DescriptorPool;
+	// information for debugging
+	uint32 PoolSizes[VK_DESCRIPTOR_TYPE_RANGE_SIZE];
 };
 
 class FVulkanDescriptorSetCache : FNoncopyable
@@ -1269,31 +1373,22 @@ private:
 	class FCachedPool : FNoncopyable
 	{
 	public:
-		FCachedPool(FVulkanDevice* InDevice, uint32 InMaxDescriptorSets)
-			: SetCapacity(FMath::RoundToZero(InMaxDescriptorSets * MaxAllocRatio))
-			, Pool(InDevice, InMaxDescriptorSets)
-			, RecentFrame(0)
-		{
-		}
+		FCachedPool(FVulkanDevice* InDevice, uint32 InMaxDescriptorSets, const float PoolSizesRatio[VK_DESCRIPTOR_TYPE_RANGE_SIZE]);
 
 		uint32 GetMaxDescriptorSets() const
 		{
 			return Pool.GetMaxDescriptorSets();
 		}
-
-		void Reset()
-		{
-			Pool.Reset();
-			SetsCache.Reset();
-			SetCache.Reset();
-		}
-
+			
+		void Reset();
 		bool CanGC() const;
 		float CalcAllocRatio() const;
 
 		bool FindDescriptorSets(const FVulkanDSetsKey& DSetsKey, VkDescriptorSet* OutSets);
 		bool CreateDescriptorSets(const FVulkanDSetsKey& DSetsKey, const FVulkanDescriptorSetsLayout& SetsLayout,
 			TArray<FVulkanDescriptorSetWriter>& DSWriters, VkDescriptorSet* OutSets);
+
+		void CalcPoolSizesRatio(float PoolSizesRatio[VK_DESCRIPTOR_TYPE_RANGE_SIZE]);
 
 	private:
 		static const float MinAllocRatio;
@@ -1305,6 +1400,9 @@ private:
 		TMap<FVulkanDSetsKey, FSetsEntry> SetsCache;
 		TMap<FVulkanDSetKey, VkDescriptorSet> SetCache;
 		uint32 RecentFrame;
+	
+	public:
+		uint32 PoolSizesStatistic[VK_DESCRIPTOR_TYPE_RANGE_SIZE];
 	};
 
 private:

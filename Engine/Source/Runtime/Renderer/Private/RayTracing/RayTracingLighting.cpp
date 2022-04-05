@@ -8,12 +8,6 @@
 
 #include "SceneRendering.h"
 
-static TAutoConsoleVariable<int32> CVarRayTracingLightingMissShader(
-	TEXT("r.RayTracing.LightingMissShader"),
-	1,
-	TEXT("Whether evaluate lighting using a miss shader when rendering reflections and translucency instead of doing it in ray generation shader. (default = 1)"),
-	ECVF_RenderThreadSafe);
-
 static TAutoConsoleVariable<int32> CVarRayTracingLightingCells(
 	TEXT("r.RayTracing.LightCulling.Cells"),
 	16,
@@ -28,10 +22,6 @@ static TAutoConsoleVariable<float> CVarRayTracingLightingCellSize(
 	ECVF_RenderThreadSafe
 );
 
-bool CanUseRayTracingLightingMissShader(EShaderPlatform ShaderPlatform)
-{
-	return CVarRayTracingLightingMissShader.GetValueOnRenderThread() != 0;
-}
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FRaytracingLightDataPacked, "RaytracingLightsDataPacked");
 
@@ -41,14 +31,15 @@ class FSetupRayTracingLightCullData : public FGlobalShader
 	DECLARE_GLOBAL_SHADER(FSetupRayTracingLightCullData);
 	SHADER_USE_PARAMETER_STRUCT(FSetupRayTracingLightCullData, FGlobalShader)
 
-		static int32 GetGroupSize()
+	static int32 GetGroupSize()
 	{
 		return 32;
 	}
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
-		return ShouldCompileRayTracingShadersForProject(Parameters.Platform);
+		// Allow this shader to be compiled if either inline or full pipeline ray tracing mode is supported by the platform
+		return IsRayTracingEnabledForProject(Parameters.Platform);
 	}
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
@@ -59,7 +50,7 @@ class FSetupRayTracingLightCullData : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_SRV(StructuredBuffer<float4>, RankedLights)
-		SHADER_PARAMETER(FVector, WorldPos)
+		SHADER_PARAMETER(FVector3f, WorldPos)
 		SHADER_PARAMETER(uint32, NumLightsToUse)
 		SHADER_PARAMETER(uint32, CellCount)
 		SHADER_PARAMETER(float, CellScale)
@@ -73,7 +64,7 @@ DECLARE_GPU_STAT_NAMED(LightCullingVolumeCompute, TEXT("RT Light Culling Volume 
 
 
 static void SelectRaytracingLights(
-	const TSparseArray<FLightSceneInfoCompact>& Lights,
+	const TSparseArray<FLightSceneInfoCompact, TAlignedSparseArrayAllocator<alignof(FLightSceneInfoCompact)>>& Lights,
 	const FViewInfo& View,
 	TArray<int32>& OutSelectedLights
 )
@@ -100,7 +91,7 @@ static int32 GetCellsPerDim()
 
 static void CreateRaytracingLightCullingStructure(
 	FRHICommandListImmediate& RHICmdList,
-	const TSparseArray<FLightSceneInfoCompact>& Lights,
+	const TSparseArray<FLightSceneInfoCompact, TAlignedSparseArrayAllocator<alignof(FLightSceneInfoCompact)>>& Lights,
 	const FViewInfo& View,
 	const TArray<int32>& LightIndices,
 	FRayTracingLightData& OutLightingData)
@@ -117,44 +108,51 @@ static void CreateRaytracingLightCullingStructure(
 
 	const int32 CellsPerDim = GetCellsPerDim();
 
-	TResourceArray<VectorRegister> RankedLights;
+	TResourceArray<FVector4f> RankedLights;
 	RankedLights.Reserve(NumLightsToUse);
 
 	// setup light vector array sorted by rank
 	for (int32 LightIndex = 0; LightIndex < NumLightsToUse; LightIndex++)
 	{
-		RankedLights.Push(Lights[LightIndices[LightIndex]].BoundingSphereVector);
+		VectorRegister BoundingSphere = Lights[LightIndices[LightIndex]].BoundingSphereVector;
+		RankedLights.Push(
+			FVector4f(
+				VectorGetComponentImpl<0>(BoundingSphere), 
+				VectorGetComponentImpl<1>(BoundingSphere), 
+				VectorGetComponentImpl<2>(BoundingSphere), 
+				VectorGetComponentImpl<3>(BoundingSphere)
+			)
+		);
 	}
 
 	// push null vector to prevent failure in RHICreateStructuredBuffer due to requesting a zero sized allocation
 	if (RankedLights.Num() == 0)
 	{
-		RankedLights.Push(VectorRegister{});
+		RankedLights.Push(FVector4f());
 	}
 
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("RayTracingCullLights"));
 	CreateInfo.ResourceArray = &RankedLights;
 
-	FStructuredBufferRHIRef RayTracingCullLights = RHICreateStructuredBuffer(sizeof(RankedLights[0]),
+	FBufferRHIRef RayTracingCullLights = RHICreateStructuredBuffer(sizeof(RankedLights[0]),
 		RankedLights.GetResourceDataSize(),
 		BUF_Static | BUF_ShaderResource,
 		CreateInfo);
 	FShaderResourceViewRHIRef RankedLightsSRV = RHICreateShaderResourceView(RayTracingCullLights);
 
 	// Structured buffer version
-	FRHIResourceCreateInfo CullStructureCreateInfo;
-	CullStructureCreateInfo.DebugName = TEXT("RayTracingLightCullVolume");
+	FRHIResourceCreateInfo CullStructureCreateInfo(TEXT("RayTracingLightCullVolume"));
 	OutLightingData.LightCullVolume = RHICreateStructuredBuffer(sizeof(FUintVector4), CellsPerDim*CellsPerDim*CellsPerDim* sizeof(FUintVector4), BUF_UnorderedAccess | BUF_ShaderResource, CullStructureCreateInfo);
 	OutLightingData.LightCullVolumeSRV = RHICmdList.CreateShaderResourceView(OutLightingData.LightCullVolume);
 	FUnorderedAccessViewRHIRef LightCullVolumeUAV = RHICmdList.CreateUnorderedAccessView(OutLightingData.LightCullVolume, false, false);
 
 	// ensure zero sized texture isn't requested  to prevent failure in Initialize
 	OutLightingData.LightIndices.Initialize(
+		TEXT("RayTracingLightIndices"),
 		sizeof(uint16),
 		FMath::Max(NumLightsToUse, 1) * CellsPerDim * CellsPerDim * CellsPerDim,
 		EPixelFormat::PF_R16_UINT,
-		BUF_UnorderedAccess,
-		TEXT("RayTracingLightIndices"));
+		BUF_UnorderedAccess);
 
 	{
 		auto* GlobalShaderMap = GetGlobalShaderMap(GMaxRHIFeatureLevel);
@@ -164,7 +162,7 @@ static void CreateRaytracingLightCullingStructure(
 			FSetupRayTracingLightCullData::FParameters Params;
 			Params.RankedLights = RankedLightsSRV;
 
-			Params.WorldPos = View.ViewMatrices.GetViewOrigin(); // View.ViewLocation;
+			Params.WorldPos = (FVector3f)View.ViewMatrices.GetViewOrigin(); // View.ViewLocation; // LWC_TODO: Precision Loss
 			Params.NumLightsToUse = NumLightsToUse;
 			Params.LightCullingVolume = LightCullVolumeUAV;
 			Params.LightIndices = OutLightingData.LightIndices.UAV;
@@ -180,7 +178,7 @@ static void CreateRaytracingLightCullingStructure(
 	{
 		FRHITransitionInfo Transitions[] =
 		{
-			FRHITransitionInfo(LightCullVolumeUAV.GetReference(), ERHIAccess::UAVCompute, ERHIAccess::SRVMask),
+			FRHITransitionInfo(LightCullVolumeUAV.GetReference(), ERHIAccess::UAVMask, ERHIAccess::SRVMask),
 			FRHITransitionInfo(OutLightingData.LightIndices.UAV.GetReference(), ERHIAccess::UAVCompute, ERHIAccess::SRVMask)
 		};
 		RHICmdList.Transition(MakeArrayView(Transitions, UE_ARRAY_COUNT(Transitions)));
@@ -191,7 +189,7 @@ static void CreateRaytracingLightCullingStructure(
 
 static void SetupRaytracingLightDataPacked(
 	FRHICommandListImmediate& RHICmdList,
-	const TSparseArray<FLightSceneInfoCompact>& Lights,
+	const TSparseArray<FLightSceneInfoCompact, TAlignedSparseArrayAllocator<alignof(FLightSceneInfoCompact)>>& Lights,
 	const TArray<int32>& LightIndices,
 	const FViewInfo& View,
 	FRaytracingLightDataPacked* LightData,
@@ -201,10 +199,6 @@ static void SetupRaytracingLightDataPacked(
 	TMap<FRHITexture*, uint32> RectTextureMap;
 
 	LightData->Count = 0;
-	LightData->LTCMatTexture = GSystemTextures.LTCMat->GetRenderTargetItem().ShaderResourceTexture;
-	LightData->LTCMatSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	LightData->LTCAmpTexture = GSystemTextures.LTCAmp->GetRenderTargetItem().ShaderResourceTexture;
-	LightData->LTCAmpSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 	FTextureRHIRef DymmyWhiteTexture = GWhiteTexture->TextureRHI;
 	LightData->RectLightTexture0 = DymmyWhiteTexture;
@@ -246,7 +240,7 @@ static void SetupRaytracingLightDataPacked(
 		const bool bAffectReflection = Light.LightSceneInfo->Proxy->AffectReflection();
 		if (bHasStaticLighting || !bAffectReflection) continue;
 
-		FLightShaderParameters LightParameters;
+		FLightRenderParameters LightParameters;
 		Light.LightSceneInfo->Proxy->GetLightShaderParameters(LightParameters);
 
 		if (Light.LightSceneInfo->Proxy->IsInverseSquared())
@@ -278,11 +272,12 @@ static void SetupRaytracingLightDataPacked(
 		LightDataElement.LightProfileIndex = IESLightProfileIndex;
 		LightDataElement.RectLightTextureIndex = InvalidTextureIndex;
 
+		const FVector3f LightColor(LightParameters.Color);
 		for (int32 Element = 0; Element < 3; Element++)
 		{
 			LightDataElement.Direction[Element] = LightParameters.Direction[Element];
-			LightDataElement.LightPosition[Element] = LightParameters.Position[Element];
-			LightDataElement.LightColor[Element] = LightParameters.Color[Element];
+			LightDataElement.LightPosition[Element] = (float)LightParameters.WorldPosition[Element]; // LWC_TODO
+			LightDataElement.LightColor[Element] = LightColor[Element];
 			LightDataElement.Tangent[Element] = LightParameters.Tangent[Element];
 		}
 
@@ -372,7 +367,7 @@ static void SetupRaytracingLightDataPacked(
 
 FRayTracingLightData CreateRayTracingLightData(
 	FRHICommandListImmediate& RHICmdList,
-	const TSparseArray<FLightSceneInfoCompact>& Lights,
+	const TSparseArray<FLightSceneInfoCompact, TAlignedSparseArrayAllocator<alignof(FLightSceneInfoCompact)>>& Lights,
 	const FViewInfo& View, EUniformBufferUsage Usage)
 {
 	FRayTracingLightData LightingData;
@@ -400,7 +395,7 @@ FRayTracingLightData CreateRayTracingLightData(
 	}
 
 	// This buffer might be best placed as an element of the LightData uniform buffer
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("LightBuffer"));
 	CreateInfo.ResourceArray = &LightDataArray;
 
 	LightingData.LightBuffer = RHICreateStructuredBuffer(sizeof(FUintVector4), LightDataArray.GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
@@ -483,7 +478,7 @@ void FDeferredShadingSceneRenderer::SetupRayTracingLightingMissShader(FRHIComman
 
 	int32 ParameterSlots = BindParameters(MissShader, MissParameters, MaxUniformBuffers, MissData);
 
-	RHICmdList.SetRayTracingMissShader(View.RayTracingScene.RayTracingSceneRHI,
+	RHICmdList.SetRayTracingMissShader(View.GetRayTracingSceneChecked(),
 		RAY_TRACING_MISS_SHADER_SLOT_LIGHTING, // Shader slot in the scene
 		View.RayTracingMaterialPipeline,
 		RAY_TRACING_MISS_SHADER_SLOT_LIGHTING, // Miss shader index in the pipeline

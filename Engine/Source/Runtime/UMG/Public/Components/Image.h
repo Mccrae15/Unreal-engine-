@@ -36,7 +36,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Image to draw */
 	UPROPERTY()
-	USlateBrushAsset* Image_DEPRECATED;
+	TObjectPtr<USlateBrushAsset> Image_DEPRECATED;
 #endif
 
 	/** Image to draw */
@@ -75,8 +75,11 @@ public:
 	void SetOpacity(float InOpacity);
 
 	/**  */
-	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	UE_DEPRECATED(5.0, "Deprecated. Use SetDesiredSizeOverride instead.")
 	void SetBrushSize(FVector2D DesiredSize);
+
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetDesiredSizeOverride(FVector2D DesiredSize);
 
 	/**  */
 	UFUNCTION(BlueprintCallable, Category = "Appearance")

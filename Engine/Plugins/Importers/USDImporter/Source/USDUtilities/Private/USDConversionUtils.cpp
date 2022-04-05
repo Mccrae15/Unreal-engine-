@@ -4,6 +4,7 @@
 
 #include "USDAssetImportData.h"
 #include "USDErrorUtils.h"
+#include "USDGeomMeshConversion.h"
 #include "USDLayerUtils.h"
 #include "USDLog.h"
 #include "USDTypesConversion.h"
@@ -20,8 +21,8 @@
 #include "CineCameraComponent.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/PointLightComponent.h"
-#include "Components/PoseableMeshComponent.h"
 #include "Components/RectLightComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/SpotLightComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -34,6 +35,8 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/Texture.h"
 #include "GeometryCache.h"
+#include "InstancedFoliageActor.h"
+#include "LandscapeProxy.h"
 
 #if WITH_EDITOR
 #include "ObjectTools.h"
@@ -43,6 +46,7 @@
 #include "USDIncludesStart.h"
 	#include "pxr/base/tf/stringUtils.h"
 	#include "pxr/base/tf/token.h"
+	#include "pxr/usd/kind/registry.h"
 	#include "pxr/usd/usd/attribute.h"
 	#include "pxr/usd/usd/editContext.h"
 	#include "pxr/usd/usd/modelAPI.h"
@@ -336,7 +340,7 @@ UClass* UsdUtils::GetComponentTypeForPrim( const pxr::UsdPrim& Prim )
 {
 	if ( Prim.IsA< pxr::UsdSkelRoot >() )
 	{
-		return UPoseableMeshComponent::StaticClass();
+		return USkeletalMeshComponent::StaticClass();
 	}
 	else if ( Prim.IsA< pxr::UsdGeomMesh >() )
 	{
@@ -379,6 +383,157 @@ UClass* UsdUtils::GetComponentTypeForPrim( const pxr::UsdPrim& Prim )
 	}
 }
 
+FString UsdUtils::GetSchemaNameForComponent( const USceneComponent& Component )
+{
+	AActor* OwnerActor = Component.GetOwner();
+	if ( OwnerActor->IsA<AInstancedFoliageActor>() )
+	{
+		return TEXT( "PointInstancer" );
+	}
+	else if ( OwnerActor->IsA<ALandscapeProxy>() )
+	{
+		return TEXT( "Mesh" );
+	}
+
+	if ( Component.IsA<USkinnedMeshComponent>() )
+	{
+		return TEXT( "SkelRoot" );
+	}
+	else if ( Component.IsA<UHierarchicalInstancedStaticMeshComponent>() )
+	{
+		// The original HISM component becomes just a regular Xform prim, so that we can handle
+		// its children correctly. We'll manually create a new child PointInstancer prim to it
+		// however, and convert the HISM data onto that prim.
+		return TEXT( "Xform" );
+	}
+	else if ( const UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>( &Component ) )
+	{
+		UStaticMesh* Mesh = StaticMeshComponent->GetStaticMesh();
+		if ( Mesh && Mesh->GetNumLODs() > 1 )
+		{
+			// Don't export 'Mesh' if we're going to export LODs, as those will also be Mesh prims.
+			// We need at least an Xform schema though as this component may still have a transform of its own
+			return TEXT( "Xform" );
+		}
+		return TEXT( "Mesh" );
+	}
+	else if ( Component.IsA<UCineCameraComponent>() )
+	{
+		return TEXT( "Camera" );
+	}
+	else if ( Component.IsA<UDirectionalLightComponent>() )
+	{
+		return TEXT( "DistantLight" );
+	}
+	else if ( Component.IsA<URectLightComponent>() )
+	{
+		return TEXT( "RectLight" );
+	}
+	else if ( Component.IsA<UPointLightComponent>() )
+	{
+		return TEXT( "SphereLight" );
+	}
+	else if ( Component.IsA<USkyLightComponent>() )
+	{
+		return TEXT( "DomeLight" );
+	}
+
+	return TEXT( "Xform" );
+}
+
+FString UsdUtils::GetPrimPathForObject( const UObject* ActorOrComponent, const FString& ParentPrimPath, bool bUseActorFolders )
+{
+	if ( !ActorOrComponent )
+	{
+		return {};
+	}
+
+	// Get component and its owner actor
+	const USceneComponent* Component = Cast<const USceneComponent>( ActorOrComponent );
+	const AActor* Owner = nullptr;
+	if ( Component )
+	{
+		Owner = Component->GetOwner();
+	}
+	else
+	{
+		Owner = Cast<AActor>( ActorOrComponent );
+		if ( Owner )
+		{
+			Component = Owner->GetRootComponent();
+		}
+	}
+	if ( !Component || !Owner )
+	{
+		return {};
+	}
+
+	// Get component name. Use actor label if the component is its root component
+	FString Path;
+#if WITH_EDITOR
+	if ( Component == Owner->GetRootComponent() )
+	{
+		Path = Owner->GetActorLabel();
+	}
+	else
+#endif // WITH_EDITOR
+	{
+		Path = Component->GetName();
+	}
+	Path = UsdUtils::SanitizeUsdIdentifier( *Path );
+
+	// Get a clean folder path string if we have and need one
+	FString FolderPathString;
+#if WITH_EDITOR
+	if ( bUseActorFolders && Component == Owner->GetRootComponent() )
+	{
+		const FName& FolderPath = Owner->GetFolderPath();
+		if ( !FolderPath.IsNone() )
+		{
+			FolderPathString = FolderPath.ToString();
+
+			TArray<FString> FolderSegments;
+			FolderPathString.ParseIntoArray( FolderSegments, TEXT( "/" ) );
+
+			for ( FString& Segment : FolderSegments )
+			{
+				Segment = UsdUtils::SanitizeUsdIdentifier( *Segment );
+			}
+
+			FolderPathString = FString::Join( FolderSegments, TEXT( "/" ) );
+
+			if ( !FolderPathString.IsEmpty() )
+			{
+				Path = FolderPathString / Path;
+			}
+		}
+	}
+#endif // WITH_EDITOR
+
+	// Get parent prim path if we need to
+	if ( !ParentPrimPath.IsEmpty() )
+	{
+		Path = ParentPrimPath / Path;
+	}
+	else
+	{
+		FString FoundParentPath;
+
+		if ( USceneComponent* ParentComp = Component->GetAttachParent() )
+		{
+			FoundParentPath = GetPrimPathForObject( ParentComp, TEXT( "" ), bUseActorFolders );
+		}
+		else
+		{
+			FoundParentPath = TEXT( "/Root" );
+		}
+
+		Path = FoundParentPath / Path;
+	}
+
+	return Path;
+}
+
 TUsdStore< pxr::TfToken > UsdUtils::GetUVSetName( int32 UVChannelIndex )
 {
 	FScopedUnrealAllocs UnrealAllocs;
@@ -416,7 +571,19 @@ TArray< TUsdStore< pxr::UsdGeomPrimvar > > UsdUtils::GetUVSetPrimvars( const pxr
 	return UsdUtils::GetUVSetPrimvars(UsdMesh, {});
 }
 
-TArray< TUsdStore< pxr::UsdGeomPrimvar > > UsdUtils::GetUVSetPrimvars( const pxr::UsdGeomMesh& UsdMesh, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames )
+TArray< TUsdStore< pxr::UsdGeomPrimvar > > UsdUtils::GetUVSetPrimvars( const pxr::UsdGeomMesh& UsdMesh, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const pxr::TfToken& RenderContext )
+{
+	if ( !UsdMesh )
+	{
+		return {};
+	}
+
+	const bool bProvideMaterialIndices = false;
+	UsdUtils::FUsdPrimMaterialAssignmentInfo Info = UsdUtils::GetPrimMaterialAssignments( UsdMesh.GetPrim(), pxr::UsdTimeCode( 0.0 ), bProvideMaterialIndices, RenderContext );
+	return UsdUtils::GetUVSetPrimvars( UsdMesh, MaterialToPrimvarsUVSetNames, Info );
+}
+
+TArray< TUsdStore< pxr::UsdGeomPrimvar > > UsdUtils::GetUVSetPrimvars( const pxr::UsdGeomMesh& UsdMesh, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const UsdUtils::FUsdPrimMaterialAssignmentInfo& UsdMeshMaterialAssignmentInfo )
 {
 	if ( !UsdMesh )
 	{
@@ -429,7 +596,7 @@ TArray< TUsdStore< pxr::UsdGeomPrimvar > > UsdUtils::GetUVSetPrimvars( const pxr
 	TMap<FString, pxr::UsdGeomPrimvar> PrimvarsByName;
 	TMap<int32, TArray<pxr::UsdGeomPrimvar>> UsablePrimvarsByUVIndex;
 	pxr::UsdGeomPrimvarsAPI PrimvarsAPI{ UsdMesh };
-	for (const pxr::UsdGeomPrimvar& Primvar : PrimvarsAPI.GetPrimvars() )
+	for ( const pxr::UsdGeomPrimvar& Primvar : PrimvarsAPI.GetPrimvars() )
 	{
 		if ( !Primvar || !Primvar.HasValue() )
 		{
@@ -452,16 +619,22 @@ TArray< TUsdStore< pxr::UsdGeomPrimvar > > UsdUtils::GetUVSetPrimvars( const pxr
 
 	// Collect all primvars that are in fact used by the materials assigned to this mesh
 	TMap<int32, TArray<pxr::UsdGeomPrimvar>> PrimvarsUsedByAssignedMaterialsPerUVIndex;
-	TTuple<TArray<FString>, TArray<int32>> Materials = IUsdPrim::GetGeometryMaterials( 0.0, UsdMesh.GetPrim() );
-	for ( const FString& MaterialPath : Materials.Key )
 	{
-		if ( const TMap< FString, int32 >* FoundMaterialPrimvars = MaterialToPrimvarsUVSetNames.Find( MaterialPath ) )
+		const bool bProvideMaterialIndices = false;
+		for ( const FUsdPrimMaterialSlot& Slot : UsdMeshMaterialAssignmentInfo.Slots )
 		{
-			for ( const TPair<FString, int32>& PrimvarAndUVIndex : *FoundMaterialPrimvars )
+			if ( Slot.AssignmentType == EPrimAssignmentType::MaterialPrim )
 			{
-				if ( pxr::UsdGeomPrimvar* FoundPrimvar = PrimvarsByName.Find( PrimvarAndUVIndex.Key ) )
+				const FString& MaterialPath = Slot.MaterialSource;
+				if ( const TMap< FString, int32 >* FoundMaterialPrimvars = MaterialToPrimvarsUVSetNames.Find( MaterialPath ) )
 				{
-					PrimvarsUsedByAssignedMaterialsPerUVIndex.FindOrAdd( PrimvarAndUVIndex.Value ).AddUnique( *FoundPrimvar );
+					for ( const TPair<FString, int32>& PrimvarAndUVIndex : *FoundMaterialPrimvars )
+					{
+						if ( pxr::UsdGeomPrimvar* FoundPrimvar = PrimvarsByName.Find( PrimvarAndUVIndex.Key ) )
+						{
+							PrimvarsUsedByAssignedMaterialsPerUVIndex.FindOrAdd( PrimvarAndUVIndex.Value ).AddUnique( *FoundPrimvar );
+						}
+					}
 				}
 			}
 		}
@@ -587,6 +760,47 @@ bool UsdUtils::IsAnimated( const pxr::UsdPrim& Prim )
 	return false;
 }
 
+EUsdDefaultKind UsdUtils::GetDefaultKind( const pxr::UsdPrim& Prim )
+{
+	FScopedUsdAllocs Allocs;
+
+	pxr::UsdModelAPI Model{ pxr::UsdTyped( Prim ) };
+
+	EUsdDefaultKind Result = EUsdDefaultKind::None;
+
+	if ( !Model )
+	{
+		return Result;
+	}
+
+	if ( Model.IsKind( pxr::KindTokens->model, pxr::UsdModelAPI::KindValidationNone ) )
+	{
+		Result |= EUsdDefaultKind::Model;
+	}
+
+	if ( Model.IsKind( pxr::KindTokens->component, pxr::UsdModelAPI::KindValidationNone ) )
+	{
+		Result |= EUsdDefaultKind::Component;
+	}
+
+	if ( Model.IsKind( pxr::KindTokens->group, pxr::UsdModelAPI::KindValidationNone ) )
+	{
+		Result |= EUsdDefaultKind::Group;
+	}
+
+	if ( Model.IsKind( pxr::KindTokens->assembly, pxr::UsdModelAPI::KindValidationNone ) )
+	{
+		Result |= EUsdDefaultKind::Assembly;
+	}
+
+	if ( Model.IsKind( pxr::KindTokens->subcomponent, pxr::UsdModelAPI::KindValidationNone ) )
+	{
+		Result |= EUsdDefaultKind::Subcomponent;
+	}
+
+	return Result;
+}
+
 TArray< TUsdStore< pxr::UsdPrim > > UsdUtils::GetAllPrimsOfType( const pxr::UsdPrim& StartPrim, const pxr::TfType& SchemaType, const TArray< TUsdStore< pxr::TfType > >& ExcludeSchemaTypes )
 {
     return GetAllPrimsOfType( StartPrim, SchemaType, []( const pxr::UsdPrim& ) { return false; }, ExcludeSchemaTypes );
@@ -703,15 +917,6 @@ FString UsdUtils::GetAssetPathFromPrimPath( const FString& RootContentPath, cons
 }
 #endif // #if USE_USD_SDK
 
-bool UsdUtils::IsAnimated( const UE::FUsdPrim& Prim )
-{
-#if USE_USD_SDK
-	return IsAnimated( static_cast< const pxr::UsdPrim& >( Prim ) );
-#else
-	return false;
-#endif // #if USE_USD_SDK
-}
-
 TArray< UE::FUsdPrim > UsdUtils::GetAllPrimsOfType( const UE::FUsdPrim& StartPrim, const TCHAR* SchemaName )
 {
 	return GetAllPrimsOfType( StartPrim, SchemaName, []( const UE::FUsdPrim& ) { return false; } );
@@ -756,6 +961,15 @@ double UsdUtils::GetDefaultTimeCode()
 #endif
 }
 
+double UsdUtils::GetEarliestTimeCode()
+{
+#if USE_USD_SDK
+	return pxr::UsdTimeCode::EarliestTime().GetValue();
+#else
+	return 0.0;
+#endif
+}
+
 UUsdAssetImportData* UsdUtils::GetAssetImportData( UObject* Asset )
 {
 	UUsdAssetImportData* ImportData = nullptr;
@@ -773,7 +987,7 @@ UUsdAssetImportData* UsdUtils::GetAssetImportData( UObject* Asset )
 	}
 	else if ( USkeletalMesh* SkMesh = Cast<USkeletalMesh>( Asset ) )
 	{
-		ImportData = Cast<UUsdAssetImportData>( SkMesh->GetAssetImportData() );
+		ImportData = Cast<UUsdAssetImportData>(SkMesh->GetAssetImportData());
 	}
 	else if ( UAnimSequence* SkelAnim = Cast<UAnimSequence>( Asset ) )
 	{
@@ -833,10 +1047,19 @@ void UsdUtils::AddReference( UE::FUsdPrim& Prim, const TCHAR* AbsoluteFilePath )
 		}
 	}
 
+	FString RelativePath = AbsoluteFilePath;
+
 	pxr::SdfLayerHandle EditLayer = UsdPrim.GetStage()->GetEditTarget().GetLayer();
 
-	FString RelativePath = AbsoluteFilePath;
-	MakePathRelativeToLayer( UE::FSdfLayer( EditLayer ), RelativePath );
+	std::string RepositoryPath = EditLayer->GetRepositoryPath().empty() ? EditLayer->GetRealPath() : EditLayer->GetRepositoryPath();
+
+	// If we're editing an in-memory stage our root layer may not have a path yet
+	// Giving an empty InRelativeTo to MakePathRelativeTo causes it to use the engine binary
+	if ( !RepositoryPath.empty() )
+	{
+		FString LayerAbsolutePath = UsdToUnreal::ConvertString( RepositoryPath );
+		FPaths::MakePathRelativeTo( RelativePath, *LayerAbsolutePath );
+	}
 
 	References.AddReference( UnrealToUsd::ConvertString( *RelativePath ).Get() );
 #endif // #if USE_USD_SDK
@@ -886,6 +1109,13 @@ bool UsdUtils::RenamePrim( UE::FUsdPrim& Prim, const TCHAR* NewPrimName )
 	pxr::TfToken NewNameToken = UnrealToUsd::ConvertToken( NewPrimName ).Get();
 	pxr::SdfPath TargetPath = PxrUsdPrim.GetPrimPath().ReplaceName( NewNameToken );
 
+	std::unordered_set<std::string> LocalLayerIdentifiers;
+	const bool bIncludeSessionLayers = true;
+	for ( const pxr::SdfLayerHandle& Handle : PxrUsdStage->GetLayerStack( bIncludeSessionLayers ) )
+	{
+		LocalLayerIdentifiers.insert( Handle->GetIdentifier() );
+	}
+
 	std::vector<pxr::SdfPrimSpecHandle> SpecStack = PxrUsdPrim.GetPrimStack();
 	TArray<TPair<pxr::SdfLayerRefPtr, pxr::SdfBatchNamespaceEdit>> Edits;
 
@@ -907,6 +1137,16 @@ bool UsdUtils::RenamePrim( UE::FUsdPrim& Prim, const TCHAR* NewPrimName )
 		}
 
 		pxr::SdfLayerRefPtr SpecLayer = Spec->GetLayer();
+
+		// We should only rename specs on layers that are in the stage's *local* layer stack (which will include root, sublayers and
+		// session layers). We shouldn't rename any spec that is created due to references/payloads to other layers, because if we do
+		// we'll end up renaming the prims within those layers too, which is not what we want: For reference/payloads it's as if
+		// we're just consuming the *contents* of the referenced prim, but we don't want to affect it. Another more drastic example:
+		// if we were to remove the referencer prim, we don't really want to delete the referenced prim within its layer
+		if ( LocalLayerIdentifiers.count( SpecLayer->GetIdentifier() ) == 0 )
+		{
+			continue;
+		}
 
 		pxr::SdfBatchNamespaceEdit BatchEdit;
 		BatchEdit.Add( pxr::SdfNamespaceEdit::Rename( SpecPath, NewNameToken ) );
@@ -952,6 +1192,11 @@ bool UsdUtils::RenamePrim( UE::FUsdPrim& Prim, const TCHAR* NewPrimName )
 			const pxr::SdfLayerRefPtr& Layer = Pair.Key;
 			const pxr::SdfBatchNamespaceEdit& Edit = Pair.Value;
 
+			// Make sure that if the renamed prim is the layer's default prim, we also update that to match the
+			// prim's new name
+			pxr::UsdPrim ParentPrim = PxrUsdPrim.GetParent();
+			const bool bNeedToRenameDefaultPrim = ParentPrim && ParentPrim.IsPseudoRoot() && ( PxrUsdPrim.GetName() == Layer->GetDefaultPrim() );
+
 			if ( !Layer->Apply( Edit ) )
 			{
 				// This should not be happening since CanApply was true, so stop doing whatever it is we're doing
@@ -962,6 +1207,11 @@ bool UsdUtils::RenamePrim( UE::FUsdPrim& Prim, const TCHAR* NewPrimName )
 				);
 
 				return false;
+			}
+
+			if ( bNeedToRenameDefaultPrim )
+			{
+				Layer->SetDefaultPrim( NewNameToken );
 			}
 		}
 	}
@@ -996,6 +1246,54 @@ bool UsdUtils::RenamePrim( UE::FUsdPrim& Prim, const TCHAR* NewPrimName )
 #else
 	return false;
 #endif // #if USE_USD_SDK
+}
+
+bool UsdUtils::RemoveNumberedSuffix( FString& Prefix )
+{
+	if ( Prefix.IsNumeric() )
+	{
+		return false;
+	}
+
+	bool bRemoved = false;
+
+	FString LastChar = Prefix.Right( 1 );
+	while ( ( LastChar.IsNumeric() || LastChar == TEXT( "_" ) ) && Prefix.Len() > 1 )
+	{
+		const bool bAllowShrinking = false;
+		Prefix.LeftChopInline( 1, bAllowShrinking );
+		LastChar = Prefix.Right( 1 );
+
+		bRemoved = true;
+	}
+	Prefix.Shrink();
+
+	return bRemoved;
+}
+
+FString UsdUtils::GetUniqueName( FString Name, const TSet<FString>& UsedNames )
+{
+	if ( !UsedNames.Contains( Name ) )
+	{
+		return Name;
+	}
+
+	const bool bRemoved = RemoveNumberedSuffix( Name );
+
+	// Its possible that removing the suffix made it into a unique name already
+	if ( bRemoved && !UsedNames.Contains( Name ) )
+	{
+		return Name;
+	}
+
+	int32 Suffix = 0;
+	FString Result;
+	do
+	{
+		Result = FString::Printf( TEXT( "%s_%d" ), *Name, Suffix++ );
+	} while ( UsedNames.Contains( Result ) );
+
+	return Result;
 }
 
 FString UsdUtils::SanitizeUsdIdentifier( const TCHAR* InIdentifier )
@@ -1038,7 +1336,7 @@ void UsdUtils::MakeInvisible( UE::FUsdPrim& Prim, double TimeCode )
 #endif // USE_USD_SDK
 }
 
-bool UsdUtils::IsVisible( UE::FUsdPrim& Prim, double TimeCode )
+bool UsdUtils::IsVisible( const UE::FUsdPrim& Prim, double TimeCode )
 {
 #if USE_USD_SDK
 	FScopedUsdAllocs Allocs;
@@ -1055,7 +1353,7 @@ bool UsdUtils::IsVisible( UE::FUsdPrim& Prim, double TimeCode )
 #endif // USE_USD_SDK
 }
 
-bool UsdUtils::HasInheritedVisibility( UE::FUsdPrim& Prim, double TimeCode )
+bool UsdUtils::HasInheritedVisibility( const UE::FUsdPrim& Prim, double TimeCode )
 {
 #if USE_USD_SDK
 	FScopedUsdAllocs Allocs;
@@ -1080,6 +1378,38 @@ bool UsdUtils::HasInheritedVisibility( UE::FUsdPrim& Prim, double TimeCode )
 #else
 	return false;
 #endif // USE_USD_SDK
+}
+
+bool UsdUtils::HasInvisibleParent( const UE::FUsdPrim& Prim, const UE::FUsdPrim& RootPrim, double TimeCode )
+{
+#if USE_USD_SDK
+	FScopedUsdAllocs Allocs;
+
+	pxr::UsdPrim PxrUsdPrim{ Prim };
+	pxr::UsdPrim Parent = PxrUsdPrim.GetParent();
+
+	while ( Parent && Parent != RootPrim )
+	{
+		if ( pxr::UsdGeomImageable Imageable{ Parent } )
+		{
+			if ( pxr::UsdAttribute VisibilityAttr = Imageable.GetVisibilityAttr() )
+			{
+				pxr::TfToken Visibility;
+				if ( VisibilityAttr.Get<pxr::TfToken>( &Visibility, TimeCode ) )
+				{
+					if ( Visibility == pxr::UsdGeomTokens->invisible )
+					{
+						return true;
+					}
+				}
+			}
+		}
+
+		Parent = Parent.GetParent();
+	}
+#endif // USE_USD_SDK
+
+	return false;
 }
 
 UE::FSdfPath UsdUtils::GetPrimSpecPathForLayer( const UE::FUsdPrim& Prim, const UE::FSdfLayer& Layer )
@@ -1133,20 +1463,47 @@ USDUTILITIES_API void UsdUtils::RemoveAllPrimSpecs( const UE::FUsdPrim& Prim, co
 	pxr::SdfLayerRefPtr UsdLayer{ Layer };
 	pxr::UsdStageRefPtr UsdStage = UsdPrim.GetStage();
 
+	std::unordered_set<std::string> LocalLayerIdentifiers;
+
+	// We'll want to remove specs from the entire stage. We need to be careful though to only remove specs from the
+	// local layer stack. If a prim within the stage has a reference/payload to another layer and we remove the
+	// referencer prim, we don't want to end up removing the referenced/payload prim within its own layer too.
+	if ( !UsdLayer )
+	{
+		const bool bIncludeSessionLayers = true;
+		for ( const pxr::SdfLayerHandle& Handle : UsdStage->GetLayerStack( bIncludeSessionLayers ) )
+		{
+			LocalLayerIdentifiers.insert( Handle->GetIdentifier() );
+		}
+	}
+
 	for ( const pxr::SdfPrimSpecHandle& Spec : UsdPrim.GetPrimStack() )
 	{
+		// For whatever reason sometimes there are invalid specs in the layer stack, so we need to be careful
+		if ( !Spec )
+		{
+			continue;
+		}
+
 		pxr::SdfPath SpecPath = Spec->GetPath();
 		if ( !SpecPath.IsPrimPath() )
 		{
 			continue;
 		}
 
-		if ( Spec->GetLayer() != UsdLayer )
+		pxr::SdfLayerRefPtr SpecLayer = Spec->GetLayer();
+		if ( UsdLayer && SpecLayer != UsdLayer )
 		{
 			continue;
 		}
 
-		UE_LOG( LogUsd, Log, TEXT( "Removing prim spec '%s' from edit target '%s'" ), *UsdToUnreal::ConvertPath( SpecPath ), *UsdToUnreal::ConvertString( UsdLayer->GetIdentifier() ) );
+		if ( !UsdLayer && LocalLayerIdentifiers.count( SpecLayer->GetIdentifier() ) == 0 )
+		{
+			continue;
+		}
+
+		UE_LOG( LogUsd, Log, TEXT( "Removing prim spec '%s' from layer '%s'" ), *UsdToUnreal::ConvertPath( SpecPath ), *UsdToUnreal::ConvertString( SpecLayer->GetIdentifier() ) );
+		pxr::UsdEditContext Context( UsdStage, SpecLayer );
 		UsdStage->RemovePrim( SpecPath );
 	}
 

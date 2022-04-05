@@ -9,10 +9,15 @@ public class LevelSequenceEditor : ModuleRules
         DynamicallyLoadedModuleNames.AddRange(
             new string[] {
 				"AssetTools",
-				"SceneOutliner",
 				"PlacementMode",
 			}
         );
+
+		PublicDependencyModuleNames.AddRange(
+			new string[] {
+				"SequencerScripting",
+			}
+		);
         
         PrivateDependencyModuleNames.AddRange(
 			new string[] {
@@ -22,8 +27,11 @@ public class LevelSequenceEditor : ModuleRules
                 "CinematicCamera",
 				"Core",
 				"CoreUObject",
+				"CurveEditor",
+				"EditorFramework",
                 "EditorStyle",
-                "Engine",
+				"EditorSubsystem",
+				"Engine",
                 "InputCore",
                 "Kismet",
                 "KismetCompiler",
@@ -35,9 +43,11 @@ public class LevelSequenceEditor : ModuleRules
 				"Sequencer",
                 "Slate",
                 "SlateCore",
+				"SceneOutliner",
                 "UnrealEd",
                 "VREditor",
-				"TimeManagement"
+				"TimeManagement",
+				"ToolWidgets",
 			}
 		);
 

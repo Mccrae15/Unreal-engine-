@@ -58,9 +58,9 @@ void PropagateVertexPaintToSkeletalMesh(USkeletalMesh* SkeletalMesh, int32 LODIn
 
 	for (int32 IndexBufferIndex = 0, SrcIndexBufferNum = SrcIndexBuffer.Num(); IndexBufferIndex < SrcIndexBufferNum; IndexBufferIndex += 3)
 	{
-		FVector PositionA = SrcVertices[SrcIndexBuffer[IndexBufferIndex]].Position;
-		FVector PositionB = SrcVertices[SrcIndexBuffer[IndexBufferIndex + 1]].Position;
-		FVector PositionC = SrcVertices[SrcIndexBuffer[IndexBufferIndex + 2]].Position;
+		FVector PositionA = (FVector)SrcVertices[SrcIndexBuffer[IndexBufferIndex]].Position;
+		FVector PositionB = (FVector)SrcVertices[SrcIndexBuffer[IndexBufferIndex + 1]].Position;
+		FVector PositionC = (FVector)SrcVertices[SrcIndexBuffer[IndexBufferIndex + 2]].Position;
 
 		FSHAHash Key = GetMatchKey(PositionA, PositionB, PositionC);
 		FMatchFaceData MatchFaceData;
@@ -77,9 +77,9 @@ void PropagateVertexPaintToSkeletalMesh(USkeletalMesh* SkeletalMesh, int32 LODIn
 		SkeletalMeshImportData::FVertex& WedgeA = ImportData.Wedges[Triangle.WedgeIndex[0]];
 		SkeletalMeshImportData::FVertex& WedgeB = ImportData.Wedges[Triangle.WedgeIndex[1]];
 		SkeletalMeshImportData::FVertex& WedgeC = ImportData.Wedges[Triangle.WedgeIndex[2]];
-		FVector PositionA = ImportData.Points[WedgeA.VertexIndex];
-		FVector PositionB = ImportData.Points[WedgeB.VertexIndex];
-		FVector PositionC = ImportData.Points[WedgeC.VertexIndex];
+		FVector PositionA = (FVector)ImportData.Points[WedgeA.VertexIndex];
+		FVector PositionB = (FVector)ImportData.Points[WedgeB.VertexIndex];
+		FVector PositionC = (FVector)ImportData.Points[WedgeC.VertexIndex];
 
 		const FSHAHash Key = GetMatchKey(PositionA, PositionB, PositionC);
 		if (FMatchFaceData* MatchFaceData = MatchTriangles.Find(Key))
@@ -181,7 +181,7 @@ bool FMeshPaintSkeletalMeshComponentAdapter::InitializeVertexData()
 	MeshVertices.AddDefaulted(NumVertices);
 	for (int32 Index = 0; Index < NumVertices; Index++)
 	{
-		const FVector& Position = LODData->StaticVertexBuffers.PositionVertexBuffer.VertexPosition(Index);
+		const FVector& Position = (FVector)LODData->StaticVertexBuffers.PositionVertexBuffer.VertexPosition(Index);
 		MeshVertices[Index] = Position;
 	}
 
@@ -229,11 +229,9 @@ void FMeshPaintSkeletalMeshComponentAdapter::OnAdded()
 
 void FMeshPaintSkeletalMeshComponentAdapter::OnRemoved()
 {
-	checkf(SkeletalMeshComponent, TEXT("Invalid SkeletalMesh Component"));
-	
 	// If the referenced skeletal mesh has been destroyed (and nulled by GC), don't try to do anything more.
 	// It should be in the process of removing all global geometry adapters if it gets here in this situation.
-	if (!ReferencedSkeletalMesh)
+	if (!ReferencedSkeletalMesh || !SkeletalMeshComponent)
 	{
 		return;
 	}
@@ -259,7 +257,7 @@ bool FMeshPaintSkeletalMeshComponentAdapter::LineTraceComponent(struct FHitResul
 		float MinDistance = FLT_MAX;
 		FVector Intersect;
 		FVector Normal;
-		FIndex3i FoundTriangle;
+		UE::Geometry::FIndex3i FoundTriangle;
 		FVector HitPosition;
 		if (!RayIntersectAdapter(FoundTriangle, HitPosition, LocalStart, LocalEnd))
 		{
@@ -322,7 +320,7 @@ void FMeshPaintSkeletalMeshComponentAdapter::ApplyOrRemoveTextureOverride(UTextu
 
 void FMeshPaintSkeletalMeshComponentAdapter::GetTextureCoordinate(int32 VertexIndex, int32 ChannelIndex, FVector2D& OutTextureCoordinate) const
 {
-	OutTextureCoordinate = LODData->StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, ChannelIndex);
+	OutTextureCoordinate = FVector2D(LODData->StaticVertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, ChannelIndex));
 }
 
 void FMeshPaintSkeletalMeshComponentAdapter::PreEdit()
@@ -369,6 +367,7 @@ void FMeshPaintSkeletalMeshComponentAdapter::PostEdit()
 {
 	TUniquePtr< FSkinnedMeshComponentRecreateRenderStateContext > RecreateRenderStateContext = MakeUnique<FSkinnedMeshComponentRecreateRenderStateContext>(ReferencedSkeletalMesh);
 	ReferencedSkeletalMesh->InitResources();
+	ReferencedSkeletalMesh->GetOnMeshChanged().Broadcast();
 }
 
 void FMeshPaintSkeletalMeshComponentAdapter::GetVertexColor(int32 VertexIndex, FColor& OutColor, bool bInstance /*= true*/) const

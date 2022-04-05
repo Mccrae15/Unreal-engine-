@@ -43,7 +43,7 @@ struct FComponentObjectTextFactory : public FCustomizableTextObjectFactory
 	TMap<FName, UActorComponent*> NewObjectMap;
 
 	// Determine whether or not scene components in the new object set can be attached to the given scene root component
-	bool CanAttachComponentsTo(USceneComponent* InRootComponent)
+	bool CanAttachComponentsTo(const USceneComponent* InRootComponent)
 	{
 		check(InRootComponent);
 
@@ -52,8 +52,8 @@ struct FComponentObjectTextFactory : public FCustomizableTextObjectFactory
 		for (auto NewComponentIt = NewObjectMap.CreateConstIterator(); NewComponentIt && bCanAttachToRoot; ++NewComponentIt)
 		{
 			// If this is a scene component, and it does not already have a parent within the set
-			USceneComponent* SceneComponent = Cast<USceneComponent>(NewComponentIt->Value);
-			if (SceneComponent != NULL && !ParentMap.Contains(SceneComponent->GetFName()))
+			const USceneComponent* SceneComponent = Cast<USceneComponent>(NewComponentIt->Value);
+			if (SceneComponent && !ParentMap.Contains(SceneComponent->GetFName()))
 			{
 				// Determine if we are allowed to attach the scene component to the given root component
 				bCanAttachToRoot = InRootComponent->CanAttachAsChild(SceneComponent, NAME_None)
@@ -451,7 +451,7 @@ bool FComponentEditorUtils::CanCopyComponents(const TArray<UActorComponent*>& Co
 	return bCanCopy;
 }
 
-void FComponentEditorUtils::CopyComponents(const TArray<UActorComponent*>& ComponentsToCopy)
+void FComponentEditorUtils::CopyComponents(const TArray<UActorComponent*>& ComponentsToCopy, FString* DestinationData)
 {
 	FStringOutputDevice Archive;
 
@@ -523,27 +523,47 @@ void FComponentEditorUtils::CopyComponents(const TArray<UActorComponent*>& Compo
 	}
 
 	// Copy text to clipboard
-	FString ExportedText = Archive;
-	FPlatformApplicationMisc::ClipboardCopy(*ExportedText);
+	if (DestinationData)
+	{
+		*DestinationData = MoveTemp(Archive);
+	}
+	else
+	{
+		FPlatformApplicationMisc::ClipboardCopy(*Archive);
+	}
 }
 
-bool FComponentEditorUtils::CanPasteComponents(USceneComponent* RootComponent, bool bOverrideCanAttach, bool bPasteAsArchetypes)
+bool FComponentEditorUtils::CanPasteComponents(const USceneComponent* RootComponent, bool bOverrideCanAttach, bool bPasteAsArchetypes, const FString* SourceData)
 {
 	FString ClipboardContent;
-	FPlatformApplicationMisc::ClipboardPaste(ClipboardContent);
+	if (SourceData)
+	{
+		ClipboardContent = *SourceData;
+	}
+	else
+	{
+		FPlatformApplicationMisc::ClipboardPaste(ClipboardContent);
+	}
 
 	// Obtain the component object text factory for the clipboard content and return whether or not we can use it
 	TSharedRef<FComponentObjectTextFactory> Factory = FComponentObjectTextFactory::Get(ClipboardContent, bPasteAsArchetypes);
 	return Factory->NewObjectMap.Num() > 0 && ( bOverrideCanAttach || Factory->CanAttachComponentsTo(RootComponent) );
 }
 
-void FComponentEditorUtils::PasteComponents(TArray<UActorComponent*>& OutPastedComponents, AActor* TargetActor, USceneComponent* TargetComponent)
+void FComponentEditorUtils::PasteComponents(TArray<UActorComponent*>& OutPastedComponents, AActor* TargetActor, USceneComponent* TargetComponent, const FString* SourceData)
 {
 	check(TargetActor);
 
 	// Get the text from the clipboard
 	FString TextToImport;
-	FPlatformApplicationMisc::ClipboardPaste(TextToImport);
+	if (SourceData)
+	{
+		TextToImport = *SourceData;
+	}
+	else
+	{
+		FPlatformApplicationMisc::ClipboardPaste(TextToImport);
+	}
 
 	// Get a new component object factory for the clipboard content
 	TSharedRef<FComponentObjectTextFactory> Factory = FComponentObjectTextFactory::Get(TextToImport);
@@ -628,21 +648,23 @@ void FComponentEditorUtils::GetComponentsFromClipboard(TMap<FName, FName>& OutPa
 	OutNewObjectMap = MoveTemp(Factory->NewObjectMap);
 }
 
+bool FComponentEditorUtils::CanDeleteComponent(const UActorComponent* ComponentToDelete)
+{
+	// We can't delete non-instance components or the default scene root
+	return ComponentToDelete->CreationMethod == EComponentCreationMethod::Instance
+		&& ComponentToDelete->GetFName() != USceneComponent::GetDefaultSceneRootVariableName();
+}
+
 bool FComponentEditorUtils::CanDeleteComponents(const TArray<UActorComponent*>& ComponentsToDelete)
 {
-	bool bCanDelete = true;
-	for (UActorComponent* ComponentToDelete : ComponentsToDelete)
+	for (const UActorComponent* ComponentToDelete : ComponentsToDelete)
 	{
-		// We can't delete non-instance components or the default scene root
-		if (ComponentToDelete->CreationMethod != EComponentCreationMethod::Instance 
-			|| ComponentToDelete->GetFName() == USceneComponent::GetDefaultSceneRootVariableName())
+		if (!CanDeleteComponent(ComponentToDelete))
 		{
-			bCanDelete = false;
-			break;
+			return false;
 		}
 	}
-
-	return bCanDelete;
+	return true;
 }
 
 int32 FComponentEditorUtils::DeleteComponents(const TArray<UActorComponent*>& ComponentsToDelete, UActorComponent*& OutComponentToSelect)
@@ -684,7 +706,7 @@ int32 FComponentEditorUtils::DeleteComponents(const TArray<UActorComponent*>& Co
 						ParentComponent->GetChildrenComponents(false, Siblings);
 						for (int32 i = 0; i < Siblings.Num() && ComponentToDelete != Siblings[i]; ++i)
 						{
-							if (Siblings[i] && !Siblings[i]->IsPendingKill())
+							if (IsValid(Siblings[i]))
 							{
 								OutComponentToSelect = Siblings[i];
 							}
@@ -823,10 +845,9 @@ UActorComponent* FComponentEditorUtils::DuplicateComponent(UActorComponent* Temp
 	return NewCloneComponent;
 }
 
-void FComponentEditorUtils::AdjustComponentDelta(USceneComponent* Component, FVector& Drag, FRotator& Rotation)
+void FComponentEditorUtils::AdjustComponentDelta(const USceneComponent* Component, FVector& Drag, FRotator& Rotation)
 {
-	USceneComponent* ParentSceneComp = Component->GetAttachParent();
-	if (ParentSceneComp)
+	if (const USceneComponent* ParentSceneComp = Component->GetAttachParent())
 	{
 		const FTransform ParentToWorldSpace = ParentSceneComp->GetSocketTransform(Component->GetAttachSocketName());
 
@@ -1117,7 +1138,7 @@ void FComponentEditorUtils::FillComponentContextMenuOptions(UToolMenu* Menu, con
 	}
 }
 
-UActorComponent* FComponentEditorUtils::FindMatchingComponent(UActorComponent* ComponentInstance, const TInlineComponentArray<UActorComponent*>& ComponentList)
+UActorComponent* FComponentEditorUtils::FindMatchingComponent(const UActorComponent* ComponentInstance, const TInlineComponentArray<UActorComponent*>& ComponentList)
 {
 	if (ComponentInstance == nullptr)
 	{
@@ -1147,7 +1168,7 @@ UActorComponent* FComponentEditorUtils::FindMatchingComponent(UActorComponent* C
 		return LastFoundComponent;
 	}
 
-	if (USceneComponent* CurrentSceneComponent = Cast<USceneComponent>(ComponentInstance))
+	if (const USceneComponent* CurrentSceneComponent = Cast<USceneComponent>(ComponentInstance))
 	{
 		// Sort by matching hierarchy
 		FoundComponents.Sort([&](const UActorComponent& ComponentA, const UActorComponent& ComponentB)

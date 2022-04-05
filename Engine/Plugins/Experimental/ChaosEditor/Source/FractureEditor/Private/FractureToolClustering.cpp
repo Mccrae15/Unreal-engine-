@@ -7,7 +7,7 @@
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
-
+#include "ScopedTransaction.h"
 
 #define LOCTEXT_NAMESPACE "FractureToolClusteringOps"
 
@@ -36,28 +36,39 @@ void UFractureToolFlattenAll::Execute(TWeakPtr<FFractureEditorModeToolkit> InToo
 {
 	if (InToolkit.IsValid())
 	{
+		FScopedTransaction Transaction(LOCTEXT("FlattenAll", "Flatten All"));
+
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
 		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
 
 		for (FFractureToolContext& Context : Contexts)
 		{
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+
 			const TManagedArray<int32>& Levels = Context.GetGeometryCollection()->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 
 			Context.ConvertSelectionToClusterNodes();
 
+			int32 MaxClusterLevel = -1;
 			for (int32 ClusterIndex : Context.GetSelection())
 			{
 				TArray<int32> LeafBones;
+				MaxClusterLevel = FMath::Max(MaxClusterLevel, Levels[ClusterIndex]);
 				FGeometryCollectionClusteringUtility::GetLeafBones(Context.GetGeometryCollection().Get(), ClusterIndex, true, LeafBones);
 				FGeometryCollectionClusteringUtility::ClusterBonesUnderExistingNode(Context.GetGeometryCollection().Get(), ClusterIndex, LeafBones);
-
-				// Cleanup: Remove any clusters remaining in the flattened branch.
-				FGeometryCollectionClusteringUtility::RemoveDanglingClusters(Context.GetGeometryCollection().Get());
-
 			}
 
-			Refresh(Context, Toolkit);
+			// if not viewing all levels, switch the view level to show make sure we can see the cluster levels
+			if (Toolkit->GetLevelViewValue() != -1 && MaxClusterLevel != -1)
+			{
+				Toolkit->OnSetLevelViewValue(MaxClusterLevel + 1);
+			}
+
+			// Cleanup: Remove any clusters remaining in the flattened branch.
+			FGeometryCollectionClusteringUtility::RemoveDanglingClusters(Context.GetGeometryCollection().Get());
+
+			Refresh(Context, Toolkit, true);
 		}
 
 		SetOutlinerComponents(Contexts, Toolkit);
@@ -92,6 +103,8 @@ void UFractureToolCluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolki
 	
 	if (InToolkit.IsValid())
 	{
+		FScopedTransaction Transaction(LOCTEXT("Cluster", "Cluster"));
+		
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
 		int32 CurrentLevelView = Toolkit->GetLevelViewValue();
@@ -100,6 +113,10 @@ void UFractureToolCluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolki
 
 		for (FFractureToolContext& Context : Contexts)
 		{
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+
+			int32 StartTransformCount = Context.GetGeometryCollection()->Transform.Num();
+			
 			Context.RemoveRootNodes();
 			Context.Sanitize();
 
@@ -118,6 +135,8 @@ void UFractureToolCluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolki
 						FGeometryCollectionClusteringUtility::ClusterBonesUnderNewNode(Context.GetGeometryCollection().Get(), Siblings[0], Context.GetSelection(), true);
 					}
 				}
+
+				Context.GenerateGuids(StartTransformCount);
 
 				Refresh(Context, Toolkit);
 			}
@@ -150,7 +169,7 @@ FSlateIcon UFractureToolUncluster::GetToolIcon() const
 
 void UFractureToolUncluster::RegisterUICommand(FFractureEditorCommands* BindingContext)
 {
-	UI_COMMAND_EXT(BindingContext, UICommandInfo, "Uncluster", "Uncluster", "Remove parent cluster and move bones up a level.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND_EXT(BindingContext, UICommandInfo, "Uncluster", "Unclstr", "Remove parent cluster and move bones up a level.", EUserInterfaceActionType::Button, FInputChord());
 	BindingContext->Uncluster = UICommandInfo;
 }
 
@@ -158,31 +177,28 @@ void UFractureToolUncluster::Execute(TWeakPtr<FFractureEditorModeToolkit> InTool
 {
 	if (InToolkit.IsValid())
 	{
+		FScopedTransaction Transaction(LOCTEXT("Uncluster", "Uncluster"));
+		
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
 		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
 
 		for (FFractureToolContext& Context : Contexts)
 		{
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+
 			const TManagedArray<TSet<int32>>& Children = Context.GetGeometryCollection()->GetAttribute<TSet<int32>>("Children", FGeometryCollection::TransformGroup);
 			const TManagedArray<int32>& Levels = Context.GetGeometryCollection()->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
 
 			Context.ConvertSelectionToClusterNodes();
 			Context.RemoveRootNodes();
 
-			// Once the operation is complete, we'll select the children that were re-leveled
-			TArray<int32> NewSelection;
-			for (int32 Cluster : Context.GetSelection())
-			{
-				NewSelection.Append(Children[Cluster].Array());
-			}
-
 			FGeometryCollectionClusteringUtility::CollapseHierarchyOneLevel(Context.GetGeometryCollection().Get(), Context.GetSelection());
-			Context.SetSelection(NewSelection);
 			
-			Refresh(Context, Toolkit);
+			FGeometryCollectionClusteringUtility::RemoveDanglingClusters(Context.GetGeometryCollection().Get());
+			Refresh(Context, Toolkit, true);
 		}
-
+		
 		SetOutlinerComponents(Contexts, Toolkit);
 	}
 }
@@ -214,17 +230,86 @@ void UFractureToolMoveUp::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit
 {
 	if (InToolkit.IsValid())
 	{
+		FScopedTransaction Transaction(LOCTEXT("MovelUp", "Level Up"));
+		
 		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
 
 		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
 
 		for (FFractureToolContext& Context: Contexts)
 		{
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+
 			Context.ConvertSelectionToRigidNodes();
 			FGeometryCollectionClusteringUtility::MoveUpOneHierarchyLevel(Context.GetGeometryCollection().Get(), Context.GetSelection());
-			Refresh(Context, Toolkit);
+			FGeometryCollectionClusteringUtility::RemoveDanglingClusters(Context.GetGeometryCollection().Get());
+			Refresh(Context, Toolkit, true);
 		}
 		
+		SetOutlinerComponents(Contexts, Toolkit);
+	}
+}
+
+
+
+FText UFractureToolClusterMerge::GetDisplayText() const
+{
+	return FText(NSLOCTEXT("FractureToolClusteringOps", "FractureToolClusterMerge", "Cluster Merge"));
+}
+
+FText UFractureToolClusterMerge::GetTooltipText() const
+{
+	return FText(NSLOCTEXT("FractureToolClusteringOps", "FractureToolClusterMergeTooltip", "Merge selected clusters."));
+}
+
+FSlateIcon UFractureToolClusterMerge::GetToolIcon() const
+{
+	return FSlateIcon("FractureEditorStyle", "FractureEditor.Merge");
+}
+
+void UFractureToolClusterMerge::RegisterUICommand(FFractureEditorCommands* BindingContext)
+{
+	UI_COMMAND_EXT(BindingContext, UICommandInfo, "Merge", "Merge", "Merge selected clusters.", EUserInterfaceActionType::Button, FInputChord());
+	BindingContext->ClusterMerge = UICommandInfo;
+}
+
+void UFractureToolClusterMerge::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
+{
+	if (InToolkit.IsValid())
+	{
+		FScopedTransaction Transaction(LOCTEXT("ClusterMerge", "Cluster Merge"));
+		
+		FFractureEditorModeToolkit* Toolkit = InToolkit.Pin().Get();
+
+		TArray<FFractureToolContext> Contexts = GetFractureToolContexts();
+
+		for (FFractureToolContext& Context : Contexts)
+		{
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+
+			const TManagedArray<TSet<int32>>& Children = Context.GetGeometryCollection()->Children;
+
+			Context.ConvertSelectionToClusterNodes();
+
+			// Collect children of context clusters
+			TArray<int32> ChildBones;
+			ChildBones.Reserve(Context.GetGeometryCollection()->NumElements(FGeometryCollection::TransformGroup));
+			for (int32 Select : Context.GetSelection())
+			{
+				ChildBones.Append(Children[Select].Array());
+			}
+			
+			int32 MergeNode = FGeometryCollectionClusteringUtility::PickBestNodeToMergeTo(Context.GetGeometryCollection().Get(), Context.GetSelection());
+			if (MergeNode >= 0)
+			{
+				FGeometryCollectionClusteringUtility::ClusterBonesUnderExistingNode(Context.GetGeometryCollection().Get(), MergeNode, ChildBones);
+				FGeometryCollectionClusteringUtility::RemoveDanglingClusters(Context.GetGeometryCollection().Get());
+
+				Context.SetSelection({ MergeNode });
+				Refresh(Context, Toolkit);
+			}
+		}
+
 		SetOutlinerComponents(Contexts, Toolkit);
 	}
 }

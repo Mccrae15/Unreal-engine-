@@ -27,7 +27,6 @@ public:
 	{
 		return SNew(SDockTab)
 			.TabRole(ETabRole::NomadTab)
-			.Icon( FEditorStyle::GetBrush("LevelEditor.Tabs.Layers") )
 			.Label( LOCTEXT( "USDStage", "USD Stage" ) )
 			[
 				SNew(SBorder)
@@ -48,12 +47,12 @@ public:
 				FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked< FLevelEditorModule >( "LevelEditor" );
 				TSharedPtr< FTabManager > LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 
-				const FSlateIcon LayersIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Layers");
+				const FSlateIcon LayersIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.USDStage");
 
 				LevelEditorTabManager->RegisterTabSpawner( TEXT("USDStage"), FOnSpawnTab::CreateStatic( &FUsdStageEditorModule::SpawnUsdStageTab ) )
 					.SetDisplayName( LOCTEXT( "USDStage", "USD Stage" ) )
 					.SetTooltipText( LOCTEXT( "USDStageTab", "Open USD Stage tab" ) )
-					.SetGroup( WorkspaceMenu::GetMenuStructure().GetLevelEditorCategory() )
+					.SetGroup(WorkspaceMenu::GetMenuStructure().GetLevelEditorVirtualProductionCategory())
 					.SetIcon( LayersIcon );
 			});
 

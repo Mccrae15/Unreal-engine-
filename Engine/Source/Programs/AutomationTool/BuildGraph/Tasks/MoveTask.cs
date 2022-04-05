@@ -1,14 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
+using UnrealBuildBase;
 
 namespace BuildGraph.Tasks
 {
@@ -77,10 +79,10 @@ namespace BuildGraph.Tasks
 		public override void Execute(JobContext Job, HashSet<FileReference> BuildProducts, Dictionary<string, HashSet<FileReference>> TagNameToFileSet)
 		{
 			// Parse all the source patterns
-			FilePattern SourcePattern = new FilePattern(CommandUtils.RootDirectory, Parameters.From);
+			FilePattern SourcePattern = new FilePattern(Unreal.RootDirectory, Parameters.From);
 
 			// Parse the target pattern
-			FilePattern TargetPattern = new FilePattern(CommandUtils.RootDirectory, Parameters.To);
+			FilePattern TargetPattern = new FilePattern(Unreal.RootDirectory, Parameters.To);
 
 			// Apply the filter to the source files
 			HashSet<FileReference> Files = null;

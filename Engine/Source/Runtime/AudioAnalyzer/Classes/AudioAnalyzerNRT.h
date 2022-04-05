@@ -10,18 +10,18 @@
 #include "Sound/SoundWave.h"
 #include "AudioAnalyzerNRT.generated.h"
 
-DECLARE_MULTICAST_DELEGATE( FAnalyzeAudioDelegate );
+
 
 /** UAudioAnalyzerNRTSettings
  *
  * UAudioAnalyzerNRTSettings provides a way to store and reuse existing analyzer settings
- * across multipler analyzers. This class provides the interface and functionality to 
+ * across multiple analyzers. This class provides the interface and functionality to 
  * automatically trigger reanalysis of audio across all analyzers associated with this 
- * settingwhen when a UPROPERTY in this setting object is edited.
+ * setting when when a UPROPERTY in this setting object is edited.
  *
  */
 UCLASS(Abstract, EditInlineNew, BlueprintType)
-class AUDIOANALYZER_API UAudioAnalyzerNRTSettings : public UAudioAnalyzerAsset
+class AUDIOANALYZER_API UAudioAnalyzerNRTSettings : public UAudioAnalyzerAssetBase
 {
 	GENERATED_BODY()
 
@@ -60,7 +60,7 @@ class AUDIOANALYZER_API UAudioAnalyzerNRTSettings : public UAudioAnalyzerAsset
  * returned by GetResult().
  */
 UCLASS(Abstract, EditInlineNew, BlueprintType)
-class AUDIOANALYZER_API UAudioAnalyzerNRT : public UAudioAnalyzerAsset
+class AUDIOANALYZER_API UAudioAnalyzerNRT : public UAudioAnalyzerAssetBase
 {
 	GENERATED_BODY()
 
@@ -78,7 +78,7 @@ class AUDIOANALYZER_API UAudioAnalyzerNRT : public UAudioAnalyzerAsset
 		 * The USoundWave which is analyzed.
 		 */
 		UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=AudioAnalyzer)
-		USoundWave* Sound;
+		TObjectPtr<USoundWave> Sound;
 
 		/** The duration of the analyzed audio in seconds. */
 		UPROPERTY(BlueprintReadOnly, Category=AudioAnalyzer)

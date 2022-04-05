@@ -1,9 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-/**
- * The base class for a playable sound object
- */
 
 #include "Audio.h"
 #include "CoreMinimal.h"
@@ -19,8 +16,16 @@
 #include "UObject/ObjectMacros.h"
 #include "AudioDeviceManager.h"
 #include "Interfaces/Interface_AssetUserData.h"
+
 #include "SoundBase.generated.h"
 
+
+// Forward Declarations
+namespace Audio
+{
+	class IParameterTransmitter;
+	struct FParameterTransmitterInitParams;
+} // namespace Audio
 
 class USoundEffectSourcePreset;
 class USoundSourceBus;
@@ -30,6 +35,7 @@ class UAssetUserData;
 
 struct FActiveSound;
 struct FSoundParseParameters;
+
 
 /**
  * Method of virtualization when a sound is stopped due to playback constraints
@@ -54,6 +60,9 @@ enum class EVirtualizationMode : uint8
 	Restart
 };
 
+/**
+ * The base class for a playable sound object
+ */
 UCLASS(config=Engine, hidecategories=Object, abstract, editinlinenew, BlueprintType)
 class ENGINE_API USoundBase : public UObject, public IInterface_AssetUserData
 {
@@ -61,8 +70,8 @@ class ENGINE_API USoundBase : public UObject, public IInterface_AssetUserData
 
 public:
 	/** Sound class this sound belongs to */
-	UPROPERTY(EditAnywhere, Category = Sound, meta = (DisplayName = "Class"), AssetRegistrySearchable)
-	USoundClass* SoundClassObject;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Sound, meta = (DisplayName = "Class"), AssetRegistrySearchable)
+	TObjectPtr<USoundClass> SoundClassObject;
 
 	/** When "au.debug.Sounds -debug" has been specified, draw this sound's attenuation shape when the sound is audible. For debugging purpose only. */
 	UPROPERTY(EditAnywhere, Category = Developer)
@@ -122,12 +131,12 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** If Override Concurrency is false, the sound concurrency settings to use for this sound. */
 	UPROPERTY()
-	USoundConcurrency* SoundConcurrencySettings_DEPRECATED;
+	TObjectPtr<USoundConcurrency> SoundConcurrencySettings_DEPRECATED;
 #endif // WITH_EDITORONLY_DATA
 
 	/** Set of concurrency settings to observe (if override is set to false).  Sound must pass all concurrency settings to play. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voice Management|Concurrency", meta = (EditCondition = "!bOverrideConcurrency"))
-	TSet<USoundConcurrency*> ConcurrencySet;
+	TSet<TObjectPtr<USoundConcurrency>> ConcurrencySet;
 
 	/** If Override Concurrency is true, concurrency settings to use. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Voice Management|Concurrency", meta = (EditCondition = "bOverrideConcurrency"))
@@ -160,12 +169,12 @@ public:
 
 	/** Attenuation settings package for the sound */
 	UPROPERTY(EditAnywhere, Category = Attenuation)
-	USoundAttenuation* AttenuationSettings;
+	TObjectPtr<USoundAttenuation> AttenuationSettings;
 
 	/** Submix to route sound output to. If unset, falls back to referenced SoundClass submix.
 	  * If SoundClass submix is unset, sends to the 'Master Submix' as set in the 'Audio' category of Project Settings'. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effects|Submix", meta = (DisplayName = "Base Submix", EditCondition = "bEnableBaseSubmix"))
-	USoundSubmixBase* SoundSubmixObject;
+	TObjectPtr<USoundSubmixBase> SoundSubmixObject;
 
 	/** Array of submix sends to which a prescribed amount (see 'Send Level') of this sound is sent. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effects|Submix", meta = (DisplayName = "Submix Sends", EditCondition = "bEnableSubmixSends"))
@@ -173,7 +182,7 @@ public:
 
 	/** The source effect chain to use for this sound. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effects|Source")
-	USoundEffectSourcePresetChain* SourceEffectChain;
+	TObjectPtr<USoundEffectSourcePresetChain> SourceEffectChain;
 
 	/** This sound will send its audio output to this list of buses if there are bus instances playing after source effects are processed. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Effects|Source", meta = (DisplayName = "Post-Effect Bus Sends", EditCondition = "bEnableBusSends"))
@@ -184,11 +193,10 @@ public:
 	TArray<FSoundSourceBusSendInfo> PreEffectBusSends;
 
 	/** Array of user data stored with the asset */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = Sound)
-	TArray<UAssetUserData*> AssetUserData;
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = Advanced)
+	TArray<TObjectPtr<UAssetUserData>> AssetUserData;
 
 public:
-
 	//~ Begin UObject Interface.
 #if WITH_EDITORONLY_DATA
 	virtual void PostLoad() override;
@@ -219,7 +227,7 @@ public:
 	/**
 	 * Returns the length of the sound
 	 */
-	virtual float GetDuration();
+	virtual float GetDuration() const;
 
 	/** Returns whether or not this sound has a delay node, which means it's possible for the sound to not generate audio for a while. */
 	bool HasDelayNode() const;
@@ -244,8 +252,11 @@ public:
 	*/
 	virtual class UCurveTable* GetCurveData() const { return nullptr; }
 
-	/** Returns whether or not this sound is looping. */
-	bool IsLooping();
+	/** Returns whether or not this sound is looping. TODO: Deprecate this to only use IsOneshot() in a MetaSound world. */
+	virtual bool IsLooping() const;
+
+	/** Query if it's one shot. One shot is defined as a sound which is intended to have a fixed duration. */
+	virtual bool IsOneShot() const;
 
 	/** Parses the Sound to generate the WaveInstances to play. */
 	virtual void Parse( class FAudioDevice* AudioDevice, const UPTRINT NodeWaveInstanceHash, FActiveSound& ActiveSound, const FSoundParseParameters& ParseParams, TArray<FWaveInstance*>& WaveInstances ) { }
@@ -281,8 +292,27 @@ public:
 	virtual const TArray<UAssetUserData*>* GetAssetUserDataArray() const override;
 	//~ End IInterface_AssetUserData Interface
 
+	/** Called from the Game Thread prior to attempting to pass parameters to the ParameterTransmitter. */
+	virtual void InitParameters(TArray<FAudioParameter>& InParametersToInit, FName InFeatureName);
+
+	/** Called from the Game Thread prior to attempting to initialize a sound instance. */
+	virtual void InitResources() { }
+
+	/** Whether or not the given sound is a generator and implements an interface with the given name. */
+	virtual bool ImplementsParameterInterface(Audio::FParameterInterfacePtr InParameterInterface) const { return false; }
+
 	/** Creates a sound generator instance from this sound base. Return true if this is being implemented by a subclass. Sound generators procedurally generate audio in the audio render thread. */
-	virtual ISoundGeneratorPtr CreateSoundGenerator(int32 InSampleRate, int32 InNumChannels) { return nullptr; }
+	virtual ISoundGeneratorPtr CreateSoundGenerator(const FSoundGeneratorInitParams& InParams) { return nullptr; }
 
+	/** Creates a parameter transmitter for communicating with active sound instances. */
+	virtual TUniquePtr<Audio::IParameterTransmitter> CreateParameterTransmitter(Audio::FParameterTransmitterInitParams&& InParams) const;
+
+	/** Returns whether parameter is valid input for the given sound */
+	virtual bool IsParameterValid(const FAudioParameter& InParameter) const;
+
+	/** Gets all the default parameters for this Asset.  */
+	virtual bool GetAllDefaultParameters(TArray<FAudioParameter>& OutParameters) const { return false; }
+
+	/** Whether or not this sound allows submix sends on preview. */
+	virtual bool EnableSubmixSendsOnPreview() const { return false; }
 };
-

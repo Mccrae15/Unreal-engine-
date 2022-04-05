@@ -27,6 +27,26 @@ namespace EThumbnailLabel
 	};
 };
 
+enum class EThumbnailSize : uint8
+{
+	Tiny = 0,
+	Small,
+	Medium,
+	Large,
+	Huge,
+
+	// Not a size
+	MAX
+};
+
+/** The edge of the thumbnail along which to display the color strip */
+enum class EThumbnailColorStripOrientation : uint8
+{
+	/** Display the color strip as a horizontal line along the bottom edge */
+	HorizontalBottomEdge,
+	/** Display the color strip as a vertical line along the right edge */
+	VerticalRightEdge,
+};
 
 /** A struct containing details about how the asset thumbnail should behave */
 struct FAssetThumbnailConfig
@@ -35,24 +55,30 @@ struct FAssetThumbnailConfig
 		: bAllowFadeIn( false )
 		, bForceGenericThumbnail( false )
 		, bAllowHintText( true )
+		, bAllowRealTimeOnHovered( true )
 		, bAllowAssetSpecificThumbnailOverlay( false )
 		, ClassThumbnailBrushOverride( NAME_None )
 		, ThumbnailLabel( EThumbnailLabel::ClassName )
 		, HighlightedText( FText::GetEmpty() )
 		, HintColorAndOpacity( FLinearColor( 0.0f, 0.0f, 0.0f, 0.0f ) )
 		, AssetTypeColorOverride()
+		, Padding(0)
 	{
 	}
 
 	bool bAllowFadeIn;
 	bool bForceGenericThumbnail;
 	bool bAllowHintText;
+	bool bAllowRealTimeOnHovered;
 	bool bAllowAssetSpecificThumbnailOverlay;
 	FName ClassThumbnailBrushOverride;
 	EThumbnailLabel::Type ThumbnailLabel;
 	TAttribute< FText > HighlightedText;
 	TAttribute< FLinearColor > HintColorAndOpacity;
 	TOptional< FLinearColor > AssetTypeColorOverride;
+	FMargin Padding;
+	TAttribute<int32> GenericThumbnailSize = 64;
+	EThumbnailColorStripOrientation ColorStripOrientation = EThumbnailColorStripOrientation::HorizontalBottomEdge;
 };
 
 
@@ -121,6 +147,9 @@ public:
 	/** Re-renders this thumbnail */
 	UNREALED_API void RefreshThumbnail();
 
+	/** Updates if this thumbnail should be realtime rendered via the pool */
+	UNREALED_API void SetRealTime( bool bRealTime );
+
 	DECLARE_EVENT(FAssetThumbnail, FOnAssetDataChanged);
 	FOnAssetDataChanged& OnAssetDataChanged() { return AssetDataChangedEvent; }
 
@@ -143,6 +172,7 @@ private:
 class FAssetThumbnailPool : public FTickableEditorObject
 {
 public:
+	UNREALED_API static FName CustomThumbnailTagName;
 
 	/**
 	 * Constructor 
@@ -152,7 +182,7 @@ public:
 	 * @param InMaxFrameTimeAllowance			The maximum number of seconds per tick to spend rendering thumbnails
 	 * @param InMaxRealTimeThumbnailsPerFrame	The maximum number of real-time thumbnails to render per tick
 	 */
-	UNREALED_API FAssetThumbnailPool( uint32 InNumInPool, const TAttribute<bool>& InAreRealTimeThumbnailsAllowed = true, double InMaxFrameTimeAllowance = 0.005, uint32 InMaxRealTimeThumbnailsPerFrame = 3 );
+	UNREALED_API FAssetThumbnailPool( uint32 InNumInPool, double InMaxFrameTimeAllowance = 0.005, uint32 InMaxRealTimeThumbnailsPerFrame = 3 );
 
 	/** Destructor to free all remaining resources */
 	UNREALED_API ~FAssetThumbnailPool();
@@ -209,6 +239,9 @@ public:
 	/** Re-renders the specified thumbnail */
 	UNREALED_API void RefreshThumbnail( const TSharedPtr<FAssetThumbnail>& ThumbnailToRefresh );
 
+	/** Enables/disables realtime thumbnail behavior */
+	UNREALED_API void SetRealTimeThumbnail(const TSharedPtr<FAssetThumbnail>& Thumbnail, bool bRealTimeThumbnail);
+
 private:
 
 	/**
@@ -260,6 +293,16 @@ private:
 		uint32 Height;
 		~FThumbnailInfo();
 	};
+	/**
+	 * Assign a thumbnail from its render target and re-render it if necessary.
+	 *
+	 * @param ThumbnailInfo The thumbnail info to assign a texture to
+	 * @param bIsAssetStillCompiling If the asset we want to load the thumbnail is compiling, this flag will be set to true, it wont be touch in other cases.
+	 * @param CustomAssetToRender The asset to render when generating the texture
+	 *
+	 * @return true if the thumbnail was assigned to a valid texture
+	 */
+	bool LoadThumbnail(TSharedRef<FThumbnailInfo> ThumbnailInfo, bool& bIsAssetStillCompiling, const FAssetData& CustomAssetToRender = FAssetData());
 
 	struct FThumbnailInfo_RenderThread
 	{
@@ -335,6 +378,9 @@ private:
 
 	/** Max number of thumbnails in the pool */
 	uint32 NumInPool;
+
+	/** Shaders are still building */
+	bool bWereShadersCompilingLastFrame = false;
 
 	/** Max number of dynamic thumbnails to update per frame */
 	uint32 MaxRealTimeThumbnailsPerFrame;

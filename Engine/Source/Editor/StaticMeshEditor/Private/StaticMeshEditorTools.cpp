@@ -29,9 +29,8 @@
 #include "FbxMeshUtils.h"
 #include "Widgets/Input/SVectorInputBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
-#include "SPerPlatformPropertiesWidget.h"
+#include "SPerQualityLevelPropertiesWidget.h"
 #include "PlatformInfo.h"
-
 #include "ContentStreaming.h"
 #include "EditorDirectories.h"
 #include "EditorFramework/AssetImportData.h"
@@ -48,9 +47,11 @@
 #include "UObject/UObjectGlobals.h"
 #include "Widgets/Input/SFilePathPicker.h"
 #include "Widgets/Input/STextComboBox.h"
+#include "PerPlatformPropertyCustomization.h"
+#include "Misc/ScopedSlowTask.h"
 
 const uint32 MaxHullCount = 64;
-const uint32 MinHullCount = 2;
+const uint32 MinHullCount = 1;
 const uint32 DefaultHullCount = 4;
 const uint32 HullCountDelta = 1;
 
@@ -129,12 +130,16 @@ void FStaticMeshDetails::CustomizeDetails( class IDetailLayoutBuilder& DetailBui
 	DetailBuilder.EditCategory( "Navigation", FText::GetEmpty(), ECategoryPriority::Uncommon );
 
 	LevelOfDetailSettings = MakeShareable( new FLevelOfDetailSettingsLayout( StaticMeshEditor ) );
-
 	LevelOfDetailSettings->AddToDetailsPanel( DetailBuilder );
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	TSharedRef<IPropertyHandle> BodyProp = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStaticMesh,BodySetup));
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	// Hide the existing NaniteSettings property so we can use the customization instead
+	TSharedRef<IPropertyHandle> NaniteSettingsProperty = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UStaticMesh, NaniteSettings));
+	NaniteSettingsProperty->MarkHiddenByCustomization();
+
+	NaniteSettings = MakeShareable(new FNaniteSettingsLayout(StaticMeshEditor));
+	NaniteSettings->AddToDetailsPanel(DetailBuilder);
+
+	TSharedRef<IPropertyHandle> BodyProp = DetailBuilder.GetProperty(UStaticMesh::GetBodySetupName());
 	BodyProp->MarkHiddenByCustomization();
 
 	static TArray<FName> HiddenBodyInstanceProps;
@@ -331,14 +336,21 @@ void SConvexDecomposition::Construct(const FArguments& InArgs)
 
 bool FStaticMeshDetails::IsApplyNeeded() const
 {
-	return LevelOfDetailSettings.IsValid() && LevelOfDetailSettings->IsApplyNeeded();
+	return
+		(LevelOfDetailSettings.IsValid() && LevelOfDetailSettings->IsApplyNeeded()) ||
+		(NaniteSettings.IsValid() && NaniteSettings->IsApplyNeeded());
 }
 
 void FStaticMeshDetails::ApplyChanges()
 {
-	if( LevelOfDetailSettings.IsValid() )
+	if (LevelOfDetailSettings.IsValid())
 	{
 		LevelOfDetailSettings->ApplyChanges();
+	}
+
+	if (NaniteSettings.IsValid())
+	{
+		NaniteSettings->ApplyChanges();
 	}
 }
 
@@ -550,24 +562,9 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 		.ValueContent()
 		[
 			SNew(SCheckBox)
+			.IsEnabled(this, &FMeshBuildSettingsLayout::IsRemoveDegeneratesDisabled)
 			.IsChecked(this, &FMeshBuildSettingsLayout::ShouldRemoveDegenerates)
 			.OnCheckStateChanged(this, &FMeshBuildSettingsLayout::OnRemoveDegeneratesChanged)
-		];
-	}
-
-	{
-		ChildrenBuilder.AddCustomRow( LOCTEXT("BuildAdjacencyBuffer", "Build Adjacency Buffer") )
-		.NameContent()
-		[
-			SNew(STextBlock)
-			.Font( IDetailLayoutBuilder::GetDetailFont() )
-			.Text(LOCTEXT("BuildAdjacencyBuffer", "Build Adjacency Buffer"))
-		]
-		.ValueContent()
-		[
-			SNew(SCheckBox)
-			.IsChecked(this, &FMeshBuildSettingsLayout::ShouldBuildAdjacencyBuffer)
-			.OnCheckStateChanged(this, &FMeshBuildSettingsLayout::OnBuildAdjacencyBufferChanged)
 		];
 	}
 
@@ -616,6 +613,22 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 			SNew(SCheckBox)
 			.IsChecked(this, &FMeshBuildSettingsLayout::ShouldUseFullPrecisionUVs)
 			.OnCheckStateChanged(this, &FMeshBuildSettingsLayout::OnUseFullPrecisionUVsChanged)
+		];
+	}
+	
+	{
+		ChildrenBuilder.AddCustomRow( LOCTEXT("UseBackwardsCompatibleF16TruncUVs", "UE4 Compatible UVs") )
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font( IDetailLayoutBuilder::GetDetailFont() )
+			.Text(LOCTEXT("UseBackwardsCompatibleF16TruncUVs", "UE4 Compatible UVs"))
+		]
+		.ValueContent()
+		[
+			SNew(SCheckBox)
+			.IsChecked(this, &FMeshBuildSettingsLayout::ShouldUseBackwardsCompatibleF16TruncUVs)
+			.OnCheckStateChanged(this, &FMeshBuildSettingsLayout::OnUseBackwardsCompatibleF16TruncUVsChanged)
 		];
 	}
 
@@ -710,7 +723,6 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 			.Y(this, &FMeshBuildSettingsLayout::GetBuildScaleY)
 			.Z(this, &FMeshBuildSettingsLayout::GetBuildScaleZ)
 			.bColorAxisLabels(false)
-			.AllowResponsiveLayout(true)
 			.AllowSpin(false)
 			.OnXCommitted(this, &FMeshBuildSettingsLayout::OnBuildScaleXChanged)
 			.OnYCommitted(this, &FMeshBuildSettingsLayout::OnBuildScaleYChanged)
@@ -776,7 +788,28 @@ void FMeshBuildSettingsLayout::GenerateChildContent( IDetailChildrenBuilder& Chi
 	}
 
 	{
+		ChildrenBuilder.AddCustomRow(LOCTEXT("MaxLumenMeshCards", "Max Lumen Mesh Cards"))
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("MaxLumenMeshCards", "Max Lumen Mesh Cards"))
+			]
+		.ValueContent()
+			[
+				SNew(SSpinBox<int32>)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+			.MinValue(0)
+			.MaxValue(32)
+			.Value(this, &FMeshBuildSettingsLayout::GetMaxLumenMeshCards)
+			.OnValueChanged(this, &FMeshBuildSettingsLayout::OnMaxLumenMeshCardsChanged)
+			.OnValueCommitted(this, &FMeshBuildSettingsLayout::OnMaxLumenMeshCardsCommitted)
+			];
+	}
+
+	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("ApplyChanges", "Apply Changes") )
+		.RowTag("ApplyChanges")
 		.ValueContent()
 		.HAlign(HAlign_Left)
 		[
@@ -831,11 +864,6 @@ ECheckBoxState FMeshBuildSettingsLayout::ShouldRemoveDegenerates() const
 	return BuildSettings.bRemoveDegenerates ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
-ECheckBoxState FMeshBuildSettingsLayout::ShouldBuildAdjacencyBuffer() const
-{
-	return BuildSettings.bBuildAdjacencyBuffer ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-}
-
 ECheckBoxState FMeshBuildSettingsLayout::ShouldBuildReversedIndexBuffer() const
 {
 	return BuildSettings.bBuildReversedIndexBuffer ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -851,6 +879,11 @@ ECheckBoxState FMeshBuildSettingsLayout::ShouldUseFullPrecisionUVs() const
 	return BuildSettings.bUseFullPrecisionUVs ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
+ECheckBoxState FMeshBuildSettingsLayout::ShouldUseBackwardsCompatibleF16TruncUVs() const
+{
+	return BuildSettings.bUseBackwardsCompatibleF16TruncUVs ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
 ECheckBoxState FMeshBuildSettingsLayout::ShouldGenerateLightmapUVs() const
 {
 	return BuildSettings.bGenerateLightmapUVs ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
@@ -859,6 +892,16 @@ ECheckBoxState FMeshBuildSettingsLayout::ShouldGenerateLightmapUVs() const
 ECheckBoxState FMeshBuildSettingsLayout::ShouldGenerateDistanceFieldAsIfTwoSided() const
 {
 	return BuildSettings.bGenerateDistanceFieldAsIfTwoSided ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+bool FMeshBuildSettingsLayout::IsRemoveDegeneratesDisabled() const
+{
+	if (TSharedPtr<FLevelOfDetailSettingsLayout> LODSettingsLayout = ParentLODSettings.Pin())
+	{
+		return !LODSettingsLayout->IsNaniteEnabled();
+	}
+
+	return true;
 }
 
 int32 FMeshBuildSettingsLayout::GetMinLightmapResolution() const
@@ -894,6 +937,11 @@ TOptional<float> FMeshBuildSettingsLayout::GetBuildScaleZ() const
 float FMeshBuildSettingsLayout::GetDistanceFieldResolutionScale() const
 {
 	return BuildSettings.DistanceFieldResolutionScale;
+}
+
+int32 FMeshBuildSettingsLayout::GetMaxLumenMeshCards() const
+{
+	return BuildSettings.MaxLumenMeshCards;
 }
 
 void FMeshBuildSettingsLayout::OnRecomputeNormalsChanged(ECheckBoxState NewState)
@@ -957,33 +1005,6 @@ void FMeshBuildSettingsLayout::OnRemoveDegeneratesChanged(ECheckBoxState NewStat
 	}
 }
 
-void FMeshBuildSettingsLayout::OnBuildAdjacencyBufferChanged(ECheckBoxState NewState)
-{
-	const bool bBuildAdjacencyBuffer = (NewState == ECheckBoxState::Checked) ? true : false;
-	if (BuildSettings.bBuildAdjacencyBuffer != bBuildAdjacencyBuffer)
-	{
-		if (FEngineAnalytics::IsAvailable())
-		{
-			FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.BuildSettings"), TEXT("bBuildAdjacencyBuffer"), bBuildAdjacencyBuffer ? TEXT("True") : TEXT("False"));
-		}
-		BuildSettings.bBuildAdjacencyBuffer = bBuildAdjacencyBuffer;
-		if (!BuildSettings.bBuildAdjacencyBuffer && ParentLODSettings.IsValid())
-		{
-			if (ParentLODSettings.Pin()->PreviewLODRequiresAdjacencyInformation(LODIndex))
-			{
-				//Prompt the user
-				FText ConfirmRequiredAdjacencyText = LOCTEXT("ConfirmRequiredAdjacencyBufferRemove", "This LOD is using at least one tessellation material that required the adjacency buffer to be computed.\nAre you sure to want to remove the adjacency buffer?");
-				EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNo, ConfirmRequiredAdjacencyText);
-				if (Result == EAppReturnType::No)
-				{
-					//Put back the adjacency buffer option to true
-					BuildSettings.bBuildAdjacencyBuffer = true;
-				}
-			}
-		}
-	}
-}
-
 void FMeshBuildSettingsLayout::OnBuildReversedIndexBufferChanged(ECheckBoxState NewState)
 {
 	const bool bBuildReversedIndexBuffer = (NewState == ECheckBoxState::Checked) ? true : false;
@@ -1020,6 +1041,19 @@ void FMeshBuildSettingsLayout::OnUseFullPrecisionUVsChanged(ECheckBoxState NewSt
 			FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.BuildSettings"), TEXT("bUseFullPrecisionUVs"), bUseFullPrecisionUVs ? TEXT("True") : TEXT("False"));
 		}
 		BuildSettings.bUseFullPrecisionUVs = bUseFullPrecisionUVs;
+	}
+}
+
+void FMeshBuildSettingsLayout::OnUseBackwardsCompatibleF16TruncUVsChanged(ECheckBoxState NewState)
+{
+	const bool bUseBackwardsCompatibleF16TruncUVs = (NewState == ECheckBoxState::Checked) ? true : false;
+	if (BuildSettings.bUseBackwardsCompatibleF16TruncUVs != bUseBackwardsCompatibleF16TruncUVs)
+	{
+		if (FEngineAnalytics::IsAvailable())
+		{
+			FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.BuildSettings"), TEXT("bUseBackwardsCompatibleF16TruncUVs"), bUseBackwardsCompatibleF16TruncUVs ? TEXT("True") : TEXT("False"));
+		}
+		BuildSettings.bUseBackwardsCompatibleF16TruncUVs = bUseBackwardsCompatibleF16TruncUVs;
 	}
 }
 
@@ -1135,6 +1169,21 @@ void FMeshBuildSettingsLayout::OnDistanceFieldResolutionScaleCommitted(float New
 	OnDistanceFieldResolutionScaleChanged(NewValue);
 }
 
+void FMeshBuildSettingsLayout::OnMaxLumenMeshCardsChanged(int32 NewValue)
+{
+	BuildSettings.MaxLumenMeshCards = NewValue;
+}
+
+void FMeshBuildSettingsLayout::OnMaxLumenMeshCardsCommitted(int32 NewValue, ETextCommit::Type TextCommitType)
+{
+	if (FEngineAnalytics::IsAvailable())
+	{
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.BuildSettings"), TEXT("MaxLumenMeshCards"), FString::Printf(TEXT("%d"), NewValue));
+	}
+	OnMaxLumenMeshCardsChanged(NewValue);
+}
+
+
 FMeshReductionSettingsLayout::FMeshReductionSettingsLayout( TSharedRef<FLevelOfDetailSettingsLayout> InParentLODSettings, int32 InCurrentLODIndex, bool InCanReduceMyself)
 	: ParentLODSettings( InParentLODSettings )
 	, CurrentLODIndex(InCurrentLODIndex)
@@ -1235,6 +1284,7 @@ void FMeshReductionSettingsLayout::GenerateChildContent( IDetailChildrenBuilder&
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("PercentTriangles", "Percent Triangles") )
+		.RowTag("PercentTriangles")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -1473,6 +1523,7 @@ void FMeshReductionSettingsLayout::GenerateChildContent( IDetailChildrenBuilder&
 
 	{
 		ChildrenBuilder.AddCustomRow( LOCTEXT("ApplyChanges", "Apply Changes") )
+			.RowTag("ApplyChanges")
 			.ValueContent()
 			.HAlign(HAlign_Left)
 			[
@@ -1747,7 +1798,7 @@ void FMeshSectionSettingsLayout::AddToCategory( IDetailCategoryBuilder& Category
 	SectionListDelegates.OnPasteSectionItem.BindSP(this, &FMeshSectionSettingsLayout::OnPasteSectionItem);
 	//We need a valid name if we want the section expand state to be saved
 	FName StaticMeshSectionListName = FName(*(FString(TEXT("StaticMeshSectionListNameLOD_")) + FString::FromInt(LODIndex)));
-	CategoryBuilder.AddCustomBuilder(MakeShareable(new FSectionList(CategoryBuilder.GetParentLayout(), SectionListDelegates, true, 64, LODIndex, StaticMeshSectionListName)));
+	CategoryBuilder.AddCustomBuilder(MakeShareable(new FSectionList(CategoryBuilder.GetParentLayout(), SectionListDelegates, true, 48, LODIndex, StaticMeshSectionListName)));
 
 	StaticMeshEditor.RegisterOnSelectedLODChanged(FOnSelectedLODChanged::CreateSP(this, &FMeshSectionSettingsLayout::UpdateLODCategoryVisibility), false);
 }
@@ -1821,10 +1872,7 @@ void FMeshSectionSettingsLayout::OnPasteSectionList(int32 CurrentLODIndex)
 
 		if (RenderData != nullptr && RenderData->LODResources.IsValidIndex(CurrentLODIndex))
 		{
-			// @todo: When SectionInfoMap moves location, this will need to be fixed up.
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_STRING_CHECKED(UStaticMesh, SectionInfoMap));
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetSectionInfoMapName());
 
 			GetStaticMesh().PreEditChange(Property);
 
@@ -1925,10 +1973,7 @@ void FMeshSectionSettingsLayout::OnPasteSectionItem(int32 CurrentLODIndex, int32
 
 		if (RenderData != nullptr && RenderData->LODResources.IsValidIndex(CurrentLODIndex))
 		{
-			// @todo: When SectionInfoMap moves location, this will need to be fixed up
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_STRING_CHECKED(UStaticMesh, SectionInfoMap));
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetSectionInfoMapName());
 
 			GetStaticMesh().PreEditChange(Property);
 
@@ -2022,9 +2067,7 @@ void FMeshSectionSettingsLayout::OnSectionChanged(int32 ForLODIndex, int32 Secti
 		FStaticMeshLODResources& LOD = RenderData->LODResources[LODIndex];
 		if (LOD.Sections.IsValidIndex(SectionIndex))
 		{
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_STRING_CHECKED(UStaticMesh, SectionInfoMap));
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetSectionInfoMapName());
 
 			GetStaticMesh().PreEditChange(Property);
 
@@ -2034,14 +2077,7 @@ void FMeshSectionSettingsLayout::OnSectionChanged(int32 ForLODIndex, int32 Secti
 			int32 CancelOldValue = Info.MaterialIndex;
 			Info.MaterialIndex = NewStaticMaterialIndex;
 			StaticMesh.GetSectionInfoMap().Set(LODIndex, SectionIndex, Info);
-			bool bUserCancel = false;
-			bRefreshAll = StaticMesh.FixLODRequiresAdjacencyInformation(ForLODIndex, false, true, &bUserCancel);
-			if (bUserCancel)
-			{
-				//Revert the section info map change
-				Info.MaterialIndex = CancelOldValue;
-				StaticMesh.GetSectionInfoMap().Set(LODIndex, SectionIndex, Info);
-			}
+
 			CallPostEditChange();
 		}
 		if (bRefreshAll)
@@ -2099,7 +2135,7 @@ TSharedRef<SWidget> FMeshSectionSettingsLayout::OnGenerateCustomSectionWidgetsFo
 				.OnCheckStateChanged(this, &FMeshSectionSettingsLayout::OnSectionCastShadowChanged, SectionIndex)
 			[
 				SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("StaticMeshEditor.NormalFont"))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
 					.Text(LOCTEXT("CastShadow", "Cast Shadow"))
 			]
 		]
@@ -2114,7 +2150,7 @@ TSharedRef<SWidget> FMeshSectionSettingsLayout::OnGenerateCustomSectionWidgetsFo
 				.OnCheckStateChanged(this, &FMeshSectionSettingsLayout::OnSectionCollisionChanged, SectionIndex)
 			[
 				SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("StaticMeshEditor.NormalFont"))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
 					.Text(LOCTEXT("EnableCollision", "Enable Collision"))
 			]
 		]
@@ -2127,7 +2163,7 @@ TSharedRef<SWidget> FMeshSectionSettingsLayout::OnGenerateCustomSectionWidgetsFo
 			.OnCheckStateChanged(this, &FMeshSectionSettingsLayout::OnSectionVisibleInRayTracingChanged, SectionIndex)
 			[
 				SNew(STextBlock)
-				.Font(FEditorStyle::GetFontStyle("StaticMeshEditor.NormalFont"))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
 			.Text(LOCTEXT("VisibleInRayTracing", "Visible In Ray Tracing"))
 			]
 		]
@@ -2140,7 +2176,7 @@ TSharedRef<SWidget> FMeshSectionSettingsLayout::OnGenerateCustomSectionWidgetsFo
 			.OnCheckStateChanged(this, &FMeshSectionSettingsLayout::OnSectionForceOpaqueFlagChanged, SectionIndex)
 			[
 				SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("StaticMeshEditor.NormalFont"))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
 					.Text(LOCTEXT("ForceOpaque", "Force Opaque"))
 			]
 		];
@@ -2164,11 +2200,9 @@ void FMeshSectionSettingsLayout::OnSectionVisibleInRayTracingChanged(ECheckBoxSt
 	}
 	FScopedTransaction Transaction(TransactionTest);
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_STRING_CHECKED(UStaticMesh, SectionInfoMap));
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetSectionInfoMapName());
 
-		StaticMesh.PreEditChange(Property);
+	StaticMesh.PreEditChange(Property);
 	StaticMesh.Modify();
 
 	FMeshSectionInfo Info = StaticMesh.GetSectionInfoMap().Get(LODIndex, SectionIndex);
@@ -2195,11 +2229,9 @@ void FMeshSectionSettingsLayout::OnSectionForceOpaqueFlagChanged( ECheckBoxState
 	}
 	FScopedTransaction Transaction(TransactionTest);
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_STRING_CHECKED(UStaticMesh, SectionInfoMap));
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetSectionInfoMapName());
 
-		StaticMesh.PreEditChange(Property);
+	StaticMesh.PreEditChange(Property);
 	StaticMesh.Modify();
 
 	FMeshSectionInfo Info = StaticMesh.GetSectionInfoMap().Get(LODIndex, SectionIndex);
@@ -2226,9 +2258,7 @@ void FMeshSectionSettingsLayout::OnSectionCastShadowChanged(ECheckBoxState NewSt
 	}
 	FScopedTransaction Transaction(TransactionTest);
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_STRING_CHECKED(UStaticMesh, SectionInfoMap));
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetSectionInfoMapName());
 
 	StaticMesh.PreEditChange(Property);
 	StaticMesh.Modify();
@@ -2280,9 +2310,7 @@ void FMeshSectionSettingsLayout::OnSectionCollisionChanged(ECheckBoxState NewSta
 	}
 	FScopedTransaction Transaction(TransactionTest);
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_STRING_CHECKED(UStaticMesh, SectionInfoMap));
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetSectionInfoMapName());
 
 	StaticMesh.PreEditChange(Property);
 	StaticMesh.Modify();
@@ -2455,6 +2483,7 @@ UStaticMesh& FMeshMaterialsLayout::GetStaticMesh() const
 void FMeshMaterialsLayout::AddToCategory(IDetailCategoryBuilder& CategoryBuilder, const TArray<FAssetData>& AssetDataArray)
 {
 	CategoryBuilder.AddCustomRow(LOCTEXT("AddLODLevelCategories_MaterialArrayOperationAdd", "Add Material Slot"))
+		.RowTag("MaterialSlots")
 		.CopyAction(FUIAction(FExecuteAction::CreateSP(this, &FMeshMaterialsLayout::OnCopyMaterialList), FCanExecuteAction::CreateSP(this, &FMeshMaterialsLayout::OnCanCopyMaterialList)))
 		.PasteAction(FUIAction(FExecuteAction::CreateSP(this, &FMeshMaterialsLayout::OnPasteMaterialList)))
 		.NameContent()
@@ -2499,7 +2528,7 @@ void FMeshMaterialsLayout::AddToCategory(IDetailCategoryBuilder& CategoryBuilder
 					.IsFocusable(false)
 					[
 						SNew(SImage)
-						.Image(FEditorStyle::GetBrush("PropertyWindow.Button_AddToArray"))
+						.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
 						.ColorAndOpacity(FSlateColor::UseForeground())
 					]
 				]
@@ -2518,14 +2547,12 @@ void FMeshMaterialsLayout::AddToCategory(IDetailCategoryBuilder& CategoryBuilder
 	MaterialListDelegates.OnCanCopyMaterialItem.BindSP(this, &FMeshMaterialsLayout::OnCanCopyMaterialItem);
 	MaterialListDelegates.OnPasteMaterialItem.BindSP(this, &FMeshMaterialsLayout::OnPasteMaterialItem);
 
-	CategoryBuilder.AddCustomBuilder(MakeShareable(new FMaterialList(CategoryBuilder.GetParentLayout(), MaterialListDelegates, AssetDataArray, false, true, true)));
+	CategoryBuilder.AddCustomBuilder(MakeShareable(new FMaterialList(CategoryBuilder.GetParentLayout(), MaterialListDelegates, AssetDataArray, false, true)));
 }
 
 void FMeshMaterialsLayout::OnCopyMaterialList()
 {
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_STRING_CHECKED(UStaticMesh, StaticMaterials));
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetStaticMaterialsName());
 	check(Property != nullptr);
 
 	auto JsonValue = FJsonObjectConverter::UPropertyToJsonValue(Property, &GetStaticMesh().GetStaticMaterials(), 0, 0);
@@ -2559,9 +2586,7 @@ void FMeshMaterialsLayout::OnPasteMaterialList()
 
 	if (RootJsonValue.IsValid())
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_STRING_CHECKED(UStaticMesh, StaticMaterials));
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetStaticMaterialsName());
 		check(Property != nullptr);
 
 		GetStaticMesh().PreEditChange(Property);
@@ -2623,9 +2648,7 @@ void FMeshMaterialsLayout::OnPasteMaterialItem(int32 CurrentSlot)
 
 	if (RootJsonObject.IsValid())
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_STRING_CHECKED(UStaticMesh, StaticMaterials));
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		FProperty* Property = UStaticMesh::StaticClass()->FindPropertyByName(UStaticMesh::GetStaticMaterialsName());
 		check(Property != nullptr);
 
 		GetStaticMesh().PreEditChange(Property);
@@ -2717,7 +2740,7 @@ TSharedRef<SWidget> FMeshMaterialsLayout::OnGenerateWidgetsForMaterial(UMaterial
 				.OnCheckStateChanged(this, &FMeshMaterialsLayout::OnOverrideUVDensityChanged, SlotIndex)
 			[
 				SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("StaticMeshEditor.NormalFont"))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
 					.Text(LOCTEXT("OverrideUVDensity", "Override UV Density"))
 			]
 		]
@@ -3239,6 +3262,7 @@ void FLevelOfDetailSettingsLayout::AddToDetailsPanel( IDetailLayoutBuilder& Deta
 		.Text(LOCTEXT("LODGroup", "LOD Group"))
 	]
 	.ValueContent()
+	.VAlign(VAlign_Center)
 	[
 		SAssignNew(LODGroupComboBox, STextComboBox)
 		.Font(IDetailLayoutBuilder::GetDetailFont())
@@ -3248,71 +3272,124 @@ void FLevelOfDetailSettingsLayout::AddToDetailsPanel( IDetailLayoutBuilder& Deta
 	];
 	
 	LODSettingsCategory.AddCustomRow( LOCTEXT("LODImport", "LOD Import") )
-		.NameContent()
-		[
-			SNew(STextBlock)
-			.Font( IDetailLayoutBuilder::GetDetailFont() )
-			.Text(LOCTEXT("LODImport", "LOD Import"))
-		]
-	.ValueContent()
-		[
-			SNew(STextComboBox)
-			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.OptionsSource(&LODNames)
-			.InitiallySelectedItem(LODNames[0])
-			.OnSelectionChanged(this, &FLevelOfDetailSettingsLayout::OnImportLOD)
-		];
-
-	int32 PlatformNumber = PlatformInfo::GetAllPlatformGroupNames().Num();
-
-	LODSettingsCategory.AddCustomRow( LOCTEXT("MinLOD", "Minimum LOD") )
-	.NameContent()
-	[
-		SNew(STextBlock)
-		.Font( IDetailLayoutBuilder::GetDetailFont() )
-		.Text(LOCTEXT("MinLOD", "Minimum LOD"))
-	]
-	.ValueContent()
-	.MinDesiredWidth((float)(StaticMesh->GetMinLOD().PerPlatform.Num() + 1)*125.0f)
-	.MaxDesiredWidth((float)(PlatformNumber + 1)*125.0f)
-	[
-		SNew(SPerPlatformPropertiesWidget)
-		.IsEnabled(FLevelOfDetailSettingsLayout::GetLODCount() > 1)
-		.OnGenerateWidget(this, &FLevelOfDetailSettingsLayout::GetMinLODWidget)
-		.OnAddPlatform(this, &FLevelOfDetailSettingsLayout::AddMinLODPlatformOverride)
-		.OnRemovePlatform(this, &FLevelOfDetailSettingsLayout::RemoveMinLODPlatformOverride)
-		.PlatformOverrideNames(this, &FLevelOfDetailSettingsLayout::GetMinLODPlatformOverrideNames)
-	];
-
-	LODSettingsCategory.AddCustomRow(LOCTEXT("NumStreamedLODs", "Num Streamed LODs"))
+	.RowTag("LODImport")
 	.NameContent()
 	[
 		SNew(STextBlock)
 		.Font(IDetailLayoutBuilder::GetDetailFont())
-		.Text(LOCTEXT("NumStreamdLODs", "Num Streamed LODs"))
+		.Text(LOCTEXT("LODImport", "LOD Import"))
 	]
 	.ValueContent()
-	.MinDesiredWidth((float)(StaticMesh->NumStreamedLODs.PerPlatform.Num() + 1)*125.0f)
-	.MaxDesiredWidth((float)(PlatformNumber + 1)*125.0f)
+	.VAlign(VAlign_Center)
 	[
-		SNew(SPerPlatformPropertiesWidget)
-		.IsEnabled(FLevelOfDetailSettingsLayout::GetLODCount() > 1)
-		.OnGenerateWidget(this, &FLevelOfDetailSettingsLayout::GetNumStreamedLODsWidget)
-		.OnAddPlatform(this, &FLevelOfDetailSettingsLayout::AddNumStreamedLODsPlatformOverride)
-		.OnRemovePlatform(this, &FLevelOfDetailSettingsLayout::RemoveNumStreamedLODsPlatformOverride)
-		.PlatformOverrideNames(this, &FLevelOfDetailSettingsLayout::GetNumStreamedLODsPlatformOverrideNames)
+		SNew(STextComboBox)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		.OptionsSource(&LODNames)
+		.InitiallySelectedItem(LODNames[0])
+		.OnSelectionChanged(this, &FLevelOfDetailSettingsLayout::OnImportLOD)
 	];
+
+	TAttribute<bool> IsMinLODEnabled = TAttribute<bool>::CreateLambda([this]() { return FLevelOfDetailSettingsLayout::GetLODCount() > 1 && !GEngine->UseStaticMeshMinLODPerQualityLevels; });
+
+	{
+		TAttribute<TArray<FName>> PlatformOverrideNames = TAttribute<TArray<FName>>::CreateSP(this, &FLevelOfDetailSettingsLayout::GetMinLODPlatformOverrideNames);
+
+		FPerPlatformPropertyCustomNodeBuilderArgs Args;
+		Args.FilterText = LOCTEXT("MinLOD", "Minimum LOD");
+		Args.Name = "MinLod";
+		Args.OnGenerateNameWidget = FOnGetContent::CreateLambda([]()
+			{
+				return SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text(LOCTEXT("MinLOD", "Minimum LOD"));
+			}
+		);
+
+		Args.PlatformOverrideNames = PlatformOverrideNames;
+		Args.OnAddPlatformOverride = FOnPlatformOverrideAction::CreateSP(this, &FLevelOfDetailSettingsLayout::AddMinLODPlatformOverride);
+		Args.OnRemovePlatformOverride = FOnPlatformOverrideAction::CreateSP(this, &FLevelOfDetailSettingsLayout::RemoveMinLODPlatformOverride);
+		Args.OnGenerateWidgetForPlatformRow = FOnGenerateWidget::CreateSP(this, &FLevelOfDetailSettingsLayout::GetMinLODWidget);
+		Args.IsEnabled = IsMinLODEnabled;
+
+		LODSettingsCategory.AddCustomBuilder(MakeShared<FPerPlatformPropertyCustomNodeBuilder>(MoveTemp(Args)));
+	}
+
+	TAttribute<bool> IsQualityLevelLODEnabled = TAttribute<bool>::CreateLambda([this]() { return FLevelOfDetailSettingsLayout::GetLODCount() > 1 && GEngine->UseStaticMeshMinLODPerQualityLevels; });
+
+	LODSettingsCategory.AddCustomRow(LOCTEXT("QualityLevelMinLOD", "Quality Level Min LOD"))
+	.Visibility(GEngine->UseStaticMeshMinLODPerQualityLevels ? EVisibility::Visible : EVisibility::Collapsed)
+	.RowTag("QualityLevelMinLOD")
+	.IsEnabled(IsQualityLevelLODEnabled)
+	.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("QualityLevelMinLOD", "Quality Level Min LOD"))
+		]
+		.ValueContent()
+		.MinDesiredWidth((float)(StaticMesh->GetQualityLevelMinLOD().PerQuality.Num() + 1)*125.0f)
+		.MaxDesiredWidth((float)((int32)QualityLevelProperty::EQualityLevels::Num + 1)*125.0f)
+		[
+			SNew(SPerQualityLevelPropertiesWidget)
+			.OnGenerateWidget(this, &FLevelOfDetailSettingsLayout::GetMinQualityLevelLODWidget)
+			.OnAddEntry(this, &FLevelOfDetailSettingsLayout::AddMinLODQualityLevelOverride)
+			.OnRemoveEntry(this, &FLevelOfDetailSettingsLayout::RemoveMinLODQualityLevelOverride)
+			.EntryNames(this, &FLevelOfDetailSettingsLayout::GetMinQualityLevelLODOverrideNames)
+		];
+
+	LODSettingsCategory.AddCustomRow(LOCTEXT("NoRefStreamingLODBias", "NoRef Streaming LOD Bias"))
+	.RowTag("NoRefStreamingLODBias")
+	.IsEnabled(TAttribute<bool>::CreateLambda([this]() { return GetLODCount() > 1; }))
+	.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("NoRefStreamingLODBias", "NoRef Streaming LOD Bias"))
+		]
+	.ValueContent()
+		.MinDesiredWidth(float(StaticMesh->GetNoRefStreamingLODBias().PerQuality.Num() + 1) * 125.f)
+		.MaxDesiredWidth(float((int32)QualityLevelProperty::EQualityLevels::Num + 1) * 125.f)
+		[
+			SNew(SPerQualityLevelPropertiesWidget)
+			.OnGenerateWidget(this, &FLevelOfDetailSettingsLayout::GetNoRefStreamingLODBiasWidget)
+			.OnAddEntry(this, &FLevelOfDetailSettingsLayout::AddNoRefStreamingLODBiasOverride)
+			.OnRemoveEntry(this, &FLevelOfDetailSettingsLayout::RemoveNoRefStreamingLODBiasOverride)
+			.EntryNames(this, &FLevelOfDetailSettingsLayout::GetNoRefStreamingLODBiasOverrideNames)
+		];
+
+	{
+		TAttribute<TArray<FName>> PlatformOverrideNames = TAttribute<TArray<FName>>::CreateSP(this, &FLevelOfDetailSettingsLayout::GetNumStreamedLODsPlatformOverrideNames);
+
+		FPerPlatformPropertyCustomNodeBuilderArgs Args;
+		Args.FilterText = LOCTEXT("NumStreamdLODs", "Num Streamed LODs");
+		Args.OnGenerateNameWidget = FOnGetContent::CreateLambda([]()
+			{
+				return SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text(LOCTEXT("NumStreamdLODs", "Num Streamed LODs"));
+			}
+		);
+
+		Args.PlatformOverrideNames = PlatformOverrideNames;
+		Args.OnAddPlatformOverride = FOnPlatformOverrideAction::CreateSP(this, &FLevelOfDetailSettingsLayout::AddNumStreamedLODsPlatformOverride);
+		Args.OnRemovePlatformOverride = FOnPlatformOverrideAction::CreateSP(this, &FLevelOfDetailSettingsLayout::RemoveNumStreamedLODsPlatformOverride);
+		Args.OnGenerateWidgetForPlatformRow = FOnGenerateWidget::CreateSP(this, &FLevelOfDetailSettingsLayout::GetNumStreamedLODsWidget);
+		Args.IsEnabled = TAttribute<bool>::CreateLambda([this]() { return GetLODCount() > 1; });
+
+		LODSettingsCategory.AddCustomBuilder(MakeShared<FPerPlatformPropertyCustomNodeBuilder>(MoveTemp(Args)));
+	}
 
 	// Add Number of LODs slider.
 	const int32 MinAllowedLOD = 1;
 	LODSettingsCategory.AddCustomRow( LOCTEXT("NumberOfLODs", "Number of LODs") )
+	.RowTag("NumberOfLODs")
 	.NameContent()
 	[
 		SNew(STextBlock)
 		.Font( IDetailLayoutBuilder::GetDetailFont() )
 		.Text(LOCTEXT("NumberOfLODs", "Number of LODs"))
 	]
-	.ValueContent()
+	.ValueContent().VAlign(VAlign_Center)
 	[
 		SNew(SSpinBox<int32>)
 		.Font( IDetailLayoutBuilder::GetDetailFont() )
@@ -3327,6 +3404,7 @@ void FLevelOfDetailSettingsLayout::AddToDetailsPanel( IDetailLayoutBuilder& Deta
 
 	// Auto LOD distance check box.
 	LODSettingsCategory.AddCustomRow( LOCTEXT("AutoComputeLOD", "Auto Compute LOD Distances") )
+	.RowTag("AutoComputeLOD")
 	.NameContent()
 	[
 		SNew(STextBlock)
@@ -3341,12 +3419,16 @@ void FLevelOfDetailSettingsLayout::AddToDetailsPanel( IDetailLayoutBuilder& Deta
 	];
 
 	LODSettingsCategory.AddCustomRow( LOCTEXT("ApplyChanges", "Apply Changes") )
+	.RowTag("ApplyChanges")
 	.ValueContent()
 	.HAlign(HAlign_Left)
+	.VAlign(VAlign_Center)
 	[
 		SNew(SButton)
 		.OnClicked(this, &FLevelOfDetailSettingsLayout::OnApply)
 		.IsEnabled(this, &FLevelOfDetailSettingsLayout::IsApplyNeeded)
+		.VAlign(VAlign_Center)
+		.HAlign(HAlign_Center)
 		[
 			SNew( STextBlock )
 			.Text(LOCTEXT("ApplyChanges", "Apply Changes"))
@@ -3409,13 +3491,13 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 	if( StaticMesh )
 	{
 		const int32 StaticMeshLODCount = StaticMesh->GetNumLODs();
-		FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData();
 
 		//Add the Materials array
 		{
 			FString CategoryName = FString(TEXT("StaticMeshMaterials"));
 
 			IDetailCategoryBuilder& MaterialsCategory = DetailBuilder.EditCategory(*CategoryName, LOCTEXT("StaticMeshMaterialsLabel", "Material Slots"), ECategoryPriority::Important);
+			MaterialsCategory.SetSortOrder(0);
 			MaterialsLayoutWidget = MakeShareable(new FMeshMaterialsLayout(StaticMeshEditor));
 			TArray<FAssetData> AssetDataArray;
 			AssetDataArray.Add(FAssetData(StaticMesh, false));
@@ -3437,6 +3519,7 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 		LodCustomCategory = &LODCustomModeCategory;
 
 		LODCustomModeCategory.AddCustomRow((LOCTEXT("LODCustomModeSelect", "Select LOD")))
+		.RowTag("SelectLOD")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -3445,11 +3528,13 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 			.IsEnabled(this, &FLevelOfDetailSettingsLayout::IsLodComboBoxEnabledForLodPicker)
 		]
 		.ValueContent()
+		.VAlign(VAlign_Center)
 		[
 			OnGenerateLodComboBoxForLodPicker()
 		];
 
 		LODCustomModeCategory.AddCustomRow((LOCTEXT("LODCustomModeFirstRowName", "LODCustomMode")))
+		.RowTag("LODCustomMode")
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -3471,6 +3556,7 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 			bool IsViewportLOD = (CurrentLodIndex == 0 ? 0 : CurrentLodIndex - 1) == LODIndex;
 			DetailDisplayLODs[LODIndex] = true; //enable all LOD in custom mode
 			LODCustomModeCategory.AddCustomRow((LOCTEXT("LODCustomModeRowName", "LODCheckBoxRowName")), true)
+			.RowTag("LODCheckBoxRowName")
 			.NameContent()
 			[
 				SNew(STextBlock)
@@ -3560,7 +3646,7 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 						.AutoWidth()
 						[
 							SNew(STextBlock)
-							.Font(FEditorStyle::GetFontStyle("StaticMeshEditor.NormalFont"))
+							.Font(IDetailLayoutBuilder::GetDetailFont())
 							.Text(this, &FLevelOfDetailSettingsLayout::GetLODScreenSizeTitle, LODIndex)
 							.Visibility( LODIndex > 0 ? EVisibility::Visible : EVisibility::Collapsed )
 						]
@@ -3569,7 +3655,7 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 						.AutoWidth()
 						[
 							SNew(STextBlock)
-							.Font(FEditorStyle::GetFontStyle("StaticMeshEditor.NormalFont"))
+							.Font(IDetailLayoutBuilder::GetDetailFont())
 							.Text( FText::Format( LOCTEXT("Triangles_MeshSimplification", "Triangles: {0}"), FText::AsNumber( StaticMeshEditor.GetNumTriangles(LODIndex) ) ) )
 						]
 						+ SHorizontalBox::Slot()
@@ -3577,7 +3663,7 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 						.AutoWidth()
 						[
 							SNew(STextBlock)
-							.Font(FEditorStyle::GetFontStyle("StaticMeshEditor.NormalFont"))
+							.Font(IDetailLayoutBuilder::GetDetailFont())
 							.Text( FText::Format( LOCTEXT("Vertices_MeshSimplification", "Vertices: {0}"), FText::AsNumber( StaticMeshEditor.GetNumVertices(LODIndex) ) ) )
 						]
 					]
@@ -3589,24 +3675,28 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 
 			int32 PlatformNumber = PlatformInfo::GetAllPlatformGroupNames().Num();
 
-			LODCategory.AddCustomRow(( LOCTEXT("ScreenSizeRow", "ScreenSize")))
-			.NameContent()
-			[
-				SNew(STextBlock)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.Text(LOCTEXT("ScreenSizeName", "Screen Size"))
-			]
-			.ValueContent()
-			.MinDesiredWidth(GetScreenSizeWidgetWidth(LODIndex))
-			.MaxDesiredWidth((float)(PlatformNumber + 1)*125.0f)
-			[
-				SNew(SPerPlatformPropertiesWidget)
-				.IsEnabled(this, &FLevelOfDetailSettingsLayout::CanChangeLODScreenSize)
-				.OnGenerateWidget(this, &FLevelOfDetailSettingsLayout::GetLODScreenSizeWidget, LODIndex)
-				.OnAddPlatform(this, &FLevelOfDetailSettingsLayout::AddLODScreenSizePlatformOverride, LODIndex)
-				.OnRemovePlatform(this, &FLevelOfDetailSettingsLayout::RemoveLODScreenSizePlatformOverride, LODIndex)
-				.PlatformOverrideNames(this, &FLevelOfDetailSettingsLayout::GetLODScreenSizePlatformOverrideNames, LODIndex)
-			];
+			TAttribute<TArray<FName>> PlatformOverrideNames = TAttribute<TArray<FName>>::Create(TAttribute<TArray<FName>>::FGetter::CreateSP(this, &FLevelOfDetailSettingsLayout::GetLODScreenSizePlatformOverrideNames, LODIndex));
+
+			FPerPlatformPropertyCustomNodeBuilderArgs Args;
+			Args.FilterText = LOCTEXT("ScreenSizeName", "Screen Size");
+
+			TAttribute<bool> IsScreenSizeEnabled = TAttribute<bool>::CreateSP(this, &FLevelOfDetailSettingsLayout::CanChangeLODScreenSize);
+
+			Args.OnGenerateNameWidget = FOnGetContent::CreateLambda([IsScreenSizeEnabled]()
+				{
+					return SNew(STextBlock)
+						.IsEnabled(IsScreenSizeEnabled)
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+						.Text(LOCTEXT("ScreenSizeName", "Screen Size"));
+				});
+
+			Args.PlatformOverrideNames = PlatformOverrideNames;
+			Args.OnAddPlatformOverride = FOnPlatformOverrideAction::CreateSP(this, &FLevelOfDetailSettingsLayout::AddLODScreenSizePlatformOverride, LODIndex);
+			Args.OnRemovePlatformOverride = FOnPlatformOverrideAction::CreateSP(this, &FLevelOfDetailSettingsLayout::RemoveLODScreenSizePlatformOverride, LODIndex);
+			Args.OnGenerateWidgetForPlatformRow = FOnGenerateWidget::CreateSP(this, &FLevelOfDetailSettingsLayout::GetLODScreenSizeWidget, LODIndex);
+			Args.IsEnabled = IsScreenSizeEnabled;
+
+			LODCategory.AddCustomBuilder(MakeShared<FPerPlatformPropertyCustomNodeBuilder>(MoveTemp(Args)));
 
 			if(LODIndex > 0 && StaticMesh->IsMeshDescriptionValid(LODIndex))
 			{
@@ -3619,6 +3709,7 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 					.Text(LOCTEXT("SourceImportFilenameName", "Source Import Filename"))
 				]
 				.ValueContent()
+					.VAlign(VAlign_Center)
 					.MinDesiredWidth(125.0f)
 					.MaxDesiredWidth(0.0f)
 				[
@@ -3650,10 +3741,12 @@ void FLevelOfDetailSettingsLayout::AddLODLevelCategories( IDetailLayoutBuilder& 
 				.ValueContent()
 				.HAlign(HAlign_Left)
 				[
-					SNew(SButton)
+ 					SNew(SButton)
 					.OnClicked(this, &FLevelOfDetailSettingsLayout::OnRemoveLOD, LODIndex)
 					.IsEnabled(this, &FLevelOfDetailSettingsLayout::CanRemoveLOD, LODIndex)
 					.ToolTipText( LOCTEXT("RemoveLOD_ToolTip", "Removes this LOD from the Static Mesh") )
+					.VAlign(VAlign_Center)
+					.HAlign(HAlign_Center)
 					[
 						SNew(STextBlock)
 						.Text( LOCTEXT("RemoveLOD", "Remove LOD") )
@@ -3757,7 +3850,7 @@ float FLevelOfDetailSettingsLayout::GetLODScreenSize(FName PlatformGroupName, in
 		}
 	}
 
-	if(Mesh->bAutoComputeLODScreenSize)
+	if(Mesh->bAutoComputeLODScreenSize && Mesh->GetRenderData())
 	{
 		ScreenSize = Mesh->GetRenderData()->ScreenSize[LODIndex].Default;
 	}
@@ -4148,13 +4241,6 @@ void FLevelOfDetailSettingsLayout::ApplyChanges()
 	StaticMeshEditor.RefreshTool();
 }
 
-bool FLevelOfDetailSettingsLayout::PreviewLODRequiresAdjacencyInformation(int32 LODIndex)
-{
-	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
-	check(StaticMesh);
-	return StaticMesh->FixLODRequiresAdjacencyInformation(LODIndex, true, false, nullptr);
-}
-
 FReply FLevelOfDetailSettingsLayout::OnApply()
 {
 	ApplyChanges();
@@ -4285,6 +4371,227 @@ TArray<FName> FLevelOfDetailSettingsLayout::GetMinLODPlatformOverrideNames() con
 	StaticMesh->GetMinLOD().PerPlatform.GenerateKeyArray(KeyArray);
 	KeyArray.Sort(FNameLexicalLess());
 	return KeyArray;
+}
+
+int32 FLevelOfDetailSettingsLayout::GetMinQualityLevelLOD(FName QualityLevel) const
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+
+	int32 QLKey = QualityLevelProperty::FNameToQualityLevel(QualityLevel);
+	const int32* ValuePtr = (QualityLevel == NAME_None) ? nullptr : StaticMesh->GetQualityLevelMinLOD().PerQuality.Find(QLKey);
+	return (ValuePtr != nullptr) ? *ValuePtr : StaticMesh->GetQualityLevelMinLOD().Default;
+}
+
+void FLevelOfDetailSettingsLayout::OnMinQualityLevelLODChanged(int32 NewValue, FName QualityLevel)
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+
+	{
+		FStaticMeshComponentRecreateRenderStateContext ReregisterContext(StaticMesh, false);
+		NewValue = FMath::Clamp<int32>(NewValue, 0, MAX_STATIC_MESH_LODS - 1);
+		FPerQualityLevelInt MinLOD = StaticMesh->GetQualityLevelMinLOD();
+		int32 QLKey = QualityLevelProperty::FNameToQualityLevel(QualityLevel);
+		if (QualityLevel == NAME_None || QLKey == INDEX_NONE)
+		{
+			MinLOD.Default = NewValue;
+		}
+		else
+		{
+			int32* ValuePtr = MinLOD.PerQuality.Find(QLKey);
+			if (ValuePtr != nullptr)
+			{
+				*ValuePtr = NewValue;
+			}
+		}
+		StaticMesh->SetQualityLevelMinLOD(MoveTemp(MinLOD));
+		StaticMesh->Modify();
+	}
+	StaticMeshEditor.RefreshViewport();
+}
+
+void FLevelOfDetailSettingsLayout::OnMinQualityLevelLODCommitted(int32 InValue, ETextCommit::Type CommitInfo, FName QualityLevel)
+{
+	OnMinQualityLevelLODChanged(InValue, QualityLevel);
+}
+
+TSharedRef<SWidget> FLevelOfDetailSettingsLayout::GetMinQualityLevelLODWidget(FName QualityLevelName) const
+{
+	return SNew(SSpinBox<int32>)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		.Value(this, &FLevelOfDetailSettingsLayout::GetMinQualityLevelLOD, QualityLevelName)
+		.OnValueChanged(const_cast<FLevelOfDetailSettingsLayout*>(this), &FLevelOfDetailSettingsLayout::OnMinQualityLevelLODChanged, QualityLevelName)
+		.OnValueCommitted(const_cast<FLevelOfDetailSettingsLayout*>(this), &FLevelOfDetailSettingsLayout::OnMinQualityLevelLODCommitted, QualityLevelName)
+		.MinValue(0)
+		.MaxValue(MAX_STATIC_MESH_LODS)
+		.ToolTipText(this, &FLevelOfDetailSettingsLayout::GetMinLODTooltip)
+		.IsEnabled(FLevelOfDetailSettingsLayout::GetLODCount() > 1);
+}
+
+bool FLevelOfDetailSettingsLayout::AddMinLODQualityLevelOverride(FName QualityLevelName)
+{
+	FScopedTransaction Transaction(LOCTEXT("AddMinLODQualityLevelOverride", "Add Min LOD Quality Level Override"));
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+	StaticMesh->Modify();
+	int32 QLKey = QualityLevelProperty::FNameToQualityLevel(QualityLevelName);
+	if (StaticMesh->GetQualityLevelMinLOD().PerQuality.Find(QLKey) == nullptr)
+	{
+		FPerQualityLevelInt MinLOD = StaticMesh->GetQualityLevelMinLOD();
+		float Value = MinLOD.Default;
+		MinLOD.PerQuality.Add(QLKey, Value);
+		StaticMesh->SetQualityLevelMinLOD(MoveTemp(MinLOD));
+		OnMinQualityLevelLODChanged(Value, QualityLevelName);
+		return true;
+	}
+	return false;
+}
+
+bool FLevelOfDetailSettingsLayout::RemoveMinLODQualityLevelOverride(FName QualityLevelName)
+{
+	FScopedTransaction Transaction(LOCTEXT("RemoveMinLODQualityLevelOverride", "Remove Min LOD Quality Level Override"));
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+	StaticMesh->Modify();
+
+	FPerQualityLevelInt MinLOD = StaticMesh->GetQualityLevelMinLOD();
+	int32 QL = QualityLevelProperty::FNameToQualityLevel(QualityLevelName);
+	if (QL != INDEX_NONE && MinLOD.PerQuality.Remove(QL) != 0)
+	{
+		float Value = MinLOD.Default;
+		StaticMesh->SetQualityLevelMinLOD(MoveTemp(MinLOD));
+		OnMinQualityLevelLODChanged(Value, QualityLevelName);
+		return true;
+	}
+	return false;
+}
+
+TArray<FName> FLevelOfDetailSettingsLayout::GetMinQualityLevelLODOverrideNames() const
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+
+	TArray<FName> OverrideNames;
+	for (const TPair<int32, int32>& Pair : StaticMesh->GetQualityLevelMinLOD().PerQuality)
+	{
+		OverrideNames.Add(QualityLevelProperty::QualityLevelToFName(Pair.Key));
+	}
+	OverrideNames.Sort(FNameLexicalLess());
+	return OverrideNames;
+}
+
+void FLevelOfDetailSettingsLayout::OnNoRefStreamingLODBiasChanged(int32 NewValue, FName QualityLevel)
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+
+	{
+		FStaticMeshComponentRecreateRenderStateContext ReregisterContext(StaticMesh, false);
+		NewValue = FMath::Clamp<int32>(NewValue, -1, MAX_STATIC_MESH_LODS - 1);
+		FPerQualityLevelInt NoRefStreamingLODBias = StaticMesh->GetNoRefStreamingLODBias();
+		int32 QLKey = QualityLevelProperty::FNameToQualityLevel(QualityLevel);
+		if (QualityLevel == NAME_None || QLKey == INDEX_NONE)
+		{
+			NoRefStreamingLODBias.Default = NewValue;
+		}
+		else
+		{
+			int32* ValuePtr = NoRefStreamingLODBias.PerQuality.Find(QLKey);
+			if (ValuePtr != nullptr)
+			{
+				*ValuePtr = NewValue;
+			}
+		}
+		StaticMesh->SetNoRefStreamingLODBias(MoveTemp(NoRefStreamingLODBias));
+		StaticMesh->Modify();
+	}
+	StaticMeshEditor.RefreshViewport();
+}
+
+void FLevelOfDetailSettingsLayout::OnNoRefStreamingLODBiasCommitted(int32 InValue, ETextCommit::Type CommitInfo, FName QualityLevel)
+{
+	OnNoRefStreamingLODBiasChanged(InValue, QualityLevel);
+}
+
+int32 FLevelOfDetailSettingsLayout::GetNoRefStreamingLODBias(FName QualityLevel) const
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+
+	int32 QLKey = QualityLevelProperty::FNameToQualityLevel(QualityLevel);
+	const int32* ValuePtr = (QualityLevel == NAME_None) ? nullptr : StaticMesh->GetNoRefStreamingLODBias().PerQuality.Find(QLKey);
+	return (ValuePtr != nullptr) ? *ValuePtr : StaticMesh->GetNoRefStreamingLODBias().Default;
+}
+
+TSharedRef<SWidget> FLevelOfDetailSettingsLayout::GetNoRefStreamingLODBiasWidget(FName QualityLevelName) const
+{
+	return SNew(SSpinBox<int32>)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		.Value(this, &FLevelOfDetailSettingsLayout::GetNoRefStreamingLODBias, QualityLevelName)
+		.OnValueChanged(const_cast<FLevelOfDetailSettingsLayout*>(this), &FLevelOfDetailSettingsLayout::OnNoRefStreamingLODBiasChanged, QualityLevelName)
+		.OnValueCommitted(const_cast<FLevelOfDetailSettingsLayout*>(this), &FLevelOfDetailSettingsLayout::OnNoRefStreamingLODBiasCommitted, QualityLevelName)
+		.MinValue(-1)
+		.MaxValue(MAX_STATIC_MESH_LODS - 1)
+		.ToolTipText(this, &FLevelOfDetailSettingsLayout::GetNoRefStreamingLODBiasTooltip)
+		.IsEnabled(FLevelOfDetailSettingsLayout::GetLODCount() > 1);
+}
+
+bool FLevelOfDetailSettingsLayout::AddNoRefStreamingLODBiasOverride(FName QualityLevelName)
+{
+	FScopedTransaction Transaction(LOCTEXT("AddNoRefStreamingLODBiasOverride", "Add NoRef Streaming LOD Bias Override"));
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+	StaticMesh->Modify();
+	int32 QLKey = QualityLevelProperty::FNameToQualityLevel(QualityLevelName);
+	if (StaticMesh->GetNoRefStreamingLODBias().PerQuality.Find(QLKey) == nullptr)
+	{
+		FPerQualityLevelInt NoRefStreamingLODBias = StaticMesh->GetNoRefStreamingLODBias();
+		int32 Value = NoRefStreamingLODBias.Default;
+		NoRefStreamingLODBias.PerQuality.Add(QLKey, Value);
+		StaticMesh->SetNoRefStreamingLODBias(MoveTemp(NoRefStreamingLODBias));
+		OnNoRefStreamingLODBiasChanged(Value, QualityLevelName);
+		return true;
+	}
+	return false;
+}
+
+bool FLevelOfDetailSettingsLayout::RemoveNoRefStreamingLODBiasOverride(FName QualityLevelName)
+{
+	FScopedTransaction Transaction(LOCTEXT("RemoveNoRefStreamingLODBiasOverride", "Remove NoRef Streaming LOD Bias Override"));
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+	StaticMesh->Modify();
+
+	FPerQualityLevelInt NoRefStreamingLODBias = StaticMesh->GetNoRefStreamingLODBias();
+	int32 QL = QualityLevelProperty::FNameToQualityLevel(QualityLevelName);
+	if (QL != INDEX_NONE && NoRefStreamingLODBias.PerQuality.Remove(QL) != 0)
+	{
+		int32 Value = NoRefStreamingLODBias.Default;
+		StaticMesh->SetNoRefStreamingLODBias(MoveTemp(NoRefStreamingLODBias));
+		OnNoRefStreamingLODBiasChanged(Value, QualityLevelName);
+		return true;
+	}
+	return false;
+}
+
+TArray<FName> FLevelOfDetailSettingsLayout::GetNoRefStreamingLODBiasOverrideNames() const
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+
+	TArray<FName> OverrideNames;
+	for (const TPair<int32, int32>& Pair : StaticMesh->GetNoRefStreamingLODBias().PerQuality)
+	{
+		OverrideNames.Add(QualityLevelProperty::QualityLevelToFName(Pair.Key));
+	}
+	OverrideNames.Sort(FNameLexicalLess());
+	return OverrideNames;
+}
+
+FText FLevelOfDetailSettingsLayout::GetNoRefStreamingLODBiasTooltip() const
+{
+	return LOCTEXT("NoRefStreamingLODBiasTooltip", "LOD bias for preloading no-ref mesh LODs. To use platform default, set to -1.");
 }
 
 /** @return - whether value was different */
@@ -4503,7 +4810,6 @@ TSharedRef<SWidget> FLevelOfDetailSettingsLayout::OnGenerateLodComboBoxForLodPic
 		.IsEnabled(this, &FLevelOfDetailSettingsLayout::IsLodComboBoxEnabledForLodPicker)
 		.OnGetMenuContent(this, &FLevelOfDetailSettingsLayout::OnGenerateLodMenuForLodPicker)
 		.VAlign(VAlign_Center)
-		.ContentPadding(2)
 		.ButtonContent()
 		[
 			SNew(STextBlock)
@@ -4608,5 +4914,445 @@ FText FLevelOfDetailSettingsLayout::GetCurrentLodTooltip() const
 	return FText::GetEmpty();
 }
 
+bool FLevelOfDetailSettingsLayout::IsNaniteEnabled() const
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh != nullptr);
+	return StaticMesh->NaniteSettings.bEnabled;
+}
+
+/////////////////////////////////
+// FNaniteSettingsLayout
+/////////////////////////////////
+
+FNaniteSettingsLayout::FNaniteSettingsLayout(FStaticMeshEditor& InStaticMeshEditor)
+: StaticMeshEditor(InStaticMeshEditor)
+{
+	const UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+	NaniteSettings = StaticMesh->NaniteSettings;
+
+	PositionPrecisionOptions.Add(MakeShared<FString>(LOCTEXT("PositionPrecisionAuto", "Auto").ToString()));
+	for (int32 i = DisplayPositionPrecisionMin; i <= DisplayPositionPrecisionMax; i++)
+	{
+		PositionPrecisionOptions.Add(MakeShared<FString>(PositionPrecisionValueToDisplayString(i)));
+	}
+
+	const FText ResidencyMinimalText = FText::Format(LOCTEXT("ResidencyMinimum", "Minimal ({0}KB)"), NANITE_ROOT_PAGE_GPU_SIZE >> 10);
+	ResidencyOptions.Add(MakeShared<FString>(ResidencyMinimalText.ToString()));
+	for (int32 i = DisplayMinimumResidencyExpRangeMin; i <= DisplayMinimumResidencyExpRangeMax; i++)
+	{
+		ResidencyOptions.Add(MakeShared<FString>(MinimumResidencyValueToDisplayString(1 << i), false));
+	}
+	ResidencyOptions.Add(MakeShared<FString>(LOCTEXT("ResidencyFull", "Full").ToString()));
+}
+
+FNaniteSettingsLayout::~FNaniteSettingsLayout()
+{
+}
+
+const FMeshNaniteSettings& FNaniteSettingsLayout::GetSettings() const
+{
+	return NaniteSettings;
+}
+
+void FNaniteSettingsLayout::UpdateSettings(const FMeshNaniteSettings& InSettings)
+{
+	NaniteSettings = InSettings;
+}
+
+void FNaniteSettingsLayout::AddToDetailsPanel(IDetailLayoutBuilder& DetailBuilder)
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+
+	IDetailCategoryBuilder& NaniteSettingsCategory =
+		DetailBuilder.EditCategory("NaniteSettings", LOCTEXT("NaniteSettingsCategory", "Nanite Settings"));
+	NaniteSettingsCategory.SetSortOrder(10);
+
+	TSharedPtr<SCheckBox> NaniteEnabledCheck;
+	{
+		NaniteSettingsCategory.AddCustomRow( LOCTEXT("Enabled", "Enabled") )
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("EnabledNaniteSupport", "Enable Nanite Support"))
+		]
+		.ValueContent()
+		[
+			SAssignNew(NaniteEnabledCheck, SCheckBox)
+			.IsChecked(this, &FNaniteSettingsLayout::IsEnabledChecked)
+			.OnCheckStateChanged(this, &FNaniteSettingsLayout::OnEnabledChanged)
+		];
+	}
+
+	{
+		TSharedPtr<STextComboBox> TerminationCriterionCombo;
+		NaniteSettingsCategory.AddCustomRow(LOCTEXT("PositionPrecision", "Position Precision"))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("PositionPrecision", "Position Precision"))
+			.ToolTipText(LOCTEXT("PositionPrecisionTooltip", "Precision of vertex positions."))
+		]
+		.ValueContent()
+		.VAlign(VAlign_Center)
+		[
+			SAssignNew(TerminationCriterionCombo, STextComboBox)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.OptionsSource(&PositionPrecisionOptions)
+			.InitiallySelectedItem(PositionPrecisionOptions[PositionPrecisionValueToIndex(NaniteSettings.PositionPrecision)])
+			.OnSelectionChanged(this, &FNaniteSettingsLayout::OnPositionPrecisionChanged)
+		];
+	}
+
+	{
+		TSharedPtr<STextComboBox> TerminationCriterionCombo;
+		NaniteSettingsCategory.AddCustomRow(LOCTEXT("MinimumResidency", "Minimum Residency"))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("MinimumResidency", "Minimum Residency"))
+			.ToolTipText(LOCTEXT("ResidencyTooltip", "How much should always be in memory. The rest will be streamed. Higher values require more memory, but also mitigate streaming pop-in issues."))
+		]
+		.ValueContent()
+		[
+			SAssignNew(TerminationCriterionCombo, STextComboBox)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.OptionsSource(&ResidencyOptions)
+			.InitiallySelectedItem(ResidencyOptions[MinimumResidencyValueToIndex(NaniteSettings.TargetMinimumResidencyInKB)])
+			.OnSelectionChanged(this, &FNaniteSettingsLayout::OnResidencyChanged)
+		];
+	}
+
+	{
+		NaniteSettingsCategory.AddCustomRow( LOCTEXT("KeepTrianglePercent", "Keep Triangle Percent") )
+
+		.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([NaniteEnabledCheck]() -> bool {return NaniteEnabledCheck->IsChecked(); } )))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("KeepTrianglePercent", "Keep Triangle Percent"))
+			.ToolTipText(LOCTEXT("KeepTrianglePercentTooltip", "Percentage of triangles to keep. Reduce to optimize for disk size."))
+		]
+		.ValueContent()
+		.VAlign(VAlign_Center)
+		[
+			SNew(SSpinBox<float>)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.MinValue(0.0f)
+			.MaxValue(100.0f)
+			.Value(this, &FNaniteSettingsLayout::GetKeepPercentTriangles)
+			.OnValueChanged(this, &FNaniteSettingsLayout::OnKeepPercentTrianglesChanged)
+			.OnValueCommitted(this, &FNaniteSettingsLayout::OnKeepPercentTrianglesCommitted)
+		];
+	}
+
+	{
+		NaniteSettingsCategory.AddCustomRow( LOCTEXT("TrimRelativeError", "Trim Relative Error") )
+
+		.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([NaniteEnabledCheck]() -> bool {return NaniteEnabledCheck->IsChecked(); } )))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("TrimRelativeError", "Trim Relative Error"))
+			.ToolTipText(LOCTEXT("TrimRelativeErrorTooltip", "Trim all detail with less than this relative error. Error is calculated relative to the mesh's size.\nIncrease to optimize for disk size."))
+		]
+		.ValueContent()
+		.VAlign(VAlign_Center)
+		[
+			SNew(SSpinBox<float>)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.MinValue(0.0f)
+			.Value(this, &FNaniteSettingsLayout::GetTrimRelativeError)
+			.OnValueChanged(this, &FNaniteSettingsLayout::OnTrimRelativeErrorChanged)
+		];
+	}
+
+	{
+		NaniteSettingsCategory.AddCustomRow( LOCTEXT("FallbackTrianglePercent", "Fallback Triangle Percent") )
+
+		.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([NaniteEnabledCheck]() -> bool {return NaniteEnabledCheck->IsChecked(); } )))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("FallbackTrianglePercent", "Fallback Triangle Percent"))
+			.ToolTipText(LOCTEXT("FallbackTrianglePercentTooltip", "Reduce until no more than this percentage of triangles remain when generating a fallback\nmesh that will be used anywhere the full detail Nanite data can't,\nincluding platforms that don't support Nanite rendering."))
+		]
+		.ValueContent()
+		.VAlign(VAlign_Center)
+		[
+			SNew(SSpinBox<float>)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.MinValue(0.0f)
+			.MaxValue(100.0f)
+			.Value(this, &FNaniteSettingsLayout::GetFallbackPercentTriangles)
+			.OnValueChanged(this, &FNaniteSettingsLayout::OnFallbackPercentTrianglesChanged)
+			.OnValueCommitted(this, &FNaniteSettingsLayout::OnFallbackPercentTrianglesCommitted)
+		];
+	}
+
+	{
+		NaniteSettingsCategory.AddCustomRow( LOCTEXT("FallbackRelativeError", "Fallback Relative Error") )
+
+		.IsEnabled(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([NaniteEnabledCheck]() -> bool {return NaniteEnabledCheck->IsChecked(); } )))
+		.NameContent()
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(LOCTEXT("FallbackRelativeError", "Fallback Relative Error"))
+			.ToolTipText(LOCTEXT("FallbackRelativeErrorTooltip", "Reduce until at least this amount of error is reached relative to its size\nwhen generating a fallback mesh that will be used anywhere the full detail Nanite data can't,\nincluding platforms that don't support Nanite rendering."))
+		]
+		.ValueContent()
+		.VAlign(VAlign_Center)
+		[
+			SNew(SSpinBox<float>)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.MinValue(0.0f)
+			.Value(this, &FNaniteSettingsLayout::GetFallbackRelativeError)
+			.OnValueChanged(this, &FNaniteSettingsLayout::OnFallbackRelativeErrorChanged)
+		];
+	}
+
+	NaniteSettingsCategory.AddCustomRow(LOCTEXT("ApplyChanges", "Apply Changes"))
+	.ValueContent()
+	.HAlign(HAlign_Left)
+	.VAlign(VAlign_Center)
+	[
+		SNew(SButton)
+		.OnClicked(this, &FNaniteSettingsLayout::OnApply)
+		.IsEnabled(this, &FNaniteSettingsLayout::IsApplyNeeded)
+		.VAlign(VAlign_Center)
+		.HAlign(HAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("ApplyChanges", "Apply Changes"))
+			.Font(DetailBuilder.GetDetailFont())
+		]
+	];
+}
+
+bool FNaniteSettingsLayout::IsApplyNeeded() const
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+	return StaticMesh->NaniteSettings != NaniteSettings;
+}
+
+void FNaniteSettingsLayout::ApplyChanges()
+{
+	UStaticMesh* StaticMesh = StaticMeshEditor.GetStaticMesh();
+	check(StaticMesh);
+
+	{
+		FFormatNamedArguments Args;
+		Args.Add(TEXT("StaticMeshName"), FText::FromString(StaticMesh->GetName()));
+		FScopedSlowTask SlowTask(0, FText::Format(LOCTEXT("ApplyNaniteChanges", "Applying changes to {StaticMeshName}..."), Args), true);
+		SlowTask.MakeDialog();
+
+		StaticMesh->Modify();
+		StaticMesh->NaniteSettings = NaniteSettings;
+		StaticMesh->PostEditChange();
+	}
+
+
+	StaticMeshEditor.RefreshTool();
+}
+
+FReply FNaniteSettingsLayout::OnApply()
+{
+	ApplyChanges();
+	return FReply::Handled();
+}
+
+int32 FNaniteSettingsLayout::PositionPrecisionIndexToValue(int32 Index)
+{
+	check(Index >= 0);
+
+	if (Index == 0)
+	{
+		return MIN_int32;
+	}
+	else
+	{
+		int32 Value = DisplayPositionPrecisionMin + (Index - 1);
+		Value = FMath::Min(Value, DisplayPositionPrecisionMax);
+		return Value;
+	}
+}
+
+int32 FNaniteSettingsLayout::PositionPrecisionValueToIndex(int32 Value)
+{
+	if (Value == MIN_int32)
+	{
+		return 0;
+	}
+	else
+	{
+		Value = FMath::Clamp(Value, DisplayPositionPrecisionMin, DisplayPositionPrecisionMax);
+		return Value - DisplayPositionPrecisionMin + 1;
+	}
+}
+
+FString FNaniteSettingsLayout::PositionPrecisionValueToDisplayString(int32 Value)
+{
+	check(Value != MIN_int32);
+	
+	if(Value <= 0)
+	{
+		return FString::Printf(TEXT("%dcm"), 1 << (-Value));
+	}
+	else
+	{
+		const float fValue = FMath::Exp2((double)-Value);
+		return FString::Printf(TEXT("1/%dcm (%.3gcm)"), 1 << Value, fValue);
+	}
+}
+
+uint32 FNaniteSettingsLayout::MinimumResidencyIndexToValue(int32 Index)
+{
+	if (Index == DisplayMinimumResidencyMinimalIndex)
+	{
+		return 0;
+	}
+	else if (Index == DisplayMinimumResidencyFullIndex)
+	{
+		return MAX_uint32;
+	}
+	else
+	{
+		return 1u << (DisplayMinimumResidencyExpRangeMin + Index - 1);
+	}
+}
+
+int32 FNaniteSettingsLayout::MinimumResidencyValueToIndex(uint32 Value)
+{
+	if (Value == 0)
+	{
+		return DisplayMinimumResidencyMinimalIndex;
+	}
+	else if (Value == MAX_uint32)
+	{
+		return DisplayMinimumResidencyFullIndex;
+	}
+	else
+	{
+		int32 Exp = (int32)FMath::CeilLogTwo(Value);
+		return FMath::Clamp(Exp, DisplayMinimumResidencyExpRangeMin, DisplayMinimumResidencyExpRangeMax) - DisplayMinimumResidencyExpRangeMin + 1;
+	}
+}
+
+FString FNaniteSettingsLayout::MinimumResidencyValueToDisplayString(uint32 Value)
+{
+	if (Value < 1024)
+	{
+		return FString::Printf(TEXT("%dKB"), Value);
+	}
+	else
+	{
+		return FString::Printf(TEXT("%dMB"), Value >> 10);
+	}
+}
+
+ECheckBoxState FNaniteSettingsLayout::IsEnabledChecked() const
+{
+	return NaniteSettings.bEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void FNaniteSettingsLayout::OnEnabledChanged(ECheckBoxState NewState)
+{
+	NaniteSettings.bEnabled = NewState == ECheckBoxState::Checked ? true : false;
+}
+
+void FNaniteSettingsLayout::OnPositionPrecisionChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo)
+{
+	int32 NewValueInt = PositionPrecisionIndexToValue(PositionPrecisionOptions.Find(NewValue));
+	if (NaniteSettings.PositionPrecision != NewValueInt)
+	{
+		if (FEngineAnalytics::IsAvailable())
+		{
+			FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.NaniteSettings"), TEXT("PositionPrecision"), *NewValue.Get());
+		}
+		NaniteSettings.PositionPrecision = NewValueInt;
+	}
+}
+
+void FNaniteSettingsLayout::OnResidencyChanged(TSharedPtr<FString> NewValue, ESelectInfo::Type SelectInfo)
+{
+	int32 NewValueInt = MinimumResidencyIndexToValue(ResidencyOptions.Find(NewValue));
+	if (NaniteSettings.TargetMinimumResidencyInKB != NewValueInt)
+	{
+		if (FEngineAnalytics::IsAvailable())
+		{
+			FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.NaniteSettings"), TEXT("MinimumResidency"), *NewValue.Get());
+		}
+		NaniteSettings.TargetMinimumResidencyInKB = NewValueInt;
+	}
+}
+
+float FNaniteSettingsLayout::GetKeepPercentTriangles() const
+{
+	return NaniteSettings.KeepPercentTriangles * 100.0f; // Display fraction as percentage.
+}
+
+void FNaniteSettingsLayout::OnKeepPercentTrianglesChanged(float NewValue)
+{
+	// Percentage -> fraction.
+	NaniteSettings.KeepPercentTriangles = NewValue * 0.01f;
+}
+
+void FNaniteSettingsLayout::OnKeepPercentTrianglesCommitted(float NewValue, ETextCommit::Type TextCommitType)
+{
+	if (FEngineAnalytics::IsAvailable())
+	{
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.NaniteSettings"), TEXT("KeepPercentTriangles"), FString::Printf(TEXT("%.1f"), NewValue));
+	}
+	OnKeepPercentTrianglesChanged(NewValue);
+}
+
+float FNaniteSettingsLayout::GetTrimRelativeError() const
+{
+	return NaniteSettings.TrimRelativeError;
+}
+
+void FNaniteSettingsLayout::OnTrimRelativeErrorChanged(float NewValue)
+{
+	NaniteSettings.TrimRelativeError = NewValue;
+}
+
+float FNaniteSettingsLayout::GetFallbackPercentTriangles() const
+{
+	return NaniteSettings.FallbackPercentTriangles * 100.0f; // Display fraction as percentage.
+}
+
+void FNaniteSettingsLayout::OnFallbackPercentTrianglesChanged(float NewValue)
+{
+	// Percentage -> fraction.
+	NaniteSettings.FallbackPercentTriangles = NewValue * 0.01f;
+}
+
+void FNaniteSettingsLayout::OnFallbackPercentTrianglesCommitted(float NewValue, ETextCommit::Type TextCommitType)
+{
+	if (FEngineAnalytics::IsAvailable())
+	{
+		FEngineAnalytics::GetProvider().RecordEvent(TEXT("Editor.Usage.StaticMesh.NaniteSettings"), TEXT("FallbackPercentTriangles"), FString::Printf(TEXT("%.1f"), NewValue));
+	}
+	OnFallbackPercentTrianglesChanged(NewValue);
+}
+
+float FNaniteSettingsLayout::GetFallbackRelativeError() const
+{
+	return NaniteSettings.FallbackRelativeError;
+}
+
+void FNaniteSettingsLayout::OnFallbackRelativeErrorChanged(float NewValue)
+{
+	NaniteSettings.FallbackRelativeError = NewValue;
+}
 
 #undef LOCTEXT_NAMESPACE

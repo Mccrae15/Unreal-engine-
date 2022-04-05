@@ -7,23 +7,27 @@
 #include "WindDirectionalSource.generated.h"
 
 /** Actor that provides a directional wind source. Only affects SpeedTree assets. */
-UCLASS(ClassGroup=Wind, showcategories=(Rendering, "Utilities|Transformation"))
+UCLASS(ClassGroup=Wind, showcategories=(Rendering, Transformation, DataLayers))
 class ENGINE_API AWindDirectionalSource : public AInfo
 {
 	GENERATED_UCLASS_BODY()
 
 private:
 	UPROPERTY(Category = WindDirectionalSource, VisibleAnywhere, BlueprintReadOnly, meta = (AllowPrivateAccess = "true"))
-	class UWindDirectionalSourceComponent* Component;
+	TObjectPtr<class UWindDirectionalSourceComponent> Component;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	class UArrowComponent* ArrowComponent;
+	TObjectPtr<class UArrowComponent> ArrowComponent;
 #endif
 
 public:
 	/** Returns Component subobject **/
 	class UWindDirectionalSourceComponent* GetComponent() const { return Component; }
+
+#if WITH_EDITOR
+	virtual bool SupportsDataLayer() const override { return true; }
+#endif
 
 #if WITH_EDITORONLY_DATA
 	/** Returns ArrowComponent subobject **/

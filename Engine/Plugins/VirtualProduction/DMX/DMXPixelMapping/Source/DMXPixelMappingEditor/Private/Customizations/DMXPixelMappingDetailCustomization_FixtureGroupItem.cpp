@@ -16,7 +16,6 @@
 #include "Layout/Visibility.h"
 #include "Modules/ModuleManager.h"
 
-
 #define LOCTEXT_NAMESPACE "FixtureGroupItem"
 
 void FDMXPixelMappingDetailCustomization_FixtureGroupItem::CustomizeDetails(IDetailLayoutBuilder& InDetailLayout)
@@ -205,7 +204,6 @@ TSharedRef<ITableRow> FDMXPixelMappingDetailCustomization_FixtureGroupItem::Gene
 
 	return SNew(STableRow<TSharedPtr<FString>>, OwnerTable)
 		.Padding(2.0f)
-		.Style(FEditorStyle::Get(), "UMGEditor.PaletteItem")
 		.ShowSelection(false)
 		[
 			SNew(SBox)
@@ -248,7 +246,7 @@ TSharedRef<ITableRow> FDMXPixelMappingDetailCustomization_FixtureGroupItem::Gene
 }
 
 void FDMXPixelMappingDetailCustomization_FixtureGroupItem::CreateModulatorDetails(IDetailLayoutBuilder& InDetailLayout)
-{	
+{
 	IDetailCategoryBuilder& ModualtorsCategory = InDetailLayout.EditCategory("Modulators", LOCTEXT("DMXModulatorsCategory", "Modulators"), ECategoryPriority::Important);
 
 	TSharedPtr<IPropertyHandle> ModulatorClassesHandle = DetailLayout->GetProperty(GET_MEMBER_NAME_CHECKED(UDMXPixelMappingFixtureGroupItemComponent, ModulatorClasses), UDMXPixelMappingFixtureGroupItemComponent::StaticClass());
@@ -305,11 +303,12 @@ void FDMXPixelMappingDetailCustomization_FixtureGroupItem::CreateModulatorDetail
 				{
 					FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-					const bool bUpdateFromSelection = false;
-					const bool bLockable			= true;
-					const bool bAllowSearch			= false;
-					const bool bHidSelectionTip		= false;
-					const FDetailsViewArgs DetailsViewArgs(bUpdateFromSelection, bLockable, bAllowSearch, FDetailsViewArgs::HideNameArea, false);
+					FDetailsViewArgs DetailsViewArgs;
+					DetailsViewArgs.bUpdatesFromSelection = false;
+					DetailsViewArgs.bLockable = true;
+					DetailsViewArgs.bAllowSearch = false;
+					DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+					DetailsViewArgs.bHideSelectionTip = false;
 					TSharedRef<IDetailsView> DetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 					DetailsView->SetObjects(ModulatorsToEdit);
 
@@ -326,7 +325,7 @@ void FDMXPixelMappingDetailCustomization_FixtureGroupItem::CreateModulatorDetail
 						[
 							SNew(STextBlock)
 							.Text(LOCTEXT("ModulatorMultipleValues", "Multiple Values"))
-							.Font(IDetailLayoutBuilder::GetDetailFont())
+						.Font(IDetailLayoutBuilder::GetDetailFont())
 						];
 
 					break;

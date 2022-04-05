@@ -27,7 +27,7 @@ namespace
 		for (const auto& Pair : DataTable->GetRowMap())
 		{
 			const FString PathToRow = PathToObject + TEXT(".") + Pair.Key.ToString();
-			PropertyLocalizationDataGatherer.GatherLocalizationDataFromStructFields(PathToRow, DataTable->RowStruct, Pair.Value, nullptr, GatherTextFlags);
+			PropertyLocalizationDataGatherer.GatherLocalizationDataFromStructWithCallbacks(PathToRow, DataTable->RowStruct, Pair.Value, nullptr, GatherTextFlags);
 		}
 	}
 #endif // WITH_EDITORONLY_DATA
@@ -192,7 +192,7 @@ void UDataTable::OnPostDataImported(TArray<FString>& OutCollectedImportProblems)
 
 void UDataTable::HandleDataTableChanged(FName ChangedRowName)
 {
-	if (IsPendingKillOrUnreachable() || HasAnyFlags(RF_BeginDestroyed))
+	if (!IsValidChecked(this) || IsUnreachable() || HasAnyFlags(RF_BeginDestroyed))
 	{
 		// This gets called during destruction, don't broadcast callbacks
 		return;
@@ -461,9 +461,9 @@ void UDataTable::CleanBeforeStructChange()
 		{
 			class FRawStructWriter : public FObjectWriter
 			{
-				TSet<UObject*>& TemporarilyReferencedObjects;
+				TSet<TObjectPtr<UObject>>& TemporarilyReferencedObjects;
 			public:
-				FRawStructWriter(TArray<uint8>& InBytes, TSet<UObject*>& InTemporarilyReferencedObjects)
+				FRawStructWriter(TArray<uint8>& InBytes, TSet<TObjectPtr<UObject>>& InTemporarilyReferencedObjects)
 					: FObjectWriter(InBytes), TemporarilyReferencedObjects(InTemporarilyReferencedObjects) {}
 				virtual FArchive& operator<<(class UObject*& Res) override
 				{
@@ -782,6 +782,38 @@ TArray<FString> UDataTable::CreateTableFromOtherTable(const UDataTable* InTable)
 	for (TMap<FName, uint8*>::TConstIterator RowMapIter(InRowMapCopy.CreateConstIterator()); RowMapIter; ++RowMapIter)
 	{
 		uint8* NewRawRowData = (uint8*)FMemory::Malloc(EmptyUsingStruct.GetStructureSize());
+		EmptyUsingStruct.InitializeStruct(NewRawRowData);
+		EmptyUsingStruct.CopyScriptStruct(NewRawRowData, RowMapIter.Value());
+		RowMap.Add(RowMapIter.Key(), NewRawRowData);
+	}
+
+	return OutProblems;
+}
+
+TArray<FString> UDataTable::CreateTableFromRawData(TMap<FName, const uint8*>& DataMap, UScriptStruct* InRowStruct)
+{
+	DATATABLE_CHANGE_SCOPE();
+
+	// Array used to store problems about table creation
+	TArray<FString> OutProblems;
+
+	if (InRowStruct == nullptr)
+	{
+		OutProblems.Add(TEXT("No input struct provided"));
+		return OutProblems;
+	}
+
+	if (RowStruct && RowMap.Num() > 0)
+	{
+		EmptyTable();
+	}
+
+	RowStruct = InRowStruct;
+
+	UScriptStruct& EmptyUsingStruct = GetEmptyUsingStruct();
+	for (TMap<FName, const uint8*>::TConstIterator RowMapIter(DataMap.CreateConstIterator()); RowMapIter; ++RowMapIter)
+	{
+		uint8* NewRawRowData = static_cast<uint8*>(FMemory::Malloc(EmptyUsingStruct.GetStructureSize()));
 		EmptyUsingStruct.InitializeStruct(NewRawRowData);
 		EmptyUsingStruct.CopyScriptStruct(NewRawRowData, RowMapIter.Value());
 		RowMap.Add(RowMapIter.Key(), NewRawRowData);

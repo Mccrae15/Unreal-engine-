@@ -5,14 +5,17 @@
 #include "RayTracingDefinitions.h"
 #include "PathTracingDefinitions.h"
 
+#if RHI_RAYTRACING
+
 RENDERER_API FRDGTexture* PrepareIESAtlas(const TMap<FTexture*, int>& InIESLightProfilesMap, FRDGBuilder& GraphBuilder);
 
-RENDERER_API void PrepareLightGrid(FRDGBuilder& GraphBuilder, FPathTracingLightGrid* LightGridParameters, const FPathTracingLight* Lights, uint32 NumLights, uint32 NumInfiniteLights, FRDGBufferSRV* LightsSRV);
+RENDERER_API void PrepareLightGrid(FRDGBuilder& GraphBuilder, const FViewInfo& View, FPathTracingLightGrid* LightGridParameters, const FPathTracingLight* Lights, uint32 NumLights, uint32 NumInfiniteLights, FRDGBufferSRV* LightsSRV);
 
 template<typename PassParameterType>
 void SetupPathTracingLightParameters(
 	const GPULightmass::FLightSceneRenderState& LightScene,
 	FRDGBuilder& GraphBuilder,
+	const FViewInfo& View,
 	PassParameterType* PassParameters)
 {
 	TArray<FPathTracingLight> Lights;
@@ -20,7 +23,7 @@ void SetupPathTracingLightParameters(
 	if (LightScene.SkyLight.IsSet())
 	{
 		FPathTracingLight& DestLight = Lights.AddDefaulted_GetRef();
-		DestLight.Color = FVector(LightScene.SkyLight->Color);
+		DestLight.Color = FVector3f(LightScene.SkyLight->Color);
 		DestLight.Flags = PATHTRACER_FLAG_TRANSMISSION_MASK;
 		DestLight.Flags |= PATHTRACER_FLAG_LIGHTING_CHANNEL_MASK;
 		DestLight.Flags |= PATHTRACER_FLAG_CAST_SHADOW_MASK;
@@ -48,9 +51,9 @@ void SetupPathTracingLightParameters(
 	{
 		FPathTracingLight& DestLight = Lights.AddDefaulted_GetRef();
 
-		DestLight.Normal = -Light.Direction;
-		DestLight.Color = FVector(Light.Color);
-		DestLight.Dimensions = FVector(
+		DestLight.Normal = (FVector3f)-Light.Direction;
+		DestLight.Color = FVector3f(Light.Color);
+		DestLight.Dimensions = FVector3f(
 			FMath::Sin(0.5f * FMath::DegreesToRadians(Light.LightSourceAngle)),
 			FMath::Sin(0.5f * FMath::DegreesToRadians(Light.LightSourceSoftAngle)),
 			0.0f);
@@ -72,13 +75,13 @@ void SetupPathTracingLightParameters(
 	{
 		FPathTracingLight& DestLight = Lights.AddDefaulted_GetRef();
 
-		DestLight.Position = Light.Position;
-		DestLight.Color = FVector(Light.Color);
-		DestLight.Normal = FVector(1, 0, 0);
-		DestLight.dPdu = FVector::CrossProduct(Light.Tangent, Light.Direction);
-		DestLight.dPdv = Light.Tangent;
+		DestLight.TranslatedWorldPosition = FVector3f(Light.Position + View.ViewMatrices.GetPreViewTranslation());
+		DestLight.Color = (FVector3f)(Light.Color);
+		DestLight.Normal = (FVector3f)Light.Direction;
+		DestLight.dPdu = (FVector3f)FVector::CrossProduct(Light.Tangent, Light.Direction);
+		DestLight.dPdv = (FVector3f)Light.Tangent;
 
-		DestLight.Dimensions = FVector(Light.SourceRadius, Light.SourceSoftRadius, Light.SourceLength);
+		DestLight.Dimensions = FVector3f(Light.SourceRadius, Light.SourceSoftRadius, Light.SourceLength);
 		DestLight.Attenuation = 1.0f / Light.AttenuationRadius;
 		DestLight.FalloffExponent = Light.FalloffExponent;
 
@@ -99,23 +102,24 @@ void SetupPathTracingLightParameters(
 		DestLight.Flags |= PATHTRACING_LIGHT_POINT;
 
 		float Radius = Light.AttenuationRadius;
-		FVector Center = DestLight.Position;
+		FVector3f Center = DestLight.TranslatedWorldPosition;
+
 		// simple sphere of influence
-		DestLight.BoundMin = Center - FVector(Radius, Radius, Radius);
-		DestLight.BoundMax = Center + FVector(Radius, Radius, Radius);
+		DestLight.TranslatedBoundMin = Center - FVector3f(Radius, Radius, Radius);
+		DestLight.TranslatedBoundMax = Center + FVector3f(Radius, Radius, Radius);
 	}
 
 	for (auto Light : LightScene.SpotLights.Elements)
 	{
 		FPathTracingLight& DestLight = Lights.AddDefaulted_GetRef();
 
-		DestLight.Position = Light.Position;
-		DestLight.Normal = Light.Direction;
-		DestLight.dPdu = FVector::CrossProduct(Light.Tangent, Light.Direction);
-		DestLight.dPdv = Light.Tangent;
-		DestLight.Color = FVector(Light.Color);
-		DestLight.Dimensions = FVector(Light.SourceRadius, Light.SourceSoftRadius, Light.SourceLength);
-		DestLight.Shaping = Light.SpotAngles;
+		DestLight.TranslatedWorldPosition = FVector3f(Light.Position + View.ViewMatrices.GetPreViewTranslation());
+		DestLight.Normal = (FVector3f)Light.Direction;
+		DestLight.dPdu = (FVector3f)FVector::CrossProduct(Light.Tangent, Light.Direction);
+		DestLight.dPdv = (FVector3f)Light.Tangent;
+		DestLight.Color = FVector3f(Light.Color);
+		DestLight.Dimensions = FVector3f(Light.SourceRadius, Light.SourceSoftRadius, Light.SourceLength);
+		DestLight.Shaping = FVector2f(Light.SpotAngles);
 		DestLight.Attenuation = 1.0f / Light.AttenuationRadius;
 		DestLight.FalloffExponent = Light.FalloffExponent;
 
@@ -135,43 +139,44 @@ void SetupPathTracingLightParameters(
 		DestLight.Flags |= Light.bStationary ? PATHTRACER_FLAG_STATIONARY_MASK : 0;
 		DestLight.Flags |= PATHTRACING_LIGHT_SPOT;
 
+		// LWC_TODO: Precision Loss
 		float Radius = Light.AttenuationRadius;
-		FVector Center = DestLight.Position;
-		FVector Normal = DestLight.Normal;
-		FVector Disc = FVector(
+		FVector3f Center = DestLight.TranslatedWorldPosition;
+		FVector3f Normal = DestLight.Normal;
+		FVector3f Disc = FVector3f(
 			FMath::Sqrt(FMath::Clamp(1 - Normal.X * Normal.X, 0.0f, 1.0f)),
 			FMath::Sqrt(FMath::Clamp(1 - Normal.Y * Normal.Y, 0.0f, 1.0f)),
 			FMath::Sqrt(FMath::Clamp(1 - Normal.Z * Normal.Z, 0.0f, 1.0f))
 		);
 		// box around ray from light center to tip of the cone
-		FVector Tip = Center + Normal * Radius;
-		DestLight.BoundMin = Center.ComponentMin(Tip);
-		DestLight.BoundMax = Center.ComponentMax(Tip);
+		FVector3f Tip = Center + Normal * Radius;
+		DestLight.TranslatedBoundMin = Center.ComponentMin(Tip);
+		DestLight.TranslatedBoundMax = Center.ComponentMax(Tip);
 		// expand by disc around the farthest part of the cone
 
 		float CosOuter = Light.SpotAngles.X;
 		float SinOuter = FMath::Sqrt(1.0f - CosOuter * CosOuter);
 
-		DestLight.BoundMin = DestLight.BoundMin.ComponentMin(Center + Radius * (Normal * CosOuter - Disc * SinOuter));
-		DestLight.BoundMax = DestLight.BoundMax.ComponentMax(Center + Radius * (Normal * CosOuter + Disc * SinOuter));
+		DestLight.TranslatedBoundMin = DestLight.TranslatedBoundMin.ComponentMin(Center + Radius * (Normal * CosOuter - Disc * SinOuter));
+		DestLight.TranslatedBoundMax = DestLight.TranslatedBoundMax.ComponentMax(Center + Radius * (Normal * CosOuter + Disc * SinOuter));
 	}
 
 	for (auto Light : LightScene.RectLights.Elements)
 	{
 		FPathTracingLight& DestLight = Lights.AddDefaulted_GetRef();
 
-		DestLight.Position = Light.Position;
-		DestLight.Normal = Light.Direction;
-		DestLight.dPdu = FVector::CrossProduct(Light.Tangent, -Light.Direction);
-		DestLight.dPdv = Light.Tangent;
+		DestLight.TranslatedWorldPosition = FVector3f(Light.Position + View.ViewMatrices.GetPreViewTranslation());
+		DestLight.Normal = (FVector3f)Light.Direction;
+		DestLight.dPdu = (FVector3f)FVector::CrossProduct(Light.Tangent, -Light.Direction);
+		DestLight.dPdv = (FVector3f)Light.Tangent;
 
 		FLinearColor LightColor = Light.Color;
 		LightColor /= 0.5f * Light.SourceWidth * Light.SourceHeight;
-		DestLight.Color = FVector(LightColor);
+		DestLight.Color = FVector3f(LightColor);
 
-		DestLight.Dimensions = FVector(Light.SourceWidth, Light.SourceHeight, 0.0f);
+		DestLight.Dimensions = FVector3f(Light.SourceWidth, Light.SourceHeight, 0.0f);
 		DestLight.Attenuation = 1.0f / Light.AttenuationRadius;
-		DestLight.Shaping = FVector2D(FMath::Cos(FMath::DegreesToRadians(Light.BarnDoorAngle)), Light.BarnDoorLength);
+		DestLight.Shaping = FVector2f(FMath::Cos(FMath::DegreesToRadians(Light.BarnDoorAngle)), Light.BarnDoorLength);
 
 		if (Light.IESTexture)
 		{
@@ -189,18 +194,18 @@ void SetupPathTracingLightParameters(
 		DestLight.Flags |= PATHTRACING_LIGHT_RECT;
 
 		float Radius = Light.AttenuationRadius;
-		FVector Center = DestLight.Position;
-		FVector Normal = DestLight.Normal;
-		FVector Disc = FVector(
+		FVector3f Center = DestLight.TranslatedWorldPosition;
+		FVector3f Normal = DestLight.Normal;
+		FVector3f Disc = FVector3f(
 			FMath::Sqrt(FMath::Clamp(1 - Normal.X * Normal.X, 0.0f, 1.0f)),
 			FMath::Sqrt(FMath::Clamp(1 - Normal.Y * Normal.Y, 0.0f, 1.0f)),
 			FMath::Sqrt(FMath::Clamp(1 - Normal.Z * Normal.Z, 0.0f, 1.0f))
 		);
 		// quad bbox is the bbox of the disc +  the tip of the hemisphere
 		// TODO: is it worth trying to account for barndoors? seems unlikely to cut much empty space since the volume _inside_ the barndoor receives light
-		FVector Tip = Center + Normal * Radius;
-		DestLight.BoundMin = Tip.ComponentMin(Center - Radius * Disc);
-		DestLight.BoundMax = Tip.ComponentMax(Center + Radius * Disc);
+		FVector3f Tip = Center + Normal * Radius;
+		DestLight.TranslatedBoundMin = Tip.ComponentMin(Center - Radius * Disc);
+		DestLight.TranslatedBoundMax = Tip.ComponentMax(Center + Radius * Disc);
 	}
 
 	PassParameters->SceneLightCount = Lights.Num();
@@ -223,5 +228,7 @@ void SetupPathTracingLightParameters(
 		PassParameters->IESTexture = GraphBuilder.RegisterExternalTexture(GSystemTextures.WhiteDummy);
 	}
 
-	PrepareLightGrid(GraphBuilder, &PassParameters->LightGridParameters, Lights.GetData(), PassParameters->SceneLightCount, NumInfiniteLights, PassParameters->SceneLights);
+	PrepareLightGrid(GraphBuilder, View, &PassParameters->LightGridParameters, Lights.GetData(), PassParameters->SceneLightCount, NumInfiniteLights, PassParameters->SceneLights);
 }
+
+#endif  // RHI_RAYTRACING

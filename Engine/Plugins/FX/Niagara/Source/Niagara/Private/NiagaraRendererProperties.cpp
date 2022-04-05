@@ -103,7 +103,7 @@ void FNiagaraRendererLayout::Finalize()
 #if WITH_EDITORONLY_DATA
 bool UNiagaraRendererProperties::IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const
 {
-	if (InSourceForBinding.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespace))
+	if (InSourceForBinding.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString))
 	{
 		return true;
 	}
@@ -131,6 +131,15 @@ TArray<FNiagaraVariable> UNiagaraRendererProperties::GetBoundAttributes() const
 	}
 
 	return BoundAttributes;
+}
+
+void UNiagaraRendererProperties::ChangeToPositionBinding(FNiagaraVariableAttributeBinding& Binding)
+{
+	if (Binding.GetType() == FNiagaraTypeDefinition::GetVec3Def())
+	{
+		FNiagaraVariable NewVarType(FNiagaraTypeDefinition::GetPositionDef(), Binding.GetParamMapBindableVariable().GetName());
+		Binding = FNiagaraConstants::GetAttributeDefaultBinding(NewVarType);
+	}
 }
 
 FNiagaraVariable UNiagaraRendererProperties::GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const
@@ -306,6 +315,15 @@ void UNiagaraRendererProperties::GetAssetTagsForContext(const UObject* InAsset, 
 	}
 }
 
+bool UNiagaraRendererProperties::PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore)
+{
+	bool bAnyAdded = false;
+	if (RendererEnabledBinding.GetParamMapBindableVariable().IsValid())
+	{
+		bAnyAdded |= InParameterStore.AddParameter(RendererEnabledBinding.GetParamMapBindableVariable(), false);
+	}
+	return bAnyAdded;
+}
 
 bool UNiagaraRendererProperties::NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const
 {
@@ -337,6 +355,9 @@ void UNiagaraRendererProperties::PostInitProperties()
 	if (HasAnyFlags(RF_ClassDefaultObject) == false)
 	{
 		SetFlags(RF_Transactional);
+
+		FNiagaraVariableBase EnabledDefaultVariable(FNiagaraTypeDefinition::GetBoolDef(), NAME_None);
+		RendererEnabledBinding.Setup(EnabledDefaultVariable, EnabledDefaultVariable, ENiagaraRendererSourceDataMode::Emitter);
 	}
 #endif
 }
@@ -374,7 +395,11 @@ void UNiagaraRendererProperties::PostEditChangeProperty(struct FPropertyChangedE
 		{
 			UNiagaraSystem::RequestCompileForEmitter(Emitter);
 		}
+
+		// Just in case we changed something that needs static params, refresh that cached list.
+		Emitter->RebuildRendererBindings();
 	}
+
 }
 
 #endif

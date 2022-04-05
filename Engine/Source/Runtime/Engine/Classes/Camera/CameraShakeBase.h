@@ -336,6 +336,9 @@ struct ENGINE_API FCameraShakeState
 	/** Helper method to get GetShakeInfo().Duration.Get() */
 	float GetDuration() const { return ShakeInfo.Duration.Get(); }
 
+	/** Helper method to get GetShakeInfo().Duration.IsInifnite() */
+	bool IsInfinite() const { return ShakeInfo.Duration.IsInfinite(); }
+
 private:
 
 	FCameraShakeInfo ShakeInfo;
@@ -478,6 +481,13 @@ public:
 	 */
 	bool IsActive() const { return State.IsActive(); }
 
+	/**
+	 * Returns the elapsed time of the current state.
+	 *
+	 * A camera shake is active between the calls to StartShake and TeardownShake.
+	 */
+	float GetElapsedTime() const { return State.IsActive() ? State.GetElapsedTime() : 0.0f; }
+
 	/** Starts this camera shake with the given parameters */
 	void StartShake(APlayerCameraManager* Camera, float Scale, ECameraShakePlaySpace InPlaySpace, FRotator UserPlaySpaceRot = FRotator::ZeroRotator);
 
@@ -524,11 +534,11 @@ private:
 
 	/** The root pattern for this camera shake */
 	UPROPERTY(EditAnywhere, Instanced, Category=CameraShakePattern)
-	UCameraShakePattern* RootShakePattern;
+	TObjectPtr<UCameraShakePattern> RootShakePattern;
 
 	/** The camera manager owning this camera shake. Only valid when the shake is active. */
 	UPROPERTY(transient)
-	APlayerCameraManager* CameraManager;
+	TObjectPtr<APlayerCameraManager> CameraManager;
 
 	/** What space to play the shake in before applying to the camera. Only valid when the shake is active. */
 	ECameraShakePlaySpace PlaySpace;

@@ -49,6 +49,9 @@ void FWindowsErrorOutputDevice::Serialize( const TCHAR* Msg, ELogVerbosity::Type
 		{
 			UE_LOG(LogWindows, Error, TEXT("Windows GetLastError: %s (%i)"), FPlatformMisc::GetSystemErrorMessage(ErrorBuffer, 1024, LastError), LastError);
 		}
+
+		FCString::Strncpy(GErrorHist, Msg, UE_ARRAY_COUNT(GErrorHist) - 5);
+		FCString::Strncat(GErrorHist, TEXT("\r\n\r\n"), UE_ARRAY_COUNT(GErrorHist) - 1);
 	}
 	else
 	{
@@ -61,19 +64,14 @@ void FWindowsErrorOutputDevice::Serialize( const TCHAR* Msg, ELogVerbosity::Type
 #if PLATFORM_EXCEPTIONS_DISABLED
 		UE_DEBUG_BREAK();
 #endif
-		// Generate the portable callstack. For asserts, we ignore the following frames:
-		// We do not ignore any stack frames since the optimization is
-		// brittle and the risk of trimming the valid frames is too high.
-		// The common frames will be instead filtered out in the web UI
-		const int32 NumStackFramesToIgnore = 0;
-
+		void* ErrorProgramCounter = GetErrorProgramCounter();
 		if (GIsGPUCrashed)
 		{
-			ReportGPUCrash(Msg, NumStackFramesToIgnore);
+			ReportGPUCrash(Msg, ErrorProgramCounter);
 		}
 		else
 		{
-			ReportAssert(Msg, NumStackFramesToIgnore);
+			ReportAssert(Msg, ErrorProgramCounter);
 		}
 	}
 	else

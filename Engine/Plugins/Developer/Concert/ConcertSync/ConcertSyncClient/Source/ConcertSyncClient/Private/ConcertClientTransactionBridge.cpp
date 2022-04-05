@@ -3,7 +3,6 @@
 #include "ConcertClientTransactionBridge.h"
 #include "ConcertLogGlobal.h"
 #include "ConcertSyncSettings.h"
-#include "ConcertSyncArchives.h"
 #include "ConcertSyncClientUtil.h"
 
 #include "ConcertTransactionEvents.h"
@@ -24,7 +23,7 @@
 namespace ConcertClientTransactionBridgeUtil
 {
 
-static TAutoConsoleVariable<int32> CVarIgnoreTransactionIncludeFilter(TEXT("Concert.IgnoreTransactionFilters"), 0, TEXT("Ignore Transaction Object Whitelist Filtering"));
+static TAutoConsoleVariable<int32> CVarIgnoreTransactionIncludeFilter(TEXT("Concert.IgnoreTransactionFilters"), 0, TEXT("Ignore Transaction Object Allow List Filtering"));
 
 bool RunTransactionFilters(const TArray<FTransactionClassFilter>& InFilters, UObject* InObject)
 {
@@ -153,7 +152,7 @@ struct FEditorTransactionNotification
 				DeltaChange.bHasNameChange = !InObjectUpdate.ObjectData.NewName.IsNone();
 				DeltaChange.bHasOuterChange = !InObjectUpdate.ObjectData.NewOuterPathName.IsNone();
 				DeltaChange.bHasExternalPackageChange = !InObjectUpdate.ObjectData.NewExternalPackageName.IsNone();
-				DeltaChange.bHasPendingKillChange = InObjectUpdate.ObjectData.bIsPendingKill != InTransactionObject->IsPendingKill();
+				DeltaChange.bHasPendingKillChange = InObjectUpdate.ObjectData.bIsPendingKill != !IsValid(InTransactionObject);
 				DeltaChange.bHasNonPropertyChanges = InObjectUpdate.ObjectData.SerializedData.Num() > 0;
 				for (const FConcertSerializedPropertyData& PropertyData : InObjectUpdate.PropertyDatas)
 				{
@@ -178,7 +177,7 @@ struct FEditorTransactionNotification
 };
 #endif
 
-void ProcessTransactionEvent(const FConcertTransactionEventBase& InEvent, const FConcertSessionVersionInfo* InVersionInfo, const TArray<FName>& InPackagesToProcess, const FConcertLocalIdentifierTable* InLocalIdentifierTablePtr, const bool bIsSnapshot)
+void ProcessTransactionEvent(const FConcertTransactionEventBase& InEvent, const FConcertSessionVersionInfo* InVersionInfo, const TArray<FName>& InPackagesToProcess, const FConcertLocalIdentifierTable* InLocalIdentifierTablePtr, const bool bIsSnapshot, const FConcertSyncWorldRemapper& WorldRemapper)
 {
 	// Transactions are applied in multiple-phases...
 	//	1) Find or create all objects in the transaction (to handle object-interdependencies in the serialized data)
@@ -263,7 +262,7 @@ void ProcessTransactionEvent(const FConcertTransactionEventBase& InEvent, const 
 		TSharedPtr<ITransactionObjectAnnotation>& TransactionAnnotation = TransactionAnnotations[ObjectIndex];
 		if (ObjectUpdate.SerializedAnnotationData.Num() > 0)
 		{
-			FConcertSyncObjectReader AnnotationReader(InLocalIdentifierTablePtr, FConcertSyncWorldRemapper(), InVersionInfo, TransactionObject, ObjectUpdate.SerializedAnnotationData);
+			FConcertSyncObjectReader AnnotationReader(InLocalIdentifierTablePtr, WorldRemapper, InVersionInfo, TransactionObject, ObjectUpdate.SerializedAnnotationData);
 			TransactionAnnotation = TransactionObject->CreateAndRestoreTransactionAnnotation(AnnotationReader);
 			UE_CLOG(!TransactionAnnotation.IsValid(), LogConcert, Warning, TEXT("Object '%s' had transaction annotation data that failed to restore!"), *TransactionObject->GetPathName());
 		}
@@ -315,7 +314,7 @@ void ProcessTransactionEvent(const FConcertTransactionEventBase& InEvent, const 
 		// Apply the new data
 		if (ObjectUpdate.ObjectData.SerializedData.Num() > 0)
 		{
-			FConcertSyncObjectReader ObjectReader(InLocalIdentifierTablePtr, FConcertSyncWorldRemapper(), InVersionInfo, TransactionObject, ObjectUpdate.ObjectData.SerializedData);
+			FConcertSyncObjectReader ObjectReader(InLocalIdentifierTablePtr, WorldRemapper, InVersionInfo, TransactionObject, ObjectUpdate.ObjectData.SerializedData);
 			ObjectReader.SerializeObject(TransactionObject);
 		}
 		else
@@ -325,7 +324,7 @@ void ProcessTransactionEvent(const FConcertTransactionEventBase& InEvent, const 
 				FProperty* TransactionProp = FindFProperty<FProperty>(TransactionObject->GetClass(), PropertyData.PropertyName);
 				if (TransactionProp)
 				{
-					FConcertSyncObjectReader ObjectReader(InLocalIdentifierTablePtr, FConcertSyncWorldRemapper(), InVersionInfo, TransactionObject, PropertyData.SerializedData);
+					FConcertSyncObjectReader ObjectReader(InLocalIdentifierTablePtr, WorldRemapper, InVersionInfo, TransactionObject, PropertyData.SerializedData);
 					ObjectReader.SerializeProperty(TransactionProp, TransactionObject);
 				}
 			}
@@ -418,11 +417,18 @@ void ProcessTransactionEvent(const FConcertTransactionEventBase& InEvent, const 
 FConcertClientTransactionBridge::FConcertClientTransactionBridge()
 	: bHasBoundUnderlyingLocalTransactionEvents(false)
 	, bIgnoreLocalTransactions(false)
+	, bIncludeEditorOnlyProperties(true)
 {
 	ConditionalBindUnderlyingLocalTransactionEvents();
 
 	FCoreDelegates::OnFEngineLoopInitComplete.AddRaw(this, &FConcertClientTransactionBridge::OnEngineInitComplete);
 	FCoreDelegates::OnEndFrame.AddRaw(this, &FConcertClientTransactionBridge::OnEndFrame);
+}
+
+FConcertClientTransactionBridge::FConcertClientTransactionBridge(bool bInIncludeEditorOnlyProperties)
+	: FConcertClientTransactionBridge()
+{
+	bIncludeEditorOnlyProperties = bInIncludeEditorOnlyProperties;
 }
 
 FConcertClientTransactionBridge::~FConcertClientTransactionBridge()
@@ -465,7 +471,12 @@ FOnApplyTransaction& FConcertClientTransactionBridge::OnApplyTransaction()
 
 void FConcertClientTransactionBridge::ApplyRemoteTransaction(const FConcertTransactionEventBase& InEvent, const FConcertSessionVersionInfo* InVersionInfo, const TArray<FName>& InPackagesToProcess, const FConcertLocalIdentifierTable* InLocalIdentifierTablePtr, const bool bIsSnapshot)
 {
-	ConcertClientTransactionBridgeUtil::ProcessTransactionEvent(InEvent, InVersionInfo, InPackagesToProcess, InLocalIdentifierTablePtr, bIsSnapshot);
+	ConcertClientTransactionBridgeUtil::ProcessTransactionEvent(InEvent, InVersionInfo, InPackagesToProcess, InLocalIdentifierTablePtr, bIsSnapshot, FConcertSyncWorldRemapper());
+}
+
+void FConcertClientTransactionBridge::ApplyRemoteTransaction(const FConcertTransactionEventBase& InEvent, const FConcertSessionVersionInfo* InVersionInfo, const TArray<FName>& InPackagesToProcess, const FConcertLocalIdentifierTable* InLocalIdentifierTablePtr, const bool bIsSnapshot, const FConcertSyncWorldRemapper& ConcertSyncWorldRemapper)
+{
+	ConcertClientTransactionBridgeUtil::ProcessTransactionEvent(InEvent, InVersionInfo, InPackagesToProcess, InLocalIdentifierTablePtr, bIsSnapshot, ConcertSyncWorldRemapper);
 }
 
 bool& FConcertClientTransactionBridge::GetIgnoreLocalTransactionsRef()
@@ -540,6 +551,8 @@ void FConcertClientTransactionBridge::HandleTransactionStateChanged(const FTrans
 
 void FConcertClientTransactionBridge::HandleObjectTransacted(UObject* InObject, const FTransactionObjectEvent& InTransactionEvent)
 {
+	SCOPED_CONCERT_TRACE(FConcertClientTransactionBridge_HandleObjectTransacted);
+
 	if (bIgnoreLocalTransactions)
 	{
 		return;
@@ -550,7 +563,7 @@ void FConcertClientTransactionBridge::HandleObjectTransacted(UObject* InObject, 
 	FOngoingTransaction* TrackedTransaction = OngoingTransactions.Find(InTransactionEvent.GetOperationId());
 
 	// TODO: This needs to send both editor-only and non-editor-only payload data to the server, which will forward only the correct part to cooked and non-cooked clients
-	bool bIncludeEditorOnlyProperties = true;
+
 
 	{
 		const TCHAR* ObjectEventString = TEXT("");
@@ -639,7 +652,7 @@ void FConcertClientTransactionBridge::HandleObjectTransacted(UObject* InObject, 
 				ObjectUpdatePtr->ObjectId = ObjectId;
 				ObjectUpdatePtr->ObjectPathDepth = ConcertSyncClientUtil::GetObjectPathDepth(InObject);
 				ObjectUpdatePtr->ObjectData.bAllowCreate = false;
-				ObjectUpdatePtr->ObjectData.bIsPendingKill = InObject->IsPendingKill();
+				ObjectUpdatePtr->ObjectData.bIsPendingKill = !IsValid(InObject);
 			}
 
 			if (TransactionAnnotation.IsValid())
@@ -678,8 +691,8 @@ void FConcertClientTransactionBridge::HandleObjectTransacted(UObject* InObject, 
 		FConcertExportedObject& ObjectUpdate = OngoingTransaction.FinalizedData.FinalizedObjectUpdates.AddDefaulted_GetRef();
 		ObjectUpdate.ObjectId = ObjectId;
 		ObjectUpdate.ObjectPathDepth = ConcertSyncClientUtil::GetObjectPathDepth(InObject);
-		ObjectUpdate.ObjectData.bAllowCreate = InTransactionEvent.HasPendingKillChange() && !InObject->IsPendingKill();
-		ObjectUpdate.ObjectData.bIsPendingKill = InObject->IsPendingKill();
+		ObjectUpdate.ObjectData.bAllowCreate = InTransactionEvent.HasPendingKillChange() && IsValid(InObject);
+		ObjectUpdate.ObjectData.bIsPendingKill = !IsValid(InObject);
 		ObjectUpdate.ObjectData.NewPackageName = NewObjectPackageName;
 		ObjectUpdate.ObjectData.NewName = NewObjectName;
 		ObjectUpdate.ObjectData.NewOuterPathName = NewObjectOuterPathName;
@@ -692,7 +705,7 @@ void FConcertClientTransactionBridge::HandleObjectTransacted(UObject* InObject, 
 		}
 
 		// If this object changed from being pending kill to not being pending kill, we have to send a full object update (including all properties), rather than attempt a delta-update
-		const bool bForceFullObjectUpdate = InTransactionEvent.HasPendingKillChange() && !InObject->IsPendingKill();
+		const bool bForceFullObjectUpdate = InTransactionEvent.HasPendingKillChange() && IsValid(InObject);
 		if (bForceFullObjectUpdate)
 		{
 			// Serialize the entire object.
@@ -766,6 +779,8 @@ void FConcertClientTransactionBridge::OnEngineInitComplete()
 
 void FConcertClientTransactionBridge::OnEndFrame()
 {
+	SCOPED_CONCERT_TRACE(FConcertClientTransactionBridge_OnEndFrame);
+
 	for (auto OngoingTransactionsOrderIter = OngoingTransactionsOrder.CreateIterator(); OngoingTransactionsOrderIter; ++OngoingTransactionsOrderIter)
 	{
 		FOngoingTransaction* OngoingTransactionPtr = OngoingTransactions.Find(*OngoingTransactionsOrderIter);

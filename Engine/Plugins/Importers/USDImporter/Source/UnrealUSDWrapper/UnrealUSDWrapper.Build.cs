@@ -14,6 +14,8 @@ namespace UnrealBuildTool.Rules
 
 			PublicDependencyModuleNames.AddRange(
 				new string[] {
+					"Boost",
+					"CinematicCamera",
 					"Core",
 					"CoreUObject",
 					"Engine",
@@ -33,7 +35,6 @@ namespace UnrealBuildTool.Rules
 				var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
 				var PythonSourceTPSDir = Path.Combine(EngineDir, "Source", "ThirdParty", "Python3", Target.Platform.ToString());
 				var PythonBinaryTPSDir = Path.Combine(EngineDir, "Binaries", "ThirdParty", "Python3", Target.Platform.ToString());
-				string IntelTBBLibs = Path.Combine(Target.UEThirdPartySourceDirectory, "Intel", "TBB", "IntelTBB-2019u8", "lib", Target.Platform.ToString());
 				string IntelTBBBinaries = Path.Combine(Target.UEThirdPartyBinariesDirectory, "Intel", "TBB", Target.Platform.ToString());
 				string IntelTBBIncludes = Path.Combine(Target.UEThirdPartySourceDirectory, "Intel", "TBB", "IntelTBB-2019u8", "include");
 				string USDLibsDir = Path.Combine(ModuleDirectory, "..", "ThirdParty", "USD", "lib");
@@ -43,33 +44,18 @@ namespace UnrealBuildTool.Rules
 					PublicDefinitions.Add("USD_USES_SYSTEM_MALLOC=1");
 
 					// TBB
-					PublicAdditionalLibraries.Add(Path.Combine(IntelTBBLibs, "vc14", "tbb.lib"));
-					RuntimeDependencies.Add(Path.Combine("$(TargetOutputDir)", "tbb.dll"), Path.Combine(IntelTBBBinaries, "tbb.dll"));
+					// Don't need to handle it for Windows or Mac as IntelTBB.Build.cs already does it
 
 					// Python3
 					PublicIncludePaths.Add(Path.Combine(PythonSourceTPSDir, "include"));
 					PublicSystemLibraryPaths.Add(Path.Combine(PythonSourceTPSDir, "libs"));
-					RuntimeDependencies.Add(Path.Combine("$(TargetOutputDir)", "python37.dll"), Path.Combine(PythonBinaryTPSDir, "python37.dll"));
-
-					// Boost
-					// Stops Boost from using pragma link to choose which lib to link against.
-					// We explicitly link against the boost libs here to choose the correct CRT flavor.
-					PublicDefinitions.Add("BOOST_ALL_NO_LIB");
-					string BoostLibSearchPattern = "boost_*-mt-x64-*.lib";
-					foreach (string BoostLib in Directory.EnumerateFiles(USDLibsDir, BoostLibSearchPattern, SearchOption.AllDirectories))
-					{
-						PublicAdditionalLibraries.Add(BoostLib);
-					}
+					RuntimeDependencies.Add(Path.Combine("$(TargetOutputDir)", "python39.dll"), Path.Combine(PythonBinaryTPSDir, "python39.dll"));
 
 					// USD
 					PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "USD", "include"));
 					PublicSystemLibraryPaths.Add(USDLibsDir);
 					foreach (string UsdLib in Directory.EnumerateFiles(USDLibsDir, "*.lib", SearchOption.AllDirectories))
 					{
-						if(Path.GetFileName(UsdLib).StartsWith("boost"))
-						{
-							continue;
-						}
 
 						PublicAdditionalLibraries.Add(UsdLib);
 					}
@@ -95,7 +81,7 @@ namespace UnrealBuildTool.Rules
 					PublicIncludePaths.Add(Path.Combine(PythonSourceTPSDir, "include"));
 					PublicSystemLibraryPaths.Add(Path.Combine(PythonBinaryTPSDir, "lib"));
 					PrivateRuntimeLibraryPaths.Add(Path.Combine(PythonBinaryTPSDir, "bin"));
-					RuntimeDependencies.Add(Path.Combine(PythonBinaryTPSDir, "bin", "python3.7m"));
+					RuntimeDependencies.Add(Path.Combine(PythonBinaryTPSDir, "bin", "python3.9"));
 
 					// USD
 					PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "USD", "include"));
@@ -103,7 +89,7 @@ namespace UnrealBuildTool.Rules
 					PrivateRuntimeLibraryPaths.Add(USDBinDir);
 					foreach (string LibPath in Directory.EnumerateFiles(USDBinDir, "*.so*", SearchOption.AllDirectories))
 					{
-						if(LibPath.EndsWith(".so")) // Don't add all versions of libboost_python37.so as they're duplicates
+						if(LibPath.EndsWith(".so")) // Don't add all versions of libboost_python39.so as they're duplicates
 						{
 							PublicAdditionalLibraries.Add(LibPath);
 						}
@@ -124,14 +110,13 @@ namespace UnrealBuildTool.Rules
 					List<string> RuntimeModulePaths = new List<string>();
 
 					// TBB
-					RuntimeModulePaths.Add(Path.Combine(IntelTBBBinaries, "libtbb.dylib"));
-					RuntimeModulePaths.Add(Path.Combine(IntelTBBBinaries, "libtbbmalloc.dylib"));
+					// Don't need to handle it for Windows or Mac as IntelTBB.Build.cs already does it
 
 					// Python3
 					PublicIncludePaths.Add(Path.Combine(PythonSourceTPSDir, "include"));
 					PublicSystemLibraryPaths.Add(Path.Combine(PythonBinaryTPSDir, "lib"));
 					PrivateRuntimeLibraryPaths.Add(Path.Combine(PythonBinaryTPSDir, "bin"));
-					RuntimeModulePaths.Add(Path.Combine(PythonBinaryTPSDir, "lib", "libpython3.7.dylib"));
+					RuntimeModulePaths.Add(Path.Combine(PythonBinaryTPSDir, "lib", "libpython3.9.dylib"));
 
 					// USD
 					PublicIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "USD", "include"));
@@ -194,7 +179,9 @@ namespace UnrealBuildTool.Rules
 			// on each module with versions that use either the ANSI (so USD-compatible) allocators or the UE allocators (ModuleBoilerplate.h) when appropriate.
 			// In a monolithic build we can't do that, as the primary game module will already define overrides for operator new and delete with
 			// the standard UE allocators: Since we can only have one operator new/delete override on the entire monolithic executable, we can't define our own overrides.
-			// The only way around it is by forcing the ansi allocator in your project's target file (YourProject/Source/YourProject.Target.cs) file like this:
+			// Additionally, the ANSI allocator does not work properly with FMallocPoisonProxy. Consequently, FMallocPoisonProxy has to be disabled.
+			// The only way around it is by forcing the ansi allocator and disabling FMallocPoisonProxy in your project's target file
+			// (YourProject/Source/YourProject.Target.cs) file like this:
 			//
 			//		public class YourProject : TargetRules
 			//		{
@@ -202,14 +189,17 @@ namespace UnrealBuildTool.Rules
 			//			{
 			//				...
 			//				GlobalDefinitions.Add("FORCE_ANSI_ALLOCATOR=1");
+			//				GlobalDefinitions.Add("UE_USE_MALLOC_FILL_BYTES=0");
+			//				...
 			//			}
 			//		}
 			//
-			// This will force the entire built executable to use the ANSI C allocators for everything (by disabling the UE overrides in ModuleBoilerplate.h), and so UE and USD allocations will be compatible.
+			// This will force the entire built executable to use the ANSI C allocators for everything (by disabling the UE overrides in ModuleBoilerplate.h) while
+			// FMallocPoisonProxy is disabled, and so UE and USD allocations will be compatible.
 			// Note that by that point everything will be using the USD-compatible ANSI allocators anyway, so our overrides in USDMemory.h are also disabled, as they're unnecessary.
 			// Also note that we're forced to use dynamic linking for monolithic targets mainly because static linking the USD libraries disables support for user USD plugins, and secondly
 			// because those static libraries would need to be linked with the --whole-archive argument, and there is currently no standard way of doing that in UE.
-			if (bEnableUsdSdk && Target.LinkType == TargetLinkType.Monolithic && !Target.GlobalDefinitions.Contains("FORCE_ANSI_ALLOCATOR=1"))
+			if (bEnableUsdSdk && Target.LinkType == TargetLinkType.Monolithic && !Target.GlobalDefinitions.Contains("FORCE_ANSI_ALLOCATOR=1") && !Target.GlobalDefinitions.Contains("UE_USE_MALLOC_FILL_BYTES=0"))
 			{
 				PublicDefinitions.Add("USD_FORCE_DISABLED=1");
 				bEnableUsdSdk = false;

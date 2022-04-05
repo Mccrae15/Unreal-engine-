@@ -5,6 +5,7 @@
 #include "NiagaraConstants.h"
 #include "NiagaraBoundsCalculatorHelper.h"
 #include "NiagaraCustomVersion.h"
+#include "NiagaraEmitterInstance.h"
 #include "Modules/ModuleManager.h"
 #if WITH_EDITOR
 #include "Widgets/Images/SImage.h"
@@ -82,12 +83,17 @@ UNiagaraRibbonRendererProperties::UNiagaraRibbonRendererProperties()
 	AttributeBindings.Add(&V0RangeOverrideBinding);
 	AttributeBindings.Add(&U1OverrideBinding);
 	AttributeBindings.Add(&V1RangeOverrideBinding);
+
+	AttributeBindings.Add(&PrevPositionBinding);
+	AttributeBindings.Add(&PrevRibbonWidthBinding);
+	AttributeBindings.Add(&PrevRibbonFacingBinding);
+	AttributeBindings.Add(&PrevRibbonTwistBinding);
 }
 
-FNiagaraRenderer* UNiagaraRibbonRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent)
+FNiagaraRenderer* UNiagaraRibbonRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController)
 {
 	FNiagaraRenderer* NewRenderer = new FNiagaraRendererRibbons(FeatureLevel, this, Emitter);
-	NewRenderer->Initialize(this, Emitter, InComponent);
+	NewRenderer->Initialize(this, Emitter, InController);
 	return NewRenderer;
 }
 
@@ -131,8 +137,9 @@ void UNiagaraRibbonRendererProperties::PostLoad()
 		UpgradeUVSettings(UV1Settings, UV1TilingDistance_DEPRECATED, UV1Offset_DEPRECATED, UV1Scale_DEPRECATED);
 	}
 
+	ChangeToPositionBinding(PositionBinding);
 #endif
-
+	
 	PostLoadBindings(ENiagaraRendererSourceDataMode::Particles);
 
 	if ( Material )
@@ -148,20 +155,18 @@ FNiagaraBoundsCalculator* UNiagaraRibbonRendererProperties::CreateBoundsCalculat
 
 void UNiagaraRibbonRendererProperties::GetUsedMaterials(const FNiagaraEmitterInstance* InEmitter, TArray<UMaterialInterface*>& OutMaterials) const
 {
-	UMaterialInterface* UserParamMaterial = nullptr;
-	if (InEmitter != nullptr && MaterialUserParamBinding.Parameter.IsValid() && InEmitter->FindBinding(MaterialUserParamBinding, UserParamMaterial))
+	UMaterialInterface* MaterialInterface = nullptr;
+	if (InEmitter != nullptr)
 	{
-		OutMaterials.Add(UserParamMaterial);
+		MaterialInterface = Cast<UMaterialInterface>(InEmitter->FindBinding(MaterialUserParamBinding.Parameter));
 	}
-	else
-	{
-		OutMaterials.Add(Material);
-	}
+
+	OutMaterials.Add(MaterialInterface ? MaterialInterface : ToRawPtr(Material));
 }
 
 bool UNiagaraRibbonRendererProperties::PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore)
 {
-	bool bAnyAdded = false;
+	bool bAnyAdded = Super::PopulateRequiredBindings(InParameterStore);
 
 	for (const FNiagaraVariableAttributeBinding* Binding : AttributeBindings)
 	{
@@ -250,6 +255,16 @@ void UNiagaraRibbonRendererProperties::InitBindings()
 		U1OverrideBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_RIBBONU1OVERRIDE);
 		V1RangeOverrideBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_RIBBONV1RANGEOVERRIDE);
 	}
+
+	SetPreviousBindings(nullptr);
+}
+
+void UNiagaraRibbonRendererProperties::SetPreviousBindings(const UNiagaraEmitter* SrcEmitter)
+{
+	PrevPositionBinding.SetAsPreviousValue(PositionBinding, SrcEmitter, ENiagaraRendererSourceDataMode::Particles);
+	PrevRibbonWidthBinding.SetAsPreviousValue(RibbonWidthBinding, SrcEmitter, ENiagaraRendererSourceDataMode::Particles);
+	PrevRibbonFacingBinding.SetAsPreviousValue(RibbonFacingBinding, SrcEmitter, ENiagaraRendererSourceDataMode::Particles);
+	PrevRibbonTwistBinding.SetAsPreviousValue(RibbonTwistBinding, SrcEmitter, ENiagaraRendererSourceDataMode::Particles);
 }
 
 void UNiagaraRibbonRendererProperties::CacheFromCompiledData(const FNiagaraDataSetCompiledData* CompiledData)
@@ -261,8 +276,8 @@ void UNiagaraRibbonRendererProperties::CacheFromCompiledData(const FNiagaraDataS
 	{
 		bSortKeyDataSetAccessorIsAge = true;
 		SortKeyDataSetAccessor.Init(CompiledData, NormalizedAgeBinding.GetDataSetBindableVariable().GetName());
-	}	
-	
+	}
+
 	NormalizedAgeAccessor.Init(CompiledData, NormalizedAgeBinding.GetDataSetBindableVariable().GetName());
 
 	PositionDataSetAccessor.Init(CompiledData, PositionBinding.GetDataSetBindableVariable().GetName());
@@ -319,6 +334,14 @@ void UNiagaraRibbonRendererProperties::CacheFromCompiledData(const FNiagaraDataS
 	MaterialParamValidMask |= RendererLayout.SetVariableFromBinding(CompiledData, DynamicMaterial1Binding, ENiagaraRibbonVFLayout::MaterialParam1) ? 2 : 0;
 	MaterialParamValidMask |= RendererLayout.SetVariableFromBinding(CompiledData, DynamicMaterial2Binding, ENiagaraRibbonVFLayout::MaterialParam2) ? 4 : 0;
 	MaterialParamValidMask |= RendererLayout.SetVariableFromBinding(CompiledData, DynamicMaterial3Binding, ENiagaraRibbonVFLayout::MaterialParam3) ? 8 : 0;
+
+	if (NeedsPreciseMotionVectors())
+	{
+		RendererLayout.SetVariableFromBinding(CompiledData, PrevPositionBinding, ENiagaraRibbonVFLayout::PrevPosition);
+		RendererLayout.SetVariableFromBinding(CompiledData, PrevRibbonWidthBinding, ENiagaraRibbonVFLayout::PrevRibbonWidth);
+		RendererLayout.SetVariableFromBinding(CompiledData, PrevRibbonFacingBinding, ENiagaraRibbonVFLayout::PrevRibbonFacing);
+		RendererLayout.SetVariableFromBinding(CompiledData, PrevRibbonTwistBinding, ENiagaraRibbonVFLayout::PrevRibbonTwist);
+	}
 	RendererLayout.Finalize();
 }
 
@@ -327,10 +350,10 @@ void UNiagaraRibbonRendererProperties::CacheFromCompiledData(const FNiagaraDataS
 
 bool UNiagaraRibbonRendererProperties::IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const
 {
-	if (InSourceForBinding.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespace) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::UserNamespace) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::SystemNamespace) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::EmitterNamespace))
+	if (InSourceForBinding.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString) ||
+		InSourceForBinding.IsInNameSpace(FNiagaraConstants::UserNamespaceString) ||
+		InSourceForBinding.IsInNameSpace(FNiagaraConstants::SystemNamespaceString) ||
+		InSourceForBinding.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString))
 	{
 		return true;
 	}
@@ -374,6 +397,34 @@ const TArray<FNiagaraVariable>& UNiagaraRibbonRendererProperties::GetOptionalAtt
 	return Attrs;
 }
 
+void UNiagaraRibbonRendererProperties::GetAdditionalVariables(TArray<FNiagaraVariableBase>& OutArray) const
+{
+	if (NeedsPreciseMotionVectors())
+	{
+		OutArray.Append({
+				PrevPositionBinding.GetParamMapBindableVariable(),
+				PrevRibbonWidthBinding.GetParamMapBindableVariable(),
+				PrevRibbonFacingBinding.GetParamMapBindableVariable(),
+				PrevRibbonTwistBinding.GetParamMapBindableVariable()
+		});
+	}
+}
+
+FNiagaraVariable UNiagaraRibbonRendererProperties::GetBoundAttribute(const FNiagaraVariableAttributeBinding* Binding) const
+{
+	if (!NeedsPreciseMotionVectors())
+	{
+		if ((Binding == &PrevPositionBinding)
+			|| (Binding == &PrevRibbonWidthBinding)
+			|| (Binding == &PrevRibbonFacingBinding)
+			|| (Binding == &PrevRibbonTwistBinding))
+		{
+			return FNiagaraVariable();
+		}
+	}
+
+	return Super::GetBoundAttribute(Binding);
+}
 
 void UNiagaraRibbonRendererProperties::GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const
 {

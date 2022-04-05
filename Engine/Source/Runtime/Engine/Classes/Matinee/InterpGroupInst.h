@@ -25,23 +25,23 @@ class UInterpGroupInst : public UObject
 
 	/** UInterpGroup within the InterpData that this is an instance of. */
 	UPROPERTY()
-	class UInterpGroup* Group;
+	TObjectPtr<class UInterpGroup> Group;
 
 	/** 
 	 *	Actor that this Group instance is acting upon.
 	 *	NB: that this may be set to NULL at any time as a result of the  AActor  being destroyed.
 	 */
 	UPROPERTY()
-	class AActor* GroupActor;
+	TObjectPtr<class AActor> GroupActor;
 
 	/** Array if InterpTrack instances. TrackInst.Num() == UInterpGroup.InterpTrack.Num() must be true. */
 	UPROPERTY()
-	TArray<class UInterpTrackInst*> TrackInst;
+	TArray<TObjectPtr<class UInterpTrackInst>> TrackInst;
 
 
 	/** 
 	 *	Return the AActor that this GroupInstance is working on.
-	 *	Should use this instead of just referencing GroupActor, as it check IsPendingKill() for you.
+	 *	Should use this instead of just referencing GroupActor, as it check IsValid() for you.
 	 */
 	virtual AActor* GetGroupActor() const;
 

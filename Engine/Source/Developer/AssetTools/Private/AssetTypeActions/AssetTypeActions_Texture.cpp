@@ -37,7 +37,6 @@
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Misc/ScopedSlowTask.h"
 #include "EditorSupportDelegates.h"
-#include "Factories/TextureImportSettings.h"
 #include "MaterialGraph/MaterialGraph.h"
 #include "MaterialEditingLibrary.h"
 #include "AssetVtConversion.h"
@@ -66,7 +65,7 @@ void FAssetTypeActions_Texture::GetActions(const TArray<UObject*>& InObjects, FT
 		"Texture_CreateMaterial",
 		LOCTEXT("Texture_CreateMaterial", "Create Material"),
 		LOCTEXT("Texture_CreateMaterialTooltip", "Creates a new material using this texture."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.Material"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.Material"),
 		FUIAction(
 			FExecuteAction::CreateSP( this, &FAssetTypeActions_Texture::ExecuteCreateMaterial, Textures ),
 			FCanExecuteAction()
@@ -79,7 +78,7 @@ void FAssetTypeActions_Texture::GetActions(const TArray<UObject*>& InObjects, FT
 			"Texture_ConvertToVT",
 			LOCTEXT("Texture_ConvertToVT", "Convert to Virtual Texture"),
 			LOCTEXT("Texture_ConvertToVTTooltip", "Converts this texture to a virtual texture if it fits the size limit imposed in the texture importer settings."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.Texture2D"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.Texture2D"),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &FAssetTypeActions_Texture::ExecuteConvertToVirtualTexture, Textures),
 				FCanExecuteAction()
@@ -93,7 +92,7 @@ void FAssetTypeActions_Texture::GetActions(const TArray<UObject*>& InObjects, FT
 			"Texture_ConvertToRegular",
 			LOCTEXT("Texture_ConvertToRegular", "Convert to Regular Texture"),
 			LOCTEXT("Texture_ConvertToRegularTooltip", "Converts this texture to a regular 2D texture if it is a virtual texture."),
-			FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.Texture2D"),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.Texture2D"),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &FAssetTypeActions_Texture::ExecuteConvertToRegularTexture, Textures),
 				FCanExecuteAction()
@@ -107,7 +106,7 @@ void FAssetTypeActions_Texture::GetActions(const TArray<UObject*>& InObjects, FT
 			"Texture_FindMaterials",
 			LOCTEXT("Texture_FindMaterials", "Find Materials Using This"),
 			LOCTEXT("Texture_FindMaterialsTooltip", "Finds all materials that use this material in the content browser."),
-			FSlateIcon(),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Find"),
 			FUIAction(
 				FExecuteAction::CreateSP( this, &FAssetTypeActions_Texture::ExecuteFindMaterials, Textures[0]),
 				FCanExecuteAction()
@@ -496,7 +495,7 @@ private:
 					.Padding(2.0f)
 					[
 						SNew(SImage)
-						.Image(FSlateIcon(FEditorStyle::GetStyleSetName(),
+						.Image(FSlateIcon(FAppStyle::GetAppStyleSetName(),
 					(Asset.GetClass() == UTexture2D::StaticClass()) ?
 							"ClassIcon.Texture2D" :
 							((Asset.GetClass() == UMaterialFunction::StaticClass()) ? "ClassIcon.MaterialFunction" : "ClassIcon.Material")).GetIcon())
@@ -882,9 +881,6 @@ FConvertToVTDlg::EResult FConvertToVTDlg::ShowModal()
 
 void FAssetTypeActions_Texture::ConvertVTTexture(TArray<TWeakObjectPtr<UTexture>> Objects, bool backwards)
 {
-	int virtualTextureAutoEnableThreshold = GetDefault<UTextureImportSettings>()->AutoVTSize;
-	int virtualTextureAutoEnableThresholdPixels = virtualTextureAutoEnableThreshold * virtualTextureAutoEnableThreshold;
-
 	TArray<FAssetData> AllRelevantMaterials;
 	TArray<UTexture2D*> UserTextures; // The original selection of the user
 

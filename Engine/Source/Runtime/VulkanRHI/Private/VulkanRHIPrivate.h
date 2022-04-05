@@ -74,16 +74,34 @@ struct FInputAttachmentData;
 class FValidationContext;
 
 
+template<typename BitsType>
+constexpr bool VKHasAllFlags(VkFlags Flags, BitsType Contains)
+{
+	return (Flags & Contains) == Contains;
+}
+
+template<typename BitsType>
+constexpr bool VKHasAnyFlags(VkFlags Flags, BitsType Contains)
+{
+	return (Flags & Contains) != 0;
+}
+
 inline VkShaderStageFlagBits UEFrequencyToVKStageBit(EShaderFrequency InStage)
 {
 	switch (InStage)
 	{
-	case SF_Vertex:		return VK_SHADER_STAGE_VERTEX_BIT;
-	case SF_Hull:		return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
-	case SF_Domain:		return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
-	case SF_Pixel:		return VK_SHADER_STAGE_FRAGMENT_BIT;
-	case SF_Geometry:	return VK_SHADER_STAGE_GEOMETRY_BIT;
-	case SF_Compute:	return VK_SHADER_STAGE_COMPUTE_BIT;
+	case SF_Vertex:			return VK_SHADER_STAGE_VERTEX_BIT;
+	case SF_Pixel:			return VK_SHADER_STAGE_FRAGMENT_BIT;
+	case SF_Geometry:		return VK_SHADER_STAGE_GEOMETRY_BIT;
+	case SF_Compute:		return VK_SHADER_STAGE_COMPUTE_BIT;
+
+#if VULKAN_RHI_RAYTRACING
+	case SF_RayGen:			return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+	case SF_RayMiss:		return VK_SHADER_STAGE_MISS_BIT_KHR;
+	case SF_RayHitGroup:	return VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR; // vkrt todo: How to handle VK_SHADER_STAGE_ANY_HIT_BIT_KHR?
+	case SF_RayCallable:	return VK_SHADER_STAGE_CALLABLE_BIT_KHR;
+#endif // VULKAN_RHI_RAYTRACING
+
 	default:
 		checkf(false, TEXT("Undefined shader stage %d"), (int32)InStage);
 		break;
@@ -97,11 +115,22 @@ inline EShaderFrequency VkStageBitToUEFrequency(VkShaderStageFlagBits FlagBits)
 	switch (FlagBits)
 	{
 	case VK_SHADER_STAGE_VERTEX_BIT:					return SF_Vertex;
-	case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:		return SF_Hull;
-	case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:	return SF_Domain;
 	case VK_SHADER_STAGE_FRAGMENT_BIT:					return SF_Pixel;
 	case VK_SHADER_STAGE_GEOMETRY_BIT:					return SF_Geometry;
 	case VK_SHADER_STAGE_COMPUTE_BIT:					return SF_Compute;
+
+#if VULKAN_RHI_RAYTRACING
+	case VK_SHADER_STAGE_RAYGEN_BIT_KHR:				return SF_RayGen;
+	case VK_SHADER_STAGE_MISS_BIT_KHR:					return SF_RayMiss;
+	case VK_SHADER_STAGE_CALLABLE_BIT_KHR:				return SF_RayCallable;
+
+	// Hit group frequencies
+	case VK_SHADER_STAGE_ANY_HIT_BIT_KHR:
+	case VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR:
+	case VK_SHADER_STAGE_INTERSECTION_BIT_KHR:
+		return SF_RayHitGroup;
+#endif // VULKAN_RHI_RAYTRACING
+
 	default:
 		checkf(false, TEXT("Undefined VkShaderStageFlagBits %d"), (int32)FlagBits);
 		break;
@@ -128,6 +157,8 @@ public:
 		check(bCalculatedHash);
 		return RenderPassFullHash;
 	}
+	inline const VkOffset2D& GetOffset2D() const { return Offset.Offset2D; }
+	inline const VkOffset3D& GetOffset3D() const { return Offset.Offset3D; }
 	inline const VkExtent2D& GetExtent2D() const { return Extent.Extent2D; }
 	inline const VkExtent3D& GetExtent3D() const { return Extent.Extent3D; }
 	inline const VkAttachmentDescription* GetAttachmentDescriptions() const { return Desc; }
@@ -151,6 +182,9 @@ public:
 	inline const VkSurfaceTransformFlagBitsKHR GetQCOMRenderPassTransform() const { return QCOMRenderPassTransform; }
 
 protected:
+	VkImageLayout GetVRSImageLayout() const;
+
+protected:
 	VkSurfaceTransformFlagBitsKHR QCOMRenderPassTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	VkAttachmentReference ColorReferences[MaxSimultaneousRenderTargets];
 	VkAttachmentReference DepthStencilReference;
@@ -172,14 +206,16 @@ protected:
 	ESubpassHint SubpassHint = ESubpassHint::None;
 	uint8 MultiViewCount;
 
-	uint8 Pad0 = 0;
-	uint8 Pad1 = 0;
-	uint8 Pad2 = 0;
-
 	// Hash for a compatible RenderPass
 	uint32 RenderPassCompatibleHash = 0;
 	// Hash for the render pass including the load/store operations
 	uint32 RenderPassFullHash = 0;
+
+	union
+	{
+		VkOffset3D Offset3D;
+		VkOffset2D Offset2D;
+	} Offset;
 
 	union
 	{
@@ -267,19 +303,14 @@ public:
 		return (DepthStencilRenderTargetImage == Image);
 	}
 
-	inline uint32 GetWidth() const
+	inline VkRect2D GetRenderArea() const
 	{
-		return Extents.width;
-	}
-
-	inline uint32 GetHeight() const
-	{
-		return Extents.height;
+		return RenderArea;
 	}
 
 private:
 	VkFramebuffer Framebuffer;
-	VkExtent2D Extents;
+	VkRect2D RenderArea;
 
 	// Unadjusted number of color render targets as in FRHISetRenderTargetsInfo 
 	uint32 NumColorRenderTargets;
@@ -482,6 +513,8 @@ namespace VulkanRHI
 		case VK_FORMAT_R16G16B16A16_SNORM:
 		case VK_FORMAT_R16G16B16A16_UINT:
 		case VK_FORMAT_R16G16B16A16_SINT:
+		case VK_FORMAT_R64_UINT:
+		case VK_FORMAT_R64_SINT:
 			return 64;
 		case VK_FORMAT_R32G32B32A32_SFLOAT:
 		case VK_FORMAT_R32G32B32A32_UINT:
@@ -846,11 +879,45 @@ namespace VulkanRHI
 
 inline bool UseVulkanDescriptorCache()
 {
-	return (PLATFORM_ANDROID && !PLATFORM_LUMIN)|| GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1;
+	return (PLATFORM_ANDROID)|| GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1;
+}
+
+inline bool ValidateShadingRateDataType()
+{
+	switch (GRHIVariableRateShadingImageDataType)
+	{
+	case VRSImage_Palette:
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+		return true;
+#else
+		checkf(false, TEXT("GRHIVariableRateShadingImageDataType was specified as VRSImage_Palette, but the VK_KHR_fragment_shading_rate extension is not supported on this platform."));
+		break;
+#endif
+
+	case VRSImage_Fractional:
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
+		return true;
+#else
+		checkf(false, TEXT("GRHIVariableRateShadingImageDataType was specified as VRSImage_Fractional, but the VK_EXT_fragment_density_map extension is not supported on this platform."));
+		break;
+#endif
+
+	case VRSImage_NotSupported:
+		checkf(false, TEXT("A texture was marked as a shading rate source but attachment VRS is not supported on this device. Ensure GRHISupportsAttachmentVariableRateShading and GRHIAttachmentVariableRateShadingEnabled are true before specifying a shading rate attachment."));
+		break;
+
+	default:
+		checkf(false, TEXT("Unrecognized shading rate image data type. Specified type was %d"), (int)GRHIVariableRateShadingImageDataType);
+		break;
+	}
+
+	return false;
 }
 
 extern int32 GVulkanSubmitAfterEveryEndRenderPass;
 extern int32 GWaitForIdleOnSubmit;
+
+// Vendor-specific GPU crash dumps
 extern bool GGPUCrashDebuggingEnabled;
 
 #if VULKAN_HAS_DEBUGGING_ENABLED

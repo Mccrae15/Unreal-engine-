@@ -17,37 +17,57 @@ namespace AudioModulation
 	using FBusId = uint32;
 	extern const FBusId InvalidBusId;
 
-	struct FControlBusSettings : public TModulatorBase<FBusId>
+	struct FControlBusSettings : public TModulatorBase<FBusId>, public Audio::IModulatorSettings
 	{
 		bool bBypass;
 		float DefaultValue;
 
 		TArray<FModulationGeneratorSettings> GeneratorSettings;
 		Audio::FModulationMixFunction MixFunction;
+		Audio::FModulationParameter OutputParameter;
 
-		FControlBusSettings(const USoundControlBus& InBus, Audio::FDeviceId InDeviceId)
+		FControlBusSettings(const USoundControlBus& InBus)
 			: TModulatorBase<FBusId>(InBus.GetName(), InBus.GetUniqueID())
-			, bBypass()
+			, bBypass(InBus.bBypass)
 			, DefaultValue(InBus.GetDefaultNormalizedValue())
 			, MixFunction(InBus.GetMixFunction())
+			, OutputParameter(InBus.GetOutputParameter())
 		{
 			for (const USoundModulationGenerator* Generator : InBus.Generators)
 			{
 				if (Generator)
 				{
-					GeneratorSettings.Emplace(FModulationGeneratorSettings(*Generator, InDeviceId));
+					FModulationGeneratorSettings Settings(*Generator);
+					GeneratorSettings.Add(MoveTemp(Settings));
 				}
 			}
 		}
+
+		virtual TUniquePtr<IModulatorSettings> Clone() const override
+		{
+			return TUniquePtr<IModulatorSettings>(new FControlBusSettings(*this));
+		}
+
+		virtual Audio::FModulatorId GetModulatorId() const override
+		{
+			return static_cast<Audio::FModulatorId>(GetId());
+		}
+
+		virtual const Audio::FModulationParameter& GetOutputParameter() const override
+		{
+			return OutputParameter;
+		}
+
+		virtual Audio::FModulatorTypeId Register(Audio::FModulatorHandleId HandleId, IAudioModulationManager& InModulation) const override;
 	};
 
 	class FControlBusProxy : public TModulatorProxyRefType<FBusId, FControlBusProxy, FControlBusSettings>
 	{
 	public:
 		FControlBusProxy();
-		FControlBusProxy(const FControlBusSettings& InSettings, FAudioModulationSystem& InModSystem);
+		FControlBusProxy(FControlBusSettings&& InSettings, FAudioModulationSystem& InModSystem);
 
-		FControlBusProxy& operator =(const FControlBusSettings& InSettings);
+		FControlBusProxy& operator =(FControlBusSettings&& InSettings);
 
 		float GetDefaultValue() const;
 		const TArray<FGeneratorHandle>& GetGeneratorHandles() const;
@@ -60,7 +80,7 @@ namespace AudioModulation
 		void Reset();
 
 	private:
-		void Init(const FControlBusSettings& InSettings);
+		void Init(FControlBusSettings&& InSettings);
 		float Mix(float ValueA) const;
 
 		float DefaultValue;

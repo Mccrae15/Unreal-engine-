@@ -39,7 +39,7 @@ class UReflectionCaptureComponent : public USceneComponent
 	GENERATED_UCLASS_BODY()
 
 	UPROPERTY()
-	UBillboardComponent* CaptureOffsetComponent;
+	TObjectPtr<UBillboardComponent> CaptureOffsetComponent;
 
 	/** Indicates where to get the reflection source from. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=ReflectionCapture)
@@ -51,7 +51,7 @@ class UReflectionCaptureComponent : public USceneComponent
 
 	/** Cubemap to use for reflection if ReflectionSourceType is set to RS_SpecifiedCubemap. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=ReflectionCapture)
-	class UTextureCube* Cubemap;
+	TObjectPtr<class UTextureCube> Cubemap;
 
 	/** Angle to rotate the source cubemap when SourceType is set to SLS_SpecifiedCubemap. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=ReflectionCapture, meta = (UIMin = "0", UIMax = "360"))
@@ -76,6 +76,10 @@ class UReflectionCaptureComponent : public USceneComponent
 	/** Guid for map build data */
 	UPROPERTY()
 	FGuid MapBuildDataId;
+
+	/** Cached Cubemap texture from MapBuildData used for rendering with the encoded HDR values. */
+	UPROPERTY(transient)
+	TObjectPtr<UTextureCube> CachedEncodedHDRCubemap;
 
 #if WITH_EDITOR
 	/** Check to see if MapBuildDataId was loaded - otherwise we need to display a warning on cook */
@@ -138,10 +142,6 @@ private:
 	/** Whether the reflection capture needs to re-capture the scene. */
 	bool bNeedsRecaptureOrUpload;
 
-	/** Cached Cubemap texture from MapBuildData used for rendering with the encoded HDR values. */
-	UPROPERTY(transient)
-	UTextureCube* CachedEncodedHDRCubemap;
-
 	/** Cached Average Brightness from MapBuildData used for rendering with the encoded HDR values. */
 	float CachedAverageBrightness;
 
@@ -169,6 +169,6 @@ private:
 	friend class FReflectionCaptureProxy;
 };
 
-ENGINE_API extern float GetMaxValueRGBM(const TArray<uint8>& FullHDRData, int32 CubemapSize, float Brightness);
-ENGINE_API extern void GenerateEncodedHDRData(const TArray<uint8>& FullHDRData, int32 CubemapSize, float Brightness, float MaxValueRGBM, TArray<uint8>& OutEncodedHDRData);
+ENGINE_API extern float GetMaxValueRGBM(const TArray<uint8>& FullHDRData, int32 CubemapSize);
+ENGINE_API extern void GenerateEncodedHDRData(const TArray<uint8>& FullHDRData, int32 CubemapSize, float MaxValueRGBM, TArray<uint8>& OutEncodedHDRData);
 ENGINE_API extern void GenerateEncodedHDRTextureCube(class UMapBuildDataRegistry* Registry, class FReflectionCaptureData& CaptureBuildData, FString& TextureName, float MaxValueRGBM, class UReflectionCaptureComponent* CaptureComponent = nullptr, bool bIsReflectionCaptureCompressionProjectSetting = false);

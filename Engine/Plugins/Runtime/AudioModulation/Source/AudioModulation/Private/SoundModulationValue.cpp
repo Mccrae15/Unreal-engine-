@@ -16,9 +16,20 @@ FSoundModulationMixValue::FSoundModulationMixValue(float InValue, float InAttack
 
 void FSoundModulationMixValue::SetActiveFade(EActiveFade InActiveFade, float InFadeTime)
 {
-	if (ActiveFade == EActiveFade::Release || InActiveFade == ActiveFade)
+	// Release has already been issued, so fade cannot be overwritten (to avoid orphaned
+	// mix stages/values)
+	if (ActiveFade == EActiveFade::Release)
 	{
 		return;
+	}
+
+	// Only override fades can modify existing, active behavior
+	if (ActiveFade != EActiveFade::Override)
+	{
+		if (InActiveFade == ActiveFade)
+		{
+			return;
+		}
 	}
 
 	ActiveFade = InActiveFade;
@@ -47,14 +58,21 @@ void FSoundModulationMixValue::SetActiveFade(EActiveFade InActiveFade, float InF
 		case EActiveFade::Override:
 		default:
 		{
-			if (InFadeTime > 0.0f)
+			if (InFadeTime > 0.0f || FMath::IsNearlyZero(InFadeTime))
 			{
 				LerpTime = InFadeTime;
 			}
 			// If fade was not set prior, use attack time as default.
 			else if (LerpTime < 0.0f)
 			{
-				LerpTime = AttackTime;
+				if (ensureAlwaysMsgf(AttackTime >= 0.0f, TEXT("Lerp time must be non-negative if attack time not set and overriding.")))
+				{
+					LerpTime = AttackTime;
+				}
+				else
+				{
+					LerpTime = 0.0f;
+				}
 			}
 			break;
 		}
@@ -106,8 +124,14 @@ void FSoundModulationMixValue::UpdateDelta()
 	// Initialize to attack time if unset
 	if (LerpTime < 0.0f)
 	{
-		check(ActiveFade == EActiveFade::Attack);
-		LerpTime = AttackTime;
+		if (ensureAlwaysMsgf(ActiveFade == EActiveFade::Attack, TEXT("Lerp time must be non-negative if not attacking.")))
+		{
+			LerpTime = AttackTime;
+		}
+		else
+		{
+			LerpTime = 0.0f;
+		}
 	}
 
 	if (LerpTime > 0.0f)

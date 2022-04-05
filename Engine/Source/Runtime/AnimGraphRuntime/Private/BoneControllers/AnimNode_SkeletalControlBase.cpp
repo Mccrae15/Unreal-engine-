@@ -4,47 +4,6 @@
 #include "Animation/AnimInstanceProxy.h"
 #include "Engine/SkeletalMeshSocket.h"
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Socket Reference 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void FSocketReference::InitializeSocketInfo(const FAnimInstanceProxy* InAnimInstanceProxy)
-{
-	CachedSocketMeshBoneIndex = INDEX_NONE;
-	CachedSocketCompactBoneIndex = FCompactPoseBoneIndex(INDEX_NONE);
-
-	if (SocketName != NAME_None)
-	{
-		const USkeletalMeshComponent* OwnerMeshComponent = InAnimInstanceProxy->GetSkelMeshComponent();
-		if (OwnerMeshComponent && OwnerMeshComponent->DoesSocketExist(SocketName))
-		{
-			USkeletalMeshSocket const* const Socket = OwnerMeshComponent->GetSocketByName(SocketName);
-			if (Socket)
-			{
-				CachedSocketLocalTransform = Socket->GetSocketLocalTransform();
-				// cache mesh bone index, so that we know this is valid information to follow
-				CachedSocketMeshBoneIndex = OwnerMeshComponent->GetBoneIndex(Socket->BoneName);
-
-				ensureMsgf(CachedSocketMeshBoneIndex != INDEX_NONE, TEXT("%s : socket has invalid bone."), *SocketName.ToString());
-			}
-		}
-		else
-		{
-			// @todo : move to graph node warning
-			UE_LOG(LogAnimation, Warning, TEXT("%s: socket doesn't exist"), *SocketName.ToString());
-		}
-	}
-}
-
-void FSocketReference::InitialzeCompactBoneIndex(const FBoneContainer& RequiredBones)
-{
-	if (CachedSocketMeshBoneIndex != INDEX_NONE)
-	{
-		const int32 SocketBoneSkeletonIndex = RequiredBones.GetPoseToSkeletonBoneIndexArray()[CachedSocketMeshBoneIndex];
-		CachedSocketCompactBoneIndex = RequiredBones.GetCompactPoseIndexFromSkeletonIndex(SocketBoneSkeletonIndex);
-	}
-}
-
 /////////////////////////////////////////////////////
 // FAnimNode_SkeletalControlBase
 
@@ -145,10 +104,8 @@ void FAnimNode_SkeletalControlBase::EvaluateComponentSpace_AnyThread(FComponentS
 {
 	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateComponentSpace_AnyThread)
 
-#if ANIM_NODE_IDS_AVAILABLE
 	// Cache the incoming node IDs in a base context
 	FAnimationBaseContext CachedContext(Output);
-#endif
 
 	EvaluateComponentPose_AnyThread(Output);
 
@@ -165,9 +122,7 @@ void FAnimNode_SkeletalControlBase::EvaluateComponentSpace_AnyThread(FComponentS
 	// Apply the skeletal control if it's valid
 	if (FAnimWeight::IsRelevant(ActualAlpha) && IsValidToEvaluate(Output.AnimInstanceProxy->GetSkeleton(), Output.AnimInstanceProxy->GetRequiredBones()))
 	{
-#if ANIM_NODE_IDS_AVAILABLE
 		Output.SetNodeIds(CachedContext);
-#endif
 
 		EvaluateComponentSpaceInternal(Output);
 
@@ -191,10 +146,15 @@ void FAnimNode_SkeletalControlBase::AddDebugNodeData(FString& OutDebugData)
 
 void FAnimNode_SkeletalControlBase::EvaluateSkeletalControl_AnyThread(FComponentSpacePoseContext& Output, TArray<FBoneTransform>& OutBoneTransforms)
 {
-	DECLARE_SCOPE_HIERARCHICAL_COUNTER_ANIMNODE(EvaluateSkeletalControl_AnyThread)
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	// Call legacy implementation for backwards compatibility
-	EvaluateBoneTransforms(Output.AnimInstanceProxy->GetSkelMeshComponent(), Output.Pose, OutBoneTransforms);
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
+void FAnimNode_SkeletalControlBase::SetAlpha(float InAlpha)
+{
+	Alpha = InAlpha;
+	ActualAlpha = InAlpha;
+}
+
+float FAnimNode_SkeletalControlBase::GetAlpha() const
+{
+	return ActualAlpha;
+}

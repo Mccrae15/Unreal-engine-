@@ -83,13 +83,14 @@ public:
 	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
 	virtual void SetChannelValue(int32 ControllerId, FForceFeedbackChannelType ChannelType, float Value) override {};
 	virtual void SetChannelValues(int32 ControllerId, const FForceFeedbackValues &values) override {};
+	virtual bool SupportsForceFeedback(int32 ControllerId) override { return false; }
 	virtual bool IsGamepadAttached() const override;
 
 	/** IHandTracker */
 	virtual FName GetHandTrackerDeviceTypeName() const override;
 	virtual bool IsHandTrackingStateValid() const override;
 	virtual bool GetKeypointState(EControllerHand Hand, EHandKeypoint Keypoint, FTransform& OutTransform, float& OutRadius) const override;
-	virtual bool GetAllKeypointStates(EControllerHand Hand, TArray<struct FVector>& OutPositions, TArray<struct FQuat>& OutRotations, TArray<float>& OutRadii) const override;
+	virtual bool GetAllKeypointStates(EControllerHand Hand, TArray<FVector>& OutPositions, TArray<FQuat>& OutRotations, TArray<float>& OutRadii) const override;
 
 private:
 	FHandState& GetLeftHandState();

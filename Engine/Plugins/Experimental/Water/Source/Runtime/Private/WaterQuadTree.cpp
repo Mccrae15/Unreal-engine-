@@ -15,7 +15,7 @@ void FWaterQuadTree::FNode::AddNodeForRender(const FNodeData& InNodeData, const 
 	int32 TileDebugID = InWaterBodyRenderData.WaterBodyType;
 
 	// The base height of this tile comes either the top of the bounding box (for rivers) or the given base height (lakes and ocean)
-	float BaseHeight = InWaterBodyRenderData.IsRiver() ? Bounds.Max.Z : InWaterBodyRenderData.SurfaceBaseHeight;
+	double BaseHeight = InWaterBodyRenderData.IsRiver() ? Bounds.Max.Z : InWaterBodyRenderData.SurfaceBaseHeight;
 
 	// If there's a transition water body
 	if (TransitionWaterBodyIndex > 0)
@@ -46,30 +46,34 @@ void FWaterQuadTree::FNode::AddNodeForRender(const FNodeData& InNodeData, const 
 		}
 	}
 
+	const float BaseHeightTWS = BaseHeight + InTraversalDesc.PreViewTranslation.Z;
+
 	const int32 DensityIndex = FMath::Min(InDensityLevel, InTraversalDesc.DensityCount - 1);
 	const int32 BucketIndex = MaterialIndex * InTraversalDesc.DensityCount + DensityIndex;
 	
 	++Output.BucketInstanceCounts[BucketIndex];
 
-	const FVector Position(Bounds.GetCenter());
+	const FVector TranslatedWorldPosition(Bounds.GetCenter() + InTraversalDesc.PreViewTranslation);
 	const FVector2D Scale(Bounds.GetSize());
 	FStagingInstanceData& StagingData = Output.StagingInstanceData[Output.StagingInstanceData.AddUninitialized()];
 
 	// Add the data to the bucket
 	StagingData.BucketIndex = BucketIndex;
-	StagingData.Data[0].X = Position.X;
-	StagingData.Data[0].Y = Position.Y;
-	StagingData.Data[0].Z = BaseHeight;
+	StagingData.Data[0].X = TranslatedWorldPosition.X;
+	StagingData.Data[0].Y = TranslatedWorldPosition.Y;
+	StagingData.Data[0].Z = BaseHeightTWS;
 	StagingData.Data[0].W = *(float*)&NodeWaterBodyIndex;
 
 	// Lowest LOD isn't always 0, this increases with the height distance 
 	const bool bIsLowestLOD = (InLODLevel == InTraversalDesc.LowestLOD);
 
 	// Only allow a tile to morph if it's not the last density level and not the last LOD level, sicne there is no next level to morph to
-	const uint32 bShouldMorph = (InTraversalDesc.bLODMorphingEnabled && (InDensityLevel < InTraversalDesc.DensityCount - 1) && (InLODLevel < InTraversalDesc.LODCount - 1)) ? 1 : 0;
+	const uint32 bShouldMorph = (InTraversalDesc.bLODMorphingEnabled && (DensityIndex != InTraversalDesc.DensityCount - 1)) ? 1 : 0;
+	// Tiles can morph twice to be able to morph between 3 LOD levels. Next to last density level can only morph once
+	const uint32 bCanMorphTwice = (DensityIndex < InTraversalDesc.DensityCount - 2) ? 1 : 0;
 
-	// Pack some of the data to save space. LOD level in the lower 8 bits and then bShouldMorph in the 9th bit
-	const uint32 BitPackedChannel = ((uint32)(InLODLevel) & 0xFF) | (bShouldMorph << 8);
+	// Pack some of the data to save space. LOD level in the lower 8 bits and then bShouldMorph in the 9th bit and bCanMorphTwice in the 10th bit
+	const uint32 BitPackedChannel = ((uint32)(InLODLevel) & 0xFF) | (bShouldMorph << 8) | (bCanMorphTwice << 9);
 
 	// Should morph
 	StagingData.Data[1].X = *(float*)&BitPackedChannel;
@@ -95,8 +99,8 @@ void FWaterQuadTree::FNode::AddNodeForRender(const FNodeData& InNodeData, const 
 		FColor Color;
 		if (InTraversalDesc.DebugShowTypeColor)
 		{
-			static FColor WaterTypeColor[] = { FColor::Red, FColor::Green, FColor::Blue, FColor::Yellow, FColor::Purple };
-			Color = WaterTypeColor[TileDebugID];
+			//static FColor WaterTypeColor[] = { FColor::Red, FColor::Green, FColor::Blue, FColor::Yellow, FColor::Purple };
+			Color = GColorList.GetFColorByIndex(DensityIndex + 1);
 		}
 		else
 		{
@@ -419,6 +423,8 @@ void FWaterQuadTree::InitTree(const FBox2D& InBounds, float InTileSize, FIntPoin
 	ensure(InExtentInTiles.X > 0);
 	ensure(InExtentInTiles.Y > 0);
 
+	FarMeshData.Clear();
+
 	// Maximum number of allocated leaf nodes for this config
 	MaxLeafCount = InExtentInTiles.X*InExtentInTiles.Y*4;
 	LeafSize = InTileSize;
@@ -529,12 +535,49 @@ void FWaterQuadTree::AddLake(const TArray<FVector2D>& InPoly, const FBox& InLake
 	AddLakeRecursive(InPoly, LakeBounds, FVector2D(InLakeBounds.Min.Z, InLakeBounds.Max.Z), true, TreeDepth * 2, InWaterBodyIndex);
 }
 
-int32 FWaterQuadTree::BuildMaterialIndices(UMaterialInterface* FarDistanceMaterial)
+void FWaterQuadTree::AddFarMesh(const UMaterialInterface* InFarMeshMaterial, double InFarDistanceMeshExtent, double InFarDistanceMeshHeight)
+{
+	// Checking for not being read only here to keep things consistent with the other Add functions. In reality the FarMesh isn't added to the QuadTree itself, so it could technically be done whenever.
+	ensure(!bIsReadOnly);
+	ensure(InFarMeshMaterial);
+
+	// Early out when there would be no far mesh rendering anyway
+	if (InFarMeshMaterial == nullptr || InFarDistanceMeshExtent <= 0.0)
+	{
+		return;
+	}
+
+	// Far mesh is always 8 tiles around the quadtree region (marked as Q in diagram below) 
+	//  _ _ _
+	// |_|_|_|
+	// |_|Q|_|
+	// |_|_|_|
+	FarMeshData.InstanceData.SetNum(8);
+	FarMeshData.Material = InFarMeshMaterial;
+
+	const FVector2D WaterCenter = GetTileRegion().GetCenter();
+	const FVector2D WaterExtents = GetTileRegion().GetExtent();
+	const FVector2D WaterSize = GetTileRegion().GetSize();
+	const FVector2D TileOffets[] = { {-1.0, 1.0}, {0.0, 1.0}, {1.0, 1.0}, {1.0, 0.0}, {1.0, -1.0}, {0.0, -1.0}, {-1.0, -1.0}, {-1.0, 0.0} };
+
+	for (int32 i = 0; i < 8; i++)
+	{
+		const FVector2D TilePos = WaterCenter + TileOffets[i] * (WaterExtents + 0.5 * InFarDistanceMeshExtent);
+		FVector2D TileScale;
+		TileScale.X = (TileOffets[i].X == 0.0) ? WaterSize.X : InFarDistanceMeshExtent;
+		TileScale.Y = (TileOffets[i].Y == 0.0) ? WaterSize.Y : InFarDistanceMeshExtent;
+
+		FarMeshData.InstanceData[i].WorldPosition = FVector(TilePos, InFarDistanceMeshHeight);
+		FarMeshData.InstanceData[i].Scale = FVector2f(TileScale);
+	}
+}
+
+void FWaterQuadTree::BuildMaterialIndices()
 {
 	int32 NextIdx = 0;
 	TMap<FMaterialRenderProxy*, int32> MatToIdxMap;
 
-	auto GetMatIdx = [&NextIdx, &MatToIdxMap](UMaterialInterface* Material)
+	auto GetMatIdx = [&NextIdx, &MatToIdxMap](const UMaterialInterface* Material)
 	{
 		if (!Material)
 		{
@@ -558,7 +601,8 @@ int32 FWaterQuadTree::BuildMaterialIndices(UMaterialInterface* FarDistanceMateri
 		Data.RiverToOceanMaterialIndex = GetMatIdx(Data.RiverToOceanMaterial);
 	}
 
-	const int32 FarDistMatIdx = GetMatIdx(FarDistanceMaterial);
+	// Special case handling for Far Mesh
+	FarMeshData.MaterialIndex = GetMatIdx(FarMeshData.Material);
 
 	WaterMaterials.Empty(MatToIdxMap.Num());
 	WaterMaterials.AddUninitialized(MatToIdxMap.Num());
@@ -567,8 +611,6 @@ int32 FWaterQuadTree::BuildMaterialIndices(UMaterialInterface* FarDistanceMateri
 	{
 		WaterMaterials[It->Value] = It->Key;
 	}
-
-	return FarDistMatIdx;
 }
 
 void FWaterQuadTree::BuildWaterTileInstanceData(const FTraversalDesc& InTraversalDesc, FTraversalOutput& Output) const
@@ -576,6 +618,34 @@ void FWaterQuadTree::BuildWaterTileInstanceData(const FTraversalDesc& InTraversa
 	TRACE_CPUPROFILER_EVENT_SCOPE(BuildWaterTileInstanceData);
 	check(bIsReadOnly);
 	NodeData.Nodes[0].SelectLOD(NodeData, TreeDepth, InTraversalDesc, Output);
+
+	// Append Far Mesh tiles
+	if (FarMeshData.InstanceData.Num() > 0 && FarMeshData.MaterialIndex != INDEX_NONE)
+	{
+		const int32 FarMeshTileCount = FarMeshData.InstanceData.Num();
+		ensure(FarMeshTileCount == 8);
+
+		// Bucket index calculation is MaterialIndex*DensityCount+CurrentDensity. Since far mesh doesn't have any Density(aka LOD) steps and should render only using a 2 triangle quad, we enter it only into the last Density bucket (this always corresponds to a 2 triangle quad). 
+		const int32 BucketIndex = FarMeshData.MaterialIndex * InTraversalDesc.DensityCount + (InTraversalDesc.DensityCount - 1);
+		Output.BucketInstanceCounts[BucketIndex] += FarMeshTileCount;
+		Output.InstanceCount += FarMeshTileCount;
+
+		const int32 StartIndex = Output.StagingInstanceData.AddUninitialized(FarMeshTileCount);
+
+		for (int32 i = 0; i < FarMeshTileCount; i++)
+		{
+			// Build instance data
+			// Transform worldposition to Translated World Position
+			const FVector TranslatedWorldPosition(FarMeshData.InstanceData[i].WorldPosition + InTraversalDesc.PreViewTranslation);
+			Output.StagingInstanceData[StartIndex + i].Data[0] = FVector4f(FVector4(TranslatedWorldPosition, 0.0));
+			Output.StagingInstanceData[StartIndex + i].Data[1] = FVector4f(FVector2f::ZeroVector, FarMeshData.InstanceData[i].Scale);
+#if WITH_WATER_SELECTION_SUPPORT
+			Output.StagingInstanceData[StartIndex + i].Data[2] = FHitProxyId::InvisibleHitProxyId.GetColor().ReinterpretAsLinear();
+#endif // WITH_WATER_SELECTION_SUPPORT
+
+			Output.StagingInstanceData[StartIndex + i].BucketIndex = BucketIndex;
+		}
+	}
 }
 
 bool FWaterQuadTree::QueryInterpolatedTileBaseHeightAtLocation(const FVector2D& InWorldLocationXY, float& OutHeight) const

@@ -29,9 +29,33 @@ enum EDepthDrawingMode
 	DDM_AllOpaque		= 3,
 	// Masked materials only
 	DDM_MaskedOnly = 4,
+	// Full prepass, every object must be drawn and every pixel must match the base pass depth, except dynamic geometry which will render in the Velocity pass
+	DDM_AllOpaqueNoVelocity	= 5,
 };
 
 extern const TCHAR* GetDepthDrawingModeString(EDepthDrawingMode Mode);
+
+struct FDepthPassInfo
+{
+	bool IsComputeStencilDitherEnabled() const
+	{
+		return StencilDitherPassFlags != ERDGPassFlags::Raster && bDitheredLODTransitionsUseStencil;
+	}
+
+	bool IsRasterStencilDitherEnabled() const
+	{
+		return StencilDitherPassFlags == ERDGPassFlags::Raster && bDitheredLODTransitionsUseStencil;
+	}
+
+	EDepthDrawingMode EarlyZPassMode = DDM_None;
+	bool bEarlyZPassMovable = false;
+	bool bDitheredLODTransitionsUseStencil = false;
+	ERDGPassFlags StencilDitherPassFlags = ERDGPassFlags::Raster;
+};
+
+extern FDepthPassInfo GetDepthPassInfo(const FScene* Scene);
+
+void AddDitheredStencilFillPass(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, FRDGTextureRef DepthTexture, const FDepthPassInfo& DepthPass);
 
 class FDepthOnlyShaderElementData : public FMeshMaterialShaderElementData
 {
@@ -96,48 +120,6 @@ public:
 };
 
 /**
- * Hull shader for depth rendering
- */
-class FDepthOnlyHS : public FBaseHS
-{
-	DECLARE_SHADER_TYPE(FDepthOnlyHS,MeshMaterial);
-public:
-
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		return FBaseHS::ShouldCompilePermutation(Parameters)
-			&& TDepthOnlyVS<false>::ShouldCompilePermutation(Parameters);
-	}
-
-	FDepthOnlyHS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
-		FBaseHS(Initializer)
-	{}
-
-	FDepthOnlyHS() {}
-};
-
-/**
- * Domain shader for depth rendering
- */
-class FDepthOnlyDS : public FBaseDS
-{
-	DECLARE_SHADER_TYPE(FDepthOnlyDS,MeshMaterial);
-public:
-
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		return FBaseDS::ShouldCompilePermutation(Parameters)
-			&& TDepthOnlyVS<false>::ShouldCompilePermutation(Parameters);		
-	}
-
-	FDepthOnlyDS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
-		FBaseDS(Initializer)
-	{}
-
-	FDepthOnlyDS() {}
-};
-
-/**
 * A pixel shader for rendering the depth of a mesh.
 */
 template <bool bUsesMobileColorValue>
@@ -145,7 +127,6 @@ class FDepthOnlyPS : public FMeshMaterialShader
 {
 	DECLARE_SHADER_TYPE(FDepthOnlyPS,MeshMaterial);
 public:
-
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
 		if (IsTranslucentBlendMode(Parameters.MaterialParameters.BlendMode))
@@ -207,8 +188,6 @@ bool GetDepthPassShaders(
 	const FMaterial& Material,
 	FVertexFactoryType* VertexFactoryType,
 	ERHIFeatureLevel::Type FeatureLevel,
-	TShaderRef<FDepthOnlyHS>& HullShader,
-	TShaderRef<FDepthOnlyDS>& DomainShader,
 	TShaderRef<TDepthOnlyVS<bPositionOnly>>& VertexShader,
 	TShaderRef<FDepthOnlyPS<bUsesMobileColorValue>>& PixelShader,
 	FShaderPipelineRef& ShaderPipeline);

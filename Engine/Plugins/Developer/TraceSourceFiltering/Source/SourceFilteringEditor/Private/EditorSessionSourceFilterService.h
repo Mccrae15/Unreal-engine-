@@ -14,12 +14,6 @@
 #include "DataSourceFilter.h"
 #include "TraceSourceFilteringSettings.h"
 
-namespace Trace
-{
-	class IAnalysisSession;
-	typedef uint64 FSessionHandle;
-}
-
 class UDataSourceFilter;
 class UDataSourceFilterSet;
 
@@ -66,6 +60,10 @@ public:
 
 	/** Begin FGCObject overrides*/
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FEditorSessionSourceFilterService");
+	}
 	/** End FGCObject overrides */
 
 protected:

@@ -24,32 +24,63 @@
  * If these do not match the same values on the Steam partner backend, 
  * matchmaking will not work for your dedicated server
  */
-#ifndef UE4_PROJECT_STEAMPRODUCTNAME
+#ifndef UE_PROJECT_STEAMPRODUCTNAME
+
 #ifdef STEAMPRODUCTNAME
-UE_DEPRECATED(4.22, "The Steam Product Name Macro has been updated to be configurable from your Target.cs file. Please change STEAMPRODUCTNAME to UE4_PROJECT_STEAMPRODUCTNAME.")
-#define UE4_PROJECT_STEAMPRODUCTNAME STEAMPRODUCTNAME
+UE_DEPRECATED(4.22, "The Steam Product Name Macro has been updated to be configurable from your Target.cs file. Please change STEAMPRODUCTNAME to UE_PROJECT_STEAMPRODUCTNAME.")
+#define UE_PROJECT_STEAMPRODUCTNAME STEAMPRODUCTNAME
 #else
-#define UE4_PROJECT_STEAMPRODUCTNAME "unrealdk"
-#endif
-#endif
 
-#ifndef UE4_PROJECT_STEAMGAMEDIR
+#ifdef UE4_PROJECT_STEAMPRODUCTNAME
+UE_DEPRECATED(5.0, "UE4_PROJECT_STEAMPRODUCTNAME has been renamed to UE_PROJECT_STEAMPRODUCTNAME.")
+#define UE_PROJECT_STEAMPRODUCTNAME UE4_PROJECT_STEAMPRODUCTNAME
+#else
+#define UE_PROJECT_STEAMPRODUCTNAME "unrealdk"
+#endif //UE4_PROJECT_STEAMPRODUCTNAME
+
+#endif //STEAMPRODUCTNAME
+
+#endif //UE_PROJECT_STEAMPRODUCTNAME
+
+
+
+#ifndef UE_PROJECT_STEAMGAMEDIR
+
 #ifdef STEAMGAMEDIR
-UE_DEPRECATED(4.22, "The Steam Game Directory Macro has been updated to be configurable from your Target.cs file. Please change STEAMGAMEDIR to UE4_PROJECT_STEAMGAMEDIR.")
-#define UE4_PROJECT_STEAMGAMEDIR STEAMGAMEDIR
+UE_DEPRECATED(4.22, "The Steam Game Directory Macro has been updated to be configurable from your Target.cs file. Please change STEAMGAMEDIR to UE_PROJECT_STEAMGAMEDIR.")
+#define UE_PROJECT_STEAMGAMEDIR STEAMGAMEDIR
 #else
-#define UE4_PROJECT_STEAMGAMEDIR "unrealtest"
-#endif
-#endif
 
-#ifndef UE4_PROJECT_STEAMGAMEDESC
-#ifdef STEAMGAMEDESC
-UE_DEPRECATED(4.22, "The Steam Game Description Macro has been updated to be configurable from your Target.cs file. Please change STEAMGAMEDESC to UE4_PROJECT_STEAMGAMEDESC.")
-#define UE4_PROJECT_STEAMGAMEDESC STEAMGAMEDESC
+#ifdef UE4_PROJECT_STEAMGAMEDIR
+UE_DEPRECATED(5.0, "UE4_PROJECT_STEAMGAMEDIR has been renamed to UE_PROJECT_STEAMGAMEDIR.")
+#define UE_PROJECT_STEAMGAMEDIR UE4_PROJECT_STEAMGAMEDIR
 #else
-#define UE4_PROJECT_STEAMGAMEDESC "Unreal Test!"
-#endif
-#endif
+#define UE_PROJECT_STEAMGAMEDIR "unrealtest"
+#endif // UE4_PROJECT_STEAMPRODUCTNAME
+
+#endif // STEAMGAMEDIR
+
+#endif // UE_PROJECT_STEAMGAMEDIR
+
+
+
+#ifndef UE_PROJECT_STEAMGAMEDESC
+
+#ifdef STEAMGAMEDESC
+UE_DEPRECATED(4.22, "The Steam Game Description Macro has been updated to be configurable from your Target.cs file. Please change STEAMGAMEDESC to UE_PROJECT_STEAMGAMEDESC.")
+#define UE_PROJECT_STEAMGAMEDESC STEAMGAMEDESC
+#else
+
+#ifdef UE4_PROJECT_STEAMGAMEDESC
+UE_DEPRECATED(5.0, "UE4_PROJECT_STEAMGAMEDESC has been renamed to UE_PROJECT_STEAMGAMEDESC.")
+#define UE_PROJECT_STEAMGAMEDESC UE4_PROJECT_STEAMGAMEDESC
+#else
+#define UE_PROJECT_STEAMGAMEDESC "Unreal Test!"
+#endif // UE4_PROJECT_STEAMGAMEDESC
+
+#endif // STEAMGAMEDESC
+
+#endif // UE_PROJECT_STEAMGAMEDESC
 
 /**
  * Get the engine unique build id as Steam key
@@ -377,13 +408,13 @@ void FOnlineAsyncTaskSteamCreateServer::Tick()
 			bool bWantsDedicated = Session->SessionSettings.bIsDedicated;
 			UE_LOG_ONLINE_SESSION(Verbose, TEXT("Starting Steam game server. Dedicated? %d Game Dir is: %s Product Name is: %s\nGame Desc is: %s"),
 				bWantsDedicated,
-				ANSI_TO_TCHAR((UE4_PROJECT_STEAMGAMEDIR)),
-				ANSI_TO_TCHAR((UE4_PROJECT_STEAMPRODUCTNAME)),
-				ANSI_TO_TCHAR((UE4_PROJECT_STEAMGAMEDESC)));
+				ANSI_TO_TCHAR((UE_PROJECT_STEAMGAMEDIR)),
+				ANSI_TO_TCHAR((UE_PROJECT_STEAMPRODUCTNAME)),
+				ANSI_TO_TCHAR((UE_PROJECT_STEAMGAMEDESC)));
 
-			SteamGameServerPtr->SetModDir(UE4_PROJECT_STEAMGAMEDIR);
-			SteamGameServerPtr->SetProduct(UE4_PROJECT_STEAMPRODUCTNAME);
-			SteamGameServerPtr->SetGameDescription(UE4_PROJECT_STEAMGAMEDESC);
+			SteamGameServerPtr->SetModDir(UE_PROJECT_STEAMGAMEDIR);
+			SteamGameServerPtr->SetProduct(UE_PROJECT_STEAMPRODUCTNAME);
+			SteamGameServerPtr->SetGameDescription(UE_PROJECT_STEAMGAMEDESC);
 			SteamGameServerPtr->SetDedicatedServer(bWantsDedicated);
 
 			if (!SteamGameServerPtr->BLoggedOn())
@@ -813,6 +844,12 @@ void FPendingSearchResultSteam::CancelQuery()
 	}
 }
 
+
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 6385) // Disable dubious Static Analysis warning C6385 on windows. See MS TechNote Here https://developercommunity2.visualstudio.com/t/C6385-False-Positive/878703
+#endif
+
 /**
  *  Create the proper query for the master server based on the given search settings
  *
@@ -836,7 +873,7 @@ void FOnlineAsyncTaskSteamFindServerBase::CreateQuery(MatchMakingKeyValuePair_t*
     NumFilters = 0;
 	// Filter must match at least our game
 	FCStringAnsi::Strncpy(Filters[NumFilters].m_szKey, "gamedir", KeySize);
-	FCStringAnsi::Strncpy(Filters[NumFilters].m_szValue, UE4_PROJECT_STEAMGAMEDIR, ValueSize);
+	FCStringAnsi::Strncpy(Filters[NumFilters].m_szValue, UE_PROJECT_STEAMGAMEDIR, ValueSize);
 	NumFilters++;
 
 	FString MapName;
@@ -982,6 +1019,10 @@ void FOnlineAsyncTaskSteamFindServerBase::CreateQuery(MatchMakingKeyValuePair_t*
 		}
 	}
 }
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 /**
  *	Create a search result from a server response

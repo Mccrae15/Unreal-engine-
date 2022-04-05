@@ -17,7 +17,7 @@
 #include "Common/PagedArray.h"
 #endif
 
-namespace Trace
+namespace TraceServices
 {
 
 enum ECounterOpType : uint8
@@ -147,12 +147,14 @@ public:
 			{
 				CurrentPage = TimestampIterator.PrevPage();
 			}
+			check(CurrentPage != nullptr);
 			uint64 PageInsertionIndex = Algo::LowerBound(*CurrentPage, Timestamp);
 #if USE_VARIABLE_PAGED_ARRAY
-			InsertionIndex = TimestampIterator.GetCurrentItemIndex() + PageInsertionIndex;
+			InsertionIndex = TimestampIterator.GetCurrentItemIndex() + PageInsertionIndex + 1 - CurrentPage->ItemCount;
 #else
 			InsertionIndex = TimestampIterator.GetCurrentPageIndex() * Timestamps.GetPageSize() + PageInsertionIndex;
 #endif
+			check(InsertionIndex <= Timestamps.Num());
 		}
 		Timestamps.Insert(InsertionIndex) = Timestamp;
 		OpTypes.Insert(InsertionIndex) = OpType;
@@ -226,7 +228,7 @@ class FCounterProvider
 public:
 	static const FName ProviderName;
 
-	FCounterProvider(IAnalysisSession& Session, IFrameProvider& FrameProvider);
+	explicit FCounterProvider(IAnalysisSession& Session, IFrameProvider& FrameProvider);
 	virtual ~FCounterProvider();
 	virtual uint64 GetCounterCount() const override { return Counters.Num(); }
 	virtual void EnumerateCounters(TFunctionRef<void(uint32, const ICounter&)> Callback) const override;
@@ -240,4 +242,4 @@ private:
 	TArray<const ICounter*> Counters;
 };
 
-}
+} // namespace TraceServices

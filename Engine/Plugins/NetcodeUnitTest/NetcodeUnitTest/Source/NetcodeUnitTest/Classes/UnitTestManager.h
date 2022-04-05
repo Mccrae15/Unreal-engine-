@@ -57,22 +57,22 @@ public:
 	uint8 MaxAutoCloseCount;
 
 
-	/** The number of recorded session where UE4 has run unit tests (max one per each run of the UE4 process) */
+	/** The number of recorded sessions where UE has run unit tests (max one per each run of the UE process) */
 	UPROPERTY(config)
 	uint32 UnitTestSessionCount;
 
 
 	/** Holds a list of unit tests pending execution */
 	UPROPERTY()
-	TArray<UClass*> PendingUnitTests;
+	TArray<TObjectPtr<UClass>> PendingUnitTests;
 
 	/** Holds a list of currently active unit tests */
 	UPROPERTY()
-	TArray<UUnitTest*> ActiveUnitTests;
+	TArray<TObjectPtr<UUnitTest>> ActiveUnitTests;
 
 	/** Unit tests which are finished, and are kept around until printing the final summary */
 	UPROPERTY()
-	TArray<UUnitTest*> FinishedUnitTests;
+	TArray<TObjectPtr<UUnitTest>> FinishedUnitTests;
 
 
 	/** If a unit test was aborted on its first run, strictly cap all first-run unit tests to one at a time */
@@ -273,7 +273,7 @@ public:
 	virtual bool IsTickable() const override
 	{
 		// @todo #JohnBLowPri: Find out how the CDO is getting registered for ticking - this is odd
-		return !IsPendingKill() && !GIsServer && !HasAnyFlags(RF_ClassDefaultObject);
+		return IsValid(this) && !GIsServer && !HasAnyFlags(RF_ClassDefaultObject);
 	}
 
 	virtual bool IsTickableWhenPaused() const override

@@ -21,6 +21,7 @@
 #include "Components/ScrollBox.h"
 #include "Engine/Engine.h"
 #include "Slate/SGameLayerManager.h"
+#include "Types/ReflectionMetadata.h"
 
 #define LOCTEXT_NAMESPACE "CommonAnalogCursor"
 
@@ -30,22 +31,6 @@
 //@todo DanH: Move to UCommonUIInputSettings
 const float AnalogScrollUpdatePeriod = 0.1f;
 const float ScrollDeadZone = 0.2f;
-
-FString ToDebugString(const TSharedPtr<SWidget>& Widget)
-{
-	if (Widget)
-	{
-		if (Widget->GetType() == FName(TEXT("SObjectWidget")))
-		{
-			if (UUserWidget* UserWidget = StaticCastSharedPtr<SObjectWidget>(Widget)->GetWidgetObject())
-			{
-				return UserWidget->GetName();
-			}
-		}
-		return Widget->ToString();
-	}
-	return TEXT("nullptr");
-}
 
 bool IsEligibleFakeKeyPointerEvent(const FPointerEvent& PointerEvent)
 {
@@ -120,6 +105,13 @@ void FCommonAnalogCursor::Tick(const float DeltaTime, FSlateApplication& SlateAp
 			// We want to update the cursor position when focus changes or the focused widget moves at all
 			if (CursorTarget != PinnedLastCursorTarget || (CursorTarget && CursorTarget->GetCachedGeometry().GetAccumulatedRenderTransform() != LastCursorTargetTransform))
 			{
+#if !UE_BUILD_SHIPPING
+				if (CursorTarget != PinnedLastCursorTarget)
+				{
+					UE_LOG(LogCommonUI, Verbose, TEXT("User[%d] cursor target changed to [%s]"), GetOwnerUserIndex(), *FReflectionMetaData::GetWidgetDebugInfo(CursorTarget.Get()));
+				}
+#endif
+
 				// Release capture unless the focused widget is the captor
 				if (PinnedLastCursorTarget != CursorTarget && SlateUser->HasCursorCapture() && !SlateUser->DoesWidgetHaveAnyCapture(CursorTarget))
 				{
@@ -156,6 +148,8 @@ void FCommonAnalogCursor::Tick(const float DeltaTime, FSlateApplication& SlateAp
 						
 						const FVector2D AbsoluteWidgetCenter = TargetGeometry.GetAbsolutePositionAtCoordinates(FVector2D(0.5f, 0.5f));
 						SlateUser->SetCursorPosition(AbsoluteWidgetCenter);
+
+						UE_LOG(LogCommonUI, Verbose, TEXT("User[%d] moving cursor to target [%s] @ (%d, %d)"), GetOwnerUserIndex(), *FReflectionMetaData::GetWidgetDebugInfo(CursorTarget.Get()), (int32)AbsoluteWidgetCenter.X, (int32)AbsoluteWidgetCenter.Y);
 					}
 				}
 
@@ -317,6 +311,24 @@ bool FCommonAnalogCursor::HandleAnalogInputEvent(FSlateApplication& SlateApp, co
 	return false;
 }
 
+bool FCommonAnalogCursor::HandleMouseMoveEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent)
+{
+#if WITH_EDITOR
+	// We can leave editor cursor visibility in a bad state if the engine stops ticking to debug
+	if (GIntraFrameDebuggingGameThread)
+	{
+		SlateApp.SetPlatformCursorVisibility(true);
+		TSharedPtr<FSlateUser> SlateUser = FSlateApplication::Get().GetUser(GetOwnerUserIndex());
+		if (ensure(SlateUser))
+		{
+			SlateUser->SetCursorVisibility(true);
+		}
+	}
+#endif // WITH_EDITOR
+
+	return FAnalogCursor::HandleMouseMoveEvent(SlateApp, MouseEvent);
+}
+
 bool FCommonAnalogCursor::HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& PointerEvent)
 {
 	if (FAnalogCursor::IsRelevantInput(PointerEvent))
@@ -346,7 +358,7 @@ bool FCommonAnalogCursor::HandleMouseButtonDownEvent(FSlateApplication& SlateApp
 				//		Mousing over to a web browser and clicking the back button, for example, will shift OS focus to the browser
 				//			Within the Slate app, clicking back will transfer focus just like LMB would
 				const FWidgetPath WidgetsUnderCursor = SlateApp.LocateWindowUnderMouse(PointerEvent.GetScreenSpacePosition(), SlateApp.GetInteractiveTopLevelWindows());
-				if (WidgetsUnderCursor.ContainsWidget(ViewportWidget.ToSharedRef()))
+				if (WidgetsUnderCursor.ContainsWidget(ViewportWidget.Get()))
 				{
 					//@todo DanH: Do we need to go through the whole process here of generating a false key down event?
 					//		All we really want to do here is allow UI input bindings to mouse buttons right?
@@ -512,14 +524,14 @@ bool FCommonAnalogCursor::IsUsingGamepad() const
 
 void FCommonAnalogCursor::HideCursor()
 {
-	TSharedPtr<FSlateUser> SlateUser = FSlateApplication::Get().GetUser(GetOwnerUserIndex());
-	UWorld* World = ActionRouter.GetWorld();
+	const TSharedPtr<FSlateUser> SlateUser = FSlateApplication::Get().GetUser(GetOwnerUserIndex());
+	const UWorld* World = ActionRouter.GetWorld();
 	if (SlateUser && World && World->IsGameWorld())
 	{
 		UGameViewportClient* GameViewport = World->GetGameViewport();
-		if (GameViewport && GameViewport->GetWindow().IsValid())
+		if (GameViewport && GameViewport->GetWindow().IsValid() && GameViewport->Viewport)
 		{
-			FVector2D TopLeftPos = GameViewport->Viewport->ViewportToVirtualDesktopPixel(FVector2D(0.025f, 0.025f));
+			const FVector2D TopLeftPos = GameViewport->Viewport->ViewportToVirtualDesktopPixel(FVector2D(0.025f, 0.025f));
 			SlateUser->SetCursorPosition(TopLeftPos);
 			SlateUser->SetCursorVisibility(false);
 		}

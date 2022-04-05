@@ -32,7 +32,7 @@ class UExporter : public UObject
 	 * Objects being exported that are contained within ExportRootScope will use just their name instead of a full path
 	 */
 	UPROPERTY(transient)
-	class UObject* ExportRootScope;    // transient
+	TObjectPtr<class UObject> ExportRootScope;    // transient
 
 	/** File extension to use for this exporter */
 	UPROPERTY(BlueprintReadWrite, Category=Misc)
@@ -63,7 +63,7 @@ class UExporter : public UObject
 	uint32 bForceFileOperations:1;
 
 	UPROPERTY(BlueprintReadWrite, Category=Misc)
-	class UAssetExportTask* ExportTask;
+	TObjectPtr<class UAssetExportTask> ExportTask;
 
 	ENGINE_API static		FString	CurrentFilename;
 	/** (debugging purposes only) */
@@ -291,6 +291,11 @@ class UExporter : public UObject
 	 * @param PortFlags			Flags controlling export behavior
 	 */
 	ENGINE_API void ExportObjectInner(const class FExportObjectInnerContext* Context, UObject* Object, FOutputDevice& Ar, uint32 PortFlags);
+
+	/**
+	 * Should the given object be considered selected by the current export?
+	 */
+	static ENGINE_API bool IsObjectSelectedForExport(const FExportObjectInnerContext* Context, const UObject* Object);
 
 protected:
 	/**

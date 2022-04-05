@@ -56,6 +56,7 @@ DECLARE_LOG_CATEGORY_EXTERN(LogD3D12GapRecorder, Log, All);
 #include "GFSDK_Aftermath.h"
 #include "GFSDK_Aftermath_GpuCrashdump.h"
 #undef GFSDK_Aftermath_WITH_DX12
+extern bool GDX12NVAfterMathModuleLoaded;
 extern int32 GDX12NVAfterMathEnabled;
 extern int32 GDX12NVAfterMathTrackResources;
 extern int32 GDX12NVAfterMathMarkers;
@@ -81,18 +82,18 @@ extern int32 GDX12NVAfterMathMarkers;
 #include "D3D12StateCachePrivate.h"
 typedef FD3D12StateCacheBase FD3D12StateCache;
 #include "D3D12Allocation.h"
+#include "D3D12TransientResourceAllocator.h"
 #include "D3D12CommandContext.h"
 #include "D3D12Stats.h"
 #include "D3D12Device.h"
 #include "D3D12Adapter.h"
 
-// Definitions.
-#define USE_D3D12RHI_RESOURCE_STATE_TRACKING 1	// Fully relying on the engine's resource barriers is a work in progress. For now, continue to use the D3D12 RHI's resource state tracking.
 
 #define EXECUTE_DEBUG_COMMAND_LISTS 0
 #define ENABLE_PLACED_RESOURCES 0 // Disabled due to a couple of NVidia bugs related to placed resources. Works fine on Intel
 #define NAME_OBJECTS !(UE_BUILD_SHIPPING || UE_BUILD_TEST)	// Name objects in all builds except shipping
 #define LOG_PSO_CREATES (0 && STATS)	// Logs Create Pipeline State timings (also requires STATS)
+#define TRACK_RESOURCE_ALLOCATIONS (PLATFORM_WINDOWS && !UE_BUILD_SHIPPING && !UE_BUILD_TEST)
 
 //@TODO: Improve allocator efficiency so we can increase these thresholds and improve performance
 // We measured 149MB of wastage in 340MB of allocations with DEFAULT_BUFFER_POOL_MAX_ALLOC_SIZE set to 512KB
@@ -111,12 +112,13 @@ typedef FD3D12StateCacheBase FD3D12StateCache;
 #define READBACK_BUFFER_POOL_MAX_ALLOC_SIZE (64 * 1024)
 #define READBACK_BUFFER_POOL_DEFAULT_POOL_SIZE (4 * 1024 * 1024)
 
-#define DEFAULT_CONTEXT_UPLOAD_POOL_SIZE (8 * 1024 * 1024)
-#define DEFAULT_CONTEXT_UPLOAD_POOL_MAX_ALLOC_SIZE (4 * 1024 * 1024)
-#define DEFAULT_CONTEXT_UPLOAD_POOL_ALIGNMENT (D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)
 #define TEXTURE_POOL_SIZE (8 * 1024 * 1024)
 
 #define MAX_GPU_BREADCRUMB_DEPTH 1024
+
+#ifndef FD3D12_HEAP_FLAG_CREATE_NOT_ZEROED
+#define FD3D12_HEAP_FLAG_CREATE_NOT_ZEROED D3D12_HEAP_FLAG_CREATE_NOT_ZEROED
+#endif
 
 #if DEBUG_RESOURCE_STATES
 #define LOG_EXECUTE_COMMAND_LISTS 1
@@ -147,6 +149,11 @@ typedef FD3D12StateCacheBase FD3D12StateCache;
 #define DEBUG_RHI_EXECUTE_COMMAND_LIST(scope) 
 #endif
 
+// Use the D3D12 RHI internal transitions to drive all resource transitions
+extern bool GUseInternalTransitions;
+// Use the D3D12 RHI internal transitions to validate the engine pushed RHI transitions
+extern bool GValidateInternalTransitions;
+
 template< typename t_A, typename t_B >
 inline t_A RoundUpToNextMultiple(const t_A& a, const t_B& b)
 {
@@ -172,6 +179,12 @@ static bool D3D12RHI_ShouldCreateWithWarp()
 	return bCreateWithWarp;
 }
 
+static bool D3D12RHI_AllowSoftwareFallback()
+{
+	static bool bAllowSoftwareRendering = FParse::Param(FCommandLine::Get(), TEXT("AllowSoftwareRendering"));
+	return bAllowSoftwareRendering;
+}
+
 static bool D3D12RHI_ShouldAllowAsyncResourceCreation()
 {
 	static bool bAllowAsyncResourceCreation = !FParse::Param(FCommandLine::Get(), TEXT("nod3dasync"));
@@ -193,8 +206,28 @@ struct FD3D12UpdateTexture3DData
 	bool bComputeShaderCopy;
 };
 
+/**
+* Structure that represents various RTPSO properties (0 if unknown).
+* These can be used to report performance characteristics, sort shaders by occupancy, etc.
+*/
+struct FD3D12RayTracingPipelineInfo
+{
+	static constexpr uint32 MaxPerformanceGroups = 10;
+
+	// Estimated RTPSO group based on occupancy or other platform-specific heuristics.
+	// Group 0 is expected to be performing worst, 9 (MaxPerformanceGroups-1) is expected to be the best.
+	uint32 PerformanceGroup = 0;
+
+	uint32 NumVGPR = 0;
+	uint32 NumSGPR = 0;
+	uint32 StackSize = 0;
+	uint32 ScratchSize = 0;
+};
+
 /** Forward declare the context for the AMD AGS utility library. */
 struct AGSContext;
+
+struct INTCExtensionContext;
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
@@ -242,7 +275,7 @@ public:
 		return Object ? static_cast<ReturnType*>(Object->GetLinkedObject(GPUIndex)) : nullptr;
 	}
 
-	virtual FD3D12CommandContext* CreateCommandContext(FD3D12Device* InParent, bool InIsDefaultContext, bool InIsAsyncComputeContext);
+	virtual FD3D12CommandContext* CreateCommandContext(FD3D12Device* InParent, ED3D12CommandQueueType InQueueType, bool InIsDefaultContext);
 	virtual void CreateCommandQueue(FD3D12Device* Device, const D3D12_COMMAND_QUEUE_DESC& Desc, TRefCountPtr<ID3D12CommandQueue>& OutCommandQueue);
 
 	virtual bool GetHardwareGPUFrameTime(double& OutGPUFrameTime) const
@@ -258,56 +291,50 @@ public:
 	virtual FVertexDeclarationRHIRef RHICreateVertexDeclaration(const FVertexDeclarationElementList& Elements) final override;
 	virtual FPixelShaderRHIRef RHICreatePixelShader(TArrayView<const uint8> Code, const FSHAHash& Hash) final override;
 	virtual FVertexShaderRHIRef RHICreateVertexShader(TArrayView<const uint8> Code, const FSHAHash& Hash) final override;
-	virtual FHullShaderRHIRef RHICreateHullShader(TArrayView<const uint8> Code, const FSHAHash& Hash) final override;
-	virtual FDomainShaderRHIRef RHICreateDomainShader(TArrayView<const uint8> Code, const FSHAHash& Hash) final override;
+	virtual FMeshShaderRHIRef RHICreateMeshShader(TArrayView<const uint8> Code, const FSHAHash& Hash) final override;
+	virtual FAmplificationShaderRHIRef RHICreateAmplificationShader(TArrayView<const uint8> Code, const FSHAHash& Hash) final override;
 	virtual FGeometryShaderRHIRef RHICreateGeometryShader(TArrayView<const uint8> Code, const FSHAHash& Hash) final override;
 	virtual FComputeShaderRHIRef RHICreateComputeShader(TArrayView<const uint8> Code, const FSHAHash& Hash) override;
 	virtual FGPUFenceRHIRef RHICreateGPUFence(const FName& Name) final override;
 	virtual FStagingBufferRHIRef RHICreateStagingBuffer() final override;
 	virtual void* RHILockStagingBuffer(FRHIStagingBuffer* StagingBuffer, FRHIGPUFence* Fence, uint32 Offset, uint32 SizeRHI) final override;
     virtual void RHIUnlockStagingBuffer(FRHIStagingBuffer* StagingBuffer) final override;
-	virtual FBoundShaderStateRHIRef RHICreateBoundShaderState(FRHIVertexDeclaration* VertexDeclaration, FRHIVertexShader* VertexShader, FRHIHullShader* HullShader, FRHIDomainShader* DomainShader, FRHIPixelShader* PixelShader, FRHIGeometryShader* GeometryShader) final override;
+	virtual FBoundShaderStateRHIRef RHICreateBoundShaderState(FRHIVertexDeclaration* VertexDeclaration, FRHIVertexShader* VertexShader, FRHIPixelShader* PixelShader, FRHIGeometryShader* GeometryShader) final override;
+	FBoundShaderStateRHIRef DX12CreateBoundShaderState(const FBoundShaderStateInput& BoundShaderStateInput);
 	virtual FGraphicsPipelineStateRHIRef RHICreateGraphicsPipelineState(const FGraphicsPipelineStateInitializer& Initializer) final override;
 	virtual TRefCountPtr<FRHIComputePipelineState> RHICreateComputePipelineState(FRHIComputeShader* ComputeShader) final override;
-	virtual void RHICreateTransition(FRHITransition* Transition, ERHIPipeline SrcPipelines, ERHIPipeline DstPipelines, ERHICreateTransitionFlags CreateFlags, TArrayView<const FRHITransitionInfo> Infos) final override;
+	virtual void RHICreateTransition(FRHITransition* Transition, const FRHITransitionCreateInfo& CreateInfo) final override;
 	virtual void RHIReleaseTransition(FRHITransition* Transition) final override;
-	virtual FUniformBufferRHIRef RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout& Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation) final override;
+	virtual FUniformBufferRHIRef RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout* Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation) final override;
 	virtual void RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRHI, const void* Contents) final override;
-	virtual FIndexBufferRHIRef RHICreateIndexBuffer(uint32 Stride, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
-	virtual void* RHILockIndexBuffer(FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* IndexBuffer, uint32 Offset, uint32 Size, EResourceLockMode LockMode) final override;
-	virtual void RHIUnlockIndexBuffer(FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* IndexBuffer) final override;
-	virtual void RHITransferIndexBufferUnderlyingResource(FRHIIndexBuffer* DestIndexBuffer, FRHIIndexBuffer* SrcIndexBuffer) final override;
-	virtual FVertexBufferRHIRef RHICreateVertexBuffer(uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
-	virtual void* RHILockVertexBuffer(FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode) final override;
-	virtual void RHIUnlockVertexBuffer(FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer) final override;
-	virtual void RHICopyVertexBuffer(FRHIVertexBuffer* SourceBuffer, FRHIVertexBuffer* DestBuffer) final override;
-	virtual void RHITransferVertexBufferUnderlyingResource(FRHIVertexBuffer* DestVertexBuffer, FRHIVertexBuffer* SrcVertexBuffer) final override;
-	virtual FStructuredBufferRHIRef RHICreateStructuredBuffer(uint32 Stride, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
-	virtual void* RHILockStructuredBuffer(FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* StructuredBuffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode) final override;
-	virtual void RHIUnlockStructuredBuffer(FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* StructuredBuffer) final override;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIStructuredBuffer* StructuredBuffer, bool bUseUAVCounter, bool bAppendBuffer) final override;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel) final override;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIVertexBuffer* VertexBuffer, uint8 Format) final override;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIIndexBuffer* IndexBuffer, uint8 Format) final override;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIStructuredBuffer* StructuredBuffer) final override;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIVertexBuffer* VertexBuffer, uint32 Stride, uint8 Format) final override;
+	virtual FBufferRHIRef RHICreateBuffer(uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) final override;
+	virtual void RHITransferBufferUnderlyingResource(FRHIBuffer* DestBuffer, FRHIBuffer* SrcBuffer) final override;
+	virtual void RHICopyBuffer(FRHIBuffer* SourceBuffer, FRHIBuffer* DestBuffer) final override;
+	virtual void* RHILockBuffer(FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 Size, EResourceLockMode LockMode) final override;
+	virtual void* RHILockBufferMGPU(FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 GPUIndex, uint32 Offset, uint32 Size, EResourceLockMode LockMode) final override;
+	virtual void RHIUnlockBuffer(FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer) final override;
+	virtual void RHIUnlockBufferMGPU(FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 GPUIndex) final override;
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIBuffer* Buffer, bool bUseUAVCounter, bool bAppendBuffer) final override;
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint16 FirstArraySlice, uint16 NumArraySlices) final override;
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHITexture* Texture, uint32 MipLevel, uint8 Format, uint16 FirstArraySlice, uint16 NumArraySlices) final override;
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView(FRHIBuffer* Buffer, uint8 Format) final override;
+	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIBuffer* Buffer) final override;
+	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIBuffer* Buffer, uint32 Stride, uint8 Format) final override;
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(const FShaderResourceViewInitializer& Initializer) final override;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHIIndexBuffer* Buffer) final override;
-	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIVertexBuffer* VertexBuffer, uint32 Stride, uint8 Format) final override;
-	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIIndexBuffer* IndexBuffer) final override;
+	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer, uint32 Stride, uint8 Format) final override;
+	virtual void RHIUpdateShaderResourceView(FRHIShaderResourceView* SRV, FRHIBuffer* Buffer) final override;
 	virtual uint64 RHICalcTexture2DPlatformSize(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags InFlags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) override;
+	virtual uint64 RHICalcTexture2DArrayPlatformSize(uint32 SizeX, uint32 SizeY, uint32 ArraySize, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) final override;
 	virtual uint64 RHICalcTexture3DPlatformSize(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags InFlags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) final override;
 	virtual uint64 RHICalcTextureCubePlatformSize(uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags InFlags, const FRHIResourceCreateInfo& CreateInfo, uint32& OutAlign) final override;
 	virtual uint64 RHIGetMinimumAlignmentForBufferBackedSRV(EPixelFormat Format) final override;
 	virtual void RHIGetTextureMemoryStats(FTextureMemoryStats& OutStats) final override;
 	virtual bool RHIGetTextureMemoryVisualizeData(FColor* TextureData, int32 SizeX, int32 SizeY, int32 Pitch, int32 PixelSize) final override;
-	virtual FTextureReferenceRHIRef RHICreateTextureReference(FLastRenderTimeContainer* LastRenderTime) final override;
 	virtual FTexture2DRHIRef RHICreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override;
 	virtual FTexture2DRHIRef RHIAsyncCreateTexture2D(uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, void** InitialMipData, uint32 NumInitialMips) final override;
 	virtual void RHICopySharedMips(FRHITexture2D* DestTexture2D, FRHITexture2D* SrcTexture2D) final override;
 	virtual FTexture2DArrayRHIRef RHICreateTexture2DArray(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override;
 	virtual FTexture3DRHIRef RHICreateTexture3D(uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override;
-	virtual void RHIGetResourceInfo(FRHITexture* Ref, FRHIResourceInfo& OutInfo) override;
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView(FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo) final override;
 	virtual uint32 RHIComputeMemorySize(FRHITexture* TextureRHI) final override;
 	virtual FTexture2DRHIRef RHIAsyncReallocateTexture2D(FRHITexture2D* Texture2D, int32 NewMipCount, int32 NewSizeX, int32 NewSizeY, FThreadSafeCounter* RequestStatus) override;
@@ -327,6 +354,7 @@ public:
 	virtual void* RHILockTextureCubeFace(FRHITextureCube* Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) final override;
 	virtual void RHIUnlockTextureCubeFace(FRHITextureCube* Texture, uint32 FaceIndex, uint32 ArrayIndex, uint32 MipIndex, bool bLockWithinMiptail) final override;
 	virtual void RHIBindDebugLabelName(FRHITexture* Texture, const TCHAR* Name) final override;
+	virtual void RHIBindDebugLabelName(FRHIBuffer* Buffer, const TCHAR* Name) final override;
 	virtual void RHIReadSurfaceData(FRHITexture* Texture, FIntRect Rect, TArray<FColor>& OutData, FReadSurfaceDataFlags InFlags) final override;
 	virtual void RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect InRect, TArray<FLinearColor>& OutData, FReadSurfaceDataFlags InFlags) final override;
 	virtual void RHIMapStagingSurface(FRHITexture* Texture, FRHIGPUFence* Fence, void*& OutData, int32& OutWidth, int32& OutHeight, uint32 GPUIndex = 0) final override;
@@ -370,6 +398,8 @@ public:
 	virtual class IRHIComputeContext* RHIGetDefaultAsyncComputeContext() final override;
 	virtual class IRHICommandContextContainer* RHIGetCommandContextContainer(int32 Index, int32 Num) final override;
 
+	virtual IRHITransientResourceAllocator* RHICreateTransientResourceAllocator() override;
+
 #if WITH_MGPU
 	virtual IRHICommandContextContainer* RHIGetCommandContextContainer(int32 Index, int32 Num, FRHIGPUMask GPUMask)final override;
 #endif
@@ -391,19 +421,19 @@ public:
 		return RHICreateVertexShader(Code, Hash);
 	}
 
+	virtual FMeshShaderRHIRef CreateMeshShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash) override final
+	{
+		return RHICreateMeshShader(Code, Hash);
+	}
+
+	virtual FAmplificationShaderRHIRef CreateAmplificationShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash) override final
+	{
+		return RHICreateAmplificationShader(Code, Hash);
+	}
+
 	virtual FGeometryShaderRHIRef CreateGeometryShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash) override final
 	{
 		return RHICreateGeometryShader(Code, Hash);
-	}
-
-	virtual FHullShaderRHIRef CreateHullShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash) override final
-	{
-		return RHICreateHullShader(Code, Hash);
-	}
-
-	virtual FDomainShaderRHIRef CreateDomainShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash) override final
-	{
-		return RHICreateDomainShader(Code, Hash);
 	}
 
 	virtual FPixelShaderRHIRef CreatePixelShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash) override final
@@ -416,17 +446,16 @@ public:
 		return RHICreateComputeShader(Code, Hash);
 	}
 
-	virtual FVertexBufferRHIRef CreateVertexBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final;
-	virtual FStructuredBufferRHIRef CreateStructuredBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Stride, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final;
-	virtual FVertexBufferRHIRef CreateAndLockVertexBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo, void*& OutDataBuffer) override final;
-	virtual FIndexBufferRHIRef CreateAndLockIndexBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Stride, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo, void*& OutDataBuffer) override final;
+	virtual FBufferRHIRef CreateBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo) override final;
 	// virtual FTexture2DRHIRef AsyncReallocateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture2D, int32 NewMipCount, int32 NewSizeX, int32 NewSizeY, FThreadSafeCounter* RequestStatus) override final;
 	// virtual ETextureReallocationStatus FinalizeAsyncReallocateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture2D, bool bBlockUntilCompleted) override final;
 	// virtual ETextureReallocationStatus CancelAsyncReallocateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture2D, bool bBlockUntilCompleted) override final;
-	virtual FIndexBufferRHIRef CreateIndexBuffer_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Stride, uint32 Size, uint32 InUsage, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override final;
 	virtual void UpdateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion2D& UpdateRegion, uint32 SourcePitch, const uint8* SourceData) override final;
 	virtual void* LockTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail, bool bNeedsDefaultRHIFlush = true) override final;
 	virtual void UnlockTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture, uint32 MipIndex, bool bLockWithinMiptail, bool bNeedsDefaultRHIFlush = true) override final;
+
+	virtual void* LockTexture2DArray_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2DArray* Texture, uint32 ArrayIndex, uint32 MipIndex, EResourceLockMode LockMode, uint32& DestStride, bool bLockWithinMiptail) override final;
+	virtual void UnlockTexture2DArray_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2DArray* Texture, uint32 ArrayIndex, uint32 MipIndex, bool bLockWithinMiptail) override final;
 
 	virtual FTexture2DRHIRef AsyncReallocateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture2D, int32 NewMipCount, int32 NewSizeX, int32 NewSizeY, FThreadSafeCounter* RequestStatus);
 	virtual ETextureReallocationStatus FinalizeAsyncReallocateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture2D, bool bBlockUntilCompleted)
@@ -441,18 +470,19 @@ public:
 	virtual FTexture2DRHIRef RHICreateTexture2D_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override;
 	virtual FTexture2DArrayRHIRef RHICreateTexture2DArray_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, uint32 NumSamples, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override;
 	virtual FTexture3DRHIRef RHICreateTexture3D_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 SizeX, uint32 SizeY, uint32 SizeZ, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* StructuredBuffer, bool bUseUAVCounter, bool bAppendBuffer) override final;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel) override final;
-	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint8 Format) override final;
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, bool bUseUAVCounter, bool bAppendBuffer) override final;
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel, uint16 FirstArraySlice, uint16 NumArraySlices) override final;
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, uint32 MipLevel, uint8 Format, uint16 FirstArraySlice, uint16 NumArraySlices) override final;
+	virtual FUnorderedAccessViewRHIRef RHICreateUnorderedAccessView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint8 Format) override final;
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture* Texture, const FRHITextureSRVCreateInfo& CreateInfo) override final;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint32 Stride, uint8 Format) override final;
+	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Stride, uint8 Format) override final;
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, const FShaderResourceViewInitializer& Initializer) override final;
 	virtual FShaderResourceViewRHIRef RHICreateShaderResourceViewWriteMask_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHITexture2D* Texture2D) override final;
 
-	virtual FShaderResourceViewRHIRef CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* VertexBuffer, uint32 Stride, uint8 Format) override final;
-	virtual FShaderResourceViewRHIRef CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIIndexBuffer* Buffer) override final;
+	virtual FShaderResourceViewRHIRef CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Stride, uint8 Format) override final;
+	virtual FShaderResourceViewRHIRef CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer) override final;
 	virtual FShaderResourceViewRHIRef CreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, const FShaderResourceViewInitializer& Initializer) override final;
-	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* StructuredBuffer) override final;
+	virtual FShaderResourceViewRHIRef RHICreateShaderResourceView_RenderThread(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer) override final;
 	virtual FTextureCubeRHIRef RHICreateTextureCube_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override;
 	virtual FTextureCubeRHIRef RHICreateTextureCubeArray_RenderThread(class FRHICommandListImmediate& RHICmdList, uint32 Size, uint32 ArraySize, uint8 Format, uint32 NumMips, ETextureCreateFlags Flags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo) override;
 
@@ -467,11 +497,15 @@ public:
 
 #if D3D12_RHI_RAYTRACING
 
+	virtual FRayTracingAccelerationStructureSize RHICalcRayTracingSceneSize(uint32 MaxInstances, ERayTracingAccelerationStructureFlags Flags) final override;
+	virtual FRayTracingAccelerationStructureSize RHICalcRayTracingGeometrySize(const FRayTracingGeometryInitializer& Initializer) final override;
+
 	virtual FRayTracingGeometryRHIRef RHICreateRayTracingGeometry(const FRayTracingGeometryInitializer& Initializer) final override;
 	virtual FRayTracingSceneRHIRef RHICreateRayTracingScene(const FRayTracingSceneInitializer& Initializer) final override;
+	virtual FRayTracingSceneRHIRef RHICreateRayTracingScene(FRayTracingSceneInitializer2 Initializer) final override;
 	virtual FRayTracingShaderRHIRef RHICreateRayTracingShader(TArrayView<const uint8> Code, const FSHAHash& Hash, EShaderFrequency ShaderFrequency) final override;
 	virtual FRayTracingPipelineStateRHIRef RHICreateRayTracingPipelineState(const FRayTracingPipelineStateInitializer& Initializer) final override;
-
+	virtual void RHITransferRayTracingGeometryUnderlyingResource(FRHIRayTracingGeometry* DestGeometry, FRHIRayTracingGeometry* SrcGeometry) final override;
 #endif //D3D12_RHI_RAYTRACING
 
 	bool CheckGpuHeartbeat() const override;
@@ -483,8 +517,9 @@ public:
 
 	static int32 GetResourceBarrierBatchSizeLimit();
 
-	void* LockBuffer(FRHICommandListImmediate* RHICmdList, FD3D12Buffer* Buffer, uint32 BufferSize, uint32 BufferUsage, uint32 Offset, uint32 Size, EResourceLockMode LockMode);
-	void UnlockBuffer(FRHICommandListImmediate* RHICmdList, FD3D12Buffer* Buffer, uint32 BufferUsage);
+	FBufferRHIRef CreateBuffer(FRHICommandListImmediate* RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo);
+	void* LockBuffer(FRHICommandListImmediate* RHICmdList, FD3D12Buffer* Buffer, uint32 BufferSize, EBufferUsageFlags BufferUsage, uint32 Offset, uint32 Size, EResourceLockMode LockMode);
+	void UnlockBuffer(FRHICommandListImmediate* RHICmdList, FD3D12Buffer* Buffer, EBufferUsageFlags BufferUsage);
 
 	static inline bool ShouldDeferBufferLockOperation(FRHICommandListImmediate* RHICmdList)
 	{
@@ -514,15 +549,13 @@ public:
 	FUpdateTexture3DData BeginUpdateTexture3D_Internal(FRHITexture3D* Texture, uint32 MipIndex, const struct FUpdateTextureRegion3D& UpdateRegion);
 	void EndUpdateTexture3D_Internal(FUpdateTexture3DData& UpdateData);
 
-	void UpdateBuffer(FD3D12Resource* Dest, uint32 DestOffset, FD3D12Resource* Source, uint32 SourceOffset, uint32 NumBytes);
+	void UpdateBuffer(FD3D12ResourceLocation* Dest, uint32 DestOffset, FD3D12ResourceLocation* Source, uint32 SourceOffset, uint32 NumBytes);
 
 #if UE_BUILD_DEBUG	
 	uint32 SubmissionLockStalls;
 	uint32 DrawCount;
 	uint64 PresentCount;
 #endif
-
-	inline void UpdataTextureMemorySize(int64 TextureSizeInKiloBytes) { FPlatformAtomics::InterlockedAdd(&GCurrentTextureMemorySize, TextureSizeInKiloBytes); }
 
 	/** Determine if an two views intersect */
 	template <class LeftT, class RightT>
@@ -552,7 +585,7 @@ public:
 		return !pLeftView->DoesNotOverlap(*pRightView);
 	}
 
-	static inline bool IsTransitionNeeded(D3D12_RESOURCE_STATES Before, D3D12_RESOURCE_STATES& After)
+	static inline bool IsTransitionNeeded(bool bInAllowStateMerging, D3D12_RESOURCE_STATES Before, D3D12_RESOURCE_STATES& After)
 	{
 		check(Before != D3D12_RESOURCE_STATE_CORRUPT && After != D3D12_RESOURCE_STATE_CORRUPT);
 		check(Before != D3D12_RESOURCE_STATE_TBD && After != D3D12_RESOURCE_STATE_TBD);
@@ -567,29 +600,40 @@ public:
 		// having exactly one bit set so we need to special case these
 		if (After == D3D12_RESOURCE_STATE_COMMON)
 		{
-			// The resource state tracking code in FD3D12CommandContext::RHITransitionResources forces all EReadable transitions
-			// to go through the COMMON state right now, so we can end up with some COMMON -> COMMON transitions which can be
-			// skipped. Once that is fixed or removed, we shouldn't get here anymore if we're already in the COMMON state,
-			// so we can simply return true and let the ensure in FD3D12CommandListHandle::AddTransitionBarrier catch bad usage.
-			return (Before != D3D12_RESOURCE_STATE_COMMON);
+			// Before state should not have the common state otherwise it's invalid transition
+			check(Before != D3D12_RESOURCE_STATE_COMMON);
+			return true;
 		}
 
-		// We should avoid doing read-to-read state transitions. But when we do, we should avoid turning off already transitioned bits,
-		// e.g. VERTEX_BUFFER -> SHADER_RESOURCE is turned into VERTEX_BUFFER -> VERTEX_BUFFER | SHADER_RESOURCE.
-		// This reduces the number of resource transitions and ensures automatic states from resource bindings get properly combined.
-		D3D12_RESOURCE_STATES Combined = Before | After;
-		if ((Combined & (D3D12_RESOURCE_STATE_GENERIC_READ | D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)) == Combined)
+		if (bInAllowStateMerging)
 		{
-			After = Combined;
+			// We should avoid doing read-to-read state transitions. But when we do, we should avoid turning off already transitioned bits,
+			// e.g. VERTEX_BUFFER -> SHADER_RESOURCE is turned into VERTEX_BUFFER -> VERTEX_BUFFER | SHADER_RESOURCE.
+			// This reduces the number of resource transitions and ensures automatic states from resource bindings get properly combined.
+			D3D12_RESOURCE_STATES Combined = Before | After;
+			if ((Combined & (D3D12_RESOURCE_STATE_GENERIC_READ | D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)) == Combined)
+			{
+				After = Combined;
+			}
 		}
 
 		return Before != After;
 	}
 
-	/** Transition a resource's state based on a Render target view */
-	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12RenderTargetView* pView, D3D12_RESOURCE_STATES after)
+	enum class ETransitionMode
 	{
-#if USE_D3D12RHI_RESOURCE_STATE_TRACKING
+		Apply,
+		Validate
+	};
+
+	/** Transition a resource's state based on a Render target view */
+	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12RenderTargetView* pView, D3D12_RESOURCE_STATES after, ETransitionMode InMode)
+	{
+		// Early out if we are not using engine transitions and not validating them
+		check(InMode == ETransitionMode::Validate);
+		if (!GUseInternalTransitions && !GValidateInternalTransitions)
+			return;
+
 		FD3D12Resource* pResource = pView->GetResource();
 
 		const D3D12_RENDER_TARGET_VIEW_DESC &desc = pView->GetDesc();
@@ -601,13 +645,13 @@ public:
 		case D3D12_RTV_DIMENSION_TEXTURE2D:
 		case D3D12_RTV_DIMENSION_TEXTURE2DMS:
 			// Only one subresource to transition
-			TransitionResource(hCommandList, pResource, after, desc.Texture2D.MipSlice);
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, desc.Texture2D.MipSlice, InMode);
 			break;
 
 		case D3D12_RTV_DIMENSION_TEXTURE2DARRAY:
 		{
 			// Multiple subresources to transition
-			TransitionResource(hCommandList, pResource, after, pView->GetViewSubresourceSubset());
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, pView->GetViewSubresourceSubset(), InMode);
 			break;
 		}
 
@@ -615,13 +659,16 @@ public:
 			check(false);	// Need to update this code to include the view type
 			break;
 		}
-#endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
 	}
 
 	/** Transition a resource's state based on a Depth stencil view's desc flags */
-	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12DepthStencilView* pView)
+	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12DepthStencilView* pView, ETransitionMode InMode)
 	{
-#if USE_D3D12RHI_RESOURCE_STATE_TRACKING
+		// Early out if we are not using engine transitions and not validating them
+		check(InMode == ETransitionMode::Validate);
+		if (!GUseInternalTransitions && !GValidateInternalTransitions)
+			return;
+
 		// Determine the required subresource states from the view desc
 		const D3D12_DEPTH_STENCIL_VIEW_DESC& DSVDesc = pView->GetDesc();
 		const bool bDSVDepthIsWritable = (DSVDesc.Flags & D3D12_DSV_FLAG_READ_ONLY_DEPTH) == 0;
@@ -639,20 +686,23 @@ public:
 		FD3D12Resource* pResource = pView->GetResource();
 		if (bDepthIsWritable)
 		{
-			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_DEPTH_WRITE, pView->GetDepthOnlyViewSubresourceSubset());
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_WRITE, pView->GetDepthOnlyViewSubresourceSubset(), InMode);
 		}
 
 		if (bStencilIsWritable)
 		{
-			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_DEPTH_WRITE, pView->GetStencilOnlyViewSubresourceSubset());
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, D3D12_RESOURCE_STATE_DEPTH_WRITE, pView->GetStencilOnlyViewSubresourceSubset(), InMode);
 		}
-#endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
 	}
 
 	/** Transition a resource's state based on a Depth stencil view */
-	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12DepthStencilView* pView, D3D12_RESOURCE_STATES after)
+	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12DepthStencilView* pView, D3D12_RESOURCE_STATES after, ETransitionMode InMode)
 	{
-#if USE_D3D12RHI_RESOURCE_STATE_TRACKING
+		// Early out if we are not using engine transitions and not validating them
+		check(InMode == ETransitionMode::Validate);
+		if (!GUseInternalTransitions && !GValidateInternalTransitions)
+			return;
+
 		FD3D12Resource* pResource = pView->GetResource();
 
 		const D3D12_DEPTH_STENCIL_VIEW_DESC &desc = pView->GetDesc();
@@ -663,14 +713,14 @@ public:
 			if (pResource->GetPlaneCount() > 1)
 			{
 				// Multiple subresources to transtion
-				TransitionResource(hCommandList, pResource, after, pView->GetViewSubresourceSubset());
+				TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, pView->GetViewSubresourceSubset(), InMode);
 				break;
 			}
 			else
 			{
 				// Only one subresource to transition
 				check(pResource->GetPlaneCount() == 1);
-				TransitionResource(hCommandList, pResource, after, desc.Texture2D.MipSlice);
+				TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, desc.Texture2D.MipSlice, InMode);
 			}
 			break;
 
@@ -678,7 +728,7 @@ public:
 		case D3D12_DSV_DIMENSION_TEXTURE2DMSARRAY:
 		{
 			// Multiple subresources to transtion
-			TransitionResource(hCommandList, pResource, after, pView->GetViewSubresourceSubset());
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, pView->GetViewSubresourceSubset(), InMode);
 			break;
 		}
 
@@ -686,37 +736,39 @@ public:
 			check(false);	// Need to update this code to include the view type
 			break;
 		}
-#endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
 	}
 
 	/** Transition a resource's state based on a Unordered access view */
-	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12UnorderedAccessView* pView, D3D12_RESOURCE_STATES after)
+	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12UnorderedAccessView* pView, D3D12_RESOURCE_STATES after, ETransitionMode InMode)
 	{
-#if USE_D3D12RHI_RESOURCE_STATE_TRACKING
+		// Early out if we are not using engine transitions and not validating them
+		if (!GUseInternalTransitions && !GValidateInternalTransitions)
+			return;
+
 		FD3D12Resource* pResource = pView->GetResource();
 
 		const D3D12_UNORDERED_ACCESS_VIEW_DESC &desc = pView->GetDesc();
 		switch (desc.ViewDimension)
 		{
 		case D3D12_UAV_DIMENSION_BUFFER:
-			TransitionResource(hCommandList, pResource, after, 0);
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, 0, InMode);
 			break;
 
 		case D3D12_UAV_DIMENSION_TEXTURE2D:
 			// Only one subresource to transition
-			TransitionResource(hCommandList, pResource, after, desc.Texture2D.MipSlice);
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, desc.Texture2D.MipSlice, InMode);
 			break;
 
 		case D3D12_UAV_DIMENSION_TEXTURE2DARRAY:
 		{
 			// Multiple subresources to transtion
-			TransitionResource(hCommandList, pResource, after, pView->GetViewSubresourceSubset());
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, pView->GetViewSubresourceSubset(), InMode);
 			break;
 		}
 		case D3D12_UAV_DIMENSION_TEXTURE3D:
 		{
 			// Multiple subresources to transtion
-			TransitionResource(hCommandList, pResource, after, pView->GetViewSubresourceSubset());
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, pView->GetViewSubresourceSubset(), InMode);
 			break;
 		}
 
@@ -724,13 +776,15 @@ public:
 			check(false);	// Need to update this code to include the view type
 			break;
 		}
-#endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
 	}
 
 	/** Transition a resource's state based on a Shader resource view */
-	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12ShaderResourceView* pView, D3D12_RESOURCE_STATES after)
+	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12ShaderResourceView* pView, D3D12_RESOURCE_STATES after, ETransitionMode InMode)
 	{
-#if USE_D3D12RHI_RESOURCE_STATE_TRACKING
+		// Early out if we are not using engine transitions and not validating them
+		if (!GUseInternalTransitions && !GValidateInternalTransitions)
+			return;
+
 		FD3D12Resource* pResource = pView->GetResource();
 
 		if (!pResource || !pResource->RequiresResourceStateTracking())
@@ -748,7 +802,7 @@ public:
 		default:
 		{
 			// Transition the resource
-			TransitionResource(hCommandList, pResource, after, subresourceSubset);
+			TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, subresourceSubset, InMode);
 			break;
 		}
 
@@ -757,37 +811,40 @@ public:
 			if (pResource->GetHeapType() == D3D12_HEAP_TYPE_DEFAULT)
 			{
 				// Transition the resource
-				TransitionResource(hCommandList, pResource, after, subresourceSubset);
+				TransitionResource(hCommandList, pResource, D3D12_RESOURCE_STATE_TBD, after, subresourceSubset, InMode);
 			}
 			break;
 		}
 		}
-#endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
 	}
 
 	// Transition a specific subresource to the after state.
-	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12Resource* pResource, D3D12_RESOURCE_STATES after, uint32 subresource)
+	// Return true if UAV barrier is required
+	static inline bool TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12Resource* pResource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after, uint32 subresource, ETransitionMode InMode)
 	{
-#if USE_D3D12RHI_RESOURCE_STATE_TRACKING
-		TransitionResourceWithTracking(hCommandList, pResource, after, subresource);
-#endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
+		// Early out if we are not using engine transitions and not validating them
+		if (InMode == ETransitionMode::Validate && !GUseInternalTransitions && !GValidateInternalTransitions)
+			return false;
+
+		return TransitionResourceWithTracking(hCommandList, pResource, before, after, subresource, InMode);
 	}
 
 	// Transition a subset of subresources to the after state.
-	static inline void TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12Resource* pResource, D3D12_RESOURCE_STATES after, const CViewSubresourceSubset& subresourceSubset)
+	// Return true if UAV barrier is required
+	static inline bool TransitionResource(FD3D12CommandListHandle& hCommandList, FD3D12Resource* pResource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after, const CViewSubresourceSubset& subresourceSubset, ETransitionMode InMode)
 	{
-#if USE_D3D12RHI_RESOURCE_STATE_TRACKING
-		TransitionResourceWithTracking(hCommandList, pResource, after, subresourceSubset);
-#endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
+		// Early out if we are not using engine transitions and not validating them
+		if (InMode == ETransitionMode::Validate && !GUseInternalTransitions && !GValidateInternalTransitions)
+			return false;
+
+		return TransitionResourceWithTracking(hCommandList, pResource, before, after, subresourceSubset, InMode);
 	}
 
 	// Transition a subresource from current to a new state, using resource state tracking.
-	static void TransitionResourceWithTracking(FD3D12CommandListHandle& hCommandList, FD3D12Resource* pResource, D3D12_RESOURCE_STATES after, uint32 subresource)
+	static bool TransitionResourceWithTracking(FD3D12CommandListHandle& hCommandList, FD3D12Resource* pResource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after, uint32 subresource, ETransitionMode InMode)
 	{
-#if USE_D3D12RHI_RESOURCE_STATE_TRACKING
 		check(pResource);
 		check(pResource->RequiresResourceStateTracking());
-
 		check(!((after & (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)) && (pResource->GetDesc().Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)));
 
 #ifdef PLATFORM_SUPPORTS_RESOURCE_COMPRESSION
@@ -795,6 +852,8 @@ public:
 #endif
 
 		hCommandList.UpdateResidency(pResource);
+
+		bool bRequireUAVBarrier = false;
 
 		CResourceState& ResourceState = hCommandList.GetResourceState(pResource);
 		if (subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES && !ResourceState.AreAllSubresourcesSame())
@@ -804,51 +863,28 @@ public:
 			const uint8 SubresourceCount = pResource->GetSubresourceCount();
 			for (uint32 SubresourceIndex = 0; SubresourceIndex < SubresourceCount; SubresourceIndex++)
 			{
-				const D3D12_RESOURCE_STATES before = ResourceState.GetSubresourceState(SubresourceIndex);
-				if (before == D3D12_RESOURCE_STATE_TBD)
-				{
-					// We need a pending resource barrier so we can setup the state before this command list executes
-					hCommandList.AddPendingResourceBarrier(pResource, after, SubresourceIndex);
-					ResourceState.SetSubresourceState(SubresourceIndex, after);
-				}
-				// We're not using IsTransitionNeeded() because we do want to transition even if 'after' is a subset of 'before'
-				// This is so that we can ensure all subresources are in the same state, simplifying future barriers
-				else if (before != after)
-				{
-					hCommandList.AddTransitionBarrier(pResource, before, after, SubresourceIndex);
-					ResourceState.SetSubresourceState(SubresourceIndex, after);
-				}
+				bool bForceInAfterState = true;
+				bRequireUAVBarrier |= ValidateAndSetResourceState(hCommandList, pResource, ResourceState, SubresourceIndex, before, after, bForceInAfterState, InMode);
 			}
 
 			// The entire resource should now be in the after state on this command list (even if all barriers are pending)
-			check(ResourceState.CheckResourceState(after));
-			ResourceState.SetResourceState(after);
+			verify(ResourceState.CheckAllSubresourceSame());
+			check(EnumHasAllFlags(ResourceState.GetSubresourceState(D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES), after));
 		}
 		else
 		{
-			const D3D12_RESOURCE_STATES before = ResourceState.GetSubresourceState(subresource);
-			if (before == D3D12_RESOURCE_STATE_TBD)
-			{
-				// We need a pending resource barrier so we can setup the state before this command list executes
-				hCommandList.AddPendingResourceBarrier(pResource, after, subresource);
-				ResourceState.SetSubresourceState(subresource, after);
-			}
-			else if (IsTransitionNeeded(before, after))
-			{
-				hCommandList.AddTransitionBarrier(pResource, before, after, subresource);
-				ResourceState.SetSubresourceState(subresource, after);
-			}
+			bool bForceInAfterState = false;
+			bRequireUAVBarrier = ValidateAndSetResourceState(hCommandList, pResource, ResourceState, subresource, before, after, bForceInAfterState, InMode);
 		}
-#endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
+
+		return bRequireUAVBarrier;
 	}
 
 	// Transition subresources from current to a new state, using resource state tracking.
-	static void TransitionResourceWithTracking(FD3D12CommandListHandle& hCommandList, FD3D12Resource* pResource, D3D12_RESOURCE_STATES after, const CViewSubresourceSubset& subresourceSubset)
+	static bool TransitionResourceWithTracking(FD3D12CommandListHandle& hCommandList, FD3D12Resource* pResource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after, const CViewSubresourceSubset& subresourceSubset, ETransitionMode InMode)
 	{
-#if USE_D3D12RHI_RESOURCE_STATE_TRACKING
 		check(pResource);
 		check(pResource->RequiresResourceStateTracking());
-
 		check(!((after & (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)) && (pResource->GetDesc().Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)));
 
 #ifdef PLATFORM_SUPPORTS_RESOURCE_COMPRESSION
@@ -856,24 +892,16 @@ public:
 #endif
 
 		hCommandList.UpdateResidency(pResource);
-		D3D12_RESOURCE_STATES before;
 		const bool bIsWholeResource = subresourceSubset.IsWholeResource();
 		CResourceState& ResourceState = hCommandList.GetResourceState(pResource);
+
+		bool bRequireUAVBarrier = false;
+
 		if (bIsWholeResource && ResourceState.AreAllSubresourcesSame())
 		{
 			// Fast path. Transition the entire resource from one state to another.
-			before = ResourceState.GetSubresourceState(D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-			if (before == D3D12_RESOURCE_STATE_TBD)
-			{
-				// We need a pending resource barrier so we can setup the state before this command list executes
-				hCommandList.AddPendingResourceBarrier(pResource, after, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-				ResourceState.SetResourceState(after);
-			}
-			else if (IsTransitionNeeded(before, after))
-			{
-				hCommandList.AddTransitionBarrier(pResource, before, after, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-				ResourceState.SetResourceState(after);
-			}
+			bool bForceInAfterState = false;
+			bRequireUAVBarrier = ValidateAndSetResourceState(hCommandList, pResource, ResourceState, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, before, after, bForceInAfterState, InMode);
 		}
 		else
 		{
@@ -885,36 +913,12 @@ public:
 			{
 				for (uint32 SubresourceIndex = it.StartSubresource(); SubresourceIndex < it.EndSubresource(); SubresourceIndex++)
 				{
-					// IsTransitionNeeded can change the after state if it's read-only and the current state already contains other read-only bits. We don't want to propagate
-					// those bits to other subresources, so we'll save the original value.
-					D3D12_RESOURCE_STATES ActualAfter = after;
+					bool bForceInAfterState = false;
+					bRequireUAVBarrier |= ValidateAndSetResourceState(hCommandList, pResource, ResourceState, SubresourceIndex, before, after, bForceInAfterState, InMode);
 
-					before = ResourceState.GetSubresourceState(SubresourceIndex);
-					if (before == D3D12_RESOURCE_STATE_TBD)
-					{
-						// We need a pending resource barrier so we can setup the state before this command list executes
-						hCommandList.AddPendingResourceBarrier(pResource, after, SubresourceIndex);
-						ResourceState.SetSubresourceState(SubresourceIndex, after);
-					}
-					else if (IsTransitionNeeded(before, ActualAfter))
-					{
-						hCommandList.AddTransitionBarrier(pResource, before, ActualAfter, SubresourceIndex);
-						ResourceState.SetSubresourceState(SubresourceIndex, ActualAfter);
-						// If IsTransitionNeeded() changed the destination state, this subresource will be in a different state compared to the previous subresources,
-						// so bWholeResourceWasTransitionedToSameState cannot be true.
-						if (ActualAfter != after)
-						{
-							bWholeResourceWasTransitionedToSameState = false;
-						}
-					}
-					else
-					{
-						// Didn't need to transition the subresource.
-						if (before != after)
-						{
-							bWholeResourceWasTransitionedToSameState = false;
-						}
-					}
+					// Subresource not in the same state, then whole resource is not in the same state anymore
+					if (ResourceState.GetSubresourceState(SubresourceIndex) != after)
+						bWholeResourceWasTransitionedToSameState = false;
 				}
 			}
 
@@ -922,12 +926,168 @@ public:
 			if (bWholeResourceWasTransitionedToSameState)
 			{
 				// Sanity check to make sure all subresources are really in the 'after' state
-				check(ResourceState.CheckResourceState(after));
-
-				ResourceState.SetResourceState(after);
+				verify(ResourceState.CheckAllSubresourceSame());
+				check(EnumHasAllFlags(ResourceState.GetSubresourceState(D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES), after));
 			}
 		}
-#endif // USE_D3D12RHI_RESOURCE_STATE_TRACKING
+
+		return bRequireUAVBarrier;
+	}
+
+	static bool ValidateAndSetResourceState(FD3D12CommandListHandle& InCommandList, FD3D12Resource* InResource, CResourceState& InResourceState, uint32 InSubresourceIndex, D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState, bool bInForceAfterState, ETransitionMode InMode)
+	{
+		// Only validate the current state?
+		bool bValidateState = !GUseInternalTransitions && (InMode == ETransitionMode::Validate);
+
+		// Try and get the correct D3D before state for the transition
+		D3D12_RESOURCE_STATES TrackedState = InResourceState.GetSubresourceState(InSubresourceIndex);
+		D3D12_RESOURCE_STATES BeforeState = TrackedState;
+
+		// Special case for UAV access resources
+		bool bHasUAVAccessResource = InResource->GetUAVAccessResource() != nullptr;
+
+		// Still untracked in this command list, then try and find out a before state to use
+		if (BeforeState == D3D12_RESOURCE_STATE_TBD)
+		{
+			if (bValidateState)
+			{
+				// Can't correctly validate on parallel command list because command list with final state which
+				// updates the resource state might not have been executed yet (on RHI Thread)
+				// Unless it's a transition on the default context and all transitions happen on the default context (validated somewhere else)
+				if (GRHICommandList.Bypass() || InCommandList.GetCurrentOwningContext()->IsDefaultContext())
+				{
+					BeforeState = InResource->GetResourceState().GetSubresourceState(InSubresourceIndex);
+				}
+			}
+			else if (GUseInternalTransitions)
+			{
+				// Already perform transition here if possible to skip patch up during command list execution
+				if (InBeforeState != D3D12_RESOURCE_STATE_TBD)
+				{
+					check(BeforeState == D3D12_RESOURCE_STATE_TBD || BeforeState == InBeforeState);
+					BeforeState = InBeforeState;
+
+					// Add dummy pending barrier, because the end state needs to be updated during execute
+					InCommandList.AddPendingResourceBarrier(InResource, D3D12_RESOURCE_STATE_TBD, InSubresourceIndex);
+				}
+				else
+				{
+					// Special handling for UAVAccessResource and transition to UAV - don't want to
+					// enqueue pending resource to UAV because the actual resource won't transition
+					// Adding of patch up will only be done when transitioning to non UAV state
+					if (bHasUAVAccessResource && EnumHasAnyFlags(InAfterState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+					{
+						InCommandList.AddAliasingBarrier(InResource->GetResource(), InResource->GetUAVAccessResource());
+						InResourceState.SetSubresourceState(InSubresourceIndex, InAfterState);
+					}
+					else
+					{
+						// We need a pending resource barrier so we can setup the state before this command list executes
+						InResourceState.SetSubresourceState(InSubresourceIndex, InAfterState);
+						InCommandList.AddPendingResourceBarrier(InResource, InAfterState, InSubresourceIndex);
+					}
+				}
+			}
+			else
+			{
+				// We have enqueue the transition right now in the command list and can't add it to the pending list because
+				// this resource can already have been used in the current state in the command list
+				// so changing that state before this command list is invalid.				
+				BeforeState = InBeforeState;
+				if (BeforeState == D3D12_RESOURCE_STATE_TBD)
+				{
+					// If we don't have a valid before state, then we have to use the actual last stored state of the
+					// resource. We can sadly enough only correctly do this when parallel command lists don't perform
+					// any resource transition because then the current stored state might be invalid
+					// (Currently validated during begin/end transition in D3D12Commands)
+					BeforeState = InResource->GetResourceState().GetSubresourceState(InSubresourceIndex);
+				}
+
+				// Add dummy pending barrier, because the end state needs to be updated during execute
+				InCommandList.AddPendingResourceBarrier(InResource, D3D12_RESOURCE_STATE_TBD, InSubresourceIndex);
+			}
+		}
+
+		bool bRequireUAVBarrier = false;
+
+		// Have a valid state now?
+		check(BeforeState != D3D12_RESOURCE_STATE_TBD || GUseInternalTransitions || bValidateState);
+		if (BeforeState != D3D12_RESOURCE_STATE_TBD)
+		{
+			// Make sure the before states match up or are unknown
+			check(InBeforeState == D3D12_RESOURCE_STATE_TBD || BeforeState == InBeforeState);
+
+			if (bValidateState)
+			{
+				// Check if all after states are valid and special case for DepthRead because then DepthWrite is also valid
+				check(EnumHasAllFlags(BeforeState, InAfterState) || (BeforeState == D3D12_RESOURCE_STATE_DEPTH_WRITE && InAfterState == D3D12_RESOURCE_STATE_DEPTH_READ));
+			}
+			else
+			{
+				bool bApplyTransitionBarrier = true;
+
+				// Require UAV barrier when before and after are UAV
+				if (BeforeState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS && InAfterState == D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+				{
+					bRequireUAVBarrier = true;
+				}
+				// Special case for UAV access resources
+				else if (bHasUAVAccessResource && EnumHasAnyFlags(BeforeState | InAfterState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
+				{
+					// inject an aliasing barrier
+					const bool bFromUAV = EnumHasAnyFlags(BeforeState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+					const bool bToUAV = EnumHasAnyFlags(InAfterState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+					check(bFromUAV != bToUAV);
+
+					InCommandList.AddAliasingBarrier(
+						bFromUAV ? InResource->GetUAVAccessResource() : InResource->GetResource(),
+						bToUAV ? InResource->GetUAVAccessResource() : InResource->GetResource());
+
+					if (bToUAV)
+					{
+						InResourceState.SetUAVHiddenResourceState(BeforeState);
+						bApplyTransitionBarrier = false;
+					}
+					else
+					{
+						D3D12_RESOURCE_STATES HiddenState = InResourceState.GetUAVHiddenResourceState();
+
+						// Still unknown in this command list?
+						if (HiddenState == D3D12_RESOURCE_STATE_TBD)
+						{
+							InCommandList.AddPendingResourceBarrier(InResource, InAfterState, InSubresourceIndex);
+							InResourceState.SetSubresourceState(InSubresourceIndex, InAfterState);
+							bApplyTransitionBarrier = false;
+						}
+						else
+						{
+							// Use the hidden state as the before state on the resource
+							BeforeState = HiddenState;
+						}
+					}
+				}
+
+				if (bApplyTransitionBarrier)
+				{
+					// We're not using IsTransitionNeeded() when bInForceAfterState is set because we do want to transition even if 'after' is a subset of 'before'
+					// This is so that we can ensure all subresources are in the same state, simplifying future barriers
+					// No state merging when using engine transitions - otherwise next before state might not match up anymore)
+					bool bAllowStateMerging = GUseInternalTransitions;
+					if ((bInForceAfterState && BeforeState != InAfterState) || IsTransitionNeeded(bAllowStateMerging, BeforeState, InAfterState))
+					{
+						InCommandList.AddTransitionBarrier(InResource, BeforeState, InAfterState, InSubresourceIndex);
+						InResourceState.SetSubresourceState(InSubresourceIndex, InAfterState);
+					}
+					// Force update the state when the tracked state is still unknown
+					else if (TrackedState == D3D12_RESOURCE_STATE_TBD)
+					{
+						InResourceState.SetSubresourceState(InSubresourceIndex, InAfterState);
+					}
+				}
+			}
+		}
+
+		return bRequireUAVBarrier;
 	}
 
 public:
@@ -936,8 +1096,8 @@ public:
 	virtual void* CreateVirtualTexture(ETextureCreateFlags InFlags, D3D12_RESOURCE_DESC& ResourceDesc, const struct FD3D12TextureLayout& TextureLayout, FD3D12Resource** ppResource, FPlatformMemory::FPlatformVirtualMemoryBlock& RawTextureBlock, D3D12_RESOURCE_STATES InitialUsage = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) = 0;
 	virtual void DestroyVirtualTexture(ETextureCreateFlags InFlags, void* RawTextureMemory, FPlatformMemory::FPlatformVirtualMemoryBlock& RawTextureBlock, uint64 CommittedTextureSize) = 0;
 #endif
-	virtual bool HandleSpecialLock(void*& MemoryOut, uint32 MipIndex, uint32 ArrayIndex, uint32 InFlags, EResourceLockMode LockMode, const FD3D12TextureLayout& TextureLayout, void* RawTextureMemory, uint32& DestStride) { return false; }
-	virtual bool HandleSpecialUnlock(FRHICommandListBase* RHICmdList, uint32 MipIndex, uint32 InFlags, const struct FD3D12TextureLayout& TextureLayout, void* RawTextureMemory) { return false; }
+	virtual bool HandleSpecialLock(void*& MemoryOut, uint32 MipIndex, uint32 ArrayIndex, ETextureCreateFlags InFlags, EResourceLockMode LockMode, const FD3D12TextureLayout& TextureLayout, void* RawTextureMemory, uint32& DestStride) { return false; }
+	virtual bool HandleSpecialUnlock(FRHICommandListBase* RHICmdList, uint32 MipIndex, ETextureCreateFlags InFlags, const struct FD3D12TextureLayout& TextureLayout, void* RawTextureMemory) { return false; }
 
 	FD3D12Adapter& GetAdapter(uint32_t Index = 0) { return *ChosenAdapters[Index]; }
 	int32 GetNumAdapters() const { return ChosenAdapters.Num(); }
@@ -965,9 +1125,15 @@ public:
 	void SetAmdSupportedExtensionFlags(uint32 Flags) { AmdSupportedExtensionFlags = Flags; }
 	uint32 GetAmdSupportedExtensionFlags() const { return AmdSupportedExtensionFlags; }
 
+	INTCExtensionContext* GetIntelExtensionContext() { return IntelExtensionContext; }
+
 protected:
 
 	TArray<TSharedPtr<FD3D12Adapter>> ChosenAdapters;
+
+#if D3D12RHI_SUPPORTS_WIN_PIX
+	void* WinPixGpuCapturerHandle = nullptr;
+#endif
 
 	/** Can pix events be used */
 	bool bPixEventEnabled = false;
@@ -983,15 +1149,29 @@ protected:
 	AGSContext* AmdAgsContext;
 	uint32 AmdSupportedExtensionFlags;
 
+	INTCExtensionContext* IntelExtensionContext = nullptr;
+
 	/** A buffer in system memory containing all zeroes of the specified size. */
 	void* ZeroBuffer;
 	uint32 ZeroBufferSize;
 
+public:
+
 	template<typename BaseResourceType>
 	TD3D12Texture2D<BaseResourceType>* CreateD3D12Texture2D(class FRHICommandListImmediate* RHICmdList, uint32 SizeX, uint32 SizeY, uint32 SizeZ, bool bTextureArray, bool CubeTexture, EPixelFormat Format,
-		uint32 NumMips, uint32 NumSamples, ETextureCreateFlags InFlags, FRHIResourceCreateInfo& CreateInfo);
+		uint32 NumMips, uint32 NumSamples, ETextureCreateFlags InFlags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo, ED3D12ResourceTransientMode TransientMode = ED3D12ResourceTransientMode::NonTransient, ID3D12ResourceAllocator* ResourceAllocator = nullptr);
 
-	FD3D12Texture3D* CreateD3D12Texture3D(class FRHICommandListImmediate* RHICmdList, uint32 SizeX, uint32 SizeY, uint32 SizeZ, EPixelFormat Format, uint32 NumMips, ETextureCreateFlags InFlags, FRHIResourceCreateInfo& CreateInfo);
+	FD3D12Buffer* CreateD3D12Buffer(class FRHICommandListImmediate* RHICmdList, uint32 Size, EBufferUsageFlags Usage, uint32 Stride, ERHIAccess ResourceState, FRHIResourceCreateInfo& CreateInfo, ED3D12ResourceTransientMode TransientMode = ED3D12ResourceTransientMode::NonTransient, ID3D12ResourceAllocator* ResourceAllocator = nullptr);
+
+	FD3D12Texture3D* CreateD3D12Texture3D(class FRHICommandListImmediate* RHICmdList, uint32 SizeX, uint32 SizeY, uint32 SizeZ, EPixelFormat Format, uint32 NumMips, ETextureCreateFlags InFlags, ERHIAccess InResourceState, FRHIResourceCreateInfo& CreateInfo, ED3D12ResourceTransientMode TransientMode = ED3D12ResourceTransientMode::NonTransient, ID3D12ResourceAllocator* ResourceAllocator = nullptr);
+
+
+	// Interface for FD3D12TransientResourceAllocator.
+	virtual D3D12_RESOURCE_DESC GetResourceDesc(const FRHITextureCreateInfo& CreateInfo) const;
+	virtual FRHITexture* CreateTexture(const FRHITextureCreateInfo& CreateInfo, const TCHAR* DebugName, ERHIAccess InitialState, ED3D12ResourceTransientMode AllocationMode, ID3D12ResourceAllocator* ResourceAllocator);
+	FRHIBuffer* CreateBuffer(const FRHIBufferCreateInfo& CreateInfo, const TCHAR* DebugName, ERHIAccess InitialState, ED3D12ResourceTransientMode TransientMode, ID3D12ResourceAllocator* ResourceAllocator);
+
+protected:
 
 	template<typename BaseResourceType>
 	TD3D12Texture2D<BaseResourceType>* CreateTextureFromResource(bool bTextureArray, bool bCubeTexture, EPixelFormat Format, ETextureCreateFlags TexCreateFlags, const FClearValueBinding& ClearValueBinding, ID3D12Resource* Resource);
@@ -1062,9 +1242,10 @@ public:
 
 private:
 
-#if USE_PIX && (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
+#if D3D12RHI_SUPPORTS_WIN_PIX
 	void* WindowsPixDllHandle = nullptr;
-#endif // USE_PIX && (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
+	void* WinPixGpuCapturerHandle = nullptr;
+#endif
 
 	TArray<TSharedPtr<FD3D12Adapter>> ChosenAdapters;
 
@@ -1105,52 +1286,77 @@ public:
 };
 
 /**
-*	Class of a scoped resource barrier.
-*	This class conditionally uses resource state tracking.
-*	This should only be used with the Editor.
+*	Class of a scoped resource barrier - handles both tracked and untracked resources
 */
-class FConditionalScopeResourceBarrier
+class FScopedResourceBarrier
 {
 private:
 	FD3D12CommandListHandle& hCommandList;
 	FD3D12Resource* const pResource;
-	D3D12_RESOURCE_STATES Current;
-	const D3D12_RESOURCE_STATES Desired;
+	D3D12_RESOURCE_STATES CurrentState;
+	const D3D12_RESOURCE_STATES DesiredState;
 	const uint32 Subresource;
-	bool bRestoreDefaultState;
+	FD3D12DynamicRHI::ETransitionMode TransitionMode;
+
+	bool bRestoreState;
 
 public:
-	explicit FConditionalScopeResourceBarrier(FD3D12CommandListHandle& hInCommandList, FD3D12Resource* pInResource, const D3D12_RESOURCE_STATES InDesired, const uint32 InSubresource)
+	FScopedResourceBarrier(FD3D12CommandListHandle& hInCommandList, FD3D12Resource* pInResource, const D3D12_RESOURCE_STATES InDesiredState, const uint32 InSubresource, FD3D12DynamicRHI::ETransitionMode InTransitionMode)
 		: hCommandList(hInCommandList)
 		, pResource(pInResource)
-		, Current(D3D12_RESOURCE_STATE_TBD)
-		, Desired(InDesired)
+		, CurrentState(D3D12_RESOURCE_STATE_TBD)
+		, DesiredState(InDesiredState)
 		, Subresource(InSubresource)
-		, bRestoreDefaultState(false)
+		, TransitionMode(InTransitionMode)
+		, bRestoreState(false)
 	{
 		// when we don't use resource state tracking, transition the resource (only if necessary)
 		if (!pResource->RequiresResourceStateTracking())
 		{
-			Current = pResource->GetDefaultResourceState();
-			if (Current != Desired)
+			CurrentState = pResource->GetDefaultResourceState();
+			if (CurrentState != DesiredState)
 			{
 				// we will add a transition, we need to transition back to the default state when the scoped object dies : 
-				bRestoreDefaultState = true;
-				hCommandList.AddTransitionBarrier(pResource, Current, Desired, Subresource);
+				bRestoreState = true;
+				hCommandList.AddTransitionBarrier(pResource, CurrentState, DesiredState, Subresource);
 			}
 		}
 		else
 		{
-			FD3D12DynamicRHI::TransitionResource(hCommandList, pResource, Desired, Subresource);
+			// If we are not using the internal transitions and need to apply the state change, then store the current state of restore
+			if (!GUseInternalTransitions && InTransitionMode == FD3D12DynamicRHI::ETransitionMode::Apply)
+			{
+				// try tracked state in command list
+				CResourceState& ResourceState = hCommandList.GetResourceState(pInResource);
+				CurrentState = ResourceState.GetSubresourceState(InSubresource);
+
+				// if still unknown then use the stored state (not valid when transitions happen in parallel command lists)
+				if (CurrentState == D3D12_RESOURCE_STATE_TBD)
+				{
+					CurrentState = pInResource->GetResourceState().GetSubresourceState(InSubresource);
+				}
+
+				// Restore state to current state when done
+				bRestoreState = true;
+			}
+
+			FD3D12DynamicRHI::TransitionResource(hCommandList, pResource, CurrentState, DesiredState, Subresource, TransitionMode);
 		}
 	}
 
-	~FConditionalScopeResourceBarrier()
+	~FScopedResourceBarrier()
 	{
-		// Return the resource to it's default state if necessary : 
-		if (bRestoreDefaultState)
+		// Return the resource to the original state if requested
+		if (bRestoreState)
 		{
-			hCommandList.AddTransitionBarrier(pResource, Desired, Current, Subresource);
+			if (!pResource->RequiresResourceStateTracking())
+			{
+				hCommandList.AddTransitionBarrier(pResource, DesiredState, CurrentState, Subresource);
+			}
+			else
+			{
+				FD3D12DynamicRHI::TransitionResource(hCommandList, pResource, DesiredState, CurrentState, Subresource, TransitionMode);
+			}
 		}
 	}
 };
@@ -1233,6 +1439,202 @@ private:
 		}
 	}
 };
+
+// This namespace is needed to avoid a name clash with D3D11 RHI when linked together in monolithic builds. Otherwise the linker will just pick any variant instead of each RHI using their own version.
+namespace D3D12RHI
+{
+
+inline DXGI_FORMAT FindSharedResourceDXGIFormat(DXGI_FORMAT InFormat, bool bSRGB)
+{
+	if (bSRGB)
+	{
+		switch (InFormat)
+		{
+		case DXGI_FORMAT_B8G8R8X8_TYPELESS:    return DXGI_FORMAT_B8G8R8X8_UNORM_SRGB;
+		case DXGI_FORMAT_B8G8R8A8_TYPELESS:    return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+		case DXGI_FORMAT_R8G8B8A8_TYPELESS:    return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+		case DXGI_FORMAT_BC1_TYPELESS:         return DXGI_FORMAT_BC1_UNORM_SRGB;
+		case DXGI_FORMAT_BC2_TYPELESS:         return DXGI_FORMAT_BC2_UNORM_SRGB;
+		case DXGI_FORMAT_BC3_TYPELESS:         return DXGI_FORMAT_BC3_UNORM_SRGB;
+		case DXGI_FORMAT_BC7_TYPELESS:         return DXGI_FORMAT_BC7_UNORM_SRGB;
+		};
+	}
+	else
+	{
+		switch (InFormat)
+		{
+		case DXGI_FORMAT_B8G8R8X8_TYPELESS:    return DXGI_FORMAT_B8G8R8X8_UNORM;
+		case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+		case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+		case DXGI_FORMAT_BC1_TYPELESS:      return DXGI_FORMAT_BC1_UNORM;
+		case DXGI_FORMAT_BC2_TYPELESS:      return DXGI_FORMAT_BC2_UNORM;
+		case DXGI_FORMAT_BC3_TYPELESS:      return DXGI_FORMAT_BC3_UNORM;
+		case DXGI_FORMAT_BC7_TYPELESS:      return DXGI_FORMAT_BC7_UNORM;
+		};
+	}
+	switch (InFormat)
+	{
+	case DXGI_FORMAT_R32G32B32A32_TYPELESS: return DXGI_FORMAT_R32G32B32A32_UINT;
+	case DXGI_FORMAT_R32G32B32_TYPELESS:    return DXGI_FORMAT_R32G32B32_UINT;
+	case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_UNORM;
+	case DXGI_FORMAT_R32G32_TYPELESS:       return DXGI_FORMAT_R32G32_UINT;
+	case DXGI_FORMAT_R10G10B10A2_TYPELESS:  return DXGI_FORMAT_R10G10B10A2_UNORM;
+	case DXGI_FORMAT_R16G16_TYPELESS:       return DXGI_FORMAT_R16G16_UNORM;
+	case DXGI_FORMAT_R8G8_TYPELESS:         return DXGI_FORMAT_R8G8_UNORM;
+	case DXGI_FORMAT_R8_TYPELESS:           return DXGI_FORMAT_R8_UNORM;
+
+	case DXGI_FORMAT_BC4_TYPELESS:         return DXGI_FORMAT_BC4_UNORM;
+	case DXGI_FORMAT_BC5_TYPELESS:         return DXGI_FORMAT_BC5_UNORM;
+
+
+
+	case DXGI_FORMAT_R24G8_TYPELESS: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+	case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
+	case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_UNORM;
+		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
+	case DXGI_FORMAT_R32G8X24_TYPELESS: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+	}
+	return InFormat;
+}
+
+inline DXGI_FORMAT FindDepthStencilResourceDXGIFormat(DXGI_FORMAT InFormat)
+{
+	switch (InFormat)
+	{
+	case DXGI_FORMAT_R32_FLOAT: return DXGI_FORMAT_R32_TYPELESS;
+	case DXGI_FORMAT_R16_FLOAT: return DXGI_FORMAT_R16_TYPELESS;
+	}
+
+	return InFormat;
+}
+
+inline DXGI_FORMAT GetPlatformTextureResourceFormat(DXGI_FORMAT InFormat, ETextureCreateFlags InFlags)
+{
+	// Find valid shared texture format
+	if (EnumHasAnyFlags(InFlags, TexCreate_Shared))
+	{
+		return FindSharedResourceDXGIFormat(InFormat, EnumHasAnyFlags(InFlags, TexCreate_SRGB));
+	}
+	if (EnumHasAnyFlags(InFlags, TexCreate_DepthStencilTargetable))
+	{
+		return FindDepthStencilResourceDXGIFormat(InFormat);
+	}
+
+	return InFormat;
+}
+
+/** Find an appropriate DXGI format for the input format and SRGB setting. */
+inline DXGI_FORMAT FindShaderResourceDXGIFormat(DXGI_FORMAT InFormat, bool bSRGB)
+{
+	if (bSRGB)
+	{
+		switch (InFormat)
+		{
+		case DXGI_FORMAT_B8G8R8A8_TYPELESS:    return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+		case DXGI_FORMAT_R8G8B8A8_TYPELESS:    return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+		case DXGI_FORMAT_BC1_TYPELESS:         return DXGI_FORMAT_BC1_UNORM_SRGB;
+		case DXGI_FORMAT_BC2_TYPELESS:         return DXGI_FORMAT_BC2_UNORM_SRGB;
+		case DXGI_FORMAT_BC3_TYPELESS:         return DXGI_FORMAT_BC3_UNORM_SRGB;
+		case DXGI_FORMAT_BC7_TYPELESS:         return DXGI_FORMAT_BC7_UNORM_SRGB;
+		};
+	}
+	else
+	{
+		switch (InFormat)
+		{
+		case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+		case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+		case DXGI_FORMAT_BC1_TYPELESS:      return DXGI_FORMAT_BC1_UNORM;
+		case DXGI_FORMAT_BC2_TYPELESS:      return DXGI_FORMAT_BC2_UNORM;
+		case DXGI_FORMAT_BC3_TYPELESS:      return DXGI_FORMAT_BC3_UNORM;
+		case DXGI_FORMAT_BC7_TYPELESS:      return DXGI_FORMAT_BC7_UNORM;
+		};
+	}
+	switch (InFormat)
+	{
+	case DXGI_FORMAT_R24G8_TYPELESS: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+	case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
+	case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_UNORM;
+		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
+	case DXGI_FORMAT_R32G8X24_TYPELESS: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+	}
+	return InFormat;
+}
+
+/** Find an appropriate DXGI format unordered access of the raw format. */
+inline DXGI_FORMAT FindUnorderedAccessDXGIFormat(DXGI_FORMAT InFormat)
+{
+	switch (InFormat)
+	{
+	case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+	case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+	}
+	return InFormat;
+}
+
+/** Find the appropriate depth-stencil targetable DXGI format for the given format. */
+inline DXGI_FORMAT FindDepthStencilDXGIFormat(DXGI_FORMAT InFormat)
+{
+	switch (InFormat)
+	{
+	case DXGI_FORMAT_R24G8_TYPELESS:
+		return DXGI_FORMAT_D24_UNORM_S8_UINT;
+		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
+	case DXGI_FORMAT_R32G8X24_TYPELESS:
+		return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+	case DXGI_FORMAT_R32_TYPELESS:
+		return DXGI_FORMAT_D32_FLOAT;
+	case DXGI_FORMAT_R16_TYPELESS:
+		return DXGI_FORMAT_D16_UNORM;
+	};
+	return InFormat;
+}
+
+/**
+* Returns whether the given format contains stencil information.
+* Must be passed a format returned by FindDepthStencilDXGIFormat, so that typeless versions are converted to their corresponding depth stencil view format.
+*/
+inline bool HasStencilBits(DXGI_FORMAT InFormat)
+{
+	switch (InFormat)
+	{
+	case DXGI_FORMAT_D24_UNORM_S8_UINT:
+		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
+	case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+		return true;
+	};
+
+	return false;
+}
+
+static void TranslateRenderTargetFormats(
+	const FGraphicsPipelineStateInitializer &PsoInit,
+	D3D12_RT_FORMAT_ARRAY& RTFormatArray,
+	DXGI_FORMAT& DSVFormat)
+{
+	RTFormatArray.NumRenderTargets = PsoInit.ComputeNumValidRenderTargets();
+
+	for (uint32 RTIdx = 0; RTIdx < PsoInit.RenderTargetsEnabled; ++RTIdx)
+	{
+		checkSlow(PsoInit.RenderTargetFormats[RTIdx] == PF_Unknown || GPixelFormats[PsoInit.RenderTargetFormats[RTIdx]].Supported);
+
+		DXGI_FORMAT PlatformFormat = (DXGI_FORMAT)GPixelFormats[PsoInit.RenderTargetFormats[RTIdx]].PlatformFormat;
+		ETextureCreateFlags Flags = PsoInit.RenderTargetFlags[RTIdx];
+
+		RTFormatArray.RTFormats[RTIdx] = D3D12RHI::FindShaderResourceDXGIFormat( GetPlatformTextureResourceFormat(PlatformFormat, Flags), EnumHasAnyFlags(Flags, TexCreate_SRGB) );
+	}
+
+	checkSlow(PsoInit.DepthStencilTargetFormat == PF_Unknown || GPixelFormats[PsoInit.DepthStencilTargetFormat].Supported);
+
+	DXGI_FORMAT PlatformFormat = (DXGI_FORMAT)GPixelFormats[PsoInit.DepthStencilTargetFormat].PlatformFormat;
+
+	DSVFormat = D3D12RHI::FindDepthStencilDXGIFormat( GetPlatformTextureResourceFormat(PlatformFormat, PsoInit.DepthStencilTargetFlag) );
+}
+
+} // namespace D3D12RHI
+
+// Returns the given format as a string. Unsupported formats are treated as DXGI_FORMAT_UNKNOWN.
+const TCHAR* LexToString(DXGI_FORMAT Format);
 
 #if (PLATFORM_WINDOWS || PLATFORM_HOLOLENS)
 

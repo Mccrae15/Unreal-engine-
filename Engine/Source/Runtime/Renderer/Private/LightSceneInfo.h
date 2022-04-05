@@ -38,7 +38,7 @@ public:
 	uint32 bStaticLighting : 1;
 	uint32 bAffectReflection : 1;
 	uint32 bAffectGlobalIllumination : 1;
-	uint32 bCastRaytracedShadow : 1;
+	TEnumAsByte<ECastRayTracedShadow::Type> CastRaytracedShadow;
 
 	/** Initializes the compact scene info from the light's full scene info. */
 	void Init(FLightSceneInfo* InLightSceneInfo);
@@ -72,21 +72,21 @@ struct FSortedLightSceneInfo
 		struct
 		{
 			// Note: the order of these members controls the light sort order!
-			// Currently bTiledDeferredNotSupported is the MSB and LightType is LSB
+			// Currently bClusteredDeferredNotSupported is the MSB and LightType is LSB
 			/** The type of light. */
 			uint32 LightType : LightType_NumBits;
 			/** Whether the light has a texture profile. */
 			uint32 bTextureProfile : 1;
 			/** Whether the light uses a light function. */
 			uint32 bLightFunction : 1;
-			/** Whether the light casts shadows. */
-			uint32 bShadowed : 1;
 			/** Whether the light uses lighting channels. */
 			uint32 bUsesLightingChannels : 1;
+			/** Whether the light casts shadows. */
+			uint32 bShadowed : 1;
 			/** Whether the light is NOT a simple light - they always support tiled/clustered but may want to be selected separately. */
 			uint32 bIsNotSimpleLight : 1;
-			/** True if the light doesn't support tiled deferred, logic is inverted so that lights that DO support tiled deferred will sort first in list */
-			uint32 bTiledDeferredNotSupported : 1;
+			/* We want to sort the lights that write into the packed shadow mask (when enabled) to the front of the list so we don't waste slots in the packed shadow mask. */
+			uint32 bDoesNotWriteIntoPackedShadowMask : 1;
 			/** 
 			 * True if the light doesn't support clustered deferred, logic is inverted so that lights that DO support clustered deferred will sort first in list 
 			 * Super-set of lights supporting tiled, so the tiled lights will end up in the first part of this range.
@@ -121,16 +121,16 @@ struct FSortedLightSceneInfo
 /** 
  * Stores info about sorted lights and ranges. 
  * The sort-key in FSortedLightSceneInfo gives rise to the following order:
- *  [SimpleLights,Tiled/Clustered,LightFunction/Shadow/LightChannels/TextureProfile]
+ *  [SimpleLights,Clustered,UnbatchedLights]
+ * Note that some shadowed lights can be included in the clustered pass when virtual shadow maps and one pass projection are used.
  */
 struct FSortedLightSetSceneInfo
 {
 	int SimpleLightsEnd;
-	int TiledSupportedEnd;
 	int ClusteredSupportedEnd;
 
 	/** First light with shadow map or */
-	int AttenuationLightStart;
+	int UnbatchedLightStart;
 
 	FSimpleLightArray SimpleLights;
 	TArray<FSortedLightSceneInfo, SceneRenderingAllocator> SortedLights;
@@ -144,6 +144,32 @@ struct TUseBitwiseSwap<FSortedLightSceneInfo>
 
 /** The type of the octree used by FScene to find lights. */
 typedef TOctree2<FLightSceneInfoCompact,struct FLightOctreeSemantics> FSceneLightOctree;
+
+struct FPersistentShadowStateKey
+{
+	int32 AtlasIndex = -1;
+	int32 ProjectionId = -1;
+	int32 SubjectPrimitiveComponentIndex = -1;
+};
+
+inline uint32 GetTypeHash(const FPersistentShadowStateKey& Key)
+{
+	return HashCombine(HashCombine((uint32)Key.AtlasIndex, (uint32)Key.ProjectionId), (uint32)Key.SubjectPrimitiveComponentIndex);
+}
+
+inline bool operator==(const FPersistentShadowStateKey& A, const FPersistentShadowStateKey& B)
+{
+	return A.AtlasIndex == B.AtlasIndex && A.ProjectionId == B.ProjectionId && A.SubjectPrimitiveComponentIndex == B.SubjectPrimitiveComponentIndex;
+}
+
+class FPersistentShadowState
+{
+public:
+	FViewMatrices						ViewMatrices;
+
+	FIntRect							HZBTestViewRect;
+	TRefCountPtr<IPooledRenderTarget>	HZB;				// Direct HZB. nullptr for Atlas rendering.
+};
 
 /**
  * The information used to render a light.  This is the rendering thread's mirror of the game thread's ULightComponent.
@@ -171,12 +197,9 @@ public:
 	/** The identifier for the primitive in Scene->PrimitiveOctree. */
 	FOctreeElementId2 OctreeId;
 
-	/** Tile intersection buffer for distance field shadowing, stored on the light to avoid reallocating each frame. */
-	mutable TUniquePtr<class FLightTileIntersectionResources> TileIntersectionResources;
-	mutable TUniquePtr<class FLightTileIntersectionResources> HeightFieldTileIntersectionResources;
-
-	mutable FVertexBufferRHIRef ShadowCapsuleShapesVertexBuffer;
-	mutable FShaderResourceViewRHIRef ShadowCapsuleShapesSRV;
+	/** Persistent shadow state used for HZB occlusion culling. */
+	TMap<FPersistentShadowStateKey, FPersistentShadowState> PrevPersistentShadows;
+	TMap<FPersistentShadowStateKey, FPersistentShadowState> PersistentShadows;
 
 protected:
 
@@ -252,7 +275,7 @@ public:
 		return FBoxCenterAndExtent(BoundingSphere.Center, FVector(BoundingSphere.W, BoundingSphere.W, BoundingSphere.W));
 	}
 
-	bool ShouldRenderLight(const FViewInfo& View) const;
+	bool ShouldRenderLight(const FViewInfo& View, bool bOffscreen = false) const;
 
 	/** Encapsulates all View-Independent reasons to have this light render. */
 	bool ShouldRenderLightViewIndependent() const
@@ -305,11 +328,11 @@ public:
 		return DynamicShadowMapChannel;
 	}
 
-	const TArray<FLightPrimitiveInteraction*>* GetInteractionShadowPrimitives(bool bSync = true) const;
+	const TArray<FLightPrimitiveInteraction*>* GetInteractionShadowPrimitives() const;
 
-	FLightPrimitiveInteraction* GetDynamicInteractionOftenMovingPrimitiveList(bool bSync = true) const;
+	FLightPrimitiveInteraction* GetDynamicInteractionOftenMovingPrimitiveList() const;
 
-	FLightPrimitiveInteraction* GetDynamicInteractionStaticPrimitiveList(bool bSync = true) const;
+	FLightPrimitiveInteraction* GetDynamicInteractionStaticPrimitiveList() const;
 
 	/** Hash function. */
 	friend uint32 GetTypeHash(const FLightSceneInfo* LightSceneInfo)
@@ -317,11 +340,10 @@ public:
 		return (uint32)LightSceneInfo->Id;
 	}
 
-	// FRenderResource interface.
-	virtual void ReleaseRHI();
-
 	// Update the mobile movable point light uniform buffer before it is used for mobile base pass rendering.
 	void ConditionalUpdateMobileMovablePointLightUniformBuffer(const class FSceneRenderer* SceneRenderer);
+
+	bool ShouldRecordShadowSubjectsForMobile() const;
 };
 
 /** Defines how the light is stored in the scene's light octree. */
@@ -331,7 +353,7 @@ struct FLightOctreeSemantics
 	enum { MinInclusiveElementsPerNode = 7 };
 	enum { MaxNodeDepth = 12 };
 
-	typedef TInlineAllocator<MaxElementsPerLeaf> ElementAllocator;
+	typedef TInlineAllocator<MaxElementsPerLeaf, TAlignedHeapAllocator<alignof(FLightSceneInfoCompact)>> ElementAllocator;
 
 	FORCEINLINE static FBoxCenterAndExtent GetBoundingBox(const FLightSceneInfoCompact& Element)
 	{

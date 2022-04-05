@@ -5,6 +5,12 @@
 #include "D3D12RHIBridge.h"
 #include "RHIValidation.h"
 
+static int32 GD3D12BatchResourceBarriers = 1;
+static FAutoConsoleVariableRef CVarD3D12BatchResourceBarriers(
+	TEXT("d3d12.BatchResourceBarriers"),
+	GD3D12BatchResourceBarriers,
+	TEXT("Whether to allow batching resource barriers"));
+
 static int64 GCommandListIDCounter = 0;
 static uint64 GenerateCommandListID()
 {
@@ -30,6 +36,11 @@ void FD3D12CommandListHandle::AddTransitionBarrier(FD3D12Resource* pResource, D3
 		CommandListData->CurrentOwningContext->numBarriers += NumAdded;
 
 		pResource->UpdateResidency(*this);
+
+		if (!GD3D12BatchResourceBarriers)
+		{
+			FlushResourceBarriers();
+		}
 	}
 	else
 	{
@@ -42,13 +53,23 @@ void FD3D12CommandListHandle::AddUAVBarrier()
 	check(CommandListData);
 	CommandListData->ResourceBarrierBatcher.AddUAV();
 	CommandListData->CurrentOwningContext->numBarriers++;
+
+	if (!GD3D12BatchResourceBarriers)
+	{
+		FlushResourceBarriers();
+	}
 }
 
-void FD3D12CommandListHandle::AddAliasingBarrier(FD3D12Resource* pResource)
+void FD3D12CommandListHandle::AddAliasingBarrier(ID3D12Resource* InResourceBefore, ID3D12Resource* InResourceAfter)
 {
 	check(CommandListData);
-	CommandListData->ResourceBarrierBatcher.AddAliasingBarrier(pResource->GetResource());
+	CommandListData->ResourceBarrierBatcher.AddAliasingBarrier(InResourceBefore, InResourceAfter);
 	CommandListData->CurrentOwningContext->numBarriers++;
+
+	if (!GD3D12BatchResourceBarriers)
+	{
+		FlushResourceBarriers();
+	}
 }
 
 void FD3D12CommandListHandle::Create(FD3D12Device* ParentDevice, D3D12_COMMAND_LIST_TYPE CommandListType, FD3D12CommandAllocator& CommandAllocator, FD3D12CommandListManager* InCommandListManager)
@@ -78,21 +99,31 @@ FD3D12CommandListHandle::FD3D12CommandListData::FD3D12CommandListData(FD3D12Devi
 	VERIFYD3D12RESULT(ParentDevice->GetDevice()->CreateCommandList(GetGPUMask().GetNative(), CommandListType, CommandAllocator, nullptr, IID_PPV_ARGS(CommandList.GetInitReference())));
 	INC_DWORD_STAT(STAT_D3D12NumCommandLists);
 
-#if PLATFORM_WINDOWS
 	// Optionally obtain the ID3D12GraphicsCommandList1 & ID3D12GraphicsCommandList2 interface, we don't check the HRESULT.
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 1
 	CommandList->QueryInterface(IID_PPV_ARGS(CommandList1.GetInitReference()));
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 2
 	CommandList->QueryInterface(IID_PPV_ARGS(CommandList2.GetInitReference()));
 #endif
-
-#if PLATFORM_SUPPORTS_VARIABLE_RATE_SHADING
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 3
+	CommandList->QueryInterface(IID_PPV_ARGS(CommandList3.GetInitReference()));
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 4
+	CommandList->QueryInterface(IID_PPV_ARGS(CommandList4.GetInitReference()));
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 5
 	CommandList->QueryInterface(IID_PPV_ARGS(CommandList5.GetInitReference()));
+#endif
+#if D3D12_MAX_COMMANDLIST_INTERFACE >= 6
+	CommandList->QueryInterface(IID_PPV_ARGS(CommandList6.GetInitReference()));
 #endif
 
 #if D3D12_RHI_RAYTRACING
 	// Obtain ID3D12CommandListRaytracingPrototype if parent device supports ray tracing and this is a compatible command list type (compute or graphics).
 	if (ParentDevice->GetDevice5() && (InCommandListType == D3D12_COMMAND_LIST_TYPE_DIRECT || InCommandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE))
 	{
-		VERIFYD3D12RESULT(CommandList->QueryInterface(IID_PPV_ARGS(RayTracingCommandList.GetInitReference())));
+		VERIFYD3D12RESULT(CommandList->QueryInterface(IID_PPV_ARGS(CommandList4.GetInitReference())));
 	}
 #endif // D3D12_RHI_RAYTRACING
 
@@ -181,6 +212,7 @@ void FD3D12CommandListHandle::FD3D12CommandListData::FlushResourceBarriers()
 
 void FD3D12CommandListHandle::FD3D12CommandListData::Reset(FD3D12CommandAllocator& CommandAllocator, bool bTrackExecTime)
 {
+	LLM_SCOPE_BYNAME(TEXT("D3D12Commandlist"));
 	VERIFYD3D12RESULT(CommandList->Reset(CommandAllocator, nullptr));
 
 	CurrentCommandAllocator = &CommandAllocator;
@@ -272,10 +304,10 @@ void FD3D12CommandListHandle::FD3D12CommandListData::FCommandListResourceState::
 	ResourceStates.Empty();
 }
 
-void FD3D12CommandListHandle::Execute(bool WaitForCompletion)
+void FD3D12CommandListHandle::Execute(FD3D12SyncPoint& CopyQueueSyncPoint, bool WaitForCompletion)
 {
 	check(CommandListData);
-	CommandListData->CommandListManager->ExecuteCommandList(*this, WaitForCompletion);
+	CommandListData->CommandListManager->ExecuteCommandList(*this, CopyQueueSyncPoint, WaitForCompletion);
 }
 
 FD3D12CommandAllocator::FD3D12CommandAllocator(ID3D12Device* InDevice, const D3D12_COMMAND_LIST_TYPE& InType)
@@ -327,7 +359,7 @@ namespace D3D12RHI
 	{
 		IRHICommandContext* Context = GDynamicRHI->RHIGetDefaultContext();
 		checkSlow(Context);
-		FD3D12CommandContextBase& BaseCmdContext = (FD3D12CommandContextBase&)*Context;
+		FD3D12CommandContextBase& BaseCmdContext = (FD3D12CommandContextBase&)Context->GetLowestLevelContext();
 
 		ID3D12CommandQueue* CommandQueue = BaseCmdContext.GetParentAdapter()->GetDevice(0)->GetD3DCommandQueue(ED3D12CommandQueueType::Copy);
 		checkSlow(CommandQueue);

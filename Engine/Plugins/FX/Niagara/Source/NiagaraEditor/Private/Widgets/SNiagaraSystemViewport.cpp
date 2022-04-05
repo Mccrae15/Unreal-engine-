@@ -10,6 +10,8 @@
 #include "NiagaraComponent.h"
 #include "NiagaraEditorCommands.h"
 #include "NiagaraEditorModule.h"
+#include "NiagaraEditorSettings.h"
+#include "NiagaraEditorStyle.h"
 #include "NiagaraEffectType.h"
 #include "NiagaraPerfBaseline.h"
 #include "NiagaraSettings.h"
@@ -38,14 +40,14 @@ public:
 
 public:
 	FNiagaraSystemViewportClient(FAdvancedPreviewScene& InPreviewScene, const TSharedRef<SNiagaraSystemViewport>& InNiagaraEditorViewport, FOnScreenShotCaptured InOnScreenShotCaptured);
-	
+
 	// FEditorViewportClient interface
 	virtual FLinearColor GetBackgroundColor() const override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void Draw(FViewport* Viewport,FCanvas* Canvas) override;
 	virtual bool ShouldOrbitCamera() const override;
-	virtual FSceneView* CalcSceneView(FSceneViewFamily* ViewFamily, const EStereoscopicPass StereoPass = eSSP_FULL) override;
-	virtual bool CanSetWidgetMode(FWidget::EWidgetMode NewMode) const override { return false; }
+	virtual FSceneView* CalcSceneView(FSceneViewFamily* ViewFamily, const int32 ViewIndex = INDEX_NONE) override;
+	virtual bool CanSetWidgetMode(UE::Widget::EWidgetMode NewMode) const override { return false; }
 	virtual bool CanCycleWidgetMode() const override { return false; }
 
 	void SetOrbitModeFromSettings();
@@ -76,7 +78,7 @@ FNiagaraSystemViewportClient::FNiagaraSystemViewportClient(FAdvancedPreviewScene
 	DrawHelper.bDrawPivot = false;
 	DrawHelper.bDrawWorldBox = false;
 	DrawHelper.bDrawKillZ = false;
-	DrawHelper.bDrawGrid = false;
+	DrawHelper.bDrawGrid = true;
 	DrawHelper.GridColorAxis = FColor(80,80,80);
 	DrawHelper.GridColorMajor = FColor(72,72,72);
 	DrawHelper.GridColorMinor = FColor(64,64,64);
@@ -84,10 +86,9 @@ FNiagaraSystemViewportClient::FNiagaraSystemViewportClient(FAdvancedPreviewScene
 	ShowWidget(false);
 
 	FEditorViewportClient::SetViewMode(VMI_Lit);
-	
-	EngineShowFlags.DisableAdvancedFeatures();
+
 	EngineShowFlags.SetSnap(0);
-	
+
 	OverrideNearClipPlane(1.0f);
 	SetOrbitModeFromSettings();
 	bCaptureScreenShot = false;
@@ -100,7 +101,7 @@ FNiagaraSystemViewportClient::FNiagaraSystemViewportClient(FAdvancedPreviewScene
 void FNiagaraSystemViewportClient::Tick(float DeltaSeconds)
 {
 	FEditorViewportClient::Tick(DeltaSeconds);
-	
+
 	// Tick the preview scene world.
 	if (!GIntraFrameDebuggingGameThread)
 	{
@@ -151,7 +152,7 @@ void FNiagaraSystemViewportClient::Draw(FViewport* InViewport, FCanvas* Canvas)
 
 	if (bCaptureScreenShot && ScreenShotOwner.IsValid() && OnScreenShotCaptured.IsBound())
 	{
-		
+
 		int32 SrcWidth = InViewport->GetSizeXY().X;
 		int32 SrcHeight = InViewport->GetSizeXY().Y;
 		// Read the contents of the viewport into an array.
@@ -169,7 +170,7 @@ void FNiagaraSystemViewportClient::Draw(FViewport* InViewport, FCanvas* Canvas)
 			// Compress.
 			FCreateTexture2DParameters Params;
 			Params.bDeferCompression = true;
-			
+
 			UTexture2D* ThumbnailImage = FImageUtils::CreateTexture2D(ScaledWidth, ScaledHeight, ScaledBitmap, ScreenShotOwner.Get(), TEXT("ThumbnailTexture"), RF_NoFlags, Params);
 
 			OnScreenShotCaptured.Execute(ThumbnailImage);
@@ -207,29 +208,14 @@ void FNiagaraSystemViewportClient::DrawInstructionCounts(UNiagaraSystem* Particl
 				if (ShaderScript != nullptr && ShaderScript->GetBaseVMScript() != nullptr)
 				{
 					TConstArrayView<FSimulationStageMetaData> SimulationStageMetaData = ShaderScript->GetBaseVMScript()->GetSimulationStageMetaData();
-
-					for (int32 iPermutation=0; iPermutation < ShaderScript->GetNumPermutations(); ++iPermutation)
+					for (int32 iSimStageIndex = 0; iSimStageIndex < SimulationStageMetaData.Num(); ++iSimStageIndex)
 					{
-						FNiagaraShaderRef Shader = ShaderScript->GetShaderGameThread(iPermutation);
+						FNiagaraShaderRef Shader = ShaderScript->GetShaderGameThread(iSimStageIndex);
 						if (Shader.IsValid())
 						{
 							FColor DisplayColor = FColor(196, 196, 196);
-							FString StageName = TEXT("Particles");
-							int32 MinStage = 0;
-							int32 MaxStage = 1;
-
-							const int32 ShaderStage = iPermutation - 1;
-							if (SimulationStageMetaData.IsValidIndex(ShaderStage))
-							{
-								if (!SimulationStageMetaData[ShaderStage].SimulationStageName.IsNone())
-								{
-									StageName = SimulationStageMetaData[ShaderStage].SimulationStageName.ToString();
-								}
-								MinStage = SimulationStageMetaData[ShaderStage].MinStage;
-								MaxStage = SimulationStageMetaData[ShaderStage].MaxStage;
-							}
-
-							Canvas->DrawShadowedString(CurrentX + 20.0f, CurrentY, *FString::Printf(TEXT("GPU StageName(%s) Stages(%d - %d) = %u"), *StageName, MinStage, MaxStage, Shader->GetNumInstructions()), Font, DisplayColor);
+							FString StageName = SimulationStageMetaData[iSimStageIndex].SimulationStageName.ToString();
+							Canvas->DrawShadowedString(CurrentX + 20.0f, CurrentY, *FString::Printf(TEXT("GPU StageName(%s) Stage(%d) = %u"), *StageName, iSimStageIndex, Shader->GetNumInstructions()), Font, DisplayColor);
 							CurrentY += FontHeight;
 						}
 					}
@@ -251,7 +237,9 @@ void FNiagaraSystemViewportClient::DrawInstructionCounts(UNiagaraSystem* Particl
 void FNiagaraSystemViewportClient::DrawParticleCounts(UNiagaraComponent* Component, FCanvas* Canvas, float& CurrentX, float& CurrentY, UFont* Font, const float FontHeight)
 {
 	// Show particle counts
-	if ( FNiagaraSystemInstance* SystemInstance = Component->GetSystemInstance() )
+	FNiagaraSystemInstanceControllerPtr SystemInstanceController = Component->GetSystemInstanceController();
+	FNiagaraSystemInstance* SystemInstance = SystemInstanceController.IsValid() ? SystemInstanceController->GetSoloSystemInstance() : nullptr;
+	if (SystemInstance)
 	{
 		FCanvasTextItem TextItem(FVector2D(CurrentX, CurrentY), FText::FromString(TEXT("Particle Counts")), Font, FLinearColor::White);
 		TextItem.EnableShadow(FLinearColor::Black);
@@ -313,15 +301,18 @@ void FNiagaraSystemViewportClient::DrawEmitterExecutionOrder(UNiagaraComponent* 
 	Canvas->DrawShadowedString(CurrentX, CurrentY, TEXT("Emitter Execution Order"), Font, FLinearColor::White);
 	CurrentY += FontHeight;
 
-	TConstArrayView<FNiagaraEmitterExecutionIndex> ExecutionOrder = NiagaraSystem->GetEmitterExecutionOrder();
-	int32 DisplayIndex = 0;
-	for (const FNiagaraEmitterExecutionIndex& EmitterExecIndex : ExecutionOrder)
+	if ( NiagaraSystem->IsReadyToRun() )
 	{
-		const FNiagaraEmitterHandle& EmitterHandle = NiagaraSystem->GetEmitterHandle(EmitterExecIndex.EmitterIndex);
-		if (UNiagaraEmitter* NiagaraEmitter = EmitterHandle.GetInstance())
+		TConstArrayView<FNiagaraEmitterExecutionIndex> ExecutionOrder = NiagaraSystem->GetEmitterExecutionOrder();
+		int32 DisplayIndex = 0;
+		for (const FNiagaraEmitterExecutionIndex& EmitterExecIndex : ExecutionOrder)
 		{
-			Canvas->DrawShadowedString(CurrentX, CurrentY, *FString::Printf(TEXT("%d - %s"), ++DisplayIndex, NiagaraEmitter->GetDebugSimName()), Font, FLinearColor::White);
-			CurrentY += FontHeight;
+			const FNiagaraEmitterHandle& EmitterHandle = NiagaraSystem->GetEmitterHandle(EmitterExecIndex.EmitterIndex);
+			if (UNiagaraEmitter* NiagaraEmitter = EmitterHandle.GetInstance())
+			{
+				Canvas->DrawShadowedString(CurrentX, CurrentY, *FString::Printf(TEXT("%d - %s"), ++DisplayIndex, NiagaraEmitter->GetDebugSimName()), Font, FLinearColor::White);
+				CurrentY += FontHeight;
+			}
 		}
 	}
 }
@@ -359,7 +350,7 @@ FLinearColor FNiagaraSystemViewportClient::GetBackgroundColor() const
 	return BackgroundColor;
 }
 
-FSceneView* FNiagaraSystemViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, const EStereoscopicPass StereoPass)
+FSceneView* FNiagaraSystemViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, const int32 StereoViewIndex)
 {
 	FSceneView* SceneView = FEditorViewportClient::CalcSceneView(ViewFamily);
 	FFinalPostProcessSettings::FCubemapEntry& CubemapEntry = *new(SceneView->FinalPostProcessSettings.ContributingCubemaps) FFinalPostProcessSettings::FCubemapEntry;
@@ -397,7 +388,13 @@ UNiagaraSystemEditorData* FNiagaraSystemViewportClient::GetSystemEditorData() co
 
 void SNiagaraSystemViewport::Construct(const FArguments& InArgs)
 {
-	DrawFlags = EDrawElements::ParticleCounts;
+	const UNiagaraEditorSettings* Settings = GetDefault<UNiagaraEditorSettings>();
+	
+	DrawFlags = 0;
+	DrawFlags |= Settings->IsShowParticleCountsInViewport() ? EDrawElements::ParticleCounts : 0;
+	DrawFlags |= Settings->IsShowInstructionsCount() ? EDrawElements::InstructionCounts : 0;
+	DrawFlags |= Settings->IsShowEmitterExecutionOrder() ? EDrawElements::EmitterExecutionOrder : 0;
+
 	bShowBackground = false;
 	PreviewComponent = nullptr;
 	AdvancedPreviewScene = MakeShareable(new FAdvancedPreviewScene(FPreviewScene::ConstructionValues()));
@@ -406,6 +403,8 @@ void SNiagaraSystemViewport::Construct(const FArguments& InArgs)
 	Sequencer = InArgs._Sequencer;
 	
 	SEditorViewport::Construct( SEditorViewport::FArguments() );
+
+	Client->EngineShowFlags.SetGrid(Settings->IsShowGridInViewport());
 }
 
 SNiagaraSystemViewport::~SNiagaraSystemViewport()
@@ -546,9 +545,9 @@ void SNiagaraSystemViewport::BindCommands()
 	CommandList->UnmapAction(FEditorViewportCommands::Get().CycleTransformGizmos);
 
 	const FNiagaraEditorCommands& Commands = FNiagaraEditorCommands::Get();
-	
+
 	// Add the commands to the toolkit command list so that the toolbar buttons can find them
-	
+
 	CommandList->MapAction(
 		Commands.TogglePreviewGrid,
 		FExecuteAction::CreateSP( this, &SNiagaraSystemViewport::TogglePreviewGrid ),
@@ -558,21 +557,36 @@ void SNiagaraSystemViewport::BindCommands()
 
 	CommandList->MapAction(
 		Commands.ToggleInstructionCounts,
-		FExecuteAction::CreateLambda([Viewport=this]() { Viewport->ToggleDrawElement(EDrawElements::InstructionCounts); Viewport->RefreshViewport(); }),
+		FExecuteAction::CreateLambda([Viewport=this]()
+		{
+			Viewport->ToggleDrawElement(EDrawElements::InstructionCounts);
+			GetMutableDefault<UNiagaraEditorSettings>()->SetShowInstructionsCount(Viewport->GetDrawElement(EDrawElements::InstructionCounts));
+			Viewport->RefreshViewport();
+		}),
 		FCanExecuteAction(),
 		FIsActionChecked::CreateLambda([Viewport=this]() -> bool { return Viewport->GetDrawElement(EDrawElements::InstructionCounts); })
 	);
 
 	CommandList->MapAction(
 		Commands.ToggleParticleCounts,
-		FExecuteAction::CreateLambda([Viewport = this]() { Viewport->ToggleDrawElement(EDrawElements::ParticleCounts); Viewport->RefreshViewport(); }),
+		FExecuteAction::CreateLambda([Viewport = this]()
+		{
+			Viewport->ToggleDrawElement(EDrawElements::ParticleCounts);
+			GetMutableDefault<UNiagaraEditorSettings>()->SetShowParticleCountsInViewport(Viewport->GetDrawElement(EDrawElements::ParticleCounts));
+			Viewport->RefreshViewport();
+		}),
 		FCanExecuteAction(),
 		FIsActionChecked::CreateLambda([Viewport = this]() -> bool { return Viewport->GetDrawElement(EDrawElements::ParticleCounts); })
 	);
 
 	CommandList->MapAction(
 		Commands.ToggleEmitterExecutionOrder,
-		FExecuteAction::CreateLambda([Viewport = this]() { Viewport->ToggleDrawElement(EDrawElements::EmitterExecutionOrder); Viewport->RefreshViewport(); }),
+		FExecuteAction::CreateLambda([Viewport = this]()
+		{
+			Viewport->ToggleDrawElement(EDrawElements::EmitterExecutionOrder);
+			GetMutableDefault<UNiagaraEditorSettings>()->SetShowEmitterExecutionOrder(Viewport->GetDrawElement(EDrawElements::EmitterExecutionOrder));
+			Viewport->RefreshViewport();
+		}),
 		FCanExecuteAction(),
 		FIsActionChecked::CreateLambda([Viewport = this]() -> bool { return Viewport->GetDrawElement(EDrawElements::EmitterExecutionOrder); })
 	);
@@ -589,7 +603,7 @@ void SNiagaraSystemViewport::BindCommands()
 		FExecuteAction::CreateSP(this, &SNiagaraSystemViewport::ToggleOrbit),
 		FCanExecuteAction(),
 		FIsActionChecked::CreateSP(this, &SNiagaraSystemViewport::IsToggleOrbitChecked));
-								  
+
 }
 
 void SNiagaraSystemViewport::OnFocusViewportToSelection()
@@ -610,6 +624,7 @@ void SNiagaraSystemViewport::OnFocusViewportToSelection()
 void SNiagaraSystemViewport::TogglePreviewGrid()
 {
 	SystemViewportClient->SetShowGrid();
+	GetMutableDefault<UNiagaraEditorSettings>()->SetShowGridInViewport(SystemViewportClient->EngineShowFlags.Grid);
 	RefreshViewport();
 }
 
@@ -630,11 +645,11 @@ bool SNiagaraSystemViewport::IsTogglePreviewBackgroundChecked() const
 	return bShowBackground;
 }
 
-TSharedRef<FEditorViewportClient> SNiagaraSystemViewport::MakeEditorViewportClient() 
+TSharedRef<FEditorViewportClient> SNiagaraSystemViewport::MakeEditorViewportClient()
 {
-	SystemViewportClient = MakeShareable( new FNiagaraSystemViewportClient(*AdvancedPreviewScene.Get(), SharedThis(this), 
+	SystemViewportClient = MakeShareable( new FNiagaraSystemViewportClient(*AdvancedPreviewScene.Get(), SharedThis(this),
 		FNiagaraSystemViewportClient::FOnScreenShotCaptured::CreateSP(this, &SNiagaraSystemViewport::OnScreenShotCaptured) ) );
-	
+
 	SystemViewportClient->SetViewLocation( FVector::ZeroVector );
 	SystemViewportClient->SetViewRotation( FRotator::ZeroRotator );
 	SystemViewportClient->SetViewLocationForOrbiting( FVector::ZeroVector );
@@ -642,7 +657,7 @@ TSharedRef<FEditorViewportClient> SNiagaraSystemViewport::MakeEditorViewportClie
 
 	SystemViewportClient->SetRealtime( true );
 	SystemViewportClient->VisibilityDelegate.BindSP( this, &SNiagaraSystemViewport::IsVisible );
-	
+
 	return SystemViewportClient.ToSharedRef();
 }
 
@@ -663,16 +678,28 @@ EVisibility SNiagaraSystemViewport::OnGetViewportContentVisibility() const
 	return IsVisible() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
-EVisibility SNiagaraSystemViewport::OnGetViewportCompileTextVisibility() const
+FText SNiagaraSystemViewport::GetViewportCompileStatusText() const
 {
-	if (PreviewComponent && PreviewComponent->GetAsset() && PreviewComponent->GetAsset()->HasOutstandingCompilationRequests())
+	if (PreviewComponent && PreviewComponent->GetAsset())
 	{
-		return EVisibility::Visible;
+		if (PreviewComponent->GetAsset()->HasOutstandingCompilationRequests())
+		{
+			return LOCTEXT("Compiling", "Compiling...");
+		}
+		bool bCompilationFailed = false;
+		PreviewComponent->GetAsset()->ForEachScript([&bCompilationFailed](UNiagaraScript* Script)
+		{
+			if (Script && Script->GetLastCompileStatus() == ENiagaraScriptCompileStatus::NCS_Error)
+			{
+				bCompilationFailed = true;
+			}
+		});
+		if (bCompilationFailed)
+		{
+			return LOCTEXT("CompilingFailed", "Compilation Failed!");
+		}
 	}
-	else
-	{
-		return EVisibility::Collapsed;
-	}
+	return FText();
 }
 
 void SNiagaraSystemViewport::PopulateViewportOverlays(TSharedRef<class SOverlay> Overlay)
@@ -687,11 +714,12 @@ void SNiagaraSystemViewport::PopulateViewportOverlays(TSharedRef<class SOverlay>
 	.HAlign(HAlign_Center)
 	[
 		SAssignNew(CompileText, STextBlock)
-		.Visibility_Raw(this, &SNiagaraSystemViewport::OnGetViewportCompileTextVisibility)
+		.Text_Raw(this, &SNiagaraSystemViewport::GetViewportCompileStatusText)
+		.TextStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.Viewport.CompileOverlay")
+		.ColorAndOpacity(FLinearColor::White)
+		.ShadowOffset(FVector2D(1.5, 1.5))
+		.ShadowColorAndOpacity(FLinearColor(0, 0, 0, 0.9f))
 	];
-
-	CompileText->SetText(LOCTEXT("Compiling","Compiling"));
-
 }
 
 
@@ -718,14 +746,14 @@ class FNiagaraBaselineViewportClient : public FEditorViewportClient
 {
 public:
 	FNiagaraBaselineViewportClient(FAdvancedPreviewScene& InPreviewScene, const TSharedRef<SNiagaraBaselineViewport>& InNiagaraEditorViewport);
-	
+
 	// FEditorViewportClient interface
 	virtual FLinearColor GetBackgroundColor() const override;
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void Draw(FViewport* Viewport,FCanvas* Canvas) override;
 	virtual bool ShouldOrbitCamera() const override;
-	virtual FSceneView* CalcSceneView(FSceneViewFamily* ViewFamily, const EStereoscopicPass StereoPass = eSSP_FULL) override;
-	virtual bool CanSetWidgetMode(FWidget::EWidgetMode NewMode) const override { return false; }
+	virtual FSceneView* CalcSceneView(FSceneViewFamily* ViewFamily, const int32 StereoViewIndex = INDEX_NONE) override;
+	virtual bool CanSetWidgetMode(UE::Widget::EWidgetMode NewMode) const override { return false; }
 	virtual bool CanCycleWidgetMode() const override { return false; }
 
 	virtual void SetIsSimulateInEditorViewport(bool bInIsSimulateInEditorViewport)override;
@@ -751,14 +779,13 @@ FNiagaraBaselineViewportClient::FNiagaraBaselineViewportClient(FAdvancedPreviewS
 	DrawHelper.PerspectiveGridSize = HALF_WORLD_MAX1;
 	ShowWidget(false);
 
-	FEditorViewportClient::SetViewMode(VMI_Lit);
+	SetViewMode(VMI_Lit);
 	
-	EngineShowFlags.DisableAdvancedFeatures();
 	EngineShowFlags.SetSnap(0);
-	
+
 	OverrideNearClipPlane(1.0f);
 	bUsingOrbitCamera = false;
-// 
+//
 // 	float PreviewDistance = 1000.0f;
 // 	FRotator PreviewAngle(45.0f, 0.0f, 0.0f);
 // 	SetViewLocation( PreviewAngle.Vector() * -PreviewDistance );
@@ -822,7 +849,7 @@ FLinearColor FNiagaraBaselineViewportClient::GetBackgroundColor() const
 	return BackgroundColor;
 }
 
-FSceneView* FNiagaraBaselineViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, const EStereoscopicPass StereoPass)
+FSceneView* FNiagaraBaselineViewportClient::CalcSceneView(FSceneViewFamily* ViewFamily, const int32 StereoViewIndex)
 {
 	FSceneView* SceneView = FEditorViewportClient::CalcSceneView(ViewFamily);
 	FFinalPostProcessSettings::FCubemapEntry& CubemapEntry = *new(SceneView->FinalPostProcessSettings.ContributingCubemaps) FFinalPostProcessSettings::FCubemapEntry;
@@ -896,7 +923,7 @@ void SNiagaraBaselineViewport::BindCommands()
 
 	// Unbind the CycleTransformGizmos since niagara currently doesn't use the gizmos and it prevents resetting the system with
 	// spacebar when the viewport is focused.
-	CommandList->UnmapAction(FEditorViewportCommands::Get().CycleTransformGizmos);					  
+	CommandList->UnmapAction(FEditorViewportCommands::Get().CycleTransformGizmos);
 }
 
 void SNiagaraBaselineViewport::OnFocusViewportToSelection()
@@ -907,7 +934,7 @@ void SNiagaraBaselineViewport::OnFocusViewportToSelection()
 TSharedRef<FEditorViewportClient> SNiagaraBaselineViewport::MakeEditorViewportClient()
 {
 	SystemViewportClient = MakeShareable( new FNiagaraBaselineViewportClient(*AdvancedPreviewScene.Get(), SharedThis(this)) );
-	
+
 	SystemViewportClient->SetViewLocation( FVector::ZeroVector );
 	SystemViewportClient->SetViewRotation( FRotator(0.0f, 0.0f, 0.0f) );
 	SystemViewportClient->SetViewLocationForOrbiting( FVector::ZeroVector, 750.0f );
@@ -916,7 +943,7 @@ TSharedRef<FEditorViewportClient> SNiagaraBaselineViewport::MakeEditorViewportCl
 	SystemViewportClient->SetRealtime( true );
 	SystemViewportClient->SetGameView(false);
 	SystemViewportClient->VisibilityDelegate.BindSP( this, &SNiagaraBaselineViewport::IsVisible );
-	
+
 	return SystemViewportClient.ToSharedRef();
 }
 
@@ -954,7 +981,7 @@ void SNiagaraBaselineViewport::Init(TSharedPtr<SWindow>& InOwnerWindow)
 bool SNiagaraBaselineViewport::AddBaseline(UNiagaraEffectType* EffectType)
 {
 	check(EffectType && EffectType->IsPerfBaselineValid() == false);
-		
+
 	if (UNiagaraBaselineController* Controller = EffectType->GetPerfBaselineController())
 	{
 		if (UNiagaraSystem* System = Controller->GetSystem())

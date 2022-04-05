@@ -6,6 +6,7 @@
 #include "Engine/DeveloperSettings.h"
 #include "AdvancedCopyCustomization.h"
 #include "Engine/AssetUserData.h"
+#include "Engine/EngineTypes.h"
 #include "AssetToolsSettings.generated.h"
 
 USTRUCT()
@@ -23,7 +24,7 @@ public:
 	FSoftClassPath AdvancedCopyCustomization;
 };
 
-UCLASS(config = Game, defaultconfig, notplaceable, meta = (DisplayName = "Asset Tools"))
+UCLASS(config = Game, defaultconfig, meta = (DisplayName = "Asset Tools"))
 class ASSETTOOLS_API UAssetToolsSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
@@ -32,6 +33,6 @@ public:
 	UAssetToolsSettings() {};
 
 	/** List of rules to use when advanced copying assets */
-	UPROPERTY(config, EditAnywhere, Category = "Asset Tools", Meta = (TitleProperty = "ClassToCopy"))
+	UPROPERTY(config, EditAnywhere, Category = "Advanced Copy", Meta = (TitleProperty = "ClassToCopy"))
 	TArray<FAdvancedCopyMap> AdvancedCopyCustomizations;
 };

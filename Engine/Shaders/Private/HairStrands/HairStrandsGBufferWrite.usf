@@ -2,20 +2,19 @@
 
 #include "../Common.ush"
 
+// Note, this doesn't work after refactoring, undoing the workaround.
 // Workaround for DeferredShadingCommon.ush requiring SceneTexturesStruct resources which is not available, 
 // since we are writing into Gbuffer textures within this pass
-#if SHADING_PATH_DEFERRED
-	#undef SHADING_PATH_DEFERRED
-	#define SHADING_PATH_DEFERRED 0
-#endif
+//#if SHADING_PATH_DEFERRED
+//	#undef SHADING_PATH_DEFERRED
+//	#define SHADING_PATH_DEFERRED 0
+//#endif
+
 #include "../DeferredShadingCommon.ush"
 #include "HairStrandsGBufferCommon.ush"
 #include "HairStrandsVisibilityCommon.ush"
 
 uint bWriteDummyData;
-Texture2D<uint4> CategorizationTexture;
-Texture2D<uint>	 NodeIndex;
-StructuredBuffer<FPackedHairSample> NodeData;
 
 void MainPS(
 	in float2 UV : TEXCOORD
@@ -41,15 +40,8 @@ void MainPS(
 #endif
 
 	const uint3 PixelCoord = uint3(floor(SvPosition.xy), 0);
-	FNodeDesc NodeDesc = DecodeNodeDesc(NodeIndex.Load(PixelCoord));
+	const FNodeDesc NodeDesc = DecodeNodeDesc(HairStrands.HairSampleOffset.Load(PixelCoord));
 	if (NodeDesc.Count == 0)
-	{
-		discard;
-	}
-
-	const FCategorizationData CatData = DecodeCategorizationData(CategorizationTexture.Load(PixelCoord));
-	const float PixelCoverage = min(CatData.PixelCoverage, 1);
-	if (PixelCoverage == 0)
 	{
 		discard;
 	}
@@ -73,7 +65,7 @@ void MainPS(
 		for (uint NodeIt = 0; NodeIt < NodeDesc.Count; ++NodeIt)
 		{
 			const uint NodeOffset = NodeDesc.Offset + NodeIt;
-			const FPackedHairSample Data = NodeData[NodeOffset];
+			const FPackedHairSample Data = HairStrands.HairSampleData[NodeOffset];
 			const FHairSample Sample = UnpackHairSample(Data);
 
 			Samples_Tangent		+= Sample.Tangent;
@@ -86,7 +78,7 @@ void MainPS(
 				Samples_LightChannelMask = Sample.LightChannelMask;
 			}
 		}
-		Samples_Depth = CatData.ClosestDepth;
+		Samples_Depth = HairStrands.HairOnlyDepthTexture.Load(PixelCoord).x;
 
 		const float InvSampleCount = 1.f / max(1u, NodeDesc.Count);
 		Samples_Tangent		 = normalize(Samples_Tangent);
@@ -94,7 +86,6 @@ void MainPS(
 		Samples_BaseColor	*= InvSampleCount;
 		Samples_Roughnesss	*= InvSampleCount;
 		Samples_Backlit		*= InvSampleCount;
-		Samples_Depth		*= InvSampleCount;
 
 		WriteGBuffer(
 			Samples_Tangent,

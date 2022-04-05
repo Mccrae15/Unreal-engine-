@@ -5,7 +5,6 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Misc/Guid.h"
-#include "Misc/Timecode.h"
 #include "Templates/SubclassOf.h"
 #include "Templates/Casts.h"
 #include "MovieSceneFwd.h"
@@ -25,6 +24,7 @@ class UMovieSceneFolder;
 class UMovieSceneSection;
 class UMovieSceneTrack;
 struct FMovieSceneChannelMetaData;
+struct FMovieSceneTimecodeSource;
 
 //delegates for use when some data in the MovieScene changes, WIP right now, hopefully will replace delegates on ISequencer
 //and be used for moving towards a true MVC system
@@ -41,41 +41,6 @@ struct FMovieSceneExpansionState
 
 	UPROPERTY()
 	bool bExpanded;
-};
-
-USTRUCT()
-struct FMovieSceneTimecodeSource
-{
-	GENERATED_BODY()
-
-	FMovieSceneTimecodeSource(FTimecode InTimecode)
-		: Timecode(InTimecode)
-		, DeltaFrame(FFrameNumber())
-	{}
-
-	FMovieSceneTimecodeSource()
-		: Timecode(FTimecode())
-		, DeltaFrame(FFrameNumber())
-	{}
-
-	FORCEINLINE bool operator==(const FMovieSceneTimecodeSource& Other) const
-	{
-		return Timecode == Other.Timecode && DeltaFrame == Other.DeltaFrame;
-	}
-	FORCEINLINE bool operator!=(const FMovieSceneTimecodeSource& Other) const
-	{
-		return Timecode != Other.Timecode || DeltaFrame != Other.DeltaFrame;
-	}
-
-public:
-
-	/** The global timecode at which this target is based (ie. the timecode at the beginning of the movie scene section when it was recorded) */
-	UPROPERTY(EditAnywhere, Category="Timecode")
-	FTimecode Timecode;
-
-	/** The delta from the original placement of this target */
-	UPROPERTY(VisibleAnywhere, Category="Timecode")
-	FFrameNumber DeltaFrame;
 };
 
 USTRUCT(BlueprintType)
@@ -348,7 +313,7 @@ public:
 
 private:
 	UPROPERTY()
-	TArray<UMovieSceneNodeGroup*> NodeGroups;
+	TArray<TObjectPtr<UMovieSceneNodeGroup>> NodeGroups;
 
 	bool bAnyActiveFilter;
 
@@ -363,10 +328,10 @@ public:
 	 * DO NOT USE DIRECTLY
 	 * STL-like iterators to enable range-based for loop support.
 	 */
-	FORCEINLINE TArray<UMovieSceneNodeGroup*>::RangedForIteratorType      begin()	{ return NodeGroups.begin(); }
-	FORCEINLINE TArray<UMovieSceneNodeGroup*>::RangedForConstIteratorType begin()	const { return NodeGroups.begin(); }
-	FORCEINLINE TArray<UMovieSceneNodeGroup*>::RangedForIteratorType      end()	{ return NodeGroups.end(); }
-	FORCEINLINE TArray<UMovieSceneNodeGroup*>::RangedForConstIteratorType end()	const { return NodeGroups.end(); }
+	FORCEINLINE auto begin()	{ return NodeGroups.begin(); }
+	FORCEINLINE auto begin()	const { return NodeGroups.begin(); }
+	FORCEINLINE auto end()	{ return NodeGroups.end(); }
+	FORCEINLINE auto end()	const { return NodeGroups.end(); }
 #endif
 };
 
@@ -560,7 +525,7 @@ public:
 	 * @param ObjectGuid The runtime object guid that the track is bound to.
 	 * @param TrackName The name of the track to differentiate the one we are searching for from other tracks of the same class (optional).
 	 * @return The found track or nullptr if one does not exist.
-	 * @see AddTrack, RemoveTrack
+	 * @see AddTrack, RemoveTrack, FindTracks
 	 */
 	UMovieSceneTrack* FindTrack(TSubclassOf<UMovieSceneTrack> TrackClass, const FGuid& ObjectGuid, const FName& TrackName = NAME_None) const;
 	
@@ -571,13 +536,24 @@ public:
 	 * @param ObjectGuid The runtime object guid that the track is bound to.
 	 * @param TrackName The name of the track to differentiate the one we are searching for from other tracks of the same class (optional).
 	 * @return The found track or nullptr if one does not exist.
-	 * @see AddTrack, RemoveTrack
+	 * @see AddTrack, RemoveTrack, FindTracks
 	 */
 	template<typename TrackClass>
 	TrackClass* FindTrack(const FGuid& ObjectGuid, const FName& TrackName = NAME_None) const
 	{
 		return Cast<TrackClass>(FindTrack(TrackClass::StaticClass(), ObjectGuid, TrackName));
 	}
+
+	/**
+	 * Find all tracks of a given class.
+	 *
+	 * @param TrackClass The class of the track to find.
+	 * @param ObjectGuid The runtime object guid that the track is bound to.
+	 * @param TrackName The name of the track to differentiate the one we are searching for from other tracks of the same class (optional).
+	 * @return The found tracks or an empty array if none exist
+	 * @see AddTrack, RemoveTrack, FindTrack
+	 */
+	TArray<UMovieSceneTrack*> FindTracks(TSubclassOf<UMovieSceneTrack> TrackClass, const FGuid& ObjectGuid, const FName& TrackName = NAME_None) const;
 
 	/**
 	 * Removes a track.
@@ -849,6 +825,11 @@ public:
 		CustomClockSourcePath = InNewClockSource;
 	}
 
+	/**
+	 * Get the earliest timecode source out of all of the movie scene sections contained within this movie scene.
+	 */
+	FMovieSceneTimecodeSource GetEarliestTimecodeSource() const;
+
 	/*
 	* Replace an existing binding with another 
 	*/
@@ -1005,10 +986,6 @@ public:
 
 	UMovieSceneNodeGroupCollection& GetNodeGroups() { return *NodeGroupCollection; }
 
-	/** The timecode at which this movie scene section is based (ie. when it was recorded) */
-	UPROPERTY()
-	FMovieSceneTimecodeSource TimecodeSource;
-
 #endif	// WITH_EDITORONLY_DATA
 
 public:
@@ -1130,8 +1107,12 @@ protected:
 
 protected:
 
-	/** Called before this object is being deserialized. */
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	/** Called before this object is being deserialized. */
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 
 	/** Perform legacy upgrade of time ranges */
 	void UpgradeTimeRanges();
@@ -1139,6 +1120,7 @@ protected:
 private:
 
 #if WITH_EDITOR
+	void OptimizeForCook();
 	void RemoveNullTracks();
 #endif
 
@@ -1166,11 +1148,11 @@ private:
 
 	/** Master tracks which are not bound to spawned or possessed objects */
 	UPROPERTY(Instanced)
-	TArray<UMovieSceneTrack*> MasterTracks;
+	TArray<TObjectPtr<UMovieSceneTrack>> MasterTracks;
 
 	/** The camera cut track is a specialized track for switching between cameras on a cinematic */
 	UPROPERTY(Instanced)
-	UMovieSceneTrack* CameraCutTrack;
+	TObjectPtr<UMovieSceneTrack> CameraCutTrack;
 
 	/** User-defined selection range. */
 	UPROPERTY()
@@ -1226,7 +1208,7 @@ private:
 
 	/** The root folders for this movie scene. */
 	UPROPERTY()
-	TArray<UMovieSceneFolder*> RootFolders;
+	TArray<TObjectPtr<UMovieSceneFolder>> RootFolders;
 
 	/** Nodes currently marked Solo, stored as node tree paths */
 	UPROPERTY()
@@ -1242,7 +1224,7 @@ private:
 
 	/** Collection of user-defined groups */
 	UPROPERTY()
-	UMovieSceneNodeGroupCollection* NodeGroupCollection;
+	TObjectPtr<UMovieSceneNodeGroupCollection> NodeGroupCollection;
 
 	/** Whether this scene's marked frames should be shown globally */
 	bool bGloballyShowMarkedFrames;

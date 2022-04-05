@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -7,13 +8,14 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 using UnrealBuildTool;
 
 namespace AutomationTool.Tasks
 {
 	/// <summary>
-	/// Parameters for a task which runs a UE4 commandlet
+	/// Parameters for a task which runs a UE commandlet
 	/// </summary>
 	public class CommandletTaskParameters
 	{
@@ -36,7 +38,7 @@ namespace AutomationTool.Tasks
 		public string Arguments;
 
 		/// <summary>
-		/// The editor executable to use. Defaults to the development UE4Editor executable for the current platform.
+		/// The editor executable to use. Defaults to the development UnrealEditor executable for the current platform.
 		/// </summary>
 		[TaskParameter(Optional = true)]
 		public FileReference EditorExe;
@@ -96,20 +98,18 @@ namespace AutomationTool.Tasks
 			}
 
 			// Get the path to the editor, and check it exists
-			FileReference EditorExe;
+			FileSystemReference EditorExe;
 			if(Parameters.EditorExe == null)
 			{
-                EditorExe = new FileReference(HostPlatform.Current.GetUE4ExePath("UE4Editor-Cmd.exe"));
+				EditorExe = ProjectUtils.GetProjectTarget(ProjectFile, UnrealBuildTool.TargetType.Editor, BuildHostPlatform.Current.Platform, UnrealTargetConfiguration.Development, true);
+				if (EditorExe == null)
+				{
+					EditorExe = new FileReference(HostPlatform.Current.GetUnrealExePath("UnrealEditor-Cmd.exe"));
+				}
 			}
 			else
 			{
 				EditorExe = Parameters.EditorExe;
-			}
-
-			// Make sure the editor exists
-			if(!FileReference.Exists(EditorExe))
-			{
-				throw new AutomationException("{0} does not exist", EditorExe.FullName);
 			}
 
 			// Run the commandlet

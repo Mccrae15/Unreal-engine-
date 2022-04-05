@@ -10,7 +10,8 @@
 #if WITH_ENGINE
 #include "VorbisAudioInfo.h"
 #include "OpusAudioInfo.h"
-#include "ADPCMAudioInfo.h"
+#include "AudioDevice.h"
+#include "BinkAudioInfo.h"
 #endif
 /**
 * CoreAudio System Headers
@@ -359,63 +360,49 @@ namespace Audio
 		RemainingBytesInCurrentSubmittedBuffer = BytesPerSubmittedBuffer;
 	}
 
-	FName FMixerPlatformCoreAudio::GetRuntimeFormat(USoundWave* InSoundWave)
+	FName FMixerPlatformCoreAudio::GetRuntimeFormat(const USoundWave* InSoundWave) const
 	{
-#if WITH_ENGINE
-		static const FName NAME_ADPCM(TEXT("ADPCM"));
-		static const FName NAME_OGG(TEXT("OGG"));
-		static const FName NAME_OPUS(TEXT("OPUS"));
+		FName RuntimeFormat = Audio::ToName(InSoundWave->GetSoundAssetCompressionType());
 
-		if (InSoundWave->IsSeekableStreaming())
+		if (RuntimeFormat == Audio::NAME_PLATFORM_SPECIFIC)
 		{
-			return NAME_ADPCM;
-		}
-
-		if (InSoundWave->IsStreaming(nullptr))
-		{
-			return NAME_OPUS;
-		}
-
-		return NAME_OGG;
-#else
-		return FName();
-#endif
-	}
-
-	bool FMixerPlatformCoreAudio::HasCompressedAudioInfoClass(USoundWave* InSoundWave)
-	{
-		return true;
-	}
-
-	ICompressedAudioInfo* FMixerPlatformCoreAudio::CreateCompressedAudioInfo(USoundWave* InSoundWave)
-	{
-#if WITH_ENGINE
-		check(InSoundWave);
-
-		if (InSoundWave->IsSeekableStreaming())
-		{
-			return new FADPCMAudioInfo();
-		}
-
-		if (InSoundWave->IsStreaming())
-		{
-			return new FOpusAudioInfo();
-		}
-
-		static const FName NAME_OGG(TEXT("OGG"));
-		if (FPlatformProperties::RequiresCookedData() ? InSoundWave->HasCompressedData(NAME_OGG) : (InSoundWave->GetCompressedData(NAME_OGG) != nullptr))
-		{
-			ICompressedAudioInfo* CompressedInfo = new FVorbisAudioInfo();
-			if (!CompressedInfo)
+			if (InSoundWave->IsStreaming(nullptr))
 			{
-				UE_LOG(LogAudio, Error, TEXT("Failed to create new FVorbisAudioInfo for SoundWave %s: out of memory."), *InSoundWave->GetName());
-				return nullptr;
+				RuntimeFormat = Audio::NAME_OPUS;
 			}
-			return CompressedInfo;
+			else
+			{
+				RuntimeFormat = Audio::NAME_OGG;
+			}
 		}
 
-#endif // WITH_ENGINE
-		return nullptr;
+		return RuntimeFormat;
+	}
+
+	ICompressedAudioInfo* FMixerPlatformCoreAudio::CreateCompressedAudioInfo(const FName& InRuntimeFormat) const
+	{
+		ICompressedAudioInfo* Decoder = nullptr;
+
+		if (InRuntimeFormat == Audio::NAME_OGG)
+		{
+			Decoder = new FVorbisAudioInfo();
+		}
+		else if (InRuntimeFormat == Audio::NAME_OPUS)
+		{
+			Decoder = new FOpusAudioInfo();
+		}
+#if WITH_BINK_AUDIO
+		else if (InRuntimeFormat == Audio::NAME_BINKA)
+		{
+			return new FBinkAudioInfo();
+		}
+#endif // WITH_BINK_AUDIO	
+		else
+		{
+			Decoder = Audio::CreateSoundAssetDecoder(InRuntimeFormat);
+		}
+		ensureMsgf(Decoder != nullptr, TEXT("Failed to create a sound asset decoder for compression type: %s"), *InRuntimeFormat.ToString());
+		return Decoder;
 	}
 
 	FString FMixerPlatformCoreAudio::GetDefaultDeviceName()

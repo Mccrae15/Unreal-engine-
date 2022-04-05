@@ -3,12 +3,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IRewindDebuggerView.h"
+#include "IRewindDebuggerViewCreator.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Views/STreeView.h"
 
 namespace Insights { class ITimingViewSession; }
 namespace Insights { enum class ETimeChangedFlags; }
-namespace Trace { class IAnalysisSession; }
+namespace TraceServices { class IAnalysisSession; }
 class FAnimationSharedData;
 class IInsightsManager;
 class FAnimGraphSchematicNode;
@@ -19,16 +21,18 @@ class SComboButton;
 class SSplitter;
 enum class EAnimGraphSchematicFilterState;
 
-class SAnimGraphSchematicView : public SCompoundWidget
+class SAnimGraphSchematicView : public IRewindDebuggerView
 {
-public:
 	SLATE_BEGIN_ARGS(SAnimGraphSchematicView) {}
-
 	SLATE_END_ARGS()
-
-	void Construct(const FArguments& InArgs, uint64 InAnimInstanceId, Insights::ITimingViewSession& InTimingViewSession, const Trace::IAnalysisSession& InAnalysisSession);
+public:
+	void Construct(const FArguments& InArgs, uint64 InAnimInstanceId, double InTimeMarker, const TraceServices::IAnalysisSession& InAnalysisSession);
 
 	uint64 GetAnimInstanceId() const { return AnimInstanceId; }
+
+	virtual void SetTimeMarker(double InTimeMarker) override;
+	virtual FName GetName() const override;
+	virtual uint64 GetObjectId() const override { return AnimInstanceId; }
 
 private:
 	// Generate a row widget for an item
@@ -71,9 +75,7 @@ private:
 	FSlateColor GetViewButtonForegroundColor() const;
 
 private:
-	const Trace::IAnalysisSession* AnalysisSession;
-
-	Insights::ITimingViewSession* TimingViewSession;
+	const TraceServices::IAnalysisSession* AnalysisSession;
 
 	TSharedPtr<SSearchBox> SearchBox;
 
@@ -112,4 +114,14 @@ private:
 	double TimeMarker;
 
 	uint64 AnimInstanceId;
+};
+
+class FAnimGraphSchematicViewCreator : public IRewindDebuggerViewCreator
+{
+	public:
+		virtual FName GetTargetTypeName() const;
+		virtual FName GetName() const override;
+		virtual FText GetTitle() const override;
+		virtual FSlateIcon GetIcon() const override;
+		virtual TSharedPtr<IRewindDebuggerView> CreateDebugView(uint64 ObjectId, double CurrentTime, const TraceServices::IAnalysisSession& InAnalysisSession) const override;
 };

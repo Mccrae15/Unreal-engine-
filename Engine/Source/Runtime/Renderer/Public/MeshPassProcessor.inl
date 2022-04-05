@@ -48,8 +48,15 @@ void FMeshPassProcessor::BuildMeshDrawCommands(
 	const FPrimitiveSceneInfo* RESTRICT PrimitiveSceneInfo = PrimitiveSceneProxy ? PrimitiveSceneProxy->GetPrimitiveSceneInfo() : nullptr;
 
 	FMeshDrawCommand SharedMeshDrawCommand;
+	EFVisibleMeshDrawCommandFlags SharedFlags = EFVisibleMeshDrawCommandFlags::Default;
+
+	if (MaterialResource.MaterialModifiesMeshPosition_RenderThread())
+	{
+		SharedFlags |= EFVisibleMeshDrawCommandFlags::MaterialMayModifyPosition;
+	}
 
 	SharedMeshDrawCommand.SetStencilRef(DrawRenderState.GetStencilRef());
+	SharedMeshDrawCommand.PrimitiveType = (EPrimitiveType)MeshBatch.Type;
 
 	FGraphicsMinimalPipelineStateInitializer PipelineState;
 	PipelineState.PrimitiveType = (EPrimitiveType)MeshBatch.Type;
@@ -78,21 +85,18 @@ void FMeshPassProcessor::BuildMeshDrawCommands(
 	check(VertexFactory && VertexFactory->IsInitialized());
 	VertexFactory->GetStreams(FeatureLevel, InputStreamType, SharedMeshDrawCommand.VertexStreams);
 
-	SharedMeshDrawCommand.PrimitiveIdStreamIndex = VertexFactory->GetPrimitiveIdStreamIndex(InputStreamType);
+	SharedMeshDrawCommand.PrimitiveIdStreamIndex = VertexFactory->GetPrimitiveIdStreamIndex(FeatureLevel, InputStreamType);
+
+	if (SharedMeshDrawCommand.PrimitiveIdStreamIndex != INDEX_NONE)
+	{
+		SharedFlags |= EFVisibleMeshDrawCommandFlags::HasPrimitiveIdStreamIndex;
+	}
 
 	int32 DataOffset = 0;
 	if (PassShaders.VertexShader.IsValid())
 	{
 		FMeshDrawSingleShaderBindings ShaderBindings = SharedMeshDrawCommand.ShaderBindings.GetSingleShaderBindings(SF_Vertex, DataOffset);
 		PassShaders.VertexShader->GetShaderBindings(Scene, FeatureLevel, PrimitiveSceneProxy, MaterialRenderProxy, MaterialResource, DrawRenderState, ShaderElementData, ShaderBindings);
-	}
-
-	if (PassShaders.HullShader.IsValid() & PassShaders.DomainShader.IsValid())
-	{
-		FMeshDrawSingleShaderBindings HullShaderBindings = SharedMeshDrawCommand.ShaderBindings.GetSingleShaderBindings(SF_Hull, DataOffset);
-		FMeshDrawSingleShaderBindings DomainShaderBindings = SharedMeshDrawCommand.ShaderBindings.GetSingleShaderBindings(SF_Domain, DataOffset);
-		PassShaders.HullShader->GetShaderBindings(Scene, FeatureLevel, PrimitiveSceneProxy, MaterialRenderProxy, MaterialResource, DrawRenderState, ShaderElementData, HullShaderBindings);
-		PassShaders.DomainShader->GetShaderBindings(Scene, FeatureLevel, PrimitiveSceneProxy, MaterialRenderProxy, MaterialResource, DrawRenderState, ShaderElementData, DomainShaderBindings);
 	}
 
 	if (PassShaders.PixelShader.IsValid())
@@ -109,7 +113,7 @@ void FMeshPassProcessor::BuildMeshDrawCommands(
 
 	SharedMeshDrawCommand.SetDebugData(PrimitiveSceneProxy, &MaterialResource, &MaterialRenderProxy, PassShaders.GetUntypedShaders(), VertexFactory);
 
-	const int32 NumElements = MeshBatch.Elements.Num();
+	const int32 NumElements = ShouldSkipMeshDrawCommand(MeshBatch, PrimitiveSceneProxy) ? 0 : MeshBatch.Elements.Num();
 
 	for (int32 BatchElementIndex = 0; BatchElementIndex < NumElements; BatchElementIndex++)
 	{
@@ -117,20 +121,26 @@ void FMeshPassProcessor::BuildMeshDrawCommands(
 		{
 			const FMeshBatchElement& BatchElement = MeshBatch.Elements[BatchElementIndex];
 			FMeshDrawCommand& MeshDrawCommand = DrawListContext->AddCommand(SharedMeshDrawCommand, NumElements);
+			
+			EFVisibleMeshDrawCommandFlags Flags = SharedFlags;
+			if (BatchElement.bForceInstanceCulling)
+			{
+				Flags |= EFVisibleMeshDrawCommandFlags::ForceInstanceCulling;
+			}
+			if (BatchElement.bPreserveInstanceOrder)
+			{
+				// TODO: add support for bPreserveInstanceOrder on mobile
+				if (ensureMsgf(FeatureLevel > ERHIFeatureLevel::ES3_1, TEXT("FMeshBatchElement::bPreserveInstanceOrder is currently only supported on non-mobile platforms.")))
+				{					
+					Flags |= EFVisibleMeshDrawCommandFlags::PreserveInstanceOrder;
+				}
+			}
 
 			DataOffset = 0;
 			if (PassShaders.VertexShader.IsValid())
 			{
 				FMeshDrawSingleShaderBindings VertexShaderBindings = MeshDrawCommand.ShaderBindings.GetSingleShaderBindings(SF_Vertex, DataOffset);
 				FMeshMaterialShader::GetElementShaderBindings(PassShaders.VertexShader, Scene, ViewIfDynamicMeshCommand, VertexFactory, InputStreamType, FeatureLevel, PrimitiveSceneProxy, MeshBatch, BatchElement, ShaderElementData, VertexShaderBindings, MeshDrawCommand.VertexStreams);
-			}
-
-			if (PassShaders.HullShader.IsValid() & PassShaders.DomainShader.IsValid())
-			{
-				FMeshDrawSingleShaderBindings HullShaderBindings = MeshDrawCommand.ShaderBindings.GetSingleShaderBindings(SF_Hull, DataOffset);
-				FMeshDrawSingleShaderBindings DomainShaderBindings = MeshDrawCommand.ShaderBindings.GetSingleShaderBindings(SF_Domain, DataOffset);
-				FMeshMaterialShader::GetElementShaderBindings(PassShaders.HullShader, Scene, ViewIfDynamicMeshCommand, VertexFactory, EVertexInputStreamType::Default, FeatureLevel, PrimitiveSceneProxy, MeshBatch, BatchElement, ShaderElementData, HullShaderBindings, MeshDrawCommand.VertexStreams);
-				FMeshMaterialShader::GetElementShaderBindings(PassShaders.DomainShader, Scene, ViewIfDynamicMeshCommand, VertexFactory, EVertexInputStreamType::Default, FeatureLevel, PrimitiveSceneProxy, MeshBatch, BatchElement, ShaderElementData, DomainShaderBindings, MeshDrawCommand.VertexStreams);
 			}
 
 			if (PassShaders.PixelShader.IsValid())
@@ -146,12 +156,10 @@ void FMeshPassProcessor::BuildMeshDrawCommands(
 				FMeshMaterialShader::GetElementShaderBindings(PassShaders.GeometryShader, Scene, ViewIfDynamicMeshCommand, VertexFactory, EVertexInputStreamType::Default, FeatureLevel, PrimitiveSceneProxy, MeshBatch, BatchElement, ShaderElementData, GeometryShaderBindings, MeshDrawCommand.VertexStreams);
 			}
 
-			int32 DrawPrimitiveId;
-			int32 ScenePrimitiveId;
-			GetDrawCommandPrimitiveId(PrimitiveSceneInfo, BatchElement, DrawPrimitiveId, ScenePrimitiveId);
+			FMeshDrawCommandPrimitiveIdInfo IdInfo = GetDrawCommandPrimitiveId(PrimitiveSceneInfo, BatchElement);
 
 			FMeshProcessorShaders ShadersForDebugging = PassShaders.GetUntypedShaders();
-			DrawListContext->FinalizeCommand(MeshBatch, BatchElementIndex, DrawPrimitiveId, ScenePrimitiveId, MeshFillMode, MeshCullMode, SortKey, PipelineState, &ShadersForDebugging, MeshDrawCommand);
+			DrawListContext->FinalizeCommand(MeshBatch, BatchElementIndex, IdInfo, MeshFillMode, MeshCullMode, SortKey, Flags, PipelineState, &ShadersForDebugging, MeshDrawCommand);
 		}
 	}
 }

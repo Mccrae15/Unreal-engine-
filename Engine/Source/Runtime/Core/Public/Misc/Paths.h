@@ -6,6 +6,21 @@
 #include "Containers/UnrealString.h"
 #include "HAL/CriticalSection.h"
 
+namespace UE::Core::Private
+{
+	const TCHAR*   GetBindingType(const TCHAR* Ptr);
+	const FString& GetBindingType(const FString& Str);
+
+	// This is used to force the arguments of FString::Combine to implicitly convert (if necessary)
+	// to FString when calling CombineImpl(), allowing them to remain as temporaries on the stack
+	// so that they stay allocated during the combining process.
+	//
+	// Pointer arguments are passed without causing FString temporaries to be created,
+	// and FString arguments are referenced directly without creating extra copies.
+	template <typename T>
+	using TToStringType_T = decltype(GetBindingType(std::declval<T>()));
+}
+
 /**
  * Path helpers for retrieving game dir, engine dir, etc.
  */
@@ -276,6 +291,13 @@ public:
 	 * @return Video capture directory
 	 */
 	static FString VideoCaptureDir();
+
+	/**
+	 * Returns the directory the engine uses to output user requested audio capture files.
+	 *
+	 * @return Audio capture directory
+	 */
+	static FString AudioCaptureDir();
 	
 	/**
 	 * Returns the directory the engine uses to output logs. This currently can't 
@@ -481,6 +503,9 @@ public:
 	 */
 	static void RemoveDuplicateSlashes(FString& InPath);
 
+	 /** Returns a copy of the given path on which duplicate slashes were removed (see the inplace version for more details). */
+	static FString RemoveDuplicateSlashes(const FString& InPath);
+
 	/**
 	 * Make fully standard "Unreal" pathname:
 	 *    - Normalizes path separators [NormalizeFilename]
@@ -566,7 +591,7 @@ public:
 	*	Returns a string that is safe to use as a filename because all items in
 	*	GetInvalidFileSystemChars() are removed
 	*/
-	static FString MakeValidFileName(const FString& InString, const TCHAR InReplacementChar=0);
+	static FString MakeValidFileName(const FString& InString, const TCHAR InReplacementChar = TEXT('\0'));
 
 	/** 
 	 * Validates that the parts that make up the path contain no invalid characters as dictated by the operating system
@@ -593,11 +618,7 @@ public:
 	template <typename... PathTypes>
 	FORCEINLINE static FString Combine(PathTypes&&... InPaths)
 	{
-		const TCHAR* Paths[] = { GetTCharPtr(Forward<PathTypes>(InPaths))... };
-		FString Out;
-		
-		CombineInternal(Out, Paths, UE_ARRAY_COUNT(Paths));
-		return Out;
+		return CombineImpl<PathTypes...>(Forward<PathTypes>(InPaths)...);
 	}
 
 	/**
@@ -611,6 +632,16 @@ protected:
 
 private:
 	struct FStaticData;
+
+	template <typename... PathTypes>
+	FORCEINLINE static FString CombineImpl(UE::Core::Private::TToStringType_T<std::decay_t<PathTypes>>... InPaths)
+	{
+		const TCHAR* Paths[] = { GetTCharPtr(InPaths)... };
+		FString Out;
+		
+		CombineInternal(Out, Paths, UE_ARRAY_COUNT(Paths));
+		return Out;
+	}
 
 	FORCEINLINE static const TCHAR* GetTCharPtr(const TCHAR* Ptr)
 	{

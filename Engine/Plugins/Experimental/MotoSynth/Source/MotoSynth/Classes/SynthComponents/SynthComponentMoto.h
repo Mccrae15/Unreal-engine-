@@ -19,7 +19,7 @@ class MOTOSYNTH_API USynthComponentMoto : public USynthComponent
 public:
 	/* The moto synth preset to use for the moto synth component. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MotoSynth")
-	UMotoSynthPreset* MotoSynthPreset;
+	TObjectPtr<UMotoSynthPreset> MotoSynthPreset;
 
 	/* Sets the starting RPM of the engine */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "MotoSynth", meta = (ClampMin = "500.0", ClampMax = "20000.0", UIMin = "500.0", UIMax = "20000.0"))
@@ -41,7 +41,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "MotoSynth")
 	bool IsEnabled() const;
 
-	virtual ISoundGeneratorPtr CreateSoundGenerator(int32 InSampleRate, int32 InNumChannels) override;
+	virtual ISoundGeneratorPtr CreateSoundGenerator(const FSoundGeneratorInitParams& InParams) override;
 
 private:
 	FMotoSynthRuntimeSettings* GetSettingsToUse();

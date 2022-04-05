@@ -149,7 +149,8 @@ bool UCollisionProfile::CheckRedirect(FName ProfileName, FBodyInstance& BodyInst
 			// if new profile name exists
 			if ( *NewName != NAME_None )
 			{
-				check (FindProfileData(Profiles, *NewName, Template));
+				const bool bSuccessfullyFoundProfileData = FindProfileData(Profiles, *NewName, Template);
+				check(bSuccessfullyFoundProfileData);
 			}
 
 			return true;
@@ -840,7 +841,7 @@ bool FCollisionProfilePrivateAccessor::AddProfileTemplate(FCollisionResponseTemp
 		if (CollisionProfile->GetProfileTemplate(NewProfileData.Name, ProfileData))
 		{
 			CollisionProfile->LoadProfileConfig(true);
-			CollisionProfile->UpdateDefaultConfigFile();
+			CollisionProfile->TryUpdateDefaultConfigFile();
 			return true;
 		}
 	}

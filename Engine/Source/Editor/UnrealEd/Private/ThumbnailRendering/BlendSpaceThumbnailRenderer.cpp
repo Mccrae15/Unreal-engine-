@@ -6,7 +6,7 @@
 #include "SceneView.h"
 #include "ThumbnailHelpers.h"
 
-#include "Animation/BlendSpaceBase.h"
+#include "Animation/BlendSpace.h"
 
 UBlendSpaceThumbnailRenderer::UBlendSpaceThumbnailRenderer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -16,7 +16,7 @@ UBlendSpaceThumbnailRenderer::UBlendSpaceThumbnailRenderer(const FObjectInitiali
 
 void UBlendSpaceThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 Width, uint32 Height, FRenderTarget* RenderTarget, FCanvas* Canvas, bool bAdditionalViewFamily)
 {
-	UBlendSpaceBase* BlendSpace = Cast<UBlendSpaceBase>(Object);
+	UBlendSpace* BlendSpace = Cast<UBlendSpace>(Object);
 	if (BlendSpace != nullptr)
 	{
 		if (ThumbnailScene == nullptr)
@@ -27,15 +27,14 @@ void UBlendSpaceThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint3
 		if (ThumbnailScene->SetBlendSpace(BlendSpace))
 		{
 			FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(RenderTarget, ThumbnailScene->GetScene(), FEngineShowFlags(ESFIM_Game))
-				.SetWorldTimes(FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime)
+				.SetTime(UThumbnailRenderer::GetTime())
 				.SetAdditionalViewFamily(bAdditionalViewFamily));
 
 			ViewFamily.EngineShowFlags.DisableAdvancedFeatures();
 			ViewFamily.EngineShowFlags.MotionBlur = 0;
 			ViewFamily.EngineShowFlags.LOD = 0;
 
-			ThumbnailScene->GetView(&ViewFamily, X, Y, Width, Height);
-			RenderViewFamily(Canvas, &ViewFamily);
+			RenderViewFamily(Canvas, &ViewFamily, ThumbnailScene->CreateView(&ViewFamily, X, Y, Width, Height));
 			ThumbnailScene->SetBlendSpace(nullptr);
 		}
 	}

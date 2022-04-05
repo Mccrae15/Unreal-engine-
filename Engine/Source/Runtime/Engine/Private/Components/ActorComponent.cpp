@@ -13,6 +13,7 @@
 #include "Components/PrimitiveComponent.h"
 #include "AI/NavigationSystemBase.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Elements/Framework/EngineElementsLibrary.h"
 #include "ContentStreaming.h"
 #include "ComponentReregisterContext.h"
 #include "Engine/AssetUserData.h"
@@ -36,6 +37,8 @@
 
 #if WITH_EDITOR
 #include "Kismet2/ComponentEditorUtils.h"
+#include "ObjectCacheEventSink.h"
+#include "StaticMeshCompiler.h"
 #endif
 #include "ObjectTrace.h"
 
@@ -72,10 +75,6 @@ FAutoConsoleVariableRef GTickComponentLatentActionsWithTheComponentCVar(
 /** Enable to log out all render state create, destroy and updatetransform events */
 #define LOG_RENDER_STATE 0
 
-#if WITH_EDITOR
-FUObjectAnnotationSparseBool GSelectedComponentAnnotation;
-#endif
-
 /** Static var indicating activity of reregister context */
 int32 FGlobalComponentReregisterContext::ActiveGlobalReregisterContextCount = 0;
 
@@ -93,18 +92,36 @@ int32 GEnableDeferredPhysicsCreation = 0;
 
 void FRegisterComponentContext::Process()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FRegisterComponentContext::Process)
+
+	bool bSingleThreaded = !FApp::ShouldUseThreadingForPerformance();
+#if WITH_EDITOR
+	// This is required for async static mesh compilation in case a scene proxy is not async aware.
+	// A stall until the compilation is finished might occur, and this is only supported on the game thread for now.
+	bSingleThreaded |= FStaticMeshCompilingManager::Get().IsAsyncStaticMeshCompilationEnabled();
+#endif
+
 	FSceneInterface* Scene = World->Scene;
 	const bool bAppCanEverRender = FApp::CanEverRender();
 
 	ParallelFor(AddPrimitiveBatches.Num(),
 		[&](int32 Index)
 		{
+			FOptionalTaskTagScope Scope(ETaskTag::EParallelGameThread);
 			UPrimitiveComponent* Component = AddPrimitiveBatches[Index];
-			if (!Component->IsPendingKill())
+
+			// AActor::PostRegisterAllComponents (called by AActor::IncrementalRegisterComponents) can trigger code 
+			// that either unregisters or re-registers components. If unregistered, skip this component.
+			// If re-registered, FRegisterComponentContext is not passed, so SceneProxy can be created.
+			if (IsValid(Component) && Component->IsRegistered())
 			{
 				if (Component->IsRenderStateCreated() || !bAppCanEverRender)
 				{
-					Scene->AddPrimitive(Component);
+					// Skip if SceneProxy is already created
+					if (Component->SceneProxy == nullptr)
+					{
+						Scene->AddPrimitive(Component);
+					}
 				}
 				else // Fallback for some edge case where the component renderstate are missing
 				{
@@ -112,7 +129,7 @@ void FRegisterComponentContext::Process()
 				}
 			}
 		},
-		!FApp::ShouldUseThreadingForPerformance()
+		bSingleThreaded
 	);
 	AddPrimitiveBatches.Empty();
 }
@@ -138,14 +155,18 @@ void UpdateAllPrimitiveSceneInfosForSingleComponent(UActorComponent* InComponent
 
 void UpdateAllPrimitiveSceneInfosForScenes(TSet<FSceneInterface*> ScenesToUpdateAllPrimitiveSceneInfos)
 {
-	ENQUEUE_RENDER_COMMAND(UpdateAllPrimitiveSceneInfosCmd)(
-		[ScenesToUpdateAllPrimitiveSceneInfos](FRHICommandListImmediate& RHICmdList)
+	if (ScenesToUpdateAllPrimitiveSceneInfos.Num())
 	{
-		for (FSceneInterface* Scene : ScenesToUpdateAllPrimitiveSceneInfos)
-		{
-			Scene->UpdateAllPrimitiveSceneInfos(RHICmdList);
-		}
-	});
+		ENQUEUE_RENDER_COMMAND(UpdateAllPrimitiveSceneInfosCmd)(
+			[ScenesToUpdateAllPrimitiveSceneInfos](FRHICommandListImmediate& RHICmdList)
+			{
+				for (FSceneInterface* Scene : ScenesToUpdateAllPrimitiveSceneInfos)
+				{
+					Scene->UpdateAllPrimitiveSceneInfos(RHICmdList);
+				}
+			}
+		);
+	}
 }
 
 FGlobalComponentReregisterContext::FGlobalComponentReregisterContext()
@@ -212,23 +233,52 @@ void FGlobalComponentReregisterContext::UpdateAllPrimitiveSceneInfos()
 
 FGlobalComponentRecreateRenderStateContext::FGlobalComponentRecreateRenderStateContext()
 {
-	// wait until resources are released
-	FlushRenderingCommands();
-
-	// recreate render state for all components.
-	for (UActorComponent* Component : TObjectRange<UActorComponent>())
+	if (FApp::CanEverRender())
 	{
-		if (Component->IsRegistered() && Component->IsRenderStateCreated())
-		{
-			ComponentContexts.Emplace(Component, &ScenesToUpdateAllPrimitiveSceneInfos);
-		}
-	}
+		TRACE_CPUPROFILER_EVENT_SCOPE(FGlobalComponentRecreateRenderStateContext::FGlobalComponentRecreateRenderStateContext);
 
-	UpdateAllPrimitiveSceneInfos();
+		// wait until resources are released
+		FlushRenderingCommands();
+
+		// recreate render state for all components.
+		for (UActorComponent* Component : TObjectRange<UActorComponent>())
+		{
+			if (Component->IsRegistered() && Component->IsRenderStateCreated())
+			{
+				ComponentContexts.Emplace(Component, &ScenesToUpdateAllPrimitiveSceneInfos);
+			}
+		}
+
+		UpdateAllPrimitiveSceneInfos();
+	}
+}
+
+FGlobalComponentRecreateRenderStateContext::FGlobalComponentRecreateRenderStateContext(const TArray<UActorComponent*>& InComponents)
+{
+	if (FApp::CanEverRender())
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FGlobalComponentRecreateRenderStateContext::FGlobalComponentRecreateRenderStateContext);
+
+		// wait until resources are released
+		FlushRenderingCommands();
+
+		// recreate render state for provided components.
+		for (UActorComponent* Component : InComponents)
+		{
+			if (Component->IsRegistered() && Component->IsRenderStateCreated())
+			{
+				ComponentContexts.Emplace(Component, &ScenesToUpdateAllPrimitiveSceneInfos);
+			}
+		}
+
+		UpdateAllPrimitiveSceneInfos();
+	}
 }
 
 FGlobalComponentRecreateRenderStateContext::~FGlobalComponentRecreateRenderStateContext()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FGlobalComponentRecreateRenderStateContext::~FGlobalComponentRecreateRenderStateContext);
+
 	ComponentContexts.Empty();
 
 	UpdateAllPrimitiveSceneInfos();
@@ -283,13 +333,17 @@ void UActorComponent::PostInitProperties()
 {
 	Super::PostInitProperties();
 
+#if WITH_EDITOR
+	UEngineElementsLibrary::CreateEditorComponentElement(this);
+#endif	// WITH_EDITOR
+
 	// Instance components will be added during the owner's initialization
 	if (OwnerPrivate && CreationMethod != EComponentCreationMethod::Instance)
 	{
 		if (!FPlatformProperties::RequiresCookedData() && CreationMethod == EComponentCreationMethod::Native && HasAllFlags(RF_NeedLoad|RF_DefaultSubObject))
 		{
 			UObject* MyArchetype = GetArchetype();
-			if (!MyArchetype->IsPendingKill() && MyArchetype != GetClass()->ClassDefaultObject)
+			if (IsValid(MyArchetype) && MyArchetype != GetClass()->ClassDefaultObject)
 			{
 				OwnerPrivate->AddOwnedComponent(this);
 			}
@@ -308,7 +362,7 @@ void UActorComponent::PostInitProperties()
 				else
 #endif // WITH_EDITOR
 				{
-					MarkPendingKill();
+					MarkAsGarbage();
 				}
 			}
 		}
@@ -332,7 +386,7 @@ void UActorComponent::PostLoad()
 	Super::PostLoad();
 	   
 #if WITH_EDITORONLY_DATA
-	if (GetLinkerUE4Version() < VER_UE4_ACTOR_COMPONENT_CREATION_METHOD)
+	if (GetLinkerUEVersion() < VER_UE4_ACTOR_COMPONENT_CREATION_METHOD)
 	{
 		if (IsTemplate())
 		{
@@ -372,7 +426,7 @@ void UActorComponent::PostLoad()
 
 	if (CreationMethod == EComponentCreationMethod::SimpleConstructionScript)
 	{
-		if ((GetLinkerUE4Version() < VER_UE4_TRACK_UCS_MODIFIED_PROPERTIES) && !HasAnyFlags(RF_ClassDefaultObject))
+		if ((GetLinkerUEVersion() < VER_UE4_TRACK_UCS_MODIFIED_PROPERTIES) && !HasAnyFlags(RF_ClassDefaultObject))
 		{
 			DetermineUCSModifiedProperties();
 		}
@@ -396,7 +450,7 @@ void UActorComponent::PostLoad()
 #if WITH_EDITOR
 	if (bMarkPendingKillOnPostLoad)
 	{
-		MarkPendingKill();
+		MarkAsGarbage();
 		bMarkPendingKillOnPostLoad = false;
 	}
 #endif // WITH_EDITOR
@@ -622,7 +676,8 @@ bool UActorComponent::ComponentIsInPersistentLevel(bool bIncludeLevelStreamingPe
 
 FString UActorComponent::GetReadableName() const
 {
-	FString Result = GetNameSafe(GetOwner()) + TEXT(".") + GetName();
+	const AActor* Owner = GetOwner();
+	FString Result = (Owner ? Owner->GetActorNameOrLabel() : TEXT("None")) + TEXT(".") + GetName();
 	UObject const *Add = AdditionalStatObject();
 	if (Add)
 	{
@@ -660,6 +715,10 @@ void UActorComponent::BeginDestroy()
 	{
 		MyOwner->RemoveOwnedComponent(this);
 	}
+
+#if WITH_EDITOR
+	UEngineElementsLibrary::DestroyEditorComponentElement(this);
+#endif	// WITH_EDITOR
 
 	Super::BeginDestroy();
 }
@@ -750,7 +809,7 @@ void UActorComponent::PreEditChange(FProperty* PropertyThatWillChange)
 	{
 		// The component or its outer could be pending kill when calling PreEditChange when applying a transaction.
 		// Don't do do a full recreate in this situation, and instead simply detach.
-		if( !IsPendingKill() )
+		if( IsValid(this) )
 		{
 			// One way this check can fail is that component subclass does not call Super::PostEditChangeProperty
 			checkf(!EditReregisterContexts.Find(this),
@@ -783,7 +842,7 @@ void UActorComponent::PostEditUndo()
 {
 	// Objects marked pending kill don't call PostEditChange() from UObject::PostEditUndo(),
 	// so they can leave an EditReregisterContexts entry around if they are deleted by an undo action.
-	if( IsPendingKill() )
+	if( !IsValid(this) )
 	{
 		// For the redo case, ensure that we're no longer in the OwnedComponents array.
 		if (AActor* OwningActor = GetOwner())
@@ -858,7 +917,7 @@ void UActorComponent::PostEditUndo()
 
 bool UActorComponent::IsSelectedInEditor() const
 {
-	return !IsPendingKill() && GSelectedComponentAnnotation.Get(this);
+	return IsValidChecked(this) && GIsComponentSelectedInEditor && GIsComponentSelectedInEditor(this);
 }
 
 void UActorComponent::ConsolidatedPostEditChange(const FPropertyChangedEvent& PropertyChangedEvent)
@@ -895,9 +954,9 @@ void UActorComponent::ConsolidatedPostEditChange(const FPropertyChangedEvent& Pr
 
 	// The component or its outer could be pending kill when calling PostEditChange when applying a transaction.
 	// Don't do do a full recreate in this situation, and instead simply detach.
-	if( IsPendingKill() )
+	if( !IsValid(this) )
 	{
-		// @todo UE4 james should this call UnregisterComponent instead to remove itself from the RegisteredComponents array on the owner?
+		// @todo james should this call UnregisterComponent instead to remove itself from the RegisteredComponents array on the owner?
 		ExecuteUnregisterEvents();
 		WorldPrivate = nullptr;
 	}
@@ -927,7 +986,7 @@ void UActorComponent::OnRegister()
 	checkf(!IsUnreachable(), TEXT("%s"), *GetDetailedInfo());
 	checkf(!GetOuter()->IsTemplate(), TEXT("'%s' (%s)"), *GetOuter()->GetFullName(), *GetDetailedInfo());
 	checkf(!IsTemplate(), TEXT("'%s' (%s)"), *GetOuter()->GetFullName(), *GetDetailedInfo() );
-	checkf(!IsPendingKill(), TEXT("OnRegister: %s to %s"), *GetDetailedInfo(), GetOwner() ? *GetOwner()->GetFullName() : TEXT("*** No Owner ***") );
+	checkf(IsValid(this), TEXT("OnRegister: %s to %s"), *GetDetailedInfo(), GetOwner() ? *GetOwner()->GetFullName() : TEXT("*** No Owner ***") );
 #endif
 	checkf(WorldPrivate, TEXT("OnRegister: %s to %s"), *GetDetailedInfo(), GetOwner() ? *GetOwner()->GetFullName() : TEXT("*** No Owner ***") );
 	checkf(!bRegistered, TEXT("OnRegister: %s to %s"), *GetDetailedInfo(), GetOwner() ? *GetOwner()->GetFullName() : TEXT("*** No Owner ***") );
@@ -971,7 +1030,7 @@ void UActorComponent::UninitializeComponent()
 
 void UActorComponent::BeginPlay()
 {
-	TRACE_OBJECT_EVENT(this, BeginPlay);
+	TRACE_OBJECT_LIFETIME_BEGIN(this);
 
 	check(bRegistered);
 	check(!bHasBegunPlay);
@@ -987,7 +1046,7 @@ void UActorComponent::BeginPlay()
 
 void UActorComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	TRACE_OBJECT_EVENT(this, EndPlay);
+	TRACE_OBJECT_LIFETIME_END(this);
 
 	check(bHasBegunPlay);
 
@@ -1007,6 +1066,7 @@ TStructOnScope<FActorComponentInstanceData> UActorComponent::GetComponentInstanc
 
 void FActorComponentTickFunction::ExecuteTick(float DeltaTime, enum ELevelTick TickType, ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FActorComponentTickFunction::ExecuteTick);
 	ExecuteTickHelper(Target, Target->bTickInEditor, DeltaTime, TickType, [this, TickType](float DilatedTime)
 	{
 		Target->TickComponent(DilatedTime, TickType, this);
@@ -1042,7 +1102,7 @@ bool UActorComponent::SetupActorComponentTickFunction(struct FTickFunction* Tick
 		AActor* MyOwner = GetOwner();
 		if (!MyOwner || !MyOwner->IsTemplate())
 		{
-			ULevel* ComponentLevel = (MyOwner ? MyOwner->GetLevel() : GetWorld()->PersistentLevel);
+			ULevel* ComponentLevel = (MyOwner ? MyOwner->GetLevel() : ToRawPtr(GetWorld()->PersistentLevel));
 			TickFunction->SetTickFunctionEnable(TickFunction->bStartWithTickEnabled || TickFunction->IsTickFunctionEnabled());
 			TickFunction->RegisterTickFunction(ComponentLevel);
 			return true;
@@ -1163,9 +1223,9 @@ void UActorComponent::RegisterComponentWithWorld(UWorld* InWorld, FRegisterCompo
 
 	checkf(!IsUnreachable(), TEXT("%s"), *GetFullName());
 
-	if(IsPendingKill())
+	if(!IsValid(this))
 	{
-		UE_LOG(LogActorComponent, Log, TEXT("RegisterComponentWithWorld: (%s) Trying to register component with IsPendingKill() == true. Aborting."), *GetPathName());
+		UE_LOG(LogActorComponent, Log, TEXT("RegisterComponentWithWorld: (%s) Trying to register component with IsValid() == false. Aborting."), *GetPathName());
 		return;
 	}
 
@@ -1200,7 +1260,7 @@ void UActorComponent::RegisterComponentWithWorld(UWorld* InWorld, FRegisterCompo
 	{
 		checkf(!MyOwner->IsUnreachable(), TEXT("%s"), *GetFullName());
 		// can happen with undo because the owner will be restored "next"
-		//checkf(!MyOwner->IsPendingKill(), TEXT("%s"), *GetFullName());
+		//checkf(IsValid(MyOwner), TEXT("%s"), *GetFullName());
 
 		if(InWorld != MyOwner->GetWorld())
 		{
@@ -1255,7 +1315,7 @@ void UActorComponent::RegisterComponentWithWorld(UWorld* InWorld, FRegisterCompo
 	if (IsCreatedByConstructionScript())
 	{
 		TArray<UObject*> Children;
-		GetObjectsWithOuter(this, Children, true, RF_NoFlags, EInternalObjectFlags::PendingKill);
+		GetObjectsWithOuter(this, Children, true, RF_NoFlags, EInternalObjectFlags::Garbage);
 
 		for (UObject* Child : Children)
 		{
@@ -1277,6 +1337,9 @@ void UActorComponent::RegisterComponent()
 	UWorld* MyOwnerWorld = (MyOwner ? MyOwner->GetWorld() : nullptr);
 	if (ensure(MyOwnerWorld))
 	{
+		//@note FH: world should be initialized when calling RegisterComponent or it should be handled gracefully as a no-op but that isn't currently the case
+		// however a lot of legacy code may end up calling RegisterComponent prior to world initialization hence why the ensure is currently commented
+		//ensure(MyOwnerWorld->bIsWorldInitialized);
 		RegisterComponentWithWorld(MyOwnerWorld);
 	}
 }
@@ -1351,7 +1414,7 @@ void UActorComponent::DestroyComponent(bool bPromoteChildren/*= false*/)
 	OnComponentDestroyed(false);
 
 	// Finally mark pending kill, to NULL out any other refs
-	MarkPendingKill();
+	MarkAsGarbage();
 }
 
 void UActorComponent::OnComponentCreated()
@@ -1390,9 +1453,14 @@ void UActorComponent::CreateRenderState_Concurrent(FRegisterComponentContext* Co
 	bRenderStateDirty = false;
 	bRenderTransformDirty = false;
 	bRenderDynamicDataDirty = false;
+	bRenderInstancesDirty = false;
 
 #if LOG_RENDER_STATE
 	UE_LOG(LogActorComponent, Log, TEXT("CreateRenderState_Concurrent: %s"), *GetPathName());
+#endif
+
+#if WITH_EDITOR
+	FObjectCacheEventSink::NotifyRenderStateChanged_Concurrent(this);
 #endif
 }
 
@@ -1416,6 +1484,16 @@ void UActorComponent::SendRenderDynamicData_Concurrent()
 #endif
 }
 
+void UActorComponent::SendRenderInstanceData_Concurrent()
+{
+	check(bRenderStateCreated);
+	bRenderInstancesDirty = false;
+
+#if LOG_RENDER_STATE
+	UE_LOG(LogActorComponent, Log, TEXT("SendRenderInstanceData_Concurrent: %s"), *GetPathName());
+#endif
+}
+
 void UActorComponent::DestroyRenderState_Concurrent()
 {
 	check(bRenderStateCreated);
@@ -1426,10 +1504,15 @@ void UActorComponent::DestroyRenderState_Concurrent()
 	// so that the component can be left in a state where its transform is marked for update while render state destroyed
 	bRenderStateDirty = false;
 	bRenderTransformDirty = false;
+	bRenderInstancesDirty = false;
 	bRenderDynamicDataDirty = false;
 
 #if LOG_RENDER_STATE
 	UE_LOG(LogActorComponent, Log, TEXT("DestroyRenderState_Concurrent: %s"), *GetPathName());
+#endif
+
+#if WITH_EDITOR
+	FObjectCacheEventSink::NotifyRenderStateChanged_Concurrent(this);
 #endif
 }
 
@@ -1462,7 +1545,27 @@ void UActorComponent::CreatePhysicsState(bool bAllowDeferral)
 	if (!bPhysicsStateCreated && WorldPrivate->GetPhysicsScene() && ShouldCreatePhysicsState())
 	{
 		UPrimitiveComponent* Primitive = Cast<UPrimitiveComponent>(this);
-		if (GEnableDeferredPhysicsCreation && bAllowDeferral && Primitive && Primitive->GetBodySetup() && !Primitive->GetGenerateOverlapEvents())
+
+		bool ShouldDefer = false;
+		if (UWorld* World = GetWorld())
+		{
+			if (World->GetAllowDeferredPhysicsStateCreation())
+			{
+				if (GEnableDeferredPhysicsCreation && bAllowDeferral && Primitive && !Primitive->GetGenerateOverlapEvents())
+				{
+					if (UBodySetup* Setup = Primitive->GetBodySetup())
+					{
+						if (!Setup->bCreatedPhysicsMeshes)
+						{
+							ShouldDefer = true;
+						}
+					}
+				}
+			}
+
+		}
+
+		if (ShouldDefer)
 		{
 #if WITH_CHAOS
 			WorldPrivate->GetPhysicsScene()->DeferPhysicsStateCreation(Primitive);
@@ -1641,7 +1744,7 @@ void UActorComponent::DoDeferredRenderUpdates_Concurrent()
 
 	checkf(!IsUnreachable(), TEXT("%s"), *GetFullName());
 	checkf(!IsTemplate(), TEXT("%s"), *GetFullName());
-	checkf(!IsPendingKill(), TEXT("%s"), *GetFullName());
+	checkf(IsValid(this), TEXT("%s"), *GetFullName());
 
 	FScopeCycleCounterUObject ContextScope(this);
 	FScopeCycleCounterUObject AdditionalScope(STATS ? AdditionalStatObject() : nullptr);
@@ -1671,6 +1774,11 @@ void UActorComponent::DoDeferredRenderUpdates_Concurrent()
 		{
 			SendRenderDynamicData_Concurrent();
 		}
+
+		if (bRenderInstancesDirty)
+		{
+			SendRenderInstanceData_Concurrent();
+		}
 	}
 }
 
@@ -1685,6 +1793,10 @@ void UActorComponent::MarkRenderStateDirty()
 		MarkForNeededEndOfFrameRecreate();
 
 		MarkRenderStateDirtyEvent.Broadcast(*this);
+
+#if WITH_EDITOR
+		FObjectCacheEventSink::NotifyRenderStateChanged_Concurrent(this);
+#endif
 	}
 }
 
@@ -1694,6 +1806,15 @@ void UActorComponent::MarkRenderTransformDirty()
 	if (IsRegistered() && bRenderStateCreated)
 	{
 		bRenderTransformDirty = true;
+		MarkForNeededEndOfFrameUpdate();
+	}
+}
+
+void UActorComponent::MarkRenderInstancesDirty()
+{
+	if (IsRegistered() && bRenderStateCreated)
+	{
+		bRenderInstancesDirty = true;
 		MarkForNeededEndOfFrameUpdate();
 	}
 }
@@ -1947,11 +2068,13 @@ bool UActorComponent::ReplicateSubobjects(class UActorChannel *Channel, class FO
 
 void UActorComponent::PreReplication(IRepChangedPropertyTracker & ChangedPropertyTracker)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	UBlueprintGeneratedClass* BPClass = Cast<UBlueprintGeneratedClass>(GetClass());
 	if (BPClass != NULL)
 	{
 		BPClass->InstancePreReplication(this, ChangedPropertyTracker);
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 bool UActorComponent::GetComponentClassCanReplicate() const
@@ -1988,6 +2111,13 @@ void UActorComponent::OnRep_IsActive()
 #if WITH_EDITOR
 bool UActorComponent::CanEditChange(const FProperty* InProperty) const
 {
+	if (AActor* Owner = GetOwner())
+	{
+		if (!Owner->CanEditChangeComponent(this, InProperty))
+		{
+			return false;
+		}
+	}
 	if (Super::CanEditChange(InProperty))
 	{
 		UActorComponent* ComponentArchetype = Cast<UActorComponent>(GetArchetype());
@@ -2132,6 +2262,14 @@ void UActorComponent::Serialize(FArchive& Ar)
 	}
 }
 
+void UActorComponent::PostApplyToComponent()
+{
+	if (IsRegistered())
+	{
+		ReregisterComponent();
+	}
+}
+
 AActor* UActorComponent::GetActorOwnerNoninline() const
 {
 	// This is defined out-of-line because AActor isn't defined where the inlined function is.
@@ -2170,5 +2308,9 @@ bool UActorComponent::NeedsInitialization() const
 {
 	return HasAnyFlags(RF_NeedInitialization);
 }
+
+#if WITH_EDITOR
+TFunction<bool(const UActorComponent*)> GIsComponentSelectedInEditor;
+#endif
 
 #undef LOCTEXT_NAMESPACE

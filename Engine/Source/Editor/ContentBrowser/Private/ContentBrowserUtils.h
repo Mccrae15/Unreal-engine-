@@ -13,8 +13,8 @@
 class SAssetView;
 class SPathView;
 
-class FBlacklistNames;
-class FBlacklistPaths;
+class FNamePermissionList;
+class FPathPermissionList;
 
 struct FARFilter;
 struct FContentBrowserItem;
@@ -67,18 +67,27 @@ namespace ContentBrowserUtils
 	/** Gets the platform specific text for the "explore" command (FPlatformProcess::ExploreFolder) */
 	FText GetExploreFolderText();
 
+	/** Perform a batched "explore" operation on the specified file and/or folder paths */
+	void ExploreFolders(const TArray<FContentBrowserItem>& InItems, const TSharedRef<SWidget>& InParentContent);
+
+	/** Returns if can perform a batched "explore" operation on the specified file and/or folder paths */
+	bool CanExploreFolders(const TArray<FContentBrowserItem>& InItems);
+
 	/** Convert a legacy asset and path selection to their corresponding virtual paths for content browser data items */
 	void ConvertLegacySelectionToVirtualPaths(TArrayView<const FAssetData> InAssets, TArrayView<const FString> InFolders, const bool InUseFolderPaths, TArray<FName>& OutVirtualPaths);
 	void ConvertLegacySelectionToVirtualPaths(TArrayView<const FAssetData> InAssets, TArrayView<const FString> InFolders, const bool InUseFolderPaths, TSet<FName>& OutVirtualPaths);
 
-	/** Append the asset registry filter and blacklists to the content browser data filter */
-	void AppendAssetFilterToContentBrowserFilter(const FARFilter& InAssetFilter, const TSharedPtr<FBlacklistNames>& InAssetClassBlacklist, const TSharedPtr<FBlacklistPaths>& InFolderBlacklist, FContentBrowserDataFilter& OutDataFilter);
+	/** Append the asset registry filter and permission lists to the content browser data filter */
+	void AppendAssetFilterToContentBrowserFilter(const FARFilter& InAssetFilter, const TSharedPtr<FNamePermissionList>& InAssetClassPermissionList, const TSharedPtr<FPathPermissionList>& InFolderPermissionList, FContentBrowserDataFilter& OutDataFilter);
+
+	/* Combine folder filters into a new filter if either are active */
+	TSharedPtr<FPathPermissionList> GetCombinedFolderPermissionList(const TSharedPtr<FPathPermissionList>& FolderPermissionList, const TSharedPtr<FPathPermissionList>& WritableFolderPermissionList);
 
 	/** Shared logic to know if we can perform certain operation depending on which view it occurred, either PathView or AssetView */
-	bool CanDeleteFromAssetView(TWeakPtr<SAssetView> AssetView);
-	bool CanRenameFromAssetView(TWeakPtr<SAssetView> AssetView);
-	bool CanDeleteFromPathView(TWeakPtr<SPathView> PathView);
-	bool CanRenameFromPathView(TWeakPtr<SPathView> PathView);
+	bool CanDeleteFromAssetView(TWeakPtr<SAssetView> AssetView, FText* OutErrorMsg = nullptr);
+	bool CanRenameFromAssetView(TWeakPtr<SAssetView> AssetView, FText* OutErrorMsg = nullptr);
+	bool CanDeleteFromPathView(TWeakPtr<SPathView> PathView, FText* OutErrorMsg = nullptr);
+	bool CanRenameFromPathView(TWeakPtr<SPathView> PathView, FText* OutErrorMsg = nullptr);
 
 	/** Returns if this folder has been marked as a favorite folder */
 	bool IsFavoriteFolder(const FString& FolderPath);

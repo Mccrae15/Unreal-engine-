@@ -5,11 +5,11 @@
 #include "CoreMinimal.h"
 #include "Fonts/SlateFontInfo.h"
 #include "EditorStyleSet.h"
-#include "AssetThumbnail.h"
 #include "PropertyHandle.h"
 #include "IDetailPropertyRow.h"
 
 class IDetailCategoryBuilder;
+class IDetailsView;
 
 namespace ECategoryPriority
 {
@@ -56,7 +56,12 @@ public:
 	/**
 	 * @return the parent detail view for this layout builder
 	 */
-	virtual const class IDetailsView* GetDetailsView() const = 0;
+	virtual const IDetailsView* GetDetailsView() const = 0;
+
+	/**
+	 * @return the parent detail view for this layout builder
+	 */
+	virtual IDetailsView* GetDetailsView() = 0;
 
 	/**
 	 * @return The base class of the objects being customized in this detail layout

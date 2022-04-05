@@ -20,7 +20,7 @@ struct CQDIPerInstanceData
 };
 
 
-/** Data Interface allowing sampling of color curves. */
+/** Data Interface that can be used to query collision related data, like geometry traces or sampling the depth buffer. */
 UCLASS(EditInlineNew, Category = "Collision", meta = (DisplayName = "Collision Query"))
 class NIAGARA_API UNiagaraDataInterfaceCollisionQuery : public UNiagaraDataInterface
 {
@@ -28,8 +28,6 @@ class NIAGARA_API UNiagaraDataInterfaceCollisionQuery : public UNiagaraDataInter
 public:
 
 	DECLARE_NIAGARA_DI_PARAMETER();
-
-	FNiagaraSystemInstance *SystemInstance;
 
 	//UObject Interface
 	virtual void PostInitProperties() override;
@@ -49,12 +47,9 @@ public:
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc) override;
 	virtual void GetAssetTagsForContext(const UObject* InAsset, const TArray<const UNiagaraDataInterface*>& InProperties, TMap<FName, uint32>& NumericKeys, TMap<FName, FString>& StringKeys) const override;
 
-
 	// VM functions
-	void PerformQuerySyncCPU(FVectorVMContext& Context);
-	void PerformQueryAsyncCPU(FVectorVMContext& Context);
-	void QuerySceneDepth(FVectorVMContext& Context);
-	void QueryMeshDistanceField(FVectorVMContext& Context);
+	void PerformQuerySyncCPU(FVectorVMExternalFunctionContext& Context);
+	void PerformQueryAsyncCPU(FVectorVMExternalFunctionContext& Context);
 
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target) const override { return true; }
 	virtual bool RequiresDistanceFieldData() const override { return true; }
@@ -74,18 +69,9 @@ public:
 	
 	virtual bool HasPreSimulateTick() const override{ return true; }
 	virtual bool HasPostSimulateTick() const override { return true; }
-private:
+	virtual bool PostSimulateCanOverlapFrames() const { return false; }
 
+private:
 	static FCriticalSection CriticalSection;
 	UEnum* TraceChannelEnum;
-};
-
-struct FNiagaraDataIntefaceProxyCollisionQuery : public FNiagaraDataInterfaceProxy
-{
-	// There's nothing in this proxy. It just reads from scene textures.
-
-	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override
-	{
-		return 0;
-	}
 };

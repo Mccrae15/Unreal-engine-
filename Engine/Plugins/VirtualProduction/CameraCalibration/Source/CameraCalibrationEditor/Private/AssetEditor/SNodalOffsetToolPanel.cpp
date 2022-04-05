@@ -124,7 +124,7 @@ void SNodalOffsetToolPanel::UpdateAlgosOptions()
 
 	for (FName& Name : Subsystem->GetCameraNodalOffsetAlgos())
 	{
-		CurrentAlgos.Add(MakeShareable(new FString(Name.ToString())));
+		CurrentAlgos.Add(MakeShared<FString>(Name.ToString()));
 	}
 
 	// Ask the ComboBox to refresh its options from its source (that we just updated)
@@ -187,7 +187,7 @@ TSharedRef<SWidget> SNodalOffsetToolPanel::BuildNodalOffsetAlgoPickerWidget()
 			.ToolTipText(LOCTEXT("ShowHelp_Tip", "Help about this algo"))
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.ButtonColorAndOpacity(FLinearColor::Transparent)
+			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
 			.OnClicked_Lambda([&]() -> FReply
 			{
 				if (!NodalOffsetTool.IsValid())

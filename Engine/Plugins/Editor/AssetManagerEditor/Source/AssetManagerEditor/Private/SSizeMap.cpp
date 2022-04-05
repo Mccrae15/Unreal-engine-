@@ -311,9 +311,8 @@ namespace SizeMapInternals
 		{
 			// Only look at objects which are valid
 			const bool bIsValidObject =
-				Object != nullptr &&	// Object should not be null
-				!Object->HasAnyFlags(RF_Transient) &&	// Should not be transient
-				!Object->IsPendingKill(); // Should not be pending kill
+				IsValid(Object) &&	// Object should be valid
+				!Object->HasAnyFlags(RF_Transient);	// Should not be transient
 			if (bIsValidObject)
 			{
 				// Skip objects that we've already processed
@@ -397,15 +396,14 @@ namespace SizeMapInternals
 
 void SSizeMap::GatherDependenciesRecursively(TSharedPtr<FAssetThumbnailPool>& InAssetThumbnailPool, TMap<FAssetIdentifier, TSharedPtr<FTreeMapNodeData>>& VisitedAssetIdentifiers, const TArray<FAssetIdentifier>& AssetIdentifiers, const FPrimaryAssetId& FilterPrimaryAsset, const TSharedPtr<FTreeMapNodeData>& Node, TSharedPtr<FTreeMapNodeData>& SharedRootNode, int32& NumAssetsWhichFailedToLoad)
 {
-	const FAssetRegistryState* CurrentPlatformState = CurrentRegistrySource && CurrentRegistrySource->RegistryState ? CurrentRegistrySource->RegistryState : nullptr;
-	if (!CurrentPlatformState)
+	if (!CurrentRegistrySource->HasRegistry())
 	{
 		return;
 	}
 	for (const FAssetIdentifier& AssetIdentifier : AssetIdentifiers)
 	{
 		FName AssetPackageName = AssetIdentifier.IsPackage() ? AssetIdentifier.PackageName : NAME_None;
-		FString AssetPackageNameString = AssetPackageName != NAME_None ? AssetPackageName.ToString() : FString();
+		FString AssetPackageNameString = (AssetPackageName != NAME_None) ? AssetPackageName.ToString() : FString();
 		FPrimaryAssetId AssetPrimaryId = AssetIdentifier.GetPrimaryAssetId();
 		int32 ChunkId = UAssetManager::ExtractChunkIdFromPrimaryAssetId(AssetPrimaryId);
 		int32 FilterChunkId = UAssetManager::ExtractChunkIdFromPrimaryAssetId(FilterPrimaryAsset);
@@ -512,11 +510,11 @@ void SSizeMap::GatherDependenciesRecursively(TSharedPtr<FAssetThumbnailPool>& In
 				NodeSizeMapData.AssetData.AssetClass = FName(*LOCTEXT("MissingAsset", "MISSING!").ToString());
 
 				const FString AssetPathString = AssetPackageNameString + TEXT(".") + FPackageName::GetLongPackageAssetName(AssetPackageNameString);
-				const FAssetData* FoundPointer = CurrentPlatformState->GetAssetByObjectPath(FName(*AssetPathString));
+				FAssetData FoundData = CurrentRegistrySource->GetAssetByObjectPath(FName(*AssetPathString));
 
-				if (FoundPointer)
+				if (FoundData.IsValid())
 				{
-					NodeSizeMapData.AssetData = *FoundPointer;
+					NodeSizeMapData.AssetData = MoveTemp(FoundData);
 				}
 			}
 			else
@@ -554,7 +552,7 @@ void SSizeMap::GatherDependenciesRecursively(TSharedPtr<FAssetThumbnailPool>& In
 				}
 				else
 				{
-					CurrentPlatformState->GetDependencies(AssetIdentifier, References, DependencyQuery.Categories, DependencyQuery.Flags);
+					CurrentRegistrySource->GetDependencies(AssetIdentifier, References, DependencyQuery.Categories, DependencyQuery.Flags);
 				}
 				
 				// Filter for registry source
@@ -582,7 +580,7 @@ void SSizeMap::GatherDependenciesRecursively(TSharedPtr<FAssetThumbnailPool>& In
 							{
 								// Check to see if this is managed by the filter asset
 								TArray<FAssetIdentifier> Managers;
-								CurrentPlatformState->GetReferencers(FoundAssetIdentifier, Managers, UE::AssetRegistry::EDependencyCategory::Manage);
+								CurrentRegistrySource->GetReferencers(FoundAssetIdentifier, Managers, UE::AssetRegistry::EDependencyCategory::Manage);
 
 								if (!Managers.Contains(FilterPrimaryAsset))
 								{

@@ -51,8 +51,7 @@ struct FGameplayDebuggerDebugActor
 {
 	GENERATED_USTRUCT_BODY()
 
-	UPROPERTY()
-	AActor* Actor = nullptr;
+	TWeakObjectPtr<AActor> Actor;
 
 	UPROPERTY()
 	FName ActorName;
@@ -101,6 +100,9 @@ public:
 	/** [ALL] set actor for debugging */
 	void SetDebugActor(AActor* Actor, bool bSelectInEditor = false);
 
+	/** [ALL] set view matrix that should be used for culling */
+	void SetViewPoint(const FVector& InViewLocation, const FVector& InViewDirection);
+
 	/** [ALL] send input event to category */
 	void SendCategoryInputEvent(int32 CategoryId, int32 HandlerId);
 
@@ -111,13 +113,16 @@ public:
 	void CollectCategoryData(bool bForce = false);
 
 	/** get current debug actor */
-	AActor* GetDebugActor() const { return IsValid(DebugActor.Actor) ? DebugActor.Actor : nullptr; }
+	AActor* GetDebugActor() const { return DebugActor.Actor.Get(); }
 	
 	/** get name of debug actor */
 	FName GetDebugActorName() const { return DebugActor.ActorName; }
 
 	/** get sync counter, increased with every change of DebugActor */
-	int16 GetDebugActorCounter() const { return DebugActor.SyncCounter; }
+	int32 GetDebugActorCounter() const { return DebugActor.SyncCounter; }
+
+	/** get view point information */
+	bool GetViewPoint(FVector& OutViewLocation, FVector& OutViewDirection) const;
 
 	const FGameplayDebuggerVisLogSync& GetVisLogSyncData() const { return VisLogSync; }
 
@@ -126,6 +131,9 @@ public:
 
 	/** get replicator state */
 	bool IsEnabled() const { return bIsEnabled; }
+
+	/** returns true if this replicator has been created for an editor world */
+	bool IsEditorWorldReplicator() const { return bIsEditorWorldReplicator; }
 
 	/** get category state */
 	bool IsCategoryEnabled(int32 CategoryId) const;
@@ -148,12 +156,16 @@ public:
 	/** returns true if object was created for local player (client / standalone) */
 	bool IsLocal() const { return bIsLocal; }
 
+#if WITH_EDITOR
+	void InitForEditor();
+#endif // WITH_EDITOR
+
 protected:
 
 	friend FGameplayDebuggerNetPack;
 
 	UPROPERTY(Replicated)
-	APlayerController* OwnerPC;
+	TObjectPtr<APlayerController> OwnerPC;
 
 	UPROPERTY(Replicated)
 	bool bIsEnabled;
@@ -169,7 +181,7 @@ protected:
 
 	/** rendering component needs to attached to some actor, and this is as good as any */
 	UPROPERTY()
-	UGameplayDebuggerRenderingComponent* RenderingComp;
+	TObjectPtr<UGameplayDebuggerRenderingComponent> RenderingComp;
 
 	/** category objects */
 	TArray<TSharedRef<FGameplayDebuggerCategory> > Categories;
@@ -177,9 +189,13 @@ protected:
 	/** extension objects */
 	TArray<TSharedRef<FGameplayDebuggerExtension> > Extensions;
 
+	TOptional<FVector> ViewLocation;
+	TOptional<FVector> ViewDirection;
+
 	uint32 bIsEnabledLocal : 1;
 	uint32 bHasAuthority : 1;
 	uint32 bIsLocal : 1;
+	uint32 bIsEditorWorldReplicator : 1;
 
 	/** notify about changes in known category set */
 	void OnCategoriesChanged();
@@ -200,6 +216,9 @@ protected:
 	void ServerSetDebugActor(AActor* Actor, bool bSelectInEditor);
 
 	UFUNCTION(Server, Reliable, WithValidation, meta = (CallInEditor = "true"))
+	void ServerSetViewPoint(const FVector& InViewLocation, const FVector& InViewDirection);
+
+	UFUNCTION(Server, Reliable, WithValidation, meta = (CallInEditor = "true"))
 	void ServerSetCategoryEnabled(int32 CategoryId, bool bEnable);
 
 	/** helper function for replicating input for category handlers */
@@ -212,4 +231,7 @@ protected:
 
 	/** [LOCAL] notify from CategoryData replication */
 	void OnReceivedDataPackPacket(int32 CategoryId, int32 DataPackId, const FGameplayDebuggerDataPack& DataPacket);
+
+	/** called both from BeginPlay and InitForEditor to setup instance's internal */
+	void Init();
 };

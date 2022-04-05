@@ -6,29 +6,75 @@
 #include "Rendering/DrawElements.h"
 #include "Layout/LayoutUtils.h"
 
+
+SLATE_IMPLEMENT_WIDGET(SGridPanel)
+void SGridPanel::PrivateRegisterAttributes(FSlateAttributeInitializer& AttributeInitializer)
+{
+	FSlateWidgetSlotAttributeInitializer Initializer = SLATE_ADD_PANELCHILDREN_DEFINITION(AttributeInitializer, Slots);
+	FSlot::RegisterAttributes(Initializer);
+}
+
+void SGridPanel::FSlot::Construct(const FChildren& SlotOwner, FSlotArguments&& InArgs)
+{
+	TBasicLayoutWidgetSlot<FSlot>::Construct(SlotOwner, MoveTemp(InArgs));
+	if (InArgs._Column.IsSet())
+	{
+		ColumnParam = FMath::Max(0, InArgs._Column.GetValue());
+	}
+	if (InArgs._ColumnSpan.IsSet())
+	{
+		ColumnSpanParam = FMath::Max(1, InArgs._ColumnSpan.GetValue());
+	}
+	if (InArgs._Row.IsSet())
+	{
+		RowParam = FMath::Max(0, InArgs._Row.GetValue());
+	}
+	if (InArgs._RowSpan.IsSet())
+	{
+		RowSpanParam = FMath::Max(1, InArgs._RowSpan.GetValue());
+	}
+	if (InArgs._Layer.IsSet())
+	{
+		LayerParam = InArgs._Layer.GetValue();
+	}
+	if (InArgs._Nudge.IsSet())
+	{
+		NudgeParam = InArgs._Nudge.GetValue();
+	}
+}
+
 SGridPanel::SGridPanel()
-: Slots(this)
+	: Slots(this, GET_MEMBER_NAME_CHECKED(SGridPanel, Slots))
 {
 	SetCanTick(false);
 }
 
-SGridPanel::FSlot& SGridPanel::AddSlot( int32 Column, int32 Row, SGridPanel::Layer InLayer )
+SGridPanel::FSlot::FSlotArguments SGridPanel::Slot(int32 Column, int32 Row, SGridPanel::Layer InLayer)
 {
-	return InsertSlot( new FSlot( Column, Row, InLayer.TheLayer ) );
+	return FSlot::FSlotArguments(MakeUnique<FSlot>(Column, Row, InLayer.TheLayer));
+}
+
+SGridPanel::FScopedWidgetSlotArguments SGridPanel::AddSlot( int32 Column, int32 Row, SGridPanel::Layer InLayer )
+{
+	TWeakPtr<SGridPanel> WeakPanel = SharedThis(this);
+
+	TUniquePtr<FSlot> NewSlot = MakeUnique<FSlot>(Column, Row, InLayer.TheLayer);
+	NewSlot->Panel = WeakPanel;
+
+	int32 InsertLocation = FindInsertSlotLocation(NewSlot.Get());
+	return FScopedWidgetSlotArguments{ MoveTemp(NewSlot), this->Slots, InsertLocation,
+		[WeakPanel](const FSlot* InNewSlot, int32 InsertedLocation)
+		{
+			if (TSharedPtr<SGridPanel> Panel = WeakPanel.Pin())
+			{
+				Panel->NotifySlotChanged(InNewSlot);
+			}
+		}};
 }
 
 bool SGridPanel::RemoveSlot(const TSharedRef<SWidget>& SlotWidget)
 {
-	for ( int32 SlotIdx = 0; SlotIdx < Slots.Num(); ++SlotIdx )
-	{
-		if ( SlotWidget == Slots[SlotIdx].GetWidget() )
-		{
-			Slots.RemoveAt(SlotIdx);
-			return true;
-		}
-	}
-
-	return false;
+	return Slots.Remove(SlotWidget) != INDEX_NONE;
 }
 
 void SGridPanel::ClearChildren()
@@ -44,9 +90,22 @@ void SGridPanel::Construct( const FArguments& InArgs )
 
 	// Populate the slots such that they are sorted by Layer (order preserved within layers)
 	// Also determine the grid size
-	for (int32 SlotIndex = 0; SlotIndex < InArgs.Slots.Num(); ++SlotIndex )
+	Slots.Reserve(InArgs._Slots.Num());
+	for (int32 SlotIndex = 0; SlotIndex < InArgs._Slots.Num(); ++SlotIndex )
 	{
-		InsertSlot( InArgs.Slots[SlotIndex] );
+		int32 SlotLocation = FindInsertSlotLocation(InArgs._Slots[SlotIndex].GetSlot());
+		if (SlotLocation == INDEX_NONE)
+		{
+			SlotLocation = Slots.AddSlot(MoveTemp(const_cast<FSlot::FSlotArguments&>(InArgs._Slots[SlotIndex])));
+		}
+		else
+		{
+			Slots.InsertSlot(MoveTemp(const_cast<FSlot::FSlotArguments&>(InArgs._Slots[SlotIndex])), SlotLocation);
+		}
+
+		FSlot& NewSlot = Slots[SlotLocation];
+		NewSlot.Panel = SharedThis(this);
+		NotifySlotChanged(&NewSlot);
 	}
 
 	ColFillCoefficients = InArgs.ColFillCoefficients;
@@ -83,10 +142,10 @@ int32 SGridPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeom
 
 				if (!IsChildWidgetCulled(MyCullingRect, CurWidget))
 				{
-					if (LastGridLayer != CurSlot.LayerParam)
+					if (LastGridLayer != CurSlot.GetLayer())
 					{
 						// We starting a new grid layer group?
-						LastGridLayer = CurSlot.LayerParam;
+						LastGridLayer = CurSlot.GetLayer();
 						// Ensure that everything here is drawn on top of 
 						// previously drawn grid content.
 						LayerId = MaxLayerId + 1;
@@ -192,23 +251,28 @@ void SGridPanel::OnArrangeChildren( const FGeometry& AllottedGeometry, FArranged
 		if ( ArrangedChildren.Accepts(ChildVisibility) )
 		{
 			// Figure out the position of this cell.
-			const FVector2D ThisCellOffset( FinalColumns[CurSlot.ColumnParam], FinalRows[CurSlot.RowParam] );
+			const FVector2D ThisCellOffset( FinalColumns[CurSlot.GetColumn()], FinalRows[CurSlot.GetRow()] );
+
 			// Figure out the size of this slot; takes row span into account.
 			// We use the properties of partial sums arrays to achieve this.
+			// Row/column span may be an arbitrarily large value above 1, so clamp it to the array bounds.
+			const int32 LastColumnIdx = FMath::Min(CurSlot.GetColumn() + CurSlot.GetColumnSpan(), FinalColumns.Num() - 1);
+			const int32 LastRowIdx = FMath::Min(CurSlot.GetRow() + CurSlot.GetRowSpan(), FinalRows.Num() - 1);
 			const FVector2D CellSize(
-				FinalColumns[CurSlot.ColumnParam+CurSlot.ColumnSpanParam] - ThisCellOffset.X ,
-				FinalRows[CurSlot.RowParam+CurSlot.RowSpanParam] - ThisCellOffset.Y );
+				FinalColumns[LastColumnIdx] - ThisCellOffset.X,
+				FinalRows[LastRowIdx] - ThisCellOffset.Y
+			);
 
 			// Do the standard arrangement of elements within a slot
 			// Takes care of alignment and padding.
-			const FMargin SlotPadding(CurSlot.SlotPadding.Get());
+			const FMargin SlotPadding(CurSlot.GetPadding());
 			AlignmentArrangeResult XAxisResult = AlignChild<Orient_Horizontal>( CellSize.X, CurSlot, SlotPadding );
 			AlignmentArrangeResult YAxisResult = AlignChild<Orient_Vertical>( CellSize.Y, CurSlot, SlotPadding );
 
 			// Output the result
 			ArrangedChildren.AddWidget( ChildVisibility, AllottedGeometry.MakeChild( 
 				CurSlot.GetWidget(),
-				ThisCellOffset + FVector2D( XAxisResult.Offset, YAxisResult.Offset ) + CurSlot.NudgeParam,
+				ThisCellOffset + FVector2D( XAxisResult.Offset, YAxisResult.Offset ) + CurSlot.GetNudge(),
 				FVector2D(XAxisResult.Size, YAxisResult.Size)
 			));
 		}
@@ -324,56 +388,45 @@ void SGridPanel::DistributeSizeContributions( float SizeContribution, TArray<flo
 }
 
 
-SGridPanel::FSlot& SGridPanel::InsertSlot( SGridPanel::FSlot* InSlot )
+int32 SGridPanel::FindInsertSlotLocation( const FSlot* InSlot )
 {
-	bool bInserted = false;
-
-	InSlot->Panel = SharedThis(this);
-
 	// Insert the slot in the list such that slots are sorted by LayerOffset.
-	for( int32 SlotIndex=0; !bInserted && SlotIndex < Slots.Num(); ++SlotIndex )
+	for( int32 SlotIndex=0; SlotIndex < Slots.Num(); ++SlotIndex )
 	{
-		if ( InSlot->LayerParam < this->Slots[SlotIndex].LayerParam )
+		if ( InSlot->GetLayer() < this->Slots[SlotIndex].GetLayer() )
 		{
-			Slots.Insert( InSlot, SlotIndex );
-			bInserted = true;
+			return SlotIndex;
 		}
 	}
-
-	// We haven't inserted yet, so add to the end of the list.
-	if ( !bInserted )
-	{
-		Slots.Add( InSlot );
-	}
-
-	NotifySlotChanged(InSlot);
-
-	return *InSlot;
+	return INDEX_NONE;
 }
 
-void SGridPanel::NotifySlotChanged(SGridPanel::FSlot* InSlot, bool bSlotLayerChanged /*= false*/)
+
+void SGridPanel::NotifySlotChanged(const FSlot* InSlot, bool bSlotLayerChanged /*= false*/)
 {
 	// Keep the size of the grid up to date.
 	// We need an extra cell at the end for easily figuring out the size across any number of cells
 	// by doing Columns[End] - Columns[Start] or Rows[End] - Rows[Start].
 	// The first Columns[]/Rows[] entry will be 0.
-	const int32 NumColumnsRequiredForThisSlot = InSlot->ColumnParam + InSlot->ColumnSpanParam + 1;
-	if ( NumColumnsRequiredForThisSlot > Columns.Num() )
+	// For a grid with 2 rows (index 0 and 1), we need 3 slots, thus the + 2 here.
+
+	const int32 NumColumnsRequiredForThisSlot = InSlot->GetColumn() + 2;
+	if (NumColumnsRequiredForThisSlot > Columns.Num())
 	{
-		Columns.AddZeroed( NumColumnsRequiredForThisSlot - Columns.Num() );
+		Columns.AddZeroed(NumColumnsRequiredForThisSlot - Columns.Num());
 	}
 
-	const int32 NumRowsRequiredForThisSlot = InSlot->RowParam + InSlot->RowSpanParam + 1;
-	if ( NumRowsRequiredForThisSlot > Rows.Num() )
+	const int32 NumRowsRequiredForThisSlot = InSlot->GetRow() + 2;
+	if (NumRowsRequiredForThisSlot > Rows.Num())
 	{
-		Rows.AddZeroed( NumRowsRequiredForThisSlot - Rows.Num() );
+		Rows.AddZeroed(NumRowsRequiredForThisSlot - Rows.Num());
 	}
 
 	if (bSlotLayerChanged)
 	{
 		Slots.Sort([](const FSlot& LHS, const FSlot& RHS)
 		{
-			return LHS.LayerParam < RHS.LayerParam;
+			return LHS.GetLayer() < RHS.GetLayer();
 		});
 	}
 
@@ -382,24 +435,30 @@ void SGridPanel::NotifySlotChanged(SGridPanel::FSlot* InSlot, bool bSlotLayerCha
 
 void SGridPanel::ComputeDesiredCellSizes( TArray<float>& OutColumns, TArray<float>& OutRows ) const
 {
-	FMemory::Memzero( OutColumns.GetData(), OutColumns.Num() * sizeof(float) );
-	FMemory::Memzero( OutRows.GetData(), OutRows.Num() * sizeof(float) );
+	FMemory::Memzero(OutColumns.GetData(), OutColumns.Num() * sizeof(float));
+	FMemory::Memzero(OutRows.GetData(), OutRows.Num() * sizeof(float));
 
-	for (int32 SlotIndex=0; SlotIndex<Slots.Num(); ++SlotIndex)
+	for (int32 SlotIndex = 0; SlotIndex < Slots.Num(); ++SlotIndex)
 	{
 		const FSlot& CurSlot = Slots[SlotIndex];
 		if (CurSlot.GetWidget()->GetVisibility() != EVisibility::Collapsed)
 		{
 			// The slots wants to be as big as its content along with the required padding.
-			const FVector2D SlotDesiredSize = CurSlot.GetWidget()->GetDesiredSize() + CurSlot.SlotPadding.Get().GetDesiredSize();
+			const FVector2D SlotDesiredSize = CurSlot.GetWidget()->GetDesiredSize() + CurSlot.GetPadding().GetDesiredSize();
 
-			// If the slot has a (colspan,rowspan) of (1,1) it will only affect that slot.
+			// If the slot has a (colspan, rowspan) of (1,1) it will only affect that slot.
 			// For larger spans, the slots size will be evenly distributed across all the affected slots.
-			const FVector2D SizeContribution( SlotDesiredSize.X / CurSlot.ColumnSpanParam, SlotDesiredSize.Y / CurSlot.RowSpanParam );
+			// For spans that are past the end of the slot array, only distribute to the size to existing columns, eg.
+			// | [0] | [1] | [2] |
+			// | S=1 |   Span=5  | <- size is only distributed between columns 1 and 2, until more slots exist
+			const int32 MaxColumns = FMath::Min(CurSlot.GetColumn() + CurSlot.GetColumnSpan(), OutColumns.Num());
+			const int32 MaxRows = FMath::Min(CurSlot.GetRow() + CurSlot.GetRowSpan(), OutRows.Num());
+
+			const FVector2D SizeContribution(SlotDesiredSize.X / (MaxColumns - CurSlot.GetColumn()), SlotDesiredSize.Y / (MaxRows - CurSlot.GetRow()));
 
 			// Distribute the size contributions over all the columns and rows that this slot spans
-			DistributeSizeContributions( SizeContribution.X, OutColumns, CurSlot.ColumnParam, CurSlot.ColumnParam + CurSlot.ColumnSpanParam );
-			DistributeSizeContributions( SizeContribution.Y, OutRows, CurSlot.RowParam, CurSlot.RowParam + CurSlot.RowSpanParam );
+			DistributeSizeContributions(SizeContribution.X, OutColumns, CurSlot.GetColumn(), MaxColumns);
+			DistributeSizeContributions(SizeContribution.Y, OutRows, CurSlot.GetRow(), MaxRows);
 		}
 	}
 }

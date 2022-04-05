@@ -121,16 +121,13 @@ FText SNiagaraBakerWidget::GetSelectedTextureAsText() const
 			const int32 PrevewTextureIndex = ViewModel->GetPreviewTextureIndex();
 			if ( BakerSettings->OutputTextures.IsValidIndex(PrevewTextureIndex) )
 			{
-				FString TextureName;
-				if (BakerSettings->OutputTextures[PrevewTextureIndex].OutputName.IsNone())
+				TStringBuilder<128> TextureName;
+				TextureName.Appendf(TEXT("Texture(%d)"), PrevewTextureIndex);
+				if (UTexture2D* GeneratedTexture = BakerSettings->OutputTextures[PrevewTextureIndex].GeneratedTexture)
 				{
-					TextureName = FString::Printf(TEXT("Output Texture %d"), PrevewTextureIndex);
+					TextureName.Appendf(TEXT(" - %s"), *BakerSettings->OutputTextures[PrevewTextureIndex].GeneratedTexture->GetName());
 				}
-				else
-				{
-					TextureName = BakerSettings->OutputTextures[PrevewTextureIndex].OutputName.ToString();
-				}
-				return FText::FromString(TextureName);
+				return FText::FromStringView(TextureName.ToView());
 			}
 		}
 	}
@@ -141,16 +138,9 @@ void SNiagaraBakerWidget::Tick(const FGeometry& AllottedGeometry, const double C
 {
 	if (auto ViewModel = WeakViewModel.Pin())
 	{
-		float StartSeconds = 0.0f;
 		float DurationSeconds = 0.0f;
-		if (const UNiagaraBakerSettings* GeneratedSettings = GetBakerGeneratedSettings())
+		if (UNiagaraBakerSettings* BakerSettings = GetBakerSettings())
 		{
-			StartSeconds = GeneratedSettings->StartSeconds;
-			DurationSeconds = GeneratedSettings->DurationSeconds;
-		}
-		else if (UNiagaraBakerSettings* BakerSettings = GetBakerSettings())
-		{
-			StartSeconds = BakerSettings->StartSeconds;
 			DurationSeconds = BakerSettings->DurationSeconds;
 		}
 
@@ -166,8 +156,7 @@ void SNiagaraBakerWidget::Tick(const FGeometry& AllottedGeometry, const double C
 				PreviewRelativeTime = FMath::Min(PreviewRelativeTime, DurationSeconds);
 			}
 
-			const float PreviewAbsoluteTime = StartSeconds + PreviewRelativeTime;
-			ViewportWidget->RefreshView(PreviewAbsoluteTime, DeltaTime);
+			ViewportWidget->RefreshView(PreviewRelativeTime, DeltaTime);
 			TimelineWidget->SetRelativeTime(PreviewRelativeTime);
 		}
 	}

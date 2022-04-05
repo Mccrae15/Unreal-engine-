@@ -8,11 +8,13 @@
 #include "UObject/ObjectMacros.h"
 
 #include "USDConversionUtils.h"
+#include "UsdWrappers/ForwardDeclarations.h"
 
 #if USE_USD_SDK
 #include "USDIncludesStart.h"
 	#include "pxr/pxr.h"
 	#include "pxr/usd/usd/timeCode.h"
+	#include "pxr/usd/usdShade/tokens.h"
 #include "USDIncludesEnd.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -38,10 +40,6 @@ namespace SkeletalMeshImportData
 namespace UsdUtils
 {
 	struct FUsdPrimMaterialSlot;
-}
-namespace UE
-{
-	class FUsdStage;
 }
 
 #endif // #if USE_USD_SDK
@@ -111,6 +109,9 @@ namespace UsdUtils
 	 * Applies the SkelBindingAPI to Prim. See pxr::SkelBindingAPI::GetAnimationSourceRel.
 	 */
 	USDUTILITIES_API void BindAnimationSource( pxr::UsdPrim& Prim, const pxr::UsdPrim& AnimationSource );
+
+	// Finds the strongest SkelAnimation prim that is bound to SkelRootPrim as its animation source
+	USDUTILITIES_API UE::FUsdPrim FindAnimationSource( const UE::FUsdPrim& SkelRootPrim );
 #endif // USE_USD_SDK
 }
 
@@ -146,9 +147,10 @@ namespace UsdToUnreal
 	 * @param SkelMeshImportData - Output parameter that will be filled with the converted data
 	 * @param MaterialAssignments - Output parameter that will be filled with the material assignment data extracted from UsdSkinningQuery
 	 * @param MaterialToPrimvarsUVSetNames - Maps from a material prim path, to pairs indicating which primvar names are used as 'st' coordinates for this mesh, and which UVIndex materials will sample from (e.g. ["st0", 0], ["myUvSet2", 2], etc). This is used to pick which primvars will become UV sets.
+	 * @param RenderContext - Render context to use when parsing the skinned mesh's materials (e.g. '' for universal, or 'mdl', or 'unreal', etc.)
 	 * @return Whether the conversion was successful or not.
 	 */
-	USDUTILITIES_API bool ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinningQuery, const FTransform& AdditionalTransform, FSkeletalMeshImportData& SkelMeshImportData, TArray< UsdUtils::FUsdPrimMaterialSlot >& MaterialAssignments, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames );
+	USDUTILITIES_API bool ConvertSkinnedMesh( const pxr::UsdSkelSkinningQuery& UsdSkinningQuery, const FTransform& AdditionalTransform, FSkeletalMeshImportData& SkelMeshImportData, TArray< UsdUtils::FUsdPrimMaterialSlot >& MaterialAssignments, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const pxr::TfToken& RenderContext = pxr::UsdShadeTokens->universalRenderContext );
 
 	/**
 	 * Will extract animation data from the animation source of InUsdSkeletonQuery's skeleton, and populate OutSkeletalAnimationAsset with the data.
@@ -158,9 +160,13 @@ namespace UsdToUnreal
 	 * @param InBlendShapes - Converted blend shape data that will be used to interpret blend shape weights as morph target weight float curves. Optional (can be nullptr to ignore)
 	 * @param InInterpretLODs - Whether we try parsing animation data from all LODs of skinning meshes that are inside LOD variant sets
 	 * @param OutSkeletalAnimationAsset - Output parameter that will be filled with the converted data
+	 * @param OutStartOffsetSeconds - Optional output parameter that will be filled with the offset in seconds of when this UAnimSequence asset should be played since the start of its layer
+	 *								  to match the intended composed animation. The baked UAnimSequence will only contain the range between the first and last joint and/or blend shape
+	 *                                timeSamples, and so the offset is needed to properly position the animation on the stage's timeline. This is in seconds because the main use case is to
+	 *                                use this offset when animating USkeletalMeshComponents, and those drive their UAnimSequences with seconds.
 	 * @return Whether the conversion was successful or not.
 	 */
-	USDUTILITIES_API bool ConvertSkelAnim( const pxr::UsdSkelSkeletonQuery& InUsdSkeletonQuery, const pxr::VtArray<pxr::UsdSkelSkinningQuery>* InSkinningTargets, const UsdUtils::FBlendShapeMap* InBlendShapes, bool bInInterpretLODs, UAnimSequence* OutSkeletalAnimationAsset );
+	USDUTILITIES_API bool ConvertSkelAnim( const pxr::UsdSkelSkeletonQuery& InUsdSkeletonQuery, const pxr::VtArray<pxr::UsdSkelSkinningQuery>* InSkinningTargets, const UsdUtils::FBlendShapeMap* InBlendShapes, bool bInInterpretLODs, UAnimSequence* OutSkeletalAnimationAsset, float* OutStartOffsetSeconds=nullptr);
 
 	/**
 	 * Builds a USkeletalMesh and USkeleton from the imported data in SkelMeshImportData
@@ -168,9 +174,11 @@ namespace UsdToUnreal
 	 * @param InSkeletonBones - Bones to use for the reference skeleton (skeleton data on each LODIndexToSkeletalMeshImportData will be ignored).
 	 * @param BlendShapesByPath - Blend shapes to convert to morph targets
 	 * @param ObjectFlags - Flags to use when creating the USkeletalMesh and corresponding USkeleton
+	 * @param MeshName - Name to use for the new USkeletalMesh asset
+	 * @param SkeletonName - Name to use for the new USkeleton asset
 	 * @return Newly created USkeletalMesh, or nullptr in case of failure
 	 */
-	USDUTILITIES_API USkeletalMesh* GetSkeletalMeshFromImportData( TArray<FSkeletalMeshImportData>& LODIndexToSkeletalMeshImportData, const TArray<SkeletalMeshImportData::FBone>& InSkeletonBones, UsdUtils::FBlendShapeMap& InBlendShapesByPath, EObjectFlags ObjectFlags );
+	USDUTILITIES_API USkeletalMesh* GetSkeletalMeshFromImportData( TArray<FSkeletalMeshImportData>& LODIndexToSkeletalMeshImportData, const TArray<SkeletalMeshImportData::FBone>& InSkeletonBones, UsdUtils::FBlendShapeMap& InBlendShapesByPath, EObjectFlags ObjectFlags, const FName& MeshName = NAME_None, const FName& SkeletonName = NAME_None );
 }
 
 namespace UnrealToUsd
@@ -187,15 +195,20 @@ namespace UnrealToUsd
 	USDUTILITIES_API bool ConvertSkeleton( const USkeleton* Skeleton, pxr::UsdSkelSkeleton& UsdSkeleton );
 	USDUTILITIES_API bool ConvertSkeleton( const FReferenceSkeleton& ReferenceSkeleton, pxr::UsdSkelSkeleton& UsdSkeleton );
 
+	// Fill out a UsdSkelAnimation's Joints attribute with data from ReferenceSkeleton, taking care to concatenate bone paths
+	USDUTILITIES_API bool ConvertJointsAttribute( const FReferenceSkeleton& ReferenceSkeleton, pxr::UsdAttribute& JointsAttribute );
+
 	/**
 	 * Converts SkeletalMesh, its skeleton and morph target data into the corresponding USD objects and populates SkelRoot with them, at time TimeCode
 	 * @param SkeletalMesh - Mesh with the source data. If it contains multiple LODs it will lead to the creation of LOD variant sets and variants within SkelRoot
 	 * @param SkelRoot - Root prim of the output source data. Child UsdSkelSkeleton, UsdGeomMesh, and UsdSkelBlendShape will be created as children of it, containing the converted data
 	 * @param TimeCode - TimeCode with which the converted data will be placed in the USD stage
 	 * @param StageForMaterialAssignments - Stage to use when authoring material assignments (we use this when we want to export the mesh to a payload layer, but the material assignments to an asset layer)
+	 * @param LowestMeshLOD - Lowest LOD of the UStaticMesh to export (start of the LOD range)
+	 * @param HighestMeshLOD - Lowest LOD of the UStaticMesh to export (end of the LOD range)
 	 * @return Whether the conversion was successful or not.
 	 */
-	USDUTILITIES_API bool ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::UsdPrim& SkelRootPrim, const pxr::UsdTimeCode TimeCode = pxr::UsdTimeCode::Default(), UE::FUsdStage* StageForMaterialAssignments = nullptr );
+	USDUTILITIES_API bool ConvertSkeletalMesh( const USkeletalMesh* SkeletalMesh, pxr::UsdPrim& SkelRootPrim, const pxr::UsdTimeCode TimeCode = pxr::UsdTimeCode::Default(), UE::FUsdStage* StageForMaterialAssignments = nullptr, int32 LowestMeshLOD = 0, int32 HighestMeshLOD = INT32_MAX );
 
 	/**
 	 * Converts an AnimSequence to a UsdSkelAnimation. Includes bone transforms and blend shape weights.

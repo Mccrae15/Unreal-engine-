@@ -104,7 +104,7 @@ public:
 
 	static void BeginFrameCapture(HWND WindowHandle, FRenderDocPluginLoader::RENDERDOC_API_CONTEXT* RenderDocAPI)
 	{
-		UE4_GEmitDrawEvents_BeforeCapture = GetEmitDrawEvents();
+		UE_GEmitDrawEvents_BeforeCapture = GetEmitDrawEvents();
 		SetEmitDrawEvents(true);
 		RenderDocAPI->StartFrameCapture(GetRenderdocDevicePointer(), WindowHandle);
 	}
@@ -113,7 +113,7 @@ public:
 	{
 		FRHICommandListExecutor::GetImmediateCommandList().SubmitCommandsAndFlushGPU();
 		uint32 Result = RenderDocAPI->EndFrameCapture(GetRenderdocDevicePointer(), WindowHandle);
-		SetEmitDrawEvents(UE4_GEmitDrawEvents_BeforeCapture);
+		SetEmitDrawEvents(UE_GEmitDrawEvents_BeforeCapture);
 		return Result;
 	}
 
@@ -188,9 +188,9 @@ public:
 	}
 
 private:
-	static bool UE4_GEmitDrawEvents_BeforeCapture;
+	static bool UE_GEmitDrawEvents_BeforeCapture;
 };
-bool FRenderDocFrameCapturer::UE4_GEmitDrawEvents_BeforeCapture = false;
+bool FRenderDocFrameCapturer::UE_GEmitDrawEvents_BeforeCapture = false;
 
 class FRenderDocDummyInputDevice : public IInputDevice
 {
@@ -232,10 +232,6 @@ void FRenderDocPluginModule::StartupModule()
 #if !UE_BUILD_SHIPPING // Disable in shipping builds
 	Loader.Initialize();
 	RenderDocAPI = nullptr;
-
-#if WITH_EDITOR
-	EditorExtensions = nullptr;
-#endif // WITH_EDITOR
 
 	if (Loader.RenderDocAPI == nullptr)
 	{
@@ -307,12 +303,22 @@ void FRenderDocPluginModule::StartupModule()
 		TEXT("Starts a PIE session and captures the specified number of frames from the start."),
 		FConsoleCommandWithArgsDelegate::CreateRaw(this, &FRenderDocPluginModule::CapturePIE)
 	);
-
-	EditorExtensions = new FRenderDocPluginEditorExtension(this);
 #endif // WITH_EDITOR
+
+	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FRenderDocPluginModule::OnPostEngineInit);
 
 	UE_LOG(RenderDocPlugin, Log, TEXT("RenderDoc plugin is ready!"));
 #endif // !UE_BUILD_SHIPPING
+}
+
+void FRenderDocPluginModule::OnPostEngineInit()
+	{
+#if WITH_EDITOR
+	if (FSlateApplication::IsInitialized() && !IsRunningCommandlet())
+	{
+		EditorExtension = MakeShared<FRenderDocPluginEditorExtension>(this);
+	}
+#endif // WITH_EDITOR
 }
 
 void FRenderDocPluginModule::BeginFrameCapture()
@@ -355,18 +361,7 @@ void FRenderDocPluginModule::ShowNotification(const FText& Message, bool bForceN
 void FRenderDocPluginModule::InjectDebugExecKeybind()
 {
 	// Inject our key bind into the debug execs
-	FConfigFile* ConfigFile = nullptr;
-	// Look for the first matching INI file entry
-	for (TMap<FString, FConfigFile>::TIterator It(*GConfig); It; ++It)
-	{
-		if (It.Key().EndsWith(TEXT("Input.ini")))
-		{
-			ConfigFile = &It.Value();
-			break;
-		}
-	}
-	check(ConfigFile != nullptr);
-	FConfigSection* Section = ConfigFile->Find(TEXT("/Script/Engine.PlayerInput"));
+	FConfigSection* Section = GConfig->GetSectionPrivate(TEXT("/Script/Engine.PlayerInput"), false, false, GInputIni);
 	if (Section != nullptr)
 	{
 		Section->HandleAddCommand(TEXT("DebugExecBindings"), TEXT("(Key=F12,Command=\"RenderDoc.CaptureFrame\", Alt=true)"), false);
@@ -642,7 +637,7 @@ void FRenderDocPluginModule::ShutdownModule()
 	IModularFeatures::Get().UnregisterModularFeature(IRenderCaptureProvider::GetModularFeatureName(), (IRenderCaptureProvider*)this);
 
 #if WITH_EDITOR
-	delete EditorExtensions;
+	EditorExtension.Reset();
 #endif // WITH_EDITOR
 
 	Loader.Release();

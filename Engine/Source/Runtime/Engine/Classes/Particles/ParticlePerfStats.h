@@ -7,6 +7,7 @@
 #include "HAL/PlatformTime.h"
 #include "Misc/CoreMiscDefines.h"
 #include "Containers/Array.h"
+#include "ProfilingDebugging/CsvProfiler.h"
 
 
 #define WITH_GLOBAL_RUNTIME_FX_BUDGET (!UE_SERVER)
@@ -23,6 +24,9 @@
 #define WITH_PER_SYSTEM_PARTICLE_PERF_STATS (WITH_PARTICLE_PERF_STATS && !UE_BUILD_SHIPPING)
 #define WITH_PER_COMPONENT_PARTICLE_PERF_STATS (WITH_PARTICLE_PERF_STATS && !UE_BUILD_SHIPPING)
 
+#define WITH_PARTICLE_PERF_CSV_STATS WITH_PER_SYSTEM_PARTICLE_PERF_STATS && CSV_PROFILER && !UE_BUILD_SHIPPING
+CSV_DECLARE_CATEGORY_MODULE_EXTERN(ENGINE_API, Particles);
+
 struct FParticlePerfStats;
 class UWorld;
 class UFXSystemAsset;
@@ -38,6 +42,8 @@ struct ENGINE_API FParticlePerfStats_GT
 	TAtomic<uint64> TickConcurrentCycles;
 	uint64 FinalizeCycles;
 	TAtomic<uint64> EndOfFrameCycles;
+	TAtomic<uint64> ActivationCycles;
+	uint64 WaitCycles;
 
 	FParticlePerfStats_GT() { Reset(); }
 	
@@ -48,6 +54,8 @@ struct ENGINE_API FParticlePerfStats_GT
 		TickConcurrentCycles = Other.TickConcurrentCycles.Load();
 		FinalizeCycles = Other.FinalizeCycles;
 		EndOfFrameCycles = Other.EndOfFrameCycles.Load();
+		ActivationCycles = Other.ActivationCycles.Load();
+		WaitCycles = Other.WaitCycles;
 	}
 
 	FParticlePerfStats_GT& operator=(const FParticlePerfStats_GT& Other)
@@ -57,6 +65,8 @@ struct ENGINE_API FParticlePerfStats_GT
 		TickConcurrentCycles = Other.TickConcurrentCycles.Load();
 		FinalizeCycles = Other.FinalizeCycles;
 		EndOfFrameCycles = Other.EndOfFrameCycles.Load();
+		ActivationCycles = Other.ActivationCycles.Load();
+		WaitCycles = Other.WaitCycles;
 		return *this;
 	}
 
@@ -80,10 +90,12 @@ struct ENGINE_API FParticlePerfStats_GT
 		TickConcurrentCycles = 0;
 		FinalizeCycles = 0;
 		EndOfFrameCycles = 0;
+		ActivationCycles = 0;
+		WaitCycles = 0;
 	}
-	FORCEINLINE uint64 GetTotalCycles_GTOnly()const { return TickGameThreadCycles + FinalizeCycles; }
-	FORCEINLINE uint64 GetTotalCycles()const { return TickGameThreadCycles + TickConcurrentCycles + FinalizeCycles + EndOfFrameCycles; }
-	FORCEINLINE uint64 GetPerInstanceAvgCycles()const { return NumInstances > 0 ? (TickGameThreadCycles + TickConcurrentCycles + FinalizeCycles + EndOfFrameCycles) / NumInstances : 0; }
+	FORCEINLINE uint64 GetTotalCycles_GTOnly()const { return TickGameThreadCycles + FinalizeCycles + ActivationCycles + WaitCycles; }
+	FORCEINLINE uint64 GetTotalCycles()const { return GetTotalCycles_GTOnly() + TickConcurrentCycles + EndOfFrameCycles; }
+	FORCEINLINE uint64 GetPerInstanceAvgCycles()const { return NumInstances > 0 ? GetTotalCycles() / NumInstances : 0; }
 };
 
 /** Stats gathered on the render thread. */
@@ -100,8 +112,25 @@ struct ENGINE_API FParticlePerfStats_RT
 		RenderUpdateCycles = 0;
 		GetDynamicMeshElementsCycles = 0;
 	}
-	FORCEINLINE uint64 GetTotalCycles()const { return RenderUpdateCycles + GetDynamicMeshElementsCycles; }
-	FORCEINLINE uint64 GetPerInstanceAvgCycles()const { return NumInstances > 0 ? (RenderUpdateCycles + GetDynamicMeshElementsCycles) / NumInstances : 0; }
+	FORCEINLINE uint64 GetTotalCycles() const { return RenderUpdateCycles + GetDynamicMeshElementsCycles; }
+	FORCEINLINE uint64 GetPerInstanceAvgCycles() const { return NumInstances > 0 ? (RenderUpdateCycles + GetDynamicMeshElementsCycles) / NumInstances : 0; }
+};
+
+/** Stats gathered from the GPU */
+struct ENGINE_API FParticlePerfStats_GPU
+{
+	uint64 NumInstances = 0;
+	uint64 TotalMicroseconds = 0;
+
+	FORCEINLINE uint64 GetTotalMicroseconds() const { return TotalMicroseconds; }
+	FORCEINLINE uint64 GetPerInstanceAvgMicroseconds() const { return NumInstances > 0 ? GetTotalMicroseconds() / NumInstances : 0; }
+
+	FParticlePerfStats_GPU() { Reset(); }
+	FORCEINLINE void Reset()
+	{
+		NumInstances = 0;
+		TotalMicroseconds = 0;
+	}
 };
 
 struct ENGINE_API FParticlePerfStats
@@ -114,6 +143,7 @@ struct ENGINE_API FParticlePerfStats
 	void Tick();
 	void TickRT();
 
+	FORCEINLINE static bool GetCSVStatsEnabled() { return bCSVStatsEnabled.Load(EMemoryOrder::Relaxed); }
 	FORCEINLINE static bool GetStatsEnabled() { return bStatsEnabled.Load(EMemoryOrder::Relaxed); }
 	FORCEINLINE static bool GetGatherWorldStats() { return WorldStatsReaders.Load(EMemoryOrder::Relaxed) > 0; }
 	FORCEINLINE static bool GetGatherSystemStats() { return SystemStatsReaders.Load(EMemoryOrder::Relaxed) > 0; }
@@ -131,6 +161,8 @@ struct ENGINE_API FParticlePerfStats
 			);
 	}
 
+
+	FORCEINLINE static void SetCSVStatsEnabled(bool bEnabled) { bCSVStatsEnabled.Store(bEnabled); }
 	FORCEINLINE static void SetStatsEnabled(bool bEnabled) { bStatsEnabled.Store(bEnabled); }
 	FORCEINLINE static void AddWorldStatReader() { ++WorldStatsReaders; }
 	FORCEINLINE static void RemoveWorldStatReader() { --WorldStatsReaders; }
@@ -139,7 +171,7 @@ struct ENGINE_API FParticlePerfStats
 	FORCEINLINE static void AddComponentStatReader() { ++ComponentStatsReaders; }
 	FORCEINLINE static void RemoveComponentStatReader() { --ComponentStatsReaders; }
 
-	static FORCEINLINE FParticlePerfStats* GetStats(UWorld* World)
+	static FORCEINLINE FParticlePerfStats* GetStats(const UWorld* World)
 	{
 		if (World && GetGatherWorldStats() && GetStatsEnabled())
 		{
@@ -148,7 +180,7 @@ struct ENGINE_API FParticlePerfStats
 		return nullptr;
 	}
 	
-	static FORCEINLINE FParticlePerfStats* GetStats(UFXSystemAsset* System)
+	static FORCEINLINE FParticlePerfStats* GetStats(const UFXSystemAsset* System)
 	{
 	#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
 		if (System && GetGatherSystemStats() && GetStatsEnabled())
@@ -159,7 +191,7 @@ struct ENGINE_API FParticlePerfStats
 		return nullptr;
 	}
 
-	static FORCEINLINE FParticlePerfStats* GetStats(UFXSystemComponent* Component)
+	static FORCEINLINE FParticlePerfStats* GetStats(const UFXSystemComponent* Component)
 	{
 	#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
 		if (Component && GetGatherComponentStats() && GetStatsEnabled())
@@ -175,11 +207,16 @@ struct ENGINE_API FParticlePerfStats
 	static TAtomic<int32>	SystemStatsReaders;
 	static TAtomic<int32>	ComponentStatsReaders;
 
+	static TAtomic<bool>	bCSVStatsEnabled;
+
 	/** Stats on GT and GT spawned concurrent work. */
 	FParticlePerfStats_GT GameThreadStats;
 
 	/** Stats on RT work. */
 	FParticlePerfStats_RT RenderThreadStats;
+
+	/** Stats from GPU work. */
+	FParticlePerfStats_GPU GPUStats;
 
 	/** Returns the current frame Game Thread stats. */
 	FORCEINLINE FParticlePerfStats_GT& GetGameThreadStats()
@@ -193,16 +230,31 @@ struct ENGINE_API FParticlePerfStats
 		return RenderThreadStats;
 	}
 
-private:
+	/** Returns the current frame GPU stats. */
+	FORCEINLINE FParticlePerfStats_GPU& GetGPUStats()
+	{
+		return GPUStats;
+	}
 
-	static FParticlePerfStats* GetWorldPerfStats(UWorld* World);
-	static FParticlePerfStats* GetSystemPerfStats(UFXSystemAsset* FXAsset);
-	static FParticlePerfStats* GetComponentPerfStats(UFXSystemComponent* FXComponent);
+private:
+	static FParticlePerfStats* GetWorldPerfStats(const UWorld* World);
+	static FParticlePerfStats* GetSystemPerfStats(const UFXSystemAsset* FXAsset);
+	static FParticlePerfStats* GetComponentPerfStats(const UFXSystemComponent* FXComponent);
 
 };
 
 struct FParticlePerfStatsContext
 {
+	FParticlePerfStatsContext()
+	: WorldStats(nullptr)
+#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
+	, SystemStats(nullptr)
+#endif
+#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
+	, ComponentStats(nullptr)
+#endif
+	{}
+
 	FORCEINLINE FParticlePerfStatsContext(FParticlePerfStats* InWorldStats, FParticlePerfStats* InSystemStats, FParticlePerfStats* InComponentStats)
 	{
 		SetWorldStats(InWorldStats);
@@ -221,20 +273,20 @@ struct FParticlePerfStatsContext
 		SetComponentStats(InComponentStats);
 	}
 
-	FORCEINLINE FParticlePerfStatsContext(UWorld* InWorld, UFXSystemAsset* InSystem, UFXSystemComponent* InComponent)
+	FORCEINLINE FParticlePerfStatsContext(const UWorld* InWorld, const UFXSystemAsset* InSystem, const UFXSystemComponent* InComponent)
 	{
 		SetWorldStats(FParticlePerfStats::GetStats(InWorld));
 		SetSystemStats(FParticlePerfStats::GetStats(InSystem));
 		SetComponentStats(FParticlePerfStats::GetStats(InComponent));
 	}
 
-	FORCEINLINE FParticlePerfStatsContext(UWorld* InWorld, UFXSystemAsset* InSystem)
+	FORCEINLINE FParticlePerfStatsContext(const UWorld* InWorld, const UFXSystemAsset* InSystem)
 	{
 		SetWorldStats(FParticlePerfStats::GetStats(InWorld));
 		SetSystemStats(FParticlePerfStats::GetStats(InSystem));
 	}
 
-	FORCEINLINE FParticlePerfStatsContext(UFXSystemComponent* InComponent)
+	FORCEINLINE FParticlePerfStatsContext(const UFXSystemComponent* InComponent)
 	{
 		SetComponentStats(FParticlePerfStats::GetStats(InComponent));
 	}
@@ -269,12 +321,13 @@ struct FParticlePerfStatsContext
 
 typedef TFunction<void(FParticlePerfStats* Stats, uint64 Cycles)> FParticlePerfStatsWriterFunc;
 
+template<typename TWriterFunc>
 struct FParticlePerfStatScope
 {
-	FORCEINLINE FParticlePerfStatScope(FParticlePerfStatsContext InContext, FParticlePerfStatsWriterFunc InWriter)
-	: Writer(InWriter)
-	, Context(InContext)
+	FORCEINLINE FParticlePerfStatScope(FParticlePerfStatsContext InContext, int32 InCount=0)
+	: Context(InContext)
 	, StartCycles(INDEX_NONE)
+	, Count(InCount)
 	{
 		if (Context.IsValid())
 		{
@@ -287,34 +340,40 @@ struct FParticlePerfStatScope
 		if (StartCycles != INDEX_NONE)
 		{
 			uint64 Cycles = FPlatformTime::Cycles64() - StartCycles;
-			Writer(Context.GetWorldStats(), Cycles);
-			Writer(Context.GetSystemStats(), Cycles);
-			Writer(Context.GetComponentStats(), Cycles);
+			TWriterFunc::Write(Context.GetWorldStats(), Cycles, Count);
+			TWriterFunc::Write(Context.GetSystemStats(), Cycles, Count);
+			TWriterFunc::Write(Context.GetComponentStats(), Cycles, Count);
 		}
 	}
 	
-	FParticlePerfStatsWriterFunc Writer;
 	FParticlePerfStatsContext Context;
 	uint64 StartCycles = 0;
+	int32 Count = 0;
 };
 
 #define PARTICLE_PERF_STAT_CYCLES_COMMON(CONTEXT, THREAD, NAME)\
-FParticlePerfStatScope ANONYMOUS_VARIABLE(ParticlePerfStatScope##THREAD##NAME)(CONTEXT,\
-[](FParticlePerfStats* Stats, uint64 Cycles)\
+struct FParticlePerfStatsWriterCycles_##THREAD##_##NAME\
 {\
-	if(Stats){ Stats->Get##THREAD##Stats().NAME##Cycles += Cycles; }\
-});
+	FORCEINLINE static void Write(FParticlePerfStats* Stats, uint64 Cycles, int32 Count)\
+	{\
+		if (Stats){ Stats->Get##THREAD##Stats().NAME##Cycles += Cycles;	}\
+	}\
+};\
+FParticlePerfStatScope<FParticlePerfStatsWriterCycles_##THREAD##_##NAME> ANONYMOUS_VARIABLE(ParticlePerfStatScope##THREAD##NAME)(CONTEXT);
 
 #define PARTICLE_PERF_STAT_CYCLES_WITH_COUNT_COMMON(CONTEXT, THREAD, NAME, COUNT)\
-FParticlePerfStatScope ANONYMOUS_VARIABLE(ParticlePerfStatScope##THREAD##NAME)(CONTEXT,\
-[=](FParticlePerfStats* Stats, uint64 Cycles)\
+struct FParticlePerfStatsWriterCyclesAndCount_##THREAD##_##NAME\
 {\
-	if(Stats)\
+	FORCEINLINE static void Write(FParticlePerfStats* Stats, uint64 Cycles, int32 Count)\
 	{\
-		Stats->Get##THREAD##Stats().NAME##Cycles += Cycles; \
-		Stats->Get##THREAD##Stats().NumInstances += COUNT; \
+		if(Stats)\
+		{\
+			Stats->Get##THREAD##Stats().NAME##Cycles += Cycles; \
+			Stats->Get##THREAD##Stats().NumInstances += Count; \
+		}\
 	}\
-});
+};\
+FParticlePerfStatScope<FParticlePerfStatsWriterCyclesAndCount_##THREAD##_##NAME> ANONYMOUS_VARIABLE(ParticlePerfStatScope##THREAD##NAME)(CONTEXT, COUNT);
 
 #define PARTICLE_PERF_STAT_CYCLES_GT(CONTEXT, NAME) PARTICLE_PERF_STAT_CYCLES_COMMON(CONTEXT, GameThread, NAME)
 #define PARTICLE_PERF_STAT_CYCLES_RT(CONTEXT, NAME) PARTICLE_PERF_STAT_CYCLES_COMMON(CONTEXT, RenderThread, NAME)
@@ -335,9 +394,9 @@ struct FParticlePerfStatsContext
 	FORCEINLINE FParticlePerfStatsContext(FParticlePerfStats* InWorldStats, FParticlePerfStats* InSystemStats, FParticlePerfStats* InComponentStats){}
 	FORCEINLINE FParticlePerfStatsContext(FParticlePerfStats* InWorldStats, FParticlePerfStats* InSystemStats) {}
 	FORCEINLINE FParticlePerfStatsContext(FParticlePerfStats* InComponentStats) {}
-	FORCEINLINE FParticlePerfStatsContext(UWorld* InWorld, UFXSystemAsset* InSystem, UFXSystemComponent* InComponent) {}
+	FORCEINLINE FParticlePerfStatsContext(UWorld* InWorld, UFXSystemAsset* InSystem, const UFXSystemComponent* InComponent) {}
 	FORCEINLINE FParticlePerfStatsContext(UWorld* InWorld, UFXSystemAsset* InSystem) {}
-	FORCEINLINE FParticlePerfStatsContext(UFXSystemComponent* InComponent) {}
+	FORCEINLINE FParticlePerfStatsContext(const UFXSystemComponent* InComponent) {}
 };
 
 #endif //WITH_PARTICLE_PERF_STATS

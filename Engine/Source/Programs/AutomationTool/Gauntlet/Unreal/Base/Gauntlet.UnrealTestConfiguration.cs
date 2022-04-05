@@ -50,7 +50,7 @@ namespace Gauntlet
 		public void AddRawCommandline(string InRawCommandline, bool bOverrideExistingValues = true)
 		{
 			// turn Name(p1,etc) into a collection of Name|(p1,etc) groups
-			MatchCollection Matches = Regex.Matches(InRawCommandline, "-(?<option>\\-?[\\w\\d.:\\[\\]\\/\\\\]+)(=(?<value>(\"([^\"]*)\")|(\\S+)))?");
+			MatchCollection Matches = Regex.Matches(InRawCommandline, "-(?<option>\\-?[\\w\\d.:!\\[\\]\\/\\\\]+)(=(?<value>(\"([^\"]*)\")|(\\S+)))?");
 
 			foreach (Match M in Matches)
 			{
@@ -69,6 +69,18 @@ namespace Gauntlet
 			}
 		}
 
+		/// <summary>
+		/// Breaks down a raw commandline and adds it to the commandline dictionary.
+		/// Will override current set values in the dictionary when conflicts arise.
+		/// </summary>
+		/// <param name="InRawCommandline"></param>
+		public void CombineCommandLines(GauntletCommandLine InCommandline, bool bOverrideExistingValues = true)
+		{
+			foreach (string Key in InCommandline.Params.Keys)
+			{
+				Add(Key, InCommandline.Params[Key]);
+			}
+		}
 		/// <summary>
 		/// Add a new value to the commandline, returning false if the value already exists on the commandline and would be set
 		/// to something other than what is passed in. Execcmds passed in here will still append to an existing value.
@@ -204,6 +216,7 @@ namespace Gauntlet
 		public void ClearCommandLine()
 		{
 			Params.Clear();
+			AdditionalExplicitCommandLineArgs = string.Empty;
 		}
 
 		/// <summary>
@@ -271,7 +284,8 @@ namespace Gauntlet
 		Demos,
 		Profiling,
 		Saved,
-		Platform
+		Platform,
+		PersistentDownloadDir
 	}
 
 	/// <summary>
@@ -313,10 +327,16 @@ namespace Gauntlet
 			FilesToCopy = new List<UnrealFileToCopy>();
 			AdditionalArtifactDirectories = new List<EIntendedBaseCopyDirectory>();
 			RoleType = ERoleModifier.None;
+			InstallOnly = false;
 			CommandLineParams = new GauntletCommandLine();
 		}
 
 		public ERoleModifier RoleType { get; set; }
+
+		/// <summary>
+		/// Whether this role should be responsible only for installing the build and not monitoring a process.
+		/// </summary>
+		public bool InstallOnly { get; set; }
 
 		/// <summary>
 		/// Type of process this role represents
@@ -526,16 +546,22 @@ namespace Gauntlet
 		public float MaxDuration { get; set; }
 
 		/// <summary>
+		/// Resume test run on critical failure through pass retry
+		/// </summary>
+		[AutoParam]
+		public bool ResumeOnCriticalFailure = false;
+
+		/// <summary>
+		/// Max number of retries in case of critical failure
+		/// </summary>
+		[AutoParam(3)]
+		public int MaxRetries { get; set; }
+
+		/// <summary>
 		/// Produce test artifacts for Horde build system
 		/// </summary>
 		[AutoParam]
-		public bool WriteTestResultsForHorde = true;
-
-		/// <summary>
-		/// Key to store Horde Test Data
-		/// </summary>
-		[AutoParam]
-		public string HordeTestDataKey = "TestPassSummary";
+		public bool WriteTestResultsForHorde = false;
 
 		/// <summary>
 		/// Path to store test data for Horde build system
@@ -544,10 +570,28 @@ namespace Gauntlet
 		public string HordeTestDataPath = "";
 
 		/// <summary>
+		/// Key to store Horde Test Data
+		/// </summary>
+		[AutoParam]
+		public string HordeTestDataKey = "";
+
+		/// <summary>
 		/// Path to store test artifacts for Horde build system
 		/// </summary>
 		[AutoParam]
 		public string HordeArtifactPath = "";
+
+		/// <summary>
+		/// Telemetry Database config to use
+		/// </summary>
+		[AutoParam]
+		public string PublishTelemetryTo = "";
+
+		/// <summary>
+		/// Path to Database config file
+		/// </summary>
+		[AutoParam]
+		public string DatabaseConfigPath = "";
 
 		/// <summary>
 		/// What the test result should be treated as if we reach max duration.
@@ -600,6 +644,12 @@ namespace Gauntlet
 		/// A map of role types to test roles
 		/// </summary>
 		public Dictionary<UnrealTargetRole, List<UnrealTestRole>> RequiredRoles { get; private set; }
+
+		/// <summary>
+		/// Log channels that should be treated as events for this test. Warnings & Errors in these
+		/// channels will be promoted to test warnings and errors. For LogFoo return "Foo".
+		/// </summary>
+		public List<string> LogCategoriesForEvents { get; protected set; } = new List<string>();
 
 		/// <summary>
 		/// Base constructor
@@ -657,6 +707,14 @@ namespace Gauntlet
 			return RequireRoles(InRole, null, Count);
 		}
 
+		/// <summary>
+		/// Clears all roles from this config. 
+		/// </summary>
+		public void ClearRoles()
+		{
+			RequiredRoles.Clear();
+		}
+
 		public IEnumerable<UnrealTestRole> RequireRoles(UnrealTargetRole InRole, UnrealTargetPlatform? PlatformOverride, int Count, ERoleModifier roleType = ERoleModifier.None)
 		{
 			if (RequiredRoles.ContainsKey(InRole) == false)
@@ -680,14 +738,6 @@ namespace Gauntlet
 		}
 
 		/// <summary>
-		/// Clears all roles from this config. 
-		/// </summary>
-		public void ClearRoles()
-		{
-			RequiredRoles.Clear();
-		}
-
-		/// <summary>
 		/// Returns the number of roles of the specified type that exist for this test
 		/// </summary>
 		/// <param name="Role"></param>
@@ -702,6 +752,46 @@ namespace Gauntlet
 			}
 
 			return Roles;
+		}
+
+		/// <summary>
+		/// Return the list of required roles for the target role
+		/// </summary>
+		/// <param name="InRole"></param>
+		/// <returns></returns>
+		public IEnumerable<UnrealTestRole> GetRequiredRoles(UnrealTargetRole InRole)
+		{
+			if (RequiredRoles.ContainsKey(InRole))
+			{
+				return RequiredRoles[InRole];
+			}
+			return new List<UnrealTestRole>();
+		}
+
+		/// <summary>
+		/// Return the main required role to execute the test.
+		/// </summary>
+		/// <returns></returns>
+		public UnrealTestRole GetMainRequiredRole()
+		{
+			var ClientRoles = GetRequiredRoles(UnrealTargetRole.Client);
+			if (ClientRoles.Any())
+			{
+				return ClientRoles.First();
+			}
+			var ServerRoles = GetRequiredRoles(UnrealTargetRole.Server);
+			if (ServerRoles.Any())
+			{
+				return ServerRoles.First();
+			}
+			var EditorRoles = GetRequiredRoles(UnrealTargetRole.Editor);
+			if (EditorRoles.Any())
+			{
+				return EditorRoles.First();
+			}
+			var RoleEnumerator = RequiredRoles.Values.GetEnumerator();
+			RoleEnumerator.MoveNext();
+			return RoleEnumerator.Current.First();
 		}
 
 		/// <summary>
@@ -787,6 +877,12 @@ namespace Gauntlet
 				{
 					AppConfig.CommandLineParams.GameMap = MapChoice;
 				}
+			}
+
+			// we write results to Horde test data if we run under Horde agent
+			if (HordeReport.IsUnderHordeAgent)
+			{
+				WriteTestResultsForHorde = true;
 			}
 		}			
 	}

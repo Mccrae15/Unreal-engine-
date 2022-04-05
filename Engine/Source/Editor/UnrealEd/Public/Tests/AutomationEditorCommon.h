@@ -6,8 +6,11 @@
 #include "Misc/AutomationTest.h"
 #include "AssetData.h"
 #include "Tests/AutomationTestSettings.h"
+#include "PlayInEditorDataTypes.h"
 
 class UFactory;
+
+#if WITH_AUTOMATION_TESTS
 
 //////////////////////////////////////////////////////////////////////////
 // FAutomationEditorCommonUtils
@@ -133,6 +136,13 @@ public:
 	static bool SetOrthoViewportView(const FVector& ViewLocation, const FRotator& ViewRotation);
 
 	/**
+	* Set Play Session parameters to Active Viewport location
+	* 
+	* @param OutParams - FRequestPlaySessionParams object to set
+	*/
+	static bool SetPlaySessionStartToActiveViewport(FRequestPlaySessionParams& OutParams);
+
+	/**
 	* Converts a package path to an asset path
 	*
 	* @param PackagePath - The package path to convert
@@ -256,3 +266,5 @@ DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND(UNREALED_API, FWaitToFinishBuildDeploy
 * Latent command to delete a directory.
 */
 DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(UNREALED_API, FDeleteDirCommand, FString, InFolderLocation);
+
+#endif

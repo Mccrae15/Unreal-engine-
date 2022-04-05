@@ -5,6 +5,8 @@
 #include "ViewModels/NiagaraSystemViewModel.h"
 #include "NiagaraNode.h"
 #include "NiagaraEditorModule.h"
+#include "NiagaraMessageManager.h"
+#include "NiagaraMessageUtilities.h"
 
 #include "Modules/ModuleManager.h"
 #include "IPropertyRowGenerator.h"
@@ -18,14 +20,24 @@ UNiagaraStackObject::UNiagaraStackObject()
 {
 }
 
-void UNiagaraStackObject::Initialize(FRequiredEntryData InRequiredEntryData, UObject* InObject, FString InOwnerStackItemEditorDataKey, UNiagaraNode* InOwningNiagaraNode)
+void UNiagaraStackObject::Initialize(FRequiredEntryData InRequiredEntryData, UObject* InObject, bool bInIsTopLevelObject, FString InOwnerStackItemEditorDataKey, UNiagaraNode* InOwningNiagaraNode)
 {
 	checkf(WeakObject.IsValid() == false, TEXT("Can only initialize once."));
 	FString ObjectStackEditorDataKey = FString::Printf(TEXT("%s-%s"), *InOwnerStackItemEditorDataKey, *InObject->GetName());
 	Super::Initialize(InRequiredEntryData, InOwnerStackItemEditorDataKey, ObjectStackEditorDataKey);
 	WeakObject = InObject;
+	bIsTopLevelObject = bInIsTopLevelObject;
 	OwningNiagaraNode = InOwningNiagaraNode;
 	bIsRefresingDataInterfaceErrors = false;
+
+	MessageLogGuid = GetSystemViewModel()->GetMessageLogGuid();
+
+	FNiagaraMessageManager::Get()->SubscribeToAssetMessagesByObject(
+		FText::FromString("StackObject")
+		, MessageLogGuid
+		, FObjectKey(InObject)
+		, MessageManagerRegistrationKey
+	).BindUObject(this, &UNiagaraStackObject::OnMessageManagerRefresh);
 }
 
 void UNiagaraStackObject::SetOnSelectRootNodes(FOnSelectRootNodes OnSelectRootNodes)
@@ -84,6 +96,12 @@ void UNiagaraStackObject::FinalizeInternal()
 		FNiagaraEditorModule::Get().EnqueueObjectForDeferredDestruction(PropertyRowGenerator.ToSharedRef());
 		PropertyRowGenerator.Reset();
 	}
+
+	if (MessageManagerRegistrationKey.IsValid())
+	{
+		FNiagaraMessageManager::Get()->Unsubscribe(FText::FromString("StackObject"), MessageLogGuid, MessageManagerRegistrationKey);
+	}
+
 	Super::FinalizeInternal();
 }
 
@@ -263,12 +281,14 @@ void UNiagaraStackObject::RefreshChildrenInternal(const TArray<UNiagaraStackEntr
 			if (ChildRow == nullptr)
 			{
 				ChildRow = NewObject<UNiagaraStackPropertyRow>(this);
-				ChildRow->Initialize(CreateDefaultChildRequiredData(), RootTreeNode, GetOwnerStackItemEditorDataKey(), GetOwnerStackItemEditorDataKey(), OwningNiagaraNode);
+				ChildRow->Initialize(CreateDefaultChildRequiredData(), RootTreeNode, bIsTopLevelObject, GetOwnerStackItemEditorDataKey(), GetOwnerStackItemEditorDataKey(), OwningNiagaraNode);
 			}
 
 			NewChildren.Add(ChildRow);
 		}
 	}
+
+	NewIssues.Append(MessageManagerIssues);
 }
 
 void UNiagaraStackObject::PostRefreshChildrenInternal()
@@ -280,6 +300,25 @@ void UNiagaraStackObject::PropertyRowsRefreshed()
 {
 	if(bIsRefresingDataInterfaceErrors == false)
 	{
+		RefreshChildren();
+	}
+}
+
+void UNiagaraStackObject::OnMessageManagerRefresh(const TArray<TSharedRef<const INiagaraMessage>>& NewMessages)
+{
+	if (MessageManagerIssues.Num() != 0 || NewMessages.Num() != 0)
+	{
+		MessageManagerIssues.Reset();
+		for (TSharedRef<const INiagaraMessage> Message : NewMessages)
+		{
+			FStackIssue Issue = FNiagaraMessageUtilities::MessageToStackIssue(Message, GetStackEditorDataKey());
+			if (MessageManagerIssues.ContainsByPredicate([&Issue](const FStackIssue& NewIssue)
+				{ return NewIssue.GetUniqueIdentifier() == Issue.GetUniqueIdentifier(); }) == false)
+			{
+				MessageManagerIssues.Add(Issue);
+			}
+		}
+
 		RefreshChildren();
 	}
 }

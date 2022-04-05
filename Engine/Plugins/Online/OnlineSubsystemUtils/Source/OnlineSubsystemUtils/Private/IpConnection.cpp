@@ -129,14 +129,14 @@ void UIpConnection::InitLocalConnection(UNetDriver* InDriver, class FSocket* InS
 			UE_LOG(LogNet, Verbose, TEXT("IpConnection::InitConnection: Unable to resolve %s"), *InURL.Host);
 			return;
 		}
-
-		// Initialize our send bunch
-		InitSendBuffer();
 	}
 	else
 	{
 		ResolutionState = EAddressResolutionState::WaitingForResolves;
 	}
+
+	// Initialize our send bunch
+	InitSendBuffer();
 }
 
 void UIpConnection::InitRemoteConnection(UNetDriver* InDriver, class FSocket* InSocket, const FURL& InURL, const class FInternetAddr& InRemoteAddr, EConnectionState InState, int32 InMaxPacket, int32 InPacketOverhead)
@@ -252,7 +252,7 @@ void UIpConnection::Tick(float DeltaSeconds)
 		ResolutionState = EAddressResolutionState::Done;
 
 		// Host name resolution just now failed.
-		State = USOCK_Closed;
+		SetConnectionState(USOCK_Closed);
 		Close();
 	}
 
@@ -646,9 +646,6 @@ FString UIpConnection::LowLevelDescribe()
 		(RemoteAddr.IsValid() ? *RemoteAddr->ToString(true) : TEXT("nullptr")),
 		*LocalAddr->ToString(true),
 		(PlayerId.IsValid() ? *PlayerId->ToDebugString() : TEXT("nullptr")),
-			State==USOCK_Pending	?	TEXT("Pending")
-		:	State==USOCK_Open		?	TEXT("Open")
-		:	State==USOCK_Closed		?	TEXT("Closed")
-		:								TEXT("Invalid")
+		LexToString(GetConnectionState())
 	);
 }

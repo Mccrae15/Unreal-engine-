@@ -53,8 +53,9 @@ namespace UnrealBuildTool.Rules
                     "Core",
                     "CoreUObject",
                     "Engine",
+					"EditorFramework",
                     "UnrealEd",
-                    "AnimationModifiers",
+					"AnimationBlueprintLibrary",
                     "MeshBoneReduction",
                     "QuadricMeshReduction",
                     "ClothingSystemRuntimeCommon"

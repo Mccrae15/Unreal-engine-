@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Class.h"
+#include "UnrealTypeDefinitionInfo.h"
 
 class UEnum;
 class UScriptStruct;
@@ -11,7 +12,6 @@ class UDelegateFunction;
 
 // Forward declarations.
 class UStruct;
-class FClassMetaData;
 class FUnrealSourceFile;
 class FFileScope;
 class FStructScope;
@@ -53,7 +53,7 @@ public:
 	 *
 	 * @param Type Type to add.
 	 */
-	void AddType(UField* Type);
+	void AddType(FUnrealFieldDefinitionInfo& Type);
 
 	/**
 	 * Finds type by its name.
@@ -62,7 +62,7 @@ public:
 	 *
 	 * @returns Found type or nullptr on failure.
 	 */
-	UField* FindTypeByName(FName Name);
+	FUnrealFieldDefinitionInfo* FindTypeByName(FName Name);
 
 	/**
 	 * Finds type by its name.
@@ -72,7 +72,7 @@ public:
 	 * @returns Found type or nullptr on failure.
 	 */
 	template <typename CharType>
-	UField* FindTypeByName(const CharType* Name)
+	FUnrealFieldDefinitionInfo* FindTypeByName(const CharType* Name)
 	{
 		return FindTypeByName(FName(Name, FNAME_Find));
 	}
@@ -86,7 +86,7 @@ public:
 	 *
 	 * @returns Found type or nullptr on failure.
 	 */
-	const UField* FindTypeByName(FName Name) const;
+	const FUnrealFieldDefinitionInfo* FindTypeByName(FName Name) const;
 
 	/**
 	 * Finds type by its name.
@@ -98,16 +98,10 @@ public:
 	 * @returns Found type or nullptr on failure.
 	 */
 	template <typename CharType>
-	const UField* FindTypeByName(const CharType* Name) const
+	const FUnrealFieldDefinitionInfo* FindTypeByName(const CharType* Name) const
 	{
 		return FindTypeByName(FName(Name, FNAME_Find));
 	}
-	/**
-	 * Checks if scope contains this type.
-	 *
-	 * @param Type Type to look for.
-	 */
-	bool ContainsType(UField* Type);
 
 	/**
 	 * Checks if scope contains type that satisfies a predicate.
@@ -129,54 +123,16 @@ public:
 	}
 
 	/**
-	 * Gets struct's or class's scope.
-	 *
-	 * @param Type A struct or class for which to return the scope.
-	 *
-	 * @returns Struct's or class's scope.
+	 * Collect a list of all types declared in this scope.  This includes any types defined in other types which 
+	 * at this time is not currently supported.  Functions that aren't delegates are not collected.
+	 * The types are returned in the order they are declared.
 	 */
-	static TSharedRef<FScope> GetTypeScope(UStruct* Type);
-
-	/**
-	 * Adds struct's or class's scope.
-	 *
-	 * @param Type A struct or class for which to add the scope.
-	 * @param ParentScope A scope in which this scope is contained.
-	 *
-	 * @returns Newly added scope.
-	 */
-	static TSharedRef<FScope> AddTypeScope(UStruct* Type, FScope* ParentScope);
-
-	/**
-	 * Gets structs, enums and delegate functions from this scope.
-	 *
-	 * @param Enums (Output parameter) List of enums from this scope.
-	 * @param Structs (Output parameter) List of structs from this scope.
-	 * @param DelegateFunctions (Output parameter) List of delegate properties from this scope.
-	 */
-	void SplitTypesIntoArrays(TArray<UEnum*>& Enums, TArray<UScriptStruct*>& Structs, TArray<UDelegateFunction*>& DelegateFunctions);
+	void GatherTypes(TArray<FUnrealFieldDefinitionInfo*>& Types);
 
 	/**
 	 * Gets scope name.
 	 */
 	virtual FName GetName() const = 0;
-
-	/**
-	 * Gets scope types filtered by type.
-	 *
-	 * @param OutArray (Output parameter) Array to fill with types from this scope.
-	 */
-	template <class TTypeFilter>
-	void GetTypes(TArray<TTypeFilter*> OutArray)
-	{
-		for (const auto& NameTypePair : TypeMap)
-		{
-			if (NameTypePair.Value->IsA<TTypeFilter>())
-			{
-				OutArray.Add((TTypeFilter*)NameTypePair.Value);
-			}
-		}
-	}
 
 	/**
 	 * Gets scope's parent.
@@ -194,7 +150,7 @@ public:
 	{
 	public:
 		// Conditional typedefs.
-		typedef typename TConditionalType<TIsConst, TMap<FName, UField*>::TConstIterator, TMap<FName, UField*>::TIterator>::Type MapIteratorType;
+		typedef typename TConditionalType<TIsConst, TMap<FName, FUnrealFieldDefinitionInfo*>::TConstIterator, TMap<FName, FUnrealFieldDefinitionInfo*>::TIterator>::Type MapIteratorType;
 		typedef typename TConditionalType<TIsConst, const FScope, FScope>::Type ScopeType;
 
 		// Constructor
@@ -211,7 +167,7 @@ public:
 		 */
 		TType* operator*()
 		{
-			return bBeforeStart ? nullptr : (TType*)(*TypeIterator).Value;
+			return bBeforeStart ? nullptr : static_cast<TType*>((*TypeIterator).Value);
 		}
 
 		/**
@@ -244,7 +200,7 @@ public:
 	 *
 	 * @return Type iterator.
 	 */
-	template <class TType = UField>
+	template <class TType = FUnrealFieldDefinitionInfo>
 	TScopeTypeIterator<TType, false> GetTypeIterator()
 	{
 		return TScopeTypeIterator<TType, false>(this);
@@ -255,7 +211,7 @@ public:
 	 *
 	 * @return Const type iterator.
 	 */
-	template <class TType = UField>
+	template <class TType = FUnrealFieldDefinitionInfo>
 	TScopeTypeIterator<TType, true> GetTypeIterator() const
 	{
 		return TScopeTypeIterator<TType, true>(this);
@@ -281,13 +237,7 @@ private:
 	const FScope* Parent;
 
 	// Map of types in this scope.
-	TMap<FName, UField*> TypeMap;
-
-	// Global map type <-> scope.
-	static TMap<UStruct*, TSharedRef<FScope> > ScopeMap;
-
-	friend struct FScopeArchiveProxy;
-	friend struct FStructScopeArchiveProxy;
+	TMap<FName, FUnrealFieldDefinitionInfo*> TypeMap;
 };
 
 using FScopeSet = TSet<FScope*, DefaultKeyFuncs<FScope*>, TInlineSetAllocator<1024>>;
@@ -343,7 +293,6 @@ public:
 		}
 	}
 
-
 	const TArray<FFileScope*>& GetIncludedScopes() const
 	{
 		return IncludedScopes;
@@ -353,6 +302,7 @@ public:
 	{
 		SourceFile = InSourceFile;
 	}
+
 private:
 	// Source file.
 	FUnrealSourceFile* SourceFile;
@@ -362,8 +312,6 @@ private:
 
 	// Included scopes list.
 	TArray<FFileScope*> IncludedScopes;
-
-	friend struct FFileScopeArchiveProxy;
 };
 
 
@@ -374,13 +322,21 @@ class FStructScope : public FScope
 {
 public:
 	// Constructor.
-	FStructScope(UStruct* Struct, FScope* Parent);
+	FStructScope(FUnrealStructDefinitionInfo& InStructDef, FScope* InParent)
+		: FScope(InParent)
+		, StructDef(InStructDef)
+	{
+	}
 
 	virtual FStructScope* AsStructScope() override { return this; }
+
 	/**
-	 * Gets struct associated with this scope.
+	 * Get the structure definition associated with this scope
 	 */
-	UStruct* GetStruct() const;
+	FUnrealStructDefinitionInfo& GetStructDef() const
+	{
+		return StructDef;
+	}
 
 	/**
 	 * Gets scope name.
@@ -389,9 +345,7 @@ public:
 
 private:
 	// Struct associated with this scope.
-	UStruct* Struct;
-
-	friend struct FStructScopeArchiveProxy;
+	FUnrealStructDefinitionInfo& StructDef;
 };
 
 /**
@@ -418,16 +372,14 @@ public:
 		{
 			ScopesToTraverse.Add(Scope);
 
-			UStruct* Struct = ((FStructScope*)CurrentScope)->GetStruct();
+			FUnrealStructDefinitionInfo& StructDef = ((FStructScope*)CurrentScope)->GetStructDef();
 
-			if (Struct->IsA<UClass>())
+			if (FUnrealClassDefinitionInfo* ClassDef = UHTCast<FUnrealClassDefinitionInfo>(StructDef))
 			{
-				UClass* Class = ((UClass*)Struct)->GetSuperClass();
-
-				while (Class && !(Class->ClassFlags & EClassFlags::CLASS_Intrinsic))
+				// Skip myself when starting this loop, we only care about the parents
+				for (ClassDef = ClassDef->GetSuperClass(); ClassDef && !ClassDef->HasAnyClassFlags(EClassFlags::CLASS_Intrinsic); ClassDef = ClassDef->GetSuperClass())
 				{
-					ScopesToTraverse.Add(&FScope::GetTypeScope(Class).Get());
-					Class = Class->GetSuperClass();
+					ScopesToTraverse.Add(&ClassDef->GetScope().Get());
 				}
 			}
 

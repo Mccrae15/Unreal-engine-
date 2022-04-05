@@ -15,13 +15,13 @@
 #include "IPropertyGenerationUtilities.h"
 #include "EditConditionParser.h"
 #include "UObject/StructOnScope.h"
+#include "ThumbnailRendering/ThumbnailManager.h"
 
 class FPropertyRowGeneratorUtilities : public IPropertyUtilities
 {
 public:
 	FPropertyRowGeneratorUtilities(FPropertyRowGenerator& InGenerator)
 		: Generator(&InGenerator)
-		, EditConditionParser(new FEditConditionParser)
 	{
 	}
 
@@ -70,7 +70,10 @@ public:
 
 	virtual void NotifyFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent) override 
 	{
-		Generator->OnFinishedChangingProperties().Broadcast(PropertyChangedEvent);
+		if (Generator)
+		{
+			Generator->OnFinishedChangingProperties().Broadcast(PropertyChangedEvent);
+		}
 	}
 
 	virtual bool DontUpdateValueWhileEditing() const override { return false; }
@@ -93,14 +96,21 @@ public:
 		return Generator != nullptr && Generator->HasClassDefaultObject();
 	}
 
-	virtual TSharedPtr<FEditConditionParser> GetEditConditionParser() const override
+	virtual const TArray<TSharedRef<class IClassViewerFilter>>& GetClassViewerFilters() const override
 	{
-		return EditConditionParser;
+		if (Generator != nullptr)
+		{
+			return Generator->GetClassViewerFilters();
+		}
+		else
+		{
+			static TArray<TSharedRef<class IClassViewerFilter>> NullFilters;
+			return NullFilters;
+		}
 	}
 
 private:
 	FPropertyRowGenerator* Generator;
-	TSharedPtr<FEditConditionParser> EditConditionParser;
 };
 
 
@@ -134,12 +144,19 @@ private:
 	FPropertyRowGenerator* Generator;
 };
 
-FPropertyRowGenerator::FPropertyRowGenerator(const FPropertyRowGeneratorArgs& InArgs, TSharedPtr<FAssetThumbnailPool> InThumbnailPool)
+FPropertyRowGenerator::FPropertyRowGenerator(const FPropertyRowGeneratorArgs& InArgs)
 	: Args(InArgs)
-	, ThumbnailPool(InThumbnailPool)
 	, PropertyUtilities(new FPropertyRowGeneratorUtilities(*this))
 	, PropertyGenerationUtilities(new FPropertyRowGeneratorGenerationUtilities(*this))
 {
+}
+
+FPropertyRowGenerator::FPropertyRowGenerator(const FPropertyRowGeneratorArgs& InArgs, TSharedPtr<FAssetThumbnailPool> InThumbnailPool)
+	: Args(InArgs)
+	, PropertyUtilities(new FPropertyRowGeneratorUtilities(*this))
+	, PropertyGenerationUtilities(new FPropertyRowGeneratorGenerationUtilities(*this))
+{
+
 }
 
 FPropertyRowGenerator::~FPropertyRowGenerator()
@@ -315,6 +332,14 @@ void FPropertyRowGenerator::UnregisterInstancedCustomPropertyTypeLayout(FName Pr
 	}
 }
 
+void FPropertyRowGenerator::InvalidateCachedState()
+{
+	for (const TSharedPtr<FComplexPropertyNode>& ComplexRootNode : RootPropertyNodes)
+	{
+		ComplexRootNode->InvalidateCachedState();
+	}
+}
+
 void FPropertyRowGenerator::Tick(float DeltaTime)
 {
 	for (TSharedPtr<IDetailCustomization>& Customization : CustomizationClassInstancesPendingDelete)
@@ -418,7 +443,14 @@ void FPropertyRowGenerator::ForceRefresh()
 
 TSharedPtr<class FAssetThumbnailPool> FPropertyRowGenerator::GetThumbnailPool() const
 {
-	return ThumbnailPool;
+	return UThumbnailManager::Get().GetSharedThumbnailPool();
+}
+
+const TArray<TSharedRef<class IClassViewerFilter>>& FPropertyRowGenerator::GetClassViewerFilters() const
+{
+	// not implemented
+	static TArray<TSharedRef<class IClassViewerFilter>> NotImplemented;
+	return NotImplemented;
 }
 
 void FPropertyRowGenerator::PreSetObject(int32 NumNewObjects, bool bHasStructRoots)

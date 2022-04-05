@@ -22,11 +22,17 @@
 #include "ScopedTransaction.h"
 #include "Engine/LevelStreaming.h"
 #include "LevelUtils.h"
+#include "LevelEditorViewport.h"
 #include "StatsViewerModule.h"
 #include "SnappingUtils.h"
 #include "Logging/MessageLog.h"
 #include "ActorGroupingUtils.h"
 #include "Subsystems/BrushEditingSubsystem.h"
+#include "Elements/Framework/TypedElementList.h"
+#include "Elements/Framework/TypedElementSelectionSet.h"
+#include "Elements/Framework/EngineElementsLibrary.h"
+#include "Elements/Interfaces/TypedElementWorldInterface.h"
+#include "Elements/Interfaces/TypedElementObjectInterface.h"
 
 #define LOCTEXT_NAMESPACE "EditorSelectUtils"
 
@@ -137,7 +143,7 @@ void UUnrealEdEngine::FinishAllSnaps()
 }
 
 
-void UUnrealEdEngine::Cleanse( bool ClearSelection, bool Redraw, const FText& Reason )
+void UUnrealEdEngine::Cleanse( bool ClearSelection, bool Redraw, const FText& Reason, bool bResetTrans )
 {
 	if (GIsRunning)
 	{
@@ -149,7 +155,7 @@ void UUnrealEdEngine::Cleanse( bool ClearSelection, bool Redraw, const FText& Re
 		StatsViewerModule.Clear();
 	}
 
-	Super::Cleanse( ClearSelection, Redraw, Reason );
+	Super::Cleanse( ClearSelection, Redraw, Reason, bResetTrans );
 }
 
 
@@ -161,6 +167,11 @@ FVector UUnrealEdEngine::GetPivotLocation()
 
 void UUnrealEdEngine::SetPivot( FVector NewPivot, bool bSnapPivotToGrid, bool bIgnoreAxis, bool bAssignPivot/*=false*/ )
 {
+	if (!GCurrentLevelEditingViewportClient)
+	{
+		return;
+	}
+
 	FEditorModeTools& EditorModeTools = GLevelEditorModeTools();
 
 	if( !bIgnoreAxis )
@@ -182,25 +193,28 @@ void UUnrealEdEngine::SetPivot( FVector NewPivot, bool bSnapPivotToGrid, bool bI
 		EditorModeTools.PivotLocation = EditorModeTools.SnappedLocation;
 	}
 
-	// Check all actors.
-	int32 Count=0, SnapCount=0;
+	// Check all elements.
+	int32 NumElements = 0;
 
 	//default to using the x axis for the translate rotate widget
 	EditorModeTools.TranslateRotateXAxisAngle = 0.0f;
 	EditorModeTools.TranslateRotate2DAngle = 0.0f;
-	FVector TranslateRotateWidgetWorldXAxis;
+	
+	FVector TranslateRotateWidgetWorldXAxis = FVector::ZeroVector;
+	FVector Widget2DWorldXAxis = FVector::ZeroVector;
 
-	FVector Widget2DWorldXAxis;
+	// Pick a new common pivot, or not.
+	TTypedElement<ITypedElementWorldInterface> SingleWorldElement;
 
-	AActor* LastSelectedActor = NULL;
-	for ( FSelectionIterator It( GetSelectedActorIterator() ) ; It ; ++It )
+	FTypedElementListConstRef ElementsToManipulate = GCurrentLevelEditingViewportClient->GetElementsToManipulate();
+	ElementsToManipulate->ForEachElement<ITypedElementWorldInterface>([&NumElements, &TranslateRotateWidgetWorldXAxis, &Widget2DWorldXAxis, &SingleWorldElement](const TTypedElement<ITypedElementWorldInterface>& InWorldElement)
 	{
-		AActor* Actor = static_cast<AActor*>( *It );
-		checkSlow( Actor->IsA(AActor::StaticClass()) );
-
-		if (Count==0)
+		if (NumElements == 0)
 		{
-			TranslateRotateWidgetWorldXAxis = Actor->ActorToWorld().TransformVector(FVector(1.0f, 0.0f, 0.0f));
+			FTransform ElementWorldTransform;
+			InWorldElement.GetWorldTransform(ElementWorldTransform);
+
+			TranslateRotateWidgetWorldXAxis = ElementWorldTransform.TransformVector(FVector(1.0f, 0.0f, 0.0f));
 			//get the xy plane project of this vector
 			TranslateRotateWidgetWorldXAxis.Z = 0.0f;
 			if (!TranslateRotateWidgetWorldXAxis.Normalize())
@@ -208,7 +222,7 @@ void UUnrealEdEngine::SetPivot( FVector NewPivot, bool bSnapPivotToGrid, bool bI
 				TranslateRotateWidgetWorldXAxis = FVector(1.0f, 0.0f, 0.0f);
 			}
 
-			Widget2DWorldXAxis = Actor->ActorToWorld().TransformVector(FVector(1, 0, 0));
+			Widget2DWorldXAxis = ElementWorldTransform.TransformVector(FVector(1, 0, 0));
 			Widget2DWorldXAxis.Y = 0;
 			if (!Widget2DWorldXAxis.Normalize())
 			{
@@ -216,30 +230,35 @@ void UUnrealEdEngine::SetPivot( FVector NewPivot, bool bSnapPivotToGrid, bool bI
 			}
 		}
 
-		LastSelectedActor = Actor;
-		++Count;
-		++SnapCount;
-	}
+		SingleWorldElement = InWorldElement;
+		++NumElements;
+		return true;
+	});
 	
-	if( bAssignPivot && LastSelectedActor && UActorGroupingUtils::IsGroupingActive())
+	if (bAssignPivot && UActorGroupingUtils::IsGroupingActive())
 	{
-		// set group pivot for the root-most group
-		AGroupActor* ActorGroupRoot = AGroupActor::GetRootForActor(LastSelectedActor, true, true);
-		if(ActorGroupRoot)
+		if (TTypedElement<ITypedElementObjectInterface> ObjectElement = ElementsToManipulate->GetElement<ITypedElementObjectInterface>(SingleWorldElement))
 		{
-			ActorGroupRoot->SetActorLocation( EditorModeTools.PivotLocation, false );
+			if (AActor* SingleActor = Cast<AActor>(ObjectElement.GetObject()))
+			{
+				// set group pivot for the root-most group
+				if (AGroupActor* ActorGroupRoot = AGroupActor::GetRootForActor(SingleActor, true, true))
+				{
+					ActorGroupRoot->SetActorLocation(EditorModeTools.PivotLocation, false);
+				}
+			}
 		}
 	}
 
-	//if there are multiple actors selected, just use the x-axis for the "translate/rotate" or 2D widgets
-	if (Count == 1)
+	//if there are multiple elements selected, just use the x-axis for the "translate/rotate" or 2D widgets
+	if (NumElements == 1)
 	{
 		EditorModeTools.TranslateRotateXAxisAngle = TranslateRotateWidgetWorldXAxis.Rotation().Yaw;
 		EditorModeTools.TranslateRotate2DAngle = FMath::RadiansToDegrees(FMath::Atan2(Widget2DWorldXAxis.Z, Widget2DWorldXAxis.X));
 	}
 
 	// Update showing.
-	EditorModeTools.PivotShown = SnapCount>0 || Count>1;
+	EditorModeTools.PivotShown = NumElements > 0;
 }
 
 
@@ -254,37 +273,36 @@ void UUnrealEdEngine::ResetPivot()
 	Selection.
 -----------------------------------------------------------------------------*/
 
-void UUnrealEdEngine::SetActorSelectionFlags (AActor* InActor)
+void UUnrealEdEngine::OnEditorElementSelectionPtrChanged(USelection* Selection, UTypedElementSelectionSet* OldSelectionSet, UTypedElementSelectionSet* NewSelectionSet)
 {
-	TInlineComponentArray<UActorComponent*> Components;
-	InActor->GetComponents(Components);
-
-	//for every component in the actor
-	for(int32 ComponentIndex = 0; ComponentIndex < Components.Num(); ComponentIndex++)
+	if (Selection == GetSelectedActors())
 	{
-		UActorComponent* Component = Components[ComponentIndex];
-		if (Component->IsRegistered())
+		if (OldSelectionSet)
 		{
-			// If we have a 'child actor' component, want to update its visible selection state
-			UChildActorComponent* ChildActorComponent = Cast<UChildActorComponent>(Component);
-			if(ChildActorComponent != NULL && ChildActorComponent->GetChildActor() != NULL)
-			{
-				SetActorSelectionFlags(ChildActorComponent->GetChildActor());
-			}
+			OldSelectionSet->OnChanged().RemoveAll(this);
+		}
 
-			UPrimitiveComponent* PrimComponent = Cast<UPrimitiveComponent>(Component);
-			if(PrimComponent != NULL && PrimComponent->IsRegistered())
-			{
-				PrimComponent->PushSelectionToProxy();
-			}
-
-			UDecalComponent* DecalComponent = Cast<UDecalComponent>(Component);
-			if(DecalComponent != NULL)// && DecalComponent->IsRegistered())
-			{
-				DecalComponent->PushSelectionToProxy();
-			}
+		if (NewSelectionSet)
+		{
+			NewSelectionSet->OnChanged().AddUObject(this, &UUnrealEdEngine::OnEditorElementSelectionChanged);
 		}
 	}
+}
+
+
+void UUnrealEdEngine::OnEditorElementSelectionChanged(const UTypedElementSelectionSet* SelectionSet)
+{
+	NoteSelectionChange();
+}
+
+
+void UUnrealEdEngine::PostActorSelectionChanged()
+{
+	// Whenever selection changes, recompute whether the selection contains a locked actor
+	bCheckForLockActors = true;
+
+	// Whenever selection changes, recompute whether the selection contains a world info actor
+	bCheckForWorldSettingsActors = true;
 }
 
 
@@ -302,78 +320,64 @@ bool UUnrealEdEngine::IsPivotMovedIndependently() const
 
 void UUnrealEdEngine::UpdatePivotLocationForSelection( bool bOnChange )
 {
+	if (!GCurrentLevelEditingViewportClient)
+	{
+		return;
+	}
+
 	// Pick a new common pivot, or not.
-	AActor* SingleActor = nullptr;
-	USceneComponent* SingleComponent = nullptr;
-
-	if (GetSelectedComponentCount() > 0)
-	{
-		for (FSelectedEditableComponentIterator It(*GetSelectedComponents()); It; ++It)
-		{
-			UActorComponent* Component = CastChecked<UActorComponent>(*It);
-			AActor* ComponentOwner = Component->GetOwner();
-
-			if (ComponentOwner != nullptr)
-			{
-				USelection* SelectedActors = GetSelectedActors();
-				const bool bIsOwnerSelected = SelectedActors->IsSelected(ComponentOwner);
-				ensureMsgf(bIsOwnerSelected, TEXT("Owner(%s) of %s is not selected"), *ComponentOwner->GetFullName(), *Component->GetFullName());
-
-				if (ComponentOwner->GetWorld() == GWorld)
-				{
-					SingleActor = ComponentOwner;
-					if (Component->IsA<USceneComponent>())
-					{
-						SingleComponent = CastChecked<USceneComponent>(Component);
-					}
-
-					const bool IsTemplate = ComponentOwner->IsTemplate();
-					const bool LevelLocked = !FLevelUtils::IsLevelLocked(ComponentOwner->GetLevel());
-					check(IsTemplate || LevelLocked);
-				}
-			}
-		}
-	}
-	else
-	{
-		for (FSelectionIterator It(GetSelectedActorIterator()); It; ++It)
-		{
-			AActor* Actor = static_cast<AActor*>(*It);
-			checkSlow(Actor->IsA(AActor::StaticClass()));
-
-			const bool IsTemplate = Actor->IsTemplate();
-			const bool LevelLocked = !FLevelUtils::IsLevelLocked(Actor->GetLevel());
-			check(IsTemplate || LevelLocked);
-
-			SingleActor = Actor;
-		}
-	}
+	TTypedElement<ITypedElementWorldInterface> SingleWorldElement;
 	
-	if (SingleComponent != NULL)
+	FTypedElementListConstRef ElementsToManipulate = GCurrentLevelEditingViewportClient->GetElementsToManipulate();
+	ElementsToManipulate->ForEachElement<ITypedElementWorldInterface>([&SingleWorldElement](const TTypedElement<ITypedElementWorldInterface>& InWorldElement)
 	{
-		SetPivot(SingleComponent->GetComponentLocation(), false, true);
-	}
-	else if( SingleActor != NULL ) 
+#if DO_CHECK
+		if (ULevel* OwnerLevel = InWorldElement.GetOwnerLevel())
+		{
+			const bool bIsTemplate = InWorldElement.IsTemplateElement();
+			const bool bLevelLocked = FLevelUtils::IsLevelLocked(OwnerLevel);
+			check(bIsTemplate || !bLevelLocked);
+		}
+#endif	// DO_CHECK
+
+		SingleWorldElement = InWorldElement;
+		return true;
+	});
+	
+	if (SingleWorldElement)
 	{
 		UBrushEditingSubsystem* BrushSubsystem = GEditor->GetEditorSubsystem<UBrushEditingSubsystem>();
-		const bool bGeometryMode = BrushSubsystem ? BrushSubsystem->IsGeometryEditorModeActive() : false;
+		const bool bGeometryMode = BrushSubsystem && BrushSubsystem->IsGeometryEditorModeActive();
 
 		// For geometry mode use current pivot location as it's set to selected face, not actor
-		if (!bGeometryMode || bOnChange == true)
+		// TODO: If geometry used elements for face selection, then this could work via the world interface and this special case could be removed
+		if (!bGeometryMode || bOnChange)
 		{
-			// Set pivot point to the actor's location, accounting for any set pivot offset
-			FVector PivotPoint = SingleActor->GetTransform().TransformPosition(SingleActor->GetPivotOffset());
+			FTransform ElementWorldTransform;
+			SingleWorldElement.GetWorldTransform(ElementWorldTransform);
 
-			// If grouping is active, see if this actor is part of a locked group and use that pivot instead
-			if(UActorGroupingUtils::IsGroupingActive())
+			FVector ElementPivotOffset = FVector::ZeroVector;
+			SingleWorldElement.GetPivotOffset(ElementPivotOffset);
+
+			// Set pivot point to the element location, accounting for any set pivot offset
+			FVector PivotPoint = ElementWorldTransform.TransformPosition(ElementPivotOffset);
+
+			// If grouping is active, see if this element is an actor that's part of a locked group and use that pivot instead
+			if (UActorGroupingUtils::IsGroupingActive())
 			{
-				AGroupActor* ActorGroupRoot = AGroupActor::GetRootForActor(SingleActor, true, true);
-				if(ActorGroupRoot)
+				if (TTypedElement<ITypedElementObjectInterface> ObjectElement = ElementsToManipulate->GetElement<ITypedElementObjectInterface>(SingleWorldElement))
 				{
-					PivotPoint = ActorGroupRoot->GetActorLocation();
+					if (AActor* SingleActor = Cast<AActor>(ObjectElement.GetObject()))
+					{
+						if (AGroupActor* ActorGroupRoot = AGroupActor::GetRootForActor(SingleActor, true, true))
+						{
+							PivotPoint = ActorGroupRoot->GetActorLocation();
+						}
+					}
 				}
 			}
-			SetPivot( PivotPoint, false, true );
+
+			SetPivot(PivotPoint, false, true);
 		}
 	}
 	else
@@ -384,8 +388,6 @@ void UUnrealEdEngine::UpdatePivotLocationForSelection( bool bOnChange )
 	SetPivotMovedIndependently(false);
 }
 
-
-
 void UUnrealEdEngine::NoteSelectionChange(bool bNotify)
 {
 	// The selection changed, so make sure the pivot (widget) is located in the right place
@@ -394,330 +396,185 @@ void UUnrealEdEngine::NoteSelectionChange(bool bNotify)
 	// Clear active editing visualizer on selection change
 	ComponentVisManager.ClearActiveComponentVis();
 
-	GLevelEditorModeTools().ActorSelectionChangeNotify();
-
 	const bool bComponentSelectionChanged = GetSelectedComponentCount() > 0;
 	if (bNotify)
 	{
 		USelection* Selection = bComponentSelectionChanged ? GetSelectedComponents() : GetSelectedActors();
-		USelection::SelectionChangedEvent.Broadcast(Selection);
+		Selection->NoteSelectionChanged();
 	}
 	
 	if (!bComponentSelectionChanged)
 	{
-		//whenever selection changes, recompute whether the selection contains a locked actor
-		bCheckForLockActors = true;
-
-		//whenever selection changes, recompute whether the selection contains a world info actor
-		bCheckForWorldSettingsActors = true;
-
-		UpdateFloatingPropertyWindows();
+		PostActorSelectionChanged();
 	}
 
+	UpdateFloatingPropertyWindows(/*bForceRefresh*/false, !bComponentSelectionChanged);
 	RedrawLevelEditingViewports();
 }
 
 void UUnrealEdEngine::SelectGroup(AGroupActor* InGroupActor, bool bForceSelection/*=false*/, bool bInSelected/*=true*/, bool bNotify/*=true*/)
 {
-	USelection* SelectedActors = GetSelectedActors();
-	bool bStartedBatchSelect = false;
-	if(!SelectedActors->IsBatchSelecting())
-	{
-		bStartedBatchSelect = true;
-		// These will have already been called when batch selecting
-		SelectedActors->BeginBatchSelectOperation();
-		SelectedActors->Modify();
-	}
+	USelection* ActorSelection = GetSelectedActors();
 
-	static bool bIteratingGroups = false;
-
-	if( !bIteratingGroups )
+	if (UTypedElementSelectionSet* SelectionSet = ActorSelection->GetElementSelectionSet())
 	{
-		bIteratingGroups = true;
-		// Select all actors within the group (if locked or forced)
-		if( bForceSelection || InGroupActor->IsLocked() )
-		{	
+		FTypedElementList::FScopedClearNewPendingChange ClearNewPendingChange;
+		if (!bNotify)
+		{
+			ClearNewPendingChange = SelectionSet->GetScopedClearNewPendingChange();
+		}
+
+		const FTypedElementSelectionOptions SelectionOptions = FTypedElementSelectionOptions()
+			.SetWarnIfLocked(true)
+			.SetAllowGroups(false)
+			.SetAllowLegacyNotifications(false);
+
+		bool bSelectionChanged = false;
+
+		// Select/deselect all actors within the group (if locked or forced)
+		if (bForceSelection || InGroupActor->IsLocked())
+		{
 			TArray<AActor*> GroupActors;
 			InGroupActor->GetGroupActors(GroupActors);
-			for( int32 ActorIndex=0; ActorIndex < GroupActors.Num(); ++ActorIndex )
-			{                  
-				SelectActor(GroupActors[ActorIndex], bInSelected, false );
-			}
-			bForceSelection = true;
 
-			// Recursively select any subgroups
-			TArray<AGroupActor*> SubGroups;
-			InGroupActor->GetSubGroups(SubGroups);
-			for( int32 GroupIndex=0; GroupIndex < SubGroups.Num(); ++GroupIndex )
+			TArray<FTypedElementHandle, TInlineAllocator<256>> GroupElements;
+			GroupElements.Reserve(GroupActors.Num());
+			for (AActor* Actor : GroupActors)
 			{
-				SelectGroup(SubGroups[GroupIndex], bForceSelection, bInSelected, false);
+				if (FTypedElementHandle ElementHandle = UEngineElementsLibrary::AcquireEditorActorElementHandle(Actor))
+				{
+					GroupElements.Add(MoveTemp(ElementHandle));
+				}
+			}
+
+			if (GroupElements.Num() > 0)
+			{
+				bSelectionChanged |= bInSelected
+					? SelectionSet->SelectElements(GroupElements, SelectionOptions)
+					: SelectionSet->DeselectElements(GroupElements, SelectionOptions);
 			}
 		}
 
-		if(bStartedBatchSelect)
+		if (bSelectionChanged)
 		{
-			SelectedActors->EndBatchSelectOperation(bNotify);
+			if (bNotify)
+			{
+				SelectionSet->NotifyPendingChanges();
+			}
 		}
-		if (bNotify)
-		{
-			NoteSelectionChange();
-		}
-
-		//whenever selection changes, recompute whether the selection contains a locked actor
-		bCheckForLockActors = true;
-
-		//whenever selection changes, recompute whether the selection contains a world info actor
-		bCheckForWorldSettingsActors = true;
-
-		bIteratingGroups = false;
 	}
 }
 
-
 bool UUnrealEdEngine::CanSelectActor(AActor* Actor, bool bInSelected, bool bSelectEvenIfHidden, bool bWarnIfLevelLocked ) const
 {
-	// If selections are globally locked, leave.
-	if( !Actor || !Actor->GetLevel() || GEdSelectionLock || !Actor->IsEditable() )
+	if (!Actor)
 	{
 		return false;
 	}
 
-	// Only abort from hidden actors if we are selecting. You can deselect hidden actors without a problem.
-	if ( bInSelected )
+	USelection* ActorSelection = GetSelectedActors();
+
+	if (UTypedElementSelectionSet* SelectionSet = ActorSelection->GetElementSelectionSet())
 	{
-		// If the actor is NULL or hidden, leave.
-		if ( !bSelectEvenIfHidden && ( Actor->IsHiddenEd() || !FLevelUtils::IsLevelVisible( Actor->GetLevel() ) ) )
-		{
-			return false;
-		}
+		const FTypedElementSelectionOptions SelectionOptions = FTypedElementSelectionOptions()
+			.SetAllowHidden(bSelectEvenIfHidden)
+			.SetWarnIfLocked(bWarnIfLevelLocked);
 
-		// If the actor explicitly makes itself unselectable, leave.
-		if (!Actor->IsSelectable())
-		{
-			return false;
-		}
-
-		// Ensure that neither the level nor the actor is being destroyed or is unreachable
-		const EObjectFlags InvalidSelectableFlags = RF_BeginDestroyed;
-		if (Actor->GetLevel()->HasAnyFlags(InvalidSelectableFlags) || Actor->GetLevel()->IsPendingKillOrUnreachable())
-		{
-			UE_LOG(LogEditorSelectUtils, Warning, TEXT("SelectActor: %s (%s)"), TEXT("The requested operation could not be completed because the level has invalid flags."),*Actor->GetActorLabel());
-			return false;
-		}
-		if (Actor->HasAnyFlags(InvalidSelectableFlags) || Actor->IsPendingKillOrUnreachable())
-		{
-			UE_LOG(LogEditorSelectUtils, Warning, TEXT("SelectActor: %s (%s)"), TEXT("The requested operation could not be completed because the actor has invalid flags."),*Actor->GetActorLabel());
-			return false;
-		}
-
-		if ( !Actor->IsTemplate() && FLevelUtils::IsLevelLocked(Actor->GetLevel()) )
-		{
-			if( bWarnIfLevelLocked )
-			{
-				UE_LOG(LogEditorSelectUtils, Warning, TEXT("SelectActor: %s (%s)"), TEXT("The requested operation could not be completed because the level is locked."),*Actor->GetActorLabel());
-			}
-			return false;
-		}
+		return bInSelected
+			? SelectionSet->CanSelectElement(UEngineElementsLibrary::AcquireEditorActorElementHandle(Actor), SelectionOptions)
+			: SelectionSet->CanDeselectElement(UEngineElementsLibrary::AcquireEditorActorElementHandle(Actor), SelectionOptions);
 	}
 
-	// If grouping operations are not currently allowed, don't select groups.
-	AGroupActor* SelectedGroupActor = Cast<AGroupActor>(Actor);
-	if( SelectedGroupActor && !UActorGroupingUtils::IsGroupingActive())
-	{
-		return false;
-	}
-
-	// Allow active modes to determine whether the selection is allowed. 
-	return GLevelEditorModeTools().IsSelectionAllowed(Actor, bInSelected);
+	return false;
 }
 
 void UUnrealEdEngine::SelectActor(AActor* Actor, bool bInSelected, bool bNotify, bool bSelectEvenIfHidden, bool bForceRefresh)
 {
-	const bool bWarnIfLevelLocked = true;
-	if( !CanSelectActor( Actor, bInSelected, bSelectEvenIfHidden, bWarnIfLevelLocked ) )
+	if (!Actor)
 	{
 		return;
 	}
 
-	bool bSelectionHandled = GLevelEditorModeTools().IsSelectionHandled(Actor, bInSelected);
+	USelection* ActorSelection = GetSelectedActors();
 
-
-	// Select the actor and update its internals.
-	if( !bSelectionHandled )
+	if (UTypedElementSelectionSet* SelectionSet = ActorSelection->GetElementSelectionSet())
 	{
-		if (bInSelected)
+		FTypedElementList::FScopedClearNewPendingChange ClearNewPendingChange;
+		if (!bNotify)
 		{
-			// If trying to select an Actor spawned by a ChildActorComponent, instead iterate up the hierarchy until we find a valid actor to select
-			while (Actor->IsChildActor())
-			{
-				Actor = Actor->GetParentComponent()->GetOwner();
-			}
+			ClearNewPendingChange = SelectionSet->GetScopedClearNewPendingChange();
 		}
 
-		if (UActorGroupingUtils::IsGroupingActive())
+		const FTypedElementSelectionOptions SelectionOptions = FTypedElementSelectionOptions()
+			.SetAllowHidden(bSelectEvenIfHidden)
+			.SetWarnIfLocked(true)
+			.SetAllowLegacyNotifications(false);
+
+		const bool bSelectionChanged = bInSelected
+			? SelectionSet->SelectElement(UEngineElementsLibrary::AcquireEditorActorElementHandle(Actor), SelectionOptions)
+			: SelectionSet->DeselectElement(UEngineElementsLibrary::AcquireEditorActorElementHandle(Actor), SelectionOptions);
+
+		if (bSelectionChanged)
 		{
-			// if this actor is a group, do a group select/deselect
-			AGroupActor* SelectedGroupActor = Cast<AGroupActor>(Actor);
-			if (SelectedGroupActor)
+			if (bNotify)
 			{
-				SelectGroup(SelectedGroupActor, true, bInSelected, bNotify);
-			}
-			else
-			{
-				// Select/Deselect this actor's entire group, starting from the top locked group.
-				// If none is found, just use the actor.
-				AGroupActor* ActorLockedRootGroup = AGroupActor::GetRootForActor(Actor, true);
-				if (ActorLockedRootGroup)
-				{
-					SelectGroup(ActorLockedRootGroup, false, bInSelected, bNotify);
-				}
+				SelectionSet->NotifyPendingChanges();
 			}
 		}
-
-		// Don't do any work if the actor's selection state is already the selected state.
-		const bool bActorSelected = Actor->IsSelected();
-		if ( bActorSelected != bInSelected )
+		else if (bNotify || bForceRefresh)
 		{
-			if(bInSelected)
-			{
-				UE_LOG(LogEditorSelectUtils, Verbose,  TEXT("Selected Actor: %s"), *Actor->GetClass()->GetName());
-			}
-			else
-			{
-				UE_LOG(LogEditorSelectUtils, Verbose,  TEXT("Deselected Actor: %s"), *Actor->GetClass()->GetName() );
-			}
-
-			GetSelectedActors()->Select( Actor, bInSelected );
-			if (!bInSelected)
-			{
-				if (GetSelectedComponentCount() > 0)
-				{
-					GetSelectedComponents()->Modify();
-				}
-
-				GetSelectedComponents()->BeginBatchSelectOperation();
-				for (UActorComponent* Component : Actor->GetComponents())
-				{
-					if (Component)
-					{
-						GetSelectedComponents()->Deselect(Component);
-
-						// Remove the selection override delegates from the deselected components
-						if (USceneComponent* SceneComponent = Cast<USceneComponent>(Component))
-						{
-							FComponentEditorUtils::BindComponentSelectionOverride(SceneComponent, false);
-						}
-					}
-				}
-				GetSelectedComponents()->EndBatchSelectOperation(false);
-			}
-			else
-			{
-				// Bind the override delegates for the components in the selected actor
-				for (UActorComponent* Component : Actor->GetComponents())
-				{
-					if (USceneComponent* SceneComponent = Cast<USceneComponent>(Component))
-					{
-						FComponentEditorUtils::BindComponentSelectionOverride(SceneComponent, true);
-					}
-				}
-			}
-
-
-			if( bNotify )
-			{
-				NoteSelectionChange();
-			}
-
-			//whenever selection changes, recompute whether the selection contains a locked actor
-			bCheckForLockActors = true;
-
-			//whenever selection changes, recompute whether the selection contains a world info actor
-			bCheckForWorldSettingsActors = true;
+			// Reset the property windows, in case something has changed since previous selection
+			UpdateFloatingPropertyWindows(bForceRefresh);
 		}
-		else
-		{
-			if (bNotify || bForceRefresh)
-			{
-				//reset the property windows.  In case something has changed since previous selection
-				UpdateFloatingPropertyWindows(bForceRefresh);
-			}
-		}
-
-		//A fast path to mark selection rather than reconnecting ALL components for ALL actors that have changed state
-		SetActorSelectionFlags(Actor);
 	}
 }
 
 void UUnrealEdEngine::SelectComponent(UActorComponent* Component, bool bInSelected, bool bNotify, bool bSelectEvenIfHidden)
 {
-	// Don't do any work if the component's selection state matches the target selection state
-	const bool bComponentSelected = GetSelectedComponents()->IsSelected(Component);
-	if (( bComponentSelected && !bInSelected ) || ( !bComponentSelected && bInSelected ))
+	if (!Component)
 	{
-		if (bInSelected)
-		{
-			UE_LOG(LogEditorSelectUtils, Verbose, TEXT("Selected Component: %s"), *Component->GetClass()->GetName());
-		}
-		else
-		{
-			UE_LOG(LogEditorSelectUtils, Verbose, TEXT("Deselected Component: %s"), *Component->GetClass()->GetName());
-		}
+		return;
+	}
 
-		GetSelectedComponents()->Select(Component, bInSelected);
+	USelection* ComponentSelection = GetSelectedComponents();
 
-		// Make sure the override delegate is bound properly
-		USceneComponent* SceneComponent = Cast<USceneComponent>(Component);
-		if (SceneComponent)
+	if (UTypedElementSelectionSet* SelectionSet = ComponentSelection->GetElementSelectionSet())
+	{
+		FTypedElementList::FScopedClearNewPendingChange ClearNewPendingChange;
+		if (!bNotify)
 		{
-			FComponentEditorUtils::BindComponentSelectionOverride(SceneComponent, true);
+			ClearNewPendingChange = SelectionSet->GetScopedClearNewPendingChange();
 		}
 
-		// Update the selection visualization
-		AActor* ComponentOwner = Component->GetOwner();
-		if (ComponentOwner != nullptr)
-		{
-			TInlineComponentArray<UPrimitiveComponent*> PrimitiveComponents;
-			ComponentOwner->GetComponents(PrimitiveComponents);
+		const FTypedElementSelectionOptions SelectionOptions = FTypedElementSelectionOptions()
+			.SetAllowHidden(bSelectEvenIfHidden)
+			.SetWarnIfLocked(true)
+			.SetAllowLegacyNotifications(false);
 
-			for (int32 Idx = 0; Idx < PrimitiveComponents.Num(); ++Idx)
+		const bool bSelectionChanged = bInSelected
+			? SelectionSet->SelectElement(UEngineElementsLibrary::AcquireEditorComponentElementHandle(Component), SelectionOptions)
+			: SelectionSet->DeselectElement(UEngineElementsLibrary::AcquireEditorComponentElementHandle(Component), SelectionOptions);
+
+		if (bSelectionChanged)
+		{
+			if (bNotify)
 			{
-				PrimitiveComponents[Idx]->PushSelectionToProxy();
+				SelectionSet->NotifyPendingChanges();
 			}
-		}
-
-		if (bNotify)
-		{
-			NoteSelectionChange();
 		}
 	}
 }
 
 bool UUnrealEdEngine::IsComponentSelected(const UPrimitiveComponent* PrimComponent)
 {
-	bool bIsSelected = false;
-	if (GetSelectedComponentCount() > 0)
+	USelection* ComponentSelection = GetSelectedComponents();
+
+	if (UTypedElementSelectionSet* SelectionSet = ComponentSelection->GetElementSelectionSet())
 	{
-		const UActorComponent* PotentiallySelectedComponent = nullptr;
-
-		AActor* ComponentOwner = PrimComponent->GetOwner();
-		if (ComponentOwner->IsChildActor())
-		{
-			do 
-			{
-				PotentiallySelectedComponent = ComponentOwner->GetParentComponent();
-				ComponentOwner = ComponentOwner->GetParentActor();
-			} while (ComponentOwner->IsChildActor());
-		}
-		else
-		{
-			PotentiallySelectedComponent = (PrimComponent->IsVisualizationComponent() ? PrimComponent->GetAttachParent() : PrimComponent);
-		}
-
-		bIsSelected = GetSelectedComponents()->IsSelected(PotentiallySelectedComponent);
+		return SelectionSet->IsElementSelected(UEngineElementsLibrary::AcquireEditorComponentElementHandle(PrimComponent), FTypedElementIsSelectedOptions().SetAllowIndirect(true));
 	}
 
-	return bIsSelected;
+	return false;
 }
 
 void UUnrealEdEngine::SelectBSPSurf(UModel* InModel, int32 iSurf, bool bSelected, bool bNoteSelectionChange)
@@ -744,17 +601,13 @@ void UUnrealEdEngine::SelectBSPSurf(UModel* InModel, int32 iSurf, bool bSelected
 		NoteSelectionChange();
 	}
 
-	//whenever selection changes, recompute whether the selection contains a locked actor
-	bCheckForLockActors = true;
-
-	//whenever selection changes, recompute whether the selection contains a world info actor
-	bCheckForWorldSettingsActors = true;
+	PostActorSelectionChanged();
 }
 
 /**
  * Deselects all BSP surfaces in the specified level.
  *
- * @param	Level		The level for which to deselect all levels.
+ * @param	Level		The level for which to deselect all surfaces.
  * @return				The number of surfaces that were deselected
  */
 static uint32 DeselectAllSurfacesForLevel(ULevel* Level)
@@ -777,121 +630,76 @@ static uint32 DeselectAllSurfacesForLevel(ULevel* Level)
 	return NumSurfacesDeselected;
 }
 
-
-void UUnrealEdEngine::DeselectAllSurfaces()
+/**
+ * Deselects all BSP surfaces in the specified world.
+ *
+ * @param	World		The world for which to deselect all surfaces.
+ * @return				The number of surfaces that were deselected
+ */
+static uint32 DeselectAllSurfacesForWorld(UWorld* World)
 {
-	UWorld* World = GWorld;
+	uint32 NumSurfacesDeselected = 0;
 	if (World)
 	{
-		DeselectAllSurfacesForLevel(World->PersistentLevel);
-		for (ULevelStreaming* StreamingLevel: World->GetStreamingLevels())
+		NumSurfacesDeselected += DeselectAllSurfacesForLevel(World->PersistentLevel);
+		for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
 		{
 			if (StreamingLevel)
 			{
 				if (ULevel* Level = StreamingLevel->GetLoadedLevel())
 				{
-					DeselectAllSurfacesForLevel(Level);
+					NumSurfacesDeselected += DeselectAllSurfacesForLevel(Level);
 				}
 			}
 		}
 	}
+	return NumSurfacesDeselected;
+}
+
+void UUnrealEdEngine::DeselectAllSurfaces()
+{
+	DeselectAllSurfacesForWorld(GWorld);
 }
 
 void UUnrealEdEngine::SelectNone(bool bNoteSelectionChange, bool bDeselectBSPSurfs, bool WarnAboutManyActors)
 {
-	if( GEdSelectionLock )
+	if (GEdSelectionLock)
 	{
 		return;
 	}
 
-	bool bShowProgress = false;
+	bool bSelectionChanged = false;
 
-	// If there are a lot of actors to process, pop up a warning "are you sure?" box
-	if( WarnAboutManyActors )
+	USelection* ActorSelection = GetSelectedActors();
+	UTypedElementSelectionSet* SelectionSet = ActorSelection->GetElementSelectionSet();
+
+	FTypedElementList::FScopedClearNewPendingChange ClearNewPendingChange;
+
+	if (SelectionSet)
 	{
-		int32 NumSelectedActors = GEditor->GetSelectedActorCount();
-		if( NumSelectedActors >= EditorActorSelectionDefs::MaxActorsToSelectBeforeWarning )
+		if (!bNoteSelectionChange)
+		{ 
+			ClearNewPendingChange = SelectionSet->GetScopedClearNewPendingChange();
+		}
+		bSelectionChanged |= SelectionSet->ClearSelection(FTypedElementSelectionOptions().SetAllowLegacyNotifications(false));
+	}
+
+	if (bDeselectBSPSurfs)
+	{
+		bSelectionChanged |= DeselectAllSurfacesForWorld(GWorld) > 0;
+	}
+
+	if (bSelectionChanged)
+	{
+		PostActorSelectionChanged();
+
+		if (SelectionSet)
 		{
-			bShowProgress = true;
-
-			const FText ConfirmText = FText::Format( NSLOCTEXT("UnrealEd", "Warning_ManyActorsForDeselect", "There are {0} selected actors. Are you sure you want to deselect them all?" ), FText::AsNumber(NumSelectedActors) );
-
-			FSuppressableWarningDialog::FSetupInfo Info( ConfirmText, NSLOCTEXT( "UnrealEd", "Warning_ManyActors", "Warning: Many Actors" ), "Warning_ManyActors" );
-			Info.ConfirmText = NSLOCTEXT("ModalDialogs", "ManyActorsForDeselectConfirm", "Continue Deselection");
-			Info.CancelText = NSLOCTEXT("ModalDialogs", "ManyActorsForDeselectCancel", "Keep Current Selection");
-
-			FSuppressableWarningDialog ManyActorsWarning( Info );
-			if( ManyActorsWarning.ShowModal() == FSuppressableWarningDialog::Cancel )
+			if (bNoteSelectionChange)
 			{
-				return;
+				SelectionSet->NotifyPendingChanges();
 			}
 		}
-	}
-
-	if( bShowProgress )
-	{
-		GWarn->BeginSlowTask( LOCTEXT("BeginDeselectingActorsTaskMessage", "Deselecting Actors"), true );
-	}
-
-	// Make a list of selected actors . . .
-	TArray<AActor*> ActorsToDeselect;
-	for ( FSelectionIterator It( GetSelectedActorIterator() ) ; It ; ++It )
-	{
-		AActor* Actor = static_cast<AActor*>( *It );
-		checkSlow( Actor->IsA(AActor::StaticClass()) );
-
-		ActorsToDeselect.Add( Actor );
-	}
-
-	USelection* SelectedActors = GetSelectedActors();
-	SelectedActors->BeginBatchSelectOperation();
-	SelectedActors->Modify();
-
-	// . . . and deselect them.
-	for ( int32 ActorIndex = 0 ; ActorIndex < ActorsToDeselect.Num() ; ++ActorIndex )
-	{
-		AActor* Actor = ActorsToDeselect[ ActorIndex ];
-		SelectActor( Actor, false, false );
-	}
-
-	uint32 NumDeselectSurfaces = 0;
-	UWorld* World = GWorld;
-	if( bDeselectBSPSurfs && World )
-	{
-		// Unselect all surfaces in all levels.
-		NumDeselectSurfaces += DeselectAllSurfacesForLevel( World->PersistentLevel );
-		for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
-		{
-			if( StreamingLevel )
-			{
-				if (ULevel* Level = StreamingLevel->GetLoadedLevel())
-				{
-					NumDeselectSurfaces += DeselectAllSurfacesForLevel( Level );
-				}
-			}
-		}
-	}
-
-	SelectedActors->EndBatchSelectOperation(bNoteSelectionChange);
-
-	//prevents clicking on background multiple times spamming selection changes
-	if (ActorsToDeselect.Num() || NumDeselectSurfaces)
-	{
-		if( bNoteSelectionChange )
-		{
-			NoteSelectionChange();
-		}
-
-		//whenever selection changes, recompute whether the selection contains a locked actor
-		bCheckForLockActors = true;
-
-		//whenever selection changes, recompute whether the selection contains a world info actor
-		bCheckForWorldSettingsActors = true;
-	}
-
-	if( bShowProgress )
-	{
-		GWarn->EndSlowTask();
 	}
 }
 

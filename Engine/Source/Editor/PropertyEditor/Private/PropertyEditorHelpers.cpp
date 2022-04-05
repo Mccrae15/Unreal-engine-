@@ -3,11 +3,11 @@
 #include "PropertyEditorHelpers.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "UserInterface/PropertyEditor/PropertyEditorConstants.h"
 #include "IDocumentation.h"
 
 #include "PropertyHandleImpl.h"
 
+#include "UserInterface/PropertyEditor/PropertyEditorConstants.h"
 #include "UserInterface/PropertyEditor/SPropertyEditor.h"
 #include "UserInterface/PropertyEditor/SPropertyEditorNumeric.h"
 #include "UserInterface/PropertyEditor/SPropertyEditorArray.h"
@@ -18,7 +18,6 @@
 #include "UserInterface/PropertyEditor/SPropertyEditorArrayItem.h"
 #include "UserInterface/PropertyEditor/SPropertyEditorTitle.h"
 #include "UserInterface/PropertyEditor/SPropertyEditorDateTime.h"
-#include "UserInterface/PropertyEditor/SResetToDefaultPropertyEditor.h"
 #include "UserInterface/PropertyEditor/SPropertyEditorAsset.h"
 #include "UserInterface/PropertyEditor/SPropertyEditorClass.h"
 #include "UserInterface/PropertyEditor/SPropertyEditorStruct.h"
@@ -35,10 +34,6 @@ void SPropertyNameWidget::Construct( const FArguments& InArgs, TSharedPtr<FPrope
 {
 	PropertyEditor = InPropertyEditor;
 
-	static const FName NAME_TitleProperty = FName(TEXT("TitleProperty"));
-	// If our property has title support we pass in empty below so it retrieves a live value
-	const bool bHasTitleProperty = InPropertyEditor->GetProperty() && InPropertyEditor->GetProperty()->HasMetaData(NAME_TitleProperty);
-
 	TSharedPtr<SHorizontalBox> HorizontalBox;
 	ChildSlot
 	[
@@ -53,24 +48,12 @@ void SPropertyNameWidget::Construct( const FArguments& InArgs, TSharedPtr<FPrope
 			.VAlign(VAlign_Center)
 			[
 				SNew( SPropertyEditorTitle, PropertyEditor.ToSharedRef() )
-				.StaticDisplayName(bHasTitleProperty ? FText::GetEmpty() : PropertyEditor->GetDisplayName())
 				.OnDoubleClicked( InArgs._OnDoubleClicked )
                 .ToolTip( IDocumentation::Get()->CreateToolTip( PropertyEditor->GetToolTipText(), NULL, PropertyEditor->GetDocumentationLink(), PropertyEditor->GetDocumentationExcerptName() ) )
 			]
 		]
 	
 	];
-
-	if( InArgs._DisplayResetToDefault && !PropertyEditor->GetPropertyHandle()->HasMetaData(TEXT("NoResetToDefault")) )
-	{
-		HorizontalBox->AddSlot()
-		.AutoWidth()
-		.VAlign(VAlign_Center)
-		.Padding(2,1)
-		[
-			SNew( SResetToDefaultPropertyEditor, PropertyEditor->GetPropertyHandle())
-		];
-	}
 }
 
 void SPropertyValueWidget::Construct( const FArguments& InArgs, TSharedPtr<FPropertyEditor> PropertyEditor, TSharedPtr<IPropertyUtilities> InPropertyUtilities )
@@ -78,11 +61,9 @@ void SPropertyValueWidget::Construct( const FArguments& InArgs, TSharedPtr<FProp
 	MinDesiredWidth = 0.0f;
 	MaxDesiredWidth = 0.0f;
 
-	bCreatedResetButton = false;
 	SetEnabled( TAttribute<bool>( PropertyEditor.ToSharedRef(), &FPropertyEditor::IsPropertyEditingEnabled ) );
 
-
-	ValueEditorWidget = ConstructPropertyEditorWidget( PropertyEditor, InPropertyUtilities, InArgs._OptionalResetWidget );
+	ValueEditorWidget = ConstructPropertyEditorWidget( PropertyEditor, InPropertyUtilities );
 
 	if ( !ValueEditorWidget->GetToolTip().IsValid() )
 	{
@@ -110,7 +91,7 @@ void SPropertyValueWidget::Construct( const FArguments& InArgs, TSharedPtr<FProp
 				.AutoWidth()
 				.HAlign(HAlign_Center)
 				.VAlign(VAlign_Center)
-				.Padding( 2.0f, 1.0f )
+				.Padding( 2.0f, 0.0f )
 				[ 
 					RequiredButtons[ButtonIndex]
 				];
@@ -134,7 +115,7 @@ void SPropertyValueWidget::Construct( const FArguments& InArgs, TSharedPtr<FProp
 
 }
 
-TSharedRef<SWidget> SPropertyValueWidget::ConstructPropertyEditorWidget( TSharedPtr<FPropertyEditor>& PropertyEditor, TSharedPtr<IPropertyUtilities> InPropertyUtilities, TSharedRef<SWidget> InResetDefaultWidget)
+TSharedRef<SWidget> SPropertyValueWidget::ConstructPropertyEditorWidget( TSharedPtr<FPropertyEditor>& PropertyEditor, TSharedPtr<IPropertyUtilities> InPropertyUtilities )
 {
 	const TSharedRef<FPropertyEditor> PropertyEditorRef = PropertyEditor.ToSharedRef();
 	//const TSharedRef<IPropertyUtilities> PropertyUtilitiesRef = InPropertyUtilities.ToSharedRef();
@@ -174,9 +155,11 @@ TSharedRef<SWidget> SPropertyValueWidget::ConstructPropertyEditorWidget( TShared
 		}
 		else if (SPropertyEditorClass::Supports(PropertyEditorRef))
 		{
+			static TArray<TSharedRef<class IClassViewerFilter>> NullFilters;
 			TSharedRef<SPropertyEditorClass> ClassWidget =
 				SAssignNew(PropertyWidget, SPropertyEditorClass, PropertyEditorRef)
-				.Font(FontStyle);
+				.Font(FontStyle)
+				.ClassViewerFilters(InPropertyUtilities.IsValid() ? InPropertyUtilities->GetClassViewerFilters() : NullFilters);
 
 			ClassWidget->GetDesiredWidth(MinDesiredWidth, MaxDesiredWidth);
 		}
@@ -192,15 +175,8 @@ TSharedRef<SWidget> SPropertyValueWidget::ConstructPropertyEditorWidget( TShared
 		{
 			TSharedRef<SPropertyEditorAsset> AssetWidget = 
 				SAssignNew( PropertyWidget, SPropertyEditorAsset, PropertyEditorRef )
-				.ThumbnailPool( InPropertyUtilities.IsValid() ? InPropertyUtilities->GetThumbnailPool() : nullptr )
-				.ResetToDefaultSlot()
-				[
-					InResetDefaultWidget
-				];
-			if (InResetDefaultWidget != SNullWidget::NullWidget)
-			{
-				bCreatedResetButton = true;
-			}
+				.ThumbnailPool( InPropertyUtilities.IsValid() ? InPropertyUtilities->GetThumbnailPool() : nullptr );
+			
 			AssetWidget->GetDesiredWidth( MinDesiredWidth, MaxDesiredWidth );
 		}
 		else if ( SPropertyEditorNumeric<float>::Supports( PropertyEditorRef ) )
@@ -346,12 +322,10 @@ TSharedRef<SWidget> SPropertyValueWidget::ConstructPropertyEditorWidget( TShared
 	return PropertyWidget.ToSharedRef();
 }
 
-void SEditConditionWidget::Construct( const FArguments& Args, TSharedPtr<FPropertyEditor> InPropertyEditor )
+void SEditConditionWidget::Construct( const FArguments& Args )
 {
-	PropertyEditor = InPropertyEditor;
-	CustomEditCondition = Args._CustomEditCondition;
-
-	SetVisibility(HasEditConditionToggle() ? EVisibility::Visible : EVisibility::Collapsed);
+	EditConditionValue = Args._EditConditionValue;
+	OnEditConditionValueChanged = Args._OnEditConditionValueChanged;
 
 	ChildSlot
 	[
@@ -361,34 +335,32 @@ void SEditConditionWidget::Construct( const FArguments& Args, TSharedPtr<FProper
 		SNew(SCheckBox)
 		.OnCheckStateChanged(this, &SEditConditionWidget::OnEditConditionCheckChanged)
 		.IsChecked(this, &SEditConditionWidget::OnGetEditConditionCheckState)
+		.Visibility(this, &SEditConditionWidget::GetVisibility)
 	];
+}
+
+EVisibility SEditConditionWidget::GetVisibility() const
+{
+	return HasEditConditionToggle() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 bool SEditConditionWidget::HasEditConditionToggle() const
 {
-	return (PropertyEditor.IsValid() && PropertyEditor->HasEditCondition() && PropertyEditor->SupportsEditConditionToggle())
-		|| (CustomEditCondition.OnEditConditionValueChanged.IsBound());
+	return OnEditConditionValueChanged.IsBound();
 }
 
 void SEditConditionWidget::OnEditConditionCheckChanged( ECheckBoxState CheckState )
 {
-	FScopedTransaction EditConditionChangedTransaction(FText::Format(LOCTEXT("UpdatedEditConditionFmt", "{0} Edit Condition Changed"), PropertyEditor->GetDisplayName()));
+	checkSlow(HasEditConditionToggle());
 
-	if (PropertyEditor.IsValid() && PropertyEditor->HasEditCondition() && PropertyEditor->SupportsEditConditionToggle())
-	{
-		PropertyEditor->ToggleEditConditionState();
-	}
-	else
-	{
-		CustomEditCondition.OnEditConditionValueChanged.ExecuteIfBound(CheckState == ECheckBoxState::Checked);
-	}
+	FScopedTransaction EditConditionChangedTransaction(LOCTEXT("UpdatedEditConditionFmt", "Edit Condition Changed"));
+	
+	OnEditConditionValueChanged.ExecuteIfBound(CheckState == ECheckBoxState::Checked);
 }
 
 ECheckBoxState SEditConditionWidget::OnGetEditConditionCheckState() const
 {
-	bool bEditConditionMet = (PropertyEditor.IsValid() && PropertyEditor->HasEditCondition() && PropertyEditor->IsEditConditionMet())
-		|| CustomEditCondition.EditConditionValue.Get();
-	return bEditConditionMet ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+	return EditConditionValue.Get() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
 namespace PropertyEditorHelpers
@@ -844,24 +816,25 @@ namespace PropertyEditorHelpers
 		return PropertyNode.IsValid() ? !PropertyNode.Pin()->IsEditConst() : false;
 	}
 
-	TSharedRef<SWidget> MakePropertyReorderHandle(const TSharedRef<FPropertyNode>& PropertyNode, TSharedPtr<SDetailSingleItemRow> InParentRow)
+	TSharedRef<SWidget> MakePropertyReorderHandle(TSharedPtr<SDetailSingleItemRow> InParentRow, TAttribute<bool> InEnabledAttr)
 	{
 		TSharedRef<SArrayRowHandle> Handle = SNew(SArrayRowHandle)
 			.Content()
 			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.Padding(5.0f, 0.0f)
+				SNew(SBox)
+				.Padding(0.0f)
+				.HAlign(HAlign_Center)
+				.VAlign(VAlign_Center)
+				.WidthOverride(16.0f)
 				[
 					SNew(SImage)
 					.Image(FCoreStyle::Get().GetBrush("VerticalBoxDragIndicatorShort"))
 				]
 			]
-		.ParentRow(InParentRow);
-		TWeakPtr<FPropertyNode> NodePtr(PropertyNode);
-		TAttribute<bool>::FGetter IsPropertyButtonEnabledDelegate = TAttribute<bool>::FGetter::CreateStatic(&IsPropertyButtonEnabled, NodePtr);
-		TAttribute<bool> IsEnabledAttribute = TAttribute<bool>::Create(IsPropertyButtonEnabledDelegate);
-		Handle->SetEnabled(IsEnabledAttribute);
+		.ParentRow(InParentRow)
+		.Cursor(EMouseCursor::GrabHand)
+		.IsEnabled(InEnabledAttr)
+		.Visibility_Lambda([InParentRow]() { return InParentRow->IsHovered() ? EVisibility::Visible : EVisibility::Hidden; });
 		return Handle;
 	}
 
@@ -1257,34 +1230,37 @@ namespace PropertyEditorHelpers
 		}
 	}
 
-	const TCHAR* GetPropertyOptionsMetaDataKey(const FProperty* Property)
+	FName GetPropertyOptionsMetaDataKey(const FProperty* Property)
 	{
 		// Only string and name properties can have options
 		if (Property->IsA(FStrProperty::StaticClass()) || Property->IsA(FNameProperty::StaticClass()))
 		{
 			const FProperty* OwnerProperty = Property->GetOwnerProperty();
-			if (OwnerProperty->HasMetaData(TEXT("GetOptions")))
+			static const FName GetOptionsName("GetOptions");
+			if (OwnerProperty->HasMetaData(GetOptionsName))
 			{
-				return TEXT("GetOptions");
+				return GetOptionsName;
 			}
 
 			// Map properties can have separate options for keys and values
 			const FMapProperty* MapProperty = CastField<FMapProperty>(OwnerProperty);
 			if (MapProperty)
 			{
-				if (MapProperty->HasMetaData(TEXT("GetKeyOptions")) && MapProperty->KeyProp == Property)
+				static const FName GetKeyOptionsName("GetKeyOptions");
+				if (MapProperty->HasMetaData(GetKeyOptionsName) && MapProperty->GetKeyProperty() == Property)
 				{
-					return TEXT("GetKeyOptions");
+					return GetKeyOptionsName;
 				}
 
-				if (MapProperty->HasMetaData(TEXT("GetValueOptions")) && MapProperty->ValueProp == Property)
+				static const FName GetValueOptionsName("GetValueOptions");
+				if (MapProperty->HasMetaData(GetValueOptionsName) && MapProperty->GetValueProperty() == Property)
 				{
-					return TEXT("GetValueOptions");
+					return GetValueOptionsName;
 				}
 			}
 		}
 
-		return nullptr;
+		return NAME_None;
 	}
 }
 

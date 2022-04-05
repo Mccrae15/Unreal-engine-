@@ -275,23 +275,23 @@ int32 UNiagaraParameterCollectionInstance::GetIntParameter(const FString& InVari
 
 FVector2D UNiagaraParameterCollectionInstance::GetVector2DParameter(const FString& InVariableName)
 {
-	return ParameterStorage.GetParameterValue<FVector2D>(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
+	return (FVector2D)ParameterStorage.GetParameterValue<FVector2f>(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
 }
 
 FVector UNiagaraParameterCollectionInstance::GetVectorParameter(const FString& InVariableName)
 {
-	return ParameterStorage.GetParameterValue<FVector>(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
+	return (FVector)ParameterStorage.GetParameterValue<FVector3f>(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
 }
 
 FVector4 UNiagaraParameterCollectionInstance::GetVector4Parameter(const FString& InVariableName)
 {
-	return ParameterStorage.GetParameterValue<FVector4>(FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
+	return (FVector4)ParameterStorage.GetParameterValue<FVector4f>(FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
 }
 
 
 FQuat UNiagaraParameterCollectionInstance::GetQuatParameter(const FString& InVariableName)
 {
-	return ParameterStorage.GetParameterValue<FQuat>(FNiagaraVariable(FNiagaraTypeDefinition::GetQuatDef(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
+	return (FQuat)ParameterStorage.GetParameterValue<FQuat4f>(FNiagaraVariable(FNiagaraTypeDefinition::GetQuatDef(), *Collection->ParameterNameFromFriendlyName(InVariableName)));
 }
 
 FLinearColor UNiagaraParameterCollectionInstance::GetColorParameter(const FString& InVariableName)

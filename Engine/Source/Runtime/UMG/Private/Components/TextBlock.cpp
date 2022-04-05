@@ -25,6 +25,7 @@ UTextBlock::UTextBlock(const FObjectInitializer& ObjectInitializer)
 	ShadowColorAndOpacity = FLinearColor::Transparent;
 	bAutoWrapText_DEPRECATED = false;
 	TextTransformPolicy = ETextTransformPolicy::None;
+	TextOverflowPolicy = ETextOverflowPolicy::Clip;
 
 	if (!IsRunningDedicatedServer())
 	{
@@ -142,6 +143,16 @@ void UTextBlock::SetTextTransformPolicy(ETextTransformPolicy InTransformPolicy)
 	if(MyTextBlock.IsValid())
 	{
 		MyTextBlock->SetTransformPolicy(TextTransformPolicy);
+	}
+}
+
+void UTextBlock::SetTextOverflowPolicy(ETextOverflowPolicy InOverflowPolicy)
+{
+	TextOverflowPolicy = InOverflowPolicy;
+
+	if (MyTextBlock.IsValid())
+	{
+		MyTextBlock->SetOverflowPolicy(TextOverflowPolicy);
 	}
 }
 
@@ -288,6 +299,8 @@ void UTextBlock::SynchronizeProperties()
 		MyTextBlock->SetShadowColorAndOpacity( ShadowColorAndOpacityBinding );
 		MyTextBlock->SetMinDesiredWidth( MinDesiredWidth );
 		MyTextBlock->SetTransformPolicy( TextTransformPolicy );
+		MyTextBlock->SetOverflowPolicy(TextOverflowPolicy);
+
 		Super::SynchronizeTextLayoutProperties( *MyTextBlock );
 	}
 }
@@ -312,8 +325,7 @@ void UTextBlock::SetText(FText InText)
 	TextDelegate.Unbind();
 	if ( MyTextBlock.IsValid() )
 	{
-		TAttribute<FText> TextBinding = GetDisplayText();
-		MyTextBlock->SetText(TextBinding);
+		MyTextBlock->SetText(GetDisplayText());
 	}
 }
 

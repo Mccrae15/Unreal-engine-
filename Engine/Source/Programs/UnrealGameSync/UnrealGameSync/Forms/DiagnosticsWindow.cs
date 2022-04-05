@@ -1,19 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Deployment.Application;
 using System.Diagnostics;
-using System.Drawing;
-using System.Linq;
-using System.Reflection;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using Ionic.Zip;
 using System.IO;
+using System.IO.Compression;
 
 namespace UnrealGameSync
 {
@@ -55,15 +46,23 @@ namespace UnrealGameSync
 				string ZipFileName = Dialog.FileName;
 				try
 				{
-					ZipFile Zip = new ZipFile();
-					foreach(string FileName in Directory.EnumerateFiles(DataFolder))
+					using (ZipArchive Zip = new ZipArchive(File.OpenWrite(ZipFileName), ZipArchiveMode.Create))
 					{
-						if(!FileName.EndsWith(".exe", StringComparison.InvariantCultureIgnoreCase) && !FileName.EndsWith(".dll", StringComparison.InvariantCultureIgnoreCase))
+						foreach (string FileName in Directory.EnumerateFiles(DataFolder))
 						{
-							Zip.AddFile(FileName, "");
+							if (!FileName.EndsWith(".exe", StringComparison.InvariantCultureIgnoreCase) && !FileName.EndsWith(".dll", StringComparison.InvariantCultureIgnoreCase))
+							{
+								using (FileStream InputStream = File.Open(FileName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+								{
+									ZipArchiveEntry Entry = Zip.CreateEntry(Path.GetFileName(FileName));
+									using (Stream OutputStream = Entry.Open())
+									{
+										InputStream.CopyTo(OutputStream);
+									}
+								}
+							}
 						}
 					}
-					Zip.Save(ZipFileName);
 				}
 				catch(Exception Ex)
 				{

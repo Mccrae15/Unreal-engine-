@@ -5,6 +5,9 @@ set(LLVM_LINK_COMPONENTS
   passprinters
 )
 
+add_hlsl_hctgen(DxcOptimizer OUTPUT DxcOptimizer.inc BUILD_DIR)
+add_hlsl_hctgen(DxilValidation OUTPUT DxilValidationImpl.inc BUILD_DIR)
+
 add_llvm_library(LLVMHLSL
   ComputeViewIdState.cpp
   ComputeViewIdStateBuilder.cpp
@@ -18,6 +21,7 @@ add_llvm_library(LLVMHLSL
   DxilLegalizeEvalOperations.cpp
   DxilLegalizeSampleOffsetPass.cpp
   DxilLinker.cpp
+  DxilLoopDeletion.cpp
   DxilPrecisePropagatePass.cpp
   DxilPreparePasses.cpp
   DxilPromoteResourcePasses.cpp
@@ -25,6 +29,7 @@ add_llvm_library(LLVMHLSL
   DxilPatchShaderRecordBindings.cpp
   DxilNoops.cpp
   DxilPreserveAllOutputs.cpp
+  DxilRenameResourcesPass.cpp
   DxilSimpleGVNHoist.cpp
   DxilSignatureValidation.cpp
   DxilTargetLowering.cpp
@@ -35,6 +40,7 @@ add_llvm_library(LLVMHLSL
   DxcOptimizer.cpp
   HLDeadFunctionElimination.cpp
   HLExpandStoreIntrinsics.cpp
+  HLLegalizeParameter.cpp
   HLLowerUDT.cpp
   HLMatrixBitcastLowerPass.cpp
   HLMatrixLowerPass.cpp
@@ -48,8 +54,10 @@ add_llvm_library(LLVMHLSL
   HLPreprocess.cpp
   HLResource.cpp
   HLSignatureLower.cpp
+  HLUtil.cpp
   PauseResumePasses.cpp
   WaveSensitivityAnalysis.cpp
+  DxilNoOptLegalize.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/IR

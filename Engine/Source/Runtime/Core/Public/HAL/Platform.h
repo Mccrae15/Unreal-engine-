@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Misc/Build.h"
+#include "Misc/LargeWorldCoordinates.h"
 
 // define all other platforms to be zero
 //@port Define the platform here to be zero when compiling for other platforms
@@ -43,26 +44,14 @@
 #if !defined(PLATFORM_ANDROID_X64)
 	#define PLATFORM_ANDROID_X64 0
 #endif
-#if !defined(PLATFORM_ANDROID_VULKAN)
-	#define PLATFORM_ANDROID_VULKAN 0
-#endif
-#if !defined(PLATFORM_ANDROIDGL4)
-	#define PLATFORM_ANDROIDGL4 0
-#endif
-#if !defined(PLATFORM_LUMINGL4)
-	#define PLATFORM_LUMINGL4 0
-#endif
-#if !defined(PLATFORM_LUMIN)
-	#define PLATFORM_LUMIN 0
-#endif
 #if !defined(PLATFORM_APPLE)
 	#define PLATFORM_APPLE 0
 #endif
 #if !defined(PLATFORM_LINUX)
 	#define PLATFORM_LINUX 0
 #endif
-#if !defined(PLATFORM_LINUXAARCH64)
-	#define PLATFORM_LINUXAARCH64 0
+#if !defined(PLATFORM_LINUXARM64)
+	#define PLATFORM_LINUXARM64 0
 #endif
 #if !defined(PLATFORM_SWITCH)
 	#define PLATFORM_SWITCH 0
@@ -187,6 +176,9 @@
 #ifndef PLATFORM_ALWAYS_HAS_AVX
 	#define PLATFORM_ALWAYS_HAS_AVX				0
 #endif
+#ifndef PLATFORM_ALWAYS_HAS_AVX_2
+#define PLATFORM_ALWAYS_HAS_AVX_2				0
+#endif
 #ifndef PLATFORM_ALWAYS_HAS_FMA3
 	#define PLATFORM_ALWAYS_HAS_FMA3			0
 #endif
@@ -250,20 +242,29 @@
 #ifndef PLATFORM_COMPILER_HAS_FOLD_EXPRESSIONS
 	#define PLATFORM_COMPILER_HAS_FOLD_EXPRESSIONS 0
 #endif
-#ifndef PLATFORM_TCHAR_IS_1_BYTE
-	#define PLATFORM_TCHAR_IS_1_BYTE			0
-#endif
 #ifndef PLATFORM_TCHAR_IS_4_BYTES
 	#define PLATFORM_TCHAR_IS_4_BYTES			0
 #endif
 #ifndef PLATFORM_WCHAR_IS_4_BYTES
 	#define PLATFORM_WCHAR_IS_4_BYTES			0
 #endif
+// The PLATFORM_TCHAR_IS_CHAR16 macro really represents PLATFORM_WIDECHAR_IS_CHAR16 - it should be deprecated
 #ifndef PLATFORM_TCHAR_IS_CHAR16
 	#define PLATFORM_TCHAR_IS_CHAR16			0
 #endif
+#define PLATFORM_WIDECHAR_IS_CHAR16 PLATFORM_TCHAR_IS_CHAR16
+#ifndef PLATFORM_TCHAR_IS_UTF8CHAR
+	#define PLATFORM_TCHAR_IS_UTF8CHAR			0
+#endif
+#ifndef PLATFORM_UCS2CHAR_IS_UTF16CHAR
+	// Currently true, but we don't want it to be true
+	#define PLATFORM_UCS2CHAR_IS_UTF16CHAR		1
+#endif
 #ifndef PLATFORM_HAS_BSD_TIME
 	#define PLATFORM_HAS_BSD_TIME				1
+#endif
+#ifndef PLATFORM_HAS_BSD_THREAD_CPUTIME
+	#define PLATFORM_HAS_BSD_THREAD_CPUTIME		0
 #endif
 #ifndef PLATFORM_HAS_BSD_SOCKETS
 	#define PLATFORM_HAS_BSD_SOCKETS			1
@@ -350,12 +351,8 @@
 	#define PLATFORM_SUPPORTS_GEOMETRY_SHADERS		1
 #endif
 
-#ifndef PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-	#define PLATFORM_SUPPORTS_TESSELLATION_SHADERS	1
-#endif
-
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS && !PLATFORM_SUPPORTS_GEOMETRY_SHADERS
-	#error Geometry shader support is required by tessellation
+#ifndef PLATFORM_SUPPORTS_MESH_SHADERS
+	#define PLATFORM_SUPPORTS_MESH_SHADERS 0
 #endif
 
 #ifndef PLATFORM_BUILTIN_VERTEX_HALF_FLOAT
@@ -380,6 +377,10 @@
 
 #ifndef PLATFORM_SUPPORTS_JEMALLOC
 	#define PLATFORM_SUPPORTS_JEMALLOC 0
+#endif
+
+#ifndef PLATFORM_SUPPORTS_MIMALLOC
+	#define PLATFORM_SUPPORTS_MIMALLOC 0
 #endif
 
 #ifndef PLATFORM_CAN_SUPPORT_EDITORONLY_DATA
@@ -478,8 +479,16 @@
 	#define PLATFORM_USE_FULL_TASK_GRAPH						1
 #endif
 
+#ifndef PLATFORM_USES_ANSI_MALLOC
+	#define PLATFORM_USES_ANSI_MALLOC							1
+#endif
+
 #ifndef PLATFORM_USE_ANSI_POSIX_MALLOC
 	#define PLATFORM_USE_ANSI_POSIX_MALLOC						0
+#endif
+
+#ifndef PLATFORM_USES__ALIGNED_MALLOC
+	#define PLATFORM_USES__ALIGNED_MALLOC						0
 #endif
 
 #ifndef PLATFORM_USE_ANSI_MEMALIGN
@@ -618,6 +627,22 @@
 	#define PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND 0
 #endif // #ifndef PLATFORM_REQUIRES_UAV_TO_RTV_TEXTURE_CACHE_FLUSH_WORKAROUND
 
+#ifndef PLATFORM_NEEDS_GPU_UAV_RESOURCE_INIT_WORKAROUND
+	#define PLATFORM_NEEDS_GPU_UAV_RESOURCE_INIT_WORKAROUND 0
+#endif
+
+#ifndef PLATFORM_USE_REPORT_ENSURE
+	#define PLATFORM_USE_REPORT_ENSURE PLATFORM_DESKTOP
+#endif
+
+#ifndef PLATFORM_USE_FALLBACK_PSO
+	#define PLATFORM_USE_FALLBACK_PSO 0
+#endif
+
+#ifndef PLATFORM_USES_UNFAIR_LOCKS
+	#define PLATFORM_USES_UNFAIR_LOCKS 0
+#endif
+
 // deprecated, do not use
 #define PLATFORM_HAS_THREADSAFE_RHIGetRenderQueryResult	#
 #define PLATFORM_SUPPORTS_RHI_THREAD #
@@ -695,6 +720,14 @@
 	#define UE_NORETURN
 #endif
 
+/* Macro wrapper for the consteval keyword which isn't yet present on all compilers - constexpr
+   can be used as a workaround but is less strict and so may let some non-consteval code pass */
+#if defined(__cpp_consteval)
+	#define UE_CONSTEVAL consteval
+#else
+	#define UE_CONSTEVAL constexpr
+#endif
+
 /* Wrap a function signature in these to indicate that the function never returns nullptr */
 #ifndef FUNCTION_NON_NULL_RETURN_START
 	#define FUNCTION_NON_NULL_RETURN_START
@@ -725,7 +758,8 @@
 	#if ( defined(__clang__) || defined(__GNUC__) ) && (PLATFORM_UNIX)	// effect of these on non-Linux platform has not been analyzed as of 2016-03-21
 		#define LIKELY(x)			__builtin_expect(!!(x), 1)
 	#else
-		#define LIKELY(x)			(x)
+		// the additional "!!" is added to silence "warning: equality comparison with exteraneous parenthese" messages on android
+		#define LIKELY(x)			(!!(x))
 	#endif
 #endif
 
@@ -733,7 +767,8 @@
 	#if ( defined(__clang__) || defined(__GNUC__) ) && (PLATFORM_UNIX)	// effect of these on non-Linux platform has not been analyzed as of 2016-03-21
 		#define UNLIKELY(x)			__builtin_expect(!!(x), 0)
 	#else
-		#define UNLIKELY(x)			(x)
+		// the additional "!!" is added to silence "warning: equality comparison with exteraneous parenthese" messages on android
+		#define UNLIKELY(x)			(!!(x))
 	#endif
 #endif
 
@@ -972,7 +1007,7 @@ typedef FPlatformTypes::WIDECHAR	WIDECHAR;
 /// Either ANSICHAR or WIDECHAR, depending on whether the platform supports wide characters or the requirements of the licensee.
 typedef FPlatformTypes::TCHAR		TCHAR;
 /// An 8-bit character containing a UTF8 (Unicode, 8-bit, variable-width) code unit.
-typedef FPlatformTypes::CHAR8		UTF8CHAR;
+typedef FPlatformTypes::UTF8CHAR	UTF8CHAR;
 /// A 16-bit character containing a UCS2 (Unicode, 16-bit, fixed-width) code unit, used for compatibility with 'Windows TCHAR' across multiple platforms.
 typedef FPlatformTypes::CHAR16		UCS2CHAR;
 /// A 16-bit character containing a UTF16 (Unicode, 16-bit, variable-width) code unit.
@@ -1002,17 +1037,22 @@ namespace TypeTests
 	template <typename A, typename B>
 	struct TAreTypesEqual
 	{
-		static const bool Value = false;
+		static constexpr bool Value = false;
 	};
 
 	template <typename T>
 	struct TAreTypesEqual<T, T>
 	{
-		static const bool Value = true;
+		static constexpr bool Value = true;
 	};
 
-	static_assert(!PLATFORM_TCHAR_IS_4_BYTES || sizeof(TCHAR) == 4, "TCHAR size must be 4 bytes.");
-	static_assert(PLATFORM_TCHAR_IS_4_BYTES || sizeof(TCHAR) == 2, "TCHAR size must be 2 bytes.");
+#if PLATFORM_TCHAR_IS_4_BYTES
+	static_assert(sizeof(TCHAR) == 4, "TCHAR size must be 4 bytes.");
+#elif PLATFORM_TCHAR_IS_UTF8CHAR
+	static_assert(sizeof(TCHAR) == 1, "TCHAR size must be 1 byte.");
+#else
+	static_assert(sizeof(TCHAR) == 2, "TCHAR size must be 2 bytes.");
+#endif
 
 	static_assert(!PLATFORM_WCHAR_IS_4_BYTES || sizeof(wchar_t) == 4, "wchar_t size must be 4 bytes.");
 	static_assert(PLATFORM_WCHAR_IS_4_BYTES || sizeof(wchar_t) == 2, "wchar_t size must be 2 bytes.");
@@ -1024,10 +1064,25 @@ namespace TypeTests
 
 	static_assert(char(-1) < char(0), "Unsigned char type test failed.");
 
-	static_assert((!TAreTypesEqual<ANSICHAR, WIDECHAR>::Value), "ANSICHAR and WIDECHAR should be different types.");
-	static_assert((!TAreTypesEqual<ANSICHAR, UCS2CHAR>::Value), "ANSICHAR and CHAR16 should be different types.");
-	static_assert((!TAreTypesEqual<WIDECHAR, UCS2CHAR>::Value), "WIDECHAR and CHAR16 should be different types.");
-	static_assert((TAreTypesEqual<TCHAR, ANSICHAR>::Value == true || TAreTypesEqual<TCHAR, WIDECHAR>::Value == true), "TCHAR should either be ANSICHAR or WIDECHAR.");
+	static_assert((!TAreTypesEqual<ANSICHAR, WIDECHAR>::Value),  "ANSICHAR and WIDECHAR should be different types.");
+	static_assert((!TAreTypesEqual<ANSICHAR, UTF8CHAR>::Value),  "ANSICHAR and UTF8CHAR should be different types.");
+#if !PLATFORM_UCS2CHAR_IS_UTF16CHAR
+	// We want these types to be different, because we want to be able to determine whether an encoding
+	// is fixed-width (UCS2CHAR) or variable-width (UTF16CHAR) at compile time.
+	static_assert((!TAreTypesEqual<UCS2CHAR, UTF16CHAR>::Value), "UCS2CHAR and UTF16CHAR should be different types.");
+#else
+	// We don't want these types to be equal, but while this macro exists, they ought to be equal
+	static_assert(TAreTypesEqual<UCS2CHAR, UTF16CHAR>::Value, "UCS2CHAR and UTF16CHAR are expected to be the same type.");
+#endif
+	static_assert((!TAreTypesEqual<ANSICHAR, UCS2CHAR>::Value),  "ANSICHAR and UCS2CHAR should be different types.");
+	static_assert((!TAreTypesEqual<WIDECHAR, UCS2CHAR>::Value),  "WIDECHAR and UCS2CHAR should be different types.");
+	static_assert(TAreTypesEqual<TCHAR, ANSICHAR>::Value || TAreTypesEqual<TCHAR, WIDECHAR>::Value || TAreTypesEqual<TCHAR, UTF8CHAR>::Value, "TCHAR should either be ANSICHAR, WIDECHAR or UTF8CHAR.");
+
+#if PLATFORM_WIDECHAR_IS_CHAR16
+	static_assert(TAreTypesEqual<WIDECHAR, char16_t>::Value, "WIDECHAR should be char16_t");
+#else
+	static_assert(TAreTypesEqual<WIDECHAR, wchar_t>::Value, "WIDECHAR should be wchar_t");
+#endif
 
 	static_assert(sizeof(uint8) == 1, "uint8 type size test failed.");
 	static_assert(int32(uint8(-1)) == 0xFF, "uint8 type sign test failed.");
@@ -1059,7 +1114,10 @@ namespace TypeTests
 
 	static_assert(sizeof(WIDECHAR) == 2 || sizeof(WIDECHAR) == 4, "WIDECHAR type size test failed.");
 
-	static_assert(sizeof(UCS2CHAR) == 2, "UCS2CHAR type size test failed.");
+	static_assert(sizeof(UTF8CHAR)  == 1, "UTF8CHAR type size test failed.");
+	static_assert(sizeof(UCS2CHAR)  == 2, "UCS2CHAR type size test failed.");
+	static_assert(sizeof(UTF16CHAR) == 2, "UTF16CHAR type size test failed.");
+	static_assert(sizeof(UTF32CHAR) == 4, "UTF32CHAR type size test failed.");
 
 	static_assert(sizeof(PTRINT) == sizeof(void *), "PTRINT type size test failed.");
 	static_assert(PTRINT(-1) < PTRINT(0), "PTRINT type sign test failed.");
@@ -1075,14 +1133,48 @@ namespace TypeTests
 #include COMPILED_PLATFORM_HEADER(PlatformCompilerSetup.h)
 
 
-// If we don't have a platform-specific define for the TEXT macro, define it now.
-#if !defined(TEXT) && !UE_BUILD_DOCS
-	#if PLATFORM_TCHAR_IS_CHAR16
-		#define TEXT_PASTE(x) u ## x
-	#else
-		#define TEXT_PASTE(x) L ## x
-	#endif
-		#define TEXT(x) TEXT_PASTE(x)
+#define UTF8TEXT_PASTE(x)  u8 ## x
+#define UTF16TEXT_PASTE(x) u ## x
+#if PLATFORM_WIDECHAR_IS_CHAR16
+	#define WIDETEXT_PASTE(x)  UTF16TEXT_PASTE(x)
+#else
+	#define WIDETEXT_PASTE(x)  L ## x
 #endif
 
+// If we don't have a platform-specific define for the TEXT macro, define it now.
+#if !defined(TEXT) && !UE_BUILD_DOCS
+	#if PLATFORM_TCHAR_IS_UTF8CHAR
+		#define TEXT_PASTE(x) UTF8TEXT(x)
+	#else
+		#define TEXT_PASTE(x) WIDETEXT(x)
+	#endif
+	#define TEXT(x) TEXT_PASTE(x)
+#endif
 
+namespace UE::Core::Private
+{
+	// Can't be constexpr because it involves casts
+	template <SIZE_T N>
+	FORCEINLINE auto ToUTF8Literal(const char(&Array)[N]) -> const UTF8CHAR(&)[N]
+	{
+		return (const UTF8CHAR(&)[N])Array;
+	}
+
+#if defined(__cpp_char8_t)
+	// Can't be constexpr because it involves casts
+	template <SIZE_T N>
+	FORCEINLINE auto ToUTF8Literal(const char8_t (&Array)[N]) -> const UTF8CHAR(&)[N]
+	{
+		return (const UTF8CHAR (&)[N])Array;
+	}
+#endif
+
+	FORCEINLINE constexpr UTF8CHAR ToUTF8Literal(unsigned long long Ch)
+	{
+		return (UTF8CHAR)Ch;
+	}
+}
+
+#define UTF8TEXT(x) (UE::Core::Private::ToUTF8Literal(UTF8TEXT_PASTE(x)))
+
+#define WIDETEXT(str) WIDETEXT_PASTE(str)

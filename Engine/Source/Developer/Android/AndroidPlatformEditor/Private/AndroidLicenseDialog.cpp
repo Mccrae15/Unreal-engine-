@@ -21,7 +21,7 @@
 #include "Widgets/Layout/SScrollBox.h"
 #include "EditorStyleSet.h"
 #include "Misc/SecureHash.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Interfaces/IAndroidDeviceDetectionModule.h"
 #include "Interfaces/IAndroidDeviceDetection.h"
 #include "Interfaces/IMainFrameModule.h"
@@ -164,7 +164,7 @@ static FString GetLicensePath()
 	IAndroidDeviceDetection* DeviceDetection = AndroidDeviceDetection.GetAndroidDeviceDetection();
 	FString ADBPath = DeviceDetection->GetADBPath();
 
-	if (!FPaths::FileExists(*ADBPath))
+	if (!FPaths::FileExists(ADBPath))
 	{
 		return TEXT("");
 	}

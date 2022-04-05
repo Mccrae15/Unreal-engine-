@@ -19,8 +19,11 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <map>
+#include <set>
 #include "dxc/HLSL/HLSLExtensionsCodegenHelper.h" // HLSL change
 #include "dxc/Support/SPIRVOptions.h" // SPIR-V Change
+#include "dxc/DxcBindingTable/DxcBindingTable.h" // HLSL chanhge
 
 namespace clang {
 
@@ -177,6 +180,10 @@ public:
   std::string HLSLProfile;
   /// Whether to target high-level DXIL.
   bool HLSLHighLevel = false;
+  /// Whether we allow preserve intermediate values
+  bool HLSLAllowPreserveValues = false;
+  /// Whether we fail compilation if loop fails to unroll
+  bool HLSLOnlyWarnOnUnrollFail = false;
   /// Whether use row major as default matrix major.
   bool HLSLDefaultRowMajor = false;
   /// Whether use legacy cbuffer load.
@@ -189,12 +196,20 @@ public:
   bool HLSLAvoidControlFlow = false;
   /// Force [flatten] on every if.
   bool HLSLAllResourcesBound = false;
+  /// Skip adding optional semantics defines except ones which are required for correctness.
+  bool HLSLIgnoreOptSemDefs = false;
+  /// List of semantic defines that must be ignored.
+  std::set<std::string> HLSLIgnoreSemDefs;
+  /// List of semantic defines that must be overridden with user-provided values.
+  std::map<std::string, std::string> HLSLOverrideSemDefs;
   /// Major version of validator to run.
   unsigned HLSLValidatorMajorVer = 0;
   /// Minor version of validator to run.
   unsigned HLSLValidatorMinorVer = 0;
   /// Define macros passed in from command line
   std::vector<std::string> HLSLDefines;
+  /// Precise output passed in from command line
+  std::vector<std::string> HLSLPreciseOutputs;
   /// Arguments passed in from command line
   std::vector<std::string> HLSLArguments;
   /// Helper for generating llvm bitcode for hlsl extensions.
@@ -216,6 +231,27 @@ public:
   bool HLSLResMayAlias = false;
   /// Lookback scan limit for memory dependencies
   unsigned ScanLimit = 0;
+  // Optimization pass enables, disables and selects
+  std::map<std::string, bool> HLSLOptimizationToggles;
+  std::map<std::string, std::string> HLSLOptimizationSelects;
+  /// Debug option to print IR after every pass
+  bool HLSLPrintAfterAll = false;
+  /// Force-replace lifetime intrinsics by zeroinitializer stores.
+  bool HLSLForceZeroStoreLifetimes = false;
+  /// Enable lifetime marker generation
+  bool HLSLEnableLifetimeMarkers = false;
+  /// Put shader sources and options in the module
+  bool HLSLEmbedSourcesInModule = false;
+  /// Enable generation of payload access qualifier metadata. 
+  bool HLSLEnablePayloadAccessQualifiers = false;
+  /// Binding table for HLSL resources
+  hlsl::DxcBindingTable HLSLBindingTable;
+  /// Binding table #define
+  struct BindingTableParserType {
+    virtual ~BindingTableParserType() {};
+    virtual bool Parse(llvm::raw_ostream &os, hlsl::DxcBindingTable *outBindingTable) = 0;
+  };
+  std::shared_ptr<BindingTableParserType> BindingTableParser;
   // HLSL Change Ends
 
   // SPIRV Change Starts

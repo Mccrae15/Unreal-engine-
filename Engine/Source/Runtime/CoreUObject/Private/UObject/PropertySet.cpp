@@ -13,7 +13,7 @@
 // WARNING: This should always be the last include in any file that needs it (except .generated.h)
 #include "UObject/UndefineUPropertyMacros.h"
 
-namespace UE4SetProperty_Private
+namespace UESetProperty_Private
 {
 	/**
 	 * Checks if any of the elements in the set compare equal to the one passed.
@@ -242,7 +242,7 @@ bool FSetProperty::Identical(const void* A, const void* B, uint32 PortFlags) con
 		return false;
 	}
 
-	return UE4SetProperty_Private::IsPermutation(SetHelperA, SetHelperB, PortFlags);
+	return UESetProperty_Private::IsPermutation(SetHelperA, SetHelperB, PortFlags);
 }
 
 void FSetProperty::GetPreloadDependencies(TArray<UObject*>& OutDeps)
@@ -288,70 +288,98 @@ void FSetProperty::SerializeItem(FStructuredArchive::FSlot Slot, void* Value, co
 		{
 			CopyValuesInternal(Value, Defaults, 1);
 		}
-		else
-		{
-			SetHelper.EmptyElements();
-		}
-
-		uint8* TempElementStorage = nullptr;
-		ON_SCOPE_EXIT
-		{
-			if (TempElementStorage)
-			{
-				ElementProp->DestroyValue(TempElementStorage);
-				FMemory::Free(TempElementStorage);
-			}
-		};
 
 		// Delete any explicitly-removed elements
 		int32 NumElementsToRemove = 0;
 		FStructuredArchive::FArray ElementsToRemoveArray = Record.EnterArray(SA_FIELD_NAME(TEXT("ElementsToRemove")), NumElementsToRemove);
 
-		if (NumElementsToRemove)
+		if (!Defaults || SetHelper.Num() == 0) // Faster loading path when loading elements into an empty set
 		{
-			TempElementStorage = (uint8*)FMemory::Malloc(SetLayout.Size);
-			ElementProp->InitializeValue(TempElementStorage);
-
-			FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ElementProp, this);
-			for (; NumElementsToRemove; --NumElementsToRemove)
+			if (NumElementsToRemove)
 			{
-				// Read key into temporary storage
-				ElementProp->SerializeItem(ElementsToRemoveArray.EnterElement(), TempElementStorage);
+				// Load and discard elements to remove, set is empty
+				void* TempElementStorage = FMemory::Malloc(SetLayout.Size);
+				ElementProp->InitializeValue(TempElementStorage);
 
-				// If the key is in the map, remove it
-				const int32 Found = SetHelper.FindElementIndex(TempElementStorage);
-				if (Found != INDEX_NONE)
+				FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ElementProp, this);
+				for (; NumElementsToRemove; --NumElementsToRemove)
 				{
-					SetHelper.RemoveAt(Found);
+					ElementProp->SerializeItem(ElementsToRemoveArray.EnterElement(), TempElementStorage);
 				}
+
+				ElementProp->DestroyValue(TempElementStorage);
+				FMemory::Free(TempElementStorage);
+			}
+
+			int32 Num = 0;
+			FStructuredArchive::FArray ElementsArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Elements")), Num);
+
+			// Empty and reserve then deserialize elements directly into set memory
+			SetHelper.EmptyElements(Num);
+			for (; Num; --Num)
+			{
+				int32 Index = SetHelper.AddDefaultValue_Invalid_NeedsRehash();
+				ElementProp->SerializeItem(ElementsArray.EnterElement(), SetHelper.GetElementPtrWithoutCheck(Index));
 			}
 		}
-
-		int32 Num = 0;
-		FStructuredArchive::FArray ElementsArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Elements")), Num);
-
-		// Allocate temporary key space if we haven't allocated it already above
-		if (Num != 0 && !TempElementStorage)
+		else // Slower loading path that mutates non-empty set
 		{
-			TempElementStorage = (uint8*)FMemory::Malloc(SetLayout.Size);
-			ElementProp->InitializeValue(TempElementStorage);
-		}
-
-		FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ElementProp, this);
-		// Read remaining items into container
-		for (; Num; --Num)
-		{
-			// Read key into temporary storage
-			ElementProp->SerializeItem(ElementsArray.EnterElement(), TempElementStorage);
-
-			// Add a new entry if the element doesn't currently exist in the set
-			if (SetHelper.FindElementIndex(TempElementStorage) == INDEX_NONE)
+			uint8* TempElementStorage = nullptr;
+			ON_SCOPE_EXIT
 			{
-				const int32 NewElementIndex = SetHelper.AddDefaultValue_Invalid_NeedsRehash();
-				uint8* NewElementPtr = SetHelper.GetElementPtrWithoutCheck(NewElementIndex);
+				if (TempElementStorage)
+				{
+					ElementProp->DestroyValue(TempElementStorage);
+					FMemory::Free(TempElementStorage);
+				}
+			};
 
-				// Copy over deserialized key from temporary storage
-				ElementProp->CopyCompleteValue_InContainer(NewElementPtr, TempElementStorage);
+			if (NumElementsToRemove)
+			{
+				TempElementStorage = (uint8*)FMemory::Malloc(SetLayout.Size);
+				ElementProp->InitializeValue(TempElementStorage);
+
+				FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ElementProp, this);
+				for (; NumElementsToRemove; --NumElementsToRemove)
+				{
+					// Read key into temporary storage
+					ElementProp->SerializeItem(ElementsToRemoveArray.EnterElement(), TempElementStorage);
+
+					// If the key is in the map, remove it
+					const int32 Found = SetHelper.FindElementIndex(TempElementStorage);
+					if (Found != INDEX_NONE)
+					{
+						SetHelper.RemoveAt(Found);
+					}
+				}
+			}
+
+			int32 Num = 0;
+			FStructuredArchive::FArray ElementsArray = Record.EnterArray(SA_FIELD_NAME(TEXT("Elements")), Num);
+
+			// Allocate temporary key space if we haven't allocated it already above
+			if (Num != 0 && !TempElementStorage)
+			{
+				TempElementStorage = (uint8*)FMemory::Malloc(SetLayout.Size);
+				ElementProp->InitializeValue(TempElementStorage);
+			}
+
+			FSerializedPropertyScope SerializedProperty(UnderlyingArchive, ElementProp, this);
+			// Read remaining items into container
+			for (; Num; --Num)
+			{
+				// Read key into temporary storage
+				ElementProp->SerializeItem(ElementsArray.EnterElement(), TempElementStorage);
+
+				// Add a new entry if the element doesn't currently exist in the set
+				if (SetHelper.FindElementIndex(TempElementStorage) == INDEX_NONE)
+				{
+					const int32 NewElementIndex = SetHelper.AddDefaultValue_Invalid_NeedsRehash();
+					uint8* NewElementPtr = SetHelper.GetElementPtrWithoutCheck(NewElementIndex);
+
+					// Copy over deserialized key from temporary storage
+					ElementProp->CopyCompleteValue_InContainer(NewElementPtr, TempElementStorage);
+				}
 			}
 		}
 
@@ -763,7 +791,7 @@ void FSetProperty::DestroyValueInternal(void* Data) const
 	FScriptSetHelper SetHelper(this, Data);
 	SetHelper.EmptyElements();
 
-	//@todo UE4 potential double destroy later from this...would be ok for a script set, but still
+	//@todo UE potential double destroy later from this...would be ok for a script set, but still
 	((FScriptSet*)Data)->~FScriptSet();
 }
 
@@ -983,6 +1011,17 @@ EConvertFromTypeResult FSetProperty::ConvertFromType(const FPropertyTag& Tag, FS
 
 	return EConvertFromTypeResult::UseSerializeItem;
 }
+
+#if WITH_EDITORONLY_DATA
+void FSetProperty::AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const
+{
+	Super::AppendSchemaHash(Builder, bSkipEditorOnly);
+	if (ElementProp)
+	{
+		ElementProp->AppendSchemaHash(Builder, bSkipEditorOnly);
+	}
+}
+#endif
 
 void FScriptSetHelper::Rehash()
 {

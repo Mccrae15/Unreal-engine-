@@ -10,7 +10,6 @@ public class HarfBuzz : ModuleRules
 		{
 			if (Target.Platform == UnrealTargetPlatform.IOS ||
 				Target.Platform == UnrealTargetPlatform.Mac ||
-				Target.Platform == UnrealTargetPlatform.Win32 ||
 				Target.Platform == UnrealTargetPlatform.Win64 ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Android) ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Unix)
@@ -73,8 +72,7 @@ public class HarfBuzz : ModuleRules
 		PublicSystemIncludePaths.Add(IncHarfBuzzRootPath);
 
 		// Libs
-		if (Target.Platform == UnrealTargetPlatform.Win64 ||
-			Target.Platform == UnrealTargetPlatform.Win32)
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			string VSVersionFolderName = "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName();
 
@@ -97,9 +95,7 @@ public class HarfBuzz : ModuleRules
 		{
 			// filtered out in the toolchain
 			LibPath = Path.Combine(BuildTypeFolderName, "libharfbuzz.a");
-			PublicAdditionalLibraries.Add(Path.Combine(LibHarfBuzzRootPath, "Android", "ARMv7", LibPath));
 			PublicAdditionalLibraries.Add(Path.Combine(LibHarfBuzzRootPath, "Android", "ARM64", LibPath));
-			PublicAdditionalLibraries.Add(Path.Combine(LibHarfBuzzRootPath, "Android", "x86", LibPath));
 			PublicAdditionalLibraries.Add(Path.Combine(LibHarfBuzzRootPath, "Android", "x64", LibPath));
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
@@ -112,7 +108,7 @@ public class HarfBuzz : ModuleRules
 			}
 
 			LibPath = Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT ? "libharfbuzzd_fPIC.a" : "libharfbuzz_fPIC.a";
-			PublicAdditionalLibraries.Add(Path.Combine(LibHarfBuzzRootPath, "Linux", Target.Architecture, LibPath));
+			PublicAdditionalLibraries.Add(Path.Combine(LibHarfBuzzRootPath, "Unix", Target.Architecture, LibPath));
 		}
 	}
 }

@@ -5,16 +5,17 @@
 #include "IPAddress.h"
 #include "SocketSubsystem.h" 
 
+
 #define LOCTEXT_NAMESPACE "FDMXProtocolUtils"
 
 TArray<TSharedPtr<FString>> FDMXProtocolUtils::GetLocalNetworkInterfaceCardIPs()
 {
 	TArray<TSharedPtr<FString>> LocalNetworkInterfaceCardIPs;
-#if PLATFORM_WINDOWS
-	// Add the default route IP Address, only for windows
+
+	// Add the default route IP Address
 	const FString DefaultRouteLocalAdapterAddress = TEXT("0.0.0.0");
 	LocalNetworkInterfaceCardIPs.Add(MakeShared<FString>(DefaultRouteLocalAdapterAddress));
-#endif 
+
 	// Add the local host IP address
 	const FString LocalHostIpAddress = TEXT("127.0.0.1");
 	LocalNetworkInterfaceCardIPs.Add(MakeShared<FString>(LocalHostIpAddress));
@@ -29,6 +30,27 @@ TArray<TSharedPtr<FString>> FDMXProtocolUtils::GetLocalNetworkInterfaceCardIPs()
 	}
 
 	return LocalNetworkInterfaceCardIPs;
+}
+
+TSharedPtr<FInternetAddr> FDMXProtocolUtils::CreateInternetAddr(const FString& IPAddress, int32 Port)
+{
+	if (IPAddress.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	TSharedPtr<FInternetAddr> InternetAddr = SocketSubsystem->CreateInternetAddr();
+
+	bool bIsValidIP = false;
+	InternetAddr->SetIp(*IPAddress, bIsValidIP);
+	if (!bIsValidIP)
+	{
+		return nullptr;
+	}
+
+	InternetAddr->SetPort(Port);
+	return InternetAddr;
 }
 
 FString FDMXProtocolUtils::GenerateUniqueNameFromExisting(const TSet<FString>& InExistingNames, const FString& InBaseName)
@@ -61,9 +83,9 @@ FString FDMXProtocolUtils::GenerateUniqueNameFromExisting(const TSet<FString>& I
 		int32 CountLength = Count > 0 ? (int32)FGenericPlatformMath::LogX(10.0f, Count) + 2 : 2;
 
 		// If the length of the final string will be too long, cut off the end so we can fit the number
-		if (CountLength + BaseName.Len() > NAME_SIZE)
+		if (CountLength + BaseName.Len() >= NAME_SIZE)
 		{
-			BaseName = BaseName.Left(NAME_SIZE - CountLength);
+			BaseName = BaseName.Left(NAME_SIZE - CountLength - 1);
 		}
 
 		FinalName = FString::Printf(TEXT("%s_%d"), *BaseName, Count);

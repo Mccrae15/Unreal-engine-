@@ -25,14 +25,14 @@ void UCommonWidgetCarousel::ReleaseSlateResources(bool bReleaseChildren)
 void UCommonWidgetCarousel::BeginAutoScrolling(float ScrollInterval)
 {
 	EndAutoScrolling();
-	TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCommonWidgetCarousel::AutoScrollCallback), ScrollInterval);
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCommonWidgetCarousel::AutoScrollCallback), ScrollInterval);
 }
 
 void UCommonWidgetCarousel::EndAutoScrolling()
 {
 	if ( TickerHandle.IsValid() )
 	{
-		FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 		TickerHandle.Reset();
 	}
 }
@@ -123,7 +123,7 @@ void UCommonWidgetCarousel::OnSlotAdded(UPanelSlot* InSlot)
 TSharedRef<SWidget> UCommonWidgetCarousel::RebuildWidget()
 {
 	MyCommonWidgetCarousel = SNew(SWidgetCarousel<UPanelSlot*>)
-		.WidgetItemsSource(&Slots)
+		.WidgetItemsSource(&ToRawPtrTArrayUnsafe(Slots))
 		.FadeRate(0)
 		.SlideValueLeftLimit(-1)
 		.SlideValueRightLimit(1)

@@ -540,11 +540,11 @@ bool FInputBindingManager::CommandPassesFilter(const FName InBindingContext, con
 {
 	if (const FCommandFilterForContext* CommandFilterForContext = CommandFiltersByContext.Find(InBindingContext))
 	{
-		if (CommandFilterForContext->BlacklistedCommands.Contains(InCommandName))
+		if (CommandFilterForContext->CommandDenyList.Contains(InCommandName))
 		{
 			return false;
 		}
-		else if (!CommandFilterForContext->WhitelistedCommands.Contains(InCommandName) && CommandFilterForContext->WhitelistedCommands.Num() > 0)
+		else if (!CommandFilterForContext->CommandAllowList.Contains(InCommandName) && CommandFilterForContext->CommandAllowList.Num() > 0)
 		{
 			return false;
 		}
@@ -553,15 +553,42 @@ bool FInputBindingManager::CommandPassesFilter(const FName InBindingContext, con
 	return true;
 }
 
+bool FInputBindingManager::RegisterCommandList(const FName InBindingContext, const TSharedRef<FUICommandList> CommandList) const
+{
+	if (ContextMap.Contains(InBindingContext) && OnRegisterCommandList.IsBound())
+	{
+		OnRegisterCommandList.Broadcast(InBindingContext, CommandList);
+		return true;
+	}
+	return false;
+}
+
+TSharedPtr<FUICommandList> FInputBindingManager::RegisterNewCommandList(const FName InBindingContext) const
+{
+	const TSharedPtr<FUICommandList> CommandList = MakeShared<FUICommandList>();
+
+	return RegisterCommandList(InBindingContext, CommandList.ToSharedRef()) ? CommandList : nullptr;
+}
+
+bool FInputBindingManager::UnregisterCommandList(const FName InBindingContext, TSharedRef<FUICommandList> CommandList) const
+{
+	if (ContextMap.Contains(InBindingContext) && OnUnregisterCommandList.IsBound())
+	{
+		OnUnregisterCommandList.Broadcast(InBindingContext, CommandList);
+		return true;
+	}
+	return false;
+}
+
 void FInputBindingManager::AddCommandFilter(const FName InOwnerName, const FName InBindingContext, const FName InCommandName, const ECommandFilterType FilterType)
 {
-	if (FilterType == ECommandFilterType::Blacklist)
+	if (FilterType == ECommandFilterType::DenyList)
 	{
-		CommandFiltersByContext.FindOrAdd(InBindingContext).BlacklistedCommands.FindOrAdd(InCommandName).OwnerNames.AddUnique(InOwnerName);
+		CommandFiltersByContext.FindOrAdd(InBindingContext).CommandDenyList.FindOrAdd(InCommandName).OwnerNames.AddUnique(InOwnerName);
 	}
-	else if (FilterType == ECommandFilterType::Whitelist)
+	else if (FilterType == ECommandFilterType::AllowList)
 	{
-		CommandFiltersByContext.FindOrAdd(InBindingContext).WhitelistedCommands.FindOrAdd(InCommandName).OwnerNames.AddUnique(InOwnerName);
+		CommandFiltersByContext.FindOrAdd(InBindingContext).CommandAllowList.FindOrAdd(InCommandName).OwnerNames.AddUnique(InOwnerName);
 	}
 }
 
@@ -571,7 +598,7 @@ void FInputBindingManager::UnregisterCommandFilterOwner(const FName InOwnerName)
 	{
 		FCommandFilterForContext& CommandFilterForContext = CommandFiltersByContextIt->Value;
 
-		for (auto CommandIt = CommandFilterForContext.BlacklistedCommands.CreateIterator(); CommandIt; ++CommandIt)
+		for (auto CommandIt = CommandFilterForContext.CommandDenyList.CreateIterator(); CommandIt; ++CommandIt)
 		{
 			FCommandFilterOwners& CommandFilterOwners = CommandIt->Value;
 			CommandFilterOwners.OwnerNames.Remove(InOwnerName);
@@ -581,7 +608,7 @@ void FInputBindingManager::UnregisterCommandFilterOwner(const FName InOwnerName)
 			}
 		}
 
-		for (auto CommandIt = CommandFilterForContext.WhitelistedCommands.CreateIterator(); CommandIt; ++CommandIt)
+		for (auto CommandIt = CommandFilterForContext.CommandAllowList.CreateIterator(); CommandIt; ++CommandIt)
 		{
 			FCommandFilterOwners& CommandFilterOwners = CommandIt->Value;
 			CommandFilterOwners.OwnerNames.Remove(InOwnerName);
@@ -591,7 +618,7 @@ void FInputBindingManager::UnregisterCommandFilterOwner(const FName InOwnerName)
 			}
 		}
 
-		if (CommandFilterForContext.BlacklistedCommands.Num() == 0 && CommandFilterForContext.WhitelistedCommands.Num() == 0)
+		if (CommandFilterForContext.CommandDenyList.Num() == 0 && CommandFilterForContext.CommandAllowList.Num() == 0)
 		{
 			CommandFiltersByContextIt.RemoveCurrent();
 		}

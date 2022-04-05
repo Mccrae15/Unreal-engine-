@@ -245,7 +245,7 @@ bool FLiveLinkComponentDetailCustomization::IsControllerItemSelected(FName Item,
 	if (ULiveLinkComponentController* EditedObjectPtr = EditedObject.Get())
 	{
 
-		ULiveLinkControllerBase** CurrentClass = EditedObjectPtr->ControllerMap.Find(RoleClass);
+		TObjectPtr<ULiveLinkControllerBase>* CurrentClass = EditedObjectPtr->ControllerMap.Find(RoleClass);
 		if (CurrentClass == nullptr || *CurrentClass == nullptr)
 		{
 			return Item.IsNone();
@@ -266,7 +266,7 @@ FSlateColor FLiveLinkComponentDetailCustomization::HandleControllerStatusColorAn
 
 	if (ULiveLinkComponentController* EditorObjectPtr = EditedObject.Get())
 	{
-		ULiveLinkControllerBase** AssociatedControllerPtr = EditorObjectPtr->ControllerMap.Find(RoleClassEntry);
+		TObjectPtr<ULiveLinkControllerBase>* AssociatedControllerPtr = EditorObjectPtr->ControllerMap.Find(RoleClassEntry);
 		if (AssociatedControllerPtr && *AssociatedControllerPtr)
 		{
 			if (UActorComponent* SelectedComponent = EditorObjectPtr->ComponentToControl.GetComponent(EditorObjectPtr->GetOwner()))
@@ -301,7 +301,7 @@ FText FLiveLinkComponentDetailCustomization::HandleControllerStatusText(TSubclas
 
 	if (ULiveLinkComponentController* EditorObjectPtr = EditedObject.Get())
 	{
-		ULiveLinkControllerBase** AssociatedControllerPtr = EditorObjectPtr->ControllerMap.Find(RoleClassEntry);
+		TObjectPtr<ULiveLinkControllerBase>* AssociatedControllerPtr = EditorObjectPtr->ControllerMap.Find(RoleClassEntry);
 		if (AssociatedControllerPtr && *AssociatedControllerPtr)
 		{
 			if (UActorComponent* SelectedComponent = EditorObjectPtr->ComponentToControl.GetComponent(EditorObjectPtr->GetOwner()))
@@ -336,7 +336,7 @@ FText FLiveLinkComponentDetailCustomization::HandleControllerStatusToolTipText(T
 
 	if (ULiveLinkComponentController* EditorObjectPtr = EditedObject.Get())
 	{
-		ULiveLinkControllerBase** AssociatedControllerPtr = EditorObjectPtr->ControllerMap.Find(RoleClassEntry);
+		TObjectPtr<ULiveLinkControllerBase>* AssociatedControllerPtr = EditorObjectPtr->ControllerMap.Find(RoleClassEntry);
 		if (AssociatedControllerPtr && *AssociatedControllerPtr)
 		{
 			if (UActorComponent* SelectedComponent = EditorObjectPtr->ComponentToControl.GetComponent(EditorObjectPtr->GetOwner()))
@@ -366,7 +366,7 @@ FText FLiveLinkComponentDetailCustomization::HandleControllerStatusToolTipText(T
 
 TSharedRef<SWidget> FLiveLinkComponentDetailCustomization::BuildControllerNameWidget(TSharedPtr<IPropertyHandle> ControllersProperty, TSubclassOf<ULiveLinkRole> RoleClass) const
 {
-	return ControllersProperty->CreatePropertyNameWidget(RoleClass.Get()->GetDisplayNameText());
+	return ControllersProperty->CreatePropertyNameWidget(RoleClass.Get()->GetDisplayNameText().ToUpper());
 }
 
 TSharedRef<SWidget> FLiveLinkComponentDetailCustomization::BuildControllerValueWidget(TSharedPtr<IPropertyHandle> RoleKeyPropertyHandle, TSubclassOf<ULiveLinkRole> RoleClass, const FText& ControllerName) const
@@ -375,20 +375,17 @@ TSharedRef<SWidget> FLiveLinkComponentDetailCustomization::BuildControllerValueW
 		SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
-		.Padding(0, 0, 0, 0)
-		.HAlign(HAlign_Left)
-		.VAlign(VAlign_Center)
-		[
-			SNew(STextBlock)
-			.Text(ControllerName)
-		]
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
 		.Padding(FMargin(4.0f, 0.0f, 0.0f, 0.0f))
 		[
 			SNew(SComboButton)
 			.OnGetMenuContent(this, &FLiveLinkComponentDetailCustomization::HandleControllerComboButton, RoleKeyPropertyHandle)
 			.ContentPadding(FMargin(4.0, 2.0))
+			.ButtonContent()
+			[
+				SNew(STextBlock)
+				.Text(ControllerName)
+				.Font(FAppStyle::Get().GetFontStyle("SmallFont"))
+			]
 		]
 		+ SHorizontalBox::Slot()
 		.AutoWidth()

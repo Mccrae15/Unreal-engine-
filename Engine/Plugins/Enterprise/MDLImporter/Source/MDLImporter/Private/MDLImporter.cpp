@@ -19,7 +19,7 @@
 #include "Engine/Texture2D.h"
 #include "Factories/TextureFactory.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Logging/LogMacros.h"
 #include "Materials/Material.h"
 #include "Misc/Paths.h"

@@ -32,6 +32,7 @@ namespace UnrealBuildTool.Rules
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
+					"DerivedDataCache",
 				});
 
 			PrivateIncludePaths.AddRange(
@@ -46,19 +47,12 @@ namespace UnrealBuildTool.Rules
 
 			if (Target.bBuildEditor == true)
 			{
-				if (Target.Platform == UnrealTargetPlatform.Win64 ||
-						Target.Platform == UnrealTargetPlatform.Win32)
-				{
-					//There are some dynamic_cast in OCIO library.
-					bUseRTTI = true;
-				}
-
 				PrivateDependencyModuleNames.AddRange(
 					new string[]
 					{
-						"DerivedDataCache",
 						"OpenColorIOLib",
 						"TargetPlatform",
+						"EditorFramework",
 						"UnrealEd"
 					});
 			}

@@ -18,8 +18,6 @@ class UMaterial;
 namespace Chaos
 {
 	class FTriangleMesh;
-	class FPBDLongRangeConstraintsBase;
-	class FPBDEvolution;
 	class FClothingSimulationSolver;
 	class FClothingSimulationMesh;
 	class FClothingSimulationCloth;
@@ -72,13 +70,14 @@ namespace Chaos
 
 		// IClothingSimulation interface
 		virtual void SetNumIterations(int32 NumIterations) override;
+		virtual void SetMaxNumIterations(int32 MaxNumIterations) override;
 		virtual void SetNumSubsteps(int32 NumSubsteps) override;
 		virtual int32 GetNumCloths() const override { return NumCloths; }
 		virtual int32 GetNumKinematicParticles() const override { return NumKinematicParticles; }
 		virtual int32 GetNumDynamicParticles() const override { return NumDynamicParticles; }
 		virtual int32 GetNumIterations() const override { return NumIterations; }
 		virtual int32 GetNumSubsteps() const override { return NumSubsteps; }
-		virtual FReal GetSimulationTime() const override { return SimulationTime; }
+		virtual float GetSimulationTime() const override { return SimulationTime; }
 		virtual bool IsTeleported() const override { return bIsTeleported; }
 		virtual void UpdateWorldForces(const USkeletalMeshComponent* OwnerComponent) override;
 		// End of IClothingSimulation interface
@@ -88,6 +87,10 @@ namespace Chaos
 #if WITH_EDITOR
 		// FGCObject interface
 		virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+		virtual FString GetReferencerName() const override
+		{
+			return TEXT("Chaos::FClothingSimulation");
+		}
 		// End of FGCObject interface
 
 		// Editor only debug draw function
@@ -101,7 +104,9 @@ namespace Chaos
 		// Editor & runtime debug draw functions
 		CHAOSCLOTH_API void DebugDrawPhysMeshWired(FPrimitiveDrawInterface* PDI = nullptr) const;
 		CHAOSCLOTH_API void DebugDrawAnimMeshWired(FPrimitiveDrawInterface* PDI = nullptr) const;
+		CHAOSCLOTH_API void DebugDrawAnimNormals(FPrimitiveDrawInterface* PDI = nullptr) const;
 		CHAOSCLOTH_API void DebugDrawPointNormals(FPrimitiveDrawInterface* PDI = nullptr) const;
+		UE_DEPRECATED(5.0, "DebugDrawInversedPointNormals is mostly redundant and will be removed, use DebugDrawPointNormals instead")
 		CHAOSCLOTH_API void DebugDrawInversedPointNormals(FPrimitiveDrawInterface* PDI = nullptr) const;
 		CHAOSCLOTH_API void DebugDrawCollision(FPrimitiveDrawInterface* PDI = nullptr) const;
 		CHAOSCLOTH_API void DebugDrawBackstops(FPrimitiveDrawInterface* PDI = nullptr) const;
@@ -146,7 +151,7 @@ namespace Chaos
 		TAtomic<int32> NumDynamicParticles;
 		TAtomic<int32> NumIterations;
 		TAtomic<int32> NumSubsteps;
-		TAtomic<FReal> SimulationTime;
+		TAtomic<float> SimulationTime;
 		TAtomic<bool> bIsTeleported;
 
 		// Overrides
@@ -165,6 +170,7 @@ namespace Chaos
 		int32 StepCount;
 		int32 ResetCount;
 #endif
+		mutable bool bHasInvalidReferenceBoneTransforms;
 	};
 } // namespace Chaos
 

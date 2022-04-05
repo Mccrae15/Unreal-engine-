@@ -46,6 +46,10 @@ private:
 
 	//~ FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SDataprepFilter");
+	}
 
 	TSharedPtr<class SDataprepDetailsView> DetailsView;
 
@@ -85,6 +89,10 @@ private:
 
 	//~ FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SDataprepFilterNoFetcher");
+	}
 
 	TSharedPtr<class SDataprepDetailsView> DetailsView;
 

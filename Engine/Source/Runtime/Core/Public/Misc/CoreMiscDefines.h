@@ -14,7 +14,6 @@
 // rest of code out for resource compilation.
 #ifndef RC_INVOKED
 
-#define LOCALIZED_SEEKFREE_SUFFIX	TEXT("_LOC")
 #define PLAYWORLD_PACKAGE_PREFIX TEXT("UEDPIE")
 
 #ifndef WITH_EDITORONLY_DATA
@@ -112,25 +111,21 @@ enum EForceInit
 enum ENoInit {NoInit};
 enum EInPlace {InPlace};
 
-// Handle type to stably track users on a specific platform
-typedef int32 FPlatformUserId;
-const FPlatformUserId PLATFORMUSERID_NONE = INDEX_NONE;
 #endif // RC_INVOKED
-
-
 
 // When passed to pragma message will result in clickable warning in VS
 #define WARNING_LOCATION(Line) __FILE__ "(" PREPROCESSOR_TO_STRING(Line) ")"
 
 // Push and pop macro definitions
 #ifdef __clang__
-	#define PUSH_MACRO(name) _Pragma(PREPROCESSOR_TO_STRING(push_macro(PREPROCESSOR_TO_STRING(name))))
-	#define POP_MACRO(name) _Pragma(PREPROCESSOR_TO_STRING(pop_macro(PREPROCESSOR_TO_STRING(name))))
+	#define UE_PUSH_MACRO(name) _Pragma(PREPROCESSOR_TO_STRING(push_macro(name)))
+	#define UE_POP_MACRO(name) _Pragma(PREPROCESSOR_TO_STRING(pop_macro(name)))
 #else
-	#define PUSH_MACRO(name) __pragma(push_macro(PREPROCESSOR_TO_STRING(name)))
-	#define POP_MACRO(name) __pragma(pop_macro(PREPROCESSOR_TO_STRING(name)))
+	#define UE_PUSH_MACRO(name) __pragma(push_macro(name))
+	#define UE_POP_MACRO(name) __pragma(pop_macro(name))
 #endif
-
+#define PUSH_MACRO(name) DEPRECATED_MACRO(5.0, "PUSH_MACRO is deprecated. Use UE_PUSH_MACRO and pass the macro name as a string.") UE_PUSH_MACRO(PREPROCESSOR_TO_STRING(name))
+#define POP_MACRO(name) DEPRECATED_MACRO(5.0, "POP_MACRO is deprecated. Use UE_POP_MACRO and pass the macro name as a string.") UE_POP_MACRO(PREPROCESSOR_TO_STRING(name))
 
 #ifdef __COUNTER__
 	// Created a variable with a unique name
@@ -140,6 +135,9 @@ const FPlatformUserId PLATFORMUSERID_NONE = INDEX_NONE;
 	// Less reliable than the __COUNTER__ version.
 	#define ANONYMOUS_VARIABLE( Name ) PREPROCESSOR_JOIN(Name, __LINE__)
 #endif
+
+/** Thread-safe call once helper, similar to std::call_once without the std::once_flag */
+#define UE_CALL_ONCE(Func) static int32 ANONYMOUS_VARIABLE(ThreadSafeOnce) = ((Func)(), 1)
 
 /**
  * Macro for marking up deprecated code, functions and types.
@@ -237,6 +235,16 @@ const FPlatformUserId PLATFORMUSERID_NONE = INDEX_NONE;
 	#define UE_DEPRECATED_FORGAME(...)
 #endif
 
+/*
+ * Macro that can be defined in the target file to strip deprecated properties in objects across the engine that check against this define.
+ * Can be used by project that have migrated away from using deprecated functions and data members to potentially gain back some memory and perf.
+ * @note This is a define that engine developer may use when deprecating properties to allow additional memory savings when a project is compliant with deprecation notice.
+ * It doesn't indicate that all deprecated properties will be stripped.
+ */
+#ifndef UE_STRIP_DEPRECATED_PROPERTIES
+	#define UE_STRIP_DEPRECATED_PROPERTIES 0
+#endif
+
 template <bool bIsDeprecated>
 struct TStaticDeprecateExpression
 {
@@ -277,3 +285,67 @@ struct TStaticDeprecateExpression
 	TypeName& operator=(const TypeName&) = delete; \
 	TypeName& operator=(TypeName&&) = delete;
 
+
+/** 
+ * Handle that defines a local user on this platform.
+ * This used to be just a typedef int32 that was used interchangeably as ControllerId and LocalUserIndex.
+ * Moving forward these will be allocated by the platform application layer.
+ */
+struct FPlatformUserId
+{
+	/** Create a default invalid Id */
+	FORCEINLINE FPlatformUserId() : InternalId(INDEX_NONE) {}
+
+	FPlatformUserId(const FPlatformUserId&) = default;
+	FPlatformUserId& operator=(const FPlatformUserId&) = default;
+
+	/** Sees if this is a valid user */
+	FORCEINLINE bool IsValid() const
+	{
+		return InternalId != INDEX_NONE;
+	}
+
+	/** Returns the internal id for debugging/etc */
+	FORCEINLINE int32 GetInternalId() const
+	{
+		return InternalId;
+	}
+
+	/** Explicit function to create from an internal id */
+	FORCEINLINE static FPlatformUserId CreateFromInternalId(int32 InInternalId)
+	{
+		FPlatformUserId IdToReturn;
+		IdToReturn.InternalId = InInternalId;
+		return IdToReturn;
+	}
+
+	FORCEINLINE bool operator==(const FPlatformUserId& Other) const
+	{
+		return InternalId == Other.InternalId;
+	}
+
+	FORCEINLINE bool operator!=(const FPlatformUserId& Other) const
+	{
+		return InternalId != Other.InternalId;
+	}
+
+	FORCEINLINE friend uint32 GetTypeHash(const FPlatformUserId& UserId)
+	{
+		return UserId.InternalId;
+	}
+
+	// This is needed until input and online code handles FPlatformUserId properly
+	UE_DEPRECATED(5.0, "Implicit conversion from user index is deprecated, use FPlatformMisc::GetPlatformUserForUserIndex")
+	FORCEINLINE constexpr FPlatformUserId(int32 InIndex) : InternalId(InIndex) {}
+
+	// This should be deprecated when the online code uniformly handles FPlatformUserId */
+	// UE_DEPRECATED(5.x, "Implicit conversion to user index is deprecated, use FPlatformMisc::GetUserIndexForPlatformUser")
+	FORCEINLINE constexpr operator int32() const { return InternalId; }
+
+private:
+	/** Raw id, will be allocated by application layer */
+	int32 InternalId;
+};
+
+/** Static invalid platform user */
+const FPlatformUserId PLATFORMUSERID_NONE;

@@ -5,6 +5,7 @@
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/PathViews.h"
 #include "Misc/FeedbackContext.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectHash.h"
@@ -121,38 +122,41 @@ bool UFactory::FactoryCanImport( const FString& Filename )
 		return true;
 	}
 
-	// only T3D is supported
-	if (FPaths::GetExtension(Filename) != TEXT("t3d"))
+	if (IsSupportedFileExtension(FPathViews::GetExtension(Filename)))
 	{
-		return false;
+		return true;
 	}
 
-	// open file
-	FString Data;
-
-	if (FFileHelper::LoadFileToString(Data, *Filename))
+	// T3D support
+	if (FPaths::GetExtension(Filename) == TEXT("t3d"))
 	{
-		const TCHAR* Str= *Data;
-		if (FParse::Command(&Str, TEXT("BEGIN")) && FParse::Command(&Str, TEXT("OBJECT")))
+		// open file
+		FString Data;
+
+		if (FFileHelper::LoadFileToString(Data, *Filename))
 		{
-			FString strClass;
-			if (FParse::Value(Str, TEXT("CLASS="), strClass))
+			const TCHAR* Str= *Data;
+			if (FParse::Command(&Str, TEXT("BEGIN")) && FParse::Command(&Str, TEXT("OBJECT")))
 			{
-				//we found the right syntax, so no error if we don't match
-				if (strClass == SupportedClass->GetName())
+				FString strClass;
+				if (FParse::Value(Str, TEXT("CLASS="), strClass))
 				{
-					return true;
+					//we found the right syntax, so no error if we don't match
+					if (strClass == SupportedClass->GetName())
+					{
+						return true;
+					}
+
+					return false;
 				}
-
-				return false;
 			}
-		}
 
-		UE_LOG(LogFactory, Warning, TEXT("Factory import failed due to invalid format: %s"), *Filename);
-	}
-	else
-	{
-		UE_LOG(LogFactory, Warning, TEXT("Factory import failed due to inability to load file %s"), *Filename);
+			UE_LOG(LogFactory, Warning, TEXT("Factory import failed due to invalid format: %s"), *Filename);
+		}
+		else
+		{
+			UE_LOG(LogFactory, Warning, TEXT("Factory import failed due to inability to load file %s"), *Filename);
+		}
 	}
 
 	return false;
@@ -497,6 +501,31 @@ void UFactory::GetSupportedFileExtensions(TArray<FString>& OutExtensions) const
 }
 
 
+bool UFactory::IsSupportedFileExtension(FStringView InExtension) const
+{
+	if (InExtension.StartsWith(TEXT('.')))
+	{
+		InExtension.RightChopInline(1);
+	}
+
+	for (const FString& Format : Formats)
+	{
+		const int32 DelimiterIdx = Format.Find(TEXT(";"));
+
+		if (DelimiterIdx != INDEX_NONE)
+		{
+			const FStringView FormatExtension(*Format, DelimiterIdx);
+			if (FormatExtension == InExtension)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+
 bool UFactory::ImportUntypedBulkDataFromText(const TCHAR*& Buffer, FUntypedBulkData& BulkData)
 {
 	FString StrLine;
@@ -542,7 +571,9 @@ bool UFactory::ImportUntypedBulkDataFromText(const TCHAR*& Buffer, FUntypedBulkD
 				else if (FParse::Value(Str, TEXT("BEGIN "), ParsedText) && (ParsedText.ToUpper() == TEXT("BINARY")))
 				{
 					check(RawData);
+#ifndef PVS_STUDIO // Build machine refuses to disable to warning below
 					uint8* BulkDataPointer = RawData;
+#endif
 					while(FParse::Line(&Buffer,StrLine))
 					{
 						Str = *StrLine;
@@ -568,8 +599,10 @@ bool UFactory::ImportUntypedBulkDataFromText(const TCHAR*& Buffer, FUntypedBulkD
 								ParseStr +=2;
 							}
 							Value = FParse::HexDigit(ParseStr[0]) * 16 + FParse::HexDigit(ParseStr[1]);
+#ifndef PVS_STUDIO // Build machine refuses to disable to warning below
 							*BulkDataPointer = (uint8)Value; //-V522
 							BulkDataPointer++;
+#endif
 							ParseStr += 2;
 							ParseStr++;
 						}

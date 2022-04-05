@@ -37,11 +37,11 @@ namespace SkeletalSimplifier
 			// NB: Required that these all have float storage.
 			// - Base Attributes: size = 13 + 2 * NumTexCoord
 
-			FVector			Normal;      // 0, 1, 2
-			FVector			Tangent;     // 3, 4, 5
-			FVector         BiTangent;   // 6, 7, 8
+			FVector3f		Normal;      // 0, 1, 2
+			FVector3f		Tangent;     // 3, 4, 5
+			FVector3f       BiTangent;   // 6, 7, 8
 			FLinearColor	Color;       // 9, 10, 11, 12
-			FVector2D		TexCoords[NumTexCoords];  // 13, .. 13 + NumTexCoords * 2 - 1
+			FVector2f		TexCoords[NumTexCoords];  // 13, .. 13 + NumTexCoords * 2 - 1
 
 
 			// used to manage identity of split/non-split vertex attributes.
@@ -157,7 +157,7 @@ namespace SkeletalSimplifier
 			{
 				for (int32 i = 0; i < NumTexCoords; ++i)
 				{
-					TexCoords[i] = FVector2D(ForceInitToZero);
+					TexCoords[i] = FVector2f(ForceInitToZero);
 				}
 			}
 
@@ -212,10 +212,10 @@ namespace SkeletalSimplifier
 			void Correct()
 			{
 				Normal.Normalize();
-				Tangent -= FVector::DotProduct(Tangent, Normal) * Normal;
+				Tangent -= FVector3f::DotProduct(Tangent, Normal) * Normal;
 				Tangent.Normalize();
-				BiTangent -= FVector::DotProduct(BiTangent, Normal) * Normal;
-				BiTangent -= FVector::DotProduct(BiTangent, Tangent) * Tangent;
+				BiTangent -= FVector3f::DotProduct(BiTangent, Normal) * Normal;
+				BiTangent -= FVector3f::DotProduct(BiTangent, Tangent) * Tangent;
 				BiTangent.Normalize();
 				Color = Color.GetClamped();
 			}
@@ -349,7 +349,7 @@ namespace SkeletalSimplifier
 			/**
 			* Compare two sparse arrays.  A small bone weight will be equivalent to no bone weight.
 			*/
-			bool IsApproxEquals(const BoneSparseVertexAttrs& Other, double Tolerance = (double)KINDA_SMALL_NUMBER)
+			bool IsApproxEquals(const BoneSparseVertexAttrs& Other, double Tolerance = (double)KINDA_SMALL_NUMBER) const
 			{
 
 				SparseVecD::SparseContainer Tmp = SparseData;
@@ -414,7 +414,7 @@ namespace SkeletalSimplifier
 			
 			// The Vertex Point
 			uint32			MaterialIndex;
-			FVector			Position;
+			FVector3f		Position;
 
 			// Additional weight used to select against collapse.
 
@@ -464,8 +464,8 @@ namespace SkeletalSimplifier
 
 
 			uint32 GetMaterialIndex() const { return MaterialIndex; }
-			FVector& GetPos() { return Position; }
-			const FVector&	GetPos() const { return Position; }
+			FVector3f& GetPos() { return Position; }
+			const FVector3f&	GetPos() const { return Position; }
 
 
 			// Access to the base attributes.  Note these are really floats. 

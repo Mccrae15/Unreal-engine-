@@ -2,12 +2,16 @@
 
 #include "LiveLinkPreset.h"
 
+#include "Misc/CoreDelegates.h"
+#include "Engine/Engine.h"
+#include "Engine/LatentActionManager.h"
 #include "Features/IModularFeatures.h"
 #include "HAL/IConsoleManager.h"
-#include "Misc/CoreDelegates.h"
+#include "LatentActions.h"
 #include "LiveLinkClient.h"
 #include "LiveLinkLog.h"
 #include "Misc/App.h"
+
 
 namespace
 {
@@ -28,7 +32,7 @@ namespace
 							UObject* Object = StaticLoadObject(ULiveLinkPreset::StaticClass(), nullptr, *Element + FoundElement + FCString::Strlen(PresetStr));
 							if (Object)
 							{
-								CastChecked<ULiveLinkPreset>(Object)->ApplyToClient();
+								CastChecked<ULiveLinkPreset>(Object)->ApplyToClientLatent();
 							}
 						}
 					}
@@ -61,7 +65,7 @@ namespace
 struct FApplyToClientPollingOperation
 {
 	/** Holds a weak pointer to the preset that will be applied. */
-	TWeakObjectPtr<const ULiveLinkPreset> WeakPreset;
+	TWeakObjectPtr<ULiveLinkPreset> WeakPreset;
 	/** Keeps track of remaining time before aborting  */
 	double RemainingTime = 1.0;
 	/** Keeps track of the last time the Update function was called. */
@@ -75,15 +79,16 @@ struct FApplyToClientPollingOperation
 		Pending  // Operation is still ongoing.
 	};
 
-	FApplyToClientPollingOperation(const ULiveLinkPreset* Preset)
+	FApplyToClientPollingOperation(ULiveLinkPreset* Preset)
 		: WeakPreset(Preset)
 	{
 	}
 	
 	EApplyToClientUpdateResult Update()
 	{
+		bool bResult = true;
         
-        const ULiveLinkPreset* Preset = WeakPreset.Get();
+        ULiveLinkPreset* Preset = WeakPreset.Get();
         if (!Preset || !IModularFeatures::Get().IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
         {
         	FLiveLinkLog::Error(TEXT("Could not apply preset"));
@@ -104,8 +109,6 @@ struct FApplyToClientPollingOperation
         constexpr bool bEvenIfPendingKill = true;
         if (LiveLinkClient.GetSources(bEvenIfPendingKill).Num() == 0)
         {
-        	bool bResult = true;
-
         	for (const FLiveLinkSourcePreset& SourcePreset : Preset->GetSourcePresets())
         	{
         		bResult &= LiveLinkClient.CreateSource(SourcePreset);
@@ -139,90 +142,115 @@ struct FApplyToClientPollingOperation
 	}
 };
 
-namespace VPLiveLinkPresetPrivate
+TPimplPtr<FApplyToClientPollingOperation> ULiveLinkPreset::ApplyToClientPollingOperation;
+
+class FApplyToClientLatentAction : public FPendingLatentAction
 {
-	/**
-	 * Class made to handle dispatching a latent ApplyToPreset operation without touching public headers
-	 */
-	class FApplyToPresetLatentActionManager
-	{
-	public:
-		/** Disallow Copying / Moving */
-		UE_NONCOPYABLE(FApplyToPresetLatentActionManager);
-
-		static FApplyToPresetLatentActionManager& Get()
-		{
-			static FApplyToPresetLatentActionManager Instance;
-			return Instance;
-		}
-
-
-		~FApplyToPresetLatentActionManager()
-		{
-			FCoreDelegates::OnEndFrame.RemoveAll(this);
-		}
-
-		bool IsPerformingLatentAction() const
-		{
-			return PollingOperation.IsValid();
-		}
-
-		void StartLatentAction(const ULiveLinkPreset* Preset)
-		{
-			if (IsPerformingLatentAction())
-			{
-				return;
-			}
-
-			PollingOperation = MakeUnique<FApplyToClientPollingOperation>(Preset);
-		}
-
-		bool TriggerLatentAction()
-		{
-			if (PollingOperation)
-			{
-				FApplyToClientPollingOperation::EApplyToClientUpdateResult Result = PollingOperation->Update();
-				if (Result != FApplyToClientPollingOperation::EApplyToClientUpdateResult::Pending)
-				{
-					PollingOperation.Reset();
-				}
-
-				return Result == FApplyToClientPollingOperation::EApplyToClientUpdateResult::Success;
-			}
-			return false;
-		}
-
-
-	private:
-
-		FApplyToPresetLatentActionManager()
-		{
-			FCoreDelegates::OnEndFrame.AddRaw(this, &FApplyToPresetLatentActionManager::OnEndFrame);
-		}
-
-		void OnEndFrame()
-		{
-			TriggerLatentAction();
-		}
-
-	private:
-		TUniquePtr<FApplyToClientPollingOperation> PollingOperation;
-	};
+public:
+	FName ExecutionFunction;
+	int32 OutputLink;
+	FWeakObjectPtr CallbackTarget;
+	FApplyToClientPollingOperation ApplyOperation;
 	
+	FApplyToClientLatentAction(const FLatentActionInfo& InLatentInfo, ULiveLinkPreset* InOwnerPreset)
+        : ExecutionFunction(InLatentInfo.ExecutionFunction)
+        , OutputLink(InLatentInfo.Linkage)
+        , CallbackTarget(InLatentInfo.CallbackTarget)
+		, ApplyOperation(InOwnerPreset)
+	{
+	}
+
+	virtual void UpdateOperation(FLatentResponse& Response) override
+	{
+		if (ApplyOperation.Update() != FApplyToClientPollingOperation::EApplyToClientUpdateResult::Pending)
+		{
+			Response.FinishAndTriggerIf(true, ExecutionFunction, OutputLink, CallbackTarget);
+		}
+	}
+};
+
+ULiveLinkPreset::~ULiveLinkPreset()
+{
+	ClearApplyToClientTimer();
 }
 
 bool ULiveLinkPreset::ApplyToClient() const
 {
-	VPLiveLinkPresetPrivate::FApplyToPresetLatentActionManager& Registry = VPLiveLinkPresetPrivate::FApplyToPresetLatentActionManager::Get();
-
-	if (Registry.IsPerformingLatentAction())
+	bool bResult = false;
+	if (IModularFeatures::Get().IsModularFeatureAvailable(ILiveLinkClient::ModularFeatureName))
 	{
-		FLiveLinkLog::Error(TEXT("Could not apply '%s', operation is already in progress."), *GetFullName());
-		return false;
+		FLiveLinkClient& LiveLinkClient = IModularFeatures::Get().GetModularFeature<FLiveLinkClient>(ILiveLinkClient::ModularFeatureName);
+
+		LiveLinkClient.RemoveAllSources();
+		LiveLinkClient.Tick();
+
+		bResult = true;
+		for (const FLiveLinkSourcePreset& SourcePreset : Sources)
+		{
+			bResult &= LiveLinkClient.CreateSource(SourcePreset);
+		}
+
+		for (const FLiveLinkSubjectPreset& SubjectPreset : Subjects)
+		{
+			bResult &= LiveLinkClient.CreateSubject(SubjectPreset);
+		}
 	}
 
-	Registry.StartLatentAction(this);
-	return Registry.TriggerLatentAction();
+	if (bResult)
+	{
+		FLiveLinkLog::Info(TEXT("Applied '%s'"), *GetFullName());
+	}
+	else
+	{
+		FLiveLinkLog::Error(TEXT("Could not apply '%s'"), *GetFullName());
+	}
+
+	return bResult;
+}
+
+void ULiveLinkPreset::ApplyToClientLatent(UObject* WorldContextObject, FLatentActionInfo LatentInfo)
+{
+	if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull))
+	{
+		FLatentActionManager& LatentActionManager = World->GetLatentActionManager();
+		if (!LatentActionManager.FindExistingAction<FApplyToClientLatentAction>(LatentInfo.CallbackTarget, LatentInfo.UUID))
+		{
+			LatentActionManager.AddNewAction(LatentInfo.CallbackTarget, LatentInfo.UUID, new FApplyToClientLatentAction(LatentInfo, this));
+		}
+	}
+}
+
+void ULiveLinkPreset::ApplyToClientLatent(TFunction<void(bool)> CompletionCallback)
+{
+	if (ApplyToClientPollingOperation.IsValid())
+	{
+		FLiveLinkLog::Error(TEXT("Could not apply '%s', operation is already in progress."), *GetFullName());
+		if (CompletionCallback != nullptr)
+		{
+			CompletionCallback(false);
+		}
+		return;
+	}
+
+	ApplyToClientPollingOperation = MakePimpl<FApplyToClientPollingOperation>(this);
+
+	ApplyToClientEndFrameHandle = FCoreDelegates::OnEndFrame.AddLambda([WeakThis = TWeakObjectPtr<ULiveLinkPreset>(this), WrappedCallback = MoveTemp(CompletionCallback)]()
+	{
+		if (ensure(WeakThis->ApplyToClientPollingOperation))
+		{
+			FApplyToClientPollingOperation::EApplyToClientUpdateResult Result = WeakThis->ApplyToClientPollingOperation->Update();
+			if (Result != FApplyToClientPollingOperation::EApplyToClientUpdateResult::Pending)
+			{
+				if (WrappedCallback != nullptr)
+				{
+					WrappedCallback(Result == FApplyToClientPollingOperation::EApplyToClientUpdateResult::Success ? true : false);
+				}
+
+				WeakThis->ApplyToClientPollingOperation.Reset();
+				WeakThis->ClearApplyToClientTimer();
+			}
+		}
+	});
 }
 
 bool ULiveLinkPreset::AddToClient(const bool bRecreatePresets) const
@@ -323,5 +351,13 @@ void ULiveLinkPreset::BuildFromClient()
 		{
 			Subjects.Add(LiveLinkClient.GetSubjectPreset(SubjectKey, this));
 		}
+	}
+}
+
+void ULiveLinkPreset::ClearApplyToClientTimer()
+{
+	if (ApplyToClientEndFrameHandle.IsValid())
+	{
+		FCoreDelegates::OnEndFrame.Remove(ApplyToClientEndFrameHandle);
 	}
 }

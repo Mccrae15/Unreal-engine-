@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SViewportToolBarComboMenu.h"
+#include "SEditorViewportToolBarMenuButton.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Images/SImage.h"
@@ -9,130 +10,87 @@
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Widgets/Input/SButton.h"
 #include "EditorStyleSet.h"
+#include "Styling/ToolBarStyle.h"
 
 void SViewportToolBarComboMenu::Construct( const FArguments& InArgs )
 {
-	FName ButtonStyle = FEditorStyle::Join(InArgs._Style.Get(), ".Button");
-	FName CheckboxStyle = FEditorStyle::Join(InArgs._Style.Get(), ".ToggleButton");
+	const FToolBarStyle& ToolBarStyle = FAppStyle::Get().GetWidgetStyle<FToolBarStyle>(InArgs._Style.Get());
+
+	EMultiBlockLocation::Type BlockLocation = InArgs._BlockLocation;
+
+	const FButtonStyle& ButtonStyle = FAppStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.ComboMenu.ButtonStyle");
+	const FCheckBoxStyle& CheckBoxStyle = FAppStyle::Get().GetWidgetStyle<FCheckBoxStyle>("EditorViewportToolBar.ToggleButton.Start");
+	const FTextBlockStyle& LabelStyle = FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("EditorViewportToolBar.ComboMenu.LabelStyle");
 
 	const FSlateIcon& Icon = InArgs._Icon.Get();
-
 	ParentToolBar = InArgs._ParentToolBar;
 
-	TSharedPtr<SCheckBox> ToggleControl;
-	{
-		ToggleControl = SNew(SCheckBox)
-		.Cursor( EMouseCursor::Default )
-		.Padding(FMargin( 4.0f ))
-		.Style(FEditorStyle::Get(), EMultiBlockLocation::ToName(CheckboxStyle, InArgs._BlockLocation))
-		.OnCheckStateChanged(InArgs._OnCheckStateChanged)
+
+	TSharedRef<SCheckBox> ToggleControl = SNew(SCheckBox)
+		.Style(&CheckBoxStyle)
 		.ToolTipText(InArgs._ToggleButtonToolTip)
+		.OnCheckStateChanged(InArgs._OnCheckStateChanged)
 		.IsChecked(InArgs._IsChecked)
-		.Content()
 		[
-			SNew( SBox )
-			.WidthOverride( 16 )
-			.HeightOverride( 16 )
-			.HAlign(HAlign_Center)
-			.VAlign(VAlign_Center)
-			[
-				SNew(SImage)
-				.Image(Icon.GetIcon())
-			]
+			SNew(SImage)
+			.Image(Icon.GetIcon())
+			.ColorAndOpacity(FSlateColor::UseForeground())
 		];
-	}
+
 
 	{
-		TSharedRef<SWidget> ButtonContents =
-			SNew(SButton)
-			.ButtonStyle( FEditorStyle::Get(), EMultiBlockLocation::ToName(ButtonStyle,EMultiBlockLocation::End) )
-			.ContentPadding( FMargin( 5.0f, 0.0f ) )
-			.ToolTipText(InArgs._MenuButtonToolTip)
-			.OnClicked(this, &SViewportToolBarComboMenu::OnMenuClicked)
-			[
-				SNew(SVerticalBox)
-				+SVerticalBox::Slot()
-				.AutoHeight()
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Top)
-				[
-					SNew(STextBlock)
-					.TextStyle( FEditorStyle::Get(), FEditorStyle::Join( InArgs._Style.Get(), ".Label" ) )
-					.Text(InArgs._Label)
-				]
-				+SVerticalBox::Slot()
-				.AutoHeight()
-				.VAlign(VAlign_Bottom)
-				[
-					SNew(SHorizontalBox)
-					+SHorizontalBox::Slot()
-					.FillWidth(1.0f)
-
-					+SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew( SBox )
-						.WidthOverride( 4 )
-						.HeightOverride( 4 )
-						[
-							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("ComboButton.Arrow"))
-							.ColorAndOpacity(FLinearColor::Black)
-						]
-					]
-
-					+SHorizontalBox::Slot()
-						.FillWidth(1.0f)
-				]
-			];
-		
-		if (InArgs._MinDesiredButtonWidth > 0.0f)
-		{
-			ButtonContents =
-				SNew(SBox)
-				.MinDesiredWidth(InArgs._MinDesiredButtonWidth)
-				[
-					ButtonContents
-				];
-		}
-
 		MenuAnchor = SNew(SMenuAnchor)
 		.Placement( MenuPlacement_BelowAnchor )
-		[
-			ButtonContents
-		]
 		.OnGetMenuContent( InArgs._OnGetMenuContent );
+
+		MenuAnchor->SetContent(
+			SNew(SBox)
+			.MinDesiredWidth(InArgs._MinDesiredButtonWidth > 0.0f ? InArgs._MinDesiredButtonWidth : FOptionalSize())
+			[
+				SNew(SEditorViewportToolBarMenuButton, MenuAnchor.ToSharedRef())
+				.ButtonStyle(&ButtonStyle)
+				.ToolTipText(this, &SViewportToolBarComboMenu::GetFilteredToolTipText, InArgs._MenuButtonToolTip)
+				.OnClicked(this, &SViewportToolBarComboMenu::OnMenuClicked)
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.TextStyle(&LabelStyle)
+					.Text(InArgs._Label)
+				]
+			]
+		);
 	}
 
 
 	ChildSlot
 	[
 		SNew(SHorizontalBox)
-
-		//Checkbox concept
 		+SHorizontalBox::Slot()
 		.AutoWidth()
 		[
-			ToggleControl->AsShared()
+			ToggleControl
 		]
 
-		// Black Separator line
 		+SHorizontalBox::Slot()
 		.AutoWidth()
 		[
-			SNew(SBorder)
-			.Padding(FMargin(1.0f, 0.0f, 0.0f, 0.0f))
-			.BorderImage(FEditorStyle::GetDefaultBrush())
-			.BorderBackgroundColor(FLinearColor::Black)
-		]
-
-		// Menu dropdown concept
-		+SHorizontalBox::Slot()
-		.AutoWidth()
-		[
-			MenuAnchor->AsShared()
+			MenuAnchor.ToSharedRef()
 		]
 	];
+}
+
+FText SViewportToolBarComboMenu::GetFilteredToolTipText(TAttribute<FText> ToolTipText) const
+{
+	// If we're part of a toolbar that has a currently open menu, then we suppress our tool-tip
+	// as it will just get in the way
+	TWeakPtr<SMenuAnchor> OpenedMenu = ParentToolBar.Pin()->GetOpenMenu();
+	if (OpenedMenu.IsValid() && OpenedMenu.Pin()->IsOpen())
+	{
+		return FText::GetEmpty();
+	}
+
+	return ToolTipText.Get();
 }
 
 FReply SViewportToolBarComboMenu::OnMenuClicked()

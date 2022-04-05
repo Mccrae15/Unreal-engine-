@@ -8,6 +8,7 @@
 #include "ISequencerModule.h"
 #include "ICurveEditorModule.h"
 #include "MovieSceneToolsProjectSettingsCustomization.h"
+#include "MovieSceneCVarOverridesPropertyTypeCustomization.h"
 #include "Engine/Blueprint.h"
 #include "EdGraph/EdGraph.h"
 #include "K2Node_CustomEvent.h"
@@ -19,6 +20,7 @@
 #include "TrackEditors/PropertyTrackEditors/BytePropertyTrackEditor.h"
 #include "TrackEditors/PropertyTrackEditors/ColorPropertyTrackEditor.h"
 #include "TrackEditors/PropertyTrackEditors/FloatPropertyTrackEditor.h"
+#include "TrackEditors/PropertyTrackEditors/DoublePropertyTrackEditor.h"
 #include "TrackEditors/PropertyTrackEditors/IntegerPropertyTrackEditor.h"
 #include "TrackEditors/PropertyTrackEditors/VectorPropertyTrackEditor.h"
 #include "TrackEditors/PropertyTrackEditors/TransformPropertyTrackEditor.h"
@@ -43,12 +45,14 @@
 #include "TrackEditors/FadeTrackEditor.h"
 #include "TrackEditors/SpawnTrackEditor.h"
 #include "TrackEditors/LevelVisibilityTrackEditor.h"
+#include "TrackEditors/DataLayerTrackEditor.h"
 #include "TrackEditors/CameraAnimTrackEditor.h"
 #include "TrackEditors/CameraShakeTrackEditor.h"
 #include "TrackEditors/MaterialParameterCollectionTrackEditor.h"
 #include "TrackEditors/ObjectPropertyTrackEditor.h"
 #include "TrackEditors/PrimitiveMaterialTrackEditor.h"
 #include "TrackEditors/CameraShakeSourceShakeTrackEditor.h"
+#include "TrackEditors/CVarTrackEditor.h"
 
 #include "MovieSceneBuiltInEasingFunctionCustomization.h"
 #include "MovieSceneObjectBindingIDCustomization.h"
@@ -69,6 +73,7 @@
 #include "Channels/MovieSceneCameraShakeSourceTriggerChannel.h"
 #include "Channels/EventChannelCurveModel.h"
 #include "Channels/SCurveEditorEventChannelView.h"
+#include "Channels/MovieSceneAudioTriggerChannel.h"
 #include "Sections/MovieSceneEventSection.h"
 
 #include "MovieSceneEventUtils.h"
@@ -104,8 +109,10 @@ void FMovieSceneToolsModule::StartupModule()
 		BytePropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FBytePropertyTrackEditor>();
 		ColorPropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FColorPropertyTrackEditor>();
 		FloatPropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FFloatPropertyTrackEditor>();
+		DoublePropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FDoublePropertyTrackEditor>();
 		IntegerPropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FIntegerPropertyTrackEditor>();
-		VectorPropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FVectorPropertyTrackEditor>();
+		FloatVectorPropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FFloatVectorPropertyTrackEditor>();
+		DoubleVectorPropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FDoubleVectorPropertyTrackEditor>();
 		TransformPropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FTransformPropertyTrackEditor>();
 		EulerTransformPropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FEulerTransformPropertyTrackEditor>();
 		VisibilityPropertyTrackCreateEditorHandle = SequencerModule.RegisterPropertyTrackEditor<FVisibilityPropertyTrackEditor>();
@@ -130,11 +137,13 @@ void FMovieSceneToolsModule::StartupModule()
 		FadeTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor( FOnCreateTrackEditor::CreateStatic( &FFadeTrackEditor::CreateTrackEditor ) );
 		SpawnTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor( FOnCreateTrackEditor::CreateStatic( &FSpawnTrackEditor::CreateTrackEditor ) );
 		LevelVisibilityTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor( FOnCreateTrackEditor::CreateStatic( &FLevelVisibilityTrackEditor::CreateTrackEditor ) );
+		DataLayerTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor( FOnCreateTrackEditor::CreateStatic( &FDataLayerTrackEditor::CreateTrackEditor ) );
 		CameraAnimTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FCameraAnimTrackEditor::CreateTrackEditor));
 		CameraShakeTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FCameraShakeTrackEditor::CreateTrackEditor));
 		MPCTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FMaterialParameterCollectionTrackEditor::CreateTrackEditor));
 		PrimitiveMaterialCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FPrimitiveMaterialTrackEditor::CreateTrackEditor));
 		CameraShakeSourceShakeCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FCameraShakeSourceShakeTrackEditor::CreateTrackEditor));
+		CVarTrackCreateEditorHandle = SequencerModule.RegisterTrackEditor(FOnCreateTrackEditor::CreateStatic(&FCVarTrackEditor::CreateTrackEditor));
 
 		RegisterClipboardConversions();
 
@@ -144,16 +153,20 @@ void FMovieSceneToolsModule::StartupModule()
 		PropertyModule.RegisterCustomClassLayout("MovieSceneBuiltInEasingFunction", FOnGetDetailCustomizationInstance::CreateLambda(&MakeShared<FMovieSceneBuiltInEasingFunctionCustomization>));
 		PropertyModule.RegisterCustomPropertyTypeLayout("MovieSceneObjectBindingID", FOnGetPropertyTypeCustomizationInstance::CreateLambda(&MakeShared<FMovieSceneObjectBindingIDCustomization>));
 		PropertyModule.RegisterCustomPropertyTypeLayout("MovieSceneEvent", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FMovieSceneEventCustomization::MakeInstance));
+		PropertyModule.RegisterCustomPropertyTypeLayout("MovieSceneCVarOverrides", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&UE::MovieScene::FCVarOverridesPropertyTypeCustomization::MakeInstance));
 
 		SequencerModule.RegisterChannelInterface<FMovieSceneBoolChannel>();
 		SequencerModule.RegisterChannelInterface<FMovieSceneByteChannel>();
 		SequencerModule.RegisterChannelInterface<FMovieSceneIntegerChannel>();
 		SequencerModule.RegisterChannelInterface<FMovieSceneFloatChannel>();
+		SequencerModule.RegisterChannelInterface<FMovieSceneDoubleChannel>();
 		SequencerModule.RegisterChannelInterface<FMovieSceneStringChannel>();
 		SequencerModule.RegisterChannelInterface<FMovieSceneParticleChannel>();
 		SequencerModule.RegisterChannelInterface<FMovieSceneActorReferenceData>();
 		SequencerModule.RegisterChannelInterface<FMovieSceneEventSectionData>();
 		SequencerModule.RegisterChannelInterface<FMovieSceneObjectPathChannel>();
+
+		SequencerModule.RegisterChannelInterface<FMovieSceneAudioTriggerChannel>();
 
 		SequencerModule.RegisterChannelInterface<FMovieSceneEventChannel>();
 
@@ -172,6 +185,7 @@ void FMovieSceneToolsModule::StartupModule()
 	FixupPayloadParameterNameHandle = UMovieSceneEventSectionBase::FixupPayloadParameterNameEvent.AddStatic(FixupPayloadParameterNameForSection);
 	UMovieSceneEventSectionBase::UpgradeLegacyEventEndpoint.BindStatic(UpgradeLegacyEventEndpointForSection);
 	UMovieSceneEventSectionBase::PostDuplicateSectionEvent.BindStatic(PostDuplicateEventSection);
+	UMovieSceneEventSectionBase::RemoveForCookEvent.BindStatic(RemoveForCookEventSection);
 
 	auto OnObjectsReplaced = [](const TMap<UObject*, UObject*>& ReplacedObjects)
 	{
@@ -187,22 +201,7 @@ void FMovieSceneToolsModule::StartupModule()
 		}
 	};
 
-	if (GEditor)
-	{
-		this->OnObjectsReplacedHandle = GEditor->OnObjectsReplaced().AddLambda(OnObjectsReplaced);
-	}
-	else
-	{
-		FCoreDelegates::OnFEngineLoopInitComplete.AddLambda(
-			[this, OnObjectsReplaced]
-			{
-				if (GEditor)
-				{
-					this->OnObjectsReplacedHandle = GEditor->OnObjectsReplaced().AddLambda(OnObjectsReplaced);
-				}
-			}
-		);
-	}
+	OnObjectsReplacedHandle = FCoreUObjectDelegates::OnObjectsReplaced.AddLambda(OnObjectsReplaced);
 
 	// EditorStyle must be initialized by now
 	FModuleManager::Get().LoadModule("EditorStyle");
@@ -219,6 +218,7 @@ void FMovieSceneToolsModule::ShutdownModule()
 	UMovieSceneEventSectionBase::FixupPayloadParameterNameEvent.Remove(FixupPayloadParameterNameHandle);
 	UMovieSceneEventSectionBase::UpgradeLegacyEventEndpoint = UMovieSceneEventSectionBase::FUpgradeLegacyEventEndpoint();
 	UMovieSceneEventSectionBase::PostDuplicateSectionEvent = UMovieSceneEventSectionBase::FPostDuplicateEvent();
+	UMovieSceneEventSectionBase::RemoveForCookEvent = UMovieSceneEventSectionBase::FRemoveForCookEvent();
 
 	if (ICurveEditorModule* CurveEditorModule = FModuleManager::GetModulePtr<ICurveEditorModule>("CurveEditor"))
 	{
@@ -230,10 +230,7 @@ void FMovieSceneToolsModule::ShutdownModule()
 		SettingsModule->UnregisterSettings("Project", "Editor", "Level Sequences");
 	}
 
-	if (GEditor)
-	{
-		GEditor->OnObjectsReplaced().Remove(OnObjectsReplacedHandle);
-	}
+	FCoreUObjectDelegates::OnObjectsReplaced.Remove(OnObjectsReplacedHandle);
 
 	if (!FModuleManager::Get().IsModuleLoaded("Sequencer"))
 	{
@@ -247,8 +244,10 @@ void FMovieSceneToolsModule::ShutdownModule()
 	SequencerModule.UnRegisterTrackEditor( BytePropertyTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( ColorPropertyTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( FloatPropertyTrackCreateEditorHandle );
+	SequencerModule.UnRegisterTrackEditor( DoublePropertyTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( IntegerPropertyTrackCreateEditorHandle );
-	SequencerModule.UnRegisterTrackEditor( VectorPropertyTrackCreateEditorHandle );
+	SequencerModule.UnRegisterTrackEditor( FloatVectorPropertyTrackCreateEditorHandle );
+	SequencerModule.UnRegisterTrackEditor( DoubleVectorPropertyTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( TransformPropertyTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( EulerTransformPropertyTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( VisibilityPropertyTrackCreateEditorHandle );
@@ -273,11 +272,13 @@ void FMovieSceneToolsModule::ShutdownModule()
 	SequencerModule.UnRegisterTrackEditor( FadeTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( SpawnTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( LevelVisibilityTrackCreateEditorHandle );
+	SequencerModule.UnRegisterTrackEditor( DataLayerTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( CameraAnimTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( CameraShakeTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( MPCTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( ObjectTrackCreateEditorHandle );
 	SequencerModule.UnRegisterTrackEditor( PrimitiveMaterialCreateEditorHandle );
+	SequencerModule.UnRegisterTrackEditor( CVarTrackCreateEditorHandle );
 
 	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
 	{	
@@ -302,6 +303,18 @@ void FMovieSceneToolsModule::PostDuplicateEventSection(UMovieSceneEventSectionBa
 	{
 		// Always bind the event section onto the blueprint to ensure that we get another chance to upgrade when the BP compiles if this try wasn't successful
 		FMovieSceneEventUtils::BindEventSectionToBlueprint(Section, SequenceDirectorBP);
+	}
+}
+
+void FMovieSceneToolsModule::RemoveForCookEventSection(UMovieSceneEventSectionBase* Section)
+{
+	UMovieSceneSequence*       Sequence           = Section->GetTypedOuter<UMovieSceneSequence>();
+	FMovieSceneSequenceEditor* SequenceEditor     = FMovieSceneSequenceEditor::Find(Sequence);
+	UBlueprint*                SequenceDirectorBP = SequenceEditor ? SequenceEditor->FindDirectorBlueprint(Sequence) : nullptr;
+
+	if (SequenceDirectorBP)
+	{
+		FMovieSceneEventUtils::RemoveEndpointsForEventSection(Section, SequenceDirectorBP);
 	}
 }
 
@@ -344,9 +357,9 @@ bool FMovieSceneToolsModule::UpgradeLegacyEventEndpointForSection(UMovieSceneEve
 			{
 				if (EntryPoint.NodeGuid_DEPRECATED.IsValid())
 				{
-					if (UEdGraph* const* GraphPtr = Algo::FindBy(SequenceDirectorBP->UbergraphPages, EntryPoint.GraphGuid_DEPRECATED, &UEdGraph::GraphGuid))
+					if (TObjectPtr<UEdGraph> const* GraphPtr = Algo::FindBy(SequenceDirectorBP->UbergraphPages, EntryPoint.GraphGuid_DEPRECATED, &UEdGraph::GraphGuid))
 					{
-						UEdGraphNode* const* NodePtr  = Algo::FindBy((*GraphPtr)->Nodes, EntryPoint.NodeGuid_DEPRECATED, &UEdGraphNode::NodeGuid);
+						TObjectPtr<UEdGraphNode> const* NodePtr  = Algo::FindBy((*GraphPtr)->Nodes, EntryPoint.NodeGuid_DEPRECATED, &UEdGraphNode::NodeGuid);
 						if (NodePtr)
 						{
 							UK2Node_CustomEvent* CustomEvent = Cast<UK2Node_CustomEvent>(*NodePtr);
@@ -359,9 +372,9 @@ bool FMovieSceneToolsModule::UpgradeLegacyEventEndpointForSection(UMovieSceneEve
 					}
 				}
 				// If the node guid is invalid, this must be a function graph on the BP
-				else if (UEdGraph* const* GraphPtr = Algo::FindBy(SequenceDirectorBP->FunctionGraphs, EntryPoint.GraphGuid_DEPRECATED, &UEdGraph::GraphGuid))
+				else if (TObjectPtr<UEdGraph> const* GraphPtr = Algo::FindBy(SequenceDirectorBP->FunctionGraphs, EntryPoint.GraphGuid_DEPRECATED, &UEdGraph::GraphGuid))
 				{
-					UEdGraphNode* const* NodePtr = Algo::FindByPredicate((*GraphPtr)->Nodes, [](UEdGraphNode* InNode){ return InNode && InNode->IsA<UK2Node_FunctionEntry>(); });
+					TObjectPtr<UEdGraphNode> const* NodePtr = Algo::FindByPredicate((*GraphPtr)->Nodes, [](UEdGraphNode* InNode){ return InNode && InNode->IsA<UK2Node_FunctionEntry>(); });
 					if (NodePtr)
 					{
 						UK2Node_FunctionEntry* FunctionEntry = CastChecked<UK2Node_FunctionEntry>(*NodePtr);
@@ -441,6 +454,12 @@ void FMovieSceneToolsModule::RegisterClipboardConversions()
 	DefineExplicitConversion<FMovieSceneFloatValue, int32>([](const FMovieSceneFloatValue& In) -> int32 { return In.Value; 					});
 	DefineExplicitConversion<FMovieSceneFloatValue, uint8>([](const FMovieSceneFloatValue& In) -> uint8 { return In.Value; 					});
 	DefineExplicitConversion<FMovieSceneFloatValue, bool>([](const FMovieSceneFloatValue& In) -> bool	{ return !!In.Value; 				});
+
+	DefineExplicitConversion<int32, FMovieSceneDoubleValue>([](const int32& In) -> FMovieSceneDoubleValue { return FMovieSceneDoubleValue(In);	});
+	DefineExplicitConversion<uint8, FMovieSceneDoubleValue>([](const uint8& In) -> FMovieSceneDoubleValue { return FMovieSceneDoubleValue(In);	});
+	DefineExplicitConversion<FMovieSceneDoubleValue, int32>([](const FMovieSceneDoubleValue& In) -> int32 { return In.Value; 					});
+	DefineExplicitConversion<FMovieSceneDoubleValue, uint8>([](const FMovieSceneDoubleValue& In) -> uint8 { return In.Value; 					});
+	DefineExplicitConversion<FMovieSceneDoubleValue, bool>([](const FMovieSceneDoubleValue& In) -> bool	  { return !!In.Value;					});
 
 	FSequencerClipboardReconciler::AddTrackAlias("Location.X", "R");
 	FSequencerClipboardReconciler::AddTrackAlias("Location.Y", "G");

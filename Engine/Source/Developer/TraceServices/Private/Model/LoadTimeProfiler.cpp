@@ -5,7 +5,7 @@
 #include "AnalysisServicePrivate.h"
 #include "Common/TimelineStatistics.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 FLoadTimeProfilerProvider::FLoaderFrameCounter::FLoaderFrameCounter(ELoaderFrameCounterType InType, const TPagedArray<FLoaderFrame>& InFrames)
@@ -102,15 +102,16 @@ FLoadTimeProfilerProvider::FLoadTimeProfilerProvider(IAnalysisSession& InSession
 	RequestsTable.EditLayout().
 		AddColumn(&FLoadRequest::Name, TEXT("Name")).
 		AddColumn(&FLoadRequest::ThreadId, TEXT("ThreadId")).
-		AddColumn(&FLoadRequest::StartTime, TEXT("StartTime")).
-		AddColumn(&FLoadRequest::EndTime, TEXT("EndTime")).
+		AddColumn(&FLoadRequest::StartTime, TEXT("StartTime"), TableColumnDisplayHint_Time).
+		AddColumn(&FLoadRequest::EndTime, TEXT("EndTime"), TableColumnDisplayHint_Time).
 		AddColumn<int32>(
 			[](const FLoadRequest& Row)
 			{
 				return Row.Packages.Num();
 			},
-			TEXT("PackageCount")).
-		AddColumn(&FLoadTimeProfilerProvider::PackageSizeSum, TEXT("Size")).
+			TEXT("PackageCount"),
+			TableColumnDisplayHint_Summable).
+		AddColumn(&FLoadTimeProfilerProvider::PackageSizeSum, TEXT("Size"), TableColumnDisplayHint_Memory | TableColumnDisplayHint_Summable).
 		AddColumn<const TCHAR*>(
 			[](const FLoadRequest& Row)
 			{
@@ -120,12 +121,12 @@ FLoadTimeProfilerProvider::FLoadTimeProfilerProvider(IAnalysisSession& InSession
 
 	AggregatedStatsTableLayout.
 		AddColumn(&FLoadTimeProfilerAggregatedStats::Name, TEXT("Name")).
-		AddColumn(&FLoadTimeProfilerAggregatedStats::Count, TEXT("Count")).
-		AddColumn(&FLoadTimeProfilerAggregatedStats::Total, TEXT("Total")).
-		AddColumn(&FLoadTimeProfilerAggregatedStats::Min, TEXT("Min")).
-		AddColumn(&FLoadTimeProfilerAggregatedStats::Max, TEXT("Max")).
-		AddColumn(&FLoadTimeProfilerAggregatedStats::Average, TEXT("Avg")).
-		AddColumn(&FLoadTimeProfilerAggregatedStats::Median, TEXT("Med"));
+		AddColumn(&FLoadTimeProfilerAggregatedStats::Count, TEXT("Count"), TableColumnDisplayHint_Summable).
+		AddColumn(&FLoadTimeProfilerAggregatedStats::Total, TEXT("Total"), TableColumnDisplayHint_Time | TableColumnDisplayHint_Summable).
+		AddColumn(&FLoadTimeProfilerAggregatedStats::Min, TEXT("Min"), TableColumnDisplayHint_Time).
+		AddColumn(&FLoadTimeProfilerAggregatedStats::Max, TEXT("Max"), TableColumnDisplayHint_Time).
+		AddColumn(&FLoadTimeProfilerAggregatedStats::Average, TEXT("Avg"), TableColumnDisplayHint_Time).
+		AddColumn(&FLoadTimeProfilerAggregatedStats::Median, TEXT("Med"), TableColumnDisplayHint_Time);
 
 	PackagesTableLayout.
 		AddColumn<const TCHAR*>([](const FPackagesTableRow& Row)
@@ -133,11 +134,11 @@ FLoadTimeProfilerProvider::FLoadTimeProfilerProvider(IAnalysisSession& InSession
 				return Row.PackageInfo->Name;
 			},
 			TEXT("Package")).
-		AddColumn(&FPackagesTableRow::SerializedHeaderSize, TEXT("SerializedHeaderSize")).
-		AddColumn(&FPackagesTableRow::SerializedExportsCount, TEXT("SerializedExportsCount")).
-		AddColumn(&FPackagesTableRow::SerializedExportsSize, TEXT("SerializedExportsSize")).
-		AddColumn(&FPackagesTableRow::MainThreadTime, TEXT("MainThreadTime")).
-		AddColumn(&FPackagesTableRow::AsyncLoadingThreadTime, TEXT("AsyncLoadingThreadTime"));
+		AddColumn(&FPackagesTableRow::SerializedHeaderSize, TEXT("SerializedHeaderSize"), TableColumnDisplayHint_Memory | TableColumnDisplayHint_Summable).
+		AddColumn(&FPackagesTableRow::SerializedExportsCount, TEXT("SerializedExportsCount"), TableColumnDisplayHint_Summable).
+		AddColumn(&FPackagesTableRow::SerializedExportsSize, TEXT("SerializedExportsSize"), TableColumnDisplayHint_Memory | TableColumnDisplayHint_Summable).
+		AddColumn(&FPackagesTableRow::MainThreadTime, TEXT("MainThreadTime"), TableColumnDisplayHint_Time | TableColumnDisplayHint_Summable).
+		AddColumn(&FPackagesTableRow::AsyncLoadingThreadTime, TEXT("AsyncLoadingThreadTime"), TableColumnDisplayHint_Time | TableColumnDisplayHint_Summable);
 
 	ExportsTableLayout.
 		AddColumn<const TCHAR*>([](const FExportsTableRow& Row)
@@ -155,9 +156,9 @@ FLoadTimeProfilerProvider::FLoadTimeProfilerProvider(IAnalysisSession& InSession
 				return GetLoadTimeProfilerObjectEventTypeString(Row.EventType);
 			},
 			TEXT("EventType")).
-		AddColumn(&FExportsTableRow::SerializedSize, TEXT("SerializedSize")).
-		AddColumn(&FExportsTableRow::MainThreadTime, TEXT("MainThreadTime")).
-		AddColumn(&FExportsTableRow::AsyncLoadingThreadTime, TEXT("AsyncLoadingThreadTime"));
+		AddColumn(&FExportsTableRow::SerializedSize, TEXT("SerializedSize"), TableColumnDisplayHint_Memory | TableColumnDisplayHint_Summable).
+		AddColumn(&FExportsTableRow::MainThreadTime, TEXT("MainThreadTime"), TableColumnDisplayHint_Time | TableColumnDisplayHint_Summable).
+		AddColumn(&FExportsTableRow::AsyncLoadingThreadTime, TEXT("AsyncLoadingThreadTime"), TableColumnDisplayHint_Time | TableColumnDisplayHint_Summable);
 }
 
 bool FLoadTimeProfilerProvider::GetCpuThreadTimelineIndex(uint32 ThreadId, uint32& OutTimelineIndex) const
@@ -228,7 +229,7 @@ ITable<FLoadTimeProfilerAggregatedStats>* FLoadTimeProfilerProvider::CreateObjec
 	{
 		return Event.Export ? Event.Export->Class : nullptr;
 	};
-	TMap<const Trace::FClassInfo*, FAggregatedTimingStats> Aggregation;
+	TMap<const FClassInfo*, FAggregatedTimingStats> Aggregation;
 	FTimelineStatistics::CreateAggregation(Timelines, BucketMapper, IntervalStart, IntervalEnd, Aggregation);
 	TTable<FLoadTimeProfilerAggregatedStats>* Table = new TTable<FLoadTimeProfilerAggregatedStats>(AggregatedStatsTableLayout);
 	for (const auto& KV : Aggregation)
@@ -305,7 +306,7 @@ ITable<FPackagesTableRow>* FLoadTimeProfilerProvider::CreatePackageDetailsTable(
 					Row->AsyncLoadingThreadTime += EndTime - StartTime; // TODO: Should be exclusive time
 				}
 			}
-			return Trace::EEventEnumerate::Continue;
+			return EEventEnumerate::Continue;
 		});
 	}
 
@@ -366,13 +367,13 @@ ITable<FExportsTableRow>* FLoadTimeProfilerProvider::CreateExportDetailsTable(do
 					Row->AsyncLoadingThreadTime += EndTime - StartTime; // TODO: Should be exclusive time
 				}
 			}
-			return Trace::EEventEnumerate::Continue;
+			return EEventEnumerate::Continue;
 		});
 	}
 	return Table;
 }
 
-const Trace::FClassInfo& FLoadTimeProfilerProvider::AddClassInfo(const TCHAR* ClassName)
+const FClassInfo& FLoadTimeProfilerProvider::AddClassInfo(const TCHAR* ClassName)
 {
 	Session.WriteAccessCheck();
 
@@ -381,7 +382,7 @@ const Trace::FClassInfo& FLoadTimeProfilerProvider::AddClassInfo(const TCHAR* Cl
 	return ClassInfo;
 }
 
-Trace::FLoadRequest& FLoadTimeProfilerProvider::CreateRequest()
+FLoadRequest& FLoadTimeProfilerProvider::CreateRequest()
 {
 	Session.WriteAccessCheck();
 
@@ -389,14 +390,13 @@ Trace::FLoadRequest& FLoadTimeProfilerProvider::CreateRequest()
 	return RequestInfo;
 }
 
-Trace::FPackageInfo& FLoadTimeProfilerProvider::EditPackageInfo(const TCHAR* PackageName)
+FPackageInfo& FLoadTimeProfilerProvider::CreatePackage()
 {
 	Session.WriteAccessCheck();
 
 	uint32 PackageId = Packages.Num();
 	FPackageInfo& Package = Packages.PushBack();
 	Package.Id = PackageId;
-	Package.Name = Session.StoreString(PackageName);
 	return Package;
 }
 
@@ -514,7 +514,7 @@ void FLoadTimeProfilerProvider::EndIoDispatcherBatch(uint64 BatchHandle, double 
 	ActiveIoDispatcherBatchesCounter->AddValue(Time, int64(-1));
 }
 
-Trace::FPackageExportInfo& FLoadTimeProfilerProvider::CreateExport()
+FPackageExportInfo& FLoadTimeProfilerProvider::CreateExport()
 {
 	Session.WriteAccessCheck();
 
@@ -600,4 +600,4 @@ const TCHAR* GetLoadTimeProfilerObjectEventTypeString(ELoadTimeProfilerObjectEve
 	return TEXT("[invalid]");
 }
 
-}
+} // namespace TraceServices

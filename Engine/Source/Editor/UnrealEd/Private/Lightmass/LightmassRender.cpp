@@ -48,6 +48,12 @@ struct FLightmassMaterialCompiler : public FProxyMaterialCompiler
 		return MSM_MAX;
 	}
 
+	virtual FMaterialShadingModelField GetCompiledShadingModels() const override
+	{
+		// not used by Lightmass
+		return MSM_MAX;
+	}
+
 	virtual EMaterialValueType GetParameterType(int32 Index) const override
 	{
 		return MCT_Unknown;
@@ -174,16 +180,6 @@ struct FLightmassMaterialCompiler : public FProxyMaterialCompiler
 		return Compiler->Constant4(1.0f,1.0f,1.0f,1.0f);
 	}
 
-	virtual int32 PreSkinVertexOffset() override
-	{
-		return Compiler->Constant3(0.f, 0.f, 0.f);
-	}
-
-	virtual int32 PostSkinVertexOffset() override
-	{
-		return Compiler->Constant3(0.f, 0.f, 0.f);
-	}
-
 	virtual int32 PreSkinnedPosition() override
 	{
 		return Compiler->Constant3(0.f,0.f,0.f);
@@ -234,7 +230,7 @@ struct FLightmassMaterialCompiler : public FProxyMaterialCompiler
 class FLightmassMaterialProxy : public FMaterial, public FMaterialRenderProxy
 {
 public:
-	FLightmassMaterialProxy(): FMaterial()
+	FLightmassMaterialProxy(): FMaterial(), FMaterialRenderProxy(TEXT("FLightmassMaterialProxy"))
 	{
 		SetQualityLevelProperties(GMaxRHIFeatureLevel);
 	}
@@ -275,7 +271,7 @@ public:
 		}
 	}
 
-	virtual TArrayView<UObject* const> GetReferencedTextures() const override
+	virtual TArrayView<const TObjectPtr<UObject>> GetReferencedTextures() const override
 	{
 		return ReferencedTextures;
 	}
@@ -330,24 +326,9 @@ public:
 		return UMaterial::GetDefaultMaterial(MD_Surface)->GetRenderProxy();
 	}
 
-	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
+	virtual bool GetParameterValue(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, FMaterialParameterValue& OutValue, const FMaterialRenderContext& Context) const override
 	{
-		return MaterialInterface->GetRenderProxy()->GetVectorValue(ParameterInfo, OutValue, Context);
-	}
-
-	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
-	{
-		return MaterialInterface->GetRenderProxy()->GetScalarValue(ParameterInfo, OutValue, Context);
-	}
-
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const override
-	{
-		return MaterialInterface->GetRenderProxy()->GetTextureValue(ParameterInfo,OutValue,Context);
-	}
-
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const override
-	{
-		return MaterialInterface->GetRenderProxy()->GetTextureValue(ParameterInfo, OutValue, Context);
+		return MaterialInterface->GetRenderProxy()->GetParameterValue(Type, ParameterInfo, OutValue, Context);
 	}
 
 	// Material properties.
@@ -453,6 +434,7 @@ public:
 				break;
 			case MP_ShadingModel:
 				return MaterialInterface->CompileProperty(&ProxyCompiler, MP_ShadingModel);
+			// STRATA_TODO
 			default:
 				return Compiler->Constant(1.0f);
 			}
@@ -472,6 +454,10 @@ public:
 		else if (Property == MP_ShadingModel)
 		{
 			return MaterialInterface->CompileProperty(Compiler, MP_ShadingModel);
+		}
+		else if (Property == MP_FrontMaterial)
+		{
+			return MaterialInterface->CompileProperty(Compiler, MP_FrontMaterial);
 		}
 		else
 		{
@@ -845,7 +831,7 @@ private:
 	/** The material interface for this proxy */
 	UMaterialInterface* MaterialInterface;
 	UMaterial* Material;
-	TArray<UObject*> ReferencedTextures;
+	TArray<TObjectPtr<UObject>> ReferencedTextures;
 	/** The property to compile for rendering the sample */
 	EMaterialProperty PropertyToCompile;
 	/** Stores which exported attribute this proxy is compiling for. */
@@ -1129,7 +1115,7 @@ bool FLightmassMaterialRenderer::GenerateMaterialPropertyData(
 		// If the ShaderMap is NULL that's because it failed to compile, which is ok as the default material will be used for exporting
 		check(!MaterialProxy->GetGameThreadShaderMap() || MaterialProxy->GetGameThreadShaderMap()->IsValidForRendering());
 
-		//@todo UE4. The format may be determined by the material property...
+		//@todo The format may be determined by the material property...
 		// For example, if Diffuse doesn't need to be F16 it can create a standard RGBA8 target.
 		EPixelFormat Format = PF_FloatRGBA;
 		if (MaterialProxy->GetRenderTargetFormatAndSize(InMaterialProperty, Format, InMaterial.GetExportResolutionScale(), InOutSizeX, InOutSizeY))
@@ -1244,7 +1230,7 @@ bool FLightmassMaterialRenderer::CreateRenderTarget(EPixelFormat InFormat, int32
 		RenderTarget->ClearColor = FLinearColor(0.0f, 0.0f, 0.0f, 0.0f);
 		RenderTarget->InitCustomFormat(InSizeX, InSizeY, InFormat, false);
 
-		Canvas = new FCanvas(RenderTarget->GameThread_GetRenderTargetResource(), NULL, 0, 0, 0, GMaxRHIFeatureLevel);
+		Canvas = new FCanvas(RenderTarget->GameThread_GetRenderTargetResource(), NULL, FGameTime(), GMaxRHIFeatureLevel);
 		check(Canvas);
 	}
 

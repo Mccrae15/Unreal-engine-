@@ -3,6 +3,7 @@
 #pragma once
 
 #include "RenderGraphDefinitions.h"
+#include "RendererInterface.h"
 #include "ProfilingDebugging/RealtimeGPUProfiler.h"
 
 /** Macros for create render graph event names and scopes.
@@ -25,12 +26,15 @@
 
 #if HAS_GPU_STATS
 	#if STATS
-		#define RDG_GPU_STAT_SCOPE(GraphBuilder, StatName) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), GET_STATID(Stat_GPU_##StatName).GetName(), &DrawcallCountCategory_##StatName.Counters);
+		#define RDG_GPU_STAT_SCOPE(GraphBuilder, StatName) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), GET_STATID(Stat_GPU_##StatName).GetName(), nullptr, &DrawcallCountCategory_##StatName.Counters);
+		#define RDG_GPU_STAT_SCOPE_VERBOSE(GraphBuilder, StatName, Description) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), GET_STATID(Stat_GPU_##StatName).GetName(), Description, &DrawcallCountCategory_##StatName.Counters);
 	#else
-		#define RDG_GPU_STAT_SCOPE(GraphBuilder, StatName) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), FName(), &DrawcallCountCategory_##StatName.Counters);
+		#define RDG_GPU_STAT_SCOPE(GraphBuilder, StatName) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), FName(), nullptr, &DrawcallCountCategory_##StatName.Counters);
+		#define RDG_GPU_STAT_SCOPE_VERBOSE(GraphBuilder, StatName, Description) FRDGGPUStatScopeGuard PREPROCESSOR_JOIN(__RDG_GPUStatEvent_##StatName,__LINE__) ((GraphBuilder), CSV_STAT_FNAME(StatName), FName(), Description, &DrawcallCountCategory_##StatName.Counters);
 	#endif
 #else
 	#define RDG_GPU_STAT_SCOPE(GraphBuilder, StatName)
+	#define RDG_GPU_STAT_SCOPE_VERBOSE(GraphBuilder, StatName, Description)
 #endif
 
 #if CSV_PROFILER
@@ -41,67 +45,216 @@
 	#define RDG_CSV_STAT_EXCLUSIVE_SCOPE_CONDITIONAL(GraphBuilder, StatName, bCondition)
 #endif
 
+ /** Injects a scope onto both the RDG and RHI timeline. */
+#define RDG_RHI_EVENT_SCOPE(GraphBuilder, Name) RDG_EVENT_SCOPE(GraphBuilder, #Name); SCOPED_DRAW_EVENT(GraphBuilder.RHICmdList, Name);
+#define RDG_RHI_GPU_STAT_SCOPE(GraphBuilder, StatName) RDG_GPU_STAT_SCOPE(GraphBuilder, StatName); SCOPED_GPU_STAT(GraphBuilder.RHICmdList, StatName);
+
 /** Returns whether the current frame is emitting render graph events. */
 RENDERCORE_API bool GetEmitRDGEvents();
 
-/** A helper profiler class for tracking and evaluating hierarchical scopes in the context of render graph. */
-template <typename TScopeType>
-class TRDGScopeStack final
+template <typename InScopeType>
+class TRDGScopeOp
+{
+public:
+	using ScopeType = InScopeType;
+
+	TRDGScopeOp() = default;
+
+	static TRDGScopeOp Push(const ScopeType* Scope)
+	{
+		TRDGScopeOp Op;
+		Op.Scope = Scope;
+		Op.Type = EType::Scope;
+		Op.Op = EOp::Push;
+		return Op;
+	}
+
+	static TRDGScopeOp Push(const TCHAR* Name)
+	{
+		TRDGScopeOp Op;
+		Op.Name = Name;
+		Op.Type = EType::Name;
+		Op.Op = EOp::Push;
+		return Op;
+	}
+
+	static TRDGScopeOp Pop(const ScopeType* Scope)
+	{
+		TRDGScopeOp Op;
+		Op.Scope = Scope;
+		Op.Type = EType::Scope;
+		Op.Op = EOp::Pop;
+		return Op;
+	}
+
+	static TRDGScopeOp Pop()
+	{
+		TRDGScopeOp Op;
+		Op.Type = EType::Name;
+		Op.Op = EOp::Pop;
+		return Op;
+	}
+
+	inline bool IsPush() const { return Op == EOp::Push; }
+	inline bool IsPop()  const { return Op == EOp::Pop;  }
+
+	inline bool IsScope() const { return Type == EType::Scope; }
+	inline bool IsName()  const { return Type == EType::Name;  }
+
+	union
+	{
+		const ScopeType* Scope = nullptr;
+		const TCHAR* Name;
+	};
+
+	enum class EType : uint8
+	{
+		Scope,
+		Name
+
+	} Type = EType::Scope;
+
+	enum class EOp : uint8
+	{
+		Push,
+		Pop
+
+	} Op = EOp::Push;
+};
+
+template <typename ScopeOpType>
+class TRDGScopeOpArray
+{
+public:
+	TRDGScopeOpArray() = default;
+
+	TRDGScopeOpArray(TArray<ScopeOpType, FRDGArrayAllocator>& InArray, int32 InOffset, int32 InCount)
+		: Array(&InArray)
+		, Offset(InOffset)
+		, Count(InCount)
+	{}
+
+	inline int32 Num() const
+	{
+		return Count;
+	}
+
+	inline const ScopeOpType& operator[](int32 Index) const
+	{
+		check(Array);
+		check(Index < Count);
+		return (*Array)[Offset + Index];
+	}
+
+	inline ScopeOpType& operator[](int32 Index)
+	{
+		check(Array);
+		check(Index < Count);
+		return (*Array)[Offset + Index];
+	}
+
+private:
+	TArray<ScopeOpType, FRDGArrayAllocator>* Array;
+	int32 Offset = 0;
+	int32 Count = 0;
+};
+
+template <typename ScopeOpType>
+class TRDGScopeStackHelper
 {
 	static constexpr uint32 kScopeStackDepthMax = 8;
 public:
-	using FPushFunction = void(*)(FRHIComputeCommandList&, const TScopeType*);
-	using FPopFunction = void(*)(FRHIComputeCommandList&, const TScopeType*);
+	using ScopeType = typename ScopeOpType::ScopeType;
 
-	TRDGScopeStack(FRHIComputeCommandList& InRHICmdList, FPushFunction InPushFunction, FPopFunction InPopFunction);
-	~TRDGScopeStack();
+	TRDGScopeStackHelper()
+		: ScopeStack(MakeUniformStaticArray<const ScopeType*, kScopeStackDepthMax>(nullptr))
+	{}
 
-	//////////////////////////////////////////////////////////////////////////
-	//! Called during graph setup phase.
+	inline void ReserveOps(int32 OpCount)
+	{
+		Ops.Reserve(OpCount);
+	}
 
-	/** Call to begin recording a scope. */
+	TRDGScopeOpArray<ScopeOpType> CompilePassPrologue(const ScopeType* ParentScope, const TCHAR* PassName);
+	TRDGScopeOpArray<ScopeOpType> CompilePassEpilogue();
+	TRDGScopeOpArray<ScopeOpType> EndCompile();
+
+private:
+	TStaticArray<const ScopeType*, kScopeStackDepthMax> ScopeStack;
+	TArray<ScopeOpType, FRDGArrayAllocator> Ops;
+	bool bNamePushed = false;
+};
+
+/** A helper profiler class for tracking and evaluating hierarchical scopes in the context of render graph. */
+template <typename ScopeOpType>
+class TRDGScopeStack final
+{
+public:
+	using ScopeType = typename ScopeOpType::ScopeType;
+
+	TRDGScopeStack(FRDGAllocator& InAllocator)
+		: Allocator(InAllocator)
+	{}
+
+	~TRDGScopeStack()
+	{
+		for (int32 Index = Scopes.Num() - 1; Index >= 0; --Index)
+		{
+			Scopes[Index]->~ScopeType();
+		}
+		Scopes.Empty();
+	}
+
 	template <typename... TScopeConstructArgs>
-	void BeginScope(TScopeConstructArgs... ScopeConstructArgs);
+	inline void BeginScope(TScopeConstructArgs... ScopeConstructArgs)
+	{
+		auto Scope = Allocator.AllocNoDestruct<ScopeType>(CurrentScope, Forward<TScopeConstructArgs>(ScopeConstructArgs)...);
+		Scopes.Add(Scope);
+		CurrentScope = Scope;
+	}
 
-	/** Call to end recording a scope. */
-	void EndScope();
+	inline void EndScope()
+	{
+		checkf(CurrentScope != nullptr, TEXT("Current scope is null."));
+		CurrentScope = CurrentScope->ParentScope;
+	}
 
-	//////////////////////////////////////////////////////////////////////////
-	//! Called during graph execute phase.
+	inline void ReserveOps(int32 NameCount = 0)
+	{
+		Helper.ReserveOps(Scopes.Num() * 2 + NameCount * 2);
+	}
 
-	/** Call prior to executing the graph. */
-	void BeginExecute();
+	inline TRDGScopeOpArray<ScopeOpType> CompilePassPrologue(const ScopeType* ParentScope, const TCHAR* Name = nullptr)
+	{
+		return Helper.CompilePassPrologue(ParentScope, Name);
+	}
 
-	/** Call prior to executing a pass in the graph. */
-	void BeginExecutePass(const TScopeType* ParentScope);
+	inline TRDGScopeOpArray<ScopeOpType> CompilePassEpilogue()
+	{
+		return Helper.CompilePassEpilogue();
+	}
 
-	/** Call after executing the graph. */
-	void EndExecute();
+	inline TRDGScopeOpArray<ScopeOpType> EndCompile()
+	{
+		checkf(CurrentScope == nullptr, TEXT("Render graph needs to have all scopes ended to execute."));
+		return Helper.EndCompile();
+	}
 
-	//////////////////////////////////////////////////////////////////////////
-
-	const TScopeType* GetCurrentScope() const
+	inline const ScopeType* GetCurrentScope() const
 	{
 		return CurrentScope;
 	}
 
-	FRHIComputeCommandList& RHICmdList;
-	FMemStackBase& MemStack;
-
 private:
-	void ClearScopes();
-
-	FPushFunction PushFunction;
-	FPopFunction PopFunction;
+	FRDGAllocator& Allocator;
 
 	/** The top of the scope stack during setup. */
-	const TScopeType* CurrentScope = nullptr;
+	const ScopeType* CurrentScope = nullptr;
 
 	/** Tracks scopes allocated through MemStack for destruction. */
-	TArray<TScopeType*, SceneRenderingAllocator> Scopes;
+	TArray<ScopeType*, FRDGArrayAllocator> Scopes;
 
-	/** Stacks of scopes pushed to the RHI command list during execution. */
-	TStaticArray<const TScopeType*, kScopeStackDepthMax> ScopeStack;
+	TRDGScopeStackHelper<ScopeOpType> Helper;
 };
 
 class FRDGPass;
@@ -123,8 +276,6 @@ public:
 
 	explicit FRDGEventName(const TCHAR* EventFormat, ...);
 
-	~FRDGEventName();
-
 	FRDGEventName(const FRDGEventName& Other);
 	FRDGEventName(FRDGEventName&& Other);
 	FRDGEventName& operator=(const FRDGEventName& Other);
@@ -138,8 +289,7 @@ private:
 	const TCHAR* EventFormat = TEXT("");
 
 #if RDG_EVENTS == RDG_EVENTS_STRING_COPY
-	// Formated event name if GetEmitRDGEvents() == true.
-	FString FormatedEventName;
+	FString FormattedEventName;
 #endif
 #endif
 };
@@ -167,35 +317,114 @@ public:
 #endif
 };
 
+using FRDGEventScopeOp = TRDGScopeOp<FRDGEventScope>;
+
+#if RHI_WANT_BREADCRUMB_EVENTS
+struct FRDGBreadcrumbState : TRHIBreadcrumbState<FRDGArrayAllocator>
+{
+	static FRDGBreadcrumbState* Create(FRDGAllocator& Allocator)
+	{
+		return Allocator.AllocNoDestruct<FRDGBreadcrumbState>();
+	}
+
+	FRDGBreadcrumbState* Copy(FRDGAllocator& Allocator) const
+	{
+		return Allocator.AllocNoDestruct<FRDGBreadcrumbState>(*this);
+	}
+
+	uint32 Version = 0;
+};
+#endif
+
+class RENDERCORE_API FRDGEventScopeOpArray final
+{
+public:
+	FRDGEventScopeOpArray(bool bInRDGEvents = true)
+		: bRDGEvents(bInRDGEvents)
+	{}
+
+	FRDGEventScopeOpArray(TRDGScopeOpArray<FRDGEventScopeOp> InOps, bool bInRDGEvents = true)
+		: Ops(InOps)
+		, bRDGEvents(bInRDGEvents)
+	{}
+
+	void Execute(FRHIComputeCommandList& RHICmdList);
+
+#if RHI_WANT_BREADCRUMB_EVENTS
+	void Execute(FRDGBreadcrumbState& State);
+#endif
+
+	TRDGScopeOpArray<FRDGEventScopeOp> Ops;
+	bool bRDGEvents;
+};
+
 /** Manages a stack of event scopes. Scopes are recorded ahead of time in a hierarchical fashion
  *  and later executed topologically during pass execution.
  */
 class RENDERCORE_API FRDGEventScopeStack final
 {
 public:
-	FRDGEventScopeStack(FRHIComputeCommandList& RHICmdList);
+	FRDGEventScopeStack(FRDGAllocator& Allocator)
+		: ScopeStack(Allocator)
+		, bRDGEvents(GetEmitRDGEvents())
+	{}
 
-	void BeginScope(FRDGEventName&& EventName);
+	inline void BeginScope(FRDGEventName&& EventName, FRHIGPUMask GPUMask)
+	{
+		if (IsEnabled())
+		{
+			ScopeStack.BeginScope(Forward<FRDGEventName&&>(EventName), GPUMask);
+		}
+	}
 
-	void EndScope();
+	inline void EndScope()
+	{
+		if (IsEnabled())
+		{
+			ScopeStack.EndScope();
+		}
+	}
 
-	void BeginExecute();
+	inline void ReserveOps(int32 NameCount)
+	{
+		if (IsEnabled())
+		{
+			ScopeStack.ReserveOps(NameCount);
+		}
+	}
 
-	void BeginExecutePass(const FRDGPass* Pass);
+	FRDGEventScopeOpArray CompilePassPrologue(const FRDGPass* Pass);
+	
+	FRDGEventScopeOpArray CompilePassEpilogue();
 
-	void EndExecutePass();
+	inline void EndExecute(FRHIComputeCommandList& RHICmdList)
+	{
+		if (IsEnabled())
+		{
+			FRDGEventScopeOpArray(ScopeStack.EndCompile()).Execute(RHICmdList);
+		}
+	}
 
-	void EndExecute();
-
-	const FRDGEventScope* GetCurrentScope() const
+	inline const FRDGEventScope* GetCurrentScope() const
 	{
 		return ScopeStack.GetCurrentScope();
 	}
 
 private:
-	static bool IsEnabled();
-	TRDGScopeStack<FRDGEventScope> ScopeStack;
-	bool bEventPushed = false;
+	inline bool IsEnabled()
+	{
+#if RHI_WANT_BREADCRUMB_EVENTS
+		return true;
+#elif RDG_EVENTS
+		return bRDGEvents;
+#else
+		return false;
+#endif
+	}
+
+	TRDGScopeStack<FRDGEventScopeOp> ScopeStack;
+	/** Are RDG Events enabled for these scopes */
+	bool bRDGEvents;
 };
 
 RENDERCORE_API FString GetRDGEventPath(const FRDGEventScope* Scope, const FRDGEventName& Event);
@@ -221,48 +450,131 @@ private:
 class FRDGGPUStatScope final
 {
 public:
-	FRDGGPUStatScope(const FRDGGPUStatScope* InParentScope, const FName& InName, const FName& InStatName, int32 (*InDrawCallCounter)[MAX_NUM_GPUS])
+	FRDGGPUStatScope(const FRDGGPUStatScope* InParentScope, const FName& InName, const FName& InStatName, const TCHAR* InDescription, int32 (*InDrawCallCounter)[MAX_NUM_GPUS])
 		: ParentScope(InParentScope)
 		, Name(InName)
 		, StatName(InStatName)
 		, DrawCallCounter(InDrawCallCounter)
-	{}
+	{
+		if (InDescription)
+		{
+			Description = InDescription;
+		}
+	}
 
 	const FRDGGPUStatScope* const ParentScope;
 	const FName Name;
 	const FName StatName;
+	FString Description;
 	int32 (*DrawCallCounter)[MAX_NUM_GPUS];
+};
+
+class FRDGGPUStatScopeOp : public TRDGScopeOp<FRDGGPUStatScope>
+{
+	using Base = TRDGScopeOp<FRDGGPUStatScope>;
+public:
+	FRDGGPUStatScopeOp() = default;
+	FRDGGPUStatScopeOp(const Base& InBase)
+		: Base(InBase)
+	{}
+
+#if HAS_GPU_STATS
+	FRealtimeGPUProfilerQuery Query;
+#endif
+};
+
+class RENDERCORE_API FRDGGPUStatScopeOpArray final
+{
+public:
+	static const int32 kInvalidEventIndex = -1;
+	
+	enum class EType
+	{
+		Prologue,
+		Epilogue
+	};
+
+	FRDGGPUStatScopeOpArray() = default;
+	FRDGGPUStatScopeOpArray(TRDGScopeOpArray<FRDGGPUStatScopeOp> InOps, FRHIGPUMask GPUMask);
+
+	void Execute(FRHIComputeCommandList& RHICmdList);
+
+	TRDGScopeOpArray<FRDGGPUStatScopeOp> Ops;
+	int32 OverrideEventIndex = kInvalidEventIndex;
+	EType Type = EType::Epilogue;
 };
 
 class RENDERCORE_API FRDGGPUStatScopeStack final
 {
 public:
-	FRDGGPUStatScopeStack(FRHIComputeCommandList& RHICmdList);
+	FRDGGPUStatScopeStack(FRDGAllocator& Allocator)
+		: ScopeStack(Allocator)
+#if HAS_GPU_STATS
+		, bGPUStats(AreGPUStatsEnabled())
+#endif
+	{}
 
-	void BeginScope(const FName& Name, const FName& StatName, int32 (*DrawCallCounter)[MAX_NUM_GPUS]);
+	inline void BeginScope(const FName& Name, const FName& StatName, const TCHAR* Description, int32(*DrawCallCounter)[MAX_NUM_GPUS])
+	{
+		if (IsEnabled())
+		{
+			check(DrawCallCounter != nullptr);
+			ScopeStack.BeginScope(Name, StatName, Description, DrawCallCounter);
+		}
+	}
 
-	void EndScope();
+	inline void EndScope()
+	{
+		if (IsEnabled())
+		{
+			ScopeStack.EndScope();
+		}
+	}
 
-	void BeginExecute();
+	inline void ReserveOps()
+	{
+		if (IsEnabled())
+		{
+			ScopeStack.ReserveOps();
+		}
+	}
 
-	void BeginExecutePass(const FRDGPass* Pass);
+	FRDGGPUStatScopeOpArray CompilePassPrologue(const FRDGPass* Pass, FRHIGPUMask GPUMask);
 
-	void EndExecute();
+	FRDGGPUStatScopeOpArray CompilePassEpilogue();
 
-	const FRDGGPUStatScope* GetCurrentScope() const
+	inline void EndExecute(FRHIComputeCommandList& RHICmdList)
+	{
+		if (IsEnabled() && RHICmdList.IsGraphics())
+		{
+			FRDGGPUStatScopeOpArray(ScopeStack.EndCompile(), RHICmdList.GetGPUMask()).Execute(RHICmdList);
+		}
+	}
+
+	inline const FRDGGPUStatScope* GetCurrentScope() const
 	{
 		return ScopeStack.GetCurrentScope();
 	}
 
 private:
-	static bool IsEnabled();
-	TRDGScopeStack<FRDGGPUStatScope> ScopeStack;
+	inline bool IsEnabled()
+	{
+#if HAS_GPU_STATS
+		return bGPUStats;
+#else
+		return false;
+#endif
+	}
+	TRDGScopeStack<FRDGGPUStatScopeOp> ScopeStack;
+	int32 OverrideEventIndex = FRDGGPUStatScopeOpArray::kInvalidEventIndex;
+	/** Are GPU Stats enabled for these scopes */
+	bool bGPUStats = false;
 };
 
 class RENDERCORE_API FRDGGPUStatScopeGuard final
 {
 public:
-	FRDGGPUStatScopeGuard(FRDGBuilder& InGraphBuilder, const FName& Name, const FName& StatName, int32 (*DrawCallCounter)[MAX_NUM_GPUS]);
+	FRDGGPUStatScopeGuard(FRDGBuilder& InGraphBuilder, const FName& Name, const FName& StatName, const TCHAR* Description, int32 (*DrawCallCounter)[MAX_NUM_GPUS]);
 	FRDGGPUStatScopeGuard(const FRDGGPUStatScopeGuard&) = delete;
 	~FRDGGPUStatScopeGuard();
 
@@ -276,50 +588,114 @@ struct FRDGGPUScopes
 	const FRDGGPUStatScope* Stat = nullptr;
 };
 
+struct FRDGGPUScopeOpArrays
+{
+	inline void Execute(FRHIComputeCommandList& RHICmdList)
+	{
+		Event.Execute(RHICmdList);
+		Stat.Execute(RHICmdList);
+	}
+
+	FRDGEventScopeOpArray Event;
+	FRDGGPUStatScopeOpArray Stat;
+};
+
 /** The complete set of scope stack implementations. */
 struct FRDGGPUScopeStacks
 {
-	FRDGGPUScopeStacks(FRHIComputeCommandList& RHICmdList);
+	FRDGGPUScopeStacks(FRDGAllocator& Allocator)
+		: Event(Allocator)
+		, Stat(Allocator)
+	{}
 
-	void BeginExecute();
+	inline void ReserveOps(int32 PassCount)
+	{
+		Event.ReserveOps(PassCount);
+		Stat.ReserveOps();
+	}
 
-	void BeginExecutePass(const FRDGPass* Pass);
+	inline FRDGGPUScopeOpArrays CompilePassPrologue(const FRDGPass* Pass, FRHIGPUMask GPUMask)
+	{
+		FRDGGPUScopeOpArrays Result;
+		Result.Event = Event.CompilePassPrologue(Pass);
+		Result.Stat = Stat.CompilePassPrologue(Pass, GPUMask);
+		return MoveTemp(Result);
+	}
 
-	void EndExecutePass();
+	inline FRDGGPUScopeOpArrays CompilePassEpilogue()
+	{
+		FRDGGPUScopeOpArrays Result;
+		Result.Event = Event.CompilePassEpilogue();
+		Result.Stat = Stat.CompilePassEpilogue();
+		return MoveTemp(Result);
+	}
 
-	void EndExecute();
+	inline void EndExecute(FRHIComputeCommandList& RHICmdList)
+	{
+		Event.EndExecute(RHICmdList);
+		Stat.EndExecute(RHICmdList);
+	}
 
-	FRDGGPUScopes GetCurrentScopes() const;
+	inline FRDGGPUScopes GetCurrentScopes() const
+	{
+		FRDGGPUScopes Scopes;
+		Scopes.Event = Event.GetCurrentScope();
+		Scopes.Stat = Stat.GetCurrentScope();
+		return Scopes;
+	}
 
 	FRDGEventScopeStack Event;
 	FRDGGPUStatScopeStack Stat;
 };
 
-struct FRDGGPUScopeStacksByPipeline
+struct RENDERCORE_API FRDGGPUScopeStacksByPipeline
 {
-	FRDGGPUScopeStacksByPipeline(FRHICommandListImmediate& RHICmdListGraphics, FRHIComputeCommandList& RHICmdListAsyncCompute);
+	FRDGGPUScopeStacksByPipeline(FRDGAllocator& Allocator)
+		: Graphics(Allocator)
+		, AsyncCompute(Allocator)
+	{}
 
-	void BeginEventScope(FRDGEventName&& ScopeName);
+	inline void BeginEventScope(FRDGEventName&& ScopeName, FRHIGPUMask GPUMask)
+	{
+		FRDGEventName ScopeNameCopy = ScopeName;
+		Graphics.Event.BeginScope(MoveTemp(ScopeNameCopy), GPUMask);
+		AsyncCompute.Event.BeginScope(MoveTemp(ScopeName), GPUMask);
+	}
 
-	void EndEventScope();
+	inline void EndEventScope()
+	{
+		Graphics.Event.EndScope();
+		AsyncCompute.Event.EndScope();
+	}
 
-	void BeginStatScope(const FName& Name, const FName& StatName, int32 (*DrawCallCounter)[MAX_NUM_GPUS]);
+	inline void BeginStatScope(const FName& Name, const FName& StatName, const TCHAR* Description, int32(*DrawCallCounter)[MAX_NUM_GPUS])
+	{
+		Graphics.Stat.BeginScope(Name, StatName, Description, DrawCallCounter);
+	}
 
-	void EndStatScope();
+	inline void EndStatScope()
+	{
+		Graphics.Stat.EndScope();
+	}
 
-	void BeginExecute();
+	inline void ReserveOps(int32 PassCount)
+	{
+		Graphics.ReserveOps(PassCount);
+		AsyncCompute.ReserveOps(PassCount);
+	}
 
-	void BeginExecutePass(const FRDGPass* Pass);
+	FRDGGPUScopeOpArrays CompilePassPrologue(const FRDGPass* Pass, FRHIGPUMask GPUMask);
 
-	void EndExecutePass(const FRDGPass* Pass);
-
-	void EndExecute();
+	FRDGGPUScopeOpArrays CompilePassEpilogue(const FRDGPass* Pass);
 
 	const FRDGGPUScopeStacks& GetScopeStacks(ERHIPipeline Pipeline) const;
 
 	FRDGGPUScopeStacks& GetScopeStacks(ERHIPipeline Pipeline);
 
-	FRDGGPUScopes GetCurrentScopes(ERHIPipeline Pipeline) const;
+	FRDGGPUScopes GetCurrentScopes(ERHIPipeline Pipeline) const
+	{
+		return GetScopeStacks(Pipeline).GetCurrentScopes();
+	}
 
 	FRDGGPUScopeStacks Graphics;
 	FRDGGPUScopeStacks AsyncCompute;
@@ -347,20 +723,61 @@ public:
 	const char* StatName;
 };
 
+using FRDGCSVStatScopeOp = TRDGScopeOp<FRDGCSVStatScope>;
+
+class RENDERCORE_API FRDGCSVStatScopeOpArray final
+{
+public:
+	FRDGCSVStatScopeOpArray() = default;
+	FRDGCSVStatScopeOpArray(TRDGScopeOpArray<FRDGCSVStatScopeOp> InOps)
+		: Ops(InOps)
+	{}
+
+	void Execute();
+
+	TRDGScopeOpArray<FRDGCSVStatScopeOp> Ops;
+};
+
 class RENDERCORE_API FRDGCSVStatScopeStack final
 {
 public:
-	FRDGCSVStatScopeStack(FRHIComputeCommandList& RHICmdList, const char* UnaccountedStatName);
+	FRDGCSVStatScopeStack(FRDGAllocator& Allocator)
+		: ScopeStack(Allocator)
+	{}
 
-	void BeginScope(const char* StatName);
+	void BeginScope(const char* StatName)
+	{
+		if (IsEnabled())
+		{
+			ScopeStack.BeginScope(StatName);
+		}
+	}
 
-	void EndScope();
+	void EndScope()
+	{
+		if (IsEnabled())
+		{
+			ScopeStack.EndScope();
+		}
+	}
 
-	void BeginExecute();
+	inline void ReserveOps()
+	{
+		if (IsEnabled())
+		{
+			ScopeStack.ReserveOps();
+		}
+	}
 
-	void BeginExecutePass(const FRDGPass* Pass);
+	FRDGCSVStatScopeOpArray CompilePassPrologue(const FRDGPass* Pass);
 
-	void EndExecute();
+	void EndExecute()
+	{
+		if (IsEnabled())
+		{
+			FRDGCSVStatScopeOpArray(ScopeStack.EndCompile()).Execute();
+		}
+	}
 
 	const FRDGCSVStatScope* GetCurrentScope() const
 	{
@@ -368,9 +785,15 @@ public:
 	}
 
 private:
-	static bool IsEnabled();
-	TRDGScopeStack<FRDGCSVStatScope> ScopeStack;
-	const char* const UnaccountedStatName;
+	static bool IsEnabled()
+	{
+#if CSV_PROFILER
+		return true;
+#else
+		return false;
+#endif
+	}
+	TRDGScopeStack<FRDGCSVStatScopeOp> ScopeStack;
 };
 
 #if CSV_PROFILER
@@ -402,17 +825,45 @@ struct FRDGCPUScopes
 	const FRDGCSVStatScope* CSV = nullptr;
 };
 
+struct FRDGCPUScopeOpArrays
+{
+	void Execute()
+	{
+		CSV.Execute();
+	}
+
+	FRDGCSVStatScopeOpArray CSV;
+};
+
 struct FRDGCPUScopeStacks
 {
-	FRDGCPUScopeStacks(FRHIComputeCommandList& RHICmdList, const char* UnaccountedCSVStat);
+	FRDGCPUScopeStacks(FRDGAllocator& Allocator)
+		: CSV(Allocator)
+	{}
 
-	void BeginExecute();
+	inline void ReserveOps()
+	{
+		CSV.ReserveOps();
+	}
 
-	void BeginExecutePass(const FRDGPass* Pass);
+	FRDGCPUScopeOpArrays CompilePassPrologue(const FRDGPass* Pass)
+	{
+		FRDGCPUScopeOpArrays Result;
+		Result.CSV = CSV.CompilePassPrologue(Pass);
+		return MoveTemp(Result);
+	}
 
-	void EndExecute();
+	FRDGCPUScopes GetCurrentScopes() const
+	{
+		FRDGCPUScopes Scopes;
+		Scopes.CSV = CSV.GetCurrentScope();
+		return Scopes;
+	}
 
-	FRDGCPUScopes GetCurrentScopes() const;
+	void EndExecute()
+	{
+		CSV.EndExecute();
+	}
 
 	FRDGCSVStatScopeStack CSV;
 };

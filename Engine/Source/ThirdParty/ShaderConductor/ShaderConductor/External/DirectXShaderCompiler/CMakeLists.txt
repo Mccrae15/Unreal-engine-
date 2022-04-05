@@ -1,6 +1,10 @@
 # See docs/CMake.html for instructions about how to build LLVM with CMake.
 cmake_minimum_required(VERSION 2.8.12.2)
 
+if (NOT "${DXC_CMAKE_BEGINS_INCLUDE}" STREQUAL "")
+  include(${DXC_CMAKE_BEGINS_INCLUDE})
+endif()
+
 if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "No build type selected, default to Debug")
   set(CMAKE_BUILD_TYPE "Debug")
@@ -89,12 +93,19 @@ option(HLSL_ENABLE_ANALYZE "Enables compiler analysis during compilation." OFF) 
 option(HLSL_OPTIONAL_PROJS_IN_DEFAULT "Include optional projects in default build target." OFF) # HLSL Change
 option(HLSL_BUILD_DXILCONV "Include DXBC to DXIL converter and tools." ON) # HLSL Change
 
+option(HLSL_ENABLE_DEBUG_ITERATORS "Disable debug iterators for faster debug and to remove some additional allocations with improper noexcept attribution" OFF) # HLSL Change
+
 # HLSL Change Starts - support commit querying
-option(HLSL_SUPPORT_QUERY_GIT_COMMIT_INFO "Supports querying Git commit info." OFF)
+option(HLSL_SUPPORT_QUERY_GIT_COMMIT_INFO "Supports querying Git commit info." ON)
 if ( HLSL_SUPPORT_QUERY_GIT_COMMIT_INFO )
   add_definitions(-DSUPPORT_QUERY_GIT_COMMIT_INFO)
 endif()
-# HLSL Chnage Ends
+
+# adjust link option to enable debugging from kernel mode; not compatible with incremental linking
+if(NOT CMAKE_VERSION VERSION_LESS "3.13" AND WIN32)
+  add_link_options(/DEBUGTYPE:CV,FIXUP,PDATA /INCREMENTAL:NO)
+endif()
+# HLSL Change Ends
 
 # HLSL Change Starts - set flag for Appveyor CI
 if ( "$ENV{CI}" AND "$ENV{APPVEYOR}" )
@@ -105,6 +116,13 @@ endif()
 # SPIRV change starts
 option(ENABLE_SPIRV_CODEGEN "Enables SPIR-V code generation." OFF)
 option(SPIRV_BUILD_TESTS "Build targets for the SPIR-V unit tests." OFF)
+
+# UE Change Begin: Allow explicit DllShutdown to prevent dangling mutex on Linux
+option(DXC_EXPLICIT_DLLSHUTDOWN "Enable explicit DllShutdown" OFF)
+if(DXC_EXPLICIT_DLLSHUTDOWN)
+  add_definitions(-DDXC_EXPLICIT_DLLSHUTDOWN)
+endif()
+# UE Change End: Allow explicit DllShutdown to prevent dangling mutex on Linux
 
 # Enable SPIR-V CodeGen for Linux by default.
 if(NOT WIN32)
@@ -403,7 +421,15 @@ set(TARGET_TRIPLE "${LLVM_DEFAULT_TARGET_TRIPLE}")
 include(HandleLLVMOptions)
 
 # Verify that we can find a Python 3 interpreter and force cmake to use it.
-find_package(Python3 COMPONENTS Interpreter Development)
+# UE Change Begin: Support Cmake 3.12+ in finding python3
+if(CMAKE_VERSION VERSION_LESS 3.12)
+  find_package(PythonInterp 3 REQUIRED)
+else()
+  find_package(Python3 COMPONENTS Interpreter)
+  set(PYTHON_EXECUTABLE "${Python3_EXECUTABLE}")
+endif()
+message("Python3=${PYTHON_EXECUTABLE}")
+# UE Change End: Support Cmake 3.12+ in finding python3
 
 ######
 # LLVMBuild Integration
@@ -453,10 +479,10 @@ execute_process(
 # streams into the GUI console. So, we explicitly catch and report them.
 if( NOT "${LLVMBUILDOUTPUT}" STREQUAL "")
   message(STATUS "llvm-build output: ${LLVMBUILDOUTPUT}")
-endif()
-if( NOT "${LLVMBUILDRESULT}" STREQUAL "0" )
-  message(FATAL_ERROR
-    "Unexpected failure executing llvm-build: ${LLVMBUILDERRORS}")
+  if( NOT "${LLVMBUILDRESULT}" STREQUAL "0" )
+    message(FATAL_ERROR
+      "Unexpected failure executing llvm-build: '${LLVMBUILDERRORS}'")
+  endif()
 endif()
 
 # Include the generated CMake fragment. This will define properties from the
@@ -612,6 +638,10 @@ if( MINGW )
   llvm_replace_compiler_option(CMAKE_CXX_FLAGS_RELEASE "-O3" "-O2")
 endif()
 
+if(LLVM_INCLUDE_TESTS AND WIN32)
+  add_definitions(/DMSFT_SUPPORTS_CHILD_PROCESSES)
+endif()
+
 # Put this before tblgen. Else we have a circular dependence.
 add_subdirectory(lib/Support)
 add_subdirectory(lib/MSSupport) # HLSL Change
@@ -620,8 +650,13 @@ add_subdirectory(lib/TableGen)
 add_subdirectory(utils/TableGen)
 
 add_subdirectory(include/llvm)
-add_subdirectory(include/dxc/Support) # HLSL Change
-add_subdirectory(include/dxc/Tracing) # HLSL Change
+# HLSL - Change Start
+add_subdirectory(include/dxc)
+
+# This over-specifies the dependency graph, but since generating these doesn't
+# really depend on anything else in the build it is safe.
+list(APPEND LLVM_COMMON_DEPENDS HCTGen) 
+# HLSL - Change End
 
 add_subdirectory(lib)
 
@@ -629,13 +664,13 @@ if (HLSL_EMBED_VERSION)
   add_subdirectory(utils/version)
 endif()
 
-if( LLVM_INCLUDE_UTILS )
-  # add_subdirectory(utils/FileCheck) # HLSL Change
+if(LLVM_INCLUDE_UTILS AND LLVM_INCLUDE_TESTS) # HLSL Change - only when testing
+  add_subdirectory(utils/FileCheck)
   # add_subdirectory(utils/FileUpdate) # HLSL Change
-  # add_subdirectory(utils/count) # HLSL Change
-  # add_subdirectory(utils/not) # HLSL Change
-  # add_subdirectory(utils/llvm-lit) # HLSL Change
-  # add_subdirectory(utils/yaml-bench) # HLSL Change
+  add_subdirectory(utils/count)
+  add_subdirectory(utils/not)
+  add_subdirectory(utils/llvm-lit)
+  add_subdirectory(utils/yaml-bench)
 else()
   if ( LLVM_INCLUDE_TESTS )
     message(FATAL_ERROR "Including tests when not building utils will not work.
@@ -643,7 +678,7 @@ else()
   endif()
 endif()
 
-if(LLVM_INCLUDE_TESTS)
+if(LLVM_INCLUDE_TESTS OR HLSL_INCLUDE_TESTS OR SPIRV_BUILD_TESTS) # HLSL Change
   add_subdirectory(utils/unittest)
 endif()
 
@@ -674,7 +709,7 @@ if( LLVM_INCLUDE_EXAMPLES AND 0 ) # HLSL Change - never build examples
   add_subdirectory(examples)
 endif()
 
-if( LLVM_INCLUDE_TESTS AND 0 ) # HLSL Change - never build tests/unittests
+if( LLVM_INCLUDE_TESTS )
   add_subdirectory(test)
   add_subdirectory(unittests)
   if (MSVC)
@@ -701,6 +736,8 @@ endif()
 if (LLVM_INCLUDE_DOCS)
   add_subdirectory(docs)
 endif()
+
+add_hlsl_hctgen(DxilDocs OUTPUT docs/DXIL.rst CODE_TAG) # HLSL Change
 
 add_subdirectory(cmake/modules)
 
@@ -738,4 +775,14 @@ if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
                               -DCMAKE_INSTALL_COMPONENT=llvm-headers
                               -P "${CMAKE_BINARY_DIR}/cmake_install.cmake")
   endif()
+endif()
+
+# Disable regeneration target for official builds as they always fun a full clean build.
+# This should eliminate the race-condition issue with "Cannot restore timestamp".
+if (HLSL_OFFICIAL_BUILD)
+  set(CMAKE_SUPPRESS_REGENERATION ON)
+endif (HLSL_OFFICIAL_BUILD)
+
+if (NOT "${DXC_CMAKE_ENDS_INCLUDE}" STREQUAL "")
+  include(${DXC_CMAKE_ENDS_INCLUDE})
 endif()

@@ -153,7 +153,7 @@ void FGroomMaterialDetails::AddMaterials(IDetailLayoutBuilder& DetailLayout)
 			.IsFocusable(false)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("PropertyWindow.Button_AddToArray"))
+				.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
 			.ColorAndOpacity(FSlateColor::UseForeground())
 			]
 			]
@@ -171,7 +171,7 @@ void FGroomMaterialDetails::AddMaterials(IDetailLayoutBuilder& DetailLayout)
 			//Pass an empty material list owner (owner can be use by the asset picker filter. In this case we do not need it)
 			TArray<FAssetData> MaterialListOwner;
 			MaterialListOwner.Add(GroomAsset);
-			MaterialCategory.AddCustomBuilder(MakeShareable(new FMaterialList(MaterialCategory.GetParentLayout(), MaterialListDelegates, MaterialListOwner, false, true, true)));
+			MaterialCategory.AddCustomBuilder(MakeShareable(new FMaterialList(MaterialCategory.GetParentLayout(), MaterialListDelegates, MaterialListOwner, false, true)));
 		}
 	}
 }
@@ -208,10 +208,8 @@ void FGroomMaterialDetails::CustomizeDetails( IDetailLayoutBuilder& DetailLayout
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
 	}
@@ -251,7 +249,7 @@ void FGroomMaterialDetails::OnMaterialArrayChanged(UMaterialInterface* NewMateri
 		GroomAsset->Modify();
 		GroomAsset->HairGroupsMaterials[SlotIndex].Material = NewMaterial;
 
-		//Add a default name to the material slot if this slot was manually add and there is no name yet
+		// Add a default name to the material slot if this slot was manually add and there is no name yet
 		if (NewMaterial != nullptr && GroomAsset->HairGroupsMaterials[SlotIndex].SlotName == NAME_None)
 		{
 			if (GroomAsset->HairGroupsMaterials[SlotIndex].SlotName == NAME_None)
@@ -318,7 +316,31 @@ FReply FGroomMaterialDetails::AddMaterialSlot()
 
 	FScopedTransaction Transaction(LOCTEXT("PersonaAddMaterialSlotTransaction", "Persona editor: Add material slot"));
 	GroomAsset->Modify();
-	GroomAsset->HairGroupsMaterials.Add(FHairGroupsMaterial());
+	FHairGroupsMaterial NewMaterial;
+	NewMaterial.SlotName = FName(TEXT("Material"));
+
+	// Build a unique name
+	FName SlotName = NewMaterial.SlotName;
+	uint32 UniqueId = 0;
+	bool bHasUniqueName = true;
+	do
+	{
+		bHasUniqueName = true;
+		for (const FHairGroupsMaterial& Group : GroomAsset->HairGroupsMaterials)
+		{
+			if (Group.SlotName == SlotName)
+			{
+				bHasUniqueName = false;				
+				FString NewSlotName = NewMaterial.SlotName.ToString() + FString::FromInt(++UniqueId);
+				SlotName = FName(*NewSlotName);
+				break;
+			}
+		}
+	} while (!bHasUniqueName);
+
+	// Add new material
+	NewMaterial.SlotName = SlotName;
+	GroomAsset->HairGroupsMaterials.Add(NewMaterial);
 	GroomAsset->PostEditChange();
 
 	return FReply::Handled();

@@ -2,14 +2,14 @@
 
 #include "NiagaraDataInterfaceLandscape.h"
 
+#include "Algo/RemoveIf.h"
+#include "EngineModule.h"
 #include "EngineUtils.h"
 #include "Landscape.h"
 #include "LandscapeHeightfieldCollisionComponent.h"
 #include "LandscapeInfo.h"
-#include "LandscapeInfoMap.h"
 #include "LandscapeProxy.h"
 #include "NiagaraComponent.h"
-#include "NiagaraCustomVersion.h"
 #include "NiagaraShader.h"
 #include "NiagaraStats.h"
 #include "NiagaraWorldManager.h"
@@ -21,8 +21,6 @@
 
 //////////////////////////////////////////////////////////////////////////
 // remaining features
-// -getting the surface normal at a point
-// -getting the physical material at a point
 // -getting the albedo colour at a point
 // -support for CPU
 
@@ -35,12 +33,14 @@ namespace NiagaraDataInterfaceLandscape
 	{
 		InitialVersion = 0,
 		SupportVirtualTextures = 1,
+		LWCPosition = 2,
 
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1
 	};
 }
 
+const FName UNiagaraDataInterfaceLandscape::GetBaseColorName(TEXT("GetBaseColor"));
 const FName UNiagaraDataInterfaceLandscape::GetHeightName(TEXT("GetHeight"));
 const FName UNiagaraDataInterfaceLandscape::GetWorldNormalName(TEXT("GetWorldNormal"));
 const FName UNiagaraDataInterfaceLandscape::GetPhysicalMaterialIndexName(TEXT("GetPhysicalMaterialIndex"));
@@ -49,7 +49,7 @@ const FName UNiagaraDataInterfaceLandscape::GetPhysicalMaterialIndexName(TEXT("G
 class FLandscapeTextureResource : public FRenderResource
 {
 public:
-	FLandscapeTextureResource(FNDI_Landscape_SharedResource& InOwner);
+	FLandscapeTextureResource(const FIntPoint& CellCount);
 	virtual ~FLandscapeTextureResource() = default;
 
 	FLandscapeTextureResource() = delete;
@@ -59,16 +59,39 @@ public:
 	virtual void InitRHI() override;
 	virtual void ReleaseRHI() override;
 
+	void ReleaseSourceData();
+
 	FRHIShaderResourceView* GetHeightTexture() const { return HeightTexture.SRV; }
 	FRHIShaderResourceView* GetPhysMatTexture() const { return PhysMatTexture.SRV; }
-	FIntPoint GetPhysMatDimensions() const { return PhysMatDimensions; }
+	FIntPoint GetDimensions() const { return CellCount; }
+
+	TArray<float>& EditHeightValues(int32 SampleCount);
+	TArray<uint8>& EditPhysMatValues(int32 SampleCount);
 
 private:
-	FNDI_Landscape_SharedResource& Owner;
-
 	FTextureReadBuffer2D HeightTexture;
 	FTextureReadBuffer2D PhysMatTexture;
-	FIntPoint PhysMatDimensions;
+	FIntPoint CellCount;
+
+	TArray<float> HeightValues;
+	TArray<uint8> PhysMatValues;
+
+	struct FTextureBulkData : public FResourceBulkDataInterface
+	{
+		void Init(const void* InData, uint32 InDataSize) { Data = InData; DataSize = InDataSize; }
+		void Clear() { Data = nullptr; DataSize = 0; }
+		virtual const void* GetResourceBulkData() const override { return Data; }
+		virtual uint32 GetResourceBulkDataSize() const override { return DataSize; }
+		virtual void Discard() override { }
+		const void* Data = nullptr;
+		uint32 DataSize = 0;
+	};
+
+	FTextureBulkData* GetHeightBulkData() { return HeightBulkData.DataSize > 0 ? &HeightBulkData : nullptr; }
+	FTextureBulkData* GetPhysMatBulkData() { return PhysMatBulkData.DataSize > 0 ? &PhysMatBulkData : nullptr; }
+
+	FTextureBulkData HeightBulkData;
+	FTextureBulkData PhysMatBulkData;
 
 #if STATS
 	int32 GpuMemoryUsage = 0;
@@ -90,16 +113,6 @@ public:
 		bool IncludesCachedPhysMat = false;
 	};
 
-	struct FTextureBulkData : public FResourceBulkDataInterface
-	{
-		FTextureBulkData(const void* InData, uint32 InDataSize) : Data(InData), DataSize(InDataSize) {}
-		virtual const void* GetResourceBulkData() const override { return Data; }
-		virtual uint32 GetResourceBulkDataSize() const override { return DataSize; }
-		virtual void Discard() override { }
-		const void* Data = nullptr;
-		uint32 DataSize = 0;
-	};
-
 	FNDI_Landscape_SharedResource() = delete;
 	FNDI_Landscape_SharedResource(const FNDI_Landscape_SharedResource&) = delete;
 	FNDI_Landscape_SharedResource(const FResourceKey& InKey);
@@ -107,17 +120,14 @@ public:
 	bool IsUsed() const;
 	bool CanBeDestroyed() const;
 	bool CanRepresent(const FResourceKey& InKey) const;
-	bool RequiresInit() const;
 
 	void RegisterUser(const FNDI_SharedResourceUsage& Usage, bool bNeedsDataImmediately);
 	void UnregisterUser(const FNDI_SharedResourceUsage& Usage);
 
-	void Initialize();
+	void UpdateState(bool& LandscapeRemoved);
+	void Release();
 
-	FTextureBulkData GetHeightBulkData() { return FTextureBulkData(HeightValues.GetData(), HeightValues.Num() * HeightValues.GetTypeSize()); }
-	FTextureBulkData GetPhysMatBulkData() { return FTextureBulkData(PhysMatValues.GetData(), PhysMatValues.Num() * PhysMatValues.GetTypeSize()); }
-
-	FLandscapeTextureResource LandscapeTextures;
+	TUniquePtr<FLandscapeTextureResource> LandscapeTextures;
 	FMatrix ActorToWorldTransform = FMatrix::Identity;
 	FMatrix WorldToActorTransform = FMatrix::Identity;
 	FVector4 UvScaleBias = FVector4(1.0f, 1.0f, 0.0f, 0.0f);
@@ -125,24 +135,21 @@ public:
 	FVector2D TextureWorldGridSize = FVector2D(1.0f, 1.0f);
 
 private:
-	void ReleaseCpu();
-	void ReleaseGpu();
+	enum class EResourceState : uint8
+	{
+		Uninitialized,
+		Initialized,
+		Released,
+	};
+
+	void Initialize();
 
 	FResourceKey ResourceKey;
 
-	std::atomic<int32> CachedCpuPhysicsDataUserCount{ 0 };
-	std::atomic<int32> CachedGpuPhysicsDataUserCount{ 0 };
+	std::atomic<int32> ShaderPhysicsDataUserCount{ 0 };
 
-	TArray<float> HeightValues;
-	TArray<uint8> PhysMatValues;
-
-	FThreadSafeBool GpuDataReleasedByRt = false;
-	FThreadSafeBool CpuDataReleasedByRt = false;
-	bool GpuDataQueuedForRelease = false;
-	bool CpuDataQueuedForRelease = false;
-
-	bool RequiresCpuInit = false;
-	bool RequiresGpuInit = false;
+	EResourceState CurrentState = EResourceState::Uninitialized;
+	EResourceState NextState = EResourceState::Uninitialized;
 };
 
 using FNDI_Landscape_SharedResourceHandle = FNDI_SharedResourceHandle<FNDI_Landscape_SharedResource, FNDI_SharedResourceUsage>;
@@ -152,6 +159,8 @@ struct FNDILandscapeData_GameThread
 {
 	TWeakObjectPtr<ALandscape> Landscape;
 	FNDI_Landscape_SharedResourceHandle SharedResourceHandle;
+	bool BaseColorVirtualTextureSRGB = false;
+	int32 BaseColorVirtualTextureIndex = INDEX_NONE;
 	int32 HeightVirtualTextureIndex = INDEX_NONE;
 	int32 NormalVirtualTextureIndex = INDEX_NONE;
 	ERuntimeVirtualTextureMaterialType NormalVirtualTextureMode = ERuntimeVirtualTextureMaterialType::Count;
@@ -163,6 +172,8 @@ struct FNDILandscapeData_GameThread
 	{
 		Landscape = nullptr;
 		SharedResourceHandle = FNDI_Landscape_SharedResourceHandle();
+		BaseColorVirtualTextureSRGB = false;
+		BaseColorVirtualTextureIndex = INDEX_NONE;
 		HeightVirtualTextureIndex = INDEX_NONE;
 		NormalVirtualTextureIndex = INDEX_NONE;
 		NormalVirtualTextureMode = ERuntimeVirtualTextureMaterialType::Count;
@@ -175,9 +186,12 @@ struct FNDILandscapeData_GameThread
 // Landscape data used on the render thread
 struct FNDILandscapeData_RenderThread
 {
-	const URuntimeVirtualTexture* HeightVirtualTexture = nullptr;
-	const URuntimeVirtualTexture* NormalVirtualTexture = nullptr;
+	TWeakObjectPtr<const URuntimeVirtualTexture> BaseColorVirtualTexture;
+	TWeakObjectPtr<const URuntimeVirtualTexture> HeightVirtualTexture;
+	TWeakObjectPtr<const URuntimeVirtualTexture> NormalVirtualTexture;
 	const FLandscapeTextureResource* TextureResources = nullptr;
+	bool BaseColorVirtualTextureSRGB = false;
+	FVector4 BaseColorVirtualTextureWorldToUvParameters[3];
 	FVector4 HeightVirtualTextureWorldToUvParameters[4];
 	FVector4 NormalVirtualTextureWorldToUvParameters[3];
 	FMatrix CachedHeightTextureWorldToUvTransform = FMatrix::Identity;
@@ -190,6 +204,7 @@ struct FNDILandscapeData_RenderThread
 class FNDI_Landscape_GeneratedData : public FNDI_GeneratedData
 {
 public:
+	virtual ~FNDI_Landscape_GeneratedData();
 	virtual void Tick(ETickingGroup TickGroup, float DeltaSeconds) override;
 
 	static TypeHash GetTypeHash();
@@ -199,6 +214,7 @@ public:
 private:
 	FRWLock LandscapeDataGuard;
 	TArray<TSharedPtr<FNDI_Landscape_SharedResource>> LandscapeData;
+	TArray<TSharedPtr<FNDI_Landscape_SharedResource>> ReleasedLandscapeData;
 };
 
 struct FNiagaraDataInterfaceProxyLandscape : public FNiagaraDataInterfaceProxy
@@ -217,33 +233,24 @@ struct FNiagaraDataInterfaceProxyLandscape : public FNiagaraDataInterfaceProxy
 	TMap<FNiagaraSystemInstanceID, FNDILandscapeData_RenderThread> SystemInstancesToProxyData_RT;
 };
 
-FLandscapeTextureResource::FLandscapeTextureResource(FNDI_Landscape_SharedResource& InOwner)
-: Owner(InOwner)
+FLandscapeTextureResource::FLandscapeTextureResource(const FIntPoint& InCellCount)
+: CellCount(InCellCount)
 {
-
 }
 
 void FLandscapeTextureResource::InitRHI()
 {
-	auto HeightBulkData = Owner.GetHeightBulkData();
-	if (HeightBulkData.DataSize)
+	if (HeightBulkData.DataSize > 0)
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		CreateInfo.BulkData = &HeightBulkData;
-		CreateInfo.DebugName = TEXT("NiagaraLandscapeCachedHeight");
-		HeightTexture.Initialize(sizeof(float), Owner.CellCount.X, Owner.CellCount.Y, EPixelFormat::PF_R32_FLOAT, FTextureReadBuffer2D::DefaultTextureInitFlag, CreateInfo);
+		HeightTexture.Initialize(TEXT("FLandscapeTextureResource_HeightTexture"), sizeof(float), CellCount.X, CellCount.Y, EPixelFormat::PF_R32_FLOAT, FTextureReadBuffer2D::DefaultTextureInitFlag, &HeightBulkData);
 	}
 
-	auto PhysMatBulkData = Owner.GetPhysMatBulkData();
-	if (PhysMatBulkData.DataSize)
+	if (PhysMatBulkData.DataSize > 0)
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		CreateInfo.BulkData = &PhysMatBulkData;
-		CreateInfo.DebugName = TEXT("NiagaraLandscapeCachedPhysMat");
-		PhysMatTexture.Initialize(sizeof(uint8), Owner.CellCount.X, Owner.CellCount.Y, EPixelFormat::PF_R8_UINT, FTextureReadBuffer2D::DefaultTextureInitFlag, CreateInfo);
-
-		PhysMatDimensions = FIntPoint(Owner.CellCount.X, Owner.CellCount.Y);
+		PhysMatTexture.Initialize(TEXT("FLandscapeTextureResource_PhysMatTexture"), sizeof(uint8), CellCount.X, CellCount.Y, EPixelFormat::PF_R8_UINT, FTextureReadBuffer2D::DefaultTextureInitFlag, &PhysMatBulkData);
 	}
+
+	ReleaseSourceData();
 
 #if STATS
 	check(GpuMemoryUsage == 0);
@@ -263,34 +270,59 @@ void FLandscapeTextureResource::ReleaseRHI()
 #endif
 }
 
+void FLandscapeTextureResource::ReleaseSourceData()
+{
+	HeightValues.Empty();
+	PhysMatValues.Empty();
+}
+
+TArray<float>& FLandscapeTextureResource::EditHeightValues(int32 SampleCount)
+{
+	const float DefaultHeight = 0.0f;
+	HeightValues.Reset(SampleCount);
+	HeightValues.Init(DefaultHeight, SampleCount);
+	HeightBulkData.Init(HeightValues.GetData(), HeightValues.Num() * HeightValues.GetTypeSize());
+
+	return HeightValues;
+}
+
+TArray<uint8>& FLandscapeTextureResource::EditPhysMatValues(int32 SampleCount)
+{
+	const uint8 DefaultPhysMat = INDEX_NONE;
+	PhysMatValues.Reset(SampleCount);
+	PhysMatValues.Init(DefaultPhysMat, SampleCount);
+	PhysMatBulkData.Init(PhysMatValues.GetData(), PhysMatValues.Num() * PhysMatValues.GetTypeSize());
+
+	return PhysMatValues;
+}
+
 FNDI_Landscape_SharedResource::FNDI_Landscape_SharedResource(const FResourceKey& InKey)
-: LandscapeTextures(*this)
+: LandscapeTextures(nullptr)
 , ResourceKey(InKey)
 {
 }
 
 bool FNDI_Landscape_SharedResource::IsUsed() const
 {
-	return (CachedCpuPhysicsDataUserCount > 0)
-		|| (CachedGpuPhysicsDataUserCount > 0);
+	return (ShaderPhysicsDataUserCount > 0) && CurrentState != EResourceState::Released;
 }
 
 bool FNDI_Landscape_SharedResource::CanBeDestroyed() const
 {
-	const bool ReadyForRemoval = !IsUsed() && GpuDataReleasedByRt && CpuDataReleasedByRt;
+	const bool ReadyForRemoval = !IsUsed();
 
-	checkf(!ReadyForRemoval || !LandscapeTextures.IsInitialized(),
-		TEXT("FNDI_Landscape_SharedResource::CanBeDestroyed returning true, but the LandscpaeTextures is still initialized! Source[%s] MinRegion[%d,%d] MaxRegion[%d,%d]"),
-		*GetNameSafe(ResourceKey.Source.Get()), ResourceKey.MinCaptureRegion.X, ResourceKey.MinCaptureRegion.Y, ResourceKey.MaxCaptureRegion.X, ResourceKey.MaxCaptureRegion.Y);
+	if (ReadyForRemoval && LandscapeTextures && LandscapeTextures->IsInitialized())
+	{
+		UE_LOG(LogNiagara, Error, TEXT("FNDI_Landscape_SharedResource::CanBeDestroyed returning true, but the LandscpaeTextures is still initialized! Source[%s] MinRegion[%d,%d] MaxRegion[%d,%d]"),
+			*GetNameSafe(ResourceKey.Source.Get()), ResourceKey.MinCaptureRegion.X, ResourceKey.MinCaptureRegion.Y, ResourceKey.MaxCaptureRegion.X, ResourceKey.MaxCaptureRegion.Y);
+	}
 
 	return ReadyForRemoval;
 }
 
 bool FNDI_Landscape_SharedResource::CanRepresent(const FResourceKey& RequestKey) const
 {
-	// once data has been queued for release make sure we don't try to re-use it.  CpuData can be released
-	// since it's currently just an intermediary for the Gpu data
-	if (GpuDataQueuedForRelease)
+	if (CurrentState == EResourceState::Released)
 	{
 		return false;
 	}
@@ -340,197 +372,180 @@ bool FNDI_Landscape_SharedResource::CanRepresent(const FResourceKey& RequestKey)
 	return SearchIndex < CapturedRegionCount;
 }
 
-bool FNDI_Landscape_SharedResource::RequiresInit() const
-{
-	return RequiresCpuInit || RequiresGpuInit;
-}
-
 void FNDI_Landscape_SharedResource::RegisterUser(const FNDI_SharedResourceUsage& Usage, bool bNeedsDataImmediately)
 {
-	if (Usage.RequiresCpuAccess)
-	{
-		if (CachedCpuPhysicsDataUserCount++ == 0)
-		{
-			RequiresCpuInit = true;
-		}
-	}
+	check(Usage.RequiresCpuAccess == false);
 
 	if (Usage.RequiresGpuAccess)
 	{
-		if (CachedGpuPhysicsDataUserCount++ == 0)
+		if (ShaderPhysicsDataUserCount++ == 0)
 		{
-			RequiresGpuInit = true;
+			NextState = EResourceState::Initialized;
 		}
 	}
 }
 
 void FNDI_Landscape_SharedResource::UnregisterUser(const FNDI_SharedResourceUsage& Usage)
 {
-	if (Usage.RequiresCpuAccess)
-	{
-		if (--CachedCpuPhysicsDataUserCount == 0)
-		{
-			ReleaseCpu();
-		}
-	}
+	check(Usage.RequiresCpuAccess == false);
 
 	if (Usage.RequiresGpuAccess)
 	{
-		if (--CachedGpuPhysicsDataUserCount == 0)
+		if (--ShaderPhysicsDataUserCount == 0)
 		{
-			ReleaseGpu();
+			NextState = EResourceState::Released;
 		}
 	}
 }
 
 void FNDI_Landscape_SharedResource::Initialize()
 {
-	if (RequiresInit())
+	if (const ULandscapeInfo* LandscapeInfo = ResourceKey.Source->GetLandscapeInfo())
 	{
-		if (const ULandscapeInfo* LandscapeInfo = ResourceKey.Source->GetLandscapeInfo())
+		const int32 ComponentQuadCount = ResourceKey.Source->ComponentSizeQuads;
+		const FIntPoint RegionSpan = ResourceKey.MaxCaptureRegion - ResourceKey.MinCaptureRegion + FIntPoint(1, 1);
+		const FIntPoint CaptureQuadSpan = RegionSpan * ComponentQuadCount;
+		const FIntPoint CaptureVertexSpan = CaptureQuadSpan + FIntPoint(1, 1);
+		const int32 SampleCount = CaptureVertexSpan.X * CaptureVertexSpan.Y;
+
+		LandscapeTextures = MakeUnique<FLandscapeTextureResource>(CaptureVertexSpan);
+
+		TArray<float>* HeightValues = ResourceKey.IncludesCachedHeight ? &LandscapeTextures->EditHeightValues(SampleCount) : nullptr;
+		TArray<uint8>* PhysMatValues = ResourceKey.IncludesCachedPhysMat ? &LandscapeTextures->EditPhysMatValues(SampleCount) : nullptr;
+
+		const FIntPoint RegionVertexBase = ResourceKey.MinCaptureRegion * ComponentQuadCount;
+
+		for (const FIntPoint& Region : ResourceKey.CapturedRegions)
 		{
-			const int32 ComponentQuadCount = ResourceKey.Source->ComponentSizeQuads;
-			const FIntPoint RegionSpan = ResourceKey.MaxCaptureRegion - ResourceKey.MinCaptureRegion + FIntPoint(1, 1);
-			const FIntPoint CaptureQuadSpan = RegionSpan * ComponentQuadCount;
-			const FIntPoint CaptureVertexSpan = CaptureQuadSpan + FIntPoint(1, 1);
-			const int32 SampleCount = CaptureVertexSpan.X * CaptureVertexSpan.Y;
+			auto FoundCollisionComponent = LandscapeInfo->XYtoCollisionComponentMap.Find(Region);
+			check(FoundCollisionComponent);
 
-			if (ResourceKey.IncludesCachedHeight)
+			if (FoundCollisionComponent)
 			{
-				const float DefaultHeight = 0.0f;
-				HeightValues.Reset(SampleCount);
-				HeightValues.Init(DefaultHeight, SampleCount);
-			}
-
-			if (ResourceKey.IncludesCachedPhysMat)
-			{
-				const uint8 DefaultPhysMat = INDEX_NONE;
-				PhysMatValues.Reset(SampleCount);
-				PhysMatValues.Init(DefaultPhysMat, SampleCount);
-			}
-
-			const FIntPoint RegionVertexBase = ResourceKey.MinCaptureRegion * ComponentQuadCount;
-
-			for (const FIntPoint& Region : ResourceKey.CapturedRegions)
-			{
-				auto FoundCollisionComponent = LandscapeInfo->XYtoCollisionComponentMap.Find(Region);
-				check(FoundCollisionComponent);
-
-				if (FoundCollisionComponent)
+				if (const ULandscapeHeightfieldCollisionComponent* CollisionComponent = *FoundCollisionComponent)
 				{
-					if (const ULandscapeHeightfieldCollisionComponent* CollisionComponent = *FoundCollisionComponent)
+					if (HeightValues)
 					{
-						if (ResourceKey.IncludesCachedHeight)
+						const FIntPoint SectionBase = (Region - ResourceKey.MinCaptureRegion) * ComponentQuadCount;
+						CollisionComponent->FillHeightTile(*HeightValues, SectionBase.X + SectionBase.Y * CaptureVertexSpan.X, CaptureVertexSpan.X);
+					}
+
+					if (PhysMatValues)
+					{
+						const FIntPoint SectionBase = (Region - ResourceKey.MinCaptureRegion) * ComponentQuadCount;
+						CollisionComponent->FillMaterialIndexTile(*PhysMatValues, SectionBase.X + SectionBase.Y * CaptureVertexSpan.X, CaptureVertexSpan.X);
+
+						// remap the material index to the list we have on the DI
+						TArray<uint8> PhysMatRemap;
+						for (const UPhysicalMaterial* ComponentMaterial : CollisionComponent->CookedPhysicalMaterials)
 						{
-							const FIntPoint SectionBase = (Region - ResourceKey.MinCaptureRegion) * ComponentQuadCount;
-							CollisionComponent->FillHeightTile(HeightValues, SectionBase.X + SectionBase.Y * CaptureVertexSpan.X, CaptureVertexSpan.X);
+							PhysMatRemap.Emplace(ResourceKey.PhysicalMaterials.IndexOfByKey(ComponentMaterial));
 						}
 
-						if (ResourceKey.IncludesCachedPhysMat)
+						for (int32 Y = 0; Y < ComponentQuadCount; ++Y)
 						{
-							const FIntPoint SectionBase = (Region - ResourceKey.MinCaptureRegion) * ComponentQuadCount;
-							CollisionComponent->FillMaterialIndexTile(PhysMatValues, SectionBase.X + SectionBase.Y * CaptureVertexSpan.X, CaptureVertexSpan.X);
-
-							// remap the material index to the list we have on the DI
-							TArray<uint8> PhysMatRemap;
-							for (const UPhysicalMaterial* ComponentMaterial : CollisionComponent->CookedPhysicalMaterials)
+							for (int32 X = 0; X < ComponentQuadCount; ++X)
 							{
-								PhysMatRemap.Emplace(ResourceKey.PhysicalMaterials.IndexOfByKey(ComponentMaterial));
-							}
-
-							for (int32 Y = 0; Y < ComponentQuadCount; ++Y)
-							{
-								for (int32 X = 0; X < ComponentQuadCount; ++X)
-								{
-									const int32 WriteIndex = SectionBase.X + X + (SectionBase.Y + Y) * CaptureVertexSpan.X;
-									uint8& PhysMatIndex = PhysMatValues[WriteIndex];
-									PhysMatIndex = PhysMatRemap.IsValidIndex(PhysMatIndex) ? PhysMatRemap[PhysMatIndex] : INDEX_NONE;
-								}
+								const int32 WriteIndex = SectionBase.X + X + (SectionBase.Y + Y) * CaptureVertexSpan.X;
+								uint8& PhysMatIndex = (*PhysMatValues)[WriteIndex];
+								PhysMatIndex = PhysMatRemap.IsValidIndex(PhysMatIndex) ? PhysMatRemap[PhysMatIndex] : INDEX_NONE;
 							}
 						}
 					}
 				}
 			}
-
-			// number of cells that are represented in our heights array
-			CellCount = CaptureVertexSpan;
-
-			// mapping to get the UV from 'cell space' which is relative to the entire terrain (not just the captured regions)
-			FVector2D UvScale(1.0f / CaptureVertexSpan.X, 1.0f / CaptureVertexSpan.Y);
-
-			UvScaleBias = FVector4(
-				UvScale.X,
-				UvScale.Y,
-				(0.5f - RegionVertexBase.X) * UvScale.X,
-				(0.5f - RegionVertexBase.Y) * UvScale.Y);
-
-			ActorToWorldTransform = ResourceKey.Source->GetTransform().ToMatrixWithScale();
-			WorldToActorTransform = ActorToWorldTransform.Inverse();
-			TextureWorldGridSize = FVector2D(ResourceKey.Source->GetTransform().GetScale3D());
-
-			if (RequiresGpuInit)
-			{
-				BeginInitResource(&LandscapeTextures);
-
-				if (!RequiresCpuInit)
-				{
-					// if we're only using the GPU copy of the resource, then we can clear our CPU copy (when the render thread is done
-					// with using it to initialize the textures)
-					FNDI_Landscape_SharedResource* ThisResource = this;
-					CpuDataQueuedForRelease = true;
-					CpuDataReleasedByRt = false;
-					FThreadSafeBool* Released = &CpuDataReleasedByRt;
-
-					ENQUEUE_RENDER_COMMAND(ReleaseCpuArray)(
-						[ThisResource, Released](FRHICommandListImmediate& RhiCmdList)
-					{
-						ThisResource->ReleaseCpu();
-						*Released = true;
-					});
-				}
-			}
-
-			RequiresCpuInit = false;
-			RequiresGpuInit = false;
 		}
+
+		// number of cells that are represented in our heights array
+		CellCount = CaptureVertexSpan;
+
+		// mapping to get the UV from 'cell space' which is relative to the entire terrain (not just the captured regions)
+		FVector2D UvScale(1.0f / CaptureVertexSpan.X, 1.0f / CaptureVertexSpan.Y);
+
+		UvScaleBias = FVector4(
+			UvScale.X,
+			UvScale.Y,
+			(0.5f - RegionVertexBase.X) * UvScale.X,
+			(0.5f - RegionVertexBase.Y) * UvScale.Y);
+
+		ActorToWorldTransform = ResourceKey.Source->GetTransform().ToMatrixWithScale();
+		WorldToActorTransform = ActorToWorldTransform.Inverse();
+		TextureWorldGridSize = FVector2D(ResourceKey.Source->GetTransform().GetScale3D());
+
+		BeginInitResource(LandscapeTextures.Get());
 	}
 }
 
-void FNDI_Landscape_SharedResource::ReleaseCpu()
+void FNDI_Landscape_SharedResource::Release()
 {
-	HeightValues.Empty(0);
-	PhysMatValues.Empty(0);
+	if (FLandscapeTextureResource* Resource = LandscapeTextures.Release())
+	{
+		ENQUEUE_RENDER_COMMAND(BeginDestroyCommand)([RT_Resource = Resource](FRHICommandListImmediate& RHICmdList)
+		{
+			RT_Resource->ReleaseResource();
+
+			// On some RHIs textures will push data on the RHI thread
+			// Therefore we are not 'released' until the RHI thread has processed all commands
+			RHICmdList.EnqueueLambda([RT_Resource](FRHICommandListImmediate& RHICmdList)
+				{
+					delete RT_Resource;
+				});
+		});
+	}
 }
 
-void FNDI_Landscape_SharedResource::ReleaseGpu()
+void FNDI_Landscape_SharedResource::UpdateState(bool& LandscapeReleased)
 {
-	GpuDataQueuedForRelease = true;
-	GpuDataReleasedByRt = false;
-	FThreadSafeBool* Released = &GpuDataReleasedByRt;
+	const EResourceState RequestedState = NextState;
 
-	BeginReleaseResource(&LandscapeTextures);
+	LandscapeReleased = false;
 
-	ENQUEUE_RENDER_COMMAND(BeginDestroyCommand)(
-		[Released](FRHICommandListImmediate& RHICmdList)
+	if (RequestedState == CurrentState)
 	{
-		*Released = true;
-	});
+		return;
+	}
+
+	if (RequestedState == EResourceState::Initialized)
+	{
+		Initialize();
+	}
+	else if (RequestedState == EResourceState::Released)
+	{
+		Release();
+		LandscapeReleased = true;
+	}
+
+	CurrentState = RequestedState;
+}
+
+FNDI_Landscape_GeneratedData::~FNDI_Landscape_GeneratedData()
+{
+	FRWScopeLock WriteLock(LandscapeDataGuard, SLT_Write);
+
+	for (TSharedPtr<FNDI_Landscape_SharedResource> Landscape : LandscapeData)
+	{
+		Landscape->Release();
+	}
 }
 
 void FNDI_Landscape_GeneratedData::Tick(ETickingGroup TickGroup, float DeltaSeconds)
 {
-	{ // handle any changes to the UV mappings
-		FRWScopeLock WriteLock(LandscapeDataGuard, SLT_Write);
+	FRWScopeLock WriteLock(LandscapeDataGuard, SLT_Write);
 
+	{ // handle any changes to the generated data
 		TArray<int32, TInlineAllocator<32>> LandscapeToRemove;
 
 		const int32 LandscapeCount = LandscapeData.Num();
 
 		for (int32 LandscapeIt = 0; LandscapeIt < LandscapeCount; ++LandscapeIt)
 		{
-			const TSharedPtr<FNDI_Landscape_SharedResource>& Landscape = LandscapeData[LandscapeIt];
+			TSharedPtr<FNDI_Landscape_SharedResource> Landscape = LandscapeData[LandscapeIt];
 
-			if (Landscape->CanBeDestroyed())
+			bool LandscapeReleased = false;
+
+			Landscape->UpdateState(LandscapeReleased);
+
+			if (LandscapeReleased)
 			{
 				LandscapeToRemove.Add(LandscapeIt);
 			}
@@ -538,21 +553,23 @@ void FNDI_Landscape_GeneratedData::Tick(ETickingGroup TickGroup, float DeltaSeco
 
 		while (LandscapeToRemove.Num())
 		{
-			LandscapeData.RemoveAtSwap(LandscapeToRemove.Pop(false));
+			const int32 LandscapeIt = LandscapeToRemove.Pop(false);
+
+			TSharedPtr<FNDI_Landscape_SharedResource> Landscape = LandscapeData[LandscapeIt];
+			LandscapeData.RemoveAtSwap(LandscapeIt);
+
+			if (!Landscape->CanBeDestroyed())
+			{
+				ReleasedLandscapeData.Add(Landscape);
+			}
 		}
 	}
 
-	// go through any resources and see if they need/can be initialized
-	{
-		FRWScopeLock WriteLock(LandscapeDataGuard, SLT_Write);
-
-		for (auto Resource : LandscapeData)
+	{ // check any shared resources that we've got pending release to see if they can now be destroyed
+		ReleasedLandscapeData.SetNum(Algo::RemoveIf(ReleasedLandscapeData, [&](TSharedPtr<FNDI_Landscape_SharedResource>& Landscape)
 		{
-			if (Resource->RequiresInit())
-			{
-				Resource->Initialize();
-			}
-		}
+			return Landscape->CanBeDestroyed();
+		}));
 	}
 }
 
@@ -564,6 +581,8 @@ FNDI_GeneratedData::TypeHash FNDI_Landscape_GeneratedData::GetTypeHash()
 
 FNDI_Landscape_SharedResourceHandle FNDI_Landscape_GeneratedData::GetLandscapeData(const UNiagaraDataInterfaceLandscape& LandscapeDI, const FNiagaraSystemInstance& SystemInstance, const FNDILandscapeData_GameThread& InstanceData, FNDI_SharedResourceUsage Usage, bool bNeedsDataImmediately)
 {
+	check(IsInGameThread());
+
 	const ALandscape* Landscape = InstanceData.Landscape.Get();
 	const ULandscapeInfo* LandscapeInfo = Landscape ? Landscape->GetLandscapeInfo() : nullptr;
 
@@ -661,6 +680,7 @@ FNDI_Landscape_SharedResourceHandle FNDI_Landscape_GeneratedData::GetLandscapeDa
 	}
 
 	// We need to add
+	// Note we do not need to check for other threads adding here as it's only every done on the GameThread
 	FRWScopeLock WriteLock(LandscapeDataGuard, SLT_Write);
 	return FNDI_Landscape_SharedResourceHandle(
 		Usage,
@@ -671,6 +691,7 @@ FNDI_Landscape_SharedResourceHandle FNDI_Landscape_GeneratedData::GetLandscapeDa
 UNiagaraDataInterfaceLandscape::UNiagaraDataInterfaceLandscape(FObjectInitializer const& ObjectInitializer)
 	: Super(ObjectInitializer)		
 {
+	SourceLandscape = nullptr;
 	Proxy.Reset(new FNiagaraDataInterfaceProxyLandscape());
 }
 
@@ -715,13 +736,28 @@ void UNiagaraDataInterfaceLandscape::GetFunctions(TArray<FNiagaraFunctionSignatu
 {
 	{
 		FNiagaraFunctionSignature Sig;
+		Sig.Name = GetBaseColorName;
+		Sig.bExperimental = true;
+		Sig.bMemberFunction = true;
+		Sig.bRequiresContext = false;
+		Sig.bSupportsCPU = false;
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Landscape")));
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("WorldPos")));
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Color")));
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsValid")));
+
+		OutFunctions.Add(Sig);
+	}
+
+	{
+		FNiagaraFunctionSignature Sig;
 		Sig.Name = GetHeightName;
 		Sig.bExperimental = true;
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
 		Sig.bSupportsCPU = false;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Landscape")));
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("WorldPos")));		
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("WorldPos")));		
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Value")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsValid")));
 
@@ -736,7 +772,7 @@ void UNiagaraDataInterfaceLandscape::GetFunctions(TArray<FNiagaraFunctionSignatu
 		Sig.bRequiresContext = false;
 		Sig.bSupportsCPU = false;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Landscape")));
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("WorldPos")));
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("WorldPos")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Value")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsValid")));
 
@@ -751,7 +787,7 @@ void UNiagaraDataInterfaceLandscape::GetFunctions(TArray<FNiagaraFunctionSignatu
 		Sig.bRequiresContext = false;
 		Sig.bSupportsCPU = false;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Landscape")));
-		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("WorldPos")));
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("WorldPos")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Value")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsValid")));
 
@@ -769,19 +805,22 @@ void UNiagaraDataInterfaceLandscape::GetFunctions(TArray<FNiagaraFunctionSignatu
 #if WITH_EDITORONLY_DATA
 bool UNiagaraDataInterfaceLandscape::UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature)
 {
-	bool WasChanged = false;
-
-	if (FunctionSignature.FunctionVersion < NiagaraDataInterfaceLandscape::SupportVirtualTextures)
+	// always upgrade to the latest version
+	if (FunctionSignature.FunctionVersion < NiagaraDataInterfaceLandscape::LatestVersion)
 	{
-		if (FunctionSignature.Name == GetHeightName)
+		TArray<FNiagaraFunctionSignature> AllFunctions;
+		GetFunctions(AllFunctions);
+		for (const FNiagaraFunctionSignature& Sig : AllFunctions)
 		{
-			FunctionSignature.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("IsValid")));
-			WasChanged = true;
+			if (FunctionSignature.Name == Sig.Name)
+			{
+				FunctionSignature = Sig;
+				return true;
+			}
 		}
 	}
 
-	FunctionSignature.FunctionVersion = NiagaraDataInterfaceLandscape::LatestVersion;
-	return WasChanged;
+	return false;
 }
 #endif
 
@@ -794,12 +833,24 @@ void UNiagaraDataInterfaceLandscape::ProvidePerInstanceDataForRenderThread(void*
 	{
 		const FNDI_Landscape_SharedResource& SourceResource = SourceData.SharedResourceHandle.ReadResource();
 
-		TargetData->TextureResources = &SourceResource.LandscapeTextures;
+		TargetData->TextureResources = SourceResource.LandscapeTextures.Get();
 		
 		TargetData->CachedHeightTextureUvScaleBias = SourceResource.UvScaleBias;
 		TargetData->CachedHeightTextureWorldToUvTransform = SourceResource.WorldToActorTransform;
 		TargetData->CachedHeightTextureUvToWorldTransform = SourceResource.ActorToWorldTransform;
 		TargetData->CachedHeightTextureGridSize = SourceResource.TextureWorldGridSize;
+	}
+
+	if (SourceData.BaseColorVirtualTextureIndex != INDEX_NONE)
+	{
+		if (const URuntimeVirtualTexture* VirtualTexture = SourceData.Landscape->RuntimeVirtualTextures[SourceData.BaseColorVirtualTextureIndex])
+		{
+			TargetData->BaseColorVirtualTexture = VirtualTexture;
+			TargetData->BaseColorVirtualTextureSRGB = SourceData.BaseColorVirtualTextureSRGB;
+			TargetData->BaseColorVirtualTextureWorldToUvParameters[0] = VirtualTexture->GetUniformParameter(ERuntimeVirtualTextureShaderUniform_WorldToUVTransform0);
+			TargetData->BaseColorVirtualTextureWorldToUvParameters[1] = VirtualTexture->GetUniformParameter(ERuntimeVirtualTextureShaderUniform_WorldToUVTransform1);
+			TargetData->BaseColorVirtualTextureWorldToUvParameters[2] = VirtualTexture->GetUniformParameter(ERuntimeVirtualTextureShaderUniform_WorldToUVTransform2);
+		}
 	}
 
 	if (SourceData.HeightVirtualTextureIndex != INDEX_NONE)
@@ -862,7 +913,13 @@ bool UNiagaraDataInterfaceLandscape::GetFunctionHLSL(const FNiagaraDataInterface
 		{TEXT("NDIGetContextName"), TEXT("NDILANDSCAPE_MAKE_CONTEXT(") + ParamInfo.DataInterfaceHLSLSymbol + TEXT(")")},
 	};
 
-	if (FunctionInfo.DefinitionName == GetHeightName)
+	if (FunctionInfo.DefinitionName == GetBaseColorName)
+	{
+		static const TCHAR* FormatSample = TEXT("void {InstanceFunctionName}(in float3 InWorldPos, out float3 OutBaseColor, out bool OutIsValid) { {NDIGetContextName} NDILandscape_GetBaseColor(DIContext, InWorldPos, OutBaseColor, OutIsValid); }\n");
+		OutHLSL += FString::Format(FormatSample, ArgsSample);
+		return true;
+	}
+	else if (FunctionInfo.DefinitionName == GetHeightName)
 	{
 		static const TCHAR* FormatSample = TEXT("void {InstanceFunctionName}(in float3 InWorldPos, out float OutHeight, out bool OutIsValid) { {NDIGetContextName} NDILandscape_GetHeight(DIContext, InWorldPos, OutHeight, OutIsValid); }\n");
 		OutHLSL += FString::Format(FormatSample, ArgsSample);
@@ -965,6 +1022,7 @@ void UNiagaraDataInterfaceLandscape::ApplyLandscape(const FNiagaraSystemInstance
 	}
 
 	InstanceData.Landscape = Landscape;
+	InstanceData.BaseColorVirtualTextureIndex = INDEX_NONE;
 	InstanceData.HeightVirtualTextureIndex = INDEX_NONE;
 	InstanceData.NormalVirtualTextureIndex = INDEX_NONE;
 
@@ -980,13 +1038,20 @@ void UNiagaraDataInterfaceLandscape::ApplyLandscape(const FNiagaraSystemInstance
 
 				switch (VirtualMaterialType)
 				{
+				case ERuntimeVirtualTextureMaterialType::BaseColor:
+					if (InstanceData.BaseColorVirtualTextureIndex == INDEX_NONE)
+					{
+						InstanceData.BaseColorVirtualTextureIndex = TextureIt;
+						InstanceData.BaseColorVirtualTextureSRGB = true;
+					}
+					break;
 				case ERuntimeVirtualTextureMaterialType::WorldHeight:
 					if (InstanceData.HeightVirtualTextureIndex == INDEX_NONE)
 					{
 						InstanceData.HeightVirtualTextureIndex = TextureIt;
 					}
 					break;
-
+				case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Roughness:
 				case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular:
 				case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular_YCoCg:
 				case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular_Mask_YCoCg:
@@ -994,6 +1059,13 @@ void UNiagaraDataInterfaceLandscape::ApplyLandscape(const FNiagaraSystemInstance
 					{
 						InstanceData.NormalVirtualTextureIndex = TextureIt;
 						InstanceData.NormalVirtualTextureMode = VirtualMaterialType;
+					}
+					if (InstanceData.BaseColorVirtualTextureIndex == INDEX_NONE)
+					{
+						InstanceData.BaseColorVirtualTextureIndex = TextureIt;
+						InstanceData.BaseColorVirtualTextureSRGB =
+							(VirtualMaterialType == ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Roughness) ||
+							(VirtualMaterialType == ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular);
 					}
 					break;
 				}
@@ -1013,10 +1085,16 @@ void UNiagaraDataInterfaceLandscape::ApplyLandscape(const FNiagaraSystemInstance
 	bool SystemRequiresPhysMatGpu = false;
 	SystemInstance.EvaluateBoundFunction(GetPhysicalMaterialIndexName, SystemRequiresPhysMatCpu, SystemRequiresPhysMatGpu);
 
+	bool SystemRequiresBaseColorCpu = false;
+	bool SystemRequiresBaseColorGpu = false;
+	SystemInstance.EvaluateBoundFunction(GetBaseColorName, SystemRequiresBaseColorCpu, SystemRequiresBaseColorGpu);
+
 	// we need to create our own copy of the collision geometry if either the heights are needed, and they're not
 	// provided by a virtual texture or if the normals are needed and they're not provided by a virtual texture
-	InstanceData.RequiresCollisionCacheGpu = (SystemRequiresHeightsGpu && InstanceData.HeightVirtualTextureIndex == INDEX_NONE)
-		|| (SystemRequiresNormalsGpu && InstanceData.NormalVirtualTextureIndex == INDEX_NONE);
+	InstanceData.RequiresCollisionCacheGpu =
+		(SystemRequiresBaseColorGpu && InstanceData.BaseColorVirtualTextureIndex == INDEX_NONE) ||
+		(SystemRequiresHeightsGpu && InstanceData.HeightVirtualTextureIndex == INDEX_NONE) ||
+		(SystemRequiresNormalsGpu && InstanceData.NormalVirtualTextureIndex == INDEX_NONE);
 
 	InstanceData.RequiresPhysMatCacheGpu = SystemRequiresPhysMatGpu;
 }
@@ -1086,11 +1164,22 @@ private:
 		None = 0,
 		BC3BC3,
 		BC5BC1,
+		B5G6R5
 	};
 
 public:
 	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
 	{
+		BaseColorVirtualTextureParam.Bind(ParameterMap, *(BaseColorVirtualTextureName + ParameterInfo.DataInterfaceHLSLSymbol));
+		BaseColorVirtualTexturePageTableParam.Bind(ParameterMap, *(BaseColorVirtualTexturePageTableName + ParameterInfo.DataInterfaceHLSLSymbol));
+		BaseColorVirtualTextureSamplerParam.Bind(ParameterMap, *(BaseColorVirtualTextureSamplerName + ParameterInfo.DataInterfaceHLSLSymbol));
+		BaseColorVirtualTextureWorldToUvTransformParam.Bind(ParameterMap, *(BaseColorVirtualTextureWorldToUvTransformName + ParameterInfo.DataInterfaceHLSLSymbol));
+		BaseColorVirtualTextureSRGBParam.Bind(ParameterMap, *(BaseColorVirtualTextureSRGBName + ParameterInfo.DataInterfaceHLSLSymbol));
+		BaseColorVirtualTextureEnabledParam.Bind(ParameterMap, *(BaseColorVirtualTextureEnabledName + ParameterInfo.DataInterfaceHLSLSymbol));
+		BaseColorVirtualTexturePageTableUniform0Param.Bind(ParameterMap, *(BaseColorVirtualTexturePageTableUniform0Name + ParameterInfo.DataInterfaceHLSLSymbol));
+		BaseColorVirtualTexturePageTableUniform1Param.Bind(ParameterMap, *(BaseColorVirtualTexturePageTableUniform1Name + ParameterInfo.DataInterfaceHLSLSymbol));
+		BaseColorVirtualTextureUniformsParam.Bind(ParameterMap, *(BaseColorVirtualTextureUniformsName + ParameterInfo.DataInterfaceHLSLSymbol));
+
 		HeightVirtualTextureParam.Bind(ParameterMap, *(HeightVirtualTextureName + ParameterInfo.DataInterfaceHLSLSymbol));
 		HeightVirtualTexturePageTableParam.Bind(ParameterMap, *(HeightVirtualTexturePageTableName + ParameterInfo.DataInterfaceHLSLSymbol));
 		HeightVirtualTextureSamplerParam.Bind(ParameterMap, *(HeightVirtualTextureSamplerName + ParameterInfo.DataInterfaceHLSLSymbol));
@@ -1122,11 +1211,88 @@ public:
 		PointClampedSamplerParam.Bind(ParameterMap, *(PointClampedSamplerName + ParameterInfo.DataInterfaceHLSLSymbol));
 		CachedPhysMatTextureParam.Bind(ParameterMap, *(CachedPhysMatTextureName + ParameterInfo.DataInterfaceHLSLSymbol));
 		CachedPhysMatTextureDimensionParam.Bind(ParameterMap, *(CachedPhysMatTextureDimensionName + ParameterInfo.DataInterfaceHLSLSymbol));
+		SystemLWCTileParam.Bind(ParameterMap, *(SystemLWCTileName + ParameterInfo.DataInterfaceHLSLSymbol));
+	}
+
+	bool SetBaseColorVirtualTextureParameters(FRHICommandList& RHICmdList, FRHIComputeShader* ComputeShaderRHI, const FNDILandscapeData_RenderThread& ProxyData) const
+	{
+		const IAllocatedVirtualTexture* BaseColorAllocatedTexture = ProxyData.BaseColorVirtualTexture.IsValid()
+			? ProxyData.BaseColorVirtualTexture->GetAllocatedVirtualTexture()
+			: nullptr;
+
+		if (!BaseColorAllocatedTexture)
+		{
+			return false;
+		}
+
+		// todo - need to figure out a way to confirm that this is in fact the best/only option for the basecolor
+		constexpr uint32 BaseColorVirtualTextureLayerIndex = 0;
+		constexpr uint32 BaseColorVirtualTexturePageIndex = 0;
+		constexpr bool BaseColorVirtualTextureSrgb = false;
+
+		FRHIShaderResourceView* PhysicalTextureSrv = BaseColorAllocatedTexture->GetPhysicalTextureSRV(BaseColorVirtualTextureLayerIndex, BaseColorVirtualTextureSrgb);
+		if (!PhysicalTextureSrv)
+		{
+			return false;
+		}
+
+		FRHITexture* PageTableTexture = nullptr;
+
+		if (FRHITexture* PageTable = BaseColorAllocatedTexture->GetPageTableTexture(BaseColorVirtualTexturePageIndex))
+		{
+			if (FRHITextureReference* TextureReference = PageTable->GetTextureReference())
+			{
+				PageTableTexture = TextureReference->GetReferencedTexture();
+			}
+		}
+
+		if (!PageTableTexture)
+		{
+			return false;
+		}
+
+		FMatrix44f WorldToUvTransform(
+			FVector3f( (FVector4f)ProxyData.BaseColorVirtualTextureWorldToUvParameters[0]),
+			FVector3f( (FVector4f)ProxyData.BaseColorVirtualTextureWorldToUvParameters[1]),
+			FVector3f( (FVector4f)ProxyData.BaseColorVirtualTextureWorldToUvParameters[2]),
+			FVector3f(0, 0, 0));
+
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureParam, PhysicalTextureSrv);
+		SetTextureParameter(RHICmdList, ComputeShaderRHI, BaseColorVirtualTexturePageTableParam, PageTableTexture);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureWorldToUvTransformParam, WorldToUvTransform);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureSRGBParam, ProxyData.BaseColorVirtualTextureSRGB ? 1 : 0);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureEnabledParam, 1 /* true */);
+
+		FUintVector4 BaseColorVirtualTexturePageTableUniforms[2];
+		FUintVector4 BaseColorVirtualTextureUniforms;
+
+		BaseColorAllocatedTexture->GetPackedPageTableUniform(BaseColorVirtualTexturePageTableUniforms);
+		BaseColorAllocatedTexture->GetPackedUniform(&BaseColorVirtualTextureUniforms, BaseColorVirtualTextureLayerIndex);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTexturePageTableUniform0Param, BaseColorVirtualTexturePageTableUniforms[0]);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTexturePageTableUniform1Param, BaseColorVirtualTexturePageTableUniforms[1]);
+
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureUniformsParam, BaseColorVirtualTextureUniforms);
+
+		return true;
+	}
+
+	void SetBaseColorVirtualTextureParameters_Default(FRHICommandList& RHICmdList, FRHIComputeShader* ComputeShaderRHI) const
+	{
+		FUintVector4 DummyUint4(ForceInitToZero);
+
+		SetSRVParameter(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureParam, GBlackTextureWithSRV->ShaderResourceViewRHI);
+		SetTextureParameter(RHICmdList, ComputeShaderRHI, BaseColorVirtualTexturePageTableParam, GBlackTexture->TextureRHI);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureWorldToUvTransformParam, FMatrix44f::Identity);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureSRGBParam, 0 /* false */);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureEnabledParam, 0 /* false */);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTexturePageTableUniform0Param, DummyUint4);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTexturePageTableUniform1Param, DummyUint4);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureUniformsParam, DummyUint4);
 	}
 
 	bool SetHeightVirtualTextureParameters(FRHICommandList& RHICmdList, FRHIComputeShader* ComputeShaderRHI, const FNDILandscapeData_RenderThread& ProxyData) const
 	{
-		const IAllocatedVirtualTexture* HeightAllocatedTexture = ProxyData.HeightVirtualTexture
+		const IAllocatedVirtualTexture* HeightAllocatedTexture = ProxyData.HeightVirtualTexture.IsValid()
 			? ProxyData.HeightVirtualTexture->GetAllocatedVirtualTexture()
 			: nullptr;
 
@@ -1161,11 +1327,11 @@ public:
 			return false;
 		}
 
-		FMatrix WorldToUvTransform(
-			FVector(ProxyData.HeightVirtualTextureWorldToUvParameters[0]),
-			FVector(ProxyData.HeightVirtualTextureWorldToUvParameters[1]),
-			FVector(ProxyData.HeightVirtualTextureWorldToUvParameters[2]),
-			FVector(ProxyData.HeightVirtualTextureWorldToUvParameters[3]));
+		FMatrix44f WorldToUvTransform(
+			FVector3f( (FVector4f)ProxyData.HeightVirtualTextureWorldToUvParameters[0]),
+			FVector3f( (FVector4f)ProxyData.HeightVirtualTextureWorldToUvParameters[1]),
+			FVector3f( (FVector4f)ProxyData.HeightVirtualTextureWorldToUvParameters[2]),
+			FVector3f( (FVector4f)ProxyData.HeightVirtualTextureWorldToUvParameters[3]));
 
 		SetSRVParameter(RHICmdList, ComputeShaderRHI, HeightVirtualTextureParam, PhysicalTextureSrv);
 		SetTextureParameter(RHICmdList, ComputeShaderRHI, HeightVirtualTexturePageTableParam, PageTableTexture);
@@ -1191,7 +1357,7 @@ public:
 
 		SetSRVParameter(RHICmdList, ComputeShaderRHI, HeightVirtualTextureParam, GBlackTextureWithSRV->ShaderResourceViewRHI);
 		SetTextureParameter(RHICmdList, ComputeShaderRHI, HeightVirtualTexturePageTableParam, GBlackTexture->TextureRHI);
-		SetShaderValue(RHICmdList, ComputeShaderRHI, HeightVirtualTextureWorldToUvTransformParam, FMatrix::Identity);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, HeightVirtualTextureWorldToUvTransformParam, FMatrix44f::Identity);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, HeightVirtualTextureEnabledParam, 0 /* false */);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, HeightVirtualTexturePageTableUniform0Param, DummyUint4);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, HeightVirtualTexturePageTableUniform1Param, DummyUint4);
@@ -1200,7 +1366,7 @@ public:
 
 	bool SetNormalVirtualTextureParameters(FRHICommandList& RHICmdList, FRHIComputeShader* ComputeShaderRHI, const FNDILandscapeData_RenderThread& ProxyData) const
 	{
-		const IAllocatedVirtualTexture* NormalAllocatedTexture = ProxyData.NormalVirtualTexture
+		const IAllocatedVirtualTexture* NormalAllocatedTexture = ProxyData.NormalVirtualTexture.IsValid()
 			? ProxyData.NormalVirtualTexture->GetAllocatedVirtualTexture()
 			: nullptr;
 
@@ -1211,11 +1377,35 @@ public:
 
 		constexpr uint32 NormalVirtualTexturePageIndex = 0;
 
+		FRHITexture* PageTableTexture = nullptr;
+
+		if (FRHITexture* PageTable = NormalAllocatedTexture->GetPageTableTexture(NormalVirtualTexturePageIndex))
+		{
+			if (FRHITextureReference* TextureReference = PageTable->GetTextureReference())
+			{
+				PageTableTexture = TextureReference->GetReferencedTexture();
+			}
+		}
+
+		if (!PageTableTexture)
+		{
+			return false;
+		}
+
 		FRHIShaderResourceView* PhysicalTextureSrv[2] = { GBlackTextureWithSRV->ShaderResourceViewRHI, GBlackTextureWithSRV->ShaderResourceViewRHI };
 		FUintVector4 NormalVirtualTextureUniforms[2];
 
 		switch (ProxyData.NormalVirtualTextureMode)
 		{
+			case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Roughness:
+				PhysicalTextureSrv[0] = NormalAllocatedTexture->GetPhysicalTextureSRV(0, false);
+				NormalAllocatedTexture->GetPackedUniform(&NormalVirtualTextureUniforms[0], 0);
+
+				PhysicalTextureSrv[1] = NormalAllocatedTexture->GetPhysicalTextureSRV(1, false);
+				NormalAllocatedTexture->GetPackedUniform(&NormalVirtualTextureUniforms[1], 1);
+
+				SetShaderValue(RHICmdList, ComputeShaderRHI, NormalVirtualTextureUnpackModeParam, ENormalUnpackType::B5G6R5);
+				break;
 			case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular:
 				PhysicalTextureSrv[0] = NormalAllocatedTexture->GetPhysicalTextureSRV(0, false);
 				NormalAllocatedTexture->GetPackedUniform(&NormalVirtualTextureUniforms[0], 0);
@@ -1241,15 +1431,15 @@ public:
 				return false;
 		}
 
-		FMatrix WorldToUvTransform(
-			FVector(ProxyData.NormalVirtualTextureWorldToUvParameters[0]),
-			FVector(ProxyData.NormalVirtualTextureWorldToUvParameters[1]),
-			FVector(ProxyData.NormalVirtualTextureWorldToUvParameters[2]),
-			FVector4(0.0f, 0.0f, 0.0f, 1.0f));
+		FMatrix44f WorldToUvTransform(
+			FPlane4f( (FVector4f)ProxyData.NormalVirtualTextureWorldToUvParameters[0]),
+			FPlane4f( (FVector4f)ProxyData.NormalVirtualTextureWorldToUvParameters[1]),
+			FPlane4f( (FVector4f)ProxyData.NormalVirtualTextureWorldToUvParameters[2]),
+			FPlane4f(0.0f, 0.0f, 0.0f, 1.0f));
 
 		SetSRVParameter(RHICmdList, ComputeShaderRHI, NormalVirtualTexture0Param, PhysicalTextureSrv[0]);
 		SetSRVParameter(RHICmdList, ComputeShaderRHI, NormalVirtualTexture1Param, PhysicalTextureSrv[1]);
-		SetTextureParameter(RHICmdList, ComputeShaderRHI, NormalVirtualTexturePageTableParam, NormalAllocatedTexture->GetPageTableTexture(NormalVirtualTexturePageIndex));
+		SetTextureParameter(RHICmdList, ComputeShaderRHI, NormalVirtualTexturePageTableParam, PageTableTexture);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, NormalVirtualTextureWorldToUvTransformParam, WorldToUvTransform);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, NormalVirtualTextureEnabledParam, 1 /* true */);
 
@@ -1271,7 +1461,7 @@ public:
 		SetSRVParameter(RHICmdList, ComputeShaderRHI, NormalVirtualTexture0Param, GBlackTextureWithSRV->ShaderResourceViewRHI);
 		SetSRVParameter(RHICmdList, ComputeShaderRHI, NormalVirtualTexture1Param, GBlackTextureWithSRV->ShaderResourceViewRHI);
 		SetTextureParameter(RHICmdList, ComputeShaderRHI, NormalVirtualTexturePageTableParam, GBlackTexture->TextureRHI);
-		SetShaderValue(RHICmdList, ComputeShaderRHI, NormalVirtualTextureWorldToUvTransformParam, FMatrix::Identity);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, NormalVirtualTextureWorldToUvTransformParam, FMatrix44f::Identity);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, NormalVirtualTextureEnabledParam, 0 /* false */);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, NormalVirtualTextureUnpackModeParam, ENormalUnpackType::None);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, NormalVirtualTexturePageTableUniform0Param, DummyUint4);
@@ -1289,10 +1479,10 @@ public:
 
 			if (HeightTextureSrv || PhysMatTextureSrv)
 			{
-				SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureWorldToUvTransformParam, ProxyData.CachedHeightTextureWorldToUvTransform);
-				SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureUvToWorldTransformParam, ProxyData.CachedHeightTextureUvToWorldTransform);
-				SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureUvScaleBiasParam, ProxyData.CachedHeightTextureUvScaleBias);
-				SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureGridSizeParam, ProxyData.CachedHeightTextureGridSize);
+				SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureWorldToUvTransformParam, (FMatrix44f)ProxyData.CachedHeightTextureWorldToUvTransform);
+				SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureUvToWorldTransformParam, (FMatrix44f)ProxyData.CachedHeightTextureUvToWorldTransform);
+				SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureUvScaleBiasParam, (FVector4f)ProxyData.CachedHeightTextureUvScaleBias);
+				SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureGridSizeParam, (FVector2f)ProxyData.CachedHeightTextureGridSize);
 
 				if (HeightTextureSrv)
 				{
@@ -1307,7 +1497,7 @@ public:
 
 				if (PhysMatTextureSrv)
 				{
-					FIntPoint PhysMatDimensions(ProxyData.TextureResources->GetPhysMatDimensions());
+					FIntPoint PhysMatDimensions(ProxyData.TextureResources->GetDimensions());
 					SetSRVParameter(RHICmdList, ComputeShaderRHI, CachedPhysMatTextureParam, PhysMatTextureSrv);
 					SetShaderValue(RHICmdList, ComputeShaderRHI, CachedPhysMatTextureDimensionParam, PhysMatDimensions);
 				}
@@ -1330,11 +1520,11 @@ public:
 
 	void SetCachedHeightTextureParameters_Defaults(FRHICommandList& RHICmdList, FRHIComputeShader* ComputeShaderRHI) const
 	{
-		FVector4 DummyVector4(ForceInitToZero);
+		FVector4f DummyVector4(ForceInitToZero);
 
 		SetSRVParameter(RHICmdList, ComputeShaderRHI, CachedHeightTextureParam, GBlackTextureWithSRV->ShaderResourceViewRHI);
-		SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureWorldToUvTransformParam, FMatrix::Identity);
-		SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureUvToWorldTransformParam, FMatrix::Identity);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureWorldToUvTransformParam, FMatrix44f::Identity);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureUvToWorldTransformParam, FMatrix44f::Identity);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureUvScaleBiasParam, DummyVector4);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTextureGridSizeParam, 0.0f);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, CachedHeightTexturEnabledParam, 0 /* false */);
@@ -1350,22 +1540,30 @@ public:
 		check(IsInRenderingThread());
 
 		FRHIComputeShader* ComputeShaderRHI = Context.Shader.GetComputeShader();
+		SetShaderValue(RHICmdList, ComputeShaderRHI, SystemLWCTileParam, Context.SystemLWCTile);
 
 		FNiagaraDataInterfaceProxyLandscape* RT_Proxy = static_cast<FNiagaraDataInterfaceProxyLandscape*>(Context.DataInterface);
 		FNDILandscapeData_RenderThread* ProxyData = RT_Proxy ? RT_Proxy->SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID) : nullptr;
 
 		// global samplers
 		FRHISamplerState* BilinearSamplerState = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+		SetSamplerParameter(RHICmdList, ComputeShaderRHI, BaseColorVirtualTextureSamplerParam, BilinearSamplerState);
 		SetSamplerParameter(RHICmdList, ComputeShaderRHI, HeightVirtualTextureSamplerParam, BilinearSamplerState);
 		SetSamplerParameter(RHICmdList, ComputeShaderRHI, NormalVirtualTextureSamplerParam, BilinearSamplerState);
 		SetSamplerParameter(RHICmdList, ComputeShaderRHI, CachedHeightTextureSamplerParam, BilinearSamplerState);
 
+		bool ApplyBaseColorVirtualTextureDefaults = true;
 		bool ApplyHeightVirtualTextureDefaults = true;
 		bool ApplyNormalVirtualTextureDefaults = true;
 		bool ApplyCachedHeightTextureDefaults = true;
 
 		if (ProxyData)
 		{
+			if (SetBaseColorVirtualTextureParameters(RHICmdList, ComputeShaderRHI, *ProxyData))
+			{
+				ApplyBaseColorVirtualTextureDefaults = false;
+			}
+
 			if (SetHeightVirtualTextureParameters(RHICmdList, ComputeShaderRHI, *ProxyData))
 			{
 				ApplyHeightVirtualTextureDefaults = false;
@@ -1380,6 +1578,11 @@ public:
 			{
 				ApplyCachedHeightTextureDefaults = false;
 			}
+		}
+
+		if (ApplyBaseColorVirtualTextureDefaults)
+		{
+			SetBaseColorVirtualTextureParameters_Default(RHICmdList, ComputeShaderRHI);
 		}
 
 		if (ApplyHeightVirtualTextureDefaults)
@@ -1399,6 +1602,17 @@ public:
 	}
 
 private:
+	// virtual texture parameters - basecolor
+	LAYOUT_FIELD(FShaderResourceParameter, BaseColorVirtualTextureParam);
+	LAYOUT_FIELD(FShaderResourceParameter, BaseColorVirtualTexturePageTableParam);
+	LAYOUT_FIELD(FShaderResourceParameter, BaseColorVirtualTextureSamplerParam);
+	LAYOUT_FIELD(FShaderParameter, BaseColorVirtualTextureWorldToUvTransformParam);
+	LAYOUT_FIELD(FShaderParameter, BaseColorVirtualTextureSRGBParam);
+	LAYOUT_FIELD(FShaderParameter, BaseColorVirtualTextureEnabledParam);
+	LAYOUT_FIELD(FShaderParameter, BaseColorVirtualTexturePageTableUniform0Param);
+	LAYOUT_FIELD(FShaderParameter, BaseColorVirtualTexturePageTableUniform1Param);
+	LAYOUT_FIELD(FShaderParameter, BaseColorVirtualTextureUniformsParam);
+
 	// virtual texture parameters - height
 	LAYOUT_FIELD(FShaderResourceParameter, HeightVirtualTextureParam);
 	LAYOUT_FIELD(FShaderResourceParameter, HeightVirtualTexturePageTableParam);
@@ -1436,6 +1650,19 @@ private:
 	LAYOUT_FIELD(FShaderResourceParameter, CachedPhysMatTextureParam);
 	LAYOUT_FIELD(FShaderParameter, CachedPhysMatTextureDimensionParam);
 
+	// LWC data
+	LAYOUT_FIELD(FShaderParameter, SystemLWCTileParam);
+
+	static const FString BaseColorVirtualTextureSRGBName;
+	static const FString BaseColorVirtualTextureEnabledName;
+	static const FString BaseColorVirtualTextureName;
+	static const FString BaseColorVirtualTexturePageTableName;
+	static const FString BaseColorVirtualTexturePageTableUniform0Name;
+	static const FString BaseColorVirtualTexturePageTableUniform1Name;
+	static const FString BaseColorVirtualTextureSamplerName;
+	static const FString BaseColorVirtualTextureUniformsName;
+	static const FString BaseColorVirtualTextureWorldToUvTransformName;
+
 	static const FString HeightVirtualTextureEnabledName;
 	static const FString HeightVirtualTextureName;
 	static const FString HeightVirtualTexturePageTableName;
@@ -1467,7 +1694,20 @@ private:
 	static const FString PointClampedSamplerName;
 	static const FString CachedPhysMatTextureName;
 	static const FString CachedPhysMatTextureDimensionName;
+	
+	static const FString SystemLWCTileName;
 };
+
+// virtual texture parameters - basecolor
+const FString FNiagaraDataInterfaceParametersCS_Landscape::BaseColorVirtualTextureSRGBName(TEXT("BaseColorVirtualTextureSRGB_"));
+const FString FNiagaraDataInterfaceParametersCS_Landscape::BaseColorVirtualTextureEnabledName(TEXT("BaseColorVirtualTextureEnabled_"));
+const FString FNiagaraDataInterfaceParametersCS_Landscape::BaseColorVirtualTextureName(TEXT("BaseColorVirtualTexture_"));
+const FString FNiagaraDataInterfaceParametersCS_Landscape::BaseColorVirtualTexturePageTableName(TEXT("BaseColorVirtualTexturePageTable_"));
+const FString FNiagaraDataInterfaceParametersCS_Landscape::BaseColorVirtualTexturePageTableUniform0Name(TEXT("BaseColorVirtualTexturePackedUniform0_"));
+const FString FNiagaraDataInterfaceParametersCS_Landscape::BaseColorVirtualTexturePageTableUniform1Name(TEXT("BaseColorVirtualTexturePackedUniform1_"));
+const FString FNiagaraDataInterfaceParametersCS_Landscape::BaseColorVirtualTextureSamplerName(TEXT("BaseColorVirtualTextureSampler_"));
+const FString FNiagaraDataInterfaceParametersCS_Landscape::BaseColorVirtualTextureUniformsName(TEXT("BaseColorVirtualTextureUniforms_"));
+const FString FNiagaraDataInterfaceParametersCS_Landscape::BaseColorVirtualTextureWorldToUvTransformName(TEXT("BaseColorVirtualTextureWorldToUvTransform_"));
 
 // virtual texture parameters - height
 const FString FNiagaraDataInterfaceParametersCS_Landscape::HeightVirtualTextureEnabledName(TEXT("HeightVirtualTextureEnabled_"));
@@ -1505,6 +1745,9 @@ const FString FNiagaraDataInterfaceParametersCS_Landscape::PointClampedSamplerNa
 // cached texture - physmat
 const FString FNiagaraDataInterfaceParametersCS_Landscape::CachedPhysMatTextureName(TEXT("CachedPhysMatTexture_"));
 const FString FNiagaraDataInterfaceParametersCS_Landscape::CachedPhysMatTextureDimensionName(TEXT("CachedPhysMatTextureDimension_"));
+
+// LWC
+const FString FNiagaraDataInterfaceParametersCS_Landscape::SystemLWCTileName(TEXT("SystemLWCTile_"));
 
 IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_Landscape);
 IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceLandscape, FNiagaraDataInterfaceParametersCS_Landscape);

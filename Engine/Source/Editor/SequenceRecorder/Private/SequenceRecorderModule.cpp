@@ -57,10 +57,32 @@ static TAutoConsoleVariable<float> CVarDefaultRecordedAnimLength(
 	TEXT("Sets default animation length for the animation recorder system."),
 	ECVF_Default);
 
-static TAutoConsoleVariable<float> CVarAnimRecorderSampleRate(
+static FAutoConsoleCommand CVarAnimRecorderSampleFrameRate(
 	TEXT("AnimRecorder.SampleRate"),
-	FAnimationRecordingSettings::DefaultSampleRate,
-	TEXT("Sets the sample rate for the animation recorder system"),
+	TEXT("Argument: valid Frame Rate format\n")
+	TEXT("Sets the sample frame-rate for the animation recorder system"),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		bool bValidFrameRate = false;
+		if (Args.Num() == 1)
+		{
+			TValueOrError<FFrameRate, FExpressionError> ParseResult = ParseFrameRate(*Args[0]);
+
+			if (ParseResult.IsValid())
+			{
+				GetMutableDefault<USequenceRecorderSettings>()->DefaultAnimationSettings.SampleFrameRate = ParseResult.GetValue();
+				UE_LOG(LogEngine, Display, TEXT("Sequence recorder default sample frame rate set to: %s"), *(GetMutableDefault<USequenceRecorderSettings>()->DefaultAnimationSettings.SampleFrameRate.ToPrettyText().ToString()));
+			}
+			else
+			{
+				UE_LOG(LogAnimation, Warning, TEXT("Invalid Frame Rate format provided for AnimRecorder.SampleRate:\n%s"), *ParseResult.GetError().Text.ToString());
+			}
+		}
+		else
+		{
+			UE_LOG(LogAnimation, Warning, TEXT("Missing Frame Rate argument for AnimRecorder.SampleRate"));
+		}
+	}),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarAnimRecorderWorldSpace(
@@ -108,11 +130,6 @@ class FSequenceRecorderModule : public ISequenceRecorder, private FSelfRegisteri
 		CVarDefaultRecordedAnimLength.AsVariable()->SetOnChangedCallback(FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* Variable)
 		{
 			GetMutableDefault<USequenceRecorderSettings>()->DefaultAnimationSettings.Length = CVarDefaultRecordedAnimLength.GetValueOnGameThread();
-		}));
-
-		CVarAnimRecorderSampleRate.AsVariable()->SetOnChangedCallback(FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* Variable)
-		{
-			GetMutableDefault<USequenceRecorderSettings>()->DefaultAnimationSettings.SampleRate = CVarAnimRecorderSampleRate.GetValueOnGameThread();
 		}));
 
 		CVarAnimRecorderWorldSpace.AsVariable()->SetOnChangedCallback(FConsoleVariableDelegate::CreateLambda([](IConsoleVariable* Variable)
@@ -785,10 +802,12 @@ class FSequenceRecorderModule : public ISequenceRecorder, private FSelfRegisteri
 	{
 		FAnimationRecorder Recorder;
 		Recorder.bRecordTransforms = true;
-		Recorder.bRecordCurves = true;
+		Recorder.bRecordMorphTargets = true;
+		Recorder.bRecordAttributeCurves = true;
+		Recorder.bRecordMaterialCurves = true;
 		if (Recorder.TriggerRecordAnimation(Component))
 		{
-			class UAnimSequence * Sequence = Recorder.GetAnimationObject();
+			class UAnimSequence* Sequence = Recorder.GetAnimationObject();
 			if (Sequence)
 			{
 				Recorder.StopRecord(false);
@@ -833,7 +852,6 @@ class FSequenceRecorderModule : public ISequenceRecorder, private FSelfRegisteri
 	{
 		TSharedPtr<SDockTab> MajorTab;
 		SAssignNew(MajorTab, SDockTab)
-			.Icon(FEditorStyle::Get().GetBrush("SequenceRecorder.TabIcon"))
 			.TabRole(ETabRole::NomadTab);
 
 		MajorTab->SetContent(SNew(SSequenceRecorder));

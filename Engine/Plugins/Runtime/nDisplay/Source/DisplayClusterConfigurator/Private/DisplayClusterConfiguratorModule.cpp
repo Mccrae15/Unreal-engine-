@@ -7,8 +7,23 @@
 #include "DisplayClusterConfiguratorVersionUtils.h"
 #include "Settings/DisplayClusterConfiguratorSettings.h"
 #include "Views/Details/DisplayClusterRootActorDetailsCustomization.h"
+#include "Views/OutputMapping/DisplayClusterConfiguratorOutputMappingCommands.h"
+#include "DisplayClusterConfiguratorLog.h"
 
-#include "Views/Details/DisplayClusterConfiguratorDetailCustomization.h"
+#include "Views/Details/DisplayClusterConfiguratorBaseTypeCustomization.h"
+#include "Views/Details/DisplayClusterEditorPropertyReferenceTypeCustomization.h"
+#include "Views/Details/DisplayClusterConfiguratorBaseDetailCustomization.h"
+#include "Views/Details/Cluster/DisplayClusterConfiguratorDataDetailsCustomization.h"
+#include "Views/Details/Cluster/DisplayClusterConfiguratorClusterDetailsCustomization.h"
+#include "Views/Details/Cluster/DisplayClusterConfiguratorExternalImageTypeCustomization.h"
+#include "Views/Details/Cluster/DisplayClusterConfiguratorGenerateMipsCustomization.h"
+#include "Views/Details/Cluster/DisplayClusterConfiguratorNodeSelectionCustomization.h"
+#include "Views/Details/Cluster/DisplayClusterConfiguratorClusterReferenceListCustomization.h"
+#include "Views/Details/Cluster/DisplayClusterConfiguratorViewportDetailsCustomization.h"
+#include "Views/Details/Cluster/DisplayClusterConfiguratorViewportRemapCustomization.h"
+#include "Views/Details/Cluster/DisplayClusterConfiguratorRectangleCustomization.h"
+#include "Views/Details/Components/DisplayClusterConfiguratorScreenComponentDetailsCustomization.h"
+#include "Views/Details/Components/DisplayClusterICVFXCameraComponentDetailsCustomization.h"
 #include "Views/Details/Policies/DisplayClusterConfiguratorPolicyDetailCustomization.h"
 
 #include "Blueprints/DisplayClusterBlueprint.h"
@@ -24,20 +39,25 @@
 #include "AssetTypeCategories.h"
 #include "HAL/IConsoleManager.h"
 #include "Modules/ModuleManager.h"
-#include "Views/Details/DisplayClusterICVFXCameraComponentDetailsCustomization.h"
+#include "IPlacementModeModule.h"
+#include "IVPUtilitiesEditorModule.h"
+#include "ActorFactories/ActorFactoryBlueprint.h"
 
+#define REGISTER_PROPERTY_LAYOUT(PropertyType, CustomizationType) { \
+	const FName LayoutName = PropertyType::StaticStruct()->GetFName(); \
+	RegisteredPropertyLayoutNames.Add(LayoutName); \
+	PropertyModule.RegisterCustomPropertyTypeLayout(LayoutName, \
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&CustomizationType::MakeInstance)); \
+}
+
+#define REGISTER_OBJECT_LAYOUT(ObjectType, CustomizationType) { \
+	const FName LayoutName = ObjectType::StaticClass()->GetFName(); \
+	RegisteredClassLayoutNames.Add(LayoutName); \
+	PropertyModule.RegisterCustomClassLayout(LayoutName, \
+		FOnGetDetailCustomizationInstance::CreateStatic(&CustomizationType::MakeInstance)); \
+}
 
 #define LOCTEXT_NAMESPACE "DisplayClusterConfigurator"
-
-FOnDisplayClusterConfiguratorReadOnlyChanged FDisplayClusterConfiguratorModule::OnDisplayClusterConfiguratorReadOnlyChanged;
-
-static TAutoConsoleVariable<bool> CVarDisplayClusterConfiguratorReadOnly(
-	TEXT("nDisplay.configurator.ReadOnly"),
-	true,
-	TEXT("Enable or disable editing functionality")
-	);
-
-static FAutoConsoleVariableSink CVarDisplayClusterConfiguratorReadOnlySink(FConsoleCommandDelegate::CreateStatic(&FDisplayClusterConfiguratorModule::ReadOnlySink));
 
 void FDisplayClusterConfiguratorModule::StartupModule()
 {
@@ -68,9 +88,13 @@ void FDisplayClusterConfiguratorModule::StartupModule()
 
 	RegisterCustomLayouts();
 	RegisterSettings();
+	RegisterPlacementModeItems();
 	
-	FDisplayClusterConfiguratorStyle::Initialize();
+	FDisplayClusterConfiguratorStyle::Get();
+
 	FDisplayClusterConfiguratorCommands::Register();
+	FDisplayClusterConfiguratorOutputMappingCommands::Register();
+
 	MenuExtensibilityManager = MakeShareable(new FExtensibilityManager);
 	ToolBarExtensibilityManager = MakeShareable(new FExtensibilityManager);
 
@@ -101,8 +125,8 @@ void FDisplayClusterConfiguratorModule::ShutdownModule()
 
 	UnregisterSettings();
 	UnregisterCustomLayouts();
+	UnregisterPlacementModeItems();
 
-	FDisplayClusterConfiguratorStyle::Shutdown();
 	MenuExtensibilityManager.Reset();
 	ToolBarExtensibilityManager.Reset();
 
@@ -119,32 +143,6 @@ void FDisplayClusterConfiguratorModule::ShutdownModule()
 const FDisplayClusterConfiguratorCommands& FDisplayClusterConfiguratorModule::GetCommands() const
 {
 	return FDisplayClusterConfiguratorCommands::Get();
-}
-
-void FDisplayClusterConfiguratorModule::ReadOnlySink()
-{
-	bool bNewDisplayClusterConfiguratorReadOnly = CVarDisplayClusterConfiguratorReadOnly.GetValueOnGameThread();
-
-	// By default we assume the ReadOnly is true
-	static bool GReadOnly = true;
-
-	if (GReadOnly != bNewDisplayClusterConfiguratorReadOnly)
-	{
-		GReadOnly = bNewDisplayClusterConfiguratorReadOnly;
-
-		// Broadcast the changes
-		OnDisplayClusterConfiguratorReadOnlyChanged.Broadcast(GReadOnly);
-	}
-}
-
-FDelegateHandle FDisplayClusterConfiguratorModule::RegisterOnReadOnly(const FOnDisplayClusterConfiguratorReadOnlyChangedDelegate& Delegate)
-{
-	return OnDisplayClusterConfiguratorReadOnlyChanged.Add(Delegate);
-}
-
-void FDisplayClusterConfiguratorModule::UnregisterOnReadOnly(FDelegateHandle DelegateHandle)
-{
-	OnDisplayClusterConfiguratorReadOnlyChanged.Remove(DelegateHandle);
 }
 
 void FDisplayClusterConfiguratorModule::RegisterAssetTypeAction(IAssetTools& AssetTools,
@@ -180,130 +178,31 @@ void FDisplayClusterConfiguratorModule::RegisterCustomLayouts()
 	/**
 	 * CLASSES
 	 */
-	{
-		const FName LayoutName = UDisplayClusterConfigurationData::StaticClass()->GetFName();
-		RegisteredClassLayoutNames.Add(LayoutName);
-		PropertyModule.RegisterCustomClassLayout(ADisplayClusterRootActor::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FDisplayClusterRootActorDetailsCustomization::MakeInstance));
-	}
-	
-	{
-		const FName LayoutName = UDisplayClusterConfigurationData::StaticClass()->GetFName();
-		RegisteredClassLayoutNames.Add(LayoutName);
-		PropertyModule.RegisterCustomClassLayout(LayoutName,
-			FOnGetDetailCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorDetailCustomization::MakeInstance<FDisplayClusterConfiguratorDataDetailCustomization>));
-	}
-
-	{
-		const FName LayoutName = UDisplayClusterConfigurationCluster::StaticClass()->GetFName();
-		RegisteredClassLayoutNames.Add(LayoutName);
-		PropertyModule.RegisterCustomClassLayout(LayoutName,
-			FOnGetDetailCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorDetailCustomization::MakeInstance<FDisplayClusterConfiguratorClusterDetailCustomization>));
-	}
-
-	{
-		const FName LayoutName = UDisplayClusterConfigurationClusterNode::StaticClass()->GetFName();
-		RegisteredClassLayoutNames.Add(LayoutName);
-		PropertyModule.RegisterCustomClassLayout(LayoutName,
-			FOnGetDetailCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorDetailCustomization::MakeInstance<FDisplayClusterConfiguratorDetailCustomization>));
-	}
-	
-	{
-		const FName LayoutName = UDisplayClusterConfigurationViewport::StaticClass()->GetFName();
-		RegisteredClassLayoutNames.Add(LayoutName);
-		PropertyModule.RegisterCustomClassLayout(LayoutName,
-			FOnGetDetailCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorDetailCustomization::MakeInstance<FDisplayClusterConfiguratorViewportDetailCustomization>));
-	}
-
-	{
-		const FName LayoutName = UDisplayClusterScreenComponent::StaticClass()->GetFName();
-		RegisteredClassLayoutNames.Add(LayoutName);
-		PropertyModule.RegisterCustomClassLayout(LayoutName,
-			FOnGetDetailCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorScreenDetailCustomization::MakeInstance));
-	}
-	
-	{
-		const FName LayoutName = UDisplayClusterICVFXCameraComponent::StaticClass()->GetFName();
-		RegisteredClassLayoutNames.Add(LayoutName);
-		PropertyModule.RegisterCustomClassLayout(LayoutName,
-			FOnGetDetailCustomizationInstance::CreateStatic(&FDisplayClusterICVFXCameraComponentDetailsCustomization::MakeInstance));
-	}
+	REGISTER_OBJECT_LAYOUT(ADisplayClusterRootActor, FDisplayClusterRootActorDetailsCustomization);
+	REGISTER_OBJECT_LAYOUT(UDisplayClusterConfigurationData, FDisplayClusterConfiguratorDataDetailsCustomization);
+	REGISTER_OBJECT_LAYOUT(UDisplayClusterConfigurationCluster, FDisplayClusterConfiguratorClusterDetailsCustomization);
+	REGISTER_OBJECT_LAYOUT(UDisplayClusterConfigurationClusterNode, FDisplayClusterConfiguratorBaseDetailCustomization);
+	REGISTER_OBJECT_LAYOUT(UDisplayClusterConfigurationViewport, FDisplayClusterConfiguratorViewportDetailsCustomization);
+	REGISTER_OBJECT_LAYOUT(UDisplayClusterScreenComponent, FDisplayClusterConfiguratorScreenDetailsCustomization);	
+	REGISTER_OBJECT_LAYOUT(UDisplayClusterICVFXCameraComponent, FDisplayClusterICVFXCameraComponentDetailsCustomization);
 	
 	/**
 	 * STRUCTS
 	 */
-	{
-		const FName LayoutName = FDisplayClusterConfigurationProjection::StaticStruct()->GetFName();
-		RegisteredPropertyLayoutNames.Add(LayoutName);
-
-		PropertyModule.RegisterCustomPropertyTypeLayout(LayoutName,
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorTypeCustomization::MakeInstance<FDisplayClusterConfiguratorProjectionCustomization>));
-	}
-
-	{
-		const FName LayoutName = FDisplayClusterConfigurationClusterSync::StaticStruct()->GetFName();
-		RegisteredPropertyLayoutNames.Add(LayoutName);
-
-		PropertyModule.RegisterCustomPropertyTypeLayout(LayoutName,
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorTypeCustomization::MakeInstance<FDisplayClusterConfiguratorClusterSyncTypeCustomization>));
-	}
-	
-	{
-		const FName LayoutName = FDisplayClusterConfigurationRenderSyncPolicy::StaticStruct()->GetFName();
-		RegisteredPropertyLayoutNames.Add(LayoutName);
-
-		PropertyModule.RegisterCustomPropertyTypeLayout(LayoutName,
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorTypeCustomization::MakeInstance<FDisplayClusterConfiguratorRenderSyncPolicyCustomization>));
-	}
-
-	{
-		// TODO: Input sync policy needed with Input / VRPN changes?
-		
-		const FName LayoutName = FDisplayClusterConfigurationInputSyncPolicy::StaticStruct()->GetFName();
-		RegisteredPropertyLayoutNames.Add(LayoutName);
-
-		PropertyModule.RegisterCustomPropertyTypeLayout(LayoutName,
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorTypeCustomization::MakeInstance<FDisplayClusterConfiguratorInputSyncPolicyCustomization>));
-	}
-
-	{
-		const FName LayoutName = FDisplayClusterConfigurationExternalImage::StaticStruct()->GetFName();
-		RegisteredPropertyLayoutNames.Add(LayoutName);
-
-		PropertyModule.RegisterCustomPropertyTypeLayout(LayoutName,
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorTypeCustomization::MakeInstance<FDisplayClusterConfiguratorExternalImageTypeCustomization>));
-	}
-
-	{
-		const FName LayoutName = FDisplayClusterComponentRef::StaticStruct()->GetFName();
-		RegisteredPropertyLayoutNames.Add(LayoutName);
-
-		PropertyModule.RegisterCustomPropertyTypeLayout(LayoutName,
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorComponentRefCustomization::MakeInstance<FDisplayClusterConfiguratorComponentRefCustomization>));
-	}
-	
-	{
-		const FName LayoutName = FDisplayClusterConfigurationOCIOProfile::StaticStruct()->GetFName();
-		RegisteredPropertyLayoutNames.Add(LayoutName);
-
-		PropertyModule.RegisterCustomPropertyTypeLayout(LayoutName,
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorOCIOProfileCustomization::MakeInstance<FDisplayClusterConfiguratorOCIOProfileCustomization>));
-	}
-
-	{
-		const FName LayoutName = FDisplayClusterConfigurationViewport_PerViewportColorGrading::StaticStruct()->GetFName();
-		RegisteredPropertyLayoutNames.Add(LayoutName);
-
-		PropertyModule.RegisterCustomPropertyTypeLayout(LayoutName,
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorPerViewportColorGradingCustomization::MakeInstance<FDisplayClusterConfiguratorPerViewportColorGradingCustomization>));
-	}
-
-	{
-		const FName LayoutName = FDisplayClusterConfigurationViewport_PerNodeColorGrading::StaticStruct()->GetFName();
-		RegisteredPropertyLayoutNames.Add(LayoutName);
-
-		PropertyModule.RegisterCustomPropertyTypeLayout(LayoutName,
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDisplayClusterConfiguratorPerNodeColorGradingCustomization::MakeInstance<FDisplayClusterConfiguratorPerNodeColorGradingCustomization>));
-	}
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationICVFX_VisibilityList, FDisplayClusterConfiguratorBaseTypeCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterEditorPropertyReference, FDisplayClusterEditorPropertyReferenceTypeCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationProjection, FDisplayClusterConfiguratorProjectionCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationRenderSyncPolicy, FDisplayClusterConfiguratorRenderSyncPolicyCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationInputSyncPolicy, FDisplayClusterConfiguratorInputSyncPolicyCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationExternalImage, FDisplayClusterConfiguratorExternalImageTypeCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterComponentRef, FDisplayClusterConfiguratorBaseTypeCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationOCIOProfile, FDisplayClusterConfiguratorOCIOProfileCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationViewport_PerViewportColorGrading, FDisplayClusterConfiguratorPerViewportColorGradingCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationViewport_PerNodeColorGrading, FDisplayClusterConfiguratorPerNodeColorGradingCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationPostRender_GenerateMips, FDisplayClusterConfiguratorGenerateMipsCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationClusterItemReferenceList, FDisplayClusterConfiguratorClusterReferenceListCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationViewport_RemapData, FDisplayClusterConfiguratorViewportRemapCustomization);
+	REGISTER_PROPERTY_LAYOUT(FDisplayClusterConfigurationRectangle, FDisplayClusterConfiguratorRectangleCustomization);
 }
 
 void FDisplayClusterConfiguratorModule::UnregisterCustomLayouts()
@@ -321,6 +220,74 @@ void FDisplayClusterConfiguratorModule::UnregisterCustomLayouts()
 	}
 
 	RegisteredPropertyLayoutNames.Empty();
+}
+
+void FDisplayClusterConfiguratorModule::RegisterPlacementModeItems()
+{
+	auto RegisterPlaceActors = [&]() -> void
+	{
+		if (!GEditor)
+		{
+			return;
+		}
+		
+		const FPlacementCategoryInfo* Info = IVPUtilitiesEditorModule::Get().GetVirtualProductionPlacementCategoryInfo();
+		if (!Info)
+		{
+			UE_LOG(DisplayClusterConfiguratorLog, Warning, TEXT("Could not find or create VirtualProduction Place Actor Category"));
+			return;
+		}
+
+		FAssetData LightCardAssetData(
+			TEXT("/nDisplay/LightCard/LightCard"),
+			TEXT("/nDisplay/LightCard"),
+			TEXT("LightCard"),
+			TEXT("Blueprint")
+		);
+		check (LightCardAssetData.IsValid());
+	
+		PlaceActors.Add(IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
+			*UActorFactoryBlueprint::StaticClass(),
+			LightCardAssetData,
+			NAME_None,
+			NAME_None,
+			TOptional<FLinearColor>(),
+			TOptional<int32>(),
+			NSLOCTEXT("PlacementMode", "LightCard", "LightCard")
+		)));
+	};
+
+	if (GEngine && GEngine->IsInitialized())
+	{
+		RegisterPlaceActors();
+	}
+	else
+	{
+		PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddLambda(RegisterPlaceActors);
+	}
+}
+
+void FDisplayClusterConfiguratorModule::UnregisterPlacementModeItems()
+{
+	if (!IsEngineExitRequested() && GEditor && UObjectInitialized())
+	{
+		IPlacementModeModule& PlacementModeModule = IPlacementModeModule::Get();
+
+		for (TOptional<FPlacementModeID>& PlaceActor : PlaceActors)
+		{
+			if (PlaceActor.IsSet())
+			{
+				PlacementModeModule.UnregisterPlaceableItem(*PlaceActor);
+			}
+		}
+	}
+
+	if (PostEngineInitHandle.IsValid())
+	{
+		FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
+	}
+	
+	PlaceActors.Empty();
 }
 
 TSharedPtr<FKismetCompilerContext> FDisplayClusterConfiguratorModule::GetCompilerForDisplayClusterBP(UBlueprint* BP,

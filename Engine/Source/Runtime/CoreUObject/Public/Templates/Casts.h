@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
+#include "UObject/ObjectPtr.h"
 #include "UObject/Class.h"
 #include "Templates/LosesQualifiersFromTo.h"
 #include "Traits/IsVoidType.h"
@@ -122,6 +123,22 @@ struct TCastImpl
 		return (To*)Src;
 	}
 
+	FORCEINLINE static To* DoCast( const FObjectPtr& Src )
+	{
+		UObject* SrcObj = ResolveObjectHandleNoRead(Src.GetHandleRef());
+		if (SrcObj && Src->GetClass()->HasAnyCastFlag(TCastFlags<To>::Value))
+		{
+			ObjectHandle_Private::OnHandleRead(SrcObj);
+			return (To*)SrcObj;
+		}
+		return nullptr;
+	}
+
+	FORCEINLINE static To* DoCastCheckedWithoutTypeCheck( const FObjectPtr& Src )
+	{
+		return (To*)Src.Get();
+	}
+
 	UE_DEPRECATED(4.25, "Cast<>() and CastChecked<>() should not be used with FProperties. Use CastField<>() or CastFieldChecked<>() instead.")
 	FORCEINLINE static To* DoCast( FField* Src )
 	{
@@ -148,6 +165,22 @@ struct TCastImpl<From, To, ECastType::UObjectToUObject>
 		return (To*)Src;
 	}
 
+	FORCEINLINE static To* DoCast( const FObjectPtr& Src )
+	{
+		UObject* SrcObj = ResolveObjectHandleNoRead(Src.GetHandleRef());
+		if (SrcObj && SrcObj->IsA<To>())
+		{
+			ObjectHandle_Private::OnHandleRead(SrcObj);
+			return (To*)SrcObj;
+		}
+		return nullptr;
+	}
+
+	FORCEINLINE static To* DoCastCheckedWithoutTypeCheck( const FObjectPtr& Src )
+	{
+		return (To*)Src.Get();
+	}
+
 	UE_DEPRECATED(4.25, "Cast<>() and CastChecked<>() should not be used with FProperties. Use CastField<>() or CastFieldChecked<>() instead.")
 	FORCEINLINE static To* DoCast( FField* Src )
 	{
@@ -166,16 +199,15 @@ struct TCastImpl<From, To, ECastType::InterfaceToUObject>
 {
 	FORCEINLINE static To* DoCast( From* Src )
 	{
-		To* Result = nullptr;
 		if (Src)
 		{
 			UObject* Obj = Src->_getUObject();
-			if (Obj->IsA<To>())
+			if (Obj && Obj->IsA<To>())
 			{
-				Result = (To*)Obj;
+				return (To*)Obj;
 			}
 		}
-		return Result;
+		return nullptr;
 	}
 
 	FORCEINLINE static To* DoCastCheckedWithoutTypeCheck( From* Src )
@@ -196,6 +228,28 @@ struct TCastImpl<From, To, ECastType::UObjectToInterface>
 	{
 		return Src ? (To*)Src->GetInterfaceAddress(To::UClassType::StaticClass()) : nullptr;
 	}
+
+	FORCEINLINE static To* DoCast( const FObjectPtr& Src )
+	{
+		UObject* SrcObj = ResolveObjectHandleNoRead(Src.GetHandleRef());
+		if (SrcObj)
+		{
+			ObjectHandle_Private::OnHandleRead(SrcObj);
+			return (To*)Src.Get()->GetInterfaceAddress(To::UClassType::StaticClass());
+		}
+		return nullptr;
+	}
+
+	FORCEINLINE static To* DoCastCheckedWithoutTypeCheck( const FObjectPtr& Src )
+	{
+		UObject* SrcObj = ResolveObjectHandleNoRead(Src.GetHandleRef());
+		if (SrcObj)
+		{
+			ObjectHandle_Private::OnHandleRead(SrcObj);
+			return (To*)Src.Get()->GetInterfaceAddress(To::UClassType::StaticClass());
+		}
+		return nullptr;
+	}
 };
 
 template <typename From, typename To>
@@ -203,12 +257,26 @@ struct TCastImpl<From, To, ECastType::InterfaceToInterface>
 {
 	FORCEINLINE static To* DoCast( From* Src )
 	{
-		return Src ? (To*)Src->_getUObject()->GetInterfaceAddress(To::UClassType::StaticClass()) : nullptr;
+		if (Src)
+		{
+			if (UObject* Obj = Src->_getUObject())
+			{
+				return (To*)Obj->GetInterfaceAddress(To::UClassType::StaticClass());
+			}
+		}
+		return nullptr;
 	}
 
 	FORCEINLINE static To* DoCastCheckedWithoutTypeCheck( From* Src )
 	{
-		return Src ? (To*)Src->_getUObject()->GetInterfaceAddress(To::UClassType::StaticClass()) : nullptr;
+		if (Src)
+		{
+			if (UObject* Obj = Src->_getUObject())
+			{
+				return (To*)Obj->GetInterfaceAddress(To::UClassType::StaticClass());
+			}
+		}
+		return nullptr;
 	}
 };
 
@@ -310,6 +378,43 @@ template< class T, class U > FORCEINLINE T* Cast       ( const TWeakObjectPtr<U>
 template< class T, class U > FORCEINLINE T* ExactCast  ( const TWeakObjectPtr<U>& Src                                                                   ) { return ExactCast  <T>(Src.Get()); }
 template< class T, class U > FORCEINLINE T* CastChecked( const TWeakObjectPtr<U>& Src, ECastCheckedType::Type CheckType = ECastCheckedType::NullChecked ) { return CastChecked<T>(Src.Get(), CheckType); }
 
+// object ptr versions
+template <class T, class U> FORCEINLINE T* Cast       ( const TObjectPtr<U>& Src                                                                   ) { return TCastImpl<U, T>::DoCast((const FObjectPtr&)Src); }
+template <class T, class U> FORCEINLINE T* ExactCast  ( const TObjectPtr<U>& Src                                                                   )
+{
+	UObject* SrcObj = ResolveObjectHandleNoRead(((const FObjectPtr&)Src).GetHandleRef());
+	if (SrcObj && (SrcObj->GetClass() == T::StaticClass()))
+	{
+		ObjectHandle_Private::OnHandleRead(SrcObj);
+		return (T*)SrcObj;
+	}
+	return nullptr;
+}
+template <class T, class U> FORCEINLINE T* CastChecked( const TObjectPtr<U>& Src, ECastCheckedType::Type CheckType = ECastCheckedType::NullChecked )
+{
+#if DO_CHECK
+	if (!Src.IsNull())
+	{
+		T* Result = Cast<T>(Src);
+		if (!Result)
+		{
+			CastLogError(*GetFullNameForCastLogError(Src.Get()), *GetTypeName<T>());
+		}
+
+		return Result;
+	}
+
+	if (CheckType == ECastCheckedType::NullChecked)
+	{
+		CastLogError(TEXT("nullptr"), *GetTypeName<T>());
+	}
+
+	return nullptr;
+#else
+	return TCastImpl<U, T>::DoCastCheckedWithoutTypeCheck((const FObjectPtr&)Src);
+#endif
+}
+
 // TSubclassOf versions
 template< class T, class U > FORCEINLINE T* Cast       ( const TSubclassOf<U>& Src                                                                   ) { return Cast       <T>(*Src); }
 template< class T, class U > FORCEINLINE T* CastChecked( const TSubclassOf<U>& Src, ECastCheckedType::Type CheckType = ECastCheckedType::NullChecked ) { return CastChecked<T>(*Src, CheckType); }
@@ -350,6 +455,7 @@ DECLARE_CAST_BY_FLAG(UClass)							\
 DECLARE_CAST_BY_FLAG(FProperty)							\
 DECLARE_CAST_BY_FLAG(FObjectPropertyBase)				\
 DECLARE_CAST_BY_FLAG(FObjectProperty)					\
+DECLARE_CAST_BY_FLAG(FObjectPtrProperty)				\
 DECLARE_CAST_BY_FLAG(FWeakObjectProperty)				\
 DECLARE_CAST_BY_FLAG(FLazyObjectProperty)				\
 DECLARE_CAST_BY_FLAG(FSoftObjectProperty)				\
@@ -421,7 +527,7 @@ private:
 
 
 
-namespace UE4Casts_Private
+namespace UECasts_Private
 {
 	template <typename To, typename From>
 	FORCEINLINE typename TEnableIf<TAnd<TIsPointer<To>, TAnd<TIsCastableToPointer<typename TRemovePointer<To>::Type>, TIsCastable<From>>>::Value, To>::Type DynamicCast(From* Arg)
@@ -466,4 +572,4 @@ namespace UE4Casts_Private
 	}
 }
 
-#define dynamic_cast UE4Casts_Private::DynamicCast
+#define dynamic_cast UECasts_Private::DynamicCast

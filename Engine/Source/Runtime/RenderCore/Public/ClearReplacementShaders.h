@@ -15,7 +15,8 @@ enum class EClearReplacementResourceType
 	Texture2D = 1,
 	Texture2DArray = 2,
 	Texture3D = 3,
-	LargeBuffer = 4,
+	StructuredBuffer = 4,
+	LargeBuffer = 5
 };
 
 enum class EClearReplacementValueType
@@ -110,11 +111,12 @@ private:
 namespace ClearReplacementCS
 {
 	template <EClearReplacementResourceType> struct TThreadGroupSize {};
-	template <> struct TThreadGroupSize<EClearReplacementResourceType::Buffer>         { static constexpr int32 X = 64,  Y = 1, Z = 1; };
-	template <> struct TThreadGroupSize<EClearReplacementResourceType::Texture2D>      { static constexpr int32 X =  8,  Y = 8, Z = 1; };
-	template <> struct TThreadGroupSize<EClearReplacementResourceType::Texture2DArray> { static constexpr int32 X =  8,  Y = 8, Z = 1; };
-	template <> struct TThreadGroupSize<EClearReplacementResourceType::Texture3D>      { static constexpr int32 X =  4,  Y = 4, Z = 4; };
-	template <> struct TThreadGroupSize<EClearReplacementResourceType::LargeBuffer>	   { static constexpr int32 X = 512, Y = 1, Z = 1; };
+	template <> struct TThreadGroupSize<EClearReplacementResourceType::Buffer>				{ static constexpr int32 X =  64, Y = 1, Z = 1; };
+	template <> struct TThreadGroupSize<EClearReplacementResourceType::Texture2D>			{ static constexpr int32 X =   8, Y = 8, Z = 1; };
+	template <> struct TThreadGroupSize<EClearReplacementResourceType::Texture2DArray>		{ static constexpr int32 X =   8, Y = 8, Z = 1; };
+	template <> struct TThreadGroupSize<EClearReplacementResourceType::Texture3D>			{ static constexpr int32 X =   4, Y = 4, Z = 4; };
+	template <> struct TThreadGroupSize<EClearReplacementResourceType::StructuredBuffer>	{ static constexpr int32 X =  64, Y = 1, Z = 1; };
+	template <> struct TThreadGroupSize<EClearReplacementResourceType::LargeBuffer>			{ static constexpr int32 X = 512, Y = 1, Z = 1; };
 }
 
 template <EClearReplacementResourceType ResourceType, typename BaseType>
@@ -151,20 +153,6 @@ public:
 	}
 	
 	static const TCHAR* GetFunctionName() { return TEXT("ClearCS"); }
-
-	UE_DEPRECATED(4.25, "TClearReplacementCS::SetResource is deprecated. Call GetClearResourceParam() and bind the UAV manually instead. Be sure to handle any necessary resource transitions.")
-	inline void SetResource(FRHIComputeCommandList& RHICmdList, FRHIUnorderedAccessView* UAV)
-	{
-		RHICmdList.Transition(FRHITransitionInfo(UAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier));
-		SetUAVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ClearResourceParam, UAV);
-	}
-
-	UE_DEPRECATED(4.25, "TClearReplacementCS::FinalizeResource is deprecated. Call GetClearResourceParam() and bind the UAV manually instead. Be sure to handle any necessary resource transitions.")
-	inline void FinalizeResource(FRHIComputeCommandList& RHICmdList, FRHIUnorderedAccessView* UAV)
-	{
-		SetUAVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ClearResourceParam, nullptr);
-		RHICmdList.Transition(FRHITransitionInfo(UAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier));
-	}
 
 	inline const FShaderResourceParameter& GetClearResourceParam() const { return ClearResourceParam; }
 	inline uint32 GetResourceParamIndex() const { return ClearResourceParam.GetBaseIndex(); }
@@ -271,46 +259,58 @@ typedef TClearReplacementPS<true,  FClearReplacementBase_Float4>             FCl
 typedef TClearReplacementPS<false, FClearReplacementBase_Float4_Zero>        FClearReplacementPS_Zero;
 	
 // Compute shaders for clearing each resource type, with a min/max bounds enabled.
-typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,         FClearReplacementBase_Uint_Bounds>   FClearReplacementCS_Buffer_Uint_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,         FClearReplacementBase_Float_Bounds>  FClearReplacementCS_Buffer_Float_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,         FClearReplacementBase_Float4_Bounds> FClearReplacementCS_Buffer_Float4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,    FClearReplacementBase_Uint_Bounds>   FClearReplacementCS_LargeBuffer_Uint_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,    FClearReplacementBase_Float_Bounds>  FClearReplacementCS_LargeBuffer_Float_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,    FClearReplacementBase_Float4_Bounds> FClearReplacementCS_LargeBuffer_Float4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture3D,      FClearReplacementBase_Float4_Bounds> FClearReplacementCS_Texture3D_Float4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,      FClearReplacementBase_Float4_Bounds> FClearReplacementCS_Texture2D_Float4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray, FClearReplacementBase_Float4_Bounds> FClearReplacementCS_Texture2DArray_Float4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,           FClearReplacementBase_Uint_Bounds>   FClearReplacementCS_Buffer_Uint_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,           FClearReplacementBase_Float_Bounds>  FClearReplacementCS_Buffer_Float_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,           FClearReplacementBase_Float4_Bounds> FClearReplacementCS_Buffer_Float4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,      FClearReplacementBase_Uint_Bounds>   FClearReplacementCS_LargeBuffer_Uint_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,      FClearReplacementBase_Float_Bounds>  FClearReplacementCS_LargeBuffer_Float_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,      FClearReplacementBase_Float4_Bounds> FClearReplacementCS_LargeBuffer_Float4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::StructuredBuffer, FClearReplacementBase_Uint_Bounds>   FClearReplacementCS_StructuredBuffer_Uint_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::StructuredBuffer, FClearReplacementBase_Float_Bounds>  FClearReplacementCS_StructuredBuffer_Float_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::StructuredBuffer, FClearReplacementBase_Float4_Bounds> FClearReplacementCS_StructuredBuffer_Float4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture3D,        FClearReplacementBase_Float4_Bounds> FClearReplacementCS_Texture3D_Float4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,		 FClearReplacementBase_Float4_Bounds> FClearReplacementCS_Texture2D_Float4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray,	 FClearReplacementBase_Float4_Bounds> FClearReplacementCS_Texture2DArray_Float4_Bounds;
 
 // Compute shaders for clearing each resource type. No bounds checks enabled.
-typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,         FClearReplacementBase_Uint_Zero>     FClearReplacementCS_Buffer_Uint_Zero;
-typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,    FClearReplacementBase_Uint_Zero>     FClearReplacementCS_LargeBuffer_Uint_Zero;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray, FClearReplacementBase_Uint_Zero>     FClearReplacementCS_Texture2DArray_Uint_Zero;
-typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,         FClearReplacementBase_Uint>          FClearReplacementCS_Buffer_Uint;
-typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,    FClearReplacementBase_Uint>          FClearReplacementCS_LargeBuffer_Uint;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray, FClearReplacementBase_Uint>          FClearReplacementCS_Texture2DArray_Uint;
+typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,           FClearReplacementBase_Uint_Zero>     FClearReplacementCS_Buffer_Uint_Zero;
+typedef TClearReplacementCS<EClearReplacementResourceType::StructuredBuffer, FClearReplacementBase_Uint_Zero>     FClearReplacementCS_StructuredBuffer_Uint_Zero;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray,   FClearReplacementBase_Uint_Zero>     FClearReplacementCS_Texture2DArray_Uint_Zero;
+typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,           FClearReplacementBase_Uint>          FClearReplacementCS_Buffer_Uint;
+typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,      FClearReplacementBase_Uint>          FClearReplacementCS_LargeBuffer_Uint;
+typedef TClearReplacementCS<EClearReplacementResourceType::StructuredBuffer, FClearReplacementBase_Uint>          FClearReplacementCS_StructuredBuffer_Uint;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray,   FClearReplacementBase_Uint>          FClearReplacementCS_Texture2DArray_Uint;
 	
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture3D,      FClearReplacementBase_Float4>        FClearReplacementCS_Texture3D_Float4;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,      FClearReplacementBase_Float4>        FClearReplacementCS_Texture2D_Float4;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray, FClearReplacementBase_Float4>        FClearReplacementCS_Texture2DArray_Float4;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture3D,        FClearReplacementBase_Float4>        FClearReplacementCS_Texture3D_Float4;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,        FClearReplacementBase_Float4>        FClearReplacementCS_Texture2D_Float4;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray,   FClearReplacementBase_Float4>        FClearReplacementCS_Texture2DArray_Float4;
 	
 // Used by ClearUAV_T in ClearQuad.cpp
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture3D,      FClearReplacementBase_Uint4>         FClearReplacementCS_Texture3D_Uint4;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,      FClearReplacementBase_Uint4>         FClearReplacementCS_Texture2D_Uint4;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray, FClearReplacementBase_Uint4>         FClearReplacementCS_Texture2DArray_Uint4;
-typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,         FClearReplacementBase_Uint4>         FClearReplacementCS_Buffer_Uint4;
-typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,	   FClearReplacementBase_Uint4>         FClearReplacementCS_LargeBuffer_Uint4;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture3D,        FClearReplacementBase_Uint4>         FClearReplacementCS_Texture3D_Uint4;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,        FClearReplacementBase_Uint4>         FClearReplacementCS_Texture2D_Uint4;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray,   FClearReplacementBase_Uint4>         FClearReplacementCS_Texture2DArray_Uint4;
+typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,			 FClearReplacementBase_Uint4>         FClearReplacementCS_Buffer_Uint4;
+typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,		 FClearReplacementBase_Uint4>         FClearReplacementCS_LargeBuffer_Uint4;
+typedef TClearReplacementCS<EClearReplacementResourceType::StructuredBuffer, FClearReplacementBase_Uint4>         FClearReplacementCS_StructuredBuffer_Uint4;
 
-typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,         FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_Buffer_Uint4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,	   FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_LargeBuffer_Uint4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture3D,      FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_Texture3D_Uint4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,      FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_Texture2D_Uint4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray, FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_Texture2DArray_Uint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,		     FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_Buffer_Uint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,		 FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_LargeBuffer_Uint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::StructuredBuffer, FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_StructuredBuffer_Uint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture3D,        FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_Texture3D_Uint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,        FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_Texture2D_Uint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray,   FClearReplacementBase_Uint4_Bounds>  FClearReplacementCS_Texture2DArray_Uint4_Bounds;
 
-typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,         FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_Buffer_Sint4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,    FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_LargeBuffer_Sint4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture3D,      FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_Texture3D_Sint4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,      FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_Texture2D_Sint4_Bounds;
-typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray, FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_Texture2DArray_Sint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Buffer,           FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_Buffer_Sint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::LargeBuffer,      FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_LargeBuffer_Sint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::StructuredBuffer, FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_StructuredBuffer_Sint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture3D,        FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_Texture3D_Sint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2D,        FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_Texture2D_Sint4_Bounds;
+typedef TClearReplacementCS<EClearReplacementResourceType::Texture2DArray,   FClearReplacementBase_Sint4_Bounds>  FClearReplacementCS_Texture2DArray_Sint4_Bounds;
+
+/**
+ * Force creation of the above clear replacement shaders. This is sometimes useful if multi-threaded creation (i.e. on demand) isn't supported.
+ */
+void RENDERCORE_API CreateClearReplacementShaders();
 
 /**
  * Helper functions for running the clear replacement shader for specific resource types, values types and number of channels.

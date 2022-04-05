@@ -12,8 +12,10 @@
 #include "DrawDebugHelpers.h"
 #include "GameFramework/PawnMovementComponent.h"
 #include "GameFramework/SpectatorPawn.h"
+#include "GameFramework/LightWeightInstanceSubsystem.h"
 #include "Engine/Canvas.h"
 #include "Engine/DebugCameraController.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 static TAutoConsoleVariable<int32> CVarDebugCameraTraceComplex(
@@ -135,6 +137,7 @@ void ADebugCameraHUD::PostRender()
 #endif
 
 			FCollisionQueryParams TraceParams(NAME_None, FCollisionQueryParams::GetUnknownStatId(), bTraceComplex, this);
+			TraceParams.bReturnPhysicalMaterial = true;
 			FHitResult Hit;
 			bool bHit = GetWorld()->LineTraceSingleByChannel(Hit, CamLoc, CamRot.Vector() * 100000.f + CamLoc, ECC_Visibility, TraceParams);
 
@@ -143,19 +146,22 @@ void ADebugCameraHUD::PostRender()
 
 			if( bHit )
 			{
-				AActor* HitActor = Hit.GetActor();
+				const FActorInstanceHandle& HitHandle = Hit.HitObjectHandle;
 				yl += Y;
 				Canvas->DrawText(RenderFont, FString::Printf(TEXT("HitLoc:%s HitNorm:%s"), *Hit.Location.ToString(), *Hit.Normal.ToString() ), X, yl, 1.f, 1.f, FontRenderInfo);
 				yl += Y;
 				Canvas->DrawText(RenderFont, FString::Printf(TEXT("HitDist: %f"), Hit.Distance), X, yl, 1.f, 1.f, FontRenderInfo);
 				yl += Y;
-				Canvas->DrawText(RenderFont, FString::Printf(TEXT("HitActor: '%s'"), HitActor ? *HitActor->GetFName().ToString() : TEXT("<NULL>")), X, yl, 1.f, 1.f, FontRenderInfo);
+				Canvas->DrawText(RenderFont, FString::Printf(TEXT("HitObject: '%s'"), *FLightWeightInstanceSubsystem::Get().GetName(HitHandle)), X, yl, 1.f, 1.f, FontRenderInfo);
 				yl += Y;
 				Canvas->DrawText(RenderFont, FString::Printf(TEXT("HitComponent: '%s'"), Hit.Component.Get() ? *Hit.Component.Get()->GetFName().ToString() : TEXT("<NULL>")), X, yl, 1.f, 1.f, FontRenderInfo);
 				yl += Y;
-				Canvas->DrawText(RenderFont, FString::Printf(TEXT("HitActor Class: '%s'"), HitActor && HitActor->GetClass() ? *HitActor->GetClass()->GetName() : TEXT("<Not Found>") ), X, yl, 1.f, 1.f, FontRenderInfo);
-				yl += Y;
+				UClass* HitClass = HitHandle.GetRepresentedClass();
+				Canvas->DrawText(RenderFont, FString::Printf(TEXT("HitHandle Class: '%s'"), HitClass ? *HitClass->GetName() : TEXT("<Not Found>") ), X, yl, 1.f, 1.f, FontRenderInfo);
+				yl += Y; AActor* HitActor = HitHandle.FetchActor();
 				Canvas->DrawText(RenderFont, FString::Printf(TEXT("HitActorPath: '%s'"), HitActor ? *HitActor->GetPathName() : TEXT("<Not Found>")), X, yl, 1.f, 1.f, FontRenderInfo);
+				yl += Y;
+				Canvas->DrawText(RenderFont, FString::Printf(TEXT("HitPhysMat: '%s'"), Hit.PhysMaterial.Get() ? *Hit.PhysMaterial.Get()->GetPathName() : TEXT("<Not Found>")), X, yl, 1.f, 1.f, FontRenderInfo);
 				yl += Y;
 
 				bool bFoundMaterial = false;

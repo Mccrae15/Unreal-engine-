@@ -11,7 +11,7 @@
 * Used to store variable data and metadata per graph. 
 */
 UCLASS()
-class UNiagaraScriptVariable : public UObject
+class NIAGARAEDITOR_API UNiagaraScriptVariable : public UObject
 {
 public:
 	GENERATED_UCLASS_BODY()
@@ -23,6 +23,7 @@ public:
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 
 	void Init(const FNiagaraVariable& InVar, const FNiagaraVariableMetaData& InVarMetaData);
+	void InitFrom(const UNiagaraScriptVariable* Value, bool bCreateNewGuid = true);
 
 	/** The default mode. Can be Value, Binding or Custom. */
 	UPROPERTY(EditAnywhere, Category = "Default Value")
@@ -94,6 +95,8 @@ public:
 
 	static bool DefaultsAreEquivalent(const UNiagaraScriptVariable* ScriptVarA, const UNiagaraScriptVariable* ScriptVarB);
 
+	static FGuid GenerateStableGuid(const UNiagaraScriptVariable* ScriptVariable);
+
 private:
 	void AllocateData()
 	{
@@ -126,12 +129,12 @@ private:
 	UPROPERTY()
 	bool bIsStaticSwitch;
 
-	UPROPERTY()
+	UPROPERTY(meta = (SkipForCompileHash = "true"))
 	bool bSubscribedToParameterDefinitions;
 
 	UPROPERTY(meta = (SkipForCompileHash = "true"))
 	FGuid ChangeId;
 
-	UPROPERTY()
+	UPROPERTY(meta = (SkipForCompileHash = "true"))
 	bool bOverrideParameterDefinitionsDefaultValue;
 }; 

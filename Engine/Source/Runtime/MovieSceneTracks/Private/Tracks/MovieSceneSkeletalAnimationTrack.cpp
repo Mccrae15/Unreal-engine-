@@ -13,12 +13,16 @@
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimationPoseData.h"
-#include "Animation/CustomAttributesRuntime.h"
+#include "Animation/AttributesRuntime.h"
 #include "SkeletalDebugRendering.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "BoneContainer.h"
-#include "Animation/AnimationPoseData.h"
-#include "Animation/CustomAttributesRuntime.h"
+
+#if WITH_EDITORONLY_DATA
+#include "AnimationBlueprintLibrary.h"
+#include "Misc/QualifiedFrameTime.h"
+#include "Misc/Timecode.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "MovieSceneSkeletalAnimationTrack"
 
@@ -56,10 +60,18 @@ UMovieSceneSection* UMovieSceneSkeletalAnimationTrack::AddNewAnimationOnRow(FFra
 {
 	UMovieSceneSkeletalAnimationSection* NewSection = Cast<UMovieSceneSkeletalAnimationSection>(CreateNewSection());
 	{
-		FFrameTime AnimationLength = AnimSequence->SequenceLength * GetTypedOuter<UMovieScene>()->GetTickResolution();
+		FFrameTime AnimationLength = AnimSequence->GetPlayLength() * GetTypedOuter<UMovieScene>()->GetTickResolution();
 		int32 IFrameNumber = AnimationLength.FrameNumber.Value + (int)(AnimationLength.GetSubFrame() + 0.5f) + 1;
 		NewSection->InitialPlacementOnRow(AnimationSections, KeyTime, IFrameNumber, RowIndex);
 		NewSection->Params.Animation = AnimSequence;
+
+#if WITH_EDITORONLY_DATA
+		FQualifiedFrameTime SourceStartFrameTime;
+		if (UAnimationBlueprintLibrary::EvaluateRootBoneTimecodeAttributesAtTime(NewSection->Params.Animation, 0.0f, SourceStartFrameTime))
+		{
+			NewSection->TimecodeSource.Timecode = SourceStartFrameTime.ToTimecode();
+		}
+#endif
 	}
 
 	AddSection(*NewSection);
@@ -333,8 +345,8 @@ static void CalculateDistanceMap(USkeletalMeshComponent* SkelMeshComp, UAnimSequ
 	TArray<TArray<float>>& OutDistanceDifferences)
 {
 
-	int32 FirstAnimNumFrames = (FirstAnimSeq->SequenceLength - StartFirstAnimTime) * FrameRate + 1;
-	int32 SecondAnimNumFrames = SecondAnimSeq->SequenceLength * FrameRate + 1;
+	int32 FirstAnimNumFrames = (FirstAnimSeq->GetPlayLength() - StartFirstAnimTime) * FrameRate + 1;
+	int32 SecondAnimNumFrames = SecondAnimSeq->GetPlayLength() * FrameRate + 1;
 	OutDistanceDifferences.SetNum(FirstAnimNumFrames);
 	float FirstAnimIndex = 0.0f;
 	float FrameRateDiff = 1.0f / FrameRate;
@@ -344,7 +356,7 @@ static void CalculateDistanceMap(USkeletalMeshComponent* SkelMeshComp, UAnimSequ
 	SecondAnimPose.ResetToRefPose(SkelMeshComp->GetAnimInstance()->GetRequiredBones());
 
 	FBlendedCurve FirstOutCurve, SecondOutCurve;
-	FStackCustomAttributes FirstTempAttributes, SecondTempAttributes;
+	UE::Anim::FStackAttributeContainer FirstTempAttributes, SecondTempAttributes;
 	FAnimationPoseData FirstAnimPoseData(FirstAnimPose, FirstOutCurve, FirstTempAttributes);
 	FAnimationPoseData SecondAnimPoseData(SecondAnimPose, SecondOutCurve, SecondTempAttributes);
 
@@ -406,7 +418,7 @@ static float GetBestBlendPointTimeAtStart(UAnimSequenceBase* FirstAnimSeq, UAnim
 {
 
 	//int32 FirstAnimNumFrames = (FirstAnimSeq->SequenceLength - StartFirstAnimTime) * FrameRate + 1;
-	int32 SecondAnimNumFrames = SecondAnimSeq->SequenceLength * FrameRate + 1;
+	int32 SecondAnimNumFrames = SecondAnimSeq->GetPlayLength() * FrameRate + 1;
 	if (SecondAnimNumFrames <= 0)
 	{
 		return 0.0f;
@@ -446,7 +458,7 @@ void UMovieSceneSkeletalAnimationTrack::FindBestBlendPoint(USkeletalMeshComponen
 					if (BeginOfSecond < EndOfFirst)
 					{
 						FFrameRate TickResolution = MovieScene->GetTickResolution();
-						FirstFrameTime = FirstSection->MapTimeToAnimation(FFrameTime(BeginOfSecond), TickResolution);
+						FirstFrameTime = static_cast<float>(FirstSection->MapTimeToAnimation(FFrameTime(BeginOfSecond), TickResolution));
 					}
 					TArray<TArray<float>> OutDistanceDifferences;
 					FFrameRate DisplayRate = MovieScene->GetDisplayRate();
@@ -585,7 +597,7 @@ void UMovieSceneSkeletalAnimationTrack::SetUpRootMotions(bool bForce)
 					{
 						UMovieSceneSkeletalAnimationSection* AnimSection = CastChecked<UMovieSceneSkeletalAnimationSection>(Section);
 
-						FStackCustomAttributes TempAttributes;
+						UE::Anim::FStackAttributeContainer TempAttributes;
 						FAnimationPoseData AnimationPoseData(OutPose, OutCurve, TempAttributes);
 						bool bIsAdditive = false;
 						if (AnimSection->GetRootMotionTransform(FrameNumber.FrameNumber, TickResolution, AnimationPoseData, bIsAdditive, CurrentTransform, CurrentWeight))
@@ -638,17 +650,22 @@ static FTransform GetWorldTransformForBone(UAnimSequence* AnimSequence, USkeleta
 	{
 		int32 BoneIndex = MeshComponent->GetBoneIndex(BoneName);
 		FTransform BoneTransform;
-		int32 TrackIndex;
+		int32 TrackIndex = INDEX_NONE;
 
-		for (TrackIndex = 0; TrackIndex < AnimSequence->GetRawTrackToSkeletonMapTable().Num(); ++TrackIndex)
+#if WITH_EDITOR
+		const UAnimDataModel* Model = AnimSequence->GetDataModel();
+		if (const FBoneAnimationTrack* TrackData = Model->FindBoneTrackByName(BoneName))
 		{
-			if (AnimSequence->GetRawTrackToSkeletonMapTable()[TrackIndex].BoneTreeIndex == BoneIndex)
-			{
-				break;
-			}
+			TrackIndex = TrackData->BoneTreeIndex;
 		}
+#else
+		TrackIndex = AnimSequence->GetCompressedTrackToSkeletonMapTable().IndexOfByPredicate([BoneIndex](const FTrackToSkeletonMap& Mapping)
+		{
+			return Mapping.BoneTreeIndex == BoneIndex;
+		});
+#endif
 
-		if (TrackIndex == AnimSequence->GetRawTrackToSkeletonMapTable().Num())
+		if (TrackIndex == INDEX_NONE)
 		{
 			break;
 		}
@@ -919,9 +936,9 @@ void UMovieSceneSkeletalAnimationTrack::MatchSectionByBoneTransform(bool bMatchW
 
 		if (FirstAnimSequence && SecondAnimSequence)
 		{
-			float FirstSectionTime = FirstSection->MapTimeToAnimation(CurrentFrame, FrameRate);
+			float FirstSectionTime = static_cast<float>(FirstSection->MapTimeToAnimation(CurrentFrame, FrameRate));
 			FTransform  FirstTransform = GetWorldTransformForBone(FirstAnimSequence, SkelMeshComp, BoneName, FirstSectionTime);
-			float SecondSectionTime = CurrentSection->MapTimeToAnimation(CurrentFrame, FrameRate);
+			float SecondSectionTime = static_cast<float>(CurrentSection->MapTimeToAnimation(CurrentFrame, FrameRate));
 			FTransform  SecondTransform = GetWorldTransformForBone(SecondAnimSequence, SkelMeshComp, BoneName, SecondSectionTime);
 
 			//Need to match the translations and rotations here 
@@ -983,9 +1000,9 @@ void UMovieSceneSkeletalAnimationTrack::MatchSectionByBoneTransform(bool bMatchW
 
 		if (FirstAnimSequence && SecondAnimSequence)
 		{
-			float FirstSectionTime = CurrentSection->MapTimeToAnimation(CurrentFrame, FrameRate);
+			float FirstSectionTime = static_cast<float>(CurrentSection->MapTimeToAnimation(CurrentFrame, FrameRate));
 			FTransform  FirstTransform = GetWorldTransformForBone(FirstAnimSequence, SkelMeshComp, BoneName, FirstSectionTime);
-			float SecondSectionTime = SecondSection->MapTimeToAnimation(CurrentFrame, FrameRate);
+			float SecondSectionTime = static_cast<float>(SecondSection->MapTimeToAnimation(CurrentFrame, FrameRate));
 			FTransform  SecondTransform = GetWorldTransformForBone(SecondAnimSequence, SkelMeshComp, BoneName, SecondSectionTime);
 
 			//Need to match the translations and rotations here 

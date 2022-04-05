@@ -23,6 +23,7 @@
 #include "Serialization/ObjectWriter.h"
 #include "Serialization/ObjectReader.h"
 #include "UObject/FieldIterator.h"
+#include "Algo/Copy.h"
 
 #define LOCTEXT_NAMESPACE "StructureCompiler"
 
@@ -81,7 +82,7 @@ struct FUserDefinedStructureCompilerInner
 			// List of unique classes and structs to regenerate bytecode and property referenced objects list
 			TSet<UStruct*> StructsToRegenerateReferencesFor;
 
-			for (TAllFieldsIterator<FStructProperty> FieldIt(RF_NoFlags, EInternalObjectFlags::PendingKill); FieldIt; ++FieldIt)
+			for (TAllFieldsIterator<FStructProperty> FieldIt(RF_NoFlags, EInternalObjectFlags::Garbage); FieldIt; ++FieldIt)
 			{
 				FStructProperty* StructProperty = *FieldIt;
 				if (StructProperty && (StructureToReinstance == StructProperty->Struct))
@@ -99,7 +100,7 @@ struct FUserDefinedStructureCompilerInner
 					{
 						check(OwnerStruct != DuplicatedStruct);
 						const bool bValidStruct = (OwnerStruct->GetOutermost() != GetTransientPackage())
-							&& !OwnerStruct->IsPendingKill()
+							&& IsValid(OwnerStruct)
 							&& (EUserDefinedStructureStatus::UDSS_Duplicate != OwnerStruct->Status.GetValue());
 
 						if (bValidStruct)
@@ -129,7 +130,7 @@ struct FUserDefinedStructureCompilerInner
 
 			DuplicatedStruct->RemoveFromRoot();
 
-			for (UBlueprint* Blueprint : TObjectRange<UBlueprint>(RF_ClassDefaultObject, /** bIncludeDerivedClasses */ true, /** InternalExcludeFlags */ EInternalObjectFlags::PendingKill))
+			for (UBlueprint* Blueprint : TObjectRange<UBlueprint>(RF_ClassDefaultObject, /** bIncludeDerivedClasses */ true, /** InternalExcludeFlags */ EInternalObjectFlags::Garbage))
 			{
 				if (Blueprint && !BlueprintsToRecompile.Contains(Blueprint))
 				{
@@ -143,32 +144,20 @@ struct FUserDefinedStructureCompilerInner
 		}
 	}
 
-	static UObject* CleanAndSanitizeStruct(UUserDefinedStruct* StructToClean)
+	static void CleanAndSanitizeStruct(UUserDefinedStruct* StructToClean)
 	{
 		check(StructToClean);
 
 		if (UUserDefinedStructEditorData* EditorData = Cast<UUserDefinedStructEditorData>(StructToClean->EditorData))
 		{
+			// Ensure that editor data is in sync w/ the current default instance (if valid) so that it can be reinitialized later.
+			EditorData->RefreshValuesFromDefaultInstance();
+
 			EditorData->CleanDefaultInstance();
 		}
 
-		UUserDefinedStruct* TransientStruct = nullptr;
-
 		if (FStructureEditorUtils::FStructEditorManager::ActiveChange != FStructureEditorUtils::EStructureEditorChangeInfo::DefaultValueChanged)
 		{
-			const FString TransientString = FString::Printf(TEXT("TRASHSTRUCT_%s"), *StructToClean->GetName());
-			const FName TransientName = MakeUniqueObjectName(GetTransientPackage(), UUserDefinedStruct::StaticClass(), FName(*TransientString));
-			TransientStruct = NewObject<UUserDefinedStruct>(GetTransientPackage(), TransientName, RF_Public | RF_Transient);
-			TransientStruct->PrepareCppStructOps();
-
-			TArray<UObject*> SubObjects;
-			GetObjectsWithOuter(StructToClean, SubObjects, true);
-			SubObjects.Remove(StructToClean->EditorData);
-			for (UObject* CurrSubObj : SubObjects)
-			{
-				FLinkerLoad::InvalidateExport(CurrSubObj);
-			}
-
 			StructToClean->SetSuperStruct(nullptr);
 			StructToClean->Children = nullptr;
 			StructToClean->DestroyChildPropertiesAndResetPropertyLinks();
@@ -178,8 +167,6 @@ struct FUserDefinedStructureCompilerInner
 			StructToClean->ErrorMessage.Empty();
 			StructToClean->SetStructTrashed(true);
 		}
-
-		return TransientStruct;
 	}
 
 	static void LogError(UUserDefinedStruct* Struct, FCompilerResultsLog& MessageLog, const FString& ErrorMsg)
@@ -441,100 +428,33 @@ void FUserDefinedStructureCompilerUtils::CompileStruct(class UUserDefinedStruct*
 		FUserDefinedStructureCompilerInner::BuildDependencyMapAndCompile(ChangedStructs, MessageLog);
 
 		// UPDATE ALL THINGS DEPENDENT ON COMPILED STRUCTURES
+		TSet<UScriptStruct*> ChangedStructsSet;
+		ChangedStructsSet.Reserve(ChangedStructs.Num());
+		Algo::Copy(ChangedStructs, ChangedStructsSet);
 		TSet<UBlueprint*> BlueprintsThatHaveBeenRecompiled;
-		for (TObjectIterator<UK2Node> It(RF_Transient | RF_ClassDefaultObject, /** bIncludeDerivedClasses */ true, /** InternalExcludeFlags */ EInternalObjectFlags::PendingKill); It && ChangedStructs.Num(); ++It)
-		{
-			bool bReconstruct = false;
-
-			UK2Node* Node = *It;
-
-			if (Node && !Node->HasAnyFlags(RF_Transient) && !Node->IsPendingKill())
-			{
-				// If this is a struct operation node operation on the changed struct we must reconstruct
-				if (UK2Node_StructOperation* StructOpNode = Cast<UK2Node_StructOperation>(Node))
-				{
-					UUserDefinedStruct* StructInNode = Cast<UUserDefinedStruct>(StructOpNode->StructType);
-					if (StructInNode && ChangedStructs.Contains(StructInNode))
-					{
-						bReconstruct = true;
-					}
-				}
-				if (!bReconstruct)
-				{
-					// Look through the nodes pins and if any of them are split and the type of the split pin is a user defined struct we need to reconstruct
-					for (UEdGraphPin* Pin : Node->Pins)
-					{
-						if (Pin->SubPins.Num() > 0)
-						{
-							UUserDefinedStruct* StructType = Cast<UUserDefinedStruct>(Pin->PinType.PinSubCategoryObject.Get());
-							if (StructType && ChangedStructs.Contains(StructType))
-							{
-								bReconstruct = true;
-								break;
-							}
-						}
-
-					}
-				}
-			}
-
-			if (bReconstruct)
+		FBlueprintEditorUtils::FindScriptStructsInNodes(ChangedStructsSet, [&BlueprintsThatHaveBeenRecompiled, &BlueprintsToRecompile](UBlueprint* Blueprint, UK2Node* Node)
 			{
 				// We need to recombine any nested subpins on this node, otherwise there will be an
 				// unexpected amount of pins during reconstruction. 
+				FBlueprintEditorUtils::RecombineNestedSubPins(Node);
+
+				if (Blueprint)
 				{
-					TArray<UEdGraphPin*> NestedSplitPins;
-					for (int32 i = Node->Pins.Num() - 1; i >= 0; --i)
-					{
-						UEdGraphPin* Pin = Node->Pins[i];
-						if (Pin->ParentPin != nullptr && Pin->ParentPin->ParentPin != nullptr && !Pin->bOrphanedPin)
-						{
-							NestedSplitPins.Add(Pin);
-							
-							// If there was nothing connected to or changed about this pin, then skip it
-							if (Pin->LinkedTo.Num() > 0 || !Pin->DoesDefaultValueMatchAutogenerated())
-							{
-								// Otherwise add an orphan pin so warning/connections are not silently lost
-								UEdGraphPin* OrphanPin = Node->CreatePin(Pin->Direction, Pin->PinType, Pin->PinName);
-								OrphanPin->bOrphanedPin = true;
-								OrphanPin->bNotConnectable = true;
-								OrphanPin->DefaultValue = Pin->DefaultValue;
-								OrphanPin->DefaultObject = Pin->DefaultObject;
-
-								for (UEdGraphPin* OldLink : Pin->LinkedTo)
-								{
-									OrphanPin->MakeLinkTo(OldLink);
-								}
-							}
-						}
-					}
-
-					// Wait to recombine because otherwise we could end up combining pins that that haven't had their orphan created yet
-					const UEdGraphSchema* Schema = Node->GetSchema();
-					for (int32 i = NestedSplitPins.Num() - 1; i >= 0; --i)
-					{
-						Schema->RecombinePin(NestedSplitPins[i]);
-					}
-				}
-
-				if (Node->HasValidBlueprint())
-				{
-					UBlueprint* FoundBlueprint = Node->GetBlueprint();
 					// The blueprint skeleton needs to be updated before we reconstruct the node
 					// or else we may have member references that point to the old skeleton
-					if (!BlueprintsThatHaveBeenRecompiled.Contains(FoundBlueprint))
+					if (!BlueprintsThatHaveBeenRecompiled.Contains(Blueprint))
 					{
-						BlueprintsThatHaveBeenRecompiled.Add(FoundBlueprint);
-						BlueprintsToRecompile.Remove(FoundBlueprint);
+						BlueprintsThatHaveBeenRecompiled.Add(Blueprint);
+						BlueprintsToRecompile.Remove(Blueprint);
 
 						// Reapply CDO data
 
-						FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(FoundBlueprint);
+						FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 					}
 					Node->ReconstructNode();
 				}
 			}
-		}
+		);
 
 		for (TPair<UBlueprint*, FUserDefinedStructureCompilerInner::FBlueprintUserStructData>& Pair : BlueprintsToRecompile)
 		{

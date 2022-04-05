@@ -66,6 +66,9 @@ public:
 	TSharedPtr<FUICommandInfo> ToggleAutoFrameCurveEditor;
 	TSharedPtr<FUICommandInfo> ToggleShowCurveEditorCurveToolTips;
 
+	TSharedPtr<FUICommandInfo> SetRandomCurveColorsForSelected;
+	TSharedPtr<FUICommandInfo> SetCurveColorsForSelected;
+
 	TSharedPtr<FUICommandInfo> AddKeyHovered;
 	TSharedPtr<FUICommandInfo> PasteKeysHovered;
 
@@ -76,6 +79,8 @@ public:
 	TSharedPtr<FUICommandInfo> SetViewModeNormalized;
 
 	TSharedPtr<FUICommandInfo> DeactivateCurrentTool;
+
+	TSharedPtr<FUICommandInfo> SelectAllKeys;
 	TSharedPtr<FUICommandInfo> DeselectAllKeys;
 
 	TSharedPtr<FUICommandInfo> BufferVisibleCurves;
@@ -88,6 +93,10 @@ public:
 	TSharedPtr<FUICommandInfo> SetAxisSnappingNone;
 	TSharedPtr<FUICommandInfo> SetAxisSnappingHorizontal;
 	TSharedPtr<FUICommandInfo> SetAxisSnappingVertical;
+
+	//Key Movement
+	TSharedPtr<FUICommandInfo> TranslateSelectedKeysLeft;
+	TSharedPtr<FUICommandInfo> TranslateSelectedKeysRight;
 
 	// Time Management
 	TSharedPtr<FUICommandInfo> StepToNextKey;

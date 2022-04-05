@@ -3,7 +3,7 @@
 #pragma once
 
 /*=============================================================================
-	Object.h: Direct base class for all UE4 objects
+	Object.h: Direct base class for all UE objects
 =============================================================================*/
 
 #include "CoreMinimal.h"
@@ -16,6 +16,10 @@
 struct FAssetData;
 class FConfigCacheIni;
 class FEditPropertyChain;
+class FObjectPostSaveContext;
+class FObjectPostSaveRootContext;
+class FObjectPreSaveContext;
+class FObjectPreSaveRootContext;
 class ITargetPlatform;
 class ITransactionObjectAnnotation;
 class FTransactionObjectEvent;
@@ -39,10 +43,10 @@ namespace ECastCheckedType
 };
 
 /** 
- * The base class of all UE4 objects. The type of an object is defined by its UClass.
+ * The base class of all UE objects. The type of an object is defined by its UClass.
  * This provides support functions for creating and using objects, and virtual functions that should be overridden in child classes.
  * 
- * @see https://docs.unrealengine.com/en-us/Programming/UnrealArchitecture/Objects
+ * @see https://docs.unrealengine.com/ProgrammingAndScripting/ProgrammingWithCPP/UnrealArchitecture/Objects
  */
 class COREUOBJECT_API UObject : public UObjectBaseUtility
 {
@@ -65,7 +69,11 @@ class COREUOBJECT_API UObject : public UObjectBaseUtility
 	/** Default constructor */
 	UObject();
 
-	/** Deprecated constructor, ObjectInitializer is no longer needed but is supported for older classes. */
+	/** 
+	 *  Constructor that takes an ObjectInitializer. 
+	 *  Typically not needed, but can be useful for class hierarchies that support
+	 *  optional subobjects or subobject class overriding
+	 */
 	UObject(const FObjectInitializer& ObjectInitializer);
 
 	/** DO NOT USE. This constructor is for internal usage only for statically-created objects. */
@@ -192,34 +200,57 @@ public:
 	 * This is called before any serialization or other setup has happened.
 	 */
 	virtual void PostInitProperties();
+	
+	/**
+	 * Called after properties are overwritten, including after subobjects initialization from a CDO.
+	 * This could be called multiple times during an object lifetime, which is not the case for PostInitProperties which is expected to be called only once.
+	 */
+	virtual void PostReinitProperties();
 
 	/**
-	* Called after the C++ constructor has run on the CDO for a class. This is an obscure routine used to deal with the recursion 
+	* Called after the C++ constructor has run on the Class Default Object (CDO) for a class. This is an obscure routine used to deal with the recursion 
 	* in the construction of the default materials
 	*/
 	virtual void PostCDOContruct()
 	{
 	}
 
+#if WITH_EDITOR
+	/**
+	 * Called after the Blueprint compiler has finished generating the Class Default Object (CDO) for a class. This can only happen in the editor.
+	 * This is called when the CDO and its associated class structure have been fully generated and populated, and allows the assignment of cached/derived data, 
+	 * eg) caching the name/count of properties of a certain type, or inspecting the properties on the class and using their meta-data and CDO default values to derive game data.
+	 */
+	virtual void PostCDOCompiled()
+	{
+	}
+#endif
+
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
+	virtual bool PreSaveRoot(const TCHAR* Filename);
+
 	/**
 	 * Called from within SavePackage on the passed in base/root object. The return value of this function will be passed to PostSaveRoot. 
 	 * This is used to allow objects used as a base to perform required actions before saving and cleanup afterwards.
-	 * @param Filename: Name of the file being saved to (includes path)
-
-	 * @return	Whether PostSaveRoot needs to perform internal cleanup
+	 *
+	 * @param	ObjectSaveContext Context providing access to parameters of the save,
+	*							  Also allows storage of variables like bCleanupIsRequired for use in PostSaveRoot
 	 */
-	virtual bool PreSaveRoot(const TCHAR* Filename)
-	{
-		return false;
-	}
+	virtual void PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext);
+
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPostSaveContext instead.")
+	virtual void PostSaveRoot(bool bCleanupIsRequired);
 
 	/**
 	 * Called from within SavePackage on the passed in base/root object. 
 	 * This function is called after the package has been saved and can perform cleanup.
 	 *
-	 * @param	bCleanupIsRequired	Whether PreSaveRoot dirtied state that needs to be cleaned up
+	 * @param	ObjectSaveContext Context providing access to parameters of the save and to values from PreSaveRoot
 	 */
-	virtual void PostSaveRoot( bool bCleanupIsRequired ) {}
+	virtual void PostSaveRoot(FObjectPostSaveRootContext ObjectSaveContext);
+
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
+	virtual void PreSave(const class ITargetPlatform* TargetPlatform);
 
 	/**
 	 * Presave function. Gets called once before an object gets serialized for saving. This function is necessary
@@ -227,7 +258,7 @@ public:
 	 *
 	 * @warning: Objects created from within PreSave will NOT have PreSave called on them!!!
 	 */
-	virtual void PreSave(const class ITargetPlatform* TargetPlatform);
+	virtual void PreSave(FObjectPreSaveContext SaveContext);
 
 	/**
 	 * Note that the object will be modified.  If we are currently recording into the 
@@ -253,6 +284,20 @@ public:
 	 */
 	virtual void LoadedFromAnotherClass(const FName& OldClassName) {}
 #endif
+
+	/**
+	 * Called to defer loading a subobject to its top-level container object. Usefull with the package override
+	 * feature, where an object might not be saved in the same package as its outer, especially if the the top-level
+	 * object does lazy loading of these objects.
+	 * 
+ 	 * @param	SubObjectPath		object path to handle, relative to the current implementer
+	 * @param	OutObject			receives the loaded object, or existing loaded object if bOnlyTestExistence is true and object is already loaded
+	 * @param	bLoadIfExists		if true, load the object if it exists
+	 * 
+	 * @return true if the object loaded or exists, depending on bLoadIfExists
+* 
+	 */
+	virtual bool ResolveSubobject(const TCHAR* SubObjectPath, UObject*& OutObject, bool bLoadIfExists) { return false; }
 
 	/**
 	 * Called before calling PostLoad() in FAsyncPackage::PostLoadObjects(). This is the safeguard to prevent PostLoad() from stalling the main thread.
@@ -307,6 +352,12 @@ public:
 	 */
 	virtual void Serialize(FArchive& Ar);
 	virtual void Serialize(FStructuredArchive::FRecord Record);
+	/**
+	 * Call Ar.UsingCustomVersion for every CustomVersion that might be serialized by this class when saving.
+	 * This duplicates CustomVersions declared in Serialize; Serialize still needs to declare them.
+	 * Used to track which customversions will be used by a package when it is resaved.
+	 * Not yet exhaustive; add CustomVersions as necessary to remove EditorDomain warnings about missing versions. */
+	virtual void DeclareCustomVersions(FArchive& Ar);
 
 	/** After a critical error, perform any mission-critical cleanup, such as restoring the video mode orreleasing hardware resources. */
 	virtual void ShutdownAfterError() {}
@@ -390,12 +441,11 @@ protected:
 	enum class ETransactionAnnotationCreationMode : uint8 { DefaultInstance, FindOrCreate };
 	virtual TSharedPtr<ITransactionObjectAnnotation> FactoryTransactionAnnotation(const ETransactionAnnotationCreationMode InCreationMode) const { return nullptr; }
 
-private:
 	/**
 	 * Test the selection state of a UObject
 	 *
 	 * @return		true if the object is selected, false otherwise.
-	 * @todo UE4 this doesn't belong here, but it doesn't belong anywhere else any better
+	 * @todo UE	 this doesn't belong here, but it doesn't belong anywhere else any better
 	 */
 	virtual bool IsSelectedInEditor() const;
 
@@ -577,7 +627,7 @@ public:
 	virtual FString GetDesc() { return TEXT( "" ); }
 
 	/** Return the UStruct corresponding to the sidecar data structure that stores data that is constant for all instances of this class. */
-	virtual UScriptStruct* GetSparseClassDataStruct() const;
+	UScriptStruct* GetSparseClassDataStruct() const;
 
 #if WITH_EDITOR
 	virtual void MoveDataToSparseClassDataStruct() const {}
@@ -747,6 +797,13 @@ public:
 	 */
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const;
 
+	/**
+	 * Temporary interim solution to gather external actors asset registry data.
+	 *
+	 * @param	OutTags		A list of key-value pairs associated with this object and their types
+	 */
+	virtual void GetExternalActorExtendedAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const {}
+
 	/** Gathers a list of asset registry tags for an FAssetData  */
 	void GetAssetRegistryTags(FAssetData& Out) const;
 
@@ -866,7 +923,7 @@ public:
 	 * Test the selection state of a UObject
 	 *
 	 * @return		true if the object is selected, false otherwise.
-	 * @todo UE4 this doesn't belong here, but it doesn't belong anywhere else any better
+	 * @todo UE this doesn't belong here, but it doesn't belong anywhere else any better
 	 */
 	bool IsSelected() const;
 
@@ -1070,7 +1127,17 @@ public:
 	/**
 	 * Saves just the section(s) for this class into the default ini file for the class (with just the changes from base)
 	 */
+	UE_DEPRECATED(5.0, "TryUpdateDefaultConfigFile replaces UpdateDefaultConfigFile")
 	void UpdateDefaultConfigFile(const FString& SpecificFileLocation = "");
+
+	/**
+	 * Try to Saves just the section(s) for this class into the default ini file for the class (with just the changes from base)
+	 *
+	 *  @param SpecificFileLocation The Ini file or if Empty the default ini file for the call
+	 *  @param bWarnIfFail If true and unable to update the Ini file due to being read only log a warning
+	 *  @return true if it was able to write false otherwise
+	 */
+	bool TryUpdateDefaultConfigFile(const FString& SpecificFileLocation = "", bool bWarnIfFail = true);
 
 	/**
 	 * Saves just the section(s) for this class into the global user ini file for the class (with just the changes from base)
@@ -1119,6 +1186,13 @@ public:
 	virtual const TCHAR* GetConfigOverridePlatform() const { return nullptr; }
 
 	/**
+	 * Allows Non-PerObjectConfig classes, to override the ini section name used for loading config settings
+	 *
+	 * @param SectionName	Reference to the unmodified config section name, that can be altered/modified
+	 */
+	virtual void OverrideConfigSection(FString& SectionName) {}
+
+	/**
 	 * Allows PerObjectConfig classes, to override the ini section name used for the PerObjectConfig object.
 	 *
 	 * @param SectionName	Reference to the unmodified config section name, that can be altered/modified
@@ -1130,10 +1204,10 @@ public:
 	 *
 	 * @param	Class				the class to use for determining which section of the ini to retrieve text values from
 	 * @param	Filename			indicates the filename to load values from; if not specified, uses ConfigClass's ClassConfigName
-	 * @param	PropagationFlags	indicates how this call to LoadConfig should be propagated; expects a bitmask of UE4::ELoadConfigPropagationFlags values.
+	 * @param	PropagationFlags	indicates how this call to LoadConfig should be propagated; expects a bitmask of UE::ELoadConfigPropagationFlags values.
 	 * @param	PropertyToLoad		if specified, only the ini value for the specified property will be imported.
 	 */
-	void LoadConfig( UClass* ConfigClass=NULL, const TCHAR* Filename=NULL, uint32 PropagationFlags=UE4::LCPF_None, class FProperty* PropertyToLoad=NULL );
+	void LoadConfig( UClass* ConfigClass=NULL, const TCHAR* Filename=NULL, uint32 PropagationFlags=UE::LCPF_None, class FProperty* PropertyToLoad=NULL );
 
 	/**
 	 * Wrapper method for LoadConfig that is used when reloading the config data for objects at runtime which have already loaded their config data at least once.
@@ -1141,10 +1215,10 @@ public:
 	 *
 	 * @param	Class				the class to use for determining which section of the ini to retrieve text values from
 	 * @param	Filename			indicates the filename to load values from; if not specified, uses ConfigClass's ClassConfigName
-	 * @param	PropagationFlags	indicates how this call to LoadConfig should be propagated; expects a bitmask of UE4::ELoadConfigPropagationFlags values.
+	 * @param	PropagationFlags	indicates how this call to LoadConfig should be propagated; expects a bitmask of UE::ELoadConfigPropagationFlags values.
 	 * @param	PropertyToLoad		if specified, only the ini value for the specified property will be imported
 	 */
-	void ReloadConfig( UClass* ConfigClass=NULL, const TCHAR* Filename=NULL, uint32 PropagationFlags=UE4::LCPF_None, class FProperty* PropertyToLoad=NULL );
+	void ReloadConfig( UClass* ConfigClass=NULL, const TCHAR* Filename=NULL, uint32 PropagationFlags=UE::LCPF_None, class FProperty* PropertyToLoad=NULL );
 
 	/** Import an object from a file. */
 	void ParseParms( const TCHAR* Parms );
@@ -1392,6 +1466,7 @@ public:
 	DECLARE_FUNCTION(execUInt64Const);
 	DECLARE_FUNCTION(execSkipOffsetConst);
 	DECLARE_FUNCTION(execFloatConst);
+	DECLARE_FUNCTION(execDoubleConst);
 	DECLARE_FUNCTION(execStringConst);
 	DECLARE_FUNCTION(execUnicodeStringConst);
 	DECLARE_FUNCTION(execTextConst);
@@ -1412,6 +1487,7 @@ public:
 	DECLARE_FUNCTION(execIntConstByte);
 	DECLARE_FUNCTION(execRotationConst);
 	DECLARE_FUNCTION(execVectorConst);
+	DECLARE_FUNCTION(execVector3fConst);
 	DECLARE_FUNCTION(execTransformConst);
 	DECLARE_FUNCTION(execStructConst);
 	DECLARE_FUNCTION(execSetArray);
@@ -1427,17 +1503,34 @@ public:
 	DECLARE_FUNCTION(execNativeParm);
 
 	// Conversions 
+	DECLARE_FUNCTION(execCast);
 	DECLARE_FUNCTION(execDynamicCast);
 	DECLARE_FUNCTION(execMetaCast);
-	DECLARE_FUNCTION(execPrimitiveCast);
 	DECLARE_FUNCTION(execInterfaceCast);
-
-	// Cast functions
+	DECLARE_FUNCTION(execDoubleToFloatCast);
+	DECLARE_FUNCTION(execDoubleToFloatArrayCast);
+	DECLARE_FUNCTION(execDoubleToFloatSetCast);
+	DECLARE_FUNCTION(execFloatToDoubleCast);
+	DECLARE_FUNCTION(execFloatToDoubleArrayCast);
+	DECLARE_FUNCTION(execFloatToDoubleSetCast);
+	DECLARE_FUNCTION(execVectorToVector3fCast);
+	DECLARE_FUNCTION(execVector3fToVectorCast);
 	DECLARE_FUNCTION(execObjectToBool);
 	DECLARE_FUNCTION(execInterfaceToBool);
 	DECLARE_FUNCTION(execObjectToInterface);
 	DECLARE_FUNCTION(execInterfaceToInterface);
 	DECLARE_FUNCTION(execInterfaceToObject);
+
+	// Map-specific conversions
+	DECLARE_FUNCTION(execFloatToDoubleKeysMapCast);
+	DECLARE_FUNCTION(execDoubleToFloatKeysMapCast);
+	DECLARE_FUNCTION(execFloatToDoubleValuesMapCast);
+	DECLARE_FUNCTION(execDoubleToFloatValuesMapCast);
+	DECLARE_FUNCTION(execFloatToDoubleKeysFloatToDoubleValuesMapCast);
+	DECLARE_FUNCTION(execDoubleToFloatKeysFloatToDoubleValuesMapCast);
+	DECLARE_FUNCTION(execDoubleToFloatKeysDoubleToFloatValuesMapCast);
+	DECLARE_FUNCTION(execFloatToDoubleKeysDoubleToFloatValuesMapCast);
+
 
 	// Dynamic array functions
 	// Array support
@@ -1536,6 +1629,7 @@ struct FObjectNetPushIdHelper
 {
 private:
 	friend struct FNetPrivatePushIdHelper;
+	friend struct FNetObjectManagerPushIdHelper;
 
 	static void SetNetPushIdDynamic(UObject* Object, const int32 NewNetPushId)
 	{
@@ -1543,14 +1637,68 @@ private:
 	}
 };
 
+struct FInternalUObjectBaseUtilityIsValidFlagsChecker
+{
+	FORCEINLINE static bool CheckObjectValidBasedOnItsFlags(const UObject* Test)
+	{
+		// Here we don't really check if the flags match but if the end result is the same
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		checkSlow(GUObjectArray.IndexToObject(Test->InternalIndex)->HasAnyFlags(EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage) == Test->HasAnyFlags(RF_InternalPendingKill | RF_InternalGarbage));
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		return !Test->HasAnyFlags(RF_InternalPendingKill | RF_InternalGarbage);
+	}
+};
+
 /**
 * Test validity of object
 *
 * @param	Test			The object to test
-* @return	Return true if the object is usable: non-null and not pending kill
+* @return	Return true if the object is usable: non-null and not pending kill or garbage
 */
 FORCEINLINE bool IsValid(const UObject *Test)
 {
-	return Test && !Test->IsPendingKill();
+	return Test && FInternalUObjectBaseUtilityIsValidFlagsChecker::CheckObjectValidBasedOnItsFlags(Test);
 }
 
+/**
+* Test validity of object similar to IsValid(Test) however the null pointer test is skipped
+*
+* @param	Test			The object to test
+* @return	Return true if the object is usable: not pending kill or garbage
+*/
+FORCEINLINE bool IsValidChecked(const UObject* Test)
+{
+	check(Test);
+	return FInternalUObjectBaseUtilityIsValidFlagsChecker::CheckObjectValidBasedOnItsFlags(Test);
+}
+
+/**
+* Returns a pointer to a valid object if the Test object passes IsValid() tests, otherwise null
+*
+* @param	Test			The object to test
+* @return	Pointer to a valid object if the Test object passes IsValid() tests, otherwise null
+*/
+template <typename T>
+T* GetValid(T* Test)
+{
+	static_assert(std::is_base_of<UObject, T>::value, "GetValid can only work with UObject-derived classes");
+	return IsValid(Test) ? Test : nullptr;
+}
+
+/**
+* Returns a pointer to a valid object if the Test object passes IsValid() tests, otherwise null
+*
+* @param	Test			The object to test
+* @return	Pointer to a valid object if the Test object passes IsValid() tests, otherwise null
+*/
+template <typename T>
+const T* GetValid(const T* Test)
+{
+	static_assert(std::is_base_of<UObject, T>::value, "GetValid can only work with UObject-derived classes");
+	return IsValid(Test) ? Test : nullptr;
+}
+
+#if WITH_EDITOR
+/** Callback for editor object selection. This must be in core instead of editor for UObject::IsSelectedInEditor to work */
+extern COREUOBJECT_API TFunction<bool(const UObject*)> GIsObjectSelectedInEditor;
+#endif

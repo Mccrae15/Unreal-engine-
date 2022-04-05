@@ -13,6 +13,7 @@
 #include "eos_init.h"
 
 #include "IEOSSDKManager.h"
+#include "Containers/Ticker.h"
 
 struct FEOSPlatformHandle;
 
@@ -26,10 +27,11 @@ public:
 	virtual EOS_EResult Initialize() override;
 	virtual bool IsInitialized() const override { return bInitialized; }
 
-	virtual IEOSPlatformHandlePtr CreatePlatform(const EOS_Platform_Options& PlatformOptions) override;
+	virtual IEOSPlatformHandlePtr CreatePlatform(EOS_Platform_Options& PlatformOptions) override;
 
 	virtual FString GetProductName() const override;
 	virtual FString GetProductVersion() const override;
+	virtual FString GetCacheDirBase() const override;
 	// End IEOSSDKManager
 
 	void Shutdown();
@@ -41,6 +43,7 @@ private:
 	friend struct FEOSPlatformHandle;
 
 	void ReleasePlatform(EOS_HPlatform PlatformHandle);
+	void ReleaseReleasedPlatforms();
 	bool Tick(float);
 	void OnLogVerbosityChanged(const FLogCategoryName& CategoryName, ELogVerbosity::Type OldVerbosity, ELogVerbosity::Type NewVerbosity);
 
@@ -50,10 +53,12 @@ private:
 
 	/** Are we currently initialized */
 	bool bInitialized = false;
-	/** Created platforms */
-	TArray<EOS_HPlatform> PlatformHandles;
-	/** Handle to ticker delegate for Tick(), valid whenever EosPlatformHandles is non-empty. */
-	FDelegateHandle TickerHandle;
+	/** Created platforms actively ticking */
+	TArray<EOS_HPlatform> ActivePlatforms;
+	/** Contains platforms released with ReleasePlatform, which we will release on the next Tick. */
+	TArray<EOS_HPlatform> ReleasedPlatforms;
+	/** Handle to ticker delegate for Tick(), valid whenever there are ActivePlatforms to tick, or ReleasedPlatforms to release. */
+	FTSTicker::FDelegateHandle TickerHandle;
 };
 
 struct FEOSPlatformHandle : public IEOSPlatformHandle

@@ -1,13 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
-using System;
+using EpicGames.BuildGraph;
 using System.Collections.Generic;
 using System.Linq;
 using System.Xml;
 using System.IO;
 using System.Text;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
+using System.Text.Json;
 
 namespace BuildGraph.Tasks
 {
@@ -62,7 +64,7 @@ namespace BuildGraph.Tasks
             {
 				return;
             }
-			HashSet<FileReference> Files = ResolveFilespec(CommandUtils.RootDirectory, Parameters.Files, TagNameToFileSet);
+			HashSet<FileReference> Files = ResolveFilespec(Unreal.RootDirectory, Parameters.Files, TagNameToFileSet);
 			foreach (var JsonFile in Files.Select(f => f.FullName))
 			{
 				var OldContents = File.ReadAllText(JsonFile);
@@ -77,7 +79,7 @@ namespace BuildGraph.Tasks
 
 				CurrObj[Keys[Keys.Length - 1]] = Parameters.NewValue;
 
-				var NewContents = Json.Serialize(ParamObj, JsonSerializeOptions.PrettyPrint);
+				var NewContents = JsonSerializer.Serialize(ParamObj, new JsonSerializerOptions { WriteIndented = true });
 				File.WriteAllText(JsonFile, NewContents, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 			}
 		}

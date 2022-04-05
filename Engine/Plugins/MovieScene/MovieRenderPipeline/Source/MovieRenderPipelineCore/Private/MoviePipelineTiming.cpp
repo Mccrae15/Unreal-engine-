@@ -365,7 +365,8 @@ void UMoviePipeline::TickProducingFrames()
 		}
 
 		CachedOutputState.TemporalSampleIndex++;
-
+		const bool bFirstFrame = CachedOutputState.TemporalSampleIndex == 0;
+		
 		if (AntiAliasingSettings->TemporalSampleCount == 1)
 		{
 			// It should always be zero when using no sub-sampling.
@@ -486,7 +487,7 @@ void UMoviePipeline::TickProducingFrames()
 			check(AntiAliasingSettings);
 			check(AntiAliasingSettings->TemporalSampleCount > 1);
 				
-			const bool bFirstFrame = CachedOutputState.TemporalSampleIndex == 0;
+			
 			if (bFirstFrame)
 			{
 				/* The first sub-frame has its timing calculated differently than the rest, because we're trying to skip
@@ -515,18 +516,23 @@ void UMoviePipeline::TickProducingFrames()
 				// Finally, we take the time it is closed plus the sample duration to put us into the new sample.
 				DeltaFrameTime = FrameMetrics.TicksWhileShutterClosed + FrameMetrics.TicksPerSample;
 
-				while (AccumulatedTickSubFrameDeltas >= 1.f)
-				{
-					// We add the deltas on the start of the first sample, since it's the one where 
-					// we jump by a non-consistent amount of time anyways.
-					DeltaFrameTime += FFrameTime(FFrameNumber(1));
-					AccumulatedTickSubFrameDeltas -= 1.f;
-				}
+
 			}
 			else
 			{
 				// We're moving from one sub-frame to the next. Our calculation is simpler.
 				DeltaFrameTime = FrameMetrics.TicksPerSample;
+			}
+		}
+		
+		if(bFirstFrame)
+		{
+			while (AccumulatedTickSubFrameDeltas >= 1.f)
+			{
+				// We add the deltas on the start of the first sample, since it's the one where 
+				// we jump by a non-consistent amount of time anyways.
+				DeltaFrameTime += FFrameTime(FFrameNumber(1));
+				AccumulatedTickSubFrameDeltas -= 1.f;
 			}
 		}
 
@@ -535,6 +541,7 @@ void UMoviePipeline::TickProducingFrames()
 		// Now that we've calculated our delta ticks, we need to multiply it by
 		// time dilation so that we advance through the sequence as slow as we
 		// advance through the world.
+		FFrameTime UndilatedDeltaFrameTime = DeltaFrameTime;
 		if (!FMath::IsNearlyEqual(WorldTimeDilation, 1.f))
 		{
 			UE_LOG(LogMovieRenderPipeline, VeryVerbose, TEXT("[%d] Modified FrameDeltaTime by a factor of %f to account for World Time Dilation."), GFrameCounter, WorldTimeDilation);
@@ -674,8 +681,10 @@ void UMoviePipeline::TickProducingFrames()
 		
 
 		
-		// Set our time step for the next frame
-		CustomTimeStep->SetCachedFrameTiming(MoviePipeline::FFrameTimeStepCache(FrameDeltaTime));
+		// Set our time step for the next frame. We use the undilated delta time for the Custom Timestep as the engine will
+		// apply the time dilation to the world tick for us, so we don't want to double up time dilation.
+		double UndilatedDeltaTime = FrameMetrics.TickResolution.AsSeconds(FFrameTime(UndilatedDeltaFrameTime.GetFrame()));
+		CustomTimeStep->SetCachedFrameTiming(MoviePipeline::FFrameTimeStepCache(UndilatedDeltaTime));
 		CustomSequenceTimeController->SetCachedFrameTiming(FQualifiedFrameTime(FinalEvalTime, FrameMetrics.TickResolution));
 		return;
 	}
@@ -708,7 +717,7 @@ void UMoviePipeline::CalculateFrameNumbersForOutputState(const MoviePipeline::FF
 		// Convert from master space back into shot space - based on the inner most detected shot.
 		CenteredTick = (CenteredTick * InCameraCut->ShotInfo.OuterToInnerTransform).FloorToFrame();
 
-		InOutOutputState.CurrentShotSourceFrameNumber = FFrameRate::TransformTime(CenteredTick, InFrameMetrics.TickResolution, SourceDisplayRate).RoundToFrame().Value;
+		InOutOutputState.CurrentShotSourceFrameNumber = FFrameRate::TransformTime(CenteredTick, InFrameMetrics.ShotTickResolution, SourceDisplayRate).RoundToFrame().Value;
 		InOutOutputState.CurrentShotSourceTimeCode = FTimecode::FromFrameNumber(InOutOutputState.CurrentShotSourceFrameNumber, InFrameMetrics.FrameRate, false);
 	}
 

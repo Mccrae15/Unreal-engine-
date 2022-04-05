@@ -27,6 +27,8 @@
 #include "KismetCompiler.h"
 #include "K2Node_VariableGet.h"
 #include "AnimBlueprintCompiler.h"
+#include "AnimGraphAttributes.h"
+#include "IAnimBlueprintCopyTermDefaultsContext.h"
 
 #define LOCTEXT_NAMESPACE "LinkedInputPose"
 
@@ -340,16 +342,18 @@ void UAnimGraphNode_LinkedInputPose::PostPlacedNewNode()
 			return true;
 		});
 
-		FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakThis = TWeakObjectPtr<UAnimGraphNode_LinkedInputPose>(this)](float InDeltaTime)
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakThis = TWeakObjectPtr<UAnimGraphNode_LinkedInputPose>(this)](float InDeltaTime)
 		{
 			QUICK_SCOPE_CYCLE_COUNTER(STAT_UAnimGraphNode_LinkedInputPose_PostPlacedNewNode);
 			if(UAnimGraphNode_LinkedInputPose* LinkedInputPoseNode = WeakThis.Get())
 			{
 				// refresh the BP editor's details panel in case we are viewing the graph
-				IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(LinkedInputPoseNode->GetAnimBlueprint(), false);
-				check(AssetEditor->GetEditorName() == "AnimationBlueprintEditor");
-				IAnimationBlueprintEditor* AnimationBlueprintEditor = static_cast<IAnimationBlueprintEditor*>(AssetEditor);
-				AnimationBlueprintEditor->RefreshInspector();
+				if(IAssetEditorInstance* AssetEditor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(LinkedInputPoseNode->GetAnimBlueprint(), false))
+				{
+					check(AssetEditor->GetEditorName() == "AnimationBlueprintEditor");
+					IAnimationBlueprintEditor* AnimationBlueprintEditor = static_cast<IAnimationBlueprintEditor*>(AssetEditor);
+					AnimationBlueprintEditor->RefreshInspector();
+				}
 			}
 			return false;
 		}));
@@ -501,6 +505,14 @@ void UAnimGraphNode_LinkedInputPose::CustomizeDetails(IDetailLayoutBuilder& Deta
 		.ShouldAutoExpand(true);
 }
 
+void UAnimGraphNode_LinkedInputPose::OnCopyTermDefaultsToDefaultObject(IAnimBlueprintCopyTermDefaultsContext& InCompilationContext, IAnimBlueprintNodeCopyTermDefaultsContext& InPerNodeContext, IAnimBlueprintGeneratedClassCompiledData& OutCompiledData)
+{
+	UAnimGraphNode_LinkedInputPose* TrueNode = InCompilationContext.GetMessageLog().FindSourceObjectTypeChecked<UAnimGraphNode_LinkedInputPose>(this);
+
+	FAnimNode_LinkedInputPose* DestinationNode = reinterpret_cast<FAnimNode_LinkedInputPose*>(InPerNodeContext.GetDestinationPtr());
+	DestinationNode->Graph = TrueNode->GetGraph()->GetFName();
+}
+
 TSharedRef<SWidget> UAnimGraphNode_LinkedInputPose::MakeNameWidget(IDetailLayoutBuilder& DetailBuilder)
 {
 	TSharedPtr<IPropertyHandle> NamePropertyHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UAnimGraphNode_LinkedInputPose, Node.Name), GetClass());
@@ -630,6 +642,16 @@ void UAnimGraphNode_LinkedInputPose::IterateFunctionParameters(TFunctionRef<void
 bool UAnimGraphNode_LinkedInputPose::IsCompatibleWithGraph(UEdGraph const* Graph) const
 {
 	return Graph->GetFName() == UEdGraphSchema_K2::GN_AnimGraph;
+}
+
+void UAnimGraphNode_LinkedInputPose::GetOutputLinkAttributes(FNodeAttributeArray& OutAttributes) const
+{
+	// We have the potential to output ALL registered attributes
+	const UAnimGraphAttributes* AnimGraphAttributes = GetDefault<UAnimGraphAttributes>();
+	AnimGraphAttributes->ForEachAttribute([&OutAttributes](const FAnimGraphAttributeDesc& InDesc)
+	{
+		OutAttributes.Add(InDesc.Name);
+	});
 }
 
 #undef LOCTEXT_NAMESPACE

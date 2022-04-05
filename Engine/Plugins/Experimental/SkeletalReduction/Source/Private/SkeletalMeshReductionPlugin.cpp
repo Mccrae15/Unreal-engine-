@@ -28,6 +28,9 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Misc/CoreMisc.h"
+#include "Animation/AnimSequence.h"
+#include "Animation/AnimSequenceHelpers.h"
+#include "Async/Async.h"
 
 #include "Animation/AnimSequence.h"
 #include "BonePose.h"
@@ -155,9 +158,9 @@ private:
 	struct  FSectionRange;
 
 	/**
-	* Important bones when simplifying
+	* Important bones and sections when simplifying
 	*/
-	struct FImportantBones;
+	struct FPrioritizedFeatures;
 
 private:
 
@@ -188,7 +191,7 @@ private:
 		                         const FBoxSphereBounds& Bounds,
 		                         const FReferenceSkeleton& RefSkeleton,
 		                         FSkeletalMeshOptimizationSettings Settings,
-								 const FImportantBones& ImportantBones,
+								 const FPrioritizedFeatures& PrioritizedFeatures,
 		                         const TArray<FMatrix>& BoneMatrices,
 		                         const int32 LODIndex,
 								 const bool bReducingSourceModel,
@@ -208,11 +211,13 @@ private:
 	* @param BoneMatrices   - define the configuration of the model
 	* @param LODIndex       - target index for the result.
 	* @param OutSkinnedMesh - the posed mesh 
+	* @param VerToSectionMap - if provided, on return this array will allow VertexID to SectionID lookup
 	*/
 	void ConvertToFSkinnedSkeletalMesh( const FSkeletalMeshLODModel& SrcLODModel,
 		                                const TArray<FMatrix>& BoneMatrices,
 		                                const int32 LODIndex,
-		                                SkeletalSimplifier::FSkinnedSkeletalMesh& OutSkinnedMesh ) const;
+		                                SkeletalSimplifier::FSkinnedSkeletalMesh& OutSkinnedMesh,
+										TArray<int32>* VertToSectionMap = nullptr) const;
 
 	/**
 	* Generate a SkeletalMeshLODModel from a SkinnedSkeletalMesh and ReferenceSkeleton
@@ -276,14 +281,14 @@ private:
 	* @param UVBounds - Resulting UV bounds
 	*/
 	void ComputeUVBounds( const SkeletalSimplifier::FSkinnedSkeletalMesh& Mesh,
-		                  FVector2D(&UVBounds)[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs] ) const;
+		                  FVector2f(&UVBounds)[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs] ) const;
 
 	/**
 	* Clamp the UVs on the mesh
 	* @param UVBounds - per channel bounds for UVs
 	* @param Mesh     - Mesh to update. 
 	*/
-	void ClampUVBounds( const FVector2D(&UVBounds)[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs],
+	void ClampUVBounds( const FVector2f(&UVBounds)[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs],
 		                SkeletalSimplifier::FSkinnedSkeletalMesh& Mesh ) const;
 
 	/**
@@ -295,9 +300,11 @@ private:
 	void TrimBonesPerVert( SkeletalSimplifier::FSkinnedSkeletalMesh& Mesh, int32 MaxBonesPerVert ) const ;
 
 	/**
-	* If a vertex has one of the important bones as its' major bone, associated the ImportantBones.Weight
+	* If a vertex has one of the prioritized bones as its' major bone, associated the PrioritizedFeatures.Weight
+	* Likewise if the section ID for the vert is in a prioritized section, associate the prioritized weight 
 	*/
-	void UpdateSpecializedVertWeights(const FImportantBones& ImportantBones, SkeletalSimplifier::FSkinnedSkeletalMesh& SkinnedSkeletalMesh) const;
+	void UpdateSpecializedVertWeights(const FPrioritizedFeatures& PrioritizedFeatures, const TArray<int32>& VertToSectionId, SkeletalSimplifier::FSkinnedSkeletalMesh& SkinnedSkeletalMesh) const;
+
 
 };
 
@@ -306,7 +313,7 @@ struct  FQuadricSkeletalMeshReduction::FSkeletalMeshData
 	TArray<SkeletalMeshImportData::FVertInfluence> Influences;
 	TArray<SkeletalMeshImportData::FMeshWedge> Wedges;
 	TArray<SkeletalMeshImportData::FMeshFace> Faces;
-	TArray<FVector> Points;
+	TArray<FVector3f> Points;
 	uint32 TexCoordCount;
 };
 
@@ -317,10 +324,16 @@ struct FQuadricSkeletalMeshReduction::FSectionRange
 	int32 End;
 };
 
-struct FQuadricSkeletalMeshReduction::FImportantBones
+struct FQuadricSkeletalMeshReduction::FPrioritizedFeatures
 {
-	TArray<int32> Ids;
+	TArray<int32> BoneIds;
+	TArray<int32> SectionIds;
 	float Weight;
+
+	bool HasFeatures() const
+	{
+		return (BoneIds.Num() >0 || SectionIds.Num() > 0);
+	}
 };
 /**
 *  Required MeshReduction Interface.
@@ -474,7 +487,8 @@ bool FQuadricSkeletalMeshReduction::RemoveMeshSection(FSkeletalMeshLODModel& Mod
 void FQuadricSkeletalMeshReduction::ConvertToFSkinnedSkeletalMesh( const FSkeletalMeshLODModel& SrcLODModel,
 	                                                               const TArray<FMatrix>& BoneMatrices,
 	                                                               const int32 LODIndex,
-	                                                               SkeletalSimplifier::FSkinnedSkeletalMesh& OutSkinnedMesh) const
+	                                                               SkeletalSimplifier::FSkinnedSkeletalMesh& OutSkinnedMesh,
+																   TArray<int32>* VertToSectionMap) const
 {
 
 
@@ -485,18 +499,18 @@ void FQuadricSkeletalMeshReduction::ConvertToFSkinnedSkeletalMesh( const FSkelet
 		bool bHasBadNTB =  ( Vertex.TangentX.ContainsNaN() || Vertex.TangentY.ContainsNaN() || Vertex.TangentZ.ContainsNaN() );
 
 		// transform position
-		FVector WeightedPosition = XForm.TransformPosition(Vertex.Position);
+		FVector3f WeightedPosition = (FVector4f)XForm.TransformPosition((FVector)Vertex.Position);
 
 		// transform tangent space
-		FVector WeightedTangentX(1.f, 0.f, 0.f);
-		FVector WeightedTangentY(0.f, 1.f, 0.f);
-		FVector WeightedTangentZ(0.f, 0.f, 1.f);
+		FVector3f WeightedTangentX(1.f, 0.f, 0.f);
+		FVector3f WeightedTangentY(0.f, 1.f, 0.f);
+		FVector3f WeightedTangentZ(0.f, 0.f, 1.f);
 
 		if (!bHasBadNTB)
 		{
-			WeightedTangentX = XForm.TransformVector(Vertex.TangentX);
-			WeightedTangentY = XForm.TransformVector(Vertex.TangentY);
-			WeightedTangentZ = XForm.TransformVector(Vertex.TangentZ);
+			WeightedTangentX = (FVector4f)XForm.TransformVector((FVector)Vertex.TangentX);
+			WeightedTangentY = (FVector4f)XForm.TransformVector((FVector)Vertex.TangentY);
+			WeightedTangentZ = (FVector4f)XForm.TransformVector((FVector4)Vertex.TangentZ);
 		}
 		
 		Vertex.TangentX   = WeightedTangentX.GetSafeNormal();
@@ -793,6 +807,30 @@ void FQuadricSkeletalMeshReduction::ConvertToFSkinnedSkeletalMesh( const FSkelet
 		}
 	}
 
+	// if requested, make a map of the vertex to original section id
+	if (VertToSectionMap != nullptr)
+	{
+		const int32 InvalidSectionId = -1;
+		VertToSectionMap->Empty();
+		VertToSectionMap->Init(InvalidSectionId, VertexCount);
+	
+		TArray<int32>& ToSection = *VertToSectionMap;
+		for (int32 s = 0; s < SectionCount; ++s)
+		{
+			if (SkipSection(s))
+			{
+				continue;
+			}
+			int32 OriginalDataSectionIndex = SrcLODModel.Sections[s].OriginalDataSectionIndex;
+
+			const FSectionRange VertexRange = SectionRangeArray[s];
+
+			for (int32 v = VertexRange.Begin; v < VertexRange.End; ++v)
+			{
+				ToSection[v] = OriginalDataSectionIndex;
+			}
+		}
+	}
 	// Put the vertex in a "correct" state.
 	//    "corrects" normals (ensures that they are orthonormal)
 	//    re-orders the bones by weight (highest to lowest)
@@ -814,21 +852,51 @@ void FQuadricSkeletalMeshReduction::ConvertToFSkinnedSkeletalMesh( const FSkelet
 
 	// Compact the mesh to remove any unreferenced verts
 	// and fix-up the index buffer
+	TArray<int32> CompactVertMap; 
+	OutSkinnedMesh.Compact(&CompactVertMap);
 
-	OutSkinnedMesh.Compact();
+	// Remap the VertToSectionMap to use the post-compact vert ids.
+	if (VertToSectionMap != nullptr)
+	{
+			const int32 CompactVertCount = OutSkinnedMesh.NumVertices();
+			TArray<int32> TmpVertToSectionMap;
+			const int32 InvalidSectionId = -1;
+			TmpVertToSectionMap.Empty();
+			TmpVertToSectionMap.Init(InvalidSectionId, CompactVertCount);
+			checkSlow(CompactVertCount == CompactVertMap.Num());
+			for (int32 DstID = 0; DstID < CompactVertMap.Num(); DstID++)
+			{
+				const int32 SrcID = CompactVertMap[DstID];
+				TmpVertToSectionMap[DstID] = (*VertToSectionMap)[SrcID];
+			}
+
+			Swap(TmpVertToSectionMap, *VertToSectionMap);
+	}
 }
 
 
-void FQuadricSkeletalMeshReduction::UpdateSpecializedVertWeights(const FImportantBones& ImportantBones, SkeletalSimplifier::FSkinnedSkeletalMesh& SkinnedSkeletalMesh) const
+void FQuadricSkeletalMeshReduction::UpdateSpecializedVertWeights(const FPrioritizedFeatures& PrioritizedFeatures, const TArray<int32>& VertToOriginalSectionId, SkeletalSimplifier::FSkinnedSkeletalMesh& SkinnedSkeletalMesh) const
 {
-	const float Weight = ImportantBones.Weight;
+
+	if (!PrioritizedFeatures.HasFeatures())
+	{
+		return;
+	}
+	
+	const float Weight = PrioritizedFeatures.Weight;
 
 	int32 NumVerts = SkinnedSkeletalMesh.NumVertices();
+	check(VertToOriginalSectionId.Num() == NumVerts);
 
+	const int32 InvalidSectionId = -1;
 	//If a vertex has one of the important bones as its' major bone, associated the ImportantBones.Weight
 	for (int32 i = 0; i < NumVerts; ++i)
 	{
+		const int32 OriginalSectionId = VertToOriginalSectionId[i];
 		auto& Vert = SkinnedSkeletalMesh.VertexBuffer[i];
+		Vert.SpecializedWeight = 0.f;
+
+		// Test if this vert is associated with a priority bone
 		const auto& Bones = Vert.GetSparseBones();
 		if (!Bones.bIsEmpty())
 		{
@@ -836,15 +904,19 @@ void FQuadricSkeletalMeshReduction::UpdateSpecializedVertWeights(const FImportan
 
 			const int32 FirstBone = CIter.Key(); // Bones are ordered by descending weight
 
-			if (ImportantBones.Ids.Contains(FirstBone))
+			if (PrioritizedFeatures.BoneIds.Contains(FirstBone))
 			{
 				Vert.SpecializedWeight = Weight;
 			}
 		}
-		else
+		
+		// Test if this vert is associated with a priority section
+		if (OriginalSectionId != InvalidSectionId && PrioritizedFeatures.SectionIds.Contains(OriginalSectionId))
 		{
-			Vert.SpecializedWeight = 0.f;
+			//Using += here will make bone and section prioritized verts stronger than only bone or only section prioritized verts
+			Vert.SpecializedWeight += Weight;
 		}
+
 	}
 }
 
@@ -868,7 +940,7 @@ void FQuadricSkeletalMeshReduction::TrimBonesPerVert( SkeletalSimplifier::FSkinn
 
 
 void FQuadricSkeletalMeshReduction::ComputeUVBounds( const SkeletalSimplifier::FSkinnedSkeletalMesh& Mesh,
-	                                                 FVector2D(&UVBounds)[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs] ) const
+	                                                 FVector2f(&UVBounds)[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs] ) const
 {
 	// Zero the bounds
 	{
@@ -876,7 +948,7 @@ void FQuadricSkeletalMeshReduction::ComputeUVBounds( const SkeletalSimplifier::F
 
 		for (int32 i = 0; i < 2 * NumUVs; ++i)
 		{
-			UVBounds[i] = FVector2D(ForceInitToZero);
+			UVBounds[i] = FVector2f(ForceInitToZero);
 		}
 	}
 
@@ -885,8 +957,8 @@ void FQuadricSkeletalMeshReduction::ComputeUVBounds( const SkeletalSimplifier::F
 		const int32 NumValidUVs = Mesh.TexCoordCount();
 		for (int32 i = 0; i < NumValidUVs; ++i)
 		{
-			UVBounds[2 * i] = FVector2D(FLT_MAX, FLT_MAX);
-			UVBounds[2 * i + 1] = FVector2D(-FLT_MAX, -FLT_MAX);
+			UVBounds[2 * i] = FVector2f(FLT_MAX, FLT_MAX);
+			UVBounds[2 * i + 1] = FVector2f(-FLT_MAX, -FLT_MAX);
 		}
 
 		for (int32 i = 0; i < Mesh.NumVertices(); ++i)
@@ -904,7 +976,7 @@ void FQuadricSkeletalMeshReduction::ComputeUVBounds( const SkeletalSimplifier::F
 	}
 }
 
-void FQuadricSkeletalMeshReduction::ClampUVBounds( const FVector2D(&UVBounds)[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs],
+void FQuadricSkeletalMeshReduction::ClampUVBounds( const FVector2f(&UVBounds)[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs],
 	                                               SkeletalSimplifier::FSkinnedSkeletalMesh& Mesh ) const
 {
 	const int32 NumValidUVs = Mesh.TexCoordCount();
@@ -967,6 +1039,7 @@ float FQuadricSkeletalMeshReduction::SimplifyMesh( const FSkeletalMeshOptimizati
 	const bool bLockEdges             = Settings.bLockEdges;
 	const bool bPreserveVolume        = (VolumeImportance > 1.e-4);
 	const bool bEnforceBoneBoundaries = Settings.bEnforceBoneBoundaries;
+	const bool bMergeCoincidentVertBones = Settings.bMergeCoincidentVertBones;
 	const bool bLockColorBoundaries   = Settings.bLockColorBounaries;
 
 	// Terminator tells the simplifier when to stop
@@ -1003,7 +1076,7 @@ float FQuadricSkeletalMeshReduction::SimplifyMesh( const FSkeletalMeshOptimizati
 	// Number of UV coords allocated.
 	const int32 NumUVs = SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs;
 
-	FVector2D  UVBounds[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs];
+	FVector2f  UVBounds[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs];
 	ComputeUVBounds(Mesh, UVBounds);
 	
 	// Set up weights for the Basic Attributes (e.g. not the bones)
@@ -1038,8 +1111,8 @@ float FQuadricSkeletalMeshReduction::SimplifyMesh( const FSkeletalMeshOptimizati
 		const int32 NumValidUVs = Mesh.TexCoordCount();
 		for (int32 i = 0; i < NumValidUVs; ++i)
 		{
-			FVector2D&  UVMin = UVBounds[2 * i];
-			FVector2D&  UVMax = UVBounds[2 * i + 1];
+			FVector2f&  UVMin = UVBounds[2 * i];
+			FVector2f&  UVMax = UVBounds[2 * i + 1];
 
 			double URange = UVMax.X - UVMin.X;
 			double VRange = UVMax.Y - UVMin.Y;
@@ -1065,7 +1138,6 @@ float FQuadricSkeletalMeshReduction::SimplifyMesh( const FSkeletalMeshOptimizati
 
 	// Additional parameters
 
-	const bool bMergeCoincidentVertBones = true;
 	const bool bWeldVertexColorAttributes = true;
 	const float EdgeWeightValue = 128.f;
 
@@ -1075,7 +1147,8 @@ float FQuadricSkeletalMeshReduction::SimplifyMesh( const FSkeletalMeshOptimizati
 	
 	SkeletalSimplifier::FMeshSimplifier  Simplifier(Mesh.VertexBuffer, (uint32)Mesh.NumVertices(),
 		                                            Mesh.IndexBuffer, (uint32)Mesh.NumIndices(), 
-		                                            CoAlignmentLimit, VolumeImportance, bPreserveVolume,  bEnforceBoneBoundaries);
+		                                            CoAlignmentLimit, VolumeImportance, bPreserveVolume,  
+													bEnforceBoneBoundaries, bMergeCoincidentVertBones);
 
 	// The simplifier made a deep copy of the mesh.  
 
@@ -1129,7 +1202,7 @@ float FQuadricSkeletalMeshReduction::SimplifyMesh( const FSkeletalMeshOptimizati
 
 	// Copy the simplified mesh back into Mesh
 
-	Simplifier.OutputMesh(Mesh.VertexBuffer, Mesh.IndexBuffer, bMergeCoincidentVertBones, bWeldVertexColorAttributes, NULL);
+	Simplifier.OutputMesh(Mesh.VertexBuffer, Mesh.IndexBuffer, bWeldVertexColorAttributes, NULL);
 
 	// There might have some unused verts at the end of the vertex buffer that were generated by the possible duplicates
 
@@ -1153,7 +1226,7 @@ void FQuadricSkeletalMeshReduction::ExtractFSkeletalData(const SkeletalSimplifie
 	MeshData.Faces.AddZeroed(NumTris);
 	MeshData.Wedges.AddZeroed(NumIndices);
 
-	TArray<FVector> PointNormals;
+	TArray<FVector3f> PointNormals;
 	TArray<uint32> PointList;
 	TArray<uint32> PointInfluenceMap;  // index into MeshData.Influences.   Id = PointInfluenceMap[v];  first_influence_for_vert 'v' = MeshData.Influences[Id] 
 
@@ -1232,7 +1305,7 @@ void FQuadricSkeletalMeshReduction::ExtractFSkeletalData(const SkeletalSimplifie
 			const uint32 vertId = SkinnedMesh.IndexBuffer[wedgeId];
 			const auto& SimpVertex = SkinnedMesh.VertexBuffer[vertId];
 
-			FVector WedgeNormal = SimpVertex.BasicAttributes.Normal;
+			FVector3f WedgeNormal = SimpVertex.BasicAttributes.Normal;
 			WedgeNormal.Normalize();
 
 			Face.TangentX[c] = SimpVertex.BasicAttributes.Tangent;
@@ -1245,7 +1318,7 @@ void FQuadricSkeletalMeshReduction::ExtractFSkeletalData(const SkeletalSimplifie
 
 			//
 			uint32 tmpVertId = vertId;
-			FVector PointNormal = PointNormals[tmpVertId];
+			FVector3f PointNormal = PointNormals[tmpVertId];
 
 			if (PointNormal.SizeSquared() < KINDA_SMALL_NUMBER) // the array starts with 0'd out normals
 			{
@@ -1253,7 +1326,7 @@ void FQuadricSkeletalMeshReduction::ExtractFSkeletalData(const SkeletalSimplifie
 			}
 			else // we have already visited this vert ..
 			{
-				while (FVector::DotProduct(PointNormal, WedgeNormal) - 1.f < -KINDA_SMALL_NUMBER)
+				while (FVector3f::DotProduct(PointNormal, WedgeNormal) - 1.f < -KINDA_SMALL_NUMBER)
 				{
 					tmpVertId = PointList[tmpVertId];
 					if (tmpVertId == INDEX_NONE)
@@ -1267,7 +1340,7 @@ void FQuadricSkeletalMeshReduction::ExtractFSkeletalData(const SkeletalSimplifie
 				if (tmpVertId == INDEX_NONE)
 				{
 					// Add a copy of this point.. 
-					FVector Point = MeshData.Points[vertId];
+					FVector3f Point = MeshData.Points[vertId];
 					tmpVertId = MeshData.Points.Add(Point);
 
 					PointNormals.Add(WedgeNormal);
@@ -1670,7 +1743,7 @@ bool FQuadricSkeletalMeshReduction::ReduceSkeletalLODModel( const FSkeletalMeshL
 	                                                        const FBoxSphereBounds& Bounds,
 	                                                        const FReferenceSkeleton& RefSkeleton,
 	                                                        FSkeletalMeshOptimizationSettings Settings,
-															const FImportantBones& ImportantBones,
+															const FPrioritizedFeatures& PrioritizedFeatures,
 	                                                        const TArray<FMatrix>& BoneMatrices,
 	                                                        const int32 LODIndex,
 															const bool bReducingSourceModel,
@@ -1708,9 +1781,9 @@ bool FQuadricSkeletalMeshReduction::ReduceSkeletalLODModel( const FSkeletalMeshL
 	}
 	
 	// Generate a single skinned mesh form the SrcModel.  This mesh has per-vertex tangent space.
-
+	TArray<int32> VertToOriginalSectionId; 
 	SkeletalSimplifier::FSkinnedSkeletalMesh SkinnedSkeletalMesh;
-	ConvertToFSkinnedSkeletalMesh(SrcModel, BoneMatrices, LODIndex, SkinnedSkeletalMesh);
+	ConvertToFSkinnedSkeletalMesh(SrcModel, BoneMatrices, LODIndex, SkinnedSkeletalMesh, &VertToOriginalSectionId);
 
 	int32 IterationNum = 0;
 	//We keep the original MaxNumVerts because if we iterate we want to still compare with the original request.
@@ -1719,15 +1792,14 @@ bool FQuadricSkeletalMeshReduction::ReduceSkeletalLODModel( const FSkeletalMeshL
 	{
 		if (bOptimizeMesh)
 		{
-			if (ImportantBones.Ids.Num() > 0)
-			{
-				// Add specialized weights for verts associated with "important" bones.
-				UpdateSpecializedVertWeights(ImportantBones, SkinnedSkeletalMesh);
-			}
+
+			// Add specialized weights for verts associated with "important" bones or sections
+			UpdateSpecializedVertWeights(PrioritizedFeatures, VertToOriginalSectionId, SkinnedSkeletalMesh);
+
 
 			// Capture the UV bounds from the source mesh.
 
-			FVector2D  UVBounds[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs];
+			FVector2f  UVBounds[2 * SkeletalSimplifier::MeshVertType::BasicAttrContainerType::NumUVs];
 			ComputeUVBounds(SkinnedSkeletalMesh, UVBounds);
 
 			{
@@ -1846,18 +1918,28 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 	// Struct to identify important bones.  Vertices associated with these bones
 	// will have additional collapse weight added to them.
 
-	FImportantBones  ImportantBones;
+	FPrioritizedFeatures  PrioritizedFeatures;
 	{
-		const TArray<FBoneReference>& BonesToPrioritize = LODInfo->BonesToPrioritize;
-		const float BonePrioritizationWeight = LODInfo->WeightOfPrioritization;
+		
+		const float PrioritizationWeight = LODInfo->WeightOfPrioritization;
+		PrioritizedFeatures.Weight = PrioritizationWeight;
 
-		ImportantBones.Weight = BonePrioritizationWeight;
+		const TArray<FBoneReference>& BonesToPrioritize = LODInfo->BonesToPrioritize;
 		for (const FBoneReference& BoneReference : BonesToPrioritize)
 		{
 			int32 BoneId = SkeletalMesh.GetRefSkeleton().FindRawBoneIndex(BoneReference.BoneName);
 
 			// Q: should we exclude BoneId = 0?
-			ImportantBones.Ids.AddUnique(BoneId);
+			PrioritizedFeatures.BoneIds.AddUnique(BoneId);
+		}
+
+		const TArray<FSectionReference>& SectionsToPrioritize = LODInfo->SectionsToPrioritize;
+		for (const FSectionReference& SectionReference : SectionsToPrioritize)
+		{
+			if (SectionReference.IsValidToEvaluate(SkeletalMeshResource.LODModels[LODIndex]))
+			{
+				PrioritizedFeatures.SectionIds.AddUnique(SectionReference.SectionIndex);
+			}
 		}
 	}
 	// select which mesh we're reducing from
@@ -1869,7 +1951,8 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 	// only allow to set BaseLOD if the LOD is less than this
 	if (Settings.BaseLOD > 0)
 	{
-		if (Settings.BaseLOD == LODIndex && (!SkelResource->OriginalReductionSourceMeshData.IsValidIndex(Settings.BaseLOD) || SkelResource->OriginalReductionSourceMeshData[Settings.BaseLOD]->IsEmpty()))
+		
+		if (Settings.BaseLOD == LODIndex && !SkeletalMesh.IsLODImportedDataBuildAvailable(LODIndex))
 		{
 			//Cannot reduce ourself if we are not imported
 			UE_LOG(LogSkeletalMeshReduction, Warning, TEXT("Building LOD %d - Cannot generate LOD with himself if the LOD do not have imported Data. Using Base LOD 0 instead"), LODIndex);
@@ -1892,33 +1975,80 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 	SrcModelBackup.UserSectionsData = SrcModel->UserSectionsData;
 
 	//Restore the source sections data
-	auto RestoreUserSectionsData = [](const FSkeletalMeshLODModel& SourceLODModel, FSkeletalMeshLODModel& DestinationLODModel)
+	auto RestoreUserSectionsData = [](const FSkeletalMeshLODModel& SourceLODModel, FSkeletalMeshLODModel& DestinationLODModel, bool bAddMissingUserSectionData)
 	{
 		//Now restore the reduce section user change and adjust the originalDataSectionIndex to point on the correct UserSectionData
-		TBitArray<> SourceSectionMatched;
-		SourceSectionMatched.Init(false, SourceLODModel.Sections.Num());
+		TArray<int32> SourceSectionMatched;
+		SourceSectionMatched.Reserve(SourceLODModel.Sections.Num());
+		for (int32 SourceSectionIndex = 0; SourceSectionIndex < SourceLODModel.Sections.Num(); ++SourceSectionIndex)
+		{
+			SourceSectionMatched.Add(INDEX_NONE);
+		}
+
 		for (int32 SectionIndex = 0; SectionIndex < DestinationLODModel.Sections.Num(); ++SectionIndex)
 		{
 			FSkelMeshSection& Section = DestinationLODModel.Sections[SectionIndex];
 			FSkelMeshSourceSectionUserData& DestinationUserData = FSkelMeshSourceSectionUserData::GetSourceSectionUserData(DestinationLODModel.UserSectionsData, Section);
 			for (int32 SourceSectionIndex = 0; SourceSectionIndex < SourceLODModel.Sections.Num(); ++SourceSectionIndex)
 			{
-				if (SourceSectionMatched[SourceSectionIndex])
+				if (SourceSectionMatched[SourceSectionIndex] != INDEX_NONE)
 				{
 					continue;
 				}
 				const FSkelMeshSection& SourceSection = SourceLODModel.Sections[SourceSectionIndex];
 				if (const FSkelMeshSourceSectionUserData* SourceUserData = SourceLODModel.UserSectionsData.Find(SourceSection.OriginalDataSectionIndex))
 				{
+					//Section material index reflect the imported material slot, if the user change this value it will go in 
+					//FSkeletalMeshLODInfo::LODMaterialMap of the skeletalmesh. So we can count on the material index to be unique per
+					//section that are not chunked.
 					if (Section.MaterialIndex == SourceSection.MaterialIndex)
 					{
 						DestinationUserData = *SourceUserData;
-						SourceSectionMatched[SourceSectionIndex] = true;
+						SourceSectionMatched[SourceSectionIndex] = SectionIndex;
 						break;
 					}
 				}
 			}
 		}
+		//If the reduction result have less "user section data" compare to the source, we have to make correction to the data
+		//and copy back the source "user section data" into the destination
+		const bool bHasSomeMissingData = DestinationLODModel.UserSectionsData.Num() < SourceLODModel.UserSectionsData.Num();
+		if (bAddMissingUserSectionData && bHasSomeMissingData)
+		{
+			//The goal is to reamp all destination LOD model sections FSkelMeshSection::OriginalDataSectionIndex to fit with the
+			//original SourceModel FSkeletalMeshLODModel::UserSectionData. to do this we will use an offset we increment for any unmatched
+			//source section.
+			int32 OriginalSectionIndexOffset = 0;
+			for (int32 SourceSectionIndex = 0; SourceSectionIndex < SourceLODModel.Sections.Num(); ++SourceSectionIndex)
+			{
+				const FSkelMeshSection& SourceSection = SourceLODModel.Sections[SourceSectionIndex];
+				//Skip chunked section, they do not affect the user section data
+				if (SourceSection.ChunkedParentSectionIndex != INDEX_NONE)
+				{
+					continue;
+				}
+				//Skip the sections that already have the correct value, no user data section was missing yet
+				if (OriginalSectionIndexOffset == 0 && SourceSectionMatched[SourceSectionIndex] == SourceSectionIndex)
+				{
+					//Nothing to change
+					continue;
+				}
+				if (SourceSectionMatched[SourceSectionIndex] == INDEX_NONE)
+				{
+					//We need to increment the offset for every unmatched source section
+					OriginalSectionIndexOffset++;
+				}
+				else
+				{
+					//Fix up the current section by adding the offset to the section OriginalDataSectionIndex.
+					FSkelMeshSection& Section = DestinationLODModel.Sections[SourceSectionMatched[SourceSectionIndex]];
+					Section.OriginalDataSectionIndex += OriginalSectionIndexOffset;
+				}
+			}
+			//We can now copy the user section data of the source since all destination sections has been converted to use the source UserSectionsData
+			DestinationLODModel.UserSectionsData = SourceLODModel.UserSectionsData;
+		}
+
 		DestinationLODModel.SyncronizeUserSectionsDataArray();
 	};
 
@@ -1937,17 +2067,9 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 	}
 
 	bool bReducingSourceModel = false;
-	//Reducing source LOD, we need to use the temporary data so it can be iterative
-	if (BaseLOD == LODIndex && (SkelResource->OriginalReductionSourceMeshData.IsValidIndex(BaseLOD) && !SkelResource->OriginalReductionSourceMeshData[BaseLOD]->IsEmpty()))
+	//Reducing source LOD, we need to use the LOD import data so it can be iterative
+	if (BaseLOD == LODIndex && SkeletalMesh.IsLODImportedDataBuildAvailable(LODIndex))
 	{
-		TMap<FString, TArray<FMorphTargetDelta>> TempLODMorphTargetData;
-		SkelResource->OriginalReductionSourceMeshData[BaseLOD]->LoadReductionData(*SrcModel, TempLODMorphTargetData, &SkeletalMesh);
-
-		//Restore the section data state (like disabled...)
-		RestoreUserSectionsData(SrcModelBackup, *SrcModel);
-		//Rebackup the source model since we update it, source always have empty LODMaterial map
-		//If you swap a material ID and after you do inline reduction, you have to remap it again, but not if you reduce and then remap the materialID
-		//this is by design currently
 		bReducingSourceModel = true;
 	}
 	else
@@ -1980,10 +2102,11 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 	}
 
 	// if it has bake pose, gets ref to local matrices using bake pose
-	if (const UAnimSequence* BakePoseAnim = SkeletalMesh.GetLODInfo(LODIndex)->BakePose)
-	{	
+	if (const UAnimSequence* BakePoseAnim = SkeletalMesh.GetBakePose(LODIndex))
+	{
+		FMemMark Mark(FMemStack::Get());
+		
 		const FReferenceSkeleton& RefSkeleton = SkeletalMesh.GetRefSkeleton();
-		const TArray<FTransform>& RefPoseInLocal = RefSkeleton.GetRefBonePose();
 
 		// Get component space retarget base pose, will be equivalent of ref-pose if not edited
 		TArray<FTransform> ComponentSpaceRefPose;
@@ -2003,14 +2126,17 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 			RequiredBoneIndexArray[BoneIndex] = BoneIndex;
 		}
 
-		FBoneContainer RequiredBones(RequiredBoneIndexArray, false, *(&SkeletalMesh));
+		FBoneContainer RequiredBones(RequiredBoneIndexArray, false, SkeletalMesh);
 		RequiredBones.SetUseRAWData(true);
 
 		FCompactPose Pose;
 		Pose.SetBoneContainer(&RequiredBones);
+		Pose.ResetToRefPose();
 
 		// Retrieve animated pose from anim sequence (including retargeting)
-		BuildPoseFromRawData(BakePoseAnim->GetRawAnimationData(), BakePoseAnim->GetRawTrackToSkeletonMapTable(), Pose, 0.f, EAnimInterpolationType::Step, BakePoseAnim->GetNumberOfFrames(), BakePoseAnim->SequenceLength, SkeletalMesh.GetSkeleton()->GetRetargetSourceForMesh(&SkeletalMesh));
+		const USkeleton* Skeleton = SkeletalMesh.GetSkeleton();
+		const FName RetargetSource = Skeleton->GetRetargetSourceForMesh(&SkeletalMesh);
+		UE::Anim::BuildPoseFromModel(BakePoseAnim->GetDataModel(), Pose, 0.f, EAnimInterpolationType::Step, RetargetSource, Skeleton->GetRefLocalPoses(RetargetSource));
 		
 		// Calculate component space animated pose matrices
 		TArray<FMatrix> ComponentSpaceAnimatedPose;
@@ -2061,7 +2187,6 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 	FSkeletalMeshLODModel* NewModel = new FSkeletalMeshLODModel();
 
 	// Swap out the old model.  
-	FSkeletalMeshImportData RawMesh;
 	bool bPutBackRawMesh = false;
 	ESkeletalMeshGeoImportVersions GeoImportVersion = ESkeletalMeshGeoImportVersions::Before_Versionning;
 	ESkeletalMeshSkinningImportVersions SkinningImportVersion = ESkeletalMeshSkinningImportVersions::Before_Versionning;
@@ -2076,33 +2201,37 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 			//We need to backup the original RawSkeletalMeshBulkData in case it was an imported LOD
 			if (!bLODModelAdded && !bIsOldRawSkelMeshEmpty)
 			{
-				SkeletalMesh.LoadLODImportedData(LODIndex, RawMesh);
 				SkeletalMesh.GetLODImportedDataVersions(LODIndex, GeoImportVersion, SkinningImportVersion);
 				bPutBackRawMesh = true;
 			}
-			//If the delegate is not bound 
-			if (!Settings.OnDeleteLODModelDelegate.IsBound())
+
+			if (Settings.OnDeleteLODModelDelegate.IsBound())
 			{
-				//If not in game thread we should never delete a structure containing bulkdata since it can crash when the bulkdata is detach from the archive
-				//Use the delegate and delete the pointer in the main thread if you reduce in other thread then game thread (main thread).
-				check(IsInGameThread());
+				Settings.OnDeleteLODModelDelegate.Execute(Old);
+			}
+			else
+			{
+				// Make sure the deletion is happening on the game-thread.
+				// Deleting a structure containing bulkdata can crash when the bulkdata is detached from the archive.
+				if (IsInGameThread())
+			{
 				delete Old;
 			}
 			else
 			{
-				Settings.OnDeleteLODModelDelegate.Execute(Old);
+					Async(EAsyncExecution::TaskGraphMainThread, [Old]() { delete Old; });
+				}
 			}
 		}
 		else if(bReducingSourceModel)
 		{
-			SkeletalMesh.LoadLODImportedData(BaseLOD, RawMesh);
 			SkeletalMesh.GetLODImportedDataVersions(BaseLOD, GeoImportVersion, SkinningImportVersion);
 			bPutBackRawMesh = true;
 		}
 	}
 
 	// Reduce LOD model with SrcMesh if src mesh has more then 1 triangle
-	if (SrcModel->NumVertices > 3 && ReduceSkeletalLODModel(*SrcModel, *NewModel, SkeletalMesh.GetPathName(), SkeletalMesh.GetImportedBounds(), SkeletalMesh.GetRefSkeleton(), Settings, ImportantBones, RelativeToRefPoseMatrices, LODIndex, bReducingSourceModel, TargetPlatform))
+	if (SrcModel->NumVertices > 3 && ReduceSkeletalLODModel(*SrcModel, *NewModel, SkeletalMesh.GetPathName(), SkeletalMesh.GetImportedBounds(), SkeletalMesh.GetRefSkeleton(), Settings, PrioritizedFeatures, RelativeToRefPoseMatrices, LODIndex, bReducingSourceModel, TargetPlatform))
 	{
 		FSkeletalMeshLODInfo* ReducedLODInfoPtr = SkeletalMesh.GetLODInfo(LODIndex);
 		check(ReducedLODInfoPtr);
@@ -2129,39 +2258,20 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 		//DDC key cannot be change during the build
 		{
 			FSkeletalMeshLODModel& ImportedModelLOD = SkeletalMesh.GetImportedModel()->LODModels[LODIndex];
-			RestoreUserSectionsData(SrcModelBackup, ImportedModelLOD);
 
 			if (!bLODModelAdded)
 			{
-				TBitArray<> SourceSectionMatched;
-				SourceSectionMatched.Init(false, DstModelBackup.Sections.Num());
-				for (int32 SectionIndex = 0; SectionIndex < ImportedModelLOD.Sections.Num(); ++SectionIndex)
-				{
-					FSkelMeshSection& Section = ImportedModelLOD.Sections[SectionIndex];
-					for (int32 SourceSectionIndex = 0; SourceSectionIndex < DstModelBackup.Sections.Num(); ++SourceSectionIndex)
-					{
-						if (SourceSectionMatched[SourceSectionIndex])
-						{
-							continue;
-						}
-						const FSkelMeshSection& SourceSection = DstModelBackup.Sections[SourceSectionIndex];
-						if (const FSkelMeshSourceSectionUserData* SourceUserData = DstModelBackup.UserSectionsData.Find(SourceSection.OriginalDataSectionIndex))
-						{
-							if (Section.MaterialIndex == SourceSection.MaterialIndex)
-							{
-								Section.OriginalDataSectionIndex = SourceSection.OriginalDataSectionIndex;
-								SourceSectionMatched[SourceSectionIndex] = true;
-								break;
-							}
-						}
-					}
-				}
-
-				ImportedModelLOD.UserSectionsData = DstModelBackup.UserSectionsData;
-				ImportedModelLOD.SyncronizeUserSectionsDataArray();
+				//We have to force the UserSectionData to be the one from the backup
+				constexpr bool bAddMissingUserSectionData = true;
+				RestoreUserSectionsData(DstModelBackup, ImportedModelLOD, bAddMissingUserSectionData);
 				//If its an existing LOD put back the buildStringID
 				ImportedModelLOD.BuildStringID = BackupLodModelBuildStringID;
 				ImportedModelLOD.RawSkeletalMeshBulkDataID = BackupRawSkeletalMeshBulkDataID;
+			}
+			else
+			{
+				constexpr bool bAddMissingUserSectionData = false;
+				RestoreUserSectionsData(SrcModelBackup, ImportedModelLOD, bAddMissingUserSectionData);
 			}
 		}
 	}
@@ -2215,8 +2325,14 @@ void FQuadricSkeletalMeshReduction::ReduceSkeletalMesh(USkeletalMesh& SkeletalMe
 		check((bReducingSourceModel || !bLODModelAdded));
 		//Put back the original import data, we need it to allow inline reduction and skeletal mesh split workflow
 		//It also warranty that we do not change the ddc key
-		SkeletalMesh.SaveLODImportedData(LODIndex, RawMesh);
 		SkeletalMesh.SetLODImportedDataVersions(LODIndex, GeoImportVersion, SkinningImportVersion);
+		if (!bLODModelAdded)
+		{
+			//The SaveLODImportdData can change the cache RawSkeletalMeshBulkDataID, so we have to put back the backup after the save
+			FSkeletalMeshLODModel& ImportedModelLOD = SkeletalMesh.GetImportedModel()->LODModels[LODIndex];
+			ImportedModelLOD.BuildStringID = BackupLodModelBuildStringID;
+			ImportedModelLOD.RawSkeletalMeshBulkDataID = BackupRawSkeletalMeshBulkDataID;
+		}
 	}
 
 	SkeletalMesh.CalculateRequiredBones(SkeletalMeshResource.LODModels[LODIndex], SkeletalMesh.GetRefSkeleton(), &BonesToRemove);

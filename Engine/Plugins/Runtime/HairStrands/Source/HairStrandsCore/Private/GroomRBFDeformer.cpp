@@ -8,14 +8,15 @@
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "MeshAttributes.h"
 #include "Engine/StaticMesh.h"
+#include "GroomBindingBuilder.h"
 
 // HairStrandsSamplesInit.usf
 void InitMeshSamples(
 	uint32 MaxVertexCount,
-	const TArray<FVector>& VertexPositionsBuffer,
+	const TArray<FVector3f>& VertexPositionsBuffer,
 	uint32 MaxSampleCount,
 	const TArray<uint32>& SampleIndicesBuffer,
-	TArray<FVector>& OutSamplePositionsBuffer
+	TArray<FVector3f>& OutSamplePositionsBuffer
 )
 {
 	OutSamplePositionsBuffer.SetNum(MaxSampleCount);
@@ -33,22 +34,21 @@ void InitMeshSamples(
 void UpdateMeshSamples(
 	uint32 MaxSampleCount,
 	const TArray<float>& InterpolationWeightsBuffer,
-	const TArray<FVector4>& SampleRestPositionsBuffer,
-	const TArray<FVector>& SampleDeformedPositionsBuffer,
-	TArray<FVector>& OutSampleDeformationsBuffer
+	const TArray<FVector4f>& SampleRestPositionsBuffer,
+	const TArray<FVector3f>& SampleDeformedPositionsBuffer,
+	TArray<FVector3f>& OutSampleDeformationsBuffer
 )
 {
-	OutSampleDeformationsBuffer.SetNum(MaxSampleCount + 5);
-	OutSampleDeformationsBuffer[MaxSampleCount + 4] = SampleDeformedPositionsBuffer[0];
+	OutSampleDeformationsBuffer.SetNum(MaxSampleCount + 4);
 
 	for (uint32 SampleIndex = 0; SampleIndex < MaxSampleCount + 4; ++SampleIndex)
 	{
 		uint32 WeightsOffset = SampleIndex * (MaxSampleCount + 4);
-		FVector SampleDeformation(FVector::ZeroVector);
+		FVector3f SampleDeformation(FVector3f::ZeroVector);
 		for (uint32 i = 0; i < MaxSampleCount; ++i, ++WeightsOffset)
 		{
 			SampleDeformation += InterpolationWeightsBuffer[WeightsOffset] *
-				(SampleDeformedPositionsBuffer[i] - (SampleRestPositionsBuffer[i] + SampleDeformedPositionsBuffer[0]) );
+				(SampleDeformedPositionsBuffer[i] - SampleRestPositionsBuffer[i]); 
 		}
 
 		OutSampleDeformationsBuffer[SampleIndex] = SampleDeformation;
@@ -56,27 +56,27 @@ void UpdateMeshSamples(
 }
 
 // HairStrandsGuideDeform.usf
-FVector DisplacePosition(
-	const FVector& RestControlPoint,
+FVector3f DisplacePosition(
+	const FVector3f& RestControlPoint,
 	uint32 SampleCount,
-	const TArray<FVector4>& RestSamplePositionsBuffer,
-	const TArray<FVector>& MeshSampleWeightsBuffer
+	const TArray<FVector4f>& RestSamplePositionsBuffer,
+	const TArray<FVector3f>& MeshSampleWeightsBuffer
 )
 {
-	FVector ControlPoint = RestControlPoint;
+	FVector3f ControlPoint = RestControlPoint;
 
 	// Apply rbf interpolation from the samples set
 	for (uint32 i = 0; i < SampleCount; ++i)
 	{
-		const FVector PositionDelta = RestControlPoint - RestSamplePositionsBuffer[i];
-		const float FunctionValue = FMath::Sqrt(FVector::DotProduct(PositionDelta, PositionDelta) + 1);
+		const FVector3f PositionDelta = RestControlPoint - RestSamplePositionsBuffer[i];
+		const float FunctionValue = FMath::Sqrt(FVector3f::DotProduct(PositionDelta, PositionDelta) + 1);
 		ControlPoint += FunctionValue * MeshSampleWeightsBuffer[i];
 	}
 	ControlPoint += MeshSampleWeightsBuffer[SampleCount];
 	ControlPoint += MeshSampleWeightsBuffer[SampleCount + 1] * RestControlPoint.X;
 	ControlPoint += MeshSampleWeightsBuffer[SampleCount + 2] * RestControlPoint.Y;
 	ControlPoint += MeshSampleWeightsBuffer[SampleCount + 3] * RestControlPoint.Z;
-	return ControlPoint + MeshSampleWeightsBuffer[SampleCount + 4];
+	return ControlPoint;
 }
 
 void DeformStrands(	
@@ -94,24 +94,24 @@ void DeformStrands(
 
 	uint32 VertexCount,
 	uint32 SampleCount,
-	const TArray<FVector>& RestPosePositionBuffer,
-	const TArray<FVector4>& RestSamplePositionsBuffer,
-	const TArray<FVector>& MeshSampleWeightsBuffer,
-	TArray<FVector>& OutDeformedPositionBuffer
+	const TArray<FVector3f>& RestPosePositionBuffer,
+	const TArray<FVector4f>& RestSamplePositionsBuffer,
+	const TArray<FVector3f>& MeshSampleWeightsBuffer,
+	TArray<FVector3f>& OutDeformedPositionBuffer
 )
 {
 	// Raw deformation with RBF
 	OutDeformedPositionBuffer.SetNum(RestPosePositionBuffer.Num());
 	ParallelFor(VertexCount, [&](uint32 VertexIndex)
 	{
-		const FVector& ControlPoint = RestPosePositionBuffer[VertexIndex];
-		const FVector DisplacedPosition = DisplacePosition(ControlPoint, SampleCount, RestSamplePositionsBuffer, MeshSampleWeightsBuffer);
+		const FVector3f& ControlPoint = RestPosePositionBuffer[VertexIndex];
+		const FVector3f DisplacedPosition = DisplacePosition(ControlPoint, SampleCount, RestSamplePositionsBuffer, MeshSampleWeightsBuffer);
 		OutDeformedPositionBuffer[VertexIndex] = DisplacedPosition;
 	});
 
 	// Compute correction for snapping the strands back to the surface, as the RBF introduces low frequency offset
 	const uint32 CurveCount = HairStandsData.GetNumCurves();
-	TArray<FVector4> CorrectionOffsets;
+	TArray<FVector4f> CorrectionOffsets;
 	CorrectionOffsets.SetNum(CurveCount);
 	ParallelFor(CurveCount, [&](uint32 CurveIndex)
 	{
@@ -121,38 +121,38 @@ void DeformStrands(
 		// Sanity check
 		check(RootIndex == CurveIndex);
 
-		const FVector& Rest_Position   = HairStandsData.StrandsPoints.PointsPosition[VertexOffset];
-		const FVector& Deform_Position = OutDeformedPositionBuffer[VertexOffset];
+		const FVector3f& Rest_Position   = HairStandsData.StrandsPoints.PointsPosition[VertexOffset];
+		const FVector3f& Deform_Position = OutDeformedPositionBuffer[VertexOffset];
 
 
 		const uint32 PackedBarycentric = RootTriangleBarycentricBuffer[RootIndex];
-		const FVector2D B0 = FHairStrandsRootUtils::DecodeBarycentrics(PackedBarycentric);
-		const FVector   B  = FVector(B0.X, B0.Y, 1.f - B0.X - B0.Y);
+		const FVector2f B0 = FHairStrandsRootUtils::DecodeBarycentrics(PackedBarycentric);
+		const FVector3f   B  = FVector3f(B0.X, B0.Y, 1.f - B0.X - B0.Y);
 
 		/* Strand hair roots translation and rotation in rest position relative to the bound triangle. Positions are relative to the rest root center */
-		const FVector& Rest_V0 = RootTrianglePosition0Buffer_Rest[RootIndex];
-		const FVector& Rest_V1 = RootTrianglePosition1Buffer_Rest[RootIndex];
-		const FVector& Rest_V2 = RootTrianglePosition2Buffer_Rest[RootIndex];
+		const FVector3f& Rest_V0 = RootTrianglePosition0Buffer_Rest[RootIndex];
+		const FVector3f& Rest_V1 = RootTrianglePosition1Buffer_Rest[RootIndex];
+		const FVector3f& Rest_V2 = RootTrianglePosition2Buffer_Rest[RootIndex];
 
-		const FVector& Deform_V0 = RootTrianglePosition0Buffer_Deformed[RootIndex];
-		const FVector& Deform_V1 = RootTrianglePosition1Buffer_Deformed[RootIndex];
-		const FVector& Deform_V2 = RootTrianglePosition2Buffer_Deformed[RootIndex];
+		const FVector3f& Deform_V0 = RootTrianglePosition0Buffer_Deformed[RootIndex];
+		const FVector3f& Deform_V1 = RootTrianglePosition1Buffer_Deformed[RootIndex];
+		const FVector3f& Deform_V2 = RootTrianglePosition2Buffer_Deformed[RootIndex];
 
-		const FVector Rest_RootPosition		=   Rest_V0 * B.X +   Rest_V1 * B.Y +   Rest_V2 * B.Z;
-		const FVector Deform_RootPosition	= Deform_V0 * B.X + Deform_V1 * B.Y + Deform_V2 * B.Z;
+		const FVector3f Rest_RootPosition		=   Rest_V0 * B.X +   Rest_V1 * B.Y +   Rest_V2 * B.Z;
+		const FVector3f Deform_RootPosition	= Deform_V0 * B.X + Deform_V1 * B.Y + Deform_V2 * B.Z;
 
-		const FVector RestOffset = Rest_Position - Rest_RootPosition;
-		const FVector SnappedDeformPosition = Deform_RootPosition + RestOffset;
-		const FVector CorrectionOffset = SnappedDeformPosition - Deform_Position;
+		const FVector3f RestOffset = Rest_Position - Rest_RootPosition;
+		const FVector3f SnappedDeformPosition = Deform_RootPosition + RestOffset;
+		const FVector3f CorrectionOffset = SnappedDeformPosition - Deform_Position;
 
-		CorrectionOffsets[CurveIndex] = FVector4(CorrectionOffset, 0);
+		CorrectionOffsets[CurveIndex] = FVector4f(CorrectionOffset, 0);
 	});
 
 	// Apply correction offset to each control points
 	ParallelFor(VertexCount, [&](uint32 VertexIndex)
 	{
 		const uint32 CurveIndex = VertexToCurveIndexBuffer[VertexIndex];
-		const FVector4 CorrectionOffset = CorrectionOffsets[CurveIndex];
+		const FVector4f CorrectionOffset = CorrectionOffsets[CurveIndex];
 		OutDeformedPositionBuffer[VertexIndex] += CorrectionOffset;
 	});
 }
@@ -191,9 +191,9 @@ void ExtractRootTrianglePositions(
 		const uint32 I1 = IndexBuffer[SectionBaseIndex + TriangleIndex * 3 + 1];
 		const uint32 I2 = IndexBuffer[SectionBaseIndex + TriangleIndex * 3 + 2];
 
-		const FVector P0 = InMeshRenderData->LODRenderData[MeshLODIndex].StaticVertexBuffers.PositionVertexBuffer.VertexPosition(I0);
-		const FVector P1 = InMeshRenderData->LODRenderData[MeshLODIndex].StaticVertexBuffers.PositionVertexBuffer.VertexPosition(I1);
-		const FVector P2 = InMeshRenderData->LODRenderData[MeshLODIndex].StaticVertexBuffers.PositionVertexBuffer.VertexPosition(I2);
+		const FVector3f P0 = InMeshRenderData->LODRenderData[MeshLODIndex].StaticVertexBuffers.PositionVertexBuffer.VertexPosition(I0);
+		const FVector3f P1 = InMeshRenderData->LODRenderData[MeshLODIndex].StaticVertexBuffers.PositionVertexBuffer.VertexPosition(I1);
+		const FVector3f P2 = InMeshRenderData->LODRenderData[MeshLODIndex].StaticVertexBuffers.PositionVertexBuffer.VertexPosition(I2);
 
 		OutDeformRootTrianglePosition0Buffer[RootIndex] = P0;
 		OutDeformRootTrianglePosition1Buffer[RootIndex] = P1;
@@ -201,8 +201,8 @@ void ExtractRootTrianglePositions(
 	}
 }
 
-TArray<FVector> GetDeformedHairStrandsPositions(
-	const TArray<FVector>& MeshVertexPositionsBuffer_Target,
+TArray<FVector3f> GetDeformedHairStrandsPositions(
+	const TArray<FVector3f>& MeshVertexPositionsBuffer_Target,
 	const FHairStrandsDatas& HairStrandsData,
 	const uint32 MeshLODIndex,
 	const FSkeletalMeshRenderData* InMeshRenderData,
@@ -213,15 +213,15 @@ TArray<FVector> GetDeformedHairStrandsPositions(
 	const int32 MaxVertexCount = MeshVertexPositionsBuffer_Target.Num();
 	const uint32 MaxSampleCount = RestLODData.SampleCount;
 	const TArray<uint32>& SampleIndicesBuffer = RestLODData.MeshSampleIndicesBuffer;
-	TArray<FVector> OutSamplePositionsBuffer;
+	TArray<FVector3f> OutSamplePositionsBuffer;
 
 	InitMeshSamples(MaxVertexCount, MeshVertexPositionsBuffer_Target, MaxSampleCount, SampleIndicesBuffer, OutSamplePositionsBuffer);
 
 	// Update those vertices with the RBF interpolation weights
 	const TArray<float>& InterpolationWeightsBuffer = RestLODData.MeshInterpolationWeightsBuffer;
-	const TArray<FVector4>& SampleRestPositionsBuffer = RestLODData.RestSamplePositionsBuffer;
-	const TArray<FVector>& SampleDeformedPositionsBuffer = OutSamplePositionsBuffer;
-	TArray<FVector> OutSampleDeformationsBuffer;
+	const TArray<FVector4f>& SampleRestPositionsBuffer = RestLODData.RestSamplePositionsBuffer;
+	const TArray<FVector3f>& SampleDeformedPositionsBuffer = OutSamplePositionsBuffer;
+	TArray<FVector3f> OutSampleDeformationsBuffer;
 
 	UpdateMeshSamples(MaxSampleCount, InterpolationWeightsBuffer, SampleRestPositionsBuffer, SampleDeformedPositionsBuffer, OutSampleDeformationsBuffer);
 
@@ -229,7 +229,7 @@ TArray<FVector> GetDeformedHairStrandsPositions(
 	const FHairStrandsPoints& Points = HairStrandsData.StrandsPoints;
 	const uint32 VertexCount = Points.Num();
 
-	TArray<FVector> OutPositions = Points.PointsPosition;
+	TArray<FVector3f> OutPositions = Points.PointsPosition;
 
 	// Use the vertex position of the binding, as the source asset might not have the same topology (in case the groom has been transfered from one mesh toanother using UV sharing)
 	TArray<FHairStrandsMeshTrianglePositionFormat::Type> RootTrianglePosition0Buffer_Rest = RestLODData.RestRootTrianglePosition0Buffer;
@@ -249,10 +249,10 @@ TArray<FVector> GetDeformedHairStrandsPositions(
 		RootTrianglePosition2Buffer_Deformed);
 
 	// Deform the strands vertices with the deformed mesh samples
-	const TArray<FVector>& RestPosePositionBuffer = OutPositions;
-	const TArray<FVector4>& RestSamplePositionsBuffer = RestLODData.RestSamplePositionsBuffer;
-	const TArray<FVector>& MeshSampleWeightsBuffer = OutSampleDeformationsBuffer;
-	TArray<FVector> OutDeformedPositionBuffer;
+	const TArray<FVector3f>& RestPosePositionBuffer = OutPositions;
+	const TArray<FVector4f>& RestSamplePositionsBuffer = RestLODData.RestSamplePositionsBuffer;
+	const TArray<FVector3f>& MeshSampleWeightsBuffer = OutSampleDeformationsBuffer;
+	TArray<FVector3f> OutDeformedPositionBuffer;
 
 	DeformStrands(
 		HairStrandsData,
@@ -279,8 +279,8 @@ TArray<FVector> GetDeformedHairStrandsPositions(
 
 struct FRBFDeformedPositions 
 {
-	TArray<FVector> RenderStrands;
-	TArray<FVector> GuideStrands;
+	TArray<FVector3f> RenderStrands;
+	TArray<FVector3f> GuideStrands;
 };
 
 #if WITH_EDITORONLY_DATA
@@ -316,7 +316,7 @@ static void ApplyDeformationToGroom(const TArray<FRBFDeformedPositions>& Deforme
 	GroupInfos.SetNum(DeformedPositions.Num());
 
 	const int32 GroomNumVertices = HairDescription.GetNumVertices();
-	TArray<FVector> FlattenedDeformedPositions;
+	TArray<FVector3f> FlattenedDeformedPositions;
 	FlattenedDeformedPositions.Reserve(GroomNumVertices);
 
 	// Mapping of GroupID to GroupIndex to preserver ordering
@@ -371,15 +371,49 @@ static void ApplyDeformationToGroom(const TArray<FRBFDeformedPositions>& Deforme
 	}
 
 	// Output the flattened deformed positions into the HairDescription
-	TVertexAttributesRef<FVector> VertexPositions = HairDescription.VertexAttributes().GetAttributesRef<FVector>(HairAttribute::Vertex::Position);
+	TVertexAttributesRef<FVector3f> VertexPositions = HairDescription.VertexAttributes().GetAttributesRef<FVector3f>(HairAttribute::Vertex::Position);
 	for (int32 VertexIndex = 0; VertexIndex < GroomNumVertices; ++VertexIndex)
 	{
 		FVertexID VertexID(VertexIndex);
 		VertexPositions[VertexID] = FlattenedDeformedPositions[VertexIndex];
 	}
 
-	FGroomBuilder::BuildGroom(HairDescription, GroomAsset);
-	FGroomBuilder::BuildClusterData(GroomAsset, FGroomBuilder::ComputeGroomBoundRadius(GroomAsset->HairGroupsData));
+	{
+		FHairDescriptionGroups HairDescriptionGroups;
+		FGroomBuilder::BuildHairDescriptionGroups(HairDescription, HairDescriptionGroups);
+
+		const int32 GroupCount = GroomAsset->HairGroupsInterpolation.Num();
+		check(HairDescriptionGroups.HairGroups.Num() == GroupCount);
+		for (int32 GroupIndex = 0; GroupIndex < GroupCount; ++GroupIndex)
+		{
+			const bool bIsValid = HairDescriptionGroups.IsValid();
+			if (bIsValid)
+			{
+				const FHairDescriptionGroup& HairGroup = HairDescriptionGroups.HairGroups[GroupIndex];
+				check(GroupIndex <= HairDescriptionGroups.HairGroups.Num());
+				check(GroupIndex == HairGroup.Info.GroupID);
+				const FHairInterpolationSettings& InterpolationSettings = GroomAsset->HairGroupsInterpolation[GroupIndex].InterpolationSettings;
+				const FHairGroupsLOD& HairGroupLOD = GroomAsset->HairGroupsLOD[GroupIndex];
+
+				FHairGroupInfo& HairGroupsInfo = GroomAsset->HairGroupsInfo[GroupIndex];
+				FHairGroupData& HairGroupsData = GroomAsset->HairGroupsData[GroupIndex];
+
+				FHairStrandsDatas StrandsData;
+				FHairStrandsDatas GuidesData;
+				FGroomBuilder::BuildData(HairGroup, GroomAsset->HairGroupsInterpolation[GroupIndex], HairGroupsInfo, StrandsData, GuidesData);
+				//GroomAsset->GetHairStrandsDatas(GroupIndex, StrandsData, GuidesData);
+
+				FGroomBuilder::BuildBulkData(HairGroup.Info, GuidesData,  HairGroupsData.Guides.BulkData);
+				FGroomBuilder::BuildBulkData(HairGroup.Info, StrandsData, HairGroupsData.Strands.BulkData);
+
+				FHairStrandsInterpolationDatas StrandsInterpolationData;
+				FGroomBuilder::BuildInterplationData(HairGroup.Info, StrandsData, GuidesData, InterpolationSettings, StrandsInterpolationData);
+				FGroomBuilder::BuildInterplationBulkData(GuidesData, StrandsInterpolationData, HairGroupsData.Strands.InterpolationBulkData);
+
+				FGroomBuilder::BuildClusterBulkData(StrandsData, HairDescriptionGroups.Bounds.SphereRadius, HairGroupLOD, HairGroupsData.Strands.ClusterCullingBulkData);
+			}
+		}
+	}
 	
 	GroomAsset->CommitHairDescription(MoveTemp(HairDescription));
 	GroomAsset->UpdateHairGroupsInfo();
@@ -392,7 +426,7 @@ static void ApplyDeformationToGroom(const TArray<FRBFDeformedPositions>& Deforme
 static void ExtractSkeletalVertexPosition(
 	const FSkeletalMeshRenderData* SkeletalMeshData,
 	const uint32 MeshLODIndex,
-	TArray<FVector>& OutMeshVertexPositionsBuffer)
+	TArray<FVector3f>& OutMeshVertexPositionsBuffer)
 {	
 	const uint32 VertexCount = SkeletalMeshData->LODRenderData[MeshLODIndex].StaticVertexBuffers.PositionVertexBuffer.GetNumVertices();
 	OutMeshVertexPositionsBuffer.SetNum(VertexCount);
@@ -404,28 +438,28 @@ static void ExtractSkeletalVertexPosition(
 
 void DeformStaticMeshPositions(
 	UStaticMesh* OutMesh, 
-	const TArray<FVector>& MeshVertexPositionsBuffer_Target,
+	const TArray<FVector3f>& MeshVertexPositionsBuffer_Target,
 	const FHairStrandsRootData::FMeshProjectionLOD& RestLODData)
 {
 	// Init the mesh samples with the target mesh vertices
 	const int32 MaxVertexCount = MeshVertexPositionsBuffer_Target.Num();
 	const uint32 MaxSampleCount = RestLODData.SampleCount;
 	const TArray<uint32>& SampleIndicesBuffer = RestLODData.MeshSampleIndicesBuffer;
-	TArray<FVector> OutSamplePositionsBuffer;
+	TArray<FVector3f> OutSamplePositionsBuffer;
 
 	InitMeshSamples(MaxVertexCount, MeshVertexPositionsBuffer_Target, MaxSampleCount, SampleIndicesBuffer, OutSamplePositionsBuffer);
 
 	// Update those vertices with the RBF interpolation weights
 	const TArray<float>& InterpolationWeightsBuffer = RestLODData.MeshInterpolationWeightsBuffer;
-	const TArray<FVector4>& SampleRestPositionsBuffer = RestLODData.RestSamplePositionsBuffer;
-	const TArray<FVector>& SampleDeformedPositionsBuffer = OutSamplePositionsBuffer;
-	TArray<FVector> OutSampleDeformationsBuffer;
+	const TArray<FVector4f>& SampleRestPositionsBuffer = RestLODData.RestSamplePositionsBuffer;
+	const TArray<FVector3f>& SampleDeformedPositionsBuffer = OutSamplePositionsBuffer;
+	TArray<FVector3f> OutSampleDeformationsBuffer;
 
 	UpdateMeshSamples(MaxSampleCount, InterpolationWeightsBuffer, SampleRestPositionsBuffer, SampleDeformedPositionsBuffer, OutSampleDeformationsBuffer);
 
 	// Deform the strands vertices with the deformed mesh samples
-	const TArray<FVector4>& RestSamplePositionsBuffer = RestLODData.RestSamplePositionsBuffer;
-	const TArray<FVector>& MeshSampleWeightsBuffer = OutSampleDeformationsBuffer;
+	const TArray<FVector4f>& RestSamplePositionsBuffer = RestLODData.RestSamplePositionsBuffer;
+	const TArray<FVector3f>& MeshSampleWeightsBuffer = OutSampleDeformationsBuffer;
 
 	// Raw deformation with RBF
 	const uint32 MeshLODCount = OutMesh->GetNumLODs();
@@ -433,13 +467,13 @@ void DeformStaticMeshPositions(
 	for (uint32 MeshLODIt = 0; MeshLODIt < MeshLODCount; ++MeshLODIt)
 	{
 		FMeshDescription* MeshDescription = OutMesh->GetMeshDescription(MeshLODIt);
-		TVertexAttributesRef<FVector> VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
+		TVertexAttributesRef<FVector3f> VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector3f>(MeshAttribute::Vertex::Position);
 
 		const uint32 VertexCount = VertexPositions.GetNumElements();
 		ParallelFor(VertexCount, [&](uint32 VertexIndex)
 		{
 			FVertexID VertexID(VertexIndex);
-			FVector& Point = VertexPositions[VertexID];
+			FVector3f& Point = VertexPositions[VertexID];
 			Point = DisplacePosition(Point, MaxSampleCount, RestSamplePositionsBuffer, MeshSampleWeightsBuffer);
 		});
 		MeshDescriptions.Add(MeshDescription);
@@ -463,16 +497,16 @@ void FGroomRBFDeformer::GetRBFDeformedGroomAsset(const UGroomAsset* InGroomAsset
 
 		// Get the target mesh vertices (source and target)
 		const FSkeletalMeshRenderData* SkeletalMeshData_Target = BindingAsset->TargetSkeletalMesh->GetResourceForRendering();
-		TArray<FVector> MeshVertexPositionsBuffer_Target;
+		TArray<FVector3f> MeshVertexPositionsBuffer_Target;
 		ExtractSkeletalVertexPosition(SkeletalMeshData_Target, MeshLODIndex, MeshVertexPositionsBuffer_Target);
 
 		// Apply RBF deformation to each group of guides and render strands
-		const int32 NumGroups = BindingAsset->HairGroupDatas.Num();
+		const int32 NumGroups = BindingAsset->HairGroupBulkDatas.Num();
 
 		// Use the vertices positions from the HairDescription instead of the GroomAsset since the latter
 		// may contain decimated or auto-generated guides depending on the import settings
-		FProcessedHairDescription ProcessedHairDescription;
-		FGroomBuilder::ProcessHairDescription(InGroomAsset->GetHairDescription(), ProcessedHairDescription);
+		FHairDescriptionGroups HairDescriptionGroups;
+		FGroomBuilder::BuildHairDescriptionGroups(InGroomAsset->GetHairDescription(), HairDescriptionGroups);
 
 		TArray<FRBFDeformedPositions> DeformedPositions;
 		DeformedPositions.SetNum(NumGroups);
@@ -486,40 +520,51 @@ void FGroomRBFDeformer::GetRBFDeformedGroomAsset(const UGroomAsset* InGroomAsset
 		// Note that the GroupID from the HairGroups cannot be used as the GroupIndex since 
 		// the former may not be strictly increasing nor consecutive
 		// but the ordering of the groups does represent the GroupIndex		
-		int32 GroupIndex = 0;
-		for (FProcessedHairDescription::FHairGroups::TConstIterator GroupIt = ProcessedHairDescription.HairGroups.CreateConstIterator(); GroupIt; ++GroupIt)
+		for (const FHairDescriptionGroup& Group : HairDescriptionGroups.HairGroups)
 		{
-			const FHairGroupData& OriginalHairGroupData = GroupIt->Value.Value;
+			const uint32 GroupIndex = Group.Info.GroupID;
+			const FHairStrandsDatas& OriginalGuides = Group.Guides;
 			const FHairGroupData& HairGroupData = InGroomAsset->HairGroupsData[GroupIndex];
+
+			FHairStrandsDatas StrandsData;
+			FHairStrandsDatas GuidesData;
+			FHairGroupInfo DummyInfo;
+			FGroomBuilder::BuildData(Group, InGroomAsset->HairGroupsInterpolation[GroupIndex], DummyInfo, StrandsData, GuidesData);
 
 			// Get deformed guides
 			// If the groom override the value, we output dummy value for the guides, since they won't be used
 			if (InGroomAsset->HairGroupsInterpolation[GroupIndex].InterpolationSettings.bOverrideGuides)
 			{
-				const uint32 OriginalVertexCount = OriginalHairGroupData.Guides.Data.StrandsPoints.Num();
-				DeformedPositions[GroupIndex].GuideStrands.Init(FVector::ZeroVector, OriginalVertexCount);
+				const uint32 OriginalVertexCount = OriginalGuides.StrandsPoints.Num();
+				DeformedPositions[GroupIndex].GuideStrands.Init(FVector3f::ZeroVector, OriginalVertexCount);
 			}
 			else
 			{
+				FHairStrandsRootData SimRootData;
+				FGroomBindingBuilder::GetRootData(SimRootData, BindingAsset->HairGroupBulkDatas[GroupIndex].SimRootBulkData);
+
 				DeformedPositions[GroupIndex].GuideStrands = GetDeformedHairStrandsPositions(
 					MeshVertexPositionsBuffer_Target,
-					HairGroupData.Guides.Data,
+					GuidesData,
 					MeshLODIndex,
 					SkeletalMeshData_Target,
-					BindingAsset->HairGroupDatas[GroupIndex].SimRootData.VertexToCurveIndexBuffer,
-					BindingAsset->HairGroupDatas[GroupIndex].SimRootData.MeshProjectionLODs[MeshLODIndex]);
+					SimRootData.VertexToCurveIndexBuffer,
+					SimRootData.MeshProjectionLODs[MeshLODIndex]);
 			}
 
 			// Get deformed render strands
-			DeformedPositions[GroupIndex].RenderStrands = GetDeformedHairStrandsPositions(
-				MeshVertexPositionsBuffer_Target,
-				HairGroupData.Strands.Data,
-				MeshLODIndex,
-				SkeletalMeshData_Target,
-				BindingAsset->HairGroupDatas[GroupIndex].RenRootData.VertexToCurveIndexBuffer,
-				BindingAsset->HairGroupDatas[GroupIndex].RenRootData.MeshProjectionLODs[MeshLODIndex]);
+			{
+				FHairStrandsRootData RenRootData;
+				FGroomBindingBuilder::GetRootData(RenRootData, BindingAsset->HairGroupBulkDatas[GroupIndex].RenRootBulkData);
 
-			++GroupIndex;
+				DeformedPositions[GroupIndex].RenderStrands = GetDeformedHairStrandsPositions(
+					MeshVertexPositionsBuffer_Target,
+					StrandsData,
+					MeshLODIndex,
+					SkeletalMeshData_Target,
+					RenRootData.VertexToCurveIndexBuffer,
+					RenRootData.MeshProjectionLODs[MeshLODIndex]);
+			}
 		}
 
 		// Apply changes onto cards and meshes (OutGroomASset already contain duplicated mesh asset
@@ -542,7 +587,11 @@ void FGroomRBFDeformer::GetRBFDeformedGroomAsset(const UGroomAsset* InGroomAsset
 			if (Desc.GroupIndex >= 0)
 			{
 				Mesh->ConditionalPostLoad();
-				DeformStaticMeshPositions(Mesh, MeshVertexPositionsBuffer_Target, BindingAsset->HairGroupDatas[Desc.GroupIndex].RenRootData.MeshProjectionLODs[MeshLODIndex]);
+
+				FHairStrandsRootData RenRootData;
+				FGroomBindingBuilder::GetRootData(RenRootData, BindingAsset->HairGroupBulkDatas[Desc.GroupIndex].RenRootBulkData);
+
+				DeformStaticMeshPositions(Mesh, MeshVertexPositionsBuffer_Target, RenRootData.MeshProjectionLODs[MeshLODIndex]);
 			}
 		} 
 
@@ -557,7 +606,11 @@ void FGroomRBFDeformer::GetRBFDeformedGroomAsset(const UGroomAsset* InGroomAsset
 				}
 
 				Mesh->ConditionalPostLoad();
-				DeformStaticMeshPositions(Mesh, MeshVertexPositionsBuffer_Target, BindingAsset->HairGroupDatas[Desc.GroupIndex].RenRootData.MeshProjectionLODs[MeshLODIndex]);
+				
+				FHairStrandsRootData RenRootData;
+				FGroomBindingBuilder::GetRootData(RenRootData, BindingAsset->HairGroupBulkDatas[Desc.GroupIndex].RenRootBulkData);
+
+				DeformStaticMeshPositions(Mesh, MeshVertexPositionsBuffer_Target, RenRootData.MeshProjectionLODs[MeshLODIndex]);
 			}
 		}
 

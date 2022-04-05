@@ -34,14 +34,14 @@ namespace DatasmithRuntime
 
 	bool /*FDatasmithStaticMeshImporter::*/ShouldRecomputeNormals(const FMeshDescription& MeshDescription, int32 BuildRequirements)
 	{
-		const TVertexInstanceAttributesConstRef<FVector> Normals = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
+		const TVertexInstanceAttributesConstRef<FVector3f> Normals = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector3f>(MeshAttribute::VertexInstance::Normal);
 		check(Normals.IsValid());
 		return Algo::AnyOf(MeshDescription.VertexInstances().GetElementIDs(), [&](const FVertexInstanceID& InstanceID) { return !Normals[InstanceID].IsNormalized(); });
 	}
 
 	bool /*FDatasmithStaticMeshImporter::*/ShouldRecomputeTangents(const FMeshDescription& MeshDescription, int32 BuildRequirements)
 	{
-		const TVertexInstanceAttributesConstRef<FVector> Tangents = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
+		const TVertexInstanceAttributesConstRef<FVector3f> Tangents = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector3f>(MeshAttribute::VertexInstance::Tangent);
 		check(Tangents.IsValid());
 		return Algo::AnyOf(MeshDescription.VertexInstances().GetElementIDs(), [&](const FVertexInstanceID& InstanceID) { return !Tangents[InstanceID].IsNormalized(); });
 	}
@@ -49,13 +49,13 @@ namespace DatasmithRuntime
 	int32 GetNextOpenUVChannel(FMeshDescription& MeshDescription)
 	{
 		FStaticMeshConstAttributes Attributes(MeshDescription);
-		int32 NumberOfUVs = Attributes.GetVertexInstanceUVs().GetNumIndices();
+		int32 NumberOfUVs = Attributes.GetVertexInstanceUVs().GetNumChannels();
 		int32 FirstEmptyUVs = 0;
 
 		for (; FirstEmptyUVs < NumberOfUVs; ++FirstEmptyUVs)
 		{
-			const TVertexInstanceAttributesConstRef<FVector2D> UVChannels = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
-			const FVector2D DefValue = UVChannels.GetDefaultValue();
+			const TVertexInstanceAttributesConstRef<FVector2f> UVChannels = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector2f>(MeshAttribute::VertexInstance::TextureCoordinate);
+			const FVector2f DefValue = UVChannels.GetDefaultValue();
 			bool bHasNonDefaultValue = false;
 
 			for (FVertexInstanceID InstanceID : MeshDescription.VertexInstances().GetElementIDs())
@@ -151,7 +151,7 @@ namespace DatasmithRuntime
 		FStaticMeshOperations::FindOverlappingCorners(OverlappingCorners, Mesh, THRESH_POINTS_ARE_SAME);
 
 		// Packing expects at least one texel per chart. This is the absolute minimum to generate valid UVs.
-		int32 ChartCount = FStaticMeshOperations::GetUVChartCount(Mesh, SrcLightmapIndex, ELightmapUVVersion::Latest, OverlappingCorners);
+		float ChartCount = FStaticMeshOperations::GetUVChartCount(Mesh, SrcLightmapIndex, ELightmapUVVersion::Latest, OverlappingCorners);
 		const int32 AbsoluteMinResolution = 1 << FMath::CeilLogTwo(FMath::Sqrt(ChartCount));
 		
 		return FMath::Clamp(MinLightmapResolution, AbsoluteMinResolution, 512);
@@ -430,7 +430,7 @@ namespace DatasmithRuntime
 						Entry.Value->ClearFlags(RF_Public);
 						Entry.Value->SetFlags(RF_Transient);
 						Entry.Value->Rename(nullptr, nullptr, REN_NonTransactional | REN_DontCreateRedirectors | REN_ForceNoResetLoaders);
-						Entry.Value->MarkPendingKill();
+						Entry.Value->MarkAsGarbage();
 						Entry.Value.Reset();
 
 						EntriesToDelete.Add(Entry.Key);
@@ -500,7 +500,7 @@ namespace DatasmithRuntime
 		{
 			for(int32 DirIndex = 0; DirIndex < DirectionCount; ++DirIndex)
 			{
-				const float Dist = PositionVertexBuffer.VertexPosition(Index) | Directions[DirIndex];
+				const float Dist = (FVector)PositionVertexBuffer.VertexPosition(Index) | Directions[DirIndex];
 				MaxDistances[DirIndex] = FMath::Max(Dist, MaxDistances[DirIndex]);
 			}
 		}
@@ -525,25 +525,25 @@ namespace DatasmithRuntime
 		for (int32 Index = 0; Index < DirectionCount; ++Index)
 		{
 			FPoly&	Polygon = Element.AddZeroed_GetRef();
-			FVector Base, AxisX, AxisY;
+			FVector3f Base, AxisX, AxisY;
 
 			Polygon.Init();
-			Polygon.Normal = Planes[Index];
+			Polygon.Normal = (FVector3f)Planes[Index];
 			Polygon.Normal.FindBestAxisVectors(AxisX, AxisY);
 
-			Base = Planes[Index] * Planes[Index].W;
+			Base = FVector3f(Planes[Index] * Planes[Index].W);
 
 			Polygon.Vertices.Reserve(4);
-			new(Polygon.Vertices) FVector(Base + AxisX * HalfWorldMax + AxisY * HalfWorldMax);
-			new(Polygon.Vertices) FVector(Base + AxisX * HalfWorldMax - AxisY * HalfWorldMax);
-			new(Polygon.Vertices) FVector(Base - AxisX * HalfWorldMax - AxisY * HalfWorldMax);
-			new(Polygon.Vertices) FVector(Base - AxisX * HalfWorldMax + AxisY * HalfWorldMax);
+			new(Polygon.Vertices) FVector3f(Base + AxisX * HalfWorldMax + AxisY * HalfWorldMax);
+			new(Polygon.Vertices) FVector3f(Base + AxisX * HalfWorldMax - AxisY * HalfWorldMax);
+			new(Polygon.Vertices) FVector3f(Base - AxisX * HalfWorldMax - AxisY * HalfWorldMax);
+			new(Polygon.Vertices) FVector3f(Base - AxisX * HalfWorldMax + AxisY * HalfWorldMax);
 
 			for (int32 Jndex = 0; Jndex < DirectionCount; ++Jndex)
 			{
 				if(Index != Jndex)
 				{
-					if(!Polygon.Split(-FVector(Planes[Jndex]), Planes[Jndex] * Planes[Jndex].W))
+					if(!Polygon.Split(-FVector3f(Planes[Jndex]), FVector3f(Planes[Jndex] * Planes[Jndex].W)))
 					{
 						Polygon.Vertices.Empty();
 						break;
@@ -573,9 +573,9 @@ namespace DatasmithRuntime
 
 		for (FPoly& Poly : Element)
 		{
-			for (FVector& Position : Poly.Vertices)
+			for (FVector3f& Position : Poly.Vertices)
 			{
-				ConvexElem.VertexData.Add(Position);
+				ConvexElem.VertexData.Add((FVector)Position);
 			}
 		}
 

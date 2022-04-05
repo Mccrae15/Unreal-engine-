@@ -11,9 +11,14 @@
 #include "ISequencer.h"
 #include "ISequencerTrackEditor.h"
 
+#include "NiagaraCommon.h"
 #include "NiagaraScript.h"
 #include "Widgets/SItemSelector.h"
 #include "ViewModels/NiagaraSystemGraphSelectionViewModel.h"
+
+#if WITH_NIAGARA_GPU_PROFILER
+	#include "NiagaraGPUProfilerInterface.h"
+#endif
 
 class FNiagaraSystemInstance;
 class FNiagaraSystemViewModel;
@@ -72,6 +77,10 @@ public:
 
 	//~ FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FNiagaraSystemToolkit");
+	}
 
 	FSlateIcon GetCompileStatusImage() const;
 	FText GetCompileStatusTooltip() const;
@@ -229,7 +238,10 @@ private:
 	bool bScratchPadChangesDiscarded;
 
 	static IConsoleVariable* VmStatEnabledVar;
-	static IConsoleVariable* GpuStatEnabledVar;
+
+#if WITH_NIAGARA_GPU_PROFILER
+	TUniquePtr<FNiagaraGpuProfilerListener> GpuProfilerListener;
+#endif
 
 public:
 	static const FName ViewportTabID;

@@ -53,10 +53,7 @@ private:
 	void RefreshTagList();
 
 	/** On Generate Row Delegate */
-	TSharedRef<ITableRow> MakeListViewWidget(TSharedPtr<FString> Item, const TSharedRef<STableViewBase>& OwnerTable);
-
-	/** Build List of Editable Containers */
-	void BuildEditableContainerList();
+	TSharedRef<ITableRow> MakeListViewWidget(TSharedPtr<FGameplayTag> Item, const TSharedRef<STableViewBase>& OwnerTable);
 
 	/** Callback function to create content for the combo button. */
 	TSharedRef<SWidget> GetListContent();
@@ -66,21 +63,18 @@ private:
 	/** Cached property handle */
 	TSharedPtr<IPropertyHandle> StructPropertyHandle;
 
-	/** The array of containers this objects has */
-	TArray<SGameplayTagWidget::FEditableGameplayTagContainerDatum> EditableContainers;
-
-	/** List of tag names selected in the tag containers*/
-	TArray< TSharedPtr<FString> > TagNames;
+	/** List of tags selected in the tag containers */
+	TArray< TSharedPtr<FGameplayTag> > TagList;
 
 	/** The TagList, kept as a member so we can update it later */
-	TSharedPtr<SListView<TSharedPtr<FString>>> TagListView;
+	TSharedPtr<SListView<TSharedPtr<FGameplayTag>>> TagListView;
 
 	TSharedPtr<class SComboButton> EditButton;
 
 	TWeakPtr<class SGameplayTagWidget> LastTagWidget;
 
-	void OnTagDoubleClicked(FString TagName);
-	FReply OnRemoveTagClicked(FString TagName);
+	void OnTagDoubleClicked(FGameplayTag Tag);
+	FReply OnRemoveTagClicked(FGameplayTag Tag);
 
 	FReply OnSingleTagMouseButtonPressed(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent, FString TagName);
 	void OnSingleTagSearchForReferences(FString TagName);

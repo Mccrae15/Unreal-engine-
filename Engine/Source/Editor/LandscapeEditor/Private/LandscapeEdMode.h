@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "InputCoreTypes.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "LandscapeProxy.h"
 #include "EdMode.h"
 #include "LandscapeToolInterface.h"
@@ -14,6 +14,7 @@
 #include "LandscapeGizmoActiveActor.h"
 #include "LandscapeEdit.h"
 #include "Containers/Set.h"
+#include "LandscapeImportHelper.h"
 
 class ALandscape;
 class FCanvas;
@@ -241,36 +242,18 @@ struct FGizmoHistory
 	}
 };
 
-
-namespace ELandscapeEdge
+enum class ENewLandscapePreviewMode : uint8
 {
-	enum Type
-	{
-		None,
+	None,
+	NewLandscape,
+	ImportLandscape,
+};
 
-		// Edges
-		X_Negative,
-		X_Positive,
-		Y_Negative,
-		Y_Positive,
-
-		// Corners
-		X_Negative_Y_Negative,
-		X_Positive_Y_Negative,
-		X_Negative_Y_Positive,
-		X_Positive_Y_Positive,
-	};
-}
-
-namespace ENewLandscapePreviewMode
+enum class EImportExportMode : uint8
 {
-	enum Type
-	{
-		None,
-		NewLandscape,
-		ImportLandscape,
-	};
-}
+	Import,
+	Export,
+};
 
 enum class ELandscapeEditingState : uint8
 {
@@ -305,9 +288,8 @@ public:
 	// UI setting for additional UI Tools
 	int32 CurrentBrushSetIndex;
 
-	ENewLandscapePreviewMode::Type NewLandscapePreviewMode;
-	ELandscapeEdge::Type DraggingEdge;
-	float DraggingEdge_Remainder;
+	ENewLandscapePreviewMode NewLandscapePreviewMode;
+	EImportExportMode ImportExportMode;
 
 	TWeakObjectPtr<ALandscapeGizmoActiveActor> CurrentGizmoActor;
 	// UI callbacks for copy/paste tool
@@ -320,10 +302,11 @@ public:
 	void ShowSplineProperties();
 	bool HasSelectedSplineSegments() const;
 	void FlipSelectedSplineSegments();
-	void GetSelectedSplineOwners(TSet<ALandscapeProxy*>& SelectedSplineOwners) const;
+	void GetSelectedSplineOwners(TSet<AActor*>& SelectedSplineOwners) const;
 	virtual void SelectAllConnectedSplineControlPoints();
 	virtual void SelectAllConnectedSplineSegments();
 	virtual void SplineMoveToCurrentLevel();
+	virtual bool CanMoveSplineToCurrentLevel() const;
 	virtual void UpdateSplineMeshLevels();
 	void SetbUseAutoRotateOnJoin(bool InbAutoRotateOnJoin);
 	bool GetbUseAutoRotateOnJoin();
@@ -351,6 +334,7 @@ public:
 	void InitializeTool_Retopologize();
 	void InitializeTool_NewLandscape();
 	void InitializeTool_ResizeLandscape();
+	void InitializeTool_ImportExport();
 	void InitializeTool_Select();
 	void InitializeTool_AddComponent();
 	void InitializeTool_DeleteComponent();
@@ -469,7 +453,7 @@ public:
 	/** FEdMode: Returns true if this mode uses the transform widget */
 	virtual bool UsesTransformWidget() const override;
 
-	virtual EAxisList::Type GetWidgetAxisToDraw(FWidget::EWidgetMode InWidgetMode) const override;
+	virtual EAxisList::Type GetWidgetAxisToDraw(UE::Widget::EWidgetMode InWidgetMode) const override;
 
 	virtual FVector GetWidgetLocation() const override;
 	virtual bool GetCustomDrawingCoordinateSystem(FMatrix& InMatrix, void* InData) override;
@@ -521,6 +505,7 @@ public:
 	const TArray<ALandscapeBlueprintBrushBase*>& GetBrushList() const;
 
 	const TArray<TSharedRef<FLandscapeTargetListInfo>>& GetTargetList() const;
+	UMaterialInterface* GetTargetLandscapeMaterial() const { return CachedLandscapeMaterial; }
 	const TArray<FName>* GetTargetDisplayOrderList() const;
 	const TArray<FName>& GetTargetShownList() const;
 	int32 GetTargetLayerStartingIndex() const;
@@ -544,6 +529,8 @@ public:
 	void UpdateLayerUsageInformation(TWeakObjectPtr<ULandscapeLayerInfoObject>* LayerInfoObjectThatChanged = nullptr);
 	void OnLandscapeMaterialChangedDelegate();
 	void RefreshDetailPanel();
+
+	bool IsGridBased() const;
 
 	// Edit Layers
 	bool HasValidLandscapeEditLayerSelection() const;
@@ -592,12 +579,7 @@ public:
 	DECLARE_EVENT(FEdModeLandscape, FTargetsListUpdated);
 	static FTargetsListUpdated TargetsListUpdated;
 
-	void OnPreSaveWorld(uint32 InSaveFlags, const class UWorld* InWorld);
-
-	/** Called when the user presses a button on their motion controller device */
-	void OnVRAction(FEditorViewportClient& ViewportClient, UViewportInteractor* Interactor, const FViewportActionKeyInput& Action, bool& bOutIsInputCaptured, bool& bWasHandled);
-
-	void OnVRHoverUpdate(UViewportInteractor* Interactor, FVector& HoverImpactPoint, bool& bWasHandled);
+	void OnPreSaveWorld(class UWorld* InWorld, FObjectPreSaveContext ObjectSaveContext);
 
 	/** Handle notification that visible levels may have changed and we should update the editable landscapes list */
 	void HandleLevelsChanged(bool ShouldExitMode);
@@ -606,6 +588,9 @@ public:
 
 	void ReimportData(const FLandscapeTargetListInfo& TargetInfo);
 	void ImportData(const FLandscapeTargetListInfo& TargetInfo, const FString& Filename);
+	void ImportHeightData(ULandscapeInfo* LandscapeInfo, const FGuid& LayerGuid, const FString& Filename, const FIntRect& ImportRegionVerts, ELandscapeImportTransformType TransformType = ELandscapeImportTransformType::ExpandCentered, FIntPoint Offset = FIntPoint(0,0), const ELandscapeLayerPaintingRestriction& PaintRestriction = ELandscapeLayerPaintingRestriction::None, bool bFlipYAxis = false);
+	void ImportWeightData(ULandscapeInfo* LandscapeInfo, const FGuid& LayerGuid, ULandscapeLayerInfoObject* LayerInfo, const FString& Filename, const FIntRect& ImportRegionVerts, ELandscapeImportTransformType TransformType = ELandscapeImportTransformType::ExpandCentered, FIntPoint Offset = FIntPoint(0, 0), const ELandscapeLayerPaintingRestriction& PaintRestriction = ELandscapeLayerPaintingRestriction::None, bool bFlipYAxis = false);
+	bool UseSingleFileImport() const { return !IsGridBased(); }
 
 	/** Resample landscape to a different resolution or change the component size */
 	ALandscape* ChangeComponentSetting(int32 NumComponentsX, int32 NumComponentsY, int32 InNumSubsections, int32 InSubsectionSizeQuads, bool bResample);
@@ -616,9 +601,6 @@ public:
 	TArray<FLandscapeToolMode> LandscapeToolModes;
 	TArray<TUniquePtr<FLandscapeTool>> LandscapeTools;
 	TArray<FLandscapeBrushSet> LandscapeBrushSets;
-
-	// For collision add visualization
-	FLandscapeAddCollision* LandscapeRenderAddCollision;
 
 	ELandscapeEditingState GetEditingState() const;
 
@@ -648,6 +630,7 @@ private:
 
 	FDelegateHandle OnLevelActorDeletedDelegateHandle;
 	FDelegateHandle OnLevelActorAddedDelegateHandle;
+	FDelegateHandle PreSaveWorldHandle;
 	
 	/** Check if we are painting using the VREditor */
 	bool bIsPaintingInVR;

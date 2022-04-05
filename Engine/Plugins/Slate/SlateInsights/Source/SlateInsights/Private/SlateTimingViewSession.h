@@ -5,10 +5,11 @@
 #include "Insights/ViewModels/TimingEventsTrack.h"
 #include "TraceServices/Model/Frames.h"
 
-namespace Trace { class IAnalysisSession; }
+namespace TraceServices { class IAnalysisSession; }
 namespace Insights { class ITimingViewSession; }
 namespace Insights { enum class ETimeChangedFlags : int32; }
 namespace UE { namespace SlateInsights { class FSlateFrameGraphTrack; } }
+namespace UE { namespace SlateInsights { class FSlateWidgetUpdateStepsTimingTrack; } }
 class FMenuBuilder;
 class SDockTab;
 
@@ -24,24 +25,39 @@ public:
 
 	void OnBeginSession(Insights::ITimingViewSession& InTimingViewSession);
 	void OnEndSession(Insights::ITimingViewSession& InTimingViewSession);
-	void Tick(Insights::ITimingViewSession& InTimingViewSession, const Trace::IAnalysisSession& InAnalysisSession);
+	void Tick(Insights::ITimingViewSession& InTimingViewSession, const TraceServices::IAnalysisSession& InAnalysisSession);
 	void ExtendFilterMenu(FMenuBuilder& InMenuBuilder);
 
 	/** Get the last cached analysis session */
-	const Trace::IAnalysisSession& GetAnalysisSession() const { return *AnalysisSession; }
+	const TraceServices::IAnalysisSession& GetAnalysisSession() const
+	{
+		return *AnalysisSession;
+	}
 
 	/** Check whether the analysis session is valid */
-	bool IsAnalysisSessionValid() const { return AnalysisSession != nullptr; }
+	bool IsAnalysisSessionValid() const
+	{
+		return AnalysisSession != nullptr;
+	}
 
 	/** Show/Hide the slate track */
 	void ToggleSlateTrack();
+	
+	/** Show/Hide the Update track */
+	void ToggleWidgetUpdateTrack();
 
 	/** Open a resume of the frame */
 	void OpenSlateFrameTab() const;
 
+	/** The timing view for the session */
+	Insights::ITimingViewSession* GetTimingView() const
+	{
+		return TimingViewSession;
+	}
+
 private:
 	// Cached analysis session, set in Tick()
-	const Trace::IAnalysisSession* AnalysisSession;
+	const TraceServices::IAnalysisSession* AnalysisSession;
 
 	// Cached timing view session, set in OnBeginSession/OnEndSession
 	Insights::ITimingViewSession* TimingViewSession;
@@ -49,8 +65,13 @@ private:
 	// All the tracks we manage
 	TSharedPtr<FSlateFrameGraphTrack> SlateFrameGraphTrack;
 
-	// Flags controlling whether check type of our animation tracks are enabled
+	// The widget timing track
+	TSharedPtr<FSlateWidgetUpdateStepsTimingTrack> WidgetUpdateStepsGraphTrack;
+
+	// Flags controlling whether the Application Tick tracks is enabled
 	bool bApplicationTracksEnabled;
+	// Flags controlling whether the Layout/Paint tracks is enabled
+	bool bWidgetUpdateStepsTracksEnabled;
 };
 
 } //namespace SlateInsights

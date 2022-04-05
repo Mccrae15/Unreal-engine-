@@ -58,6 +58,7 @@ public class EditorTests : ModuleRules
 				"GraphEditor",
 				"DirectoryWatcher",
 				"Projects",
+				"EditorFramework",
 				"UnrealEd",
 				"AudioEditor",
 				"AnimGraphRuntime",
@@ -67,6 +68,8 @@ public class EditorTests : ModuleRules
 				"StaticMeshDescription",
                 "MeshBuilder",
                 "RawMesh",
+				"AutomationController",
+				//"SubobjectDataInterface",
 			}
 		);
 

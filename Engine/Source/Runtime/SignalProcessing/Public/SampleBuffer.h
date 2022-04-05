@@ -60,7 +60,7 @@ namespace Audio
 			FMemory::Memcpy(RawPCMData.GetData(), Other.RawPCMData.GetData(), NumSamples * sizeof(SampleType));
 		}
 
-		FORCEINLINE TSampleBuffer(const AlignedFloatBuffer& InData, int32 InNumChannels, int32 InSampleRate)
+		FORCEINLINE TSampleBuffer(const FAlignedFloatBuffer& InData, int32 InNumChannels, int32 InSampleRate)
 		{
 			*this =  TSampleBuffer(InData.GetData(), InData.Num(), InNumChannels, InSampleRate);
 		}
@@ -85,7 +85,7 @@ namespace Audio
 				// Convert from float to int:
 				for (int32 SampleIndex = 0; SampleIndex < NumSamples; SampleIndex++)
 				{
-					RawPCMData[SampleIndex] = (int16)(InBufferPtr[SampleIndex] * 32767.0f);
+					RawPCMData[SampleIndex] = (int16)(FMath::Clamp(InBufferPtr[SampleIndex], -1.0f, 1.0f) * 32767.0f);
 				}
 			}
 			else

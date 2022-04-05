@@ -34,7 +34,10 @@
 // "impure" node types (utilized in BlueprintActionFilterImpl::IsImpure)
 #include "K2Node_MultiGate.h"
 #include "K2Node_Message.h"
+#include "K2Node_PromotableOperator.h"
 #include "EditorCategoryUtils.h"
+#include "BlueprintEditorModule.h"
+#include "Kismet2/KismetEditorUtilities.h"
 
 /*******************************************************************************
  * Static BlueprintActionFilter Helpers
@@ -183,6 +186,16 @@ namespace BlueprintActionFilterImpl
 	static bool IsPropertyAccessorNode(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction);
 
 	/**
+	* Rejection test that checks to see if the supplied node-spawner would produce a node with thread safety
+	* characteristics that are incompatible with the specification of the containing graph. 
+	* 
+	* @param  Filter			Filter context (unused) for this test.
+	* @param  BlueprintAction	The action you wish to query.
+	* @return True if the action would spawn a node that has incompatible thread safety.
+	*/
+	static bool IsThreadSafetyIncompatible(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction);
+
+	/**
 	 * Rejection test that checks to see if the supplied node-spawner would 
 	 * produce an impure node, incompatible with the specified graphs.
 	 * 
@@ -218,19 +231,30 @@ namespace BlueprintActionFilterImpl
 	 * 
 	 * @param  Filter			Holds the TagetClass context for this test.
 	 * @param  BlueprintAction	The action you wish to query.
-	 * @return 
+	 * @param  Flags			Filter flags that may modify this test (@see FBlueprintActionFilter::EFlags).
+	 * @return True if the action should be rejected.
 	 */
-	static bool IsRejectedGlobalField(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction);
+	static bool IsRejectedGlobalField(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, uint32 Flags);
+
+	/**
+	 * Rejection test that checks to see if the node-spawner represents an object
+	 * that does NOT exist within the scope of the editor's current import set.
+	 *
+	 * @param  Filter			The filter context for this test.
+	 * @param  InObject			The associated object you wish to query.
+	 * @return True if the action is associated with an object that is not included in any imported or global namespace.
+	 */
+	static bool IsNonImportedObject(FBlueprintActionFilter const& Filter, const UObject* InObject);
 
 	/**
 	 * Rejection test that checks to see if the node-spawner is associated with 
-	 * a field that belongs to a class that is not white-listed (ignores global/
+	 * a field that belongs to a class that is not allowed (ignores global/
 	 * static fields).
 	 * 
 	 * @param  Filter					Holds the class context for this test.
 	 * @param  BlueprintAction			The action you wish to query.
 	 * @param  bPermitNonTargetGlobals	Determines if this test should pass for external global/static fields.
-	 * @return True if the action is associated with a non-whitelisted class member.
+	 * @return True if the action is associated with a non-allowed class member.
 	 */
 	static bool IsNonTargetMember(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, bool const bPermitNonTargetGlobals);
 
@@ -255,13 +279,13 @@ namespace BlueprintActionFilterImpl
 
 	/**
 	 * Rejection test that checks to see if the node-spawner would produce a 
-	 * node type that isn't white-listed. 
+	 * node type that isn't allowed
 	 * 
 	 * @param  Filter				Holds the class context for this test.
 	 * @param  BlueprintAction		The action you wish to query.
 	 * @param  bPermitChildClasses	When true, the node's class doesn't have to perfectly match a class to be passed (it can be a sub-class).
 	 * @param  bRejectChildClasses	When true, the node's class doesn't have to perfectly match a class to be rejected (it can be a sub-class).
-	 * @return True if the action would produce a non-whitelisted node.
+	 * @return True if the action would produce a denied node.
 	 */
 	static bool IsFilteredNodeType(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, bool const bPermitChildClasses, bool const bRejectChildClasses);
 
@@ -397,9 +421,10 @@ namespace BlueprintActionFilterImpl
 	 * 
 	 * @param  Filter			Holds the graph context for this test.
 	 * @param  BlueprintAction	The action you wish to query.
+	 * @param  Flags			Filter flags that may modify this test (@see FBlueprintActionFilter::EFlags).
 	 * @return True if the macro instance is incompatible with the current graph context
 	 */
-	static bool IsIncompatibleMacroInstance(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction);
+	static bool IsIncompatibleMacroInstance(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, uint32 Flags);
 
 	/**
 	 * Rejection test to help unblock common crashes, where programmers forget 
@@ -857,13 +882,59 @@ static bool BlueprintActionFilterImpl::IsDeprecated(FBlueprintActionFilter const
 }
 
 //------------------------------------------------------------------------------
-static bool BlueprintActionFilterImpl::IsRejectedGlobalField(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
+static bool BlueprintActionFilterImpl::IsNonImportedObject(FBlueprintActionFilter const& Filter, const UObject* InObject)
 {
+	// All objects are considered to be imported if there is no context.
+	bool bIsFilteredOut = false;
+
+	if (InObject)
+	{
+		// @todo_namespaces - Maybe cache this as part of the filter context, or decouple queries from the editor?
+		TArray<TSharedPtr<IBlueprintEditor>> BlueprintEditors;
+		for (const UBlueprint* Blueprint : Filter.Context.Blueprints)
+		{
+			const bool bOpenEditor = false;
+			TSharedPtr<IBlueprintEditor> BlueprintEditor = FKismetEditorUtilities::GetIBlueprintEditorForObject(Blueprint, bOpenEditor);
+			if (BlueprintEditor.IsValid())
+			{
+				BlueprintEditors.AddUnique(BlueprintEditor);
+			}
+		}
+
+		for (const TSharedPtr<IBlueprintEditor>& BlueprintEditor : BlueprintEditors)
+		{
+			if (BlueprintEditor->IsNonImportedObject(InObject))
+			{
+				bIsFilteredOut = true;
+				break;
+			}
+		}
+	}
+
+	return bIsFilteredOut;
+}
+
+//------------------------------------------------------------------------------
+static bool BlueprintActionFilterImpl::IsRejectedGlobalField(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, uint32 Flags)
+{
+	const bool bRejectAllGlobalFields = ((Flags & FBlueprintActionFilter::EFlags::BPFILTER_RejectGlobalFields) != 0);
+	const bool bRejectNonImportedFields = ((Flags & FBlueprintActionFilter::EFlags::BPFILTER_RejectNonImportedFields) != 0);
+
 	bool bIsFilteredOut = false;
 	FFieldVariant Field = BlueprintAction.GetAssociatedMemberField();
-	if (Field.IsValid())
+	if (Field.IsValid() && IsGloballyAccessible(Field))
 	{
-		bIsFilteredOut = IsGloballyAccessible(Field);
+		const UStruct* OuterType = nullptr;
+		if (const UField* FieldAsUObject = Cast<UField>(Field.ToUObject()))
+		{
+			OuterType = FieldAsUObject->GetOwnerStruct();
+		}
+		else
+		{
+			OuterType = Field.ToField()->GetOwnerStruct();
+		}
+
+		bIsFilteredOut = bRejectAllGlobalFields || (bRejectNonImportedFields && OuterType && IsNonImportedObject(Filter, OuterType));
 		
 		UClass* FieldClass = Field.GetOwnerClass();
 		if (bIsFilteredOut && (FieldClass != nullptr))
@@ -987,6 +1058,32 @@ static bool BlueprintActionFilterImpl::IsPropertyAccessorNode(FBlueprintActionFi
 	}
 
 	return bIsAccessor;
+}
+
+//------------------------------------------------------------------------------
+static bool BlueprintActionFilterImpl::IsThreadSafetyIncompatible(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
+{
+	if (UFunction const* Function = BlueprintAction.GetAssociatedFunction())
+	{	
+		bool bAllowNonThreadSafeNodes = true;
+
+		FBlueprintActionContext const& FilterContext = Filter.Context;
+
+		for (UEdGraph* Graph : FilterContext.Graphs)
+		{
+			if (const UEdGraphSchema_K2* K2Schema = Cast<UEdGraphSchema_K2>(Graph->GetSchema()))
+			{
+				bAllowNonThreadSafeNodes &= !K2Schema->IsGraphMarkedThreadSafe(Graph);
+			}
+		}
+
+		if(!bAllowNonThreadSafeNodes)
+		{
+			return !FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(Function);
+		}
+	}
+	
+	return false;
 }
 
 //------------------------------------------------------------------------------
@@ -1354,6 +1451,11 @@ static bool BlueprintActionFilterImpl::IsFunctionMissingPinParam(FBlueprintActio
 		UEdGraphSchema_K2 const* K2Schema = GetDefault<UEdGraphSchema_K2>();
 		bool const bIsEventSpawner  = BlueprintAction.GetNodeClass()->IsChildOf<UK2Node_Event>();
 		bool const bIsArrayFunction = BlueprintAction.GetNodeClass()->IsChildOf<UK2Node_CallArrayFunction>();
+		
+		if (BlueprintAction.GetNodeClass()->IsChildOf<UK2Node_PromotableOperator>())
+		{
+			return false;
+		}
 
 		for (int32 PinIndex = 0; !bIsFilteredOut && (PinIndex < Filter.Context.Pins.Num()); ++PinIndex)
 		{
@@ -1519,7 +1621,7 @@ static bool BlueprintActionFilterImpl::IsMissingMatchingPinParam(FBlueprintActio
 	// we have a separate pin tests for function/property nodes (IsFunctionMissingPinParam/IsMissmatchedPropertyType). Note that we only skip
 	// this test for functions with bindings (because it does not handle getting templates for all binding nodes). By running this for 
 	// other functions we ensure that IsConnectionDisallowed is honored.
-	bool const bTestPinCompatibility = (BlueprintAction.GetAssociatedProperty() == nullptr) && BlueprintAction.GetBindings().Num() == 0;
+	bool const bTestPinCompatibility = (BlueprintAction.GetAssociatedProperty() == nullptr) && BlueprintAction.GetBindings().Num() == 0 && !BlueprintAction.GetNodeClass()->IsChildOf<UK2Node_PromotableOperator>();
 
 	if (bTestPinCompatibility)
 	{
@@ -1560,6 +1662,12 @@ static bool BlueprintActionFilterImpl::IsNotSubClassCast(FBlueprintActionFilter 
 				// could be a delegate (or some other) pin, with a non-class
 				// PinSubCategoryObject
 				if (ContextPinClass == nullptr)
+				{
+					continue;
+				}
+
+				// Interface casts are always enabled
+				if (CastClass->IsChildOf<UInterface>())
 				{
 					continue;
 				}
@@ -1631,7 +1739,7 @@ static bool BlueprintActionFilterImpl::IsExtraneousInterfaceCall(FBlueprintActio
 		UClass* InterfaceClass = Function->GetOwnerClass();
 		checkSlow(InterfaceClass->IsChildOf<UInterface>());
 
-		bool const bCanBeAddedToBlueprints = !InterfaceClass->HasMetaData(FBlueprintMetadata::MD_CannotImplementInterfaceInBlueprint);
+		bool const bCanBeAddedToBlueprints = FKismetEditorUtilities::IsClassABlueprintImplementableInterface(InterfaceClass);
 
 		bIsFilteredOut = (Filter.TargetClasses.Num() > 0);
 		for (const auto& ClassData : Filter.TargetClasses)
@@ -1688,14 +1796,21 @@ static bool BlueprintActionFilterImpl::IsExtraneousInterfaceCall(FBlueprintActio
 }
 
 //------------------------------------------------------------------------------
-static bool BlueprintActionFilterImpl::IsIncompatibleMacroInstance(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction)
+static bool BlueprintActionFilterImpl::IsIncompatibleMacroInstance(FBlueprintActionFilter const& Filter, FBlueprintActionInfo& BlueprintAction, uint32 Flags)
 {
 	bool bIsFilteredOut = false;
+
+	const bool bRejectNonImportedMacros = ((Flags & FBlueprintActionFilter::EFlags::BPFILTER_RejectNonImportedFields) != 0);
 
 	if(BlueprintAction.GetNodeClass()->IsChildOf<UK2Node_MacroInstance>())
 	{
 		if(const UBlueprint* MacroBP = Cast<const UBlueprint>(BlueprintAction.GetActionOwner()))
 		{
+			if (bRejectNonImportedMacros && IsNonImportedObject(Filter, MacroBP))
+			{
+				return true;
+			}
+
 			if (!ensure(MacroBP->ParentClass != nullptr))
 			{
 				return true;
@@ -1736,6 +1851,7 @@ static bool BlueprintActionFilterImpl::IsHiddenInNonEditorBlueprint(FBlueprintAc
 
 	if (Function)
 	{
+		 // Leaving this check here (even though its done in CanEditorOnlyFunctionBeCalled) as an early exit
 		const bool bIsEditorOnlyFunction = IsEditorOnlyObject(Function) || Function->HasAnyFunctionFlags(FUNC_EditorOnly);
 		const bool bIsUncookedOnlyFunction = Function->GetOutermost()->HasAnyPackageFlags(PKG_UncookedOnly);
 
@@ -1743,9 +1859,7 @@ static bool BlueprintActionFilterImpl::IsHiddenInNonEditorBlueprint(FBlueprintAc
 		{
 			for (const UBlueprint* Blueprint : Filter.Context.Blueprints)
 			{
-				const UClass* BlueprintClass = Blueprint->ParentClass;
-				const bool bIsEditorBlueprintClass = (BlueprintClass != nullptr) && IsEditorOnlyObject(BlueprintClass);
-				bVisible &= bIsEditorBlueprintClass;
+				bVisible &= UK2Node_CallFunction::CanEditorOnlyFunctionBeCalled(Function, Blueprint->ParentClass);
 			}
 		}
 
@@ -1950,12 +2064,16 @@ FBlueprintActionFilter::FBlueprintActionFilter(uint32 Flags/*= 0x00*/)
 	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsIncompatibleLatentNode));
 	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsIncompatibleImpureNode));
 	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsPropertyAccessorNode));
+	if (Flags & BPFILTER_RejectIncompatibleThreadSafety)
+	{
+		AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsThreadSafetyIncompatible));
+	}
 	
 	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsActionHiddenByConfig));
 	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsFieldCategoryHidden));
-	if (Flags & BPFILTER_RejectGlobalFields)
+	if (Flags & (BPFILTER_RejectGlobalFields | BPFILTER_RejectNonImportedFields))
 	{
-		AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsRejectedGlobalField));
+		AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsRejectedGlobalField, Flags));
 	}
 	
 	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsFieldInaccessible));
@@ -1966,7 +2084,7 @@ FBlueprintActionFilter::FBlueprintActionFilter(uint32 Flags/*= 0x00*/)
 	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsIncompatibleWithGraphType));
 	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsSchemaIncompatible));
 	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsExtraneousInterfaceCall));
-	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsIncompatibleMacroInstance));
+	AddRejectionTest(FRejectionTestDelegate::CreateStatic(IsIncompatibleMacroInstance, Flags));
 
 	if (!(Flags & BPFILTER_PermitDeprecated))
 	{

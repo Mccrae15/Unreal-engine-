@@ -29,11 +29,13 @@ public:
 
 	/** IEditableSkeleton interface */
 	virtual const USkeleton& GetSkeleton() const override;
+	virtual bool IsSkeletonValid() const override;
 	virtual const TArray<class UBlendProfile*>& GetBlendProfiles() const override;
 	virtual class UBlendProfile* GetBlendProfile(const FName& InBlendProfileName) override;
 	virtual class UBlendProfile* CreateNewBlendProfile(const FName& InBlendProfileName) override;
 	virtual void RemoveBlendProfile(UBlendProfile* InBlendProfile) override;
 	virtual void SetBlendProfileScale(const FName& InBlendProfileName, const FName& InBoneName, float InNewScale, bool bInRecurse) override;
+	virtual void SetBlendProfileMode(FName InBlendProfileName, EBlendProfileMode ProfileMode);
 	virtual USkeletalMeshSocket* DuplicateSocket(const FSelectedSocketInfo& SocketInfoToDuplicate, const FName& NewParentBoneName, USkeletalMesh* InSkeletalMesh) override;
 	virtual int32 ValidatePreviewAttachedObjects() override;
 	virtual int32 DeleteAnimNotifies(const TArray<FName>& InSelectedNotifyNames) override;
@@ -85,6 +87,10 @@ public:
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FEditableSkeleton");
+	}
 
 	/** Generates a unique socket name from the input name, by changing the FName's number */
 	FName GenerateUniqueSocketName(FName InName, USkeletalMesh* InSkeletalMesh);

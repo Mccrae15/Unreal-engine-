@@ -2,7 +2,7 @@
 #include "NiagaraDataInterfaceNeighborGrid3D.h"
 #include "NiagaraShader.h"
 #include "ShaderParameterUtils.h"
-#include "NiagaraEmitterInstanceBatcher.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraShaderParticleID.h"
@@ -27,6 +27,14 @@ static const FName GetParticleNeighborFunctionName("GetParticleNeighbor");
 static const FName SetParticleNeighborFunctionName("SetParticleNeighbor");
 static const FName GetParticleNeighborCountFunctionName("GetParticleNeighborCount");
 static const FName SetParticleNeighborCountFunctionName("SetParticleNeighborCount");
+
+static int32 GMaxNiagaraNeighborGridCells = (100*100*100);
+static FAutoConsoleVariableRef CVarMaxNiagaraNeighborGridCells(
+	TEXT("fx.MaxNiagaraNeighborGridCells"),
+	GMaxNiagaraNeighborGridCells,
+	TEXT("The max number of supported grid cells in Niagara. Overflowing this threshold will cause the sim to warn and fail. \n"),
+	ECVF_Default
+);
 
 
 /*--------------------------------------------------------------------------------------------------------------------------*/
@@ -62,31 +70,31 @@ public:
 		NeighborGrid3DRWInstanceData* ProxyData = VFDI->SystemInstancesToProxyData.Find(Context.SystemInstanceID);
 		float CellSizeTmp[3];
 
-		if (!ProxyData)
+		if (!(ProxyData && ProxyData->NeighborhoodBuffer.Buffer.IsValid()))
 		{
 			CellSizeTmp[0] = CellSizeTmp[1] = CellSizeTmp[2] = 1.0f;
 			SetShaderValue(RHICmdList, ComputeShaderRHI, NumCellsParam, 0);
-			SetShaderValue(RHICmdList, ComputeShaderRHI, UnitToUVParam, FVector::ZeroVector);
+			SetShaderValue(RHICmdList, ComputeShaderRHI, UnitToUVParam, FVector3f::ZeroVector);
 			SetShaderValue(RHICmdList, ComputeShaderRHI, CellSizeParam, CellSizeTmp);
 			SetShaderValue(RHICmdList, ComputeShaderRHI, MaxNeighborsPerCellParam, 0);
-			SetShaderValue(RHICmdList, ComputeShaderRHI, WorldBBoxSizeParam, FVector(0.0f, 0.0f, 0.0f));
+			SetShaderValue(RHICmdList, ComputeShaderRHI, WorldBBoxSizeParam, FVector3f(0.0f, 0.0f, 0.0f));
 			SetSRVParameter(RHICmdList, ComputeShaderRHI, ParticleNeighborsGridParam, FNiagaraRenderer::GetDummyIntBuffer());
 			SetSRVParameter(RHICmdList, ComputeShaderRHI, ParticleNeighborCountGridParam, FNiagaraRenderer::GetDummyIntBuffer());
 			if (OutputParticleNeighborsGridParam.IsUAVBound())
 			{
-				RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputParticleNeighborsGridParam.GetUAVIndex(), Context.Batcher->GetEmptyUAVFromPool(RHICmdList, PF_R32_SINT, ENiagaraEmptyUAVType::Buffer));
+				RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputParticleNeighborsGridParam.GetUAVIndex(), Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, PF_R32_SINT, ENiagaraEmptyUAVType::Buffer));
 			}
 
 			if (OutputParticleNeighborCountGridParam.IsUAVBound())
 			{
-				RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputParticleNeighborCountGridParam.GetUAVIndex(), Context.Batcher->GetEmptyUAVFromPool(RHICmdList, PF_R32_SINT, ENiagaraEmptyUAVType::Buffer));
+				RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputParticleNeighborCountGridParam.GetUAVIndex(), Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, PF_R32_SINT, ENiagaraEmptyUAVType::Buffer));
 			}
 
 			return;
 		}
 
 		SetShaderValue(RHICmdList, ComputeShaderRHI, NumCellsParam, ProxyData->NumCells);
-		SetShaderValue(RHICmdList, ComputeShaderRHI, UnitToUVParam, FVector(1.0f) / FVector(ProxyData->NumCells));
+		SetShaderValue(RHICmdList, ComputeShaderRHI, UnitToUVParam, FVector3f(1.0f) / FVector3f(ProxyData->NumCells));
 
 		// #todo(dmp): remove this computation here
 		CellSizeTmp[0] = ProxyData->WorldBBoxSize.X / ProxyData->NumCells.X;
@@ -94,7 +102,7 @@ public:
 		CellSizeTmp[2] = ProxyData->WorldBBoxSize.Z / ProxyData->NumCells.Z;
 		SetShaderValue(RHICmdList, ComputeShaderRHI, CellSizeParam, CellSizeTmp);
 		SetShaderValue(RHICmdList, ComputeShaderRHI, MaxNeighborsPerCellParam, ProxyData->MaxNeighborsPerCell);
-		SetShaderValue(RHICmdList, ComputeShaderRHI, WorldBBoxSizeParam, ProxyData->WorldBBoxSize);
+		SetShaderValue(RHICmdList, ComputeShaderRHI, WorldBBoxSizeParam, FVector3f(ProxyData->WorldBBoxSize));	// LWC_TODO: Potential issues for large world representation here.
 		
 		if (!Context.IsOutputStage)
 		{
@@ -112,12 +120,12 @@ public:
 
 			if (OutputParticleNeighborsGridParam.IsUAVBound())
 			{
-				RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputParticleNeighborsGridParam.GetUAVIndex(), Context.Batcher->GetEmptyUAVFromPool(RHICmdList, PF_R32_SINT, ENiagaraEmptyUAVType::Buffer));
+				RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputParticleNeighborsGridParam.GetUAVIndex(), Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, PF_R32_SINT, ENiagaraEmptyUAVType::Buffer));
 			}
 
 			if (OutputParticleNeighborCountGridParam.IsUAVBound())
 			{
-				RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputParticleNeighborCountGridParam.GetUAVIndex(), Context.Batcher->GetEmptyUAVFromPool(RHICmdList, PF_R32_SINT, ENiagaraEmptyUAVType::Buffer));
+				RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputParticleNeighborCountGridParam.GetUAVIndex(), Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, PF_R32_SINT, ENiagaraEmptyUAVType::Buffer));
 			}
 		}
 		else
@@ -164,6 +172,25 @@ private:
 	LAYOUT_FIELD(FRWShaderParameter, OutputParticleNeighborCountGridParam);
 	LAYOUT_FIELD(FRWShaderParameter, OutputParticleNeighborsGridParam);
 };
+
+void NeighborGrid3DRWInstanceData::ResizeBuffers()
+{
+	uint32 NumTotalCells = NumCells.X * NumCells.Y * NumCells.Z;
+
+	uint32 NumIntsInGridBuffer = NumTotalCells * MaxNeighborsPerCell;
+
+	if (NumTotalCells > (uint32)GMaxNiagaraNeighborGridCells)
+		return;
+
+	NeighborhoodCountBuffer.Initialize(TEXT("NiagaraNeighborGrid3D::NeighborCount"), sizeof(int32), NumTotalCells, EPixelFormat::PF_R32_SINT, BUF_Static);
+	NeighborhoodBuffer.Initialize(TEXT("NiagaraNeighborGrid3D::NeighborsGrid"), sizeof(int32), NumIntsInGridBuffer, EPixelFormat::PF_R32_SINT, BUF_Static);
+
+	#if STATS
+		DEC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, GPUMemory);
+		GPUMemory = NumTotalCells * sizeof(int32) + NumIntsInGridBuffer * sizeof(int32);
+		INC_MEMORY_STAT_BY(STAT_NiagaraGPUDataInterfaceMemory, GPUMemory);
+	#endif
+}
 
 IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_NeighborGrid3D);
 
@@ -297,17 +324,17 @@ void UNiagaraDataInterfaceNeighborGrid3D::GetVMExternalFunction(const FVMExterna
 	if (BindingInfo.Name == UNiagaraDataInterfaceRWBase::WorldBBoxSizeFunctionName)
 	{
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 3);
-		OutFunc = FVMExternalFunction::CreateLambda([&](FVectorVMContext& Context) { GetWorldBBoxSize(Context); });
+		OutFunc = FVMExternalFunction::CreateLambda([&](FVectorVMExternalFunctionContext& Context) { GetWorldBBoxSize(Context); });
 	}
 	else if (BindingInfo.Name == UNiagaraDataInterfaceRWBase::NumCellsFunctionName)
 	{
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 3);
-		OutFunc = FVMExternalFunction::CreateLambda([&](FVectorVMContext& Context) { GetNumCells(Context); });
+		OutFunc = FVMExternalFunction::CreateLambda([&](FVectorVMExternalFunctionContext& Context) { GetNumCells(Context); });
 	}
 	else if (BindingInfo.Name == MaxNeighborsPerCellFunctionName)
 	{
 		check(BindingInfo.GetNumInputs() == 1 && BindingInfo.GetNumOutputs() == 1);
-		OutFunc = FVMExternalFunction::CreateLambda([&](FVectorVMContext& Context) { GetMaxNeighborsPerCell(Context); });
+		OutFunc = FVMExternalFunction::CreateLambda([&](FVectorVMExternalFunctionContext& Context) { GetMaxNeighborsPerCell(Context); });
 	}
 	else if (BindingInfo.Name == SetNumCellsFunctionName)
 	{
@@ -321,19 +348,19 @@ void UNiagaraDataInterfaceNeighborGrid3D::GetVMExternalFunction(const FVMExterna
 	//else if (BindingInfo.Name == SetParticleNeighborCountFunctionName) { OutFunc = FVMExternalFunction::CreateUObject(this, &UNiagaraDataInterfaceRWBase::EmptyVMFunction); }
 }
 
-void UNiagaraDataInterfaceNeighborGrid3D::GetWorldBBoxSize(FVectorVMContext& Context)
+void UNiagaraDataInterfaceNeighborGrid3D::GetWorldBBoxSize(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<NeighborGrid3DRWInstanceData> InstData(Context);
 
-	FNDIOutputParam<FVector> OutWorldBounds(Context);
+	FNDIOutputParam<FVector3f> OutWorldBounds(Context);
 
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
-		OutWorldBounds.SetAndAdvance(WorldBBoxSize);
+		OutWorldBounds.SetAndAdvance((FVector3f)WorldBBoxSize);	// LWC_TODO: Precision Loss
 	}
 }
 
-void UNiagaraDataInterfaceNeighborGrid3D::GetNumCells(FVectorVMContext& Context)
+void UNiagaraDataInterfaceNeighborGrid3D::GetNumCells(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<NeighborGrid3DRWInstanceData> InstData(Context);
 
@@ -341,7 +368,7 @@ void UNiagaraDataInterfaceNeighborGrid3D::GetNumCells(FVectorVMContext& Context)
 	FNDIOutputParam<int32> NumCellsY(Context);
 	FNDIOutputParam<int32> NumCellsZ(Context);
 
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		NumCellsX.SetAndAdvance(NumCells.X);
 		NumCellsY.SetAndAdvance(NumCells.Y);
@@ -349,13 +376,13 @@ void UNiagaraDataInterfaceNeighborGrid3D::GetNumCells(FVectorVMContext& Context)
 	}
 }
 
-void UNiagaraDataInterfaceNeighborGrid3D::GetMaxNeighborsPerCell(FVectorVMContext& Context)
+void UNiagaraDataInterfaceNeighborGrid3D::GetMaxNeighborsPerCell(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<NeighborGrid3DRWInstanceData> InstData(Context);
 
 	FNDIOutputParam<int32> OutMaxNeighborsPerCell(Context);
 
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		OutMaxNeighborsPerCell.SetAndAdvance(InstData->MaxNeighborsPerCell);
 	}
@@ -371,6 +398,18 @@ bool UNiagaraDataInterfaceNeighborGrid3D::Equals(const UNiagaraDataInterface* Ot
 
 	return OtherTyped->MaxNeighborsPerCell == MaxNeighborsPerCell;
 }
+
+#if WITH_EDITOR
+bool UNiagaraDataInterfaceNeighborGrid3D::ShouldCompile(EShaderPlatform ShaderPlatform) const
+{
+	if (!RHISupportsVolumeTextureAtomics(ShaderPlatform))
+	{
+		return false;
+	}
+
+	return UNiagaraDataInterface::ShouldCompile(ShaderPlatform);
+}
+#endif
 
 #if WITH_EDITORONLY_DATA
 void UNiagaraDataInterfaceNeighborGrid3D::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
@@ -528,10 +567,8 @@ bool UNiagaraDataInterfaceNeighborGrid3D::InitPerInstanceData(void* PerInstanceD
 	FIntVector RT_NumCells = NumCells;
 	uint32 RT_MaxNeighborsPerCell = MaxNeighborsPerCell;	
 	FVector RT_WorldBBoxSize = WorldBBoxSize;
-	TSet<int> RT_OutputShaderStages = OutputShaderStages;
-	TSet<int> RT_IterationShaderStages = IterationShaderStages;
 
-	float TmpCellSize = RT_WorldBBoxSize[0] / RT_NumCells[0];
+	FVector::FReal TmpCellSize = RT_WorldBBoxSize[0] / RT_NumCells[0];
 
 	if (SetResolutionMethod == ESetResolutionMethod::MaxAxis)
 	{
@@ -598,10 +635,16 @@ bool UNiagaraDataInterfaceNeighborGrid3D::InitPerInstanceData(void* PerInstanceD
 	InstanceData->MaxNeighborsPerCell = RT_MaxNeighborsPerCell;	
 	InstanceData->NumCells = RT_NumCells;
 
+	if ((RT_NumCells.X * RT_NumCells.Y * RT_NumCells.Z) > GMaxNiagaraNeighborGridCells)
+	{
+		UE_LOG(LogNiagara, Warning, TEXT("Dimensions are too big! Please adjust! %d x %d x %d > %d for ==> %s"), RT_NumCells.X, RT_NumCells.Y, RT_NumCells.Z, GMaxNiagaraNeighborGridCells , *GetFullNameSafe(this))
+			return false;
+	}
+
 	// @todo-threadsafety. This would be a race but I'm taking a ref here. Not ideal in the long term.
 	// Push Updates to Proxy.
 	ENQUEUE_RENDER_COMMAND(FUpdateData)(
-		[RT_Proxy, RT_NumCells, RT_MaxNeighborsPerCell, RT_WorldBBoxSize, RT_OutputShaderStages, RT_IterationShaderStages, InstanceID = SystemInstance->GetId()](FRHICommandListImmediate& RHICmdList)
+		[RT_Proxy, RT_NumCells, RT_MaxNeighborsPerCell, RT_WorldBBoxSize, InstanceID = SystemInstance->GetId()](FRHICommandListImmediate& RHICmdList)
 	{
 		check(!RT_Proxy->SystemInstancesToProxyData.Contains(InstanceID));
 		NeighborGrid3DRWInstanceData* TargetData = &RT_Proxy->SystemInstancesToProxyData.Add(InstanceID);
@@ -610,16 +653,13 @@ bool UNiagaraDataInterfaceNeighborGrid3D::InitPerInstanceData(void* PerInstanceD
 		TargetData->MaxNeighborsPerCell = RT_MaxNeighborsPerCell;		
 		TargetData->WorldBBoxSize = RT_WorldBBoxSize;
 
-		RT_Proxy->OutputSimulationStages_DEPRECATED = RT_OutputShaderStages;
-		RT_Proxy->IterationSimulationStages_DEPRECATED = RT_IterationShaderStages;
-
 		TargetData->ResizeBuffers();
 	});
 
 	return true;
 }
 
-void UNiagaraDataInterfaceNeighborGrid3D::SetNumCells(FVectorVMContext& Context)
+void UNiagaraDataInterfaceNeighborGrid3D::SetNumCells(FVectorVMExternalFunctionContext& Context)
 {
 	// This should only be called from a system or emitter script due to a need for only setting up initially.
 	VectorVM::FUserPtrHandler<NeighborGrid3DRWInstanceData> InstData(Context);
@@ -629,13 +669,13 @@ void UNiagaraDataInterfaceNeighborGrid3D::SetNumCells(FVectorVMContext& Context)
 	VectorVM::FExternalFuncInputHandler<int> InMaxNeighborsPerCell(Context);
 	VectorVM::FExternalFuncRegisterHandler<FNiagaraBool> OutSuccess(Context);
 
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		int NewNumCellsX = InNumCellsX.GetAndAdvance();
 		int NewNumCellsY = InNumCellsY.GetAndAdvance();
 		int NewNumCellsZ = InNumCellsZ.GetAndAdvance();
 		int NewMaxNeighborsPerCell = InMaxNeighborsPerCell.GetAndAdvance();
-		bool bSuccess = (InstData.Get() != nullptr && Context.NumInstances == 1 && NumCells.X >= 0 && NumCells.Y >= 0 && NumCells.Z >= 0 && MaxNeighborsPerCell >= 0);
+		bool bSuccess = (InstData.Get() != nullptr && Context.GetNumInstances() == 1 && NumCells.X >= 0 && NumCells.Y >= 0 && NumCells.Z >= 0 && MaxNeighborsPerCell >= 0);
 		*OutSuccess.GetDestAndAdvance() = bSuccess;
 		if (bSuccess)
 		{
@@ -647,7 +687,7 @@ void UNiagaraDataInterfaceNeighborGrid3D::SetNumCells(FVectorVMContext& Context)
 			InstData->NumCells.Z = NewNumCellsZ;
 			InstData->MaxNeighborsPerCell = NewMaxNeighborsPerCell;
 		
-			InstData->NeedsRealloc = OldNumCells != InstData->NumCells && OldMaxNeighborsPerCell != InstData->MaxNeighborsPerCell;
+			InstData->NeedsRealloc = OldNumCells != InstData->NumCells || OldMaxNeighborsPerCell != InstData->MaxNeighborsPerCell;
 		}
 	}
 }
@@ -691,7 +731,7 @@ void UNiagaraDataInterfaceNeighborGrid3D::DestroyPerInstanceData(void* PerInstan
 		return;
 
 	ENQUEUE_RENDER_COMMAND(FNiagaraDIDestroyInstanceData) (
-		[ThisProxy, InstanceID = SystemInstance->GetId(), Batcher = SystemInstance->GetBatcher()](FRHICommandListImmediate& CmdList)
+		[ThisProxy, InstanceID = SystemInstance->GetId()](FRHICommandListImmediate& CmdList)
 	{
 		//check(ThisProxy->SystemInstancesToProxyData.Contains(InstanceID));
 		ThisProxy->SystemInstancesToProxyData.Remove(InstanceID);
@@ -706,7 +746,7 @@ void FNiagaraDataInterfaceProxyNeighborGrid3D::PreStage(FRHICommandList& RHICmdL
 		NeighborGrid3DRWInstanceData* ProxyData = SystemInstancesToProxyData.Find(Context.SystemInstanceID);
 
 		SCOPED_DRAW_EVENT(RHICmdList, NiagaraNeighborGrid3DClearNeighborInfo);
-		ERHIFeatureLevel::Type FeatureLevel = Context.Batcher->GetFeatureLevel();
+		ERHIFeatureLevel::Type FeatureLevel = Context.ComputeDispatchInterface->GetFeatureLevel();
 
 		FRHITransitionInfo TransitionInfos[] =
 		{

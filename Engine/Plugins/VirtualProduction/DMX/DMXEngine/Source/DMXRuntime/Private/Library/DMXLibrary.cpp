@@ -15,6 +15,9 @@
 
 #define LOCTEXT_NAMESPACE "DMXLibrary"
 
+FDMXOnEntityArrayChangedDelegate UDMXLibrary::OnEntitiesAddedDelegate;
+
+FDMXOnEntityArrayChangedDelegate UDMXLibrary::OnEntitiesRemovedDelegate;
 
 void UDMXLibrary::PostInitProperties()
 {
@@ -75,7 +78,6 @@ void UDMXLibrary::PostDuplicate(EDuplicateMode::Type DuplicateMode)
 		// Entity could be null
 		if (ensure(Entity))
 		{
-			Entity->SetParentLibrary(this);
 			Entity->RefreshID();
 			ValidEntities.Add(Entity);
 		}
@@ -93,7 +95,7 @@ void UDMXLibrary::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	FName PropertyName = PropertyChangedEvent.GetPropertyName();
+	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
 	const FProperty* Property = PropertyChangedEvent.Property;
 	const UScriptStruct* InputPortReferenceStruct = FDMXInputPortReference::StaticStruct();
 	const UScriptStruct* OutputPortReferenceStruct = FDMXOutputPortReference::StaticStruct();
@@ -106,8 +108,36 @@ void UDMXLibrary::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 	{
 		UpdatePorts();
 	}
+
+	// Remove any null entities from the library
+	Entities.RemoveAll([](UDMXEntity* Entity)
+		{
+			return !IsValid(Entity);
+		});
 }
 #endif // WITH_EDITOR
+
+void UDMXLibrary::RegisterEntity(UDMXEntity* Entity)
+{
+	if (ensureMsgf(IsValid(Entity), TEXT("Trying to register Entity with DMX Library, but DMX Entity is not valid.")))
+	{
+		if (!Entities.Contains(Entity))
+		{
+			Entities.Add(Entity);
+			LastAddedEntity = Entity;
+			OnEntitiesAddedDelegate.Broadcast(this, TArray<UDMXEntity*>({ Entity }));
+		}	
+	}
+}
+
+void UDMXLibrary::UnregisterEntity(UDMXEntity* Entity)
+{
+	if (Entities.Contains(Entity))
+	{
+		Entities.Remove(Entity);
+		OnEntitiesRemovedDelegate.Broadcast(this, TArray<UDMXEntity*>({ Entity }));
+	}
+}
 
 UDMXEntity* UDMXLibrary::GetOrCreateEntityObject(const FString& InName, TSubclassOf<UDMXEntity> DMXEntityClass)
 {
@@ -129,8 +159,9 @@ UDMXEntity* UDMXLibrary::GetOrCreateEntityObject(const FString& InName, TSubclas
 
 	UDMXEntity* Entity = NewObject<UDMXEntity>(this, DMXEntityClass, NAME_None, RF_Transactional);
 	Entity->SetName(InName);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	AddEntity(Entity);
-	OnEntitiesUpdated.Broadcast(this);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	return Entity;
 }
@@ -169,11 +200,15 @@ int32 UDMXLibrary::FindEntityIndex(UDMXEntity* InEntity) const
 
 void UDMXLibrary::AddEntity(UDMXEntity* InEntity)
 {
+	// DEPRECATED 5.0
+
 	check(InEntity);
 	check(!Entities.Contains(InEntity));
 	
 	Entities.Add(InEntity);
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	InEntity->SetParentLibrary(this);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	// Check for unique Id
 	for (UDMXEntity* Entity : Entities)
@@ -184,6 +219,9 @@ void UDMXLibrary::AddEntity(UDMXEntity* InEntity)
 			break;
 		}
 	}
+
+	OnEntitiesAddedDelegate.Broadcast(this, TArray<UDMXEntity*>({ InEntity }));
+	OnEntitiesUpdated_DEPRECATED.Broadcast(this);
 }
 
 void UDMXLibrary::SetEntityIndex(UDMXEntity* InEntity, const int32 NewIndex)
@@ -246,6 +284,8 @@ void UDMXLibrary::SetEntityIndex(UDMXEntity* InEntity, const int32 NewIndex)
 
 void UDMXLibrary::RemoveEntity(const FString& EntityName)
 {
+	// DEPRECATED 5.0
+
 	int32 EntityIndex = Entities.IndexOfByPredicate([&EntityName] (const UDMXEntity* Entity)->bool
 		{
 			return Entity && Entity->GetDisplayName().Equals(EntityName);
@@ -253,23 +293,47 @@ void UDMXLibrary::RemoveEntity(const FString& EntityName)
 
 	if (EntityIndex != INDEX_NONE)
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		Entities[EntityIndex]->SetParentLibrary(nullptr);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		Entities.RemoveAt(EntityIndex);
-		OnEntitiesUpdated.Broadcast(this);
+
+		OnEntitiesRemovedDelegate.Broadcast(this, TArray<UDMXEntity*>({ Entities[EntityIndex] }));
+		OnEntitiesUpdated_DEPRECATED.Broadcast(this);
 	}
+}
+
+void UDMXLibrary::RemoveEntity(UDMXEntity* InEntity)
+{
+	// DEPRECATED 5.0
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	InEntity->SetParentLibrary(nullptr);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	Entities.Remove(InEntity);
+
+	OnEntitiesRemovedDelegate.Broadcast(this, TArray<UDMXEntity*>({ InEntity }));
+	OnEntitiesUpdated_DEPRECATED.Broadcast(this);
 }
 
 void UDMXLibrary::RemoveAllEntities()
 {
+	// DEPRECATED 5.0
+
+	TArray<UDMXEntity*> OldEntities = Entities;
 	for (UDMXEntity* Entity : Entities)
 	{
 		if (Entity)
 		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			Entity->SetParentLibrary(nullptr);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 	}
 	Entities.Empty();
-	OnEntitiesUpdated.Broadcast(this);
+
+	OnEntitiesRemovedDelegate.Broadcast(this, TArray<UDMXEntity*>({ OldEntities }));
+	OnEntitiesUpdated_DEPRECATED.Broadcast(this);
 }
 
 const TArray<UDMXEntity*>& UDMXLibrary::GetEntities() const
@@ -310,9 +374,19 @@ void UDMXLibrary::ForEachEntityOfType(TSubclassOf<UDMXEntity> InEntityClass, TFu
 	}
 }
 
-FOnEntitiesUpdated& UDMXLibrary::GetOnEntitiesUpdated()
+FDMXOnEntityArrayChangedDelegate& UDMXLibrary::GetOnEntitiesAdded()
 {
-	return OnEntitiesUpdated;
+	return OnEntitiesAddedDelegate;
+}
+
+FDMXOnEntityArrayChangedDelegate& UDMXLibrary::GetOnEntitiesRemoved()
+{
+	return OnEntitiesRemovedDelegate;
+}
+
+FOnEntitiesUpdated_DEPRECATED& UDMXLibrary::GetOnEntitiesUpdated()
+{
+	return OnEntitiesUpdated_DEPRECATED;
 }
 
 TSet<int32> UDMXLibrary::GetAllLocalUniversesIDsInPorts() const
@@ -612,7 +686,6 @@ void UDMXLibrary::UpgradeFromControllersToPorts()
 					OutputPortConfigParams.CommunicationType = VoidController->CommunicationMode;
 					OutputPortConfigParams.ProtocolName = ProtocolName;
 					OutputPortConfigParams.DeviceAddress = InterfaceIPAddress_DEPRECATED;
-					OutputPortConfigParams.DestinationAddress = TEXT("");
 					OutputPortConfigParams.bLoopbackToEngine = OutputPortConfigParams.CommunicationType == EDMXCommunicationType::Multicast ? true : false;
 					OutputPortConfigParams.LocalUniverseStart = FixedLocalUniverseStart;
 					OutputPortConfigParams.NumUniverses = FixedNumUniverses;
@@ -627,7 +700,7 @@ void UDMXLibrary::UpgradeFromControllersToPorts()
 				}
 
 				// Add ports from additional unicast ip
-				for (const FString& AdditionalUnicastIP : VoidController->AdditionalUnicastIPs)
+				if (VoidController->AdditionalUnicastIPs.Num() > 0)
 				{
 					ExistingOutputPortConfigPtr = ProtocolSettings->FindOutputPortConfig([VoidController, &InterfaceIPAddress_DEPRECATED, &ProtocolName](FDMXOutputPortConfig& OutputPortConfig) {
 						return
@@ -636,11 +709,17 @@ void UDMXLibrary::UpgradeFromControllersToPorts()
 							OutputPortConfig.GetCommunicationType() == EDMXCommunicationType::Unicast;
 					});
 
+					TArray<FDMXOutputPortDestinationAddress> DestinationAddressStructs;
+					for (const FString& DestinationAddress : VoidController->AdditionalUnicastIPs)
+					{
+						DestinationAddressStructs.Add(FDMXOutputPortDestinationAddress(DestinationAddress));
+					}
+
 					if (ExistingOutputPortConfigPtr)
 					{
 						FDMXOutputPortConfigParams OutputPortConfigParams(*ExistingOutputPortConfigPtr);
 						OutputPortConfigParams.CommunicationType = EDMXCommunicationType::Unicast;
-						OutputPortConfigParams.DestinationAddress = AdditionalUnicastIP;
+						OutputPortConfigParams.DestinationAddresses = DestinationAddressStructs;
 						OutputPortConfigParams.LocalUniverseStart = FMath::Min(ExistingOutputPortConfigPtr->GetLocalUniverseStart(), FixedLocalUniverseStart);
 						OutputPortConfigParams.NumUniverses = FMath::Max(ExistingOutputPortConfigPtr->GetNumUniverses(), FixedNumUniverses);
 
@@ -655,7 +734,7 @@ void UDMXLibrary::UpgradeFromControllersToPorts()
 						OutputPortConfigParams.CommunicationType = EDMXCommunicationType::Unicast;
 						OutputPortConfigParams.ProtocolName = ProtocolName;
 						OutputPortConfigParams.DeviceAddress = InterfaceIPAddress_DEPRECATED;
-						OutputPortConfigParams.DestinationAddress = AdditionalUnicastIP;
+						OutputPortConfigParams.DestinationAddresses = DestinationAddressStructs;
 						OutputPortConfigParams.bLoopbackToEngine = true;
 						OutputPortConfigParams.LocalUniverseStart = FixedLocalUniverseStart;
 						OutputPortConfigParams.NumUniverses = FixedNumUniverses;

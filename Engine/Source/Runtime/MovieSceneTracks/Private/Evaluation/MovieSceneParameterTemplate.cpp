@@ -41,7 +41,7 @@ void FMovieSceneParameterSectionTemplate::EvaluateCurves(const FMovieSceneContex
 
 	for (const FVector2DParameterNameAndCurves& Vector : Vector2Ds)
 	{
-		FVector2D Value(ForceInitToZero);
+		FVector2f Value(ForceInitToZero);
 
 		bool bAnyEvaluated = false;
 		bAnyEvaluated |= Vector.XCurve.Evaluate(Time, Value.X);
@@ -49,14 +49,14 @@ void FMovieSceneParameterSectionTemplate::EvaluateCurves(const FMovieSceneContex
 
 		if (bAnyEvaluated)
 		{
-			Values.Vector2DValues.Emplace(Vector.ParameterName, Value);
+			Values.Vector2DValues.Emplace(Vector.ParameterName, FVector2D(Value));
 		}
 	}
 
 
 	for ( const FVectorParameterNameAndCurves& Vector : Vectors )
 	{
-		FVector Value(ForceInitToZero);
+		FVector3f Value(ForceInitToZero);
 
 		bool bAnyEvaluated = false;
 		bAnyEvaluated |= Vector.XCurve.Evaluate(Time, Value.X);
@@ -65,7 +65,7 @@ void FMovieSceneParameterSectionTemplate::EvaluateCurves(const FMovieSceneContex
 
 		if (bAnyEvaluated)
 		{
-			Values.VectorValues.Emplace(Vector.ParameterName, Value);
+			Values.VectorValues.Emplace(Vector.ParameterName, (FVector)Value);
 		}
 	}
 
@@ -87,8 +87,8 @@ void FMovieSceneParameterSectionTemplate::EvaluateCurves(const FMovieSceneContex
 
 	for (const FTransformParameterNameAndCurves& Transform : Transforms)
 	{
-		FVector Translation, Scale(FVector::OneVector);
-		FRotator Rotator;
+		FVector3f Translation, Scale(FVector3f::OneVector);
+		FRotator3f Rotator;
 		bool bAnyEvaluated = false;
 		bAnyEvaluated |= Transform.Translation[0].Evaluate(Time,Translation[0]);
 		bAnyEvaluated |= Transform.Translation[1].Evaluate(Time, Translation[1]);
@@ -106,7 +106,7 @@ void FMovieSceneParameterSectionTemplate::EvaluateCurves(const FMovieSceneContex
 
 		if (bAnyEvaluated)
 		{
-			FTransformParameterNameAndValue NameAndValue(Transform.ParameterName, Translation, Rotator, Scale);
+			FTransformParameterNameAndValue NameAndValue(Transform.ParameterName, (FVector)Translation, FRotator(Rotator), (FVector)Scale);
 			Values.TransformValues.Emplace(NameAndValue);
 		}
 	}

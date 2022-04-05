@@ -59,21 +59,20 @@ void FPropertyValueImpl::EnumerateObjectsToModify( FPropertyNode* InPropertyNode
 		const int32 NumInstances = ComplexNode->GetInstancesNum();
 		for (int32 Index = 0; Index < NumInstances; ++Index)
 		{
-			uint8* ObjectOrStruct = nullptr;
-			uint8* BaseAddress = nullptr;
+			UObject* Object = nullptr;
+			uint8* StructAddress = nullptr;
 			if (bIsStruct)
 			{
-				ObjectOrStruct = ComplexNode->GetMemoryOfInstance(Index);
-				BaseAddress = InPropertyNode->GetValueBaseAddress(ObjectOrStruct, false);
+				StructAddress = ComplexNode->GetMemoryOfInstance(Index);
 			}
 			else
 			{
-				const UObject* Obj = ComplexNode->GetInstanceAsUObject(Index).Get();
-				ObjectOrStruct = (uint8*)Obj;
-				BaseAddress = InPropertyNode->GetValueBaseAddressFromObject(Obj);
+				Object = ComplexNode->GetInstanceAsUObject(Index).Get();
+				StructAddress = InPropertyNode->GetStartAddressFromObject(Object);
 			}
+			uint8* BaseAddress = InPropertyNode->GetValueBaseAddress(StructAddress, InPropertyNode->HasNodeFlags(EPropertyNodeFlags::IsSparseClassData));
 
-			if (!InObjectsToModifyCallback(FObjectBaseAddress(ObjectOrStruct, BaseAddress, bIsStruct), Index, NumInstances))
+			if (!InObjectsToModifyCallback(FObjectBaseAddress(Object, StructAddress, BaseAddress), Index, NumInstances))
 			{
 				break;
 			}
@@ -214,7 +213,7 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const FString& InValue, 
 	TArray<FString> Values;
 	for (const FObjectBaseAddress& BaseAddress : ObjectsToModify)
 	{
-		if (BaseAddress.ObjectOrStruct)
+		if (BaseAddress.BaseAddress)
 		{
 			Values.Add(InValue);
 		}
@@ -261,7 +260,7 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 		bool bIsGameWorld = false;
 		// If the object we are modifying is in the PIE world, than make the PIE world the active
 		// GWorld.  Assumes all objects managed by this property window belong to the same world.
-		UObject* FirstObject = InObjects[0].GetUObject();
+		UObject* FirstObject = InObjects[0].Object;
 		if (UPackage* ObjectPackage = (FirstObject ? FirstObject->GetOutermost() : nullptr))
 		{
 			const bool bIsPIEPackage = ObjectPackage->HasAnyPackageFlags(PKG_PlayInEditor);
@@ -295,7 +294,7 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 				break;
 			}
 
-			UObject* CurObject = Cur.GetUObject();
+			UObject* CurObject = Cur.Object;
 
 			const FString& NewValue = InValues[ObjectIndex];
 
@@ -324,7 +323,7 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 
 				if (bIsInContainer)
 				{
-					uint8* ValueBaseAddress = ParentNode->GetValueBaseAddress(Cur.ObjectOrStruct, bIsSparseClassData);
+					uint8* ValueBaseAddress = ParentNode->GetValueBaseAddress(Cur.StructAddress, bIsSparseClassData);
 					
 					FScriptSetHelper SetHelper(SetProperty, ValueBaseAddress);
 					if (SetHelper.HasElement(Cur.BaseAddress, NewValue) &&
@@ -343,7 +342,7 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 
 				if (bIsInContainer)
 				{
-					uint8* ValueBaseAddress = ParentNode->GetValueBaseAddress(Cur.ObjectOrStruct, bIsSparseClassData);
+					uint8* ValueBaseAddress = ParentNode->GetValueBaseAddress(Cur.StructAddress, bIsSparseClassData);
 					
 					FScriptMapHelper MapHelper(MapProperty, ValueBaseAddress);
 					if (MapHelper.HasKey(Cur.BaseAddress, NewValue) && 
@@ -363,7 +362,7 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 
 			if (bIsInContainer)
 			{
-				uint8* Addr = ParentNode->GetValueBaseAddress(Cur.ObjectOrStruct, bIsSparseClassData);
+				uint8* Addr = ParentNode->GetValueBaseAddress(Cur.StructAddress, bIsSparseClassData);
 				Property->ExportText_Direct(PreviousContainerValue, Addr, Addr, nullptr, 0);
 			}
 
@@ -429,13 +428,13 @@ FPropertyAccess::Result FPropertyValueImpl::ImportText( const TArray<FObjectBase
 				// For TMap and TSet, we need to rehash it in case a key was modified
 				if (NodeProperty->GetOwner<FMapProperty>())
 				{
-					uint8* Addr = InPropertyNode->GetParentNode()->GetValueBaseAddress(Cur.ObjectOrStruct, bIsSparseClassData);
+					uint8* Addr = InPropertyNode->GetParentNode()->GetValueBaseAddress(Cur.StructAddress, bIsSparseClassData);
 					FScriptMapHelper MapHelper(NodeProperty->GetOwner<FMapProperty>(), Addr);
 					MapHelper.Rehash();
 				}
 				else if (NodeProperty->GetOwner<FSetProperty>())
 				{
-					uint8* Addr = InPropertyNode->GetParentNode()->GetValueBaseAddress(Cur.ObjectOrStruct, bIsSparseClassData);
+					uint8* Addr = InPropertyNode->GetParentNode()->GetValueBaseAddress(Cur.StructAddress, bIsSparseClassData);
 					FScriptSetHelper SetHelper(NodeProperty->GetOwner<FSetProperty>(), Addr);
 					SetHelper.Rehash();
 				}
@@ -707,25 +706,10 @@ FPropertyAccess::Result FPropertyValueImpl::SetValueAsString( const FString& InV
 
 		FString Value = InValue;
 
-		// Strip any leading spaces from names.
+		// Trim the name
 		if( NodeProperty && NodeProperty->IsA( FNameProperty::StaticClass() ) )
 		{
-			while ( true )
-			{
-				if ( Value.StartsWith( TEXT(" "), ESearchCase::CaseSensitive) )
-				{
-					// Strip leading spaces.
-					do
-					{
-						Value.RightInline( Value.Len()-1, false );
-					} while ( Value.StartsWith( TEXT(" "), ESearchCase::CaseSensitive) );
-				}
-				else
-				{
-					// Starting with something valid -- break.
-					break;
-				}
-			}
+			Value.TrimStartAndEndInline();
 		}
 
 		// If more than one object is selected, an empty field indicates their values for this property differ.
@@ -1153,18 +1137,18 @@ void FPropertyValueImpl::ClearChildren()
 						{
 							FScriptArrayHelper ArrayHelper(ArrayProperty, Addr);
 
-							// If the inner property is an instanced component property we must move the old components to the 
-							// transient package so resetting owned components on the parent doesn't find them
+							// If the inner property is an instanced property we must move the old objects to the 
+							// transient package so code looking for objects of this type on the parent doesn't find them
 							FObjectProperty* InnerObjectProperty = CastField<FObjectProperty>(ArrayProperty->Inner);
-							if (InnerObjectProperty && InnerObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference) && InnerObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+							if (InnerObjectProperty && InnerObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference))
 							{
 								const int32 ArraySize = ArrayHelper.Num();
 								for (int32 Index = 0; Index < ArraySize; ++Index)
 								{
-									if (UActorComponent* Component = *reinterpret_cast<UActorComponent**>(ArrayHelper.GetRawPtr(Index)))
+									if (UObject* InstancedObject = *reinterpret_cast<UObject**>(ArrayHelper.GetRawPtr(Index)))
 									{
-										Component->Modify();
-										Component->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
+										InstancedObject->Modify();
+										InstancedObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
 									}
 								}
 							}
@@ -1175,10 +1159,10 @@ void FPropertyValueImpl::ClearChildren()
 						{
 							FScriptSetHelper SetHelper(SetProperty, Addr);
 
-							// If the element property is an instanced component property we must move the old components to the 
-							// transient package so resetting owned components on the parent doesn't find them
+							// If the element property is an instanced property we must move the old objects to the 
+							// transient package so code looking for objects of this type on the parent doesn't find them
 							FObjectProperty* ElementObjectProperty = CastField<FObjectProperty>(SetProperty->ElementProp);
-							if (ElementObjectProperty && ElementObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference) && ElementObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+							if (ElementObjectProperty && ElementObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference))
 							{
 								int32 ElementsToRemove = SetHelper.Num();
 								int32 Index = 0;
@@ -1186,10 +1170,10 @@ void FPropertyValueImpl::ClearChildren()
 								{
 									if (SetHelper.IsValidIndex(Index))
 									{
-										if (UActorComponent* Component = *reinterpret_cast<UActorComponent**>(SetHelper.GetElementPtr(Index)))
+										if (UObject* InstancedObject = *reinterpret_cast<UObject**>(SetHelper.GetElementPtr(Index)))
 										{
-											Component->Modify();
-											Component->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
+											InstancedObject->Modify();
+											InstancedObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
 										}
 										--ElementsToRemove;
 									}
@@ -1203,10 +1187,10 @@ void FPropertyValueImpl::ClearChildren()
 						{
 							FScriptMapHelper MapHelper(MapProperty, Addr);
 
-							// If the map's value property is an instanced component property we must move the old components to the 
-							// transient package so resetting owned components on the parent doesn't find them
+							// If the map's value property is an instanced property we must move the old objects to the 
+							// transient package so code looking for objects of this type on the parent doesn't find them
 							FObjectProperty* ValueObjectProperty = CastField<FObjectProperty>(MapProperty->ValueProp);
-							if (ValueObjectProperty && ValueObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference) && ValueObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+							if (ValueObjectProperty && ValueObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference))
 							{
 								int32 ElementsToRemove = MapHelper.Num();
 								int32 Index = 0;
@@ -1214,10 +1198,10 @@ void FPropertyValueImpl::ClearChildren()
 								{
 									if (MapHelper.IsValidIndex(Index))
 									{
-										if (UActorComponent* Component = *reinterpret_cast<UActorComponent**>(MapHelper.GetValuePtr(Index)))
+										if (UObject* InstancedObject = *reinterpret_cast<UObject**>(MapHelper.GetValuePtr(Index)))
 										{
-											Component->Modify();
-											Component->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
+											InstancedObject->Modify();
+											InstancedObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
 										}
 										--ElementsToRemove;
 									}
@@ -1439,15 +1423,15 @@ void FPropertyValueImpl::DeleteChild( TSharedPtr<FPropertyNode> ChildNodeToDelet
 					{
 						FScriptArrayHelper ArrayHelper(ArrayProperty, Address);
 
-						// If the inner property is an instanced component property we must move the old component to the 
-						// transient package so resetting owned components on the parent doesn't find it
+						// If the inner property is an instanced property we must move the old object to the 
+						// transient package so code looking for objects of this type on the parent doesn't find it
 						FObjectProperty* InnerObjectProperty = CastField<FObjectProperty>(ArrayProperty->Inner);
-						if (InnerObjectProperty && InnerObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference) && InnerObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+						if (InnerObjectProperty && InnerObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference))
 						{
-							if (UActorComponent* Component = *reinterpret_cast<UActorComponent**>(ArrayHelper.GetRawPtr(ChildNodePtr->GetArrayIndex())))
+							if (UObject* InstancedObject = *reinterpret_cast<UObject**>(ArrayHelper.GetRawPtr(ChildNodePtr->GetArrayIndex())))
 							{
-								Component->Modify();
-								Component->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
+								InstancedObject->Modify();
+								InstancedObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
 							}
 						}
 
@@ -1456,40 +1440,40 @@ void FPropertyValueImpl::DeleteChild( TSharedPtr<FPropertyNode> ChildNodeToDelet
 					else if (SetProperty)
 					{
 						FScriptSetHelper SetHelper(SetProperty, Address);
-
-						// If the element property is an instanced component property we must move the old component to the 
-						// transient package so resetting owned components on the parent doesn't find it
+						int32 InternalIndex = SetHelper.FindInternalIndex(ChildNodePtr->GetArrayIndex());
+						
+						// If the element property is an instanced property we must move the old object to the 
+						// transient package so code looking for objects of this type on the parent doesn't find it
 						FObjectProperty* ElementObjectProperty = CastField<FObjectProperty>(SetProperty->ElementProp);
-						if (ElementObjectProperty && ElementObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference) && ElementObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+						if (ElementObjectProperty && ElementObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference))
 						{
-							if (UActorComponent* Component = *reinterpret_cast<UActorComponent**>(SetHelper.GetElementPtr(ChildNodePtr->GetArrayIndex())))
+							if (UObject* InstancedObject = *reinterpret_cast<UObject**>(SetHelper.GetElementPtr(InternalIndex)))
 							{
-								Component->Modify();
-								Component->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
+								InstancedObject->Modify();
+								InstancedObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
 							}
 						}
 
-						int32 InternalIndex = SetHelper.FindInternalIndex(ChildNodePtr->GetArrayIndex());
 						SetHelper.RemoveAt(InternalIndex);
 						SetHelper.Rehash();
 					}
 					else if (MapProperty)
 					{
 						FScriptMapHelper MapHelper(MapProperty, Address);
-
-						// If the map's value property is an instanced component property we must move the old component to the 
-						// transient package so resetting owned components on the parent doesn't find it
+						int32 InternalIndex = MapHelper.FindInternalIndex(ChildNodePtr->GetArrayIndex());
+						
+						// If the map's value property is an instanced property we must move the old object to the 
+						// transient package so code looking for objects of this type on the parent doesn't find it
 						FObjectProperty* ValueObjectProperty = CastField<FObjectProperty>(MapProperty->ValueProp);
-						if (ValueObjectProperty && ValueObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference) && ValueObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+						if (ValueObjectProperty && ValueObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference))
 						{
-							if (UActorComponent* Component = *reinterpret_cast<UActorComponent**>(MapHelper.GetValuePtr(ChildNodePtr->GetArrayIndex())))
+							if (UObject* InstancedObject = *reinterpret_cast<UObject**>(MapHelper.GetValuePtr(InternalIndex)))
 							{
-								Component->Modify();
-								Component->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
+								InstancedObject->Modify();
+								InstancedObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
 							}
 						}
 
-						int32 InternalIndex = MapHelper.FindInternalIndex(ChildNodePtr->GetArrayIndex());
 						MapHelper.RemoveAt(InternalIndex);
 						MapHelper.Rehash();
 					}
@@ -1577,21 +1561,21 @@ void FPropertyValueImpl::SwapChildren( TSharedPtr<FPropertyNode> FirstChildNode,
 				{
 					FScriptArrayHelper ArrayHelper(ArrayProperty, Address);
 
-					// If the inner property is an instanced component property we must move the old component to the 
-					// transient package so resetting owned components on the parent doesn't find it
+					// If the inner property is an instanced property we must move the old object to the 
+					// transient package so code looking for objects of this type on the parent doesn't find it
 					FObjectProperty* InnerObjectProperty = CastField<FObjectProperty>(ArrayProperty->Inner);
-					if (InnerObjectProperty && InnerObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference) && InnerObjectProperty->PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+					if (InnerObjectProperty && InnerObjectProperty->HasAnyPropertyFlags(CPF_InstancedReference))
 					{
-						if (UActorComponent* Component = *reinterpret_cast<UActorComponent**>(ArrayHelper.GetRawPtr(FirstIndex)))
+						if (UObject* InstancedObject = *reinterpret_cast<UObject**>(ArrayHelper.GetRawPtr(FirstIndex)))
 						{
-							Component->Modify();
-							Component->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
+							InstancedObject->Modify();
+							InstancedObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
 						}
 
-						if (UActorComponent* Component = *reinterpret_cast<UActorComponent**>(ArrayHelper.GetRawPtr(SecondIndex)))
+						if (UObject* InstancedObject = *reinterpret_cast<UObject**>(ArrayHelper.GetRawPtr(SecondIndex)))
 						{
-							Component->Modify();
-							Component->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
+							InstancedObject->Modify();
+							InstancedObject->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors);
 						}
 					}
 
@@ -2182,8 +2166,7 @@ TSharedRef<SWidget> FPropertyHandleBase::CreatePropertyNameWidget( const FText& 
 
 		TSharedPtr<FPropertyEditor> PropertyEditor = FPropertyEditor::Create( Implementation->GetPropertyNode().ToSharedRef(), Implementation->GetPropertyUtilities().ToSharedRef() );
 
-		return SNew( SPropertyNameWidget, PropertyEditor )
-				.DisplayResetToDefault( bDisplayResetToDefault );
+		return SNew( SPropertyNameWidget, PropertyEditor );
 	}
 
 	return SNullWidget::NullWidget;
@@ -2225,15 +2208,6 @@ class SDefaultPropertyButtonWidgets : public SCompoundWidget
 				RequiredButton
 			];
 		}
-
-		ButtonBox->AddSlot()
-		.AutoWidth()
-		.HAlign(HAlign_Left)
-		.VAlign(VAlign_Center)
-		.Padding(4.0f, 0.0f)
-		[
-			SNew(SResetToDefaultPropertyEditor, PropertyEditor->GetPropertyHandle())
-		];
 
 		ChildSlot
 		[
@@ -2385,7 +2359,20 @@ void FPropertyHandleBase::GetOuterObjects( TArray<UObject*>& OuterObjects ) cons
 			}
 		}
 	}
+}
 
+const UClass* FPropertyHandleBase::GetOuterBaseClass() const
+{
+	if (Implementation->GetPropertyNode().IsValid())
+	{
+		FObjectPropertyNode* ObjectNode = Implementation->GetPropertyNode()->FindObjectItemParent();
+		if (ObjectNode)
+		{
+			return ObjectNode->GetObjectBaseClass();
+		}
+	}
+
+	return nullptr;
 }
 
 void FPropertyHandleBase::ReplaceOuterObjects(const TArray<UObject*>& OuterObjects)
@@ -2485,16 +2472,18 @@ TSharedPtr<FPropertyNode> FPropertyHandleBase::GetPropertyNode() const
 	return Implementation->GetPropertyNode();
 }
 
-void FPropertyHandleBase::OnCustomResetToDefault(const FResetToDefaultOverride& OnCustomResetToDefault)
+void FPropertyHandleBase::OnCustomResetToDefault(const FResetToDefaultOverride& CustomResetToDefault)
 {
-	if (OnCustomResetToDefault.OnResetToDefaultClicked().IsBound())
+	if (CustomResetToDefault.HasResetToDefaultHandler())
 	{
 		FScopedTransaction Transaction(LOCTEXT("PropertyCustomResetToDefault", "Custom Reset to Default"));
 		if (Implementation->GetPropertyUtilities().IsValid() && Implementation->GetPropertyUtilities()->GetNotifyHook() != nullptr)
 		{
 			Implementation->GetPropertyNode()->NotifyPreChange(Implementation->GetPropertyNode()->GetProperty(), Implementation->GetPropertyUtilities()->GetNotifyHook());
 		}
-		OnCustomResetToDefault.OnResetToDefaultClicked().Execute(SharedThis(this));
+
+		FResetToDefaultHandler Delegate = CustomResetToDefault.GetPropertyResetToDefaultDelegate();
+		Delegate.ExecuteIfBound(SharedThis(this));
 
 		// Call PostEditchange on all the objects
 		FPropertyChangedEvent ChangeEvent(Implementation->GetPropertyNode()->GetProperty());
@@ -2873,7 +2862,9 @@ bool FPropertyHandleBase::GeneratePossibleValues(TArray< TSharedPtr<FString> >& 
 			}
 		}
 	}
-	else if (const TCHAR* MetaDataKey = PropertyEditorHelpers::GetPropertyOptionsMetaDataKey(Property))
+
+	FName MetaDataKey = PropertyEditorHelpers::GetPropertyOptionsMetaDataKey(Property);
+	if (!MetaDataKey.IsNone())
 	{
 		FString GetOptionsFunctionName = Property->GetOwnerProperty()->GetMetaData(MetaDataKey);
 		if (!GetOptionsFunctionName.IsEmpty())
@@ -2897,25 +2888,24 @@ bool FPropertyHandleBase::GeneratePossibleValues(TArray< TSharedPtr<FString> >& 
 
 			if (OutObjects.Num() > 0)
 			{
-				FCachedPropertyPath Path(GetOptionsFunctionName);
-				
 				TArray<FString> OptionIntersection;
 				TSet<FString> OptionIntersectionSet;
 
 				for (UObject* Target : OutObjects)
 				{
 					TArray<FString> StringOptions;
-					if (PropertyPathHelpers::GetPropertyValue(Target, Path, StringOptions))
 					{
-						// No-Op
-					}
-					else
+						FEditorScriptExecutionGuard ScriptExecutionGuard;
+
+						FCachedPropertyPath Path(GetOptionsFunctionName);
+						if (!PropertyPathHelpers::GetPropertyValue(Target, Path, StringOptions))
 					{
 						TArray<FName> NameOptions;
 						if (PropertyPathHelpers::GetPropertyValue(Target, Path, NameOptions))
 						{
 							Algo::Transform(NameOptions, StringOptions, [](const FName& InName) { return InName.ToString(); });
 						}
+					}
 					}
 
 					// If this is the first time there won't be any options.
@@ -3131,6 +3121,7 @@ TArray<TSharedPtr<IPropertyHandle>> FPropertyHandleBase::AddChildStructure( TSha
 	RootInitParams.bAllowChildren = true;
 	RootInitParams.bForceHiddenPropertyVisibility = FPropertySettings::Get().ShowHiddenProperties();
 	RootInitParams.bCreateCategoryNodes = false;
+	RootInitParams.IsSparseProperty = FPropertyNodeInitParams::EIsSparseDataProperty::False; // FStructurePropertyNode can't inherit the sparse data flag
 
 	StructPropertyNode->InitNode(RootInitParams);
 
@@ -3185,13 +3176,23 @@ bool FPropertyHandleBase::CanResetToDefault() const
 void FPropertyHandleBase::ExecuteCustomResetToDefault(const FResetToDefaultOverride& InOnCustomResetToDefault)
 {
 	// This action must be deferred until next tick so that we avoid accessing invalid data before we have a chance to tick
-	Implementation->GetPropertyUtilities()->EnqueueDeferredAction(FSimpleDelegate::CreateLambda([this, InOnCustomResetToDefault]() { OnCustomResetToDefault(InOnCustomResetToDefault); }));
+	TSharedPtr<IPropertyUtilities> PropertyUtilities = Implementation->GetPropertyUtilities();
+	if (PropertyUtilities.IsValid())
+	{
+		TSharedPtr<FPropertyHandleBase> ThisShared = SharedThis(this);
+		PropertyUtilities->EnqueueDeferredAction(FSimpleDelegate::CreateLambda([ThisShared, InOnCustomResetToDefault]()
+			{
+				if (ThisShared.IsValid())
+				{
+					ThisShared->OnCustomResetToDefault(InOnCustomResetToDefault);
+				}
+			}));
+	}
 }
 
 FName FPropertyHandleBase::GetDefaultCategoryName() const
 {
 	FProperty* Property = GetProperty();
-
 	if (Property)
 	{
 		return FObjectEditorUtils::GetCategoryFName(Property);
@@ -3794,20 +3795,27 @@ FPropertyAccess::Result FPropertyHandleObject::SetValue(const FAssetData& NewVal
 
 	if (!PropertyNode->HasNodeFlags(EPropertyNodeFlags::EditInlineNew))
 	{
-		if (!PropertyNode->GetProperty()->IsA(FSoftObjectProperty::StaticClass()))
+		const bool bSkipResolve = PropertyNode->GetProperty()->IsA(FSoftObjectProperty::StaticClass());
+		if (!bSkipResolve)
 		{
 			// Make sure the asset is loaded if we are not a soft reference
 			NewValue.GetAsset();
 		}
 
 		FString ObjectPathName = NewValue.IsValid() ? NewValue.ObjectPath.ToString() : TEXT("None");
-		return SetValueFromFormattedString(ObjectPathName, Flags);
+		return SetValueFromFormattedString(ObjectPathName, Flags, bSkipResolve);
 	}
 
 	return FPropertyAccess::Fail;
 }
 
 FPropertyAccess::Result FPropertyHandleObject::SetValueFromFormattedString(const FString& InValue, EPropertyValueSetFlags::Type Flags)
+{
+	const bool bSkipResolve = false;
+	return SetValueFromFormattedString(InValue, Flags, bSkipResolve);
+}
+
+FPropertyAccess::Result FPropertyHandleObject::SetValueFromFormattedString(const FString& InValue, EPropertyValueSetFlags::Type Flags, bool bSkipResolve)
 {
 	// We need to do all of the type validation up front, to correctly support soft objects
 	TSharedPtr<FPropertyNode> PropertyNodePin = Implementation->GetPropertyNode();
@@ -3818,8 +3826,15 @@ FPropertyAccess::Result FPropertyHandleObject::SetValueFromFormattedString(const
 	// Only allow finding any object with the same name if package path not provided
 	const bool bAllowAnyPackage = !InValue.Contains(TEXT("/"));
 
-	// This will attempt to load the object if it is not in memory. We purposefully pass in null as owner to avoid issues with cross level references
-	if (NodeProperty && FObjectPropertyBase::ParseObjectPropertyValue(NodeProperty, nullptr, UObject::StaticClass(), 0, ObjectBuffer, QualifiedObject, nullptr, bAllowAnyPackage))
+	if (!NodeProperty)
+	{
+		return FPropertyAccess::Fail;
+	} // Skip the resolving, just set the value
+	else if (bSkipResolve)
+	{
+		return FPropertyHandleBase::SetValueFromFormattedString(InValue, Flags);
+	} // This will attempt to load the object if it is not in memory. We purposefully pass in null as owner to avoid issues with cross level references
+	else if (FObjectPropertyBase::ParseObjectPropertyValue(NodeProperty, nullptr, UObject::StaticClass(), 0, ObjectBuffer, QualifiedObject, nullptr, bAllowAnyPackage))
 	{
 		if (QualifiedObject)
 		{
@@ -3827,7 +3842,6 @@ FPropertyAccess::Result FPropertyHandleObject::SetValueFromFormattedString(const
 			FInterfaceProperty* InterfaceProperty = CastField<FInterfaceProperty>(NodeProperty);
 			FClassProperty* ClassProperty = CastField<FClassProperty>(NodeProperty);
 			FSoftClassProperty* SoftClassProperty = CastField<FSoftClassProperty>(NodeProperty);
-			FSoftObjectProperty* SoftObjectProperty = CastField<FSoftObjectProperty>(NodeProperty);
 
 			// Figure out what classes are required
 			UClass* InterfaceThatMustBeImplemented = nullptr;
@@ -3959,15 +3973,13 @@ FPropertyAccess::Result FPropertyHandleObject::SetValueFromFormattedString(const
 			}
 		}
 
-		// Parsing passed but object is null, we want to set it to null explicitly
-	}
-	else
-	{
-		// Failed parsing, it's either invalid format or a nonexistent object
-		return FPropertyAccess::Fail;
+		// Parsing passed and QualifiedObject !nullptr and bSupportedObject is true and so we should set the value or
+		// Parsing passed but QualifiedObject is nullptr and we want to set it to null explicitly
+		return FPropertyHandleBase::SetValueFromFormattedString(InValue, Flags);
 	}
 
-	return FPropertyHandleBase::SetValueFromFormattedString(InValue, Flags);
+		// Failed parsing, it's either invalid format or a nonexistent object
+		return FPropertyAccess::Fail;
 }
 
 FPropertyAccess::Result FPropertyHandleObject::SetObjectValueFromSelection()
@@ -4085,6 +4097,68 @@ FPropertyAccess::Result FPropertyHandleObject::SetObjectValueFromSelection()
 	return Res;
 }
 
+
+// Temporary mixed float/double property handle to support the various default template types having differing component types. LWC_TODO: Remove once all types support double.
+FPropertyHandleMixed::FPropertyHandleMixed(TSharedRef<FPropertyNode> PropertyNode, FNotifyHook* NotifyHook, TSharedPtr<IPropertyUtilities> PropertyUtilities)
+	: FPropertyHandleBase(PropertyNode, NotifyHook, PropertyUtilities) {}
+
+bool FPropertyHandleMixed::Supports(TSharedRef<FPropertyNode> PropertyNode)
+{
+	FProperty* Property = PropertyNode->GetProperty();
+
+	if (Property == nullptr)
+	{
+		return false;
+	}
+
+	return Property->IsA(FFloatProperty::StaticClass()) || Property->IsA(FDoubleProperty::StaticClass());
+}
+
+FPropertyAccess::Result FPropertyHandleMixed::GetValue(double& OutValue) const
+{
+	void* PropValue = nullptr;
+	FPropertyAccess::Result Res = Implementation->GetValueData(PropValue);
+
+	if (Res == FPropertyAccess::Success)
+	{
+		if(Implementation->IsPropertyTypeOf(FFloatProperty::StaticClass()))
+		{
+			OutValue = Implementation->GetPropertyValue<FFloatProperty>(PropValue);
+		}
+		else
+		{
+			OutValue = Implementation->GetPropertyValue<FDoubleProperty>(PropValue);
+		}
+	}
+
+	return Res;
+}
+
+FPropertyAccess::Result FPropertyHandleMixed::SetValue(const double& NewValue, EPropertyValueSetFlags::Type Flags)
+{
+	FPropertyAccess::Result Res;
+	// Clamp the value from any meta data ranges stored on the property value
+	double FinalValue = ClampValueFromMetaData<double>(NewValue, *Implementation->GetPropertyNode());
+
+	const FString ValueStr = FString::Printf(TEXT("%f"), FinalValue);
+	Res = Implementation->ImportText(ValueStr, Flags);
+
+	return Res;
+}
+
+FPropertyAccess::Result FPropertyHandleMixed::GetValue(float& OutValue) const
+{
+	double AsDouble;
+	FPropertyAccess::Result Res = GetValue(AsDouble);
+	OutValue = AsDouble;
+	return Res;
+}
+
+FPropertyAccess::Result FPropertyHandleMixed::SetValue(const float& NewValue, EPropertyValueSetFlags::Type Flags)
+{
+	return SetValue((double)NewValue);
+}
+
 // Vector
 bool FPropertyHandleVector::Supports( TSharedRef<FPropertyNode> PropertyNode )
 {
@@ -4116,19 +4190,19 @@ FPropertyHandleVector::FPropertyHandleVector( TSharedRef<class FPropertyNode> Pr
 {
 	const bool bRecurse = false;
 	// A vector is a struct property that has 3 children.  We get/set the values from the children
-	VectorComponents.Add( MakeShareable( new FPropertyHandleFloat( Implementation->GetChildNode("X", bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) ) );
+	VectorComponents.Add( MakeShareable( new FPropertyHandleMixed( Implementation->GetChildNode("X", bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) ) );
 
-	VectorComponents.Add( MakeShareable( new FPropertyHandleFloat( Implementation->GetChildNode("Y", bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) ) );
+	VectorComponents.Add( MakeShareable( new FPropertyHandleMixed( Implementation->GetChildNode("Y", bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) ) );
 
 	if( Implementation->GetNumChildren() > 2 )
 	{
 		// at least a 3 component vector
-		VectorComponents.Add( MakeShareable( new FPropertyHandleFloat( Implementation->GetChildNode("Z",bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) ) );
+		VectorComponents.Add( MakeShareable( new FPropertyHandleMixed( Implementation->GetChildNode("Z",bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) ) );
 	}
 	if( Implementation->GetNumChildren() > 3 )
 	{
 		// a 4 component vector
-		VectorComponents.Add( MakeShareable( new FPropertyHandleFloat( Implementation->GetChildNode("W",bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) ) );
+		VectorComponents.Add( MakeShareable( new FPropertyHandleMixed( Implementation->GetChildNode("W",bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) ) );
 	}
 }
 
@@ -4302,21 +4376,21 @@ FPropertyAccess::Result FPropertyHandleVector::SetValue( const FQuat& NewValue, 
 	return SetValue(VectorProxy);
 }
 
-FPropertyAccess::Result FPropertyHandleVector::SetX( float InValue, EPropertyValueSetFlags::Type Flags )
+FPropertyAccess::Result FPropertyHandleVector::SetX( double InValue, EPropertyValueSetFlags::Type Flags )
 {
 	FPropertyAccess::Result Res = VectorComponents[0]->SetValue( InValue, Flags );
 
 	return Res;
 }
 
-FPropertyAccess::Result FPropertyHandleVector::SetY( float InValue, EPropertyValueSetFlags::Type Flags )
+FPropertyAccess::Result FPropertyHandleVector::SetY(double InValue, EPropertyValueSetFlags::Type Flags )
 {
 	FPropertyAccess::Result Res = VectorComponents[1]->SetValue( InValue, Flags );
 
 	return Res;
 }
 
-FPropertyAccess::Result FPropertyHandleVector::SetZ( float InValue, EPropertyValueSetFlags::Type Flags )
+FPropertyAccess::Result FPropertyHandleVector::SetZ(double InValue, EPropertyValueSetFlags::Type Flags )
 {
 	if( VectorComponents.Num() > 2 )
 	{
@@ -4328,7 +4402,7 @@ FPropertyAccess::Result FPropertyHandleVector::SetZ( float InValue, EPropertyVal
 	return FPropertyAccess::Fail;
 }
 
-FPropertyAccess::Result FPropertyHandleVector::SetW( float InValue, EPropertyValueSetFlags::Type Flags )
+FPropertyAccess::Result FPropertyHandleVector::SetW(double InValue, EPropertyValueSetFlags::Type Flags )
 {
 	if( VectorComponents.Num() == 4 )
 	{
@@ -4358,11 +4432,11 @@ FPropertyHandleRotator::FPropertyHandleRotator( TSharedRef<class FPropertyNode> 
 {
 	const bool bRecurse = false;
 	// A vector is a struct property that has 3 children.  We get/set the values from the children
-	RollValue = MakeShareable( new FPropertyHandleFloat( Implementation->GetChildNode("Roll", bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) );
+	RollValue = MakeShareable( new FPropertyHandleMixed( Implementation->GetChildNode("Roll", bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) );
 
-	PitchValue = MakeShareable( new FPropertyHandleFloat( Implementation->GetChildNode("Pitch", bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) );
+	PitchValue = MakeShareable( new FPropertyHandleMixed( Implementation->GetChildNode("Pitch", bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) );
 
-	YawValue = MakeShareable( new FPropertyHandleFloat( Implementation->GetChildNode("Yaw", bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) );
+	YawValue = MakeShareable( new FPropertyHandleMixed( Implementation->GetChildNode("Yaw", bRecurse).ToSharedRef(), NotifyHook, PropertyUtilities ) );
 }
 
 
@@ -4404,19 +4478,19 @@ FPropertyAccess::Result FPropertyHandleRotator::SetValue( const FRotator& NewVal
 	}
 }
 
-FPropertyAccess::Result FPropertyHandleRotator::SetRoll( float InRoll, EPropertyValueSetFlags::Type Flags )
+FPropertyAccess::Result FPropertyHandleRotator::SetRoll( double InRoll, EPropertyValueSetFlags::Type Flags )
 {
 	FPropertyAccess::Result Res = RollValue->SetValue( InRoll, Flags );
 	return Res;
 }
 
-FPropertyAccess::Result FPropertyHandleRotator::SetPitch( float InPitch, EPropertyValueSetFlags::Type Flags )
+FPropertyAccess::Result FPropertyHandleRotator::SetPitch( double InPitch, EPropertyValueSetFlags::Type Flags )
 {
 	FPropertyAccess::Result Res = PitchValue->SetValue( InPitch, Flags );
 	return Res;
 }
 
-FPropertyAccess::Result FPropertyHandleRotator::SetYaw( float InYaw, EPropertyValueSetFlags::Type Flags )
+FPropertyAccess::Result FPropertyHandleRotator::SetYaw( double InYaw, EPropertyValueSetFlags::Type Flags )
 {
 	FPropertyAccess::Result Res = YawValue->SetValue( InYaw, Flags );
 	return Res;
@@ -4603,7 +4677,7 @@ bool FPropertyHandleSet::HasDefaultElement()
 		{
 			const bool IsSparseClassData = PropNode->HasNodeFlags(EPropertyNodeFlags::IsSparseClassData) != 0;
 			FSetProperty* SetProperty = CastFieldChecked<FSetProperty>(PropNode->GetProperty());
-			FScriptSetHelper SetHelper(SetProperty, PropNode->GetValueBaseAddress(Addresses[0].ObjectOrStruct, IsSparseClassData));
+			FScriptSetHelper SetHelper(SetProperty, PropNode->GetValueBaseAddress(Addresses[0].StructAddress, IsSparseClassData));
 
 			FDefaultConstructedPropertyElement DefaultElement(SetHelper.ElementProp);
 			return SetHelper.FindElementIndex(DefaultElement.GetObjAddress()) != INDEX_NONE;
@@ -4701,7 +4775,7 @@ bool FPropertyHandleMap::HasDefaultKey()
 		{
 			const bool IsSparseClassData = PropNode->HasNodeFlags(EPropertyNodeFlags::IsSparseClassData) != 0;
 			FMapProperty* MapProperty = CastFieldChecked<FMapProperty>(PropNode->GetProperty());
-			FScriptMapHelper MapHelper(MapProperty, PropNode->GetValueBaseAddress(Addresses[0].ObjectOrStruct, IsSparseClassData));
+			FScriptMapHelper MapHelper(MapProperty, PropNode->GetValueBaseAddress(Addresses[0].StructAddress, IsSparseClassData));
 
 			FDefaultConstructedPropertyElement DefaultKey(MapHelper.KeyProp);
 			return MapHelper.FindMapIndexWithKey(DefaultKey.GetObjAddress()) != INDEX_NONE;

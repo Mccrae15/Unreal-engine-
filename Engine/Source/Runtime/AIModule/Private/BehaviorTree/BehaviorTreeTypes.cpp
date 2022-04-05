@@ -390,12 +390,14 @@ void FBehaviorTreeSearchData::AddUniqueUpdate(const FBehaviorTreeSearchUpdate& U
 			// duplicate, skip
 			if (Info.Mode == UpdateInfo.Mode)
 			{
+				UE_VLOG(OwnerComp.GetOwner(), LogBehaviorTree, Verbose, TEXT(">> skipped: duplicated operation"));
 				bSkipAdding = true;
 				break;
 			}
 
 			// don't add pairs add-remove
 			bSkipAdding = (Info.Mode == EBTNodeUpdateMode::Remove) || (UpdateInfo.Mode == EBTNodeUpdateMode::Remove);
+			UE_CVLOG(bSkipAdding, OwnerComp.GetOwner(), LogBehaviorTree, Verbose, TEXT(">> skipped: paired add/remove"));
 
 			PendingUpdates.RemoveAt(UpdateIndex, 1, false);
 		}
@@ -407,16 +409,13 @@ void FBehaviorTreeSearchData::AddUniqueUpdate(const FBehaviorTreeSearchUpdate& U
 	{
 		const bool bIsActive = OwnerComp.IsAuxNodeActive(UpdateInfo.AuxNode, UpdateInfo.InstanceIndex);
 		bSkipAdding = !bIsActive;
+		UE_CVLOG(bSkipAdding, OwnerComp.GetOwner(), LogBehaviorTree, Verbose, TEXT(">> skipped: inactive aux nodes"));
 	}
 
 	if (!bSkipAdding)
 	{
 		const int32 Idx = PendingUpdates.Add(UpdateInfo);
 		PendingUpdates[Idx].bPostUpdate = (UpdateInfo.Mode == EBTNodeUpdateMode::Add) && (Cast<UBTService>(UpdateInfo.AuxNode) != NULL);
-	}
-	else
-	{
-		UE_VLOG(OwnerComp.GetOwner(), LogBehaviorTree, Verbose, TEXT(">> or not, update skipped"));
 	}
 }
 
@@ -621,6 +620,11 @@ FString UBehaviorTreeTypes::DescribeNodeHelper(const UBTNode* Node)
 
 FString UBehaviorTreeTypes::GetShortTypeName(const UObject* Ob)
 {
+	if ((Ob == nullptr) || (Ob->GetClass() == nullptr))
+	{
+		return TEXT("None");
+	}
+
 	if (Ob->GetClass()->HasAnyClassFlags(CLASS_CompiledFromBlueprint))
 	{
 		return Ob->GetClass()->GetName().LeftChop(2);
@@ -638,9 +642,7 @@ FString UBehaviorTreeTypes::GetShortTypeName(const UObject* Ob)
 
 void UBehaviorTreeTypes::SetBTLoggingContext(const UBTNode* NewBTLoggingContext)
 {
-	BTLoggingContext = NewBTLoggingContext 
-		? FString::Printf(TEXT("%s[%d]"), *NewBTLoggingContext->GetNodeName(), NewBTLoggingContext->GetExecutionIndex())
-		: TEXT("");
+	BTLoggingContext = DescribeNodeHelper(NewBTLoggingContext);
 }
 
 //----------------------------------------------------------------------//

@@ -3,6 +3,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+
+#include "WaterBodyActor.h"
 #include "UObject/ObjectMacros.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Engine/EngineTypes.h"
@@ -15,8 +17,8 @@ DECLARE_STATS_GROUP(TEXT("Water"), STATGROUP_Water, STATCAT_Advanced);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnCameraUnderwaterStateChanged, bool, bIsUnderWater, float, DepthUnderwater);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnWaterScalabilityChanged);
 
-class AWaterMeshActor;
-class AWaterBody;
+class AWaterZone;
+class UWaterBodyComponent;
 class UMaterialParameterCollection;
 class UWaterRuntimeSettings;
 class FSceneView;
@@ -49,6 +51,13 @@ struct FUnderwaterPostProcessVolume : public IInterface_PostProcessVolume
 	{
 		return PostProcessProperties;
 	}
+
+#if DEBUG_POST_PROCESS_VOLUME_ENABLE
+	virtual FString GetDebugName() const override
+	{
+		return FString("UnderwaterPostProcessVolume");
+	}
+#endif
 
 	FPostProcessVolumeProperties PostProcessProperties;
 };
@@ -87,14 +96,17 @@ public:
 	/** Static helper function to get a waterbody manager from a world, returns nullptr if world or manager don't exist */
 	static FWaterBodyManager* GetWaterBodyManager(UWorld* InWorld);
 
+	/** Execute a predicate function on each valid water body. Predicate should return false for early exit. */
+	static void ForEachWaterBodyComponent(const UWorld* World, TFunctionRef<bool(UWaterBodyComponent*)> Predicate);
+
 	FWaterBodyManager WaterBodyManager;
 
-	AWaterMeshActor* GetWaterMeshActor() const;
+	AWaterZone* GetWaterZoneActor() const;
 
 	ABuoyancyManager* GetBuoyancyManager() const { return BuoyancyManager; }
 
-	TWeakObjectPtr<AWaterBody> GetOceanActor() { return OceanActor; }
-	void SetOceanActor(TWeakObjectPtr<AWaterBody> InOceanActor) { OceanActor = InOceanActor; }
+	TWeakObjectPtr<UWaterBodyComponent> GetOceanBodyComponent() { return OceanBodyComponent; }
+	void SetOceanBodyComponent(TWeakObjectPtr<UWaterBodyComponent> InOceanBodyComponent) { OceanBodyComponent = InOceanBodyComponent; }
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category=Water)
 	bool IsShallowWaterSimulationEnabled() const;
@@ -176,7 +188,7 @@ public:
 
 private:
 	void NotifyWaterScalabilityChangedInternal(IConsoleVariable* CVar);
-	void NotifyWaterEnabledChangedInternal(IConsoleVariable* CVar);
+	void NotifyWaterVisibilityChangedInternal(IConsoleVariable* CVar);
 	void ComputeUnderwaterPostProcess(FVector ViewLocation, FSceneView* SceneView);
 	void SetMPCTime(float Time, float PrevTime);
 	void AdjustUnderwaterWaterInfoQueryFlags(EWaterBodyQueryFlags& InOutFlags);
@@ -209,9 +221,9 @@ public:
 
 private:
 	UPROPERTY()
-	mutable AWaterMeshActor* WaterMeshActor;
+	mutable AWaterZone* WaterZoneActor;
 
-	TWeakObjectPtr<AWaterBody> OceanActor;
+	TWeakObjectPtr<UWaterBodyComponent> OceanBodyComponent;
 
 	ECollisionChannel UnderwaterTraceChannel;
 

@@ -88,6 +88,10 @@ public:
 	{
 		Collector.AddReferencedObject(LevelSequence);
 	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FLevelSequenceEditorToolkit");
+	}
 
 	virtual void OnClose() override;
 	virtual bool CanFindInContentBrowser() const override;
@@ -100,8 +104,6 @@ public:
 	virtual FName GetToolkitFName() const override;
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;
 	virtual FString GetWorldCentricTabPrefix() const override;
-	virtual void RegisterTabSpawners(const TSharedRef<FTabManager>& TabManager) override;
-	virtual void UnregisterTabSpawners(const TSharedRef<FTabManager>& TabManager) override;
 
 protected:
 

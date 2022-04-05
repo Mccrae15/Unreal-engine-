@@ -56,7 +56,7 @@ void FOnlineAsyncTaskGooglePlayShowLoginUI::Finalize()
 void FOnlineAsyncTaskGooglePlayShowLoginUI::TriggerDelegates()
 {
 	UE_LOG_ONLINE(Log, TEXT("FOnlineAsyncTaskGooglePlayShowLoginUI: TriggerDelegates Success: %d."), WasSuccessful());
-	TSharedPtr<const FUniqueNetIdGooglePlay> UserId = Subsystem->GetIdentityGooglePlay()->GetCurrentUserId();
+	FUniqueNetIdGooglePlayPtr UserId = Subsystem->GetIdentityGooglePlay()->GetCurrentUserId();
 
 	if (bWasSuccessful && !UserId.IsValid())
 	{
@@ -127,7 +127,7 @@ void FOnlineAsyncTaskGooglePlayShowLoginUI::OnFetchSelfResponse(const gpg::Playe
 		// in OnPermissionRequestReturn we will try the Google Client Connect
 		if (bUseGetAccounts && !UAndroidPermissionFunctionLibrary::CheckPermission("android.permission.GET_ACCOUNTS"))
 		{
-			UAndroidPermissionCallbackProxy::GetInstance()->OnPermissionsGrantedDelegate.BindRaw(this, &FOnlineAsyncTaskGooglePlayShowLoginUI::OnPermissionRequestReturn);
+			UAndroidPermissionCallbackProxy::GetInstance()->OnPermissionsGrantedDelegate.AddRaw(this, &FOnlineAsyncTaskGooglePlayShowLoginUI::OnPermissionRequestReturn);
 			TArray<FString> Permissions = { "android.permission.GET_ACCOUNTS" };
 			UAndroidPermissionFunctionLibrary::AcquirePermissions(Permissions);
 		}

@@ -18,10 +18,11 @@
 #include "Framework/MultiBox/SGroupMarkerBlock.h"
 #include "Framework/MultiBox/ToolMenuBase.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "Styling/ToolBarStyle.h"
 
 
 FMultiBoxBuilder::FMultiBoxBuilder( const EMultiBoxType InType, FMultiBoxCustomization InCustomization, const bool bInShouldCloseWindowAfterMenuSelection, const TSharedPtr< const FUICommandList >& InCommandList, TSharedPtr<FExtender> InExtender, FName InTutorialHighlightName, FName InMenuName )
-	: MultiBox( FMultiBox::Create( InType, InMenuName != NAME_None ? FMultiBoxCustomization::AllowCustomization(InMenuName) : InCustomization, bInShouldCloseWindowAfterMenuSelection ) )
+	: MultiBox( FMultiBox::Create( InType, (InMenuName != NAME_None) ? FMultiBoxCustomization::AllowCustomization(InMenuName) : InCustomization, bInShouldCloseWindowAfterMenuSelection ) )
 	, CommandListStack()
 	, TutorialHighlightName(InTutorialHighlightName)
 	, MenuName(InMenuName)
@@ -139,7 +140,7 @@ void FBaseMenuBuilder::AddMenuEntry( const TSharedPtr< const FUICommandInfo > In
 	
 	// The command must be valid
 	check( InCommand.IsValid() );
-	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock( new FMenuEntryBlock( InExtensionHook, InCommand, CommandListStack.Last(), InLabelOverride, InToolTipOverride, InIconOverride, bCloseSelfOnly ) );
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>( InExtensionHook, InCommand, CommandListStack.Last(), InLabelOverride, InToolTipOverride, InIconOverride, bCloseSelfOnly );
 	NewMenuEntryBlock->SetTutorialHighlightName(GenerateTutorialIdentfierName(TutorialHighlightName, InTutorialHighlightName, InCommand, MultiBox->GetBlocks().Num()));
 	MultiBox->AddMultiBlock( NewMenuEntryBlock );
 
@@ -152,7 +153,7 @@ void FBaseMenuBuilder::AddMenuEntry( const TAttribute<FText>& InLabel, const TAt
 
 	ApplyHook(InExtensionHook, EExtensionHook::Before);
 	
-	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock( new FMenuEntryBlock( InExtensionHook, InLabel, InToolTip, InIcon, InAction, UserInterfaceActionType, bCloseSelfOnly ) );
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>( InExtensionHook, InLabel, InToolTip, InIcon, InAction, UserInterfaceActionType, bCloseSelfOnly );
 	NewMenuEntryBlock->SetTutorialHighlightName(GenerateTutorialIdentfierName(TutorialHighlightName, InTutorialHighlightName, nullptr, MultiBox->GetBlocks().Num()));
 	MultiBox->AddMultiBlock( NewMenuEntryBlock );
 	
@@ -165,11 +166,24 @@ void FBaseMenuBuilder::AddMenuEntry( const FUIAction& UIAction, const TSharedRef
 
 	ApplyHook(InExtensionHook, EExtensionHook::Before);
 
-	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock( new FMenuEntryBlock( InExtensionHook, UIAction, Contents, InToolTip, UserInterfaceActionType, bCloseSelfOnly ) );
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>( InExtensionHook, UIAction, Contents, InToolTip, UserInterfaceActionType, bCloseSelfOnly );
 	NewMenuEntryBlock->SetTutorialHighlightName(GenerateTutorialIdentfierName(TutorialHighlightName, InTutorialHighlightName, nullptr, MultiBox->GetBlocks().Num()));
 	MultiBox->AddMultiBlock( NewMenuEntryBlock );
 
 	ApplyHook(InExtensionHook, EExtensionHook::After);
+}
+
+void FBaseMenuBuilder::AddMenuEntry(const FMenuEntryParams& InMenuEntryParams)
+{
+	ApplySectionBeginning();
+
+	ApplyHook(InMenuEntryParams.ExtensionHook, EExtensionHook::Before);
+	
+	TSharedPtr< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>(InMenuEntryParams);
+	NewMenuEntryBlock->SetTutorialHighlightName(GenerateTutorialIdentfierName(TutorialHighlightName, InMenuEntryParams.TutorialHighlightName, nullptr, MultiBox->GetBlocks().Num()));
+	MultiBox->AddMultiBlock(NewMenuEntryBlock.ToSharedRef());
+
+	ApplyHook(InMenuEntryParams.ExtensionHook, EExtensionHook::After);
 }
 
 TSharedRef< class SWidget > FMenuBuilder::MakeWidget( FMultiBox::FOnMakeMultiBoxBuilderOverride* InMakeMultiBoxBuilderOverride /* = nullptr */, uint32 MaxHeight)
@@ -240,7 +254,8 @@ void FMenuBuilder::AddSubMenu( const TAttribute<FText>& InMenuLabel, const TAttr
 	ApplySectionBeginning();
 
 	const bool bIsSubMenu = true;
-	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock( new FMenuEntryBlock( InExtensionHook, InMenuLabel, InToolTip, InSubMenu, ExtenderStack.Top(), bIsSubMenu, bInOpenSubMenuOnClick, InIcon, InUIAction, InUserInterfaceActionType, bCloseSelfOnly, bInShouldCloseWindowAfterMenuSelection, CommandListStack.Last() ) );
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>( InExtensionHook, InMenuLabel, InToolTip, InSubMenu, ExtenderStack.Top(), bIsSubMenu, bInOpenSubMenuOnClick, InIcon, InUIAction, InUserInterfaceActionType, bCloseSelfOnly, bInShouldCloseWindowAfterMenuSelection, CommandListStack.Last() );
+	NewMenuEntryBlock->SetRecursivelySearchable(bRecursivelySearchable);
 
 	MultiBox->AddMultiBlock( NewMenuEntryBlock );
 }
@@ -250,7 +265,8 @@ void FMenuBuilder::AddSubMenu( const TAttribute<FText>& InMenuLabel, const TAttr
 	ApplySectionBeginning();
 
 	const bool bIsSubMenu = true;
-	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock( new FMenuEntryBlock( InExtensionHook, InMenuLabel, InToolTip, InSubMenu, ExtenderStack.Top(), bIsSubMenu, bInOpenSubMenuOnClick, CommandListStack.Last(), bCloseSelfOnly, InIcon, bInShouldCloseWindowAfterMenuSelection ) );
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>( InExtensionHook, InMenuLabel, InToolTip, InSubMenu, ExtenderStack.Top(), bIsSubMenu, bInOpenSubMenuOnClick, CommandListStack.Last(), bCloseSelfOnly, InIcon, bInShouldCloseWindowAfterMenuSelection );
+	NewMenuEntryBlock->SetRecursivelySearchable(bRecursivelySearchable);
 
 	MultiBox->AddMultiBlock( NewMenuEntryBlock );
 }
@@ -260,7 +276,8 @@ void FMenuBuilder::AddSubMenu( const TSharedRef< SWidget > Contents, const FNewM
 	ApplySectionBeginning();
 
 	const bool bIsSubMenu = true;
-	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock( new FMenuEntryBlock( NAME_None, Contents, InSubMenu, ExtenderStack.Top(), bIsSubMenu, bInOpenSubMenuOnClick, CommandListStack.Last(), bCloseSelfOnly, bInShouldCloseWindowAfterMenuSelection ) );
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>( NAME_None, Contents, InSubMenu, ExtenderStack.Top(), bIsSubMenu, bInOpenSubMenuOnClick, CommandListStack.Last(), bCloseSelfOnly, bInShouldCloseWindowAfterMenuSelection );
+	NewMenuEntryBlock->SetRecursivelySearchable(bRecursivelySearchable);
 
 	MultiBox->AddMultiBlock( NewMenuEntryBlock );
 }
@@ -270,7 +287,8 @@ void FMenuBuilder::AddSubMenu( const FUIAction& UIAction, const TSharedRef< SWid
 	ApplySectionBeginning();
 
 	const bool bIsSubMenu = true;
-	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock( new FMenuEntryBlock( NAME_None, UIAction, Contents, InSubMenu, ExtenderStack.Top(), bIsSubMenu, CommandListStack.Last(), bCloseSelfOnly, bInShouldCloseWindowAfterMenuSelection ) );
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>( NAME_None, UIAction, Contents, InSubMenu, ExtenderStack.Top(), bIsSubMenu, CommandListStack.Last(), bCloseSelfOnly, bInShouldCloseWindowAfterMenuSelection );
+	NewMenuEntryBlock->SetRecursivelySearchable(bRecursivelySearchable);
 
 	MultiBox->AddMultiBlock( NewMenuEntryBlock );
 }
@@ -280,7 +298,8 @@ void FMenuBuilder::AddWrapperSubMenu( const FText& InMenuLabel, const FText& InT
 	ApplySectionBeginning();
 
 	const bool bIsSubMenu = true;
-	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock( new FMenuEntryBlock( NAME_None, InMenuLabel, InToolTip, InSubMenu, ExtenderStack.Top(), bIsSubMenu, false, CommandListStack.Last(), bCloseSelfOnly, InIcon ) );
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>( NAME_None, InMenuLabel, InToolTip, InSubMenu, ExtenderStack.Top(), bIsSubMenu, false, CommandListStack.Last(), bCloseSelfOnly, InIcon );
+	NewMenuEntryBlock->SetRecursivelySearchable(bRecursivelySearchable);
 
 	MultiBox->AddMultiBlock( NewMenuEntryBlock );
 }
@@ -290,7 +309,8 @@ void FMenuBuilder::AddWrapperSubMenu( const FText& InMenuLabel, const FText& InT
 	ApplySectionBeginning();
 
 	const bool bIsSubMenu = true;
-	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock( new FMenuEntryBlock( NAME_None, UIAction, InMenuLabel, InToolTip, InSubMenu, ExtenderStack.Top(), bIsSubMenu, false, bCloseSelfOnly, InIcon ) );
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>( NAME_None, UIAction, InMenuLabel, InToolTip, InSubMenu, ExtenderStack.Top(), bIsSubMenu, false, bCloseSelfOnly, InIcon );
+	NewMenuEntryBlock->SetRecursivelySearchable(bRecursivelySearchable);
 
 	MultiBox->AddMultiBlock( NewMenuEntryBlock );
 }
@@ -300,7 +320,8 @@ void FMenuBuilder::AddWrapperSubMenu( const FText& InMenuLabel, const FText& InT
 	ApplySectionBeginning();
 
 	const bool bIsSubMenu = true;
-	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock( new FMenuEntryBlock( NAME_None, InMenuLabel, InToolTip, InSubMenu, ExtenderStack.Top(), bIsSubMenu, false, CommandListStack.Last(), bCloseSelfOnly, InIcon ) );
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock = MakeShared<FMenuEntryBlock>( NAME_None, InMenuLabel, InToolTip, InSubMenu, ExtenderStack.Top(), bIsSubMenu, false, CommandListStack.Last(), bCloseSelfOnly, InIcon );
+	NewMenuEntryBlock->SetRecursivelySearchable(bRecursivelySearchable);
 
 	MultiBox->AddMultiBlock( NewMenuEntryBlock );
 }
@@ -339,12 +360,7 @@ void FMenuBuilder::ApplyHook(FName InExtensionHook, EExtensionHook::Position Hoo
 void FMenuBuilder::ApplySectionBeginning()
 {
 	if (bSectionNeedsToBeApplied)
-	{			
-        // Do not count search block, which starts as invisible
-		if( MultiBox->GetBlocks().Num() > 1 || FMultiBoxSettings::DisplayMultiboxHooks.Get() )
-		{
-			MultiBox->AddMultiBlock( MakeShareable( new FMenuSeparatorBlock(CurrentSectionExtensionHook, /* bInIsPartOfHeading=*/ true) ) );
-		}
+	{
 		if (!CurrentSectionHeadingText.IsEmpty())
 		{
 			MultiBox->AddMultiBlock( MakeShareable( new FHeadingBlock(CurrentSectionExtensionHook, CurrentSectionHeadingText) ) );
@@ -354,7 +370,7 @@ void FMenuBuilder::ApplySectionBeginning()
 	}
 }
 
-void FMenuBarBuilder::AddPullDownMenu(const FText& InMenuLabel, const FText& InToolTip, const FNewMenuDelegate& InPullDownMenu, FName InExtensionHook, FName InTutorialHighlightName)
+void FMenuBarBuilder::AddPullDownMenu(const TAttribute<FText>& InMenuLabel, const TAttribute<FText>& InToolTip, const FNewMenuDelegate& InPullDownMenu, FName InExtensionHook, FName InTutorialHighlightName)
 {
 	ApplySectionBeginning();
 
@@ -365,6 +381,24 @@ void FMenuBarBuilder::AddPullDownMenu(const FText& InMenuLabel, const FText& InT
 	// Pulldown menus always close all menus not just themselves
 	const bool bShouldCloseSelfOnly = false;
 	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock(new FMenuEntryBlock(InExtensionHook, InMenuLabel, InToolTip, InPullDownMenu, ExtenderStack.Top(), bIsSubMenu, bOpenSubMenuOnClick, CommandListStack.Last(), bShouldCloseSelfOnly));
+	NewMenuEntryBlock->SetTutorialHighlightName(GenerateTutorialIdentfierName(TutorialHighlightName, InTutorialHighlightName, nullptr, MultiBox->GetBlocks().Num()));
+
+	MultiBox->AddMultiBlock(NewMenuEntryBlock);
+
+	ApplyHook(InExtensionHook, EExtensionHook::After);
+}
+
+void FMenuBarBuilder::AddPullDownMenu(const TAttribute<FText>& InMenuLabel, const TAttribute<FText>& InToolTip, const FOnGetContent& InMenuContentGenerator, FName InExtensionHook, FName InTutorialHighlightName)
+{
+	ApplySectionBeginning();
+
+	ApplyHook(InExtensionHook, EExtensionHook::Before);
+
+	const bool bIsSubMenu = false;
+	const bool bOpenSubMenuOnClick = false;
+	// Pulldown menus always close all menus not just themselves
+	const bool bShouldCloseSelfOnly = false;
+	TSharedRef< FMenuEntryBlock > NewMenuEntryBlock(new FMenuEntryBlock(InExtensionHook, InMenuLabel, InToolTip, InMenuContentGenerator, ExtenderStack.Top(), bIsSubMenu, bOpenSubMenuOnClick, CommandListStack.Last(), bShouldCloseSelfOnly));
 	NewMenuEntryBlock->SetTutorialHighlightName(GenerateTutorialIdentfierName(TutorialHighlightName, InTutorialHighlightName, nullptr, MultiBox->GetBlocks().Num()));
 
 	MultiBox->AddMultiBlock(NewMenuEntryBlock);
@@ -385,7 +419,13 @@ void FMenuBarBuilder::ApplyHook(FName InExtensionHook, EExtensionHook::Position 
 	}
 }
 
-void FToolBarBuilder::AddToolBarButton(const TSharedPtr< const FUICommandInfo > InCommand, FName InExtensionHook, const TAttribute<FText>& InLabelOverride, const TAttribute<FText>& InToolTipOverride, const TAttribute<FSlateIcon>& InIconOverride, FName InTutorialHighlightName )
+void FToolBarBuilder::SetIsFocusable(bool bInIsFocusable)
+{
+	bIsFocusable = bInIsFocusable; 
+	MultiBox->bIsFocusable = bIsFocusable;
+}
+
+void FToolBarBuilder::AddToolBarButton(const TSharedPtr< const FUICommandInfo > InCommand, FName InExtensionHook, const TAttribute<FText>& InLabelOverride, const TAttribute<FText>& InToolTipOverride, const TAttribute<FSlateIcon>& InIconOverride, FName InTutorialHighlightName, FNewMenuDelegate InCustomMenuDelegate )
 {
 	ApplySectionBeginning();
 
@@ -401,6 +441,8 @@ void FToolBarBuilder::AddToolBarButton(const TSharedPtr< const FUICommandInfo > 
 	NewToolBarButtonBlock->SetIsFocusable(bIsFocusable);
 	NewToolBarButtonBlock->SetForceSmallIcons(bForceSmallIcons);
 	NewToolBarButtonBlock->SetTutorialHighlightName(GenerateTutorialIdentfierName(TutorialHighlightName, InTutorialHighlightName, InCommand, MultiBox->GetBlocks().Num()));
+	NewToolBarButtonBlock->SetStyleNameOverride(CurrentStyleOverride);
+	NewToolBarButtonBlock->SetCustomMenuDelegate(InCustomMenuDelegate);
 
 	MultiBox->AddMultiBlock( NewToolBarButtonBlock );
 
@@ -423,6 +465,7 @@ void FToolBarBuilder::AddToolBarButton(const FUIAction& InAction, FName InExtens
 	NewToolBarButtonBlock->SetIsFocusable(bIsFocusable);
 	NewToolBarButtonBlock->SetForceSmallIcons(bForceSmallIcons);
 	NewToolBarButtonBlock->SetTutorialHighlightName(GenerateTutorialIdentfierName(TutorialHighlightName, InTutorialHighlightName, nullptr, MultiBox->GetBlocks().Num()));
+	NewToolBarButtonBlock->SetStyleNameOverride(CurrentStyleOverride);
 
 	MultiBox->AddMultiBlock( NewToolBarButtonBlock );
 
@@ -433,7 +476,7 @@ void FToolBarBuilder::AddComboButton( const FUIAction& InAction, const FOnGetCon
 {
 	ApplySectionBeginning();
 
-	TSharedRef< FToolBarComboButtonBlock > NewToolBarComboButtonBlock( new FToolBarComboButtonBlock( InAction, InMenuContentGenerator, InLabelOverride, InToolTipOverride, InIconOverride, bInSimpleComboBox ) );
+	TSharedRef<FToolBarComboButtonBlock> NewToolBarComboButtonBlock( new FToolBarComboButtonBlock( InAction, InMenuContentGenerator, InLabelOverride, InToolTipOverride, InIconOverride, bInSimpleComboBox ) );
 
 	if ( LabelVisibility.IsSet() )
 	{
@@ -442,6 +485,7 @@ void FToolBarBuilder::AddComboButton( const FUIAction& InAction, const FOnGetCon
 
 	NewToolBarComboButtonBlock->SetForceSmallIcons(bForceSmallIcons);
 	NewToolBarComboButtonBlock->SetTutorialHighlightName(GenerateTutorialIdentfierName(TutorialHighlightName, InTutorialHighlightName, nullptr, MultiBox->GetBlocks().Num()));
+	NewToolBarComboButtonBlock->SetStyleNameOverride(CurrentStyleOverride);
 
 	MultiBox->AddMultiBlock( NewToolBarComboButtonBlock );
 }
@@ -452,6 +496,8 @@ void FToolBarBuilder::AddToolBarWidget( TSharedRef<SWidget> InWidget, const TAtt
 
 	// If tutorial name specified, wrap in tutorial wrapper
 	const FName WrapperName = GenerateTutorialIdentfierName(InTutorialHighlightName, NAME_None, nullptr, MultiBox->GetBlocks().Num());
+
+	const FToolBarStyle& ToolBarStyle = GetStyleSet()->GetWidgetStyle<FToolBarStyle>(GetStyleName());
 
 	TSharedRef<SWidget> ChildWidget = InWidget;
 	InWidget = 
@@ -467,7 +513,7 @@ void FToolBarBuilder::AddToolBarWidget( TSharedRef<SWidget> InWidget, const TAtt
 
 		+SVerticalBox::Slot()
 		.AutoHeight()
-		.Padding(GetStyleSet()->GetMargin(ISlateStyle::Join( GetStyleName(), ".Label.Padding" )))
+		.Padding(ToolBarStyle.LabelPadding)
 		.HAlign( HAlign_Center )
 		[
 			SNew( STextBlock )
@@ -479,8 +525,7 @@ void FToolBarBuilder::AddToolBarWidget( TSharedRef<SWidget> InWidget, const TAtt
 			})
 			.IsEnabled_Lambda( [ChildWidget] () -> bool { return ChildWidget->IsEnabled(); } )
 			.Text( InLabel )
-			.TextStyle( GetStyleSet(), ISlateStyle::Join( GetStyleName(), ".Label" ) )	// Smaller font for tool tip labels
-			.ShadowOffset( FVector2D::UnitVector )
+			.TextStyle(&ToolBarStyle.LabelStyle)	// Smaller font for tool tip labels
 		] ;
 	
 	TSharedRef< FWidgetBlock > NewWidgetBlock( new FWidgetBlock( InWidget, FText::GetEmpty(), true ) );
@@ -488,7 +533,7 @@ void FToolBarBuilder::AddToolBarWidget( TSharedRef<SWidget> InWidget, const TAtt
 	NewWidgetBlock->SetSearchable(bSearchable);
 }
 
-void FToolBarBuilder::AddWidget( TSharedRef<SWidget> InWidget, FName InTutorialHighlightName, bool bSearchable )
+void FToolBarBuilder::AddWidget( TSharedRef<SWidget> InWidget, FName InTutorialHighlightName, bool bSearchable, EHorizontalAlignment Alignment, FNewMenuDelegate InCustomMenuDelegate )
 {
 	ApplySectionBeginning();
 
@@ -503,9 +548,10 @@ void FToolBarBuilder::AddWidget( TSharedRef<SWidget> InWidget, FName InTutorialH
 			ChildWidget
 		];
 	
-	TSharedRef< FWidgetBlock > NewWidgetBlock( new FWidgetBlock( InWidget, FText::GetEmpty(), true ) );
+	TSharedRef< FWidgetBlock > NewWidgetBlock( new FWidgetBlock( InWidget, FText::GetEmpty(), true, Alignment) );
 	MultiBox->AddMultiBlock( NewWidgetBlock );
 	NewWidgetBlock->SetSearchable(bSearchable);
+	NewWidgetBlock->SetCustomMenuDelegate(InCustomMenuDelegate);
 }
 
 void FToolBarBuilder::AddSeparator(FName InExtensionHook)
@@ -514,11 +560,10 @@ void FToolBarBuilder::AddSeparator(FName InExtensionHook)
 
 	ApplyHook(InExtensionHook, EExtensionHook::Before);
 
-	// Never add a menu separate as the first item, even if we were asked to
-	if( MultiBox->GetBlocks().Num() > 0 || FMultiBoxSettings::DisplayMultiboxHooks.Get() )
-	{
-		MultiBox->AddMultiBlock( MakeShareable( new FToolBarSeparatorBlock(InExtensionHook) ) );
-	}
+	TSharedRef<FToolBarSeparatorBlock> NewSeparatorBlock = MakeShared<FToolBarSeparatorBlock>(InExtensionHook);
+	NewSeparatorBlock->SetStyleNameOverride(CurrentStyleOverride);
+
+	MultiBox->AddMultiBlock(NewSeparatorBlock);
 
 	ApplyHook(InExtensionHook, EExtensionHook::After);
 }
@@ -571,7 +616,10 @@ void FToolBarBuilder::ApplySectionBeginning()
 	{
 		if( MultiBox->GetBlocks().Num() > 0 || FMultiBoxSettings::DisplayMultiboxHooks.Get() )
 		{
-			MultiBox->AddMultiBlock( MakeShareable( new FToolBarSeparatorBlock(CurrentSectionExtensionHook) ) );
+			TSharedRef<FToolBarSeparatorBlock> NewSeparatorBlock = MakeShared<FToolBarSeparatorBlock>(CurrentSectionExtensionHook);
+			NewSeparatorBlock->SetStyleNameOverride(CurrentStyleOverride);
+
+			MultiBox->AddMultiBlock(NewSeparatorBlock);
 		}
 		bSectionNeedsToBeApplied = false;
 	}
@@ -581,9 +629,20 @@ void FToolBarBuilder::EndBlockGroup()
 {
 	ApplySectionBeginning();
 
-	TSharedRef< FGroupEndBlock > NewGroupEndBlock( new FGroupEndBlock() );
-
+	TSharedRef<FGroupEndBlock> NewGroupEndBlock( new FGroupEndBlock() );
+	NewGroupEndBlock->SetStyleNameOverride(CurrentStyleOverride);
+	
 	MultiBox->AddMultiBlock( NewGroupEndBlock );
+}
+
+void FToolBarBuilder::BeginStyleOverride(FName StyleOverrideName)
+{
+	CurrentStyleOverride = StyleOverrideName;
+}
+
+void FToolBarBuilder::EndStyleOverride()
+{
+	CurrentStyleOverride = NAME_None;
 }
 
 void FToolBarBuilder::BeginBlockGroup()
@@ -591,6 +650,7 @@ void FToolBarBuilder::BeginBlockGroup()
 	ApplySectionBeginning();
 
 	TSharedRef< FGroupStartBlock > NewGroupStartBlock( new FGroupStartBlock() );
+	NewGroupStartBlock->SetStyleNameOverride(CurrentStyleOverride);
 
 	MultiBox->AddMultiBlock( NewGroupStartBlock );
 }

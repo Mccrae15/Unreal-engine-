@@ -9,7 +9,7 @@
 #include "ISourceControlProvider.h"
 #include "ISourceControlModule.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/FileHelper.h"
 
 namespace LocalizationConfigSCC
@@ -1198,6 +1198,10 @@ namespace LocalizationConfigurationScript
 			if (!bReadFile)
 			{
 				return false;
+			}
+			else
+			{
+				NewConfigContents = TEXT("; THESE ARE GENERATED FILES, DO NOT EDIT DIRECTLY!\r\n; USE THE LOCALIZATION DASHBOARD IN THE UNREAL EDITOR TO EDIT THE CONFIGURATION\r\n") + NewConfigContents;
 			}
 		}
 

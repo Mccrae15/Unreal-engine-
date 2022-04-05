@@ -45,6 +45,10 @@
 #include "Templates/UnrealTemplate.h"
 #include "UObject/GCObjectScopeGuard.h"
 #include "Containers/Ticker.h"
+#include "IImageWrapper.h"
+#include "IImageWrapperModule.h"
+#include "ImageWrapperHelper.h"
+#include "Misc/FileHelper.h"
 
 #if WITH_EDITOR
 #include "SLevelViewport.h"
@@ -150,7 +154,6 @@ public:
 	FAutomationViewExtension(const FAutoRegister& AutoRegister, UWorld* InWorld, FAutomationScreenshotOptions& InOptions, float InCurrentTimeToSimulate)
 		: FWorldSceneViewExtension(AutoRegister, InWorld)
 		, Options(InOptions)
-		, CurrentTime(InCurrentTimeToSimulate)
 	{
 	}
 	
@@ -188,11 +191,9 @@ public:
 		}
 
 		if (Options.bOverride_OverrideTimeTo)
-{
+		{
 			// Turn off time the ultimate source of noise.
-			InViewFamily.CurrentWorldTime = Options.OverrideTimeTo;
-			InViewFamily.CurrentRealTime = Options.OverrideTimeTo;
-			InViewFamily.DeltaWorldTime = 0;
+			InViewFamily.Time = FGameTime::CreateUndilated(Options.OverrideTimeTo, 0.0f);
 		}
 
 		if (Options.bDisableNoisyRenderingFeatures)
@@ -230,20 +231,21 @@ public:
 
 private:
 	FAutomationScreenshotOptions Options;
-	float CurrentTime;
 };
 
 FAutomationTestScreenshotEnvSetup::FAutomationTestScreenshotEnvSetup()
-	: DefaultFeature_AntiAliasing(TEXT("r.DefaultFeature.AntiAliasing"))
+	: DefaultFeature_AntiAliasing(TEXT("r.AntiAliasingMethod"))
 	, DefaultFeature_AutoExposure(TEXT("r.DefaultFeature.AutoExposure"))
 	, DefaultFeature_MotionBlur(TEXT("r.DefaultFeature.MotionBlur"))
-	, PostProcessAAQuality(TEXT("r.PostProcessAAQuality"))
 	, MotionBlurQuality(TEXT("r.MotionBlurQuality"))
 	, ScreenSpaceReflectionQuality(TEXT("r.SSR.Quality"))
 	, EyeAdaptationQuality(TEXT("r.EyeAdaptationQuality"))
 	, ContactShadows(TEXT("r.ContactShadows"))
 	, TonemapperGamma(TEXT("r.TonemapperGamma"))
 	, TonemapperSharpen(TEXT("r.Tonemapper.Sharpen"))
+	, ScreenPercentage(TEXT("r.ScreenPercentage"))
+	, ScreenPercentageMode(TEXT("r.ScreenPercentage.Mode"))
+	, EditorViewportOverrideGameScreenPercentage(TEXT("r.Editor.Viewport.OverridePIEScreenPercentage"))
 	, SecondaryScreenPercentage(TEXT("r.SecondaryScreenPercentage.GameViewport"))
 {
 }
@@ -263,7 +265,6 @@ void FAutomationTestScreenshotEnvSetup::Setup(UWorld* InWorld, FAutomationScreen
 		DefaultFeature_AntiAliasing.Set(0);
 		DefaultFeature_AutoExposure.Set(0);
 		DefaultFeature_MotionBlur.Set(0);
-		PostProcessAAQuality.Set(0);
 		MotionBlurQuality.Set(0);
 		ScreenSpaceReflectionQuality.Set(0);
 		ContactShadows.Set(0);
@@ -278,8 +279,18 @@ void FAutomationTestScreenshotEnvSetup::Setup(UWorld* InWorld, FAutomationScreen
 		//TonemapperSharpen.Set(0);
 	}
 
+	// Forces ScreenPercentage=100
+	{
+		if (GIsEditor)
+		{
+			EditorViewportOverrideGameScreenPercentage.Set(0);
+		}
+		ScreenPercentageMode.Set(0);
+		ScreenPercentage.Set(100.f);
+	}
+
 	// Ignore High-DPI settings
-	SecondaryScreenPercentage.Set(100.f); 
+	SecondaryScreenPercentage.Set(100.f);
 
 	InOutOptions.SetToleranceAmounts(InOutOptions.Tolerance);
 
@@ -309,13 +320,15 @@ void FAutomationTestScreenshotEnvSetup::Restore()
 	DefaultFeature_AntiAliasing.Restore();
 	DefaultFeature_AutoExposure.Restore();
 	DefaultFeature_MotionBlur.Restore();
-	PostProcessAAQuality.Restore();
 	MotionBlurQuality.Restore();
 	ScreenSpaceReflectionQuality.Restore();
 	EyeAdaptationQuality.Restore();
 	ContactShadows.Restore();
 	TonemapperGamma.Restore();
 	//TonemapperSharpen.Restore();
+	ScreenPercentage.Restore();
+	ScreenPercentageMode.Restore();
+	EditorViewportOverrideGameScreenPercentage.Restore();
 	SecondaryScreenPercentage.Restore();
 
 	AutomationViewExtension.Reset();
@@ -409,7 +422,7 @@ public:
 	{
 		if (!bDeleteQueued)
 		{
-			FTicker::GetCoreTicker().AddTicker(TEXT("ScreenshotCleanup"), 0.1, [this](float) {
+			FTSTicker::GetCoreTicker().AddTicker(TEXT("ScreenshotCleanup"), 0.1, [this](float) {
 				delete this;
 				return false;
 				});
@@ -482,7 +495,10 @@ public:
 		// dangerous actor references that won't carry over into the next world.
 		if (InLevel == nullptr && InWorld == World.Get())
 		{
-			delete this;
+			// we don't delete directly because of the risk of conflicting with an already in flight
+			// request to delete ourselves
+			World.Reset();
+			DeleteSelfNextFrame();
 		}
 	}
 
@@ -1185,7 +1201,7 @@ UAutomationEditorTask* UAutomationBlueprintFunctionLibrary::TakeHighResScreensho
 			Task->BindTask(MakeUnique<FScreenshotTakenState>());
 
 			// Delay taking the screenshot by a few frames			
-			FTicker::GetCoreTicker().AddTicker(TEXT("ScreenshotDelay"), Delay, [LevelViewport, ComparisonTolerance, ComparisonNotes, Filename, ResX, ResY, bMaskEnabled, bCaptureHDR](float) {
+			FTSTicker::GetCoreTicker().AddTicker(TEXT("ScreenshotDelay"), Delay, [LevelViewport, ComparisonTolerance, ComparisonNotes, Filename, ResX, ResY, bMaskEnabled, bCaptureHDR](float) {
 					FHighResScreenshotConfig& HighResScreenshotConfig = GetHighResScreenshotConfig();
 					HighResScreenshotConfig.SetResolution(ResX, ResY);
 					HighResScreenshotConfig.SetFilename(Filename);
@@ -1216,6 +1232,100 @@ UAutomationEditorTask* UAutomationBlueprintFunctionLibrary::TakeHighResScreensho
 	}
 #endif
 	return Task;
+}
+
+bool UAutomationBlueprintFunctionLibrary::CompareImageAgainstReference(FString InImagePath, FString ComparisonName, EComparisonTolerance InTolerance, FString InNotes, UObject* WorldContextObject)
+{
+#if WITH_AUTOMATION_TESTS
+	if (GIsAutomationTesting)
+	{
+		const FString ImageExtension = FPaths::GetExtension(InImagePath);
+		const EImageFormat ImageFormat = ImageWrapperHelper::GetImageFormat(ImageExtension);
+
+		IImageWrapperModule& ImageWrapperModule = FModuleManager::GetModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+		TSharedPtr<IImageWrapper> ImageReader = ImageWrapperModule.CreateImageWrapper(ImageFormat);
+		if (!ImageReader.IsValid())
+		{
+			UE_LOG(AutomationFunctionLibrary, Error, TEXT("Unable to locate image processor for {0} file format"), *ImageExtension);
+			return false;
+		}
+
+		TArray64<uint8> ImageData;
+		const bool OpenSuccess = FFileHelper::LoadFileToArray(ImageData, *InImagePath);
+
+		if (!OpenSuccess)
+		{
+			UE_LOG(AutomationFunctionLibrary, Error, TEXT("Unable to read image {0}"), *InImagePath);
+			return false;
+		}
+
+		if (!ImageReader->SetCompressed(ImageData.GetData(), ImageData.Num()))
+		{
+			UE_LOG(AutomationFunctionLibrary, Error, TEXT("Unable to parse image {0}"), *InImagePath);
+			return false;
+		}
+
+		if (ImageReader->GetBitDepth() != 8)
+		{
+			UE_LOG(AutomationFunctionLibrary, Error, TEXT("Automation can only compare 8bit depth channel. {0} has {1}bit per channel."), *InImagePath, *FString::FromInt(ImageReader->GetBitDepth()));
+			return false;
+		}
+
+		const int32 Width = ImageReader->GetWidth();
+		const int32 Height = ImageReader->GetHeight();
+		TArray<FColor> ImageDataDecompressed;
+		ImageDataDecompressed.SetNum(Width * Height);
+
+		if (!ImageReader->GetRaw(ERGBFormat::BGRA, 8, TArrayView64<uint8>((uint8*)ImageDataDecompressed.GetData(), ImageDataDecompressed.Num() * 4)))
+		{
+			UE_LOG(AutomationFunctionLibrary, Error, TEXT("Unable to decompress image {0}"), *InImagePath);
+			return false;
+		}
+
+		if (ComparisonName.IsEmpty())
+		{
+			ComparisonName = FPaths::GetBaseFilename(InImagePath);
+		}
+
+		FString Context = TEXT("");
+		if (FFunctionalTestBase::IsFunctionalTestRunning() && WorldContextObject != nullptr)
+		{
+			// Functional tests have a different rule to name their test, mainly because part of the full test name is a path.
+			// So, to keep name short and still comprehensible, we are going to use the map name + the actor label instead.
+			UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
+			Context = World != nullptr ? World->GetName() : TEXT("UnknownMap");
+			Context += TEXT(".") + FFunctionalTestBase::GetRunningTestName();
+		}
+
+		RequestImageComparison(ComparisonName, Width, Height, ImageDataDecompressed, (EAutomationComparisonToleranceLevel)InTolerance, Context, InNotes);
+
+		return true;
+	}
+#endif
+	UE_LOG(AutomationFunctionLibrary, Warning, TEXT("Can compare image only during test automation."));
+	return false;
+}
+
+void UAutomationBlueprintFunctionLibrary::AddTestTelemetryData(FString DataPoint, float Measurement, FString Context)
+{
+	if (GIsAutomationTesting)
+	{
+		if (FAutomationTestBase* CurrentTest = FAutomationTestFramework::Get().GetCurrentTest())
+		{
+			CurrentTest->AddTelemetryData(DataPoint, Measurement, Context);
+		}
+	}
+}
+
+void UAutomationBlueprintFunctionLibrary::SetTestTelemetryStorage(FString StorageName)
+{
+	if (GIsAutomationTesting)
+	{
+		if (FAutomationTestBase* CurrentTest = FAutomationTestFramework::Get().GetCurrentTest())
+		{
+			CurrentTest->SetTelemetryStorage(StorageName);
+		}
+	}
 }
 
 FAutomationScreenshotOptions UAutomationBlueprintFunctionLibrary::GetDefaultScreenshotOptionsForGameplay(EComparisonTolerance Tolerance, float Delay)

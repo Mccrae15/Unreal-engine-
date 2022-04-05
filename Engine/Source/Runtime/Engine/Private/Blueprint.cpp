@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Engine/Blueprint.h"
+
 #include "Misc/CoreMisc.h"
 #include "Misc/ConfigCacheIni.h"
 #include "UObject/BlueprintsObjectVersion.h"
 #include "UObject/FrameworkObjectVersion.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectHash.h"
 #include "Serialization/PropertyLocalizationDataGathering.h"
 #include "UObject/UnrealType.h"
@@ -14,15 +16,13 @@
 #include "Misc/SecureHash.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "EdGraph/EdGraph.h"
-#include "Engine/Breakpoint.h"
 #include "Components/TimelineComponent.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/TextProperty.h"
 
 #if WITH_EDITOR
 #include "BlueprintCompilationManager.h"
-#include "Editor/UnrealEd/Classes/Settings/ProjectPackagingSettings.h"
-#include "Editor/UnrealEd/Classes/Settings/EditorExperimentalSettings.h"
+#include "Settings/ProjectPackagingSettings.h"
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
 #include "Kismet2/BlueprintEditorUtils.h"
@@ -43,8 +43,14 @@
 #include "BlueprintAssetHandler.h"
 #include "Blueprint/BlueprintExtension.h"
 #include "UObject/TextProperty.h"
+#include "Kismet2/Breakpoint.h"
 #endif
+
 #include "Engine/InheritableComponentHandler.h"
+
+#if WITH_EDITORONLY_DATA
+#include "Kismet2/KismetDebugUtilities.h"
+#endif
 
 DEFINE_LOG_CATEGORY(LogBlueprint);
 
@@ -283,8 +289,8 @@ void UBlueprintCore::Serialize(FArchive& Ar)
 	}
 #endif
 
-	if ((Ar.UE4Ver() < VER_UE4_BLUEPRINT_SKEL_CLASS_TRANSIENT_AGAIN)
-		&& (Ar.UE4Ver() != VER_UE4_BLUEPRINT_SKEL_TEMPORARY_TRANSIENT))
+	if ((Ar.UEVer() < VER_UE4_BLUEPRINT_SKEL_CLASS_TRANSIENT_AGAIN)
+		&& (Ar.UEVer() != VER_UE4_BLUEPRINT_SKEL_TEMPORARY_TRANSIENT))
 	{
 		Ar << SkeletonGeneratedClass;
 		if( SkeletonGeneratedClass )
@@ -368,10 +374,18 @@ static TAutoConsoleVariable<bool> CVarBPForceOldSearchDataFormatVersionOnSave(
 
 void UBlueprint::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UBlueprint::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
 
 	// Clear all upgrade notes, the user has saved and should not see them anymore
 	UpgradeNotesLog.Reset();
+	const ITargetPlatform* TargetPlatform = ObjectSaveContext.GetTargetPlatform();
 
 	if (!TargetPlatform || TargetPlatform->HasEditorOnlyData())
 	{
@@ -397,7 +411,6 @@ void UBlueprint::PreSave(const class ITargetPlatform* TargetPlatform)
 		FFindInBlueprintSearchManager::Get().AddOrUpdateBlueprintSearchMetadata(this, Flags, OverrideVersion);
 	}
 }
-#endif // WITH_EDITORONLY_DATA
 
 void UBlueprint::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 {
@@ -410,13 +423,16 @@ void UBlueprint::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 		}
 	}
 }
+#endif // WITH_EDITORONLY_DATA
 
 void UBlueprint::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
 #if WITH_EDITORONLY_DATA
-	if(Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_BLUEPRINT_VARS_NOT_READ_ONLY)
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+
+	if(Ar.IsLoading() && Ar.UEVer() < VER_UE4_BLUEPRINT_VARS_NOT_READ_ONLY)
 	{
 		// Allow all blueprint defined vars to be read/write.  undoes previous convention of making exposed variables read-only
 		for (int32 i = 0; i < NewVariables.Num(); ++i)
@@ -426,7 +442,7 @@ void UBlueprint::Serialize(FArchive& Ar)
 		}
 	}
 
-	if (Ar.UE4Ver() < VER_UE4_K2NODE_REFERENCEGUIDS)
+	if (Ar.UEVer() < VER_UE4_K2NODE_REFERENCEGUIDS)
 	{
 		for (int32 Index = 0; Index < NewVariables.Num(); ++Index)
 		{
@@ -453,7 +469,7 @@ void UBlueprint::Serialize(FArchive& Ar)
 
 		// Actor variables can't have default values (because Blueprint templates are library elements that can 
 		// bridge multiple levels and different levels might not have the actor that the default is referencing).
-		if (Ar.UE4Ver() < VER_UE4_FIX_BLUEPRINT_VARIABLE_FLAGS)
+		if (Ar.UEVer() < VER_UE4_FIX_BLUEPRINT_VARIABLE_FLAGS)
 		{
 			const FEdGraphPinType& VarType = Variable.VarType;
 
@@ -483,51 +499,6 @@ void UBlueprint::Serialize(FArchive& Ar)
 		{
 			// Validate metadata keys/values on load only
 			FBlueprintEditorUtils::FixupVariableDescription(this, Variable);
-		}
-	}
-
-	if (Ar.IsPersistent())
-	{
-		bool bSettingsChanged = false;
-		const FString PackageName = GetOutermost()->GetName();
-		UProjectPackagingSettings* PackagingSettings = GetMutableDefault<UProjectPackagingSettings>();
-
-		if (Ar.IsLoading())
-		{
-#if WITH_EDITORONLY_DATA
-			if (bNativize_DEPRECATED)
-			{
-				// Migrate to the new transient flag.
-				bNativize_DEPRECATED = false;
-
-				NativizationFlag = EBlueprintNativizationFlag::ExplicitlyEnabled;
-				// Add this Blueprint asset to the exclusive list in the Project Settings (in case it doesn't exist).
-				bSettingsChanged |= PackagingSettings->AddBlueprintAssetToNativizationList(this);
-			}
-			else
-#endif
-			{
-				// Cache whether or not this Blueprint asset was selected for exclusive nativization in the Project Settings.
-				for (int AssetIndex = 0; AssetIndex < PackagingSettings->NativizeBlueprintAssets.Num(); ++AssetIndex)
-				{
-					if (PackagingSettings->NativizeBlueprintAssets[AssetIndex].FilePath.Equals(PackageName, ESearchCase::IgnoreCase))
-					{
-						NativizationFlag = EBlueprintNativizationFlag::ExplicitlyEnabled;
-						break;
-					}
-				}
-			}
-		}
-		else if (Ar.IsSaving())
-		{
-			bSettingsChanged |= FBlueprintEditorUtils::PropagateNativizationSetting(this);
-		}
-
-		if (bSettingsChanged)
-		{
-			// Update cached config settings and save.
-			PackagingSettings->SaveConfig();
-			PackagingSettings->UpdateDefaultConfigFile();
 		}
 	}
 #endif // WITH_EDITORONLY_DATA
@@ -717,7 +688,7 @@ void UBlueprint::PostLoad()
 				// PostLoad), and checking RF_WasLoaded makes sure we only 
 				// forcefully set bIsRegeneratingOnLoad for blueprints that need 
 				// it (ones still actively loading)
-				Blueprint.bIsRegeneratingOnLoad = bPreviousValue || ((Package->LinkerLoad != nullptr) && !Package->HasAnyFlags(RF_WasLoaded));
+				Blueprint.bIsRegeneratingOnLoad = bPreviousValue || ((Package->GetLinker() != nullptr) && !Package->HasAnyFlags(RF_WasLoaded));
 			}
 		}
 		~FScopedRegeneratingOnLoad()
@@ -735,17 +706,11 @@ void UBlueprint::PostLoad()
 	// Purge any NULL graphs
 	FBlueprintEditorUtils::PurgeNullGraphs(this);
 
-	// Remove stale breakpoints
-	for (int32 i = 0; i < Breakpoints.Num(); ++i)
-	{
-		UBreakpoint* Breakpoint = Breakpoints[i];
-		const UEdGraphNode* const Location = Breakpoint ? Breakpoint->GetLocation() : nullptr;
-		if (!Location || !Location->IsIn(this))
-		{
-			Breakpoints.RemoveAt(i);
-			--i;
-		}
-	}
+#if WITH_EDITOR
+	// Restore breakpoints for this Blueprint
+	FKismetDebugUtilities::RestoreBreakpointsOnLoad(this);
+# endif
+	Breakpoints_DEPRECATED.Empty();
 
 	// Make sure we have an SCS and ensure it's transactional
 	if( FBlueprintEditorUtils::SupportsConstructionScript(this) )
@@ -828,9 +793,18 @@ void UBlueprint::DebuggingWorldRegistrationHelper(UObject* ObjectProvidingWorld,
 			ObjOuter = ObjOuter->GetOuter();
 		}
 
+		// if we can't find the world on the outer chain, fallback to the GetWorld method
+		if (ObjWorld == NULL)
+		{
+			ObjWorld = ObjectProvidingWorld->GetWorld();
+		}
+
 		if (ObjWorld != NULL)
 		{
-			ObjWorld->NotifyOfBlueprintDebuggingAssociation(this, ValueToRegister);
+			if( !ObjWorld->HasAnyFlags(RF_BeginDestroyed))
+			{
+				ObjWorld->NotifyOfBlueprintDebuggingAssociation(this, ValueToRegister);
+			}
 			OnSetObjectBeingDebuggedDelegate.Broadcast(ValueToRegister);
 		}
 	}
@@ -839,44 +813,6 @@ void UBlueprint::DebuggingWorldRegistrationHelper(UObject* ObjectProvidingWorld,
 UClass* UBlueprint::GetBlueprintClass() const
 {
 	return UBlueprintGeneratedClass::StaticClass();
-}
-
-bool UBlueprint::SupportsNativization(FText* OutReason) const
-{
-	// Previously commented out in FBlueprintNativeCodeGenModule::IsTargetedForReplacement - should 'const' blueprints be nativized??
-	//BPTYPE_Const,		// What is a "const" Blueprint?
-	if (BlueprintType == BPTYPE_MacroLibrary)
-	{
-		if (OutReason)
-		{
-			*OutReason = NSLOCTEXT("Blueprint", "MacroLibraryNativizationReason", "Macro Libraries cannot be nativized.");
-		}
-		return false;
-	}
-	else if (BlueprintType == BPTYPE_LevelScript)
-	{
-		if (OutReason)
-		{
-			*OutReason = NSLOCTEXT("Blueprint", "LevelScriptNativizationReason", "Level Blueprints cannot be nativized.");
-		}
-		return false;
-	}
-	else if (!GetOuter()->IsA<UPackage>())
-	{
-		// If this blueprint is not an asset itself, check whether the asset supports nativization
-		UObject* Asset = GetOuter();
-		while (Asset && !Asset->GetOuter()->IsA<UPackage>())
-		{
-			Asset = Asset->GetOuter();
-		}
-
-		const IBlueprintAssetHandler* Handler = Asset ? FBlueprintAssetHandler::Get().FindHandler(Asset->GetClass()) : nullptr;
-		if (Handler && !Handler->SupportsNativization(Asset, this, OutReason))
-		{
-			return false;
-		}
-	}
-	return true;
 }
 
 void UBlueprint::SetObjectBeingDebugged(UObject* NewObject)
@@ -940,9 +876,9 @@ void UBlueprint::GetReparentingRules(TSet< const UClass* >& AllowedChildrenOfCla
 
 }
 
-bool UBlueprint::CanRecompileWhilePlayingInEditor() const
+bool UBlueprint::CanAlwaysRecompileWhilePlayingInEditor() const
 {
-	return GetDefault<UEditorExperimentalSettings>()->IsClassAllowedToRecompileDuringPIE(ParentClass);
+	return false;
 }
 
 void UBlueprint::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
@@ -951,7 +887,7 @@ void UBlueprint::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 	UObject* BlueprintCDO = nullptr;
 	if (GeneratedClass)
 	{
-		BlueprintCDO = GeneratedClass->GetDefaultObject();
+		BlueprintCDO = GeneratedClass->GetDefaultObject(/*bCreateIfNeeded*/false);
 		if (BlueprintCDO)
 		{
 			BlueprintCDO->GetAssetRegistryTags(OutTags);
@@ -1004,6 +940,7 @@ void UBlueprint::GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const
 	}
 	OutTags.Add(FAssetRegistryTag(FBlueprintTags::NumReplicatedProperties, FString::FromInt(NumReplicatedProperties), FAssetRegistryTag::TT_Numerical));
 	OutTags.Add(FAssetRegistryTag(FBlueprintTags::BlueprintDescription, BlueprintDescription, FAssetRegistryTag::TT_Hidden));
+	OutTags.Add(FAssetRegistryTag(FBlueprintTags::BlueprintCategory, BlueprintCategory, FAssetRegistryTag::TT_Hidden));
 	OutTags.Add(FAssetRegistryTag(FBlueprintTags::BlueprintDisplayName, BlueprintDisplayName, FAssetRegistryTag::TT_Hidden));
 
 	uint32 ClassFlagsTagged = 0;
@@ -1074,7 +1011,7 @@ FPrimaryAssetId UBlueprint::GetPrimaryAssetId() const
 {
 	// Forward to our Class, which will forward to CDO if needed
 	// We use Generated instead of Skeleton because the CDO data is more accurate on Generated
-	if (GeneratedClass)
+	if (GeneratedClass && GeneratedClass->ClassDefaultObject)
 	{
 		return GeneratedClass->GetPrimaryAssetId();
 	}
@@ -1094,7 +1031,7 @@ bool UBlueprint::AllowsDynamicBinding() const
 
 bool UBlueprint::SupportsInputEvents() const
 {
-	return FBlueprintEditorUtils::IsActorBased(this);
+	return ParentClass && ParentClass->IsChildOf(UObject::StaticClass());
 }
 
 struct FBlueprintInnerHelper
@@ -1312,84 +1249,6 @@ void UBlueprint::BeginCacheForCookedPlatformData(const ITargetPlatform *TargetPl
 			return false;
 		};
 
-		// If nativization is enabled and this Blueprint class will NOT be nativized, we need to determine if any of its parent Blueprints will be nativized and flag it for the runtime code.
-		// Note: Currently, this flag is set on Actor-based Blueprint classes only. If it's ever needed for non-Actor-based Blueprint classes at runtime, then this needs to be updated to match.
-		const IBlueprintNativeCodeGenCore* NativeCodeGenCore = IBlueprintNativeCodeGenCore::Get();
-		if (GeneratedClass != nullptr && NativeCodeGenCore != nullptr)
-		{
-			ensure(TargetPlatform);
-			const FCompilerNativizationOptions& NativizationOptions = NativeCodeGenCore->GetNativizationOptionsForPlatform(TargetPlatform);
-			TArray<const UBlueprintGeneratedClass*> ParentBPClassStack;
-			UBlueprintGeneratedClass::GetGeneratedClassesHierarchy(GeneratedClass->GetSuperClass(), ParentBPClassStack);
-			for (const UBlueprintGeneratedClass *ParentBPClass : ParentBPClassStack)
-			{
-				if (NativeCodeGenCore->IsTargetedForReplacement(ParentBPClass, NativizationOptions) == EReplacementResult::ReplaceCompletely)
-				{
-					if (UBlueprintGeneratedClass* BPGC = CastChecked<UBlueprintGeneratedClass>(*GeneratedClass))
-					{
-						// Flag that this BP class will have a nativized parent class.
-						BPGC->bHasNativizedParent = true;
-
-						// Cache the IsTargetedForReplacement() result for the parent BP class that we know to be nativized.
-						TMap<const UClass*, bool> ParentBPClassNativizationResultMap;
-						ParentBPClassNativizationResultMap.Add(ParentBPClass, true);
-
-						// Cook all overridden SCS component node templates inherited from parent BP classes that will be nativized.
-						if (UInheritableComponentHandler* TargetInheritableComponentHandler = BPGC->GetInheritableComponentHandler())
-						{
-							for (auto RecordIt = TargetInheritableComponentHandler->CreateRecordIterator(); RecordIt; ++RecordIt)
-							{
-								// Only generate cooked data if the target platform supports the template class type.
-								if (ShouldCookBlueprintComponentTemplate(RecordIt->ComponentTemplate))
-								{
-									// Get the original class that we're overriding a template from.
-									const UClass* ComponentTemplateOwnerClass = RecordIt->ComponentKey.GetComponentOwner();
-
-									// Check to see if we've already checked this class for nativization; if not, then cache the result of a new query and return the result.
-									bool bIsOwnerClassTargetedForReplacement = false;
-									bool* bCachedResult = ParentBPClassNativizationResultMap.Find(ComponentTemplateOwnerClass);
-									if (bCachedResult)
-									{
-										bIsOwnerClassTargetedForReplacement = *bCachedResult;
-									}
-									else
-									{
-										bool bResult = (NativeCodeGenCore->IsTargetedForReplacement(RecordIt->ComponentKey.GetComponentOwner(), NativizationOptions) == EReplacementResult::ReplaceCompletely);
-										bIsOwnerClassTargetedForReplacement = ParentBPClassNativizationResultMap.Add(ComponentTemplateOwnerClass, bResult);
-									}
-
-									if (bIsOwnerClassTargetedForReplacement)
-									{
-										// EDL is required, because we need to enforce a preload dependency on the CDO (see UBlueprintGeneratedClass::GetDefaultObjectPreloadDependencies). This is
-										// difficult to support in the non-EDL case, because we have to enforce the dependency at runtime, which can lead to unpredictable results in a cooked build.
-										if (IsEventDrivenLoaderEnabledInCookedBuilds())
-										{
-											// Use the template's archetype for the delta serialization here; remaining properties will have already been set via native subobject instancing at runtime.
-											constexpr bool bUseTemplateArchetype = true;
-											FBlueprintEditorUtils::BuildComponentInstancingData(RecordIt->ComponentTemplate, RecordIt->CookedComponentInstancingData, bUseTemplateArchetype);
-											++NumCookedComponents;
-										}
-										else
-										{
-											UE_LOG(LogBlueprint, Error, TEXT("%s overrides component \'%s\' inherited from %s, which will be converted to C++. This requires Event-Driven Loading (EDL) to be enabled; otherwise, %s must be excluded from Blueprint nativization."),
-												*GetName(),
-												*RecordIt->ComponentKey.GetSCSVariableName().ToString(),
-												*ComponentTemplateOwnerClass->GetName(),
-												*ComponentTemplateOwnerClass->GetName()
-											);
-										}
-									}
-								}
-							}
-						}
-					}
-					
-					// All remaining antecedent classes should be native or nativized; no need to continue.
-					break;
-				}
-			}
-		}
-
 		auto ShouldCookBlueprintComponentTemplateData = [](UBlueprintGeneratedClass* InBPGClass) -> bool
 		{
 			// Check to see if we should cook component data for the given class type.
@@ -1412,20 +1271,6 @@ void UBlueprint::BeginCacheForCookedPlatformData(const ITargetPlatform *TargetPl
 				break;
 			}
 			
-			// EDL is required, because we need to enforce a preload dependency on the CDO (see UBlueprintGeneratedClass::GetDefaultObjectPreloadDependencies). This is
-			// difficult to support in the non-EDL case, because we have to enforce the dependency at runtime, which can lead to unpredictable results in a cooked build.
-			if(bResult && !IsEventDrivenLoaderEnabledInCookedBuilds())
-			{
-				bResult = false;
-
-				static bool bWarnOnEDLDisabled = true;
-				if (bWarnOnEDLDisabled)
-				{
-					UE_LOG(LogBlueprint, Warning, TEXT("Cannot cook Blueprint component data for faster instancing at runtime, because Event-Driven Loading (EDL) has been disabled. Re-enable EDL to support this feature, or disable the option to cook Blueprint component data."));
-					bWarnOnEDLDisabled = false;
-				}
-			}
-
 			return bResult;
 		};
 
@@ -1533,11 +1378,11 @@ void UBlueprint::BeginDestroy()
 	Super::BeginDestroy();
 
 	FBlueprintEditorUtils::RemoveAllLocalBookmarks(this);
-	WatchViewer::ClearWatchListFromBlueprint(this);
 }
 
 #endif // WITH_EDITOR
 
+#if WITH_EDITORONLY_DATA
 UBlueprint* UBlueprint::GetBlueprintFromClass(const UClass* InClass)
 {
 	UBlueprint* BP = NULL;
@@ -1558,9 +1403,7 @@ bool UBlueprint::GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<UB
 	{
 		OutBlueprintParents.Add(BP);
 
-#if WITH_EDITORONLY_DATA
 		bNoErrors &= (BP->Status != BS_Error);
-#endif // #if WITH_EDITORONLY_DATA
 
 		// If valid, use stored ParentClass rather than the actual UClass::GetSuperClass(); handles the case when the class has not been recompiled yet after a reparent operation.
 		if (BP->ParentClass)
@@ -1576,6 +1419,7 @@ bool UBlueprint::GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<UB
 
 	return bNoErrors;
 }
+#endif
 
 bool UBlueprint::GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<UBlueprintGeneratedClass*>& OutBlueprintParents)
 {
@@ -1587,14 +1431,13 @@ bool UBlueprint::GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<UB
 	{
 		OutBlueprintParents.Add(CurrentClass);
 
+#if WITH_EDITORONLY_DATA
 		UBlueprint* BP = UBlueprint::GetBlueprintFromClass(CurrentClass);
 
-#if WITH_EDITORONLY_DATA
 		if (BP)
 		{
 			bNoErrors &= (BP->Status != BS_Error);
 		}
-#endif // #if WITH_EDITORONLY_DATA
 
 		// If valid, use stored ParentClass rather than the actual UClass::GetSuperClass(); handles the case when the class has not been recompiled yet after a reparent operation.
 		if (BP && BP->ParentClass)
@@ -1602,6 +1445,7 @@ bool UBlueprint::GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<UB
 			CurrentClass = Cast<UBlueprintGeneratedClass>(BP->ParentClass);
 		}
 		else
+#endif // #if WITH_EDITORONLY_DATA
 		{
 			check(CurrentClass);
 			CurrentClass = Cast<UBlueprintGeneratedClass>(CurrentClass->GetSuperClass());
@@ -1914,7 +1758,7 @@ bool UBlueprint::ChangeOwnerOfTemplates()
 
 			for (USCS_Node* SCSNode : SCS->GetAllNodes())
 			{
-				UActorComponent* Component = SCSNode ? SCSNode->ComponentTemplate : NULL;
+				UActorComponent* Component = SCSNode ? ToRawPtr(SCSNode->ComponentTemplate) : NULL;
 				if (Component && Component->GetOuter() == this)
 				{
 					const bool bRenamed = Component->Rename(FUniqueNewNameHelper(Component->GetName(), BPGClass).Get(), BPGClass, REN_ForceNoResetLoaders | REN_DoNotDirty);

@@ -12,14 +12,17 @@
 
 UE_TRACE_CHANNEL(StatsChannel)
 
-UE_TRACE_EVENT_BEGIN(Stats, Spec, Important)
+UE_TRACE_EVENT_BEGIN(Stats, Spec, NoSync|Important)
 	UE_TRACE_EVENT_FIELD(uint32, Id)
 	UE_TRACE_EVENT_FIELD(bool, IsFloatingPoint)
 	UE_TRACE_EVENT_FIELD(bool, IsMemory)
 	UE_TRACE_EVENT_FIELD(bool, ShouldClearEveryFrame)
+	UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, Name)
+	UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, Description)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(Stats, EventBatch)
+	UE_TRACE_EVENT_FIELD(uint8[], Data)
 UE_TRACE_EVENT_END()
 
 struct FStatsTraceInternal
@@ -71,8 +74,8 @@ FStatsTraceInternal::FThreadState* FStatsTraceInternal::InitThreadState()
 
 void FStatsTraceInternal::FlushThreadBuffer(FThreadState* ThreadState)
 {
-	UE_TRACE_LOG(Stats, EventBatch, StatsChannel, ThreadState->BufferSize)
-		<< EventBatch.Attachment(ThreadState->Buffer, ThreadState->BufferSize);
+	UE_TRACE_LOG(Stats, EventBatch, StatsChannel)
+		<< EventBatch.Data(ThreadState->Buffer, ThreadState->BufferSize);
 	ThreadState->BufferSize = 0;
 }
 
@@ -102,19 +105,16 @@ void FStatsTraceInternal::EndEncodeOp(FThreadState* ThreadState, uint8* BufferPt
 
 void FStatsTrace::DeclareStat(const FName& Stat, const ANSICHAR* Name, const TCHAR* Description, bool IsFloatingPoint, bool IsMemory, bool ShouldClearEveryFrame)
 {
-	uint16 NameSize = (strlen(Name) + 1) * sizeof(ANSICHAR);
-	uint16 DescriptionSize = (FCString::Strlen(Description) + 1) * sizeof(TCHAR);
-	auto Attachment = [Name, NameSize, Description, DescriptionSize](uint8* Buffer)
-	{
-		memcpy(Buffer, Name, NameSize);
-		memcpy(Buffer + NameSize, Description, DescriptionSize);
-	};
-	UE_TRACE_LOG(Stats, Spec, StatsChannel, NameSize + DescriptionSize)
+	uint32 NameLen = FCStringAnsi::Strlen(Name);
+	uint32 DescriptionLen = FCString::Strlen(Description);
+
+	UE_TRACE_LOG(Stats, Spec, StatsChannel, NameLen + DescriptionLen)
 		<< Spec.Id(Stat.GetComparisonIndex().ToUnstableInt())
 		<< Spec.IsFloatingPoint(IsFloatingPoint)
 		<< Spec.IsMemory(IsMemory)
 		<< Spec.ShouldClearEveryFrame(ShouldClearEveryFrame)
-		<< Spec.Attachment(Attachment);
+		<< Spec.Name(Name, NameLen)
+		<< Spec.Description(Description, DescriptionLen);
 }
 
 void FStatsTrace::Increment(const FName& Stat)

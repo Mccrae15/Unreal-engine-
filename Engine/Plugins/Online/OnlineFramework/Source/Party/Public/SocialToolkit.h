@@ -8,6 +8,7 @@
 #include "OnlineSubsystem.h"
 #include "Interfaces/OnlinePartyInterface.h"
 #include "Interfaces/OnlinePresenceInterface.h"
+#include "Containers/Ticker.h"
 
 #include "PartyPackage.h"
 #include "SocialToolkit.generated.h"
@@ -102,6 +103,7 @@ public:
 	
 	DECLARE_EVENT_OneParam(USocialToolkit, FPartyInviteEvent, USocialUser&);
 	FPartyInviteEvent& OnPartyInviteReceived() const { return OnPartyInviteReceivedEvent; }
+	FPartyInviteEvent& OnPartyInviteRemoved() const { return OnPartyInviteRemovedEvent; }
 
 	DECLARE_EVENT_TwoParams(USocialToolkit, FFriendInviteEvent, USocialUser&, ESocialSubsystem);
 	FFriendInviteEvent& OnFriendInviteSent() const { return OnFriendInviteSentEvent; }
@@ -121,6 +123,18 @@ public:
 	DECLARE_EVENT(USocialToolkit, FBasicToolkitEvent);
 	FBasicToolkitEvent& OnToolkitReset() const { return OnToolkitResetEvent; }
 
+	DECLARE_EVENT_OneParam(USocialToolkit, FOnPartyRequestToJoinSentEvent, const USocialUser&);
+	FOnPartyRequestToJoinSentEvent& OnPartyRequestToJoinSent() const { return OnPartyRequestToJoinSentEvent; }
+
+	DECLARE_EVENT_TwoParams(USocialToolkit, FOnPartyRequestToJoinReceivedEvent, USocialUser& /*SocialUser*/, IOnlinePartyRequestToJoinInfoConstRef /*Request*/);
+	FOnPartyRequestToJoinReceivedEvent& OnPartyRequestToJoinReceived() const { return OnPartyRequestToJoinReceivedEvent; }
+
+	DECLARE_EVENT_ThreeParams(USocialToolkit, FOnPartyRequestToJoinRemovedEvent, USocialUser& /*SocialUser*/, IOnlinePartyRequestToJoinInfoConstRef /*Request*/, EPartyRequestToJoinRemovedReason /*Reason*/);
+	FOnPartyRequestToJoinRemovedEvent& OnPartyRequestToJoinRemoved() const { return OnPartyRequestToJoinRemovedEvent; }
+
+	virtual void NotifyPartyInviteReceived(USocialUser& SocialUser, const IOnlinePartyJoinInfo& Invite);
+	virtual void NotifyPartyInviteRemoved(USocialUser& SocialUser, const IOnlinePartyJoinInfo& Invite);
+
 #if WITH_EDITOR
 	bool Debug_IsRandomlyChangingPresence() const { return bDebug_IsRandomlyChangingUserPresence; }
 #endif
@@ -132,6 +146,8 @@ PACKAGE_SCOPE:
 	bool TrySendFriendInvite(USocialUser& SocialUser, ESocialSubsystem SubsystemType) const;
 
 	bool AcceptFriendInvite(const USocialUser& SocialUser, ESocialSubsystem SubsystemType) const;
+
+	void RequestToJoinParty(USocialUser& SocialUser);
 
 	void HandleUserInvalidated(USocialUser& InvalidUser);
 
@@ -152,6 +168,10 @@ protected:
 	virtual void OnDeleteFriendComplete(int32 LocalPlayer, bool bWasSuccessful, const FUniqueNetId& FormerFriendId, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType) {}
 	virtual void OnBlockPlayerComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& BlockedPlayerID, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType) {}
 	virtual void OnUnblockPlayerComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UnblockedPlayerID, const FString& ListName, const FString& ErrorStr, ESocialSubsystem SubsystemType) {}
+	virtual void OnRequestToJoinPartyComplete(const FUniqueNetId& PartyLeaderId, ERequestToJoinPartyCompletionResult Result) {}
+
+	/** Called when a Friend's presence did change */
+	virtual void OnFriendPresenceDidChange(const USocialUser& FriendSocialUser, const TSharedRef<FOnlineUserPresence>& NewPresence, ESocialSubsystem SubsystemType) {}
 
 	void QueryFriendsLists();
 	void QueryBlockedPlayers();
@@ -239,13 +259,17 @@ private:	// Handlers
 
 	void HandleExistingPartyInvites(ESocialSubsystem SubsystemType);
 
+	void HandlePartyRequestToJoinSent(const FUniqueNetId& LocalUserId, const FUniqueNetId& PartyLeaderId, const FDateTime& ExpiresAt, const ERequestToJoinPartyCompletionResult Result);
+	void HandlePartyRequestToJoinReceived(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RequesterId, const IOnlinePartyRequestToJoinInfo& Request);
+	void HandlePartyRequestToJoinRemoved(const FUniqueNetId& LocalUserId, const FOnlinePartyId& PartyId, const FUniqueNetId& RequesterId, const IOnlinePartyRequestToJoinInfo& Request, EPartyRequestToJoinRemovedReason Reason);
+
 #if WITH_EDITOR
 	void Debug_OnStartRandomizeUserPresence(uint8 NumRandomUser, float TickerTimer);
 	void Debug_OnStopRandomizeUserPresence(bool bClearGeneratedPresence);
 	bool Debug_HandleRandomizeUserPresenceTick(float DeltaTime, uint8 NumRandomUser);
 	void Debug_ChangeRandomUserPresence(uint8 NumRandomUser);
 	bool bDebug_IsRandomlyChangingUserPresence = false;
-	FDelegateHandle Debug_PresenceTickerHandle;
+	FTSTicker::FDelegateHandle Debug_PresenceTickerHandle;
 #endif
 
 private:
@@ -265,11 +289,13 @@ private:
 	UPROPERTY()
 	USocialChatManager* SocialChatManager;
 
+	TSet<IOnlinePartyJoinInfoConstRef> PartyInvitations;
 	mutable TArray<TWeakPtr<FSocialUserList>> CachedSocialUserLists;
 
 	mutable FPartyInviteEvent OnPartyInviteReceivedEvent;
 	mutable FPartyInviteEvent OnPartyInviteAcceptedEvent;
 	mutable FPartyInviteEvent OnPartyInviteRejectedEvent;
+	mutable FPartyInviteEvent OnPartyInviteRemovedEvent;
 
 	mutable FFriendInviteEvent OnFriendInviteReceivedEvent;
 	mutable FFriendInviteEvent OnFriendInviteSentEvent;
@@ -281,4 +307,8 @@ private:
 	mutable FOnKnownUserInitialized OnKnownUserInitializedEvent;
 	mutable FOnSocialUserInvalidated OnSocialUserInvalidatedEvent;
 	mutable FBasicToolkitEvent OnToolkitResetEvent;
+
+	mutable FOnPartyRequestToJoinSentEvent OnPartyRequestToJoinSentEvent;
+	mutable FOnPartyRequestToJoinReceivedEvent OnPartyRequestToJoinReceivedEvent;
+	mutable FOnPartyRequestToJoinRemovedEvent OnPartyRequestToJoinRemovedEvent;
 };

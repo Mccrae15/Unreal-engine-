@@ -18,7 +18,8 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Sequencer.h"
 
-class FActorDragDropGraphEdOp;
+class FActorDragDropOp;
+class FFolderDragDropOp;
 class FAssetDragDropOp;
 class FClassDragDropOp;
 class FMovieSceneClipboard;
@@ -263,6 +264,9 @@ public:
 		/** Called when an actor is dropped on the sequencer. Not called if OnReceivedDrop is bound and returned true. */
 		SLATE_EVENT( FOnActorsDrop, OnActorsDrop )
 
+		/** Called when a folder is dropped onto the sequencer. Not called if OnReceivedDrop is bound and returned true. */
+		SLATE_EVENT(FOnFoldersDrop, OnFoldersDrop)
+
 		/** Extender to use for the add menu. */
 		SLATE_ARGUMENT( TSharedPtr<FExtender>, AddMenuExtender )
 
@@ -279,6 +283,10 @@ public:
 	~SSequencer();
 	
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) { }
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SSequencer");
+	}
 
 	virtual bool SupportsKeyboardFocus() const override
 	{
@@ -331,8 +339,7 @@ public:
 	/** Access the currently active track area edit tool */
 	const ISequencerEditTool* GetEditTool() const;
 
-	void ShowTickResolutionOverlay();
-	void HideTickResolutionOverlay();
+	void OpenTickResolutionOptions();
 
 	/** Sets the play time for the sequence but clamped by the working range. This is useful for cases where we can't clamp via the UI control. */
 	void SetPlayTimeClampedByWorkingRange(double Frame);
@@ -340,8 +347,14 @@ public:
 	/** Sets the play time for the sequence. Will extend the working range if out of bounds. */
 	void SetPlayTime(double Frame);
 
-	/** Sets the specified filter to be on or off*/
-	void SetFilterOn(const FText& InName, bool bOn);
+	/** Sets the specified track filter to be on or off */
+	void SetTrackFilterEnabled(const FText& InTrackFilterName, bool bEnabled);
+
+	/** Gets whether the specified track filter is on/off */
+	bool IsTrackFilterEnabled(const FText& InTrackFilterName) const;
+
+	/** Gets all the available track filter names */
+	TArray<FText> GetTrackFilterNames() const;
 
 	/** Sets the text to search by */
 	void SetSearchText(const FText& InSearchText);
@@ -518,7 +531,14 @@ private:
 	 *
 	 * @param	DragDropOp	Information about the actor(s) that was dropped
 	 */
-	void OnActorsDropped(FActorDragDropGraphEdOp& DragDropOp); 
+	void OnActorsDropped(FActorDragDropOp& DragDropOp); 
+
+	/**
+	 * Called when one or more folders are dropped into the widget
+	 *
+	 * @param	DragDropOp	Information about the objects(s) that was dropped
+	 */
+	void OnFolderDropped(FFolderDragDropOp& DragDropOp); 
 
 	/** Called when a breadcrumb is clicked on in the sequencer */
 	void OnCrumbClicked(const FSequencerBreadcrumb& Item);
@@ -598,6 +618,9 @@ public:
 
 	/** This adds the specified path to the selection set to be restored the next time the tree view is refreshed. */
 	void AddAdditionalPathToSelectionSet(const FString& Path) { AdditionalSelectionsToAdd.Add(Path); }
+
+	/** Request to rename the given node path. */
+	void RequestRenameNode(const FString& Path) { NodePathToRename = Path; }
 
 	/** Applies dynamic sequencer customizations to this editor. */
 	void ApplySequencerCustomizations(const TArray<FSequencerCustomizationInfo>& Customizations);
@@ -736,6 +759,9 @@ private:
 	/** Called when an actor is dropped on the sequencer. */
 	TArray<FOnActorsDrop> OnActorsDrop;
 
+	/** Called when a folder is dropped on the sequencer. */
+	TArray<FOnFoldersDrop> OnFoldersDrop;
+
 	/** Stores the callbacks and extenders provided to the constructor. */
 	FSequencerCustomizationInfo RootCustomization;
 
@@ -750,7 +776,9 @@ private:
 	*/
 	TArray<FString> AdditionalSelectionsToAdd;
 
-	TSharedPtr<SWidget> TickResolutionOverlay;
+	FString NodePathToRename;
+
+	TWeakPtr<SWindow> WeakTickResolutionOptionsWindow;
 
 	/** All possible track filter objects */
 	TArray< TSharedRef<FSequencerTrackFilter> > AllTrackFilters;

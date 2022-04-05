@@ -20,19 +20,17 @@ enum class EEnvQueryHightlightMode : uint8
 	Best25Pct UMETA(DisplayName = "Best 25%"),
 };
 
-/** this class is abstract even though it's perfectly functional on its own.
- *	The reason is to stop it from showing as valid player pawn type when configuring 
- *	project's game mode. */
-UCLASS(abstract, hidecategories=(Advanced, Attachment, Mesh, Animation, Clothing, Physics, Rendering, Lighting, Activation, CharacterMovement, AgentPhysics, Avoidance, MovementComponent, Velocity, Shape, Camera, Input, Layers, SkeletalMesh, Optimization, Pawn, Replication, Actor))
+UCLASS(hidedropdown, hidecategories=(Advanced, Attachment, Mesh, Animation, Clothing, Physics, Rendering, Lighting, Activation, CharacterMovement, AgentPhysics, Avoidance, MovementComponent, Velocity, Shape, Camera, Input, Layers, SkeletalMesh, Optimization, Pawn, Replication, Actor))
 class AIMODULE_API AEQSTestingPawn : public ACharacter, public IEQSQueryResultSourceInterface
 {
 	GENERATED_UCLASS_BODY()
 	
 	UPROPERTY(Category=EQS, EditAnywhere)
-	UEnvQuery* QueryTemplate;
+	TObjectPtr<UEnvQuery> QueryTemplate;
 
 	/** optional parameters for query */
-	UPROPERTY(Category=EQS, VisibleAnywhere, meta=(DisplayName="QueryParams_DEPRECATED"))
+	UE_DEPRECATED_FORGAME(5.0, "QueryParams has been deprecated for a long while now. Will be removed in the next engine version.")
+	UPROPERTY()
 	TArray<FEnvNamedValue> QueryParams;
 
 	UPROPERTY(Category=EQS, EditAnywhere)
@@ -72,7 +70,7 @@ class AIMODULE_API AEQSTestingPawn : public ACharacter, public IEQSQueryResultSo
 private:
 	/** Editor Preview */
 	UPROPERTY(Transient)
-	UEQSRenderingComponent* EdRenderComp;
+	TObjectPtr<UEQSRenderingComponent> EdRenderComp;
 #endif // WITH_EDITORONLY_DATA
 
 protected:

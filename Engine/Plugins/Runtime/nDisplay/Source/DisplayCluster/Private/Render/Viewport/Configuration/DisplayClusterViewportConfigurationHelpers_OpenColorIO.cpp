@@ -77,32 +77,70 @@ bool FDisplayClusterViewportConfigurationHelpers_OpenColorIO::UpdateLightcardVie
 	return false;
 }
 
+#if WITH_EDITOR
+bool FDisplayClusterViewportConfigurationHelpers_OpenColorIO::IsInnerFrustumViewportSettingsEqual_Editor(const FDisplayClusterViewport& InViewport1, const FDisplayClusterViewport& InViewport2, UDisplayClusterICVFXCameraComponent& InCameraComponent)
+{
+	const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings = InCameraComponent.GetCameraSettingsICVFX();
+	if (CameraSettings.AllNodesOCIOConfiguration.bIsEnabled)
+	{
+		for (const FDisplayClusterConfigurationOCIOProfile& OCIOProfileIt : CameraSettings.PerNodeOCIOProfiles)
+		{
+			if (OCIOProfileIt.bIsEnabled)
+			{
+				const FString* CustomNode1 = OCIOProfileIt.ApplyOCIOToObjects.FindByPredicate([ClusterNodeId = InViewport1.GetClusterNodeId()](const FString& InClusterNodeId)
+				{
+					return ClusterNodeId.Equals(InClusterNodeId, ESearchCase::IgnoreCase);
+				});
+
+				const FString* CustomNode2 = OCIOProfileIt.ApplyOCIOToObjects.FindByPredicate([ClusterNodeId = InViewport2.GetClusterNodeId()](const FString& InClusterNodeId)
+				{
+					return ClusterNodeId.Equals(InClusterNodeId, ESearchCase::IgnoreCase);
+				});
+
+				if (CustomNode1 && CustomNode2)
+				{
+					// equal custom settings
+					return true;
+				}
+
+				if (CustomNode1 || CustomNode2)
+				{
+					// one of node has custom settings
+					return false;
+				}
+			}
+		}
+	}
+
+	return true;
+}
+#endif
+
 bool FDisplayClusterViewportConfigurationHelpers_OpenColorIO::UpdateICVFXCameraViewport(FDisplayClusterViewport& DstViewport, ADisplayClusterRootActor& RootActor, UDisplayClusterICVFXCameraComponent& InCameraComponent)
 {
 	const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings = InCameraComponent.GetCameraSettingsICVFX();
 	if (CameraSettings.AllNodesOCIOConfiguration.bIsEnabled)
 	{
-		const FDisplayClusterRenderFrameSettings& RenderFrameSettings = DstViewport.Owner.Configuration->GetRenderFrameSettingsConstRef();
+		const FDisplayClusterRenderFrameSettings& RenderFrameSettings = DstViewport.Owner.GetRenderFrameSettings();
 
-		const FString& ClusterNodeId = RenderFrameSettings.ClusterNodeId;
-		if (!ClusterNodeId.IsEmpty())
+		const FString& ClusterNodeId = DstViewport.GetClusterNodeId();
+		check(!ClusterNodeId.IsEmpty());
+
+		for (const FDisplayClusterConfigurationOCIOProfile& OCIOProfileIt : CameraSettings.PerNodeOCIOProfiles)
 		{
-			for (const FDisplayClusterConfigurationOCIOProfile& OCIOProfileIt : CameraSettings.PerNodeOCIOProfiles)
+			if (OCIOProfileIt.bIsEnabled)
 			{
-				if (OCIOProfileIt.bIsEnabled)
+				for (const FString& ClusterNodeIt : OCIOProfileIt.ApplyOCIOToObjects)
 				{
-					for (const FString& ClusterNodeIt : OCIOProfileIt.ApplyOCIOToObjects)
+					if (ClusterNodeId.Compare(ClusterNodeIt, ESearchCase::IgnoreCase) == 0)
 					{
-						if (ClusterNodeId.Compare(ClusterNodeIt, ESearchCase::IgnoreCase) == 0)
+						// Use cluster node OCIO
+						if (FDisplayClusterViewportConfigurationHelpers_OpenColorIO::ImplUpdate(DstViewport, OCIOProfileIt.OCIOConfiguration))
 						{
-							// Use cluster node OCIO
-							if (FDisplayClusterViewportConfigurationHelpers_OpenColorIO::ImplUpdate(DstViewport, OCIOProfileIt.OCIOConfiguration))
-							{
-								return true;
-							}
-
-							break;
+							return true;
 						}
+
+						break;
 					}
 				}
 			}

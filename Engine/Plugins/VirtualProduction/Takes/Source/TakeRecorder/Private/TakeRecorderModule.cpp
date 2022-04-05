@@ -40,6 +40,8 @@
 #include "ContentBrowserModule.h"
 
 #include "SerializedRecorder.h"
+#include "Misc/Attribute.h"
+#include "Textures/SlateIcon.h"
 
 #define LOCTEXT_NAMESPACE "TakeRecorderModule"
 
@@ -51,14 +53,6 @@ FText ITakeRecorderModule::TakesBrowserTabLabel = LOCTEXT("TakesBrowserTab_Label
 FName ITakeRecorderModule::TakesBrowserInstanceName = "TakesBrowser";
 
 IMPLEMENT_MODULE(FTakeRecorderModule, TakeRecorder);
-
-static TAutoConsoleVariable<int32> CVarTakeRecorderEditTrackingMode(
-	TEXT("TakeRecorder.TrackLevelViewportChanges"),
-	0,
-	TEXT("Whether or not Take Recorder should automatically set Sequencer to track changes made in the Level Viewport.\n")
-	TEXT("0: Don't track changes (default)\n")
-	TEXT("1: Attempt to track changes made in the Level Viewport in the open Sequence\n"),
-	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarTakeRecorderSaveRecordedAssetsOverride(
 	TEXT("TakeRecorder.SaveRecordedAssetsOverride"),
@@ -115,13 +109,18 @@ namespace
 	static TSharedRef<SDockTab> SpawnTakeRecorderTab(const FSpawnTabArgs& SpawnTabArgs)
 	{
 		TSharedRef<STakeRecorderTabContent> Content = SNew(STakeRecorderTabContent);
-		return SNew(SDockTab)
+		TSharedPtr<SDockTab> ContentTab = SNew(SDockTab)
 			.Label(Content, &STakeRecorderTabContent::GetTitle)
-			.Icon(Content, &STakeRecorderTabContent::GetIcon)
 			.TabRole(ETabRole::NomadTab)
 			[
 				Content
 			];
+		const TAttribute<const FSlateBrush*> TabIcon = TAttribute<const FSlateBrush*>::CreateLambda([Content]()
+			{
+				return Content->GetIcon();
+			});
+		ContentTab->SetTabIcon(TabIcon);
+		return ContentTab.ToSharedRef();
 	}
 
 	static void RegisterLevelEditorLayout(FLayoutExtender& Extender)
@@ -146,7 +145,7 @@ namespace
 			.SetGroup(WorkspaceMenu::GetMenuStructure().GetLevelEditorCinematicsCategory())
 			.SetDisplayName(ITakeRecorderModule::TakeRecorderTabLabel)
 			.SetTooltipText(LOCTEXT("TakeRecorderTab_Tooltip", "Open the main Take Recorder UI."))
-			.SetIcon(FSlateIcon(FTakeRecorderStyle::StyleName, "TakeRecorder.TabIcon"));
+			.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "SequenceRecorder.TabIcon"));
 
 		FTabSpawnerEntry& TBTabSpawner = FGlobalTabmanager::Get()->RegisterNomadTabSpawner(ITakeRecorderModule::TakesBrowserTabName, FOnSpawnTab::CreateStatic(SpawnTakesBrowserTab));
 
@@ -432,10 +431,6 @@ void FTakeRecorderModule::RegisterSettings()
 	);
 
 	SequencerSettings = USequencerSettingsContainer::GetOrCreate<USequencerSettings>(TEXT("TakeRecorderSequenceEditor"));
-	SequencerSettings->LoadConfig();
-
-	const bool bTrackLevelEditorChanges = CVarTakeRecorderEditTrackingMode.GetValueOnGameThread() != 0;
-	SequencerSettings->SetAllowEditsMode(bTrackLevelEditorChanges ? EAllowEditsMode::AllowSequencerEditsOnly : EAllowEditsMode::AllEdits);
 
 	GetMutableDefault<UTakeRecorderUserSettings>()->LoadConfig();
 	const bool bSaveRecordedAssetsOverride = CVarTakeRecorderSaveRecordedAssetsOverride.GetValueOnGameThread() != 0;

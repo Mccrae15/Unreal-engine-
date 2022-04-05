@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Templates/AreTypesEqual.h"
+#include "Misc/LargeWorldCoordinates.h"
 
 namespace Chaos
 {
@@ -18,11 +19,12 @@ namespace Chaos
 	* precision of type is required most code should use these existing types
 	* (e.g. FVec3) to adapt to global changes in precision.
 	*/
-	using FReal = FRealSingle;
+
+	using FReal = FRealDouble;
 
 	/**
-	* ISPC optimization supports float, this allows classes that uses ISPC to branch to the right implementation 
+	* ISPC optimization supports float and double, this allows classes that uses ISPC to branch to the right implementation 
 	* without having to check the actual underlying type of FReal
 	*/
-	constexpr bool bRealTypeCompatibleWithISPC = (TAreTypesEqual<FReal, float>::Value == true);
+	constexpr bool bRealTypeCompatibleWithISPC = (TAreTypesEqual<FReal, float>::Value == true) || (TAreTypesEqual<FReal, double>::Value == true);
 }

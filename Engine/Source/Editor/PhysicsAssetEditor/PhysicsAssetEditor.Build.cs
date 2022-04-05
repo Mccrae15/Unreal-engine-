@@ -31,6 +31,7 @@ public class PhysicsAssetEditor : ModuleRules
 				"SlateCore",
                 "EditorStyle",
 				"LevelEditor",
+				"EditorFramework",
 				"UnrealEd",
                 "Kismet",
                 "Persona",
@@ -42,8 +43,11 @@ public class PhysicsAssetEditor : ModuleRules
                 "DetailCustomizations",
                 "PinnedCommandList",
 				"ToolMenus",
-				"PhysicsCore"
-            }
+				"PhysicsCore",
+				"PhysicsUtilities",
+				"MeshUtilitiesCommon",
+				"ApplicationCore",
+			}
         );
 
 		DynamicallyLoadedModuleNames.AddRange(

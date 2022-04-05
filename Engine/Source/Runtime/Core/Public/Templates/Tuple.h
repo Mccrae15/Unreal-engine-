@@ -32,7 +32,7 @@
 // - Key is a pointer type.
 // - Key and Value are members of a base class.
 // - Dereferencing is done as part of a compound boolean expression (removing '&& Pair.Value != 15' removes the warning)
-#if defined(_MSC_VER) && USING_CODE_ANALYSIS
+#if (defined(_MSC_VER) && !defined(__clang__)) && USING_CODE_ANALYSIS
 	#define UE_TUPLE_STATIC_ANALYSIS_WORKAROUND 1
 #else
 	#define UE_TUPLE_STATIC_ANALYSIS_WORKAROUND 0
@@ -49,7 +49,7 @@ class FArchive;
 template <typename... Types>
 struct TTuple;
 
-namespace UE4Tuple_Private
+namespace UE::Core::Private::Tuple
 {
 	enum EForwardingConstructor { ForwardingConstructor };
 	enum EOtherTupleConstructor { OtherTupleConstructor };
@@ -202,6 +202,26 @@ namespace UE4Tuple_Private
 		}
 	};
 
+#if UE_TUPLE_STATIC_ANALYSIS_WORKAROUND
+	template <typename Type>
+	struct TTupleElementGetterByType<Type, 2>
+	{
+		template <typename TupleType>
+		static FORCEINLINE decltype(auto) Get(TupleType&& Tuple)
+		{
+			if constexpr (std::is_same_v<Type, decltype(Tuple.Key)>)
+			{
+				return TTupleElementGetterByIndex<0, 2>::Get(Forward<TupleType>(Tuple));
+			}
+			else
+			{
+				static_assert(std::is_same_v<Type, decltype(Tuple.Value)>, "This has to be true - check the call site");
+				return TTupleElementGetterByIndex<1, 2>::Get(Forward<TupleType>(Tuple));
+			}
+		}
+	};
+#endif
+
 	template <uint32 ArgCount, uint32 ArgToCompare>
 	struct FEqualityHelper
 	{
@@ -300,17 +320,23 @@ namespace UE4Tuple_Private
 		template <typename T, typename TEnableIf<TTypeCountInParameterPack<T, Types...>::Value == 1>::Type* = nullptr> FORCEINLINE decltype(auto) Get()       volatile&& { return TTupleElementGetterByType<T, sizeof...(Types)>::Get(static_cast<      volatile TTupleBase&&>(*this)); }
 		template <typename T, typename TEnableIf<TTypeCountInParameterPack<T, Types...>::Value == 1>::Type* = nullptr> FORCEINLINE decltype(auto) Get() const volatile&& { return TTupleElementGetterByType<T, sizeof...(Types)>::Get(static_cast<const volatile TTupleBase&&>(*this)); }
 
-		template <typename FuncType, typename... ArgTypes>
-		decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args) const
-		{
-			return ::Invoke(Func, Forward<ArgTypes>(Args)..., this->template Get<Indices>()...);
-		}
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args)               &  { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<               TTupleBase& >(*this).template Get<Indices>()...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args) const         &  { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<const          TTupleBase& >(*this).template Get<Indices>()...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args)       volatile&  { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<      volatile TTupleBase& >(*this).template Get<Indices>()...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args) const volatile&  { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<const volatile TTupleBase& >(*this).template Get<Indices>()...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args)               && { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<               TTupleBase&&>(*this).template Get<Indices>()...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args) const         && { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<const          TTupleBase&&>(*this).template Get<Indices>()...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args)       volatile&& { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<      volatile TTupleBase&&>(*this).template Get<Indices>()...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args) const volatile&& { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<const volatile TTupleBase&&>(*this).template Get<Indices>()...); }
 
-		template <typename FuncType, typename... ArgTypes>
-		decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args) const
-		{
-			return ::Invoke(Func, this->template Get<Indices>()..., Forward<ArgTypes>(Args)...);
-		}
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args)               &  { return ::Invoke(Func, static_cast<               TTupleBase& >(*this).template Get<Indices>()..., Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args) const         &  { return ::Invoke(Func, static_cast<const          TTupleBase& >(*this).template Get<Indices>()..., Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args)       volatile&  { return ::Invoke(Func, static_cast<      volatile TTupleBase& >(*this).template Get<Indices>()..., Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args) const volatile&  { return ::Invoke(Func, static_cast<const volatile TTupleBase& >(*this).template Get<Indices>()..., Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args)               && { return ::Invoke(Func, static_cast<               TTupleBase&&>(*this).template Get<Indices>()..., Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args) const         && { return ::Invoke(Func, static_cast<const          TTupleBase&&>(*this).template Get<Indices>()..., Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args)       volatile&& { return ::Invoke(Func, static_cast<      volatile TTupleBase&&>(*this).template Get<Indices>()..., Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args) const volatile&& { return ::Invoke(Func, static_cast<const volatile TTupleBase&&>(*this).template Get<Indices>()..., Forward<ArgTypes>(Args)...); }
 
 		FORCEINLINE friend FArchive& operator<<(FArchive& Ar, TTupleBase& Tuple)
 		{
@@ -417,17 +443,23 @@ namespace UE4Tuple_Private
 		template <typename T, typename TEnableIf<TTypeCountInParameterPack<T, KeyType, ValueType>::Value == 1>::Type* = nullptr> FORCEINLINE decltype(auto) Get()       volatile&& { return TTupleElementGetterByType<T, 2>::Get(static_cast<      volatile TTupleBase&&>(*this)); }
 		template <typename T, typename TEnableIf<TTypeCountInParameterPack<T, KeyType, ValueType>::Value == 1>::Type* = nullptr> FORCEINLINE decltype(auto) Get() const volatile&& { return TTupleElementGetterByType<T, 2>::Get(static_cast<const volatile TTupleBase&&>(*this)); }
 
-		template <typename FuncType, typename... ArgTypes>
-		decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args) const
-		{
-			return ::Invoke(Func, Forward<ArgTypes>(Args)..., this->Key, this->Value);
-		}
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args)               &  { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<               TTupleBase& >(*this).template Get<0>(), static_cast<               TTupleBase& >(*this).template Get<1>()); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args) const         &  { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<const          TTupleBase& >(*this).template Get<0>(), static_cast<const          TTupleBase& >(*this).template Get<1>()); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args)       volatile&  { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<      volatile TTupleBase& >(*this).template Get<0>(), static_cast<      volatile TTupleBase& >(*this).template Get<1>()); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args) const volatile&  { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<const volatile TTupleBase& >(*this).template Get<0>(), static_cast<const volatile TTupleBase& >(*this).template Get<1>()); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args)               && { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<               TTupleBase&&>(*this).template Get<0>(), static_cast<               TTupleBase&&>(*this).template Get<1>()); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args) const         && { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<const          TTupleBase&&>(*this).template Get<0>(), static_cast<const          TTupleBase&&>(*this).template Get<1>()); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args)       volatile&& { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<      volatile TTupleBase&&>(*this).template Get<0>(), static_cast<      volatile TTupleBase&&>(*this).template Get<1>()); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyAfter(FuncType&& Func, ArgTypes&&... Args) const volatile&& { return ::Invoke(Func, Forward<ArgTypes>(Args)..., static_cast<const volatile TTupleBase&&>(*this).template Get<0>(), static_cast<const volatile TTupleBase&&>(*this).template Get<1>()); }
 
-		template <typename FuncType, typename... ArgTypes>
-		decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args) const
-		{
-			return ::Invoke(Func, this->Key, this->Value, Forward<ArgTypes>(Args)...);
-		}
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args)               &  { return ::Invoke(Func, static_cast<               TTupleBase& >(*this).template Get<0>(), static_cast<               TTupleBase& >(*this).template Get<1>(), Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args) const         &  { return ::Invoke(Func, static_cast<const          TTupleBase& >(*this).template Get<0>(), static_cast<const          TTupleBase& >(*this).template Get<1>(), Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args)       volatile&  { return ::Invoke(Func, static_cast<      volatile TTupleBase& >(*this).template Get<0>(), static_cast<      volatile TTupleBase& >(*this).template Get<1>(), Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args) const volatile&  { return ::Invoke(Func, static_cast<const volatile TTupleBase& >(*this).template Get<0>(), static_cast<const volatile TTupleBase& >(*this).template Get<1>(), Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args)               && { return ::Invoke(Func, static_cast<               TTupleBase&&>(*this).template Get<0>(), static_cast<               TTupleBase&&>(*this).template Get<1>(), Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args) const         && { return ::Invoke(Func, static_cast<const          TTupleBase&&>(*this).template Get<0>(), static_cast<const          TTupleBase&&>(*this).template Get<1>(), Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args)       volatile&& { return ::Invoke(Func, static_cast<      volatile TTupleBase&&>(*this).template Get<0>(), static_cast<      volatile TTupleBase&&>(*this).template Get<1>(), Forward<ArgTypes>(Args)...); }
+		template <typename FuncType, typename... ArgTypes> decltype(auto) ApplyBefore(FuncType&& Func, ArgTypes&&... Args) const volatile&& { return ::Invoke(Func, static_cast<const volatile TTupleBase&&>(*this).template Get<0>(), static_cast<const volatile TTupleBase&&>(*this).template Get<1>(), Forward<ArgTypes>(Args)...); }
 
 		FORCEINLINE friend FArchive& operator<<(FArchive& Ar, TTupleBase& Tuple)
 		{
@@ -615,7 +647,7 @@ namespace UE4Tuple_Private
 		template <typename TupleType>
 		FORCEINLINE static uint32 Do(uint32 Hash, const TupleType& Tuple)
 		{
-			return TGetTupleHashHelper<ArgToCombine + 1, ArgCount>::Do(HashCombine(Hash, GetTypeHash(Tuple.template Get<ArgToCombine>())), Tuple);
+			return TGetTupleHashHelper<ArgToCombine + 1, ArgCount>::Do(HashCombineFast(Hash, GetTypeHash(Tuple.template Get<ArgToCombine>())), Tuple);
 		}
 	};
 
@@ -630,43 +662,65 @@ namespace UE4Tuple_Private
 	};
 
 	template <typename... Given, typename... Deduced>
-	std::enable_if_t<TAnd<TIsConstructible<Given, Deduced&&>...>::Value> ConstructibleConceptCheck(Deduced&&...);
+	std::enable_if_t<std::conjunction_v<std::is_constructible<Given, Deduced&&>...>> ConstructibleConceptCheck(Deduced&&...);
 
 	template <typename... Given, typename... Deduced>
 	decltype(ConceptCheckingHelper((DeclVal<Given>() = DeclVal<Deduced&&>(), 0)...)) AssignableConceptCheck(Deduced&&...);
 }
 
 template <typename... Types>
-struct TTuple : UE4Tuple_Private::TTupleBase<TMakeIntegerSequence<uint32, sizeof...(Types)>, Types...>
+struct TTuple : UE::Core::Private::Tuple::TTupleBase<TMakeIntegerSequence<uint32, sizeof...(Types)>, Types...>
 {
 private:
-	typedef UE4Tuple_Private::TTupleBase<TMakeIntegerSequence<uint32, sizeof...(Types)>, Types...> Super;
+	typedef UE::Core::Private::Tuple::TTupleBase<TMakeIntegerSequence<uint32, sizeof...(Types)>, Types...> Super;
 
 public:
+#ifdef __cpp_conditional_explicit
 	template <
 		typename... ArgTypes,
-		decltype(UE4Tuple_Private::ConstructibleConceptCheck<Types...>(DeclVal<ArgTypes&&>()...))* = nullptr
+		decltype(UE::Core::Private::Tuple::ConstructibleConceptCheck<Types...>(DeclVal<ArgTypes&&>()...))* = nullptr
+	>
+	explicit(!std::conjunction_v<std::is_convertible<ArgTypes&&, Types>...>) TTuple(ArgTypes&&... Args)
+		: Super(UE::Core::Private::Tuple::ForwardingConstructor, Forward<ArgTypes>(Args)...)
+	{
+	}
+#else
+	template <
+		typename... ArgTypes,
+		decltype(UE::Core::Private::Tuple::ConstructibleConceptCheck<Types...>(DeclVal<ArgTypes&&>()...))* = nullptr,
+		std::enable_if_t<std::conjunction_v<std::is_convertible<ArgTypes&&, Types>...>>* = nullptr
+	>
+	TTuple(ArgTypes&&... Args)
+		: Super(UE::Core::Private::Tuple::ForwardingConstructor, Forward<ArgTypes>(Args)...)
+	{
+	}
+
+	template <
+		typename... ArgTypes,
+		decltype(UE::Core::Private::Tuple::ConstructibleConceptCheck<Types...>(DeclVal<ArgTypes&&>()...))* = nullptr,
+		std::enable_if_t<!std::conjunction_v<std::is_convertible<ArgTypes&&, Types>...>>* = nullptr
 	>
 	explicit TTuple(ArgTypes&&... Args)
-		: Super(UE4Tuple_Private::ForwardingConstructor, Forward<ArgTypes>(Args)...)
+		: Super(UE::Core::Private::Tuple::ForwardingConstructor, Forward<ArgTypes>(Args)...)
 	{
 	}
+#endif
 
 	template <
 		typename... OtherTypes,
-		decltype(UE4Tuple_Private::ConstructibleConceptCheck<Types...>(DeclVal<OtherTypes&&>()...))* = nullptr
+		decltype(UE::Core::Private::Tuple::ConstructibleConceptCheck<Types...>(DeclVal<OtherTypes&&>()...))* = nullptr
 	>
 	TTuple(TTuple<OtherTypes...>&& Other)
-		: Super(UE4Tuple_Private::OtherTupleConstructor, MoveTemp(Other))
+		: Super(UE::Core::Private::Tuple::OtherTupleConstructor, MoveTemp(Other))
 	{
 	}
 
 	template <
 		typename... OtherTypes,
-		decltype(UE4Tuple_Private::ConstructibleConceptCheck<Types...>(DeclVal<const OtherTypes&>()...))* = nullptr
+		decltype(UE::Core::Private::Tuple::ConstructibleConceptCheck<Types...>(DeclVal<const OtherTypes&>()...))* = nullptr
 	>
 	TTuple(const TTuple<OtherTypes...>& Other)
-		: Super(UE4Tuple_Private::OtherTupleConstructor, Other)
+		: Super(UE::Core::Private::Tuple::OtherTupleConstructor, Other)
 	{
 	}
 
@@ -678,21 +732,21 @@ public:
 
 	template <
 		typename... OtherTypes,
-		decltype(UE4Tuple_Private::AssignableConceptCheck<Types&...>(DeclVal<const OtherTypes&>()...))* = nullptr
+		decltype(UE::Core::Private::Tuple::AssignableConceptCheck<Types&...>(DeclVal<const OtherTypes&>()...))* = nullptr
 	>
 	TTuple& operator=(const TTuple<OtherTypes...>& Other)
 	{
-		UE4Tuple_Private::Assign(*this, Other, TMakeIntegerSequence<uint32, sizeof...(Types)>{});
+		UE::Core::Private::Tuple::Assign(*this, Other, TMakeIntegerSequence<uint32, sizeof...(Types)>{});
 		return *this;
 	}
 
 	template <
 		typename... OtherTypes,
-		decltype(UE4Tuple_Private::AssignableConceptCheck<Types&...>(DeclVal<OtherTypes&&>()...))* = nullptr
+		decltype(UE::Core::Private::Tuple::AssignableConceptCheck<Types&...>(DeclVal<OtherTypes&&>()...))* = nullptr
 	>
 	TTuple& operator=(TTuple<OtherTypes...>&& Other)
 	{
-		UE4Tuple_Private::Assign(*this, MoveTemp(Other), TMakeIntegerSequence<uint32, sizeof...(OtherTypes)>{});
+		UE::Core::Private::Tuple::Assign(*this, MoveTemp(Other), TMakeIntegerSequence<uint32, sizeof...(OtherTypes)>{});
 		return *this;
 	}
 
@@ -712,7 +766,7 @@ public:
 template <typename... Types>
 FORCEINLINE uint32 GetTypeHash(const TTuple<Types...>& Tuple)
 {
-	return UE4Tuple_Private::TGetTupleHashHelper<1u, sizeof...(Types)>::Do(GetTypeHash(Tuple.template Get<0>()), Tuple);
+	return UE::Core::Private::Tuple::TGetTupleHashHelper<1u, sizeof...(Types)>::Do(GetTypeHash(Tuple.template Get<0>()), Tuple);
 }
 
 FORCEINLINE uint32 GetTypeHash(const TTuple<>& Tuple)
@@ -730,11 +784,12 @@ namespace Freeze
 	}
 
 	template<typename KeyType, typename ValueType>
-	void IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TTuple<KeyType, ValueType>& Object, void* OutDst)
+	uint32 IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TTuple<KeyType, ValueType>& Object, void* OutDst)
 	{
 		TTuple<KeyType, ValueType>* DstObject = (TTuple<KeyType, ValueType>*)OutDst;
 		Context.UnfreezeObject(Object.Key, &DstObject->Key);
 		Context.UnfreezeObject(Object.Value, &DstObject->Value);
+		return sizeof(Object);
 	}
 
 	template<typename KeyType, typename ValueType>
@@ -758,7 +813,7 @@ DECLARE_TEMPLATE_INTRINSIC_TYPE_LAYOUT((template <typename KeyType, typename Val
  * Traits class which calculates the number of elements in a tuple.
  */
 template <typename TupleType>
-struct TTupleArity : UE4Tuple_Private::TCVTupleArity<const volatile TupleType>
+struct TTupleArity : UE::Core::Private::Tuple::TCVTupleArity<const volatile TupleType>
 {
 };
 
@@ -771,7 +826,7 @@ struct TTupleArity : UE4Tuple_Private::TCVTupleArity<const volatile TupleType>
  * TTupleIndex<Type, Tuple>::Value will be 2.
  */
 template <typename Type, typename TupleType>
-using TTupleIndex = UE4Tuple_Private::TCVTupleIndex<Type, const volatile TupleType>;
+using TTupleIndex = UE::Core::Private::Tuple::TCVTupleIndex<Type, const volatile TupleType>;
 
 
 /**
@@ -782,7 +837,7 @@ using TTupleIndex = UE4Tuple_Private::TCVTupleIndex<Type, const volatile TupleTy
  * TTupleElement<Index, Tuple>::Type will be float.
  */
 template <uint32 Index, typename TupleType>
-using TTupleElement = UE4Tuple_Private::TCVTupleElement<Index, const volatile TupleType>;
+using TTupleElement = UE::Core::Private::Tuple::TCVTupleElement<Index, const volatile TupleType>;
 
 
 /**
@@ -803,7 +858,7 @@ using TTupleElement = UE4Tuple_Private::TCVTupleElement<Index, const volatile Tu
 template <typename... Types>
 FORCEINLINE TTuple<typename TDecay<Types>::Type...> MakeTuple(Types&&... Args)
 {
-	return UE4Tuple_Private::MakeTupleImpl(Forward<Types>(Args)...);
+	return UE::Core::Private::Tuple::MakeTupleImpl(Forward<Types>(Args)...);
 }
 
 
@@ -831,13 +886,13 @@ FORCEINLINE TTuple<typename TDecay<Types>::Type...> MakeTuple(Types&&... Args)
 template <typename FuncType, typename... Types>
 FORCEINLINE decltype(auto) TransformTuple(TTuple<Types...>&& Tuple, FuncType Func)
 {
-	return UE4Tuple_Private::TTransformTuple_Impl<TMakeIntegerSequence<uint32, sizeof...(Types)>>::Do(MoveTemp(Tuple), MoveTemp(Func));
+	return UE::Core::Private::Tuple::TTransformTuple_Impl<TMakeIntegerSequence<uint32, sizeof...(Types)>>::Do(MoveTemp(Tuple), MoveTemp(Func));
 }
 
 template <typename FuncType, typename... Types>
 FORCEINLINE decltype(auto) TransformTuple(const TTuple<Types...>& Tuple, FuncType Func)
 {
-	return UE4Tuple_Private::TTransformTuple_Impl<TMakeIntegerSequence<uint32, sizeof...(Types)>>::Do(Tuple, MoveTemp(Func));
+	return UE::Core::Private::Tuple::TTransformTuple_Impl<TMakeIntegerSequence<uint32, sizeof...(Types)>>::Do(Tuple, MoveTemp(Func));
 }
 
 
@@ -862,7 +917,7 @@ FORCEINLINE decltype(auto) TransformTuple(const TTuple<Types...>& Tuple, FuncTyp
 template <typename FuncType, typename FirstTupleType, typename... TupleTypes>
 FORCEINLINE void VisitTupleElements(FuncType&& Func, FirstTupleType&& FirstTuple, TupleTypes&&... Tuples)
 {
-	UE4Tuple_Private::TVisitTupleElements_Impl<TMakeIntegerSequence<uint32, TTupleArity<typename TDecay<FirstTupleType>::Type>::Value>>::Do(Forward<FuncType>(Func), Forward<FirstTupleType>(FirstTuple), Forward<TupleTypes>(Tuples)...);
+	UE::Core::Private::Tuple::TVisitTupleElements_Impl<TMakeIntegerSequence<uint32, TTupleArity<typename TDecay<FirstTupleType>::Type>::Value>>::Do(Forward<FuncType>(Func), Forward<FirstTupleType>(FirstTuple), Forward<TupleTypes>(Tuples)...);
 }
 
 /**
@@ -889,12 +944,18 @@ FORCEINLINE TTuple<Types&...> Tie(Types&... Args)
 #if UE_TUPLE_STRUCTURED_BINDING_SUPPORT
 // TTuple support for structured bindings
 template <typename... ArgTypes>
-class std::tuple_size<TTuple<ArgTypes...>>
-	: public std::integral_constant<std::size_t, sizeof...(ArgTypes)>
+struct std::tuple_size<TTuple<ArgTypes...>>
+	: std::integral_constant<std::size_t, sizeof...(ArgTypes)>
 {
 };
 template <std::size_t N, typename... ArgTypes>
+#if defined(_LIBCPP_VERSION) && _LIBCPP_VERSION < 9000
+// libc++ 8.0 and older incorrectly defined std::tuple_element as class, whereas the standard
+// says it should be a struct.
 class std::tuple_element<N, TTuple<ArgTypes...>>
+#else
+struct std::tuple_element<N, TTuple<ArgTypes...>>
+#endif
 {
 public:
 	using type = typename TTupleElement<N, TTuple<ArgTypes...>>::Type;

@@ -120,7 +120,7 @@ void UDataprepDeleteObjectsOperation::OnExecution_Implementation(const FDataprep
 
 	for (UObject* Object : InContext.Objects)
 	{
-		if ( !ensure(Object) || Object->IsPendingKill() )
+		if ( !ensure(Object) || !IsValid(Object) )
 		{
 			continue;
 		}
@@ -155,7 +155,7 @@ void UDataprepDeleteObjectsOperation::OnExecution_Implementation(const FDataprep
 				{
 					// skip component with invalid or condemned owner
 					AActor* Owner = ChildComponent->GetOwner();
-					if ( Owner == nullptr || Owner == Actor || Owner->IsPendingKill() || InContext.Objects.Contains(Owner) /* Slow!!! */)
+					if ( Owner == Actor || !IsValid(Owner) || InContext.Objects.Contains(Owner) /* Slow!!! */)
 					{
 						continue;
 					}
@@ -250,7 +250,9 @@ bool UDataprepMergeActorsOperation::MergeStaticMeshActors(UWorld* World, const T
 
 	TArray<UObject*> CreatedAssets;
 	const float ScreenAreaSize = TNumericLimits<float>::Max();
-	MeshUtilities.MergeComponentsToStaticMesh( PrimitiveComponentsToMerge, World, MergeSettings, nullptr, GetTransientPackage(), FString(), CreatedAssets, MergedMeshWorldLocation, ScreenAreaSize, true);
+	FVector MMWL;
+	MeshUtilities.MergeComponentsToStaticMesh( PrimitiveComponentsToMerge, World, MergeSettings, nullptr, GetTransientPackage(), FString(), CreatedAssets, MMWL, ScreenAreaSize, true);
+	MergedMeshWorldLocation = MMWL;
 
 	UStaticMesh* UtilitiesMergedMesh = nullptr;
 	if (!CreatedAssets.FindItemByClass(&UtilitiesMergedMesh))
@@ -350,8 +352,8 @@ void UDataprepCreateProxyMeshOperation::OnExecution_Implementation(const FDatapr
 		{
 			FStaticMeshAttributes Attributes(*MeshDescription);
 			bool bHasValidLightmapUVs = Attributes.GetVertexInstanceUVs().IsValid() &&
-				Attributes.GetVertexInstanceUVs().GetNumIndices() > BuildSettings.SrcLightmapIndex &&
-				Attributes.GetVertexInstanceUVs().GetNumIndices() > BuildSettings.DstLightmapIndex;
+				Attributes.GetVertexInstanceUVs().GetNumChannels() > BuildSettings.SrcLightmapIndex &&
+				Attributes.GetVertexInstanceUVs().GetNumChannels() > BuildSettings.DstLightmapIndex;
 			if(!bHasValidLightmapUVs)
 			{
 				ProxySettings.bReuseMeshLightmapUVs = false;
@@ -489,7 +491,7 @@ void UDataprepDeleteUnusedAssetsOperation::OnExecution_Implementation(const FDat
 
 	for (UObject* Object : InContext.Objects)
 	{
-		if ( !ensure(Object) || Object->IsPendingKill() )
+		if ( !ensure(Object) || !IsValid(Object) )
 		{
 			continue;
 		}
@@ -557,7 +559,7 @@ void UDataprepCompactSceneGraphOperation::OnExecution_Implementation(const FData
 	TMap<AActor*, bool> VisibilityMap;
 	for (UObject* Object : InContext.Objects)
 	{
-		if (!ensure(Object) || Object->IsPendingKill())
+		if (!ensure(Object) || !IsValid(Object))
 		{
 			continue;
 		}
@@ -596,7 +598,7 @@ void UDataprepSpawnActorsAtLocation::OnExecution_Implementation(const FDataprepC
 
 	for (UObject* Object : InContext.Objects)
 	{
-		if (!ensure(Object) || Object->IsPendingKill())
+		if (!ensure(Object) || !IsValid(Object))
 		{
 			continue;
 		}
@@ -966,8 +968,7 @@ namespace DatasmithEditingOperationsUtils
 		{
 			for(AActor* Actor : Level->Actors)
 			{
-				const bool bIsValidRootActor = Actor &&
-					!Actor->IsPendingKill() &&
+				const bool bIsValidRootActor = IsValid(Actor) &&
 					Actor->IsEditable() &&
 					!Actor->IsTemplate() &&
 					!FActorEditorUtils::IsABuilderBrush(Actor) &&
@@ -992,7 +993,7 @@ namespace DatasmithEditingOperationsUtils
 		{
 			if(AActor* Actor = Cast<AActor>(Object))
 			{
-				if(!Actor->IsPendingKillOrUnreachable())
+				if(IsValidChecked(Actor))
 				{
 					// Set current world to first world encountered
 					if(World == nullptr)
@@ -1014,7 +1015,7 @@ namespace DatasmithEditingOperationsUtils
 						// Skip components which are either editor only or for visualization
 						if(!MeshComponent->IsEditorOnly() && !MeshComponent->IsVisualizationComponent())
 						{
-							if(MeshComponent->GetStaticMesh() && MeshComponent->GetStaticMesh()->GetSourceModels().Num() > 0)
+							if(MeshComponent->GetStaticMesh() && MeshComponent->GetStaticMesh()->GetNumSourceModels() > 0)
 							{
 								ComponentsToMerge.Add(MeshComponent);
 							}

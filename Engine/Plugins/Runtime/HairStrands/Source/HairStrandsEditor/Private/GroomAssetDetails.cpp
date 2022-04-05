@@ -109,7 +109,7 @@ static uint32 GetHairCardsAtlasResolution(int32 InLODIndex, int32 PrevResolution
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Array panel for hair strands infos
-TSharedRef<SUniformGridPanel> MakeHairStrandsInfoGrid(const FSlateFontInfo& DetailFontInfo, FHairGroupInfoWithVisibility& CurrentAsset)
+TSharedRef<SUniformGridPanel> MakeHairStrandsInfoGrid(const FSlateFontInfo& DetailFontInfo, FHairGroupInfoWithVisibility& CurrentAsset, float MaxRadius)
 {
 	TSharedRef<SUniformGridPanel> Grid = SNew(SUniformGridPanel).SlotPadding(2.0f);
 
@@ -176,6 +176,51 @@ TSharedRef<SUniformGridPanel> MakeHairStrandsInfoGrid(const FSlateFontInfo& Deta
 		.Text(FText::AsNumber(CurrentAsset.NumGuideVertices))
 	];
 
+	// Width (mm)
+	Grid->AddSlot(0, 3) // x, y
+	.HAlign(HAlign_Left)
+	[
+		SNew(STextBlock)
+		.Font(DetailFontInfo)
+		.Text(LOCTEXT("HairInfo_Width", "Max. Width"))
+	];
+	Grid->AddSlot(1, 3) // x, y
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Font(DetailFontInfo)
+		.Text(LOCTEXT("HairInfo_GuideWidth", ""))
+	];
+	Grid->AddSlot(2, 3) // x, y
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Font(DetailFontInfo)
+		.Text(FText::AsNumber(MaxRadius*2.0f))
+	];
+
+	// Imported Width (mm)
+	Grid->AddSlot(0, 4) // x, y
+	.HAlign(HAlign_Left)
+	[
+		SNew(STextBlock)
+		.Font(DetailFontInfo)
+	.Text(LOCTEXT("HairInfo_ImportedWidth", "Max. Imported Width"))
+	];
+	Grid->AddSlot(1, 4) // x, y
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Font(DetailFontInfo)
+	.Text(LOCTEXT("HairInfo_GuideImportedWidth", ""))
+	];
+	Grid->AddSlot(2, 4) // x, y
+	.HAlign(HAlign_Right)
+	[
+		SNew(STextBlock)
+		.Font(DetailFontInfo)
+		.Text(CurrentAsset.MaxImportedWidth > 0.f ? FText::AsNumber(CurrentAsset.MaxImportedWidth) : LOCTEXT("HairInfo_ImportedWidthDefault", "Not exported"))
+	];
 	return Grid;
 }
 
@@ -280,13 +325,22 @@ void FGroomRenderingDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLayout
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Custom widget for material slot for hair rendering
 
-void FGroomRenderingDetails::AddNewGroupButton(IDetailCategoryBuilder& FilesCategory, FProperty* Property)
+void FGroomRenderingDetails::AddNewGroupButton(IDetailCategoryBuilder& FilesCategory, FProperty* Property, const FText& HeaderText)
 {
 	// Add a button for adding element to the hair groups array
 	FilesCategory.AddCustomRow(FText::FromString(TEXT("AddGroup")))
 	.ValueContent()
 	[
 		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(2.f, 2.f, 10.f, 2.f)
+		[
+			SNew(STextBlock)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Text(HeaderText)
+		]
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
 		[
@@ -297,7 +351,7 @@ void FGroomRenderingDetails::AddNewGroupButton(IDetailCategoryBuilder& FilesCate
 			.OnClicked(this, &FGroomRenderingDetails::OnAddGroup, Property)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Plus"))
+				.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
 			]
 		]
 	];
@@ -317,10 +371,8 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
 	}
@@ -335,10 +387,8 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
 	}
@@ -353,10 +403,8 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
 	}
@@ -371,10 +419,8 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
 	}
@@ -389,10 +435,8 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 //		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
 //		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
 	}
@@ -407,10 +451,8 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials), UGroomAsset::StaticClass()));
 //		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsLOD), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, EnableGlobalInterpolation), UGroomAsset::StaticClass()));
 		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairInterpolationType), UGroomAsset::StaticClass()));
-//		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType), UGroomAsset::StaticClass()));
 //		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, MinLOD), UGroomAsset::StaticClass()));
 //		DetailLayout.HideProperty(DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, DisableBelowMinLodStripping), UGroomAsset::StaticClass()));
 	}
@@ -422,7 +464,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		case EMaterialPanelType::Cards:		
 		{
 			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsCards), UGroomAsset::StaticClass());
-			AddNewGroupButton(FilesCategory, Property->GetProperty());
+			AddNewGroupButton(FilesCategory, Property->GetProperty(), FText::FromString(TEXT("Add Card asset")));
 			if (Property->IsValidHandle())
 			{
 				TSharedRef<FDetailArrayBuilder> PropertyBuilder = MakeShareable(new FDetailArrayBuilder(Property, false, false, false));
@@ -435,7 +477,7 @@ void FGroomRenderingDetails::CustomizeStrandsGroupProperties(IDetailLayoutBuilde
 		case EMaterialPanelType::Meshes:	
 		{
 			TSharedRef<IPropertyHandle> Property = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMeshes), UGroomAsset::StaticClass());
-			AddNewGroupButton(FilesCategory, Property->GetProperty());
+			AddNewGroupButton(FilesCategory, Property->GetProperty(), FText::FromString(TEXT("Add Mesh asset")));
 			if (Property->IsValidHandle())
 			{
 				TSharedRef<FDetailArrayBuilder> PropertyBuilder = MakeShareable(new FDetailArrayBuilder(Property, false, false, false));
@@ -736,7 +778,6 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 		{
 			FHairGeometrySettings Default;
 			HAIR_RESET1(HairGroupsRendering, FHairGeometrySettings, GeometrySettings, HairWidth);
-			HAIR_RESET1(HairGroupsRendering, FHairGeometrySettings, GeometrySettings, HairClipScale);
 			HAIR_RESET1(HairGroupsRendering, FHairGeometrySettings, GeometrySettings, HairRootScale);
 			HAIR_RESET1(HairGroupsRendering, FHairGeometrySettings, GeometrySettings, HairTipScale);
 		}
@@ -783,7 +824,7 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 			HAIR_RESET0(HairGroupsLOD, FHairGroupsLOD, ClusterScreenSizeScale);
 		}
 
-		if (LODIndex >= 0 && LODIndex < GroomAsset->HairGroupsLOD[GroupIndex].LODs.Num())
+		if (LODIndex>=0 && LODIndex < GroomAsset->HairGroupsLOD[GroupIndex].LODs.Num())
 		{
 			FHairLODSettings Default;
 			HAIR_RESET1(HairGroupsLOD, FHairLODSettings, LODs[LODIndex], CurveDecimation);
@@ -813,6 +854,7 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, CoverageTexture);
 			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, TangentTexture);
 			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, AttributeTexture);
+			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, MaterialTexture);
 			HAIR_RESET1(HairGroupsCards, FHairGroupCardsTextures, Textures, AuxilaryDataTexture);
 		}
 	}
@@ -833,6 +875,7 @@ bool FGroomRenderingDetails::CommonResetToDefault(TSharedPtr<IPropertyHandle> Ch
 			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, CoverageTexture);
 			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, TangentTexture);
 			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, AttributeTexture);
+			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, MaterialTexture);
 			HAIR_RESET1(HairGroupsMeshes, FHairGroupCardsTextures, Textures, AuxilaryDataTexture);
 		}
 	}
@@ -921,6 +964,40 @@ void FGroomRenderingDetails::AddPropertyWithCustomReset(TSharedPtr<IPropertyHand
 	FResetToDefaultHandler ResetHandler = FResetToDefaultHandler::CreateSP(this, &FGroomRenderingDetails::ResetToDefault, GroupIndex, LODIndex);
 	FResetToDefaultOverride ResetOverride = FResetToDefaultOverride::Create(IsResetVisible, ResetHandler);
 	Builder.AddProperty(PropertyHandle.ToSharedRef()).OverrideResetToDefault(ResetOverride);
+}
+
+void FGroomRenderingDetails::ExpandStructForLOD(TSharedRef<IPropertyHandle>& PropertyHandle, IDetailChildrenBuilder& ChildrenBuilder, int32 GroupIndex, int32 LODIndex, bool bOverrideReset)
+{
+
+	uint32 ChildrenCount = 0;
+	PropertyHandle->GetNumChildren(ChildrenCount);
+	for (uint32 ChildIt = 0; ChildIt < ChildrenCount; ++ChildIt)
+	{
+		TSharedPtr<IPropertyHandle> ChildHandle = PropertyHandle->GetChildHandle(ChildIt);
+		const FName ChildPropertyName = ChildHandle->GetProperty()->GetFName();
+
+		// If the geometry type is not strands, then bypass the display of the strands related property
+		if (GroomAsset->GetGeometryType(GroupIndex, LODIndex) != EGroomGeometryType::Strands && 
+			(ChildPropertyName == GET_MEMBER_NAME_CHECKED(FHairLODSettings, CurveDecimation)  ||
+			 ChildPropertyName == GET_MEMBER_NAME_CHECKED(FHairLODSettings, VertexDecimation) ||
+			 ChildPropertyName == GET_MEMBER_NAME_CHECKED(FHairLODSettings, AngularThreshold) ||
+			 ChildPropertyName == GET_MEMBER_NAME_CHECKED(FHairLODSettings, ThicknessScale)))
+		{
+			continue;
+		}
+
+		if (bOverrideReset)
+		{
+			FIsResetToDefaultVisible IsResetVisible = FIsResetToDefaultVisible::CreateSP(this, &FGroomRenderingDetails::ShouldResetToDefault, GroupIndex, LODIndex);
+			FResetToDefaultHandler ResetHandler = FResetToDefaultHandler::CreateSP(this, &FGroomRenderingDetails::ResetToDefault, GroupIndex, LODIndex);
+			FResetToDefaultOverride ResetOverride = FResetToDefaultOverride::Create(IsResetVisible, ResetHandler);
+			ChildrenBuilder.AddProperty(ChildHandle.ToSharedRef()).OverrideResetToDefault(ResetOverride);
+		}
+		else
+		{
+			ChildrenBuilder.AddProperty(ChildHandle.ToSharedRef());
+		}
+	}
 }
 
 void FGroomRenderingDetails::ExpandStruct(TSharedPtr<IPropertyHandle>& PropertyHandle, IDetailChildrenBuilder& ChildrenBuilder, int32 GroupIndex, int32 LODIndex, bool bOverrideReset)
@@ -1042,50 +1119,57 @@ void FGroomRenderingDetails::OnGenerateElementForLODs(TSharedRef<IPropertyHandle
 	const FSlateFontInfo DetailFontInfo = IDetailLayoutBuilder::GetDetailFont();
 	FProperty* Property = StructProperty->GetProperty();
 
+	const FLinearColor LODColorBlock = GetHairGroupDebugColor(GroupIndex) * 0.25f;
+	const FLinearColor LODNameColor(FLinearColor::White);
+	static const FSlateBrush* GenericBrush = FCoreStyle::Get().GetBrush("GenericWhiteBox");
+	float OtherMargin = 2.0f;
+
 	ChildrenBuilder.AddCustomRow(LOCTEXT("HairInfo_Separator", "Separator"))
-	.ValueContent()
+	.WholeRowContent()
+	.VAlign(VAlign_Fill)
 	.HAlign(HAlign_Fill)
 	[
-		SNew(SHorizontalBox)
-		+ SHorizontalBox::Slot()
+		SNew(SOverlay)
+		+ SOverlay::Slot()
+		[
+			SNew(SImage)
+			.Image(GenericBrush)
+			.ColorAndOpacity(LODColorBlock)
+		]
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Right)
 		.VAlign(VAlign_Center)
 		[
-			SNew(SSeparator)
-			.Thickness(2)
-		]
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.VAlign(VAlign_Center)
-		[
-			SNew(STextBlock)
-			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.ColorAndOpacity(HairLODColor)
-			.Text(FText::Format(LOCTEXT("LOD", "LOD {0}"), FText::AsNumber(LODIndex)))
-		]
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		[
-			SNew(SSeparator)
-			.Thickness(2)
-		]
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		[
-			SNew(SButton)
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
 			.VAlign(VAlign_Center)
-			.HAlign(HAlign_Right)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-			.OnClicked(this, &FGroomRenderingDetails::OnRemoveLODClicked, GroupIndex, LODIndex, Property)
+			.Padding(OtherMargin)
 			[
-				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Cross"))
+				SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ColorAndOpacity(LODNameColor)
+				.Text(FText::Format(LOCTEXT("LOD", "LOD {0}"), FText::AsNumber(LODIndex)))
 			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				SNew(SButton)
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Right)
+				.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+				.OnClicked(this, &FGroomRenderingDetails::OnRemoveLODClicked, GroupIndex, LODIndex, Property)
+				[
+					SNew(SImage)
+					.Image(FEditorStyle::GetBrush("Icons.Delete"))
+				]
+			]
+			
 		]
 	];
 
 	// Rename the array entry name by its group name and adds all its existing properties
 	StructProperty->SetPropertyDisplayName(LOCTEXT("LODProperties", "LOD Properties"));
-	ExpandStruct(StructProperty, ChildrenBuilder, GroupIndex, LODIndex, true);
+	ExpandStructForLOD(StructProperty, ChildrenBuilder, GroupIndex, LODIndex, true); ///
 }
 
 TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameButtonCustomization(int32 GroupIndex, FProperty* Property)
@@ -1101,7 +1185,7 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameButtonCustomization(int
 			.OnClicked(this, &FGroomRenderingDetails::OnAddLODClicked, GroupIndex, Property)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Plus"))
+				.Image(FEditorStyle::GetBrush("Icons.PlusCircle"))
 			];
 	}
 	break;
@@ -1114,7 +1198,7 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameButtonCustomization(int
 			.OnClicked(this, &FGroomRenderingDetails::OnRemoveGroupClicked, GroupIndex, Property)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Cross"))
+				.Image(FEditorStyle::GetBrush("Icons.Delete"))
 			];
 	}
 	break;
@@ -1127,7 +1211,7 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameButtonCustomization(int
 			.OnClicked(this, &FGroomRenderingDetails::OnRemoveGroupClicked, GroupIndex, Property)
 			[
 				SNew(SImage)
-				.Image(FEditorStyle::GetBrush("Cross"))
+				.Image(FEditorStyle::GetBrush("Icons.Delete"))
 			];
 	}
 	break;
@@ -1136,7 +1220,16 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameButtonCustomization(int
 	return SNullWidget::NullWidget;
 }
 
-TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameCustomization(int32 GroupIndex)
+FName FGroomRenderingDetails::GetGroupName(int32 GroupIndex) const
+{
+	if (GroomAsset && GroupIndex >= 0 && GroupIndex < GroomAsset->HairGroupsInfo.Num())
+	{
+		return GroomAsset->HairGroupsInfo[GroupIndex].GroupName;
+	}
+	return NAME_None;
+}
+
+TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameCustomization(int32 GroupIndex, const FLinearColor& GroupColor)
 {
 	switch (PanelType)
 	{
@@ -1144,24 +1237,35 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameCustomization(int32 Gro
 	{
 		return SNew(STextBlock)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.ColorAndOpacity(HairGroupColor)
-			.Text(FText::Format(LOCTEXT("Cards", "Cards {0}"), FText::AsNumber(GroupIndex)));
+			.ColorAndOpacity(GroupColor)
+			.Text(FText::Format(LOCTEXT("Cards", "Cards {0} "), FText::AsNumber(GroupIndex)));
 	}
 	break;
 	case EMaterialPanelType::Meshes:
 	{
 		return SNew(STextBlock)
 			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.ColorAndOpacity(HairGroupColor)
-			.Text(FText::Format(LOCTEXT("Meshes", "Meshes {0}"), FText::AsNumber(GroupIndex)));
+			.ColorAndOpacity(GroupColor)
+			.Text(FText::Format(LOCTEXT("Meshes", "Meshes {0} "), FText::AsNumber(GroupIndex)));
 	}
 	break;
 	default:
 	{
-		return SNew(STextBlock)
-			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.ColorAndOpacity(HairGroupColor)
-			.Text(FText::Format(LOCTEXT("Group", "Group ID {0}"), FText::AsNumber(GroupIndex)));
+		FName GroupName = GetGroupName(GroupIndex);
+		if (GroupName != NAME_None)
+		{
+			return SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ColorAndOpacity(GroupColor)
+				.Text(FText::Format(LOCTEXT("GroupWithName", "Group ID {0} - {1}"), FText::AsNumber(GroupIndex), FText::FromName(GroupName)));
+		}
+		else
+		{
+			return SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ColorAndOpacity(GroupColor)
+				.Text(FText::Format(LOCTEXT("GroupWithoutName", "Group ID {0}"), FText::AsNumber(GroupIndex)));
+		}
 	}
 	break;
 	}
@@ -1173,41 +1277,49 @@ TSharedRef<SWidget> FGroomRenderingDetails::MakeGroupNameCustomization(int32 Gro
 void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyHandle> StructProperty, int32 GroupIndex, IDetailChildrenBuilder& ChildrenBuilder, IDetailLayoutBuilder* DetailLayout)
 {
 	const FSlateFontInfo DetailFontInfo = IDetailLayoutBuilder::GetDetailFont();
+	const FLinearColor GroupColorBlock = GetHairGroupDebugColor(GroupIndex) * 0.75f;
+	const FLinearColor GroupNameColor(FLinearColor::White);
 
 	FProperty* Property = StructProperty->GetProperty();
 
+	static const FSlateBrush* GenericBrush = FCoreStyle::Get().GetBrush("GenericWhiteBox");
+
+	float OtherMargin = 2.0f;
+	float RightMargin = 2.0f;
+	if (PanelType != EMaterialPanelType::LODs && PanelType != EMaterialPanelType::Cards && PanelType != EMaterialPanelType::Meshes)
+	{
+		RightMargin = 10.0f;
+	}
+
 	ChildrenBuilder.AddCustomRow(LOCTEXT("HairInfo_Separator", "Separator"))
-	.NameContent()
-	[
-		SNew(SHorizontalBox)
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		[
-			SNew(SSeparator)
-			.Thickness(2)
-			.ColorAndOpacity(HairGroupColor)
-		]
-	]
-	.ValueContent()
+	.WholeRowContent()
+	.VAlign(VAlign_Fill)
 	.HAlign(HAlign_Fill)
 	[
-		SNew(SHorizontalBox)
-		+ SHorizontalBox::Slot()
+		SNew(SOverlay)
+		+ SOverlay::Slot()
+		[
+			SNew(SImage)
+			.Image(GenericBrush)
+			.ColorAndOpacity(GroupColorBlock)
+		]
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Right)
 		.VAlign(VAlign_Center)
 		[
-			SNew(SSeparator)
-			.Thickness(2)
-		]
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.HAlign(HAlign_Right)
-		[
-			MakeGroupNameCustomization(GroupIndex)
-		]
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		[
-			MakeGroupNameButtonCustomization(GroupIndex, Property)
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.Padding(OtherMargin, OtherMargin, RightMargin, OtherMargin)
+			[
+				MakeGroupNameCustomization(GroupIndex, GroupNameColor)
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			[
+				MakeGroupNameButtonCustomization(GroupIndex, Property)
+			]
+			
 		]
 	];
 
@@ -1217,7 +1329,7 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 		.ValueContent()
 		.HAlign(HAlign_Fill)
 		[
-			MakeHairStrandsInfoGrid(DetailFontInfo, GroomAsset->HairGroupsInfo[GroupIndex])
+			MakeHairStrandsInfoGrid(DetailFontInfo, GroomAsset->HairGroupsInfo[GroupIndex], GroomAsset->HairGroupsData[GroupIndex].Strands.BulkData.MaxRadius)
 		];
 	}
 
@@ -1235,7 +1347,13 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 	// materials which have been added by the user within the material panel
 	if (PanelType == EMaterialPanelType::Strands || PanelType == EMaterialPanelType::Cards || PanelType == EMaterialPanelType::Meshes)
 	{
+		FResetToDefaultOverride ResetToDefaultOverride = FResetToDefaultOverride::Create(
+			FIsResetToDefaultVisible::CreateSP(this, &FGroomRenderingDetails::GetReplaceVisibility),
+			FResetToDefaultHandler::CreateSP(this, &FGroomRenderingDetails::OnResetToBaseClicked)
+		);
+
 		ChildrenBuilder.AddCustomRow(LOCTEXT("HairGroup_Material", "Material"))
+		.OverrideResetToDefault(ResetToDefaultOverride)
 		.NameContent()
 		[
 			SNew(STextBlock)
@@ -1305,7 +1423,7 @@ void FGroomRenderingDetails::OnGenerateElementForHairGroup(TSharedRef<IPropertyH
 							.OnClicked(this, &FGroomRenderingDetails::OnSaveCards, GroupIndex, Property)
 							[
 								SNew(SImage)
-								.Image(FEditorStyle::GetBrush("AssetEditor.SaveAsset.Greyscale"))
+								.Image(FEditorStyle::GetBrush("AssetEditor.SaveAsset"))
 							]
 						]
 						+ SHorizontalBox::Slot()
@@ -1451,11 +1569,6 @@ TSharedRef<SWidget> FGroomRenderingDetails::CreateMaterialSwatch( const TSharedP
 {
 	FIntPoint ThumbnailSize(64, 64);
 
-	FResetToDefaultOverride ResetToDefaultOverride = FResetToDefaultOverride::Create(
-		FIsResetToDefaultVisible::CreateSP(this, &FGroomRenderingDetails::GetReplaceVisibility),
-		FResetToDefaultHandler::CreateSP(this, &FGroomRenderingDetails::OnResetToBaseClicked)
-	);
-
 	const bool bDisplayCompactSize = false;
 	return
 		SNew(SHorizontalBox)
@@ -1480,7 +1593,6 @@ TSharedRef<SWidget> FGroomRenderingDetails::CreateMaterialSwatch( const TSharedP
 					.OnObjectChanged(this, &FGroomRenderingDetails::OnSetObject)
 					.ThumbnailPool(ThumbnailPool)
 					.DisplayCompactSize(bDisplayCompactSize)
-					.CustomResetToDefault(ResetToDefaultOverride)
 					//.OwnerAssetDataArray(OwnerAssetDataArray)
 					.CustomContentSlot()
 					[

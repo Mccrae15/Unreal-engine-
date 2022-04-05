@@ -58,6 +58,11 @@ UWorld* UCheatManagerExtension::GetWorld() const
 	return GetOuterUCheatManager()->GetWorld();
 }
 
+APlayerController* UCheatManagerExtension::GetPlayerController() const
+{
+	return GetOuterUCheatManager()->GetPlayerController();
+}
+
 UCheatManager::UCheatManager(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, bToggleAILogging(false)
@@ -69,6 +74,11 @@ UCheatManager::UCheatManager(const FObjectInitializer& ObjectInitializer)
 	DebugTraceDrawNormalLength = 30.0f;
 	DebugTraceChannel = ECC_Pawn;
 	bDebugCapsuleTraceComplex = false;
+}
+
+void UCheatManager::OnPlayerEndPlayed(AActor* Player, EEndPlayReason::Type EndPlayReason)
+{
+	CheatManagerExtensions.Empty();
 }
 
 bool UCheatManager::ProcessConsoleExec(const TCHAR* Cmd, FOutputDevice& Ar, UObject* Executor)
@@ -311,7 +321,7 @@ void UCheatManager::DestroyAll(TSubclassOf<AActor> aClass)
 	for (TActorIterator<AActor> It(GetWorld(),aClass); It; ++It)
 	{
 		AActor* A = *It;
-		if (!A->IsPendingKill())
+		if (IsValidChecked(A))
 		{
 			APawn* Pawn = Cast<APawn>(A);
 			if (Pawn != NULL)
@@ -338,8 +348,7 @@ void UCheatManager::DestroyAllPawnsExceptTarget()
 		for (TActorIterator<APawn> It(GetWorld(), APawn::StaticClass()); It; ++It)
 		{
 			APawn* Pawn = *It;
-			checkSlow(Pawn);
-			if (!Pawn->IsPendingKill())
+			if (IsValidChecked(Pawn))
 			{
 				if ((Pawn != HitPawnTarget) && Cast<APlayerController>(Pawn->Controller) == NULL)
 				{
@@ -519,7 +528,7 @@ void UCheatManager::ViewActor( FName ActorName)
 	for (FActorIterator It(GetWorld()); It; ++It)
 	{
 		AActor* A = *It;
-		if (A && !A ->IsPendingKill())
+		if (IsValid(A))
 		{
 			if ( A->GetFName() == ActorName )
 			{
@@ -539,7 +548,7 @@ void UCheatManager::ViewClass( TSubclassOf<AActor> DesiredClass )
 	for (TActorIterator<AActor> It(GetWorld(), DesiredClass); It; ++It)
 	{
 		AActor* TestActor = *It;
-		if (!TestActor->IsPendingKill())
+		if (IsValidChecked(TestActor))
 		{
 			AActor* Other = TestActor;
 			if (bFound || (First == NULL))
@@ -669,6 +678,7 @@ void UCheatManager::InitCheatManager()
 {
 	ReceiveInitCheatManager(); //BP Initialization event
 	OnCheatManagerCreatedDelegate.Broadcast(this);
+	GetOuterAPlayerController()->OnEndPlay.AddDynamic(this, &UCheatManager::OnPlayerEndPlayed);
 }
 
 void UCheatManager::BeginDestroy()
@@ -783,7 +793,7 @@ void UCheatManager::TickCollisionDebug()
 				if(bHit)
 				{
 					AddCapsuleSweepDebugInfo(ViewLoc, End, Result.ImpactPoint, Result.Normal, Result.ImpactNormal, Result.Location, DebugCapsuleHalfHeight, DebugCapsuleRadius, false, (Result.bStartPenetrating && Result.bBlockingHit)? true: false);
-					UE_LOG(LogCollision, Log, TEXT("Collision component (%s) : Actor (%s)"), *GetNameSafe(Result.Component.Get()), *GetNameSafe(Result.GetActor()));
+					UE_LOG(LogCollision, Log, TEXT("Collision component (%s) : Actor (%s)"), *GetNameSafe(Result.Component.Get()), *Result.HitObjectHandle.GetName());
 				}
 			}
 		}
@@ -841,7 +851,7 @@ void UCheatManager::TickCollisionDebug()
 			}
 			else
 			{
-				DrawDebugCapsule(GetWorld(), TraceInfo.HitLocation, TraceInfo.CapsuleHalfHeight, TraceInfo.CapsuleRadius, FQuat::Identity, CurrentColor.Quantize());
+				DrawDebugCapsule(GetWorld(), TraceInfo.HitLocation, TraceInfo.CapsuleHalfHeight, TraceInfo.CapsuleRadius, FQuat::Identity, CurrentColor.QuantizeRound());
 			}
 			DrawDebugDirectionalArrow(GetWorld(), TraceInfo.HitNormalStart, TraceInfo.HitNormalEnd, 5.f, FColor(255,64,64), SDPG_World);
 		}
@@ -1279,8 +1289,8 @@ AActor* UCheatManager::GetTarget(APlayerController* PlayerController, struct FHi
     bool bHit = GetWorld()->LineTraceSingleByChannel(OutHit, CamLoc, CamRot.Vector() * 100000.f + CamLoc, ECC_Pawn, TraceParams);
     if (bHit)
     {
-        check(OutHit.GetActor() != NULL);
-        return OutHit.GetActor();
+        check(OutHit.HitObjectHandle.FetchActor() != nullptr);
+		return OutHit.HitObjectHandle.FetchActor();
     }
     return NULL;
 }
@@ -1412,6 +1422,11 @@ FDelegateHandle UCheatManager::RegisterForOnCheatManagerCreated(FOnCheatManagerC
 void UCheatManager::UnregisterFromOnCheatManagerCreated(FDelegateHandle DelegateHandle)
 {
 	OnCheatManagerCreatedDelegate.Remove(DelegateHandle);
+}
+
+APlayerController* UCheatManager::GetPlayerController() const
+{
+	return GetOuterAPlayerController();
 }
 
 #undef LOCTEXT_NAMESPACE

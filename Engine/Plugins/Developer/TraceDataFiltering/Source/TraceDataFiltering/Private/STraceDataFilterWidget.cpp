@@ -129,7 +129,6 @@ void STraceDataFilterWidget::Construct(const FArguments& InArgs)
 			[
 				SNew(SBorder)
 				.BorderImage(FEventFilterStyle::GetBrush("FilterPresets.SessionWarningBorder"))
-				.BorderBackgroundColor(FColor(166,137,0))
 				[
 					SNew(SHorizontalBox)
 					.Visibility_Lambda([this]() -> EVisibility 
@@ -146,13 +145,14 @@ void STraceDataFilterWidget::Construct(const FArguments& InArgs)
 						.Image(FEventFilterStyle::GetBrush("FilterPresets.WarningIcon"))
 					]
 
-					+SHorizontalBox::Slot()
+					+ SHorizontalBox::Slot()
 					.VAlign(VAlign_Center)
 					.AutoWidth()
 					.Padding(4.0f, 0.0f, 0.0f, 0.0f)
 					[
 						SNew(STextBlock)
 						.Text(LOCTEXT("NoValidFilterWarning", "Trace Data Filtering requires a connected Live Trace Session"))
+						.ColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 1.0f))
 					]
 				]
 			]
@@ -167,7 +167,7 @@ void STraceDataFilterWidget::Construct(const FArguments& InArgs)
 				[
 					SNew(SScrollBorder, Treeview.ToSharedRef())
 					[
-						Treeview.ToSharedRef()					
+						Treeview.ToSharedRef()
 					]
 				]
 			]			
@@ -215,7 +215,7 @@ void STraceDataFilterWidget::OnHighlightPreset(const TSharedPtr<IFilterPreset>& 
 {
 	if (Treeview.IsValid())
 	{
-		/** Update treeview so that any whitelisted entry (as part of Preset) is highlighted and expanded */
+		/** Update treeview so that any allowlisted entry (as part of Preset) is highlighted and expanded */
 		Treeview->ClearHighlightedItems();
 		if (Preset.IsValid())
 		{
@@ -227,7 +227,7 @@ void STraceDataFilterWidget::OnHighlightPreset(const TSharedPtr<IFilterPreset>& 
 			}
 
 			TArray<FString> Names;
-			Preset->GetWhitelistedNames(Names);
+			Preset->GetAllowlistedNames(Names);
 
 			EnumerateAllItems([this, Names](TSharedPtr<ITraceObject> Object) -> void
 			{
@@ -566,7 +566,7 @@ void STraceDataFilterWidget::RestoreItemSelection()
 	SelectedObjectNames.Empty();
 }
 
-void STraceDataFilterWidget::SetCurrentAnalysisSession(uint32 SessionHandle, TSharedRef<const Trace::IAnalysisSession> AnalysisSession)
+void STraceDataFilterWidget::SetCurrentAnalysisSession(uint32 SessionHandle, TSharedRef<const TraceServices::IAnalysisSession> AnalysisSession)
 {
 #if WITH_EDITOR
 	SessionFilterService = MakeShareable(new FSessionEditorFilterService(SessionHandle, AnalysisSession));
@@ -717,7 +717,7 @@ void STraceDataFilterWidget::RefreshTreeviewData()
 void STraceDataFilterWidget::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
 	IUnrealInsightsModule& InsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
-	TSharedPtr<const Trace::IAnalysisSession> AnalysisSession = InsightsModule.GetAnalysisSession();
+	TSharedPtr<const TraceServices::IAnalysisSession> AnalysisSession = InsightsModule.GetAnalysisSession();
 
 	if (SessionFilterService.IsValid() )
 	{
@@ -736,18 +736,13 @@ void STraceDataFilterWidget::Tick(const FGeometry& AllottedGeometry, const doubl
 	{
 		if (AnalysisSession.IsValid())
 		{			
-			Trace::FStoreClient* StoreClient = InsightsModule.GetStoreClient();
+			UE::Trace::FStoreClient* StoreClient = InsightsModule.GetStoreClient();
 			if (StoreClient)
 			{
-				const int32 SessionCount = StoreClient->GetSessionCount();
-
-				if (SessionCount > 0)
+				const UE::Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfoByTraceId(AnalysisSession->GetTraceId());
+				if (SessionInfo && (!AnalysisSession->IsAnalysisComplete() || SessionInfo->GetTraceId() != PreviousSessionHandle))
 				{
-					const Trace::FStoreClient::FSessionInfo* SessionInfo = StoreClient->GetSessionInfo(SessionCount - 1);
-					if (SessionInfo && (!AnalysisSession->IsAnalysisComplete() || SessionInfo->GetTraceId() != PreviousSessionHandle))
-					{
-						SetCurrentAnalysisSession(SessionInfo->GetTraceId(), AnalysisSession.ToSharedRef());
-					}
+					SetCurrentAnalysisSession(SessionInfo->GetTraceId(), AnalysisSession.ToSharedRef());
 				}
 			}
 		}

@@ -5,8 +5,8 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SSpinBox.h"
+#include "Widgets/Input/STextComboBox.h"
 #include "EditorStyleSet.h"
-
 
 #include "STransformViewportToolbar.h"
 #include "EditorShowFlags.h"
@@ -26,31 +26,41 @@
 //////////////////////////////////////////////////////////////////////////
 // SCommonEditorViewportToolbarBase
 
+SCommonEditorViewportToolbarBase::~SCommonEditorViewportToolbarBase()
+{
+	if (PreviewProfileController)
+	{
+		PreviewProfileController->OnPreviewProfileListChanged().RemoveAll(this);
+		PreviewProfileController->OnPreviewProfileChanged().RemoveAll(this);
+	}
+}
+
+
 void SCommonEditorViewportToolbarBase::Construct(const FArguments& InArgs, TSharedPtr<class ICommonEditorViewportToolbarInfoProvider> InInfoProvider)
 {
 	InfoProviderPtr = InInfoProvider;
- 	TSharedRef<SEditorViewport> ViewportRef = GetInfoProvider().GetViewportWidget();
+	PreviewProfileController = InArgs._PreviewProfileController;
+
+	TSharedRef<SEditorViewport> ViewportRef = GetInfoProvider().GetViewportWidget();
 	TSharedPtr<SHorizontalBox> MainBoxPtr;
 
-	const FMargin ToolbarSlotPadding( 2.0f, 2.0f );
-	const FMargin ToolbarButtonPadding( 2.0f, 0.0f );
+	if (PreviewProfileController)
+	{
+		PreviewProfileController->OnPreviewProfileListChanged().AddRaw(this, &SCommonEditorViewportToolbarBase::UpdateAssetViewerProfileList);
+		PreviewProfileController->OnPreviewProfileChanged().AddRaw(this, &SCommonEditorViewportToolbarBase::UpdateAssetViewerProfileSelection);
+		UpdateAssetViewerProfileList();
+	}
 
-	static const FName DefaultForegroundName("DefaultForeground");
+	const FMargin ToolbarSlotPadding(4.0f, 1.0f);
+	const FMargin ToolbarButtonPadding(4.0f, 0.0f);
 
 	ChildSlot
 	[
 		SNew( SBorder )
-		.BorderImage( FEditorStyle::GetBrush("NoBorder") )
-		// Color and opacity is changed based on whether or not the mouse cursor is hovering over the toolbar area
-		.ColorAndOpacity( this, &SViewportToolBar::OnGetColorAndOpacity )
-		.ForegroundColor( FEditorStyle::GetSlateColor(DefaultForegroundName) )
+		.BorderImage(FAppStyle::Get().GetBrush("EditorViewportToolBar.Background"))
+		.Cursor(EMouseCursor::Default)
 		[
-			SNew( SVerticalBox )
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			[
-				SAssignNew( MainBoxPtr, SHorizontalBox )
-			]
+			SAssignNew( MainBoxPtr, SHorizontalBox )
 		]
 	];
 
@@ -62,7 +72,7 @@ void SCommonEditorViewportToolbarBase::Construct(const FArguments& InArgs, TShar
 			SNew(SEditorViewportToolbarMenu)
 			.ParentToolBar(SharedThis(this))
 			.Cursor(EMouseCursor::Default)
-			.Image("EditorViewportToolBar.MenuDropdown")
+			.Image("EditorViewportToolBar.OptionsDropdown")
 			.OnGetMenuContent(this, &SCommonEditorViewportToolbarBase::GenerateOptionsMenu)
 		];
 
@@ -75,7 +85,6 @@ void SCommonEditorViewportToolbarBase::Construct(const FArguments& InArgs, TShar
 			.ParentToolBar(SharedThis(this))
 			.Cursor(EMouseCursor::Default)
 			.Label(this, &SCommonEditorViewportToolbarBase::GetCameraMenuLabel)
-			.LabelIcon(this, &SCommonEditorViewportToolbarBase::GetCameraMenuLabelIcon)
 			.OnGetMenuContent(this, &SCommonEditorViewportToolbarBase::GenerateCameraMenu)
 		];
 
@@ -99,6 +108,17 @@ void SCommonEditorViewportToolbarBase::Construct(const FArguments& InArgs, TShar
 			.OnGetMenuContent(this, &SCommonEditorViewportToolbarBase::GenerateShowMenu)
 		];
 
+	// Profile menu (Controls the Preview Scene Settings)
+	if (InArgs._PreviewProfileController)
+	{
+		MainBoxPtr->AddSlot()
+			.AutoWidth()
+			.Padding(ToolbarSlotPadding)
+			[
+				MakeAssetViewerProfileComboBox()
+			];
+	}
+
 	// Realtime button
 	if (InArgs._AddRealtimeButton)
 	{
@@ -109,16 +129,15 @@ void SCommonEditorViewportToolbarBase::Construct(const FArguments& InArgs, TShar
 				SNew(SEditorViewportToolBarButton)
 				.Cursor(EMouseCursor::Default)
 				.ButtonType(EUserInterfaceActionType::Button)
-				.ButtonStyle(&FEditorStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.MenuButtonWarning"))
+				.ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.WarningButton"))
 				.OnClicked(this, &SCommonEditorViewportToolbarBase::OnRealtimeWarningClicked)
 				.Visibility(this, &SCommonEditorViewportToolbarBase::GetRealtimeWarningVisibility)
 				.ToolTipText(LOCTEXT("RealtimeOff_ToolTip", "This viewport is not updating in realtime.  Click to turn on realtime mode."))
 				.Content()
 				[
 					SNew(STextBlock)
-					.Font(FEditorStyle::GetFontStyle("EditorViewportToolBar.Font"))
-					.Text(LOCTEXT("RealtimeOff", "Realtime: Off"))
-					.ColorAndOpacity(FLinearColor::Black)
+					.TextStyle(&FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("SmallText"))
+					.Text(LOCTEXT("RealtimeOff", "Realtime Off"))
 				]
 			];
 	}
@@ -142,13 +161,12 @@ void SCommonEditorViewportToolbarBase::Construct(const FArguments& InArgs, TShar
 			// Button to show scalability warnings
 			SNew(SEditorViewportToolbarMenu)
 			.ParentToolBar(SharedThis(this))
-			.Cursor(EMouseCursor::Default)
 			.Label(this, &SCommonEditorViewportToolbarBase::GetScalabilityWarningLabel)
-			.MenuStyle(FEditorStyle::Get(), "EditorViewportToolBar.MenuButtonWarning")
+			.MenuStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.WarningButton"))
 			.OnGetMenuContent(this, &SCommonEditorViewportToolbarBase::GetScalabilityWarningMenuContent)
 			.Visibility(this, &SCommonEditorViewportToolbarBase::GetScalabilityWarningVisibility)
 			.ToolTipText(LOCTEXT("ScalabilityWarning_ToolTip", "Non-default scalability settings could be affecting what is shown in this viewport.\nFor example you may experience lower visual quality, reduced particle counts, and other artifacts that don't match what the scene would look like when running outside of the editor. Click to make changes."))
-			];
+		];
 
 	// Add optional toolbar slots to be added by child classes inherited from this common viewport toolbar
 	ExtendLeftAlignedToolbarSlots(MainBoxPtr, SharedThis(this));
@@ -168,15 +186,84 @@ void SCommonEditorViewportToolbarBase::Construct(const FArguments& InArgs, TShar
 	SViewportToolBar::Construct(SViewportToolBar::FArguments());
 }
 
+void SCommonEditorViewportToolbarBase::UpdateAssetViewerProfileList()
+{
+	if (PreviewProfileController)
+	{
+		// Pull the latest profile list.
+		int32 CurrProfileIndex = 0;
+		TArray<FString> ProfileNames = PreviewProfileController->GetPreviewProfiles(CurrProfileIndex);
+
+		// Rebuild the combo box list.
+		AssetViewerProfileNames.Empty();
+		for (const FString& Profile : ProfileNames)
+		{
+			AssetViewerProfileNames.Add(MakeShared<FString>(Profile));
+		}
+
+		// Select the current profile item.
+		if (AssetViewerProfileComboBox)
+		{
+			AssetViewerProfileComboBox->RefreshOptions();
+			AssetViewerProfileComboBox->SetSelectedItem(AssetViewerProfileNames[CurrProfileIndex]);
+		}
+	}
+}
+
+void SCommonEditorViewportToolbarBase::UpdateAssetViewerProfileSelection()
+{
+	if (PreviewProfileController)
+	{
+		FString ActiveProfileName = PreviewProfileController->GetActiveProfile();
+		if (TSharedPtr<FString>* Match = AssetViewerProfileNames.FindByPredicate(
+			[&ActiveProfileName](const TSharedPtr<FString>& Candidate) { return *Candidate == ActiveProfileName; }))
+		{
+			AssetViewerProfileComboBox->SetSelectedItem(*Match);
+		}
+		else // The profile was likely renamed.
+		{
+			UpdateAssetViewerProfileList();
+		}
+	}
+}
+
+void SCommonEditorViewportToolbarBase::OnAssetViewerProfileComboBoxSelectionChanged(TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectInfo)
+{
+	int32 NewSelectionIndex;
+	if (AssetViewerProfileNames.Find(NewSelection, NewSelectionIndex))
+	{
+		// If that's the user changing the combo box, not an update coming from code to reflect a change that already occurred.
+		if (SelectInfo != ESelectInfo::Direct)
+		{
+			PreviewProfileController->SetActiveProfile(*NewSelection);
+		}
+	}
+}
+
+TSharedRef<SWidget> SCommonEditorViewportToolbarBase::MakeAssetViewerProfileComboBox()
+{
+	AssetViewerProfileComboBox = SNew(STextComboBox)
+		.OptionsSource(&AssetViewerProfileNames)
+		.ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("EditorViewportToolBar.Button"))
+		.ContentPadding(FMargin(2, 0))
+		.ToolTipText(LOCTEXT("AssetViewerProfile_ToolTip", "Changes the asset viewer profile"))
+		.OnSelectionChanged(this, &SCommonEditorViewportToolbarBase::OnAssetViewerProfileComboBoxSelectionChanged)
+		.Visibility_Lambda([this]() { return AssetViewerProfileNames.Num() > 1 ? EVisibility::Visible : EVisibility::Collapsed; });
+
+	AssetViewerProfileComboBox->RefreshOptions();
+	if (!AssetViewerProfileNames.IsEmpty())
+	{
+		AssetViewerProfileComboBox->SetSelectedItem(AssetViewerProfileNames[0]);
+	}
+
+	return AssetViewerProfileComboBox.ToSharedRef();
+}
+
 FText SCommonEditorViewportToolbarBase::GetCameraMenuLabel() const
 {
 	return GetCameraMenuLabelFromViewportType( GetViewportClient().GetViewportType() );
 }
 
-const FSlateBrush* SCommonEditorViewportToolbarBase::GetCameraMenuLabelIcon() const
-{
-	return GetCameraMenuLabelIconFromViewportType( GetViewportClient().GetViewportType() );
-}
 
 EVisibility SCommonEditorViewportToolbarBase::GetViewModeOptionsVisibility() const
 {
@@ -325,6 +412,9 @@ TSharedRef<SWidget> SCommonEditorViewportToolbarBase::GenerateShowMenu() const
 			ShowMenuBuilder.AddSubMenu( LOCTEXT("LightingFeaturesShowFlagsMenu", "Lighting Features"), LOCTEXT("LightingFeaturesShowFlagsMenu_ToolTip", "Lighting Features show flags"),
 				FNewMenuDelegate::CreateStatic(&CommonEditorViewportUtils::FillShowMenu, ShowMenu[SFG_LightingFeatures], 0));
 
+			ShowMenuBuilder.AddSubMenu(LOCTEXT("LumenShowFlagsMenu", "Lumen"), LOCTEXT("LumenShowFlagsMenu_ToolTip", "Lumen show flags"),
+				FNewMenuDelegate::CreateStatic(&CommonEditorViewportUtils::FillShowMenu, ShowMenu[SFG_Lumen], 0));
+
 			ShowMenuBuilder.AddSubMenu( LOCTEXT("DeveloperShowFlagsMenu", "Developer"), LOCTEXT("DeveloperShowFlagsMenu_ToolTip", "Developer show flags"),
 				FNewMenuDelegate::CreateStatic(&CommonEditorViewportUtils::FillShowMenu, ShowMenu[SFG_Developer], 0));
 
@@ -373,12 +463,18 @@ TSharedRef<SWidget> SCommonEditorViewportToolbarBase::GenerateFOVMenu() const
 			.Padding( FMargin(4.0f, 0.0f, 0.0f, 0.0f) )
 			.WidthOverride( 100.0f )
 			[
-				SNew(SSpinBox<float>)
-				.Font( FEditorStyle::GetFontStyle( TEXT( "MenuItem.Font" ) ) )
-				.MinValue(FOVMin)
-				.MaxValue(FOVMax)
-				.Value(this, &SCommonEditorViewportToolbarBase::OnGetFOVValue)
-				.OnValueChanged(this, &SCommonEditorViewportToolbarBase::OnFOVValueChanged)
+				SNew ( SBorder )
+				.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+				.Padding(FMargin(1.0f))
+				[
+					SNew(SSpinBox<float>)
+					.Style(&FAppStyle::Get(), "Menu.SpinBox")
+					.Font( FEditorStyle::GetFontStyle( TEXT( "MenuItem.Font" ) ) )
+					.MinValue(FOVMin)
+					.MaxValue(FOVMax)
+					.Value(this, &SCommonEditorViewportToolbarBase::OnGetFOVValue)
+					.OnValueChanged(this, &SCommonEditorViewportToolbarBase::OnFOVValueChanged)
+				]
 			]
 		];
 }
@@ -398,8 +494,8 @@ void SCommonEditorViewportToolbarBase::OnFOVValueChanged(float NewValue) const
 
 TSharedRef<SWidget> SCommonEditorViewportToolbarBase::GenerateScreenPercentageMenu() const
 {
-	const int32 PreviewScreenPercentageMin = FSceneViewScreenPercentageConfig::kMinTAAUpsampleResolutionFraction * 100.0f;
-	const int32 PreviewScreenPercentageMax = FSceneViewScreenPercentageConfig::kMaxTAAUpsampleResolutionFraction * 100.0f;
+	const int32 PreviewScreenPercentageMin = ISceneViewFamilyScreenPercentage::kMinTSRResolutionFraction * 100.0f;
+	const int32 PreviewScreenPercentageMax = ISceneViewFamilyScreenPercentage::kMaxTSRResolutionFraction * 100.0f;
 
 	return
 		SNew(SBox)
@@ -408,15 +504,21 @@ TSharedRef<SWidget> SCommonEditorViewportToolbarBase::GenerateScreenPercentageMe
 		[
 			SNew(SBox)
 			.Padding(FMargin(4.0f, 0.0f, 0.0f, 0.0f))
-		.WidthOverride(100.0f)
-		[
-			SNew(SSpinBox<int32>)
-			.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
-		.MinValue(PreviewScreenPercentageMin)
-		.MaxValue(PreviewScreenPercentageMax)
-		.Value(this, &SCommonEditorViewportToolbarBase::OnGetScreenPercentageValue)
-		.OnValueChanged(const_cast<SCommonEditorViewportToolbarBase*>(this), &SCommonEditorViewportToolbarBase::OnScreenPercentageValueChanged)
-		]
+			.WidthOverride(100.0f)
+			[
+				SNew ( SBorder )
+				.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+				.Padding(FMargin(1.0f))
+				[
+					SNew(SSpinBox<int32>)
+					.Style(&FAppStyle::Get(), "Menu.SpinBox")
+					.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
+					.MinSliderValue(PreviewScreenPercentageMin)
+					.MaxSliderValue(PreviewScreenPercentageMax)
+					.Value(this, &SCommonEditorViewportToolbarBase::OnGetScreenPercentageValue)
+					.OnValueChanged(const_cast<SCommonEditorViewportToolbarBase*>(this), &SCommonEditorViewportToolbarBase::OnScreenPercentageValueChanged)
+				]
+			]
 		];
 }
 
@@ -448,13 +550,19 @@ TSharedRef<SWidget> SCommonEditorViewportToolbarBase::GenerateFarViewPlaneMenu()
 			.Padding(FMargin(4.0f, 0.0f, 0.0f, 0.0f))
 			.WidthOverride(100.0f)
 			[
-				SNew(SSpinBox<float>)
-				.ToolTipText(LOCTEXT("FarViewPlaneTooltip", "Distance to use as the far view plane, or zero to enable an infinite far view plane"))
-				.MinValue(0.0f)
-				.MaxValue(100000.0f)
-				.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
-				.Value(this, &SCommonEditorViewportToolbarBase::OnGetFarViewPlaneValue)
-				.OnValueChanged(const_cast<SCommonEditorViewportToolbarBase*>(this), &SCommonEditorViewportToolbarBase::OnFarViewPlaneValueChanged)
+				SNew ( SBorder )
+				.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+				.Padding(FMargin(1.0f))
+				[
+					SNew(SSpinBox<float>)
+					.Style(&FAppStyle::Get(), "Menu.SpinBox")
+					.ToolTipText(LOCTEXT("FarViewPlaneTooltip", "Distance to use as the far view plane, or zero to enable an infinite far view plane"))
+					.MinValue(0.0f)
+					.MaxValue(100000.0f)
+					.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
+					.Value(this, &SCommonEditorViewportToolbarBase::OnGetFarViewPlaneValue)
+					.OnValueChanged(const_cast<SCommonEditorViewportToolbarBase*>(this), &SCommonEditorViewportToolbarBase::OnFarViewPlaneValueChanged)
+				]
 			]
 		];
 }
@@ -561,7 +669,7 @@ FText SCommonEditorViewportToolbarBase::GetScalabilityWarningLabel() const
 EVisibility SCommonEditorViewportToolbarBase::GetScalabilityWarningVisibility() const
 {
 	//This method returns magic numbers. 3 means epic
-	return GetDefault<UEditorPerformanceSettings>()->bEnableScalabilityWarningIndicator && GetShowScalabilityMenu() && Scalability::GetQualityLevels().GetMinQualityLevel() < 3 ? EVisibility::Visible : EVisibility::Collapsed;
+	return GetDefault<UEditorPerformanceSettings>()->bEnableScalabilityWarningIndicator && GetShowScalabilityMenu() && Scalability::GetQualityLevels().GetMinQualityLevel() != 3 ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 TSharedRef<SWidget> SCommonEditorViewportToolbarBase::GetScalabilityWarningMenuContent() const

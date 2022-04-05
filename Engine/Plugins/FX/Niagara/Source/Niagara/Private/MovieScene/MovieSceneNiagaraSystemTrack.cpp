@@ -29,7 +29,7 @@ FMovieSceneEvalTemplatePtr UMovieSceneNiagaraSystemTrack::CreateTemplateForSecti
 
 void UMovieSceneNiagaraSystemTrack::PostCompile(FMovieSceneEvaluationTrack& OutTrack, const FMovieSceneTrackCompilerArgs& Args) const
 {
-	UMovieSceneSection* const* SpawnSectionPtr = Sections.FindByPredicate([](const UMovieSceneSection* Section) { return Section->GetClass() == UMovieSceneNiagaraSystemSpawnSection::StaticClass(); });
+	TObjectPtr<UMovieSceneSection> const* SpawnSectionPtr = Sections.FindByPredicate([](const UMovieSceneSection* Section) { return Section->GetClass() == UMovieSceneNiagaraSystemSpawnSection::StaticClass(); });
 	if (SpawnSectionPtr != nullptr)
 	{
 		UMovieSceneNiagaraSystemSpawnSection* SpawnSection = CastChecked<UMovieSceneNiagaraSystemSpawnSection>(*SpawnSectionPtr);
@@ -37,7 +37,7 @@ void UMovieSceneNiagaraSystemTrack::PostCompile(FMovieSceneEvaluationTrack& OutT
 		OutTrack.SetTrackImplementation(FMovieSceneNiagaraSystemTrackImplementation(
 			SpawnSection->GetInclusiveStartFrame(), SpawnSection->GetExclusiveEndFrame(),
 			SpawnSection->GetSectionStartBehavior(), SpawnSection->GetSectionEvaluateBehavior(),
-			SpawnSection->GetSectionEndBehavior(), SpawnSection->GetAgeUpdateMode()));
+			SpawnSection->GetSectionEndBehavior(), SpawnSection->GetAgeUpdateMode(), SpawnSection->GetAllowScalability()));
 	}
 }
 

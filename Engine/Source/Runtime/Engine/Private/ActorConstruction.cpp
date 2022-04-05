@@ -220,6 +220,17 @@ void AActor::DestroyConstructedComponents()
 	}
 }
 
+
+bool AActor::HasNonTrivialUserConstructionScript() const
+{
+	UFunction* UCS = GetClass()->FindFunctionByName(FName(TEXT("UserConstructionScript"))/*UEdGraphSchema_K2::FN_UserConstructionScript*/);
+	if (UCS && UCS->Script.Num())
+	{
+		return true;
+	}
+	return false;
+}
+
 void AActor::RerunConstructionScripts()
 {
 	checkf(!HasAnyFlags(RF_ClassDefaultObject), TEXT("RerunConstructionScripts should never be called on a CDO as it can mutate the transient data on the CDO which then propagates to instances!"));
@@ -227,34 +238,35 @@ void AActor::RerunConstructionScripts()
 	FEditorScriptExecutionGuard ScriptGuard;
 	// don't allow (re)running construction scripts on dying actors and Actors that seamless traveled 
 	// were constructed in the previous level and should not have construction scripts rerun
-	bool bAllowReconstruction = !bActorSeamlessTraveled && !IsPendingKill() && !HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed);
-#if WITH_EDITOR
-	if(bAllowReconstruction && GIsEditor)
+	bool bAllowReconstruction = !bActorSeamlessTraveled && IsValidChecked(this) && !HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed);
+	if (bAllowReconstruction)
 	{
-		// Don't allow reconstruction if we're still in the middle of construction.
-		bAllowReconstruction = !bActorIsBeingConstructed;
-		if (ensureMsgf(bAllowReconstruction, TEXT("Attempted to rerun construction scripts on an Actor that isn't fully constructed yet (%s)."), *GetFullName()))
+		TRACE_CPUPROFILER_EVENT_SCOPE(AActor::RerunConstructionScripts);
+#if WITH_EDITOR
+		if(GIsEditor)
 		{
-			// Generate the blueprint hierarchy for this actor
-			TArray<UBlueprint*> ParentBPStack;
-			bAllowReconstruction = UBlueprint::GetBlueprintHierarchyFromClass(GetClass(), ParentBPStack);
-			if (bAllowReconstruction)
+			// Don't allow reconstruction if we're still in the middle of construction.
+			bAllowReconstruction = !bActorIsBeingConstructed;
+			if (ensureMsgf(bAllowReconstruction, TEXT("Attempted to rerun construction scripts on an Actor that isn't fully constructed yet (%s)."), *GetFullName()))
 			{
-				for (int i = ParentBPStack.Num() - 1; i > 0 && bAllowReconstruction; --i)
+				// Generate the blueprint hierarchy for this actor
+				TArray<UBlueprint*> ParentBPStack;
+				bAllowReconstruction = UBlueprint::GetBlueprintHierarchyFromClass(GetClass(), ParentBPStack);
+				if (bAllowReconstruction)
 				{
-					const UBlueprint* ParentBP = ParentBPStack[i];
-					if (ParentBP && ParentBP->bBeingCompiled)
+					for (int i = ParentBPStack.Num() - 1; i > 0 && bAllowReconstruction; --i)
 					{
-						// don't allow (re)running construction scripts if a parent BP is being compiled
-						bAllowReconstruction = false;
+						const UBlueprint* ParentBP = ParentBPStack[i];
+						if (ParentBP && ParentBP->bBeingCompiled)
+						{
+							// don't allow (re)running construction scripts if a parent BP is being compiled
+							bAllowReconstruction = false;
+						}
 					}
 				}
 			}
 		}
-	}
 #endif
-	if(bAllowReconstruction)
-	{
 		// Child Actors can be customized in many ways by their parents construction scripts and rerunning directly on them would wipe
 		// that out. So instead we redirect up the hierarchy
 		if (IsChildActor())
@@ -322,22 +334,22 @@ void AActor::RerunConstructionScripts()
 			CurrentTransactionAnnotation = FActorTransactionAnnotation::Create(this, false);
 		}
 		FActorTransactionAnnotation* ActorTransactionAnnotation = CurrentTransactionAnnotation.Get();
-		InstanceDataCache = &ActorTransactionAnnotation->ComponentInstanceData;
+		InstanceDataCache = &ActorTransactionAnnotation->ActorTransactionAnnotationData.ComponentInstanceData;
 
-		if (ActorTransactionAnnotation->bRootComponentDataCached)
+		if (ActorTransactionAnnotation->ActorTransactionAnnotationData.bRootComponentDataCached)
 		{
-			OldTransform = ActorTransactionAnnotation->RootComponentData.Transform;
-			OldTransformRotationCache = ActorTransactionAnnotation->RootComponentData.TransformRotationCache;
-			Parent = ActorTransactionAnnotation->RootComponentData.AttachedParentInfo.Actor.Get();
+			OldTransform = ActorTransactionAnnotation->ActorTransactionAnnotationData.RootComponentData.Transform;
+			OldTransformRotationCache = ActorTransactionAnnotation->ActorTransactionAnnotationData.RootComponentData.TransformRotationCache;
+			Parent = ActorTransactionAnnotation->ActorTransactionAnnotationData.RootComponentData.AttachedParentInfo.Actor.Get();
 			if (Parent)
 			{
-				USceneComponent* AttachParent = ActorTransactionAnnotation->RootComponentData.AttachedParentInfo.AttachParent.Get();
-				AttachParentComponent = (AttachParent ? AttachParent : FindObjectFast<USceneComponent>(Parent, ActorTransactionAnnotation->RootComponentData.AttachedParentInfo.AttachParentName));
-				SocketName = ActorTransactionAnnotation->RootComponentData.AttachedParentInfo.SocketName;
+				USceneComponent* AttachParent = ActorTransactionAnnotation->ActorTransactionAnnotationData.RootComponentData.AttachedParentInfo.AttachParent.Get();
+				AttachParentComponent = (AttachParent ? AttachParent : FindObjectFast<USceneComponent>(Parent, ActorTransactionAnnotation->ActorTransactionAnnotationData.RootComponentData.AttachedParentInfo.AttachParentName));
+				SocketName = ActorTransactionAnnotation->ActorTransactionAnnotationData.RootComponentData.AttachedParentInfo.SocketName;
 				DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
 			}
 
-			for (const FActorRootComponentReconstructionData::FAttachedActorInfo& CachedAttachInfo : ActorTransactionAnnotation->RootComponentData.AttachedToInfo)
+			for (const FActorRootComponentReconstructionData::FAttachedActorInfo& CachedAttachInfo : ActorTransactionAnnotation->ActorTransactionAnnotationData.RootComponentData.AttachedToInfo)
 			{
 				AActor* AttachedActor = CachedAttachInfo.Actor.Get();
 				if (AttachedActor)
@@ -514,7 +526,7 @@ void AActor::RerunConstructionScripts()
 
 		// Exchange net roles before running construction scripts
 		UWorld *OwningWorld = GetWorld();
-		if (OwningWorld && !OwningWorld->IsServer())
+		if (OwningWorld && OwningWorld->IsNetMode(NM_Client))
 		{
 			ExchangeNetRoles(true);
 		}
@@ -539,7 +551,7 @@ void AActor::RerunConstructionScripts()
 		for(FAttachedActorInfo& Info : AttachedActorInfos)
 		{
 			// If this actor is no longer attached to anything, reattach
-			if (!Info.AttachedActor->IsPendingKill() && Info.AttachedActor->GetAttachParentActor() == nullptr)
+			if (IsValid(Info.AttachedActor) && Info.AttachedActor->GetAttachParentActor() == nullptr)
 			{
 				USceneComponent* ChildRoot = Info.AttachedActor->GetRootComponent();
 				if (ChildRoot && ChildRoot->GetAttachParent() != RootComponent)
@@ -593,6 +605,8 @@ void AActor::RerunConstructionScripts()
 		// Now iterate through all previous construction script created components, looking for a match with reinstanced components.
 		for (const FComponentData& ComponentData : ComponentMapping)
 		{
+			UActorComponent* ResolvedNewComponent = nullptr;
+			
 			if (ComponentData.OldComponent->CreationMethod == EComponentCreationMethod::UserConstructionScript)
 			{
 				if (ComponentData.UCSComponentIndex >= 0)
@@ -606,7 +620,7 @@ void AActor::RerunConstructionScripts()
 							if (   ComponentData.OldComponent->GetClass() == NewComponent->GetClass() 
 							    && ComponentData.OldArchetype == ComponentToArchetypeMap[NewComponent])
 							{
-								OldToNewComponentMapping.Add(ComponentData.OldComponent, NewComponent);
+								ResolvedNewComponent = NewComponent;
 								NewUCSComponentsToConsider->RemoveAtSwap(Index, 1, false);
 								break;
 							}
@@ -643,12 +657,26 @@ void AActor::RerunConstructionScripts()
 					{
 						if (!OuterToMatch || GetComponentAddedByConstructionScript(MatchedComponent) == OuterToMatch)
 						{
-							OldToNewComponentMapping.Add(ComponentData.OldComponent, MatchedComponent);
+							ResolvedNewComponent = MatchedComponent;
 							break;
 						}
 					}
 				}
 			}
+#if WITH_EDITORONLY_DATA
+			if (OwningWorld && OwningWorld->GetWorldPartition() != nullptr)
+			{
+				if (USceneComponent* OldSceneComponent = Cast<USceneComponent>(ComponentData.OldComponent))
+				{
+					if (USceneComponent* NewSceneComponent = Cast<USceneComponent>(ResolvedNewComponent))
+					{
+						OldSceneComponent->ReplacementSceneComponent = NewSceneComponent;
+					}
+				}
+			}
+#endif
+
+			OldToNewComponentMapping.Add(ComponentData.OldComponent, ResolvedNewComponent);
 		}
 
 		if (GEditor && (OldToNewComponentMapping.Num() > 0))
@@ -674,7 +702,7 @@ namespace
 
 bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationConversionCache* TransformRotationCache, const FComponentInstanceDataCache* InstanceDataCache, bool bIsDefaultTransform)
 {
-	check(!IsPendingKill());
+	check(IsValid(this));
 	check(!HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed));
 
 #if WITH_EDITOR
@@ -703,19 +731,6 @@ bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationCon
 	// Generate the parent blueprint hierarchy for this actor, so we can run all the construction scripts sequentially
 	TArray<const UBlueprintGeneratedClass*> ParentBPClassStack;
 	const bool bErrorFree = UBlueprintGeneratedClass::GetGeneratedClassesHierarchy(GetClass(), ParentBPClassStack);
-
-	TArray<const UDynamicClass*> ParentDynamicClassStack;
-	for (UClass* ClassIt = GetClass(); ClassIt; ClassIt = ClassIt->GetSuperClass())
-	{
-		if (UDynamicClass* DynamicClass = Cast<UDynamicClass>(ClassIt))
-		{
-			ParentDynamicClassStack.Add(DynamicClass);
-		}
-	}
-	for (int32 i = ParentDynamicClassStack.Num() - 1; i >= 0; i--)
-	{
-		UBlueprintGeneratedClass::CreateComponentsForActor(ParentDynamicClassStack[i], this);
-	}
 
 	// If this actor has a blueprint lineage, go ahead and run the construction scripts from least derived to most
 	if( (ParentBPClassStack.Num() > 0)  )
@@ -766,7 +781,7 @@ bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationCon
 			}
 
 			// Ensure that we've called RegisterAllComponents(), in case it was deferred and the SCS could not be fully executed.
-			if (HasDeferredComponentRegistration())
+			if (HasDeferredComponentRegistration() && GetWorld()->bIsWorldInitialized)
 			{
 				RegisterAllComponents();
 			}
@@ -777,7 +792,7 @@ bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationCon
 			for (UActorComponent* ActorComponent : PostSCSComponents)
 			{
 				// Limit registration to components that are known to have been created during SCS execution
-				if (!ActorComponent->IsRegistered() && ActorComponent->bAutoRegister && !ActorComponent->IsPendingKill()
+				if (!ActorComponent->IsRegistered() && ActorComponent->bAutoRegister && IsValidChecked(ActorComponent) && GetWorld()->bIsWorldInitialized
 					&& (ActorComponent->CreationMethod == EComponentCreationMethod::SimpleConstructionScript || !PreSCSComponents.Contains(ActorComponent)))
 				{
 					USimpleConstructionScript::RegisterInstancedComponent(ActorComponent);
@@ -853,7 +868,7 @@ bool AActor::ExecuteConstruction(const FTransform& Transform, const FRotationCon
 			}
 
 			// Ensure that we've called RegisterAllComponents(), in case it was deferred and the SCS could not be executed (due to error).
-			if (HasDeferredComponentRegistration())
+			if (HasDeferredComponentRegistration() && GetWorld()->bIsWorldInitialized)
 			{
 				RegisterAllComponents();
 			}
@@ -913,7 +928,10 @@ void AActor::ProcessUserConstructionScript()
 
 void AActor::FinishAndRegisterComponent(UActorComponent* Component)
 {
-	Component->RegisterComponent();
+	if (GetWorld()->bIsWorldInitialized)
+	{
+		Component->RegisterComponent();
+	}
 	BlueprintCreatedComponents.Add(Component);
 }
 
@@ -1116,14 +1134,6 @@ UActorComponent* AActor::AddComponent(FName TemplateName, bool bManualAttachment
 			{
 				Template = BPGC->FindComponentTemplateByName(TemplateName);
 			}
-		}
-		else if (UDynamicClass* DynamicClass = Cast<UDynamicClass>(TemplateOwnerClass))
-		{
-			UObject** FoundTemplatePtr = DynamicClass->ComponentTemplates.FindByPredicate([=](UObject* Obj) -> bool
-			{
-				return Obj && Obj->IsA<UActorComponent>() && (Obj->GetFName() == TemplateName);
-			});
-			Template = (nullptr != FoundTemplatePtr) ? Cast<UActorComponent>(*FoundTemplatePtr) : nullptr;
 		}
 	}
 

@@ -18,7 +18,6 @@
 #include "Windows/WindowsTextInputMethodSystem.h"
 
 class FGenericWindow;
-struct FVector2D;
 enum class EWindowTransparency;
 class IInputInterface;
 class ITextInputMethodSystem;
@@ -87,28 +86,28 @@ public:
 	/**
 	 * Sets the overlay icon of a task bar entry.
 	 *
-	 * @param NativeWindow The native window to change the overlay icon for.
+	 * @param WindowHandle The window handle to change the overlay icon for.
 	 * @param Icon The overlay icon to set.
 	 * @param Description The overlay icon's description text.
 	 */
-	void SetOverlayIcon(const TSharedRef<FGenericWindow>& NativeWindow, HICON Icon, FText Description);
+	void SetOverlayIcon(HWND WindowHandle, HICON Icon, FText Description);
 
 	/**
 	 * Sets the progress state of a task bar entry.
 	 *
-	 * @param NativeWindow The native window to change the progress state for.
+	 * @param WindowHandle The window handle to change the progress state for.
 	 * @param State The new progress state.
 	 */
-	void SetProgressState(const TSharedRef<FGenericWindow>& NativeWindow, ETaskbarProgressState::Type State);
+	void SetProgressState(HWND WindowHandle, ETaskbarProgressState::Type State);
 
 	/**
 	 * Sets the progress value of a task bar entry.
 	 *
-	 * @param NativeWindow The native window to change the progress value for.
+	 * @param WindowHandle The window handle to change the progress value for.
 	 * @param Current The current progress value.
 	 * @param Total The total progress value.
 	 */
-	void SetProgressValue(const TSharedRef<FGenericWindow>& NativeWindow, uint64 Current, uint64 Total);
+	void SetProgressValue(HWND WindowHandle, uint64 Current, uint64 Total);
 
 	/** Destructor. */
 	~FTaskbarList();
@@ -408,9 +407,13 @@ protected:
 	/** Hidden constructor. */
 	FWindowsApplication( const HINSTANCE HInstance, const HICON IconHandle );
 
+	void ApplyLowLevelMouseFilter();
+	void RemoveLowLevelMouseFilter();
+
 	static LRESULT CALLBACK HandleLowLevelMouseFilterHook(int nCode, WPARAM wParam, LPARAM lParam);
 
 	HHOOK LowLevelMouseFilterHook;
+	bool bLowLevelMouseFilterIsApplied = false;
 
 private:
 
@@ -444,13 +447,11 @@ private:
 	/** Queries and caches the number of connected mouse devices. */
 	void QueryConnectedMice();
 
-#if WINVER >= 0x0601
 	/** Gets the touch index for a given windows touch ID. */
 	uint32 GetTouchIndexForID(int32 TouchID);
 
 	/** Searches for a free touch index. */
 	uint32 GetFirstFreeTouchIndex();
-#endif
 
 	/** Helper function to update the cached states of all modifier keys */
 	void UpdateAllModifierKeyStates();
@@ -520,7 +521,7 @@ private:
 
 	TSharedPtr<FTaskbarList> TaskbarList;
 
-#if WITH_ACCESSIBILITY
+#if WITH_ACCESSIBILITY && UE_WINDOWS_USING_UIA
 	/** Handler for WM_GetObject messages that come in */
 	TUniquePtr<class FWindowsUIAManager> UIAManager;
 #endif
@@ -530,10 +531,8 @@ private:
 	TOGGLEKEYS							StartupToggleKeys;
 	FILTERKEYS							StartupFilterKeys;
 
-#if WINVER >= 0x0601
 	/** Maps touch indexes to windows touch IDs. */
 	TArray<TOptional<int32>> TouchIDs;
-#endif
 
 	bool bSimulatingHighPrecisionMouseInputForRDP;
 

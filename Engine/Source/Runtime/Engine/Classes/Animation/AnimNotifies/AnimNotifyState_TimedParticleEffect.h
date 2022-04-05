@@ -20,7 +20,7 @@ class ENGINE_API UAnimNotifyState_TimedParticleEffect : public UAnimNotifyState
 
 	// The particle system template to use when spawning the particle component
 	UPROPERTY(EditAnywhere, Category = ParticleSystem, meta = (ToolTip = "The particle system to spawn for the notify state"))
-	UParticleSystem* PSTemplate;
+	TObjectPtr<UParticleSystem> PSTemplate;
 
 	// The socket within our mesh component to attach to when we spawn the particle component
 	UPROPERTY(EditAnywhere, Category = ParticleSystem, meta = (ToolTip = "The socket or bone to attach the system to"))
@@ -46,7 +46,7 @@ class ENGINE_API UAnimNotifyState_TimedParticleEffect : public UAnimNotifyState
 	// Because these can change at any time we need to track previous versions when we are in an
 	// editor build. Refactor when stateful data is possible, tracking our component instead.
 	UPROPERTY(transient)
-	TArray<UParticleSystem*> PreviousPSTemplates;
+	TArray<TObjectPtr<UParticleSystem>> PreviousPSTemplates;
 
 	UPROPERTY(transient)
 	TArray<FName> PreviousSocketNames;
@@ -57,9 +57,16 @@ class ENGINE_API UAnimNotifyState_TimedParticleEffect : public UAnimNotifyState
 	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 #endif
 
+	UE_DEPRECATED(5.0, "Please use the other NotifyBegin function instead")
 	virtual void NotifyBegin(class USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation, float TotalDuration) override;
+	UE_DEPRECATED(5.0, "Please use the other NotifyTick function instead")
 	virtual void NotifyTick(class USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation, float FrameDeltaTime) override;
+	UE_DEPRECATED(5.0, "Please use the other NotifyEnd function instead")
 	virtual void NotifyEnd(class USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation) override;
+	
+	virtual void NotifyBegin(class USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation, float TotalDuration, const FAnimNotifyEventReference& EventReference) override;
+	virtual void NotifyTick(class USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation, float FrameDeltaTime, const FAnimNotifyEventReference& EventReference) override;
+	virtual void NotifyEnd(class USkeletalMeshComponent * MeshComp, class UAnimSequenceBase * Animation, const FAnimNotifyEventReference& EventReference) override;
 
 	// Overridden from UAnimNotifyState to provide custom notify name.
 	FString GetNotifyName_Implementation() const override;

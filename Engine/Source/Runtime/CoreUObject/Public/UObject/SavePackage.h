@@ -5,10 +5,13 @@
 #include "Containers/Array.h"
 #include "Containers/Set.h"
 #include "Containers/Map.h"
-#include "UObject/NameTypes.h"
-#include "Serialization/FileRegions.h"
 #include "Misc/DateTime.h"
 #include "ObjectMacros.h"
+#include "Serialization/FileRegions.h"
+#include "Serialization/PackageWriter.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/NameTypes.h"
+#include "UObject/Package.h"
 
 #if !defined(UE_WITH_SAVEPACKAGE)
 #	define UE_WITH_SAVEPACKAGE 1
@@ -16,10 +19,12 @@
 
 class FArchive;
 class FIoBuffer;
-class FPackageStoreBulkDataManifest;
+struct FObjectSaveContextData;
+class FPackagePath;
 class FSavePackageContext;
 class FArchiveDiffMap;
 class FOutputDevice;
+class IPackageWriter;
 
 /**
  * Struct to encapsulate arguments specific to saving one package
@@ -37,92 +42,132 @@ struct FPackageSaveInfo
  */
 struct FSavePackageArgs
 {
-	class ITargetPlatform* TargetPlatform = nullptr;
+	/* The platform being saved for when cooking, or nullptr if not cooking. */
+	const ITargetPlatform* TargetPlatform = nullptr;
+	/**
+	 * For all objects which are not referenced[either directly, or indirectly] through the InAsset provided
+	 * to the Save call (See UPackage::Save), only objects that contain any of these flags will be saved.
+	 * If RF_NoFlags is specified, only objects which are referenced by InAsset will be saved into the package.
+	 */
 	EObjectFlags TopLevelFlags = RF_NoFlags;
-	uint32 SaveFlags = 0;
-	bool bForceByteSwapping = false; // for FLinkerSave
-	bool bWarnOfLongFilename = false;
+	/* Flags to control saving, a bitwise-or'd combination of values from ESaveFlags */
+	uint32 SaveFlags = SAVE_None;
+	/* Whether we should forcefully byte swap before writing header and exports to disk. Passed into FLinkerSave. */
+	bool bForceByteSwapping = false;
+	/* If true (the default), warn when saving to a long filename. */
+	bool bWarnOfLongFilename = true;
+	/** If true, the Save will send progress events that are displayed in the editor. */
 	bool bSlowTask = true;
+	/*
+	 * If not FDateTime::MinValue() (the default), the timestamp the saved file should be set to.
+	 * (Intended for cooking only...)
+	 */
 	FDateTime FinalTimeStamp;
-	FOutputDevice* Error = nullptr;
-	FArchiveDiffMap* DiffMap = nullptr;
+	/** Receives error/warning messages sent by the Save, to log and respond to their severity level. */
+	FOutputDevice* Error = GError;
+	/** Structure to hold longer-lifetime parameters that apply to multiple saves */
 	FSavePackageContext* SavePackageContext = nullptr;
+	UE_DEPRECATED(5.0, "FArchiveDiffMap is no longer used; it is now implemented by DiffPackageWriter.")
+	FArchiveDiffMap* DiffMap = nullptr;
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
+	FSavePackageArgs() = default;
+	FSavePackageArgs(const FSavePackageArgs&) = default;
+	FSavePackageArgs(FSavePackageArgs&&) = default;
+	FSavePackageArgs& operator=(const FSavePackageArgs&) = default;
+	FSavePackageArgs& operator=(FSavePackageArgs&&) = default;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
 };
 
-class FPackageStoreWriter
+/** Interface for SavePackage to test for caller-specific errors. */
+class ISavePackageValidator
 {
 public:
-	COREUOBJECT_API			FPackageStoreWriter();
-	COREUOBJECT_API virtual ~FPackageStoreWriter();
-
-	struct HeaderInfo
+	virtual ~ISavePackageValidator()
 	{
-		FName	PackageName;
-		FString	LooseFilePath;
-	};
+	}
 
-	/** Write 'uasset' data
-	  */
-	virtual void WriteHeader(const HeaderInfo& Info, const FIoBuffer& HeaderData) = 0;
-
-	struct ExportsInfo
-	{
-		FName	PackageName;
-		FString	LooseFilePath;
-		uint64  RegionsOffset;
-
-		TArray<FIoBuffer> Exports;
-	};
-
-	/** Write 'uexp' data
-	  */
-	virtual void WriteExports(const ExportsInfo& Info, const FIoBuffer& ExportsData, const TArray<FFileRegion>& FileRegions) = 0;
-
-	struct FBulkDataInfo
-	{
-		enum EType 
-		{
-			Standard,
-			Mmap,
-			Optional
-		};
-
-		FName	PackageName;
-		EType	BulkdataType = Standard;
-		FString	LooseFilePath;
-	};
-
-	/** Write 'ubulk' data
-	  */
-	virtual void WriteBulkdata(const FBulkDataInfo& Info, const FIoBuffer& BulkData, const TArray<FFileRegion>& FileRegions) = 0;
-};
-
-class FLooseFileWriter : public FPackageStoreWriter
-{
-public:
-	COREUOBJECT_API FLooseFileWriter();
-	COREUOBJECT_API ~FLooseFileWriter();
-
-	COREUOBJECT_API virtual void WriteHeader(const HeaderInfo& Info, const FIoBuffer& HeaderData) override;
-	COREUOBJECT_API virtual void WriteExports(const ExportsInfo& Info, const FIoBuffer& ExportsData, const TArray<FFileRegion>& FileRegions) override;
-	COREUOBJECT_API virtual void WriteBulkdata(const FBulkDataInfo& Info, const FIoBuffer& BulkData, const TArray<FFileRegion>& FileRegions) override;
-
-private:
+	virtual ESavePackageResult ValidateImports(const UPackage* Package, const TSet<UObject*>& Imports) = 0;
 };
 
 class FSavePackageContext
 {
 public:
-	FSavePackageContext(FPackageStoreWriter* InPackageStoreWriter, FPackageStoreBulkDataManifest* InBulkDataManifest, bool InbForceLegacyOffsets)
-	: PackageStoreWriter(InPackageStoreWriter) 
-	, BulkDataManifest(InBulkDataManifest)
-	, bForceLegacyOffsets(InbForceLegacyOffsets)
+	FSavePackageContext(const ITargetPlatform* InTargetPlatform, IPackageWriter* InPackageWriter)
+	: TargetPlatform(InTargetPlatform)
+	, PackageWriter(InPackageWriter) 
+	{
+		if (PackageWriter)
+		{
+			PackageWriterCapabilities = PackageWriter->GetCapabilities();
+		}
+	}
+
+	UE_DEPRECATED(5.0, "bInForceLegacyOffsets is no longer supported; remove the variable from your constructor call")
+	FSavePackageContext(const ITargetPlatform* InTargetPlatform, IPackageWriter* InPackageWriter, bool InbForceLegacyOffsets)
+		: FSavePackageContext(InTargetPlatform, InPackageWriter)
 	{
 	}
 
 	COREUOBJECT_API ~FSavePackageContext();
 
-	FPackageStoreWriter* PackageStoreWriter;
-	FPackageStoreBulkDataManifest* BulkDataManifest;
-	bool bForceLegacyOffsets;
+	ISavePackageValidator* GetValidator()
+	{
+		return Validator.Get();
+	}
+	COREUOBJECT_API void SetValidator(TUniquePtr<ISavePackageValidator>&& InValidator)
+	{
+		Validator = MoveTemp(InValidator);
+	}
+
+	const ITargetPlatform* const TargetPlatform;
+	IPackageWriter* const PackageWriter;
+	IPackageWriter::FCapabilities PackageWriterCapabilities;
+
+private:
+	TUniquePtr<ISavePackageValidator> Validator;
+public:
+
+	UE_DEPRECATED(5.0, "bForceLegacyOffsets is no longer supported; remove uses of the variable")
+	const bool bForceLegacyOffsets = false;
 };
+
+namespace UE::SavePackageUtilities
+{
+	/**
+	 * Return whether the given save parameters indicate the LoadedPath of the package being saved should be updated.
+	 * This allows us to update the in-memory package when it is saved in editor to match its new save file.
+	 */
+	COREUOBJECT_API bool IsUpdatingLoadedPath(bool bIsCooking, const FPackagePath& TargetPackagePath, uint32 SaveFlags);
+
+	/**
+	 * Return whether the given save parameters indicate the package is a procedural save.
+	 * Any save without the the possibility of user-generated edits to the package is a procedural save (Cooking, EditorDomain).
+	 * This allows us to execute transforms that only need to be executed in response to new user data.
+	 */
+	COREUOBJECT_API bool IsProceduralSave(bool bIsCooking, const FPackagePath& TargetPackagePath, uint32 SaveFlags);
+
+	/** Call the PreSave function on the given object and log a warning if there is an incorrect override. */
+	COREUOBJECT_API void CallPreSave(UObject* Object, FObjectSaveContextData& ObjectSaveContext);
+
+	/** Call the PreSaveRoot function on the given object. */
+	COREUOBJECT_API void CallPreSaveRoot(UObject* Object, FObjectSaveContextData& ObjectSaveContext);
+
+	/** Call the PostSaveRoot function on the given object. */
+	COREUOBJECT_API void CallPostSaveRoot(UObject* Object, FObjectSaveContextData& ObjectSaveContext, bool bCleanupRequired);
+
+	/** Add any required TopLevelFlags based on the save parameters. */
+	COREUOBJECT_API EObjectFlags NormalizeTopLevelFlags(EObjectFlags TopLevelFlags, bool bIsCooking);
+
+	COREUOBJECT_API void IncrementOutstandingAsyncWrites();
+	COREUOBJECT_API void DecrementOutstandingAsyncWrites();
+
+	COREUOBJECT_API void ResetCookStats();
+	COREUOBJECT_API int32 GetNumPackagesSaved();
+
+	COREUOBJECT_API void StartSavingEDLCookInfoForVerification();
+	COREUOBJECT_API void VerifyEDLCookInfo(bool bFullReferencesExpected = true);
+	COREUOBJECT_API void EDLCookInfoAddIterativelySkippedPackage(FName LongPackageName);
+}
+
+COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogSavePackage, Log, All);

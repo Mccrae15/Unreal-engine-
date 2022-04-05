@@ -167,7 +167,7 @@ void USoundCue::Serialize(FStructuredArchive::FRecord Record)
 		Super::Serialize(Record);
 	}
 
-	if (UnderlyingArchive.UE4Ver() >= VER_UE4_COOKED_ASSETS_IN_EDITOR_SUPPORT)
+	if (UnderlyingArchive.UEVer() >= VER_UE4_COOKED_ASSETS_IN_EDITOR_SUPPORT)
 	{
 		FStripDataFlags StripFlags(Record.EnterField(SA_FIELD_NAME(TEXT("SoundCueStripFlags"))));
 #if WITH_EDITORONLY_DATA
@@ -561,12 +561,15 @@ float USoundCue::GetMaxDistance() const
 	return GIsEditor ? FindMaxDistanceInternal() : MaxDistance;
 }
 
-float USoundCue::GetDuration()
+float USoundCue::GetDuration() const
 {
 	// Always recalc the duration when in the editor as it could change
 	if (GIsEditor || (Duration < SMALL_NUMBER) || HasDelayNode())
 	{
-		CacheAggregateValues();
+		// This needs to be cached here vs an earlier point due to the need to parse sound cues and load order issues.
+		// Alternative is to make getters not const, this is preferable. 
+		USoundCue* ThisSoundCue = const_cast<USoundCue*>(this);
+		ThisSoundCue->CacheAggregateValues();
 	}
 
 	return Duration;

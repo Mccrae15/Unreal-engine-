@@ -22,7 +22,7 @@ FDynamicDelayAPF::FDynamicDelayAPF(float InG, int32 InMinDelay, int32 InMaxDelay
 	{
 		NumInternalBufferSamples = MaxBufferSamples;
 		// Block length must be divisible by simd alignment to support simd operations.
-		NumInternalBufferSamples -= (NumInternalBufferSamples % AUDIO_SIMD_FLOAT_ALIGNMENT);
+		NumInternalBufferSamples -= (NumInternalBufferSamples % AUDIO_NUM_FLOATS_PER_VECTOR_REGISTER);
 	}
 
 	checkf(NumInternalBufferSamples > 0, TEXT("Invalid internal buffer length"));
@@ -49,7 +49,7 @@ FDynamicDelayAPF::FDynamicDelayAPF(float InG, int32 InMinDelay, int32 InMaxDelay
 FDynamicDelayAPF::~FDynamicDelayAPF()
 {}
 
-void FDynamicDelayAPF::ProcessAudio(const AlignedFloatBuffer& InSamples, const AlignedFloatBuffer& InSampleDelays, AlignedFloatBuffer& OutSamples)
+void FDynamicDelayAPF::ProcessAudio(const FAlignedFloatBuffer& InSamples, const FAlignedFloatBuffer& InSampleDelays, FAlignedFloatBuffer& OutSamples)
 {
 	const int32 InNum = InSamples.Num();
 	checkf(InNum == InSampleDelays.Num(), TEXT("InSamples [%d], InSampleDelays [%d] length mismatch"), InNum, InSampleDelays.Num());
@@ -91,7 +91,7 @@ void FDynamicDelayAPF::ProcessAudio(const AlignedFloatBuffer& InSamples, const A
 	}
 }
 
-void FDynamicDelayAPF::ProcessAudioBlock(const float* InSamples, const AlignedFloatBuffer& InFractionalDelays, const int32 InNum, float* OutSamples)
+void FDynamicDelayAPF::ProcessAudioBlock(const float* InSamples, const FAlignedFloatBuffer& InFractionalDelays, const int32 InNum, float* OutSamples)
 {
 	// Make a copy of the delay line w[n - d_int]
 	WorkBufferA.Reset(InNum);

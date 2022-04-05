@@ -26,6 +26,7 @@ export interface ColorProperty {
   R: number;
   G: number;
   B: number;
+  A?: number;
 }
 
 export interface VectorProperty {
@@ -44,12 +45,11 @@ export type PropertyValue = boolean | number | string | VectorProperty | Rotator
 
 export type JoystickValue = { [key: string]: number };
 
-export type AxisInfo = [string, number];
-
 export type IHsvColor = {
   h: number;
   s: number;
   v: number;
+  a?: number;
 };
 
 export interface IFunctionParameter {
@@ -141,6 +141,7 @@ export type IPayloads = { [preset: string]: IPayload };
 
 export enum WidgetTypes {
   Dial =            'Dial',
+  Dials =           'Dials',
   Slider =          'Slider',
   Sliders =         'Sliders',
   ScaleSlider =     'Scale Slider',
@@ -177,6 +178,7 @@ export enum IPanelType {
 export interface IPanel {
   id?: string;
   title?: string;
+  isTemplate?: boolean;
   type: IPanelType;
   widgets?: ICustomStackWidget[];
   items?: ICustomStackListItem[];

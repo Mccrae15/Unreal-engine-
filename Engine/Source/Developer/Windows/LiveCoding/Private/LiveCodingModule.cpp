@@ -6,52 +6,147 @@
 #include "HAL/IConsoleManager.h"
 #include "Misc/CoreDelegates.h"
 #include "LiveCodingLog.h"
+#include "External/LC_Commands.h"
 #include "External/LC_EntryPoint.h"
 #include "External/LC_API.h"
 #include "Misc/App.h"
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/MessageDialog.h"
+#include "Misc/ScopedSlowTask.h"
 #include "LiveCodingSettings.h"
 #include "ISettingsModule.h"
 #include "ISettingsSection.h"
 #include "Windows/WindowsHWrapper.h"
+#include "Algo/Sort.h"
+#include "Algo/BinarySearch.h"
+#if WITH_EDITOR
+	#include "Editor.h"
+	#include "Kismet2/ReloadUtilities.h"
+	#include "Widgets/Notifications/SNotificationList.h"
+	#include "Framework/Notifications/NotificationManager.h"
+#else
+	#include "UObject/Reload.h"
+#endif
+#if WITH_ENGINE
+	#include "Engine/Engine.h"
+	#include "UObject/UObjectIterator.h"
+	#include "UObject/StrongObjectPtr.h"
+#endif
 
 IMPLEMENT_MODULE(FLiveCodingModule, LiveCoding)
 
 #define LOCTEXT_NAMESPACE "LiveCodingModule"
 
 bool GIsCompileActive = false;
+bool GTriggerReload = false;
 bool GHasLoadedPatch = false;
+commands::PostCompileResult GPostCompileResult = commands::PostCompileResult::Success;
 FString GLiveCodingConsolePath;
 FString GLiveCodingConsoleArguments;
+FLiveCodingModule* GLiveCodingModule = nullptr;
 
 #if IS_MONOLITHIC
 extern const TCHAR* GLiveCodingEngineDir;
 extern const TCHAR* GLiveCodingProject;
 #endif
 
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wextern-initializer"
+#if !WITH_EDITOR
+class FNullReload : public IReload
+{
+public:
+	FNullReload(FLiveCodingModule& InLiveCodingModule)
+		: LiveCodingModule(InLiveCodingModule)
+	{
+		BeginReload(EActiveReloadType::LiveCoding, *this);
+	}
+
+	~FNullReload()
+	{
+		EndReload();
+	}
+
+	virtual EActiveReloadType GetType() const
+	{
+		return EActiveReloadType::LiveCoding;
+	}
+
+
+	virtual const TCHAR* GetPrefix() const
+	{
+		return TEXT("LIVECODING");
+	}
+
+	virtual void NotifyFunctionRemap(FNativeFuncPtr NewFunctionPointer, FNativeFuncPtr OldFunctionPointer)
+	{
+	}
+
+	virtual void NotifyChange(UClass* New, UClass* Old) override
+	{
+	}
+
+	virtual void NotifyChange(UEnum* New, UEnum* Old) override
+	{
+	}
+
+	virtual void NotifyChange(UScriptStruct* New, UScriptStruct* Old) override
+	{
+	}
+
+	virtual void NotifyChange(UPackage* New, UPackage* Old) override
+	{
+	}
+
+	virtual bool GetEnableReinstancing(bool bHasChanged) const
+	{
+		if (bHasChanged && !bEnabledMessage)
+		{
+			bEnabledMessage = true;
+			bHasReinstancingOccurred = true;
+			static const TCHAR* Message = TEXT("Object structure changes detected.  LiveCoding re-instancing isn't supported in builds without the editor");
+			UE_LOG(LogLiveCoding, Error, TEXT("%s"), Message);
+#if WITH_ENGINE
+			if (GEngine)
+			{
+				GEngine->AddOnScreenDebugMessage(uint64(uintptr_t(&LiveCodingModule)), 5.f, FColor::Red, Message);
+			}
 #endif
+		}
+		return false;
+	}
 
-LPP_PRECOMPILE_HOOK(FLiveCodingModule::PreCompileHook);
-LPP_POSTCOMPILE_HOOK(FLiveCodingModule::PostCompileHook);
+	virtual void Reinstance()
+	{
+	}
 
-#ifdef __clang__
-#pragma clang diagnostic pop
+	bool HasReinstancingOccurred() const
+	{
+		return bHasReinstancingOccurred;
+	}
+
+	void Reset()
+	{
+		bHasReinstancingOccurred = false;
+	}
+
+private:
+	FLiveCodingModule& LiveCodingModule;
+	mutable bool bEnabledMessage = false;
+	mutable bool bHasReinstancingOccurred = false;
+};
 #endif
 
 FLiveCodingModule::FLiveCodingModule()
-	: bEnabledLastTick(false)
-	, bEnabledForSession(false)
-	, bStarted(false)
-	, bUpdateModulesInTick(false)
-	, FullEnginePluginsDir(FPaths::ConvertRelativePathToFull(FPaths::EnginePluginsDir()))
+	: FullEnginePluginsDir(FPaths::ConvertRelativePathToFull(FPaths::EnginePluginsDir()))
 	, FullProjectDir(FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()))
 	, FullProjectPluginsDir(FPaths::ConvertRelativePathToFull(FPaths::ProjectPluginsDir()))
 {
+	GLiveCodingModule = this;
+}
+
+FLiveCodingModule::~FLiveCodingModule()
+{
+	GLiveCodingModule = nullptr;
 }
 
 void FLiveCodingModule::StartupModule()
@@ -70,7 +165,7 @@ void FLiveCodingModule::StartupModule()
 	CompileCommand = ConsoleManager.RegisterConsoleCommand(
 		TEXT("LiveCoding.Compile"),
 		TEXT("Initiates a live coding compile"),
-		FConsoleCommandDelegate::CreateRaw(this, &FLiveCodingModule::Compile),
+		FConsoleCommandDelegate::CreateLambda([this] { Compile(ELiveCodingCompileFlags::None, nullptr); }),
 		ECVF_Cheat
 	);
 
@@ -115,7 +210,7 @@ void FLiveCodingModule::StartupModule()
 		);
 	}
 
-	LppStartup(hInstance);
+	LppStartup();
 
 	if (Settings->bEnabled && !FApp::IsUnattended())
 	{
@@ -137,6 +232,7 @@ void FLiveCodingModule::StartupModule()
 	}
 
 	bEnabledLastTick = Settings->bEnabled;
+	bEnableReinstancingLastTick = IsReinstancingEnabled();
 }
 
 void FLiveCodingModule::ShutdownModule()
@@ -174,6 +270,7 @@ void FLiveCodingModule::EnableForSession(bool bEnable)
 {
 	if (bEnable)
 	{
+		EnableErrorText = FText::GetEmpty();
 		if(!bStarted)
 		{
 			StartLiveCoding();
@@ -200,6 +297,11 @@ void FLiveCodingModule::EnableForSession(bool bEnable)
 bool FLiveCodingModule::IsEnabledForSession() const
 {
 	return bEnabledForSession;
+}
+
+const FText& FLiveCodingModule::GetEnableErrorText() const
+{
+	return EnableErrorText;
 }
 
 bool FLiveCodingModule::CanEnableForSession() const
@@ -231,16 +333,63 @@ void FLiveCodingModule::ShowConsole()
 
 void FLiveCodingModule::Compile()
 {
-	if(!GIsCompileActive)
+	Compile(ELiveCodingCompileFlags::None, nullptr);
+}
+
+inline bool ReturnResults(ELiveCodingCompileResult InResult, ELiveCodingCompileResult* OutResult)
+{
+	if (OutResult != nullptr)
 	{
-		EnableForSession(true);
-		if(bStarted)
-		{
-			UpdateModules(); // Need to do this immediately rather than waiting until next tick
-			LppTriggerRecompile();
-			GIsCompileActive = true;
-		}
+		*OutResult = InResult;
 	}
+	return InResult == ELiveCodingCompileResult::Success || InResult == ELiveCodingCompileResult::NoChanges || InResult == ELiveCodingCompileResult::InProgress;
+}
+
+bool FLiveCodingModule::Compile(ELiveCodingCompileFlags CompileFlags, ELiveCodingCompileResult* Result)
+{
+	if (GIsCompileActive)
+	{
+		return ReturnResults(ELiveCodingCompileResult::CompileStillActive, Result);
+	}
+
+	EnableForSession(true);
+	if (!bStarted)
+	{
+		return ReturnResults(ELiveCodingCompileResult::NotStarted, Result);
+	}
+
+	// Need to do this immediately rather than waiting until next tick
+	UpdateModules(); 
+
+	// Trigger the recompile
+	GIsCompileActive = true;
+	LastResults = ELiveCodingCompileResult::Failure;
+	LppTriggerRecompile();
+
+	// If we aren't waiting, just return now
+	if (!EnumHasAnyFlags(CompileFlags, ELiveCodingCompileFlags::WaitForCompletion))
+	{
+		return ReturnResults(ELiveCodingCompileResult::InProgress, Result);
+	}
+
+	// Wait until we are no longer compiling.  Cancellation is handled via other mechanisms and
+	// need not be detected in this loop.  GIsCompileActive will be cleared.
+	FText StatusUpdate = LOCTEXT("CompileStatusMessage", "Compiling...");
+	FScopedSlowTask SlowTask(0, StatusUpdate, GIsSlowTask);
+	SlowTask.MakeDialog();
+
+	// Wait until the compile completes
+	while (GIsCompileActive)
+	{
+		SlowTask.EnterProgressFrame(0.0f);
+		AttemptSyncLivePatching();
+		FPlatformProcess::Sleep(0.01f);
+	}
+
+	// A final sync to get the result and complete the process
+	AttemptSyncLivePatching();
+
+	return ReturnResults(LastResults, Result);
 }
 
 bool FLiveCodingModule::IsCompiling() const
@@ -264,6 +413,11 @@ void FLiveCodingModule::Tick()
 			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NoEnableLiveCodingAfterHotReload", "Live Coding cannot be enabled while hot-reloaded modules are active. Please close the editor and build from your IDE before restarting."));
 		}
 	}
+	else if (IsEnabledForSession() && IsReinstancingEnabled() != bEnableReinstancingLastTick)
+	{
+		bEnableReinstancingLastTick = IsReinstancingEnabled();
+		LppSetReinstancingFlow(bEnableReinstancingLastTick);
+	}
 
 	if (bUpdateModulesInTick)
 	{
@@ -276,15 +430,15 @@ void FLiveCodingModule::Tick()
 
 void FLiveCodingModule::AttemptSyncLivePatching()
 {
-	while (LppPendingTokens.Num() > 0)
+
+	// We use to wait for all commands to finish, but that causes a lock up if starting PIE after a compilation 
+	// request caused another command to be sent to the live coding console.  For example, the registering of 
+	// another lazy load module at PIE start would cause this problem.
+	for (int Index = LppPendingTokens.Num(); Index-- > 0;)
 	{
-		if (LppTryWaitForToken(LppPendingTokens[0]))
+		if (LppTryWaitForToken(LppPendingTokens[Index]))
 		{
-			LppPendingTokens.RemoveAt(0);
-		}
-		else
-		{
-			return;
+			LppPendingTokens.RemoveAt(Index);
 		}
 	}
 
@@ -292,12 +446,209 @@ void FLiveCodingModule::AttemptSyncLivePatching()
 	extern void LppSyncPoint();
 	LppSyncPoint();
 
-	if (GHasLoadedPatch)
+	if ((!GIsCompileActive || GTriggerReload) && Reload.IsValid())
 	{
-		OnPatchCompleteDelegate.Broadcast();
-		GHasLoadedPatch = false;
+		if (GHasLoadedPatch)
+		{
+#if WITH_COREUOBJECT && WITH_ENGINE
+
+			// Collect the existing objects
+			TArray<UObject*> StartingObjects;
+			if (Reload->GetEnableReinstancing(false))
+			{
+				StartingObjects.Reserve(1024); // Arbitrary
+				for (TObjectIterator<UObject> It(EObjectFlags::RF_NoFlags); It; ++It)
+				{
+					StartingObjects.Add(*It);
+				}
+				Algo::Sort(StartingObjects);
+			}
+
+			// During the module loading process, the list of changed classes will be recorded.  Invoking this method will 
+			// result in the RegisterForReinstancing method being invoked which in turn records the classes in the ClassesToReinstance
+			// member variable being populated.
+			ProcessNewlyLoadedUObjects();
+
+			// Complete the process of re-instancing without doing a GC
+#if WITH_EDITOR
+			Reload->Finalize(false);
+#endif
+
+			TArray<TStrongObjectPtr<UObject>> NewObjects;
+			if (Reload->GetEnableReinstancing(false))
+			{
+
+				// Loop through the objects again looking for anything new that isn't associated with a
+				// reinstanced class.
+				for (TObjectIterator<UObject> It(EObjectFlags::RF_NoFlags); It; ++It)
+				{
+					if (Algo::BinarySearch(StartingObjects, *It) == INDEX_NONE)
+					{
+						if (!It->GetClass()->HasAnyClassFlags(CLASS_NewerVersionExists))
+						{
+							NewObjects.Add(TStrongObjectPtr<UObject>(*It));
+						}
+					}
+				}
+
+				// Loop through all of the classes looking for classes that have been re-instanced.  Reset the CDO
+				// to something that will never change.  Since these classes have been replaced, they should NEVER
+				// have their CDos accessed again.  In the future we should try to figure out a better solution the issue
+				// where the reinstanced crashes recreating the default object probably due to a mismatch between then
+				// new constructor being invoked and the blueprint data associated with the old class.  With LC, the
+				// old constructor has been replaced.
+				static UObject* DummyDefaultObject = UObject::StaticClass()->ClassDefaultObject;
+				for (TObjectIterator<UClass> It; It; ++It)
+				{
+					UClass* Class = *It;
+					if (Class->GetName().StartsWith(TEXT("LIVECODING_")) ||
+						Class->GetName().StartsWith(TEXT("REINST_")))
+					{
+						Class->ClassDefaultObject = DummyDefaultObject;
+					}
+				}
+			}
+
+			// Broadcast event prior to GC.  Otherwise some things are holding onto references
+			FCoreUObjectDelegates::ReloadCompleteDelegate.Broadcast(EReloadCompleteReason::None);
+
+			// Perform the GC to try and destruct all the objects which will be invoking the old destructors.
+			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS, true);
+#endif
+
+			// Second sync point to finish off the patching
+			if (GTriggerReload)
+			{
+				LppSyncPoint();
+			}
+
+#if WITH_COREUOBJECT && WITH_ENGINE
+			// Remove the reference to any new objects
+			NewObjects.Empty();
+#endif
+
+			OnPatchCompleteDelegate.Broadcast();
+			GHasLoadedPatch = false;
+
+			bHasReinstancingOccurred |= Reload->HasReinstancingOccurred();
+		}
+		else if (GTriggerReload)
+		{
+			LppSyncPoint();
+		}
+
+		if (!GIsCompileActive)
+		{
+			static const FString Success("Live coding succeeded");
+
+			// Reset this first so it does its logging first
+			Reload.Reset();
+
+			switch (GPostCompileResult)
+			{
+			case commands::PostCompileResult::Success:
+				LastResults = ELiveCodingCompileResult::Success;
+				if (bHasReinstancingOccurred)
+				{
+					if (!IsReinstancingEnabled())
+					{
+						UE_LOG(LogLiveCoding, Warning, TEXT("%s, %s"), *Success, TEXT("data type changes with re-instancing disabled is not supported and will likely lead to a crash"));
+					}
+					else
+					{
+#if WITH_EDITOR
+						UE_LOG(LogLiveCoding, Warning, TEXT("%s, %s"), *Success, TEXT("data type changes may cause packaging to fail if assets reference the new or updated data types"));
+#else
+						UE_LOG(LogLiveCoding, Warning, TEXT("%s, %s"), *Success, TEXT("data type changes may cause unexpected failures"));
+#endif
+					}
+				}
+				else
+				{
+					UE_LOG(LogLiveCoding, Display, TEXT("%s"), *Success);
+				}
+				break;
+			case commands::PostCompileResult::NoChanges:
+				LastResults = ELiveCodingCompileResult::NoChanges;
+				UE_LOG(LogLiveCoding, Display, TEXT("%s, %s"), *Success, TEXT("no code changes detected"));
+				break;
+			case commands::PostCompileResult::Cancelled:
+				LastResults = ELiveCodingCompileResult::Cancelled;
+				UE_LOG(LogLiveCoding, Error, TEXT("Live coding canceled"));
+				break;
+			case commands::PostCompileResult::Failure:
+				LastResults = ELiveCodingCompileResult::Failure;
+				UE_LOG(LogLiveCoding, Error, TEXT("Live coding failed, please see Live console for more information"));
+				break;
+			default:
+				LastResults = ELiveCodingCompileResult::Failure;
+				check(false);
+			}
+
+#if WITH_EDITOR
+			static const FText SuccessText = LOCTEXT("Success", "Live coding succeeded");
+			static const FText NoChangesText = LOCTEXT("NoChanges", "No code changes were detected.");
+			static const FText FailureText = LOCTEXT("Failed", "Live coding failed");
+			static const FText FailureDetailText = LOCTEXT("FailureDetail", "Please see Live Coding console for more information.");
+			static const FText CancelledText = LOCTEXT("Cancelled", "Live coding cancelled");
+			static const FText ReinstancingText = LOCTEXT("Reinstancing", "Data type changes may cause packaging to fail if assets reference the new or updated data types.");
+			static const FText DisabledText = LOCTEXT("ReinstancingDisabled", "Data type changes with re-instancing disabled is not supported and will likely lead to a crash.");
+
+			switch (GPostCompileResult)
+			{
+			case commands::PostCompileResult::Success:
+				if (bHasReinstancingOccurred)
+				{
+					if (!IsReinstancingEnabled())
+					{
+						ShowNotification(true, SuccessText, &DisabledText);
+					}
+					else
+					{
+						ShowNotification(true, SuccessText, &ReinstancingText);
+					}
+				}
+				else
+				{
+					ShowNotification(true, SuccessText, nullptr);
+				}
+				break;
+			case commands::PostCompileResult::NoChanges:
+				ShowNotification(true, SuccessText, &NoChangesText);
+				break;
+			case commands::PostCompileResult::Cancelled:
+				ShowNotification(false, CancelledText, nullptr);
+				break;
+			case commands::PostCompileResult::Failure:
+				ShowNotification(false, FailureText, &FailureDetailText);
+				break;
+			default:
+				check(false);
+			}
+#endif
+		}
+		else
+		{
+			Reload->Reset();
+		}
 	}
+	GTriggerReload = false;
 }
+
+#if WITH_EDITOR
+void FLiveCodingModule::ShowNotification(bool Success, const FText& Title, const FText* SubText)
+{
+	FNotificationInfo Info(Title);
+	Info.ExpireDuration = 5.0f;
+	Info.bUseSuccessFailIcons = true;
+	if (SubText)
+	{
+		Info.SubText = *SubText;
+	}
+	TSharedPtr<SNotificationItem> CompileNotification = FSlateNotificationManager::Get().AddNotification(Info);
+	CompileNotification->SetCompletionState(Success ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
+}
+#endif
 
 ILiveCodingModule::FOnPatchCompleteDelegate& FLiveCodingModule::GetOnPatchCompleteDelegate()
 {
@@ -306,11 +657,13 @@ ILiveCodingModule::FOnPatchCompleteDelegate& FLiveCodingModule::GetOnPatchComple
 
 bool FLiveCodingModule::StartLiveCoding()
 {
+	EnableErrorText = FText::GetEmpty();
 	if(!bStarted)
 	{
 		// Make sure there aren't any hot reload modules already active
 		if (!CanEnableForSession())
 		{
+			EnableErrorText = LOCTEXT("NoLiveCodingCompileAfterHotReload", "Live Coding cannot be enabled while hot-reloaded modules are active. Please close the editor and build from your IDE before restarting.");
 			UE_LOG(LogLiveCoding, Error, TEXT("Unable to start live coding session. Some modules have already been hot reloaded."));
 			return false;
 		}
@@ -319,6 +672,10 @@ bool FLiveCodingModule::StartLiveCoding()
 		GLiveCodingConsolePath = ConsolePathVariable->GetString();
 		if (!FPaths::FileExists(GLiveCodingConsolePath))
 		{
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("Executable"), FText::FromString(GLiveCodingConsolePath));
+			const static FText FormatString = LOCTEXT("LiveCodingMissingExecutable", "Unable to start live coding session. Missing executable '{Executable}'. Use the LiveCoding.ConsolePath console variable to modify.");
+			EnableErrorText = FText::Format(FormatString, Args);
 			UE_LOG(LogLiveCoding, Error, TEXT("Unable to start live coding session. Missing executable '%s'. Use the LiveCoding.ConsolePath console variable to modify."), *GLiveCodingConsolePath);
 			return false;
 		}
@@ -327,6 +684,10 @@ bool FLiveCodingModule::StartLiveCoding()
 		FString SourceProject = SourceProjectVariable->GetString();
 		if (SourceProject.Len() > 0 && !FPaths::FileExists(SourceProject))
 		{
+			FFormatNamedArguments Args;
+			Args.Add(TEXT("ProjectFile"), FText::FromString(SourceProject));
+			const static FText FormatString = LOCTEXT("LiveCodingMissingProjectFile", "Unable to start live coding session. Unable to find source project file '{ProjectFile}'.");
+			EnableErrorText = FText::Format(FormatString, Args);
 			UE_LOG(LogLiveCoding, Error, TEXT("Unable to start live coding session. Unable to find source project file '%s'."), *SourceProject);
 			return false;
 		}
@@ -338,7 +699,7 @@ bool FLiveCodingModule::StartLiveCoding()
 
 		// Enable the server
 		FString ProjectPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()).ToLower();
-		FString ProcessGroup = FString::Printf(TEXT("UE4_%s_0x%08x"), FApp::GetProjectName(), GetTypeHash(ProjectPath));
+		FString ProcessGroup = FString::Printf(TEXT("UE_%s_0x%08x"), FApp::GetProjectName(), GetTypeHash(ProjectPath));
 		LppRegisterProcessGroup(TCHAR_TO_ANSI(*ProcessGroup));
 
 		// Build the command line
@@ -355,6 +716,18 @@ bool FLiveCodingModule::StartLiveCoding()
 			Arguments += FString::Printf(TEXT(" -Project=\"%s\""), *FPaths::ConvertRelativePathToFull(SourceProject));
 		}
 		LppSetBuildArguments(*Arguments);
+
+#if WITH_EDITOR
+		if (IsReinstancingEnabled())
+		{
+			LppSetReinstancingFlow(true);
+		}
+
+		if (GEditor != nullptr)
+		{
+			LppDisableCompileFinishNotification();
+		}
+#endif
 
 		// Create a mutex that allows UBT to detect that we shouldn't hot-reload into this executable. The handle to it will be released automatically when the process exits.
 		FString ExecutablePath = FPaths::ConvertRelativePathToFull(FPlatformProcess::ExecutablePath());
@@ -519,16 +892,76 @@ bool FLiveCodingModule::ShouldPreloadModule(const FName& Name, const FString& Fu
 	}
 }
 
-void FLiveCodingModule::PreCompileHook()
+void FLiveCodingModule::BeginReload()
+{
+	if (GLiveCodingModule != nullptr)
+	{
+		if (!GLiveCodingModule->Reload.IsValid())
+		{
+			GLiveCodingModule->bHasReinstancingOccurred = false;
+			GLiveCodingModule->bHasPatchBeenLoaded = false;
+			GPostCompileResult = commands::PostCompileResult::Success;
+#if WITH_EDITOR
+			GLiveCodingModule->Reload.Reset(new FReload(EActiveReloadType::LiveCoding, TEXT("LIVECODING"), *GLog));
+			GLiveCodingModule->Reload->SetEnableReinstancing(GLiveCodingModule->IsReinstancingEnabled());
+			GLiveCodingModule->Reload->SetSendReloadCompleteNotification(false);
+#else
+			GLiveCodingModule->Reload.Reset(new FNullReload(*GLiveCodingModule));
+#endif
+		}
+	}
+}
+
+bool FLiveCodingModule::IsReinstancingEnabled() const
+{
+#if WITH_EDITOR
+	return Settings->bEnableReinstancing;
+#else
+	return false;
+#endif
+}
+
+bool FLiveCodingModule::AutomaticallyCompileNewClasses() const
+{
+	return Settings->bAutomaticallyCompileNewClasses;
+}
+
+// Invoked from LC_ClientCommandActions
+void LiveCodingBeginPatch()
+{
+	GHasLoadedPatch = true;
+	// If we are beginning a patch from a restart from the console, we need to create the reload object
+	FLiveCodingModule::BeginReload();
+}
+
+// Invoked from LC_ClientCommandActions
+void LiveCodingEndCompile()
+{
+	GIsCompileActive = false;
+}
+
+// Invoked from LC_ClientCommandActions
+void LiveCodingPreCompile()
 {
 	UE_LOG(LogLiveCoding, Display, TEXT("Starting Live Coding compile."));
 	GIsCompileActive = true;
+	if (GLiveCodingModule != nullptr)
+	{
+		GLiveCodingModule->BeginReload();
+	}
 }
 
-void FLiveCodingModule::PostCompileHook()
+// Invoked from LC_ClientCommandActions
+void LiveCodingPostCompile(commands::PostCompileResult PostCompileResult)
 {
-	UE_LOG(LogLiveCoding, Display, TEXT("Live Coding compile done.  See Live Coding console for more information."));
+	GPostCompileResult = PostCompileResult;
 	GIsCompileActive = false;
+}
+
+// Invoked from LC_ClientCommandActions
+void LiveCodingTriggerReload()
+{
+	GTriggerReload = true;
 }
 
 #undef LOCTEXT_NAMESPACE

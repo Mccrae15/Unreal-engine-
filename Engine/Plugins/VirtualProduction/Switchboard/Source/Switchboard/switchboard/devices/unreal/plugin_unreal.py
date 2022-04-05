@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from collections import OrderedDict
 from datetime import datetime
 from functools import wraps
@@ -10,11 +11,13 @@ import ipaddress
 import os
 import pathlib
 import re
+import sys
 import threading
 from typing import Callable, List, Optional, Set
 import uuid
 
 from PySide2 import QtCore
+from PySide2 import QtGui
 from PySide2 import QtWidgets
 
 from switchboard import config_osc as osc
@@ -22,18 +25,22 @@ from switchboard import message_protocol
 from switchboard import switchboard_application
 from switchboard import switchboard_utils as sb_utils
 from switchboard.config import CONFIG, BoolSetting, DirectoryPathSetting, \
-    IntSetting, MultiOptionSetting, OptionSetting, StringSetting, SETTINGS, \
-    DEFAULT_MAP_TEXT
+    FilePathSetting, IntSetting, MultiOptionSetting, OptionSetting, StringSetting, \
+    SETTINGS, DEFAULT_MAP_TEXT, StringListSetting, migrate_comma_separated_string_to_list
 from switchboard.devices.device_base import Device, DeviceStatus, \
     PluginHeaderWidgets
-from switchboard.devices.device_widget_base import DeviceWidget
+from switchboard.devices.device_widget_base import DeviceWidget, DeviceAutoJoinMUServerUI
 from switchboard.listener_client import ListenerClient
 from switchboard.switchboard_logging import LOGGER
 import switchboard.switchboard_widgets as sb_widgets
 
+from switchboard.tools.insights_launcher import InsightsLauncher
+
 from .listener_watcher import ListenerWatcher
 from .redeploy_dialog import RedeployListenerDialog
 from . import version_helpers
+from ...util import p4_changelist_inspection
+from ...util.p4_changelist_inspection import P4Error
 
 
 class ProgramStartQueueItem:
@@ -277,17 +284,19 @@ class DeviceUnreal(Device):
             value="",
             tool_tip='Additional command line arguments for the engine',
         ),
-        'exec_cmds': StringSetting(
+        'exec_cmds': StringListSetting(
             attr_name="exec_cmds",
             nice_name='ExecCmds',
-            value="",
+            value=[],
             tool_tip='ExecCmds to be passed. No need for outer double quotes.',
+            migrate_data=migrate_comma_separated_string_to_list
         ),
-        'dp_cvars': StringSetting(
+        'dp_cvars': StringListSetting(
             attr_name='dp_cvars',
             nice_name="DPCVars",
-            value='',
-            tool_tip="Device profile console variables (comma separated)."
+            value=[],
+            tool_tip="Device profile console variables.",
+            migrate_data=migrate_comma_separated_string_to_list
         ),
         'port': IntSetting(
             attr_name="port",
@@ -312,10 +321,10 @@ class DeviceUnreal(Device):
                 "Instances with different Session IDs are invisible to each "
                 "other in Stage Monitor."),
         ),
-        'ue4_exe': StringSetting(
+        'ue_exe': StringSetting(
             attr_name="editor_exe",
-            nice_name="UE4 Editor filename",
-            value="UE4Editor.exe",
+            nice_name="Unreal Editor filename",
+            value="UnrealEditor.exe",
         ),
         'max_gpu_count': OptionSetting(
             attr_name="max_gpu_count",
@@ -378,17 +387,36 @@ class DeviceUnreal(Device):
                 'Directory in which to store logs transferred from devices. '
                 'If unset, defaults to $(ProjectDir)/Saved/Logs/Switchboard/'),
         ),
+        'reflect_visibility_to_game': BoolSetting(
+            attr_name='reflect_visibility_to_game',
+            nice_name='Reflect Editor Visibility to Game',
+            value=True,
+            tool_tip=(
+                'Sets the value for `Reflect Level Visibilty to Game` for Multi-user editing. \n'
+                'Editor visibilty state will be applied to the game equivalent visibility properties. \n'
+                'This is useful for ICVFX workflows where the editor visibilty state directly \n'
+                'corresponds to the state on the render nodes.')
+        ),
         'rsync_port': IntSetting(
             attr_name='rsync_port',
             nice_name='Rsync Server Port',
             value=switchboard_application.RsyncServer.DEFAULT_PORT,
             tool_tip='Port number on which the rsync server should listen.'
         ),
+        'listener_inactive_timeout': IntSetting(
+            attr_name='listener_inactive_timeout',
+            nice_name='Listener Timeout',
+            value=5,
+            tool_tip=(
+                'Tells the connected Listener to wait at least N seconds '
+                'between network messages before considering the connection '
+                'to Switchboard lost and closing it with a timeout error.')
+        ),
     }
 
     unreal_started_signal = QtCore.Signal()
 
-    mu_server = switchboard_application.MultiUserApplication()
+    mu_server = switchboard_application.get_multi_user_server_instance()
     rsync_server = switchboard_application.RsyncServer()
 
     # Monitors the local listener executable and notifies when the file is
@@ -415,7 +443,7 @@ class DeviceUnreal(Device):
             (ipaddress.ip_address(d.ip_address), d)
             for d in cls.active_unreal_devices]
 
-        switchboard_ip_address = ipaddress.ip_address(SETTINGS.IP_ADDRESS)
+        switchboard_ip_address = ipaddress.ip_address(SETTINGS.IP_ADDRESS.get_value())
 
         def is_local(pair):
             return pair[0].is_loopback or (pair[0] == switchboard_ip_address)
@@ -467,6 +495,42 @@ class DeviceUnreal(Device):
             tool_tip="List of roles for this device"
         )
 
+        autojoin_mu_server = kwargs.get("autojoin_mu_server", True)
+        self.autojoin_mu_server = BoolSetting(
+            attr_name="autojoin_mu_server",
+            nice_name="Auto join Multi-user Server",
+            value=autojoin_mu_server,
+            show_ui=False
+        )
+
+        self.last_launch_command = StringSetting(
+            attr_name="last_launch_command",
+            nice_name="Last Launch Command",
+            value=kwargs.get("last_launch_command", ''),
+            show_ui=False
+        )
+
+        self.last_log_path = FilePathSetting(
+            attr_name="last_log_path",
+            nice_name="Last Log Path",
+            value=kwargs.get("last_log_path", ''),
+            show_ui=False
+        )
+
+        self.last_trace_path = FilePathSetting(
+            attr_name="last_trace_path",
+            nice_name="Last Insights Trace Path",
+            value=kwargs.get("last_trace_path", ''),
+            show_ui=False
+        )
+
+        self.exclude_from_build = BoolSetting(
+            attr_name="exclude_from_build",
+            nice_name="Exclude from build",
+            value=kwargs.get("exclude_from_build", False),
+            tool_tip="Whether to exclude this device from builds"
+        )
+
         self.setting_ip_address.signal_setting_changed.connect(
             self.on_setting_ip_address_changed)
         DeviceUnreal.csettings['port'].signal_setting_changed.connect(
@@ -476,6 +540,7 @@ class DeviceUnreal(Device):
 
         self.auto_connect = False
 
+        self.runtime_str = ""
         self.inflight_project_cl = None
         self.inflight_engine_cl = None
 
@@ -564,6 +629,15 @@ class DeviceUnreal(Device):
         # Notify user of any invalid settings
         self.check_settings_valid()
 
+    def init(self, widget_class, icons):
+        super().init(widget_class, icons)
+        
+        self.exclude_from_build.signal_setting_changed.connect(
+            lambda _, new_value: self.on_setting_exclude_from_build_changed(new_value)
+        )
+        self.on_setting_exclude_from_build_changed(self.exclude_from_build.get_value())
+        
+
     def should_allow_exit(self, close_req_id: int) -> bool:
         # Delegate to a class method which surveys all active devices.
         return DeviceUnreal._should_allow_exit(close_req_id)
@@ -581,7 +655,7 @@ class DeviceUnreal(Device):
 
         log_xfer_devices = [
             dev for dev in DeviceUnreal.active_unreal_devices
-            if dev.log_transfer_in_progress]
+            if dev.transfer_in_progress]
 
         if len(log_xfer_devices) == 0:
             return True
@@ -662,7 +736,14 @@ class DeviceUnreal(Device):
         ]
 
     def device_settings(self):
-        return super().device_settings() + [self.setting_roles]
+        return super().device_settings() + [
+            self.setting_roles,
+            self.autojoin_mu_server,
+            self.last_launch_command,
+            self.last_log_path,
+            self.last_trace_path,
+            self.exclude_from_build
+        ]
 
     def check_settings_valid(self) -> bool:
         valid = True
@@ -685,7 +766,7 @@ class DeviceUnreal(Device):
 
         # Also check the multi-user server settings.
         muserver_extra_args_lower: str = (
-            CONFIG.MUSERVER_COMMAND_LINE_ARGUMENTS.lower())
+            CONFIG.MUSERVER_COMMAND_LINE_ARGUMENTS.get_value().lower())
         if '-udpmessaging_transport_unicast' in muserver_extra_args_lower:
             LOGGER.error(
                 f'{self.name}: Multi-user server command line arguments '
@@ -703,7 +784,29 @@ class DeviceUnreal(Device):
         return (
             super().plugin_header_widget_config() |
             PluginHeaderWidgets.OPEN_BUTTON |
-            PluginHeaderWidgets.CHANGELIST_LABEL)
+            PluginHeaderWidgets.CHANGELIST_LABEL |
+            PluginHeaderWidgets.AUTOJOIN_MU
+        )
+
+    def device_widget_registered(self, device_widget):
+        ''' Device interface method '''
+
+        super().device_widget_registered(device_widget)
+
+        device_widget.signal_exclude_from_build_toggled.connect(self.on_toggle_exclude_from_build)
+
+        # hook to open last log signal from widget
+        device_widget.signal_open_last_log.connect(self.on_open_last_log)
+
+        # hook to open last trace signal from widget
+        device_widget.signal_open_last_trace.connect(self.on_open_last_trace)
+
+        # hook to copy last launch signal from widget
+        device_widget.signal_copy_last_launch_command.connect(self.on_copy_last_launch_command)
+
+        self.update_settings_menu_state()
+
+        device_widget.autojoin_mu.signal_device_widget_autojoin_mu.connect(self.on_autojoin_mu_ui_change)
 
     def on_setting_ip_address_changed(self, _, new_address):
         LOGGER.info(f"Updating IP address for ListenerClient to {new_address}")
@@ -721,6 +824,10 @@ class DeviceUnreal(Device):
                 self._request_engine_changelist_number()
         else:
             self.widget.engine_changelist_label.hide()
+            self.widget.update_build_info(current_cl=self.engine_changelist, built_cl=self.built_engine_changelist)
+
+    def on_setting_exclude_from_build_changed(self, exclude_from_build):
+        self.widget.update_exclude_from_build(exclude_from_build, not self.is_disconnected)
 
     def set_slate(self, value):
         if not self.is_recording_device:
@@ -747,8 +854,18 @@ class DeviceUnreal(Device):
             self.name)
         roles_file_path = os.path.join(
             os.path.dirname(uproject_path), "Config", "Tags", roles_filename)
-        _, msg = message_protocol.create_copy_file_from_listener_message(
-            roles_file_path)
+        _, msg = message_protocol.create_copy_file_from_listener_message(roles_file_path)
+        self.unreal_client.send_message(msg)
+        
+    def _request_unreal_editor_version_file(self):
+        '''
+        Requests the Engine/Binaries/[platform]/UnrealEditor.version file.
+        On success _on_receive_editor_version is called with the file content.
+        '''
+        engine_path = CONFIG.ENGINE_DIR.get_value(self.name).replace('"', '')
+        platform_dir = self.platform_binary_directory
+        roles_file_path = os.path.join(os.path.dirname(engine_path), "Engine", "Binaries", platform_dir, "UnrealEditor.version")
+        _, msg = message_protocol.create_copy_file_from_listener_message(roles_file_path)
         self.unreal_client.send_message(msg)
 
     def _request_project_changelist_number(self):
@@ -904,9 +1021,15 @@ class DeviceUnreal(Device):
             f"{self.name}: Queuing sync for project {project_name} "
             f"(revisions: engine={engine_cl}, project={project_cl})")
 
-        python_path = os.path.normpath(os.path.join(
-            engine_dir, 'Binaries', 'ThirdParty', 'Python3', 'Win64',
-            'python.exe'))
+        if self.platform_binary_directory == 'Win64':
+            python_path = os.path.normpath(os.path.join(
+                engine_dir, 'Binaries', 'ThirdParty', 'Python3',
+                self.platform_binary_directory, 'python.exe'))
+        else:
+            python_path = os.path.normpath(os.path.join(
+                engine_dir, 'Binaries', 'ThirdParty', 'Python3',
+                self.platform_binary_directory, 'bin', 'python3'))
+
         helper_path = os.path.normpath(os.path.join(
             engine_dir, 'Plugins', 'VirtualProduction', 'Switchboard',
             'Source', 'Switchboard', 'sbl_helper.py'))
@@ -960,6 +1083,9 @@ class DeviceUnreal(Device):
             self.status = DeviceStatus.SYNCING
 
     def build(self):
+        if self.exclude_from_build.get_value():
+            return
+
         program_name = 'build_project'
 
         # check if it is already on its way:
@@ -991,7 +1117,7 @@ class DeviceUnreal(Device):
         if (self.is_designated_local_builder() and
                 CONFIG.BUILD_ENGINE.get_value()):
             # Build multi-user server
-            if CONFIG.MUSERVER_AUTO_BUILD:
+            if CONFIG.MUSERVER_AUTO_BUILD.get_value():
                 if DeviceUnreal.mu_server.is_running():
                     mb_ret = QtWidgets.QMessageBox.question(
                         None, 'Terminate multi-user server?',
@@ -1001,7 +1127,7 @@ class DeviceUnreal(Device):
                         QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
 
                     if mb_ret == QtWidgets.QMessageBox.Yes:
-                        DeviceUnreal.mu_server.terminate()
+                        DeviceUnreal.mu_server.terminate(bypolling=True)
 
                 puuid_dependency = self._build_mu_server(
                     puuid_dependency=puuid_dependency)
@@ -1019,27 +1145,36 @@ class DeviceUnreal(Device):
         puuid_dependency = self._build_project(
             puuid_dependency=puuid_dependency)
 
+    @property
+    def target_platform(self) -> str:
+        ''' Returns the Unreal target platform name for e.g. build actions '''
+        # FIXME?: Not strictly correct, but holds for desktop host platforms
+        return self.platform_binary_directory
+
     def _build_project(self, puuid_dependency: Optional[uuid.UUID] = None):
         ubt_args = (
-            'Win64 Development '
+            f'{self.target_platform} Development '
             f'-project="{CONFIG.UPROJECT_PATH.get_value(self.name)}" '
             '-TargetType=Editor -Progress -NoHotReloadFromIDE')
         return self._queue_build(
             'project', ubt_args=ubt_args, puuid_dependency=puuid_dependency)
 
     def _build_mu_server(self, puuid_dependency: Optional[uuid.UUID] = None):
-        ubt_args = 'UnrealMultiUserServer Win64 Development -Progress'
+        ubt_args = (f'UnrealMultiUserServer {self.target_platform} '
+                    'Development -Progress')
         return self._queue_build(
             'mu_server', ubt_args=ubt_args, puuid_dependency=puuid_dependency)
 
     def _build_listener(self, puuid_dependency: Optional[uuid.UUID] = None):
-        ubt_args = 'SwitchboardListener Win64 Development -Progress'
+        ubt_args = (f'SwitchboardListener {self.target_platform} '
+                    'Development -Progress')
         return self._queue_build(
             'listener', ubt_args=ubt_args, puuid_dependency=puuid_dependency)
 
     def _build_shadercompileworker(
             self, puuid_dependency: Optional[uuid.UUID] = None):
-        ubt_args = 'ShaderCompileWorker Win64 Development -Progress'
+        ubt_args = (f'ShaderCompileWorker {self.target_platform} '
+                    'Development -Progress')
         return self._queue_build(
             'shadercw', ubt_args=ubt_args, puuid_dependency=puuid_dependency)
 
@@ -1049,8 +1184,8 @@ class DeviceUnreal(Device):
         program_name = f"build_{program_name_suffix}"
 
         engine_path = CONFIG.ENGINE_DIR.get_value(self.name)
-        ubt_path = os.path.join(
-            engine_path, 'Binaries', 'DotNET', 'UnrealBuildTool')
+        ubt_path = os.path.join(engine_path, 'Binaries', 'DotNET',
+                                'UnrealBuildTool', 'UnrealBuildTool')
 
         puuid, msg = message_protocol.create_start_process_message(
             prog_path=ubt_path,
@@ -1094,7 +1229,7 @@ class DeviceUnreal(Device):
             self.status = DeviceStatus.CLOSING
 
     def fix_exe_flags(self):
-        ''' Tries to force the correct UE4Editor.exe flags '''
+        ''' Tries to force the correct UnrealEditor.exe flags '''
         unreals = self.program_start_queue.running_programs_named('unreal')
 
         if not len(unreals):
@@ -1116,7 +1251,7 @@ class DeviceUnreal(Device):
 
     @property
     def executable_filename(self):
-        return DeviceUnreal.csettings["ue4_exe"].get_value()
+        return DeviceUnreal.csettings['ue_exe'].get_value()
 
     @property
     def extra_cmdline_args_setting(self) -> str:
@@ -1150,35 +1285,23 @@ class DeviceUnreal(Device):
 
         return vproles, missing_roles
 
-    @classmethod
-    def expand_endpoint(
-            cls, endpoint: str, default_addr: str = '0.0.0.0',
-            default_port: int = 0) -> str:
-        '''
-        Given an endpoint where either address or port was omitted, use
-        the provided defaults.
-        '''
-        addr_str, _, port_str = endpoint.partition(':')
-
-        if not addr_str:
-            addr_str = default_addr
-
-        if not port_str:
-            port_str = str(default_port)
-
-        return f'{addr_str}:{port_str}'
+    @property
+    def reflect_editor_vis_in_game(self) -> str:
+        return DeviceUnreal.csettings['reflect_visibility_to_game'].get_value()
 
     @property
     def udpmessaging_multicast_endpoint(self) -> str:
+        device_multicast = DeviceUnreal.csettings[
+            'udpmessaging_multicast_endpoint'].get_value().strip()
         return DeviceUnreal.csettings[
             'udpmessaging_multicast_endpoint'].get_value().strip()
 
     @classmethod
     def get_muserver_endpoint(cls) -> str:
-        setting_val = CONFIG.MUSERVER_ENDPOINT.strip()
+        setting_val = CONFIG.MUSERVER_ENDPOINT.get_value().strip()
         if setting_val:
-            return cls.expand_endpoint(setting_val,
-                                       SETTINGS.IP_ADDRESS.strip())
+            return sb_utils.expand_endpoint(setting_val,
+                                            SETTINGS.IP_ADDRESS.get_value().strip())
         else:
             return ''
 
@@ -1186,7 +1309,7 @@ class DeviceUnreal(Device):
     def udpmessaging_unicast_endpoint(self) -> str:
         setting_val = self.udpmessaging_unicast_endpoint_setting.strip()
         if setting_val:
-            return self.expand_endpoint(setting_val, self.ip_address)
+            return sb_utils.expand_endpoint(setting_val, self.ip_address)
         else:
             return ''
 
@@ -1194,7 +1317,7 @@ class DeviceUnreal(Device):
         endpoints: List[str] = []
 
         # Multi-user server.
-        if CONFIG.MUSERVER_AUTO_JOIN and CONFIG.MUSERVER_AUTO_ENDPOINT:
+        if CONFIG.MUSERVER_AUTO_ENDPOINT.get_value():
             endpoints.append(DeviceUnreal.get_muserver_endpoint())
 
         # Any additional endpoints manually specified via settings.
@@ -1206,30 +1329,72 @@ class DeviceUnreal(Device):
 
         return endpoints
 
+    def get_utrace_filepath(self):
+        return self.get_remote_log_path() / f'{self.name}_{self.runtime_str}.utrace'
+
+    @staticmethod
+    def add_or_override_cvars(cvars:list[str], new_cvars:list[str]):
+        ''' Adds new cvars, or overrides values if already existing.
+
+        Args:
+            cvars     : Cvars to be overridden
+            new_cvars : Cvars to override or add
+
+        Returns:
+            list[str]: Resulting list of cvars.
+        '''
+
+        cvars_map = OrderedDict() # keep the original order
+
+        for cvar in cvars + new_cvars:
+
+            parts = cvar.strip().split('=')
+
+            if len(parts) != 2:
+                continue
+
+            name = parts[0]
+            value = parts[1]
+
+            cvars_map[name.lower()] = (name,value)
+
+        return [f'{cvar[0]}={cvar[1]}' for cvar in cvars_map.values()]
+
     def generate_unreal_command_line_args(self, map_name):
         command_line_args = f'{self.extra_cmdline_args_setting}'
 
         command_line_args += f' Log={self.log_filename}'
 
-        if CONFIG.MUSERVER_AUTO_JOIN:
+        command_line_args += " "
+
+        if CONFIG.MUSERVER_AUTO_JOIN.get_value() and self.autojoin_mu_server.get_value():
             command_line_args += (
-                ' -CONCERTRETRYAUTOCONNECTONERROR '
-                '-CONCERTAUTOCONNECT '
-                f'-CONCERTSERVER={CONFIG.MUSERVER_SERVER_NAME} '
-                f'-CONCERTSESSION={SETTINGS.MUSERVER_SESSION_NAME} '
-                f'-CONCERTDISPLAYNAME={self.name}')
+                '-CONCERTRETRYAUTOCONNECTONERROR '
+                '-CONCERTAUTOCONNECT ')
 
-        exec_cmds = str(
-            DeviceUnreal.csettings["exec_cmds"].get_value(self.name)).strip()
+        command_line_args += (f'-CONCERTSERVER="{CONFIG.MUSERVER_SERVER_NAME.get_value()}" '
+                              f'-CONCERTSESSION="{SETTINGS.MUSERVER_SESSION_NAME}" '
+                              f'-CONCERTDISPLAYNAME="{self.name}"')
+
+        if CONFIG.INSIGHTS_TRACE_ENABLE.get_value():
+            LOGGER.warning(f"Unreal Insight Tracing is enabled for '{self.name}'. This may affect Unreal Engine performance.")
+            remote_utrace_path = self.get_utrace_filepath()
+            command_line_args += ' -statnamedevents' if CONFIG.INSIGHTS_STAT_EVENTS.get_value() else ''
+            command_line_args += ' -tracefile="{}" -trace="{}"'.format(
+                remote_utrace_path,
+                CONFIG.INSIGHTS_TRACE_ARGS.get_value())
+
+        exec_cmds = DeviceUnreal.csettings["exec_cmds"].get_value(self.name).copy()
+        exec_cmds = [cmd for cmd in exec_cmds if len(cmd.strip())]
         if len(exec_cmds):
-            command_line_args += f' -ExecCmds="{exec_cmds}" '
+            exec_cmds_expanded = ','.join(exec_cmds)
+            command_line_args += f' -ExecCmds="{exec_cmds_expanded}"'
 
-        # DPCVars may need to be appended to, so we don't concatenate them
-        # until the end.
-        dp_cvars = str(
-            DeviceUnreal.csettings["dp_cvars"].get_value(self.name)).strip()
+        # DPCVars may need to be appended to, so we don't concatenate them until the end.
+        dp_cvars = []
 
         (supported_roles, unsupported_roles) = self.get_vproles()
+
         if supported_roles:
             command_line_args += ' -VPRole=' + '|'.join(supported_roles)
         if unsupported_roles:
@@ -1242,7 +1407,7 @@ class DeviceUnreal(Device):
         if session_id > 0:
             command_line_args += f" -StageSessionId={session_id}"
 
-        command_line_args += f" -StageFriendlyName={self.name}"
+        command_line_args += f' -StageFriendlyName="{self.name.replace(" ", "_")}"'
 
         # Max GPU Count (mGPU)
         max_gpu_count = DeviceUnreal.csettings["max_gpu_count"].get_value(
@@ -1250,21 +1415,31 @@ class DeviceUnreal(Device):
         try:
             if int(max_gpu_count) > 1:
                 command_line_args += f" -MaxGPUCount={max_gpu_count} "
-                if len(dp_cvars):
-                    dp_cvars += ','
-                dp_cvars += 'r.AllowMultiGPUInEditor=1'
+                dp_cvars.append('r.AllowMultiGPUInEditor=1')
         except ValueError:
             LOGGER.warning(f"Invalid Number of GPUs '{max_gpu_count}'")
 
+        # Add user set dp cvars, overriding any of the forced ones.
+        user_dp_cvars = DeviceUnreal.csettings["dp_cvars"].get_value(self.name)
+        user_dp_cvars = [cvar.strip() for cvar in user_dp_cvars if len(cvar.strip().split('=')) == 2]
+        dp_cvars = self.add_or_override_cvars(dp_cvars, user_dp_cvars)
+
+        # add accumulated dpcvars to args
         if len(dp_cvars):
-            command_line_args += f' -DPCVars="{dp_cvars}" '
+            command_line_args += f" -DPCVars=\"{','.join(dp_cvars)}\""
 
         if DeviceUnreal.csettings['auto_decline_package_recovery'].get_value(
                 self.name):
             command_line_args += ' -AutoDeclinePackageRecovery'
 
+        concert_vis_reflect = 1 if self.reflect_editor_vis_in_game else 0
+        command_line_args += f' -ConcertReflectVisibility={concert_vis_reflect}'
+
         # UdpMessaging endpoints
         if self.udpmessaging_multicast_endpoint:
+            server_mc = CONFIG.MUSERVER_MULTICAST_ENDPOINT.get_value().strip()
+            if server_mc != self.udpmessaging_multicast_endpoint:
+                LOGGER.warning(f"{self.name} contains a multicast endpoint ('{self.udpmessaging_multicast_endpoint}') that does not match configured value on Multi-user server ('{server_mc}').")
             command_line_args += (
                 ' -UDPMESSAGING_TRANSPORT_MULTICAST='
                 f'"{self.udpmessaging_multicast_endpoint}"'
@@ -1300,21 +1475,14 @@ class DeviceUnreal(Device):
             return
 
         # Launch the MU server
-        if CONFIG.MUSERVER_AUTO_LAUNCH:
-            mu_args: List[str] = []
+        if CONFIG.MUSERVER_AUTO_JOIN.get_value() \
+            and self.autojoin_mu_server.get_value() \
+            and CONFIG.MUSERVER_AUTO_LAUNCH.get_value():
+            DeviceUnreal.mu_server.launch()
 
-            if DeviceUnreal.get_muserver_endpoint():
-                mu_args.append('-UDPMESSAGING_TRANSPORT_UNICAST='
-                               f'"{DeviceUnreal.get_muserver_endpoint()}"')
-
-            if self.udpmessaging_multicast_endpoint:
-                mu_args.append('-UDPMESSAGING_TRANSPORT_MULTICAST='
-                               f'"{self.udpmessaging_multicast_endpoint}"')
-
-            DeviceUnreal.mu_server.launch(mu_args)
-
+        self.compute_runtime_str()
         engine_path, args = self.generate_unreal_command_line(map_name)
-        LOGGER.info(f"Launching UE4: {engine_path} {args}")
+        LOGGER.info(f"Launching Unreal: {engine_path} {args}")
 
         priority_modifier_str = self.csettings['priority_modifier'].get_value(
             self.name)
@@ -1329,6 +1497,8 @@ class DeviceUnreal(Device):
 
         # TODO: Sanitize these on Qt input? Deserialization?
         args = args.replace('\r', ' ').replace('\n', ' ')
+
+        self.last_launch_command.update_value(f'{engine_path} {args}')
 
         puuid, msg = message_protocol.create_start_process_message(
             prog_path=engine_path,
@@ -1353,7 +1523,7 @@ class DeviceUnreal(Device):
         if self.status == DeviceStatus.OPEN:
             self.send_osc_message(
                 osc.OSC_ADD_SEND_TARGET,
-                [SETTINGS.IP_ADDRESS, CONFIG.OSC_SERVER_PORT.get_value()])
+                [SETTINGS.IP_ADDRESS.get_value(), CONFIG.OSC_SERVER_PORT.get_value()])
         else:
             self.osc_connection_timer.stop()
 
@@ -1396,7 +1566,7 @@ class DeviceUnreal(Device):
                 self.project_changelist = self.project_changelist
             elif program_name == 'unreal':
                 self.status = DeviceStatus.CLOSED
-            elif program_name == 'retrieve_log':
+            elif program_name == 'retrieve':
                 self.status = DeviceStatus.CLOSED
 
             return
@@ -1469,14 +1639,18 @@ class DeviceUnreal(Device):
         remaining_homonyms = self.program_start_queue.running_puuids_named(
             program_name)
         for prog_id in remaining_homonyms:
-            LOGGER.warning(
-                f'{self.name}: But ({prog_id}) with the same name '
-                f'"{program_name}" is still in the list, which is unusual')
+            if program_name != 'retrieve':
+                LOGGER.warning(
+                    f'{self.name}: But ({prog_id}) with the same name '
+                    f'"{program_name}" is still in the list, which is unusual')
 
         if program_name == 'unreal' and not len(remaining_homonyms):
-            self.start_retrieve_log(unreal_exit_code=returncode)
+            log_success = self.start_retrieve_log(unreal_exit_code=returncode)
+            utrace_success = self.start_retrieve_utrace(unreal_exit_code=returncode)
+            if not log_success and not utrace_success:
+                self.status = DeviceStatus.CLOSED
 
-        elif program_name == 'retrieve_log':
+        elif program_name == 'retrieve' and not self.transfer_in_progress:
             self.status = DeviceStatus.CLOSED
 
         elif program_name == 'sync':
@@ -1526,11 +1700,13 @@ class DeviceUnreal(Device):
 
             if 'build_project' == program_name:
                 self.status = DeviceStatus.CLOSED
+                
+                self._request_project_changelist_number()
                 # Forces an update to the changelist field (to hide the
                 # Building state).
-                self.project_changelist = self.project_changelist
                 if CONFIG.BUILD_ENGINE.get_value():
-                    self.engine_changelist = self.engine_changelist
+                    self._request_engine_changelist_number()
+                    self._request_unreal_editor_version_file()
 
         elif "cstat" in program_name:
             output = get_stdout_str()
@@ -1586,22 +1762,34 @@ class DeviceUnreal(Device):
                 f"Error was '{message['error']}''")
 
     def on_file_received(self, source_path, content):
-        if source_path.endswith(
-                DeviceUnreal.csettings["roles_filename"].get_value(self.name)):
-            decoded_content = base64.b64decode(content).decode()
-            tags = parse_unreal_tag_file(decoded_content.splitlines())
-            self.setting_roles.possible_values = tags
-            LOGGER.info(f"{self.name}: All possible roles: {tags}")
-            unsupported_roles = [
-                role for role in self.setting_roles.get_value()
-                if role not in tags]
-            if len(unsupported_roles) > 0:
-                LOGGER.error(
-                    f"{self.name}: Found unsupported roles: "
-                    f"{unsupported_roles}")
-                LOGGER.error(
-                    f"{self.name}: Please change the roles for this device in "
-                    "the settings or in the unreal project settings!")
+        if source_path.endswith(DeviceUnreal.csettings["roles_filename"].get_value(self.name)):
+            self._on_receive_roles(content)
+        elif "UnrealEditor" in source_path and source_path.endswith(".version"):
+            self._on_receive_editor_version(content)
+        
+    def _on_receive_roles(self, content):
+        decoded_content = base64.b64decode(content).decode()
+        tags = parse_unreal_tag_file(decoded_content.splitlines())
+        self.setting_roles.possible_values = tags
+        LOGGER.info(f"{self.name}: All possible roles: {tags}")
+        unsupported_roles = [
+            role for role in self.setting_roles.get_value()
+            if role not in tags]
+        if len(unsupported_roles) > 0:
+            LOGGER.error(
+                f"{self.name}: Found unsupported roles: "
+                f"{unsupported_roles}")
+            LOGGER.error(
+                f"{self.name}: Please change the roles for this device in "
+                "the settings or in the unreal project settings!")
+                
+    def _on_receive_editor_version(self, content):
+        '''
+        Receives the Engine/Binaries/[platform]/UnrealEditor.version file _request_unreal_editor_version_file
+        '''
+        decoded_content = base64.b64decode(content).decode()
+        data = json.loads(decoded_content)
+        self.built_engine_changelist = data.get("Changelist", None)
 
     def on_file_receive_failed(self, source_path, error):
         roles = self.setting_roles.get_value()
@@ -1648,7 +1836,9 @@ class DeviceUnreal(Device):
 
                     if '%' == percent[-1]:
                         self.device_qt_handler.signal_device_build_update.emit(
-                            self, step, percent)
+                            self, step, percent
+                        )
+                        
 
         elif process['name'] == 'sync':
             for line in lines:
@@ -1701,6 +1891,7 @@ class DeviceUnreal(Device):
         self.os_version_label_sub = message.get('osVersionLabelSub', '')
         self.os_version_number = message.get('osVersionNumber', '')
         self.total_phys_mem = message.get('totalPhysicalMemory', 0)
+        self.platform_binary_directory = message.get('platformBinaryDirectory', '')
 
         # update list of running processes
         for process in message['runningProcesses']:
@@ -1711,12 +1902,19 @@ class DeviceUnreal(Device):
                     f"{self.name} already running {prog.name} {prog.puuid}")
                 self.do_program_running_update(prog=prog)
 
+        # override listener "inactive" timeout
+        _, msg = message_protocol.create_set_inactive_timeout_message(
+            DeviceUnreal.csettings['listener_inactive_timeout'].get_value()
+        )
+        self.unreal_client.send_message(msg)
+
         # request roles and changelists
         self._request_roles_file()
         self._request_project_changelist_number()
 
         if CONFIG.BUILD_ENGINE.get_value():
             self._request_engine_changelist_number()
+            self._request_unreal_editor_version_file()
 
     def transport_paths(self, device_recording):
         '''
@@ -1727,6 +1925,14 @@ class DeviceUnreal(Device):
     @property
     def log_filename(self):
         return f'{self.name}.log'
+
+    def compute_runtime_str(self):
+        """
+        Insight tracing requires a unique file name.  We use the current time
+        from the start of the build.
+        """
+        now = datetime.now()
+        self.runtime_str = now.strftime('%Y.%m.%d-%H.%M.%S')
 
     @classmethod
     def get_log_download_dir(cls) -> Optional[pathlib.Path]:
@@ -1756,13 +1962,14 @@ class DeviceUnreal(Device):
         DeviceUnreal.rsync_server.register_client(
             self, self.name, self.ip_address)
 
-    def backup_downloaded_log(self):
-        ''' Rotate existing log to a timestamped backup, ala Unreal. '''
-        log_download_path = self.get_log_download_dir()
-        if not log_download_path:
+    def backup_file(self, filename):
+        ''' Rotate existing filename to a timestamped backup, a la Unreal. '''
+
+        try:
+            src = self.make_local_filepath_to_fetch(filename)
+        except:
             return
 
-        src = log_download_path / self.log_filename
         if not src.is_file():
             return
 
@@ -1770,30 +1977,35 @@ class DeviceUnreal(Device):
         modtime_str = modtime.strftime('%Y.%m.%d-%H.%M.%S')
         dest_filename = f'{src.stem}-backup-{modtime_str}{src.suffix}'
 
-        src.rename(log_download_path / dest_filename)
+        src.rename(self.make_local_filepath_to_fetch(dest_filename))
 
-    def start_retrieve_log(self, unreal_exit_code: int):
-        self.backup_downloaded_log()
-
-        program_name = 'retrieve_log'
-
-        rsync_path = pathlib.Path(
-            CONFIG.ENGINE_DIR.get_value(self.name),
-            'Extras', 'ThirdPartyNotUE', 'cwrsync', 'bin', 'rsync.exe')
-
+    def get_remote_log_path(self):
         remote_project_path = \
             pathlib.Path(CONFIG.UPROJECT_PATH.get_value(self.name)).parent
-        remote_log_path = \
-            remote_project_path / 'Saved' / 'Logs' / self.log_filename
-        remote_log_cygpath = \
-            DeviceUnreal.rsync_server.make_cygdrive_path(remote_log_path)
+        return remote_project_path / 'Saved' / 'Logs'
+
+    def get_rsync_path(self):
+        if sys.platform.startswith('win'):
+            return pathlib.Path(
+                CONFIG.ENGINE_DIR.get_value(self.name),
+                'Extras', 'ThirdPartyNotUE', 'cwrsync', 'bin', 'rsync.exe')
+        else:
+            return 'rsync'
+
+    def fetch_file(self, remote_path):
+        program_name = 'retrieve'
+
+        rsync_path = self.get_rsync_path()
+
+        remote_cygpath = \
+            DeviceUnreal.rsync_server.make_cygdrive_path(remote_path)
 
         dest_endpoint = \
-            f'{SETTINGS.IP_ADDRESS}:{DeviceUnreal.rsync_server.port}'
+            f'{SETTINGS.IP_ADDRESS.get_value()}:{DeviceUnreal.rsync_server.port}'
         dest_module = DeviceUnreal.rsync_server.INCOMING_LOGS_MODULE
         dest_path = f'rsync://{dest_endpoint}/{dest_module}/'
 
-        rsync_args = f'{remote_log_cygpath} {dest_path}'
+        rsync_args = f'"{remote_cygpath}" "{dest_path}"'
 
         puuid, msg = message_protocol.create_start_process_message(
             prog_path=str(rsync_path),
@@ -1811,21 +2023,67 @@ class DeviceUnreal(Device):
             ),
             unreal_client=self.unreal_client,
         )
+        # TODO: sync crash log?
+        return True
 
-        # if unreal_exit_code != 0:
-        #     TODO: sync crash log?
+    def make_local_filepath_to_fetch(self, filename):
+        """
+        Makes the destination path of a file to be fetched
+        """
+
+        log_download_dir = self.get_log_download_dir()
+
+        if not log_download_dir:
+            raise NotADirectoryError
+
+        return log_download_dir / filename
+
+    def start_retrieve_utrace(self, unreal_exit_code:int ):
+        """
+        Retrieve the utrace file if tracing is enabled.
+        """
+        if not CONFIG.INSIGHTS_TRACE_ENABLE.get_value():
+            return False
+
+        remote_path = self.get_utrace_filepath()
+
+        filename = os.path.basename(remote_path)
+        self.backup_file(filename)
+
+        # remember the path to the trace to be fetched, so that it can later be opened from the device's context menu
+        try:
+            self.last_trace_path.update_value(str(self.make_local_filepath_to_fetch(filename)))
+        except:
+            pass
+
+        return self.fetch_file(remote_path)
+
+    def start_retrieve_log(self, unreal_exit_code: int):
+        """
+        Retrieve the log file if logging is enabled.
+        """
+        self.backup_file(self.log_filename)
+
+        # remember the path to the log file to be fetched, so that it can later be opened from the device's context menu
+        try:
+            self.last_log_path.update_value(str(self.make_local_filepath_to_fetch(self.log_filename)))
+        except:
+            pass
+
+        remote_log_path = self.get_remote_log_path() / self.log_filename
+        return self.fetch_file(remote_log_path)
 
     @property
-    def log_transfer_in_progress(self) -> bool:
+    def transfer_in_progress(self) -> bool:
         return len(
-            self.program_start_queue.running_puuids_named('retrieve_log')) > 0
+            self.program_start_queue.running_puuids_named('retrieve')) > 0
 
     def get_widget_classes(self):
         widget_classes = list(self._widget_classes)
 
         widget_classes.append(f'status_{self.status.name.lower()}')
 
-        if self.log_transfer_in_progress:
+        if self.transfer_in_progress:
             widget_classes.append('download')
 
         return widget_classes
@@ -1853,6 +2111,42 @@ class DeviceUnreal(Device):
             self._widget_classes.remove(widget_class)
             self._update_widget_classes()
 
+    def update_settings_menu_state(self):
+        autojoin = self.widget.autojoin_mu
+        autojoin.set_autojoin_mu(self.autojoin_mu_server.get_value())
+
+    def on_autojoin_mu_ui_change(self):
+        autojoin = self.widget.autojoin_mu
+        self.autojoin_mu_server.update_value(autojoin.is_autojoin_enabled())
+        self.update_settings_menu_state()
+
+    def on_toggle_exclude_from_build(self):
+        self.exclude_from_build.update_value(not self.exclude_from_build.get_value())
+        CONFIG.save()
+
+    def on_open_last_log(self):
+        ''' Opens the last log in your preferred editor '''
+        path_str = self.last_log_path.get_value()
+        if path_str and pathlib.Path(path_str).is_file():
+            url = QtCore.QUrl.fromLocalFile(path_str)
+            QtGui.QDesktopServices.openUrl(url)
+
+    def on_open_last_trace(self):
+        ''' Opens the last unreal insights trace '''
+
+        tracepath = self.last_trace_path.get_value()
+
+        if not pathlib.Path(tracepath).is_file():
+            LOGGER.error(f"Could not find '{tracepath}'")
+            return
+
+        insights = InsightsLauncher()
+        insights.launch(args=[f'"{str(tracepath)}"'], allow_duplicate=True)
+
+    def on_copy_last_launch_command(self):
+        ''' Copies the last launch command to the clipboard'''
+        QtGui.QGuiApplication.clipboard().setText(
+            self.last_launch_command.get_value())
 
 def parse_unreal_tag_file(file_content):
     tags = []
@@ -1865,12 +2159,48 @@ def parse_unreal_tag_file(file_content):
     return tags
 
 
+BASE_ENGINE_CL_TOOLTIP = "Current Engine Changelist"
+BASE_PROJECT_CL_TOOLTIP = "Current Project Changelist"
+    
 class DeviceWidgetUnreal(DeviceWidget):
+    
+    signal_exclude_from_build_toggled = QtCore.Signal()
+    signal_open_last_log = QtCore.Signal(object)
+    signal_open_last_trace = QtCore.Signal(object)
+    signal_copy_last_launch_command = QtCore.Signal(object)
+
     def __init__(self, name, device_hash, ip_address, icons, parent=None):
+        self._autojoin_visible = True
+        self._is_engine_synched = True
+        self._is_project_synched = True
+        self._needs_rebuild = False
+        self._exclude_from_build = False
+        self._desired_build_button_tooltip = "Build changelist"
+
         super().__init__(name, device_hash, ip_address, icons, parent=parent)
 
         CONFIG.P4_ENABLED.signal_setting_changed.connect(
             lambda _, enabled: self.sync_button.setVisible(enabled))
+
+    @property
+    def exclude_from_build(self):
+        return self._exclude_from_build
+
+    def update_exclude_from_build(self, exclude_from_build, update_ui=True):
+        self._exclude_from_build = exclude_from_build
+        if not update_ui:
+            return
+        
+        if exclude_from_build:
+            self.engine_changelist_label.hide()
+            self._update_build_button_tooltip()
+            sb_widgets.set_qt_property(self.build_button, 'not_built', False)
+        else:
+            self.engine_changelist_label.show()
+            self._refresh_build_info_ui()
+
+        self.build_button.setDisabled(exclude_from_build)
+        self._update_engine_cl_label()
 
     def _add_control_buttons(self):
         super()._add_control_buttons()
@@ -1878,12 +2208,12 @@ class DeviceWidgetUnreal(DeviceWidget):
         changelist_layout = QtWidgets.QVBoxLayout()
         self.engine_changelist_label = QtWidgets.QLabel()
         self.engine_changelist_label.setObjectName('changelist')
-        self.engine_changelist_label.setToolTip("Current Engine Changelist")
+        self.engine_changelist_label.setToolTip(BASE_ENGINE_CL_TOOLTIP)
         changelist_layout.addWidget(self.engine_changelist_label)
 
         self.project_changelist_label = QtWidgets.QLabel()
         self.project_changelist_label.setObjectName('changelist')
-        self.project_changelist_label.setToolTip("Current Project Changelist")
+        self.project_changelist_label.setToolTip(BASE_PROJECT_CL_TOOLTIP)
         changelist_layout.addWidget(self.project_changelist_label)
 
         spacer = QtWidgets.QSpacerItem(
@@ -1909,6 +2239,14 @@ class DeviceWidgetUnreal(DeviceWidget):
             name='build')
 
         self.layout.addItem(spacer)
+
+        self.autojoin_mu = DeviceAutoJoinMUServerUI("")
+        button = self.autojoin_mu.make_button(self)
+        button.setVisible(self._autojoin_visible)
+        self.layout.setAlignment(button, QtCore.Qt.AlignVCenter)
+        self.add_widget_to_layout(button)
+
+        self.assign_button_to_name("autojoin_mu", button)
 
         self.open_button = self.add_control_button(
             icon_size=CONTROL_BUTTON_ICON_SIZE,
@@ -1983,6 +2321,11 @@ class DeviceWidgetUnreal(DeviceWidget):
         self.sync_button.setDisabled(True)
         self.build_button.setDisabled(True)
 
+        sb_widgets.set_qt_property(self.sync_button, 'not_synched', False)
+        sb_widgets.set_qt_property(self.sync_button, 'not_built', False)
+        sb_widgets.set_qt_property(self.build_button, 'not_synched', False)
+        sb_widgets.set_qt_property(self.build_button, 'not_built', False)
+
     def _update_connected_ui(self):
         ''' Updates the UI of the device to reflect connected status. '''
         # Make sure the button is in the correct state
@@ -1991,7 +2334,7 @@ class DeviceWidgetUnreal(DeviceWidget):
 
         self.open_button.setDisabled(False)
         self.sync_button.setDisabled(False)
-        self.build_button.setDisabled(False)
+        self.build_button.setDisabled(self.exclude_from_build)
 
     def update_status(self, status, previous_status):
         super().update_status(status, previous_status)
@@ -2012,7 +2355,9 @@ class DeviceWidgetUnreal(DeviceWidget):
             self.open_button.setDisabled(False)
             self.open_button.setChecked(False)
             self.sync_button.setDisabled(False)
-            self.build_button.setDisabled(False)
+            self.build_button.setDisabled(self.exclude_from_build)
+            if self.exclude_from_build:
+                self.engine_changelist_label.hide()
         elif status == DeviceStatus.CLOSING:
             self.open_button.setDisabled(True)
             self.open_button.setChecked(True)
@@ -2049,13 +2394,16 @@ class DeviceWidgetUnreal(DeviceWidget):
         else:
             self.open_button.setToolTip('Start Unreal')
 
-    def update_project_changelist(self, value):
-        self.project_changelist_label.setText(f'P: {value}')
+    def update_project_changelist(self, required_cl: str, current_device_cl: str):
+        self.project_changelist_label.setText(f'P: {current_device_cl}')
         self.project_changelist_label.setToolTip('Project CL')
 
         self.project_changelist_label.show()
         self.sync_button.show()
         self.build_button.show()
+    
+        is_synched = required_cl is None or required_cl == current_device_cl
+        self._set_project_changelist_is_synched(is_synched)
 
     def update_build_status(self, device, step, percent):
         self.project_changelist_label.setText(f'Building...{percent}')
@@ -2070,18 +2418,101 @@ class DeviceWidgetUnreal(DeviceWidget):
 
         self.project_changelist_label.show()
 
-    def update_engine_changelist(self, value):
-        self.engine_changelist_label.setText(f'E: {value}')
-        self.engine_changelist_label.show()
+    def update_engine_changelist(self, required_cl: str, synched_cl: str, built__cl: str):
+        if not CONFIG.BUILD_ENGINE.get_value():
+            return
+        
+        self.engine_changelist_label.setText(f'E: {synched_cl}')
+        if not self.exclude_from_build:
+            self.engine_changelist_label.show()
 
         self.sync_button.show()
         self.build_button.show()
+        
+        is_synched = required_cl is None or required_cl == synched_cl
+        self._set_engine_changelist_is_synched(is_synched)
+        self.update_build_info(synched_cl=synched_cl, built_cl=built__cl)
 
-    def project_changelist_display_warning(self, b):
-        sb_widgets.set_qt_property(self.project_changelist_label, 'error', b)
+    def _set_project_changelist_is_synched(self, is_synched: bool):
+        self._is_project_synched = is_synched
+        sb_widgets.set_qt_property(self.project_changelist_label, 'not_synched', not is_synched)
+        
+        self._update_cl_widget_tooltip(self.project_changelist_label, BASE_PROJECT_CL_TOOLTIP, self._is_project_synched)
+        self._update_sync_button()
 
-    def engine_changelist_display_warning(self, b):
-        sb_widgets.set_qt_property(self.engine_changelist_label, 'error', b)
+    def _set_engine_changelist_is_synched(self, is_synched: bool):
+        self._is_engine_synched = is_synched
+        self._update_engine_cl_label()
+        
+        self._update_cl_widget_tooltip(self.engine_changelist_label, BASE_ENGINE_CL_TOOLTIP, self._is_engine_synched)
+        self._update_sync_button()
+        
+    def _update_sync_button(self):
+        needs_resync = not self._is_project_synched or not self._is_engine_synched
+        sb_widgets.set_qt_property(self.sync_button, 'not_synched', needs_resync)
+            
+    def update_build_info(self, synched_cl: str, built_cl: str):
+        if built_cl is not None and synched_cl is not None and CONFIG.BUILD_ENGINE.get_value():
+            try:
+                earlier_cl = min(int(built_cl), int(synched_cl))
+                later_cl = max(int(built_cl), int(synched_cl))
+                self._needs_rebuild = p4_changelist_inspection.has_source_code_changes(
+                    earlier_cl,
+                    later_cl,
+                    CONFIG.P4_ENGINE_PATH.get_value()
+                )
+            except P4Error as error:
+                LOGGER.error(f"Couldn't check {built_cl} - {built_cl} for source code changes."
+                             f" Reason: {error.message}")
+                # Assume that non-equal CL numbers have source changes
+                self._needs_rebuild = int(built_cl) != int(synched_cl)
+        else:
+            self._needs_rebuild = False
+
+        desired_tooltip = f"Build changelist.\n\nBuild required.\nSynched: {synched_cl}\nBuilt: {built_cl}" \
+            if self._needs_rebuild else f"Build changelist (not required - built CL {built_cl} matches synched CL)"
+        self._desired_build_button_tooltip = desired_tooltip
+        self._update_build_button_tooltip()
+        self._refresh_build_info_ui()
+        
+    def _refresh_build_info_ui(self):
+        should_update_ui = not self.exclude_from_build
+        if should_update_ui:
+            sb_widgets.set_qt_property(self.build_button, 'not_built', self._needs_rebuild)
+            self._update_build_button_tooltip()
+            self._update_engine_cl_label()
+            self._update_cl_widget_tooltip(self.engine_changelist_label, BASE_ENGINE_CL_TOOLTIP, self._is_engine_synched)
+            
+    def _update_build_button_tooltip(self):
+        if self.exclude_from_build:
+            self.build_button.setToolTip("Excluded from build (see device settings)")
+        else:
+            self.build_button.setToolTip(self._desired_build_button_tooltip)
+            
+    def _update_engine_cl_label(self):
+        if self.exclude_from_build:
+            sb_widgets.set_qt_property(self.engine_changelist_label, 'not_synched', False)
+            sb_widgets.set_qt_property(self.engine_changelist_label, 'not_built', False)
+        if not self._is_engine_synched:
+            sb_widgets.set_qt_property(self.engine_changelist_label, 'not_synched', True)
+            sb_widgets.set_qt_property(self.engine_changelist_label, 'not_built', False)
+        elif self._needs_rebuild:
+            sb_widgets.set_qt_property(self.engine_changelist_label, 'not_synched', False)
+            sb_widgets.set_qt_property(self.engine_changelist_label, 'not_built', True)
+        else:
+            sb_widgets.set_qt_property(self.engine_changelist_label, 'not_synched', False)
+            sb_widgets.set_qt_property(self.engine_changelist_label, 'not_built', False)
+
+    def _update_cl_widget_tooltip(self, label: QtWidgets.QLabel, base_tooltip: str, is_synched: bool):
+        tooltip = base_tooltip
+
+        if not is_synched:
+            tooltip += "\nNot synched to selected CL"
+            
+        if self._needs_rebuild:
+            tooltip += "\nSynched CL not built"
+
+        label.setToolTip(tooltip)
 
     def sync_button_clicked(self):
         self.signal_device_widget_sync.emit(self)
@@ -2100,3 +2531,15 @@ class DeviceWidgetUnreal(DeviceWidget):
             self._connect()
         else:
             self._disconnect()
+
+    def populate_context_menu(self, cmenu: QtWidgets.QMenu):
+        ''' Called to populate the given context menu with any desired actions'''
+        
+        cmenu.addAction(
+            "Include in build" if self.exclude_from_build else "Exclude from build",
+            lambda: self.signal_exclude_from_build_toggled.emit()
+        )
+        cmenu.addAction("Open fetched log", lambda: self.signal_open_last_log.emit(self))
+        cmenu.addAction("Open fetched trace", lambda: self.signal_open_last_trace.emit(self))
+        cmenu.addAction("Copy last launch command", lambda: self.signal_copy_last_launch_command.emit(self))
+

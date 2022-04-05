@@ -28,13 +28,19 @@
 #include "EngineAnalytics.h"
 #include "Editor/EditorPerformanceSettings.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Toolkits/FConsoleCommandExecutor.h"
 #include "Misc/MessageDialog.h"
+#include "ProfilingDebugging/StallDetector.h"
 
 DEFINE_LOG_CATEGORY(LogMainFrame);
 #define LOCTEXT_NAMESPACE "FMainFrameModule"
 
+static FAutoConsoleCommand ResizeMainFrameCommand(
+	TEXT("Editor.ResizeMainFrame"),
+	TEXT(""),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&FMainFrameModule::HandleResizeMainFrameCommand)
+);
 
 const FText StaticGetApplicationTitle( const bool bIncludeGameName )
 {
@@ -65,8 +71,32 @@ const FText StaticGetApplicationTitle( const bool bIncludeGameName )
 /* IMainFrameModule implementation
  *****************************************************************************/
 
-void FMainFrameModule::CreateDefaultMainFrame( const bool bStartImmersive, const bool bStartPIE )
+void FMainFrameModule::CreateDefaultMainFrame(const bool bStartImmersive, const bool bStartPIE)
 {
+	CreateDefaultMainFrameAuxiliary(bStartImmersive, bStartPIE, /*bIsBeingRecreated*/false);
+}
+
+void FMainFrameModule::RecreateDefaultMainFrame(const bool bStartImmersive, const bool bStartPIE)
+{
+	check(!bRecreatingDefaultMainFrame);
+	TGuardValue<bool> GuardRecreatingDefaultMainFrame(bRecreatingDefaultMainFrame, true);
+
+	// Clean previous default main frame
+	if (IsWindowInitialized())
+	{
+		// Clean FSlateApplication
+		FSlateApplication::Get().CloseAllWindowsImmediately();
+		// Clean FGlobalTabmanager
+		FGlobalTabmanager::Get()->CloseAllAreas();
+	}
+	// (Re-)create default main frame
+	CreateDefaultMainFrameAuxiliary(bStartImmersive, bStartPIE, /*bIsBeingRecreated*/true);
+}
+
+void FMainFrameModule::CreateDefaultMainFrameAuxiliary(const bool bStartImmersive, const bool bStartPIE, const bool bIsBeingRecreated)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FMainFrameModule::CreateDefaultMainFrame);
+
 	if (!IsWindowInitialized())
 	{
 		FRootWindowLocation DefaultWindowLocation;
@@ -123,6 +153,8 @@ void FMainFrameModule::CreateDefaultMainFrame( const bool bStartImmersive, const
 		FSlateApplication::Get().AddWindow( RootWindow, bShowRootWindowImmediately );
 
 		FGlobalTabmanager::Get()->SetRootWindow(RootWindow);
+		FGlobalTabmanager::Get()->SetAllowWindowMenuBar(true);
+
 		FSlateNotificationManager::Get().SetRootWindow(RootWindow);
 
 		TSharedPtr<SWidget> MainFrameContent;
@@ -163,7 +195,7 @@ void FMainFrameModule::CreateDefaultMainFrame( const bool bStartImmersive, const
 			//     9.3. Etc
 			// 10. Push the new "DefaultLayout.ini" together with your new code.
 			// 11. Also update these instructions if you change the version number (e.g., from "UnrealEd_Layout_v1.4" to "UnrealEd_Layout_v1.5").
-			const FName LayoutName = TEXT("UnrealEd_Layout_v1.4");
+			const FName LayoutName = TEXT("UnrealEd_Layout_v1.5");
 			const TSharedRef<FTabManager::FLayout> DefaultLayout =
 				// We persist the positioning of the level editor and the content browser.
 				// The asset editors currently do not get saved.
@@ -182,17 +214,6 @@ void FMainFrameModule::CreateDefaultMainFrame( const bool bStartImmersive, const
 				)
 				->AddArea
 				(
-					// content browser window
-					FTabManager::NewArea(WindowSize)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(1.0f)
-						->AddTab("ContentBrowser1Tab", ETabState::ClosedTab)
-					)
-				)
-				->AddArea
-				(
 					// toolkits window
 					FTabManager::NewArea(WindowSize)
 					->SetOrientation(Orient_Vertical)
@@ -201,12 +222,6 @@ void FMainFrameModule::CreateDefaultMainFrame( const bool bStartImmersive, const
 						FTabManager::NewStack()
 						->SetSizeCoefficient(1.0f)
 						->AddTab("StandaloneToolkit", ETabState::ClosedTab)
-					)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(0.35f)
-						->AddTab("MergeTool", ETabState::ClosedTab)
 					)
 				)
 				->AddArea
@@ -232,12 +247,21 @@ void FMainFrameModule::CreateDefaultMainFrame( const bool bStartImmersive, const
 			if (RemovedOlderLayoutVersions.Num() > 0)
 			{
 				// FMessageDialog - Notify the user that the layout version was updated and the current layout uses a deprecated one
-				const FText TextTitle = LOCTEXT("MainFrameModuleVersionErrorTitle", "Unreal Editor Layout Version Mismatch");
-				const FText TextBody = FText::Format(LOCTEXT("MainFrameModuleVersionErrorBody", "The expected Unreal Editor layout version is \"{0}\", while only version \"{1}\" was found. I.e., the current layout was created with a previous version of Unreal that is deprecated and no longer compatible.\n\nUnreal will continue with the default layout for its current version, the deprecated one has been removed.\n\nYou can create and save your custom layouts with \"Window\"->\"Save Layout\"->\"Save Layout As...\"."),
+				const FText WarningText = FText::Format(LOCTEXT("MainFrameModuleVersionErrorBody", "The expected Unreal Editor layout version is \"{0}\", while only version \"{1}\" was found. I.e., the current layout was created with a previous version of Unreal that is deprecated and no longer compatible.\n\nUnreal will continue with the default layout for its current version, the deprecated one has been removed.\n\nYou can create and save your custom layouts with \"Window\"->\"Save Layout\"->\"Save Layout As...\"."),
 					FText::FromString(LayoutName.ToString()), FText::FromString(RemovedOlderLayoutVersions[0]));
-				FMessageDialog::Open(EAppMsgType::Ok, TextBody, &TextTitle);
+				UE_LOG(LogMainFrame, Warning, TEXT("%s"), *WarningText.ToString());
+				// If user is trying to load a specific layout with "Load", also warn him with a message dialog
+				if (bIsBeingRecreated)
+				{
+					const FText TextTitle = LOCTEXT("MainFrameModuleVersionErrorTitle", "Unreal Editor Layout Version Mismatch");
+					FMessageDialog::Open(EAppMsgType::Ok, WarningText, &TextTitle);
+				}
 			}
 
+
+			FToolMenuContext EmptyContext;
+			MakeMainMenu(FGlobalTabmanager::Get(), "MainFrame.NomadMainMenu", EmptyContext);
+		
 			MainFrameContent = FGlobalTabmanager::Get()->RestoreFrom(LoadedLayout, RootWindow, bEmbedTitleAreaContent, OutputCanBeNullptr);
 			// MainFrameContent will only be nullptr if its main area contains invalid tabs (probably some layout bug). If so, reset layout to avoid potential crashes
 			if (!MainFrameContent.IsValid())
@@ -299,18 +323,9 @@ void FMainFrameModule::CreateDefaultMainFrame( const bool bStartImmersive, const
 	}
 }
 
-void FMainFrameModule::RecreateDefaultMainFrame(const bool bStartImmersive, const bool bStartPIE)
+bool FMainFrameModule::IsRecreatingDefaultMainFrame() const
 {
-	// Clean previous default main frame
-	if (IsWindowInitialized())
-	{
-		// Clean FSlateApplication
-		FSlateApplication::Get().CloseAllWindowsImmediately();
-		// Clean FGlobalTabmanager
-		FGlobalTabmanager::Get()->CloseAllAreas();
-	}
-	// (Re-)create default main frame
-	CreateDefaultMainFrame(bStartImmersive, bStartPIE);
+	return bRecreatingDefaultMainFrame;
 }
 
 
@@ -319,14 +334,6 @@ TSharedRef<SWidget> FMainFrameModule::MakeMainMenu(const TSharedPtr<FTabManager>
 	return FMainMenu::MakeMainMenu(TabManager, MenuName, ToolMenuContext);
 }
 
-
-TSharedRef<SWidget> FMainFrameModule::MakeMainTabMenu(const TSharedPtr<FTabManager>& TabManager, const FName MenuName, FToolMenuContext& ToolMenuContext) const
-{
-	return FMainMenu::MakeMainTabMenu(TabManager, MenuName, ToolMenuContext);
-}
-
-
-BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SWidget> FMainFrameModule::MakeDeveloperTools( const TArray<FMainFrameDeveloperTool>& AdditionalTools ) const
 {
 	struct Local
@@ -382,6 +389,13 @@ TSharedRef<SWidget> FMainFrameModule::MakeDeveloperTools( const TArray<FMainFram
 		{
 			return FText::AsNumber(GUObjectArray.GetObjectArrayNumMinusAvailable());
 		}
+
+#if STALL_DETECTOR
+		static FText GetStallCountAsString()
+		{
+			return FText::AsNumber(UE::FStallDetectorStats::TotalTriggeredCount.Get());
+		}
+#endif // STALL_DETECTOR
 
 		static void OpenVideo( FString SourceFilePath )
 		{
@@ -465,6 +479,15 @@ TSharedRef<SWidget> FMainFrameModule::MakeDeveloperTools( const TArray<FMainFram
 		ObjDeveloperTool.Value = TAttribute<FText>::Create(&Local::GetUObjectCountAsString);
 		Local::AddSlot(DeveloperToolWidget, LabelFont, NormalFixedFont, ObjDeveloperTool);
 	}
+	{
+#if STALL_DETECTOR
+		FMainFrameDeveloperTool StallsDeveloperTool;
+		StallsDeveloperTool.Visibility = TAttribute<EVisibility>::Create(&Local::ShouldShowFrameRateAndMemory);
+		StallsDeveloperTool.Label = LOCTEXT("StallsLabel", "Stalls: ");
+		StallsDeveloperTool.Value = TAttribute<FText>::Create(&Local::GetStallCountAsString);
+		Local::AddSlot(DeveloperToolWidget, LabelFont, NormalFixedFont, StallsDeveloperTool);
+#endif // STALL_DETECTOR
+	}
 
 
 	// Invisible border, so that we can animate our box panel size
@@ -485,7 +508,6 @@ TSharedRef<SWidget> FMainFrameModule::MakeDeveloperTools( const TArray<FMainFram
 			]
 		];
 }
-END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 
 void FMainFrameModule::SetLevelNameForWindowTitle( const FString& InLevelFileName )
@@ -508,6 +530,7 @@ void FMainFrameModule::SetApplicationTitleOverride(const FText& NewOverriddenApp
 void FMainFrameModule::StartupModule( )
 {
 	bDelayedShowMainFrame = false;
+	bRecreatingDefaultMainFrame = false;
 
 	MRUFavoritesList = NULL;
 
@@ -517,13 +540,16 @@ void FMainFrameModule::StartupModule( )
 	FGenericCommands::Register();
 	FMainFrameCommands::Register();
 
+	// Exposes the main frame command list to subscribers from other systems
+	FInputBindingManager::Get().RegisterCommandList(FMainFrameCommands::Get().GetContextName(), FMainFrameCommands::ActionList);
+
 	SetLevelNameForWindowTitle(TEXT(""));
 
 	// Register to find out about when hot reload completes, so we can show a notification
 	IHotReloadModule& HotReloadModule = IHotReloadModule::Get();
 	HotReloadModule.OnModuleCompilerStarted().AddRaw( this, &FMainFrameModule::HandleLevelEditorModuleCompileStarted );
 	HotReloadModule.OnModuleCompilerFinished().AddRaw( this, &FMainFrameModule::HandleLevelEditorModuleCompileFinished );
-	HotReloadModule.OnHotReload().AddRaw( this, &FMainFrameModule::HandleHotReloadFinished );
+	FCoreUObjectDelegates::ReloadCompleteDelegate.AddRaw( this, &FMainFrameModule::HandleReloadFinished );
 
 #if WITH_EDITOR
 	ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>("SourceCodeAccess");
@@ -557,7 +583,7 @@ void FMainFrameModule::ShutdownModule( )
 	if( IHotReloadModule::IsAvailable() )
 	{
 		IHotReloadModule& HotReloadModule = IHotReloadModule::Get();
-		HotReloadModule.OnHotReload().RemoveAll( this );
+		FCoreUObjectDelegates::ReloadCompleteDelegate.RemoveAll( this );
 		HotReloadModule.OnModuleCompilerStarted().RemoveAll( this );
 		HotReloadModule.OnModuleCompilerFinished().RemoveAll( this );
 	}
@@ -571,6 +597,23 @@ void FMainFrameModule::ShutdownModule( )
 		SourceCodeAccessModule.OnOpenFileFailed().RemoveAll( this );
 	}
 #endif
+}
+
+
+void FMainFrameModule::HandleResizeMainFrameCommand(const TArray<FString>& Args)
+{
+	if (Args.Num() == 2)
+	{
+		FVector2D Size;
+		Size.X = FPlatformString::Atof(*Args[0]);
+		Size.Y = FPlatformString::Atof(*Args[1]);
+
+		if (Size.X > 0 && Size.Y > 0)
+		{
+			FGlobalTabmanager::Get()->GetRootWindow()->ReshapeWindow(FGlobalTabmanager::Get()->GetRootWindow()->GetPositionInScreen(), Size);
+		}
+	}
+	
 }
 
 
@@ -696,11 +739,11 @@ void FMainFrameModule::HandleLevelEditorModuleCompileFinished(const FString& Log
 }
 
 
-void FMainFrameModule::HandleHotReloadFinished( bool bWasTriggeredAutomatically )
+void FMainFrameModule::HandleReloadFinished( EReloadCompleteReason Reason )
 {
 	// Only play the notification for hot reloads that were triggered automatically.  If the user triggered the hot reload, they'll
 	// have a different visual cue for that, such as the "Compiling Complete!" notification
-	if( bWasTriggeredAutomatically )
+	if( Reason == EReloadCompleteReason::HotReloadAutomatic )
 	{
 		FNotificationInfo Info( LOCTEXT("HotReloadFinished", "Hot Reload Complete!") );
 		Info.Image = FEditorStyle::GetBrush(TEXT("LevelEditor.RecompileGameCode"));
@@ -763,6 +806,7 @@ void FMainFrameModule::HandleCodeAccessorLaunching()
 	CodeAccessorNotificationPtr = FSlateNotificationManager::Get().AddNotification(Info);
 	CodeAccessorNotificationPtr.Pin()->SetCompletionState(SNotificationItem::CS_Pending);
 }
+
 
 void FMainFrameModule::HandleCodeAccessorOpenFileFailed(const FString& Filename)
 {

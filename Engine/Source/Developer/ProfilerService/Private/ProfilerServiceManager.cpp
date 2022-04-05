@@ -7,7 +7,7 @@
 #include "Serialization/MemoryReader.h"
 #include "Stats/StatsData.h"
 #include "Stats/StatsFile.h"
-
+#include "Tasks/Pipe.h"
 
 DEFINE_LOG_CATEGORY(LogProfilerService);
 
@@ -126,7 +126,7 @@ TSharedPtr<IProfilerServiceManager> FProfilerServiceManager::CreateSharedService
 }
 
 
-void FProfilerServiceManager::AddNewFrameHandleStatsThread()
+void FProfilerServiceManager::AddNewFrameHandleStatsPipe()
 {
 #if	STATS
 	const FStatsThreadState& Stats = FStatsThreadState::GetLocalState();
@@ -137,7 +137,7 @@ void FProfilerServiceManager::AddNewFrameHandleStatsThread()
 }
 
 
-void FProfilerServiceManager::RemoveNewFrameHandleStatsThread()
+void FProfilerServiceManager::RemoveNewFrameHandleStatsPipe()
 {
 #if	STATS
 	const FStatsThreadState& Stats = FStatsThreadState::GetLocalState();
@@ -147,6 +147,7 @@ void FProfilerServiceManager::RemoveNewFrameHandleStatsThread()
 #endif //STATS
 }
 
+extern CORE_API UE::Tasks::FPipe GStatsPipe;
 
 void FProfilerServiceManager::SetPreviewState( const FMessageAddress& ClientAddress, const bool bRequestedPreviewState )
 {
@@ -163,17 +164,25 @@ void FProfilerServiceManager::SetPreviewState( const FMessageAddress& ClientAddr
 				// Enable stat capture.
 				if (PreviewClients.Num() == 0)
 				{
-					FSimpleDelegateGraphTask::CreateAndDispatchWhenReady
-					(
-						FSimpleDelegateGraphTask::FDelegate::CreateRaw( this, &FProfilerServiceManager::AddNewFrameHandleStatsThread ),
-						TStatId(), nullptr,
-						FPlatformProcess::SupportsMultithreading() ? ENamedThreads::StatsThread : ENamedThreads::GameThread
-					);
+#if UE_STATS_THREAD_AS_PIPE
+					if (FPlatformProcess::SupportsMultithreading())
+					{
+						GStatsPipe.Launch(UE_SOURCE_LOCATION, [this] { AddNewFrameHandleStatsPipe(); });
+					}
+					else
+#endif
+					{
+						FSimpleDelegateGraphTask::CreateAndDispatchWhenReady
+						(
+							FSimpleDelegateGraphTask::FDelegate::CreateRaw(this, &FProfilerServiceManager::AddNewFrameHandleStatsPipe),
+							TStatId(), nullptr, ENamedThreads::GameThread
+						);
+					}
 				}
 				PreviewClients.Add(ClientAddress);
 				Client->Preview = true;
 
-				MessageEndpoint->Send( new FProfilerServicePreviewAck( InstanceId ), ClientAddress );
+				MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServicePreviewAck>(InstanceId), ClientAddress);
 			}
 			else
 			{
@@ -183,13 +192,20 @@ void FProfilerServiceManager::SetPreviewState( const FMessageAddress& ClientAddr
 				// Disable stat capture.
 				if (PreviewClients.Num() == 0)
 				{
-					FSimpleDelegateGraphTask::CreateAndDispatchWhenReady
-					(
-						FSimpleDelegateGraphTask::FDelegate::CreateRaw( this, &FProfilerServiceManager::RemoveNewFrameHandleStatsThread ),
-						TStatId(), nullptr,
-						FPlatformProcess::SupportsMultithreading() ? ENamedThreads::StatsThread : ENamedThreads::GameThread
-					);
-					
+#if UE_STATS_THREAD_AS_PIPE
+					if (FPlatformProcess::SupportsMultithreading())
+					{
+						GStatsPipe.Launch(UE_SOURCE_LOCATION, [this] { RemoveNewFrameHandleStatsPipe(); });
+					}
+					else
+#endif
+					{
+						FSimpleDelegateGraphTask::CreateAndDispatchWhenReady
+						(
+							FSimpleDelegateGraphTask::FDelegate::CreateRaw(this, &FProfilerServiceManager::RemoveNewFrameHandleStatsPipe),
+							TStatId(), nullptr, ENamedThreads::GameThread
+						);
+					}
 				}	
 			}
 		}
@@ -232,7 +248,7 @@ bool FProfilerServiceManager::HandlePing( float DeltaTime )
 	// send the ping message
 	if (MessageEndpoint.IsValid() && Clients.Num() > 0)
 	{
-		MessageEndpoint->Send(new FProfilerServicePing(), Clients);
+		MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServicePing>(), Clients);
 	}
 	return (ClientData.Num() > 0);
 #endif //STATS
@@ -333,13 +349,13 @@ void FProfilerServiceManager::HandleServiceSubscribeMessage( const FProfilerServ
 		ClientData.Add( SenderAddress, Data );
 
 		// Send authorize.
-		MessageEndpoint->Send( new FProfilerServiceAuthorize( SessionId, InstanceId ), SenderAddress );
+		MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServiceAuthorize>(SessionId, InstanceId), SenderAddress);
 		// Eventually send the metadata if needed.
 
 		// Initiate the ping callback
 		if (ClientData.Num() == 1)
 		{
-			PingDelegateHandle = FTicker::GetCoreTicker().AddTicker(PingDelegate, 5.0f);
+			PingDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(PingDelegate, 5.0f);
 		}
 	}
 #endif //STATS
@@ -367,7 +383,7 @@ void FProfilerServiceManager::HandleServiceUnsubscribeMessage( const FProfilerSe
 		// stop the ping messages if we have no clients
 		if (ClientData.Num() == 0)
 		{
-			FTicker::GetCoreTicker().RemoveTicker(PingDelegateHandle);
+			FTSTicker::GetCoreTicker().RemoveTicker(PingDelegateHandle);
 		}
 	}
 #endif //STATS

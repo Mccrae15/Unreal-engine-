@@ -2,15 +2,19 @@
 
 #include "SNiagaraScriptVersionWidget.h"
 
+#include "AssetToolsModule.h"
 #include "DetailLayoutBuilder.h"
+#include "Editor.h"
 #include "IDetailsView.h"
 #include "PropertyEditorModule.h"
 #include "SGraphActionMenu.h"
 #include "SlateOptMacros.h"
+#include "Editor/EditorEngine.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Modules/ModuleManager.h"
 #include "NiagaraEditor/Private/NiagaraVersionMetaData.h"
 #include "NiagaraEditor/Public/NiagaraActions.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBox.h"
@@ -60,7 +64,7 @@ void SNiagaraScriptVersionWidget::Construct(const FArguments& InArgs, UNiagaraSc
 	VersionSettingsDetails = PropertyModule.CreateDetailView(DetailsArgs);
 	VersionSettingsDetails->SetObject(VersionMetadata);
 
-	// the list of available version
+	// the list of available versions
 	SAssignNew(VersionListWidget, SGraphActionMenu)
 	    .OnActionSelected(this, &SNiagaraScriptVersionWidget::OnActionSelected)
 		.OnCollectAllActions(this, &SNiagaraScriptVersionWidget::CollectAllVersionActions)
@@ -242,6 +246,9 @@ TSharedPtr<SWidget> SNiagaraScriptVersionWidget::OnVersionContextMenuOpening()
                 FCanExecuteAction::CreateSP(this, &SNiagaraScriptVersionWidget::CanExecuteExposeAction, SelectedAction->AssetVersion)
             ));
 
+		MenuBuilder.AddMenuEntry(LOCTEXT("SaveAsAsset", "Save as new asset..."), LOCTEXT("SaveAsAssetVersion_Tooltip", "Creates a new asset with this version as starting point."), FSlateIcon(),
+			FUIAction(FExecuteAction::CreateSP(this, &SNiagaraScriptVersionWidget::ExecuteSaveAsAssetAction, SelectedAction->AssetVersion)));
+
 		MenuBuilder.AddSeparator();
 		
 		MenuBuilder.AddMenuEntry(LOCTEXT("DeleteVersion", "Delete version"), LOCTEXT("DeleteVersion_Tooltip", "Deletes this version and all associated data. This will break existing usages of that version!"), FSlateIcon(),
@@ -295,6 +302,20 @@ void SNiagaraScriptVersionWidget::ExecuteExposeAction(FNiagaraAssetVersion Asset
 	VersionListWidget->RefreshAllActions(true);
 	VersionInListSelected(AssetVersion);
 	OnVersionDataChanged.ExecuteIfBound();
+}
+
+void SNiagaraScriptVersionWidget::ExecuteSaveAsAssetAction(FNiagaraAssetVersion AssetVersion)
+{
+	UNiagaraScript* ScriptToCopy = Script;
+	const FString StartingPath = FPackageName::GetLongPackagePath(ScriptToCopy->GetOutermost()->GetName());
+	FAssetToolsModule& AssetToolsModule = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools");
+	UNiagaraScript* NewAssetScript = Cast<UNiagaraScript>(AssetToolsModule.Get().DuplicateAssetWithDialogAndTitle(
+		ScriptToCopy->GetName(), StartingPath, ScriptToCopy, LOCTEXT("SaveVersionAsAssetTitle", "Create Script As")));
+	if (NewAssetScript != nullptr)
+	{
+		NewAssetScript->DisableVersioning(AssetVersion.VersionGuid);
+		GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(NewAssetScript);
+	}
 }
 
 TSharedRef<ITableRow> SNiagaraScriptVersionWidget::HandleVersionViewGenerateRow(TSharedRef<FNiagaraAssetVersion> Item, const TSharedRef<STableViewBase>& OwnerTable)

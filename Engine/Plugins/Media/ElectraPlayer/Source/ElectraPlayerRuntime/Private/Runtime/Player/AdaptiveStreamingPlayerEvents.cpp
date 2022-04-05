@@ -49,25 +49,33 @@ void FAdaptiveStreamingPlayer::DispatchSegmentDownloadedEvent(TSharedPtrTS<IStre
 
 void FAdaptiveStreamingPlayer::DispatchBufferUtilizationEvent(EStreamType BufferType)
 {
-	Metrics::FBufferStats stats;
-	stats.BufferType = BufferType;
-
-	FAccessUnitBufferInfo bufStats;
-
+	const FAccessUnitBufferInfo* BufferStats = nullptr;
+	const FAccessUnitBuffer::FConfiguration* BufferConfig = nullptr;
 	if (BufferType == EStreamType::Video)
 	{
-		MultiStreamBufferVid.GetStats(bufStats);
+		BufferStats = &VideoBufferStats.StreamBuffer;
+		BufferConfig = &PlayerConfig.StreamBufferConfigVideo;
 	}
 	else if (BufferType == EStreamType::Audio)
 	{
-		MultiStreamBufferAud.GetStats(bufStats);
+		BufferStats = &AudioBufferStats.StreamBuffer;
+		BufferConfig = &PlayerConfig.StreamBufferConfigAudio;
 	}
-
-	stats.MaxDurationInSeconds = bufStats.MaxDuration.GetAsSeconds();
-	stats.DurationInUse 	   = bufStats.PushedDuration.GetAsSeconds();
-	stats.MaxByteCapacity      = bufStats.MaxDataSize;
-	stats.BytesInUse		   = bufStats.CurrentMemInUse;
-	DispatchEvent(FMetricEvent::ReportBufferUtilization(stats));
+	else if (BufferType == EStreamType::Subtitle)
+	{
+		BufferStats = &TextBufferStats.StreamBuffer;
+		BufferConfig = &PlayerConfig.StreamBufferConfigText;
+	}
+	if (BufferStats)
+	{
+		Metrics::FBufferStats stats;
+		stats.BufferType = BufferType;
+		stats.MaxDurationInSeconds = BufferConfig ? BufferConfig->MaxDuration.GetAsSeconds() : 0.0;
+		stats.DurationInUse 	   = BufferStats->PushedDuration.GetAsSeconds();
+		stats.MaxByteCapacity      = BufferConfig ? BufferConfig->MaxDataSize : 0;
+		stats.BytesInUse		   = BufferStats->CurrentMemInUse;
+		DispatchEvent(FMetricEvent::ReportBufferUtilization(stats));
+	}
 }
 
 

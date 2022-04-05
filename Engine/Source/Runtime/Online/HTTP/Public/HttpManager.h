@@ -8,14 +8,30 @@
 #include "Containers/Ticker.h"
 #include "Containers/Queue.h"
 #include "HttpPackage.h"
+#include "Containers/Ticker.h"
+#include "Misc/EnumRange.h"
 
 class FHttpThread;
+
+enum class EHttpFlushReason : uint8
+{
+	/** Reasonable, typically higher time limits */
+	Default,
+	/** Shorter time limits depending on platform requirements */
+	Background,
+	/** Shorter time limits depending on platform requirements */
+	Shutdown,
+	/** Infinite wait, should only be used in non-game scenarios where longer waits are acceptable */
+	FullFlush,
+	Count
+};
+ENUM_RANGE_BY_COUNT(EHttpFlushReason, EHttpFlushReason::Count)
 
 /**
  * Manages Http request that are currently being processed
  */
 class HTTP_API FHttpManager
-	: public FTickerObjectBase
+	: public FTSTickerObjectBase
 {
 public:
 
@@ -42,7 +58,7 @@ public:
 	 *
 	 * @param Request - the request object to add
 	 */
-	void AddRequest(const TSharedRef<IHttpRequest, ESPMode::ThreadSafe>& Request);
+	void AddRequest(const FHttpRequestRef& Request);
 
 	/**
 	 * Removes an Http request instance from the manager
@@ -50,7 +66,7 @@ public:
 	 *
 	 * @param Request - the request object to remove
 	 */
-	void RemoveRequest(const TSharedRef<IHttpRequest, ESPMode::ThreadSafe>& Request);
+	void RemoveRequest(const FHttpRequestRef& Request);
 
 	/**
 	* Find an Http request in the lists of current valid requests
@@ -66,10 +82,18 @@ public:
 	 *
 	 * @param bShutdown true if final flush during shutdown
 	 */
+	UE_DEPRECATED(5.0, "This method is deprecated. Please use Flush(EHttpFlushReason FlushReason) instead.")
 	void Flush(bool bShutdown);
 
 	/**
-	 * FTicker callback
+	 * Block until all pending requests are finished processing
+	 *
+	 * @param FlushReason the flush reason will influence times waited to cancel ongoing http requests
+	 */
+	void Flush(EHttpFlushReason FlushReason);
+
+	/**
+	 * FTSTicker callback
 	 *
 	 * @param DeltaSeconds - time in seconds since the last tick
 	 *
@@ -133,7 +157,7 @@ public:
 	 *
 	 * @param Url the path to check domain on
 	 *
-	 * @return true if domain is whitelisted and allowed
+	 * @return true if domain is allowed
 	 */
 	bool IsDomainAllowed(const FString& Url) const;
 
@@ -180,10 +204,11 @@ protected:
 	 */
 	virtual FHttpThread* CreateHttpThread();
 
+	void ReloadFlushTimeLimits();
 
 protected:
 	/** List of Http requests that are actively being processed */
-	TArray<TSharedRef<IHttpRequest, ESPMode::ThreadSafe>> Requests;
+	TArray<FHttpRequestRef> Requests;
 
 	FHttpThread* Thread;
 
@@ -192,6 +217,35 @@ protected:
 
 	/** Queue of tasks to run on the game thread */
 	TQueue<TFunction<void()>, EQueueMode::Mpsc> GameThreadQueue;
+
+	// This variable is set to true in Flush(EHttpFlushReason), and prevents new Http requests from being launched
+	bool bFlushing;
+
+	struct FHttpFlushTimeLimit
+	{
+		/**
+		 * Designates the amount of time we will wait during a flush before we try to cancel the request.
+		 * This MUST be strictly < FlushTimeHardLimitSeconds for the logic to work and actually cancel the request, since we must Tick at least one time for the cancel to work.
+		 * Setting this to 0 will immediately cancel all ongoing requests. A hard limit is still required for this to work.
+		 * Setting this to < 0 will disable the cancel, but FlushTimeHardLimitSeconds can still be used to stop waiting on requests.
+		 */		
+		double SoftLimitSeconds;
+
+		/**
+		 * After we hit the soft time limit and cancel the requests, we wait some additional time for the canceled requests to go away.
+		 * If they don't go away in time, we will hit this "hard" time limit that will just stop waiting.
+		 * If we are shutting down, this is probably fine. If we are flushing for other reasons,
+		 * This could indicate things lying around, and we'll put out some warning log messages to indicate this.
+		 * Setting this to < 0 will disable all time limits and the code will wait infinitely for all requests to complete.
+		 */
+		double HardLimitSeconds;
+
+		FHttpFlushTimeLimit(double InSoftLimitSeconds, double InHardLimitSeconds)
+			: SoftLimitSeconds(InSoftLimitSeconds), HardLimitSeconds(InHardLimitSeconds)
+		{}
+	};
+
+	TMap<EHttpFlushReason, FHttpFlushTimeLimit> FlushTimeLimitsMap;
 
 PACKAGE_SCOPE:
 

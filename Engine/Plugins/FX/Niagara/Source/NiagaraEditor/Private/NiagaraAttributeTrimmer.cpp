@@ -109,6 +109,59 @@ namespace NiagaraAttributeTrimming
 		TMap<FModuleScopedPin, FModuleScopedPin> FunctionInputMap;
 	};
 
+	class FImpureFunctionParser
+	{
+	public:
+		FImpureFunctionParser(UNiagaraGraph* Graph, ENiagaraScriptUsage Usage)
+		{
+			Traverse(TEXT(""), Graph, Usage);
+		}
+
+		const TArray<FModuleScopedPin>& ReadFunctionInputs() const
+		{
+			return ImpureFunctionInputs;
+		}
+
+	private:
+		void Traverse(FString Namespace, UNiagaraGraph* Graph, ENiagaraScriptUsage Usage)
+		{
+			const FString NamespacePrefix = (Namespace.Len() > 0) ? (Namespace + TEXT(".")) : TEXT("");
+
+			TArray<UNiagaraNodeOutput*> OutputNodes;
+			Graph->FindOutputNodes(Usage, OutputNodes);
+
+			for (UNiagaraNodeOutput* OutputNode : OutputNodes)
+			{
+				TArray<UNiagaraNode*> TraversedNodes;
+				Graph->BuildTraversal(TraversedNodes, OutputNode, true);
+
+				for (UNiagaraNode* Node : TraversedNodes)
+				{
+					if (UNiagaraNodeFunctionCall* FunctionNode = Cast<UNiagaraNodeFunctionCall>(Node))
+					{
+						if (UNiagaraGraph* FunctionGraph = FunctionNode->GetCalledGraph())
+						{
+							Traverse(NamespacePrefix + FunctionNode->GetFunctionName(), FunctionGraph, FunctionNode->GetCalledUsage());
+						}
+
+						if (FunctionNode->Signature.bRequiresExecPin)
+						{
+							for (const UEdGraphPin* Pin : FunctionNode->GetAllPins())
+							{
+								if (Pin->Direction == EEdGraphPinDirection::EGPD_Input)
+								{
+									ImpureFunctionInputs.Emplace(Pin, *Namespace);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		TArray<FModuleScopedPin> ImpureFunctionInputs;
+	};
+
 	class FExpressionBuilder
 	{
 	public:
@@ -470,7 +523,7 @@ static void TrimAttributes_Safe(TConstArrayView<const FNiagaraParameterMapHistor
 	}));
 }
 
-static void TrimAttributes_Aggressive(const FNiagaraCompileRequestData* CompileData, TConstArrayView<const FNiagaraParameterMapHistory*> LocalParamHistories, TSet<FName>& AttributesToPreserve, TArray<FNiagaraVariable>& Attributes)
+static void TrimAttributes_Aggressive(const FNiagaraCompileRequestDuplicateData* CompileDuplicateData, TConstArrayView<const FNiagaraParameterMapHistory*> LocalParamHistories, TSet<FName>& AttributesToPreserve, TArray<FNiagaraVariable>& Attributes)
 {
 	// variable references hidden in custom hlsl nodes may not be present in a specific stages parameter map
 	// so we consolidate all the variables into one list to use when going through custom hlsl nodes
@@ -492,7 +545,7 @@ static void TrimAttributes_Aggressive(const FNiagaraCompileRequestData* CompileD
 
 	for (const FNiagaraParameterMapHistory* ParamMap : LocalParamHistories)
 	{
-		FFunctionInputResolver InputResolver(CompileData->NodeGraphDeepCopy, ParamMap->OriginatingScriptUsage);
+		FFunctionInputResolver InputResolver(CompileDuplicateData->NodeGraphDeepCopy.Get(), ParamMap->OriginatingScriptUsage);
 
 		const int32 VariableCount = ParamMap->Variables.Num();
 
@@ -508,6 +561,32 @@ static void TrimAttributes_Aggressive(const FNiagaraCompileRequestData* CompileD
 				Builder.FindDependencies(WritePin, Dependencies);
 
 				DependencySets.FindOrAdd(Var.GetName()).Add(Dependencies);
+			}
+		}
+
+		FImpureFunctionParser ImpureFunctionParser(CompileDuplicateData->NodeGraphDeepCopy.Get(), ParamMap->OriginatingScriptUsage);
+		for (const FModuleScopedPin& RequiredFunctionInput : ImpureFunctionParser.ReadFunctionInputs())
+		{
+			FDependencyChain Dependencies;
+
+			FExpressionBuilder Builder(*ParamMap, InputResolver);
+			Builder.FindDependencies(RequiredFunctionInput, Dependencies);
+
+			for (const FModuleScopedPin& DependentPin : Dependencies.Pins)
+			{
+				// see if this variable corresponds to something in our parameter map's list of variables
+				// if it does then we need to mark it as something that needs to be preserved
+				// Note that we need to resolve the Pin name's module namespace before we actually search for it
+				// as a variable
+				FString VariableNameString = DependentPin.Pin->GetName();
+				VariableNameString.ReplaceInline(*DependentPin.ModuleName.ToString(), *FNiagaraConstants::ModuleNamespace.ToString());
+
+				const FName VariableName = *VariableNameString;
+
+				if (ParamMap->FindVariableByName(VariableName) != INDEX_NONE)
+				{
+					AttributesToPreserve.Add(VariableName);
+				}
 			}
 		}
 	}
@@ -689,7 +768,7 @@ void FHlslNiagaraTranslator::TrimAttributes(const FNiagaraCompileOptions& InComp
 		}
 		else if (AggressiveTrimAttributesEnabled)
 		{
-			TrimAttributes_Aggressive(CompileData, LocalParamHistories, AttributesToPreserve, Attributes);
+			TrimAttributes_Aggressive(CompileDuplicateData, LocalParamHistories, AttributesToPreserve, Attributes);
 		}
 
 		for (const FNiagaraVariable& Attribute : PreTrimmedAttributes)

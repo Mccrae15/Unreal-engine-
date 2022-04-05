@@ -55,7 +55,15 @@ static FAutoConsoleVariableRef GMallocBinned2AllocExtraCVar(
 	TEXT("When we do acquire the lock, how many blocks cached in TLS caches. In no case will we grab more than a page.")
 	);
 
+int32 GMallocBinned2MoveOSFreesOffTimeCriticalThreads = 1;
+static FAutoConsoleVariableRef GGMallocBinned2MoveOSFreesOffTimeCriticalThreadsCVar(
+	TEXT("MallocBinned2.MoveOSFreesOffTimeCriticalThreads"),
+	GMallocBinned2MoveOSFreesOffTimeCriticalThreads,
+	TEXT("When the OS needs to free memory hint to the underlying cache that we are on a time critical thread, it may decide to delay the free for a non time critical thread")
+);
 #endif
+
+
 
 float GMallocBinned2FlushThreadCacheMaxWaitTime = 0.02f;
 static FAutoConsoleVariableRef GMallocBinned2FlushThreadCacheMaxWaitTimeCVar(
@@ -88,12 +96,12 @@ int32 RecursionCounter = 0;
 // They must be 16-byte aligned as well.
 static uint16 SmallBlockSizes[] =
 {
-	16, 32, 48, 64, 80, 96, 112, 128,
+	16, 32, 48, 64, 80, 96, 128,
 	160, 192, 224, 256, 288, 320, 384, 448,
 	512, 576, 640, 704, 768, 896, 1024 - 16, 1168,
-	1360, 1632, 2048 - 16, 2336, 2720, 3264, 4096 - 16, 4368,
-	4672, 5040, 5456, 5952, 6544 - 16, 7280, 8192 - 16, 9360,
-	10912, 13104, 16384 - 16, 21840, 32768 - 16
+	1488, 1632, 2048 - 16, 2336, 2720, 3264, 4096 - 16, 4368,
+	5040, 5456, 5952, 6544 - 16, 7280, 8192 - 16, 9360,
+	10912, 13104, 16384 - 16, 19104, 21840, 27024, 32768 - 16
 };
 
 MS_ALIGN(PLATFORM_CACHE_LINE_SIZE) static uint8 UnusedAlignPadding[PLATFORM_CACHE_LINE_SIZE] GCC_ALIGN(PLATFORM_CACHE_LINE_SIZE) = { 0 };
@@ -623,16 +631,22 @@ FMallocBinned2::FPoolInfo& FMallocBinned2::FPoolList::PushNewPoolToFront(FMalloc
 	const uint32 LocalPageSize = Allocator.PageSize;
 
 	// Allocate memory.
+	LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
 	void* FreePtr = Allocator.CachedOSPageAllocator.Allocate(LocalPageSize, FMemory::AllocationHints::SmallPool);
 	if (!FreePtr)
 	{
 		Private::OutOfMemory(LocalPageSize);
 	}
+#if !UE_USE_VERYLARGEPAGEALLOCATOR || !BINNED2_BOOKKEEPING_AT_THE_END_OF_LARGEBLOCK
 	FFreeBlock* Free = new (FreePtr) FFreeBlock(LocalPageSize, InBlockSize, InPoolIndex);
+	check(IsAligned(Free, LocalPageSize));
+#else
+	FFreeBlock* FreeBlockPtr = GetPoolHeaderFromPointer(FreePtr);
+	FFreeBlock* Free = new (FreeBlockPtr) FFreeBlock(LocalPageSize, InBlockSize, InPoolIndex);
+#endif
 #if BINNED2_ALLOCATOR_STATS
 	AllocatedOSSmallPoolMemory += (int64)LocalPageSize;
 #endif
-	check(IsAligned(Free, LocalPageSize));
 	// Create pool
 	FPoolInfo* Result = Private::GetOrCreatePoolInfo(Allocator, Free, FPoolInfo::ECanary::FirstFreeBlockIsPtr, false);
 	Result->Link(Front);
@@ -707,9 +721,10 @@ FMallocBinned2::FMallocBinned2()
 
 	{
 		LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
-		HashBuckets = (PoolHashBucket*)FPlatformMemory::BinnedAllocFromOS(Align(MaxHashBuckets * sizeof(PoolHashBucket), OsAllocationGranularity));
+		size_t AllocationSize = Align(MaxHashBuckets * sizeof(PoolHashBucket), OsAllocationGranularity);
+		HashBuckets = (PoolHashBucket*)FPlatformMemory::BinnedAllocFromOS(AllocationSize);
 #if BINNED2_ALLOCATOR_STATS
-		Binned2HashMemory += Align(MaxHashBuckets * sizeof(PoolHashBucket), OsAllocationGranularity);
+		Binned2HashMemory += AllocationSize;
 #endif
 	}
 
@@ -800,6 +815,8 @@ void* FMallocBinned2::MallocExternalLarge(SIZE_T Size, uint32 Alignment)
 	checkf(FMallocBinned2::FPoolInfo::IsSupportedSize(Size), TEXT("Invalid Malloc size: '%" SIZE_T_FMT "'"), Size);
 
 	UPTRINT AlignedSize = Align(Size, OsAllocationGranularity);
+
+	LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
 
 	FPoolInfo* Pool;
 	void*      Result;
@@ -979,7 +996,7 @@ void FMallocBinned2::FreeExternal(void* Ptr)
 		checkf(PoolOSRequestedBytes <= PoolOsBytes, TEXT("FMallocBinned2::FreeExternal %d %d"), int32(PoolOSRequestedBytes), int32(PoolOsBytes));
 		Pool->SetCanary(FPoolInfo::ECanary::Unassigned, true, false);
 		// Free an OS allocation.
-		CachedOSPageAllocator.Free(Ptr, PoolOsBytes, &Mutex);
+		CachedOSPageAllocator.Free(Ptr, PoolOsBytes, &Mutex, FPerThreadFreeBlockLists::Get() != nullptr && GMallocBinned2MoveOSFreesOffTimeCriticalThreads != 0);
 	}
 }
 
@@ -1061,6 +1078,7 @@ const TCHAR* FMallocBinned2::GetDescriptiveName()
 void FMallocBinned2::FlushCurrentThreadCache()
 {
 	double StartTimeInner = FPlatformTime::Seconds();
+	TRACE_CPUPROFILER_EVENT_SCOPE(FMallocBinned2::FlushCurrentThreadCache);
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FMallocBinned2_FlushCurrentThreadCache);
 	FPerThreadFreeBlockLists* Lists = FPerThreadFreeBlockLists::Get();
 
@@ -1121,7 +1139,10 @@ void FMallocBinned2::Trim(bool bTrimThreadCaches)
 	{
 		//double StartTime = FPlatformTime::Seconds();
 		FScopeLock Lock(&Mutex);
+#if !UE_USE_VERYLARGEPAGEALLOCATOR
+		// this cache is recycled anyway, if you need to trim it based on being OOM, it's already too late.
 		CachedOSPageAllocator.FreeAll(&Mutex);
+#endif
 		//UE_LOG(LogTemp, Display, TEXT("Trim CachedOSPageAllocator = %6.2fms"), 1000.0f * float(FPlatformTime::Seconds() - StartTime));
 	}
 }
@@ -1331,4 +1352,4 @@ void FMallocBinned2::UpdateStats()
 }
 
 
-PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
+PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS

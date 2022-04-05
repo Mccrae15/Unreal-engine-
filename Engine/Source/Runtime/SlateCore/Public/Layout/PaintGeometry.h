@@ -29,7 +29,7 @@ struct SLATECORE_API FPaintGeometry
 	 *
 	 * 
 	 */
-	FVector2D DrawPosition;
+	FVector2f DrawPosition;
 
 	/**
 	 * !!! DEPRECATED!!! Drawing should only happen in local space to ensure render transforms work.
@@ -54,16 +54,16 @@ struct SLATECORE_API FPaintGeometry
 	{ 
 		if (!bUsingLegacyConstructor) return;
 		
-		AccumulatedRenderTransform = FSlateRenderTransform(DrawScale, DrawPosition);
-		FSlateLayoutTransform AccumulatedLayoutTransform = FSlateLayoutTransform(DrawScale, DrawPosition);
-		LocalSize = TransformVector(Inverse(AccumulatedLayoutTransform), DrawSize);
+		AccumulatedRenderTransform = FSlateRenderTransform(DrawScale, FVector2D(DrawPosition));
+		FSlateLayoutTransform AccumulatedLayoutTransform = FSlateLayoutTransform(DrawScale, FVector2D(DrawPosition));
+		LocalSize = TransformVector(Inverse(AccumulatedLayoutTransform), FVector2D(DrawSize));
 	}
 
 	bool HasRenderTransform() const { return bHasRenderTransform; }
 
 private:
 	// Mutable to support legacy constructors. Doesn't account for render transforms.
-	mutable FVector2D DrawSize;
+	mutable FVector2f DrawSize;
 
 	// Mutable to support legacy constructors.
 	mutable FVector2D LocalSize;

@@ -8,7 +8,11 @@
 #include "Runtime/Engine/Classes/Components/AudioComponent.h"
 #include "Sound/SoundAttenuation.h"
 #include "Channels/MovieSceneFloatChannel.h"
+#include "Channels/MovieSceneStringChannel.h"
+#include "Channels/MovieSceneBoolChannel.h"
+#include "Channels/MovieSceneIntegerChannel.h"
 #include "Sections/MovieSceneActorReferenceSection.h"
+#include "Channels/MovieSceneAudioTriggerChannel.h"
 #include "MovieSceneAudioSection.generated.h"
 
 class USoundBase;
@@ -26,7 +30,7 @@ public:
 
 	/** Sets this section's sound */
 	UFUNCTION(BlueprintCallable, Category="Sequencer|Section")
-	void SetSound(class USoundBase* InSound) {Sound = InSound;}
+	void SetSound(class USoundBase* InSound);
 
 	/** Gets the sound for this section */
 	UFUNCTION(BlueprintPure, Category = "Sequencer|Section")
@@ -158,6 +162,13 @@ public:
 	{
 		return OnAudioPlaybackPercent;
 	}
+	
+	/** Overloads for each input type, const */
+	void ForEachInput(TFunction<void(FName, const FMovieSceneBoolChannel&)> InFunction) const { ForEachInternal(InFunction, Inputs_Bool); }
+	void ForEachInput(TFunction<void(FName, const FMovieSceneStringChannel&)> InFunction) const { ForEachInternal(InFunction, Inputs_String); }
+	void ForEachInput(TFunction<void(FName, const FMovieSceneIntegerChannel&)> InFunction) const  { ForEachInternal(InFunction, Inputs_Int); }
+	void ForEachInput(TFunction<void(FName, const FMovieSceneFloatChannel&)> InFunction) const { ForEachInternal(InFunction, Inputs_Float); }
+	void ForEachInput(TFunction<void(FName, const FMovieSceneAudioTriggerChannel&)> InFunction) const { ForEachInternal(InFunction, Inputs_Trigger); }
 
 public:
 
@@ -166,14 +177,26 @@ public:
 	virtual void TrimSection(FQualifiedFrameTime TrimTime, bool bTrimLeft, bool bDeleteKeys) override;
 	virtual UMovieSceneSection* SplitSection(FQualifiedFrameTime SplitTime, bool bDeleteKeys) override;
 	virtual TOptional<FFrameTime> GetOffsetTime() const override;
-
+	virtual void MigrateFrameTimes(FFrameRate SourceRate, FFrameRate DestinationRate) override;
+	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostEditImport() override;
 	virtual EMovieSceneChannelProxyType CacheChannelProxy() override;
 
 private:
+	template<typename ChannelType, typename ForEachFunction>
+	FORCEINLINE static void ForEachInternal(ForEachFunction InFuncton, const TMap<FName, ChannelType>& InMapToIterate) 
+	{
+		for (auto& Item : InMapToIterate)
+		{
+			InFuncton(Item.Key, Item.Value);
+		}	
+	}
+
+	void SetupSoundInputParameters(const USoundBase* InSoundBase);
 
 	/** The sound cue or wave that this section plays */
 	UPROPERTY(EditAnywhere, Category="Audio")
-	USoundBase* Sound;
+	TObjectPtr<USoundBase> Sound;
 
 	/** The offset into the beginning of the audio clip */
 	UPROPERTY(EditAnywhere, Category="Audio")
@@ -203,6 +226,18 @@ private:
 	UPROPERTY( )
 	FMovieSceneFloatChannel PitchMultiplier;
 
+	/** Generic inputs for the sound  */
+	UPROPERTY()
+	TMap<FName, FMovieSceneFloatChannel> Inputs_Float;
+	UPROPERTY()
+	TMap<FName, FMovieSceneStringChannel> Inputs_String;
+	UPROPERTY()
+	TMap<FName, FMovieSceneBoolChannel> Inputs_Bool;
+	UPROPERTY()
+	TMap<FName, FMovieSceneIntegerChannel> Inputs_Int;
+	UPROPERTY()
+	TMap<FName, FMovieSceneAudioTriggerChannel> Inputs_Trigger;
+
 	UPROPERTY()
 	FMovieSceneActorReferenceData AttachActorData;
 
@@ -219,7 +254,7 @@ private:
 
 	/** The attenuation settings to use. */
 	UPROPERTY( EditAnywhere, Category="Attenuation" )
-	class USoundAttenuation* AttenuationSettings;
+	TObjectPtr<class USoundAttenuation> AttenuationSettings;
 
 	/** Called when subtitles are sent to the SubtitleManager.  Set this delegate if you want to hijack the subtitles for other purposes */
 	UPROPERTY()

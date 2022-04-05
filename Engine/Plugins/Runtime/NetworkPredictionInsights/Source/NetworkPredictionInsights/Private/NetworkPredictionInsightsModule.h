@@ -7,13 +7,19 @@
 #include "NetworkPredictionTraceModule.h"
 #include "Framework/Docking/TabManager.h"
 #include "INetworkPredictionInsightsModule.h"
+#include "Trace/StoreService.h"
 
 struct FInsightsMajorTabExtender;
 
+namespace UE
+{
 namespace Trace 
 {
+#if WITH_TRACE_STORE
 	class FStoreService;
+#endif
 	class FStoreClient;
+}
 }
 
 class FNetworkPredictionInsightsModule : public IModuleInterface
@@ -26,10 +32,12 @@ public:
 private:
 	FNetworkPredictionTraceModule NetworkPredictionTraceModule;
 
-	FDelegateHandle TickerHandle;
+	FTSTicker::FDelegateHandle TickerHandle;
 	FDelegateHandle StoreServiceHandle;
 
-	TSharedPtr<Trace::FStoreService> StoreService;
+#if WITH_TRACE_STORE
+	TSharedPtr<UE::Trace::FStoreService> StoreService;
+#endif
 	//TWeakPtr<FTabManager> WeakTimingProfilerTabManager;
 
 	static const FName InsightsTabName;	

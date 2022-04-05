@@ -37,7 +37,7 @@ public:
 	{};
 
 	UPROPERTY()
-	UNiagaraParameterDefinitions* SubscribedParameterDefinitions;
+	TObjectPtr<UNiagaraParameterDefinitions> SubscribedParameterDefinitions;
 
 	UPROPERTY()
 	TArray<FScriptVarBindingNameSubscription> BindingNameSubscriptions;
@@ -60,6 +60,8 @@ public:
 	//~ End UObject Interface
 
 	void AddParameter(const FNiagaraVariable& NewVariable);
+	bool HasParameter(const FNiagaraVariable& Variable);
+	void FindOrAddParameter(const FNiagaraVariable& Variable);
 	void RemoveParameter(const FNiagaraVariable& VariableToRemove);
 	void RenameParameter(const FNiagaraVariable& VariableToRename, const FName NewName);
 	const TArray<UNiagaraScriptVariable*>& GetParametersConst() const;
@@ -101,7 +103,7 @@ private:
 	int32 MenuSortOrder;
 
 	UPROPERTY()
-	TArray<UNiagaraScriptVariable*> ScriptVariables;
+	TArray<TObjectPtr<UNiagaraScriptVariable>> ScriptVariables;
 
 	UPROPERTY()
 	TArray<FParameterDefinitionsBindingNameSubscription> ExternalParameterDefinitionsSubscriptions;

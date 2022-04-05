@@ -15,39 +15,12 @@
 #include "Async/TaskGraphInterfaces.h"
 #include "Misc/EnumClassFlags.h"
 #include "ProfilingDebugging/MiscTrace.h"
+#include "ProfilingDebugging/CsvProfilerConfig.h"
 #include "ProfilingDebugging/CsvProfilerTrace.h"
 
 #include <atomic>
 
-// Whether to allow the CSV profiler in shipping builds.
-// Enable in a .Target.cs file if required.
-#ifndef CSV_PROFILER_ENABLE_IN_SHIPPING
-#define CSV_PROFILER_ENABLE_IN_SHIPPING 0
-#endif
-
-// Enables command line switches and unit tests of the CSV profiler.
-// The default disables these features in a shipping build, but a .Target.cs file can override this.
-#ifndef CSV_PROFILER_ALLOW_DEBUG_FEATURES
-#define CSV_PROFILER_ALLOW_DEBUG_FEATURES (!UE_BUILD_SHIPPING)
-#endif
-
-#ifndef CSV_PROFILER_USE_CUSTOM_FRAME_TIMINGS
-#define CSV_PROFILER_USE_CUSTOM_FRAME_TIMINGS 0
-#endif
-
-// CSV_PROFILER default enabling rules, if not specified explicitly in <Program>.Target.cs GlobalDefinitions
-#ifndef CSV_PROFILER
-	#if WITH_SERVER_CODE
-	  #define CSV_PROFILER (WITH_ENGINE && 1)
-	#else
-	  #define CSV_PROFILER (WITH_ENGINE && (!UE_BUILD_SHIPPING || CSV_PROFILER_ENABLE_IN_SHIPPING))
-	#endif
-#endif
-
 #if CSV_PROFILER
-
-#define CSV_TIMING_STATS_EMIT_NAMED_EVENTS 0
-#define CSV_EXCLUSIVE_TIMING_STATS_EMIT_NAMED_EVENTS 0
 
 // Helpers
 #define CSV_CATEGORY_INDEX(CategoryName)						(_GCsvCategory_##CategoryName.Index)
@@ -100,7 +73,7 @@
 // Events
 #define CSV_EVENT(Category, Format, ...) \
 	FCsvProfiler::RecordEventf( CSV_CATEGORY_INDEX(Category), Format, ##__VA_ARGS__ ); \
-	TRACE_BOOKMARK(Format, ##__VA_ARGS__)
+	TRACE_BOOKMARK(TEXT(PREPROCESSOR_TO_STRING(Category)) TEXT("/") Format, ##__VA_ARGS__)
 
 #define CSV_EVENT_GLOBAL(Format, ...) \
 	FCsvProfiler::RecordEventf( CSV_CATEGORY_INDEX_GLOBAL, Format, ##__VA_ARGS__ ); \
@@ -138,6 +111,7 @@
 
 
 #if CSV_PROFILER
+
 class FCsvProfilerFrame;
 class FCsvProfilerThreadData;
 class FCsvProfilerProcessingThread;
@@ -232,14 +206,18 @@ public:
 
 	/** Begin static interface (used by macros)*/
 	/** Push/pop events */
-	CORE_API static void BeginStat(const char * StatName, uint32 CategoryIndex);
-	CORE_API static void EndStat(const char * StatName, uint32 CategoryIndex);
+	CORE_API static void BeginStat(const char* StatName, uint32 CategoryIndex);
+	CORE_API static void BeginStat(const FName& StatName, uint32 CategoryIndex);
+	CORE_API static void EndStat(const char* StatName, uint32 CategoryIndex);
+	CORE_API static void EndStat(const FName& StatName, uint32 CategoryIndex);
 
 	CORE_API static void BeginExclusiveStat(const char * StatName);
 	CORE_API static void EndExclusiveStat(const char * StatName);
 
 	CORE_API static void RecordCustomStat(const char * StatName, uint32 CategoryIndex, float Value, const ECsvCustomStatOp CustomStatOp);
 	CORE_API static void RecordCustomStat(const FName& StatName, uint32 CategoryIndex, float Value, const ECsvCustomStatOp CustomStatOp);
+	CORE_API static void RecordCustomStat(const char* StatName, uint32 CategoryIndex, double Value, const ECsvCustomStatOp CustomStatOp);
+	CORE_API static void RecordCustomStat(const FName& StatName, uint32 CategoryIndex, double Value, const ECsvCustomStatOp CustomStatOp);
 	CORE_API static void RecordCustomStat(const char * StatName, uint32 CategoryIndex, int32 Value, const ECsvCustomStatOp CustomStatOp);
 	CORE_API static void RecordCustomStat(const FName& StatName, uint32 CategoryIndex, int32 Value, const ECsvCustomStatOp CustomStatOp);
 
@@ -248,10 +226,8 @@ public:
 
 	CORE_API static void SetMetadata(const TCHAR* Key, const TCHAR* Value);
 	
-	/** Set Thread name for a TLS. Needs to be called before the first event of that thread is sent. */
-	CORE_API static void SetThreadName(const FString& ThreadName);
-
 	static CORE_API int32 RegisterCategory(const FString& Name, bool bEnableByDefault, bool bIsGlobal);
+	static CORE_API int32 GetCategoryIndex(const FString& Name);
 
 	template <typename FmtType, typename... Types>
 	FORCEINLINE static void RecordEventf(int32 CategoryIndex, const FmtType& Fmt, Types... Args)
@@ -277,6 +253,7 @@ public:
 
 	CORE_API bool EnableCategoryByString(const FString& CategoryName) const;
 	CORE_API void EnableCategoryByIndex(uint32 CategoryIndex, bool bEnable) const;
+	CORE_API bool IsCategoryEnabled(uint32 CategoryIndex) const;
 
 	/** Per-frame update */
 	CORE_API void BeginFrame();
@@ -308,6 +285,7 @@ public:
 
 	CORE_API static bool IsWaitTrackingEnabledOnCurrentThread();
 
+	CORE_API void GetFrameExecCommands(TArray<FString>& OutFrameCommands) const;
 
 	DECLARE_MULTICAST_DELEGATE(FOnCSVProfileStart);
 	FOnCSVProfileStart& OnCSVProfileStart() { return OnCSVProfileStartDelegate; }
@@ -331,7 +309,7 @@ public:
 private:
 	CORE_API static void VARARGS RecordEventfInternal(int32 CategoryIndex, const TCHAR* Fmt, ...);
 
-	static int32 GetCategoryIndex(const FString& Name);
+	void SetMetadataInternal(const TCHAR* Key, const TCHAR* Value, bool bSanitize=true);
 
 	void FinalizeCsvFile();
 
@@ -378,16 +356,10 @@ public:
 		, CategoryIndex(InCategoryIndex)
 	{
 		FCsvProfiler::BeginStat(StatName, CategoryIndex);
-#if CSV_TIMING_STATS_EMIT_NAMED_EVENTS
-		FPlatformMisc::BeginNamedEvent(FColor(255, 128, 255), StatName);
-#endif
 	}
 
 	~FScopedCsvStat()
 	{
-#if CSV_TIMING_STATS_EMIT_NAMED_EVENTS
-		FPlatformMisc::EndNamedEvent();
-#endif
 		FCsvProfiler::EndStat(StatName, CategoryIndex);
 	}
 	const char * StatName;
@@ -401,16 +373,10 @@ public:
 		: StatName(InStatName)
 	{
 		FCsvProfiler::BeginExclusiveStat(StatName);
-#if CSV_EXCLUSIVE_TIMING_STATS_EMIT_NAMED_EVENTS
-		FPlatformMisc::BeginNamedEvent(FColor(255, 128, 128), StatName);
-#endif
 	}
 
 	~FScopedCsvStatExclusive()
 	{
-#if CSV_EXCLUSIVE_TIMING_STATS_EMIT_NAMED_EVENTS
-		FPlatformMisc::EndNamedEvent();
-#endif
 		FCsvProfiler::EndExclusiveStat(StatName);
 	}
 	const char * StatName;
@@ -426,9 +392,6 @@ public:
 		if (bCondition)
 		{
 			FCsvProfiler::BeginExclusiveStat(StatName);
-#if CSV_EXCLUSIVE_TIMING_STATS_EMIT_NAMED_EVENTS
-			FPlatformMisc::BeginNamedEvent(FColor(255,128,128),StatName);
-#endif
 		}
 	}
 
@@ -436,9 +399,6 @@ public:
 	{
 		if (bCondition)
 		{
-#if CSV_EXCLUSIVE_TIMING_STATS_EMIT_NAMED_EVENTS
-			FPlatformMisc::EndNamedEvent();
-#endif
 			FCsvProfiler::EndExclusiveStat(StatName);
 		}
 	}
@@ -455,9 +415,6 @@ public:
 		if (bCondition)
 		{
 			FCsvProfiler::BeginWait();
-#if CSV_EXCLUSIVE_TIMING_STATS_EMIT_NAMED_EVENTS
-			FPlatformMisc::BeginNamedEvent(FColor(255, 128, 128), EventWait);
-#endif
 		}
 	}
 
@@ -465,9 +422,6 @@ public:
 	{
 		if (bCondition)
 		{
-#if CSV_EXCLUSIVE_TIMING_STATS_EMIT_NAMED_EVENTS
-			FPlatformMisc::EndNamedEvent();
-#endif
 			FCsvProfiler::EndWait();
 		}
 	}

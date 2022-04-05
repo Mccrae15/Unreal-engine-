@@ -16,29 +16,21 @@ IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraSpriteVFLooseParameters, "Niaga
 
 TGlobalResource<FNullDynamicParameterVertexBuffer> GNullNiagaraDynamicParameterVertexBuffer;
 
-/**
- * Shader parameters for the particle vertex factory.
- */
-class FNiagaraSpriteVertexFactoryShaderParameters : public FVertexFactoryShaderParameters
+class FNiagaraSpriteVertexFactoryShaderParametersVS : public FNiagaraVertexFactoryShaderParametersBase
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FNiagaraSpriteVertexFactoryShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FNiagaraSpriteVertexFactoryShaderParametersVS, NonVirtual);
 public:
-	
-	
-};
 
-class FNiagaraSpriteVertexFactoryShaderParametersVS : public FNiagaraSpriteVertexFactoryShaderParameters
-{
-	DECLARE_INLINE_TYPE_LAYOUT(FNiagaraSpriteVertexFactoryShaderParametersVS, NonVirtual);
-public:
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
+		FNiagaraVertexFactoryShaderParametersBase::Bind(ParameterMap);
+
 		NumCutoutVerticesPerFrame.Bind(ParameterMap, TEXT("NumCutoutVerticesPerFrame"));
 		CutoutGeometry.Bind(ParameterMap, TEXT("CutoutGeometry"));
 
-//  		NiagaraParticleDataInt.Bind(ParameterMap, TEXT("NiagaraParticleDataInt"));
-//  		Int32DataOffset.Bind(ParameterMap, TEXT("NiagaraInt32DataOffset"));
-//  		Int32DataStride.Bind(ParameterMap, TEXT("NiagaraInt3DataStride"));
+		//  		NiagaraParticleDataInt.Bind(ParameterMap, TEXT("NiagaraParticleDataInt"));
+		//  		Int32DataOffset.Bind(ParameterMap, TEXT("NiagaraInt32DataOffset"));
+		//  		Int32DataStride.Bind(ParameterMap, TEXT("NiagaraInt3DataStride"));
 
 		ParticleAlignmentMode.Bind(ParameterMap, TEXT("ParticleAlignmentMode"));
 		ParticleFacingMode.Bind(ParameterMap, TEXT("ParticleFacingMode"));
@@ -58,11 +50,13 @@ public:
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams) const
 	{
-		FNiagaraSpriteVertexFactory* SpriteVF = (FNiagaraSpriteVertexFactory*)VertexFactory;
-		ShaderBindings.Add(Shader->GetUniformBufferParameter<FNiagaraSpriteUniformParameters>(), SpriteVF->GetSpriteUniformBuffer() );
+		FNiagaraVertexFactoryShaderParametersBase::GetElementShaderBindings(Scene, View, Shader, VertexStreamType, FeatureLevel, VertexFactory, BatchElement, ShaderBindings, VertexStreams);
+
+		const FNiagaraSpriteVertexFactory* SpriteVF = static_cast<const FNiagaraSpriteVertexFactory*>(VertexFactory);
+		ShaderBindings.Add(Shader->GetUniformBufferParameter<FNiagaraSpriteUniformParameters>(), SpriteVF->GetSpriteUniformBuffer());
 
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FNiagaraSpriteVFLooseParameters>(), SpriteVF->LooseParameterUniformBuffer);
-		
+
 		ShaderBindings.Add(NumCutoutVerticesPerFrame, SpriteVF->GetNumCutoutVerticesPerFrame());
 		FRHIShaderResourceView* NullSRV = GFNiagaraNullCutoutVertexBuffer.VertexBufferSRV;
 		ShaderBindings.Add(CutoutGeometry, SpriteVF->GetCutoutGeometrySRV() ? SpriteVF->GetCutoutGeometrySRV() : NullSRV);
@@ -75,26 +69,29 @@ public:
 	}
 
 private:
-	
-		LAYOUT_FIELD(FShaderParameter, NumCutoutVerticesPerFrame);
 
-		LAYOUT_FIELD(FShaderParameter, ParticleAlignmentMode);
-		LAYOUT_FIELD(FShaderParameter, ParticleFacingMode);
+	LAYOUT_FIELD(FShaderParameter, NumCutoutVerticesPerFrame);
 
-		LAYOUT_FIELD(FShaderResourceParameter, CutoutGeometry);
+	LAYOUT_FIELD(FShaderParameter, ParticleAlignmentMode);
+	LAYOUT_FIELD(FShaderParameter, ParticleFacingMode);
+
+	LAYOUT_FIELD(FShaderResourceParameter, CutoutGeometry);
 
 
 	//  	LAYOUT_FIELD(FShaderResourceParameter, NiagaraParticleDataInt);
 	//  	LAYOUT_FIELD(FShaderParameter, Int32DataOffset);
 	//  	LAYOUT_FIELD(FShaderParameter, Int32DataStride);
-	
-		LAYOUT_FIELD(FShaderResourceParameter, SortedIndices);
-		LAYOUT_FIELD(FShaderParameter, SortedIndicesOffset);
-	
+
+	LAYOUT_FIELD(FShaderResourceParameter, SortedIndices);
+	LAYOUT_FIELD(FShaderParameter, SortedIndicesOffset);
+
 };
 
-class FNiagaraSpriteVertexFactoryShaderParametersPS : public FNiagaraSpriteVertexFactoryShaderParameters
+IMPLEMENT_TYPE_LAYOUT(FNiagaraSpriteVertexFactoryShaderParametersVS);
+
+class FNiagaraSpriteVertexFactoryShaderParametersPS : public FNiagaraVertexFactoryShaderParametersBase
 {
+	DECLARE_TYPE_LAYOUT(FNiagaraSpriteVertexFactoryShaderParametersPS, NonVirtual);
 public:
 	void GetElementShaderBindings(
 		const FSceneInterface* Scene,
@@ -107,10 +104,14 @@ public:
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams) const
 	{
-		FNiagaraSpriteVertexFactory* SpriteVF = (FNiagaraSpriteVertexFactory*)VertexFactory;
+		FNiagaraVertexFactoryShaderParametersBase::GetElementShaderBindings(Scene, View, Shader, InputStreamType, FeatureLevel, VertexFactory, BatchElement, ShaderBindings, VertexStreams);
+
+		const FNiagaraSpriteVertexFactory* SpriteVF = static_cast<const FNiagaraSpriteVertexFactory*>(VertexFactory);
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FNiagaraSpriteUniformParameters>(), SpriteVF->GetSpriteUniformBuffer() );
 	}
 };
+
+IMPLEMENT_TYPE_LAYOUT(FNiagaraSpriteVertexFactoryShaderParametersPS);
 
 /**
  * The particle system vertex declaration resource type.
@@ -173,6 +174,9 @@ void FNiagaraSpriteVertexFactory::ModifyCompilationEnvironment(const FVertexFact
 
 	// Set a define so we can tell in MaterialTemplate.usf when we are compiling a sprite vertex factory
 	OutEnvironment.SetDefine(TEXT("PARTICLE_SPRITE_FACTORY"),TEXT("1"));
+
+	// Sprites are generated in world space and never have a matrix transform in raytracing, so it is safe to leave them in world space.
+	OutEnvironment.SetDefine(TEXT("RAY_TRACING_DYNAMIC_MESH_IN_WORLD_SPACE"), TEXT("1"));
 }
 
 /**
@@ -189,7 +193,7 @@ void FNiagaraSpriteVertexFactory::InitStreams()
 	check(Streams.Num() == 0);
 	FVertexStream* TexCoordStream = new(Streams) FVertexStream;
 	TexCoordStream->VertexBuffer = VertexBufferOverride ? VertexBufferOverride : &GParticleTexCoordVertexBuffer;
-	TexCoordStream->Stride = sizeof(FVector2D);
+	TexCoordStream->Stride = sizeof(FVector2f);
 	TexCoordStream->Offset = 0;
 }
 
@@ -205,7 +209,12 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraSpriteVertexFactory, SF_Pixel, F
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraSpriteVertexFactory, SF_Compute, FNiagaraSpriteVertexFactoryShaderParametersVS);
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraSpriteVertexFactory, SF_RayHitGroup, FNiagaraSpriteVertexFactoryShaderParametersVS);
 #endif // RHI_RAYTRACING
-IMPLEMENT_VERTEX_FACTORY_TYPE(FNiagaraSpriteVertexFactory,"/Plugin/FX/Niagara/Private/NiagaraSpriteVertexFactory.ush",true,false,true,false,false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FNiagaraSpriteVertexFactory,"/Plugin/FX/Niagara/Private/NiagaraSpriteVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsRayTracing
+	| EVertexFactoryFlags::SupportsRayTracingDynamicGeometry
+);
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -215,4 +224,10 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraSpriteVertexFactoryEx, SF_Pixel,
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraSpriteVertexFactoryEx, SF_Compute, FNiagaraSpriteVertexFactoryShaderParametersVS);
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraSpriteVertexFactoryEx, SF_RayHitGroup, FNiagaraSpriteVertexFactoryShaderParametersVS);
 #endif // RHI_RAYTRACING
-IMPLEMENT_VERTEX_FACTORY_TYPE(FNiagaraSpriteVertexFactoryEx, "/Plugin/FX/Niagara/Private/NiagaraSpriteVertexFactory.ush", true, false, true, true, false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FNiagaraSpriteVertexFactoryEx,"/Plugin/FX/Niagara/Private/NiagaraSpriteVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsRayTracing
+	| EVertexFactoryFlags::SupportsRayTracingDynamicGeometry
+	| EVertexFactoryFlags::SupportsPrecisePrevWorldPos
+);

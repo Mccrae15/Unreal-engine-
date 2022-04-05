@@ -52,9 +52,8 @@ static TAutoConsoleVariable<int32> CVarAVTLevelIncrement(
 class FVirtualTextureAddressRedirect : public IVirtualTexture
 {
 public:
-	FVirtualTextureAddressRedirect(FVirtualTextureProducerHandle InProducerHandle, IVirtualTexture* InVirtualTexture, FIntPoint InAddressOffset, int32 InLevelOffset)
-		: ProducerHandle(InProducerHandle)
-		, VirtualTexture(InVirtualTexture)
+	FVirtualTextureAddressRedirect(IVirtualTexture* InVirtualTexture, FIntPoint InAddressOffset, int32 InLevelOffset)
+		: VirtualTexture(InVirtualTexture)
 		, AddressOffset(InAddressOffset)
 		, LevelOffset(InLevelOffset)
 	{
@@ -65,7 +64,7 @@ public:
 	}
 
 	virtual FVTRequestPageResult RequestPageData(
-		const FVirtualTextureProducerHandle& InProducerHandle,
+		const FVirtualTextureProducerHandle& ProducerHandle,
 		uint8 LayerMask,
 		uint8 vLevel,
 		uint64 vAddress,
@@ -84,7 +83,7 @@ public:
 		FRHICommandListImmediate& RHICmdList,
 		ERHIFeatureLevel::Type FeatureLevel,
 		EVTProducePageFlags Flags,
-		const FVirtualTextureProducerHandle& InProducerHandle,
+		const FVirtualTextureProducerHandle& ProducerHandle,
 		uint8 LayerMask,
 		uint8 vLevel,
 		uint64 vAddress,
@@ -101,7 +100,6 @@ public:
 	}
 
 private:
-	FVirtualTextureProducerHandle ProducerHandle;
 	IVirtualTexture* VirtualTexture;
 	FIntPoint AddressOffset;
 	int32 LevelOffset;
@@ -142,6 +140,7 @@ namespace
 		AllocatedDesc.bPrivateSpace = true;
 		AllocatedDesc.ForceSpaceID = InForcedSpaceID;
 		AllocatedDesc.IndirectionTextureSize = FMath::Max(InGridSize.X, InGridSize.Y);
+		AllocatedDesc.AdaptiveLevelBias = InLevelOffset;
 
 		for (int32 LayerIndex = 0; LayerIndex < InAllocatedDesc.NumTextureLayers; ++LayerIndex)
 		{
@@ -160,7 +159,7 @@ namespace
 			NewProducerDesc.MaxLevel = FMath::CeilLogTwo(FMath::Max(InWidthInTiles, InHeightInTiles));
 
 			IVirtualTexture* VirtualTextureProducer = Producer->GetVirtualTexture();
-			IVirtualTexture* NewVirtualTextureProducer = new FVirtualTextureAddressRedirect(ProducerHandle, VirtualTextureProducer, InAddressOffset, InLevelOffset);
+			IVirtualTexture* NewVirtualTextureProducer = new FVirtualTextureAddressRedirect(VirtualTextureProducer, InAddressOffset, InLevelOffset);
 			FVirtualTextureProducerHandle NewProducerHandle = InSystem->RegisterProducer(NewProducerDesc, NewVirtualTextureProducer);
 
 			// Copy new producer to all subsequent layers.
@@ -276,6 +275,66 @@ IAllocatedVirtualTexture* FAdaptiveVirtualTexture::GetAllocatedVirtualTexture()
 int32 FAdaptiveVirtualTexture::GetSpaceID() const
 {
 	return AllocatedVirtualTextureLowMips->GetSpaceID();
+}
+
+void FAdaptiveVirtualTexture::GetProducers(FIntRect const& InTextureRegion, uint32 InMaxLevel, TArray<FProducerInfo>& OutProducerInfos)
+{
+	const uint32 NumProducers = AllocatedVirtualTextureLowMips->GetNumUniqueProducers();
+
+	OutProducerInfos.Reserve((NumAllocated + 1) * NumProducers);
+	
+	// Add producers from persistent allocated virtual texture.
+	{
+		const uint32 AdaptiveLevelBias = AllocatedVirtualTextureLowMips->GetDescription().AdaptiveLevelBias;
+		
+		// Only add to output array if we have some relevant mips under the InMaxLevel.
+		if (InMaxLevel >= AdaptiveLevelBias)
+		{
+			const int32 Divisor = 1 << AdaptiveLevelBias;
+			const FIntRect RemappedTextureRegion(
+				FIntPoint::DivideAndRoundDown(InTextureRegion.Min, Divisor), 
+				FIntPoint::DivideAndRoundUp(InTextureRegion.Max, Divisor));
+			const uint32 RemappedMaxLevel = InMaxLevel - AdaptiveLevelBias;
+
+			for (uint32 ProducerIndex = 0; ProducerIndex < NumProducers; ++ProducerIndex)
+			{
+		 		OutProducerInfos.Emplace(FProducerInfo{ AllocatedVirtualTextureLowMips->GetUniqueProducerHandle(ProducerIndex), RemappedTextureRegion, RemappedMaxLevel });
+			}
+		}
+	}
+
+	// Add producers from transient allocated virtual textures.
+	for (FAllocation const& Allocation : AllocationSlots)
+	{
+		if (Allocation.AllocatedVT != nullptr)
+		{
+			const uint32 AdaptiveLevelBias = Allocation.AllocatedVT->GetDescription().AdaptiveLevelBias;
+			if (InMaxLevel >= AdaptiveLevelBias)
+			{
+				// Get texture region in the full VT space for this allocated VT.
+				const uint32 X = Allocation.GridIndex % GridSize.X;
+				const uint32 Y = Allocation.GridIndex / GridSize.X;
+				const FIntPoint PageSize(AllocatedDesc.TileSize * AdaptiveDesc.TileCountX / GridSize.X, AllocatedDesc.TileSize * AdaptiveDesc.TileCountY / GridSize.Y);
+				const FIntPoint PageBase(PageSize.X * X, PageSize.Y * Y);
+				const FIntRect AllocationRegion(PageBase - AllocatedDesc.TileBorderSize, PageBase + PageSize + AllocatedDesc.TileBorderSize);
+
+				// Only add to output array if the texture region intersects this allocation region.
+				if (AllocationRegion.Intersect(InTextureRegion))
+				{
+					const int32 Divisor = 1 << AdaptiveLevelBias;
+					const FIntRect RemappedTextureRegion(
+							FIntPoint::DivideAndRoundDown(InTextureRegion.Min - PageBase, Divisor),
+							FIntPoint::DivideAndRoundUp(InTextureRegion.Max - PageBase, Divisor));
+					const uint32 RemappedMaxLevel = InMaxLevel - AdaptiveLevelBias;
+
+					for (uint32 ProducerIndex = 0; ProducerIndex < NumProducers; ++ProducerIndex)
+					{
+						OutProducerInfos.Emplace(FProducerInfo{ Allocation.AllocatedVT->GetUniqueProducerHandle(ProducerIndex), RemappedTextureRegion, RemappedMaxLevel });
+					}
+				}
+			}
+		}
+	}
 }
 
 /** Get hash key for the GridIndexMap. */
@@ -455,7 +514,7 @@ void FAdaptiveVirtualTexture::Allocate(FVirtualTextureSystem* InSystem, uint32 I
 
 	// Check if we have space in the page table to allocate. If not then hopefully we can allocate next frame.
 	FVirtualTextureSpace* Space = InSystem->GetSpace(GetSpaceID());
-	if (Space->GetPageTableSize() >= Space->GetDescription().MaxSpaceSize && !Space->GetAllocator().TryAlloc(NewLevel))
+	if (!Space->GetAllocator().TryAlloc(NewLevel))
 	{
 		return;
 	}
@@ -562,7 +621,7 @@ bool FAdaptiveVirtualTexture::FreeLRU(FVirtualTextureSystem* InSystem, uint32 In
 	int32 NewLevel = CurrentLevel - 1;
 	while (NewLevel > 0)
 	{
-		if (Space->GetPageTableSize() < Space->GetDescription().MaxSpaceSize || Space->GetAllocator().TryAlloc(NewLevel))
+		if (Space->GetAllocator().TryAlloc(NewLevel))
 		{
 			break;
 		}

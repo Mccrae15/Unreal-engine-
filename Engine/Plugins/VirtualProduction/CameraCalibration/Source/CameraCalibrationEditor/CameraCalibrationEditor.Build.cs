@@ -10,6 +10,7 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"ApplicationCore",
+					"AppFramework",
 					"AssetRegistry",
 					"AssetTools",
 					"CameraCalibration",
@@ -24,6 +25,8 @@ namespace UnrealBuildTool.Rules
 					"EditorWidgets",
 					"Engine",
 					"InputCore",
+					"Json",
+					"JsonUtilities",
 					"LiveLinkCamera",
 					"LiveLinkComponents",
 					"LiveLinkEditor",
@@ -37,6 +40,7 @@ namespace UnrealBuildTool.Rules
 					"Settings",
 					"Slate",
 					"SlateCore",
+					"ToolMenus",
 					"UnrealEd",
 					"WorkspaceMenuStructure",
 				});

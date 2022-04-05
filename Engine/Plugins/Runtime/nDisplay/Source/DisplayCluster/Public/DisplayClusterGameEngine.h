@@ -12,7 +12,7 @@
 
 
 class IPDisplayClusterClusterManager;
-class IDisplayClusterNodeController;
+class IDisplayClusterClusterNodeController;
 class IDisplayClusterClusterSyncObject;
 class UDisplayClusterConfigurationData;
 
@@ -49,6 +49,7 @@ protected:
 	EDisplayClusterOperationMode DetectOperationMode() const;
 	bool GetResolvedNodeId(const UDisplayClusterConfigurationData* ConfigData, FString& NodeId) const;
 	bool ValidateConfigFile(const FString& FilePath);
+	void PreExitImpl();
 
 private:
 	bool OutOfSync() const;
@@ -64,12 +65,10 @@ private:
 private:
 	IPDisplayClusterClusterManager* ClusterMgr = nullptr;
 
-	IDisplayClusterNodeController* NodeController = nullptr;
-
 	FDisplayClusterConfigurationDiagnostics Diagnostics;
 
 	EDisplayClusterOperationMode OperationMode = EDisplayClusterOperationMode::Disabled;
-	EDisplayClusterRunningMode  RunningMode = EDisplayClusterRunningMode::Startup;
+	EDisplayClusterRunningMode   RunningMode = EDisplayClusterRunningMode::Startup;
 
 	TMap<FString, TSet<FString>> SyncMap;
 };

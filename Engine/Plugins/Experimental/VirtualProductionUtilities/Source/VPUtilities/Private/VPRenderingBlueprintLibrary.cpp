@@ -8,10 +8,10 @@
 
 #if WITH_EDITOR
 #include "Editor/EditorEngine.h"
-#include "IAssetViewport.h"
 #include "ILevelEditor.h"
 #include "LevelEditor.h"
 #include "Modules/ModuleManager.h"
+#include "SLevelViewport.h"
 #endif // WITH_EDITOR
 
 
@@ -61,7 +61,7 @@ void UVPRenderingBlueprintLibrary::GenerateSceneViewExtensionIsActiveFunctorForV
 
 					if (LevelEditor.IsValid())
 					{
-						for (TSharedPtr<IAssetViewport>& AssetViewport : LevelEditor->GetViewports())
+						for (TSharedPtr<SLevelViewport>& AssetViewport : LevelEditor->GetViewports())
 						{
 							if (AssetViewport->HasPlayInEditorViewport() && (AssetViewport->GetActiveViewport() == Context.Viewport))
 							{

@@ -46,6 +46,18 @@ private:
 	/** Handler for when RemoveVertexColors is selected */
 	void ExecuteRemoveVertexColors(TArray<TWeakObjectPtr<UStaticMesh>> Objects);
 
+	/** Handler for when NaniteEnable is modified */
+	void ModifyNaniteEnable(TArray<TWeakObjectPtr<UStaticMesh>> Objects, bool bNaniteEnable);
+
+	/** Handler for when NaniteEnable is selected */
+	void ExecuteNaniteEnable(TArray<TWeakObjectPtr<UStaticMesh>> Objects);
+
+	/** Handler for when NaniteDisable is selected */
+	void ExecuteNaniteDisable(TArray<TWeakObjectPtr<UStaticMesh>> Objects);
+
+	/** Handler to provide the Nanite sub-menu */
+	void GetNaniteMenu(class FMenuBuilder& MenuBuilder, TArray<TWeakObjectPtr<UStaticMesh>> Meshes);
+
 	/** Handler to provide the list of LODs that can be imported or reimported */
 	void GetImportLODMenu(class FMenuBuilder& MenuBuilder,TArray<TWeakObjectPtr<UStaticMesh>> Objects);
 

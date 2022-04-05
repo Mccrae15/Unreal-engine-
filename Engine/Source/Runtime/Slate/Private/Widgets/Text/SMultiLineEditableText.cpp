@@ -11,6 +11,7 @@
 #include "Framework/Text/PlainTextLayoutMarshaller.h"
 #include "Widgets/Text/SlateEditableTextLayout.h"
 #include "Types/ReflectionMetadata.h"
+#include "Types/TrackedMetaData.h"
 
 SMultiLineEditableText::SMultiLineEditableText()
 	: bSelectAllTextWhenFocused(false)
@@ -84,12 +85,14 @@ void SMultiLineEditableText::Construct( const FArguments& InArgs )
 	EditableTextLayout->SetJustification(InArgs._Justification);
 	EditableTextLayout->SetLineHeightPercentage(InArgs._LineHeightPercentage);
 	EditableTextLayout->SetDebugSourceInfo(TAttribute<FString>::Create(TAttribute<FString>::FGetter::CreateLambda([this]{ return FReflectionMetaData::GetWidgetDebugInfo(this); })));
+	EditableTextLayout->SetOverflowPolicy(InArgs._OverflowPolicy);
 
 	// build context menu extender
 	MenuExtender = MakeShareable(new FExtender);
 	MenuExtender->AddMenuExtension("EditText", EExtensionHook::Before, TSharedPtr<FUICommandList>(), InArgs._ContextMenuExtender);
-}
 
+	AddMetadata(MakeShared<FTrackedMetaData>(this, FName(TEXT("EditableText"))));
+}
 
 void SMultiLineEditableText::GetCurrentTextLine(FString& OutTextLine) const
 {
@@ -190,6 +193,11 @@ void SMultiLineEditableText::SetMargin(const TAttribute<FMargin>& InMargin)
 void SMultiLineEditableText::SetJustification(const TAttribute<ETextJustify::Type>& InJustification)
 {
 	EditableTextLayout->SetJustification(InJustification);
+}
+
+void SMultiLineEditableText::SetOverflowPolicy(TOptional<ETextOverflowPolicy> InOverflowPolicy)
+{
+	EditableTextLayout->SetOverflowPolicy(InOverflowPolicy);
 }
 
 void SMultiLineEditableText::SetAllowContextMenu(const TAttribute< bool >& InAllowContextMenu)
@@ -515,6 +523,11 @@ TSharedPtr<const IRun> SMultiLineEditableText::GetRunUnderCursor() const
 TArray<TSharedRef<const IRun>> SMultiLineEditableText::GetSelectedRuns() const
 {
 	return EditableTextLayout->GetSelectedRuns();
+}
+
+FTextLocation SMultiLineEditableText::GetCursorLocation() const
+{
+	return EditableTextLayout->GetCursorLocation();
 }
 
 TSharedPtr<const SScrollBar> SMultiLineEditableText::GetHScrollBar() const

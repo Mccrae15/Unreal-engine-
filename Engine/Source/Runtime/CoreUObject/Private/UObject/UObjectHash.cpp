@@ -9,13 +9,17 @@
 #include "UObject/Package.h"
 #include "Misc/AsciiSet.h"
 #include "Misc/PackageName.h"
+#include "Async/ParallelFor.h"
 #include "HAL/IConsoleManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUObjectHash, Log, All);
 
 DECLARE_CYCLE_STAT( TEXT( "GetObjectsOfClass" ), STAT_Hash_GetObjectsOfClass, STATGROUP_UObjectHash );
+
+#if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
 DECLARE_CYCLE_STAT( TEXT( "HashObject" ), STAT_Hash_HashObject, STATGROUP_UObjectHash );
 DECLARE_CYCLE_STAT( TEXT( "UnhashObject" ), STAT_Hash_UnhashObject, STATGROUP_UObjectHash );
+#endif
 
 #if UE_GC_TRACK_OBJ_AVAILABLE
 DEFINE_STAT( STAT_Hash_NumObjects );
@@ -49,22 +53,6 @@ struct FHashBucket
 	*/
 	void *ElementsOrSetPtr[2];
 
-#if !UE_BUILD_SHIPPING
-	/** If true this bucket is being iterated over and no Add or Remove operations are allowed */
-	int32 ReadOnlyLock;
-
-	FORCEINLINE void Lock()
-	{
-		ReadOnlyLock++;
-	}
-
-	FORCEINLINE void Unlock()
-	{
-		ReadOnlyLock--;
-		check(ReadOnlyLock >= 0);
-	}
-#endif // !UE_BUILD_SHIPPING
-
 	FORCEINLINE TSet<UObjectBase*>* GetSet()
 	{
 		if (ElementsOrSetPtr[1] && !ElementsOrSetPtr[0])
@@ -88,9 +76,6 @@ struct FHashBucket
 	{
 		ElementsOrSetPtr[0] = nullptr;
 		ElementsOrSetPtr[1] = nullptr;
-#if !UE_BUILD_SHIPPING
-		ReadOnlyLock = 0;
-#endif // !UE_BUILD_SHIPPING
 	}
 	FORCEINLINE ~FHashBucket()
 	{
@@ -99,11 +84,6 @@ struct FHashBucket
 	/** Adds an Object to the bucket */
 	FORCEINLINE void Add(UObjectBase* Object)
 	{
-#if !UE_BUILD_SHIPPING
-		UE_CLOG(ReadOnlyLock != 0, LogObj, Fatal, TEXT("Trying to add %s to a hash bucket that is currently being iterated over which is not allowed and may lead to undefined behavior!"),
-			*static_cast<UObject*>(Object)->GetFullName());
-#endif // !UE_BUILD_SHIPPING
-
 		TSet<UObjectBase*>* Items = GetSet();
 		if (Items)
 		{
@@ -131,11 +111,6 @@ struct FHashBucket
 	/** Removes an Object from the bucket */
 	FORCEINLINE int32 Remove(UObjectBase* Object)
 	{
-#if !UE_BUILD_SHIPPING
-		UE_CLOG(ReadOnlyLock != 0, LogObj, Fatal, TEXT("Trying to remove %s from a hash bucket that is currently being iterated over which is not allowed and may lead to undefined behavior!"),
-			*static_cast<UObject*>(Object)->GetFullName());
-#endif // !UE_BUILD_SHIPPING
-
 		int32 Result = 0;
 		TSet<UObjectBase*>* Items = GetSet();
 		if (Items)
@@ -273,6 +248,98 @@ struct FHashBucketIterator
 	}
 };
 
+/**
+* Wrapper around a TMap with FHashBucket values that supports read only locks
+*/
+template <typename T>
+class TBucketMap : private TMap<T, FHashBucket>
+{
+	typedef TMap<T, FHashBucket> Super;
+#if !UE_BUILD_SHIPPING
+	int32 ReadOnlyLock = 0;
+#endif // !UE_BUILD_SHIPPING
+public:
+
+	using Super::begin;
+	using Super::end;
+	using Super::GetAllocatedSize;
+	using Super::Find;
+	using Super::Num;
+	using Super::FindChecked;
+
+	FORCEINLINE void LockReadOnly()
+	{
+#if !UE_BUILD_SHIPPING
+		ReadOnlyLock++;
+#endif
+	}
+	FORCEINLINE void UnlockReadOnly()
+	{
+#if !UE_BUILD_SHIPPING
+		ReadOnlyLock--;
+		check(ReadOnlyLock >= 0);
+#endif
+	}
+
+	FORCEINLINE void Compact()
+	{
+#if !UE_BUILD_SHIPPING
+		UE_CLOG(ReadOnlyLock != 0, LogObj, Fatal, TEXT("Trying to modify UObject map (Compact) that is currently being iterated. Please make sure you're not creating new UObjects or Garbage Collecting while iterating UObject hash tables."));
+#endif
+		Super::Compact();
+	}
+
+	FORCEINLINE void Add(const T& Key)
+	{
+#if !UE_BUILD_SHIPPING
+		UE_CLOG(ReadOnlyLock != 0, LogObj, Fatal, TEXT("Trying to modify UObject map (Add) that is currently being iterated. Please make sure you're not creating new UObjects or Garbage Collecting while iterating UObject hash tables."));
+#endif
+		Super::Add(Key);
+	}
+
+	FORCEINLINE void Remove(const T& Key)
+	{
+#if !UE_BUILD_SHIPPING
+		UE_CLOG(ReadOnlyLock != 0, LogObj, Fatal, TEXT("Trying to modify UObject map (Remove) that is currently being iterated. Please make sure you're not creating new UObjects or Garbage Collecting while iterating UObject hash tables."));
+#endif
+		Super::Remove(Key);
+	}
+
+	FORCEINLINE FHashBucket& FindOrAdd(const T& Key)
+	{
+#if !UE_BUILD_SHIPPING
+		UE_CLOG(ReadOnlyLock != 0, LogObj, Fatal, TEXT("Trying to modify UObject map (FindOrAdd) that is currently being iterated. Please make sure you're not creating new UObjects or Garbage Collecting while iterating UObject hash tables."));
+#endif
+		return Super::FindOrAdd(Key);
+	}
+
+	FORCEINLINE FHashBucket& FindOrAdd(T&& Key)
+	{
+#if !UE_BUILD_SHIPPING
+		UE_CLOG(ReadOnlyLock != 0, LogObj, Fatal, TEXT("Trying to modify UObject map (FindOrAdd) that is currently being iterated. Please make sure you're not creating new UObjects or Garbage Collecting while iterating UObject hash tables."));
+#endif
+		return Super::FindOrAdd(Key);
+	}
+};
+
+/**
+ * Simple TBucketMap read only lock scope
+ */
+template <typename T>
+struct TBucketMapLock
+{
+	T& Map;
+	explicit FORCEINLINE TBucketMapLock(T& InMap)
+		: Map(InMap)
+	{
+		Map.LockReadOnly();
+	}
+	FORCEINLINE ~TBucketMapLock()
+	{
+		Map.UnlockReadOnly();
+	}
+};
+
 class FUObjectHashTables
 {
 	/** Critical section that guards against concurrent adds from multiple threads */
@@ -281,17 +348,17 @@ class FUObjectHashTables
 public:
 
 	/** Hash sets */
-	TMap<int32, FHashBucket> Hash;
-	TMultiMap<int32, class UObjectBase*> HashOuter;
+	TBucketMap<int32> Hash;
+	TMultiMap<int32, uint32> HashOuter;
 
 	/** Map of object to their outers, used to avoid an object iterator to find such things. **/
-	TMap<UObjectBase*, FHashBucket> ObjectOuterMap;
-	TMap<UClass*, FHashBucket> ClassToObjectListMap;
-	TMap<UClass*, TSet<UClass*>> ClassToChildListMap;
+	TBucketMap<UObjectBase*> ObjectOuterMap;
+	TBucketMap<UClass*> ClassToObjectListMap;
+	TMap<UClass*, TSet<UClass*> > ClassToChildListMap;
 	TAtomic<uint64> ClassToChildListMapVersion;
 
 	/** Map of package to the object their contain. */
-	TMap<UPackage*, FHashBucket> PackageToObjectListMap;
+	TBucketMap<UPackage*> PackageToObjectListMap;
 	/** Map of object to their external package. */
 	TMap<UObjectBase*, UPackage*> ObjectToPackageMap;
 
@@ -302,34 +369,56 @@ public:
 
 	void ShrinkMaps()
 	{
+		const EParallelForFlags BaseFlags = FTaskGraphInterface::IsRunning() ? EParallelForFlags::None : EParallelForFlags::ForceSingleThread;
 		double StartTime = FPlatformTime::Seconds();
-		Hash.Compact();
-		for (auto& Pair : Hash)
+		ParallelFor(7,
+			[this](int32 Index)
 		{
-			Pair.Value.Compact();
-		}
-		HashOuter.Compact();
-		ObjectOuterMap.Compact();
-		for (auto& Pair : ObjectOuterMap)
-		{
-			Pair.Value.Compact();
-		}
-		ClassToObjectListMap.Compact();
-		for (auto& Pair : ClassToObjectListMap)
-		{
-			Pair.Value.Compact();
-		}
-		ClassToChildListMap.Compact();
-		for (auto& Pair : ClassToChildListMap)
-		{
-			Pair.Value.Compact();
-		}
-		PackageToObjectListMap.Compact();
-		for (auto& Pair : PackageToObjectListMap)
-		{
-			Pair.Value.Compact();
-		}
-		ObjectToPackageMap.Compact();
+			switch (Index)
+			{
+			case 0:
+				Hash.Compact();
+				for (auto& Pair : Hash)
+				{
+					Pair.Value.Compact();
+				}
+				break;
+			case 1:
+				HashOuter.Compact();
+				break;
+			case 2:
+				ObjectOuterMap.Compact();
+				for (auto& Pair : ObjectOuterMap)
+				{
+					Pair.Value.Compact();
+				}
+				break;
+			case 3:
+				ClassToObjectListMap.Compact();
+				for (auto& Pair : ClassToObjectListMap)
+				{
+					Pair.Value.Compact();
+				}
+				break;
+			case 4:
+				ClassToChildListMap.Compact();
+				for (auto& Pair : ClassToChildListMap)
+				{
+					Pair.Value.Compact();
+				}
+				break;
+			case 5:
+				PackageToObjectListMap.Compact();
+				for (auto& Pair : PackageToObjectListMap)
+				{
+					Pair.Value.Compact();
+				}
+				break;
+			case 6:
+				ObjectToPackageMap.Compact();
+				break;
+			}
+		}, BaseFlags | EParallelForFlags::Unbalanced);
 		UE_LOG(LogUObjectHash, Log, TEXT("Compacting FUObjectHashTables data took %6.2fms"), 1000.0f * float(FPlatformTime::Seconds() - StartTime));
 	}
 
@@ -540,13 +629,13 @@ struct FObjectSearchPath
 		const TCHAR* End = FAsciiSet::FindFirstOrEnd(Begin, DotColon);
 		while (*End != '\0')
 		{
-			Outers.Add(FName(End - Begin, Begin));
+			Outers.Add(FName(UE_PTRDIFF_TO_INT32(End - Begin), Begin));
 
 			Begin = End + 1;
 			End = FAsciiSet::FindFirstOrEnd(Begin, DotColon);
 		}
 
-		Inner = Outers.Num() == 0 ? InPath : FName(FStringView(Begin, End - Begin), InPath.GetNumber());
+		Inner = Outers.Num() == 0 ? InPath : FName(FStringView(Begin, UE_PTRDIFF_TO_INT32(End - Begin)), InPath.GetNumber());
 	}
 
 	bool MatchOuterNames(UObject* Outer) const
@@ -576,9 +665,6 @@ UObject* StaticFindObjectInPackageInternal(FUObjectHashTables& ThreadHash, const
 	UObject* Result = nullptr;
 	if (FHashBucket* Inners = ThreadHash.PackageToObjectListMap.Find(ObjectPackage))
 	{
-#if !UE_BUILD_SHIPPING
-		Inners->Lock();
-#endif // !UE_BUILD_SHIPPING
 		for (FHashBucketIterator It(*Inners); It; ++It)
 		{
 			UObject* Object = static_cast<UObject*>(*It);
@@ -603,9 +689,6 @@ UObject* StaticFindObjectInPackageInternal(FUObjectHashTables& ThreadHash, const
 				break;
 			}
 		}
-#if !UE_BUILD_SHIPPING
-		Inners->Unlock();
-#endif // !UE_BUILD_SHIPPING
 	}
 	return Result;
 }
@@ -620,9 +703,10 @@ UObject* StaticFindObjectFastInternalThreadSafe(FUObjectHashTables& ThreadHash, 
 	{
 		int32 Hash = GetObjectOuterHash(ObjectName, (PTRINT)ObjectPackage);
 		FHashTableLock HashLock(ThreadHash);
-		for (TMultiMap<int32, class UObjectBase*>::TConstKeyIterator HashIt(ThreadHash.HashOuter, Hash); HashIt; ++HashIt)
+		for (TMultiMap<int32, uint32>::TConstKeyIterator HashIt(ThreadHash.HashOuter, Hash); HashIt; ++HashIt)
 		{
-			UObject *Object = (UObject *)HashIt.Value();
+			uint32 InternalIndex = HashIt.Value();
+			UObject* Object = static_cast<UObject*>(GUObjectArray.IndexToObject(InternalIndex)->Object);
 			if
 				/* check that the name matches the name we're searching for */
 				((Object->GetFName() == ObjectName)
@@ -858,6 +942,7 @@ FORCEINLINE static UPackage* UnassignExternalPackageFromObject(FUObjectHashTable
 
 void ShrinkUObjectHashTables()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ShrinkUObjectHashTables);
 	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
 	FHashTableLock HashLock(ThreadHash);
 	ThreadHash.ShrinkMaps();
@@ -899,6 +984,8 @@ void GetObjectsWithOuter(const class UObjectBase* Outer, TArray<UObject *>& Resu
 	{
 		ExclusionInternalFlags |= EInternalObjectFlags::AsyncLoading;
 	}
+	ExclusionInternalFlags = UObjectBaseUtility::FixGarbageOrPendingKillInternalObjectFlags(ExclusionInternalFlags);
+
 	int32 StartNum = Results.Num();
 	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
 	FHashTableLock HashLock(ThreadHash);
@@ -939,7 +1026,7 @@ void GetObjectsWithOuter(const class UObjectBase* Outer, TArray<UObject *>& Resu
 	}
 }
 
-void ForEachObjectWithOuter(const class UObjectBase* Outer, TFunctionRef<void(UObject*)> Operation, bool bIncludeNestedObjects, EObjectFlags ExclusionFlags, EInternalObjectFlags ExclusionInternalFlags)
+void ForEachObjectWithOuterBreakable(const class UObjectBase* Outer, TFunctionRef<bool(UObject*)> Operation, bool bIncludeNestedObjects, EObjectFlags ExclusionFlags, EInternalObjectFlags ExclusionInternalFlags)
 {
 	checkf(Outer != nullptr, TEXT("Getting objects with a null outer is no longer supported. If you want to get all packages you might consider using GetObjectsOfClass instead."));
 	
@@ -958,10 +1045,13 @@ void ForEachObjectWithOuter(const class UObjectBase* Outer, TFunctionRef<void(UO
 	{
 		ExclusionInternalFlags |= EInternalObjectFlags::AsyncLoading;
 	}
+	ExclusionInternalFlags = UObjectBaseUtility::FixGarbageOrPendingKillInternalObjectFlags(ExclusionInternalFlags);
+
 	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
 	FHashTableLock HashLock(ThreadHash);
 	TArray<FHashBucket*, TInlineAllocator<1> > AllInners;
 
+	TBucketMapLock MapLock(ThreadHash.ObjectOuterMap);
 	if (FHashBucket* Inners = ThreadHash.ObjectOuterMap.Find(Outer))
 	{
 		AllInners.Add(Inners);
@@ -969,15 +1059,16 @@ void ForEachObjectWithOuter(const class UObjectBase* Outer, TFunctionRef<void(UO
 	while (AllInners.Num())
 	{
 		FHashBucket* Inners = AllInners.Pop();
-#if !UE_BUILD_SHIPPING
-		Inners->Lock();
-#endif // !UE_BUILD_SHIPPING
 		for (FHashBucketIterator It(*Inners); It; ++It)
 		{
 			UObject *Object = static_cast<UObject*>(*It);
 			if (!Object->HasAnyFlags(ExclusionFlags) && !Object->HasAnyInternalFlags(ExclusionInternalFlags))
 			{
-				Operation(Object);
+				if (!Operation(Object))
+				{
+					AllInners.Empty();
+					break;
+				}
 			}
 			if (bIncludeNestedObjects)
 			{
@@ -987,9 +1078,6 @@ void ForEachObjectWithOuter(const class UObjectBase* Outer, TFunctionRef<void(UO
 				}
 			}
 		}
-#if !UE_BUILD_SHIPPING
-		Inners->Unlock();
-#endif // !UE_BUILD_SHIPPING
 	}
 }
 
@@ -1053,9 +1141,14 @@ void ForEachObjectWithPackage(const class UPackage* Package, TFunctionRef<bool(U
 	{
 		ExclusionInternalFlags |= EInternalObjectFlags::AsyncLoading;
 	}
+	ExclusionInternalFlags = UObjectBaseUtility::FixGarbageOrPendingKillInternalObjectFlags(ExclusionInternalFlags);
+
 	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
 	FHashTableLock HashLock(ThreadHash);
 	TArray<FHashBucket*, TInlineAllocator<1> > AllInners;
+	
+	TBucketMapLock PackageToObjectListMapLock(ThreadHash.PackageToObjectListMap);
+	TBucketMapLock ObjectOuterMapLock(ThreadHash.ObjectOuterMap);
 
 	// Add the object bucket that have this package as an external package
 	if (FHashBucket* Inners = ThreadHash.PackageToObjectListMap.Find(Package))
@@ -1070,9 +1163,6 @@ void ForEachObjectWithPackage(const class UPackage* Package, TFunctionRef<bool(U
 	while (AllInners.Num())
 	{
 		FHashBucket* Inners = AllInners.Pop();
-#if !UE_BUILD_SHIPPING
-		Inners->Lock();
-#endif // !UE_BUILD_SHIPPING
 		for (FHashBucketIterator It(*Inners); It; ++It)
 		{
 			UObject *Object = static_cast<UObject*>(*It);
@@ -1098,9 +1188,6 @@ void ForEachObjectWithPackage(const class UPackage* Package, TFunctionRef<bool(U
 				}
 			}
 		}
-#if !UE_BUILD_SHIPPING
-		Inners->Unlock();
-#endif // !UE_BUILD_SHIPPING
 	}
 }
 
@@ -1153,12 +1240,17 @@ void GetObjectsOfClass(const UClass* ClassToLookFor, TArray<UObject *>& Results,
 
 FORCEINLINE void ForEachObjectOfClasses_Implementation(FUObjectHashTables& ThreadHash, TArrayView<const UClass*> ClassesToLookFor, TFunctionRef<void(UObject*)> Operation, EObjectFlags ExcludeFlags /*= RF_ClassDefaultObject*/, EInternalObjectFlags ExclusionInternalFlags /*= EInternalObjectFlags::None*/)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ForEachObjectOfClasses_Implementation);
+
 	// We don't want to return any objects that are currently being background loaded unless we're using the object iterator during async loading.
 	ExclusionInternalFlags |= EInternalObjectFlags::Unreachable;
 	if (!IsInAsyncLoadingThread())
 	{
 		ExclusionInternalFlags |= EInternalObjectFlags::AsyncLoading;
 	}
+	ExclusionInternalFlags = UObjectBaseUtility::FixGarbageOrPendingKillInternalObjectFlags(ExclusionInternalFlags);
+
+	TBucketMapLock ClassToObjectListMapLock(ThreadHash.ClassToObjectListMap);
 
 	for (const UClass* SearchClass : ClassesToLookFor)
 	{
@@ -1179,6 +1271,8 @@ FORCEINLINE void ForEachObjectOfClasses_Implementation(FUObjectHashTables& Threa
 
 void ForEachObjectOfClass(const UClass* ClassToLookFor, TFunctionRef<void(UObject*)> Operation, bool bIncludeDerivedClasses, EObjectFlags ExclusionFlags, EInternalObjectFlags ExclusionInternalFlags)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ForEachObjectOfClass);
+
 	// Most classes searched for have around 10 subclasses, some have hundreds
 	TArray<const UClass*, TInlineAllocator<16>> ClassesToSearch;
 	ClassesToSearch.Add(ClassToLookFor);
@@ -1221,6 +1315,13 @@ void GetDerivedClasses(const UClass* ClassToLookFor, TArray<UClass*>& Results, b
 	}
 }
 
+TMap<UClass*, TSet<UClass*>> GetAllDerivedClasses()
+{
+	FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
+	FHashTableLock HashLock(ThreadHash);
+	return ThreadHash.ClassToChildListMap;
+}
+
 bool ClassHasInstancesAsyncLoading(const UClass* ClassToLookFor)
 {
 	TArray<const UClass*> ClassesToSearch;
@@ -1252,11 +1353,12 @@ bool ClassHasInstancesAsyncLoading(const UClass* ClassToLookFor)
 
 void HashObject(UObjectBase* Object)
 {
-	SCOPE_CYCLE_COUNTER( STAT_Hash_HashObject );
-
 	FName Name = Object->GetFName();
 	if (Name != NAME_None)
 	{
+#if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
+		SCOPE_CYCLE_COUNTER(STAT_Hash_HashObject);
+#endif
 		int32 Hash = 0;
 
 		FUObjectHashTables& ThreadHash = FUObjectHashTables::Get();
@@ -1272,12 +1374,12 @@ void HashObject(UObjectBase* Object)
 		if (PTRINT Outer = (PTRINT)Object->GetOuter())
 		{
 			Hash = GetObjectOuterHash(Name, Outer);
-			checkSlow(!ThreadHash.HashOuter.FindPair(Hash, Object));  
+			checkSlow(!ThreadHash.HashOuter.FindPair(Hash, Object->GetUniqueID()));
 #if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
 			// if it already exists, something is wrong with the external code
-			UE_CLOG(ThreadHash.HashOuter.FindPair(Hash, Object), LogUObjectHash, Fatal, TEXT("%s already exists in UObject Outer hash!"), *GetFullNameSafe((UObjectBaseUtility*)Object));
+			UE_CLOG(ThreadHash.HashOuter.FindPair(Hash, Object->GetUniqueID()), LogUObjectHash, Fatal, TEXT("%s already exists in UObject Outer hash!"), *GetFullNameSafe((UObjectBaseUtility*)Object));
 #endif
-			ThreadHash.HashOuter.Add(Hash, Object);
+			ThreadHash.HashOuter.Add(Hash, Object->GetUniqueID());
 
 			AddToOuterMap(ThreadHash, Object);
 		}
@@ -1293,11 +1395,12 @@ void HashObject(UObjectBase* Object)
  */
 void UnhashObject(UObjectBase* Object)
 {
-	SCOPE_CYCLE_COUNTER(STAT_Hash_UnhashObject);
-
 	FName Name = Object->GetFName();
 	if (Name != NAME_None)
 	{
+#if !UE_BUILD_TEST && !UE_BUILD_SHIPPING
+		SCOPE_CYCLE_COUNTER(STAT_Hash_UnhashObject);
+#endif
 		int32 Hash = 0;
 		int32 NumRemoved = 0;
 
@@ -1313,7 +1416,7 @@ void UnhashObject(UObjectBase* Object)
 		if (PTRINT Outer = (PTRINT)Object->GetOuter())
 		{
 			Hash = GetObjectOuterHash(Name, Outer);
-			NumRemoved = ThreadHash.HashOuter.RemoveSingle(Hash, Object);
+			NumRemoved = ThreadHash.HashOuter.RemoveSingle(Hash, Object->GetUniqueID());
 
 			// must have existed, else something is wrong with the external code
 			UE_CLOG(NumRemoved != 1, LogUObjectHash, Fatal, TEXT("Internal Error: Remove from HashOuter NumRemoved = %d  for %s"), NumRemoved, *GetFullNameSafe((UObjectBaseUtility*)Object));
@@ -1395,7 +1498,7 @@ void UnlockUObjectHashTables()
 #endif
 }
 
-void LogHashStatisticsInternal(TMultiMap<int32, UObjectBase*>& Hash, FOutputDevice& Ar, const bool bShowHashBucketCollisionInfo)
+void LogHashStatisticsInternal(TMultiMap<int32, uint32>& Hash, FOutputDevice& Ar, const bool bShowHashBucketCollisionInfo)
 {
 	TArray<int32> HashBuckets;
 	// Get the set of keys in use, which is the number of hash buckets
@@ -1414,7 +1517,7 @@ void LogHashStatisticsInternal(TMultiMap<int32, UObjectBase*>& Hash, FOutputDevi
 	{
 		int32 Collisions = 0;
 
-		for (TMultiMap<int32, UObjectBase*>::TConstKeyIterator HashIt(Hash, HashBucket); HashIt; ++HashIt)
+		for (TMultiMap<int32, uint32>::TConstKeyIterator HashIt(Hash, HashBucket); HashIt; ++HashIt)
 		{
 			// There's one collision per object in a given bucket
 			Collisions++;
@@ -1440,9 +1543,9 @@ void LogHashStatisticsInternal(TMultiMap<int32, UObjectBase*>& Hash, FOutputDevi
 	// Dump the first 30 objects in the worst bin for inspection
 	Ar.Logf(TEXT("Worst hash bucket contains:"));
 	int32 Count = 0;
-	for (TMultiMap<int32, UObjectBase*>::TConstKeyIterator HashIt(Hash, MaxBin); HashIt && Count < 30; ++HashIt)
+	for (TMultiMap<int32, uint32>::TConstKeyIterator HashIt(Hash, MaxBin); HashIt && Count < 30; ++HashIt)
 	{
-		UObject* Object = (UObject*)HashIt.Value();
+		UObject* Object = static_cast<UObject*>(GUObjectArray.IndexToObject(HashIt.Value())->Object);
 		Ar.Logf(TEXT("\tObject is %s (%s)"), *Object->GetName(), *Object->GetFullName());
 		Count++;
 	}
@@ -1459,7 +1562,7 @@ void LogHashStatisticsInternal(TMultiMap<int32, UObjectBase*>& Hash, FOutputDevi
 	Ar.Logf(TEXT("Total memory allocated for Object Outer Hash: %u bytes."), HashtableAllocatedSize);
 }
 
-void LogHashStatisticsInternal(TMap<int32, FHashBucket>& Hash, FOutputDevice& Ar, const bool bShowHashBucketCollisionInfo)
+void LogHashStatisticsInternal(TBucketMap<int32>& Hash, FOutputDevice& Ar, const bool bShowHashBucketCollisionInfo)
 {
 	TArray<int32> HashBuckets;
 	// Get the set of keys in use, which is the number of hash buckets

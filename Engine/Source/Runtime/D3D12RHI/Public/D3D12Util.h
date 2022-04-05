@@ -10,27 +10,7 @@
 #include "Containers/Queue.h"
 #include "RenderUtils.h"
 
-#if WINVER == 0x0502
-// Windows XP uses Win7 sdk, and in that one winerror.h doesn't include them
-#ifndef DXGI_ERROR_INVALID_CALL
-#define DXGI_ERROR_INVALID_CALL                 MAKE_DXGI_HRESULT(1)
-#define DXGI_ERROR_NOT_FOUND                    MAKE_DXGI_HRESULT(2)
-#define DXGI_ERROR_MORE_DATA                    MAKE_DXGI_HRESULT(3)
-#define DXGI_ERROR_UNSUPPORTED                  MAKE_DXGI_HRESULT(4)
-#define DXGI_ERROR_DEVICE_REMOVED               MAKE_DXGI_HRESULT(5)
-#define DXGI_ERROR_DEVICE_HUNG                  MAKE_DXGI_HRESULT(6)
-#define DXGI_ERROR_DEVICE_RESET                 MAKE_DXGI_HRESULT(7)
-#define DXGI_ERROR_WAS_STILL_DRAWING            MAKE_DXGI_HRESULT(10)
-#define DXGI_ERROR_FRAME_STATISTICS_DISJOINT    MAKE_DXGI_HRESULT(11)
-#define DXGI_ERROR_GRAPHICS_VIDPN_SOURCE_IN_USE MAKE_DXGI_HRESULT(12)
-#define DXGI_ERROR_DRIVER_INTERNAL_ERROR        MAKE_DXGI_HRESULT(32)
-#define DXGI_ERROR_NONEXCLUSIVE                 MAKE_DXGI_HRESULT(33)
-#define DXGI_ERROR_NOT_CURRENTLY_AVAILABLE      MAKE_DXGI_HRESULT(34)
-#define DXGI_ERROR_REMOTE_CLIENT_DISCONNECTED   MAKE_DXGI_HRESULT(35)
-#define DXGI_ERROR_REMOTE_OUTOFMEMORY           MAKE_DXGI_HRESULT(36)
-#endif
-
-#endif
+class FD3D12Adapter;
 
 namespace D3D12RHI
 {
@@ -73,7 +53,11 @@ namespace D3D12RHI
 
 	/** Returns a string for the provided DXGI format. */
 	const TCHAR* GetD3D12TextureFormatString(DXGI_FORMAT TextureFormat);
-}
+
+	/** Checks if given GPU virtual address corresponds to any known resource allocations and logs results */
+	void LogPageFaultData(FD3D12Adapter* InAdapter, D3D12_GPU_VIRTUAL_ADDRESS InPageFaultAddress);
+	
+} // namespace D3D12RHI
 
 using namespace D3D12RHI;
 
@@ -86,9 +70,11 @@ enum EShaderVisibility
 {
 	SV_Vertex,
 	SV_Pixel,
-	SV_Hull,
-	SV_Domain,
 	SV_Geometry,
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	SV_Mesh,
+	SV_Amplification,
+#endif
 	SV_All,
 	SV_ShaderVisibilityCount
 };
@@ -112,7 +98,12 @@ struct FD3D12QuantizedBoundShaderState
 {
 	FShaderRegisterCounts RegisterCounts[SV_ShaderVisibilityCount];
 	ERTRootSignatureType RootSignatureType = RS_Raster;
-	bool bAllowIAInputLayout;
+	uint8 bAllowIAInputLayout : 1;
+	uint8 bNeedsAgsIntrinsicsSpace : 1;
+	uint8 bUseDiagnosticBuffer : 1;
+	uint8 bUseDirectlyIndexedResourceHeap : 1;
+	uint8 bUseDirectlyIndexedSamplerHeap : 1;
+	uint8 Padding : 3;
 
 	inline bool operator==(const FD3D12QuantizedBoundShaderState& RHS) const
 	{
@@ -268,6 +259,7 @@ void LogExecuteCommandLists(uint32 NumCommandLists, ID3D12CommandList *const *pp
 FString ConvertToResourceStateString(uint32 ResourceState);
 void LogResourceBarriers(uint32 NumBarriers, D3D12_RESOURCE_BARRIER *pBarriers, ID3D12CommandList *const pCommandList);
 
+void StallRHIThreadAndForceFlush(FD3D12Device* InDevice);
 
 // Custom resource states
 // To Be Determined (TBD) means we need to fill out a resource barrier before the command list is executed.
@@ -278,6 +270,13 @@ static bool IsValidD3D12ResourceState(D3D12_RESOURCE_STATES InState)
 {
 	return (InState != D3D12_RESOURCE_STATE_TBD && InState != D3D12_RESOURCE_STATE_CORRUPT);
 }
+
+static bool IsDirectQueueExclusiveD3D12State(D3D12_RESOURCE_STATES InState)
+{
+	return EnumHasAnyFlags(InState, D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+}
+
+D3D12_RESOURCE_STATES GetD3D12ResourceState(ERHIAccess InRHIAccess, bool InIsAsyncCompute);
 
 //==================================================================================================================================
 // CResourceState
@@ -292,8 +291,12 @@ public:
 	bool CheckResourceState(D3D12_RESOURCE_STATES State) const;
 	bool CheckResourceStateInitalized() const;
 	D3D12_RESOURCE_STATES GetSubresourceState(uint32 SubresourceIndex) const;
+	bool CheckAllSubresourceSame();
 	void SetResourceState(D3D12_RESOURCE_STATES State);
 	void SetSubresourceState(uint32 SubresourceIndex, D3D12_RESOURCE_STATES State);
+
+	D3D12_RESOURCE_STATES GetUAVHiddenResourceState() const { return UAVHiddenResourceState; }
+	void SetUAVHiddenResourceState(D3D12_RESOURCE_STATES InUAVHiddenResourceState) { UAVHiddenResourceState = InUAVHiddenResourceState; }
 
 private:
 	// Only used if m_AllSubresourcesSame is 1.
@@ -303,6 +306,10 @@ private:
 	// Set to 1 if m_ResourceState is valid.  In this case, all subresources have the same state
 	// Set to 0 if m_SubresourceState is valid.  In this case, each subresources may have a different state (or may be unknown)
 	uint32 m_AllSubresourcesSame : 1;
+
+	// Special resource state to track previous state before resource transitioned to UAV when the resource
+	// has a UAV aliasing resource so correct previous state can be found (only single state allowed)
+	D3D12_RESOURCE_STATES UAVHiddenResourceState;
 
 	// Only used if m_AllSubresourcesSame is 0.
 	// The state of each subresources.  Bits are from D3D12_RESOURCE_STATES.
@@ -326,50 +333,6 @@ struct ShaderBytecodeHash
 	{
 		return (Hash[0] != b.Hash[0] || Hash[1] != b.Hash[1]);
 	}
-};
-
-class FD3D12ShaderBytecode
-{
-public:
-	FD3D12ShaderBytecode()
-	{
-		FMemory::Memzero(Shader);
-		FMemory::Memzero(Hash);
-	}
-
-	FD3D12ShaderBytecode(const D3D12_SHADER_BYTECODE &InShader)
-		: Shader(InShader)
-	{
-		HashShader();
-	}
-
-	void SetShaderBytecode(const D3D12_SHADER_BYTECODE &InShader)
-	{
-		Shader = InShader;
-		HashShader();
-	}
-
-	const D3D12_SHADER_BYTECODE& GetShaderBytecode() const { return Shader; }
-	const ShaderBytecodeHash& GetHash() const { return Hash; }
-
-private:
-	void HashShader()
-	{
-		if (Shader.pShaderBytecode && Shader.BytecodeLength > 0)
-		{
-			// D3D shader bytecode contains a 128bit checksum in DWORD 1-4. We can just use that directly instead of hashing the whole shader bytecode ourselves.
-			check(Shader.BytecodeLength >= sizeof(uint32) + sizeof(Hash));
-			FMemory::Memcpy(&Hash, ((uint32*) Shader.pShaderBytecode) + 1, sizeof(Hash));
-		}
-		else
-		{
-			FMemory::Memzero(Hash);
-		}
-	}
-
-private:
-	ShaderBytecodeHash Hash;
-	D3D12_SHADER_BYTECODE Shader;
 };
 
 /**
@@ -474,12 +437,17 @@ inline bool IsCPUWritable(D3D12_HEAP_TYPE HeapType, const D3D12_HEAP_PROPERTIES 
 			(pCustomHeapProperties->CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE || pCustomHeapProperties->CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_WRITE_BACK));
 }
 
-inline bool IsCPUInaccessible(D3D12_HEAP_TYPE HeapType, const D3D12_HEAP_PROPERTIES *pCustomHeapProperties = nullptr)
+inline bool IsGPUOnly(D3D12_HEAP_TYPE HeapType, const D3D12_HEAP_PROPERTIES *pCustomHeapProperties = nullptr)
 {
 	check(HeapType == D3D12_HEAP_TYPE_CUSTOM ? pCustomHeapProperties != nullptr : true);
 	return HeapType == D3D12_HEAP_TYPE_DEFAULT ||
 		(HeapType == D3D12_HEAP_TYPE_CUSTOM &&
 		(pCustomHeapProperties->CPUPageProperty == D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE));
+}
+
+inline bool IsCPUAccessible(D3D12_HEAP_TYPE HeapType, const D3D12_HEAP_PROPERTIES* pCustomHeapProperties = nullptr)
+{
+	return !IsGPUOnly(HeapType, pCustomHeapProperties);
 }
 
 inline D3D12_RESOURCE_STATES DetermineInitialResourceState(D3D12_HEAP_TYPE HeapType, const D3D12_HEAP_PROPERTIES *pCustomHeapProperties = nullptr)
@@ -514,6 +482,14 @@ public:
 	bool IsValid() const;
 	bool IsComplete() const;
 	void WaitForCompletion() const;
+	void GPUWait(ED3D12CommandQueueType InCommandQueueType) const;
+
+	void Merge(const FD3D12SyncPoint& InOther)
+	{
+		check(Fence == nullptr || Fence == InOther.Fence);
+		Fence = InOther.Fence;
+		Value = FMath::Max(Value, InOther.Value);
+	}
 
 private:
 	FD3D12Fence* Fence;
@@ -607,7 +583,7 @@ static uint32 GetHeightAlignment(DXGI_FORMAT Format)
 	}
 }
 
-static void Get4KTileShape(D3D12_TILE_SHAPE* pTileShape, DXGI_FORMAT Format, uint8 UEFormat, D3D12_RESOURCE_DIMENSION Dimension, uint32 SampleCount)
+static void Get4KTileShape(D3D12_TILE_SHAPE* pTileShape, DXGI_FORMAT DXGIFormat, EPixelFormat UEFormat, D3D12_RESOURCE_DIMENSION Dimension, uint32 SampleCount)
 {
 	//Bits per unit
 	uint32 BPU = GPixelFormats[UEFormat].BlockBytes * 8;
@@ -617,7 +593,7 @@ static void Get4KTileShape(D3D12_TILE_SHAPE* pTileShape, DXGI_FORMAT Format, uin
 	case D3D12_RESOURCE_DIMENSION_BUFFER:
 	case D3D12_RESOURCE_DIMENSION_TEXTURE1D:
 	{
-		check(!IsBlockCompressFormat(Format));
+		check(!IsBlockCompressFormat(DXGIFormat));
 		pTileShape->WidthInTexels = (BPU == 0) ? 4096 : 4096 * 8 / BPU;
 		pTileShape->HeightInTexels = 1;
 		pTileShape->DepthInTexels = 1;
@@ -626,19 +602,19 @@ static void Get4KTileShape(D3D12_TILE_SHAPE* pTileShape, DXGI_FORMAT Format, uin
 	case D3D12_RESOURCE_DIMENSION_TEXTURE2D:
 	{
 		pTileShape->DepthInTexels = 1;
-		if (IsBlockCompressFormat(Format))
+		if (IsBlockCompressFormat(DXGIFormat))
 		{
 			// Currently only supported block sizes are 64 and 128.
 			// These equations calculate the size in texels for a tile. It relies on the fact that 16*16*16 blocks fit in a tile if the block size is 128 bits.
 			check(BPU == 64 || BPU == 128);
-			pTileShape->WidthInTexels = 16 * GetWidthAlignment(Format);
-			pTileShape->HeightInTexels = 16 * GetHeightAlignment(Format);
+			pTileShape->WidthInTexels = 16 * GetWidthAlignment(DXGIFormat);
+			pTileShape->HeightInTexels = 16 * GetHeightAlignment(DXGIFormat);
 			if (BPU == 64)
 			{
 				// If bits per block are 64 we double width so it takes up the full tile size.
 				// This is only true for BC1 and BC4
-				check((Format >= DXGI_FORMAT_BC1_TYPELESS && Format <= DXGI_FORMAT_BC1_UNORM_SRGB) ||
-					(Format >= DXGI_FORMAT_BC4_TYPELESS && Format <= DXGI_FORMAT_BC4_SNORM));
+				check((DXGIFormat >= DXGI_FORMAT_BC1_TYPELESS && DXGIFormat <= DXGI_FORMAT_BC1_UNORM_SRGB) ||
+					(DXGIFormat >= DXGI_FORMAT_BC4_TYPELESS && DXGIFormat <= DXGI_FORMAT_BC4_SNORM));
 				pTileShape->WidthInTexels *= 2;
 			}
 		}
@@ -702,28 +678,28 @@ static void Get4KTileShape(D3D12_TILE_SHAPE* pTileShape, DXGI_FORMAT Format, uin
 				check(false);
 			}
 
-			check(GetWidthAlignment(Format) == 1);
-			check(GetHeightAlignment(Format) == 1);
+			check(GetWidthAlignment(DXGIFormat) == 1);
+			check(GetHeightAlignment(DXGIFormat) == 1);
 		}
 
 		break;
 	}
 	case D3D12_RESOURCE_DIMENSION_TEXTURE3D:
 	{
-		if (IsBlockCompressFormat(Format))
+		if (IsBlockCompressFormat(DXGIFormat))
 		{
 			// Currently only supported block sizes are 64 and 128.
 			// These equations calculate the size in texels for a tile. It relies on the fact that 16*16*16 blocks fit in a tile if the block size is 128 bits.
 			check(BPU == 64 || BPU == 128);
-			pTileShape->WidthInTexels = 8 * GetWidthAlignment(Format);
-			pTileShape->HeightInTexels = 8 * GetHeightAlignment(Format);
+			pTileShape->WidthInTexels = 8 * GetWidthAlignment(DXGIFormat);
+			pTileShape->HeightInTexels = 8 * GetHeightAlignment(DXGIFormat);
 			pTileShape->DepthInTexels = 4;
 			if (BPU == 64)
 			{
 				// If bits per block are 64 we double width so it takes up the full tile size.
 				// This is only true for BC1 and BC4
-				check((Format >= DXGI_FORMAT_BC1_TYPELESS && Format <= DXGI_FORMAT_BC1_UNORM_SRGB) ||
-					(Format >= DXGI_FORMAT_BC4_TYPELESS && Format <= DXGI_FORMAT_BC4_SNORM));
+				check((DXGIFormat >= DXGI_FORMAT_BC1_TYPELESS && DXGIFormat <= DXGI_FORMAT_BC1_UNORM_SRGB) ||
+					(DXGIFormat >= DXGI_FORMAT_BC4_TYPELESS && DXGIFormat <= DXGI_FORMAT_BC4_SNORM));
 				pTileShape->DepthInTexels *= 2;
 			}
 		}
@@ -764,24 +740,12 @@ static void Get4KTileShape(D3D12_TILE_SHAPE* pTileShape, DXGI_FORMAT Format, uin
 				check(false);
 			}
 
-			check(GetWidthAlignment(Format) == 1);
-			check(GetHeightAlignment(Format) == 1);
+			check(GetWidthAlignment(DXGIFormat) == 1);
+			check(GetHeightAlignment(DXGIFormat) == 1);
 		}
 	}
 	break;
 	}
-}
-
-#define NUM_4K_BLOCKS_PER_64K_PAGE (16)
-
-static bool TextureCanBe4KAligned(D3D12_RESOURCE_DESC& Desc, uint8 UEFormat)
-{
-	D3D12_TILE_SHAPE Tile = {};
-	Get4KTileShape(&Tile, Desc.Format, UEFormat, Desc.Dimension, Desc.SampleDesc.Count);
-
-	uint32 TilesNeeded = GetTilesNeeded(Desc.Width, Desc.Height, Desc.DepthOrArraySize, Tile);
-
-	return TilesNeeded <= NUM_4K_BLOCKS_PER_64K_PAGE;
 }
 
 template <class TView>
@@ -793,154 +757,6 @@ bool AssertResourceState(ID3D12CommandList* pCommandList, FD3D12View<TView>* pVi
 
 bool AssertResourceState(ID3D12CommandList* pCommandList, FD3D12Resource* pResource, const D3D12_RESOURCE_STATES& State, uint32 Subresource);
 bool AssertResourceState(ID3D12CommandList* pCommandList, FD3D12Resource* pResource, const D3D12_RESOURCE_STATES& State, const CViewSubresourceSubset& SubresourceSubset);
-
-inline DXGI_FORMAT FindSharedResourceDXGIFormat(DXGI_FORMAT InFormat, bool bSRGB)
-{
-	if (bSRGB)
-	{
-		switch (InFormat)
-		{
-		case DXGI_FORMAT_B8G8R8X8_TYPELESS:    return DXGI_FORMAT_B8G8R8X8_UNORM_SRGB;
-		case DXGI_FORMAT_B8G8R8A8_TYPELESS:    return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS:    return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		case DXGI_FORMAT_BC1_TYPELESS:         return DXGI_FORMAT_BC1_UNORM_SRGB;
-		case DXGI_FORMAT_BC2_TYPELESS:         return DXGI_FORMAT_BC2_UNORM_SRGB;
-		case DXGI_FORMAT_BC3_TYPELESS:         return DXGI_FORMAT_BC3_UNORM_SRGB;
-		case DXGI_FORMAT_BC7_TYPELESS:         return DXGI_FORMAT_BC7_UNORM_SRGB;
-		};
-	}
-	else
-	{
-		switch (InFormat)
-		{
-		case DXGI_FORMAT_B8G8R8X8_TYPELESS:    return DXGI_FORMAT_B8G8R8X8_UNORM;
-		case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		case DXGI_FORMAT_BC1_TYPELESS:      return DXGI_FORMAT_BC1_UNORM;
-		case DXGI_FORMAT_BC2_TYPELESS:      return DXGI_FORMAT_BC2_UNORM;
-		case DXGI_FORMAT_BC3_TYPELESS:      return DXGI_FORMAT_BC3_UNORM;
-		case DXGI_FORMAT_BC7_TYPELESS:      return DXGI_FORMAT_BC7_UNORM;
-		};
-	}
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_R32G32B32A32_TYPELESS: return DXGI_FORMAT_R32G32B32A32_UINT;
-	case DXGI_FORMAT_R32G32B32_TYPELESS:    return DXGI_FORMAT_R32G32B32_UINT;
-	case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_UNORM;
-	case DXGI_FORMAT_R32G32_TYPELESS:       return DXGI_FORMAT_R32G32_UINT;
-	case DXGI_FORMAT_R10G10B10A2_TYPELESS:  return DXGI_FORMAT_R10G10B10A2_UNORM;
-	case DXGI_FORMAT_R16G16_TYPELESS:       return DXGI_FORMAT_R16G16_UNORM;
-	case DXGI_FORMAT_R8G8_TYPELESS:         return DXGI_FORMAT_R8G8_UNORM;
-	case DXGI_FORMAT_R8_TYPELESS:           return DXGI_FORMAT_R8_UNORM;
-
-	case DXGI_FORMAT_BC4_TYPELESS:         return DXGI_FORMAT_BC4_UNORM;
-	case DXGI_FORMAT_BC5_TYPELESS:         return DXGI_FORMAT_BC5_UNORM;
-
-
-
-	case DXGI_FORMAT_R24G8_TYPELESS: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-	case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
-	case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_UNORM;
-		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
-	case DXGI_FORMAT_R32G8X24_TYPELESS: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
-	}
-	return InFormat;
-}
-
-inline DXGI_FORMAT GetPlatformTextureResourceFormat(DXGI_FORMAT InFormat, uint32 InFlags)
-{
-	// Find valid shared texture format
-	if (InFlags & TexCreate_Shared)
-	{
-		return FindSharedResourceDXGIFormat(InFormat, InFlags & TexCreate_SRGB);
-	}
-
-	return InFormat;
-}
-
-/** Find an appropriate DXGI format for the input format and SRGB setting. */
-inline DXGI_FORMAT FindShaderResourceDXGIFormat(DXGI_FORMAT InFormat, bool bSRGB)
-{
-	if (bSRGB)
-	{
-		switch (InFormat)
-		{
-		case DXGI_FORMAT_B8G8R8A8_TYPELESS:    return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS:    return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-		case DXGI_FORMAT_BC1_TYPELESS:         return DXGI_FORMAT_BC1_UNORM_SRGB;
-		case DXGI_FORMAT_BC2_TYPELESS:         return DXGI_FORMAT_BC2_UNORM_SRGB;
-		case DXGI_FORMAT_BC3_TYPELESS:         return DXGI_FORMAT_BC3_UNORM_SRGB;
-		case DXGI_FORMAT_BC7_TYPELESS:         return DXGI_FORMAT_BC7_UNORM_SRGB;
-		};
-	}
-	else
-	{
-		switch (InFormat)
-		{
-		case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		case DXGI_FORMAT_BC1_TYPELESS:      return DXGI_FORMAT_BC1_UNORM;
-		case DXGI_FORMAT_BC2_TYPELESS:      return DXGI_FORMAT_BC2_UNORM;
-		case DXGI_FORMAT_BC3_TYPELESS:      return DXGI_FORMAT_BC3_UNORM;
-		case DXGI_FORMAT_BC7_TYPELESS:      return DXGI_FORMAT_BC7_UNORM;
-		};
-	}
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_R24G8_TYPELESS: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-	case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
-	case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_UNORM;
-		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
-	case DXGI_FORMAT_R32G8X24_TYPELESS: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
-	}
-	return InFormat;
-}
-
-/** Find an appropriate DXGI format unordered access of the raw format. */
-inline DXGI_FORMAT FindUnorderedAccessDXGIFormat(DXGI_FORMAT InFormat)
-{
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
-	case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
-	}
-	return InFormat;
-}
-
-/** Find the appropriate depth-stencil targetable DXGI format for the given format. */
-inline DXGI_FORMAT FindDepthStencilDXGIFormat(DXGI_FORMAT InFormat)
-{
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_R24G8_TYPELESS:
-		return DXGI_FORMAT_D24_UNORM_S8_UINT;
-		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
-	case DXGI_FORMAT_R32G8X24_TYPELESS:
-		return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
-	case DXGI_FORMAT_R32_TYPELESS:
-		return DXGI_FORMAT_D32_FLOAT;
-	case DXGI_FORMAT_R16_TYPELESS:
-		return DXGI_FORMAT_D16_UNORM;
-	};
-	return InFormat;
-}
-
-/**
-* Returns whether the given format contains stencil information.
-* Must be passed a format returned by FindDepthStencilDXGIFormat, so that typeless versions are converted to their corresponding depth stencil view format.
-*/
-inline bool HasStencilBits(DXGI_FORMAT InFormat)
-{
-	switch (InFormat)
-	{
-	case DXGI_FORMAT_D24_UNORM_S8_UINT:
-		// Changing Depth Buffers to 32 bit on Dingo as D24S8 is actually implemented as a 32 bit buffer in the hardware
-	case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
-		return true;
-	};
-
-	return false;
-}
 
 FORCEINLINE_DEBUGGABLE D3D12_PRIMITIVE_TOPOLOGY_TYPE TranslatePrimitiveTopologyType(EPrimitiveTopologyType TopologyType)
 {
@@ -1040,37 +856,6 @@ FORCEINLINE_DEBUGGABLE D3D12_PRIMITIVE_TOPOLOGY_TYPE D3D12PrimitiveTypeToTopolog
 	}
 }
 #pragma warning(pop)
-
-static void TranslateRenderTargetFormats(
-	const FGraphicsPipelineStateInitializer &PsoInit,
-	D3D12_RT_FORMAT_ARRAY& RTFormatArray,
-	DXGI_FORMAT& DSVFormat
-	)
-{
-	RTFormatArray.NumRenderTargets = PsoInit.ComputeNumValidRenderTargets();
-
-	for (uint32 RTIdx = 0; RTIdx < PsoInit.RenderTargetsEnabled; ++RTIdx)
-	{
-		checkSlow(PsoInit.RenderTargetFormats[RTIdx] == PF_Unknown || GPixelFormats[PsoInit.RenderTargetFormats[RTIdx]].Supported);
-
-		DXGI_FORMAT PlatformFormat = (DXGI_FORMAT)GPixelFormats[PsoInit.RenderTargetFormats[RTIdx]].PlatformFormat;
-		uint32 Flags = PsoInit.RenderTargetFlags[RTIdx];
-
-		RTFormatArray.RTFormats[RTIdx] = FindShaderResourceDXGIFormat(
-			GetPlatformTextureResourceFormat(PlatformFormat, Flags),
-			(Flags & TexCreate_SRGB) != 0
-			);
-	}
-
-	checkSlow(PsoInit.DepthStencilTargetFormat == PF_Unknown || GPixelFormats[PsoInit.DepthStencilTargetFormat].Supported);
-
-	DXGI_FORMAT PlatformFormat = (DXGI_FORMAT)GPixelFormats[PsoInit.DepthStencilTargetFormat].PlatformFormat;
-	uint32 Flags = PsoInit.DepthStencilTargetFlag;
-
-	DSVFormat = FindDepthStencilDXGIFormat(
-		GetPlatformTextureResourceFormat(PlatformFormat, PsoInit.DepthStencilTargetFlag)
-		);
-}
 
 // @return 0xffffffff if not not supported
 FORCEINLINE_DEBUGGABLE uint32 GetMaxMSAAQuality(uint32 SampleCount)

@@ -77,7 +77,7 @@ bool FloatArrayToTransform(const TArray<float>& Floats, FTransform& Transform)
 		return false;
 	}
 
-	FMatrix matrix = FMatrix();
+	FMatrix44f matrix = FMatrix44f();
 	float (*matrixData)[4] = matrix.M;
 
 	const float* floatsData = Floats.GetData();
@@ -87,7 +87,7 @@ bool FloatArrayToTransform(const TArray<float>& Floats, FTransform& Transform)
 	FMemory::Memcpy(matrixData[2], &floatsData[8], 4 * sizeof(float));
 	FMemory::Memcpy(matrixData[3], &floatsData[12], 4 * sizeof(float));
 
-	Transform.SetFromMatrix(matrix);
+	Transform.SetFromMatrix(FMatrix(matrix));
 
 	return true;
 }

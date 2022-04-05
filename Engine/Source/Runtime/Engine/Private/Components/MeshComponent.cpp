@@ -9,6 +9,7 @@
 #include "Engine/World.h"
 #if WITH_EDITOR
 #include "Rendering/StaticLightingSystemInterface.h"
+#include "TextureCompiler.h"
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogMaterialParameter, Warning, All);
@@ -77,10 +78,14 @@ void UMeshComponent::SetMaterial(int32 ElementIndex, UMaterialInterface* Materia
 			}
 
 #if WITH_EDITOR
-			FStaticLightingSystemInterface::OnPrimitiveComponentUnregistered.Broadcast(this);
-			if (HasValidSettingsForStaticLighting(false))
+			// Static Lighting is updated when compilation finishes
+			if (!IsCompiling())
 			{
-				FStaticLightingSystemInterface::OnPrimitiveComponentRegistered.Broadcast(this);
+				FStaticLightingSystemInterface::OnPrimitiveComponentUnregistered.Broadcast(this);
+				if (HasValidSettingsForStaticLighting(false))
+				{
+					FStaticLightingSystemInterface::OnPrimitiveComponentRegistered.Broadcast(this);
+				}
 			}
 #endif
 		}
@@ -187,6 +192,10 @@ void UMeshComponent::PrestreamTextures( float Seconds, bool bPrioritizeCharacter
 	TArray<UTexture*> Textures;
 	GetUsedTextures(/*out*/ Textures, EMaterialQualityLevel::Num);
 
+#if WITH_EDITOR
+	FTextureCompilingManager::Get().FinishCompilation(Textures);
+#endif
+
 	for (UTexture* Texture : Textures)
 	{
 		if (UTexture2D* Texture2D = Cast<UTexture2D>(Texture))
@@ -209,6 +218,10 @@ void UMeshComponent::SetTextureForceResidentFlag( bool bForceMiplevelsToBeReside
 
 	TArray<UTexture*> Textures;
 	GetUsedTextures(/*out*/ Textures, EMaterialQualityLevel::Num);
+
+#if WITH_EDITOR
+	FTextureCompilingManager::Get().FinishCompilation(Textures);
+#endif
 
 	for (UTexture* Texture : Textures)
 	{
@@ -427,6 +440,11 @@ void UMeshComponent::CacheMaterialParameterNameIndices()
 
 void UMeshComponent::GetStreamingTextureInfoInner(FStreamingTextureLevelContext& LevelContext, const TArray<FStreamingTextureBuildInfo>* PreBuiltData, float ComponentScaling, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingTextures) const
 {
+	if (CanSkipGetTextureStreamingRenderAssetInfo())
+	{
+		return;
+	}
+
 	LevelContext.BindBuildData(PreBuiltData);
 
 	const int32 NumMaterials = GetNumMaterials();
@@ -435,7 +453,7 @@ void UMeshComponent::GetStreamingTextureInfoInner(FStreamingTextureLevelContext&
 		FPrimitiveMaterialInfo MaterialData;
 		if (GetMaterialStreamingData(MaterialIndex, MaterialData))
 		{
-			LevelContext.ProcessMaterial(Bounds, MaterialData, ComponentScaling, OutStreamingTextures);
+			LevelContext.ProcessMaterial(Bounds, MaterialData, ComponentScaling, OutStreamingTextures, bIsValidTextureStreamingBuiltData, this);
 		}
 	}
 }

@@ -122,18 +122,11 @@ void FCurveAssetEditor::UnregisterTabSpawners(const TSharedRef<class FTabManager
 void FCurveAssetEditor::InitCurveAssetEditor( const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, UCurveBase* CurveToEdit )
 {	
 
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_CurveAssetEditor_Layout_v1")
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_CurveAssetEditor_Layout_v2")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewStack()
@@ -147,18 +140,11 @@ void FCurveAssetEditor::InitCurveAssetEditor( const EToolkitMode::Type Mode, con
 	if (ColorCurve)
 	{
 
-		StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_CurveAssetEditor_Layout_ColorCurvev2")
+		StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_CurveAssetEditor_Layout_ColorCurvev3")
 			->AddArea
 			(
 				FTabManager::NewPrimaryArea()
 				->SetOrientation(Orient_Vertical)
-				->Split
-				(
-					FTabManager::NewStack()
-					->SetSizeCoefficient(0.1f)
-					->SetHideTabWell(true)
-					->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-				)
 				->Split
 				(
 					FTabManager::NewSplitter()
@@ -182,7 +168,10 @@ void FCurveAssetEditor::InitCurveAssetEditor( const EToolkitMode::Type Mode, con
 			);
 
 		FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-		const FDetailsViewArgs DetailsViewArgs(false, false, false, FDetailsViewArgs::HideNameArea);
+		FDetailsViewArgs DetailsViewArgs;
+		DetailsViewArgs.bAllowSearch = false;
+		DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+
 		ColorCurveDetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 	}
 	const bool bCreateDefaultStandaloneMenu = true;
@@ -287,7 +276,6 @@ TSharedRef<SDockTab> FCurveAssetEditor::SpawnTab_CurveAsset( const FSpawnTabArgs
 	
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("CurveAssetEditor.Tabs.Properties"))
 		.Label(FText::Format(LOCTEXT("CurveAssetEditorTitle", "{0} Curve Asset"), FText::FromString(GetTabPrefix())))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -322,7 +310,6 @@ TSharedRef<SDockTab> FCurveAssetEditor::SpawnTab_ColorCurveEditor(const FSpawnTa
 
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("CurveAssetEditor.Tabs.Properties"))
 		.Label(LOCTEXT("ColorCurveEditor", "Color Curve Editor"))
 		.TabColorScale(GetTabColorScale())
 		[

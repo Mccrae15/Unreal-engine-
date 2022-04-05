@@ -103,23 +103,26 @@ public:
 #endif
 };
 
-class FDerivedDataBackendInterface;
-
 /**
  *  Hierarchical usage stats for the DDC nodes.
  */
 class FDerivedDataCacheStatsNode : public TSharedFromThis<FDerivedDataCacheStatsNode>
 {
 public:
-	FDerivedDataCacheStatsNode(const FDerivedDataBackendInterface* InBackendInterface, const FString& InCacheName)
-		: BackendInterface(InBackendInterface)
+	FDerivedDataCacheStatsNode() = default;
+
+	FDerivedDataCacheStatsNode(const FString& InCacheType, const FString& InCacheName, bool bInIsLocal)
+		: CacheType(InCacheType)
 		, CacheName(InCacheName)
+		, bIsLocal(bInIsLocal)
 	{
 	}
 
-	const FDerivedDataBackendInterface* GetBackendInterface() const { return BackendInterface; }
+	const FString& GetCacheType() const { return CacheType; }
 
 	const FString& GetCacheName() const { return CacheName; }
+
+	bool IsLocal() const { return bIsLocal; }
 
 	TMap<FString, FDerivedDataCacheUsageStats> ToLegacyUsageMap() const
 	{
@@ -149,7 +152,7 @@ public:
 			}
 		}
 		else
-		{
+		{ //-V523
 			for (const auto& KVP : Stats)
 			{
 				COOK_STAT(UsageStatsMap.Add(FString::Printf(TEXT("%s: %s.%s"), *GraphPath, *GetCacheName(), *KVP.Key), KVP.Value));
@@ -168,6 +171,90 @@ public:
 	TArray<TSharedRef<FDerivedDataCacheStatsNode>> Children;
 
 protected:
-	const FDerivedDataBackendInterface* BackendInterface;
+	FString CacheType;
 	FString CacheName;
+	bool bIsLocal;
+};
+
+struct FDerivedDataCacheResourceStat
+{
+public:
+	FDerivedDataCacheResourceStat(FString InAssetType = TEXT("None"), bool bIsGameThreadTime = 0.0, double InLoadTimeSec = 0.0, double InLoadSizeMB = 0.0, int64 InAssetsLoaded = 0, double InBuildTimeSec = 0.0, double InBuildSizeMB = 0.0, int64 InAssetsBuilt = 0) :
+		AssetType(MoveTemp(InAssetType)),
+		LoadTimeSec(InLoadTimeSec),
+		LoadSizeMB(InLoadSizeMB),
+		LoadCount(InAssetsLoaded),
+		BuildTimeSec(InBuildTimeSec),
+		BuildSizeMB(InBuildSizeMB),
+		BuildCount(InAssetsBuilt),
+		GameThreadTimeSec(bIsGameThreadTime ? InLoadTimeSec + InBuildTimeSec : 0.0)
+	{}
+
+	const FDerivedDataCacheResourceStat& operator+(const FDerivedDataCacheResourceStat& OtherStat)
+	{
+		GameThreadTimeSec += OtherStat.GameThreadTimeSec;
+
+		LoadCount += OtherStat.LoadCount;
+		LoadTimeSec += OtherStat.LoadTimeSec;
+		LoadSizeMB += OtherStat.LoadSizeMB;
+
+		BuildCount += OtherStat.BuildCount;
+		BuildTimeSec += OtherStat.BuildTimeSec;
+		BuildSizeMB += OtherStat.BuildSizeMB;
+
+		return *this;
+	}
+
+	const FDerivedDataCacheResourceStat& operator-(const FDerivedDataCacheResourceStat& OtherStat)
+	{
+		GameThreadTimeSec -= OtherStat.GameThreadTimeSec;
+
+		LoadCount -= OtherStat.LoadCount;
+		LoadTimeSec -= OtherStat.LoadTimeSec;
+		LoadSizeMB -= OtherStat.LoadSizeMB;
+
+		BuildCount -= OtherStat.BuildCount;
+		BuildTimeSec -= OtherStat.BuildTimeSec;
+		BuildSizeMB -= OtherStat.BuildSizeMB;
+
+		return *this;
+	}
+
+	const FDerivedDataCacheResourceStat& operator+=(const FDerivedDataCacheResourceStat& OtherStat)
+	{
+		*this = *this + OtherStat;
+		return *this;
+	}
+
+	const FDerivedDataCacheResourceStat& operator-=(const FDerivedDataCacheResourceStat& OtherStat)
+	{
+		*this = *this - OtherStat;
+		return *this;
+	}
+
+	FString AssetType;
+
+	double LoadTimeSec;
+	double LoadSizeMB;
+	int64 LoadCount;
+
+	double BuildTimeSec;
+	double BuildSizeMB;
+	int64 BuildCount;
+
+	double GameThreadTimeSec;
+};
+
+struct FDerivedDataCacheResourceStatKeyFuncs : BaseKeyFuncs<FDerivedDataCacheResourceStat, FString, false>
+{
+	static const FString& GetSetKey(const FDerivedDataCacheResourceStat& Element) { return Element.AssetType; }
+	static bool Matches(const FString& A, const FString& B) { return A == B; }
+	static uint32 GetKeyHash(const FString& Key) { return GetTypeHash(Key); }
+};
+
+COOK_STAT(using FDerivedDataCacheSummaryStat = FCookStatsManager::StringKeyValue);
+
+struct FDerivedDataCacheSummaryStats
+{
+	COOK_STAT(TArray<FDerivedDataCacheSummaryStat> Stats);
 };

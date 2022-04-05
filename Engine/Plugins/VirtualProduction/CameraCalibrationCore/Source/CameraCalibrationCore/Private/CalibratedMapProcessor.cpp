@@ -21,7 +21,7 @@ public:
 	SHADER_USE_PARAMETER_STRUCT(FCalibratedMapDerivedDataCS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER(FVector2D, TexelSize)
+		SHADER_PARAMETER(FVector2f, TexelSize)
 		SHADER_PARAMETER(FIntPoint, TextureSize)
 		
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, DistortionSTMap)
@@ -187,7 +187,7 @@ void FCalibratedMapProcessor::ExecuteJob(TSharedPtr<FDerivedDistortionDataJob> J
 			FCalibratedMapDerivedDataCS::FParameters* Parameters = GraphBuilder.AllocParameters<FCalibratedMapDerivedDataCS::FParameters>();
             Parameters->DistortionSTMap = SourceSTMap;
            	Parameters->DistortionSTMapSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-           	Parameters->TexelSize = FVector2D(1.0f / UndistortionDisplacementMap->Desc.Extent.X, 1.0f / UndistortionDisplacementMap->Desc.Extent.Y);
+           	Parameters->TexelSize = FVector2f(1.0f / UndistortionDisplacementMap->Desc.Extent.X, 1.0f / UndistortionDisplacementMap->Desc.Extent.Y);
             Parameters->TextureSize = FIntPoint(UndistortionDisplacementMap->Desc.Extent.X, UndistortionDisplacementMap->Desc.Extent.Y);
 
             //Create UAVs for compute shader outputs

@@ -1,15 +1,19 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Chaos/Transform.h"
+#include "Chaos/Real.h"
 
 using namespace Chaos;
 
-PMatrix<Chaos::FReal, 4, 4> operator*(const TRigidTransform<Chaos::FReal, 3>& Transform, const PMatrix<Chaos::FReal, 4, 4>& Matrix)
+PMatrix<FRealSingle, 4, 4> TRigidTransform<FRealSingle, 3>::operator*(const PMatrix<FRealSingle, 4, 4>& Matrix) const
 {
-	return Transform.ToMatrixNoScale() * static_cast<const FMatrix&>(Matrix);
+	// LWC_TODO: Perf pessimization
+	return ToMatrixNoScale() * static_cast<const UE::Math::TMatrix<FRealSingle>&>(Matrix);
 }
 
-PMatrix<Chaos::FReal, 4, 4> operator*(const PMatrix<Chaos::FReal, 4, 4>& Matrix, const TRigidTransform<Chaos::FReal, 3>& Transform)
+PMatrix<FRealDouble, 4, 4> TRigidTransform<FRealDouble, 3>::operator*(const PMatrix<FRealDouble, 4, 4>& Matrix) const
 {
-	return static_cast<const FMatrix&>(Matrix) * Transform.ToMatrixNoScale();
+	// LWC_TODO: Perf pessimization
+	return ToMatrixNoScale() * static_cast<const UE::Math::TMatrix<FRealDouble>&>(Matrix);
 }
+

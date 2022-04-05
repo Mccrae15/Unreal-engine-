@@ -6,11 +6,12 @@
 
 #include "CoreMinimal.h"
 
+#include "UnrealUSDWrapper.h"
+#include "UsdWrappers/ForwardDeclarations.h"
+
 #include "USDIncludesStart.h"
-
-#include "pxr/usd/usd/timeCode.h"
-#include "pxr/usd/usdShade/tokens.h"
-
+	#include "pxr/usd/usd/timeCode.h"
+	#include "pxr/usd/usdShade/tokens.h"
 #include "USDIncludesEnd.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -33,7 +34,7 @@ namespace UsdUtils
 }
 namespace UE
 {
-	class FUsdStage;
+	class FUsdPrim;
 }
 
 namespace UsdToUnreal
@@ -44,7 +45,7 @@ namespace UsdToUnreal
 	 * @param UsdSchema - UsdGeomMesh that contains the data to convert
 	 * @param MeshDescription - Output parameter that will be filled with the converted data
 	 * @param MaterialAssignments - Output parameter that will be filled with the material data extracted from UsdSchema
-	 * @param AdditionalTransform - Transform (in UE4 space) to bake into the vertex positions and normals of the converted mesh
+	 * @param AdditionalTransform - Transform (in UnrealEditor space) to bake into the vertex positions and normals of the converted mesh
 	 * @param MaterialToPrimvarsUVSetNames - Maps from a material prim path, to pairs indicating which primvar names are used as 'st' coordinates for this mesh, and which UVIndex materials will sample from (e.g. ["st0", 0], ["myUvSet2", 2], etc). This is used to pick which primvars will become UV sets.
 	 * @param TimeCode - USD timecode when the UsdGeomMesh should be sampled for mesh data and converted
 	 * @return Whether the conversion was successful or not.
@@ -57,6 +58,21 @@ namespace UsdToUnreal
 	USDUTILITIES_API bool ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescription& MeshDescription, const pxr::UsdTimeCode TimeCode = pxr::UsdTimeCode::EarliestTime() );
 	USDUTILITIES_API bool ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescription& MeshDescription, const FTransform& AdditionalTransform, const pxr::UsdTimeCode TimeCode = pxr::UsdTimeCode::EarliestTime() );
 	USDUTILITIES_API bool ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescription& MeshDescription, const FTransform& AdditionalTransform, const TMap< FString, TMap< FString, int32 > >& MaterialToPrimvarsUVSetNames, const pxr::UsdTimeCode TimeCode = pxr::UsdTimeCode::EarliestTime() );
+
+	/**
+	 * Recursively traverses down Prim's subtree parsing all Mesh data (including Prim's), baking all transforms and putting the resulting
+	 * mesh data within OutMeshDescription and OutMaterialAssignments. It will not bake Prim's own transform into the Mesh data.
+	 *
+	 * @param Prim - Prim that will be converted (result will include its mesh and its children's)
+	 * @param TimeCode - USD timecode when the UsdGeomMeshes should be sampled for mesh data and converted
+	 * @param PurposesToLoad - Only prims with these purposes will be traversed
+	 * @param RenderContext - Render context to use when parsing Mesh materials
+	 * @param MaterialToPrimvarToUVIndex - Maps from a material prim path, to pairs indicating which primvar names are used as 'st' coordinates for this mesh, and which UVIndex materials will sample from (e.g. ["st0", 0], ["myUvSet2", 2], etc). This is used to pick which primvars will become UV sets.
+	 * @param OutMeshDescription - Output parameter that will be filled with the converted mesh data
+	 * @param OutMaterialAssignments - Output parameter that will be filled with the material data extracted from UsdSchema
+	 * @return Whether the conversion was successful or not.
+	 */
+	USDUTILITIES_API bool ConvertGeomMeshHierarchy( const pxr::UsdPrim& Prim, const pxr::UsdTimeCode& TimeCode, const EUsdPurpose PurposesToLoad, const pxr::TfToken& RenderContext, const TMap< FString, TMap<FString, int32> >& MaterialToPrimvarToUVIndex, FMeshDescription& OutMeshDescription, UsdUtils::FUsdPrimMaterialAssignmentInfo& OutMaterialAssignments );
 
 	/** Configure Material to become a vertex color/displayColor material, according to the given description */
 	USDUTILITIES_API bool ConvertDisplayColor( const UsdUtils::FDisplayColorMaterial& DisplayColorDescription, UMaterialInstanceConstant& Material );
@@ -72,9 +88,11 @@ namespace UnrealToUsd
 	 * @param UsdPrim - Prim to receive the mesh data or LOD variant set
 	 * @param TimeCode - TimeCode to author the attributes with
 	 * @param StageForMaterialAssignments - Stage to use when authoring material assignments (we use this when we want to export the mesh to a payload layer, but the material assignments to an asset layer)
+	 * @param LowestMeshLOD - Lowest LOD of the UStaticMesh to export (start of the LOD range)
+	 * @param HighestMeshLOD - Lowest LOD of the UStaticMesh to export (end of the LOD range)
 	 * @return Whether the conversion was successful or not.
 	 */
-	USDUTILITIES_API bool ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim& UsdPrim, pxr::UsdTimeCode TimeCode = pxr::UsdTimeCode::Default(), UE::FUsdStage* StageForMaterialAssignments = nullptr );
+	USDUTILITIES_API bool ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim& UsdPrim, pxr::UsdTimeCode TimeCode = pxr::UsdTimeCode::Default(), UE::FUsdStage* StageForMaterialAssignments = nullptr, int32 LowestMeshLOD = 0, int32 HighestMeshLOD = INT32_MAX );
 
 	/**
 	 * Converts an array of mesh descriptions into mesh data, and places that data within the UsdGeomMesh UsdPrim.
@@ -163,6 +181,12 @@ namespace UsdUtils
 	USDUTILITIES_API FUsdPrimMaterialAssignmentInfo GetPrimMaterialAssignments( const pxr::UsdPrim& UsdPrim, const pxr::UsdTimeCode TimeCode = pxr::UsdTimeCode::EarliestTime(),
 		bool bProvideMaterialIndices = true, const pxr::TfToken& RenderContext = pxr::UsdShadeTokens->universalRenderContext );
 
+	/**
+	 * Returns an array of prim paths to prims within MaterialPrim's stage that have a UsdShadeMaterialBindingAPI, and whose computed material binding points to MaterialPrim.
+	 * The user prim's schema is not even checked, so this list will naturally include regular UsdGeomMesh prims, UsdGeomSubset prims, and any other with the UsdShadeMaterialBindingAPI.
+	 */
+	USDUTILITIES_API TArray<FString> GetMaterialUsers( const UE::FUsdPrim& MaterialPrim );
+
 	/** Returns whether this UsdMesh can be interpreted as a LOD of a mesh with multiple LODs */
 	USDUTILITIES_API bool IsGeomMeshALOD( const pxr::UsdPrim& UsdMeshPrim );
 
@@ -177,6 +201,27 @@ namespace UsdUtils
 	 * WARNING: This will temporarily mutate the stage, and can invalidate references to children of ParentPrim!
 	 */
 	USDUTILITIES_API bool IterateLODMeshes( const pxr::UsdPrim& ParentPrim, TFunction<bool(const pxr::UsdGeomMesh& LODMesh, int32 LODIndex)> Func);
+
+	/**
+	 * Traverses `Stage` and authors material binding attributes for all `unrealMaterials` that were baked into USD material assets.
+	 * @param Stage - Stage to replace the unrealMaterials attributes in. All of it's layers will be traversed.
+	 * @param LayerToAuthorIn - Where the material binding opinions are authored
+	 * @param BakedMaterials - Maps from material path names to file paths where they were baked
+	 *                         Example: { "/Game/MyMaterials/Red.Red": "C:/MyFolder/Red.usda" }
+	 * @param bIsAssetLayer - True when we're exporting a single mesh/animation asset. False when we're exporting a level. Dictates minor behaviors
+	 *                        when authoring the material binding relationships, e.g. whether we author them inside variants or not
+	 * @param bUsePayload - Should be True if the Stage was exported using payload files to store the actual Mesh prims. Also dictates minor
+	 *                      behaviors when authoring the material binding relationships.
+	 * @param bRemoveUnrealMaterials - Whether to remove the `unrealMaterial` attributes after replacing them with material bindings.
+	 *                                 Important because the `unrealMaterial` attributes will be used as a higher priority when determining material assignments
+	 */
+	USDUTILITIES_API void ReplaceUnrealMaterialsWithBaked( const UE::FUsdStage& Stage, const UE::FSdfLayer& LayerToAuthorIn, const TMap<FString, FString>& BakedMaterials, bool bIsAssetLayer, bool bUsePayload, bool bRemoveUnrealMaterials );
+
+	/**
+	 * Hashes the attributes of the GeomMesh at the given prim path on the Stage at TimeCode
+	 * If the prim path is invalid or not a GeomMesh, it will return an empty hash
+	 */
+	USDUTILITIES_API FString HashGeomMeshPrim( const UE::FUsdStage& Stage, const FString& PrimPath, double TimeCode );
 }
 
 #endif // #if USE_USD_SDK

@@ -24,15 +24,18 @@
 #include "Misc/FileHelper.h"
 #include "PlatformHttp.h"
 
+#include "AutomationTelemetry.h"
+
 #if WITH_EDITOR
+#include "UnrealEdGlobals.h"
+#include "Editor/UnrealEdEngine.h"
 #include "Logging/MessageLog.h"
 #endif
 #include "Async/ParallelFor.h"
 
 // these strings are parsed by Gauntlet (AutomationLogParser) so make sure changes are replicated there!
-#define AutomationTestStarting		TEXT("Test Started. Name={%s}")
-#define AutomationSuccessFormat		TEXT("Test Completed. Result={Passed} Name={%s} Path={%s}")
-#define AutomationFailureFormat		TEXT("Test Completed. Result={Failed} Name={%s} Path={%s}")
+#define AutomationTestStarting		TEXT("Test Started. Name={%s} Path={%s}")
+#define AutomationStateFormat		TEXT("Test Completed. Result={%s} Name={%s} Path={%s}")
 
 #define BeginEventsFormat			TEXT("BeginEvents: %s")
 #define EndEventsFormat				TEXT("EndEvents: %s")
@@ -40,6 +43,107 @@
 DEFINE_LOG_CATEGORY_STATIC(LogAutomationController, Log, All)
 
 #define LOCTEXT_NAMESPACE "AutomationTesting"
+
+void FAutomatedTestPassResults::AddTestResult(const IAutomationReportPtr& TestReport)
+{
+	const FString& FullTestPath = TestReport->GetFullTestPath();
+	if (!TestsMapIndex.Contains(FullTestPath))
+	{
+		FAutomatedTestResult TestResult;
+		TestResult.Test = TestReport;
+		TestResult.TestDisplayName = TestReport->GetDisplayName();
+		TestResult.FullTestPath = FullTestPath;
+
+		TestsMapIndex.Add(FullTestPath, Tests.Num());
+		Tests.Add(TestResult);
+		NotRun++;
+	}
+}
+
+FAutomatedTestResult& FAutomatedTestPassResults::GetTestResult(const IAutomationReportPtr& TestReport)
+{
+	const FString& FullTestPath = TestReport->GetFullTestPath();
+	check(TestsMapIndex.Contains(FullTestPath));
+	return Tests[TestsMapIndex[FullTestPath]];
+}
+
+void FAutomatedTestPassResults::ReBuildTestsMapIndex()
+{
+	TestsMapIndex.Empty();
+	uint32 Index = 0;
+	for (const FAutomatedTestResult& TestResult : Tests)
+	{
+		TestsMapIndex.Add(TestResult.FullTestPath, Index++);
+	}
+}
+
+bool FAutomatedTestPassResults::ReflectResultStateToReport(IAutomationReportPtr& TestReport)
+{
+	const FString& FullTestPath = TestReport->GetFullTestPath();
+	if (TestsMapIndex.Contains(FullTestPath))
+	{
+		FAutomatedTestResult& TestResult = Tests[TestsMapIndex[FullTestPath]];
+		if (TestResult.State == EAutomationState::InProcess)
+		{
+			// Marking incomplete test from previous pass as failure.
+			TestResult.AddEvent(EAutomationEventType::Error, TEXT("Test did not run until completion. The test exited prematurely."));
+			TestResult.State = EAutomationState::Fail;
+			InProcess--;
+			Failed++;
+		}
+		TestReport->SetState(TestResult.State);
+		TestResult.Test = TestReport;
+		return true;
+	}
+	return false;
+}
+
+void FAutomatedTestPassResults::UpdateTestResultStatus(const IAutomationReportPtr& TestReport, EAutomationState State, bool bHasWarning)
+{
+	FAutomatedTestResult& TestResult = GetTestResult(TestReport);
+	if (TestResult.State == State)
+		return;
+
+	// Book keeping
+	// from transient states
+	switch (TestResult.State)
+	{
+	case EAutomationState::InProcess:
+		InProcess--;
+		break;
+	case EAutomationState::NotRun:
+		NotRun--;
+		break;
+	}
+	// to new state
+	switch (State)
+	{
+	case EAutomationState::Success:
+		if (bHasWarning)
+		{
+			SucceededWithWarnings++;
+		}
+		else
+		{
+			Succeeded++;
+		}
+		break;
+	case EAutomationState::Fail:
+		Failed++;
+		break;
+	case EAutomationState::InProcess:
+		InProcess++;
+		break;
+	case EAutomationState::NotRun:
+		NotRun++;
+		break;
+	case EAutomationState::Skipped:
+		// Those are not counted
+		break;
+	}
+	// commit the change
+	TestResult.State = State;
+}
 
 FAutomationControllerManager::FAutomationControllerManager()
 {
@@ -90,6 +194,8 @@ FAutomationControllerManager::FAutomationControllerManager()
 	{
 		DeveloperReportUrl = ReportURLPath / TEXT("dev") / FString(FPlatformProcess::UserName()).ToLower() / TEXT("index.html");
 	}
+
+	bResumeRunTest = FParse::Param(FCommandLine::Get(), TEXT("ResumeRunTest"));
 }
 
 void FAutomationControllerManager::RequestAvailableWorkers(const FGuid& SessionId)
@@ -112,7 +218,7 @@ void FAutomationControllerManager::RequestAvailableWorkers(const FGuid& SessionI
 	int32 ChangelistNumber = 10000;
 	FString ProcessName = TEXT("instance_name");
 
-	MessageEndpoint->Publish(new FAutomationWorkerFindWorkers(ChangelistNumber, FApp::GetProjectName(), ProcessName, SessionId), EMessageScope::Network);
+	MessageEndpoint->Publish(FMessageEndpoint::MakeMessage<FAutomationWorkerFindWorkers>(ChangelistNumber, FApp::GetProjectName(), ProcessName, SessionId), EMessageScope::Network);
 
 	// Reset the check test timers
 	LastTimeUpdateTicked = FPlatformTime::Seconds();
@@ -141,7 +247,7 @@ void FAutomationControllerManager::RequestTests()
 			UE_LOG(LogAutomationController, Log, TEXT("Requesting test list from %s"), *MessageAddress.ToString());
 
 			//issue tests on appropriate platforms
-			MessageEndpoint->Send(new FAutomationWorkerRequestTests(bDeveloperDirectoryIncluded, RequestedTestFlags), MessageAddress);
+			MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FAutomationWorkerRequestTests>(bDeveloperDirectoryIncluded, RequestedTestFlags), MessageAddress);
 		}
 	}
 }
@@ -176,6 +282,17 @@ void FAutomationControllerManager::RunTests(const bool bInIsLocalSession)
 	{
 		JsonTestPassResults.IsRequired = true;
 		TArray<IAutomationReportPtr> TestsToRun = ReportManager.GetEnabledTestReports();
+
+		// Load previous test results
+		if (bResumeRunTest)
+		{
+			FString ReportFileName = FString::Printf(TEXT("%s/index.json"), *ReportExportPath);
+			if (FPaths::FileExists(ReportFileName))
+			{
+				LoadJsonTestPassSummary(ReportFileName, TestsToRun);
+			}
+		}
+
 		for (IAutomationReportPtr& TestReport : TestsToRun)
 		{
 			JsonTestPassResults.AddTestResult(TestReport);
@@ -199,7 +316,14 @@ void FAutomationControllerManager::RunTests(const bool bInIsLocalSession)
 			FMessageAddress MessageAddress = DeviceClusterManager.GetDeviceMessageAddress(ClusterIndex, DeviceIndex);
 			UE_LOG(LogAutomationController, Log, TEXT("Sending Reset Tests to %s"), *MessageAddress.ToString());
 
-			MessageEndpoint->Send(new FAutomationWorkerResetTests(), MessageAddress);
+			MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FAutomationWorkerResetTests>(), MessageAddress);
+
+			// Store devices info into the json report.
+			if (JsonTestPassResults.IsRequired)
+			{
+				const FAutomationDeviceInfo& DeviceInfo = DeviceClusterManager.GetDeviceInfo(ClusterIndex, DeviceIndex);
+				JsonTestPassResults.Devices.Add(DeviceInfo);
+			}
 		}
 	}
 	
@@ -238,7 +362,7 @@ void FAutomationControllerManager::StopTests()
 				FMessageAddress MessageAddress = DeviceClusterManager.GetDeviceMessageAddress(ClusterIndex, DeviceIndex);
 
 				UE_LOG(LogAutomationController, Log, TEXT("Sending StopTests to %s"), *MessageAddress.ToString());
-				MessageEndpoint->Send(new FAutomationWorkerStopTests(), MessageAddress);
+				MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FAutomationWorkerStopTests>(), MessageAddress);
 			}
 		}
 
@@ -264,7 +388,7 @@ void FAutomationControllerManager::Init()
 
 void FAutomationControllerManager::RequestLoadAsset(const FString& InAssetName)
 {
-	MessageEndpoint->Publish(new FAssetEditorRequestOpenAsset(InAssetName), EMessageScope::Process);
+	MessageEndpoint->Publish(FMessageEndpoint::MakeMessage<FAssetEditorRequestOpenAsset>(InAssetName), EMessageScope::Process);
 }
 
 void FAutomationControllerManager::Tick()
@@ -289,7 +413,7 @@ void FAutomationControllerManager::ProcessComparisonQueue()
 
 			// Send the message back to the automation worker letting it know the results of the comparison test.
 			{
-				FAutomationWorkerImageComparisonResults* Message = new FAutomationWorkerImageComparisonResults(
+				FAutomationWorkerImageComparisonResults* Message = FMessageEndpoint::MakeMessage<FAutomationWorkerImageComparisonResults>(
 					UniqueId,
 					Result.IsNew(),
 					Result.AreSimilar(),
@@ -369,6 +493,15 @@ void FAutomationControllerManager::ProcessAvailableTasks()
 				if ( ClusterDistributionMask == 0 )
 				{
 					ProcessResults();
+
+					// Close play window
+					#if WITH_EDITOR
+					if (GUnrealEd)
+					{
+						GUnrealEd->RequestEndPlayMap();
+					}
+					#endif
+
 					//Notify the graphical layout we are done processing results.
 					TestsCompleteDelegate.Broadcast();
 				}
@@ -388,7 +521,7 @@ void FAutomationControllerManager::ReportTestResults()
 	UE_LOG(LogAutomationController, Log, TEXT("Test Pass Results:"));
 	for ( int32 i = 0; i < JsonTestPassResults.Tests.Num(); i++ )
 	{
-		UE_LOG(LogAutomationController, Log, TEXT("%s: %s"), *JsonTestPassResults.Tests[i].TestDisplayName, ToString(JsonTestPassResults.Tests[i].State));
+		UE_LOG(LogAutomationController, Log, TEXT("%s: %s"), *JsonTestPassResults.Tests[i].TestDisplayName, *AutomationStateToString(JsonTestPassResults.Tests[i].State));
 	}
 }
 
@@ -400,6 +533,7 @@ void FAutomationControllerManager::CollectTestResults(TSharedPtr<IAutomationRepo
 		FAutomatedTestResult& TestResult = JsonTestPassResults.GetTestResult(Report);
 		TestResult.SetEvents(Results.GetEntries(), Results.GetWarningTotal(), Results.GetErrorTotal());
 		TestResult.SetArtifacts(Results.Artifacts);
+		TestResult.DeviceInstance = Results.GameInstance;
 
 		JsonTestPassResults.TotalDuration += Results.Duration;
 
@@ -500,6 +634,35 @@ bool FAutomationControllerManager::GenerateTestPassHtmlIndex()
 	return false;
 }
 
+bool FAutomationControllerManager::LoadJsonTestPassSummary(FString& ReportFilePath, TArray<IAutomationReportPtr> TestReports)
+{
+	FString Json;
+	if (!FFileHelper::LoadFileToString(Json, *ReportFilePath))
+	{
+		UE_LOG(LogAutomationController, Error, TEXT("Failed to read json results file '%s'."), *ReportFilePath);
+		return false;
+	}
+	if (!FJsonObjectConverter::JsonObjectStringToUStruct(Json, &JsonTestPassResults))
+	{
+		UE_LOG(LogAutomationController, Error, TEXT("Failed to load json results file '%s'."), *ReportFilePath);
+		return false;
+	}
+	UE_LOG(LogAutomationController, Display, TEXT("Successfully loaded json results file."));
+
+	JsonTestPassResults.ReBuildTestsMapIndex();
+
+	// Reflect Test Result Status on Report Status
+	for (IAutomationReportPtr& TestReport : TestReports)
+	{
+		if (!JsonTestPassResults.ReflectResultStateToReport(TestReport))
+		{
+			UE_LOG(LogAutomationController, Warning, TEXT("No match to test '%s' in json results."), *TestReport->GetFullTestPath());
+		}
+	}
+
+	return true;
+}
+
 FString FAutomationControllerManager::SlugString(const FString& DisplayString) const
 {
 	FString GeneratedName = DisplayString;
@@ -556,7 +719,7 @@ void FAutomationControllerManager::ExecuteNextTask( int32 ClusterIndex, OUT bool
 			{
 				// Get the status of the test
 				EAutomationState TestState = NextTest->GetState(ClusterIndex, CurrentTestPass);
-				if ( TestState == EAutomationState::NotRun )
+				if (TestState == EAutomationState::NotRun)
 				{
 					// Reserve this device for the test
 					DeviceClusterManager.SetTest(ClusterIndex, DeviceIndex, NextTest);
@@ -564,20 +727,21 @@ void FAutomationControllerManager::ExecuteNextTask( int32 ClusterIndex, OUT bool
 
 					// If we now have enough devices reserved for the test, run it!
 					TArray<FMessageAddress> DeviceAddresses = DeviceClusterManager.GetDevicesReservedForTest(ClusterIndex, NextTest);
-					if ( DeviceAddresses.Num() == NextTest->GetNumParticipantsRequired() )
+					if (DeviceAddresses.Num() == NextTest->GetNumParticipantsRequired())
 					{
 						// Send it to each device
-						for ( int32 AddressIndex = 0; AddressIndex < DeviceAddresses.Num(); ++AddressIndex )
+						for (int32 AddressIndex = 0; AddressIndex < DeviceAddresses.Num(); ++AddressIndex)
 						{
 							FAutomationTestResults TestResults;
+							TSharedPtr< IAutomationReport > Test = TestsRunThisPass[AddressIndex];
 
-							UE_LOG(LogAutomationController, Display, AutomationTestStarting, *TestsRunThisPass[AddressIndex]->GetDisplayName(), *TestsRunThisPass[AddressIndex]->GetCommand());
+							UE_LOG(LogAutomationController, Display, AutomationTestStarting, *Test->GetDisplayName(), *Test->GetFullTestPath());
 							TestResults.State = EAutomationState::InProcess;
 
-							if (JsonTestPassResults.IsRequired)
+							if (JsonTestPassResults.IsRequired && bResumeRunTest)
 							{
-								JsonTestPassResults.UpdateTestResultStatus(NextTest, EAutomationState::InProcess);
-								// Save the whole pass report so that if the next test triggers a critical failure we are not left with no pass report.
+								JsonTestPassResults.UpdateTestResultStatus(NextTest, TestResults.State);
+								// Save the whole pass report so that if the next test triggers a critical failure we are not left with no pass report and we can resume.
 								GenerateJsonTestPassSummary(JsonTestPassResults);
 							}
 
@@ -591,7 +755,7 @@ void FAutomationControllerManager::ExecuteNextTask( int32 ClusterIndex, OUT bool
 							// Send the test to the device for execution!
 							UE_LOG(LogAutomationController, Log, TEXT("Sending RunTest %s to %s"), *NextTest->GetDisplayName(), *DeviceAddress.ToString());
 
-							MessageEndpoint->Send(new FAutomationWorkerRunTests(ExecutionCount, AddressIndex, NextTest->GetCommand(), NextTest->GetDisplayName(), bSendAnalytics), DeviceAddress);
+							MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FAutomationWorkerRunTests>(ExecutionCount, AddressIndex, NextTest->GetCommand(), NextTest->GetDisplayName(), NextTest->GetFullTestPath(), bSendAnalytics), DeviceAddress);
 
 							// Add a test so we can check later if the device is still active
 							TestRunningArray.Add(FTestRunningInfo(DeviceAddress));
@@ -617,11 +781,12 @@ void FAutomationControllerManager::ExecuteNextTask( int32 ClusterIndex, OUT bool
 			if ( GetNumDevicesInCluster(ClusterIndex) < CurrentTest->GetNumParticipantsRequired() )
 			{
 				FAutomationTestResults TestResults;
-				TestResults.State = EAutomationState::NotEnoughParticipants;
+				TestResults.State = EAutomationState::Skipped;
 				TestResults.GameInstance = DeviceClusterManager.GetClusterDeviceName(ClusterIndex, 0);
-				TestResults.AddEvent(FAutomationEvent(EAutomationEventType::Warning, FString::Printf(TEXT("Needed %d devices to participate, Only had %d available."), CurrentTest->GetNumParticipantsRequired(), DeviceClusterManager.GetNumDevicesInCluster(ClusterIndex))));
+				TestResults.AddEvent(FAutomationEvent(EAutomationEventType::Warning, FString::Printf(TEXT("Skipped because the test needed %d devices to participate, Only had %d available."), CurrentTest->GetNumParticipantsRequired(), DeviceClusterManager.GetNumDevicesInCluster(ClusterIndex))));
 
 				CurrentTest->SetResults(ClusterIndex, CurrentTestPass, TestResults);
+				CollectTestResults(CurrentTest, TestResults);
 				DeviceClusterManager.ResetAllDevicesRunningTest(ClusterIndex, CurrentTest);
 			}
 		}
@@ -647,7 +812,8 @@ void FAutomationControllerManager::Startup()
 		.Handling<FAutomationWorkerRunTestsReply>(this, &FAutomationControllerManager::HandleRunTestsReplyMessage)
 		.Handling<FAutomationWorkerScreenImage>(this, &FAutomationControllerManager::HandleReceivedScreenShot)
 		.Handling<FAutomationWorkerTestDataRequest>(this, &FAutomationControllerManager::HandleTestDataRequest)
-		.Handling<FAutomationWorkerWorkerOffline>(this, &FAutomationControllerManager::HandleWorkerOfflineMessage);
+		.Handling<FAutomationWorkerWorkerOffline>(this, &FAutomationControllerManager::HandleWorkerOfflineMessage)
+		.Handling<FAutomationWorkerTelemetryData>(this, &FAutomationControllerManager::HandleReceivedTelemetryData);
 
 	if ( MessageEndpoint.IsValid() )
 	{
@@ -757,6 +923,18 @@ void FAutomationControllerManager::ProcessResults()
 						return true;
 				}
 				else if (B.GetErrorTotal() > 0)
+				{
+					return false;
+				}
+
+				if (A.State == EAutomationState::Skipped)
+				{
+					if (B.State == EAutomationState::Skipped)
+						return  (A.FullTestPath < B.FullTestPath);
+					else
+						return true;
+				}
+				else if (B.State == EAutomationState::Skipped)
 				{
 					return false;
 				}
@@ -877,81 +1055,95 @@ void FAutomationControllerManager::AddPingResult(const FMessageAddress& Responde
 
 void FAutomationControllerManager::UpdateTests()
 {
-	CheckTestTimer += FPlatformTime::Seconds() - LastTimeUpdateTicked;
+	const double kIgnoreAsFrameHitchDelta = 2.0f;
+	const double TickDelta = FPlatformTime::Seconds() - LastTimeUpdateTicked;
+
 	LastTimeUpdateTicked = FPlatformTime::Seconds();
-	if (CheckTestTimer > CheckTestIntervalSeconds)
+
+	// If this tick was very long then don't check the health of tests. If we've been blocked for a while on a load and ping responses haven't yet been processed
+	// then otherwise might add a delta to the ping time that causes the test to look like it's timed out.
+	if (TickDelta < kIgnoreAsFrameHitchDelta)
 	{
-		for ( int32 Index = 0; Index < TestRunningArray.Num(); Index++ )
+		CheckTestTimer += TickDelta;
+		if (CheckTestTimer > CheckTestIntervalSeconds)
 		{
-			TestRunningArray[Index].LastPingTime += CheckTestTimer;
-
-			if (TestRunningArray[Index].LastPingTime > GameInstanceLostTimerSeconds)
+			for ( int32 Index = 0; Index < TestRunningArray.Num(); Index++ )
 			{
-				// Find the game session instance info
-				int32 ClusterIndex;
-				int32 DeviceIndex;
-				verify(DeviceClusterManager.FindDevice(TestRunningArray[Index].OwnerMessageAddress, ClusterIndex, DeviceIndex));
-				//verify this device thought it was busy
-				TSharedPtr <IAutomationReport> Report = DeviceClusterManager.GetTest(ClusterIndex, DeviceIndex);
-				check(Report.IsValid());
-				// A dummy array used to report the result
+				TestRunningArray[Index].LastPingTime += CheckTestTimer;
 
-				TArray<FString> EmptyStringArray;
-				TArray<FString> ErrorStringArray;
-				ErrorStringArray.Add(FString(TEXT("Failed")));
-				bHasErrors = true;
-				UE_LOG(LogAutomationController, Display, TEXT("Timeout hit. Nooooooo."));
-
-				FAutomationTestResults TestResults;
-				TestResults.State = EAutomationState::Fail;
-				TestResults.GameInstance = DeviceClusterManager.GetClusterDeviceName(ClusterIndex, DeviceIndex);
-				TestResults.AddEvent(FAutomationEvent(EAutomationEventType::Error, FString::Printf(TEXT("Timeout waiting for device %s"), *TestResults.GameInstance)));
-
-				// Set the results
-				Report->SetResults(ClusterIndex, CurrentTestPass, TestResults);
-				bTestResultsAvailable = true;
-
-				const FAutomationTestResults& FinalResults = Report->GetResults(ClusterIndex, CurrentTestPass);
-
-				// Gather all of the data relevant to this test for our json reporting.
-				CollectTestResults(Report, FinalResults);
-
-				// Disable the device in the cluster so it is not used again
-				DeviceClusterManager.DisableDevice(ClusterIndex, DeviceIndex);
-
-				// Remove the running test
-				TestRunningArray.RemoveAt(Index--);
-
-				// If there are no more devices, set the module state to disabled
-				if ( DeviceClusterManager.HasActiveDevice() == false )
+				if (TestRunningArray[Index].LastPingTime > GameInstanceLostTimerSeconds)
 				{
-					// Process results first to write out the report
-					ProcessResults();
+					// Find the game session instance info
+					int32 ClusterIndex;
+					int32 DeviceIndex;
+					verify(DeviceClusterManager.FindDevice(TestRunningArray[Index].OwnerMessageAddress, ClusterIndex, DeviceIndex));
+					//verify this device thought it was busy
+					TSharedPtr <IAutomationReport> Report = DeviceClusterManager.GetTest(ClusterIndex, DeviceIndex);
+					check(Report.IsValid());
+					// A dummy array used to report the result
 
-					UE_LOG(LogAutomationController, Display, TEXT("Module disabled"));
-					SetControllerStatus(EAutomationControllerModuleState::Disabled);
-					ClusterDistributionMask = 0;
+					TArray<FString> EmptyStringArray;
+					TArray<FString> ErrorStringArray;
+					ErrorStringArray.Add(FString(TEXT("Failed")));
+					bHasErrors = true;
+
+					FAutomationTestResults TestResults;
+					TestResults.State = EAutomationState::Fail;
+					TestResults.GameInstance = DeviceClusterManager.GetClusterDeviceName(ClusterIndex, DeviceIndex);
+					TestResults.AddEvent(FAutomationEvent(EAutomationEventType::Error, FString::Printf(TEXT("Timeout waiting for device %s"), *TestResults.GameInstance)));
+
+					UE_LOG(LogAutomationController, Error, TEXT("Removing test and marking failure after timeout waiting for device %s LastPingTime was greater than %.1f"), *TestResults.GameInstance, GameInstanceLostTimerSeconds);
+
+					// Set the results
+					Report->SetResults(ClusterIndex, CurrentTestPass, TestResults);
+					bTestResultsAvailable = true;
+
+					const FAutomationTestResults& FinalResults = Report->GetResults(ClusterIndex, CurrentTestPass);
+
+					// Gather all of the data relevant to this test for our json reporting.
+					CollectTestResults(Report, FinalResults);
+
+					// Disable the device in the cluster so it is not used again
+					DeviceClusterManager.DisableDevice(ClusterIndex, DeviceIndex);
+
+					// Remove the running test
+					TestRunningArray.RemoveAt(Index--);
+
+					// If there are no more devices, set the module state to disabled
+					if ( DeviceClusterManager.HasActiveDevice() == false )
+					{
+						// Process results first to write out the report
+						ProcessResults();
+
+						UE_LOG(LogAutomationController, Display, TEXT("Module disabled"));
+						SetControllerStatus(EAutomationControllerModuleState::Disabled);
+						ClusterDistributionMask = 0;
+					}
+					else
+					{
+						UE_LOG(LogAutomationController, Display, TEXT("Module not disabled. Keep looking."));
+						// Remove the cluster from the mask if there are no active devices left
+						if ( DeviceClusterManager.GetNumActiveDevicesInCluster(ClusterIndex) == 0 )
+						{
+							ClusterDistributionMask &= ~( 1 << ClusterIndex );
+						}
+						if ( TestRunningArray.Num() == 0 )
+						{
+							SetControllerStatus(EAutomationControllerModuleState::Ready);
+						}
+					}
 				}
 				else
 				{
-					UE_LOG(LogAutomationController, Display, TEXT("Module not disabled. Keep looking."));
-					// Remove the cluster from the mask if there are no active devices left
-					if ( DeviceClusterManager.GetNumActiveDevicesInCluster(ClusterIndex) == 0 )
-					{
-						ClusterDistributionMask &= ~( 1 << ClusterIndex );
-					}
-					if ( TestRunningArray.Num() == 0 )
-					{
-						SetControllerStatus(EAutomationControllerModuleState::Ready);
-					}
+					MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FAutomationWorkerPing>(), TestRunningArray[Index].OwnerMessageAddress);
 				}
 			}
-			else
-			{
-				MessageEndpoint->Send(new FAutomationWorkerPing(), TestRunningArray[Index].OwnerMessageAddress);
-			}
+			CheckTestTimer = 0.f;
 		}
-		CheckTestTimer = 0.f;
+	}
+	else
+	{
+		UE_LOG(LogAutomationController, Log, TEXT("Ignoring very large delta of %.02f seconds in calls to FAutomationControllerManager::Tick() and not penalizing unresponsive tests"), TickDelta);
 	}
 }
 
@@ -1102,7 +1294,7 @@ void FAutomationControllerManager::HandleTestDataRequest(const FAutomationWorker
 		}
 	}
 
-	FAutomationWorkerTestDataResponse* ResponseMessage = new FAutomationWorkerTestDataResponse();
+	FAutomationWorkerTestDataResponse* ResponseMessage = FMessageEndpoint::MakeMessage<FAutomationWorkerTestDataResponse>();
 	ResponseMessage->bIsNew = bIsNew;
 	ResponseMessage->JsonData = ResponseJsonData;
 
@@ -1114,7 +1306,7 @@ void FAutomationControllerManager::HandlePerformanceDataRequest(const FAutomatio
 	//TODO Read/Performance data.
 	UE_LOG(LogAutomationController, Log, TEXT("Received PerformanceDataRequest from %s"), *Context->GetSender().ToString());
 
-	FAutomationWorkerPerformanceDataResponse* ResponseMessage = new FAutomationWorkerPerformanceDataResponse();
+	FAutomationWorkerPerformanceDataResponse* ResponseMessage = FMessageEndpoint::MakeMessage<FAutomationWorkerPerformanceDataResponse>();
 	ResponseMessage->bSuccess = true;
 	ResponseMessage->ErrorMessage = TEXT("");
 
@@ -1155,7 +1347,7 @@ void FAutomationControllerManager::HandleRequestNextNetworkCommandMessage(const 
 			for ( int32 AddressIndex = 0; AddressIndex < DeviceAddresses.Num(); ++AddressIndex )
 			{
 				//send "next command message" to worker
-				MessageEndpoint->Send(new FAutomationWorkerNextNetworkCommandReply(), DeviceAddresses[AddressIndex]);
+				MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FAutomationWorkerNextNetworkCommandReply>(), DeviceAddresses[AddressIndex]);
 			}
 		}
 	}
@@ -1178,6 +1370,10 @@ void FAutomationControllerManager::HandleRequestTestsReplyCompleteMessage(const 
 	SetTestNames(Context->GetSender(), TestInfo);
 }
 
+void FAutomationControllerManager::HandleReceivedTelemetryData(const FAutomationWorkerTelemetryData& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
+{
+	FAutomationTelemetry::HandleAddTelemetry(Message);
+}
 
 void FAutomationControllerManager::ReportAutomationResult(const TSharedPtr<IAutomationReport> InReport, int32 ClusterIndex, int32 PassIndex)
 {
@@ -1191,17 +1387,22 @@ void FAutomationControllerManager::ReportAutomationResult(const TSharedPtr<IAuto
 #endif
 
 	const FAutomationTestResults& Results = InReport->GetResults(ClusterIndex, PassIndex);
+	const FString StateString = AutomationStateToString(Results.State);
 
 	// write results to editor panel
 #if WITH_EDITOR
 	FFormatNamedArguments Arguments;
 	Arguments.Add(TEXT("TestName"), FText::FromString(InReport->GetFullTestPath()));
-	Arguments.Add(TEXT("Result"), Results.State != EAutomationState::Success ? LOCTEXT("Failed", "Failed") : LOCTEXT("Passed", "Passed"));
+	Arguments.Add(TEXT("Result"), FText::FromString(StateString));
 	TSharedRef<FTextToken> Token = FTextToken::Create(FText::Format(LOCTEXT("TestSuccessOrFailure", "Test '{TestName}' completed with result '{Result}'"), Arguments));
 	
 	if (Results.State == EAutomationState::Success)
 	{
 		AutomationEditorLog.Info()->AddToken(Token);
+	}
+	else if (Results.State == EAutomationState::Skipped)
+	{
+		AutomationEditorLog.Warning()->AddToken(Token);
 	}
 	else
 	{
@@ -1210,15 +1411,14 @@ void FAutomationControllerManager::ReportAutomationResult(const TSharedPtr<IAuto
 #endif
 
 	// Now log
-	if (Results.State == EAutomationState::Success)
+	FString ResultString = FString::Printf(AutomationStateFormat, *StateString, *InReport->GetDisplayName(), *InReport->GetFullTestPath());
+	if (Results.State == EAutomationState::Fail)
 	{
-		FString SuccessString = FString::Printf(AutomationSuccessFormat, *InReport->GetDisplayName(), *InReport->GetFullTestPath());
-		UE_LOG(LogAutomationController, Display, TEXT("%s"), *SuccessString);
+		UE_LOG(LogAutomationController, Error, TEXT("%s"), *ResultString);
 	}
 	else
 	{
-		FString FailureString = FString::Printf(AutomationFailureFormat, *InReport->GetDisplayName(), *InReport->GetFullTestPath());
-		UE_LOG(LogAutomationController, Error, TEXT("%s"), *FailureString);
+		UE_LOG(LogAutomationController, Display, TEXT("%s"), *ResultString);
 	}
 
 	// bracket these for easy parsing
@@ -1265,7 +1465,7 @@ void FAutomationControllerManager::HandleRunTestsReplyMessage(const FAutomationW
 	{
 		FAutomationTestResults TestResults;
 
-		TestResults.State = Message.Success ? EAutomationState::Success : EAutomationState::Fail;
+		TestResults.State = Message.State;
 		TestResults.Duration = Message.Duration;
 
 		// Mark device as back on the market

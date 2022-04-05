@@ -38,7 +38,14 @@ public:
 
     bool bHasOverlappingVertices;
 
-    FDuplicatedVerticesBuffer() : DupVertData(true), DupVertIndexData(true), bHasOverlappingVertices(false) {}
+    FDuplicatedVerticesBuffer() 
+#if WITH_EDITOR
+	// Keep CPU copy in editor for geometry operations
+	: DupVertData(true), DupVertIndexData(true)
+#else
+	: DupVertData(false), DupVertIndexData(false)
+#endif
+	, bHasOverlappingVertices(false) {}
 	
     /** Destructor. */
 	virtual ~FDuplicatedVerticesBuffer() {}
@@ -92,13 +99,19 @@ public:
         }
     }
 
+	void ReleaseCPUResources()
+	{
+		DupVertData.Discard();
+		DupVertIndexData.Discard();
+	}
+
     virtual void InitRHI() override
     {
         {
             FResourceArrayInterface* ResourceArray = DupVertData.GetResourceArray();
             check(ResourceArray->GetResourceDataSize() > 0);
 
-            FRHIResourceCreateInfo CreateInfo(ResourceArray);
+            FRHIResourceCreateInfo CreateInfo(TEXT("DuplicatedVerticesIndexBuffer"), ResourceArray);
             DuplicatedVerticesIndexBuffer.VertexBufferRHI = RHICreateVertexBuffer(ResourceArray->GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
             DuplicatedVerticesIndexBuffer.VertexBufferSRV = RHICreateShaderResourceView(DuplicatedVerticesIndexBuffer.VertexBufferRHI, sizeof(uint32), PF_R32_UINT);
         }
@@ -107,7 +120,7 @@ public:
             FResourceArrayInterface* ResourceArray = DupVertIndexData.GetResourceArray();
             check(ResourceArray->GetResourceDataSize() > 0);
 
-            FRHIResourceCreateInfo CreateInfo(ResourceArray);
+            FRHIResourceCreateInfo CreateInfo(TEXT("LengthAndIndexDuplicatedVerticesIndexBuffer"), ResourceArray);
             LengthAndIndexDuplicatedVerticesIndexBuffer.VertexBufferRHI = RHICreateVertexBuffer(ResourceArray->GetResourceDataSize(), BUF_Static | BUF_ShaderResource, CreateInfo);
             LengthAndIndexDuplicatedVerticesIndexBuffer.VertexBufferSRV = RHICreateShaderResourceView(LengthAndIndexDuplicatedVerticesIndexBuffer.VertexBufferRHI, sizeof(uint32), PF_R32_UINT);
         }

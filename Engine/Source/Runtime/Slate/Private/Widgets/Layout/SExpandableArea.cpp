@@ -36,8 +36,7 @@ void SExpandableArea::Construct( const FArguments& InArgs )
 		HeaderContent = 
 			SNew(STextBlock)
 			.Text(InArgs._AreaTitle)
-			.Font(InArgs._AreaTitleFont)
-			.ShadowOffset(FVector2D(1.0f, 1.0f));
+			.Font(InArgs._AreaTitleFont);
 	}
 
 	// If the user wants the body of the expanded section to be different from the title area,
@@ -50,6 +49,7 @@ void SExpandableArea::Construct( const FArguments& InArgs )
 	const TAttribute<const FSlateBrush*> TitleBorderImage = !bBodyDiffers ? FStyleDefaults::GetNoBrush() : InArgs._BorderImage;
 	const TAttribute<FSlateColor> TitleBorderBackgroundColor = !bBodyDiffers ? FLinearColor::Transparent : InArgs._BorderBackgroundColor;
 
+	bAllowAnimatedTransition = InArgs._AllowAnimatedTransition;
 	ChildSlot
 	[
 		SNew( SBorder )
@@ -165,18 +165,6 @@ EVisibility SExpandableArea::OnGetContentVisibility() const
 	return Scale > 0 ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
-/*
-FReply SExpandableArea::OnMouseDown( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent )
-{
-	if ( MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton )
-	{
-		//we need to capture the mouse for MouseUp events
-		return FReply::Handled().CaptureMouse( HeaderBorder.ToSharedRef() ).SetUserFocus( AsShared(), EFocusCause::Mouse );
-	}
-
-	return FReply::Unhandled();
-}*/
-
 
 FReply SExpandableArea::OnHeaderClicked()
 {
@@ -188,7 +176,7 @@ FReply SExpandableArea::OnHeaderClicked()
 
 void SExpandableArea::OnToggleContentVisibility()
 {
-	SetExpanded_Animated( !!bAreaCollapsed );
+	bAllowAnimatedTransition ? SetExpanded_Animated(!!bAreaCollapsed) : SetExpanded(!!bAreaCollapsed);
 }
 
 const FSlateBrush* SExpandableArea::OnGetCollapseImage() const
@@ -207,7 +195,7 @@ FVector2D SExpandableArea::ComputeDesiredSize( float ) const
 	EVisibility ChildVisibility = ChildSlot.GetWidget()->GetVisibility();
 	if ( ChildVisibility != EVisibility::Collapsed )
 	{
-		FVector2D SlotWidgetDesiredSize = ChildSlot.GetWidget()->GetDesiredSize() + ChildSlot.SlotPadding.Get().GetDesiredSize();
+		FVector2D SlotWidgetDesiredSize = ChildSlot.GetWidget()->GetDesiredSize() + ChildSlot.GetPadding().GetDesiredSize();
 		
 		// Only clamp if the user specified a min width
 		if( MinWidth > 0.0f )

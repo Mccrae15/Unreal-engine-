@@ -6,6 +6,8 @@
 ** file at : https://github.com/libsndfile/libsamplerate/blob/master/COPYING
 */
 
+#ifndef LIBSAMPLERATE_WITHOUT_LINEAR
+
 #include "CoreMinimal.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,7 +74,7 @@ linear_vari_process (SRC_STATE *state, SRC_DATA *data)
 	/* Calculate samples before first sample in input array. */
 	while (input_index < 1.0 && priv->out_gen < priv->out_count)
 	{
-		if (priv->in_used + state->channels * (1.0 + input_index) >= priv->in_count)
+		if (priv->in_used + state->channels * (1.0 + input_index) > priv->in_count)
 			break ;
 
 		if (priv->out_count > 0 && fabs (state->last_ratio - data->src_ratio) > SRC_MIN_RATIO_DIFF)
@@ -227,3 +229,5 @@ linear_copy (SRC_STATE *from, SRC_STATE *to)
 
 	return SRC_ERR_NO_ERROR ;
 } /* linear_copy */
+
+#endif // LIBSAMPLERATE_WITHOUT_LINEAR

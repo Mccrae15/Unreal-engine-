@@ -35,7 +35,10 @@ UStruct* SStructureDetailsView::GetBaseScriptStruct() const
 void SStructureDetailsView::Construct(const FArguments& InArgs)
 {
 	DetailsViewArgs = InArgs._DetailsViewArgs;
-	
+
+	ColumnSizeData.SetValueColumnWidth(DetailsViewArgs.ColumnWidth);
+	ColumnSizeData.RightColumnMinWidth = DetailsViewArgs.RightColumnMinWidth;
+
 	CustomName = InArgs._CustomName;
 
 	// Create the root property now
@@ -46,11 +49,6 @@ void SStructureDetailsView::Construct(const FArguments& InArgs)
 	PropertyUtilities = MakeShareable( new FPropertyDetailsUtilities( *this ) );
 	PropertyGenerationUtilities = MakeShareable(new FDetailsViewPropertyGenerationUtilities(*this));
 	
-	ColumnWidth = DetailsViewArgs.ColumnWidth;
-	ColumnSizeData.LeftColumnWidth = TAttribute<float>(this, &SStructureDetailsView::OnGetLeftColumnWidth);
-	ColumnSizeData.RightColumnWidth = TAttribute<float>(this, &SStructureDetailsView::OnGetRightColumnWidth);
-	ColumnSizeData.OnWidthChanged = SSplitter::FOnSlotResized::CreateSP(this, &SStructureDetailsView::OnSetColumnWidth);
-
 	TSharedRef<SScrollBar> ExternalScrollbar = SNew(SScrollBar);
 
 	// See note in SDetailsView for why visibility is set after construction
@@ -190,13 +188,13 @@ void SStructureDetailsView::Construct(const FArguments& InArgs)
 			.FillHeight(1)
 			.Padding(0)
 			[
-				SNew( SHorizontalBox )
-				+ SHorizontalBox::Slot()
+				SNew( SOverlay )
+				+ SOverlay::Slot()
 				[
 					DetailTree.ToSharedRef()
 				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
+				+ SOverlay::Slot()
+				.HAlign(HAlign_Right)
 				[
 					SNew( SBox )
 					.WidthOverride( 16.0f )

@@ -23,19 +23,15 @@ public:
 		: NativeValue(InitialValue)
 	{}
 
-	const T& Get(const FParameterStore& InStore) const { return NativeValue; }
-	T& Edit(const FParameterStore& InStore) { return NativeValue; }
+	const T& Get() const { return NativeValue; }
+	T& Get() { return NativeValue; }
 	operator const T&() const { return NativeValue; }
+	operator T&() { return NativeValue; }
 
 	T& operator=(const T& InValue)
 	{
 		NativeValue = InValue;
 		return NativeValue;
-	}
-
-	void Set(FParameterStore& InStore, const T& InValue)
-	{
-		NativeValue = InValue;
 	}
 
 private:
@@ -103,6 +99,13 @@ private:
 class DIRECTLINK_API FParameterStore
 {
 public:
+	FParameterStore();
+	~FParameterStore();
+	FParameterStore(const FParameterStore&);
+	FParameterStore& operator=(const FParameterStore&);
+	FParameterStore(FParameterStore&&);
+	FParameterStore& operator=(FParameterStore&&);
+
 	template<typename T, typename S>
 	TStoreKey<T, S>& RegisterParameter(TStoreKey<T, S>& Key, FName Name)
 	{

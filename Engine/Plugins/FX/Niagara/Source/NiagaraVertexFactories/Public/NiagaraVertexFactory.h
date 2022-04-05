@@ -24,11 +24,11 @@ public:
 	virtual void InitRHI() override
 	{
 		// create a static vertex buffer
-		FRHIResourceCreateInfo CreateInfo;
-		void* BufferData = nullptr;
-		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(int32), BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FNiagaraNullSortedIndicesVertexBuffer"));
+		VertexBufferRHI = RHICreateBuffer(sizeof(int32), BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
+		void* BufferData = RHILockBuffer(VertexBufferRHI, 0, sizeof(int32), RLM_WriteOnly);
 		FMemory::Memzero(BufferData, sizeof(int32));
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		RHIUnlockBuffer(VertexBufferRHI);
 
 		VertexBufferSRV = RHICreateShaderResourceView(VertexBufferRHI, sizeof(int32), PF_R32_SINT);
 	}
@@ -53,8 +53,6 @@ enum ENiagaraVertexFactoryType
 	NVFT_Mesh,
 	NVFT_MAX
 };
-
-
 
 /**
 * Base class for particle vertex factories.
@@ -109,19 +107,18 @@ public:
 
 	bool CheckAndUpdateLastFrame(const FSceneViewFamily& ViewFamily, const FSceneView *View = nullptr) const
 	{
-		if (LastFrameSetup != MAX_uint32 && (&ViewFamily == LastViewFamily) && (View == LastView) && ViewFamily.FrameNumber == LastFrameSetup && LastFrameRealTime == ViewFamily.CurrentRealTime)
+		if (LastFrameSetup != MAX_uint32 && (&ViewFamily == LastViewFamily) && (View == LastView) && ViewFamily.FrameNumber == LastFrameSetup && LastFrameRealTime == ViewFamily.Time.GetRealTimeSeconds())
 		{
 			return false;
 		}
 		LastFrameSetup = ViewFamily.FrameNumber;
-		LastFrameRealTime = ViewFamily.CurrentRealTime;
+		LastFrameRealTime = ViewFamily.Time.GetRealTimeSeconds();
 		LastViewFamily = &ViewFamily;
 		LastView = View;
 		return true;
 	}
 
 private:
-
 	/** Last state where we set this. We only need to setup these once per frame, so detemine same frame by number, time, and view family. */
 	mutable uint32 LastFrameSetup;
 	mutable const FSceneViewFamily *LastViewFamily;
@@ -133,4 +130,25 @@ private:
 
 	/** Whether the vertex factory is in use. */
 	bool bInUse;
+};
+
+/**
+* Base class for Niagara vertex factory shader parameters.
+*/
+class FNiagaraVertexFactoryShaderParametersBase : public FVertexFactoryShaderParameters
+{
+	DECLARE_TYPE_LAYOUT(FNiagaraVertexFactoryShaderParametersBase, NonVirtual);
+
+public:
+	void Bind(const FShaderParameterMap& ParameterMap);
+	void GetElementShaderBindings(
+		const FSceneInterface* Scene,
+		const FSceneView* View,
+		const FMeshMaterialShader* Shader,
+		const EVertexInputStreamType VertexStreamType,
+		ERHIFeatureLevel::Type FeatureLevel,
+		const FVertexFactory* VertexFactory,
+		const FMeshBatchElement& BatchElement,
+		class FMeshDrawSingleShaderBindings& ShaderBindings,
+		FVertexInputStreamArray& VertexStreams) const;
 };

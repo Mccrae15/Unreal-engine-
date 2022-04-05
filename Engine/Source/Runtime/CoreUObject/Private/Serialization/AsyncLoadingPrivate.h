@@ -19,8 +19,16 @@ public:
 		WaitingForFirstExport,
 		ProcessingExports,
 	};
+	enum class ELoadError : uint8
+	{
+		Unknown,
+		UnsupportedFormat,
+		FileDoesNotExist,
+		CorruptData,
+		Cancelled,
+	};
 
-	FAsyncArchive(const TCHAR* InFileName, FLinkerLoad* InOwner, TFunction<void()>&& InSummaryReadyCallback);
+	FAsyncArchive(const FPackagePath& InPackagePath, FLinkerLoad* InOwner, TFunction<void()>&& InSummaryReadyCallback);
 	virtual ~FAsyncArchive ();
 
 	/** Archive overrides */
@@ -41,14 +49,14 @@ public:
 	virtual void FlushCache() override;
 	virtual FString GetArchiveName() const override 
 	{
-		return FileName;
+		return PackagePath.GetDebugName();
 	}
 
 	/** AsyncArchive interface */
-	bool PrecacheWithTimeLimit(int64 PrecacheOffset, int64 PrecacheSize, bool bUseTimeLimit, bool bUseFullTimeLimit, double TickStartTime, float TimeLimit);
+	bool PrecacheWithTimeLimit(int64 PrecacheOffset, int64 PrecacheSize, bool bUseTimeLimit, bool bUseFullTimeLimit, double TickStartTime, double TimeLimit);
 	bool PrecacheForEvent(IAsyncReadRequest* Read, int64 PrecacheOffset, int64 PrecacheSize);
 	void FlushPrecacheBlock();
-	bool ReadyToStartReadingHeader(bool bUseTimeLimit, bool bUseFullTimeLimit, double TickStartTime, float TimeLimit);
+	bool ReadyToStartReadingHeader(bool bUseTimeLimit, bool bUseFullTimeLimit, double TickStartTime, double TimeLimit);
 	void StartReadingHeader();
 	void EndReadingHeader();
 	IAsyncReadRequest* MakeEventDrivenPrecacheRequest(int64 Offset, int64 BytesToRead, FAsyncFileCallBack* CompleteCallback);
@@ -58,6 +66,16 @@ public:
 	{
 		return bCookedForEDLInEditor;
 	}
+
+	ELoadError GetLoadError() const
+	{
+		return LoadError;
+	}
+	bool NeedsEngineVersionChecks() const
+	{
+		return bNeedsEngineVersionChecks;
+	}
+
 
 private:
 #if DEVIRTUALIZE_FLinkerLoad_Serialize
@@ -70,11 +88,11 @@ private:
 
 #endif
 	void FirstExportStarting();
-	bool WaitRead(float TimeLimit = 0.0f);
+	bool WaitRead(double TimeLimit = 0.0);
 	void CompleteRead();
 	void CancelRead();
 	void CompleteCancel();
-	bool WaitForIntialPhases(float TimeLimit = 0.0f);
+	bool WaitForIntialPhases(double TimeLimit = 0.0);
 	void ReadCallback(bool bWasCancelled, IAsyncReadRequest*);
 	bool PrecacheInternal(int64 PrecacheOffset, int64 PrecacheSize, bool bApplyMinReadSize = true, IAsyncReadRequest* Read = nullptr);
 	
@@ -112,13 +130,16 @@ private:
 	int64 HeaderSizeWhenReadingExportsFromSplitFile;
 
 	ELoadPhase LoadPhase;
+	ELoadError LoadError;
 
 	/** If true, this package is a cooked EDL package loaded in uncooked builds */
 	bool bCookedForEDLInEditor;
+	/** True if the linker should do version and corruption checks on bytes of this archive. */
+	bool bNeedsEngineVersionChecks;
 
 	FAsyncFileCallBack ReadCallbackFunction;
-	/** Cached filename for debugging.												*/
-	FString	FileName;
+	/** Cached PackagePath for debugging.												*/
+	FPackagePath PackagePath;
 	double OpenTime;
 	double SummaryReadTime;
 	double ExportReadTime;
@@ -128,3 +149,5 @@ private:
 
 	FLinkerLoad* OwnerLinker;
 };
+
+bool IsPackageLoadingFromIoDispatcher(const UPackage* Package, const FArchive& Ar);

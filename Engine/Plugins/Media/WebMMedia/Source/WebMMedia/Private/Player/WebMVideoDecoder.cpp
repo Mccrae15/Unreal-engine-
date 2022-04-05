@@ -24,7 +24,7 @@ namespace
 	public:
 
 		FVertexDeclarationRHIRef VertexDeclarationRHI;
-		FVertexBufferRHIRef VertexBufferRHI;
+		FBufferRHIRef VertexBufferRHI;
 
 		virtual ~FMoviePlaybackResources() { }
 
@@ -46,7 +46,7 @@ namespace
 			Vertices[2].TextureCoordinate.Set(0.0f, 1.0f);
 			Vertices[3].Position.Set(1.0f, -1.0f, 1.0f, 1.0f);
 			Vertices[3].TextureCoordinate.Set(1.0f, 1.0f);
-			FRHIResourceCreateInfo CreateInfo(&Vertices);
+			FRHIResourceCreateInfo CreateInfo(TEXT("FMoviePlaybackResources"), &Vertices);
 			VertexBufferRHI = RHICreateVertexBuffer(sizeof(FMediaElementVertex) * 4, BUF_Static, CreateInfo);
 		}
 
@@ -104,17 +104,15 @@ void FWebMVideoDecoder::DecodeVideoFramesAsync(const TArray<TSharedPtr<FWebMFram
 	static bool bUseRenderThread = FPlatformMisc::UseRenderThread();
 	if (bUseRenderThread)
 	{
-		FGraphEventRef PreviousDecodingTask = VideoDecodingTask;
-
-		VideoDecodingTask = FFunctionGraphTask::CreateAndDispatchWhenReady([this, PreviousDecodingTask, VideoFrames]()
+		FGraphEventArray Prerequisites;
+		if (VideoDecodingTask)
 		{
-			if(PreviousDecodingTask && !PreviousDecodingTask->IsComplete())
-			{
-				FTaskGraphInterface::Get().WaitUntilTaskCompletes(PreviousDecodingTask);
-			}
-
+			Prerequisites.Emplace(VideoDecodingTask);
+		}
+		VideoDecodingTask = FFunctionGraphTask::CreateAndDispatchWhenReady([this,  VideoFrames]()
+		{
 			DoDecodeVideoFrames(VideoFrames);
-		}, TStatId(), nullptr, ENamedThreads::AnyThread);
+		}, TStatId(), &Prerequisites, ENamedThreads::AnyThread);
 	}
 	else
 	{
@@ -171,10 +169,13 @@ void FWebMVideoDecoder::DoDecodeVideoFrames(const TArray<TSharedPtr<FWebMFrame>>
 
 void FWebMVideoDecoder::CreateTextures(const vpx_image_t* Image)
 {
-	FRHIResourceCreateInfo CreateInfo;
-
+	FRHIResourceCreateInfo CreateInfo(TEXT("FWebMVideoDecoder_DecodedY"));
 	DecodedY = RHICreateTexture2D(Image->stride[0], Image->d_h, PF_G8, 1, 1, TexCreate_Dynamic, CreateInfo);
+
+	CreateInfo.DebugName = TEXT("FWebMVideoDecoder_DecodedU");
 	DecodedU = RHICreateTexture2D(Image->stride[1], Image->d_h / 2, PF_G8, 1, 1, TexCreate_Dynamic, CreateInfo);
+
+	CreateInfo.DebugName = TEXT("FWebMVideoDecoder_DecodedV");
 	DecodedV = RHICreateTexture2D(Image->stride[2], Image->d_h / 2, PF_G8, 1, 1, TexCreate_Dynamic, CreateInfo);
 }
 
@@ -274,8 +275,8 @@ void FWebMVideoDecoder::ConvertYUVToRGBAndSubmit(const FConvertParams& Params)
 				GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
 			}
 
-			SetGraphicsPipelineState(CommandList, GraphicsPSOInit);
-			PixelShader->SetParameters(CommandList, DecodedY->GetTexture2D(), DecodedU->GetTexture2D(), DecodedV->GetTexture2D(), FIntPoint(Image->d_w, Image->d_h), MediaShaders::YuvToSrgbDefault, MediaShaders::YUVOffset8bits, true);
+			SetGraphicsPipelineState(CommandList, GraphicsPSOInit, 0);
+			PixelShader->SetParameters(CommandList, DecodedY->GetTexture2D(), DecodedU->GetTexture2D(), DecodedV->GetTexture2D(), FIntPoint(Image->d_w, Image->d_h), MediaShaders::YuvToRgbRec709Scaled, MediaShaders::YUVOffset8bits, true);
 
 			// draw full-size quad
 			CommandList.SetViewport(0, 0, 0.0f, Image->d_w, Image->d_h, 1.0f);

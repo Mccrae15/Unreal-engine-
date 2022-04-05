@@ -5,18 +5,7 @@ using System.IO;
 
 public class libstrophe : ModuleRules
 {
-	protected virtual string StropheVersion {
-		get { 
-			if (Target.Platform == UnrealTargetPlatform.Android)
-			{
-				return  "libstrophe-0.9.3"; 
-			}
-			else
-			{
-				return  "libstrophe-0.9.1";
-			}
-		} 
-	}
+	protected virtual string StropheVersion { get { return (Target.Platform == UnrealTargetPlatform.Mac) ? "libstrophe-0.9.1" : "libstrophe-0.9.3"; } } 
 
 	protected virtual string LibRootDirectory { get { return ModuleDirectory; } }
 
@@ -54,14 +43,14 @@ public class libstrophe : ModuleRules
 			PublicAdditionalLibraries.Add(Path.Combine(StrophePackagePath, Target.Platform.ToString(), ConfigName, "libstrophe.a"));
 			PublicSystemLibraries.Add("resolv");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+		else if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			string LibrayPath = Path.Combine(StrophePackagePath, Target.Platform.ToString(), "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), ConfigName) + "/";
 			PublicAdditionalLibraries.Add(LibrayPath + "strophe.lib");
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
 		{
-			PublicAdditionalLibraries.Add(Path.Combine(StrophePackagePath, "Linux", Target.Architecture.ToString(), ConfigName, "libstrophe" + ((Target.LinkType != TargetLinkType.Monolithic) ? "_fPIC" : "") + ".a"));
+			PublicAdditionalLibraries.Add(Path.Combine(StrophePackagePath, "Unix", Target.Architecture.ToString(), ConfigName, "libstrophe" + ((Target.LinkType != TargetLinkType.Monolithic) ? "_fPIC" : "") + ".a"));
 			PublicSystemLibraries.Add("resolv");
 		}
 	}

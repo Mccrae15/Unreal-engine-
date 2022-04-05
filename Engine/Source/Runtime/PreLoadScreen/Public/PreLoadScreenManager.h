@@ -106,6 +106,13 @@ protected:
 	void HandleStopPreLoadScreen();
 	void CleanUpResources();
 
+	//Helpers that setup and clean-up delegates that only need to be active while we are playing an EarlyStartup PreLoadScreen
+	void RegisterDelegatesForEarlyStartupPlay();
+	void CleanUpDelegatesForEarlyStartupPlay();
+
+	void HandleFlushRenderingCommandsStart();
+	void HandleFlushRenderingCommandsEnd();
+
 	//Singleton Instance
 	struct FPreLoadScreenManagerDelete
 	{
@@ -155,8 +162,4 @@ private:
 #if PLATFORM_IOS
 	void IOS_PlatformSpecificGameLogicFrameTick();
 #endif //PLATFORM_IOS
-
-#if PLATFORM_XBOXONE
-	void XboxOne_PlatformSpecificGameLogicFrameTick();
-#endif //PLATFORM_XBOXONE
 };

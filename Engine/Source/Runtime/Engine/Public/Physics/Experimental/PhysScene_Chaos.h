@@ -2,6 +2,7 @@
 
 #pragma once
 
+#if WITH_CHAOS
 #include "CoreMinimal.h"
 #include "Tickable.h"
 #include "Physics/PhysScene.h"
@@ -10,6 +11,8 @@
 #include "PhysInterface_Chaos.h"
 #include "Physics/PhysicsInterfaceUtils.h"
 #include "Chaos/ChaosScene.h"
+#include "Chaos/ContactModification.h"
+#include "Chaos/Real.h"
 
 #ifndef CHAOS_WITH_PAUSABLE_SOLVER
 #define CHAOS_WITH_PAUSABLE_SOLVER 1
@@ -37,6 +40,7 @@ class UWorld;
 class AWorldSettings;
 class FPhysicsReplicationFactory;
 class FContactModifyCallbackFactory;
+struct FConstraintInstanceBase;
 
 namespace Chaos
 {
@@ -65,6 +69,26 @@ namespace Chaos
 
 extern int32 GEnableKinematicDeferralStartPhysicsCondition;
 
+struct FConstraintBrokenDelegateWrapper
+{
+	FConstraintBrokenDelegateWrapper(FConstraintInstanceBase* ConstraintInstance);
+
+	void DispatchOnBroken();
+
+	FOnConstraintBroken OnConstraintBrokenDelegate;
+	int32 ConstraintIndex;
+};
+
+struct FPlasticDeformationDelegateWrapper
+{
+	FPlasticDeformationDelegateWrapper(FConstraintInstanceBase* ConstraintInstance);
+
+	void DispatchPlasticDeformation();
+
+	FOnPlasticDeformation OnPlasticDeformationDelegate;
+	int32 ConstraintIndex;
+};
+
 /**
 * Low level Chaos scene used when building custom simulations that don't exist in the main world physics scene.
 */
@@ -76,13 +100,13 @@ public:
 	
 #if !WITH_CHAOS_NEEDS_TO_BE_FIXED
 	FPhysScene_Chaos(AActor* InSolverActor
-#if CHAOS_CHECKED
+#if CHAOS_DEBUG_NAME
 	, const FName& DebugName=NAME_None
 #endif
 );
 #else
 	FPhysScene_Chaos(AActor* InSolverActor=nullptr
-#if CHAOS_CHECKED
+#if CHAOS_DEBUG_NAME
 	, const FName& DebugName=NAME_None
 #endif
 );
@@ -123,7 +147,7 @@ public:
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	/** Given a solver object, returns its associated component. */
 	template<class OwnerType>
-	OwnerType* GetOwningComponent(IPhysicsProxyBase* PhysicsProxy) const
+	OwnerType* GetOwningComponent(const IPhysicsProxyBase* PhysicsProxy) const
 	{ 
 		UPrimitiveComponent* const* CompPtr = PhysicsProxyToComponentMap.Find(PhysicsProxy);
 		return CompPtr ? Cast<OwnerType>(*CompPtr) : nullptr;
@@ -134,6 +158,9 @@ public:
 	{
 		return ComponentToPhysicsProxyMap.Find(Comp);
 	}
+
+	/** Given a physics proxy, returns its associated body instance if any */
+	FBodyInstance* GetBodyInstanceFromProxy(const IPhysicsProxyBase* PhysicsProxy) const;
 
 	/**
 	 * Callback when a world ends, to mark updated packages dirty. This can't be done in final
@@ -167,6 +194,7 @@ public:
 
 	void AddPendingOnConstraintBreak(FConstraintInstance* ConstraintInstance, int32 SceneType);
 	void AddPendingSleepingEvent(FBodyInstance* BI, ESleepEvent SleepEventType, int32 SceneType);
+
 	int32 DirtyElementCount(Chaos::ISpatialAccelerationCollection<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>& Collection);
 
 	TArray<FCollisionNotifyInfo>& GetPendingCollisionNotifies(int32 SceneType);
@@ -221,7 +249,7 @@ private:
 
 		friend inline uint32 GetTypeHash(FUniqueContactPairKey const& P)
 		{
-			return (PTRINT)P.Body0 ^ ((PTRINT)P.Body1 << 18);
+			return (uint32)((PTRINT)P.Body0 ^ ((PTRINT)P.Body1 << 18));
 		}
 	};
 
@@ -318,6 +346,10 @@ private:
 	/** The SolverActor that spawned and owns this scene */
 	TWeakObjectPtr<AActor> SolverActor;
 
+#if WITH_CHAOS
+	Chaos::FReal LastEventDispatchTime;
+#endif 
+
 #if WITH_EDITOR
 	// Counter used to check a match with the single step status.
 	int32 SingleStepCounter;
@@ -331,3 +363,5 @@ private:
 	friend struct FScopedSceneReadLock;
 	friend struct FScopedSceneLock_Chaos;
 };
+
+#endif

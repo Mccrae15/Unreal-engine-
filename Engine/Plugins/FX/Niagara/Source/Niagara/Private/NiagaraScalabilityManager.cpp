@@ -73,6 +73,7 @@ static int32 GetMaxUpdatesPerFrame(const UNiagaraEffectType* EffectType, int32 I
 FNiagaraScalabilityManager::FNiagaraScalabilityManager()
 	: EffectType(nullptr)
 	, LastUpdateTime(0.0f)
+	, bRefreshCachedSystemData(false)
 {
 
 }
@@ -99,7 +100,7 @@ void FNiagaraScalabilityManager::AddReferencedObjects(FReferenceCollector& Colle
 void FNiagaraScalabilityManager::PreGarbageCollectBeginDestroy()
 {
 	//After the GC has potentially nulled out references to the components we were tracking we clear them out here.
-	//This should only be in the case where MarkPendingKill() is called directly. Typical component destruction will unregister in OnComponentDestroyed() or OnUnregister().
+	//This should only be in the case where MarkAsGarbage() is called directly. Typical component destruction will unregister in OnComponentDestroyed() or OnUnregister().
 	//Components then just clear their handle in BeginDestroy knowing they've already been removed from the manager.
 	//I would prefer some pre BeginDestroy() callback into the component in which I could cleanly unregister with the manager in all cases but I don't think that's possible.
 	int32 CompIdx = ManagedComponents.Num();
@@ -111,11 +112,17 @@ void FNiagaraScalabilityManager::PreGarbageCollectBeginDestroy()
 			//UE_LOG(LogNiagara, Warning, TEXT("Unregister from PreGCBeginDestroy @%d/%d - %s"), CompIdx, ManagedComponents.Num(), *EffectType->GetName());
 			UnregisterAt(CompIdx);
 		}
-		else if (Comp->IsPendingKillOrUnreachable())
+		else if (!IsValidChecked(Comp) || Comp->IsUnreachable())
 		{
 			Unregister(Comp);
 		}
 	}
+}
+
+void FNiagaraScalabilityManager::OnRefreshOwnerAllowsScalability()
+{
+	//We trigger a full refresh of scalability state when the view target changes etc to ensure we're not culling something we now shouldn't.
+	bRefreshOwnerAllowsScalability = true;
 }
 
 void FNiagaraScalabilityManager::Register(UNiagaraComponent* Component)
@@ -130,6 +137,9 @@ void FNiagaraScalabilityManager::Register(UNiagaraComponent* Component)
 	{
 		DefaultContext.ComponentRequiresUpdate.Add(true);
 	}
+
+	//Init System Data.
+	GetSystemData(Component->ScalabilityManagerHandle);
 
 	//UE_LOG(LogNiagara, Warning, TEXT("Registered Component %p at index %d"), Component, Component->ScalabilityManagerHandle);
 }
@@ -185,8 +195,8 @@ bool FNiagaraScalabilityManager::EvaluateCullState(FNiagaraWorldManager* WorldMa
 		UnregisterAt(ComponentIndex);
 		return false;
 	}
-	//Belt and braces GC safety. If someone calls MarkPendingKill() directly and we get here before we clear these out in the post GC callback.
-	else if (Component->IsPendingKill())
+	//Belt and braces GC safety. If someone calls MarkAsGarbage() directly and we get here before we clear these out in the post GC callback.
+	else if (!IsValid(Component))
 	{
 		Unregister(Component);
 		return false;
@@ -197,7 +207,7 @@ bool FNiagaraScalabilityManager::EvaluateCullState(FNiagaraWorldManager* WorldMa
 	//Though this does mean the sorted significance values will be using out of date distances etc.
 	//I'm somewhat on the fence currently as to whether it's better to pay this cost for correctness.
 	const bool UpdateScalability = Component->ScalabilityManagerHandle == ComponentIndex
-		&& (!Context.bNewOnly || Component->GetSystemInstance()->IsPendingSpawn());
+		&& (!Context.bNewOnly || Component->GetSystemInstanceController()->IsPendingSpawn());
 
 	if (UpdateScalability)
 	{
@@ -213,6 +223,8 @@ bool FNiagaraScalabilityManager::EvaluateCullState(FNiagaraWorldManager* WorldMa
 		FNiagaraScalabilityState& CompState = State[ComponentIndex];
 		const FNiagaraSystemScalabilitySettings& Scalability = System->GetScalabilitySettings();
 
+		const FNiagaraScalabilitySystemData& SysData = GetSystemData(ComponentIndex);
+
 #if DEBUG_SCALABILITY_STATE
 		CompState.bCulledByInstanceCount = false;
 		CompState.bCulledByDistance = false;
@@ -223,7 +235,9 @@ bool FNiagaraScalabilityManager::EvaluateCullState(FNiagaraWorldManager* WorldMa
 		// components that are not dirty and are culled can be safely skipped because we don't care about their
 		// significance.  We also don't care about the significance of those components that are dirty and culled
 		// but we do have to make sure to reset their significance index
-		if (!CompState.bCulled || CompState.IsDirty())
+		// though some systems do require full significance info for culled instances.
+		bool bNeedSortedSignificane = (SysData.bNeedsSignificanceForActiveOrDirty && (!CompState.bCulled || CompState.IsDirty())) || SysData.bNeedsSignificanceForCulled;
+		if (bNeedSortedSignificane)
 		{
 			Context.bRequiresGlobalSignificancePass |= System->NeedsSortedSignificanceCull();
 		}
@@ -243,69 +257,77 @@ void FNiagaraScalabilityManager::ProcessSignificance(FNiagaraWorldManager* World
 	// it would be good to get a better estimate for how many indices we're going to need to process
 	Context.SignificanceIndices.Reset(ManagedComponents.Num());
 
-	SignificanceHandler->CalculateSignificance(ManagedComponents, State, Context.SignificanceIndices);
+	SignificanceHandler->CalculateSignificance(ManagedComponents, State, SystemData, Context.SignificanceIndices);
 
-	// sort predicate which will order things in the following buckets:
-	// -stale (not dirty) culled -> these can be skipped, we don't care about their significance
-	// -dirty culled -> these have just been made culled, so we don't care about their significance, but we need to update their Index
-	// -not culled, ordered by significance
 	auto ComparePredicate = [&](const FNiagaraScalabilityState& A, const FNiagaraScalabilityState& B)
 	{
-		if (A.bCulled)
-		{
-			return !A.IsDirty();
-		}
-		else if (B.bCulled)
-		{
-			return !B.IsDirty();
-		}
-
 		return A.Significance > B.Significance;
 	};
 
 	Context.SignificanceIndices.Sort([&](int32 A, int32 B) { return ComparePredicate(State[A], State[B]); });
 
-	const FNiagaraScalabilityState ClearSignificanceIndexMarker(FLT_MAX, true, false);
-	const FNiagaraScalabilityState EvaluateSignificanceCullMarker(FLT_MAX, false, false);
-
-	const int32 ClearSignificanceIndexBegin = Algo::LowerBoundBy(Context.SignificanceIndices, ClearSignificanceIndexMarker, [&](int32 A) { return State[A]; }, ComparePredicate);
-	const int32 EvaluateSignificanceCullBegin = Algo::LowerBoundBy(Context.SignificanceIndices, EvaluateSignificanceCullMarker, [&](int32 A) { return State[A]; }, ComparePredicate);
-	const int32 EvaluateSignificanceCullEnd = Context.SignificanceIndices.Num();
-
-	// process all Culled + Dirty components, invalidating their SystemSignificanceIndex
-	for (int32 SortedIt = ClearSignificanceIndexBegin; SortedIt < EvaluateSignificanceCullBegin; ++SortedIt)
+	//clear out working variables for the system data.
+	for (FNiagaraScalabilitySystemData& SysData : SystemData)
 	{
-		const int32 ComponentIt = Context.SignificanceIndices[SortedIt];
-		if (UNiagaraComponent* Component = ManagedComponents[ComponentIt])
-		{
-			Component->SetSystemSignificanceIndex(INDEX_NONE);
-		}
+		SysData.InstanceCount = 0;
+		SysData.CullProxyCount = 0;
 	}
 
-	// process all initially non Culled components (they still might get called because of instance count limits)
 	int32 EffectTypeActiveInstances = 0;
 
-	TMap<const UNiagaraSystem*, int32> SystemInstanceCounts;
-	for (int32 SortedIt = EvaluateSignificanceCullBegin; SortedIt < EvaluateSignificanceCullEnd; ++SortedIt)
+	for (int32 SortedIt = 0; SortedIt < Context.SignificanceIndices.Num(); ++SortedIt)
 	{
 		int32 SortedIdx = Context.SignificanceIndices[SortedIt];
 		UNiagaraComponent* Component = ManagedComponents[SortedIdx];
 		FNiagaraScalabilityState& CompState = State[SortedIdx];
 		UNiagaraSystem* System = Component->GetAsset();
-
-		int32& SystemInstanceCountRef = SystemInstanceCounts.FindOrAdd(System);
-
-		bool bOldCulled = CompState.bCulled;
-
 		const FNiagaraSystemScalabilitySettings& ScalabilitySettings = System->GetScalabilitySettings();
-		WorldMan->SortedSignificanceCull(EffectType, ScalabilitySettings, CompState.Significance, EffectTypeActiveInstances, SystemInstanceCountRef, CompState);
 
-		//Inform the component how significant it is so emitters internally can scale based on that information.
-		//e.g. expensive emitters can turn off for all but the N most significant systems.
-		int32 SignificanceIndex = CompState.bCulled ? INDEX_NONE : SystemInstanceCountRef - 1;
-		Component->SetSystemSignificanceIndex(SignificanceIndex);
+		FNiagaraScalabilitySystemData& SysData = GetSystemData(SortedIdx);
+		if (CompState.bCulled)
+		{
+			if (CompState.IsDirty())
+			{
+				Component->SetSystemSignificanceIndex(INDEX_NONE);
+			}
+		}
+		else
+		{
+			bool bOldCulled = CompState.bCulled;
 
-		Context.bHasDirtyState |= CompState.IsDirty();
+			WorldMan->SortedSignificanceCull(EffectType, Component, ScalabilitySettings, CompState.Significance, EffectTypeActiveInstances, SysData.InstanceCount, CompState);
+
+			//Inform the component how significant it is so emitters internally can scale based on that information.
+			//e.g. expensive emitters can turn off for all but the N most significant systems.
+			int32 SignificanceIndex = CompState.bCulled ? INDEX_NONE : SysData.InstanceCount - 1;
+			Component->SetSystemSignificanceIndex(SignificanceIndex);
+
+			Context.bHasDirtyState |= CompState.IsDirty();
+		}
+
+		//Handle cull proxy creation here so that it can be done in significance order
+		if (ScalabilitySettings.CullProxyMode != ENiagaraCullProxyMode::None)
+		{
+			if (CompState.bCulled)
+			{
+				bool bEnableCullProxy = SysData.CullProxyCount < ScalabilitySettings.MaxSystemProxies
+										&& CompState.bCulledByVisibility == false;//Don't allow proxies on invisible systems. Keep them all for those culled by distance and budget etc.
+				
+				if (bEnableCullProxy)
+				{
+					++SysData.CullProxyCount;
+					Component->CreateCullProxy(true);
+				}
+				else
+				{
+					Component->DestroyCullProxy();
+				}
+			}
+			else
+			{
+				Component->DestroyCullProxy();
+			}		
+		}
 	}
 }
 
@@ -321,7 +343,30 @@ bool FNiagaraScalabilityManager::ApplyScalabilityState(int32 ComponentIndex, ENi
 	bool bContinueIteration = true;
 	if (UNiagaraComponent* Component = ManagedComponents[ComponentIndex])
 	{
+		//If we're using cull proxies then override all deactivates to be immediate. No need to keep state around that won't be used.
+		//TODO: Make this pause instead.
+		FNiagaraScalabilitySystemData& SysData = GetSystemData(ComponentIndex);
+		if (SysData.bNeedsSignificanceForCulled)
+		{
+			if (CullReaction == ENiagaraCullReaction::Deactivate)
+			{
+				CullReaction = ENiagaraCullReaction::DeactivateImmediate;
+			}
+			else if (CullReaction == ENiagaraCullReaction::DeactivateResume)
+			{
+				CullReaction = ENiagaraCullReaction::DeactivateImmediateResume;
+			}
+		}
+
 		CompState.Apply();
+
+#if WITH_NIAGARA_DEBUGGER
+		//Tell the debugger about our scalability state.
+		//Unfortunately cannot have the debugger just read the manager state data as components are removed.
+		//To avoid extra copy in future we can have the manager keep another list of recently removed component states which is cleaned up on component destruction.
+		Component->DebugCachedScalabilityState = CompState;
+#endif
+
 		if (CompState.bCulled)
 		{
 			switch (CullReaction)
@@ -404,11 +449,30 @@ void FNiagaraScalabilityManager::UpdateInternal(FNiagaraWorldManager* WorldMan, 
 
 void FNiagaraScalabilityManager::Update(FNiagaraWorldManager* WorldMan, float DeltaSeconds, bool bNewOnly)
 {
-	//Paranoia code in case the EffectType is GCd from under us.
-	if (EffectType == nullptr)
+	if (bRefreshCachedSystemData)
+	{	
+		bRefreshCachedSystemData = false;
+
+		//Clear and refresh all cached system data.
+		SystemDataIndexMap.Reset();
+		SystemData.Reset();
+
+		for (int32 CompIdx = 0; CompIdx < ManagedComponents.Num(); ++CompIdx)
+		{
+			GetSystemData(CompIdx, true);
+		}
+	}
+
+	bool bShutdown = EffectType == nullptr || FNiagaraWorldManager::GetScalabilityCullingMode() == ENiagaraScalabilityCullingMode::Disabled;
+	if (bShutdown)
 	{
-		ManagedComponents.Empty();
-		State.Empty();
+		while (ManagedComponents.Num())
+		{
+			ManagedComponents.Last()->UnregisterWithScalabilityManager();
+		}
+
+		check(ManagedComponents.Num() == 0);
+		check(State.Num() == 0);
 		LastUpdateTime = 0.0f;
 		return;
 	}
@@ -441,9 +505,9 @@ void FNiagaraScalabilityManager::Update(FNiagaraWorldManager* WorldMan, float De
 	const float TimeSinceUpdate = CurrentTime - LastUpdateTime;
 	const float UpdatePeriod = GetScalabilityUpdatePeriod(EffectType->UpdateFrequency);
 
-	const bool bResetUpdate = EffectType->UpdateFrequency == ENiagaraScalabilityUpdateFrequency::Continuous
+	const bool bResetUpdate = bRefreshOwnerAllowsScalability || EffectType->UpdateFrequency == ENiagaraScalabilityUpdateFrequency::Continuous
 		|| ((TimeSinceUpdate >= UpdatePeriod) && !DefaultContext.ComponentRequiresUpdate.Contains(true));
-		
+
 	const int32 ComponentCount = ManagedComponents.Num();
 
 	if (bResetUpdate)
@@ -455,7 +519,7 @@ void FNiagaraScalabilityManager::Update(FNiagaraWorldManager* WorldMan, float De
 		DefaultContext.bRequiresGlobalSignificancePass = false;
 
 		DefaultContext.MaxUpdateCount = GetMaxUpdatesPerFrame(EffectType, ComponentCount, UpdatePeriod, DeltaSeconds);
-		DefaultContext.bProcessAllComponents = DefaultContext.MaxUpdateCount == ComponentCount;
+		DefaultContext.bProcessAllComponents = bRefreshOwnerAllowsScalability || DefaultContext.MaxUpdateCount == ComponentCount;
 
 		if (DefaultContext.bProcessAllComponents)
 		{
@@ -491,6 +555,47 @@ void FNiagaraScalabilityManager::Update(FNiagaraWorldManager* WorldMan, float De
 	DefaultContext.WorstGlobalBudgetUse = WorstGlobalBudgetUse;
 
 	UpdateInternal(WorldMan, DefaultContext);
+	
+	bRefreshOwnerAllowsScalability = false;
+}
+
+FNiagaraScalabilitySystemData& FNiagaraScalabilityManager::GetSystemData(int32 ComponentIndex, bool bForceRefresh)
+{
+	FNiagaraScalabilityState& CompState = State[ComponentIndex];
+
+	if (CompState.SystemDataIndex == INDEX_NONE || bForceRefresh)
+	{
+		UNiagaraComponent* Component = ManagedComponents[ComponentIndex];
+		UNiagaraSystem* System = Component->GetAsset();
+		int32* SysDataIndex = SystemDataIndexMap.Find(System);
+		if (SysDataIndex == nullptr)
+		{
+			CompState.SystemDataIndex = SystemData.Num();
+			SystemDataIndexMap.Add(System) = CompState.SystemDataIndex;			
+
+			FNiagaraScalabilitySystemData& NewSystemData = SystemData.AddDefaulted_GetRef();
+			NewSystemData.bNeedsSignificanceForActiveOrDirty = System->NeedsSortedSignificanceCull();
+			NewSystemData.bNeedsSignificanceForCulled = System->NeedsSortedSignificanceCull() && System->GetScalabilitySettings().CullProxyMode != ENiagaraCullProxyMode::None;
+		}
+		else
+		{
+			CompState.SystemDataIndex = *SysDataIndex;
+		}
+	}
+
+	return SystemData[CompState.SystemDataIndex];
+}
+
+#if WITH_EDITOR
+void FNiagaraScalabilityManager::OnSystemPostChange(UNiagaraSystem* System)
+{
+	InvalidateCachedSystemData();
+}
+#endif//WITH_EDITOR
+
+void FNiagaraScalabilityManager::InvalidateCachedSystemData()
+{
+	bRefreshCachedSystemData = true;
 }
 
 #if DEBUG_SCALABILITY_STATE
@@ -559,4 +664,53 @@ void FNiagaraScalabilityManager::Dump()
 	UE_LOG(LogNiagara, Display, TEXT("-------------------------------------------------------------------------------\n%s"), *DetailString);
 }
 
+#endif
+
+#if WITH_PARTICLE_PERF_CSV_STATS
+
+CSV_DECLARE_CATEGORY_MODULE_EXTERN(ENGINE_API, Particles);
+
+void FNiagaraScalabilityManager::CSVProfilerUpdate(FCsvProfiler* CSVProfiler)
+{
+	check(CSVProfiler && CSVProfiler->IsCapturing());
+	if (!FParticlePerfStats::GetCSVStatsEnabled())
+	{
+		return;
+	}
+
+	static const FName Total(TEXT("NiagaraCulled/Total"));
+	static const FName Distance(TEXT("NiagaraCulled/Distance"));
+	static const FName InstCounts(TEXT("NiagaraCulled/InstCounts"));
+	static const FName Visibility(TEXT("NiagaraCulled/Visibility"));
+	static const FName Budget(TEXT("NiagaraCulled/Budgets"));
+
+	int32 NumCulled = 0;
+	int32 NumByDistance = 0;
+	int32 NumByInstCounts = 0;
+	int32 NumByVisibility = 0;
+	int32 NumByBudget = 0;
+
+	for (int32 i = 0; i < ManagedComponents.Num(); ++i)
+	{
+		UNiagaraComponent* Comp = ManagedComponents[i];
+		FNiagaraScalabilityState& CompState = State[i];
+
+		NumCulled += CompState.bCulled ? 1 : 0;
+		NumByDistance += CompState.bCulledByDistance ? 1 : 0;
+		NumByInstCounts += CompState.bCulledByInstanceCount ? 1 : 0;
+		NumByVisibility += CompState.bCulledByVisibility ? 1 : 0;
+		NumByBudget += CompState.bCulledByGlobalBudget ? 1 : 0;
+
+		if(CompState.bCulled)
+		{
+			UNiagaraSystem* System = Comp->GetAsset();
+			CSVProfiler->RecordCustomStat(System->CSVStat_Culled, CSV_CATEGORY_INDEX(Particles), 1, ECsvCustomStatOp::Accumulate);
+		}
+	}
+	CSVProfiler->RecordCustomStat(Total, CSV_CATEGORY_INDEX(Particles), NumCulled, ECsvCustomStatOp::Accumulate);
+	CSVProfiler->RecordCustomStat(Distance, CSV_CATEGORY_INDEX(Particles), NumByDistance, ECsvCustomStatOp::Accumulate);
+	CSVProfiler->RecordCustomStat(InstCounts, CSV_CATEGORY_INDEX(Particles), NumByInstCounts, ECsvCustomStatOp::Accumulate);
+	CSVProfiler->RecordCustomStat(Visibility, CSV_CATEGORY_INDEX(Particles), NumByVisibility, ECsvCustomStatOp::Accumulate);
+	CSVProfiler->RecordCustomStat(Budget, CSV_CATEGORY_INDEX(Particles), NumByBudget, ECsvCustomStatOp::Accumulate);
+}
 #endif

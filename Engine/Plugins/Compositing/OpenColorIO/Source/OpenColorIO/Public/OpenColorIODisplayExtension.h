@@ -42,6 +42,10 @@ public:
 
 	//~Begin FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FOpenColorIODisplayExtension");
+	}
 	//~End FGCObject interface
 
 	void SetDisplayConfiguration(const FOpenColorIODisplayConfiguration& InDisplayConfiguration) { DisplayConfiguration = InDisplayConfiguration; };

@@ -27,7 +27,9 @@ public class UnrealPakTarget : TargetRules
 		bCompileICU = false;
 
 		// UnrealPak is a console application, not a Windows app (sets entry point to main(), instead of WinMain())
-		bCompileAgainstApplicationCore = false;
+		bCompileAgainstApplicationCore = true;
 		bIsBuildingConsoleApplication = true;
+
+		GlobalDefinitions.Add("UE_TRACE_ENABLED=1");
 	}
 }

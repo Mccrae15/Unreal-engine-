@@ -12,10 +12,8 @@ int8 FManagedArrayCollection::Invalid = INDEX_NONE;
 
 FManagedArrayCollection::FManagedArrayCollection()
 {
-	Version = 5;
+	Version = 9;
 }
-
-static const FName GuidName("GUID");
 
 void FManagedArrayCollection::AddGroup(FName Group)
 {
@@ -24,9 +22,6 @@ void FManagedArrayCollection::AddGroup(FName Group)
 		0
 	};
 	GroupInfo.Add(Group, info);
-
-	//Every group has to have a GUID attribute
-	AddAttribute<FGuid>(GuidName, Group);
 }
 
 void FManagedArrayCollection::RemoveElements(const FName& Group, const TArray<int32>& SortedDeletionList, FProcessingParameters Params)
@@ -77,16 +72,8 @@ TArray<FName> FManagedArrayCollection::GroupNames() const
 
 bool FManagedArrayCollection::HasAttribute(FName Name, FName Group) const
 {
-	bool bReturnValue = false;
-	for (const TTuple<FKeyType, FValueType>& Entry : Map)
-	{
-		if (Entry.Key.Get<0>() == Name && Entry.Key.Get<1>() == Group)
-		{
-			bReturnValue = true;
-			break;
-		}
-	}
-	return bReturnValue;
+	FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+	return Map.Contains(Key);
 }
 
 TArray<FName> FManagedArrayCollection::AttributeNames(FName Group) const
@@ -112,22 +99,6 @@ int32 FManagedArrayCollection::NumElements(FName Group) const
 	return Num;
 }
 
-/** Should be called whenever new elements are added. Generates guids for new entries */
-void FManagedArrayCollection::GenerateGuids(FName Group, int32 StartIdx)
-{
-	TManagedArray<FGuid>& Guids = GetAttribute<FGuid>(GuidName, Group);
-
-	// we don't actually rely on this at the moment and generating the guids is very expensive.
-	// we don't need these at runtime in any case, so if we need in the editor later, make sure this is in-editor only
-	if (GIsEditor)
-	{
-		for (int32 Idx = StartIdx; Idx < Guids.Num(); ++Idx)
-		{
-			Guids[Idx] = FGuid::NewGuid();
-		}
-	}
-}
-
 int32 FManagedArrayCollection::AddElements(int32 NumberElements, FName Group)
 {
 	int32 StartSize = 0;
@@ -144,7 +115,6 @@ int32 FManagedArrayCollection::AddElements(int32 NumberElements, FName Group)
 			Entry.Value.Value->Resize(StartSize + NumberElements);
 		}
 	}
-	GenerateGuids(Group, StartSize);
 	GroupInfo[Group].Size += NumberElements;
 
 	SetDefaults(Group, StartSize, NumberElements);
@@ -154,14 +124,8 @@ int32 FManagedArrayCollection::AddElements(int32 NumberElements, FName Group)
 
 void FManagedArrayCollection::RemoveAttribute(FName Name, FName Group)
 {
-	for (const TTuple<FKeyType, FValueType>& Entry : Map)
-	{
-		if (Entry.Key.Get<0>() == Name && Entry.Key.Get<1>() == Group)
-		{
-			Map.Remove(Entry.Key);
-			return;
-		}
-	}
+	FKeyType Key = FManagedArrayCollection::MakeMapKey(Name, Group);
+	Map.Remove(Key);
 }
 
 void FManagedArrayCollection::RemoveGroup(FName Group)
@@ -204,7 +168,6 @@ void FManagedArrayCollection::Resize(int32 Size, FName Group)
 			Entry.Value.Value->Resize(Size);
 		}
 	}
-	GenerateGuids(Group, StartSize);
 	GroupInfo[Group].Size = Size;
 }
 
@@ -407,10 +370,11 @@ FString FManagedArrayCollection::ToString() const
 	return Buffer;
 }
 
+static const FName GuidName("GUID");
 
 void FManagedArrayCollection::Serialize(Chaos::FChaosArchive& Ar)
 {
-	if (Ar.IsSaving()) Version = 5;
+	if (Ar.IsSaving()) Version = 9;
 	Ar << Version;
 
 	if (Ar.IsLoading())
@@ -457,15 +421,18 @@ void FManagedArrayCollection::Serialize(Chaos::FChaosArchive& Ar)
 				Pair.Value.Value->Resize(GroupSize);
 			}
 		}
-		if (Version < 4)
+
+#endif
+
+		// strip out GUID Attributes
+		for (auto& GroupName : GroupNames())
 		{
-			//old content has no guids
-			for (TTuple<FName, FGroupInfo>& Pair : GroupInfo)
+			if (HasAttribute(GuidName, GroupName))
 			{
-				GenerateGuids(Pair.Key, 0);
+				RemoveAttribute(GuidName, GroupName);
 			}
 		}
-#endif
+
 	}
 	else
 	{

@@ -34,36 +34,28 @@ struct FAttenuationListenerData;
 struct FAttenuationFocusData
 {
 	/** Azimuth of the active sound relative to the listener. Used by sound focus. */
-	float Azimuth;
+	float Azimuth = 0.0f;
 
 	/** Absolute azimuth of the active sound relative to the listener. Used for 3d audio calculations. */
-	float AbsoluteAzimuth;
+	float AbsoluteAzimuth = 0.0f;
 
 	/** Value used to allow smooth interpolation in/out of focus */
-	float FocusFactor;
+	float FocusFactor = 1.0f;
 
 	/** Cached calculation of the amount distance is scaled due to focus */
-	float DistanceScale;
+	float DistanceScale = 1.0f;
 
 	/** The amount priority is scaled due to focus */
-	float PriorityScale;
+	float PriorityScale = 1.0f;
 
 	/** Cached highest priority of the parent active sound's wave instances. */
-	float PriorityHighest;
+	float PriorityHighest = 1.0f;
 
 	/** The amount volume is scaled due to focus */
-	float VolumeScale;
+	float VolumeScale = 1.0f;
 
-	FAttenuationFocusData()
-		: Azimuth(0.0f)
-		, AbsoluteAzimuth(0.0f)
-		, FocusFactor(1.0f)
-		, DistanceScale(1.0f)
-		, PriorityScale(1.0f)
-		, PriorityHighest(1.0f)
-		, VolumeScale(1.0f)
-	{
-	}
+	/** If this is the first update for focus. Handles edge case of starting a sound in-focus or out-of-focus. */
+	bool bFirstFocusUpdate = true;
 };
 
 /**
@@ -89,9 +81,11 @@ struct FSoundParseParameters
 	// The attenuation of the sound due to distance attenuation
 	float DistanceAttenuation;
 
+	// The attenuation of the sound due to occlusion attenuation
+	float OcclusionAttenuation;
+
 	// A volume scale on the sound specified by user
 	float VolumeMultiplier;
-
 
 	// Attack time of the source envelope follower
 	int32 EnvelopeFollowerAttackTime;
@@ -163,6 +157,9 @@ struct FSoundParseParameters
 	// What reverb plugin source settings to use
 	UReverbPluginSourceSettingsBase* ReverbPluginSettings;
 
+	// What source data override plugin source settings to use
+	USourceDataOverridePluginSourceSettingsBase* SourceDataOverridePluginSettings;
+
 	// What source effect chain to use
 	USoundEffectSourcePresetChain* SourceEffectChain;
 
@@ -190,6 +187,8 @@ struct FSoundParseParameters
 	/** Whether or not to enable Submix Sends in addition to the Main Submix*/
 	uint32 bEnableSubmixSends : 1;
 
+	uint32 bEnableSourceDataOverride : 1;
+
 	// Whether the sound should be spatialized
 	uint8 bUseSpatialization:1;
 
@@ -216,6 +215,7 @@ struct FSoundParseParameters
 		, Velocity(ForceInit)
 		, Volume(1.f)
 		, DistanceAttenuation(1.f)
+		, OcclusionAttenuation(1.f)
 		, VolumeMultiplier(1.f)
 		, EnvelopeFollowerAttackTime(10)
 		, EnvelopeFollowerReleaseTime(100)
@@ -238,6 +238,7 @@ struct FSoundParseParameters
 		, SpatializationPluginSettings(nullptr)
 		, OcclusionPluginSettings(nullptr)
 		, ReverbPluginSettings(nullptr)
+		, SourceDataOverridePluginSettings(nullptr)
 		, SourceEffectChain(nullptr)
 		, LowPassFilterFrequency(MAX_FILTER_FREQUENCY)
 		, AttenuationLowpassFilterFrequency(MAX_FILTER_FREQUENCY)
@@ -247,6 +248,7 @@ struct FSoundParseParameters
 		, bEnableBusSends(false)
 		, bEnableBaseSubmix(false)
 		, bEnableSubmixSends(false)
+		, bEnableSourceDataOverride(false)
 		, bUseSpatialization(false)
 		, bLooping(false)
 		, bEnableLowPassFilter(false)
@@ -290,13 +292,15 @@ public:
 	bool IsPreviewSound() const override { return bIsPreviewSound; }
 	void Stop() override;
 
+	/** Returns a unique identifier for this active sound object */
+	uint32 GetInstanceID() const { return PlayOrder; }
 
 	uint64 GetAudioComponentID() const { return AudioComponentID; }
 	FName GetAudioComponentUserID() const { return AudioComponentUserID; }
 	void ClearAudioComponent();
 	void SetAudioComponent(const FActiveSound& ActiveSound);
 	void SetAudioComponent(const UAudioComponent& Component);
-	void SetOwner(AActor* Owner);
+	void SetOwner(const AActor* Owner);
 	FString GetAudioComponentName() const;
 	FString GetOwnerName() const;
 
@@ -319,7 +323,7 @@ public:
 	USoundBase* GetSound() const { return Sound; }
 	void SetSound(USoundBase* InSound);
 
-	USoundEffectSourcePresetChain* GetSourceEffectChain() const { return SourceEffectChain ? SourceEffectChain : Sound->SourceEffectChain; }
+	USoundEffectSourcePresetChain* GetSourceEffectChain() const { return SourceEffectChain ? SourceEffectChain : ToRawPtr(Sound->SourceEffectChain); }
 	void SetSourceEffectChain(USoundEffectSourcePresetChain* InSourceEffectChain);
 
 	void SetSoundClass(USoundClass* SoundClass);
@@ -327,6 +331,12 @@ public:
 	void SetAudioDevice(FAudioDevice* InAudioDevice)
 	{
 		AudioDevice = InAudioDevice;
+	}
+
+	void SetSourceListener(FSharedISourceBufferListenerPtr InListener, bool bShouldZeroBuffer)
+	{
+		SourceBufferListener = InListener;
+		bShouldSourceBufferListenerZeroBuffer = bShouldZeroBuffer;
 	}
 
 	int32 GetClosestListenerIndex() const { return ClosestListenerIndex; }
@@ -352,7 +362,7 @@ public:
 	TMap<FConcurrencyGroupID, FConcurrencySoundData> ConcurrencyGroupData;
 
 	/** Optional USoundConcurrency to override for the sound. */
-	TSet<USoundConcurrency*> ConcurrencySet;
+	TSet<TObjectPtr<USoundConcurrency>> ConcurrencySet;
 
 private:
 	/** Optional SoundClass to override for the sound. */
@@ -366,7 +376,83 @@ private:
 
 	TMap<UPTRINT, FWaveInstance*> WaveInstances;
 
+	class FParameterTransmitter
+	{
+	public:
+		FParameterTransmitter() = default;
+		FParameterTransmitter(FParameterTransmitter&&) = default;
+		FParameterTransmitter& operator=(FParameterTransmitter&&) = default;
+
+		FParameterTransmitter(TUniquePtr<Audio::IParameterTransmitter>&& InTransmitterImpl)
+		:	TransmitterImpl(MoveTemp(InTransmitterImpl))
+		{
+		}
+
+		FParameterTransmitter(const FParameterTransmitter& InOther)
+		{
+			if (InOther.IsValid())
+			{
+				TransmitterImpl = InOther->Clone();
+			}
+		}
+
+		FParameterTransmitter& operator=(const FParameterTransmitter& InOther)
+		{
+			TransmitterImpl.Reset();
+			if (InOther.IsValid())
+			{
+				TransmitterImpl = InOther->Clone();
+			}
+			return *this;
+		}
+
+		FParameterTransmitter& operator=(TUniquePtr<Audio::IParameterTransmitter>&& InTransmitterImpl)
+		{
+			TransmitterImpl = MoveTemp(InTransmitterImpl);
+			return *this;
+		}
+
+		bool IsValid() const
+		{
+			return TransmitterImpl.IsValid();
+		}
+
+		Audio::IParameterTransmitter* Get()
+		{
+			return TransmitterImpl.Get();
+		}
+		const Audio::IParameterTransmitter* Get() const
+		{
+			return TransmitterImpl.Get();
+		}
+
+		Audio::IParameterTransmitter* operator->()
+		{
+			return TransmitterImpl.Get();
+		}
+
+		const Audio::IParameterTransmitter* operator->() const
+		{
+			return TransmitterImpl.Get();
+		}
+
+	private:
+		TUniquePtr<Audio::IParameterTransmitter> TransmitterImpl;
+	};
+
+	FParameterTransmitter InstanceTransmitter;
+
 public:
+	Audio::IParameterTransmitter* GetTransmitter()
+	{
+		return InstanceTransmitter.Get();
+	}
+
+	const Audio::IParameterTransmitter* GetTransmitter() const
+	{
+		return InstanceTransmitter.Get();
+	}
+
 	enum class EFadeOut : uint8
 	{
 		// Sound is not currently fading out
@@ -481,6 +567,9 @@ public:
 	uint8 bEnableMainSubmixOutputOverride : 1;
 	uint8 bEnableSubmixSendRoutingOverride : 1;
 
+	uint8 bIsFirstAttenuationUpdate : 1;
+	uint8 bStartedWithinNonBinauralRadius : 1;
+
 	uint8 UserIndex;
 
 	/** Type of fade out currently being applied */
@@ -549,6 +638,10 @@ public:
 	/** Quantization information */
 	Audio::FQuartzQuantizedRequestData QuantizedRequestData;
 
+	/** Source buffer listener */
+	FSharedISourceBufferListenerPtr SourceBufferListener;
+	bool bShouldSourceBufferListenerZeroBuffer = false;
+
 	/** Cache what volume settings we had last time so we don't have to search again if we didn't move */
 	FInteriorSettings InteriorSettings;
 	TArray<FAudioVolumeSubmixSendSettings> AudioVolumeSubmixSendSettings;
@@ -570,19 +663,19 @@ public:
 	TMap<UPTRINT,uint32> SoundNodeOffsetMap;
 	TArray<uint8> SoundNodeData;
 
-	TArray<FAudioComponentParam> InstanceParameters;
-
 	// Whether or not there are Source Bus Sends that have not been sent to the render thread
 	bool bHasNewBusSends;
 
 	// Bus send(s) that have not yet been sent to the render thread
-	TArray<TTuple<EBusSendType, FSoundSourceBusSendInfo>> newBusSends;
+	TArray<TTuple<EBusSendType, FSoundSourceBusSendInfo>> NewBusSends;
 
 	FSoundModulationDefaultRoutingSettings ModulationRouting;
 
 #if ENABLE_AUDIO_DEBUG
 	FColor DebugColor;
 #endif // ENABLE_AUDIO_DEBUG
+
+	void UpdateInterfaceParameters(const TArray<FListener>& InListeners);
 
 	// Updates the wave instances to be played.
 	void UpdateWaveInstances(TArray<FWaveInstance*> &OutWaveInstances, const float DeltaTime);
@@ -611,45 +704,6 @@ public:
 
 	/** Gets total concurrency gain stage based on all concurrency memberships of sound */
 	float GetTotalConcurrencyVolumeScale() const;
-
-	/** Sets a float instance parameter for the ActiveSound */
-	void SetFloatParameter(const FName InName, const float InFloat);
-
-	/** Sets a wave instance parameter for the ActiveSound */
-	void SetWaveParameter(const FName InName, class USoundWave* InWave);
-
-	/** Sets a boolean instance parameter for the ActiveSound */
-	void SetBoolParameter(const FName InName, const bool InBool);
-
-	/** Sets an integer instance parameter for the ActiveSound */
-	void SetIntParameter(const FName InName, const int32 InInt);
-
-	/** Sets the audio component parameter on the active sound. Note: this can be set without audio components if they are set when active sound is created. */
-	void SetSoundParameter(const FAudioComponentParam& Param);
-
-	/**
-	 * Try and find an Instance Parameter with the given name and if we find it return the float value.
-	 * @return true if float for parameter was found, otherwise false
-	 */
-	bool GetFloatParameter(const FName InName, float& OutFloat) const;
-
-	/**
-	 *Try and find an Instance Parameter with the given name and if we find it return the USoundWave value.
-	 * @return true if USoundWave for parameter was found, otherwise false
-	 */
-	bool GetWaveParameter(const FName InName, USoundWave*& OutWave) const;
-
-	/**
-	 *Try and find an Instance Parameter with the given name and if we find it return the boolean value.
-	 * @return true if boolean for parameter was found, otherwise false
-	 */
-	bool GetBoolParameter(const FName InName, bool& OutBool) const;
-
-	/**
-	 *Try and find an Instance Parameter with the given name and if we find it return the integer value.
-	 * @return true if boolean for parameter was found, otherwise false
-	 */
-	bool GetIntParameter(const FName InName, int32& OutInt) const;
 
 	void CollectAttenuationShapesForVisualization(TMultiMap<EAttenuationShape::Type, FBaseAttenuationSettings::AttenuationShapeDetails>& ShapeDetailsMap) const;
 
@@ -739,6 +793,9 @@ public:
 	/** Updates the provided focus data using the local */
 	void UpdateFocusData(float DeltaTime, const FAttenuationListenerData& ListenerData, FAttenuationFocusData* OutFocusData = nullptr);
 
+	/** Apply the submix sends to our parse params as appropriate */
+	void AddVolumeSubmixSends(FSoundParseParameters& ParseParams, EAudioVolumeLocationState LocationState);
+
 private:
 
 	struct FAsyncTraceDetails
@@ -780,8 +837,11 @@ private:
 	 */
 	void CheckOcclusion(const FVector ListenerLocation, const FVector SoundLocation, const FSoundAttenuationSettings* AttenuationSettingsPtr);
 
+	/** Gather the interior settings needed for the sound */
+	void GatherInteriorData(FSoundParseParameters& ParseParams);
+
 	/** Apply the interior settings to the ambient sound as appropriate */
-	void HandleInteriorVolumes(struct FSoundParseParameters& ParseParams);
+	void HandleInteriorVolumes(FSoundParseParameters& ParseParams);
 
 	/** Helper function which retrieves attenuation frequency value for HPF and LPF distance-based filtering. */
 	float GetAttenuationFrequency(const FSoundAttenuationSettings* InSettings, const FAttenuationListenerData& ListenerData, const FVector2D& FrequencyRange, const FRuntimeFloatCurve& CustomCurve);

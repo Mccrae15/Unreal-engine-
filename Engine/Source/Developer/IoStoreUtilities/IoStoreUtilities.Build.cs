@@ -13,10 +13,18 @@ public class IoStoreUtilities : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] {
             "Core",
             "CoreUObject",
-            "Projects",
             "AssetRegistry",
+			"Zen",
+			"DerivedDataCache",
+			"RenderCore",
+			"libcurl",
         });
-        PrivateDependencyModuleNames.Add("PakFile");
+
+		PublicIncludePathModuleNames.AddRange(new string[] {
+			"Zen",
+		});
+
+		PrivateDependencyModuleNames.Add("PakFile");
         PrivateDependencyModuleNames.Add("Json");
         PrivateDependencyModuleNames.Add("RSA");
 	}

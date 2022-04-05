@@ -48,12 +48,11 @@ FAnimationEditorPreviewScene::FAnimationEditorPreviewScene(const ConstructionVal
 	, PrevWindStrength(0.2f)
 	, GravityScale(0.25f)
 	, SelectedBoneIndex(INDEX_NONE)
-	, bEnableMeshHitProxies(false)
+	, bEnableMeshHitProxies(true)
 	, LastTickTime(0.0)
 	, bSelecting(false)
 	, bAllowAdditionalMeshes(true)
 	, bAdditionalMeshesSelectable(true)
-	, bUsePhysicsBodiesForBoneSelection(true)
 {
 	if (GEditor)
 	{
@@ -92,7 +91,7 @@ FAnimationEditorPreviewScene::FAnimationEditorPreviewScene(const ConstructionVal
 	{
 		FactoryToUse->CurrentSkeleton = MakeWeakObjectPtr(const_cast<USkeleton*>(&InEditableSkeleton->GetSkeleton()));
 	}
-	PreviewSceneDescription->DefaultAdditionalMeshes = CastChecked<UPreviewMeshCollection>(FactoryToUse->FactoryCreateNew(UPreviewMeshCollection::StaticClass(), PreviewSceneDescription, "UnsavedCollection", RF_Transient, nullptr, nullptr));
+	PreviewSceneDescription->DefaultAdditionalMeshes = CastChecked<UPreviewMeshCollection>(FactoryToUse->FactoryCreateNew(UPreviewMeshCollection::StaticClass(), PreviewSceneDescription, "UnsavedCollection", RF_Transient | RF_Transactional, nullptr, nullptr));
 
 	if (!PreviewSceneDescription->AdditionalMeshes.IsValid())
 	{
@@ -211,13 +210,16 @@ void FAnimationEditorPreviewScene::SetPreviewMeshInternal(USkeletalMesh* NewPrev
 	USkeletalMeshComponent* DebuggedSkeletalMeshComponent = nullptr;
 	if(SkeletalMeshComponent->GetAnimInstance())
 	{
-		UAnimBlueprint* SourceBlueprint = PersonaToolkit.Pin()->GetAnimBlueprint();
-		if(SourceBlueprint)
+		if(PersonaToolkit.IsValid())
 		{
-			UAnimInstance* DebuggedAnimInstance = Cast<UAnimInstance>(SourceBlueprint->GetObjectBeingDebugged());
-			if(DebuggedAnimInstance)
+			UAnimBlueprint* SourceBlueprint = PersonaToolkit.Pin()->GetAnimBlueprint();
+			if(SourceBlueprint)
 			{
-				DebuggedSkeletalMeshComponent = DebuggedAnimInstance->GetSkelMeshComponent();
+				UAnimInstance* DebuggedAnimInstance = Cast<UAnimInstance>(SourceBlueprint->GetObjectBeingDebugged());
+				if(DebuggedAnimInstance)
+				{
+					DebuggedSkeletalMeshComponent = DebuggedAnimInstance->GetSkelMeshComponent();
+				}
 			}
 		}
 	}
@@ -274,9 +276,9 @@ void FAnimationEditorPreviewScene::SetPreviewMeshInternal(USkeletalMesh* NewPrev
 
 	// Setting the skeletal mesh to in the PreviewScene can change AnimScriptInstance so we must re register it
 	// with the AnimBlueprint
-	if (DebuggedSkeletalMeshComponent && DebuggedSkeletalMeshComponent->GetAnimInstance() && !DebuggedSkeletalMeshComponent->GetAnimInstance()->IsA<UAnimPreviewInstance>())
+	UAnimBlueprint* SourceBlueprint = PersonaToolkit.Pin()->GetAnimBlueprint();
+	if (DebuggedSkeletalMeshComponent && DebuggedSkeletalMeshComponent->GetAnimInstance() && DebuggedSkeletalMeshComponent->GetAnimInstance()->IsA(SourceBlueprint->GeneratedClass))
 	{
-		UAnimBlueprint* SourceBlueprint = PersonaToolkit.Pin()->GetAnimBlueprint();
 		PersonaUtils::SetObjectBeingDebugged(SourceBlueprint, DebuggedSkeletalMeshComponent->GetAnimInstance());
 	}
 
@@ -330,9 +332,11 @@ void FAnimationEditorPreviewScene::RefreshAdditionalMeshes(bool bAllowOverrideBa
 	// remove all components
 	for (USkeletalMeshComponent* Component : AdditionalMeshes)
 	{
-		const UAnimInstance* AnimInst = Component->GetAnimInstance();
+		UAnimInstance* AnimInst = Component->GetAnimInstance();
 		if (AnimInst && AnimInst->IsA(UAnimPreviewAttacheInstance::StaticClass()))
 		{
+			AnimInst->Montage_Stop(0.0f);
+
 			FAnimCustomInstanceHelper::UnbindFromSkeletalMeshComponent<UAnimPreviewAttacheInstance>(Component);
 		}
 		
@@ -380,8 +384,12 @@ void FAnimationEditorPreviewScene::RefreshAdditionalMeshes(bool bAllowOverrideBa
 						NewComp->bSelectable = bAdditionalMeshesSelectable;
 						NewComp->RegisterComponent();
 						NewComp->SetSkeletalMesh(SkeletalMesh);
-						NewComp->bUseAttachParentBound = true;
 						AddComponent(NewComp, FTransform::Identity, true);
+						// Use the attach parent bounds if it is valid, as empty bounds would cause mesh to flicker from frustum culling.
+						if (NewComp->GetAttachParent() && NewComp->GetAttachParent()->Bounds.SphereRadius > 0)
+						{
+							NewComp->bUseAttachParentBound = true;
+						}
 						if (bUseCustomAnimBP && AnimInstances.IsValidIndex(MeshIndex) && AnimInstances[MeshIndex] != nullptr)
 						{
 							NewComp->SetAnimInstanceClass(AnimInstances[MeshIndex]);
@@ -401,17 +409,20 @@ void FAnimationEditorPreviewScene::RefreshAdditionalMeshes(bool bAllowOverrideBa
 
 void FAnimationEditorPreviewScene::AddPreviewAttachedObjects()
 {
-	// Load up mesh attachments...
-	USkeletalMesh* Mesh = PersonaToolkit.Pin()->GetMesh();
-
-	if ( Mesh )
+	if(PersonaToolkit.IsValid())
 	{
-		FPreviewAssetAttachContainer& PreviewAssetAttachContainer = Mesh->GetPreviewAttachedAssetContainer();
-		for(int32 Index = 0; Index < PreviewAssetAttachContainer.Num(); Index++)
-		{
-			FPreviewAttachedObjectPair& PreviewAttachedObject = PreviewAssetAttachContainer[Index];
+		// Load up mesh attachments...
+		USkeletalMesh* Mesh = PersonaToolkit.Pin()->GetMesh();
 
-			AttachObjectToPreviewComponent(PreviewAttachedObject.GetAttachedObject(), PreviewAttachedObject.AttachedTo);
+		if ( Mesh )
+		{
+			FPreviewAssetAttachContainer& PreviewAssetAttachContainer = Mesh->GetPreviewAttachedAssetContainer();
+			for(int32 Index = 0; Index < PreviewAssetAttachContainer.Num(); Index++)
+			{
+				FPreviewAttachedObjectPair& PreviewAttachedObject = PreviewAssetAttachContainer[Index];
+
+				AttachObjectToPreviewComponent(PreviewAttachedObject.GetAttachedObject(), PreviewAttachedObject.AttachedTo);
+			}
 		}
 	}
 
@@ -614,7 +625,7 @@ void FAnimationEditorPreviewScene::SetPreviewAnimationAsset(UAnimationAsset* Ani
 			}
 
 			// Treat it as invalid if it's got a bogus skeleton pointer
-			if (AnimAsset->GetSkeleton() != Skeleton && Skeleton != nullptr)
+			if (Skeleton != nullptr && !Skeleton->IsCompatible(AnimAsset->GetSkeleton()))
 			{
 				return;
 			}
@@ -1100,16 +1111,6 @@ AActor* FAnimationEditorPreviewScene::GetActor() const
 bool FAnimationEditorPreviewScene::AllowMeshHitProxies() const
 {
 	return bEnableMeshHitProxies;
-}
-
-bool FAnimationEditorPreviewScene::UsePhysicsBodiesForBoneSelection() const
-{
-	return bUsePhysicsBodiesForBoneSelection;
-}
-
-void FAnimationEditorPreviewScene::SetUsePhysicsBodiesForBoneSelection(bool bUsePhysicsBodies)
-{
-	bUsePhysicsBodiesForBoneSelection = bUsePhysicsBodies;
 }
 
 void FAnimationEditorPreviewScene::SetAllowMeshHitProxies(bool bState)

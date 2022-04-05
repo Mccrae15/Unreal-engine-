@@ -305,7 +305,7 @@ public:
 };
 
 USTRUCT()
-struct FDisplayClusterConfigurationJsonMasterNode_426
+struct FDisplayClusterConfigurationJsonPrimaryNode_426
 {
 	GENERATED_BODY()
 
@@ -352,25 +352,6 @@ struct FDisplayClusterConfigurationJsonProjectionPolicy_426
 };
 
 USTRUCT()
-struct FDisplayClusterConfigurationJsonTextureShare_426
-{
-	GENERATED_BODY()
-
-public:
-	UPROPERTY()
-	bool bIsEnabled = false;
-
-	UPROPERTY()
-	int SyncPolicy_Connection;
-
-	UPROPERTY()
-	int SyncPolicy_Frame;
-
-	UPROPERTY()
-	int SyncPolicy_Texture;
-};
-
-USTRUCT()
 struct FDisplayClusterConfigurationJsonViewport_426
 {
 	GENERATED_BODY()
@@ -380,13 +361,16 @@ public:
 	FString Camera;
 
 	UPROPERTY()
-	float BufferRatio;
+	float BufferRatio = 1.0f;
 
 	UPROPERTY()
-	int GPUIndex;
+	int32 GPUIndex = 0;
 
 	UPROPERTY()
-	FDisplayClusterConfigurationJsonTextureShare_426 TextureShare;
+	bool AllowCrossGPUTransfer = false;
+
+	UPROPERTY()
+	bool IsShared = false;
 
 	UPROPERTY()
 	FDisplayClusterConfigurationJsonRectangle_426 Region;
@@ -405,10 +389,10 @@ public:
 	FString Host;
 
 	UPROPERTY()
-	bool Sound;
+	bool Sound = true;
 
 	UPROPERTY()
-	bool FullScreen;
+	bool FullScreen = false;
 
 	UPROPERTY()
 	FDisplayClusterConfigurationJsonRectangle_426 Window;
@@ -427,7 +411,7 @@ struct FDisplayClusterConfigurationJsonCluster_426
 
 public:
 	UPROPERTY()
-	FDisplayClusterConfigurationJsonMasterNode_426 MasterNode;
+	FDisplayClusterConfigurationJsonPrimaryNode_426 MasterNode;
 
 	UPROPERTY()
 	FDisplayClusterConfigurationJsonClusterSync_426 Sync;
@@ -446,13 +430,13 @@ struct FDisplayClusterConfigurationJsonDiagnostics_426
 
 public:
 	UPROPERTY()
-	bool SimulateLag;
+	bool SimulateLag = false;
 
 	UPROPERTY()
-	float MinLagTime;
+	float MinLagTime = 0.01f;
 
 	UPROPERTY()
-	float MaxLagTime;
+	float MaxLagTime = 0.3f;
 };
 
 

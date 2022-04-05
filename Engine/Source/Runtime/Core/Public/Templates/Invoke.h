@@ -3,31 +3,27 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "Templates/PointerIsConvertibleFromTo.h"
-#include "Templates/UnrealTemplate.h"
-#include "Templates/Decay.h"
+#include "Traits/MemberFunctionPtrOuter.h"
+#include "Templates/UnrealTemplate.h" // For Forward<>()
+#include <type_traits>
 
 
-namespace UE4Invoke_Private
+namespace UE::Core::Private
 {
-	template <
-		typename BaseType,
-		typename CallableType,
-		typename TEnableIf<TPointerIsConvertibleFromTo<typename TDecay<CallableType>::Type, typename TDecay<BaseType>::Type>::Value>::Type* = nullptr
-	>
-	FORCEINLINE auto DereferenceIfNecessary(CallableType&& Callable) -> decltype((CallableType&&)Callable)
+	template <typename OuterType, typename TargetType>
+	FORCEINLINE auto DereferenceIfNecessary(TargetType&& Target, const volatile OuterType* TargetPtr)
+		-> decltype((TargetType&&)Target)
 	{
-		return (CallableType&&)Callable;
+		// If the target is the same as or is derived from the outer type, just return it unchanged.
+		return (TargetType&&)Target;
 	}
 
-	template <
-		typename BaseType,
-		typename CallableType,
-		typename TEnableIf<!TPointerIsConvertibleFromTo<typename TDecay<CallableType>::Type, typename TDecay<BaseType>::Type>::Value>::Type* = nullptr
-	>
-	FORCEINLINE auto DereferenceIfNecessary(CallableType&& Callable) -> decltype(*(CallableType&&)Callable)
+	template <typename OuterType, typename TargetType>
+	FORCEINLINE auto DereferenceIfNecessary(TargetType&& Target, ...)
+		-> decltype(*(TargetType&&)Target)
 	{
-		return *(CallableType&&)Callable;
+		// If the target is not related to the outer type, assume it's a (possibly smart) pointer and dereference it.
+		return *(TargetType&&)Target;
 	}
 }
 
@@ -51,25 +47,23 @@ FORCEINLINE auto Invoke(FuncType&& Func, ArgTypes&&... Args)
 	return Forward<FuncType>(Func)(Forward<ArgTypes>(Args)...);
 }
 
-template <typename ReturnType, typename ObjType, typename CallableType>
-FORCEINLINE auto Invoke(ReturnType ObjType::*pdm, CallableType&& Callable)
-	-> decltype(UE4Invoke_Private::DereferenceIfNecessary<ObjType>(Forward<CallableType>(Callable)).*pdm)
+template <typename ReturnType, typename ObjType, typename TargetType>
+FORCEINLINE auto Invoke(ReturnType ObjType::*pdm, TargetType&& Target)
+	-> decltype(UE::Core::Private::DereferenceIfNecessary<ObjType>(Forward<TargetType>(Target), &Target).*pdm)
 {
-	return UE4Invoke_Private::DereferenceIfNecessary<ObjType>(Forward<CallableType>(Callable)).*pdm;
+	return UE::Core::Private::DereferenceIfNecessary<ObjType>(Forward<TargetType>(Target), &Target).*pdm;
 }
 
-template <typename ReturnType, typename ObjType, typename... PMFArgTypes, typename CallableType, typename... ArgTypes>
-FORCEINLINE auto Invoke(ReturnType (ObjType::*PtrMemFun)(PMFArgTypes...), CallableType&& Callable, ArgTypes&&... Args)
-	-> decltype((UE4Invoke_Private::DereferenceIfNecessary<ObjType>(Forward<CallableType>(Callable)).*PtrMemFun)(Forward<ArgTypes>(Args)...))
+template <
+	typename    PtrMemFunType,
+	typename    TargetType,
+	typename... ArgTypes,
+	typename    ObjType = TMemberFunctionPtrOuter_T<PtrMemFunType>
+>
+FORCEINLINE auto Invoke(PtrMemFunType PtrMemFun, TargetType&& Target, ArgTypes&&... Args)
+	-> decltype((UE::Core::Private::DereferenceIfNecessary<ObjType>(Forward<TargetType>(Target), &Target).*PtrMemFun)(Forward<ArgTypes>(Args)...))
 {
-	return (UE4Invoke_Private::DereferenceIfNecessary<ObjType>(Forward<CallableType>(Callable)).*PtrMemFun)(Forward<ArgTypes>(Args)...);
-}
-
-template <typename ReturnType, typename ObjType, typename... PMFArgTypes, typename CallableType, typename... ArgTypes>
-FORCEINLINE auto Invoke(ReturnType (ObjType::*PtrMemFun)(PMFArgTypes...) const, CallableType&& Callable, ArgTypes&&... Args)
-	-> decltype((UE4Invoke_Private::DereferenceIfNecessary<ObjType>(Forward<CallableType>(Callable)).*PtrMemFun)(Forward<ArgTypes>(Args)...))
-{
-	return (UE4Invoke_Private::DereferenceIfNecessary<ObjType>(Forward<CallableType>(Callable)).*PtrMemFun)(Forward<ArgTypes>(Args)...);
+	return (UE::Core::Private::DereferenceIfNecessary<ObjType>(Forward<TargetType>(Target), &Target).*PtrMemFun)(Forward<ArgTypes>(Args)...);
 }
 
 
@@ -111,13 +105,10 @@ FORCEINLINE auto Invoke(ReturnType (ObjType::*PtrMemFun)(PMFArgTypes...) const, 
 #define UE_PROJECTION_MEMBER(Type, FuncName) \
 	[](auto&& Obj, auto&&... Args) -> decltype(auto) \
 	{ \
-		return UE4Invoke_Private::DereferenceIfNecessary<Type>(Forward<decltype(Obj)>(Obj)).FuncName(Forward<decltype(Args)>(Args)...); \
+		return UE::Core::Private::DereferenceIfNecessary<Type>(Forward<decltype(Obj)>(Obj), &Obj).FuncName(Forward<decltype(Args)>(Args)...); \
 	}
 
-#define PROJECTION(FuncName)              DEPRECATED_MACRO(4.26, "The PROJECTION macro is deprecated, please use UE_PROJECTION instead.") UE_PROJECTION(FuncName)
-#define PROJECTION_MEMBER(Type, FuncName) DEPRECATED_MACRO(4.26, "The PROJECTION_MEMBER macro is deprecated, please use UE_PROJECTION_MEMBER instead.") UE_PROJECTION_MEMBER(Type, FuncName)
-
-namespace UE4Invoke_Private
+namespace UE::Core::Private
 {
 	template <typename, typename FuncType, typename... ArgTypes>
 	struct TInvokeResult_Impl
@@ -133,10 +124,10 @@ namespace UE4Invoke_Private
 
 /**
  * Trait for the type of the result when invoking a callable with the given argument types.
- * Not defined (as thus usable in SFINAE contexts) when the callable cannot be invoked with the given argument types.
+ * Not defined (and thus usable in SFINAE contexts) when the callable cannot be invoked with the given argument types.
  */
 template <typename FuncType, typename... ArgTypes>
-struct TInvokeResult : UE4Invoke_Private::TInvokeResult_Impl<void, FuncType, ArgTypes...>
+struct TInvokeResult : UE::Core::Private::TInvokeResult_Impl<void, FuncType, ArgTypes...>
 {
 };
 

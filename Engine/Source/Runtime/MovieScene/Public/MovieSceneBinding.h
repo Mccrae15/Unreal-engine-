@@ -116,7 +116,7 @@ struct FMovieSceneBinding
 	 */
 	TArray<UMovieSceneTrack*> StealTracks()
 	{
-		TArray<UMovieSceneTrack*> Empty;
+		decltype(Tracks) Empty;
 		Swap(Empty, Tracks);
 		return Empty;
 	}
@@ -169,7 +169,7 @@ private:
 
 	/** All tracks in this binding */
 	UPROPERTY(Instanced)
-	TArray<UMovieSceneTrack*> Tracks;
+	TArray<TObjectPtr<UMovieSceneTrack>> Tracks;
 
 #if WITH_EDITORONLY_DATA
 	/** The desired sorting order for this binding in Sequencer */

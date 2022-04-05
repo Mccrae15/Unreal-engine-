@@ -41,6 +41,14 @@ static FAutoConsoleVariableRef CVarMaximumRenderTargetHeight
 	TEXT("Sets the maximum height of the render target used by a Widget Component.")
 );
 
+static bool bUseAutomaticTickModeByDefault = false;
+static FAutoConsoleVariableRef CVarbUseAutomaticTickModeByDefault
+(
+	TEXT("WidgetComponent.UseAutomaticTickModeByDefault"),
+	bUseAutomaticTickModeByDefault,
+	TEXT("Sets to true to Disable Tick by default on Widget Components when set to false, the tick will enabled by default.")
+);
+
 class FWorldWidgetScreenLayer : public IGameLayer
 {
 public:
@@ -194,7 +202,7 @@ public:
 		}
 	}
 
-	virtual TSharedPtr<struct FVirtualPointerPosition> TranslateMouseCoordinateForCustomHitTestChild( const TSharedRef<SWidget>& ChildWidget, const FGeometry& ViewportGeometry, const FVector2D& ScreenSpaceMouseCoordinate, const FVector2D& LastScreenSpaceMouseCoordinate ) const override
+	virtual TOptional<FVirtualPointerPosition> TranslateMouseCoordinateForCustomHitTestChild(const SWidget& ChildWidget, const FGeometry& ViewportGeometry, const FVector2D ScreenSpaceMouseCoordinate, const FVector2D LastScreenSpaceMouseCoordinate) const override
 	{
 		if ( World.IsValid() && ensure(World->IsGameWorld()) )
 		{
@@ -208,7 +216,7 @@ public:
 				{
 					UWidgetComponent* WidgetComponent = Component.Get();
 					// Check if visible;
-					if ( WidgetComponent && WidgetComponent->GetSlateWindow() == ChildWidget )
+					if ( WidgetComponent && WidgetComponent->GetSlateWindow().Get() == &ChildWidget )
 					{
 						if ( UPrimitiveComponent* HitComponent = GetHitResultAtScreenPositionAndCache(TargetPlayer->PlayerController, LocalMouseCoordinate) )
 						{
@@ -218,15 +226,9 @@ public:
 								{
 									if ( WidgetComponent == HitComponent )
 									{
-										TSharedPtr<FVirtualPointerPosition> VirtualCursorPos = MakeShareable(new FVirtualPointerPosition);
-
 										FVector2D LocalHitLocation;
 										WidgetComponent->GetLocalHitLocation(CachedHitResult.Location, LocalHitLocation);
-
-										VirtualCursorPos->CurrentCursorPosition = LocalHitLocation;
-										VirtualCursorPos->LastCursorPosition = LocalHitLocation;
-
-										return VirtualCursorPos;
+										return FVirtualPointerPosition(LocalHitLocation, LocalHitLocation);
 									}
 								}
 							}
@@ -236,7 +238,7 @@ public:
 			}
 		}
 
-		return nullptr;
+		return TOptional<FVirtualPointerPosition>();
 	}
 	// End ICustomHitTestPath
 
@@ -356,7 +358,7 @@ public:
 
 		if( RenderTarget )
 		{
-			FTextureResource* TextureResource = RenderTarget->Resource;
+			FTextureResource* TextureResource = RenderTarget->GetResource();
 			if ( TextureResource )
 			{
 				if (GeometryMode == EWidgetGeometryMode::Plane)
@@ -374,10 +376,10 @@ public:
 
 						if ( VisibilityMap & ( 1 << ViewIndex ) )
 						{
-							VertexIndices[0] = MeshBuilder.AddVertex(-FVector(0, U, V ),  FVector2D(0, 0), FVector(0, -1, 0), FVector(0, 0, -1), FVector(1, 0, 0), FColor::White);
-							VertexIndices[1] = MeshBuilder.AddVertex(-FVector(0, U, VL),  FVector2D(0, 1), FVector(0, -1, 0), FVector(0, 0, -1), FVector(1, 0, 0), FColor::White);
-							VertexIndices[2] = MeshBuilder.AddVertex(-FVector(0, UL, VL), FVector2D(1, 1), FVector(0, -1, 0), FVector(0, 0, -1), FVector(1, 0, 0), FColor::White);
-							VertexIndices[3] = MeshBuilder.AddVertex(-FVector(0, UL, V),  FVector2D(1, 0), FVector(0, -1, 0), FVector(0, 0, -1), FVector(1, 0, 0), FColor::White);
+							VertexIndices[0] = MeshBuilder.AddVertex(-FVector3f(0, U, V ),  FVector2f(0, 0), FVector3f(0, -1, 0), FVector3f(0, 0, -1), FVector3f(1, 0, 0), FColor::White);
+							VertexIndices[1] = MeshBuilder.AddVertex(-FVector3f(0, U, VL),  FVector2f(0, 1), FVector3f(0, -1, 0), FVector3f(0, 0, -1), FVector3f(1, 0, 0), FColor::White);
+							VertexIndices[2] = MeshBuilder.AddVertex(-FVector3f(0, UL, VL), FVector2f(1, 1), FVector3f(0, -1, 0), FVector3f(0, 0, -1), FVector3f(1, 0, 0), FColor::White);
+							VertexIndices[3] = MeshBuilder.AddVertex(-FVector3f(0, UL, V),  FVector2f(1, 0), FVector3f(0, -1, 0), FVector3f(0, 0, -1), FVector3f(1, 0, 0), FColor::White);
 
 							MeshBuilder.AddTriangle(VertexIndices[0], VertexIndices[1], VertexIndices[2]);
 							MeshBuilder.AddTriangle(VertexIndices[0], VertexIndices[2], VertexIndices[3]);
@@ -451,10 +453,10 @@ public:
 									LastTangentZ = TangentZ;
 								}
 
-								VertexIndices[0] = MeshBuilder.AddVertex(Vertex0, FVector2D(U0, 0), LastTangentX, LastTangentY, LastTangentZ, FColor::White);
-								VertexIndices[1] = MeshBuilder.AddVertex(Vertex1, FVector2D(U0, 1), LastTangentX, LastTangentY, LastTangentZ, FColor::White);
-								VertexIndices[2] = MeshBuilder.AddVertex(Vertex2, FVector2D(U1, 1), TangentX, TangentY, TangentZ, FColor::White);
-								VertexIndices[3] = MeshBuilder.AddVertex(Vertex3, FVector2D(U1, 0), TangentX, TangentY, TangentZ, FColor::White);
+								VertexIndices[0] = MeshBuilder.AddVertex((FVector3f)Vertex0, FVector2f(U0, 0), (FVector3f)LastTangentX, (FVector3f)LastTangentY, (FVector3f)LastTangentZ, FColor::White);
+								VertexIndices[1] = MeshBuilder.AddVertex((FVector3f)Vertex1, FVector2f(U0, 1), (FVector3f)LastTangentX, (FVector3f)LastTangentY, (FVector3f)LastTangentZ, FColor::White);
+								VertexIndices[2] = MeshBuilder.AddVertex((FVector3f)Vertex2, FVector2f(U1, 1), (FVector3f)TangentX, (FVector3f)TangentY, (FVector3f)TangentZ, FColor::White);
+								VertexIndices[3] = MeshBuilder.AddVertex((FVector3f)Vertex3, FVector2f(U1, 0), (FVector3f)TangentX, (FVector3f)TangentY, (FVector3f)TangentZ, FColor::White);
 
 								MeshBuilder.AddTriangle(VertexIndices[0], VertexIndices[1], VertexIndices[2]);
 								MeshBuilder.AddTriangle(VertexIndices[0], VertexIndices[2], VertexIndices[3]);
@@ -550,7 +552,7 @@ public:
 		Result.bShadowRelevance = IsShadowCast(View);
 		Result.bTranslucentSelfShadow = bCastVolumetricTranslucentShadow;
 		Result.bEditorPrimitiveRelevance = false;
-		Result.bVelocityRelevance = IsMovable() && Result.bOpaque && Result.bRenderInMainPass;
+		Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
 
 		return Result;
 	}
@@ -616,7 +618,7 @@ UWidgetComponent::UWidgetComponent( const FObjectInitializer& PCIP )
 	, LayerZOrder(-100)
 	, GeometryMode(EWidgetGeometryMode::Plane)
 	, CylinderArcAngle(180.0f)
-	, TickMode(ETickMode::Enabled)
+	, TickMode(bUseAutomaticTickModeByDefault ? ETickMode::Automatic : ETickMode::Enabled)
     , bRenderCleared(false)
 	, bOnWidgetVisibilityChangedRegistered(false)
 {
@@ -723,9 +725,24 @@ void UWidgetComponent::UpdateMaterialInstance()
 
 	UMaterialInterface* BaseMaterial = GetMaterial(0);
 	MaterialInstance = UMaterialInstanceDynamic::Create(BaseMaterial, this);
+	if (MaterialInstance)
+	{
+		MaterialInstance->AddToCluster(this);
+	}
 	UpdateMaterialInstanceParameters();
 
 	MarkRenderStateDirty();
+}
+
+void UWidgetComponent::OnHiddenInGameChanged()
+{
+	Super::OnHiddenInGameChanged();
+	
+	// If the component is changed from hidden to shown in game, we must start a tick to render the widget Component
+	if (bHiddenInGame == false && TickMode == ETickMode::Automatic)
+	{
+		SetComponentTickEnabled(true);
+	}
 }
 
 FPrimitiveSceneProxy* UWidgetComponent::CreateSceneProxy()
@@ -933,7 +950,7 @@ void UWidgetComponent::OnWidgetVisibilityChanged(ESlateVisibility InVisibility)
 		{
 			Widget->OnNativeVisibilityChanged.RemoveAll(this);
 			bOnWidgetVisibilityChangedRegistered = false;
-		}			
+		}
 	}
 }
 
@@ -970,17 +987,20 @@ void UWidgetComponent::SetTickMode(ETickMode InTickMode)
 }
 
 bool UWidgetComponent::IsWidgetVisible() const
-{	
-	if (!SlateWindow.IsValid() || !SlateWindow->GetVisibility().IsVisible())
+{
+	//  If we are in World Space, if the SlateWindow is not visible the Widget is not visible.
+	if (Space == EWidgetSpace::World && (!SlateWindow.IsValid() || !SlateWindow->GetVisibility().IsVisible()))
 	{
 		return false;
 	}	
 	
+	// If we have a UUserWidget check its visibility
 	if (Widget)
 	{
 		return Widget->IsVisible();
 	}
 
+	// If we use a SlateWidget check its visibility
 	return SlateWidget.IsValid() && SlateWidget->GetVisibility().IsVisible();
 }
 
@@ -1066,9 +1086,14 @@ void UWidgetComponent::DestroyComponent(bool bPromoteChildren/*= false*/)
 
 void UWidgetComponent::ReleaseResources()
 {
-	if ( Widget )
+	if (Widget)
 	{
 		RemoveWidgetFromScreen();
+		if (bOnWidgetVisibilityChangedRegistered)
+		{
+			Widget->OnNativeVisibilityChanged.RemoveAll(this);
+			bOnWidgetVisibilityChangedRegistered = false;
+		}
 		Widget = nullptr;
 	}
 
@@ -1102,13 +1127,12 @@ void UWidgetComponent::RegisterWindow()
 			{
 				if (LocalWorld->IsGameWorld())
 				{
-					UGameInstance* GameInstance = LocalWorld->GetGameInstance();
-					check(GameInstance);
-
-					UGameViewportClient* GameViewportClient = GameInstance->GetGameViewportClient();
-					if (GameViewportClient)
+					if (UGameInstance* GameInstance = LocalWorld->GetGameInstance())
 					{
-						SlateWindow->AssignParentWidget(GameViewportClient->GetGameViewportWidget());
+						if (UGameViewportClient* GameViewportClient = GameInstance->GetGameViewportClient())
+						{
+							SlateWindow->AssignParentWidget(GameViewportClient->GetGameViewportWidget());
+						}
 					}
 				}
 			}
@@ -1133,17 +1157,32 @@ void UWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, 
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
+	if (IsRunningDedicatedServer())
+	{
+		SetTickMode(ETickMode::Disabled);
+		return;
+	}
+
+
 #if !UE_SERVER
 	if (!IsRunningDedicatedServer())
 	{
 		UpdateWidget();
 
+		// There is no Widget set and we already rendered an empty widget. No need to continue.
 		if (Widget == nullptr && !SlateWidget.IsValid() && bRenderCleared)
 		{
-			// We will enter here if the WidgetClass is empty and we already renderered an empty widget. No need to continue.
 			return;	
 		}
-		
+
+		// Tick Mode is Disabled, we stop here and Disable the Component Tick
+		if (TickMode == ETickMode::Disabled && !bRedrawRequested)
+		{
+			SetComponentTickEnabled(false);
+			return;
+		}
+
+		// We have a Widget, it's invisible and we are in automatic TickMode, we disable ticking and register a callback to know if visibility changes.
 		if (Widget && TickMode == ETickMode::Automatic && !IsWidgetVisible())
 		{
 			SetComponentTickEnabled(false);
@@ -1152,16 +1191,9 @@ void UWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, 
 				Widget->OnNativeVisibilityChanged.AddUObject(this, &UWidgetComponent::OnWidgetVisibilityChanged);
 				bOnWidgetVisibilityChangedRegistered = true;
 			}
-			return;
 		}
 
-		if (TickMode == ETickMode::Disabled)
-		{ 
-			SetComponentTickEnabled(false);
-			return;
-		}
-
-	    if ( Space != EWidgetSpace::Screen )
+	    if ( Space == EWidgetSpace::World)
 	    {
 			if ( ShouldDrawWidget() )
 		    {
@@ -1178,63 +1210,70 @@ void UWidgetComponent::TickComponent(float DeltaTime, enum ELevelTick TickType, 
 				}
 		    }
 	    }
-	    else
-	    {
-			if ( ( Widget && !Widget->IsDesignTime() ) || SlateWidget.IsValid() )
-		    {
-				UWorld* ThisWorld = GetWorld();
+	    
+	}
+#endif // !UE_SERVER
+}
 
-				ULocalPlayer* TargetPlayer = GetOwnerPlayer();
-				APlayerController* PlayerController = TargetPlayer ? TargetPlayer->PlayerController : nullptr;
-
-				if ( TargetPlayer && PlayerController && IsVisible() && !(GetOwner()->IsHidden()))
+void UWidgetComponent::UpdateWidgetOnScreen()
+{
+	if ((GetUserWidgetObject() || GetSlateWidget().IsValid()) && Space == EWidgetSpace::Screen)
+	{
+		UWorld* ThisWorld = GetWorld();
+		if (ThisWorld && ThisWorld->IsGameWorld())
+		{
+			ULocalPlayer* TargetPlayer = GetOwnerPlayer();
+			APlayerController* PlayerController = TargetPlayer ? ToRawPtr(TargetPlayer->PlayerController) : nullptr;
+			if (TargetPlayer && PlayerController && IsVisible() && !(GetOwner()->IsHidden()))
+			{
+				if (!bAddedToScreen)
 				{
-					if ( !bAddedToScreen )
-					{
-						if ( ThisWorld->IsGameWorld() )
-						{
-							if ( UGameViewportClient* ViewportClient = ThisWorld->GetGameViewport() )
-							{
-								TSharedPtr<IGameLayerManager> LayerManager = ViewportClient->GetGameLayerManager();
-								if ( LayerManager.IsValid() )
-								{
-									TSharedPtr<FWorldWidgetScreenLayer> ScreenLayer;
-
-									FLocalPlayerContext PlayerContext(TargetPlayer, ThisWorld);
-
-									TSharedPtr<IGameLayer> Layer = LayerManager->FindLayerForPlayer(TargetPlayer, SharedLayerName);
-									if ( !Layer.IsValid() )
-									{
-										TSharedRef<FWorldWidgetScreenLayer> NewScreenLayer = MakeShareable(new FWorldWidgetScreenLayer(PlayerContext));
-										LayerManager->AddLayerForPlayer(TargetPlayer, SharedLayerName, NewScreenLayer, LayerZOrder);
-										ScreenLayer = NewScreenLayer;
-									}
-									else
-									{
-										ScreenLayer = StaticCastSharedPtr<FWorldWidgetScreenLayer>(Layer);
-									}
-								
-									bAddedToScreen = true;
-								
-									if (Widget && Widget->IsValidLowLevel())
-									{
-										Widget->SetPlayerContext(PlayerContext);
-									}
-									
-									ScreenLayer->AddComponent(this);
-								}
-							}
-						}
-					}
+					AddWidgetToScreen(TargetPlayer);
 				}
-				else if ( bAddedToScreen )
+				return;
+			}
+		}
+	}
+	if (bAddedToScreen)
+	{
+		RemoveWidgetFromScreen();
+	}
+}
+
+void UWidgetComponent::AddWidgetToScreen(ULocalPlayer* TargetPlayer)
+{
+	if (GetUserWidgetObject() || GetSlateWidget().IsValid())
+	{
+		UWorld* ThisWorld = GetWorld();
+		if (ThisWorld && ThisWorld->IsGameWorld())
+		{
+			if (UGameViewportClient* ViewportClient = ThisWorld->GetGameViewport())
+			{
+				TSharedPtr<IGameLayerManager> LayerManager = ViewportClient->GetGameLayerManager();
+				if (LayerManager.IsValid())
 				{
-					RemoveWidgetFromScreen();
+					TSharedPtr<FWorldWidgetScreenLayer> ScreenLayer;
+
+					FLocalPlayerContext PlayerContext(TargetPlayer, ThisWorld);
+
+					TSharedPtr<IGameLayer> Layer = LayerManager->FindLayerForPlayer(TargetPlayer, SharedLayerName);
+					if (!Layer.IsValid())
+					{
+						TSharedRef<FWorldWidgetScreenLayer> NewScreenLayer = MakeShareable(new FWorldWidgetScreenLayer(PlayerContext));
+						LayerManager->AddLayerForPlayer(TargetPlayer, SharedLayerName, NewScreenLayer, LayerZOrder);
+						ScreenLayer = NewScreenLayer;
+					}
+					else
+					{
+						ScreenLayer = StaticCastSharedPtr<FWorldWidgetScreenLayer>(Layer);
+					}
+
+					bAddedToScreen = true;
+					ScreenLayer->AddComponent(this);
 				}
 			}
 		}
 	}
-#endif // !UE_SERVER
 }
 
 bool UWidgetComponent::ShouldDrawWidget() const
@@ -1283,6 +1322,7 @@ void UWidgetComponent::DrawWidgetToRenderTarget(float DeltaTime)
 
 	const float DrawScale = 1.0f;
 
+	bool bHasValidSize = true;
 	if ( bDrawAtDesiredSize )
 	{
 		SlateWindow->SlatePrepass(DrawScale);
@@ -1293,6 +1333,11 @@ void UWidgetComponent::DrawWidgetToRenderTarget(float DeltaTime)
 		CurrentDrawSize = DesiredSize.IntPoint();
 
 		WidgetRenderer->SetIsPrepassNeeded(false);
+
+		if (DesiredSize.X <= 0 || DesiredSize.Y <= 0)
+		{
+			bHasValidSize = false;
+		}
 	}
 	else
 	{
@@ -1301,8 +1346,15 @@ void UWidgetComponent::DrawWidgetToRenderTarget(float DeltaTime)
 
 	if ( CurrentDrawSize != PreviousDrawSize )
 	{
-		UpdateBodySetup(true);
-		RecreatePhysicsState();
+		if (bHasValidSize)
+		{
+			UpdateBodySetup(true);
+			RecreatePhysicsState();
+		}
+		else
+		{
+			DestroyPhysicsState();
+		}
 	}
 
 	UpdateRenderTarget(CurrentDrawSize);
@@ -1532,27 +1584,34 @@ void UWidgetComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 
 void UWidgetComponent::InitWidget()
 {
+	if (IsRunningDedicatedServer())
+	{
+		SetTickMode(ETickMode::Disabled);
+		return;
+	}
+
 	// Don't do any work if Slate is not initialized
 	if ( FSlateApplication::IsInitialized() )
 	{
-		UWorld* World = GetWorld();
-
-		if ( WidgetClass && Widget == nullptr && World && !World->bIsTearingDown)
+		if (UWorld* World = GetWorld())
 		{
-			Widget = CreateWidget(GetWorld(), WidgetClass);
-			SetTickMode(TickMode);
-		}
-		
-#if WITH_EDITOR
-		if ( Widget && !World->IsGameWorld() && !bEditTimeUsable )
-		{
-			if( !GEnableVREditorHacks )
+			if (WidgetClass && Widget == nullptr && !World->bIsTearingDown)
 			{
-				// Prevent native ticking of editor component previews
-				Widget->SetDesignerFlags(EWidgetDesignFlags::Designing);
+				Widget = CreateWidget(World, WidgetClass);
+				SetTickMode(TickMode);
 			}
-		}
+
+#if WITH_EDITOR
+			if (Widget && !World->IsGameWorld() && !bEditTimeUsable)
+			{
+				if (!GEnableVREditorHacks)
+				{
+					// Prevent native ticking of editor component previews
+					Widget->SetDesignerFlags(EWidgetDesignFlags::Designing);
+				}
+			}
 #endif
+		}
 	}
 }
 
@@ -1631,9 +1690,9 @@ void UWidgetComponent::SetSlateWidget(const TSharedPtr<SWidget>& InSlateWidget)
 void UWidgetComponent::UpdateWidget()
 {
 	// Don't do any work if Slate is not initialized
-	if (FSlateApplication::IsInitialized() && !IsPendingKill())
+	if (FSlateApplication::IsInitialized() && IsValid(this))
 	{
-		if ( Space != EWidgetSpace::Screen )
+		if (Space == EWidgetSpace::World)
 		{
 			// Look for a UMG widget set
 			TSharedPtr<SWidget> NewSlateWidget;
@@ -1660,7 +1719,7 @@ void UWidgetComponent::UpdateWidget()
 
 			// Add the UMG or SlateWidget to the Component
 			bool bWidgetChanged = false;
-			
+
 			// We Get here if we have a UMG Widget
 			if (NewSlateWidget.IsValid())
 			{
@@ -1700,10 +1759,8 @@ void UWidgetComponent::UpdateWidget()
 				SetComponentTickEnabled(true);
 			}
 		}
-		else
-		{
-			UnregisterWindow();
-		}
+
+		UpdateWidgetOnScreen();		
 	}
 }
 
@@ -1918,7 +1975,7 @@ TTuple<FVector, FVector2D> UWidgetComponent::GetCylinderHitLocation(FVector Worl
 		// Determine the widget-space X hit coordinate.
 		const float Endpoint1 = FMath::Fmod(FMath::Atan2(-0.5f*ChordLength, -Apothem) + 2*PI, 2*PI);
 		const float Endpoint2 = FMath::Fmod(FMath::Atan2(+0.5f*ChordLength, -Apothem) + 2*PI, 2*PI);
-		const float HitAngleRads = FMath::Fmod(FMath::Atan2(TrueHitLocation_CircleSpace.Y, TrueHitLocation_CircleSpace.X) + 2*PI, 2*PI);
+		const float HitAngleRads = FMath::Fmod((float)FMath::Atan2(TrueHitLocation_CircleSpace.Y, TrueHitLocation_CircleSpace.X) + 2*PI, 2*PI);
 		const float HitAngleZeroToOne = (HitAngleRads - FMath::Min(Endpoint1, Endpoint2)) / FMath::Abs(Endpoint2 - Endpoint1);
 
 
@@ -1969,12 +2026,8 @@ TArray<FWidgetAndPointer> UWidgetComponent::GetHitWidgetPath(FVector WorldHitLoc
 
 TArray<FWidgetAndPointer> UWidgetComponent::GetHitWidgetPath(FVector2D WidgetSpaceHitCoordinate, bool bIgnoreEnabledStatus, float CursorRadius /*= 0.0f*/)
 {
-	TSharedRef<FVirtualPointerPosition> VirtualMouseCoordinate = MakeShareable(new FVirtualPointerPosition);
-
 	const FVector2D& LocalHitLocation = WidgetSpaceHitCoordinate;
-
-	VirtualMouseCoordinate->CurrentCursorPosition = LocalHitLocation;
-	VirtualMouseCoordinate->LastCursorPosition = LastLocalHitLocation;
+	const FVirtualPointerPosition VirtualMouseCoordinate(LocalHitLocation, LastLocalHitLocation);
 
 	// Cache the location of the hit
 	LastLocalHitLocation = LocalHitLocation;
@@ -1988,7 +2041,7 @@ TArray<FWidgetAndPointer> UWidgetComponent::GetHitWidgetPath(FVector2D WidgetSpa
 
 		for( FWidgetAndPointer& ArrangedWidget : ArrangedWidgets )
 		{
-			ArrangedWidget.PointerPosition = VirtualMouseCoordinate;
+			ArrangedWidget.SetPointerPosition(VirtualMouseCoordinate);
 		}
 	}
 

@@ -190,7 +190,12 @@ FString FPaths::EngineConfigDir()
 
 FString FPaths::EngineEditorSettingsDir()
 {
+#if IS_MONOLITHIC
+	// monolithic editors don't want/need to share settings with the non-monolithic editors
+	return FPaths::GeneratedConfigDir();
+#else
 	return FPaths::GameAgnosticSavedDir() + TEXT("Config/");
+#endif
 }
 
 FString FPaths::EngineIntermediateDir()
@@ -312,7 +317,12 @@ FString FPaths::ProjectUserDir()
 
 	if (ShouldSaveToUserDir())
 	{
+		// if defined, this will override both saveddirsuffix and enginesaveddirsuffix
+#ifdef UE_SAVED_DIR_OVERRIDE
+		return FPaths::Combine(FPlatformProcess::UserSettingsDir(), TEXT(PREPROCESSOR_TO_STRING(UE_SAVED_DIR_OVERRIDE))) + TEXT("/");
+#else
 		return FPaths::Combine(FPlatformProcess::UserSettingsDir(), FApp::GetProjectName()) + TEXT("/");
+#endif
 	}
 	else
 	{
@@ -415,6 +425,11 @@ FString FPaths::BugItDir()
 FString FPaths::VideoCaptureDir()
 {
 	return FPaths::ProjectSavedDir() + TEXT("VideoCaptures/");
+}
+
+FString FPaths::AudioCaptureDir()
+{
+	return FPaths::ProjectSavedDir() + TEXT("AudioCaptures/");
 }
 
 FString FPaths::ProjectLogDir()
@@ -646,9 +661,9 @@ const TArray<FString>& FPaths::GetRestrictedFolderNames()
 		StaticData.RestrictedFolderNames.Add(TEXT("EpicInternal"));
 
 		// Add confidential platforms
-		for (const FString& PlatformStr : FDataDrivenPlatformInfoRegistry::GetConfidentialPlatforms())
+		for (FName PlatformStr : FDataDrivenPlatformInfoRegistry::GetConfidentialPlatforms())
 		{
-			StaticData.RestrictedFolderNames.Add(PlatformStr);
+			StaticData.RestrictedFolderNames.Add(PlatformStr.ToString());
 		}
 
 		StaticData.bRestrictedFolderNamesInitialized = true;
@@ -867,7 +882,7 @@ FString FPaths::GetPathLeaf(FString&& InPath)
 FString FPaths::ChangeExtension(const FString& InPath, const FString& InNewExtension)
 {
 	int32 Pos = INDEX_NONE;
-	if (InPath.FindLastChar('.', Pos))
+	if (InPath.FindLastChar(TEXT('.'), Pos))
 	{
 		const int32 PathEndPos = InPath.FindLastCharByPredicate(UE4Paths_Private::IsSlashOrBackslash);
 		if (PathEndPos != INDEX_NONE && PathEndPos > Pos)
@@ -897,7 +912,7 @@ FString FPaths::ChangeExtension(const FString& InPath, const FString& InNewExten
 FString FPaths::SetExtension(const FString& InPath, const FString& InNewExtension)
 {
 	int32 Pos = INDEX_NONE;
-	if (InPath.FindLastChar('.', Pos))
+	if (InPath.FindLastChar(TEXT('.'), Pos))
 	{
 		const int32 PathEndPos = InPath.FindLastCharByPredicate(UE4Paths_Private::IsSlashOrBackslash);
 		if (PathEndPos != INDEX_NONE && PathEndPos > Pos)
@@ -1064,7 +1079,7 @@ void FPaths::NormalizeDirectoryName(FString& InPath)
 	if (InPath.EndsWith(TEXT("/"), ESearchCase::CaseSensitive) && !InPath.EndsWith(TEXT("//"), ESearchCase::CaseSensitive) && !InPath.EndsWith(TEXT(":/"), ESearchCase::CaseSensitive))
 	{
 		// overwrite trailing slash with terminator
-		InPath.GetCharArray()[InPath.Len() - 1] = 0;
+		InPath.GetCharArray()[InPath.Len() - 1] = TEXT('\0');
 		// shrink down
 		InPath.TrimToNullTerminator();
 	}
@@ -1152,6 +1167,13 @@ bool FPaths::CollapseRelativeDirectories(FString& InPath)
 	InPath.TrimToNullTerminator();
 
 	return true;
+}
+
+FString FPaths::RemoveDuplicateSlashes(const FString& InPath)
+{
+	FString Result = InPath;
+	RemoveDuplicateSlashes(Result);
+	return MoveTemp(Result);
 }
 
 void FPaths::RemoveDuplicateSlashes(FString& InPath)
@@ -1402,7 +1424,7 @@ FString FPaths::MakeValidFileName(const FString& InString, const TCHAR InReplace
 		}
 	}
 
-	Output[InLen] = 0;
+	Output[InLen] = TEXT('\0');
 
 	if (InReplacementChar == 0)
 	{
@@ -1433,7 +1455,7 @@ FString FPaths::MakeValidFileName(const FString& InString, const TCHAR InReplace
 				{
 					// take this char and null it out
 					Output[iChar] = Output[iFill];
-					Output[iFill] = 0;
+					Output[iFill] = TEXT('\0');
 				}
 			}
 		}
@@ -1479,7 +1501,7 @@ bool FPaths::ValidatePath( const FString& InPath, FText* OutReason )
 		}
 
 		// Check for invalid characters
-		TCHAR CharString[] = { '\0', '\0' };
+		TCHAR CharString[] = { TEXT('\0'), TEXT('\0') };
 		FString MatchedInvalidChars;
 		for(const TCHAR* InvalidCharacters = *RestrictedChars; *InvalidCharacters; ++InvalidCharacters)
 		{
@@ -1607,7 +1629,7 @@ bool FPaths::IsUnderDirectory(const FString& InPath, const FString& InDirectory)
 	int Compare = FCString::Strncmp(*Path, *Directory, Directory.Len());
 #endif
 
-	return Compare == 0 && (Path.Len() == Directory.Len() || Path[Directory.Len()] == '/');
+	return Compare == 0 && (Path.Len() == Directory.Len() || Path[Directory.Len()] == TEXT('/'));
 }
 
 

@@ -21,6 +21,7 @@ class UPhysicalMaterial;
 class UPhysicalMaterialMask;
 class UPrimitiveComponent;
 class USceneComponent;
+class USubsurfaceProfile;
 
 /**
  * Default number of components to expect in TInlineAllocators used with AActor component arrays.
@@ -249,6 +250,21 @@ enum EBlendMode
 	BLEND_MAX,
 };
 
+/** The default float precision for material's pixel shaders on mobile devices*/
+UENUM()
+enum EMaterialFloatPrecisionMode
+{
+	/** Uses project based precision mode setting */
+	MFPM_Default UMETA(DisplayName = "Default"),
+	/** Force full-precision for MaterialFloat only, no effect on shader codes in .ush/.usf*/
+	MFPM_Full_MaterialExpressionOnly UMETA(DisplayName = "Use Full-precision for MaterialExpressions only"),
+	/** All the floats are full-precision */
+	MFPM_Full UMETA(DisplayName = "Use Full-precision for every float"),
+	/** Half precision, except explict 'float' in .ush/.usf*/
+	MFPM_Half UMETA(DisplayName = "Use Half-precision"),
+	MFPM_MAX,
+};
+
 /** Controls where the sampler for different texture lookups comes from */
 UENUM()
 enum ESamplerSourceMode
@@ -259,6 +275,25 @@ enum ESamplerSourceMode
 	SSM_Wrap_WorldGroupSettings UMETA(DisplayName="Shared: Wrap"),
 	/** Shared sampler source that does not consume a sampler slot.  Uses clamp addressing and gets filter mode from the world texture group. */
 	SSM_Clamp_WorldGroupSettings UMETA(DisplayName="Shared: Clamp")
+};
+
+/** defines how MipValue is used */
+UENUM()
+enum ETextureMipValueMode
+{
+	/* Use hardware computed sample's mip level with automatic anisotropic filtering support. */
+	TMVM_None UMETA(DisplayName="None (use computed mip level)"),
+
+	/* Explicitly compute the sample's mip level. Disables anisotropic filtering. */
+	TMVM_MipLevel UMETA(DisplayName="MipLevel (absolute, 0 is full resolution)"),
+	
+	/* Bias the hardware computed sample's mip level. Disables anisotropic filtering. */
+	TMVM_MipBias UMETA(DisplayName="MipBias (relative to the computed mip level)"),
+	
+	/* Explicitly compute the sample's DDX and DDY for anisotropic filtering. */
+	TMVM_Derivative UMETA(DisplayName="Derivative (explicit derivative to compute mip level)"),
+
+	TMVM_MAX,
 };
 
 /** Describes how to handle lighting of translucent objets */
@@ -345,6 +380,78 @@ namespace ETranslucentSortPolicy
 	};
 }
 
+// Note: Must match r.DynamicGlobalIlluminationMethod, this is used in URendererSettings
+UENUM()
+namespace EDynamicGlobalIlluminationMethod
+{
+	enum Type
+	{
+		/** No dynamic Global Illumination method will be used. Global Illumination can still be baked into lightmaps. */
+		None, 
+
+		/** Use Lumen Global Illumination for all lights, emissive materials casting light and SkyLight Occlusion.  Requires 'Generate Mesh Distance Fields' enabled for Software Ray Tracing and 'Support Hardware Ray Tracing' enabled for Hardware Ray Tracing. */
+		Lumen,
+
+		/** Standalone Screen Space Global Illumination.  Low cost, but limited by screen space information. */
+		ScreenSpace UMETA(DisplayName="Screen Space (Beta)"),
+
+		/** Standalone Ray Traced Global Illumination technique.  Deprecated, use Lumen Global Illumination instead. */
+		RayTraced UMETA(DisplayName="Standalone Ray Traced (Deprecated)"),
+
+		/** Use a plugin for Global Illumination */
+		Plugin UMETA(DisplayName="Plugin"),
+	};
+}
+
+// Note: Must match r.ReflectionMethod, this is used in URendererSettings
+UENUM()
+namespace EReflectionMethod
+{
+	enum Type
+	{
+		/** No global reflection method will be used. Reflections can still come from Reflection Captures, Planar Reflections or a Skylight placed in the level. */
+		None, 
+
+		/** Use Lumen Reflections, which supports Screen / Software / Hardware Ray Tracing together and integrates with Lumen Global Illumination for rough reflections and Global Illumination seen in reflections. */
+		Lumen,
+
+		/** Standalone Screen Space Reflections.  Low cost, but limited by screen space information. */
+		ScreenSpace UMETA(DisplayName="Screen Space"),
+
+		/** Standalone Ray Traced Reflections technique.  Deprecated, use Lumen Reflections instead. */
+		RayTraced UMETA(DisplayName="Standalone Ray Traced (Deprecated)"),
+	};
+}
+
+// Note: Must match r.Shadow.Virtual.Enable, this is used in URendererSettings
+UENUM()
+namespace EShadowMapMethod
+{
+	enum Type
+	{
+		/** Render geometry into shadow depth maps for shadowing.  Requires manual setup of shadowing distances and only culls per-component, causing poor performance with high poly scenes.  Required to enable stationary baked shadows (but which is incompatible with Nanite geometry). */
+		ShadowMaps UMETA(DisplayName = "Shadow Maps"),
+
+		/** Render geometry into virtualized shadow depth maps for shadowing.  Provides high-quality shadows for next-gen projects with simplified setup.  High efficiency culling when used with Nanite. This system is in development and thus has a number of performance pitfalls. */
+		VirtualShadowMaps UMETA(DisplayName = "Virtual Shadow Maps (Beta)")
+	};
+}
+
+/** Ray Tracing Shadows type. */
+UENUM()
+namespace ECastRayTracedShadow 
+{
+	enum Type
+	{
+		/** Ray traced shadows disabled for this light */
+		Disabled,
+		/** Ray traced shadows follow Cast Ray Traced Shadows project setting */
+		UseProjectSetting,
+		/** Ray traced shadows enabled for this light */
+		Enabled,
+	};
+}
+
 /** Specifies which component of the scene rendering should be output to the final render target. */
 UENUM()
 enum ESceneCaptureSource 
@@ -358,7 +465,9 @@ enum ESceneCaptureSource
 	SCS_Normal UMETA(DisplayName="Normal in RGB (Deferred Renderer only)"),
 	SCS_BaseColor UMETA(DisplayName = "BaseColor in RGB (Deferred Renderer only)"),
 	SCS_FinalColorHDR UMETA(DisplayName = "Final Color (HDR) in Linear sRGB gamut"),
-	SCS_FinalToneCurveHDR UMETA(DisplayName = "Final Color (with tone curve) in Linear sRGB gamut")
+	SCS_FinalToneCurveHDR UMETA(DisplayName = "Final Color (with tone curve) in Linear sRGB gamut"),
+
+	SCS_MAX
 };
 
 /** Specifies how scene captures are composited into render buffers */
@@ -476,6 +585,7 @@ enum EMaterialShadingModel
 	MSM_Eye						UMETA(DisplayName="Eye"),
 	MSM_SingleLayerWater		UMETA(DisplayName="SingleLayerWater"),
 	MSM_ThinTranslucent			UMETA(DisplayName="Thin Translucent"),
+	MSM_Strata					UMETA(DisplayName="Strata", Hidden),
 	/** Number of unique shading models. */
 	MSM_NUM						UMETA(Hidden),
 	/** Shading model will be determined by the Material Expression Graph,
@@ -530,17 +640,64 @@ private:
 	uint16 ShadingModelField = 0;
 };
 
-/** This is used by the drawing passes to determine tessellation policy, so changes here need to be supported in native code. */
+/**
+ * Specifies the Strata runtime shading model summarized from the material graph
+ */
 UENUM()
-enum EMaterialTessellationMode
+enum EStrataShadingModel
 {
-	/** Tessellation disabled. */
-	MTM_NoTessellation UMETA(DisplayName="No Tessellation"),
-	/** Simple tessellation. */
-	MTM_FlatTessellation UMETA(DisplayName="Flat Tessellation"),
-	/** Simple spline based tessellation. */
-	MTM_PNTriangles UMETA(DisplayName="PN Triangles"),
-	MTM_MAX,
+	SSM_Unlit					UMETA(DisplayName = "Unlit"),
+	SSM_DefaultLit				UMETA(DisplayName = "DefaultLit"),
+	SSM_SubsurfaceLit			UMETA(DisplayName = "SubsurfaceLit"),
+	SSM_VolumetricFogCloud		UMETA(DisplayName = "VolumetricFogCloud"),
+	SSM_Hair					UMETA(DisplayName = "Hair"),
+	SSM_SingleLayerWater		UMETA(DisplayName = "SingleLayerWater"),
+	/** Number of unique shading models. */
+	SSM_NUM						UMETA(Hidden),
+};
+static_assert(SSM_NUM <= 8, "Do not exceed 16 shading models without expanding FStrataMaterialShadingModelField to support uint32 instead of uint16!");
+
+/** Gather information from the Strata material graph to setup material for runtime. */
+USTRUCT()
+struct ENGINE_API FStrataMaterialInfo
+{
+	GENERATED_USTRUCT_BODY()
+
+public:
+	FStrataMaterialInfo() {}
+	FStrataMaterialInfo(EStrataShadingModel InShadingModel) { AddShadingModel(InShadingModel); }
+
+	// Shading model
+	void AddShadingModel(EStrataShadingModel InShadingModel) { check(InShadingModel < SSM_NUM); ShadingModelField |= (1 << (uint16)InShadingModel); }
+	bool HasShadingModel(EStrataShadingModel InShadingModel) const { return (ShadingModelField & (1 << (uint16)InShadingModel)) != 0; }
+	bool HasOnlyShadingModel(EStrataShadingModel InShadingModel) const { return ShadingModelField == (1 << (uint16)InShadingModel); }
+	uint8 GetShadingModelField() const { return ShadingModelField; }
+	int32 CountShadingModels() const { return FMath::CountBits(ShadingModelField); }
+
+	// Subsurface profiles
+	void AddSubsurfaceProfile(USubsurfaceProfile* InProfile) { if (InProfile) SubsurfaceProfiles.Add(InProfile); }
+	int32 CountSubsurfaceProfiles() const { return SubsurfaceProfiles.Num(); }
+	USubsurfaceProfile* GetSubsurfaceProfile() const { return SubsurfaceProfiles.Num() > 0 ? SubsurfaceProfiles[0] : nullptr; }
+
+	// Shading model from expression
+	void SetShadingModelFromExpression(bool bIn) { bHasShadingModelFromExpression = bIn ? 1u : 0u; }
+	bool HasShadingModelFromExpression() const { return bHasShadingModelFromExpression > 0u; }
+
+	bool IsValid() const { return (ShadingModelField > 0) && (ShadingModelField < (1 << SSM_NUM)); }
+
+	bool operator==(const FStrataMaterialInfo& Other) const { return ShadingModelField == Other.GetShadingModelField(); }
+	bool operator!=(const FStrataMaterialInfo& Other) const { return ShadingModelField != Other.GetShadingModelField(); }
+
+private:
+	UPROPERTY()
+	uint8 ShadingModelField = 0;
+
+	/* Indicates if the shading model is constant or data-driven from the shader graph */
+	UPROPERTY()
+	uint8 bHasShadingModelFromExpression = 0;
+
+	UPROPERTY()
+	TArray<TObjectPtr<USubsurfaceProfile>> SubsurfaceProfiles;
 };
 
 /** Describes how textures are sampled for materials */
@@ -749,6 +906,7 @@ enum ECollisionChannel
 };
 
 DECLARE_DELEGATE_OneParam(FOnConstraintBroken, int32 /*ConstraintIndex*/);
+DECLARE_DELEGATE_OneParam(FOnPlasticDeformation, int32 /*ConstraintIndex*/);
 
 #define COLLISION_GIZMO ECC_EngineTraceChannel1
 
@@ -861,9 +1019,12 @@ enum ECollisionResponse
 UENUM()
 enum EFilterInterpolationType
 {
-	BSIT_Average UMETA(DisplayName = "Averaged Interpolation"),
-	BSIT_Linear UMETA(DisplayName = "Linear Interpolation"),
-	BSIT_Cubic UMETA(DisplayName = "Cubic Interpolation"),
+	BSIT_Average UMETA(DisplayName = "Averaged"),
+	BSIT_Linear UMETA(DisplayName = "Linear"),
+	BSIT_Cubic UMETA(DisplayName = "Cubic"),
+	BSIT_EaseInOut UMETA(DisplayName = "Ease In/Out"),
+	BSIT_ExponentialDecay UMETA(DisplayName = "Exponential"),
+	BSIT_SpringDamper UMETA(DisplayName = "Spring Damper"),
 	BSIT_MAX
 };
 
@@ -896,10 +1057,9 @@ namespace EWorldType
 		/** An editor world that was loaded but not currently being edited in the level editor */
 		Inactive
 	};
-
-	UE_DEPRECATED(4.14, "EWorldType::Preview is deprecated. Please use either EWorldType::EditorPreview or EWorldType::GamePreview")
-	const EWorldType::Type Preview = EWorldType::EditorPreview;
 }
+
+ENGINE_API const TCHAR* LexToString(const EWorldType::Type Value);
 
 /** Describes what parts of level streaming should be forcibly handled immediately */
 enum class EFlushLevelStreamingType : uint8
@@ -1193,6 +1353,27 @@ namespace ECollisionEnabled
 	}; 
 } 
 
+struct ENGINE_API FCollisionEnabledMask
+{
+	int8 Bits;
+
+	FCollisionEnabledMask(const FCollisionEnabledMask&) = default;
+	FCollisionEnabledMask(int8 InBits = 0);
+	FCollisionEnabledMask(ECollisionEnabled::Type CollisionEnabled);
+
+	operator int8() const;
+	operator bool() const;
+	FCollisionEnabledMask operator&(const FCollisionEnabledMask Other) const;
+	FCollisionEnabledMask operator&(const ECollisionEnabled::Type Other) const;
+	FCollisionEnabledMask operator|(const FCollisionEnabledMask Other) const;
+	FCollisionEnabledMask operator|(const ECollisionEnabled::Type Other) const;
+};
+
+extern FCollisionEnabledMask ENGINE_API operator&(const ECollisionEnabled::Type A, const ECollisionEnabled::Type B);
+extern FCollisionEnabledMask ENGINE_API operator&(const ECollisionEnabled::Type A, const FCollisionEnabledMask B);
+extern FCollisionEnabledMask ENGINE_API operator|(const ECollisionEnabled::Type A, const ECollisionEnabled::Type B);
+extern FCollisionEnabledMask ENGINE_API operator|(const ECollisionEnabled::Type A, const FCollisionEnabledMask B);
+
 FORCEINLINE bool CollisionEnabledHasPhysics(ECollisionEnabled::Type CollisionEnabled)
 {
 	return (CollisionEnabled == ECollisionEnabled::PhysicsOnly) ||
@@ -1370,7 +1551,7 @@ struct ENGINE_API FRigidBodyContactInfo
 
 	/** The physical material of the two shapes involved in a contact */
 	UPROPERTY()
-	class UPhysicalMaterial* PhysMaterial[2];
+	TObjectPtr<class UPhysicalMaterial> PhysMaterial[2];
 
 
 	FRigidBodyContactInfo()
@@ -1443,11 +1624,11 @@ struct FFractureEffect
 
 	/** Particle system effect to play at fracture location. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=FractureEffect)
-	class UParticleSystem* ParticleSystem;
+	TObjectPtr<class UParticleSystem> ParticleSystem;
 
 	/** Sound cue to play at fracture location. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=FractureEffect)
-	class USoundBase* Sound;
+	TObjectPtr<class USoundBase> Sound;
 
 	FFractureEffect()
 		: ParticleSystem(nullptr)
@@ -1463,7 +1644,7 @@ struct ENGINE_API FBasedPosition
 
 	/** Actor that is the base */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BasedPosition)
-	class AActor* Base;
+	TObjectPtr<class AActor> Base;
 
 	/** Position relative to the base actor */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BasedPosition)
@@ -1716,7 +1897,7 @@ struct FLightmassPrimitiveSettings
 
 	friend bool operator==(const FLightmassPrimitiveSettings& A, const FLightmassPrimitiveSettings& B)
 	{
-		//@todo UE4. Do we want a little 'leeway' in joining 
+		//@todo Do we want a little 'leeway' in joining 
 		if ((A.bUseTwoSidedLighting != B.bUseTwoSidedLighting) ||
 			(A.bShadowIndirectOnly != B.bShadowIndirectOnly) || 
 			(A.bUseEmissiveForStaticLighting != B.bUseEmissiveForStaticLighting) || 
@@ -1862,7 +2043,7 @@ struct FSwarmDebugOptions
 	{
 	}
 
-	//@todo UE4. For some reason, the global instance is not initializing to the default settings...
+	//@todo For some reason, the global instance is not initializing to the default settings...
 	// Be sure to update this function to properly set the desired initial values!!!!
 	void Touch();
 };
@@ -1894,11 +2075,11 @@ struct FPrimitiveMaterialRef
 
 	/** Material is on a primitive component */
 	UPROPERTY()
-	class UPrimitiveComponent* Primitive;
+	TObjectPtr<class UPrimitiveComponent> Primitive;
 
 	/** Material is on a decal component */
 	UPROPERTY()
-	class UDecalComponent* Decal;
+	TObjectPtr<class UDecalComponent> Decal;
 
 	/** Index into the material on the components data */
 	UPROPERTY()
@@ -1922,6 +2103,100 @@ struct FPrimitiveMaterialRef
 		, ElementIndex(InElementIndex)
 	{ 	}
 };
+
+// Handle to a unique object. This may specify a full weigh actor or it may only specify the light weight instance that represents the same object.
+USTRUCT(BlueprintType)
+struct ENGINE_API FActorInstanceHandle
+{
+	GENERATED_BODY()
+
+	friend struct FLightWeightInstanceSubsystem;
+	friend class ALightWeightInstanceManager;
+	friend class UActorInstanceHandleInterface;
+
+	FActorInstanceHandle();
+
+	explicit FActorInstanceHandle(AActor* InActor);
+	explicit FActorInstanceHandle(class ALightWeightInstanceManager* Manager, int32 InInstanceIndex);
+
+	FActorInstanceHandle(const FActorInstanceHandle& Other);
+
+	bool IsValid() const;
+
+	bool DoesRepresentClass(const UClass* OtherClass) const;
+
+	UClass* GetRepresentedClass() const;
+
+	FVector GetLocation() const;
+	FRotator GetRotation() const;
+	FTransform GetTransform() const;
+
+	FName GetFName() const;
+	FString GetName() const;
+
+	/** If this handle has a valid actor, return it; otherwise return the actor responsible for managing the instances. */
+	AActor* GetManagingActor() const;
+
+	/** Returns either the actor's root component or the root component for the manager associated with the handle */
+	USceneComponent* GetRootComponent() const;
+
+	/** Returns the actor specified by this handle. This may require loading and creating the actor object. */
+	AActor* FetchActor() const;
+	template <typename T>
+	T* FetchActor() const;
+
+	/* Returns the index used internally by the manager */
+	FORCEINLINE int32 GetInstanceIndex() const { return InstanceIndex; }
+
+	/* Returns the index used by rendering and collision */
+	int32 GetRenderingInstanceIndex() const;
+
+	FActorInstanceHandle& operator=(const FActorInstanceHandle& Other) = default;
+	FActorInstanceHandle& operator=(FActorInstanceHandle&& Other) = default;
+	FActorInstanceHandle& operator=(AActor* OtherActor);
+
+	bool operator==(const FActorInstanceHandle& Other) const;
+	bool operator!=(const FActorInstanceHandle& Other) const;
+
+	bool operator==(const AActor* OtherActor) const;
+	bool operator!=(const AActor* OtherActor) const;
+
+	friend ENGINE_API uint32 GetTypeHash(const FActorInstanceHandle& Handle);
+
+	friend ENGINE_API FArchive& operator<<(FArchive& Ar, FActorInstanceHandle& Handle);
+
+	uint32 GetInstanceUID() const { return InstanceUID; }
+
+private:
+	/**
+	 * helper functions that let us treat the actor pointer as a UObject in templated functions
+	 * these do NOT fetch the actor so they will return nullptr if we don't have a full actor representation
+	 */
+	UObject* GetActorAsUObject();
+	const UObject* GetActorAsUObject() const;
+
+	/** Returns true if Actor is not null and not pending kill */
+	bool IsActorValid() const;
+
+	/** this is cached here for convenience */
+	UPROPERTY()
+	mutable TWeakObjectPtr<AActor> Actor;
+
+	/** Identifies the light weight instance manager to use */
+	TWeakObjectPtr<ALightWeightInstanceManager> Manager;
+
+	/** Identifies the instance within the manager */
+	int32 InstanceIndex;
+
+	/** Unique identifier for instances represented by the handle */
+	uint32 InstanceUID;
+};
+
+template <typename T>
+T* FActorInstanceHandle::FetchActor() const
+{
+	return Cast<T>(FetchActor());
+}
 
 /**
  * Structure containing information about one hit of a trace, such as point of impact and surface normal at that point.
@@ -2000,6 +2275,10 @@ struct ENGINE_API FHitResult
 	UPROPERTY()
 	float PenetrationDepth;
 
+	/** If the hit result is from a collision this will have extra info about the item that hit the second item. */
+	UPROPERTY()
+	int32 MyItem;
+
 	/** Extra data about item that was hit (hit primitive specific). */
 	UPROPERTY()
 	int32 Item;
@@ -2028,9 +2307,9 @@ struct ENGINE_API FHitResult
 	UPROPERTY()
 	TWeakObjectPtr<class UPhysicalMaterial> PhysMaterial;
 
-	/** Actor hit by the trace. */
+	/** Handle to the object hit by the trace. */
 	UPROPERTY()
-	TWeakObjectPtr<class AActor> Actor;
+	FActorInstanceHandle HitObjectHandle;
 
 	/** PrimitiveComponent hit by the trace. */
 	UPROPERTY()
@@ -2074,16 +2353,20 @@ struct ENGINE_API FHitResult
 	FORCEINLINE void Init()
 	{
 		FMemory::Memzero(this, sizeof(FHitResult));
+		HitObjectHandle = FActorInstanceHandle();
 		Time = 1.f;
+		MyItem = INDEX_NONE;
 	}
 
 	/** Initialize empty hit result with given time, TraceStart, and TraceEnd */
 	FORCEINLINE void Init(FVector Start, FVector End)
 	{
 		FMemory::Memzero(this, sizeof(FHitResult));
+		HitObjectHandle = FActorInstanceHandle();
 		Time = 1.f;
 		TraceStart = Start;
 		TraceEnd = End;
+		MyItem = INDEX_NONE;
 	}
 
 	/** Ctor for easily creating "fake" hits from limited data. */
@@ -2106,7 +2389,17 @@ struct ENGINE_API FHitResult
 	/** Utility to return the Actor that owns the Component that was hit. */
 	FORCEINLINE AActor* GetActor() const
 	{
-		return Actor.Get();
+		return HitObjectHandle.FetchActor();
+	}
+
+	FORCEINLINE FActorInstanceHandle GetHitObjectHandle() const
+	{
+		return HitObjectHandle;
+	}
+
+	FORCEINLINE bool HasValidHitObjectHandle() const
+	{
+		return HitObjectHandle.IsValid();
 	}
 
 	/** Utility to return the Component that was hit. */
@@ -2166,6 +2459,14 @@ struct ENGINE_API FHitResult
 		FHitResult Result(Hit);
 		Result.Normal = -Result.Normal;
 		Result.ImpactNormal = -Result.ImpactNormal;
+
+		int32 TempItem = Result.Item;
+		Result.Item = Result.MyItem;
+		Result.MyItem = TempItem;
+
+		FName TempBoneName = Result.BoneName;
+		Result.BoneName = Result.MyBoneName;
+		Result.MyBoneName = TempBoneName;
 		return Result;
 	}
 
@@ -2209,9 +2510,8 @@ struct ENGINE_API FOverlapResult
 {
 	GENERATED_BODY()
 
-	/** Actor that the check hit. */
 	UPROPERTY()
-	TWeakObjectPtr<class AActor> Actor;
+	FActorInstanceHandle OverlapObjectHandle;
 
 	/** PrimitiveComponent that the check hit. */
 	UPROPERTY()
@@ -2572,10 +2872,6 @@ struct FMeshBuildSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings)
 	uint8 bRemoveDegenerates:1;
 	
-	/** Required for PNT tessellation but can be slow. Recommend disabling for larger meshes. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings)
-	uint8 bBuildAdjacencyBuffer:1;
-
 	/** Required to optimize mesh in mirrored transform. Double index buffer size. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings)
 	uint8 bBuildReversedIndexBuffer:1;
@@ -2587,6 +2883,10 @@ struct FMeshBuildSettings
 	/** If true, UVs will be stored at full floating point precision. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings)
 	uint8 bUseFullPrecisionUVs:1;
+	
+	/** If true, UVs will use backwards-compatible F16 conversion with truncation for legacy meshes. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings, AdvancedDisplay)
+	uint8 bUseBackwardsCompatibleF16TruncUVs:1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings)
 	uint8 bGenerateLightmapUVs:1;
@@ -2630,7 +2930,16 @@ struct FMeshBuildSettings
 #endif
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings)
-	class UStaticMesh* DistanceFieldReplacementMesh;
+	TObjectPtr<class UStaticMesh> DistanceFieldReplacementMesh;
+
+	/** 
+	 * Max Lumen mesh cards to generate for this mesh.
+	 * More cards means that surface will have better coverage, but will result in increased runtime overhead.
+	 * Set to 0 in order to disable mesh card generation for this mesh.
+	 * Default is 12.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings)
+	int32 MaxLumenMeshCards;
 
 	/** Default settings. */
 	FMeshBuildSettings()
@@ -2639,10 +2948,10 @@ struct FMeshBuildSettings
 		, bRecomputeTangents(true)
 		, bComputeWeightedNormals(false)
 		, bRemoveDegenerates(true)
-		, bBuildAdjacencyBuffer(true)
 		, bBuildReversedIndexBuffer(true)
 		, bUseHighPrecisionTangentBasis(false)
 		, bUseFullPrecisionUVs(false)
+		, bUseBackwardsCompatibleF16TruncUVs(false)
 		, bGenerateLightmapUVs(true)
 		, bGenerateDistanceFieldAsIfTwoSided(false)
 		, bSupportFaceRemap(false)
@@ -2656,6 +2965,7 @@ struct FMeshBuildSettings
 		, DistanceFieldBias_DEPRECATED(0.0f)
 #endif
 		, DistanceFieldReplacementMesh(nullptr)
+		, MaxLumenMeshCards(12)
 	{ }
 
 	/** Equality operator. */
@@ -2666,10 +2976,10 @@ struct FMeshBuildSettings
 			&& bComputeWeightedNormals == Other.bComputeWeightedNormals
 			&& bUseMikkTSpace == Other.bUseMikkTSpace
 			&& bRemoveDegenerates == Other.bRemoveDegenerates
-			&& bBuildAdjacencyBuffer == Other.bBuildAdjacencyBuffer
 			&& bBuildReversedIndexBuffer == Other.bBuildReversedIndexBuffer
 			&& bUseHighPrecisionTangentBasis == Other.bUseHighPrecisionTangentBasis
 			&& bUseFullPrecisionUVs == Other.bUseFullPrecisionUVs
+			&& bUseBackwardsCompatibleF16TruncUVs == Other.bUseBackwardsCompatibleF16TruncUVs
 			&& bGenerateLightmapUVs == Other.bGenerateLightmapUVs
 			&& MinLightmapResolution == Other.MinLightmapResolution
 			&& SrcLightmapIndex == Other.SrcLightmapIndex
@@ -2677,7 +2987,8 @@ struct FMeshBuildSettings
 			&& BuildScale3D == Other.BuildScale3D
 			&& DistanceFieldResolutionScale == Other.DistanceFieldResolutionScale
 			&& bGenerateDistanceFieldAsIfTwoSided == Other.bGenerateDistanceFieldAsIfTwoSided
-			&& DistanceFieldReplacementMesh == Other.DistanceFieldReplacementMesh;
+			&& DistanceFieldReplacementMesh == Other.DistanceFieldReplacementMesh
+			&& MaxLumenMeshCards == Other.MaxLumenMeshCards;
 	}
 
 	/** Inequality. */
@@ -2722,11 +3033,11 @@ struct FSkeletalMeshBuildSettings
 	/** If true, UVs will be stored at full floating point precision. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings)
 	uint8 bUseFullPrecisionUVs:1;
-	
-	/** Required for PNT tessellation but can be slow. Recommend disabling for larger meshes. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings)
-	uint8 bBuildAdjacencyBuffer:1;
 
+	/** If true, UVs will use backwards-compatible F16 conversion with truncation for legacy meshes. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BuildSettings, AdvancedDisplay)
+	uint8 bUseBackwardsCompatibleF16TruncUVs:1;
+	
 	/** Threshold use to decide if two vertex position are equal. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = BuildSettings)
 	float ThresholdPosition;
@@ -2752,7 +3063,7 @@ struct FSkeletalMeshBuildSettings
 		, bRemoveDegenerates(true)
 		, bUseHighPrecisionTangentBasis(false)
 		, bUseFullPrecisionUVs(false)
-		, bBuildAdjacencyBuffer(true)
+		, bUseBackwardsCompatibleF16TruncUVs(false)
 		, ThresholdPosition(0.00002)
 		, ThresholdTangentNormal(0.00002)
 		, ThresholdUV(0.0009765625)
@@ -2769,7 +3080,7 @@ struct FSkeletalMeshBuildSettings
 			&& bRemoveDegenerates == Other.bRemoveDegenerates
 			&& bUseHighPrecisionTangentBasis == Other.bUseHighPrecisionTangentBasis
 			&& bUseFullPrecisionUVs == Other.bUseFullPrecisionUVs
-			&& bBuildAdjacencyBuffer == Other.bBuildAdjacencyBuffer
+			&& bUseBackwardsCompatibleF16TruncUVs == Other.bUseBackwardsCompatibleF16TruncUVs
 			&& ThresholdPosition == Other.ThresholdPosition
 			&& ThresholdTangentNormal == Other.ThresholdTangentNormal
 			&& ThresholdUV == Other.ThresholdUV
@@ -2778,6 +3089,84 @@ struct FSkeletalMeshBuildSettings
 
 	/** Inequality. */
 	bool operator!=(const FSkeletalMeshBuildSettings& Other) const
+	{
+		return !(*this == Other);
+	}
+};
+
+/**
+ * Settings applied when building Nanite data.
+ */
+USTRUCT(BlueprintType)
+struct FMeshNaniteSettings
+{
+	GENERATED_BODY()
+
+	/** If true, Nanite data will be generated. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
+	uint8 bEnabled : 1;
+
+	/** Position Precision. Step size is 2^(-PositionPrecision) cm. MIN_int32 is auto. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
+	int32 PositionPrecision;
+
+	/** How much of the resource should always be resident (In KB). Approximate due to paging. 0: Minimum size (single page). MAX_uint32: Entire mesh.*/
+	UPROPERTY(EditAnywhere, Category = NaniteSettings)
+	uint32 TargetMinimumResidencyInKB;
+	
+	/** Percentage of triangles to keep from source mesh. 1.0 = no reduction, 0.0 = no triangles. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
+	float KeepPercentTriangles;
+
+	/** Reduce until at least this amount of error is reached relative to size of the mesh */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
+	float TrimRelativeError;
+	
+	/** Percentage of triangles to keep from source mesh for fallback. 1.0 = no reduction, 0.0 = no triangles. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
+	float FallbackPercentTriangles;
+
+	/** Reduce until at least this amount of error is reached relative to size of the mesh */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = NaniteSettings)
+	float FallbackRelativeError;
+
+	/** Default settings. */
+	FMeshNaniteSettings()
+	: bEnabled(false)
+	, PositionPrecision(MIN_int32)
+	, TargetMinimumResidencyInKB(0)
+	, KeepPercentTriangles(1.0f)
+	, TrimRelativeError(0.0f)
+	, FallbackPercentTriangles(1.0f)
+	, FallbackRelativeError(1.0f)
+	{
+	}
+
+	FMeshNaniteSettings(const FMeshNaniteSettings& Other)
+	: bEnabled(Other.bEnabled)
+	, PositionPrecision(Other.PositionPrecision)
+	, TargetMinimumResidencyInKB(Other.TargetMinimumResidencyInKB)
+	, KeepPercentTriangles(Other.KeepPercentTriangles)
+	, TrimRelativeError(Other.TrimRelativeError)
+	, FallbackPercentTriangles(Other.FallbackPercentTriangles)
+	, FallbackRelativeError(Other.FallbackRelativeError)
+	{
+	}
+
+	/** Equality operator. */
+	bool operator==(const FMeshNaniteSettings& Other) const
+	{
+		return bEnabled == Other.bEnabled
+			&& PositionPrecision == Other.PositionPrecision
+			&& TargetMinimumResidencyInKB == Other.TargetMinimumResidencyInKB
+			&& KeepPercentTriangles == Other.KeepPercentTriangles
+			&& TrimRelativeError == Other.TrimRelativeError
+			&& FallbackPercentTriangles == Other.FallbackPercentTriangles
+			&& FallbackRelativeError == Other.FallbackRelativeError;
+	}
+
+	/** Inequality operator. */
+	bool operator!=(const FMeshNaniteSettings& Other) const
 	{
 		return !(*this == Other);
 	}
@@ -3241,7 +3630,7 @@ struct ENGINE_API FRepMovement
 		RBState.Quaternion = Rotation.Quaternion();
 		RBState.LinVel = LinearVelocity;
 		RBState.AngVel = AngularVelocity;
-		RBState.Flags = (bSimulatedPhysicSleep ? ERigidBodyFlags::Sleeping : ERigidBodyFlags::None) | ERigidBodyFlags::NeedsUpdate;
+		RBState.Flags = (decltype(FRigidBodyState::Flags))(bSimulatedPhysicSleep ? ERigidBodyFlags::Sleeping : ERigidBodyFlags::None) | ERigidBodyFlags::NeedsUpdate;
 	}
 
 	bool operator==(const FRepMovement& Other) const
@@ -3288,22 +3677,22 @@ struct ENGINE_API FRepMovement
 	static int32 EnableMultiplayerWorldOriginRebasing;
 
 	/** Rebase zero-origin position onto local world origin value. */
-	static FVector RebaseOntoLocalOrigin(const struct FVector& Location, const struct FIntVector& LocalOrigin);
+	static FVector RebaseOntoLocalOrigin(const FVector& Location, const struct FIntVector& LocalOrigin);
 
 	/** Rebase local-origin position onto zero world origin value. */
-	static FVector RebaseOntoZeroOrigin(const struct FVector& Location, const struct FIntVector& LocalOrigin);
+	static FVector RebaseOntoZeroOrigin(const FVector& Location, const struct FIntVector& LocalOrigin);
 
 	/** Rebase zero-origin position onto an Actor's local world origin. */
-	static FVector RebaseOntoLocalOrigin(const struct FVector& Location, const AActor* const WorldContextActor);
+	static FVector RebaseOntoLocalOrigin(const FVector& Location, const AActor* const WorldContextActor);
 
 	/** Rebase an Actor's local-origin position onto zero world origin value. */
-	static FVector RebaseOntoZeroOrigin(const struct FVector& Location, const AActor* const WorldContextActor);
+	static FVector RebaseOntoZeroOrigin(const FVector& Location, const AActor* const WorldContextActor);
 
 	/** Rebase zero-origin position onto local world origin value based on an actor component's world. */
-	static FVector RebaseOntoLocalOrigin(const struct FVector& Location, const class UActorComponent* const WorldContextActorComponent);
+	static FVector RebaseOntoLocalOrigin(const FVector& Location, const class UActorComponent* const WorldContextActorComponent);
 
 	/** Rebase local-origin position onto zero world origin value based on an actor component's world.*/
-	static FVector RebaseOntoZeroOrigin(const struct FVector& Location, const class UActorComponent* const WorldContextActorComponent);
+	static FVector RebaseOntoZeroOrigin(const FVector& Location, const class UActorComponent* const WorldContextActorComponent);
 };
 
 
@@ -3315,7 +3704,7 @@ struct FRepAttachment
 
 	/** Actor we are attached to, movement replication will not happen while AttachParent is non-nullptr */
 	UPROPERTY()
-	class AActor* AttachParent;
+	TObjectPtr<class AActor> AttachParent;
 
 	/** Location offset from attach parent */
 	UPROPERTY()
@@ -3335,7 +3724,7 @@ struct FRepAttachment
 
 	/** Specific component we are attached to */
 	UPROPERTY()
-	class USceneComponent* AttachComponent;
+	TObjectPtr<class USceneComponent> AttachComponent;
 
 	FRepAttachment()
 		: AttachParent(nullptr)
@@ -3532,6 +3921,13 @@ struct FReplicationFlags
 			uint32 bSkipRoleSwap:1;
 			/** True if we should only compare role properties in CompareProperties */
 			uint32 bRolesOnly:1;
+			/** True if we should force all properties dirty on initial replication. */
+			uint32 bForceInitialDirty:1;
+			/** True if we should serialize property names instead of handles. */
+			uint32 bSerializePropertyNames : 1;
+			/** True if a subclass of UActorChannel needs custom subobject replication */
+			uint32 bUseCustomSubobjectReplication : 1;
+
 		};
 
 		uint32	Value;
@@ -3571,14 +3967,14 @@ struct ENGINE_API FComponentReference
 	 * If this is not provided the reference refers to a component on this / the same actor.
 	 */
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category=Component, meta = (DisplayName = "Referenced Actor"))
-	AActor* OtherActor;
+	TObjectPtr<AActor> OtherActor;
 
 	/** Name of component to use. If this is not specified the reference refers to the root component. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Component, meta = (DisplayName = "Component Name"))
 	FName ComponentProperty;
 
 	/** Path to the component from its owner actor */
-	UPROPERTY()
+	UPROPERTY(EditDefaultsOnly, Category=Component, meta =(EditCondition="false", EditConditionHides))
 	FString PathToComponent;
 
 	/** Allows direct setting of first component to constraint. */
@@ -3705,31 +4101,8 @@ struct FComponentSocketDescription
 /** Dynamic delegate to use by components that want to route the broken-event into blueprints */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FConstraintBrokenSignature, int32, ConstraintIndex);
 
-/** Structure for file paths that are displayed in the editor with a picker UI. */
-USTRUCT(BlueprintType)
-struct FFilePath
-{
-	GENERATED_BODY()
-
-	/**
-	 * The path to the file.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=FilePath)
-	FString FilePath;
-};
-
-/** Structure for directory paths that are displayed in the editor with a picker UI. */
-USTRUCT(BlueprintType)
-struct FDirectoryPath
-{
-	GENERATED_BODY()
-
-	/**
-	 * The path to the directory.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Path)
-	FString Path;
-};
+/** Dynamic delegate to use by components that want to route the pasticity deformation event into blueprints */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FPlasticDeformationEventSignature, int32, ConstraintIndex);
 
 
 /**
@@ -3790,7 +4163,7 @@ private:
 public:
 	/** Max Samples to record. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="DebugFloatHistory")
-	float MaxSamples;
+	int32 MaxSamples;
 
 	/** Min value to record. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DebugFloatHistory")
@@ -3811,7 +4184,7 @@ public:
 		, bAutoAdjustMinMax(true)
 	{ }
 
-	FDebugFloatHistory(float const & InMaxSamples, float const & InMinValue, float const & InMaxValue, bool const & InbAutoAdjustMinMax)
+	FDebugFloatHistory(int32 const & InMaxSamples, float const & InMinValue, float const & InMaxValue, bool const & InbAutoAdjustMinMax)
 		: MaxSamples(InMaxSamples)
 		, MinValue(InMinValue)
 		, MaxValue(InMaxValue)

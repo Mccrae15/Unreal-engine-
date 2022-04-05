@@ -18,7 +18,10 @@ UAnimBlueprint::UAnimBlueprint(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	bUseMultiThreadedAnimationUpdate = true;
-
+#if WITH_EDITORONLY_DATA
+	bRefreshExtensions = true;
+#endif
+	
 #if WITH_EDITOR
 	if(!HasAnyFlags(RF_ClassDefaultObject))
 	{
@@ -84,11 +87,9 @@ int32 UAnimBlueprint::FindOrAddGroup(FName GroupName)
 	}
 }
 
-
-/** Returns the most base anim blueprint for a given blueprint (if it is inherited from another anim blueprint, returning null if only native / non-anim BP classes are it's parent) */
 UAnimBlueprint* UAnimBlueprint::FindRootAnimBlueprint(const UAnimBlueprint* DerivedBlueprint)
 {
-	UAnimBlueprint* ParentBP = NULL;
+	UAnimBlueprint* ParentBP = nullptr;
 
 	// Determine if there is an anim blueprint in the ancestry of this class
 	for (UClass* ParentClass = DerivedBlueprint->ParentClass; ParentClass && (UObject::StaticClass() != ParentClass); ParentClass = ParentClass->GetSuperClass())
@@ -97,6 +98,19 @@ UAnimBlueprint* UAnimBlueprint::FindRootAnimBlueprint(const UAnimBlueprint* Deri
 		{
 			ParentBP = TestBP;
 		}
+	}
+
+	return ParentBP;
+}
+
+UAnimBlueprint* UAnimBlueprint::GetParentAnimBlueprint(const UAnimBlueprint* DerivedBlueprint)
+{
+	UAnimBlueprint* ParentBP = nullptr;
+	UClass* ParentClass = DerivedBlueprint->ParentClass;
+
+	if (UAnimBlueprint* TestBP = Cast<UAnimBlueprint>(ParentClass->ClassGeneratedBy))
+	{
+		ParentBP = TestBP;
 	}
 
 	return ParentBP;
@@ -176,16 +190,9 @@ void UAnimBlueprint::PostLoad()
 		});
 	}
 #endif
-
-#if WITH_EDITORONLY_DATA
-	if(GetLinkerCustomVersion(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::AnimBlueprintSubgraphFix)
-	{
-		AnimationEditorUtils::RegenerateSubGraphArrays(this);
-	}
-#endif
 }
 
-bool UAnimBlueprint::CanRecompileWhilePlayingInEditor() const
+bool UAnimBlueprint::CanAlwaysRecompileWhilePlayingInEditor() const
 {
 	return true;
 }
@@ -200,6 +207,14 @@ bool UAnimBlueprint::FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults& R
 
 	// Anim BPs should diff correctly, as all the info is stored in graphs or the parent
 	return true;
+}
+
+void UAnimBlueprint::SetObjectBeingDebugged(UObject* NewObject)
+{
+	// Look for any linked instances and set them up too if they are not already open in an editor
+	AnimationEditorUtils::SetupDebugLinkedAnimInstances(this, NewObject);
+
+	Super::SetObjectBeingDebugged(NewObject);
 }
 
 #endif
@@ -326,3 +341,39 @@ FAnimBlueprintDebugData* UAnimBlueprint::GetDebugData() const
 	return nullptr;
 #endif // WITH_EDITORONLY_DATA
 }
+
+#if WITH_EDITORONLY_DATA
+bool UAnimBlueprint::IsCompatible(const UAnimBlueprint* InAnimBlueprint) const
+{
+	if(InAnimBlueprint->bIsTemplate)
+	{
+		// Directionality here, templates are compatible with all anim BPs, but not necessarily vice versa
+		return true;
+	}
+	
+	if(InAnimBlueprint->BlueprintType == BPTYPE_Interface)
+	{
+		// Interfaces dont bother with skeleton checks - assume compatibility is driven by the interface machinery
+		return true;
+	}
+
+	return (TargetSkeleton != nullptr && TargetSkeleton->IsCompatible(InAnimBlueprint->TargetSkeleton));
+}
+
+bool UAnimBlueprint::IsCompatibleByAssetString(const FString& InSkeletonAsset, bool bInIsTemplate, bool bInIsInterface) const
+{
+	if(bInIsTemplate)
+	{
+		// Directionality here, templates are compatible with all anim BPs, but not necessarily vice versa
+		return true;
+	}
+	
+	if(bInIsInterface)
+	{
+		// Interfaces dont bother with skeleton checks - assume compatibility is driven by the interface machinery
+		return true;
+	}
+
+	return (TargetSkeleton != nullptr && TargetSkeleton->IsCompatibleSkeletonByAssetString(InSkeletonAsset));
+}
+#endif

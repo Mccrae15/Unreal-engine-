@@ -1,69 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "../Common.ush"
-#include "../CommonViewUniformBuffer.ush"
-
 #include "../SceneTexturesCommon.ush"
 #include "../DeferredShadingCommon.ush"
-#include "HairStrandsVisibilityCommon.ush"
-
-#if SHADER_SUBCOLOR
-
-Texture2D<float4> SubPixelColorTexture;
-Texture2D<uint4> CategorisationTexture;
-
-void SubColorPS(
-	in FScreenVertexOutput Input,
-	out float4 OutColor  : SV_Target0, 
-	out float  OutDepth : SV_DEPTH)
-{
-	const uint2 PixelCoord = floor(Input.Position.xy);
-	OutColor = SubPixelColorTexture.Load(uint3(PixelCoord, 0));
-
-	// Early out writing to not write stencil value for full coverred pixels (or not covered at all)
-	//if (OutColor.a == 0)
-	//	discard;
-
-	const FCategorizationData CategorisationData = DecodeCategorizationData(CategorisationTexture.Load(uint3(Input.Position.xy, 0)));
-	OutDepth = CategorisationData.ClosestDepth;
-}
-
-#endif // SHADER_SUBCOLOR
+#include "HairStrandsVisibilityCommon.ush"   
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
-
-#if SHADER_FASTRESOLVE_MSAA
-
-#ifndef PERMUTATION_MSAACOUNT 
-#error PERMUTATION_MSAACOUNT is not defined
-#endif
-
-float VelocityThreshold;
-Texture2DMS<float2, PERMUTATION_MSAACOUNT> HairVisibilityVelocityTexture;
-
-void FastResolvePS(in FScreenVertexOutput Input)
-{
-	const uint2 PixelCoord = floor(Input.Position.xy);
-
-	bool bNeedFastResolve = false;
-	for (uint SampleIt = 0; SampleIt < PERMUTATION_MSAACOUNT; ++SampleIt)
-	{
-		const float2 EncodedVelocity = HairVisibilityVelocityTexture.Load(PixelCoord, SampleIt);
-		const float2 Velocity = DecodeVelocityFromTexture(float4(EncodedVelocity, 0.0, 0.0)).xy;
-		const float VelocityMagnitude = sqrt(dot(Velocity, Velocity));
-		if (EncodedVelocity.x > 0 && VelocityMagnitude > VelocityThreshold)
-		{
-			bNeedFastResolve = true;
-			break;
-		}
-	}
-
-	if (!bNeedFastResolve)
-		discard;
-}
-
-#endif // SHADER_FASTRESOLVE_MSAA
-
 
 #if SHADER_FASTRESOLVE_MASK
 
@@ -89,35 +31,28 @@ void FastResolvePS(in FScreenVertexOutput Input)
 
 int2 OutputResolution;
 uint bComposeDofDepth;
-uint bEmissiveEnable;
 
-Texture2D<float4>	HairEmissiveTexture;
 Texture2D<float>	HairDOFDepthTexture;
-Texture2D<uint>		HairSampleCount;
-Texture2D<uint4>	HairCategorizationTexture;
-Texture2D<uint>		HairVisibilityNodeOffsetAndCount;
 Texture2D<float4>	HairLightingSampleBuffer;
 
 float4 EvaluateVolumetric(float3 WorldPosition)
 {
-	const float3 CameraRelative_WorldPosition = WorldPosition - View.WorldCameraOrigin;
+	const float3 CameraRelative_WorldPosition = WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin);
 	float4 HeightFogging = CalculateHeightFog(CameraRelative_WorldPosition);
 	float4 Fogging = HeightFogging;
 
 	if (FogStruct.ApplyVolumetricFog > 0)
 	{
 		const uint EyeIndex = 0;
-		float3 VolumeUV = ComputeVolumeUV(WorldPosition, View.WorldToClip);
+		float3 VolumeUV = ComputeVolumeUV_DEPRECATED(WorldPosition, LWCHackToFloat(PrimaryView.WorldToClip));
 		Fogging = CombineVolumetricFog(HeightFogging, VolumeUV, EyeIndex);
 	}
-#if USE_PREEXPOSURE 
+
 	Fogging.rgb *= View.PreExposure;
-#endif
 
 	if (View.SkyAtmosphereApplyCameraAerialPerspectiveVolume > 0.0f)
 	{
-		const float OneOverPreExposure = USE_PREEXPOSURE ? View.OneOverPreExposure : 1.0f;
-		float4 NDCPosition = mul(float4(WorldPosition.xyz, 1), View.WorldToClip);
+		float4 NDCPosition = mul(float4(WorldPosition.xyz, 1), LWCHackToFloat(PrimaryView.WorldToClip));
 
 		// Sample the aerial perspective (AP).
 		Fogging = GetAerialPerspectiveLuminanceTransmittanceWithFogOver(
@@ -125,7 +60,7 @@ float4 EvaluateVolumetric(float3 WorldPosition)
 			View.SkyAtmosphereCameraAerialPerspectiveVolumeSizeAndInvSize,
 			NDCPosition, 
 			WorldPosition.xyz * CM_TO_SKY_UNIT, 
-			View.WorldCameraOrigin.xyz * CM_TO_SKY_UNIT,
+			LWCHackToFloat(PrimaryView.WorldCameraOrigin).xyz * CM_TO_SKY_UNIT,
 			View.CameraAerialPerspectiveVolume, 
 			View.CameraAerialPerspectiveVolumeSampler,
 			View.SkyAtmosphereCameraAerialPerspectiveVolumeDepthResolutionInv,
@@ -133,7 +68,7 @@ float4 EvaluateVolumetric(float3 WorldPosition)
 			View.SkyAtmosphereAerialPerspectiveStartDepthKm,
 			View.SkyAtmosphereCameraAerialPerspectiveVolumeDepthSliceLengthKm,
 			View.SkyAtmosphereCameraAerialPerspectiveVolumeDepthSliceLengthKmInv,
-			OneOverPreExposure, 
+			View.OneOverPreExposure, 
 			Fogging);
 	}
 
@@ -144,25 +79,26 @@ void ComposeSamplePS(
 	in FScreenVertexOutput Input,
 	out float4 OutColor : SV_Target0,
 	out float  OutDepth : SV_DEPTH)
+#if PERMUTATION_DEBUG == 0
 {
 	OutColor = 0.0f;
 	const uint3 PixelCoord = uint3(floor(Input.Position.xy), 0);
 
-	FNodeDesc NodeDesc = DecodeNodeDesc(HairVisibilityNodeOffsetAndCount.Load(PixelCoord));
+	const FNodeDesc NodeDesc = DecodeNodeDesc(HairStrands.HairSampleOffset.Load(PixelCoord));
 	if (NodeDesc.Count == 0)
 	{
 		discard;
 	}
 
-	const FCategorizationData CatData = DecodeCategorizationData(HairCategorizationTexture.Load(PixelCoord));
-	const float PixelCoverage = min(CatData.PixelCoverage, 1);
+	const float PixelCoverage = min(HairStrands.HairCoverageTexture.Load(PixelCoord), 1);
 	if (PixelCoverage == 0)
 		discard;
 
-	const uint TotalNodeCount = HairSampleCount.Load(uint3(0, 0, 0));
+	const uint TotalNodeCount = HairStrands.HairSampleCount.Load(uint3(0, 0, 0));
 	const uint Resolution = uint(ceil(sqrt(float(TotalNodeCount))));
 
-	const float3 ClosetPointWorldPosition = SvPositionToWorld(float4(Input.Position.xy, CatData.ClosestDepth, 1.0));;
+	const float HairDeviceZ = HairStrands.HairOnlyDepthTexture.Load(PixelCoord);
+	const float3 ClosetPointWorldPosition = LWCHackToFloat(SvPositionToWorld(float4(Input.Position.xy, HairDeviceZ, 1.0)));
 	const float4 Volumetric = EvaluateVolumetric(ClosetPointWorldPosition);
 
 	float3 LocalAccColor = 0;
@@ -171,20 +107,51 @@ void ComposeSamplePS(
 	{
 		const uint LocalOffset = NodeDesc.Offset + SampleIt;
 		const uint2 Coord = uint2(LocalOffset % Resolution, LocalOffset / Resolution);
-		const float4 LightingSample = HairLightingSampleBuffer.Load(uint3(Coord,0));
-		const float4 EmissiveSample = HairEmissiveTexture.Load(uint3(Coord, 0));
-		LocalAccColor += LightingSample.rgb + EmissiveSample.rgb;
+		LocalAccColor += HairLightingSampleBuffer.Load(uint3(Coord, 0));
 	}
 	OutColor.rgb = LocalAccColor * Volumetric.a + Volumetric.rgb;
 
 	OutColor.rgb *= PixelCoverage;
 	OutColor.a = PixelCoverage;
-	OutDepth = CatData.ClosestDepth;
+	OutDepth = HairDeviceZ;
 	if (bComposeDofDepth)
 	{
 		OutDepth = HairDOFDepthTexture.Load(PixelCoord);
 	}
 }
+#else // PERMUTATION_DEBUG == 1
+{
+	OutColor = 0.0f;
+	const uint3 PixelCoord = uint3(floor(Input.Position.xy), 0);
+
+	const FNodeDesc NodeDesc = DecodeNodeDesc(HairStrands.HairSampleOffset.Load(PixelCoord));
+	if (NodeDesc.Count == 0)
+	{
+		discard;
+	}
+
+	const float PixelCoverage = min(HairStrands.HairCoverageTexture.Load(PixelCoord), 1);
+	if (PixelCoverage == 0)
+		discard;
+
+	const float HairDeviceZ = HairStrands.HairOnlyDepthTexture.Load(PixelCoord);
+
+	float3 LocalAccColor = 0;
+	LOOP
+	for (uint SampleIt = 0; SampleIt < NodeDesc.Count; SampleIt++)
+	{
+		const FPackedHairSample PackedSample = HairStrands.HairSampleData[NodeDesc.Offset + SampleIt];
+		const FHairSample Sample = UnpackHairSample(PackedSample);
+		const float LocalCoverage = From8bitCoverage(Sample.Coverage8bit);
+		LocalAccColor += LocalCoverage * Sample.BaseColor;
+	}
+	OutColor.rgb = LocalAccColor;
+
+	OutColor.rgb *= PixelCoverage;
+	OutColor.a = PixelCoverage;
+	OutDepth = HairDeviceZ;
+}
+#endif
 
 #endif // SHADER_COMPOSE_SAMPLE
 
@@ -193,8 +160,8 @@ void ComposeSamplePS(
 #if SHADER_DOFDEPTH
 #include "../CircleDOFCommon.ush"
 
-Texture2D<float>	SceneDepthTexture;
-Texture2D<uint4>	HairCategorizationTexture;
+// Included from DeferredLightingCommon now
+//Texture2D<float>	SceneDepthTexture;
 
 void DOFDepthPS(
 	in FScreenVertexOutput Input,
@@ -203,8 +170,7 @@ void DOFDepthPS(
 	OutTexture = 0.0f;
 	const uint3 PixelCoord = uint3(floor(Input.Position.xy), 0);
 
-	const FCategorizationData CatData = DecodeCategorizationData(HairCategorizationTexture.Load(PixelCoord));
-	const float PixelCoverage = min(CatData.PixelCoverage, 1);
+	const float PixelCoverage = min(HairStrands.HairCoverageTexture.Load(PixelCoord), 1);
 	if (PixelCoverage == 0)
 	{
 		return;
@@ -216,7 +182,7 @@ void DOFDepthPS(
 	float SceneDepth = 0;
 	float SceneCoC = 0; // Radius in pixel
 	{
-		SceneDeviceZ = SceneDepthTexture.Load(PixelCoord);
+		SceneDeviceZ = SceneDepthTexture.Load(PixelCoord).x;
 		SceneDepth = ConvertFromDeviceZ(SceneDeviceZ);
 		SceneDeviceZ = 1 - SceneDeviceZ;
 		SceneCoC = DepthToCoc(SceneDepth) * HalfResToFullRes;
@@ -227,7 +193,7 @@ void DOFDepthPS(
 	float HairDepth = 0;
 	float HairCoC = 0; // Radius in pixel
 	{
-		HairDeviceZ = CatData.ClosestDepth;
+		HairDeviceZ = HairStrands.HairOnlyDepthTexture.Load(PixelCoord).x;
 		HairDepth = ConvertFromDeviceZ(HairDeviceZ);
 		HairDeviceZ = 1 - HairDeviceZ;
 		HairCoC = DepthToCoc(HairDepth) * HalfResToFullRes;

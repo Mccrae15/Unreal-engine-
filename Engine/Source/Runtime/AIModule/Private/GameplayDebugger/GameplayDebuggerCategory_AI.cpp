@@ -117,7 +117,12 @@ static FString DescribeTaskHelper(const UGameplayTask& TaskOb)
 		*TaskOb.GetName(),
 		TaskOb.GetInstanceName() != NAME_None ? *FString::Printf(TEXT(" {yellow}[%s]"), *TaskOb.GetInstanceName().ToString()) : TEXT(""),
 		TaskOb.IsActive() ? TEXT("green") : TEXT("orange"),
-		*TaskOb.GetTaskStateName(), TaskOb.GetPriority(),
+#if ENABLE_VISUAL_LOG 
+		*TaskOb.GetTaskStateName(),
+#else
+		TEXT("UnknownTaskStateName"),
+#endif
+		TaskOb.GetPriority(),
 		*GetNameSafe(OwnerOb),
 		TaskOb.GetRequiredResources().IsEmpty() ? TEXT("None") : *TaskOb.GetRequiredResources().GetDebugDescription());
 }
@@ -133,7 +138,7 @@ void FGameplayDebuggerCategory_AI::CollectData(APlayerController* OwnerPC, AActo
 	DataPack.bHasController = (MyController != nullptr);
 	if (MyController)
 	{
-		if (MyController->IsPendingKill() == false)
+		if (IsValid(MyController))
 		{
 			DataPack.ControllerName = MyController->GetName();
 		}
@@ -147,7 +152,7 @@ void FGameplayDebuggerCategory_AI::CollectData(APlayerController* OwnerPC, AActo
 		DataPack.ControllerName = TEXT("No Controller");
 	}
 
-	if (MyPawn && !MyPawn->IsPendingKill())
+	if (MyPawn && IsValidChecked(MyPawn))
 	{
 		UCharacterMovementComponent* CharMovementComp = MyChar ? MyChar->GetCharacterMovement() : nullptr;
 		if (CharMovementComp)
@@ -301,13 +306,13 @@ void FGameplayDebuggerCategory_AI::OnDataPackReplicated(int32 DataPackId)
 
 void FGameplayDebuggerCategory_AI::DrawData(APlayerController* OwnerPC, FGameplayDebuggerCanvasContext& CanvasContext)
 {
-	UWorld* MyWorld = OwnerPC->GetWorld();
+	UWorld* MyWorld = CanvasContext.GetWorld();
 	AActor* SelectedActor = FindLocalDebugActor();
 
 	const bool bReducedMode = IsSimulateInEditor();
 	bShowCategoryName = !bReducedMode || DataPack.bHasController;
 
-	if (FGameplayDebuggerCategoryTweakables::bDrawOverheadIcons)
+	if (FGameplayDebuggerCategoryTweakables::bDrawOverheadIcons && OwnerPC)
 	{
 		DrawPawnIcons(MyWorld, SelectedActor, OwnerPC->GetPawn(), CanvasContext);
 	}
@@ -398,13 +403,13 @@ FDebugRenderSceneProxy* FGameplayDebuggerCategory_AI::CreateDebugSceneProxy(cons
 			if (Poly.Points.Num() > 2)
 			{
 				FDebugRenderSceneProxy::FMesh PolyMesh;
-				PolyMesh.Vertices.Add(FDynamicMeshVertex(Poly.Points[0]));
+				PolyMesh.Vertices.Add(FDynamicMeshVertex((FVector3f)Poly.Points[0]));
 				PolyMesh.Color = Poly.Color;
 
 				for (int32 VertIdx = 2; VertIdx < Poly.Points.Num(); VertIdx++)
 				{
-					PolyMesh.Vertices.Add(FDynamicMeshVertex(Poly.Points[VertIdx - 1]));
-					PolyMesh.Vertices.Add(FDynamicMeshVertex(Poly.Points[VertIdx]));
+					PolyMesh.Vertices.Add(FDynamicMeshVertex((FVector3f)Poly.Points[VertIdx - 1]));
+					PolyMesh.Vertices.Add(FDynamicMeshVertex((FVector3f)Poly.Points[VertIdx]));
 
 					PolyMesh.Indices.Add(0);
 					PolyMesh.Indices.Add(PolyMesh.Vertices.Num() - 2);

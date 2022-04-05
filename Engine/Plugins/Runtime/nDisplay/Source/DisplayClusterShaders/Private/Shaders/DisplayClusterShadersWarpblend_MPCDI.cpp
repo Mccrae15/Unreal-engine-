@@ -18,8 +18,7 @@
 #include "ShaderPermutation.h"
 #include "ShaderParameterStruct.h"
 
-#include "Render/Containers/DisplayClusterRender_MeshComponent.h"
-#include "Render/Containers/DisplayClusterRender_MeshComponentProxy.h"
+#include "Render/Containers/IDisplayClusterRender_MeshComponentProxy.h"
 #include "WarpBlend/IDisplayClusterWarpBlend.h"
 
 #include "ShaderParameters/DisplayClusterShaderParameters_WarpBlend.h"
@@ -38,7 +37,7 @@ enum class EVarMPCDIShaderType : uint8
 
 static TAutoConsoleVariable<int32> CVarMPCDIShaderType(
 	TEXT("nDisplay.render.mpcdi.shader"),
-	(int)EVarMPCDIShaderType::Default,
+	(int32)EVarMPCDIShaderType::Default,
 	TEXT("Select shader for mpcdi:\n")
 	TEXT(" 0: Warp shader (used by default)\n")
 	TEXT(" 1: Warp shader with disabled blend maps\n")
@@ -60,10 +59,20 @@ namespace MpcdiShaderPermutation
 	class FMpcdiShaderAlphaMapBlending : SHADER_PERMUTATION_BOOL("ALPHAMAP_BLENDING");
 	class FMpcdiShaderBetaMapBlending : SHADER_PERMUTATION_BOOL("BETAMAP_BLENDING");
 
+	class FMpcdiShaderViewportInputAlpha : SHADER_PERMUTATION_BOOL("VIEWPORT_INPUT_ALPHA");
+
 	class FMpcdiShaderMeshWarp : SHADER_PERMUTATION_BOOL("MESH_WARP");
 
-	using FCommonVSDomain = TShaderPermutationDomain<FMpcdiShaderMeshWarp>;
-	using FCommonPSDomain = TShaderPermutationDomain<FMpcdiShaderAlphaMapBlending, FMpcdiShaderBetaMapBlending, FMpcdiShaderMeshWarp>;
+	using FCommonVSDomain = TShaderPermutationDomain<
+		FMpcdiShaderMeshWarp
+	>;
+
+	using FCommonPSDomain = TShaderPermutationDomain<
+		FMpcdiShaderAlphaMapBlending,
+		FMpcdiShaderBetaMapBlending,
+		FMpcdiShaderViewportInputAlpha,
+		FMpcdiShaderMeshWarp
+	>;
 
 	bool ShouldCompileCommonPSPermutation(const FGlobalShaderPermutationParameters& Parameters, const FCommonPSDomain& PermutationVector)
 	{
@@ -82,11 +91,11 @@ namespace MpcdiShaderPermutation
 };
 
 BEGIN_SHADER_PARAMETER_STRUCT(FMpcdiVertexShaderParameters, )
-	SHADER_PARAMETER(FVector4, DrawRectanglePosScaleBias)
-	SHADER_PARAMETER(FVector4, DrawRectangleInvTargetSizeAndTextureSize)
-	SHADER_PARAMETER(FVector4, DrawRectangleUVScaleBias)
+	SHADER_PARAMETER(FVector4f, DrawRectanglePosScaleBias)
+	SHADER_PARAMETER(FVector4f, DrawRectangleInvTargetSizeAndTextureSize)
+	SHADER_PARAMETER(FVector4f, DrawRectangleUVScaleBias)
 
-	SHADER_PARAMETER(FMatrix, MeshToStageProjectionMatrix)
+	SHADER_PARAMETER(FMatrix44f, MeshToStageProjectionMatrix)
 END_SHADER_PARAMETER_STRUCT()
 
 BEGIN_SHADER_PARAMETER_STRUCT(FMpcdiPixelShaderParameters, )
@@ -100,7 +109,7 @@ BEGIN_SHADER_PARAMETER_STRUCT(FMpcdiPixelShaderParameters, )
 	SHADER_PARAMETER_SAMPLER(SamplerState, AlphaMapSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, BetaMapSampler)
 
-	SHADER_PARAMETER(FMatrix, ViewportTextureProjectionMatrix)
+	SHADER_PARAMETER(FMatrix44f, ViewportTextureProjectionMatrix)
 
 	SHADER_PARAMETER(float, AlphaEmbeddedGamma)
 END_SHADER_PARAMETER_STRUCT()
@@ -197,12 +206,12 @@ private:
 
 	FIntRect GetViewportRect() const
 	{
-		int vpPosX  = WarpBlendParameters.Dest.Rect.Min.X;
-		int vpPosY  = WarpBlendParameters.Dest.Rect.Min.Y;
-		int vpSizeX = WarpBlendParameters.Dest.Rect.Width();
-		int vpSizeY = WarpBlendParameters.Dest.Rect.Height();
+		const int32 PosX  = WarpBlendParameters.Dest.Rect.Min.X;
+		const int32 PosY  = WarpBlendParameters.Dest.Rect.Min.Y;
+		const int32 SizeX = WarpBlendParameters.Dest.Rect.Width();
+		const int32 SizeY = WarpBlendParameters.Dest.Rect.Height();
 
-		return FIntRect(FIntPoint(vpPosX, vpPosY), FIntPoint(vpPosX + vpSizeX, vpPosY + vpSizeY));
+		return FIntRect(FIntPoint(PosX, PosY), FIntPoint(PosX + SizeX, PosY + SizeY));
 	}
 
 	EMpcdiShaderType GetPixelShaderType()
@@ -243,27 +252,33 @@ public:
 		float USize = WarpBlendParameters.Src.Rect.Width() / (float)WarpDataSrcSize.X;
 		float VSize = WarpBlendParameters.Src.Rect.Height() / (float)WarpDataSrcSize.Y;
 
-		RenderPassData.VSParameters.DrawRectanglePosScaleBias = FVector4(1, 1, 0, 0);
-		RenderPassData.VSParameters.DrawRectangleInvTargetSizeAndTextureSize = FVector4(1, 1, 1, 1);
-		RenderPassData.VSParameters.DrawRectangleUVScaleBias = FVector4(USize, VSize, U, V);
+		RenderPassData.VSParameters.DrawRectanglePosScaleBias = FVector4f(1, 1, 0, 0);
+		RenderPassData.VSParameters.DrawRectangleInvTargetSizeAndTextureSize = FVector4f(1, 1, 1, 1);
+		RenderPassData.VSParameters.DrawRectangleUVScaleBias = FVector4f(USize, VSize, U, V);
 		return true;
 	}
 
 	bool GetWarpMapParameters(FMpcdiRenderPassData& RenderPassData)
 	{
-		RenderPassData.PSParameters.ViewportTextureProjectionMatrix = LocalUVMatrix * GetStereoMatrix();;
+		RenderPassData.PSParameters.ViewportTextureProjectionMatrix = FMatrix44f(LocalUVMatrix * GetStereoMatrix());
 
 		if (WarpBlendParameters.WarpInterface.IsValid())
 		{
+			if (WarpBlendParameters.bRenderAlphaChannel)
+			{
+				RenderPassData.PSPermutationVector.Set<MpcdiShaderPermutation::FMpcdiShaderViewportInputAlpha>(true);
+			}
+
 			switch (WarpBlendParameters.WarpInterface->GetWarpGeometryType())
 			{
 				case EDisplayClusterWarpGeometryType::WarpMesh:
+				case EDisplayClusterWarpGeometryType::WarpProceduralMesh:
 				{
 					// Use mesh inseat of warp texture
 					RenderPassData.PSPermutationVector.Set<MpcdiShaderPermutation::FMpcdiShaderMeshWarp>(true);
 					RenderPassData.VSPermutationVector.Set<MpcdiShaderPermutation::FMpcdiShaderMeshWarp>(true);
 
-					RenderPassData.VSParameters.MeshToStageProjectionMatrix = WarpBlendParameters.Context.MeshToStageMatrix;
+					RenderPassData.VSParameters.MeshToStageProjectionMatrix = FMatrix44f(WarpBlendParameters.Context.MeshToStageMatrix);
 					break;
 				}
 
@@ -345,15 +360,12 @@ public:
 				return true;
 
 			case EDisplayClusterWarpGeometryType::WarpMesh:
+			case EDisplayClusterWarpGeometryType::WarpProceduralMesh:
 			{
-				const FDisplayClusterRender_MeshComponent* DCWarpMeshComponent = WarpBlendParameters.WarpInterface->GetWarpMesh();
-				if (DCWarpMeshComponent)
+				const IDisplayClusterRender_MeshComponentProxy* WarpMeshProxy = WarpBlendParameters.WarpInterface->GetWarpMeshProxy_RenderThread();
+				if (WarpMeshProxy != nullptr)
 				{
-					const FDisplayClusterRender_MeshComponentProxy* WarpMesh = DCWarpMeshComponent->GetProxy();
-					if (WarpMesh)
-					{
-						return WarpMesh->BeginRender_RenderThread(RHICmdList, GraphicsPSOInit);
-					}
+					return WarpMeshProxy->BeginRender_RenderThread(RHICmdList, GraphicsPSOInit);
 				}
 				break;
 			}
@@ -377,15 +389,12 @@ public:
 				return true;
 
 			case EDisplayClusterWarpGeometryType::WarpMesh:
+			case EDisplayClusterWarpGeometryType::WarpProceduralMesh:
 			{
-				const FDisplayClusterRender_MeshComponent* DCWarpMeshComponent = WarpBlendParameters.WarpInterface->GetWarpMesh();
-				if (DCWarpMeshComponent)
+				const IDisplayClusterRender_MeshComponentProxy* WarpMeshProxy = WarpBlendParameters.WarpInterface->GetWarpMeshProxy_RenderThread();
+				if (WarpMeshProxy != nullptr)
 				{
-					const FDisplayClusterRender_MeshComponentProxy* WarpMesh = DCWarpMeshComponent->GetProxy();
-					if (WarpMesh)
-					{
-						return WarpMesh->FinishRender_RenderThread(RHICmdList);
-					}
+					return WarpMeshProxy->FinishRender_RenderThread(RHICmdList);
 				}
 				break;
 			}
@@ -425,7 +434,7 @@ public:
 
 			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 			GraphicsPSOInit.BlendState = TStaticBlendState <>::GetRHI();
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 			// Setup shaders data
 			SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), RenderPassData.VSParameters);
@@ -470,7 +479,7 @@ public:
 			// First pass always override old viewport image
 			GraphicsPSOInit.BlendState = TStaticBlendState <>::GetRHI();
 
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 			// Setup shaders data
 			SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), RenderPassData.VSParameters);
@@ -574,10 +583,16 @@ bool FDisplayClusterShadersWarpblend_MPCDI::RenderWarpBlend_MPCDI(FRHICommandLis
 	SCOPED_DRAW_EVENT(RHICmdList, nDisplay_Mpcdi_WarpBlend);
 
 	// Do single-pass warp&blend render
+	bool bIsRenderSuccess = false;
 	FRHIRenderPassInfo RPInfo(InWarpBlendParameters.Dest.Texture, ERenderTargetActions::Load_Store);
+	TransitionRenderPassTargets(RHICmdList, RPInfo);
+
 	RHICmdList.BeginRenderPass(RPInfo, TEXT("nDisplay_MpcdiWarpBlend"));
-	bool bIsRenderSuccess = MpcdiPassRenderer.Render(RHICmdList);
+	{
+		bIsRenderSuccess = MpcdiPassRenderer.Render(RHICmdList);
+	}
 	RHICmdList.EndRenderPass();
+	RHICmdList.Transition(FRHITransitionInfo(InWarpBlendParameters.Dest.Texture, ERHIAccess::Unknown, ERHIAccess::SRVMask));
 
 	return bIsRenderSuccess;
 };

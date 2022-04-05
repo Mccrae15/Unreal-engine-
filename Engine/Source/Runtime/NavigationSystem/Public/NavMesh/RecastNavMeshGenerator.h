@@ -140,7 +140,7 @@ struct FRecastGeometryCache
 	FHeader Header;
 
 	/** recast coords of vertices (size: NumVerts * 3) */
-	float* Verts;
+	FVector::FReal* Verts;
 
 	/** vert indices for triangles (size: NumFaces * 3) */
 	int32* Indices;
@@ -154,8 +154,8 @@ struct FRecastGeometryCache
 struct FRecastRawGeometryElement
 {
 	// Instance geometry
-	TArray<float>		GeomCoords;
-	TArray<int32>		GeomIndices;
+	TArray<FVector::FReal>		GeomCoords;
+	TArray<int32>				GeomIndices;
 	
 	// Per instance transformations in unreal coords
 	// When empty geometry is in world space
@@ -179,7 +179,7 @@ struct FRcTileBox
 {
 	int32 XMin, XMax, YMin, YMax;
 
-	FRcTileBox(const FBox& UnrealBounds, const FVector& RcNavMeshOrigin, const float TileSizeInWorldUnits)
+	FRcTileBox(const FBox& UnrealBounds, const FVector& RcNavMeshOrigin, const FVector::FReal TileSizeInWorldUnits)
 	{
 		check(TileSizeInWorldUnits > 0);
 
@@ -334,9 +334,9 @@ protected:
 	void Setup(const FRecastNavMeshGenerator& ParentGenerator, const TArray<FBox>& DirtyAreas);
 	
 	/** Gather geometry */
-	void GatherGeometry(const FRecastNavMeshGenerator& ParentGenerator, bool bGeometryChanged);
+	virtual void GatherGeometry(const FRecastNavMeshGenerator& ParentGenerator, bool bGeometryChanged);
 	/** Gather geometry sources to be processed later by the GatherGeometryFromSources */
-	void PrepareGeometrySources(const FRecastNavMeshGenerator& ParentGenerator, bool bGeometryChanged);
+	virtual void PrepareGeometrySources(const FRecastNavMeshGenerator& ParentGenerator, bool bGeometryChanged);
 	/** Gather geometry from the prefetched sources */
 	void GatherGeometryFromSources();
 	/** Gather geometry from the prefetched sources time sliced version */
@@ -348,10 +348,20 @@ protected:
 	bool CreateHeightField(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext);
 	ETimeSliceWorkResult RasterizeTrianglesTimeSliced(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext);
 	void RasterizeTriangles(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext);
+	ETimeSliceWorkResult RasterizeGeometryRecastTimeSliced(FNavMeshBuildContext& BuildContext, const TArray<FVector::FReal>& Coords, const TArray<int32>& Indices, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext);
+	UE_DEPRECATED(5.0, "Call the version of this function where Coords are now a TArray of FReals!")
 	ETimeSliceWorkResult RasterizeGeometryRecastTimeSliced(FNavMeshBuildContext& BuildContext, const TArray<float>& Coords, const TArray<int32>& Indices, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext);
+	void RasterizeGeometryRecast(FNavMeshBuildContext& BuildContext, const TArray<FVector::FReal>& Coords, const TArray<int32>& Indices, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext);
+	UE_DEPRECATED(5.0, "Call the version of this function where Coords are now a TArray of FReals!")
 	void RasterizeGeometryRecast(FNavMeshBuildContext& BuildContext, const TArray<float>& Coords, const TArray<int32>& Indices, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext);
+	void RasterizeGeometryTransformCoords(const TArray<FVector::FReal>& Coords, const FTransform& LocalToWorld);
+	UE_DEPRECATED(5.0, "Call the version of this function where Coords are now a TArray of FReals!")
 	void RasterizeGeometryTransformCoords(const TArray<float>& Coords, const FTransform& LocalToWorld);
+	ETimeSliceWorkResult RasterizeGeometryTimeSliced(FNavMeshBuildContext& BuildContext, const TArray<FVector::FReal>& Coords, const TArray<int32>& Indices, const FTransform& LocalToWorld, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext);
+	UE_DEPRECATED(5.0, "Call the version of this function where Coords are now a TArray of FReals!")
 	ETimeSliceWorkResult RasterizeGeometryTimeSliced(FNavMeshBuildContext& BuildContext, const TArray<float>& Coords, const TArray<int32>& Indices, const FTransform& LocalToWorld, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext);
+	void RasterizeGeometry(FNavMeshBuildContext& BuildContext, const TArray<FVector::FReal>& Coords, const TArray<int32>& Indices, const FTransform& LocalToWorld, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext);
+	UE_DEPRECATED(5.0, "Call the version of this function where Coords are now a TArray of FReals!")
 	void RasterizeGeometry(FNavMeshBuildContext& BuildContext, const TArray<float>& Coords, const TArray<int32>& Indices, const FTransform& LocalToWorld, const rcRasterizationFlags RasterizationFlags, FTileRasterizationContext& RasterContext);
 	void GenerateRecastFilter(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext);
 	bool BuildCompactHeightField(FNavMeshBuildContext& BuildContext, FTileRasterizationContext& RasterContext);
@@ -374,7 +384,7 @@ protected:
 	/** builds NavigationData array (layers + obstacles) */
 	bool GenerateNavigationData(FNavMeshBuildContext& BuildContext);
 
-	void ApplyVoxelFilter(struct rcHeightfield* SolidHF, float WalkableRadius);
+	virtual void ApplyVoxelFilter(struct rcHeightfield* SolidHF, FVector::FReal WalkableRadius);
 
 	/** Compute rasterization mask */
 	void InitRasterizationMaskArray(const rcHeightfield* SolidHF, TInlineMaskArray& OutRasterizationMasks);
@@ -401,7 +411,7 @@ protected:
 	void DumpAsyncData();
 
 #if RECAST_INTERNAL_DEBUG_DATA
-	bool IsTileToDebug();
+	bool IsTileDebugActive();
 #endif
 
 protected:
@@ -455,7 +465,7 @@ protected:
 	TArray<FNavMeshTileData> NavigationData;
 
 	/** Result of calling RasterizeGeometryInitVars() */
-	TArray<float> RasterizeGeometryWorldRecastCoords;
+	TArray<FVector::FReal> RasterizeGeometryWorldRecastCoords;
 	
 	// tile's geometry: without voxel cache
 	TArray<FRecastRawGeometryElement> RawGeometry;
@@ -469,6 +479,8 @@ protected:
 	TNavStatArray<TSharedRef<FNavigationRelevantData, ESPMode::ThreadSafe> > NavigationRelevantData;
 	TWeakObjectPtr<UNavigationSystemV1> NavSystem; 
 	FNavDataConfig NavDataConfig;
+
+	FRecastNavMeshTileGenerationDebug TileDebugSettings;
 
 #if RECAST_INTERNAL_DEBUG_DATA
 	FRecastInternalDebugData DebugData;
@@ -503,7 +515,7 @@ struct FPendingTileElement
 	/** tile coordinates on a grid in recast space */
 	FIntPoint	Coord;
 	/** distance to seed, used for sorting pending tiles */
-	float		SeedDistance; 
+	FVector::FReal SeedDistance;
 	/** Whether we need a full rebuild for this tile grid cell */
 	bool		bRebuildGeometry;
 	/** We need to store dirty area bounds to check which cached layers needs to be regenerated
@@ -513,7 +525,7 @@ struct FPendingTileElement
 
 	FPendingTileElement()
 		: Coord(FIntPoint::NoneValue)
-		, SeedDistance(MAX_flt)
+		, SeedDistance(TNumericLimits<FVector::FReal>::Max())
 		, bRebuildGeometry(false)
 	{
 	}
@@ -645,6 +657,8 @@ public:
 
 	const FRecastBuildConfig& GetConfig() const { return Config; }
 
+	const FRecastNavMeshTileGenerationDebug& GetTileDebugSettings() const { return DestNavMesh->TileGenerationDebug; } 
+
 	const TNavStatArray<FBox>& GetInclusionBounds() const { return InclusionBounds; }
 	
 	FVector GetRcNavMeshOrigin() const { return RcNavMeshOrigin; }
@@ -667,6 +681,9 @@ public:
 
 	FBox GrowBoundingBox(const FBox& BBox, bool bIncludeAgentHeight) const;
 	
+	/** Returns if the provided Octree Element should generate geometry on the provided NavDataConfig. Can be used to extend the logic to decide what geometry is generated on what Navmesh */
+	virtual bool ShouldGenerateGeometryForOctreeElement(const FNavigationOctreeElement& Element, const FNavDataConfig& NavDataConfig) const;
+	
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) && ENABLE_VISUAL_LOG
 	virtual void ExportNavigationData(const FString& FileName) const override;
 	virtual void GrabDebugSnapshot(struct FVisualLogEntry* Snapshot, const FBox& BoundingBox, const FName& CategoryName, ELogVerbosity::Type Verbosity) const override;
@@ -682,10 +699,10 @@ public:
 	static void ExportRigidBodyGeometry(UBodySetup& BodySetup, TNavStatArray<FVector>& OutTriMeshVertexBuffer, TNavStatArray<int32>& OutTriMeshIndexBuffer, TNavStatArray<FVector>& OutConvexVertexBuffer, TNavStatArray<int32>& OutConvexIndexBuffer, TNavStatArray<int32>& OutShapeBuffer, const FTransform& LocalToWorld = FTransform::Identity);
 	static void ExportAggregatedGeometry(const FKAggregateGeom& AggGeom, TNavStatArray<FVector>& OutConvexVertexBuffer, TNavStatArray<int32>& OutConvexIndexBuffer, TNavStatArray<int32>& OutShapeBuffer, const FTransform& LocalToWorld = FTransform::Identity);
 
-#if !UE_BUILD_SHIPPING
+#if UE_ENABLE_DEBUG_DRAWING
 	/** Converts data encoded in EncodedData.CollisionData to FNavDebugMeshData format */
 	static void GetDebugGeometry(const FNavigationRelevantData& EncodedData, FNavDebugMeshData& DebugMeshData);
-#endif  // !UE_BUILD_SHIPPING
+#endif  // UE_ENABLE_DEBUG_DRAWING
 
 	const FNavRegenTimeSliceManager* GetTimeSliceManager() const { return SyncTimeSlicedData.TimeSliceManager; }
 	
@@ -716,6 +733,9 @@ protected:
 	
 	/** Marks grid tiles affected by specified areas as dirty */
 	virtual void MarkDirtyTiles(const TArray<FNavigationDirtyArea>& DirtyAreas);
+
+	/** Returns if the provided UObject that requested a navmesh dirtying should dirty this Navmesh. Useful to avoid tiles regeneration from objects that are excluded from the provided NavDataConfig */
+	virtual bool ShouldDirtyTilesRequestedByObject(const UNavigationSystemV1& NavSys, const FNavigationOctree& NavOctreeInstance, const UObject& SourceObject, const FNavDataConfig& NavDataConfig) const;
 
 	/** Marks all tiles overlapping with InclusionBounds dirty (via MarkDirtyTiles). */
 	bool MarkNavBoundsDirty();
@@ -773,6 +793,14 @@ protected:
 
 	virtual TSharedRef<FRecastTileGenerator> CreateTileGenerator(const FIntPoint& Coord, const TArray<FBox>& DirtyAreas);
 
+	template <typename T>
+	TSharedRef<T> ConstuctTileGeneratorImpl(const FIntPoint& Coord, const TArray<FBox>& DirtyAreas)
+	{
+		TSharedRef<T> TileGenerator = MakeShareable(new T(*this, Coord));
+		TileGenerator->Setup(*this, DirtyAreas);
+		return TileGenerator;
+	}
+
 	void SetBBoxGrowth(const FVector& InBBox) { BBoxGrowth = InBBox; }
 
 	//----------------------------------------------------------------------//
@@ -799,7 +827,7 @@ protected:
 	 */
 	int32 MaxTileGeneratorTasks;
 
-	float AvgLayersPerTile;
+	FVector::FReal AvgLayersPerTile;
 
 	/** Total bounding box that includes all volumes, in unreal units. */
 	FBox TotalNavBounds;

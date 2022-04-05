@@ -22,9 +22,67 @@ inline void TryBulkSerializeArrayNDBase(FArchive& Ar, TArray<float>& Array)
 	Array.BulkSerialize(Ar);
 }
 
-inline void TryBulkSerializeArrayNDBase(FArchive& Ar, TArray<FVec3>& Array)
+inline void TryBulkSerializeArrayNDBase(FArchive& Ar, TArray<TVec3<FRealSingle>>& Array)
 {
-	Array.BulkSerialize(Ar);
+	Array.BulkSerialize(Ar); 
+}
+
+inline float ConvertDoubleToFloat(double DoubleValue)
+{
+	return (float)DoubleValue; // LWC_TODO : Perf pessimization 
+}
+
+inline TVec3<float> ConvertDoubleToFloat(TVec3<double> DoubleValue)
+{
+	return TVec3<float>((float)DoubleValue.X, (float)DoubleValue.Y, (float)DoubleValue.Z); // LWC_TODO : Perf pessimization 
+}
+
+inline double ConvertFloatToDouble(float FloatValue)
+{
+	return (double)FloatValue;
+}
+
+inline TVec3<double> ConvertFloatToDouble(TVec3<float> FloatValue)
+{
+	return TVec3<double>((double)FloatValue.X, (double)FloatValue.Y, (double)FloatValue.Z); 
+}
+
+// LWC_TODO : Perf pessimization : this is sub-optimal but will do until we sort the serialization out
+template<typename DOUBLE_T, typename FLOAT_T>
+inline void TryBulkSerializeArrayNDBaseForDoubles(FArchive& Ar, TArray<DOUBLE_T>& DoubleTypedArray)
+{
+	TArray<FLOAT_T> FloatTypedArray;
+	if (Ar.IsSaving())
+	{
+		FloatTypedArray.SetNumUninitialized(DoubleTypedArray.Num());
+		for (int i = 0; i < DoubleTypedArray.Num(); ++i)
+		{
+			FloatTypedArray[i] = ConvertDoubleToFloat(DoubleTypedArray[i]);
+		}
+	}
+
+	TryBulkSerializeArrayNDBase(Ar, FloatTypedArray);
+
+	if (Ar.IsLoading())
+	{
+		DoubleTypedArray.SetNumUninitialized(FloatTypedArray.Num());
+		for (int i = 0; i < FloatTypedArray.Num(); ++i)
+		{
+			DoubleTypedArray[i] = ConvertFloatToDouble(FloatTypedArray[i]);
+		}
+	}
+}
+
+// LWC_TODO : Perf pessimization : this is sub-optimal but will do until we sort the serialization out
+inline void TryBulkSerializeArrayNDBase(FArchive& Ar, TArray<double>& Array)
+{
+	TryBulkSerializeArrayNDBaseForDoubles<double, float>(Ar, Array);
+}
+
+// LWC_TODO : Perf pessimization : this is sub-optimal but will do until we sort the serialization out
+inline void TryBulkSerializeArrayNDBase(FArchive& Ar, TArray<TVec3<FRealDouble>>& Array)
+{
+	TryBulkSerializeArrayNDBaseForDoubles<TVec3<FRealDouble>, TVec3<FRealSingle>>(Ar, Array);
 }
 
 template<class T_DERIVED, class T, int d>
@@ -72,7 +130,13 @@ class TArrayNDBase
 		Ar << MArray;
 	}
 
-	FORCEINLINE TArrayNDBase<T_DERIVED, T, d>& operator=(const TArrayNDBase<T_DERIVED, T, d>& Other) = delete;
+	FORCEINLINE TArrayNDBase<T_DERIVED, T, d>& operator=(const TArrayNDBase<T_DERIVED, T, d>& Other)
+	{
+		MCounts = Other.MCounts;
+		MArray = Other.MArray;
+		return *this;
+	}
+
 	FORCEINLINE TArrayNDBase<T_DERIVED, T, d>& operator=(TArrayNDBase<T_DERIVED, T, d>&& Other)
 	{
 		MCounts = Other.MCounts;
@@ -135,7 +199,11 @@ class TArrayND : public TArrayNDBase<TArrayND<T, d>, T, d>
 	    : Base(MoveTemp(Other)) {}
 	FORCEINLINE TArrayND(std::istream& Stream)
 	    : Base(Stream) {}
-	FORCEINLINE TArrayND<T, d>& operator=(const TArrayND<T, d>& Other) = delete;
+	FORCEINLINE TArrayND<T, d>& operator=(const TArrayND<T, d>& Other)
+	{
+		Base::operator=(Other);
+		return *this;
+	}
 	FORCEINLINE TArrayND<T, d>& operator=(TArrayND<T, d>&& Other)
 	{
 		Base::operator=(MoveTemp(Other));
@@ -167,7 +235,7 @@ class TArrayND<T, 3> : public TArrayNDBase<TArrayND<T, 3>, T, 3>
 #else
 	FORCEINLINE TArrayND() { MCounts = TVec3<int32>(0); }
 #endif
-	FORCEINLINE TArrayND(const TUniformGrid<float, 3>& grid)
+	FORCEINLINE TArrayND(const TUniformGrid<FReal, 3>& grid)
 	{
 		MCounts = grid.Counts();
 		MArray.SetNum(MCounts[0] * MCounts[1] * MCounts[2]);
@@ -184,7 +252,11 @@ class TArrayND<T, 3> : public TArrayNDBase<TArrayND<T, 3>, T, 3>
 	    : Base(MoveTemp(Other)) {}
 	FORCEINLINE TArrayND(std::istream& Stream)
 	    : Base(Stream) {}
-	FORCEINLINE TArrayND<T, 3>& operator=(const TArrayND<T, 3>& Other) = delete;
+	FORCEINLINE TArrayND<T, 3>& operator=(const TArrayND<T, 3>& Other)
+	{
+		Base::operator=(Other);
+		return *this;
+	}
 	FORCEINLINE TArrayND<T, 3>& operator=(TArrayND<T, 3>&& Other)
 	{
 		Base::operator=(MoveTemp(Other));

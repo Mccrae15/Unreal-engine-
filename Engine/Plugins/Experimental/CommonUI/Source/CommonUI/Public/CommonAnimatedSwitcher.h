@@ -11,6 +11,9 @@
 class SOverlay;
 class SSpacer;
 
+/**
+ * A widget switcher that activates / deactivates CommonActivatableWidgets, allowing for associated animations to trigger.
+ */
 UCLASS()
 class COMMONUI_API UCommonAnimatedSwitcher : public UWidgetSwitcher
 {
@@ -40,8 +43,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Common Widget Switcher")
 	void SetDisableTransitionAnimation(bool bDisableAnimation);
 
+	UFUNCTION(BlueprintCallable, Category = "Common Widget Switcher")
+	bool IsCurrentlySwitching() const;
+
 protected:
 	virtual void HandleSlateActiveIndexChanged(int32 ActiveIndex);
+
+	virtual void HandleSlateIsTransitioningChanged(bool bIsTransitioning);
 
 	virtual TSharedRef<SWidget> RebuildWidget() override;
 
@@ -73,8 +81,8 @@ protected:
 	bool bInstantTransition = false;
 
 	bool bSetOnce = false;
+	bool bCurrentlySwitching = false;
 
 private:
-	void HandleSlateIsTransitioningChanged(bool bIsTransitioning);
 	void SetActiveWidgetIndex_Internal(int32 Index);
 };

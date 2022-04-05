@@ -10,6 +10,7 @@
 #include "MediaOutput.h"
 #include "Misc/Timecode.h"
 #include "PixelFormat.h"
+#include "RendererInterface.h"
 #include "RHI.h"
 #include "RHIResources.h"
 #include "Templates/Atomic.h"
@@ -255,12 +256,15 @@ protected:
 	/** Should we call OnFrameCaptured_RenderingThread() with a RHI Texture -or- copy the memory to CPU ram and call OnFrameCaptured_RenderingThread(). */
 	virtual bool ShouldCaptureRHITexture() const { return false; }
 
+	/** Called at the beginning of the Capture_RenderThread call. */
+	virtual void BeforeFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture) {}
+
 	/**
 	 * Callback when the buffer was successfully copied to CPU ram.
 	 * The callback in called from a critical point. If you intend to process the buffer, do so in another thread.
 	 * The buffer is only valid for the duration of the callback.
 	 */
-	virtual void OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height) { }
+	virtual void OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height, int32 BytesPerRow) { }
 
 	/**
 	 * Callback when the buffer was successfully copied on the GPU ram.
@@ -319,6 +323,8 @@ private:
 		FCaptureBaseData CaptureBaseData;
 		TAtomic<bool> bResolvedTargetRequested;
 		TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> UserData;
+		// Used for RHI Capture
+		TRefCountPtr<IPooledRenderTarget> RenderTarget;
 	};
 
 	TArray<FCaptureFrame> CaptureFrames;
@@ -340,6 +346,8 @@ private:
 	EMediaCaptureConversionOperation ConversionOperation;
 	FString MediaOutputName;
 	bool bUseRequestedTargetSize;
+
+
 
 	bool bViewportHasFixedViewportSize;
 	TAtomic<bool> bResolvedTargetInitialized;

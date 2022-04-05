@@ -14,6 +14,7 @@
 #include "EntitySystem/MovieSceneEntitySystemGraphs.h"
 #include "EntitySystem/MovieSceneSequenceInstance.h"
 #include "EntitySystem/MovieSceneEntitySystemLinkerExtension.h"
+#include "Evaluation/PreAnimatedState/MovieScenePreAnimatedStateExtension.h"
 
 #include "MovieSceneEntitySystemLinker.generated.h"
 
@@ -63,6 +64,8 @@ public:
 public:
 
 	GENERATED_BODY()
+
+	UE::MovieScene::FPreAnimatedStateExtension PreAnimatedState;
 
 	UMovieSceneEntitySystemLinker(const FObjectInitializer& ObjInit);
 
@@ -234,11 +237,14 @@ public:
 	void LinkRelevantSystems();
 	void AutoLinkRelevantSystems();
 
+	bool HasStructureChangedSinceLastRun() const;
+
 	void InvalidateObjectBinding(const FGuid& ObjectBindingID, FInstanceHandle InstanceHandle);
 	void CleanupInvalidBoundObjects();
 
 	bool StartEvaluation(FMovieSceneEntitySystemRunner& InRunner);
 	FMovieSceneEntitySystemRunner* GetActiveRunner() const;
+	void PostInstantation(FMovieSceneEntitySystemRunner& InRunner);
 	void EndEvaluation(FMovieSceneEntitySystemRunner& InRunner);
 
 private:
@@ -249,6 +255,7 @@ private:
 	void CleanGarbage();
 
 	void OnWorldCleanup(UWorld* InWorld, bool bSessionEnded, bool bCleanupResources);
+	void OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap);
 
 	virtual void BeginDestroy() override;
 
@@ -259,6 +266,7 @@ private:
 	TUniquePtr<FInstanceRegistry> InstanceRegistry;
 
 	TSparseArray<UMovieSceneEntitySystem*> EntitySystemsByGlobalGraphID;
+	TMap<UClass*, UMovieSceneEntitySystem*> EntitySystemsRecyclingPool;
 
 	struct FActiveRunnerInfo
 	{
@@ -285,6 +293,7 @@ public:
 private:
 
 	uint64 LastSystemLinkVersion;
+	uint64 LastInstantiationVersion;
 
 	TWeakPtr<bool> GlobalStateCaptureToken;
 

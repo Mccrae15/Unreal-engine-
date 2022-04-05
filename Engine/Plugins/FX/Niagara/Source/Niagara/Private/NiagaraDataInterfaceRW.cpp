@@ -9,6 +9,7 @@
 
 // Global HLSL variable base names, used by HLSL.
 const FString UNiagaraDataInterfaceRWBase::NumAttributesName(TEXT("NumAttributes_"));
+const FString UNiagaraDataInterfaceRWBase::NumNamedAttributesName(TEXT("NumNamedAttributes_"));
 const FString UNiagaraDataInterfaceRWBase::NumCellsName(TEXT("NumCells_"));
 const FString UNiagaraDataInterfaceRWBase::UnitToUVName(TEXT("UnitToUV_"));
 const FString UNiagaraDataInterfaceRWBase::CellSizeName(TEXT("CellSize_"));
@@ -40,33 +41,6 @@ UNiagaraDataInterfaceRWBase::UNiagaraDataInterfaceRWBase(FObjectInitializer cons
 
 }
 
-bool UNiagaraDataInterfaceRWBase::Equals(const UNiagaraDataInterface* Other) const
-{
-	const UNiagaraDataInterfaceRWBase* OtherTyped = CastChecked<const UNiagaraDataInterfaceRWBase>(Other);
-
-	if (OtherTyped)
-	{
-		return OutputShaderStages.Difference(OtherTyped->OutputShaderStages).Num() == 0 && IterationShaderStages.Difference(OtherTyped->IterationShaderStages).Num() == 0;
-	}
-
-	return false;
-}
-
-bool UNiagaraDataInterfaceRWBase::CopyToInternal(UNiagaraDataInterface* Destination) const
-{
-	if (!Super::CopyToInternal(Destination))
-	{
-		return false;
-	}
-
-	UNiagaraDataInterfaceRWBase* OtherTyped = CastChecked<UNiagaraDataInterfaceRWBase>(Destination);
-
-	OtherTyped->OutputShaderStages = OutputShaderStages;
-	OtherTyped->IterationShaderStages = IterationShaderStages;
-
-	return true;
-}
-
 /*--------------------------------------------------------------------------------------------------------------------------*/
 
 UNiagaraDataInterfaceGrid3D::UNiagaraDataInterfaceGrid3D(FObjectInitializer const& ObjectInitializer)
@@ -87,7 +61,8 @@ void UNiagaraDataInterfaceGrid3D::GetFunctions(TArray<FNiagaraFunctionSignature>
 		Sig.Name = UNiagaraDataInterfaceRWBase::WorldBBoxSizeFunctionName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Grid")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("WorldBBoxSize")));
-
+		Sig.bHidden = true;
+		Sig.bSoftDeprecatedFunction = true;
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
 		OutFunctions.Add(Sig);
@@ -242,7 +217,8 @@ void UNiagaraDataInterfaceGrid3D::GetFunctions(TArray<FNiagaraFunctionSignature>
 		Sig.Name = UNiagaraDataInterfaceRWBase::CellSizeFunctionName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Grid")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("CellSize")));		
-
+		Sig.bHidden = true;
+		Sig.bSoftDeprecatedFunction = true;
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
 		OutFunctions.Add(Sig);
@@ -425,35 +401,45 @@ bool UNiagaraDataInterfaceGrid3D::GetFunctionHLSL(const FNiagaraDataInterfaceGPU
 	}
 	else if (FunctionInfo.DefinitionName == UNiagaraDataInterfaceRWBase::ExecutionIndexToUnitFunctionName)
 	{
-	static const TCHAR* FormatSample = TEXT(R"(
+		static const TCHAR* FormatSample = TEXT(R"(
 			void {FunctionName}(out float3 Out_Unit)
 			{
-				const uint Linear = GLinearThreadId;
-				const uint IndexX = Linear % {NumCellsName}.x;
-				const uint IndexY = (Linear / {NumCellsName}.x) % {NumCellsName}.y;
-				const uint IndexZ = Linear / ({NumCellsName}.x * {NumCellsName}.y);				
+				#if NIAGARA_DISPATCH_TYPE == NIAGARA_DISPATCH_TYPE_THREE_D || NIAGARA_DISPATCH_TYPE == NIAGARA_DISPATCH_TYPE_CUSTOM
+					Out_Unit = (float3(GDispatchThreadId.x, GDispatchThreadId.y, GDispatchThreadId.z) + .5) / {NumCellsName};
+				#else
+					const uint Linear = GLinearThreadId;
+					const uint IndexX = Linear % {NumCellsName}.x;
+					const uint IndexY = (Linear / {NumCellsName}.x) % {NumCellsName}.y;
+					const uint IndexZ = Linear / ({NumCellsName}.x * {NumCellsName}.y);				
 
-				Out_Unit = (float3(IndexX, IndexY, IndexZ) + .5) / {NumCellsName};				
+					Out_Unit = (float3(IndexX, IndexY, IndexZ) + .5) / {NumCellsName};				
+				#endif
 			}
 		)");
 
-	OutHLSL += FString::Format(FormatSample, ArgsDeclarations);
-	return true;
+		OutHLSL += FString::Format(FormatSample, ArgsDeclarations);
+		return true;
 	}
 	else if (FunctionInfo.DefinitionName == UNiagaraDataInterfaceRWBase::ExecutionIndexToGridIndexFunctionName)
 	{
-	static const TCHAR* FormatSample = TEXT(R"(
+		static const TCHAR* FormatSample = TEXT(R"(
 			void {FunctionName}(out int Out_IndexX, out int Out_IndexY, out int Out_IndexZ)
 			{
-				const uint Linear = GLinearThreadId;
-				Out_IndexX = Linear % {NumCellsName}.x;
-				Out_IndexY = (Linear / {NumCellsName}.x) % {NumCellsName}.y;
-				Out_IndexZ = Linear / ({NumCellsName}.x * {NumCellsName}.y);
+				#if NIAGARA_DISPATCH_TYPE == NIAGARA_DISPATCH_TYPE_THREE_D || NIAGARA_DISPATCH_TYPE == NIAGARA_DISPATCH_TYPE_CUSTOM
+					Out_IndexX = GDispatchThreadId.x;
+					Out_IndexY = GDispatchThreadId.y;
+					Out_IndexZ = GDispatchThreadId.z;
+				#else
+					const uint Linear = GLinearThreadId;
+					Out_IndexX = Linear % {NumCellsName}.x;
+					Out_IndexY = (Linear / {NumCellsName}.x) % {NumCellsName}.y;
+					Out_IndexZ = Linear / ({NumCellsName}.x * {NumCellsName}.y);
+				#endif
 			}
 		)");
 
-	OutHLSL += FString::Format(FormatSample, ArgsDeclarations);
-	return true;
+		OutHLSL += FString::Format(FormatSample, ArgsDeclarations);
+		return true;
 	}
 	else if (FunctionInfo.DefinitionName == UNiagaraDataInterfaceRWBase::CellSizeFunctionName)
 	{
@@ -515,7 +501,7 @@ void UNiagaraDataInterfaceGrid2D::ValidateFunction(const FNiagaraFunctionSignatu
 	DeprecatedFunctionNames.Add(UNiagaraDataInterfaceRWBase::WorldBBoxSizeFunctionName);
 	DeprecatedFunctionNames.Add(UNiagaraDataInterfaceRWBase::CellSizeFunctionName);
 
-	if (DIFuncs.Contains(Function) && DeprecatedFunctionNames.Contains(FName(Function.GetName())))
+	if (DIFuncs.Contains(Function) && DeprecatedFunctionNames.Contains(Function.Name))
 	{
 		// #TODO(dmp): add validation warnings that aren't as strict as these errors
 		// OutValidationErrors.Add(FText::Format(LOCTEXT("Grid2DDeprecationMsgFmt", "Grid2D DI Function {0} has been deprecated. Specify grid size on your emitter.\n"), FText::FromString(Function.GetName())));	
@@ -532,7 +518,8 @@ void UNiagaraDataInterfaceGrid2D::GetFunctions(TArray<FNiagaraFunctionSignature>
 		Sig.Name = UNiagaraDataInterfaceRWBase::WorldBBoxSizeFunctionName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Grid")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("WorldBBoxSize")));		
-
+		Sig.bHidden = true;
+		Sig.bSoftDeprecatedFunction = true;
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
 		OutFunctions.Add(Sig);
@@ -695,7 +682,8 @@ void UNiagaraDataInterfaceGrid2D::GetFunctions(TArray<FNiagaraFunctionSignature>
 		Sig.Name = UNiagaraDataInterfaceRWBase::CellSizeFunctionName;
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Grid")));
 		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetVec2Def(), TEXT("CellSize")));
-
+		Sig.bHidden = true;
+		Sig.bSoftDeprecatedFunction = true;
 		Sig.bMemberFunction = true;
 		Sig.bRequiresContext = false;
 		OutFunctions.Add(Sig);
@@ -904,33 +892,41 @@ bool UNiagaraDataInterfaceGrid2D::GetFunctionHLSL(const FNiagaraDataInterfaceGPU
 	}
 	else if (FunctionInfo.DefinitionName == UNiagaraDataInterfaceRWBase::ExecutionIndexToUnitFunctionName)
 	{
-	static const TCHAR* FormatSample = TEXT(R"(
+		static const TCHAR* FormatSample = TEXT(R"(
 			void {FunctionName}(out float2 Out_Unit)
 			{
-				const uint Linear = GLinearThreadId;
-				const uint IndexX = Linear % {NumCellsName}.x;
-				const uint IndexY = Linear / {NumCellsName}.x;				
-
-				Out_Unit = (float2(IndexX, IndexY) + .5) * {UnitToUVName};			
+				#if NIAGARA_DISPATCH_TYPE == NIAGARA_DISPATCH_TYPE_TWO_D || NIAGARA_DISPATCH_TYPE == NIAGARA_DISPATCH_TYPE_CUSTOM
+					Out_Unit = (float2(GDispatchThreadId.x, GDispatchThreadId.y) + .5) * {UnitToUVName};			
+				#else
+					const uint Linear = GLinearThreadId;
+					const uint IndexX = Linear % {NumCellsName}.x;
+					const uint IndexY = Linear / {NumCellsName}.x;				
+					Out_Unit = (float2(IndexX, IndexY) + .5) * {UnitToUVName};			
+				#endif
 			}
 		)");
 
-	OutHLSL += FString::Format(FormatSample, ArgsDeclarations);
-	return true;
+		OutHLSL += FString::Format(FormatSample, ArgsDeclarations);
+		return true;
 	}
 	else if (FunctionInfo.DefinitionName == UNiagaraDataInterfaceRWBase::ExecutionIndexToGridIndexFunctionName)
 	{
-	static const TCHAR* FormatSample = TEXT(R"(
+		static const TCHAR* FormatSample = TEXT(R"(
 			void {FunctionName}(out int Out_IndexX, out int Out_IndexY)
 			{
-				const uint Linear = GLinearThreadId;
-				Out_IndexX = Linear % {NumCellsName}.x;
-				Out_IndexY = Linear / {NumCellsName}.x;				
+				#if NIAGARA_DISPATCH_TYPE == NIAGARA_DISPATCH_TYPE_TWO_D || NIAGARA_DISPATCH_TYPE == NIAGARA_DISPATCH_TYPE_CUSTOM
+					Out_IndexX = GDispatchThreadId.x;
+					Out_IndexY = GDispatchThreadId.y;
+				#else
+					const uint Linear = GLinearThreadId;
+					Out_IndexX = Linear % {NumCellsName}.x;
+					Out_IndexY = Linear / {NumCellsName}.x;				
+				#endif
 			}
 		)");
 
-	OutHLSL += FString::Format(FormatSample, ArgsDeclarations);
-	return true;
+		OutHLSL += FString::Format(FormatSample, ArgsDeclarations);
+		return true;
 	}
 	else if (FunctionInfo.DefinitionName == UNiagaraDataInterfaceRWBase::CellSizeFunctionName)
 	{

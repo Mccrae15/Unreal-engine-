@@ -1,14 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "CADInterfacesModule.h"
 
+#include "CADOptions.h"
 #include "CoreTechTypes.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
+#include "TechSoftInterface.h"
 
 #define LOCTEXT_NAMESPACE "CADInterfacesModule"
 
-DEFINE_LOG_CATEGORY(CADInterfaces);
+DEFINE_LOG_CATEGORY(LogCADInterfaces);
 
 class FCADInterfacesModule : public ICADInterfacesModule
 {
@@ -17,9 +19,11 @@ private:
 	virtual void ShutdownModule() override;
 
 	static void* KernelIOLibHandle;
+	static void* TechSoftLibHandle;
 };
 
 void* FCADInterfacesModule::KernelIOLibHandle = nullptr;
+void* FCADInterfacesModule::TechSoftLibHandle = nullptr;
 
 ICADInterfacesModule& ICADInterfacesModule::Get()
 {
@@ -32,44 +36,89 @@ ECADInterfaceAvailability ICADInterfacesModule::GetAvailability()
 {
 	if (FModuleManager::Get().IsModuleLoaded(CADINTERFACES_MODULE_NAME))
 	{
-		if(CADLibrary::CTKIO_InitializeKernel())
+		if (CADLibrary::FImportParameters::GCADLibrary == TEXT("KernelIO"))
 		{
-			return ECADInterfaceAvailability::Available;
+			if (CADLibrary::CTKIO_InitializeKernel())
+			{
+				return ECADInterfaceAvailability::Available;
+			}
+		}
+		else if (CADLibrary::FImportParameters::GCADLibrary == TEXT("TechSoft"))
+		{
+			if (CADLibrary::TechSoftInterface::TECHSOFT_InitializeKernel())
+			{
+				return ECADInterfaceAvailability::Available;
+			}
 		}
 	}
 
-	UE_LOG(CADInterfaces, Warning, TEXT("Failed to load CADInterfaces module. Plug-in may not be functional."));
+	UE_LOG(LogCADInterfaces, Warning, TEXT("Failed to load CADInterfaces module. Plug-in may not be functional."));
 	return ECADInterfaceAvailability::Unavailable;
 }
 
 void FCADInterfacesModule::StartupModule()
 {
+	// determine directory paths
+	FString CADImporterDllPath = FPaths::Combine(FPaths::EnginePluginsDir(), TEXT("Enterprise/DatasmithCADImporter"), TEXT("Binaries"), FPlatformProcess::GetBinariesSubdirectory());
+	FPlatformProcess::PushDllDirectory(*CADImporterDllPath);
+
 #if WITH_EDITOR & defined(USE_KERNEL_IO_SDK)
 	check(KernelIOLibHandle == nullptr);
 
 	FString KernelIODll = TEXT("kernel_io.dll");
-
-	// determine directory paths
-	FString CADImporterDllPath = FPaths::Combine(FPaths::EnginePluginsDir(), TEXT("Enterprise/DatasmithCADImporter"), TEXT("Binaries"), FPlatformProcess::GetBinariesSubdirectory());
-	FPlatformProcess::PushDllDirectory(*CADImporterDllPath);
 	KernelIODll = FPaths::Combine(CADImporterDllPath, KernelIODll);
 
 	if (!FPaths::FileExists(KernelIODll))
 	{
-		UE_LOG(CADInterfaces, Warning, TEXT("CoreTech module is missing. Plug-in will not be functional."));
-		return;
+		UE_LOG(LogCADInterfaces, Warning, TEXT("CoreTech module is missing. Plug-in will not be functional."));
 	}
-
-	KernelIOLibHandle = FPlatformProcess::GetDllHandle(*KernelIODll);
-	if (KernelIOLibHandle == nullptr)
+	else
 	{
-		UE_LOG(CADInterfaces, Warning, TEXT("Failed to load required library %s. Plug-in will not be functional."), *KernelIODll);
+		KernelIOLibHandle = FPlatformProcess::GetDllHandle(*KernelIODll);
+		if (KernelIOLibHandle == nullptr)
+		{
+			UE_LOG(LogCADInterfaces, Warning, TEXT("Failed to load required library %s. Plug-in will not be functional."), *KernelIODll);
+		}
+		else
+		{
+			CADLibrary::InitializeCoreTechInterface();
+		}
+
+		FPlatformProcess::PopDllDirectory(*CADImporterDllPath);
 	}
-
-	FPlatformProcess::PopDllDirectory(*CADImporterDllPath);
-
-	CADLibrary::InitializeCoreTechInterface();
 #endif
+
+#if WITH_EDITOR & defined(USE_TECHSOFT_SDK)
+	check(TechSoftLibHandle == nullptr);
+
+	FString TechSoftDllPath = FPaths::ConvertRelativePathToFull(FPaths::Combine(CADImporterDllPath, "TechSoft"));
+	FPlatformProcess::PushDllDirectory(*TechSoftDllPath);
+
+#if PLATFORM_WINDOWS
+	FString TechSoftDll = TEXT("A3DLIBS.dll");
+#elif PLATFORM_LINUX
+	FString TechSoftDll = TEXT("libA3DLIBS.so");
+#else
+#error Platform not supported
+#endif
+	TechSoftDll = FPaths::Combine(TechSoftDllPath, TechSoftDll);
+
+	if (!FPaths::FileExists(TechSoftDll))
+	{
+		UE_LOG(LogCADInterfaces, Warning, TEXT("TechSoft module is missing. Plug-in will not be functional."));
+	}
+	else
+	{
+		TechSoftLibHandle = FPlatformProcess::GetDllHandle(*TechSoftDll);
+		if (TechSoftLibHandle == nullptr)
+		{
+			UE_LOG(LogCADInterfaces, Warning, TEXT("Failed to load required library %s. Plug-in will not be functional."), *TechSoftDll);
+		}
+
+		FPlatformProcess::PopDllDirectory(*TechSoftDllPath);
+	}
+#endif
+
 }
 
 void FCADInterfacesModule::ShutdownModule()

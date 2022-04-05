@@ -15,11 +15,11 @@
             "Name": "OnlineSubsystemFacebook",
             "Type": "Runtime",
             "LoadingPhase" : "Default",
-			"WhitelistPlatforms" :
+			"PlatformAllowList" :
 			[
 				"IOS",
 				"Android",
-				"Win64","Win32"
+				"Win64"
 			]
         }
     ],

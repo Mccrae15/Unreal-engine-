@@ -14,13 +14,15 @@ const int32 SkeletalSimplifier::LinearAlgebra::SymmetricMatrix::Mapping[9] = { 0
 //=============
 SkeletalSimplifier::FMeshSimplifier::FMeshSimplifier(const MeshVertType* InSrcVerts, const uint32 InNumSrcVerts,
 	const uint32* InSrcIndexes, const uint32 InNumSrcIndexes,
-	const float CoAlignmentLimit, const float VolumeImportanceValue, const bool VolumeConservation, const bool bEnforceBoundaries)
+	const float CoAlignmentLimit, const float VolumeImportanceValue, const bool VolumeConservation, const bool bEnforceBoundaries, 
+	const bool bMergeCoincidentVertBones)
 	:
 	coAlignmentLimit(CoAlignmentLimit),
 	VolumeImportance(VolumeImportanceValue),
 	bPreserveVolume(VolumeConservation),
 	bCheckBoneBoundaries(bEnforceBoundaries),
-	MeshManager(InSrcVerts, InNumSrcVerts, InSrcIndexes, InNumSrcIndexes)
+	bMergeBonesOnCoincidentVerts(bMergeCoincidentVertBones),
+	MeshManager(InSrcVerts, InNumSrcVerts, InSrcIndexes, InNumSrcIndexes, bMergeCoincidentVertBones)
 {
 
 	// initialize the weights to be unit
@@ -106,6 +108,7 @@ void SkeletalSimplifier::FMeshSimplifier::SetBoxCornersLocked()
 
 void SkeletalSimplifier::FMeshSimplifier::InitCosts()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(SkeletalSimplifier::InitCosts);
 
 	const int32 NumEdges = MeshManager.TotalNumEdges();
 	for (int i = 0; i < NumEdges; ++i)
@@ -147,7 +150,6 @@ FVector SkeletalSimplifier::FMeshSimplifier::ComputeEdgeCollapseVertsPos(SimpEdg
 		checkSlow(e == MeshManager.FindEdge(e->v0, e->v1));
 		checkSlow(e->v0->adjTris.Num() > 0);
 		checkSlow(e->v1->adjTris.Num() > 0);
-		checkSlow(e->v0->GetMaterialIndex() == e->v1->GetMaterialIndex());
 
 		EdgeAndNewVertArray.Emplace(e->v0, e->v1, e->v1->vert);
 
@@ -237,12 +239,12 @@ FVector SkeletalSimplifier::FMeshSimplifier::ComputeEdgeCollapseVertsPos(SimpEdg
 		if (bLocked0)
 		{
 			// v0 position
-			newPos = edge->v0->GetPos();
+			newPos = (FVector)edge->v0->GetPos();
 		}
 		else if (bLocked1)
 		{
 			// v1 position
-			newPos = edge->v1->GetPos();
+			newPos = (FVector)edge->v1->GetPos();
 		}
 		else
 		{
@@ -252,7 +254,7 @@ FVector SkeletalSimplifier::FMeshSimplifier::ComputeEdgeCollapseVertsPos(SimpEdg
 			if (!valid)
 			{
 				// Couldn't find optimal so choose middle
-				newPos = (edge->v0->GetPos() + edge->v1->GetPos()) * 0.5f;
+				newPos = (FVector)(edge->v0->GetPos() + edge->v1->GetPos()) * 0.5f;
 			}
 			else
 			{
@@ -289,12 +291,12 @@ void SkeletalSimplifier::FMeshSimplifier::ComputeEdgeCollapseVertsAndFixBones(Si
 	const SimpVertType* Vert0 = edge->v0;
 	const SimpVertType* Vert1 = edge->v1;
 
-	const FVector Pos0 = Vert0->vert.GetPos();
-	const FVector Pos1 = Vert1->vert.GetPos();
+	const FVector Pos0 = (FVector)Vert0->vert.GetPos();
+	const FVector Pos1 = (FVector)Vert1->vert.GetPos();
 
 	// Position of the collapsed vert
 
-	const FVector CollapsedPos = EdgeAndNewVertArray[0].Get<2>().GetPos();
+	const FVector CollapsedPos = (FVector)EdgeAndNewVertArray[0].Get<2>().GetPos();
 
 	// Find edge endpoint that is closest to the collapsed vert location.
 
@@ -356,9 +358,9 @@ float SkeletalSimplifier::FMeshSimplifier::CalculateNormalShift(const SimpTriTyp
 	else
 		k = 2;
 
-	const FVector& v0 = tri.verts[k]->GetPos();
-	const FVector& v1 = tri.verts[k = (1 << k) & 3]->GetPos();
-	const FVector& v2 = tri.verts[k = (1 << k) & 3]->GetPos();
+	const FVector& v0 = (FVector)tri.verts[k]->GetPos();
+	const FVector& v1 = (FVector)tri.verts[k = (1 << k) & 3]->GetPos();
+	const FVector& v2 = (FVector)tri.verts[k = (1 << k) & 3]->GetPos();
 
 	const FVector d21 = v2 - v1;
 	const FVector d01 = v0 - v1;
@@ -393,7 +395,7 @@ double SkeletalSimplifier::FMeshSimplifier::ComputeEdgeCollapseCost(SimpEdgeType
 
 	// All the new verts share the same location, but will have different attributes.
 
-	const FVector newPos = EdgeAndNewVertArray[0].Get<2>().GetPos();
+	const FVector newPos = (FVector)EdgeAndNewVertArray[0].Get<2>().GetPos();
 
 	// add penalties
 	// the below penalty code works with groups so no need to worry about remainder verts
@@ -553,7 +555,7 @@ double SkeletalSimplifier::FMeshSimplifier::ComputeEdgeCollapseCost(SimpEdgeType
 				{
 					
 #if 1
-					if (!tri->ReplaceVertexIsValid(vert, newPos))
+					if (!tri->ReplaceVertexIsValid(vert, (FVector3f)newPos))
 					{
 						penalty += penaltyToPreventEdgeFolding;
 					}
@@ -587,7 +589,7 @@ double SkeletalSimplifier::FMeshSimplifier::ComputeEdgeCollapseCost(SimpEdgeType
 				if (tri->TestFlags(SIMP_MARK1))
 				{
 #if 1
-					if (!tri->ReplaceVertexIsValid(vert, newPos))
+					if (!tri->ReplaceVertexIsValid(vert, (FVector3f)newPos))
 					{
 						penalty += penaltyToPreventEdgeFolding;
 					}
@@ -624,10 +626,10 @@ int32 SkeletalSimplifier::FMeshSimplifier::CountDegenerates() const
 }
 
 
-void SkeletalSimplifier::FMeshSimplifier::OutputMesh(MeshVertType* verts, uint32* indexes, bool bMergeCoincidentVertBones, bool bWeldVtxColorAttrs, TArray<int32>* LockedVerts)
+void SkeletalSimplifier::FMeshSimplifier::OutputMesh(MeshVertType* verts, uint32* indexes, bool bWeldVtxColorAttrs, TArray<int32>* LockedVerts)
 {
 
-	if (bMergeCoincidentVertBones)
+	if(bMergeBonesOnCoincidentVerts)
 	{
 		// Fix-up to make sure that verts that share the same location (e.g. UV boundaries) have the same bone weights
 		// (otherwise we will get cracks when the characters animate)

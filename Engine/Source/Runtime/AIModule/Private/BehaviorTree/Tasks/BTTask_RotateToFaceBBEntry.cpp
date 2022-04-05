@@ -13,7 +13,7 @@ UBTTask_RotateToFaceBBEntry::UBTTask_RotateToFaceBBEntry(const FObjectInitialize
 	, Precision(10.f)
 {
 	NodeName = "Rotate to face BB entry";
-	bNotifyTick = true;
+	INIT_TASK_NODE_NOTIFY_FLAGS();
 	
 	// accept only actors and vectors
 	BlackboardKey.AddObjectFilter(this, GET_MEMBER_NAME_CHECKED(UBTTask_RotateToFaceBBEntry, BlackboardKey), AActor::StaticClass());
@@ -148,10 +148,18 @@ void UBTTask_RotateToFaceBBEntry::TickTask(UBehaviorTreeComponent& OwnerComp, ui
 		const FVector PawnDirection = AIController->GetPawn()->GetActorForwardVector();				
 		const FVector FocalPoint = AIController->GetFocalPointForPriority(EAIFocusPriority::Gameplay);
 
-		if (CalculateAngleDifferenceDot(PawnDirection, FocalPoint - AIController->GetPawn()->GetActorLocation()) >= PrecisionDot)
+		if (FocalPoint != FAISystem::InvalidLocation)
+		{
+			if (CalculateAngleDifferenceDot(PawnDirection, FocalPoint - AIController->GetPawn()->GetActorLocation()) >= PrecisionDot)
+			{
+				CleanUp(*AIController, NodeMemory);
+				FinishLatentTask(OwnerComp, EBTNodeResult::Succeeded);
+			}
+		}
+		else
 		{
 			CleanUp(*AIController, NodeMemory);
-			FinishLatentTask(OwnerComp, EBTNodeResult::Succeeded);
+			FinishLatentTask(OwnerComp, EBTNodeResult::Failed);
 		}
 	}
 }

@@ -9,6 +9,7 @@
 #include "SceneCore.h"
 #include "ScenePrivate.h"
 #include "DistanceFieldLightingShared.h"
+#include "Misc/LargeWorldRenderPosition.h"
 
 int32 GWholeSceneShadowUnbuiltInteractionThreshold = 500;
 static FAutoConsoleVariableRef CVarWholeSceneShadowUnbuiltInteractionThreshold(
@@ -39,7 +40,7 @@ void FLightSceneInfoCompact::Init(FLightSceneInfo* InLightSceneInfo)
 	bStaticLighting = InLightSceneInfo->Proxy->HasStaticLighting();
 	bAffectReflection = InLightSceneInfo->Proxy->AffectReflection();
 	bAffectGlobalIllumination = InLightSceneInfo->Proxy->AffectGlobalIllumination();
-	bCastRaytracedShadow = InLightSceneInfo->Proxy->CastsRaytracedShadow();
+	CastRaytracedShadow = InLightSceneInfo->Proxy->CastsRaytracedShadow();
 }
 
 FLightSceneInfo::FLightSceneInfo(FLightSceneProxy* InProxy, bool InbVisible)
@@ -48,8 +49,6 @@ FLightSceneInfo::FLightSceneInfo(FLightSceneProxy* InProxy, bool InbVisible)
 	, DynamicInteractionStaticPrimitiveList(NULL)
 	, Proxy(InProxy)
 	, Id(INDEX_NONE)
-	, TileIntersectionResources(nullptr)
-	, HeightFieldTileIntersectionResources(nullptr)
 	, DynamicShadowMapChannel(-1)
 	, bPrecomputedLightingIsValid(InProxy->GetLightComponent()->IsPrecomputedLightingValid())
 	, bVisible(InbVisible)
@@ -95,8 +94,6 @@ void FLightSceneInfo::AddToScene()
 		// Mobile path supports dynamic point/spot lights in the base pass using forward rendering, so we need to know the primitives
 		|| bIsValidLightTypeMobile)
 	{
-		Scene->FlushAsyncLightPrimitiveInteractionCreation();
-		
 		// Directional lights have no finite extent and cannot meaningfully be in the LocalShadowCastingLightOctree
 		if (LightSceneInfoCompact.LightType == LightType_Directional)
 		{
@@ -139,7 +136,7 @@ void FLightSceneInfo::AddToScene()
  */
 void FLightSceneInfo::CreateLightPrimitiveInteraction(const FLightSceneInfoCompact& LightSceneInfoCompact, const FPrimitiveSceneInfoCompact& PrimitiveSceneInfoCompact)
 {
-	if(	LightSceneInfoCompact.AffectsPrimitive(PrimitiveSceneInfoCompact.Bounds, PrimitiveSceneInfoCompact.Proxy))
+	if(	!Scene->IsPrimitiveBeingRemoved(PrimitiveSceneInfoCompact.PrimitiveSceneInfo) && LightSceneInfoCompact.AffectsPrimitive(FBoxSphereBounds(PrimitiveSceneInfoCompact.Bounds), PrimitiveSceneInfoCompact.Proxy))
 	{
 		// create light interaction and add to light/primitive lists
 		FLightPrimitiveInteraction::Create(this,PrimitiveSceneInfoCompact.PrimitiveSceneInfo);
@@ -149,8 +146,6 @@ void FLightSceneInfo::CreateLightPrimitiveInteraction(const FLightSceneInfoCompa
 
 void FLightSceneInfo::RemoveFromScene()
 {
-	Scene->FlushAsyncLightPrimitiveInteractionCreation();
-
 	if (OctreeId.IsValidId())
 	{
 		// Remove the light from the octree.
@@ -185,10 +180,10 @@ void FLightSceneInfo::Detach()
 	}
 }
 
-bool FLightSceneInfo::ShouldRenderLight(const FViewInfo& View) const
+bool FLightSceneInfo::ShouldRenderLight(const FViewInfo& View, bool bOffscreen) const
 {
 	// Only render the light if it is in the view frustum
-	bool bLocalVisible = bVisible ? View.VisibleLightInfos[Id].bInViewFrustum : true;
+	bool bLocalVisible = bVisible && (bOffscreen ? View.VisibleLightInfos[Id].bInDrawRange : View.VisibleLightInfos[Id].bInViewFrustum);
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	ELightComponentType Type = (ELightComponentType)Proxy->GetLightType();
@@ -234,42 +229,19 @@ bool FLightSceneInfo::IsPrecomputedLightingValid() const
 	return (bPrecomputedLightingIsValid && NumUnbuiltInteractions < GWholeSceneShadowUnbuiltInteractionThreshold) || !Proxy->HasStaticShadowing();
 }
 
-const TArray<FLightPrimitiveInteraction*>* FLightSceneInfo::GetInteractionShadowPrimitives(bool bSync) const
+const TArray<FLightPrimitiveInteraction*>* FLightSceneInfo::GetInteractionShadowPrimitives() const
 {
-	if (bSync)
-	{
-		Scene->FlushAsyncLightPrimitiveInteractionCreation();
-	}
 	return bRecordInteractionShadowPrimitives ? &InteractionShadowPrimitives : nullptr;
 }
 
-FLightPrimitiveInteraction* FLightSceneInfo::GetDynamicInteractionOftenMovingPrimitiveList(bool bSync) const
+FLightPrimitiveInteraction* FLightSceneInfo::GetDynamicInteractionOftenMovingPrimitiveList() const
 {
-	if (bSync)
-	{
-		Scene->FlushAsyncLightPrimitiveInteractionCreation();
-	}
 	return DynamicInteractionOftenMovingPrimitiveList;
 }
 
-FLightPrimitiveInteraction* FLightSceneInfo::GetDynamicInteractionStaticPrimitiveList(bool bSync) const
+FLightPrimitiveInteraction* FLightSceneInfo::GetDynamicInteractionStaticPrimitiveList() const
 {
-	if (bSync)
-	{
-		Scene->FlushAsyncLightPrimitiveInteractionCreation();
-	}
 	return DynamicInteractionStaticPrimitiveList;
-}
-
-void FLightSceneInfo::ReleaseRHI()
-{
-	if (TileIntersectionResources)
-	{
-		TileIntersectionResources->Release();
-	}
-
-	ShadowCapsuleShapesVertexBuffer.SafeRelease();
-	ShadowCapsuleShapesSRV.SafeRelease();
 }
 
 void FLightSceneInfo::ConditionalUpdateMobileMovablePointLightUniformBuffer(const FSceneRenderer* SceneRenderer)
@@ -287,13 +259,14 @@ void FLightSceneInfo::ConditionalUpdateMobileMovablePointLightUniformBuffer(cons
 
 	checkSlow(MobileNumDynamicPointLights > 0 && SceneRenderer);
 
-	FVector4 LightPositionAndInvRadius;
-	FVector4 LightColorAndFalloffExponent;
-	FVector4 SpotLightDirectionAndSpecularScale;
-	FVector4 SpotLightAnglesAndSoftTransitionScaleAndLightShadowType;
-	FVector4 SpotLightShadowSharpenAndShadowFadeFraction;
-	FVector4 SpotLightShadowmapMinMax;
-	FMatrix SpotLightWorldToShadowMatrix;
+	FVector4f LightPositionAndInvRadius;
+	FVector4f LightColorAndFalloffExponent;
+	FVector4f SpotLightDirectionAndSpecularScale;
+	FVector4f SpotLightAnglesAndSoftTransitionScaleAndLightShadowType;
+	FVector4f SpotLightShadowSharpenAndShadowFadeFraction;
+	FVector4f SpotLightShadowmapMinMax;
+	FVector4f LightTilePosition;
+	FMatrix44f SpotLightWorldToShadowMatrix;
 
 	bool bShouldBeRender = false;
 	bool bShouldCastShadow = false;
@@ -319,7 +292,7 @@ void FLightSceneInfo::ConditionalUpdateMobileMovablePointLightUniformBuffer(cons
 
 		checkSlow(bIsValidLightType && Proxy->IsMovable());
 
-		FLightShaderParameters LightParameters;
+		FLightRenderParameters LightParameters;
 		Proxy->GetLightShaderParameters(LightParameters);
 
 		float LightFadeFactor = 0.0f;
@@ -353,30 +326,35 @@ void FLightSceneInfo::ConditionalUpdateMobileMovablePointLightUniformBuffer(cons
 
 		if (bShouldCastShadow)
 		{
-			FProjectedShadowInfo *ProjectedShadowInfo = SceneRenderer->VisibleLightInfos[Id].AllProjectedShadows.Last();
+			FProjectedShadowInfo* ProjectedShadowInfo = SceneRenderer->VisibleLightInfos[Id].AllProjectedShadows.Last();
 			checkSlow(ProjectedShadowInfo && ProjectedShadowInfo->CacheMode != SDCM_StaticPrimitivesOnly);
-			
+
 			const float TransitionSize = ProjectedShadowInfo->ComputeTransitionSize();
 			checkSlow(TransitionSize > 0.0f);
 
 			SoftTransitionScale = 1.0f / TransitionSize;
-			
+
 			for (int32 ViewIndex = 0; ViewIndex < SceneRenderer->Views.Num(); ++ViewIndex)
 			{
 				ShadowFadeFraction = FMath::Max(ShadowFadeFraction, ProjectedShadowInfo->FadeAlphas[ViewIndex]);
 			}
 
-			SpotLightShadowSharpenAndShadowFadeFraction = FVector4(Proxy->GetShadowSharpen() * 7.0f + 1.0f, ShadowFadeFraction, 0.0f, 0.0f);
-			SpotLightWorldToShadowMatrix = ProjectedShadowInfo->GetWorldToShadowMatrix(SpotLightShadowmapMinMax);
+			SpotLightShadowSharpenAndShadowFadeFraction = FVector4f(Proxy->GetShadowSharpen() * 7.0f + 1.0f, ShadowFadeFraction, ProjectedShadowInfo->GetShaderReceiverDepthBias(), 0.0f);
+
+			const FMatrix WorldToShadowMatrix = ProjectedShadowInfo->GetWorldToShadowMatrix(SpotLightShadowmapMinMax);
+			SpotLightWorldToShadowMatrix = FMatrix44f(FTranslationMatrix(LightParameters.WorldPosition) * WorldToShadowMatrix);
 		}
-		
-		LightPositionAndInvRadius = FVector4(LightParameters.Position, LightParameters.InvRadius);
-		LightColorAndFalloffExponent = FVector4(LightParameters.Color, LightParameters.FalloffExponent);
-		SpotLightDirectionAndSpecularScale = FVector4(LightParameters.Direction.X, LightParameters.Direction.Y, LightParameters.Direction.Z, Proxy->GetSpecularScale());
-		SpotLightAnglesAndSoftTransitionScaleAndLightShadowType = FVector4(LightParameters.SpotAngles.X, LightParameters.SpotAngles.Y, SoftTransitionScale, LightShadowType);
+
+		const FLargeWorldRenderPosition AbsoluteWorldPosition(LightParameters.WorldPosition);
+
+		LightPositionAndInvRadius = FVector4f(AbsoluteWorldPosition.GetOffset(), LightParameters.InvRadius);
+		LightTilePosition = FVector4f(AbsoluteWorldPosition.GetTile(), 0);
+		LightColorAndFalloffExponent = FVector4f(LightParameters.Color, LightParameters.FalloffExponent);
+		SpotLightDirectionAndSpecularScale = FVector4f(LightParameters.Direction.X, LightParameters.Direction.Y, LightParameters.Direction.Z, Proxy->GetSpecularScale());
+		SpotLightAnglesAndSoftTransitionScaleAndLightShadowType = FVector4f(LightParameters.SpotAngles.X, LightParameters.SpotAngles.Y, SoftTransitionScale, LightShadowType);
 	}
 
-	if (bShouldBeRender != Proxy->bMobileMovablePointLightShouldBeRender || 
+	if (bShouldBeRender != Proxy->bMobileMovablePointLightShouldBeRender ||
 		bShouldCastShadow != Proxy->bMobileMovablePointLightShouldCastShadow ||
 		SpotLightShadowmapMinMax != Proxy->MobileMovablePointLightShadowmapMinMax)
 	{
@@ -394,6 +372,7 @@ void FLightSceneInfo::ConditionalUpdateMobileMovablePointLightUniformBuffer(cons
 		const FMobileMovablePointLightUniformShaderParameters MobileMovablePointLightUniformShaderParameters =
 			GetMovablePointLightUniformShaderParameters(
 				LightPositionAndInvRadius,
+				LightTilePosition,
 				LightColorAndFalloffExponent,
 				SpotLightDirectionAndSpecularScale,
 				SpotLightAnglesAndSoftTransitionScaleAndLightShadowType,
@@ -406,6 +385,35 @@ void FLightSceneInfo::ConditionalUpdateMobileMovablePointLightUniformBuffer(cons
 
 		Proxy->bMobileMovablePointLightUniformBufferNeedsUpdate = false;
 	}
+}
+
+bool FLightSceneInfo::ShouldRecordShadowSubjectsForMobile() const
+{
+	if (Proxy == nullptr)
+	{
+		return false;
+	}
+
+	// record shadow casters if CSM culling is enabled for the light's mobility type and the culling mode requires the list of casters.
+	static auto* MyCVarMobileEnableStaticAndCSMShadowReceivers = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableStaticAndCSMShadowReceivers"));
+	const bool bCombinedStaticAndCSMEnabled = MyCVarMobileEnableStaticAndCSMShadowReceivers->GetValueOnAnyThread() != 0;
+
+	static auto* CVarMobileEnableMovableLightCSMShaderCulling = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.EnableMovableLightCSMShaderCulling"));
+	const bool bMobileEnableMovableLightCSMShaderCulling = CVarMobileEnableMovableLightCSMShaderCulling->GetValueOnAnyThread() == 1;
+
+	static auto* CVarMobileCSMShaderCullingMethod = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.Shadow.CSMShaderCullingMethod"));
+	const uint32 MobileCSMCullingMode = CVarMobileCSMShaderCullingMethod->GetValueOnAnyThread() & 0xF;
+
+	const FLightSceneProxy* LightSceneProxy = Proxy;
+
+	bool bRenderMovableDirectionalLightCSM = LightSceneProxy->IsMovable() && ShouldRenderViewIndependentWholeSceneShadows();
+
+	bool bLightHasCombinedStaticAndCSMEnabled = bCombinedStaticAndCSMEnabled && LightSceneProxy->UseCSMForDynamicObjects();
+	bool bMovableLightUsingCSM = bMobileEnableMovableLightCSMShaderCulling && bRenderMovableDirectionalLightCSM;
+
+	bool bShouldRecordShadowSubjectsForMobile = (MobileCSMCullingMode == 2 || MobileCSMCullingMode == 3) && (bLightHasCombinedStaticAndCSMEnabled || bMovableLightUsingCSM);
+
+	return bShouldRecordShadowSubjectsForMobile;
 }
 
 /** Determines whether two bounding spheres intersect. */

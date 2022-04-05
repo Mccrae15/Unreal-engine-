@@ -38,6 +38,9 @@ public:
 	// Returns a prototype pointer given its notation (or nullptr)
 	const FRigVMPrototype* FindPrototype(UScriptStruct* InStruct, const FString& InPrototypeName) const;
 
+	// Returns registry info about a function given its name
+	FRigVMFunction FindFunctionInfo(const TCHAR* InName) const;
+
 	// Returns all current rigvm functions
 	const TArray<FRigVMFunction>& GetFunctions() const;
 

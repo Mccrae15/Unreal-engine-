@@ -47,7 +47,7 @@ void FWidgetBlueprintCompiler::PreCompile(UBlueprint* Blueprint, const FKismetCo
 {
 	if (ReRegister == nullptr
 		&& CanCompile(Blueprint)
-		&& (CompileOptions.CompileType == EKismetCompileType::Full || CompileOptions.CompileType == EKismetCompileType::Cpp))
+		&& CompileOptions.CompileType == EKismetCompileType::Full)
 	{
 		ReRegister = new TComponentReregisterContext<UWidgetComponent>();
 	}
@@ -96,6 +96,7 @@ bool FWidgetBlueprintCompiler::GetBlueprintTypesForClass(UClass* ParentClass, UC
 FWidgetBlueprintCompilerContext::FWidgetBlueprintCompilerContext(UWidgetBlueprint* SourceSketch, FCompilerResultsLog& InMessageLog, const FKismetCompilerOptions& InCompilerOptions)
 	: Super(SourceSketch, InMessageLog, InCompilerOptions)
 	, NewWidgetBlueprintClass(nullptr)
+	, OldWidgetTree(nullptr)
 	, WidgetSchema(nullptr)
 {
 }
@@ -271,14 +272,77 @@ void FWidgetBlueprintCompilerContext::CleanAndSanitizeClass(UBlueprintGeneratedC
 			WidgetBP->WidgetTree->GetAllWidgets(TreeWidgets);
 		}
 
+		FMemMark Mark(FMemStack::Get());
+		TArray<UWidget*, TMemStackAllocator<>> WidgetsToRemove;
+		WidgetsToRemove.Reserve(OuterWidgets.Num());
+		
+		struct FNameSlotInfo
+		{
+			TScriptInterface<INamedSlotInterface> NamedSlotHost;
+			FName SlotName;
+		};
+		TMap<UWidget*, FNameSlotInfo> WidgetToNamedSlotInfo;
+		WidgetToNamedSlotInfo.Reserve(OuterWidgets.Num());
+
 		for (UWidget* OuterWidget : OuterWidgets)
 		{
+			if (TScriptInterface<INamedSlotInterface> NamedSlotHost = TScriptInterface<INamedSlotInterface>(OuterWidget))
+			{
+				TArray<FName> SlotNames;
+				NamedSlotHost->GetSlotNames(SlotNames);
+				for (FName SlotName : SlotNames)
+				{
+					if (UWidget* SlotContent = NamedSlotHost->GetContentForSlot(SlotName))
+					{
+						FNameSlotInfo Info = { NamedSlotHost, SlotName };
+						WidgetToNamedSlotInfo.Add(SlotContent, Info);						
+					}
+				}
+			}
+
 			if (!TreeWidgets.Contains(OuterWidget))
 			{
-				MessageLog.Note(*FText::Format(LOCTEXT("UnusedWidgetFoundAndRemoved", "Removed unused widget '{0}'."), FText::FromName(OuterWidget->GetFName())).ToString());
+				WidgetsToRemove.Push(OuterWidget);
+			}
+		}
 
-				FString TransientCDOString = FString::Printf(TEXT("TRASH_%s"), *OuterWidget->GetName());
-				RenameObjectToTransientPackage(OuterWidget, *TransientCDOString, true);
+		if (WidgetsToRemove.Num() != 0)
+		{
+			if (WidgetBP->WidgetTree->RootWidget == nullptr)
+			{
+				MessageLog.Note(*LOCTEXT("RootWidgetEmpty", "There is no valid Widgets in this Widget Hierarchy.").ToString());
+			}
+			else
+			{
+				MessageLog.Note(*FText::Format(LOCTEXT("RootWidgetNamedMessage", "Some Widgets will be removed since they are not part of the Widget Hierarchy. Root Widget is  '{0}'."), FText::FromName(WidgetBP->WidgetTree->RootWidget->GetFName())).ToString());
+			}
+
+			// Log first to have all the parents and named slot intact for logging
+			for (const UWidget* WidgetToClean : WidgetsToRemove)
+			{
+				if (UPanelWidget* Parent = WidgetToClean->GetParent())
+				{
+					MessageLog.Note(*FText::Format(LOCTEXT("UnusedWidgetFoundAndRemovedWithParent", "Removing unused widget '{0}' (Parent: '{1}')."), FText::FromName(WidgetToClean->GetFName()), FText::FromName(Parent->GetFName())).ToString());				
+				}
+				else if (const FNameSlotInfo* Info = WidgetToNamedSlotInfo.Find(WidgetToClean))
+				{
+					UObject* NamedSlotWidget = Info->NamedSlotHost.GetObject();
+					if (ensure(NamedSlotWidget))
+					{
+						MessageLog.Note(*FText::Format(LOCTEXT("UnusedWidgetFoundAndRemovedWithNamedSlot", "Removing unused widget '{0}' (Named Slot '{1} in '{2}')."), FText::FromName(WidgetToClean->GetFName()), FText::FromName(Info->SlotName), FText::FromName(NamedSlotWidget->GetFName())).ToString());
+					}
+				}
+				else
+				{
+					MessageLog.Note(*FText::Format(LOCTEXT("UnusedWidgetFoundAndRemoved", "Removing unused widget '{0}'."), FText::FromName(WidgetToClean->GetFName())).ToString());
+				}
+			}
+
+			// Remove Widget
+			for (UWidget* WidgetToClean : WidgetsToRemove)
+			{
+				FString TransientCDOString = FString::Printf(TEXT("TRASH_%s"), *WidgetToClean->GetName());
+				RenameObjectToTransientPackage(WidgetToClean, *TransientCDOString, true);
 			}
 		}
 	}
@@ -304,6 +368,14 @@ void FWidgetBlueprintCompilerContext::SaveSubObjectsFromCleanAndSanitizeClass(FS
 	// Make sure our typed pointer is set
 	check(ClassToClean == NewClass);
 	NewWidgetBlueprintClass = CastChecked<UWidgetBlueprintGeneratedClass>((UObject*)NewClass);
+
+	OldWidgetTree = nullptr;
+	OldWidgetAnimations.Empty();
+	if (NewWidgetBlueprintClass)
+	{
+		OldWidgetTree = NewWidgetBlueprintClass->GetWidgetTreeArchetype();
+		OldWidgetAnimations.Append(NewWidgetBlueprintClass->Animations);
+	}
 
 	UWidgetBlueprint* WidgetBP = WidgetBlueprint();
 
@@ -631,17 +703,32 @@ void FWidgetBlueprintCompilerContext::FinishCompilingClass(UClass* Class)
 			}
 
 			BPGClass->SetWidgetTreeArchetype(NewWidgetTree);
+			if (OldWidgetTree)
+			{
+				FLinkerLoad::PRIVATE_PatchNewObjectIntoExport(OldWidgetTree, NewWidgetTree);
+			}
+			OldWidgetTree = nullptr;
 
 			WidgetBP->WidgetTree->SetFlags(PreviousFlags);
 		}
 
+		int32 AnimIndex = 0;
 		for ( const UWidgetAnimation* Animation : WidgetBP->Animations )
 		{
 			UWidgetAnimation* ClonedAnimation = DuplicateObject<UWidgetAnimation>(Animation, BPGClass, *( Animation->GetName() + TEXT("_INST") ));
 			//ClonedAnimation->SetFlags(RF_Public); // Needs to be marked public so that it can be referenced from widget instances.
+			
+			if (OldWidgetAnimations.IsValidIndex(AnimIndex) && OldWidgetAnimations[AnimIndex])
+
+			if ((AnimIndex < OldWidgetAnimations.Num()) && OldWidgetAnimations[AnimIndex])
+			{
+				FLinkerLoad::PRIVATE_PatchNewObjectIntoExport(OldWidgetAnimations[AnimIndex], ClonedAnimation);
+			}
 
 			BPGClass->Animations.Add(ClonedAnimation);
+			AnimIndex++;
 		}
+		OldWidgetAnimations.Empty();
 
 		// Only check bindings on a full compile.  Also don't check them if we're regenerating on load,
 		// that has a nasty tendency to fail because the other dependent classes that may also be blueprints

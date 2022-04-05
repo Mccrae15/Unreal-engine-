@@ -91,9 +91,9 @@ class UAnimStreamable : public UAnimSequenceBase
 	GENERATED_UCLASS_BODY()
 
 public:
-	/** Number of raw frames in this sequence (not used by engine - just for informational purposes). */
-	UPROPERTY(AssetRegistrySearchable, meta = (DisplayName = "Number of Keys"))
-	int32 NumFrames;
+	/** The number of keys expected within the individual animation tracks. */
+	UPROPERTY(AssetRegistrySearchable)
+	int32 NumberOfKeys;
 
 	/** This defines how values between keys are calculated **/
 	UPROPERTY(EditAnywhere, AssetRegistrySearchable, Category = Animation)
@@ -107,10 +107,15 @@ public:
 
 	// Sequence the streamable was created from (used for reflecting changes to the source in editor)
 	UPROPERTY()
-	const UAnimSequence* SourceSequence;
+	TObjectPtr<const UAnimSequence> SourceSequence;
 
 	UPROPERTY()
 	FGuid RawDataGuid;
+
+	/** Number of raw frames in this sequence (not used by engine - just for informational purposes). */
+	UE_DEPRECATED(5.0, "Num Frames is deprecated use NumberOfKeys instead")
+	UPROPERTY()
+	int32 NumFrames;
 
 	/**
 	 * Raw uncompressed keyframe data.
@@ -172,11 +177,11 @@ public:
 
 	/** The bone compression settings used to compress bones in this sequence. */
 	UPROPERTY(Category = Compression, EditAnywhere)
-	class UAnimBoneCompressionSettings* BoneCompressionSettings;
+	TObjectPtr<class UAnimBoneCompressionSettings> BoneCompressionSettings;
 
 	/** The curve compression settings used to compress curves in this sequence. */
 	UPROPERTY(Category = Compression, EditAnywhere)
-	class UAnimCurveCompressionSettings* CurveCompressionSettings;
+	TObjectPtr<class UAnimCurveCompressionSettings> CurveCompressionSettings;
 
 	/** If this is on, it will allow extracting of root motion **/
 	UPROPERTY(EditAnywhere, AssetRegistrySearchable, Category = RootMotion, meta = (DisplayName = "EnableRootMotion"))
@@ -195,7 +200,11 @@ public:
 	bool bUseNormalizedRootMotionScale;
 
 	//~ Begin UObject Interface
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
 	virtual void FinishDestroy() override;
@@ -205,7 +214,7 @@ public:
 	//~ Begin UAnimSequenceBase Interface
 	ENGINE_API virtual void HandleAssetPlayerTickedInternal(FAnimAssetTickContext &Context, const float PreviousTime, const float MoveDelta, const FAnimTickRecord &Instance, struct FAnimNotifyQueue& NotifyQueue) const override;
 	virtual void GetAnimationPose(FAnimationPoseData& OutAnimationPoseData, const FAnimExtractContext& ExtractionContext) const override;
-	virtual int32 GetNumberOfFrames() const override { return NumFrames; }
+	virtual int32 GetNumberOfSampledKeys() const override { return NumberOfKeys; }
 	//~ End UAnimSequenceBase Interface
 
 #if WITH_EDITOR

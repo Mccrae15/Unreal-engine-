@@ -77,8 +77,8 @@ LANDSCAPE_API void FLandscapeComponentDataInterface::GetHeightmapTextureData(TAr
 LANDSCAPE_API bool FLandscapeComponentDataInterface::GetWeightmapTextureData(ULandscapeLayerInfoObject* LayerInfo, TArray<uint8>& OutData, bool InUseEditingWeightmap)
 {
 	int32 LayerIdx = INDEX_NONE;
-	TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = Component->GetWeightmapLayerAllocations(InUseEditingWeightmap);
-	TArray<UTexture2D*>& ComponentWeightmapTextures = Component->GetWeightmapTextures(InUseEditingWeightmap);
+	const TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = Component->GetWeightmapLayerAllocations(InUseEditingWeightmap);
+	const TArray<UTexture2D*>& ComponentWeightmapTextures = Component->GetWeightmapTextures(InUseEditingWeightmap);
 
 	for (int32 Idx = 0; Idx < ComponentWeightmapLayerAllocations.Num(); Idx++)
 	{
@@ -128,7 +128,7 @@ LANDSCAPE_API FColor* FLandscapeComponentDataInterface::GetXYOffsetData(int32 Lo
 	check(LocalX >= 0 && LocalY >= 0 && LocalX < Component->ComponentSizeQuads + 1 && LocalY < Component->ComponentSizeQuads + 1);
 #endif
 
-	const int32 WeightmapSize = (Component->SubsectionSizeQuads + 1) * Component->NumSubsections;
+	const int32 WeightmapSize = ((Component->SubsectionSizeQuads + 1) * Component->NumSubsections) >> MipLevel;
 	int32 SubNumX;
 	int32 SubNumY;
 	int32 SubX;

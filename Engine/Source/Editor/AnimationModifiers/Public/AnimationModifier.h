@@ -4,6 +4,7 @@
 
 #include "Animation/AnimEnums.h"
 #include "Animation/AnimCurveTypes.h"
+#include "Misc/MessageDialog.h"
 #include "AnimationBlueprintLibrary.h"
 
 #include "AnimationModifier.generated.h"
@@ -41,6 +42,7 @@ public:
 	// Begin UObject Overrides
 	virtual void PostInitProperties() override;
 	virtual void Serialize(FArchive& Ar) override;
+	virtual void PostLoad() override;
 	// End UObject Overrides
 protected:
 	// Derived class accessors to skeleton and anim sequence 
@@ -56,6 +58,10 @@ protected:
 	/** Updating of blueprint and native GUIDs*/
 	void UpdateRevisionGuid(UClass* ModifierClass);
 	void UpdateNativeRevisionGuid();
+
+	/** Applies all instances of the provided Modifier class to its outer Animation Sequence*/
+	static void ApplyToAll(TSubclassOf<UAnimationModifier> ModifierSubClass, bool bForceApply = true);
+	static void LoadModifierReferencers(TSubclassOf<UAnimationModifier> ModifierSubClass);
 private:
 	UAnimSequence* CurrentAnimSequence;
 	USkeleton* CurrentSkeleton;
@@ -78,5 +84,41 @@ private:
 
 	/** Serialized version of the modifier that has been previously applied to the Animation Asset */
 	UPROPERTY()
-	UAnimationModifier* PreviouslyAppliedModifier;
+	TObjectPtr<UAnimationModifier> PreviouslyAppliedModifier;
+
+	static const FName RevertModifierObjectName;
 };
+
+namespace UE
+{
+	namespace Anim
+	{
+		struct FApplyModifiersScope
+		{
+			FApplyModifiersScope()
+			{
+				if (ScopesOpened == 0)
+				{				
+					PerClassReturnTypeValues.Empty();
+				}
+				++ScopesOpened;
+			}
+
+			~FApplyModifiersScope()
+			{
+				--ScopesOpened;
+				check(ScopesOpened >= 0);
+				if(ScopesOpened == 0)
+				{
+					PerClassReturnTypeValues.Empty();
+				}
+			}
+
+			static TOptional<EAppReturnType::Type> GetReturnType(const UAnimationModifier* InModifier);			
+			static void SetReturnType(const class UAnimationModifier* InModifier, EAppReturnType::Type InReturnType);
+
+			static TMap<FObjectKey, TOptional<EAppReturnType::Type>> PerClassReturnTypeValues;
+			static int32 ScopesOpened;
+		};
+	}
+}

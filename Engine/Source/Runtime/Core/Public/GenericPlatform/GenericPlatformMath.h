@@ -10,12 +10,18 @@
 #include "CoreTypes.h"
 #include "Containers/ContainersFwd.h"
 #include "HAL/PlatformCrt.h"
+#include "Templates/AndOrNot.h"
+#include "Templates/Decay.h"
+#include "Templates/IsFloatingPoint.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "Templates/ResolveTypeAmbiguity.h"
 
 /**
  * Generic implementation for most platforms
  */
 struct FGenericPlatformMath
 {
+
 	//https://gist.github.com/rygorous/2156668
 	static FORCEINLINE float LoadHalf(const uint16* Ptr)
 	{
@@ -47,6 +53,7 @@ struct FGenericPlatformMath
 	}
 
 	//https://gist.github.com/rygorous/2156668
+	// float_to_half_fast3_rtne
 	static FORCEINLINE void StoreHalf(uint16* Ptr, float Value)
 	{
 		union FP32T
@@ -133,14 +140,78 @@ struct FGenericPlatformMath
 	}
 
 	/**
+	 * Performs a bit cast of the given float to an unsigned int of the same bit width.
+	 * @param F The float to bit cast to an unsigned integer.
+	*  @return A bitwise copy of the float in a 32-bit unsigned integer value.
+	 */
+	static inline uint32 AsUInt(float F)
+	{
+		uint32 U{};
+		static_assert(sizeof(F) == sizeof(U), "The float and uint sizes must be equal");
+		::memcpy(&U, &F, sizeof(F));
+		return U;
+	}
+
+	/** 
+	 * Performs a bit cast of the given double to an unsigned int of the same bit width.
+	 * @param D The double to bit cast to an unsigned integer.
+	*  @return A bitwise copy of the double in a 64-bit unsigned integer value.
+	 */
+	static inline uint64 AsUInt(double F)
+	{
+		uint64 U{};
+		static_assert(sizeof(F) == sizeof(U), "The float and uint sizes must be equal");
+		::memcpy(&U, &F, sizeof(F));
+		return U;
+	}
+
+	/** 
+	 * Performs a bit cast of the given unsigned int to float of the same bit width.
+	 * @param U The 32-bit unsigned int to bit cast to a 32-bit float.
+	*  @return A bitwise copy of the 32-bit float in a 32-bit unsigned integer value.
+	 */
+	static inline float AsFloat(uint32 U)
+	{
+		float F{};
+		static_assert(sizeof(F) == sizeof(U), "The float and uint32 sizes must be equal");
+		::memcpy(&F, &U, sizeof(U));
+		return F;
+	}
+
+	/** 
+	 * Performs a bit cast of the given unsigned int to float of the same bit width.
+	 * @param U The 64-bit unsigned int to bit cast to a 64-bit float.
+	*  @return A bitwise copy of the 64-bit float in a 64-bit unsigned integer value.
+	 */
+	static inline double AsFloat(uint64 U)
+	{
+		double F{};
+		static_assert(sizeof(F) == sizeof(U), "The double and uint64 sizes must be equal");
+		::memcpy(&F, &U, sizeof(F));
+		return F;
+	}
+
+
+	/**
 	 * Converts a float to an integer with truncation towards zero.
 	 * @param F		Floating point value to convert
 	 * @return		Truncated integer.
 	 */
-	static CONSTEXPR FORCEINLINE int32 TruncToInt(float F)
+	static CONSTEXPR FORCEINLINE int32 TruncToInt32(float F)
 	{
 		return (int32)F;
 	}
+	static CONSTEXPR FORCEINLINE int32 TruncToInt32(double F)
+	{
+		return (int32)F;
+	}
+	static CONSTEXPR FORCEINLINE int64 TruncToInt64(double F)
+	{
+		return (int64)F;
+	}
+
+	static CONSTEXPR FORCEINLINE int32 TruncToInt(float F) { return TruncToInt32(F); }
+	static CONSTEXPR FORCEINLINE int32 TruncToInt(double F) { return TruncToInt32(F); }
 
 	/**
 	 * Converts a float to an integer value with truncation towards zero.
@@ -162,16 +233,41 @@ struct FGenericPlatformMath
 		return trunc(F);
 	}
 
+	static FORCEINLINE double TruncToFloat(double F)
+	{
+		return TruncToDouble(F);
+	}
+	
+	RESOLVE_FLOAT_AMBIGUITY(TruncToFloat);
+
 	/**
 	 * Converts a float to a nearest less or equal integer.
 	 * @param F		Floating point value to convert
 	 * @return		An integer less or equal to 'F'.
 	 */
-	static FORCEINLINE int32 FloorToInt(float F)
+	static FORCEINLINE int32 FloorToInt32(float F)
 	{
-		return TruncToInt(floorf(F));
+		int32 I = TruncToInt32(F);
+		I -= ((float)I > F);
+		return I;
+	}
+	static FORCEINLINE int32 FloorToInt32(double F)
+	{
+		int32 I = TruncToInt32(F);
+		I -= ((double)I > F);
+		return I;
+	}
+	static FORCEINLINE int64 FloorToInt64(double F)
+	{
+		int64 I = TruncToInt64(F);
+		I -= ((double)I > F);
+		return I;
 	}
 
+	static FORCEINLINE int32 FloorToInt(float F) { return FloorToInt32(F); }
+	static FORCEINLINE int32 FloorToInt(double F) { return FloorToInt32(F); }
+	
+	
 	/**
 	* Converts a float to the nearest less or equal integer.
 	* @param F		Floating point value to convert
@@ -192,15 +288,33 @@ struct FGenericPlatformMath
 		return floor(F);
 	}
 
+	static FORCEINLINE double FloorToFloat(double F)
+	{
+		return FloorToDouble(F);
+	}
+
+	RESOLVE_FLOAT_AMBIGUITY(FloorToFloat);
+
 	/**
 	 * Converts a float to the nearest integer. Rounds up when the fraction is .5
 	 * @param F		Floating point value to convert
 	 * @return		The nearest integer to 'F'.
 	 */
-	static FORCEINLINE int32 RoundToInt(float F)
+	static FORCEINLINE int32 RoundToInt32(float F)
 	{
-		return FloorToInt(F + 0.5f);
+		return FloorToInt32(F + 0.5f);
 	}
+	static FORCEINLINE int32 RoundToInt32(double F)
+	{
+		return FloorToInt32(F + 0.5);
+	}
+	static FORCEINLINE int64 RoundToInt64(double F)
+	{
+		return FloorToInt64(F + 0.5);
+	}
+	
+	static FORCEINLINE int32 RoundToInt(float F) { return RoundToInt32(F); }
+	static FORCEINLINE int32 RoundToInt(double F) { return RoundToInt32(F); }
 
 	/**
 	* Converts a float to the nearest integer. Rounds up when the fraction is .5
@@ -222,15 +336,39 @@ struct FGenericPlatformMath
 		return FloorToDouble(F + 0.5);
 	}
 
+	static FORCEINLINE double RoundToFloat(double F)
+	{
+		return RoundToDouble(F);
+	}
+
+	RESOLVE_FLOAT_AMBIGUITY(RoundToFloat);
+
 	/**
 	* Converts a float to the nearest greater or equal integer.
 	* @param F		Floating point value to convert
 	* @return		An integer greater or equal to 'F'.
 	*/
-	static FORCEINLINE int32 CeilToInt(float F)
+	static FORCEINLINE int32 CeilToInt32(float F)
 	{
-		return TruncToInt(ceilf(F));
+		int32 I = TruncToInt32(F);
+		I += ((float)I < F);
+		return I;
 	}
+	static FORCEINLINE int32 CeilToInt32(double F)
+	{
+		int32 I = TruncToInt32(F);
+		I += ((double)I < F);
+		return I;
+	}
+	static FORCEINLINE int64 CeilToInt64(double F)
+	{
+		int64 I = TruncToInt64(F);
+		I += ((double)I < F);
+		return I;
+	}
+
+	static FORCEINLINE int32 CeilToInt(float F) { return CeilToInt32(F); }
+	static FORCEINLINE int32 CeilToInt(double F) { return CeilToInt32(F); }
 
 	/**
 	* Converts a float to the nearest greater or equal integer.
@@ -252,6 +390,13 @@ struct FGenericPlatformMath
 		return ceil(F);
 	}
 
+	static FORCEINLINE double CeilToFloat(double F)
+	{
+		return CeilToDouble(F);
+	}
+
+	RESOLVE_FLOAT_AMBIGUITY(CeilToFloat);
+
 	/**
 	* Returns signed fractional part of a float.
 	* @param Value	Floating point value to convert
@@ -262,6 +407,13 @@ struct FGenericPlatformMath
 		return Value - TruncToFloat(Value);
 	}
 
+	static FORCEINLINE double Fractional(double Value)
+	{
+		return Value - TruncToDouble(Value);
+	}
+
+	RESOLVE_FLOAT_AMBIGUITY(Fractional);
+
 	/**
 	* Returns the fractional part of a float.
 	* @param Value	Floating point value to convert
@@ -271,6 +423,14 @@ struct FGenericPlatformMath
 	{
 		return Value - FloorToFloat(Value);
 	}
+	
+
+	static FORCEINLINE double Frac(double Value)
+	{
+		return Value - FloorToDouble(Value);
+	}
+
+	RESOLVE_FLOAT_AMBIGUITY(Frac);
 
 	/**
 	* Breaks the given value into an integral and a fractional part.
@@ -296,46 +456,90 @@ struct FGenericPlatformMath
 
 	// Returns e^Value
 	static FORCEINLINE float Exp( float Value ) { return expf(Value); }
+	static FORCEINLINE double Exp(double Value) { return exp(Value); }
+	RESOLVE_FLOAT_AMBIGUITY(Exp);
+
 	// Returns 2^Value
 	static FORCEINLINE float Exp2( float Value ) { return powf(2.f, Value); /*exp2f(Value);*/ }
+	static FORCEINLINE double Exp2(double Value) { return pow(2.0, Value); /*exp2(Value);*/ }
+	RESOLVE_FLOAT_AMBIGUITY(Exp2);
+
 	static FORCEINLINE float Loge( float Value ) {	return logf(Value); }
+	static FORCEINLINE double Loge(double Value) { return log(Value); }
+	RESOLVE_FLOAT_AMBIGUITY(Loge);
+
 	static FORCEINLINE float LogX( float Base, float Value ) { return Loge(Value) / Loge(Base); }
+	static FORCEINLINE double LogX(double Base, double Value) { return Loge(Value) / Loge(Base); }
+	RESOLVE_FLOAT_AMBIGUITY_2_ARGS(LogX);
+
 	// 1.0 / Loge(2) = 1.4426950f
 	static FORCEINLINE float Log2( float Value ) { return Loge(Value) * 1.4426950f; }	
+	// 1.0 / Loge(2) = 1.442695040888963387
+	static FORCEINLINE double Log2(double Value) { return Loge(Value) * 1.442695040888963387; }
+	RESOLVE_FLOAT_AMBIGUITY(Log2);
 
-	/** 
-	* Returns the floating-point remainder of X / Y
-	* Warning: Always returns remainder toward 0, not toward the smaller multiple of Y.
-	*			So for example Fmod(2.8f, 2) gives .8f as you would expect, however, Fmod(-2.8f, 2) gives -.8f, NOT 1.2f 
-	* Use Floor instead when snapping positions that can be negative to a grid
-	*
-	* This is forced to *NOT* inline so that divisions by constant Y does not get optimized in to an inverse scalar multiply,
-	* which is not consistent with the intent nor with the vectorized version.
-	*/
+	/**
+	 * Returns the floating-point remainder of X / Y
+	 * Warning: Always returns remainder toward 0, not toward the smaller multiple of Y.
+	 *			So for example Fmod(2.8f, 2) gives .8f as you would expect, however, Fmod(-2.8f, 2) gives -.8f, NOT 1.2f
+	 * Use Floor instead when snapping positions that can be negative to a grid
+	 *
+	 * This is forced to *NOT* inline so that divisions by constant Y does not get optimized in to an inverse scalar multiply,
+	 * which is not consistent with the intent nor with the vectorized version.
+	 */
+
 	static CORE_API FORCENOINLINE float Fmod(float X, float Y);
+	static CORE_API FORCENOINLINE double Fmod(double X, double Y);
+	RESOLVE_FLOAT_AMBIGUITY_2_ARGS(Fmod);
 
 	static FORCEINLINE float Sin( float Value ) { return sinf(Value); }
+	static FORCEINLINE double Sin( double Value ) { return sin(Value); }
+
 	static FORCEINLINE float Asin( float Value ) { return asinf( (Value<-1.f) ? -1.f : ((Value<1.f) ? Value : 1.f) ); }
+	static FORCEINLINE double Asin( double Value ) { return asin( (Value<-1.0) ? -1.0 : ((Value<1.0) ? Value : 1.0) ); }
+	RESOLVE_FLOAT_AMBIGUITY(Asin);
+
 	static FORCEINLINE float Sinh(float Value) { return sinhf(Value); }
+	static FORCEINLINE double Sinh(double Value) { return sinh(Value); }
+	RESOLVE_FLOAT_AMBIGUITY(Sinh);
+
 	static FORCEINLINE float Cos( float Value ) { return cosf(Value); }
+	static FORCEINLINE double Cos( double Value ) { return cos(Value); }
+	RESOLVE_FLOAT_AMBIGUITY(Cos);
+
 	static FORCEINLINE float Acos( float Value ) { return acosf( (Value<-1.f) ? -1.f : ((Value<1.f) ? Value : 1.f) ); }
+	static FORCEINLINE double Acos( double Value ) { return acos( (Value<-1.0) ? -1.0 : ((Value<1.0) ? Value : 1.0) ); }
+	RESOLVE_FLOAT_AMBIGUITY(Acos);
+
 	static FORCEINLINE float Tan( float Value ) { return tanf(Value); }
+	static FORCEINLINE double Tan( double Value ) { return tan(Value); }
+	RESOLVE_FLOAT_AMBIGUITY(Tan);
+
 	static FORCEINLINE float Atan( float Value ) { return atanf(Value); }
+	static FORCEINLINE double Atan( double Value ) { return atan(Value); }
+	RESOLVE_FLOAT_AMBIGUITY(Atan);
+
 	static CORE_API float Atan2( float Y, float X );
+	static CORE_API double Atan2( double Y, double X );
+	RESOLVE_FLOAT_AMBIGUITY_2_ARGS(Atan2);
+
 	static FORCEINLINE float Sqrt( float Value ) { return sqrtf(Value); }
+	static FORCEINLINE double Sqrt( double Value ) { return sqrt(Value); }
+	RESOLVE_FLOAT_AMBIGUITY(Sqrt);
+
 	static FORCEINLINE float Pow( float A, float B ) { return powf(A,B); }
+	static FORCEINLINE double Pow( double A, double B ) { return pow(A,B); }
+	RESOLVE_FLOAT_AMBIGUITY_2_ARGS(Pow);
 
 	/** Computes a fully accurate inverse square root */
-	static FORCEINLINE float InvSqrt( float F )
-	{
-		return 1.0f / sqrtf( F );
-	}
+	static FORCEINLINE float InvSqrt( float F ) { return 1.0f / sqrtf( F ); }
+	static FORCEINLINE double InvSqrt( double F ) { return 1.0 / sqrt( F ); }
+	RESOLVE_FLOAT_AMBIGUITY(InvSqrt);
 
 	/** Computes a faster but less accurate inverse square root */
-	static FORCEINLINE float InvSqrtEst( float F )
-	{
-		return InvSqrt( F );
-	}
+	static FORCEINLINE float InvSqrtEst( float F ) { return InvSqrt( F ); }
+	static FORCEINLINE double InvSqrtEst( double F ) { return InvSqrt( F ); }
+	RESOLVE_FLOAT_AMBIGUITY(InvSqrtEst);
 
 	/** Return true if value is NaN (not a number). */
 	static FORCEINLINE bool IsNaN( float A ) 
@@ -357,14 +561,20 @@ struct FGenericPlatformMath
 		return ((*(uint64*)&A) & 0x7FF0000000000000ULL) != 0x7FF0000000000000ULL;
 	}
 
-	static FORCEINLINE bool IsNegativeFloat(float A)
+	//UE_DEPRECATED(5.0, "Use IsNegative here.")	// LWC_TODO: Enable IsNegativeFloat/Double deprecations and fix engine calls.
+	static FORCEINLINE bool IsNegativeFloat(float A) { return IsNegative(A); }
+
+	//UE_DEPRECATED(5.0, "Use IsNegative here.")
+	static FORCEINLINE bool IsNegativeDouble(double A) { return IsNegative(A); }
+
+	static FORCEINLINE bool IsNegative(float A)
 	{
-		return ( (*(uint32*)&A) >= (uint32)0x80000000 ); // Detects sign bit.
+		return ((*(uint32*)&A) >= (uint32)0x80000000); // Detects sign bit.
 	}
 
-	static FORCEINLINE bool IsNegativeDouble(double A)
+	static FORCEINLINE bool IsNegative(double A)
 	{
-		return ( (*(uint64*)&A) >= (uint64)0x8000000000000000 ); // Detects sign bit.
+		return ((*(uint64*)&A) >= (uint64)0x8000000000000000); // Detects sign bit.
 	}
 
 	/** Returns a random integer between 0 and RAND_MAX, inclusive */
@@ -693,7 +903,7 @@ struct FGenericPlatformMath
 	 */
 	static CONSTEXPR FORCEINLINE double FloatSelect( double Comparand, double ValueGEZero, double ValueLTZero )
 	{
-		return Comparand >= 0.f ? ValueGEZero : ValueLTZero;
+		return Comparand >= 0.0 ? ValueGEZero : ValueLTZero;
 	}
 
 	/** Computes absolute value in a generic way */
@@ -723,6 +933,12 @@ struct FGenericPlatformMath
 	{
 		return (A<=B) ? A : B;
 	}
+
+	// Allow mixing of float types to promote to highest precision type
+	static CONSTEXPR FORCEINLINE double Max(const double A, const float B) { return Max<double>(A, B); }
+	static CONSTEXPR FORCEINLINE double Max(const float A, const double B) { return Max<double>(A, B); }
+	static CONSTEXPR FORCEINLINE double Min(const double A, const float B) { return Min<double>(A, B); }
+	static CONSTEXPR FORCEINLINE double Min(const float A, const double B) { return Min<double>(A, B); }
 
 	/**
 	* Min of Array
@@ -812,10 +1028,22 @@ struct FGenericPlatformMath
 	static void AutoTest();
 #endif
 
+
+	// Temporary support for ambiguities to simplify UE4 -> UE5 upgrades - falls back to float variant.
+	// A call is considered ambiguous if it passes no float types, any long double, or multiple mismatched float/double types.
+
+	template<typename T1, typename T2>
+	struct TIsSameOrNotFP { static constexpr bool Value = TIsSame<T1, T2>::Value || !TIsFloatingPoint<T2>::Value; };
+	template<typename... Ts>
+	static constexpr bool TIsAmbiguous =	!TOr<TIsFloatingPoint<typename TDecay<Ts>::Type>...>::Value ||
+											TOr<TIsSame<long double, typename TDecay<Ts>::Type>...>::Value ||
+											(TOr<TIsSame<float, typename TDecay<Ts>::Type>...>::Value && !TAnd<TIsSameOrNotFP<float, typename TDecay<Ts>::Type>...>::Value);
+
 private:
 
 	/** Error reporting for Fmod. Not inlined to avoid compilation issues and avoid all the checks and error reporting at all callsites. */
 	static CORE_API void FmodReportError(float X, float Y);
+	static CORE_API void FmodReportError(double X, double Y);
 };
 
 /** Float specialization */
@@ -824,4 +1052,8 @@ FORCEINLINE float FGenericPlatformMath::Abs( const float A )
 {
 	return fabsf( A );
 }
-
+template<>
+FORCEINLINE double FGenericPlatformMath::Abs(const double A)
+{
+	return fabs(A);
+}

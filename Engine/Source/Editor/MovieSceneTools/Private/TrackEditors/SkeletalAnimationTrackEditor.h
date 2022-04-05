@@ -39,6 +39,10 @@ public:
 
 	//~ FGCObject
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FSkeletalAnimationTrackEditor");
+	}
 
 	/**
 	 * Creates an instance of this class.  Called by a sequencer 
@@ -118,7 +122,7 @@ private:
 	FDelegateHandle SequencerSavedHandle;
 	void OnSequencerSaved(ISequencer& InSequence);
 
-
+	void OnPostPropertyChanged(UObject* InObject, struct FPropertyChangedEvent& InPropertyChangedEvent);
 };
 
 

@@ -9,6 +9,8 @@
 #include "UObject/PropertyHelper.h"
 #include "UObject/LinkerPlaceholderBase.h"
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
+#include "Hash/Blake3.h"
+#include "IO/IoHash.h"
 
 // WARNING: This should always be the last include in any file that needs it (except .generated.h)
 #include "UObject/UndefineUPropertyMacros.h"
@@ -250,6 +252,12 @@ FString FStructProperty::GetCPPType( FString* ExtendedTypeText/*=NULL*/, uint32 
 
 FString FStructProperty::GetCPPTypeForwardDeclaration() const
 {
+	// Core type structs don't need to forward declare in UHT as every generated.h indirectly includes CoreMinimal.h
+	if (Struct->GetCppStructOps() && Struct->GetCppStructOps()->IsUECoreType())
+	{
+		return FString();
+	}
+
 	return FString::Printf(TEXT("struct F%s;"), *Struct->GetName());
 }
 
@@ -257,12 +265,6 @@ FString FStructProperty::GetCPPMacroType( FString& ExtendedTypeText ) const
 {
 	ExtendedTypeText = GetCPPType(NULL, CPPF_None);
 	return TEXT("STRUCT");
-}
-
-void FStructProperty::ExportTextItem_Static(UScriptStruct* InStruct, FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope)
-{
-	// For backward compatibility skip the native export 
-	InStruct->ExportText(ValueStr, PropertyValue, DefaultValue, Parent, PortFlags, ExportRootScope, false);
 }
 
 void FStructProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
@@ -299,11 +301,6 @@ const TCHAR* FStructProperty::ImportText_Internal(const TCHAR* InBuffer, void* D
 #endif
 
 	return Result;
-}
-
-const TCHAR* FStructProperty::ImportText_Static(UScriptStruct* InStruct, const FString& Name, const TCHAR* InBuffer, void* Data, int32 PortFlags, UObject* Parent, FOutputDevice* ErrorText)
-{
-	return InStruct->ImportText(InBuffer, Data, Parent, PortFlags, ErrorText, Name, true);
 }
 
 void FStructProperty::CopyValuesInternal( void* Dest, void const* Src, int32 Count  ) const
@@ -353,7 +350,7 @@ EConvertFromTypeResult FStructProperty::ConvertFromType(const FPropertyTag& Tag,
 
 	auto CanSerializeFromStructWithDifferentName = [](const FArchive& InAr, const FPropertyTag& PropertyTag, const FStructProperty* StructProperty)
 	{
-		if (InAr.UE4Ver() < VER_UE4_STRUCT_GUID_IN_PROPERTY_TAG)
+		if (InAr.UEVer() < VER_UE4_STRUCT_GUID_IN_PROPERTY_TAG)
 		{
 			// Old Implementation
 			return StructProperty && !StructProperty->UseBinaryOrNativeSerialization(InAr);
@@ -378,8 +375,19 @@ EConvertFromTypeResult FStructProperty::ConvertFromType(const FPropertyTag& Tag,
 				FArchive& Ar = Adapter.GetArchive();
 				if (CppStructOps->HasSerializeFromMismatchedTag() && CppStructOps->SerializeFromMismatchedTag(Tag, Ar, DestAddress))
 				{
-
 					return EConvertFromTypeResult::Converted;
+				}
+				else if(((Struct->StructFlags & STRUCT_SerializeNative) == 0) && CppStructOps->HasSerializeFromMismatchedTag() && CppStructOps->IsUECoreVariant())
+				{
+					// Special case for Transform, as the f/d variants are immutable whilst the default is not, so we must call SerializeTaggedProperties directly to perform the conversion.
+					if(Tag.StructName == NAME_Transform)
+					{
+						Struct->SerializeTaggedProperties(Slot, (uint8*)DestAddress, Struct, nullptr);
+						return EConvertFromTypeResult::Converted;
+					}
+					// If a core variant without a native serializer returns false from SerializeFromMismatchedTag fall back to standard SerializeItem.
+					// We rely on all properties within the variant supporting SerializeFromMismatchedTag to perform the conversion per property.
+					return EConvertFromTypeResult::UseSerializeItem;
 				}
 				else
 				{
@@ -391,22 +399,6 @@ EConvertFromTypeResult FStructProperty::ConvertFromType(const FPropertyTag& Tag,
 
 		if (Tag.Type == NAME_StructProperty && Tag.StructName != Struct->GetFName() && !CanSerializeFromStructWithDifferentName(UnderlyingArchive, Tag, this))
 		{
-			//handle Vector -> Vector4 upgrades here because using the SerializeFromMismatchedTag system would cause a dependency from Core -> CoreUObject
-			if (Tag.StructName == NAME_Vector && Struct->GetFName() == NAME_Vector4)
-			{
-				void* DestAddress = ContainerPtrToValuePtr<void>(Data, Tag.ArrayIndex);
-				FVector OldValue;
-				Slot << OldValue;
-
-				//only set X/Y/Z.  The W should already have been set to the property specific default and we don't want to trash it by forcing 0 or 1.
-				FVector4* DestValue = (FVector4*)DestAddress;
-				DestValue->X = OldValue.X;
-				DestValue->Y = OldValue.Y;
-				DestValue->Z = OldValue.Z;
-
-				return EConvertFromTypeResult::Converted;
-			}
-
 			UE_LOG(LogClass, Warning, TEXT("Property %s of %s has a struct type mismatch (tag %s != prop %s) in package:  %s. If that struct got renamed, add an entry to ActiveStructRedirects."),
 				*Tag.Name.ToString(), *GetName(), *Tag.StructName.ToString(), *Struct->GetName(), *UnderlyingArchive.GetArchiveName());
 			return EConvertFromTypeResult::CannotConvert;
@@ -414,5 +406,18 @@ EConvertFromTypeResult FStructProperty::ConvertFromType(const FPropertyTag& Tag,
 	}
 	return EConvertFromTypeResult::UseSerializeItem;
 }
+
+#if WITH_EDITORONLY_DATA
+void FStructProperty::AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const
+{
+	Super::AppendSchemaHash(Builder, bSkipEditorOnly);
+	if (Struct)
+	{
+		const FIoHash& StructSchemaHash = Struct->GetSchemaHash(bSkipEditorOnly);
+		Builder.Update(&StructSchemaHash, sizeof(StructSchemaHash));
+	}
+}
+#endif
+
 
 #include "UObject/DefineUPropertyMacros.h"

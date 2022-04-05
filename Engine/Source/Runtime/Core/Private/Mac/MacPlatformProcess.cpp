@@ -11,6 +11,7 @@
 #include "Misc/App.h"
 #include "Misc/CoreDelegates.h"
 #include "Misc/Paths.h"
+#include "Misc/StringBuilder.h"
 #include "HAL/FileManager.h"
 #include "Apple/PreAppleSystemHeaders.h"
 #include <mach-o/dyld.h>
@@ -19,7 +20,6 @@
 #include <libproc.h>
 #include <spawn.h>
 #include "Apple/PostAppleSystemHeaders.h"
-
 #if PLATFORM_MAC_X86
     #include <cpuid.h>
 #endif
@@ -201,7 +201,7 @@ FString FMacPlatformProcess::GetGameBundleId()
 	return FString([[NSBundle mainBundle] bundleIdentifier]);
 }
 
-bool FMacPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory)
+bool FMacPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory, bool bShouldEndWithParentProcess)
 {
 	FString CmdLineParams = Params;
 	FString ExecutableFileName = URL;
@@ -307,6 +307,11 @@ bool FMacPlatformProcess::ExecProcess( const TCHAR* URL, const TCHAR* Params, in
 FProcHandle FMacPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild)
 {
 	return CreateProcInternal(URL, Parms, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, OutProcessID, PriorityModifier, OptionalWorkingDirectory, PipeWriteChild, PipeWriteChild, PipeReadChild);
+}
+
+FProcHandle FMacPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild, void* PipeStdErrChild)
+{
+	return CreateProcInternal(URL, Parms, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, OutProcessID, PriorityModifier, OptionalWorkingDirectory, PipeWriteChild, PipeStdErrChild, PipeReadChild);
 }
 
 FProcHandle FMacPlatformProcess::CreateProcInternal(const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeStdOutChild, void* PipeStdErrChild, void *PipeStdInChild)
@@ -1021,11 +1026,11 @@ const TCHAR* FMacPlatformProcess::BaseDir()
 				NSString* BundledBinariesPath = NULL;
 				if (!FApp::IsProjectNameEmpty())
 				{
-					BundledBinariesPath = [BasePath stringByAppendingPathComponent : [NSString stringWithFormat : @"Contents/UE4/%s/Binaries/Mac", TCHAR_TO_UTF8(FApp::GetProjectName())]];
+					BundledBinariesPath = [BasePath stringByAppendingPathComponent : [NSString stringWithFormat : @"Contents/UE/%s/Binaries/Mac", TCHAR_TO_UTF8(FApp::GetProjectName())]];
 				}
 				if (!BundledBinariesPath || ![FileManager fileExistsAtPath:BundledBinariesPath])
 				{
-					BundledBinariesPath = [BasePath stringByAppendingPathComponent: @"Contents/UE4/Engine/Binaries/Mac"];
+					BundledBinariesPath = [BasePath stringByAppendingPathComponent: @"Contents/UE/Engine/Binaries/Mac"];
 				}
 				if ([FileManager fileExistsAtPath: BundledBinariesPath])
 				{
@@ -1241,7 +1246,12 @@ const TCHAR* FMacPlatformProcess::GetBinariesSubdirectory()
 	return TEXT("Mac");
 }
 
-void FMacPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms /*= NULL*/, ELaunchVerb::Type Verb /*= ELaunchVerb::Open*/ )
+const FString FMacPlatformProcess::GetModulesDirectory()
+{
+	return FString(BaseDir());
+}
+
+bool FMacPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms /*= NULL*/, ELaunchVerb::Type Verb /*= ELaunchVerb::Open*/, bool bPromptToOpenOnFailure /*= true */)
 {
 	SCOPED_AUTORELEASE_POOL;
 	// First attempt to open the file in its default application
@@ -1253,8 +1263,10 @@ void FMacPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHAR* F
 		// Xcode project is a special case where we don't open the project file itself, but the .xcodeproj folder containing it
 		FileToOpen = [FileToOpen stringByDeletingLastPathComponent];
 	}
-	[[NSWorkspace sharedWorkspace] openFile: FileToOpen];
+	bool Result = [[NSWorkspace sharedWorkspace] openFile: FileToOpen];
 	CFRelease( CFFileName );
+
+	return Result;
 }
 
 void FMacPlatformProcess::ExploreFolder( const TCHAR* FilePath )
@@ -1297,7 +1309,7 @@ void FMacPlatformProcess::ClosePipe( void* ReadPipe, void* WritePipe )
 	}
 }
 
-bool FMacPlatformProcess::CreatePipe( void*& ReadPipe, void*& WritePipe )
+bool FMacPlatformProcess::CreatePipe( void*& ReadPipe, void*& WritePipe, bool bWritePipeLocal )
 {
 	SCOPED_AUTORELEASE_POOL;
 	int pipefd[2];
@@ -1317,26 +1329,28 @@ FString FMacPlatformProcess::ReadPipe( void* ReadPipe )
 {
 	SCOPED_AUTORELEASE_POOL;
 
-	FString Output;
-
 	const int32 READ_SIZE = 8192;
 	ANSICHAR Buffer[READ_SIZE+1];
 	int32 BytesRead = 0;
+
+	// We don't want to use FUtf8StringBuilderBase here because the Buffer boundary could split a UTF-8 character
+	// and we don't want .Append to attempt to interpert the incoming data.  We will convert the whole string in one go at the end.
+	FAnsiStringBuilderBase StringBuilder;
 
 	if(ReadPipe)
 	{
 		do
 		{
-		BytesRead = read([(NSFileHandle*)ReadPipe fileDescriptor], Buffer, READ_SIZE);
-		if (BytesRead > 0)
-		{
-			Buffer[BytesRead] = '\0';
-			Output += StringCast<TCHAR>(Buffer).Get();
-		}
+			BytesRead = read([(NSFileHandle*)ReadPipe fileDescriptor], Buffer, READ_SIZE);
+			if (BytesRead > 0)
+			{
+				Buffer[BytesRead] = '\0';
+				StringBuilder.Append(Buffer, BytesRead);
+			}
 		} while (BytesRead > 0);
 	}
-
-	return Output;
+	
+	return FString(UTF8_TO_TCHAR(StringBuilder.ToString()));
 }
 
 bool FMacPlatformProcess::ReadPipeToArray(void* ReadPipe, TArray<uint8>& Output)
@@ -1381,9 +1395,9 @@ bool FMacPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FSt
 	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 2];
 	for (uint32 i = 0; i < BytesAvailable; i++)
 	{
-		Buffer[i] = Message[i];
+		Buffer[i] = (UTF8CHAR)Message[i];
 	}
-	Buffer[BytesAvailable] = '\n';
+	Buffer[BytesAvailable] = (UTF8CHAR)'\n';
 
 	// Write to pipe
 	uint32 BytesWritten = write([(NSFileHandle*)WritePipe fileDescriptor], Buffer, BytesAvailable + 1);
@@ -1391,7 +1405,7 @@ bool FMacPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FSt
 	// Get written message
 	if (OutWritten)
 	{
-		Buffer[BytesWritten] = '\0';
+		Buffer[BytesWritten] = (UTF8CHAR)'\0';
 		*OutWritten = FUTF8ToTCHAR((const ANSICHAR*)Buffer).Get();
 	}
 

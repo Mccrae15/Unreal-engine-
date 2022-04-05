@@ -16,7 +16,7 @@
 #include "GenericPlatform/GenericPlatformMisc.h"
 #include "GenericPlatform/GenericPlatformProcess.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "IPAddress.h"
 #include "Misc/Base64.h"
@@ -45,9 +45,12 @@ static void FillOutMosaicTopologies(TArray<FMosaicTopo>& MosaicTopos);
 #endif // PLATFORM_WINDOWS
 
 
+const FIPv4Endpoint FSwitchboardListener::InvalidEndpoint(FIPv4Address::LanBroadcast, 0);
+
+
 namespace
 {
-	const double SecondsUntilInactiveClientDisconnect = 5.0;
+	const double DefaultInactiveTimeoutSeconds = 5.0;
 
 	bool TryFindIdInBrokenMessage(const FString& InMessage, FGuid& OutGuid)
 	{
@@ -283,6 +286,8 @@ bool FSwitchboardListener::StopListening()
 
 bool FSwitchboardListener::Tick()
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Tick);
+
 	// Dequeue pending connections
 	{
 		TPair<FIPv4Endpoint, TSharedPtr<FSocket>> Connection;
@@ -291,6 +296,7 @@ bool FSwitchboardListener::Tick()
 			Connections.Add(Connection);
 
 			FIPv4Endpoint ClientEndpoint = Connection.Key;
+			InactiveTimeouts.FindOrAdd(ClientEndpoint, DefaultInactiveTimeoutSeconds);
 			LastActivityTime.FindOrAdd(ClientEndpoint, FPlatformTime::Seconds());
 
 			// Send current state upon connection
@@ -301,6 +307,7 @@ bool FSwitchboardListener::Tick()
 				StatePacket.OsVersionNumber = FPlatformMisc::GetOSVersion();
 
 				StatePacket.TotalPhysicalMemory = FPlatformMemory::GetConstants().TotalPhysical;
+				StatePacket.PlatformBinaryDirectory = FPlatformProcess::GetBinariesSubdirectory();
 
 				for (const auto& RunningProcess : RunningProcesses)
 				{
@@ -378,6 +385,8 @@ bool FSwitchboardListener::Tick()
 
 bool FSwitchboardListener::ParseIncomingMessage(const FString& InMessage, const FIPv4Endpoint& InEndpoint)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::ParseIncomingMessage);
+
 	TUniquePtr<FSwitchboardTask> Task;
 	bool bEcho = true;
 	if (CreateTaskFromCommand(InMessage, InEndpoint, Task, bEcho))
@@ -479,6 +488,11 @@ bool FSwitchboardListener::RunScheduledTask(const FSwitchboardTask& InTask)
 		{
 			const FSwitchboardMinimizeWindowsTask& Task = static_cast<const FSwitchboardMinimizeWindowsTask&>(InTask);
 			return Task_MinimizeWindows(Task);
+		}
+		case ESwitchboardTaskType::SetInactiveTimeout:
+		{
+			const FSwitchboardSetInactiveTimeoutTask& Task = static_cast<const FSwitchboardSetInactiveTimeoutTask&>(InTask);
+			return Task_SetInactiveTimeout(Task);
 		}
 		default:
 		{
@@ -614,6 +628,8 @@ static bool DisableFullscreenOptimizationForProcess(const FRunningProcess* Proce
 
 bool FSwitchboardListener::Task_StartProcess(const FSwitchboardStartTask& InRunTask)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_StartProcess);
+
 	auto NewProcess = MakeShared<FRunningProcess, ESPMode::ThreadSafe>();
 
 	NewProcess->Recipient = InRunTask.Recipient;
@@ -649,7 +665,7 @@ bool FSwitchboardListener::Task_StartProcess(const FSwitchboardStartTask& InRunT
 		NewProcess->ReadPipe
 	);
 
-	if (!NewProcess->Handle.IsValid() || !FPlatformProcess::IsProcRunning(NewProcess->Handle))
+	if (!NewProcess->Handle.IsValid())
 	{
 		// Close process in case it just didn't run
 		FPlatformProcess::CloseProc(NewProcess->Handle);
@@ -702,6 +718,8 @@ bool FSwitchboardListener::Task_StartProcess(const FSwitchboardStartTask& InRunT
 
 bool FSwitchboardListener::Task_KillProcess(const FSwitchboardKillTask& KillTask)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_KillProcess);
+
 	if (EquivalentTaskFutureExists(KillTask.GetEquivalenceHash()))
 	{
 		SendMessage(
@@ -759,6 +777,8 @@ bool FSwitchboardListener::Task_KillProcess(const FSwitchboardKillTask& KillTask
 	const FGuid UUID = KillTask.ProgramID;
 
 	MessageFuture.Future = Async(EAsyncExecution::ThreadPool, [=]() {
+		SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE_STR("FSwitchboardListener::Task_KillProcess future closure");
+
 		const float SoftKillTimeout = 2.0f;
 
 		const bool bKilledProcess = KillProcessNow(Process.Get(), SoftKillTimeout);
@@ -813,6 +833,8 @@ bool FSwitchboardListener::Task_KillProcess(const FSwitchboardKillTask& KillTask
 
 bool FSwitchboardListener::Task_FixExeFlags(const FSwitchboardFixExeFlagsTask& Task)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_FixExeFlags);
+
 	if (EquivalentTaskFutureExists(Task.GetEquivalenceHash()))
 	{
 		SendMessage(	
@@ -866,6 +888,8 @@ bool FSwitchboardListener::Task_FixExeFlags(const FSwitchboardFixExeFlagsTask& T
 
 bool FSwitchboardListener::KillProcessNow(FRunningProcess* InProcess, float SoftKillTimeout)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::KillProcessNow);
+
 	if (InProcess && InProcess->Handle.IsValid() && FPlatformProcess::IsProcRunning(InProcess->Handle))
 	{
 		UE_LOG(LogSwitchboard, Display, TEXT("Killing app with PID %d"), InProcess->PID);
@@ -905,6 +929,8 @@ bool FSwitchboardListener::KillProcessNow(FRunningProcess* InProcess, float Soft
 
 bool FSwitchboardListener::Task_ReceiveFileFromClient(const FSwitchboardReceiveFileFromClientTask& InReceiveFileFromClientTask)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_ReceiveFileFromClient);
+
 	FString Destination = InReceiveFileFromClientTask.Destination;
 
 	if (Destination.Contains(TEXT("%TEMP%")))
@@ -955,6 +981,8 @@ bool FSwitchboardListener::Task_ReceiveFileFromClient(const FSwitchboardReceiveF
 
 bool FSwitchboardListener::Task_RedeployListener(const FSwitchboardRedeployListenerTask& InRedeployListenerTask)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_RedeployListener);
+
 	if (RedeployStatus.State != FRedeployStatus::EState::None)
 	{
 		const FString ErrorMsg(TEXT("Redeploy already in progress"));
@@ -1095,6 +1123,8 @@ bool FSwitchboardListener::Task_RedeployListener(const FSwitchboardRedeployListe
 
 void FSwitchboardListener::RollbackRedeploy()
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::RollbackRedeploy);
+
 	// Unwind redeploy actions, in reverse order of corresponding state transitions.
 	UE_LOG(LogSwitchboard, Warning, TEXT("Rolling back redeploy..."));
 
@@ -1145,6 +1175,8 @@ FString FSwitchboardListener::GetIpcSemaphoreName(uint32 ParentPid)
 
 bool FSwitchboardListener::Task_SendFileToClient(const FSwitchboardSendFileToClientTask& InSendFileToClientTask)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_SendFileToClient);
+
 	FString SourceFilePath = InSendFileToClientTask.Source;
 	FPlatformMisc::NormalizePath(SourceFilePath);
 	FPaths::MakePlatformFilename(SourceFilePath);
@@ -1177,6 +1209,8 @@ static FCriticalSection SwitchboardListenerMutexNvapi;
 #if PLATFORM_WINDOWS
 static void FillOutSyncTopologies(TArray<FSyncTopo>& SyncTopos)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FillOutSyncTopologies);
+
 	FScopeLock LockNvapi(&SwitchboardListenerMutexNvapi);
 
 	// Normally there is a single sync card. BUT an RTX Server could have more, and we need to account for that.
@@ -1354,6 +1388,8 @@ static void FillOutSyncTopologies(TArray<FSyncTopo>& SyncTopos)
 #if PLATFORM_WINDOWS
 static void FillOutDriverVersion(FSyncStatus& SyncStatus)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FillOutDriverVersion);
+
 	NvU32 DriverVersion;
 	NvAPI_ShortString BuildBranchString;
 
@@ -1375,6 +1411,8 @@ static void FillOutDriverVersion(FSyncStatus& SyncStatus)
 #if PLATFORM_WINDOWS
 static void FillOutTaskbarAutoHide(FSyncStatus& SyncStatus)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FillOutTaskbarAutoHide);
+
 	APPBARDATA AppBarData;
 
 	AppBarData.cbSize = sizeof(APPBARDATA);
@@ -1397,6 +1435,8 @@ static void FillOutTaskbarAutoHide(FSyncStatus& SyncStatus)
 #if PLATFORM_WINDOWS
 static void FillOutMosaicTopologies(TArray<FMosaicTopo>& MosaicTopos)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FillOutMosaicTopologies);
+
 	FScopeLock LockNvapi(&SwitchboardListenerMutexNvapi);
 
 	NvU32 GridCount = 0;
@@ -1457,6 +1497,8 @@ static void FillOutMosaicTopologies(TArray<FMosaicTopo>& MosaicTopos)
 #if PLATFORM_WINDOWS
 FRunningProcess* FSwitchboardListener::FindOrStartFlipModeMonitorForUUID(const FGuid& UUID)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::FindOrStartFlipModeMonitorForUUID);
+
 	// See if the associated FlipModeMonitor is running
 	{
 		auto* FlipModeMonitorPtr = FlipModeMonitors.FindByPredicate([&](const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& FlipMonitor)
@@ -1550,6 +1592,8 @@ FRunningProcess* FSwitchboardListener::FindOrStartFlipModeMonitorForUUID(const F
 	// The monitor auto-closes when monitored program closes.
 	MonitorProcess->UUID = Process->UUID;
 	MonitorProcess->bUpdateClientsWithStdout = false;
+	MonitorProcess->Recipient = InvalidEndpoint;
+	MonitorProcess->Name = TEXT("flipmode_monitor");
 
 	FlipModeMonitors.Add(MonitorProcess);
 
@@ -1560,6 +1604,8 @@ FRunningProcess* FSwitchboardListener::FindOrStartFlipModeMonitorForUUID(const F
 #if PLATFORM_WINDOWS
 static void FillOutFlipMode(FSyncStatus& SyncStatus, FRunningProcess* FlipModeMonitor)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FillOutFlipMode);
+
 	// See if the flip monitor is still there.
 	if (!FlipModeMonitor || !FlipModeMonitor->Handle.IsValid())
 	{
@@ -1568,7 +1614,8 @@ static void FillOutFlipMode(FSyncStatus& SyncStatus, FRunningProcess* FlipModeMo
 	}
 
 	// Get stdout.
-	const FString StdOut(UTF8_TO_TCHAR(FlipModeMonitor->Output.GetData()));
+	FUTF8ToTCHAR StdoutConv(reinterpret_cast<const ANSICHAR*>(FlipModeMonitor->Output.GetData()), FlipModeMonitor->Output.Num());
+	const FString StdOut(StdoutConv.Length(), StdoutConv.Get());
 
 	// Clear out the StdOut array.
 	FlipModeMonitor->Output.Empty();
@@ -1608,6 +1655,8 @@ static void FillOutFlipMode(FSyncStatus& SyncStatus, FRunningProcess* FlipModeMo
 #if PLATFORM_WINDOWS
 static void FillOutDisableFullscreenOptimizationForProcess(FSyncStatus& SyncStatus, const FRunningProcess* Process)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FillOutDisableFullscreenOptimizationForProcess);
+
 	// Reset output array just in case
 	SyncStatus.ProgramLayers.Reset();
 
@@ -1646,6 +1695,8 @@ static void FillOutDisableFullscreenOptimizationForProcess(FSyncStatus& SyncStat
 #if PLATFORM_WINDOWS
 static void FillOutPhysicalGpuStats(FSyncStatus& SyncStatus)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FillOutPhysicalGpuStats);
+
 	// TODO: Can we somehow use the GPU engine "engtype_3D" perf counters for this instead?
 
 	FScopeLock LockNvapi(&SwitchboardListenerMutexNvapi);
@@ -1779,6 +1830,8 @@ bool FSwitchboardListener::EquivalentTaskFutureExists(uint32 TaskEquivalenceHash
 
 bool FSwitchboardListener::Task_GetSyncStatus(const FSwitchboardGetSyncStatusTask& InGetSyncStatusTask)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_GetSyncStatus);
+
 #if PLATFORM_WINDOWS
 	// Reject request if an equivalent one is already in our future
 	if (EquivalentTaskFutureExists(InGetSyncStatusTask.GetEquivalenceHash()))
@@ -1828,6 +1881,8 @@ bool FSwitchboardListener::Task_GetSyncStatus(const FSwitchboardGetSyncStatusTas
 			CachedMosaicToposLock=CachedMosaicToposLock,
 			CachedMosaicTopos=CachedMosaicTopos
 		]() {
+			SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE_STR("FSwitchboardListener::Task_GetSyncStatus future closure");
+
 			FillOutTaskbarAutoHide(SyncStatus.Get());
 
 			if (IsNvAPIInitialized)
@@ -1872,6 +1927,8 @@ bool FSwitchboardListener::Task_GetSyncStatus(const FSwitchboardGetSyncStatusTas
 
 bool FSwitchboardListener::Task_RefreshMosaics(const FSwitchboardRefreshMosaicsTask& InRefreshMosaicsTask)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_RefreshMosaics);
+
 #if PLATFORM_WINDOWS
 	if (!bIsNvAPIInitialized)
 	{
@@ -1901,6 +1958,8 @@ bool FSwitchboardListener::Task_RefreshMosaics(const FSwitchboardRefreshMosaicsT
 			CachedMosaicTopos=CachedMosaicTopos
 		]()
 		{
+			SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE_STR("FSwitchboardListener::Task_RefreshMosaics future closure");
+
 			FWriteScopeLock Lock(*CachedMosaicToposLock);
 			CachedMosaicTopos->Reset();
 			FillOutMosaicTopologies(*CachedMosaicTopos);
@@ -1920,8 +1979,9 @@ bool FSwitchboardListener::Task_RefreshMosaics(const FSwitchboardRefreshMosaicsT
 
 bool FSwitchboardListener::Task_MinimizeWindows(const FSwitchboardMinimizeWindowsTask& InTask)
 {
-#if PLATFORM_WINDOWS
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::Task_MinimizeWindows);
 
+#if PLATFORM_WINDOWS
 	// Reject request if an equivalent one is already in our future
 	if (EquivalentTaskFutureExists(InTask.GetEquivalenceHash()))
 	{
@@ -1939,6 +1999,8 @@ bool FSwitchboardListener::Task_MinimizeWindows(const FSwitchboardMinimizeWindow
 	TaskFuture.Future = Async(EAsyncExecution::ThreadPool,
 		[]()
 		{
+			SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE_STR("FSwitchboardListener::Task_MinimizeWindows future closure");
+
 			if (const HWND HWnd = ::FindWindowA("Shell_TrayWnd", NULL))
 			{
 				::SendMessageA(HWnd, WM_COMMAND, (WPARAM)419, 0);
@@ -1957,15 +2019,40 @@ bool FSwitchboardListener::Task_MinimizeWindows(const FSwitchboardMinimizeWindow
 #endif // PLATFORM_WINDOWS
 }
 
+bool FSwitchboardListener::Task_SetInactiveTimeout(const FSwitchboardSetInactiveTimeoutTask& InTimeoutTask)
+{
+	const FIPv4Endpoint& Client = InTimeoutTask.Recipient;
+	const float RequestedTimeout = InTimeoutTask.TimeoutSeconds;
+
+	if (RequestedTimeout < DefaultInactiveTimeoutSeconds)
+	{
+		SendMessage(CreateTaskDeclinedMessage(InTimeoutTask, "Requested timeout too low", {}), Client);
+		return false;
+	}
+
+	float& ClientTimeout = InactiveTimeouts[Client];
+	if (RequestedTimeout != ClientTimeout)
+	{
+		UE_LOG(LogSwitchboard, Display, TEXT("Changing client %s inactive timeout from %.0f to %.0f seconds"),
+			*Client.ToString(), ClientTimeout, RequestedTimeout);
+		ClientTimeout = RequestedTimeout;
+	}
+
+	return true;
+}
+
 void FSwitchboardListener::CleanUpDisconnectedSockets()
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::CleanUpDisconnectedSockets);
+
 	const double CurrentTime = FPlatformTime::Seconds();
 	for (const TPair<FIPv4Endpoint, double>& LastActivity : LastActivityTime)
 	{
 		const FIPv4Endpoint& Client = LastActivity.Key;
-		if (CurrentTime - LastActivity.Value > SecondsUntilInactiveClientDisconnect)
+		const float ClientTimeout = InactiveTimeouts[Client];
+		if (CurrentTime - LastActivity.Value > ClientTimeout)
 		{
-			UE_LOG(LogSwitchboard, Warning, TEXT("Client %s has been inactive for more than %.1fs -- closing connection"), *Client.ToString(), SecondsUntilInactiveClientDisconnect);
+			UE_LOG(LogSwitchboard, Warning, TEXT("Client %s has been inactive for more than %.1fs -- closing connection"), *Client.ToString(), ClientTimeout);
 			TUniquePtr<FSwitchboardDisconnectTask> DisconnectTask = MakeUnique<FSwitchboardDisconnectTask>(FGuid(), Client);
 			DisconnectTasks.Enqueue(MoveTemp(DisconnectTask));
 		}
@@ -1993,12 +2080,15 @@ void FSwitchboardListener::DisconnectClient(const FIPv4Endpoint& InClientEndpoin
 	const FString Client = InClientEndpoint.ToString();
 	UE_LOG(LogSwitchboard, Display, TEXT("Client %s disconnected"), *Client);
 	Connections.Remove(InClientEndpoint);
+	InactiveTimeouts.Remove(InClientEndpoint);
 	LastActivityTime.Remove(InClientEndpoint);
 	ReceiveBuffer.Remove(InClientEndpoint);
 }
 
 void FSwitchboardListener::HandleStdout(const TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>& Process)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::HandleStdout);
+
 	TArray<uint8> Output;
 	if (FPlatformProcess::ReadPipeToArray(Process->ReadPipe, Output))
 	{
@@ -2028,6 +2118,8 @@ void FSwitchboardListener::HandleStdout(const TSharedPtr<FRunningProcess, ESPMod
 
 void FSwitchboardListener::HandleRunningProcesses(TArray<TSharedPtr<FRunningProcess, ESPMode::ThreadSafe>>& Processes, bool bNotifyThatProgramEnded)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::HandleRunningProcesses);
+
 	// Reads pipe and cleans up dead processes from the array.
 	for (auto Iter = Processes.CreateIterator(); Iter; ++Iter)
 	{
@@ -2051,11 +2143,13 @@ void FSwitchboardListener::HandleRunningProcesses(TArray<TSharedPtr<FRunningProc
 
 				int32 ReturnCode = 0;
 				FPlatformProcess::GetProcReturnCode(Process->Handle, &ReturnCode);
-				UE_LOG(LogSwitchboard, Display, TEXT("Process exited with returncode: %d"), ReturnCode);
+				UE_LOG(LogSwitchboard, Display, TEXT("Process %d (%s) exited with returncode: %d"),
+					Process->PID, *Process->Name, ReturnCode);
 
-				if (ReturnCode != 0)
+				if (ReturnCode != 0 && Process->Output.Num() > 0)
 				{
-					UE_LOG(LogSwitchboard, Display, TEXT("Output:\n%s"), UTF8_TO_TCHAR(Process->Output.GetData()));
+					FUTF8ToTCHAR StdoutConv(reinterpret_cast<const ANSICHAR*>(Process->Output.GetData()), Process->Output.Num());
+					UE_LOG(LogSwitchboard, Display, TEXT("Output:\n%.*s"), StdoutConv.Length(), StdoutConv.Get());
 				}
 
 				// Notify remote client, which implies that this is a program managed by it.
@@ -2116,6 +2210,13 @@ bool FSwitchboardListener::OnIncomingConnection(FSocket* InSocket, const FIPv4En
 
 bool FSwitchboardListener::SendMessage(const FString& InMessage, const FIPv4Endpoint& InEndpoint)
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::SendMessage);
+
+	if (InEndpoint == InvalidEndpoint)
+	{
+		return false;
+	}
+
 	if (Connections.Contains(InEndpoint))
 	{
 		TSharedPtr<FSocket> ClientSocket = Connections[InEndpoint];
@@ -2136,6 +2237,8 @@ bool FSwitchboardListener::SendMessage(const FString& InMessage, const FIPv4Endp
 
 void FSwitchboardListener::SendMessageFutures()
 {
+	SWITCHBOARD_TRACE_CPUPROFILER_EVENT_SCOPE(FSwitchboardListener::SendMessageFutures);
+
 	for (auto Iter = MessagesFutures.CreateIterator(); Iter; ++Iter)
 	{
 		FSwitchboardMessageFuture& MessageFuture = *Iter;

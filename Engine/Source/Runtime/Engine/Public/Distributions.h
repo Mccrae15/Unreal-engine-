@@ -83,7 +83,7 @@ struct FDistributionLookupTable
 	 */
 	FORCEINLINE float GetValuesPerEntry() const
 	{
-		return (EntryStride - SubEntryStride);
+		return (float)(EntryStride - SubEntryStride);
 	}
 
 	/**
@@ -91,7 +91,7 @@ struct FDistributionLookupTable
 	 */
 	FORCEINLINE float GetValueCount() const
 	{
-		return Values.Num();
+		return (float)(Values.Num());
 	}
 
 	/**
@@ -131,7 +131,7 @@ struct FDistributionLookupTable
 	{
 		if ( EntryCount > 0 )
 		{
-			const int32 ValuesPerEntry = GetValuesPerEntry();
+			const int32 ValuesPerEntry = (int32)GetValuesPerEntry();
 			const float* Entry = Values.GetData();
 
 			// Initialize to the first entry in the table.
@@ -384,9 +384,18 @@ public:
 	 * @param OutMin - The minimum value in the distribution.
 	 * @param OutMax - The maximum value in the distribution.
 	 */
-	void GetRange( FVector* OutMin, FVector* OutMax )
+	void GetRange(FVector3f* OutMin, FVector3f* OutMax)
 	{
-		LookupTable.GetRange( (float*)OutMin, (float*)OutMax );
+		LookupTable.GetRange((float*)OutMin, (float*)OutMax);
+	}
+
+	// LWC_TODO: Precision loss
+	void GetRange(FVector3d* OutMin, FVector3d* OutMax)
+	{
+		FVector3f OutMinFloat, OutMaxFloat;
+		GetRange(&OutMinFloat, &OutMaxFloat);
+		*OutMin = FVector3d(OutMinFloat);
+		*OutMax = FVector3d(OutMaxFloat);
 	}
 
 private:
@@ -471,9 +480,18 @@ public:
 	 * @param OutMin - The minimum value in the distribution.
 	 * @param OutMax - The maximum value in the distribution.
 	 */
-	void GetRange( FVector4* OutMin, FVector4* OutMax )
+	void GetRange( FVector4f* OutMin, FVector4f* OutMax )
 	{
 		LookupTable.GetRange( (float*)OutMin, (float*)OutMax );
+	}
+
+	// LWC_TODO: Precision loss
+	void GetRange(FVector4d* OutMin, FVector4d* OutMax)
+	{
+		FVector4f OutMinFloat, OutMaxFloat;
+		GetRange(&OutMinFloat, &OutMaxFloat);
+		*OutMin = (FVector4d)OutMinFloat;
+		*OutMax = (FVector4d)OutMaxFloat;
 	}
 
 private:

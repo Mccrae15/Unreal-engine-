@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
 
 public class OnlineSubsystemGooglePlay : ModuleRules
@@ -31,7 +31,7 @@ public class OnlineSubsystemGooglePlay : ModuleRules
                 "Engine", 
                 "Sockets",
 				"OnlineSubsystem", 
-                "Http",
+                "HTTP",
 				"AndroidRuntimeSettings",
 				"Launch",
 				"GpgCppSDK"

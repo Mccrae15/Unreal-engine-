@@ -4,6 +4,8 @@
 	DBufferDecalShared.ush: Common definitions for DBuffer decals
 =============================================================================*/
 
+#pragma once
+
 // all values that are output by the forward rendering pass
 struct FDBufferData
 {
@@ -42,19 +44,6 @@ void EncodeDBufferData(FGBufferData GBufferData, float3 MultiOpacity,
 
 	// UNORM 4 channel
 	DBufferC = float4(GBufferData.Metallic, GBufferData.Specular, GBufferData.Roughness, MultiOpacity.z);
-
-	// no need to output any data if the channel isn't used anyway (for DX10 we don't adjust the FrameBufferBlend state - it doesn't support different blend modes for different MRT)
-	{
-#if !MATERIAL_DBUFFERA
-		DBufferA = 0;
-#endif
-#if !MATERIAL_DBUFFERB
-		DBufferB = 0;
-#endif
-#if !MATERIAL_DBUFFERC
-		DBufferC = 0;
-#endif
-	}
 }
 
 /** Populates FDBufferData */
@@ -93,54 +82,75 @@ FDBufferData DecodeDBufferData(
 	#define OpaqueBasePassDBufferCTextureSampler OpaqueBasePass.DBufferCTextureSampler
 #endif
 
-#if MATERIALDECALRESPONSEMASK
-// @param UV - UV space in the DBuffer textures (BufferSize resolution)
-FDBufferData GetDBufferData(float2 UV, uint RTWriteMaskBit)
+// Returns a bitmask of DBuffer targets that contain valid data for this pixel.
+// @param BufferUV - UV space in the DBuffer textures
+uint GetDBufferTargetMask(uint2 PixelPos)
 {
+#if USE_DBUFFER && ENABLE_DBUFFER_TEXTURES && !RAYHITGROUPSHADER && !LUMEN_CARD_CAPTURE
+
+	#if PLATFORM_SUPPORTS_RENDERTARGET_WRITE_MASK
+		return DecodeRTWriteMask(PixelPos, OpaqueBasePass.DBufferRenderMask, 3);
+	#elif PLATFORM_SUPPORTS_PER_PIXEL_DBUFFER_MASK
+		uint Mask = OpaqueBasePass.DBufferRenderMask.Load(uint3(PixelPos, 0));
+		return Mask > 0 ? 0x07 : 0x00;
+	#else
+		return 0x07;
+	#endif
+
+#else
+	return 0;
+#endif
+}
+
+// @param BufferUV - UV space in the DBuffer textures
+FDBufferData GetDBufferData(float2 BufferUV, uint RTMaskBit)
+{
+	// Setup default values, which mean that no decals are present in DBuffer
 	float4 DBufferA = float4(0.0, 0.0, 0.0, 1.0);
-	float4 DBufferB = float4(0.5, 0.5, 0.5, 1.0);
+	float4 DBufferB = float4(128.0f / 255.0f, 128.f / 255.5f, 128.f / 255.5f, 1.0);
 	float4 DBufferC = float4(0.0, 0.0, 0.0, 1.0);
 
-	if ((MATERIALDECALRESPONSEMASK & 0x1) && (RTWriteMaskBit & 0x1))
+#if USE_DBUFFER && ENABLE_DBUFFER_TEXTURES && !RAYHITGROUPSHADER && !LUMEN_CARD_CAPTURE
+	BRANCH
+	if (RTMaskBit & 0x1)
 	{
-		DBufferA = Texture2DSampleLevel(OpaqueBasePass.DBufferATexture, OpaqueBasePassDBufferATextureSampler, UV, 0);
+		DBufferA = Texture2DSampleLevel(OpaqueBasePass.DBufferATexture, OpaqueBasePassDBufferATextureSampler, BufferUV, 0);
 	}
 
-	if ((MATERIALDECALRESPONSEMASK & 0x2) && (RTWriteMaskBit & 0x2))
+	BRANCH
+	if (RTMaskBit & 0x2)
 	{
-		DBufferB = Texture2DSampleLevel(OpaqueBasePass.DBufferBTexture, OpaqueBasePassDBufferBTextureSampler, UV, 0);
+		DBufferB = Texture2DSampleLevel(OpaqueBasePass.DBufferBTexture, OpaqueBasePassDBufferBTextureSampler, BufferUV, 0);
 	}
 
-	if ((MATERIALDECALRESPONSEMASK & 0x4) && (RTWriteMaskBit & 0x4))
+	BRANCH
+	if (RTMaskBit & 0x4)
 	{
-		DBufferC = Texture2DSampleLevel(OpaqueBasePass.DBufferCTexture, OpaqueBasePassDBufferCTextureSampler, UV, 0);
+		DBufferC = Texture2DSampleLevel(OpaqueBasePass.DBufferCTexture, OpaqueBasePassDBufferCTextureSampler, BufferUV, 0);
 	}
-	
+#endif
+
 	return DecodeDBufferData(DBufferA, DBufferB, DBufferC);
 }
-#endif
 
 /** Populates DBufferA, DBufferB, DBufferC as float4 and puts opacity in alpha for frame buffer blending */
 void ApplyDBufferData(
 	FDBufferData DBufferData, inout float3 WorldNormal, inout float3 SubsurfaceColor, inout float Roughness, 
 	inout float3 BaseColor, inout float Metallic, inout float Specular )
 {
+#if (MATERIALDECALRESPONSEMASK & 0x1)
+	BaseColor = BaseColor * DBufferData.ColorOpacity + DBufferData.PreMulColor;
+	SubsurfaceColor *= DBufferData.ColorOpacity;
+#endif
+
+#if (MATERIALDECALRESPONSEMASK & 0x2)
 	// We normalise the normal to get smoother visual result (it helps to avoid having D_GGX explodes toward infinity, and matches DecodeGBufferData)
 	WorldNormal = normalize(WorldNormal * DBufferData.NormalOpacity + DBufferData.PreMulWorldNormal);
+#endif
 
+#if (MATERIALDECALRESPONSEMASK & 0x4)
 	Roughness = Roughness * DBufferData.RoughnessOpacity + DBufferData.PreMulRoughness;
-
 	Metallic = Metallic * DBufferData.RoughnessOpacity + DBufferData.PreMulMetallic;
 	Specular = Specular * DBufferData.RoughnessOpacity + DBufferData.PreMulSpecular;
-
-	SubsurfaceColor *= DBufferData.ColorOpacity;
-
-	BaseColor = BaseColor * DBufferData.ColorOpacity + DBufferData.PreMulColor;
-}
-
-uint GetDBufferMask(in float2 ScreenPosition, in Texture2D<uint> DBufferMaskTexture)
-{
-	int2 PixelPos = int2(ScreenPosition.xy);
-	uint Mask = DBufferMaskTexture.Load( int3(PixelPos, 0) );
-	return Mask > 0 ? 0x07 : 0x00;
+#endif
 }

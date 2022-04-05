@@ -8,13 +8,13 @@
 #include "UniformBuffer.h"
 #include "ShaderParameterStruct.h"
 
-FUniformBufferRHIRef FD3D12DynamicRHI::RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout& Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation)
+FUniformBufferRHIRef FD3D12DynamicRHI::RHICreateUniformBuffer(const void* Contents, const FRHIUniformBufferLayout* Layout, EUniformBufferUsage Usage, EUniformBufferValidation Validation)
 {
 	SCOPE_CYCLE_COUNTER(STAT_D3D12UpdateUniformBufferTime);
 
 	if (Validation == EUniformBufferValidation::ValidateResources)
 	{
-		ValidateShaderParameterResourcesRHI(Contents, Layout);
+		ValidateShaderParameterResourcesRHI(Contents, *Layout);
 	}
 
 	//Note: This is not overly efficient in the mGPU case (we create two+ upload locations) but the CPU savings of having no extra indirection to the resource are worth
@@ -26,7 +26,7 @@ FUniformBufferRHIRef FD3D12DynamicRHI::RHICreateUniformBuffer(const void* Conten
 		FD3D12UniformBuffer* NewUniformBuffer = new FD3D12UniformBuffer(Device, Layout, Usage);
 		check(nullptr != NewUniformBuffer);
 
-		const uint32 NumBytesActualData = Layout.ConstantBufferSize;
+		const uint32 NumBytesActualData = Layout->ConstantBufferSize;
 		if (NumBytesActualData > 0)
 		{
 			// Is this check really needed?
@@ -42,8 +42,8 @@ FUniformBufferRHIRef FD3D12DynamicRHI::RHICreateUniformBuffer(const void* Conten
 			if (Usage == EUniformBufferUsage::UniformBuffer_MultiFrame)
 			{
 				// Uniform buffers that live for multiple frames must use the more expensive and persistent allocation path
-				FD3D12DynamicHeapAllocator& Allocator = GetAdapter().GetUploadHeapAllocator(Device->GetGPUIndex());
-				MappedData = Allocator.AllocUploadResource(NumBytesActualData, DEFAULT_CONTEXT_UPLOAD_POOL_ALIGNMENT, NewUniformBuffer->ResourceLocation);
+				FD3D12UploadHeapAllocator& Allocator = GetAdapter().GetUploadHeapAllocator(Device->GetGPUIndex());
+				MappedData = Allocator.AllocUploadResource(NumBytesActualData, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, NewUniformBuffer->ResourceLocation);
 			}
 			else
 			{
@@ -73,22 +73,22 @@ FUniformBufferRHIRef FD3D12DynamicRHI::RHICreateUniformBuffer(const void* Conten
 
 	check(UniformBufferOut);
 
-	if (Layout.Resources.Num())
+	if (Layout->Resources.Num())
 	{
-		const int32 NumResources = Layout.Resources.Num();
+		const int32 NumResources = Layout->Resources.Num();
 
 		for (FD3D12UniformBuffer& CurrentBuffer : *UniformBufferOut)
 		{
 			CurrentBuffer.ResourceTable.Empty(NumResources);
-			CurrentBuffer.ResourceTable.AddZeroed(NumResources);
 			for (int32 Index = 0; Index < NumResources; ++Index)
 			{
-				CurrentBuffer.ResourceTable[Index] = GetShaderParameterResourceRHI(Contents, Layout.Resources[Index].MemberOffset, Layout.Resources[Index].MemberType);
+				//Emplace here instead of assignation prevents a lot of boiler plate code for the destruction/release of TSharedPtr from being generated at all.
+				CurrentBuffer.ResourceTable.Emplace(GetShaderParameterResourceRHI(Contents, Layout->Resources[Index].MemberOffset, Layout->Resources[Index].MemberType));
 			}
 		}
 	}
 
-	UpdateBufferStats<FD3D12UniformBuffer>(&UniformBufferOut->ResourceLocation, true);
+	INC_MEMORY_STAT_BY(STAT_UniformBufferMemory, UniformBufferOut->ResourceLocation.GetSize());
 
 	return UniformBufferOut;
 }
@@ -174,8 +174,8 @@ void FD3D12DynamicRHI::RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRH
 
 			if (UniformBuffer.UniformBufferUsage == UniformBuffer_MultiFrame)
 			{
-				FD3D12DynamicHeapAllocator& Allocator = GetAdapter().GetUploadHeapAllocator(Device->GetGPUIndex());
-				MappedData = Allocator.AllocUploadResource(NumBytes, DEFAULT_CONTEXT_UPLOAD_POOL_ALIGNMENT, UpdatedResourceLocation);
+				FD3D12UploadHeapAllocator& Allocator = GetAdapter().GetUploadHeapAllocator(Device->GetGPUIndex());
+				MappedData = Allocator.AllocUploadResource(NumBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, UpdatedResourceLocation);
 			}
 			else
 			{
@@ -210,9 +210,10 @@ void FD3D12DynamicRHI::RHIUpdateUniformBuffer(FRHIUniformBuffer* UniformBufferRH
 
 FD3D12UniformBuffer::~FD3D12UniformBuffer()
 {
-	check(!GRHISupportsRHIThread || IsInRenderingThread());
+	check(IsInRHIThread() || IsInRenderingThread());
 
-	UpdateBufferStats<FD3D12UniformBuffer>(&ResourceLocation, false);
+	int64 BufferSize = ResourceLocation.GetSize();
+	DEC_MEMORY_STAT_BY(STAT_UniformBufferMemory, BufferSize);
 
 #if USE_STATIC_ROOT_SIGNATURE
 	delete View;

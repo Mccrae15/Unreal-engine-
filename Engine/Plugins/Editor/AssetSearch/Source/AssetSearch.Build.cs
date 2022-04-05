@@ -27,8 +27,8 @@ public class AssetSearch : ModuleRules
 				"Slate",
 				"SlateCore",
 				"GameplayTags",
-				"DerivedDataCache",
 				"WorkspaceMenuStructure",
+				"EditorFramework",
 				"UnrealEd",
 				"Json",
 				"AssetRegistry",
@@ -39,6 +39,12 @@ public class AssetSearch : ModuleRules
 				"UMGEditor",
 				"BlueprintGraph",
 				"DeveloperSettings"
+			}
+		);
+
+		PrivateIncludePathModuleNames.AddRange(
+			new string[] {
+				"DerivedDataCache",
 			}
 		);
 	}

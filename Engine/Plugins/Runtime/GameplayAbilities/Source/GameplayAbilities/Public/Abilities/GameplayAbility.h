@@ -70,6 +70,16 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FOnGameplayAbilityStateEnded, FName);
 /** Used to delay execution until we leave a critical section */
 DECLARE_DELEGATE(FPostLockDelegate);
 
+
+#define ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(FunctionName, ReturnValue)																				\
+{																																						\
+	if (!ensure(IsInstantiated()))																														\
+	{																																					\
+		ABILITY_LOG(Error, TEXT("%s: " #FunctionName " cannot be called on a non-instanced ability. Check the instancing policy."), *GetPathName());	\
+		return ReturnValue;																																\
+	}																																					\
+}
+
 /** Structure that defines how an ability will be triggered by external events */
 USTRUCT()
 struct FAbilityTriggerData
@@ -175,28 +185,28 @@ public:
 	/** Gets the current actor info bound to this ability - can only be called on instanced abilities. */
 	const FGameplayAbilityActorInfo* GetCurrentActorInfo() const
 	{
-		check(IsInstantiated());
+		ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetCurrentActorInfo, nullptr);
 		return CurrentActorInfo;
 	}
 
 	/** Gets the current activation info bound to this ability - can only be called on instanced abilities. */
 	FGameplayAbilityActivationInfo GetCurrentActivationInfo() const
 	{
-		check(IsInstantiated());
+		ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetCurrentActivationInfo, FGameplayAbilityActivationInfo());
 		return CurrentActivationInfo;
 	}
 
 	/** Gets the current activation info bound to this ability - can only be called on instanced abilities. */
 	FGameplayAbilityActivationInfo& GetCurrentActivationInfoRef()
 	{
-		check(IsInstantiated());
+		checkf(IsInstantiated(), TEXT("%s: GetCurrentActivationInfoRef cannot be called on a non-instanced ability. Check the instancing policy."), *GetPathName());
 		return CurrentActivationInfo;
 	}
 
 	/** Gets the current AbilitySpecHandle- can only be called on instanced abilities. */
 	FGameplayAbilitySpecHandle GetCurrentAbilitySpecHandle() const
 	{
-		check(IsInstantiated());
+		ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetCurrentAbilitySpecHandle, FGameplayAbilitySpecHandle());
 		return CurrentSpecHandle;
 	}
 
@@ -575,12 +585,15 @@ protected:
 	// -------------------------------------
 	//	EndAbility
 	// -------------------------------------
-
-	/** Call from kismet to end the ability naturally */
-	UFUNCTION(BlueprintCallable, Category = Ability, DisplayName="EndAbility", meta=(ScriptName = "EndAbility"))
+	/** Call from blueprints to forcibly end the ability without canceling it. This will replicate the end ability to the client or server which can interrupt tasks */
+	UFUNCTION(BlueprintCallable, Category = Ability, DisplayName="End Ability", meta=(ScriptName = "EndAbility"))
 	virtual void K2_EndAbility();
 
-	/** Kismet event, will be called if an ability ends normally or abnormally */
+	/** Call from blueprints to end the ability naturally. This will only end predicted abilities locally, allowing it end naturally on the client or server */
+	UFUNCTION(BlueprintCallable, Category = Ability, DisplayName = "End Ability Locally", meta = (ScriptName = "EndAbilityLocally"))
+	virtual void K2_EndAbilityLocally();
+
+	/** Blueprint event, will be called if an ability ends normally or abnormally */
 	UFUNCTION(BlueprintImplementableEvent, Category = Ability, DisplayName = "OnEndAbility", meta=(ScriptName = "OnEndAbility"))
 	void K2_OnEndAbility(bool bWasCancelled);
 
@@ -725,7 +738,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="AbilityTagCategory"))
 	FGameplayTagContainer BlockAbilitiesWithTag;
 
-	/** Tags to apply to activating owner while this ability is active */
+	/** Tags to apply to activating owner while this ability is active. These are replicated if ReplicateActivationOwnedTags is enabled in AbilitySystemGlobals. */
 	UPROPERTY(EditDefaultsOnly, Category = Tags, meta=(Categories="OwnedTagsCategory"))
 	FGameplayTagContainer ActivationOwnedTags;
 

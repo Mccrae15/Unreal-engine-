@@ -10,6 +10,7 @@
 #include "UObject/Class.h"
 #include "UObject/Package.h"
 #include "NiagaraWorldManager.h"
+#include "NiagaraRenderViewDataManager.h"
 #include "VectorVM.h"
 #include "NiagaraConstants.h"
 #include "NiagaraLightRendererProperties.h"
@@ -21,10 +22,11 @@
 #include "NiagaraRenderer.h"
 #include "NiagaraShaderModule.h"
 #include "UObject/CoreRedirects.h"
-#include "NiagaraEmitterInstanceBatcher.h"
+#include "NiagaraGpuComputeDispatch.h"
 #include "Misc/CoreDelegates.h"
 #include "NiagaraDebuggerClient.h"
 #include "Particles/FXBudget.h"
+#include "Engine/StaticMesh.h"
 #include "UObject/UObjectGlobals.h"
 
 IMPLEMENT_MODULE(INiagaraModule, Niagara);
@@ -67,12 +69,21 @@ static FAutoConsoleVariableRef CVarUseGlobalFXBudget(
 	ECVF_Default
 );
 
+static float GNiagaraMaxCompilePollTimePerFrame = 0.016f;
+static FAutoConsoleVariableRef CVarNiagaraMaxCompilePollTimePerFrame(
+	TEXT("fx.Niagara.MaxCompilePollTimePerFrame"),
+	GNiagaraMaxCompilePollTimePerFrame,
+	TEXT("When a lot of system compile tasks queue up, this is the max time per frame that is used to advance them."),
+	ECVF_Default
+);
+
 void INiagaraModule::OnUseGlobalFXBudgetChanged(IConsoleVariable* Variable)
 {
-	//Enable the global budget tracking if needed.
-	if (UseGlobalFXBudget() && FFXBudget::Enabled() == false)
+	//Warn if we're enabling Niagara's use of budgeting but the budgeting itself is disabled.
+	if (UseGlobalFXBudget() && FFXBudget::Enabled() == false && !IsRunningCommandlet())
 	{
-		FFXBudget::SetEnabled(true);
+		//FFXBudget::SetEnabled(true);
+		UE_LOG(LogNiagara, Warning, TEXT("Niagara has enabled fx.Niagara.UseGlobalFXBudget but fx.Budget.Enabled is false so global FX budgetting will still be disabled. Consider also enabling fx.Budget.Enabled."));
 	}
 }
 
@@ -89,6 +100,7 @@ FNiagaraVariable INiagaraModule::Engine_Owner_YAxis;
 FNiagaraVariable INiagaraModule::Engine_Owner_ZAxis;
 FNiagaraVariable INiagaraModule::Engine_Owner_Scale;
 FNiagaraVariable INiagaraModule::Engine_Owner_Rotation;
+FNiagaraVariable INiagaraModule::Engine_Owner_LWC_Tile;
 
 FNiagaraVariable INiagaraModule::Engine_Owner_SystemLocalToWorld;
 FNiagaraVariable INiagaraModule::Engine_Owner_SystemWorldToLocal;
@@ -111,6 +123,7 @@ FNiagaraVariable INiagaraModule::Engine_Emitter_SpawnCountScale;
 FNiagaraVariable INiagaraModule::Engine_System_TickCount;
 FNiagaraVariable INiagaraModule::Engine_System_NumEmittersAlive;
 FNiagaraVariable INiagaraModule::Engine_System_SignificanceIndex;
+FNiagaraVariable INiagaraModule::Engine_System_RandomSeed;
 FNiagaraVariable INiagaraModule::Engine_System_NumEmitters;
 FNiagaraVariable INiagaraModule::Engine_NumSystemInstances;
 
@@ -122,6 +135,7 @@ FNiagaraVariable INiagaraModule::Engine_System_Age;
 FNiagaraVariable INiagaraModule::Emitter_Age;
 FNiagaraVariable INiagaraModule::Emitter_LocalSpace;
 FNiagaraVariable INiagaraModule::Emitter_Determinism;
+FNiagaraVariable INiagaraModule::Emitter_InterpolatedSpawn;
 FNiagaraVariable INiagaraModule::Emitter_OverrideGlobalSpawnCountScale;
 FNiagaraVariable INiagaraModule::Emitter_SimulationTarget;
 FNiagaraVariable INiagaraModule::Emitter_RandomSeed;
@@ -181,7 +195,7 @@ void INiagaraModule::StartupModule()
 {
 	VectorVM::Init();
 	FNiagaraTypeDefinition::Init();
-	FNiagaraViewDataMgr::Init();
+	FNiagaraRenderViewDataManager::Init();
 
 	FNiagaraWorldManager::OnStartup();
 
@@ -207,13 +221,14 @@ void INiagaraModule::StartupModule()
 	Engine_RealTime = FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Engine.RealTime"));
 	Engine_QualityLevel = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.QualityLevel"));
 
-	Engine_Owner_Position = FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Engine.Owner.Position"));
+	Engine_Owner_Position = FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("Engine.Owner.Position"));
 	Engine_Owner_Velocity = FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Engine.Owner.Velocity"));
 	Engine_Owner_XAxis = FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Engine.Owner.SystemXAxis"));
 	Engine_Owner_YAxis = FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Engine.Owner.SystemYAxis"));
 	Engine_Owner_ZAxis = FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Engine.Owner.SystemZAxis"));
 	Engine_Owner_Scale = FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Engine.Owner.Scale"));
 	Engine_Owner_Rotation = FNiagaraVariable(FNiagaraTypeDefinition::GetQuatDef(), TEXT("Engine.Owner.Rotation"));
+	Engine_Owner_LWC_Tile = FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), TEXT("Engine.Owner.LWCTile"));
 
 	Engine_Owner_SystemLocalToWorld = FNiagaraVariable(FNiagaraTypeDefinition::GetMatrix4Def(), TEXT("Engine.Owner.SystemLocalToWorld"));
 	Engine_Owner_SystemWorldToLocal = FNiagaraVariable(FNiagaraTypeDefinition::GetMatrix4Def(), TEXT("Engine.Owner.SystemWorldToLocal"));
@@ -230,13 +245,14 @@ void INiagaraModule::StartupModule()
 	
 	Engine_ExecutionCount = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.ExecutionCount"));
 	Engine_Emitter_NumParticles = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.Emitter.NumParticles"));
-	Engine_Emitter_SimulationPosition = FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Engine.Emitter.SimulationPosition"));
+	Engine_Emitter_SimulationPosition = FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("Engine.Emitter.SimulationPosition"));
 	Engine_Emitter_TotalSpawnedParticles = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.Emitter.TotalSpawnedParticles"));
 	Engine_Emitter_SpawnCountScale = FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Engine.Emitter.SpawnCountScale"));
 	Engine_Emitter_InstanceSeed = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.Emitter.InstanceSeed"));
 	Engine_System_TickCount = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.TickCount"));
 	Engine_System_NumEmittersAlive = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.NumEmittersAlive"));
 	Engine_System_SignificanceIndex = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.SignificanceIndex"));
+	Engine_System_RandomSeed = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.RandomSeed"));
 	Engine_System_NumEmitters = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.System.NumEmitters"));
 	Engine_NumSystemInstances = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Engine.NumSystemInstances"));
 
@@ -248,6 +264,7 @@ void INiagaraModule::StartupModule()
 	Emitter_LocalSpace = FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Emitter.LocalSpace"));
 	Emitter_RandomSeed = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Emitter.RandomSeed"));
 	Emitter_Determinism = FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Emitter.Determinism"));
+	Emitter_InterpolatedSpawn = FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Emitter.InterpolatedSpawn"));
 	Emitter_OverrideGlobalSpawnCountScale = FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Emitter.OverrideGlobalSpawnCountScale"));
 	Emitter_SimulationTarget = FNiagaraVariable(FNiagaraTypeDefinition::GetSimulationTargetEnum(), TEXT("Emitter.SimulationTarget"));
 	Emitter_SpawnRate = FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Emitter.SpawnRate"));
@@ -257,7 +274,7 @@ void INiagaraModule::StartupModule()
 
 	Particles_UniqueID = FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Particles.UniqueID"));
 	Particles_ID = FNiagaraVariable(FNiagaraTypeDefinition::GetIDDef(), TEXT("Particles.ID"));
-	Particles_Position = FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Particles.Position"));
+	Particles_Position = FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("Particles.Position"));
 	Particles_Velocity = FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("Particles.Velocity"));
 	Particles_Color = FNiagaraVariable(FNiagaraTypeDefinition::GetColorDef(), TEXT("Particles.Color"));
 	Particles_SpriteRotation = FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Particles.SpriteRotation"));
@@ -319,10 +336,10 @@ void INiagaraModule::StartupModule()
 	}));
 
 	FFXSystemInterface::RegisterCustomFXSystem(
-		NiagaraEmitterInstanceBatcher::Name, 
+		FNiagaraGpuComputeDispatch::Name,
 		FCreateCustomFXSystemDelegate::CreateLambda([](ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InShaderPlatform, FGPUSortManager* InGPUSortManager) -> FFXSystemInterface*
 	{
-		return new NiagaraEmitterInstanceBatcher(InFeatureLevel, InShaderPlatform, InGPUSortManager);
+		return new FNiagaraGpuComputeDispatch(InFeatureLevel, InShaderPlatform, InGPUSortManager);
 	}));
 
 	// Needed for NiagaraDataInterfaceAudioSpectrum
@@ -365,8 +382,28 @@ void INiagaraModule::OnPreExit()
 #endif
 }
 
+#if WITH_EDITOR
+void PollSystemCompilations()
+{
+	double Start = FPlatformTime::Seconds();
+	for (TObjectIterator<UNiagaraSystem> SysIt; SysIt; ++SysIt)
+	{
+		UNiagaraSystem* System = *SysIt;
+		System->PollForCompilationComplete();
+		if (FPlatformTime::Seconds() - Start > GNiagaraMaxCompilePollTimePerFrame)
+		{
+			break;
+		}
+	}
+}
+#endif
+
 void INiagaraModule::OnWorldTickStart(UWorld* World, ELevelTick TickType, float DeltaSeconds)
 {
+#if WITH_EDITOR
+	PollSystemCompilations();
+#endif
+	
 #if NIAGARA_PERF_BASELINES
 	if (BaselineHandler.IsValid())
 	{
@@ -387,9 +424,9 @@ void INiagaraModule::OnWorldBeginTearDown(UWorld* World)
 
 void INiagaraModule::ShutdownRenderingResources()
 {
-	FFXSystemInterface::UnregisterCustomFXSystem(NiagaraEmitterInstanceBatcher::Name);
+	FFXSystemInterface::UnregisterCustomFXSystem(FNiagaraGpuComputeDispatch::Name);
 
-	FNiagaraViewDataMgr::Shutdown();
+	FNiagaraRenderViewDataManager::Shutdown();
 }
 
 void INiagaraModule::ShutdownModule()
@@ -459,10 +496,10 @@ void INiagaraModule::UnregisterEditorOnlyDataUtilities(TSharedRef<INiagaraEditor
 	EditorOnlyDataUtilities.Reset();
 }
 
-int32 INiagaraModule::StartScriptCompileJob(const FNiagaraCompileRequestDataBase* InCompileData, const FNiagaraCompileOptions& InCompileOptions)
+int32 INiagaraModule::StartScriptCompileJob(const FNiagaraCompileRequestDataBase* InCompileData, const FNiagaraCompileRequestDuplicateDataBase* InCompileDuplicateData, const FNiagaraCompileOptions& InCompileOptions)
 {
 	checkf(ScriptCompilerDelegate.IsBound(), TEXT("Create default script compiler delegate not bound."));
-	return ScriptCompilerDelegate.Execute(InCompileData, InCompileOptions);
+	return ScriptCompilerDelegate.Execute(InCompileData, InCompileDuplicateData, InCompileOptions);
 }
 
 TSharedPtr<FNiagaraVMExecutableData> INiagaraModule::GetCompileJobResult(int32 JobID, bool bWait)
@@ -502,23 +539,73 @@ void INiagaraModule::UnregisterCompileResultDelegate(FDelegateHandle DelegateHan
 
 TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> INiagaraModule::Precompile(UObject* Obj, FGuid Version)
 {
-	checkf(ObjectPrecompilerDelegate.IsBound(), TEXT("ObjectPrecompiler delegate not bound."));
-	return ObjectPrecompilerDelegate.Execute(Obj, Version);
+	checkf(PrecompileDelegate.IsBound(), TEXT("Precompile delegate not bound."));
+	return PrecompileDelegate.Execute(Obj, Version);
+}
+
+TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe> INiagaraModule::PrecompileDuplicate(
+	const FNiagaraCompileRequestDataBase* OwningSystemRequestData,
+	UNiagaraSystem* OwningSystem,
+	UNiagaraEmitter* OwningEmitter,
+	UNiagaraScript* TargetScript,
+	FGuid TargetVersion)
+{
+	checkf(PrecompileDuplicateDelegate.IsBound(), TEXT("PrecompileDuplicate delegate not bound."));
+	return PrecompileDuplicateDelegate.Execute(OwningSystemRequestData, OwningSystem, OwningEmitter, TargetScript, TargetVersion);
+}
+
+TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> INiagaraModule::CacheGraphTraversal(const UObject* Obj, FGuid Version)
+{
+	checkf(GraphTraversalCacheDelegate.IsBound(), TEXT("GraphTraversalCache delegate not bound."));
+	return GraphTraversalCacheDelegate.Execute(Obj, Version);
 }
 
 FDelegateHandle INiagaraModule::RegisterPrecompiler(FOnPrecompile PreCompiler)
 {
-	checkf(ObjectPrecompilerDelegate.IsBound() == false, TEXT("Only one handler is allowed for the ObjectPrecompiler delegate"));
-	ObjectPrecompilerDelegate = PreCompiler;
-	return ObjectPrecompilerDelegate.GetHandle();
+	checkf(PrecompileDelegate.IsBound() == false, TEXT("Only one handler is allowed for the Precompiler delegate"));
+	PrecompileDelegate = PreCompiler;
+	return PrecompileDelegate.GetHandle();
 }
 
 void INiagaraModule::UnregisterPrecompiler(FDelegateHandle DelegateHandle)
 {
-	checkf(ObjectPrecompilerDelegate.IsBound(), TEXT("ObjectPrecompiler is not registered"));
-	checkf(ObjectPrecompilerDelegate.GetHandle() == DelegateHandle, TEXT("Can only unregister the ObjectPrecompiler delegate with the handle it was registered with."));
-	ObjectPrecompilerDelegate.Unbind();
+	checkf(PrecompileDelegate.IsBound(), TEXT("ObjectPrecompiler is not registered"));
+	checkf(PrecompileDelegate.GetHandle() == DelegateHandle, TEXT("Can only unregister the Precompiler delegate with the handle it was registered with."));
+	PrecompileDelegate.Unbind();
 }
+
+
+
+FDelegateHandle INiagaraModule::RegisterPrecompileDuplicator(FOnPrecompileDuplicate PreCompileDuplicator)
+{
+	checkf(PrecompileDuplicateDelegate.IsBound() == false, TEXT("Only one handler is allowed for the PrecompileDuplicator delegate"));
+	PrecompileDuplicateDelegate = PreCompileDuplicator;
+	return PrecompileDuplicateDelegate.GetHandle();
+}
+
+void INiagaraModule::UnregisterPrecompileDuplicator(FDelegateHandle DelegateHandle)
+{
+	checkf(PrecompileDuplicateDelegate.IsBound(), TEXT("PrecompileDuplicator is not registered"));
+	checkf(PrecompileDuplicateDelegate.GetHandle() == DelegateHandle, TEXT("Can only unregister the PrecompileDuplicator delegate with the handle it was registered with."));
+	PrecompileDuplicateDelegate.Unbind();
+}
+
+
+FDelegateHandle INiagaraModule::RegisterGraphTraversalCacher(FOnCacheGraphTraversal GraphTraversalCacher)
+{
+	checkf(GraphTraversalCacheDelegate.IsBound() == false, TEXT("Only one handler is allowed for the GraphTraversalCacher delegate"));
+	GraphTraversalCacheDelegate = GraphTraversalCacher;
+	return GraphTraversalCacheDelegate.GetHandle();
+}
+
+void INiagaraModule::UnregisterGraphTraversalCacher(FDelegateHandle DelegateHandle)
+{
+	checkf(GraphTraversalCacheDelegate.IsBound(), TEXT("ObjectGraphTraversalCacher is not registered"));
+	checkf(GraphTraversalCacheDelegate.GetHandle() == DelegateHandle, TEXT("Can only unregister the GraphTraversalCacher delegate with the handle it was registered with."));
+	GraphTraversalCacheDelegate.Unbind();
+}
+
+
 
 void INiagaraModule::OnAssetLoaded(UObject* Asset)
 {
@@ -538,6 +625,7 @@ void INiagaraModule::OnAssetLoaded(UObject* Asset)
 
 UScriptStruct* FNiagaraTypeDefinition::ParameterMapStruct;
 UScriptStruct* FNiagaraTypeDefinition::IDStruct;
+UScriptStruct* FNiagaraTypeDefinition::RandInfoStruct;
 UScriptStruct* FNiagaraTypeDefinition::NumericStruct;
 UScriptStruct* FNiagaraTypeDefinition::FloatStruct;
 UScriptStruct* FNiagaraTypeDefinition::BoolStruct;
@@ -549,6 +637,7 @@ UScriptStruct* FNiagaraTypeDefinition::Vec2Struct;
 UScriptStruct* FNiagaraTypeDefinition::ColorStruct;
 UScriptStruct* FNiagaraTypeDefinition::QuatStruct;
 UScriptStruct* FNiagaraTypeDefinition::WildcardStruct;
+UScriptStruct* FNiagaraTypeDefinition::PositionStruct;
 
 UScriptStruct* FNiagaraTypeDefinition::HalfStruct;
 UScriptStruct* FNiagaraTypeDefinition::HalfVec2Struct;
@@ -575,6 +664,7 @@ UEnum* FNiagaraTypeDefinition::FunctionDebugStateEnum;
 
 FNiagaraTypeDefinition FNiagaraTypeDefinition::ParameterMapDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::IDDef;
+FNiagaraTypeDefinition FNiagaraTypeDefinition::RandInfoDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::NumericDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::FloatDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::BoolDef;
@@ -584,6 +674,7 @@ FNiagaraTypeDefinition FNiagaraTypeDefinition::Vec4Def;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::Vec3Def;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::Vec2Def;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::ColorDef;
+FNiagaraTypeDefinition FNiagaraTypeDefinition::PositionDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::QuatDef;
 
 FNiagaraTypeDefinition FNiagaraTypeDefinition::HalfDef;
@@ -595,6 +686,7 @@ FNiagaraTypeDefinition FNiagaraTypeDefinition::UObjectDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::UMaterialDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::UTextureDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::UTextureRenderTargetDef;
+FNiagaraTypeDefinition FNiagaraTypeDefinition::UStaticMeshDef;
 FNiagaraTypeDefinition FNiagaraTypeDefinition::WildcardDef;
 
 TSet<UScriptStruct*> FNiagaraTypeDefinition::NumericStructs;
@@ -620,23 +712,25 @@ void FNiagaraTypeDefinition::Init()
 	static auto* NiagaraPkg = FindObjectChecked<UPackage>(nullptr, TEXT("/Script/Niagara"));
 	FNiagaraTypeDefinition::ParameterMapStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraParameterMap"));
 	FNiagaraTypeDefinition::IDStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraID"));
+	FNiagaraTypeDefinition::RandInfoStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraRandInfo"));
 	FNiagaraTypeDefinition::NumericStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraNumeric"));
 	FNiagaraTypeDefinition::FloatStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraFloat"));
 	FNiagaraTypeDefinition::BoolStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraBool"));
 	FNiagaraTypeDefinition::IntStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraInt32"));
 	FNiagaraTypeDefinition::Matrix4Struct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraMatrix"));
 	FNiagaraTypeDefinition::WildcardStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraWildcard"));
+	FNiagaraTypeDefinition::PositionStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraPosition"));
 
 	FNiagaraTypeDefinition::HalfStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraHalf"));
 	FNiagaraTypeDefinition::HalfVec2Struct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraHalfVector2"));
 	FNiagaraTypeDefinition::HalfVec3Struct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraHalfVector3"));
 	FNiagaraTypeDefinition::HalfVec4Struct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraHalfVector4"));
 
-	FNiagaraTypeDefinition::Vec2Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector2D"));
-	FNiagaraTypeDefinition::Vec3Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector"));
-	FNiagaraTypeDefinition::Vec4Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector4"));
+	FNiagaraTypeDefinition::Vec2Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector2f"));
+	FNiagaraTypeDefinition::Vec3Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector3f"));
+	FNiagaraTypeDefinition::Vec4Struct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Vector4f"));
 	FNiagaraTypeDefinition::ColorStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("LinearColor"));
-	FNiagaraTypeDefinition::QuatStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Quat"));
+	FNiagaraTypeDefinition::QuatStruct = FindObjectChecked<UScriptStruct>(CoreUObjectPkg, TEXT("Quat4f"));
 
 	FNiagaraTypeDefinition::UObjectClass = UObject::StaticClass();
 	FNiagaraTypeDefinition::UMaterialClass = UMaterialInterface::StaticClass();
@@ -645,6 +739,7 @@ void FNiagaraTypeDefinition::Init()
 	
 	ParameterMapDef = FNiagaraTypeDefinition(ParameterMapStruct);
 	IDDef = FNiagaraTypeDefinition(IDStruct);
+	RandInfoDef = FNiagaraTypeDefinition(RandInfoStruct);
 	NumericDef = FNiagaraTypeDefinition(NumericStruct);
 	FloatDef = FNiagaraTypeDefinition(FloatStruct);
 	BoolDef = FNiagaraTypeDefinition(BoolStruct);
@@ -653,6 +748,7 @@ void FNiagaraTypeDefinition::Init()
 	Vec3Def = FNiagaraTypeDefinition(Vec3Struct);
 	Vec4Def = FNiagaraTypeDefinition(Vec4Struct);
 	ColorDef = FNiagaraTypeDefinition(ColorStruct);
+	PositionDef = FNiagaraTypeDefinition(PositionStruct);
 	QuatDef = FNiagaraTypeDefinition(QuatStruct);
 	Matrix4Def = FNiagaraTypeDefinition(Matrix4Struct);
 	WildcardDef = FNiagaraTypeDefinition(WildcardStruct);
@@ -666,6 +762,7 @@ void FNiagaraTypeDefinition::Init()
 	UMaterialDef = FNiagaraTypeDefinition(UMaterialClass);
 	UTextureDef = FNiagaraTypeDefinition(UTextureClass);
 	UTextureRenderTargetDef = FNiagaraTypeDefinition(UTextureRenderTargetClass);
+	UStaticMeshDef = FNiagaraTypeDefinition(UStaticMesh::StaticClass());
 
 	CollisionEventDef = FNiagaraTypeDefinition(FNiagaraCollisionEventPayload::StaticStruct());
 	NumericStructs.Add(NumericStruct);
@@ -675,6 +772,7 @@ void FNiagaraTypeDefinition::Init()
 	NumericStructs.Add(Vec3Struct);
 	NumericStructs.Add(Vec4Struct);
 	NumericStructs.Add(ColorStruct);
+	NumericStructs.Add(PositionStruct);
 	NumericStructs.Add(QuatStruct);
 	//Make matrix a numeric type?
 
@@ -684,6 +782,7 @@ void FNiagaraTypeDefinition::Init()
 	FloatStructs.Add(Vec4Struct);
 	//FloatStructs.Add(Matrix4Struct)??
 	FloatStructs.Add(ColorStruct);
+	FloatStructs.Add(PositionStruct);
 	FloatStructs.Add(QuatStruct);
 
 	IntStructs.Add(IntStruct);
@@ -696,6 +795,7 @@ void FNiagaraTypeDefinition::Init()
 	OrderedNumericTypes.Add(Vec3Struct);
 	OrderedNumericTypes.Add(Vec4Struct);
 	OrderedNumericTypes.Add(ColorStruct);
+	OrderedNumericTypes.Add(PositionStruct);
 	OrderedNumericTypes.Add(QuatStruct);
 
 	ScalarStructs.Add(BoolStruct);
@@ -803,11 +903,21 @@ bool FNiagaraTypeDefinition::AppendCompileHash(FNiagaraCompileHashVisitor* InVis
 		InVisitor->UpdateString(TEXT("\tTDName"), InvalidStr);
 	}
 
+	InVisitor->UpdatePOD(TEXT("\tFlags"), Flags);
+
 	return true;
 #else
 	return false;
 #endif
 }
+
+FNiagaraTypeDefinition FNiagaraTypeDefinition::ToStaticDef() const
+{
+	FNiagaraTypeDefinition Def(*this);
+	Def.Flags |= TF_Static;
+	return Def;
+}
+
 
 #if WITH_EDITORONLY_DATA
 bool FNiagaraTypeDefinition::IsInternalType() const
@@ -832,28 +942,37 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 	ENiagaraTypeRegistryFlags VarFlags = ENiagaraTypeRegistryFlags::AllowAnyVariable;
 	ENiagaraTypeRegistryFlags ParamFlags = VarFlags | ENiagaraTypeRegistryFlags::AllowParameter;
 	ENiagaraTypeRegistryFlags PayloadFlags = VarFlags | ENiagaraTypeRegistryFlags::AllowPayload;
+
 	FNiagaraTypeRegistry::Register(CollisionEventDef, PayloadFlags);
 
 	FNiagaraTypeRegistry::Register(ParameterMapDef, ParamFlags);
-	FNiagaraTypeRegistry::Register(IDDef, ParamFlags | PayloadFlags);
+	FNiagaraTypeRegistry::Register(IDDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(RandInfoDef, ParamFlags);
 	FNiagaraTypeRegistry::Register(NumericDef, ParamFlags);
-	FNiagaraTypeRegistry::Register(FloatDef, ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(HalfDef, ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(IntDef, ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(BoolDef, ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(Vec2Def, ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(Vec3Def, ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(Vec4Def, ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(ColorDef, ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(QuatDef, ParamFlags | PayloadFlags);
+	FNiagaraTypeRegistry::Register(FloatDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(HalfDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(IntDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(BoolDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(Vec2Def, ParamFlags);
+	FNiagaraTypeRegistry::Register(Vec3Def, ParamFlags);
+	FNiagaraTypeRegistry::Register(Vec4Def, ParamFlags);
+	FNiagaraTypeRegistry::Register(ColorDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(PositionDef, ParamFlags);
+	FNiagaraTypeRegistry::Register(QuatDef, ParamFlags);
 	FNiagaraTypeRegistry::Register(Matrix4Def, ParamFlags);
+
+	// Register static versions
+	ENiagaraTypeRegistryFlags StaticParamFlags = ENiagaraTypeRegistryFlags::AllowSystemVariable | ENiagaraTypeRegistryFlags::AllowEmitterVariable | ENiagaraTypeRegistryFlags::AllowParticleVariable | ENiagaraTypeRegistryFlags::AllowParameter;
+	FNiagaraTypeRegistry::Register(IntDef.ToStaticDef(), StaticParamFlags);
+	FNiagaraTypeRegistry::Register(BoolDef.ToStaticDef(), StaticParamFlags);
+
 	// @todo wildcard shouldn't be available for parameters etc., so just don't register here?
 	//FNiagaraTypeRegistry::Register(WildcardDef, VarFlags);
 
-	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(ExecutionStateEnum), ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(CoordinateSpaceEnum), ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(OrientationAxisEnum), ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(ExecutionStateSourceEnum), ParamFlags | PayloadFlags);
+	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(ExecutionStateEnum), ParamFlags);
+	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(CoordinateSpaceEnum), ParamFlags);
+	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(OrientationAxisEnum), ParamFlags);
+	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(ExecutionStateSourceEnum), ParamFlags);
 
 	UScriptStruct* SpawnInfoStruct = FindObjectChecked<UScriptStruct>(NiagaraPkg, TEXT("NiagaraSpawnInfo"));
 	FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(SpawnInfoStruct), ParamFlags);
@@ -862,15 +981,15 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 	FNiagaraTypeRegistry::Register(UMaterialDef, VarFlags);
 	FNiagaraTypeRegistry::Register(UTextureDef, VarFlags);
 	FNiagaraTypeRegistry::Register(UTextureRenderTargetDef, VarFlags);
-	FNiagaraTypeRegistry::Register(FNiagaraRandInfo::StaticStruct(), ParamFlags | PayloadFlags);
-	FNiagaraTypeRegistry::Register(StaticEnum<ENiagaraLegacyTrailWidthMode>(), ParamFlags | PayloadFlags);
+	FNiagaraTypeRegistry::Register(UStaticMeshDef, VarFlags);
+	FNiagaraTypeRegistry::Register(StaticEnum<ENiagaraLegacyTrailWidthMode>(), ParamFlags);
 
 	
 	if (!IsRunningCommandlet())
 	{
-		TArray<FString> Blacklist;
-		Blacklist.Emplace(TEXT("/Niagara/Enums/ENiagaraCoordinateSpace.ENiagaraCoordinateSpace"));
-		Blacklist.Emplace(TEXT("/Niagara/Enums/ENiagaraOrientationAxis.ENiagaraOrientationAxis"));
+		TArray<FString> DenyList;
+		DenyList.Emplace(TEXT("/Niagara/Enums/ENiagaraCoordinateSpace.ENiagaraCoordinateSpace"));
+		DenyList.Emplace(TEXT("/Niagara/Enums/ENiagaraOrientationAxis.ENiagaraOrientationAxis"));
 		
 		const UNiagaraSettings* Settings = GetDefault<UNiagaraSettings>();
 		check(Settings);
@@ -889,8 +1008,10 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 		{
 			FName AssetRefPathNamePreResolve = AssetRef.GetAssetPathName();
 
-			if (Blacklist.Contains(AssetRefPathNamePreResolve.ToString()))
+			if (DenyList.Contains(AssetRefPathNamePreResolve.ToString()))
+			{
 				continue;
+			}
 
 			UObject* Obj = AssetRef.ResolveObject();
 			if (Obj == nullptr)
@@ -914,6 +1035,7 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 					{
 						Flags |= ENiagaraTypeRegistryFlags::AllowPayload;
 					}
+					ScriptStruct = FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(ScriptStruct, ENiagaraStructConversion::UserFacing);
 					FNiagaraTypeRegistry::Register(ScriptStruct, Flags);
 				}
 
@@ -930,15 +1052,16 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 				UE_LOG(LogNiagara, Warning, TEXT("Could not find additional parameter/payload type: %s"), *AssetRef.ToString());
 			}
 		}
-
-
+		
 		for (FSoftObjectPath AssetRef : Settings->AdditionalParameterEnums)
 		{
 			FName AssetRefPathNamePreResolve = AssetRef.GetAssetPathName();
 			UObject* Obj = AssetRef.ResolveObject();
 
-			if (Blacklist.Contains(AssetRefPathNamePreResolve.ToString()))
+			if (DenyList.Contains(AssetRefPathNamePreResolve.ToString()))
+			{
 				continue;
+			}
 
 			if (Obj == nullptr)
 			{
@@ -947,21 +1070,14 @@ void FNiagaraTypeDefinition::RecreateUserDefinedTypeRegistry()
 
 			if (Obj != nullptr)
 			{
-				const FSoftObjectPath* ParamRefFound = Settings->AdditionalParameterEnums.FindByPredicate([&](const FSoftObjectPath& Ref) { return Ref.ToString() == AssetRef.ToString(); });
-				const FSoftObjectPath* PayloadRefFound = nullptr;
 				UEnum* Enum = Cast<UEnum>(Obj);
 				if (Enum != nullptr)
 				{
-					ENiagaraTypeRegistryFlags Flags = ENiagaraTypeRegistryFlags::AllowAnyVariable;
-					if (ParamRefFound)
-					{
-						Flags |= ENiagaraTypeRegistryFlags::AllowParameter;
-					}
-					if (PayloadRefFound)
-					{
-						Flags |= ENiagaraTypeRegistryFlags::AllowPayload;
-					}
-					FNiagaraTypeRegistry::Register(Enum, Flags);
+					ENiagaraTypeRegistryFlags Flags = ENiagaraTypeRegistryFlags::AllowAnyVariable | ENiagaraTypeRegistryFlags::AllowParameter;
+					
+					FNiagaraTypeDefinition Def(Enum);
+					FNiagaraTypeRegistry::Register(Def, Flags);
+					FNiagaraTypeRegistry::Register(Def.ToStaticDef(), StaticParamFlags);
 				}
 
 				UObjectRedirector* Redirector = FindObject<UObjectRedirector>(nullptr, *AssetRefPathNamePreResolve.ToString());
@@ -985,47 +1101,60 @@ bool FNiagaraTypeDefinition::IsScalarDefinition(const FNiagaraTypeDefinition& Ty
 	return ScalarStructs.Contains(Type.GetScriptStruct()) || (Type.GetScriptStruct() == IntStruct && Type.GetEnum() != nullptr);
 }
 
-bool FNiagaraTypeDefinition::TypesAreAssignable(const FNiagaraTypeDefinition& TypeA, const FNiagaraTypeDefinition& TypeB)
+bool FNiagaraTypeDefinition::TypesAreAssignable(const FNiagaraTypeDefinition& TypeInput, const FNiagaraTypeDefinition& TypeOutput, bool bAllowLossyLWCConversions)
 {
-	if (const UClass* AClass = TypeA.GetClass())
+	if (const UClass* AClass = TypeInput.GetClass())
 	{
-		if (const UClass* BClass = TypeB.GetClass())
+		if (const UClass* BClass = TypeOutput.GetClass())
 		{
 			return AClass == BClass;
 			return true;
 		}
 	}
 	
-	if (const UClass* BClass = TypeB.GetClass())
+	if (const UClass* BClass = TypeOutput.GetClass())
 	{
 		return false;
 	}
 
-	if (const UClass* AClass = TypeA.GetClass())
+	if (const UClass* AClass = TypeInput.GetClass())
 	{
 		return false;
 	}
 
 	// Make sure that enums are not assignable to enums of different types or just plain ints
-	if (TypeA.GetStruct() == TypeB.GetStruct() &&
-		TypeA.GetEnum() != TypeB.GetEnum())
+	if (TypeInput.GetStruct() == TypeOutput.GetStruct() &&
+		TypeInput.GetEnum() != TypeOutput.GetEnum())
 	{
 		return false;
 	}
 
-	if (TypeA.GetStruct() == TypeB.GetStruct())
+
+	// Static can go to static or static can go to nonstatic, but nonstatic can't go to static
+	if (((!TypeInput.IsStatic() && TypeOutput.IsStatic()) || (TypeInput.IsStatic() && TypeOutput.IsStatic())) && TypeInput.GetStruct() == TypeOutput.GetStruct() && TypeInput.GetEnum() == TypeOutput.GetEnum())
+	{
+		return true;
+	}
+	else if ((TypeInput.IsStatic() || TypeOutput.IsStatic()) && TypeInput.GetStruct() == TypeOutput.GetStruct() && TypeInput.GetEnum() == TypeOutput.GetEnum())
+	{
+		return false;
+	}
+
+	if (TypeInput.GetStruct() == TypeOutput.GetStruct())
 	{
 		return true;
 	}
 
 	bool bIsSupportedConversion = false;
-	if (IsScalarDefinition(TypeA) && IsScalarDefinition(TypeB))
+	if (IsScalarDefinition(TypeInput) && IsScalarDefinition(TypeOutput))
 	{
-		bIsSupportedConversion = (TypeA == IntDef && TypeB == FloatDef) || (TypeB == IntDef && TypeA == FloatDef);
+		bIsSupportedConversion = (TypeInput == IntDef && TypeOutput == FloatDef) || (TypeOutput == IntDef && TypeInput == FloatDef) || (TypeInput == IntDef && TypeOutput == BoolDef) || (TypeOutput == IntDef && TypeInput == BoolDef);
 	}
 	else
 	{
-		bIsSupportedConversion = (TypeA == ColorDef && TypeB == Vec4Def) || (TypeB == ColorDef && TypeA == Vec4Def);
+		bIsSupportedConversion = (TypeInput == ColorDef && TypeOutput == Vec4Def) || (TypeOutput == ColorDef && TypeInput == Vec4Def)
+			// we only allow direct assignments between vec <-> position if we are allowing lossy conversions
+			|| (bAllowLossyLWCConversions && ((TypeOutput == PositionDef && TypeInput == Vec3Def) || (TypeOutput == Vec3Def && TypeInput == PositionDef)));
 	}
 
 	if (bIsSupportedConversion)
@@ -1033,20 +1162,28 @@ bool FNiagaraTypeDefinition::TypesAreAssignable(const FNiagaraTypeDefinition& Ty
 		return true;
 	}
 
-	return	(TypeA == NumericDef && NumericStructs.Contains(TypeB.GetScriptStruct())) ||
-			(TypeB == NumericDef && NumericStructs.Contains(TypeA.GetScriptStruct())) ||
-			(TypeA == NumericDef && (TypeB.GetStruct() == GetIntStruct()) && TypeB.GetEnum() != nullptr) ||
-			(TypeB == NumericDef && (TypeA.GetStruct() == GetIntStruct()) && TypeA.GetEnum() != nullptr);
+
+	return	(TypeInput == NumericDef && NumericStructs.Contains(TypeOutput.GetScriptStruct())) ||
+		(TypeOutput == NumericDef && NumericStructs.Contains(TypeInput.GetScriptStruct())) ||
+		(TypeInput == NumericDef && (TypeOutput.GetStruct() == GetIntStruct()) && TypeOutput.GetEnum() != nullptr) ||
+		(TypeOutput == NumericDef && (TypeInput.GetStruct() == GetIntStruct()) && TypeInput.GetEnum() != nullptr);
 }
 
-bool FNiagaraTypeDefinition::IsLossyConversion(const FNiagaraTypeDefinition& TypeA, const FNiagaraTypeDefinition& TypeB)
+bool FNiagaraTypeDefinition::IsLossyConversion(const FNiagaraTypeDefinition& FromType, const FNiagaraTypeDefinition& ToType)
 {
-	return (TypeA == IntDef && TypeB == FloatDef) || (TypeB == IntDef && TypeA == FloatDef);
+	// @todo this should be unidirectional, same with TypesAreAssignable
+	return (FromType.IsSameBaseDefinition(IntDef) && ToType.IsSameBaseDefinition(FloatDef))
+		|| (ToType.IsSameBaseDefinition(IntDef) && FromType.IsSameBaseDefinition(FloatDef))
+		|| (FromType.IsSameBaseDefinition(BoolDef) && ToType.IsSameBaseDefinition(FloatDef))
+		|| (ToType.IsSameBaseDefinition(BoolDef) && FromType.IsSameBaseDefinition(FloatDef))
+		|| (FromType == PositionDef && ToType == Vec3Def)
+		|| (FromType == Vec3Def && ToType == PositionDef);
 }
 
 FNiagaraTypeDefinition FNiagaraTypeDefinition::GetNumericOutputType(const TArray<FNiagaraTypeDefinition> TypeDefinintions, ENiagaraNumericOutputTypeSelectionMode SelectionMode)
 {
 	checkf(SelectionMode != ENiagaraNumericOutputTypeSelectionMode::None, TEXT("Can not get numeric output type with selection mode none."));
+	checkf(SelectionMode != ENiagaraNumericOutputTypeSelectionMode::Custom, TEXT("Can not get numeric output type with selection mode custom."));
 
 	//This may need some work. Should work fine for now.
 	if (SelectionMode == ENiagaraNumericOutputTypeSelectionMode::Scalar)
@@ -1076,11 +1213,11 @@ FNiagaraTypeDefinition FNiagaraTypeDefinition::GetNumericOutputType(const TArray
 
 	TArray<FNiagaraTypeDefinition> SortedTypeDefinitions = TypeDefinintions;
 	SortedTypeDefinitions.Sort([&](const FNiagaraTypeDefinition& TypeA, const FNiagaraTypeDefinition& TypeB)
-	{
-		int32 AIndex = OrderedNumericTypes.IndexOfByKey(TypeA);
-		int32 BIndex = OrderedNumericTypes.IndexOfByKey(TypeB);
-		return AIndex < BIndex;
-	});
+		{
+			int32 AIndex = OrderedNumericTypes.IndexOfByKey(TypeA);
+			int32 BIndex = OrderedNumericTypes.IndexOfByKey(TypeB);
+			return AIndex < BIndex;
+		});
 
 	if (SelectionMode == ENiagaraNumericOutputTypeSelectionMode::Largest)
 	{
@@ -1121,6 +1258,13 @@ void FNiagaraTypeDefinition::PostSerialize(const FArchive& Ar)
 		{
 			UnderlyingType = UT_None;
 			ClassStructOrEnum = nullptr;
+		}
+	}
+	if (Ar.IsLoading() && ClassStructOrEnum != nullptr)
+	{
+		if (ClassStructOrEnum.GetClass()->IsChildOf(UScriptStruct::StaticClass()))
+		{
+			ClassStructOrEnum = FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(static_cast<UScriptStruct*>(ClassStructOrEnum), ENiagaraStructConversion::UserFacing);
 		}
 	}
 #endif
@@ -1342,7 +1486,6 @@ const TArray<FNiagaraVariable>& FNiagaraSystemParameters::GetVariables()
 {
 	static const FName NAME_NiagaraStructPadding0 = "Engine.System.PaddingInt32_0";
 	static const FName NAME_NiagaraStructPadding1 = "Engine.System.PaddingInt32_1";
-	static const FName NAME_NiagaraStructPadding2 = "Engine.System.PaddingInt32_2";
 
 	static const TArray<FNiagaraVariable> Variables =
 	{
@@ -1355,9 +1498,9 @@ const TArray<FNiagaraVariable>& FNiagaraSystemParameters::GetVariables()
 		SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS,
 		SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS_ALIVE,
 		SYS_PARAM_ENGINE_SYSTEM_SIGNIFICANCE_INDEX,
+		SYS_PARAM_ENGINE_SYSTEM_RANDOM_SEED,
 		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding0),
 		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding1),
-		FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), NAME_NiagaraStructPadding2),
 	};
 
 	return Variables;
@@ -1380,6 +1523,7 @@ const TArray<FNiagaraVariable>& FNiagaraOwnerParameters::GetVariables()
 		SYS_PARAM_ENGINE_Y_AXIS,
 		SYS_PARAM_ENGINE_Z_AXIS,
 		SYS_PARAM_ENGINE_SCALE,
+		SYS_PARAM_ENGINE_LWC_TILE,
 	};
 
 	return Variables;

@@ -184,17 +184,10 @@ void FStringTableEditor::HandlePostChange(const FString& NewSelection)
 
 void FStringTableEditor::InitStringTableEditor(const EToolkitMode::Type Mode, const TSharedPtr<class IToolkitHost>& InitToolkitHost, UStringTable* StringTable)
 {
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_StringTableEditor_Layout_v1")
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_StringTableEditor_Layout_v2")
 	->AddArea
 	(
 		FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
-		->Split
-		(
-			FTabManager::NewStack()
-			->SetSizeCoefficient(0.1f)
-			->SetHideTabWell(true)
-			->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-		)
 		->Split
 		(
 			FTabManager::NewStack()
@@ -262,7 +255,6 @@ TSharedRef<SDockTab> FStringTableEditor::SpawnTab_StringTable(const FSpawnTabArg
 	})));
 
 	TSharedRef<SDockTab> StringTableTab = SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("StringTableEditor.Tabs.Properties"))
 		.Label(LOCTEXT("StringTableTitle", "String Table"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -670,7 +662,7 @@ FReply FStringTableEditor::OnImportFromCSVClicked()
 			LOCTEXT("ImportStringTableTitle", "Choose a string table CSV file...").ToString(),
 			DefaultPath,
 			TEXT(""),
-			TEXT("String Table CSV (*.csv, *.csv)"),
+			TEXT("String Table CSV (*.csv)|*.csv"),
 			EFileDialogFlags::None,
 			OutFiles
 			))

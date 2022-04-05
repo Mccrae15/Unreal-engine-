@@ -34,11 +34,9 @@ void ReportInteractiveEnsure(const TCHAR* InMessage)
 {
 	GEnsureShowsCRC = true;
 
-#if PLATFORM_DESKTOP
+#if PLATFORM_USE_REPORT_ENSURE
 	GLog->PanicFlushThreadedLogs();
-	// Skip macros and FDebug, we always want this to fire
-	const int32 NumStackFramesToIgnore = 1;
-	ReportEnsure(InMessage, NumStackFramesToIgnore);
+	ReportEnsure(InMessage, nullptr);
 #endif
 
 	GEnsureShowsCRC = false;

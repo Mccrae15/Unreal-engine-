@@ -12,6 +12,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "EditorStyleSet.h"
+#include "AutomationTestExcludelist.h"
 #include "SAutomationWindow.h"
 
 #if WITH_EDITOR
@@ -19,6 +20,8 @@
 	#include "EngineGlobals.h"
 	#include "Editor.h"
 	#include "AssetRegistryModule.h"
+	#include "Dialogs/Dialogs.h"
+	#include "SKismetInspector.h"
 #endif
 
 #include "Widgets/Input/SHyperlink.h"
@@ -229,15 +232,36 @@ TSharedRef<SWidget> SAutomationTestItem::GenerateWidgetForColumn( const FName& C
 				[
 					SNew(SBorder)
 					.BorderImage( FEditorStyle::GetBrush("ErrorReporting.Box") )
-					.HAlign(HAlign_Fill)
+					.HAlign(HAlign_Center)
 					.VAlign(VAlign_Center)
 					.Padding( FMargin(3,0) )
 					.BorderBackgroundColor( FSlateColor( FLinearColor( 1.0f, 0.0f, 1.0f, 0.0f ) ) )
 					[
-						//progress bar for percent of enabled children completed
-						SNew(SProgressBar)
-						.Percent( this, &SAutomationTestItem::ItemStatus_ProgressFraction, ClusterIndex )
-						.FillColorAndOpacity(this, &SAutomationTestItem::ItemStatus_ProgressColor, ClusterIndex )
+						SNew(SHorizontalBox)
+						+SHorizontalBox::Slot()
+						.AutoWidth()
+						.HAlign(HAlign_Center)
+						.VAlign(VAlign_Center)
+						[
+							//image when children complete or not run
+							SNew(SImage)
+							.Image(this, &SAutomationTestItem::ItemChildrenStatus_StatusImage, ClusterIndex)
+							.Visibility(this, &SAutomationTestItem::ItemStatus_GetChildrenStatusVisibility, ClusterIndex, false)
+						]
+						+SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(SBox)
+							.WidthOverride(ColumnWidth - 8)
+							.HeightOverride(16.0f)
+							[
+								//progress bar for percent of enabled children completed
+								SNew(SProgressBar)
+								.Percent(this, &SAutomationTestItem::ItemStatus_ProgressFraction, ClusterIndex)
+								.FillColorAndOpacity(this, &SAutomationTestItem::ItemStatus_ProgressColor, ClusterIndex)
+								.Visibility(this, &SAutomationTestItem::ItemStatus_GetChildrenStatusVisibility, ClusterIndex, true)
+							]
+						]
 					]
 				];
 			}
@@ -248,6 +272,37 @@ TSharedRef<SWidget> SAutomationTestItem::GenerateWidgetForColumn( const FName& C
 	{
 		return SNew( STextBlock )
 		.Text( this, &SAutomationTestItem::ItemStatus_DurationText);
+	}
+	else if (ColumnName == AutomationTestWindowConstants::IsToBeSkipped)
+	{
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.HAlign(HAlign_Center)
+			.AutoWidth()
+			[
+				SNew(SCheckBox)
+				.IsChecked(this, &SAutomationTestItem::IsToBeSkipped)
+				.IsEnabled(this, &SAutomationTestItem::IsDirectlyExcluded)
+				.OnCheckStateChanged(this, &SAutomationTestItem::SetSkipFlag)
+				.ToolTipText(this, &SAutomationTestItem::GetExcludeReason)
+#if WITH_EDITOR
+			]
+		+ SHorizontalBox::Slot()
+			.HAlign(HAlign_Center)
+			.AutoWidth()
+			[
+				SNew(SButton)
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+				.Visibility(this, &SAutomationTestItem::IsDirectlyExcluded_GetVisibility)
+				.ToolTipText(LOCTEXT("EditExcludeOptions", "Edit exclude options"))
+				.OnClicked(FOnClicked::CreateSP(this, &SAutomationTestItem::OnEditExcludeOptionsClicked))
+				[
+					SNew(SImage)
+					.ColorAndOpacity(FSlateColor::UseForeground())
+				.Image(FAppStyle::Get().GetBrush("Icons.Edit"))
+				]
+#endif
+			];
 	}
 
 
@@ -286,9 +341,9 @@ FText SAutomationTestItem::GetTestToolTip( int32 ClusterIndex ) const
 	{
 		TestToolTip = LOCTEXT("TestToolTipNotRun", "Not Run");
 	}
-	else if( TestState == EAutomationState::NotEnoughParticipants )
+	else if( TestState == EAutomationState::Skipped )
 	{
-		TestToolTip = LOCTEXT("ToolTipNotEnoughParticipants", "This test could not be completed as there were not enough participants.");
+		TestToolTip = LOCTEXT("ToolTipSkipped", "This test was skipped.");
 	}
 	else
 	{
@@ -317,6 +372,63 @@ ECheckBoxState SAutomationTestItem::IsTestEnabled() const
 	return TestStatus->IsEnabled() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
+ECheckBoxState SAutomationTestItem::IsToBeSkipped() const
+{
+	return TestStatus->IsToBeSkipped() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+bool SAutomationTestItem::IsDirectlyExcluded() const
+{
+	return WITH_EDITOR && !TestStatus->IsToBeSkippedByPropagation();
+}
+
+EVisibility SAutomationTestItem::IsDirectlyExcluded_GetVisibility() const
+{
+	return  TestStatus->IsToBeSkipped() && IsDirectlyExcluded() ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+FText SAutomationTestItem::GetExcludeReason() const
+{
+	FName Reason;
+	bool IsToBeSkipped = TestStatus->IsToBeSkipped(&Reason);
+
+	return IsToBeSkipped ? FText::FromName(Reason) : FText();
+}
+
+void SAutomationTestItem::SetSkipFlag(ECheckBoxState Enable)
+{
+#if WITH_EDITOR
+	if (Enable == ECheckBoxState::Checked)
+	{
+		OnEditExcludeOptionsClicked();
+	}
+	else
+	{
+		TestStatus->SetSkipFlag(false);
+	}
+#endif
+}
+
+FReply SAutomationTestItem::OnEditExcludeOptionsClicked()
+{
+#if WITH_EDITOR
+	TSharedPtr<FAutomationTestExcludeOptions> Options = TestStatus->GetExcludeOptions();
+	TSharedPtr<FStructOnScope> StructToDisplay = MakeShareable(new FStructOnScope(FAutomationTestExcludeOptions::StaticStruct(), (uint8*)Options.Get()));
+
+	TSharedRef<SKismetInspector> KismetInspector = SNew(SKismetInspector);
+	KismetInspector->ShowSingleStruct(StructToDisplay);
+
+	SGenericDialogWidget::FArguments DialogArguments;
+	DialogArguments.OnOkPressed_Lambda([Options, this]()
+		{
+			auto Entry = FAutomationTestExcludelistEntry(*Options);
+			TestStatus->SetSkipFlag(true, &Entry, false);
+		});
+
+	SGenericDialogWidget::OpenDialog(LOCTEXT("ExcludeTestOptions", "Exclude Test Options"), KismetInspector, DialogArguments, true);
+#endif
+	return FReply::Handled();
+}
 
 FSlateColor SAutomationTestItem::ItemStatus_BackgroundColor(const int32 ClusterIndex) const
 {
@@ -388,6 +500,26 @@ EVisibility SAutomationTestItem::ItemStatus_GetStatusVisibility(const int32 Clus
 	bool bImageVisible = TestState != EAutomationState::InProcess;
 
 	bool bFinalVisibility =  bForInProcessThrobber ? !bImageVisible : bImageVisible;
+
+	return bFinalVisibility ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+EVisibility SAutomationTestItem::ItemStatus_GetChildrenStatusVisibility(const int32 ClusterIndex, const bool bForInProcessThrobber) const
+{
+	// Internal node: completion status image visible when all children completed
+	bool bImageVisible = false;
+
+	FAutomationCompleteState CompleteState;
+	const int32 PassIndex = TestStatus->GetCurrentPassIndex(ClusterIndex);
+	TestStatus->GetCompletionStatus(ClusterIndex, PassIndex, CompleteState);
+
+	uint32 TotalComplete = CompleteState.NumEnabledTestsPassed + CompleteState.NumEnabledTestsFailed + CompleteState.NumEnabledTestsCouldntBeRun;
+	if ((TotalComplete > 0) && (CompleteState.TotalEnabled > 0))
+	{
+		bImageVisible = (TotalComplete == CompleteState.TotalEnabled);
+	}
+
+	bool bFinalVisibility = bForInProcessThrobber ? !bImageVisible : bImageVisible;
 
 	return bFinalVisibility ? EVisibility::Visible : EVisibility::Collapsed;
 }
@@ -485,8 +617,8 @@ const FSlateBrush* SAutomationTestItem::ItemStatus_StatusImage(const int32 Clust
 		}
 		break;
 
-	case EAutomationState::NotEnoughParticipants:
-		ImageToUse = FEditorStyle::GetBrush("Automation.NotEnoughParticipants");
+	case EAutomationState::Skipped:
+		ImageToUse = FEditorStyle::GetBrush("Automation.Skipped");
 		break;
 
 	default:
@@ -498,6 +630,31 @@ const FSlateBrush* SAutomationTestItem::ItemStatus_StatusImage(const int32 Clust
 	return ImageToUse;
 }
 
+const FSlateBrush* SAutomationTestItem::ItemChildrenStatus_StatusImage(const int32 ClusterIndex) const
+{
+	FAutomationCompleteState CompleteState;
+	const int32 PassIndex = TestStatus->GetCurrentPassIndex(ClusterIndex);
+	TestStatus->GetCompletionStatus(ClusterIndex, PassIndex, CompleteState);
+
+	const FSlateBrush* ImageToUse = FEditorStyle::GetBrush("Automation.InProcess");
+
+	uint32 TotalComplete = CompleteState.NumEnabledTestsPassed + CompleteState.NumEnabledTestsFailed + CompleteState.NumEnabledTestsCouldntBeRun;
+	if ((TotalComplete > 0) && (CompleteState.TotalEnabled > 0) && TotalComplete == CompleteState.TotalEnabled) {
+		if (TotalComplete == CompleteState.NumEnabledTestsPassed)
+		{
+			ImageToUse = FEditorStyle::GetBrush("Automation.Success");
+		}
+		else if (CompleteState.NumEnabledTestsFailed)
+		{
+			ImageToUse = FEditorStyle::GetBrush("Automation.Fail");
+		}
+		else if (CompleteState.NumEnabledTestsCouldntBeRun)
+		{
+			ImageToUse = FEditorStyle::GetBrush("Automation.NotRun");
+		}
+	}
+	return ImageToUse;
+}
 
 /* SAutomationTestitem event handlers
  *****************************************************************************/

@@ -57,9 +57,9 @@ void UProjectileMovementComponent::PostLoad()
 {
 	Super::PostLoad();
 
-	const int32 LinkerUE4Ver = GetLinkerUE4Version();
+	const FPackageFileVersion LinkerUEVer = GetLinkerUEVersion();
 
-	if (LinkerUE4Ver < VER_UE4_REFACTOR_PROJECTILE_MOVEMENT)
+	if (LinkerUEVer < VER_UE4_REFACTOR_PROJECTILE_MOVEMENT)
 	{
 		// Old code used to treat Bounciness as Friction as well.
 		Friction = FMath::Clamp(1.f - Bounciness, 0.f, 1.f);
@@ -176,7 +176,7 @@ void UProjectileMovementComponent::TickComponent(float DeltaTime, enum ELevelTic
 	int32 Iterations = 0;
 	FHitResult Hit(1.f);
 	
-	while (bSimulationEnabled && RemainingTime >= MIN_TICK_TIME && (Iterations < MaxSimulationIterations) && !ActorOwner->IsPendingKill() && !HasStoppedSimulation())
+	while (bSimulationEnabled && RemainingTime >= MIN_TICK_TIME && (Iterations < MaxSimulationIterations) && IsValid(ActorOwner) && !HasStoppedSimulation())
 	{
 		LoopCount++;
 		Iterations++;
@@ -220,7 +220,7 @@ void UProjectileMovementComponent::TickComponent(float DeltaTime, enum ELevelTic
 		}
 		
 		// If we hit a trigger that destroyed us, abort.
-		if( ActorOwner->IsPendingKill() || HasStoppedSimulation() )
+		if( !IsValid(ActorOwner) || HasStoppedSimulation() )
 		{
 			return;
 		}
@@ -524,21 +524,21 @@ void UProjectileMovementComponent::StopSimulating(const FHitResult& HitResult)
 UProjectileMovementComponent::EHandleBlockingHitResult UProjectileMovementComponent::HandleBlockingHit(const FHitResult& Hit, float TimeTick, const FVector& MoveDelta, float& SubTickTimeRemaining)
 {
 	AActor* ActorOwner = UpdatedComponent ? UpdatedComponent->GetOwner() : NULL;
-	if (!CheckStillInWorld() || !ActorOwner || ActorOwner->IsPendingKill())
+	if (!CheckStillInWorld() || !IsValid(ActorOwner))
 	{
 		return EHandleBlockingHitResult::Abort;
 	}
 	
 	HandleImpact(Hit, TimeTick, MoveDelta);
 	
-	if (ActorOwner->IsPendingKill() || HasStoppedSimulation())
+	if (!IsValid(ActorOwner) || HasStoppedSimulation())
 	{
 		return EHandleBlockingHitResult::Abort;
 	}
 
 	if (Hit.bStartPenetrating)
 	{
-		UE_LOG(LogProjectileMovement, Verbose, TEXT("Projectile %s is stuck inside %s.%s with velocity %s!"), *GetNameSafe(ActorOwner), *GetNameSafe(Hit.GetActor()), *GetNameSafe(Hit.GetComponent()), *Velocity.ToString());
+		UE_LOG(LogProjectileMovement, Verbose, TEXT("Projectile %s is stuck inside %s.%s with velocity %s!"), *GetNameSafe(ActorOwner), *Hit.HitObjectHandle.GetName(), *GetNameSafe(Hit.GetComponent()), *Velocity.ToString());
 		return EHandleBlockingHitResult::Abort;
 	}
 
@@ -621,7 +621,7 @@ bool UProjectileMovementComponent::CheckStillInWorld()
 
 	// check the variations of KillZ
 	AWorldSettings* WorldSettings = MyWorld->GetWorldSettings( true );
-	if (!WorldSettings->bEnableWorldBoundsChecks)
+	if (!WorldSettings->AreWorldBoundsChecksEnabled())
 	{
 		return true;
 	}

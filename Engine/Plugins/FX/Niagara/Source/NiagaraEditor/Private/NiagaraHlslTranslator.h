@@ -66,76 +66,134 @@ public:
 
 	}
 
-	virtual ~FNiagaraCompileRequestData() {}
-	virtual bool GatherPreCompiledVariables(const FString& InNamespaceFilter, TArray<FNiagaraVariable>& OutVars) override;
-	virtual void GetReferencedObjects(TArray<UObject*>& Objects) override;
-	virtual const TMap<FName, UNiagaraDataInterface*>& GetObjectNameMap() override;
-	void MergeInEmitterPrecompiledData(FNiagaraCompileRequestDataBase* InEmitterDataBase);
+	virtual void GatherPreCompiledVariables(const FString& InNamespaceFilter, TArray<FNiagaraVariable>& OutVars) const override;
 	virtual FName ResolveEmitterAlias(FName VariableName) const override;
 
-	TArray<FNiagaraParameterMapHistory>& GetPrecomputedHistories() { return PrecompiledHistories; }
-	const TArray<FNiagaraParameterMapHistory>& GetPrecomputedHistories() const { return PrecompiledHistories; }
-	virtual const class UNiagaraGraph* GetPrecomputedNodeGraph() const { return NodeGraphDeepCopy; }
 	const FString& GetUniqueEmitterName() const { return EmitterUniqueName; }
-	void VisitReferencedGraphs(UNiagaraGraph* InSrcGraph, UNiagaraGraph* InDupeGraph, ENiagaraScriptUsage InUsage, FCompileConstantResolver ConstantResolver, bool bNeedsCompilation, TMap<UNiagaraNodeFunctionCall*, ENiagaraScriptUsage> FunctionsWithUsage = TMap<UNiagaraNodeFunctionCall*, ENiagaraScriptUsage>());
-	void DeepCopyGraphs(UNiagaraScriptSource* ScriptSource, ENiagaraScriptUsage InUsage, FCompileConstantResolver ConstantResolver, bool bNeedsCompilation);
-	void DeepCopyGraphs(UNiagaraScriptSource* ScriptSource, UNiagaraEmitter* Emitter, bool bNeedsCompilation);
-	void FinishPrecompile(const TArray<FNiagaraVariable>& EncounterableVariables, ENiagaraScriptUsage InUsage, FCompileConstantResolver ConstantResolver, const TArray<class UNiagaraSimulationStageBase*>* SimStages);
+	void FinishPrecompile(const TArray<FNiagaraVariable>& EncounterableVariables, const TArray<FNiagaraVariable>& InStaticVariables, FCompileConstantResolver ConstantResolver, const TArray<ENiagaraScriptUsage>& UsagesToProcess, const TArray<class UNiagaraSimulationStageBase*>* SimStages, const TArray<FString> EmitterNames);
 	virtual int32 GetDependentRequestCount() const override {
 		return EmitterData.Num();
 	};
 	virtual TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> GetDependentRequest(int32 Index) override {
 		return EmitterData[Index];
 	}
+	virtual const FNiagaraCompileRequestDataBase* GetDependentRequest(int32 Index) const override
+	{
+		return EmitterData[Index].Get();
+	}
 	void AddRapidIterationParameters(const FNiagaraParameterStore& InParamStore, FCompileConstantResolver InResolver);
 	virtual bool GetUseRapidIterationParams() const override { return bUseRapidIterationParams; }
 
-	// Simulation Stage Variables. Sim stage of 0 is always Spawn/Update
-	TArray<uint32> NumIterationsPerStage;
-	TArray<FName> IterationSourcePerStage;
-	TArray<bool> SpawnOnlyPerStage;
-	mutable TArray<bool> PartialParticleUpdatePerStage;		//-TODO: Remove mutable and communicate that we can do a partial write in another way
-	TArray<FGuid> StageGuids;
-	TArray<FName> StageNames;
+	virtual bool GetDisableDebugSwitches() const override { return bDisableDebugSwitches; }
 
-	// If this is being held onto for any length of time, make sure to hold onto it in a gc-aware object. Right now in this information-passing struct,
-	// we could have a leaked garbage collected pointer if not held onto by someone capable of registering a reference.
-	UNiagaraGraph* NodeGraphDeepCopy;
-	TArray<FNiagaraParameterMapHistory> PrecompiledHistories;
-	TArray<FNiagaraVariable> ChangedFromNumericVars;
-	TMap<FName, UNiagaraDataInterface*> CopiedDataInterfacesByName;
-	TMap<UClass*, UObject*> CDOs;
+	// Simulation Stage Variables. Sim stage of 0 is always Spawn/Update
+	struct FCompileSimStageData
+	{
+		FGuid							StageGuid;
+		FName							StageName;
+		FName							EnabledBinding;
+		uint32							NumIterations = 1;
+		FName							NumIterationsBinding;
+		FName							IterationSource;
+		ENiagaraSimStageExecuteBehavior	ExecuteBehavior = ENiagaraSimStageExecuteBehavior::Always;
+		mutable bool					PartialParticleUpdate = false;
+		bool							bParticleIterationStateEnabled = false;
+		FName							ParticleIterationStateBinding;
+		FIntPoint						ParticleIterationStateRange = FIntPoint::ZeroValue;
+		bool							bGpuDispatchForceLinear = false;
+		bool							bOverrideGpuDispatchNumThreads = false;
+		FIntVector						OverrideGpuDispatchNumThreads = FIntVector(1, 1, 1);
+	};
+	TArray<FCompileSimStageData> CompileSimStageData;
+
+	struct FCompileDataInterfaceData
+	{
+		FString EmitterName;
+		ENiagaraScriptUsage Usage;
+		FGuid UsageId;
+		FNiagaraVariable Variable;
+		TArray<FString> ReadsEmitterParticleData;
+	};
+	TSharedPtr<TArray<FCompileDataInterfaceData>> SharedCompileDataInterfaceData;
+
+	TArray<FNiagaraVariable> EncounteredVariables;
 	FString EmitterUniqueName;
 	TArray<TSharedPtr<FNiagaraCompileRequestData, ESPMode::ThreadSafe>> EmitterData;
-	UNiagaraScriptSource* Source;
+	TWeakObjectPtr<UNiagaraScriptSource> Source;
 	FString SourceName;
 	bool bUseRapidIterationParams = true;
-	bool bSimulationStagesEnabled = false;
+	bool bDisableDebugSwitches = false;
 
 	UEnum* ENiagaraScriptCompileStatusEnum;
 	UEnum* ENiagaraScriptUsageEnum;
 
 	TArray<FNiagaraVariable> RapidIterationParams;
 
-	struct FunctionData
+	TMap<FGraphTraversalHandle, FString> PinToConstantValues;
+	TArray<FNiagaraVariable> StaticVariables;
+	TArray<FNiagaraVariable> StaticVariablesWithMultipleWrites;
+
+	void CompareAgainst(FNiagaraGraphCachedBuiltHistory* InCachedDataBase);
+};
+
+class FNiagaraCompileRequestDuplicateData : public FNiagaraCompileRequestDuplicateDataBase
+{
+public:
+	FNiagaraCompileRequestDuplicateData()
+	{
+	}
+
+	virtual bool IsDuplicateDataFor(UNiagaraSystem* InSystem, UNiagaraEmitter* InEmitter, UNiagaraScript* InScript) const override;
+	virtual void GetDuplicatedObjects(TArray<UObject*>& Objects) override;
+	virtual const TMap<FName, UNiagaraDataInterface*>& GetObjectNameMap() override;
+	virtual const UNiagaraScriptSourceBase* GetScriptSource() const override;
+	UNiagaraDataInterface* GetDuplicatedDataInterfaceCDOForClass(UClass* Class) const;
+
+	TArray<FNiagaraParameterMapHistory>& GetPrecomputedHistories() { return PrecompiledHistories; }
+	const TArray<FNiagaraParameterMapHistory>& GetPrecomputedHistories() const { return PrecompiledHistories; }
+
+	void DuplicateReferencedGraphs(UNiagaraGraph* InSrcGraph, UNiagaraGraph* InDupeGraph, ENiagaraScriptUsage InUsage, FCompileConstantResolver ConstantResolver, TMap<UNiagaraNodeFunctionCall*, ENiagaraScriptUsage> FunctionsWithUsage = TMap<UNiagaraNodeFunctionCall*, ENiagaraScriptUsage>());
+	void DeepCopyGraphs(UNiagaraScriptSource* ScriptSource, ENiagaraScriptUsage InUsage, FCompileConstantResolver ConstantResolver);
+	void DeepCopyGraphs(UNiagaraEmitter* Emitter);
+	
+	void FinishPrecompileDuplicate(const TArray<FNiagaraVariable>& EncounterableVariables, const TArray<FNiagaraVariable>& InStaticVariables, FCompileConstantResolver ConstantResolver, const TArray<class UNiagaraSimulationStageBase*>* SimStages, const TArray<FNiagaraVariable>& InParamStore);
+	void CreateDataInterfaceCDO(TArrayView<UClass*> VariableDataInterfaces);
+
+	virtual int32 GetDependentRequestCount() const override	{ return EmitterData.Num();	}
+	virtual TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe> GetDependentRequest(int32 Index) override { return EmitterData[Index];	}
+
+	virtual void ReleaseCompilationCopies() override;
+
+	TWeakObjectPtr<UNiagaraSystem> OwningSystem;
+	TWeakObjectPtr<UNiagaraEmitter> OwningEmitter;
+	TArray<ENiagaraScriptUsage> ValidUsages;
+
+	TWeakObjectPtr<UNiagaraScriptSource> SourceDeepCopy;
+	TWeakObjectPtr<UNiagaraGraph> NodeGraphDeepCopy;
+
+	TArray<FNiagaraParameterMapHistory> PrecompiledHistories;
+
+	TArray<FNiagaraVariable> ChangedFromNumericVars;
+	FString EmitterUniqueName;
+	TArray<TSharedPtr<FNiagaraCompileRequestDuplicateData, ESPMode::ThreadSafe>> EmitterData;
+
+	struct FDuplicatedGraphData
 	{
 		UNiagaraScript* ClonedScript;
 		UNiagaraGraph* ClonedGraph;
 		TArray<UEdGraphPin*> CallInputs;
 		TArray<UEdGraphPin*> CallOutputs;
 		ENiagaraScriptUsage Usage;
-		bool bHasNumericInputs;
+		bool bHasNumericParameters;
 	};
-	TMap<const UNiagaraGraph*, TArray<FunctionData>> PreprocessedFunctions;
-	TArray<UNiagaraGraph*> ClonedGraphs;
 
-	// Copy of the variables that are required by Renderers if this is a compile request for an Emitter. 
-	TArray<FNiagaraVariable> RequiredRendererVariables;
+	TSharedPtr<TMap<const UNiagaraGraph*, TArray<FDuplicatedGraphData>>> SharedSourceGraphToDuplicatedGraphsMap;
+	TSharedPtr<TMap<FName, UNiagaraDataInterface*>> SharedNameToDuplicatedDataInterfaceMap;
+	TSharedPtr<TMap<UClass*, UNiagaraDataInterface*>> SharedDataInterfaceClassToDuplicatedCDOMap;
 
 protected:
-	void VisitReferencedGraphsRecursive(UNiagaraGraph* InGraph, const FCompileConstantResolver& ConstantResolver, bool bNeedsCompile, TMap<UNiagaraNodeFunctionCall*, ENiagaraScriptUsage> FunctionsWithUsage);
+	void DuplicateReferencedGraphsRecursive(UNiagaraGraph* InGraph, const FCompileConstantResolver& ConstantResolver, TMap<UNiagaraNodeFunctionCall*, ENiagaraScriptUsage> FunctionsWithUsage);
 };
-
 
 
 /** Data which is generated from the hlsl by the VectorVMBackend and fed back into the */
@@ -197,8 +255,7 @@ FORCEINLINE uint32 GetTypeHash(const FNiagaraFunctionSignature& Sig)
 		Hash = HashCombine(Hash, GetTypeHash(Var));
 	}
 	Hash = HashCombine(Hash, GetTypeHash(Sig.OwnerName));
-	Hash = HashCombine(Hash, GetTypeHash(Sig.ContextStageMinIndex));
-	Hash = HashCombine(Hash, GetTypeHash(Sig.ContextStageMaxIndex));
+	Hash = HashCombine(Hash, GetTypeHash(Sig.ContextStageIndex));
 	return Hash;
 }
 
@@ -265,11 +322,17 @@ public:
 	FHlslNiagaraTranslatorOptions()
 		: SimTarget(ENiagaraSimTarget::CPUSim)
 		, bParameterRapidIteration(true)
+		, bDisableDebugSwitches(false)
 	{
 
 	}
 
-	FHlslNiagaraTranslatorOptions(const FHlslNiagaraTranslatorOptions& InOptions) : SimTarget(InOptions.SimTarget), InstanceParameterNamespaces(InOptions.InstanceParameterNamespaces), bParameterRapidIteration(InOptions.bParameterRapidIteration), OverrideModuleConstants(InOptions.OverrideModuleConstants)
+	FHlslNiagaraTranslatorOptions(const FHlslNiagaraTranslatorOptions& InOptions)
+		: SimTarget(InOptions.SimTarget)
+		, InstanceParameterNamespaces(InOptions.InstanceParameterNamespaces)
+		, bParameterRapidIteration(InOptions.bParameterRapidIteration)
+		, bDisableDebugSwitches(InOptions.bDisableDebugSwitches)
+		, OverrideModuleConstants(InOptions.OverrideModuleConstants)
 	{
 	}
 
@@ -280,6 +343,9 @@ public:
 
 	/** Whether or not to treat top-level module variables as external values for rapid iteration without need for compilation.*/
 	bool bParameterRapidIteration;
+
+	/** Should we disable debug switches during translation. */
+	bool bDisableDebugSwitches;
 
 	/** Whether or not to override top-level module variables with values from the constant override table. This is only used for variables that were candidates for rapid iteration.*/
 	TArray<FNiagaraVariable> OverrideModuleConstants;
@@ -304,18 +370,25 @@ public:
 	bool bCopyPreviousParams = true;
 	ENiagaraCodeChunkMode ChunkModeIndex = (ENiagaraCodeChunkMode)-1;
 	FName IterationSource;
-	int32 SimulationStageIndexMin = -1;
-	int32 SimulationStageIndexMax = -1;
-	int32 NumIterationsThisStage = 1;
-	int32 SourceSimStage = -1;
-	bool bSpawnOnly = false;
+	int32 SimulationStageIndex = -1;
+	FName EnabledBinding;
+	int32 NumIterations = 1;
+	FName NumIterationsBinding;
+	ENiagaraSimStageExecuteBehavior ExecuteBehavior = ENiagaraSimStageExecuteBehavior::Always;
+	bool bParticleIterationStateEnabled = false;
+	FName ParticleIterationStateBinding;
+	FIntPoint ParticleIterationStateRange = FIntPoint::ZeroValue;
 	bool bUsesAlive = false;
 	bool bWritesAlive = false;
 	bool bWritesParticles = false;
 	bool bPartialParticleUpdate = false;
+	bool bGpuDispatchForceLinear = false;
+	bool bOverrideGpuDispatchNumThreads = false;
+	FIntVector OverrideGpuDispatchNumThreads = FIntVector(1, 1, 1);
 	TArray<FNiagaraVariable> SetParticleAttributes;
 	FString CustomReadFunction;
 	FString CustomWriteFunction;
+	int32 ParamMapHistoryIndex = INDEX_NONE;
 
 	bool ShouldDoSpawnOnlyLogic() const;
 	bool IsRelevantToSpawnForStage(const FNiagaraParameterMapHistory& InHistory, const FNiagaraVariable& InAliasedVar, const FNiagaraVariable& InVar) const;
@@ -323,6 +396,12 @@ public:
 	bool IsExternalConstantNamespace(const FNiagaraVariable& InVar, ENiagaraScriptUsage InTargetUsage, uint32 InTargetBitmask);
 	int32 CurrentCallID = 0;
 	bool bCallIDInitialized = false;
+};
+
+struct FunctionNodeStackEntry
+{
+	TSet<FName> UnusedInputs;
+	TSet<FString> CulledFunctionNames;
 };
 
 class NIAGARAEDITOR_API FHlslNiagaraTranslator
@@ -345,6 +424,7 @@ public:
 
 protected:
 	const FNiagaraCompileRequestData* CompileData;
+	const FNiagaraCompileRequestDuplicateData* CompileDuplicateData;
 	FNiagaraCompileOptions CompileOptions;
 
 	FHlslNiagaraTranslatorOptions TranslationOptions;
@@ -361,7 +441,7 @@ protected:
 	Map of Pins to compiled code chunks. Allows easy reuse of previously compiled pins.
 	A stack so that we can track pin reuse within function calls but not have cached pins cross talk with subsequent calls to the same function.
 	*/
-	TArray<TMap<UEdGraphPin*, int32>> PinToCodeChunks;
+	TArray<TMap<const UEdGraphPin*, int32>> PinToCodeChunks;
 
 	/** The combined output of the compilation of this script. This is temporary and will be reworked soon. */
 	FNiagaraTranslatorOutput CompilationOutput;
@@ -397,9 +477,6 @@ protected:
 	TMap<FNiagaraFunctionSignature, FNiagaraFunctionBody> Functions;
 	TMap<FNiagaraFunctionSignature, TArray<FName> > FunctionStageWriteTargets;
 	TArray<TArray<FName>> ActiveStageWriteTargets;
-
-	/** Map of function graphs we've seen before and already pre-processed. */
-	TMap<const UNiagaraGraph*, UNiagaraGraph*> PreprocessedFunctions;
 
 	void RegisterFunctionCall(ENiagaraScriptUsage ScriptUsage, const FString& InName, const FString& InFullName, const FGuid& CallNodeId, const FString& InFunctionNameSuffix, UNiagaraScriptSource* Source, FNiagaraFunctionSignature& InSignature, bool bIsCustomHlsl, const FString& InCustomHlsl, TArray<int32>& Inputs, TArrayView<UEdGraphPin* const> CallInputs, TArrayView<UEdGraphPin* const> CallOutputs,
 		FNiagaraFunctionSignature& OutSignature);
@@ -471,7 +548,7 @@ public:
 
 	static void Init();
 	
-	virtual const FNiagaraTranslateResults &Translate(const FNiagaraCompileRequestData* InCompileData, const FNiagaraCompileOptions& InCompileOptions, FHlslNiagaraTranslatorOptions Options);
+	virtual const FNiagaraTranslateResults &Translate(const FNiagaraCompileRequestData* InCompileData, const FNiagaraCompileRequestDuplicateData* InCompileDuplicateData, const FNiagaraCompileOptions& InCompileOptions, FHlslNiagaraTranslatorOptions Options);
 	FNiagaraTranslatorOutput &GetTranslateOutput() { return CompilationOutput; }
 
 	virtual int32 CompilePin(const UEdGraphPin* Pin);
@@ -483,6 +560,8 @@ public:
 
 	virtual int32 GetParameter(const FNiagaraVariable& Parameter);
 	virtual int32 GetRapidIterationParameter(const FNiagaraVariable& Parameter);
+
+	bool DisableDebugSwitches() const { return TranslationOptions.bDisableDebugSwitches; }
 
 	bool IsCompileOptionDefined(const TCHAR* InDefineStr);
 
@@ -497,7 +576,9 @@ public:
 	virtual void Emitter(class UNiagaraNodeEmitter* GetNode, TArray<int32>& Inputs, TArray<int32>& Outputs);
 
 	virtual void ParameterMapForBegin(class UNiagaraNodeParameterMapFor* ForNode, int32 IterationCount);
+	virtual void ParameterMapForContinue(class UNiagaraNodeParameterMapFor* ForNode, int32 IterationEnabled);
 	virtual void ParameterMapForEnd(class UNiagaraNodeParameterMapFor* ForNode);
+	virtual int32 ParameterMapForInnerIndex() const;
 
 	void DefineInterpolatedParametersFunction(FString &HlslOutput);
 	void DefinePreviousParametersFunction(FString& HlslOutput, TArray<TArray<FNiagaraVariable>>& DataSetVariables, TMap<FNiagaraDataSetID, int32>& DataSetReads, TMap<FNiagaraDataSetID, int32>& DataSetWrites);
@@ -523,19 +604,19 @@ public:
 	void EnterFunctionCallNode(const TSet<FName>& UnusedInputs);
 	void ExitFunctionCallNode();
 	bool IsFunctionVariableCulledFromCompilation(const FName& InputName) const;
+	void CullMapSetInputPin(UEdGraphPin* InputPin);
 
 	virtual void Convert(class UNiagaraNodeConvert* Convert, TArrayView<const int32> Inputs, TArray<int32>& Outputs);
 	virtual void If(class UNiagaraNodeIf* IfNode, TArray<FNiagaraVariable>& Vars, int32 Condition, TArray<int32>& PathA, TArray<int32>& PathB, TArray<int32>& Outputs);
 	/** Options is a map from selector values to compiled pin code chunk indices */
 	virtual void Select(class UNiagaraNodeSelect* SelectNode, int32 Selector, const TArray<FNiagaraVariable>& OutputVariables, TMap<int32, TArray<int32>>& Options, TArray<int32>& Outputs);
 	
-
 	void WriteCompilerTag(int32 InputCompileResult, const UEdGraphPin* Pin, bool bEmitMessageOnFailure, FNiagaraCompileEventSeverity FailureSeverity, const FString& Prefix = FString());
 
 	void Message(FNiagaraCompileEventSeverity Severity, FText MessageText, const UNiagaraNode* Node, const UEdGraphPin* Pin, FString ShortDescription = FString(), bool bDismissable = false);
 	virtual void Error(FText ErrorText, const UNiagaraNode* Node, const UEdGraphPin* Pin, FString ShortDescription = FString(), bool bDismissable = false);
 	virtual void Warning(FText WarningText, const UNiagaraNode* Node, const UEdGraphPin* Pin, FString ShortDescription = FString(), bool bDismissable = false);
-	void RegisterCompileDependency(const FNiagaraVariableBase& InVar, FText ErrorText, const UNiagaraNode* Node, const UEdGraphPin* Pin, bool bEmitAsLinker);
+	void RegisterCompileDependency(const FNiagaraVariableBase& InVar, FText ErrorText, const UNiagaraNode* Node, const UEdGraphPin* Pin, bool bEmitAsLinker, int32 ParamMapHistoryIdx);
 	FString NodePinToMessage(FText MessageText, const UNiagaraNode* Node, const UEdGraphPin* Pin);
 
 	virtual bool GetFunctionParameter(const FNiagaraVariable& Parameter, int32& OutParam)const;
@@ -549,12 +630,11 @@ public:
 	{
 		return CompilationTarget;
 	}
-	bool GetUsesSimulationStages() const;
 
 	static bool IsBuiltInHlslType(const FNiagaraTypeDefinition& Type);
 	static FString GetStructHlslTypeName(const FNiagaraTypeDefinition& Type);
 	static FString GetPropertyHlslTypeName(const FProperty* Property);
-	static FString BuildHLSLStructDecl(const FNiagaraTypeDefinition& Type, FText& OutErrorMessage);
+	static FString BuildHLSLStructDecl(const FNiagaraTypeDefinition& Type, FText& OutErrorMessage, bool bGpuScript);
 	static FString GetHlslDefaultForType(const FNiagaraTypeDefinition& Type);
 	static bool IsHlslBuiltinVector(const FNiagaraTypeDefinition& Type);
 	static TArray<FName> ConditionPropertyPath(const FNiagaraTypeDefinition& Type, const TArray<FName>& InPath);
@@ -583,9 +663,20 @@ public:
 
 	/** If Var can be replaced by a another constant variable, or is a constant itself, add the appropriate body chunk and return true. */
 	bool HandleBoundConstantVariableToDataSetRead(FNiagaraVariable InVariable, UNiagaraNode* InNode, int32 InParamMapHistoryIdx, int32& Output, const UEdGraphPin* InDefaultPin);
-private:
-	bool GetUsesOldShaderStages() const;
 
+	static FString GenerateFunctionHlslPrototype(FStringView InVariableName, const FNiagaraFunctionSignature& FunctionSignature);
+	void FillVariableWithDefaultValue(FNiagaraVariable& InVar, const UEdGraphPin* InDefaultPin);
+	void FillVariableWithDefaultValue(int32& OutValue, const UEdGraphPin* InDefaultPin);
+
+	void SetConstantByStaticVariable(int32& OutValue, const UEdGraphPin* InDefaultPin, FString* DebugString = nullptr);
+	void SetConstantByStaticVariable(int32& OutValue, const FNiagaraVariable& Var, FString* DebugString = nullptr);
+	void SetConstantByStaticVariable(FNiagaraVariable& OutValue, const FNiagaraVariable& Var, FString* DebugString = nullptr);
+	void SetConstantByStaticVariable(FNiagaraVariable& OutValue, const UEdGraphPin* InDefaultPin, FString* DebugString = nullptr);
+
+	int32 MakeStaticVariableDirect(const UEdGraphPin* InDefaultPin);
+
+
+private:
 	void InitializeParameterMapDefaults(int32 ParamMapHistoryIdx);
 	void HandleParameterRead(int32 ParamMapHistoryIdx, const FNiagaraVariable& Var, const UEdGraphPin* DefaultPin, UNiagaraNode* ErrorNode, int32& OutputChunkId, UNiagaraScriptVariable* Variable, bool bTreatAsUnknownParameterMap = false, bool bIgnoreDefaultSetFirst = false);
 	bool ShouldConsiderTargetParameterMap(ENiagaraScriptUsage InUsage) const;
@@ -594,6 +685,8 @@ private:
 	void FinalResolveNamespacedTokens(const FString& ParameterMapInstanceNamespace, TArray<FString>& Tokens, TArray<FString>& ValidChildNamespaces, FNiagaraParameterMapHistoryBuilder& Builder, TArray<FNiagaraVariable>& UniqueParameterMapEntriesAliasesIntact, TArray<FNiagaraVariable>& UniqueParameterMapEntries, int32 ParamMapHistoryIdx);
 
 	void HandleNamespacedExternalVariablesToDataSetRead(TArray<FNiagaraVariable>& InDataSetVars, FString InNamespaceStr);
+
+	void FindConstantValue(int32 InputCompileResult, const FNiagaraTypeDefinition& TypeDef, FString& Value, FNiagaraVariable& Variable);
 
 	// For GPU simulations we have to special case some variables and pass them view shader parameters rather than the uniform buffer as they vary from CPU simulations
 	bool IsVariableInUniformBuffer(const FNiagaraVariable& Variable) const;
@@ -610,6 +703,7 @@ private:
 	// Add a raw float constant chunk
 	int32 GetConstantDirect(float InValue);
 	int32 GetConstantDirect(bool InValue);
+	int32 GetConstantDirect(int InValue);
 
 	FNiagaraTypeDefinition GetChildType(const FNiagaraTypeDefinition& BaseType, const FName& PropertyName);
 	FString NamePathToString(const FString& Prefix, const FNiagaraTypeDefinition& RootType, const TArray<FName>& NamePath);
@@ -621,6 +715,9 @@ private:
 	//Retreives the code for this chunk being used as a source for another chunk
 	FString GetCodeAsSource(int32 ChunkIdx);
 
+	// Generate a structure initializer string
+	// Returns true if we generated the structure successfully or false if we encounter something we could not handle
+	bool GenerateStructInitializer(TStringBuilder<128>& InitializerString, UStruct* UserDefinedStruct, const void* StructData, int32 ByteOffset = 0);
 	// Convert a variable with actual data into a constant string
 	FString GenerateConstantString(const FNiagaraVariable& Constant);
 
@@ -637,7 +734,7 @@ private:
 
     // Checks that the Partices.ID parameter is only used if persistent IDs are active
     void ValidateParticleIDUsage();
-	bool ValidateTypePins(UNiagaraNode* NodeToValidate);
+	bool ValidateTypePins(const UNiagaraNode* NodeToValidate);
 	void GenerateFunctionSignature(ENiagaraScriptUsage ScriptUsage, FString InName, const FString& InFullName, const FString& InFunctionNameSuffix, UNiagaraGraph* FuncGraph, TArray<int32>& Inputs, 
 		bool bHadNumericInputs, bool bHasParameterMapParameters, TArray<UEdGraphPin*> StaticSwitchValues, FNiagaraFunctionSignature& OutSig) const;
 
@@ -655,6 +752,9 @@ private:
 	void BuildConstantBuffer(ENiagaraCodeChunkMode ChunkMode);
 
 	void TrimAttributes(const FNiagaraCompileOptions& InCompileOptions, TArray<FNiagaraVariable>& Attributes);
+
+	// Specific method to reconcile whether the default value has been implicitly or explicitly set for a namespaced var added to the param map.
+	void RecordParamMapDefinedAttributeToNamespaceVar(const FNiagaraVariable& VarToRecord, const UEdGraphPin* VarAssociatedDefaultPin);
 	
 	/** Map of symbol names to count of times it's been used. Used for generating unique symbol names. */
 	TMap<FName, uint32> SymbolCounts;
@@ -681,8 +781,8 @@ private:
 	// Synced to the ParamMapHistories.
 	TArray<TArray<int32>> ParamMapSetVariablesToChunks;
 
-	// Used to keep track of contextual information about the currently compiled function node (currently only the unsused parameter names)
-	TArray<TSet<FName>> FunctionNodeStack;
+	// Used to keep track of contextual information about the currently compiled function node
+	TArray<FunctionNodeStackEntry> FunctionNodeStack;
 
 	// Synced to the System uniforms encountered for parameter maps thus far.
 	struct UniformVariableInfo
@@ -690,6 +790,12 @@ private:
 		FNiagaraVariable Variable;
 		int32 ChunkIndex;
 		int32 ChunkMode;
+	};
+
+	struct FVarAndDefaultSource
+	{
+		FNiagaraVariable Variable;
+		bool bDefaultExplicit = false; //Whether or not the default value of the variable is explicit, e.g. there is an explicit value on a pin, explicit binding, or explicit custom initialization.
 	};
 
 	TMap<FName, UniformVariableInfo> ParamMapDefinedSystemVars; // Map from the defined constants to the uniform chunk expressing them (i.e. have we encountered before in this graph?)
@@ -700,7 +806,7 @@ private:
 
 	// Synced to the Attributes encountered for parameter maps thus far.
 	TMap<FName, int32> ParamMapDefinedAttributesToUniformChunks; // Map from the variable name exposed as a attribute to the uniform chunk expressing it (i.e. have we encountered before in this graph?)
-	TMap<FName, FNiagaraVariable> ParamMapDefinedAttributesToNamespaceVars; // Map from defined parameter to the Namespaced variable expressing it.
+	TMap<FName, FVarAndDefaultSource> ParamMapDefinedAttributesToNamespaceVars; // Map from defined parameter to the Namespaced variable expressing it.
 
 	// Synced to the external variables used when bulk compiling system scripts.
 	TArray<FNiagaraVariable> ExternalVariablesForBulkUsage;
@@ -719,6 +825,8 @@ private:
 	
 	// Map ofthe primary output variable description to the actual chunk id that wrote to it.
 	TMap<FNiagaraVariable, int32> UniqueVarToChunk;
+
+	TArray<int32> ParameterMapForIndexStack;
 
 	// Strings to be inserted within the main function
 	TArray<TArray<FString>> PerStageMainPreSimulateChunks;
@@ -746,6 +854,7 @@ private:
 	TArray<FHlslNiagaraTranslationStage> TranslationStages;
 	int32 ActiveStageIdx;
 	bool bInitializedDefaults;
+	bool bEnforceStrictTypesValidations;
 
 	TArray<const UEdGraphPin*> CurrentDefaultPinTraversal;
 	// Variables that need to be initialized based on some other variable's value at the end of spawn.

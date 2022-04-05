@@ -106,6 +106,12 @@ struct TDuplicateChildEntityInitializer : FChildEntityInitializer
 
 struct FObjectFactoryBatch : FChildEntityFactory
 {
+	enum class EResolveError
+	{
+		None              = 0x0,
+		UnresolvedBinding = 0x1,
+	};
+
 	void Add(int32 EntityIndex, UObject* BoundObject);
 
 	virtual void GenerateDerivedType(FComponentMask& OutNewEntityType) override;
@@ -114,7 +120,7 @@ struct FObjectFactoryBatch : FChildEntityFactory
 
 	virtual void PostInitialize(UMovieSceneEntitySystemLinker* InLinker) override;
 
-	virtual void ResolveObjects(FInstanceRegistry* InstanceRegistry, FInstanceHandle InstanceHandle, int32 InEntityIndex, const FGuid& ObjectBinding) = 0;
+	virtual EResolveError ResolveObjects(FInstanceRegistry* InstanceRegistry, FInstanceHandle InstanceHandle, int32 InEntityIndex, const FGuid& ObjectBinding) = 0;
 
 	TMap<TTuple<UObject*, FMovieSceneEntityID>, FMovieSceneEntityID>* StaleEntitiesToPreserve;
 
@@ -122,23 +128,32 @@ private:
 	TSortedMap<FMovieSceneEntityID, FMovieSceneEntityID> PreservedEntities;
 	TArray<UObject*> ObjectsToAssign;
 };
+ENUM_CLASS_FLAGS(FObjectFactoryBatch::EResolveError)
 
 struct FBoundObjectTask
 {
 	FBoundObjectTask(UMovieSceneEntitySystemLinker* InLinker);
 	virtual ~FBoundObjectTask(){}
 
-	virtual FObjectFactoryBatch& AddBatch(const FEntityAllocation* Parent) = 0;
+	virtual FObjectFactoryBatch& AddBatch(FEntityAllocationProxy ParentProxy) = 0;
 	virtual void Apply() = 0;
 
-	void ForEachAllocation(const FEntityAllocation* Allocation, FReadEntityIDs EntityIDs, TRead<FInstanceHandle> Instances, TRead<FGuid> ObjectBindings);
+	void ForEachAllocation(FEntityAllocationProxy AllocationProxy, FReadEntityIDs EntityIDs, TRead<FInstanceHandle> Instances, TRead<FGuid> ObjectBindings);
 
 	void PostTask();
 
 private:
 
+	struct FEntityMutationData
+	{
+		FMovieSceneEntityID EntityID;
+		FComponentTypeID ComponentTypeID;
+		bool bAddComponent;
+	};
+
 	TMap<TTuple<UObject*, FMovieSceneEntityID>, FMovieSceneEntityID> StaleEntitiesToPreserve;
 	TArray<FMovieSceneEntityID> EntitiesToDiscard;
+	TArray<FEntityMutationData> EntityMutations;
 
 protected:
 
@@ -154,25 +169,24 @@ struct TBoundObjectTask : FBoundObjectTask
 
 private:
 
-	virtual FObjectFactoryBatch& AddBatch(const FEntityAllocation* Parent) override
+	virtual FObjectFactoryBatch& AddBatch(FEntityAllocationProxy ParentProxy) override
 	{
-		return Batches.Add(Parent);
+		return Batches.Add(ParentProxy);
 	}
 
 	virtual void Apply() override
 	{
-		for (TTuple<const FEntityAllocation*, BatchType>& Pair : Batches)
+		for (TTuple<FEntityAllocationProxy, BatchType>& Pair : Batches)
 		{
 			// Determine the type for the new entities
-			const FEntityAllocation* ParentAllocation = Pair.Key;
 			if (Pair.Value.Num() != 0)
 			{
-				Pair.Value.Apply(Linker, ParentAllocation);
+				Pair.Value.Apply(Linker, Pair.Key);
 			}
 		}
 	}
 
-	TMap<const FEntityAllocation*, BatchType> Batches;
+	TMap<FEntityAllocationProxy, BatchType> Batches;
 };
 
 
@@ -242,8 +256,8 @@ TComponentTypeID<T> FComponentRegistry::NewComponentType(const TCHAR* const Debu
 	NewTypeInfo.bIsTriviallyDestructable   = TIsTriviallyDestructible<T>::Value;
 	NewTypeInfo.bIsTriviallyCopyAssignable = TIsTriviallyCopyAssignable<T>::Value;
 	NewTypeInfo.bIsPreserved               = EnumHasAnyFlags(Flags, EComponentTypeFlags::Preserved);
-	NewTypeInfo.bIsMigratedToOutput        = EnumHasAnyFlags(Flags, EComponentTypeFlags::MigrateToOutput);
 	NewTypeInfo.bIsCopiedToOutput          = EnumHasAnyFlags(Flags, EComponentTypeFlags::CopyToOutput);
+	NewTypeInfo.bIsMigratedToOutput        = EnumHasAnyFlags(Flags, EComponentTypeFlags::MigrateToOutput);
 	NewTypeInfo.bHasReferencedObjects      = !TIsSame< FNotImplemented*, decltype( AddReferencedObjectForComponent((FReferenceCollector*)0, (T*)0) ) >::Value;
 
 #if UE_MOVIESCENE_ENTITY_DEBUG

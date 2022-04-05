@@ -3,11 +3,13 @@
 #include "Camera/PlayerCameraManager.h"
 #include "GameFramework/Pawn.h"
 #include "CollisionQueryParams.h"
+#include "UObject/ObjectMacros.h"
 #include "WorldCollision.h"
 #include "Engine/World.h"
 #include "GameFramework/Controller.h"
 #include "Camera/CameraActor.h"
 #include "Engine/Canvas.h"
+#include "Features/IModularFeatures.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/WorldSettings.h"
 #include "AudioDevice.h"
@@ -17,12 +19,16 @@
 #include "Camera/CameraComponent.h"
 #include "Camera/CameraModifier.h"
 #include "Camera/CameraModifier_CameraShake.h"
+#include "Camera/CameraModularFeature.h"
 #include "Camera/CameraPhotography.h"
 #include "Camera/CameraShakeBase.h"
 #include "GameFramework/PlayerState.h"
 #include "IXRTrackingSystem.h" // for IsHeadTrackingAllowed()
 #include "GameFramework/GameNetworkManager.h"
 #include "TimerManager.h"
+#include "Camera/CameraLensEffectInterface.h"
+#include "UObject/ScriptInterface.h"
+#include "GameDelegates.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPlayerCameraManager, Log, All);
 
@@ -36,8 +42,6 @@ DECLARE_CYCLE_STAT(TEXT("Camera ProcessViewRotation"), STAT_Camera_ProcessViewRo
 APlayerCameraManager::APlayerCameraManager(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	static FName NAME_Default(TEXT("Default"));
-
 	DefaultFOV = 90.0f;
 	DefaultAspectRatio = 1.33333f;
 	bDefaultConstrainAspectRatio = false;
@@ -224,6 +228,8 @@ void APlayerCameraManager::AssignViewTarget(AActor* NewTarget, FTViewTarget& VT,
 	{
 		PCOwner->ClientSetViewTarget(VT.Target, TransitionParams);
 	}
+
+	FGameDelegates::Get().GetViewTargetChangedDelegate().Broadcast(PCOwner, OldViewTarget, NewTarget);
 }
 
 AActor* APlayerCameraManager::GetViewTarget() const
@@ -363,7 +369,7 @@ UCameraAnimInst* APlayerCameraManager::AllocCameraAnimInst()
 {
 	check(IsInGameThread());
 
-	UCameraAnimInst* FreeAnim = (FreeAnims.Num() > 0) ? FreeAnims.Pop() : NULL;
+	UCameraAnimInst* FreeAnim = (FreeAnims.Num() > 0) ? ToRawPtr(FreeAnims.Pop()) : NULL;
 	if (FreeAnim)
 	{
 		UCameraAnimInst const* const DefaultInst = GetDefault<UCameraAnimInst>();
@@ -763,9 +769,20 @@ void APlayerCameraManager::PostInitializeComponents()
 	Super::PostInitializeComponents();
 
  	// Setup default camera modifiers
-	if (DefaultModifiers.Num() > 0)
+	TArray<TSubclassOf<UCameraModifier>> AllDefaultModifiers(DefaultModifiers);
+	TArray<ICameraModularFeature*> CameraModularFeatures = IModularFeatures::Get()
+		.GetModularFeatureImplementations<ICameraModularFeature>(ICameraModularFeature::GetModularFeatureName());
+	for (const ICameraModularFeature* CameraModularFeature : CameraModularFeatures)
 	{
-		for (auto ModifierClass : DefaultModifiers)
+		if (ensure(CameraModularFeature))
+		{
+			CameraModularFeature->GetDefaultModifiers(AllDefaultModifiers);
+		}
+	}
+
+	if (AllDefaultModifiers.Num() > 0)
+	{
+		for (auto ModifierClass : AllDefaultModifiers)
 		{
 			// empty entries are not valid here, do work only for actual classes
 			if (ModifierClass)
@@ -809,8 +826,11 @@ void APlayerCameraManager::EndPlay(const EEndPlayReason::Type EndPlayReason)
 		{
 			AnimCameraActor->Destroy();
 		}
-		AnimCameraActor = NULL;
+		AnimCameraActor->SetOwner(nullptr);
+		AnimCameraActor = nullptr;
 	}
+	ActiveAnims.Empty();
+	ModifierList.Empty();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -954,21 +974,6 @@ void APlayerCameraManager::UpdateCamera(float DeltaTime)
 
 				if ((CompressedRotation != PrevCompressedRotation) || !ClientCameraPosition.Equals(PrevClientCameraPosition) || (TimeSinceLastServerUpdateCamera > ServerUpdateCameraTimeout))
 				{
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-					if (ClientCameraPosition.X > 1048576.0f || ClientCameraPosition.X < -1048576.0f ||
-						ClientCameraPosition.Y > 1048576.0f || ClientCameraPosition.Y < -1048576.0f ||
-						ClientCameraPosition.Z > 1048576.0f || ClientCameraPosition.Z < -1048576.0f)
-					{
-						UE_LOG(LogPlayerCameraManager, Warning, TEXT("ClientCameraPosition %f %f %f doesn't fit in FVector_NetQuantize for ServerUpdateCamera, capping"), ClientCameraPosition.X, ClientCameraPosition.Y, ClientCameraPosition.Z);
-					}
-#endif //!(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-					
-					const float MaxQuantize = 1048575.f;
-					const float MinQuantize = -1048575.f;
-					ClientCameraPosition.X = FMath::Clamp(ClientCameraPosition.X, MinQuantize, MaxQuantize);
-					ClientCameraPosition.Y = FMath::Clamp(ClientCameraPosition.Y, MinQuantize, MaxQuantize);
-					ClientCameraPosition.Z = FMath::Clamp(ClientCameraPosition.Z, MinQuantize, MaxQuantize);
-
 					PCOwner->ServerUpdateCamera(ClientCameraPosition, CompressedRotation);
 
 					TimeSinceLastServerUpdateCamera = 0.0f;
@@ -1231,6 +1236,15 @@ void APlayerCameraManager::DisplayDebug(class UCanvas* Canvas, const FDebugDispl
 	}
 	DisplayDebugManager.DrawString(FString::Printf(TEXT("   CamLoc:%s CamRot:%s FOV:%f"), *CurrentPOV.Location.ToCompactString(), *CurrentPOV.Rotation.ToCompactString(), CurrentPOV.FOV));
 	DisplayDebugManager.DrawString(FString::Printf(TEXT("   AspectRatio: %1.3f"), CurrentPOV.AspectRatio));
+
+	const float DurationPct = BlendParams.BlendTime == 0.f ? 0.f : (BlendParams.BlendTime - BlendTimeToGo) / BlendParams.BlendTime;
+	const FString BlendStr = FString::Printf(TEXT("   ViewTarget Blend: From %s to %s, time remaining = %f, pct = %f"), *GetNameSafe(ViewTarget.Target), *GetNameSafe(PendingViewTarget.Target), BlendTimeToGo, DurationPct);
+	DisplayDebugManager.DrawString(BlendStr);
+	
+	for (UCameraModifier* Modifier : ModifierList)
+	{
+		Modifier->DisplayDebug(Canvas, DebugDisplay, YL, YPos);
+	}
 }
 
 void APlayerCameraManager::ApplyWorldOffset(const FVector& InOffset, bool bWorldShift)
@@ -1254,18 +1268,26 @@ void APlayerCameraManager::ApplyWorldOffset(const FVector& InOffset, bool bWorld
 	PendingViewTarget.POV.Location.DiagnosticCheckNaN(TEXT("APlayerCameraManager::ApplyWorldOffset: PendingViewTarget.POV.Location"));
 }
 
-AEmitterCameraLensEffectBase* APlayerCameraManager::FindCameraLensEffect(TSubclassOf<AEmitterCameraLensEffectBase> LensEffectEmitterClass)
+TScriptInterface<class ICameraLensEffectInterface> APlayerCameraManager::FindGenericCameraLensEffect(TSubclassOf<AActor> LensEffectEmitterClass)
 {
 	for (int32 i = 0; i < CameraLensEffects.Num(); ++i)
 	{
-		AEmitterCameraLensEffectBase* LensEffect = CameraLensEffects[i];
-		if (LensEffect &&
-			!LensEffect->IsPendingKill() &&
-			( (LensEffect->GetClass() == LensEffectEmitterClass) ||
-			(LensEffect->EmittersToTreatAsSame.Find(LensEffectEmitterClass) != INDEX_NONE) ||
-			(GetDefault<AEmitterCameraLensEffectBase>(LensEffectEmitterClass)->EmittersToTreatAsSame.Find(LensEffect->GetClass()) != INDEX_NONE ) ) )
+		const TScriptInterface<class ICameraLensEffectInterface> LensEffectInterface = CameraLensEffects[i];
+		const UObject* LensEffectObject = LensEffectInterface.GetObject();
+
+		// we have to use GetMutableDefault here because TScriptInterface cannot handle a const UObject* and requires a non-const qualified pointer.
+		const TScriptInterface<class ICameraLensEffectInterface> OtherEffectDefaultInterface = GetMutableDefault<AActor>(LensEffectEmitterClass);
+
+		// if the lens effect in our list is valid, and either it treats the requested effect as the same
+		// or if the requested effect would treat our existing lens effect as the same...
+		if (IsValid(LensEffectObject)
+		&& (  (LensEffectObject->GetClass() == LensEffectEmitterClass)
+		    ||(LensEffectInterface->ShouldTreatEmitterAsSame(LensEffectEmitterClass))
+		    ||(OtherEffectDefaultInterface && OtherEffectDefaultInterface->ShouldTreatEmitterAsSame(LensEffectObject->GetClass()))
+		   ))
 		{
-			return LensEffect;
+			// then, we can just recycle this
+			return LensEffectInterface;
 		}
 	}
 
@@ -1273,23 +1295,26 @@ AEmitterCameraLensEffectBase* APlayerCameraManager::FindCameraLensEffect(TSubcla
 }
 
 
-AEmitterCameraLensEffectBase* APlayerCameraManager::AddCameraLensEffect(TSubclassOf<AEmitterCameraLensEffectBase> LensEffectEmitterClass)
+TScriptInterface<class ICameraLensEffectInterface> APlayerCameraManager::AddGenericCameraLensEffect(TSubclassOf<AActor> LensEffectEmitterClass)
 {
 	if (LensEffectEmitterClass != NULL)
 	{
-		AEmitterCameraLensEffectBase* LensEffect = NULL;
-		const AEmitterCameraLensEffectBase* LensEffectClassDefaultObject = GetDefault<AEmitterCameraLensEffectBase>(LensEffectEmitterClass);
-		if (LensEffectClassDefaultObject && !LensEffectClassDefaultObject->bAllowMultipleInstances)
-		{
-			LensEffect = FindCameraLensEffect(LensEffectEmitterClass);
+		TScriptInterface<class ICameraLensEffectInterface> SpawnedLensEffectInterface = NULL;
 
-			if (LensEffect != NULL)
+		const TScriptInterface<class ICameraLensEffectInterface> DesiredLensEffect_DefaultInterface = GetMutableDefault<AActor>(LensEffectEmitterClass);
+		const AActor* DesiredLensEffect_DefaultObject = Cast<AActor>(DesiredLensEffect_DefaultInterface.GetObject());
+
+		if (DesiredLensEffect_DefaultInterface && !DesiredLensEffect_DefaultInterface->ShouldAllowMultipleInstances())
+		{
+			SpawnedLensEffectInterface = FindGenericCameraLensEffect(LensEffectEmitterClass);
+
+			if (SpawnedLensEffectInterface != NULL)
 			{
-				LensEffect->NotifyRetriggered();
+				SpawnedLensEffectInterface->NotifyRetriggered();
 			}
 		}
 
-		if (LensEffect == NULL)
+		if (SpawnedLensEffectInterface == NULL)
 		{
 			// spawn with viewtarget as the owner so bOnlyOwnerSee works as intended
 			FActorSpawnParameters SpawnInfo;
@@ -1297,28 +1322,35 @@ AEmitterCameraLensEffectBase* APlayerCameraManager::AddCameraLensEffect(TSubclas
 			SpawnInfo.Instigator = GetInstigator();
 			SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 			SpawnInfo.ObjectFlags |= RF_Transient;	// We never want to save these into a map
+
+			// RegisterCamera should occur before BeginPlay IMO, to do that we have to defer construction
+			SpawnInfo.bDeferConstruction = true;
 			
-			AEmitterCameraLensEffectBase const* const EmitterCDO = LensEffectEmitterClass->GetDefaultObject<AEmitterCameraLensEffectBase>();
+			AActor const* const EmitterCDO = LensEffectEmitterClass->GetDefaultObject<AActor>();
 			FVector CamLoc;
 			FRotator CamRot;
 			GetCameraViewPoint(CamLoc, CamRot);
-			FTransform SpawnTransform = AEmitterCameraLensEffectBase::GetAttachedEmitterTransform(EmitterCDO, CamLoc, CamRot, GetFOVAngle());
-			
-			LensEffect = GetWorld()->SpawnActor<AEmitterCameraLensEffectBase>(LensEffectEmitterClass, SpawnTransform, SpawnInfo);
-			if (LensEffect != NULL)
+			FTransform SpawnTransform = ICameraLensEffectInterface::GetAttachedEmitterTransform(EmitterCDO, CamLoc, CamRot, GetFOVAngle());
+
+			SpawnedLensEffectInterface = GetWorld()->SpawnActor<AActor>(LensEffectEmitterClass, SpawnTransform, SpawnInfo);
+
+			if (SpawnedLensEffectInterface != NULL)
 			{
-				LensEffect->RegisterCamera(this);
-				CameraLensEffects.Add(LensEffect);
+				SpawnedLensEffectInterface->RegisterCamera(this);
+				CameraLensEffects.Add(SpawnedLensEffectInterface);
+
+				// since SpawnActor didn't fail (SpawnedLensEffectInterface was not nullptr), this check is safe.
+				CastChecked<AActor>(SpawnedLensEffectInterface.GetObject(), ECastCheckedType::NullChecked)->FinishSpawning(SpawnTransform, true);
 			}
 		}
 		
-		return LensEffect;
+		return SpawnedLensEffectInterface;
 	}
 
 	return NULL;
 }
 
-void APlayerCameraManager::RemoveCameraLensEffect(AEmitterCameraLensEffectBase* Emitter)
+void APlayerCameraManager::RemoveGenericCameraLensEffect(TScriptInterface<class ICameraLensEffectInterface> Emitter)
 {
 	CameraLensEffects.Remove(Emitter);
 }
@@ -1327,12 +1359,34 @@ void APlayerCameraManager::ClearCameraLensEffects()
 {
 	for (int32 i = 0; i < CameraLensEffects.Num(); ++i)
 	{
-		CameraLensEffects[i]->Destroy();
+		if (AActor* ActorEffect = Cast<AActor>(CameraLensEffects[i].GetObject()))
+		{
+			ActorEffect->Destroy();
+		}
 	}
 
 	// empty the array.  unnecessary, since destruction will call RemoveCameraLensEffect,
 	// but this gets it done in one fell swoop.
 	CameraLensEffects.Empty();
+}
+
+AEmitterCameraLensEffectBase* APlayerCameraManager::FindCameraLensEffect(TSubclassOf<AEmitterCameraLensEffectBase> LensEffectEmitterClass)
+{
+	static_assert(TIsDerivedFrom<AEmitterCameraLensEffectBase, ICameraLensEffectInterface>::IsDerived, "Unexpected: AEmitterCameraLensEffectBase does not implement ICameraLensEffectInterface! Partial engine merge?");
+	return CastChecked<AEmitterCameraLensEffectBase>(FindGenericCameraLensEffect(LensEffectEmitterClass).GetObject(), ECastCheckedType::NullAllowed);
+}
+
+AEmitterCameraLensEffectBase* APlayerCameraManager::AddCameraLensEffect(TSubclassOf<AEmitterCameraLensEffectBase> LensEffectEmitterClass)
+{
+	static_assert(TIsDerivedFrom<AEmitterCameraLensEffectBase, ICameraLensEffectInterface>::IsDerived, "Unexpected: AEmitterCameraLensEffectBase does not implement ICameraLensEffectInterface! Partial engine merge?");
+	return CastChecked<AEmitterCameraLensEffectBase>(AddGenericCameraLensEffect(LensEffectEmitterClass).GetObject(), ECastCheckedType::NullAllowed);
+}
+
+void APlayerCameraManager::RemoveCameraLensEffect(AEmitterCameraLensEffectBase* Emitter)
+{
+	static_assert(TIsDerivedFrom<AEmitterCameraLensEffectBase, ICameraLensEffectInterface>::IsDerived, "Unexpected: AEmitterCameraLensEffectBase does not implement ICameraLensEffectInterface! Partial engine merge?");
+	TScriptInterface<ICameraLensEffectInterface> LensEffect{Emitter};
+	RemoveGenericCameraLensEffect(LensEffect);
 }
 
 /** ------------------------------------------------------------
@@ -1577,9 +1631,9 @@ void FTViewTarget::CheckViewTarget(APlayerController* OwningController)
 		PlayerState = NULL;
 	}
 
-	if ((PlayerState != NULL) && !PlayerState->IsPendingKill())
+	if (PlayerState && IsValidChecked(PlayerState))
 	{
-		if ((Target == NULL) || Target->IsPendingKill() || !Cast<APawn>(Target) || (CastChecked<APawn>(Target)->GetPlayerState() != PlayerState) )
+		if (!IsValid(Target) || !Cast<APawn>(Target) || (CastChecked<APawn>(Target)->GetPlayerState() != PlayerState) )
 		{
 			Target = NULL;
 
@@ -1594,7 +1648,7 @@ void FTViewTarget::CheckViewTarget(APlayerController* OwningController)
 				if (AController* PlayerStateOwner = Cast<AController>(PlayerState->GetOwner()))
 				{
 					AActor* PlayerStateViewTarget = PlayerStateOwner->GetPawn();
-					if( PlayerStateViewTarget && !PlayerStateViewTarget->IsPendingKill() )
+					if( IsValid(PlayerStateViewTarget) )
 					{
 						OwningController->PlayerCameraManager->AssignViewTarget(PlayerStateViewTarget, *this);
 					}
@@ -1611,7 +1665,7 @@ void FTViewTarget::CheckViewTarget(APlayerController* OwningController)
 		}
 	}
 
-	if ((Target == NULL) || Target->IsPendingKill())
+	if (!IsValid(Target))
 	{
 		if (OwningController->GetPawn() && !OwningController->GetPawn()->IsPendingKillPending() )
 		{

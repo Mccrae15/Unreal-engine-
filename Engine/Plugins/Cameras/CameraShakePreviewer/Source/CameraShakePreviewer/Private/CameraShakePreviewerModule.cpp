@@ -5,7 +5,6 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "ILevelEditor.h"
-#include "ILevelViewport.h"
 #include "LevelEditor.h"
 #include "LevelEditorViewport.h"
 #include "Modules/ModuleManager.h"
@@ -17,6 +16,7 @@
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
 #include "IAssetViewport.h"
+#include "SLevelViewport.h"
 #include "EditorViewportClient.h"
 #include "LevelEditorMenuContext.h"
 
@@ -86,13 +86,13 @@ void FCameraShakePreviewerModule::RegisterEditorTab()
 		TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 
 		const IWorkspaceMenuStructure& MenuStructure = WorkspaceMenu::GetMenuStructure();
-		const FSlateIcon Icon(FEditorStyle::GetStyleSetName(), "LevelViewport.ToggleActorPilotCameraView");
+		const FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "LevelViewport.ToggleActorPilotCameraView");
 
 		LevelEditorTabManager->RegisterTabSpawner("CameraShakePreviewer", FOnSpawnTab::CreateStatic(&FCameraShakePreviewerModule::CreateCameraShakePreviewerTab))
 			.SetDisplayName(LOCTEXT("CameraShakePreviewer", "Camera Shake Previewer"))
 			.SetTooltipText(LOCTEXT("CameraShakePreviewerTooltipText", "Open the camera shake preview panel."))
 			.SetIcon(Icon)
-			.SetGroup(MenuStructure.GetLevelEditorCategory());
+			.SetGroup(WorkspaceMenu::GetMenuStructure().GetLevelEditorCinematicsCategory());
 	});
 }
 
@@ -161,7 +161,7 @@ void FCameraShakePreviewerModule::RegisterViewportOptionMenuExtender()
 						"ToggleCameraShakesPreview",
 						ToggleCameraShakesPreview->GetLabel(),
 						ToggleCameraShakesPreview->GetDescription(),
-						ToggleCameraShakesPreview->GetIcon(),
+						FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelViewport.ToggleCameraShakePreview"),
 						Action,
 						ToggleCameraShakesPreview->GetUserInterfaceType()
 					);
@@ -200,7 +200,7 @@ TSharedRef<FExtender> FCameraShakePreviewerModule::OnExtendLevelViewportOptionMe
 	// Find the viewport for which we're opening this options menu.
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>(LevelEditorModuleName);
 	TSharedPtr<ILevelEditor> LevelEditor = LevelEditorModule.GetLevelEditorInstance().Pin();
-	TSharedPtr<IAssetViewport> ViewportInterface = LevelEditor->GetActiveViewportInterface();
+	TSharedPtr<SLevelViewport> ViewportInterface = LevelEditor->GetActiveViewportInterface();
 	FLevelEditorViewportClient* ViewportClient = (FLevelEditorViewportClient*)&ViewportInterface->GetAssetViewportClient();
 	if (ViewportClient->ViewportType != ELevelViewportType::LVT_Perspective)
 	{

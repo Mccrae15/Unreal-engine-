@@ -14,7 +14,7 @@ FHairDescription::FHairDescription()
 {
 	// Required attributes
 	StrandAttributesSet.RegisterAttribute<int>(HairAttribute::Strand::VertexCount);
-	VertexAttributesSet.RegisterAttribute<FVector>(HairAttribute::Vertex::Position, 1, FVector::ZeroVector);
+	VertexAttributesSet.RegisterAttribute<FVector3f>(HairAttribute::Vertex::Position, 1, FVector3f::ZeroVector);
 
 	// Only one set of groom attributes
 	GroomAttributesSet.Initialize(1);
@@ -61,8 +61,13 @@ bool FHairDescription::IsValid() const
 	return (NumStrands > 0) && (NumVertices > 0);
 }
 
+
 void FHairDescription::Serialize(FArchive& Ar)
 {
+	Ar.UsingCustomVersion(FEditorObjectVersion::GUID);
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
 	Ar << NumVertices;
 	Ar << NumStrands;
 
@@ -75,16 +80,41 @@ void FHairDescription::Serialize(FArchive& Ar)
 
 void FHairDescriptionBulkData::Serialize(FArchive& Ar, UObject* Owner)
 {
-	if (Ar.IsLoading())
+	Ar.UsingCustomVersion(FEditorObjectVersion::GUID);
+	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
+	if (Ar.IsTransacting())
 	{
-		// If loading, take the package custom version so it can be applied to the bulk data archive
-		// when unpacking HairDescription from it
-		CustomVersions = Ar.GetCustomVersions();
+		// If transacting, keep these members alive the other side of an undo, otherwise their values will get lost
+		CustomVersions.Serialize(Ar);
+		Ar << bBulkDataUpdated;
+	}
+	else
+	{
+		if (Ar.IsSaving())
+		{
+			// If the bulk data hasn't been updated since this was loaded, there's a possibility that it has old versioning.
+			// Explicitly load and resave the FHairDescription so that its version is in sync with the FHairDescriptionBulkData.
+			if (!bBulkDataUpdated)
+			{
+				FHairDescription HairDescription;
+				LoadHairDescription(HairDescription);
+				SaveHairDescription(HairDescription);
+			}
+		}
 	}
 
 	BulkData.Serialize(Ar, Owner);
 
 	Ar << Guid;
+
+	if (!Ar.IsTransacting() && Ar.IsLoading())
+	{
+		// If loading, take the package custom version so it can be applied to the bulk data archive
+		// when unpacking HairDescription from it
+		CustomVersions = BulkData.GetCustomVersions(Ar);
+	}
 }
 
 void FHairDescriptionBulkData::SaveHairDescription(FHairDescription& HairDescription)
@@ -102,6 +132,10 @@ void FHairDescriptionBulkData::SaveHairDescription(FHairDescription& HairDescrip
 
 	// Use bulk data hash instead of guid to identify content to improve DDC cache hit
 	ComputeGuidFromHash();
+
+	// Mark the HairDescriptionBulkData as having been updated.
+	// This means we know that its version is up-to-date.
+	bBulkDataUpdated = true;
 }
 
 

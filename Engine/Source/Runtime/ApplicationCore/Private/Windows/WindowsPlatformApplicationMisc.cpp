@@ -8,6 +8,7 @@
 #include "HAL/FeedbackContextAnsi.h"
 #include "Misc/App.h"
 #include "Math/Color.h"
+#include "Misc/ScopeExit.h"
 #include "Windows/WindowsHWrapper.h"
 #include "Modules/ModuleManager.h"
 #include "Misc/CoreDelegates.h"
@@ -31,10 +32,14 @@ THIRD_PARTY_INCLUDES_END
 typedef HRESULT(STDAPICALLTYPE *GetDpiForMonitorProc)(HMONITOR Monitor, int32 DPIType, uint32 *DPIX, uint32 *DPIY);
 APPLICATIONCORE_API GetDpiForMonitorProc GetDpiForMonitor;
 
+void FWindowsPlatformApplicationMisc::PreInit()
+{
+	FApp::SetHasFocusFunction(&FWindowsPlatformApplicationMisc::IsThisApplicationForeground);
+}
+
 void FWindowsPlatformApplicationMisc::LoadStartupModules()
 {
 #if !UE_SERVER
-	FModuleManager::Get().LoadModule(TEXT("XAudio2"));
 	FModuleManager::Get().LoadModule(TEXT("HeadMountedDisplay"));
 #endif // !UE_SERVER
 
@@ -90,11 +95,12 @@ bool FWindowsPlatformApplicationMisc::IsThisApplicationForeground()
 
 int32 FWindowsPlatformApplicationMisc::GetAppIcon()
 {
-	return IDICON_UE4Game;
+	return IDICON_UEGame;
 }
 
 static void WinPumpMessages()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WinPumpMessages);
 	{
 		MSG Msg;
 		while( PeekMessage(&Msg,NULL,0,0,PM_REMOVE) )
@@ -108,12 +114,19 @@ static void WinPumpMessages()
 
 void FWindowsPlatformApplicationMisc::PumpMessages(bool bFromMainLoop)
 {
-	TSharedPtr<void> RevertGlobalFlag;
-	if (!GPumpingMessages)
+	const bool bSetPumpingMessages = !GPumpingMessages;
+	if (bSetPumpingMessages)
 	{
 		GPumpingMessages = true;
-		RevertGlobalFlag = MakeShareable<void>(nullptr, [](auto) {GPumpingMessages = false; });
 	}
+
+	ON_SCOPE_EXIT
+	{
+		if (bSetPumpingMessages)
+		{
+			GPumpingMessages = false;
+		}
+	};
 
 	if (!bFromMainLoop)
 	{
@@ -125,44 +138,35 @@ void FWindowsPlatformApplicationMisc::PumpMessages(bool bFromMainLoop)
 	WinPumpMessages();
 
 	// Determine if application has focus
-	bool HasFocus = FApp::UseVRFocus() ? FApp::HasVRFocus() : FWindowsPlatformApplicationMisc::IsThisApplicationForeground();
-	static bool HadFocus = false;
+	bool bHasFocus = FApp::HasFocus();
+	static bool bHadFocus = false;
 
 #if WITH_EDITOR
 	// If editor thread doesn't have the focus, don't suck up too much CPU time.
 	if( GIsEditor )
 	{
-		if( HadFocus && !HasFocus )
+		if( !bHasFocus )
 		{
-			// Drop our priority to speed up whatever is in the foreground.
-			SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL );
-		}
-		else if( HasFocus && !HadFocus )
-		{
-			// Boost our priority back to above normal as initially set in WindowsRunnableThread::CreateInternal.
-			SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL );
-		}
-		if( !HasFocus )
-		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(EditorIsInBackgroundSleep);
 			// Sleep for a bit to not eat up all CPU time.
 			FPlatformProcess::Sleep(0.005f);
 		}
-		HadFocus = HasFocus;
+		bHadFocus = bHasFocus;
 	}
 #endif
 
 #if !UE_SERVER
 	// For non-editor clients, record if the active window is in focus
-	if( HadFocus != HasFocus )
+	if( bHadFocus != bHasFocus )
 	{
-		FGenericCrashContext::SetEngineData(TEXT("Platform.AppHasFocus"), HasFocus ? TEXT("true") : TEXT("false"));
+		FGenericCrashContext::SetEngineData(TEXT("Platform.AppHasFocus"), bHasFocus ? TEXT("true") : TEXT("false"));
 	}
 #endif
 
-	HadFocus = HasFocus;
+	bHadFocus = bHasFocus;
 
 	// if its our window, allow sound, otherwise apply multiplier
-	FApp::SetVolumeMultiplier( HasFocus ? 1.0f : FApp::GetUnfocusedVolumeMultiplier() );
+	FApp::SetVolumeMultiplier( bHasFocus ? 1.0f : FApp::GetUnfocusedVolumeMultiplier() );
 }
 
 void FWindowsPlatformApplicationMisc::PreventScreenSaver()
@@ -180,7 +184,10 @@ void FWindowsPlatformApplicationMisc::PreventScreenSaver()
 
 FLinearColor FWindowsPlatformApplicationMisc::GetScreenPixelColor(const FVector2D& InScreenPos, float /*InGamma*/)
 {
-	COLORREF PixelColorRef = GetPixel(GetDC(HWND_DESKTOP), InScreenPos.X, InScreenPos.Y);
+	HDC TempDC = GetDC(HWND_DESKTOP);
+	COLORREF PixelColorRef = GetPixel(TempDC, InScreenPos.X, InScreenPos.Y);
+
+	ReleaseDC(HWND_DESKTOP, TempDC);
 
 	FColor sRGBScreenColor(
 		(PixelColorRef & 0xFF),
@@ -399,6 +406,10 @@ void FWindowsPlatformApplicationMisc::ClipboardCopy(const TCHAR* Str)
 			UE_LOG(LogWindows, Fatal,TEXT("SetClipboardData failed with error code %i"), (uint32)GetLastError() );
 		verify(CloseClipboard());
 	}
+	else
+	{
+		UE_LOG(LogWindows, Warning, TEXT("OpenClipboard failed with error code %i"), (uint32)GetLastError());
+	}
 }
 
 void FWindowsPlatformApplicationMisc::ClipboardPaste(class FString& Result)
@@ -442,6 +453,7 @@ void FWindowsPlatformApplicationMisc::ClipboardPaste(class FString& Result)
 	else 
 	{
 		Result=TEXT("");
+		UE_LOG(LogWindows, Warning, TEXT("OpenClipboard failed with error code %i"), (uint32)GetLastError());
 	}
 }
 

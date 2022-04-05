@@ -64,36 +64,11 @@ UMovieSceneSubSection* UMovieSceneSubTrack::AddSequenceOnRow(UMovieSceneSequence
 	Sections.Add(NewSection);
 
 #if WITH_EDITORONLY_DATA
-	if (Sequence && Sequence->GetMovieScene())
+	if (Sequence)
 	{
-		NewSection->TimecodeSource = Sequence->GetMovieScene()->TimecodeSource;
+		NewSection->TimecodeSource = Sequence->GetEarliestTimecodeSource();
 	}
 #endif
-
-	return NewSection;
-}
-
-UMovieSceneSubSection* UMovieSceneSubTrack::AddSequenceToRecord()
-{
-	Modify();
-
-	UMovieScene* MovieScene = CastChecked<UMovieScene>(GetOuter());
-	TRange<FFrameNumber> PlaybackRange = MovieScene->GetPlaybackRange();
-
-	int32 MaxRowIndex = -1;
-	for (auto Section : Sections)
-	{
-		MaxRowIndex = FMath::Max(Section->GetRowIndex(), MaxRowIndex);
-	}
-
-	UMovieSceneSubSection* NewSection = CastChecked<UMovieSceneSubSection>(CreateNewSection());
-	{
-		NewSection->SetRowIndex(MaxRowIndex + 1);
-		NewSection->SetAsRecording(true);
-		NewSection->SetRange(PlaybackRange);
-	}
-
-	Sections.Add(NewSection);
 
 	return NewSection;
 }
@@ -219,7 +194,7 @@ bool UMovieSceneSubTrack::SupportsMultipleRows() const
 #if WITH_EDITORONLY_DATA
 FText UMovieSceneSubTrack::GetDefaultDisplayName() const
 {
-	return LOCTEXT("TrackName", "Subscenes");
+	return LOCTEXT("TrackName", "Subsequences");
 }
 #endif
 

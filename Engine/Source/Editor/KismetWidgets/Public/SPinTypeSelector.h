@@ -50,22 +50,29 @@ public:
 	enum class ESelectorType : uint8
 	{
 		None,
+		// Shows only the type selector pill
 		Compact,
+		// Shows the type selector pill and full name of type
+		Partial,
+		// Shows the type selector pill, full name of type, and container selection type
 		Full
 	};
 
-	SLATE_BEGIN_ARGS( SPinTypeSelector )
+	SLATE_BEGIN_ARGS(SPinTypeSelector)
 		: _TargetPinType()
 		, _Schema(nullptr)
+		, _SchemaAction(nullptr)
 		, _TypeTreeFilter(ETypeTreeFilter::None)
 		, _bAllowArrays(true)
 		, _TreeViewWidth(300.f)
 		, _TreeViewHeight(400.f)
-		, _Font( FEditorStyle::GetFontStyle( TEXT("NormalFont") ) )
-		, _SelectorType( ESelectorType::Full )
+		, _Font(FEditorStyle::GetFontStyle(TEXT("NormalFont")))
+		, _SelectorType(ESelectorType::Full)
+		, _ReadOnly(false)
 		{}
 		SLATE_ATTRIBUTE( FEdGraphPinType, TargetPinType )
-		SLATE_ARGUMENT( const UEdGraphSchema_K2*, Schema )
+		SLATE_ARGUMENT( const UEdGraphSchema*, Schema )
+		SLATE_ARGUMENT( TWeakPtr<const FEdGraphSchemaAction>, SchemaAction)
 		SLATE_ARGUMENT( ETypeTreeFilter, TypeTreeFilter )
 		SLATE_ARGUMENT( bool, bAllowArrays )
 		SLATE_ATTRIBUTE( FOptionalSize, TreeViewWidth )
@@ -74,6 +81,8 @@ public:
 		SLATE_EVENT( FOnPinTypeChanged, OnPinTypeChanged )
 		SLATE_ATTRIBUTE( FSlateFontInfo, Font )
 		SLATE_ARGUMENT( ESelectorType, SelectorType )
+		SLATE_ATTRIBUTE(bool, ReadOnly)
+		SLATE_ARGUMENT(TSharedPtr<class IPinTypeSelectorFilter>, CustomFilter)
 	SLATE_END_ARGS()
 public:
 	void Construct(const FArguments& InArgs, FGetPinTypeTree GetPinTypeTreeFunc);
@@ -103,6 +112,9 @@ protected:
 	/** Gets the secondary type description. E.g. the value type for TMaps */
 	FText GetSecondaryTypeDescription() const;
 
+	/** Gets a combined description of the primary, container, and secondary types. E.g. "Map of Strings to Floats" */
+	FText GetCombinedTypeDescription() const;
+
 	TSharedPtr<SComboButton>		TypeComboButton;
 	TSharedPtr<SComboButton>		SecondaryTypeComboButton;
 	TSharedPtr<SSearchBox>			FilterTextBox;
@@ -119,7 +131,10 @@ protected:
 	FGetPinTypeTree				GetPinTypeTree;
 
 	/** Schema in charge of determining available types for this pin */
-	UEdGraphSchema_K2*			Schema;
+	const UEdGraphSchema*				Schema;
+
+	/** Schema action related to the pin selection */
+	TWeakPtr<const FEdGraphSchemaAction> SchemaAction;
 
 	/** UEdgraphSchema::ETypeTreeFilter flags for filtering available types*/
 	ETypeTreeFilter				TypeTreeFilter;
@@ -139,10 +154,19 @@ protected:
 	/** Whether the selector is using the compact or full mode, or not a selector at all, but just the type image.*/
 	ESelectorType SelectorType;
 
+	/** Whether or not the type is read only and not editable (implies a different style) */
+	TAttribute<bool> ReadOnly;
+
+	/** Total number of filtered pin type items. This count excludes category items and reference subtypes. */
+	int32 NumFilteredPinTypeItems;
+
 	/** Holds a cache of the allowed Object Reference types for the last sub-menu opened. */
 	TArray<FObjectReferenceListItem> AllowedObjectReferenceTypes;
 	TWeakPtr<SListView<FObjectReferenceListItem>> WeakListView;
 	TWeakPtr<SMenuOwner> PinTypeSelectorMenuOwner;
+
+	/** An interface to optionally apply a custom filter to the available pin type items for display. */
+	TSharedPtr<class IPinTypeSelectorFilter> CustomFilter;
 
 	/** Array checkbox support functions */
 	ECheckBoxState IsArrayChecked() const;
@@ -171,11 +195,15 @@ protected:
 	/** Reference to the menu content that's displayed when the type button is clicked on */
 	TSharedPtr<SMenuOwner> MenuContent;
 	virtual TSharedRef<SWidget>	GetMenuContent(bool bForSecondaryType);
+	TSharedRef<SWidget> GetPinContainerTypeMenuContent();
 
 	/** Type searching support */
 	FText SearchText;
 	void OnFilterTextChanged(const FText& NewText);
 	void OnFilterTextCommitted(const FText& NewText, ETextCommit::Type CommitInfo);
+
+	/** Helper to generate the filtered list of types, based on the supported types of the schema */
+	bool GetChildrenWithSupportedTypes(const TArray<FPinTypeTreeItem>& UnfilteredList, TArray<FPinTypeTreeItem>& OutFilteredList);
 
 	/** Helper to generate the filtered list of types, based on the search string matching */
 	bool GetChildrenMatchingSearch(const FText& SearchText, const TArray<FPinTypeTreeItem>& UnfilteredList, TArray<FPinTypeTreeItem>& OutFilteredList);
@@ -191,6 +219,9 @@ protected:
 
 	/** Callback to get the tooltip for the container type dropdown widget */
 	FText GetToolTipForContainerWidget() const;
+
+	/** Callback to get the display text for the total pin type item count */
+	FText GetPinTypeItemCountText() const;
 
 	/**
 	 * Helper function to create widget for the sub-menu
@@ -212,4 +243,30 @@ protected:
 	 * @param InPinCategory			This is the PinType's category, must be provided separately as the PinType in the tree item is always Object Types for any object related type.
 	 */
 	void OnSelectPinType(FPinTypeTreeItem InItem, FName InPinCategory, bool bForSecondaryType);
+
+	/** Called whenever the custom filter options are changed. */
+	void OnCustomFilterChanged();
+};
+
+
+//////////////////////////////////////////////////////////////////////////
+// IPinTypeSelectorFilter
+
+/** An interface for implementing a custom pin type filter for the selector widget. */
+class KISMETWIDGETS_API IPinTypeSelectorFilter
+{
+public:
+	virtual ~IPinTypeSelectorFilter() {}
+
+	/** (Required) - Implement this method to filter the given pin type item and determine whether or not it should be displayed. */
+	virtual bool ShouldShowPinTypeTreeItem(FPinTypeTreeItem InItem) const = 0;
+
+	/** (Optional) - Override this method to bind a delegate to call when the filter changes. */
+	virtual FDelegateHandle RegisterOnFilterChanged(FSimpleDelegate InOnFilterChanged) { return FDelegateHandle(); }
+
+	/** (Optional) - Override this method to unbind a delegate that was previously bound to a filter change event. */
+	virtual void UnregisterOnFilterChanged(FDelegateHandle InDelegateHandle) {}
+
+	/** (Optional) - Override this method to return a widget that allows the user to toggle filter options on/off, etc. */
+	virtual TSharedPtr<SWidget> GetFilterOptionsWidget() { return TSharedPtr<SWidget>(); }
 };

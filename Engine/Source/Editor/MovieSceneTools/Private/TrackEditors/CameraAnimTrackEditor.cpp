@@ -37,7 +37,7 @@ public:
 	virtual FText GetSectionTitle() const override 
 	{ 
 		UMovieSceneCameraAnimSection const* const AnimSection = Cast<UMovieSceneCameraAnimSection>(WeakSection.Get());
-		UCameraAnim const* const Anim = AnimSection ? AnimSection->AnimData.CameraAnim : nullptr;
+		UCameraAnim const* const Anim = AnimSection ? ToRawPtr(AnimSection->AnimData.CameraAnim) : nullptr;
 		if (Anim)
 		{
 			return FText::FromString(Anim->GetName());
@@ -150,6 +150,7 @@ void FCameraAnimTrackEditor::AddCameraAnimSubMenu(FMenuBuilder& MenuBuilder, TAr
 		AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 		AssetPickerConfig.Filter.ClassNames.Add(UCameraAnim::StaticClass()->GetFName());
 //		AssetPickerConfig.Filter.TagsAndValues.Add(TEXT("Skeleton"), FAssetData(Skeleton).GetExportTextName());
+		AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
 	}
 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));

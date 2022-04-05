@@ -23,7 +23,7 @@
 #define LOCTEXT_NAMESPACE "OculusToolWidget"
 
 // Misc notes and known issues:
-// * I save after every change because UE4 wasn't prompting to save on exit, but this makes it tough for users to undo, and doesn't prompt shader rebuild. Alternatives?
+// * I save after every change because UE wasn't prompting to save on exit, but this makes it tough for users to undo, and doesn't prompt shader rebuild. Alternatives?
 
 TSharedRef<SHorizontalBox> SOculusToolWidget::CreateSimpleSetting(SimpleSetting* setting)
 {
@@ -224,11 +224,12 @@ void SOculusToolWidget::RebuildLayout()
 	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileMultiView")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileMSAA")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("MobilePostProcessing")));
+	AddSimpleSetting(box, SimpleSettings.Find(FName("MobileVulkan")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("AndroidManifest")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("AndroidPackaging")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("AndroidQuestArch")));
 
-	box = NewCategory(scroller, LOCTEXT("PostProcessHeader", "<RichTextBlock.Bold>Post-Processing Settings:</>\nThe below settings all refer to your project's post-processing settings. Post-processing can be very expensive in VR, so we recommend disabling many expensive post-processing effects. You can fine-tune your post-processing settings with a Post Process Volume. <a href=\"https://docs.unrealengine.com/en-us/Platforms/VR/VRPerformance\" id=\"HyperlinkDecorator\">Read more.</>."));
+	box = NewCategory(scroller, LOCTEXT("PostProcessHeader", "<RichTextBlock.Bold>Post-Processing Settings:</>\nThe below settings all refer to your project's post-processing settings. Post-processing can be very expensive in VR, so we recommend disabling many expensive post-processing effects. You can fine-tune your post-processing settings with a Post Process Volume. <a href=\"https://docs.unrealengine.com/SharingAndReleasing/XRDevelopment/VR/VRPerformanceAndProfiling\" id=\"HyperlinkDecorator\">Read more.</>."));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("LensFlare")));
 	AddSimpleSetting(box, SimpleSettings.Find(FName("AntiAliasing")));
 
@@ -420,6 +421,18 @@ void SOculusToolWidget::Construct(const FArguments& InArgs)
 	SimpleSettings.Find(FName("MobilePostProcessing"))->actions.Add(
 		{ LOCTEXT("MobileHDRButton", "Disable Mobile HDR"),
 		&SOculusToolWidget::MobilePostProcessingDisable }
+	);
+
+	SimpleSettings.Add(FName("MobileVulkan"), {
+		FName("MobileVulkan"),
+		LOCTEXT("MobileVulkanDescription", "Oculus recommends using Vulkan as the rendering backend for all mobile apps."),
+		&SOculusToolWidget::MobileVulkanVisibility,
+		TArray<SimpleSettingAction>(),
+		(int)SupportFlags::SupportMobile
+		});
+	SimpleSettings.Find(FName("MobileVulkan"))->actions.Add(
+		{ LOCTEXT("MobileVulkanButton", "Use Vulkan Rendering Backend"),
+		&SOculusToolWidget::MobileVulkanEnable }
 	);
 
 	SimpleSettings.Add(FName("AndroidManifest"), {
@@ -705,17 +718,35 @@ EVisibility SOculusToolWidget::MobileMultiViewVisibility(FName tag) const
 FReply SOculusToolWidget::MobileMSAAEnable(bool text)
 {
 	URendererSettings* Settings = GetMutableDefault<URendererSettings>();
-	Settings->MobileMSAASampleCount = EMobileMSAASampleCount::Four;
-	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(URendererSettings, MobileMSAASampleCount)), Settings->GetDefaultConfigFilename());
+	Settings->MobileAntiAliasing = EMobileAntiAliasingMethod::MSAA;
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(URendererSettings, MobileAntiAliasing)), Settings->GetDefaultConfigFilename());
+	Settings->MSAASampleCount = ECompositingSampleCount::Four;
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(URendererSettings, MSAASampleCount)), Settings->GetDefaultConfigFilename());
 	return FReply::Handled();
 }
 
 EVisibility SOculusToolWidget::MobileMSAAVisibility(FName tag) const
 {
 	URendererSettings* Settings = GetMutableDefault<URendererSettings>();
-	const bool bMobileMSAAValid = Settings->MobileMSAASampleCount == EMobileMSAASampleCount::Four;
+	const bool bMobileMSAAValid = Settings->MobileAntiAliasing == EMobileAntiAliasingMethod::MSAA && Settings->MSAASampleCount == ECompositingSampleCount::Four;
 
 	return bMobileMSAAValid ? EVisibility::Collapsed : EVisibility::Visible;
+}
+
+FReply SOculusToolWidget::MobileVulkanEnable(bool text)
+{
+	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
+	Settings->bSupportsVulkan = true;
+	Settings->bBuildForES31 = false;
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bSupportsVulkan)), Settings->GetDefaultConfigFilename());
+	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForES31)), Settings->GetDefaultConfigFilename());
+	return FReply::Handled();
+}
+
+EVisibility SOculusToolWidget::MobileVulkanVisibility(FName tag) const
+{
+	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
+	return Settings->bSupportsVulkan && !Settings->bBuildForES31 ? EVisibility::Collapsed : EVisibility::Visible;
 }
 
 FReply SOculusToolWidget::MobilePostProcessingDisable(bool text)
@@ -780,10 +811,8 @@ EVisibility SOculusToolWidget::AndroidPackagingVisibility(FName tag) const
 FReply SOculusToolWidget::AndroidQuestArchFix(bool text)
 {
 	UAndroidRuntimeSettings* Settings = GetMutableDefault<UAndroidRuntimeSettings>();
-	Settings->bBuildForArmV7 = false;
 	Settings->bBuildForArm64 = true;
 	Settings->bBuildForX8664 = false;
-	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForArmV7)), Settings->GetDefaultConfigFilename());
 	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForArm64)), Settings->GetDefaultConfigFilename());
 	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForX8664)), Settings->GetDefaultConfigFilename());
 	return FReply::Handled();
@@ -799,7 +828,7 @@ EVisibility SOculusToolWidget::AndroidQuestArchVisibility(FName tag) const
 FReply SOculusToolWidget::AntiAliasingEnable(bool text)
 {
 	URendererSettings* Settings = GetMutableDefault<URendererSettings>();
-	Settings->DefaultFeatureAntiAliasing = EAntiAliasingMethod::AAM_TemporalAA;
+	Settings->DefaultFeatureAntiAliasing = EAntiAliasingMethod::AAM_TemporalAA; // TODO(TSR)
 	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(URendererSettings, DefaultFeatureAntiAliasing)), Settings->GetDefaultConfigFilename());
 	return FReply::Handled();
 }
@@ -923,9 +952,7 @@ FReply SOculusToolWidget::MobileNumDynamicPointLightsFix(bool text)
 {
 	URendererSettings* Settings = GetMutableDefault<URendererSettings>();
 	Settings->MobileNumDynamicPointLights = 0;
-	Settings->bMobileDynamicPointLightsUseStaticBranch = true;
 	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(URendererSettings, MobileNumDynamicPointLights)), Settings->GetDefaultConfigFilename());
-	Settings->UpdateSinglePropertyInConfigFile(Settings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(URendererSettings, bMobileDynamicPointLightsUseStaticBranch)), Settings->GetDefaultConfigFilename());
 	SuggestRestart();
 	return FReply::Handled();
 }
@@ -933,7 +960,7 @@ FReply SOculusToolWidget::MobileNumDynamicPointLightsFix(bool text)
 EVisibility SOculusToolWidget::MobileNumDynamicPointLightsVisibility(FName tag) const
 {
 	URendererSettings* Settings = GetMutableDefault<URendererSettings>();
-	if (Settings->MobileNumDynamicPointLights == 0 && Settings->bMobileDynamicPointLightsUseStaticBranch)
+	if (Settings->MobileNumDynamicPointLights == 0)
 	{
 		return EVisibility::Collapsed;
 	}

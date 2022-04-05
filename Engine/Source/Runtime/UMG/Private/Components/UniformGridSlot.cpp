@@ -8,7 +8,7 @@
 
 UUniformGridSlot::UUniformGridSlot(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, Slot(NULL)
+	, Slot(nullptr)
 {
 	HorizontalAlignment = HAlign_Left;
 	VerticalAlignment = VAlign_Top;
@@ -18,16 +18,17 @@ void UUniformGridSlot::ReleaseSlateResources(bool bReleaseChildren)
 {
 	Super::ReleaseSlateResources(bReleaseChildren);
 
-	Slot = NULL;
+	Slot = nullptr;
 }
 
 void UUniformGridSlot::BuildSlot(TSharedRef<SUniformGridPanel> GridPanel)
 {
-	Slot = &GridPanel->AddSlot(Column, Row)
+	GridPanel->AddSlot(Column, Row)
+		.Expose(Slot)
 		.HAlign(HorizontalAlignment)
 		.VAlign(VerticalAlignment)
 		[
-			Content == NULL ? SNullWidget::NullWidget : Content->TakeWidget()
+			Content == nullptr ? SNullWidget::NullWidget : Content->TakeWidget()
 		];
 }
 
@@ -36,7 +37,7 @@ void UUniformGridSlot::SetRow(int32 InRow)
 	Row = InRow;
 	if ( Slot )
 	{
-		Slot->Row = InRow;
+		Slot->SetRow(InRow);
 	}
 }
 
@@ -45,7 +46,7 @@ void UUniformGridSlot::SetColumn(int32 InColumn)
 	Column = InColumn;
 	if ( Slot )
 	{
-		Slot->Column = InColumn;
+		Slot->SetColumn(InColumn);
 	}
 }
 
@@ -54,7 +55,7 @@ void UUniformGridSlot::SetHorizontalAlignment(EHorizontalAlignment InHorizontalA
 	HorizontalAlignment = InHorizontalAlignment;
 	if ( Slot )
 	{
-		Slot->HAlignment = InHorizontalAlignment;
+		Slot->SetHorizontalAlignment(InHorizontalAlignment);
 	}
 }
 
@@ -63,7 +64,7 @@ void UUniformGridSlot::SetVerticalAlignment(EVerticalAlignment InVerticalAlignme
 	VerticalAlignment = InVerticalAlignment;
 	if ( Slot )
 	{
-		Slot->VAlignment = InVerticalAlignment;
+		Slot->SetVerticalAlignment(InVerticalAlignment);
 	}
 }
 
@@ -74,3 +75,33 @@ void UUniformGridSlot::SynchronizeProperties()
 	SetHorizontalAlignment(HorizontalAlignment);
 	SetVerticalAlignment(VerticalAlignment);
 }
+
+#if WITH_EDITOR
+
+bool UUniformGridSlot::NudgeByDesigner(const FVector2D& NudgeDirection, const TOptional<int32>& GridSnapSize)
+{
+	const FVector2D ClampedDirection = NudgeDirection.ClampAxes(-1.0f, 1.0f);
+	const int32 NewColumn = Column + ClampedDirection.X;
+	const int32 NewRow = Row + ClampedDirection.Y;
+
+	if (NewColumn < 0 || NewRow < 0 || (NewColumn == Column && NewRow == Row))
+	{
+		return false;
+	}
+
+	Modify();
+
+	SetRow(NewRow);
+	SetColumn(NewColumn);
+
+	return true;
+}
+
+void UUniformGridSlot::SynchronizeFromTemplate(const UPanelSlot* const TemplateSlot)
+{
+	const ThisClass* const TemplateUniformGridSlot = CastChecked<ThisClass>(TemplateSlot);
+	SetRow(TemplateUniformGridSlot->Row);
+	SetColumn(TemplateUniformGridSlot->Column);
+}
+
+#endif

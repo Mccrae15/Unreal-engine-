@@ -32,7 +32,8 @@ public:
 	virtual bool CloseWindow() = 0;
 	virtual bool IsPrimaryEditor() const = 0;
 	virtual void InvokeTab(const struct FTabId& TabId) = 0;
-	virtual FName GetToolbarTabId() const = 0;
+	UE_DEPRECATED(5.0, "Toolbar tab no longer exists and tab ID will return None; do not add it to layouts")
+	virtual FName GetToolbarTabId() const { return NAME_None; }
 	virtual TSharedPtr<class FTabManager> GetAssociatedTabManager() = 0;
 	virtual double GetLastActivationTime() = 0;
 	virtual void RemoveEditingAsset(UObject* Asset) = 0;
@@ -126,6 +127,13 @@ public:
 	DECLARE_EVENT_TwoParams(UAssetEditorSubsystem, FOnAssetOpenedInEditorEvent, UObject*, IAssetEditorInstance*);
 	virtual FOnAssetOpenedInEditorEvent& OnAssetOpenedInEditor() { return AssetOpenedInEditorEvent; }
 
+	/** Notify the asset editor manager that an asset editor is being opened and before widgets are constructed */
+	void NotifyEditorOpeningPreWidgets(const TArray< UObject* >& Assets, IAssetEditorInstance* Instance);
+
+	/** Called when an asset editor is opening and before widgets are constructed */
+	DECLARE_EVENT_TwoParams(UAssetEditorSubsystem, FOnAssetsOpenedInEditorEvent, const TArray<UObject*>&, IAssetEditorInstance*);
+	virtual FOnAssetsOpenedInEditorEvent& OnEditorOpeningPreWidgets() { return EditorOpeningPreWidgetsEvent; }
+
 	/** Notify the asset editor manager that an asset editor is done editing an asset */
 	void NotifyAssetClosed(UObject* Asset, IAssetEditorInstance* Instance);
 
@@ -211,9 +219,18 @@ public:
 
 	/**
 	 * Saves a list of open asset editors so they can be restored on editor restart.
+	 * @param bOnShutdown If true, this is handled as if the engine is shutting down right now.
+	 */
+
+	void SaveOpenAssetEditors(const bool bOnShutdown);
+	
+	/**
+	 * Saves a list of open asset editors so they can be restored on editor restart.
+	 * @param bOnShutdown If true, this is handled as if the engine is shutting down right now.
 	 * @param bCancelIfDebugger If true, don't save a list of assets to restore if we are running under a debugger.
 	 */
-	void SaveOpenAssetEditors(const bool bOnShutdown, const bool bCancelIfDebugger = true);
+	UE_DEPRECATED(5.0, "Please use the version of SaveOpenAssetEditors with only one argument, bOnShutdown.")
+	void SaveOpenAssetEditors(const bool bOnShutdown, const bool bCancelIfDebugger);
 
 	/** Restore the assets that were previously open when the editor was last closed. */
 	void RestorePreviouslyOpenAssets();
@@ -231,6 +248,7 @@ private:
 
 	void RegisterEditorModes();
 	void UnregisterEditorModes();
+	void OnSMInstanceElementsEnabled();
 
 private:
 
@@ -276,6 +294,9 @@ private:
 	/** Called when an asset has been opened in an editor */
 	FOnAssetOpenedInEditorEvent AssetOpenedInEditorEvent;
 
+	/** Called when editor is opening and before widgets are constructed */
+	FOnAssetsOpenedInEditorEvent EditorOpeningPreWidgetsEvent;
+
 	/** Multicast delegate executed when an asset editor is requested to be opened */
 	FAssetEditorRequestOpenEvent AssetEditorRequestOpenEvent;
 
@@ -300,7 +321,7 @@ private:
 	TWeakPtr<SNotificationItem> RestorePreviouslyOpenAssetsNotificationPtr;
 	
 	UPROPERTY(Transient)
-	TArray<UAssetEditor*> OwnedAssetEditors;
+	TArray<TObjectPtr<UAssetEditor>> OwnedAssetEditors;
 	
 	/** Map of FEditorModeId to EditorModeInfo for all known UEdModes when the subsystem initialized */
 	RegisteredModeInfoMap EditorModes;

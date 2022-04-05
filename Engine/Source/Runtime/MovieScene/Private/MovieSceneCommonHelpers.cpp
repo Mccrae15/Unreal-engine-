@@ -414,7 +414,7 @@ UCameraComponent* MovieSceneHelpers::CameraComponentFromRuntimeObject(UObject* R
 
 float MovieSceneHelpers::GetSoundDuration(USoundBase* Sound)
 {
-	return Sound ? Sound->GetDuration() : 0.0f;
+	return Sound ? FMath::Max(0.0f, Sound->GetDuration()) : 0.0f;
 }
 
 
@@ -488,6 +488,7 @@ UObject* MovieSceneHelpers::MakeSpawnableTemplateFromInstance(UObject& InSourceO
 	UEngine::FCopyPropertiesForUnrelatedObjectsParams CopyParams;
 	CopyParams.bNotifyObjectReplacement = false;
 	CopyParams.bPreserveRootComponent = false;
+	CopyParams.bPerformDuplication = true;
 	UEngine::CopyPropertiesForUnrelatedObjects(&InSourceObject, NewInstance, CopyParams);
 
 	AActor* Actor = CastChecked<AActor>(NewInstance);

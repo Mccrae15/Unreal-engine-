@@ -15,7 +15,7 @@ namespace UnrealBuildTool.Rules
 				}
 				);
 
-			if(Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+			if(Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				PrivateIncludePaths.Add("../../../../../Source/Runtime/VulkanRHI/Private/Windows");
 			}
@@ -31,6 +31,7 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"Engine",
 					"RHI",
+					"RHICore",
 					"RenderCore",
 					"Renderer",
                     "InputCore",
@@ -43,6 +44,7 @@ namespace UnrealBuildTool.Rules
             
             if (Target.bBuildEditor == true)
             {
+				PrivateDependencyModuleNames.Add("EditorFramework");
                 PrivateDependencyModuleNames.Add("UnrealEd");
             }
 
@@ -51,7 +53,7 @@ namespace UnrealBuildTool.Rules
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
 			}
 
-			if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+            if (Target.Platform == UnrealTargetPlatform.Win64)
             {
 				PrivateDependencyModuleNames.AddRange(
 					new string[]

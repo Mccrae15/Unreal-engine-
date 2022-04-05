@@ -42,8 +42,8 @@ void UDetailsView::BuildContentWidget()
 		UObject* ViewedObject = GetObject();
 		if (ViewedObject == nullptr)
 		{
-			bool bIsLazyObjectNull = LazyObject.IsNull();
-			if (bIsLazyObjectNull)
+			bool bIsObjectNull = Object.IsNull();
+			if (bIsObjectNull)
 			{
 				MissingWidgetText = FPropertyViewHelper::UndefinedObjectText;
 			}
@@ -78,10 +78,8 @@ void UDetailsView::BuildContentWidget()
 			DetailViewWidget = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 			
 			DetailViewWidget->SetCustomFilterLabel(LOCTEXT("ShowAllParameters", "Show All Parameters"));
-			DetailViewWidget->SetCustomFilterDelegate(FSimpleDelegate::CreateUObject(this, &UDetailsView::ToggleWhitelistedProperties));
-
+			DetailViewWidget->SetCustomFilterDelegate(FSimpleDelegate::CreateUObject(this, &UDetailsView::ToggleShowingOnlyAllowedProperties));
 			DetailViewWidget->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateUObject(this, &UDetailsView::GetIsPropertyVisible));
-			DetailViewWidget->SetIsCustomRowVisibilityFilteredDelegate(FIsCustomRowVisibilityFiltered::CreateUObject(this, &UDetailsView::IsRowVisibilityFiltered));
 			DetailViewWidget->SetIsCustomRowVisibleDelegate(FIsCustomRowVisible::CreateUObject(this, &UDetailsView::GetIsRowVisible));
 			DetailViewWidget->SetObject(ViewedObject);
 			if (DetailViewWidget.IsValid())
@@ -145,31 +143,29 @@ void UDetailsView::PostEditChangeProperty(FPropertyChangedEvent& PropertyChanged
 			|| PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDetailsView, bForceHiddenPropertyVisibility)
 			|| PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDetailsView, ColumnWidth))
 		{
-			SoftObjectPath = LazyObject.Get();
 			BuildContentWidget();
 		}
 	}
 }
 
 
-void UDetailsView::ToggleWhitelistedProperties()
+void UDetailsView::ToggleShowingOnlyAllowedProperties()
 {
-	bShowOnlyWhitelisted = !bShowOnlyWhitelisted;
+	bShowOnlyAllowed = !bShowOnlyAllowed;
 	if (DetailViewWidget.IsValid())
 	{
 		DetailViewWidget->ForceRefresh();
 	}
 }
 
-
 bool UDetailsView::IsRowVisibilityFiltered() const
 {
-	return bShowOnlyWhitelisted && (PropertiesToShow.Num() > 0 || CategoriesToShow.Num() > 0);
+	return bShowOnlyAllowed && (PropertiesToShow.Num() > 0 || CategoriesToShow.Num() > 0);
 }
 
 bool UDetailsView::GetIsPropertyVisible(const FPropertyAndParent& PropertyAndParent) const
 {
-    if (!IsRowVisibilityFiltered())
+	if (!IsRowVisibilityFiltered())
 	{
 		return true;
 	}
@@ -209,7 +205,7 @@ bool UDetailsView::GetIsPropertyVisible(const FPropertyAndParent& PropertyAndPar
 
 bool UDetailsView::GetIsRowVisible(FName InRowName, FName InParentName) const
 {
-    if (!IsRowVisibilityFiltered())
+	if (!IsRowVisibilityFiltered())
 	{
 		return true;
 	}

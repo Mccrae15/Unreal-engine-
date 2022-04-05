@@ -36,7 +36,7 @@ void UCanvasRenderTarget2D::UpdateResource()
 
 void UCanvasRenderTarget2D::FastUpdateResource()
 {
-	if (Resource == nullptr)
+	if (GetResource() == nullptr)
 	{
 		// We don't have a resource, just take the fast path
 		UpdateResource();
@@ -71,7 +71,7 @@ void UCanvasRenderTarget2D::RepaintCanvas()
 	// NOTE: This texture may be null when this is invoked through blueprint from a cmdlet or server.
 	FTextureRenderTarget2DResource* TextureRenderTarget = (FTextureRenderTarget2DResource*) GameThread_GetRenderTargetResource();
 
-	FCanvas RenderCanvas(TextureRenderTarget, nullptr, FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime, FeatureLevel);
+	FCanvas RenderCanvas(TextureRenderTarget, nullptr, FGameTime::GetTimeSinceAppStart(), FeatureLevel);
 	Canvas->Init(GetSurfaceWidth(), GetSurfaceHeight(), nullptr, &RenderCanvas);
 
 	if (TextureRenderTarget)
@@ -92,7 +92,7 @@ void UCanvasRenderTarget2D::RepaintCanvas()
 		});
 	}
 
-	if (!IsPendingKill() && OnCanvasRenderTargetUpdate.IsBound())
+	if (IsValid(this) && OnCanvasRenderTargetUpdate.IsBound())
 	{
 		OnCanvasRenderTargetUpdate.Broadcast(Canvas, GetSurfaceWidth(), GetSurfaceHeight());
 	}

@@ -3,12 +3,98 @@
 #include "Chaos/ChaosCache.h"
 #include "Chaos/ChaosCachingPlugin.h"
 #include "Components/PrimitiveComponent.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+#include "GeometryCollection/GeometryCollectionComponent.h"
+#include "GeometryCollection/GeometryCollectionObject.h"
 
 UChaosCache::UChaosCache()
 	: CurrentRecordCount(0)
 	, CurrentPlaybackCount(0)
+	, bStripMassToLocal(false)
 {
+	// Default Version. If a Version was archived, this will be overwritten during Serialize() 
+	Version = 0;
+}
 
+void UChaosCache::Serialize(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
+
+	Super::Serialize(Ar);
+
+	if (Ar.IsLoading())
+	{ 
+		// Older versions of GeometryCollection caches had MassToLocal transform baked into the stored transforms. This unfortunately means
+		// that evaluating the cache outside the context of the PhysicsThread is unlikely to be accurate. To make this work, we need to
+		// strip the MassToLocal from the existing cached transforms.
+		if ((Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::GeometryCollectionCacheRemovesMassToLocal) && (Version == 0))
+		{
+			bStripMassToLocal = true;
+		}
+	}	
+}
+
+void UChaosCache::PostLoad()
+{
+	if (bStripMassToLocal)
+	{ 
+		// Am I a GeometryCollection cache?
+		UObject* DuplicatedTemplate = Spawnable.DuplicatedTemplate;
+		if (UGeometryCollectionComponent* GeometryCollectionComponent = Cast<UGeometryCollectionComponent>(DuplicatedTemplate))
+		{
+			// Get the referenced RestCollection
+			if (const UGeometryCollection* RestCollection = GeometryCollectionComponent->GetRestCollection())
+			{
+				const TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollection = RestCollection->GetGeometryCollection();
+
+				// Get the MassToLocal transforms
+				if (GeometryCollection->HasAttribute(TEXT("MassToLocal"), FTransformCollection::TransformGroup))
+				{
+					const TManagedArray<FTransform>& CollectionMassToLocal = GeometryCollection->GetAttribute<FTransform>(TEXT("MassToLocal"), FTransformCollection::TransformGroup);
+				
+					// Strip out the MassToLocal transforms from all cached transforms
+					int32 NumTracks = TrackToParticle.Num();
+					int32 NumParticles = CollectionMassToLocal.Num();
+					for (int32 TrackIdx = 0; TrackIdx < NumTracks; ++TrackIdx)
+					{
+						int32 ParticleIdx = TrackToParticle[TrackIdx];
+						if (ParticleIdx < NumParticles)
+						{ 
+							const FTransform& MassToLocal = CollectionMassToLocal[ParticleIdx];
+							FTransform MassToLocalInverse = MassToLocal.Inverse();
+							FTransform3f MassToLocalInversef(FQuat4f(MassToLocalInverse.GetRotation()), FVector3f(MassToLocalInverse.GetTranslation()), FVector3f(MassToLocalInverse.GetScale3D()));
+
+							FParticleTransformTrack& TransformData = ParticleTracks[TrackIdx].TransformData;
+							FRawAnimSequenceTrack& AnimTrack = TransformData.RawTransformTrack;
+
+							if (ensure((AnimTrack.PosKeys.Num() == AnimTrack.RotKeys.Num()) && (AnimTrack.RotKeys.Num() == AnimTrack.ScaleKeys.Num())))
+							{ 
+								int32 NumKeys = AnimTrack.PosKeys.Num();
+								for (int32 KeyIdx = 0; KeyIdx < NumKeys; ++KeyIdx)
+								{
+									FTransform3f MassTransform(AnimTrack.RotKeys[KeyIdx], AnimTrack.PosKeys[KeyIdx], AnimTrack.ScaleKeys[KeyIdx]);
+									FTransform3f LocalTransform = MassToLocalInversef * MassTransform;
+									const FQuat4f& LocalRotation = LocalTransform.GetRotation();
+									const FVector3f& LocalTranslation = LocalTransform.GetTranslation();
+
+									AnimTrack.RotKeys[KeyIdx] = LocalRotation;
+									AnimTrack.PosKeys[KeyIdx] = LocalTranslation;
+								}
+							}
+						}
+					}
+				
+					bStripMassToLocal = false;
+										
+				}
+			}
+		}
+	}
+
+	// Up-to-date now
+	Version = CurrentVersion;
+
+	Super::PostLoad();
 }
 
 void UChaosCache::FlushPendingFrames()
@@ -42,6 +128,15 @@ void UChaosCache::FlushPendingFrames()
 			{
 				// Initial write to this particle
 				PTrack.BeginOffset = NewData.Time;
+
+				// Particle will hold at end of recording.
+				PTrack.bDeactivateOnEnd = false;
+			}
+
+			if (ParticleData.bPendingDeactivate)
+			{
+				// Signals that this is the final keyframe and that the particle then deactivates.
+				PTrack.bDeactivateOnEnd = true;
 			}
 
 			// Make sure we're actually appending to the track - shouldn't be adding data from the past
@@ -51,9 +146,9 @@ void UChaosCache::FlushPendingFrames()
 
 				// Append the transform (ignoring scale)
 				FRawAnimSequenceTrack& RawTrack = PTrack.RawTransformTrack;
-				RawTrack.ScaleKeys.Add(FVector(1.0f));
-				RawTrack.PosKeys.Add(ParticleData.PendingTransform.GetTranslation());
-				RawTrack.RotKeys.Add(ParticleData.PendingTransform.GetRotation());
+				RawTrack.ScaleKeys.Add(FVector3f(1.0f));
+				RawTrack.PosKeys.Add(FVector3f(ParticleData.PendingTransform.GetTranslation()));
+				RawTrack.RotKeys.Add(FQuat4f(ParticleData.PendingTransform.GetRotation()));
 
 				for(TPair<FName, float> CurveKeyPair : ParticleData.PendingCurveData)
 				{
@@ -93,7 +188,7 @@ void UChaosCache::FlushPendingFrames()
 	}
 }
 
-FCacheUserToken UChaosCache::BeginRecord(UPrimitiveComponent* InComponent, FGuid InAdapterId)
+FCacheUserToken UChaosCache::BeginRecord(UPrimitiveComponent* InComponent, FGuid InAdapterId, const FTransform& SpaceTransform)
 {
 	// First make sure we're valid to record
 	int32 OtherRecordersCount = CurrentRecordCount.fetch_add(1);
@@ -114,10 +209,15 @@ FCacheUserToken UChaosCache::BeginRecord(UPrimitiveComponent* InComponent, FGuid
 			PendingWrites.Empty();
 
 			// Initialise the spawnable template to handle the provided component
-			BuildSpawnableFromComponent(InComponent);
+			BuildSpawnableFromComponent(InComponent, SpaceTransform);
 
 			// Build a compatibility hash for the component state.
 			AdapterGuid = InAdapterId;
+
+			if (UPackage* Package = GetOutermost())
+			{
+				Package->SetDirtyFlag(true);
+			}
 
 			return FCacheUserToken(true, true, this);
 		}
@@ -147,6 +247,9 @@ void UChaosCache::EndRecord(FCacheUserToken& InOutToken)
 		InOutToken.bIsOpen = false;
 		InOutToken.Owner = nullptr;
 		CurrentRecordCount--;
+
+		// Set the Version appropriately
+		Version = CurrentVersion;
 	}
 	else
 	{
@@ -297,6 +400,12 @@ FCacheEvaluationResult UChaosCache::Evaluate(const FCacheEvaluationContext& InCo
 				continue;
 			}
 
+			if (ParticleTracks[Index].TransformData.bDeactivateOnEnd && ParticleTracks[Index].TransformData.GetEndTime() < InContext.TickRecord.GetTime())
+			{
+				// Particle has deactivated so skip evaluation
+				continue;
+			}
+
 			FTransform* EvalTransform = nullptr;
 			TMap<FName, float>* EvalCurves = nullptr;
 
@@ -338,10 +447,11 @@ FCacheEvaluationResult UChaosCache::Evaluate(const FCacheEvaluationContext& InCo
 	return Result;
 }
 
-void UChaosCache::BuildSpawnableFromComponent(UPrimitiveComponent* InComponent)
+void UChaosCache::BuildSpawnableFromComponent(UPrimitiveComponent* InComponent, const FTransform& SpaceTransform)
 {
 	Spawnable.DuplicatedTemplate = StaticDuplicateObject(InComponent, this);
 	Spawnable.InitialTransform = InComponent->GetComponentToWorld();
+	Spawnable.ComponentTransform = InComponent->GetComponentToWorld() * SpaceTransform.Inverse();
 }
 
 const FCacheSpawnableTemplate& UChaosCache::GetSpawnableTemplate() const
@@ -355,11 +465,13 @@ void UChaosCache::EvaluateSingle(int32 InIndex, FPlaybackTickRecord& InTickRecor
 	checkSlow(ParticleTracks.IsValidIndex(InIndex));
 	FPerParticleCacheData& Data = ParticleTracks[InIndex];
 
+	
 	if(OutOptTransform)
 	{
 		EvaluateTransform(Data, InTickRecord.GetTime(), *OutOptTransform);
-		(*OutOptTransform) = (*OutOptTransform) * InTickRecord.SpaceTransform;
+		(*OutOptTransform) = (*OutOptTransform) *InTickRecord.SpaceTransform;
 	}
+	
 
 	if(OutOptCurves)
 	{
@@ -432,19 +544,19 @@ FTransform FParticleTransformTrack::Evaluate(float InCacheTime) const
 		if(InCacheTime < BeginOffset)
 		{
 			// Take first key
-			return FTransform(RawTransformTrack.RotKeys[0], RawTransformTrack.PosKeys[0]);
+			return FTransform(FQuat(RawTransformTrack.RotKeys[0]), FVector(RawTransformTrack.PosKeys[0]));
 		}
 		else if(InCacheTime > KeyTimestamps.Last())
 		{
 			// Take last key
-			return FTransform(RawTransformTrack.RotKeys.Last(), RawTransformTrack.PosKeys.Last());
+			return FTransform(FQuat(RawTransformTrack.RotKeys.Last()), FVector(RawTransformTrack.PosKeys.Last()));
 		}
 		else
 		{
 			// Valid in-range, evaluate
 			if(NumKeys == 1)
 			{
-				return FTransform(RawTransformTrack.RotKeys[0], RawTransformTrack.PosKeys[0]);
+				return FTransform(FQuat(RawTransformTrack.RotKeys[0]), FVector(RawTransformTrack.PosKeys[0]));
 			}
 
 			// Find the first key with a timestamp greater than InCacheTIme
@@ -457,7 +569,7 @@ FTransform FParticleTransformTrack::Evaluate(float InCacheTime) const
 			if(IndexBeyond == INDEX_NONE || IndexBeyond >= KeyTimestamps.Num())
 			{
 				// Must be equal to the last key
-				return FTransform(RawTransformTrack.RotKeys.Last(), RawTransformTrack.PosKeys.Last());
+				return FTransform(FQuat(RawTransformTrack.RotKeys.Last()), FVector(RawTransformTrack.PosKeys.Last()));
 			}
 
 			const int32 IndexBefore = IndexBeyond - 1;
@@ -465,7 +577,7 @@ FTransform FParticleTransformTrack::Evaluate(float InCacheTime) const
 			if(IndexBefore == INDEX_NONE)
 			{
 				// Must have been equal to first key
-				return FTransform(RawTransformTrack.RotKeys[0], RawTransformTrack.PosKeys[0]);
+				return FTransform(FQuat(RawTransformTrack.RotKeys[0]), FVector(RawTransformTrack.PosKeys[0]));
 			}
 
 			// Need to interpolate
@@ -473,8 +585,8 @@ FTransform FParticleTransformTrack::Evaluate(float InCacheTime) const
 			const float Fraction = (InCacheTime - KeyTimestamps[IndexBefore]) / Interval;
 
 			// Slerp rotation - lerp translation
-			return FTransform(FQuat::Slerp(RawTransformTrack.RotKeys[IndexBefore], RawTransformTrack.RotKeys[IndexBeyond], Fraction),
-							  FMath::Lerp(RawTransformTrack.PosKeys[IndexBefore], RawTransformTrack.PosKeys[IndexBeyond], Fraction));
+			return FTransform(FQuat(FQuat4f::Slerp(RawTransformTrack.RotKeys[IndexBefore], RawTransformTrack.RotKeys[IndexBeyond], Fraction)),
+							  FVector(FMath::Lerp(RawTransformTrack.PosKeys[IndexBefore], RawTransformTrack.PosKeys[IndexBeyond], Fraction)));
 		}
 	}
 

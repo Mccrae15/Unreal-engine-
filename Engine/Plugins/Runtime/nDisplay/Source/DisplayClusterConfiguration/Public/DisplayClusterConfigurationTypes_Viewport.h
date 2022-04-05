@@ -10,8 +10,7 @@
 #include "DisplayClusterConfigurationStrings.h"
 #include "DisplayClusterConfigurationTypes_PostRender.h"
 #include "DisplayClusterConfigurationTypes_Postprocess.h"
-
-#include "DisplayClusterConfigurationTypes_TextureShare.h"
+#include "DisplayClusterConfigurationTypes_ViewportRemap.h"
 
 #include "OpenColorIOColorSpace.h"
 #include "Engine/Scene.h"
@@ -25,8 +24,12 @@ struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationViewport_Over
 
 public:
 	/** Enable/disable Viewport Overscan and specify units as percent or pixel values. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay Viewport", meta = (DisplayName = "Enable"))
+	bool bEnabled = false;
+
+	/** Enable/disable Viewport Overscan and specify units as percent or pixel values. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay Viewport")
-	EDisplayClusterConfigurationViewportOverscanMode Mode = EDisplayClusterConfigurationViewportOverscanMode::None;
+	EDisplayClusterConfigurationViewportOverscanMode Mode = EDisplayClusterConfigurationViewportOverscanMode::Percent;
 
 	/** Left */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "NDisplay Viewport")
@@ -79,19 +82,19 @@ struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationViewport_Rend
 
 public:
 	/** Specify which GPU should render the second Stereo eye */
-	UPROPERTY(EditAnywhere, Category = "Configuration", meta = (DisplayName = "Stereo GPU Index"))
+	UPROPERTY(EditAnywhere, Category = "Stereo", meta = (DisplayName = "Stereo GPU Index"))
 	int StereoGPUIndex = -1;
 
 	/** Enables and sets Stereo mode */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stereo")
 	EDisplayClusterConfigurationViewport_StereoMode StereoMode = EDisplayClusterConfigurationViewport_StereoMode::Default;
 
 	/** Adjust resolution scaling for an individual viewport.  Viewport Screen Percentage Multiplier is applied to this value. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (DisplayName = "Screen Percentage", ClampMin = "0.05", UIMin = "0.05", ClampMax = "10.0", UIMax = "1.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering", meta = (DisplayName = "Screen Percentage", ClampMin = "0.05", UIMin = "0.05", ClampMax = "10.0", UIMax = "1.0"))
 	float BufferRatio = 1;
 
 	/** Adjust resolution scaling for an individual viewport.  Viewport Screen Percentage Multiplier is applied to this value. */
-	UPROPERTY(EditAnywhere, Category = "Configuration", meta = (ClampMin = "0.01", UIMin = "0.01", ClampMax = "1.0", UIMax = "1.0"))
+	UPROPERTY()
 	float RenderTargetRatio = 1.f;
 
 	UPROPERTY()
@@ -136,11 +139,33 @@ public:
 public:
 	void GetReferencedMeshNames(TArray<FString>& OutMeshNames) const;
 
-private:
 #if WITH_EDITOR
 	// UObject interface
+	virtual void PreEditChange(FEditPropertyChain& PropertyAboutToChange) override;
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;
 	// End of UObject interface
+
+	/** Enable the preview texture. Only should be called by the object managing the preview texture state. */
+	void EnablePreviewTexture();
+	
+	/**
+	 * Signal that the preview texture should be disabled.
+	 * @return True if the preview texture was disabled. False if it was already disabled.
+	 */
+	bool DisablePreviewTexture();
+
+	/** If this viewport is allowed to render a preview texture. Used with resizing viewports. */
+	bool IsPreviewTextureAllowed() const { return bAllowPreviewTexture; }
+	
+protected:
+	virtual void OnPreCompile(class FCompilerResultsLog& MessageLog) override;
+	
+private:
+	/** If this viewport is allowed to render a preview texture. */
+	bool bAllowPreviewTexture = true;
+	
+	/** If this object is managing the preview texture state. */
+	bool bIsManagingPreviewTexture = false;
 #endif
 
 public:
@@ -153,29 +178,28 @@ public:
 	FString Camera;
 
 	/** Specify your Projection Policy Settings */
-	UPROPERTY(EditDefaultsOnly, Category = "Configuration")
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Configuration")
 	FDisplayClusterConfigurationProjection ProjectionPolicy;
 
-	/** Enable or disable compatibility with inter process GPU Texture share */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Configuration", meta = (DisplayName = "Shared Texture"))
-	FDisplayClusterConfigurationTextureShare_Viewport TextureShare;
-
 #if WITH_EDITORONLY_DATA
-	/** Locks the Viewport aspect ratio for easier resizing */
-	UPROPERTY(EditAnywhere, Category = "Configuration")
-	bool bFixedAspectRatio;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview", meta = (DisplayName = "Preview Frustum"))
+	bool bAllowPreviewFrustumRendering = false;
 #endif
 	
 	/** Define the Viewport 2D coordinates */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (DisplayMode = "Compound", FixedAspectRatioProperty = "bFixedAspectRatio"))
 	FDisplayClusterConfigurationRectangle Region;
 
+	/** Define the Viewport Remap settings */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (DisplayName = "Remapping"))
+	FDisplayClusterConfigurationViewport_Remap ViewportRemap;
+
 	/** Allows Viewports to overlap and sets Viewport overlapping order priority */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering")
 	int OverlapOrder = 0;
 
 	/** Specify which GPU should render this Viewport. "-1" is default. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration", meta = (DisplayName = "GPU Index"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering", meta = (DisplayName = "GPU Index"))
 	int GPUIndex = -1;
 
 	// Configure render for this viewport
@@ -187,10 +211,14 @@ public:
 	FDisplayClusterConfigurationViewport_ICVFX ICVFX;
 
 #if WITH_EDITORONLY_DATA
-	UPROPERTY(EditDefaultsOnly, Category = "Configuration", meta = (nDisplayHidden))
-	bool bIsEnabled = true;
+	/** Locks the Viewport aspect ratio for easier resizing */
+	UPROPERTY(EditAnywhere, Category = "Configuration", meta = (HideProperty))
+	bool bFixedAspectRatio;
 
-	UPROPERTY(EditDefaultsOnly, Category = "Configuration", meta = (nDisplayHidden))
+	UPROPERTY(EditDefaultsOnly, Category = "Configuration", meta = (HideProperty))
+	bool bIsUnlocked = true;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Configuration", meta = (HideProperty))
 	bool bIsVisible = true;
 #endif
 
@@ -254,27 +282,3 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Configuration")
 	bool bAllowWarpBlend = true;
 };
-
-USTRUCT()
-struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationViewportPreview
-{
-	GENERATED_BODY()
-
-public:
-	// Allow preview render
-	UPROPERTY()
-	bool bEnable = true;
-
-	// Render single node preview or whole cluster
-	UPROPERTY()
-	FString PreviewNodeId = DisplayClusterConfigurationStrings::gui::preview::PreviewNodeAll;
-
-	// Update preview texture period in tick
-	UPROPERTY()
-	int TickPerFrame = 1;
-
-	// Preview texture size get from viewport, and scaled by this value
-	UPROPERTY()
-	float PreviewRenderTargetRatioMult = 0.25;
-};
-

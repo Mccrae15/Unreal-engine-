@@ -8,6 +8,7 @@
 
 #include "BoundShaderStateCache.h"
 #include "D3D12ShaderResources.h"
+#include "RHIPoolAllocator.h"
 
 constexpr D3D12_RESOURCE_STATES BackBufferBarrierWriteTransitionTargets = D3D12_RESOURCE_STATES(
 	uint32(D3D12_RESOURCE_STATE_RENDER_TARGET) |
@@ -23,6 +24,7 @@ class FD3D12CommandListManager;
 class FD3D12CommandContext;
 class FD3D12CommandListHandle;
 class FD3D12SegListAllocator;
+class FD3D12PoolAllocator;
 struct FD3D12GraphicsPipelineState;
 typedef FD3D12StateCacheBase FD3D12StateCache;
 
@@ -38,6 +40,12 @@ enum class ED3D12ResourceStateMode
 	Default,					//< Decide if tracking is required based on flags
 	SingleState,				//< Force disable state tracking of resource - resource will always be in the initial resource state
 	MultiState,					//< Force enable state tracking of resource
+};
+
+enum class ED3D12ResourceTransientMode
+{
+	NonTransient,				//< Resource is not transient
+	Transient,					//< Resource is transient
 };
 
 class FD3D12PendingResourceBarrier
@@ -91,55 +99,92 @@ public:
 	FD3D12Heap(FD3D12Device* Parent, FRHIGPUMask VisibleNodes);
 	~FD3D12Heap();
 
-	inline ID3D12Heap* GetHeap() { return Heap.GetReference(); }
-	inline void SetHeap(ID3D12Heap* HeapIn) { *Heap.GetInitReference() = HeapIn; }
+	inline ID3D12Heap* GetHeap() const { return Heap.GetReference(); }
+	void SetHeap(ID3D12Heap* HeapIn, const TCHAR* const InName, bool bTrack = true, bool bForceGetGPUAddress = false);
 
 	void UpdateResidency(FD3D12CommandListHandle& CommandList);
-
 	void BeginTrackingResidency(uint64 Size);
-
-	void Destroy();
-
+	
+	inline FName GetName() const { return HeapName; }
+	inline D3D12_HEAP_DESC GetHeapDesc() const { return HeapDesc; }
 	inline FD3D12ResidencyHandle* GetResidencyHandle() { return &ResidencyHandle; }
+	inline D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return GPUVirtualAddress; }
 
 private:
+
 	TRefCountPtr<ID3D12Heap> Heap;
+	FName HeapName;
+	bool bTrack = true;
+	D3D12_HEAP_DESC HeapDesc;
+	D3D12_GPU_VIRTUAL_ADDRESS GPUVirtualAddress = 0;
 	FD3D12ResidencyHandle ResidencyHandle;
+};
+
+struct FD3D12ResourceDesc : public D3D12_RESOURCE_DESC
+{
+	FD3D12ResourceDesc() = default;
+	FD3D12ResourceDesc(const CD3DX12_RESOURCE_DESC& Other)
+		: D3D12_RESOURCE_DESC(Other)
+	{
+	}
+	
+	// TODO: use this type everywhere and disallow implicit conversion
+	/*explicit*/ FD3D12ResourceDesc(const D3D12_RESOURCE_DESC& Other)
+		: D3D12_RESOURCE_DESC(Other)
+	{
+	}
+
+	EPixelFormat PixelFormat{ PF_Unknown };
+
+	// PixelFormat for the Resource that aliases our current resource.
+	EPixelFormat UAVAliasPixelFormat{ PF_Unknown };
+
+#if D3D12RHI_NEEDS_VENDOR_EXTENSIONS
+	bool bRequires64BitAtomicSupport{ false };
+#endif
+
+	// Used primarily to help treat this resource description as writable.
+	inline bool NeedsUAVAliasWorkarounds() const { return UAVAliasPixelFormat != PF_Unknown; }
 };
 
 class FD3D12Resource : public FD3D12RefCount, public FD3D12DeviceChild, public FD3D12MultiNodeGPUObject
 {
 private:
 	TRefCountPtr<ID3D12Resource> Resource;
+	// Since certain formats cannot be aliased in D3D12, we have to create a separate ID3D12Resource that aliases the
+	// resource's memory and use this separate resource to create the UAV.
+	// TODO: UE-116727: request better DX12 API support and clean this up.
+	TRefCountPtr<ID3D12Resource> UAVAccessResource;
 	TRefCountPtr<FD3D12Heap> Heap;
 
 	FD3D12ResidencyHandle ResidencyHandle;
 
-	D3D12_RESOURCE_DESC Desc;
-	uint8 PlaneCount;
-	uint16 SubresourceCount;
-	CResourceState ResourceState;
-	D3D12_RESOURCE_STATES DefaultResourceState;
-	D3D12_RESOURCE_STATES ReadableState;
-	D3D12_RESOURCE_STATES WritableState;
-#ifdef PLATFORM_SUPPORTS_RESOURCE_COMPRESSION
-	D3D12_RESOURCE_STATES CompressedState;
+	D3D12_GPU_VIRTUAL_ADDRESS GPUVirtualAddress{};
+	void* ResourceBaseAddress{};
+
+#if NV_AFTERMATH
+	GFSDK_Aftermath_ResourceHandle AftermathHandle{};
 #endif
 
+	const FD3D12ResourceDesc Desc;
+	CResourceState ResourceState;
+	D3D12_RESOURCE_STATES DefaultResourceState{ D3D12_RESOURCE_STATE_TBD };
+	D3D12_RESOURCE_STATES ReadableState{ D3D12_RESOURCE_STATE_CORRUPT };
+	D3D12_RESOURCE_STATES WritableState{ D3D12_RESOURCE_STATE_CORRUPT };
+#ifdef PLATFORM_SUPPORTS_RESOURCE_COMPRESSION
+	D3D12_RESOURCE_STATES CompressedState{ D3D12_RESOURCE_STATE_CORRUPT };
+#endif
+
+	D3D12_HEAP_TYPE HeapType;
+	FName DebugName;
+
+	int32 NumMapCalls = 0;
+	uint16 SubresourceCount{};
+	uint8 PlaneCount;
 	bool bRequiresResourceStateTracking : 1;
 	bool bDepthStencil : 1;
 	bool bDeferDelete : 1;
 	bool bBackBuffer : 1;
-
-	D3D12_HEAP_TYPE HeapType;
-	D3D12_GPU_VIRTUAL_ADDRESS GPUVirtualAddress;
-	void* ResourceBaseAddress;
-	int32 NumMapCalls = 0;
-	FName DebugName;
-
-#if NV_AFTERMATH
-	GFSDK_Aftermath_ResourceHandle AftermathHandle;
-#endif
 
 #if UE_BUILD_DEBUG
 	static int64 TotalResourceCount;
@@ -147,11 +192,12 @@ private:
 #endif
 
 public:
+	FD3D12Resource() = delete;
 	explicit FD3D12Resource(FD3D12Device* ParentDevice,
 		FRHIGPUMask VisibleNodes,
 		ID3D12Resource* InResource,
 		D3D12_RESOURCE_STATES InInitialResourceState,
-		D3D12_RESOURCE_DESC const& InDesc,
+		FD3D12ResourceDesc const& InDesc,
 		FD3D12Heap* InHeap = nullptr,
 		D3D12_HEAP_TYPE InHeapType = D3D12_HEAP_TYPE_DEFAULT);
 
@@ -161,20 +207,24 @@ public:
 		D3D12_RESOURCE_STATES InInitialResourceState,
 		ED3D12ResourceStateMode InResourceStateMode,
 		D3D12_RESOURCE_STATES InDefaultResourceState,
-		D3D12_RESOURCE_DESC const& InDesc,
+		FD3D12ResourceDesc const& InDesc,
 		FD3D12Heap* InHeap,
 		D3D12_HEAP_TYPE InHeapType);
 
 	virtual ~FD3D12Resource();
 
 	operator ID3D12Resource&() { return *Resource; }
+
 	ID3D12Resource* GetResource() const { return Resource.GetReference(); }
+	ID3D12Resource* GetUAVAccessResource() const { return UAVAccessResource.GetReference(); }
+	void SetUAVAccessResource(ID3D12Resource* InUAVAccessResource) { UAVAccessResource = InUAVAccessResource; }
 
 	inline void* Map(const D3D12_RANGE* ReadRange = nullptr)
 	{
 		if (NumMapCalls == 0)
 		{
 			check(Resource);
+			check(ResourceBaseAddress == nullptr);
 			VERIFYD3D12RESULT(Resource->Map(0, ReadRange, &ResourceBaseAddress));
 		}
 		else
@@ -201,9 +251,10 @@ public:
 	}
 
 	ID3D12Pageable* GetPageable();
-	D3D12_RESOURCE_DESC const& GetDesc() const { return Desc; }
+	const FD3D12ResourceDesc& GetDesc() const { return Desc; }
 	D3D12_HEAP_TYPE GetHeapType() const { return HeapType; }
 	D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return GPUVirtualAddress; }
+	inline void SetGPUVirtualAddress(D3D12_GPU_VIRTUAL_ADDRESS Value) { GPUVirtualAddress = Value; }
 	void* GetResourceBaseAddress() const { check(ResourceBaseAddress); return ResourceBaseAddress; }
 	uint16 GetMipLevels() const { return Desc.MipLevels; }
 	uint16 GetArraySize() const { return (Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D) ? 1 : Desc.DepthOrArraySize; }
@@ -230,8 +281,13 @@ public:
 
 	void SetName(const TCHAR* Name)
 	{
-		DebugName = FName(Name);
-		::SetName(Resource, Name);
+		// Check name before setting it.  Saves FName lookup and driver call.  Names are frequently the same for pooled buffers
+		// that end up getting reused for the same purpose every frame (2/3 of calls to this function on a given frame).
+		if (DebugName != Name)
+		{
+			DebugName = FName(Name);
+			::SetName(Resource, Name);
+		}
 	}
 
 	FName GetName() const
@@ -262,52 +318,62 @@ public:
 
 	struct FD3D12ResourceTypeHelper
 	{
-		FD3D12ResourceTypeHelper(D3D12_RESOURCE_DESC& Desc, D3D12_HEAP_TYPE HeapType) :
-			bSRV((Desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0),
-			bDSV((Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0),
-			bRTV((Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0),
-			bUAV((Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0),
+		FD3D12ResourceTypeHelper(const FD3D12ResourceDesc& Desc, D3D12_HEAP_TYPE HeapType) :
+			bSRV(!EnumHasAnyFlags(Desc.Flags, D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)),
+			bDSV(EnumHasAnyFlags(Desc.Flags, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)),
+			bRTV(EnumHasAnyFlags(Desc.Flags, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)),
+			bUAV(EnumHasAnyFlags(Desc.Flags, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) || Desc.NeedsUAVAliasWorkarounds()),
 			bWritable(bDSV || bRTV || bUAV),
 			bSRVOnly(bSRV && !bWritable),
 			bBuffer(Desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER),
 			bReadBackResource(HeapType == D3D12_HEAP_TYPE_READBACK)
 		{}
 
-		const D3D12_RESOURCE_STATES GetOptimalInitialState(bool bAccurateWriteableStates) const
+		const D3D12_RESOURCE_STATES GetOptimalInitialState(ERHIAccess InResourceState, bool bAccurateWriteableStates) const
 		{
-			if (bSRVOnly)
+			// Ignore the requested resource state for non tracked resource because RHI will assume it's always in default resource 
+			// state then when a transition is required (will transition via scoped push/pop to requested state)
+			if (!bSRVOnly && InResourceState != ERHIAccess::Unknown && InResourceState != ERHIAccess::Discard)
 			{
-				return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+				bool bAsyncCompute = false;
+				return GetD3D12ResourceState(InResourceState, bAsyncCompute);
 			}
-			else if (bBuffer && !bUAV)
+			else
 			{
-				return (bReadBackResource) ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_GENERIC_READ;
-			}
-			else if (bWritable)
-			{
-				if (bAccurateWriteableStates)
+				if (bSRVOnly)
 				{
-					if (bDSV)
+					return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+				}
+				else if (bBuffer && !bUAV)
+				{
+					return (bReadBackResource) ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_GENERIC_READ;
+				}
+				else if (bWritable)
+				{
+					if (bAccurateWriteableStates)
 					{
-						return D3D12_RESOURCE_STATE_DEPTH_WRITE;
+						if (bDSV)
+						{
+							return D3D12_RESOURCE_STATE_DEPTH_WRITE;
+						}
+						else if (bRTV)
+						{
+							return D3D12_RESOURCE_STATE_RENDER_TARGET;
+						}
+						else if (bUAV)
+						{
+							return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+						}
 					}
-					else if (bRTV)
+					else
 					{
-						return D3D12_RESOURCE_STATE_RENDER_TARGET;
-					}
-					else if (bUAV)
-					{
-						return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+						// This things require tracking anyway
+						return D3D12_RESOURCE_STATE_COMMON;
 					}
 				}
-				else
-				{
-					// This things require tracking anyway
-					return D3D12_RESOURCE_STATE_COMMON;
-				}
-			}
 
-			return D3D12_RESOURCE_STATE_COMMON;
+				return D3D12_RESOURCE_STATE_COMMON;
+			}
 		}
 
 		const uint32 bSRV : 1;
@@ -340,14 +406,14 @@ private:
 		}
 		else
 		{
-			DetermineResourceStates(InDefaultState);
+			DetermineResourceStates(InDefaultState, InResourceStateMode);
 		}
 
 		if (bRequiresResourceStateTracking)
 		{
 #if D3D12_RHI_RAYTRACING
 			// No state tracking for acceleration structures because they can't have another state
-			check(InDefaultState != D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+			check(InDefaultState != D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE && InInitialState != D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
 #endif // D3D12_RHI_RAYTRACING
 
 			// Only a few resources (~1%) actually need resource state tracking
@@ -356,7 +422,7 @@ private:
 		}
 	}
 
-	void DetermineResourceStates(D3D12_RESOURCE_STATES InDefaultState)
+	void DetermineResourceStates(D3D12_RESOURCE_STATES InDefaultState, ED3D12ResourceStateMode InResourceStateMode)
 	{
 		const FD3D12ResourceTypeHelper Type(Desc, HeapType);
 
@@ -366,7 +432,7 @@ private:
 		SetCompressedState(D3D12_RESOURCE_STATE_COMMON);
 #endif
 
-		if (Type.bWritable)
+		if (Type.bWritable || InResourceStateMode == ED3D12ResourceStateMode::MultiState)
 		{
 			// Determine the resource's write/read states.
 			if (Type.bRTV)
@@ -378,68 +444,41 @@ private:
 			}
 			else if (Type.bDSV)
 			{
-				check(!Type.bRTV && !Type.bUAV && !Type.bBuffer);
+				check(!Type.bRTV && (!Type.bUAV || GRHISupportsDepthUAV) && !Type.bBuffer);
 				WritableState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 				ReadableState = Type.bSRV ? D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_DEPTH_READ;
 			}
 			else
 			{
-				check(Type.bUAV && !Type.bRTV && !Type.bDSV);
-				WritableState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+				WritableState = Type.bUAV ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_CORRUPT;
 				ReadableState = Type.bSRV ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_CORRUPT;
-			}
-		}
-
-		if (Type.bBuffer)
-		{
-			if (!Type.bWritable)
-			{
-				// Buffer used for input, like Vertex/Index buffer.
-				// Don't bother tracking state for this resource.
-#if UE_BUILD_DEBUG
-				FPlatformAtomics::InterlockedIncrement(&NoStateTrackingResourceCount);
-#endif
-				if (InDefaultState != D3D12_RESOURCE_STATE_TBD)
-				{
-					DefaultResourceState = InDefaultState;
-				}
-				else
-				{
-					DefaultResourceState = (HeapType == D3D12_HEAP_TYPE_READBACK) ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_GENERIC_READ;
-				}
-				bRequiresResourceStateTracking = false;
-				return;
 			}
 		}
 		else
 		{
-			if (Type.bSRVOnly)
-			{
-				// Texture used only as a SRV.
-				// Don't bother tracking state for this resource.
+			bRequiresResourceStateTracking = false;
+						
 #if UE_BUILD_DEBUG
-				FPlatformAtomics::InterlockedIncrement(&NoStateTrackingResourceCount);
+			FPlatformAtomics::InterlockedIncrement(&NoStateTrackingResourceCount);
 #endif
-				if (InDefaultState != D3D12_RESOURCE_STATE_TBD)
-				{
-					DefaultResourceState = InDefaultState;
-				}
-				else
-				{
-					DefaultResourceState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-				}
-				bRequiresResourceStateTracking = false;
-				return;
+			if (InDefaultState != D3D12_RESOURCE_STATE_TBD)
+			{
+				DefaultResourceState = InDefaultState;
+			}
+			else if (Type.bBuffer)
+			{
+				DefaultResourceState = (HeapType == D3D12_HEAP_TYPE_READBACK) ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_GENERIC_READ;
+			}
+			else
+			{
+				check(Type.bSRVOnly);
+				DefaultResourceState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 			}
 		}
 	}
 };
 
-#ifdef USE_BUCKET_ALLOCATOR
-typedef class FD3D12BucketAllocator FD3D12BaseAllocatorType;
-#else
 typedef class FD3D12BuddyAllocator FD3D12BaseAllocatorType;
-#endif
 
 struct FD3D12BuddyAllocatorPrivateData
 {
@@ -479,13 +518,24 @@ struct FD3D12SegListAllocatorPrivateData
 	}
 };
 
+struct FD3D12PoolAllocatorPrivateData
+{
+	FRHIPoolAllocationData PoolData;
+
+	void Init()
+	{
+		PoolData.Reset();
+	}
+};
+
 class FD3D12ResourceAllocator;
+class FD3D12BaseShaderResource;
+
 // A very light-weight and cache friendly way of accessing a GPU resource
-class FD3D12ResourceLocation : public FD3D12DeviceChild, public FNoncopyable
+class FD3D12ResourceLocation : public FRHIPoolResource, public FD3D12DeviceChild, public FNoncopyable
 {
 public:
-
-	enum class ResourceLocationType
+	enum class ResourceLocationType : uint8
 	{
 		eUndefined,
 		eStandAlone,
@@ -501,6 +551,7 @@ public:
 	{
 		AT_Default, // FD3D12BaseAllocatorType
 		AT_SegList, // FD3D12SegListAllocator
+		AT_Pool,	// FD3D12PoolAllocator
 		AT_Unknown = 0xff
 	};
 
@@ -513,11 +564,15 @@ public:
 	static void TransferOwnership(FD3D12ResourceLocation& Destination, FD3D12ResourceLocation& Source);
 
 	// Setters
+	inline void SetOwner(FD3D12BaseShaderResource* InOwner) { Owner = InOwner; }
 	void SetResource(FD3D12Resource* Value);
 	inline void SetType(ResourceLocationType Value) { Type = Value;}
 
 	inline void SetAllocator(FD3D12BaseAllocatorType* Value) { Allocator = Value; AllocatorType = AT_Default; }
 	inline void SetSegListAllocator(FD3D12SegListAllocator* Value) { SegListAllocator = Value; AllocatorType = AT_SegList; }
+	inline void SetPoolAllocator(FD3D12PoolAllocator* Value) { PoolAllocator = Value; AllocatorType = AT_Pool; }
+	inline void ClearAllocator() { Allocator = nullptr; AllocatorType = AT_Unknown; }
+
 	inline void SetMappedBaseAddress(void* Value) { MappedBaseAddress = Value; }
 	inline void SetGPUVirtualAddress(D3D12_GPU_VIRTUAL_ADDRESS Value) { GPUVirtualAddress = Value; }
 	inline void SetOffsetFromBaseOfResource(uint64 Value) { OffsetFromBaseOfResource = Value; }
@@ -525,8 +580,10 @@ public:
 
 	// Getters
 	inline ResourceLocationType GetType() const { return Type; }
+	inline EAllocatorType GetAllocatorType() const { return AllocatorType; }
 	inline FD3D12BaseAllocatorType* GetAllocator() { check(AT_Default == AllocatorType); return Allocator; }
 	inline FD3D12SegListAllocator* GetSegListAllocator() { check(AT_SegList == AllocatorType); return SegListAllocator; }
+	inline FD3D12PoolAllocator* GetPoolAllocator() { check(AT_Pool == AllocatorType); return PoolAllocator; }
 	inline FD3D12Resource* GetResource() const { return UnderlyingResource; }
 	inline void* GetMappedBaseAddress() const { return MappedBaseAddress; }
 	inline D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return GPUVirtualAddress; }
@@ -536,26 +593,20 @@ public:
 	inline FD3D12BuddyAllocatorPrivateData& GetBuddyAllocatorPrivateData() { return AllocatorData.BuddyAllocatorPrivateData; }
 	inline FD3D12BlockAllocatorPrivateData& GetBlockAllocatorPrivateData() { return AllocatorData.BlockAllocatorPrivateData; }
 	inline FD3D12SegListAllocatorPrivateData& GetSegListAllocatorPrivateData() { return AllocatorData.SegListAllocatorPrivateData; }
+	inline FD3D12PoolAllocatorPrivateData& GetPoolAllocatorPrivateData() { return AllocatorData.PoolAllocatorPrivateData; }
+
+	// Pool allocation specific functions
+	bool OnAllocationMoved(FRHIPoolAllocationData* InNewData);
+	void UnlockPoolData();
 
 	const inline bool IsValid() const { return Type != ResourceLocationType::eUndefined; }
 
-	inline void AsStandAlone(FD3D12Resource* Resource, uint32 BufferSize = 0, bool bInIsTransient = false )
-	{
-		SetType(FD3D12ResourceLocation::ResourceLocationType::eStandAlone);
-		SetResource(Resource);
-		SetSize(BufferSize);
-
-		if (!IsCPUInaccessible(Resource->GetHeapType()))
-		{
-			D3D12_RANGE range = { 0, IsCPUWritable(Resource->GetHeapType())? 0 : BufferSize };
-			SetMappedBaseAddress(Resource->Map(&range));
-		}
-		SetGPUVirtualAddress(Resource->GetGPUVirtualAddress());
-		SetTransient(bInIsTransient);
-	}
+	void AsStandAlone(FD3D12Resource* Resource, uint64 InSize = 0, bool bInIsTransient = false, const D3D12_HEAP_PROPERTIES* CustomHeapProperties = nullptr);
 
 	inline void AsHeapAliased(FD3D12Resource* Resource)
 	{
+		check(Resource->GetHeapType() != D3D12_HEAP_TYPE_READBACK);
+
 		SetType(FD3D12ResourceLocation::ResourceLocationType::eHeapAliased);
 		SetResource(Resource);
 		SetSize(0);
@@ -620,17 +671,18 @@ private:
 	void InternalClear();
 
 	void ReleaseResource();
+	void UpdateStandAloneStats(bool bIncrement);
 
-	ResourceLocationType Type;
-
-	FD3D12Resource* UnderlyingResource;
-	FD3D12ResidencyHandle* ResidencyHandle;
+	FD3D12BaseShaderResource* Owner{};
+	FD3D12Resource* UnderlyingResource{};
+	FD3D12ResidencyHandle* ResidencyHandle{};
 
 	// Which allocator this belongs to
 	union
 	{
 		FD3D12BaseAllocatorType* Allocator;
 		FD3D12SegListAllocator* SegListAllocator;
+		FD3D12PoolAllocator* PoolAllocator;
 	};
 
 	// Union to save memory
@@ -639,19 +691,32 @@ private:
 		FD3D12BuddyAllocatorPrivateData BuddyAllocatorPrivateData;
 		FD3D12BlockAllocatorPrivateData BlockAllocatorPrivateData;
 		FD3D12SegListAllocatorPrivateData SegListAllocatorPrivateData;
+		FD3D12PoolAllocatorPrivateData PoolAllocatorPrivateData;
 	} AllocatorData;
 
 	// Note: These values refer to the start of this location including any padding *NOT* the start of the underlying resource
-	void* MappedBaseAddress;
-	D3D12_GPU_VIRTUAL_ADDRESS GPUVirtualAddress;
-	uint64 OffsetFromBaseOfResource;
+	void* MappedBaseAddress{};
+	D3D12_GPU_VIRTUAL_ADDRESS GPUVirtualAddress{};
+	uint64 OffsetFromBaseOfResource{};
 
 	// The size the application asked for
-	uint64 Size;
+	uint64 Size{};
 
-	bool bTransient;
+	ResourceLocationType Type{ ResourceLocationType::eUndefined };
+	EAllocatorType AllocatorType{ AT_Unknown };
+	bool bTransient{ false };
+};
 
-	EAllocatorType AllocatorType;
+// Generic interface for every type D3D12 specific allocator
+struct ID3D12ResourceAllocator
+{
+	// Helper function for textures to compute the correct size and alignment
+	void AllocateTexture(uint32 GPUIndex, D3D12_HEAP_TYPE InHeapType, const FD3D12ResourceDesc& InDesc, EPixelFormat InUEFormat, ED3D12ResourceStateMode InResourceStateMode,
+		D3D12_RESOURCE_STATES InCreateState, const D3D12_CLEAR_VALUE* InClearValue, const TCHAR* InName, FD3D12ResourceLocation& ResourceLocation);
+
+	// Actual pure virtual resource allocation function
+	virtual void AllocateResource(uint32 GPUIndex, D3D12_HEAP_TYPE InHeapType, const FD3D12ResourceDesc& InDesc, uint64 InSize, uint32 InAllocationAlignment, ED3D12ResourceStateMode InResourceStateMode,
+		D3D12_RESOURCE_STATES InCreateState, const D3D12_CLEAR_VALUE* InClearValue, const TCHAR* InName, FD3D12ResourceLocation& ResourceLocation) = 0;
 };
 
 class FD3D12DeferredDeletionQueue : public FD3D12AdapterChild
@@ -743,61 +808,81 @@ struct FD3D12LockedResource : public FD3D12DeviceChild
 	uint32 bHasNeverBeenLocked : 1;
 };
 
-class FD3D12BaseShaderResourceView
+/** Resource which might needs to be notified about changes on dependent resources (Views, RTGeometryObject, Cached binding tables) */
+class FD3D12ShaderResourceRenameListener
 {
 protected:
-	void Remove();
 
 	friend class FD3D12BaseShaderResource;
-	FD3D12BaseShaderResource* DynamicResource = nullptr;
+	virtual void ResourceRenamed(FD3D12BaseShaderResource* InRenamedResource, FD3D12ResourceLocation* InNewResourceLocation) = 0;
 };
 
-/** The base class of resources that may be bound as shader resources. */
+
+#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
+class FD3D12FastClearResource
+{
+public:
+	inline void GetWriteMaskProperties(void*& OutData, uint32& OutSize)
+	{
+		OutData = nullptr;
+		OutSize = 0;
+	}
+};
+#endif
+
+
+/** The base class of resources that may be bound as shader resources (texture or buffer). */
 class FD3D12BaseShaderResource : public FD3D12DeviceChild, public IRefCountedObject
 {
 protected:
-	FCriticalSection DynamicSRVsCS;
-	TArray<class FD3D12BaseShaderResourceView*> DynamicSRVs;
+	FCriticalSection RenameListenersCS;
+	TArray<FD3D12ShaderResourceRenameListener*> RenameListeners;
 
 public:
 	FD3D12Resource* GetResource() const { return ResourceLocation.GetResource(); }
 
-	void AddDynamicSRV(FD3D12BaseShaderResourceView* InSRV)
+	void AddRenameListener(FD3D12ShaderResourceRenameListener* InRenameListener)
 	{
-		FScopeLock Lock(&DynamicSRVsCS);
-		check(InSRV->DynamicResource == nullptr);
-		InSRV->DynamicResource = this;
-		DynamicSRVs.Add(InSRV);
+		FScopeLock Lock(&RenameListenersCS);
+		check(!RenameListeners.Contains(InRenameListener));
+		RenameListeners.Add(InRenameListener);
 	}
 
-	void RemoveDynamicSRV(FD3D12BaseShaderResourceView* InSRV)
+	void RemoveRenameListener(FD3D12ShaderResourceRenameListener* InRenameListener)
 	{
-		FScopeLock Lock(&DynamicSRVsCS);
-		check(InSRV->DynamicResource == this);
-		InSRV->DynamicResource = nullptr;
-		uint32 Removed = DynamicSRVs.Remove(InSRV);
-		check(Removed == 1);
-	}
+		FScopeLock Lock(&RenameListenersCS);
+		uint32 Removed = RenameListeners.Remove(InRenameListener);
 
-	void RemoveAllDynamicSRVs()
-	{
-		FScopeLock Lock(&DynamicSRVsCS);
-		for (FD3D12BaseShaderResourceView* DynamicSRV : DynamicSRVs)
-		{
-			if (DynamicSRV != nullptr)
-			{
-				DynamicSRV->DynamicResource = nullptr;
-			}
-		}
-		DynamicSRVs.Reset();
+		checkf(Removed == 1, TEXT("Should have exactly one registered listener during remove (same listener shouldn't registered twice and we shouldn't call this if not registered"));
 	}
 
 	void Swap(FD3D12BaseShaderResource& Other)
 	{
+		// assume RHI thread when swapping listeners and resources
+		check(!IsRunningRHIInSeparateThread() || IsInRHIThread());
+
 		::Swap(Parent, Other.Parent);
 		ResourceLocation.Swap(Other.ResourceLocation);
+		ResourceLocation.SetOwner(this);
 		::Swap(BufferAlignment, Other.BufferAlignment);
-		::Swap(DynamicSRVs, Other.DynamicSRVs);
+
+		// NOTE: Don't swap the rename listeners because these are still referencing the original BaseShaderResource
+	}
+
+	void RemoveAllRenameListeners()
+	{
+		FScopeLock Lock(&RenameListenersCS);
+		ResourceRenamed(nullptr);
+		RenameListeners.Reset();
+	}
+
+	void ResourceRenamed(FD3D12ResourceLocation* InNewResourceLocation)
+	{
+		FScopeLock Lock(&RenameListenersCS);
+		for (FD3D12ShaderResourceRenameListener* RenameListener : RenameListeners)
+		{
+			RenameListener->ResourceRenamed(this, InNewResourceLocation);
+		}
 	}
 
 	FD3D12ResourceLocation ResourceLocation;
@@ -813,28 +898,11 @@ public:
 
 	~FD3D12BaseShaderResource()
 	{
-		for (FD3D12BaseShaderResourceView* DynamicSRV : DynamicSRVs)
-		{
-			check(DynamicSRV->DynamicResource == this);
-			DynamicSRV->DynamicResource = nullptr;
-		}
+		RemoveAllRenameListeners();
 	}
 };
 
-inline void FD3D12BaseShaderResourceView::Remove()
-{
-	if (DynamicResource)
-	{
-		DynamicResource->RemoveDynamicSRV(this);
-	}
-}
-
-/** Updates tracked stats for a buffer. */
-#define D3D12_BUFFER_TYPE_CONSTANT   1
-#define D3D12_BUFFER_TYPE_INDEX      2
-#define D3D12_BUFFER_TYPE_VERTEX     3
-#define D3D12_BUFFER_TYPE_STRUCTURED 4
-extern void UpdateBufferStats(FD3D12ResourceLocation* ResourceLocation, bool bAllocating, uint32 BufferType);
+extern void UpdateBufferStats(EBufferUsageFlags UsageFlags, int64 RequestedSize);
 
 /** Uniform buffer resource class. */
 class FD3D12UniformBuffer : public FRHIUniformBuffer, public FD3D12DeviceChild, public FD3D12LinkedAdapterObject<FD3D12UniformBuffer>
@@ -853,7 +921,7 @@ public:
 	const EUniformBufferUsage UniformBufferUsage;
 
 	/** Initialization constructor. */
-	FD3D12UniformBuffer(class FD3D12Device* InParent, const FRHIUniformBufferLayout& InLayout, EUniformBufferUsage InUniformBufferUsage)
+	FD3D12UniformBuffer(class FD3D12Device* InParent, const FRHIUniformBufferLayout* InLayout, EUniformBufferUsage InUniformBufferUsage)
 		: FRHIUniformBuffer(InLayout)
 		, FD3D12DeviceChild(InParent)
 #if USE_STATIC_ROOT_SIGNATURE
@@ -867,170 +935,74 @@ public:
 	virtual ~FD3D12UniformBuffer();
 };
 
-#if PLATFORM_WINDOWS || PLATFORM_HOLOLENS
-class FD3D12TransientResource
-{
-	// Nothing special for fast ram
-public:
-	void Swap(FD3D12TransientResource&) {}
-};
-class FD3D12FastClearResource
+class FD3D12Buffer : public FRHIBuffer, public FD3D12BaseShaderResource, public FD3D12LinkedAdapterObject<FD3D12Buffer>
 {
 public:
-	inline void GetWriteMaskProperties(void*& OutData, uint32& OutSize)
+	FD3D12Buffer()
+		: FRHIBuffer(0, BUF_None, 0)
+		, FD3D12BaseShaderResource(nullptr)
+		, LockedData(nullptr)
 	{
-		OutData = nullptr;
-		OutSize = 0;
 	}
-};
-#endif
 
-class FD3D12Buffer : public FD3D12BaseShaderResource, public FD3D12TransientResource, public FD3D12LinkedAdapterObject<FD3D12Buffer>
-{
-public:
-	FD3D12Buffer(FD3D12Device* InParent)
-		: FD3D12BaseShaderResource(InParent)
+	FD3D12Buffer(FD3D12Device* InParent, uint32 InSize, EBufferUsageFlags InUsage, uint32 InStride)
+		: FRHIBuffer(InSize, InUsage, InStride)
+		, FD3D12BaseShaderResource(InParent)
 		, LockedData(InParent)
 	{
 	}
-	virtual ~FD3D12Buffer()
+	virtual ~FD3D12Buffer();
+
+	virtual uint32 GetParentGPUIndex() const override;
+
+	void UploadResourceData(class FRHICommandListImmediate* InRHICmdList, FResourceArrayInterface* InResourceArray, D3D12_RESOURCE_STATES InDestinationState);
+	FD3D12SyncPoint UploadResourceDataViaCopyQueue(FResourceArrayInterface* InResourceArray);
+
+	// FRHIResource overrides
+#if RHI_ENABLE_RESOURCE_INFO
+	bool GetResourceInfo(FRHIResourceInfo& OutResourceInfo) const override
 	{
+		OutResourceInfo = FRHIResourceInfo{};
+		OutResourceInfo.Name = GetName();
+		OutResourceInfo.Type = GetType();
+		OutResourceInfo.VRamAllocation.AllocationSize = ResourceLocation.GetSize();
+		OutResourceInfo.IsTransient = this->ResourceLocation.IsTransient();
+		return true;
 	}
+#endif
 
 	void Rename(FD3D12ResourceLocation& NewLocation);
 	void RenameLDAChain(FD3D12ResourceLocation& NewLocation);
 
+	void Swap(FD3D12Buffer& Other);
+
 	void ReleaseUnderlyingResource();
+
+	// IRefCountedObject interface.
+	virtual uint32 AddRef() const
+	{
+		return FRHIResource::AddRef();
+	}
+	virtual uint32 Release() const
+	{
+		return FRHIResource::Release();
+	}
+	virtual uint32 GetRefCount() const
+	{
+		return FRHIResource::GetRefCount();
+	}
+
+	static void GetResourceDescAndAlignment(uint64 InSize, uint32 InStride, EBufferUsageFlags& InUsage, D3D12_RESOURCE_DESC& ResourceDesc, uint32& Alignment);
 
 	FD3D12LockedResource LockedData;
 };
 
-/** Index buffer resource class that stores stride information. */
-class FD3D12IndexBuffer : public FRHIIndexBuffer, public FD3D12Buffer
-{
-public:
-	FD3D12IndexBuffer()
-		: FD3D12Buffer(nullptr)
-	{
-	}
-
-	FD3D12IndexBuffer(FD3D12Device* InParent, uint32 InStride, uint32 InSize, uint32 InUsage)
-		: FRHIIndexBuffer(InStride, InSize, InUsage)
-		, FD3D12Buffer(InParent)
-	{
-	}
-
-	virtual ~FD3D12IndexBuffer();
-
-	void Swap(FD3D12IndexBuffer& Other);
-
-	void ReleaseUnderlyingResource();
-
-	// IRefCountedObject interface.
-	virtual uint32 AddRef() const
-	{
-		return FRHIResource::AddRef();
-	}
-	virtual uint32 Release() const
-	{
-		return FRHIResource::Release();
-	}
-	virtual uint32 GetRefCount() const
-	{
-		return FRHIResource::GetRefCount();
-	}
-};
-
 class FD3D12ShaderResourceView;
 
-/** Structured buffer resource class. */
-class FD3D12StructuredBuffer : public FRHIStructuredBuffer, public FD3D12Buffer
+template<typename InAllocatorType>
+inline void AddTransitionBarrier(TArray<D3D12_RESOURCE_BARRIER, InAllocatorType>& BarrierList, FD3D12Resource* pResource, D3D12_RESOURCE_STATES Before, D3D12_RESOURCE_STATES After, uint32 Subresource)
 {
-public:
-	FD3D12StructuredBuffer(FD3D12Device* InParent, uint32 InStride, uint32 InSize, uint32 InUsage)
-		: FRHIStructuredBuffer(InStride, InSize, InUsage)
-		, FD3D12Buffer(InParent)
-	{
-	}
-
-	virtual ~FD3D12StructuredBuffer();
-
-	// IRefCountedObject interface.
-	virtual uint32 AddRef() const
-	{
-		return FRHIResource::AddRef();
-	}
-	virtual uint32 Release() const
-	{
-		return FRHIResource::Release();
-	}
-	virtual uint32 GetRefCount() const
-	{
-		return FRHIResource::GetRefCount();
-	}
-};
-
-/** Vertex buffer resource class. */
-class FD3D12VertexBuffer : public FRHIVertexBuffer, public FD3D12Buffer
-{
-public:
-	FD3D12VertexBuffer()
-		: FD3D12Buffer(nullptr)
-	{}
-
-	FD3D12VertexBuffer(FD3D12Device* InParent, uint32 InStride, uint32 InSize, uint32 InUsage)
-		: FRHIVertexBuffer(InSize, InUsage)
-		, FD3D12Buffer(InParent)
-	{
-		UNREFERENCED_PARAMETER(InStride);
-	}
-
-	virtual ~FD3D12VertexBuffer();
-
-	void Swap(FD3D12VertexBuffer& Other);
-
-	void ReleaseUnderlyingResource();
-
-	// IRefCountedObject interface.
-	virtual uint32 AddRef() const
-	{
-		return FRHIResource::AddRef();
-	}
-	virtual uint32 Release() const
-	{
-		return FRHIResource::Release();
-	}
-	virtual uint32 GetRefCount() const
-	{
-		return FRHIResource::GetRefCount();
-	}
-};
-
-template<class BufferType>
-inline void UpdateBufferStats(FD3D12ResourceLocation* ResourceLocation, bool bAllocating);
-
-template<>
-inline void UpdateBufferStats<FD3D12UniformBuffer>(FD3D12ResourceLocation* ResourceLocation, bool bAllocating)
-{
-	UpdateBufferStats(ResourceLocation, bAllocating, D3D12_BUFFER_TYPE_CONSTANT);
-}
-
-template<>
-inline void UpdateBufferStats<FD3D12VertexBuffer>(FD3D12ResourceLocation* ResourceLocation, bool bAllocating)
-{
-	UpdateBufferStats(ResourceLocation, bAllocating, D3D12_BUFFER_TYPE_VERTEX);
-}
-
-template<>
-inline void UpdateBufferStats<FD3D12IndexBuffer>(FD3D12ResourceLocation* ResourceLocation, bool bAllocating)
-{
-	UpdateBufferStats(ResourceLocation, bAllocating, D3D12_BUFFER_TYPE_INDEX);
-}
-
-template<>
-inline void UpdateBufferStats<FD3D12StructuredBuffer>(FD3D12ResourceLocation* ResourceLocation, bool bAllocating)
-{
-	UpdateBufferStats(ResourceLocation, bAllocating, D3D12_BUFFER_TYPE_STRUCTURED);
+	BarrierList.Add(CD3DX12_RESOURCE_BARRIER::Transition(pResource->GetResource(), Before, After, Subresource));
 }
 
 class FD3D12ResourceBarrierBatcher : public FNoncopyable
@@ -1074,37 +1046,28 @@ public:
 
 		check(IsValidD3D12ResourceState(Before) && IsValidD3D12ResourceState(After));
 
-		D3D12_RESOURCE_BARRIER* Barrier = nullptr;
 #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
-		if (pResource->IsBackBuffer() && (After & BackBufferBarrierWriteTransitionTargets))
+		if (pResource->IsBackBuffer() && EnumHasAnyFlags(After, BackBufferBarrierWriteTransitionTargets))
 		{
-			BackBufferBarriers.AddUninitialized();
-			Barrier = &BackBufferBarriers.Last();
+			AddTransitionBarrier(BackBufferBarriers, pResource, Before, After, Subresource);
 		}
 		else
-#endif // #if PLATFORM_USE_BACKBUFFER_WRITE_TRANSITION_TRACKING
+#endif
 		{
-			Barriers.AddUninitialized();
-			Barrier = &Barriers.Last();
+			AddTransitionBarrier(Barriers, pResource, Before, After, Subresource);
 		}
 
-		Barrier->Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		Barrier->Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		Barrier->Transition.StateBefore = Before;
-		Barrier->Transition.StateAfter = After;
-		Barrier->Transition.Subresource = Subresource;
-		Barrier->Transition.pResource = pResource->GetResource();
 		return 1;
 	}
 
-	void AddAliasingBarrier(ID3D12Resource* pResource)
+	void AddAliasingBarrier(ID3D12Resource* InResourceBefore, ID3D12Resource* InResourceAfter)
 	{
 		Barriers.AddUninitialized();
 		D3D12_RESOURCE_BARRIER& Barrier = Barriers.Last();
 		Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
 		Barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		Barrier.Aliasing.pResourceBefore = NULL;
-		Barrier.Aliasing.pResourceAfter = pResource;
+		Barrier.Aliasing.pResourceBefore = InResourceBefore;
+		Barrier.Aliasing.pResourceAfter = InResourceAfter;
 	}
 
 	// Flush the batch to the specified command list then reset.
@@ -1197,19 +1160,9 @@ struct TD3D12ResourceTraits<FRHIUniformBuffer>
 	typedef FD3D12UniformBuffer TConcreteType;
 };
 template<>
-struct TD3D12ResourceTraits<FRHIIndexBuffer>
+struct TD3D12ResourceTraits<FRHIBuffer>
 {
-	typedef FD3D12IndexBuffer TConcreteType;
-};
-template<>
-struct TD3D12ResourceTraits<FRHIStructuredBuffer>
-{
-	typedef FD3D12StructuredBuffer TConcreteType;
-};
-template<>
-struct TD3D12ResourceTraits<FRHIVertexBuffer>
-{
-	typedef FD3D12VertexBuffer TConcreteType;
+	typedef FD3D12Buffer TConcreteType;
 };
 template<>
 struct TD3D12ResourceTraits<FRHISamplerState>

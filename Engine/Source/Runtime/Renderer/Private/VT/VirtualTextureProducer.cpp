@@ -10,6 +10,8 @@ FVirtualTextureProducer::~FVirtualTextureProducer()
 
 void FVirtualTextureProducer::Release(FVirtualTextureSystem* System, const FVirtualTextureProducerHandle& HandleToSelf)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FVirtualTextureProducer::Release);
+
 	if (Description.bPersistentHighestMip)
 	{
 		System->ForceUnlockAllTiles(HandleToSelf, this);
@@ -23,8 +25,18 @@ void FVirtualTextureProducer::Release(FVirtualTextureSystem* System, const FVirt
 	}
 
 	PhysicalGroups.Reset();
+
+	FGraphEventArray ProducePageTasks;
+	VirtualTexture->GatherProducePageDataTasks(HandleToSelf, ProducePageTasks);
+	if (ProducePageTasks.Num())
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FVirtualTextureProducer::Release_Wait);
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(ProducePageTasks, ENamedThreads::GetRenderThread_Local());
+	}
+
 	delete VirtualTexture;
 	VirtualTexture = nullptr;
+	
 	Description = FVTProducerDescription();
 }
 
@@ -129,6 +141,15 @@ void FVirtualTextureProducerCollection::CallPendingCallbacks()
 		// Make a copy, then release the callback entry before calling the callback function
 		// (The destroyed callback may try to remove this or other callbacks, so need to make sure state is valid before calling)
 		const FCallbackEntry CallbackCopy(Callback);
+		if (Callback.Baton)
+		{
+			TArray<uint32>& BatonCallbacks = CallbacksMap.FindChecked(Callback.Baton);
+			BatonCallbacks.Remove(CallbackIndex);
+			if (BatonCallbacks.IsEmpty())
+			{
+				CallbacksMap.Remove(Callback.Baton);
+			}
+		}
 		Callback.DestroyedFunction = nullptr;
 		Callback.Baton = nullptr;
 		Callback.OwnerHandle = FVirtualTextureProducerHandle();
@@ -156,6 +177,7 @@ void FVirtualTextureProducerCollection::AddDestroyedCallback(const FVirtualTextu
 {
 	check(IsInRenderingThread());
 	check(Function);
+	check(Baton);
 
 	FProducerEntry* Entry = GetEntry(Handle);
 	if (Entry)
@@ -167,6 +189,7 @@ void FVirtualTextureProducerCollection::AddDestroyedCallback(const FVirtualTextu
 		Callback.Baton = Baton;
 		Callback.OwnerHandle = Handle;
 		Callback.PackedFlags = 0u;
+		CallbacksMap.FindOrAdd(Baton).Add(CallbackIndex);
 	}
 }
 
@@ -176,11 +199,13 @@ uint32 FVirtualTextureProducerCollection::RemoveAllCallbacks(const void* Baton)
 	check(Baton);
 
 	uint32 NumRemoved = 0u;
-	for (int32 CallbackIndex = CallbackList_Count; CallbackIndex < Callbacks.Num(); ++CallbackIndex)
+	TArray<uint32>* CallbackIndices = CallbacksMap.Find(Baton);
+	if (CallbackIndices != nullptr)
 	{
-		FCallbackEntry& Callback = Callbacks[CallbackIndex];
-		if (Callback.Baton == Baton)
+		for (int32 CallbackIndex : *CallbackIndices)
 		{
+			FCallbackEntry& Callback = Callbacks[CallbackIndex];
+			check(Callback.Baton == Baton);
 			check(Callback.DestroyedFunction);
 			Callback.DestroyedFunction = nullptr;
 			Callback.Baton = nullptr;
@@ -195,6 +220,7 @@ uint32 FVirtualTextureProducerCollection::RemoveAllCallbacks(const void* Baton)
 			}
 			++NumRemoved;
 		}
+		CallbacksMap.Remove(Baton);
 	}
 	return NumRemoved;
 }

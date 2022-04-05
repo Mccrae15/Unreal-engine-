@@ -2,20 +2,18 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
 #include "Engine/EngineTypes.h"
 #include "PrimitiveViewRelevance.h"
-#include "RenderResource.h"
 #include "MaterialShared.h"
 #include "DynamicMeshBuilder.h"
 #include "DebugRenderSceneProxy.h"
-#include "Components/PrimitiveComponent.h"
+#include "Debug/DebugDrawComponent.h"
 #include "MeshBatch.h"
 #include "LocalVertexFactory.h"
 #include "Math/GenericOctree.h"
 #include "StaticMeshResources.h"
 #include "NavigationSystemTypes.h"
+#include "Templates/UnrealTemplate.h"
 #include "NavMeshRenderingComponent.generated.h"
 
 class APlayerController;
@@ -59,11 +57,10 @@ struct NAVIGATIONSYSTEM_API FNavMeshSceneProxyData : public TSharedFromThis<FNav
 
 	struct FDebugPoint
 	{
-		FDebugPoint() {}
 		FDebugPoint(const FVector& InPosition, const FColor& InColor, const float InSize) : Position(InPosition), Color(InColor), Size(InSize) {}
 		FVector Position;
 		FColor Color;
-		float Size;
+		float Size = 0.f;
 	};
 
 	TArray<FDebugRenderSceneProxy::FDebugLine> ThickLineItems;
@@ -102,7 +99,6 @@ struct NAVIGATIONSYSTEM_API FNavMeshSceneProxyData : public TSharedFromThis<FNav
 	uint32 GetAllocatedSize() const;
 
 #if WITH_RECAST
-	int32 GetDetailFlags(const ARecastNavMesh* NavMesh) const;
 	void GatherData(const ARecastNavMesh* NavMesh, int32 InNavDetailFlags, const TArray<int32>& TileSet);
 
 #if RECAST_INTERNAL_DEBUG_DATA
@@ -113,23 +109,22 @@ struct NAVIGATIONSYSTEM_API FNavMeshSceneProxyData : public TSharedFromThis<FNav
 };
 
 // exported to API for GameplayDebugger module
-class NAVIGATIONSYSTEM_API FNavMeshSceneProxy final : public FDebugRenderSceneProxy
+class NAVIGATIONSYSTEM_API FNavMeshSceneProxy final : public FDebugRenderSceneProxy, public FNoncopyable
 {
 	friend class FNavMeshDebugDrawDelegateHelper;
 public:
 	virtual SIZE_T GetTypeHash() const override;
 
 	FNavMeshSceneProxy(const UPrimitiveComponent* InComponent, FNavMeshSceneProxyData* InProxyData, bool ForceToRender = false);
-	virtual ~FNavMeshSceneProxy();
+	virtual ~FNavMeshSceneProxy() override;
 
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
 protected:
-	void DrawDebugBox(FPrimitiveDrawInterface* PDI, FVector const& Center, FVector const& Box, FColor const& Color) const;
 	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
 
-	virtual uint32 GetMemoryFootprint(void) const override { return sizeof(*this) + GetAllocatedSize(); }
-	uint32 GetAllocatedSize(void) const;
+	virtual uint32 GetMemoryFootprint(void) const override { return sizeof(*this) + GetAllocatedSizeInternal(); }
+	uint32 GetAllocatedSizeInternal(void) const;
 
 private:			
 	FNavMeshSceneProxyData ProxyData;
@@ -138,19 +133,18 @@ private:
 	FStaticMeshVertexBuffers VertexBuffers;
 	FLocalVertexFactory VertexFactory;
 
-	TArray<FColoredMaterialRenderProxy> MeshColors;
+	TArray<TUniquePtr<FColoredMaterialRenderProxy>> MeshColors;
 	TArray<FMeshBatchElement> MeshBatchElements;
 
 	FDebugDrawDelegate DebugTextDrawingDelegate;
 	FDelegateHandle DebugTextDrawingDelegateHandle;
 	TWeakObjectPtr<UNavMeshRenderingComponent> RenderingComponent;
-	uint32 bRequestedData : 1;
 	uint32 bForceRendering : 1;
 	uint32 bSkipDistanceCheck : 1;
 	uint32 bUseThickLines : 1;
 };
 
-#if WITH_RECAST && !UE_BUILD_SHIPPING && !UE_BUILD_TEST
+#if WITH_RECAST && UE_ENABLE_DEBUG_DRAWING
 class FNavMeshDebugDrawDelegateHelper : public FDebugDrawDelegateHelper
 {
 	typedef FDebugDrawDelegateHelper Super;
@@ -162,23 +156,13 @@ public:
 	{
 	}
 
-	virtual void InitDelegateHelper(const FDebugRenderSceneProxy* InSceneProxy) override
+	void SetupFromProxy(const FNavMeshSceneProxy* InSceneProxy)
 	{
-		check(0);
-	}
-
-	void InitDelegateHelper(const FNavMeshSceneProxy* InSceneProxy)
-	{
-		Super::InitDelegateHelper(InSceneProxy);
-
 		DebugLabels.Reset();
 		DebugLabels.Append(InSceneProxy->ProxyData.DebugLabels);
 		bForceRendering = InSceneProxy->bForceRendering;
 		bNeedsNewData = InSceneProxy->ProxyData.bNeedsNewData;
 	}
-
-	NAVIGATIONSYSTEM_API virtual void RegisterDebugDrawDelgate() override;
-	NAVIGATIONSYSTEM_API virtual void UnregisterDebugDrawDelgate() override;
 
 protected:
 	NAVIGATIONSYSTEM_API virtual void DrawDebugLabels(UCanvas* Canvas, APlayerController*) override;
@@ -190,34 +174,28 @@ private:
 };
 #endif
 
-UCLASS(hidecategories=Object, editinlinenew)
-class NAVIGATIONSYSTEM_API UNavMeshRenderingComponent : public UPrimitiveComponent
+UCLASS(editinlinenew, ClassGroup = Debug)
+class NAVIGATIONSYSTEM_API UNavMeshRenderingComponent : public UDebugDrawComponent
 {
 	GENERATED_UCLASS_BODY()
 
 public:
-	
-	//~ Begin UPrimitiveComponent Interface
-	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
-	virtual void OnRegister()  override;
-	virtual void OnUnregister()  override;
-	//~ End UPrimitiveComponent Interface
-
-	//~ Begin UActorComponent Interface
-	virtual void CreateRenderState_Concurrent(FRegisterComponentContext* Context) override;
-	virtual void DestroyRenderState_Concurrent() override;
-	//~ End UActorComponent Interface
-
-	//~ Begin USceneComponent Interface
-	virtual FBoxSphereBounds CalcBounds(const FTransform &LocalToWorld) const override;
-	//~ End USceneComponent Interface
-
 	void ForceUpdate() { bForceUpdate = true; }
 	bool IsForcingUpdate() const { return bForceUpdate; }
 
 	static bool IsNavigationShowFlagSet(const UWorld* World);
 
 protected:
+	virtual void OnRegister()  override;
+	virtual void OnUnregister()  override;
+
+#if UE_ENABLE_DEBUG_DRAWING
+  	virtual FDebugRenderSceneProxy* CreateDebugSceneProxy() override;
+	virtual FDebugDrawDelegateHelper& GetDebugDrawDelegateHelper() override { return NavMeshDebugDrawDelegateManager; }
+#endif
+
+	virtual FBoxSphereBounds CalcBounds(const FTransform &LocalToWorld) const override;
+
 	/** Gathers drawable information from NavMesh and puts it in OutProxyData. 
 	 *	Override to add additional information to OutProxyData.*/
 	virtual void GatherData(const ARecastNavMesh& NavMesh, FNavMeshSceneProxyData& OutProxyData) const;
@@ -230,8 +208,8 @@ protected:
 	FTimerHandle TimerHandle;
 
 protected:
-#if WITH_RECAST && !UE_BUILD_SHIPPING && !UE_BUILD_TEST
-	FNavMeshDebugDrawDelegateHelper NavMeshDebugDrawDelgateManager;
+#if UE_ENABLE_DEBUG_DRAWING
+	FNavMeshDebugDrawDelegateHelper NavMeshDebugDrawDelegateManager;
 #endif
 };
 

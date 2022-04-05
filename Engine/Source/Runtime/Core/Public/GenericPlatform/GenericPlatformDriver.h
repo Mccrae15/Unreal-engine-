@@ -138,7 +138,7 @@ public:
 		return (*this == rhs) || (*this < rhs);
 	}
 
-	static const uint32 Size = TSize;
+	static constexpr uint32 Size = TSize;
 
 	// [0]:left .. [Size-1]:right
 	uint32 Value[Size];
@@ -289,28 +289,62 @@ struct FGPUDriverInfo
 	// get VendorId
 	bool IsNVIDIA() const { return VendorId == 0x10DE; }
 
+	bool IsSameDriverVersionGeneration(const TCHAR* InOpWithMultiInt) const
+	{
+		if (IsIntel())
+		{
+			const TCHAR* p = InOpWithMultiInt;
+			FString DriverVersion = GetUnifiedDriverVersion();
+
+			EComparisonOp Op = ParseComparisonOp(p);
+
+			FMultiInt<6> A, B;
+
+			A.GetValue(*DriverVersion);
+			B.Parse(p);
+
+			// https://www.intel.com/content/www/us/en/support/articles/000005654/graphics.html
+			// Version format changed in April 2018 starting with xx.xx.100.xxxx
+			if (!((A.Value[4] >= 100) ^ (B.Value[4] >= 100)))
+			{
+				return true;
+			}
+			else
+			{
+				return false;
+			}
+		}
+		
+		return true;
+	}
+
+	static FString TrimNVIDIAInternalVersion(const FString& InternalVersion)
+	{
+		// on the internal driver number: https://forums.geforce.com/default/topic/378546/confusion-over-driver-version-numbers/
+		//   The first 7 shows u that is a Vista driver, 6 that is an XP and 4 that is Me
+		// we don't care about the windows version so we don't look at the front part of the driver version
+		// "9.18.13.4788" -> "347.88"
+		// "10.18.13.4788" -> "347.88"
+		// the following code works with the current numbering scheme, if needed we have to update that
+
+		// we don't care about the windows version so we don't look at the front part of the driver version
+		// e.g. 36.143
+		FString RightPart = InternalVersion.Right(6);
+
+		// move the dot
+		RightPart = RightPart.Replace(TEXT("."), TEXT(""));
+		RightPart.InsertAt(3, TEXT("."));
+		return RightPart;
+	}
+
 	FString GetUnifiedDriverVersion() const
 	{
 		// we use the internal version, not the user version to avoid problem where the name was altered 
 		const FString& FullVersion = InternalDriverVersion;
 
-		if(IsNVIDIA())
+		if(IsNVIDIA() && (InternalDriverVersion != UserDriverVersion))
 		{
-			// on the internal driver number: https://forums.geforce.com/default/topic/378546/confusion-over-driver-version-numbers/
-			//   The first 7 shows u that is a Vista driver, 6 that is an XP and 4 that is Me
-			// we don't care about the windows version so we don't look at the front part of the driver version
-			// "9.18.13.4788" -> "347.88"
-			// "10.18.13.4788" -> "347.88"
-			// the following code works with the current numbering scheme, if needed we have to update that
-
-			// we don't care about the windows version so we don't look at the front part of the driver version
-			// e.g. 36.143
-			FString RightPart = FullVersion.Right(6);
-
-			// move the dot
-			RightPart = RightPart.Replace(TEXT("."), TEXT(""));
-			RightPart.InsertAt(3, TEXT("."));
-			return RightPart;
+			return TrimNVIDIAInternalVersion(FullVersion);
 		}
 		else if(IsAMD())
 		{
@@ -318,13 +352,25 @@ struct FGPUDriverInfo
 		}
 		else if(IsIntel())
 		{
+			// https://www.intel.com/content/www/us/en/support/articles/000005654/graphics.html
+			// Drop off the OS and DirectX version
+			// 27.20.100.8935 -> 100.8935
+			int32 DotIndex = FullVersion.Find(TEXT("."), ESearchCase::CaseSensitive, ESearchDir::FromStart);
+			if (DotIndex != INDEX_NONE)
+			{
+				DotIndex = FullVersion.Find(TEXT("."), ESearchCase::CaseSensitive, ESearchDir::FromStart, DotIndex + 1);
+				if (DotIndex != INDEX_NONE)
+				{
+					return FullVersion.RightChop(DotIndex + 1);
+				}
+			}
 		}
 		return FullVersion;
 	}
 };
 
 // one entry in the Hardware.ini file
-struct FBlackListEntry
+struct FDriverDenyListEntry
 {
 	// optional, e.g. "<=223.112.21.1", might includes comparison operators, later even things multiple ">12.22 <=12.44"
 	FString DriverVersionString;
@@ -344,10 +390,10 @@ struct FBlackListEntry
 		ensure(!DriverVersionString.IsEmpty() || !DriverDateString.IsEmpty());
 
 		FParse::Value(In, TEXT("RHI="), RHIName);
-		
+
+
 		// later:
 //		FParse::Value(In, TEXT("DeviceId="), DeviceId);
-//		FParse::Value(In, TEXT("OS="), OS);
 //		FParse::Value(In, TEXT("API="), API);
 //		ensure(API == TEXT("DX11"));
 
@@ -355,7 +401,7 @@ struct FBlackListEntry
 		ensure(!Reason.IsEmpty());
 	}
 
-	// test if the given driver version is mentioned in the this blacklist entry
+	// test if the given driver version is mentioned in the this entry
 	// @return true:yes, inform used, false otherwise
 	bool Test(const FGPUDriverInfo& Info) const
 	{
@@ -369,7 +415,14 @@ struct FBlackListEntry
 
 			if (!DriverVersionString.IsEmpty())
 			{
-				return CompareStringOp(*DriverVersionString, *Info.GetUnifiedDriverVersion());
+				if (Info.IsSameDriverVersionGeneration(*DriverVersionString))
+				{
+					return CompareStringOp(*DriverVersionString, *Info.GetUnifiedDriverVersion());
+				}
+				else
+				{
+					return false;
+				}
 			}
 			else
 			{
@@ -410,19 +463,19 @@ struct FBlackListEntry
 	}
 
 	/**
-	 * Returns true if the latest version of the driver is blacklisted by this entry,
+	 * Returns true if the latest version of the driver is denied by this entry,
 	 * i.e. the comparison op is > or >=.
 	 */
-	bool IsLatestBlacklisted() const
+	bool IsLatestDenied() const
 	{
-		bool bLatestBlacklisted = false;
+		bool bLatestDenied = false;
 		if (IsValid())
 		{
 			const TCHAR* DriverVersionTchar = !DriverVersionString.IsEmpty() ? *DriverVersionString : *DriverDateString;
 			EComparisonOp ComparisonOp = ParseComparisonOp(DriverVersionTchar);
-			bLatestBlacklisted = (ComparisonOp == ECO_Larger) || (ComparisonOp == ECO_LargerThan);
+			bLatestDenied = (ComparisonOp == ECO_Larger) || (ComparisonOp == ECO_LargerThan);
 		}
-		return bLatestBlacklisted;
+		return bLatestDenied;
 	}
 };
 
@@ -510,7 +563,7 @@ struct FGPUHardware
 				Version.DeviceDescription = TEXT("Intel(R) HD Graphics 4600");
 				Version.InternalDriverVersion = TEXT("9.18.10.3310");
 				Version.DriverDate = TEXT("9-17-2013");
-				check(Version.GetUnifiedDriverVersion() == TEXT("9.18.10.3310"));
+				check(Version.GetUnifiedDriverVersion() == TEXT("10.3310"));
 			}
 		}
 #endif// !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -519,14 +572,14 @@ struct FGPUHardware
 	// @return a driver version intended to be shown to the user e.g. "15.30.1025.1001 12/17/2015 (Crimson Edition 15.12)"
 	FString GetSuggestedDriverVersion(const FString& InRHIName) const
 	{
-		const TCHAR* Section = GetVendorSectionName();
+		const FString Section = GetVendorSectionName();
 
 		FString Ret;
 
-		if(Section)
+		if(!Section.IsEmpty())
 		{
 			TArray<FString> SuggestedDriverVersions;
-			GConfig->GetArray(Section, TEXT("SuggestedDriverVersion"), SuggestedDriverVersions, GHardwareIni);
+			GConfig->GetArray(*Section, TEXT("SuggestedDriverVersion"), SuggestedDriverVersions, GHardwareIni);
 
 			// Find specific RHI version first
 			if (InRHIName.Len() > 0)
@@ -557,20 +610,20 @@ struct FGPUHardware
 	}
 
 	// @return 0 if there is none
-	FBlackListEntry FindDriverBlacklistEntry() const
+	FDriverDenyListEntry FindDriverDenyListEntry() const
 	{
-		const TCHAR* Section = GetVendorSectionName();
+		const FString Section = GetVendorSectionName();
 
-		if(Section)
+		if(!Section.IsEmpty())
 		{
-			TArray<FString> BlacklistStrings;
-			GConfig->GetArray(GetVendorSectionName(), TEXT("Blacklist"), BlacklistStrings, GHardwareIni);
+			TArray<FString> DenyListStrings;
+			GConfig->GetArray(*Section, TEXT("DriverDenyList"), DenyListStrings, GHardwareIni);
 
-			for(int32 i = 0; i < BlacklistStrings.Num(); ++i)
+			for(int32 i = 0; i < DenyListStrings.Num(); ++i)
 			{
-				FBlackListEntry Entry;
+				FDriverDenyListEntry Entry;
 
-				const TCHAR* Line = *BlacklistStrings[i];
+				const TCHAR* Line = *DenyListStrings[i];
 			
 				ensure(Line[0] == TCHAR('('));
 
@@ -583,56 +636,63 @@ struct FGPUHardware
 			}
 		}
 
-		return FBlackListEntry();
+		return FDriverDenyListEntry();
 	}
 
 	/**
-	 * Returns true if the latest version of the driver has been blacklisted.
+	 * Returns true if the latest version of the driver is on the deny list.
 	 */
-	bool IsLatestBlacklisted() const
+	bool IsLatestDenied() const
 	{
-		bool bLatestBlacklisted = false;
-		const TCHAR* Section = GetVendorSectionName();
+		bool bLatestDenied = false;
+		const FString Section = GetVendorSectionName();
 
-		if(Section)
+		if(!Section.IsEmpty())
 		{
-			TArray<FString> BlacklistStrings;
-			GConfig->GetArray(GetVendorSectionName(), TEXT("Blacklist"), BlacklistStrings, GHardwareIni);
+			TArray<FString> DenyListStrings;
+			GConfig->GetArray(*Section, TEXT("DriverDenyList"), DenyListStrings, GHardwareIni);
 
-			for(int32 i = 0; !bLatestBlacklisted && i < BlacklistStrings.Num(); ++i)
+			for(int32 i = 0; !bLatestDenied && i < DenyListStrings.Num(); ++i)
 			{
-				FBlackListEntry Entry;
+				FDriverDenyListEntry Entry;
 
-				const TCHAR* Line = *BlacklistStrings[i];
+				const TCHAR* Line = *DenyListStrings[i];
 			
 				ensure(Line[0] == TCHAR('('));
 
 				Entry.LoadFromINIString(&Line[1]);
 
-				bLatestBlacklisted |= Entry.IsLatestBlacklisted();
+				bLatestDenied |= Entry.IsLatestDenied();
 			}
 		}
-		return bLatestBlacklisted;
+		return bLatestDenied;
 	}
 
 	// to get a section name in the Hardware.ini file
 	// @return 0 if not found
-	const TCHAR* GetVendorSectionName() const
+	FString GetVendorSectionName() const
 	{
+		const TCHAR* Section = nullptr;
+
 		if(DriverInfo.IsNVIDIA())
 		{
-			return TEXT("GPU_NVIDIA");
+			Section = TEXT("GPU_NVIDIA");
 		}
 		if(DriverInfo.IsAMD())
 		{
-			return TEXT("GPU_AMD");
+			Section = TEXT("GPU_AMD");
 		}
 		else if(DriverInfo.IsIntel())
 		{
-			return TEXT("GPU_0x8086");
-		}
+			Section = TEXT("GPU_Intel");
+		}	
 		// more GPU vendors can be added on demand
-		return 0;
+		if (!Section)
+		{
+			return TEXT("");
+		}
+
+		return FString::Printf(TEXT("%s %s"), Section, ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName()));
 	}
 };
 

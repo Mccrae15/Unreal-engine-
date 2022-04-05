@@ -7,103 +7,97 @@ using UnrealBuildTool;
 
 public class TextureFormatOodle : ModuleRules
 {
-	protected virtual string OodleVersion { get { return "2.9.0"; } }
+	protected string DynamicLibNamePrefix;
+	protected string DynamicLibNameSuffix;
 
-	// Platform Extensions need to override these
-	protected virtual string LibRootDirectory { get { return ModuleDirectory; } }
-	protected virtual string ReleaseLibraryName { get { return null; } }
-	protected virtual string DebugLibraryName { get { return null; } }
+	protected void SetDynamicLibNameStrings()
+	{
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
+		{
+			DynamicLibNamePrefix = "oo2tex_win64_";
+			DynamicLibNameSuffix = ".dll";
+		}
+		else if (Target.Platform == UnrealTargetPlatform.Mac)
+		{
+			DynamicLibNamePrefix = "liboo2texmac64.";
+			DynamicLibNameSuffix = ".dylib";
+		}
+		else if (Target.Platform == UnrealTargetPlatform.Linux)
+		{
+			DynamicLibNamePrefix = "liboo2texlinux64.";
+			DynamicLibNameSuffix = ".so";
+		}
+		else if (Target.Platform == UnrealTargetPlatform.LinuxArm64)
+		{
+			DynamicLibNamePrefix = "liboo2texlinuxarm64.";
+			DynamicLibNameSuffix = ".so";
+		}
+		else
+		{
+			throw new BuildException("Platform {0} not supported in TextureFormatOodle.", Target.Platform);
+		}
 
-	protected virtual string SdkBaseDirectory { get { return Path.Combine(LibRootDirectory, "..", "Sdks", OodleVersion); } }
-	protected virtual string LibDirectory { get { return Path.Combine(SdkBaseDirectory, "lib"); } }
+		PublicDefinitions.Add("TFO_DLL_PREFIX=\"" + DynamicLibNamePrefix + "\"");
+		PublicDefinitions.Add("TFO_DLL_SUFFIX=\"" + DynamicLibNameSuffix + "\"");
+	}
 
-	protected virtual string IncludeDirectory { get { return Path.Combine(ModuleDirectory, "..", "Sdks", OodleVersion, "include"); } }
+	protected void AddDynamicLibsForVersion(string Version)
+	{
+		string PlatformDir = Target.Platform.ToString();
+
+		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
+		{
+			PlatformDir = "Win64";
+		}
+
+		string DynamicLibName = DynamicLibNamePrefix + Version + DynamicLibNameSuffix;
+		string SdkBase = Path.Combine(ModuleDirectory, "..", "Sdks", Version);
+		string FullDynamicLibName = Path.Combine(SdkBase, "redist", PlatformDir, DynamicLibName);
+
+		if (!File.Exists(FullDynamicLibName))
+		{
+			throw new BuildException("Platform {0} can't find dynamic lib for  TextureFormatOodle {1}.", Target.Platform, FullDynamicLibName);
+		}
+
+		FullDynamicLibName = "$(EngineDir)/" + UnrealBuildTool.Utils.MakePathRelativeTo(FullDynamicLibName, EngineDirectory);
+
+		RuntimeDependencies.Add(Path.Combine("$(TargetOutputDir)", DynamicLibName), FullDynamicLibName, StagedFileType.NonUFS);
+	}
 
 	public TextureFormatOodle(ReadOnlyTargetRules Target) : base(Target)
 	{
 		ShortName = "TextureFormatOodle";
 
-        PrivatePCHHeaderFile = "Private/TextureFormatOodlePCH.h";
+		PrivatePCHHeaderFile = "Private/TextureFormatOodlePCH.h";
 
-        PublicIncludePaths.Add(IncludeDirectory);
-
-		PrivateIncludePathModuleNames.AddRange(
-			new string[] {
-				"TargetPlatform",
-				"TextureCompressor",
-				"Engine"
-			}
-        );
-
-		PrivateDependencyModuleNames.AddRange(
-			new string[] {
-				"Core",
-                "Engine",
-				"ImageCore",
-				"ImageWrapper",
-                "RenderCore",
-                "AssetRegistry",
-                "InputCore",
-                "SlateCore"
-			}
-        );
-
-		string ReleaseLib = null;
-		string DebugLib = null;
-		string PlatformDir = Target.Platform.ToString();
-
-		// turn on bAllowDebugLibrary if you need to debug a problem with Oodle
-		bool bAllowDebugLibrary = false;
-		bool bUseDebugLibrary = bAllowDebugLibrary && Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT;
-
-		bool bSkipLibrarySetup = false;
-
-
-        if (Target.Platform == UnrealTargetPlatform.Win32)
-        {
-			ReleaseLib = "oo2tex_win32.lib";
-			DebugLib = "oo2tex_win32_debug.lib";
-        }
-        else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
-        {
-			ReleaseLib = "oo2tex_win64.lib";
-			DebugLib = "oo2tex_win64_debug.lib";
-			PlatformDir = "Win64";
-        }
-        else if (Target.Platform == UnrealTargetPlatform.Mac)
-        {
-			ReleaseLib = "liboo2texmac64.a";
-			DebugLib = "liboo2texmac64_dbg.a";
-        }
-        else if (Target.Platform == UnrealTargetPlatform.Linux)
-        {
-			ReleaseLib = "liboo2texlinux64.a";
-			DebugLib = "liboo2texlinux64_dbg.a";
-        }
-		else if (Target.Platform == UnrealTargetPlatform.LinuxAArch64)
+		PrivateIncludePathModuleNames.AddRange(new string[]
 		{
-			ReleaseLib = "liboo2texlinuxarm64.a";
-			DebugLib = "liboo2texlinuxarm64_dbg.a";
-		}
-		else
-		{
-			// the subclass will return the library names
-			ReleaseLib = ReleaseLibraryName;
-			DebugLib = DebugLibraryName;
-			// platform extensions don't need the Platform directory under lib
-			PlatformDir = "";
-		}
+			"CoreUObject",
+			"DerivedDataCache",
+			"Engine",
+			"TargetPlatform",
+			"TextureCompressor",
+		});
 
-		if (!bSkipLibrarySetup)
+		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			// combine everything and make sure it was set up properly
-			string LibraryToLink = bUseDebugLibrary ? DebugLib : ReleaseLib;
-			if (LibraryToLink == null)
-			{
-				throw new BuildException("Platform {0} doesn't have OodleData libraries properly set up.", Target.Platform);
-			}
+			"Core",
+			"ImageCore",
+			"ImageWrapper",
+			"TextureBuild",
+		});
 
-			PublicAdditionalLibraries.Add(Path.Combine(LibDirectory, PlatformDir, LibraryToLink));
-		}
+		SetDynamicLibNameStrings();
+
+		// dynamic libs , for every version, not just current :
+
+		AddDynamicLibsForVersion("2.9.5");
+
+		string LatestOodleVersion = "2.9.5";
+
+		string IncludeDirectory = Path.Combine(ModuleDirectory, "..", "Sdks", LatestOodleVersion, "include");
+		PrivateIncludePaths.Add(IncludeDirectory);
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "Private", "Jobify"));
+
 	}
 }

@@ -5,7 +5,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -30,14 +31,14 @@ namespace UnrealBuildTool
 		{
 			Arguments.ApplyTo(this);
 
-			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, false, false);
+			List<TargetDescriptor> TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, false, false, false);
 			foreach(TargetDescriptor TargetDescriptor in TargetDescriptors)
 			{
 				// Create the target
-				UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, false, false);
+				UEBuildTarget Target = UEBuildTarget.Create(TargetDescriptor, false, false, false);
 
 				// Get the output file
-				FileReference OutputFile = TargetDescriptor.AdditionalArguments.GetFileReferenceOrDefault("-OutputFile=", null);
+				FileReference? OutputFile = TargetDescriptor.AdditionalArguments.GetFileReferenceOrDefault("-OutputFile=", null);
 				if(OutputFile == null)
 				{
 					OutputFile = Target.ReceiptFileName.ChangeExtension(".json");
@@ -54,13 +55,13 @@ namespace UnrealBuildTool
 						Arguments.ApplyTo(BuildConfiguration);
 
 						// Create the makefile
-						const bool bIsAssemblingBuild = true;
-						TargetMakefile Makefile = Target.Build(BuildConfiguration, WorkingSet, bIsAssemblingBuild, TargetDescriptor.SpecificFilesToCompile);
-						ActionGraph.Link(Makefile.Actions);
+						TargetMakefile Makefile = Target.Build(BuildConfiguration, WorkingSet, TargetDescriptor);
+						List<LinkedAction> Actions = Makefile.Actions.ConvertAll(x => new LinkedAction(x, TargetDescriptor));
+						ActionGraph.Link(Actions);
 
 						// Filter all the actions to execute
 						HashSet<FileItem> PrerequisiteItems = new HashSet<FileItem>(Makefile.Actions.SelectMany(x => x.ProducedItems).Where(x => x.HasExtension(".h") || x.HasExtension(".cpp")));
-						List<Action> PrerequisiteActions = ActionGraph.GatherPrerequisiteActions(Makefile.Actions, PrerequisiteItems);
+						List<LinkedAction> PrerequisiteActions = ActionGraph.GatherPrerequisiteActions(Actions, PrerequisiteItems);
 
 						// Execute these actions
 						if (PrerequisiteActions.Count > 0)

@@ -257,7 +257,7 @@ TSharedRef<SWidget> FBrushDetails::GenerateBuildMenuContent()
 	};
 
 	FClassViewerInitializationOptions Options;
-	Options.ClassFilter = MakeShareable(new FBrushFilter);
+	Options.ClassFilters.Add(MakeShareable(new FBrushFilter));
 	Options.Mode = EClassViewerMode::ClassPicker;
 	Options.DisplayMode = EClassViewerDisplayMode::ListView;
 	return FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer").CreateClassViewer(Options, FOnClassPicked::CreateSP(this, &FBrushDetails::OnClassPicked));
@@ -294,13 +294,13 @@ void FBrushDetails::OnClassPicked(UClass* InChosenClass)
 			NewObjectPaths.Add(NewUObject->GetPathName());
 		}
 
-		BrushBuilderHandle->SetPerObjectValues(NewObjectPaths);
-
 		// make sure the brushes are rebuilt
 		for (FNewBrushBuilder& NewObject : NewBuilders)
 		{
 			NewObject.Builder->Build(NewObject.Brush->GetWorld(), NewObject.Brush);
 		}
+
+		BrushBuilderHandle->SetPerObjectValues(NewObjectPaths);
 
 		GEditor->RebuildAlteredBSP();
 

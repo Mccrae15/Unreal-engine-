@@ -108,6 +108,9 @@ struct FNodeWidgets
 	/** Layout data for the whole row widget. */
 	FNodeWidgetLayoutData WholeRowWidgetLayoutData;
 
+	/** Edit condition widget. */
+	TSharedPtr<SWidget> EditConditionWidget;
+
 	/** The actions which can be performed on the node widgets. */
 	FNodeWidgetActions Actions;
 };
@@ -116,6 +119,11 @@ class IDetailTreeNode
 {
 public:
 	virtual ~IDetailTreeNode() {}
+
+	/** 
+	 * @return Get the details view that this node is contained in.
+	 */
+	virtual class IDetailsView* GetNodeDetailsView() const = 0;
 
 	/**
 	 * @return The type of this node.  Should be used to determine any external styling to apply to the generated r ow
@@ -150,10 +158,18 @@ public:
 	 */
 	virtual FName GetNodeName() const = 0;
 
+	/**
+	 * Get the property row that this node is represented by.
+	 */
 	virtual TSharedPtr<class IDetailPropertyRow> GetRow() const = 0;
 
 	/**
 	 * Gets the filter strings for this node in the tree.
 	 */
 	virtual void GetFilterStrings(TArray<FString>& OutFilterStrings) const = 0;
+
+	/**
+	 * Gets if this node should be initially collapsed by default.
+	 */
+	virtual bool GetInitiallyCollapsed() const = 0;
 };

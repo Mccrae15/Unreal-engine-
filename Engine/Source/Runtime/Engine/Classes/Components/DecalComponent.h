@@ -26,7 +26,7 @@ class ENGINE_API UDecalComponent : public USceneComponent
 protected:
 	/** Decal material. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Decal)
-	class UMaterialInterface* DecalMaterial;
+	TObjectPtr<class UMaterialInterface> DecalMaterial;
 
 public:
 	/** 
@@ -175,6 +175,9 @@ public:
 	//~ End UObject Interface
 
 	//~ Begin USceneComponent Interface
+#if WITH_EDITOR
+	virtual bool GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty) override;
+#endif // WITH_EDITOR
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	//~ End USceneComponent Interface
 

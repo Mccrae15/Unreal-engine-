@@ -29,7 +29,7 @@ void SHierarchyView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetBluep
 	bIsUpdatingSelection = false;
 
 	// register for any objects replaced
-	GEditor->OnObjectsReplaced().AddRaw(this, &SHierarchyView::OnObjectsReplaced);
+	FCoreUObjectDelegates::OnObjectsReplaced.AddRaw(this, &SHierarchyView::OnObjectsReplaced);
 
 	// Create the filter for searching in the tree
 	SearchBoxWidgetFilter = MakeShareable(new WidgetTextFilter(WidgetTextFilter::FItemToStringArray::CreateSP(this, &SHierarchyView::GetWidgetFilterStrings)));
@@ -98,7 +98,7 @@ SHierarchyView::~SHierarchyView()
 		BlueprintEditor.Pin()->OnSelectedWidgetsChanged.RemoveAll(this);
 	}
 
-	GEditor->OnObjectsReplaced().RemoveAll(this);
+	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
 }
 
 void SHierarchyView::Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime )
@@ -237,6 +237,22 @@ TSharedPtr<SWidget> SHierarchyView::WidgetHierarchy_OnContextMenuOpening()
 	FMenuBuilder MenuBuilder(true, CommandList);
 
 	FWidgetBlueprintEditorUtils::CreateWidgetContextMenu(MenuBuilder, BlueprintEditor.Pin().ToSharedRef(), FVector2D(0, 0));
+
+	MenuBuilder.BeginSection("Expansion", LOCTEXT("Expansion", "Expansion"));
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT( "CollapseAll_Label", "Collapse All" ),
+		LOCTEXT( "CollapseAll_Tooltip", "Collapses this item and all children" ),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateSP(this, &SHierarchyView::SetItemExpansionRecursive_SelectedItems, false))
+	);
+	
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT( "ExpandAll_Label", "Expand All" ),
+		LOCTEXT( "ExpandAll_Tooltip", "Expands this item and all children" ),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateSP(this, &SHierarchyView::SetItemExpansionRecursive_SelectedItems, true))
+	);
 
 	return MenuBuilder.MakeWidget();
 }
@@ -469,6 +485,14 @@ void SHierarchyView::SetItemExpansionRecursive(TSharedPtr<FHierarchyModel> Model
 	if (Model.IsValid())
 	{
 		RecursiveExpand(Model, bInExpansionState ? EExpandBehavior::AlwaysExpand : EExpandBehavior::NeverExpand);
+	}
+}
+
+void SHierarchyView::SetItemExpansionRecursive_SelectedItems(const bool bInExpansionState)
+{
+	for (const TSharedPtr<FHierarchyModel>& Item : WidgetTreeView->GetSelectedItems())
+	{
+		SetItemExpansionRecursive(Item, bInExpansionState);
 	}
 }
 

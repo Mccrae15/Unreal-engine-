@@ -24,7 +24,7 @@ void UK2Node_MacroInstance::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	if (Ar.UE4Ver() < VER_UE4_K2NODE_REFERENCEGUIDS)
+	if (Ar.UEVer() < VER_UE4_K2NODE_REFERENCEGUIDS)
 	{
 		MacroGraphReference.SetGraph(MacroGraph_DEPRECATED);
 	}
@@ -208,7 +208,7 @@ void UK2Node_MacroInstance::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNod
 				"MacroInstanceFindInContentBrowser",
 				NSLOCTEXT("K2Node", "MacroInstanceFindInContentBrowser", "Find in Content Browser"),
 				NSLOCTEXT("K2Node", "MacroInstanceFindInContentBrowserTooltip", "Finds the Blueprint Macro Library that contains this Macro in the Content Browser"),
-				FSlateIcon(FEditorStyle::GetStyleSetName(), "PropertyWindow.Button_Browse"),
+				FSlateIcon(FEditorStyle::GetStyleSetName(), "Icons.Search"),
 				FUIAction( FExecuteAction::CreateStatic( &UK2Node_MacroInstance::FindInContentBrowser, MakeWeakObjectPtr(const_cast<UK2Node_MacroInstance*>(this)) ) )
 				);
 		}

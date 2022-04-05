@@ -1,9 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-
 #include "Sound/SoundAttenuation.h"
-#include "EngineDefines.h"
+
 #include "AudioDevice.h"
+#include "EngineDefines.h"
+#include "Internationalization/Internationalization.h"
+#include "Sound/SoundBase.h"
+#include "Templates/SharedPointer.h"
 #include "UObject/AnimPhysObjectVersion.h"
 
 /*-----------------------------------------------------------------------------
@@ -13,7 +16,7 @@
 #if WITH_EDITORONLY_DATA
 void FSoundAttenuationSettings::PostSerialize(const FArchive& Ar)
 {
-	if (Ar.UE4Ver() < VER_UE4_ATTENUATION_SHAPES)
+	if (Ar.UEVer() < VER_UE4_ATTENUATION_SHAPES)
 	{
 		FalloffDistance = RadiusMax_DEPRECATED - RadiusMin_DEPRECATED;
 
@@ -123,6 +126,7 @@ bool FSoundAttenuationSettings::operator==(const FSoundAttenuationSettings& Othe
 			&& PluginSettings.OcclusionPluginSettingsArray	== Other.PluginSettings.OcclusionPluginSettingsArray
 			&& bEnableReverbSend		== Other.bEnableReverbSend
 			&& PluginSettings.ReverbPluginSettingsArray		== Other.PluginSettings.ReverbPluginSettingsArray
+			&& PluginSettings.SourceDataOverridePluginSettingsArray == Other.PluginSettings.SourceDataOverridePluginSettingsArray
 			&& ReverbWetLevelMin		== Other.ReverbWetLevelMin
 			&& ReverbWetLevelMax		== Other.ReverbWetLevelMax
 			&& ReverbDistanceMin		== Other.ReverbDistanceMin
@@ -141,3 +145,95 @@ USoundAttenuation::USoundAttenuation(const FObjectInitializer& ObjectInitializer
 	: Super(ObjectInitializer)
 {
 }
+
+#define LOCTEXT_NAMESPACE "AudioParameterInterface"
+#define AUDIO_PARAMETER_INTERFACE_NAMESPACE "UE.Attenuation"
+namespace Audio
+{
+	namespace AttenuationInterface
+	{
+		const FName Name = AUDIO_PARAMETER_INTERFACE_NAMESPACE;
+
+		namespace Inputs
+		{
+			const FName Distance = AUDIO_PARAMETER_INTERFACE_MEMBER_DEFINE("Distance");
+		} // namespace Inputs
+
+		Audio::FParameterInterfacePtr GetInterface()
+		{
+			struct FInterface : public Audio::FParameterInterface
+			{
+				FInterface()
+					: FParameterInterface(AttenuationInterface::Name, { 1, 0 }, *USoundBase::StaticClass())
+				{
+					Inputs =
+					{
+						{
+							FText(),
+							NSLOCTEXT("AudioGeneratorInterface_Attenuation", "DistanceDescription", "Distance between listener and sound location in game units."),
+							FName(),
+							{ Inputs::Distance, 0.0f }
+						}
+					};
+				}
+			};
+
+			static FParameterInterfacePtr InterfacePtr;
+			if (!InterfacePtr.IsValid())
+			{
+				InterfacePtr = MakeShared<FInterface>();
+			}
+
+			return InterfacePtr;
+		}
+	} // namespace AttenuationInterface
+#undef AUDIO_PARAMETER_INTERFACE_NAMESPACE
+
+#define AUDIO_PARAMETER_INTERFACE_NAMESPACE "UE.Spatialization"
+	namespace SpatializationInterface
+	{
+		const FName Name = AUDIO_PARAMETER_INTERFACE_NAMESPACE;
+
+		namespace Inputs
+		{
+			const FName Azimuth = AUDIO_PARAMETER_INTERFACE_MEMBER_DEFINE("Azimuth");
+			const FName Elevation = AUDIO_PARAMETER_INTERFACE_MEMBER_DEFINE("Elevation");
+		} // namespace Inputs
+
+		Audio::FParameterInterfacePtr GetInterface()
+		{
+			struct FInterface : public Audio::FParameterInterface
+			{
+				FInterface()
+					: FParameterInterface(SpatializationInterface::Name, { 1, 0 }, *USoundBase::StaticClass())
+				{
+					Inputs =
+					{
+						{
+							FText(),
+							NSLOCTEXT("Spatialization", "AzimuthDescription", "Horizontal angle between listener forward and sound location in degrees."),
+							FName(),
+							{ Inputs::Azimuth, 0.0f }
+						},
+						{
+							FText(),
+							NSLOCTEXT("Spatialization", "ElevationDescription", "Vertical angle between listener forward and sound location in degrees."),
+							FName(),
+							{ Inputs::Elevation, 0.0f }
+						}
+					};
+				}
+			};
+
+			static FParameterInterfacePtr InterfacePtr;
+			if (!InterfacePtr.IsValid())
+			{
+				InterfacePtr = MakeShared<FInterface>();
+			}
+
+			return InterfacePtr;
+		}
+	} // namespace SpatializationInterface
+#undef AUDIO_PARAMETER_INTERFACE_NAMESPACE
+} // namespace Audio
+#undef LOCTEXT_NAMESPACE

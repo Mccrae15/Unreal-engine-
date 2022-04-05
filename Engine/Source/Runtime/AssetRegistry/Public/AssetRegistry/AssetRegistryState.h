@@ -10,13 +10,22 @@
 class FDependsNode;
 struct FARCompiledFilter;
 
-#ifndef ASSET_REGISTRY_STATE_DUMPING_ENABLED
-	#define ASSET_REGISTRY_STATE_DUMPING_ENABLED !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-#endif
+namespace UE::AssetRegistry
+{
+	class FAssetRegistryImpl;
+}
 
 /** Load/Save options used to modify how the cache is serialized. These are read out of the AssetRegistry section of Engine.ini and can be changed per platform. */
 struct FAssetRegistrySerializationOptions
 {
+	FAssetRegistrySerializationOptions(UE::AssetRegistry::ESerializationTarget Target = UE::AssetRegistry::ESerializationTarget::ForGame)
+	{
+		if (Target == UE::AssetRegistry::ESerializationTarget::ForDevelopment)
+		{
+			InitForDevelopment();
+		}
+	}
+
 	/** True rather to load/save registry at all */
 	bool bSerializeAssetRegistry = false;
 
@@ -32,8 +41,8 @@ struct FAssetRegistrySerializationOptions
 	/** If true will read/write FAssetPackageData */
 	bool bSerializePackageData = false;
 
-	/** True if CookFilterlistTagsByClass is a whitelist. False if it is a blacklist. */
-	bool bUseAssetRegistryTagsWhitelistInsteadOfBlacklist = false;
+	/** True if CookFilterlistTagsByClass is an allow list. False if it is a deny list. */
+	bool bUseAssetRegistryTagsAllowListInsteadOfDenyList = false;
 
 	/** True if we want to only write out asset data if it has valid tags. This saves memory by not saving data for things like textures */
 	bool bFilterAssetDataWithNoTags = false;
@@ -44,7 +53,7 @@ struct FAssetRegistrySerializationOptions
 	/** Filter out searchable names from dependency data */
 	bool bFilterSearchableNames = false;
 
-	/** The map of classname to tag set of tags that are allowed in cooked builds. This is either a whitelist or blacklist depending on bUseAssetRegistryTagsWhitelistInsteadOfBlacklist */
+	/** The map of classname to tag set of tags that are allowed in cooked builds. This is either an allow list or deny list depending on bUseAssetRegistryTagsAllowListInsteadOfDenyList */
 	TMap<FName, TSet<FName>> CookFilterlistTagsByClass;
 
 	/** Tag keys whose values should be stored as FName in cooked builds */
@@ -54,10 +63,10 @@ struct FAssetRegistrySerializationOptions
 	TSet<FName> CookTagsAsPath;
 
 	/** Options used to read/write the DevelopmentAssetRegistry, which includes all data */
+	UE_DEPRECATED(4.26, "Use new UE::AssetRegistry::ESerializationTarget on either the constructor or InitializeSerializationOptions")
 	void ModifyForDevelopment()
 	{
-		bSerializeAssetRegistry = bSerializeDependencies = bSerializeSearchableNameDependencies = bSerializeManageDependencies = bSerializePackageData = true;
-		DisableFilters();
+		InitForDevelopment();
 	}
 
 	/** Disable all filters */
@@ -66,6 +75,13 @@ struct FAssetRegistrySerializationOptions
 		bFilterAssetDataWithNoTags = false;
 		bFilterDependenciesWithNoTags = false;
 		bFilterSearchableNames = false;
+	}
+
+private:
+	void InitForDevelopment()
+	{
+		bSerializeAssetRegistry = bSerializeDependencies = bSerializeSearchableNameDependencies = bSerializeManageDependencies = bSerializePackageData = true;
+		DisableFilters();
 	}
 };
 
@@ -152,6 +168,25 @@ public:
 	 * @param bARFiltering Whether to apply filtering from UE::AssetRegistry::FFiltering (false by default)
 	 */
 	bool EnumerateAllAssets(const TSet<FName>& PackageNamesToSkip, TFunctionRef<bool(const FAssetData&)> Callback, bool bARFiltering = false) const;
+
+	/**
+	 * Gets the LongPackageNames for all packages with the given PackageName.
+	 * Call to check existence of a LongPackageName or find all packages with a ShortPackageName.
+	 *
+	 * @param PackageName Name of the package to find, may be a LongPackageName or ShortPackageName.
+	 * @param OutPackageNames All discovered matching LongPackageNames are appended to this array.
+	 */
+	void GetPackagesByName(FStringView PackageName, TArray<FName>& OutPackageNames) const;
+
+	/**
+	 * Returns the first LongPackageName found for the given PackageName.
+	 * Issues a warning and returns the first (sorted lexically) if there is more than one.
+	 * Call to check existence of a LongPackageName or find a package with a ShortPackageName.
+	 *
+	 * @param PackageName Name of the package to find, may be a LongPackageName or ShortPackageName.
+	 * @return The first LongPackageName of the matching package, or NAME_None if not found.
+	 */
+	FName GetFirstPackageByName(FStringView PackageName) const;
 
 	UE_DEPRECATED(4.26, "Use GetDependencies that takes a UE::AssetRegistry::EDependencyCategory instead")
 	bool GetDependencies(const FAssetIdentifier& AssetIdentifier, TArray<FAssetIdentifier>& OutDependencies, EAssetRegistryDependencyType::Type InDependencyType) const;
@@ -297,6 +332,15 @@ public:
 	/** Updates an existing asset data with the new value and updates lookup maps */
 	void UpdateAssetData(FAssetData* AssetData, const FAssetData& NewAssetData);
 
+	/**
+	 * Updates all asset data package flags in the specified package
+	 *
+	 * @param PackageName the package name
+	 * @param PackageFlags the package flags to set
+	 * @return True if any assets exists in the package
+	 */
+	bool UpdateAssetDataPackageFlags(FName PackageName, uint32 PackageFlags);
+
 	/** Removes the asset data from the lookup maps */
 	void RemoveAssetData(FAssetData* AssetData, bool bRemoveDependencyData, bool& bOutRemovedAssetData, bool& bOutRemovedPackageData);
 
@@ -340,13 +384,16 @@ public:
 	bool Load(FArchive& Ar, const FAssetRegistryLoadOptions& Options = FAssetRegistryLoadOptions());
 
 	/** Returns memory size of entire registry, optionally logging sizes */
-	uint32 GetAllocatedSize(bool bLogDetailed = false) const;
+	SIZE_T GetAllocatedSize(bool bLogDetailed = false) const;
 
 	/** Checks a filter to make sure there are no illegal entries */
 	static bool IsFilterValid(const FARCompiledFilter& Filter);
 
 	/** Returns the number of assets in this state */
 	int32 GetNumAssets() const { return NumAssets; }
+
+	/** Returns the number of packages in this state */
+	int32 GetNumPackages() const { return CachedAssetsByPackageName.Num(); }
 
 #if ASSET_REGISTRY_STATE_DUMPING_ENABLED
 	/**
@@ -379,7 +426,7 @@ private:
 	bool RemoveDependsNode(const FAssetIdentifier& Identifier);
 
 	/** Filter a set of tags and output a copy of the filtered set. */
-	static void FilterTags(const FAssetDataTagMapSharedView& InTagsAndValues, FAssetDataTagMap& OutTagsAndValues, const TSet<FName>* ClassSpecificFilterlist, const FAssetRegistrySerializationOptions & Options);
+	static void FilterTags(const FAssetDataTagMapSharedView& InTagsAndValues, FAssetDataTagMap& OutTagsAndValues, const TSet<FName>* ClassSpecificFilterList, const FAssetRegistrySerializationOptions & Options);
 
 	void LoadDependencies(FArchive& Ar);
 	void LoadDependencies_BeforeFlags(FArchive& Ar, bool bSerializeDependencies, FAssetRegistryVersion::Type Version);
@@ -416,4 +463,5 @@ private:
 	int32 NumPackageData = 0;
 
 	friend class UAssetRegistryImpl;
+	friend class UE::AssetRegistry::FAssetRegistryImpl;
 };

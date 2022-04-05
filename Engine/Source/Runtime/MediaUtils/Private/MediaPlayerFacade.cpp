@@ -15,6 +15,7 @@
 #include "IMediaSamples.h"
 #include "IMediaAudioSample.h"
 #include "IMediaTextureSample.h"
+#include "IMediaOverlaySample.h"
 #include "IMediaTracks.h"
 #include "IMediaView.h"
 #include "IMediaTicker.h"
@@ -69,12 +70,17 @@ DECLARE_DWORD_COUNTER_STAT(TEXT("MediaPlayerFacade NumAudioSamples"), STAT_Media
 DECLARE_DWORD_COUNTER_STAT(TEXT("MediaPlayerFacade NumPurgedVideoSamples"), STAT_MediaUtils_FacadeNumPurgedVideoSamples, STATGROUP_Media);
 DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("MediaPlayerFacade TotalPurgedVideoSamples"), STAT_MediaUtils_FacadeTotalPurgedVideoSamples, STATGROUP_Media);
 
+/** Number of purged subtitle samples */
+DECLARE_DWORD_COUNTER_STAT(TEXT("MediaPlayerFacade NumPurgedSubtitleSamples"), STAT_MediaUtils_FacadeNumPurgedSubtitleSamples, STATGROUP_Media);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("MediaPlayerFacade TotalPurgedSubtitleSamples"), STAT_MediaUtils_FacadeTotalPurgedSubtitleSamples, STATGROUP_Media);
+
 /* Some constants
 *****************************************************************************/
 
 const double kMaxTimeSinceFrameStart = 0.300; // max seconds we allow between the start of the frame and the player facade timing computations (to catch suspended apps & debugging)
 const double kMaxTimeSinceAudioTimeSampling = 0.250; // max seconds we allow to have passed between the last audio timing sampling and the player facade timing computations (to catch suspended apps & debugging - some platforms do update audio at a farily low rate: hence the big tollerance)
-const double kOutdatedVideoSamplesTollerance = 0.050; // seconds video samples are allowed to be "too old" to stay in the player's output queue despite of calculations indicating they need to go
+const double kOutdatedVideoSamplesTolerance = 0.050; // seconds video samples are allowed to be "too old" to stay in the player's output queue despite of calculations indicating they need to go
+const double kOutdatedSubtitleSamplesTolerance = 0.050; // seconds subtitle samples are allowed to be "too old" to stay in the player's output queue despite of calculations indicating they need to go
 
 /* Local helpers
 *****************************************************************************/
@@ -102,6 +108,7 @@ FMediaPlayerFacade::FMediaPlayerFacade()
 	, bHaveActiveAudio(false)
 	, VideoSampleAvailability(-1)
 	, AudioSampleAvailability(-1)
+	, bAreEventsSafeForAnyThread(false)
 {
 	BlockOnRangeDisabled = false;
 
@@ -686,8 +693,8 @@ bool FMediaPlayerFacade::IsReady() const
 class FMediaPlayerLifecycleManagerDelegateOpenRequest : public IMediaPlayerLifecycleManagerDelegate::IOpenRequest
 {
 public:
-	FMediaPlayerLifecycleManagerDelegateOpenRequest(const FString& InUrl, const IMediaOptions* InOptions, const FMediaPlayerOptions* InPlayerOptions, IMediaPlayerFactory* InPlayerFactory, bool bInWillCreatePlayer, uint32 InWillUseNewResources)
-		: Url(InUrl), Options(InOptions), PlayerFactory(InPlayerFactory), bWillCreatePlayer(bInWillCreatePlayer), NewResources(InWillUseNewResources)
+	FMediaPlayerLifecycleManagerDelegateOpenRequest(const FString& InUrl, const IMediaOptions* InOptions, const FMediaPlayerOptions* InPlayerOptions, IMediaPlayerFactory* InPlayerFactory, TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> InReusedPlayer, bool bInWillCreatePlayer, uint32 InWillUseNewResources)
+		: Url(InUrl), Options(InOptions), PlayerFactory(InPlayerFactory), ReusedPlayer(InReusedPlayer), bWillCreatePlayer(bInWillCreatePlayer), NewResources(InWillUseNewResources)
 	{
 		if (InPlayerOptions)
 		{
@@ -729,6 +736,7 @@ public:
 	const IMediaOptions* Options;
 	TOptional<FMediaPlayerOptions> PlayerOptions;
 	IMediaPlayerFactory* PlayerFactory;
+	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> ReusedPlayer;
 	bool bWillCreatePlayer;
 	uint32 NewResources;
 };
@@ -754,7 +762,7 @@ public:
 		if (TSharedPtr<FMediaPlayerFacade, ESPMode::ThreadSafe> PinnedFacade = Facade.Pin())
 		{
 			const FMediaPlayerLifecycleManagerDelegateOpenRequest* OR = static_cast<const FMediaPlayerLifecycleManagerDelegateOpenRequest*>(OpenRequest.Get());
-			if (PinnedFacade->ContinueOpen(AsShared(), OR->Url, OR->Options, OR->PlayerOptions.IsSet() ? &OR->PlayerOptions.GetValue() : nullptr, OR->PlayerFactory, OR->bWillCreatePlayer, InstanceID))
+			if (PinnedFacade->ContinueOpen(AsShared(), OR->Url, OR->Options, OR->PlayerOptions.IsSet() ? &OR->PlayerOptions.GetValue() : nullptr, OR->PlayerFactory, OR->ReusedPlayer, OR->bWillCreatePlayer, InstanceID))
 			{
 				SubmittedRequest = true;
 			}
@@ -795,7 +803,7 @@ private:
 
 bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerOpen(IMediaPlayerLifecycleManagerDelegate::IControlRef& NewLifecycleManagerDelegateControl, const FString& Url, const IMediaOptions* Options, const FMediaPlayerOptions* PlayerOptions, IMediaPlayerFactory* PlayerFactory, bool bWillCreatePlayer, uint32 WillUseNewResources, uint64 NewPlayerInstanceID)
 {
-	check(IsInGameThread());
+	check(IsInGameThread() || IsInSlateThread());
 
 	if (IMediaPlayerLifecycleManagerDelegate* Delegate = MediaModule->GetPlayerLifecycleManagerDelegate())
 	{
@@ -805,7 +813,7 @@ bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerOpen(IMediaPlayerLi
 			// Set instance ID we will use for a new player if we get the go-ahead to create it (old ID if player is about to be reused)
 			static_cast<FMediaPlayerLifecycleManagerDelegateControl*>(NewLifecycleManagerDelegateControl.Get())->SetInstanceID(NewPlayerInstanceID);
 
-			IMediaPlayerLifecycleManagerDelegate::IOpenRequestRef OpenRequest(new FMediaPlayerLifecycleManagerDelegateOpenRequest(Url, Options, PlayerOptions, PlayerFactory, bWillCreatePlayer, WillUseNewResources));
+			IMediaPlayerLifecycleManagerDelegate::IOpenRequestRef OpenRequest(new FMediaPlayerLifecycleManagerDelegateOpenRequest(Url, Options, PlayerOptions, PlayerFactory, !bWillCreatePlayer ? Player : TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe>(), bWillCreatePlayer, WillUseNewResources));
 			if (OpenRequest.IsValid())
 			{
 				if (Delegate->OnMediaPlayerOpen(NewLifecycleManagerDelegateControl, OpenRequest))
@@ -821,7 +829,7 @@ bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerOpen(IMediaPlayerLi
 
 bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerCreated()
 {
-	check(IsInGameThread());
+	check(IsInGameThread() || IsInSlateThread());
 	check(Player.IsValid());
 
 	if (LifecycleManagerDelegateControl.IsValid())
@@ -837,7 +845,7 @@ bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerCreated()
 
 bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerCreateFailed()
 {
-	check(IsInGameThread());
+	check(IsInGameThread() || IsInSlateThread());
 
 	if (LifecycleManagerDelegateControl.IsValid())
 	{
@@ -852,7 +860,7 @@ bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerCreateFailed()
 
 bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerClosed()
 {
-	check(IsInGameThread());
+	check(IsInGameThread() || IsInSlateThread());
 
 	if (LifecycleManagerDelegateControl.IsValid())
 	{
@@ -867,7 +875,7 @@ bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerClosed()
 
 bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerDestroyed()
 {
-	check(IsInGameThread());
+	check(IsInGameThread() || IsInSlateThread());
 
 	if (LifecycleManagerDelegateControl.IsValid())
 	{
@@ -882,7 +890,7 @@ bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerDestroyed()
 
 bool FMediaPlayerFacade::NotifyLifetimeManagerDelegate_PlayerResourcesReleased(uint32 ResourceFlags)
 {
-	check(IsInGameThread());
+	check(IsInGameThread() || IsInSlateThread());
 
 	if (LifecycleManagerDelegateControl.IsValid())
 	{
@@ -901,7 +909,7 @@ void FMediaPlayerFacade::DestroyPlayer()
 {
 	FScopeLock Lock(&CriticalSection);
 
-	if (!Player.IsValid() || !LifecycleManagerDelegateControl.IsValid())
+	if (!Player.IsValid())
 	{
 		return;
 	}
@@ -943,7 +951,7 @@ bool FMediaPlayerFacade::Open(const FString& Url, const IMediaOptions* Options, 
 
 	IMediaPlayerFactory* OldFactory(Player.IsValid() ? MediaModule->GetPlayerFactory(Player->GetPlayerPluginGUID()) : nullptr);
 
-	bool bWillCreatePlayer = (PlayerFactory != OldFactory);
+	bool bWillCreatePlayer = (!Player.IsValid() || PlayerFactory != OldFactory);
 	uint64 NewPlayerInstanceID;
 	uint32 WillUseNewResources;
 
@@ -954,16 +962,9 @@ bool FMediaPlayerFacade::Open(const FString& Url, const IMediaOptions* Options, 
 	}
 	else
 	{
-		if (Player.IsValid())
-		{
-			NewPlayerInstanceID = PlayerInstanceID;
-			WillUseNewResources = Player->GetNewResourcesOnOpen(); // ask player what resources it will create again even if it already exists
-		}
-		else
-		{
-			NewPlayerInstanceID = ~0;
-			WillUseNewResources = 0;
-		}
+		check(Player.IsValid());
+		NewPlayerInstanceID = PlayerInstanceID;
+		WillUseNewResources = Player->GetNewResourcesOnOpen(); // ask player what resources it will create again even if it already exists
 	}
 
 	IMediaPlayerLifecycleManagerDelegate::IControlRef NewLifecycleManagerDelegateControl;
@@ -974,13 +975,13 @@ bool FMediaPlayerFacade::Open(const FString& Url, const IMediaOptions* Options, 
 	}
 
 	// We did not notify successfully or the delegate will not submit the request in its own. Do so here...
-	return ContinueOpen(NewLifecycleManagerDelegateControl, Url, Options, PlayerOptions, PlayerFactory, bWillCreatePlayer, NewPlayerInstanceID);
+	return ContinueOpen(NewLifecycleManagerDelegateControl, Url, Options, PlayerOptions, PlayerFactory, Player, bWillCreatePlayer, NewPlayerInstanceID);
 }
 
-bool FMediaPlayerFacade::ContinueOpen(IMediaPlayerLifecycleManagerDelegate::IControlRef NewLifecycleManagerDelegateControl, const FString& Url, const IMediaOptions* Options, const FMediaPlayerOptions* PlayerOptions, IMediaPlayerFactory* PlayerFactory, bool bCreateNewPlayer, uint64 NewPlayerInstanceID)
+bool FMediaPlayerFacade::ContinueOpen(IMediaPlayerLifecycleManagerDelegate::IControlRef NewLifecycleManagerDelegateControl, const FString& Url, const IMediaOptions* Options, const FMediaPlayerOptions* PlayerOptions, IMediaPlayerFactory* PlayerFactory, TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> ReusedPlayer, bool bCreateNewPlayer, uint64 NewPlayerInstanceID)
 {
 	// Create or reuse player
-	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> NewPlayer(bCreateNewPlayer ? PlayerFactory->CreatePlayer(*this) : Player);
+	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> NewPlayer(bCreateNewPlayer ? PlayerFactory->CreatePlayer(*this) : ReusedPlayer);
 
 	// Continue initialization ---------------------------------------
 
@@ -1434,6 +1435,11 @@ FTimespan FMediaPlayerFacade::GetLastAudioRenderedSampleTime() const
 	return LastAudioRenderedSampleTime.TimeStamp.Time;
 }
 
+void FMediaPlayerFacade::SetAreEventsSafeForAnyThread(bool bInAreEventsSafeForAnyThread)
+{
+	bAreEventsSafeForAnyThread = bInAreEventsSafeForAnyThread;
+}
+
 /* FMediaPlayerFacade implementation
 *****************************************************************************/
 
@@ -1726,7 +1732,7 @@ bool FMediaPlayerFacade::GetVideoTrackFormat(int32 TrackIndex, int32 FormatIndex
 }
 
 
-void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event)
+void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event, bool bIsBroadcastAllowed)
 {
 	SCOPE_CYCLE_COUNTER(STAT_MediaUtils_FacadeProcessEvent);
 
@@ -1784,7 +1790,14 @@ void FMediaPlayerFacade::ProcessEvent(EMediaEvent Event)
 		}
 	}
 
-	MediaEvent.Broadcast(Event);
+	if (bIsBroadcastAllowed)
+	{
+		MediaEvent.Broadcast(Event);
+	}
+	else
+	{
+		QueuedEventBroadcasts.Enqueue(Event);
+	}
 }
 
 
@@ -1832,6 +1845,7 @@ void FMediaPlayerFacade::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 
 		Player->TickInput(DeltaTime, Timecode);
 
+		bool bIsBroadcastAllowed = bAreEventsSafeForAnyThread || IsInGameThread();
 		if (Player->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2))
 		{
 			//
@@ -1841,9 +1855,16 @@ void FMediaPlayerFacade::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 			// process deferred events
 			// NOTE: if there is no player anymore we execute the remaining queued events in TickFetch (backwards compatibility - should move here once V1 support removed)
 			EMediaEvent Event;
+			if (bIsBroadcastAllowed)
+			{
+				while (QueuedEventBroadcasts.Dequeue(Event))
+				{
+					MediaEvent.Broadcast(Event);
+				}
+			}
 			while (QueuedEvents.Dequeue(Event))
 			{
-				ProcessEvent(Event);
+				ProcessEvent(Event, bIsBroadcastAllowed);
 			}
 
 			// Handling events may have killed the player. Did it?
@@ -1906,7 +1927,7 @@ void FMediaPlayerFacade::TickInput(FTimespan DeltaTime, FTimespan Timecode)
 					{
 						bEventCancelsBlock = true;
 					}
-					ProcessEvent(Event);
+					ProcessEvent(Event, bIsBroadcastAllowed);
 				}
 
 				// We might have lost the player during event handling or an event breaks the block...
@@ -1956,11 +1977,21 @@ void FMediaPlayerFacade::TickFetch(FTimespan DeltaTime, FTimespan Timecode)
 
 	if (!Player.IsValid())
 	{
-		// process deferred events
+		// Send out deferred broadcasts.
 		EMediaEvent Event;
+		bool bIsBroadcastAllowed = bAreEventsSafeForAnyThread || IsInGameThread();
+		if (bIsBroadcastAllowed)
+		{
+			while (QueuedEventBroadcasts.Dequeue(Event))
+			{
+				MediaEvent.Broadcast(Event);
+			}
+		}
+
+		// process deferred events
 		while (QueuedEvents.Dequeue(Event))
 		{
-			ProcessEvent(Event);
+			ProcessEvent(Event, bIsBroadcastAllowed);
 		}
 		return;
 	}
@@ -1979,7 +2010,7 @@ void FMediaPlayerFacade::TickFetch(FTimespan DeltaTime, FTimespan Timecode)
 			EMediaEvent Event;
 			while (QueuedEvents.Dequeue(Event))
 			{
-				ProcessEvent(Event);
+				ProcessEvent(Event, true);
 			}
 		}
 
@@ -2250,7 +2281,7 @@ bool FMediaPlayerFacade::GetCurrentPlaybackTimeRange(TRange<FMediaTimeStamp>& Ti
 			// Normal estimation relative to current frame start...
 			// (on gamethread operation)
 
-			check(IsInGameThread());
+			check(IsInGameThread() || IsInSlateThread());
 
 			double AgeOfFrameStart = Now - MediaModule->GetFrameStartTime();
 			double AgeOfAudioTime = Now - AudioTime.SampledAtTime;
@@ -2659,10 +2690,24 @@ void FMediaPlayerFacade::ProcessSubtitleSamples(IMediaSamples& Samples, TRange<F
 {
 	TSharedPtr<IMediaOverlaySample, ESPMode::ThreadSafe> Sample;
 
+	// There might be samples in the subtitle sample queue that have may lie before the specified time range.
+	// Since these have no way of being displayed they must be removed from the sample queue.
+	TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> CurrentPlayer = Player;
+	if (CurrentPlayer.IsValid() && CurrentPlayer->GetPlayerFeatureFlag(IMediaPlayer::EFeatureFlag::UsePlaybackTimingV2))
+	{
+		bool bReverse = CurrentRate < 0.0f;
+		uint32 NumPurged = CurrentPlayer->GetSamples().PurgeOutdatedSubtitleSamples(TimeRange.GetLowerBoundValue() + (bReverse ? kOutdatedVideoSamplesTolerance : -kOutdatedVideoSamplesTolerance), bReverse);
+		SET_DWORD_STAT(STAT_MediaUtils_FacadeNumPurgedSubtitleSamples, NumPurged);
+		INC_DWORD_STAT_BY(STAT_MediaUtils_FacadeTotalPurgedSubtitleSamples, NumPurged);
+	}
+
 	while (Samples.FetchSubtitle(TimeRange, Sample))
 	{
 		if (Sample.IsValid() && !SubtitleSampleSinks.Enqueue(Sample.ToSharedRef(), FMediaPlayerQueueDepths::MaxSubtitleSinkDepth))
 		{
+			FString Caption = Sample->GetText().ToString();
+			UE_LOG(LogMediaUtils, Log, TEXT("New caption @%.3f: %s"), Sample->GetTime().Time.GetTotalSeconds(), *Caption);
+
 #if MEDIAPLAYERFACADE_TRACE_SINKOVERFLOWS
 			UE_LOG(LogMediaUtils, VeryVerbose, TEXT("PlayerFacade %p: Subtitle sample sink overflow"), this);
 #endif
@@ -2720,8 +2765,7 @@ void FMediaPlayerFacade::ReceiveMediaEvent(EMediaEvent Event)
 			}
 
 			bool bReverse = (Rate < 0.0f);
-			uint32 NumPurged = CurrentPlayer->GetSamples().PurgeOutdatedVideoSamples(TimeRange.GetLowerBoundValue() + (bReverse ? kOutdatedVideoSamplesTollerance : -kOutdatedVideoSamplesTollerance), bReverse);
-
+			uint32 NumPurged = CurrentPlayer->GetSamples().PurgeOutdatedVideoSamples(TimeRange.GetLowerBoundValue() + (bReverse ? kOutdatedVideoSamplesTolerance : -kOutdatedVideoSamplesTolerance), bReverse);
 			SET_DWORD_STAT(STAT_MediaUtils_FacadeNumPurgedVideoSamples, NumPurged);
 			INC_DWORD_STAT_BY(STAT_MediaUtils_FacadeTotalPurgedVideoSamples, NumPurged);
 

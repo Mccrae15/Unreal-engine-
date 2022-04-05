@@ -31,6 +31,7 @@
 #include "InstancedFoliageActor.h"
 #include "InstancedFoliage.h"
 #include "Components/BrushComponent.h"
+#include "Algo/Transform.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogEditorObject, Log, All);
 
@@ -332,14 +333,12 @@ static const TCHAR* ImportProperties(
 
 				if (ActorComponent && ActorComponent->GetComponentLevel())
 				{
-					AInstancedFoliageActor* IFA = AInstancedFoliageActor::GetInstancedFoliageActorForLevel(ActorComponent->GetComponentLevel(), true);
-
-					FFoliageInfo* MeshInfo = nullptr;
-					UFoliageType* FoliageType = IFA->AddFoliageType(SourceFoliageType, &MeshInfo);
-
+					UWorld* World = ActorComponent->GetWorld();
+					TMap<AInstancedFoliageActor*, TArray<FFoliageInstance>> FoliageInstances;
+					
 					const TCHAR* StrPtr;
 					FString TextLine;
-					while (MeshInfo && FParse::Line(&SourceText, TextLine))
+					while (FParse::Line(&SourceText, TextLine))
 					{
 						StrPtr = *TextLine;
 						if (GetEND(&StrPtr, TEXT("Foliage")))
@@ -352,7 +351,9 @@ static const TCHAR* ImportProperties(
 						FString Temp;
 						if (FParse::Value(StrPtr, TEXT("Location="), Temp, false))
 						{
-							GetFVECTOR(*Temp, Instance.Location);
+							FVector Location;
+							GetFVECTOR(*Temp, Location);
+							Instance.Location = Location;
 						}
 						if (FParse::Value(StrPtr, TEXT("Rotation="), Temp, false))
 						{
@@ -364,17 +365,32 @@ static const TCHAR* ImportProperties(
 						}
 						if (FParse::Value(StrPtr, TEXT("DrawScale3D="), Temp, false))
 						{
-							GetFVECTOR(*Temp, Instance.DrawScale3D);
+							FVector DrawScale3D;
+							GetFVECTOR(*Temp, DrawScale3D);
+							Instance.DrawScale3D = (FVector3f)DrawScale3D;
 						}
 						FParse::Value(StrPtr, TEXT("Flags="), Instance.Flags);
 
-						// Add the instance
-						MeshInfo->AddInstance(IFA, FoliageType, Instance, ActorComponent);
+						Instance.BaseComponent = ActorComponent;
+
+						if (AInstancedFoliageActor* IFA = AInstancedFoliageActor::Get(World, true, ActorComponent->GetComponentLevel(), Instance.Location))
+						{
+							FoliageInstances.FindOrAdd(IFA).Add(MoveTemp(Instance));
+						}
 					}
 
-					if (MeshInfo)
+					for (const auto& Pair : FoliageInstances)
 					{
-						MeshInfo->Refresh(IFA, true, true);
+						AInstancedFoliageActor* IFA = Pair.Key;
+						FFoliageInfo* MeshInfo = nullptr;
+						UFoliageType* FoliageType = IFA->AddFoliageType(SourceFoliageType, &MeshInfo);
+						TArray<const FFoliageInstance*> InstancePtrs;
+						InstancePtrs.Reserve(Pair.Value.Num());
+						Algo::Transform(Pair.Value, InstancePtrs, [](const FFoliageInstance& FoliageInstance) { return &FoliageInstance; });
+						if (MeshInfo)
+						{
+							MeshInfo->AddInstances(FoliageType, InstancePtrs);
+						}
 					}
 				}
 			}
@@ -592,13 +608,13 @@ static const TCHAR* ImportProperties(
 				{
 					checkSlow(ComponentTemplate->GetArchetype() == Archetype);
 					ReplacementMap.Add(Archetype, ComponentTemplate);
-					InstanceGraph.AddNewInstance(ComponentTemplate);
+					InstanceGraph.AddNewInstance(ComponentTemplate, Archetype);
 				}
 				if (OldComponent)
 				{
 					ReplacementMap.Add(OldComponent, ComponentTemplate);
 				}
-				FArchiveReplaceObjectRef<UObject> ReplaceAr(SubobjectOuter, ReplacementMap, false, false, true);
+				FArchiveReplaceObjectRef<UObject> ReplaceAr(SubobjectOuter, ReplacementMap, EArchiveReplaceObjectFlags::IgnoreArchetypeRef);
 
 				// import the properties for the subobject
 				SourceText = ImportObjectProperties(

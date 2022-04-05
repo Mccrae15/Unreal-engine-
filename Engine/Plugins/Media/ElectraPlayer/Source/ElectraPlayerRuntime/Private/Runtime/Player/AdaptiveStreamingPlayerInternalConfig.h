@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Decoder/VideoDecoderH264.h"
+#include "Decoder/VideoDecoderH265.h"
 #include "Decoder/AudioDecoderAAC.h"
 #include "StreamAccessUnitBuffer.h"
 #include "Player/AdaptiveStreamingPlayerABR.h"
@@ -30,6 +31,11 @@ namespace Electra
 
 				StreamBufferConfigAudio.MaxDataSize = 2 << 20;
 				StreamBufferConfigAudio.MaxDuration.SetFromSeconds(20.0);
+
+				// Subtitle streams tend to be sparse and each AU could potentially have
+				// a huge duration, so we need to ignore durations altogether.
+				StreamBufferConfigText.MaxDataSize = 8 << 20;
+				StreamBufferConfigText.MaxDuration.SetToPositiveInfinity();
 
 				bHoldLastFrameDuringSeek = true;
 

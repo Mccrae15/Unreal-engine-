@@ -9,6 +9,7 @@
 #include "UObject/Linker.h"
 #include "UObject/LinkerSave.h"
 #include "UObject/Package.h"
+#include "Internationalization/GatherableTextData.h"
 
 FLinkerDiff FLinkerDiff::CompareLinkers(FLinker* LHSLinker, FLinker* RHSLinker)
 {
@@ -89,13 +90,13 @@ void FLinkerDiff::GenerateSummaryDiff(FLinker* LHSLinker, FLinker* RHSLinker)
 
 	// Package Tag, file version
 	COMPARE_MEMBER(LHSSummary, RHSSummary, Tag);
-	//COMPARE_MEMBER(LHSSummary, RHSSummary, FileVersionUE4);
-	//COMPARE_MEMBER(LHSSummary, RHSSummary, FileVersionLicenseeUE4);
+	//COMPARE_MEMBER(LHSSummary, RHSSummary, FileVersionUE);
+	//COMPARE_MEMBER(LHSSummary, RHSSummary, FileVersionLicenseeUE);
 
 	//CustomVersionContainer
 
 	//COMPARE_MEMBER(LHSSummary, RHSSummary, TotalHeaderSize);
-	COMPARE_MEMBER(LHSSummary, RHSSummary, PackageFlags);
+	COMPARE_MEMBER(LHSSummary, RHSSummary, GetPackageFlags());
 	//FolderName
 	COMPARE_MEMBER(LHSSummary, RHSSummary, NameCount);
 	//COMPARE_MEMBER(LHSSummary, RHSSummary, NameOffset);

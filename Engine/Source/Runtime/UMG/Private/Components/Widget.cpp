@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Components/Widget.h"
+
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/UObjectToken.h"
 #include "CoreGlobals.h"
@@ -9,6 +10,7 @@
 #include "Widgets/IToolTip.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SOverlay.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "Engine/LocalPlayer.h"
@@ -19,6 +21,7 @@
 #include "Binding/PropertyBinding.h"
 #include "Logging/MessageLog.h"
 #include "Blueprint/UserWidget.h"
+#include "Blueprint/UserWidgetBlueprint.h"
 #include "Slate/SObjectWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "UMGStyle.h"
@@ -1064,14 +1067,30 @@ const FText UWidget::GetPaletteCategory()
 	return LOCTEXT("Uncategorized", "Uncategorized");
 }
 
-const FSlateBrush* UWidget::GetEditorIcon()
-{
-	return nullptr;
-}
-
 EVisibility UWidget::GetVisibilityInDesigner() const
 {
 	return bHiddenInDesigner ? EVisibility::Collapsed : EVisibility::Visible;
+}
+
+bool UWidget::IsEditorWidget() const
+{
+	if (UWidgetTree* WidgetTree = Cast<UWidgetTree>(GetOuter()))
+	{
+		//@TODO: DarenC - This is a bit dirty, can't find a cleaner alternative yet though.
+		bool bIsEditorWidgetPreview = WidgetTree->RootWidget && WidgetTree->RootWidget->WidgetGeneratedBy.IsValid();
+		UObject* WidgetBPObject = bIsEditorWidgetPreview ? WidgetTree->RootWidget->WidgetGeneratedBy.Get() : WidgetTree->GetOuter();
+
+		if (UUserWidgetBlueprint* WidgetBP = Cast<UUserWidgetBlueprint>(WidgetBPObject))
+		{
+			return WidgetBP->AllowEditorWidget();
+		}
+		else if (UUserWidget* UserWidget = Cast<UUserWidget>(WidgetBPObject))
+		{
+			return UserWidget->IsEditorUtility();
+		}
+	}
+
+	return false;
 }
 
 bool UWidget::IsVisibleInDesigner() const
@@ -1136,11 +1155,18 @@ void UWidget::DeselectByDesigner()
 
 #undef LOCTEXT_NAMESPACE
 #define LOCTEXT_NAMESPACE "UMG"
-#endif
+#endif // WITH_EDITOR
 
 void UWidget::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+void UWidget::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
 
 	// This is a failsafe to make sure all the accessibility data is copied over in case
 	// some rare instance isn't handled by SynchronizeProperties. It might not be necessary.
@@ -1344,7 +1370,7 @@ UObject* UWidget::GetSourceAssetOrClass() const
 	// where it comes from, what blueprint, what the name of the widget was...etc.
 	SourceAsset = WidgetGeneratedBy.Get();
 #else
-	#if !UE_BUILD_SHIPPING
+	#if UE_HAS_WIDGET_GENERATED_BY_CLASS
 		SourceAsset = WidgetGeneratedByClass.Get();
 	#endif
 #endif

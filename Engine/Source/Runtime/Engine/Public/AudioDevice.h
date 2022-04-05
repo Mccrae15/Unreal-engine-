@@ -21,6 +21,8 @@
 #include "Sound/SoundSubmixSend.h"
 #include "Sound/SoundSourceBus.h"
 #include "Sound/SoundModulationDestination.h"
+#include "Subsystems/AudioEngineSubsystem.h"
+#include "Subsystems/SubsystemCollection.h"
 #include "AudioVirtualLoop.h"
 #include "AudioMixer.h"
 #include "UObject/StrongObjectPtr.h"
@@ -47,8 +49,8 @@ class USoundConcurrency;
 class USoundEffectSourcePreset;
 class USoundEffectSubmixPreset;
 class USoundMix;
-class USoundSubmixBase;
 class USoundModulatorBase;
+class USoundSubmixBase;
 class USoundSourceBus;
 class USoundWave;
 class UWorld;
@@ -57,12 +59,15 @@ struct FActiveSound;
 struct FAttenuationFocusData;
 struct FAudioComponentParam;
 struct FAudioQualitySettings;
-struct FRotator;
+UE_DECLARE_LWC_TYPE(Rotator, 3);
 struct FWaveInstance;
 
 namespace Audio
 {
 	class FAudioDebugger;
+
+	/** Returns a decoder for the sound assets's given compression type. Will return nullptr if the compression type is platform-dependent. */
+	ENGINE_API ICompressedAudioInfo* CreateSoundAssetDecoder(const FName& InRuntimeFormat);
 }
 
 /**
@@ -232,6 +237,9 @@ struct FListenerProxy
 	/** Is our attenuation override active */
 	uint32 bUseAttenuationOverride :1;
 
+	/** The ID of the world the listener resides in */
+	uint32 WorldID = INDEX_NONE;
+
 	/**
 	 * Gets the position of the listener proxy
 	 */
@@ -246,6 +254,7 @@ struct FListenerProxy
 		: Transform(Listener.Transform)
 		, AttenuationOverride(Listener.AttenuationOverride)
 		, bUseAttenuationOverride(Listener.bUseAttenuationOverride)
+		, WorldID(Listener.WorldID)
 	{
 	}
 };
@@ -324,12 +333,12 @@ struct FActivatedReverb
 struct FAttenuationListenerData
 {
 	FVector ListenerToSoundDir;
-	float AttenuationDistance;
-	float ListenerToSoundDistance;
+	FVector::FReal AttenuationDistance;
+	FVector::FReal ListenerToSoundDistance;
 
 	// (AudioMixer only)
 	// Non-attenuation distance for calculating surround sound speaker maps for sources w/ spread
-	float ListenerToSoundDistanceForPanning;
+	FVector::FReal ListenerToSoundDistanceForPanning;
 
 	FTransform ListenerTransform;
 	const FTransform SoundTransform;
@@ -425,10 +434,6 @@ private:
 	 */
 	bool HandleDumpSoundInfoCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 	/**
-	 * Lists all the loaded sounds and their memory footprint
-	 */
-	bool HandleListSoundsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
-	/**
 	 * Lists all the playing waveinstances and their associated source
 	 */
 	bool HandleListWavesCommand(const TCHAR* Cmd, FOutputDevice& Ar);
@@ -512,12 +517,27 @@ public:
 	/**
 	 * Basic initialization of the platform agnostic layer of the audio system
 	 */
-	bool Init(Audio::FDeviceId InDeviceID, int32 InMaxSources);
+	bool Init(Audio::FDeviceId InDeviceID, int32 InMaxSources, int32 BufferSizeOverride = INDEX_NONE, int32 NumBuffersOverride = INDEX_NONE);
+
+	/**
+	 * Called after FAudioDevice creation and init
+	 */
+	void OnDeviceCreated(Audio::FDeviceId InDeviceID);
+
+	/**
+	 * Called before FAudioDevice teardown
+	 */
+	void OnDeviceDestroyed(Audio::FDeviceId InDeviceID);
 
 	/**
 	 * Tears down the audio device
 	 */
 	void Teardown();
+
+	/**
+	 * De-initialization step that occurs after device destroyed broadcast, but before removal from the device manager
+	 */
+	void Deinitialize();
 
 	/**
 	 * The audio system's main "Tick" function
@@ -718,20 +738,10 @@ public:
 
 	/**
 	 * Creates an audio component to handle playing a sound.
-	 * Plays a sound at the given location without creating an audio component.
 	 * @param   Sound				The USoundBase to play at the location.
-	 * @param   World				The world this sound is playing in.
-	 * @param   AActor				The optional actor with which to play the sound on.
-	 * @param   Play				Whether or not to automatically call play on the audio component after it is created.
-	 * @param	bStopWhenOwnerDestroyed Whether or not to automatically stop the audio component if its owner is destroyed.
-	 * @param	Location			The sound's location.
-	 * @param	AttenuationSettings	The sound's attenuation settings to use. Will default to the USoundBase's AttenuationSettings if not specified.
-	 * @param	USoundConcurrency	The sound's sound concurrency settings to use. Will use the USoundBase's USoundConcurrency if not specified.
+	 * @param   Params				The parameter block of properties to create the component based on
 	 * @return	The created audio component if the function successfully created one or a nullptr if not successful. Note: if audio is disabled or if there were no hardware audio devices available, this will return nullptr.
 	 */
-	UE_DEPRECATED(4.14, "Use CreateComponent that passes a parameters block instead")
-	static UAudioComponent* CreateComponent(USoundBase* Sound, UWorld* World, AActor* Actor = nullptr, bool bPlay = true, bool bStopWhenOwnerDestroyed = false, const FVector* Location = nullptr, USoundAttenuation* AttenuationSettings = nullptr, USoundConcurrency* ConcurrencySettings = nullptr);
-
 	static UAudioComponent* CreateComponent(USoundBase* Sound, const FCreateComponentParams& Params = FCreateComponentParams());
 
 	/**
@@ -747,12 +757,17 @@ public:
 	 * @param	USoundConcurrency	The sound's sound concurrency settings to use (optional). Will use the USoundBase's USoundConcurrency if not specified.
 	 * @param	Params				An optional list of audio component params to immediately apply to a sound.
 	 */
-	void PlaySoundAtLocation(USoundBase* Sound, UWorld* World, float VolumeMultiplier, float PitchMultiplier, float StartTime, const FVector& Location, const FRotator& Rotation, USoundAttenuation* AttenuationSettings = nullptr, USoundConcurrency* ConcurrencySettings = nullptr, const TArray<FAudioComponentParam>* Params = nullptr, AActor* OwningActor = nullptr);
+	void PlaySoundAtLocation(USoundBase* Sound, UWorld* World, float VolumeMultiplier, float PitchMultiplier, float StartTime, const FVector& Location, const FRotator& Rotation, USoundAttenuation* AttenuationSettings = nullptr, USoundConcurrency* ConcurrencySettings = nullptr, const TArray<FAudioParameter>* Params = nullptr, const AActor* OwningActor = nullptr);
 
 	/**
 	 * Adds an active sound to the audio device
 	 */
-	void AddNewActiveSound(const FActiveSound& ActiveSound);
+	void AddNewActiveSound(const FActiveSound& ActiveSound, const TArray<FAudioParameter>* InDefaultParams = nullptr);
+
+	/**
+	 * Adds an active sound to the audio device
+	 */
+	void AddNewActiveSound(const FActiveSound& ActiveSound, TArray<FAudioParameter>&& InDefaultParams);
 
 	/**
 	 * Attempts to retrigger a provided loop
@@ -778,9 +793,24 @@ public:
 	void NotifyActiveSoundOcclusionTraceDone(FActiveSound* ActiveSound, bool bIsOccluded);
 
 	/**
-	* Finds the active sound for the specified audio component ID
+	* Finds the active sound for the specified audio component ID.
+	* This call cannot be called from the GameThread & AudioComponents can now execute 
+	* multiple ActiveSound instances at once.  Use 'SendCommandToActiveSounds' instead.
 	*/
+	UE_DEPRECATED(5.0, "This call cannot be called from the GameThread & AudioComponents can now execute multiple ActiveSound instances at once.  Use 'SendCommandToActiveSounds' instead.")
 	FActiveSound* FindActiveSound(uint64 AudioComponentID);
+
+	/**
+	 * Whether a given Audio Component ID should be allowed to have multiple
+	 * associated Active Sounds
+	 */
+	bool CanHaveMultipleActiveSounds(uint64 AudioComponentID) const;
+
+	/**
+	 * Set whether a given Audio Component ID should be allowed to have multiple
+	 * associated Active Sounds
+	 */
+	void SetCanHaveMultipleActiveSounds(uint64 AudioComponentID, bool InCanHaveMultipleActiveSounds);
 
 	/**
 	 * Removes an active sound from the active sounds array
@@ -799,12 +829,37 @@ public:
 		FInteriorSettings InteriorSettings;
 		TArray<FAudioVolumeSubmixSendSettings> SubmixSendSettings;
 		TArray<FAudioVolumeSubmixOverrideSettings> SubmixOverrideSettings;
+		bool bChanged = false;
 	};
 
 	void GetAudioVolumeSettings(const uint32 WorldID, const FVector& Location, FAudioVolumeSettings& OutSettings) const;
+	void ResetAudioVolumeProxyChangedState();
+
+	/**
+	 * Gathers data about interior volumes affecting the active sound (called on audio thread)
+	 */
+	void GatherInteriorData(FActiveSound& ActiveSound, FSoundParseParameters& ParseParams) const;
+
+	/**
+	 * Applies interior settings from affecting volumes to the active sound (called on audio thread)
+	 */
+	void ApplyInteriorSettings(FActiveSound& ActiveSound, FSoundParseParameters& ParseParams) const;
+
+	/**
+	 * Notifies subsystems an active sound is about to be deleted (called on audio thread)
+	 */
+	void NotifyPendingDelete(FActiveSound& ActiveSound) const;
 
 public:
 
+	/**
+	 * Gets the default reverb and interior settings for the provided world.  Returns true if settings with WorldID were located
+	 */
+	bool GetDefaultAudioSettings(uint32 WorldID, FReverbSettings& OutReverbSettings, FInteriorSettings& OutInteriorSettings) const;
+
+	/**
+	 * Sets the default reverb and interior settings for the provided world
+	 */
 	void SetDefaultAudioSettings(UWorld* World, const FReverbSettings& DefaultReverbSettings, const FInteriorSettings& DefaultInteriorSettings);
 
 	/**
@@ -826,6 +881,14 @@ protected:
 	 */
 	void InitSoundSources();
 
+	/** Create our subsystem collection root object and initialize subsystems */
+	void InitializeSubsystemCollection();
+
+	// Handle for our device created delegate
+	FDelegateHandle DeviceCreatedHandle;
+
+	// Handle for our device destroyed delegate
+	FDelegateHandle DeviceDestroyedHandle;
 
 public:
 	/**
@@ -931,7 +994,7 @@ public:
 	*/
 	bool GetDistanceSquaredToNearestListener(const FVector& Location, float& OutSqDistance) const;
 		
-		/**
+	/**
 	* Returns a position from the appropriate listener representation, depending on calling thread.
 	*
 	* @param	ListenerIndex	index of the listener or proxy
@@ -945,6 +1008,11 @@ public:
 	* Returns the transform of the appropriate listener representation, depending on calling thread
 	*/
 	bool GetListenerTransform(int32 ListenerIndex, FTransform& OutTransform) const;
+
+	/**
+	 * Returns the WorldID of the appropriate listener representation, depending on calling thread
+	 */
+	bool GetListenerWorldID(int32 ListenerIndex, uint32& OutWorldID) const;
 
 	/**
 	 * Sets the Sound Mix that should be active by default
@@ -1024,7 +1092,7 @@ public:
 	 */
 	void DeactivateReverbEffect(FName TagName);
 
-	virtual FName GetRuntimeFormat(USoundWave* SoundWave) = 0;
+	virtual FName GetRuntimeFormat(const USoundWave* SoundWave) const = 0;
 
 	/** Whether this SoundWave has an associated info class to decompress it */
 	virtual bool HasCompressedAudioInfoClass(USoundWave* SoundWave) { return false; }
@@ -1042,7 +1110,8 @@ public:
 	}
 
 	/** Creates a Compressed audio info class suitable for decompressing this SoundWave */
-	virtual ICompressedAudioInfo* CreateCompressedAudioInfo(USoundWave* SoundWave) { return nullptr; }
+	virtual ICompressedAudioInfo* CreateCompressedAudioInfo(const USoundWave* SoundWave) const { return nullptr; }
+	virtual ICompressedAudioInfo* CreateCompressedAudioInfo(const FSoundWaveProxyPtr& SoundWave) const { return nullptr; }
 
 	/**
 	 * Check for errors and output a human readable string
@@ -1202,7 +1271,7 @@ public:
 	int32 GetNumFreeSources() const { return Sources.Num(); }
 
 	/** Returns the sample rate used by the audio device. */
-	float GetSampleRate() const { return SampleRate; }
+	float GetSampleRate() const { return (float)(SampleRate); }
 
 	/** Returns the buffer length of the audio device. */
 	int32 GetBufferLength() const { return PlatformSettings.CallbackBufferFrameSize; }
@@ -1255,6 +1324,20 @@ public:
 		return false;
 	}
 
+	bool IsSourceDataOverridePluginEnabled() const
+	{
+		return bSourceDataOverrideInterfaceEnabled;
+	}
+
+	static bool IsSourceDataOverridePluginLoaded()
+	{
+		if (FAudioDeviceHandle MainAudioDevice = GEngine->GetMainAudioDevice())
+		{
+			return MainAudioDevice->bSourceDataOverrideInterfaceEnabled;
+		}
+		return false;
+	}
+
 	/** Returns if this is the multi-platform audio mixer. */
 	bool IsAudioMixerEnabled() const
 	{
@@ -1272,6 +1355,9 @@ public:
 	{
 		return bIsBakedAnalysisEnabled;
 	}
+
+	/** Performs an operation on all active sounds requested to execute by an audio component */
+	void SendCommandToActiveSounds(uint64 InAudioComponentID, TUniqueFunction<void(FActiveSound&)> InFunc, const TStatId InStatId = TStatId());
 
 	virtual bool IsNonRealtime() const
 	{
@@ -1297,11 +1383,11 @@ public:
 	}
 
 	/** This is called by a USoundSubmix when we stop recording a submix on this device. */
-	virtual Audio::AlignedFloatBuffer& StopRecording(USoundSubmix* InSubmix, float& OutNumChannels, float& OutSampleRate)
+	virtual Audio::FAlignedFloatBuffer& StopRecording(USoundSubmix* InSubmix, float& OutNumChannels, float& OutSampleRate)
 	{
 		UE_LOG(LogAudio, Error, TEXT("Submix recording only works with the audio mixer. Please run using -audiomixer to or set INI file use submix recording."));
 
-		static Audio::AlignedFloatBuffer InvalidBuffer;
+		static Audio::FAlignedFloatBuffer InvalidBuffer;
 		return InvalidBuffer;
 	}
 
@@ -1323,6 +1409,28 @@ public:
 		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
 	}
 
+	/** Set whether or not a submix is auto-disabled. */
+	virtual void SetSubmixAutoDisable(USoundSubmix* InSoundSubmix, bool bInAutoDisable)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
+	}
+
+	/** Set what the auto-disable time is. */
+	virtual void SetSubmixAutoDisableTime(USoundSubmix* InSoundSubmix, float InDisableTime)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
+	}
+
+	virtual void UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, USoundModulatorBase* InOutputModulation, USoundModulatorBase* InWetLevelModulation, USoundModulatorBase* InDryLevelModulation)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
+	}
+
+	virtual void SetSubmixModulationBaseLevels(USoundSubmix* InSoundSubmix, float InVolumeModBase, float InWetModBase, float InDryModBase)
+	{
+		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
+	}
+
 	/** Set the wet-dry level of the given submix */
 	virtual void SetSubmixOutputVolume(USoundSubmix* InSoundSubmix, float InOutputVolume)
 	{
@@ -1337,16 +1445,6 @@ public:
 
 	/** Set the wet-dry level of the given submix */
 	virtual void SetSubmixDryLevel(USoundSubmix* InSoundSubmix, float InDryLevel)
-	{
-		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
-	}
-
-	virtual void UpdateSubmixModulationSettings(USoundSubmix* InSoundSubmix, USoundModulatorBase* InOutputModulation, USoundModulatorBase* InWetLevelModulation, USoundModulatorBase* InDryLevelModulation)
-	{
-		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
-	}
-
-	virtual void SetSubmixModulationBaseLevels(USoundSubmix* InSoundSubmix, float InVolumeModBase, float InWetModBase, float InDryModBase)
 	{
 		UE_LOG(LogAudio, Error, TEXT("Submixes are only supported in audio mixer."));
 	}
@@ -1398,13 +1496,13 @@ protected:
 	 */
 	virtual void OnListenerUpdated(const TArray<FListener>& InListeners) {};
 
-private:
+	private:
 
 	/**
 	 * Adds an active sound to the audio device. Can be a new active sound or one provided by the re-triggering
 	 * loop system.
 	 */
-	void AddNewActiveSoundInternal(const FActiveSound& ActiveSound, FAudioVirtualLoop* VirtualLoop);
+	void AddNewActiveSoundInternal(const FActiveSound& InActiveSound, TArray<FAudioParameter>&& InDefaultParams, FAudioVirtualLoop* InVirtualLoopToRetrigger = nullptr);
 
 	/**
 	 * Reports if a sound fails to start when attempting to create a new active sound.
@@ -1544,6 +1642,9 @@ private:
 
 	/** Updates audio volume effects. */
 	void UpdateAudioVolumeEffects();
+
+	/** Updates audio engine subsystems on this device. */
+	void UpdateAudioEngineSubsystems();
 
 public:
 
@@ -1695,7 +1796,7 @@ public:
 	virtual void UpdateDeviceDeltaTime()
 	{
 		const double CurrTime = FPlatformTime::Seconds();
-		DeviceDeltaTime = CurrTime - LastUpdateTime;
+		DeviceDeltaTime = UE_REAL_TO_FLOAT(CurrTime - LastUpdateTime);
 		LastUpdateTime = CurrTime;
 	}
 
@@ -1780,6 +1881,43 @@ public:
 	FName GetAudioStateProperty(const FName& PropertyName) const;
 	void SetAudioStateProperty(const FName& PropertyName, const FName& PropertyValue);
 
+	/** Get a Subsystem of specified type */
+	UAudioEngineSubsystem* GetSubsystemBase(TSubclassOf<UAudioEngineSubsystem> SubsystemClass) const
+	{
+		return SubsystemCollection.GetSubsystem<UAudioEngineSubsystem>(SubsystemClass);
+	}
+
+	/** Get a Subsystem of specified type */
+	template <typename TSubsystemClass>
+	TSubsystemClass* GetSubsystem() const
+	{
+		return SubsystemCollection.GetSubsystem<TSubsystemClass>(TSubsystemClass::StaticClass());
+	}
+
+	/**
+	 * Get a Subsystem of specified type from the provided AudioDeviceHandle
+	 * returns nullptr if the Subsystem cannot be found or the AudioDeviceHandle is invalid
+	 */
+	template <typename TSubsystemClass>
+	static FORCEINLINE TSubsystemClass* GetSubsystem(const FAudioDeviceHandle& InHandle)
+	{
+		if (InHandle.IsValid())
+		{
+			return InHandle->GetSubsystem<TSubsystemClass>();
+		}
+		return nullptr;
+	}
+
+	/**
+	 * Gets all Subsystems of specified type, this is only necessary for interfaces that can have multiple implementations instanced at a time.
+	 * Do not hold onto this Array reference unless you are sure the lifetime is less than that of the audio device
+	 */
+	template <typename TSubsystemClass>
+	const TArray<TSubsystemClass*>& GetSubsystemArray() const
+	{
+		return SubsystemCollection.GetSubsystemArray<TSubsystemClass>(TSubsystemClass::StaticClass());
+	}
+
 public:
 
 	/** The number of sources to reserve for stopping sounds. */
@@ -1799,6 +1937,9 @@ public:
 
 	/** 3rd party audio spatialization interface. */
 	TAudioSpatializationPtr SpatializationPluginInterface;
+
+	/** 3rd party source data override interface. */
+	TAudioSourceDataOverridePtr SourceDataOverridePluginInterface;
 
 	/** 3rd party reverb interface. */
 	TAudioReverbPtr ReverbPluginInterface;
@@ -1854,7 +1995,6 @@ private:
 	/** Next resource ID to assign out to a wave/buffer */
 	int32 NextResourceID;
 
-	/** Set of sources used to play sounds (platform will subclass these) */
 protected:
 	// Audio thread representation of listeners
 	TArray<FListener> Listeners;
@@ -1863,6 +2003,14 @@ protected:
 	TArray<FSoundSource*> FreeSources;
 
 private:
+
+	/** Anchor used to connect UAudioEngineSubsystems to FAudioDevice */
+	TStrongObjectPtr<UAudioSubsystemCollectionRoot> SubsystemCollectionRoot;
+
+	/** Subsystems tied to this device's lifecycle */
+	FAudioSubsystemCollection SubsystemCollection;
+
+	/** Set of sources used to play sounds (platform will subclass these) */
 	TMap<FWaveInstance*, FSoundSource*>	WaveInstanceSourceMap;
 
 	/** Current properties of all sound classes */
@@ -1945,6 +2093,7 @@ private:
 	uint8 bSpatializationInterfaceEnabled:1;
 	uint8 bOcclusionInterfaceEnabled:1;
 	uint8 bReverbInterfaceEnabled:1;
+	uint8 bSourceDataOverrideInterfaceEnabled:1;
 	uint8 bModulationInterfaceEnabled:1;
 
 	/** Whether or not we've initialized plugin listeners array. */
@@ -2021,7 +2170,10 @@ private:
 	/** A set of sounds which need to be deleted but weren't able to be deleted due to pending async operations */
 	TArray<FActiveSound*> PendingSoundsToDelete;
 
-	TMap<uint64, FActiveSound*> AudioComponentIDToActiveSoundMap;
+	TMap<uint64, TArray<FActiveSound*>> AudioComponentIDToActiveSoundMap;
+
+	/** Used to determine if a given Audio Component should be allowed to have multiple simultaneous associated active sounds */
+	TMap<uint64, bool> AudioComponentIDToCanHaveMultipleActiveSoundsMap;
 
 	TMap<uint32, FAudioVolumeProxy> AudioVolumeProxies;
 
@@ -2036,8 +2188,8 @@ private:
 	friend class FSoundConcurrencyManager;
 	FSoundConcurrencyManager ConcurrencyManager;
 
-	/** Inverse listener transformation, used for spatialization */
-	FMatrix InverseListenerTransform;
+	/** Inverse listener transformations, used for spatialization */
+	TArray<FMatrix> InverseListenerTransforms;
 
 	/** A count of the number of one-shot active sounds. */
 	uint32 OneShotCount;

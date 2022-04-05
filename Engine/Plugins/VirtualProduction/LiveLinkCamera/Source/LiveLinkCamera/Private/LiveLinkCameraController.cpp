@@ -3,6 +3,7 @@
 #include "LiveLinkCameraController.h"
 
 #include "Camera/CameraComponent.h"
+#include "Camera/PlayerCameraManager.h"
 #include "CameraCalibrationSubsystem.h"
 #include "CineCameraComponent.h"
 #include "Controllers/LiveLinkTransformController.h"
@@ -10,6 +11,7 @@
 #include "Engine/World.h"
 #include "Features/IModularFeatures.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/PlayerController.h"
 #include "ILiveLinkClient.h"
 #include "LensFile.h"
 #include "LiveLinkComponentController.h"
@@ -74,9 +76,6 @@ ULiveLinkCameraController::ULiveLinkCameraController()
 {
 	if (!HasAnyFlags(RF_ArchetypeObject | RF_ClassDefaultObject))
 	{
-		//Hook up to PostActorTick to handle nodal offset
-		FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &ULiveLinkCameraController::OnPostActorTick);
-
 		DistortionProducerID = FGuid::NewGuid();
 	}
 }
@@ -264,11 +263,20 @@ void ULiveLinkCameraController::Cleanup()
 		}
 	}
 
-	FWorldDelegates::OnWorldPostActorTick.RemoveAll(this);
+	if (PostActorTickHandle.IsValid())
+	{
+		FWorldDelegates::OnWorldPostActorTick.Remove(PostActorTickHandle);
+		PostActorTickHandle.Reset();
+	}
 }
 
 void ULiveLinkCameraController::OnEvaluateRegistered()
 {
+	//Hook up to PostActorTick to handle nodal offset
+	if (!PostActorTickHandle.IsValid())
+	{
+		PostActorTickHandle = FWorldDelegates::OnWorldPostActorTick.AddUObject(this, &ULiveLinkCameraController::OnPostActorTick);
+	}
 }
 
 void ULiveLinkCameraController::PostDuplicate(bool bDuplicateForPIE)
@@ -526,8 +534,10 @@ void ULiveLinkCameraController::ApplyNodalOffset(ULensFile* SelectedLensFile, UC
 		const FVector CurrentTranslation = CineCameraComponent->GetRelativeLocation();
 		
 		//Verify if something was set by user / programmatically and update original values
+		bool bWasTransformChanged = false;
 		if (CurrentRotator != LastRotation)
 		{
+			bWasTransformChanged = true;
 			if (CurrentRotator.Pitch != LastRotation.Pitch)
 			{
 				OriginalCameraRotation.Pitch = CurrentRotator.Pitch;
@@ -546,6 +556,7 @@ void ULiveLinkCameraController::ApplyNodalOffset(ULensFile* SelectedLensFile, UC
 
 		if (CurrentTranslation != LastLocation)
 		{
+			bWasTransformChanged = true;
 			if (CurrentTranslation.X != LastLocation.X)
 			{
 				OriginalCameraLocation.X = CurrentTranslation.X;
@@ -568,10 +579,48 @@ void ULiveLinkCameraController::ApplyNodalOffset(ULensFile* SelectedLensFile, UC
 
 			LensFileEvalData.NodalOffset.bWasApplied = true;
 
-			CineCameraComponent->SetRelativeLocation(OriginalCameraLocation);
-			CineCameraComponent->SetRelativeRotation(OriginalCameraRotation.Quaternion());
-			CineCameraComponent->AddLocalOffset(Offset.LocationOffset);
-			CineCameraComponent->AddLocalRotation(Offset.RotationOffset);
+			bWasTransformChanged |= Offset.LocationOffset != LastLocationOffset;
+			bWasTransformChanged |= Offset.RotationOffset != LastRotationOffset;
+
+			if (bWasTransformChanged)
+			{
+				CineCameraComponent->SetRelativeLocation(OriginalCameraLocation);
+				CineCameraComponent->SetRelativeRotation(OriginalCameraRotation.Quaternion());
+				CineCameraComponent->AddLocalOffset(Offset.LocationOffset);
+				CineCameraComponent->AddLocalRotation(Offset.RotationOffset);
+
+				// Update the camera manager's cache to reflect this change to nodal offset
+				const UWorld* const World = GetWorld();
+				if (World)
+				{
+					for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator)
+					{
+						if (APlayerController* PlayerController = Iterator->Get())
+						{
+							if (APlayerCameraManager* PlayerCameraManager = PlayerController->PlayerCameraManager)
+							{
+								if (PlayerCameraManager->GetViewTarget() == CineCameraComponent->GetOuter())
+								{
+									FMinimalViewInfo CameraViewInfo = PlayerCameraManager->GetCameraCachePOV();
+
+									CameraViewInfo.Location = CineCameraComponent->GetComponentLocation();
+									CameraViewInfo.Rotation = CineCameraComponent->GetComponentRotation();
+
+									PlayerCameraManager->FillCameraCache(CameraViewInfo);
+								}
+							}
+						}
+					}
+				}
+			}
+
+			LastLocationOffset = Offset.LocationOffset;
+			LastRotationOffset = Offset.RotationOffset;
+		}
+		else
+		{
+			LastLocationOffset = FVector::ZeroVector;
+			LastRotationOffset = FQuat(0);
 		}
 
 		LastLocation = CineCameraComponent->GetRelativeLocation();
@@ -581,6 +630,8 @@ void ULiveLinkCameraController::ApplyNodalOffset(ULensFile* SelectedLensFile, UC
 	{
 		LastLocation = FVector::OneVector;
 		LastRotation = FRotator::ZeroRotator;
+		LastLocationOffset = FVector::ZeroVector;
+		LastRotationOffset = FQuat(0);
 	}
 }
 

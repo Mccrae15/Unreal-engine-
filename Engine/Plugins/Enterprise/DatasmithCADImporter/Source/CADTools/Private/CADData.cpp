@@ -7,8 +7,11 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
+uint32 MeshArchiveMagic = 345612;
+
 namespace CADLibrary
 {
+
 uint32 BuildColorId(uint32 ColorId, uint8 Alpha)
 {
 	if (Alpha == 0)
@@ -18,7 +21,7 @@ uint32 BuildColorId(uint32 ColorId, uint8 Alpha)
 	return ColorId | Alpha << 24;
 }
 
-void GetCTColorIdAlpha(ColorId ColorId, uint32& CTColorId, uint8& Alpha)
+void GetCTColorIdAlpha(FColorId ColorId, uint32& CTColorId, uint8& Alpha)
 {
 	CTColorId = ColorId & 0x00ffffff;
 	Alpha = (uint8)((ColorId & 0xff000000) >> 24);
@@ -26,27 +29,31 @@ void GetCTColorIdAlpha(ColorId ColorId, uint32& CTColorId, uint8& Alpha)
 
 int32 BuildColorName(const FColor& Color)
 {
-	FString Name = FString::Printf(TEXT("%02x%02x%02x%02x"), Color.R, Color.G, Color.B, Color.A);
-	return FGenericPlatformMath::Abs((int32)GetTypeHash(Name));
+	return FMath::Abs((int32)GetTypeHash(Color));
 }
 
 int32 BuildMaterialName(const FCADMaterial& Material)
 {
-	FString Name;
+	using ::GetTypeHash;
+
+	uint32 MaterialName = 0;
 	if (!Material.MaterialName.IsEmpty())
 	{
-		Name += Material.MaterialName;  // we add material name because it could be used by the end user so two material with same parameters but different name are different.
+		MaterialName = GetTypeHash(*Material.MaterialName); // we add material name because it could be used by the end user so two material with same parameters but different name are different.
 	}
-	Name += FString::Printf(TEXT("%02x%02x%02x "), Material.Diffuse.R, Material.Diffuse.G, Material.Diffuse.B);
-	Name += FString::Printf(TEXT("%02x%02x%02x "), Material.Ambient.R, Material.Ambient.G, Material.Ambient.B);
-	Name += FString::Printf(TEXT("%02x%02x%02x "), Material.Specular.R, Material.Specular.G, Material.Specular.B);
-	Name += FString::Printf(TEXT("%02x%02x%02x"), (int)(Material.Shininess * 255.0), (int)(Material.Transparency * 255.0), (int)(Material.Reflexion * 255.0));
+
+	MaterialName = HashCombine(MaterialName, GetTypeHash(Material.Diffuse));
+	MaterialName = HashCombine(MaterialName, GetTypeHash(Material.Ambient));
+	MaterialName = HashCombine(MaterialName, GetTypeHash(Material.Specular));
+	MaterialName = HashCombine(MaterialName, GetTypeHash((int)(Material.Shininess * 255.0)));
+	MaterialName = HashCombine(MaterialName, GetTypeHash((int)(Material.Transparency * 255.0)));
+	MaterialName = HashCombine(MaterialName, GetTypeHash((int)(Material.Reflexion * 255.0)));
 
 	if (!Material.TextureName.IsEmpty())
 	{
-		Name += Material.TextureName;
+		MaterialName = HashCombine(MaterialName, GetTypeHash(*Material.TextureName));
 	}
-	return FMath::Abs((int32)GetTypeHash(Name));
+	return FMath::Abs((int32) MaterialName);
 }
 
 FArchive& operator<<(FArchive& Ar, FCADMaterial& Material)
@@ -62,43 +69,44 @@ FArchive& operator<<(FArchive& Ar, FCADMaterial& Material)
 	return Ar;
 }
 
-FArchive& operator<<(FArchive& Ar, FFileDescription& File)
+FArchive& operator<<(FArchive& Ar, FFileDescriptor& File)
 {
-	Ar << File.Path;
-	Ar << File.OriginalPath;
+	Ar << File.SourceFilePath;
+	Ar << File.CacheFilePath;
 	Ar << File.Name;
-	Ar << File.Extension;
 	Ar << File.Configuration;
-	Ar << File.MainCadFilePath;
-
+	Ar << File.Format;
+	Ar << File.RootFolder;
 	return Ar;
 }
 
 FArchive& operator<<(FArchive& Ar, FTessellationData& TessellationData)
 {
-	Ar << TessellationData.PatchId;
+	Ar << TessellationData.PositionArray;
 
-	Ar << TessellationData.VertexArray;
+	Ar << TessellationData.PositionIndices;
+	Ar << TessellationData.VertexIndices;
+
 	Ar << TessellationData.NormalArray;
-	Ar << TessellationData.IndexArray;
 	Ar << TessellationData.TexCoordArray;
-
-	Ar << TessellationData.StartVertexIndex;
 
 	Ar << TessellationData.ColorName;
 	Ar << TessellationData.MaterialName;
+
+	Ar << TessellationData.PatchId;
 
 	return Ar;
 }
 
 FArchive& operator<<(FArchive& Ar, FBodyMesh& BodyMesh)
 {
+	Ar << BodyMesh.VertexArray;
+	Ar << BodyMesh.Faces;
+	Ar << BodyMesh.BBox;
+
 	Ar << BodyMesh.TriangleCount;
 	Ar << BodyMesh.BodyID;
 	Ar << BodyMesh.MeshActorName;
-	Ar << BodyMesh.Faces;
-
-	Ar << BodyMesh.BBox;
 
 	Ar << BodyMesh.MaterialSet;
 	Ar << BodyMesh.ColorSet;
@@ -110,8 +118,8 @@ void SerializeBodyMeshSet(const TCHAR* Filename, TArray<FBodyMesh>& InBodySet)
 {
 	TUniquePtr<FArchive> Archive(IFileManager::Get().CreateFileWriter(Filename));
 
-	uint32 type = 234561;
-	*Archive << type;
+	uint32 MagicNumber = MeshArchiveMagic;
+	*Archive << MagicNumber;
 
 	*Archive << InBodySet;
 
@@ -122,9 +130,9 @@ void DeserializeBodyMeshFile(const TCHAR* Filename, TArray<FBodyMesh>& OutBodySe
 {
 	TUniquePtr<FArchive> Archive(IFileManager::Get().CreateFileReader(Filename));
 
-	uint32 type = 0;
-	*Archive << type;
-	if (type != 234561)
+	uint32 MagicNumber = 0;
+	*Archive << MagicNumber;
+	if (MagicNumber != MeshArchiveMagic)
 	{
 		Archive->Close();
 		return;
@@ -150,29 +158,131 @@ void GetCleanFilenameAndExtension(const FString& InFilePath, FString& OutFilenam
 	if (!OutExtension.IsEmpty() && FCString::IsNumeric(*OutExtension))
 	{
 		BaseFile = OutFilename;
-		BaseFile.Split(TEXT("."), &OutFilename, &OutExtension, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
-		OutExtension = OutExtension + TEXT(".*");
-		return;
-	}
-
-	if (OutExtension.IsEmpty())
-	{
-		OutFilename = BaseFile;
+		FString NewExtension;
+		BaseFile.Split(TEXT("."), &OutFilename, &NewExtension, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+		if (!NewExtension.IsEmpty())
+		{
+			OutExtension = NewExtension + TEXT(".*");
+		}
 	}
 }
 
-uint32 FFileDescription::GetFileHash()
+FString GetExtension(const FString& InFilePath)
 {
-	FFileStatData FileStatData = IFileManager::Get().GetStatData(*OriginalPath);
+	if (InFilePath.IsEmpty())
+	{
+		return FString();
+	}
 
-	FDateTime ModificationTime = FileStatData.ModificationTime;
+	FString Extension;
+	FString BaseFileWithoutExt;
 
-	uint32 FileHash = GetTypeHash(*Name);
-	FileHash = HashCombine(FileHash, GetTypeHash(*Configuration));
-	FileHash = HashCombine(FileHash, GetTypeHash(FileStatData.FileSize));
-	FileHash = HashCombine(FileHash, GetTypeHash(ModificationTime));
+	FString BaseFile = FPaths::GetCleanFilename(InFilePath);
+	BaseFile.Split(TEXT("."), &BaseFileWithoutExt, &Extension, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
 
-	return FileHash;
+	if (!Extension.IsEmpty() && FCString::IsNumeric(*Extension))
+	{
+		FString NewExtension;
+		BaseFileWithoutExt.Split(TEXT("."), &BaseFile, &NewExtension, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+		if (!NewExtension.IsEmpty())
+		{
+			NewExtension += TEXT(".*");
+			return NewExtension;
+		}
+	}
+	return Extension;
+}
+
+uint32 GetTypeHash(const FFileDescriptor& FileDescriptor)
+{
+	using ::GetTypeHash;
+	FFileStatData FileStatData = IFileManager::Get().GetStatData(*FileDescriptor.SourceFilePath);
+
+	uint32 DescriptorHash = GetTypeHash(*FileDescriptor.Name);
+	DescriptorHash = HashCombine(DescriptorHash, GetTypeHash(*FileDescriptor.Configuration));
+	DescriptorHash = HashCombine(DescriptorHash, GetTypeHash(FileStatData.FileSize));
+	DescriptorHash = HashCombine(DescriptorHash, GetTypeHash(FileStatData.ModificationTime));
+
+	return DescriptorHash;
+}
+
+ECADFormat FileFormat(const FString& Extension)
+{
+	if (Extension == TEXT("catpart") || Extension == TEXT("catproduct"))
+	{
+		return ECADFormat::CATIA;
+	}
+	else if (Extension == TEXT("cgr"))
+	{
+		return ECADFormat::CATIA_CGR;
+	}
+	else if (Extension == TEXT("iges") || Extension == TEXT("igs"))
+	{
+		return ECADFormat::IGES;
+	}
+	else if (Extension == TEXT("step") || Extension == TEXT("stp"))
+	{
+		return ECADFormat::STEP;
+	}
+	else if (Extension == TEXT("ipt") || Extension == TEXT("iam"))
+	{
+		return ECADFormat::INVENTOR;
+	}
+	else if (Extension == TEXT("jt"))
+	{
+		return ECADFormat::JT;
+	}
+	else if (Extension == TEXT("model"))
+	{
+		return ECADFormat::CATIAV4;
+	}
+	else if (Extension == TEXT("prt.*") || Extension == TEXT("asm.*") 
+		|| Extension == TEXT("creo") || Extension == TEXT("creo.*")
+		|| Extension == TEXT("neu") || Extension == TEXT("neu.*")
+		|| Extension == TEXT("xas") || Extension == TEXT("xpr"))
+	{
+		return ECADFormat::CREO;
+	}
+	else if (Extension == TEXT("prt") || Extension == TEXT("asm"))
+	{
+		return ECADFormat::NX;
+	}
+	else if (Extension == TEXT("sat"))
+	{
+		return ECADFormat::ACIS;
+	}
+	else if (Extension == TEXT("sldprt") || Extension == TEXT("sldasm"))
+	{
+		return ECADFormat::SOLIDWORKS;
+	}
+	else if (Extension == TEXT("x_t") || Extension == TEXT("x_b"))
+	{
+		return ECADFormat::PARASOLID;
+	}
+	else if (Extension == TEXT("3dxml") || Extension == TEXT("3drep"))
+	{
+		return ECADFormat::CATIA_3DXML;
+	}
+	else if (Extension == TEXT("par") || Extension == TEXT("psm"))
+	{
+		return ECADFormat::SOLID_EDGE;
+	}
+	else if (Extension == TEXT("dwg"))
+	{
+		return ECADFormat::AUTOCAD;
+	}
+	else if (Extension == TEXT("dgn"))
+	{
+		return ECADFormat::MICROSTATION;
+	}
+	else if (Extension == TEXT("hsf"))
+	{
+		return ECADFormat::TECHSOFT;
+	}
+	else
+	{
+		return ECADFormat::OTHER;
+	}
 }
 
 }

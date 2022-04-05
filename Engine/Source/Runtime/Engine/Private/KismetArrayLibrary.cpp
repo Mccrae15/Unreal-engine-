@@ -153,8 +153,9 @@ void UKismetArrayLibrary::GenericArray_Append(void* TargetArray, const FArrayPro
 		{
 			FProperty* InnerProp = TargetArrayProp->Inner;
 
+			const int32 EndIdx = SourceArrayHelper.Num();
 			int32 StartIdx = TargetArrayHelper.AddValues(SourceArrayHelper.Num());
-			for(int32 x = 0; x < SourceArrayHelper.Num(); ++x, ++StartIdx)
+			for(int32 x = 0; x < EndIdx; ++x, ++StartIdx)
 			{
 				InnerProp->CopySingleValueToScriptVM(TargetArrayHelper.GetRawPtr(StartIdx), SourceArrayHelper.GetRawPtr(x));
 			}
@@ -285,6 +286,30 @@ int32 UKismetArrayLibrary::GenericArray_Length(const void* TargetArray, const FA
 	}
 	
 	return 0;
+}
+
+bool UKismetArrayLibrary::GenericArray_IsEmpty(const void* TargetArray, const FArrayProperty* ArrayProp)
+{
+	if( TargetArray )
+	{
+		FScriptArrayHelper ArrayHelper(ArrayProp, TargetArray);
+
+		return ArrayHelper.Num() == 0;
+	}
+	
+	return true;
+}
+
+bool UKismetArrayLibrary::GenericArray_IsNotEmpty(const void* TargetArray, const FArrayProperty* ArrayProp)
+{
+	if( TargetArray )
+	{
+		FScriptArrayHelper ArrayHelper(ArrayProp, TargetArray);
+
+		return ArrayHelper.Num() > 0;
+	}
+
+	return false;
 }
 
 int32 UKismetArrayLibrary::GenericArray_LastIndex(const void* TargetArray, const FArrayProperty* ArrayProp)
@@ -547,6 +572,20 @@ int32 UKismetArrayLibrary::Array_Length(const TArray<int32>& TargetArray)
 	// We should never hit these!  They're stubs to avoid NoExport on the class.  Call the Generic* equivalent instead
 	check(0);
 	return 0;
+}
+
+bool UKismetArrayLibrary::Array_IsEmpty(const TArray<int32>& TargetArray)
+{
+	// We should never hit these!  They're stubs to avoid NoExport on the class.  Call the Generic* equivalent instead
+	check(0);
+	return true;
+}
+
+bool UKismetArrayLibrary::Array_IsNotEmpty(const TArray<int32>& TargetArray)
+{
+	// We should never hit these!  They're stubs to avoid NoExport on the class.  Call the Generic* equivalent instead
+	check(0);
+	return false;
 }
 
 int32 UKismetArrayLibrary::Array_LastIndex(const TArray<int32>& TargetArray)

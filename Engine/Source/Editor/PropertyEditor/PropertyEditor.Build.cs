@@ -8,9 +8,11 @@ public class PropertyEditor : ModuleRules
 	{
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
+				"EditorFramework",
 				"UnrealEd",
                 "ActorPickerMode",
                 "SceneDepthPickerMode",
+				"EditorConfig",
 			}
 		);
 		
@@ -64,7 +66,8 @@ public class PropertyEditor : ModuleRules
                 "SceneOutliner",
 				"DesktopPlatform",
 				"PropertyPath",
-            }
+				"ToolWidgets",
+			}
         );
 
 		DynamicallyLoadedModuleNames.AddRange(

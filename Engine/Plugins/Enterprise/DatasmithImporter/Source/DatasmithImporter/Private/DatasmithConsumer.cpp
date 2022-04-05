@@ -47,6 +47,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/World.h"
+#include "ExternalSourceModule.h"
 #include "Factories/WorldFactory.h"
 #include "FileHelpers.h"
 #include "GameFramework/PhysicsVolume.h"
@@ -55,6 +56,7 @@
 #include "HAL/PlatformApplicationMisc.h"
 #include "IAssetTools.h"
 #include "Internationalization/Internationalization.h"
+#include "IUriManager.h"
 #include "LevelSequence.h"
 #include "LevelUtils.h"
 #include "Materials/Material.h"
@@ -67,6 +69,7 @@
 #include "Misc/SecureHash.h"
 #include "ObjectTools.h"
 #include "PackageTools.h"
+#include "SourceUri.h"
 #include "UObject/Package.h"
 #include "UObject/SoftObjectPtr.h"
 #include "UObject/UnrealType.h"
@@ -705,16 +708,20 @@ const FText& UDatasmithConsumer::GetDescription() const
 
 bool UDatasmithConsumer::BuildContexts()
 {
-	const FString FilePath = FPaths::Combine( FPaths::ProjectIntermediateDir(), ( DatasmithSceneWeakPtr->GetName() + TEXT( ".udatasmith" ) ) );
+	using namespace UE::DatasmithImporter;
 
-	ImportContextPtr = MakeUnique< FDatasmithImportContext >( FilePath, false, TEXT("DatasmithImport"), LOCTEXT("DatasmithImportFactoryDescription", "Datasmith") );
+	const FString FilePath = FPaths::Combine( FPaths::ProjectIntermediateDir(), ( DatasmithSceneWeakPtr->GetName() + TEXT( ".udatasmith" ) ) );
+	const FSourceUri FileUri = FSourceUri::FromFilePath( FilePath );
+	TSharedPtr<FExternalSource> ExternalSource = IExternalSourceModule::GetOrCreateExternalSource( FileUri );
+	check( ExternalSource.IsValid() );
+
+	ImportContextPtr = MakeUnique< FDatasmithImportContext >( ExternalSource.ToSharedRef(), false, TEXT("DatasmithImport"), LOCTEXT("DatasmithImportFactoryDescription", "Datasmith") );
 
 	// Update import context with consumer's data
 	ImportContextPtr->Options->BaseOptions.SceneHandling = EDatasmithImportScene::CurrentLevel;
 	ImportContextPtr->SceneAsset = DatasmithSceneWeakPtr.Get();
 	ImportContextPtr->ActorsContext.ImportWorld = Context.WorldPtr.Get();
-	ImportContextPtr->Scene = FDatasmithSceneFactory::CreateScene( *DatasmithSceneWeakPtr->GetName() );
-	ImportContextPtr->SceneName = ImportContextPtr->Scene->GetName();
+	ImportContextPtr->InitScene(FDatasmithSceneFactory::CreateScene(*DatasmithSceneWeakPtr->GetName()));
 
 	// Convert all incoming Datasmith scene actors as regular actors
 	DatasmithConsumerUtils::ConvertSceneActorsToActors( *ImportContextPtr );
@@ -738,7 +745,8 @@ bool UDatasmithConsumer::BuildContexts()
 
 	FPaths::NormalizeDirectoryName( RootPath );
 
-	if ( !ImportContextPtr->Init( ImportContextPtr->Scene.ToSharedRef(), RootPath, RF_Public | RF_Standalone | RF_Transactional, GWarn, TSharedPtr< FJsonObject >(), true ) )
+	const bool bSilent = true;
+	if (!ImportContextPtr->Init(RootPath, RF_Public | RF_Standalone | RF_Transactional, GWarn, TSharedPtr< FJsonObject >(), bSilent))
 	{
 		FText Message = LOCTEXT( "DatasmithConsumer_BuildContexts", "Initialization of consumer failed" );
 		LogError( Message );
@@ -771,7 +779,7 @@ bool UDatasmithConsumer::BuildContexts()
 	ImportContextPtr->ActorsContext.FinalWorld = WorkingWorld.Get();
 
 	// Initialize ActorsContext's UniqueNameProvider with actors in the GWorld not the Import world
-	ImportContextPtr->ActorsContext.UniqueNameProvider = FDatasmithActorUniqueLabelProvider();
+	ImportContextPtr->ActorsContext.UniqueNameProvider.Clear();
 	ImportContextPtr->ActorsContext.UniqueNameProvider.PopulateLabelFrom( ImportContextPtr->ActorsContext.FinalWorld );
 
 	// Add assets as if they have been imported using the current import context
@@ -1061,7 +1069,7 @@ ULevel* UDatasmithConsumer::FindOrAddLevel(const FString& InLevelName)
 	// If it does not exist, create a new one and add it to the working world
 	else
 	{
-		StreamingLevel = EditorLevelUtils::CreateNewStreamingLevelForWorld( *WorkingWorld, ULevelStreamingAlwaysLoaded::StaticClass(), *PackageFilename );
+		StreamingLevel = EditorLevelUtils::CreateNewStreamingLevelForWorld( *WorkingWorld, ULevelStreamingAlwaysLoaded::StaticClass(), PackageFilename, false, nullptr, false );
 
 		if( StreamingLevel )
 		{
@@ -1470,6 +1478,8 @@ namespace DatasmithConsumerUtils
 
 			FDatasmithImporter::ImportMetaDataForObject( ImportContext, RootActorElement, Actor );
 
+			// Copy Tags
+			Actor->Tags = MoveTemp(SceneActor->Tags);
 
 			// Copy the transforms
 			USceneComponent* ActorRootComponent = Actor->GetRootComponent();
@@ -1637,7 +1647,10 @@ namespace DatasmithConsumerUtils
 					TSharedRef< IDatasmithTextureElement > TextureElement = FDatasmithSceneFactory::CreateTexture( *AssetTag );
 					TextureElement->SetLabel( *Texture->GetName() );
 
-					ImportContext.ImportedTextures.Add( TextureElement, Texture );
+					UE::Interchange::FAssetImportResultRef& AssetImportResults = ImportContext.ImportedTextures.Add( TextureElement, MakeShared< UE::Interchange::FImportResult, ESPMode::ThreadSafe >() );
+					AssetImportResults->AddImportedObject( Texture );
+					AssetImportResults->SetDone();
+
 					ImportContext.Scene->AddTexture( TextureElement );
 				}
 				else if(UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(Asset))

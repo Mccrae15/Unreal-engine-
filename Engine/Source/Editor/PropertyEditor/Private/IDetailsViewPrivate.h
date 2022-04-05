@@ -2,11 +2,10 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "AssetThumbnail.h"
 #include "DetailTreeNode.h"
-#include "PropertyNode.h"
 #include "IDetailsView.h"
+#include "PropertyNode.h"
 
 class FEditConditionParser;
 class FNotifyHook;
@@ -81,19 +80,24 @@ public:
 	virtual bool IsPropertyReadOnly( const struct FPropertyAndParent& PropertyAndParent ) const = 0;
 
 	/**
-	 * @return Whether the IsCustomRowVisible check is pertinent, i.e. always return true no matter the specified row and parent names.
-	 */
-	virtual bool IsCustomRowVisibilityFiltered() const = 0;
-
-	/**
 	 * @return Whether a custom row with the specified name and parent name is visible.
 	 */
 	virtual bool IsCustomRowVisible(FName InRowName, FName InParentName) const = 0;
 
 	/**
+	 * @return Whether a custom row with the specified name and parent name is read-only.
+	 */
+	virtual bool IsCustomRowReadOnly(FName InRowName, FName InParentName) const = 0;
+
+	/**
 	 * @return The thumbnail pool that should be used for thumbnails being rendered in this view
 	 */
 	virtual TSharedPtr<class FAssetThumbnailPool> GetThumbnailPool() const = 0;
+
+	/**
+	 * @return The set of custom class viewer filters to use for class properties in this view
+	 */
+	virtual const TArray<TSharedRef<class IClassViewerFilter>>& GetClassViewerFilters() const = 0;
 
 	/**
 	 * Creates the color picker window for this property view.
@@ -140,5 +144,27 @@ public:
 	*/
 	virtual void RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode) = 0;
 
-	virtual TSharedPtr<FEditConditionParser> GetEditConditionParser() const = 0;
+	/** Mark node as animating, useful if animating during behaviors that trigger widget reconstruction */
+	virtual void MarkNodeAnimating(TSharedPtr<FPropertyNode> InNode, float InAnimationDuration) = 0;
+
+	/** Returns true if node is animating, currently we only keep track of the last animated node */
+	virtual bool IsNodeAnimating(TSharedPtr<FPropertyNode> InNode) = 0;
+
+	/** Column width accessibility */
+	virtual FDetailColumnSizeData& GetColumnSizeData() = 0;
+
+	/** Does this details view allow favoriting? */
+	virtual bool IsFavoritingEnabled() const = 0;
+
+	/** Is the given group a favorite? */
+	virtual bool IsGroupFavorite(FStringView GroupPath) const = 0;
+
+	/** Set the given group's favorite status. */
+	virtual void SetGroupFavorite(FStringView GroupPath, bool IsFavorite) = 0;
+
+	/** Is the given custom builder a favorite? */
+	virtual bool IsCustomBuilderFavorite(FStringView Path) const = 0;
+
+	/** Set the given group's favorite status. */
+	virtual void SetCustomBuilderFavorite(FStringView GroupPath, bool IsFavorite) = 0;
 };

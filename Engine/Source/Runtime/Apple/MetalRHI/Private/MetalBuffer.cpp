@@ -1198,8 +1198,14 @@ FMetalBuffer FMetalBufferPoolPolicyData::CreateResource(CreationArguments Args)
 {
 	check(Args.Device);	
 	uint32 BufferSize = GetPoolBucketSize(GetPoolBucketIndex(Args));
-	METAL_GPUPROFILE(FScopedMetalCPUStats CPUStat(FString::Printf(TEXT("AllocBuffer: %llu, %llu"), BufferSize, mtlpp::ResourceOptions(BUFFER_CACHE_MODE | ((NSUInteger)Args.Storage << mtlpp::ResourceStorageModeShift)))));
-	FMetalBuffer NewBuf(MTLPP_VALIDATE(mtlpp::Device, Args.Device, SafeGetRuntimeDebuggingLevel() >= EMetalDebugLevelValidation, NewBuffer(BufferSize, FMetalCommandQueue::GetCompatibleResourceOptions(mtlpp::ResourceOptions(BUFFER_CACHE_MODE | mtlpp::ResourceOptions::HazardTrackingModeUntracked | ((NSUInteger)Args.Storage << mtlpp::ResourceStorageModeShift))))), true);
+	
+	NSUInteger CpuCacheMode = (NSUInteger)Args.CpuCacheMode << mtlpp::ResourceCpuCacheModeShift;
+	NSUInteger StorageMode = (NSUInteger)Args.Storage << mtlpp::ResourceStorageModeShift;
+	mtlpp::ResourceOptions ResourceOptions = FMetalCommandQueue::GetCompatibleResourceOptions(mtlpp::ResourceOptions(CpuCacheMode | StorageMode | mtlpp::ResourceOptions::HazardTrackingModeUntracked));
+	
+	METAL_GPUPROFILE(FScopedMetalCPUStats CPUStat(FString::Printf(TEXT("AllocBuffer: %llu, %llu"), BufferSize, ResourceOptions)));
+	FMetalBuffer NewBuf(MTLPP_VALIDATE(mtlpp::Device, Args.Device, SafeGetRuntimeDebuggingLevel() >= EMetalDebugLevelValidation, NewBuffer(BufferSize, ResourceOptions), true));
+
 #if STATS || ENABLE_LOW_LEVEL_MEM_TRACKER
 	MetalLLM::LogAllocBuffer(Args.Device, NewBuf);
 #endif
@@ -1210,7 +1216,7 @@ FMetalBuffer FMetalBufferPoolPolicyData::CreateResource(CreationArguments Args)
 
 FMetalBufferPoolPolicyData::CreationArguments FMetalBufferPoolPolicyData::GetCreationArguments(FMetalBuffer const& Resource)
 {
-	return FMetalBufferPoolPolicyData::CreationArguments(Resource.GetDevice(), Resource.GetLength(), 0, Resource.GetStorageMode());
+	return FMetalBufferPoolPolicyData::CreationArguments(Resource.GetDevice(), Resource.GetLength(), BUF_None, Resource.GetStorageMode(), Resource.GetCpuCacheMode());
 }
 
 void FMetalBufferPoolPolicyData::FreeResource(FMetalBuffer& Resource)
@@ -1257,10 +1263,7 @@ FMetalTexture FMetalTexturePool::CreateTexture(mtlpp::Device Device, mtlpp::Text
 		Pool.Remove(Descriptor);
 		if (GMetalResourcePurgeInPool)
 		{
-			if (@available(iOS 12.0, macOS 10.13, *))
-			{
-        		Texture.SetPurgeableState(mtlpp::PurgeableState::NonVolatile);
-			}
+            Texture.SetPurgeableState(mtlpp::PurgeableState::NonVolatile);
         }
 	}
 	else
@@ -1289,13 +1292,10 @@ void FMetalTexturePool::ReleaseTexture(FMetalTexture& Texture)
 	Descriptor.usage = Texture.GetUsage();
 	Descriptor.freedFrame = GFrameNumberRenderThread;
 	
-	if (@available(iOS 12.0, macOS 10.13, *))
-	{
-		if (GMetalResourcePurgeInPool && Texture.SetPurgeableState(mtlpp::PurgeableState::KeepCurrent) == mtlpp::PurgeableState::NonVolatile)
-		{
-			Texture.SetPurgeableState(mtlpp::PurgeableState::Volatile);
-		}
-	}
+    if (GMetalResourcePurgeInPool && Texture.SetPurgeableState(mtlpp::PurgeableState::KeepCurrent) == mtlpp::PurgeableState::NonVolatile)
+    {
+        Texture.SetPurgeableState(mtlpp::PurgeableState::Volatile);
+    }
 	
 	FScopeLock Lock(&PoolMutex);
 	Pool.Add(Descriptor, Texture);
@@ -1320,10 +1320,7 @@ void FMetalTexturePool::Drain(bool const bForce)
             {
 				if (GMetalResourcePurgeInPool && (GFrameNumberRenderThread - It->Key.freedFrame) >= PurgeAfterNumFrames)
 				{
-					if (@available(iOS 12.0, macOS 10.13, *))
-					{
-						It->Value.SetPurgeableState(mtlpp::PurgeableState::Empty);
-					}
+					It->Value.SetPurgeableState(mtlpp::PurgeableState::Empty);
 				}
             }
         }
@@ -1473,7 +1470,7 @@ mtlpp::Heap FMetalResourceHeap::GetTextureHeap(mtlpp::TextureDescriptor Desc, mt
 	return Result;
 }
 
-FMetalBuffer FMetalResourceHeap::CreateBuffer(uint32 Size, uint32 Alignment, uint32 Flags, mtlpp::ResourceOptions Options, bool bForceUnique)
+FMetalBuffer FMetalResourceHeap::CreateBuffer(uint32 Size, uint32 Alignment, EBufferUsageFlags Flags, mtlpp::ResourceOptions Options, bool bForceUnique)
 {
 	LLM_SCOPE_METAL(ELLMTagMetal::Buffers);
 	LLM_PLATFORM_SCOPE_METAL(ELLMTagMetal::Buffers);
@@ -1482,11 +1479,16 @@ FMetalBuffer FMetalResourceHeap::CreateBuffer(uint32 Size, uint32 Alignment, uin
 	static bool bSupportsBufferSubAllocation = FMetalCommandQueue::SupportsFeature(EMetalFeaturesBufferSubAllocation);
 	bForceUnique |= (!bSupportsBufferSubAllocation && !bSupportsHeaps);
 	
-	uint32 Usage = (Flags & BUF_Static) ? UsageStatic : UsageDynamic;
+	uint32 Usage = EnumHasAnyFlags(Flags, BUF_Static) ? UsageStatic : UsageDynamic;
 	
 	FMetalBuffer Buffer;
 	uint32 BlockSize = Align(Size, Alignment);
 	mtlpp::StorageMode StorageMode = (mtlpp::StorageMode)(((NSUInteger)Options & mtlpp::ResourceStorageModeMask) >> mtlpp::ResourceStorageModeShift);
+	mtlpp::CpuCacheMode CpuMode = (mtlpp::CpuCacheMode)(((NSUInteger)Options & mtlpp::ResourceCpuCacheModeMask) >> mtlpp::ResourceCpuCacheModeShift);
+	
+	// Write combined should be on a case by case basis
+	check(CpuMode == mtlpp::CpuCacheMode::DefaultCache);
+	
 	if (BlockSize <= 33554432)
 	{
 		switch (StorageMode)
@@ -1521,13 +1523,10 @@ FMetalBuffer FMetalResourceHeap::CreateBuffer(uint32 Size, uint32 Alignment, uin
 				 }
 				 else
 				 {
-                    Buffer = ManagedBuffers.CreatePooledResource(FMetalPooledBufferArgs(Queue->GetDevice(), BlockSize, Flags, StorageMode));
-					if (@available(iOS 12.0, macOS 10.13, *))
+                    Buffer = ManagedBuffers.CreatePooledResource(FMetalPooledBufferArgs(Queue->GetDevice(), BlockSize, Flags, StorageMode, CpuMode));
+					if (GMetalResourcePurgeInPool)
 					{
-						if (GMetalResourcePurgeInPool)
-						{
-							Buffer.SetPurgeableState(mtlpp::PurgeableState::NonVolatile);
-						}
+						Buffer.SetPurgeableState(mtlpp::PurgeableState::NonVolatile);
 					}
 					DEC_MEMORY_STAT_BY(STAT_MetalBufferUnusedMemory, Buffer.GetLength());
 					DEC_MEMORY_STAT_BY(STAT_MetalPooledBufferUnusedMemory, Buffer.GetLength());
@@ -1601,13 +1600,10 @@ FMetalBuffer FMetalResourceHeap::CreateBuffer(uint32 Size, uint32 Alignment, uin
 				else
 				{
 					FScopeLock Lock(&Mutex);
-                    Buffer = Buffers[Storage].CreatePooledResource(FMetalPooledBufferArgs(Queue->GetDevice(), BlockSize, Flags, StorageMode));
+                    Buffer = Buffers[Storage].CreatePooledResource(FMetalPooledBufferArgs(Queue->GetDevice(), BlockSize, Flags, StorageMode, CpuMode));
 					if (GMetalResourcePurgeInPool)
 					{
-						if (@available(iOS 12.0, macOS 10.13, *))
-						{
-                    		Buffer.SetPurgeableState(mtlpp::PurgeableState::NonVolatile);
-						}
+                   		Buffer.SetPurgeableState(mtlpp::PurgeableState::NonVolatile);
 					}
 					DEC_MEMORY_STAT_BY(STAT_MetalBufferUnusedMemory, Buffer.GetLength());
 					DEC_MEMORY_STAT_BY(STAT_MetalPooledBufferUnusedMemory, Buffer.GetLength());
@@ -1655,10 +1651,7 @@ void FMetalResourceHeap::ReleaseBuffer(FMetalBuffer& Buffer)
 		
 		if (GMetalResourcePurgeInPool)
 		{
-			if (@available(iOS 12.0, macOS 10.13, *))
-			{
-        		Buffer.SetPurgeableState(mtlpp::PurgeableState::Volatile);
-			}
+       		Buffer.SetPurgeableState(mtlpp::PurgeableState::Volatile);
 		}
         
 		switch (StorageMode)
@@ -1671,13 +1664,9 @@ void FMetalResourceHeap::ReleaseBuffer(FMetalBuffer& Buffer)
 			}
 	#endif
 			case mtlpp::StorageMode::Private:
-			{
-				Buffers[AllocPrivate].ReleasePooledResource(Buffer);
-				break;
-			}
 			case mtlpp::StorageMode::Shared:
 			{
-				Buffers[AllocShared].ReleasePooledResource(Buffer);
+				Buffers[(NSUInteger)StorageMode].ReleasePooledResource(Buffer);
 				break;
 			}
 			default:
@@ -1774,8 +1763,11 @@ void FMetalResourceHeap::Compact(FMetalRenderPass* Pass, bool const bForce)
         }
     }
 
-	Buffers[AllocShared].DrainPool(bForce);
-	Buffers[AllocPrivate].DrainPool(bForce);
+	for(uint32 AllocTypeIndex = 0;AllocTypeIndex < NumAllocTypes;++AllocTypeIndex)
+	{
+		Buffers[AllocTypeIndex].DrainPool(bForce);
+	}
+	
 #if PLATFORM_MAC
 	ManagedBuffers.DrainPool(bForce);
 	for (auto It = ManagedSubHeaps.CreateIterator(); It; ++It)

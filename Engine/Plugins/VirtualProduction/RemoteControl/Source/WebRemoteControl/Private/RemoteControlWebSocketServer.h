@@ -7,6 +7,7 @@
 #include "INetworkingWebSocket.h"
 #include "IWebSocketServer.h"
 #include "RemoteControlRoute.h"
+#include "Containers/Ticker.h"
 
 /**
  * Router used to dispatch messages received by a WebSocketServer.
@@ -27,7 +28,24 @@ public:
 	 */
 	void UnbindRoute(const FString& MessageName);
 
+	/**
+	 * Adds a Preprocessor called before the Dispatch of the Route
+	 * @param WebsocketPreprocessor The Preprocessor Function to register 
+	 */
+	void AddPreDispatch(TFunction<bool(const struct FRemoteControlWebSocketMessage& Message)> WebsocketPreprocessor);
+
 private:
+	/** Preprocessors for the Dispatch Function */
+	TArray<TFunction<bool(const struct FRemoteControlWebSocketMessage& Message)>> DispatchPreProcessor;
+	
+	/**
+	 * Check if the Message to be dispatched can be executed
+	 * @param MessageName the name of the message to dispatch, used to find its handler
+	 * @param TCHARMessage the payload to dispatch.
+	 * @return true if can be dispatched, false if not
+	 */
+	bool PreDispatch(const struct FRemoteControlWebSocketMessage& Message) const;
+	
 	/**
 	 * Invoke the handler bound to a message name.
 	 * @param MessageName the name of the message to dispatch, used to find its handler.
@@ -142,7 +160,7 @@ private:
 
 private:
 	/** Handle to the tick delegate. */
-	FDelegateHandle TickerHandle;
+	FTSTicker::FDelegateHandle TickerHandle;
  
 	/** Holds the LibWebSocket wrapper. */
 	TUniquePtr<IWebSocketServer> Server;

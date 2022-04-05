@@ -18,6 +18,7 @@
 #include "RayTracing/RayTracingMaterialHitShaders.h"
 #include "Containers/DynamicRHIResourceArray.h"
 #include "SceneTextureParameters.h"
+#include "RayTracingDefinitions.h"
 
 static float GRayTracingMaxNormalBias = 0.1f;
 static FAutoConsoleVariableRef CVarRayTracingNormalBias(
@@ -85,7 +86,7 @@ static TAutoConsoleVariable<int32> CVarRayTracingShadowsLODTransitionEnd(
 
 static TAutoConsoleVariable<int32> CVarRayTracingShadowsAcceptFirstHit(
 	TEXT("r.RayTracing.Shadows.AcceptFirstHit"),
-	0,
+	1,
 	TEXT("Whether to allow shadow rays to terminate early, on first intersected primitive. This may result in worse denoising quality in some cases. (default = 0)"),
 	ECVF_RenderThreadSafe
 );
@@ -103,12 +104,11 @@ class FOcclusionRGS : public FGlobalShader
 
 	class FLightTypeDim : SHADER_PERMUTATION_INT("LIGHT_TYPE", LightType_MAX);
 	class FDenoiserOutputDim : SHADER_PERMUTATION_INT("DIM_DENOISER_OUTPUT", 3);
-	class FEnableTwoSidedGeometryDim : SHADER_PERMUTATION_BOOL("ENABLE_TWO_SIDED_GEOMETRY");
 	class FEnableMultipleSamplesPerPixel : SHADER_PERMUTATION_BOOL("ENABLE_MULTIPLE_SAMPLES_PER_PIXEL");
 	class FHairLighting : SHADER_PERMUTATION_INT("USE_HAIR_LIGHTING", 2);
 	class FEnableTransmissionDim : SHADER_PERMUTATION_INT("ENABLE_TRANSMISSION", 2);
 
-	using FPermutationDomain = TShaderPermutationDomain<FLightTypeDim, FDenoiserOutputDim, FEnableTwoSidedGeometryDim, FHairLighting, FEnableMultipleSamplesPerPixel, FEnableTransmissionDim>;
+	using FPermutationDomain = TShaderPermutationDomain<FLightTypeDim, FDenoiserOutputDim, FHairLighting, FEnableMultipleSamplesPerPixel, FEnableTransmissionDim>;
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
 	{
@@ -136,7 +136,7 @@ class FOcclusionRGS : public FGlobalShader
 	}
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderDrawDebugParameters, ShaderDrawParameters)
+		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderParameters, ShaderDrawParameters)
 		SHADER_PARAMETER(uint32, SamplesPerPixel)
 		SHADER_PARAMETER(float, NormalBias)
 		SHADER_PARAMETER(uint32, LightingChannelMask)
@@ -150,19 +150,20 @@ class FOcclusionRGS : public FGlobalShader
 		SHADER_PARAMETER(uint32, TransmissionSamplingTechnique)
 		SHADER_PARAMETER(uint32, RejectionSamplingTrials)
 		SHADER_PARAMETER(uint32, bAcceptFirstHit)
+		SHADER_PARAMETER(uint32, bTwoSidedGeometry)
 
 		SHADER_PARAMETER_STRUCT(FLightShaderParameters, Light)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneLightingChannelParameters, SceneLightingChannels)
 
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HairCategorizationTexture)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, HairLightChannelMaskTexture)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SSProfilesTexture)
+		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 		SHADER_PARAMETER_SRV(RaytracingAccelerationStructure, TLAS)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, RWOcclusionMaskUAV)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, RWRayDistanceUAV)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, RWSubPixelOcclusionMaskUAV)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FHairStrandsViewUniformParameters, HairStrands)
 		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FVirtualVoxelParameters, VirtualVoxel)
 	END_SHADER_PARAMETER_STRUCT()
 };
@@ -177,10 +178,9 @@ float GetRaytracingMaxNormalBias()
 void FDeferredShadingSceneRenderer::PrepareRayTracingShadows(const FViewInfo& View, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
 	// Declare all RayGen shaders that require material closest hit shaders to be bound
+	// Ray tracing shadows shaders should be properly configured even if r.RayTracing.Shadows is 0 because lights can have raytracing shadows enabled independently of that CVar
 
-	static auto CVarRayTracingShadows = IConsoleManager::Get().FindConsoleVariable(TEXT("r.RayTracing.Shadows"));
-
-	const bool bRayTracingShadows = ShouldRenderRayTracingEffect(CVarRayTracingShadows != nullptr && CVarRayTracingShadows->GetInt() > 0);
+	const bool bRayTracingShadows = ShouldRenderRayTracingEffect(ERayTracingPipelineCompatibilityFlags::FullPipeline);
 
 	if (!bRayTracingShadows)
 	{
@@ -207,7 +207,6 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingShadows(const FViewInfo& Vi
 						FOcclusionRGS::FPermutationDomain PermutationVector;
 						PermutationVector.Set<FOcclusionRGS::FLightTypeDim>(LightType);
 						PermutationVector.Set<FOcclusionRGS::FDenoiserOutputDim>((int32)DenoiserRequirement);
-						PermutationVector.Set<FOcclusionRGS::FEnableTwoSidedGeometryDim>(CVarRayTracingShadowsEnableTwoSidedGeometry.GetValueOnRenderThread() != 0);
 						PermutationVector.Set<FOcclusionRGS::FHairLighting>(HairLighting);
 						PermutationVector.Set<FOcclusionRGS::FEnableMultipleSamplesPerPixel>(MultiSPP != 0);
 						PermutationVector.Set<FOcclusionRGS::FEnableTransmissionDim>(EnableTransmissionDim);
@@ -230,7 +229,6 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 	const FLightSceneInfo& LightSceneInfo,
 	const IScreenSpaceDenoiser::FShadowRayTracingConfig& RayTracingConfig,
 	const IScreenSpaceDenoiser::EShadowRequirements DenoiserRequirements,
-	const FHairStrandsOcclusionResources* HairResources,
 	FRDGTextureRef LightingChannelsTexture,
 	FRDGTextureUAV* OutShadowMaskUAV,
 	FRDGTextureUAV* OutRayHitDistanceUAV,
@@ -264,11 +262,8 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 
 	// Ray generation pass for shadow occlusion.
 	{
-		const bool bUseHairLighting =
-			HairResources != nullptr &&
-			HairResources->CategorizationTexture != nullptr &&
-			HairResources->LightChannelMaskTexture != nullptr &&
-			HairResources->VoxelResources != nullptr;
+		const bool bUseHairLighting   = HairStrands::HasViewHairStrandsData(View) && HairStrands::HasViewHairStrandsVoxelData(View);
+		const bool bUseHairDeepShadow = HairStrands::HasViewHairStrandsData(View) && LightSceneProxy->CastsHairStrandsDeepShadow();
 
 		FOcclusionRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FOcclusionRGS::FParameters>();
 		PassParameters->RWOcclusionMaskUAV = OutShadowMaskUAV;
@@ -277,32 +272,38 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 		PassParameters->SamplesPerPixel = RayTracingConfig.RayCountPerPixel;
 		PassParameters->NormalBias = GetRaytracingMaxNormalBias();
 		PassParameters->LightingChannelMask = LightSceneProxy->GetLightingChannelMask();
-		LightSceneProxy->GetLightShaderParameters(PassParameters->Light);
-		PassParameters->Light.SourceRadius *= LightSceneProxy->GetShadowSourceAngleFactor();
+		
+		{
+			FLightRenderParameters LightParameters;
+			LightSceneProxy->GetLightShaderParameters(LightParameters);
+			LightParameters.MakeShaderParameters(View.ViewMatrices, PassParameters->Light);
+			PassParameters->Light.SourceRadius *= LightSceneProxy->GetShadowSourceAngleFactor();
+		}
 
 		PassParameters->TraceDistance = LightSceneProxy->GetTraceDistance();
 		PassParameters->LODTransitionStart = CVarRayTracingShadowsLODTransitionStart.GetValueOnRenderThread();
 		PassParameters->LODTransitionEnd = CVarRayTracingShadowsLODTransitionEnd.GetValueOnRenderThread();
 		PassParameters->bAcceptFirstHit = CVarRayTracingShadowsAcceptFirstHit.GetValueOnRenderThread();
-		PassParameters->TLAS = View.RayTracingScene.RayTracingSceneRHI->GetShaderResourceView();
+		PassParameters->bTwoSidedGeometry = EnableRayTracingShadowTwoSidedGeometry() ? 1 : 0;
+		PassParameters->TLAS = View.GetRayTracingSceneViewChecked();
 		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 		PassParameters->SceneTextures = SceneTextures;
 		PassParameters->SceneLightingChannels = GetSceneLightingChannelParameters(GraphBuilder, LightingChannelsTexture);
 		PassParameters->LightScissor = ScissorRect;
 		PassParameters->PixelOffset = PixelOffset;
-		PassParameters->SSProfilesTexture = GraphBuilder.RegisterExternalTexture(View.RayTracingSubSurfaceProfileTexture);
+		PassParameters->SSProfilesTexture = View.RayTracingSubSurfaceProfileTexture;
 		PassParameters->bTransmissionSamplingDistanceCulling = CVarRayTracingTransmissionSamplingDistanceCulling.GetValueOnRenderThread();
 		PassParameters->TransmissionSamplingTechnique = CVarRayTracingTransmissionSamplingTechnique.GetValueOnRenderThread();
 		PassParameters->RejectionSamplingTrials = CVarRayTracingTransmissionRejectionSamplingTrials.GetValueOnRenderThread();
 		if (bUseHairLighting)
 		{
 			const bool bUseHairVoxel = CVarRayTracingShadowsEnableHairVoxel.GetValueOnRenderThread() > 0;
-			PassParameters->bUseHairVoxel = (HairResources->bUseHairVoxel && bUseHairVoxel) ? 1 : 0;
-			PassParameters->HairCategorizationTexture = HairResources->CategorizationTexture;
-			PassParameters->HairLightChannelMaskTexture = HairResources->LightChannelMaskTexture;
-			PassParameters->VirtualVoxel = HairResources->VoxelResources->UniformBuffer;
+			PassParameters->bUseHairVoxel = !bUseHairDeepShadow && bUseHairVoxel ? 1 : 0;
+			PassParameters->HairLightChannelMaskTexture = View.HairStrandsViewData.VisibilityData.LightChannelMaskTexture;
+			PassParameters->HairStrands = HairStrands::BindHairStrandsViewUniformParameters(View);
+			PassParameters->VirtualVoxel = HairStrands::BindHairStrandsVoxelUniformParameters(View);
 
-			if (ShaderDrawDebug::IsShaderDrawDebugEnabled(View))
+			if (ShaderDrawDebug::IsEnabled(View))
 			{
 				ShaderDrawDebug::SetParameters(GraphBuilder, View.ShaderDrawData, PassParameters->ShaderDrawParameters);
 			}
@@ -321,7 +322,6 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 		{
 			PermutationVector.Set<FOcclusionRGS::FDenoiserOutputDim>(0);
 		}
-		PermutationVector.Set<FOcclusionRGS::FEnableTwoSidedGeometryDim>(CVarRayTracingShadowsEnableTwoSidedGeometry.GetValueOnRenderThread() != 0);
 		PermutationVector.Set<FOcclusionRGS::FHairLighting>(bUseHairLighting? 1 : 0);
 
 		PermutationVector.Set<FOcclusionRGS::FEnableMultipleSamplesPerPixel>(RayTracingConfig.RayCountPerPixel > 1);
@@ -342,12 +342,12 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 			RDG_EVENT_NAME("RayTracedShadow (spp=%d) %dx%d", RayTracingConfig.RayCountPerPixel, Resolution.X, Resolution.Y),
 			PassParameters,
 			ERDGPassFlags::Compute,
-			[this, &View, RayGenerationShader, PassParameters, Resolution](FRHICommandList& RHICmdList)
+			[this, &View, RayGenerationShader, PassParameters, Resolution](FRHIRayTracingCommandList& RHICmdList)
 		{
 			FRayTracingShaderBindingsWriter GlobalResources;
 			SetShaderParameters(GlobalResources, RayGenerationShader, *PassParameters);
 
-			FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+			FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 
 			if (GRayTracingShadowsEnableMaterials)
 			{
@@ -357,7 +357,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 			{
 				FRayTracingPipelineStateInitializer Initializer;
 
-				Initializer.MaxPayloadSizeInBytes = 64; // sizeof(FPackedMaterialClosestHitPayload)
+				Initializer.MaxPayloadSizeInBytes = RAY_TRACING_MAX_ALLOWED_PAYLOAD_SIZE; // sizeof(FPackedMaterialClosestHitPayload)
 
 				FRHIRayTracingShader* RayGenShaderTable[] = { RayGenerationShader.GetRayTracingShader() };
 				Initializer.SetRayGenShaderTable(RayGenShaderTable);
@@ -379,19 +379,28 @@ void FDeferredShadingSceneRenderer::RenderRayTracingShadows(
 }
 #endif
 
+BEGIN_SHADER_PARAMETER_STRUCT(FDitheredLODFadingOutMaskParameters, )
+	SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
+	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+	RENDER_TARGET_BINDING_SLOTS()
+END_SHADER_PARAMETER_STRUCT()
+
 void FDeferredShadingSceneRenderer::RenderDitheredLODFadingOutMask(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef SceneDepthTexture)
 {
-	auto* PassParameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
+	auto* PassParameters = GraphBuilder.AllocParameters<FDitheredLODFadingOutMaskParameters>();
+	PassParameters->View = View.ViewUniformBuffer;
 	PassParameters->RenderTargets.DepthStencil = FDepthStencilBinding(SceneDepthTexture, ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthWrite_StencilWrite);
+
+	const_cast<FViewInfo&>(View).ParallelMeshDrawCommandPasses[EMeshPass::DitheredLODFadingOutMaskPass].BuildRenderingCommands(GraphBuilder, Scene->GPUScene, PassParameters->InstanceCullingDrawParams);
 
 	GraphBuilder.AddPass(
 		RDG_EVENT_NAME("DitheredLODFadingOutMask"),
 		PassParameters,
 		ERDGPassFlags::Raster,
-		[this, &View](FRHICommandListImmediate& RHICmdList)
+		[this, &View, PassParameters](FRHICommandList& RHICmdList)
 	{
 		RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
 		RHICmdList.SetViewport(View.ViewRect.Min.X, View.ViewRect.Min.Y, 0.0f, View.ViewRect.Max.X, View.ViewRect.Max.Y, 1.0f);
-		View.ParallelMeshDrawCommandPasses[EMeshPass::DitheredLODFadingOutMaskPass].DispatchDraw(nullptr, RHICmdList);
+		View.ParallelMeshDrawCommandPasses[EMeshPass::DitheredLODFadingOutMaskPass].DispatchDraw(nullptr, RHICmdList, &PassParameters->InstanceCullingDrawParams);
 	});
 }

@@ -44,8 +44,27 @@ APawn::APawn(const FObjectInitializer& ObjectInitializer)
 
 	if (HasAnyFlags(RF_ClassDefaultObject) && GetClass() == APawn::StaticClass())
 	{
-		// WARNING: This line is why the AISupport plugin has to load the AIModule before UObject initialization, otherwise this load fails and CDOs are corrupt in the editor
-		AIControllerClass = LoadClass<AController>(nullptr, *((UEngine*)(UEngine::StaticClass()->GetDefaultObject()))->AIControllerClassName.ToString(), nullptr, LOAD_None, nullptr);
+		bool bLoadPluginClass = true;
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		// disabling engine plugins will cause loader warnings, this was added because it added non-valuable warnings for things like basic commandlets
+		if (FParse::Param(FCommandLine::Get(), TEXT("NoEnginePlugins")))
+		{
+			bLoadPluginClass = false;
+		}
+#endif
+
+		FString AIControllerClassName = GetDefault<UEngine>()->AIControllerClassName.ToString();
+
+		// resolve the name to a UClass
+		AIControllerClass = FindObject<UClass>(ANY_PACKAGE, *AIControllerClassName);
+
+		// if we failed to resolve, and plugins are expected to be loaded, proceed with loading it
+		if (AIControllerClass == nullptr && bLoadPluginClass)
+		{
+			// WARNING: This line is why the AISupport plugin has to load the AIModule before UObject initialization, otherwise this load fails and CDOs are corrupt in the editor
+			AIControllerClass = LoadClass<AController>(nullptr, *AIControllerClassName, nullptr, LOAD_None, nullptr);
+		}
 	}
 	else
 	{
@@ -65,6 +84,7 @@ APawn::APawn(const FObjectInitializer& ObjectInitializer)
 	SpawnCollisionHandlingMethod = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
 	bGenerateOverlapEventsDuringLevelStreaming = true;
 	bProcessingOutsideWorldBounds = false;
+	bIsLocalViewTarget = false;
 
 	bUseControllerRotationPitch = false;
 	bUseControllerRotationYaw = false;
@@ -108,7 +128,7 @@ void APawn::PostInitializeComponents()
 
 	Super::PostInitializeComponents();
 	
-	if (!IsPendingKill())
+	if (IsValid(this))
 	{
 		UWorld* World = GetWorld();
 
@@ -359,6 +379,64 @@ void APawn::BecomeViewTarget(APlayerController* PC)
 	{
 		PC->ForceSingleNetUpdateFor(this);
 	}
+
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		bIsLocalViewTarget = GetLocalViewingPlayerController() != nullptr;
+	}
+}
+
+void APawn::EndViewTarget(APlayerController* PC)
+{
+	Super::EndViewTarget(PC);
+
+	if (GetNetMode() != NM_DedicatedServer)
+	{
+		// are any other PCs viewing this pawn before we set it to false
+		bIsLocalViewTarget = GetLocalViewingPlayerController() != nullptr;
+	}
+}
+
+bool APawn::IsLocallyViewed() const
+{
+	return bIsLocalViewTarget;
+}
+
+bool APawn::IsLocalPlayerControllerViewingAPawn() const
+{
+	if (UWorld* World = GetWorld())
+	{
+		for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator)
+		{
+			APlayerController* PlayerController = Iterator->Get();
+			if (PlayerController &&
+				PlayerController->IsLocalController() &&
+				PlayerController->GetViewTarget() != nullptr &&
+				PlayerController->GetViewTarget() != PlayerController)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+APlayerController* APawn::GetLocalViewingPlayerController() const
+{
+	if (UWorld* World = GetWorld())
+	{
+		for (FConstPlayerControllerIterator Iterator = World->GetPlayerControllerIterator(); Iterator; ++Iterator)
+		{
+			APlayerController* PlayerController = Iterator->Get();
+			if (PlayerController && PlayerController->IsLocalController() && PlayerController->GetViewTarget() == this)
+			{
+				return PlayerController;
+			}
+		}
+	}
+
+	return nullptr;
 }
 
 void APawn::PawnClientRestart()
@@ -385,12 +463,32 @@ void APawn::PawnClientRestart()
 				if (UInputDelegateBinding::SupportsInputDelegate(GetClass()))
 				{
 					InputComponent->bBlockInput = bBlockInput;
-					UInputDelegateBinding::BindInputDelegates(GetClass(), InputComponent);
+					UInputDelegateBinding::BindInputDelegatesWithSubojects(this, InputComponent);
 				}
-
 			}
 		}
 	}
+}
+
+void APawn::NotifyRestarted()
+{
+	ReceiveRestarted();
+	ReceiveRestartedDelegate.Broadcast(this);
+}
+
+void APawn::DispatchRestart(bool bCallClientRestart)
+{
+	if (bCallClientRestart)
+	{
+		// This calls Restart()
+		PawnClientRestart();
+	}
+	else
+	{
+		Restart();
+	}
+
+	NotifyRestarted();
 }
 
 void APawn::Destroyed()
@@ -483,10 +581,7 @@ void APawn::OnRep_Controller()
 
 	if (bNotifyControllerChange)
 	{
-		if (UGameInstance* GameInstance = GetGameInstance())
-		{
-			GameInstance->GetOnPawnControllerChanged().Broadcast(this, Controller);
-		}
+		NotifyControllerChanged();
 	}
 }
 
@@ -540,10 +635,7 @@ void APawn::PossessedBy(AController* NewController)
 	{
 		ReceivePossessed(Controller);
 	
-		if (UGameInstance* GameInstance = GetGameInstance())
-		{
-			GameInstance->GetOnPawnControllerChanged().Broadcast(this, Controller);
-		}
+		NotifyControllerChanged();
 	}
 }
 
@@ -566,14 +658,23 @@ void APawn::UnPossessed()
 		ReceiveUnpossessed(OldController);
 	}
 
-	if (UGameInstance* GameInstance = GetGameInstance())
-	{
-		GameInstance->GetOnPawnControllerChanged().Broadcast(this, nullptr);
-	}
+	NotifyControllerChanged();
 
 	ConsumeMovementInputVector();
 }
 
+void APawn::NotifyControllerChanged()
+{
+	ReceiveControllerChanged(PreviousController, Controller);
+	ReceiveControllerChangedDelegate.Broadcast(this, PreviousController, Controller);
+	if (UGameInstance* GameInstance = GetGameInstance())
+	{
+		GameInstance->GetOnPawnControllerChanged().Broadcast(this, Controller);
+	}
+
+	// Update the cached controller
+	PreviousController = Controller;
+}
 
 class UNetConnection* APawn::GetNetConnection() const
 {
@@ -652,12 +753,6 @@ FVector APawn::GetLastMovementInputVector() const
 	return LastControlInputVector;
 }
 
-// TODO: deprecated, remove
-FVector APawn::K2_GetMovementInputVector() const
-{
-	return GetPendingMovementInputVector();
-}
-
 FVector APawn::ConsumeMovementInputVector()
 {
 	UPawnMovementComponent* MovementComponent = GetMovementComponent();
@@ -727,18 +822,19 @@ void APawn::Restart()
 	RecalculateBaseEyeHeight();
 }
 
-class APhysicsVolume* APawn::GetPawnPhysicsVolume() const
+APhysicsVolume* APawn::GetPawnPhysicsVolume() const
 {
-	const UPawnMovementComponent* MovementComponent = GetMovementComponent();
-	if (MovementComponent)
+	return GetPhysicsVolume();
+}
+
+APhysicsVolume* APawn::GetPhysicsVolume() const
+{
+	if (const UPawnMovementComponent* MovementComponent = GetMovementComponent())
 	{
 		return MovementComponent->GetPhysicsVolume();
 	}
-	else if (GetRootComponent())
-	{
-		return GetRootComponent()->GetPhysicsVolume();
-	}
-	return GetWorld()->GetDefaultPhysicsVolume();
+
+	return Super::GetPhysicsVolume();
 }
 
 
@@ -1012,16 +1108,6 @@ void APawn::GetMoveGoalReachTest(const AActor* MovingActor, const FVector& MoveO
 {
 	GoalOffset = FVector::ZeroVector;
 	GetSimpleCollisionCylinder(GoalRadius, GoalHalfHeight);
-}
-
-// @TODO: Deprecated, remove me.
-void APawn::LaunchPawn(FVector LaunchVelocity, bool bXYOverride, bool bZOverride)
-{
-	ACharacter* Character = Cast<ACharacter>(this);
-	if (Character)
-	{
-		Character->LaunchCharacter(LaunchVelocity, bXYOverride, bZOverride);
-	}
 }
 
 // REPLICATION

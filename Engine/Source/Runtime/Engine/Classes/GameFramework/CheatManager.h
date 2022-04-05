@@ -19,6 +19,7 @@
 
 #include "CheatManager.generated.h"
 
+/** If set to 0, cheat manager functionality will be entirely disabled. If cheats are desired in shipping mode this can be overridden in the target definitions */
 #ifndef UE_WITH_CHEAT_MANAGER
 #define UE_WITH_CHEAT_MANAGER (1 && !UE_BUILD_SHIPPING)
 #endif
@@ -78,6 +79,9 @@ class ENGINE_API UCheatManagerExtension : public UObject
 public:
 	/** Use the outer cheat manager to get a World. */
 	virtual UWorld* GetWorld() const override;
+
+	UFUNCTION(BlueprintPure, Category = "Cheat Manager")
+	APlayerController* GetPlayerController() const;
 };
 
 /** 
@@ -95,7 +99,7 @@ class ENGINE_API UCheatManager : public UObject
 
 	/** Debug camera - used to have independent camera without stopping gameplay */
 	UPROPERTY()
-	class ADebugCameraController* DebugCameraControllerRef;
+	TObjectPtr<class ADebugCameraController> DebugCameraControllerRef;
 
 	/** Debug camera - used to have independent camera without stopping gameplay */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Debug Camera")
@@ -356,6 +360,9 @@ class ENGINE_API UCheatManager : public UObject
 	UFUNCTION(exec)
 	void UpdateSafeArea();
 
+	UFUNCTION()
+	void OnPlayerEndPlayed(AActor* Player, EEndPlayReason::Type EndPlayReason);
+
 	/**
 	 * This will move the player and set their rotation to the passed in values.
 	 * This actually does the location / rotation setting.  Additionally it will set you as ghost as the level may have
@@ -450,7 +457,7 @@ public:
 protected:
 	/** List of registered cheat manager extensions */
 	UPROPERTY(Transient)
-	TArray<UCheatManagerExtension*> CheatManagerExtensions;
+	TArray<TObjectPtr<UCheatManagerExtension>> CheatManagerExtensions;
 
 	/** Delegate called when the asset manager singleton is created */
 	static FOnCheatManagerCreated OnCheatManagerCreatedDelegate;
@@ -469,6 +476,10 @@ protected:
     
     /** Retrieve the given PlayerContoller's current "target" AActor. */
     virtual AActor* GetTarget(APlayerController* PlayerController, struct FHitResult& OutHit);
+
+public:
+	UFUNCTION(BlueprintPure, Category = "Cheat Manager")
+	APlayerController* GetPlayerController() const;
 };
 
 

@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-using UnrealBuildTool;
 using System.IO;
+using System.Linq;
+using EpicGames.Core;
 
 namespace UnrealBuildTool.Rules
 {
@@ -21,7 +22,7 @@ namespace UnrealBuildTool.Rules
 				}
 				);
 
-			if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+            if (Target.Platform == UnrealTargetPlatform.Win64)
             {
                 PrivateIncludePaths.Add(EngineDir + "/Source/Runtime/VulkanRHI/Private/Windows");
             }
@@ -44,21 +45,24 @@ namespace UnrealBuildTool.Rules
                     "BuildSettings",
                     "InputCore",
 					"RHI",
+					"RHICore",
 					"RenderCore",
 					"Renderer",
 					"RenderCore",
                     "Slate",
                     "SlateCore",
 					"AugmentedReality",
+					"EngineSettings",
 				}
 				);
 
 			if (Target.bBuildEditor == true)
             {
+				PrivateDependencyModuleNames.Add("EditorFramework");
                 PrivateDependencyModuleNames.Add("UnrealEd");
 			}
 
-            if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.HoloLens)
+            if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.HoloLens)
             {
                 PrivateDependencyModuleNames.AddRange(new string[] {
 					"D3D11RHI",
@@ -87,7 +91,7 @@ namespace UnrealBuildTool.Rules
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
 			}
 
-			if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+            if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Android)
             {
                 PrivateDependencyModuleNames.AddRange(new string[] {
                     "OpenGLDrv",
@@ -96,15 +100,45 @@ namespace UnrealBuildTool.Rules
                 AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenGL");
 			}
 
-			if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64 ||
-				Target.Platform == UnrealTargetPlatform.Android  || Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
+			if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Android  
+			    || Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
             {
                 PrivateDependencyModuleNames.AddRange(new string[] {
                     "VulkanRHI"
                 });
 
                 AddEngineThirdPartyPrivateStaticDependencies(Target, "Vulkan");
-            }
+			}
+
+			if (Target.Platform == UnrealTargetPlatform.Android)
+			{
+				bool bAndroidOculusEnabled = false;
+				if (Target.ProjectFile != null)
+				{
+					ProjectDescriptor Project = ProjectDescriptor.FromFile(Target.ProjectFile);
+					if (Project.Plugins != null)
+					{
+						foreach (PluginReferenceDescriptor PluginDescriptor in Project.Plugins)
+						{
+							if ((PluginDescriptor.Name == "OculusVR") && PluginDescriptor.IsEnabledForPlatform(Target.Platform))
+							{
+								Log.TraceInformation("OpenXRHMD: Android Oculus plugin enabled, will use OculusMobile_APL.xml");
+								bAndroidOculusEnabled = true;
+								break;
+							}
+						}
+					}
+				}
+
+				if (!bAndroidOculusEnabled)
+				{
+					Log.TraceInformation("OpenXRHMD: Using OculusOpenXRLoader_APL.xml");
+
+					// If the Oculus plugin is not enabled we need to include our own APL
+					string PluginPath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
+					AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginPath, "..", "..", "OculusOpenXRLoader_APL.xml"));
+				}
+			}
 		}
 	}
 }

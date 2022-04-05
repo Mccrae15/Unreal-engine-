@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/CoreOnlineFwd.h"
+#include "Online/CoreOnlineFwd.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/ScriptMacros.h"
 #include "UObject/Object.h"
@@ -14,6 +14,7 @@
 
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Subsystems/SubsystemCollection.h"
+#include "GameFramework/OnlineReplStructs.h"
 
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
@@ -169,15 +170,15 @@ protected:
 
 	/** List of locally participating players in this game instance */
 	UPROPERTY()
-	TArray<ULocalPlayer*> LocalPlayers;
+	TArray<TObjectPtr<ULocalPlayer>> LocalPlayers;
 	
 	/** Class to manage online services */
 	UPROPERTY()
-	class UOnlineSession* OnlineSession;
+	TObjectPtr<class UOnlineSession> OnlineSession;
 
 	/** List of objects that are being kept alive by this game instance. Stored as array for fast iteration, should not be modified every frame */
 	UPROPERTY()
-	TArray<UObject*> ReferencedObjects;
+	TArray<TObjectPtr<UObject>> ReferencedObjects;
 
 	/** Listeners to PreClientTravel call */
 	FOnPreClientTravel NotifyPreClientTravelDelegates;
@@ -197,6 +198,7 @@ public:
 	FString PIEMapName;
 #if WITH_EDITOR
 	double PIEStartTime = 0;
+	bool bReportedPIEStartupTime = false;
 #endif
 
 	//~ Begin FExec Interface
@@ -249,11 +251,7 @@ public:
 	/** Called as soon as the game mode is spawned, to allow additional PIE setting validation prior to creating the local players / etc... (called on pure clients too, in which case the game mode is nullptr) */
 	virtual FGameInstancePIEResult PostCreateGameModeForPIE(const FGameInstancePIEParameters& Params, AGameModeBase* GameMode);
 
-	UE_DEPRECATED(4.15, "Please override InitializeForPIE instead")
-	virtual bool InitializePIE(bool bAnyBlueprintErrors, int32 PIEInstance, bool bRunAsDedicated);
-
-	UE_DEPRECATED(4.15, "Please override StartPlayInEditorGameInstance instead")
-	virtual bool StartPIEGameInstance(ULocalPlayer* LocalPlayer, bool bInSimulateInEditor, bool bAnyBlueprintErrors, bool bStartInSpectatorMode);
+	void ReportPIEStartupTime();
 #endif
 
 	class UEngine* GetEngine() const;
@@ -315,17 +313,33 @@ public:
 	 * @return whether the player was successfully removed. Removal is not allowed while connected to a server.
 	 */
 	virtual bool			RemoveLocalPlayer(ULocalPlayer * ExistingPlayer);
-
+	
+	/** Returns number of fully registered local players */
 	int32					GetNumLocalPlayers() const;
+
+	/** Returns the local player at a certain index, or null if not found */
 	ULocalPlayer*			GetLocalPlayerByIndex(const int32 Index) const;
-	APlayerController*		GetFirstLocalPlayerController(const UWorld* World = nullptr) const;
-	ULocalPlayer*			FindLocalPlayerFromControllerId(const int32 ControllerId) const;
-	ULocalPlayer*			FindLocalPlayerFromUniqueNetId(FUniqueNetIdPtr UniqueNetId) const;
-	ULocalPlayer*			FindLocalPlayerFromUniqueNetId(const FUniqueNetId& UniqueNetId) const;
+
+	/** Returns the first local player, will not be null during normal gameplay */
 	ULocalPlayer*			GetFirstGamePlayer() const;
 
+	/** Returns the player controller assigned to the first local player. If World is specified it will search within that specific world */
+	APlayerController*		GetFirstLocalPlayerController(const UWorld* World = nullptr) const;
+
+	/** Returns the local player assigned to a physical Controller Id, or null if not found */
+	ULocalPlayer*			FindLocalPlayerFromControllerId(const int32 ControllerId) const;
+
+	/** Returns the local player that has been assigned the specific unique net id */
+	ULocalPlayer*			FindLocalPlayerFromUniqueNetId(FUniqueNetIdPtr UniqueNetId) const;
+	ULocalPlayer*			FindLocalPlayerFromUniqueNetId(const FUniqueNetId& UniqueNetId) const;
+	ULocalPlayer*			FindLocalPlayerFromUniqueNetId(const FUniqueNetIdRepl& UniqueNetId) const;
+
+	/** Returns const iterator for searching list of local players */
 	TArray<ULocalPlayer*>::TConstIterator	GetLocalPlayerIterator() const;
+
+	/** Returns reference to entire local player list */
 	const TArray<ULocalPlayer*> &			GetLocalPlayers() const;
+
 	/**
 	 * Get the primary player controller on this machine (others are splitscreen children)
 	 * (must have valid player state)
@@ -339,7 +353,15 @@ public:
 	 *
 	 * @return the unique id of the primary player on this machine
 	 */
+	UE_DEPRECATED(5.0, "Use GetPrimaryPlayerUniqueIdRepl.")
 	FUniqueNetIdPtr GetPrimaryPlayerUniqueId() const;
+
+	/**
+	 * Get the unique id for the primary player on this machine (others are splitscreen children)
+	 *
+	 * @return the unique id of the primary player on this machine
+	 */
+	FUniqueNetIdRepl GetPrimaryPlayerUniqueIdRepl() const;
 
 	void CleanupGameViewport();
 
@@ -438,6 +460,16 @@ public:
 	 */
 	virtual void AddUserToReplay(const FString& UserString);
 
+	/** 
+	 * Turns on/off listen server capability for a game instance
+	 * By default this will set up the persistent URL state so it persists across server travels and spawn the appropriate network listener
+	 *
+	 * @param bEnable turn on or off the listen server
+	 * @param PortOverride will use this specific port, or if 0 will use the URL default port
+	 * @return true if desired settings were applied, games can override to deny changes in certain states
+	 */
+	virtual bool EnableListenServer(bool bEnable, int32 PortOverride = 0);
+
 	/** handle a game specific net control message (NMT_GameSpecific)
 	 * this allows games to insert their own logic into the control channel
 	 * the meaning of both data parameters is game-specific
@@ -456,6 +488,9 @@ public:
 
 	/** Call to create the game mode for a given map URL */
 	virtual class AGameModeBase* CreateGameModeForURL(FURL InURL, UWorld* InWorld);
+
+	/** Call to modify the saved url that will be used as a base for future map travels */
+	virtual void SetPersistentTravelURL(FURL InURL);
 
 	/** Return the game mode subclass to use for a given map, options, and portal. By default return passed in one */
 	virtual TSubclassOf<AGameModeBase> OverrideGameModeClass(TSubclassOf<AGameModeBase> GameModeClass, const FString& MapName, const FString& Options, const FString& Portal) const;

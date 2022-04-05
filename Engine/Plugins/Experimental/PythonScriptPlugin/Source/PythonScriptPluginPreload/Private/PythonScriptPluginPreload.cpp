@@ -75,7 +75,7 @@ private:
 #if PLATFORM_WINDOWS || PLATFORM_LINUX
 		// Load the DSOs
 		{
-			// Build the full Python directory (UE_PYTHON_DIR may be relative to UE4 engine directory for portability)
+			// Build the full Python directory (UE_PYTHON_DIR may be relative to the engine directory for portability)
 			FString PythonDir = UTF8_TO_TCHAR(UE_PYTHON_DIR);
 			PythonDir.ReplaceInline(TEXT("{ENGINE_DIR}"), *FPaths::EngineDir(), ESearchCase::CaseSensitive);
 			FPaths::NormalizeDirectoryName(PythonDir);
@@ -85,7 +85,7 @@ private:
 			const FString PythonDSOWildcard = FString::Printf(TEXT("python%d*.dll"), PY_MAJOR_VERSION);
 #elif PLATFORM_LINUX
 			const FString PythonDSOWildcard = FString::Printf(TEXT("libpython%d*.so*"), PY_MAJOR_VERSION);
-			PythonDir /= "lib";
+			PythonDir /= TEXT("lib");
 #endif
 			LoadSharedDSO(PythonDSOWildcard, PythonDir);
 		}

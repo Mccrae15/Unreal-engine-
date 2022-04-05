@@ -3,6 +3,7 @@
 #include "CommonActivatableWidget.h"
 #include "CommonUIPrivatePCH.h"
 #include "Input/CommonUIInputTypes.h"
+#include "Input/UIActionRouterTypes.h"
 #include "ICommonInputModule.h"
 
 UCommonActivatableWidget::FActivatableWidgetRebuildEvent UCommonActivatableWidget::OnRebuilding;
@@ -14,8 +15,9 @@ void UCommonActivatableWidget::NativeConstruct()
 	if (bIsBackHandler)
 	{
 		FBindUIActionArgs BindArgs(ICommonInputModule::GetSettings().GetDefaultBackAction(), FSimpleDelegate::CreateUObject(this, &UCommonActivatableWidget::HandleBackAction));
-		BindArgs.bDisplayInActionBar = false;
-		RegisterUIActionBinding(BindArgs);
+		BindArgs.bDisplayInActionBar = bIsBackActionDisplayedInActionBar;
+
+		DefaultBackActionHandle = RegisterUIActionBinding(BindArgs);
 	}
 
 	if (bAutoActivate)
@@ -34,6 +36,11 @@ void UCommonActivatableWidget::NativeDestruct()
 		DeactivateWidget();
 	}
 	Super::NativeDestruct();
+
+	if (DefaultBackActionHandle.IsValid())
+	{
+		DefaultBackActionHandle.Unregister();
+	}
 }
 
 UWidget* UCommonActivatableWidget::GetDesiredFocusTarget() const
@@ -69,8 +76,11 @@ void UCommonActivatableWidget::ActivateWidget()
 		InternalProcessActivation();
 	}
 }
+
 void UCommonActivatableWidget::InternalProcessActivation()
 {
+	UE_LOG(LogCommonUI, Verbose, TEXT("[%s] -> Activated"), *GetName());
+
 	bIsActive = true;
 	NativeOnActivated();
 }
@@ -83,10 +93,57 @@ void UCommonActivatableWidget::DeactivateWidget()
 	}
 }
 
+void UCommonActivatableWidget::SetBindVisibilities(ESlateVisibility OnActivatedVisibility, ESlateVisibility OnDeactivatedVisibility, bool bInAllActive)
+{
+	ActivatedBindVisibility = OnActivatedVisibility;
+	DeactivatedBindVisibility = OnDeactivatedVisibility;
+	bAllActive = bInAllActive;
+}
+
+void UCommonActivatableWidget::BindVisibilityToActivation(UCommonActivatableWidget* ActivatableWidget)
+{
+	if (ActivatableWidget && !VisibilityBoundWidgets.Contains(ActivatableWidget))
+	{
+		VisibilityBoundWidgets.Add(ActivatableWidget);
+		ActivatableWidget->OnActivated().AddUObject(this, &UCommonActivatableWidget::HandleVisibilityBoundWidgetActivations);
+		ActivatableWidget->OnDeactivated().AddUObject(this, &UCommonActivatableWidget::HandleVisibilityBoundWidgetActivations);
+
+		HandleVisibilityBoundWidgetActivations();
+	}
+}
+
 void UCommonActivatableWidget::InternalProcessDeactivation()
 {
+	UE_LOG(LogCommonUI, Verbose, TEXT("[%s] -> Deactivated"), *GetName());
+
 	bIsActive = false;
 	NativeOnDeactivated();
+}
+
+void UCommonActivatableWidget::RegisterInputTreeNode(const TSharedPtr<FActivatableTreeNode>& OwnerNode)
+{
+	InputTreeNode = OwnerNode;
+}
+
+void UCommonActivatableWidget::ClearActiveHoldInputs()
+{
+	if (InputTreeNode.IsValid())
+	{
+		TSharedPtr<FActivatableTreeNode> Node = InputTreeNode.Pin();
+		if (Node->HasHoldBindings())
+		{
+			const TArray<FUIActionBindingHandle>& NodeActionBindings = Node->GetActionBindings();
+			for (const FUIActionBindingHandle& Handle : NodeActionBindings)
+			{
+				const TSharedPtr<FUIActionBinding>& UIActionBinding = FUIActionBinding::FindBinding(Handle);
+				if (UIActionBinding.IsValid() && UIActionBinding->IsHoldActive())
+				{
+					UIActionBinding->CancelHold();
+					UIActionBinding->OnHoldActionProgressed.Broadcast(0.0f);
+				}
+			}
+		}
+	}
 }
 
 TSharedRef<SWidget> UCommonActivatableWidget::RebuildWidget()
@@ -133,6 +190,9 @@ void UCommonActivatableWidget::NativeOnDeactivated()
 			UE_LOG(LogCommonUI, Verbose, TEXT("[%s] set visibility to [%d] on deactivation"), *GetName(), *StaticEnum<ESlateVisibility>()->GetDisplayValueAsText(DeactivatedVisibility).ToString());
 		}
 
+		// Cancel any holds that were active
+		ClearActiveHoldInputs();
+
 		BP_OnDeactivated();
 		OnDeactivated().Broadcast();
 		BP_OnWidgetDeactivated.Broadcast();
@@ -158,6 +218,38 @@ bool UCommonActivatableWidget::NativeOnHandleBackAction()
 void UCommonActivatableWidget::HandleBackAction()
 {
 	NativeOnHandleBackAction();
+}
+
+void UCommonActivatableWidget::HandleVisibilityBoundWidgetActivations()
+{
+	ESlateVisibility OldDeactivatedVisibility = DeactivatedBindVisibility;
+	OldDeactivatedVisibility = bSetVisibilityOnActivated && IsActivated() ? ActivatedVisibility : OldDeactivatedVisibility;
+	OldDeactivatedVisibility = bSetVisibilityOnDeactivated  && !IsActivated() ? DeactivatedVisibility : OldDeactivatedVisibility;
+
+	for (const TWeakObjectPtr<UCommonActivatableWidget>& VisibilityBoundWidget : VisibilityBoundWidgets)
+	{
+		if (VisibilityBoundWidget.IsValid())
+		{
+			if (bAllActive)
+			{
+				if (!VisibilityBoundWidget->IsActivated())
+				{
+					SetVisibility(OldDeactivatedVisibility);
+					return;
+				}
+			}
+			else 
+			{
+				if (VisibilityBoundWidget->IsActivated())
+				{
+					SetVisibility(ActivatedBindVisibility);
+					return;
+				}
+			}
+		}
+	}
+
+	SetVisibility(bAllActive ? ActivatedBindVisibility : OldDeactivatedVisibility);
 }
 
 void UCommonActivatableWidget::Reset()

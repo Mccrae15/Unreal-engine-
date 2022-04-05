@@ -17,7 +17,7 @@ IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FParticleBeamTrailUniformParameters,"Be
  */
 class FParticleBeamTrailVertexFactoryShaderParameters : public FVertexFactoryShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FParticleBeamTrailVertexFactoryShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FParticleBeamTrailVertexFactoryShaderParameters, NonVirtual);
 public:
 	void GetElementShaderBindings(
 		const FSceneInterface* Scene,
@@ -33,10 +33,9 @@ public:
 		FParticleBeamTrailVertexFactory* BeamTrailVF = (FParticleBeamTrailVertexFactory*)VertexFactory;
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FParticleBeamTrailUniformParameters>(), BeamTrailVF->GetBeamTrailUniformBuffer() );
 	}
-
-	
-	
 };
+
+IMPLEMENT_TYPE_LAYOUT(FParticleBeamTrailVertexFactoryShaderParameters);
 
 ///////////////////////////////////////////////////////////////////////////////
 /**
@@ -73,7 +72,7 @@ public:
 		Offset += sizeof(float) * 4;
 		
 		/** Dynamic parameters come from a second stream */
-		Elements.Add(FVertexElement(1, 0, VET_Float4, 5, bUsesDynamicParameter ? sizeof(FVector4) : 0));
+		Elements.Add(FVertexElement(1, 0, VET_Float4, 5, bUsesDynamicParameter ? sizeof(FVector4f) : 0));
 	}
 
 	virtual void InitDynamicRHI()
@@ -162,4 +161,7 @@ void FParticleBeamTrailVertexFactory::SetDynamicParameterBuffer(const FVertexBuf
 
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FParticleBeamTrailVertexFactory, SF_Vertex, FParticleBeamTrailVertexFactoryShaderParameters);
 
-IMPLEMENT_VERTEX_FACTORY_TYPE(FParticleBeamTrailVertexFactory,"/Engine/Private/ParticleBeamTrailVertexFactory.ush",true,false,true,false,false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FParticleBeamTrailVertexFactory,"/Engine/Private/ParticleBeamTrailVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsDynamicLighting
+);

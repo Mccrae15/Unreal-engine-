@@ -3,16 +3,16 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/ErrorException.h"
 #include "UObject/Package.h"
 #include "UObject/MetaData.h"
 #include "UObject/TextProperty.h"
 #include "UObject/EnumProperty.h"
 #include "UObject/FieldPathProperty.h"
+#include "UObject/Stack.h"
 #include "UnrealHeaderToolGlobals.h"
-#include "ClassMaps.h"
 #include "Templates/UniqueObj.h"
 #include "Templates/UniquePtr.h"
+#include "RigVMDefines.h"
 
 class UEnum;
 class UScriptStruct;
@@ -22,8 +22,12 @@ class UObject;
 class UField;
 class UMetaData;
 class FHeaderParser;
-
-extern class FCompilerMetadataManager GScriptHelper;
+class FUnrealPropertyDefinitionInfo;
+class FUnrealTypeDefinitionInfo;
+class FUnrealEnumDefinitionInfo;
+class FUnrealClassDefinitionInfo;
+class FUnrealScriptStructDefinitionInfo;
+class FUnrealFunctionDefinitionInfo;
 
 /*-----------------------------------------------------------------------------
 	FPropertyBase.
@@ -69,12 +73,6 @@ struct EArrayType
 	};
 };
 
-enum class EAllocatorType
-{
-	Default,
-	MemoryImage
-};
-
 struct ERefQualifier
 {
 	enum Type
@@ -92,9 +90,77 @@ enum class EIntType
 	Unsized // e.g. int, unsigned int
 };
 
-#ifndef CASE_TEXT
-#define CASE_TEXT(txt) case txt: return TEXT(#txt)
-#endif
+enum class EAllocatorType
+{
+	Default,
+	MemoryImage
+};
+
+/** Types access specifiers. */
+enum EAccessSpecifier
+{
+	ACCESS_NotAnAccessSpecifier = 0,
+	ACCESS_Public,
+	ACCESS_Private,
+	ACCESS_Protected,
+	ACCESS_Num,
+};
+
+enum class EUHTPropertyType : uint8
+{
+	None = CPT_None,
+	Byte = CPT_Byte,
+	UInt16 = CPT_UInt16,
+	UInt32 = CPT_UInt32,
+	UInt64 = CPT_UInt64,
+	Int8 = CPT_Int8,
+	Int16 = CPT_Int16,
+	Int = CPT_Int,
+	Int64 = CPT_Int64,
+	Bool = CPT_Bool,
+	Bool8 = CPT_Bool8,
+	Bool16 = CPT_Bool16,
+	Bool32 = CPT_Bool32,
+	Bool64 = CPT_Bool64,
+	Float = CPT_Float,
+	ObjectReference = CPT_ObjectReference,
+	Name = CPT_Name,
+	Delegate = CPT_Delegate,
+	Interface = CPT_Interface,
+	Struct = CPT_Struct,
+	String = CPT_String,
+	Text = CPT_Text,
+	MulticastDelegate = CPT_MulticastDelegate,
+	WeakObjectReference = CPT_WeakObjectReference,
+	LazyObjectReference = CPT_LazyObjectReference,
+	ObjectPtrReference = CPT_ObjectPtrReference,
+	SoftObjectReference = CPT_SoftObjectReference,
+	Double = CPT_Double,
+	Map = CPT_Map,
+	Set = CPT_Set,
+	FieldPath = CPT_FieldPath,
+	LargeWorldCoordinatesReal = CPT_FLargeWorldCoordinatesReal,
+
+	Enum,
+	DynamicArray,
+
+	MAX,
+};
+
+inline bool IsBool(EPropertyType Type)
+{
+	return Type == CPT_Bool || Type == CPT_Bool8 || Type == CPT_Bool16 || Type == CPT_Bool32 || Type == CPT_Bool64;
+}
+
+inline bool IsNumeric(EPropertyType Type)
+{
+	return Type == CPT_Byte || Type == CPT_UInt16 || Type == CPT_UInt32 || Type == CPT_UInt64 || Type == CPT_Int8 || Type == CPT_Int16 || Type == CPT_Int || Type == CPT_Int64 || Type == CPT_Float || Type == CPT_Double;
+}
+
+inline bool IsObjectOrInterface(EPropertyType Type)
+{
+	return Type == CPT_ObjectReference || Type == CPT_Interface || Type == CPT_WeakObjectReference || Type == CPT_LazyObjectReference || Type == CPT_ObjectPtrReference || Type == CPT_SoftObjectReference;
+}
 
 /**
  * Basic information describing a type.
@@ -103,37 +169,35 @@ class FPropertyBase : public TSharedFromThis<FPropertyBase>
 {
 public:
 	// Variables.
-	EPropertyType       Type;
-	EArrayType::Type    ArrayType;
+	EPropertyType       Type = EPropertyType::CPT_None;
+	EArrayType::Type    ArrayType = EArrayType::None;
 	EAllocatorType      AllocatorType = EAllocatorType::Default;
-	EPropertyFlags      PropertyFlags;
-	EPropertyFlags      ImpliedPropertyFlags;
-	ERefQualifier::Type RefQualifier; // This is needed because of legacy stuff - FString mangles the flags for reasons that have become lost in time but we need this info for testing for invalid replicated function signatures.
+	EPropertyFlags      PropertyFlags = CPF_None;
+	EPropertyFlags      ImpliedPropertyFlags = CPF_None;
+	EPropertyFlags		DisallowFlags = ~CPF_None; 
+	ERefQualifier::Type RefQualifier = ERefQualifier::None; // This is needed because of legacy stuff - FString mangles the flags for reasons that have become lost in time but we need this info for testing for invalid replicated function signatures.
 
 	TSharedPtr<FPropertyBase> MapKeyProp;
 
 	/**
 	 * A mask of EPropertyHeaderExportFlags which are used for modifying how this property is exported to the native class header
 	 */
-	uint32 PropertyExportFlags;
+	uint32 PropertyExportFlags = PROPEXPORT_Public;
+
 	union
 	{
-		class UEnum* Enum;
-		class UClass* PropertyClass;
-		class UScriptStruct* Struct;
-		class UFunction* Function;
-		class FFieldClass* PropertyPathClass;
-#if PLATFORM_64BITS
-		int64 StringSize;
-#else
-		int32 StringSize;
-#endif
+		FUnrealTypeDefinitionInfo* TypeDef = nullptr;
+		FUnrealEnumDefinitionInfo* EnumDef;
+		FUnrealScriptStructDefinitionInfo* ScriptStructDef;
+		FUnrealClassDefinitionInfo* ClassDef;
+		FUnrealFunctionDefinitionInfo* FunctionDef;
 	};
+	FName FieldClassName = NAME_None;
+	FUnrealClassDefinitionInfo* MetaClassDef = nullptr;
 
-	UClass* MetaClass;
-	FName   DelegateName;
-	UClass*	DelegateSignatureOwnerClass;
-	FName   RepNotifyName;
+	FName   DelegateName = NAME_None;
+	FUnrealClassDefinitionInfo* DelegateSignatureOwnerClassDef = nullptr;
+	FName   RepNotifyName = NAME_None;
 
 	/** Raw string (not type-checked) used for specifying special text when exporting a property to the *Classes.h file */
 	FString	ExportInfo;
@@ -141,8 +205,8 @@ public:
 	/** Map of key value pairs that will be added to the package's UMetaData for this property */
 	TMap<FName, FString> MetaData;
 
-	EPointerType::Type PointerType;
-	EIntType IntType;
+	EPointerType::Type PointerType = EPointerType::None;
+	EIntType IntType = EIntType::None;
 
 public:
 	/** @name Constructors */
@@ -152,343 +216,17 @@ public:
 	FPropertyBase& operator=(const FPropertyBase&) = default;
 	FPropertyBase& operator=(FPropertyBase&&) = default;
 
-	explicit FPropertyBase(EPropertyType InType)
-	: Type                (InType)
-	, ArrayType           (EArrayType::None)
-	, PropertyFlags       (CPF_None)
-	, ImpliedPropertyFlags(CPF_None)
-	, RefQualifier        (ERefQualifier::None)
-	, PropertyExportFlags (PROPEXPORT_Public)
-	, StringSize          (0)
-	, MetaClass           (nullptr)
-	, DelegateName        (NAME_None)
-	, DelegateSignatureOwnerClass(nullptr)
-	, RepNotifyName       (NAME_None)
-	, PointerType         (EPointerType::None)
-	, IntType             (GetSizedIntTypeFromPropertyType(InType))
-	{
-	}
+	explicit FPropertyBase(EPropertyType InType);
 
-	explicit FPropertyBase(EPropertyType InType, EIntType InIntType)
-	: Type                (InType)
-	, ArrayType           (EArrayType::None)
-	, PropertyFlags       (CPF_None)
-	, ImpliedPropertyFlags(CPF_None)
-	, RefQualifier        (ERefQualifier::None)
-	, PropertyExportFlags (PROPEXPORT_Public)
-	, StringSize          (0)
-	, MetaClass           (nullptr)
-	, DelegateName        (NAME_None)
-	, DelegateSignatureOwnerClass(nullptr)
-	, RepNotifyName       (NAME_None)
-	, PointerType         (EPointerType::None)
-	, IntType             (InIntType)
-	{
-	}
+	explicit FPropertyBase(EPropertyType InType, EIntType InIntType);
 
-	explicit FPropertyBase(UEnum* InEnum, EPropertyType InType)
-	: Type                (InType)
-	, ArrayType           (EArrayType::None)
-	, PropertyFlags       (CPF_None)
-	, ImpliedPropertyFlags(CPF_None)
-	, RefQualifier        (ERefQualifier::None)
-	, PropertyExportFlags (PROPEXPORT_Public)
-	, Enum                (InEnum)
-	, MetaClass           (nullptr)
-	, DelegateName        (NAME_None)
-	, DelegateSignatureOwnerClass(nullptr)
-	, RepNotifyName       (NAME_None)
-	, PointerType         (EPointerType::None)
-	, IntType             (GetSizedIntTypeFromPropertyType(InType))
-	{
-	}
+	explicit FPropertyBase(FUnrealEnumDefinitionInfo& InEnumDef, EPropertyType InType);
 
-	explicit FPropertyBase(UClass* InClass, bool bIsWeak = false, bool bWeakIsAuto = false, bool bIsLazy = false, bool bIsSoft = false)
-	: Type                (CPT_ObjectReference)
-	, ArrayType           (EArrayType::None)
-	, PropertyFlags       (CPF_None)
-	, ImpliedPropertyFlags(CPF_None)
-	, RefQualifier        (ERefQualifier::None)
-	, PropertyExportFlags (PROPEXPORT_Public)
-	, PropertyClass       (InClass)
-	, MetaClass           (nullptr)
-	, DelegateName        (NAME_None)
-	, DelegateSignatureOwnerClass(nullptr)
-	, RepNotifyName       (NAME_None)
-	, PointerType         (EPointerType::None)
-	, IntType             (EIntType::None)
-	{
-		// if this is an interface class, we use the FInterfaceProperty class instead of FObjectProperty
-		if ( InClass->HasAnyClassFlags(CLASS_Interface) )
-		{
-			Type = CPT_Interface;
-		}
-		if (bIsLazy)
-		{
-			Type = CPT_LazyObjectReference;
-		}
-		else if (bIsSoft)
-		{
-			Type = CPT_SoftObjectReference;
-		}
-		else if (bIsWeak)
-		{
-			Type = CPT_WeakObjectReference;
-			if (bWeakIsAuto)
-			{
-				PropertyFlags |= CPF_AutoWeak;
-			}
-		}
-	}
+	explicit FPropertyBase(FUnrealClassDefinitionInfo& InClassDef, EPropertyType InType, bool bWeakIsAuto = false);
 
-	explicit FPropertyBase(UScriptStruct* InStruct)
-	: Type                (CPT_Struct)
-	, ArrayType           (EArrayType::None)
-	, PropertyFlags       (CPF_None)
-	, ImpliedPropertyFlags(CPF_None)
-	, RefQualifier        (ERefQualifier::None)
-	, PropertyExportFlags (PROPEXPORT_Public)
-	, Struct              (InStruct)
-	, MetaClass           (NULL)
-	, DelegateName        (NAME_None)
-	, DelegateSignatureOwnerClass(nullptr)
-	, RepNotifyName       (NAME_None)
-	, PointerType         (EPointerType::None)
-	, IntType             (EIntType::None)
-	{
-	}
+	explicit FPropertyBase(FUnrealScriptStructDefinitionInfo& InStructDef);
 
-	explicit FPropertyBase(FProperty* Property)
-	: PropertyExportFlags(PROPEXPORT_Public)
-	, DelegateName       (NAME_None)
-	, DelegateSignatureOwnerClass(nullptr)
-	, RepNotifyName      (NAME_None)
-	, IntType            (EIntType::None)
-	{
-		checkSlow(Property);
-
-		EArrayType::Type ArrType         = EArrayType::None;
-		EPropertyFlags   PropagateFlags  = CPF_None;
-		FFieldClass*     ClassOfProperty = Property->GetClass();
-
-		if( ClassOfProperty==FArrayProperty::StaticClass() )
-		{
-			ArrType = EArrayType::Dynamic;
-
-			// if we're an array, save up Parm flags so we can propagate them.
-			// below the array will be assigned the inner property flags. This allows propagation of Parm flags (out, optional..)
-			PropagateFlags = Property->PropertyFlags & CPF_ParmFlags;
-			Property = CastFieldChecked<FArrayProperty>(Property)->Inner;
-			ClassOfProperty = Property->GetClass();
-		}
-		else if (ClassOfProperty == FSetProperty::StaticClass())
-		{
-			ArrType = EArrayType::Set;
-
-			PropagateFlags = Property->PropertyFlags & CPF_ParmFlags;
-			Property = CastFieldChecked<FSetProperty>(Property)->ElementProp;
-			ClassOfProperty = Property->GetClass();
-		}
-		else if (ClassOfProperty == FMapProperty::StaticClass())
-		{
-			PropagateFlags = Property->PropertyFlags & CPF_ParmFlags;
-			MapKeyProp = MakeShared<FPropertyBase>(CastFieldChecked<FMapProperty>(Property)->KeyProp);
-			Property = CastFieldChecked<FMapProperty>(Property)->ValueProp;
-			ClassOfProperty = Property->GetClass();
-		}
-
-		if( ClassOfProperty==FByteProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Byte);
-			Enum = CastField<FByteProperty>(Property)->Enum;
-			IntType = EIntType::Sized;
-		}
-		else if( ClassOfProperty==FEnumProperty::StaticClass() )
-		{
-			FEnumProperty* EnumProp = CastField<FEnumProperty>(Property);
-			FNumericProperty* UnderlyingProp = EnumProp->GetUnderlyingProperty();
-
-			*this = FPropertyBase(
-				  UnderlyingProp->IsA<FInt8Property>()   ? CPT_Int8
-				: UnderlyingProp->IsA<FInt16Property>()  ? CPT_Int16
-				: UnderlyingProp->IsA<FIntProperty>()    ? CPT_Int
-				: UnderlyingProp->IsA<FInt64Property>()  ? CPT_Int64
-				: UnderlyingProp->IsA<FByteProperty>()   ? CPT_Byte
-				: UnderlyingProp->IsA<FUInt16Property>() ? CPT_UInt16
-				: UnderlyingProp->IsA<FUInt32Property>() ? CPT_UInt32
-				: UnderlyingProp->IsA<FUInt64Property>() ? CPT_UInt64
-				:                                          CPT_None
-			);
-			check(this->Type != CPT_None);
-			Enum = EnumProp->Enum;
-			IntType = EIntType::Sized;
-		}
-		else if( ClassOfProperty==FInt8Property::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Int8);
-			IntType = EIntType::Sized;
-		}
-		else if( ClassOfProperty==FInt16Property::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Int16);
-			IntType = EIntType::Sized;
-		}
-		else if( ClassOfProperty==FIntProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Int);
-			IntType = EIntType::Sized;
-		}
-		else if( ClassOfProperty==FInt64Property::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Int64);
-			IntType = EIntType::Sized;
-		}
-		else if( ClassOfProperty==FUInt16Property::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_UInt16);
-			IntType = EIntType::Sized;
-		}
-		else if( ClassOfProperty==FUInt32Property::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_UInt32);
-			IntType = EIntType::Sized;
-		}
-		else if( ClassOfProperty==FUInt64Property::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_UInt64);
-			IntType = EIntType::Sized;
-		}
-		else if( ClassOfProperty==FBoolProperty::StaticClass() )
-		{
-			FBoolProperty* BoolProperty =  CastField<FBoolProperty>(Property);
-			if (BoolProperty->IsNativeBool())
-			{
-				*this = FPropertyBase(CPT_Bool);
-			}
-			else
-			{
-				switch( BoolProperty->ElementSize )
-				{
-				case sizeof(uint8):
-					*this = FPropertyBase(CPT_Bool8);
-					break;
-				case sizeof(uint16):
-					*this = FPropertyBase(CPT_Bool16);
-					break;
-				case sizeof(uint32):
-					*this = FPropertyBase(CPT_Bool32);
-					break;
-				case sizeof(uint64):
-					*this = FPropertyBase(CPT_Bool64);
-					break;
-				}
-			}
-		}
-		else if( ClassOfProperty==FFloatProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Float);
-		}
-		else if( ClassOfProperty==FDoubleProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Double);
-		}
-		else if( ClassOfProperty==FClassProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_ObjectReference);
-			PropertyClass = CastField<FClassProperty>(Property)->PropertyClass;
-			MetaClass = CastField<FClassProperty>(Property)->MetaClass;
-		}
-		else if( ClassOfProperty==FObjectProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_ObjectReference);
-			PropertyClass = CastField<FObjectProperty>(Property)->PropertyClass;
-		}
-		else if( ClassOfProperty==FWeakObjectProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_WeakObjectReference);
-			PropertyClass = CastField<FWeakObjectProperty>(Property)->PropertyClass;
-		}
-		else if( ClassOfProperty==FLazyObjectProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_LazyObjectReference);
-			PropertyClass = CastField<FLazyObjectProperty>(Property)->PropertyClass;
-		}
-		else if( ClassOfProperty==FSoftClassProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_SoftObjectReference);
-			PropertyClass = CastField<FSoftClassProperty>(Property)->PropertyClass;
-			MetaClass = CastField<FSoftClassProperty>(Property)->MetaClass;
-		}
-		else if( ClassOfProperty==FSoftObjectProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_SoftObjectReference);
-			PropertyClass = CastField<FSoftObjectProperty>(Property)->PropertyClass;
-		}
-		else if( ClassOfProperty==FNameProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Name);
-		}
-		else if( ClassOfProperty==FStrProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_String);
-		}
-		else if( ClassOfProperty==FTextProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Text);
-		}
-		else if( ClassOfProperty==FStructProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Struct);
-			Struct = CastField<FStructProperty>(Property)->Struct;
-		}
-		else if( ClassOfProperty==FDelegateProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Delegate);
-			Function = CastField<FDelegateProperty>(Property)->SignatureFunction;
-		}
-		else if( ClassOfProperty==FMulticastDelegateProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_MulticastDelegate);
-			// @todo delegate: Any other setup for calling multi-cast delegates from script needed?
-			Function = CastField<FMulticastDelegateProperty>(Property)->SignatureFunction;
-		}
-		else if ( ClassOfProperty==FInterfaceProperty::StaticClass() )
-		{
-			*this = FPropertyBase(CPT_Interface);
-			PropertyClass = CastField<FInterfaceProperty>(Property)->InterfaceClass;
-		}
-		else if (ClassOfProperty == FFieldPathProperty::StaticClass())
-		{
-			*this = FPropertyBase(CPT_FieldPath);
-			PropertyPathClass = CastField<FFieldPathProperty>(Property)->PropertyClass;
-		}
-		else
-		{
-			UE_LOG(LogCompile, Fatal, TEXT("Unknown property type '%s'"), *Property->GetFullName() );
-		}
-		ArrayType            = ArrType;
-		PropertyFlags        = Property->PropertyFlags | PropagateFlags;
-		ImpliedPropertyFlags = CPF_None;
-		RefQualifier         = ERefQualifier::None;
-		PointerType          = EPointerType::None;
-	}
-
-	explicit FPropertyBase(FFieldClass* InPropertyClass, EPropertyType InType)
-		: Type(InType)
-		, ArrayType(EArrayType::None)
-		, PropertyFlags(CPF_None)
-		, ImpliedPropertyFlags(CPF_None)
-		, RefQualifier(ERefQualifier::None)
-		, PropertyExportFlags(PROPEXPORT_Public)
-		, PropertyPathClass(InPropertyClass)
-		, MetaClass(nullptr)
-		, DelegateName(NAME_None)
-		, DelegateSignatureOwnerClass(nullptr)
-		, RepNotifyName(NAME_None)
-		, PointerType(EPointerType::None)
-		, IntType(GetSizedIntTypeFromPropertyType(InType))
-	{
-	}
+	explicit FPropertyBase(FName InFieldClassName, EPropertyType InType);
 	//@}
 
 	/** @name Functions */
@@ -497,15 +235,94 @@ public:
 	/**
 	 * Returns whether this token represents an object reference
 	 */
-	bool IsObject() const
+	bool IsObjectOrInterface() const
 	{
-		return Type == CPT_ObjectReference || Type == CPT_Interface || Type == CPT_WeakObjectReference || Type == CPT_LazyObjectReference || Type == CPT_SoftObjectReference;
+		return ::IsObjectOrInterface(Type);
+	}
+
+	bool IsBool() const
+	{
+		return ::IsBool(Type);
 	}
 
 	bool IsContainer() const
 	{
 		return (ArrayType != EArrayType::None || MapKeyProp.IsValid());
 	}
+
+	bool IsPrimitiveOrPrimitiveStaticArray() const
+	{
+		return (ArrayType == EArrayType::None || ArrayType == EArrayType::Static) && !MapKeyProp.IsValid();
+	}
+
+	bool IsBooleanOrBooleanStaticArray() const
+	{
+		return IsBool() && IsPrimitiveOrPrimitiveStaticArray();
+	}
+
+	bool IsStructOrStructStaticArray() const
+	{
+		return Type == CPT_Struct && IsPrimitiveOrPrimitiveStaticArray();
+	}
+
+	bool IsObjectRefOrObjectRefStaticArray() const
+	{
+		return (Type == CPT_ObjectReference || Type == CPT_ObjectPtrReference) && IsPrimitiveOrPrimitiveStaticArray();
+	}
+
+	bool IsClassRefOrClassRefStaticArray() const;
+
+	bool IsInterfaceOrInterfaceStaticArray() const
+	{
+		return Type == CPT_Interface && IsPrimitiveOrPrimitiveStaticArray();
+	}
+
+	bool IsByteEnumOrByteEnumStaticArray() const;
+
+	bool IsNumericOrNumericStaticArray() const
+	{
+		return IsNumeric(Type) && IsPrimitiveOrPrimitiveStaticArray();
+	}
+
+	bool IsDelegateOrDelegateStaticArray() const
+	{
+		return Type == CPT_Delegate && IsPrimitiveOrPrimitiveStaticArray();
+	}
+
+	bool IsMulticastDelegateOrMulticastDelegateStaticArray() const
+	{
+		return Type == CPT_Delegate && IsPrimitiveOrPrimitiveStaticArray();
+	}
+
+	bool PassCPPArgsByRef() const
+	{
+		if (ArrayType == EArrayType::Dynamic || ArrayType == EArrayType::Set || MapKeyProp.IsValid())
+		{
+			return true;
+		}
+		switch (Type)
+		{
+		//case CPT_Struct:
+		case CPT_String:
+		case CPT_Text:
+		case CPT_Delegate:
+		case CPT_MulticastDelegate:
+		case CPT_WeakObjectReference:
+		case CPT_LazyObjectReference:
+		case CPT_ObjectPtrReference:
+		case CPT_SoftObjectReference:
+		case CPT_Map:
+		case CPT_Set:
+			return true;
+
+		default:
+			return false;
+		}
+	}
+
+	FUnrealEnumDefinitionInfo* AsEnum() const;
+
+	bool IsEnum() const;
 
 	/**
 	 * Determines whether this token's type is compatible with another token's type.
@@ -524,189 +341,10 @@ public:
 	 *											of the other token's type (or vice versa, when dealing with structs
 	 * @param	bIgnoreImplementedInterfaces	controls whether two types can be considered a match if one type is an interface implemented
 	 *											by the other type.
+	 * @param   bEmulateSameType				If true, perform slightly different validation as per FProperty::SameType.  Implementation is not
+	 *											complete.
 	 */
-	bool MatchesType( const FPropertyBase& Other, bool bDisallowGeneralization, bool bIgnoreImplementedInterfaces=false ) const
-	{
-		check(Type!=CPT_None || !bDisallowGeneralization);
-
-		bool bIsObjectType = IsObject();
-		bool bOtherIsObjectType = Other.IsObject();
-		bool bIsObjectComparison = bIsObjectType && bOtherIsObjectType;
-		bool bReverseClassChainCheck = true;
-
-		// If converting to an l-value, we require an exact match with an l-value.
-		if( (PropertyFlags&CPF_OutParm) != 0 )
-		{
-			// if the other type is not an l-value, disallow
-			if ( (Other.PropertyFlags&CPF_OutParm) == 0 )
-			{
-				return false;
-			}
-
-			// if the other type is const and we are not const, disallow
-			if ( (Other.PropertyFlags&CPF_ConstParm) != 0 && (PropertyFlags&CPF_ConstParm) == 0 )
-			{
-				return false;
-			}
-
-			if ( Type == CPT_Struct )
-			{
-				// Allow derived structs to be passed by reference, unless this is a dynamic array of structs
-				bDisallowGeneralization = bDisallowGeneralization || ArrayType == EArrayType::Dynamic || Other.ArrayType == EArrayType::Dynamic;
-			}
-
-			// if Type == CPT_ObjectReference, out object function parm; allow derived classes to be passed in
-			// if Type == CPT_Interface, out interface function parm; allow derived classes to be passed in
-			else if ( (PropertyFlags & CPF_ConstParm) == 0 || !IsObject() )
-			{
-				// all other variable types must match exactly when passed as the value to an 'out' parameter
-				bDisallowGeneralization = true;
-			}
-			
-			// both types are objects, but one is an interface and one is an object reference
-			else if ( bIsObjectComparison && Type != Other.Type )
-			{
-				return false;
-			}
-		}
-		else if ((Type == CPT_ObjectReference || Type == CPT_WeakObjectReference || Type == CPT_LazyObjectReference || Type == CPT_SoftObjectReference) && Other.Type != CPT_Interface && (PropertyFlags & CPF_ReturnParm))
-		{
-			bReverseClassChainCheck = false;
-		}
-
-		// Check everything.
-		if( Type==CPT_None && (Other.Type==CPT_None || !bDisallowGeneralization) )
-		{
-			// If Other has no type, accept anything.
-			return true;
-		}
-		else if( Type != Other.Type && !bIsObjectComparison )
-		{
-			// Mismatched base types.
-			return false;
-		}
-		else if( ArrayType != Other.ArrayType )
-		{
-			// Mismatched array types.
-			return false;
-		}
-		else if( Type==CPT_Byte )
-		{
-			// Make sure enums match, or we're generalizing.
-			return Enum==Other.Enum || (Enum==NULL && !bDisallowGeneralization);
-		}
-		else if( bIsObjectType )
-		{
-			check(PropertyClass!=NULL);
-
-			// Make sure object types match, or we're generalizing.
-			if( bDisallowGeneralization )
-			{
-				// Exact match required.
-				return PropertyClass==Other.PropertyClass && MetaClass==Other.MetaClass;
-			}
-			else if( Other.PropertyClass==NULL )
-			{
-				// Cannonical 'None' matches all object classes.
-				return true;
-			}
-			else
-			{
-				// Generalization is ok (typical example of this check would look like: VarA = VarB;, where this is VarB and Other is VarA)
-				if ( Other.PropertyClass->IsChildOf(PropertyClass) )
-				{
-					if ( !bIgnoreImplementedInterfaces || ((Type == CPT_Interface) == (Other.Type == CPT_Interface)) )
-					{
-						if ( !PropertyClass->IsChildOf(UClass::StaticClass()) || MetaClass == NULL || Other.MetaClass->IsChildOf(MetaClass) ||
-							(bReverseClassChainCheck && (Other.MetaClass == NULL || MetaClass->IsChildOf(Other.MetaClass))) )
-						{
-							return true;
-						}
-					}
-				}
-				// check the opposite class chain for object types
-				else if (bReverseClassChainCheck && Type != CPT_Interface && bIsObjectComparison && PropertyClass != NULL && PropertyClass->IsChildOf(Other.PropertyClass))
-				{
-					if (!Other.PropertyClass->IsChildOf(UClass::StaticClass()) || MetaClass == NULL || Other.MetaClass == NULL || MetaClass->IsChildOf(Other.MetaClass) || Other.MetaClass->IsChildOf(MetaClass))
-					{
-						return true;
-					}
-				}
-
-				if ( PropertyClass->HasAnyClassFlags(CLASS_Interface) && !bIgnoreImplementedInterfaces )
-				{
-					if ( Other.PropertyClass->ImplementsInterface(PropertyClass) )
-					{
-						return true;
-					}
-				}
-
-				return false;
-			}
-		}
-		else if( Type==CPT_Struct )
-		{
-			check(Struct!=NULL);
-			check(Other.Struct!=NULL);
-
-			if ( Struct == Other.Struct )
-			{
-				// struct types match exactly 
-				return true;
-			}
-
-			// returning false here prevents structs related through inheritance from being used interchangeably, such as passing a derived struct as the value for a parameter
-			// that expects the base struct, or vice versa.  An easier example is assignment (e.g. Vector = Plane or Plane = Vector).
-			// there are two cases to consider (let's use vector and plane for the example):
-			// - Vector = Plane;
-			//		in this expression, 'this' is the vector, and Other is the plane.  This is an unsafe conversion, as the destination property type is used to copy the r-value to the l-value
-			//		so in this case, the VM would call CopyCompleteValue on the FPlane struct, which would copy 16 bytes into the l-value's buffer;  However, the l-value buffer will only be
-			//		12 bytes because that is the size of FVector
-			// - Plane = Vector;
-			//		in this expression, 'this' is the plane, and Other is the vector.  This is a safe conversion, since only 12 bytes would be copied from the r-value into the l-value's buffer
-			//		(which would be 16 bytes).  The problem with allowing this conversion is that what to do with the extra member (e.g. Plane.W); should it be left alone? should it be zeroed?
-			//		difficult to say what the correct behavior should be, so let's just ignore inheritance for the sake of determining whether two structs are identical
-
-			// Previously, the logic for determining whether this is a generalization of Other was reversed; this is very likely the culprit behind all current issues with 
-			// using derived structs interchangeably with their base versions.  The inheritance check has been fixed; for now, allow struct generalization and see if we can find any further
-			// issues with allowing conversion.  If so, then we disable all struct generalization by returning false here.
- 			// return false;
-
-			if ( bDisallowGeneralization )
-			{
-				return false;
-			}
-
-			// Generalization is ok if this is not a dynamic array
-			if ( ArrayType != EArrayType::Dynamic && Other.ArrayType != EArrayType::Dynamic )
-			{
-				if ( !Other.Struct->IsChildOf(Struct) && Struct->IsChildOf(Other.Struct) )
-				{
-					return true;
-				}
-			}
-
-			return false;
-		}
-		else
-		{
-			// General match.
-			return true;
-		}
-	}
-
-	FString Describe()
-	{
-		return FString::Printf(
-			TEXT("Type:%s  Flags:%lli  ImpliedFlags:%lli  Enum:%s  PropertyClass:%s  Struct:%s  Function:%s  MetaClass:%s"),
-			GetPropertyTypeText(Type), PropertyFlags, ImpliedPropertyFlags,
-			Enum!=NULL?*Enum->GetName():TEXT(""),
-			PropertyClass!=NULL?*PropertyClass->GetName():TEXT("NULL"),
-			Struct!=NULL?*Struct->GetName():TEXT("NULL"),
-			Function!=NULL?*Function->GetName():TEXT("NULL"),
-			MetaClass!=NULL?*MetaClass->GetName():TEXT("NULL")
-			);
-	}
+	bool MatchesType(const FPropertyBase& Other, bool bDisallowGeneralization, bool bIgnoreImplementedInterfaces = false, bool bEmulateSameType = false) const;
 	//@}
 
 	EIntType GetSizedIntTypeFromPropertyType(EPropertyType PropType)
@@ -728,323 +366,9 @@ public:
 		}
 	}
 
-	static const TCHAR* GetPropertyTypeText( EPropertyType Type );
+	EUHTPropertyType GetUHTPropertyType() const;
 
 	friend struct FPropertyBaseArchiveProxy;
-};
-
-//
-// Token types.
-//
-enum ETokenType
-{
-	TOKEN_None				= 0x00,		// No token.
-	TOKEN_Identifier		= 0x01,		// Alphanumeric identifier.
-	TOKEN_Symbol			= 0x02,		// Symbol.
-	TOKEN_Const				= 0x03,		// A constant.
-	TOKEN_Max				= 0x0D
-};
-
-/*-----------------------------------------------------------------------------
-	FToken.
------------------------------------------------------------------------------*/
-//
-// Information about a token that was just parsed.
-//
-class FToken : public FPropertyBase
-{
-public:
-	/** @name Variables */
-	//@{
-	/** Type of token. */
-	ETokenType TokenType;
-
-private:
-	/** Whether TokenName has been looked up */
-	mutable bool bTokenNameInitialized;
-	/** Name of token, lazily initialized */
-	mutable FName TokenName;
-
-public:
-	/** Starting position in script where this token came from. */
-	int32 StartPos;
-	/** Starting line in script. */
-	int32 StartLine;
-	/** Always valid. */
-	TCHAR Identifier[NAME_SIZE];
-	/** property that corresponds to this FToken - null if this Token doesn't correspond to a FProperty */
-	FProperty* TokenProperty;
-
-
-public:
-
-	union
-	{
-		// TOKEN_Const values.
-		uint8 Byte;								// If CPT_Byte.
-		int64 Int64;							// If CPT_Int64.
-		int32 Int;								// If CPT_Int.
-		bool NativeBool;						// if CPT_Bool
-		float Float;							// If CPT_Float.
-		double Double;							// If CPT_Double.
-		uint8 NameBytes[sizeof(FName)];			// If CPT_Name.
-		TCHAR String[MAX_STRING_CONST_SIZE];	// If CPT_String
-	};
-	//@}
-
-	FToken& operator=(const FToken& Other);
-	FToken& operator=(FToken&& Other);
-
-	FString GetConstantValue() const
-	{
-		if (TokenType == TOKEN_Const)
-		{
-			switch (Type)
-			{
-				case CPT_Byte:
-					return FString::Printf(TEXT("%u"), Byte);
-				case CPT_Int64:
-					return FString::Printf(TEXT("%" INT64_FMT), Int64);
-				case CPT_Int:
-					return FString::Printf(TEXT("%i"), Int);
-				case CPT_Bool:
-					// Don't use FCoreTexts::True/FCoreTexts::False here because they can be localized
-					return FString::Printf(TEXT("%s"), NativeBool ? *(FName::GetEntry(NAME_TRUE)->GetPlainNameString()) : *(FName::GetEntry(NAME_FALSE)->GetPlainNameString()));
-				case CPT_Float:
-					return FString::Printf(TEXT("%f"), Float);
-				case CPT_Double:
-					return FString::Printf(TEXT("%f"), Double);
-				case CPT_Name:
-					return FString::Printf(TEXT("%s"), *(*(FName*)NameBytes).ToString());
-				case CPT_String:
-					return String;
-
-				// unsupported (parsing never produces a constant token of these types)
-				default:
-					return TEXT("InvalidTypeForAToken");
-			}
-		}
-		else
-		{
-			return TEXT("NotConstant");
-		}
-	}
-
-	// Constructors.
-	FToken()
-		: FPropertyBase(CPT_None)
-		, TokenProperty(NULL)
-	{
-		InitToken(CPT_None);
-	}
-
-	// copy constructors
-	explicit FToken(EPropertyType InType)
-		: FPropertyBase(InType)
-		, TokenProperty(NULL)
-	{
-		InitToken(InType);
-	}
-
-	// copy constructors
-	FToken(const FPropertyBase& InType)
-		: FPropertyBase(CPT_None)
-		, TokenProperty(NULL)
-	{
-		InitToken( CPT_None );
-		(FPropertyBase&)*this = InType;
-	}
-
-	FToken(const FToken& InToken)
-		: FPropertyBase(CPT_None)
-	{
-		*this = InToken;
-	}
-
-	FToken(FToken&& InToken)
-		: FPropertyBase(CPT_None)
-	{
-		*this = MoveTemp(InToken);
-	}
-
-	// Inlines.
-	void InitToken( EPropertyType InType )
-	{
-		(FPropertyBase&)*this = FPropertyBase(InType);
-		TokenType		= TOKEN_None;
-		TokenName		= NAME_None;
-		StartPos		= 0;
-		StartLine		= 0;
-		*Identifier		= 0;
-		FMemory::Memzero(String);
-	}
-	bool Matches(const TCHAR Ch) const
-	{
-		return TokenType==TOKEN_Symbol && Identifier[0] == Ch && Identifier[1] == 0;
-	}
-	bool Matches( const TCHAR* Str, ESearchCase::Type SearchCase ) const
-	{
-		return (TokenType==TOKEN_Identifier || TokenType==TOKEN_Symbol) && ((SearchCase == ESearchCase::CaseSensitive) ? !FCString::Strcmp(Identifier, Str) : !FCString::Stricmp(Identifier, Str));
-	}
-	bool IsBool() const
-	{
-		return Type == CPT_Bool || Type == CPT_Bool8 || Type == CPT_Bool16 || Type == CPT_Bool32 || Type == CPT_Bool64;
-	}
-	FName GetTokenName() const
-	{
-		if (!bTokenNameInitialized)
-		{
-			TokenName = FName(Identifier, FNAME_Find);
-			bTokenNameInitialized = true;
-		}
-		return TokenName;
-	}
-	void ClearTokenName()
-	{
-		bTokenNameInitialized = false;
-		TokenName = NAME_None;
-	}
-
-	// Setters.
-	
-	void SetIdentifier( const TCHAR* InString)
-	{
-		InitToken(CPT_None);
-		TokenType = TOKEN_Identifier;
-		FCString::Strncpy(Identifier, InString, NAME_SIZE);
-		bTokenNameInitialized = false;
-	}
-
-	void SetConstInt64( int64 InInt64 )
-	{
-		(FPropertyBase&)*this = FPropertyBase(CPT_Int64);
-		Int64			= InInt64;
-		TokenType		= TOKEN_Const;
-	}
-	void SetConstInt( int32 InInt )
-	{
-		(FPropertyBase&)*this = FPropertyBase(CPT_Int);
-		Int				= InInt;
-		TokenType		= TOKEN_Const;
-	}
-	void SetConstBool( bool InBool )
-	{
-		(FPropertyBase&)*this = FPropertyBase(CPT_Bool);
-		NativeBool 		= InBool;
-		TokenType		= TOKEN_Const;
-	}
-	void SetConstFloat( float InFloat )
-	{
-		(FPropertyBase&)*this = FPropertyBase(CPT_Float);
-		Float			= InFloat;
-		TokenType		= TOKEN_Const;
-	}
-	void SetConstDouble( double InDouble )
-	{
-		(FPropertyBase&)*this = FPropertyBase(CPT_Double);
-		Double			= InDouble;
-		TokenType		= TOKEN_Const;
-	}
-	void SetConstName( FName InName )
-	{
-		(FPropertyBase&)*this = FPropertyBase(CPT_Name);
-		*(FName *)NameBytes = InName;
-		TokenType		= TOKEN_Const;
-	}
-	void SetConstString( const TCHAR* InString, int32 MaxLength=MAX_STRING_CONST_SIZE )
-	{
-		check(MaxLength>0);
-		(FPropertyBase&)*this = FPropertyBase(CPT_String);
-		if( InString != String )
-		{
-			FCString::Strncpy( String, InString, MaxLength );
-		}
-		TokenType = TOKEN_Const;
-	}
-	void SetConstChar(TCHAR InChar)
-	{
-		//@TODO: Treating this like a string for now, nothing consumes it
-		(FPropertyBase&)*this = FPropertyBase(CPT_String);
-		String[0] = InChar;
-		String[1] = 0;
-		TokenType = TOKEN_Const;
-	}
-	//!!struct constants
-
-	// Getters.
-	bool GetConstInt( int32& I ) const
-	{
-		if( TokenType==TOKEN_Const && Type==CPT_Int64 )
-		{
-			I = (int32)Int64;
-			return 1;
-		}
-		else if( TokenType==TOKEN_Const && Type==CPT_Int )
-		{
-			I = Int;
-			return 1;
-		}
-		else if( TokenType==TOKEN_Const && Type==CPT_Byte )
-		{
-			I = Byte;
-			return 1;
-		}
-		else if( TokenType==TOKEN_Const && Type==CPT_Float && Float==FMath::TruncToInt(Float))
-		{
-			I = (int32) Float;
-			return 1;
-		}
-		else if (TokenType == TOKEN_Const && Type == CPT_Double && Double == FMath::TruncToInt((float)Double))
-		{
-			I = (int32) Double;
-			return 1;
-		}
-		else return 0;
-	}
-
-	bool GetConstInt64( int64& I ) const
-	{
-		if( TokenType==TOKEN_Const && Type==CPT_Int64 )
-		{
-			I = Int64;
-			return 1;
-		}
-		else if( TokenType==TOKEN_Const && Type==CPT_Int )
-		{
-			I = Int;
-			return 1;
-		}
-		else if( TokenType==TOKEN_Const && Type==CPT_Byte )
-		{
-			I = Byte;
-			return 1;
-		}
-		else if( TokenType==TOKEN_Const && Type==CPT_Float && Float==FMath::TruncToInt(Float))
-		{
-			I = (int32) Float;
-			return 1;
-		}
-		else if (TokenType == TOKEN_Const && Type == CPT_Double && Double == FMath::TruncToInt((float)Double))
-		{
-			I = (int32) Double;
-			return 1;
-		}
-		else return 0;
-	}
-
-	FString Describe()
-	{
-		return FString::Printf(
-			TEXT("Property:%s  Type:%s  TokenName:%s  ConstValue:%s  Struct:%s  Flags:%lli  Implied:%lli"),
-			TokenProperty!=NULL?*TokenProperty->GetName():TEXT("NULL"),
-			GetPropertyTypeText(Type), *GetTokenName().ToString(), *GetConstantValue(),
-			Struct!=NULL?*Struct->GetName():TEXT("NULL"),
-			PropertyFlags,
-			ImpliedPropertyFlags
-			);
-	}
-
-	friend struct FTokenArchiveProxy;
 };
 
 /**
@@ -1054,16 +378,12 @@ struct FFuncInfo
 {
 	/** @name Variables */
 	//@{
-	/** Name of the function or operator. */
-	FToken		Function;
 	/** Function flags. */
-	EFunctionFlags	FunctionFlags;
+	EFunctionFlags	FunctionFlags = FUNC_None;
 	/** Function flags which are only required for exporting */
-	uint32		FunctionExportFlags;
+	uint32		FunctionExportFlags = 0;
 	/** Number of parameters expected for operator. */
-	int32		ExpectParms;
-	/** Pointer to the UFunction corresponding to this FFuncInfo */
-	UFunction*	FunctionReference;
+	int32		ExpectParms = 0;
 	/** Name of the wrapper function that marshalls the arguments and does the indirect call **/
 	FString		MarshallAndCallName;
 	/** Name of the actual implementation **/
@@ -1075,786 +395,22 @@ struct FFuncInfo
 	/** Endpoint name */
 	FString		EndpointName;
 	/** Identifier for an RPC call to a platform service */
-	uint16		RPCId;
+	uint16		RPCId = 0;
 	/** Identifier for an RPC call expecting a response */
-	uint16		RPCResponseId;
+	uint16		RPCResponseId = 0;
 	/** Delegate macro line in header. */
-	int32		MacroLine;
+	int32		MacroLine = -1;
 	/** Position in file where this function was declared. Points to first char of function name. */
-	int32 InputPos;
+	int32		InputPos = -1;
 	/** Whether this function represents a sealed event */
-	bool		bSealedEvent;
+	bool		bSealedEvent = false;
 	/** TRUE if the function is being forced to be considered as impure by the user */
-	bool bForceBlueprintImpure;
+	bool		bForceBlueprintImpure = false;
 
 	//@}
-
-	/** Constructor. */
-	FFuncInfo()
-		: Function()
-		, FunctionFlags(FUNC_None)
-		, FunctionExportFlags(0)
-		, ExpectParms(0)
-		, FunctionReference(nullptr)
-		, RPCId(0)
-		, RPCResponseId(0)
-		, MacroLine(-1)
-		, InputPos(-1)
-		, bSealedEvent(false)
-		, bForceBlueprintImpure(false)
-	{}
-
-	FFuncInfo(const FFuncInfo& Other) = default;
-	FFuncInfo(FFuncInfo&& Other) = default;
-	FFuncInfo& operator=(FFuncInfo&& Other) = default;
 
 	/** Set the internal function names based on flags **/
-	void SetFunctionNames()
-	{
-		FString FunctionName = FunctionReference->GetName();
-		if( FunctionReference->HasAnyFunctionFlags( FUNC_Delegate ) )
-		{
-			FunctionName.LeftChopInline( FString(HEADER_GENERATED_DELEGATE_SIGNATURE_SUFFIX).Len(), false );
-		}
-		UnMarshallAndCallName = FString(TEXT("exec")) + FunctionName;
-		
-		if (FunctionReference->HasAnyFunctionFlags(FUNC_BlueprintEvent))
-		{
-			MarshallAndCallName = FunctionName;
-		}
-		else
-		{
-			MarshallAndCallName = FString(TEXT("event")) + FunctionName;
-		}
-
-		if (FunctionReference->HasAllFunctionFlags(FUNC_Native | FUNC_Net))
-		{
-			MarshallAndCallName = FunctionName;
-			if (FunctionReference->HasAllFunctionFlags(FUNC_NetResponse))
-			{
-				// Response function implemented by programmer and called directly from thunk
-				CppImplName = FunctionReference->GetName();
-			}
-			else
-			{
-				if (CppImplName.IsEmpty())
-				{
-					CppImplName = FunctionReference->GetName() + TEXT("_Implementation");
-				}
-				else if (CppImplName == FunctionName)
-				{
-					FError::Throwf(TEXT("Native implementation function must be different than original function name."));
-				}
-
-				if (CppValidationImplName.IsEmpty() && FunctionReference->HasAllFunctionFlags(FUNC_NetValidate))
-				{
-					CppValidationImplName = FunctionReference->GetName() + TEXT("_Validate");
-				}
-				else if(CppValidationImplName == FunctionName)
-				{
-					FError::Throwf(TEXT("Validation function must be different than original function name."));
-				}
-			}
-		}
-
-		if (FunctionReference->HasAllFunctionFlags(FUNC_Delegate))
-		{
-			MarshallAndCallName = FString(TEXT("delegate")) + FunctionName;
-		}
-
-		if (FunctionReference->HasAllFunctionFlags(FUNC_BlueprintEvent | FUNC_Native))
-		{
-			MarshallAndCallName = FunctionName;
-			CppImplName = FunctionReference->GetName() + TEXT("_Implementation");
-		}
-
-		if (CppImplName.IsEmpty())
-		{
-			CppImplName = FunctionName;
-		}
-	}
-};
-
-/**
- * Stores "compiler" data about an FToken.  "Compiler" data is data that is associated with a
- * specific property, function or class that is only needed during script compile.
- * This class is designed to make adding new compiler data very simple.
- *
- * - stores the raw evaluated bytecode associated with an FToken
- */
-struct FTokenData
-{
-	/** The token tracked by this FTokenData. */
-	FToken Token;
-
-	FTokenData() = default;
-	FTokenData(FTokenData&&) = default;
-	FTokenData& operator=(FTokenData&&) = default;
-	FTokenData(FToken&& InToken)
-		: Token(MoveTemp(InToken))
-	{
-	}
-};
-
-/**
- * Class for storing data about a list of properties.  Though FToken contains a reference to its
- * associated FProperty, it's faster lookup to use the FProperty as the key in a TMap.
- */
-class FPropertyData : public TMap< FProperty*, TSharedPtr<FTokenData> >
-{
-	typedef TMap<FProperty*, TSharedPtr<FTokenData> >	Super;
-
-public:
-	/**
-	 * Returns the value associated with a specified key.
-	 * @param	Key - The key to search for.
-	 * @return	A pointer to the value associated with the specified key, or NULL if the key isn't contained in this map.  The pointer
-	 *			is only valid until the next change to any key in the map.
-	 */
-	FTokenData* Find(FProperty* Key)
-	{
-		FTokenData* Result = NULL;
-
-		TSharedPtr<FTokenData>* pResult = Super::Find(Key);
-		if ( pResult != NULL )
-		{
-			Result = pResult->Get();
-		}
-		return Result;
-	}
-	const FTokenData* Find(FProperty* Key) const
-	{
-		const FTokenData* Result = NULL;
-
-		const TSharedPtr<FTokenData>* pResult = Super::Find(Key);
-		if ( pResult != NULL )
-		{
-			Result = pResult->Get();
-		}
-		return Result;
-	}
-
-	/**
-	 * Sets the value associated with a key.  If the key already exists in the map, uses the same
-	 * value pointer and reinitalized the FTokenData with the input value.
-	 *
-	 * @param	InKey	the property to get a token wrapper for
-	 * @param	InValue	the token wrapper for the specified key
-	 *
-	 * @return	a pointer to token data created associated with the property
-	 */
-	FTokenData* Set(FProperty* InKey, FTokenData&& InValue, FUnrealSourceFile* UnrealSourceFile);
-
-	/**
-	 * (debug) Dumps the values of this FPropertyData to the log file
-	 * 
-	 * @param	Indent	number of spaces to insert at the beginning of each line
-	 */	
-	void Dump( int32 Indent )
-	{
-		for (auto& Kvp : *this)
-		{
-			TSharedPtr<FTokenData>& PointerVal = Kvp.Value;
-			FToken& Token = PointerVal->Token;
-			if ( Token.Type != CPT_None )
-			{
-				UE_LOG(LogCompile, Log, TEXT("%s%s"), FCString::Spc(Indent), *Token.Describe());
-			}
-		}
-	}
-};
-
-/**
- * Class for storing additional data about compiled structs and struct properties
- */
-class FStructData
-{
-public:
-	/** info about the struct itself */
-	FToken			StructData;
-
-private:
-	/** info for the properties contained in this struct */
-	FPropertyData	StructPropertyData;
-
-public:
-	/**
-	 * Adds a new struct property token
-	 * 
-	 * @param	PropertyToken	token that should be added to the list
-	 */
-	void AddStructProperty(FTokenData&& PropertyToken, FUnrealSourceFile* UnrealSourceFile)
-	{
-		check(PropertyToken.Token.TokenProperty);
-		StructPropertyData.Set(PropertyToken.Token.TokenProperty, MoveTemp(PropertyToken), UnrealSourceFile);
-	}
-
-	FPropertyData& GetStructPropertyData()
-	{
-		return StructPropertyData;
-	}
-	const FPropertyData& GetStructPropertyData() const
-	{
-		return StructPropertyData;
-	}
-
-	/**
-	* (debug) Dumps the values of this FStructData to the log file
-	* 
-	* @param	Indent	number of spaces to insert at the beginning of each line
-	*/	
-	void Dump( int32 Indent )
-	{
-		UE_LOG(LogCompile, Log, TEXT("%s%s"), FCString::Spc(Indent), *StructData.Describe());
-
-		UE_LOG(LogCompile, Log, TEXT("%sproperties:"), FCString::Spc(Indent));
-		StructPropertyData.Dump(Indent + 4);
-	}
-
-	/** Constructor */
-	FStructData(FToken&& StructToken) : StructData(MoveTemp(StructToken)) {}
-
-	friend struct FStructDataArchiveProxy;
-};
-
-/**
- * Class for storing additional data about compiled function properties.
- */
-class FFunctionData
-{
-	/** info about the function associated with this FFunctionData */
-	FFuncInfo		FunctionData;
-
-	/** return value for this function */
-	FTokenData		ReturnTypeData;
-
-	/** function parameter data */
-	FPropertyData	ParameterData;
-
-	/**
-	 * Adds a new parameter token
-	 * 
-	 * @param	PropertyToken	token that should be added to the list
-	 */
-	void AddParameter(FToken&& PropertyToken, FUnrealSourceFile* UnrealSourceFile)
-	{
-		check(PropertyToken.TokenProperty);
-		ParameterData.Set(PropertyToken.TokenProperty, MoveTemp(PropertyToken), UnrealSourceFile);
-	}
-
-	/**
-	 * Sets the value of the return token for this function
-	 * 
-	 * @param	PropertyToken	token that should be added
-	 */
-	void SetReturnData(FToken&& PropertyToken )
-	{
-		check(PropertyToken.TokenProperty);
-		ReturnTypeData.Token = MoveTemp(PropertyToken);
-	}
-
-public:
-	/** Constructors */
-	FFunctionData() = default;
-	FFunctionData(FFunctionData&& Other) = default;
-	FFunctionData(FFuncInfo&& inFunctionData )
-		: FunctionData(MoveTemp(inFunctionData))
-	{}
-
-	FFunctionData& operator=(FFunctionData&& Other) = default;
-	
-	/** @name getters */
-	//@{
-	const	FFuncInfo&		GetFunctionData()	const	{	return FunctionData;	}
-	const	FToken&			GetReturnData()		const	{	return ReturnTypeData.Token;	}
-	const	FPropertyData&	GetParameterData()	const	{	return ParameterData;	}
-	FPropertyData&			GetParameterData()			{	return ParameterData;	}
-	FTokenData* GetReturnTokenData() { return &ReturnTypeData; }
-	//@}
-
-	void UpdateFunctionData(FFuncInfo& UpdatedFuncData)
-	{
-		//@TODO: UCREMOVAL: Some more thorough evaluation should be done here
-		FunctionData.FunctionFlags |= UpdatedFuncData.FunctionFlags;
-		FunctionData.FunctionExportFlags |= UpdatedFuncData.FunctionExportFlags;
-	}
-
-	/**
-	 * Adds a new function property to be tracked.  Determines whether the property is a
-	 * function parameter, local property, or return value, and adds it to the appropriate
-	 * list
-	 * 
-	 * @param	PropertyToken	the property to add
-	 */
-	void AddProperty(FToken&& PropertyToken, FUnrealSourceFile* UnrealSourceFile)
-	{
-		const FProperty* Prop = PropertyToken.TokenProperty;
-		check(Prop);
-		check( (Prop->PropertyFlags&CPF_Parm) != 0 );
-
-		if ( (Prop->PropertyFlags&CPF_ReturnParm) != 0 )
-		{
-			SetReturnData(MoveTemp(PropertyToken));
-		}
-		else
-		{
-			AddParameter(MoveTemp(PropertyToken), UnrealSourceFile);
-		}
-	}
-
-	/**
-	 * (debug) Dumps the values of this FFunctionData to the log file
-	 * 
-	 * @param	Indent	number of spaces to insert at the beginning of each line
-	 */	
-	void Dump( int32 Indent )
-	{
-		UE_LOG(LogCompile, Log, TEXT("%sparameters:"), FCString::Spc(Indent));
-		ParameterData.Dump(Indent + 4);
-
-		UE_LOG(LogCompile, Log, TEXT("%sreturn prop:"), FCString::Spc(Indent));
-		if ( ReturnTypeData.Token.Type != CPT_None )
-		{
-			UE_LOG(LogCompile, Log, TEXT("%s%s"), FCString::Spc(Indent + 4), *ReturnTypeData.Token.Describe());
-		}
-	}
-
-	/**
-	 * Sets the specified function export flags
-	 */
-	void SetFunctionExportFlag( uint32 NewFlags )
-	{
-		FunctionData.FunctionExportFlags |= NewFlags;
-	}
-
-	/**
-	 * Clears the specified function export flags
-	 */
-	void ClearFunctionExportFlags( uint32 ClearFlags )
-	{
-		FunctionData.FunctionExportFlags &= ~ClearFlags;
-	}
-
-	/**
-	 * Finds function data for given function object.
-	 */
-	static FFunctionData* FindForFunction(UFunction* Function);
-
-	/**
-	 * Adds function data object for given function object.
-	 */
-	static FFunctionData* Add(UFunction* Function);
-
-	/**
-	 * Adds function data object for given function object.
-	 */
-	static FFunctionData* Add(FFuncInfo&& FunctionInfo);
-
-	/**
-	 * Tries to find function data for given function object.
-	 */
-	static bool TryFindForFunction(UFunction* Function, FFunctionData*& OutData);
-
-private:
-	static TMap<UFunction*, TUniqueObj<FFunctionData> > FunctionDataMap;
-};
-
-/**
- * Tracks information about a multiple inheritance parent declaration for native script classes.
- */
-struct FMultipleInheritanceBaseClass
-{
-	/**
-	 * The name to use for the base class when exporting the script class to header file.
-	 */
-	FString ClassName;
-
-	/**
-	 * For multiple inheritance parents declared using 'Implements', corresponds to the UClass for the interface.  For multiple inheritance parents declared
-	 * using 'Inherits', this value will be NULL.
-	 */
-	UClass* InterfaceClass = nullptr;
-
-	/**
-	 * Constructors
-	 */
-	explicit FMultipleInheritanceBaseClass(FString&& BaseClassName)
-		: ClassName(MoveTemp(BaseClassName))
-	{
-	}
-
-	explicit FMultipleInheritanceBaseClass(UClass* ImplementedInterfaceClass)
-		: InterfaceClass(ImplementedInterfaceClass)
-	{
-		ClassName = FString::Printf(TEXT("I%s"), *ImplementedInterfaceClass->GetName());
-	}
-};
-
-enum class EParsedInterface
-{
-	NotAnInterface,
-	ParsedUInterface,
-	ParsedIInterface
-};
-
-/**
- * Class for storing compiler metadata about a class's properties.
- */
-class FClassMetaData
-{
-	/** member properties for this class */
-	FPropertyData											GlobalPropertyData;
-
-	/** base classes to multiply inherit from (other than the main base class */
-	TArray<FMultipleInheritanceBaseClass*>					MultipleInheritanceParents;
-
-	/** whether this class declares delegate functions or properties */
-	bool													bContainsDelegates;
-
-	/** The line of UCLASS/UINTERFACE macro in this class. */
-	int32 PrologLine;
-
-	/** The line of GENERATED_BODY/GENERATED_UCLASS_BODY macro in this class. */
-	int32 GeneratedBodyLine;
-
-	/** Same as above, but for interface class associated with this class. */
-	int32 InterfaceGeneratedBodyLine;
-
-public:
-	/** Default constructor */
-	FClassMetaData()
-		: bContainsDelegates(false)
-		, PrologLine(-1)
-		, GeneratedBodyLine(-1)
-		, InterfaceGeneratedBodyLine(-1)
-		, bConstructorDeclared(false)
-		, bDefaultConstructorDeclared(false)
-		, bObjectInitializerConstructorDeclared(false)
-		, bCustomVTableHelperConstructorDeclared(false)
-		, GeneratedBodyMacroAccessSpecifier(ACCESS_NotAnAccessSpecifier)
-	{
-	}
-
-	/**
-	 * Gets prolog line number for this class.
-	 */
-	int32 GetPrologLine() const
-	{
-		check(PrologLine > 0);
-		return PrologLine;
-	}
-
-	/**
-	 * Gets generated body line number for this class.
-	 */
-	int32 GetGeneratedBodyLine() const
-	{
-		check(GeneratedBodyLine > 0);
-		return GeneratedBodyLine;
-	}
-
-	/**
-	 * Gets interface generated body line number for this class.
-	 */
-	int32 GetInterfaceGeneratedBodyLine() const
-	{
-		check(InterfaceGeneratedBodyLine > 0);
-		return InterfaceGeneratedBodyLine;
-	}
-
-	/**
-	 * Sets prolog line number for this class.
-	 */
-	void SetPrologLine(int32 Line)
-	{
-		check(Line > 0);
-		PrologLine = Line;
-	}
-
-	/**
-	 * Sets generated body line number for this class.
-	 */
-	void SetGeneratedBodyLine(int32 Line)
-	{
-		check(Line > 0);
-		GeneratedBodyLine = Line;
-	}
-
-	/**
-	 * Sets interface generated body line number for this class.
-	 */
-	void SetInterfaceGeneratedBodyLine(int32 Line)
-	{
-		check(Line > 0);
-		InterfaceGeneratedBodyLine = Line;
-	}
-
-	/**
-	 * Sets contains delegates flag for this class.
-	 */
-	void MarkContainsDelegate()
-	{
-		bContainsDelegates = true;
-	}
-
-	/**
-	 * Adds a new property to be tracked.  Determines the correct list for the property based on
-	 * its owner (function, struct, etc).
-	 * 
-	 * @param	PropertyToken	the property to add
-	 */
-	void AddProperty(FToken&& PropertyToken, FUnrealSourceFile* UnrealSourceFile)
-	{
-		FProperty* Prop = PropertyToken.TokenProperty;
-		check(Prop);
-
-		UObject* Outer = Prop->GetOwner<UObject>();
-		check(Outer);
-		UStruct* OuterClass = Cast<UStruct>(Outer);
-		if ( OuterClass != NULL )
-		{
-			// global property
-			GlobalPropertyData.Set(Prop, MoveTemp(PropertyToken), UnrealSourceFile);
-		}
-		else
-		{
-			checkNoEntry();
-			UFunction* OuterFunction = Cast<UFunction>(Outer);
-			if ( OuterFunction != NULL )
-			{
-				// function parameter, return, or local property
-				FFunctionData::FindForFunction(OuterFunction)->AddProperty(MoveTemp(PropertyToken), UnrealSourceFile);
-			}
-		}
-
-		// update the optimization flags
-		if ( !bContainsDelegates )
-		{
-			if( Prop->IsA( FDelegateProperty::StaticClass() ) || Prop->IsA( FMulticastDelegateProperty::StaticClass() ) )
-			{
-				bContainsDelegates = true;
-			}
-			else
-			{
-				FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop);
-				if ( ArrayProp != NULL )
-				{
-					if( ArrayProp->Inner->IsA( FDelegateProperty::StaticClass() ) || ArrayProp->Inner->IsA( FMulticastDelegateProperty::StaticClass() ) )
-					{
-						bContainsDelegates = true;
-					}
-				}
-			}
-		}
-	}
-
-	/**
-	 * Adds new editor-only metadata (key/value pairs) to the class or struct that
-	 * owns this property or function.
-	 * 
-	 * @param	Field		the property or function to add to
-	 * @param	InMetaData	the metadata to add
-	 */
-	static void AddMetaData(UField* Field, TMap<FName, FString>&& InMetaData)
-	{
-		// only add if we have some!
-		if (InMetaData.Num())
-		{
-			check(Field);
-
-			// get (or create) a metadata object for this package
-			UMetaData* MetaData = Field->GetOutermost()->GetMetaData();
-			TMap<FName, FString>* ExistingMetaData = MetaData->GetMapForObject(Field);
-			if (ExistingMetaData && ExistingMetaData->Num())
-			{
-				// Merge the existing metadata
-				TMap<FName, FString> MergedMetaData;
-				MergedMetaData.Reserve(InMetaData.Num() + ExistingMetaData->Num());
-				MergedMetaData.Append(*ExistingMetaData);
-				MergedMetaData.Append(InMetaData);
-				MetaData->SetObjectValues(Field, MoveTemp(MergedMetaData));
-			}
-			else
-			{
-				// set the metadata for this field
-				MetaData->SetObjectValues(Field, MoveTemp(InMetaData));
-			}
-		}
-	}
-	static void AddMetaData(FField* Field, TMap<FName, FString>&& InMetaData)
-	{
-		// only add if we have some!
-		if (InMetaData.Num())
-		{
-			check(Field);
-
-			UPackage* Package = Field->GetOutermost();
-			// get (or create) a metadata object for this package
-			UMetaData* MetaData = Package->GetMetaData();
-			
-			for (TPair<FName, FString>& MetaKeyValue : InMetaData)
-			{
-				Field->SetMetaData(MetaKeyValue.Key, MoveTemp(MetaKeyValue.Value));
-			}
-		}
-	}
-
-	/**
-	 * Finds the metadata for the function specified
-	 * 
-	 * @param	Func	the function to search for
-	 *
-	 * @return	pointer to the metadata for the function specified, or NULL
-	 *			if the function doesn't exist in the list (for example, if it
-	 *			is declared in a package that is already compiled and has had its
-	 *			source stripped)
-	 */
-	FFunctionData* FindFunctionData( UFunction* Func );
-
-	/**
-	 * Finds the metadata for the property specified
-	 * 
-	 * @param	Prop	the property to search for
-	 *
-	 * @return	pointer to the metadata for the property specified, or NULL
-	 *			if the property doesn't exist in the list (for example, if it
-	 *			is declared in a package that is already compiled and has had its
-	 *			source stripped)
-	 */
-	FTokenData* FindTokenData( FProperty* Prop );
-
-	/**
-	 * (debug) Dumps the values of this FFunctionData to the log file
-	 * 
-	 * @param	Indent	number of spaces to insert at the beginning of each line
-	 */	
-	void Dump( int32 Indent );
-
-	/**
-	 * Add a string to the list of inheritance parents for this class.
-	 *
-	 * @param Inparent The C++ class name to add to the multiple inheritance list
-	 * @param UnrealSourceFile Currently parsed source file.
-	 */
-	void AddInheritanceParent(FString&& InParent, FUnrealSourceFile* UnrealSourceFile);
-
-	/**
-	 * Add a string to the list of inheritance parents for this class.
-	 *
-	 * @param Inparent	The C++ class name to add to the multiple inheritance list
-	 * @param UnrealSourceFile Currently parsed source file.
-	 */
-	void AddInheritanceParent(UClass* ImplementedInterfaceClass, FUnrealSourceFile* UnrealSourceFile);
-
-	/**
-	 * Return the list of inheritance parents
-	 */
-	const TArray<FMultipleInheritanceBaseClass*>& GetInheritanceParents() const
-	{
-		return MultipleInheritanceParents;
-	}
-
-	/**
-	 * Returns whether this class contains any delegate properties which need to be fixed up.
-	 */
-	bool ContainsDelegates() const
-	{
-		return bContainsDelegates;
-	}
-
-	/**
-	 * Shrink TMaps to avoid slack in Pairs array.
-	 */
-	void Shrink()
-	{
-		GlobalPropertyData.Shrink();
-		MultipleInheritanceParents.Shrink();
-	}
-
-	// Is constructor declared?
-	bool bConstructorDeclared;
-
-	// Is default constructor declared?
-	bool bDefaultConstructorDeclared;
-
-	// Is ObjectInitializer constructor (i.e. a constructor with only one parameter of type FObjectInitializer) declared?
-	bool bObjectInitializerConstructorDeclared;
-
-	// Is custom VTable helper constructor declared?
-	bool bCustomVTableHelperConstructorDeclared;
-
-	// GENERATED_BODY access specifier to preserve.
-	EAccessSpecifier GeneratedBodyMacroAccessSpecifier;
-
-	/** Parsed interface state */
-	EParsedInterface ParsedInterface = EParsedInterface::NotAnInterface;
-
-	friend struct FClassMetaDataArchiveProxy;
-};
-
-/**
- * Class for storing and linking data about properties and functions that is only required by the compiler.
- * The type of data tracked by this class is data that would otherwise only be accessible by adding a 
- * member property to UFunction/FProperty.  
- */
-class FCompilerMetadataManager : protected TMap<UStruct*, TUniquePtr<FClassMetaData> >
-{
-	using Super = TMap<UStruct*, TUniquePtr<FClassMetaData>>;
-
-public:
-	/**
-	 * Adds a new class to be tracked
-	 * 
-	 * @param	Struct	the UStruct to add
-	 *
-	 * @return	a pointer to the newly added metadata for the class specified
-	 */
-	FClassMetaData* AddClassData(UStruct* Struct, FUnrealSourceFile* UnrealSourceFile);
-
-	FClassMetaData* AddInterfaceClassData(UStruct* Struct, FUnrealSourceFile* UnrealSourceFile);
-
-	/**
-	 * Find the metadata associated with the class specified
-	 * 
-	 * @param	Struct	the UStruct to add
-	 *
-	 * @return	a pointer to the newly added metadata for the class specified
-	 */
-	FClassMetaData* FindClassData(UStruct* Struct)
-	{
-		FClassMetaData* Result = nullptr;
-
-		TUniquePtr<FClassMetaData>* pClassData = Find(Struct);
-		if (pClassData)
-		{
-			Result = pClassData->Get();
-		}
-
-		return Result;
-	}
-
-	/**
-	 * Shrink TMaps to avoid slack in Pairs array.
-	 */
-	void Shrink()
-	{
-		TMap<UStruct*, TUniquePtr<FClassMetaData> >::Shrink();
-		for (TMap<UStruct*, TUniquePtr<FClassMetaData> >::TIterator It(*this); It; ++It)
-		{
-			FClassMetaData* MetaData = It->Value.Get();
-			MetaData->Shrink();
-		}
-	}
-
-	/**
-	 * Throws an exception if a UInterface was parsed but not the corresponding IInterface.
-	 */
-	void CheckForNoIInterfaces();
-
-	friend struct FCompilerMetadataManagerArchiveProxy;
-
-private:
-	TArray<TPair<UStruct*, FClassMetaData*>> InterfacesToVerify;
+	void SetFunctionNames(FUnrealFunctionDefinitionInfo& FunctionDef);
 };
 
 /*-----------------------------------------------------------------------------
@@ -1873,8 +429,6 @@ private:
  */
 struct FScriptLocation
 {
-	static class FHeaderParser* Compiler;
-
 	/** the text buffer for the class associated with this retry point */
 	const TCHAR* Input;
 
@@ -1883,29 +437,6 @@ struct FScriptLocation
 
 	/** the LineNumber of the compiler when this retry point was created */
 	int32 InputLine;
-
-	/** Constructor */
-	FScriptLocation();
-};
-
-/////////////////////////////////////////////////////
-// FNameLookupCPP
-
-/**
- * Helper class used to cache UClass* -> TCHAR* name lookup for finding the named used for C++ declaration.
- */
-struct FNameLookupCPP
-{
-	/**
-	 * Returns the name used for declaring the passed in struct in C++
-	 *
-	 * @param	Struct	UStruct to obtain C++ name for
-	 * @return	Name used for C++ declaration
-	 */
-	static FString GetNameCPP(UStruct* Struct, bool bForceInterface = false)
-	{
-		return FString::Printf(TEXT("%s%s"), (bForceInterface ? TEXT("I") : Struct->GetPrefixCPP()), *Struct->GetName());
-	}
 };
 
 /////////////////////////////////////////////////////
@@ -1935,4 +466,259 @@ public:
 
 	/** return if more parameters can be marked */
 	bool CanMarkMore() const;
+};
+
+/**
+ * The FRigVMParameter represents a single parameter of a method
+ * marked up with RIGVM_METHOD.
+ * Each parameter can be marked with Constant, Input or Output
+ * metadata - this struct simplifies access to that information.
+ */
+struct FRigVMParameter
+{
+	FRigVMParameter()
+		: Name()
+		, Type()
+		, bConstant(false)
+		, bInput(false)
+		, bOutput(false)
+		, bSingleton(false)
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+		, ArraySize()
+#endif
+		, Getter()
+		, CastName()
+		, CastType()
+		, bEditorOnly(false)
+		, bIsEnum(false)
+	{
+	}
+
+	FString Name;
+	FString Type;
+	bool bConstant;
+	bool bInput;
+	bool bOutput;
+	bool bSingleton;
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+	FString ArraySize;
+#endif
+	FString Getter;
+	FString CastName;
+	FString CastType;
+	bool bEditorOnly;
+	bool bIsEnum;
+
+	const FString& NameOriginal(bool bCastName = false) const
+	{
+		return (bCastName && !CastName.IsEmpty()) ? CastName : Name;
+	}
+
+	const FString& TypeOriginal(bool bCastType = false) const
+	{
+		return (bCastType && !CastType.IsEmpty()) ? CastType : Type;
+	}
+
+	FString Declaration(bool bCastType = false, bool bCastName = false) const
+	{
+		return FString::Printf(TEXT("%s %s"), *TypeOriginal(bCastType), *NameOriginal(bCastName));
+	}
+
+	FString BaseType(bool bCastType = false) const
+	{
+		const FString& String = TypeOriginal(bCastType);
+		int32 LesserPos = 0;
+		if (String.FindChar(TEXT('<'), LesserPos))
+		{
+			return String.Mid(0, LesserPos);
+		}
+		return String;
+	}
+
+	FString ExtendedType(bool bCastType = false) const
+	{
+		const FString& String = TypeOriginal(bCastType);
+		int32 LesserPos = 0;
+		if (String.FindChar(TEXT('<'), LesserPos))
+		{
+			return String.Mid(LesserPos);
+		}
+		return String;
+	}
+
+	FString TypeConstRef(bool bCastType = false) const
+	{
+		const FString& String = TypeNoRef(bCastType);
+		if (String.StartsWith(TEXT("T"), ESearchCase::CaseSensitive) || String.StartsWith(TEXT("F"), ESearchCase::CaseSensitive))
+		{
+			return FString::Printf(TEXT("const %s&"), *String);
+		}
+		return FString::Printf(TEXT("const %s"), *String);
+	}
+
+	FString TypeRef(bool bCastType = false) const
+	{
+		const FString& String = TypeNoRef(bCastType);
+		return FString::Printf(TEXT("%s&"), *String);
+	}
+
+	FString TypeNoRef(bool bCastType = false) const
+	{
+		const FString& String = TypeOriginal(bCastType);
+		if (String.EndsWith(TEXT("&")))
+		{
+			return String.LeftChop(1);
+		}
+		return String;
+	}
+
+	FString TypeVariableRef(bool bCastType = false) const
+	{
+		return IsConst() ? TypeConstRef(bCastType) : TypeRef(bCastType);
+	}
+
+	FString Variable(bool bCastType = false, bool bCastName = false) const
+	{
+		return FString::Printf(TEXT("%s %s"), *TypeVariableRef(bCastType), *NameOriginal(bCastName));
+	}
+
+	bool IsConst() const
+	{
+		return bConstant || (bInput && !bOutput);
+	}
+
+	bool IsArray() const
+	{
+		return BaseType().Equals(TEXT("TArray"));
+	}
+
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+
+	bool IsDynamic() const
+	{
+		return ArraySize.IsEmpty() && !bInput && !bOutput && !bSingleton;
+	}
+
+	bool IsDynamicArray() const
+	{
+		return IsArray() && IsDynamic();
+	}
+
+#endif
+
+	bool RequiresCast() const
+	{
+		return !CastType.IsEmpty() && !CastName.IsEmpty();
+	}
+};
+
+/**
+ * The FRigVMParameterArray represents the parameters in a notation
+ * of a function marked with RIGVM_METHOD. The parameter array can
+ * produce a comma separated list of names or parameter declarations.
+ */
+struct FRigVMParameterArray
+{
+public:
+	int32 Num() const { return Parameters.Num(); }
+	const FRigVMParameter& operator[](int32 InIndex) const { return Parameters[InIndex]; }
+	FRigVMParameter& operator[](int32 InIndex) { return Parameters[InIndex]; }
+	TArray<FRigVMParameter>::RangedForConstIteratorType begin() const { return Parameters.begin(); }
+	TArray<FRigVMParameter>::RangedForConstIteratorType end() const { return Parameters.end(); }
+	TArray<FRigVMParameter>::RangedForIteratorType begin() { return Parameters.begin(); }
+	TArray<FRigVMParameter>::RangedForIteratorType end() { return Parameters.end(); }
+
+	int32 Add(const FRigVMParameter& InParameter)
+	{
+		return Parameters.Add(InParameter);
+	}
+
+	FString Names(bool bLeadingSeparator = false, const TCHAR* Separator = TEXT(", "), bool bCastType = false, bool bIncludeEditorOnly = true) const
+	{
+		if (Parameters.Num() == 0)
+		{
+			return FString();
+		}
+		TArray<FString> NameArray;
+		for (const FRigVMParameter& Parameter : Parameters)
+		{
+			if (!bIncludeEditorOnly && Parameter.bEditorOnly)
+			{
+				continue;
+			}
+			NameArray.Add(Parameter.NameOriginal(bCastType));
+		}
+
+		if (NameArray.Num() == 0)
+		{
+			return FString();
+		}
+
+		FString Joined = FString::Join(NameArray, Separator);
+		if (bLeadingSeparator)
+		{
+			return FString::Printf(TEXT("%s%s"), Separator, *Joined);
+		}
+		return Joined;
+	}
+
+	FString Declarations(bool bLeadingSeparator = false, const TCHAR* Separator = TEXT(", "), bool bCastType = false, bool bCastName = false, bool bIncludeEditorOnly = true) const
+	{
+		if (Parameters.Num() == 0)
+		{
+			return FString();
+		}
+		TArray<FString> DeclarationArray;
+		for (const FRigVMParameter& Parameter : Parameters)
+		{
+			if (!bIncludeEditorOnly && Parameter.bEditorOnly)
+			{
+				continue;
+			}
+			DeclarationArray.Add(Parameter.Variable(bCastType, bCastName));
+		}
+
+		if (DeclarationArray.Num() == 0)
+		{
+			return FString();
+		}
+
+		FString Joined = FString::Join(DeclarationArray, Separator);
+		if (bLeadingSeparator)
+		{
+			return FString::Printf(TEXT("%s%s"), Separator, *Joined);
+		}
+		return Joined;
+	}
+
+private:
+	TArray<FRigVMParameter> Parameters;
+};
+
+/**
+ * A single info dataset for a function marked with RIGVM_METHOD.
+ * This struct provides access to its name, the return type and all parameters.
+ */
+struct FRigVMMethodInfo
+{
+	FString ReturnType;
+	FString Name;
+	FRigVMParameterArray Parameters;
+
+	FString ReturnPrefix() const
+	{
+		return (ReturnType.IsEmpty() || (ReturnType == TEXT("void"))) ? TEXT("") : TEXT("return ");
+	}
+};
+
+/**
+ * An info dataset providing access to all functions marked with RIGVM_METHOD
+ * for each struct.
+ */
+struct FRigVMStructInfo
+{
+	bool bHasRigVM = false;
+	FString Name;
+	FRigVMParameterArray Members;
+	TArray<FRigVMMethodInfo> Methods;
 };

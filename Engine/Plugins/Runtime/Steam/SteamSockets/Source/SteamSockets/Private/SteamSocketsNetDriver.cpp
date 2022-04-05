@@ -9,6 +9,9 @@
 #include "SteamSocketsNetConnection.h"
 #include "SteamSocketsSubsystem.h"
 #include "IPAddressSteamSockets.h"
+#include "Engine/NetworkDelegates.h"
+#include "Engine/World.h"
+#include "Misc/CommandLine.h"
 
 void USteamSocketsNetDriver::PostInitProperties()
 {
@@ -290,7 +293,7 @@ void USteamSocketsNetDriver::TickDispatch(float DeltaTime)
 			if (Socket->RecvRaw(Message, 1, BytesRead) && BytesRead > 0 && Message != nullptr)
 			{
 				USteamSocketsNetConnection* ConnectionToHandleMessage = static_cast<USteamSocketsNetConnection*>((bIsAServer) ? 
-					FindClientConnectionForHandle(Message->m_conn) : ServerConnection);
+					FindClientConnectionForHandle(Message->m_conn) : ToRawPtr(ServerConnection));
 
 				// Grab sender information for the purposes of logging
 				FInternetAddrSteamSockets MessageSender(Message->m_identityPeer);
@@ -400,7 +403,7 @@ class ISocketSubsystem* USteamSocketsNetDriver::GetSocketSubsystem()
 
 bool USteamSocketsNetDriver::IsNetResourceValid(void)
 {
-	return Socket != nullptr && (!ServerConnection || (ServerConnection && ServerConnection->State == USOCK_Open));
+	return Socket != nullptr && (!ServerConnection || (ServerConnection && ServerConnection->GetConnectionState() == USOCK_Open));
 }
 
 bool USteamSocketsNetDriver::ArePacketHandlersDisabled() const
@@ -416,7 +419,7 @@ void USteamSocketsNetDriver::ResetSocketInfo(const FSteamSocket* RemovedSocket)
 {
 	const SteamSocketHandles SocketHandle = RemovedSocket->InternalHandle;
 	USteamSocketsNetConnection* SocketConnection = 
-		static_cast<USteamSocketsNetConnection*>(ServerConnection ? ServerConnection : FindClientConnectionForHandle(SocketHandle));
+		static_cast<USteamSocketsNetConnection*>(ServerConnection ? ToRawPtr(ServerConnection) : FindClientConnectionForHandle(SocketHandle));
 
 	if (SocketConnection)
 	{
@@ -432,7 +435,7 @@ void USteamSocketsNetDriver::ResetSocketInfo(const FSteamSocket* RemovedSocket)
 
 UNetConnection* USteamSocketsNetDriver::FindClientConnectionForHandle(SteamSocketHandles SocketHandle)
 {
-	for (UNetConnection*& ClientConnection : ClientConnections)
+	for (TObjectPtr<UNetConnection>& ClientConnection : ClientConnections)
 	{
 		USteamSocketsNetConnection* SteamConnection = static_cast<USteamSocketsNetConnection*>(ClientConnection);
 		if (SteamConnection && SteamConnection->GetRawSocket() != nullptr)
@@ -543,10 +546,10 @@ void USteamSocketsNetDriver::OnConnectionUpdated(SteamSocketHandles SocketHandle
 	// care about the connected state flag.
 	if (NewState == k_ESteamNetworkingConnectionState_Connected)
 	{
-		UNetConnection* SocketConnection = (ServerConnection) ? ServerConnection : FindClientConnectionForHandle(SocketHandle);
+		UNetConnection* SocketConnection = (ServerConnection) ? ToRawPtr(ServerConnection) : FindClientConnectionForHandle(SocketHandle);
 		if (SocketConnection)
 		{
-			SocketConnection->State = USOCK_Open;
+			SocketConnection->SetConnectionState(USOCK_Open);
 		}
 
 		UE_LOG(LogNet, Verbose, TEXT("SteamSockets: Connection established with user with socket id: %u"), SocketHandle);
@@ -566,10 +569,10 @@ void USteamSocketsNetDriver::OnConnectionUpdated(SteamSocketHandles SocketHandle
 
 void USteamSocketsNetDriver::OnConnectionDisconnected(SteamSocketHandles SocketHandle)
 {
-	UNetConnection* SocketConnection = ServerConnection ? ServerConnection : FindClientConnectionForHandle(SocketHandle);
+	UNetConnection* SocketConnection = ServerConnection ? ToRawPtr(ServerConnection) : FindClientConnectionForHandle(SocketHandle);
 	if (SocketConnection)
 	{
-		SocketConnection->State = USOCK_Closed;
+		SocketConnection->SetConnectionState(USOCK_Closed);
 	}
 
 	UE_LOG(LogNet, Verbose, TEXT("SteamSockets: Connection dropped with user with socket id: %u"), SocketHandle);

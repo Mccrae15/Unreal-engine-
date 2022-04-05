@@ -7,14 +7,15 @@
 #include "AssetEditor/CameraCalibrationCommands.h"
 #include "AssetEditor/Curves/LensDataCurveModel.h"
 #include "AssetEditor/SCameraCalibrationCurveEditorView.h"
-#include "CameraCalibrationEditorLog.h"
 #include "AssetToolsModule.h"
 #include "AssetTypeActions/AssetTypeActions_LensFile.h"
+#include "CameraCalibrationEditorLog.h"
+#include "CameraCalibrationSubsystem.h"
 #include "CameraCalibrationTypes.h"
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
-#include "IPlacementModeModule.h"
 #include "ICurveEditorModule.h"
+#include "IPlacementModeModule.h"
 #include "LensFile.h"
 #include "LevelEditor.h"
 #include "Misc/App.h"
@@ -32,7 +33,7 @@ DEFINE_LOG_CATEGORY(LogCameraCalibrationEditor);
 void FCameraCalibrationEditorModule::StartupModule()
 {
 	FCameraCalibrationCommands::Register();
-	FCameraCalibrationEditorStyle::Register();
+	FCameraCalibrationEditorStyle::Get();
 
 	// Register AssetTypeActions
 	auto RegisterAssetTypeAction = [this](const TSharedRef<IAssetTypeActions>& InAssetTypeAction)
@@ -57,6 +58,8 @@ void FCameraCalibrationEditorModule::StartupModule()
 
 	RegisterPlacementModeItems();
 
+	RegisterOverlayMaterials();
+
 	ICurveEditorModule& CurveEditorModule = FModuleManager::LoadModuleChecked<ICurveEditorModule>("CurveEditor");
 	FLensDataCurveModel::ViewId = CurveEditorModule.RegisterView(FOnCreateCurveEditorView::CreateStatic(
 		[](TWeakPtr<FCurveEditor> WeakCurveEditor) -> TSharedRef<SCurveEditorView>
@@ -80,6 +83,7 @@ const FPlacementCategoryInfo* FCameraCalibrationEditorModule::GetVirtualProducti
 	{
 		FPlacementCategoryInfo Info(
 			LOCTEXT("VirtualProductionCategoryName", "Virtual Production"),
+			FSlateIcon(FCameraCalibrationEditorStyle::Get().GetStyleSetName(), "PlacementBrowser.Icons.VirtualProduction"),
 			VirtualProductionName,
 			TEXT("PMVirtualProduction"),
 			25
@@ -121,6 +125,7 @@ void FCameraCalibrationEditorModule::RegisterPlacementModeItems()
 				*UActorFactoryBlueprint::StaticClass(),
 				TrackerAssetDataV2,
 				NAME_None,
+				NAME_None,
 				TOptional<FLinearColor>(),
 				TOptional<int32>(),
 				NSLOCTEXT("PlacementMode", "TrackerV2", "TrackerV2")
@@ -136,6 +141,7 @@ void FCameraCalibrationEditorModule::RegisterPlacementModeItems()
 			PlaceActors.Add(IPlacementModeModule::Get().RegisterPlaceableItem(Info->UniqueHandle, MakeShared<FPlaceableItem>(
 				*UActorFactoryBlueprint::StaticClass(),
 				TrackerAssetDataV3,
+				NAME_None,
 				NAME_None,
 				TOptional<FLinearColor>(),
 				TOptional<int32>(),
@@ -153,6 +159,40 @@ void FCameraCalibrationEditorModule::RegisterPlacementModeItems()
 		else
 		{
 			PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddLambda(RegisterPlaceActors);
+		}
+	}
+}
+
+void FCameraCalibrationEditorModule::RegisterOverlayMaterials()
+{
+	auto RegisterOverlays = [this]()
+	{
+		// Register all overlay materials defined in this module
+		UCameraCalibrationSubsystem* SubSystem = GEngine->GetEngineSubsystem<UCameraCalibrationSubsystem>();
+		SubSystem->RegisterOverlayMaterial(TEXT("Crosshair"), TEXT("/CameraCalibration/Materials/M_Crosshair.M_Crosshair"));
+	};
+
+	if (FApp::CanEverRender())
+	{
+		if (GEngine && GEngine->IsInitialized())
+		{
+			RegisterOverlays();
+		}
+		else
+		{
+			PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddLambda(RegisterOverlays);
+		}
+	}
+}
+
+void FCameraCalibrationEditorModule::UnregisterOverlayMaterials()
+{
+	if (GEngine)
+	{
+		// Unregister all overlay materials defined in this module
+		if (UCameraCalibrationSubsystem* SubSystem = GEngine->GetEngineSubsystem<UCameraCalibrationSubsystem>())
+		{
+			SubSystem->UnregisterOverlayMaterial(TEXT("Crosshair"));
 		}
 	}
 }
@@ -178,10 +218,11 @@ void FCameraCalibrationEditorModule::ShutdownModule()
 			}
 		}
 
-		FCameraCalibrationEditorStyle::Unregister();
 		FCameraCalibrationCommands::Unregister();
 
 		UnregisterPlacementModeItems();
+
+		UnregisterOverlayMaterials();
 	}
 
 	if (PostEngineInitHandle.IsValid())

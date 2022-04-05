@@ -6,7 +6,7 @@ using System.Text;
 using System.IO;
 using System.Linq;
 using System.Xml.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -22,7 +22,7 @@ namespace UnrealBuildTool
         /// </summary>
         /// <param name="InOnlyGameProject">The single project to generate project files for, or null</param>
         /// <param name="InArguments">Additional command line arguments</param>
-        public VCMacProjectFileGenerator(FileReference InOnlyGameProject, CommandLineArguments InArguments)
+        public VCMacProjectFileGenerator(FileReference? InOnlyGameProject, CommandLineArguments InArguments)
 			: base(InOnlyGameProject, VCProjectFileFormat.Default, InArguments)
         {
 			// no suo file, requires ole32
@@ -42,8 +42,8 @@ namespace UnrealBuildTool
         protected override bool WriteProjectFiles(PlatformProjectGeneratorCollection PlatformProjectGenerators)
         {
 			// This can be reset by higher level code when it detects that we don't have
-			// VS2015 installed (TODO - add custom format for Mac?)
-			Settings.ProjectFileFormat = VCProjectFileFormat.VisualStudio2015;
+			// VS2019 installed (TODO - add custom format for Mac?)
+			Settings.ProjectFileFormat = VCProjectFileFormat.VisualStudio2019;
 
             // we can't generate native projects so clear them here, we will just
             // write out OtherProjectFiles and AutomationProjectFiles
@@ -69,13 +69,13 @@ namespace UnrealBuildTool
                             from AutomationProject in AutomationProjectFiles
                             select new XElement(NS + "ProjectReference",
                                 new XAttribute("Include", AutomationProject.ProjectFilePath.MakeRelativeTo(AutomationToolDir)),
-                                new XElement(NS + "Project", (AutomationProject as VCSharpProjectFile).ProjectGUID.ToString("B")),
+                                new XElement(NS + "Project", (AutomationProject as VCSharpProjectFile)!.ProjectGUID.ToString("B")),
                                 new XElement(NS + "Name", AutomationProject.ProjectFilePath.GetFileNameWithoutExtension()),
                                 new XElement(NS + "Private", "false")
                             )
                         )
                     )
-                ).Save(FileReference.Combine(AutomationToolDir, "AutomationTool.csproj.References").FullName);
+                ).Save(FileReference.Combine(IntermediateProjectFilesPath, "AutomationTool.csproj.References").FullName);
             }
 
             return true;

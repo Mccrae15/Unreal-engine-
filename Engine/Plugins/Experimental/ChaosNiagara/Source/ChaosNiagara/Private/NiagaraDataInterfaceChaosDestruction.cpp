@@ -12,7 +12,6 @@
 #include "Chaos/CollisionResolutionTypes.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 #include "NiagaraComponent.h"
-#include "NiagaraEmitterInstanceBatcher.h"
 
 #include <memory>
 #include "GeometryCollection/GeometryCollectionComponent.h"
@@ -93,6 +92,7 @@ UNiagaraDataInterfaceChaosDestruction::UNiagaraDataInterfaceChaosDestruction(FOb
 	, LocationYToSpawnMinMax(FVector2D(0.f, 0.f))
 	, LocationZToSpawn(ELocationZToSpawnEnum::ChaosNiagara_LocationZToSpawn_None)
 	, LocationZToSpawnMinMax(FVector2D(0.f, 0.f))
+	, TrailMinSpeedToSpawn(50.f)
 	, DataSortingType(EDataSortTypeEnum::ChaosNiagara_DataSortType_NoSorting)
 	, bGetExternalCollisionData(false)
 	, DoSpatialHash(false)
@@ -254,9 +254,9 @@ void UNiagaraDataInterfaceChaosDestruction::PostEditChangeProperty(struct FPrope
 		}
 		else if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UNiagaraDataInterfaceChaosDestruction, SpatialHashVolumeCellSize))
 		{
-			SpatialHashVolumeCellSize.X = FMath::Max(1.f, SpatialHashVolumeCellSize.X);
-			SpatialHashVolumeCellSize.Y = FMath::Max(1.f, SpatialHashVolumeCellSize.Y);
-			SpatialHashVolumeCellSize.Z = FMath::Max(1.f, SpatialHashVolumeCellSize.Z);
+			SpatialHashVolumeCellSize.X = FMath::Max<FVector::FReal>(1.0, SpatialHashVolumeCellSize.X);
+			SpatialHashVolumeCellSize.Y = FMath::Max<FVector::FReal>(1.0, SpatialHashVolumeCellSize.Y);
+			SpatialHashVolumeCellSize.Z = FMath::Max<FVector::FReal>(1.0, SpatialHashVolumeCellSize.Z);
 		}
 		else if (PropertyChangedEvent.MemberProperty->GetFName() == GET_MEMBER_NAME_CHECKED(UNiagaraDataInterfaceChaosDestruction, MaxDataPerCell))
 		{
@@ -510,7 +510,6 @@ bool UNiagaraDataInterfaceChaosDestruction::InitPerInstanceData(void* PerInstanc
 
 	ResetInstData(InstData);
 
-	check(SystemInstance);
 	if (SystemInstance)
 	{
 		FNiagaraDataInterfaceProxyChaosDestruction* ThisProxy = GetProxyAs<FNiagaraDataInterfaceProxyChaosDestruction>();
@@ -535,10 +534,10 @@ void UNiagaraDataInterfaceChaosDestruction::DestroyPerInstanceData(void* PerInst
 	{
 		FNiagaraDataInterfaceProxyChaosDestruction* ThisProxy = GetProxyAs<FNiagaraDataInterfaceProxyChaosDestruction>();
 		ENQUEUE_RENDER_COMMAND(FNiagaraDIChaosDestructionDestroyInstanceData) (
-			[ThisProxy, InstanceID = SystemInstance->GetId(), Batcher = SystemInstance->GetBatcher()](FRHICommandListImmediate& CmdList)
-		{
-			ThisProxy->DestroyInstanceData(Batcher, InstanceID);
-		}
+			[ThisProxy, InstanceID = SystemInstance->GetId()](FRHICommandListImmediate& CmdList)
+			{
+				ThisProxy->DestroyInstanceData(InstanceID);
+			}
 		);
 	}
 }
@@ -752,10 +751,66 @@ void UNiagaraDataInterfaceChaosDestruction::HandleCollisionEvents(const Chaos::F
 			AllCollisionsArray[Idx].SurfaceType);
 		*/
 
+		UPhysicalMaterial* PhysicalMaterial = nullptr;
+		int32 MaterialID = 0;
+
+		UGeometryCollectionComponent* GeometryCollectionComponent = nullptr;
+		UMaterialInterface* Material = nullptr;
+#if INCLUDE_CHAOS
+		for (auto& Solver : Solvers)
+		{
+			if (Solver.PhysScene)
+			{
+				GeometryCollectionComponent = Solver.PhysScene->GetOwningComponent<UGeometryCollectionComponent>(DataIn.Proxy1);
+				if (GeometryCollectionComponent)
+					break;
+			}
+		}
+
+		if (GeometryCollectionComponent)
+		{
+			PhysicalMaterial = GeometryCollectionComponent->GetPhysicalMaterial();
+			ensure(PhysicalMaterial);
+			if (PhysicalMaterial)
+			{
+				CopyData.SurfaceType1 = PhysicalMaterial->SurfaceType;
+				CopyData.PhysicalMaterialName1 = PhysicalMaterial->GetFName();
+			}
+			else
+			{
+				CopyData.PhysicalMaterialName1 = FName();
+			}
+		}
+
+		for (auto& Solver : Solvers)
+		{
+			if (Solver.PhysScene)
+			{
+				GeometryCollectionComponent = Solver.PhysScene->GetOwningComponent<UGeometryCollectionComponent>(DataIn.Proxy2);
+				if (GeometryCollectionComponent)
+					break;
+			}
+		}
+
+		if (GeometryCollectionComponent)
+		{
+			PhysicalMaterial = GeometryCollectionComponent->GetPhysicalMaterial();
+			ensure(PhysicalMaterial);
+			if (PhysicalMaterial)
+			{
+				CopyData.SurfaceType2 = PhysicalMaterial->SurfaceType;
+				CopyData.PhysicalMaterialName2 = PhysicalMaterial->GetFName();
+			}
+			else
+			{
+				CopyData.PhysicalMaterialName2 = FName();
+			}
+		}
+#endif
+
 		CopyData.BoundingboxVolume = 1000000.f;
 		CopyData.BoundingboxExtentMin = 100.f;
 		CopyData.BoundingboxExtentMax = 100.f;
-		CopyData.SurfaceType = 0;
 
 		Idx++;
 	}
@@ -767,6 +822,7 @@ void UNiagaraDataInterfaceChaosDestruction::FilterAllCollisions(TArray<Chaos::FC
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FilterAllCollisions);
 
 	if (/*ParticleToProcess != nullptr ||*/
+		bApplyMaterialsFilter ||
 		ImpulseToSpawnMinMax.X > 0.f ||
 		ImpulseToSpawnMinMax.Y > 0.f ||
 		SpeedToSpawnMinMax.X > 0.f ||
@@ -796,12 +852,37 @@ void UNiagaraDataInterfaceChaosDestruction::FilterAllCollisions(TArray<Chaos::FC
 		float MinSpeedToSpawnSquared = SpeedToSpawnMinMax.X * SpeedToSpawnMinMax.X;
 		float MaxSpeedToSpawnSquared = SpeedToSpawnMinMax.Y * SpeedToSpawnMinMax.Y;
 
+		auto IsMaterialInFilter = [&](const FName& InMaterialName)
+		{
+			if (!InMaterialName.IsValid())
+			{
+				return false;
+			}
+
+			for (const UPhysicalMaterial* Material : ChaosBreakingMaterialSet)
+			{
+				if (!Material)
+				{
+					continue;
+				}
+
+				if (Material->GetFName() == InMaterialName)
+				{
+					return true;
+				}
+			}
+
+			return false;
+		};
+
 		for (int32 IdxCollision = 0; IdxCollision < AllCollisionsArray.Num(); ++IdxCollision)
 		{
 			float CollisionAccumulatedImpulseSquared = AllCollisionsArray[IdxCollision].AccumulatedImpulse.SizeSquared();
 			float CollisionSpeedSquared = AllCollisionsArray[IdxCollision].Velocity1.SizeSquared();
 
+			// @TODO(Chaos): Need to be optimized
 			if (/*(ParticleToProcess != nullptr && AllCollisionsArrayInOut[IdxCollision].Particle != ParticleToProcess) ||*/
+				(bApplyMaterialsFilter && !IsMaterialInFilter(AllCollisionsArray[IdxCollision].PhysicalMaterialName1) && !IsMaterialInFilter(AllCollisionsArray[IdxCollision].PhysicalMaterialName2)) ||
 				(ImpulseToSpawnMinMax.X > 0.f && ImpulseToSpawnMinMax.Y < 0.f && CollisionAccumulatedImpulseSquared < MinImpulseToSpawnSquared) ||
 				(ImpulseToSpawnMinMax.X < 0.f && ImpulseToSpawnMinMax.Y > 0.f && CollisionAccumulatedImpulseSquared > MaxImpulseToSpawnSquared) ||
 				(ImpulseToSpawnMinMax.X > 0.f && ImpulseToSpawnMinMax.Y > 0.f && (CollisionAccumulatedImpulseSquared < MinImpulseToSpawnSquared || CollisionAccumulatedImpulseSquared > MaxImpulseToSpawnSquared)) ||
@@ -823,7 +904,7 @@ void UNiagaraDataInterfaceChaosDestruction::FilterAllCollisions(TArray<Chaos::FC
 				(SolverTimeToSpawnMinMax.X > 0.f && SolverTimeToSpawnMinMax.Y < 0.f && SolverTime < SolverTimeToSpawnMinMax.X) ||
 				(SolverTimeToSpawnMinMax.X < 0.f && SolverTimeToSpawnMinMax.Y > 0.f && SolverTime > SolverTimeToSpawnMinMax.Y) ||
 				(SolverTimeToSpawnMinMax.X > 0.f && SolverTimeToSpawnMinMax.Y > 0.f && (SolverTime < SolverTimeToSpawnMinMax.X || SolverTime > SolverTimeToSpawnMinMax.Y)) ||
-				(SurfaceTypeToSpawn != -1 && AllCollisionsArray[IdxCollision].SurfaceType != SurfaceTypeToSpawn) ||
+				(SurfaceTypeToSpawn != -1 && AllCollisionsArray[IdxCollision].SurfaceType1 != SurfaceTypeToSpawn && AllCollisionsArray[IdxCollision].SurfaceType2 != SurfaceTypeToSpawn) ||
 				(LocationFilteringMode == ELocationFilteringModeEnum::ChaosNiagara_LocationFilteringMode_Inclusive && LocationXToSpawn == ELocationXToSpawnEnum::ChaosNiagara_LocationXToSpawn_Min && AllCollisionsArray[IdxCollision].Location.X <= LocationXToSpawnMinMax.X) ||
 				(LocationFilteringMode == ELocationFilteringModeEnum::ChaosNiagara_LocationFilteringMode_Inclusive && LocationXToSpawn == ELocationXToSpawnEnum::ChaosNiagara_LocationXToSpawn_Max && AllCollisionsArray[IdxCollision].Location.X >= LocationXToSpawnMinMax.Y) ||
 				(LocationFilteringMode == ELocationFilteringModeEnum::ChaosNiagara_LocationFilteringMode_Inclusive && LocationXToSpawn == ELocationXToSpawnEnum::ChaosNiagara_LocationXToSpawn_MinMax && (AllCollisionsArray[IdxCollision].Location.X <= LocationXToSpawnMinMax.X || AllCollisionsArray[IdxCollision].Location.X >= LocationXToSpawnMinMax.Y)) ||
@@ -1205,7 +1286,7 @@ bool UNiagaraDataInterfaceChaosDestruction::CollisionCallback(FNDIChaosDestructi
 						// jf: optimization: presize these arrays?
 						for (int32 Idx = 0; Idx < NumParticlesSpawned; ++Idx)
 						{
-							InstData->SurfaceTypeArray.Add(CollisionsToSpawnArray[IdxCollision].SurfaceType);
+							InstData->SurfaceTypeArray.Add(CollisionsToSpawnArray[IdxCollision].SurfaceType1);
 							InstData->ColorArray.Add(Color);
 							InstData->FrictionArray.Add(Friction);
 							InstData->RestitutionArray.Add(Restitution);
@@ -1254,40 +1335,45 @@ void UNiagaraDataInterfaceChaosDestruction::HandleBreakingEvents(const Chaos::FB
 			CopyData.BoundingboxVolume = CopyData.BoundingBox.GetVolume();
 
 			UPhysicalMaterial* PhysicalMaterial = nullptr;
-			int32 MaterialID = DataIn.Particle->Geometry()->GetMaterialIndex(0);
+			int32 MaterialID = 0;
+			
+			// #todo (bmiller) Need to have a better way to get at this data now that particle handle isn't in the Breaking event payload.
+			/*
+			if(DataIn.Particle && DataIn.Particle->Geometry() )
+				MaterialID = DataIn.Particle->Geometry()->GetMaterialIndex(0);
+			*/
 
 			UGeometryCollectionComponent* GeometryCollectionComponent = nullptr;
 			UMaterialInterface* Material = nullptr;
 #if INCLUDE_CHAOS
 			for (auto& Solver : Solvers)
 			{
-				GeometryCollectionComponent = Solver.PhysScene->GetOwningComponent<UGeometryCollectionComponent>(DataIn.ParticleProxy);
-				if (GeometryCollectionComponent)
-					break;
+				if (Solver.PhysScene)
+				{
+					GeometryCollectionComponent = Solver.PhysScene->GetOwningComponent<UGeometryCollectionComponent>(DataIn.Proxy);
+					if (GeometryCollectionComponent)
+						break;
+				}
 			}
+
 			if (GeometryCollectionComponent)
 			{
-				Material = GeometryCollectionComponent->GetMaterial(MaterialID);
-			}
-#endif
-			if (Material)
-			{
-				PhysicalMaterial = Material->GetPhysicalMaterial();
+				PhysicalMaterial = GeometryCollectionComponent->GetPhysicalMaterial();
 				ensure(PhysicalMaterial);
 				if (PhysicalMaterial)
 				{
 					CopyData.SurfaceType = PhysicalMaterial->SurfaceType;
+					CopyData.PhysicalMaterialName = PhysicalMaterial->GetFName();
 				}
-			}
+				else
+				{
+					CopyData.PhysicalMaterialName = FName();
+				}
 
-			if (Material)
-			{
-				CopyData.PhysicalMaterialName = Material->GetFName();
+				// Save GeometryCollectionComponent for trailing
+				GeometryCollectionComponentsFromBreaking.Add(GeometryCollectionComponent);
 			}
-			else
-			{
-				CopyData.PhysicalMaterialName = FName();
-			}
+#endif
 		}
 		else
 		{
@@ -1361,7 +1447,7 @@ void UNiagaraDataInterfaceChaosDestruction::FilterAllBreakings(TArray<Chaos::FBr
 		{
 			float BreakingSpeedSquared = AllBreakingsArray[IdxBreaking].Velocity.SizeSquared();
 
-			if (!(bApplyMaterialsFilter && IsMaterialInFilter(AllBreakingsArray[IdxBreaking].PhysicalMaterialName)) ||
+			if ((bApplyMaterialsFilter && !IsMaterialInFilter(AllBreakingsArray[IdxBreaking].PhysicalMaterialName)) ||
 				(SpeedToSpawnMinMax.X > 0.f && SpeedToSpawnMinMax.Y < 0.f && BreakingSpeedSquared < MinSpeedToSpawnSquared) ||
 				(SpeedToSpawnMinMax.X < 0.f && SpeedToSpawnMinMax.Y > 0.f && BreakingSpeedSquared > MaxSpeedToSpawnSquared) ||
 				(SpeedToSpawnMinMax.X > 0.f && SpeedToSpawnMinMax.Y > 0.f && (BreakingSpeedSquared < MinSpeedToSpawnSquared || BreakingSpeedSquared > MaxSpeedToSpawnSquared)) ||
@@ -1785,37 +1871,104 @@ bool UNiagaraDataInterfaceChaosDestruction::BreakingCallback(FNDIChaosDestructio
 void UNiagaraDataInterfaceChaosDestruction::HandleTrailingEvents(const Chaos::FTrailingEventData& Event)
 {
 	ensure(IsInGameThread());
-	Chaos::FTrailingDataArray const& TrailingDataIn = Event.TrailingData.AllTrailingsArray;
 
 	TrailingEvents.Reset();
 
-	// Copy data from Event
-	TrailingEvents.AddUninitialized(Event.TrailingData.AllTrailingsArray.Num());
+	float TrailMinSpeedToSpawnSquared = TrailMinSpeedToSpawn * TrailMinSpeedToSpawn;
+	UPhysicalMaterial* PhysicalMaterial = nullptr;
 
-	int32 Idx = 0;
-	for (Chaos::FTrailingData const& DataIn : TrailingDataIn)
+	auto IsMaterialInFilter = [&](const FName& InMaterialName) 
 	{
-		auto& CopyData = TrailingEvents[Idx];
-		CopyData = DataIn;
+		if (!InMaterialName.IsValid())
+		{
+			return false;
+		}
 
-		// #GM: Disable this for now for perf
-		/*
-		GetMeshExtData(SolverData,
-			AllTrailingsArray[Idx].ParticleIndexMesh == INDEX_NONE ? AllTrailingsArray[Idx].ParticleIndex : AllTrailingsArray[Idx].ParticleIndexMesh,
-			PhysicsProxyReverseMappingArray,
-			ParticleIndexReverseMappingArray,
-			AllTrailingsArray[Idx].BoundingboxVolume,
-			AllTrailingsArray[Idx].BoundingboxExtentMin,
-			AllTrailingsArray[Idx].BoundingboxExtentMax,
-			AllTrailingsArray[Idx].SurfaceType);
-		*/
+		for (const UPhysicalMaterial* Material : ChaosBreakingMaterialSet)
+		{
+			if (!Material)
+			{
+				continue;
+			}
 
-		CopyData.BoundingboxVolume = 1000000.f;
-		CopyData.BoundingboxExtentMin = 100.f;
-		CopyData.BoundingboxExtentMax = 100.f;
-		CopyData.SurfaceType = 0;
+			if (Material->GetFName() == InMaterialName)
+			{
+				return true;
+			}
+		}
 
-		Idx++;
+		return false;
+	};
+
+	if (GeometryCollectionComponentsFromBreaking.Num() > 0)
+	{
+		for (auto& GeometryCollectionComponent : GeometryCollectionComponentsFromBreaking)
+		{
+			if (GeometryCollectionComponent && GeometryCollectionComponent->GetNotifyTrailing())
+			{
+				PhysicalMaterial = GeometryCollectionComponent->GetPhysicalMaterial();
+				ensure(PhysicalMaterial);
+				if (PhysicalMaterial)
+				{
+					if (bApplyMaterialsFilter && !IsMaterialInFilter(PhysicalMaterial->GetFName()))
+					{
+						continue;
+					}
+				}
+
+				const TArray<FMatrix>& GlobalMatrices = GeometryCollectionComponent->GetGlobalMatrices();
+				const FTransform ActorTransform = GeometryCollectionComponent->GetComponentToWorld();
+
+				const FGeometryDynamicCollection* DynamicCollection = GeometryCollectionComponent->GetDynamicCollection();
+
+				if (DynamicCollection)
+				{
+					if (const UGeometryCollection* RestCollection = GeometryCollectionComponent->GetRestCollection())
+					{
+						const TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollection = RestCollection->GetGeometryCollection();
+
+						// Get the MassToLocal transforms
+						if (GeometryCollection->HasAttribute(TEXT("MassToLocal"), FTransformCollection::TransformGroup))
+						{
+							const TManagedArray<FTransform>& CollectionMassToLocal = GeometryCollection->GetAttribute<FTransform>(TEXT("MassToLocal"), FTransformCollection::TransformGroup);
+
+							const TManagedArray<FVector3f>* LinearVelocity = DynamicCollection->FindAttributeTyped<FVector3f>("LinearVelocity", FTransformCollection::TransformGroup);
+							const TManagedArray<FVector3f>* AngularVelocity = DynamicCollection->FindAttributeTyped<FVector3f>("AngularVelocity", FTransformCollection::TransformGroup);
+
+							if (!LinearVelocity || !AngularVelocity)
+							{
+								continue;
+							}
+
+							ensure(DynamicCollection->Active.Num() == (*LinearVelocity).Num());
+							ensure(DynamicCollection->Active.Num() == (*AngularVelocity).Num());
+
+							for (int Idx = 0; Idx < DynamicCollection->Active.Num(); ++Idx)
+							{
+								if (DynamicCollection->Active[Idx] && (*LinearVelocity)[Idx].SquaredLength() >= TrailMinSpeedToSpawnSquared)
+								{
+									Chaos::FTrailingDataExt TrailingData;
+
+									FTransform CurrTransform = FTransform(CollectionMassToLocal[Idx].ToMatrixWithScale() * GlobalMatrices[Idx] * ActorTransform.ToMatrixWithScale());
+									TrailingData.Location = CurrTransform.GetTranslation();
+
+									TrailingData.Velocity = (*LinearVelocity)[Idx];
+									TrailingData.AngularVelocity = (*AngularVelocity)[Idx];
+
+									TrailingData.Mass = 1.f;
+									TrailingData.BoundingboxVolume = 1000000.f;
+									TrailingData.BoundingboxExtentMin = 100.f;
+									TrailingData.BoundingboxExtentMax = 100.f;
+									TrailingData.SurfaceType = 0;
+
+									TrailingEvents.Add(TrailingData);
+								}
+							}
+						}
+					}
+				}				
+			}
+		}
 	}
 }
 
@@ -2682,721 +2835,371 @@ void UNiagaraDataInterfaceChaosDestruction::GetVMExternalFunction(const FVMExter
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetPosition(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetPosition(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleZ(Context);
+	FNDIOutputParam<FVector3f> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		//		if (InstData->ParticleDataArray.Num())
-		if (InstData->PositionArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			FVector V = InstData->PositionArray[ParticleID];
-			//UE_LOG(LogScript, Warning, TEXT("Position: %d: %f %f %f"), ParticleID, V.X, V.Y, V.Z);
-			*OutSampleX.GetDest() = V.X;
-			*OutSampleY.GetDest() = V.Y;
-			*OutSampleZ.GetDest() = V.Z;
-		}
-
-		ParticleIDParam.Advance();
-		OutSampleX.Advance();
-		OutSampleY.Advance();
-		OutSampleZ.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		//-TODO: LWC
+		const FVector3f Sample = InstData->PositionArray.IsValidIndex(ParticleID) ? (FVector3f)InstData->PositionArray[ParticleID] : FVector3f::Zero();
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetNormal(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetNormal(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleZ(Context);
+	FNDIOutputParam<FVector3f> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->IncomingNormalArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			FVector V = InstData->IncomingNormalArray[ParticleID];
-
-			*OutSampleX.GetDest() = V.X;
-			*OutSampleY.GetDest() = V.Y;
-			*OutSampleZ.GetDest() = V.Z;
-		}
-
-		ParticleIDParam.Advance();
-		OutSampleX.Advance();
-		OutSampleY.Advance();
-		OutSampleZ.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const FVector3f Sample = InstData->IncomingNormalArray.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingNormalArray[ParticleID] : FVector3f::Zero();
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetVelocity(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetVelocity(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleZ(Context);
+	FNDIOutputParam<FVector3f> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		//		if (InstData->ParticleDataArray.Num())
-		if (InstData->VelocityArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			FVector V = InstData->VelocityArray[ParticleID];
-			*OutSampleX.GetDest() = V.X;
-			*OutSampleY.GetDest() = V.Y;
-			*OutSampleZ.GetDest() = V.Z;
-		}
-
-		ParticleIDParam.Advance();
-		OutSampleX.Advance();
-		OutSampleY.Advance();
-		OutSampleZ.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const FVector3f Sample = InstData->VelocityArray.IsValidIndex(ParticleID) ? (FVector3f)InstData->VelocityArray[ParticleID] : FVector3f::Zero();
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetAngularVelocity(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetAngularVelocity(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleZ(Context);
+	FNDIOutputParam<FVector3f> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->IncomingAngularVelocity1Array.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			FVector W = InstData->IncomingAngularVelocity1Array[ParticleID];
-
-			*OutSampleX.GetDest() = W.X;
-			*OutSampleY.GetDest() = W.Y;
-			*OutSampleZ.GetDest() = W.Z;
-		}
-
-		ParticleIDParam.Advance();
-		OutSampleX.Advance();
-		OutSampleY.Advance();
-		OutSampleZ.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const FVector3f Sample = InstData->IncomingAngularVelocity1Array.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingAngularVelocity1Array[ParticleID] : FVector3f::Zero();
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetExtentMin(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetExtentMin(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutValue(Context);
+	FNDIOutputParam<float> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->ExtentMinArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			float Value = InstData->ExtentMinArray[ParticleID];
-
-			*OutValue.GetDest() = Value;
-		}
-
-		ParticleIDParam.Advance();
-		OutValue.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const float Sample = InstData->ExtentMinArray.IsValidIndex(ParticleID) ? InstData->ExtentMinArray[ParticleID] : 0.0f;
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetExtentMax(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetExtentMax(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutValue(Context);
+	FNDIOutputParam<float> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->ExtentMaxArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			float Value = InstData->ExtentMaxArray[ParticleID];
-
-			*OutValue.GetDest() = Value;
-		}
-
-		ParticleIDParam.Advance();
-		OutValue.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const float Sample = InstData->ExtentMaxArray.IsValidIndex(ParticleID) ? InstData->ExtentMaxArray[ParticleID] : 0.0f;
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetVolume(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetVolume(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutValue(Context);
+	FNDIOutputParam<float> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->VolumeArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			float Value = InstData->VolumeArray[ParticleID];
-
-			*OutValue.GetDest() = Value;
-		}
-
-		ParticleIDParam.Advance();
-		OutValue.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const float Sample = InstData->VolumeArray.IsValidIndex(ParticleID) ? InstData->VolumeArray[ParticleID] : 0.0f;
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename TimeParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetParticleIdsToSpawnAtTime(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetParticleIdsToSpawnAtTime(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	TimeParamType TimeParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<int32> OutMinValue(Context);
-	VectorVM::FExternalFuncRegisterHandler<int32> OutMaxValue(Context);
-	VectorVM::FExternalFuncRegisterHandler<int32> OutCountValue(Context);
+	FNDIOutputParam<int32> OutMinValue(Context);
+	FNDIOutputParam<int32> OutMaxValue(Context);
+	FNDIOutputParam<int32> OutCountValue(Context);
 
-	if (DoSpawn && ShouldSpawn && InstData->PositionArray.Num())
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		*OutMinValue.GetDest() = LastSpawnedPointID + 1;
-		*OutMaxValue.GetDest() = LastSpawnedPointID + InstData->PositionArray.Num();
-		*OutCountValue.GetDest() = InstData->PositionArray.Num();
-		//UE_LOG(LogScript, Warning, TEXT("Min = %d, Max = %d, Count = %d"), LastSpawnedPointID + 1, LastSpawnedPointID + InstData->PositionArray.Num(), InstData->PositionArray.Num());
-	} 
-	else 
-	{
-		*OutMinValue.GetDest() = 0;
-		*OutMaxValue.GetDest() = 0;
-		*OutCountValue.GetDest() = 0;		
-	}
-	
-
-	TimeParam.Advance();
-	OutMinValue.Advance();
-	OutMaxValue.Advance();
-	OutCountValue.Advance();
-}
-
-template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetPointType(FVectorVMContext& Context)
-{
-	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
-	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<int32> OutValue(Context);
-
-	for (int32 i = 0; i < Context.NumInstances; ++i)
-	{
-		if (InstData->PositionArray.Num())
+		if (DoSpawn && ShouldSpawn && InstData->PositionArray.Num())
 		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-
-			int32 Value = 0;
-
-			*OutValue.GetDest() = Value;
+			OutMinValue.SetAndAdvance(LastSpawnedPointID + 1);
+			OutMaxValue.SetAndAdvance(LastSpawnedPointID + InstData->PositionArray.Num());
+			OutCountValue.SetAndAdvance(InstData->PositionArray.Num());
+			//UE_LOG(LogScript, Warning, TEXT("Min = %d, Max = %d, Count = %d"), LastSpawnedPointID + 1, LastSpawnedPointID + InstData->PositionArray.Num(), InstData->PositionArray.Num());
 		}
-
-		ParticleIDParam.Advance();
-		OutValue.Advance();
+		else
+		{
+			OutMinValue.SetAndAdvance(0);
+			OutMaxValue.SetAndAdvance(0);
+			OutCountValue.SetAndAdvance(0);
+		}
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetColor(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetPointType(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleR(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleG(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleB(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSampleA(Context);
+	FNDIOutputParam<int32> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->ColorArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			FLinearColor V = InstData->ColorArray[ParticleID];
+		//if (InstData->PositionArray.Num())
+		//{
+		//	int32 ParticleID = ParticleIDParam.Get();
+		//	// Remap ParticleID
+		//	ParticleID -= LastSpawnedPointID + 1;
 
-			*OutSampleR.GetDest() = V.R;
-			*OutSampleG.GetDest() = V.G;
-			*OutSampleB.GetDest() = V.B;
-			*OutSampleA.GetDest() = V.A;
-		}
+		//	int32 Value = 0;
 
-		ParticleIDParam.Advance();
-		OutSampleR.Advance();
-		OutSampleG.Advance();
-		OutSampleB.Advance();
-		OutSampleA.Advance();
+		//	*OutValue.GetDest() = Value;
+		//}
+
+		//ParticleIDParam.Advance();
+		//OutValue.Advance();
+		OutSample.SetAndAdvance(0);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetSolverTime(FVectorVMContext& Context)
-{
-	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutValue(Context);
-
-	*OutValue.GetDest() = SolverTime;
-
-	OutValue.Advance();
-}
-
-template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetDensity(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetColor(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutValue(Context);
+	FNDIOutputParam<FLinearColor> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->DensityArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			float Value = InstData->DensityArray[ParticleID];
-
-			*OutValue.GetDest() = Value;
-		}
-
-		ParticleIDParam.Advance();
-		OutValue.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const FLinearColor Sample = InstData->ColorArray.IsValidIndex(ParticleID) ? InstData->ColorArray[ParticleID] : FLinearColor::White;
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetFriction(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetSolverTime(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
-	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutValue(Context);
+	FNDIOutputParam<float> OutValue(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->FrictionArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			float Value = InstData->FrictionArray[ParticleID];
-
-			*OutValue.GetDest() = Value;
-		}
-
-		ParticleIDParam.Advance();
-		OutValue.Advance();
+		OutValue.SetAndAdvance(SolverTime);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetRestitution(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetDensity(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutValue(Context);
+	FNDIOutputParam<float> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->RestitutionArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			float Value = InstData->RestitutionArray[ParticleID];
-
-			*OutValue.GetDest() = Value;
-		}
-
-		ParticleIDParam.Advance();
-		OutValue.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const float Sample = InstData->DensityArray.IsValidIndex(ParticleID) ? InstData->DensityArray[ParticleID] : 0.0f;
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetTransform(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetFriction(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutTranslationX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutTranslationY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutTranslationZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutRotationX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutRotationY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutRotationZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutRotationW(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutScaleX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutScaleY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutScaleZ(Context);
+	FNDIOutputParam<float> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->TransformTranslationArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			FVector Translation = InstData->TransformTranslationArray[ParticleID];
-			FQuat Rotation = InstData->TransformRotationArray[ParticleID];
-			FVector Scale = InstData->TransformScaleArray[ParticleID];
-			//UE_LOG(LogScript, Warning, TEXT("%f %f %f    %f %f %f %f   %f %f %f"), Translation.X, Translation.Y, Translation.Z, Rotation.X, Rotation.Y, Rotation.Z, Rotation.W, Scale.X, Scale.X, Scale.X)
-			//UE_LOG(LogScript, Warning, TEXT("Transform: %f %f %f"), Translation.X, Translation.Y, Translation.Z)
-
-			*OutTranslationX.GetDest() = Translation.X;
-			*OutTranslationY.GetDest() = Translation.Y;
-			*OutTranslationZ.GetDest() = Translation.Z;
-			*OutRotationX.GetDest() = Rotation.X;
-			*OutRotationY.GetDest() = Rotation.Y;
-			*OutRotationZ.GetDest() = Rotation.Z;
-			*OutRotationW.GetDest() = Rotation.W;
-			*OutScaleX.GetDest() = Scale.X;
-			*OutScaleY.GetDest() = Scale.Y;
-			*OutScaleZ.GetDest() = Scale.Z;
-		}
-
-		ParticleIDParam.Advance();
-		OutTranslationX.Advance();
-		OutTranslationY.Advance();
-		OutTranslationZ.Advance();
-		OutRotationX.Advance();
-		OutRotationY.Advance();
-		OutRotationZ.Advance();
-		OutRotationW.Advance();
-		OutScaleX.Advance();
-		OutScaleY.Advance();
-		OutScaleZ.Advance();
-		//OutRotation.Advance();
-		//OutScale.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const float Sample = InstData->FrictionArray.IsValidIndex(ParticleID) ? InstData->FrictionArray[ParticleID] : 0.0f;
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetSize(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetRestitution(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSizeX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSizeY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutSizeZ(Context);
+	FNDIOutputParam<float> OutSample(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->TransformTranslationArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			FVector Bounds = InstData->BoundsArray[ParticleID];
-
-			*OutSizeX.GetDest() = Bounds.X;
-			*OutSizeY.GetDest() = Bounds.Y;
-			*OutSizeZ.GetDest() = Bounds.Z;
-		}
-
-		ParticleIDParam.Advance();
-		OutSizeX.Advance();
-		OutSizeY.Advance();
-		OutSizeZ.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const float Sample = InstData->RestitutionArray.IsValidIndex(ParticleID) ? InstData->RestitutionArray[ParticleID] : 0.0f;
+		OutSample.SetAndAdvance(Sample);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetSurfaceType(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetTransform(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<int32> OutValue(Context);
+	FNDIOutputParam<FVector3f> OutTranslation(Context);
+	FNDIOutputParam<FQuat4f> OutRotation(Context);
+	FNDIOutputParam<FVector3f> OutScale(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->SurfaceTypeArray.Num())
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		if (InstData->TransformTranslationArray.IsValidIndex(ParticleID))
 		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-			int32 Value = InstData->SurfaceTypeArray[ParticleID];
-
-			*OutValue.GetDest() = Value;
+			//-TODO: LWC
+			OutTranslation.SetAndAdvance((FVector3f)InstData->TransformTranslationArray[ParticleID]);
+			OutRotation.SetAndAdvance((FQuat4f)InstData->TransformRotationArray[ParticleID]);
+			OutScale.SetAndAdvance((FVector3f)InstData->TransformScaleArray[ParticleID]);
 		}
-
-		ParticleIDParam.Advance();
-		OutValue.Advance();
+		else
+		{
+			OutTranslation.SetAndAdvance(FVector3f::Zero());
+			OutRotation.SetAndAdvance(FQuat4f::Identity);
+			OutScale.SetAndAdvance(FVector3f(1.0f, 1.0f, 1.0f));
+		}
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetCollisionData(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetSize(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutLocationX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutLocationY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutLocationZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAccumulatedImpulseX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAccumulatedImpulseY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAccumulatedImpulseZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutNormalX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutNormalY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutNormalZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocity1X(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocity1Y(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocity1Z(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocity2X(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocity2Y(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocity2Z(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocity1X(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocity1Y(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocity1Z(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocity2X(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocity2Y(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocity2Z(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutMass1(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutMass2(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutTime(Context);
+	FNDIOutputParam<FVector3f> OutSize(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->IncomingLocationArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-
-			FVector VValue;
-			float FValue;
-
-			VValue = InstData->IncomingLocationArray[ParticleID];
-			*OutLocationX.GetDest() = VValue.X;
-			*OutLocationY.GetDest() = VValue.Y;
-			*OutLocationZ.GetDest() = VValue.Z;
-
-			VValue = InstData->IncomingAccumulatedImpulseArray[ParticleID];
-			*OutAccumulatedImpulseX.GetDest() = VValue.X;
-			*OutAccumulatedImpulseY.GetDest() = VValue.Y;
-			*OutAccumulatedImpulseZ.GetDest() = VValue.Z;
-
-			VValue = InstData->IncomingNormalArray[ParticleID];
-			*OutNormalX.GetDest() = VValue.X;
-			*OutNormalY.GetDest() = VValue.Y;
-			*OutNormalZ.GetDest() = VValue.Z;
-
-			VValue = InstData->IncomingVelocity1Array[ParticleID];
-			*OutVelocity1X.GetDest() = VValue.X;
-			*OutVelocity1Y.GetDest() = VValue.Y;
-			*OutVelocity1Z.GetDest() = VValue.Z;
-
-			VValue = InstData->IncomingVelocity2Array[ParticleID];
-			*OutVelocity2X.GetDest() = VValue.X;
-			*OutVelocity2Y.GetDest() = VValue.Y;
-			*OutVelocity2Z.GetDest() = VValue.Z;
-
-			VValue = InstData->IncomingAngularVelocity1Array[ParticleID];
-			*OutAngularVelocity1X.GetDest() = VValue.X;
-			*OutAngularVelocity1Y.GetDest() = VValue.Y;
-			*OutAngularVelocity1Z.GetDest() = VValue.Z;
-
-			VValue = InstData->IncomingAngularVelocity2Array[ParticleID];
-			*OutAngularVelocity2X.GetDest() = VValue.X;
-			*OutAngularVelocity2Y.GetDest() = VValue.Y;
-			*OutAngularVelocity2Z.GetDest() = VValue.Z;
-
-			FValue = InstData->IncomingMass1Array[ParticleID];
-			*OutMass1.GetDest() = FValue;
-
-			FValue = InstData->IncomingMass2Array[ParticleID];
-			*OutMass2.GetDest() = FValue;
-
-			FValue = InstData->IncomingTimeArray[ParticleID];
-			*OutTime.GetDest() = FValue;
-		}
-
-		ParticleIDParam.Advance();
-		OutLocationX.Advance();
-		OutLocationY.Advance();
-		OutLocationZ.Advance();
-		OutAccumulatedImpulseX.Advance();
-		OutAccumulatedImpulseY.Advance();
-		OutAccumulatedImpulseZ.Advance();
-		OutNormalX.Advance();
-		OutNormalY.Advance();
-		OutNormalZ.Advance();
-		OutVelocity1X.Advance();
-		OutVelocity1Y.Advance();
-		OutVelocity1Z.Advance();
-		OutVelocity2X.Advance();
-		OutVelocity2Y.Advance();
-		OutVelocity2Z.Advance();
-		OutAngularVelocity1X.Advance();
-		OutAngularVelocity1Y.Advance();
-		OutAngularVelocity1Z.Advance();
-		OutAngularVelocity2X.Advance();
-		OutAngularVelocity2Y.Advance();
-		OutAngularVelocity2Z.Advance();
-		OutMass1.Advance();
-		OutMass2.Advance();
-		OutTime.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const FVector3f Size = InstData->BoundsArray.IsValidIndex(ParticleID) ? (FVector3f)InstData->BoundsArray[ParticleID] : FVector3f::Zero();
+		OutSize.SetAndAdvance(Size);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetBreakingData(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetSurfaceType(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutLocationX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutLocationY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutLocationZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocityX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocityY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocityZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocityX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocityY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocityZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutMass(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutTime(Context);
+	FNDIOutputParam<int32> OutValue(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->IncomingLocationArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
-
-			FVector VValue;
-			float FValue;
-
-			VValue = InstData->IncomingLocationArray[ParticleID];
-			*OutLocationX.GetDest() = VValue.X;
-			*OutLocationY.GetDest() = VValue.Y;
-			*OutLocationZ.GetDest() = VValue.Z;
-
-			VValue = InstData->IncomingVelocity1Array[ParticleID];
-			*OutVelocityX.GetDest() = VValue.X;
-			*OutVelocityY.GetDest() = VValue.Y;
-			*OutVelocityZ.GetDest() = VValue.Z;
-
-			VValue = InstData->IncomingAngularVelocity1Array[ParticleID];
-			*OutAngularVelocityX.GetDest() = VValue.X;
-			*OutAngularVelocityY.GetDest() = VValue.Y;
-			*OutAngularVelocityZ.GetDest() = VValue.Z;
-
-			FValue = InstData->IncomingMass1Array[ParticleID];
-			*OutMass.GetDest() = FValue;
-
-			FValue = InstData->IncomingTimeArray[ParticleID];
-			*OutTime.GetDest() = FValue;
-		}
-
-		ParticleIDParam.Advance();
-		OutLocationX.Advance();
-		OutLocationY.Advance();
-		OutLocationZ.Advance();
-		OutVelocityX.Advance();
-		OutVelocityY.Advance();
-		OutVelocityZ.Advance();
-		OutAngularVelocityX.Advance();
-		OutAngularVelocityY.Advance();
-		OutAngularVelocityZ.Advance();
-		OutMass.Advance();
-		OutTime.Advance();
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
+		const int32 Value = InstData->SurfaceTypeArray.IsValidIndex(ParticleID) ? InstData->SurfaceTypeArray[ParticleID] : 0;
+		OutValue.SetAndAdvance(Value);
 	}
 }
 
 template<typename ParticleIDParamType>
-void UNiagaraDataInterfaceChaosDestruction::GetTrailingData(FVectorVMContext& Context)
+void UNiagaraDataInterfaceChaosDestruction::GetCollisionData(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
 	ParticleIDParamType ParticleIDParam(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutLocationX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutLocationY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutLocationZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocityX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocityY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutVelocityZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocityX(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocityY(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutAngularVelocityZ(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutMass(Context);
-	VectorVM::FExternalFuncRegisterHandler<float> OutTime(Context);
+	FNDIOutputParam<FVector3f> OutLocation(Context);
+	FNDIOutputParam<FVector3f> OutAccumulatedImpulse(Context);
+	FNDIOutputParam<FVector3f> OutNormal(Context);
+	FNDIOutputParam<FVector3f> OutVelocity1(Context);
+	FNDIOutputParam<FVector3f> OutVelocity2(Context);
+	FNDIOutputParam<FVector3f> OutAngularVelocity1(Context);
+	FNDIOutputParam<FVector3f> OutAngularVelocity2(Context);
+	FNDIOutputParam<float> OutMass1(Context);
+	FNDIOutputParam<float> OutMass2(Context);
+	FNDIOutputParam<float> OutTime(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
-		if (InstData->IncomingLocationArray.Num())
-		{
-			int32 ParticleID = ParticleIDParam.Get();
-			// Remap ParticleID
-			ParticleID -= LastSpawnedPointID + 1;
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
 
-			FVector VValue;
-			float FValue;
+		//-TODO: LWC
+		OutLocation.SetAndAdvance(InstData->IncomingLocationArray.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingLocationArray[ParticleID] : FVector3f::Zero());
+		OutAccumulatedImpulse.SetAndAdvance(InstData->IncomingAccumulatedImpulseArray.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingAccumulatedImpulseArray[ParticleID] : FVector3f::Zero());
+		OutNormal.SetAndAdvance(InstData->IncomingNormalArray.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingNormalArray[ParticleID] : FVector3f::Zero());
+		OutVelocity1.SetAndAdvance(InstData->IncomingVelocity1Array.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingVelocity1Array[ParticleID] : FVector3f::Zero());
+		OutVelocity2.SetAndAdvance(InstData->IncomingVelocity2Array.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingVelocity2Array[ParticleID] : FVector3f::Zero());
+		OutAngularVelocity1.SetAndAdvance(InstData->IncomingAngularVelocity1Array.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingAngularVelocity1Array[ParticleID] : FVector3f::Zero());
+		OutAngularVelocity2.SetAndAdvance(InstData->IncomingAngularVelocity2Array.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingAngularVelocity2Array[ParticleID] : FVector3f::Zero());
+		OutMass1.SetAndAdvance(InstData->IncomingMass1Array.IsValidIndex(ParticleID) ? InstData->IncomingMass1Array[ParticleID] : 0.0f);
+		OutMass2.SetAndAdvance(InstData->IncomingMass2Array.IsValidIndex(ParticleID) ? InstData->IncomingMass2Array[ParticleID] : 0.0f);
+		OutTime.SetAndAdvance(InstData->IncomingTimeArray.IsValidIndex(ParticleID) ? InstData->IncomingTimeArray[ParticleID] : 0.0f);
+	}
+}
 
-			VValue = InstData->IncomingLocationArray[ParticleID];
-			*OutLocationX.GetDest() = VValue.X;
-			*OutLocationY.GetDest() = VValue.Y;
-			*OutLocationZ.GetDest() = VValue.Z;
+template<typename ParticleIDParamType>
+void UNiagaraDataInterfaceChaosDestruction::GetBreakingData(FVectorVMExternalFunctionContext& Context)
+{
+	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
+	ParticleIDParamType ParticleIDParam(Context);
+	FNDIOutputParam<FVector3f> OutLocation(Context);
+	FNDIOutputParam<FVector3f> OutVelocity(Context);
+	FNDIOutputParam<FVector3f> OutAngularVelocity(Context);
+	FNDIOutputParam<float> OutMass(Context);
+	FNDIOutputParam<float> OutTime(Context);
 
-			VValue = InstData->IncomingVelocity1Array[ParticleID];
-			*OutVelocityX.GetDest() = VValue.X;
-			*OutVelocityY.GetDest() = VValue.Y;
-			*OutVelocityZ.GetDest() = VValue.Z;
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+	{
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
 
-			VValue = InstData->IncomingAngularVelocity1Array[ParticleID];
-			*OutAngularVelocityX.GetDest() = VValue.X;
-			*OutAngularVelocityY.GetDest() = VValue.Y;
-			*OutAngularVelocityZ.GetDest() = VValue.Z;
+		OutLocation.SetAndAdvance(InstData->IncomingLocationArray.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingLocationArray[ParticleID] : FVector3f::Zero());
+		OutVelocity.SetAndAdvance(InstData->IncomingVelocity1Array.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingVelocity1Array[ParticleID] : FVector3f::Zero());
+		OutAngularVelocity.SetAndAdvance(InstData->IncomingAngularVelocity1Array.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingAngularVelocity1Array[ParticleID] : FVector3f::Zero());
+		OutMass.SetAndAdvance(InstData->IncomingMass1Array.IsValidIndex(ParticleID) ? InstData->IncomingMass1Array[ParticleID] : 0.0f);
+		OutTime.SetAndAdvance(InstData->IncomingTimeArray.IsValidIndex(ParticleID) ? InstData->IncomingTimeArray[ParticleID] : 0.0f);
+	}
+}
 
-			FValue = InstData->IncomingMass1Array[ParticleID];
-			*OutMass.GetDest() = FValue;
+template<typename ParticleIDParamType>
+void UNiagaraDataInterfaceChaosDestruction::GetTrailingData(FVectorVMExternalFunctionContext& Context)
+{
+	VectorVM::FUserPtrHandler<FNDIChaosDestruction_InstanceData> InstData(Context);
+	ParticleIDParamType ParticleIDParam(Context);
+	FNDIOutputParam<FVector3f> OutLocation(Context);
+	FNDIOutputParam<FVector3f> OutVelocity(Context);
+	FNDIOutputParam<FVector3f> OutAngularVelocity(Context);
+	FNDIOutputParam<float> OutMass(Context);
+	FNDIOutputParam<float> OutTime(Context);
 
-			FValue = InstData->IncomingTimeArray[ParticleID];
-			*OutTime.GetDest() = FValue;
-		}
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
+	{
+		const int32 ParticleID = ParticleIDParam.GetAndAdvance() - LastSpawnedPointID + 1;
 
-		ParticleIDParam.Advance();
-		OutLocationX.Advance();
-		OutLocationY.Advance();
-		OutLocationZ.Advance();
-		OutVelocityX.Advance();
-		OutVelocityY.Advance();
-		OutVelocityZ.Advance();
-		OutAngularVelocityX.Advance();
-		OutAngularVelocityY.Advance();
-		OutAngularVelocityZ.Advance();
-		OutMass.Advance();
-		OutTime.Advance();
+		OutLocation.SetAndAdvance(InstData->IncomingLocationArray.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingLocationArray[ParticleID] : FVector3f::Zero());
+		OutVelocity.SetAndAdvance(InstData->IncomingVelocity1Array.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingVelocity1Array[ParticleID] : FVector3f::Zero());
+		OutAngularVelocity.SetAndAdvance(InstData->IncomingAngularVelocity1Array.IsValidIndex(ParticleID) ? (FVector3f)InstData->IncomingAngularVelocity1Array[ParticleID] : FVector3f::Zero());
+		OutMass.SetAndAdvance(InstData->IncomingMass1Array.IsValidIndex(ParticleID) ? InstData->IncomingMass1Array[ParticleID] : 0.0f);
+		OutTime.SetAndAdvance(InstData->IncomingTimeArray.IsValidIndex(ParticleID) ? InstData->IncomingTimeArray[ParticleID] : 0.0f);
 	}
 }
 
@@ -3873,11 +3676,11 @@ void LoadGPUBufferFromArray(FDynamicReadBuffer& Buffer,
 	Buffer.Lock();
 	if (bIsVector)
 	{
-		FVector4* Data = (FVector4*)Buffer.MappedBuffer;
+		FVector4f* Data = (FVector4f*)Buffer.MappedBuffer;
 		check(Data); // TODO: Handle gracefully.
 
 		for (int32 i = 0; i < Array->Num(); i++) {
-			Data[i] = FVector4((*Array)[i]);
+			Data[i] = FVector4f((*Array)[i]);
 		}
 	}
 	else
@@ -3900,7 +3703,7 @@ static void SetBuffer(FRHICommandList& CmdList,
 	FDynamicReadBuffer& Buffer,
 	const TArray<T>& Array,
 	const EPixelFormat PixelFormat,
-	FString BufferName)
+	const TCHAR* BufferName)
 {
 	checkf(PixelFormat == PF_A32B32G32R32F ||
 		   PixelFormat == PF_R32_FLOAT || 
@@ -3921,7 +3724,7 @@ static void SetBuffer(FRHICommandList& CmdList,
 	if (Buffer.NumBytes == 0 || Buffer.NumBytes < Array.Num() * SizePerElement)
 	{
 		Buffer.Release();
-		Buffer.Initialize(SizePerElement, Array.Num(), PixelFormat, BUF_Dynamic);
+		Buffer.Initialize(BufferName, SizePerElement, Array.Num(), PixelFormat, BUF_Dynamic);
 	}
 
 	Buffer.Lock();
@@ -3931,7 +3734,7 @@ static void SetBuffer(FRHICommandList& CmdList,
 	// NOTE: Reading from `Array` is not thread safe since it belongs to the simulation thread.
 	if (bIsVector)
 	{
-		FVector4* Data = (FVector4*)Buffer.MappedBuffer;
+		FVector4f* Data = (FVector4f*)Buffer.MappedBuffer;
 		check(Data); // TODO: Handle gracefully.
 
 		for (int32 i = 0; i < Array.Num(); i++) {
@@ -3985,12 +3788,22 @@ void UNiagaraDataInterfaceChaosDestruction::ProvidePerInstanceDataForRenderThrea
 
 	if (InstanceData->PositionArray.Num() > 0)
 	{
-		DataToPass->PositionArray = new TArray<FVector>(InstanceData->PositionArray);
+		DataToPass->PositionArray = new TArray<FVector3f>();
+		DataToPass->PositionArray->AddUninitialized(InstanceData->PositionArray.Num());
+		for (int i = 0; i < InstanceData->PositionArray.Num(); ++i)
+		{
+			(*DataToPass->PositionArray)[i] = (FVector3f)InstanceData->PositionArray[i];
+		}
 	}
 
 	if (InstanceData->VelocityArray.Num() > 0)
 	{
-		DataToPass->VelocityArray = new TArray<FVector>(InstanceData->VelocityArray);
+		DataToPass->VelocityArray = new TArray<FVector3f>();
+		DataToPass->VelocityArray->AddUninitialized(InstanceData->VelocityArray.Num());
+		for (int i = 0; i < InstanceData->VelocityArray.Num(); ++i)
+		{
+			(*DataToPass->VelocityArray)[i] = (FVector3f)InstanceData->VelocityArray[i];
+		}
 	}
 
 	if (InstanceData->ExtentMinArray.Num() > 0)
@@ -4116,7 +3929,7 @@ void FNiagaraDataInterfaceProxyChaosDestruction::CreatePerInstanceData(const FNi
 	SystemsToGPUInstanceData.Add(SystemInstance, FNiagaraDIChaosDestruction_GPUData());
 }
 
-void FNiagaraDataInterfaceProxyChaosDestruction::DestroyInstanceData(NiagaraEmitterInstanceBatcher* Batcher, const FNiagaraSystemInstanceID& SystemInstance)
+void FNiagaraDataInterfaceProxyChaosDestruction::DestroyInstanceData(const FNiagaraSystemInstanceID& SystemInstance)
 {
 	check(IsInRenderingThread());
 	check(SystemsToGPUInstanceData.Contains(SystemInstance));
@@ -4138,14 +3951,14 @@ void FNiagaraDataInterfaceProxyChaosDestruction::ConsumePerInstanceDataFromGameT
 
 		if (InstanceData->PositionArray)
 		{
-			Data.PositionArray = TArray<FVector>(MoveTemp(*InstanceData->PositionArray));		
+			Data.PositionArray = TArray<FVector3f>(MoveTemp(*InstanceData->PositionArray));		
 			//LoadGPUBufferFromArray(Data.GPUPositionBuffer, InstanceData->PositionArray, EPixelFormat::PF_A32B32G32R32F, FString(TEXT("PositionBuffer")));
 			delete InstanceData->PositionArray;
 		}
 
 		if (InstanceData->VelocityArray)
 		{
-			Data.VelocityArray = TArray<FVector>(MoveTemp(*InstanceData->VelocityArray));
+			Data.VelocityArray = TArray<FVector3f>(MoveTemp(*InstanceData->VelocityArray));
 			//LoadGPUBufferFromArray(Data.GPUVelocityBuffer, InstanceData->VelocityArray, EPixelFormat::PF_A32B32G32R32F, FString(TEXT("VelocityBuffer")));
 			delete InstanceData->VelocityArray;
 		}
@@ -4370,33 +4183,33 @@ public:
 			}
 			if(InstanceData->PositionArray.Num() > 0)
 			{
-				SetBuffer(RHICmdList, PositionBuffer,    ComputeShaderRHI, InstanceData->GPUPositionBuffer,    InstanceData->PositionArray,    EPixelFormat::PF_A32B32G32R32F, FString(TEXT("PositionBuffer")));
-				SetBuffer(RHICmdList, VelocityBuffer,    ComputeShaderRHI, InstanceData->GPUVelocityBuffer,    InstanceData->VelocityArray,    EPixelFormat::PF_A32B32G32R32F, FString(TEXT("VelocityBuffer")));
-				SetBuffer(RHICmdList, ExtentMinBuffer,   ComputeShaderRHI, InstanceData->GPUExtentMinBuffer,   InstanceData->ExtentMinArray,   EPixelFormat::PF_R32_FLOAT,     FString(TEXT("ExtentMinBuffer")));
-				SetBuffer(RHICmdList, ExtentMaxBuffer,   ComputeShaderRHI, InstanceData->GPUExtentMaxBuffer,   InstanceData->ExtentMaxArray,   EPixelFormat::PF_R32_FLOAT,     FString(TEXT("ExtentMaxBuffer")));
-				SetBuffer(RHICmdList, VolumeBuffer,      ComputeShaderRHI, InstanceData->GPUVolumeBuffer,      InstanceData->VolumeArray,      EPixelFormat::PF_R32_FLOAT,     FString(TEXT("VolumeBuffer")));
-				SetBuffer(RHICmdList, SolverIDBuffer,    ComputeShaderRHI, InstanceData->GPUSolverIDBuffer,    InstanceData->SolverIDArray,    EPixelFormat::PF_R32_SINT,      FString(TEXT("SolverIDBuffer")));
-				SetBuffer(RHICmdList, DensityBuffer,     ComputeShaderRHI, InstanceData->GPUDensityBuffer,     InstanceData->DensityArray,     EPixelFormat::PF_R32_FLOAT,     FString(TEXT("DensityBuffer")));
-				SetBuffer(RHICmdList, FrictionBuffer,    ComputeShaderRHI, InstanceData->GPUFrictionBuffer,    InstanceData->FrictionArray,    EPixelFormat::PF_R32_FLOAT,     FString(TEXT("FrictionBuffer")));
-				SetBuffer(RHICmdList, RestitutionBuffer, ComputeShaderRHI, InstanceData->GPURestitutionBuffer, InstanceData->RestitutionArray, EPixelFormat::PF_R32_FLOAT,     FString(TEXT("RestitutionBuffer")));
-				SetBuffer(RHICmdList, SurfaceTypeBuffer, ComputeShaderRHI, InstanceData->GPUSurfaceTypeBuffer, InstanceData->SurfaceTypeArray, EPixelFormat::PF_R32_SINT,      FString(TEXT("SurfaceTypeBuffer")));
-				SetBuffer(RHICmdList, ColorBuffer,       ComputeShaderRHI, InstanceData->GPUColorBuffer,       InstanceData->ColorArray,       EPixelFormat::PF_A32B32G32R32F, FString(TEXT("ColorBuffer")));
+				SetBuffer(RHICmdList, PositionBuffer,    ComputeShaderRHI, InstanceData->GPUPositionBuffer,    InstanceData->PositionArray,    EPixelFormat::PF_A32B32G32R32F, TEXT("PositionBuffer"));
+				SetBuffer(RHICmdList, VelocityBuffer,    ComputeShaderRHI, InstanceData->GPUVelocityBuffer,    InstanceData->VelocityArray,    EPixelFormat::PF_A32B32G32R32F, TEXT("VelocityBuffer"));
+				SetBuffer(RHICmdList, ExtentMinBuffer,   ComputeShaderRHI, InstanceData->GPUExtentMinBuffer,   InstanceData->ExtentMinArray,   EPixelFormat::PF_R32_FLOAT,     TEXT("ExtentMinBuffer"));
+				SetBuffer(RHICmdList, ExtentMaxBuffer,   ComputeShaderRHI, InstanceData->GPUExtentMaxBuffer,   InstanceData->ExtentMaxArray,   EPixelFormat::PF_R32_FLOAT,     TEXT("ExtentMaxBuffer"));
+				SetBuffer(RHICmdList, VolumeBuffer,      ComputeShaderRHI, InstanceData->GPUVolumeBuffer,      InstanceData->VolumeArray,      EPixelFormat::PF_R32_FLOAT,     TEXT("VolumeBuffer"));
+				SetBuffer(RHICmdList, SolverIDBuffer,    ComputeShaderRHI, InstanceData->GPUSolverIDBuffer,    InstanceData->SolverIDArray,    EPixelFormat::PF_R32_SINT,      TEXT("SolverIDBuffer"));
+				SetBuffer(RHICmdList, DensityBuffer,     ComputeShaderRHI, InstanceData->GPUDensityBuffer,     InstanceData->DensityArray,     EPixelFormat::PF_R32_FLOAT,     TEXT("DensityBuffer"));
+				SetBuffer(RHICmdList, FrictionBuffer,    ComputeShaderRHI, InstanceData->GPUFrictionBuffer,    InstanceData->FrictionArray,    EPixelFormat::PF_R32_FLOAT,     TEXT("FrictionBuffer"));
+				SetBuffer(RHICmdList, RestitutionBuffer, ComputeShaderRHI, InstanceData->GPURestitutionBuffer, InstanceData->RestitutionArray, EPixelFormat::PF_R32_FLOAT,     TEXT("RestitutionBuffer"));
+				SetBuffer(RHICmdList, SurfaceTypeBuffer, ComputeShaderRHI, InstanceData->GPUSurfaceTypeBuffer, InstanceData->SurfaceTypeArray, EPixelFormat::PF_R32_SINT,      TEXT("SurfaceTypeBuffer"));
+				SetBuffer(RHICmdList, ColorBuffer,       ComputeShaderRHI, InstanceData->GPUColorBuffer,       InstanceData->ColorArray,       EPixelFormat::PF_A32B32G32R32F, TEXT("ColorBuffer"));
 
-				SetBuffer(RHICmdList, IncomingLocationBuffer,           ComputeShaderRHI, InstanceData->GPUIncomingLocationBuffer,           InstanceData->IncomingLocationArray,           EPixelFormat::PF_A32B32G32R32F, FString(TEXT("IncomingLocationBuffer")));
-				SetBuffer(RHICmdList, IncomingAccumulatedImpulseBuffer, ComputeShaderRHI, InstanceData->GPUIncomingAccumulatedImpulseBuffer, InstanceData->IncomingAccumulatedImpulseArray, EPixelFormat::PF_A32B32G32R32F, FString(TEXT("IncomingAccumulatedImpulseBuffer")));
-				SetBuffer(RHICmdList, IncomingNormalBuffer,             ComputeShaderRHI, InstanceData->GPUIncomingNormalBuffer,             InstanceData->IncomingNormalArray,             EPixelFormat::PF_A32B32G32R32F, FString(TEXT("IncomingNormalBuffer")));
-				SetBuffer(RHICmdList, IncomingVelocity1Buffer,          ComputeShaderRHI, InstanceData->GPUIncomingVelocity1Buffer,          InstanceData->IncomingVelocity1Array,          EPixelFormat::PF_A32B32G32R32F, FString(TEXT("IncomingVelocity1Buffer")));
-				SetBuffer(RHICmdList, IncomingVelocity2Buffer,          ComputeShaderRHI, InstanceData->GPUIncomingVelocity2Buffer,          InstanceData->IncomingVelocity2Array,          EPixelFormat::PF_A32B32G32R32F, FString(TEXT("IncomingVelocity2Buffer")));
-				SetBuffer(RHICmdList, IncomingAngularVelocity1Buffer,   ComputeShaderRHI, InstanceData->GPUIncomingAngularVelocity1Buffer,   InstanceData->IncomingAngularVelocity1Array,   EPixelFormat::PF_A32B32G32R32F, FString(TEXT("IncomingAngularVelocity1Buffer")));
-				SetBuffer(RHICmdList, IncomingAngularVelocity2Buffer,   ComputeShaderRHI, InstanceData->GPUIncomingAngularVelocity2Buffer,   InstanceData->IncomingAngularVelocity2Array,   EPixelFormat::PF_A32B32G32R32F, FString(TEXT("IncomingAngularVelocity2Buffer")));
-				SetBuffer(RHICmdList, IncomingMass1Buffer,              ComputeShaderRHI, InstanceData->GPUIncomingMass1Buffer,              InstanceData->IncomingMass1Array,              EPixelFormat::PF_R32_FLOAT,     FString(TEXT("IncomingMass1Buffer")));
-				SetBuffer(RHICmdList, IncomingMass2Buffer,              ComputeShaderRHI, InstanceData->GPUIncomingMass2Buffer,              InstanceData->IncomingMass2Array,              EPixelFormat::PF_R32_FLOAT,     FString(TEXT("IncomingMass2Buffer")));
-				SetBuffer(RHICmdList, IncomingTimeBuffer,               ComputeShaderRHI, InstanceData->GPUIncomingTimeBuffer,               InstanceData->IncomingTimeArray,               EPixelFormat::PF_R32_FLOAT,     FString(TEXT("IncomingTimeBuffer")));
+				SetBuffer(RHICmdList, IncomingLocationBuffer,           ComputeShaderRHI, InstanceData->GPUIncomingLocationBuffer,           InstanceData->IncomingLocationArray,           EPixelFormat::PF_A32B32G32R32F, TEXT("IncomingLocationBuffer"));
+				SetBuffer(RHICmdList, IncomingAccumulatedImpulseBuffer, ComputeShaderRHI, InstanceData->GPUIncomingAccumulatedImpulseBuffer, InstanceData->IncomingAccumulatedImpulseArray, EPixelFormat::PF_A32B32G32R32F, TEXT("IncomingAccumulatedImpulseBuffer"));
+				SetBuffer(RHICmdList, IncomingNormalBuffer,             ComputeShaderRHI, InstanceData->GPUIncomingNormalBuffer,             InstanceData->IncomingNormalArray,             EPixelFormat::PF_A32B32G32R32F, TEXT("IncomingNormalBuffer"));
+				SetBuffer(RHICmdList, IncomingVelocity1Buffer,          ComputeShaderRHI, InstanceData->GPUIncomingVelocity1Buffer,          InstanceData->IncomingVelocity1Array,          EPixelFormat::PF_A32B32G32R32F, TEXT("IncomingVelocity1Buffer"));
+				SetBuffer(RHICmdList, IncomingVelocity2Buffer,          ComputeShaderRHI, InstanceData->GPUIncomingVelocity2Buffer,          InstanceData->IncomingVelocity2Array,          EPixelFormat::PF_A32B32G32R32F, TEXT("IncomingVelocity2Buffer"));
+				SetBuffer(RHICmdList, IncomingAngularVelocity1Buffer,   ComputeShaderRHI, InstanceData->GPUIncomingAngularVelocity1Buffer,   InstanceData->IncomingAngularVelocity1Array,   EPixelFormat::PF_A32B32G32R32F, TEXT("IncomingAngularVelocity1Buffer"));
+				SetBuffer(RHICmdList, IncomingAngularVelocity2Buffer,   ComputeShaderRHI, InstanceData->GPUIncomingAngularVelocity2Buffer,   InstanceData->IncomingAngularVelocity2Array,   EPixelFormat::PF_A32B32G32R32F, TEXT("IncomingAngularVelocity2Buffer"));
+				SetBuffer(RHICmdList, IncomingMass1Buffer,              ComputeShaderRHI, InstanceData->GPUIncomingMass1Buffer,              InstanceData->IncomingMass1Array,              EPixelFormat::PF_R32_FLOAT,     TEXT("IncomingMass1Buffer"));
+				SetBuffer(RHICmdList, IncomingMass2Buffer,              ComputeShaderRHI, InstanceData->GPUIncomingMass2Buffer,              InstanceData->IncomingMass2Array,              EPixelFormat::PF_R32_FLOAT,     TEXT("IncomingMass2Buffer"));
+				SetBuffer(RHICmdList, IncomingTimeBuffer,               ComputeShaderRHI, InstanceData->GPUIncomingTimeBuffer,               InstanceData->IncomingTimeArray,               EPixelFormat::PF_R32_FLOAT,     TEXT("IncomingTimeBuffer"));
 				
-				SetBuffer(RHICmdList, TransformTranslationBuffer,       ComputeShaderRHI, InstanceData->GPUTransformTranslationBuffer,       InstanceData->TransformTranslationArray,       EPixelFormat::PF_A32B32G32R32F, FString(TEXT("TransformTranslationBuffer")));
-				SetBuffer(RHICmdList, TransformRotationBuffer,          ComputeShaderRHI, InstanceData->GPUTransformRotationBuffer,          InstanceData->TransformRotationArray,          EPixelFormat::PF_A32B32G32R32F, FString(TEXT("TransformRotationBuffer")));
-				SetBuffer(RHICmdList, TransformScaleBuffer,             ComputeShaderRHI, InstanceData->GPUTransformScaleBuffer,             InstanceData->TransformScaleArray,             EPixelFormat::PF_A32B32G32R32F, FString(TEXT("TransformScaleBuffer")));
-				SetBuffer(RHICmdList, BoundsBuffer,                     ComputeShaderRHI, InstanceData->GPUBoundsBuffer,                     InstanceData->BoundsArray,                     EPixelFormat::PF_A32B32G32R32F, FString(TEXT("BoundsBuffer")));
+				SetBuffer(RHICmdList, TransformTranslationBuffer,       ComputeShaderRHI, InstanceData->GPUTransformTranslationBuffer,       InstanceData->TransformTranslationArray,       EPixelFormat::PF_A32B32G32R32F, TEXT("TransformTranslationBuffer"));
+				SetBuffer(RHICmdList, TransformRotationBuffer,          ComputeShaderRHI, InstanceData->GPUTransformRotationBuffer,          InstanceData->TransformRotationArray,          EPixelFormat::PF_A32B32G32R32F, TEXT("TransformRotationBuffer"));
+				SetBuffer(RHICmdList, TransformScaleBuffer,             ComputeShaderRHI, InstanceData->GPUTransformScaleBuffer,             InstanceData->TransformScaleArray,             EPixelFormat::PF_A32B32G32R32F, TEXT("TransformScaleBuffer"));
+				SetBuffer(RHICmdList, BoundsBuffer,                     ComputeShaderRHI, InstanceData->GPUBoundsBuffer,                     InstanceData->BoundsArray,                     EPixelFormat::PF_A32B32G32R32F, TEXT("BoundsBuffer"));
 
 				SetShaderValue(RHICmdList, ComputeShaderRHI, LastSpawnedPointID, InstanceData->LastSpawnedPointID);
 				SetShaderValue(RHICmdList, ComputeShaderRHI, SolverTime, InstanceData->SolverTime);

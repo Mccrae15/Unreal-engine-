@@ -32,7 +32,7 @@ void DataprepCorePrivateUtils::DeleteRegisteredAsset(UObject* Asset)
 
 		Asset->ClearFlags(RF_Standalone | RF_Public);
 		Asset->RemoveFromRoot();
-		Asset->MarkPendingKill();
+		Asset->MarkAsGarbage();
 
 		FAssetRegistryModule::AssetDeleted( Asset ) ;
 	}
@@ -105,13 +105,13 @@ void DataprepCorePrivateUtils::BuildStaticMeshes(TSet<UStaticMesh*>& StaticMeshe
 		//Cache the BuildSettings and update them before building the meshes.
 		for (UStaticMesh* StaticMesh : BuiltMeshes)
 		{
-			TArray<FStaticMeshSourceModel>& SourceModels = StaticMesh->GetSourceModels();
+			int32 NumSourceModels = StaticMesh->GetNumSourceModels();
 			TArray<FMeshBuildSettings> BuildSettings;
-			BuildSettings.Reserve(SourceModels.Num());
+			BuildSettings.Reserve(NumSourceModels);
 
-			for(int32 Index = 0; Index < SourceModels.Num(); ++Index)
+			for(int32 Index = 0; Index < NumSourceModels; ++Index)
 			{
-				FStaticMeshSourceModel& SourceModel = SourceModels[Index];
+				FStaticMeshSourceModel& SourceModel = StaticMesh->GetSourceModel(Index);
 
 				BuildSettings.Add( SourceModel.BuildSettings );
 
@@ -120,19 +120,18 @@ void DataprepCorePrivateUtils::BuildStaticMeshes(TSet<UStaticMesh*>& StaticMeshe
 					FStaticMeshAttributes Attributes(*MeshDescription);
 					if(SourceModel.BuildSettings.DstLightmapIndex != -1)
 					{
-						TVertexInstanceAttributesConstRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
+						TVertexInstanceAttributesConstRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 						//If the importer have enabled lightmap generation, disabling it may interfere with the build process, so we only allow enabling it.
-						SourceModel.BuildSettings.bGenerateLightmapUVs |= VertexInstanceUVs.IsValid() && VertexInstanceUVs.GetNumIndices() > SourceModel.BuildSettings.SrcLightmapIndex;
+						SourceModel.BuildSettings.bGenerateLightmapUVs |= VertexInstanceUVs.IsValid() && VertexInstanceUVs.GetNumChannels() > SourceModel.BuildSettings.SrcLightmapIndex;
 					}
 					else
 					{
 						SourceModel.BuildSettings.bGenerateLightmapUVs = false;
 					}
 
-					SourceModel.BuildSettings.bRecomputeNormals = !(Attributes.GetVertexInstanceNormals().IsValid() && Attributes.GetVertexInstanceNormals().GetNumIndices() > 0);
+					SourceModel.BuildSettings.bRecomputeNormals = !(Attributes.GetVertexInstanceNormals().IsValid() && Attributes.GetVertexInstanceNormals().GetNumChannels() > 0);
 					SourceModel.BuildSettings.bRecomputeTangents = false;
 					SourceModel.BuildSettings.DistanceFieldResolutionScale = 0;
-					//SourceModel.BuildSettings.bBuildAdjacencyBuffer = false;
 					//SourceModel.BuildSettings.bBuildReversedIndexBuffer = false;
 				}
 			}
@@ -154,11 +153,10 @@ void DataprepCorePrivateUtils::BuildStaticMeshes(TSet<UStaticMesh*>& StaticMeshe
 			UStaticMesh* StaticMesh = BuiltMeshes[Index];
 			TArray<FMeshBuildSettings>& PrevBuildSettings = StaticMeshesSettings[Index];
 
-			TArray<FStaticMeshSourceModel>& SourceModels = StaticMesh->GetSourceModels();
-
-			for(int32 SourceModelIndex = 0; SourceModelIndex < SourceModels.Num(); ++SourceModelIndex)
+			int32 NumSourceModels = StaticMesh->GetNumSourceModels();
+			for(int32 SourceModelIndex = 0; SourceModelIndex < NumSourceModels; ++SourceModelIndex)
 			{
-				SourceModels[SourceModelIndex].BuildSettings = PrevBuildSettings[SourceModelIndex];
+				StaticMesh->GetSourceModel(SourceModelIndex).BuildSettings = PrevBuildSettings[SourceModelIndex];
 			}
 
 			if(FStaticMeshRenderData* RenderData = StaticMesh->GetRenderData())

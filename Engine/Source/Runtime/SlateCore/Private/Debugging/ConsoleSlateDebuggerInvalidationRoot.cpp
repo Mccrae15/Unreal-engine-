@@ -30,10 +30,10 @@ FConsoleSlateDebuggerInvalidationRoot::FConsoleSlateDebuggerInvalidationRoot()
 	, DrawFastPathColor(FColorList::Green)
 	, DrawNoneColor(FColorList::Blue)
 	, MaxNumberOfWidgetInList(20)
-	, CacheDuration(2.0)
+	, CacheDuration(2.0f)
 	, StartCommand(
 		TEXT("SlateDebugger.InvalidationRoot.Start"),
-		TEXT("Start the Invalidation Root widget debug tool. It shows when Invalidation Root are using the slow or the fast path."),
+		TEXT("Start the Invalidation Root widget debug tool. It shows when Invalidation Roots are using the slow or the fast path."),
 		FConsoleCommandDelegate::CreateRaw(this, &FConsoleSlateDebuggerInvalidationRoot::StartDebugging))
 	, StopCommand(
 		TEXT("SlateDebugger.InvalidationRoot.Stop"),
@@ -42,7 +42,7 @@ FConsoleSlateDebuggerInvalidationRoot::FConsoleSlateDebuggerInvalidationRoot()
 	, EnabledRefCVar(
 		TEXT("SlateDebugger.InvalidationRoot.Enable")
 		, bEnabledCVarValue
-		, TEXT("Start/Stop the Invalidation Root widget debug tool. It shows when Invalidation Root are using the slow or the fast path.")
+		, TEXT("Start/Stop the Invalidation Root widget debug tool. It shows when Invalidation Roots are using the slow or the fast path.")
 		, FConsoleVariableDelegate::CreateRaw(this, &FConsoleSlateDebuggerInvalidationRoot::HandleEnabled))
 	, ToggleLegendCommand(
 		TEXT("SlateDebugger.InvalidationRoot.ToggleLegend"),
@@ -242,7 +242,7 @@ void FConsoleSlateDebuggerInvalidationRoot::HandlePaintDebugInfo(const FPaintArg
 		if (WindowId == PaintWindow)
 		{
 			FLinearColor DrawColor = GetColor(LastPaintType);
-			double LerpValue = 1.0;
+			float LerpValue = 1.0f;
 
 			FInvalidatedInfo& FoundInvalidationInfo = InvaliadatedRoots[Itt.Key];
 			// If we went from fast to slow or to none, flash it on screen
@@ -259,12 +259,12 @@ void FConsoleSlateDebuggerInvalidationRoot::HandlePaintDebugInfo(const FPaintArg
 			}
 			FoundInvalidationInfo.PaintType = LastPaintType;
 
-			const double DeltaTime = SlateApplicationCurrentTime - FoundInvalidationInfo.FlashingSeconds;
+			const float DeltaTime = (float)(SlateApplicationCurrentTime - FoundInvalidationInfo.FlashingSeconds);
 			const bool bLearp = DeltaTime <= CacheDuration;
 			if (bLearp)
 			{
 				DrawColor = FoundInvalidationInfo.FlashingColor;
-				LerpValue = FMath::Clamp(DeltaTime / CacheDuration, 0.1, 1.0);
+				LerpValue = FMath::Clamp(DeltaTime / CacheDuration, 0.1f, 1.0f);
 			}
 
 			const SWidget* Widget = Itt.Value->GetInvalidationRootWidget();

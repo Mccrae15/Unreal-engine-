@@ -15,43 +15,27 @@ public class GeoReferencing : ModuleRules
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
-				"Core"
+				"Core",
+				"Engine"
 			}
 		);
-
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[]
 			{
 				"CoreUObject",
+				"InputCore",
 				"Engine",
-				"GeometricObjects",
 				"PROJ",
 				"Projects",
 				"Slate",
-				"SlateCore"
+				"SlateCore",
+				"SQLiteCore"
+
 			}
 		);
 
-		// Stage Proj data files
 		string ProjRedistFolder = Path.Combine(PluginDirectory, @"Resources\PROJ\*");
-		RuntimeDependencies.Add(ProjRedistFolder, StagedFileType.NonUFS);
-
-		// Add dependencies to PROJ
-		List<string> RuntimeModuleNames = new List<string>();
-		if (Target.Platform == UnrealTargetPlatform.Win64)
-		{
-			foreach (string RuntimeModuleName in RuntimeModuleNames)
-			{
-				string ModulePath = Path.Combine(ProjRedistFolder, RuntimeModuleName);
-				if (!File.Exists(ModulePath))
-				{
-					string Err = string.Format("PROJ SDK module '{0}' not found.", ModulePath);
-					System.Console.WriteLine(Err);
-					throw new BuildException(Err);
-				}
-				RuntimeDependencies.Add("$(BinaryOutputDir)/" + RuntimeModuleName, ModulePath);
-			}
-		}
+		RuntimeDependencies.Add(ProjRedistFolder, StagedFileType.UFS);
 	}
 }

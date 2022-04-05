@@ -63,24 +63,29 @@ bool NiagaraAny(bool4 b) { return b.x || b.y || b.z || b.w; }
 		#define NIAGARA_PARTICLE_PARTIAL_ENABLED 0
 	#endif
 
-	// Used to convert from DispatchThreadId to a linear thread id
-	uint DispatchThreadIdToLinear;
+	// Type of dispatch mode we are in this allows us to customize some HLSL code to avoid / % operations
+	#define NIAGARA_DISPATCH_TYPE_ONE_D		0
+	#define NIAGARA_DISPATCH_TYPE_TWO_D		1
+	#define NIAGARA_DISPATCH_TYPE_THREE_D	2
+	#define NIAGARA_DISPATCH_TYPE_CUSTOM	3
+	#ifndef NIAGARA_DISPATCH_TYPE
+		#define NIAGARA_DISPATCH_TYPE NIAGARA_DISPATCH_TYPE_ONE_D
+	#endif
+
+	uint3 DispatchThreadIdBounds;		// Used to track thread bounds
+	uint3 DispatchThreadIdToLinear;		// Used to convert from DispatchThreadId to a linear thread id
 
 	static uint GLinearThreadId;
 	static uint3 GDispatchThreadId;
 	static uint3 GGroupThreadId;
-	static uint GCurrentPhase;
 	static uint GEmitterTickCounter;
-	static uint GSimStart;
 	static uint GRandomSeedOffset = 0;
 	
-	const static uint GSpawnPhase = 0;
-	const static uint GUpdatePhase = 1;
-
 	// To be removed as well but don't know who is using it
 	#include "/Engine/Private/SceneTexturesCommon.ush"
 
 	// Physics common 
+	//-TOFIX: This should not be included here
 	#if USE_SIMULATION_STAGES == 1
 		#include "NiagaraPhysicsCommon.ush"
 	#endif
@@ -93,10 +98,12 @@ bool NiagaraAny(bool4 b) { return b.x || b.y || b.z || b.w; }
 	float Modulo(float x, float y){ return fmod(x,y); }
 
 	// utility function used for scene depth calculations
-	float3 WorldPositionFromSceneDepth(float2 ScreenPosition, float SceneDepth)
+	FLWCVector3 WorldPositionFromSceneDepth(float2 ScreenPosition, float SceneDepth)
 	{
-		float4 HomogeneousWorldPosition = mul(float4(ScreenPosition * SceneDepth, SceneDepth, 1), View.ScreenToWorld);
-		return HomogeneousWorldPosition.xyz / HomogeneousWorldPosition.w;
+		FLWCVector4 HomogeneousWorldPosition = LWCMultiply(float4(ScreenPosition * SceneDepth, SceneDepth, 1), PrimaryView.ScreenToWorld);
+		FLWCVector3 WorldPosition = MakeLWCVector3(LWCGetTile(HomogeneousWorldPosition).xyz, HomogeneousWorldPosition.Offset.xyz);
+		FLWCScalar Scale = MakeLWCScalar(LWCGetTile(HomogeneousWorldPosition).w, HomogeneousWorldPosition.Offset.w);
+		return LWCDivide(WorldPosition, LWCToFloat(Scale));
 	}
 
 	// MASSIVE HACK - Tracked in JIRA UE-69298
@@ -126,17 +133,16 @@ bool NiagaraAny(bool4 b) { return b.x || b.y || b.z || b.w; }
 
 	static uint GSpawnStartInstance;
 	uint SpawnedInstances;
-	uint UpdateStartInstance;
 
 	void SetupExecIndexForGPU()
 	{
-		GGPUExecIndex = UpdateStartInstance + GLinearThreadId;
+		GGPUExecIndex = GLinearThreadId;
 		Engine_ExecutionCount = GSpawnStartInstance;
 	}
 
 	void SetupExecIndexAndSpawnInfoForGPU()
 	{
-		GGPUExecIndex = UpdateStartInstance + GLinearThreadId - GSpawnStartInstance;
+		GGPUExecIndex = GLinearThreadId - GSpawnStartInstance;
 
 		int SpawnInfoIndex = 0;
 		UNROLL
@@ -489,21 +495,8 @@ int rand_int(int x, int Seed1, int Seed2, int Seed3)
  * -----------------------------------------------------------------
  */
 #if GPU_SIMULATION
-	/*
-	 * declared as int instead of uint to avoid compiler warnings because we can't expose uint on Niagara module parameters.  
-	 * This is still declared as a uint in the corresponding C++ classes
-	 */
-	#if NIAGARA_SHADER_PERMUTATIONS == 0
-		int DefaultSimulationStageIndex;
-		int SimulationStageIndex;
-	#endif
-
 	uint ComponentBufferSizeRead;
 	uint ComponentBufferSizeWrite;
-	int	NumEventsPerParticle;
-	int NumParticlesPerEvent;
-	uint CopyInstancesBeforeStart;
-
 	uint SimStart;
 
 	/* Buffers for particle data and DrawIndirect calls
@@ -516,6 +509,8 @@ int rand_int(int x, int Seed1, int Seed2, int Seed3)
 	RWBuffer<int> RWOutputInt;
 	RWBuffer<float> RWOutputFloat;
 	RWBuffer<half> RWOutputHalf;
+
+	Buffer<float> StaticInputFloat;
 
 	RWBuffer<uint> RWInstanceCounts;
 	uint ReadInstanceCountOffset;
@@ -537,6 +532,9 @@ int rand_int(int x, int Seed1, int Seed2, int Seed3)
 	int SimulationStage_GetNumIterations() { return SimulationStageIterationInfo.w; }
 	float SimulationStage_GetNormalizedIterationIndex() { return SimulationStageNormalizedIterationIndex; }
 
+	// Where X = Parameter Binding, YZ = Inclusive Range
+	uint3 ParticleIterationStateInfo;
+
 	void AcquireID(int DataSetID, out int IDIndex, out int IDAcquireTag)
 	{
 		// Begin static assert : GPU particles only support DataSetID 0
@@ -545,8 +543,8 @@ int rand_int(int x, int Seed1, int Seed2, int Seed3)
 		// End static assert
 
 		// This is the same as ExecIndex() right now, but that function may change in the future to accommodate multiple
-		// spawn infos. Revisit this computation if the change affects the meaning of UpdateStartInstance or GSpawnStartInstance.
-		int SpawnIndex = UpdateStartInstance + GLinearThreadId - GSpawnStartInstance;
+		// spawn infos. Revisit this computation if the change affects the meaning of GSpawnStartInstance.
+		int SpawnIndex = GLinearThreadId - GSpawnStartInstance;
 		IDIndex = FreeIDList[SpawnIndex];
 		IDAcquireTag = EmitterTickCounter;
 	}
@@ -561,8 +559,7 @@ int rand_int(int x, int Seed1, int Seed2, int Seed3)
 		RWIDToIndexTable[IDIndex] = InstanceIndex;
 	}
 
-#define USE_WAVE_INTRISICS 0//(XBOXONE_PROFILE)
-#define USE_GROUP_SHARED ((THREADGROUP_SIZE == 64 || THREADGROUP_SIZE == 32)  && !USE_WAVE_INTRISICS)
+#define USE_GROUP_SHARED ((THREADGROUP_SIZE == 64 || THREADGROUP_SIZE == 32) && !USE_WAVE_INTRINSICS && !VULKAN_PROFILE_SM5 && !VULKAN_PROFILE)
 
 #if USE_GROUP_SHARED
 	#if THREADGROUP_SIZE == 64
@@ -590,22 +587,22 @@ int rand_int(int x, int Seed1, int Seed2, int Seed3)
 
 		int PrevIdx = GSpawnStartInstance + SpawnedInstances;	// scratch instance as default; write to that for dead particles
 
-		#if USE_WAVE_INTRISICS
+		#if USE_WAVE_INTRINSICS
 
 			uint NumCounters = WaveActiveCountBits(bDoAcquire);
 			uint PrefixCounts = WavePrefixCountBits(bDoAcquire);
-			if(NumCounters)
+			if (NumCounters > 0)
 			{
-				if(WaveIsFirstLane())
+				if (WaveIsFirstLane())
 				{
 					uint RetPrevIdx;
 					InterlockedAdd(RWInstanceCounts[WriteInstanceCountOffset], NumCounters, RetPrevIdx);
 					PrevIdx = (int)RetPrevIdx;
 				}
 
-				if(bDoAcquire)
+				if (bDoAcquire)
 				{
-					PrevIdx = WaveReadFirstLane(PrevIdx);
+					PrevIdx = WaveReadLaneFirst(PrevIdx);
 					PrevIdx += PrefixCounts;
 				}
 			}	
@@ -680,7 +677,7 @@ int rand_int(int x, int Seed1, int Seed2, int Seed3)
 
 			PrevIdx = GroupSharedIndex64 + GroupSharedIndex16[GGroupThreadId.x / 16] + GroupSharedIndex4[GGroupThreadId.x / 4] + GroupSharedIndex[GGroupThreadId.x];
 
-		#else // !USE_WAVE_INTRISICS && !USE_GROUP_SHARED
+		#else // !USE_WAVE_INTRINSICS && !USE_GROUP_SHARED
 
 			if(bDoAcquire == true)
 			{
@@ -742,22 +739,22 @@ int rand_int(int x, int Seed1, int Seed2, int Seed3)
 	 */
 	void OutputDataFloat(int DataSetIndex, int RegisterIndex, int InstanceIndex, float Value)
 	{
-		RWOutputFloat[RegisterIndex*ComponentBufferSizeWrite + InstanceIndex + UpdateStartInstance] = Value;
+		RWOutputFloat[RegisterIndex*ComponentBufferSizeWrite + InstanceIndex] = Value;
 	}
 
 	void OutputDataInt(int DataSetIndex, int RegisterIndex, int InstanceIndex, int Value)
 	{
-		RWOutputInt[RegisterIndex*ComponentBufferSizeWrite + InstanceIndex + UpdateStartInstance] = Value;
+		RWOutputInt[RegisterIndex*ComponentBufferSizeWrite + InstanceIndex] = Value;
 	}
 
 	void OutputDataBool(int DataSetIndex, int RegisterIndex, int InstanceIndex, bool Value)
 	{
-		RWOutputInt[RegisterIndex*ComponentBufferSizeWrite + InstanceIndex + UpdateStartInstance] = Value ? -1 : 0;
+		RWOutputInt[RegisterIndex*ComponentBufferSizeWrite + InstanceIndex] = Value ? -1 : 0;
 	}
 
 	void OutputDataHalf(int DataSetIndex, int RegisterIndex, int InstanceIndex, float Value)
 	{
-		RWOutputHalf[RegisterIndex*ComponentBufferSizeWrite + InstanceIndex + UpdateStartInstance] = Value;
+		RWOutputHalf[RegisterIndex*ComponentBufferSizeWrite + InstanceIndex] = Value;
 	}
 
 	void EnterStatScope(int ID)	{}
@@ -775,7 +772,6 @@ int rand_int(int x, int Seed1, int Seed2, int Seed3)
 			// other branchless construct), because we don't want to call AcquireIndex() at all, since
 			// that manipulates the RWInstanceCounts UAV. The generated code will copy the source count
 			// at the end of the shader.
-			BRANCH
 			if (!bStageKillsParticles)
 			{
 				return GLinearThreadId;
@@ -785,5 +781,47 @@ int rand_int(int x, int Seed1, int Seed2, int Seed3)
 			return AcquireIndex(DataSetID, bIsValid);
 	}
 
+////////////////////////////////////////////////////////////////////////////////////
+// Random number functions
+struct NiagaraRandInfo
+{
+	int Seed1;
+	int Seed2;
+	int Seed3;
+};
+
+#if GPU_SIMULATION
+NiagaraRandInfo MakeRandInfo()
+{
+	GRandomSeedOffset += 1664525u;
+
+	NiagaraRandInfo RandInfo;
+	RandInfo.Seed1 = GLinearThreadId;
+	RandInfo.Seed2 = GRandomSeedOffset;
+	RandInfo.Seed3 = GEmitterTickCounter;
+	return RandInfo;
+}
+
+float NiagaraRandomFloat(NiagaraRandInfo RandInfo)
+{
+	return uint(RandInfo.Seed3) == 0xffffffff ? NiagaraInternalNoise(uint(RandInfo.Seed1), uint(RandInfo.Seed2), uint(RandInfo.Seed3)) : rand(1.0f, uint(RandInfo.Seed1), uint(RandInfo.Seed2), uint(RandInfo.Seed3));
+}
+
+int NiagaraRandomInt(NiagaraRandInfo RandInfo, int Range)
+{
+	float T = NiagaraRandomFloat(RandInfo);
+	return int(floor(float(Range) * T));
+}
+
+float3 NiagaraRandomBaryCoord(NiagaraRandInfo RandInfo)
+{
+	float2 r = float2(NiagaraRandomFloat(RandInfo), NiagaraRandomFloat(RandInfo));
+	float sqrt0 = sqrt(r.x);
+	float sqrt1 = sqrt(r.y);
+	return float3(1.0f - sqrt0, sqrt0 * (1.0 - r.y), r.y * sqrt0);
+}
+#endif
+
+////////////////////////////////////////////////////////////////////////////////////
 //Include the simulation shader code generated by the node graph.
 #include "/Engine/Generated/NiagaraEmitterInstance.ush"

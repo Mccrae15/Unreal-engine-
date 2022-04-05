@@ -26,6 +26,114 @@ namespace ChaosTest {
 	using namespace Chaos;
 	using namespace ChaosInterface;
 
+	// Returns true on raycast if we hit payload bounds.
+	struct FSimpleRaycastVisitor: ISpatialVisitor<FAccelerationStructureHandle>
+	{
+		using FPayload = FAccelerationStructureHandle;
+		FVec3 Start;
+		bool bHit;
+		bool bQueryGameThread; // Query game thread or physics thread data?
+
+		bool bUseQueryFilter;
+		FCollisionFilterData FilterData;
+
+		FSimpleRaycastVisitor(const FVec3& InStart, bool bInQueryGameThread)
+			: Start(InStart)
+			, bHit(false)
+			, bQueryGameThread(bInQueryGameThread)
+		{
+		}
+
+		FSimpleRaycastVisitor(const FVec3& InStart, FCollisionFilterData& InFilterData, bool bInQueryGameThread)
+			: Start(InStart)
+			, bHit(false)
+			, bQueryGameThread(bInQueryGameThread)
+			, bUseQueryFilter(true)
+			, FilterData(InFilterData)
+			
+		{
+		}
+
+		virtual const void* GetQueryData() const override
+		{
+			if (bUseQueryFilter)
+			{
+				return &FilterData;
+			}
+
+			return nullptr;
+		}
+
+		enum class SQType
+		{
+			Raycast,
+			Sweep,
+			Overlap
+		};
+
+		bool VisitRaycast(const TSpatialVisitorData<FPayload>& Data, FQueryFastData& CurData)
+		{
+			FReal OutTime = 0;
+			FVec3 OutPos;
+			FVec3 OutNorm;
+			int32 FaceIdx;
+
+			if (Data.Bounds.Raycast(Start, CurData.Dir, CurData.CurrentLength, 0, OutTime, OutPos, OutNorm, FaceIdx))
+			{
+				if (bQueryGameThread)
+				{
+					FTransform ParticleTransform(Data.Payload.GetExternalGeometryParticle_ExternalThread()->R(), Data.Payload.GetExternalGeometryParticle_ExternalThread()->X());
+					const FVec3 DirLocal = ParticleTransform.InverseTransformVectorNoScale(CurData.Dir);
+					const FVec3 StartLocal = ParticleTransform.InverseTransformPositionNoScale(Start);
+					bHit = Data.Payload.GetExternalGeometryParticle_ExternalThread()->Geometry()->Raycast(StartLocal, DirLocal, CurData.CurrentLength, 0, OutTime, OutPos, OutNorm, FaceIdx);
+				}
+				else
+				{
+					FTransform ParticleTransform(Data.Payload.GetGeometryParticleHandle_PhysicsThread()->R(), Data.Payload.GetGeometryParticleHandle_PhysicsThread()->X());
+					const FVec3 DirLocal = ParticleTransform.InverseTransformVectorNoScale(CurData.Dir);
+					const FVec3 StartLocal = ParticleTransform.InverseTransformPositionNoScale(Start);
+					bHit = Data.Payload.GetGeometryParticleHandle_PhysicsThread()->Geometry()->Raycast(StartLocal, DirLocal, CurData.CurrentLength, 0, OutTime, OutPos, OutNorm, FaceIdx);
+				}
+
+				if (bHit)
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		bool VisitSweep(const TSpatialVisitorData<FPayload>& Data, FQueryFastData& CurData)
+		{
+			check(false);
+			return false;
+		}
+
+		bool VisitOverlap(const TSpatialVisitorData<FPayload>& Data)
+		{
+			check(false);
+			return false;
+		}
+
+		virtual bool Overlap(const TSpatialVisitorData<FPayload>& Instance) override
+		{
+			check(false);
+			return false;
+		}
+
+		virtual bool Raycast(const TSpatialVisitorData<FPayload>& Instance, FQueryFastData& CurData) override
+		{
+			return VisitRaycast(Instance, CurData);
+		}
+
+		virtual bool Sweep(const TSpatialVisitorData<FPayload>& Instance, FQueryFastData& CurData) override
+		{
+			check(false);
+			return false;
+		}
+	};
+
 	FSQHitBuffer<ChaosInterface::FOverlapHit> InSphereHelper(const FChaosScene& Scene, const FTransform& InTM, const FReal Radius)
 	{
 		FChaosSQAccelerator SQAccelerator(*Scene.GetSpacialAcceleration());
@@ -37,7 +145,7 @@ namespace ChaosTest {
 
 	GTEST_TEST(EngineInterface, CreateAndReleaseActor)
 	{
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -59,7 +167,7 @@ namespace ChaosTest {
 
 	GTEST_TEST(EngineInterface, CreateMoveAndReleaseInScene)
 	{
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -123,7 +231,7 @@ namespace ChaosTest {
 	{
 		//make sure acceleration structure has appropriate sync time
 
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 
 		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 0);	//timestamp of 0 because we flush when scene is created
@@ -131,13 +239,13 @@ namespace ChaosTest {
 		FReal TotalDt = 0;
 		for (int Step = 1; Step < 10; ++Step)
 		{
-			FVec3 Grav(0, 0, -1);
-			Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+			FVec3 Grav(0,0,-1);
+			Scene.SetUpForFrame(&Grav, 1,0,99999,99999,10,false);
 			Scene.StartFrame();
 			Scene.GetSolver()->GetEvolution()->FlushSpatialAcceleration();	//make sure we get a new tree every step
 			Scene.EndFrame();
 
-			EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), Step);
+			EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), Step - 1);
 		}
 	}
 
@@ -145,14 +253,14 @@ namespace ChaosTest {
 	{
 		//make sure acceleration structure has appropriate sync time when PT falls behind GT
 
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 		Scene.GetSolver()->SetStealAdvanceTasks_ForTesting(true); // prevents execution on StartFrame so we can execute task manually.
 
 		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 0);	//timestamp of 0 because we flush when scene is created
 
 		FVec3 Grav(0, 0, -1);
-		Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+		Scene.SetUpForFrame(&Grav, 1, 0, 99999, 99999, 10, false);
 
 		// Game thread enqueues second solver task before first completes (we did not execute advance task)
 		Scene.StartFrame();
@@ -163,12 +271,10 @@ namespace ChaosTest {
 		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
 		Scene.GetSolver()->GetEvolution()->FlushSpatialAcceleration();
 
-		// No EndFrame called after PT execution, stamp should still be 0.
-		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 0);
-
-		// Endframe update structure to stamp 1, as we have completed 1 frame on PT.
 		Scene.EndFrame();
-		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 1);
+
+		// Still timestamp 0, as we have only processed first PT step..
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 0);
 
 		Scene.StartFrame();
 
@@ -178,8 +284,8 @@ namespace ChaosTest {
 		Scene.GetSolver()->GetEvolution()->FlushSpatialAcceleration();
 		Scene.EndFrame();
 
-		// New structure should be at 3 as PT/GT are in sync.
-		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 3);
+		// New structure should be at 2, 3 steps have been processed, PT/GT are in sync.
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 2);
 
 	}
 
@@ -187,14 +293,14 @@ namespace ChaosTest {
 	{
 		//make sure acceleration structure has appropriate sync time when PT falls behind GT
 
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 		Scene.GetSolver()->SetStealAdvanceTasks_ForTesting(true); // prevents execution on StartFrame so we can execute task manually.
 
 		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 0);	//timestamp of 0 because we flush when scene is created
 
-		FVec3 Grav(0, 0, -1);
-		Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+		FVec3 Grav(0,0,-1);
+		Scene.SetUpForFrame(&Grav, 1,0,99999,99999,10,false);
 
 		// PT not finished yet (we didn't execute solver task), should still be 0.
 		Scene.StartFrame();
@@ -206,25 +312,29 @@ namespace ChaosTest {
 		Scene.EndFrame();
 		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 0);
 
-		// First PT task finished this frame, we are two behind, now at time 1.
+		// First PT task finished this frame, we are two behind, still at 0 as structure is from first GT input (timestamp 0).
 		Scene.StartFrame();
 		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
 		Scene.GetSolver()->GetEvolution()->FlushSpatialAcceleration();
 		Scene.EndFrame();
-		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 1);
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 0);
 
-		// Remaining two PT tasks finish, we are caught up, but still time 1 as EndFrame has not updated our structure.
 		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
 		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
 		Scene.GetSolver()->GetEvolution()->FlushSpatialAcceleration();
-		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 1);
+		// Remaining two PT tasks finish, we are caught up, GT is still time 0 as EndFrame has not updated our structure.
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 0);
 
-		// PT task this frame finishes before EndFrame, putting us at 4, in sync with GT.
+		// Popping acceleration structures from physics thread will give us timestamp of 2. (3 total GT inputs processed)
+		Scene.CopySolverAccelerationStructure();
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 2);
+
+		// PT task this frame finishes before EndFrame, putting us at 3, in sync with GT.
 		Scene.StartFrame();
 		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
 		Scene.GetSolver()->GetEvolution()->FlushSpatialAcceleration();
 		Scene.EndFrame();
-		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 4);
+		EXPECT_EQ(Scene.GetSpacialAcceleration()->GetSyncTimestamp(), 3);
 	}
 
 	GTEST_TEST(EngineInterface, PullFromPhysicsState_MultiFrameDelay)
@@ -232,12 +342,12 @@ namespace ChaosTest {
 		// This test is designed to verify pulldata is being timestamped correctly, and that we will not write to a deleted GT Proxy 
 		// in this case. 
 
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 		Scene.GetSolver()->SetStealAdvanceTasks_ForTesting(true); // prevents execution on StartFrame so we can execute task manually.
 
-		FVec3 Grav(0, 0, -1);
-		Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+		FVec3 Grav(0,0,-1);
+		Scene.SetUpForFrame(&Grav, 1,0,99999,99999,10,false);
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -268,40 +378,40 @@ namespace ChaosTest {
 
 		// verify external timestamps are as expected.
 		auto& MarshallingManager = Scene.GetSolver()->GetMarshallingManager();
-		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 1);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 0);
 
 		// Execute a frame such that Proxys should be initialized in physics thread and game thread.
 		Scene.StartFrame();
-		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 2);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 1);
 		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
 		Scene.EndFrame();
 
 		// run GT frame, no PT task executed.
 		Scene.StartFrame();
-		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 3);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 2);
 		Scene.EndFrame();
 
 		// enqueue another frame.
 		Scene.StartFrame();
-		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 4);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 3);
 
-		// Remove Proxy, is stamped with external time 4. PT needs to run 3 frames before this will be removed,
+		// Remove Proxy, is stamped with external time 3. PT needs to run 3 frames before this will be removed,
 		// as we are two PT tasks behind, and this has not been enqueued yet.
 		auto StaleProxy = Proxy;
 		FChaosEngineInterface::ReleaseActor(Proxy, &Scene);
 		EXPECT_EQ(Proxy, nullptr);
 		EXPECT_EQ(StaleProxy->GetSyncTimestamp()->bDeleted, true);
 
-		// Run PT task for internal timestamp 2.
+		// Run PT task for internal timestamp 1.
 		Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
 
-		// Proxy should not get touched in Pull, as timestamp from removal should be greater than pulldata timestamp. (4 > 2).
+		// Proxy should not get touched in Pull, as timestamp from removal should be greater than pulldata timestamp.
 		// (if it was touched we'd crash as it is now deleted).
 		Scene.EndFrame();
 
 
 		Scene.StartFrame();
-		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 5);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 4);
 		EXPECT_EQ(StaleProxy->GetSyncTimestamp()->bDeleted, true);
 
 		// run pt task for internal timestamp 3. Proxy still not removed on PT.
@@ -314,7 +424,7 @@ namespace ChaosTest {
 
 
 		Scene.StartFrame();
-		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 6);
+		EXPECT_EQ(MarshallingManager.GetExternalTimestamp_External(), 5);
 		EXPECT_EQ(StaleProxy->GetSyncTimestamp()->bDeleted, true);
 		EXPECT_EQ(Scene.GetSolver()->GetEvolution()->GetParticles().GetAllParticlesView().Num(), 2); // Proxys not yet removed on pt, still 2.
 
@@ -328,12 +438,223 @@ namespace ChaosTest {
 		Scene.EndFrame();
 	}
 
+	GTEST_TEST(EngineInterface, UpdatingAccelerationStructurePrePreFilterOnShapeFilterChange)
+	{
+		const float PhysicsTimestep = 1; // 1 second
+		FChaosScene Scene(nullptr, PhysicsTimestep);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+
+		float DeltaSeconds = PhysicsTimestep;
+		FVec3 Grav(0, 0, -1);
+		Scene.SetUpForFrame(&Grav, DeltaSeconds, 0, 9999, 9999, 9999, false);
+
+		// Raycast params, aimed to hit our particle at (0,0,0)
+		const FVector Start(0, 0, -5);
+		const FVector Dir(0, 0, 1);
+		const float Length = 50;
+
+		// Init kinematic particle, sphere radius 3
+		FActorCreationParams Params;
+		Params.Scene = &Scene;
+		Params.bSimulatePhysics = false;
+		Params.bEnableGravity = true;
+		Params.bStartAwake = true;
+		FPhysicsActorHandle Proxy = nullptr;
+		FChaosEngineInterface::CreateActor(Params, Proxy);
+		auto& Particle = Proxy->GetGameThreadAPI();
+		{
+			auto Sphere = MakeUnique<TSphere<FReal, 3>>(FVec3(0), 3);
+			Particle.SetGeometry(MoveTemp(Sphere));
+		}
+		TArray<FPhysicsActorHandle> Proxys = { Proxy };
+		Scene.AddActorsToScene_AssumesLocked(Proxys);
+
+		// Execute a whole frame such that particle is initialized on physics thread
+		Scene.StartFrame();
+		Scene.EndFrame();
 
 
+		// Make query filter that will allow query against particle that blocks/touches all channels.
+		// Filter will fail against particle that has no query allowed (default query filter).
+		FCollisionFilterData QueryFilter;
+		QueryFilter.Word0 = 1; // Setting to non-zero to set query type that will filter
+
+		// This is setting a somewhat arbritrary trace channels. It's very hard to make sense of these bitfields at this level of API.
+		// Below particle uses a filter that touches/blocks anything, so these bits are enough to make filter pass.
+		QueryFilter.Word3 = 7 << 21; 
+
+
+		// Get collision data off shape
+		for (const TUniquePtr<Chaos::FPerShapeData>& Shape : Particle.ShapesArray())
+		{
+			const FCollisionData& CollisionData = Shape->GetCollisionData();
+			EXPECT_EQ(CollisionData.QueryData.Word0, 0); // ensure query filter is defaulted to 0 (no query allowed at all)
+
+			// Verify query is filtered out with default collision data on shape
+			bool bFiltered = PrePreQueryFilterImp(QueryFilter, CollisionData.QueryData);
+			EXPECT_EQ(bFiltered, true);
+		}
+
+		// Query against particle on game thread, should fail to hit due to particle filter being defaulted, no touch/block set.
+		{
+			bool bQueryGameThread = true;
+			FSimpleRaycastVisitor Visitor(Start, QueryFilter, bQueryGameThread);
+			Scene.GetSpacialAcceleration()->Raycast(Start, Dir, Length, Visitor);
+			EXPECT_EQ(Visitor.bHit, false);
+		}
+
+		// Change filter data on game thread to contain touch/block on all channels.
+		FCollisionFilterData NewParticleQueryFilter;
+		NewParticleQueryFilter.Word1 = TNumericLimits<int32>::Max();
+		NewParticleQueryFilter.Word2 = TNumericLimits<int32>::Max();
+		for (const TUniquePtr<Chaos::FPerShapeData>& Shape : Particle.ShapesArray())
+		{
+			const FCollisionData& CollisionData = Shape->GetCollisionData();
+
+			// Update filter
+			FCollisionData NewCollisionData = CollisionData;
+			NewCollisionData.QueryData = NewParticleQueryFilter;
+			Shape->SetCollisionData(NewCollisionData);
+
+			// Filter with new data, ensuring we pass and are not filtered out.
+			bool bFiltered = PrePreQueryFilterImp(QueryFilter, NewCollisionData.QueryData);
+			EXPECT_EQ(bFiltered, false);
+		}
+
+		// Update particle in GT accel structure so cached PrePreFilter updates
+		Scene.UpdateActorInAccelerationStructure(Proxy);
+
+		// Query against particle on game thread, should hit with new filter.
+		{
+			bool bQueryGameThread = true;
+			FSimpleRaycastVisitor Visitor(Start, QueryFilter, bQueryGameThread);
+			Scene.GetSpacialAcceleration()->Raycast(Start, Dir, Length, Visitor);
+			EXPECT_EQ(Visitor.bHit, true);
+		}
+
+		// Tick to push to physics thread
+		Scene.StartFrame();
+		Scene.EndFrame();
+
+		// Query particle on physics thread, expected to hit with new filter.
+		// If this fails it means we did not update cached filter data in acceleration structure entry.
+		{
+			bool bQueryGameThread = false;
+			FSimpleRaycastVisitor Visitor(Start, QueryFilter, bQueryGameThread);
+			Scene.GetSolver()->GetEvolution()->GetSpatialAcceleration()->Raycast(Start, Dir, Length, Visitor);
+			EXPECT_EQ(Visitor.bHit, true);
+		}
+	}
+	
+	// Disabled until we move fix with kineamtic bounds update on PushToPhysicsState into this branch. Might also need to remove bounds computation in ApplyKinematicTarget.
+	GTEST_TEST(EngineInterface, DISABLED_KinematicTargetsPassingGTWrongAccelBoundsBeforeHittingTarget)
+	{
+		// This test is designed to catch an edge case with kinematic targets (or other things interpolated over multiple physics steps), and acceleration structure bounds.
+		// Timestep is setup such that 1 GT frame = 10 physics steps, we have to make sure that if a non-final step gives an acceleration structure to game thread, in which
+		// kinematic has not reached target yet, that the bounds in structure representing interpolated position do not make it to game thread, otherwise game thread has
+		// position at target, but bounds that don't match.
+
+		const float PhysicsTimestep = 1; // 1 second
+
+		// Setup solver so we can manually execute each physics step.
+		FChaosScene Scene(nullptr, PhysicsTimestep);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+		Scene.GetSolver()->SetStealAdvanceTasks_ForTesting(true);
+
+		// In this test we have a 10s Dt, split into 10 physics steps of 1s.
+		const int32 PhysicsStepsInFrame = 10; 
+		float DeltaSeconds = PhysicsTimestep * PhysicsStepsInFrame;
+		FVec3 Grav(0, 0, -1);
+
+		Scene.SetUpForFrame(&Grav, DeltaSeconds, 0, 9999, 9999, 9999, false);
+		
+		// Raycast params, aimed to hit our kinematic target (10,0,0)
+		const FVector Start(10, 0, -5);
+		const FVector Dir(0, 0,1);
+		const float Length = 50;
+
+		// Init kinematic particle, sphere radius 3
+		FActorCreationParams Params;
+		Params.Scene = &Scene;
+		Params.bSimulatePhysics = false;
+		Params.bEnableGravity = true;
+		Params.bStartAwake = true;
+		FPhysicsActorHandle Proxy = nullptr;
+		FChaosEngineInterface::CreateActor(Params, Proxy);
+		auto& Particle = Proxy->GetGameThreadAPI();
+		{
+			auto Sphere = MakeUnique<TSphere<FReal, 3>>(FVec3(0), 3);
+			Particle.SetGeometry(MoveTemp(Sphere));
+		}
+		TArray<FPhysicsActorHandle> Proxys = { Proxy };
+		Scene.AddActorsToScene_AssumesLocked(Proxys);
+
+		// Execute a whole frame such that particle is initialized on physics thread
+		Scene.StartFrame();
+		for (int32 PhysicsTicks = 0; PhysicsTicks < PhysicsStepsInFrame; ++PhysicsTicks)
+		{
+			// Tick each physics step generated from game thread input
+			Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+		}
+		Scene.EndFrame();
+
+		// Set kinematic target to (10,0,0) on game thread
+		FTransform Target(FVector(10, 0, 0));
+		FChaosEngineInterface::SetKinematicTarget_AssumesLocked(Proxy, Target);
+
+		// Confirm particle is at target on game thread with raycast.
+		{
+			FSimpleRaycastVisitor Visitor(Start, true);
+			Scene.GetSpacialAcceleration()->Raycast(Start, Dir, Length, Visitor);
+			EXPECT_EQ(Visitor.bHit, true);
+		}
+		
+	
+
+		// Tick game thread again, this enqueues 10 physics steps, kinematic will interpolate
+		// to target on physics thread over duration of these 10 steps.
+		Scene.StartFrame();
+
+
+
+		for (int32 PhysicsTick = 0; PhysicsTick < PhysicsStepsInFrame; ++PhysicsTick)
+		{
+
+			Scene.GetSolver()->PopAndExecuteStolenAdvanceTask_ForTesting();
+
+			if (PhysicsTick == 2)
+			{
+				// On this arbritrary tick, copy acceleration structure to game thread,
+				// at this point we have sim'd only some of the physics steps for this frame.
+				// kinematic target is still interpolating, has not reached target of (10,0,0) yet.
+				// When this was broken this would give game thread a structure with
+				// the bounds of interpolated position (which is wrong because game thread particle is at target!)
+				Scene.CopySolverAccelerationStructure();
+
+				// Verify the game thread particle can still be queried at target (verifying bounds and particle position are still correct)
+				{
+					FSimpleRaycastVisitor Visitor(Start, true);
+					Scene.GetSpacialAcceleration()->Raycast(Start, Dir, Length, Visitor);
+					EXPECT_EQ(Visitor.bHit, true);
+				}
+			}
+
+		}
+
+		// Finish frame
+		Scene.EndFrame();
+
+		// Verify can still query game thread particle at our target.
+		{
+			FSimpleRaycastVisitor Visitor(Start, true);
+			Scene.GetSpacialAcceleration()->Raycast(Start, Dir, Length, Visitor);
+			EXPECT_EQ(Visitor.bHit, true);
+		}
+	}
 
 	GTEST_TEST(EngineInterface, CreateActorPostFlush)
 	{
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 
 		FActorCreationParams Params;
@@ -352,8 +673,8 @@ namespace ChaosTest {
 
 		//tick solver but don't call EndFrame (want to flush and swap manually)
 		{
-			FVec3 Grav(0, 0, -1);
-			Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+			FVec3 Grav(0,0,-1);
+			Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 			Scene.StartFrame();
 		}
 
@@ -373,7 +694,7 @@ namespace ChaosTest {
 
 	GTEST_TEST(EngineInterface, MoveActorPostFlush)
 	{
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 
 		FActorCreationParams Params;
@@ -396,8 +717,8 @@ namespace ChaosTest {
 
 		//tick solver so that Proxy is created, but don't call EndFrame (want to flush and swap manually)
 		{
-			FVec3 Grav(0, 0, -1);
-			Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+			FVec3 Grav(0,0,-1);
+			Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 			Scene.StartFrame();
 		}
 
@@ -417,7 +738,7 @@ namespace ChaosTest {
 
 	GTEST_TEST(EngineInterface, RemoveActorPostFlush)
 	{
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 
 		FActorCreationParams Params;
@@ -440,8 +761,8 @@ namespace ChaosTest {
 
 		//tick solver so that Proxy is created, but don't call EndFrame (want to flush and swap manually)
 		{
-			FVec3 Grav(0, 0, -1);
-			Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+			FVec3 Grav(0,0,-1);
+			Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 			Scene.StartFrame();
 		}
 
@@ -460,7 +781,7 @@ namespace ChaosTest {
 
 	GTEST_TEST(EngineInterface, RemoveActorPostFlush0Dt)
 	{
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 
 		FActorCreationParams Params;
@@ -484,8 +805,8 @@ namespace ChaosTest {
 		//tick solver so that Proxy is created, but don't call EndFrame (want to flush and swap manually)
 		{
 			//use 0 dt to make sure pending operations are not sensitive to 0 dt
-			FVec3 Grav(0, 0, -1);
-			Scene.SetUpForFrame(&Grav, 0, 99999, 99999, 10, false);
+			FVec3 Grav(0,0,-1);
+			Scene.SetUpForFrame(&Grav,0,0,99999,99999,10,false);
 			Scene.StartFrame();
 		}
 
@@ -504,7 +825,7 @@ namespace ChaosTest {
 
 	GTEST_TEST(EngineInterface, CreateAndRemoveActorPostFlush)
 	{
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 
 		FActorCreationParams Params;
@@ -514,8 +835,8 @@ namespace ChaosTest {
 
 		//tick solver, but don't call EndFrame (want to flush and swap manually)
 		{
-			FVec3 Grav(0, 0, -1);
-			Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+			FVec3 Grav(0,0,-1);
+			Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 			Scene.StartFrame();
 		}
 
@@ -549,7 +870,7 @@ namespace ChaosTest {
 	{
 		for (int Delay = 0; Delay < 4; ++Delay)
 		{
-			FChaosScene Scene(nullptr);
+			FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 			Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 			Scene.GetSolver()->GetMarshallingManager().SetTickDelay_External(Delay);
 
@@ -575,8 +896,8 @@ namespace ChaosTest {
 			{
 				//tick solver
 				{
-					FVec3 Grav(0, 0, -1);
-					Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+					FVec3 Grav(0,0,-1);
+					Scene.SetUpForFrame(&Grav,1,0,99999,99999,1,false);
 					Scene.StartFrame();
 					Scene.EndFrame();
 				}
@@ -597,8 +918,8 @@ namespace ChaosTest {
 
 			//tick solver one last time
 			{
-				FVec3 Grav(0, 0, -1);
-				Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+				FVec3 Grav(0,0,-1);
+				Scene.SetUpForFrame(&Grav,1,0,99999,99999,1,false);
 				Scene.StartFrame();
 				Scene.EndFrame();
 			}
@@ -616,8 +937,8 @@ namespace ChaosTest {
 			{
 				//tick solver
 				{
-					FVec3 Grav(0, 0, -1);
-					Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+					FVec3 Grav(0,0,-1);
+					Scene.SetUpForFrame(&Grav,1,0,99999,99999,1,false);
 					Scene.StartFrame();
 					Scene.EndFrame();
 				}
@@ -633,8 +954,8 @@ namespace ChaosTest {
 
 			//tick solver one last time
 			{
-				FVec3 Grav(0, 0, -1);
-				Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+				FVec3 Grav(0,0,-1);
+				Scene.SetUpForFrame(&Grav,1,0,99999,99999,1,false);
 				Scene.StartFrame();
 				Scene.EndFrame();
 			}
@@ -663,8 +984,8 @@ namespace ChaosTest {
 			for (int Repeat = 0; Repeat < Delay + 1; ++Repeat)
 			{
 				//tick solver
-				FVec3 Grav(0, 0, -1);
-				Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+				FVec3 Grav(0,0,-1);
+				Scene.SetUpForFrame(&Grav,1,0,99999,99999,1,false);
 				Scene.StartFrame();
 				Scene.EndFrame();
 
@@ -679,7 +1000,7 @@ namespace ChaosTest {
 	{
 		for (int Delay = 0; Delay < 4; ++Delay)
 		{
-			FChaosScene Scene(nullptr);
+			FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 			Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 			Scene.GetSolver()->GetMarshallingManager().SetTickDelay_External(Delay);
 
@@ -721,8 +1042,8 @@ namespace ChaosTest {
 			for (int Repeat = 0; Repeat < Delay; ++Repeat)
 			{
 				{
-					FVec3 Grav(0, 0, 0);
-					Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+					FVec3 Grav(0,0,0);
+					Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 					Scene.StartFrame();
 					Scene.EndFrame();
 				}
@@ -734,8 +1055,8 @@ namespace ChaosTest {
 
 			//tick solver and see new position synced from sim
 			{
-				FVec3 Grav(0, 0, 0);
-				Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 				Scene.StartFrame();
 				Scene.EndFrame();
 				EXPECT_NEAR(Particle.X()[2], -1, 1e-4);
@@ -744,8 +1065,8 @@ namespace ChaosTest {
 
 			//tick solver and delete in between solver finishing and sync
 			{
-				FVec3 Grav(0, 0, 0);
-				Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 				Scene.StartFrame();
 
 				//delete Proxy
@@ -760,8 +1081,8 @@ namespace ChaosTest {
 			for (int Repeat = 0; Repeat < Delay + 1; ++Repeat)
 			{
 				{
-					FVec3 Grav(0, 0, 0);
-					Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+					FVec3 Grav(0,0,0);
+					Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 					Scene.StartFrame();
 					Scene.EndFrame();
 					EXPECT_NEAR(Particle2.X()[1], -3 - Repeat, 1e-4);	//other Proxy keeps moving
@@ -774,7 +1095,7 @@ namespace ChaosTest {
 	{
 		for (int Delay = 0; Delay < 4; ++Delay)
 		{
-			FChaosScene Scene(nullptr);
+			FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 			Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 			Scene.GetSolver()->GetMarshallingManager().SetTickDelay_External(Delay);
 
@@ -803,8 +1124,8 @@ namespace ChaosTest {
 			for (int Repeat = 0; Repeat < Delay; ++Repeat)
 			{
 				{
-					FVec3 Grav(0, 0, 0);
-					Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+					FVec3 Grav(0,0,0);
+					Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 					Scene.StartFrame();
 					Scene.EndFrame();
 				}
@@ -815,8 +1136,8 @@ namespace ChaosTest {
 
 			//tick solver and see new position synced from sim
 			{
-				FVec3 Grav(0, 0, 0);
-				Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 				Scene.StartFrame();
 				Scene.EndFrame();
 				EXPECT_NEAR(Particle.X()[2], -1, 1e-4);
@@ -828,8 +1149,8 @@ namespace ChaosTest {
 			for (int Repeat = 0; Repeat < Delay; ++Repeat)
 			{
 				{
-					FVec3 Grav(0, 0, 0);
-					Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+					FVec3 Grav(0,0,0);
+					Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 					Scene.StartFrame();
 					Scene.EndFrame();
 
@@ -839,8 +1160,8 @@ namespace ChaosTest {
 
 			//tick solver one last time, should see sim results from the place we teleported to
 			{
-				FVec3 Grav(0, 0, 0);
-				Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 				Scene.StartFrame();
 				Scene.EndFrame();
 				EXPECT_NEAR(Particle.X()[2], 9, 1e-4);
@@ -848,8 +1169,8 @@ namespace ChaosTest {
 
 			//set x after sim but before EndFrame, make sure to see gt position since it was written after
 			{
-				FVec3 Grav(0, 0, 0);
-				Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 				Scene.StartFrame();
 				FChaosEngineInterface::SetGlobalPose_AssumesLocked(Proxy, FTransform(FQuat::Identity, FVec3(0, 0, 100)));
 				Scene.EndFrame();
@@ -859,8 +1180,8 @@ namespace ChaosTest {
 			for (int Repeat = 0; Repeat < Delay; ++Repeat)
 			{
 				{
-					FVec3 Grav(0, 0, 0);
-					Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+					FVec3 Grav(0,0,0);
+					Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 					Scene.StartFrame();
 					Scene.EndFrame();
 
@@ -870,8 +1191,8 @@ namespace ChaosTest {
 
 			//tick solver one last time, should see sim results from the place we teleported to
 			{
-				FVec3 Grav(0, 0, 0);
-				Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+				FVec3 Grav(0,0,0);
+				Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 				Scene.StartFrame();
 				Scene.EndFrame();
 				EXPECT_NEAR(Particle.X()[2], 99, 1e-4);
@@ -881,7 +1202,7 @@ namespace ChaosTest {
 
 	GTEST_TEST(EngineInterface, SimRoundTrip)
 	{
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 
 		FActorCreationParams Params;
@@ -901,8 +1222,8 @@ namespace ChaosTest {
 		Particle.SetObjectState(EObjectStateType::Dynamic);
 		Particle.AddForce(FVec3(0, 0, 10) * Particle.M());
 
-		FVec3 Grav(0, 0, 0);
-		Scene.SetUpForFrame(&Grav, 1, 99999, 99999, 10, false);
+		FVec3 Grav(0,0,0);
+		Scene.SetUpForFrame(&Grav,1,0,99999,99999,10,false);
 		Scene.StartFrame();
 		Scene.EndFrame();
 
@@ -923,10 +1244,10 @@ namespace ChaosTest {
 		//wake events must be collapsed (sleep awake sleep becomes sleep)
 		//collision events must be collapsed
 		//forces are averaged
-		FChaosScene Scene(nullptr);
-		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 		const FReal FixedDT = 1;
-		Scene.GetSolver()->EnableAsyncMode(1);	//tick 1 dt at a time
+		FChaosScene Scene(nullptr, FixedDT);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -941,6 +1262,7 @@ namespace ChaosTest {
 			Particle.SetGeometry(MoveTemp(Sphere));
 		}
 
+		Params.bSimulatePhysics = true;
 		FChaosEngineInterface::CreateActor(Params, Proxy2);
 		auto& Particle2 = Proxy2->GetGameThreadAPI();
 		{
@@ -984,7 +1306,7 @@ namespace ChaosTest {
 			//set force every external frame
 			Particle2.AddForce(ConstantForce);
 			FVec3 Grav(0, 0, 0);
-			Scene.SetUpForFrame(&Grav, GTDt, 99999, 99999, 10, false);
+			Scene.SetUpForFrame(&Grav, GTDt, 0, 99999, 99999, 1, false);
 			Scene.StartFrame();
 			Scene.EndFrame();
 
@@ -1011,14 +1333,152 @@ namespace ChaosTest {
 		EXPECT_NEAR(Particle.V()[2], ZVel, 1e-2);
 	}
 
+	GTEST_TEST(EngineInterface, SetKinematicTarget)
+	{
+		// Need to test:
+		// GT particle position is immediately updated after calling SetKinematicTarget_AssumesLocked
+		// GT particle positions and velocities are correctly updated
+		// PT particle positions and velocities are correctly updated
+		// Velocity becomes zero if no KinematicTarget is set in the current frame
+		// Particle positions and velocities are correct after SetKinematicTarget_AssumesLocked, SetKinematicTarget_AssumesLocked
+		// Velocity is zero if only SetGlobalPose_AssumesLocked is called (Teleport)
+		// Particle positions and velocities are correct after SetGlobalPose_AssumesLocked, SetKinematicTarget_AssumesLocked (Teleport)
+		// Particle positions and velocities are correct after SetKinematicTarget_AssumesLocked, SetGlobalPose_AssumesLocked (Teleport, KinematicTarget is cleared)
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
+
+		FActorCreationParams Params;
+		Params.Scene = &Scene;
+
+		FPhysicsActorHandle Proxy = nullptr;
+
+		FChaosEngineInterface::CreateActor(Params, Proxy);
+		auto& Particle = Proxy->GetGameThreadAPI();
+		{
+			auto Sphere = MakeUnique<TSphere<FReal, 3>>(FVec3(0), 3);
+			Particle.SetGeometry(MoveTemp(Sphere));
+		}
+
+		TArray<FPhysicsActorHandle> Proxys = { Proxy };
+		Scene.AddActorsToScene_AssumesLocked(Proxys);
+		Particle.SetObjectState(EObjectStateType::Kinematic);
+
+		struct FDummyInput : FSimCallbackInput
+		{
+			FSingleParticlePhysicsProxy* Proxy;
+			FVec3 CorrectX;
+			FVec3 CorrectV;
+			void Reset() {}
+		};
+
+		struct FCallback : public TSimCallbackObject<FDummyInput>
+		{
+			virtual void OnPreSimulate_Internal() override
+			{
+				auto Handle = GetConsumerInput_Internal()->Proxy->GetPhysicsThreadAPI();
+				EXPECT_EQ(Handle->X(), GetConsumerInput_Internal()->CorrectX);
+				EXPECT_EQ(Handle->V(), GetConsumerInput_Internal()->CorrectV);
+			}
+		};
+
+		auto Callback = Scene.GetSolver()->CreateAndRegisterSimCallbackObject_External<FCallback>();
+
+		Callback->GetProducerInputData_External()->Proxy = Proxy;
+
+		FVec3 Grav(0, 0, 0);
+		float Dt = 1;
+
+		auto AdvanceFrameAndRunTest = [&](const FVec3 &CorrectX, const FVec3 &CorrectV)
+		{
+			Scene.SetUpForFrame(&Grav, Dt, 0, 99999, 99999, 10, false);
+			Scene.StartFrame();
+			Scene.EndFrame();
+			// Test X and V on GT
+			EXPECT_EQ(Particle.X(), CorrectX);
+			EXPECT_EQ(Particle.V(), CorrectV);
+			// Test X and V on PT, this is going to be used in OnPreSimulate_Internal in next frame.
+			Callback->GetProducerInputData_External()->CorrectX = CorrectX;
+			Callback->GetProducerInputData_External()->CorrectV = CorrectV;
+		};
+
+		// Set initial transform
+		FVec3 CurrentX = FVec3(1, 2, 3);
+		FVec3 CurrentV = FVec3(0, 0, 0);
+		FChaosEngineInterface::SetGlobalPose_AssumesLocked(Proxy, FTransform(CurrentX));
+
+		Callback->GetProducerInputData_External()->CorrectX = CurrentX;
+		Callback->GetProducerInputData_External()->CorrectV = CurrentV;
+		AdvanceFrameAndRunTest(CurrentX, CurrentV);
+
+		// Test SetKinematicTarget_AssumesLocked
+		CurrentX = FVec3(2, 3, 4);
+		CurrentV = FVec3(1, 1, 1);
+		FChaosEngineInterface::SetKinematicTarget_AssumesLocked(Proxy, FTransform(CurrentX));
+
+		// Test if position is immediately updated on GT after SetKinematicTarget_AssumesLocked
+		EXPECT_EQ(Particle.X(), CurrentX);
+
+		AdvanceFrameAndRunTest(CurrentX, CurrentV);
+
+		// Test if velocity becomes zero when no kinematic target is set
+		CurrentX = FVec3(2, 3, 4);
+		CurrentV = FVec3(0, 0, 0);
+
+		AdvanceFrameAndRunTest(CurrentX, CurrentV);
+
+		// Test if particle positions and velocities are correct after SetKinematicTarget_AssumesLocked, SetKinematicTarget_AssumesLocked
+		CurrentX = FVec3(0, 0, 0);
+		CurrentV = FVec3(-2, -3, -4);
+		FChaosEngineInterface::SetKinematicTarget_AssumesLocked(Proxy, FTransform(FVec3(1, 2, 3)));
+		FChaosEngineInterface::SetKinematicTarget_AssumesLocked(Proxy, FTransform(CurrentX));
+
+		AdvanceFrameAndRunTest(CurrentX, CurrentV);
+
+		// Test if velocity is zero if only SetGlobalPose_AssumesLocked is called (Teleport)
+		CurrentX = FVec3(0, 0, 0);
+		CurrentV = FVec3(0, 0, 0);
+		FChaosEngineInterface::SetGlobalPose_AssumesLocked(Proxy, FTransform(CurrentX));
+
+		Callback->GetProducerInputData_External()->CorrectX = CurrentX;
+		AdvanceFrameAndRunTest(CurrentX, CurrentV);
+
+		// Test if particle positions and velocities are correct after SetGlobalPose_AssumesLocked, SetKinematicTarget_AssumesLocked
+		CurrentX = FVec3(-1, -2, -3);
+		CurrentV = FVec3(0, 0, 0);
+		FChaosEngineInterface::SetGlobalPose_AssumesLocked(Proxy, FTransform(CurrentX));
+		FChaosEngineInterface::SetKinematicTarget_AssumesLocked(Proxy, FTransform(CurrentX));
+
+		Callback->GetProducerInputData_External()->CorrectX = CurrentX;
+		AdvanceFrameAndRunTest(CurrentX, CurrentV);
+
+		// Test if particle state to sleeping change after setting a kinematic target it's position and velocity should remain the same
+		FChaosEngineInterface::SetKinematicTarget_AssumesLocked(Proxy, FTransform(FVec3(1, 2, 3)));
+		Particle.SetObjectState(EObjectStateType::Sleeping);
+		AdvanceFrameAndRunTest(CurrentX, CurrentV);
+
+		// Test if particle positions and velocities are correct after SetKinematicTarget_AssumesLocked, SetGlobalPose_AssumesLocked
+		CurrentX = FVec3(3, 2, 1);
+		CurrentV = FVec3(0, 0, 0);
+		FChaosEngineInterface::SetKinematicTarget_AssumesLocked(Proxy, FTransform(CurrentX));
+		FChaosEngineInterface::SetGlobalPose_AssumesLocked(Proxy, FTransform(CurrentX));
+
+		Callback->GetProducerInputData_External()->CorrectX = CurrentX;
+		AdvanceFrameAndRunTest(CurrentX, CurrentV);
+
+		// Test if the PT positions and velocities are right from previous frame
+		CurrentX = FVec3(3, 2, 1);
+		CurrentV = FVec3(0, 0, 0);
+		AdvanceFrameAndRunTest(CurrentX, CurrentV);
+	}
+
 	GTEST_TEST(EngineInterface, PerPropertySetOnGT)
 	{
 		//Need to test:
 		//setting transform, velocities, wake state, on external thread means we overwrite results until sim catches up
 		//deleted proxy does not incorrectly update after it's deleted on gt
-		FChaosScene Scene(nullptr);
-		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 		const FReal FixedDT = 1;
+		FChaosScene Scene(nullptr, FixedDT);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 		Scene.GetSolver()->EnableAsyncMode(1);	//tick 1 dt at a time
 
 		FActorCreationParams Params;
@@ -1089,7 +1549,7 @@ namespace ChaosTest {
 			}
 
 			FVec3 Grav(0, 0, 0);
-			Scene.SetUpForFrame(&Grav, GTDt, 99999, 99999, 10, false);
+			Scene.SetUpForFrame(&Grav, GTDt, 0, 99999, 99999, 10, false);
 			Scene.StartFrame();
 			Scene.EndFrame();
 
@@ -1187,7 +1647,7 @@ namespace ChaosTest {
 
 		bool bHitOnShutDown = false;
 		{
-			FChaosScene Scene(nullptr);
+			FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 			Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 			Scene.GetSolver()->EnableAsyncMode(1);	//tick 1 dt at a time
 
@@ -1224,7 +1684,7 @@ namespace ChaosTest {
 			auto Callback = Scene.GetSolver()->CreateAndRegisterSimCallbackObject_External<FCallback>();
 
 			FVec3 Grav(0, 0, 0);
-			Scene.SetUpForFrame(&Grav, 0, 99999, 99999, 10, false);	//flush with dt 0
+			Scene.SetUpForFrame(&Grav, 0, 0, 99999, 99999, 10, false);	//flush with dt 0
 			Scene.StartFrame();
 			Scene.EndFrame();
 
@@ -1245,10 +1705,9 @@ namespace ChaosTest {
 		//kinematic targets are interpolated over the sub-step
 		//identical inputs are given to sub-steps
 
-		FChaosScene Scene(nullptr);
-		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 		const FReal FixedDT = 1;
-		Scene.GetSolver()->EnableAsyncMode(FixedDT);	//tick 1 dt at a time
+		FChaosScene Scene(nullptr, FixedDT);
+		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -1298,7 +1757,7 @@ namespace ChaosTest {
 			//set force every external frame
 			Particle.AddForce(FVec3(0, 0, 1 * Particle.M()));	//should counteract gravity
 			FVec3 Grav(0, 0, -1);
-			Scene.SetUpForFrame(&Grav, GTDt, 99999, 99999, 10, false);
+			Scene.SetUpForFrame(&Grav, GTDt, 0, 99999, 99999, 10, false);
 			Scene.StartFrame();
 			Scene.EndFrame();
 
@@ -1316,7 +1775,7 @@ namespace ChaosTest {
 		//destroyed proxy still valid in callback, but Proxy is nulled out
 		//valid for multiple sub-steps
 
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 		Scene.GetSolver()->SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 		const FReal FixedDT = 1;
 		Scene.GetSolver()->EnableAsyncMode(FixedDT);	//tick 1 dt at a time
@@ -1356,14 +1815,14 @@ namespace ChaosTest {
 		Scene.GetSolver()->UnregisterObject(Proxy);
 
 		FVec3 Grav(0, 0, -1);
-		Scene.SetUpForFrame(&Grav, FixedDT * 3, 99999, 99999, 10, false);
+		Scene.SetUpForFrame(&Grav, FixedDT * 3, 0, 99999, 99999, 10, false);
 		Scene.StartFrame();
 		Scene.EndFrame();
 	}
 	
 	GTEST_TEST(EngineInterface, OverlapOffsetActor)
 	{
-		FChaosScene Scene(nullptr);
+		FChaosScene Scene(nullptr, /*AsyncDt=*/-1);
 
 		FActorCreationParams Params;
 		Params.Scene = &Scene;
@@ -1393,7 +1852,7 @@ namespace ChaosTest {
 			TUniquePtr<FImplicitObjectUnion> GeomUnion = MakeUnique<FImplicitObjectUnion>(MoveTemp(Geoms));
 			Particle.SetGeometry(MoveTemp(GeomUnion));
 		}
-
+		
 		TArray<FPhysicsActorHandle> Particles{ StaticCube };
 		Scene.AddActorsToScene_AssumesLocked(Particles);
 

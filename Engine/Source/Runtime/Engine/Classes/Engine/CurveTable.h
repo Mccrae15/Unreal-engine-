@@ -55,6 +55,8 @@ class UCurveTable
 
 	ECurveTableMode GetCurveTableMode() const { return CurveTableMode; }
 
+	/** Removes a single row from the CurveTable by name. Just returns if row is not found. */
+	ENGINE_API virtual void RemoveRow(FName RowName);
 	ENGINE_API FRichCurve& AddRichCurve(FName RowName);
 	ENGINE_API FSimpleCurve& AddSimpleCurve(FName RowName);
 
@@ -65,6 +67,8 @@ protected:
 	 * If ECurveTableMode is RichCurves the value type will be FRichCurve*
 	 */
 	TMap<FName, FRealCurve*>	RowMap;
+
+	static FCriticalSection& GetCurveTableChangeCriticalSection();
 
 public:
 	//~ Begin UObject Interface.
@@ -77,7 +81,7 @@ public:
 	virtual void PostLoad() override;
 
 	UPROPERTY(VisibleAnywhere, Instanced, Category=ImportSettings)
-	class UAssetImportData* AssetImportData;
+	TObjectPtr<class UAssetImportData> AssetImportData;
 
 	/** The filename imported to create this object. Relative to this object's package, BaseDir() or absolute */
 	UPROPERTY()
@@ -252,7 +256,7 @@ struct ENGINE_API FCurveTableRowHandle
 
 	/** Pointer to table we want a row from */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=CurveTableRowHandle, meta=(DisplayThumbnail="false"))
-	const class UCurveTable*	CurveTable;
+	TObjectPtr<const class UCurveTable>	CurveTable;
 
 	/** Name of row in the table that we want */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=CurveTableRowHandle)

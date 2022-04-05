@@ -58,9 +58,9 @@ void FStaticMeshVertexBuffer::Init(uint32 InNumVertices, uint32 InNumTexCoords, 
 * @param InVertices - The vertices to initialize the buffer with.
 * @param InNumTexCoords - The number of texture coordinate to store in the buffer.
 */
-void FStaticMeshVertexBuffer::Init(const TArray<FStaticMeshBuildVertex>& InVertices, uint32 InNumTexCoords, bool bNeedsCPUAccess)
+void FStaticMeshVertexBuffer::Init(const TArray<FStaticMeshBuildVertex>& InVertices, uint32 InNumTexCoords, const FStaticMeshVertexBufferFlags & InInitFlags)
 {
-	Init(InVertices.Num(), InNumTexCoords, bNeedsCPUAccess);
+	Init(InVertices.Num(), InNumTexCoords, InInitFlags.bNeedsCPUAccess);
 
 	// Copy the vertices into the buffer.
 	for (int32 VertexIndex = 0; VertexIndex < InVertices.Num(); VertexIndex++)
@@ -71,7 +71,7 @@ void FStaticMeshVertexBuffer::Init(const TArray<FStaticMeshBuildVertex>& InVerti
 
 		for (uint32 UVIndex = 0; UVIndex < NumTexCoords; UVIndex++)
 		{
-			SetVertexUV(DestVertexIndex, UVIndex, SourceVertex.UVs[UVIndex]);
+			SetVertexUV(DestVertexIndex, UVIndex, SourceVertex.UVs[UVIndex], InInitFlags.bUseBackwardsCompatibleF16TruncUVs);
 		}
 	}
 }
@@ -131,7 +131,7 @@ void FStaticMeshVertexBuffer::ConvertHalfTexcoordsToFloat(const uint8* InData)
 	TexcoordDataPtr = TexcoordData->GetDataPointer();
 	TexcoordStride = sizeof(UVType);
 
-	FVector2D* DestTexcoordDataPtr = (FVector2D*)TexcoordDataPtr;
+	FVector2f* DestTexcoordDataPtr = (FVector2f*)TexcoordDataPtr;
 	FVector2DHalf* SourceTexcoordDataPtr = (FVector2DHalf*)(InData ? InData : OriginalTexcoordData->GetDataPointer());
 	for (uint32 i = 0; i < NumVertices * GetNumTexCoords(); i++)
 	{
@@ -143,7 +143,7 @@ void FStaticMeshVertexBuffer::ConvertHalfTexcoordsToFloat(const uint8* InData)
 }
 
 
-void FStaticMeshVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend )
+void FStaticMeshVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vertices, const uint32 NumVerticesToAppend, bool bUseBackwardsCompatibleF16TruncUVs)
 {
 	if ((TangentsData == nullptr || TexcoordData == nullptr) && NumVerticesToAppend > 0)
 	{
@@ -179,7 +179,7 @@ void FStaticMeshVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vert
 				SetVertexTangents( DestVertexIndex, SourceVertex.TangentX, SourceVertex.TangentY, SourceVertex.TangentZ );
 				for( uint32 UVIndex = 0; UVIndex < NumTexCoords; UVIndex++ )
 				{
-					SetVertexUV( DestVertexIndex, UVIndex, SourceVertex.UVs[ UVIndex ] );
+					SetVertexUV( DestVertexIndex, UVIndex, SourceVertex.UVs[ UVIndex ], bUseBackwardsCompatibleF16TruncUVs );
 				}
 			}
 		}
@@ -199,7 +199,7 @@ void FStaticMeshVertexBuffer::Serialize(FArchive& Ar, bool bNeedsCPUAccess)
 
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FStaticMeshVertexBuffer::Serialize"), STAT_StaticMeshVertexBuffer_Serialize, STATGROUP_LoadTime);
 
-	FStripDataFlags StripFlags(Ar, 0, VER_UE4_STATIC_SKELETAL_MESH_SERIALIZATION_FIX);
+	FStripDataFlags StripFlags(Ar, 0, FPackageFileVersion::CreateUE4Version(VER_UE4_STATIC_SKELETAL_MESH_SERIALIZATION_FIX));
 
 	SerializeMetaData(Ar);
 
@@ -267,13 +267,13 @@ void FStaticMeshVertexBuffer::operator=(const FStaticMeshVertexBuffer &Other)
 }
 
 template <bool bRenderThread>
-FVertexBufferRHIRef FStaticMeshVertexBuffer::CreateTangentsRHIBuffer_Internal()
+FBufferRHIRef FStaticMeshVertexBuffer::CreateTangentsRHIBuffer_Internal()
 {
 	if (GetNumVertices())
 	{
  		FResourceArrayInterface* RESTRICT ResourceArray = TangentsData ? TangentsData->GetResourceArray() : nullptr;
 		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
-		FRHIResourceCreateInfo CreateInfo(ResourceArray);
+		FRHIResourceCreateInfo CreateInfo(TEXT("TangentsRHIBuffer"), ResourceArray);
 		CreateInfo.bWithoutNativeResource = !TangentsData;
 		if (bRenderThread)
 		{
@@ -287,24 +287,24 @@ FVertexBufferRHIRef FStaticMeshVertexBuffer::CreateTangentsRHIBuffer_Internal()
 	return nullptr;
 }
 
-FVertexBufferRHIRef FStaticMeshVertexBuffer::CreateTangentsRHIBuffer_RenderThread()
+FBufferRHIRef FStaticMeshVertexBuffer::CreateTangentsRHIBuffer_RenderThread()
 {
 	return CreateTangentsRHIBuffer_Internal<true>();
 }
 
-FVertexBufferRHIRef FStaticMeshVertexBuffer::CreateTangentsRHIBuffer_Async()
+FBufferRHIRef FStaticMeshVertexBuffer::CreateTangentsRHIBuffer_Async()
 {
 	return CreateTangentsRHIBuffer_Internal<false>();
 }
 
 template <bool bRenderThread>
-FVertexBufferRHIRef FStaticMeshVertexBuffer::CreateTexCoordRHIBuffer_Internal()
+FBufferRHIRef FStaticMeshVertexBuffer::CreateTexCoordRHIBuffer_Internal()
 {
 	if (GetNumTexCoords())
 	{
 		FResourceArrayInterface* RESTRICT ResourceArray = TexcoordData ? TexcoordData->GetResourceArray() : nullptr;
 		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
-		FRHIResourceCreateInfo CreateInfo(ResourceArray);
+		FRHIResourceCreateInfo CreateInfo(TEXT("TexCoordRHIBuffer"), ResourceArray);
 		CreateInfo.bWithoutNativeResource = !TexcoordData;
 		if (bRenderThread)
 		{
@@ -318,12 +318,12 @@ FVertexBufferRHIRef FStaticMeshVertexBuffer::CreateTexCoordRHIBuffer_Internal()
 	return nullptr;
 }
 
-FVertexBufferRHIRef FStaticMeshVertexBuffer::CreateTexCoordRHIBuffer_RenderThread()
+FBufferRHIRef FStaticMeshVertexBuffer::CreateTexCoordRHIBuffer_RenderThread()
 {
 	return CreateTexCoordRHIBuffer_Internal<true>();
 }
 
-FVertexBufferRHIRef FStaticMeshVertexBuffer::CreateTexCoordRHIBuffer_Async()
+FBufferRHIRef FStaticMeshVertexBuffer::CreateTexCoordRHIBuffer_Async()
 {
 	return CreateTexCoordRHIBuffer_Internal<false>();
 }
@@ -358,6 +358,7 @@ void FStaticMeshVertexBuffer::CopyRHIForStreaming(const FStaticMeshVertexBuffer&
 
 void FStaticMeshVertexBuffer::InitRHI()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FStaticMeshVertexBuffer::InitRHI);
 	SCOPED_LOADTIMER(FStaticMeshVertexBuffer_InitRHI);
 
 	TangentsVertexBuffer.VertexBufferRHI = CreateTangentsRHIBuffer_RenderThread();

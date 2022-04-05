@@ -53,9 +53,9 @@ public:
 
 	using FPermutationDomain = TShaderPermutationDomain<FDMXPixelBlendingQualityDimension, FDMXVertexUVDimension>;
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER(FVector4, DrawRectanglePosScaleBias)
-		SHADER_PARAMETER(FVector4, DrawRectangleInvTargetSizeAndTextureSize)
-		SHADER_PARAMETER(FVector4, DrawRectangleUVScaleBias)
+		SHADER_PARAMETER(FVector4f, DrawRectanglePosScaleBias)
+		SHADER_PARAMETER(FVector4f, DrawRectangleInvTargetSizeAndTextureSize)
+		SHADER_PARAMETER(FVector4f, DrawRectangleUVScaleBias)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return true; }
@@ -78,9 +78,9 @@ public:
 
 		SHADER_PARAMETER(FIntPoint, InputTextureSize)
 		SHADER_PARAMETER(FIntPoint, OutputTextureSize)
-		SHADER_PARAMETER(FVector4, PixelFactor)
+		SHADER_PARAMETER(FVector4f, PixelFactor)
 		SHADER_PARAMETER(FIntVector4, InvertPixel)
-		SHADER_PARAMETER(FVector2D, UVCellSize)
+		SHADER_PARAMETER(FVector2f, UVCellSize)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return true; }
@@ -154,6 +154,8 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 
 			const FTextureRHIRef InputTextureRHI = InputTexture->TextureRHI;
 
+			RHICmdList.Transition(FRHITransitionInfo(RenderTargetRef, ERHIAccess::SRVMask, ERHIAccess::RTV));
+
 			FRHIRenderPassInfo RpInfo(RenderTargetRef, ERenderTargetActions::Load_Store);
 			RHICmdList.BeginRenderPass(RpInfo, DMXPixelMappingRenderer::RenderPassName);
 			{
@@ -181,13 +183,13 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 					GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 					// Set vertex shader buffer
 					FDMXPixelMappingRendererVS::FParameters VSParameters;
-					VSParameters.DrawRectanglePosScaleBias = FVector4(PixelSize.X, PixelSize.Y, PixelParam.Position.X, PixelParam.Position.Y);
-					VSParameters.DrawRectangleUVScaleBias = FVector4(PixelParam.UVSize.X, PixelParam.UVSize.Y, PixelParam.UV.X, PixelParam.UV.Y);
-					VSParameters.DrawRectangleInvTargetSizeAndTextureSize = FVector4(
+					VSParameters.DrawRectanglePosScaleBias = FVector4f(PixelSize.X, PixelSize.Y, PixelParam.Position.X, PixelParam.Position.Y);
+					VSParameters.DrawRectangleUVScaleBias = FVector4f(PixelParam.UVSize.X, PixelParam.UVSize.Y, PixelParam.UV.X, PixelParam.UV.Y);
+					VSParameters.DrawRectangleInvTargetSizeAndTextureSize = FVector4f(
 						1.f / OutputTextureSize.X, 1.f / OutputTextureSize.Y,
 						1.f / TextureSize.X, 1.f / TextureSize.Y);
 					SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
@@ -198,9 +200,9 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 					PSParameters.InputSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 					PSParameters.InputTextureSize = InputTextureSize;
 					PSParameters.OutputTextureSize = OutputTextureSize;
-					PSParameters.PixelFactor = PixelParam.PixelFactor;
+					PSParameters.PixelFactor = FVector4f(PixelParam.PixelFactor);
 					PSParameters.InvertPixel = PixelParam.InvertPixel;
-					PSParameters.UVCellSize = PixelParam.UVCellSize;
+					PSParameters.UVCellSize = FVector2f(PixelParam.UVCellSize);
 					SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 
 					// Draw a two triangle on the entire viewport.
@@ -213,7 +215,10 @@ void FDMXPixelMappingRenderer::DownsampleRender(
 			// Copy texture from GPU to CPU
 			{
 				// Copies the contents of the given surface to its resolve target texture.
-				RHICmdList.CopyToResolveTarget(ResolveRenderTarget, RenderTargetRef, FResolveParams());
+				FResolveParams ResolveParams;
+				ResolveParams.SourceAccessFinal = ERHIAccess::SRVMask;
+				ResolveParams.DestAccessFinal = ERHIAccess::SRVMask;
+				RHICmdList.CopyToResolveTarget(ResolveRenderTarget, RenderTargetRef, ResolveParams);
 
 				// Read the contents of a texture to an output CPU buffer
 				TArray<FLinearColor> ColorArray;
@@ -283,7 +288,7 @@ void FDMXPixelMappingRenderer::RenderPreview(const FTextureResource* TextureReso
 				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), DownsampleTextureRef);
 
@@ -395,6 +400,8 @@ void FDMXPixelMappingRenderer::RenderTextureToRectangle(const FTextureResource* 
 	ENQUEUE_RENDER_COMMAND(DMXPixelMapping_CopyToPreveiewTexture)([this, RenderContext]
 	(FRHICommandListImmediate& RHICmdList)
 	{
+		RHICmdList.Transition(FRHITransitionInfo(RenderContext.TextureResource->TextureRHI, ERHIAccess::RTV, ERHIAccess::SRVMask));
+
 		FRHIRenderPassInfo RPInfo(RenderContext.Texture2DRHI, ERenderTargetActions::Load_Store);
 		RHICmdList.BeginRenderPass(RPInfo, TEXT("DMXPixelMapping_CopyToPreveiewTexture"));
 		{
@@ -417,18 +424,16 @@ void FDMXPixelMappingRenderer::RenderTextureToRectangle(const FTextureResource* 
 			{
 				TShaderMapRef<FScreenPSsRGBSource> PixelShader(ShaderMap);
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), RenderContext.TextureResource->TextureRHI);
 			}
 			else
 			{
 				TShaderMapRef<FScreenPS> PixelShader(ShaderMap);
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 				PixelShader->SetParameters(RHICmdList, TStaticSamplerState<SF_Point>::GetRHI(), RenderContext.TextureResource->TextureRHI);
 			}
-
-			
 
 			RendererModule->DrawRectangle(
 				RHICmdList,
@@ -442,5 +447,7 @@ void FDMXPixelMappingRenderer::RenderTextureToRectangle(const FTextureResource* 
 				EDRF_Default); // Flags see EDrawRectangleFlags
 		}
 		RHICmdList.EndRenderPass();
+
+		RHICmdList.Transition(FRHITransitionInfo(RenderContext.TextureResource->TextureRHI, ERHIAccess::SRVMask, ERHIAccess::RTV));
 	});
 }

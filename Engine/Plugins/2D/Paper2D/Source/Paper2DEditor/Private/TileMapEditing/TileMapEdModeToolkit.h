@@ -23,8 +23,6 @@ public:
 	FTileMapEdModeToolkit(class FEdModeTileMap* InOwningMode);
 
 	// IToolkit interface
-	virtual void RegisterTabSpawners(const TSharedRef<class FTabManager>& TabManager) override;
-	virtual void UnregisterTabSpawners(const TSharedRef<class FTabManager>& TabManager) override;
 	virtual FName GetToolkitFName() const override;
 	virtual FText GetBaseToolkitName() const override;
 	virtual FText GetToolkitName() const override;
@@ -38,6 +36,7 @@ public:
 	// End of FModeToolkit interface
 
 protected:
+	void OnAssetsDropped(const FDragDropEvent&, TArrayView<FAssetData> InAssets);
 	void OnChangeTileSet(UObject* NewAsset);
 	UObject* GetCurrentTileSet() const;
 
@@ -55,7 +54,7 @@ protected:
 	EVisibility GetTileSetPaletteCornerTextVisibility() const;
 	FReply ClickedOnTileSetPaletteCornerText();
 
-	bool OnAssetDraggedOver(const UObject* InObject) const;
+	bool OnAssetDraggedOver(TArrayView<FAssetData> InAssets) const;
 
 private:
 	class FEdModeTileMap* TileMapEditor;

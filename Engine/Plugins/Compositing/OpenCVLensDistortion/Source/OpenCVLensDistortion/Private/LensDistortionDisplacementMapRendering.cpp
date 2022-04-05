@@ -49,7 +49,7 @@ public:
 	template<typename TShaderRHIParamRef>
 	void SetParameters(FRHICommandListImmediate& RHICmdList, const TShaderRHIParamRef ShaderRHI, const FTextureResource* PreComputedDisplacementMap, const FIntPoint& DisplacementMapResolution)
 	{
-		FVector2D PixelUVSizeValue(1.f / float(DisplacementMapResolution.X), 1.f / float(DisplacementMapResolution.Y));
+		FVector2f PixelUVSizeValue(1.f / float(DisplacementMapResolution.X), 1.f / float(DisplacementMapResolution.Y));
 
 		SetShaderValue(RHICmdList, ShaderRHI, PixelUVSize, PixelUVSizeValue);
 		SetTextureParameter(RHICmdList, ShaderRHI, UndistortDisplacementMap, BilinearSampler, TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI(), PreComputedDisplacementMap->TextureRHI);
@@ -142,7 +142,7 @@ static void DrawUVDisplacementToRenderTargetFromPreComputedDisplacementMap_Rende
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GetVertexDeclarationFVector4();
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 		// Update shader uniform parameters.
 		VertexShader->SetParameters(RHICmdList, VertexShader.GetVertexShader(), PreComputedDisplacementMap, DisplacementMapResolution);
@@ -167,7 +167,7 @@ void FOpenCVLensDistortionParameters::DrawDisplacementMapToRenderTarget(UWorld* 
 		return;
 	}
 
-	if(InPreComputedUndistortDisplacementMap == nullptr || InPreComputedUndistortDisplacementMap->Resource == nullptr)
+	if(InPreComputedUndistortDisplacementMap == nullptr || InPreComputedUndistortDisplacementMap->GetResource() == nullptr)
 	{
 		UE_LOG(LogOpenCVLensDistortion, Error, TEXT("Precomputed displacement map is required to generate final displacement maps."));
 		return;
@@ -176,7 +176,7 @@ void FOpenCVLensDistortionParameters::DrawDisplacementMapToRenderTarget(UWorld* 
 	//Prepare parameters for render command
 	const FName TextureRenderTargetName = InOutputRenderTarget->GetFName();
 	FTextureRenderTargetResource* TextureRenderTargetResource = InOutputRenderTarget->GameThread_GetRenderTargetResource();
-	const FTextureResource* PreComputedMapResource = InPreComputedUndistortDisplacementMap->Resource;
+	const FTextureResource* PreComputedMapResource = InPreComputedUndistortDisplacementMap->GetResource();
 	ERHIFeatureLevel::Type FeatureLevel = InWorld->Scene->GetFeatureLevel();
 
 	ENQUEUE_RENDER_COMMAND(CaptureCommand)

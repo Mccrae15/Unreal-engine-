@@ -30,8 +30,9 @@ struct CORE_API FHoloLensProcess : public FGenericPlatformProcess
 	static const TCHAR* BaseDir();
 	static void Sleep( float Seconds );
 	static void SleepNoStats(float Seconds); 
-	static void SleepInfinite();
+	[[noreturn]] static void SleepInfinite();
 	static void YieldThread();
+	UE_DEPRECATED(5.0, "Please use GetSynchEventFromPool to create a new event, and ReturnSynchEventToPool to release the event.")
 	static class FEvent* CreateSynchEvent(bool bIsManualReset = false);
 	static class FRunnableThread* CreateRunnableThread();
 	static const TCHAR* ExecutableName(bool bRemoveExtension = true);

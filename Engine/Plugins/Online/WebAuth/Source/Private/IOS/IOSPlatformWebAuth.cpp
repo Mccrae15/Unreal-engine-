@@ -8,11 +8,8 @@
 
 #import <WebKit/WebKit.h>
 
-#ifdef WEBAUTH_PLATFORM_IOS_13
 #include "IOS/IOSAppDelegate.h"
-#endif
 
-#ifdef WEBAUTH_PLATFORM_IOS_13
 @interface PresentationContext : NSObject <ASWebAuthenticationPresentationContextProviding>
 {
 }
@@ -30,12 +27,9 @@
 }
 
 @end
-#endif
 
 static NSMutableDictionary* MakeSearchDictionary(NSString *EnvironmentName);
-#ifdef WEBAUTH_PLATFORM_IOS_13
 static PresentationContext* PresentationContextProvider = nullptr;
-#endif
 
 
 // Returns true if the request is made
@@ -71,14 +65,8 @@ bool FIOSWebAuth::AuthSessionWithURL(const FString &UrlStr, const FString &Schem
         AuthSessionCompleteDelegate = nullptr;
     }];
 
-#ifdef WEBAUTH_PLATFORM_IOS_13
-    // If we are using iOS 13+ ensure we supply the context provider
-    if (@available(iOS 13.0, *))
-    {
-        check(PresentationContextProvider);
-        ((ASWebAuthenticationSession*)SavedAuthSession).presentationContextProvider = PresentationContextProvider;
-    }
-#endif
+    check(PresentationContextProvider);
+    ((ASWebAuthenticationSession*)SavedAuthSession).presentationContextProvider = PresentationContextProvider;
 
     [(ASWebAuthenticationSession*)SavedAuthSession start];
 
@@ -219,20 +207,16 @@ void FIOSWebAuth::DeleteLoginCookies(const FString& PrefixStr, const FString& Sc
 
 FIOSWebAuth::FIOSWebAuth()
 {
-#ifdef WEBAUTH_PLATFORM_IOS_13
 	PresentationContextProvider = [PresentationContext new];
-#endif
 }
 
 FIOSWebAuth::~FIOSWebAuth()
 {
-#ifdef WEBAUTH_PLATFORM_IOS_13
 	if (PresentationContextProvider != nil)
 	{
 		[PresentationContextProvider release];
 		PresentationContextProvider = nil;
 	}
-#endif
 }
 
 

@@ -5,48 +5,16 @@
 #include "AssetEditor/CameraCalibrationStepsController.h"
 #include "AssetEditor/LensDistortionTool.h"
 #include "AssetEditor/SSimulcamViewport.h"
-#include "Camera/CameraActor.h"
-#include "Camera/CameraComponent.h"
 #include "CameraCalibrationCheckerboard.h"
-#include "CameraCalibrationEditorLog.h"
-#include "CameraCalibrationUtils.h"
-#include "Editor.h"
 #include "EditorFontGlyphs.h"
-#include "Engine/TextureRenderTarget2D.h"
 #include "EngineUtils.h"
-#include "GameFramework/Actor.h"
-#include "GenericPlatform/GenericApplication.h"
-#include "Input/Events.h"
-#include "Internationalization/Text.h"
-#include "Layout/Geometry.h"
-#include "LensFile.h"
-#include "Math/Color.h"
-#include "Math/UnrealMathUtility.h"
-#include "Math/Vector.h"
 #include "Misc/MessageDialog.h"
 #include "PropertyCustomizationHelpers.h"
 #include "SphericalLensDistortionModelHandler.h"
 #include "UI/CameraCalibrationWidgetHelpers.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Views/SListView.h"
-#include "Widgets/SNullWidget.h"
-#include "Widgets/SWidget.h"
 
-
-#if WITH_OPENCV
-
-#include <vector>
-
-#include "OpenCVHelper.h"
-OPENCV_INCLUDES_START
-#undef check 
-#include "opencv2/opencv.hpp"
-#include "opencv2/calib3d.hpp"
-OPENCV_INCLUDES_END
-
-#endif //WITH_OPENCV
 
 #define LOCTEXT_NAMESPACE "CameraLensDistortionAlgoCheckerboard"
 
@@ -128,6 +96,25 @@ void UCameraLensDistortionAlgoCheckerboard::Initialize(ULensDistortionTool* InTo
 
 	// Guess which calibrator to use.
 	SetCalibrator(FindFirstCalibrator());
+
+#if WITH_OPENCV
+	// Initialize coverage matrix
+	FCameraCalibrationStepsController* StepsController = Tool->GetCameraCalibrationStepsController();
+
+	if (!ensure(StepsController))
+	{
+		return;
+	}
+
+	FIntPoint Size = StepsController->GetCompRenderTargetSize();
+	CvCoverage = cv::Mat(cv::Size(Size.X, Size.Y), CV_8UC4);
+	CoverageTexture = FOpenCVHelper::TextureFromCvMat(CvCoverage, CoverageTexture);
+#endif
+
+	if (UMaterialInstanceDynamic* OverlayMID = Tool->GetOverlayMID())
+	{
+		OverlayMID->SetTextureParameterValue(FName(TEXT("CoverageTexture")), CoverageTexture);
+	}
 }
 
 void UCameraLensDistortionAlgoCheckerboard::Shutdown()
@@ -296,7 +283,7 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 			CvGray, 
 			CheckerboardSize,
 			Corners,
-			CV_CALIB_CB_ADAPTIVE_THRESH | CV_CALIB_CB_NORMALIZE_IMAGE
+			cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE
 		);
 		
 		if (!bCornersFound)
@@ -310,9 +297,9 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 			return false;
 		}
 		
-		// CV_TERMCRIT_EPS will stop the search when the error is under the given epsilon.
-		// CV_TERMCRIT_ITER will stop after the specified number of iterations regardless of epsilon.
-		cv::TermCriteria Criteria(CV_TERMCRIT_EPS | CV_TERMCRIT_ITER, 30, 0.001);
+		// cv::TermCriteria::Type::EPS will stop the search when the error is under the given epsilon.
+		// cv::TermCriteria::Type::COUNT will stop after the specified number of iterations regardless of epsilon.
+		cv::TermCriteria Criteria(cv::TermCriteria::Type::EPS | cv::TermCriteria::Type::COUNT, 30, 0.001);
 		cv::cornerSubPix(CvGray, Corners, cv::Size(11, 11), cv::Size(-1, -1), Criteria);
 
 		for (cv::Point2f& Corner : Corners)
@@ -320,16 +307,23 @@ bool UCameraLensDistortionAlgoCheckerboard::AddCalibrationRow(FText& OutErrorMes
 			Row->Points2d.Add(FVector2D(Corner.x, Corner.y));
 		}
 
-		cv::drawChessboardCorners(CvFrame, CheckerboardSize, Corners, bCornersFound);
-	}
+		// Update the coverage overlay image with information from the newly added row
+		cv::drawChessboardCorners(CvCoverage, CheckerboardSize, Corners, true);
 
-	// Show the detection to the user
-	if (bShouldShowDetectionWindow)
-	{
-		FCameraCalibrationWidgetHelpers::DisplayTextureInWindowAlmostFullScreen(
-			FOpenCVHelper::TextureFromCvMat(CvFrame),
-			LOCTEXT("CheckerboardDetection", "Checkerboard Detection")
-		);
+		CoverageTexture = FOpenCVHelper::TextureFromCvMat(CvCoverage, CoverageTexture);
+		StepsController->RefreshOverlay();
+
+		// Show the detection to the user
+		if (bShouldShowDetectionWindow)
+		{
+			// Update the coverage overlay image with information from the newly added row
+			cv::drawChessboardCorners(CvFrame, CheckerboardSize, Corners, true);
+
+			FCameraCalibrationWidgetHelpers::DisplayTextureInWindowAlmostFullScreen(
+				FOpenCVHelper::TextureFromCvMat(CvFrame),
+				LOCTEXT("CheckerboardDetection", "Checkerboard Detection")
+			);
+		}
 	}
 
 	// Create thumbnail and add it to the row
@@ -380,6 +374,12 @@ TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildUI()
 		.AutoHeight()
 		.MaxHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
 		[ FCameraCalibrationWidgetHelpers::BuildLabelWidgetPair(LOCTEXT("Checkerboard", "Checkerboard"), BuildCalibrationDevicePickerWidget()) ]
+
+		+ SVerticalBox::Slot() // Show Overlay
+		.VAlign(EVerticalAlignment::VAlign_Top)
+		.AutoHeight()
+		.MaxHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
+		[FCameraCalibrationWidgetHelpers::BuildLabelWidgetPair(LOCTEXT("ShowOverlay", "Show Coverage Overlay"), BuildShowOverlayWidget())]
 
 		+ SVerticalBox::Slot() // Show Detection
 		.VAlign(EVerticalAlignment::VAlign_Top)
@@ -700,7 +700,7 @@ TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildCalibrationDevic
 			.Text(LOCTEXT("Spawn", "Spawn"))
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
-			.ButtonColorAndOpacity(FLinearColor::Transparent)
+			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
 			.OnClicked_Lambda([&]() -> FReply
 			{
 				const FCameraCalibrationStepsController* StepsController = GetStepsController();
@@ -725,6 +725,28 @@ TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildCalibrationDevic
 			]
 		]
 		;
+}
+
+TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildShowOverlayWidget()
+{
+	return SNew(SCheckBox)
+		.IsChecked_Lambda([&]() -> ECheckBoxState
+		{
+			return bShouldShowOverlay ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		})
+		.OnCheckStateChanged_Lambda([&](ECheckBoxState NewState) -> void
+		{
+			bShouldShowOverlay = (NewState == ECheckBoxState::Checked);
+
+			FCameraCalibrationStepsController* StepsController = Tool->GetCameraCalibrationStepsController();
+
+			if (!ensure(StepsController))
+			{
+				return;
+			}
+
+			StepsController->SetOverlayEnabled(bShouldShowOverlay);
+		});
 }
 
 TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildShowDetectionWidget()
@@ -790,6 +812,7 @@ TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildCalibrationPoint
 				}
 
 				CalibrationListView->RequestListRefresh();
+				RefreshCoverage();
 				return FReply::Handled();
 			}
 			else if (KeyEvent.GetModifierKeys().IsControlDown() && (KeyEvent.GetKey() == EKeys::A))
@@ -864,6 +887,11 @@ ACameraCalibrationCheckerboard* UCameraLensDistortionAlgoCheckerboard::GetCalibr
 	return Calibrator.Get();
 }
 
+UMaterialInterface* UCameraLensDistortionAlgoCheckerboard::GetOverlayMaterial() const
+{
+	return TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/CameraCalibration/Materials/M_Coverage.M_Coverage"))).LoadSynchronous();
+}
+
 void UCameraLensDistortionAlgoCheckerboard::OnDistortionSavedToLens()
 {
 	// Since the calibration result was saved, there is no further use for the current samples.
@@ -878,6 +906,43 @@ void UCameraLensDistortionAlgoCheckerboard::ClearCalibrationRows()
 	{
 		CalibrationListView->RequestListRefresh();
 	}
+
+	RefreshCoverage();
+}
+
+void UCameraLensDistortionAlgoCheckerboard::RefreshCoverage()
+{
+#if WITH_OPENCV
+	FCameraCalibrationStepsController* StepsController = Tool->GetCameraCalibrationStepsController();
+
+	if (!ensure(StepsController))
+	{
+		return;
+	}
+
+	FIntPoint Size = StepsController->GetCompRenderTargetSize();
+
+	CvCoverage.release();
+	CvCoverage = cv::Mat(cv::Size(Size.X, Size.Y), CV_8UC4);
+
+	for (const TSharedPtr<FCalibrationRowData>& Row : CalibrationRows)
+	{
+		cv::Size CheckerboardSize(Row->NumCornerCols, Row->NumCornerRows);
+
+		std::vector<cv::Point2f> Corners;
+
+		for (const FVector2D& Corner : Row->Points2d)
+		{
+			Corners.push_back(cv::Point2f(Corner.X, Corner.Y));
+		}
+
+		cv::drawChessboardCorners(CvCoverage, CheckerboardSize, Corners, true);
+	}
+
+	CoverageTexture = FOpenCVHelper::TextureFromCvMat(CvCoverage, CoverageTexture);
+
+	StepsController->RefreshOverlay();
+#endif
 }
 
 TSharedRef<SWidget> UCameraLensDistortionAlgoCheckerboard::BuildHelpWidget()

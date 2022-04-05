@@ -30,6 +30,13 @@ endif( NOT MSVC )
 # HLSL Change - add ignored sources
 set(HLSL_IGNORE_SOURCES DynamicLibrary.cpp PluginLoader.cpp)
 
+# HLSL Change Begin - Add implicit filesystem when tests are enabled
+if (LLVM_INCLUDE_TESTS)
+  set_source_files_properties(Path.cpp
+    PROPERTIES COMPILE_DEFINITIONS "MS_IMPLICIT_DISK_FILESYSTEM")
+endif()
+# HLSL Change End
+
 add_llvm_library(LLVMSupport
   APFloat.cpp
   APInt.cpp
@@ -137,3 +144,8 @@ add_llvm_library(LLVMSupport
   )
 
 set_property(TARGET LLVMSupport PROPERTY LLVM_SYSTEM_LIBS "${system_libs}")
+if(WIN32)
+set_property(TARGET LLVMSupport PROPERTY COMPILE_FLAGS /EHsc )
+endif(WIN32)
+
+target_link_libraries(LLVMSupport PUBLIC LLVMMSSupport) # HLSL Change

@@ -4,6 +4,7 @@
 
 #include "RigVMCore/RigVMExternalVariable.h"
 #include "RigVMModel/RigVMNode.h"
+#include "RigVMTypeUtils.h"
 #include "RigVMParameterNode.generated.h"
 
 /**
@@ -38,7 +39,7 @@ public:
 
 	// The Struct of the C++ data type of the parameter (or nullptr)
 	UPROPERTY(BlueprintReadOnly, Category = RigVMGraphParameterDescription)
-	UObject* CPPTypeObject = nullptr;
+	TObjectPtr<UObject> CPPTypeObject = nullptr;
 
 	// The default value of the parameter
 	UPROPERTY(BlueprintReadOnly, Category = RigVMGraphParameterDescription)
@@ -50,7 +51,7 @@ public:
 		FRigVMExternalVariable ExternalVariable;
 		ExternalVariable.Name = Name;
 
-		if (CPPType.StartsWith(TEXT("TArray<")))
+		if (RigVMTypeUtils::IsArrayType(CPPType))
 		{
 			ExternalVariable.bIsArray = true;
 			ExternalVariable.TypeName = *CPPType.Mid(7, CPPType.Len() - 8);

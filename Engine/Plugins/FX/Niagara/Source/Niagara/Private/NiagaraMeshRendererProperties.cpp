@@ -6,6 +6,7 @@
 #include "NiagaraConstants.h"
 #include "NiagaraBoundsCalculatorHelper.h"
 #include "NiagaraCustomVersion.h"
+#include "NiagaraEmitterInstance.h"
 #include "Modules/ModuleManager.h"
 
 #if WITH_EDITOR
@@ -49,11 +50,40 @@ bool FNiagaraMeshMaterialOverride::SerializeFromMismatchedTag(const struct FProp
 
 FNiagaraMeshRendererMeshProperties::FNiagaraMeshRendererMeshProperties()
 	: Mesh(nullptr)
+	, UserParamBinding(FNiagaraTypeDefinition(UStaticMesh::StaticClass()))
 	, Scale(1.0f, 1.0f, 1.0f)
+	, Rotation(FRotator::ZeroRotator)
 	, PivotOffset(ForceInitToZero)
 	, PivotOffsetSpace(ENiagaraMeshPivotOffsetSpace::Mesh)
-{	
+{
 }
+
+UStaticMesh* FNiagaraMeshRendererMeshProperties::ResolveStaticMesh(const FNiagaraEmitterInstance* Emitter) const
+{
+	UStaticMesh* FoundMesh = nullptr;
+
+	if (UserParamBinding.Parameter.IsValid() && Emitter)
+	{
+		UStaticMesh* TestMesh = Cast<UStaticMesh>(Emitter->GetRendererBoundVariables().GetUObject(UserParamBinding.Parameter));
+		if (TestMesh && TestMesh->GetRenderData())
+		{
+			FoundMesh = TestMesh;
+		}
+	}
+
+	if (!FoundMesh && Mesh && Mesh->GetRenderData())
+	{
+		FoundMesh = Mesh;
+	}
+
+	return FoundMesh;
+}
+
+bool FNiagaraMeshRendererMeshProperties::HasValidMeshProperties() const
+{
+	return Mesh || UserParamBinding.Parameter.IsValid();
+}
+
 
 
 UNiagaraMeshRendererProperties::UNiagaraMeshRendererProperties()
@@ -106,15 +136,15 @@ UNiagaraMeshRendererProperties::UNiagaraMeshRendererProperties()
 	AttributeBindings.Add(&MeshIndexBinding);
 }
 
-FNiagaraRenderer* UNiagaraMeshRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent)
+FNiagaraRenderer* UNiagaraMeshRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController)
 {
 	for (const auto& MeshProperties : Meshes)
 	{
-		if (MeshProperties.Mesh && MeshProperties.Mesh->GetRenderData())
+		if (MeshProperties.ResolveStaticMesh(Emitter))
 		{
 			// There's at least one valid mesh
 			FNiagaraRenderer* NewRenderer = new FNiagaraRendererMeshes(FeatureLevel, this, Emitter);
-			NewRenderer->Initialize(this, Emitter, InComponent);
+			NewRenderer->Initialize(this, Emitter, InController);
 			return NewRenderer;
 		}
 	}
@@ -338,10 +368,10 @@ void UNiagaraMeshRendererProperties::CacheFromCompiledData(const FNiagaraDataSet
 #if WITH_EDITORONLY_DATA
 bool UNiagaraMeshRendererProperties::IsSupportedVariableForBinding(const FNiagaraVariableBase& InSourceForBinding, const FName& InTargetBindingName) const
 {
-	if ((SourceMode == ENiagaraRendererSourceDataMode::Particles && InSourceForBinding.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespace)) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::UserNamespace) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::SystemNamespace) ||
-		InSourceForBinding.IsInNameSpace(FNiagaraConstants::EmitterNamespace))
+	if ((SourceMode == ENiagaraRendererSourceDataMode::Particles && InSourceForBinding.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespaceString)) ||
+		InSourceForBinding.IsInNameSpace(FNiagaraConstants::UserNamespaceString) ||
+		InSourceForBinding.IsInNameSpace(FNiagaraConstants::SystemNamespaceString) ||
+		InSourceForBinding.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString))
 	{
 		return true;
 	}
@@ -353,7 +383,7 @@ void UNiagaraMeshRendererProperties::GetUsedMeshMaterials(int32 MeshIndex, const
 {
 	check(Meshes.IsValidIndex(MeshIndex));
 
-	const UStaticMesh* Mesh = Meshes[MeshIndex].Mesh;
+	const UStaticMesh* Mesh = Meshes[MeshIndex].ResolveStaticMesh(Emitter);
 	check(Mesh);
 
 	const FStaticMeshRenderData* RenderData = Mesh->GetRenderData();
@@ -401,7 +431,7 @@ void UNiagaraMeshRendererProperties::GetUsedMeshMaterials(int32 MeshIndex, const
 				// and still have good defaults if it isn't set to anything.
 				if (Emitter && OverrideMaterials[OverrideIndex].UserParamBinding.Parameter.IsValid())
 				{
-					Emitter->FindBinding(OverrideMaterials[OverrideIndex].UserParamBinding, OverrideMat);
+					OverrideMat = Cast<UMaterialInterface>(Emitter->FindBinding(OverrideMaterials[OverrideIndex].UserParamBinding.Parameter));
 				}
 
 				if (!OverrideMat)
@@ -423,7 +453,7 @@ void UNiagaraMeshRendererProperties::GetUsedMaterials(const FNiagaraEmitterInsta
 	TArray<UMaterialInterface*> OrderedMeshMaterials;
 	for (int32 MeshIndex = 0; MeshIndex < Meshes.Num(); ++MeshIndex)
 	{
-		const UStaticMesh* Mesh = Meshes[MeshIndex].Mesh;
+		const UStaticMesh* Mesh = Meshes[MeshIndex].ResolveStaticMesh(InEmitter);
 		if (Mesh && Mesh->GetRenderData())
 		{
 			GetUsedMeshMaterials(MeshIndex, InEmitter, OrderedMeshMaterials);
@@ -441,7 +471,7 @@ void UNiagaraMeshRendererProperties::GetUsedMaterials(const FNiagaraEmitterInsta
 
 bool UNiagaraMeshRendererProperties::PopulateRequiredBindings(FNiagaraParameterStore& InParameterStore)
 {
-	bool bAnyAdded = false;
+	bool bAnyAdded = Super::PopulateRequiredBindings(InParameterStore);
 
 	for (const FNiagaraVariableAttributeBinding* Binding : AttributeBindings)
 	{
@@ -456,6 +486,15 @@ bool UNiagaraMeshRendererProperties::PopulateRequiredBindings(FNiagaraParameterS
 	{
 		InParameterStore.AddParameter(MaterialParamBinding.GetParamMapBindableVariable(), false);
 		bAnyAdded = true;
+	}
+
+	for (FNiagaraMeshRendererMeshProperties& Binding : Meshes)
+	{
+		if (Binding.UserParamBinding.Parameter.IsValid())
+		{
+			InParameterStore.AddParameter(Binding.UserParamBinding.Parameter, false);
+			bAnyAdded = true;
+		}
 	}
 
 	return bAnyAdded;
@@ -489,7 +528,11 @@ void UNiagaraMeshRendererProperties::PostLoad()
 		}
 	}
 
-
+#if WITH_EDITORONLY_DATA
+	ChangeToPositionBinding(PositionBinding);
+	ChangeToPositionBinding(PrevPositionBinding);
+#endif
+	
 	PostLoadBindings(SourceMode);
 	
 	// Fix up these bindings from their loaded source bindings
@@ -559,41 +602,65 @@ void UNiagaraMeshRendererProperties::GetAdditionalVariables(TArray<FNiagaraVaria
 
 void UNiagaraMeshRendererProperties::GetRendererWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const
 {
-	TSharedRef<SWidget> ThumbnailWidget = SNullWidget::NullWidget;
+	TSharedRef<SWidget> DefaultThumbnailWidget = SNew(SImage)
+		.Image(FSlateIconFinder::FindIconBrushForClass(StaticClass()));
+
 	int32 ThumbnailSize = 32;
-	TArray<UMaterialInterface*> Materials;
-	GetUsedMaterials(InEmitter, Materials);
-	for (UMaterialInterface* Material : Materials)
+	for(const FNiagaraMeshRendererMeshProperties& MeshProperties : Meshes)
 	{
-		TSharedPtr<FAssetThumbnail> AssetThumbnail = MakeShareable(new FAssetThumbnail(Material, ThumbnailSize, ThumbnailSize, InThumbnailPool));
-		if (AssetThumbnail)
+		TSharedPtr<SWidget> ThumbnailWidget = DefaultThumbnailWidget;
+
+		UStaticMesh* Mesh = MeshProperties.Mesh;
+		if (Mesh && Mesh->HasValidRenderData())
 		{
+			TSharedPtr<FAssetThumbnail> AssetThumbnail = MakeShareable(new FAssetThumbnail(Mesh, ThumbnailSize, ThumbnailSize, InThumbnailPool));
 			ThumbnailWidget = AssetThumbnail->MakeThumbnailWidget();
 		}
-		OutWidgets.Add(ThumbnailWidget);
+		
+		OutWidgets.Add(ThumbnailWidget);		
 	}
 
-	if (Materials.Num() == 0)
+	if (Meshes.Num() == 0)
 	{
-		TSharedRef<SWidget> SpriteWidget = SNew(SImage)
-			.Image(FSlateIconFinder::FindIconBrushForClass(GetClass()));
-		OutWidgets.Add(SpriteWidget);
+		OutWidgets.Add(DefaultThumbnailWidget);
 	}
 }
 
 void UNiagaraMeshRendererProperties::GetRendererTooltipWidgets(const FNiagaraEmitterInstance* InEmitter, TArray<TSharedPtr<SWidget>>& OutWidgets, TSharedPtr<FAssetThumbnailPool> InThumbnailPool) const
 {
-	TArray<UMaterialInterface*> Materials;
-	GetUsedMaterials(InEmitter, Materials);
-	if (Materials.Num() > 0)
+	TSharedRef<SWidget> DefaultMeshTooltip = SNew(STextBlock)
+			.Text(LOCTEXT("MeshRendererNoMat", "Mesh Renderer (No Mesh Set)"));
+	
+	TArray<TSharedPtr<SWidget>> RendererWidgets;
+	if (Meshes.Num() > 0)
 	{
-		GetRendererWidgets(InEmitter, OutWidgets, InThumbnailPool);
+		GetRendererWidgets(InEmitter, RendererWidgets, InThumbnailPool);
 	}
-	else
+	
+	for(int32 MeshIndex = 0; MeshIndex < Meshes.Num(); MeshIndex++)
 	{
-		TSharedRef<SWidget> MeshTooltip = SNew(STextBlock)
-			.Text(LOCTEXT("MeshRendererNoMat", "Mesh Renderer (No Material Set)"));
-		OutWidgets.Add(MeshTooltip);
+		const FNiagaraMeshRendererMeshProperties& MeshProperties = Meshes[MeshIndex];
+		
+		TSharedPtr<SWidget> TooltipWidget = DefaultMeshTooltip;		
+		// we make sure to reuse the mesh widget as a thumbnail if the mesh is valid
+		if(MeshProperties.ResolveStaticMesh(InEmitter))
+		{
+			TooltipWidget = RendererWidgets[MeshIndex];
+		}
+
+		// we override the previous thumbnail tooltip with a text indicating user parameter binding, if it exists
+		if(MeshProperties.UserParamBinding.Parameter.IsValid())
+		{
+			TooltipWidget = SNew(STextBlock)
+				.Text(FText::Format(LOCTEXT("MeshBoundTooltip", "Mesh slot is bound to user parameter {0}"), FText::FromName(MeshProperties.UserParamBinding.Parameter.GetName())));
+		}
+		
+		OutWidgets.Add(TooltipWidget);
+	}
+
+	if (Meshes.Num() == 0)
+	{
+		OutWidgets.Add(DefaultMeshTooltip);
 	}
 }
 
@@ -948,7 +1015,7 @@ void UNiagaraMeshRendererProperties::RebuildMeshList()
 
 	if (bAnyError)
 	{
-		ShowFlipbookWarningToast(LOCTEXT("FlipbookSuffixWarningToastMessage", "Failed to load one or more meshes for Mesh Flipbook. See the Output Log for details."));
+		ShowFlipbookWarningToast(LOCTEXT("FlipbookWarningToastMessage", "Failed to load one or more meshes for Mesh Flipbook. See the Output Log for details."));
 	}
 }
 

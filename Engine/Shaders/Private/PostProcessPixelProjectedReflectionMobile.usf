@@ -31,9 +31,9 @@ Texture2D SceneDepthTexture;
 SamplerState SceneDepthSampler;
 
 float4 ReflectionPlane;
-half4 BufferSizeAndInvSize;
-half4 ViewSizeAndInvSize;
-half4 ViewRectMin;
+float4 BufferSizeAndInvSize;
+float4 ViewSizeAndInvSize;
+float4 ViewRectMin;
 
 float2 ProjectionPixelToBufferUV(int2 ReflectionPixel)
 {
@@ -164,7 +164,7 @@ void ProjectionPassCS(
 
 		float PlaneDistance = dot(ReflectionPlane, float4(ViewPosition, -1.0f));
 
-		if (PlaneDistance > 0.01f )
+		if (PlaneDistance > 0.5f )
 		{
 			float3 MirroredViewPosition = ViewPosition - ReflectionPlane.xyz * (2.f * PlaneDistance);
 
@@ -223,7 +223,7 @@ void ReflectionPassVS(
 
 	float3 RotatedPosition = LocalToWorld[0].xyz * LocalPosition.xxx + LocalToWorld[1].xyz * LocalPosition.yyy + LocalToWorld[2].xyz * LocalPosition.zzz;
 	
-	float4 TranslatedWorldPosition = float4(RotatedPosition + (LocalToWorld[3].xyz + ResolvedView.PreViewTranslation.xyz), 1);
+	float4 TranslatedWorldPosition = float4(RotatedPosition + (LocalToWorld[3].xyz + LWCHackToFloat(ResolvedView.PreViewTranslation)), 1);
 
 	OutPosition = mul(TranslatedWorldPosition, ResolvedView.TranslatedWorldToClip);
 
@@ -300,7 +300,7 @@ void ReflectionPassPS(
 #if MOBILE_MULTI_VIEW
 	in float MultiViewId : VIEW_ID,
 #endif
-	out half4 OutColor : SV_Target0)
+	out HALF4_TYPE OutColor : SV_Target0)
 {
 #if MOBILE_MULTI_VIEW
 	ResolvedView = ResolveView(uint(MultiViewId));
@@ -355,8 +355,6 @@ void ReflectionPassPS(
 	}
 #endif
 
-#if USE_PREEXPOSURE
 	OutColor.rgb *= ResolvedView.OneOverPreExposure;
-#endif
 }
 #endif

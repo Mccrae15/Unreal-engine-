@@ -6,10 +6,11 @@
 #include "CoreGlobals.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/ScopeLock.h"
+#include "AudioDevice.h"
 
 #if WITH_ENGINE
 #include "VorbisAudioInfo.h"
-#include "ADPCMAudioInfo.h"
+#include "BinkAudioInfo.h"
 #include "AudioPluginUtilities.h"
 #endif
 
@@ -400,11 +401,6 @@ namespace Audio
 		}
 	}
 
-	bool FMixerPlatformAndroid::SupportsRealtimeDecompression() const
-	{
-		return true;
-	}
-
 	void FMixerPlatformAndroid::SubmitBuffer(const uint8* Buffer)
 	{
 		check(DeviceBuffer.Num() == NumSamplesPerDeviceCallback);
@@ -423,49 +419,38 @@ namespace Audio
 		}
 	}
 
-	FName FMixerPlatformAndroid::GetRuntimeFormat(USoundWave* InSoundWave)
+	FName FMixerPlatformAndroid::GetRuntimeFormat(const USoundWave* InSoundWave) const
 	{
-#if WITH_ENGINE
-		static FName NAME_ADPCM(TEXT("ADPCM"));
+		FName RuntimeFormat = Audio::ToName(InSoundWave->GetSoundAssetCompressionType());
 
-		if (InSoundWave->IsSeekableStreaming())
+		if (RuntimeFormat == Audio::NAME_PLATFORM_SPECIFIC)
 		{
-			return NAME_ADPCM;
+			RuntimeFormat = Audio::NAME_OGG;
 		}
 
-#if WITH_OGGVORBIS
-		static FName NAME_OGG(TEXT("OGG"));
-		if (InSoundWave->HasCompressedData(NAME_OGG))
-		{
-			return NAME_OGG;
-		}
-#endif // WITH_OGGVORBIS
-		return NAME_ADPCM;
-#else
-		return FName(TEXT("None"));
-#endif //WITH_ENGINE
+		return RuntimeFormat;
 	}
 
-	bool FMixerPlatformAndroid::HasCompressedAudioInfoClass(USoundWave* InSoundWave)
+	ICompressedAudioInfo* FMixerPlatformAndroid::CreateCompressedAudioInfo(const FName& InRuntimeFormat) const
 	{
-		return true;
-	}
+		ICompressedAudioInfo* Decoder = nullptr;
 
-	ICompressedAudioInfo* FMixerPlatformAndroid::CreateCompressedAudioInfo(USoundWave* InSoundWave)
-	{
-#if WITH_ENGINE
-		static FName NAME_OGG(TEXT("OGG"));
-		static FName NAME_ADPCM(TEXT("ADPCM"));
-
-		if (InSoundWave->IsSeekableStreaming())
+		if (InRuntimeFormat == Audio::NAME_OGG)
 		{
-			return new FADPCMAudioInfo();
+			Decoder = new FVorbisAudioInfo();
 		}
-
-		return new FVorbisAudioInfo();
-#else
-		return nullptr;
-#endif // WITH_ENGINE
+		else if (InRuntimeFormat == Audio::NAME_BINKA)
+		{
+#if WITH_BINK_AUDIO
+			Decoder = new FBinkAudioInfo();
+#endif // WITH_BINK_AUDIO			
+		}
+		else
+		{
+			Decoder = Audio::CreateSoundAssetDecoder(InRuntimeFormat);
+		}
+		ensureMsgf(Decoder != nullptr, TEXT("Failed to create a sound asset decoder for compression type: %s"), *InRuntimeFormat.ToString());
+		return Decoder;
 	}
 
 	FString FMixerPlatformAndroid::GetDefaultDeviceName()

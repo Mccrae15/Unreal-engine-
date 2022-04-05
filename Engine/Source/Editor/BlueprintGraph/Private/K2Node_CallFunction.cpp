@@ -1191,12 +1191,8 @@ void UK2Node_CallFunction::PostReconstructNode()
 
 	if (IsNodePure())
 	{
-		// Remove any pre-existing breakpoint on this node since pure nodes cannot have breakpoints
-		if (UBreakpoint* ExistingBreakpoint = FKismetDebugUtilities::FindBreakpointForNode(GetBlueprint(), this))
-		{
-			// Remove the breakpoint
-			FKismetDebugUtilities::StartDeletingBreakpoint(ExistingBreakpoint, GetBlueprint());
-		}
+		// Remove the breakpoint
+		FKismetDebugUtilities::RemoveBreakpointFromNode(this, GetBlueprint());
 	}
 }
 
@@ -1215,7 +1211,9 @@ void UK2Node_CallFunction::NotifyPinConnectionListChanged(UEdGraphPin* Pin)
 	FCustomStructureParamHelper::UpdateCustomStructurePins(GetTargetFunction(), this, Pin);
 
 	// Refresh the node to hide internal-only pins once the [invalid] connection has been broken
-	if (Pin->bHidden && Pin->bNotConnectable && Pin->LinkedTo.Num() == 0)
+	// If the pin was a container then it needs to be refreshed to get the correct pin literal text boxes
+	// for its default value
+	if (Pin->PinType.IsContainer() || (Pin->bHidden && Pin->bNotConnectable && Pin->LinkedTo.Num() == 0))
 	{
 		GetGraph()->NotifyGraphChanged();
 	}
@@ -1316,10 +1314,34 @@ bool UK2Node_CallFunction::CanFunctionSupportMultipleTargets(UFunction const* Fu
 	return !bHasReturnParam && bIsImpure && !bIsLatent;
 }
 
+bool UK2Node_CallFunction::CanEditorOnlyFunctionBeCalled(const UFunction* InFunction, const UObject* InObject)
+{
+	if (InFunction && InObject &&
+		(IsEditorOnlyObject(InFunction) || InFunction->HasAnyFunctionFlags(FUNC_EditorOnly)))
+	{
+		if (!IsEditorOnlyObject(InObject))
+		{
+			// InObject isn't editor-only, but it's still possible that it's a blueprint derived from an editor-only class, so let's check for that case
+			const UBlueprint* InObjectAsBP = Cast<const UBlueprint>(InObject->GetOuter());
+			return (InObjectAsBP && InObjectAsBP->ParentClass && IsEditorOnlyObject(InObjectAsBP->ParentClass));
+		}
+	}
+
+	return true;
+}
+
 bool UK2Node_CallFunction::CanPasteHere(const UEdGraph* TargetGraph) const
 {
 	// Basic check for graph compatibility, etc.
 	bool bCanPaste = Super::CanPasteHere(TargetGraph);
+
+	// Cannot paste editor only functions into runtime graphs
+	if (bCanPaste)
+	{
+		UFunction* TargetFunction = GetTargetFunction();
+
+		bCanPaste = CanEditorOnlyFunctionBeCalled(TargetFunction, TargetGraph);
+	}
 
 	// We check function context for placability only in the base class case; derived classes are typically bound to
 	// specific functions that should always be placeable, but may not always be explicitly callable (e.g. InternalUseOnly).
@@ -1718,12 +1740,8 @@ FText UK2Node_CallFunction::GetDefaultCategoryForFunction(const UFunction* Funct
 
 FText UK2Node_CallFunction::GetKeywordsForFunction(const UFunction* Function)
 {
-	// If the friendly name and real function name do not match add the real function name friendly name as a keyword.
-	FString Keywords;
-	if( Function->GetName() != GetUserFacingFunctionName(Function).ToString() )
-	{
-		Keywords = Function->GetName();
-	}
+	// Always add the real function name as the first keyword, even if it matches the display name we don't want to penalize one word function names in later searches
+	FString Keywords = Function->GetName();
 
 	if (ShouldDrawCompact(Function))
 	{
@@ -2025,31 +2043,35 @@ void UK2Node_CallFunction::ValidateNodeDuringCompilation(class FCompilerResultsL
 
 	const UClass* BlueprintClass = Blueprint ? Blueprint->ParentClass : nullptr;
 	const bool bIsEditorOnlyBlueprintBaseClass = !BlueprintClass || IsEditorOnlyObject(BlueprintClass);
+	static bool bAllowUnsafeBlueprintCalls = FParse::Param(FCommandLine::Get(), TEXT("AllowUnsafeBlueprintCalls"));
 
-	// This error is disabled while we figure out how we can identify uncooked only
-	// blueprints that want to make use of uncooked only APIs:
-	#if 0
-	const bool bIsUncookedOnlyFunction = Function && Function->GetOutermost()->HasAllPackagesFlags(PKG_UncookedOnly);
-	if (	bIsUncookedOnlyFunction &&
+	if (!bAllowUnsafeBlueprintCalls)
+	{
+		// This error is disabled while we figure out how we can identify uncooked only
+		// blueprints that want to make use of uncooked only APIs:
+		#if 0
+		const bool bIsUncookedOnlyFunction = Function && Function->GetOutermost()->HasAllPackagesFlags(PKG_UncookedOnly);
+		if (bIsUncookedOnlyFunction &&
 			// Only allow calls to uncooked only functions from editor only/uncooked only
 			// contexts:
-			!(	GetOutermost()->HasAnyPackageFlags(PKG_UncookedOnly|PKG_EditorOnly) ||
-				bIsEditorOnlyBlueprintBaseClass ))
-	{
-		MessageLog.Error(*LOCTEXT("UncookedOnlyError", "Attempting to call uncooked only function @@ in runtime blueprint").ToString(), this);
-	}
-	#endif //0
-	
-	// Ensure that editor module BP exposed UFunctions can only be called in blueprints for which the base class is also part of an editor module
-	// Also check for functions wrapped in WITH_EDITOR 
-	if (Function && Blueprint &&
-		(IsEditorOnlyObject(Function) || Function->HasAnyFunctionFlags(FUNC_EditorOnly)))
-	{	
-		if (!bIsEditorOnlyBlueprintBaseClass)
+			!(GetOutermost()->HasAnyPackageFlags(PKG_UncookedOnly | PKG_EditorOnly) ||
+				bIsEditorOnlyBlueprintBaseClass))
 		{
-			FString const FunctName = Function->GetName();
-			FText const WarningFormat = LOCTEXT("EditorFunctionFmt", "Cannot use the editor function \"{0}\" in this runtime Blueprint. Only for use in Editor Utility Blueprints and Blutilities.");
-			MessageLog.Error(*FText::Format(WarningFormat, FText::FromString(FunctName)).ToString(), this);
+			MessageLog.Error(*LOCTEXT("UncookedOnlyError", "Attempting to call uncooked only function @@ in runtime blueprint").ToString(), this);
+		}
+		#endif	// 0
+
+		// Ensure that editor module BP exposed UFunctions can only be called in blueprints for which the base class is also part of an editor module
+		// Also check for functions wrapped in WITH_EDITOR 
+		if (Function && Blueprint &&
+			(IsEditorOnlyObject(Function) || Function->HasAnyFunctionFlags(FUNC_EditorOnly)))
+		{
+			if (!bIsEditorOnlyBlueprintBaseClass)
+			{
+				FString const FunctName = Function->GetName();
+				FText const WarningFormat = LOCTEXT("EditorFunctionFmt", "Cannot use the editor function \"{0}\" in this runtime Blueprint. Only for use in Editor Utility Blueprints and Blutilities.");
+				MessageLog.Error(*FText::Format(WarningFormat, FText::FromString(FunctName)).ToString(), this);
+			}
 		}
 	}
 
@@ -2160,7 +2182,7 @@ void UK2Node_CallFunction::Serialize(FArchive& Ar)
 
 	if (Ar.IsLoading())
 	{
-		if (Ar.UE4Ver() < VER_UE4_SWITCH_CALL_NODE_TO_USE_MEMBER_REFERENCE)
+		if (Ar.UEVer() < VER_UE4_SWITCH_CALL_NODE_TO_USE_MEMBER_REFERENCE)
 		{
 			UFunction* Function = FindUField<UFunction>(CallFunctionClass_DEPRECATED, CallFunctionName_DEPRECATED);
 			const bool bProbablySelfCall = (CallFunctionClass_DEPRECATED == NULL) || ((Function != NULL) && (Function->GetOuterUClass()->ClassGeneratedBy == GetBlueprint()));
@@ -2168,7 +2190,7 @@ void UK2Node_CallFunction::Serialize(FArchive& Ar)
 			FunctionReference.SetDirect(CallFunctionName_DEPRECATED, FGuid(), CallFunctionClass_DEPRECATED, bProbablySelfCall);
 		}
 
-		if(Ar.UE4Ver() < VER_UE4_K2NODE_REFERENCEGUIDS)
+		if(Ar.UEVer() < VER_UE4_K2NODE_REFERENCEGUIDS)
 		{
 			FGuid FunctionGuid;
 
@@ -2437,7 +2459,7 @@ void UK2Node_CallFunction::ExpandNode(class FKismetCompilerContext& CompilerCont
 								AssignNode->GetValuePin()->DefaultValue = Pin->PinName.ToString();
 
 								// Finally remove this 'cosmetic' exec pin
-								Pins[PinIdx]->MarkPendingKill();
+								Pins[PinIdx]->MarkAsGarbage();
 								Pins.RemoveAt(PinIdx);
 							}
 						}
@@ -2475,7 +2497,7 @@ void UK2Node_CallFunction::ExpandNode(class FKismetCompilerContext& CompilerCont
 										CompilerContext.MovePinLinksToIntermediate(*Pin, *FoundPin);
 
 										// Finally remove this 'cosmetic' exec pin
-										Pins[PinIdx]->MarkPendingKill();
+										Pins[PinIdx]->MarkAsGarbage();
 										Pins.RemoveAt(PinIdx);
 									}
 								}
@@ -3335,10 +3357,21 @@ FString UK2Node_CallFunction::GetPinMetaData(FName InPinName, FName InKey)
 	{
 		if (UFunction* Function = GetTargetFunction())
 		{
-			// Find the corresponding property for the pin
+			// Find the corresponding property for the pin and search that first
 			if (FProperty* Property = Function->FindPropertyByName(InPinName))
 			{
 				MetaData = Property->GetMetaData(InKey);
+			}
+
+			// Also look for metadata like DefaultToSelf on the function itself
+			if (MetaData.IsEmpty())
+			{
+				MetaData = Function->GetMetaData(InKey);
+				if (MetaData != InPinName.ToString())
+				{
+					// Only return if the value matches the pin name as we don't want general function metadata
+					MetaData.Empty();
+				}
 			}
 		}
 	}

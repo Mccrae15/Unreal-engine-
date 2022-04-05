@@ -9,7 +9,6 @@ class USceneComponent;
 class FJsonObject;
 class FString;
 class AActor;
-struct FBox;
 
 namespace DatasmithImportFactoryHelper
 {
@@ -17,5 +16,5 @@ namespace DatasmithImportFactoryHelper
 
 	void ComputeBounds( USceneComponent* ActorComponent, FBox& Bounds );
 
-	void CaptureSceneThumbnail(AActor* SceneActor, TArray<FAssetData>& AssetDataList);
+	void SetupSceneViewport(AActor* SceneActor, TArray<FAssetData>& AssetDataList);
 }

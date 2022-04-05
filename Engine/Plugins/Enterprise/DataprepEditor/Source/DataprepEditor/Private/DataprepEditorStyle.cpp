@@ -10,6 +10,7 @@
 #include "Styling/SlateStyle.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateTypes.h"
+#include "Styling/ToolBarStyle.h"
 
 #define IMAGE_PLUGIN_BRUSH( RelativePath, ... ) FSlateImageBrush( FDataprepEditorStyle::InContent( RelativePath, ".png" ), __VA_ARGS__ )
 #define BOX_BRUSH( RelativePath, ... ) FSlateBoxBrush( FDataprepEditorStyle::InContent( RelativePath, ".png" ), __VA_ARGS__ )
@@ -99,7 +100,7 @@ void FDataprepEditorStyle::Initialize()
 			TilteTextStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 11));
 			StyleSet->Set("DataprepAction.TitleTextStyle", TilteTextStyle);
 
-			FEditableTextBoxStyle TitleEditableText = FEditorStyle::GetWidgetStyle< FEditableTextBoxStyle >("ViewportMenu.EditableText");
+			FEditableTextBoxStyle TitleEditableText = FEditorStyle::Get().GetWidgetStyle<FToolBarStyle>("LegacyViewportMenu").EditableTextStyle;
 			TitleEditableText.SetFont(FCoreStyle::GetDefaultFontStyle("Bold", 11));
 
 			StyleSet->Set( "DataprepAction.TitleInlineEditableText", FInlineEditableTextBlockStyle()

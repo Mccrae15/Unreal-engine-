@@ -4,6 +4,8 @@
 
 #include "Engine/Attenuation.h"
 #include "IAudioExtensionPlugin.h"
+#include "IAudioParameterInterfaceRegistry.h"
+
 #include "SoundAttenuation.generated.h"
 
 class USoundSubmixBase;
@@ -88,15 +90,19 @@ struct ENGINE_API FSoundAttenuationPluginSettings
 
 	/** Settings to use with spatialization audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. This is an array so multiple plugins can have settings. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (DisplayName = "Spatialization Plugin Settings"))
-	TArray<USpatializationPluginSourceSettingsBase*> SpatializationPluginSettingsArray;
+	TArray<TObjectPtr<USpatializationPluginSourceSettingsBase>> SpatializationPluginSettingsArray;
 
-	/** Settings to use with occlusion audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. This  is an array so multiple plugins can have settings. */
+	/** Settings to use with occlusion audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. This is an array so multiple plugins can have settings. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationOcclusion, meta = (DisplayName = "Occlusion Plugin Settings"))
-	TArray<UOcclusionPluginSourceSettingsBase*> OcclusionPluginSettingsArray;
+	TArray<TObjectPtr<UOcclusionPluginSourceSettingsBase>> OcclusionPluginSettingsArray;
 
-	/** Settings to use with reverb audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. This  is an array so multiple plugins can have settings. */
+	/** Settings to use with reverb audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. This is an array so multiple plugins can have settings. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationReverbSend, meta = (DisplayName = "Reverb Plugin Settings"))
-	TArray<UReverbPluginSourceSettingsBase*> ReverbPluginSettingsArray;
+	TArray<TObjectPtr<UReverbPluginSourceSettingsBase>> ReverbPluginSettingsArray;
+
+	/** Settings to use with source data override audio plugin. These are defined by the plugin creator. Not all audio plugins utilize this feature. This is an array so multiple plugins can have settings. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSourceDataOverride, meta = (DisplayName = "Source Data Override Plugin Settings"))
+	TArray<TObjectPtr<USourceDataOverridePluginSourceSettingsBase>> SourceDataOverridePluginSettingsArray;
 };
 
 USTRUCT(BlueprintType)
@@ -106,7 +112,7 @@ struct ENGINE_API FAttenuationSubmixSendSettings
 
 	/** Submix to send audio to based on distance. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSubmixSend)
-	USoundSubmixBase* Submix = nullptr;
+	TObjectPtr<USoundSubmixBase> Submix = nullptr;
 
 	/** What method to use to use for submix sends. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationReverbSend)
@@ -193,6 +199,10 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSubmixSend, meta = (DisplayName = "Enable Submix Send"))
 	uint8 bEnableSubmixSends : 1;
 
+	/** Enables overriding WaveInstance data using source data override plugin */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSourceDataOverride, meta = (DisplayName = "Enable Source Data Override"))
+	uint8 bEnableSourceDataOverride : 1;
+
 	/** What method we use to spatialize the sound. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta = (ClampMin = "0", EditCondition = "bSpatialize", DisplayName = "Spatialization Method"))
 	TEnumAsByte<enum ESoundSpatializationAlgorithm> SpatializationAlgorithm;
@@ -222,7 +232,7 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 	TEnumAsByte<enum ESoundDistanceCalc> DistanceType_DEPRECATED;
 #endif
 
-	/** The distance below which a sound is non-spatialized (2D). This prevents near-field audio from flipping as audio crosses the listener's position. */
+	/** The distance below which a sound is non-spatialized (2D). This prevents near-field audio from flipping as audio crosses the listener's position. This does not apply when using a 3rd party binaural plugin (audio will remain spatialized). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AttenuationSpatialization, meta=(ClampMin = "0", EditCondition="bSpatialize", DisplayName="Non-Spatialized Radius"))
 	float OmniRadius;
 
@@ -232,7 +242,7 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	USpatializationPluginSourceSettingsBase* SpatializationPluginSettings_DEPRECATED;
+	TObjectPtr<USpatializationPluginSourceSettingsBase> SpatializationPluginSettings_DEPRECATED;
 
 	UPROPERTY()
 	float RadiusMin_DEPRECATED;
@@ -327,10 +337,10 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	UOcclusionPluginSourceSettingsBase* OcclusionPluginSettings_DEPRECATED;
+	TObjectPtr<UOcclusionPluginSourceSettingsBase> OcclusionPluginSettings_DEPRECATED;
 
 	UPROPERTY()
-	UReverbPluginSourceSettingsBase* ReverbPluginSettings_DEPRECATED;
+	TObjectPtr<UReverbPluginSourceSettingsBase> ReverbPluginSettings_DEPRECATED;
 #endif
 
 	/** The amount to send to master reverb when sound is located at a distance equal to value specified in the reverb min send distance. */
@@ -402,6 +412,7 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 		, bApplyNormalizationToStereoSounds(false)
 		, bEnableLogFrequencyScaling(false)
 		, bEnableSubmixSends(false)
+		, bEnableSourceDataOverride(false)
 		, SpatializationAlgorithm(ESoundSpatializationAlgorithm::SPATIALIZATION_Default)
 		, BinauralRadius(0.0f)
 		, AbsorptionMethod(EAirAbsorptionMethod::Linear)
@@ -443,13 +454,13 @@ struct ENGINE_API FSoundAttenuationSettings : public FBaseAttenuationSettings
 #endif
 		, ReverbWetLevelMin(0.3f)
 		, ReverbWetLevelMax(0.95f)
-		, ReverbDistanceMin(AttenuationShapeExtents.X)
-		, ReverbDistanceMax(AttenuationShapeExtents.X + FalloffDistance)
+		, ReverbDistanceMin(UE_REAL_TO_FLOAT(AttenuationShapeExtents.X))
+		, ReverbDistanceMax(UE_REAL_TO_FLOAT(AttenuationShapeExtents.X) + FalloffDistance)
 		, ManualReverbSendLevel(0.0f)
 		, PriorityAttenuationMin(1.0f)
 		, PriorityAttenuationMax(1.0f)
-		, PriorityAttenuationDistanceMin(AttenuationShapeExtents.X)
-		, PriorityAttenuationDistanceMax(AttenuationShapeExtents.X + FalloffDistance)
+		, PriorityAttenuationDistanceMin(UE_REAL_TO_FLOAT(AttenuationShapeExtents.X))
+		, PriorityAttenuationDistanceMax(UE_REAL_TO_FLOAT(AttenuationShapeExtents.X) + FalloffDistance)
 		, ManualPriorityAttenuation(1.0f)
 	{
 	}
@@ -487,3 +498,31 @@ class USoundAttenuation : public UObject
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Settings, meta = (CustomizeProperty))
 	FSoundAttenuationSettings Attenuation;
 };
+
+namespace Audio
+{
+	namespace AttenuationInterface
+	{
+		ENGINE_API const extern FName Name;
+
+		namespace Inputs
+		{
+			ENGINE_API const extern FName Distance;
+		} // namespace Inputs
+
+		ENGINE_API Audio::FParameterInterfacePtr GetInterface();
+	} // namespace AttenuationInterface
+
+	namespace SpatializationInterface
+	{
+		ENGINE_API const extern FName Name;
+
+		namespace Inputs
+		{
+			ENGINE_API const extern FName Azimuth;
+			ENGINE_API const extern FName Elevation;
+		} // namespace Inputs
+
+		ENGINE_API Audio::FParameterInterfacePtr GetInterface();
+	} // namespace SpatializationInterface
+} // namespace Audio

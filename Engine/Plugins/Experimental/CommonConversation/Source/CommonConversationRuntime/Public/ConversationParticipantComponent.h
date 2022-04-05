@@ -35,9 +35,13 @@ public:
 	DECLARE_EVENT_OneParam(UConversationParticipantComponent, FConversationUpdatedEvent, const FClientConversationMessagePayload& /*Message*/);
 	FConversationUpdatedEvent ConversationUpdated;
 
+	DECLARE_EVENT_TwoParams(UConversationParticipantComponent, FConversationTaskChoiceDataUpdatedEvent, const FConversationNodeHandle& /*Handle*/, const FClientConversationOptionEntry& /*OptionEntry*/);
+	FConversationTaskChoiceDataUpdatedEvent ConversationTaskChoiceDataUpdated;
+
 public:
 	void SendClientConversationMessage(const FConversationContext& Context, const FClientConversationMessagePayload& Payload);
 	void SendClientUpdatedChoices(const FConversationContext& Context);
+	void SendClientRefreshedTaskChoiceData(const FConversationNodeHandle& Handle, const FConversationContext& Context);
 
 	UFUNCTION(BlueprintCallable, Category=Conversation)
 	void RequestServerAdvanceConversation(const FAdvanceConversationRequest& InChoicePicked);
@@ -47,12 +51,16 @@ public:
 	void ServerNotifyConversationEnded(UConversationInstance* Conversation);
 	void ServerNotifyExecuteTaskAndSideEffects(const FConversationNodeHandle& Handle);
 	void ServerForAllConversationsRefreshChoices(UConversationInstance* IgnoreConversation = nullptr);
+	void ServerForAllConversationsRefreshTaskChoiceData(const FConversationNodeHandle& Handle, UConversationInstance* IgnoreConversation /*= nullptr*/);
 
 	/** Check if this actor is in a good state to start a conversation */
 	virtual bool ServerIsReadyToConverse() const { return true; }
 
 	/** Ask to this actor to change is state to be able to start a conversation */
 	virtual void ServerGetReadyToConverse();
+
+	/** Ask this actor to abort all active conversations */
+	void ServerAbortAllConversations();
 
 	FConversationMemory& GetParticipantMemory() { return ParticipantMemory; }
 
@@ -64,13 +72,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category=Conversation)
 	virtual FText GetParticipantDisplayName();
 
+
+	UFUNCTION(BlueprintCallable, Category = Conversation)
+	bool IsInActiveConversation() const;
+
 public:
 
 	FConversationNodeHandle GetCurrentNodeHandle() const;
 
 	const FConversationParticipantEntry* GetParticipant(const FGameplayTag& ParticipantTag) const;
-
-	bool IsInActiveConversation() const;
 
 protected:
 	UFUNCTION(Server, Reliable)
@@ -86,10 +96,13 @@ protected:
 	void ClientUpdateConversation(const FClientConversationMessagePayload& Message);
 
 	UFUNCTION(Client, Reliable)
+	void ClientUpdateConversationTaskChoiceData(FConversationNodeHandle Handle, const FClientConversationOptionEntry& OptionEntry);
+
+	UFUNCTION(Client, Reliable)
 	void ClientUpdateConversations(int32 InConversationsActive);
 
 	UFUNCTION(Client, Reliable)
-	void ClientStartConversation(const UConversationInstance* Conversation, const FGameplayTag AsParticipant);
+	void ClientStartConversation(const FGameplayTag AsParticipant);
 
 protected:
 	UFUNCTION()
@@ -107,7 +120,6 @@ protected:
 #if WITH_SERVER_CODE
 	UConversationInstance* GetCurrentConversationForAuthority() const { return Auth_CurrentConversation; }
 	const TArray<UConversationInstance*>& GetConversationsForAuthority() const { return Auth_Conversations; }
-	void ServerAbortAllConversations();
 #endif
 
 public:

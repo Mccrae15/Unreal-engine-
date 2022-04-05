@@ -1,29 +1,27 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SSaveAndLoadFilters.h"
+#include "Widgets/Filter/SSaveAndLoadFilters.h"
 
-#include "LevelSnapshotsFilterPreset.h"
-#include "FilterLoader.h"
+#include "Data/Filters/LevelSnapshotsFilterPreset.h"
+#include "Data/FilterLoader.h"
+#include "Data/LevelSnapshotsEditorData.h"
 
 #include "ContentBrowserModule.h"
 #include "Engine/AssetManager.h"
-#include "IContentBrowserSingleton.h"
-#include "LevelSnapshotsEditorData.h"
-#include "Misc/MessageDialog.h"
-#include "SAssetSearchBox.h"
-#include "SAssetDropTarget.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "IContentBrowserSingleton.h"
+#include "Misc/MessageDialog.h"
+#include "SAssetDropTarget.h"
 #include "Styling/SlateIconFinder.h"
 #include "Widgets/Images/SImage.h"
-#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/SBoxPanel.h"
 
 #define LOCTEXT_NAMESPACE "LevelSnapshotsEditor"
 
 namespace
 {
-	constexpr const auto ComboButtonStyle = TEXT("RoundButton");
-	constexpr const auto FontStyle = TEXT("GenericFilters.TextStyle");
-
 	void SaveAs(TWeakObjectPtr<UFilterLoader> FilterLoader)
 	{
 		FilterLoader->SaveAs();
@@ -110,7 +108,7 @@ void SSaveAndLoadFilters::Construct(const FArguments& InArgs, ULevelSnapshotsEdi
             .Padding(0, 1, 0, 0)
             [
               SNew(STextBlock)
-              .Text(LOCTEXT("SavedToolbarButton", "Load/Save Filter"))
+              .Text(LOCTEXT("SavedToolbarButton", "Save / Load Preset"))
             ]
           ]
     ];

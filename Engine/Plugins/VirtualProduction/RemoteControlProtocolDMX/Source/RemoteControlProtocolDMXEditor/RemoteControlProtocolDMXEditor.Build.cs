@@ -6,6 +6,8 @@ public class RemoteControlProtocolDMXEditor : ModuleRules
 {
 	public RemoteControlProtocolDMXEditor(ReadOnlyTargetRules Target) : base(Target)
 	{
+		ShortName = "RCPDMXEditor";
+
 		PublicDependencyModuleNames.AddRange(
 			new string[] {}
 		);
@@ -14,12 +16,16 @@ public class RemoteControlProtocolDMXEditor : ModuleRules
 			new string[] {
 				"Core",
 				"CoreUObject",
-				"DMXRuntime",
+				"DMXProtocol",
+				"DMXProtocolEditor",
+				"EditorStyle",
 				"InputCore",
 				"PropertyEditor",
 				"RemoteControl",
 				"RemoteControlProtocol",
-				"RemoteControlProtocolDMX"
+				"RemoteControlProtocolDMX",
+				"Slate",
+				"SlateCore"
 			}
 		);
     }

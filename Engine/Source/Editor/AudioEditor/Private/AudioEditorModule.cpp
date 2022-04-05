@@ -68,6 +68,11 @@ static const FVector2D Icon64 = FVector2D(64.0f, 64.0f);
 // Simpler version of SET_AUDIO_ICON, assumes same name of icon png and class name
 #define SET_AUDIO_ICON_SIMPLE(CLASS_NAME) SET_AUDIO_ICON(CLASS_NAME, CLASS_NAME)
 
+#define SET_AUDIO_ICON_SVG(CLASS_NAME, ICON_NAME) \
+		AudioStyleSet->Set( *FString::Printf(TEXT("ClassIcon.%s"), TEXT(#CLASS_NAME)), new FSlateVectorImageBrush(FPaths::EngineContentDir() / FString::Printf(TEXT("Editor/Slate/Starship/AssetIcons/%s_16.svg"), TEXT(#ICON_NAME)), Icon16)); \
+		AudioStyleSet->Set( *FString::Printf(TEXT("ClassThumbnail.%s"), TEXT(#CLASS_NAME)), new FSlateVectorImageBrush(FPaths::EngineContentDir() / FString::Printf(TEXT("Editor/Slate/Starship/AssetIcons/%s_64.svg"), TEXT(#ICON_NAME)), Icon64));
+
+#define SET_AUDIO_ICON_SVG_SIMPLE(CLASS_NAME) SET_AUDIO_ICON_SVG(CLASS_NAME, CLASS_NAME)
 
 class FAudioEditorModule : public IAudioEditorModule
 {
@@ -229,7 +234,7 @@ public:
 
 				// Look for submix or source preset classes
 				UClass* ParentClass = ChildClass->GetSuperClass();
-				if (ParentClass->IsChildOf(USoundEffectSourcePreset::StaticClass()) || ParentClass->IsChildOf(USoundEffectSubmixPreset::StaticClass()))
+				if (ParentClass && (ParentClass->IsChildOf(USoundEffectSourcePreset::StaticClass()) || ParentClass->IsChildOf(USoundEffectSubmixPreset::StaticClass())))
 				{
 					USoundEffectPreset* EffectPreset = ChildClass->GetDefaultObject<USoundEffectPreset>();
 					if (!RegisteredActions.Contains(EffectPreset) && EffectPreset->HasAssetActions())
@@ -293,35 +298,6 @@ public:
 		return SoundCueExtensibility.MenuExtensibilityManager;
 	}
 
-	virtual void RegisterSoundEffectPresetWidget(TSubclassOf<USoundEffectPreset> PresetClass, UWidgetBlueprint* WidgetBlueprint) override
-	{
-		UnregisterSoundEffectPresetWidget(PresetClass);
-
-		if (PresetClass)
-		{
-			WidgetBlueprint->AddToRoot();
-			EffectPresetWidgets.Add(PresetClass, WidgetBlueprint);
-		}
-	}
-
-	/** Returns custom widget blueprint for a given SoundEffectPreset class (or null if unset). */
-	virtual UWidgetBlueprint* GetSoundEffectPresetWidget(TSubclassOf<USoundEffectPreset> PresetClass) override
-	{
-		return EffectPresetWidgets.FindRef(PresetClass);
-	}
-
-	virtual void UnregisterSoundEffectPresetWidget(TSubclassOf<USoundEffectPreset> PresetClass) override
-	{
-		if (PresetClass)
-		{
-			if (UWidgetBlueprint* WidgetBlueprint = EffectPresetWidgets.FindRef(PresetClass))
-			{
-				WidgetBlueprint->RemoveFromRoot();
-				EffectPresetWidgets.Remove(PresetClass);
-			}
-		}
-	}
-
 	virtual void ReplaceSoundNodesInGraph(USoundCue* SoundCue, UDialogueWave* DialogueWave, TArray<USoundNode*>& NodesToReplace, const FDialogueContextMapping& ContextMapping) override
 	{
 		// Replace any sound nodes in the graph.
@@ -373,12 +349,12 @@ private:
 	void SetupIcons()
 	{
 		SET_AUDIO_ICON_SIMPLE(SoundAttenuation);
-		SET_AUDIO_ICON_SIMPLE(AmbientSound);
+		SET_AUDIO_ICON_SVG_SIMPLE(AmbientSound);
 		SET_AUDIO_ICON_SIMPLE(SoundClass);
 		SET_AUDIO_ICON_SIMPLE(SoundConcurrency);
 		SET_AUDIO_ICON_SIMPLE(SoundCue);
 		SET_AUDIO_ICON_SIMPLE(SoundMix);
-		SET_AUDIO_ICON_SIMPLE(AudioVolume);
+		SET_AUDIO_ICON_SVG_SIMPLE(AudioVolume);
 		SET_AUDIO_ICON_SIMPLE(SoundSourceBus);
 		SET_AUDIO_ICON_SIMPLE(SoundSubmix);
 		SET_AUDIO_ICON_SIMPLE(ReverbEffect);

@@ -6,35 +6,40 @@
 #include "DMXEditor.h"
 #include "DMXEditorStyle.h"
 #include "DMXEditorTabNames.h"
-#include "DMXProtocolTypes.h"
 #include "DMXProtocolBlueprintLibrary.h"
-#include "Library/DMXLibrary.h"
-#include "Library/DMXEntityReference.h"
-#include "Library/DMXEntity.h"
-#include "Game/DMXComponent.h"
-#include "Commands/DMXEditorCommands.h"
+#include "DMXProtocolTypes.h"
 #include "AssetTools/AssetTypeActions_DMXEditorLibrary.h"
-#include "Customizations/DMXEditorPropertyEditorCustomization.h"
+#include "Commands/DMXEditorCommands.h"
+#include "Customizations/DMXEntityFixtureTypeDetails.h"
+#include "Customizations/DMXEntityReferenceCustomization.h"
+#include "Customizations/DMXFixtureSignalFormatCustomization.h"
 #include "Customizations/DMXLibraryPortReferencesCustomization.h"
+#include "Customizations/DMXNameListCustomization.h"
+#include "Customizations/DMXPixelMappingDistributionCustomization.h"
+#include "Customizations/TakeRecorderDMXLibrarySourceEditorCustomization.h"
+#include "Game/DMXComponent.h"
+#include "Library/DMXEntity.h"
+#include "Library/DMXEntityFixtureType.h"
+#include "Library/DMXEntityReference.h"
+#include "Library/DMXLibrary.h"
 #include "Sequencer/DMXLibraryTrackEditor.h"
 #include "Sequencer/TakeRecorderDMXLibrarySource.h"
-#include "Sequencer/Customizations/TakeRecorderDMXLibrarySourceEditorCustomization.h"
 #include "Widgets/Monitors/SDMXActivityMonitor.h"
 #include "Widgets/Monitors/SDMXChannelsMonitor.h"
 #include "Widgets/OutputConsole/SDMXOutputConsole.h"
 #include "Widgets/PatchTool/SDMXPatchTool.h"
 
-#include "Templates/SharedPointer.h"
-#include "LevelEditor.h"
 #include "AssetToolsModule.h"
-#include "PropertyEditorModule.h"
 #include "AssetRegistryModule.h"
 #include "AssetToolsModule.h"
 #include "ISequencerModule.h"
+#include "LevelEditor.h"
+#include "PropertyEditorModule.h"
+#include "ToolMenus.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
-#include "Toolkits/GlobalEditorCommonCommands.h"
+#include "Templates/SharedPointer.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -50,8 +55,6 @@ EAssetTypeCategories::Type FDMXEditorModule::DMXEditorAssetCategory;
 
 void FDMXEditorModule::StartupModule()
 {
-	FDMXEditorStyle::Initialize();
-
 	FDMXEditorCommands::Register();
 	BindDMXEditorCommands();
 
@@ -61,6 +64,7 @@ void FDMXEditorModule::StartupModule()
 	RegisterAssetTypeCategories();
 	RegisterAssetTypeActions();
 
+	RegisterClassCustomizations();
 	RegisterPropertyTypeCustomizations();
 	RegisterSequencerTypes();
 	RegisterNomadTabSpawners();
@@ -71,7 +75,11 @@ void FDMXEditorModule::StartupModule()
 
 void FDMXEditorModule::ShutdownModule()
 {
-	FDMXEditorStyle::Shutdown();
+	if(UObjectInitialized())
+	{
+		UToolMenus::Get()->RemoveSection("LevelEditor.LevelEditorToolBar.User", "DMX");
+	}
+	
 	FDMXEditorCommands::Unregister();
 
 	MenuExtensibilityManager.Reset();
@@ -136,50 +144,46 @@ void FDMXEditorModule::BindDMXEditorCommands()
 
 void FDMXEditorModule::ExtendLevelEditorToolbar()
 {
-	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
-	TSharedPtr<FUICommandList> CommandBindings = LevelEditorModule.GetGlobalLevelEditorActions();
+	UToolMenu* const Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.LevelEditorToolBar.User");
 
-	TSharedPtr<FExtender> ToolbarExtender = MakeShared<FExtender>();
-	ToolbarExtender->AddToolBarExtension(
-		"Settings", 
-		EExtensionHook::After,
-		CommandBindings,
-		FToolBarExtensionDelegate::CreateRaw(this, &FDMXEditorModule::GenerateToolbarExtension)
-	);
+	FToolMenuSection& Section = Menu->FindOrAddSection("DMX");
 
-	LevelEditorModule.GetToolBarExtensibilityManager()->AddExtender(ToolbarExtender);
-}
-
-void FDMXEditorModule::GenerateToolbarExtension(FToolBarBuilder& InOutBuilder)
-{
-	auto OnGetToolbarButtonBrushLambda = [this]() -> const FSlateIcon
-	{
-		bool bSendEnabled = UDMXProtocolBlueprintLibrary::IsSendDMXEnabled();
-		bool bReceiveEnabled = UDMXProtocolBlueprintLibrary::IsReceiveDMXEnabled();
-
-		if (bSendEnabled && bReceiveEnabled)
-		{
-			return FSlateIcon(FDMXEditorStyle::GetStyleSetName(), "DMXEditor.LevelEditor.MenuIcon_snd-rcv");
-		}
-		else if (bSendEnabled)
-		{
-			return FSlateIcon(FDMXEditorStyle::GetStyleSetName(), "DMXEditor.LevelEditor.MenuIcon_snd");
-		}
-		else if (bReceiveEnabled)
-		{
-			return FSlateIcon(FDMXEditorStyle::GetStyleSetName(), "DMXEditor.LevelEditor.MenuIcon_rcv");
-		}
-
-		return FSlateIcon(FDMXEditorStyle::GetStyleSetName(), "DMXEditor.LevelEditor.MenuIcon_none");
-	};
-
-	InOutBuilder.AddComboButton(
+	FToolMenuEntry DMXEntry = FToolMenuEntry::InitComboButton(
+		"DMXMenu",
 		FUIAction(),
-		FOnGetContent::CreateRaw(this, &FDMXEditorModule::GenerateDMXLevelEditorToolbarMenu),
-		LOCTEXT("InputInfo_Label", "DMX"),
-		LOCTEXT("InputInfo_ToolTip", "DMX Tools"),
-		TAttribute<FSlateIcon>::Create(OnGetToolbarButtonBrushLambda)
-	);
+		FOnGetContent::CreateStatic(&FDMXEditorModule::GenerateDMXLevelEditorToolbarMenu),
+		LOCTEXT("LevelEditorToolbarDMXButtonLabel", "DMX"),
+		LOCTEXT("LevelEditorToolbarDMXButtonTooltip", "DMX Tools"),
+		TAttribute<FSlateIcon>::CreateLambda([]()
+			{
+				bool bSendEnabled = UDMXProtocolBlueprintLibrary::IsSendDMXEnabled();
+				bool bReceiveEnabled = UDMXProtocolBlueprintLibrary::IsReceiveDMXEnabled();
+
+				if (bSendEnabled && bReceiveEnabled)
+				{
+					static const FSlateIcon IconSendReceiveDMXEnabled = FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.SendReceiveDMXEnabled");
+					return IconSendReceiveDMXEnabled;
+				}
+				else if (bSendEnabled)
+				{
+					static const FSlateIcon IconSendDMXEnabled = FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.SendDMXEnabled");
+					return IconSendDMXEnabled;
+				}
+				else if (bReceiveEnabled)
+				{
+					static const FSlateIcon IconReceiveDMXEnabled = FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.ReceiveDMXEnabled");
+					return IconReceiveDMXEnabled;
+				}
+				else
+				{
+					static const FSlateIcon IconSendReceiveDMXDisabled = FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.SendReceiveDMXDisabled");
+					return IconSendReceiveDMXDisabled;
+				}
+			})
+		);
+
+	DMXEntry.StyleNameOverride = "CalloutToolbar";
+	Section.AddEntry(DMXEntry);
 }
 
 TSharedRef<SWidget> FDMXEditorModule::GenerateDMXLevelEditorToolbarMenu()
@@ -189,24 +193,51 @@ TSharedRef<SWidget> FDMXEditorModule::GenerateDMXLevelEditorToolbarMenu()
 
 	FMenuBuilder MenuBuilder(true, CommandBindings);
 
-	MenuBuilder.BeginSection("CustomMenu", TAttribute<FText>(FText::FromString("DMX")));
-
-	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().OpenChannelsMonitor);
-	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().OpenActivityMonitor);
-	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().OpenOutputConsole);
-	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().OpenPatchTool);
-	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().ToggleReceiveDMX);
-	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().ToggleSendDMX);
-
-	MenuBuilder.EndSection();
-
+	static const FName NoExtensionHook = NAME_None;
+	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().OpenChannelsMonitor,
+		NoExtensionHook,
+		LOCTEXT("ChannelsMonitorLabel", "Open Channel Monitor"),
+		LOCTEXT("ChannelsMonitorTooltip", "Opens the Monitor for all DMX Channels in a Universe"),
+		FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.ChannelsMonitor")
+	);
+	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().OpenActivityMonitor,
+		NoExtensionHook,
+		LOCTEXT("ActivityMonitorLabel", "Open Activity Monitor"),
+		LOCTEXT("ActivityMonitorTooltip", "Open the Monitor for all DMX activity in a range of Universes"),
+		FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.ActivityMonitor")
+	);
+	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().OpenOutputConsole,
+		NoExtensionHook,
+		LOCTEXT("OutputConsoleLabel", "Open Output Console"),
+		LOCTEXT("OutputConsoleTooltip", "Opens a Console to generate and output DMX Signals"),
+		FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.OutputConsole")
+	);
+	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().OpenPatchTool,
+		NoExtensionHook,
+		LOCTEXT("PatchToolLabel", "Open Patch Tool"),
+		LOCTEXT("PatchToolTooltip", "Open the patch tool - Useful to patch many fixtures at once."),
+		FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.PatchTool")
+	);
+	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().ToggleReceiveDMX,
+		NoExtensionHook,
+		LOCTEXT("ReceiveDMXLabel", "Receive DMX"),
+		LOCTEXT("ReceiveDMXTooltip", "Sets whether DMX is received in from the network"),
+		FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.ReceiveDMX")
+	);
+	MenuBuilder.AddMenuEntry(FDMXEditorCommands::Get().ToggleSendDMX,
+		NoExtensionHook,
+		LOCTEXT("SendDMXLabel", "Send DMX"),
+		LOCTEXT("SendDMXTooltip", "Sets whether DMX is sent to the network"),
+		FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.SendDMX")
+	);
+	
 	return MenuBuilder.MakeWidget();
 }
 
 void FDMXEditorModule::RegisterAssetTypeCategories()
 {
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	DMXEditorAssetCategory = AssetTools.RegisterAdvancedAssetCategory(FName(TEXT("DMX")), LOCTEXT("DmxCategory", "DMX"));
+	DMXEditorAssetCategory = AssetTools.RegisterAdvancedAssetCategory(FName(TEXT("DMX")), LOCTEXT("DmxCategory", "DMX")); 
 }
 
 void FDMXEditorModule::RegisterAssetTypeActions()
@@ -215,23 +246,58 @@ void FDMXEditorModule::RegisterAssetTypeActions()
 	RegisterAssetTypeAction(MakeShared<FAssetTypeActions_DMXEditorLibrary>());
 }
 
+void FDMXEditorModule::RegisterClassCustomizations()
+{
+	FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+
+	// Property type customization for the UDMXEntityFixtureType class
+	PropertyModule.RegisterCustomClassLayout(UDMXEntityFixtureType::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FDMXEntityFixtureTypeDetails::MakeInstance)
+	);
+}
+
 void FDMXEditorModule::RegisterPropertyTypeCustomizations()
 {
-	// Customizations for the name lists of our custom types, like Fixture Categories
-	RegisterCustomPropertyTypeLayout(FDMXProtocolName::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXCustomizationFactory::MakeInstance<FNameListCustomization<FDMXProtocolName>>));
-	RegisterCustomPropertyTypeLayout(FDMXFixtureCategory::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXCustomizationFactory::MakeInstance<FNameListCustomization<FDMXFixtureCategory>>));
-	RegisterCustomPropertyTypeLayout(FDMXAttributeName::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXCustomizationFactory::MakeInstance<FNameListCustomization<FDMXAttributeName>>));
-	RegisterCustomPropertyTypeLayout("EDMXPixelMappingDistribution", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXCustomizationFactory::MakeInstance<FDMXPixelMappingDistributionCustomization>));
+	FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	// Customizations for the Entity Reference types
-	RegisterCustomPropertyTypeLayout(FDMXEntityFixtureTypeRef::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXCustomizationFactory::MakeInstance<FDMXEntityReferenceCustomization>));
-	RegisterCustomPropertyTypeLayout(FDMXEntityFixturePatchRef::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXCustomizationFactory::MakeInstance<FDMXEntityReferenceCustomization>));
+	// Property type customization for the EDMXPixelMappingDistribution enum
+	RegisterCustomPropertyTypeLayout("EDMXPixelMappingDistribution", 
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXPixelMappingDistributionCustomization::MakeInstance)
+	);
 
-	// Customization for the DMXLibraryPortReferences struct type
-	RegisterCustomPropertyTypeLayout(FDMXLibraryPortReferences::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXCustomizationFactory::MakeInstance<FDMXLibraryPortReferencesCustomization>));
+	// Property type customization for the EDMXFixtureSignalFormat enum
+	RegisterCustomPropertyTypeLayout("EDMXFixtureSignalFormat", 
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXFixtureSignalFormatCustomization::MakeInstance)
+	);
 
-	// DMXLibrary TakeRecorder AddAllPatchesButton customization
-	RegisterCustomPropertyTypeLayout(FAddAllPatchesButton::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXCustomizationFactory::MakeInstance<FDMXLibraryRecorderAddAllPatchesButtonCustomization>));
+	// Property type customization for Name List structs
+	RegisterCustomPropertyTypeLayout(FDMXProtocolName::StaticStruct()->GetFName(), 
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXNameListCustomization<FDMXProtocolName>::MakeInstance)
+	);
+	RegisterCustomPropertyTypeLayout(FDMXFixtureCategory::StaticStruct()->GetFName(), 
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXNameListCustomization<FDMXFixtureCategory>::MakeInstance)
+	);
+	RegisterCustomPropertyTypeLayout(FDMXAttributeName::StaticStruct()->GetFName(), 
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXNameListCustomization<FDMXAttributeName>::MakeInstance)
+	);
+
+	// Customizations for the FDMXEntityReference structs
+	RegisterCustomPropertyTypeLayout(FDMXEntityFixtureTypeRef::StaticStruct()->GetFName(), 
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXEntityReferenceCustomization::MakeInstance)
+	);
+	RegisterCustomPropertyTypeLayout(FDMXEntityFixturePatchRef::StaticStruct()->GetFName(), 
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXEntityReferenceCustomization::MakeInstance)
+	);
+
+	// Customization for the FDMXLibraryPortReferences struct type
+	RegisterCustomPropertyTypeLayout(FDMXLibraryPortReferences::StaticStruct()->GetFName(), 
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDMXLibraryPortReferencesCustomization::MakeInstance)
+	);
+
+	// Customization for the DMXLibrary TakeRecorder AddAllPatchesButton
+	RegisterCustomPropertyTypeLayout(FAddAllPatchesButton::StaticStruct()->GetFName(), 
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FTakeRecorderDMXLibrarySourceEditorCustomization::MakeInstance)
+	);
 }
 
 void FDMXEditorModule::RegisterSequencerTypes()
@@ -245,22 +311,26 @@ void FDMXEditorModule::RegisterNomadTabSpawners()
 	RegisterNomadTabSpawner(FDMXEditorTabNames::ChannelsMonitor,
 		FOnSpawnTab::CreateStatic(&FDMXEditorModule::OnSpawnChannelsMonitorTab))
 		.SetDisplayName(LOCTEXT("ChannelsMonitorTabTitle", "DMX Channel Monitor"))
-		.SetMenuType(ETabSpawnerMenuType::Hidden);
+		.SetMenuType(ETabSpawnerMenuType::Hidden)
+		.SetIcon(FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.ChannelsMonitor"));
 
 	RegisterNomadTabSpawner(FDMXEditorTabNames::ActivityMonitor,
 		FOnSpawnTab::CreateStatic(&FDMXEditorModule::OnSpawnActivityMonitorTab))
 		.SetDisplayName(LOCTEXT("ActivityMonitorTabTitle", "DMX Activity Monitor"))
-		.SetMenuType(ETabSpawnerMenuType::Hidden);
+		.SetMenuType(ETabSpawnerMenuType::Hidden)
+		.SetIcon(FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.ActivityMonitor"));
 
 	RegisterNomadTabSpawner(FDMXEditorTabNames::OutputConsole,
 		FOnSpawnTab::CreateStatic(&FDMXEditorModule::OnSpawnOutputConsoleTab))
 		.SetDisplayName(LOCTEXT("OutputConsoleTabTitle", "DMX Output Console"))
-		.SetMenuType(ETabSpawnerMenuType::Hidden);
+		.SetMenuType(ETabSpawnerMenuType::Hidden)
+		.SetIcon(FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.OutputConsole"));
 
 	RegisterNomadTabSpawner(FDMXEditorTabNames::PatchTool,
 		FOnSpawnTab::CreateStatic(&FDMXEditorModule::OnSpawnPatchToolTab))
 		.SetDisplayName(LOCTEXT("PatchToolTabTitle", "DMX Patch Tool"))
-		.SetMenuType(ETabSpawnerMenuType::Hidden);
+		.SetMenuType(ETabSpawnerMenuType::Hidden)
+		.SetIcon(FSlateIcon(FDMXEditorStyle::Get().GetStyleSetName(), "Icons.PatchTool"));
 }
 
 void FDMXEditorModule::StartupPIEManager()
@@ -347,30 +417,6 @@ bool FDMXEditorModule::IsSendDMXEnabled()
 	return UDMXProtocolBlueprintLibrary::IsSendDMXEnabled();
 }
 
-FText FDMXEditorModule::GetToggleSendDMXText() const
-{
-	if (UDMXProtocolBlueprintLibrary::IsSendDMXEnabled())
-	{
-		return LOCTEXT("MenuButtonText_PauseSendDMX", "Pause Send DMX");
-	}
-	else
-	{
-		return LOCTEXT("MenuButtonText_ResumeSendDMX", "Resume Send DMX");
-	}
-}
-
-FText FDMXEditorModule::GetToggleSendDMXTooltip() const
-{
-	if (UDMXProtocolBlueprintLibrary::IsSendDMXEnabled())
-	{
-		return LOCTEXT("MenuButtonText_DisableOutboundDMXPackets", "Disables outbound DMX packets in editor.");
-	}
-	else
-	{
-		return LOCTEXT("MenuButtonText_EnableOutboundDMXPackets", "Enables outbound DMX packets in editor.");
-	}
-}
-
 void FDMXEditorModule::OnToggleReceiveDMX()
 {
 	bool bAffectEditor = true;
@@ -388,30 +434,6 @@ void FDMXEditorModule::OnToggleReceiveDMX()
 bool FDMXEditorModule::IsReceiveDMXEnabled()
 {
 	return UDMXProtocolBlueprintLibrary::IsReceiveDMXEnabled();
-}
-
-FText FDMXEditorModule::GetToggleReceiveDMXText() const
-{
-	if (UDMXProtocolBlueprintLibrary::IsReceiveDMXEnabled())
-	{
-		return LOCTEXT("MenuButtonText_PauseReceiveDMX", "Pause Receive DMX");
-	}
-	else
-	{
-		return LOCTEXT("MenuButtonText_ResumeReceiveDMX", "Resume Receive DMX");
-	}
-}
-
-FText FDMXEditorModule::GetToggleReceiveDMXTooltip() const
-{
-	if (UDMXProtocolBlueprintLibrary::IsReceiveDMXEnabled())
-	{
-		return LOCTEXT("MenuButtonText_DisableInboundDMXPackets", "Disables inbound DMX packets in editor.");
-	}
-	else
-	{
-		return LOCTEXT("MenuButtonText_EnableInboundDMXPackets", "Enables inbound DMX packets editor.");
-	}
 }
 
 void FDMXEditorModule::RegisterAssetTypeAction(TSharedRef<IAssetTypeActions> Action)

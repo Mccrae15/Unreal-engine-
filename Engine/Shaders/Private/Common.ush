@@ -8,7 +8,7 @@
 
 #include "/Engine/Public/Platform.ush"
 // These types are used for material translator generated code, or any functions the translated code can call
-#if PIXELSHADER
+#if PIXELSHADER && !FORCE_MATERIAL_FLOAT_FULL_PRECISION
 	#define MaterialFloat half
 	#define MaterialFloat2 half2
 	#define MaterialFloat3 half3
@@ -27,6 +27,90 @@
 	#define MaterialFloat4x4 float4x4 
 	#define MaterialFloat4x3 float4x3 
 #endif
+
+struct FloatDeriv
+{
+	float Value;
+	float Ddx;
+	float Ddy;
+};
+
+struct FloatDeriv2
+{
+	float2 Value;
+	float2 Ddx;
+	float2 Ddy;
+};
+
+struct FloatDeriv3
+{
+	float3 Value;
+	float3 Ddx;
+	float3 Ddy;
+};
+
+struct FloatDeriv4
+{
+	float4 Value;
+	float4 Ddx;
+	float4 Ddy;
+};
+
+FloatDeriv ConstructFloatDeriv(float InValue, float InDdx, float InDdy)
+{
+	FloatDeriv Ret;
+	Ret.Value = InValue;
+	Ret.Ddx = InDdx;
+	Ret.Ddy = InDdy;
+	return Ret;
+}
+
+FloatDeriv2 ConstructFloatDeriv2(float2 InValue, float2 InDdx, float2 InDdy)
+{
+	FloatDeriv2 Ret;
+	Ret.Value = InValue;
+	Ret.Ddx = InDdx;
+	Ret.Ddy = InDdy;
+	return Ret;
+}
+
+FloatDeriv3 ConstructFloatDeriv3(float3 InValue, float3 InDdx, float3 InDdy)
+{
+	FloatDeriv3 Ret;
+	Ret.Value = InValue;
+	Ret.Ddx = InDdx;
+	Ret.Ddy = InDdy;
+	return Ret;
+}
+
+FloatDeriv4 ConstructFloatDeriv4(float4 InValue, float4 InDdx, float4 InDdy)
+{
+	FloatDeriv4 Ret;
+	Ret.Value = InValue;
+	Ret.Ddx = InDdx;
+	Ret.Ddy = InDdy;
+	return Ret;
+}
+
+
+#define POSITIVE_INFINITY (asfloat(0x7F800000))
+#define NEGATIVE_INFINITY (asfloat(0xFF800000))
+
+#define METER_TO_CENTIMETER		100.0f
+#define CENTIMETER_TO_METER		(1.0f / METER_TO_CENTIMETER)
+#define KILOMETER_TO_METER  	1000.0f
+#define METER_TO_KILOMETER  	(1.0f / KILOMETER_TO_METER)
+#define KILOMETER_TO_CENTIMETER	(KILOMETER_TO_METER * METER_TO_CENTIMETER)
+#define CENTIMETER_TO_KILOMETER	(1.0f / KILOMETER_TO_CENTIMETER)
+
+#define NearDepthValue (HAS_INVERTED_Z_BUFFER ? 1.0f : 0.0f)
+#define FarDepthValue  (HAS_INVERTED_Z_BUFFER ? 0.0f : 1.0f)
+
+const static MaterialFloat PI = 3.1415926535897932f;
+const static float MaxHalfFloat = 65504.0f;
+const static float Max11BitsFloat = 65024.0f;
+const static float Max10BitsFloat = 64512.0f;
+const static float3 Max111110BitsFloat3 = float3(Max11BitsFloat, Max11BitsFloat, Max10BitsFloat);
 
 #if POST_PROCESS_ALPHA
 #define SceneColorLayout float4
@@ -61,42 +145,6 @@
 	#define TextureCubeArray TextureCube
 #endif
 
-// Generated file that contains uniform buffer declarations needed by the shader being compiled 
-#include "/Engine/Generated/GeneratedUniformBuffers.ush" 
-
-// uniform buffers specifics
-#include "CommonViewUniformBuffer.ush"
-
-#include "InstancedStereo.ush"
-
-#include "Definitions.usf"
-
-#define METAL_TESSELLATION_PROFILE ((METAL_PROFILE || METAL_SM5_PROFILE) && USING_TESSELLATION)
-
-#ifndef VELOCITY_ENCODE_DEPTH
-#define VELOCITY_ENCODE_DEPTH 1
-#endif
-
-// Using SV_ClipDistance has overhead (15% slower base pass in triangle bound test scene on PS4) so projects have to opt-in
-#define USE_GLOBAL_CLIP_PLANE (PLATFORM_SUPPORTS_GLOBAL_CLIP_PLANE && PROJECT_ALLOW_GLOBAL_CLIP_PLANE && !MATERIAL_DOMAIN_POSTPROCESS && !MATERIAL_DOMAIN_UI)
-
-#define POSITIVE_INFINITY (asfloat(0x7F800000))
-#define NEGATIVE_INFINITY (asfloat(0xFF800000))
-
-#define METER_TO_CENTIMETER		100.0f
-#define CENTIMETER_TO_METER		(1.0f / METER_TO_CENTIMETER)
-#define KILOMETER_TO_METER  	1000.0f
-#define METER_TO_KILOMETER  	(1.0f / KILOMETER_TO_METER)
-#define KILOMETER_TO_CENTIMETER	(KILOMETER_TO_METER * METER_TO_CENTIMETER)
-#define CENTIMETER_TO_KILOMETER	(1.0f / KILOMETER_TO_CENTIMETER)
-
-#define NearDepthValue (HAS_INVERTED_Z_BUFFER ? 1.0f : 0.0f)
-#define FarDepthValue  (HAS_INVERTED_Z_BUFFER ? 0.0f : 1.0f)
-
-const static MaterialFloat PI = 3.1415926535897932f;
-const static float MaxHalfFloat = 65504.0f;
-const static float Max10BitsFloat = 64512.0f;
-
 // Control MIP level used for material texture fetches. By default only raytracing 
 // shaders (i.e., !PIXELSHADER) use manual MIP level selection. A material shader 
 // can opt. in to force a specific MIP level.
@@ -112,6 +160,72 @@ const static float Max10BitsFloat = 64512.0f;
 #endif
 #ifndef FORCED_TEXTURE_MIP
 	#define FORCED_TEXTURE_MIP 0.0f
+#endif
+
+// Add definition of types used by generated uniform buffers
+#include "GeneratedUniformBufferTypes.ush"
+
+// Generated file that contains uniform buffer declarations needed by the shader being compiled 
+#include "/Engine/Generated/GeneratedUniformBuffers.ush" 
+
+// uniform buffers specifics
+#include "CommonViewUniformBuffer.ush"
+
+// In HLSL, fmod is implemented as 'Lhs - trunc(Lhs / Rhs) * Rhs'
+// In some cases, using floor rather than trunc is better
+float FmodFloor(float Lhs, float Rhs)
+{
+	return Lhs - floor(Lhs / Rhs) * Rhs;
+}
+
+float2 FmodFloor(float2 Lhs, float2 Rhs)
+{
+	return Lhs - floor(Lhs / Rhs) * Rhs;
+}
+
+float3 FmodFloor(float3 Lhs, float3 Rhs)
+{
+	return Lhs - floor(Lhs / Rhs) * Rhs;
+}
+
+float4 FmodFloor(float4 Lhs, float4 Rhs)
+{
+	return Lhs - floor(Lhs / Rhs) * Rhs;
+}
+
+#include "LargeWorldCoordinates.ush"
+
+#include "InstancedStereo.ush"
+
+#include "Definitions.usf"
+
+#include "AssertionMacros.ush"
+
+#ifndef VELOCITY_ENCODE_DEPTH
+#define VELOCITY_ENCODE_DEPTH 1
+#endif
+
+#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5
+	#define VELOCITY_ENCODE_GAMMA 1
+#else
+	#define VELOCITY_ENCODE_GAMMA 0
+#endif
+
+//Tie Editor features to platform support and the COMPILE_SHADERS_FOR_DEVELOPMENT which is set via CVAR.
+#define USE_EDITOR_SHADERS (PLATFORM_SUPPORTS_EDITOR_SHADERS && USE_DEVELOPMENT_SHADERS)
+
+// Using SV_ClipDistance has overhead (15% slower base pass in triangle bound test scene on PS4) so projects have to opt-in
+#define USE_GLOBAL_CLIP_PLANE (PROJECT_ALLOW_GLOBAL_CLIP_PLANE && !MATERIAL_DOMAIN_POSTPROCESS && !MATERIAL_DOMAIN_UI)
+
+#if RAYHITGROUPSHADER || RAYMISSHADER
+
+// These built-ins are not available in ray tracing
+// Define dummy versions so that ray-tracing materials will at least compile
+#define clip(x)
+#define ddx(x) 0
+#define ddy(x) 0
+#define fwidth(x) 0
+
 #endif
 
 #ifndef USE_RAYTRACED_TEXTURE_RAYCONE_LOD
@@ -153,6 +267,14 @@ MaterialFloat4 Texture2DSample(Texture2D Tex, SamplerState Sampler, float2 UV)
 	return Tex.SampleLevel(Sampler, UV, ComputeRayConeLod(Tex) + GlobalTextureMipBias);
 #else
 	return Tex.Sample(Sampler, UV);
+#endif
+}
+MaterialFloat4 Texture2DSample(Texture2D Tex, SamplerState Sampler, FloatDeriv2 UV)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV.Value, ComputeRayConeLod(Tex) + GlobalTextureMipBias);
+#else
+	return Tex.SampleGrad(Sampler, UV.Value, UV.Ddx, UV.Ddy);
 #endif
 }
 MaterialFloat Texture2DSample_A8(Texture2D Tex, SamplerState Sampler, float2 UV)
@@ -269,12 +391,16 @@ MaterialFloat4 TextureExternalSampleLevel(TextureExternal Tex, SamplerState Samp
 // to workaround we always sample top mip level
 MaterialFloat4 Texture1DSample_Decal(Texture1D Tex, SamplerState Sampler, float UV)
 {
+#if METAL_PROFILE || COMPILER_GLSL_ES3_1	
+	return Texture1DSampleLevel(Tex, Sampler, UV, 0);
+#else
 	return Texture1DSample(Tex, Sampler, UV);
+#endif
 }
 MaterialFloat4 Texture2DSample_Decal(Texture2D Tex, SamplerState Sampler, float2 UV)
 {
 #if METAL_PROFILE || COMPILER_GLSL_ES3_1
-	return Texture2DSampleGrad(Tex, Sampler, UV, 0.f, 0.f);
+	return Texture2DSampleLevel(Tex, Sampler, UV, 0);
 #else
 	return Texture2DSample(Tex, Sampler, UV);
 #endif
@@ -282,7 +408,7 @@ MaterialFloat4 Texture2DSample_Decal(Texture2D Tex, SamplerState Sampler, float2
 MaterialFloat4 Texture3DSample_Decal(Texture3D Tex, SamplerState Sampler, float3 UV)
 {
 #if METAL_PROFILE || COMPILER_GLSL_ES3_1
-	return Texture3DSampleGrad(Tex, Sampler, UV, 0.f, 0.f);
+	return Texture3DSampleLevel(Tex, Sampler, UV, 0);
 #else
 	return Texture3DSample(Tex, Sampler, UV);
 #endif
@@ -290,7 +416,7 @@ MaterialFloat4 Texture3DSample_Decal(Texture3D Tex, SamplerState Sampler, float3
 MaterialFloat4 TextureCubeSample_Decal(TextureCube Tex, SamplerState Sampler, float3 UV)
 {
 #if METAL_PROFILE || COMPILER_GLSL_ES3_1
-	return TextureCubeSampleGrad(Tex, Sampler, UV, 0.f, 0.f);
+	return TextureCubeSampleLevel(Tex, Sampler, UV, 0);
 #else
 	return TextureCubeSample(Tex, Sampler, UV);
 #endif
@@ -298,7 +424,7 @@ MaterialFloat4 TextureCubeSample_Decal(TextureCube Tex, SamplerState Sampler, fl
 MaterialFloat4 TextureExternalSample_Decal(TextureExternal Tex, SamplerState Sampler, float2 UV)
 {
 #if METAL_PROFILE || COMPILER_GLSL_ES3_1
-	return TextureExternalSampleGrad(Tex, Sampler, UV, 0.f, 0.f);
+	return TextureExternalSampleLevel(Tex, Sampler, UV, 0);
 #else
 	return TextureExternalSample(Tex, Sampler, UV);
 #endif
@@ -385,11 +511,36 @@ float4 PseudoVolumeTexture(Texture2D Tex, SamplerState TexSampler, float3 inPos,
 }
 
 #if FEATURE_LEVEL >= FEATURE_LEVEL_SM5 // Cubemap arrays are not supported in SM4 feature level
-	MaterialFloat4 TextureCubeArraySampleLevel(TextureCubeArray Tex, SamplerState Sampler, float3 UV, float ArrayIndex, MaterialFloat Mip)
-	{
-		return Tex.SampleLevel(Sampler, float4(UV, ArrayIndex), Mip);
-	}
+MaterialFloat4 TextureCubeArraySample(TextureCubeArray Tex, SamplerState Sampler, float4 UV)
+{
+	return Tex.Sample(Sampler, UV);
+}
+
+MaterialFloat4 TextureCubeArraySampleLevel(TextureCubeArray Tex, SamplerState Sampler, float4 UV, MaterialFloat Mip)
+{
+	return Tex.SampleLevel(Sampler, UV, Mip);
+}
+
+MaterialFloat4 TextureCubeArraySampleBias(TextureCubeArray Tex, SamplerState Sampler, float4 UV, MaterialFloat MipBias)
+{
+#if USE_FORCE_TEXTURE_MIP
+	return Tex.SampleLevel(Sampler, UV, 0);
+#else
+	return Tex.SampleBias(Sampler, UV, MipBias);
 #endif
+}
+
+MaterialFloat4 TextureCubeArraySampleGrad(TextureCubeArray Tex, SamplerState Sampler, float4 UV, MaterialFloat3 DDX, MaterialFloat3 DDY)
+{
+	return Tex.SampleGrad(Sampler, UV, DDX, DDY);
+}
+
+// OVerload with explicit array parameter, used by some non-material shader code
+MaterialFloat4 TextureCubeArraySampleLevel(TextureCubeArray Tex, SamplerState Sampler, float3 UV, float ArrayIndex, MaterialFloat Mip)
+{
+	return TextureCubeArraySampleLevel(Tex, Sampler, float4(UV, ArrayIndex), Mip);
+}
+#endif // FEATURE_LEVEL >= FEATURE_LEVEL_SM5
 
 // TANGENTTOWORLD0 is the first row of the tangent to world matrix, w might be needed for padding and is not used yet.
 // TANGENTTOWORLD2 is the last row of the tangent to world matrix, determinant of tangent basis in w
@@ -633,21 +784,9 @@ MaterialFloat PhongShadingPow(MaterialFloat X, MaterialFloat Y)
 	#define uint4	int4
 #endif
 
-// Optional VertexID - used by tessellation to uniquely identify control points.
-#if USING_TESSELLATION && DISPLACEMENT_ANTICRACK
-	#define OPTIONAL_VertexID			uint VertexID : SV_VertexID,
-	#define OPTIONAL_VertexID_PARAM		VertexID,
-	#define OPTIONAL_VertexID_VS_To_DS	uint VertexID : VS_To_DS_VertexID;
-	#define OutputVertexID( Out ) Out.VertexID = VertexID
-#else // #if USING_TESSELLATION && DISPLACEMENT_ANTICRACK
-	#define OPTIONAL_VertexID
-	#define OPTIONAL_VertexID_PARAM
-	#define OPTIONAL_VertexID_VS_To_DS
-	#define OutputVertexID( Out )
-#endif // #if USING_TESSELLATION && DISPLACEMENT_ANTICRACK
 
 // Helper macro used to interpolate the given member
-#define TESSELLATION_INTERPOLATE_MEMBER(member) O.member = a.member * aInterp + b.member * bInterp
+#define INTERPOLATE_MEMBER(member) O.member = a.member * aInterp + b.member * bInterp
 
 
 #if FEATURE_LEVEL >= FEATURE_LEVEL_SM4
@@ -780,6 +919,34 @@ float4 ConvertTangentSnormToUnorm16(float4 Input)
 // We don't use a function so we can avoid type promotion/ coercion.
 #define TangentBias(X)		(X)
 #define TangentUnbias(X)	(X)
+
+uint PackUnorm2x16(float2 v)
+{
+	uint2 sv = uint2(round(clamp(v, 0.0, 1.0) * 65535.0));
+	return (sv.x | (sv.y << 16u));
+}
+
+uint PackSnorm2x16(float2 v)
+{
+	uint2 sv = uint2(round(clamp(v, -1.0, 1.0) * 32767.0) + 32767.0);
+	return (sv.x | (sv.y << 16u));
+}
+
+float2 UnpackUnorm2x16(uint p)
+{
+	float2 Ret;
+	Ret.x = (p & 0xffff) * rcp(65535.0f);
+	Ret.y = (p >> 16u) * rcp(65535.0f);
+	return Ret;
+}
+
+float2 UnpackSnorm2x16(uint p)
+{
+	float2 Ret;
+	Ret.x = clamp((float(p & 0xffff) - 32767.0f) * rcp(32767.0f), -1.0, 1.0);
+	Ret.y = clamp((float(p >> 16u) - 32767.0f) * rcp(32767.0f), -1.0, 1.0);
+	return Ret;
+}
 
 float Square( float x )
 {
@@ -935,6 +1102,18 @@ MaterialFloat4 EncodeLightAttenuation(MaterialFloat4 InColor)
 	return sqrt(InColor);
 }
 
+/** Converts value stored in the light attenuation buffer into a linear light attenuation value. */
+MaterialFloat DecodeLightAttenuation(MaterialFloat InColor)
+{
+	return Square(InColor);
+}
+
+/** Converts value stored in the light attenuation buffer into a linear light attenuation value. */
+MaterialFloat4 DecodeLightAttenuation(MaterialFloat4 InColor)
+{
+	return Square(InColor);
+}
+
 // Like RGBM but this can be interpolated.
 MaterialFloat4 RGBTEncode(MaterialFloat3 Color)
 {
@@ -1013,15 +1192,13 @@ MaterialFloat3 RGBTDecode8BPC(MaterialFloat4 RGBT, MaterialFloat Range)
   * This gets a bit from a write mask texture created with FRTWriteMaskDecodeCS. Only supprted on some platforms.
   */
 #if PLATFORM_SUPPORTS_RENDERTARGET_WRITE_MASK
-uint DecodeRTWriteMask(float2 ScreenPos, Texture2D<uint> RTWriteMaskTexture, uint NumEncodedTextures)
+uint DecodeRTWriteMask(uint2 PixelPos, Texture2D<uint> RTWriteMaskTexture, uint NumEncodedTextures)
 {
-	uint2 InPos = uint2(ScreenPos);
-
-	uint2 TileIndex = InPos >> 3;
-	uint2 TileOffset = (InPos >> 2) & 1;
+	uint2 TileIndex = PixelPos >> 3;
+	uint2 TileOffset = (PixelPos >> 2) & 1;
 
 	uint Shift = (TileOffset.y * 2 + TileOffset.x) * NumEncodedTextures;
-	uint Mask = ~((~0) << NumEncodedTextures);
+	uint Mask = ~((~0u) << NumEncodedTextures);
 
 	return (RTWriteMaskTexture.Load(uint3(TileIndex, 0)) >> Shift) & Mask;
 }
@@ -1040,7 +1217,7 @@ float2 CalcScreenUVFromOffsetFraction(float4 ScreenPosition, float2 OffsetFracti
 
 float4 GetPerPixelLightAttenuation(float2 UV)
 {
-	return Square(Texture2DSampleLevel(LightAttenuationTexture, LightAttenuationTextureSampler, UV, 0));
+	return DecodeLightAttenuation(Texture2DSampleLevel(LightAttenuationTexture, LightAttenuationTextureSampler, UV, 0));
 }
 
 // also see ConvertToDeviceZ()
@@ -1097,12 +1274,13 @@ float3 SvPositionToResolvedTranslatedWorld(float4 SvPosition)
 }
 
 // prefer to use SvPositionToTranslatedWorld() for better quality
-float3 SvPositionToWorld(float4 SvPosition)
+FLWCVector3 SvPositionToWorld(float4 SvPosition)
 {
-	return SvPositionToTranslatedWorld(SvPosition) - View.PreViewTranslation;
+	float3 TranslatedWorldPosition = SvPositionToTranslatedWorld(SvPosition);
+	return LWCSubtract(TranslatedWorldPosition, PrimaryView.PreViewTranslation);
 }
 
-// investigate: doesn't work for usage with View.ScreenToWorld, see SvPositionToScreenPosition2()
+// investigate: doesn't work for usage with PrimaryView.ScreenToWorld, see SvPositionToScreenPosition2()
 float4 SvPositionToScreenPosition(float4 SvPosition)
 {
 	// todo: is already in .w or needs to be reconstructed like this:
@@ -1127,6 +1305,20 @@ float4 SvPositionToResolvedScreenPosition(float4 SvPosition)
 
 	// SvPosition.w: so .w has the SceneDepth, some mobile code and the DepthFade material expression wants that
 	return float4(NDCPos.xyz, 1) * SvPosition.w;
+}
+
+void SvPositionToResolvedScreenPositionDeriv(float4 SvPosition, float2 PPZ_DDX_DDY, float2 W_DDX_DDY, inout float4 ScreenPosition, inout float4 ScreenPositionDDX, inout float4 ScreenPositionDDY)
+{
+	float2 PixelPos = SvPosition.xy - ResolvedView.ViewRectMin.xy;
+
+	// NDC (NormalizedDeviceCoordinates, after the perspective divide)
+	float4 NDCPos = float4((PixelPos * ResolvedView.ViewSizeAndInvSize.zw - 0.5f) * float2(2, -2), SvPosition.z, 1.0f);
+	float4 NDCPosDDX = float4(ResolvedView.ViewSizeAndInvSize.z * 2.0f, 0.0f, PPZ_DDX_DDY.x, 0.0f);
+	float4 NDCPosDDY = float4(ResolvedView.ViewSizeAndInvSize.w * 2.0f, 0.0f, PPZ_DDX_DDY.y, 0.0f);
+
+	ScreenPosition = NDCPos * SvPosition.w;
+	ScreenPositionDDX = NDCPos * W_DDX_DDY.x + NDCPosDDX * SvPosition.w;
+	ScreenPositionDDY = NDCPos * W_DDX_DDY.y + NDCPosDDY * SvPosition.w;
 }
 
 float2 SvPositionToViewportUV(float4 SvPosition)
@@ -1512,7 +1704,7 @@ void GenerateCoordinateSystem(float3 ZAxis, out float3 XAxis, out float3 YAxis)
 }
 
 // Define passthrough implementations of EvaluateAttributeAtSample for non-D3D11 platforms.
-#if !SM5_PROFILE
+#if !(SM6_PROFILE || SM5_PROFILE)
 	float EvaluateAttributeAtSample(float Attribute,uint SampleIndex) { return Attribute; }
 	float2 EvaluateAttributeAtSample(float2 Attribute,uint SampleIndex) { return Attribute; }
 	float3 EvaluateAttributeAtSample(float3 Attribute,uint SampleIndex) { return Attribute; }
@@ -1536,21 +1728,25 @@ struct FScreenVertexOutput
 // texture is 16bit 0..1 range per channel
 float4 EncodeVelocityToTexture(float3 V)
 {
+	#if VELOCITY_ENCODE_GAMMA
+		V.xy = sign(V.xy) * sqrt(abs(V.xy)) * (2.0 / sqrt(2.0));
+	#endif
+
 	// 0.499f is a value smaller than 0.5f to avoid using the full range to use the clear color (0,0) as special value
 	// 0.5f to allow for a range of -2..2 instead of -1..1 for really fast motions for temporal AA
 	float4 EncodedV;
 	EncodedV.xy = V.xy * (0.499f * 0.5f) + 32767.0f / 65535.0f;
 
-#if VELOCITY_ENCODE_DEPTH
-	uint Vz = asuint(V.z);
+	#if VELOCITY_ENCODE_DEPTH
+		uint Vz = asuint(V.z);
 
-	EncodedV.z = saturate(float((Vz >> 16) & 0xFFFF) * rcp(65535.0f) + (0.1 / 65535.0f));
-	EncodedV.w = saturate(float((Vz >>  0) & 0xFFFF) * rcp(65535.0f) + (0.1 / 65535.0f));
+		EncodedV.z = saturate(float((Vz >> 16) & 0xFFFF) * rcp(65535.0f) + (0.1 / 65535.0f));
+		EncodedV.w = saturate(float((Vz >>  0) & 0xFFFF) * rcp(65535.0f) + (0.1 / 65535.0f));
+	#else
+		EncodedV.zw = 0.0;
+	#endif
 
 	return EncodedV;
-#else
-	return float4(EncodedV.x, EncodedV.y, 0, 0);
-#endif
 }
 // see EncodeVelocityToTexture()
 float3 DecodeVelocityFromTexture(float4 EncodedV)
@@ -1560,13 +1756,17 @@ float3 DecodeVelocityFromTexture(float4 EncodedV)
 	float3 V;
 	V.xy = EncodedV.xy * InvDiv - 32767.0f / 65535.0f * InvDiv;
 
-#if VELOCITY_ENCODE_DEPTH
-	V.z = asfloat((uint(round(EncodedV.z * 65535.0f)) << 16) | uint(round(EncodedV.w * 65535.0f)));
+	#if VELOCITY_ENCODE_DEPTH
+		V.z = asfloat((uint(round(EncodedV.z * 65535.0f)) << 16) | uint(round(EncodedV.w * 65535.0f)));
+	#else
+		V.z = 0.0;
+	#endif
+
+	#if VELOCITY_ENCODE_GAMMA
+		V.xy = (V.xy * abs(V.xy)) * 0.5;
+	#endif
 
 	return V;
-#else
-	return float3 (V.x, V.y, 0);
-#endif
 }
 
 // Used for the Global Illumination in the GIReplace material expression
@@ -1581,7 +1781,16 @@ bool GetGIReplaceState()
 
 bool GetRayTracingQualitySwitch()
 {
-#if RAYHITGROUPSHADER
+#if (RAYHITGROUPSHADER || LUMEN_CARD_CAPTURE) && !PATH_TRACING
+	return true;
+#else
+	return false;
+#endif
+}
+
+bool GetPathTracingQualitySwitch()
+{
+#if RAYHITGROUPSHADER && PATH_TRACING
 	return true;
 #else
 	return false;
@@ -1729,26 +1938,57 @@ float DecodePackedHeight(float2 PackedHeight)
 	return DecodeHeightValue(DecodePackedTwoChannelValue(PackedHeight));
 }
 
-/** Reverses all the 32 bits. */
-uint ReverseBits32( uint bits )
-{
-#if SM5_PROFILE || COMPILER_METAL
-	return reversebits( bits );
-#else
-	bits = ( bits << 16) | ( bits >> 16);
-	bits = ( (bits & 0x00ff00ff) << 8 ) | ( (bits & 0xff00ff00) >> 8 );
-	bits = ( (bits & 0x0f0f0f0f) << 4 ) | ( (bits & 0xf0f0f0f0) >> 4 );
-	bits = ( (bits & 0x33333333) << 2 ) | ( (bits & 0xcccccccc) >> 2 );
-	bits = ( (bits & 0x55555555) << 1 ) | ( (bits & 0xaaaaaaaa) >> 1 );
-	return bits;
-#endif
-}
-
 /** Reverses all the <BitCount> lowest significant bits. */
 uint ReverseBitsN(uint Bitfield, const uint BitCount)
 {
-	return ReverseBits32(Bitfield) >> (32 - BitCount);
+	return reversebits(Bitfield) >> (32 - BitCount);
 }
+
+
+uint2 ZOrder2D(uint Index, const uint SizeLog2)
+{
+	uint2 Coord = 0; 
+
+	UNROLL
+	for (uint i = 0; i < SizeLog2; i++)
+	{
+		Coord.x |= ((Index >> (2 * i + 0)) & 0x1) << i;
+		Coord.y |= ((Index >> (2 * i + 1)) & 0x1) << i;
+	}
+
+	return Coord;
+}
+
+uint3 ZOrder3D(uint Index, const uint SizeLog2)
+{
+    uint3 Coord = 0;
+    
+    UNROLL
+    for (uint i = 0; i < SizeLog2; i++)
+    {
+        Coord.x |= ((Index >> (3 * i + 0)) & 0x1) << i;
+        Coord.y |= ((Index >> (3 * i + 1)) & 0x1) << i;
+        Coord.z |= ((Index >> (3 * i + 2)) & 0x1) << i;
+    }
+
+    return Coord;
+}
+
+uint ZOrder3DEncode(uint3 Coord, const uint SizeLog2)
+{
+    uint Index = 0;
+    
+    UNROLL
+    for (uint i = 0; i < SizeLog2; i++)
+    {
+        Index |= ((Coord.x >> i) & 0x1) << (3 * i + 0);
+        Index |= ((Coord.y >> i) & 0x1) << (3 * i + 1);
+        Index |= ((Coord.z >> i) & 0x1) << (3 * i + 2);
+    }
+
+    return Index;
+}
+
 
 // see PixelShaderOutputCommon
 struct FPixelShaderIn
@@ -1767,6 +2007,9 @@ struct FPixelShaderOut
 {
 	// [0..7], only usable if PIXELSHADEROUTPUT_MRT0, PIXELSHADEROUTPUT_MRT1, ... is 1
 	float4 MRT[8];
+	
+	// Explicit uint output specific to strata.
+	uint StrataOutput[3];
 
 	// Pixel Shader OutCoverage, only usable if PIXELSHADEROUTPUT_COVERAGE is 1
 	uint Coverage;

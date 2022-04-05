@@ -27,8 +27,7 @@ namespace UnrealBuildTool.Rules
         {
             bEnableExceptions = true;
 
-            if (Target.Platform == UnrealTargetPlatform.Win32 ||
-                Target.Platform == UnrealTargetPlatform.Win64 ||
+            if (Target.Platform == UnrealTargetPlatform.Win64 ||
                 Target.Platform == UnrealTargetPlatform.HoloLens)
             {
                 PublicDependencyModuleNames.AddRange(
@@ -54,6 +53,7 @@ namespace UnrealBuildTool.Rules
 						"Projects",
                         "HeadMountedDisplay",
                         "D3D11RHI",
+						"RHICore",
                         "Slate",
                         "SlateCore",
                         "MRMesh",
@@ -63,8 +63,15 @@ namespace UnrealBuildTool.Rules
 
                 AddEngineThirdPartyPrivateStaticDependencies(Target, "WindowsMixedRealityInterop");
 
-                if (Target.bBuildEditor == true)
+				if (Target.Platform != UnrealTargetPlatform.HoloLens)
+				{
+					AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
+					AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
+				}
+
+				if (Target.bBuildEditor == true)
                 {
+					PrivateDependencyModuleNames.Add("EditorFramework");
                     PrivateDependencyModuleNames.Add("UnrealEd");
                 }
 
@@ -79,8 +86,7 @@ namespace UnrealBuildTool.Rules
                     });
 
                 //TODO: needed?
-                if (Target.Platform == UnrealTargetPlatform.Win32 ||
-                    Target.Platform == UnrealTargetPlatform.Win64)
+                if (Target.Platform == UnrealTargetPlatform.Win64)
                 {
                     PrivateIncludePaths.Add("../../../../Source/Runtime/Windows/D3D11RHI/Private/Windows");
                 }

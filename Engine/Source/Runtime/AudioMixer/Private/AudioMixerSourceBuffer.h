@@ -46,11 +46,24 @@ namespace Audio
 
 	using FMixerSourceBufferPtr = TSharedPtr<class FMixerSourceBuffer, ESPMode::ThreadSafe>;
 
+	struct FMixerSourceBufferInitArgs
+	{
+		FDeviceId AudioDeviceID = 0;
+		uint32 InstanceID = 0;
+		int32 SampleRate = 0;
+		FMixerBuffer* Buffer = nullptr;
+		USoundWave* SoundWave = nullptr;
+		ELoopingMode LoopingMode = ELoopingMode::LOOP_Never;
+		bool bIsSeeking = false;
+		bool bForceSyncDecode = false;
+		bool bIsPreviewSound = false;
+	};
+
 	/** Class which handles decoding audio for a particular source buffer. */
 	class FMixerSourceBuffer : public ISoundWaveClient
 	{
-	public:		
-		static FMixerSourceBufferPtr Create(int32 InSampleRate, FMixerBuffer& InBuffer, USoundWave& InWave, ELoopingMode InLoopingMode, bool bInIsSeeking, bool bInForceSyncDecode = false);
+	public:
+		static FMixerSourceBufferPtr Create(FMixerSourceBufferInitArgs& InArgs);
 
 		~FMixerSourceBuffer();
 
@@ -96,12 +109,16 @@ namespace Audio
 		void OnBeginGenerate();
 		void OnEndGenerate();
 		void ClearWave() { SoundWave = nullptr; }
+
+		// Returns whether or not generator is finished (returns false if generator is invalid)
+		bool IsGeneratorFinished() const;
+
 	private:
-		FMixerSourceBuffer(int32 InSampleRate, FMixerBuffer& InBuffer, USoundWave& InWave, ELoopingMode InLoopingMode, bool bInIsSeeking, bool bInForceSyncDecode = false);
+		FMixerSourceBuffer(FMixerSourceBufferInitArgs& InArgs);
 
 		void SubmitInitialPCMBuffers();
 		void SubmitInitialRealtimeBuffers();
-		void SubmitRealTimeSourceData(const bool bLooped);
+		void SubmitRealTimeSourceData(const bool bFinishedOrLooped);
 		void ProcessRealTimeSource();
 		void SubmitBuffer(TSharedPtr<FMixerSourceVoiceBuffer, ESPMode::ThreadSafe> InSourceVoiceBuffer);
 		void DeleteDecoder();

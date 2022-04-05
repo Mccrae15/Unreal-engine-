@@ -15,6 +15,7 @@
 #include "PaperEditorShared/SpriteGeometryEditCommands.h"
 #include "IDetailsView.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "EditorModeManager.h"
 
 #define LOCTEXT_NAMESPACE "TileSetEditor"
 
@@ -289,6 +290,14 @@ void FTileSetEditor::ExtendToolbar()
 	AddToolbarExtender(ToolbarExtender);
 }
 
+void FTileSetEditor::CreateEditorModeManager()
+{
+	check(TileEditorViewportClient.IsValid());
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	TileEditorViewportClient->TakeOwnershipOfModeManager(EditorModeManager);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 void FTileSetEditor::OnPropertyChanged(UObject* ObjectBeingModified, FPropertyChangedEvent& PropertyChangedEvent)
 {
 	if (ObjectBeingModified == TileSetBeingEdited)
@@ -301,18 +310,11 @@ void FTileSetEditor::OnPropertyChanged(UObject* ObjectBeingModified, FPropertyCh
 void FTileSetEditor::CreateLayouts()
 {
 	// Default layout
-	TileSelectorPreferredLayout = FTabManager::NewLayout("Standalone_TileSetEditor_Layout_v4")
+	TileSelectorPreferredLayout = FTabManager::NewLayout("Standalone_TileSetEditor_Layout_v5")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -347,18 +349,11 @@ void FTileSetEditor::CreateLayouts()
 		);
 
 	// Alternate layout
-	SingleTileEditorPreferredLayout = FTabManager::NewLayout("Standalone_TileSetEditor_AlternateLayout_v1")
+	SingleTileEditorPreferredLayout = FTabManager::NewLayout("Standalone_TileSetEditor_AlternateLayout_v2")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -445,8 +440,7 @@ FLinearColor FTileSetEditor::GetWorldCentricTabColorScale() const
 
 FString FTileSetEditor::GetDocumentationLink() const
 {
-	//@TODO: Need to make a page for this
-	return TEXT("Engine/Paper2D/TileSetEditor");
+	return TEXT("AnimatingObjects/Paper2D/TileMaps");
 }
 
 void FTileSetEditor::OnToolkitHostingStarted(const TSharedRef<class IToolkit>& Toolkit)

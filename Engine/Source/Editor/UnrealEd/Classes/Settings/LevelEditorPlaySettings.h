@@ -80,6 +80,9 @@ enum EPlayModeType
 	/** Simulates in viewport without possessing the player. */
 	PlayMode_Simulate,
 
+	/** Runs the last launched device (from Platforms menu) */
+	PlayMode_QuickLaunch,
+
 	/** The number of different Play Modes. */
 	PlayMode_Count,
 };
@@ -252,6 +255,10 @@ public:
 	UPROPERTY(config, EditAnywhere, Category=PlayInEditor, meta=(ToolTip="Whether to play sounds when in a Play In Editor session"))
 	bool EnableGameSound;
 
+	/** Whether to automatically solo audio in first PIE client. */
+	UPROPERTY(config, EditAnywhere, Category = PlayInEditor, meta = (ToolTip="Whether to automatically solo audio in first PIE client", EditCondition="EnableGameSound", DisplayName = "Solo Audio in First PIE Client"))
+	bool SoloAudioInFirstPIEClient;
+
 	/** Whether to play a sound when entering and exiting PIE */
 	UPROPERTY(config, EditAnywhere, AdvancedDisplay, Category = PlayInEditor, meta = (DisplayName = "Enable PIE Enter and Exit Sounds"))
 	bool EnablePIEEnterAndExitSounds;
@@ -304,10 +311,6 @@ public:
 	UPROPERTY(config, EditAnywhere, Category=PlayInStandaloneGame)
 	FString AdditionalLaunchParameters;
 
-	/** Extra parameters to be included as part of the command line for a mobile-on-PC standalone game. */
-	UPROPERTY(config, EditAnywhere, Category=PlayInStandaloneGame)
-	FString AdditionalLaunchParametersForMobile;
-
 public:
 
 	/** Whether to build the game before launching on device. */
@@ -345,7 +348,7 @@ private:
 	UPROPERTY(config, EditAnywhere, Category="Multiplayer Options")
 	TEnumAsByte<EPlayNetMode> PlayNetMode;
 
-	/** Spawn multiple player windows in a single instance of UE4. This will load much faster, but has potential to have more issues.  */
+	/** Spawn multiple player windows in a single instance of UE. This will load much faster, but has potential to have more issues.  */
 	UPROPERTY(config, EditAnywhere, Category="Multiplayer Options")
 	bool RunUnderOneProcess;
 
@@ -413,15 +416,15 @@ private:
 	FString AdditionalLaunchOptions;
 
 	/** Controls the default value of the show flag ServerDrawDebug */
-	UPROPERTY(config, EditAnywhere, Category = MultiplayerOptions)
+	UPROPERTY(config, EditAnywhere, Category = "Multiplayer Options")
 	bool bShowServerDebugDrawingByDefault;
 
 	/** How strongly debug drawing originating from the server will be biased towards the tint color */
-	UPROPERTY(config, EditAnywhere, Category=MultiplayerOptions, meta=(ClampMin=0, ClampMax=1, UIMin=0, UIMax=1))
+	UPROPERTY(config, EditAnywhere, Category="Multiplayer Options", meta=(ClampMin=0, ClampMax=1, UIMin=0, UIMax=1))
 	float ServerDebugDrawingColorTintStrength;
 
 	/** Debug drawing originating from the server will be biased towards this color */
-	UPROPERTY(config, EditAnywhere, Category=MultiplayerOptions)
+	UPROPERTY(config, EditAnywhere, Category="Multiplayer Options")
 	FLinearColor ServerDebugDrawingColorTint;
 
 private:

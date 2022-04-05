@@ -147,15 +147,13 @@ public:
 			float CursorRadius = 0.f;
 			ArrangedWidgets = SlateWindowPin->GetHittestGrid().GetBubblePath(LocalMouseCoordinate, CursorRadius, bIgnoreEnabledStatus);
 
-			TSharedRef<FVirtualPointerPosition> VirtualMouseCoordinate = MakeShared<FVirtualPointerPosition>();
-			VirtualMouseCoordinate->CurrentCursorPosition = LocalMouseCoordinate;
-			VirtualMouseCoordinate->LastCursorPosition = LastLocalHitLocation;
+			FVirtualPointerPosition VirtualMouseCoordinate(LocalMouseCoordinate, LastLocalHitLocation);
 
 			LastLocalHitLocation = LocalMouseCoordinate;
 
 			for (FWidgetAndPointer& ArrangedWidget : ArrangedWidgets)
 			{
-				ArrangedWidget.PointerPosition = VirtualMouseCoordinate;
+				ArrangedWidget.SetPointerPosition(VirtualMouseCoordinate);
 			}
 		}
 
@@ -172,9 +170,9 @@ public:
 		}
 	}
 
-	virtual TSharedPtr<struct FVirtualPointerPosition> TranslateMouseCoordinateForCustomHitTestChild(const TSharedRef<SWidget>& ChildWidget, const FGeometry& ViewportGeometry, const FVector2D& ScreenSpaceMouseCoordinate, const FVector2D& LastScreenSpaceMouseCoordinate) const override
+	virtual TOptional<FVirtualPointerPosition> TranslateMouseCoordinateForCustomHitTestChild(const SWidget& ChildWidget, const FGeometry& MyGeometry, const FVector2D ScreenSpaceMouseCoordinate, const FVector2D LastScreenSpaceMouseCoordinate) const override
 	{
-		return nullptr;
+		return TOptional<FVirtualPointerPosition>();
 	}
 
 	void SetWidgetDrawSize(FIntPoint NewWidgetDrawSize)
@@ -713,6 +711,7 @@ bool UVPFullScreenUserWidget::Display(UWorld* InWorld)
 		if (bWasAdded)
 		{
 			FWorldDelegates::LevelRemovedFromWorld.AddUObject(this, &UVPFullScreenUserWidget::OnLevelRemovedFromWorld);
+			FWorldDelegates::OnWorldCleanup.AddUObject(this, &UVPFullScreenUserWidget::OnWorldCleanup);
 
 			VPFullScreenUserWidgetPrivate::FWorldCleanupListener::Get()->AddWidget(this);
 
@@ -761,6 +760,7 @@ void UVPFullScreenUserWidget::Hide()
 	{
 		ReleaseWidget();
 		FWorldDelegates::LevelRemovedFromWorld.RemoveAll(this);
+		FWorldDelegates::OnWorldCleanup.RemoveAll(this);
 
 		VPFullScreenUserWidgetPrivate::FWorldCleanupListener::Get()->RemoveWidget(this);
 
@@ -832,6 +832,14 @@ void UVPFullScreenUserWidget::OnLevelRemovedFromWorld(ULevel* InLevel, UWorld* I
 	// If the InLevel is invalid, then the entire world is about to disappear.
 	//Hide the widget to clear the memory and reference to the world it may hold.
 	if (InLevel == nullptr && InWorld && InWorld == World.Get())
+	{
+		Hide();
+	}
+}
+
+void UVPFullScreenUserWidget::OnWorldCleanup(UWorld* InWorld, bool bSessionEnded, bool bCleanupResources)
+{
+	if (IsDisplayed() && World == InWorld)
 	{
 		Hide();
 	}

@@ -28,6 +28,7 @@
 #include "Components/LineBatchComponent.h"
 #include "GameFramework/GameUserSettings.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Slate/SceneViewport.h"
 
 #include "LegacyScreenPercentageDriver.h"
 #include "DynamicResolutionState.h"
@@ -47,6 +48,24 @@
 
 #include "Config/DisplayClusterConfigManager.h"
 
+
+// Debug feature to synchronize and force all external resources to be transferred cross GPU at the end of graph execution.
+// May be useful for testing cross GPU synchronization logic.
+int32 GDisplayClusterForceCopyCrossGPU = 0;
+static FAutoConsoleVariableRef CVarDisplayClusterForceCopyCrossGPU(
+	TEXT("DC.ForceCopyCrossGPU"),
+	GDisplayClusterForceCopyCrossGPU,
+	TEXT("Force cross GPU copy of all resources after each view render.  Bad for perf, but may be useful for debugging."),
+	ECVF_RenderThreadSafe
+);
+
+int32 GDisplayClusterShowStats = 0;
+static FAutoConsoleVariableRef CVarDisplayClusterShowStats(
+	TEXT("DC.Stats"),
+	GDisplayClusterShowStats,
+	TEXT("Show per-view profiling stats for display cluster rendering."),
+	ECVF_RenderThreadSafe
+);
 
 UDisplayClusterViewportClient::UDisplayClusterViewportClient(FVTableHelper& Helper)
 	: Super(Helper)
@@ -77,6 +96,183 @@ static UCanvas* GetCanvasByName(FName CanvasName)
 	}
 
 	return *FoundCanvas;
+}
+
+// Wrapper for FSceneViewport to allow us to add custom stats specific to display cluster (per-view-family CPU and GPU perf)
+class FDisplayClusterSceneViewport : public FSceneViewport
+{
+public:
+	FDisplayClusterSceneViewport(FViewportClient* InViewportClient, TSharedPtr<SViewport> InViewportWidget)
+		: FSceneViewport(InViewportClient, InViewportWidget)
+	{}
+
+	~FDisplayClusterSceneViewport()
+	{
+		for (auto It = CpuHistoryByDescription.CreateIterator(); It; ++It)
+		{
+			delete It.Value();
+		}
+	}
+
+	virtual int32 DrawStatsHUD(FCanvas* InCanvas, int32 InX, int32 InY) override
+	{
+#if GPUPROFILERTRACE_ENABLED
+		if (GDisplayClusterShowStats)
+		{
+			// Get GPU perf results
+			TArray<FRealtimeGPUProfilerDescriptionResult> PerfResults;
+			FRealtimeGPUProfiler::Get()->FetchPerfByDescription(PerfResults);
+
+			UFont* StatsFont = GetStatsFont();
+
+			const FLinearColor HeaderColor = FLinearColor(1.f, 0.2f, 0.f);
+
+			if (PerfResults.Num())
+			{
+				// Get CPU perf results
+				TArray<float> CpuPerfResults;
+				CpuPerfResults.AddUninitialized(PerfResults.Num());
+				{
+					FRWScopeLock Lock(CpuHistoryMutex, SLT_Write);
+
+					for (int32 ResultIndex = 0; ResultIndex < PerfResults.Num(); ResultIndex++)
+					{
+						CpuPerfResults[ResultIndex] = FetchHistoryAverage(PerfResults[ResultIndex].Description);
+					}
+				}
+
+				// Compute column sizes
+				int32 YIgnore;
+
+				const TCHAR* DescriptionHeader = TEXT("Display Cluster Stats");
+				int32 DescriptionColumnWidth;
+				StringSize(StatsFont, DescriptionColumnWidth, YIgnore, DescriptionHeader);
+
+				for (const FRealtimeGPUProfilerDescriptionResult& PerfResult : PerfResults)
+				{
+					int32 XL;
+					StringSize(StatsFont, XL, YIgnore, *PerfResult.Description);
+
+					DescriptionColumnWidth = FMath::Max(DescriptionColumnWidth, XL);
+				}
+
+				int32 NumberColumnWidth;
+				StringSize(StatsFont, NumberColumnWidth, YIgnore, *FString::ChrN(7, 'W'));
+
+				// Render header
+				InCanvas->DrawShadowedString(InX, InY, DescriptionHeader, StatsFont, HeaderColor);
+				RightJustify(InCanvas, StatsFont, InX + DescriptionColumnWidth + 1 * NumberColumnWidth, InY, TEXT("GPUs"), HeaderColor);
+				RightJustify(InCanvas, StatsFont, InX + DescriptionColumnWidth + 2 * NumberColumnWidth, InY, TEXT("Average"), HeaderColor);
+				RightJustify(InCanvas, StatsFont, InX + DescriptionColumnWidth + 3 * NumberColumnWidth, InY, TEXT("CPU"), HeaderColor);
+				InY += StatsFont->GetMaxCharHeight();
+
+				// Render rows
+				int32 ResultIndex = 0;
+				const FLinearColor StatColor = FLinearColor(0.f, 1.f, 0.f);
+
+				for (const FRealtimeGPUProfilerDescriptionResult& PerfResult : PerfResults)
+				{
+					InCanvas->DrawTile(InX, InY, DescriptionColumnWidth + 3 * NumberColumnWidth, StatsFont->GetMaxCharHeight(),
+						0, 0, 1, 1,
+						(ResultIndex & 1) ? FLinearColor(0.02f, 0.02f, 0.02f, 0.88f) : FLinearColor(0.05f, 0.05f, 0.05f, 0.92f),
+						GWhiteTexture, true);
+
+					// Source GPU times are in microseconds, CPU times in seconds, so we need to divide one by 1000, and multiply the other by 1000
+					InCanvas->DrawShadowedString(InX, InY, *PerfResult.Description, StatsFont, StatColor);
+					RightJustify(InCanvas, StatsFont, InX + DescriptionColumnWidth + 1 * NumberColumnWidth, InY, *FString::Printf(TEXT("%d"), PerfResult.GPUMask.GetNative()), StatColor);
+					RightJustify(InCanvas, StatsFont, InX + DescriptionColumnWidth + 2 * NumberColumnWidth, InY, *FString::Printf(TEXT("%.2f"), PerfResult.AverageTime / 1000.f), StatColor);
+					RightJustify(InCanvas, StatsFont, InX + DescriptionColumnWidth + 3 * NumberColumnWidth, InY, *FString::Printf(TEXT("%.2f"), CpuPerfResults[ResultIndex] * 1000.f), StatColor);
+
+					InY += StatsFont->GetMaxCharHeight();
+
+					ResultIndex++;
+				}
+			}
+			else
+			{
+				InCanvas->DrawShadowedString(InX, InY, TEXT("Display Cluster Stats [NO DATA]"), StatsFont, HeaderColor);
+				InY += StatsFont->GetMaxCharHeight();
+			}
+
+			InY += StatsFont->GetMaxCharHeight();
+		}
+#endif  // GPUPROFILERTRACE_ENABLED
+
+		return InY;
+	}
+
+	float* GetNextHistoryWriteAddress(const FString& Description)
+	{
+		FRWScopeLock Lock(CpuHistoryMutex, SLT_Write);
+
+		FCpuProfileHistory*& History = CpuHistoryByDescription.FindOrAdd(Description);
+		if (!History)
+		{
+			History = new FCpuProfileHistory;
+		}
+
+		return &History->Times[(History->HistoryIndex++) % FCpuProfileHistory::HistoryCount];
+	}
+
+private:
+	static void RightJustify(FCanvas* Canvas, UFont* StatsFont, const int32 X, const int32 Y, TCHAR const* Text, FLinearColor const& Color)
+	{
+		int32 ColumnSizeX, ColumnSizeY;
+		StringSize(StatsFont, ColumnSizeX, ColumnSizeY, Text);
+		Canvas->DrawShadowedString(X - ColumnSizeX, Y, Text, StatsFont, Color);
+	}
+
+	// Only callable when the CpuHistoryMutex is locked!
+	float FetchHistoryAverage(const FString& Description) const
+	{
+		const FCpuProfileHistory* const* History = CpuHistoryByDescription.Find(Description);
+
+		float Average = 0.f;
+		if (History)
+		{
+			float ValidResultCount = 0.f;
+			for (uint32 HistoryIndex = 0; HistoryIndex < FCpuProfileHistory::HistoryCount; HistoryIndex++)
+			{
+				float HistoryTime = (*History)->Times[HistoryIndex];
+				if (HistoryTime > 0.f)
+				{
+					Average += HistoryTime;
+					ValidResultCount += 1.f;
+				}
+			}
+			if (ValidResultCount > 0.f)
+			{
+				Average /= ValidResultCount;
+			}
+		}
+		return Average;
+	}
+
+	struct FCpuProfileHistory
+	{
+		FCpuProfileHistory()
+		{
+			FMemory::Memset(*this, 0);
+		}
+
+		static const uint32 HistoryCount = 64;
+
+		// Constructor memsets everything to zero, assuming structure is Plain Old Data.  If any dynamic structures are
+		// added, you'll need a more generalized constructor that zeroes out all the uninitialized data.
+		uint32 HistoryIndex;
+		float Times[HistoryCount];
+	};
+
+	// History payload is separately allocated in memory, as it's written to asynchronously by the Render Thread, and we
+	// can't have it moved if the Map storage gets reallocated when new view families are added.
+	TMap<FString, FCpuProfileHistory*> CpuHistoryByDescription;
+	FRWLock CpuHistoryMutex;
+};
+
+// Override to allocate our custom viewport class
+FSceneViewport* UDisplayClusterViewportClient::CreateGameViewport(TSharedPtr<SViewport> InViewportWidget)
+{
+	return new FDisplayClusterSceneViewport(this, InViewportWidget);
 }
 
 void UDisplayClusterViewportClient::Init(struct FWorldContext& WorldContext, UGameInstance* OwningGameInstance, bool bCreateNewAudioDevice)
@@ -216,6 +412,7 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 
 	//Experimental code from render team, now always disabled
 	const bool bIsRenderedImmediatelyAfterAnotherViewFamily = false;
+	bool bIsFirstViewInMultipleViewFamily = true;
 
 	for (FDisplayClusterRenderFrame::FFrameRenderTarget& DCRenderTarget : RenderFrame.RenderTargets)
 	{
@@ -225,14 +422,17 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 		for (FDisplayClusterRenderFrame::FFrameViewFamily& DCViewFamily : DCRenderTarget.ViewFamilies)
 		{
 			// Create the view family for rendering the world scene to the viewport's render target
-			FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(DCRenderTarget.RenderTargetPtr, MyWorld->Scene, EngineShowFlags)
-				.SetRealtimeUpdate(true)
-				.SetAdditionalViewFamily(bAdditionalViewFamily));
+			FSceneViewFamilyContext ViewFamily(RenderFrame.ViewportManager->CreateViewFamilyConstructionValues(
+				DCRenderTarget,
+				MyWorld->Scene,
+				EngineShowFlags,
+				bAdditionalViewFamily
+			));
 
 			// Disable clean op for all next families on this render target
 			bAdditionalViewFamily = true;
 
-			// Configure family flags
+			// Configure family
 			RenderFrame.ViewportManager->ConfigureViewFamily(DCRenderTarget, DCViewFamily, ViewFamily);
 
 #if WITH_EDITOR
@@ -294,9 +494,9 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 				// Calculate the player's view information.
 				FVector		ViewLocation;
 				FRotator	ViewRotation;
-				FSceneView* View = LocalPlayer->CalcSceneView(&ViewFamily, ViewLocation, ViewRotation, InViewport, nullptr, ViewportContext.StereoscopicPass);
+				FSceneView* View = LocalPlayer->CalcSceneView(&ViewFamily, ViewLocation, ViewRotation, InViewport, nullptr, ViewportContext.StereoViewIndex);
 
-				if (View && DCView.bDisableRender)
+				if (View && DCView.IsShouldRenderView() == false)
 				{
 					ViewFamily.Views.Remove(View);
 
@@ -318,35 +518,35 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 					if (View->Family->EngineShowFlags.Wireframe)
 					{
 						// Wireframe color is emissive-only, and mesh-modifying materials do not use material substitution, hence...
-						View->DiffuseOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
-						View->SpecularOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
+						View->DiffuseOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
+						View->SpecularOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
 					}
 					else if (View->Family->EngineShowFlags.OverrideDiffuseAndSpecular)
 					{
-						View->DiffuseOverrideParameter = FVector4(GEngine->LightingOnlyBrightness.R, GEngine->LightingOnlyBrightness.G, GEngine->LightingOnlyBrightness.B, 0.0f);
-						View->SpecularOverrideParameter = FVector4(.1f, .1f, .1f, 0.0f);
+						View->DiffuseOverrideParameter = FVector4f(GEngine->LightingOnlyBrightness.R, GEngine->LightingOnlyBrightness.G, GEngine->LightingOnlyBrightness.B, 0.0f);
+						View->SpecularOverrideParameter = FVector4f(.1f, .1f, .1f, 0.0f);
 					}
 					else if (View->Family->EngineShowFlags.LightingOnlyOverride)
 					{
-						View->DiffuseOverrideParameter = FVector4(GEngine->LightingOnlyBrightness.R, GEngine->LightingOnlyBrightness.G, GEngine->LightingOnlyBrightness.B, 0.0f);
-						View->SpecularOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
+						View->DiffuseOverrideParameter = FVector4f(GEngine->LightingOnlyBrightness.R, GEngine->LightingOnlyBrightness.G, GEngine->LightingOnlyBrightness.B, 0.0f);
+						View->SpecularOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
 					}
 					else if (View->Family->EngineShowFlags.ReflectionOverride)
 					{
-						View->DiffuseOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
-						View->SpecularOverrideParameter = FVector4(1, 1, 1, 0.0f);
-						View->NormalOverrideParameter = FVector4(0, 0, 1, 0.0f);
+						View->DiffuseOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
+						View->SpecularOverrideParameter = FVector4f(1, 1, 1, 0.0f);
+						View->NormalOverrideParameter = FVector4f(0, 0, 1, 0.0f);
 						View->RoughnessOverrideParameter = FVector2D(0.0f, 0.0f);
 					}
 
 					if (!View->Family->EngineShowFlags.Diffuse)
 					{
-						View->DiffuseOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
+						View->DiffuseOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
 					}
 
 					if (!View->Family->EngineShowFlags.Specular)
 					{
-						View->SpecularOverrideParameter = FVector4(0.f, 0.f, 0.f, 0.f);
+						View->SpecularOverrideParameter = FVector4f(0.f, 0.f, 0.f, 0.f);
 					}
 
 					View->CurrentBufferVisualizationMode = GetCurrentBufferVisualizationMode();
@@ -415,11 +615,6 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 								}
 							}
 						}
-
-#if RHI_RAYTRACING
-						View->SetupRayTracedRendering();
-#endif
-
 					}
 
 					// Add view information for resource streaming. Allow up to 5X boost for small FOV.
@@ -483,7 +678,6 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 						ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
 							ViewFamily,
 							DynamicResolutionStateInfos.ResolutionFractionApproximation,
-							false,
 							DynamicResolutionStateInfos.ResolutionFractionUpperBound));
 					}
 
@@ -502,15 +696,11 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 					// In case of stereo, we set the same buffer ratio for both left and right views (taken from left)
 					float CustomBufferRatio = DCViewFamily.CustomBufferRatio;
 
-					bool AllowPostProcessSettingsScreenPercentage = false;
 					float GlobalResolutionFraction = 1.0f;
 					float SecondaryScreenPercentage = 1.0f;
 
 					if (ViewFamily.EngineShowFlags.ScreenPercentage)
 					{
-						// Allow FPostProcessSettings::ScreenPercentage.
-						AllowPostProcessSettingsScreenPercentage = true;
-
 						// Get global view fraction set by r.ScreenPercentage.
 						GlobalResolutionFraction = FLegacyScreenPercentageDriver::GetCVarResolutionFraction() * CustomBufferRatio;
 
@@ -523,7 +713,7 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 					}
 
 					ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
-						ViewFamily, GlobalResolutionFraction, AllowPostProcessSettingsScreenPercentage));
+						ViewFamily, GlobalResolutionFraction));
 
 					ViewFamily.SecondaryViewFraction = SecondaryScreenPercentage;
 				}
@@ -541,10 +731,23 @@ void UDisplayClusterViewportClient::Draw(FViewport* InViewport, FCanvas* SceneCa
 
 				ViewFamily.bIsHDR = GetWindow().IsValid() ? GetWindow().Get()->GetIsHDR() : false;
 
+#if WITH_MGPU
+				ViewFamily.bForceCopyCrossGPU = GDisplayClusterForceCopyCrossGPU != 0;
+#endif
+
+				ViewFamily.ProfileDescription = DCViewFamily.Views[0].Viewport->GetId();
+				if (!ViewFamily.ProfileDescription.IsEmpty())
+				{
+					ViewFamily.ProfileSceneRenderTime = ((FDisplayClusterSceneViewport*)InViewport)->GetNextHistoryWriteAddress(ViewFamily.ProfileDescription);
+				}
+
 				// Draw the player views.
 				if (!bDisableWorldRendering && PlayerViewMap.Num() > 0 && FSlateApplication::Get().GetPlatformApplication()->IsAllowedToRender()) //-V560
 				{
 					ViewFamily.bIsRenderedImmediatelyAfterAnotherViewFamily = bIsRenderedImmediatelyAfterAnotherViewFamily;
+					ViewFamily.bIsMultipleViewFamily = true;
+					ViewFamily.bIsFirstViewInMultipleViewFamily = bIsFirstViewInMultipleViewFamily;
+					bIsFirstViewInMultipleViewFamily = false;
 
 					GetRendererModule().BeginRenderingViewFamily(SceneCanvas, &ViewFamily);
 
@@ -689,8 +892,6 @@ bool UDisplayClusterViewportClient::Draw_PIE(FViewport* InViewport, FCanvas* Sce
 	default:
 		break;
 	}
-		
-
 
 	//Get world for render
 	UWorld* const MyWorld = GetWorld();
@@ -700,19 +901,26 @@ bool UDisplayClusterViewportClient::Draw_PIE(FViewport* InViewport, FCanvas* Sce
 	{
 		return false;
 	}
+
+	FDisplayClusterPreviewSettings PreviewSettings;
+	PreviewSettings.bPreviewEnablePostProcess = true;
+	PreviewSettings.bIsPIE = true;
+
 	// Update local node viewports (update\create\delete) and build new render frame
-	if (ViewportManager->UpdateConfiguration(RenderFrameMode, LocalNodeId, RootActor) == false)
+	if (ViewportManager->UpdateConfiguration(RenderFrameMode, LocalNodeId, RootActor, &PreviewSettings) == false)
 	{
 		return false;
 	}
 
 	FDisplayClusterRenderFrame RenderFrame;
-	if (ViewportManager->BeginNewFrame(InViewport, MyWorld, RenderFrame) == false || RenderFrame.DesiredNumberOfViews < 1)
+	if (ViewportManager->BeginNewFrame(InViewport, MyWorld, RenderFrame) == false)
 	{
 		return false;
 	}
 
-	if (ViewportManager->RenderInEditor(RenderFrame, InViewport) == false)
+	bool bOutFrameRendered = false;
+	int32 RenderedViewportsAmount = 0;
+	if (ViewportManager->RenderInEditor(RenderFrame, InViewport, 0, -1, RenderedViewportsAmount, bOutFrameRendered) == false)
 	{
 		return false;
 	}

@@ -112,7 +112,7 @@ void FOpenColorIODisplayExtension::SetupView(FSceneViewFamily& InViewFamily, FSc
 namespace {
 	template<typename TSetupFunction>
 	void DrawScreenPass(
-		FRHICommandListImmediate& RHICmdList,
+		FRHICommandList& RHICmdList,
 		const FSceneView& View,
 		const FScreenPassTextureViewport& OutputViewport,
 		const FScreenPassTextureViewport& InputViewport,
@@ -144,7 +144,7 @@ namespace {
 			OutputSize,
 			InputSize,
 			PipelineState.VertexShader,
-			View.StereoPass,
+			View.StereoViewIndex,
 			false,
 			DrawRectangleFlags);
 	}
@@ -174,7 +174,7 @@ FScreenPassTexture FOpenColorIODisplayExtension::PostProcessPassAfterTonemap_Ren
 		return SceneColor;
 	}
 
-	if (!(SceneColor.Texture->Desc.Flags & ETextureCreateFlags::TexCreate_ShaderResource))
+	if (!EnumHasAnyFlags(SceneColor.Texture->Desc.Flags, TexCreate_ShaderResource))
 	{
 		return SceneColor;
 	}
@@ -231,9 +231,9 @@ FScreenPassTexture FOpenColorIODisplayExtension::PostProcessPassAfterTonemap_Ren
 			Parameters->InputTextureSampler = TStaticSamplerState<>::GetRHI();
 			if (CachedResourcesRenderThread.LUT3dResource)
 			{
-				Parameters->Ociolut3d = CachedResourcesRenderThread.LUT3dResource->TextureRHI;
+				Parameters->Ocio_lut3d_0 = CachedResourcesRenderThread.LUT3dResource->TextureRHI;
 			}
-			Parameters->Ociolut3dSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+			Parameters->Ocio_lut3d_0Sampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 			// There is a special case where post processing and tonemapper are disabled. In this case tonemapper applies a static display Inverse of Gamma which defaults to 2.2.
 			// In the case when Both PostProcessing and ToneMapper are disabled we apply gamma manually. In every other case we apply inverse gamma before applying OCIO.
@@ -252,7 +252,7 @@ FScreenPassTexture FOpenColorIODisplayExtension::PostProcessPassAfterTonemap_Ren
 				DepthStencilState,
 				SceneColorViewport,
 				BackBufferViewport,
-				Parameters](FRHICommandListImmediate& RHICmdList)
+				Parameters](FRHICommandList& RHICmdList)
 			{
 				DrawScreenPass(
 					RHICmdList,
@@ -260,7 +260,7 @@ FScreenPassTexture FOpenColorIODisplayExtension::PostProcessPassAfterTonemap_Ren
 					BackBufferViewport,
 					SceneColorViewport,
 					FScreenPassPipelineState(VertexShader, OCIOPixelShader, DefaultBlendState, DepthStencilState),
-					[&](FRHICommandListImmediate& RHICmdList)
+					[&](FRHICommandList& RHICmdList)
 				{
 					SetShaderParameters(RHICmdList, OCIOPixelShader, OCIOPixelShader.GetPixelShader(), *Parameters);
 				});

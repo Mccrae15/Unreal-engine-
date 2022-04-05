@@ -11,6 +11,7 @@ public class AudioModulationEditor : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
+				"EditorFramework",
 				"GameProjectGeneration",
 				"UnrealEd",
 				"PropertyEditor",
@@ -23,7 +24,8 @@ public class AudioModulationEditor : ModuleRules
 				"AudioExtensions",
 				"AudioModulation",
 				"CurveEditor",
-				"EditorWidgets"
+				"EditorWidgets",
+				"ToolWidgets",
 			}
 		);
 

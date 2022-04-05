@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -7,7 +8,8 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 using UnrealBuildTool;
 
 namespace AutomationTool.Tasks
@@ -120,10 +122,10 @@ namespace AutomationTool.Tasks
 			}
 
 			// Set the Engine directory
-			DirectoryReference EngineDir = Parameters.EngineDir ?? CommandUtils.EngineDirectory;
+			DirectoryReference EngineDir = Parameters.EngineDir ?? Unreal.EngineDirectory;
 
 			// Resolve the input list
-			IEnumerable<FileReference> TargetFiles = ResolveFilespec(CommandUtils.RootDirectory, Parameters.Files, TagNameToFileSet);
+			IEnumerable<FileReference> TargetFiles = ResolveFilespec(Unreal.RootDirectory, Parameters.Files, TagNameToFileSet);
 			HashSet<FileReference> Files = new HashSet<FileReference>();
 
 			foreach (FileReference TargetFile in TargetFiles)
@@ -172,7 +174,7 @@ namespace AutomationTool.Tasks
 							continue;
 						}
 
-						// Check which files exist, and warn about any that don't. Ignore debug files, as they are frequently excluded for size (eg. UE4 on GitHub). This matches logic during staging.
+						// Check which files exist, and warn about any that don't. Ignore debug files, as they are frequently excluded for size (eg. UE on GitHub). This matches logic during staging.
 						FileReference DependencyPath = RuntimeDependency.Path;
 						if (FileReference.Exists(DependencyPath))
 						{

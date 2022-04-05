@@ -16,7 +16,7 @@ bool FDisplayClusterRenderFrameManager::BuildRenderFrame(FViewport* InViewport, 
 
 	switch (InRenderFrameSettings.RenderMode)
 	{
-	case EDisplayClusterRenderFrameMode::PreviewMono:
+	case EDisplayClusterRenderFrameMode::PreviewInScene:
 		// Dont use render frame for preview
 		break;
 	default:
@@ -84,27 +84,6 @@ bool FDisplayClusterRenderFrameManager::BuildRenderFrame(FViewport* InViewport, 
 		bResult = BuildSimpleFrame(InViewport, InRenderFrameSettings, SortedViewports, OutRenderFrame);
 	}
 
-	if (bResult)
-	{
-		uint32 RenderFrameViewIndex = 0;
-
-		// Update view index for each context inside view family
-		for (FDisplayClusterRenderFrame::FFrameRenderTarget& RenderTargetIt : OutRenderFrame.RenderTargets)
-		{
-			for (FDisplayClusterRenderFrame::FFrameViewFamily& ViewFamilieIt : RenderTargetIt.ViewFamilies)
-			{
-				for (FDisplayClusterRenderFrame::FFrameView& ViewIt : ViewFamilieIt.Views)
-				{
-					FDisplayClusterViewport* ViewportPtr = static_cast<FDisplayClusterViewport*>(ViewIt.Viewport);
-					if (ViewportPtr != nullptr)
-					{
-						ViewportPtr->Contexts[ViewIt.ContextNum].RenderFrameViewIndex = RenderFrameViewIndex++;
-					}
-				}
-			}
-		}
-	}
-
 	return bResult;
 }
 
@@ -116,49 +95,26 @@ bool FDisplayClusterRenderFrameManager::BuildSimpleFrame(FViewport* InViewport, 
 		{
 			for (const FDisplayClusterViewport_Context& ContextIt : ViewportIt->GetContexts())
 			{
-				bool bShouldUseRenderTarget = true;
-
 				FDisplayClusterRenderFrame::FFrameView FrameView;
 				{
 					FrameView.ContextNum = ContextIt.ContextNum;
 					FrameView.Viewport = ViewportIt;
 					FrameView.bDisableRender = ContextIt.bDisableRender;
-
-					// Simple frame use unique RTT  for each viewport, so disable RTT when viewport rendering disabled
-					if (ContextIt.bDisableRender)
-					{
-						bShouldUseRenderTarget = false;
-					}
+					FrameView.bFreezeRendering = ViewportIt->RenderSettings.bFreezeRendering;
 				}
-
-					float CustomBufferRatio = ViewportIt->GetRenderSettings().BufferRatio;
-					{
-						// Global multiplier
-						CustomBufferRatio *= InRenderFrameSettings.ClusterBufferRatioMult;
-
-						if ((ViewportIt->RenderSettingsICVFX.RuntimeFlags & ViewportRuntime_ICVFXTarget) != 0)
-						{
-							// Outer viewport
-							CustomBufferRatio *= InRenderFrameSettings.ClusterICVFXOuterViewportBufferRatioMult;
-						}
-						else
-						if ((ViewportIt->RenderSettingsICVFX.RuntimeFlags & ViewportRuntime_ICVFXIncamera) != 0)
-						{
-							// Inner Frustum
-							CustomBufferRatio *= InRenderFrameSettings.ClusterICVFXInnerFrustumBufferRatioMult;
-						}
-					}
 
 				FDisplayClusterRenderFrame::FFrameViewFamily FrameViewFamily;
 				{
 					FrameViewFamily.Views.Add(FrameView);
-					FrameViewFamily.CustomBufferRatio = CustomBufferRatio;
+					FrameViewFamily.CustomBufferRatio = ContextIt.CustomBufferRatio;
 					FrameViewFamily.ViewExtensions = ViewportIt->GatherActiveExtensions(InViewport);
 				}
 
 				FDisplayClusterRenderFrame::FFrameRenderTarget FrameRenderTarget;
 				{
-					FrameRenderTarget.bShouldUseRenderTarget = bShouldUseRenderTarget;
+					// Simple frame use unique RTT  for each viewport, so disable RTT when viewport rendering disabled
+					FrameRenderTarget.bShouldUseRenderTarget = ViewportIt->RenderTargets.Num() > 0;
+
 					FrameRenderTarget.ViewFamilies.Add(FrameViewFamily);
 
 					FrameRenderTarget.RenderTargetSize = ContextIt.RenderTargetRect.Max;
@@ -178,7 +134,7 @@ bool FDisplayClusterRenderFrameManager::FindFrameTargetRect(FViewport* InViewpor
 	// Calculate Backbuffer frame
 	bool bIsUsed = false;
 
-	if (InRenderFrameSettings.bShouldUseFullSizeFrameTargetableResource)
+	if (InViewport && InRenderFrameSettings.bShouldUseFullSizeFrameTargetableResource)
 	{
 		// Use full-size frame RTT
 		OutFrameTargetRect = FIntRect(FIntPoint(0, 0), InViewport->GetSizeXY());

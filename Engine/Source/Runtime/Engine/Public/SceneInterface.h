@@ -10,7 +10,6 @@
 #include "RenderGraphDefinitions.h"
 
 class AWorldSettings;
-class FAtmosphericFogSceneInfo;
 class FSkyAtmosphereRenderSceneInfo;
 class FSkyAtmosphereSceneProxy;
 class FVolumetricCloudRenderSceneInfo;
@@ -27,12 +26,15 @@ class UDecalComponent;
 class ULightComponent;
 class UPlanarReflectionComponent;
 class UPrimitiveComponent;
+class UInstancedStaticMeshComponent;
 class UReflectionCaptureComponent;
 class USkyLightComponent;
 class UStaticMeshComponent;
 class UTextureCube;
 class FViewInfo;
 class FSceneRenderer;
+class FInstanceCullingManager;
+struct FHairStrandsInstance;
 
 enum EBasePassDrawListType
 {
@@ -48,7 +50,7 @@ enum EBasePassDrawListType
 class FSceneInterface
 {
 public:
-	FSceneInterface(ERHIFeatureLevel::Type InFeatureLevel)
+	ENGINE_API FSceneInterface(ERHIFeatureLevel::Type InFeatureLevel)
 		: FeatureLevel(InFeatureLevel)
 	{}
 
@@ -71,15 +73,26 @@ public:
 	/**
 	* Updates all primitive scene info additions, remobals and translation changes
 	*/
-	virtual void UpdateAllPrimitiveSceneInfos(FRHICommandListImmediate& RHICmdList, bool bAsyncCreateLPIs = false) = 0;
+	virtual void UpdateAllPrimitiveSceneInfos(FRDGBuilder& GraphBuilder, bool bAsyncCreateLPIs = false) = 0;
+	virtual ENGINE_API void UpdateAllPrimitiveSceneInfos(FRHICommandListImmediate& RHICmdList, bool bAsyncCreateLPIs = false);
+
 	/** 
 	 * Updates the transform of a primitive which has already been added to the scene. 
 	 * 
 	 * @param Primitive - primitive component to update
 	 */
 	virtual void UpdatePrimitiveTransform(UPrimitiveComponent* Primitive) = 0;
+	virtual void UpdatePrimitiveOcclusionBoundsSlack(UPrimitiveComponent* Primitive, float NewSlack) = 0;
 	/** Updates primitive attachment state. */
 	virtual void UpdatePrimitiveAttachment(UPrimitiveComponent* Primitive) = 0;
+
+	/**
+	 * Updates all the instances that have been updated through the InstanceUpdateCmdBuffer on the UPrimitiveComponent.
+	 *
+	 * @param Primitive - primitive component to update
+	 */
+	virtual void UpdatePrimitiveInstances(UInstancedStaticMeshComponent* Primitive) = 0;
+
 	/** 
 	 * Updates the custom primitive data of a primitive component which has already been added to the scene. 
 	 * 
@@ -164,7 +177,7 @@ public:
 	 */
 	virtual void UpdateSkyCaptureContents(const USkyLightComponent* CaptureComponent, bool bCaptureEmissiveOnly, UTextureCube* SourceCubemap, FTexture* OutProcessedTexture, float& OutAverageBrightness, FSHVectorRGB3& OutIrradianceEnvironmentMap, TArray<FFloat16Color>* OutRadianceMap) {}
 
-	virtual void AllocateAndCaptureFrameSkyEnvMap(FRDGBuilder& GraphBuilder, FSceneRenderer& SceneRenderer, FViewInfo& MainView, bool bShouldRenderSkyAtmosphere, bool bShouldRenderVolumetricCloud) {}
+	virtual void AllocateAndCaptureFrameSkyEnvMap(FRDGBuilder& GraphBuilder, FSceneRenderer& SceneRenderer, FViewInfo& MainView, bool bShouldRenderSkyAtmosphere, bool bShouldRenderVolumetricCloud, FInstanceCullingManager& InstanceCullingManager) {}
 	virtual void ValidateSkyLightRealTimeCapture(FRDGBuilder& GraphBuilder, const FViewInfo& View, FRDGTextureRef SceneColorTexture) {}
 
 	virtual void AddPlanarReflection(class UPlanarReflectionComponent* Component) {}
@@ -198,6 +211,9 @@ public:
 	/** Invalidates pages in a runtime virtual texture object. */
 	virtual void InvalidateRuntimeVirtualTexture(class URuntimeVirtualTextureComponent* Component, FBoxSphereBounds const& WorldBounds) {}
 
+	/** Mark scene as needing to restart path tracer accumulation. */
+	virtual void InvalidatePathTracedOutput() {}
+
 	/** 
 	 * Retrieves primitive uniform shader parameters that are internal to the renderer.
 	 */
@@ -227,6 +243,12 @@ public:
 
 	/** Update render states that possibly cached inside renderer, like mesh draw commands. More lightweight than re-registering the scene proxy. */
 	virtual void UpdateCachedRenderStates(class FPrimitiveSceneProxy* SceneProxy) {}
+	
+	/** Updates the selected state values that might be cached inside the renderer */
+	virtual void UpdatePrimitiveSelectedState_RenderThread(const FPrimitiveSceneInfo* PrimitiveSceneInfo, bool bIsSelected) {}
+
+	/** Updates the velocity state values that might be cached inside the renderer */
+	virtual void UpdatePrimitiveVelocityState_RenderThread(FPrimitiveSceneInfo* PrimitiveSceneInfo, bool bIsBeingMoved) {}
 
 	/** 
 	 * Adds a new exponential height fog component to the scene
@@ -244,36 +266,6 @@ public:
 	 * @return True if there are any exponential height fog potentially enabled in the scene
 	 */
 	virtual bool HasAnyExponentialHeightFog() const = 0;
-
-	/** 
-	 * Adds a new atmospheric fog component to the scene
-	 * 
-	 * @param FogComponent - fog component to add
-	 */
-	UE_DEPRECATED(4.26, "Please use the SkyAtmosphere actor instead.")
-	void AddAtmosphericFog(class UAtmosphericFogComponent* FogComponent) { AddAtmosphericFog_Impl(FogComponent); }
-
-	/** 
-	 * Removes a atmospheric fog component from the scene
-	 * 
-	 * @param FogComponent - fog component to remove
-	 */
-	UE_DEPRECATED(4.26, "Please use the SkyAtmosphere actor instead.")
-	void RemoveAtmosphericFog(class UAtmosphericFogComponent* FogComponent) { RemoveAtmosphericFog_Impl(FogComponent); }
-
-	/** 
-	 * Removes a atmospheric fog resource from the scene...this is just a double check to make sure we don't have stale stuff hanging around; should already be gone.
-	 * 
-	 * @param FogResource - fog resource to remove
-	 */
-	UE_DEPRECATED(4.26, "Please use the SkyAtmosphere actor instead.")
-	void RemoveAtmosphericFogResource_RenderThread(FRenderResource* FogResource) { RemoveAtmosphericFogResource_RenderThread_Impl(FogResource); }
-
-	/**
-	 * Returns the scene's FAtmosphericFogSceneInfo if it exists
-	 */
-	UE_DEPRECATED(4.26, "Please use the SkyAtmosphere actor instead.")
-	FAtmosphericFogSceneInfo* GetAtmosphericFogSceneInfo() { return GetAtmosphericFogSceneInfo_Impl(); }
 
 	/**
 	 * Adds the unique volumetric cloud component to the scene
@@ -307,6 +299,20 @@ public:
 	virtual void RemoveVolumetricCloud(FVolumetricCloudSceneProxy* VolumetricCloudSceneProxy) = 0;
 
 	/**
+	 * Adds a hair strands proxy to the scene
+	 *
+	 * @param Proxy - the hair strands proxy
+	 */
+	virtual void AddHairStrands(FHairStrandsInstance* Proxy) = 0;
+
+	/**
+	 * Removes a hair strands proxy to the scene
+	 *
+	 * @param Proxy - the hair strands proxy
+	 */
+	virtual void RemoveHairStrands(FHairStrandsInstance* Proxy) = 0;
+
+	/**
 	 * Set the physics field scene proxy to the scene
 	 *
 	 * @param PhysicsFieldSceneProxy - the physics field scene proxy
@@ -319,9 +325,17 @@ public:
 	virtual void ResetPhysicsField() = 0;
 
 	/**
+	 * Set the shader print/debug cvars to be able to show the fields
+	 */
+	virtual void ShowPhysicsField() = 0;
+
+	/**
 	 * Reset the physics field scene proxy
 	 */
-	virtual void UpdatePhysicsField(FRHICommandListImmediate& RHICmdList, FViewInfo& View) = 0;
+	virtual void UpdatePhysicsField(FRDGBuilder& GraphBuilder, FViewInfo& View) = 0;
+
+	UE_DEPRECATED(5.0, "This method has been refactored to use an FRDGBuilder instead.")
+	virtual void UpdatePhysicsField(FRHICommandListImmediate& RHICmdList, FViewInfo& View) {}
 
 	/**
 	 * Returns the scene's unique info if it exists
@@ -380,6 +394,10 @@ public:
 	 */
 	virtual FRHIUniformBuffer* GetSpeedTreeUniformBuffer(const FVertexFactory* VertexFactory) const = 0;
 
+	virtual void AddLumenSceneCard(class ULumenSceneCardComponent* LumenSceneCardComponent) {};
+	virtual void UpdateLumenSceneCardTransform(class ULumenSceneCardComponent* LumenSceneCardComponent) {};
+	virtual void RemoveLumenSceneCard(class ULumenSceneCardComponent* LumenSceneCardComponent) {};
+
 	/**
 	 * Release this scene and remove it from the rendering thread
 	 */
@@ -426,6 +444,11 @@ public:
 	}
 
 	/**
+	 * Gets the compute work scheduler objects associated with the scene.
+	 */
+	virtual void GetComputeTaskWorkers(TArray<class IComputeTaskWorker*>& OutWorkers) const {}
+
+	/**
 	 * Sets the FX system associated with the scene.
 	 */
 	virtual void SetFXSystem( class FFXSystemInterface* InFXSystem ) = 0;
@@ -463,7 +486,7 @@ public:
 	 * @param	InLevelName		Level name
 	 */
 	virtual void OnLevelAddedToWorld(FName InLevelName, UWorld* InWorld, bool bIsLightingScenario) {}
-	virtual void OnLevelRemovedFromWorld(UWorld* InWorld, bool bIsLightingScenario) {}
+	virtual void OnLevelRemovedFromWorld(FName InLevelName, UWorld* InWorld, bool bIsLightingScenario) {}
 
 	/**
 	 * @return True if there are any lights in the scene
@@ -523,7 +546,9 @@ public:
 	virtual void IncrementFrameNumber() {}
 
 #if RHI_RAYTRACING
+	virtual void UpdateCachedRayTracingState(class FPrimitiveSceneProxy* SceneProxy) {}
 	virtual class FRayTracingDynamicGeometryCollection* GetRayTracingDynamicGeometryCollection() { return nullptr; }
+	virtual class FRayTracingSkinnedGeometryUpdateQueue* GetRayTracingSkinnedGeometryUpdateQueue() { return nullptr; }
 #endif
 
 protected:
@@ -531,11 +556,4 @@ protected:
 
 	/** This scene's feature level */
 	ERHIFeatureLevel::Type FeatureLevel;
-
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	virtual void AddAtmosphericFog_Impl(class UAtmosphericFogComponent* FogComponent) = 0;
-	virtual void RemoveAtmosphericFog_Impl(class UAtmosphericFogComponent* FogComponent) = 0;
-	virtual void RemoveAtmosphericFogResource_RenderThread_Impl(FRenderResource* FogResource) = 0;
-	virtual FAtmosphericFogSceneInfo* GetAtmosphericFogSceneInfo_Impl() = 0;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 };

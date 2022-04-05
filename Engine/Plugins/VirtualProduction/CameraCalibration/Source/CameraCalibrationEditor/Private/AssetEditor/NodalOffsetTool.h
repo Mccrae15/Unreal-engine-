@@ -33,6 +33,7 @@ public:
 	virtual void Shutdown() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual bool OnViewportClicked(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual bool OnViewportInputKey(const FKey& InKey, const EInputEvent& InEvent) override;
 	virtual TSharedRef<SWidget> BuildUI() override;
 	virtual FName FriendlyName() const  override { return TEXT("Nodal Offset"); };
 	virtual bool DependsOnStep(UCameraCalibrationStep* Step) const override;
@@ -40,6 +41,8 @@ public:
 	virtual void Deactivate() override;
 	virtual FCameraCalibrationStepsController* GetCameraCalibrationStepsController() const override;
 	virtual bool IsActive() const override;
+	virtual UMaterialInstanceDynamic* GetOverlayMID() const override;
+	virtual bool IsOverlayEnabled() const override;
 	//~ End UCameraCalibrationStep interface
 
 public:
@@ -63,6 +66,10 @@ private:
 	/** The currently selected nodal offset algorithm */
 	UPROPERTY()
 	UCameraNodalOffsetAlgo* NodalOffsetAlgo;
+
+	/** Map of algo names to overlay MIDs used by those algos */
+	UPROPERTY(Transient)
+	TMap<FName, TWeakObjectPtr<UMaterialInstanceDynamic>> AlgoOverlayMIDs;
 
 	/** True if this tool is the active one in the panel */
 	bool bIsActive = false;

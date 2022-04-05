@@ -21,6 +21,7 @@
 #include "LandscapeFileFormatInterface.h"
 #include "LandscapeStreamingProxy.h"
 #include "Landscape.h"
+#include "Modules/ModuleManager.h"
 
 
 #define LOCTEXT_NAMESPACE "WorldBrowser"
@@ -103,7 +104,7 @@ FWorldTileModel::~FWorldTileModel()
 		TileDetails->HideInTileViewChangedEvent.RemoveAll(this);
 				
 		TileDetails->RemoveFromRoot();
-		TileDetails->MarkPendingKill();
+		TileDetails->MarkAsGarbage();
 	}
 
 	if (LoadedLevel.IsValid())
@@ -349,7 +350,7 @@ bool FWorldTileModel::CanReimportHeightmap() const
 		const FString TargetExtension = FPaths::GetExtension(GetLandscape()->ReimportHeightmapFilePath, true);
 		const ILandscapeHeightmapFileFormat* HeightmapFormat = LandscapeEditorModule.GetHeightmapFormatByExtension(*TargetExtension);
 
-		FLandscapeHeightmapInfo HeightmapInfo = HeightmapFormat->Validate(*GetLandscape()->ReimportHeightmapFilePath);
+		FLandscapeFileInfo HeightmapInfo = HeightmapFormat->Validate(*GetLandscape()->ReimportHeightmapFilePath, NAME_None);
 		if (HeightmapInfo.ResultCode != ELandscapeImportResult::Error)
 		{
 			FIntRect ComponentsRect = GetLandscape()->GetBoundingRect();

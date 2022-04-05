@@ -2,20 +2,19 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
-#include "InputCoreTypes.h"
-#include "Input/Reply.h"
 #include "DetailTreeNode.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
-#include "Textures/SlateIcon.h"
-#include "Framework/Commands/UIAction.h"
-#include "Widgets/Views/SListView.h"
 #include "IDetailsViewPrivate.h"
-#include "Layout/WidgetPath.h"
+#include "InputCoreTypes.h"
 #include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Input/Reply.h"
+#include "Layout/WidgetPath.h"
+#include "Textures/SlateIcon.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/Views/STableRow.h"
 
 class SDetailTableRowBase : public STableRow< TSharedPtr< FDetailTreeNode > >
 {
@@ -60,6 +59,11 @@ public:
 		return STableRow< TSharedPtr< FDetailTreeNode > >::OnMouseButtonUp( MyGeometry, MouseEvent );
 	}
 
+	int32 GetIndentLevelForBackgroundColor() const;
+
+	static bool IsScrollBarVisible(TWeakPtr<STableViewBase> OwnerTableViewWeak);
+	static const float ScrollBarPadding;
+
 protected:
 	/**
 	 * Called when the user opens the context menu on this row
@@ -92,6 +96,5 @@ private:
 		}
 	}
 protected:
-	static float ScrollbarPaddingSize;
 	TWeakPtr<FDetailTreeNode> OwnerTreeNode;
 };

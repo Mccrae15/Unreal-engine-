@@ -1,14 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
+using UnrealBuildBase;
 
 namespace BuildGraph.Tasks
 {
@@ -102,7 +104,7 @@ namespace BuildGraph.Tasks
 			}
 
 			// Get the directories used for staging this project
-			DirectoryReference SourceEngineDir = CommandUtils.EngineDirectory;
+			DirectoryReference SourceEngineDir = Unreal.EngineDirectory;
 			DirectoryReference SourceProjectDir = (ProjectFile == null)? SourceEngineDir : ProjectFile.Directory;
 
 			// Get the output directories. We flatten the directory structure on output.
@@ -144,12 +146,6 @@ namespace BuildGraph.Tasks
 				else
 				{
 					TargetFile = FileReference.Combine(TargetProjectDir, SourceFile.MakeRelativeTo(SourceProjectDir));
-				}
-
-				// Fixup the case of the output file. Would expect Platform.DeployLowerCaseFilenames() to return true here, but seems not to be the case.
-				if(Parameters.Platform == UnrealTargetPlatform.PS4)
-				{
-					TargetFile = FileReference.Combine(TargetDir, TargetFile.MakeRelativeTo(TargetDir).ToLowerInvariant());
 				}
 
 				// Only copy the output file if it doesn't already exist. We can stage multiple targets to the same output directory.

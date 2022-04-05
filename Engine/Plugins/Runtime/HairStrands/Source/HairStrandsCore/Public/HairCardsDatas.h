@@ -19,7 +19,7 @@ struct FUIntPoint
 
 struct FHairCardsPositionFormat
 {
-	typedef FVector4 Type;
+	typedef FVector4f Type;
 	static const uint32 ComponentCount = 1;
 	static const uint32 SizeInByte = sizeof(Type);
 	static const EVertexElementType VertexElementType = VET_Float4;
@@ -28,7 +28,7 @@ struct FHairCardsPositionFormat
 
 struct FHairCardsStrandsAttributeFormat
 {
-	typedef FVector4 Type;
+	typedef FVector4f Type;
 	static const uint32 ComponentCount = 1;
 	static const uint32 SizeInByte = sizeof(Type);
 	static const EVertexElementType VertexElementType = VET_Float4;
@@ -38,11 +38,20 @@ struct FHairCardsStrandsAttributeFormat
 struct FHairCardsUVFormat
 {
 	// Store atlas UV and (approximated) root UV
-	typedef FVector4 Type;
+	typedef FVector4f Type;
 	static const uint32 ComponentCount = 1;
 	static const uint32 SizeInByte = sizeof(Type);
 	static const EVertexElementType VertexElementType = VET_Float4;
 	static const EPixelFormat Format = PF_A32B32G32R32F; // TODO
+};
+
+struct FHairCardsMaterialFormat
+{
+	typedef uint32 Type;
+	static const uint32 ComponentCount = 1;
+	static const uint32 SizeInByte = sizeof(Type);
+	static const EVertexElementType VertexElementType = VET_UByte4;
+	static const EPixelFormat Format = PF_R8G8B8A8;
 };
 
 struct FHairCardsNormalFormat
@@ -85,7 +94,7 @@ struct FHairCardsDimensionFormat
 
 struct FHairCardsStrandsPositionFormat
 {
-	typedef FVector4 Type;
+	typedef FVector4f Type;
 	static const uint32 ComponentCount = 1;
 	static const uint32 SizeInByte = sizeof(Type);
 	static const EVertexElementType VertexElementType = VET_Float4;
@@ -103,7 +112,7 @@ struct FHairCardsOffsetAndCount
 
 struct FHairCardsBoundsFormat
 {
-	typedef FVector4 Type;
+	typedef FVector4f Type;
 	static const uint32 ComponentCount = 4;
 	static const uint32 SizeInByte = sizeof(Type);
 	static const EVertexElementType VertexElementType = VET_Float4;
@@ -121,7 +130,7 @@ struct FHairCardsVoxelDensityFormat
 
 struct FHairCardsVoxelTangentFormat
 {
-	typedef FVector4 Type;
+	typedef FVector4f Type;
 	static const uint32 ComponentCount = 1;
 	static const uint32 SizeInByte = sizeof(Type);
 	static const EVertexElementType VertexElementType = VET_Float4;
@@ -147,12 +156,12 @@ struct FHairCardsInterpolationFormat
 
 struct FHairOrientedBound
 {
-	FVector Center;
-	FVector ExtentX;
-	FVector ExtentY;
-	FVector ExtentZ;
+	FVector3f Center;
+	FVector3f ExtentX;
+	FVector3f ExtentY;
+	FVector3f ExtentZ;
 
-	FVector& Extent(uint8 Axis)
+	FVector3f& Extent(uint8 Axis)
 	{
 		if (Axis == 0) return ExtentX;
 		if (Axis == 1) return ExtentY;
@@ -160,7 +169,7 @@ struct FHairOrientedBound
 		return ExtentX;
 	}
 
-	const FVector& Extent(uint8 Axis) const
+	const FVector3f& Extent(uint8 Axis) const
 	{
 		if (Axis == 0) return ExtentX;
 		if (Axis == 1) return ExtentY;
@@ -176,10 +185,10 @@ struct FHairOrientedBound
 struct FHairCardsGeometry
 {
 	// Geometry
-	TArray<FVector4> UVs;
-	TArray<FVector>  Normals;
-	TArray<FVector>  Tangents;
-	TArray<FVector>  Positions;
+	TArray<FVector4f>UVs;
+	TArray<FVector3f>Normals;
+	TArray<FVector3f>Tangents;
+	TArray<FVector3f>Positions;
 	TArray<uint32>   Indices;
 	TArray<float>    CoordU; // Transient data storing [0..1] parametric value along main axis. This is used for generating guides & interpolation data
 
@@ -192,7 +201,7 @@ struct FHairCardsGeometry
 	TArray<uint32> IndexOffsets;
 	TArray<uint32> IndexCounts;
 
-	FBox BoundingBox;
+	FBox3f BoundingBox;
 
 	void Reset()
 	{
@@ -240,27 +249,49 @@ struct FHairCardsGeometry
 	}
 };
 
+struct FHairCardsBulkData;
 struct FHairCardsDatas
 {
-	bool IsValid() const { return RenderData.Positions.Num() > 0; }
+	bool IsValid() const { return Cards.Positions.Num() > 0; }
 
 	FHairCardsGeometry Cards;
+};
+
+struct FHairCardsBulkData
+{
+	bool IsValid() const { return Positions.Num() > 0; }
+	void Reset()
+	{
+		DepthTexture = nullptr;
+		TangentTexture = nullptr;
+		CoverageTexture = nullptr;
+		AttributeTexture = nullptr;
+
+		Positions.Empty();
+		Normals.Empty();
+		UVs.Empty();
+		Materials.Empty();
+		Indices.Empty();
+	}
+
+	uint32 GetNumTriangles() const { return Indices.Num() / 3; }
+	uint32 GetNumVertices() const { return Positions.Num(); }
+	const FBox& GetBounds() const { return BoundingBox; }
 
 	UTexture2D* DepthTexture = nullptr;
 	UTexture2D* TangentTexture = nullptr;
 	UTexture2D* CoverageTexture = nullptr;
 	UTexture2D* AttributeTexture = nullptr;
 
-	struct FRenderData
-	{
-		TArray<FHairCardsPositionFormat::Type> Positions;
-		TArray<FHairCardsNormalFormat::Type> Normals;
-		TArray<FHairCardsUVFormat::Type> UVs;
-		TArray<FHairCardsIndexFormat::Type> Indices;
-	} RenderData;
-};
+	TArray<FHairCardsPositionFormat::Type> Positions;
+	TArray<FHairCardsNormalFormat::Type> Normals;
+	TArray<FHairCardsUVFormat::Type> UVs;
+	TArray<FHairCardsMaterialFormat::Type> Materials;
+	TArray<FHairCardsIndexFormat::Type> Indices;
+	FBox BoundingBox;
 
-FArchive& operator<<(FArchive& Ar, FHairCardsDatas& CardData);
+	void Serialize(FArchive& Ar);
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
 // Hair Cards (Procedural generation)
@@ -273,8 +304,8 @@ struct FHairCardsVoxel
 	FRDGExternalBuffer NormalBuffer;
 	FRDGExternalBuffer DensityBuffer;
 	FIntVector	Resolution;
-	FVector		MinBound;
-	FVector		MaxBound;
+	FVector3f	MinBound;
+	FVector3f	MaxBound;
 	float		VoxelSize;
 };
 
@@ -324,12 +355,12 @@ struct FHairCardsProceduralAtlas
 		FIntPoint Resolution = FIntPoint(0, 0);
 		uint32 VertexOffset = 0;
 		uint32 VertexCount = 0;
-		FVector MinBound = FVector::ZeroVector;
-		FVector MaxBound = FVector::ZeroVector;
+		FVector3f MinBound = FVector3f::ZeroVector;
+		FVector3f MaxBound = FVector3f::ZeroVector;
 
-		FVector RasterAxisX = FVector::ZeroVector;
-		FVector RasterAxisY = FVector::ZeroVector;
-		FVector RasterAxisZ = FVector::ZeroVector;
+		FVector3f RasterAxisX = FVector3f::ZeroVector;
+		FVector3f RasterAxisY = FVector3f::ZeroVector;
+		FVector3f RasterAxisZ = FVector3f::ZeroVector;
 
 		float CardWidth = 0;
 		float CardLength = 0;
@@ -337,8 +368,8 @@ struct FHairCardsProceduralAtlas
 
 	FIntPoint Resolution;
 	TArray<Rect> Rects;
-	TArray<FVector4> StrandsPositions;
-	TArray<FVector4> StrandsAttributes;
+	TArray<FVector4f> StrandsPositions;
+	TArray<FVector4f> StrandsAttributes;
 	bool bIsDirty = true;
 };
 
@@ -386,13 +417,13 @@ struct HAIRSTRANDSCORE_API FHairCardsSourceData
 struct FHairMeshes
 {
 	// Geometry
-	TArray<FVector2D> UVs;
-	TArray<FVector>   Normals;
-	TArray<FVector>   Tangents;
-	TArray<FVector>   Positions;
+	TArray<FVector2f> UVs;
+	TArray<FVector3f> Normals;
+	TArray<FVector3f> Tangents;
+	TArray<FVector3f> Positions;
 	TArray<uint32>    Indices;
 
-	FBox BoundingBox;
+	FBox3f BoundingBox;
 
 	void SetNum(uint32 Count)
 	{
@@ -406,30 +437,33 @@ struct FHairMeshes
 		BoundingBox.Init();
 	}
 
-	uint32 GetNumTriangles() const
-	{
-		return Indices.Num() / 3;
-	}
-
-	uint32 GetNumVertices() const
-	{
-		return Positions.Num();
-	}
+	uint32 GetNumTriangles() const { return Indices.Num() / 3; }
+	uint32 GetNumVertices() const { return Positions.Num(); }
 };
+
+struct FHairMeshesBulkData;
 
 struct FHairMeshesDatas
 {
-	bool IsValid() const { return RenderData.Positions.Num() > 0; }
+	bool IsValid() const { return Meshes.Positions.Num() > 0; }
 
 	FHairMeshes Meshes;
-
-	struct FRenderData
-	{
-		TArray<FHairCardsPositionFormat::Type> Positions;
-		TArray<FHairCardsNormalFormat::Type> Normals;
-		TArray<FHairCardsUVFormat::Type> UVs;
-		TArray<FHairCardsIndexFormat::Type> Indices;		
-	} RenderData;
 };
 
-FArchive& operator<<(FArchive& Ar, FHairMeshesDatas& MeshData);
+struct FHairMeshesBulkData
+{
+	bool IsValid() const { return Positions.Num() > 0; }
+
+	uint32 GetNumTriangles() const { return Indices.Num() / 3; }
+	uint32 GetNumVertices() const { return Positions.Num(); }
+	const FBox& GetBounds() const { return BoundingBox; }
+
+	TArray<FHairCardsPositionFormat::Type> Positions;
+	TArray<FHairCardsNormalFormat::Type> Normals;
+	TArray<FHairCardsUVFormat::Type> UVs;
+	TArray<FHairCardsIndexFormat::Type> Indices;
+	FBox BoundingBox;
+
+	void Serialize(FArchive& Ar);
+};
+

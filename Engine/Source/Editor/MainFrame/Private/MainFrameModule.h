@@ -15,7 +15,6 @@
 /**
  * Editor main frame module
  */
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
 class FMainFrameModule
 	: public IMainFrameModule
 {
@@ -23,12 +22,20 @@ public:
 
 	// IMainFrameModule interface
 
-	virtual void CreateDefaultMainFrame( const bool bStartImmersive, const bool bStartPIE ) override;
+	virtual void CreateDefaultMainFrame(const bool bStartImmersive, const bool bStartPIE) override;
 	virtual void RecreateDefaultMainFrame(const bool bStartImmersive, const bool bStartPIE) override;
+private:
+	/**
+	 * Shared code between CreateDefaultMainFrame and RecreateDefaultMainFrame
+	 * @param bIsBeingRecreated False if it is being called by first time (CreateDefaultMainFrame), and true if it is being recreated (RecreateDefaultMainFrame). If recreated, it will also display 
+	 */
+	virtual void CreateDefaultMainFrameAuxiliary(const bool bStartImmersive, const bool bStartPIE, const bool bIsBeingRecreated);
+
+public:
+	virtual bool IsRecreatingDefaultMainFrame() const override;
 	virtual TSharedRef<SWidget> MakeMainMenu(const TSharedPtr<FTabManager>& TabManager, const FName MenuName, FToolMenuContext& ToolMenuContext) const override;
 	
-	// deprecated in 4.26
-	virtual TSharedRef<SWidget> MakeMainTabMenu(const TSharedPtr<FTabManager>& TabManager, const FName MenuName, FToolMenuContext& ToolMenuContext) const override;
+
 	virtual TSharedRef<SWidget> MakeDeveloperTools( const TArray<FMainFrameDeveloperTool>& AdditionalTools ) const override;
 
 	virtual bool IsWindowInitialized( ) const override
@@ -166,6 +173,7 @@ public:
 		return true; // @todo: Eventually, this should probably not be allowed.
 	}
 
+	static void HandleResizeMainFrameCommand(const TArray<FString>& Args);
 protected:
 
 	/**
@@ -180,7 +188,7 @@ protected:
 public:
 
 	/** Get the size of the project browser window */
-	static FVector2D GetProjectBrowserWindowSize() { return FVector2D(1100, 740); }
+	static FVector2D GetProjectBrowserWindowSize() { return FVector2D(1190, 733); }
 
 private:
 
@@ -193,8 +201,8 @@ private:
 	// Handles the level editor module finishing to recompile.
 	void HandleLevelEditorModuleCompileFinished( const FString& LogDump, ECompilationResult::Type CompilationResult, bool bShowLog );
 
-	/** Called when Hot Reload completes */
-	void HandleHotReloadFinished( bool bWasTriggeredAutomatically );
+	/** Called when Reload completes */
+	void HandleReloadFinished( EReloadCompleteReason Reason );
 
 	// Handles the code accessor having finished launching its editor
 	void HandleCodeAccessorLaunched( const bool WasSuccessful );
@@ -210,7 +218,6 @@ private:
 	{
 		DelayedShowMainFrameDelegate.Unbind();
 	}
-
 private:
 
 	// Weak pointer to the level editor's compile notification item.
@@ -251,6 +258,7 @@ private:
 
 	// Allow delaying when to show main frame's window
 	bool bDelayedShowMainFrame;
-};
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+	// Is recreating Default Main Frame
+	bool bRecreatingDefaultMainFrame;
+};

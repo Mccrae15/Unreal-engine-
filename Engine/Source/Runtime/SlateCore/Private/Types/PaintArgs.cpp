@@ -13,6 +13,7 @@ FPaintArgs::FPaintArgs(const SWidget* PaintParent, FHittestGrid& InRootHittestGr
 	, CurrentTime(InCurrentTime)
 	, DeltaTime(InDeltaTime)
 	, bInheritedHittestability(true)
+	, bDeferredPainting(false)
 {
 }
 
@@ -24,8 +25,6 @@ FPaintArgs::FPaintArgs(const SWidget* PaintParent, FHittestGrid& InRootHittestGr
 
 FPaintArgs FPaintArgs::InsertCustomHitTestPath(const SWidget* Widget, TSharedRef<ICustomHitTestPath> CustomHitTestPath) const
 {
-	TSharedRef<SWidget> SafeWidget = const_cast<SWidget*>(Widget)->AsShared();
-
-	const_cast<FHittestGrid&>(CurrentGrid).InsertCustomHitTestPath(SafeWidget, CustomHitTestPath);
+	const_cast<FHittestGrid&>(CurrentGrid).InsertCustomHitTestPath(Widget, CustomHitTestPath);
 	return *this;
 }

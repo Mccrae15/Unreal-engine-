@@ -15,15 +15,10 @@
 #include "NiagaraDataInterface.h"
 #include "IPythonScriptPlugin.h"
 #include "NiagaraClipboard.h"
-#include "NiagaraComponent.h"
-#include "NiagaraConstants.h"
-#include "NiagaraCustomVersion.h"
 #include "NiagaraEditorSettings.h"
 #include "NiagaraEditorStyle.h"
 #include "NiagaraGraph.h"
 #include "NiagaraEditorModule.h"
-#include "NiagaraEditorSettings.h"
-#include "NiagaraEditorStyle.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "NiagaraNodeInput.h"
 #include "NiagaraNodeOutput.h"
@@ -34,48 +29,29 @@
 #include "NiagaraParameterDefinitions.h"
 #include "NiagaraScript.h"
 #include "NiagaraScriptSource.h"
+#include "NiagaraSettings.h"
 #include "NiagaraSimulationStageBase.h"
 #include "NiagaraStackEditorData.h"
-#include "NiagaraOverviewNode.h"
-#include "NiagaraNodeParameterMapSet.h"
-#include "NiagaraNodeStaticSwitch.h"
-#include "NiagaraOverviewNode.h"
 #include "ViewModels/NiagaraOverviewGraphViewModel.h"
 #include "ViewModels/NiagaraSystemSelectionViewModel.h"
-#include "AssetRegistryModule.h"
 #include "ViewModels/NiagaraParameterDefinitionsSubscriberViewModel.h"
 #include "ViewModels/NiagaraSystemViewModel.h"
-#include "ViewModels/NiagaraOverviewGraphViewModel.h"
 #include "ViewModels/NiagaraScratchPadUtilities.h"
 #include "ViewModels/NiagaraScriptViewModel.h"
-#include "ViewModels/NiagaraSystemSelectionViewModel.h"
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
 #include "Widgets/SNiagaraParameterName.h"
 
-#include "AssetRegistryModule.h"
-#include "AssetToolsModule.h"
-#include "ContentBrowserModule.h"
 #include "EdGraph/EdGraphPin.h"
 #include "Editor/EditorEngine.h"
-#include "EditorStyleSet.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "HAL/PlatformApplicationMisc.h"
-#include "HAL/PlatformFilemanager.h"
-#include "IContentBrowserSingleton.h"
+#include "HAL/PlatformFileManager.h"
 #include "Interfaces/IPluginManager.h"
-#include "NiagaraScript.h"
-#include "NiagaraScriptSource.h"
-#include "NiagaraSimulationStageBase.h"
-#include "NiagaraStackEditorData.h"
 #include "NiagaraSystem.h"
 #include "NiagaraSystemEditorData.h"
 #include "ScopedTransaction.h"
 #include "UpgradeNiagaraScriptResults.h"
-#include "EdGraph/EdGraphPin.h"
-#include "Editor/EditorEngine.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "HAL/PlatformFilemanager.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/FileHelper.h"
 #include "Misc/ScopeExit.h"
@@ -87,30 +63,20 @@
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/Text/STextBlock.h"
-#include "UObject/StructOnScope.h"
 #include "UObject/TextProperty.h"
-#include "Editor/EditorEngine.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Styling/CoreStyle.h"
-#include "Framework/Notifications/NotificationManager.h"
-#include "NiagaraSimulationStageBase.h"
-#include "NiagaraEditorSettings.h"
-#include "Widgets/SNiagaraParameterName.h"
+#include "Widgets/SNiagaraPinTypeSelector.h"
 #include "ViewModels/NiagaraEmitterHandleViewModel.h"
 #include "ViewModels/NiagaraEmitterViewModel.h"
-#include "ViewModels/NiagaraOverviewGraphViewModel.h"
-#include "ViewModels/NiagaraScratchPadUtilities.h"
-#include "ViewModels/NiagaraSystemSelectionViewModel.h"
-#include "ViewModels/NiagaraSystemViewModel.h"
-#include "ViewModels/Stack/NiagaraParameterHandle.h"
-#include "Widgets/SBoxPanel.h"
-#include "Widgets/SNiagaraParameterName.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/Images/SImage.h"
-#include "Widgets/Notifications/SNotificationList.h"
-#include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "FNiagaraEditorUtilities"
+
+static int GNiagaraDeletePythonFilesOnError = 1;
+static FAutoConsoleVariableRef CVarDeletePythonFilesOnError(
+	TEXT("fx.Niagara.DeletePythonFilesOnError"),
+	GNiagaraDeletePythonFilesOnError,
+	TEXT("This determines whether we keep the intermediate python used by module versioning around when they were executed and resulted in an error."),
+	ECVF_Default
+);
 
 TSet<FName> FNiagaraEditorUtilities::GetSystemConstantNames()
 {
@@ -443,16 +409,6 @@ bool FNiagaraEditorUtilities::PODPropertyAppendCompileHash(const void* Container
 	}
 	else if (Property->IsA(FBoolProperty::StaticClass()))
 	{
-		//@HACK (ng) 4.27.1 avoid these specific properties in FNiagaraEditorUtilities::PODPropertyAppendCompileHash as we cannot mark them up as SkipForCompileHash without breaking ABI.
-		static const FString ScriptVarPropSubscribedToParameterDefinitionsNameString("bSubscribedToParameterDefinitions");
-		static const FString ScriptVarPropOverrideParameterDefinitionsDefaultValueNameString("bOverrideParameterDefinitionsDefaultValue");
-		const FString& PropertyNameString = Property->GetName();
-
-		if (PropertyNameString == ScriptVarPropSubscribedToParameterDefinitionsNameString || PropertyNameString == ScriptVarPropOverrideParameterDefinitionsDefaultValueNameString)
-		{
-			return true;
-		}
-
 		FBoolProperty* CastProp = CastFieldChecked<FBoolProperty>(Property);
 		bool Value = CastProp->GetPropertyValue_InContainer(Container, 0);
 		InVisitor->UpdatePOD(*PropertyName, Value);
@@ -954,7 +910,7 @@ void FNiagaraEditorUtilities::CompileExistingEmitters(const TArray<UNiagaraEmitt
 		for (UNiagaraEmitter* Emitter : AffectedEmitters)
 		{
 			// If we've already compiled this emitter, or it's invalid skip it.
-			if (Emitter == nullptr || CompiledEmitters.Contains(Emitter) || Emitter->IsPendingKillOrUnreachable())
+			if (Emitter == nullptr || CompiledEmitters.Contains(Emitter) || !IsValidChecked(Emitter) || Emitter->IsUnreachable())
 			{
 				continue;
 			}
@@ -1038,6 +994,18 @@ FText FNiagaraEditorUtilities::GetTypeDefinitionCategory(const FNiagaraTypeDefin
 	return Category;
 }
 
+bool FNiagaraEditorUtilities::AreTypesAssignable(const FNiagaraTypeDefinition& TypeA, const FNiagaraTypeDefinition& TypeB)
+{
+	const UNiagaraSettings* Settings = GetDefault<UNiagaraSettings>();
+	if (Settings->bEnforceStrictStackTypes)
+	{
+		return TypeA == TypeB;
+	}
+	return (TypeA == TypeB)
+		|| (TypeA == FNiagaraTypeDefinition::GetPositionDef() && TypeB == FNiagaraTypeDefinition::GetVec3Def())
+		|| (TypeB == FNiagaraTypeDefinition::GetPositionDef() && TypeA == FNiagaraTypeDefinition::GetVec3Def());
+}
+
 void FNiagaraEditorUtilities::MarkDependentCompilableAssetsDirty(TArray<UObject*> InObjects)
 {
 	const FText LoadAndMarkDirtyDisplayName = NSLOCTEXT("NiagaraEditor", "MarkDependentAssetsDirtySlowTask", "Loading and marking dependent assets dirty.");
@@ -1107,6 +1075,10 @@ void FixUpNumericPinsVisitor(const UEdGraphSchema_Niagara* Schema, UNiagaraNode*
 
 void FNiagaraEditorUtilities::FixUpNumericPins(const UEdGraphSchema_Niagara* Schema, UNiagaraNode* Node)
 {
+	if (ensureMsgf(Node->GetOutermost() == GetTransientPackage(), TEXT("Can not fix up numerics on non-transient node {0}"), *Node->GetPathName()) == false)
+	{
+		return;
+	}
 	auto FixUpVisitor = [&](const UEdGraphSchema_Niagara* LSchema, UNiagaraNode* LNode) { FixUpNumericPinsVisitor(LSchema, LNode); };
 	TraverseGraphFromOutputDepthFirst(Schema, Node, FixUpVisitor);
 }
@@ -1122,6 +1094,10 @@ void FNiagaraEditorUtilities::SetStaticSwitchConstants(UNiagaraGraph* Graph, TAr
 		if (SwitchNode)
 		{
 			if (SwitchNode->IsSetByCompiler())
+			{
+				SwitchNode->SetSwitchValue(ConstantResolver);
+			}
+			else if (SwitchNode->IsSetByPin())
 			{
 				SwitchNode->SetSwitchValue(ConstantResolver);
 			}
@@ -1149,7 +1125,7 @@ void FNiagaraEditorUtilities::SetStaticSwitchConstants(UNiagaraGraph* Graph, TAr
 		UNiagaraNodeFunctionCall* FunctionNode = Cast<UNiagaraNodeFunctionCall>(Node);
 		if (FunctionNode)
 		{
-			FunctionNode->DebugState = FunctionNode->bInheritDebugStatus? ConstantResolver.GetDebugState() : ENiagaraFunctionDebugState::NoDebug;
+			FunctionNode->DebugState = FunctionNode->bInheritDebugStatus? ConstantResolver.CalculateDebugState() : ENiagaraFunctionDebugState::NoDebug;
 
 			if (FunctionNode->PropagatedStaticSwitchParameters.Num() > 0)
 			{
@@ -1210,7 +1186,7 @@ bool FNiagaraEditorUtilities::ResolveConstantValue(UEdGraphPin* Pin, int32& Valu
 
 TSharedPtr<FStructOnScope> FNiagaraEditorUtilities::StaticSwitchDefaultIntToStructOnScope(int32 InStaticSwitchDefaultValue, FNiagaraTypeDefinition InSwitchType)
 {
-	if (InSwitchType == FNiagaraTypeDefinition::GetBoolDef())
+	if (InSwitchType.IsSameBaseDefinition(FNiagaraTypeDefinition::GetBoolDef()))
 	{
 		checkf(FNiagaraBool::StaticStruct()->GetStructureSize() == InSwitchType.GetSize(), TEXT("Value to type def size mismatch."));
 
@@ -1222,7 +1198,7 @@ TSharedPtr<FStructOnScope> FNiagaraEditorUtilities::StaticSwitchDefaultIntToStru
 
 		return StructValue;
 	}
-	else if (InSwitchType == FNiagaraTypeDefinition::GetIntDef() || InSwitchType.IsEnum())
+	else if (InSwitchType.IsSameBaseDefinition(FNiagaraTypeDefinition::GetIntDef()) || InSwitchType.IsEnum())
 	{
 		checkf(FNiagaraInt32::StaticStruct()->GetStructureSize() == InSwitchType.GetSize(), TEXT("Value to type def size mismatch."));
 
@@ -1339,6 +1315,11 @@ void FNiagaraEditorUtilities::ResolveNumerics(UNiagaraGraph* SourceGraph, bool b
 void FNiagaraEditorUtilities::PreprocessFunctionGraph(const UEdGraphSchema_Niagara* Schema, UNiagaraGraph* Graph, TArrayView<UEdGraphPin* const> CallInputs, TArrayView<UEdGraphPin* const> CallOutputs,
 	ENiagaraScriptUsage ScriptUsage, const FCompileConstantResolver& ConstantResolver)
 {
+	if (ensureMsgf(Graph->GetOutermost() == GetTransientPackage(), TEXT("Can not preprocess non-transient function graph {0}"), *Graph->GetPathName()) == false)
+	{
+		return;
+	}
+
 	// Change any numeric inputs or outputs to match the types from the call node.
 	TArray<UNiagaraNodeInput*> InputNodes;
 
@@ -1850,7 +1831,7 @@ int32 FNiagaraEditorUtilities::GetWeightForItem(const TSharedPtr<FNiagaraMenuAct
 	if(InCurrentAction->Section == ENiagaraMenuSections::Suggested)
 	{
 		//TotalWeight *= TotalWeight;
-		TotalWeight += FMath::Pow(10, 4);
+		TotalWeight += (int32)FMath::Pow(10.0f, 4.0f);
 	}
 	
 	return TotalWeight > 0.f ? TotalWeight : INDEX_NONE;
@@ -1916,7 +1897,7 @@ TTuple<EScriptSource, FText> FNiagaraEditorUtilities::GetScriptSource(const FAss
 	FString PackagePathLocal ="";
 	FPackageName::TryConvertGameRelativePackagePathToLocalPath(ScriptAssetData.PackagePath.ToString(), PackagePathLocal);
 
-	if(FPaths::IsUnderDirectory(PackagePathLocal, FPaths::EnginePluginsDir() / TEXT("FX/Niagara")))
+	if(FPaths::IsUnderDirectory(PackagePathLocal, FPaths::EnginePluginsDir() / TEXT("FX")))
 	{
 		int32 ContentFoundIndex = PackagePathLocal.Find(TEXT("/Content"));
 
@@ -2049,7 +2030,7 @@ TArray<UNiagaraComponent*> FNiagaraEditorUtilities::GetComponentsThatReferenceSy
 		UNiagaraComponent* Component = *ComponentIt;
 		if (Component && Component->GetAsset())
 		{
-			for (auto EmitterHandle : ReferencedSystemViewModel.GetSystem().GetEmitterHandles())
+			for (const auto& EmitterHandle : ReferencedSystemViewModel.GetSystem().GetEmitterHandles())
 			{
 				if (Component->GetAsset()->UsesEmitter(EmitterHandle.GetInstance()->GetParent()))
 				{
@@ -2129,7 +2110,7 @@ bool FNiagaraEditorUtilities::VerifyNameChangeForInputOrOutputNode(const UNiagar
 {
 	if (NewNameString.Len() >= FNiagaraConstants::MaxParameterLength)
 	{
-		OutErrorMessage = FText::FormatOrdered(LOCTEXT("EmptyNameError", "Name cannot exceed {0} characters."), FNiagaraConstants::MaxParameterLength);
+		OutErrorMessage = FText::FormatOrdered(LOCTEXT("InputOutputNodeNameLengthExceeded", "Name cannot exceed {0} characters."), FNiagaraConstants::MaxParameterLength);
 		return false;
 	}
 
@@ -2137,7 +2118,7 @@ bool FNiagaraEditorUtilities::VerifyNameChangeForInputOrOutputNode(const UNiagar
 
 	if (NewName == NAME_None)
 	{
-		OutErrorMessage = LOCTEXT("EmptyNameError", "Name can not be empty.");
+		OutErrorMessage = LOCTEXT("InputOutputNodeNameEmptyNameError", "Name can not be empty.");
 		return false;
 	}
 
@@ -2811,7 +2792,7 @@ void FNiagaraEditorUtilities::RefreshAllScriptsFromExternalChanges(FRefreshAllSc
 
 	for (TObjectIterator<UNiagaraScript> It; It; ++It)
 	{
-		if (*It == OriginatingScript || It->IsPendingKillOrUnreachable())
+		if (*It == OriginatingScript || !IsValidChecked(*It))
 		{
 			continue;
 		}
@@ -3034,7 +3015,10 @@ void FNiagaraEditorUtilities::RunPythonUpgradeScripts(UNiagaraNodeFunctionCall* 
 			ON_SCOPE_EXIT
 			{
 				// Delete temp script file
-				PlatformFile.DeleteFile(*TempScriptFile);
+				if (GNiagaraDeletePythonFilesOnError || !Results->bCancelledByPythonError)
+				{
+					PlatformFile.DeleteFile(*TempScriptFile);
+				}
 			};
 			if (!FFileHelper::SaveStringToFile(FString::Format(*PythonUpgradeScriptStub, {Results->GetPathName(), PythonScript}), *TempScriptFile))
 			{
@@ -3053,7 +3037,7 @@ void FNiagaraEditorUtilities::RunPythonUpgradeScripts(UNiagaraNodeFunctionCall* 
 
 			if (Results->bCancelledByPythonError)
 			{
-				UE_LOG(LogNiagaraEditor, Error, TEXT("%s\n\nPython script:\n%s"), *PythonCommand.CommandResult, *PythonCommand.Command);
+				UE_LOG(LogNiagaraEditor, Error, TEXT("%s\n\nPython script:\n%s\nTo keep the intermediate script around, set fx.Niagara.DeletePythonFilesOnError to 0."), *PythonCommand.CommandResult, *PythonCommand.Command);
 				AddStackWarning(PreviousData->Version, NewData->Version, "Python script ended with error!", bLoggedWarning, OutWarnings);
 			}
 			else
@@ -3250,7 +3234,8 @@ void FNiagaraParameterUtilities::GetChangeNamespaceMenuData(FName InParameterNam
 			Metadata == CurrentMetadata ||
 			Metadata.Options.Contains(ENiagaraNamespaceMetadataOptions::PreventEditingNamespace) ||
 			(InParameterContext == EParameterContext::Script && Metadata.Options.Contains(ENiagaraNamespaceMetadataOptions::HideInScript)) ||
-			(InParameterContext == EParameterContext::System && Metadata.Options.Contains(ENiagaraNamespaceMetadataOptions::HideInSystem)))
+			(InParameterContext == EParameterContext::System && Metadata.Options.Contains(ENiagaraNamespaceMetadataOptions::HideInSystem)) ||
+			(InParameterContext == EParameterContext::Definitions && Metadata.Options.Contains(ENiagaraNamespaceMetadataOptions::HideInDefinitions)))
 		{
 			continue;
 		}
@@ -3543,6 +3528,209 @@ bool FNiagaraParameterUtilities::TestCanRenameWithMessage(FName ParameterName, F
 		}
 	}
 	return false;
+}
+
+TSharedRef<SWidget> FNiagaraParameterUtilities::GetParameterWidget(FNiagaraVariable Variable, bool bShowValue)
+{
+	FNiagaraTypeDefinition Type = Variable.GetType();
+	const FLinearColor TypeColor = UEdGraphSchema_Niagara::GetTypeColor(Type);
+	TSharedPtr<INiagaraEditorTypeUtilities> TypeUtilities = FNiagaraEditorModule::Get().GetTypeUtilities(Type);
+
+	FText			   IconToolTip = FText::GetEmpty();
+	FSlateBrush const* IconBrush = FAppStyle::Get().GetBrush(TEXT("Kismet.AllClasses.VariableIcon"));
+	FSlateColor        IconColor = FSlateColor(TypeColor);
+	FString			   IconDocLink, IconDocExcerpt;
+	FSlateBrush const* SecondaryIconBrush = FEditorStyle::GetBrush(TEXT("NoBrush"));
+	FSlateColor        SecondaryIconColor = IconColor;
+
+	TSharedPtr<SHorizontalBox> ParameterContainer;
+	TSharedRef<SVerticalBox> ParameterWidget = SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			SAssignNew(ParameterContainer, SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SNiagaraIconWidget)
+				.IconToolTip(IconToolTip)
+				.IconBrush(IconBrush)
+				.IconColor(IconColor)
+				.DocLink(IconDocLink)
+				.DocExcerpt(IconDocExcerpt)
+				.SecondaryIconBrush(SecondaryIconBrush) 
+				.SecondaryIconColor(SecondaryIconColor)
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			.Padding(3.f)
+			[
+				SNew(SNiagaraParameterNameTextBlock)
+				.IsReadOnly(true)
+				.ParameterText(FText::FromName(Variable.GetName()))
+			]
+		];
+
+	if(bShowValue && Variable.IsDataAllocated())
+	{
+		const FText ValueText = TypeUtilities->GetStackDisplayText(Variable);
+
+		ParameterWidget->AddSlot()
+		.AutoHeight()
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			.Padding(3.f)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("ParameterTooltipText", "Value: "))
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			.Padding(3.f)
+			[
+				SNew(STextBlock)
+				.Text(ValueText)
+			]
+		];
+	}
+
+	return ParameterWidget;
+}
+
+TSharedRef<SToolTip> FNiagaraParameterUtilities::GetTooltipWidget(FNiagaraVariable Variable, bool bShowValue, TSharedPtr<SWidget> AdditionalVerticalWidget,  TSharedPtr<SWidget> AdditionalHorizontalWidget)
+{
+	FNiagaraTypeDefinition Type = Variable.GetType();
+	const FLinearColor TypeColor = UEdGraphSchema_Niagara::GetTypeColor(Type);
+	TSharedPtr<INiagaraEditorTypeUtilities> TypeUtilities = FNiagaraEditorModule::Get().GetTypeUtilities(Type);
+
+	FText			   IconToolTip = FText::GetEmpty();
+	FSlateBrush const* IconBrush = FAppStyle::Get().GetBrush(TEXT("Kismet.AllClasses.VariableIcon"));
+	FSlateColor        IconColor = FSlateColor(TypeColor);
+	FString			   IconDocLink, IconDocExcerpt;
+	FSlateBrush const* SecondaryIconBrush = FEditorStyle::GetBrush(TEXT("NoBrush"));
+	FSlateColor        SecondaryIconColor = IconColor;
+
+	TSharedPtr<SHorizontalBox> ParameterContainer;
+	TSharedRef<SWidget> TooltipContent = GetParameterWidget(Variable, bShowValue);
+
+	TSharedPtr<SVerticalBox> InnerContainer;
+	// we construct a tooltip widget that shows the parameter the value is associated with
+	TSharedRef<SToolTip> TooltipWidget = SNew(SToolTip)
+	.Content()
+	[
+		SAssignNew(InnerContainer, SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			TooltipContent
+		]
+	];
+
+	// if we specified an additional widget, add it here
+	if(AdditionalVerticalWidget.IsValid())
+	{
+		InnerContainer->AddSlot()
+		.AutoHeight()
+		[
+			AdditionalVerticalWidget.ToSharedRef()
+		];
+	}
+
+	if(AdditionalHorizontalWidget.IsValid())
+	{
+		ParameterContainer->AddSlot()
+		.AutoWidth()
+		[
+			AdditionalHorizontalWidget.ToSharedRef()	
+		];
+	}
+
+	return TooltipWidget;
+}
+
+void FNiagaraParameterUtilities::FilterToRelevantStaticVariables(const TArray<FNiagaraVariable>& InVars, TArray<FNiagaraVariable>& OutVars, FName InOldEmitterAlias, FName InNewEmitterAlias, bool bFilterByEmitterAliasAndConvertToUnaliased)
+{
+	FNiagaraAliasContext RenameContext(ENiagaraScriptUsage::ParticleSpawnScript);
+	RenameContext.ChangeEmitterName(InOldEmitterAlias.ToString(), InNewEmitterAlias.ToString());
+
+	for (const FNiagaraVariable& InVar : InVars)
+	{
+		if (InVar.GetType().IsStatic())
+		{
+			if (bFilterByEmitterAliasAndConvertToUnaliased)
+			{
+				FNiagaraVariable NewVar = FNiagaraUtilities::ResolveAliases(InVar, RenameContext);
+
+				if (NewVar.GetName() != InVar.GetName())
+				{
+					NewVar.SetData(InVar.GetData());
+					OutVars.AddUnique(NewVar);
+				}
+				else
+				{
+					OutVars.AddUnique(InVar);
+				}
+			}
+			else
+			{
+				OutVars.AddUnique(InVar);
+			}
+		}
+	}
+}
+
+TArray<const UNiagaraScriptVariable*> FNiagaraParameterDefinitionsUtilities::FindReservedParametersByName(const FName ParameterName)
+{
+	TArray<const UNiagaraScriptVariable*> OutScriptVars;
+	FNiagaraEditorModule& NiagaraEditorModule = FModuleManager::GetModuleChecked<FNiagaraEditorModule>("NiagaraEditor");
+	const TArray<TWeakObjectPtr<UNiagaraParameterDefinitions>>& CachedParameterDefinitionsAssets = NiagaraEditorModule.GetCachedParameterDefinitionsAssets();
+	for (const TWeakObjectPtr<UNiagaraParameterDefinitions>& CachedParameterDefinitionsAsset : CachedParameterDefinitionsAssets)
+	{
+		for (const UNiagaraScriptVariable* ScriptVar : CachedParameterDefinitionsAsset->GetParametersConst())
+		{
+			if (ScriptVar->Variable.GetName() == ParameterName)
+			{
+				OutScriptVars.Add(ScriptVar);
+			}
+		}
+	}
+	return OutScriptVars;
+}
+
+int32 FNiagaraParameterDefinitionsUtilities::GetNumParametersReservedForName(const FName ParameterName)
+{
+	return FindReservedParametersByName(ParameterName).Num();
+}
+
+EParameterDefinitionMatchState FNiagaraParameterDefinitionsUtilities::GetDefinitionMatchStateForParameter(const FNiagaraVariableBase& Parameter)
+{
+	const TArray<const UNiagaraScriptVariable*> ReservedScriptVarsForName = FindReservedParametersByName(Parameter.GetName());
+	if (ReservedScriptVarsForName.Num() == 0)
+	{
+		return EParameterDefinitionMatchState::NoMatchingDefinitions;
+	}
+	else if (ReservedScriptVarsForName.Num() == 1)
+	{
+		if (ReservedScriptVarsForName[0]->Variable.GetType() == Parameter.GetType())
+		{
+			return EParameterDefinitionMatchState::MatchingOneDefinition;
+		}
+		return EParameterDefinitionMatchState::MatchingDefinitionNameButNotType;
+	}
+	else
+	{
+		return EParameterDefinitionMatchState::MatchingMoreThanOneDefinition;
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

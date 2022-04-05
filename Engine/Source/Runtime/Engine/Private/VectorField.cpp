@@ -208,7 +208,7 @@ public:
 		{
 			const uint32 DataSize = SizeX * SizeY * SizeZ * sizeof(FFloat16Color);
 			FVectorFieldStaticResourceBulkDataInterface BulkDataInterface(VolumeData, DataSize);
-			FRHIResourceCreateInfo CreateInfo(&BulkDataInterface);
+			FRHIResourceCreateInfo CreateInfo(TEXT("FVectorFieldStaticResource"), &BulkDataInterface);
 			VolumeTextureRHI = RHICreateTexture3D(
 				SizeX, SizeY, SizeZ, PF_FloatRGBA,
 				/*NumMips=*/ 1,
@@ -424,7 +424,7 @@ void UVectorFieldStatic::UpdateCPUData(bool bDiscardData)
 		// because of vector implementations in VectorLoadHalf we want to make sure that our buffer
 		// is padded out to support reading the last element
 		constexpr int32 DestComponentCount = 3;
-		CPUData.Reset(Align(SampleCount * DestComponentCount * sizeof(FFloat16), sizeof(FVector4)));
+		CPUData.Reset(Align(SampleCount * DestComponentCount * sizeof(FFloat16), sizeof(FVector4f)));
 
 		for (size_t SampleIt = 0; SampleIt < SampleCount; ++SampleIt)
 		{
@@ -433,11 +433,11 @@ void UVectorFieldStatic::UpdateCPUData(bool bDiscardData)
 			Ar << Ptr[SampleIt].B;
 		}
 #else
-		CPUData.Reset(Align(SampleCount * sizeof(FVector), sizeof(FVector4)));
+		CPUData.Reset(Align(SampleCount * sizeof(FVector3f), sizeof(FVector4f)));
 
 		for (size_t SampleIt = 0; SampleIt < SampleCount; ++SampleIt)
 		{
-			FVector Value(Ptr[SampleIt].R.GetFloat(), Ptr[SampleIt].G.GetFloat(), Ptr[SampleIt].B.GetFloat());
+			FVector3f Value(Ptr[SampleIt].R.GetFloat(), Ptr[SampleIt].G.GetFloat(), Ptr[SampleIt].B.GetFloat());
 			Ar << Value;
 		}
 #endif
@@ -462,9 +462,9 @@ FVector UVectorFieldStatic::FilteredSample(const FVector& SamplePosition, const 
 	};
 
 	static auto FVectorFloor = [](const FVector& v) {
-		return FVector(FGenericPlatformMath::FloorToFloat(v.X),
-			FGenericPlatformMath::FloorToFloat(v.Y),
-			FGenericPlatformMath::FloorToFloat(v.Z));
+		return FVector(FGenericPlatformMath::FloorToDouble(v.X),
+			FGenericPlatformMath::FloorToDouble(v.Y),
+			FGenericPlatformMath::FloorToDouble(v.Z));
 	};
 
 	const FVector Size(SizeX, SizeY, SizeZ);
@@ -530,9 +530,9 @@ FORCEINLINE static FVector SampleInternalData(TConstArrayView<FFloat16> Samples,
 		HalfData += SampleOffset;
 	}
 
-	FVector4 Result;
+	FVector4f Result;
 	FPlatformMath::VectorLoadHalf(reinterpret_cast<float*>(&Result), reinterpret_cast<const uint16*>(HalfData));
-	return FVector(Result);
+	return FVector(Result.X, Result.Y, Result.Z);
 }
 
 FORCEINLINE static FVector SampleInternalData(TConstArrayView<float> Samples, int32 SampleIndex)
@@ -931,9 +931,9 @@ void UVectorFieldComponent::PostEditChangeProperty(FPropertyChangedEvent& Proper
 ------------------------------------------------------------------------------*/
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT( FCompositeAnimatedVectorFieldUniformParameters, )
-	SHADER_PARAMETER( FVector4, FrameA )
-	SHADER_PARAMETER( FVector4, FrameB )
-	SHADER_PARAMETER( FVector, VoxelSize )
+	SHADER_PARAMETER( FVector4f, FrameA )
+	SHADER_PARAMETER( FVector4f, FrameB )
+	SHADER_PARAMETER( FVector3f, VoxelSize )
 	SHADER_PARAMETER( float, FrameLerp )
 	SHADER_PARAMETER( float, NoiseScale )
 	SHADER_PARAMETER( float, NoiseMax )
@@ -1096,7 +1096,7 @@ public:
 				TexCreateFlags = TexCreate_ShaderResource | TexCreate_UAV;
 			}
 
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FVectorFieldAnimatedResource"));
 			VolumeTextureRHI = RHICreateTexture3D(
 				SizeX, SizeY, SizeZ,
 				PF_FloatRGBA,
@@ -1128,7 +1128,7 @@ public:
 	{
 		check(IsInRenderingThread());
 
-		if (GetFeatureLevel() == ERHIFeatureLevel::SM5 && AnimatedVectorField && AnimatedVectorField->Texture && AnimatedVectorField->Texture->Resource)
+		if (GetFeatureLevel() == ERHIFeatureLevel::SM5 && AnimatedVectorField && AnimatedVectorField->Texture && AnimatedVectorField->Texture->GetResource())
 		{
 			SCOPED_DRAW_EVENT(RHICmdList, AnimateVectorField);
 
@@ -1154,17 +1154,17 @@ public:
 			const FVector2D AtlasScale(
 				1.0f / AnimatedVectorField->SubImagesX,
 				1.0f / AnimatedVectorField->SubImagesY);
-			Parameters.FrameA = FVector4(
+			Parameters.FrameA = FVector4f(
 				AtlasScale.X,
 				AtlasScale.Y,
 				FrameA_X * AtlasScale.X,
 				FrameA_Y * AtlasScale.Y );
-			Parameters.FrameB = FVector4(
+			Parameters.FrameB = FVector4f(
 				AtlasScale.X,
 				AtlasScale.Y,
 				FrameB_X * AtlasScale.X,
 				FrameB_Y * AtlasScale.Y );
-			Parameters.VoxelSize = FVector(1.0f / SizeX, 1.0f / SizeY, 1.0f / SizeZ);
+			Parameters.VoxelSize = FVector3f(1.0f / SizeX, 1.0f / SizeY, 1.0f / SizeZ);
 			Parameters.FrameLerp = FMath::Fractional(FrameTime);
 			Parameters.NoiseScale = AnimatedVectorField->NoiseScale;
 			Parameters.NoiseMax = AnimatedVectorField->NoiseMax;
@@ -1180,14 +1180,14 @@ public:
 				NoiseVolumeTextureRHI = AnimatedVectorField->NoiseField->Resource->VolumeTextureRHI;
 			}
 
-			RHICmdList.Transition(FRHITransitionInfo(VolumeTextureUAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier));
+			RHICmdList.Transition(FRHITransitionInfo(VolumeTextureUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 			RHICmdList.SetComputeShader(CompositeCS.GetComputeShader());
 			CompositeCS->SetOutput(RHICmdList, VolumeTextureUAV);
 			/// ?
 			CompositeCS->SetParameters(
 				RHICmdList,
 				UniformBuffer,
-				AnimatedVectorField->Texture->Resource->TextureRHI,
+				AnimatedVectorField->Texture->GetResource()->TextureRHI,
 				NoiseVolumeTextureRHI );
 			DispatchComputeShader(
 				RHICmdList,
@@ -1196,7 +1196,7 @@ public:
 				SizeY / THREADS_PER_AXIS,
 				SizeZ / THREADS_PER_AXIS );
 			CompositeCS->UnbindBuffers(RHICmdList);
-			RHICmdList.Transition(FRHITransitionInfo(VolumeTextureUAV, ERHIAccess::ERWBarrier, ERHIAccess::SRVMask));
+			RHICmdList.Transition(FRHITransitionInfo(VolumeTextureUAV, ERHIAccess::UAVCompute, ERHIAccess::SRVMask));
 		}
 	}
 

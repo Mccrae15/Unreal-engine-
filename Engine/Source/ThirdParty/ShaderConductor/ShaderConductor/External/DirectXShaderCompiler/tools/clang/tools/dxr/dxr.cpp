@@ -176,6 +176,21 @@ int __cdecl wmain(int argc, const wchar_t **argv_) {
       return 0;
     }
 
+    if (dxcOpts.ShowVersion) {
+      std::string version;
+      llvm::raw_string_ostream versionStream(version);
+      WriteDxCompilerVersionInfo(
+          versionStream,
+          dxcOpts.ExternalLib.empty() ? (LPCSTR) nullptr
+                                      : dxcOpts.ExternalLib.data(),
+          dxcOpts.ExternalFn.empty() ? (LPCSTR) nullptr
+                                     : dxcOpts.ExternalFn.data(),
+          dxcSupport);
+      versionStream.flush();
+      WriteUtf8ToConsoleSizeT(version.data(), version.size());
+      return 0;
+    }
+
     CComPtr<IDxcRewriter2> pRewriter;
     CComPtr<IDxcOperationResult> pRewriteResult;
     CComPtr<IDxcBlobEncoding> pSource;
@@ -183,10 +198,14 @@ int __cdecl wmain(int argc, const wchar_t **argv_) {
     if (!dxcOpts.InputFile.empty()) {
       IFT_Data(FileMapDxcBlobEncoding::CreateForFile(wName.c_str(), &pSource), wName.c_str());
     }
+    CComPtr<IDxcLibrary> pLibrary;
+    CComPtr<IDxcIncludeHandler> pIncludeHandler;
+    IFT(dxcSupport.CreateInstance(CLSID_DxcLibrary, &pLibrary));
+    IFT(pLibrary->CreateIncludeHandler(&pIncludeHandler));
     IFT(dxcSupport.CreateInstance(CLSID_DxcRewriter, &pRewriter));
     IFT(pRewriter->RewriteWithOptions(pSource, wName.c_str(),
                                       argv_, argc,
-                                      nullptr, 0, nullptr,
+                                      nullptr, 0, pIncludeHandler,
                                       &pRewriteResult));
 
     if (dxcOpts.OutputObject.empty()) {

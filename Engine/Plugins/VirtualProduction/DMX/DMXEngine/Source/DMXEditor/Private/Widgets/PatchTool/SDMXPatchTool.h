@@ -7,8 +7,10 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 
-class UDMXLibrary;
+class UDMXEntity;
 class UDMXEntityFixturePatch;
+class UDMXLibrary;
+
 template<typename OptionType> class SComboBox;
 class STextBlock;
 
@@ -32,10 +34,13 @@ public:
 	/** Constructs the widget */
 	void Construct(const FArguments& InArgs);
 
-
 protected:
 	// ~Begin FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SDMXPatchTool");
+	}
 	// ~End FGCObject interface
 
 	/** Updates the selected library. Useful on initialization or when assets changed */
@@ -87,7 +92,7 @@ private:
 
 private:
 	/** Called when the library was edited */
-	void OnLibraryEdited(UDMXLibrary* Library);
+	void OnEntitiesAddedOrRemoved(UDMXLibrary* Library, TArray<UDMXEntity*> Entities);
 
 	/** Called when the asset registry finished loading files */
 	void OnAllDMXLibraryAssetsLoaded();

@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
@@ -7,7 +7,8 @@ using System.Text;
 using System.IO;
 using AutomationTool;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 /// <summary>
 /// Copies all UAT and UBT build products to a directory
@@ -23,44 +24,37 @@ public class CopyUAT : BuildCommand
 			throw new AutomationException("Missing -TargetDir=... argument to CopyUAT");
 		}
 
-		// Construct a dummy UE4Build object to get a list of the UAT and UBT build products
-		UE4Build Build = new UE4Build(this);
+		// Construct a dummy UnrealBuild object to get a list of the UAT and UBT build products
+		UnrealBuild Build = new UnrealBuild(this);
 		Build.AddUATFilesToBuildProducts();
-		if(ParseParam("WithLauncher") && !Utils.IsRunningOnMono)
-		{
-			Build.AddUATLauncherFilesToBuildProducts();
-		}
 		Build.AddUBTFilesToBuildProducts();
 
 		// Get a list of all the input files
-		List<FileReference> SourceFiles = new List<FileReference>();
+		HashSet<FileReference> SourceFilesSet = new HashSet<FileReference>();
 		foreach(string BuildProductFile in Build.BuildProductFiles)
 		{
 			FileReference SourceFile = new FileReference(BuildProductFile);
-			SourceFiles.Add(SourceFile);
+			SourceFilesSet.Add(SourceFile);
 
 			FileReference SourceSymbolFile = SourceFile.ChangeExtension(".pdb");
 			if(FileReference.Exists(SourceSymbolFile))
 			{
-				SourceFiles.Add(SourceSymbolFile);
+				SourceFilesSet.Add(SourceSymbolFile);
 			}
 
 			FileReference DocumentationFile = SourceFile.ChangeExtension(".xml");
 			if(FileReference.Exists(DocumentationFile))
 			{
-				SourceFiles.Add(DocumentationFile);
+				SourceFilesSet.Add(DocumentationFile);
 			}
 		}
 
 		// Copy all the files over
 		DirectoryReference TargetDir = new DirectoryReference(TargetDirParam);
-		foreach(FileReference SourceFile in SourceFiles)
-		{
-			FileReference TargetFile = FileReference.Combine(TargetDir, SourceFile.MakeRelativeTo(CommandUtils.RootDirectory));
-			DirectoryReference.CreateDirectory(TargetFile.Directory);
-			CommandUtils.CopyFile(SourceFile.FullName, TargetFile.FullName);
-		}
+		List<FileReference> SourceFiles = SourceFilesSet.OrderBy(x => x.FullName).ToList();
+		CommandUtils.ThreadedCopyFiles(SourceFiles, Unreal.RootDirectory, TargetDir);
 
 		LogInformation("Copied {0} files to {1}", SourceFiles.Count, TargetDir);
+		File.WriteAllLines(Path.Combine(TargetDirParam, "CopiedFiles.txt"), SourceFiles.Select(F => F.FullName));
 	}
 }

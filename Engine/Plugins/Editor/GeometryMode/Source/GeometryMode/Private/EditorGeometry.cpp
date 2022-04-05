@@ -155,15 +155,15 @@ FGeomVertex::FGeomVertex()
 
 FVector FGeomVertex::GetWidgetLocation()
 {
-	return GetParentObject()->GetActualBrush()->ActorToWorld().TransformPosition( *this );
+	return GetParentObject()->GetActualBrush()->ActorToWorld().TransformPosition((FVector)*this );
 }
 
 FVector FGeomVertex::GetMidPoint() const
 {
-	return *this;
+	return (FVector)*this;
 }
 
-FVector* FGeomVertex::GetActualVertex( FPolyVertexIndex& InPVI )
+FVector3f* FGeomVertex::GetActualVertex( FPolyVertexIndex& InPVI )
 {
 	return &(GetParentObject()->GetActualBrush()->Brush->Polys->Element[ InPVI.PolyIndex ].Vertices[ InPVI.VertexIndex ]);
 }
@@ -195,10 +195,10 @@ bool FGeomEdge::IsSameEdge( const FGeomEdge& InEdge ) const
 
 FVector FGeomEdge::GetWidgetLocation()
 {
-	FVector dir = (GetParentObject()->VertexPool[ VertexIndices[1] ] - GetParentObject()->VertexPool[ VertexIndices[0] ]);
+	FVector dir = ((FVector)GetParentObject()->VertexPool[ VertexIndices[1] ] - (FVector)GetParentObject()->VertexPool[ VertexIndices[0] ]);
 	const float dist = dir.Size() / 2;
 	dir.Normalize();
-	const FVector loc = GetParentObject()->VertexPool[ VertexIndices[0] ] + (dir * dist);
+	const FVector loc = (FVector)GetParentObject()->VertexPool[ VertexIndices[0] ] + (dir * dist);
 	return GetParentObject()->GetActualBrush()->ActorToWorld().TransformPosition( loc );
 }
 
@@ -232,7 +232,7 @@ FVector FGeomPoly::GetWidgetLocation()
 	{
 		for( int32 VertIndex = 0 ; VertIndex < Poly->Vertices.Num() ; ++VertIndex )
 		{
-			Wk += Poly->Vertices[VertIndex];
+			Wk += (FVector)Poly->Vertices[VertIndex];
 		}
 		Wk = Wk / Poly->Vertices.Num();
 	}
@@ -248,9 +248,9 @@ FVector FGeomPoly::GetMidPoint() const
 	for( int32 e = 0 ; e < EdgeIndices.Num() ; ++e )
 	{
 		const FGeomEdge* ge = &GetParentObject()->EdgePool[ EdgeIndices[e] ];
-		Wk += GetParentObject()->VertexPool[ ge->VertexIndices[0] ];
+		Wk += (FVector)GetParentObject()->VertexPool[ ge->VertexIndices[0] ];
 		Count++;
-		Wk += GetParentObject()->VertexPool[ ge->VertexIndices[1] ];
+		Wk += (FVector)GetParentObject()->VertexPool[ ge->VertexIndices[1] ];
 		Count++;
 	}
 
@@ -289,12 +289,12 @@ FVector FGeomObject::GetWidgetLocation()
 int32 FGeomObject::AddVertexToPool( int32 InObjectIndex, int32 InParentPolyIndex, int32 InPolyIndex, int32 InVertexIndex )
 {
 	FGeomVertex* gv = NULL;
-	FVector CmpVtx = GetActualBrush()->Brush->Polys->Element[ InPolyIndex ].Vertices[InVertexIndex];
+	FVector3f CmpVtx = GetActualBrush()->Brush->Polys->Element[ InPolyIndex ].Vertices[InVertexIndex];
 
 	// See if the vertex is already in the pool
 	for( int32 x = 0 ; x < VertexPool.Num() ; ++x )
 	{
-		if( FVector::PointsAreNear( VertexPool[x], CmpVtx, 0.5f ) )
+		if( FVector3f::PointsAreNear( VertexPool[x], CmpVtx, 0.5f ) )
 		{
 			gv = &VertexPool[x];
 			gv->ActualVertexIndices.AddUnique( FPolyVertexIndex( InPolyIndex, InVertexIndex ) );
@@ -416,7 +416,7 @@ void FGeomObject::SendToSource()
 			FPolyVertexIndex& PVI = gv->ActualVertexIndices[x];
 			if (ensure(PVI.PolyIndex < Element.Num() && PVI.VertexIndex < Element[PVI.PolyIndex].Vertices.Num()))
 			{
-				FVector* vtx = gv->GetActualVertex(PVI);
+				FVector3f* vtx = gv->GetActualVertex(PVI);
 				vtx->X = gv->X;
 				vtx->Y = gv->Y;
 				vtx->Z = gv->Z;
@@ -536,7 +536,7 @@ void FGeomObject::ComputeData()
 	{
 		FGeomPoly* poly = &PolyPool[p];
 
-		poly->SetNormal( poly->GetActualPoly()->Normal );
+		poly->SetNormal( (FVector)poly->GetActualPoly()->Normal );
 		poly->SetMid( poly->GetMidPoint() );
 
 	}
@@ -592,7 +592,7 @@ void FGeomObject::ComputeData()
 				{
 					FGeomPoly* gp = &PolyPool[ ge2->ParentPolyIndices[p] ];
 
-					Wk += gp->GetActualPoly()->Normal;
+					Wk += (FVector)gp->GetActualPoly()->Normal;
 					Count++;
 
 				}

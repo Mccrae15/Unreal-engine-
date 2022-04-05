@@ -5,8 +5,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -23,12 +24,12 @@ namespace UnrealBuildTool
 			/// <summary>
 			/// Exponent
 			/// </summary>
-			public byte[] Exponent;
+			public byte[]? Exponent { get; set; }
 
 			/// <summary>
 			/// Modulus
 			/// </summary>
-			public byte[] Modulus;
+			public byte[]? Modulus { get; set; }
 
 			/// <summary>
 			/// Determine if this key is valid
@@ -47,12 +48,12 @@ namespace UnrealBuildTool
 			/// <summary>
 			/// Public key
 			/// </summary>
-			public SigningKey PublicKey = new SigningKey();
+			public SigningKey PublicKey { get; set; } = new SigningKey();
 
 			/// <summary>
 			/// Private key
 			/// </summary>
-			public SigningKey PrivateKey = new SigningKey();
+			public SigningKey PrivateKey { get; set; } = new SigningKey();
 
 			/// <summary>
 			/// Determine if this key is valid
@@ -67,10 +68,10 @@ namespace UnrealBuildTool
 			/// </summary>
 			public bool IsUnsecureLegacyKey()
 			{
-				int LongestKey = PublicKey.Exponent.Length;
-				LongestKey = Math.Max(LongestKey, PublicKey.Modulus.Length);
-				LongestKey = Math.Max(LongestKey, PrivateKey.Exponent.Length);
-				LongestKey = Math.Max(LongestKey, PrivateKey.Modulus.Length);
+				int LongestKey = PublicKey.Exponent!.Length;
+				LongestKey = Math.Max(LongestKey, PublicKey.Modulus!.Length);
+				LongestKey = Math.Max(LongestKey, PrivateKey.Exponent!.Length);
+				LongestKey = Math.Max(LongestKey, PrivateKey.Modulus!.Length);
 				return LongestKey <= 64;
 			}
 		}
@@ -83,15 +84,15 @@ namespace UnrealBuildTool
 			/// <summary>
 			/// Optional name for this encryption key
 			/// </summary>
-			public string Name;
+			public string? Name { get; set; }
 			/// <summary>
 			/// Optional guid for this encryption key
 			/// </summary>
-			public string Guid;
+			public string? Guid { get; set; }
 			/// <summary>
 			/// AES key
 			/// </summary>
-			public byte[] Key;
+			public byte[]? Key { get; set; }
 			/// <summary>
 			/// Determine if this key is valid
 			/// </summary>
@@ -109,58 +110,58 @@ namespace UnrealBuildTool
 			/// <summary>
 			/// AES encyption key
 			/// </summary>
-			public EncryptionKey EncryptionKey = null;
+			public EncryptionKey? EncryptionKey { get; set; } = null;
 
 			/// <summary>
 			/// RSA public/private key
 			/// </summary>
-			public SigningKeyPair SigningKey = null;
+			public SigningKeyPair? SigningKey { get; set; } = null;
 
 			/// <summary>
 			/// Enable pak signature checking
 			/// </summary>
-			public bool bEnablePakSigning = false;
+			public bool bEnablePakSigning { get; set; } = false;
 
 			/// <summary>
 			/// Encrypt the index of the pak file. Stops the pak file being easily accessible by unrealpak
 			/// </summary>
-			public bool bEnablePakIndexEncryption = false;
+			public bool bEnablePakIndexEncryption { get; set; } = false;
 
 			/// <summary>
 			/// Encrypt all ini files in the pak. Good for game data obsfucation
 			/// </summary>
-			public bool bEnablePakIniEncryption = false;
+			public bool bEnablePakIniEncryption { get; set; } = false;
 
 			/// <summary>
 			/// Encrypt the uasset files in the pak file. After cooking, uasset files only contain package metadata / nametables / export and import tables. Provides good string data obsfucation without
 			/// the downsides of full package encryption, with the security drawbacks of still having some data stored unencrypted 
 			/// </summary>
-			public bool bEnablePakUAssetEncryption = false;
+			public bool bEnablePakUAssetEncryption { get; set; } = false;
 
 			/// <summary>
 			/// Encrypt all assets data files (including exp and ubulk) in the pak file. Likely to be slow, and to cause high data entropy (bad for delta patching)
 			/// </summary>
-			public bool bEnablePakFullAssetEncryption = false;
+			public bool bEnablePakFullAssetEncryption { get; set; } = false;
 
 			/// <summary>
 			/// Some platforms have their own data crypto systems, so allow the config settings to totally disable our own crypto
 			/// </summary>
-			public bool bDataCryptoRequired = false;
+			public bool bDataCryptoRequired { get; set; } = false;
 
 			/// <summary>
 			/// Config setting to enable pak signing
 			/// </summary>
-			public bool PakEncryptionRequired = true;
+			public bool PakEncryptionRequired { get; set; } = true;
 
 			/// <summary>
 			/// Config setting to enable pak encryption
 			/// </summary>
-			public bool PakSigningRequired = true;
+			public bool PakSigningRequired { get; set; } = true;
 			
 			/// <summary>
 			/// A set of named encryption keys that can be used to encrypt different sets of data with a different key that is delivered dynamically (i.e. not embedded within the game executable)
 			/// </summary>
-			public EncryptionKey[] SecondaryEncryptionKeys;
+			public EncryptionKey[]? SecondaryEncryptionKeys { get; set; }
 
 			/// <summary>
 			/// 
@@ -184,7 +185,7 @@ namespace UnrealBuildTool
 			public void Save(FileReference InFile)
 			{
 				DirectoryReference.CreateDirectory(InFile.Directory);
-				FileReference.WriteAllText(InFile, fastJSON.JSON.Instance.ToJSON(this, new fastJSON.JSONParameters {}));
+				FileReference.WriteAllText(InFile, JsonSerializer.Serialize(this));
 			}
 		}
 
@@ -224,35 +225,37 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Parse crypto settings from INI file
 		/// </summary>
-		public static CryptoSettings ParseCryptoSettings(DirectoryReference InProjectDirectory, UnrealTargetPlatform InTargetPlatform)
+		public static CryptoSettings ParseCryptoSettings(DirectoryReference? InProjectDirectory, UnrealTargetPlatform InTargetPlatform)
 		{
 			CryptoSettings Settings = new CryptoSettings();
 			
 			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, InProjectDirectory, InTargetPlatform);
-			Ini.GetBool("PlatformCrypto", "PlatformRequiresDataCrypto", out Settings.bDataCryptoRequired);
-			Ini.GetBool("PlatformCrypto", "PakSigningRequired", out Settings.PakSigningRequired);
-			Ini.GetBool("PlatformCrypto", "PakEncryptionRequired", out Settings.PakEncryptionRequired);
+			Ini.GetBool("PlatformCrypto", "PlatformRequiresDataCrypto", out bool bDataCryptoRequired);
+			Settings.bDataCryptoRequired = bDataCryptoRequired;
+
+			Ini.GetBool("PlatformCrypto", "PakSigningRequired", out bool PakSigningRequired);
+			Settings.PakSigningRequired = PakSigningRequired;
+
+			Ini.GetBool("PlatformCrypto", "PakEncryptionRequired", out bool PakEncryptionRequired);
+			Settings.PakEncryptionRequired = PakEncryptionRequired;
 
 			{
 				// Start by parsing the legacy encryption.ini settings
 				Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Encryption, InProjectDirectory, InTargetPlatform);
-				Ini.GetBool("Core.Encryption", "SignPak", out Settings.bEnablePakSigning);
 
-				string[] SigningKeyStrings = new string[3];
-				Ini.GetString("Core.Encryption", "rsa.privateexp", out SigningKeyStrings[0]);
-				Ini.GetString("Core.Encryption", "rsa.modulus", out SigningKeyStrings[1]);
-				Ini.GetString("Core.Encryption", "rsa.publicexp", out SigningKeyStrings[2]);
+				Ini.GetBool("Core.Encryption", "SignPak", out bool bEnablePakSigning);
+				Settings.bEnablePakSigning = bEnablePakSigning;
 
-				if (String.IsNullOrEmpty(SigningKeyStrings[0]) || String.IsNullOrEmpty(SigningKeyStrings[1]) || String.IsNullOrEmpty(SigningKeyStrings[2]))
-				{
-					SigningKeyStrings = null;
-				}
-				else
+				Ini.GetString("Core.Encryption", "rsa.privateexp", out string PrivateExponent);
+				Ini.GetString("Core.Encryption", "rsa.modulus", out string Modulus);
+				Ini.GetString("Core.Encryption", "rsa.publicexp", out string PublicExponent);
+
+				if (PrivateExponent.Length > 0 && Modulus.Length > 0 && PublicExponent.Length > 0)
 				{
 					Settings.SigningKey = new SigningKeyPair();
-					Settings.SigningKey.PrivateKey.Exponent = ParseHexStringToByteArray(ProcessSigningKeyInputStrings(SigningKeyStrings[0]), 64);
-					Settings.SigningKey.PrivateKey.Modulus = ParseHexStringToByteArray(ProcessSigningKeyInputStrings(SigningKeyStrings[1]), 64);
-					Settings.SigningKey.PublicKey.Exponent = ParseHexStringToByteArray(ProcessSigningKeyInputStrings(SigningKeyStrings[2]), 64);
+					Settings.SigningKey.PrivateKey.Exponent = ParseHexStringToByteArray(ProcessSigningKeyInputStrings(PrivateExponent), 64);
+					Settings.SigningKey.PrivateKey.Modulus = ParseHexStringToByteArray(ProcessSigningKeyInputStrings(Modulus), 64);
+					Settings.SigningKey.PublicKey.Exponent = ParseHexStringToByteArray(ProcessSigningKeyInputStrings(PublicExponent), 64);
 					Settings.SigningKey.PublicKey.Modulus = Settings.SigningKey.PrivateKey.Modulus;
 
 					if ((Settings.SigningKey.PrivateKey.Exponent.Length > 64) ||
@@ -264,7 +267,9 @@ namespace UnrealBuildTool
 					}
 				}
 
-				Ini.GetBool("Core.Encryption", "EncryptPak", out Settings.bEnablePakIndexEncryption);
+				Ini.GetBool("Core.Encryption", "EncryptPak", out bool bEnablePakIndexEncryption);
+				Settings.bEnablePakIndexEncryption = bEnablePakIndexEncryption;
+
 				Settings.bEnablePakFullAssetEncryption = false;
 				Settings.bEnablePakUAssetEncryption = false;
 				Settings.bEnablePakIniEncryption = Settings.bEnablePakIndexEncryption;
@@ -295,11 +300,20 @@ namespace UnrealBuildTool
 			// If we have new format crypto keys, read them in over the top of the legacy settings
 			if (CryptoSection != null && CryptoSection.KeyNames.Count() > 0)
 			{
-				Ini.GetBool(SectionName, "bEnablePakSigning", out Settings.bEnablePakSigning);
-				Ini.GetBool(SectionName, "bEncryptPakIniFiles", out Settings.bEnablePakIniEncryption);
-				Ini.GetBool(SectionName, "bEncryptPakIndex", out Settings.bEnablePakIndexEncryption);
-				Ini.GetBool(SectionName, "bEncryptUAssetFiles", out Settings.bEnablePakUAssetEncryption);
-				Ini.GetBool(SectionName, "bEncryptAllAssetFiles", out Settings.bEnablePakFullAssetEncryption);
+				Ini.GetBool(SectionName, "bEnablePakSigning", out bool bEnablePakSigning);
+				Settings.bEnablePakSigning = bEnablePakSigning;
+
+				Ini.GetBool(SectionName, "bEncryptPakIniFiles", out bool bEnablePakIniEncryption);
+				Settings.bEnablePakIniEncryption = bEnablePakIniEncryption;
+
+				Ini.GetBool(SectionName, "bEncryptPakIndex", out bool bEnablePakIndexEncryption);
+				Settings.bEnablePakIndexEncryption = bEnablePakIndexEncryption;
+
+				Ini.GetBool(SectionName, "bEncryptUAssetFiles", out bool bEnablePakUAssetEncryption);
+				Settings.bEnablePakUAssetEncryption = bEnablePakUAssetEncryption;
+
+				Ini.GetBool(SectionName, "bEncryptAllAssetFiles", out bool bEnablePakFullAssetEncryption);
+				Settings.bEnablePakFullAssetEncryption = bEnablePakFullAssetEncryption;
 
 				// Parse encryption key
 				string EncryptionKeyString;
@@ -314,7 +328,7 @@ namespace UnrealBuildTool
 
 				// Parse secondary encryption keys
 				List<EncryptionKey> SecondaryEncryptionKeys = new List<EncryptionKey>();
-				List<string> SecondaryEncryptionKeyStrings;
+				List<string>? SecondaryEncryptionKeyStrings;
 
 				if (Ini.GetArray(SectionName, "SecondaryEncryptionKeys", out SecondaryEncryptionKeyStrings))
 				{
@@ -396,8 +410,8 @@ namespace UnrealBuildTool
 									NewKey.Guid = KeyParts[2];
 									NewKey.Key = System.Convert.FromBase64String(KeyParts[3]);
 
-									EncryptionKey ExistingKey = EncryptionKeys.Find((EncryptionKey OtherKey) => { return OtherKey.Guid == NewKey.Guid; });
-									if (ExistingKey != null && !CompareKey(ExistingKey.Key, NewKey.Key))
+									EncryptionKey? ExistingKey = EncryptionKeys.Find((EncryptionKey OtherKey) => { return OtherKey.Guid == NewKey.Guid; });
+									if (ExistingKey != null && !CompareKey(ExistingKey.Key!, NewKey.Key))
 									{
 										throw new Exception("Found multiple encryption keys with the same guid but different AES keys while merging secondary keys from the project key-chain!");
 									}

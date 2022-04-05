@@ -97,11 +97,12 @@ public:
 	SizeType Add(const TSharedPtr<T>& Element) { return Inner.Add(Element); }
 	SizeType Add(TSharedPtr<T>&& Element) { return Inner.Add(MoveTemp(Element)); }
 	SizeType Remove(const TSharedPtr<T>& Item) { return Inner.Remove(Item); }
+	void RemoveAt(int32 Index) { Inner.RemoveAt(Index); }
 	void Empty() { return Inner.Empty(); }
 
 	const TArray<TSharedPtr<T>>& View() const { return Inner; }
 	      TArray<TSharedPtr<T>>& Edit()       { return Inner; }
 
-public:
+private:
 	TArray<TSharedPtr<T>> Inner;
 };

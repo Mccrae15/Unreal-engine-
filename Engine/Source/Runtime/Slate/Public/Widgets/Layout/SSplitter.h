@@ -25,8 +25,11 @@ namespace ESplitterResizeMode
 {
 	enum Type
 	{
+		/** Resize the selected slot. If space is needed, then resize the next resizable slot. */
 		FixedPosition,
+		/** Resize the selected slot. If space is needed, then resize the last resizable slot. */
 		FixedSize,
+		/** Resize the selected slot by redistributing the available space with the following resizable slots. */
 		Fill,
 	};
 }
@@ -57,42 +60,111 @@ public:
 	DECLARE_DELEGATE_RetVal_OneParam(FVector2D, FOnGetMaxSlotSize, int32);
 
 public:
-	class FSlot : public TSlotBase<FSlot>
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	class SLATE_API FSlot : public TSlotBase<FSlot>
 	{
 	public:		
 		FSlot()
 			: TSlotBase<FSlot>()
 			, SizingRule( FractionOfParent )
 			, SizeValue( 1 )
+			, MinSizeValue( 0 )
 		{
 		}
 
-		FSlot& Value( const TAttribute<float>& InValue )
+		SLATE_SLOT_BEGIN_ARGS(FSlot, TSlotBase<FSlot>)
+			/** The size rule used by the slot. */
+			SLATE_ATTRIBUTE(ESizeRule, SizeRule)
+			/** When the RuleSize is set to FractionOfParent, the size of the slot is the Value percentage of its parent size. */
+			SLATE_ATTRIBUTE(float, Value)
+			/** Minimum slot size when resizing. */
+			SLATE_ATTRIBUTE(float, MinSize)
+			/** Can the slot be resize by the user. */
+			SLATE_ARGUMENT(TOptional<bool>, Resizable)
+			/** Callback when the slot is resized. */
+			SLATE_EVENT(FOnSlotResized, OnSlotResized)
+		SLATE_SLOT_END_ARGS()
+
+		void Construct(const FChildren& SlotOwner, FSlotArguments&& InArgs);
+
+		/** When the RuleSize is set to FractionOfParent, the size of the slot is the Value percentage of its parent size. */
+		void SetSizeValue( TAttribute<float> InValue )
 		{
-			SizeValue = InValue;
-			return *this;
+			SizeValue = MoveTemp(InValue);
+		}
+		float GetSizeValue() const
+		{
+			return SizeValue.Get();
+		}
+
+		/**
+		 * Can the slot be resize by the user.
+		 * @see CanBeResized()
+		 */
+		void SetResizable(bool bInIsResizable)
+		{
+			bIsResizable = bInIsResizable;
+		}
+		bool IsResizable() const
+		{
+			return bIsResizable.Get(false);
+		}
+
+		/** Minimum slot size when resizing. */
+		void SetMinSize(float InMinSize)
+		{
+			MinSizeValue = InMinSize;
+		}
+		float GetMinSize() const
+		{
+			return MinSizeValue.Get(0.f);
 		}
 		
-		FSlot& OnSlotResized( const FOnSlotResized& InHandler )
+		/**
+		 * Callback when the slot is resized.
+		 * @see CanBeResized()
+		 */
+		FOnSlotResized& OnSlotResized()
 		{
-			OnSlotResized_Handler = InHandler;
-			return *this;
+			return OnSlotResized_Handler;
+		}
+		const FOnSlotResized& OnSlotResized() const
+		{
+			return OnSlotResized_Handler;
 		}
 
-		FSlot& SizeRule( const TAttribute<ESizeRule>& InSizeRule ) 
+		/** The size rule used by the slot. */
+		void SetSizingRule( TAttribute<ESizeRule> InSizeRule ) 
 		{
-			SizingRule = InSizeRule;
-			return *this;
+			SizingRule = MoveTemp(InSizeRule);
+		}
+		ESizeRule GetSizingRule() const
+		{
+			return SizingRule.Get();
 		}
 
+	public:
+		/** A slot can be resize if bIsResizable and the SizeRule is a FractionOfParent or the OnSlotResized delegate is set. */
+		bool CanBeResized() const;
+
+	public:
+		UE_DEPRECATED(5.0, "Direct access to SizingRule is now deprecated. Use the getter.")
 		TAttribute<ESizeRule> SizingRule;
+		UE_DEPRECATED(5.0, "Direct access to SizeValue is now deprecated. Use the getter.")
 		TAttribute<float> SizeValue;
+		UE_DEPRECATED(5.0, "Direct access to MinSizeValue is now deprecated. Use the getter.")
+		TAttribute<float> MinSizeValue;
+		UE_DEPRECATED(5.0, "Direct access to OnSlotResized_Handler is now deprecated. Use the getter.")
 		FOnSlotResized OnSlotResized_Handler;
+		UE_DEPRECATED(5.0, "Direct access to bIsResizable is now deprecated. Use the getter.")
+		TOptional<bool> bIsResizable;
 	};
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
-	/** @return a new SSplitter::FSlot() */
-	static FSlot& Slot();
+	/** @return Add a new FSlot() */
+	static FSlot::FSlotArguments Slot();
 	
+	using FScopedWidgetSlotArguments = TPanelChildren<FSlot>::FScopedWidgetSlotArguments;
 	/**
 	 * Add a slot to the splitter at the specified index
 	 * Sample usage:
@@ -103,8 +175,9 @@ public:
 	 *
 	 * @return the new slot.
 	 */
-	FSlot& AddSlot( int32 AtIndex = INDEX_NONE );
+	FScopedWidgetSlotArguments AddSlot( int32 AtIndex = INDEX_NONE );
 
+	DECLARE_DELEGATE_OneParam(FOnHandleHovered, int32);
 
 	SLATE_BEGIN_ARGS(SSplitter)
 		: _Style( &FCoreStyle::Get().GetWidgetStyle<FSplitterStyle>("Splitter") )
@@ -117,7 +190,7 @@ public:
 		{
 		}
 
-		SLATE_SUPPORTS_SLOT(FSlot)
+		SLATE_SLOT_ARGUMENT(FSlot, Slots)
 
 		/** Style used to draw this splitter */
 		SLATE_STYLE_ARGUMENT( FSplitterStyle, Style )
@@ -132,9 +205,13 @@ public:
 
 		SLATE_ARGUMENT( float, MinimumSlotHeight )
 
+		SLATE_ATTRIBUTE( int32, HighlightedHandleIndex )
+
+		SLATE_EVENT( FOnHandleHovered, OnHandleHovered )
+
 		SLATE_EVENT( FSimpleDelegate, OnSplitterFinishedResizing )
 		
-		SLATE_EVENT(FOnGetMaxSlotSize, OnGetMaxSlotSize)
+		SLATE_EVENT( FOnGetMaxSlotSize, OnGetMaxSlotSize )
 
 	SLATE_END_ARGS()
 
@@ -232,8 +309,7 @@ public:
 	/**
 	 * @return the current orientation of the splitter.
 	 */
-	EOrientation GetOrientation() const;	
-
+	EOrientation GetOrientation() const;
 
 private:
 	TArray<FLayoutGeometry> ArrangeChildrenForLayout( const FGeometry& AllottedGeometry ) const;
@@ -254,7 +330,7 @@ protected:
 	 */
 	static int32 FindResizeableSlotAfterHandle( int32 DraggedHandle, const TPanelChildren<FSlot>& Children );
 
-	static void FindAllResizeableSlotsAfterHandle( int32 DraggedHandle, const TPanelChildren<FSlot>& Children, TArray< int32 >& OutSlotIndicies );
+	static void FindAllResizeableSlotsAfterHandle( int32 DraggedHandle, const TPanelChildren<FSlot>& Children, TArray<int32, TMemStackAllocator<>>& OutSlotIndicies );
 
 	/**
 	 * Resizes the children based on user input. The template parameter Orientation corresponds to the splitter being horizontal or vertical.
@@ -273,7 +349,7 @@ protected:
 	 *
 	 * @return A size that is clamped against the minimum size allowed for children.
 	 */
-	float ClampChild( float ProposedSize );
+	float ClampChild(const FSlot& ChildSlot, float ProposedSize) const;
 
 	/**
 	 * Given a mouse position within the splitter, figure out which resize handle we are hovering (if any).
@@ -290,12 +366,15 @@ protected:
 	TPanelChildren< FSlot > Children;
 
 	int32 HoveredHandleIndex;
+	TSlateAttribute<int32, EInvalidateWidgetReason::Paint> HighlightedHandleIndex;
 	bool bIsResizing;
 	EOrientation Orientation;
 	ESplitterResizeMode::Type ResizeMode;
 
 	FSimpleDelegate OnSplitterFinishedResizing;
 	FOnGetMaxSlotSize OnGetMaxSlotSize;
+	FOnHandleHovered OnHandleHovered;
+
 	/** The user is not allowed to make any of the splitter's children smaller than this. */
 	float MinSplitterChildLength;
 
@@ -306,6 +385,15 @@ protected:
 	const FSplitterStyle* Style;
 };
 
+enum class EResizingAxis : uint8
+{
+	None = 0x00,
+	LeftRightMask = 0x01,
+	UpDownMask = 0x10,
+	CrossMask = UpDownMask | LeftRightMask
+};
+ENUM_CLASS_FLAGS(EResizingAxis);
+
 /**
  * SSplitter2x2													
  * A splitter which has exactly 4 children and allows simultaneous		
@@ -314,40 +402,44 @@ protected:
  */
 class SLATE_API SSplitter2x2 : public SPanel
 {
-public:
-	class FSlot : public TSlotBase<FSlot>
+private:
+	class SLATE_API FSlot : public TSlotBase<FSlot>
 	{
 	public:	
-		/** Default Constructor.  Initially each slot takes up a quarter of the entire space */
-		FSlot()
-			: TSlotBase<FSlot>( SNullWidget::NullWidget )
-			, PercentageAttribute( FVector2D(0.5, 0.5) )
-		{
-		}
-
-		/** Copy Constructor */
-		FSlot( const TSharedRef<SWidget>& InWidget )
-			: TSlotBase<FSlot>( InWidget )
-			, PercentageAttribute( FVector2D(0.5, 0.5) )
-		{
-		}
+		SLATE_SLOT_BEGIN_ARGS(FSlot, TSlotBase<FSlot>)
+			SLATE_ATTRIBUTE(FVector2D, Percentage)
+		SLATE_SLOT_END_ARGS()
 
 		/**
 		 * Sets the percentage attribute
 		 *
 		 * @param Value The new percentage value
 		 */
-		FSlot& SetPercentage( const FVector2D& Value )
+		void SetPercentage( const FVector2D& Value )
 		{
 			PercentageAttribute.Set( Value );
-			return *this;
 		}
-	public:
+
+		FVector2D GetPercentage() const
+		{
+			return PercentageAttribute.Get();
+		}
+
+		FSlot(const TSharedRef<SWidget>& InWidget);
+
+		void Construct(const FChildren& SlotOwner, FSlotArguments&& InArg);
+
+	private:
 		/** The percentage of the alloted space of the splitter that this slot requires */
 		TAttribute<FVector2D> PercentageAttribute;
 	};
 
-	SLATE_BEGIN_ARGS( SSplitter2x2 ){}
+	SLATE_BEGIN_ARGS( SSplitter2x2 )
+		: _Style(&FCoreStyle::Get().GetWidgetStyle<FSplitterStyle>("Splitter"))
+		{
+		}
+		/** Style used to draw this splitter */
+		SLATE_STYLE_ARGUMENT(FSplitterStyle, Style)
 		SLATE_NAMED_SLOT( FArguments, TopLeft )
 		SLATE_NAMED_SLOT( FArguments, BottomLeft )
 		SLATE_NAMED_SLOT( FArguments, TopRight )
@@ -418,7 +510,7 @@ public:
 	void GetSplitterPercentages( TArray< FVector2D >& OutPercentages ) const;
 	
 	/** Sets the size percentages for the children in this order: TopLeft, BottomLeft, TopRight, BottomRight */
-	void SetSplitterPercentages( const TArray< FVector2D >& InPercentages );
+	void SetSplitterPercentages( TArrayView< FVector2D > InPercentages );
 
 
 private:
@@ -426,6 +518,8 @@ private:
 	TArray<FLayoutGeometry> ArrangeChildrenForLayout( const FGeometry& AllottedGeometry ) const;
 
 	virtual void OnArrangeChildren( const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren ) const override;
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 
 	/**
 	 * A Panel's desired size in the space required to arrange of its children on the screen while respecting all of
@@ -483,7 +577,7 @@ private:
 	 * @param MyGeometry	The geometry of this widget
 	 * @param LocalMousePos	The local space current mouse position
 	 */
-	int32 CalculateResizingAxis( const FGeometry& MyGeometry, const FVector2D& LocalMousePos ) const;
+	EResizingAxis CalculateResizingAxis( const FGeometry& MyGeometry, const FVector2D& LocalMousePos ) const;
 
 	/**
 	 * Resizes all children based on a user moving the splitter handles
@@ -499,8 +593,10 @@ private:
 	/** The children of the splitter. There can only be four */
 	TPanelChildren<FSlot> Children;
 
+	const FSplitterStyle* Style = nullptr;
+
 	/** The axis currently being resized or INDEX_NONE if no resizing */
-	int32 ResizingAxis;
+	EResizingAxis ResizingAxisMask;
 
 	/** true if a splitter axis is currently being resized. */
 	bool bIsResizing;

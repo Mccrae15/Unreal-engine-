@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnlineFwd.h"
 #include "Stats/Stats.h"
 #include "Modules/ModuleManager.h"
 #include "OnlineSubsystemModule.h"
@@ -125,6 +125,16 @@ typedef FOnConnectionStatusChanged::FDelegate FOnConnectionStatusChangedDelegate
  */
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOnlineEnvironmentChanged, EOnlineEnvironment::Type /*LastEnvironment*/, EOnlineEnvironment::Type /*Environment*/);
 typedef FOnOnlineEnvironmentChanged::FDelegate FOnOnlineEnvironmentChangedDelegate;
+
+/**
+ * Delegate fired when a configuration change was detected as a result of
+ * ReloadConfigs being called. Allows application code to inject custom
+ * configuration data before the new configuration is used.
+ *
+ * @param ConfigSections list of ini sections that need to be reloaded
+ */
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnConfigChanged, const TSet<FString>& /*ConfigSections*/);
+typedef FOnConfigChanged::FDelegate FOnConfigChangedDelegate;
 
 /**
  *	OnlineSubsystem - Series of interfaces to support communicating with various web/platform layer services
@@ -604,6 +614,15 @@ public:
 	 * @return The name of the social platform for this subsystem
 	 */
 	virtual FText GetSocialPlatformName() const = 0;
+
+	/**
+	 * Delegate fired when a configuration change was detected as a result of
+	 * ReloadConfigs being called. Allows application code to inject custom
+	 * configuration data before the new configuration is used.
+	 *
+	 * @param ConfigSections list of ini sections that need to be reloaded
+	 */
+	DEFINE_ONLINE_DELEGATE_ONE_PARAM(OnConfigChanged, const TSet<FString>& /*ConfigSections*/);
 
 	/**
 	 * Reload the configuration if it is relevant for this OSS instance

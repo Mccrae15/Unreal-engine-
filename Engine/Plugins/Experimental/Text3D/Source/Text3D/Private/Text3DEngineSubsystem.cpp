@@ -49,14 +49,14 @@ UText3DEngineSubsystem::UText3DEngineSubsystem()
 void UText3DEngineSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
-	CleanupTickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UText3DEngineSubsystem::CleanupTimerCallback), 600.0f);
+	CleanupTickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UText3DEngineSubsystem::CleanupTimerCallback), 600.0f);
 }
 
 void UText3DEngineSubsystem::Deinitialize()
 {
 	if (CleanupTickerHandle.IsValid())
 	{
-		FTicker::GetCoreTicker().RemoveTicker(CleanupTickerHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(CleanupTickerHandle);
 		CleanupTickerHandle.Reset();
 	}
 
@@ -187,27 +187,17 @@ TSharedPtr<int32> FCachedFontData::GetCacheCounter()
 	return CacheCounter;
 }
 
-TSharedPtr<int32> FCachedFontData::GetMeshesCacheCounter(bool bOutline, float Extrude, float Bevel, EText3DBevelType BevelType, float BevelSegments)
+TSharedPtr<int32> FCachedFontData::GetMeshesCacheCounter(const FGlyphMeshParameters& Parameters)
 {
-	uint32 HashParameters = 0;
-	HashParameters = HashCombine(HashParameters, GetTypeHash(bOutline));
-	HashParameters = HashCombine(HashParameters, GetTypeHash(Extrude));
-	HashParameters = HashCombine(HashParameters, GetTypeHash(Bevel));
-	HashParameters = HashCombine(HashParameters, GetTypeHash(BevelType));
-	HashParameters = HashCombine(HashParameters, GetTypeHash(BevelSegments));
+	const uint32 HashParameters = GetTypeHash(Parameters);
 	FCachedFontMeshes& CachedMeshes = Meshes.FindOrAdd(HashParameters);
 
 	return CachedMeshes.GetCacheCounter();
 }
 
-UStaticMesh* FCachedFontData::GetGlyphMesh(uint32 GlyphIndex, bool bOutline, float Extrude, float Bevel, EText3DBevelType BevelType, float BevelSegments)
+UStaticMesh* FCachedFontData::GetGlyphMesh(uint32 GlyphIndex, const FGlyphMeshParameters& Parameters)
 {
-	uint32 HashParameters = 0;
-	HashParameters = HashCombine(HashParameters, GetTypeHash(bOutline));
-	HashParameters = HashCombine(HashParameters, GetTypeHash(Extrude));
-	HashParameters = HashCombine(HashParameters, GetTypeHash(Bevel));
-	HashParameters = HashCombine(HashParameters, GetTypeHash(BevelType));
-	HashParameters = HashCombine(HashParameters, GetTypeHash(BevelSegments));
+	const uint32 HashParameters = GetTypeHash(Parameters);
 	FCachedFontMeshes& CachedMeshes = Meshes.FindOrAdd(HashParameters);
 
 	UStaticMesh** CachedStaticMesh = CachedMeshes.Glyphs.Find(GlyphIndex);
@@ -219,25 +209,24 @@ UStaticMesh* FCachedFontData::GetGlyphMesh(uint32 GlyphIndex, bool bOutline, flo
 	uint32 HashGroup = 0;
 	HashGroup = HashCombine(HashGroup, GetTypeHash(Font));
 	HashGroup = HashCombine(HashGroup, GetTypeHash(GlyphIndex));
-	FString StaticMeshName = FString::Printf(TEXT("Text3D_Char_%u_%u"), HashGroup, HashParameters);
+	const FString StaticMeshName = FString::Printf(TEXT("Text3D_Char_%u_%u"), HashGroup, HashParameters);
 
-
-	FMeshCreator MeshCreator;
-	TSharedContourNode Root = GetGlyphContours(GlyphIndex);
+	const TSharedContourNode Root = GetGlyphContours(GlyphIndex);
 	if (Root->Children.Num() == 0)
 	{
 		return nullptr;
 	}
 
-	MeshCreator.CreateMeshes(Root, bOutline, Extrude, Bevel, BevelType, BevelSegments);
-	MeshCreator.SetFrontAndBevelTextureCoordinates(Bevel);
-	MeshCreator.MirrorGroups(Extrude);
-
 	UText3DEngineSubsystem* Subsystem = GEngine->GetEngineSubsystem<UText3DEngineSubsystem>();
 	UStaticMesh* StaticMesh = NewObject<UStaticMesh>(Subsystem, *StaticMeshName);
-	MeshCreator.BuildMesh(StaticMesh, Subsystem->DefaultMaterial);
-
 	CachedMeshes.Glyphs.Add(GlyphIndex, StaticMesh);
+
+	FMeshCreator MeshCreator;
+	MeshCreator.CreateMeshes(Root, Parameters.Extrude, Parameters.Bevel, Parameters.BevelType, Parameters.BevelSegments, Parameters.bOutline, Parameters.OutlineExpand);
+	MeshCreator.SetFrontAndBevelTextureCoordinates(Parameters.Bevel);
+	MeshCreator.MirrorGroups(Parameters.Extrude);
+		
+	MeshCreator.BuildMesh(StaticMesh, Subsystem->DefaultMaterial);
 
 	return StaticMesh;
 }

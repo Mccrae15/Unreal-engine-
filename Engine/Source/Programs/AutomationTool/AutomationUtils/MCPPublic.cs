@@ -16,7 +16,9 @@ namespace EpicGames.MCP.Automation
 {
 	using EpicGames.MCP.Config;
 	using System.Threading.Tasks;
-	using Tools.DotNETCommon;
+	using EpicGames.Core;
+	using System.ComponentModel;
+	using System.Globalization;
 
 	public static class Extensions
 	{
@@ -84,82 +86,236 @@ namespace EpicGames.MCP.Automation
 	/// <summary>
 	/// Enum that defines the MCP backend-compatible platform
 	/// </summary>
-	public enum MCPPlatform
+	[TypeConverter(typeof(MCPPlatformTypeConverter))]
+	public partial struct MCPPlatform
 	{
+		#nullable enable
+		#region Private/boilerplate
+
+		// internal concrete name of the enum
+		private int Id;
+
+		// shared string instance registry - pass in a delegate to create a new one with a name that wasn't made yet
+		private static UniqueStringRegistry? StringRegistry;
+
+		// #jira UE-88908 if parts of a partial struct have each static member variables, their initialization order does not appear guaranteed
+		// here this means initializing "StringRegistry" directly to "new UniqueStringRegistry()" may not be executed before FindOrAddByName() has been called as part of initializing a static member variable of another part of the partial struct
+		private static UniqueStringRegistry GetUniqueStringRegistry()
+		{
+			if (StringRegistry == null)
+			{
+				StringRegistry = new UniqueStringRegistry();
+			}
+			return StringRegistry;
+		}
+
+		private MCPPlatform(string Name)
+		{
+			Id = GetUniqueStringRegistry().FindOrAddByName(Name);
+		}
+
+		private MCPPlatform(int InId)
+		{
+			Id = InId;
+		}
+
+		static private MCPPlatform FindOrAddByName(string Name)
+		{
+			return new MCPPlatform(GetUniqueStringRegistry().FindOrAddByName(Name));
+		}
+
+		/// <summary>
+		/// 
+		/// </summary>
+		/// <param name="A"></param>
+		/// <param name="B"></param>
+		/// <returns></returns>
+		public static bool operator ==(MCPPlatform A, MCPPlatform B)
+		{
+			return A.Id == B.Id;
+		}
+
+		/// <summary>
+		/// 
+		/// </summary>
+		/// <param name="A"></param>
+		/// <param name="B"></param>
+		/// <returns></returns>
+		public static bool operator !=(MCPPlatform A, MCPPlatform B)
+		{
+			return A.Id != B.Id;
+		}
+
+		/// <summary>
+		/// 
+		/// </summary>
+		/// <param name="B"></param>
+		/// <returns></returns>
+		public override bool Equals(object? B)
+		{
+			if (Object.ReferenceEquals(B, null))
+			{
+				return false;
+			}
+
+			return Id == ((MCPPlatform)B).Id;
+		}
+
+		/// <summary>
+		/// 
+		/// </summary>
+		/// <returns></returns>
+		public override int GetHashCode()
+		{
+			return Id;
+		}
+
+		#endregion
+
+		/// <summary>
+		/// Return the string representation
+		/// </summary>
+		/// <returns></returns>
+		public override string ToString()
+		{
+			return GetUniqueStringRegistry().GetStringForId(Id);
+		}
+
+		/// <summary>
+		/// Parse string into a MCPPlatform
+		/// </summary>
+		/// <param name="Name"></param>
+		/// <param name="Platform"></param>
+		/// <returns>True if parse succeeded</returns>
+		static public bool TryParse(string Name, out MCPPlatform Platform)
+		{
+			if (GetUniqueStringRegistry().HasString(Name))
+			{
+				Platform.Id = GetUniqueStringRegistry().FindOrAddByName(Name);
+				return true;
+			}
+			Platform.Id = -1;
+			return false;
+		}
+
+		/// <summary>
+		/// Parse string into a MCPPlatform
+		/// </summary>
+		/// <param name="Name"></param>
+		/// <returns></returns>
+		static public MCPPlatform Parse(string Name)
+		{
+			if (GetUniqueStringRegistry().HasString(Name))
+			{
+				return new MCPPlatform(Name);
+			}
+
+			throw new BuildException(string.Format("The platform name {0} is not a valid platform name. Valid names are ({1})", Name,
+				string.Join(",", GetUniqueStringRegistry().GetStringNames())));
+		}
+
+		/// <summary>
+		/// Get list of valid platforms
+		/// </summary>
+		/// <returns>MCPPlatform list</returns>
+		public static MCPPlatform[] GetValidPlatforms()
+		{
+			return Array.ConvertAll(GetUniqueStringRegistry().GetStringIds(), x => new MCPPlatform(x));
+		}
+
+		/// <summary>
+		/// Get list of valid platform names
+		/// </summary>
+		/// <returns>Platform name list</returns>
+		public static string[] GetValidPlatformNames()
+		{
+			return GetUniqueStringRegistry().GetStringNames();
+		}
+
 		/// <summary>
 		/// MCP uses Windows for Win64
 		/// </summary>
-		Windows,
+		public static MCPPlatform Windows = FindOrAddByName("Windows");
 
 		/// <summary>
 		/// 32 bit Windows
 		/// </summary>
-		Win32,
+		public static MCPPlatform Win32 = FindOrAddByName("Win32");
 
 		/// <summary>
 		/// Mac platform.
 		/// </summary>
-		Mac,
+		public static MCPPlatform Mac = FindOrAddByName("Mac");
 
 		/// <summary>
 		/// Linux platform.
 		/// </summary>
-		Linux,
+		public static MCPPlatform Linux = FindOrAddByName("Linux");
 
 		/// <summary>
 		/// IOS platform.
 		/// </summary>
-		IOS,
+		public static MCPPlatform IOS = FindOrAddByName("IOS");
 
 		/// <summary>
 		/// Android platform.
 		/// </summary>
-		Android,
+		public static MCPPlatform Android = FindOrAddByName("Android");
 
 		/// <summary>
 		/// WindowsCN Platform.
 		/// </summary>
-		WindowsCN,
+		public static MCPPlatform WindowsCN = FindOrAddByName("WindowsCN");
 
 		/// <summary>
 		/// IOSCN Platform.
 		/// </summary>
-		IOSCN,
+		public static MCPPlatform IOSCN = FindOrAddByName("IOSCN");
 
 		/// <summary>
 		/// AndroidCN Platform.
 		/// </summary>
-		AndroidCN,
+		public static MCPPlatform AndroidCN = FindOrAddByName("AndroidCN");
 
-		/// <summary>
-		/// PS4 platform
-		/// </summary>
-		PS4,
+	#nullable restore
+	}
 
-		/// <summary>
-		/// PS5 platform
-		/// </summary>
-		PS5,
+	internal class MCPPlatformTypeConverter : TypeConverter
+	{
+		public override bool CanConvertFrom(ITypeDescriptorContext context, Type sourceType)
+		{
+			if (sourceType == typeof(string))
+				return true;
 
-		/// <summary>
-		/// Switch platform
-		/// </summary>
-		Switch,
+			return base.CanConvertFrom(context, sourceType);
+		}
 
-		/// <summary>
-		/// Xbox One Platform
-		/// </summary>
-		XboxOne,
+		public override bool CanConvertTo(ITypeDescriptorContext context, Type destinationType)
+		{
+			if (destinationType == typeof(string))
+				return true;
 
-		/// <summary>
-		/// Xbox One with GDK Platform
-		/// </summary>
-		XboxOneGDK,
+			return base.CanConvertTo(context, destinationType);
+		}
 
-		/// <summary>
-		/// XSX platform
-		/// </summary>
-		XSX,
+		public override object ConvertFrom(ITypeDescriptorContext context, CultureInfo culture, object value)
+		{
+			if (value.GetType() == typeof(string))
+			{
+				return MCPPlatform.Parse((string)value);
+			}
+			return base.ConvertFrom(context, culture, value);
+		}
+
+		public override object ConvertTo(ITypeDescriptorContext context, CultureInfo culture, object value, Type destinationType)
+		{
+			if (destinationType == typeof(string))
+			{
+				MCPPlatform Platform = (MCPPlatform)value;
+				return Platform.ToString();
+			}
+			return base.ConvertTo(context, culture, value, destinationType);
+		}
 	}
 
 	/// <summary>
@@ -265,49 +421,9 @@ namespace EpicGames.MCP.Automation
 			{
 				return MCPPlatform.Windows;
 			}
-			else if (TargetPlatform == UnrealTargetPlatform.Win32)
+			else if (MCPPlatform.TryParse(TargetPlatform.ToString(), out MCPPlatform Platform))
 			{
-				return MCPPlatform.Win32;
-			}
-			else if (TargetPlatform == UnrealTargetPlatform.Mac)
-			{
-				return MCPPlatform.Mac;
-			}
-			else if (TargetPlatform == UnrealTargetPlatform.Linux)
-			{
-				return MCPPlatform.Linux;
-			}
-			else if (TargetPlatform == UnrealTargetPlatform.IOS)
-			{
-				return MCPPlatform.IOS;
-			}
-			else if (TargetPlatform == UnrealTargetPlatform.Android)
-			{
-				return MCPPlatform.Android;
-			}
-			else if (TargetPlatform == UnrealTargetPlatform.PS4)
-			{
-				return MCPPlatform.PS4;
-			}
-			else if (TargetPlatform.ToString() == "PS5")
-			{
-				return MCPPlatform.PS5;
-			}
-			else if (TargetPlatform == UnrealTargetPlatform.XboxOne)
-			{
-				return MCPPlatform.XboxOne;
-			}
-			else if (TargetPlatform.ToString() == "XboxOneGDK")
-			{
-				return MCPPlatform.XboxOneGDK;
-			}
-			else if (TargetPlatform.ToString() == "XSX")
-			{
-				return MCPPlatform.XSX;
-			}
-			else if (TargetPlatform == UnrealTargetPlatform.Switch)
-			{
-				return MCPPlatform.Switch;
+				return Platform;
 			}
 			throw new AutomationException("Platform {0} is not properly supported by the MCP backend yet", TargetPlatform);
         }
@@ -321,54 +437,8 @@ namespace EpicGames.MCP.Automation
 			{
 				return UnrealTargetPlatform.Win64;
 			}
-			else if (TargetPlatform == MCPPlatform.Win32)
+			else if (UnrealTargetPlatform.TryParse(TargetPlatform.ToString(), out UnrealTargetPlatform ReturnValue))
 			{
-				return UnrealTargetPlatform.Win32;
-			}
-			else if (TargetPlatform == MCPPlatform.Mac)
-			{
-				return UnrealTargetPlatform.Mac;
-			}
-			else if (TargetPlatform == MCPPlatform.Linux)
-			{
-				return UnrealTargetPlatform.Linux;
-			}
-			else if (TargetPlatform == MCPPlatform.IOS)
-			{
-				return UnrealTargetPlatform.IOS;
-			}
-			else if (TargetPlatform == MCPPlatform.Android)
-			{
-				return UnrealTargetPlatform.Android;
-			}
-			else if (TargetPlatform == MCPPlatform.PS4)
-			{
-				return UnrealTargetPlatform.PS4;
-			}
-			else if (TargetPlatform == MCPPlatform.XboxOne)
-			{
-				return UnrealTargetPlatform.XboxOne;
-			}
-			else if (TargetPlatform == MCPPlatform.Switch)
-			{
-				return UnrealTargetPlatform.Switch;
-			}
-			else if (TargetPlatform == MCPPlatform.XboxOneGDK)
-			{
-				UnrealTargetPlatform ReturnValue;
-				UnrealTargetPlatform.TryParse("XboxOneGDK", out ReturnValue);
-				return ReturnValue;
-			}
-			else if (TargetPlatform == MCPPlatform.XSX)
-			{
-				UnrealTargetPlatform ReturnValue;
-				UnrealTargetPlatform.TryParse("XSX", out ReturnValue);
-				return ReturnValue;
-			}
-			else if (TargetPlatform == MCPPlatform.PS5)
-			{
-				UnrealTargetPlatform ReturnValue;
-				UnrealTargetPlatform.TryParse("PS5", out ReturnValue);
 				return ReturnValue;
 			}
 			throw new AutomationException("Platform {0} is not properly supported by the MCP backend yet", TargetPlatform);
@@ -783,6 +853,10 @@ namespace EpicGames.MCP.Automation
 			/// </summary>
 			public string FileAttributeList;
 			/// <summary>
+			/// List of artifact ids which will be used to generate patches, if this is left blank all artifact ids will be used
+			/// </summary>
+			public string AllowedlistArtifactIds;
+			/// <summary>
 			/// Specifies the client id allocated to you by Epic for uploading binaries to Epic's services.
 			/// </summary>
 			public string ClientId;
@@ -904,6 +978,55 @@ namespace EpicGames.MCP.Automation
 			public string CommandLineFile;
 		}
 
+
+		public class BinaryDeltaOptimizeOptions
+		{
+			public BinaryDeltaOptimizeOptions()
+			{
+			}
+
+			/// <summary>
+			/// The id of the artifact.
+			/// </summary>
+			public string ArtifactId;
+			/// <summary>
+			/// The build version to generate optimized deltas from 
+			/// </summary>
+			public string BuildVersionA;
+			/// <summary>
+			/// The build version to generate optimized deltas to 
+			/// </summary>
+			public string BuildVersionB;
+			/// <summary>
+			/// Specifies the client id allocated to you by Epic for uploading binaries to Epic's services.
+			/// </summary>
+			public string ClientId;
+			/// <summary>
+			/// Specifies the client secret allocated to you by Epic for uploading binaries to Epic's services.
+			/// </summary>
+			public string ClientSecret;
+			/// <summary>
+			/// Specifies the name of an environment variable containing the client secret allocated to you by Epic for uploading binaries to Epic's services.
+			/// </summary>
+			public string ClientSecretEnvVar;
+			/// <summary>
+			/// Specifies the id of the organization that this product belongs to.
+			/// </summary>
+			public string OrganizationId;
+			/// <summary>
+			/// Specifies the id of the product being uploaded.
+			/// </summary>
+			public string ProductId;
+			/// <summary>
+			/// File path to a file containing parameters for bpt to use (can be used in combination with parameters above, no duplicates)
+			/// </summary>
+			public string CommandLineFile;
+			/// <summary>
+			/// The directory which will receive the generated manifest and chunks.
+			/// </summary>
+			public string CloudDir;
+		}
+
 		public class ListBinariesOptions
 		{
 			public ListBinariesOptions()
@@ -983,6 +1106,54 @@ namespace EpicGames.MCP.Automation
 			}
 			public List<ListBinariesOutputBinary> Binaries;
 		}
+		public class ListBinariesOutputBinaryJsonFormat
+		{
+			public class ListBinariesOutputLabelJsonFormat
+			{
+				public string LabelName;
+				public string Platform;
+			}
+			public List<ListBinariesOutputLabelJsonFormat> Labels;
+			public string ArtifactId;
+			public string BuildVersion;
+			public DateTime Created;
+			public DateTime Updated;
+			public string ManifestHash;
+			public int Rvn;
+			
+			public ListBinariesOutput.ListBinariesOutputBinary.ListBinariesOutputManifestLocation ManifestLocation;
+			public bool IsResuable;
+
+			public ListBinariesOutput.ListBinariesOutputBinary ConvertToOutputBinary()
+			{
+				ListBinariesOutput.ListBinariesOutputBinary Result = new ListBinariesOutput.ListBinariesOutputBinary();
+				Result.Labels = new List<ListBinariesOutput.ListBinariesOutputBinary.ListBinariesOutputLabel>();
+				foreach (ListBinariesOutputLabelJsonFormat Label in Labels)
+				{
+					ListBinariesOutput.ListBinariesOutputBinary.ListBinariesOutputLabel NewLabel = new ListBinariesOutput.ListBinariesOutputBinary.ListBinariesOutputLabel();
+					if (MCPPlatform.TryParse(Label.Platform, out NewLabel.Platform) == false)
+					{
+						// skip platforms which don't have a resolvable platform
+						CommandUtils.LogWarning("Unable to resolve MCP platform for Label {0} platform string is {1}", Label.LabelName, Label.Platform);
+						continue;
+					}
+					NewLabel.LabelName = Label.LabelName;
+					Result.Labels.Add(NewLabel);
+				}
+
+				Result.ArtifactId = ArtifactId;
+				Result.BuildVersion = BuildVersion;
+				Result.Created = Created;
+				Result.Updated = Updated;
+				Result.ManifestHash = ManifestHash;
+				Result.Rvn = Rvn;
+				Result.ManifestLocation = ManifestLocation;
+				Result.IsResuable = IsResuable;
+
+				return Result;
+			}
+		}
+
 
 		public class CopyBinaryOptions
 		{
@@ -1028,6 +1199,73 @@ namespace EpicGames.MCP.Automation
 			/// </summary>
 			public string CommandLineFile;
 		}
+
+		public class BuildPatchToolException : AutomationTool.AutomationException
+		{
+			public enum BPTErrorCode
+			{
+				Success,
+				Unknown,
+				Copy_Failed,
+				Copy_Failed_Binary_Exists,
+				Copy_Failed_No_Source_Binary,
+				Num
+			};
+			public BPTErrorCode ResolvedErrorCode;
+			public string[] LogFileLines;
+			public BuildPatchToolException(string StdOutLogFileName, AutomationTool.AutomationException Exception) : base(Exception.ErrorCode, Exception.Message)
+			{
+				ResolvedErrorCode = BPTErrorCode.Success;
+				LogFileLines = null;
+				// try to classify the type of error
+				CommandUtils.LogInformation("Parsing log for build patch tool exception");
+				if (File.Exists(StdOutLogFileName))
+				{
+					LogFileLines = CommandUtils.ReadAllLines(StdOutLogFileName);
+					System.Text.RegularExpressions.Regex ErrorCodeRegex = new System.Text.RegularExpressions.Regex(@".*errors\.com\.epicgames\.artifact\.(?<errorCode>[A-Za-z_]*);");
+
+					foreach (string Line in LogFileLines)
+					{
+						System.Text.RegularExpressions.Match Match = ErrorCodeRegex.Match(Line);
+						if (Match.Success)
+						{
+							
+							// found an error code
+							if (ResolvedErrorCode == BPTErrorCode.Success)
+							{
+								ResolvedErrorCode = BPTErrorCode.Unknown;
+							}
+							string ErrorCodeString = Match.Groups[@"errorCode"].Value;
+							CommandUtils.LogInformation("Found match for build patch tool exception \"{0}\"", ErrorCodeString);
+							if (string.IsNullOrEmpty(ErrorCodeString) == false)
+							{
+								if (Enum.TryParse<BPTErrorCode>(ErrorCodeString, true, out ResolvedErrorCode))
+								{
+									break;
+								}
+							}
+						}
+					}
+				}
+			}
+
+			public void DumpLogFile()
+			{
+				Log.WriteLine(LogEventType.Console, "Dumping log file from last exception {0}", ToString());
+				// do the same as Process.StdOut
+				foreach (string LogFileLine in LogFileLines)
+				{
+					Log.WriteLine(LogEventType.Console, LogFileLine);
+				}
+}
+			public override string ToString()
+			{
+				return string.Format("{0}, ResolvedErrorCode: {1}", base.ToString(), ResolvedErrorCode.ToString());
+			}
+
+		}
+
+		
 
 
 
@@ -1249,6 +1487,62 @@ namespace EpicGames.MCP.Automation
 			public ManifestDiff Differential;
 		}
 
+		public class BinaryDiffOptions
+		{
+			/// <summary>
+			/// The id of the artifact.
+			/// </summary>
+			public string ArtifactId;
+			/// <summary>
+			/// The install tags to use for ManifestA.
+			/// </summary
+			public HashSet<string> InstallTagsA;
+			/// <summary>
+			/// The build version to generate optimized deltas from 
+			/// </summary>
+			public string BuildVersionA;
+			/// <summary>
+			/// The install tags to use for ManifestB.
+			/// </summary>
+			public HashSet<string> InstallTagsB;
+			/// <summary>
+			/// The build version to generate optimized deltas to 
+			/// </summary>
+			public string BuildVersionB;
+			/// <summary>
+			/// Specifies the client id allocated to you by Epic for uploading binaries to Epic's services.
+			/// </summary>
+			public string ClientId;
+			/// <summary>
+			/// Specifies the client secret allocated to you by Epic for uploading binaries to Epic's services.
+			/// </summary>
+			public string ClientSecret;
+			/// <summary>
+			/// Specifies the name of an environment variable containing the client secret allocated to you by Epic for uploading binaries to Epic's services.
+			/// </summary>
+			public string ClientSecretEnvVar;
+			/// <summary>
+			/// Specifies the id of the organization that this product belongs to.
+			/// </summary>
+			public string OrganizationId;
+			/// <summary>
+			/// Specifies the id of the product being uploaded.
+			/// </summary>
+			public string ProductId;
+			/// <summary>
+			/// File path to a file containing parameters for bpt to use (can be used in combination with parameters above, no duplicates)
+			/// </summary>
+			public string CommandLineFile;
+			/// <summary>
+			/// Tag sets to be compared between manifests 
+			/// </summary>
+			public List<HashSet<string>> CompareTagSets;
+			/// <summary>
+			/// Specifies in quotes the file path where the diff will be exported as a JSON object.
+			/// </summary>
+			public string OutputFile;
+		}
+
 		public class AutomationTestsOptions
 		{
 			/// <summary>
@@ -1404,6 +1698,13 @@ namespace EpicGames.MCP.Automation
 		public abstract void Execute(CopyBinaryOptions Opts, ToolVersion Version = ToolVersion.Online_Live);
 
 		/// <summary>
+		/// Runs the Build Patch Tool executable to generate optimized deltas between the two binaries provided
+		/// </summary>
+		/// <param name="Opts">Parameters which will be passed to the Build Patch Tool generation process.</param>
+		/// <param name="Version">Which version of BuildPatchTool is desired.</param>
+		public abstract void Execute(BinaryDeltaOptimizeOptions Opts, ToolVersion Version = ToolVersion.Online_Live);
+
+		/// <summary>
 		/// Runs the Build Patch Tool executable to compactify a cloud directory using the supplied parameters.
 		/// </summary>
 		/// <param name="Opts">Parameters which will be passed to the Build Patch Tool compactify process.</param>
@@ -1431,6 +1732,14 @@ namespace EpicGames.MCP.Automation
 		/// <param name="Output">Will receive the data back for the diff.</param>
 		/// <param name="Version">Which version of BuildPatchTool is desired.</param>
 		public abstract void Execute(ManifestDiffOptions Opts, out ManifestDiffOutput Output, ToolVersion Version = ToolVersion.Live);
+
+		/// <summary>
+		/// Runs the Build Patch Tool executable to diff two binaries files logging out details.
+		/// </summary>
+		/// <param name="Opts">Parameters which will be passed to the Build Patch Tool manifest diff process.</param>
+		/// <param name="Output">Will receive the data back for the diff.</param>
+		/// <param name="Version">Which version of BuildPatchTool is desired.</param>
+		public abstract void Execute(BinaryDiffOptions Opts, out ManifestDiffOutput Output, ToolVersion Version = ToolVersion.Live);
 
 		/// <summary>
 		/// Runs the Build Patch Tool executable to evaluate built in automation testing.
@@ -2233,6 +2542,12 @@ namespace EpicGames.MCP.Config
                     Type[] AllTypes = Dll.SafeGetLoadedTypes();
                     foreach (var PotentialConfigType in AllTypes)
                     {
+						// do not attempt to instantiate abstract (base) configs
+						if(PotentialConfigType.IsAbstract)
+						{
+							continue;
+						}
+
                         if (PotentialConfigType != typeof(McpConfigData) && typeof(McpConfigData).IsAssignableFrom(PotentialConfigType))
                         {
                             try
@@ -2243,9 +2558,16 @@ namespace EpicGames.MCP.Config
                                     Configs.Add(Config.Name, Config);
                                 }
                             }
-                            catch
+                            catch (Exception Ex)
                             {
-                                BuildCommand.LogWarning("Unable to create McpConfig: {0}", PotentialConfigType.Name);
+                                var ErrorBuilder = new System.Text.StringBuilder(Ex.Message);
+                                if (Ex.InnerException != null)
+                                {
+                                    ErrorBuilder.AppendLine(Ex.InnerException.Message);
+                                }
+                                ErrorBuilder.AppendLine(Ex.StackTrace);
+                                BuildCommand.LogWarning("Unable to create McpConfig [{0}] with error: {1}",
+                                    PotentialConfigType.Name, ErrorBuilder.ToString());
                             }
                         }
                     }

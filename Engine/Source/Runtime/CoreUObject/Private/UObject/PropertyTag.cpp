@@ -83,7 +83,7 @@ void operator<<(FStructuredArchive::FSlot Slot, FPropertyTag& Tag)
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
 	bool bIsTextFormat = UnderlyingArchive.IsTextFormat();
 
-	int32 Version = UnderlyingArchive.UE4Ver();
+	const FPackageFileVersion Version = UnderlyingArchive.UEVer();
 
 	check(!UnderlyingArchive.GetArchiveState().UseUnversionedPropertySerialization());
 	checkf(!UnderlyingArchive.IsSaving() || Tag.Prop, TEXT("FPropertyTag must be constructed with a valid property when used for saving data!"));
@@ -109,7 +109,6 @@ void operator<<(FStructuredArchive::FSlot Slot, FPropertyTag& Tag)
 
 	if (!bIsTextFormat)
 	{
-		FArchive::FScopeSetDebugSerializationFlags S(UnderlyingArchive, DSF_IgnoreDiff);
 		Slot << SA_ATTRIBUTE(TEXT("Size"), Tag.Size);
 		Slot << SA_ATTRIBUTE(TEXT("ArrayIndex"), Tag.ArrayIndex);
 	}
@@ -213,7 +212,7 @@ void FPropertyTag::SerializeTaggedProperty(FArchive& Ar, FProperty* Property, ui
 void FPropertyTag::SerializeTaggedProperty(FStructuredArchive::FSlot Slot, FProperty* Property, uint8* Value, uint8* Defaults) const
 {
 	FArchive& UnderlyingArchive = Slot.GetUnderlyingArchive();
-	const int32 StartOfProperty = UnderlyingArchive.Tell();
+	const int64 StartOfProperty = UnderlyingArchive.Tell();
 
 	if (!UnderlyingArchive.IsTextFormat() && Property->GetClass() == FBoolProperty::StaticClass())
 	{
@@ -242,10 +241,10 @@ void FPropertyTag::SerializeTaggedProperty(FStructuredArchive::FSlot Slot, FProp
 	}
 
 	// Ensure that we serialize what we expected to serialize.
-	const int32 EndOfProperty = UnderlyingArchive.Tell();
+	const int64 EndOfProperty = UnderlyingArchive.Tell();
 	if (Size && (EndOfProperty - StartOfProperty != Size))
 	{
-		UE_LOG(LogClass, Error, TEXT("Failed loading tagged %s. Read %dB, expected %dB."), *GetFullNameSafe(Property), EndOfProperty - StartOfProperty, Size);
+		UE_LOG(LogClass, Error, TEXT("Failed loading tagged %s. Read %" INT64_FMT "B, expected %dB."), *GetFullNameSafe(Property), EndOfProperty - StartOfProperty, Size);
 		UnderlyingArchive.Seek(StartOfProperty + Size);
 		Property->ClearValue(Value);
 	}

@@ -60,57 +60,58 @@ void FTextureShareCoreModule::ReleaseLib()
 	TextureShares.Empty();
 }
 
-bool FTextureShareCoreModule::ImplCheckTextureShareItem(const FString& InShareName) const
+static bool IsShareNameEmpty(const FString& ShareName)
 {
-	if (!bIsValidSharedResource)
-	{
-		UE_LOG(LogTextureShareCore, Error, TEXT("CreateTextureShare: Failed. Shared memory not connected for share '%s'"), *InShareName);
-		return false;
-	}
-
-	if (InShareName.IsEmpty())
+	if (ShareName.IsEmpty())
 	{
 		UE_LOG(LogTextureShareCore, Error, TEXT("TextureShare: Share name is empty"));
-		return false;
+		return true;
 	}
-
-	return true;
+	return false;
 }
 
 bool FTextureShareCoreModule::GetTextureShareItem(const FString& InShareName, TSharedPtr<ITextureShareItem>& OutShareObject) const
 {
-	if (ImplCheckTextureShareItem(InShareName))
+	if (IsShareNameEmpty(InShareName))
+	{
+		return false;
+	}
+
+	if (bIsValidSharedResource)
 	{
 		FScopeLock ScopeLock(&DataGuard);
 
 		const TSharedPtr<ITextureShareItem>* ShareItem = TextureShares.Find(InShareName.ToLower());
-		if (ShareItem && ShareItem->IsValid())
+		if (ShareItem)
 		{
 			OutShareObject = *ShareItem;
-
-			return true;
+			return OutShareObject.IsValid();
 		}
-
-		UE_LOG(LogTextureShareCore, Error, TEXT("Texture share '%s' not exist"), *InShareName);
 	}
 
+	UE_LOG(LogTextureShareCore, Error, TEXT("Texture share '%s' not exist"), *InShareName);
 	return false;
 }
 
 // Create shared resource object
 bool FTextureShareCoreModule::CreateTextureShareItem(const FString& InShareName, ETextureShareProcess Process, FTextureShareSyncPolicy SyncMode, ETextureShareDevice DeviceType, TSharedPtr<ITextureShareItem>& OutShareObject, float SyncWaitTime)
 {
-	if (ImplCheckTextureShareItem(InShareName))
+	if (IsShareNameEmpty(InShareName))
 	{
-		FScopeLock ScopeLock(&DataGuard);
+		return false;
+	}
 
-		FString LowerShareName = InShareName.ToLower();
-		if (TextureShares.Contains(LowerShareName))
-		{
-			UE_LOG(LogTextureShareCore, Error, TEXT("CreateTextureShare: Texture share '%s' already exist"), *InShareName);
-			return false;
-		}
+	FScopeLock ScopeLock(&DataGuard);
 
+	FString LowerShareName = InShareName.ToLower();
+	if (TextureShares.Contains(LowerShareName))
+	{
+		UE_LOG(LogTextureShareCore, Error, TEXT("CreateTextureShare: Texture share '%s' already exist"), *InShareName);
+		return false;
+	}
+
+	if (bIsValidSharedResource)
+	{
 		TextureShareItem::FTextureShareItemBase* Resource = nullptr;
 		switch (DeviceType)
 		{
@@ -144,32 +145,40 @@ bool FTextureShareCoreModule::CreateTextureShareItem(const FString& InShareName,
 			return false;
 		}
 
+		// set sync wait time
+		Resource->SetSyncWaitTime(SyncWaitTime);
+
 		// Save created object ptr
 		TSharedPtr<ITextureShareItem> NewShareObject = MakeShareable(Resource);
-
 		TextureShares.Add(LowerShareName, NewShareObject);
-		OutShareObject = NewShareObject;
 
+		OutShareObject = NewShareObject;
 		UE_LOG(LogTextureShareCore, Log, TEXT("Created TextureShare '%s'"), *InShareName);
 		return true;
 	}
 
+	UE_LOG(LogTextureShareCore, Error, TEXT("CreateTextureShare: Failed. Shared memory not connected for share '%s'"), *InShareName);
 	return false;
 }
 
 bool FTextureShareCoreModule::ReleaseTextureShareItem(const FString& InShareName)
 {
-	if (ImplCheckTextureShareItem(InShareName))
+	if (IsShareNameEmpty(InShareName))
 	{
-		FScopeLock ScopeLock(&DataGuard);
+		return false;
+	}
 
-		FString LowerShareName = InShareName.ToLower();
-		if (TextureShares.Contains(LowerShareName))
+	FScopeLock ScopeLock(&DataGuard);
+
+	FString LowerShareName = InShareName.ToLower();
+	if (bIsValidSharedResource && TextureShares.Contains(LowerShareName))
+	{
+		TSharedPtr<ITextureShareItem> Resource = TextureShares[LowerShareName];
+
+		if (Resource)
 		{
-			// Reset share ptr
-			TextureShares[LowerShareName].Reset();
-
-			// Remove key
+			Resource->Release();
+			Resource.Reset();
 			TextureShares.Remove(LowerShareName);
 
 			UE_LOG(LogTextureShareCore, Log, TEXT("Released TextureShare '%s'"), *InShareName);
@@ -182,15 +191,11 @@ bool FTextureShareCoreModule::ReleaseTextureShareItem(const FString& InShareName
 
 FTextureShareSyncPolicySettings FTextureShareCoreModule::GetSyncPolicySettings(ETextureShareProcess Process) const
 {
-	check(IsInGameThread());
-
 	return TextureShareItem::FTextureShareItemBase::GetSyncPolicySettings(Process);
 }
 
 void FTextureShareCoreModule::SetSyncPolicySettings(ETextureShareProcess Process, const FTextureShareSyncPolicySettings& InSyncPolicySettings)
 {
-	check(IsInGameThread());
-
 	TextureShareItem::FTextureShareItemBase::SetSyncPolicySettings(Process, InSyncPolicySettings);
 }
 

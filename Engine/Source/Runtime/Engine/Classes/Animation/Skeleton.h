@@ -16,8 +16,10 @@
 #include "Animation/PreviewAssetAttachComponent.h"
 #include "Animation/SmartName.h"
 #include "Engine/AssetUserData.h"
+#include "HAL/CriticalSection.h"
 #include "Interfaces/Interface_AssetUserData.h"
 #include "Interfaces/Interface_PreviewMeshProvider.h"
+#include "Delegates/DelegateCombinations.h"
 #include "Skeleton.generated.h"
 
 class UAnimSequence;
@@ -26,6 +28,7 @@ class URig;
 class USkeletalMesh;
 class USkeletalMeshSocket;
 class FPackageReloadedEvent;
+struct FAssetData;
 enum class EPackageReloadPhase : uint8;
 
 /** This is a mapping table between bone in a particular skeletal mesh and bone of this skeleton set. */
@@ -199,7 +202,7 @@ struct FRigConfiguration
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	class URig * Rig = nullptr;
+	TObjectPtr<class URig>  Rig = nullptr;
 
 	// @todo in the future we can make this to be run-time data
 	UPROPERTY()
@@ -266,14 +269,182 @@ public:
 	}
 };
 
+struct FSkeletonRemapping
+{
+	FSkeletonRemapping() = default;
+	FSkeletonRemapping(const USkeleton* InSourceSkeleton, const USkeleton* InTargetSkeleton);
+
+	const TWeakObjectPtr<const USkeleton>& GetSourceSkeleton() const { return SourceSkeleton; }
+	const TWeakObjectPtr<const USkeleton>& GetTargetSkeleton() const { return TargetSkeleton; }
+
+	/**
+	 * Compose this remapping with another remapping in place.  The other remapping's source skeleton must match
+	 * this remapping's target skeleton.  The result will map from this remapping's source skeleton to the other
+	 * remapping's target skeleton
+	 *
+	 * @param	OtherSkeletonRemapping		Skeleton remapping to compose into this remapping
+	 */
+	void ComposeWith(const FSkeletonRemapping& OtherSkeletonRemapping);
+
+	/**
+	 * Get the target skeleton bone index that corresponds to the specified bone on the source skeleton
+	 *
+	 * @param	SourceSkeletonBoneIndex		Skeleton bone index on the source skeleton
+	 * @return								Skeleton bone index on the target skeleton (or INDEX_NONE)
+	 */
+	int32 GetTargetSkeletonBoneIndex(int32 SourceSkeletonBoneIndex) const
+	{
+		return (SourceToTargetBoneIndexes.IsValidIndex(SourceSkeletonBoneIndex))
+				   ? SourceToTargetBoneIndexes[SourceSkeletonBoneIndex]
+				   : INDEX_NONE;
+	}
+
+	/**
+	 * Get the source skeleton bone index that corresponds to the specified bone on the target skeleton
+	 *
+	 * @param	TargetSkeletonBoneIndex		Skeleton bone index on the target skeleton
+	 * @return								Skeleton bone index on the source skeleton (or INDEX_NONE)
+	 */
+	int32 GetSourceSkeletonBoneIndex(int32 TargetSkeletonBoneIndex) const
+	{
+		return (TargetToSourceBoneIndexes.IsValidIndex(TargetSkeletonBoneIndex))
+				   ? TargetToSourceBoneIndexes[TargetSkeletonBoneIndex]
+				   : INDEX_NONE;
+	}
+
+	/**
+	 * Get the specified bone transform retargeted from the source skeleton onto the target skeleton, corrected
+	 * for differences between source and target rest poses
+	 *
+	 * @param	TargetSkeletonBoneIndex		Skeleton bone index on the target skeleton
+	 * @param	SourceTransform				Bone transform from the corresponding bone on the source skeleton
+	 * @return								Transform mapped onto the target skeleton
+	 */
+	FTransform RetargetBoneTransformToTargetSkeleton(int32 TargetSkeletonBoneIndex, const FTransform& SourceTransform) const
+	{
+		return FTransform(
+			RetargetBoneRotationToTargetSkeleton(TargetSkeletonBoneIndex, SourceTransform.GetRotation()),
+			RetargetBoneTranslationToTargetSkeleton(TargetSkeletonBoneIndex, SourceTransform.GetTranslation()),
+			SourceTransform.GetScale3D());
+	}
+
+	/**
+	 * Get the specified bone translation retargeted from the source skeleton onto the target skeleton, corrected
+	 * for differences between source and target rest poses
+	 *
+	 * @param	TargetSkeletonBoneIndex		Skeleton bone index on the target skeleton
+	 * @param	SourceTranslation			Bone translation from the corresponding bone on the source skeleton
+	 * @return								Translation mapped onto the target skeleton
+	 */
+	FVector RetargetBoneTranslationToTargetSkeleton(int32 TargetSkeletonBoneIndex, const FVector& SourceTranslation) const
+	{
+		// Compute the translation part of FTransform(Q1) * Source * FTransform(Q0)
+		const TTuple<FQuat, FQuat>& QQ = RetargetingTable[TargetSkeletonBoneIndex];
+		return QQ.Get<0>().RotateVector(SourceTranslation);
+	}
+
+	/**
+	 * Get the specified bone rotation retargeted from the source skeleton onto the target skeleton, corrected
+	 * for differences between source and target rest poses
+	 *
+	 * @param	TargetSkeletonBoneIndex		Skeleton bone index on the target skeleton
+	 * @param	SourceRotation				Bone rotation from the corresponding bone on the source skeleton
+	 * @return								Rotation mapped onto the target skeleton
+	 */
+	FQuat RetargetBoneRotationToTargetSkeleton(int32 TargetSkeletonBoneIndex, const FQuat& SourceRotation) const
+	{
+		// Compute the rotation part of FTransform(Q1) * Source * FTransform(Q0)
+		const TTuple<FQuat, FQuat>& QQ = RetargetingTable[TargetSkeletonBoneIndex];
+		return QQ.Get<0>() * SourceRotation * QQ.Get<1>();
+	}
+
+	/**
+	 * Get the specified additive transform retargeted from the source skeleton onto the target skeleton, corrected
+	 * for differences between source and target rest poses
+	 *
+	 * @param	TargetSkeletonBoneIndex		Skeleton bone index on the target skeleton
+	 * @param	SourceTransform				Bone transform from the corresponding bone on the source skeleton
+	 * @return								Transform mapped onto the target skeleton
+	 */
+	FTransform RetargetAdditiveTransformToTargetSkeleton(int32 TargetSkeletonBoneIndex, const FTransform& SourceTransform) const
+	{
+		return FTransform(
+			RetargetAdditiveRotationToTargetSkeleton(TargetSkeletonBoneIndex, SourceTransform.GetRotation()),
+			RetargetAdditiveTranslationToTargetSkeleton(TargetSkeletonBoneIndex, SourceTransform.GetTranslation()),
+			SourceTransform.GetScale3D());
+	}
+
+	/**
+	 * Get the specified additive translation retargeted from the source skeleton onto the target skeleton, corrected
+	 * for differences between source and target rest poses
+	 *
+	 * @param	TargetSkeletonBoneIndex		Skeleton bone index on the target skeleton
+	 * @param	SourceTranslation			Bone translation from the corresponding bone on the source skeleton
+	 * @return								Translation mapped onto the target skeleton
+	 */
+	FVector RetargetAdditiveTranslationToTargetSkeleton(int32 TargetSkeletonBoneIndex, const FVector& SourceTranslation) const
+	{
+		// Compute the translation part of FTransform(Q0.Inverse) * Source * FTransform(Q0)
+		const TTuple<FQuat, FQuat>& QQ = RetargetingTable[TargetSkeletonBoneIndex];
+		return QQ.Get<0>().RotateVector(SourceTranslation);
+	}
+
+	/**
+	 * Get the specified additive rotation retargeted from the source skeleton onto the target skeleton, corrected
+	 * for differences between source and target rest poses
+	 *
+	 * @param	TargetSkeletonBoneIndex		Skeleton bone index on the target skeleton
+	 * @param	SourceRotation				Bone rotation from the corresponding bone on the source skeleton
+	 * @return								Rotation mapped onto the target skeleton
+	 */
+	FQuat RetargetAdditiveRotationToTargetSkeleton(int32 TargetSkeletonBoneIndex, const FQuat& SourceRotation) const
+	{
+		// Compute the rotation part of FTransform(Q0.Inverse) * Source * FTransform(Q0)
+		const TTuple<FQuat, FQuat>& QQ = RetargetingTable[TargetSkeletonBoneIndex];
+		return QQ.Get<0>() * SourceRotation * QQ.Get<0>().Inverse();
+	}
+
+	/**
+	 * Get the curve mapping array, which maps from the source curve UID to the target curve UID.
+	 * You can access this array like this:
+	 * 
+	 * \code{.cpp}
+	 * const SmartName::UID_Type TargetCurveUID = GetSourceToTargetCurveMapping()[SourceCurveUID];
+	 * \endcode
+	 */
+	const TArray<SmartName::UID_Type>& GetSourceToTargetCurveMapping() const { return SourceToTargetCurveMapping; }
+
+	/**
+	 * Generates the mapping table for the curves, based on curve names.
+	 * Basically this will look at the curve names in the smart name table on the source, and tries to find matching ones in the table of 
+	 * the target skeleton. It then maps the UID's.
+	 */
+	void GenerateCurveMapping();
+
+private:
+	TWeakObjectPtr<const USkeleton> SourceSkeleton;
+	TWeakObjectPtr<const USkeleton> TargetSkeleton;
+
+	// Table of target skeleton bone indexes (indexed by source skeleton bone index)
+	TArray<int32> SourceToTargetBoneIndexes;
+
+	// Table of source skeleton bone indexes (indexed by target skeleton bone index)
+	TArray<int32> TargetToSourceBoneIndexes;
+	
+	// Maps curve UIDs between source and target (indexed by source curve UID).
+	TArray<SmartName::UID_Type> SourceToTargetCurveMapping;
+
+	// Table of precalculated constants for retargeting from source to target (indexed by target skeleton bone index)
+	TArray<TTuple<FQuat, FQuat>> RetargetingTable;
+};
+
 /**
  *	USkeleton : that links between mesh and animation
  *		- Bone hierarchy for animations
  *		- Bone/track linkup between mesh and animation
  *		- Retargetting related
- *		- Mirror table
  */
-UCLASS(hidecategories=Object, MinimalAPI)
+UCLASS(hidecategories=Object, MinimalAPI, BlueprintType)
 class USkeleton : public UObject, public IInterface_AssetUserData, public IInterface_PreviewMeshProvider
 {
 	friend class UAnimationBlueprintLibrary;
@@ -311,9 +482,17 @@ protected:
 	UPROPERTY()
 	TArray<FVirtualBone> VirtualBones;
 
+	/**
+	 * The list of compatible skeletons.
+	 * This is an array of TSoftObjectPtr in order to prevent all skeletons to be loaded, as we only want to load things on demand.
+	 **/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = CompatibleSkeletons)
+	TArray<TSoftObjectPtr<USkeleton>> CompatibleSkeletons;
+
 public:
 	//~ Begin UObject Interface.
 #if WITH_EDITOR
+	ENGINE_API virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent);
 	ENGINE_API virtual void PreEditUndo() override;
 	ENGINE_API virtual void PostEditUndo() override;
 #endif
@@ -333,7 +512,7 @@ public:
 	 *	everything explicitly to AttachComponent in the SkeletalMeshComponent.
 	 */
 	UPROPERTY()
-	TArray<class USkeletalMeshSocket*> Sockets;
+	TArray<TObjectPtr<class USkeletalMeshSocket>> Sockets;
 
 	/** Serializable retarget sources for this skeleton **/
 	TMap< FName, FReferencePose > AnimRetargetSources;
@@ -370,6 +549,9 @@ public:
 	// return version of AnimCurveUidVersion
 	uint16 GetAnimCurveUidVersion() const { return AnimCurveUidVersion;  }
 	const TArray<uint16>& GetDefaultCurveUIDList() const { return DefaultCurveUIDList; }
+
+	ENGINE_API const TArray<TSoftObjectPtr<USkeleton>>& GetCompatibleSkeletons() const { return CompatibleSkeletons; }
+	ENGINE_API const FSkeletonRemapping* GetSkeletonRemapping(const USkeleton* SourceSkeleton) const;
 
 #if WITH_EDITOR
 	// Get existing (seen) sync marker names for this Skeleton
@@ -410,9 +592,10 @@ public:
 
 	/** List of blend profiles available in this skeleton */
 	UPROPERTY(Instanced)
-	TArray<UBlendProfile*> BlendProfiles;
+	TArray<TObjectPtr<UBlendProfile>> BlendProfiles;
 
 	/** Get the specified blend profile by name */
+	UFUNCTION(BlueprintPure, Category = Skeleton)
 	ENGINE_API UBlendProfile* GetBlendProfile(const FName& InProfileName);
 
 	/** Create a new blend profile with the specified name */
@@ -475,8 +658,8 @@ public:
 
 	// quick wrapper function for Find UID by name, if not found, it will return SmartName::MaxUID
 	ENGINE_API SmartName::UID_Type GetUIDByName(const FName& ContainerName, const FName& Name) const;
-	ENGINE_API bool GetSmartNameByUID(const FName& ContainerName, SmartName::UID_Type UID, FSmartName& OutSmartName);
-	ENGINE_API bool GetSmartNameByName(const FName& ContainerName, const FName& InName, FSmartName& OutSmartName);
+	ENGINE_API bool GetSmartNameByUID(const FName& ContainerName, SmartName::UID_Type UID, FSmartName& OutSmartName) const;
+	ENGINE_API bool GetSmartNameByName(const FName& ContainerName, const FName& InName, FSmartName& OutSmartName) const;
 
 	// Get or add a smartname container with the given name
 	ENGINE_API const FSmartNameMapping* GetSmartNameContainer(const FName& ContainerName) const;
@@ -561,6 +744,9 @@ public:
 	/** Runtime built mapping table between SkeletalMeshes, and LinkupCache array indices. */
 	TMap<TWeakObjectPtr<USkeletalMesh>, int32> SkelMesh2LinkupCache;
 
+	/** A cached soft object pointer of this skeleton. This is done for performance reasons when searching for compatible skeletons when using IsCompatible(Skeleton). */
+	TSoftObjectPtr<USkeleton> CachedSoftObjectPtr;
+
 	/** IInterface_PreviewMeshProvider interface */
 	virtual USkeletalMesh* GetPreviewMesh(bool bFindIfNotSet = false) override;
 	virtual USkeletalMesh* GetPreviewMesh() const override;
@@ -613,12 +799,86 @@ public:
 	ENGINE_API int32 GetChildBones(int32 ParentBoneIndex, TArray<int32> & Children) const;
 
 #endif
+	/**
+	 * Check if animation content authored on the supplied skeleton may be played on this skeleton
+	 */
+	ENGINE_API bool IsCompatible(const USkeleton* InSkeleton) const;
 
 	/**
-	 *	Check if this skeleton may be used with other skeleton
+	 * Check if this skeleton is compatible with a given other asset, if that is a skeleton.
 	 */
-	ENGINE_API bool IsCompatible(USkeleton const * InSkeleton) const { return (InSkeleton && this == InSkeleton); }
+	ENGINE_API bool IsCompatibleSkeletonByAssetData(const FAssetData& AssetData, const TCHAR* InTag = TEXT("Skeleton")) const;
 
+	/**
+	 * Check if this skeleton is compatible with another skeleton asset that is identified by the string returned by AssetData(SkeletonPtr).GetExportTextName().
+	 */
+	ENGINE_API bool IsCompatibleSkeletonByAssetString(const FString& SkeletonAssetString) const;
+
+	DECLARE_EVENT_OneParam(USkeleton, FSkeletonDestructEvent, const USkeleton*);
+	FSkeletonDestructEvent OnSkeletonDestructEvent;
+
+	DECLARE_EVENT(USkeleton, FSmartNamesChangedEvent);
+	FSmartNamesChangedEvent OnSmartNamesChangedEvent;
+
+public:
+	UFUNCTION(BlueprintCallable, Category=Skeleton)
+	ENGINE_API void AddCompatibleSkeleton(const USkeleton* SourceSkeleton);
+	ENGINE_API void RemoveCompatibleSkeleton(const USkeleton* SourceSkeleton);
+protected:
+	mutable FCriticalSection SkeletonRemappingMutex;
+
+	/** The skeleton remappings, which map bones from a source skeleton to this skeleton (the target). */
+	TMap<const USkeleton*, FSkeletonRemapping*> SkeletonRemappings;
+
+	/**
+ 	 * The function that is called when another skeleton is being destructed.
+	 * This is used to unregister skeleton remappings that aren't needed anymore.
+	 * @param Skeleton The skeleton that is being destructed.
+	 */
+	void HandleSkeletonDestruct(const USkeleton* Skeleton);
+
+	/**
+	 * Handle smart name changes.
+	 * This will internally trigger skeleton remappings to be regenerated where needed, for example when editing curves in the animation editor.
+	 **/
+	void HandleSmartNamesChangedEvent();
+
+	/**
+	 * Build or update all skeleton remappings for all loaded skeletons that we are compatible with.
+	 * And if bBidirectional is set to true also update all remappings in other skeletons that are compatible with this skeleton.
+	 * Keep in mind this only generates mappings to skeletons that are loaded, as otherwise we can't generate the mappings yet, even though the list of compatible skeletons might contain
+	 * a larger set of skeletons. We do not load all skeletons upfront.
+	 * @param bBidirectional When enabled we update or create all mappings for both skeletons we are compatible with and skeletons that are compatible with ourselves.
+	 *        When set to false it only updates or creates mappings to skeletons we are compatible with.
+	 */
+	void BuildSkeletonRemappings(bool bBidirectional);
+
+	/**
+	 * Remove all skeleton remappings stored inside our skeleton.
+	 * This frees up memory.
+	 */
+	void ClearSkeletonRemappings();
+
+	/**
+	 * Remove the skeleton remappings for a specific source skeleton.
+	 * This only works if the source skeleton is inside the compatible skeleton list of this skeleton.
+	 * If a skeleton is passed in that isn't in the compatibility list this method will essentially do nothing.
+	 * The skeleton will remain inside the compatibility list, it is just the remapping data that is being removed.
+	 * @param SourceSkeleton The source skeleton we are compatible with and want to remove the generated mapping data for.
+	 */
+	void RemoveSkeletonRemapping(const USkeleton* SourceSkeleton);
+
+	/**
+	 * Create or update a skeletal remapping to a given source skeleton.
+	 * @param SourceSkeleton The skeleton from which we receive animation data.
+	 * @param bRebuildIfExists When set to true this method will delete the old mapping and generate a new one. This is useful when the hierarchy changes for example.
+	 */
+	void CreateSkeletonRemappingIfNeeded(const USkeleton* SourceSkeleton, bool bRebuildIfExists = false);
+
+	static TArray<USkeleton*> LoadedSkeletons; // The set of skeletons that are currently loaded.
+	static FCriticalSection LoadedSkeletonsMutex; // The mutex used for thread safety when registering and removing items from the LoadedSkeletons array.
+
+public:
 	/** 
 	 * Indexing naming convention
 	 * 
@@ -637,10 +897,11 @@ public:
 	 *		- and if more than 50 % of bones matches
 	 *  
 	 * @param	InSkelMesh	SkeletalMesh to compare the Skeleton against.
+	 * @param   bDoParentChainCheck When true (the default) this method also compares if chains match with the parent. 
 	 * 
 	 * @return				true if animation set can play on supplied SkeletalMesh, false if not.
 	 */
-	ENGINE_API bool IsCompatibleMesh(const USkeletalMesh* InSkelMesh) const;
+	ENGINE_API bool IsCompatibleMesh(const USkeletalMesh* InSkelMesh, bool bDoParentChainCheck=true) const;
 
 	/** Clears all cache data **/
 	ENGINE_API void ClearCacheData();
@@ -687,17 +948,6 @@ public:
 	 * @return true if success
 	 */
 	ENGINE_API bool RecreateBoneTree(USkeletalMesh* InSkelMesh);
-
-	/** This is const accessor for BoneTree
-	 *  Understand there will be a lot of need to access BoneTree, but 
-	 *	Anybody modifying BoneTree will corrupt animation data, so will need to make sure it's not modifiable outside of Skeleton
-	 *	You can add new BoneNode but you can't modify current list. The index will be referenced by Animation data.
-	 */
-	UE_DEPRECATED(4.14, "GetBoneTree should not be called. Please use GetBoneTranslationRetargetingMode()/SetBoneTranslationRetargetingMode() functions instead")
-	const TArray<FBoneNode>& GetBoneTree()	const
-	{ 
-		return BoneTree;	
-	}
 
 	// @todo document
 	const TArray<FTransform>& GetRefLocalPoses( FName RetargetSource = NAME_None ) const 
@@ -889,9 +1139,6 @@ private:
 	// Handle skeletons being reloaded via the content browser
 	static void HandlePackageReloaded(const EPackageReloadPhase InPackageReloadPhase, FPackageReloadedEvent* InPackageReloadedEvent);
 
-
-
-
 public:
 	//~ Begin IInterface_AssetUserData Interface
 	ENGINE_API virtual void AddAssetUserData(UAssetUserData* InUserData) override;
@@ -902,6 +1149,8 @@ public:
 protected:
 	/** Array of user data stored with the asset */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = Skeleton)
-	TArray<UAssetUserData*> AssetUserData;
+	TArray<TObjectPtr<UAssetUserData>> AssetUserData;
+
+	friend struct FReferenceSkeletonModifier;
 };
 

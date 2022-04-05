@@ -67,7 +67,7 @@ void AndroidJavaEnv::InitializeJavaEnv( JavaVM* VM, jint Version, jobject Global
 		CurrentJavaVersion = Version;
 
 		JNIEnv* Env = GetJavaEnv(false);
-		jclass MainClass = Env->FindClass("com/epicgames/ue4/GameActivity");
+		jclass MainClass = Env->FindClass("com/epicgames/unreal/GameActivity");
 		jclass classClass = Env->FindClass("java/lang/Class");
 		jclass classLoaderClass = Env->FindClass("java/lang/ClassLoader");
 		jmethodID getClassLoaderMethod = Env->GetMethodID(classClass, "getClassLoader", "()Ljava/lang/ClassLoader;");
@@ -125,7 +125,8 @@ JNIEnv* AndroidJavaEnv::GetJavaEnv( bool bRequireGlobalThis /*= true*/ )
 		Args.version = CurrentJavaVersion;
 		Args.group = nullptr;
 		const FString& ThreadName = FThreadManager::GetThreadName(FPlatformTLS::GetCurrentThreadId());
-		Args.name = ThreadName.IsEmpty() ? nullptr : TCHAR_TO_ANSI(*ThreadName);
+		auto Name = StringCast<ANSICHAR>(*ThreadName);
+		Args.name = Name.Get();
 
 		jint AttachResult = CurrentJavaVM->AttachCurrentThread(&Env, &Args);
 		if (AttachResult == JNI_ERR)
@@ -154,8 +155,14 @@ JNIEnv* AndroidJavaEnv::GetJavaEnv( bool bRequireGlobalThis /*= true*/ )
 		JavaVMAttachArgs Args;
 		Args.version = CurrentJavaVersion;
 		Args.group = nullptr;
-		const FString& ThreadName = FThreadManager::GetThreadName(FPlatformTLS::GetCurrentThreadId());
-		Args.name = ThreadName.IsEmpty() ? nullptr : TCHAR_TO_ANSI(*ThreadName);
+		const uint32 ThreadId = FPlatformTLS::GetCurrentThreadId();
+		const FString& ThreadName = FThreadManager::GetThreadName(ThreadId);
+		auto Name = StringCast<ANSICHAR>(*ThreadName);
+		Args.name = Name.Get();
+		if (!Args.name)
+		{
+			Args.name = FAndroidMisc::GetThreadName(ThreadId);
+		}
 
 		jint AttachResult = CurrentJavaVM->AttachCurrentThread(&Env, &Args);
 		if (AttachResult == JNI_ERR)

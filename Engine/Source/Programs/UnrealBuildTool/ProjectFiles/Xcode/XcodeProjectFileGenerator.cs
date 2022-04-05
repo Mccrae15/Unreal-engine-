@@ -4,22 +4,11 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Linq;
 
 namespace UnrealBuildTool
 {
-	/// <summary>
-	/// Represents a folder within the master project (e.g. Visual Studio solution)
-	/// </summary>
-	class XcodeProjectFolder : MasterProjectFolder
-	{
-		public XcodeProjectFolder(ProjectFileGenerator InitOwnerProjectFileGenerator, string InitFolderName)
-			: base(InitOwnerProjectFileGenerator, InitFolderName)
-		{
-		}
-	}
-
 	/// <summary>
 	/// Xcode project file generator implementation
 	/// </summary>
@@ -43,7 +32,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		string AppName = "";
 
-		public XcodeProjectFileGenerator(FileReference InOnlyGameProject, CommandLineArguments CommandLine)
+		public XcodeProjectFileGenerator(FileReference? InOnlyGameProject, CommandLineArguments CommandLine)
 			: base(InOnlyGameProject)
 		{
 			if (CommandLine.HasOption("-distribution"))
@@ -89,12 +78,12 @@ namespace UnrealBuildTool
 
 		/// <summary>
 		/// </summary>
-		public override void CleanProjectFiles(DirectoryReference InMasterProjectDirectory, string InMasterProjectName, DirectoryReference InIntermediateProjectFilesPath)
+		public override void CleanProjectFiles(DirectoryReference InPrimaryProjectDirectory, string InPrimaryProjectName, DirectoryReference InIntermediateProjectFilesPath)
 		{
-			DirectoryReference MasterProjDeleteFilename = DirectoryReference.Combine(InMasterProjectDirectory, InMasterProjectName + ".xcworkspace");
-			if (DirectoryReference.Exists(MasterProjDeleteFilename))
+			DirectoryReference PrimaryProjDeleteFilename = DirectoryReference.Combine(InPrimaryProjectDirectory, InPrimaryProjectName + ".xcworkspace");
+			if (DirectoryReference.Exists(PrimaryProjDeleteFilename))
 			{
-				DirectoryReference.Delete(MasterProjDeleteFilename, true);
+				DirectoryReference.Delete(PrimaryProjDeleteFilename, true);
 			}
 
 			// Delete the project files folder
@@ -116,16 +105,11 @@ namespace UnrealBuildTool
 		/// Allocates a generator-specific project file object
 		/// </summary>
 		/// <param name="InitFilePath">Path to the project file</param>
+		/// <param name="BaseDir">The base directory for files within this project</param>
 		/// <returns>The newly allocated project file object</returns>
-		protected override ProjectFile AllocateProjectFile(FileReference InitFilePath)
+		protected override ProjectFile AllocateProjectFile(FileReference InitFilePath, DirectoryReference BaseDir)
 		{
-			return new XcodeProjectFile(InitFilePath, OnlyGameProject, bForDistribution, BundleIdentifier, AppName);
-		}
-
-		/// ProjectFileGenerator interface
-		public override MasterProjectFolder AllocateMasterProjectFolder(ProjectFileGenerator InitOwnerProjectFileGenerator, string InitFolderName)
-		{
-			return new XcodeProjectFolder(InitOwnerProjectFileGenerator, InitFolderName);
+			return new XcodeProjectFile(InitFilePath, BaseDir, bForDistribution, BundleIdentifier, AppName);
 		}
 
 		private bool WriteWorkspaceSettingsFile(string Path)
@@ -184,29 +168,26 @@ namespace UnrealBuildTool
 
 			List<XcodeProjectFile> BuildableProjects = new List<XcodeProjectFile>();
 
-			System.Action< List<MasterProjectFolder> /* Folders */, string /* Ident */ > AddProjectsFunction = null;
+			System.Action< List<PrimaryProjectFolder> /* Folders */, string /* Ident */ >? AddProjectsFunction = null;
 			AddProjectsFunction = (FolderList, Ident) =>
 				{
-					foreach (XcodeProjectFolder CurFolder in FolderList)
+					foreach (PrimaryProjectFolder CurFolder in FolderList)
 					{
 						WorkspaceDataContent.Append(Ident + "   <Group" + ProjectFileGenerator.NewLine);
 						WorkspaceDataContent.Append(Ident + "      location = \"container:\"      name = \"" + CurFolder.FolderName + "\">" + ProjectFileGenerator.NewLine);
 
-						AddProjectsFunction(CurFolder.SubFolders, Ident + "   ");
+						AddProjectsFunction!(CurFolder.SubFolders, Ident + "   ");
 				
 						// Filter out anything that isn't an XC project, and that shouldn't be in the workspace
 						IEnumerable<XcodeProjectFile> SupportedProjects =
-								CurFolder.ChildProjects
-									.Where(P => P is XcodeProjectFile)
-									.Select(P => P as XcodeProjectFile)
+								CurFolder.ChildProjects.OfType<XcodeProjectFile>()
 									.Where(P => P.ShouldIncludeProjectInWorkspace())
 									.OrderBy(P => P.ProjectFilePath.GetFileName());
-
 
 						foreach (XcodeProjectFile XcodeProject in SupportedProjects)
 						{
 							WorkspaceDataContent.Append(Ident + "      <FileRef" + ProjectFileGenerator.NewLine);
-							WorkspaceDataContent.Append(Ident + "         location = \"group:" + XcodeProject.ProjectFilePath.MakeRelativeTo(ProjectFileGenerator.MasterProjectPath) + "\">" + ProjectFileGenerator.NewLine);
+							WorkspaceDataContent.Append(Ident + "         location = \"group:" + XcodeProject.ProjectFilePath.MakeRelativeTo(ProjectFileGenerator.PrimaryProjectPath) + "\">" + ProjectFileGenerator.NewLine);
 							WorkspaceDataContent.Append(Ident + "      </FileRef>" + ProjectFileGenerator.NewLine);							
 						}
 
@@ -224,11 +205,11 @@ namespace UnrealBuildTool
 			int SchemeIndex = 0;
 			BuildableProjects.Sort((ProjA, ProjB) => {
 
-				var TargetA = ProjA.ProjectTargets.OrderBy(T => T.TargetRules.Type).FirstOrDefault();
-				var TargetB = ProjB.ProjectTargets.OrderBy(T => T.TargetRules.Type).FirstOrDefault();
+				ProjectTarget TargetA = ProjA.ProjectTargets.OfType<ProjectTarget>().OrderBy(T => T.TargetRules!.Type).First();
+				ProjectTarget TargetB = ProjB.ProjectTargets.OfType<ProjectTarget>().OrderBy(T => T.TargetRules!.Type).First();
 
-				var TypeA = TargetA != null ? TargetA.TargetRules.Type : TargetType.Program;
-				var TypeB = TargetB != null ? TargetB.TargetRules.Type : TargetType.Program;
+				TargetType TypeA = TargetA.TargetRules!.Type;
+				TargetType TypeB = TargetB.TargetRules!.Type;
 
 				if (TypeA != TypeB)
 				{
@@ -250,25 +231,26 @@ namespace UnrealBuildTool
 				}
 			}
 
-			string ProjectName = MasterProjectName;
+			string ProjectName = PrimaryProjectName;
 			if (ProjectFilePlatform != XcodeProjectFilePlatform.All)
 			{
 				ProjectName += ProjectFilePlatform == XcodeProjectFilePlatform.Mac ? "_Mac" : (ProjectFilePlatform == XcodeProjectFilePlatform.iOS ? "_IOS" : "_TVOS");
 			}
-			string WorkspaceDataFilePath = MasterProjectPath + "/" + ProjectName + ".xcworkspace/contents.xcworkspacedata";
+			string WorkspaceDataFilePath = PrimaryProjectPath + "/" + ProjectName + ".xcworkspace/contents.xcworkspacedata";
 			bSuccess = WriteFileIfChanged(WorkspaceDataFilePath, WorkspaceDataContent.ToString(), new UTF8Encoding());
 			if (bSuccess)
 			{
-				string WorkspaceSettingsFilePath = MasterProjectPath + "/" + ProjectName + ".xcworkspace/xcuserdata/" + Environment.UserName + ".xcuserdatad/WorkspaceSettings.xcsettings";
+				string WorkspaceSettingsFilePath = PrimaryProjectPath + "/" + ProjectName + ".xcworkspace/xcuserdata/" + Environment.UserName + ".xcuserdatad/WorkspaceSettings.xcsettings";
 				bSuccess = WriteWorkspaceSettingsFile(WorkspaceSettingsFilePath);
-				string WorkspaceSharedSettingsFilePath = MasterProjectPath + "/" + ProjectName + ".xcworkspace/xcshareddata/WorkspaceSettings.xcsettings";
+				string WorkspaceSharedSettingsFilePath = PrimaryProjectPath + "/" + ProjectName + ".xcworkspace/xcshareddata/WorkspaceSettings.xcsettings";
 				bSuccess = WriteWorkspaceSharedSettingsFile(WorkspaceSharedSettingsFilePath);
 			}
+
 
 			return bSuccess;
 		}
 
-		protected override bool WriteMasterProjectFile(ProjectFile UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators)
+		protected override bool WritePrimaryProjectFile(ProjectFile? UBTProject, PlatformProjectGeneratorCollection PlatformProjectGenerators)
 		{
 			return WriteXcodeWorkspace();
 		}
@@ -319,6 +301,12 @@ namespace UnrealBuildTool
 
 			if (bGeneratingGameProjectFiles)
 			{
+				if (bGeneratingRunIOSProject || bGeneratingRunTVOSProject || UnrealBuildBase.Unreal.IsEngineInstalled())
+				{
+					// an Engine target is required in order to be able to get Xcode to sign blueprint projects
+					// always include the engine target for installed builds.
+					IncludeEnginePrograms = true;
+				}
 				bIncludeEngineSource = true;
 			}
 		}

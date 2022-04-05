@@ -19,6 +19,7 @@
 #include "GameFramework/PawnMovementComponent.h"
 #include "GameFramework/CharacterMovementReplication.h"
 #include "Interfaces/NetworkPredictionInterface.h"
+#include "CharacterMovementComponentAsync.h"
 #include "CharacterMovementComponent.generated.h"
 
 class ACharacter;
@@ -29,80 +30,20 @@ class UPrimitiveComponent;
 class INavigationData;
 class UCharacterMovementComponent;
 
-DECLARE_DELEGATE_RetVal_TwoParams(FTransform, FOnProcessRootMotion, const FTransform&, UCharacterMovementComponent*)
+DECLARE_DELEGATE_RetVal_ThreeParams(FTransform, FOnProcessRootMotion, const FTransform&, UCharacterMovementComponent*, float)
 
-/** Data about the floor for walking movement, used by CharacterMovementComponent. */
-USTRUCT(BlueprintType)
-struct ENGINE_API FFindFloorResult
+namespace CharacterMovementConstants
 {
-	GENERATED_USTRUCT_BODY()
+	extern const float MAX_STEP_SIDE_Z;
+	extern const float VERTICAL_SLOPE_NORMAL_Z;
+}
 
-	/**
-	* True if there was a blocking hit in the floor test that was NOT in initial penetration.
-	* The HitResult can give more info about other circumstances.
-	*/
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category=CharacterFloor)
-	uint32 bBlockingHit:1;
-
-	/** True if the hit found a valid walkable floor. */
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category=CharacterFloor)
-	uint32 bWalkableFloor:1;
-
-	/** True if the hit found a valid walkable floor using a line trace (rather than a sweep test, which happens when the sweep test fails to yield a walkable surface). */
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category=CharacterFloor)
-	uint32 bLineTrace:1;
-
-	/** The distance to the floor, computed from the swept capsule trace. */
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category=CharacterFloor)
-	float FloorDist;
-	
-	/** The distance to the floor, computed from the trace. Only valid if bLineTrace is true. */
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category=CharacterFloor)
-	float LineDist;
-
-	/** Hit result of the test that found a floor. Includes more specific data about the point of impact and surface normal at that point. */
-	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category=CharacterFloor)
-	FHitResult HitResult;
-
-public:
-
-	FFindFloorResult()
-		: bBlockingHit(false)
-		, bWalkableFloor(false)
-		, bLineTrace(false)
-		, FloorDist(0.f)
-		, LineDist(0.f)
-		, HitResult(1.f)
-	{
-	}
-
-	/** Returns true if the floor result hit a walkable surface. */
-	bool IsWalkableFloor() const
-	{
-		return bBlockingHit && bWalkableFloor;
-	}
-
-	void Clear()
-	{
-		bBlockingHit = false;
-		bWalkableFloor = false;
-		bLineTrace = false;
-		FloorDist = 0.f;
-		LineDist = 0.f;
-		HitResult.Reset(1.f, false);
-	}
-
-	/** Gets the distance to floor, either LineDist or FloorDist. */
-	float GetDistanceToFloor() const
-	{
-		// When the floor distance is set using SetFromSweep, the LineDist value will be reset.
-		// However, when SetLineFromTrace is used, there's no guarantee that FloorDist is set.
-		return bLineTrace ? LineDist : FloorDist;
-	}
-
-	void SetFromSweep(const FHitResult& InHit, const float InSweepFloorDist, const bool bIsWalkableFloor);
-	void SetFromLineTrace(const FHitResult& InHit, const float InSweepFloorDist, const float InLineDist, const bool bIsWalkableFloor);
-};
+namespace CharacterMovementCVars
+{
+	// Is Async Character Movement enabled?
+	extern ENGINE_API int32 AsyncCharacterMovement;
+	extern int32 ForceJumpPeakSubstep;
+}
 
 /** 
  * Tick function that calls UCharacterMovementComponent::PostPhysicsTickComponent
@@ -132,6 +73,39 @@ struct FCharacterMovementComponentPostPhysicsTickFunction : public FTickFunction
 
 template<>
 struct TStructOpsTypeTraits<FCharacterMovementComponentPostPhysicsTickFunction> : public TStructOpsTypeTraitsBase2<FCharacterMovementComponentPostPhysicsTickFunction>
+{
+	enum
+	{
+		WithCopy = false
+	};
+};
+
+USTRUCT()
+struct FCharacterMovementComponentPrePhysicsTickFunction : public FTickFunction
+{
+	GENERATED_USTRUCT_BODY()
+
+	/** CharacterMovementComponent that is the target of this tick **/
+	class UCharacterMovementComponent* Target;
+
+	/**
+	 * Abstract function actually execute the tick.
+	 * @param DeltaTime - frame time to advance, in seconds
+	 * @param TickType - kind of tick for this frame
+	 * @param CurrentThread - thread we are executing on, useful to pass along as new tasks are created
+	 * @param MyCompletionGraphEvent - completion event for this task. Useful for holding the completion of this task until certain child tasks are complete.
+	 **/
+	virtual void ExecuteTick(float DeltaTime, enum ELevelTick TickType, ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent) override;
+
+	/** Abstract function to describe this tick. Used to print messages about illegal cycles in the dependency graph **/
+	virtual FString DiagnosticMessage() override;
+	
+	/** Function used to describe this tick for active tick reporting. **/
+	virtual FName DiagnosticContext(bool bDetailed) override;
+};
+
+template<>
+struct TStructOpsTypeTraits<FCharacterMovementComponentPrePhysicsTickFunction> : public TStructOpsTypeTraitsBase2<FCharacterMovementComponentPrePhysicsTickFunction>
 {
 	enum
 	{
@@ -172,7 +146,7 @@ protected:
 
 	/** Character movement component belongs to */
 	UPROPERTY(Transient, DuplicateTransient)
-	ACharacter* CharacterOwner;
+	TObjectPtr<ACharacter> CharacterOwner;
 
 public:
 
@@ -181,23 +155,31 @@ public:
 	float GravityScale;
 
 	/** Maximum height character can step up */
-	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0", ForceUnits="cm"))
 	float MaxStepHeight;
 
 	/** Initial velocity (instantaneous vertical acceleration) when jumping. */
-	UPROPERTY(Category="Character Movement: Jumping / Falling", EditAnywhere, BlueprintReadWrite, meta=(DisplayName="Jump Z Velocity", ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement: Jumping / Falling", EditAnywhere, BlueprintReadWrite, meta=(DisplayName="Jump Z Velocity", ClampMin="0", UIMin="0", ForceUnits="cm/s"))
 	float JumpZVelocity;
 
 	/** Fraction of JumpZVelocity to use when automatically "jumping off" of a base actor that's not allowed to be a base for a character. (For example, if you're not allowed to stand on other players.) */
 	UPROPERTY(Category="Character Movement: Jumping / Falling", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0"))
 	float JumpOffJumpZFactor;
 
+
+private:
+	FCharacterMovementComponentAsyncCallback* AsyncCallback;
+
+protected:
+	// This is the most recent async state from simulated. Only safe for access on physics thread.
+	TSharedPtr<FCharacterMovementComponentAsyncOutput, ESPMode::ThreadSafe> AsyncSimState;
+	bool bMovementModeDirty = false; // Gamethread changed movement mode, need to update sim.
 private:
 
 	/**
 	 * Max angle in degrees of a walkable surface. Any greater than this and it is too steep to be walkable.
 	 */
-	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, meta=(ClampMin="0.0", ClampMax="90.0", UIMin = "0.0", UIMax = "90.0"))
+	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, meta=(ClampMin="0.0", ClampMax="90.0", UIMin = "0.0", UIMax = "90.0", ForceUnits="degrees"))
 	float WalkableFloorAngle;
 
 	/**
@@ -250,23 +232,23 @@ public:
 	FVector OldBaseLocation;
 
 	/** The maximum ground speed when walking. Also determines maximum lateral speed when falling. */
-	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0", ForceUnits="cm/s"))
 	float MaxWalkSpeed;
 
 	/** The maximum ground speed when walking and crouched. */
-	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0", ForceUnits="cm/s"))
 	float MaxWalkSpeedCrouched;
 
 	/** The maximum swimming speed. */
-	UPROPERTY(Category="Character Movement: Swimming", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement: Swimming", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0", ForceUnits="cm/s"))
 	float MaxSwimSpeed;
 
 	/** The maximum flying speed. */
-	UPROPERTY(Category="Character Movement: Flying", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement: Flying", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0", ForceUnits="cm/s"))
 	float MaxFlySpeed;
 
 	/** The maximum speed when using Custom movement mode. */
-	UPROPERTY(Category="Character Movement: Custom Movement", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement: Custom Movement", EditAnywhere, BlueprintReadWrite, meta=(ClampMin="0", UIMin="0", ForceUnits="cm/s"))
 	float MaxCustomMovementSpeed;
 
 	/** Max Acceleration (rate of change of velocity) */
@@ -274,7 +256,7 @@ public:
 	float MaxAcceleration;
 
 	/** The ground speed that we should accelerate up to when walking at minimum analog stick tilt */
-	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0"))
+	UPROPERTY(Category = "Character Movement: Walking", EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0", UIMin = "0", ForceUnits="cm/s"))
 	float MinAnalogWalkSpeed;
 
 	/**
@@ -361,7 +343,8 @@ public:
 	float FallingLateralFriction;
 
 	/** Collision half-height when crouching (component scale is applied separately) */
-	UPROPERTY(Category="Character Movement (General Settings)", EditAnywhere, BlueprintReadOnly, meta=(ClampMin="0", UIMin="0"))
+	UE_DEPRECATED_FORGAME(5.0, "Public access to this property is deprecated, and it will become private in a future release. Please use SetCrouchedHalfHeight and GetCrouchedHalfHeight instead.")
+	UPROPERTY(Category="Character Movement (General Settings)", EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetCrouchedHalfHeight, BlueprintGetter=GetCrouchedHalfHeight, meta=(ClampMin="0", UIMin="0", ForceUnits=cm))
 	float CrouchedHalfHeight;
 
 	/** Water buoyancy. A ratio (1.0 = neutral buoyancy, 0.0 = no buoyancy) */
@@ -372,7 +355,7 @@ public:
 	 * Don't allow the character to perch on the edge of a surface if the contact is this close to the edge of the capsule.
 	 * Note that characters will not fall off if they are within MaxStepHeight of a walkable surface below.
 	 */
-	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0", ForceUnits=cm))
 	float PerchRadiusThreshold;
 
 	/**
@@ -380,7 +363,7 @@ public:
 	 * Note that we still enforce MaxStepHeight to start the step up; this just allows the character to hang off the edge or step slightly higher off the floor.
 	 * (@see PerchRadiusThreshold)
 	 */
-	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0", ForceUnits=cm))
 	float PerchAdditionalHeight;
 
 	/** Change in rotation per second, used when UseControllerDesiredRotation or OrientRotationToMovement are true. Set a negative value for infinite rotation rate and instant turns. */
@@ -547,14 +530,14 @@ public:
 
 	/** What to update CharacterOwner and UpdatedComponent after movement ends */
 	UPROPERTY()
-	USceneComponent* DeferredUpdatedMoveComponent;
+	TObjectPtr<USceneComponent> DeferredUpdatedMoveComponent;
 
 	/** Maximum step height for getting out of water */
-	UPROPERTY(Category="Character Movement: Swimming", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement: Swimming", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0", ForceUnits=cm))
 	float MaxOutOfWaterStepHeight;
 
 	/** Z velocity applied when pawn tries to get out of water */
-	UPROPERTY(Category="Character Movement: Swimming", EditAnywhere, BlueprintReadWrite, AdvancedDisplay)
+	UPROPERTY(Category="Character Movement: Swimming", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ForceUnits="cm/s"))
 	float OutofWaterZ;
 
 	/** Mass of pawn (for when momentum is imparted to it). */
@@ -741,7 +724,7 @@ public:
 	* This is generally more tolerant than with Pawns, because other geometry is either not moving, or is moving predictably with a bit of delay compared to on the server.
 	* @see MaxDepenetrationWithGeometryAsProxy, MaxDepenetrationWithPawn, MaxDepenetrationWithPawnAsProxy
 	*/
-	UPROPERTY(Category="Character Movement (General Settings)", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement (General Settings)", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0", ForceUnits=cm))
 	float MaxDepenetrationWithGeometry;
 
 	/**
@@ -749,14 +732,14 @@ public:
 	* This is generally more tolerant than with Pawns, because other geometry is either not moving, or is moving predictably with a bit of delay compared to on the server.
 	* @see MaxDepenetrationWithGeometry, MaxDepenetrationWithPawn, MaxDepenetrationWithPawnAsProxy
 	*/
-	UPROPERTY(Category="Character Movement (General Settings)", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement (General Settings)", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0", ForceUnits=cm))
 	float MaxDepenetrationWithGeometryAsProxy;
 
 	/**
 	* Max distance we are allowed to depenetrate when moving out of other Pawns.
 	* @see MaxDepenetrationWithGeometry, MaxDepenetrationWithGeometryAsProxy, MaxDepenetrationWithPawnAsProxy
 	*/
-	UPROPERTY(Category="Character Movement (General Settings)", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement (General Settings)", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0", ForceUnits=cm))
 	float MaxDepenetrationWithPawn;
 
 	/**
@@ -764,61 +747,61 @@ public:
 	 * Typically we don't want a large value, because we receive a server authoritative position that we should not then ignore by pushing them out of the local player.
 	 * @see MaxDepenetrationWithGeometry, MaxDepenetrationWithGeometryAsProxy, MaxDepenetrationWithPawn
 	 */
-	UPROPERTY(Category="Character Movement (General Settings)", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0"))
+	UPROPERTY(Category="Character Movement (General Settings)", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ClampMin="0", UIMin="0", ForceUnits=cm))
 	float MaxDepenetrationWithPawnAsProxy;
 
 	/**
 	 * How long to take to smoothly interpolate from the old pawn position on the client to the corrected one sent by the server. Not used by Linear smoothing.
 	 */
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", ClampMax="1.0", UIMin="0.0", UIMax="1.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", ClampMax="1.0", UIMin="0.0", UIMax="1.0", ForceUnits=s))
 	float NetworkSimulatedSmoothLocationTime;
 
 	/**
 	 * How long to take to smoothly interpolate from the old pawn rotation on the client to the corrected one sent by the server. Not used by Linear smoothing.
 	 */
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", ClampMax="1.0", UIMin="0.0", UIMax="1.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", ClampMax="1.0", UIMin="0.0", UIMax="1.0", ForceUnits=s))
 	float NetworkSimulatedSmoothRotationTime;
 
 	/**
 	* Similar setting as NetworkSimulatedSmoothLocationTime but only used on Listen servers.
 	*/
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", ClampMax="1.0", UIMin="0.0", UIMax="1.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", ClampMax="1.0", UIMin="0.0", UIMax="1.0", ForceUnits=s))
 	float ListenServerNetworkSimulatedSmoothLocationTime;
 
 	/**
 	* Similar setting as NetworkSimulatedSmoothRotationTime but only used on Listen servers.
 	*/
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", ClampMax="1.0", UIMin="0.0", UIMax="1.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", ClampMax="1.0", UIMin="0.0", UIMax="1.0", ForceUnits=s))
 	float ListenServerNetworkSimulatedSmoothRotationTime;
 
 	/**
 	 * Shrink simulated proxy capsule radius by this amount, to account for network rounding that may cause encroachment. Changing during gameplay is not supported.
 	 * @see AdjustProxyCapsuleSize()
 	 */
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", UIMin="0.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", UIMin="0.0", ForceUnits=cm))
 	float NetProxyShrinkRadius;
 
 	/**
 	 * Shrink simulated proxy capsule half height by this amount, to account for network rounding that may cause encroachment. Changing during gameplay is not supported.
 	 * @see AdjustProxyCapsuleSize()
 	 */
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", UIMin="0.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, AdvancedDisplay, meta=(ClampMin="0.0", UIMin="0.0", ForceUnits=cm))
 	float NetProxyShrinkHalfHeight;
 
 	/** Maximum distance character is allowed to lag behind server location when interpolating between updates. */
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0", ForceUnits=cm))
 	float NetworkMaxSmoothUpdateDistance;
 
 	/**
 	 * Maximum distance beyond which character is teleported to the new server location without any smoothing.
 	 */
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0", ForceUnits=cm))
 	float NetworkNoSmoothUpdateDistance;
 
 	/**
 	 * Minimum time on the server between acknowledging good client moves. This can save on bandwidth. Set to 0 to disable throttling.
 	 */
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0", ForceUnits=s))
 	float NetworkMinTimeBetweenClientAckGoodMoves;
 
 	/**
@@ -827,7 +810,7 @@ public:
   	 * This can save on bandwidth. Set to 0 to disable throttling.
 	 * @see ServerLastClientAdjustmentTime
 	 */
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0", ForceUnits=s))
 	float NetworkMinTimeBetweenClientAdjustments;
 
 	/**
@@ -835,18 +818,18 @@ public:
 	* Should be <= NetworkMinTimeBetweenClientAdjustments (the smaller value is used regardless).
 	* @see NetworkMinTimeBetweenClientAdjustments
 	*/
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0", ForceUnits=s))
 	float NetworkMinTimeBetweenClientAdjustmentsLargeCorrection;
 
 	/**
 	* If client error is larger than this, sets bNetworkLargeClientCorrection to reduce delay between client adjustments.
 	* @see NetworkMinTimeBetweenClientAdjustments, NetworkMinTimeBetweenClientAdjustmentsLargeCorrection
 	*/
-	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0"))
+	UPROPERTY(Category="Character Movement (Networking)", EditDefaultsOnly, meta=(ClampMin="0.0", UIMin="0.0", ForceUnits=cm))
 	float NetworkLargeClientCorrectionDistance;
 
 	/** Used in determining if pawn is going off ledge.  If the ledge is "shorter" than this value then the pawn will be able to walk off it. **/
-	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, AdvancedDisplay)
+	UPROPERTY(Category="Character Movement: Walking", EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta=(ForceUnits=cm))
 	float LedgeCheckThreshold;
 
 	/** When exiting water, jump if control pitch angle is this high or above. */
@@ -881,6 +864,9 @@ private:
 	 */
 	UPROPERTY(Transient)
 	TEnumAsByte<enum EMovementMode> GroundMovementMode;
+
+	/** Remember last server movement base so we can detect mounts/dismounts and respond accordingly. */
+	TWeakObjectPtr<UPrimitiveComponent> LastServerMovementBase = nullptr;
 
 public:
 	/**
@@ -1025,6 +1011,15 @@ public:
 	UPROPERTY(Category = "RootMotion", EditAnywhere, BlueprintReadWrite)
 	uint8 bAllowPhysicsRotationDuringAnimRootMotion : 1;
 
+	/**
+	 * When applying a root motion override while falling off a moving object, this controls how long it takes to lose half the former base's velocity (in seconds).
+	 * Set to 0 to ignore former bases (default).
+	 * Set to -1 for no decay.
+	 * Any other positive value sets the half-life for exponential decay.
+	 */
+	UPROPERTY(Category = "RootMotion", EditAnywhere, BlueprintReadWrite)
+	float FormerBaseVelocityDecayHalfLife = 0.f;
+
 protected:
 
 	// AI PATH FOLLOWING
@@ -1063,7 +1058,7 @@ protected:
 
 public:
 
-	UPROPERTY(Category="Character Movement: Avoidance", EditAnywhere, BlueprintReadOnly)
+	UPROPERTY(Category="Character Movement: Avoidance", EditAnywhere, BlueprintReadOnly, meta=(ForceUnits=cm))
 	float AvoidanceConsiderationRadius;
 
 	/**
@@ -1120,6 +1115,30 @@ public:
 
 	/** Last valid projected hit result from raycast to geometry from navmesh */
 	FHitResult CachedProjectedNavMeshHitResult;
+
+	/** Remember last server movement base bone so we can detect mounts/dismounts and respond accordingly. */
+	FName LastServerMovementBaseBoneName = NAME_None;
+
+	/** Remember if the client was previously falling so we can tell when they've just landed. */
+	bool bLastClientIsFalling = false;
+
+	/** Remember if the server was previously falling so we can tell when they've just landed. */
+	bool bLastServerIsFalling = false;
+
+	/** Whether we were just walking on something, used to help with transitions off moving objects. */
+	bool bLastServerIsWalking = false;
+
+	/** True if the UpdatedComponent was moved outside of this CharacterMovementComponent since the last move -- its starting location for this update doesn't match its ending position for the previous update. */
+	bool bTeleportedSinceLastUpdate = false;
+
+	/** Whether we're stepping off a moving platform (and should trust the client somewhat when landing). */
+	bool bCanTrustClientOnLanding = false;
+
+	/** How loosely the client can follow the server location during this fall. */
+	float MaxServerClientErrorWhileFalling = 0.f;
+
+	/** Left over velocity when leaving a moving base. Helps with airborne root motion. */
+	FVector DecayingFormerBaseVelocity = FVector::ZeroVector;
 
 	/** How often we should raycast to project from navmesh to underlying geometry */
 	UPROPERTY(Category="Character Movement: NavMesh Movement", EditAnywhere, BlueprintReadWrite, meta=(editcondition = "bProjectNavMeshWalking"))
@@ -1203,6 +1222,7 @@ public:
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
 	virtual void OnRegister() override;
 	virtual void BeginDestroy() override;
+	virtual void BeginPlay() override;
 	virtual void PostLoad() override;
 	virtual void Deactivate() override;
 	virtual void RegisterComponentTickFunctions(bool bRegister) override;
@@ -1425,13 +1445,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Pawn|Components|CharacterMovement")
 	virtual float GetMinAnalogSpeed() const;
 	
-	UE_DEPRECATED(4.3, "GetModifiedMaxAcceleration() is deprecated, apply your own modifiers to GetMaxAcceleration() if desired.")
-	virtual float GetModifiedMaxAcceleration() const;
-	
-	/** Returns maximum acceleration for the current state, based on MaxAcceleration and any additional modifiers. */
-	UFUNCTION(BlueprintCallable, Category="Pawn|Components|CharacterMovement", meta=(DeprecatedFunction, DisplayName="GetModifiedMaxAcceleration", ScriptName="GetModifiedMaxAcceleration", DeprecationMessage="GetModifiedMaxAcceleration() is deprecated, apply your own modifiers to GetMaxAcceleration() if desired."))
-	virtual float K2_GetModifiedMaxAcceleration() const;
-
 	/** Returns maximum acceleration for the current state. */
 	UFUNCTION(BlueprintCallable, Category="Pawn|Components|CharacterMovement")
 	virtual float GetMaxAcceleration() const;
@@ -1451,18 +1464,6 @@ public:
 	/** Returns true if we can step up on the actor in the given FHitResult. */
 	virtual bool CanStepUp(const FHitResult& Hit) const;
 
-	/** Struct updated by StepUp() to return result of final step down, if applicable. */
-	struct FStepDownResult
-	{
-		uint32 bComputedFloor:1;		// True if the floor was computed as a result of the step down.
-		FFindFloorResult FloorResult;	// The result of the floor test if the floor was updated.
-
-		FStepDownResult()
-			: bComputedFloor(false)
-		{
-		}
-	};
-
 	/** 
 	 * Move up steps or slope. Does nothing and returns false if CanStepUp(Hit) returns false.
 	 *
@@ -1472,7 +1473,7 @@ public:
 	 * @param OutStepDownResult	[Out] If non-null, a floor check will be performed if possible as part of the final step down, and it will be updated to reflect this result.
 	 * @return true if the step up was successful.
 	 */
-	virtual bool StepUp(const FVector& GravDir, const FVector& Delta, const FHitResult &Hit, struct UCharacterMovementComponent::FStepDownResult* OutStepDownResult = NULL);
+	virtual bool StepUp(const FVector& GravDir, const FVector& Delta, const FHitResult &Hit, FStepDownResult* OutStepDownResult = NULL);
 
 	/** Update the base of the character, which is the PrimitiveComponent we are standing on. */
 	virtual void SetBase(UPrimitiveComponent* NewBase, const FName BoneName = NAME_None, bool bNotifyActor=true);
@@ -1645,7 +1646,15 @@ public:
 
 	/** Returns true if the character is allowed to crouch in the current state. By default it is allowed when walking or falling, if CanEverCrouch() is true. */
 	virtual bool CanCrouchInCurrentState() const;
-	
+
+	/** Sets collision half-height when crouching and updates dependent computations */
+	UFUNCTION(BlueprintSetter)
+	void SetCrouchedHalfHeight(const float NewValue);
+
+	/** Returns the collision half-height when crouching (component scale is applied separately) */
+	UFUNCTION(BlueprintGetter)
+	float GetCrouchedHalfHeight() const;
+
 	/** Returns true if there is a suitable floor SideStep from current position. */
 	virtual bool CheckLedgeDirection(const FVector& OldLocation, const FVector& SideStep, const FVector& GravDir) const;
 
@@ -1780,6 +1789,12 @@ public:
 	/** Set the Z component of the normal of the steepest walkable surface for the character. Also computes WalkableFloorAngle. */
 	UFUNCTION(BlueprintCallable, Category="Pawn|Components|CharacterMovement")
 	void SetWalkableFloorZ(float InWalkableFloorZ);
+	
+	/** Pre-physics tick function for this character */
+	struct FCharacterMovementComponentPrePhysicsTickFunction PrePhysicsTickFunction;
+
+	/** Tick function called before physics */
+	virtual void PrePhysicsTickComponent(float DeltaTime, FCharacterMovementComponentPrePhysicsTickFunction& ThisTickFunction);
 
 	/** Post-physics tick function for this character */
 	UPROPERTY()
@@ -2008,14 +2023,6 @@ protected:
 	UFUNCTION()
 	virtual void CapsuleTouched(UPrimitiveComponent* OverlappedComp, AActor* Other, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
 
-	// Enum used to control GetPawnCapsuleExtent behavior
-	enum EShrinkCapsuleExtent
-	{
-		SHRINK_None,			// Don't change the size of the capsule
-		SHRINK_RadiusCustom,	// Change only the radius, based on a supplied param
-		SHRINK_HeightCustom,	// Change only the height, based on a supplied param
-		SHRINK_AllCustom,		// Change both radius and height, based on a supplied param
-	};
 
 	/** Get the capsule extent for the Pawn owner, possibly reduced in size depending on ShrinkMode.
 	 * @param ShrinkMode			Controls the way the capsule is resized.
@@ -2060,6 +2067,22 @@ protected:
 	 */
 	virtual void OnUnableToFollowBaseMove(const FVector& DeltaPosition, const FVector& OldLocation, const FHitResult& MoveOnBaseHit);
 
+
+protected:
+	/* Prepare root motion to be passed on to physics thread */
+	virtual void AccumulateRootMotionForAsync(float DeltaSeconds, FRootMotionAsyncData& RootMotion);
+	/* Prepare inputs for asynchronous simulation on physics thread */ 
+	virtual void FillAsyncInput(const FVector& InputVector, FCharacterMovementComponentAsyncInput& AsyncInput);
+	virtual void BuildAsyncInput();
+	virtual void PostBuildAsyncInput();
+	/* Apply outputs from async sim. */
+	virtual void ApplyAsyncOutput(FCharacterMovementComponentAsyncOutput& Output);
+	virtual void ProcessAsyncOutput();
+	
+	/* Register async callback with physics system. */
+	virtual void RegisterAsyncCallback();
+	virtual bool IsAsyncCallbackRegistered() const;
+	
 public:
 
 	/**
@@ -2238,7 +2261,7 @@ protected:
 	virtual float GetClientNetSendDeltaTime(const APlayerController* PC, const FNetworkPredictionData_Client_Character* ClientData, const FSavedMovePtr& NewMove) const;
 
 	/** Ticks the characters pose and accumulates root motion */
-	void TickCharacterPose(float DeltaTime);
+	virtual void TickCharacterPose(float DeltaTime);
 
 	/** On the server if we know we are having our replication rate throttled, this method checks if important replicated properties have changed that should cause us to return to the normal replication rate. */
 	virtual bool ShouldCancelAdaptiveReplication() const;
@@ -2535,6 +2558,8 @@ public:
 	UPROPERTY(Transient)
 	FRootMotionSourceGroup ServerCorrectionRootMotion;
 
+	FRootMotionAsyncData AsyncRootMotion;
+
 	/** Returns true if we have Root Motion from any source to use in PerformMovement() physics. */
 	bool HasRootMotionSources() const;
 
@@ -2573,6 +2598,9 @@ protected:
 	/** Applies root motion from root motion sources to velocity (override and additive) */
 	void ApplyRootMotionToVelocity(float deltaTime);
 
+	/** Reduces former base velocity according to FormerBaseVelocityDecayHalfLife */
+	void DecayFormerBaseVelocity(float deltaTime);
+
 public:
 
 	/**
@@ -2596,7 +2624,7 @@ public:
 	}
 
 	// Takes component space root motion and converts it to world space
-	FTransform ConvertLocalRootMotionToWorld(const FTransform& InLocalRootMotion);
+	FTransform ConvertLocalRootMotionToWorld(const FTransform& InLocalRootMotion, float DeltaSeconds);
 
 	// Delegate for modifying root motion pre conversion from component space to world space.
 	FOnProcessRootMotion ProcessRootMotionPreConvertToWorld;
@@ -2615,9 +2643,6 @@ public:
 	 * @see ConstrainAnimRootMotionVelocity
 	 */
 	virtual FVector CalcAnimRootMotionVelocity(const FVector& RootMotionDeltaMove, float DeltaSeconds, const FVector& CurrentVelocity) const;
-
-	UE_DEPRECATED(4.13, "CalcRootMotionVelocity() has been replaced by CalcAnimRootMotionVelocity() instead, and ConstrainAnimRootMotionVelocity() now handles restricting root motion velocity under different conditions.")
-	virtual FVector CalcRootMotionVelocity(const FVector& RootMotionDeltaMove, float DeltaSeconds, const FVector& CurrentVelocity) const;
 
 	/**
 	 * Constrain components of root motion velocity that may not be appropriate given the current movement mode (e.g. when falling Z may be ignored).
@@ -2919,10 +2944,7 @@ public:
 
 	// Mesh smoothing variables (for network smoothing)
 	//
-	/** Whether to smoothly interpolate pawn position corrections on clients based on received location updates */
-	UE_DEPRECATED(4.11, "bSmoothNetUpdates will be removed, use UCharacterMovementComponent::NetworkSmoothingMode instead.")
-	uint32 bSmoothNetUpdates:1;
-
+	
 	/** Used for position smoothing in net games */
 	FVector OriginalMeshTranslationOffset;
 
@@ -2953,14 +2975,6 @@ public:
 	/** Used to track the client time as we try to match the server.*/
 	double SmoothingClientTimeStamp;
 
-	/** Used to track how much time has elapsed since last correction. It can be computed as World->TimeSince(LastCorrectionTime). */
-	UE_DEPRECATED(4.11, "CurrentSmoothTime will be removed, use LastCorrectionTime instead.")
-	float CurrentSmoothTime;
-
-	/** Used to signify that linear smoothing is desired */
-	UE_DEPRECATED(4.11, "bUseLinearSmoothing will be removed, use UCharacterMovementComponent::NetworkSmoothingMode instead.")
-	bool bUseLinearSmoothing;
-
 	/**
 	 * Copied value from UCharacterMovementComponent::NetworkMaxSmoothUpdateDistance.
 	 * @see UCharacterMovementComponent::NetworkMaxSmoothUpdateDistance
@@ -2978,10 +2992,6 @@ public:
 
 	/** How long to take to smoothly interpolate from the old pawn rotation on the client to the corrected one sent by the server.  Must be >= 0. Not used for linear smoothing. */
 	float SmoothNetUpdateRotationTime;
-
-	/** (DEPRECATED) How long server will wait for client move update before setting position */
-	UE_DEPRECATED(4.12, "MaxResponseTime has been renamed to MaxMoveDeltaTime for clarity in what it does and will be removed, use MaxMoveDeltaTime instead.")
-	float MaxResponseTime;
 	
 	/** 
 	 * Max delta time for a given move, in real seconds
@@ -3051,10 +3061,6 @@ public:
 
 	/** Server clock time when last server move was received from client (does NOT include forced moves on server) */
 	float ServerTimeStampLastServerMove;
-
-	/** (DEPRECATED) How long server will wait for client move update before setting position */
-	UE_DEPRECATED(4.12, "MaxResponseTime has been renamed to MaxMoveDeltaTime for clarity in what it does and will be removed, use MaxMoveDeltaTime instead.")
-	float MaxResponseTime;
 	
 	/** 
 	 * Max delta time for a given move, in real seconds

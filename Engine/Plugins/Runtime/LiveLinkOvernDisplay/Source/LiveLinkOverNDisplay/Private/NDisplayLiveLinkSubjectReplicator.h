@@ -48,6 +48,10 @@ public:
 
 	//~ Begin FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FNDisplayLiveLinkSubjectReplicator");
+	}
 	//~ End FGCObject interface
 
 	/** Initializes all required callbacks and LiveLink source */

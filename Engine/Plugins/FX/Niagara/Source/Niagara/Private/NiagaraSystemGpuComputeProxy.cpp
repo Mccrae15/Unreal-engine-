@@ -3,19 +3,21 @@
 #include "NiagaraSystemGpuComputeProxy.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraEmitterInstance.h"
-#include "NiagaraEmitterInstanceBatcher.h"
 #include "NiagaraComputeExecutionContext.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraGPUSystemTick.h"
+#include "NiagaraRenderer.h"
 
 FNiagaraSystemGpuComputeProxy::FNiagaraSystemGpuComputeProxy(FNiagaraSystemInstance* OwnerInstance)
 	: DebugOwnerInstance(OwnerInstance)
-	, DebugOwnerBatcher(nullptr)
+	, SystemLWCTile(OwnerInstance->GetLWCTile())
 	, SystemInstanceID(OwnerInstance->GetId())
 {
 	bRequiresDistanceFieldData = OwnerInstance->RequiresDistanceFieldData();
 	bRequiresDepthBuffer = OwnerInstance->RequiresDepthBuffer();
 	bRequiresEarlyViewData = OwnerInstance->RequiresEarlyViewData();
 	bRequiresViewUniformBuffer = OwnerInstance->RequiresViewUniformBuffer();
+	bRequiresRayTracingScene = OwnerInstance->RequiresRayTracingScene();
 
 	// Gather all emitter compute contexts
 	for ( auto& Emitter : OwnerInstance->GetEmitters() )
@@ -27,7 +29,7 @@ FNiagaraSystemGpuComputeProxy::FNiagaraSystemGpuComputeProxy(FNiagaraSystemInsta
 	}
 
 	// Calculate Tick Stage
-	if (bRequiresDistanceFieldData || bRequiresDepthBuffer)
+	if (bRequiresDistanceFieldData || bRequiresDepthBuffer || bRequiresRayTracingScene)
 	{
 		ComputeTickStage = ENiagaraGpuComputeTickStage::PostOpaqueRender;
 	}
@@ -43,30 +45,45 @@ FNiagaraSystemGpuComputeProxy::FNiagaraSystemGpuComputeProxy(FNiagaraSystemInsta
 	{
 		ComputeTickStage = ENiagaraGpuComputeTickStage::PreInitViews;
 	}
+
+	// Static buffers
+	ENQUEUE_RENDER_COMMAND(SetStaticBuffers)(
+		[RT_Context=this, RT_StaticBuffers=OwnerInstance->GetSystem()->GetStaticBuffers()](FRHICommandListImmediate& RHICmdList)
+		{
+			RT_Context->StaticFloatBuffer = RT_StaticBuffers->GetGpuFloatBuffer();
+			if (!RT_Context->StaticFloatBuffer.IsValid())
+			{
+				RT_Context->StaticFloatBuffer = FNiagaraRenderer::GetDummyFloatBuffer();
+			}
+		}
+	);
 }
 
 FNiagaraSystemGpuComputeProxy::~FNiagaraSystemGpuComputeProxy()
 {
 	check(IsInRenderingThread());
-	check(DebugOwnerBatcher == nullptr);
+	check(DebugOwnerComputeDispatchInterface == nullptr);
 }
 
-void FNiagaraSystemGpuComputeProxy::AddToBatcher(NiagaraEmitterInstanceBatcher* Batcher)
+void FNiagaraSystemGpuComputeProxy::AddToRenderThread(FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface)
 {
 	check(IsInGameThread());
-	check(DebugOwnerBatcher == nullptr);
-	DebugOwnerBatcher = Batcher;
+	check(DebugOwnerComputeDispatchInterface == nullptr);
+	DebugOwnerComputeDispatchInterface = ComputeDispatchInterface;
 
-	ENQUEUE_RENDER_COMMAND(AddProxyToBatcher)(
+	ENQUEUE_RENDER_COMMAND(AddProxyToComputeDispatchInterface)(
 		[=](FRHICommandListImmediate& RHICmdList)
 		{
-			Batcher->AddGpuComputeProxy(this);
+			ComputeDispatchInterface->AddGpuComputeProxy(this);
 
 			for (FNiagaraComputeExecutionContext* ComputeContext : ComputeContexts)
 			{
 				ComputeContext->bHasTickedThisFrame_RT = false;
 				ComputeContext->CurrentNumInstances_RT = 0;
 				ComputeContext->CurrentMaxInstances_RT = 0;
+
+				ComputeContext->EmitterInstanceReadback.CPUCount = 0;
+				ComputeContext->EmitterInstanceReadback.GPUCountOffset = INDEX_NONE;
 
 				for (int i=0; i < UE_ARRAY_COUNT(ComputeContext->DataBuffers_RT); ++i)
 				{
@@ -78,21 +95,21 @@ void FNiagaraSystemGpuComputeProxy::AddToBatcher(NiagaraEmitterInstanceBatcher* 
 	);
 }
 
-void FNiagaraSystemGpuComputeProxy::RemoveFromBatcher(NiagaraEmitterInstanceBatcher* Batcher, bool bDeleteProxy)
+void FNiagaraSystemGpuComputeProxy::RemoveFromRenderThread(FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, bool bDeleteProxy)
 {
 	check(IsInGameThread());
-	check(DebugOwnerBatcher == Batcher);
-	DebugOwnerBatcher = nullptr;
+	check(DebugOwnerComputeDispatchInterface == ComputeDispatchInterface);
+	DebugOwnerComputeDispatchInterface = nullptr;
 
-	ENQUEUE_RENDER_COMMAND(RemoveFromBatcher)(
+	ENQUEUE_RENDER_COMMAND(RemoveFromRenderThread)(
 		[=](FRHICommandListImmediate& RHICmdList)
 		{
-			Batcher->RemoveGpuComputeProxy(this);
-			ReleaseTicks(Batcher->GetGPUInstanceCounterManager());
+			ComputeDispatchInterface->RemoveGpuComputeProxy(this);
+			ReleaseTicks(ComputeDispatchInterface->GetGPUInstanceCounterManager());
 
 			for (FNiagaraComputeExecutionContext* ComputeContext : ComputeContexts)
 			{
-				ComputeContext->ResetInternal(Batcher);
+				ComputeContext->ResetInternal(ComputeDispatchInterface);
 
 				//-TODO: Can we move this inside the context???
 				for (int i = 0; i < UE_ARRAY_COUNT(ComputeContext->DataBuffers_RT); ++i)

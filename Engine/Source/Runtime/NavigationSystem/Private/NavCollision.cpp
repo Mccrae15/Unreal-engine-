@@ -56,7 +56,7 @@ public:
 	{
 		// Read cooked data
 		uint8* DataPtr = (uint8*)InBulkData.Lock( LOCK_READ_ONLY );
-		FBufferReader Ar( DataPtr, InBulkData.GetBulkDataSize(), false );
+		FBufferReader Ar( DataPtr, InBulkData.GetBulkDataSize(), false, true );
 
 		uint8 bLittleEndian = true;
 
@@ -115,6 +115,7 @@ public:
 	}
 
 	virtual bool Build( TArray<uint8>& OutData ) override;
+	virtual FString GetDebugContextString() const override;
 
 	/** Return true if we can build **/
 	bool CanBuild()
@@ -159,6 +160,20 @@ bool FDerivedDataNavCollisionCooker::Build( TArray<uint8>& OutData )
 
 	// Whatever got cached return true. We want to cache 'failure' too.
 	return true;
+}
+
+FString FDerivedDataNavCollisionCooker::GetDebugContextString() const
+{
+	if (NavCollisionInstance)
+	{
+		UObject* Outer = NavCollisionInstance->GetOuter();
+		if (Outer)
+		{
+			return Outer->GetFullName();
+		}
+	}
+
+	return FDerivedDataPluginInterface::GetDebugContextString();
 }
 
 namespace
@@ -518,7 +533,10 @@ void UNavCollision::PostLoad()
 		Outer->ConditionalPostLoad();
 
 		UStaticMesh* StaticMeshOuter = Cast<UStaticMesh>(Outer);
-		if (StaticMeshOuter != NULL)
+		
+		// It's OK to skip this in case of StaticMesh pending compilation because it is also
+		// called by UStaticMesh::CreateNavCollision at the end of UStaticMesh's PostLoad.
+		if (StaticMeshOuter != nullptr && !StaticMeshOuter->IsCompiling())
 		{
 			Setup(StaticMeshOuter->GetBodySetup());
 		}

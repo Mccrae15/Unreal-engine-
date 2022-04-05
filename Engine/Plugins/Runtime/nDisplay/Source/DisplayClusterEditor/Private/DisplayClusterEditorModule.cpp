@@ -16,7 +16,10 @@ void FDisplayClusterEditorModule::StartupModule()
 
 void FDisplayClusterEditorModule::ShutdownModule()
 {
-	UnregisterSettings();
+	if (UObjectInitialized())
+	{
+		UnregisterSettings();
+	}
 }
 
 

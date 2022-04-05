@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
 	ContentStreaming.cpp: Implementation of content streaming classes.
@@ -25,6 +26,7 @@
 #include "VT/VirtualTextureChunkManager.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Rendering/NaniteCoarseMeshStreamingManager.h"
 
 /*-----------------------------------------------------------------------------
 	Globals.
@@ -37,6 +39,12 @@ static TAutoConsoleVariable<int32> CVarMeshStreaming(
 	TEXT("When non zero, enables mesh stremaing.\n"),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe);
 
+static int32 GNaniteCoarseMeshStreamingEnabled = 0;
+static FAutoConsoleVariableRef CVarNaniteCoarseMeshStreaming(
+	TEXT("r.Nanite.CoarseMeshStreaming"),
+	GNaniteCoarseMeshStreamingEnabled,
+	TEXT("Generates 2 Nanite coarse mesh LODs and dynamically streams in the higher quality LOD depending on TLAS usage of the proxy.\n"),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe);
 
 /** Collection of views that need to be taken into account for streaming. */
 TArray<FStreamingViewInfo> IStreamingManager::CurrentViewInfos;
@@ -116,7 +124,7 @@ TArray<FTrackedRenderAssetEvent> GTrackedRenderAssets;
  */
 void TrackRenderAssetInit()
 {
-	if ( GConfig && GConfig->Num() > 0 )
+	if ( GConfig && GConfig->IsReadyForUse() )
 	{
 		GTrackedRenderAssetNames.Empty();
 		GTrackedRenderAssetsInitialized = true;
@@ -392,7 +400,7 @@ void IStreamingManager::Shutdown()
 
 bool IStreamingManager::HasShutdown()
 {
-	return StreamingManagerCollection == (FStreamingManagerCollection*)-1;
+	return (StreamingManagerCollection == nullptr) || (StreamingManagerCollection == (FStreamingManagerCollection*)-1);
 }
 
 /**
@@ -500,7 +508,7 @@ void IStreamingManager::SetupViewInfos( float DeltaTime )
 	// Apply a split-screen factor if we have multiple players on the same machine, and they currently have individual views.
 	float SplitScreenFactor = 1.0f;
 	
-	if ( bHaveMultiplePlayerViews && GEngine->IsSplitScreen(NULL) )
+	if ( bHaveMultiplePlayerViews && GEngine->HasMultipleLocalPlayers(NULL) )
 	{
 		SplitScreenFactor = 0.75f;
 	}
@@ -759,6 +767,7 @@ FStreamingManagerCollection::FStreamingManagerCollection()
 	, DisableResourceStreamingCount(0)
 	, LoadMapTimeLimit(5.0f)
 	, RenderAssetStreamingManager(nullptr)
+	, NaniteCoarseMeshStreamingManager(nullptr)
 {
 #if PLATFORM_SUPPORTS_TEXTURE_STREAMING
 	// Disable texture streaming if that was requested (needs to happen before the call to ProcessNewlyLoadedUObjects, as that can load textures)
@@ -791,6 +800,13 @@ FStreamingManagerCollection::FStreamingManagerCollection()
 
 FStreamingManagerCollection::~FStreamingManagerCollection()
 {
+	if (NaniteCoarseMeshStreamingManager)
+	{
+		RemoveStreamingManager(NaniteCoarseMeshStreamingManager);
+		delete NaniteCoarseMeshStreamingManager;
+		NaniteCoarseMeshStreamingManager = nullptr;
+	}
+
 	RemoveStreamingManager(VirtualTextureStreamingManager);
 	delete VirtualTextureStreamingManager;
 	VirtualTextureStreamingManager = nullptr;
@@ -845,6 +861,7 @@ void FStreamingManagerCollection::Tick( float DeltaTime, bool bProcessEverything
 
 void FStreamingManagerCollection::UpdateResourceStreaming( float DeltaTime, bool bProcessEverything/*=false*/ )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FStreamingManagerCollection::UpdateResourceStreaming);
 	SetupViewInfos( DeltaTime );
 
 	// only allow this if its not disabled
@@ -1002,6 +1019,8 @@ bool FStreamingManagerCollection::IsRenderAssetStreamingEnabled(EStreamableRende
 		case EStreamableRenderAssetType::StaticMesh:
 		case EStreamableRenderAssetType::SkeletalMesh:
 			return FPlatformProperties::SupportsMeshLODStreaming() && CVarMeshStreaming.GetValueOnAnyThread() != 0;
+		case EStreamableRenderAssetType::NaniteCoarseMesh:
+			return FPlatformProperties::SupportsMeshLODStreaming() && GNaniteCoarseMeshStreamingEnabled != 0;
 		case EStreamableRenderAssetType::LandscapeMeshMobile:
 			return true;
 		default:
@@ -1042,6 +1061,11 @@ FVirtualTextureChunkStreamingManager& FStreamingManagerCollection::GetVirtualTex
 {
 	check(VirtualTextureStreamingManager);
 	return *VirtualTextureStreamingManager;
+}
+
+Nanite::FCoarseMeshStreamingManager* FStreamingManagerCollection::GetNaniteCoarseMeshStreamingManager() const
+{
+	return NaniteCoarseMeshStreamingManager;
 }
 
 /** Don't stream world resources for the next NumFrames. */
@@ -1285,6 +1309,12 @@ void FStreamingManagerCollection::AddOrRemoveTextureStreamingManagerIfNeeded(boo
 			// Create the streaming manager and add the default streamers.
 			RenderAssetStreamingManager = new FRenderAssetStreamingManager();
 			AddStreamingManager( RenderAssetStreamingManager );		
+
+			if (IsRenderAssetStreamingEnabled(EStreamableRenderAssetType::NaniteCoarseMesh))
+			{
+				NaniteCoarseMeshStreamingManager = new Nanite::FCoarseMeshStreamingManager();
+				AddStreamingManager(NaniteCoarseMeshStreamingManager);
+			}
 				
 			// TODO : Register all levels
 
@@ -1306,6 +1336,10 @@ void FStreamingManagerCollection::AddOrRemoveTextureStreamingManagerIfNeeded(boo
 		{
 			FlushRenderingCommands();
 			RenderAssetStreamingManager->BlockTillAllRequestsFinished();
+			if (NaniteCoarseMeshStreamingManager)
+			{
+				NaniteCoarseMeshStreamingManager->BlockTillAllRequestsFinished();
+			}
 
 			// Stream all LODs back in before disabling the streamer.
 			for( TObjectIterator<UStreamableRenderAsset>It; It; ++It )
@@ -1318,6 +1352,10 @@ void FStreamingManagerCollection::AddOrRemoveTextureStreamingManagerIfNeeded(boo
 				}
 			}
 			RenderAssetStreamingManager->BlockTillAllRequestsFinished();
+			if (NaniteCoarseMeshStreamingManager)
+			{
+				NaniteCoarseMeshStreamingManager->BlockTillAllRequestsFinished();
+			}
 
 			for( TObjectIterator<UStreamableRenderAsset>It; It; ++It )
 			{
@@ -1327,6 +1365,13 @@ void FStreamingManagerCollection::AddOrRemoveTextureStreamingManagerIfNeeded(boo
 			RemoveStreamingManager(RenderAssetStreamingManager);
 			delete RenderAssetStreamingManager;
 			RenderAssetStreamingManager = nullptr;
+
+			if (NaniteCoarseMeshStreamingManager)
+			{
+				RemoveStreamingManager(NaniteCoarseMeshStreamingManager);
+				delete NaniteCoarseMeshStreamingManager;
+				NaniteCoarseMeshStreamingManager = nullptr;
+			}
 		}
 	}
 }
@@ -1344,7 +1389,7 @@ void FStreamingManagerCollection::AddOrRemoveTextureStreamingManagerIfNeeded(boo
  */
 FArchive& operator<<( FArchive& Ar, FStreamableTextureInstance& TextureInstance )
 {
-	if (Ar.UE4Ver() >= VER_UE4_STREAMABLE_TEXTURE_AABB)
+	if (Ar.UEVer() >= VER_UE4_STREAMABLE_TEXTURE_AABB)
 	{
 		Ar << TextureInstance.Bounds;
 	}
@@ -1355,7 +1400,7 @@ FArchive& operator<<( FArchive& Ar, FStreamableTextureInstance& TextureInstance 
 		TextureInstance.Bounds = FBoxSphereBounds(BoundingSphere);
 	}
 
-	if (Ar.UE4Ver() >= VER_UE4_STREAMABLE_TEXTURE_MIN_MAX_DISTANCE)
+	if (Ar.UEVer() >= VER_UE4_STREAMABLE_TEXTURE_MIN_MAX_DISTANCE)
 	{
 		Ar << TextureInstance.MinDistance;
 		Ar << TextureInstance.MaxDistance;
@@ -1399,22 +1444,20 @@ FAudioChunkHandle::FAudioChunkHandle()
 	, CorrespondingWave(nullptr)
 	, CorrespondingWaveName()
 	, ChunkIndex(INDEX_NONE)
-	, CacheLookupID(InvalidAudioStreamCacheLookupID)
 #if WITH_EDITOR
 	, ChunkGeneration(INDEX_NONE)
 #endif
 {
 }
 
-FAudioChunkHandle::FAudioChunkHandle(const uint8* InData, uint32 NumBytes, const USoundWave* InSoundWave, const FName& SoundWaveName, uint32 InChunkIndex, uint64 InCacheLookupID)
+FAudioChunkHandle::FAudioChunkHandle(const uint8* InData, uint32 NumBytes, const FSoundWaveProxyPtr&  InSoundWave, const FName& SoundWaveName, uint32 InChunkIndex, uint64 InCacheLookupID)
 	: CachedData(InData)
 	, CachedDataNumBytes(NumBytes)
-	, CorrespondingWave(InSoundWave)
+	, CorrespondingWave(InSoundWave->GetSoundWaveData())
 	, CorrespondingWaveName(SoundWaveName)
 	, ChunkIndex(InChunkIndex)
-	, CacheLookupID(InCacheLookupID)
 #if WITH_EDITOR
-	, ChunkGeneration(InSoundWave->CurrentChunkRevision.GetValue())
+	, ChunkGeneration(InSoundWave.IsValid()? InSoundWave->GetCurrentChunkRevision() : 0)
 #endif
 {
 }
@@ -1441,10 +1484,9 @@ FAudioChunkHandle& FAudioChunkHandle::operator=(FAudioChunkHandle&& Other)
 
 	CachedData = Other.CachedData;
 	CachedDataNumBytes = Other.CachedDataNumBytes;
-	CorrespondingWave = Other.CorrespondingWave;
+	CorrespondingWave = MoveTemp(Other.CorrespondingWave);
 	CorrespondingWaveName = Other.CorrespondingWaveName;
 	ChunkIndex = Other.ChunkIndex;
-	CacheLookupID = Other.CacheLookupID;
 #if WITH_EDITOR
 	ChunkGeneration = Other.ChunkGeneration;
 #endif
@@ -1456,7 +1498,6 @@ FAudioChunkHandle& FAudioChunkHandle::operator=(FAudioChunkHandle&& Other)
 	Other.CorrespondingWave = nullptr;
 	Other.CorrespondingWaveName = FName();
 	Other.ChunkIndex = INDEX_NONE;
-	Other.CacheLookupID = InvalidAudioStreamCacheLookupID;
 #if WITH_EDITOR
 	Other.ChunkGeneration = INDEX_NONE;
 #endif
@@ -1470,14 +1511,19 @@ FAudioChunkHandle& FAudioChunkHandle::operator=(const FAudioChunkHandle& Other)
 	if (IsValid())
 	{
 		IStreamingManager::Get().GetAudioStreamingManager().RemoveReferenceToChunk(*this);
+		CorrespondingWave.Reset();
 	}
 
 	CachedData = Other.CachedData;
 	CachedDataNumBytes = Other.CachedDataNumBytes;
-	CorrespondingWave = Other.CorrespondingWave;
+
+	if (Other.CorrespondingWave.IsValid())
+	{
+		CorrespondingWave = Other.CorrespondingWave;
+	}
+
 	CorrespondingWaveName = Other.CorrespondingWaveName;
 	ChunkIndex = Other.ChunkIndex;
-	CacheLookupID = Other.CacheLookupID;
 #if WITH_EDITOR
 	ChunkGeneration = Other.ChunkGeneration;
 #endif
@@ -1511,16 +1557,18 @@ uint32 FAudioChunkHandle::Num() const
 
 bool FAudioChunkHandle::IsValid() const
 {
-	return GetData() != nullptr;
+	return GetData() && CorrespondingWave.Pin().IsValid();
 }
 
 #if WITH_EDITOR
 bool FAudioChunkHandle::IsStale() const
 {
-	if (CorrespondingWave != nullptr)
+	TSharedPtr<FSoundWaveData, ESPMode::ThreadSafe> SoundWaveDataPtr = CorrespondingWave.Pin();
+
+	if (SoundWaveDataPtr.IsValid())
 	{
 		// NOTE: While this is currently safe in editor, there's no guarantee the USoundWave will be kept alive during the lifecycle of this chunk handle.
-		return ChunkGeneration != CorrespondingWave->CurrentChunkRevision.GetValue();
+		return ChunkGeneration != SoundWaveDataPtr->GetCurrentChunkRevision();
 	}
 	else
 	{
@@ -1529,7 +1577,12 @@ bool FAudioChunkHandle::IsStale() const
 }
 #endif
 
-FAudioChunkHandle IAudioStreamingManager::BuildChunkHandle(const uint8* InData, uint32 NumBytes, const USoundWave* InSoundWave, const FName& SoundWaveName, uint32 InChunkIndex, uint64 InCacheLookupID)
+FAudioChunkHandle IAudioStreamingManager::BuildChunkHandle(const uint8* InData, uint32 NumBytes, const FSoundWaveProxyPtr&  InSoundWave, const FName& SoundWaveName, uint32 InChunkIndex, uint64 InCacheLookupID)
 {
-	return FAudioChunkHandle(InData, NumBytes, InSoundWave, SoundWaveName, InChunkIndex, InCacheLookupID);
+	if (ensure(InSoundWave.IsValid()))
+	{
+		return FAudioChunkHandle(InData, NumBytes, InSoundWave, SoundWaveName, InChunkIndex, InCacheLookupID);
+	}
+
+	return {};
 }

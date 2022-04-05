@@ -16,7 +16,7 @@ class UK2Node_StructOperation : public UK2Node_Variable
 
 	/** Class that this variable is defined in.  */
 	UPROPERTY()
-	UScriptStruct* StructType;
+	TObjectPtr<UScriptStruct> StructType;
 
 	//~ Begin UEdGraphNode Interface
 	virtual FString GetPinMetaData(FName InPinName, FName InKey) override;
@@ -39,8 +39,18 @@ protected:
 		virtual void GetRecordDefaults(FProperty* TestProperty, FOptionalPinFromProperty& Record) const override
 		{
 			Record.bCanToggleVisibility = true;
-			UStruct* OwnerStruct = TestProperty ? TestProperty->GetOwnerStruct() : nullptr;
-			Record.bShowPin = OwnerStruct ? !OwnerStruct->HasMetaData(TEXT("HiddenByDefault")) : true;
+			Record.bShowPin = true;
+			if (TestProperty)
+			{
+				Record.bShowPin = !TestProperty->HasMetaData(TEXT("PinHiddenByDefault"));
+				if (Record.bShowPin)
+				{
+					if (UStruct* OwnerStruct = TestProperty->GetOwnerStruct())
+					{
+						Record.bShowPin = !OwnerStruct->HasMetaData(TEXT("HiddenByDefault"));
+					}
+				}
+			}
 		}
 
 		virtual void CustomizePinData(UEdGraphPin* Pin, FName SourcePropertyName, int32 ArrayIndex, FProperty* Property) const override;
@@ -48,5 +58,9 @@ protected:
 	};
 
 	bool DoRenamedPinsMatch(const UEdGraphPin* NewPin, const UEdGraphPin* OldPin, bool bStructInVariablesOut) const;
+
+	/** Utility function to set up menu actions to set the struct type and promote category */
+	DECLARE_DELEGATE_RetVal_TwoParams(bool, FMakeStructSpawnerAllowedDelegate, const UScriptStruct*, bool);
+	void SetupMenuActions(FBlueprintActionDatabaseRegistrar& ActionRegistrar, const FMakeStructSpawnerAllowedDelegate& AllowedDelegate, EEdGraphPinDirection PinDirectionToPromote) const;
 };
 

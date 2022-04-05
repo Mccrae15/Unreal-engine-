@@ -42,6 +42,7 @@ enum class EElementType : uint8
 	ET_Custom,
 	ET_CustomVerts,
 	ET_PostProcessPass,
+	ET_RoundedBox,
 	/** Total number of draw commands */
 	ET_Count,
 };
@@ -71,7 +72,7 @@ public:
 	 * @param InLayer				The layer to draw the element on
 	 * @param PaintGeometry         DrawSpace position and dimensions; see FPaintGeometry
 	 */
-	SLATECORE_API static void MakeDebugQuad( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const FLinearColor& InTint = FLinearColor::White );
+	SLATECORE_API static void MakeDebugQuad( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, FLinearColor Tint = FLinearColor::White);
 
 	/**
 	 * Creates a box element based on the following diagram.  Allows for this element to be resized while maintain the border of the image
@@ -156,7 +157,7 @@ public:
 	 * @param InDrawEffects         Optional draw effects to apply
 	 * @param InTint                Color to tint the element
 	 */
-	SLATECORE_API static void MakeShapedText( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const FShapedGlyphSequenceRef& InShapedGlyphSequence, ESlateDrawEffect InDrawEffects, const FLinearColor& BaseTint, const FLinearColor& OutlineTint);
+	SLATECORE_API static void MakeShapedText( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const FShapedGlyphSequenceRef& InShapedGlyphSequence, ESlateDrawEffect InDrawEffects, const FLinearColor& BaseTint, const FLinearColor& OutlineTint, FTextOverflowArgs TextOverflowArgs = FTextOverflowArgs());
 
 	/**
 	 * Creates a gradient element
@@ -167,8 +168,9 @@ public:
 	 * @param InGradientStops          List of gradient stops which define the element
 	 * @param InGradientType           The type of gradient (I.E Horizontal, vertical)
 	 * @param InDrawEffects            Optional draw effects to apply
+	 * @param CornerRadius			   Rounds the corners of the box created by the gradient by the specified radius
 	 */
-	SLATECORE_API static void MakeGradient( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, TArray<FSlateGradientStop> InGradientStops, EOrientation InGradientType, ESlateDrawEffect InDrawEffects = ESlateDrawEffect::None );
+	SLATECORE_API static void MakeGradient( FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, TArray<FSlateGradientStop> InGradientStops, EOrientation InGradientType, ESlateDrawEffect InDrawEffects = ESlateDrawEffect::None, FVector4f CornerRadius = FVector4f(0.0f) );
 
 	/**
 	 * Creates a Hermite Spline element
@@ -250,7 +252,7 @@ public:
 	
 	SLATECORE_API static void MakeCustomVerts(FSlateWindowElementList& ElementList, uint32 InLayer, const FSlateResourceHandle& InRenderResourceHandle, const TArray<FSlateVertex>& InVerts, const TArray<SlateIndex>& InIndexes, ISlateUpdatableInstanceBuffer* InInstanceData, uint32 InInstanceOffset, uint32 InNumInstances, ESlateDrawEffect InDrawEffects = ESlateDrawEffect::None);
 
-	SLATECORE_API static void MakePostProcessPass(FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const FVector4& Params, int32 DownsampleAmount);
+	SLATECORE_API static void MakePostProcessPass(FSlateWindowElementList& ElementList, uint32 InLayer, const FPaintGeometry& PaintGeometry, const FVector4f& Params, int32 DownsampleAmount, const FVector4f CornerRadius = FVector4f(0.0f));
 
 	FSlateDrawElement();
 	SLATECORE_API ~FSlateDrawElement();
@@ -267,9 +269,9 @@ public:
 
 	FORCEINLINE const FSlateRenderTransform& GetRenderTransform() const { return RenderTransform; }
 	FORCEINLINE void SetRenderTransform(const FSlateRenderTransform& InRenderTransform) { RenderTransform = InRenderTransform; }
-	FORCEINLINE const FVector2D& GetPosition() const { return Position; }
-	FORCEINLINE void SetPosition(const FVector2D& InPosition) { Position = InPosition; }
-	FORCEINLINE const FVector2D& GetLocalSize() const { return LocalSize; }
+	FORCEINLINE FVector2D GetPosition() const { return FVector2D(Position); }
+	FORCEINLINE void SetPosition(const FVector2D& InPosition) { Position = FVector2f(InPosition); }
+	FORCEINLINE FVector2D GetLocalSize() const { return FVector2D(LocalSize); }
 	FORCEINLINE float GetScale() const { return Scale; }
 	FORCEINLINE ESlateDrawEffect GetDrawEffects() const { return DrawEffects; }
 	FORCEINLINE ESlateBatchDrawFlag GetBatchFlags() const { return BatchFlags; }
@@ -287,7 +289,7 @@ public:
 
 	FORCEINLINE FSlateLayoutTransform GetInverseLayoutTransform() const
 	{
-		return Inverse(FSlateLayoutTransform(Scale, Position));
+		return Inverse(FSlateLayoutTransform(Scale, FVector2D(Position)));
 	}
 
 	void AddReferencedObjects(FReferenceCollector& Collector);
@@ -314,8 +316,8 @@ private:
 private:
 	FSlateDataPayload* DataPayload;
 	FSlateRenderTransform RenderTransform;
-	FVector2D Position;
-	FVector2D LocalSize;
+	FVector2f Position;
+	FVector2f LocalSize;
 	int32 LayerId;
 	FClipStateHandle ClipStateHandle;
 	float Scale;

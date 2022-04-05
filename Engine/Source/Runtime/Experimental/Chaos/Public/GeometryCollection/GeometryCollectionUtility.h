@@ -35,11 +35,11 @@ namespace GeometryCollection
 		RestCollection->AddElements(TrianglesIn.Num(), FGeometryCollection::FacesGroup);
 		RestCollection->AddElements(1, FGeometryCollection::TransformGroup);
 
-		TManagedArray<FVector>& Vertices = RestCollection->Vertex;
-		TManagedArray<FVector>& Normals = RestCollection->Normal;
-		TManagedArray<FVector>& TangentU = RestCollection->TangentU;
-		TManagedArray<FVector>& TangentV = RestCollection->TangentV;
-		TManagedArray<FVector2D>& UVs = RestCollection->UV;
+		TManagedArray<FVector3f>& Vertices = RestCollection->Vertex;
+		TManagedArray<FVector3f>& Normals = RestCollection->Normal;
+		TManagedArray<FVector3f>& TangentU = RestCollection->TangentU;
+		TManagedArray<FVector3f>& TangentV = RestCollection->TangentV;
+		TManagedArray<TArray<FVector2f>>& UVs = RestCollection->UVs;
 		TManagedArray<FLinearColor>& Colors = RestCollection->Color;
 		TManagedArray<FIntVector>& Indices = RestCollection->Indices;
 		TManagedArray<bool>& Visible = RestCollection->Visible;
@@ -56,9 +56,12 @@ namespace GeometryCollection
 		// Set vertex info
 		for (int32 Idx = 0; Idx < PointsIn.Num(); ++Idx)
 		{
-			Vertices[Idx] = GeoXf.TransformPosition(FVector(PointsIn[Idx][0], PointsIn[Idx][1], PointsIn[Idx][2])); // transform points by GeoXf
-			Normals[Idx] = NormalsIn.Num() > Idx ? FVector(NormalsIn[Idx][0], NormalsIn[Idx][1], NormalsIn[Idx][2]) : FVector(0);
-			UVs[Idx] = UVsIn.Num() > Idx ? FVector2D(UVsIn[Idx][0], UVsIn[Idx][1]) : FVector2D(0);
+			Vertices[Idx] = (FVector3f)GeoXf.TransformPosition(FVector(PointsIn[Idx][0], PointsIn[Idx][1], PointsIn[Idx][2])); // transform points by GeoXf
+			Normals[Idx] = NormalsIn.Num() > Idx ? FVector3f(NormalsIn[Idx][0], NormalsIn[Idx][1], NormalsIn[Idx][2]) : FVector3f(0);
+
+			FVector2D UV = UVsIn.Num() > Idx ? FVector2D(UVsIn[Idx][0], UVsIn[Idx][1]) : FVector2D(0);
+			UVs[Idx].Add(FVector2f(UV));
+			
 			Colors[Idx] = FLinearColor::White;
 		}
 
@@ -75,8 +78,8 @@ namespace GeometryCollection
 
 			for (int32 Axis = 0; Axis < 3; ++Axis)
 			{
-				const FVector& Normal = Normals[Tri[Axis]];
-				const FVector Edge = (Vertices[Tri[(Axis + 1) % 3]] - Vertices[Tri[Axis]]);
+				const FVector3f& Normal = Normals[Tri[Axis]];
+				const FVector3f Edge = (Vertices[Tri[(Axis + 1) % 3]] - Vertices[Tri[Axis]]);
 				TangentU[Tri[Axis]] = (Edge ^ Normal).GetSafeNormal();
 				TangentV[Tri[Axis]] = (Normal ^ TangentU[Tri[Axis]]).GetSafeNormal();
 			}
@@ -151,6 +154,17 @@ namespace GeometryCollection
 	template<class T>
 	void
 	AttributeTransfer(const FGeometryCollection * FromCollection, FGeometryCollection * ToCollection, const FName FromAttributeName, const FName ToAttributeName);
+
+	/***
+	* Generate GUID in the FTransformCollection::TransformGroup for id tracking. 
+	* The GUIDs will not be saved during serialization, and can be used to bind
+	* and entry to an location in the collection. NOTE: GUIDs are expensive to
+	* maintain so they should not be kept for cooked content. 
+	*/
+	void 
+	CHAOS_API
+	GenerateTemporaryGuids(FTransformCollection* Collection, int32 StartIdx = 0, bool bForceInit=false);
+
 };
 
 // AttributeTransfer implementation
@@ -161,8 +175,8 @@ void GeometryCollection::AttributeTransfer(const FGeometryCollection * FromColle
 	const TManagedArray<T> &FromAttribute = FromCollection->GetAttribute<T>(FromAttributeName, FGeometryCollection::VerticesGroup);
 	TManagedArray<T> &ToAttribute = ToCollection->GetAttribute<T>(ToAttributeName, FGeometryCollection::VerticesGroup);
 
-	const TManagedArray<FVector> &FromVertex = FromCollection->Vertex;
-	TManagedArray<FVector> &ToVertex = ToCollection->Vertex;
+	const TManagedArray<FVector3f> &FromVertex = FromCollection->Vertex;
+	TManagedArray<FVector3f> &ToVertex = ToCollection->Vertex;
 
 	// for each vertex in ToCollection, find the closest in FromCollection based on vertex position
 	// #todo(dmp): should we be evaluating the transform hierarchy here, or just do it in local space?
@@ -173,7 +187,7 @@ void GeometryCollection::AttributeTransfer(const FGeometryCollection * FromColle
 		Chaos::FReal ClosestDist = MAX_FLT;
 		for (int32 FromIndex = 0, ni = FromVertex.Num(); FromIndex < ni ; ++FromIndex)
 		{
-			Chaos::FReal CurrDist = FVector::DistSquared(FromVertex[FromIndex], ToVertex[ToIndex]);
+			Chaos::FReal CurrDist = FVector3f::DistSquared(FromVertex[FromIndex], ToVertex[ToIndex]);
 			if (CurrDist < ClosestDist)
 			{
 				ClosestDist = CurrDist;

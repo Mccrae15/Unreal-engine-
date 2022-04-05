@@ -16,7 +16,7 @@ UStaticMeshThumbnailRenderer::UStaticMeshThumbnailRenderer(const FObjectInitiali
 void UStaticMeshThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32 Width, uint32 Height, FRenderTarget* RenderTarget, FCanvas* Canvas, bool bAdditionalViewFamily)
 {
 	UStaticMesh* StaticMesh = Cast<UStaticMesh>(Object);
-	if (StaticMesh != nullptr && !StaticMesh->IsPendingKill())
+	if (IsValid(StaticMesh))
 	{
 		if (ThumbnailScene == nullptr || ensure(ThumbnailScene->GetWorld() != nullptr) == false)
 		{
@@ -32,15 +32,14 @@ void UStaticMeshThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint3
 		ThumbnailScene->GetScene()->UpdateSpeedTreeWind(0.0);
 
 		FSceneViewFamilyContext ViewFamily( FSceneViewFamily::ConstructionValues( RenderTarget, ThumbnailScene->GetScene(), FEngineShowFlags(ESFIM_Game) )
-			.SetWorldTimes(FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime)
+			.SetTime(UThumbnailRenderer::GetTime())
 			.SetAdditionalViewFamily(bAdditionalViewFamily));
 
 		ViewFamily.EngineShowFlags.DisableAdvancedFeatures();
 		ViewFamily.EngineShowFlags.MotionBlur = 0;
 		ViewFamily.EngineShowFlags.LOD = 0;
 
-		ThumbnailScene->GetView(&ViewFamily, X, Y, Width, Height);
-		RenderViewFamily(Canvas,&ViewFamily);
+		RenderViewFamily(Canvas, &ViewFamily, ThumbnailScene->CreateView(&ViewFamily, X, Y, Width, Height));
 		ThumbnailScene->SetStaticMesh(nullptr);
 	}
 }

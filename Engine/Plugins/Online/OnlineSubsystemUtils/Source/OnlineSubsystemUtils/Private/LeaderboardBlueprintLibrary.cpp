@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LeaderboardBlueprintLibrary.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "OnlineSubsystem.h"
@@ -18,7 +18,7 @@ ULeaderboardBlueprintLibrary::ULeaderboardBlueprintLibrary(const FObjectInitiali
 
 bool ULeaderboardBlueprintLibrary::WriteLeaderboardObject(APlayerController* PlayerController, class FOnlineLeaderboardWrite& WriteObject)
 {
-	if (APlayerState* PlayerState = (PlayerController != NULL) ? PlayerController->PlayerState : NULL)
+	if (APlayerState* PlayerState = (PlayerController != NULL) ? ToRawPtr(PlayerController->PlayerState) : NULL)
 	{
 		FUniqueNetIdPtr UserId = PlayerState->GetUniqueId().GetUniqueNetId();
 		if (UserId.IsValid())

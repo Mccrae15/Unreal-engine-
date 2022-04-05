@@ -209,7 +209,7 @@ public:
 private:
 
 	/** The maximum size of type we will allow allocation on the stack (for efficiency). Anything larger will be allocated on the heap. */
-	static const uint32 MaxStackAllocationSize = 64 - sizeof(FGuid);
+	static constexpr uint32 MaxStackAllocationSize = 64 - sizeof(FGuid);
 
 	/** Helper accessor to the data interface. Returns null for empty containers. */
 	Impl::IExpressionNodeStorage* GetData();
@@ -217,7 +217,7 @@ private:
 
 	/** TypeID - 16 bytes */
 	FGuid TypeId;
-	uint8 InlineBytes[MaxStackAllocationSize];
+	alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) uint8 InlineBytes[MaxStackAllocationSize];
 };
 
 /** A specific token in a stream. Comprises an expression node, and the stream token it was created from */

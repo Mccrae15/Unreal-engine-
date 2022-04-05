@@ -82,7 +82,7 @@ UMovieScene* GetMovieScene(TWeakObjectPtr<ALevelSequenceActor> LevelSequenceActo
 		return nullptr;
 	}
 
-	ULevelSequence* LevelSequence = Cast<ULevelSequence>(Actor->LevelSequence.TryLoad());
+	ULevelSequence* LevelSequence = Actor->GetSequence();
 	if (!LevelSequence)
 	{
 		return nullptr;
@@ -251,7 +251,7 @@ void UAutomatedLevelSequenceCapture::Initialize(TSharedPtr<FSceneViewport> InVie
 			{
 				for( auto It = TActorIterator<ALevelSequenceActor>( InViewport->GetClient()->GetWorld() ); It; ++It )
 				{
-					if( It->LevelSequence == LevelSequenceAsset )
+					if( It->GetSequence() == Asset )
 					{
 						// Found it!
 						Actor = *It;
@@ -544,7 +544,7 @@ void UAutomatedLevelSequenceCapture::SetupFrameRange()
 	ALevelSequenceActor* Actor = LevelSequenceActor.Get();
 	if( Actor )
 	{
-		ULevelSequence* LevelSequence = Cast<ULevelSequence>( Actor->LevelSequence.TryLoad() );
+		ULevelSequence* LevelSequence = Actor->GetSequence();
 		if( LevelSequence != nullptr )
 		{
 			UMovieScene* MovieScene = LevelSequence->GetMovieScene();
@@ -648,14 +648,13 @@ void UAutomatedLevelSequenceCapture::OnTick(float DeltaSeconds)
 		return;
 	}
 
-	// Flush the level streaming system. This would cause hitches under normal gameplay, but because we already run at slower-than-real-time
+	// Block till level streaming is completed. This would cause hitches under normal gameplay, but because we already run at slower-than-real-time
 	// it doesn't matter for movie captures. This solves situations where games have systems that pull in sublevels via level streaming that cannot
-	// be normally controlled via the Sequencer Level Visibility track. If all levels are already loaded, flushing will have no effect.
-	if (GetWorld())
+	// be normally controlled via the Sequencer Level Visibility track. If all levels are already loaded, blocking will have no effect.
+	if (Actor->GetWorld())
 	{
-		GetWorld()->FlushLevelStreaming(EFlushLevelStreamingType::Full);
+		Actor->GetWorld()->BlockTillLevelStreamingCompleted();
 	}
-
 
 	if (GShaderCompilingManager && GShaderCompilingManager->GetNumRemainingJobs() > 0)
 	{
@@ -706,7 +705,6 @@ void UAutomatedLevelSequenceCapture::OnTick(float DeltaSeconds)
 	}
 	else if( CaptureState == ELevelSequenceCaptureState::ReadyToWarmUp )
 	{
-		Actor->SequencePlayer->SetSnapshotSettings(FLevelSequenceSnapshotSettings(Settings.ZeroPadFrameNumbers, Settings.GetFrameRate()));
 		Actor->SequencePlayer->Play();
 		// Start warming up
 		CaptureState = ELevelSequenceCaptureState::WarmingUp;

@@ -6,6 +6,7 @@
 #include "DMXProtocolConstants.h"
 #include "DMXProtocolLog.h"
 #include "DMXProtocolSettings.h"
+#include "DMXProtocolUtils.h"
 #include "DMXStats.h"
 #include "Packets/DMXProtocolArtNetPackets.h"
 
@@ -14,7 +15,6 @@
 #include "SocketSubsystem.h"
 #include "Common/UdpSocketBuilder.h"
 #include "Common/UdpSocketSender.h"
-#include "HAL/RunnableThread.h"
 #include "Serialization/ArrayReader.h"
 #include "Serialization/ArrayWriter.h"
 #include "UObject/Class.h"
@@ -27,13 +27,8 @@ FDMXProtocolArtNetSender::FDMXProtocolArtNetSender(const TSharedPtr<FDMXProtocol
 	, Socket(&InSocket)
 	, NetworkInterfaceInternetAddr(InNetworkInterfaceInternetAddr)
 	, DestinationInternetAddr(InDestinationInternetAddr)
-	, bStopping(false)
-	, Thread(nullptr)
 {
 	check(DestinationInternetAddr.IsValid());
-
-	FString SenderThreadName = FString(TEXT("ArtNetSender_")) + InDestinationInternetAddr->ToString(false);
-	Thread = FRunnableThread::Create(this, *SenderThreadName, 0U, TPri_TimeCritical, FPlatformAffinity::GetPoolThreadMask());
 
 	UE_LOG(LogDMXProtocol, VeryVerbose, TEXT("Created Art-Net Sender at %s sending to %s"), *NetworkInterfaceInternetAddr->ToString(false), *DestinationInternetAddr->ToString(false));
 }
@@ -46,12 +41,6 @@ FDMXProtocolArtNetSender::~FDMXProtocolArtNetSender()
 		SocketSubsystem->DestroySocket(Socket);
 	}
 
-	if (Thread != nullptr)
-	{
-		Thread->Kill(true);
-		delete Thread;
-	}
-
 	UE_LOG(LogDMXProtocol, VeryVerbose, TEXT("Destroyed Art-Net Sender at %s sending to %s"), *NetworkInterfaceInternetAddr->ToString(false), *DestinationInternetAddr->ToString(false));
 }
 
@@ -62,7 +51,7 @@ TSharedPtr<FDMXProtocolArtNetSender> FDMXProtocolArtNetSender::TryCreateUnicastS
 	const FString& InUnicastIP)
 {
 	// Try to create a socket
-	TSharedPtr<FInternetAddr> NewNetworkInterfaceInternetAddr = CreateInternetAddr(InNetworkInterfaceIP, ARTNET_SENDER_PORT);
+	TSharedPtr<FInternetAddr> NewNetworkInterfaceInternetAddr = FDMXProtocolUtils::CreateInternetAddr(InNetworkInterfaceIP, ARTNET_SENDER_PORT);
 	if (!NewNetworkInterfaceInternetAddr.IsValid())
 	{
 		UE_LOG(LogDMXProtocol, Error, TEXT("Cannot create Art-Net sender: Invalid IP address: %s"), *InNetworkInterfaceIP);
@@ -84,7 +73,7 @@ TSharedPtr<FDMXProtocolArtNetSender> FDMXProtocolArtNetSender::TryCreateUnicastS
 	}
 
 	// Try create the unicast internet addr
-	TSharedPtr<FInternetAddr> NewUnicastInternetAddr = CreateInternetAddr(InUnicastIP, ARTNET_PORT);
+	TSharedPtr<FInternetAddr> NewUnicastInternetAddr = FDMXProtocolUtils::CreateInternetAddr(InUnicastIP, ARTNET_PORT);
 	if (!NewUnicastInternetAddr.IsValid())
 	{
 		UE_LOG(LogDMXProtocol, Error, TEXT("Invalid Unicast IP %s for DMX Port. Please update your Output Port in Project Settings -> Plugins -> DMX Plugin"), *InUnicastIP);
@@ -102,7 +91,7 @@ TSharedPtr<FDMXProtocolArtNetSender> FDMXProtocolArtNetSender::TryCreateBroadcas
 	const FString& InNetworkInterfaceIP)
 {
 	// Try to create a socket
-	TSharedPtr<FInternetAddr> NewNetworkInterfaceInternetAddr = CreateInternetAddr(InNetworkInterfaceIP, ARTNET_SENDER_PORT);
+	TSharedPtr<FInternetAddr> NewNetworkInterfaceInternetAddr = FDMXProtocolUtils::CreateInternetAddr(InNetworkInterfaceIP, ARTNET_SENDER_PORT);
 	if (!NewNetworkInterfaceInternetAddr.IsValid())
 	{
 		UE_LOG(LogDMXProtocol, Error, TEXT("Cannot create Art-Net sender: Invalid IP address: %s"), *InNetworkInterfaceIP);
@@ -134,10 +123,10 @@ TSharedPtr<FDMXProtocolArtNetSender> FDMXProtocolArtNetSender::TryCreateBroadcas
 
 bool FDMXProtocolArtNetSender::EqualsEndpoint(const FString& NetworkInterfaceIP, const FString& DestinationIPAddress) const
 {
-	TSharedPtr<FInternetAddr> OtherNetworkInterfaceInternetAddr = CreateInternetAddr(NetworkInterfaceIP, ARTNET_SENDER_PORT);
+	TSharedPtr<FInternetAddr> OtherNetworkInterfaceInternetAddr = FDMXProtocolUtils::CreateInternetAddr(NetworkInterfaceIP, ARTNET_SENDER_PORT);
 	if (OtherNetworkInterfaceInternetAddr.IsValid() && OtherNetworkInterfaceInternetAddr->CompareEndpoints(*NetworkInterfaceInternetAddr))
 	{
-		TSharedPtr<FInternetAddr> OtherDestinationInternetAddr = CreateInternetAddr(DestinationIPAddress, ARTNET_PORT);
+		TSharedPtr<FInternetAddr> OtherDestinationInternetAddr = FDMXProtocolUtils::CreateInternetAddr(DestinationIPAddress, ARTNET_PORT);
 		if (OtherDestinationInternetAddr.IsValid() && OtherDestinationInternetAddr->CompareEndpoints(*DestinationInternetAddr))
 		{
 			return true;
@@ -166,32 +155,51 @@ bool FDMXProtocolArtNetSender::IsCausingLoopback() const
 
 void FDMXProtocolArtNetSender::SendDMXSignal(const FDMXSignalSharedRef& DMXSignal)
 {
-	Buffer.Enqueue(DMXSignal);
-}
+	// This may be called from multiple threads, so calls need be synchronized
+	const FScopeLock SendDMXLock(&SendDMXCriticalSection);
 
-void FDMXProtocolArtNetSender::ClearBuffer()
-{
-	FScopeLock Lock(&LatestSignalLock);
+	FDMXProtocolArtNetDMXPacket ArtNetDMXPacket;
+	FMemory::Memcpy(ArtNetDMXPacket.Data, DMXSignal->ChannelData.GetData(), ARTNET_DMX_LENGTH);
 
-	Buffer.Empty();
-	UniverseToLatestSignalMap.Reset();
-}
+	uint16 UniverseID = static_cast<uint16>(DMXSignal->ExternUniverseID);
 
-TSharedPtr<FInternetAddr> FDMXProtocolArtNetSender::CreateInternetAddr(const FString& IPAddress, int32 Port)
-{
-	ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+	//Set Packet Data
+	ArtNetDMXPacket.Physical = 0; // As per Standard: For information only. We always specify port 0.
+	ArtNetDMXPacket.Universe = UniverseID;
+	ArtNetDMXPacket.Sequence = 0x00; // As per Standard: The Sequence field is set to 0x00 to disable this feature.
 
-	TSharedPtr<FInternetAddr> InternetAddr = SocketSubsystem->CreateInternetAddr();
+	TSharedPtr<FBufferArchive> BufferArchive = ArtNetDMXPacket.Pack(ARTNET_DMX_LENGTH);
 
-	bool bIsValidIP = false;
-	InternetAddr->SetIp(*IPAddress, bIsValidIP);
-	if (!bIsValidIP)
+	int32 SendDataSize = BufferArchive->Num();
+	int32 BytesSent = -1;
+
+	// Try to send, log errors but avoid spaming the Log
+	static bool bErrorEverLogged = false;
+	if (Socket->SendTo(BufferArchive->GetData(), BufferArchive->Num(), BytesSent, *DestinationInternetAddr))
 	{
-		return nullptr;
+		INC_DWORD_STAT(STAT_ArtNetPackagesSent);
+	}
+	else
+	{
+		if (!bErrorEverLogged)
+		{
+			ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+			TEnumAsByte<ESocketErrors> RecvFromError = SocketSubsystem->GetLastErrorCode();
+
+			UE_LOG(LogDMXProtocol, Error, TEXT("Failed send DMX to %s with Error Code %d"), *DestinationInternetAddr->ToString(false), RecvFromError);
+
+			bErrorEverLogged = true;
+		}
 	}
 
-	InternetAddr->SetPort(Port);
-	return InternetAddr;
+	if (BytesSent != SendDataSize)
+	{
+		if (!bErrorEverLogged)
+		{
+			UE_LOG(LogDMXProtocol, Warning, TEXT("Incomplete DMX Packet sent to %s"), *DestinationInternetAddr->ToString(false));
+			bErrorEverLogged = true;
+		}
+	}
 }
 
 TSharedRef<FInternetAddr> FDMXProtocolArtNetSender::CreateBroadcastInternetAddr(int32 Port)
@@ -205,131 +213,4 @@ TSharedRef<FInternetAddr> FDMXProtocolArtNetSender::CreateBroadcastInternetAddr(
 	check(InternetAddr->IsValid());
 
 	return InternetAddr;
-}
-
-bool FDMXProtocolArtNetSender::Init()
-{
-	return true;
-}
-
-uint32 FDMXProtocolArtNetSender::Run()
-{
-	const UDMXProtocolSettings* DMXSettings = GetDefault<UDMXProtocolSettings>();
-	check(DMXSettings);
-	
-	// Fixed rate delta time
-	const double SendDeltaTime = 1.f / DMXSettings->SendingRefreshRate;
-
-	while (!bStopping)
-	{
-		const double StartTime = FPlatformTime::Seconds();
-
-		Update();
-
-		const double EndTime = FPlatformTime::Seconds();
-		const double WaitTime = SendDeltaTime - (EndTime - StartTime);
-
-		if (WaitTime > 0.f)
-		{
-			// Sleep by the amount which is set in refresh rate
-			FPlatformProcess::SleepNoStats(WaitTime);
-		}
-
-		// In the unlikely case we took to long to send, we instantly continue, but do not take 
-		// further measures to compensate - We would have to run faster than DMX send rate to catch up.
-	}
-
-	return 0;
-}
-
-void FDMXProtocolArtNetSender::Stop()
-{
-	bStopping = true;
-}
-
-void FDMXProtocolArtNetSender::Exit()
-{
-}
-
-void FDMXProtocolArtNetSender::Tick()
-{
-	Update();
-}
-
-FSingleThreadRunnable* FDMXProtocolArtNetSender::GetSingleThreadInterface()
-{
-	return this;
-}
-
-void FDMXProtocolArtNetSender::Update()
-{
-	FScopeLock Lock(&LatestSignalLock);
-
-	UniverseToLatestSignalMap.Reset();
-
-	// Keep latest signal per universe
-	FDMXSignalSharedPtr DequeuedDMXSignal;
-	while (Buffer.Dequeue(DequeuedDMXSignal))
-	{
-		if (Protocol->IsValidUniverseID(DequeuedDMXSignal->ExternUniverseID))
-		{
-			if(UniverseToLatestSignalMap.Contains(DequeuedDMXSignal->ExternUniverseID))
-			{
-				UniverseToLatestSignalMap[DequeuedDMXSignal->ExternUniverseID] = DequeuedDMXSignal.ToSharedRef();
-			}
-			else
-			{
-				UniverseToLatestSignalMap.Add(DequeuedDMXSignal->ExternUniverseID, DequeuedDMXSignal.ToSharedRef());
-			}
-		}
-	}
-
-	// Create a packet for each universe and send it
-	for (const TTuple<int32, FDMXSignalSharedRef>& UniverseToSignalKvp : UniverseToLatestSignalMap)
-	{
-		const FDMXSignalSharedRef& DMXSignal = UniverseToSignalKvp.Value;
-
-		FDMXProtocolArtNetDMXPacket ArtNetDMXPacket;
-		FMemory::Memcpy(ArtNetDMXPacket.Data, DMXSignal->ChannelData.GetData(), ARTNET_DMX_LENGTH);
-
-		uint16 UniverseID = static_cast<uint16>(DMXSignal->ExternUniverseID);
-
-		//Set Packet Data
-		ArtNetDMXPacket.Physical = 0; // As per Standard: For information only. We always specify port 0.
-		ArtNetDMXPacket.Universe = UniverseID;
-		ArtNetDMXPacket.Sequence = 0x00; // As per Standard: The Sequence field is set to 0x00 to disable this feature.
-
-		TSharedPtr<FBufferArchive> BufferArchive = ArtNetDMXPacket.Pack(ARTNET_DMX_LENGTH);
-
-		int32 SendDataSize = BufferArchive->Num();
-		int32 BytesSent = -1;
-
-		// Try to send, log errors but avoid spaming the Log
-		static bool bErrorEverLogged = false;
-		if (Socket->SendTo(BufferArchive->GetData(), BufferArchive->Num(), BytesSent, *DestinationInternetAddr))
-		{
-			INC_DWORD_STAT(STAT_ArtNetPackagesSent);
-		}
-		else
-		{
-			if(!bErrorEverLogged)
-			{
-				ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-				TEnumAsByte<ESocketErrors> RecvFromError = SocketSubsystem->GetLastErrorCode();
-
-				UE_LOG(LogDMXProtocol, Error, TEXT("Failed send DMX to %s with Error Code %d"), *DestinationInternetAddr->ToString(false), RecvFromError);
-
-				bErrorEverLogged = true;
-			}
-		}
-		
-		if (BytesSent != SendDataSize)
-		{
-			if (!bErrorEverLogged)
-			{
-				UE_LOG(LogDMXProtocol, Warning, TEXT("Incomplete DMX Packet sent to %s"), *DestinationInternetAddr->ToString(false));
-				bErrorEverLogged = true;
-			}
-		}
-	}
 }

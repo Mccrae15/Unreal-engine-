@@ -10,6 +10,7 @@
 #include "Interfaces/OnlineIdentityInterface.h"
 #include "PatchCheck.h"
 #include "InstallBundleTypes.h"
+#include "Containers/Ticker.h"
 #include "UpdateManager.generated.h"
 
 class Error;
@@ -387,8 +388,8 @@ protected:
 	UPROPERTY()
 	EUpdateCompletionStatus LastCompletionResult[2];
 
-	FDelegateHandle TickerHandle;
-	FTimerHandle StartCheckInternalTimerHandle;
+	FTSTicker::FDelegateHandle TickerHandle;
+	FTSTicker::FDelegateHandle StartCheckInternalTimerHandle;
 
 private:
 
@@ -404,10 +405,7 @@ private:
 
 	/** Fire a delegate after a given amount of time */
 	typedef TFunction<void(void)> DelayCb;
-	FTimerHandle DelayResponse(DelayCb&& Delegate, float Delay);
-
-	/** Helper function to check if a timer is running. */
-	bool IsTimerHandleActive(const FTimerHandle& TimerHandle) const;
+	FTSTicker::FDelegateHandle DelayResponse(DelayCb&& Delegate, float Delay);
 
 	friend bool SkipPatchCheck(UUpdateManager* UpdateManager);
 

@@ -3,12 +3,38 @@
 #include "Engine/SubsurfaceProfile.h"
 #include "RenderingThread.h"
 #include "RendererInterface.h"
-#include "Rendering/SeparableSSS.h"
 #include "Rendering/BurleyNormalizedSSS.h"
 #include "EngineModule.h"
 #include "RenderTargetPool.h"
+#include "PixelShaderUtils.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogSubsurfaceProfile, Log, All);
+
+static TAutoConsoleVariable<int32> CVarSSProfilesPreIntegratedTextureResolution(
+	TEXT("r.SSProfilesPreIntegratedTextureResolution"),
+	64,
+	TEXT("The resolution of the subsurface profile preintegrated texture.\n"),
+	ECVF_RenderThreadSafe
+);
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+static TAutoConsoleVariable<int32> CVarSSProfilesPreIntegratedTextureForceUpdate(
+	TEXT("r.SSProfilesPreIntegratedTextureForceUpdate"),
+	0,
+	TEXT("0: Only update the preintegrated texture as needed.\n")
+	TEXT("1: Force to update the preintegrated texture for debugging.\n"),
+	ECVF_Cheat | ECVF_RenderThreadSafe);
+#endif
+
+static bool ForceUpdateSSProfilesPreIntegratedTexture()
+{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	return (CVarSSProfilesPreIntegratedTextureForceUpdate.GetValueOnAnyThread() == 1);
+#else
+	return false;
+#endif
+}
+
 
 // lives on the render thread
 ENGINE_API TGlobalResource<FSubsurfaceProfileTexture> GSubsurfaceProfileTextureObject;
@@ -16,11 +42,40 @@ ENGINE_API TGlobalResource<FSubsurfaceProfileTexture> GSubsurfaceProfileTextureO
 // Texture with one or more SubSurfaceProfiles or 0 if there is no user
 static TRefCountPtr<IPooledRenderTarget> GSSProfiles;
 
+// Texture with one or more pre-integrated textures or 0 if there is no user
+static TRefCountPtr<IPooledRenderTarget> GSSProfilesPreIntegratedTexture;
+
+void ConvertSubsurfaceParametersFromSeparableToBurley(const FSubsurfaceProfileStruct& Settings, FLinearColor& SurfaceAlbedo, FLinearColor& MeanFreePathColor, float& MeanFreePathDistance)
+{
+	MapFallOffColor2SurfaceAlbedoAndDiffuseMeanFreePath(Settings.FalloffColor.R, SurfaceAlbedo.R, MeanFreePathColor.R);
+	MapFallOffColor2SurfaceAlbedoAndDiffuseMeanFreePath(Settings.FalloffColor.G, SurfaceAlbedo.G, MeanFreePathColor.G);
+	MapFallOffColor2SurfaceAlbedoAndDiffuseMeanFreePath(Settings.FalloffColor.B, SurfaceAlbedo.B, MeanFreePathColor.B);
+
+	//Normalize mean free path color and set the corresponding dfmp
+	float MaxMeanFreePathColor = FMath::Max3(MeanFreePathColor.R, MeanFreePathColor.G, MeanFreePathColor.B);
+	if (MaxMeanFreePathColor > 1)
+	{
+		MeanFreePathColor /= MaxMeanFreePathColor;
+		MeanFreePathDistance = FMath::Clamp(Settings.ScatterRadius * MaxMeanFreePathColor, 0.1f, 50.0f);	// 50.0f is the ClampMax of MeanFreePathDistance.
+	}
+}
+
+void UpgradeSeparableToBurley(FSubsurfaceProfileStruct& Settings)
+{
+	ConvertSubsurfaceParametersFromSeparableToBurley(Settings, Settings.SurfaceAlbedo, Settings.MeanFreePathColor, Settings.MeanFreePathDistance);
+	Settings.MeanFreePathDistance /= (2.229f * 2.229f);
+	Settings.Tint = Settings.SubsurfaceColor;
+	Settings.bEnableBurley = true;
+}
+
 FSubsurfaceProfileTexture::FSubsurfaceProfileTexture()
 {
 	check(IsInGameThread());
 
 	FSubsurfaceProfileStruct DefaultSkin;
+
+	//The default burley in slot 0 behaves the same as Separable previously
+	UpgradeSeparableToBurley(DefaultSkin);
 
 	// add element 0, it is used as default profile
 	SubsurfaceProfileEntries.Add(FSubsurfaceProfileEntry(DefaultSkin, 0));
@@ -96,6 +151,12 @@ void FSubsurfaceProfileTexture::UpdateProfile(int32 AllocationId, const FSubsurf
 	SubsurfaceProfileEntries[AllocationId].Settings = Settings;
 
 	GSSProfiles.SafeRelease();
+	GSSProfilesPreIntegratedTexture.SafeRelease();
+}
+
+IPooledRenderTarget* FSubsurfaceProfileTexture::GetTexture()
+{
+	return GSSProfiles;
 }
 
 IPooledRenderTarget* FSubsurfaceProfileTexture::GetTexture(FRHICommandListImmediate& RHICmdList)
@@ -108,9 +169,89 @@ IPooledRenderTarget* FSubsurfaceProfileTexture::GetTexture(FRHICommandListImmedi
 	return GSSProfiles;
 }
 
+class FSSProfilePreIntegratedPS : public FGlobalShader
+{
+public:
+	DECLARE_GLOBAL_SHADER(FSSProfilePreIntegratedPS);
+	SHADER_USE_PARAMETER_STRUCT(FSSProfilePreIntegratedPS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_TEXTURE(Texture2D, SourceSSProfilesTexture)
+		SHADER_PARAMETER_SAMPLER(SamplerState, SourceSSProfilesSampler)
+		SHADER_PARAMETER(FVector4f, SourceSSProfilesTextureSizeAndInvSize)
+		SHADER_PARAMETER(FVector4f, TargetSSProfilesPreIntegratedTextureSizeAndInvSize)
+		SHADER_PARAMETER(int32, SourceSubsurfaceProfileInt)
+		RENDER_TARGET_BINDING_SLOTS()
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsMobilePlatform(Parameters.Platform);
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FSSProfilePreIntegratedPS, "/Engine/Private/SSProfilePreIntegratedMobile.usf", "SSProfilePreIntegratedPS", SF_Pixel);
+
+IPooledRenderTarget* FSubsurfaceProfileTexture::GetSSProfilesPreIntegratedTexture(FRDGBuilder& GraphBuilder, EShaderPlatform ShaderPlatform)
+{
+	// For now the pre-integrated texture only used on mobile platform
+	if (!IsMobilePlatform(ShaderPlatform))
+	{
+		return nullptr;
+	}
+
+	// PreIntegrated SSS look up texture
+	int32 SSProfilesPreIntegratedTextureResolution = FMath::RoundUpToPowerOfTwo(FMath::Max(CVarSSProfilesPreIntegratedTextureResolution.GetValueOnAnyThread(), 32));
+	
+	// Generate the new preintegrated texture if needed.
+	if (!GSSProfilesPreIntegratedTexture || 
+		GSSProfilesPreIntegratedTexture->GetDesc().Extent != SSProfilesPreIntegratedTextureResolution ||
+		ForceUpdateSSProfilesPreIntegratedTexture())
+	{
+		GSSProfilesPreIntegratedTexture.SafeRelease();
+
+		int32 SubsurfaceProfileEntriesNum = SubsurfaceProfileEntries.Num();
+		// Use RGB10A2 since it could be compressed by mobile hardware according to ARM.
+		FRDGTextureDesc ProfileTextureDesc = FRDGTextureDesc::Create2DArray(
+			SSProfilesPreIntegratedTextureResolution, 
+			PF_A2B10G10R10, 
+			FClearValueBinding::Black, 
+			TexCreate_TargetArraySlicesIndependently | TexCreate_ShaderResource | TexCreate_RenderTargetable,
+			SubsurfaceProfileEntriesNum);
+		FRDGTextureRef ProfileTexture = GraphBuilder.CreateTexture(ProfileTextureDesc, TEXT("SSProfilePreIntegratedTexture"));
+
+		for (int32 i = 0; i < SubsurfaceProfileEntriesNum; ++i)
+		{
+			FSSProfilePreIntegratedPS::FParameters* PassParameters = GraphBuilder.AllocParameters<FSSProfilePreIntegratedPS::FParameters>();
+			PassParameters->RenderTargets[0] = FRenderTargetBinding(ProfileTexture, ERenderTargetLoadAction::EClear, 0, i);
+
+			PassParameters->SourceSSProfilesTexture = GetSubsurfaceProfileTextureWithFallback();
+			PassParameters->SourceSSProfilesSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+
+			FIntVector SourceSSProfilesTextureSize = PassParameters->SourceSSProfilesTexture->GetSizeXYZ();
+
+			PassParameters->SourceSSProfilesTextureSizeAndInvSize = FVector4f(SourceSSProfilesTextureSize.X, SourceSSProfilesTextureSize.Y, 1.0f / SourceSSProfilesTextureSize.X, 1.0f / SourceSSProfilesTextureSize.Y);
+			PassParameters->TargetSSProfilesPreIntegratedTextureSizeAndInvSize = FVector4f(SSProfilesPreIntegratedTextureResolution, SSProfilesPreIntegratedTextureResolution, 1.0f / SSProfilesPreIntegratedTextureResolution, 1.0f / SSProfilesPreIntegratedTextureResolution);
+			PassParameters->SourceSubsurfaceProfileInt = i;
+
+			FIntRect ViewRect = FIntRect(FIntPoint(0, 0), SSProfilesPreIntegratedTextureResolution);
+
+			const auto GlobalShaderMap = GetGlobalShaderMap(ERHIFeatureLevel::ES3_1);
+			TShaderMapRef<FSSProfilePreIntegratedPS> PixelShader(GlobalShaderMap);
+
+			FPixelShaderUtils::AddFullscreenPass(GraphBuilder, GlobalShaderMap, RDG_EVENT_NAME("SSS::SSProfilePreIntegrated"), PixelShader, PassParameters, ViewRect);
+		}
+
+		GraphBuilder.QueueTextureExtraction(ProfileTexture, &GSSProfilesPreIntegratedTexture);
+	}
+
+	return GSSProfilesPreIntegratedTexture;
+}
+
 void FSubsurfaceProfileTexture::ReleaseDynamicRHI()
 {
 	GSSProfiles.SafeRelease();
+	GSSProfilesPreIntegratedTexture.SafeRelease();
 }
 
 static float GetNextSmallerPositiveFloat(float x)
@@ -126,8 +267,8 @@ static float GetNextSmallerPositiveFloat(float x)
 
 // NOTE: Changing offsets below requires updating all instances of #SSSS_CONSTANTS
 // TODO: This needs to be defined in a single place and shared between C++ and shaders!
-#define SSSS_SUBSURFACE_COLOR_OFFSET			0
-#define BSSS_SURFACEALBEDO_OFFSET                (SSSS_SUBSURFACE_COLOR_OFFSET+1)
+#define SSSS_TINT_SCALE_OFFSET					0
+#define BSSS_SURFACEALBEDO_OFFSET               (SSSS_TINT_SCALE_OFFSET+1)
 #define BSSS_DMFP_OFFSET                        (BSSS_SURFACEALBEDO_OFFSET+1)
 #define SSSS_TRANSMISSION_OFFSET				(BSSS_DMFP_OFFSET+1)
 #define SSSS_BOUNDARY_COLOR_BLEED_OFFSET		(SSSS_TRANSMISSION_OFFSET+1)
@@ -139,10 +280,8 @@ static float GetNextSmallerPositiveFloat(float x)
 #define SSSS_KERNEL2_OFFSET						(SSSS_KERNEL1_OFFSET + SSSS_KERNEL1_SIZE)
 #define SSSS_KERNEL2_SIZE						6
 #define SSSS_KERNEL_TOTAL_SIZE					(SSSS_KERNEL0_SIZE + SSSS_KERNEL1_SIZE + SSSS_KERNEL2_SIZE)
-#define SSSS_TRANSMISSION_PROFILE_OFFSET		(SSSS_KERNEL0_OFFSET + SSSS_KERNEL_TOTAL_SIZE)
-#define SSSS_TRANSMISSION_PROFILE_SIZE			32
-#define BSSS_TRANSMISSION_PROFILE_OFFSET        (SSSS_TRANSMISSION_PROFILE_OFFSET + SSSS_TRANSMISSION_PROFILE_SIZE)
-#define BSSS_TRANSMISSION_PROFILE_SIZE			SSSS_TRANSMISSION_PROFILE_SIZE
+#define BSSS_TRANSMISSION_PROFILE_OFFSET		(SSSS_KERNEL0_OFFSET + SSSS_KERNEL_TOTAL_SIZE)
+#define BSSS_TRANSMISSION_PROFILE_SIZE			32
 #define	SSSS_MAX_TRANSMISSION_PROFILE_DISTANCE	5.0f // See MaxTransmissionProfileDistance in ComputeTransmissionProfile(), SeparableSSS.cpp
 #define	SSSS_MAX_DUAL_SPECULAR_ROUGHNESS		2.0f
 
@@ -190,7 +329,7 @@ void SetupSurfaceAlbedoAndDiffuseMeanFreePath(FLinearColor& SurfaceAlbedo, FLine
 	//This is an optimization to shift finding the max correspondence workload
 	//to CPU.
 	const float MaxDmfpComp = FMath::Max3(Dmfp.R, Dmfp.G, Dmfp.B);
-	const uint32 IndexOfMaxDmfp = (Dmfp.R == MaxDmfpComp) ? 0 : ((Dmfp.B == MaxDmfpComp) ? 1 : 2);
+	const uint32 IndexOfMaxDmfp = (Dmfp.R == MaxDmfpComp) ? 0 : ((Dmfp.G == MaxDmfpComp) ? 1 : 2);
 
 	SurfaceAlbedo.A = SurfaceAlbedo.Component(IndexOfMaxDmfp);
 	Dmfp.A = MaxDmfpComp;
@@ -234,8 +373,12 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 	FLinearColor TextureRow[Width];
 	FMemory::Memzero(TextureRow);
 
-	// Android devices have different precision to desktop GPU's, scaling to one less works on Adreno and Mali
-	const float FloatScaleInitial = GMaxRHIShaderPlatform == SP_VULKAN_SM5_ANDROID ? 0xffff : 0x10000;
+	// bias to avoid div by 0 and a jump to a different value
+	// this basically means we don't want subsurface scattering
+	// 0.0001f turned out to be too small to fix the issue (for a small KernelSize)
+	const float Bias = 0.009f;
+	const float CmToMm = 10.f;
+	const float FloatScaleInitial = 0x10000;
 	const float FloatScale = GetNextSmallerPositiveFloat(FloatScaleInitial);
 	check((int32)GetNextSmallerPositiveFloat(FloatScaleInitial) == (FloatScaleInitial - 1));
 
@@ -243,25 +386,23 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 	{
 		FSubsurfaceProfileStruct Data = SubsurfaceProfileEntries[y].Settings;
 
-		// bias to avoid div by 0 and a jump to a different value
-		// this basically means we don't want subsurface scattering
-		// 0.0001f turned out to be too small to fix the issue (for a small KernelSize)
-		const float Bias = 0.009f;
-
-		Data.SubsurfaceColor = Data.SubsurfaceColor.GetClamped();
+		Data.Tint = Data.Tint.GetClamped();
 		Data.FalloffColor = Data.FalloffColor.GetClamped(Bias);
-		Data.MeanFreePathColor = Data.MeanFreePathColor.GetClamped(Bias);
+		Data.MeanFreePathColor = Data.MeanFreePathColor.GetClamped(Bias); // In Cm
 		Data.TransmissionTintColor = Data.TransmissionTintColor.GetClamped(Bias);
 		Data.SurfaceAlbedo = Data.SurfaceAlbedo.GetClamped(Bias);
 
-		// to allow blending of the Subsurface with fullres in the shader
-		TextureRow[SSSS_SUBSURFACE_COLOR_OFFSET] = Data.SubsurfaceColor;
-		TextureRow[SSSS_SUBSURFACE_COLOR_OFFSET].A = EncodeWorldUnitScale(Data.WorldUnitScale);
+		// to allow blending of the Subsurface with fullres in the shader and
+		// to depricate {scatter radius, falloff} in favor of albedo/MFP, need the `subsurface color` as tint.
+		TextureRow[SSSS_TINT_SCALE_OFFSET] = Data.Tint;
+		TextureRow[SSSS_TINT_SCALE_OFFSET].A = EncodeWorldUnitScale(Data.WorldUnitScale);
 		
-		FLinearColor DifffuseMeanFreePath = Data.MeanFreePathColor*Data.MeanFreePathDistance*10.0f; // convert cm to mm.
-		SetupSurfaceAlbedoAndDiffuseMeanFreePath(Data.SurfaceAlbedo, DifffuseMeanFreePath);
+		const float UnitToCm = Data.WorldUnitScale;
+
+		FLinearColor DifffuseMeanFreePathInMm = (Data.MeanFreePathColor*Data.MeanFreePathDistance) * CmToMm; // convert cm to mm.
+		SetupSurfaceAlbedoAndDiffuseMeanFreePath(Data.SurfaceAlbedo, DifffuseMeanFreePathInMm);
 		TextureRow[BSSS_SURFACEALBEDO_OFFSET] = Data.SurfaceAlbedo;
-		TextureRow[BSSS_DMFP_OFFSET] = EncodeDiffuseMeanFreePath(DifffuseMeanFreePath);
+		TextureRow[BSSS_DMFP_OFFSET] = EncodeDiffuseMeanFreePath(DifffuseMeanFreePathInMm);
 
 		TextureRow[SSSS_BOUNDARY_COLOR_BLEED_OFFSET] = Data.BoundaryColorBleed;
 
@@ -300,40 +441,30 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 			Data.ScatterRadius = FMath::Max(Data.MeanFreePathDistance*Data.MeanFreePathColor.GetMax()/2.229f, 0.1f);
 
 			ComputeMirroredBSSSKernel(&TextureRow[SSSS_KERNEL0_OFFSET], SSSS_KERNEL0_SIZE, Data.SurfaceAlbedo,
-				DifffuseMeanFreePath, Data.ScatterRadius);
+				DifffuseMeanFreePathInMm, Data.ScatterRadius);
 			ComputeMirroredBSSSKernel(&TextureRow[SSSS_KERNEL1_OFFSET], SSSS_KERNEL1_SIZE, Data.SurfaceAlbedo,
-				DifffuseMeanFreePath, Data.ScatterRadius);
+				DifffuseMeanFreePathInMm, Data.ScatterRadius);
 			ComputeMirroredBSSSKernel(&TextureRow[SSSS_KERNEL2_OFFSET], SSSS_KERNEL2_SIZE, Data.SurfaceAlbedo,
-				DifffuseMeanFreePath, Data.ScatterRadius);
+				DifffuseMeanFreePathInMm, Data.ScatterRadius);
 
 			// Then, scale up by world unit scale and the fitting parameters to affect screen space sampling location.
 			// For high irradiance, the lose of energy due to insufficient sampling count needs to be compensated to
 			// make Burley fallback looks the same to Burley. Set 1.0f when we have enough samples.
 			const float SamplingCountCompensation = 0.707f;
 			Data.ScatterRadius *= (Data.WorldUnitScale * 10.0f)*2.229f* SamplingCountCompensation;
-
-			// Reset subsurface rgb component to 1. So in the combine pass, we will directly use the subsurface scattering result
-			// in Burley fallback and Burley mode.
-			TextureRow[SSSS_SUBSURFACE_COLOR_OFFSET].R = 1; 
-			TextureRow[SSSS_SUBSURFACE_COLOR_OFFSET].G = 1; 
-			TextureRow[SSSS_SUBSURFACE_COLOR_OFFSET].B = 1; 
 		}
 		else
 		{
-			ComputeMirroredSSSKernel(&TextureRow[SSSS_KERNEL0_OFFSET], SSSS_KERNEL0_SIZE, Data.SubsurfaceColor, Data.FalloffColor);
-			ComputeMirroredSSSKernel(&TextureRow[SSSS_KERNEL1_OFFSET], SSSS_KERNEL1_SIZE, Data.SubsurfaceColor, Data.FalloffColor);
-			ComputeMirroredSSSKernel(&TextureRow[SSSS_KERNEL2_OFFSET], SSSS_KERNEL2_SIZE, Data.SubsurfaceColor, Data.FalloffColor);
+			UE_LOG(LogSubsurfaceProfile, Warning, TEXT("Dipole model has already been upgraded to Burley. Should not reach here."));
 		}
 
-		ComputeTransmissionProfile(&TextureRow[SSSS_TRANSMISSION_PROFILE_OFFSET], SSSS_TRANSMISSION_PROFILE_SIZE, Data.SubsurfaceColor, Data.FalloffColor, Data.ExtinctionScale);
-
-		ComputeTransmissionProfileBurley(&TextureRow[BSSS_TRANSMISSION_PROFILE_OFFSET], BSSS_TRANSMISSION_PROFILE_SIZE,
-			Data.SubsurfaceColor, Data.FalloffColor, Data.ExtinctionScale, Data.SurfaceAlbedo, DifffuseMeanFreePath,Data.WorldUnitScale * 10.0f/*cm to mm*/,Data.TransmissionTintColor);
+		ComputeTransmissionProfileBurley(&TextureRow[BSSS_TRANSMISSION_PROFILE_OFFSET], BSSS_TRANSMISSION_PROFILE_SIZE, 
+			Data.FalloffColor, Data.ExtinctionScale, Data.SurfaceAlbedo, DifffuseMeanFreePathInMm, UnitToCm * CmToMm, Data.TransmissionTintColor);
 
 		// could be lower than 1 (but higher than 0) to range compress for better quality (for 8 bit)
 		const float TableMaxRGB = 1.0f;
 		const float TableMaxA = 3.0f;
-		const FLinearColor TableColorScale = FLinearColor(
+		const FVector4f TableColorScale = FVector4f(
 			1.0f / TableMaxRGB,
 			1.0f / TableMaxRGB,
 			1.0f / TableMaxRGB,
@@ -341,7 +472,7 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 
 		const float CustomParameterMaxRGB = 1.0f;
 		const float CustomParameterMaxA = 1.0f;
-		const FLinearColor CustomParameterColorScale = FLinearColor(
+		const FVector4f CustomParameterColorScale = FVector4f(
 			1.0f / CustomParameterMaxRGB,
 			1.0f / CustomParameterMaxRGB,
 			1.0f / CustomParameterMaxRGB,
@@ -350,7 +481,7 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 		// each kernel is normalized to be 1 per channel (center + one_side_samples * 2)
 		for (int32 Pos = 0; Pos < Width; ++Pos)
 		{
-			FVector4 C = TextureRow[Pos];
+			FVector4f C = FVector4f(TextureRow[Pos]);
 
 			// Remap custom parameter and kernel values into 0..1
 			if (Pos >= SSSS_KERNEL0_OFFSET && Pos < SSSS_KERNEL0_OFFSET + SSSS_KERNEL_TOTAL_SIZE)
@@ -369,12 +500,29 @@ void FSubsurfaceProfileTexture::CreateTexture(FRHICommandListImmediate& RHICmdLi
 				// scale from 0..1 to 0..0xffff
 				// scale with 0x10000 and round down to evenly distribute, avoid 0x10000
 
-				uint16* Dest = (uint16*)(DestBuffer + DestStride * y);
+				// RGBA16 UNorm is not supported on android mobile, it falls back to RGBA16F.
+				const bool bUseRGBA16F = GPixelFormats[PF_A16B16G16R16].PlatformFormat == GPixelFormats[PF_FloatRGBA].PlatformFormat;
 
-				Dest[Pos * 4 + 0] = (uint16)(C.X * FloatScale);
-				Dest[Pos * 4 + 1] = (uint16)(C.Y * FloatScale);
-				Dest[Pos * 4 + 2] = (uint16)(C.Z * FloatScale);
-				Dest[Pos * 4 + 3] = (uint16)(C.W * FloatScale);
+				if (bUseRGBA16F)
+				{ 
+					float PlatformFloatScale = 1.0f / (FloatScaleInitial - 1.0f);
+
+					uint16* Dest = (uint16*)(DestBuffer + DestStride * y);
+
+					Dest[Pos * 4 + 0] = FFloat16(((uint16)(C.X * FloatScale)) * PlatformFloatScale).Encoded;
+					Dest[Pos * 4 + 1] = FFloat16(((uint16)(C.Y * FloatScale)) * PlatformFloatScale).Encoded;
+					Dest[Pos * 4 + 2] = FFloat16(((uint16)(C.Z * FloatScale)) * PlatformFloatScale).Encoded;
+					Dest[Pos * 4 + 3] = FFloat16(((uint16)(C.W * FloatScale)) * PlatformFloatScale).Encoded;
+				}
+				else
+				{
+					uint16* Dest = (uint16*)(DestBuffer + DestStride * y);
+
+					Dest[Pos * 4 + 0] = (uint16)(C.X * FloatScale);
+					Dest[Pos * 4 + 1] = (uint16)(C.Y * FloatScale);
+					Dest[Pos * 4 + 2] = (uint16)(C.Z * FloatScale);
+					Dest[Pos * 4 + 3] = (uint16)(C.W * FloatScale);
+				}
 			}
 			else
 			{
@@ -415,18 +563,16 @@ bool FSubsurfaceProfileTexture::GetEntryString(uint32 Index, FString& Out) const
 	const FSubsurfaceProfileStruct& ref = SubsurfaceProfileEntries[Index].Settings;
 
 
-	Out = FString::Printf(TEXT(" %c. %p ScatterRadius=%.1f, SubsurfaceColor=%.1f %.1f %.1f, FalloffColor=%.1f %.1f %.1f, \
-								SurfaceAlbedo=%.1f %.1f %.1f, MeanFreePathColor=%.1f %.1f %.1f, MeanFreePathDistance=%.1f, WorldUnitScale=%.1f,\
-								TransmissionTintColor=%.1f %.1f %.1f, EnableBurley=%.1f"), 
+	Out = FString::Printf(TEXT(" %c. %p SurfaceAlbedo=%.1f %.1f %.1f, MeanFreePathColor=%.1f %.1f %.1f, MeanFreePathDistance=%.1f, WorldUnitScale=%.1f,\
+								Tint=%.1f %.1f %.1f, BoundaryColorBleeding=%.1f %.1f %.1f, TransmissionTintColor=%.1f %.1f %.1f, EnableBurley=%.1f"), 
 		MiniFontCharFromIndex(Index), 
 		SubsurfaceProfileEntries[Index].Profile,
-		ref.ScatterRadius,
-		ref.SubsurfaceColor.R, ref.SubsurfaceColor.G, ref.SubsurfaceColor.B,
-		ref.FalloffColor.R, ref.FalloffColor.G, ref.FalloffColor.B,
 		ref.SurfaceAlbedo.R, ref.SurfaceAlbedo.G, ref.SurfaceAlbedo.B,
 		ref.MeanFreePathColor.R, ref.MeanFreePathColor.G, ref.MeanFreePathColor.B,
 		ref.MeanFreePathDistance,
 		ref.WorldUnitScale,
+		ref.Tint.R, ref.Tint.G, ref.Tint.B,
+		ref.BoundaryColorBleed.R, ref.BoundaryColorBleed.G, ref.BoundaryColorBleed.B, 
 		ref.TransmissionTintColor.R, ref.TransmissionTintColor.G, ref.TransmissionTintColor.B,
 		ref.bEnableBurley?1.0f:0.0f);
 
@@ -458,13 +604,6 @@ void FSubsurfaceProfileTexture::Dump()
 		UE_LOG(LogSubsurfaceProfile, Log, TEXT("  %d. AllocationId=%d, Pointer=%p"), i, i + 1, SubsurfaceProfileEntries[i].Profile);
 
 		{
-			UE_LOG(LogSubsurfaceProfile, Log, TEXT("     ScatterRadius = %f"),
-				SubsurfaceProfileEntries[i].Settings.ScatterRadius);
-			UE_LOG(LogSubsurfaceProfile, Log, TEXT("     SubsurfaceColor=%f %f %f"),
-				SubsurfaceProfileEntries[i].Settings.SubsurfaceColor.R, SubsurfaceProfileEntries[i].Settings.SubsurfaceColor.G, SubsurfaceProfileEntries[i].Settings.SubsurfaceColor.B);
-			UE_LOG(LogSubsurfaceProfile, Log, TEXT("     FalloffColor=%f %f %f"),
-				SubsurfaceProfileEntries[i].Settings.FalloffColor.R, SubsurfaceProfileEntries[i].Settings.FalloffColor.G, SubsurfaceProfileEntries[i].Settings.FalloffColor.B);
-
 			UE_LOG(LogSubsurfaceProfile, Log, TEXT("     SurfaceAlbedo=%f %f %f"),
 				SubsurfaceProfileEntries[i].Settings.SurfaceAlbedo.R, SubsurfaceProfileEntries[i].Settings.SurfaceAlbedo.G, SubsurfaceProfileEntries[i].Settings.SurfaceAlbedo.B);
 			UE_LOG(LogSubsurfaceProfile, Log, TEXT("     MeanFreePathColor=%f %f %f"),
@@ -473,6 +612,10 @@ void FSubsurfaceProfileTexture::Dump()
 				SubsurfaceProfileEntries[i].Settings.MeanFreePathDistance);
 			UE_LOG(LogSubsurfaceProfile, Log, TEXT("     WorldUnitScale=%f"),
 				SubsurfaceProfileEntries[i].Settings.WorldUnitScale);
+			UE_LOG(LogSubsurfaceProfile, Log, TEXT("     Tint=%f %f %f"),
+				SubsurfaceProfileEntries[i].Settings.Tint.R, SubsurfaceProfileEntries[i].Settings.Tint.G, SubsurfaceProfileEntries[i].Settings.Tint.B);
+			UE_LOG(LogSubsurfaceProfile, Log, TEXT("     Boundary Color Bleed=%f %f %f"),
+				SubsurfaceProfileEntries[i].Settings.BoundaryColorBleed.R, SubsurfaceProfileEntries[i].Settings.BoundaryColorBleed.G, SubsurfaceProfileEntries[i].Settings.BoundaryColorBleed.B);
 			UE_LOG(LogSubsurfaceProfile, Log, TEXT("     TransmissionTintColor=%f %f %f"),
 				SubsurfaceProfileEntries[i].Settings.TransmissionTintColor.R, SubsurfaceProfileEntries[i].Settings.TransmissionTintColor.G, SubsurfaceProfileEntries[i].Settings.TransmissionTintColor.B);
 			UE_LOG(LogSubsurfaceProfile, Log, TEXT("     EnableBurley=%.1f"),
@@ -484,13 +627,47 @@ void FSubsurfaceProfileTexture::Dump()
 #endif
 }
 
-
-
-ENGINE_API IPooledRenderTarget* GetSubsufaceProfileTexture_RT(FRHICommandListImmediate& RHICmdList)
+FName GetSubsurfaceProfileParameterName()
 {
-	check(IsInRenderingThread());
+	static FName NameSubsurfaceProfile(TEXT("__SubsurfaceProfile"));
+	return NameSubsurfaceProfile;
+}
 
-	return GSubsurfaceProfileTextureObject.GetTexture(RHICmdList);
+float GetSubsurfaceProfileId(const USubsurfaceProfile* In)
+{
+	int32 AllocationId = 0;
+	if (In)
+	{
+		// can be optimized (cached)
+		AllocationId = GSubsurfaceProfileTextureObject.FindAllocationId(In);
+	}
+	else
+	{
+		// no profile specified means we use the default one stored at [0] which is human skin
+		AllocationId = 0;
+	}
+	return AllocationId / 255.0f;
+}
+
+FRHITexture* GetSubsurfaceProfileTexture()
+{
+	return GSSProfiles ? GSSProfiles->GetRHI() : nullptr;
+}
+
+FRHITexture* GetSubsurfaceProfileTextureWithFallback()
+{
+	return GSSProfiles ? GSSProfiles->GetRHI() : static_cast<FRHITexture*>(GBlackTexture->TextureRHI);
+}
+
+FRHITexture* GetSSProfilesPreIntegratedTextureWithFallback()
+{
+	return GSSProfilesPreIntegratedTexture ? GSSProfilesPreIntegratedTexture->GetRHI() : static_cast<FRHITexture*>(GBlackArrayTexture->TextureRHI);
+}
+
+void UpdateSubsurfaceProfileTexture(FRDGBuilder& GraphBuilder, EShaderPlatform ShaderPlatform)
+{
+	GSubsurfaceProfileTextureObject.GetTexture(GraphBuilder.RHICmdList);
+	GSubsurfaceProfileTextureObject.GetSSProfilesPreIntegratedTexture(GraphBuilder, ShaderPlatform);
 }
 
 // ------------------------------------------------------
@@ -534,19 +711,13 @@ void USubsurfaceProfile::PostLoad()
 	{
 		const bool bUpdateBurleyParametersFromSeparable = CVar->GetValueOnAnyThread() == 1;
 
-		if (bUpdateBurleyParametersFromSeparable)
+		if (!Settings.bEnableBurley
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+			|| bUpdateBurleyParametersFromSeparable
+#endif
+			)
 		{
-			MapFallOffColor2SurfaceAlbedoAndDiffuseMeanFreePath(Settings.FalloffColor.R, Settings.SurfaceAlbedo.R, Settings.MeanFreePathColor.R);
-			MapFallOffColor2SurfaceAlbedoAndDiffuseMeanFreePath(Settings.FalloffColor.G, Settings.SurfaceAlbedo.G, Settings.MeanFreePathColor.G);
-			MapFallOffColor2SurfaceAlbedoAndDiffuseMeanFreePath(Settings.FalloffColor.B, Settings.SurfaceAlbedo.B, Settings.MeanFreePathColor.B);
-
-			//Normalize mean free path color and set the corresponding dfmp
-			float MaxMeanFreePathColor = FMath::Max3(Settings.MeanFreePathColor.R, Settings.MeanFreePathColor.G, Settings.MeanFreePathColor.B);
-			if (MaxMeanFreePathColor > 1)
-			{
-				Settings.MeanFreePathColor /= MaxMeanFreePathColor;
-				Settings.MeanFreePathDistance = FMath::Clamp(Settings.ScatterRadius*MaxMeanFreePathColor, 0.1f, 50.0f);	// 50.0f is the ClampMax of MeanFreePathDistance.
-			}
+			UpgradeSeparableToBurley(Settings);
 		}
 	}
 }

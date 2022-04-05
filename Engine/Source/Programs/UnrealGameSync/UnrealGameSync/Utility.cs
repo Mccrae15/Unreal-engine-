@@ -8,12 +8,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices;
+using System.Linq;	
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
-using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 namespace UnrealGameSync
@@ -248,6 +247,11 @@ namespace UnrealGameSync
 			return Result;
 		}
 
+		class ProjectJson
+		{
+			public bool Enterprise { get; set; }
+		}
+
 		/// <summary>
 		/// Determines if a project is an enterprise project
 		/// </summary>
@@ -257,16 +261,13 @@ namespace UnrealGameSync
 		{
 			try
 			{
-				JavaScriptSerializer Serializer = new JavaScriptSerializer();
-				Dictionary<string, object> RawObject = Serializer.Deserialize<Dictionary<string, object>>(Text);
+				JsonSerializerOptions Options = new JsonSerializerOptions();
+				Options.PropertyNameCaseInsensitive = true;
+				Options.Converters.Add(new JsonStringEnumConverter());
 
-				object Enterprise;
-				if(RawObject.TryGetValue("Enterprise", out Enterprise) && Enterprise is bool)
-				{
-					return (bool)Enterprise;
-				}
+				ProjectJson Project = JsonSerializer.Deserialize<ProjectJson>(Text, Options);
 
-				return false;
+				return Project.Enterprise;
 			}
 			catch
 			{
@@ -672,6 +673,14 @@ namespace UnrealGameSync
 			{
 				MessageBox.Show("Unable to spawn p4vc. Check you have P4V installed.");
 			}
+		}
+
+		public static void OpenUrl(string Url)
+		{
+			ProcessStartInfo StartInfo = new ProcessStartInfo();
+			StartInfo.FileName = Url;
+			StartInfo.UseShellExecute = true;
+			using Process _ = Process.Start(StartInfo);
 		}
 	}
 }

@@ -24,6 +24,11 @@ export class Api {
     this.send(res, UnrealEngine.getPresets());
   }
 
+  @Get('passphrase')
+  private async passphrase(req: Request, res: Response) {
+    this.send(res, Promise.resolve({ keyCorrect: await UnrealEngine.checkPassphrase(req.headers['passphrase'].toString()) }) );
+  }
+
   @Get('payloads')
   private payloads(req: Request, res: Response) {
     this.send(res, UnrealEngine.getPayloads());
@@ -44,15 +49,6 @@ export class Api {
     this.send(res, UnrealEngine.getView(req.query.preset?.toString()));
   }
 
-  @Get('assets/search')
-  private search(req: Request, res: Response) {
-    const prefix = req.query.prefix?.toString() || '/Game';
-    const query = req.query.q?.toString() ?? '';
-    const count = parseInt(req.query.count?.toString()) || 50;
-    const types = req.query.types?.toString().split(',') ?? [];
-    this.send(res, UnrealEngine.search(query, types, prefix, count));
-  }
-
   @Put('proxy')
   private proxy(req: Request, res: Response) {
     this.send(res, UnrealEngine.proxy(req.body?.method, req.body?.url, req.body?.body));
@@ -66,7 +62,7 @@ export class Api {
   @Get('shutdown')
   private shutdown(req: Request, res: Response) {
     res.send({ message: 'ok' });
-    setTimeout(() => process.exit(0), 1000);
+    setImmediate(() => process.exit(0));
   }
 
   protected async send(res: Response, promise: Promise<any>, options?: ISendOptions): Promise<any> {

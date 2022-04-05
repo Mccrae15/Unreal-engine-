@@ -10,13 +10,17 @@
 
 #include "Concepts/GetTypeHashable.h"
 #include "Math/RandomStream.h"
+#include "Math/InterpCurvePoint.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/FallbackStruct.h"
 #include "Misc/Guid.h"
 #include "Misc/Optional.h"
+#include "Misc/PackageAccessTracking.h"
+#include "Misc/PackageAccessTrackingOps.h"
 #include "Misc/ScopeRWLock.h"
 #include "Templates/IsAbstract.h"
 #include "Templates/IsEnum.h"
+#include "Templates/IsUECoreType.h"
 #include "Templates/Models.h"
 #include "UObject/CoreNative.h"
 #include "UObject/GarbageCollection.h"
@@ -26,7 +30,9 @@
 #include "UObject/Script.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/FieldPath.h"
+#include "UObject/PropertyTag.h"
 
+struct FBlake3Hash;
 struct FCustomPropertyListNode;
 struct FFrame;
 struct FNetDeltaSerializeInfo;
@@ -340,8 +346,15 @@ public:
 	int32 FieldPathSerialNumber;
 #endif
 
-	/** Cached schema for optimized unversioned property serialization, owned by this. */
-	mutable const struct FUnversionedStructSchema* UnversionedSchema = nullptr;
+	/** Cached schema for optimized unversioned and filtereditoronly property serialization, owned by this. */
+	mutable const struct FUnversionedStructSchema* UnversionedGameSchema = nullptr;
+#if WITH_EDITORONLY_DATA
+	/** Cached schema for optimized unversioned property serialization, with editor data, owned by this. */
+	mutable const struct FUnversionedStructSchema* UnversionedEditorSchema = nullptr;
+
+	/** Get the Schema Hash for this struct - the hash of its property names and types. */
+	const FBlake3Hash& GetSchemaHash(bool bSkipEditorOnly) const;
+#endif
 
 public:
 	// Constructors.
@@ -413,6 +426,12 @@ public:
 
 	/** Serializes list of properties, using property tags to handle mismatches */
 	virtual void SerializeTaggedProperties(FStructuredArchive::FSlot Slot, uint8* Data, UStruct* DefaultsStruct, uint8* Defaults, const UObject* BreakRecursionIfFullyLoad = nullptr) const;
+
+	/**
+	 * Preloads all fields that belong to this struct
+	 * @param Ar Archive used for loading this struct
+	 */
+	virtual void PreloadChildren(FArchive& Ar);
 
 	/**
 	 * Initialize a struct over uninitialized memory. This may be done by calling the native constructor or individually initializing properties
@@ -571,6 +590,10 @@ public:
 	 * Collects UObjects referenced by bytecode and properties for faster GC access
 	 */
 	void CollectBytecodeAndPropertyReferencedObjects();
+	/**
+	 * Collects UObjects referenced by bytecode and properties for this class and its child fields and their children...
+	 */
+	void CollectBytecodeAndPropertyReferencedObjectsRecursively();
 
 protected:
 
@@ -674,6 +697,9 @@ enum EStructFlags
 	/** If set, this struct has been cleaned and sanitized (trashed) and should not be used */
 	STRUCT_Trashed = 0x00800000,
 
+	/** If set, this structure has been replaced via reinstancing */
+	STRUCT_NewerVersionExists = 0x01000000,
+
 	/** Struct flags that are automatically inherited */
 	STRUCT_Inherit				= STRUCT_HasInstancedReference|STRUCT_Atomic,
 
@@ -706,6 +732,7 @@ struct TStructOpsTypeTraitsBase2
 		WithStructuredSerializeFromMismatchedTag = false,               // struct has an FStructuredArchive-based SerializeFromMismatchedTag function for converting from other property tags.
 		WithPostScriptConstruct        = false,                         // struct has a PostScriptConstruct function which is called after it is constructed in blueprints
 		WithNetSharedSerialization     = false,                         // struct has a NetSerialize function that does not require the package map to serialize its state.
+		WithGetPreloadDependencies     = false,                         // struct has a GetPreloadDependencies function to return all objects that will be Preload()ed when the struct is serialized at load time.
 		WithPureVirtual                = false,                         // struct has PURE_VIRTUAL functions and cannot be constructed when CHECK_PUREVIRTUALS is true
 	};
 };
@@ -855,6 +882,21 @@ struct TStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<CPPSTRUCT>
 
 
 	/**
+	 * Selection of GetPreloadDependencies call.
+	 */
+	template<class CPPSTRUCT>
+	FORCEINLINE typename TEnableIf<!TStructOpsTypeTraits<CPPSTRUCT>::WithGetPreloadDependencies>::Type GetPreloadDependenciesOrNot(CPPSTRUCT* Data, TArray<UObject*>& OutDeps)
+	{
+	}
+
+	template<class CPPSTRUCT>
+	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithGetPreloadDependencies>::Type GetPreloadDependenciesOrNot(CPPSTRUCT* Data, TArray<UObject*>& OutDeps)
+	{
+		Data->GetPreloadDependencies(OutDeps);
+	}
+
+
+	/**
 	 * Selection of Copy behavior.
 	 */
 	template<class CPPSTRUCT>
@@ -948,9 +990,15 @@ struct TStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<CPPSTRUCT>
 	}
 
 	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithSerializeFromMismatchedTag, bool>::Type SerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FArchive& Ar, CPPSTRUCT *Data)
+	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithSerializeFromMismatchedTag && !TIsUECoreType<CPPSTRUCT>::Value, bool>::Type SerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FArchive& Ar, CPPSTRUCT *Data)
 	{
 		return Data->SerializeFromMismatchedTag(Tag, Ar);
+	}
+
+	template<class CPPSTRUCT>
+	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithSerializeFromMismatchedTag && TIsUECoreType<CPPSTRUCT>::Value, bool>::Type SerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FArchive& Ar, CPPSTRUCT *Data)
+	{
+		return Data->SerializeFromMismatchedTag(Tag.StructName, Ar);
 	}
 
 	template<class CPPSTRUCT>
@@ -960,10 +1008,17 @@ struct TStructOpsTypeTraits : public TStructOpsTypeTraitsBase2<CPPSTRUCT>
 	}
 
 	template<class CPPSTRUCT>
-	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializeFromMismatchedTag, bool>::Type StructuredSerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FStructuredArchive::FSlot Slot, CPPSTRUCT *Data)
+	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializeFromMismatchedTag && !TIsUECoreType<CPPSTRUCT>::Value, bool>::Type StructuredSerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FStructuredArchive::FSlot Slot, CPPSTRUCT *Data)
 	{
 		return Data->SerializeFromMismatchedTag(Tag, Slot);
 	}
+
+	template<class CPPSTRUCT>
+	FORCEINLINE typename TEnableIf<TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializeFromMismatchedTag && TIsUECoreType<CPPSTRUCT>::Value, bool>::Type StructuredSerializeFromMismatchedTagOrNot(FPropertyTag const& Tag, FStructuredArchive::FSlot Slot, CPPSTRUCT *Data)
+	{
+		return Data->SerializeFromMismatchedTag(Tag.StructName, Slot);
+	}
+
 
 
 	/**
@@ -1097,8 +1152,17 @@ public:
 		/** Call PostScriptConstruct on this structure */
 		virtual void PostScriptConstruct(void *Data) = 0;
 
+		/** Call PreloadDependencies on this structure */
+		virtual void GetPreloadDependencies(void* Data, TArray<UObject*>& OutDeps) = 0;
+
 		/** return true if this struct should be memcopied **/
 		virtual bool IsPlainOldData() = 0;
+
+		/** return true if this struct is one of the UE Core types (and is include in CoreMinimal.h) **/
+		virtual bool IsUECoreType() = 0;
+
+		/** return true if this struct is one of the UE Core types (and is include in CoreMinimal.h) **/
+		virtual bool IsUECoreVariant() = 0;		
 
 		/** return true if this struct can copy **/
 		virtual bool HasCopy() = 0;
@@ -1359,10 +1423,29 @@ public:
 			PostScriptConstructOrNot((CPPSTRUCT*)Data);
 #endif
 		}
+		virtual void GetPreloadDependencies(void* Data, TArray<UObject*>& OutDeps) override
+		{
+#if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
+			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithGetPreloadDependencies)
+			{
+				((CPPSTRUCT*)Data)->GetPreloadDependencies(OutDeps);
+			}
+#else
+			GetPreloadDependenciesOrNot((CPPSTRUCT*)Data, OutDeps);
+#endif
+		}
 		virtual bool IsPlainOldData() override
 		{
 			return TIsPODType<CPPSTRUCT>::Value;
 		}
+		virtual bool IsUECoreType() override
+		{
+			return TIsUECoreType<CPPSTRUCT>::Value;
+		}
+		virtual bool IsUECoreVariant() override
+		{
+			return TIsUECoreVariant<CPPSTRUCT>::Value;
+		}		
 		virtual bool HasCopy() override
 		{
 			return TTraits::WithCopy;
@@ -1479,7 +1562,15 @@ public:
 #if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithSerializeFromMismatchedTag)
 			{
-				return ((CPPSTRUCT*)Data)->SerializeFromMismatchedTag(Tag, Ar);
+				if constexpr (TIsUECoreType<CPPSTRUCT>::Value)
+				{
+					// Custom version of SerializeFromMismatchedTag for core types, which don't have access to FPropertyTag.
+					return ((CPPSTRUCT*)Data)->SerializeFromMismatchedTag(Tag.StructName, Ar);
+				}
+				else
+				{
+					return ((CPPSTRUCT*)Data)->SerializeFromMismatchedTag(Tag, Ar);
+				}
 			}
 			else
 			{
@@ -1499,7 +1590,15 @@ public:
 #if PLATFORM_COMPILER_HAS_IF_CONSTEXPR
 			if constexpr (TStructOpsTypeTraits<CPPSTRUCT>::WithStructuredSerializeFromMismatchedTag)
 			{
-				return ((CPPSTRUCT*)Data)->SerializeFromMismatchedTag(Tag, Slot);
+				if constexpr (TIsUECoreType<CPPSTRUCT>::Value)
+				{
+					// Custom version of SerializeFromMismatchedTag for core types, which don't understand FPropertyTag.
+					return ((CPPSTRUCT*)Data)->SerializeFromMismatchedTag(Tag.StructName, Slot);
+				}
+				else
+				{
+					return ((CPPSTRUCT*)Data)->SerializeFromMismatchedTag(Tag, Slot);
+				}
 			}
 			else
 			{
@@ -1574,6 +1673,8 @@ public:
 
 	// Required by UHT makefiles for internal data serialization.
 	friend struct FScriptStructArchiveProxy;
+
+	static COREUOBJECT_API ICppStructOps* FindDeferredCppStructOps(FName StructName);
 #endif
 
 protected:
@@ -1817,6 +1918,11 @@ public:
 
 	/** The state offset inside of the event graph (persistent) */
 	int32 EventGraphCallOffset;
+#endif
+
+#if WITH_LIVE_CODING
+	/** Pointer to the cached singleton pointer to this instance */
+	UFunction** SingletonPtr;
 #endif
 
 private:
@@ -2132,6 +2238,11 @@ public:
 		return CppForm;
 	}
 
+	void SetEnumFlags(EEnumFlags FlagsToSet)
+	{
+		EnumFlags |= FlagsToSet;
+	}
+
 	bool HasAnyEnumFlags(EEnumFlags InFlags) const
 	{
 		return EnumHasAnyFlags(EnumFlags, InFlags);
@@ -2243,9 +2354,6 @@ public:
 	 * @return The tooltip for this object.
 	 */
 	FText GetToolTipTextByIndex(int32 NameIndex) const;
-
-	UE_DEPRECATED(4.16, "GetToolTipText with name index is deprecated, call GetToolTipTextByIndex instead")
-	FText GetToolTipText(int32 NameIndex) const { return GetToolTipTextByIndex(NameIndex); }
 #endif
 
 #if WITH_EDITORONLY_DATA
@@ -2422,31 +2530,6 @@ public:
 		out_TextValue = GetDisplayValueAsText(EnumeratorValue);
 	}
 
-	// Deprecated Functions
-	UE_DEPRECATED(4.16, "FindEnumIndex is deprecated, call GetIndexByName or GetValueByName instead")
-	int32 FindEnumIndex(FName InName) const { return GetIndexByName(InName, EGetByNameFlags::ErrorIfNotFound); }
-
-	UE_DEPRECATED(4.16, "FindEnumRedirects is deprecated, call GetIndexByNameString instead")
-	static int32 FindEnumRedirects(const UEnum* Enum, FName EnumEntryName) { return Enum->GetIndexByNameString(EnumEntryName.ToString()); }
-
-	UE_DEPRECATED(4.16, "GetEnum is deprecated, call GetNameByIndex instead")
-	FName GetEnum(int32 InIndex) const { return GetNameByIndex(InIndex); }
-
-	UE_DEPRECATED(4.16, "GetEnumNameStringByValue is deprecated, call GetNameStringByValue instead")
-	FString GetEnumNameStringByValue(int64 InValue) const { return GetNameStringByValue(InValue); }
-
-	UE_DEPRECATED(4.16, "GetEnumName is deprecated, call GetNameStringByIndex instead")
-	FString GetEnumName(int32 InIndex) const { return GetNameStringByIndex(InIndex); }
-
-	UE_DEPRECATED(4.16, "GetDisplayNameText with name index is deprecated, call GetDisplayNameTextByIndex instead")
-	FText GetDisplayNameText(int32 NameIndex) const { return GetDisplayNameTextByIndex(NameIndex); }
-
-	UE_DEPRECATED(4.16, "GetEnumText with name index is deprecated, call GetDisplayNameTextByIndex instead")
-	FText GetEnumText(int32 NameIndex) const { return GetDisplayNameTextByIndex(NameIndex); }
-
-	UE_DEPRECATED(4.16, "GetEnumTextByValue with name index is deprecated, call GetDisplayNameTextByValue instead")
-	FText GetEnumTextByValue(int64 Value) { return GetDisplayNameTextByValue(Value);  }
-
 	// UObject interface.
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void BeginDestroy() override;
@@ -2619,6 +2702,17 @@ struct FClassFunctionLinkInfo
 };
 
 
+enum class EGetSparseClassDataMethod : uint8
+{
+	/** Create a new instance when this class doesn't have any sparse data of its own */
+	CreateIfNull,
+	/** Use the archetype instance (if possible) when this class doesn't have any sparse data of its own */
+	ArchetypeIfNull,
+	/** Return null when this class doesn't have any sparse data of its own */
+	ReturnIfNull,
+};
+
+
 /**
  * An object class.
  */
@@ -2642,10 +2736,16 @@ public:
 	ClassAddReferencedObjectsType ClassAddReferencedObjects;
 
 	/** Class pseudo-unique counter; used to accelerate unique instance name generation */
-	mutable uint32 ClassUnique:31;
+	mutable int32 ClassUnique;
+
+	/** Index of the first ClassRep that belongs to this class. Anything before that was defined by / belongs to parent classes. */
+	int32 FirstOwnedClassRep = 0;
 
 	/** Used to check if the class was cooked or not */
-	uint32 bCooked:1;
+	bool bCooked;
+
+	/** Used to check if the class layout is currently changing and therefore is not ready for a CDO to be created */
+	bool bLayoutChanging;
 
 	/** Class flags; See EClassFlags for more information */
 	EClassFlags ClassFlags;
@@ -2656,10 +2756,10 @@ public:
 	/** The required type for the outer of instances of this class */
 	UClass* ClassWithin;
 
+#if WITH_EDITORONLY_DATA
 	/** This is the blueprint that caused the generation of this class, or null if it is a native compiled-in class */
 	UObject* ClassGeneratedBy;
 
-#if WITH_EDITORONLY_DATA
 	/** Linked list of properties to be destroyed when this class is destroyed that couldn't be destroyed in PurgeClass **/
 	FField* PropertiesPendingDestruction;
 
@@ -2685,15 +2785,14 @@ public:
 	/** List of network relevant fields (functions) */
 	TArray<UField*> NetFields;
 
-	/** Index of the first ClassRep that belongs to this class. Anything before that was defined by / belongs to parent classes. */
-	int32 FirstOwnedClassRep = 0;
-
 #if WITH_EDITOR || HACK_HEADER_GENERATOR 
 	// Editor only properties
 	void GetHideFunctions(TArray<FString>& OutHideFunctions) const;
 	bool IsFunctionHidden(const TCHAR* InFunction) const;
 	void GetAutoExpandCategories(TArray<FString>& OutAutoExpandCategories) const;
 	bool IsAutoExpandCategory(const TCHAR* InCategory) const;
+	void GetPrioritizeCategories(TArray<FString>& OutPrioritizedCategories) const;
+	bool IsPrioritizeCategory(const TCHAR* InCategory) const;
 	void GetAutoCollapseCategories(TArray<FString>& OutAutoCollapseCategories) const;
 	bool IsAutoCollapseCategory(const TCHAR* InCategory) const;
 	void GetClassGroupNames(TArray<FString>& OutClassGroupNames) const;
@@ -2719,25 +2818,35 @@ public:
 
 protected:
 	/** This is where we store the data that is only changed per class instead of per instance */
-	UPROPERTY()
 	void* SparseClassData;
 
 	/** The struct used to store sparse class data. */
-	UPROPERTY()
 	UScriptStruct* SparseClassDataStruct;
 
 public:
 	/**
+	 * Returns a pointer to the sidecar data structure, based on the EGetSparseClassDataMethod.
+	 * @note It is only safe to mutate this data when using "CreateIfNull", as others may return archetype/default data; consider GetOrCreateSparseClassData for this use-case.
+	 */
+	const void* GetSparseClassData(const EGetSparseClassDataMethod GetMethod);
+
+	/**
 	 * Returns a pointer to the sidecar data structure. This function will create an instance of the data structure if one has been specified and it has not yet been created.
 	 */
-	void* GetOrCreateSparseClassData() { return SparseClassData ? SparseClassData : CreateSparseClassData(); }
+	void* GetOrCreateSparseClassData() { return const_cast<void*>(GetSparseClassData(EGetSparseClassDataMethod::CreateIfNull)); }
 
 	/**
 	 * Returns a pointer to the type of the sidecar data structure if one is specified.
 	 */
-	virtual UScriptStruct* GetSparseClassDataStruct() const;
+	UScriptStruct* GetSparseClassDataStruct() const;
 
 	void SetSparseClassDataStruct(UScriptStruct* InSparseClassDataStruct);
+
+	/** 
+	 * Clears the sparse class data struct for this and all child classes that directly reference it as a super-struct 
+	 * This will rename the current sparse class data struct aside into the transient package
+	 */
+	void ClearSparseClassDataStruct(bool bInRecomplingOnLoad);
 
 	/** Assemble reference token streams for all classes if they haven't had it assembled already */
 	static void AssembleReferenceTokenStreams();
@@ -2749,11 +2858,12 @@ public:
 	}
 #endif // WITH_EDITOR
 
-private:
+protected:
 	void* CreateSparseClassData();
 
 	void CleanupSparseClassData();
 
+private:
 #if WITH_EDITOR
 	/** Provides access to attributes of the underlying C++ class. Should never be unset. */
 	TOptional<FCppClassTypeInfo> CppTypeInfo;
@@ -2792,7 +2902,7 @@ public:
 		ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
 		ClassAddReferencedObjectsType InClassAddReferencedObjects);
 
-#if WITH_HOT_RELOAD
+#if WITH_RELOAD
 	/**
 	 * Called when a class is reloading from a DLL...updates various information in-place.
 	 * @param	InSize							sizeof the class
@@ -2885,6 +2995,7 @@ public:
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	virtual bool IsAsset() const override { return false; }	
 	virtual bool IsNameStableForNetworking() const override { return true; } // For now, assume all classes have stable net names
+	virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
 	// End of UObject interface.
 
 	// UField interface.
@@ -2949,6 +3060,7 @@ public:
 	{
 		if (ClassDefaultObject == nullptr && bCreateIfNeeded)
 		{
+			UE_TRACK_REFERENCING_PACKAGE_SCOPED((GetOutermost()), PackageAccessTrackingOps::NAME_CreateDefaultObject);
 			const_cast<UClass*>(this)->CreateDefaultObject();
 		}
 
@@ -3012,9 +3124,9 @@ public:
 	UObject* GetDefaultSubobjectByName(FName ToFind);
 
 	/** Adds a new default instance map item **/
-	void AddDefaultSubobject(UObject* NewSubobject, UClass* BaseClass)
+	void AddDefaultSubobject(UObject* NewSubobject, const UClass* BaseClass)
 	{
-		// this compoonent must be a derived class of the base class
+		// this component must be a derived class of the base class
 		check(NewSubobject->IsA(BaseClass));
 		// the outer of the component must be of my class or some superclass of me
 		check(IsChildOf(NewSubobject->GetOuter()->GetClass()));
@@ -3232,10 +3344,13 @@ public:
 	virtual UObject* GetArchetypeForCDO() const;
 
 	/** Returns archetype for sparse class data */
-	virtual void* GetArchetypeForSparseClassData() const;
+	const void* GetArchetypeForSparseClassData() const;
 
 	/** Returns the struct used by the sparse class data archetype */
 	UScriptStruct* GetSparseClassDataArchetypeStruct() const;
+
+	/** Returns whether the sparse class data on this instance overrides that of its archetype (in type or value) */
+	bool OverridesSparseClassDataArchetype() const;
 
 	/**
 	* Returns all objects that should be preloaded before the class default object is serialized at load time. Only used by the EDL.
@@ -3309,10 +3424,11 @@ protected:
 #endif // HACK_HEADER_GENERATOR
 };
 
+// @todo: BP2CPP_remove
 /**
 * Dynamic class (can be constructed after initial startup)
 */
-class COREUOBJECT_API UDynamicClass : public UClass
+class COREUOBJECT_API UE_DEPRECATED(5.0, "Dynamic class types are no longer supported.") UDynamicClass : public UClass
 {
 	DECLARE_CASTED_CLASS_INTRINSIC_NO_CTOR(UDynamicClass, UClass, 0, TEXT("/Script/CoreUObject"), CASTCLASS_None, NO_API)
 	DECLARE_WITHIN_UPACKAGE()
@@ -3321,25 +3437,17 @@ public:
 
 	typedef void (*DynamicClassInitializerType)	(UDynamicClass*);
 
-	UDynamicClass(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
-	explicit UDynamicClass(const FObjectInitializer& ObjectInitializer, UClass* InSuperClass);
+	UDynamicClass(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get()) {}
+	explicit UDynamicClass(const FObjectInitializer& ObjectInitializer, UClass* InSuperClass) {}
 	UDynamicClass(EStaticConstructor, FName InName, uint32 InSize, uint32 InAlignment, EClassFlags InClassFlags, EClassCastFlags InClassCastFlags,
 		const TCHAR* InClassConfigName, EObjectFlags InFlags, ClassConstructorType InClassConstructor,
 		ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
 		ClassAddReferencedObjectsType InClassAddReferencedObjects,
-		DynamicClassInitializerType InDynamicClassInitializer);
-
-	// UObject interface.
-	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
-
-	// UClass interface
-	virtual UObject* CreateDefaultObject();
-	virtual void PurgeClass(bool bRecompilingOnLoad) override;
-	virtual UObject* FindArchetype(const UClass* ArchetypeClass, const FName ArchetypeName) const override;
-	virtual void SetupObjectInitializer(FObjectInitializer& ObjectInitializer) const override;
+		DynamicClassInitializerType InDynamicClassInitializer)
+	{}
 
 	/** Find a struct property, called from generated code */
-	FStructProperty* FindStructPropertyChecked(const TCHAR* PropertyName) const;
+	FStructProperty* FindStructPropertyChecked(const TCHAR* PropertyName) const { return nullptr; }
 
 	/** Misc objects owned by the class. */
 	TArray<UObject*> MiscConvertedSubobjects;
@@ -3356,7 +3464,7 @@ public:
 	TArray<UObject*> Timelines;
 
 	/** Array of blueprint overrides of component classes in parent classes */
-	TArray<TPair<FName, UClass*>> ComponentClassOverrides;
+	TArray<TPair<FName, const UClass*>> ComponentClassOverrides;
 
 	/** IAnimClassInterface (UAnimClassData) or null */
 	UObject* AnimClassImplementation;
@@ -3411,7 +3519,6 @@ COREUOBJECT_API void InitializePrivateStaticClass(
  * @param InClassAddReferencedObjects Class AddReferencedObjects function pointer
  * @param InSuperClassFn Super class function pointer
  * @param WithinClass Within class
- * @param bIsDynamic true if the class can be constructed dynamically at runtime
  */
 COREUOBJECT_API void GetPrivateStaticClassBody(
 	const TCHAR* PackageName,
@@ -3427,9 +3534,7 @@ COREUOBJECT_API void GetPrivateStaticClassBody(
 	UClass::ClassVTableHelperCtorCallerType InClassVTableHelperCtorCaller,
 	UClass::ClassAddReferencedObjectsType InClassAddReferencedObjects,
 	UClass::StaticClassFunctionType InSuperClassFn,
-	UClass::StaticClassFunctionType InWithinClassFn,
-	bool bIsDynamic = false,
-	UDynamicClass::DynamicClassInitializerType InDynamicClassInitializer = nullptr);
+	UClass::StaticClassFunctionType InWithinClassFn);
 
 /*-----------------------------------------------------------------------------
 	FObjectInstancingGraph.
@@ -3733,47 +3838,12 @@ template< class T > struct TBaseStructure
 	}
 };
 
-template<> struct TBaseStructure<FRotator>
-{
-	COREUOBJECT_API static UScriptStruct* Get();
-};
-
-template<> struct TBaseStructure<FQuat>
-{
-	COREUOBJECT_API static UScriptStruct* Get();
-};
-
-template<> struct TBaseStructure<FTransform>
-{
-	COREUOBJECT_API static UScriptStruct* Get();
-};
-
 template<> struct TBaseStructure<FLinearColor>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
 template<> struct TBaseStructure<FColor>
-{
-	COREUOBJECT_API static UScriptStruct* Get();
-};
-
-template<> struct  TBaseStructure<FPlane>
-{
-	COREUOBJECT_API static UScriptStruct* Get();
-};
-
-template<> struct  TBaseStructure<FVector>
-{
-	COREUOBJECT_API static UScriptStruct* Get();
-};
-
-template<> struct TBaseStructure<FVector2D>
-{
-	COREUOBJECT_API static UScriptStruct* Get();
-};
-
-template<> struct TBaseStructure<FVector4>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
@@ -3788,12 +3858,37 @@ template<> struct TBaseStructure<FGuid>
 	COREUOBJECT_API static UScriptStruct* Get();
 };
 
-template<> struct TBaseStructure<FBox2D>
+template<> struct TBaseStructure<FFallbackStruct>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
-};	
+};
 
-template<> struct TBaseStructure<FFallbackStruct>
+template<> struct TBaseStructure<FInterpCurvePointFloat>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
+};
+
+template<> struct TBaseStructure<FInterpCurvePointVector2D>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
+};
+
+template<> struct TBaseStructure<FInterpCurvePointVector>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
+};
+
+template<> struct TBaseStructure<FInterpCurvePointQuat>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
+};
+
+template<> struct TBaseStructure<FInterpCurvePointTwoVectors>
+{
+	COREUOBJECT_API static UScriptStruct* Get();
+};
+
+template<> struct TBaseStructure<FInterpCurvePointLinearColor>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
@@ -3886,3 +3981,28 @@ template<> struct TBaseStructure<FTestUninitializedScriptStructMembersTest>
 {
 	COREUOBJECT_API static UScriptStruct* Get();
 };
+
+
+
+// TBaseStructure for explicit core variant types only. e.g. FVector3d returns "Vector3d" struct. 
+template< class T > struct TVariantStructure
+{
+	static_assert(sizeof(T) == 0, "Unsupported for this type. Did you mean to use TBaseStructure?");
+};
+
+#define UE_DECLARE_CORE_VARIANT_TYPE(VARIANT, CORE)														\
+template<> struct TBaseStructure<F##CORE> { COREUOBJECT_API static UScriptStruct* Get(); };				\
+template<> struct TVariantStructure<F##VARIANT##f> { COREUOBJECT_API static UScriptStruct* Get(); };	\
+template<> struct TVariantStructure<F##VARIANT##d> { COREUOBJECT_API static UScriptStruct* Get(); };
+
+UE_DECLARE_CORE_VARIANT_TYPE(Vector2,	Vector2D);
+UE_DECLARE_CORE_VARIANT_TYPE(Vector3,	Vector);
+UE_DECLARE_CORE_VARIANT_TYPE(Vector4,	Vector4);
+UE_DECLARE_CORE_VARIANT_TYPE(Plane4,	Plane);
+UE_DECLARE_CORE_VARIANT_TYPE(Quat4,		Quat);
+UE_DECLARE_CORE_VARIANT_TYPE(Rotator3,	Rotator);
+UE_DECLARE_CORE_VARIANT_TYPE(Transform3,Transform);
+UE_DECLARE_CORE_VARIANT_TYPE(Matrix44,	Matrix);
+UE_DECLARE_CORE_VARIANT_TYPE(Box2,		Box2D);
+
+#undef UE_DECLARE_CORE_VARIANT_TYPE

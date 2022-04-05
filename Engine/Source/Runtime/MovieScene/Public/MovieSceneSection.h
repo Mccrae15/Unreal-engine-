@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "Containers/ContainersFwd.h"
 #include "Misc/FrameTime.h"
+#include "Misc/QualifiedFrameTime.h"
+#include "Misc/Timecode.h"
 #include "UObject/ObjectMacros.h"
 #include "MovieSceneFwd.h"
 #include "KeyParams.h"
@@ -13,8 +15,8 @@
 #include "Evaluation/Blending/MovieSceneBlendType.h"
 #include "Evaluation/MovieSceneCompletionMode.h"
 #include "Generators/MovieSceneEasingFunction.h"
+#include "Evaluation/MovieSceneSequenceHierarchy.h"
 #include "MovieSceneFrameMigration.h"
-#include "Misc/QualifiedFrameTime.h"
 #include "Evaluation/MovieSceneEvaluationCustomVersion.h"
 #include "EntitySystem/MovieSceneEntityBuilder.h"
 #include "MovieSceneSection.generated.h"
@@ -26,8 +28,12 @@ struct FKeyHandle;
 struct FEasingComponentData;
 struct FMovieSceneChannelProxy;
 struct FMovieSceneEvalTemplatePtr;
+struct FMovieSceneSequenceID;
+struct FFrameRate;
 
 class UMovieSceneEntitySystemLinker;
+class IMovieScenePlayer;
+enum class ECookOptimizationFlags;
 
 namespace UE
 {
@@ -35,6 +41,7 @@ namespace MovieScene
 {
 	struct FEntityImportParams;
 	struct FImportedEntity;
+	struct FFixedObjectBindingID;
 }
 }
 
@@ -144,6 +151,35 @@ public:
 #endif
 };
 
+USTRUCT(BlueprintType)
+struct FMovieSceneTimecodeSource
+{
+	GENERATED_BODY()
+
+	FMovieSceneTimecodeSource(FTimecode InTimecode)
+		: Timecode(InTimecode)
+	{}
+
+	FMovieSceneTimecodeSource()
+		: Timecode(FTimecode())
+	{}
+
+	FORCEINLINE bool operator==(const FMovieSceneTimecodeSource& Other) const
+	{
+		return Timecode == Other.Timecode;
+	}
+	FORCEINLINE bool operator!=(const FMovieSceneTimecodeSource& Other) const
+	{
+		return Timecode != Other.Timecode;
+	}
+
+public:
+
+	/** The global timecode at which this target is based (ie. the timecode at the beginning of the movie scene section when it was recorded) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Timecode")
+	FTimecode Timecode;
+};
+
 /**
  * Base class for movie scene sections
  */
@@ -152,6 +188,8 @@ class UMovieSceneSection
 	: public UMovieSceneSignedObject
 {
 	GENERATED_UCLASS_BODY()
+
+	MOVIESCENE_API ~UMovieSceneSection() {};
 
 public:
 
@@ -499,10 +537,16 @@ public:
 	/** The optional offset time of this section */
 	virtual TOptional<FFrameTime> GetOffsetTime() const { return TOptional<FFrameTime>(); }
 
+	/* Migrate the frame times of the movie scene section from the source frame rate to the destination frame rate */
+	virtual void MigrateFrameTimes(FFrameRate SourceRate, FFrameRate DestinationRate) {}
+
 	/**
 	 * When guid bindings are updated to allow this section to fix-up any internal bindings
 	 *
 	 */
+	virtual void OnBindingIDsUpdated(const TMap<UE::MovieScene::FFixedObjectBindingID, UE::MovieScene::FFixedObjectBindingID>& OldFixedToNewFixedMap, FMovieSceneSequenceID LocalSequenceID, const FMovieSceneSequenceHierarchy* Hierarchy, IMovieScenePlayer& Player) {}
+
+	UE_DEPRECATED(5.0, "OnBindingsUpdated has been deprecated. Use OnBindingIDsUpdated instead")
 	virtual void OnBindingsUpdated(const TMap<FGuid, FGuid>& OldGuidToNewGuidMap) { }
 
 	/** Get the referenced bindings for this section */
@@ -550,8 +594,32 @@ public:
 	*/
 	MOVIESCENE_API virtual float GetTotalWeightValue(FFrameTime InTime) const { return EvaluateEasing(InTime); }
 
+
+	/**
+	*  Get the implicit owner of this section, usually this will be the section's outer possessable or spawnable,
+	*  but some sections, like Control Rig, this will be the Control Rig object instead.
+	*
+	**/
+	MOVIESCENE_API virtual UObject* GetImplicitObjectOwner();
+
+
 #if WITH_EDITOR
 	MOVIESCENE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+#if WITH_EDITOR
+
+	/**
+	 * Called when this section's movie scene is being cooked to determine if/how this section should be cooked.
+	 * @return ECookOptimizationFlags detailing how to optimize this section
+	 */
+	MOVIESCENE_API virtual ECookOptimizationFlags GetCookOptimizationFlags() const;
+
+	/**
+	 * Called when this section should be removed for cooking
+	 */
+	MOVIESCENE_API virtual void RemoveForCook();
+
 #endif
 
 public:

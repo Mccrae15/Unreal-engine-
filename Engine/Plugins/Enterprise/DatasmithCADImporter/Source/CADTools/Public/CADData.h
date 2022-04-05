@@ -9,17 +9,56 @@
 
 class FArchive;
 
-using CadId = uint32; // Identifier defined in the input CAD file
-using ColorId = uint32; // Identifier defined in the input CAD file
-using MaterialId = uint32; // Identifier defined in the input CAD file
-using CADUUID = uint32;  // Universal unique identifier that be used for the unreal asset name (Actor, Material)
+using FCadId = uint32; // Identifier defined in the input CAD file
+using FColorId = uint32; // Identifier defined in the input CAD file
+using FMaterialId = uint32; // Identifier defined in the input CAD file
+using FCADUUID = uint32;  // Universal unique identifier that be used for the unreal asset name (Actor, Material)
 
 
 namespace CADLibrary
 {
 
+enum class ECADFormat
+{
+	ACIS,
+	AUTOCAD,
+	CATIA,
+	CATIA_CGR,
+	CATIA_3DXML,
+	CATIAV4,
+	CREO,
+	DWG,
+	DGN,
+	TECHSOFT,
+	IFC,
+	IGES,
+	INVENTOR,
+	JT,
+	NX,
+	MICROSTATION,
+	PARASOLID,
+	SOLID_EDGE,
+	SOLIDWORKS,
+	STEP,
+	OTHER
+};
+
+CADTOOLS_API ECADFormat FileFormat(const FString& Extension);
+
+enum class ECADParsingResult : uint8
+{
+	Unknown,
+	Running,
+	UnTreated,
+	ProcessOk,
+	ProcessFailed,
+	FileNotFound,
+};
+
 // TODO: Remove from hear and replace by DatasmithUtils::GetCleanFilenameAndExtension... But need to remove DatasmithCore dependancies 
 CADTOOLS_API void GetCleanFilenameAndExtension(const FString& InFilePath, FString& OutFilename, FString& OutExtension);
+CADTOOLS_API FString GetExtension(const FString& InFilePath);
+
 
 class CADTOOLS_API FCADMaterial
 {
@@ -39,80 +78,170 @@ public:
 
 struct CADTOOLS_API FObjectDisplayDataId
 {
-	CADUUID DefaultMaterialName = 0;
-	MaterialId Material = 0;
-	ColorId Color = 0; // => FastHash == ColorId+Transparency
+	FCADUUID DefaultMaterialName = 0;
+	FMaterialId Material = 0;
+	FColorId Color = 0; // => FastHash == ColorId+Transparency
 };
 
-struct CADTOOLS_API FFileDescription
+class CADTOOLS_API FFileDescriptor
 {
-	explicit FFileDescription(const TCHAR* InFilePath = nullptr, const TCHAR* InConfiguration = nullptr, const TCHAR* InRootFilePath = nullptr)
-		: Path(InFilePath)
-		, OriginalPath(InFilePath)
+public:
+	FFileDescriptor() = default;
+	
+	explicit FFileDescriptor(const TCHAR* InFilePath, const TCHAR* InConfiguration = nullptr, const TCHAR* InRootFolder = nullptr)
+		: SourceFilePath(InFilePath)
 		, Configuration(InConfiguration)
-		, MainCadFilePath(InRootFilePath)
 	{
-		if (MainCadFilePath.IsEmpty() && !Path.IsEmpty())
-		{
-			MainCadFilePath = FPaths::GetPath(Path);
-		}
-
-		GetCleanFilenameAndExtension(Path, Name, Extension);
-		Name += TEXT(".") + Extension;
+		Name = FPaths::GetCleanFilename(InFilePath);
+		Format = FileFormat(GetExtension(InFilePath));
+		RootFolder = InRootFolder ? InRootFolder : FPaths::GetPath(InFilePath);
 	}
 
 	/**
-	 * Used to replace CADFile path by the path of the file saved in KernelIO format (*.ct)
+	 * Used define and then load the cache of the CAD File instead of the source file
 	 */ 
-	void ReplaceByKernelIOBackup(const FString& InKernelIOBackupPath)
+	void SetCacheFile(const FString& InCacheFilePath)
 	{
-		Path = InKernelIOBackupPath;
+		CacheFilePath = InCacheFilePath;
 	}
 
-	bool operator==(const FFileDescription& Other) const
+	bool operator==(const FFileDescriptor& Other) const
 	{
 		return (Name.Equals(Other.Name, ESearchCase::IgnoreCase) && (Configuration == Other.Configuration));
 	}
 
-	friend CADTOOLS_API FArchive& operator<<(FArchive& Ar, FFileDescription& File);
+	bool IsEmpty()
+	{
+		return Name.IsEmpty();
+	}
 
-	uint32 GetFileHash();
+	void Empty()
+	{
+		SourceFilePath.Empty(); 
+		CacheFilePath.Empty();
+		Name.Empty();
+		Configuration.Empty();
+		RootFolder.Empty();
+		DescriptorHash = 0;
+	}
 
-	FString Path;
-	FString OriginalPath;
-	FString Name;
-	FString Extension;
-	FString Configuration;
-	FString MainCadFilePath;
+	friend CADTOOLS_API FArchive& operator<<(FArchive& Ar, FFileDescriptor& File);
+
+	friend CADTOOLS_API uint32 GetTypeHash(const FFileDescriptor& FileDescription);
+
+	uint32 GetDescriptorHash() const
+	{
+		if (!DescriptorHash)
+		{
+			DescriptorHash = GetTypeHash(*this);
+		}
+		return DescriptorHash;
+	}
+
+	const FString& GetSourcePath() const 
+	{
+		return SourceFilePath;
+	}
+	
+	bool HasConfiguration() const
+	{
+		return !Configuration.IsEmpty();
+	}
+
+	const FString& GetConfiguration() const
+	{
+		return Configuration;
+	}
+
+	void SetConfiguration(const FString& NewConfiguration)
+	{
+		Configuration = NewConfiguration;
+	}
+
+	ECADFormat GetFileFormat() const
+	{
+		return Format;
+	}
+
+	const FString& GetPathOfFileToLoad() const
+	{
+		if (CacheFilePath.IsEmpty())
+		{
+			return SourceFilePath;
+		}
+		else
+		{
+			return CacheFilePath;
+		}
+	}
+
+	/** Set the file path if SourceFilePath was not the real path */
+	void SetSourceFilePath(const FString& NewFilePath)
+	{
+		SourceFilePath = NewFilePath;
+	}
+
+	const FString& GetRootFolder() const 
+	{
+		return RootFolder;
+	}
+
+	const FString& GetFileName() const
+	{
+		return Name;
+	}
+
+private:
+
+	FString SourceFilePath; // e.g. d:/folder/content.jt
+	FString CacheFilePath; // if the file has already been loaded 
+	FString Name; // content.jt
+	ECADFormat Format; // ECADFormat::JT
+	FString Configuration; // dedicated to JT or SW file to read the good configuration (SW) or only a sub-file (JT)
+	FString RootFolder; // alternative folder where the file could be if its path is not valid.
+
+	mutable uint32 DescriptorHash = 0;
 };
 
 /**
- * Helper struct to store tessellation data from CoreTech
+ * Helper struct to store tessellation data from CoreTech or CADKernel
+ *
+ * FBodyMesh and FTessellationData are design to manage mesh from CoreTech and CADKernel.
+ * FTessellationData is the mesh of a face
+ * FBodyMesh is the mesh of a body composed by an array of FTessellationData (one FTessellationData by body face)
+ *
+ * CoreTech mesh are defined surface by surface. The mesh is not connected
+ * CADKernel mesh is connected.
  */
 struct CADTOOLS_API FTessellationData
 {
 	friend CADTOOLS_API FArchive& operator<<(FArchive& Ar, FTessellationData& Tessellation);
 
-	int32    PatchId = 0;
+	/** Empty with CADKernel as set in FBodyMesh, Set by CoreTech (this is only the vertices of the face) */
+	TArray<FVector> PositionArray;
 
-	TArray<FVector> VertexArray;
+	/** Index of each vertex in FBody::VertexArray. Empty with CoreTech and filled by FillKioVertexPosition */
+	TArray<int32> PositionIndices;
+
+	/** Index of Vertices of each face in the local Vertices set (i.e. VerticesBodyIndex for CADKernel, VertexArray for Coretech) */
+	TArray<int32> VertexIndices;
+
+	/** Normal of each vertex */
 	TArray<FVector> NormalArray;
-	TArray<int32> IndexArray;
+
+	/** UV coordinates of each vertex */
 	TArray<FVector2D> TexCoordArray;
 
-	uint32    StartVertexIndex = 0;
+	FCADUUID ColorName = 0;
+	FCADUUID MaterialName = 0;
 
-	CADUUID ColorName = 0;
-	CADUUID MaterialName = 0;
-
-	TArray<int32> VertexIdSet;  // StaticMesh FVertexID NO Serialize
-	TArray<int32> SymVertexIdSet; // StaticMesh FVertexID for sym part NO Serialize
+	int32 PatchId;
 };
 
 class CADTOOLS_API FBodyMesh
 {
 public:
-	FBodyMesh(CadId InBodyID = 0) : BodyID(InBodyID)
+	FBodyMesh(FCadId InBodyID = 0) : BodyID(InBodyID)
 	{
 		BBox.Init();
 	}
@@ -120,12 +249,16 @@ public:
 	friend FArchive& operator<<(FArchive& Ar, FBodyMesh& BodyMesh);
 
 public:
+	TArray<FVector> VertexArray; // set by CADKernel, filled by FillKioVertexPosition that merges coincident vertices (CoreTechHelper)
 	TArray<FTessellationData> Faces;
 	FBox BBox;
 
 	uint32 TriangleCount = 0;
-	CadId BodyID = 0;
-	CADUUID MeshActorName = 0;
+	FCadId BodyID = 0;
+	FCADUUID MeshActorName = 0;
+
+	TArray<int32> VertexIds;  // StaticMesh FVertexID NO Serialize, filled by FillKioVertexPosition or FillVertexPosition
+	TArray<int32> SymmetricVertexIds; // StaticMesh FVertexID for sym part NO Serialize, filled by FillKioVertexPosition or FillVertexPosition
 
 	TSet<uint32> MaterialSet;
 	TSet<uint32> ColorSet;
@@ -224,12 +357,6 @@ inline void CopyValue(const void* Source, int Offset, uint8 Size, int32 Dest[3])
 		}
 	}
 }
-
-using ::GetTypeHash;
-FORCEINLINE CADTOOLS_API uint32 GetTypeHash(const FFileDescription& FileDescription)
-{
-	return HashCombine(GetTypeHash(FileDescription.Name), GetTypeHash(FileDescription.Configuration));
-};
 
 }
 

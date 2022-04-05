@@ -11,7 +11,8 @@
 #include "Presentation/PropertyEditor/PropertyEditor.h"
 #include "ObjectPropertyNode.h"
 #include "PropertyEditorHelpers.h"
-#include "UserInterface/PropertyEditor/SResetToDefaultPropertyEditor.h"
+#include "SResetToDefaultPropertyEditor.h"
+#include "ThumbnailRendering/ThumbnailManager.h"
 #include "Widgets/Colors/SColorPicker.h"
 
 
@@ -19,8 +20,9 @@ class FSinglePropertyUtilities : public IPropertyUtilities
 {
 public:
 
-	FSinglePropertyUtilities( const TWeakPtr< SSingleProperty >& InView )
+	FSinglePropertyUtilities( const TWeakPtr< SSingleProperty >& InView, bool bInShouldDisplayThumbnail )
 		: View( InView )
+		, bShouldHideAssetThumbnail(bInShouldDisplayThumbnail)
 	{
 	}
 
@@ -67,8 +69,7 @@ public:
 
 	virtual TSharedPtr<class FAssetThumbnailPool> GetThumbnailPool() const override
 	{
-		// not implemented
-		return NULL;
+		return bShouldHideAssetThumbnail ? nullptr : UThumbnailManager::Get().GetSharedThumbnailPool();
 	}
 
 	virtual void NotifyFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent) override
@@ -77,6 +78,13 @@ public:
 	virtual bool DontUpdateValueWhileEditing() const override
 	{
 		return false;
+	}
+
+	virtual const TArray<TSharedRef<class IClassViewerFilter>>& GetClassViewerFilters() const override
+	{
+		// not implemented
+		static TArray<TSharedRef<class IClassViewerFilter>> NotImplemented;
+		return NotImplemented;
 	}
 
 	const TArray<TWeakObjectPtr<UObject>>& GetSelectedObjects() const override
@@ -90,13 +98,9 @@ public:
 		return false;
 	}
 
-	virtual TSharedPtr<FEditConditionParser> GetEditConditionParser() const override
-	{
-		return nullptr;
-	}
-
 private:
 	TWeakPtr< SSingleProperty > View;
+	bool bShouldHideAssetThumbnail = false;
 };
 
 void SSingleProperty::Construct( const FArguments& InArgs )
@@ -107,7 +111,7 @@ void SSingleProperty::Construct( const FArguments& InArgs )
 	NotifyHook = InArgs._NotifyHook;
 	PropertyFont = InArgs._PropertyFont;
 
-	PropertyUtilities = MakeShareable( new FSinglePropertyUtilities( SharedThis( this ) ) );
+	PropertyUtilities = MakeShareable( new FSinglePropertyUtilities( SharedThis( this ), InArgs._bShouldHideAssetThumbnail ) );
 
 	SetObject( InArgs._Object );
 }
@@ -179,7 +183,6 @@ void SSingleProperty::SetObject( UObject* InObject )
 			.VAlign( VAlign_Center )
 			[
 				SNew( SPropertyNameWidget, PropertyEditor )
-				.DisplayResetToDefault( false )
 			];
 		}
 

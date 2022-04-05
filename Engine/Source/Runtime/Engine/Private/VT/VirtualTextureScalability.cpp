@@ -16,7 +16,7 @@ namespace VirtualTextureScalability
 #if WITH_EDITOR
 	static TAutoConsoleVariable<int32> CVarVTMaxUploadsPerFrameInEditor(
 		TEXT("r.VT.MaxUploadsPerFrameInEditor"),
-		64,
+		32,
 		TEXT("Max number of page uploads per frame when in editor"),
 		ECVF_RenderThreadSafe
 	);
@@ -29,10 +29,24 @@ namespace VirtualTextureScalability
 		ECVF_RenderThreadSafe | ECVF_Scalability
 	);
 
+	static TAutoConsoleVariable<int32> CVarMaxPagesProducedPerFrame(
+		TEXT("r.VT.MaxTilesProducedPerFrame"),
+		30,
+		TEXT("Max number of pages that can be produced per frame"),
+		ECVF_RenderThreadSafe | ECVF_Scalability
+	);
+
+	static TAutoConsoleVariable<int32> CVarVTMaxReleasedPerFrame(
+		TEXT("r.VT.MaxReleasedPerFrame"),
+		0,
+		TEXT("Max number of allocated virtual textures to release per frame"),
+		ECVF_RenderThreadSafe | ECVF_Scalability
+	);
+
 #if WITH_EDITOR
 	static TAutoConsoleVariable<int32> CVarVTMaxContinuousUpdatesPerFrameInEditor(
 		TEXT("r.VT.MaxContinuousUpdatesPerFrameInEditor"),
-		128,
+		8,
 		TEXT("Max number of page uploads for pages that are already mapped when in editor."),
 		ECVF_RenderThreadSafe | ECVF_Scalability
 	);
@@ -114,7 +128,29 @@ namespace VirtualTextureScalability
 		ECVF_Scalability
 	);
 
+	static TAutoConsoleVariable<int32> CVarVTSplitPhysicalPoolSize(
+		TEXT("r.VT.SplitPhysicalPoolSize"),
+		0,
+		TEXT("Create multiple physical pools per format to keep pools at this maximum size in tiles.")
+		TEXT("A value of 64 tiles will force 16bit page tables. This can be a page table memory optimization for large physical pools.")
+		TEXT("Defaults to 0 (off)."),
+		ECVF_RenderThreadSafe
+	);
 
+	static TAutoConsoleVariable<int32> CVarVTEnableAnisotropy(
+		TEXT("r.VT.AnisotropicFiltering"),
+		0,
+		TEXT("Is anisotropic filtering for VTs enabled?"),
+		ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
+	static TAutoConsoleVariable<int32> CVarVTPageFreeThreshold(
+		TEXT("r.VT.PageFreeThreshold"),
+		60,
+		TEXT("Number of frames since the last time a VT page was used, before it's considered free.\n")
+		TEXT("VT pages are not necesarily marked as used on the CPU every time they're accessed by the GPU.\n")
+		TEXT("Increasing this threshold reduces the chances that an in-use frame is considered free."),
+		ECVF_RenderThreadSafe);
+	
 	/** Track changes and apply to relevant systems. This allows us to dynamically change the scalability settings. */
 	static void OnUpdate()
 	{
@@ -160,7 +196,7 @@ namespace VirtualTextureScalability
 				if (It->IsCurrentlyVirtualTextured())
 				{
 					ReleasedVirtualTextures.Add(*It);
-					BeginReleaseResource(It->Resource);
+					BeginReleaseResource(It->GetResource());
 				}
 			}
 
@@ -174,7 +210,7 @@ namespace VirtualTextureScalability
 			// Reinit streaming virtual textures
 			for (UTexture2D* Texture : ReleasedVirtualTextures)
 			{
-				BeginInitResource(Texture->Resource);
+				BeginInitResource(Texture->GetResource());
 			}
 
 			// Reinit runtime virtual textures
@@ -198,6 +234,16 @@ namespace VirtualTextureScalability
 #endif
 	}
 
+	int32 GetMaxPagesProducedPerFrame()
+	{
+		return CVarMaxPagesProducedPerFrame.GetValueOnAnyThread();
+	}
+
+	int32 GetMaxAllocatedVTReleasedPerFrame()
+	{
+		return CVarVTMaxReleasedPerFrame.GetValueOnAnyThread();
+	}
+
 	int32 GetMaxContinuousUpdatesPerFrame()
 	{
 #if WITH_EDITOR
@@ -206,6 +252,11 @@ namespace VirtualTextureScalability
 #else
 		return CVarVTMaxContinuousUpdatesPerFrame.GetValueOnAnyThread();
 #endif
+	}
+
+	bool IsAnisotropicFilteringEnabled()
+	{
+		return CVarVTEnableAnisotropy.GetValueOnAnyThread() != 0;
 	}
 
 	int32 GetMaxAnisotropy()
@@ -223,5 +274,22 @@ namespace VirtualTextureScalability
 	int32 GetRuntimeVirtualTextureSizeBias(uint32 GroupIndex)
 	{
 		return GroupIndex < NumScalabilityGroups ? GTileCountBiases[GroupIndex] : 0;
+	}
+
+	int32 GetSplitPhysicalPoolSize()
+	{
+		return FMath::Max(CVarVTSplitPhysicalPoolSize.GetValueOnRenderThread(), 0);
+	}
+
+	uint32 GetPageFreeThreshold()
+	{
+		return FMath::Max(CVarVTPageFreeThreshold.GetValueOnRenderThread(), 0);
+	}
+	
+	uint32 GetPhysicalPoolSettingsHash()
+	{
+		uint32 Hash = GetTypeHash(GPoolSizeScales);
+		Hash = HashCombine(Hash, GetSplitPhysicalPoolSize());
+		return Hash;
 	}
 }

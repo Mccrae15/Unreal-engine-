@@ -41,7 +41,12 @@
 #include "BlueprintDetailsCustomization.h"
 #include "K2Node_BitmaskLiteral.h"
 #include "BitmaskLiteralDetails.h"
+#include "BlueprintMemberReferenceCustomization.h"
 #include "FormatTextDetails.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "ClassViewerFilter.h"
+#include "BlueprintEditorSettings.h"
+#include "BlueprintNamespaceUtilities.h"
 
 #define LOCTEXT_NAMESPACE "KismetInspector"
 
@@ -343,8 +348,19 @@ void SKismetInspector::Construct(const FArguments& InArgs)
 		NotifyHook = Kismet2.Get();
 	}
 
-	FDetailsViewArgs::ENameAreaSettings NameAreaSettings = InArgs._HideNameArea ? FDetailsViewArgs::HideNameArea : FDetailsViewArgs::ObjectsUseNameArea;
-	FDetailsViewArgs DetailsViewArgs( /*bUpdateFromSelection=*/ false, /*bLockable=*/ false, /*bAllowSearch=*/ true, NameAreaSettings, /*bHideSelectionTip=*/ true, /*InNotifyHook=*/ NotifyHook, /*InSearchInitialKeyFocus=*/ false, /*InViewIdentifier=*/ InArgs._ViewIdentifier );
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = InArgs._HideNameArea ? FDetailsViewArgs::HideNameArea : FDetailsViewArgs::ObjectsUseNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
+	DetailsViewArgs.NotifyHook = NotifyHook;
+	DetailsViewArgs.ViewIdentifier = InArgs._ViewIdentifier;
+	if (Kismet2.IsValid())
+	{
+		TSharedPtr<IClassViewerFilter> ImportedClassFilter = Kismet2->GetImportedClassViewerFilter();
+		if (ImportedClassFilter.IsValid())
+		{
+			DetailsViewArgs.ClassViewerFilters.Add(ImportedClassFilter.ToSharedRef());
+		}
+	}
 
 	PropertyView = EditModule.CreateDetailView( DetailsViewArgs );
 		
@@ -372,6 +388,8 @@ void SKismetInspector::Construct(const FArguments& InArgs)
 		PropertyView->RegisterInstancedCustomPropertyLayout(UPropertyWrapper::StaticClass(), LayoutVariableDetails);
 		PropertyView->RegisterInstancedCustomPropertyLayout(UK2Node_VariableGet::StaticClass(), LayoutVariableDetails);
 		PropertyView->RegisterInstancedCustomPropertyLayout(UK2Node_VariableSet::StaticClass(), LayoutVariableDetails);
+
+		PropertyView->RegisterInstancedCustomPropertyTypeLayout(FMemberReference::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FBlueprintMemberReferenceDetails::MakeInstance, MyBlueprint));
 	}
 
 	if (Kismet2.IsValid() && Kismet2->IsEditingSingleBlueprint())
@@ -424,7 +442,7 @@ void SKismetInspector::Construct(const FArguments& InArgs)
 	FDetailsViewArgs ViewArgs;
 	ViewArgs.bAllowSearch = false;
 	ViewArgs.bHideSelectionTip = false;
-	ViewArgs.bShowActorLabel = false;
+	ViewArgs.bShowObjectLabel = false;
 	ViewArgs.NotifyHook = NotifyHook;
 
 	StructureDetailsView = EditModule.CreateStructureDetailView(ViewArgs, StructureViewArgs, StructToDisplay, LOCTEXT("Struct", "Struct View"));
@@ -608,7 +626,8 @@ void SKismetInspector::UpdateFromObjects(const TArray<UObject*>& PropertyObjects
 	}
 
 	PropertyView->OnFinishedChangingProperties().Clear();
-	PropertyView->OnFinishedChangingProperties().Add( UserOnFinishedChangingProperties );
+	PropertyView->OnFinishedChangingProperties().Add(UserOnFinishedChangingProperties);
+	PropertyView->OnFinishedChangingProperties().AddSP(this, &SKismetInspector::OnFinishedChangingProperties);
 
 	// Proceed to update
 	SelectedObjects.Empty();
@@ -785,12 +804,11 @@ bool SKismetInspector::IsPropertyVisible( const FPropertyAndParent& PropertyAndP
 			}
 		}
 	}
-
+	
 	if(const UClass* OwningClass = Property.GetOwner<UClass>())
 	{
 		const UBlueprint* BP = BlueprintEditorPtr.IsValid() ? BlueprintEditorPtr.Pin()->GetBlueprintObj() : nullptr;
 		const bool VariableAddedInCurentBlueprint = (OwningClass->ClassGeneratedBy == BP);
-
 		// If we did not add this var, hide it!
 		if(!VariableAddedInCurentBlueprint)
 		{
@@ -898,13 +916,27 @@ bool SKismetInspector::IsPropertyEditingEnabled() const
 
 	for (const TWeakObjectPtr<UObject>& SelectedObject : SelectedObjects)
 	{
-		UActorComponent* Component = Cast<UActorComponent>(SelectedObject.Get());
-		if (Component && !CastChecked<UActorComponent>(Component->GetArchetype())->IsEditableWhenInherited() )
+		if (UActorComponent* Component = Cast<UActorComponent>(SelectedObject.Get()))
 		{
-			bIsEditable = false;
-			break;
+			if(!CastChecked<UActorComponent>(Component->GetArchetype())->IsEditableWhenInherited())
+			{
+				bIsEditable = false;
+				break;
+			}
+		}
+		else if(UEdGraphNode* EdGraphNode = Cast<UEdGraphNode>(SelectedObject.Get()))
+		{
+			if(UEdGraph* OuterGraph = EdGraphNode->GetGraph())
+			{
+				if(BlueprintEditorPtr.IsValid() && !BlueprintEditorPtr.Pin()->IsEditable(OuterGraph))
+				{
+					bIsEditable = false;
+					break;
+				}
+			}
 		}
 	}
+	
 	return bIsEditable && (!IsPropertyEditingEnabledDelegate.IsBound() || IsPropertyEditingEnabledDelegate.Execute());
 }
 
@@ -967,6 +999,58 @@ void SKismetInspector::SetPublicViewCheckboxState( ECheckBoxState InIsChecked )
 	}
 	
 	BlueprintEditorPtr.Pin()->StartEditingDefaults();
+}
+
+void SKismetInspector::OnFinishedChangingProperties(const FPropertyChangedEvent& InPropertyChangedEvent)
+{
+	ImportNamespacesForPropertyValue(InPropertyChangedEvent.MemberProperty);
+}
+
+void SKismetInspector::ImportNamespacesForPropertyValue(const FProperty* InProperty) const
+{
+	if (!GetDefault<UBlueprintEditorSettings>()->bEnableNamespaceImportingFeatures)
+	{
+		return;
+	}
+
+	if (!InProperty || SelectedObjects.Num() == 0)
+	{
+		return;
+	}
+
+	// Gather all namespace identifier strings associated with the property's value for each edited object.
+	TSet<FString> AssociatedNamespaces;
+	for (const TWeakObjectPtr<UObject>& SelectedObjectPtr : SelectedObjects)
+	{
+		if (const UObject* SelectedObject = SelectedObjectPtr.Get())
+		{
+			const UStruct* SelectedType = SelectedObject->GetClass();
+
+			// Ensure that the selected object type matches the property's owner.
+			// For example, a details customization may select an unrelated object
+			// and then customize each row with an external object reference. In
+			// those cases, the customization would need to handle this explicitly.
+			if (SelectedType != InProperty->GetOwnerStruct())
+			{
+				continue;
+			}
+
+			FBlueprintNamespaceUtilities::GetPropertyValueNamespaces(SelectedType, InProperty, SelectedObject, AssociatedNamespaces);
+		}
+	}
+
+	// Auto-import any namespace(s) associated with the property's value into the current editor context.
+	if (AssociatedNamespaces.Num() > 0)
+	{
+		TSharedPtr<FBlueprintEditor> BlueprintEditor = BlueprintEditorPtr.Pin();
+		if (BlueprintEditor.IsValid())
+		{
+			for (const FString& AssociatedNamespace : AssociatedNamespaces)
+			{
+				BlueprintEditor->ImportNamespace(AssociatedNamespace);
+			}
+		}
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////

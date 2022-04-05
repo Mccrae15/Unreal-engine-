@@ -10,7 +10,7 @@ void FPIELoginSettingsInternal::Encrypt()
 {
 	if (Token.Len() > 0)
 	{
-		TArray<TCHAR> SrcCharArray = Token.GetCharArray();
+		TArray<TCHAR, FString::AllocatorType> SrcCharArray = Token.GetCharArray();
 		int32 SrcSize = SrcCharArray.Num() * sizeof(TCHAR);
 		const int64 PaddedEncryptedFileSize = Align(SrcSize + 1, FAES::AESBlockSize);
 
@@ -125,7 +125,10 @@ void UOnlinePIESettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 					// Remove any whitespace from login input
 					Login.Id.TrimStartAndEndInline();
 
-					if (Ids.Contains(Login.Id))
+					const bool bIsExistingLogin = Ids.Contains(Login.Id);
+					// Allow duplicate for Developer credentials.  This is intended to support logins where other fields uniquely identify the login but require the same id.
+					const bool bDuplicateAllowed = Login.Type.Equals(TEXT("Developer"), ESearchCase::IgnoreCase);
+					if (bIsExistingLogin && !bDuplicateAllowed)
 					{
 						// Don't allow duplicate login ids
 						Login.Id.Reset();

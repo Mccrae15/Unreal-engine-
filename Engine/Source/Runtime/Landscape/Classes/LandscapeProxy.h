@@ -15,7 +15,8 @@
 #include "LandscapeComponent.h"
 #include "LandscapeWeightmapUsage.h"
 #include "VT/RuntimeVirtualTextureEnum.h"
-
+#include "ActorPartition/PartitionActor.h"
+#include "ILandscapeSplineInterface.h"
 #include "LandscapeProxy.generated.h"
 
 class ALandscape;
@@ -41,7 +42,10 @@ enum class ENavDataGatheringMode : uint8;
 
 #if WITH_EDITOR
 LANDSCAPE_API extern bool GLandscapeEditModeActive;
-#endif
+#endif // WITH_EDITOR
+
+
+// ----------------------------------------------------------------------------------
 
 USTRUCT()
 struct FLandscapeEditorLayerSettings
@@ -50,7 +54,7 @@ struct FLandscapeEditorLayerSettings
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	ULandscapeLayerInfoObject* LayerInfoObj;
+	TObjectPtr<ULandscapeLayerInfoObject> LayerInfoObj;
 
 	UPROPERTY()
 	FString ReimportLayerFilePath;
@@ -81,14 +85,14 @@ struct FLandscapeLayerStruct
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	ULandscapeLayerInfoObject* LayerInfoObj;
+	TObjectPtr<ULandscapeLayerInfoObject> LayerInfoObj;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(transient)
-	ULandscapeMaterialInstanceConstant* ThumbnailMIC;
+	TObjectPtr<ULandscapeMaterialInstanceConstant> ThumbnailMIC;
 
 	UPROPERTY()
-	ALandscapeProxy* Owner;
+	TObjectPtr<ALandscapeProxy> Owner;
 
 	UPROPERTY(transient)
 	int32 DebugColorChannel;
@@ -118,7 +122,7 @@ enum class ELandscapeImportAlphamapType : uint8
 {
 	// Three layers blended 50/30/20 represented as 0.5, 0.3, and 0.2 in the alpha maps
 	// All alpha maps for blended layers total to 1.0
-	// This is the style used by UE4 internally for blended layers
+	// This is the style used by UE internally for blended layers
 	Additive,
 
 	// Three layers blended 50/30/20 represented as 0.5, 0.6, and 1.0 in the alpha maps
@@ -138,9 +142,9 @@ struct FLandscapeImportLayerInfo
 	FName LayerName;
 
 	UPROPERTY(Category="Import", EditAnywhere)
-	ULandscapeLayerInfoObject* LayerInfo;
+	TObjectPtr<ULandscapeLayerInfoObject> LayerInfo;
 
-	UPROPERTY(Category="Import", EditAnywhere)
+	UPROPERTY(Category="Import", EditAnywhere, meta=(DisplayName="Layer File"))
 	FString SourceFilePath; // Optional
 	
 	// Raw weightmap data
@@ -174,8 +178,8 @@ enum class ELandscapeLayerPaintingRestriction : uint8
 	/** Restricts painting to only components that already have this layer. */
 	ExistingOnly UMETA(DisplayName="Existing Layers Only"),
 
-	/** Restricts painting to only components that have this layer in their whitelist. */
-	UseComponentWhitelist UMETA(DisplayName="Component Whitelist"),
+	/** Restricts painting to only components that have this layer in their allow list. */
+	UseComponentAllowList UMETA(DisplayName="Component Allow List"),
 };
 
 UENUM()
@@ -325,7 +329,7 @@ struct FLandscapeProxyMaterialOverride
 	FPerPlatformInt LODIndex;
 
 	UPROPERTY(EditAnywhere, Category = Landscape)
-	UMaterialInterface* Material = nullptr;
+	TObjectPtr<UMaterialInterface> Material = nullptr;
 
 #if WITH_EDITORONLY_DATA
 	bool operator==(const FLandscapeProxyMaterialOverride& InOther) const
@@ -353,8 +357,8 @@ struct FLandscapeProxyMaterialOverride
 #endif
 };
 
-UCLASS(Abstract, MinimalAPI, NotBlueprintable, NotPlaceable, hidecategories=(Display, Attachment, Physics, Debug, Lighting, LOD), showcategories=(Lighting, Rendering, "Utilities|Transformation"), hidecategories=(Mobility))
-class ALandscapeProxy : public AActor
+UCLASS(Abstract, MinimalAPI, NotBlueprintable, NotPlaceable, hidecategories=(Display, Attachment, Physics, Debug, Lighting, HLOD), showcategories=(Lighting, Rendering, Transformation), hidecategories=(Mobility))
+class ALandscapeProxy : public APartitionActor, public ILandscapeSplineInterface
 {
 	GENERATED_BODY()
 
@@ -363,10 +367,10 @@ public:
 
 	virtual ~ALandscapeProxy();
 
-	UPROPERTY()
-	ULandscapeSplinesComponent* SplineComponent;
-
 protected:
+	UPROPERTY()
+	TObjectPtr<ULandscapeSplinesComponent> SplineComponent;
+
 	/** Guid for LandscapeEditorInfo **/
 	UPROPERTY()
 	FGuid LandscapeGuid;
@@ -395,7 +399,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = LOD, meta=(ClampMin = "0.01", ClampMax = "1.0", UIMin = "0.01", UIMax = "1.0", DisplayName= "SubSection Min Component ScreenSize"))
 	float ComponentScreenSizeToUseSubSections;
 
-	/** This is the starting screen size used to calculate the distribution, by default it's 1, but you can increase the value if you want less LOD0 component, and you use very large landscape component. */
+	/** This is the starting screen size used to calculate the distribution. You can increase the value if you want less LOD0 component, and you use very large landscape component. */
 	UPROPERTY(EditAnywhere, Category = "LOD Distribution", meta = (DisplayName = "LOD 0 Screen Size", ClampMin = "0.1", ClampMax = "10.0", UIMin = "1.0", UIMax = "10.0"))
 	float LOD0ScreenSize;
 
@@ -406,22 +410,6 @@ public:
 	/** The distribution setting used to change the LOD generation, 2 is the normal distribution, small number mean you want your last LODs to take more screen space and big number mean you want your first LODs to take more screen space. */
 	UPROPERTY(EditAnywhere, Category = "LOD Distribution", meta = (DisplayName = "Other LODs", ClampMin = "1.0", ClampMax = "10.0", UIMin = "1.0", UIMax = "10.0"))
 	float LODDistributionSetting;
-
-	/** Component screen size (0.0 - 1.0) at which we should enable tessellation. */
-	UPROPERTY(EditAnywhere, Category = Tessellation, meta = (ClampMin = "0.01", ClampMax = "1.0", UIMin = "0.01", UIMax = "1.0"))
-	float TessellationComponentScreenSize;
-
-	/** Tell if we should enable tessellation falloff. It will ramp down the Tessellation Multiplier from the material linearly. It should be disabled if you plan on using a custom implementation in material/shaders. */
-	UPROPERTY(EditAnywhere, Category = Tessellation, meta=(DisplayName = "Use Default Falloff"))
-	bool UseTessellationComponentScreenSizeFalloff;
-
-	/** Component screen size (0.0 - 1.0) at which we start the tessellation falloff. */
-	UPROPERTY(EditAnywhere, Category = Tessellation, meta=(editcondition= UseTessellationComponentScreenSizeFalloff, ClampMin = "0.01", ClampMax = "1.0", UIMin = "0.01", UIMax = "1.0", DisplayName = "Tessellation Component Screen Size Falloff"))
-	float TessellationComponentScreenSizeFalloff;
-
-	/** Landscape LOD to use as an occluder geometry for software occlusion */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=LOD)
-	int32 OccluderGeometryLOD;
 
 #if WITH_EDITORONLY_DATA
 	/** LOD level to use when exporting the landscape to obj or FBX */
@@ -443,7 +431,7 @@ public:
 
 	/** Default physical material, used when no per-layer values physical materials */
 	UPROPERTY(EditAnywhere, Category=Landscape)
-	UPhysicalMaterial* DefaultPhysMaterial;
+	TObjectPtr<UPhysicalMaterial> DefaultPhysMaterial;
 
 	/**
 	 * Allows artists to adjust the distance where textures using UV 0 are streamed in/out.
@@ -455,7 +443,7 @@ public:
 
 	/** Combined material used to render the landscape */
 	UPROPERTY(EditAnywhere, BlueprintSetter=EditorSetLandscapeMaterial, Category=Landscape)
-	UMaterialInterface* LandscapeMaterial;
+	TObjectPtr<UMaterialInterface> LandscapeMaterial;
 
 #if !WITH_EDITORONLY_DATA
 	/** Used to cache grass types from GetGrassTypes */
@@ -470,17 +458,17 @@ public:
 
 	/** Material used to render landscape components with holes. If not set, LandscapeMaterial will be used (blend mode will be overridden to Masked if it is set to Opaque) */
 	UPROPERTY(EditAnywhere, Category=Landscape, AdvancedDisplay)
-	UMaterialInterface* LandscapeHoleMaterial;
+	TObjectPtr<UMaterialInterface> LandscapeHoleMaterial;
 
 	UPROPERTY(EditAnywhere, Category = Landscape)
 	TArray<FLandscapeProxyMaterialOverride> LandscapeMaterialsOverride;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(Transient)
-	UMaterialInterface* PreEditLandscapeMaterial;
+	TObjectPtr<UMaterialInterface> PreEditLandscapeMaterial;
 
 	UPROPERTY(Transient)
-	UMaterialInterface* PreEditLandscapeHoleMaterial;
+	TObjectPtr<UMaterialInterface> PreEditLandscapeHoleMaterial;
 
 	UPROPERTY(Transient)
 	TArray<FLandscapeProxyMaterialOverride> PreEditLandscapeMaterialsOverride;
@@ -502,7 +490,11 @@ public:
 	 * The material also needs to be set up to output to a virtual texture.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = VirtualTexture, meta = (DisplayName = "Draw in Virtual Textures"))
-	TArray<URuntimeVirtualTexture*> RuntimeVirtualTextures;
+	TArray<TObjectPtr<URuntimeVirtualTexture>> RuntimeVirtualTextures;
+
+	/** Placeholder for details customization button. */
+	UPROPERTY(VisibleAnywhere, Transient, Category = VirtualTexture)
+	bool bSetCreateRuntimeVirtualTextureVolumes;
 
 	/** 
 	 * Number of mesh levels to use when rendering landscape into runtime virtual texture.
@@ -536,14 +528,14 @@ public:
 
 	/** The array of LandscapeComponent that are used by the landscape */
 	UPROPERTY()
-	TArray<ULandscapeComponent*> LandscapeComponents;
+	TArray<TObjectPtr<ULandscapeComponent>> LandscapeComponents;
 
 	/** Array of LandscapeHeightfieldCollisionComponent */
 	UPROPERTY()
-	TArray<ULandscapeHeightfieldCollisionComponent*> CollisionComponents;
+	TArray<TObjectPtr<ULandscapeHeightfieldCollisionComponent>> CollisionComponents;
 
 	UPROPERTY(transient, duplicatetransient)
-	TArray<UHierarchicalInstancedStaticMeshComponent*> FoliageComponents;
+	TArray<TObjectPtr<UHierarchicalInstancedStaticMeshComponent>> FoliageComponents;
 
 	/** A transient data structure for tracking the grass */
 	FCachedLandscapeFoliage FoliageCache;
@@ -576,6 +568,10 @@ public:
 	/** Whether the object should cast a static shadow from shadow casting lights.  This flag is only used if CastShadow is true. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Lighting, AdvancedDisplay, meta = (EditCondition = "CastShadow", DisplayName = "Static Shadow"))
 	uint8 bCastStaticShadow : 1;
+
+	/** Whether the object should cast contact shadows. This flag is only used if CastShadow is true. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Lighting, AdvancedDisplay, meta = (EditCondition = "CastShadow", DisplayName = "Contact Shadow"))
+	uint8 bCastContactShadow : 1;
 
 	/** When enabled, the component will be rendering into the far shadow cascades(only for directional lights).  This flag is only used if CastShadow is true. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, BlueprintReadOnly, Category = Lighting, meta = (EditCondition = "CastShadow", DisplayName = "Far Shadow"))
@@ -652,7 +648,7 @@ public:
 	 * If true, Landscape will generate overlap events when other components are overlapping it (eg Begin Overlap).
 	 * Both the Landscape and the other component must have this flag enabled for overlap events to occur.
 	 *
-	 * @see [Overlap Events](https://docs.unrealengine.com/latest/INT/Engine/Physics/Collision/index.html#overlapandgenerateoverlapevents)
+	 * @see [Overlap Events](https://docs.unrealengine.com/InteractiveExperiences/Physics/Collision/Overview#overlapandgenerateoverlapevents)
 	 * @see UpdateOverlaps(), BeginComponentOverlap(), EndComponentOverlap()
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Collision)
@@ -666,7 +662,7 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	TArray<ULandscapeLayerInfoObject*> EditorCachedLayerInfos_DEPRECATED;
+	TArray<TObjectPtr<ULandscapeLayerInfoObject>> EditorCachedLayerInfos_DEPRECATED;
 
 	UPROPERTY()
 	FString ReimportHeightmapFilePath;
@@ -682,6 +678,16 @@ public:
 	TMap<UTexture2D*, FLandscapeEditLayerReadback*> WeightmapsCPUReadback;
 
 	FRenderCommandFence ReleaseResourceFence;
+
+	/** Map of weightmap usage */
+	UPROPERTY(Transient, NonTransactional)
+	TMap<TObjectPtr<UTexture2D>, TObjectPtr<ULandscapeWeightmapUsage>> WeightmapUsageMap;
+
+	/** Set to true when on undo, when it's necessary to completely regenerate weightmap usages (since some weightmap allocations are transactional and others not, e.g. splines edit layer) */
+	bool bNeedsWeightmapUsagesUpdate = false;
+
+	/** Set to true when we know that weightmap usages are being reconstructed and might be temporarily invalid as a result (ValidateProxyLayersWeightmapUsage should be called after setting this back to false) */
+	bool bTemporarilyDisableWeightmapUsagesValidation = false;
 #endif
 
 	/** Data set at creation time */
@@ -733,31 +739,15 @@ public:
 	TMap<FString, UMaterialInstanceConstant*> MaterialInstanceConstantMap;
 #endif
 
-	/** Map of weightmap usage */
-	UPROPERTY(Transient)
-	TMap<UTexture2D*, ULandscapeWeightmapUsage*> WeightmapUsageMap;
-
 	// Blueprint functions
 
 	/** Change the Level of Detail distance factor */
 	UFUNCTION(BlueprintCallable, Category = "Rendering", meta=(DeprecatedFunction, DeprecationMessage = "This value can't be changed anymore, you should edit the property LODDistributionSetting of the Landscape"))
 	virtual void ChangeLODDistanceFactor(float InLODDistanceFactor);
 
-	/** Change TessellationComponentScreenSize value on the render proxy.*/
-	UFUNCTION(BlueprintCallable, Category = "Rendering")
-	virtual void ChangeTessellationComponentScreenSize(float InTessellationComponentScreenSize);
-
 	/** Change ComponentScreenSizeToUseSubSections value on the render proxy.*/
 	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	virtual void ChangeComponentScreenSizeToUseSubSections(float InComponentScreenSizeToUseSubSections);
-
-	/** Change UseTessellationComponentScreenSizeFalloff value on the render proxy.*/
-	UFUNCTION(BlueprintCallable, Category = "Rendering")
-	virtual void ChangeUseTessellationComponentScreenSizeFalloff(bool InComponentScreenSizeToUseSubSections);
-
-	/** Change TessellationComponentScreenSizeFalloff value on the render proxy.*/
-	UFUNCTION(BlueprintCallable, Category = "Rendering")
-	virtual void ChangeTessellationComponentScreenSizeFalloff(float InUseTessellationComponentScreenSizeFalloff);
 
 	/* Setter for LandscapeMaterial. Has no effect outside the editor. */
 	UFUNCTION(BlueprintSetter)
@@ -814,9 +804,14 @@ public:
 	virtual bool ShouldImport(FString* ActorPropString, bool IsMovingLevel) override;
 	virtual bool ShouldExport() override;
 	//~ End AActor Interface
+	virtual uint32 GetDefaultGridSize(UWorld* InWorld) const override { return 1; }
+	virtual FGuid GetGridGuid() const override { return LandscapeGuid; }
+	virtual TUniquePtr<class FWorldPartitionActorDesc> CreateClassActorDesc() const override;
+	virtual bool EditorCanAttachTo(const AActor* InParent, FText& OutReason) const override { return false; }
+	virtual bool GetReferencedContentObjects(TArray<UObject*>& Objects) const override;
 #endif	//WITH_EDITOR
 
-	FGuid GetLandscapeGuid() const { return LandscapeGuid; }
+	virtual FGuid GetLandscapeGuid() const override { return LandscapeGuid; }
 	void SetLandscapeGuid(const FGuid& Guid) { LandscapeGuid = Guid; }
 	virtual ALandscape* GetLandscapeActor() PURE_VIRTUAL(GetLandscapeActor, return nullptr;)
 	virtual const ALandscape* GetLandscapeActor() const PURE_VIRTUAL(GetLandscapeActor, return nullptr;)
@@ -881,11 +876,24 @@ public:
 	/** Render grass maps for the specified components */
 	void RenderGrassMaps(const TArray<ULandscapeComponent*>& LandscapeComponents, const TArray<ULandscapeGrassType*>& GrassTypes);
 
-	/** Update any textures baked from the landscape as necessary */
-	void UpdateBakedTextures();
+	/** Stores Components and their latest BakedTextureMaterial hash*/
+	struct FGIBakedTextureState
+	{
+		FGuid CombinedStateId;
+		TArray<ULandscapeComponent*> Components;
+	};
+		
+	/** Update any GI baked textures from the landscape as necessary */
+	void UpdateGIBakedTextures(bool bBakeAllGITextures = false);
+	/** Update the landscape GI baked textures without deferring*/
+	void UpdateGIBakedTextureData(bool bInShouldMarkDirty = false);
+	/** Update the status of landscape GI baked textures*/
+	void UpdateGIBakedTextureStatus(bool* bOutGenerateLandscapeGIData, TMap<UTexture2D*, FGIBakedTextureState>* OutComponentsNeedBakingByHeightmap, int32* OutdatedComponentsCount=nullptr) const;
 
 	/** Update the landscape physical material render tasks */
-	void UpdatePhysicalMaterialTasks();
+	void UpdatePhysicalMaterialTasks(bool bInShouldMarkDirty = false);
+
+	void UpdatePhysicalMaterialTasksStatus(TSet<ULandscapeComponent*>* OutdatedComponents, int32* OutdatedComponentsCount) const;
 
 	/** Frame counter to count down to the next time we check to update baked textures, so we don't check every frame */
 	int32 UpdateBakedTexturesCountdown;
@@ -898,16 +906,20 @@ public:
 #endif
 
 	//~ Begin UObject Interface.
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual void Serialize(FArchive& Ar) override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 	virtual void PostLoad() override;
 
 	LANDSCAPE_API ULandscapeInfo* CreateLandscapeInfo(bool bMapCheck = false);
-	LANDSCAPE_API ULandscapeInfo* GetLandscapeInfo() const;
+	virtual LANDSCAPE_API ULandscapeInfo* GetLandscapeInfo() const override;
 
 	/** Get the LandcapeActor-to-world transform with respect to landscape section offset*/
-	LANDSCAPE_API FTransform LandscapeActorToWorld() const;
+	virtual LANDSCAPE_API FTransform LandscapeActorToWorld() const override;
 
 	/**
 	* Output a landscape heightmap to a render target
@@ -921,20 +933,40 @@ public:
 
 	/** Get landscape position in section space */
 	LANDSCAPE_API FIntPoint GetSectionBaseOffset() const;
+
+	// ILandscapeSplineInterface
+	LANDSCAPE_API virtual ULandscapeSplinesComponent* GetSplinesComponent() const override { return SplineComponent; }
+
+	// Retrieve the screen size at which each LOD should be rendered
+	LANDSCAPE_API TArray<float> GetLODScreenSizeArray() const;
+
 #if WITH_EDITOR
+	LANDSCAPE_API void SetSplinesComponent(ULandscapeSplinesComponent* InSplineComponent) { check(!SplineComponent); SplineComponent = InSplineComponent; }
+
+	LANDSCAPE_API virtual bool SupportsForeignSplineMesh() const override { return true; }
+
 	LANDSCAPE_API int32 GetOutdatedGrassMapCount() const;
 	LANDSCAPE_API void BuildGrassMaps(struct FScopedSlowTask* InSlowTask = nullptr);
-	LANDSCAPE_API void CreateSplineComponent(const FVector& Scale3D);
+	LANDSCAPE_API void BuildGIBakedTextures(struct FScopedSlowTask* InSlowTask = nullptr);
+	LANDSCAPE_API int32 GetOutdatedGIBakedTextureComponentsCount() const;
+	LANDSCAPE_API void BuildPhysicalMaterial(struct FScopedSlowTask* InSlowTask = nullptr);
+	LANDSCAPE_API int32 GetOudatedPhysicalMaterialComponentsCount() const;
+	LANDSCAPE_API virtual void CreateSplineComponent() override;
+	LANDSCAPE_API virtual void CreateSplineComponent(const FVector& Scale3D) override;
 
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditImport() override;
+	virtual void PostEditUndo() override;
 	//~ End UObject Interface
 
 	LANDSCAPE_API void InitializeProxyLayersWeightmapUsage();
+	void ValidateProxyLayersWeightmapUsage() const;
+	void UpdateProxyLayersWeightmapUsage();
+	void RequestProxyLayersWeightmapUsageUpdate();
 
-	LANDSCAPE_API static TArray<FName> GetLayersFromMaterial(UMaterialInterface* Material);
-	LANDSCAPE_API TArray<FName> GetLayersFromMaterial() const;
+	LANDSCAPE_API static const TArray<FName>& GetLayersFromMaterial(UMaterialInterface* Material);
+	LANDSCAPE_API const TArray<FName>& GetLayersFromMaterial() const;
 	LANDSCAPE_API static ULandscapeLayerInfoObject* CreateLayerInfo(const TCHAR* LayerName, ULevel* Level);
 	LANDSCAPE_API ULandscapeLayerInfoObject* CreateLayerInfo(const TCHAR* LayerName);
 
@@ -944,8 +976,11 @@ public:
 	// Get Hole Landscape Material assigned to this Landscape
 	virtual UMaterialInterface* GetLandscapeHoleMaterial() const;
 
-	// 
+	/** Fix up component layers, weightmaps */
 	void FixupWeightmaps();
+
+	/** Repair invalid texture data that might have been introduced by a faulty version :  */
+	void RepairInvalidTextures();
 
 	// Remove Invalid weightmaps
 	LANDSCAPE_API void RemoveInvalidWeightmaps();
@@ -975,8 +1010,8 @@ public:
 	LANDSCAPE_API void RemoveXYOffsets();
 
 	/** Update the material instances for all the landscape components */
-	LANDSCAPE_API void UpdateAllComponentMaterialInstances();
-	LANDSCAPE_API void UpdateAllComponentMaterialInstances(FMaterialUpdateContext& InOutMaterialContext, TArray<class FComponentRecreateRenderStateContext>& InOutRecreateRenderStateContext);
+	LANDSCAPE_API void UpdateAllComponentMaterialInstances(bool bInInvalidateCombinationMaterials = false);
+	LANDSCAPE_API void UpdateAllComponentMaterialInstances(FMaterialUpdateContext& InOutMaterialContext, TArray<class FComponentRecreateRenderStateContext>& InOutRecreateRenderStateContext, bool bInInvalidateCombinationMaterials = false);
 
 	/** Create a thumbnail material for a given layer */
 	LANDSCAPE_API static ULandscapeMaterialInstanceConstant* GetLayerThumbnailMIC(UMaterialInterface* LandscapeMaterial, FName LayerName, UTexture2D* ThumbnailWeightmap, UTexture2D* ThumbnailHeightmap, ALandscapeProxy* Proxy);
@@ -1117,6 +1152,8 @@ private:
 	}
 	static int32 GrassUpdateInterval;
 
+	FName GenerateUniqueLandscapeTextureName(UObject* InOuter, TextureGroup InLODGroup) const;
+
 #if WITH_EDITOR
 	void UpdateGrassDataStatus(TSet<UTexture2D*>* OutCurrentForcedStreamedTextures, TSet<UTexture2D*>* OutDesiredForcedStreamedTextures, TSet<ULandscapeComponent*>* OutComponentsNeedingGrassMapRender, TSet<ULandscapeComponent*>* OutOutdatedComponents, bool bInEnableForceResidentFlag, int32* OutOutdatedGrassMaps = nullptr) const;
 #endif
@@ -1147,4 +1184,36 @@ private:
 	mutable int32 OutdatedGrassMapCount;
 	mutable double GrassMapsLastCheckTime;
 };
+
+/**
+ * Helper class used to Build or monitor Landscape GI Textures
+ */
+class LANDSCAPE_API FLandscapeGIBakedTextureBuilder
+{
+public:
+	FLandscapeGIBakedTextureBuilder(UWorld* InWorld);
+	void Build();
+	int32 GetOutdatedGIBakedTextureComponentsCount(bool bInForceUpdate = true) const;
+private:
+	UWorld* World;
+	mutable int32 OutdatedGIBakedTextureComponentsCount;
+	mutable double GIBakedTexturesLastCheckTime;
+};
+
+
+/**
+ * Helper class used to Build or monitor Landscape Physical Material
+ */
+class LANDSCAPE_API FLandscapePhysicalMaterialBuilder
+{
+public:
+	FLandscapePhysicalMaterialBuilder(UWorld* InWorld);
+	void Build();
+	int32 GetOudatedPhysicalMaterialComponentsCount();
+private:
+	UWorld* World;
+	int32 OudatedPhysicalMaterialComponentsCount;
+};
+
+DEFINE_ACTORDESC_TYPE(ALandscapeProxy, FLandscapeActorDesc);
 #endif

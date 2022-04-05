@@ -87,7 +87,7 @@ FString FScreenShotManager::GetApprovedFolderForImageWithOptions(const FAutomati
 {
 	// plaform will be something like PS4
 	// RHI = SM5
-	const FDataDrivenPlatformInfoRegistry::FPlatformInfo& PlatInfo = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(MetaData.Platform);
+	const FDataDrivenPlatformInfo& PlatInfo = FDataDrivenPlatformInfoRegistry::GetPlatformInfo(MetaData.Platform);
 
 	bool bUsePlatformPath = PlatInfo.bIsConfidential && (InOptions & EApprovedFolderOptions::UsePlatformFolders) == 0;
 
@@ -156,7 +156,7 @@ TArray<FString> FScreenShotManager::FindApprovedImages(const FAutomationScreensh
 	{
 		FString CurrentPlatformRHI = GetPathComponentForPlatformAndRHI(IncomingMetaData);
 
-		UE_LOG(LogScreenShotManager, Log, TEXT("No ideal-image found at {0}. Checking fallback images"), *ApprovedPath);
+		UE_LOG(LogScreenShotManager, Log, TEXT("No ideal-image found at %s. Checking fallback images"), *ApprovedPath);
 
 		while (ApprovedImages.Num() == 0)
 		{
@@ -336,6 +336,7 @@ FImageComparisonResult FScreenShotManager::CompareScreenshot(const FString& InUn
 	{
 		// We can't find a ground truth, so it's a new comparison.
 		ComparisonResult.IncomingFilePath = InUnapprovedIncomingFilePath;
+		ComparisonResult.CreationTime = FDateTime::Now();
 
 		UE_LOG(LogScreenShotManager, Log, TEXT("No ideal-image found. Assuming %s is a new test image"), *InUnapprovedIncomingFilePath);
 	}
@@ -373,7 +374,7 @@ FImageComparisonResult FScreenShotManager::CompareScreenshot(const FString& InUn
 	*/
 	
 	// files we write/copy to for reports
-	ComparisonResult.ReportApprovedFilePath = FPaths::Combine(ReportPathOnDisk, TEXT("Approved.png"));
+	ComparisonResult.ReportApprovedFilePath = FPaths::Combine(ReportPathOnDisk, TEXT("Approved.png")); 
 	ComparisonResult.ReportIncomingFilePath = FPaths::Combine(ReportPathOnDisk, TEXT("Incoming.png"));
 	ComparisonResult.ReportComparisonFilePath = FPaths::Combine(ReportPathOnDisk, TEXT("Delta.png"));
 
@@ -604,9 +605,9 @@ void FScreenShotManager::BuildFallbackPlatformsListFromConfig(const UScreenShotC
 	// legacy path
 	if (GConfig)
 	{
-		for (const TPair<FString,FConfigFile>& Config : *GConfig)
+		for (const FString& ConfigFilename : GConfig->GetFilenames())
 		{
-			FConfigSection* FallbackSection = GConfig->GetSectionPrivate(TEXT("AutomationTestFallbackHierarchy"), false, true, Config.Key);
+			FConfigSection* FallbackSection = GConfig->GetSectionPrivate(TEXT("AutomationTestFallbackHierarchy"), false, true, ConfigFilename);
 			if (FallbackSection)
 			{
 				UE_LOG(LogScreenShotManager, Warning, TEXT("Please move FallbackPlatform entries in [AutomationTestFallbackHierarchy] to +ScreenshotFallbackPlatforms= under[/Script/ScreenShotComparisonTools.ScreenShotComparisonSettings] in DefaultEngine.ini"));

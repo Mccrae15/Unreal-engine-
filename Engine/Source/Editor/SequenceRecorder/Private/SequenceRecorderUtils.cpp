@@ -14,6 +14,7 @@
 #include "Tracks/MovieSceneCameraCutTrack.h"
 #include "Sections/MovieSceneCameraCutSection.h"
 #include "SequenceRecorderActorGroup.h"
+#include "UObject/SavePackage.h"
 
 namespace SequenceRecorderUtils
 {
@@ -61,8 +62,8 @@ bool RecordSingleNodeInstanceToAnimation(USkeletalMeshComponent* PreviewComponen
 		FAnimationRecordingSettings Setting;
 		AnimRecorder.Init(PreviewComponent, NewAsset,nullptr, Setting);
 		float Length = SingleNodeInstance->GetLength();
-		const float DefaultSampleRate = (Setting.SampleRate > 0.f) ? Setting.SampleRate : DEFAULT_SAMPLERATE;
-		const float Interval = 1.f / DefaultSampleRate;
+		const FFrameRate DefaultSampleRate = Setting.SampleFrameRate.IsValid() ? Setting.SampleFrameRate : FAnimationRecordingSettings::DefaultSampleFrameRate;
+		const float Interval = DefaultSampleRate.AsInterval();
 		float Time = 0.f;
 		for (; Time < Length; Time += Interval)
 		{
@@ -270,7 +271,10 @@ void SaveAsset(UObject* InObject)
 	// More like a quick fix to be able to save sequence recordings in -game mode
 	Package->GetMetaData();
 
-	UPackage::SavePackage(Package, NULL, RF_Standalone, *PackageFileName, GError, nullptr, false, true, SAVE_NoError);
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	UPackage::SavePackage(Package, NULL, *PackageFileName, SaveArgs);
 }
 
 void GatherTakeInfo(ULevelSequence* InLevelSequence, TArray<FTakeInfo>& TakeInfos)

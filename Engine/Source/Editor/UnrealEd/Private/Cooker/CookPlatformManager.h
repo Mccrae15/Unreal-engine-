@@ -44,8 +44,11 @@ namespace Cook
 		/* Pointer to the platform-specific RegistryGenerator for this platform.  If already constructed we can take a faster refresh path on future sessions. */
 		TUniquePtr<FAssetRegistryGenerator> RegistryGenerator;
 
-		/* Whether InitializeSandbox has been called for this platform.  If we have already initialized the sandbox we can take a faster refresh path on future sessions. */
+		/* Whether BeginCookSandbox has been called for this platform.  If we have already initialized the sandbox we can take a faster refresh path on future sessions. */
 		bool bIsSandboxInitialized = false;
+
+		/* Whether BeginCookSandbox specified a full, non-iterative build for this platform. */
+		bool bFullBuild = false;
 
 		/*
 		 * The last FPlatformTime::GetSeconds() at which this platform was requested in a CookOnTheFly request.

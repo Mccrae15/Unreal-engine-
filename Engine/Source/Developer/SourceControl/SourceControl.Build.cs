@@ -12,7 +12,9 @@ public class SourceControl : ModuleRules
 			new string[] {
 				"Core",
 				"CoreUObject",
+				"SlateCore",
 				"InputCore",
+				"DeveloperSettings",
 			}
 		);
 
@@ -20,9 +22,9 @@ public class SourceControl : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
+				"AssetRegistry",
 				"Slate",
-				"SlateCore",
-				"EditorStyle"
+				"EditorStyle",
 			}
 		);
 
@@ -30,6 +32,7 @@ public class SourceControl : ModuleRules
         {
 			PrivateDependencyModuleNames.AddRange(
                 new string[] {
+					"EditorFramework",
 					"Engine",
 					"UnrealEd",
 				}

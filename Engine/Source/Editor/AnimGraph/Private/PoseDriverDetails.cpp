@@ -32,12 +32,12 @@ class FSoloToggleButton : public SButton
 public:
 	SLATE_BEGIN_ARGS(FSoloToggleButton)
 	{}
-	SLATE_EVENT(FSimpleDelegate, OnSoloStartAction)
+		SLATE_EVENT(FSimpleDelegate, OnSoloStartAction)
 		SLATE_EVENT(FSimpleDelegate, OnSoloEndAction)
 		SLATE_ATTRIBUTE(bool, SoloState)
-		SLATE_END_ARGS()
+	SLATE_END_ARGS()
 
-		void Construct(const FArguments& InArgs)
+	void Construct(const FArguments& InArgs)
 	{
 		OnSoloStartAction = InArgs._OnSoloStartAction;
 		OnSoloEndAction = InArgs._OnSoloEndAction;
@@ -54,18 +54,14 @@ public:
 			.OnReleased(this, &FSoloToggleButton::OnButtonReleased)
 			.IsFocusable(false)
 		);
+
+		SetAppearPressed(SoloState);
 	}
 
 	FReply OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent) override
 	{
 		OnSoloStartAction.ExecuteIfBound();
 		return FReply::Handled();
-	}
-
-protected:
-	bool IsPressed() const override
-	{
-		return SButton::IsPressed() || SoloState.Get(false);
 	}
 
 private:
@@ -76,7 +72,7 @@ private:
 
 	void OnButtonReleased()
 	{
-		OnSoloEndAction.ExecuteIfBound();
+		OnSoloEndAction.ExecuteIfBound();	
 	}
 
 	FSimpleDelegate OnSoloStartAction;
@@ -92,7 +88,7 @@ void SPDD_TargetRow::Construct(const FArguments& InArgs, const TSharedRef<STable
 
 	if (DistanceMethodOptions.Num() == 0)
 	{
-		UEnum* Enum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ERBFDistanceMethod"));
+		UEnum * Enum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ERBFDistanceMethod"));
 		for (int32 i = 0; i < Enum->NumEnums() - 1; i++)
 		{
 			DistanceMethodOptions.Add(MakeShareable(new FString(Enum->GetDisplayNameTextByIndex(i).ToString())));
@@ -101,7 +97,7 @@ void SPDD_TargetRow::Construct(const FArguments& InArgs, const TSharedRef<STable
 
 	if (FunctionTypeOptions.Num() == 0)
 	{
-		UEnum* Enum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ERBFFunctionType"));
+		UEnum * Enum = FindObjectChecked<UEnum>(ANY_PACKAGE, TEXT("ERBFFunctionType"));
 		for (int32 i = 0; i < Enum->NumEnums() - 1; i++)
 		{
 			FunctionTypeOptions.Add(MakeShareable(new FString(Enum->GetDisplayNameTextByIndex(i).ToString())));
@@ -122,289 +118,289 @@ TSharedRef< SWidget > SPDD_TargetRow::GenerateWidgetForColumn(const FName& Colum
 	TSharedPtr<SVerticalBox> TargetEntryVertBox;
 
 	TSharedRef<SWidget> RowWidget = SNew(SBox)
-		.Padding(2)
-		[
-			SNew(SBorder)
-			.Padding(0)
+	.Padding(2)
+	[
+		SNew(SBorder)
+		.Padding(0)
 		.ForegroundColor(FLinearColor::White)
 		.BorderImage(FEditorStyle::GetBrush("NoBorder"))
 		[
 			SAssignNew(ExpandArea, SExpandableArea)
 			.Padding(0)
-		.InitiallyCollapsed(true)
-		.BorderBackgroundColor(FLinearColor(.6f, .6f, .6f))
-		.OnAreaExpansionChanged(this, &SPDD_TargetRow::OnTargetExpansionChanged)
-		.HeaderContent()
-		[
-			SNew(SHorizontalBox)
+			.InitiallyCollapsed(true)
+			.BorderBackgroundColor(FLinearColor(.6f, .6f, .6f))
+			.OnAreaExpansionChanged(this, &SPDD_TargetRow::OnTargetExpansionChanged)
+			.HeaderContent()
+			[
+				SNew(SHorizontalBox)
 
-			+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.VAlign(VAlign_Center)
-		[
-			SNew(STextBlock)
-			.Text(this, &SPDD_TargetRow::GetTargetTitleText)
-		]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(this, &SPDD_TargetRow::GetTargetTitleText)
+				]
 
-	+ SHorizontalBox::Slot()
-		.FillWidth(1)
-		[
-			SNew(SSpacer)
-		]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1)
+				[
+					SNew(SSpacer)
+				]
 
-	+ SHorizontalBox::Slot()
-		.Padding(0, 3)
-		.AutoWidth()
-		[
-			SNew(SBox)
-			.MinDesiredWidth(150)
-		.Content()
-		[
-			SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.Padding(0,3)
+				.AutoWidth()
+				[
+					SNew(SBox)
+					.MinDesiredWidth(150)
+					.Content()
+					[
+						SNew(SHorizontalBox)
 
-			+ SHorizontalBox::Slot()
-		.FillWidth(TAttribute<float>::Create(TAttribute<float>::FGetter::CreateLambda([this] { return 1.f - this->GetTargetWeight(); })))
-		[
-			SNew(SSpacer)
-		]
+						+ SHorizontalBox::Slot()
+						.FillWidth(TAttribute<float>::Create(TAttribute<float>::FGetter::CreateLambda([this] { return 1.f - this->GetTargetWeight(); })))
+						[
+							SNew(SSpacer)
+						]
 
-	+ SHorizontalBox::Slot()
-		.FillWidth(TAttribute<float>::Create(TAttribute<float>::FGetter::CreateLambda([this] { return this->GetTargetWeight(); })))
-		[
-			SNew(SImage)
-			.ColorAndOpacity(this, &SPDD_TargetRow::GetWeightBarColor)
-		.Image(FEditorStyle::GetBrush("WhiteBrush"))
-		]
-		]
-		]
+						+ SHorizontalBox::Slot()
+						.FillWidth(TAttribute<float>::Create(TAttribute<float>::FGetter::CreateLambda([this] { return this->GetTargetWeight(); })))
+						[
+							SNew(SImage)
+							.ColorAndOpacity(this, &SPDD_TargetRow::GetWeightBarColor)
+							.Image(FEditorStyle::GetBrush("WhiteBrush"))
+						]
+					]
+				]
 
-	+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.VAlign(VAlign_Center)
-		.Padding(FMargin(3, 0))
-		[
-			SNew(SBox)
-			.MinDesiredWidth(40)
-		.MaxDesiredWidth(40)
-		.Content()
-		[
-			SNew(STextBlock)
-			.Text(this, &SPDD_TargetRow::GetTargetWeightText)
-		]
-		]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(3, 0))
+				[
+					SNew(SBox)
+					.MinDesiredWidth(40)
+					.MaxDesiredWidth(40)
+					.Content()
+					[
+						SNew(STextBlock)
+						.Text(this, &SPDD_TargetRow::GetTargetWeightText)
+					]
+				]
 
-	+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.Padding(FMargin(3, 0, 6, 0))
-		[
-			SNew(FSoloToggleButton)
-			.SoloState(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([this] { return this->IsSoloTarget(); })))
-		.OnSoloStartAction(FSimpleDelegate::CreateSP(this, &SPDD_TargetRow::SoloTargetStart))
-		.OnSoloEndAction(FSimpleDelegate::CreateSP(this, &SPDD_TargetRow::SoloTargetEnd))
-		.ToolTipText(LOCTEXT("SoloTarget", "Hold to solo temporarily. Doube-click to keep solo enabled."))
-		]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(FMargin(3, 0, 6, 0))
+				[
+					SNew(FSoloToggleButton)
+					.SoloState(TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda([this] { return this->IsSoloTarget(); })))
+					.OnSoloStartAction(FSimpleDelegate::CreateSP(this, &SPDD_TargetRow::SoloTargetStart))
+					.OnSoloEndAction(FSimpleDelegate::CreateSP(this, &SPDD_TargetRow::SoloTargetEnd))
+					.ToolTipText(LOCTEXT("SoloTarget", "Hold to solo temporarily. Doube-click to keep solo enabled."))
+				]
 
-	+ SHorizontalBox::Slot()
-		.AutoWidth()
-		[
-			PropertyCustomizationHelpers::MakeDeleteButton(FSimpleDelegate::CreateSP(this, &SPDD_TargetRow::RemoveTarget), LOCTEXT("RemoveTarget", "Remove Target"))
-		]
-		]
-	.BodyContent()
-		[
-			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
-		[
-			SAssignNew(TargetEntryVertBox, SVerticalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					PropertyCustomizationHelpers::MakeDeleteButton(FSimpleDelegate::CreateSP(this, &SPDD_TargetRow::RemoveTarget), LOCTEXT("RemoveTarget", "Remove Target"))
+				]
+			]
+			.BodyContent()
+			[
+				SNew(SBorder)
+				.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
+				[
+					SAssignNew(TargetEntryVertBox, SVerticalBox)
 
-			+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(2.0f)
-		.VAlign(VAlign_Fill)
-		[
-			SNew(SHorizontalBox)
+					+SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(2.0f)
+					.VAlign(VAlign_Fill)
+					[
+						SNew(SHorizontalBox)
 
-			+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(0, 0, 3, 0))
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("Scale", "Scale:"))
-		]
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						.Padding(FMargin(0, 0, 3, 0))
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("Scale", "Scale:"))
+						]
 
-	+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.VAlign(VAlign_Center)
-		[
-			SNew(SBox)
-			.MinDesiredWidth(150.f)
-		.Content()
-		[
-			SNew(SNumericEntryBox<float>)
-			.MinSliderValue(0.f)
-		.MaxSliderValue(1.f)
-		.Value(this, &SPDD_TargetRow::GetScale)
-		.OnValueChanged(this, &SPDD_TargetRow::SetScale)
-		.AllowSpin(true)
-		]
-		]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							SNew(SBox)
+							.MinDesiredWidth(150.f)
+							.Content()
+							[
+								SNew(SNumericEntryBox<float>)
+								.MinSliderValue(0.f)
+								.MaxSliderValue(1.f)
+								.Value(this, &SPDD_TargetRow::GetScale)
+								.OnValueChanged(this, &SPDD_TargetRow::SetScale)
+								.AllowSpin(true)
+							]
+						]
 
-	+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(6, 0, 3, 0))
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("DrivenName", "Drive:"))
-		]
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						.Padding(FMargin(6, 0, 3, 0))
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("DrivenName","Drive:"))
+						]
 
-	+ SHorizontalBox::Slot()
-		.AutoWidth()
-		[
-			SNew(SSearchableComboBox)
-			.OptionsSource(&PoseDriverDetails->DrivenNameOptions)
-		.OnGenerateWidget(this, &SPDD_TargetRow::MakeDrivenNameWidget)
-		.OnSelectionChanged(this, &SPDD_TargetRow::OnDrivenNameChanged)
-		.Content()
-		[
-			SNew(STextBlock)
-			.Text(this, &SPDD_TargetRow::GetDrivenNameText)
-		]
-		]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(SSearchableComboBox)
+							.OptionsSource(&PoseDriverDetails->DrivenNameOptions)
+							.OnGenerateWidget(this, &SPDD_TargetRow::MakeDrivenNameWidget)
+							.OnSelectionChanged(this, &SPDD_TargetRow::OnDrivenNameChanged)
+							.Content()						
+							[
+								SNew(STextBlock)
+								.Text(this, &SPDD_TargetRow::GetDrivenNameText)
+							]
+						]
 
-	+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(6, 0, 3, 0))
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("IsHidden", "Hidden:"))
-		]
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						.Padding(FMargin(6, 0, 3, 0))
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("IsHidden", "Hidden:"))
+						]
 
-	+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(6, 0, 3, 0))
-		[
-			SNew(SCheckBox)
-			.IsChecked_Lambda([=]() { return IsHidden() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-		.OnCheckStateChanged(this, &SPDD_TargetRow::OnIsHiddenChanged)
-		.Padding(FMargin(4.0f, 0.0f))
-		.ToolTipText(LOCTEXT("IsHiddenToolTip", "Define if this target should be hidden from debug drawing."))
-		]
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						.Padding(FMargin(6, 0, 3, 0))
+						[
+							SNew(SCheckBox)
+							.IsChecked_Lambda([=]() { return IsHidden() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+							.OnCheckStateChanged(this, &SPDD_TargetRow::OnIsHiddenChanged)
+							.Padding(FMargin(4.0f, 0.0f))
+							.ToolTipText(LOCTEXT("IsHiddenToolTip", "Define if this target should be hidden from debug drawing."))
+						]
 
-	+ SHorizontalBox::Slot()
-		.FillWidth(1)
-		[
-			SNew(SSpacer)
-		]
+						+ SHorizontalBox::Slot()
+						.FillWidth(1)
+						[
+							SNew(SSpacer)
+						]
 
-		]
+					]
 
-	+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(2.0f)
-		.VAlign(VAlign_Fill)
-		[
-			SNew(SHorizontalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(2.0f)
+					.VAlign(VAlign_Fill)
+					[
+						SNew(SHorizontalBox)
 
-			+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(6, 0, 3, 0))
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("Override", "Override:"))
-		]
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						.Padding(FMargin(6, 0, 3, 0))
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("Override", "Override:"))
+						]
+					
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						.Padding(FMargin(6, 0, 3, 0))
+						[
+							SNew(SSearchableComboBox)
+							.OptionsSource(&DistanceMethodOptions)
+							.OnGenerateWidget(this, &SPDD_TargetRow::MakeDrivenNameWidget)
+							.OnSelectionChanged(this, &SPDD_TargetRow::OnDistanceMethodChanged)
+							.IsEnabled_Lambda([this]() { return IsOverrideEnabled(); })
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text(this, &SPDD_TargetRow::GetDistanceMethodAsText)
+							]
+						]
 
-	+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(6, 0, 3, 0))
-		[
-			SNew(SSearchableComboBox)
-			.OptionsSource(&DistanceMethodOptions)
-		.OnGenerateWidget(this, &SPDD_TargetRow::MakeDrivenNameWidget)
-		.OnSelectionChanged(this, &SPDD_TargetRow::OnDistanceMethodChanged)
-		.IsEnabled_Lambda([this]() { return IsOverrideEnabled(); })
-		.Content()
-		[
-			SNew(STextBlock)
-			.Text(this, &SPDD_TargetRow::GetDistanceMethodAsText)
-		]
-		]
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						.Padding(FMargin(6, 0, 3, 0))
+						[
+							SNew(SSearchableComboBox)
+							.Visibility_Lambda([=]() { return IsCustomCurveEnabled() ? EVisibility::Collapsed : EVisibility::Visible;  })
+							.OptionsSource(&FunctionTypeOptions)
+							.OnGenerateWidget(this, &SPDD_TargetRow::MakeDrivenNameWidget)
+							.OnSelectionChanged(this, &SPDD_TargetRow::OnFunctionTypeChanged)
+							.IsEnabled_Lambda([this]() { return IsOverrideEnabled(); })
+							.Content()
+							[
+								SNew(STextBlock)
+								.Text(this, &SPDD_TargetRow::GetFunctionTypeAsText)
+							]
+						]
 
-	+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(6, 0, 3, 0))
-		[
-			SNew(SSearchableComboBox)
-			.Visibility_Lambda([=]() { return IsCustomCurveEnabled() ? EVisibility::Collapsed : EVisibility::Visible;  })
-		.OptionsSource(&FunctionTypeOptions)
-		.OnGenerateWidget(this, &SPDD_TargetRow::MakeDrivenNameWidget)
-		.OnSelectionChanged(this, &SPDD_TargetRow::OnFunctionTypeChanged)
-		.IsEnabled_Lambda([this]() { return IsOverrideEnabled(); })
-		.Content()
-		[
-			SNew(STextBlock)
-			.Text(this, &SPDD_TargetRow::GetFunctionTypeAsText)
-		]
-		]
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						.Padding(FMargin(6, 0, 3, 0))
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("CustomCurve", "Curve:"))
+						]
 
-	+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(6, 0, 3, 0))
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("CustomCurve", "Curve:"))
-		]
+						+ SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.AutoWidth()
+						.Padding(FMargin(6, 0, 3, 0))
+						[
+							SNew(SCheckBox)
+							.IsChecked_Lambda([=]() { return IsCustomCurveEnabled() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+							.OnCheckStateChanged(this, &SPDD_TargetRow::OnApplyCustomCurveChanged)
+							.Padding(FMargin(4.0f, 0.0f))
+							.ToolTipText(LOCTEXT("CustomCurveTooltip", "Define a custom response curve for this target."))
+						]
 
-	+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(6, 0, 3, 0))
-		[
-			SNew(SCheckBox)
-			.IsChecked_Lambda([=]() { return IsCustomCurveEnabled() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-		.OnCheckStateChanged(this, &SPDD_TargetRow::OnApplyCustomCurveChanged)
-		.Padding(FMargin(4.0f, 0.0f))
-		.ToolTipText(LOCTEXT("CustomCurveTooltip", "Define a custom response curve for this target."))
-		]
+						+ SHorizontalBox::Slot()
+						.FillWidth(1)
+						[
+							SNew(SSpacer)
+						]
+					]
 
-	+ SHorizontalBox::Slot()
-		.FillWidth(1)
-		[
-			SNew(SSpacer)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(2.0f)
+					.VAlign(VAlign_Fill)
+					[
+						SNew(SBox)
+						.Visibility_Lambda([=]() { return IsCustomCurveEnabled() ? EVisibility::Visible : EVisibility::Collapsed;  })
+						.IsEnabled_Lambda([this]() { return IsOverrideEnabled(); })
+						.Content()
+						[
+							SAssignNew(CurveEditor, SCurveEditor)
+							.ViewMinInput(0.f)
+							.ViewMaxInput(1.f)
+							.ViewMinOutput(0.f)
+							.ViewMaxOutput(1.f)
+							.TimelineLength(1.f)
+							.DesiredSize(FVector2D(512, 128))
+							.HideUI(true)
+						]
+					]
+				]
+			]
 		]
-		]
-
-	+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(2.0f)
-		.VAlign(VAlign_Fill)
-		[
-			SNew(SBox)
-			.Visibility_Lambda([=]() { return IsCustomCurveEnabled() ? EVisibility::Visible : EVisibility::Collapsed;  })
-		.IsEnabled_Lambda([this]() { return IsOverrideEnabled(); })
-		.Content()
-		[
-			SAssignNew(CurveEditor, SCurveEditor)
-			.ViewMinInput(0.f)
-		.ViewMaxInput(1.f)
-		.ViewMinOutput(0.f)
-		.ViewMaxOutput(1.f)
-		.TimelineLength(1.f)
-		.DesiredSize(FVector2D(512, 128))
-		.HideUI(true)
-		]
-		]
-		]
-		]
-		]
-		];
+	];
 
 	CurveEditor->SetCurveOwner(this);
 
@@ -414,47 +410,47 @@ TSharedRef< SWidget > SPDD_TargetRow::GenerateWidgetForColumn(const FName& Colum
 	for (int32 BoneIndex = 0; BoneIndex < NumSourceBones; BoneIndex++)
 	{
 		TargetEntryVertBox->AddSlot()
-			.AutoHeight()
-			.Padding(2.0f)
-			.VAlign(VAlign_Fill)
-			[
-				SNew(SBox)
-				.MaxDesiredWidth(800.f)
+		.AutoHeight()
+		.Padding(2.0f)
+		.VAlign(VAlign_Fill)
+		[
+			SNew(SBox)
+			.MaxDesiredWidth(800.f)
 			.Content()
 			[
 				SNew(SHorizontalBox)
 
 				+ SHorizontalBox::Slot()
-			.FillWidth(1)
-			[
-				SNew(SWidgetSwitcher)
-				.WidgetIndex(this, &SPDD_TargetRow::GetTransRotWidgetIndex)
+				.FillWidth(1)
+				[
+					SNew(SWidgetSwitcher)
+					.WidgetIndex(this, &SPDD_TargetRow::GetTransRotWidgetIndex)
 
-			+ SWidgetSwitcher::Slot()
-			[
-				SNew(SVectorInputBox)
-				.AllowSpin(true)
-			.X(this, &SPDD_TargetRow::GetTranslation, BoneIndex, EAxis::X)
-			.OnXChanged(this, &SPDD_TargetRow::SetTranslation, BoneIndex, EAxis::X)
-			.Y(this, &SPDD_TargetRow::GetTranslation, BoneIndex, EAxis::Y)
-			.OnYChanged(this, &SPDD_TargetRow::SetTranslation, BoneIndex, EAxis::Y)
-			.Z(this, &SPDD_TargetRow::GetTranslation, BoneIndex, EAxis::Z)
-			.OnZChanged(this, &SPDD_TargetRow::SetTranslation, BoneIndex, EAxis::Z)
-			]
+					+SWidgetSwitcher::Slot()
+					[
+						SNew(SVectorInputBox)
+						.AllowSpin(true)
+						.X(this, &SPDD_TargetRow::GetTranslation, BoneIndex, EAxis::X)
+						.OnXChanged(this, &SPDD_TargetRow::SetTranslation, BoneIndex, EAxis::X)
+						.Y(this, &SPDD_TargetRow::GetTranslation, BoneIndex, EAxis::Y)
+						.OnYChanged(this, &SPDD_TargetRow::SetTranslation, BoneIndex, EAxis::Y)
+						.Z(this, &SPDD_TargetRow::GetTranslation, BoneIndex, EAxis::Z)
+						.OnZChanged(this, &SPDD_TargetRow::SetTranslation, BoneIndex, EAxis::Z)
+					]
 
-		+ SWidgetSwitcher::Slot()
-			[
-				SNew(SRotatorInputBox)
-				.Roll(this, &SPDD_TargetRow::GetRotation, BoneIndex, EAxis::X)
-			.OnRollChanged(this, &SPDD_TargetRow::SetRotation, BoneIndex, EAxis::X)
-			.Pitch(this, &SPDD_TargetRow::GetRotation, BoneIndex, EAxis::Y)
-			.OnPitchChanged(this, &SPDD_TargetRow::SetRotation, BoneIndex, EAxis::Y)
-			.Yaw(this, &SPDD_TargetRow::GetRotation, BoneIndex, EAxis::Z)
-			.OnYawChanged(this, &SPDD_TargetRow::SetRotation, BoneIndex, EAxis::Z)
+					+ SWidgetSwitcher::Slot()
+					[
+						SNew(SRotatorInputBox)
+						.Roll(this, &SPDD_TargetRow::GetRotation, BoneIndex, EAxis::X)
+						.OnRollChanged(this, &SPDD_TargetRow::SetRotation, BoneIndex, EAxis::X)
+						.Pitch(this, &SPDD_TargetRow::GetRotation, BoneIndex, EAxis::Y)
+						.OnPitchChanged(this, &SPDD_TargetRow::SetRotation, BoneIndex, EAxis::Y)
+						.Yaw(this, &SPDD_TargetRow::GetRotation, BoneIndex, EAxis::Z)
+						.OnYawChanged(this, &SPDD_TargetRow::SetRotation, BoneIndex, EAxis::Z)
+					]
+				]
 			]
-			]
-			]
-			];
+		];
 	}
 
 	return RowWidget;
@@ -473,7 +469,7 @@ FPoseDriverTarget* SPDD_TargetRow::GetTarget() const
 	return Target;
 }
 
-UAnimGraphNode_PoseDriver* SPDD_TargetRow::GetPoseDriverGraphNode() const
+UAnimGraphNode_PoseDriver* SPDD_TargetRow::GetPoseDriverGraphNode() const 
 {
 	UAnimGraphNode_PoseDriver* Driver = nullptr;
 	TSharedPtr<FPoseDriverDetails> PoseDriverDetails = PoseDriverDetailsPtr.Pin();
@@ -626,7 +622,7 @@ void SPDD_TargetRow::OnIsHiddenChanged(const ECheckBoxState NewCheckState)
 	FPoseDriverTarget* Target = GetTarget();
 	if (Target)
 	{
-		Target->bIsHidden = (NewCheckState == ECheckBoxState::Checked);
+		Target->bIsHidden= (NewCheckState == ECheckBoxState::Checked);
 		NotifyTargetChanged();
 	}
 }
@@ -703,7 +699,7 @@ void SPDD_TargetRow::OnDrivenNameChanged(TSharedPtr<FString> NewName, ESelectInf
 
 TSharedRef<SWidget> SPDD_TargetRow::MakeDrivenNameWidget(TSharedPtr<FString> InItem)
 {
-	return
+	return 
 		SNew(STextBlock)
 		.Text(FText::FromString(*InItem));
 }
@@ -790,7 +786,7 @@ void SPDD_TargetRow::SoloTargetStart()
 	TSharedPtr<FPoseDriverDetails> PoseDriverDetails = PoseDriverDetailsPtr.Pin();
 	if (PoseDriverDetails.IsValid())
 	{
-		PoseDriverDetails->SetSoloTarget(GetTargetIndex());
+		PoseDriverDetails->SetSoloTarget(GetTargetIndex()); 
 	}
 }
 
@@ -799,7 +795,7 @@ void SPDD_TargetRow::SoloTargetEnd()
 	TSharedPtr<FPoseDriverDetails> PoseDriverDetails = PoseDriverDetailsPtr.Pin();
 	if (PoseDriverDetails.IsValid())
 	{
-		PoseDriverDetails->SetSoloTarget(INDEX_NONE);
+		PoseDriverDetails->SetSoloTarget(INDEX_NONE); 
 	}
 }
 
@@ -917,8 +913,8 @@ TSharedRef<SWidget> FPoseDriverDetails::GetToolsMenuContent()
 	FMenuBuilder MenuBuilder(true, nullptr);
 
 	MenuBuilder.AddMenuEntry(
-		LOCTEXT("CopyFromPoseAsset", "Copy All From PoseAsset"),
-		LOCTEXT("CopyFromPoseAssetTooltip", "Copy target positions from PoseAsset. Will overwrite any existing targets."),
+		LOCTEXT("CopyFromPoseAsset", "Copy All From PoseAsset"), 
+		LOCTEXT("CopyFromPoseAssetTooltip", "Copy target positions from PoseAsset. Will overwrite any existing targets."), 
 		FSlateIcon(),
 		FUIAction(
 			FExecuteAction::CreateRaw(this, &FPoseDriverDetails::ClickedOnCopyFromPoseAsset),
@@ -983,33 +979,33 @@ void FPoseDriverDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 		[
 			SNew(SButton)
 			.ButtonStyle(FEditorStyle::Get(), "RoundButton")
-		.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
-		.ContentPadding(FMargin(2, 0))
-		.OnClicked(this, &FPoseDriverDetails::ClickedAddTarget)
-		.HAlign(HAlign_Center)
-		.VAlign(VAlign_Center)
-		[
-			SNew(SHorizontalBox)
+			.ForegroundColor(FEditorStyle::GetSlateColor("DefaultForeground"))
+			.ContentPadding(FMargin(2, 0))
+			.OnClicked(this, &FPoseDriverDetails::ClickedAddTarget)
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SHorizontalBox)
 
-			+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.Padding(FMargin(0, 1))
-		[
-			SNew(SImage)
-			.Image(FEditorStyle::GetBrush("Plus"))
-		]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(FMargin(0, 1))
+				[
+					SNew(SImage)
+					.Image(FEditorStyle::GetBrush("Plus"))
+				]
 
-	+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(2, 0, 0, 0))
-		[
-			SNew(STextBlock)
-			.Font(IDetailLayoutBuilder::GetDetailFontBold())
-		.Text(LOCTEXT("AddTarget", "Add Target"))
-		.ShadowOffset(FVector2D(1, 1))
-		]
-		]
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				.AutoWidth()
+				.Padding(FMargin(2, 0, 0, 0))
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFontBold())
+					.Text(LOCTEXT("AddTarget", "Add Target"))
+					.ShadowOffset(FVector2D(1, 1))
+				]
+			]
 		];
 
 	PoseTargetsCategory.HeaderContent(PoseTargetsHeaderWidget);
@@ -1017,69 +1013,69 @@ void FPoseDriverDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 	static const FName DefaultForegroundName("DefaultForeground");
 
 	PoseTargetRowWidget.WholeRowContent()
-		.HAlign(HAlign_Fill)
-		[
-			SNew(SVerticalBox)
+	.HAlign(HAlign_Fill)
+	[
+		SNew(SVerticalBox)
 
-			+ SVerticalBox::Slot()
+		+SVerticalBox::Slot()
 		.FillHeight(1)
 		[
 			SAssignNew(TargetListWidget, SPDD_TargetListType)
 			.ListItemsSource(&TargetInfos)
-		.OnGenerateRow(this, &FPoseDriverDetails::GenerateTargetRow)
-		.SelectionMode(ESelectionMode::SingleToggle)
-		.OnSelectionChanged(this, &FPoseDriverDetails::OnTargetSelectionChanged)
-		.HeaderRow
-		(
-			SNew(SHeaderRow)
-			.Visibility(EVisibility::Collapsed)
-			+ SHeaderRow::Column(ColumnId_Target)
-		)
+			.OnGenerateRow(this, &FPoseDriverDetails::GenerateTargetRow)
+			.SelectionMode(ESelectionMode::SingleToggle)
+			.OnSelectionChanged(this, &FPoseDriverDetails::OnTargetSelectionChanged)
+			.HeaderRow
+			(
+				SNew(SHeaderRow)
+				.Visibility(EVisibility::Collapsed)
+				+ SHeaderRow::Column(ColumnId_Target)
+			)
 		]
 
-	+ SVerticalBox::Slot()
+		+SVerticalBox::Slot()
 		.AutoHeight()
 		[
 			SNew(SHorizontalBox)
 
 			+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.AutoWidth()
-		.Padding(FMargin(6, 0, 3, 0))
-		[
-			SNew(SCheckBox)
-			.IsChecked_Lambda([=]() { return IsSoloDrivenOnly() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-		.OnCheckStateChanged(this, &FPoseDriverDetails::OnSoloDrivenOnlyChanged)
-		.Padding(FMargin(4.0f, 0.0f))
-		.ToolTipText(LOCTEXT("SoloDrivenOnlyHelp", "Only solo the driven poses or curves and leave the source joint(s) in place."))
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("SoloDrivenOnly", "Solo Driven Pose/Curve Only"))
-		]
-		]
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			.Padding(FMargin(6, 0, 3, 0))
+			[
+				SNew(SCheckBox)
+				.IsChecked_Lambda([=]() { return IsSoloDrivenOnly() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+				.OnCheckStateChanged(this, &FPoseDriverDetails::OnSoloDrivenOnlyChanged)
+				.Padding(FMargin(4.0f, 0.0f))
+				.ToolTipText(LOCTEXT("SoloDrivenOnlyHelp", "Only solo the driven poses or curves and leave the source joint(s) in place."))
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("SoloDrivenOnly", "Solo Driven Pose/Curve Only"))
+				]
+			]
 
-	+ SHorizontalBox::Slot()
-		.FillWidth(1)
-		[
-			SNew(SSpacer)
-		]
+			+ SHorizontalBox::Slot()
+			.FillWidth(1)
+			[
+				SNew(SSpacer)
+			]
 
-	+ SHorizontalBox::Slot()
-		.Padding(2, 2)
-		.AutoWidth()
-		[
-			SAssignNew(ToolsButton, SComboButton)
-			.ContentPadding(3)
-		.ForegroundColor(this, &FPoseDriverDetails::GetToolsForegroundColor)
-		.ButtonStyle(FEditorStyle::Get(), "ToggleButton") // Use the tool bar item style for this button
-		.OnGetMenuContent(this, &FPoseDriverDetails::GetToolsMenuContent)
-		.ButtonContent()
-		[
-			SNew(STextBlock).Text(LOCTEXT("ViewButton", "Tools "))
+			+ SHorizontalBox::Slot()
+			.Padding(2, 2)
+			.AutoWidth()
+			[
+				SAssignNew(ToolsButton, SComboButton)
+				.ContentPadding(3)
+				.ForegroundColor(this, &FPoseDriverDetails::GetToolsForegroundColor)
+				.ButtonStyle(FEditorStyle::Get(), "ToggleButton") // Use the tool bar item style for this button
+				.OnGetMenuContent(this, &FPoseDriverDetails::GetToolsMenuContent)
+				.ButtonContent()
+				[
+					SNew(STextBlock).Text(LOCTEXT("ViewButton", "Tools "))
+				]
+			]
 		]
-		]
-		]
-		];
+	];
 
 	// Update target list from selected pose driver node
 	UpdateTargetInfosList();
@@ -1134,7 +1130,7 @@ void FPoseDriverDetails::OnSourceBonesChanged()
 	for (const TWeakObjectPtr<UObject>& Object : SelectedObjectsList)
 	{
 		UAnimGraphNode_PoseDriver* PoseDriver = Cast<UAnimGraphNode_PoseDriver>(Object.Get());
-		if (PoseDriver)
+		if(PoseDriver)
 		{
 			PoseDriver->ReserveTargetTransforms();
 		}
@@ -1144,11 +1140,11 @@ void FPoseDriverDetails::OnSourceBonesChanged()
 }
 
 void FPoseDriverDetails::OnSoloDrivenOnlyChanged(const ECheckBoxState NewCheckState)
-{
+{	
 	bool bDrivenOnly = (NewCheckState == ECheckBoxState::Checked);
 
 	UAnimGraphNode_PoseDriver* PoseDriver = GetFirstSelectedPoseDriver();
-	if (PoseDriver && PoseDriver->Node.bSoloDrivenOnly != bDrivenOnly)
+	if (PoseDriver&& PoseDriver->Node.bSoloDrivenOnly != bDrivenOnly)
 	{
 		PoseDriver->Node.bSoloDrivenOnly = bDrivenOnly;
 
@@ -1175,15 +1171,15 @@ UAnimGraphNode_PoseDriver* FPoseDriverDetails::GetFirstSelectedPoseDriver() cons
 void FPoseDriverDetails::UpdateTargetInfosList()
 {
 	TargetInfos.Empty();
-
-	if (SelectedObjectsList.Num() == 1)
+	
+	if(SelectedObjectsList.Num() == 1)
 	{
 		UAnimGraphNode_PoseDriver* PoseDriver = GetFirstSelectedPoseDriver();
 		if (PoseDriver)
 		{
 			for (int32 i = 0; i < PoseDriver->Node.PoseTargets.Num(); i++)
 			{
-				TargetInfos.Add(FPDD_TargetInfo::Make(i));
+				TargetInfos.Add( FPDD_TargetInfo::Make(i) );
 			}
 		}
 	}

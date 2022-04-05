@@ -8,14 +8,30 @@
 #include "Widgets/Views/STableRow.h"
 
 #include "LevelEditor.h"
+#include "ToolMenus.h"
 #include "Modules/ModuleManager.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "FractureEditorMode.h"
 #include "ScopedTransaction.h"
 #include "FractureSettings.h"
 #include "GeometryCollectionOutlinerDragDrop.h"
+#include "GeometryCollection/GeometryCollectionUtility.h"
 
 #define LOCTEXT_NAMESPACE "ChaosEditor"
+
+
+static FText GettextFromInitialDynamicState(int32 InitialDynamicState)
+{
+	switch (InitialDynamicState)
+	{
+	case 0: return NSLOCTEXT("Fracture", "FractureToolInitialDynamicStateNoOverride", "No Override");
+	case 1: return NSLOCTEXT("Fracture", "FractureToolInitialDynamicStateSleeping", "Sleeping");
+	case 2: return NSLOCTEXT("Fracture", "FractureToolInitialDynamicStateKinematic", "Kinematic");
+	case 3: return NSLOCTEXT("Fracture", "FractureToolInitialDynamicStateStatic", "Static");
+	default:
+		return FText();
+	}
+}
 
 void FGeometryCollectionTreeItem::OnDragLeave(const FDragDropEvent& InDragDropEvent)
 {
@@ -29,6 +45,32 @@ void FGeometryCollectionTreeItem::OnDragLeave(const FDragDropEvent& InDragDropEv
 			GeometryCollectionBoneOp->SetToolTip(FText(), Icon);
 		}
 	}
+}
+
+void FGeometryCollectionTreeItem::GenerateContextMenu(UToolMenu* Menu, SGeometryCollectionOutliner& Outliner)
+{
+	auto SharedOutliner = StaticCastSharedRef<SGeometryCollectionOutliner>(Outliner.AsShared());
+
+	auto MakeDynamicStateMenu = [&Outliner](UToolMenu* Menu)
+	{
+		const FName MenuEntryNames[] =
+		{
+			"NoOverride"
+			"Sleeping",
+			"Kinematic",
+			"Static"
+		};
+		const int32 MenuEntryNamesCount = sizeof(MenuEntryNames) / sizeof(FName);
+
+		FToolMenuSection& Section = Menu->AddSection("State");
+		for (int32 Index = 0; Index < MenuEntryNamesCount; ++Index)
+		{
+			Section.AddMenuEntry(MenuEntryNames[Index], GettextFromInitialDynamicState(Index), FText(), FSlateIcon(), FUIAction(FExecuteAction::CreateRaw(&Outliner, &SGeometryCollectionOutliner::SetInitialDynamicState, Index)));
+		}
+	};
+
+	FToolMenuSection& Section = Menu->AddSection("State");
+	Section.AddSubMenu("FractureToolSetInitialDynamicStateMenu", NSLOCTEXT("Fracture", "FractureToolSetInitialDynamicStateMenu", "Initial Dynamic State"), FText(),FNewToolMenuDelegate::CreateLambda(MakeDynamicStateMenu));
 }
 
 void FGeometryCollectionTreeItemBone::OnDragEnter(FDragDropEvent const& InDragDropEvent)
@@ -103,7 +145,6 @@ FReply FGeometryCollectionTreeItemBone::OnDrop(const FDragDropEvent& DragDropEve
 	return FReply::Unhandled();
 }
 
-
 UOutlinerSettings::UOutlinerSettings(const FObjectInitializer& ObjInit)
 	: Super(ObjInit)
 	, ItemText(EOutlinerItemNameEnum::BoneIndex)
@@ -122,7 +163,9 @@ void SGeometryCollectionOutliner::Construct(const FArguments& InArgs)
 		.OnSelectionChanged(this, &SGeometryCollectionOutliner::OnSelectionChanged)
 		.OnGenerateRow(this, &SGeometryCollectionOutliner::MakeTreeRowWidget)
 		.OnGetChildren(this, &SGeometryCollectionOutliner::OnGetChildren)
+		.OnContextMenuOpening(this, &SGeometryCollectionOutliner::OnOpenContextMenu)
 		.AllowInvisibleItemSelection(true)
+		.HighlightParentNodesForSelection(true)
 		.OnSetExpansionRecursive(this, &SGeometryCollectionOutliner::ExpandRecursive)
 	];
 }
@@ -142,6 +185,30 @@ void SGeometryCollectionOutliner::OnGetChildren(FGeometryCollectionTreeItemPtr I
 	InItem->GetChildren(OutChildren);
 }
 
+TSharedPtr<SWidget> SGeometryCollectionOutliner::OnOpenContextMenu()
+{
+	FGeometryCollectionTreeItemList SelectedItems;
+	TreeView->GetSelectedItems(SelectedItems);
+
+	if (SelectedItems.Num())
+	{
+		UToolMenus* ToolMenus = UToolMenus::Get();
+		static const FName MenuName = "SGeometryCollectionOutliner.GeometryCollectionOutlinerContextMenu";
+		if (!ToolMenus->IsMenuRegistered(MenuName))
+		{
+			ToolMenus->RegisterMenu(MenuName);
+		}
+
+		// Build up the menu for a selection
+		FToolMenuContext Context;
+		UToolMenu* Menu = ToolMenus->GenerateMenu(MenuName, Context);
+		SelectedItems[0]->GenerateContextMenu(Menu, *this);
+		return ToolMenus->GenerateWidget(Menu);
+	}
+
+	return TSharedPtr<SWidget>();
+}
+
 void SGeometryCollectionOutliner::UpdateGeometryCollection()
 {
 	TreeView->RequestTreeRefresh();
@@ -159,7 +226,7 @@ void SGeometryCollectionOutliner::SetComponents(const TArray<UGeometryCollection
 
 	for (UGeometryCollectionComponent* Component : InNewComponents)
 	{
-		if (Component->GetRestCollection() && !Component->GetRestCollection()->IsPendingKill())
+		if (Component->GetRestCollection() && IsValidChecked(Component->GetRestCollection()))
 		{
 			RootNodes.Add(MakeShared<FGeometryCollectionTreeItemComponent>(Component, TreeView));
 			TArray<int32> SelectedBones = Component->GetSelectedBones();
@@ -208,6 +275,11 @@ void SGeometryCollectionOutliner::SetHistogramSelection(UGeometryCollectionCompo
 	}
 }
 
+int32 SGeometryCollectionOutliner::GetBoneSelectionCount() const
+{
+	return TreeView->GetSelectedItems().Num();
+}
+
 void SGeometryCollectionOutliner::SetBoneSelection(UGeometryCollectionComponent* RootComponent, const TArray<int32>& InSelection, bool bClearCurrentSelection)
 {
 	TGuardValue<bool> ExternalSelectionGuard(bPerformingSelection, true);
@@ -219,6 +291,7 @@ void SGeometryCollectionOutliner::SetBoneSelection(UGeometryCollectionComponent*
 
 	bool bFirstSelection = true;
 
+	FGeometryCollectionTreeItemList NewSelection;
 	for(auto& RootNode : RootNodes)
 	{
 		if (RootNode->GetComponent() == RootComponent)
@@ -233,12 +306,13 @@ void SGeometryCollectionOutliner::SetBoneSelection(UGeometryCollectionComponent*
 						TreeView->RequestScrollIntoView(Item);
 						bFirstSelection = false;
 					}
-					TreeView->SetItemSelection(Item, true);
+					NewSelection.Add(Item);
 				}
 			}
 			break;
 		}
 	}
+	TreeView->SetItemSelection(NewSelection, true);
 }
 
 void SGeometryCollectionOutliner::OnSelectionChanged(FGeometryCollectionTreeItemPtr Item, ESelectInfo::Type SelectInfo)
@@ -281,6 +355,33 @@ void SGeometryCollectionOutliner::OnSelectionChanged(FGeometryCollectionTreeItem
 	}
 }
 
+void SGeometryCollectionOutliner::SetInitialDynamicState(int32 InDynamicState)
+{
+	FGeometryCollectionTreeItemList SelectedItems;
+	TreeView->GetSelectedItems(SelectedItems);
+
+	for (auto& SelectedItem : SelectedItems)
+	{
+		if (UGeometryCollectionComponent* Component = SelectedItem->GetComponent())
+		{
+			if (const UGeometryCollection* RestCollection = Component->GetRestCollection())
+			{
+				if (FGeometryCollection* GeometryCollection = RestCollection->GetGeometryCollection().Get())
+				{
+					TManagedArray<int32>& InitialDynamicState = GeometryCollection->GetAttribute<int32>("InitialDynamicState", FGeometryCollection::TransformGroup);
+					TArray<int32> SelectedBones = Component->GetSelectedBones();
+					int32 BoneIndex = SelectedItem->GetBoneIndex();
+					if (ensure(0 <= BoneIndex && BoneIndex < InitialDynamicState.Num()))
+					{
+						InitialDynamicState[SelectedItem->GetBoneIndex()] = InDynamicState;
+					}
+				}
+			}
+		}
+	}
+	RegenerateItems();
+}
+
 TSharedRef<ITableRow> FGeometryCollectionTreeItemComponent::MakeTreeRowWidget(const TSharedRef<STableViewBase>& InOwnerTable)
 {
 	FString ActorName = Component->GetOwner()->GetActorLabel();
@@ -321,6 +422,11 @@ void FGeometryCollectionTreeItemComponent::GetChildrenForBone(FGeometryCollectio
 	{
 		if (FGeometryCollection* Collection = RestCollection->GetGeometryCollection().Get())
 		{
+			if (!Collection->HasAttribute("GUID", "Transform"))
+			{
+				GeometryCollection::GenerateTemporaryGuids(Collection);
+			}
+
 			if (const int32* BoneIndex = GuidIndexMap.Find(BoneItem.GetGuid()))
 			{
 				const TManagedArray<TSet<int32>>& Children = Collection->Children;
@@ -392,6 +498,7 @@ void FGeometryCollectionTreeItemComponent::RegenerateChildren()
 		{
 			int32 NumElements = Collection->NumElements(FGeometryCollection::TransformGroup);
 
+			GeometryCollection::GenerateTemporaryGuids(Collection, 0, true);
 			const TManagedArray<FGuid>& Guids = Collection->GetAttribute<FGuid>("GUID", "Transform");
 			const TManagedArray<int32>& Parents = Collection->Parent;
 			// const TManagedArray<FString>& BoneNames = CollectionPtr->BoneName;
@@ -434,18 +541,21 @@ void FGeometryCollectionTreeItemComponent::SetHistogramSelection(TArray<int32>& 
 
 bool FGeometryCollectionTreeItemComponent::FilterBoneIndex(int32 BoneIndex) const
 {
-	FGeometryCollection* Collection = Component->GetRestCollection()->GetGeometryCollection().Get();
-	TManagedArray<TSet<int32>>& Children = Collection->GetAttribute<TSet<int32>>("Children", FGeometryCollection::TransformGroup);
+	const FGeometryCollection* Collection = Component->GetRestCollection()->GetGeometryCollection().Get();
+	const TManagedArray<int32>& SimTypes = Collection->SimulationType;
+	bool bHasChildren = Collection->Children[BoneIndex].Num() > 0;
 
-	if (Children[BoneIndex].Num() == 0)
+	if (SimTypes[BoneIndex] != FGeometryCollection::ESimulationTypes::FST_Clustered)
 	{
-		// We don't display leaf nodes deeper than the view level.
+		// We only display cluster nodes deeper than the view level.
 		UFractureSettings* FractureSettings = GetMutableDefault<UFractureSettings>();
 
 		if (FractureSettings->FractureLevel >= 0)
 		{
-			TManagedArray<int32>& Level = Collection->GetAttribute<int32>("Level", FTransformCollection::TransformGroup);
-			if (Level[BoneIndex] != FractureSettings->FractureLevel)
+			const TManagedArray<int32>& Level = Collection->GetAttribute<int32>("Level", FTransformCollection::TransformGroup);
+			int32 BoneLevel = Level[BoneIndex];
+			// bone is not at the right level itself and doesn't have child(ren) at the right level
+			if (BoneLevel != FractureSettings->FractureLevel && (!bHasChildren || BoneLevel + 1 != FractureSettings->FractureLevel))
 			{
 				return false;
 			}
@@ -476,9 +586,10 @@ TSharedRef<ITableRow> FGeometryCollectionTreeItemBone::MakeTreeRowWidget(const T
 	// Set color according to simulation type
 
 	FSlateColor TextColor(FLinearColor::Red); // default color indicates something wrong
+	int32 InitialDynamicState = INDEX_NONE;
 
 	const UGeometryCollection* RestCollection = ParentComponentItem->GetComponent()->GetRestCollection();
-	if (RestCollection && !RestCollection->IsPendingKill())
+	if (RestCollection && IsValidChecked(RestCollection))
 	{
 		TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = RestCollection->GetGeometryCollection();
 		const TManagedArray<int32>& SimulationType = GeometryCollectionPtr->SimulationType;
@@ -489,7 +600,14 @@ TSharedRef<ITableRow> FGeometryCollectionTreeItemBone::MakeTreeRowWidget(const T
 				break;
 
 			case FGeometryCollection::ESimulationTypes::FST_Rigid:
-				TextColor = FLinearColor::Gray;
+				if (GeometryCollectionPtr->IsVisible(GetBoneIndex()))
+				{ 
+					TextColor = FSlateColor::UseForeground();
+				}
+				else
+				{
+					TextColor = FLinearColor{0.1f, 0.1f, 0.1f, 1.f};
+				}
 				break;
 
 			case FGeometryCollection::ESimulationTypes::FST_Clustered:
@@ -500,19 +618,36 @@ TSharedRef<ITableRow> FGeometryCollectionTreeItemBone::MakeTreeRowWidget(const T
 				ensureMsgf(false, TEXT("Invalid Geometry Collection simulation type encountered."));
 				break;
 		}
+
+		InitialDynamicState = GeometryCollectionPtr->InitialDynamicState[GetBoneIndex()];
 	}
 	else
 	{
 		// Deleted rest collection
 		TextColor = FLinearColor(0.1f, 0.1f, 0.1f);
+		InitialDynamicState = INDEX_NONE;
 	}
 	
 	return SNew(STableRow<FGeometryCollectionTreeItemPtr>, InOwnerTable)
 		.Content()
-		[			
-			SNew(STextBlock)
-			.Text(ItemText)
-			.ColorAndOpacity(TextColor)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+				.Padding(2.0f, 4.0f)
+				.AutoWidth()
+				[
+					SNew(STextBlock)
+					.Text(ItemText)
+					.ColorAndOpacity(TextColor)
+				]
+			+ SHorizontalBox::Slot()
+				.Padding(2.0f, 2.0f)
+				.FillWidth(1.0f)
+				.HAlign(HAlign_Right)
+				[
+					SNew(STextBlock)
+					.Text(GettextFromInitialDynamicState(InitialDynamicState))
+				]
 		]
 		.OnDragDetected(this, &FGeometryCollectionTreeItem::OnDragDetected)
 		.OnDrop(this, &FGeometryCollectionTreeItem::OnDrop)

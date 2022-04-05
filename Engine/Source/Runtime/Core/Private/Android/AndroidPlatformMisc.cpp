@@ -51,7 +51,6 @@
 #include "Misc/OutputDevice.h"
 #include "Logging/LogMacros.h"
 #include "Misc/OutputDeviceError.h"
-#include "Async/Async.h"
 
 #if USE_ANDROID_JNI
 extern AAssetManager * AndroidThunkCpp_GetAssetManager();
@@ -135,6 +134,9 @@ bool FAndroidMisc::bNeedsRestartAfterPSOPrecompile = false;
 // Key/Value pair variables from the optional configuration.txt
 TMap<FString, FString> FAndroidMisc::ConfigRulesVariables;
 
+static FCriticalSection AndroidThreadNamesLock;
+static TMap<uint32, const char*, TFixedSetAllocator<16>> AndroidThreadNames;
+
 EDeviceScreenOrientation FAndroidMisc::DeviceOrientation = EDeviceScreenOrientation::Unknown;
 
 extern void AndroidThunkCpp_ForceQuit();
@@ -200,11 +202,12 @@ static void InitCpuThermalSensor()
 
 	for (uint32 i = 0; i < SensorLocations.Num(); ++i)
 	{
-		const char* SensorFilePath = TCHAR_TO_ANSI(*SensorLocations[i]);
+		auto ConvertedStr = StringCast<ANSICHAR>(*SensorLocations[i]);
+		const char* SensorFilePath = ConvertedStr.Get();
 		if (FILE* File = fopen(SensorFilePath, "r"))
 		{
 			FCStringAnsi::Strcpy(AndroidCpuThermalSensorFileBuf, SensorFilePath);
-			UE_LOG(LogAndroid, Display, TEXT("Selecting thermal sensor located at `%s`"), ANSI_TO_TCHAR(AndroidCpuThermalSensorFileBuf));
+			UE_LOG(LogAndroid, Display, TEXT("Selecting thermal sensor located at `%s`"), *SensorLocations[i]);
 			fclose(File);
 			return;
 		}
@@ -222,10 +225,18 @@ void FAndroidMisc::RequestExit( bool Force )
 	if (!GIsCriticalError)
 	{
 		PGO_WriteFile();
+		// exit now to avoid a possible second PGO write when AndroidMain exits.
+		Force = true;
 	}
 #endif
 
 	UE_LOG(LogAndroid, Log, TEXT("FAndroidMisc::RequestExit(%i)"), Force);
+	if(GLog)
+	{
+		GLog->FlushThreadedLogs();
+		GLog->Flush();
+	}
+
 	if (Force)
 	{
 #if USE_ANDROID_JNI
@@ -285,7 +296,7 @@ void FAndroidMisc::LocalPrint(const TCHAR *Message)
 			}
 		}
 		*WritePtr = '\0';
-		__android_log_print(ANDROID_LOG_DEBUG, "UE4", "%ls", MessageBuffer);
+		__android_log_print(ANDROID_LOG_DEBUG, "UE", "%ls", MessageBuffer);
 	}
 #endif
 }
@@ -321,13 +332,13 @@ static struct
 extern "C"
 {
 
-	JNIEXPORT void Java_com_epicgames_ue4_HeadsetReceiver_stateChanged(JNIEnv * jni, jclass clazz, jint state)
+	JNIEXPORT void Java_com_epicgames_unreal_HeadsetReceiver_stateChanged(JNIEnv * jni, jclass clazz, jint state)
 	{
 		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("nativeHeadsetEvent(%i)"), state);
 		HeadPhonesArePluggedIn = (state == 1);
 	}
 
-	JNIEXPORT void Java_com_epicgames_ue4_VolumeReceiver_volumeChanged(JNIEnv * jni, jclass clazz, jint volume)
+	JNIEXPORT void Java_com_epicgames_unreal_VolumeReceiver_volumeChanged(JNIEnv * jni, jclass clazz, jint volume)
 	{
 		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("nativeVolumeEvent(%i)"), volume);
 		ReceiversLock.Lock();
@@ -336,7 +347,7 @@ extern "C"
 		ReceiversLock.Unlock();
 	}
 
-	JNIEXPORT void Java_com_epicgames_ue4_BatteryReceiver_dispatchEvent(JNIEnv * jni, jclass clazz, jint status, jint level, jint temperature)
+	JNIEXPORT void Java_com_epicgames_unreal_BatteryReceiver_dispatchEvent(JNIEnv * jni, jclass clazz, jint status, jint level, jint temperature)
 	{
 		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("nativeBatteryEvent(stat = %i, lvl = %i %, temp = %3.2f \u00B0C)"), status, level, float(temperature)/10.f);
 
@@ -377,9 +388,9 @@ static struct
 	jmethodID		StopReceiver;
 } JavaEventReceivers[] =
 {
-	{ "com/epicgames/ue4/VolumeReceiver",{ "volumeChanged", "(I)V",  (void *)Java_com_epicgames_ue4_VolumeReceiver_volumeChanged } },
-	{ "com/epicgames/ue4/BatteryReceiver",{ "dispatchEvent", "(III)V",(void *)Java_com_epicgames_ue4_BatteryReceiver_dispatchEvent } },
-	{ "com/epicgames/ue4/HeadsetReceiver",{ "stateChanged",  "(I)V",  (void *)Java_com_epicgames_ue4_HeadsetReceiver_stateChanged } },
+	{ "com/epicgames/unreal/VolumeReceiver",{ "volumeChanged", "(I)V",  (void *)Java_com_epicgames_unreal_VolumeReceiver_volumeChanged } },
+	{ "com/epicgames/unreal/BatteryReceiver",{ "dispatchEvent", "(III)V",(void *)Java_com_epicgames_unreal_BatteryReceiver_dispatchEvent } },
+	{ "com/epicgames/unreal/HeadsetReceiver",{ "stateChanged",  "(I)V",  (void *)Java_com_epicgames_unreal_HeadsetReceiver_stateChanged } },
 };
 
 void InitializeJavaEventReceivers()
@@ -612,8 +623,14 @@ const TCHAR* FAndroidMisc::GetSystemErrorMessage(TCHAR* OutBuffer, int32 BufferC
 		Error = errno;
 	}
 	char ErrorBuffer[1024];
-	strerror_r(Error, ErrorBuffer, 1024);
-	FCString::Strcpy(OutBuffer, BufferCount, UTF8_TO_TCHAR((const ANSICHAR*)ErrorBuffer));
+	if (strerror_r(Error, ErrorBuffer, 1024) == 0)
+	{
+		FCString::Strcpy(OutBuffer, BufferCount, UTF8_TO_TCHAR((const ANSICHAR*)ErrorBuffer));
+	}
+	else
+	{
+		*OutBuffer = TEXT('\0');
+	}
 	return OutBuffer;
 }
 
@@ -766,95 +783,13 @@ bool FAndroidMisc::UseRenderThread()
 	return true;
 }
 
-#if PLATFORM_LUMIN
-
 int32 FAndroidMisc::NumberOfCores()
-{
-//#if USE_ANDROID_JNI
-//	static int32 NumberOfCores = android_getCpuCount();
-//	return NumberOfCores;
-//#else
-	// WARNING: this function ignores edge cases like affinity mask changes (and even more fringe cases like CPUs going offline)
-	// in the name of performance (higher level code calls NumberOfCores() way too often...)
-	static int32 NumberOfCores = 0;
-	if (NumberOfCores == 0)
-	{
-		if (FParse::Param(FCommandLine::Get(), TEXT("usehyperthreading")))
-		{
-			NumberOfCores = NumberOfCoresIncludingHyperthreads();
-		}
-		else
-		{
-			cpu_set_t AvailableCpusMask;
-			CPU_ZERO(&AvailableCpusMask);
-
-			if (0 != sched_getaffinity(0, sizeof(AvailableCpusMask), &AvailableCpusMask))
-			{
-				NumberOfCores = 1;	// we are running on something, right?
-			}
-			else
-			{
-				// read the proc core counts and the proc max frequencies from cpuinfo because of 
-				// potential security restrictions on the sys mount
-				if (FILE* FileGlobalCpuStats = fopen("/proc/cpuinfo", "r"))
-				{
-					char LineBuffer[256] = { 0 };
-					do
-					{
-						char *Line = fgets(LineBuffer, UE_ARRAY_COUNT(LineBuffer), FileGlobalCpuStats);
-						if (Line == nullptr)
-						{
-							break;	// eof or an error
-						}
-						// count the number of processor entries in loop
-						// for Lumin one processor translates to one core
-						if (strstr(Line, "processor") == Line)
-						{
-							NumberOfCores += 1;
-						}
-					} while (1);
-					fclose(FileGlobalCpuStats);
-				}
-			}
-		}
-	}
-	return NumberOfCores;
-//#endif
-}
-
-
-int32 FAndroidMisc::NumberOfCoresIncludingHyperthreads()
 {
 #if USE_ANDROID_JNI
-	return FPlatformMisc::NumberOfCores();
-#else
-	// WARNING: this function ignores edge cases like affinity mask changes (and even more fringe cases like CPUs going offline)
-	// in the name of performance (higher level code calls NumberOfCores() way too often...)
-	static int32 NumCoreIds = 0;
-	if (NumCoreIds == 0)
-	{
-		cpu_set_t AvailableCpusMask;
-		CPU_ZERO(&AvailableCpusMask);
-
-		if (0 != sched_getaffinity(0, sizeof(AvailableCpusMask), &AvailableCpusMask))
-		{
-			NumCoreIds = 1;	// we are running on something, right?
-		}
-		else
-		{
-			return CPU_COUNT(&AvailableCpusMask);
-		}
-	}
-	return NumCoreIds;
-#endif
-}
-
-
-#else
-
-int32 FAndroidMisc::NumberOfCores()
-{
 	int32 NumberOfCores = android_getCpuCount();
+#else
+	int32 NumberOfCores = 0;
+#endif
 
 	static int CalculatedNumberOfCores = 0;
 	if (CalculatedNumberOfCores == 0)
@@ -878,7 +813,6 @@ int32 FAndroidMisc::NumberOfCoresIncludingHyperthreads()
 	return NumberOfCores();
 }
 
-#endif
 
 static FAndroidMisc::FCPUState CurrentCPUState;
 
@@ -1793,7 +1727,7 @@ int32 FAndroidMisc::GetAndroidBuildVersion()
 		JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
 		if (nullptr != JEnv)
 		{
-			jclass Class = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/ue4/GameActivity");
+			jclass Class = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/unreal/GameActivity");
 			if (nullptr != Class)
 			{
 				jfieldID Field = JEnv->GetStaticFieldID(Class, "ANDROID_BUILD_VERSION", "I");
@@ -1828,7 +1762,7 @@ bool FAndroidMisc::IsSupportedAndroidDevice()
 		JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
 		if (nullptr != JEnv)
 		{
-			jclass Class = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/ue4/GameActivity");
+			jclass Class = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/unreal/GameActivity");
 			if (nullptr != Class)
 			{
 				jfieldID Field = JEnv->GetStaticFieldID(Class, "bSupportedDevice", "Z");
@@ -1859,11 +1793,6 @@ bool FAndroidMisc::ShouldDisablePluginAtRuntime(const FString& PluginName)
 	}
 #endif
 	return false;
-}
-
-void FAndroidMisc::SetThreadName(const char* name)
-{
-	pthread_setname_np(pthread_self(), name);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -2171,9 +2100,9 @@ static EDeviceVulkanSupportStatus AttemptVulkanInit(void* VulkanLib)
 	VkApplicationInfo App;
 	FMemory::Memzero(App);
 	App.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-	App.pApplicationName = "UE4";
+	App.pApplicationName = "UE";
 	App.applicationVersion = 0;
-	App.pEngineName = "UE4";
+	App.pEngineName = "UE";
 	App.engineVersion = 0;
 	App.apiVersion = UE_VK_API_VERSION;
 
@@ -2487,7 +2416,7 @@ FString* FAndroidMisc::GetConfigRulesVariable(const FString& Key)
 	return ConfigRulesVariables.Find(Key);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetConfigRulesVariables(JNIEnv* jenv, jobject thiz, jobjectArray KeyValuePairs)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeSetConfigRulesVariables(JNIEnv* jenv, jobject thiz, jobjectArray KeyValuePairs)
 {
 	int32 Count = jenv->GetArrayLength(KeyValuePairs);
 	int32 Index = 0;
@@ -2502,19 +2431,9 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetConfigRulesVariable
 
 extern bool AndroidThunkCpp_HasMetaDataKey(const FString& Key);
 
-bool FAndroidMisc::IsDaydreamApplication()
-{
-#if USE_ANDROID_JNI
-	static const bool bIsDaydreamApplication = AndroidThunkCpp_HasMetaDataKey(TEXT("com.epicgames.ue4.GameActivity.bDaydream"));
-	return bIsDaydreamApplication;
-#else
-	return false;
-#endif
-}
-
 static bool bDetectedDebugger = false;
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetAndroidStartupState(JNIEnv* jenv, jobject thiz, jboolean bDebuggerAttached)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeSetAndroidStartupState(JNIEnv* jenv, jobject thiz, jboolean bDebuggerAttached)
 {
 	// if Java debugger attached, mark detected (but don't lose previous trigger state)
 	if (bDebuggerAttached)
@@ -3009,6 +2928,12 @@ bool FAndroidMisc::Expand16BitIndicesTo32BitOnLoad()
 	return  (CVarMaliMidgardIndexingBug.GetValueOnAnyThread() > 0);
 }
 
+int FAndroidMisc::GetMobilePropagateAlphaSetting()
+{
+	extern int GAndroidPropagateAlpha;
+	return GAndroidPropagateAlpha;
+}
+
 TArray<int32> FAndroidMisc::GetSupportedNativeDisplayRefreshRates()
 {
 	TArray<int32> Result;
@@ -3042,65 +2967,13 @@ int32 FAndroidMisc::GetNativeDisplayRefreshRate()
 
 }
 
-static FAndroidMemoryWarningContext GAndroidMemoryWarningContext;
-void (*GMemoryWarningHandler)(const FGenericMemoryWarningContext& Context) = NULL;
-
-static void SendMemoryWarningContext()
-	{
-	if (FTaskGraphInterface::IsRunning())
-	{
-		// Run on game thread to avoid mem handler callback getting confused.
-		AsyncTask(ENamedThreads::GameThread, [AndroidMemoryWarningContext = GAndroidMemoryWarningContext]()
-			{
-				if (GMemoryWarningHandler)
-				{
-					// note that we may also call this when recovering from low memory conditions. (i.e. not in low memory state.)
-					GMemoryWarningHandler(AndroidMemoryWarningContext);
-				}
-			});
-	}
-	else
-	{
-		const FAndroidMemoryWarningContext& Context = GAndroidMemoryWarningContext;
-		UE_LOG(LogAndroid, Warning, TEXT("Not calling memory warning handler, received too early. %d, %d %d %d"), Context.LastTrimMemoryState
-			   , Context.LastNativeMemoryAdvisorState, Context.MemoryAdvisorEstimatedAvailableMemoryMB, Context.OomScore);
-	}
-}
-
-void FAndroidMisc::UpdateOSMemoryStatus(EOSMemoryStatusCategory OSMemoryStatusCategory, int Value)
-{
-	switch (OSMemoryStatusCategory)
-	{
-		case EOSMemoryStatusCategory::OSTrim:
-			GAndroidMemoryWarningContext.LastTrimMemoryState = Value;
-			break;
-		default:
-			checkNoEntry();
-	}
-
-	SendMemoryWarningContext();
-}
-
 FORCEINLINE bool ValueOutsideThreshold(float Value, float BaseLine, float Threshold)
 {
 	return Value > BaseLine * (1.0f + Threshold)
 		|| Value < BaseLine * (1.0f - Threshold);
 }
 
-void FAndroidMisc::UpdateMemoryAdvisorState(int State, int EstimateAvailableMB, int OOMScore)
-{
-	bool bUpdate = GAndroidMemoryWarningContext.LastNativeMemoryAdvisorState != State;
-	bUpdate |= ValueOutsideThreshold(EstimateAvailableMB, GAndroidMemoryWarningContext.MemoryAdvisorEstimatedAvailableMemoryMB, GAndroidMemoryStateChangeThreshold);
-	bUpdate |= ValueOutsideThreshold(OOMScore, GAndroidMemoryWarningContext.OomScore, GAndroidMemoryStateChangeThreshold);
-
-	if (bUpdate)
-	{
-		GAndroidMemoryWarningContext.LastNativeMemoryAdvisorState = State;
-		GAndroidMemoryWarningContext.MemoryAdvisorEstimatedAvailableMemoryMB = EstimateAvailableMB;
-		GAndroidMemoryWarningContext.OomScore = OOMScore;
-		SendMemoryWarningContext();
-	}
-}
+void (*GMemoryWarningHandler)(const FGenericMemoryWarningContext& Context) = NULL;
 
 void FAndroidMisc::SetMemoryWarningHandler(void (*InHandler)(const FGenericMemoryWarningContext& Context))
 {
@@ -3140,6 +3013,22 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	GIsRequestingExit = true;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 #endif // UE_SET_REQUEST_EXIT_ON_TICK_ONLY
+}
+
+void FAndroidMisc::RegisterThreadName(const char* Name, uint32 ThreadId)
+{
+	FScopeLock Lock(&AndroidThreadNamesLock);
+	if (!AndroidThreadNames.Contains(ThreadId))
+	{
+		AndroidThreadNames.Add(ThreadId, Name);
+	}
+}
+
+const char* FAndroidMisc::GetThreadName(uint32 ThreadId)
+{
+	FScopeLock Lock(&AndroidThreadNamesLock);
+	const char** ThreadName = AndroidThreadNames.Find(ThreadId);
+	return ThreadName ? *ThreadName : nullptr;
 }
 
 void FAndroidMisc::SetDeviceOrientation(EDeviceScreenOrientation NewDeviceOrentation)
@@ -3187,3 +3076,11 @@ int32 FAndroidMisc::GetAndroidScreenOrientation(EDeviceScreenOrientation ScreenO
 	return static_cast<int32>(AndroidScreenOrientation);
 }
 #endif // USE_ANDROID_JNI
+
+extern void AndroidThunkCpp_ShowConsoleWindow();
+void FAndroidMisc::ShowConsoleWindow()
+{
+#if !UE_BUILD_SHIPPING && USE_ANDROID_JNI
+	AndroidThunkCpp_ShowConsoleWindow();
+#endif // !UE_BUILD_SHIPPING && USE_ANDROID_JNI
+}

@@ -774,20 +774,16 @@ PyTypeObject InitializePyWrapperDelegateType()
 	PyType.tp_dealloc = (destructor)&FFuncs::Dealloc;
 	PyType.tp_init = (initproc)&FFuncs::Init;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Str;
 	PyType.tp_call = (ternaryfunc)&FFuncs::Call;
 
 	PyType.tp_methods = PyMethods;
 
 	PyType.tp_flags = Py_TPFLAGS_DEFAULT;
-	PyType.tp_doc = "Type for all UE4 exposed delegate instances";
+	PyType.tp_doc = "Type for all Unreal exposed delegate instances";
 
 	static PyNumberMethods PyNumber;
-#if PY_MAJOR_VERSION >= 3
 	PyNumber.nb_bool = (inquiry)&FNumberFuncs::Bool;
-#else	// PY_MAJOR_VERSION >= 3
-	PyNumber.nb_nonzero = (inquiry)&FNumberFuncs::Bool;
-#endif	// PY_MAJOR_VERSION >= 3
-
 	PyType.tp_as_number = &PyNumber;
 
 	return PyType;
@@ -1202,20 +1198,16 @@ PyTypeObject InitializePyWrapperMulticastDelegateType()
 	PyType.tp_dealloc = (destructor)&FFuncs::Dealloc;
 	PyType.tp_init = (initproc)&FFuncs::Init;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Str;
 	PyType.tp_call = (ternaryfunc)&FFuncs::Call;
 
 	PyType.tp_methods = PyMethods;
 
 	PyType.tp_flags = Py_TPFLAGS_DEFAULT;
-	PyType.tp_doc = "Type for all UE4 exposed multicast delegate instances";
+	PyType.tp_doc = "Type for all Unreal exposed multicast delegate instances";
 
 	static PyNumberMethods PyNumber;
-#if PY_MAJOR_VERSION >= 3
 	PyNumber.nb_bool = (inquiry)&FNumberFuncs::Bool;
-#else	// PY_MAJOR_VERSION >= 3
-	PyNumber.nb_nonzero = (inquiry)&FNumberFuncs::Bool;
-#endif	// PY_MAJOR_VERSION >= 3
-
 	PyType.tp_as_number = &PyNumber;
 
 	return PyType;

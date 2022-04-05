@@ -115,21 +115,16 @@ namespace AssetViewUtils
 	ASSETTOOLS_API bool AssetHasCustomThumbnail( const FAssetData& AssetData );
 
 	/** Returns true if the passed-in path is a project folder */
-	ASSETTOOLS_API bool IsProjectFolder(const FString& InPath, const bool bIncludePlugins = false);
+	ASSETTOOLS_API bool IsProjectFolder(const FStringView InPath, const bool bIncludePlugins = false);
 
 	/** Returns true if the passed-in path is a engine folder */
-	ASSETTOOLS_API bool IsEngineFolder(const FString& InPath, const bool bIncludePlugins = false);
+	ASSETTOOLS_API bool IsEngineFolder(const FStringView InPath, const bool bIncludePlugins = false);
 
 	/** Returns true if the passed-in path is a developers folder */
-	ASSETTOOLS_API bool IsDevelopersFolder( const FString& InPath );
+	ASSETTOOLS_API bool IsDevelopersFolder( const FStringView InPath );
 
 	/** Returns true if the passed-in path is a plugin folder, optionally reporting where the plugin was loaded from */
-	ASSETTOOLS_API bool IsPluginFolder(const FString& InPath, EPluginLoadedFrom* OutPluginSource = nullptr);
-
-	/** Returns true if the passed-in path is a plugin folder, optionally reporting where the plugin was loaded from.
-	 *  Pass in a prefiltered list of plugins to consider -- more efficient when called many times.
-	 */
-	ASSETTOOLS_API bool IsPluginFolder(const FString& InPath, const TArray<TSharedRef<IPlugin>>& InPlugins, EPluginLoadedFrom* OutPluginSource = nullptr);
+	ASSETTOOLS_API bool IsPluginFolder(const FStringView InPath, EPluginLoadedFrom* OutPluginSource = nullptr);
 
 	/** Get all the objects in a list of asset data */
 	ASSETTOOLS_API void GetObjectsInAssetData(const TArray<FAssetData>& AssetList, TArray<UObject*>& OutDroppedObjects);
@@ -177,11 +172,17 @@ namespace AssetViewUtils
 	/** Returns true if the specified folder name in the specified path is available for folder creation */
 	ASSETTOOLS_API bool IsValidFolderPathForCreate(const FString& FolderPath, const FString& NewFolderName, FText& OutErrorMessage);
 
+	/** Returns the relative path, from the workspace root, of the package */
+	ASSETTOOLS_API FString GetPackagePathWithinRoot(const FString& PackageName);
+
 	/** Returns the length of the computed cooked package name and path whether it's run on a build machine or locally */
 	ASSETTOOLS_API int32 GetPackageLengthForCooking(const FString& PackageName, bool IsInternalBuild);
 
 	/** Checks to see whether the path is within the size restrictions for cooking */
 	ASSETTOOLS_API bool IsValidPackageForCooking(const FString& PackageName, FText& OutErrorMessage);
+
+	/** Gets the maximum path length for an asset package file. Changes behavior based on whether the editor experimental setting for long paths is enabled. */
+	ASSETTOOLS_API int32 GetMaxAssetPathLen();
 
 	/** Gets the maximum path length for a cooked file. Changes behavior based on whether the editor experimental setting for long paths is enabled. */
 	ASSETTOOLS_API int32 GetMaxCookPathLen();

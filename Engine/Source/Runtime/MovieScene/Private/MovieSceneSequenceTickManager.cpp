@@ -45,12 +45,29 @@ void UMovieSceneSequenceTickManager::RegisterSequenceActor(AActor* InActor)
 	}
 }
 
+void UMovieSceneSequenceTickManager::RegisterSequenceActor(AActor* InActor, TScriptInterface<IMovieSceneSequenceActor> InActorInterface)
+{
+	if (ensure(InActor && InActorInterface))
+	{
+		SequenceActors.Add(FMovieSceneSequenceActorPointers{ InActor, InActorInterface });
+	}
+}
+
 void UMovieSceneSequenceTickManager::UnregisterSequenceActor(AActor* InActor)
 {
 	TScriptInterface<IMovieSceneSequenceActor> SequenceActorInterface(InActor);
 	if (ensureMsgf(SequenceActorInterface, TEXT("The given actor doesn't implement the IMovieSceneSequenceActor interface!")))
 	{
 		int32 NumRemoved = SequenceActors.RemoveAll([=](FMovieSceneSequenceActorPointers& Item) { return Item.SequenceActor == InActor; });
+		ensureMsgf(NumRemoved > 0, TEXT("The given sequence actor wasn't registered"));
+	}
+}
+
+void UMovieSceneSequenceTickManager::UnregisterSequenceActor(AActor* InActor, TScriptInterface<IMovieSceneSequenceActor> InActorInterface)
+{
+	if (ensure(InActor && InActorInterface))
+	{
+		int32 NumRemoved = SequenceActors.RemoveAll([=](const FMovieSceneSequenceActorPointers& Item) { return Item.SequenceActor == InActor && Item.SequenceActorInterface == InActorInterface; });
 		ensureMsgf(NumRemoved > 0, TEXT("The given sequence actor wasn't registered"));
 	}
 }
@@ -65,9 +82,7 @@ void UMovieSceneSequenceTickManager::TickSequenceActors(float DeltaSeconds)
 	// things (e.g. start/stop, loop, etc.), but in 95% of cases, they will just queue up a normal evaluation
 	// request...
 	//
-	bool bHasTasks = Runner.HasQueuedUpdates();
 	UWorld* World = GetTypedOuter<UWorld>();
-
 	check(World != nullptr);
 	ensure(LatentActionManager.IsEmpty());
 	
@@ -83,13 +98,12 @@ void UMovieSceneSequenceTickManager::TickSequenceActors(float DeltaSeconds)
 				check(Pointers.SequenceActorInterface);
 				check(Pointers.SequenceActor->GetWorld() == World);
 				Pointers.SequenceActorInterface->TickFromSequenceTickManager(DeltaSeconds);
-				bHasTasks = true;
 			}
 		}
 	}
 
 	// If we have nothing to do, we can early-out.
-	if (!bHasTasks)
+	if (!Runner.HasQueuedUpdates())
 	{
 		return;
 	}

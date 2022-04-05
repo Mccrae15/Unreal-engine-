@@ -371,7 +371,7 @@ void FPhysInterface_Chaos::UpdateTwistLimitParams_AssumesLocked(const FPhysicsCo
 	}
 }
 
-void FPhysInterface_Chaos::UpdateLinearDrive_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, const FLinearDriveConstraint& InDriveParams)
+void FPhysInterface_Chaos::UpdateLinearDrive_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, const FLinearDriveConstraint& InDriveParams, bool InInitialize)
 {
 	if (InConstraintRef.IsValid() && InConstraintRef.Constraint->IsType(Chaos::EConstraintType::JointConstraintType))
 	{
@@ -391,7 +391,7 @@ void FPhysInterface_Chaos::UpdateLinearDrive_AssumesLocked(const FPhysicsConstra
 				Constraint->SetLinearPositionDriveXEnabled(InDriveParams.XDrive.bEnablePositionDrive);
 				Constraint->SetLinearPositionDriveYEnabled(InDriveParams.YDrive.bEnablePositionDrive);
 				Constraint->SetLinearPositionDriveZEnabled(InDriveParams.ZDrive.bEnablePositionDrive);
-				if (FMath::IsNearlyEqual(Constraint->GetLinearPlasticityLimit(), FLT_MAX))
+				if (InInitialize || FMath::IsNearlyEqual(Constraint->GetLinearPlasticityLimit(), (Chaos::FReal)FLT_MAX))
 				{
 					Constraint->SetLinearDrivePositionTarget(InDriveParams.PositionTarget);
 				}
@@ -413,7 +413,7 @@ void FPhysInterface_Chaos::UpdateLinearDrive_AssumesLocked(const FPhysicsConstra
 	}
 }
 
-void FPhysInterface_Chaos::UpdateAngularDrive_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, const FAngularDriveConstraint& InDriveParams)
+void FPhysInterface_Chaos::UpdateAngularDrive_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, const FAngularDriveConstraint& InDriveParams, bool InInitialize)
 {
 	if (InConstraintRef.IsValid() && InConstraintRef.Constraint->IsType(Chaos::EConstraintType::JointConstraintType))
 	{
@@ -440,7 +440,7 @@ void FPhysInterface_Chaos::UpdateAngularDrive_AssumesLocked(const FPhysicsConstr
 					Constraint->SetAngularSLerpPositionDriveEnabled(InDriveParams.SlerpDrive.bEnablePositionDrive);
 				}
 
-				if (FMath::IsNearlyEqual(Constraint->GetAngularPlasticityLimit(),FLT_MAX) )
+				if (InInitialize || FMath::IsNearlyEqual(Constraint->GetAngularPlasticityLimit(), (Chaos::FReal)FLT_MAX))
 				{
 					// Plastic joints should not be re-targeted after initialization. 
 					Constraint->SetAngularDrivePositionTarget(Chaos::FRotation3(InDriveParams.OrientationTarget.Quaternion()));
@@ -460,7 +460,7 @@ void FPhysInterface_Chaos::UpdateAngularDrive_AssumesLocked(const FPhysicsConstr
 					Constraint->SetAngularSLerpVelocityDriveEnabled(InDriveParams.SlerpDrive.bEnableVelocityDrive);
 				}
 
-				if (!FMath::IsNearlyEqual(Constraint->GetAngularPlasticityLimit(),FLT_MAX))
+				if (!FMath::IsNearlyEqual(Constraint->GetAngularPlasticityLimit(), (Chaos::FReal)FLT_MAX))
 				{
 					// Plasticity requires a zero relative velocity.
 					if (!Constraint->GetAngularDriveVelocityTarget().IsZero())
@@ -470,7 +470,7 @@ void FPhysInterface_Chaos::UpdateAngularDrive_AssumesLocked(const FPhysicsConstr
 				}
 				else
 				{
-					Constraint->SetAngularDriveVelocityTarget(InDriveParams.AngularVelocityTarget);
+					Constraint->SetAngularDriveVelocityTarget(InDriveParams.AngularVelocityTarget * 2.0f * PI); // Rev/s to Rad/s
 				}
 			}
 
@@ -481,12 +481,12 @@ void FPhysInterface_Chaos::UpdateAngularDrive_AssumesLocked(const FPhysicsConstr
 	}
 }
 
-void FPhysInterface_Chaos::UpdateDriveTarget_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, const FLinearDriveConstraint& InLinDrive, const FAngularDriveConstraint& InAngDrive)
+void FPhysInterface_Chaos::UpdateDriveTarget_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, const FLinearDriveConstraint& InLinDrive, const FAngularDriveConstraint& InAngDrive, bool InInitialize)
 {
 	if (InConstraintRef.IsValid())
 	{
-		UpdateLinearDrive_AssumesLocked(InConstraintRef, InLinDrive);
-		UpdateAngularDrive_AssumesLocked(InConstraintRef, InAngDrive);
+		UpdateLinearDrive_AssumesLocked(InConstraintRef, InLinDrive, InInitialize);
+		UpdateAngularDrive_AssumesLocked(InConstraintRef, InAngDrive, InInitialize);
 	}
 }
 
@@ -785,6 +785,18 @@ bool FPhysInterface_Chaos::ExecuteWrite(FPhysScene* InScene, TFunctionRef<void()
 	return false;
 }
 
+bool FPhysInterface_Chaos::ExecuteWrite(FPhysScene* InScene, TFunctionRef<void(FPhysScene* Scene)> InCallable)
+{
+	if (InScene)
+	{
+		FScopedSceneLock_Chaos SceneLock(InScene, EPhysicsInterfaceScopedLockType::Write);
+		InCallable(InScene);
+		return true;
+	}
+
+	return false;
+}
+
 void FPhysInterface_Chaos::ExecuteShapeWrite(FBodyInstance* InInstance, FPhysicsShapeHandle& InShape, TFunctionRef<void(FPhysicsShapeHandle& InShape)> InCallable)
 {
 	if(InInstance && InShape.IsValid())
@@ -830,6 +842,7 @@ const FBodyInstance* FPhysInterface_Chaos::ShapeToOriginalBodyInstance(const FBo
 
 void FPhysInterface_Chaos::AddGeometry(FPhysicsActorHandle& InActor, const FGeometryAddParams& InParams, TArray<FPhysicsShapeHandle>* OutOptShapes)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FPhysInterface_Chaos::AddGeometry);
 	LLM_SCOPE(ELLMTag::ChaosGeometry);
 	TArray<TUniquePtr<Chaos::FImplicitObject>> Geoms;
 	Chaos::FShapesArray Shapes;
@@ -1023,7 +1036,7 @@ bool FPhysInterface_Chaos::LineTrace_Geom(FHitResult& OutHit, const FBodyInstanc
 						if ((bTraceComplex && bShapeIsComplex) || (!bTraceComplex && bShapeIsSimple))
 						{
 
-							float Distance;
+							Chaos::FReal Distance;
 							Chaos::FVec3 LocalPosition;
 							Chaos::FVec3 LocalNormal;
 
@@ -1128,8 +1141,10 @@ bool FPhysInterface_Chaos::Sweep_Geom(FHitResult& OutHit, const FBodyInstance* I
 							//question: this is returning first result, is that valid? Keeping it the same as physx for now
 							Chaos::FVec3 WorldPosition;
 							Chaos::FVec3 WorldNormal;
+							Chaos::FReal Distance;
 							int32 FaceIdx;
-							if (Chaos::Utilities::CastHelper(ShapeAdapter.GetGeometry(), ActorTM, [&](const auto& Downcast, const auto& FullActorTM) { return Chaos::SweepQuery(*Shape->GetGeometry(), FullActorTM, Downcast, StartTM, Dir, DeltaMag, Hit.Distance, WorldPosition, WorldNormal, FaceIdx, 0.f, false); }))
+							Chaos::FVec3 FaceNormal;
+							if (Chaos::Utilities::CastHelper(ShapeAdapter.GetGeometry(), ActorTM, [&](const auto& Downcast, const auto& FullActorTM) { return Chaos::SweepQuery(*Shape->GetGeometry(), FullActorTM, Downcast, StartTM, Dir, DeltaMag, Distance, WorldPosition, WorldNormal, FaceIdx, FaceNormal, 0.f, false); }))
 							{
 								// we just like to make sure if the hit is made
 								FCollisionFilterData QueryFilter;
@@ -1140,6 +1155,7 @@ bool FPhysInterface_Chaos::Sweep_Geom(FHitResult& OutHit, const FBodyInstance* I
 								Hit.Actor = ShapeRef.ActorRef ? ShapeRef.ActorRef->GetParticle_LowLevel() : nullptr;
 								Hit.WorldPosition = WorldPosition;
 								Hit.WorldNormal = WorldNormal;
+								Hit.Distance = (float)Distance; // we should eventually have the Hit structure to use a Chaos::FReal equivalent instead
 								Hit.FaceIndex = FaceIdx;
 								if (!HadInitialOverlap(Hit))
 								{
@@ -1247,6 +1263,11 @@ bool FPhysInterface_Chaos::GetSquaredDistanceToBody(const FBodyInstance* InInsta
 		InInstance->GetAllShapes_AssumesLocked(Shapes);
 		for (const FPhysicsShapeReference_Chaos& Shape : Shapes)
 		{
+			if (!Shape.IsValid())
+			{
+				continue;
+			}
+
 			if (UseBI->IsShapeBoundToBody(Shape) == false)	//skip welded shapes that do not belong to us
 			{
 				continue;

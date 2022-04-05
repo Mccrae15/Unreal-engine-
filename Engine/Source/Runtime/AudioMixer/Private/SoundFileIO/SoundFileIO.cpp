@@ -106,19 +106,20 @@ namespace Audio
 		Error = InputSoundDataReader->ReadSamples(ProcessBuffer.GetData(), ProcessBufferSamples, InputSamplesRead);
 		check(Error == ESoundFileError::Type::NONE);
 
-		// ... normalize the samples if we're told to
+		// Normalize and clamp the input decoded audio
 		if (bPerformPeakNormalization)
 		{
 			for (int32 Sample = 0; Sample < InputSamplesRead; ++Sample)
 			{
-				ProcessBuffer[Sample] /= MaxValue;
+				ProcessBuffer[Sample] = FMath::Clamp(ProcessBuffer[Sample] / MaxValue, -1.0f, 1.0f);
 			}
 		}
-
-		// clamp the output
-		for (int32 Sample = 0; Sample < InputSamplesRead; ++Sample)
+		else
 		{
-			ProcessBuffer[Sample] = FMath::Clamp(ProcessBuffer[Sample], -1.0f, 1.0f);
+			for (int32 Sample = 0; Sample < InputSamplesRead; ++Sample)
+			{
+				ProcessBuffer[Sample] = FMath::Clamp(ProcessBuffer[Sample], -1.0f, 1.0f);
+			}
 		}
 
 		SoundFileCount SamplesWritten = 0;
@@ -133,19 +134,20 @@ namespace Audio
 			Error = InputSoundDataReader->ReadSamples(ProcessBuffer.GetData(), ProcessBufferSamples, InputSamplesRead);
 			check(Error == ESoundFileError::Type::NONE);
 
-			// ... normalize the samples if we're told to
+			// Normalize and clamp the samples
 			if (bPerformPeakNormalization)
 			{
 				for (int32 Sample = 0; Sample < InputSamplesRead; ++Sample)
 				{
-					ProcessBuffer[Sample] /= MaxValue;
+					ProcessBuffer[Sample] = FMath::Clamp(ProcessBuffer[Sample] / MaxValue, -1.0f, 1.0f);
 				}
 			}
-
-			// clamp the output
-			for (int32 Sample = 0; Sample < InputSamplesRead; ++Sample)
+			else
 			{
-				ProcessBuffer[Sample] = FMath::Clamp(ProcessBuffer[Sample], -1.0f, 1.0f);
+				for (int32 Sample = 0; Sample < InputSamplesRead; ++Sample)
+				{
+					ProcessBuffer[Sample] = FMath::Clamp(ProcessBuffer[Sample], -1.0f, 1.0f);
+				}
 			}
 		}
 

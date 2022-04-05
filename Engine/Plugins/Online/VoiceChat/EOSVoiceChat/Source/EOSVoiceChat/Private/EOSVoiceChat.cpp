@@ -771,6 +771,16 @@ bool FEOSVoiceChat::IsPlayerMuted(const FString& PlayerName) const
 	return GetVoiceChatUser().IsPlayerMuted(PlayerName);
 }
 
+void FEOSVoiceChat::SetChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName, bool bMuted)
+{
+	GetVoiceChatUser().SetChannelPlayerMuted(ChannelName, PlayerName, bMuted);
+}
+
+bool FEOSVoiceChat::IsChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName) const
+{
+	return GetVoiceChatUser().IsChannelPlayerMuted(ChannelName, PlayerName);
+}
+
 FOnVoiceChatPlayerMuteUpdatedDelegate& FEOSVoiceChat::OnVoiceChatPlayerMuteUpdated()
 {
 	return GetVoiceChatUser().OnVoiceChatPlayerMuteUpdated();
@@ -1118,7 +1128,7 @@ bool FEOSVoiceChat::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 			{
 				if (!SingleUserVoiceChatUser)
 				{
-					CreateUser();
+					UsersCreatedByConsoleCommand.Add(CreateUser());
 					EOS_EXEC_LOG(TEXT("EOS CREATEUSER success"));
 					return true;
 				}
@@ -1154,16 +1164,24 @@ bool FEOSVoiceChat::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 				{
 					if (UserIndex < VoiceChatUsers.Num())
 					{
-						const FEOSVoiceChatUserRef& User = VoiceChatUsers[UserIndex];
+						const FEOSVoiceChatUserRef& UserRef = VoiceChatUsers[UserIndex];
 						if (FParse::Command(&Cmd, TEXT("RELEASEUSER")))
 						{
-							EOS_EXEC_LOG(TEXT("EOS RELEASEUSER releasing UserIndex=%d..."), UserIndex);
-							ReleaseUser(&User.Get());
+							IVoiceChatUser* User = &UserRef.Get();
+							if (UsersCreatedByConsoleCommand.RemoveSwap(User))
+							{
+								EOS_EXEC_LOG(TEXT("EOS RELEASEUSER releasing UserIndex=%d..."), UserIndex);
+								ReleaseUser(User);
+							}
+							else
+							{
+								EOS_EXEC_LOG(TEXT("EOS RELEASEUSER UserIndex=%d not created by CREATEUSER call."), UserIndex);
+							}
 							return true;
 						}
 						else
 						{
-							return User->Exec(InWorld, Cmd, Ar);
+							return UserRef->Exec(InWorld, Cmd, Ar);
 						}
 					}
 					else

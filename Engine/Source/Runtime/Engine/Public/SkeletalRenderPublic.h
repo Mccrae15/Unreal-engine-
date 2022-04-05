@@ -18,19 +18,21 @@ class FPrimitiveDrawInterface;
 class FVertexFactory;
 class UMorphTarget;
 struct FSkelMeshRenderSection;
+class FGPUSkinCacheEntry;
 
 /** data for a single skinned skeletal mesh vertex */
 struct FFinalSkinVertex
 {
-	FVector			Position;
+	FVector3f			Position;
 	FPackedNormal	TangentX;
 	FPackedNormal	TangentZ;
 	float			U;
 	float			V;
+	FVector2D TextureCoordinates[MAX_TEXCOORDS];
 
-	FVector GetTangentY() const
+	FVector3f GetTangentY() const
 	{
-		return GenerateYAxis(TangentX, TangentZ);
+		return FVector3f(GenerateYAxis(TangentX, TangentZ));
 	};
 };
 
@@ -84,7 +86,7 @@ public:
 	 * @param	ChunkIdx - not used
 	 * @return	vertex factory for rendering the LOD, 0 to suppress rendering
 	 */
-	virtual const FVertexFactory* GetSkinVertexFactory(const FSceneView* View, int32 LODIndex,int32 ChunkIdx) const = 0;
+	virtual const FVertexFactory* GetSkinVertexFactory(const FSceneView* View, int32 LODIndex,int32 ChunkIdx, ESkinVertexFactoryMode VFMode = ESkinVertexFactoryMode::Default) const = 0;
 
 	/**
 	 * Re-skin cached vertices for an LOD and update the vertex buffer. Note that this
@@ -109,7 +111,7 @@ public:
 	 *	Get the array of refpose->local matrices
 	 *	Not safe to hold this reference between frames, because it exists in dynamic data passed from main thread.
 	 */
-	virtual const TArray<FMatrix>& GetReferenceToLocalMatrices() const = 0;
+	virtual const TArray<FMatrix44f>& GetReferenceToLocalMatrices() const = 0;
 
 	/**
 	*	Will force re-evaluating which Skin Weight buffer should be used for skinning, determined by checking for any override weights or a skin weight profile being set.
@@ -204,7 +206,14 @@ public:
 	virtual FRayTracingGeometry* GetRayTracingGeometry() { return nullptr; }
 	virtual const FRayTracingGeometry* GetRayTracingGeometry() const { return nullptr; }
 	virtual FRWBuffer* GetRayTracingDynamicVertexBuffer() { return nullptr; }
+	virtual int32 GetRayTracingLOD() const { return GetLOD(); }
+
+	virtual bool ShouldUseSeparateSkinCacheEntryForRayTracing() const { return GetLOD() != GetRayTracingLOD() || SkinCacheEntry == nullptr; }
+	virtual FGPUSkinCacheEntry* GetSkinCacheEntryForRayTracing() const { return ShouldUseSeparateSkinCacheEntryForRayTracing() ? SkinCacheEntryForRayTracing : SkinCacheEntry; }
 #endif // RHI_RAYTRACING
+
+	/** Called when that component transform has changed */
+	virtual void SetTransform(const FMatrix& InNewLocalToWorld, uint32 FrameNumber) {};
 
 	/** Called to notify clothing data that component transform has changed */
 	virtual void RefreshClothingTransforms(const FMatrix& InNewLocalToWorld, uint32 FrameNumber) {};
@@ -218,7 +227,7 @@ public:
 
 	TArray<FSkelMeshObjectLODInfo> LODInfo;
 
-	TArray<FCapsuleShape> ShadowCapsuleShapes;
+	TArray<FCapsuleShape3f> ShadowCapsuleShapes;
 
 	/** 
 	 *	Lowest (best) LOD that was desired for rendering this SkeletalMesh last frame. 
@@ -244,7 +253,16 @@ public:
 #if RHI_RAYTRACING
 	bool bRequireRecreatingRayTracingGeometry;
 	bool bSupportRayTracing;
+	bool bHiddenMaterialVisibilityDirtyForRayTracing;
+	int32 RayTracingMinLOD;
 #endif
+
+#if UE_BUILD_SHIPPING
+	FName GetDebugName() const { return FName(); }
+#else
+	FName GetDebugName() const { return DebugName; }
+	FName DebugName;
+#endif // !UE_BUILD_SHIPPING
 
 #if WITH_EDITORONLY_DATA
 	/** Index of the section to preview... If set to -1, all section will be rendered */
@@ -277,7 +295,8 @@ protected:
 	/** Per-LOD info. */
 	TArray<FSkeletalMeshLODInfo> SkeletalMeshLODInfo;
 
-	class FGPUSkinCacheEntry* SkinCacheEntry;
+	FGPUSkinCacheEntry* SkinCacheEntry;
+	FGPUSkinCacheEntry* SkinCacheEntryForRayTracing;
 
 	/** Used to keep track of the first call to UpdateMinDesiredLODLevel each frame. from ViewFamily.FrameNumber */
 	uint32 LastFrameNumber;

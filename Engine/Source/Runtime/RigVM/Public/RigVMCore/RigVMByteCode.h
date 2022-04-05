@@ -3,8 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RigVMDefines.h"
 #include "RigVMRegistry.h"
 #include "RigVMStatistics.h"
+#include "RigVMMemoryDeprecated.h"
+
 #include "RigVMByteCode.generated.h"
 
 struct FRigVMByteCode;
@@ -92,11 +95,29 @@ enum class ERigVMOpCode : uint8
 	JumpAbsoluteIf, // jump to an absolute instruction index based on a condition register
 	JumpForwardIf, // jump forwards given a relative instruction index offset based on a condition register
 	JumpBackwardIf, // jump backwards given a relative instruction index offset based on a condition register
-	ChangeType, // change the type of a register
+	ChangeType, // change the type of a register (deprecated)
 	Exit, // exit the execution loop
 	BeginBlock, // begins a new memory slice / block
 	EndBlock, // ends the last memory slice / block
-	Invalid
+	ArrayReset, // clears an array and resets its content
+	ArrayGetNum, // reads and returns the size of an array (binary op, in array, out int32) 
+	ArraySetNum, // resizes an array (binary op, in out array, in int32)
+	ArrayGetAtIndex, // returns an array element by index (ternary op, in array, in int32, out element)  
+	ArraySetAtIndex, // sets an array element by index (ternary op, in out array, in int32, in element)
+	ArrayAdd, // adds an element to an array (ternary op, in out array, in element, out int32 index)
+	ArrayInsert, // inserts an element to an array (ternary op, in out array, in int32, in element)
+	ArrayRemove, // removes an element from an array (binary op, in out array, in inindex)
+	ArrayFind, // finds and returns the index of an element (quaternery op, in array, in element, out int32 index, out bool success)
+	ArrayAppend, // appends an array to another (binary op, in out array, in array)
+	ArrayClone, // clones an array (binary op, in array, out array)
+	ArrayIterator, // iterates over an array (senary op, in array, out element, out index, out count, out ratio, out continue)
+	ArrayUnion, // merges two arrays while avoiding duplicates (binary op, in out array, in other array)
+	ArrayDifference, // returns a new array containing elements only found in one array (ternary op, in array, in array, out result)
+	ArrayIntersection, // returns a new array containing elements found in both of the input arrays (ternary op, in array, in array, out result)
+	ArrayReverse, // returns the reverse of the input array (unary op, in out array)
+	Invalid,
+	FirstArrayOpCode = ArrayReset,
+	LastArrayOpCode = ArrayReverse,
 };
 
 // Base class for all VM operations
@@ -136,7 +157,7 @@ struct RIGVM_API FRigVMExecuteOp : public FRigVMBaseOp
 
 	FORCEINLINE uint8 GetOperandCount() const { return uint8(OpCode) - uint8(ERigVMOpCode::Execute_0_Operands); }
 
-	bool Serialize(FArchive& Ar);
+	void Serialize(FArchive& Ar);
 	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMExecuteOp& P)
 	{
 		P.Serialize(Ar);
@@ -169,13 +190,15 @@ struct RIGVM_API FRigVMUnaryOp : public FRigVMBaseOp
 			uint8(InOpCode) == uint8(ERigVMOpCode::JumpAbsoluteIf) ||
 			uint8(InOpCode) == uint8(ERigVMOpCode::JumpForwardIf) ||
 			uint8(InOpCode) == uint8(ERigVMOpCode::JumpBackwardIf) ||
-			uint8(InOpCode) == uint8(ERigVMOpCode::ChangeType)
+			uint8(InOpCode) == uint8(ERigVMOpCode::ChangeType) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayReset) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayReverse)
 		);
 	}
 
 	FRigVMOperand Arg;
 
-	bool Serialize(FArchive& Ar);
+	void Serialize(FArchive& Ar);
 	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMUnaryOp& P)
 	{
 		P.Serialize(Ar);
@@ -183,7 +206,7 @@ struct RIGVM_API FRigVMUnaryOp : public FRigVMBaseOp
 	}
 };
 
-// operator used for beginblock
+// operator used for beginblock and array reset
 USTRUCT()
 struct RIGVM_API FRigVMBinaryOp : public FRigVMBaseOp
 {
@@ -202,19 +225,202 @@ struct RIGVM_API FRigVMBinaryOp : public FRigVMBaseOp
 		, ArgB(InArgB)
 	{
 		ensure(
-			uint8(InOpCode) == uint8(ERigVMOpCode::BeginBlock)
+			uint8(InOpCode) == uint8(ERigVMOpCode::BeginBlock) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayGetNum) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArraySetNum) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayAppend) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayClone) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayRemove) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayUnion)
 		);
 	}
 
 	FRigVMOperand ArgA;
 	FRigVMOperand ArgB;
 
-	bool Serialize(FArchive& Ar);
+	void Serialize(FArchive& Ar);
 	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMBinaryOp& P)
 	{
 		P.Serialize(Ar);
 		return Ar;
 	}
+};
+
+// operator used for some array operations
+USTRUCT()
+struct RIGVM_API FRigVMTernaryOp : public FRigVMBaseOp
+{
+	GENERATED_USTRUCT_BODY()
+
+	FRigVMTernaryOp()
+		: FRigVMBaseOp(ERigVMOpCode::Invalid)
+		, ArgA()
+		, ArgB()
+		, ArgC()
+	{
+	}
+
+	FRigVMTernaryOp(ERigVMOpCode InOpCode, FRigVMOperand InArgA, FRigVMOperand InArgB, FRigVMOperand InArgC)
+		: FRigVMBaseOp(InOpCode)
+		, ArgA(InArgA)
+		, ArgB(InArgB)
+		, ArgC(InArgC)
+	{
+		ensure(
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayAdd) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayGetAtIndex) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArraySetAtIndex) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayInsert) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayDifference) ||
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayIntersection)
+		);
+	}
+
+	FRigVMOperand ArgA;
+	FRigVMOperand ArgB;
+	FRigVMOperand ArgC;
+
+	void Serialize(FArchive& Ar);
+	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMTernaryOp& P)
+	{
+		P.Serialize(Ar);
+		return Ar;
+	}
+};
+
+// operator used for some array operations
+USTRUCT()
+struct RIGVM_API FRigVMQuaternaryOp : public FRigVMBaseOp
+{
+	GENERATED_USTRUCT_BODY()
+
+	FRigVMQuaternaryOp()
+		: FRigVMBaseOp(ERigVMOpCode::Invalid)
+		, ArgA()
+		, ArgB()
+		, ArgC()
+		, ArgD()
+	{
+	}
+
+	FRigVMQuaternaryOp(ERigVMOpCode InOpCode, FRigVMOperand InArgA, FRigVMOperand InArgB, FRigVMOperand InArgC, FRigVMOperand InArgD)
+		: FRigVMBaseOp(InOpCode)
+		, ArgA(InArgA)
+		, ArgB(InArgB)
+		, ArgC(InArgC)
+		, ArgD(InArgD)
+	{
+		ensure(
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayFind)
+		);
+	}
+
+	FRigVMOperand ArgA;
+	FRigVMOperand ArgB;
+	FRigVMOperand ArgC;
+	FRigVMOperand ArgD;
+
+	void Serialize(FArchive& Ar);
+	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMQuaternaryOp& P)
+	{
+		P.Serialize(Ar);
+		return Ar;
+	}
+};
+
+// operator used for some array operations
+USTRUCT()
+struct RIGVM_API FRigVMQuinaryOp : public FRigVMBaseOp
+{
+	GENERATED_USTRUCT_BODY()
+
+	FRigVMQuinaryOp()
+		: FRigVMBaseOp(ERigVMOpCode::Invalid)
+		, ArgA()
+		, ArgB()
+		, ArgC()
+		, ArgD()
+		, ArgE()
+	{
+	}
+
+	FRigVMQuinaryOp(ERigVMOpCode InOpCode, FRigVMOperand InArgA, FRigVMOperand InArgB, FRigVMOperand InArgC, FRigVMOperand InArgD, FRigVMOperand InArgE)
+		: FRigVMBaseOp(InOpCode)
+		, ArgA(InArgA)
+		, ArgB(InArgB)
+		, ArgC(InArgC)
+		, ArgD(InArgD)
+		, ArgE(InArgE)
+	{
+	}
+
+	FRigVMOperand ArgA;
+	FRigVMOperand ArgB;
+	FRigVMOperand ArgC;
+	FRigVMOperand ArgD;
+	FRigVMOperand ArgE;
+
+	void Serialize(FArchive& Ar);
+	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMQuinaryOp& P)
+	{
+		P.Serialize(Ar);
+		return Ar;
+	}
+};
+
+// operator used for some array operations
+USTRUCT()
+struct RIGVM_API FRigVMSenaryOp : public FRigVMBaseOp
+{
+	GENERATED_USTRUCT_BODY()
+
+	FRigVMSenaryOp()
+		: FRigVMBaseOp(ERigVMOpCode::Invalid)
+		, ArgA()
+		, ArgB()
+		, ArgC()
+		, ArgD()
+		, ArgE()
+		, ArgF()
+	{
+	}
+
+	FRigVMSenaryOp(ERigVMOpCode InOpCode, FRigVMOperand InArgA, FRigVMOperand InArgB, FRigVMOperand InArgC, FRigVMOperand InArgD, FRigVMOperand InArgE, FRigVMOperand InArgF)
+		: FRigVMBaseOp(InOpCode)
+		, ArgA(InArgA)
+		, ArgB(InArgB)
+		, ArgC(InArgC)
+		, ArgD(InArgD)
+		, ArgE(InArgE)
+		, ArgF(InArgF)
+	{
+		ensure(
+			uint8(InOpCode) == uint8(ERigVMOpCode::ArrayIterator)
+		);
+	}
+
+	FRigVMOperand ArgA;
+	FRigVMOperand ArgB;
+	FRigVMOperand ArgC;
+	FRigVMOperand ArgD;
+	FRigVMOperand ArgE;
+	FRigVMOperand ArgF;
+
+	void Serialize(FArchive& Ar);
+	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMSenaryOp& P)
+	{
+		P.Serialize(Ar);
+		return Ar;
+	}
+};
+
+// The kind of copy operation to perform
+UENUM()
+enum class ERigVMCopyType : uint8
+{
+	Default,
+	FloatToDouble,
+	DoubleToFloat
 };
 
 // copy the content of one register to another
@@ -223,27 +429,66 @@ struct RIGVM_API FRigVMCopyOp : public FRigVMBaseOp
 {
 	GENERATED_USTRUCT_BODY()
 
+#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+public:
+#endif
+
 	FRigVMCopyOp()
 	: FRigVMBaseOp(ERigVMOpCode::Copy)
 	, Source()
 	, Target()
+	, NumBytes(0)
+	, RegisterType(ERigVMRegisterType::Invalid)
+	, CopyType(ERigVMCopyType::Default)
 	{
 	}
 
 	FRigVMCopyOp(
 		FRigVMOperand InSource,
 		FRigVMOperand InTarget
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+		, uint16 InNumBytes,
+		ERigVMRegisterType InRegisterType,
+		ERigVMCopyType InCopyType
+#endif
 	)
 		: FRigVMBaseOp(ERigVMOpCode::Copy)
 		, Source(InSource)
 		, Target(InTarget)
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+		, NumBytes(InNumBytes)
+		, RegisterType(InRegisterType)
+		, CopyType(InCopyType)
+#else
+		, NumBytes(0)
+		, RegisterType(ERigVMRegisterType::Invalid)
+		, CopyType(ERigVMCopyType::Default)
+#endif
 	{
+	}
+
+	bool IsValid() const
+	{
+		return
+			Source.IsValid() &&
+			Target.IsValid() &&
+			(Source != Target) &&
+			(Target.GetMemoryType() != ERigVMMemoryType::Literal);
 	}
 
 	FRigVMOperand Source;
 	FRigVMOperand Target;
+#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+private:
+#endif
+	uint16 NumBytes;
+	ERigVMRegisterType RegisterType;
+	ERigVMCopyType CopyType;
 
-	bool Serialize(FArchive& Ar);
+#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+public:
+#endif
+	void Serialize(FArchive& Ar);
 	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMCopyOp& P)
 	{
 		P.Serialize(Ar);
@@ -286,7 +531,7 @@ struct RIGVM_API FRigVMComparisonOp : public FRigVMBaseOp
 	FRigVMOperand B;
 	FRigVMOperand Result;
 
-	bool Serialize(FArchive& Ar);
+	void Serialize(FArchive& Ar);
 	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMComparisonOp& P)
 	{
 		P.Serialize(Ar);
@@ -318,7 +563,7 @@ struct RIGVM_API FRigVMJumpOp : public FRigVMBaseOp
 
 	int32 InstructionIndex;
 
-	bool Serialize(FArchive& Ar);
+	void Serialize(FArchive& Ar);
 	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMJumpOp& P)
 	{
 		P.Serialize(Ar);
@@ -353,7 +598,7 @@ struct RIGVM_API FRigVMJumpIfOp : public FRigVMUnaryOp
 	int32 InstructionIndex;
 	bool Condition;
 
-	bool Serialize(FArchive& Ar);
+	void Serialize(FArchive& Ar);
 	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMJumpIfOp& P)
 	{
 		P.Serialize(Ar);
@@ -366,6 +611,8 @@ USTRUCT()
 struct RIGVM_API FRigVMChangeTypeOp : public FRigVMUnaryOp
 {
 	GENERATED_USTRUCT_BODY()
+
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 
 	FRigVMChangeTypeOp()
 		: FRigVMUnaryOp()
@@ -390,7 +637,9 @@ struct RIGVM_API FRigVMChangeTypeOp : public FRigVMUnaryOp
 	uint16 ElementCount;
 	uint16 SliceCount;
 
-	bool Serialize(FArchive& Ar);
+#endif
+
+	void Serialize(FArchive& Ar);
 	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMChangeTypeOp& P)
 	{
 		P.Serialize(Ar);
@@ -453,6 +702,9 @@ public:
 	// const accessor for an instruction given its index
 	FORCEINLINE const FRigVMInstruction& operator[](int32 InIndex) const { return Instructions[InIndex]; }
 
+	FORCEINLINE_DEBUGGABLE TArray<FRigVMInstruction>::RangedForConstIteratorType begin() const { return Instructions.begin(); }
+	FORCEINLINE_DEBUGGABLE TArray<FRigVMInstruction>::RangedForConstIteratorType end() const { return Instructions.end(); }
+
 private:
 
 	// hide utility constructor
@@ -496,7 +748,9 @@ public:
 
 	FRigVMByteCode();
 
-	bool Serialize(FArchive& Ar);
+	void Serialize(FArchive& Ar);
+	void Save(FArchive& Ar) const;
+	void Load(FArchive& Ar);
 	FORCEINLINE friend FArchive& operator<<(FArchive& Ar, FRigVMByteCode& P)
 	{
 		P.Serialize(Ar);
@@ -537,7 +791,14 @@ public:
 	uint64 AddTrueOp(const FRigVMOperand& InArg);
 
 	// adds a copy operator to copy the content of a source argument to a target argument
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+	uint64 AddCopyOp(const FRigVMOperand& InSource, const FRigVMOperand& InTarget, uint16 InNumBytes, ERigVMRegisterType InTargetType, ERigVMCopyType InCopyType);
+#else
 	uint64 AddCopyOp(const FRigVMOperand& InSource, const FRigVMOperand& InTarget);
+#endif
+
+	// adds a copy operator to copy the content of a source argument to a target argument
+	uint64 AddCopyOp(const FRigVMCopyOp& InCopyOp);
 
 	// adds an increment operator to increment a int32 argument
 	uint64 AddIncrementOp(const FRigVMOperand& InArg);
@@ -557,8 +818,12 @@ public:
 	// adds an absolute, forward or backward jump operator based on a condition argument
 	uint64 AddJumpIfOp(ERigVMOpCode InOpCode, uint16 InInstructionIndex, const FRigVMOperand& InConditionArg, bool bJumpWhenConditionIs = false);
 
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+
 	// adds a change-type operator to reuse a register for a smaller or same size type
 	uint64 AddChangeTypeOp(FRigVMOperand InArg, ERigVMRegisterType InType, uint16 InElementSize, uint16 InElementCount, uint16 InSliceCount = 1);
+
+#endif
 
 	// adds an exit operator to exit the execution loop
 	uint64 AddExitOp();
@@ -568,6 +833,54 @@ public:
 
 	// adds an operator to end the last memory slice
 	uint64 AddEndBlockOp();
+
+	// adds an array reset operator
+	uint64 AddArrayResetOp(FRigVMOperand InArrayArg);
+
+	// adds an array get num operator
+	uint64 AddArrayGetNumOp(FRigVMOperand InArrayArg, FRigVMOperand InNumArg);
+
+	// adds an array set num operator
+	uint64 AddArraySetNumOp(FRigVMOperand InArrayArg, FRigVMOperand InNumArg);
+
+	// adds an array get at index operator
+	uint64 AddArrayGetAtIndexOp(FRigVMOperand InArrayArg, FRigVMOperand InIndexArg, FRigVMOperand InElementArg);
+
+	// adds an array set at index operator
+	uint64 AddArraySetAtIndexOp(FRigVMOperand InArrayArg, FRigVMOperand InIndexArg, FRigVMOperand InElementArg);
+
+	// adds an array add operator
+	uint64 AddArrayAddOp(FRigVMOperand InArrayArg, FRigVMOperand InElementArg, FRigVMOperand InIndexArg);
+
+	// adds an array insert operator
+	uint64 AddArrayInsertOp(FRigVMOperand InArrayArg, FRigVMOperand InIndexArg, FRigVMOperand InElementArg);
+
+	// adds an array remove operator
+	uint64 AddArrayRemoveOp(FRigVMOperand InArrayArg, FRigVMOperand InIndexArg);
+
+	// adds an array find operator
+	uint64 AddArrayFindOp(FRigVMOperand InArrayArg, FRigVMOperand InElementArg, FRigVMOperand InIndexArg, FRigVMOperand InSuccessArg);
+
+	// adds an array append operator
+	uint64 AddArrayAppendOp(FRigVMOperand InArrayArg, FRigVMOperand InOtherArrayArg);
+
+	// adds an array clone operator
+	uint64 AddArrayCloneOp(FRigVMOperand InArrayArg, FRigVMOperand InClonedArrayArg);
+
+	// adds an array iterator operator
+	uint64 AddArrayIteratorOp(FRigVMOperand InArrayArg, FRigVMOperand InElementArg, FRigVMOperand InIndexArg, FRigVMOperand InCountArg, FRigVMOperand InRatioArg, FRigVMOperand InContinueArg);
+
+	// adds an array union operator
+	uint64 AddArrayUnionOp(FRigVMOperand InArrayArg, FRigVMOperand InOtherArrayArg);
+	
+	// adds an array difference operator
+	uint64 AddArrayDifferenceOp(FRigVMOperand InArrayArg, FRigVMOperand InOtherArrayArg, FRigVMOperand InResultArrayArg);
+	
+	// adds an array intersection operator
+	uint64 AddArrayIntersectionOp(FRigVMOperand InArrayArg, FRigVMOperand InOtherArrayArg, FRigVMOperand InResultArrayArg);
+	
+	// adds an array reverse operator
+	uint64 AddArrayReverseOp(FRigVMOperand InArrayArg);
 
 	// returns an instruction array for iterating over all operators
 	FORCEINLINE FRigVMInstructionArray GetInstructions() const
@@ -633,12 +946,25 @@ public:
 		return GetOperandsAt(ByteCodeIndex, ExecuteOp.GetOperandCount());
 	}
 
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+
 	// returns the raw data of the byte code
 	FORCEINLINE const FRigVMFixedArray<uint8> GetByteCode() const
 	{
 		const uint8* Data = ByteCode.GetData();
 		return FRigVMFixedArray<uint8>((uint8*)Data, ByteCode.Num());
 	}
+
+#else
+
+	// returns the raw data of the byte code
+	FORCEINLINE const TArrayView<const uint8> GetByteCode() const
+	{
+		const uint8* Data = ByteCode.GetData();
+		return TArrayView<const uint8>((uint8*)Data, ByteCode.Num());
+	}
+
+#endif
 
 	// returns the statistics information
 	FRigVMByteCodeStatistics GetStatistics() const
@@ -659,6 +985,72 @@ public:
 	uint64 GetOperandAlignment() const;
 
 	FString DumpToText() const;
+
+#if WITH_EDITOR
+
+	// returns the subject which was used to inject a given instruction
+	UObject* GetSubjectForInstruction(int32 InInstructionIndex) const;
+
+	// returns the first hit instruction index for a given subject (or INDEX_NONE)
+	int32 GetFirstInstructionIndexForSubject(UObject* InSubject) const;
+
+	// returns all found instruction indices for a given subject
+	const TArray<int32>& GetAllInstructionIndicesForSubject(UObject* InSubject) const;
+
+	// returns the callpath which was used to inject a given instruction
+	FString GetCallPathForInstruction(int32 InInstructionIndex) const;
+
+	// returns the first hit instruction index for a given callpath (or INDEX_NONE)
+	int32 GetFirstInstructionIndexForCallPath(const FString& InCallPath, bool bStartsWith = false, bool bEndsWith = false) const;
+
+	// returns all found instruction indices for a given callpath
+	TArray<int32> GetAllInstructionIndicesForCallPath(const FString& InCallPath, bool bStartsWith = false, bool bEndsWith = false) const;
+
+	// returns the first hit instruction index for a given callpath (or INDEX_NONE)
+	int32 GetFirstInstructionIndexForCallstack(const TArray<UObject*>& InCallstack) const;
+
+	// returns all found instruction indices for a given callpath
+	const TArray<int32>& GetAllInstructionIndicesForCallstack(const TArray<UObject*>& InCallstack) const;
+
+	// returns the callstack which was used to inject a given instruction
+	const TArray<UObject*>* GetCallstackForInstruction(int32 InInstructionIndex) const;
+
+	// returns the callstack hash which was used to inject a given instruction
+	uint32 GetCallstackHashForInstruction(int32 InInstructionIndex) const;
+
+	// computes a hash for a given callstack
+	static uint32 GetCallstackHash(const TArray<UObject*>& InCallstack);
+	static uint32 GetCallstackHash(const TArrayView<UObject* const>& InCallstack);
+
+	// returns the input operands of a given instruction
+	FORCEINLINE_DEBUGGABLE FRigVMOperandArray GetInputOperands(int32 InInstructionIndex)
+	{
+		if(InputOperandsPerInstruction.IsValidIndex(InInstructionIndex))
+		{
+			if(InputOperandsPerInstruction[InInstructionIndex].Num() > 0)
+			{
+				return FRigVMOperandArray((FRigVMOperand*)(InputOperandsPerInstruction[InInstructionIndex].GetData()), InputOperandsPerInstruction[InInstructionIndex].Num());
+			}
+		}
+		return FRigVMOperandArray();
+	}
+
+	// returns the output operands of a given instruction
+	FORCEINLINE_DEBUGGABLE FRigVMOperandArray GetOutputOperands(int32 InInstructionIndex)
+	{
+		if(OutputOperandsPerInstruction.IsValidIndex(InInstructionIndex))
+		{
+			if(OutputOperandsPerInstruction[InInstructionIndex].Num() > 0)
+			{
+				return FRigVMOperandArray((FRigVMOperand*)(OutputOperandsPerInstruction[InInstructionIndex].GetData()), OutputOperandsPerInstruction[InInstructionIndex].Num());
+			}
+		}
+		return FRigVMOperandArray();
+	}
+
+	void SetOperandsForInstruction(int32 InInstructionIndex, const FRigVMOperandArray& InputOperands, const FRigVMOperandArray& OutputOperands);
+
+#endif
 
 private:
 
@@ -681,6 +1073,26 @@ private:
 	// number of instructions stored here
 	UPROPERTY()
 	int32 NumInstructions;
+	
+#if WITH_EDITORONLY_DATA
+
+	TArray<UObject*> SubjectPerInstruction;
+	TMap<UObject*, TArray<int32>> SubjectToInstructions;
+	TArray<FString> CallPathPerInstruction;
+	TMap<FString, TArray<int32>> CallPathToInstructions;
+	TArray<TArray<UObject*>> CallstackPerInstruction;
+	TMap<uint32, TArray<int32>> CallstackHashToInstructions;
+	TArray<uint32> CallstackHashPerInstruction;
+	TArray<TArray<FRigVMOperand>> InputOperandsPerInstruction;
+	TArray<TArray<FRigVMOperand>> OutputOperandsPerInstruction;
+
+#endif
+
+#if WITH_EDITOR
+
+	void SetSubject(int32 InInstructionIndex, const FString& InCallPath, const TArray<UObject*>& InCallstack);
+
+#endif
 
 	// a look up table from entry name to instruction index
 	UPROPERTY()
@@ -688,6 +1100,8 @@ private:
 
 	// if this is set to true the stored bytecode is aligned / padded
 	bool bByteCodeIsAligned;
+
+	static TArray<int32> EmptyInstructionIndices;
 
 	friend class URigVMCompiler;
 	friend class FRigVMByteCodeTest;

@@ -10,6 +10,7 @@
 #include "UObject/LazyObjectPtr.h"
 #include "UObject/SoftObjectPtr.h"
 #include "Internationalization/TextPackageNamespaceUtil.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectThreadContext.h"
 #include "UObject/UnrealType.h"
 #include "HAL/PlatformStackWalk.h"
@@ -22,26 +23,39 @@
 TMap<FString, TArray<uint8> > FLinkerSave::PackagesToScriptSHAMap;
 
 FLinkerSave::FLinkerSave(UPackage* InParent, const TCHAR* InFilename, bool bForceByteSwapping, bool bInSaveUnversioned)
-:	FLinker(ELinkerType::Save, InParent, InFilename)
+:	FLinker(ELinkerType::Save, InParent)
 ,	Saver(nullptr)
 {
+	SetFilename(InFilename);
+
 	if (FPlatformProperties::HasEditorOnlyData())
 	{
 		// Create file saver.
 		Saver = IFileManager::Get().CreateFileWriter( InFilename, 0 );
 		if( !Saver )
 		{
-			UE_LOG(LogLinker, Fatal, TEXT("%s"), *FString::Printf( TEXT("Error opening file '%s'."), InFilename ) );
+			TCHAR LastErrorText[1024];
+			uint32 LastError = FPlatformMisc::GetLastError();
+			if (LastError != 0)
+			{
+				FPlatformMisc::GetSystemErrorMessage(LastErrorText, UE_ARRAY_COUNT(LastErrorText), LastError);
+			}
+			else
+			{
+				FCString::Strcpy(LastErrorText, TEXT("Unknown failure reason."));
+			}
+			UE_LOG(LogLinker, Error, TEXT("Error opening file '%s': %s"), InFilename, LastErrorText);
+			return; // Caller must test this->Saver to detect the failure
 		}
 
 		UPackage* Package = dynamic_cast<UPackage*>(LinkerRoot);
 
 		// Set main summary info.
-		Summary.Tag           = PACKAGE_FILE_TAG;
-		Summary.SetFileVersions( GPackageFileUE4Version, GPackageFileLicenseeUE4Version, bInSaveUnversioned );
+		Summary.Tag = PACKAGE_FILE_TAG;
+		Summary.SetToLatestFileVersions(bInSaveUnversioned);
 		Summary.SavedByEngineVersion = FEngineVersion::Current();
 		Summary.CompatibleWithEngineVersion = FEngineVersion::CompatibleWith();
-		Summary.PackageFlags = Package ? (Package->GetPackageFlags() & ~PKG_NewlyCreated) : 0;
+		Summary.SetPackageFlags(Package ? Package->GetPackageFlags() : 0);
 
 #if USE_STABLE_LOCALIZATION_KEYS
 		if (GIsEditor)
@@ -74,9 +88,10 @@ FLinkerSave::FLinkerSave(UPackage* InParent, const TCHAR* InFilename, bool bForc
 
 
 FLinkerSave::FLinkerSave(UPackage* InParent, FArchive *InSaver, bool bForceByteSwapping, bool bInSaveUnversioned)
-: FLinker(ELinkerType::Save, InParent, TEXT("$$Memory$$"))
+: FLinker(ELinkerType::Save, InParent)
 , Saver(nullptr)
 {
+	SetFilename(TEXT("$$Memory$$"));
 	if (FPlatformProperties::HasEditorOnlyData())
 	{
 		// Create file saver.
@@ -91,10 +106,10 @@ FLinkerSave::FLinkerSave(UPackage* InParent, FArchive *InSaver, bool bForceByteS
 
 		// Set main summary info.
 		Summary.Tag = PACKAGE_FILE_TAG;
-		Summary.SetFileVersions(GPackageFileUE4Version, GPackageFileLicenseeUE4Version, bInSaveUnversioned);
+		Summary.SetToLatestFileVersions(bInSaveUnversioned);
 		Summary.SavedByEngineVersion = FEngineVersion::Current();
 		Summary.CompatibleWithEngineVersion = FEngineVersion::CompatibleWith();
-		Summary.PackageFlags = Package ? (Package->GetPackageFlags() & ~PKG_NewlyCreated) : 0;
+		Summary.SetPackageFlags(Package ? Package->GetPackageFlags() : 0);
 
 #if USE_STABLE_LOCALIZATION_KEYS
 		if (GIsEditor)
@@ -126,23 +141,24 @@ FLinkerSave::FLinkerSave(UPackage* InParent, FArchive *InSaver, bool bForceByteS
 }
 
 FLinkerSave::FLinkerSave(UPackage* InParent, bool bForceByteSwapping, bool bInSaveUnversioned )
-:	FLinker(ELinkerType::Save, InParent, TEXT("$$Memory$$"))
+:	FLinker(ELinkerType::Save, InParent)
 ,	Saver(nullptr)
 {
+	SetFilename(TEXT("$$Memory$$"));
 	if (FPlatformProperties::HasEditorOnlyData())
 	{
 		// Create file saver.
-		Saver = new FLargeMemoryWriter( 0, false, *InParent->FileName.ToString() );
+		Saver = new FLargeMemoryWriter( 0, false, *InParent->GetLoadedPath().GetDebugName() );
 		check(Saver);
 
 		UPackage* Package = dynamic_cast<UPackage*>(LinkerRoot);
 
 		// Set main summary info.
-		Summary.Tag           = PACKAGE_FILE_TAG;
-		Summary.SetFileVersions( GPackageFileUE4Version, GPackageFileLicenseeUE4Version, bInSaveUnversioned );
+		Summary.Tag = PACKAGE_FILE_TAG;
+		Summary.SetToLatestFileVersions(bInSaveUnversioned);
 		Summary.SavedByEngineVersion = FEngineVersion::Current();
 		Summary.CompatibleWithEngineVersion = FEngineVersion::CompatibleWith();
-		Summary.PackageFlags = Package ? (Package->GetPackageFlags() & ~PKG_NewlyCreated) : 0;
+		Summary.SetPackageFlags(Package ? Package->GetPackageFlags() : 0);
 
 #if USE_STABLE_LOCALIZATION_KEYS
 		if (GIsEditor)
@@ -211,8 +227,7 @@ FPackageIndex FLinkerSave::MapObject( const UObject* Object ) const
 		const FPackageIndex *Found = ObjectIndicesMap.Find(Object);
 		if (Found)
 		{
-			if (IsEventDrivenLoaderEnabledInCookedBuilds() &&
-				IsCooking() && CurrentlySavingExport.IsExport() &&
+			if (IsCooking() && CurrentlySavingExport.IsExport() &&
 				Object->GetOutermost()->GetFName() != GLongCoreUObjectPackageName && // We assume nothing in coreuobject ever loads assets in a constructor
 				*Found != CurrentlySavingExport) // would be weird, but I can't be a dependency on myself
 			{
@@ -269,7 +284,37 @@ void FLinkerSave::Serialize( void* V, int64 Length )
 #endif
 	Saver->Serialize( V, Length );
 }
+
+void FLinkerSave::OnPostSave(const FPackagePath& PackagePath, FObjectPostSaveContext ObjectSaveContext)
+{
+	for (TUniqueFunction<void(const FPackagePath&, FObjectPostSaveContext)>& Callback : PostSaveCallbacks)
+	{
+		Callback(PackagePath, ObjectSaveContext);
+	}
+
+	PostSaveCallbacks.Empty();
+}
 	
+FString FLinkerSave::GetDebugName() const
+{
+	return GetFilename();
+}
+
+const FString& FLinkerSave::GetFilename() const
+{
+	// When the deprecated Filename is removed from FLinker, add a separate Filename variable to FLinkerSave
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return Filename;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+void FLinkerSave::SetFilename(FStringView InFilename)
+{
+	// When the deprecated Filename is removed from FLinker, add a separate Filename variable to FLinkerSave
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	Filename = FString(InFilename);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
 
 FString FLinkerSave::GetArchiveName() const
 {
@@ -281,11 +326,41 @@ FArchive& FLinkerSave::operator<<( FName& InName )
 	int32 Save = MapName(InName.GetDisplayIndex());
 
 	check(GetSerializeContext());
-	ensureMsgf(Save != INDEX_NONE, TEXT("Name \"%s\" is not mapped when saving %s (object: %s, property: %s)"), 
-		*InName.ToString(),
-		*GetArchiveName(),
-		*GetSerializeContext()->SerializedObject->GetFullName(),
-		*GetFullNameSafe(GetSerializedProperty()));
+
+	bool bNameMapped = Save != INDEX_NONE;
+	if (!bNameMapped)
+	{
+		// Set an error on the archive and record the error on the log output if one is set.
+		SetCriticalError();
+		FString ErrorMessage = FString::Printf(TEXT("Name \"%s\" is not mapped when saving %s (object: %s, property: %s)."),
+			*InName.ToString(),
+			*GetArchiveName(),
+			*GetSerializeContext()->SerializedObject->GetFullName(),
+			*GetFullNameSafe(GetSerializedProperty()));
+		ensureMsgf(false, TEXT("%s"), *ErrorMessage);
+		if (LogOutput)
+		{
+			LogOutput->Logf(ELogVerbosity::Error, TEXT("%s"), *ErrorMessage);
+		}
+	}
+
+	if (!CurrentlySavingExport.IsNull())
+	{
+		if (Save >= Summary.NamesReferencedFromExportDataCount)
+		{
+			SetCriticalError();
+			FString ErrorMessage = FString::Printf(TEXT("Name \"%s\" is referenced from an export but not mapped in the export data names region when saving %s (object: %s, property: %s)."),
+				*InName.ToString(),
+				*GetArchiveName(),
+				*GetSerializeContext()->SerializedObject->GetFullName(),
+				*GetFullNameSafe(GetSerializedProperty()));
+			ensureMsgf(false, TEXT("%s"), *ErrorMessage);
+			if (LogOutput)
+			{
+				LogOutput->Logf(ELogVerbosity::Error, TEXT("%s"), *ErrorMessage);
+			}
+		}
+	}
 
 	int32 Number = InName.GetNumber();
 	FArchive& Ar = *this;
@@ -357,5 +432,30 @@ void FLinkerSave::UsingCustomVersion(const struct FGuid& Guid)
 		}
 
 		UE_LOG(LogLinker, Warning, TEXT("%s"), *CustomVersionWarning);
+	}
+}
+
+void FLinkerSave::SetUseUnversionedPropertySerialization(bool bInUseUnversioned)
+{
+	FArchiveUObject::SetUseUnversionedPropertySerialization(bInUseUnversioned);
+	if (Saver)
+	{
+		Saver->SetUseUnversionedPropertySerialization(bInUseUnversioned);
+	}
+	if (bInUseUnversioned)
+	{
+		Summary.SetPackageFlags(Summary.GetPackageFlags() | PKG_UnversionedProperties);
+		if (LinkerRoot)
+		{
+			LinkerRoot->SetPackageFlags(PKG_UnversionedProperties);
+		}
+	}
+	else
+	{
+		Summary.SetPackageFlags(Summary.GetPackageFlags() & ~PKG_UnversionedProperties);
+		if (LinkerRoot)
+		{
+			LinkerRoot->ClearPackageFlags(PKG_UnversionedProperties);
+		}
 	}
 }

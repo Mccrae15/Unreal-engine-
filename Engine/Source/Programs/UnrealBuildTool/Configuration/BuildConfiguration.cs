@@ -5,7 +5,7 @@ using System.IO;
 using System.Collections.Generic;
 using System.Xml;
 using System.Reflection;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -33,13 +33,8 @@ namespace UnrealBuildTool
 		/// Whether debug info should be written to the console.
 		/// </summary>
 		[XmlConfigFile]
+		[CommandLine("-PrintDebugInfo", Value = "true")]
 		public bool bPrintDebugInfo = false;
-
-		/// <summary>
-		/// Whether to log detailed action stats. This forces local execution.
-		/// </summary>
-		[XmlConfigFile]
-		public bool bLogDetailedActionStats = false;
 
 		/// <summary>
 		/// Whether the hybrid executor will be used (a remote executor and local executor).
@@ -65,7 +60,14 @@ namespace UnrealBuildTool
 		/// Whether SN-DBS may be used.
 		/// </summary>
 		[XmlConfigFile]
+		[CommandLine("-NoSNDBS", Value = "false")]
 		public bool bAllowSNDBS = true;
+
+		/// <summary>
+		/// Whether the experimental async TaskExecutor may be used.
+		/// </summary>
+		[XmlConfigFile]
+		public bool bAllowTaskExecutor = false;
 
 		/// <summary>
 		/// Enables support for very fast iterative builds by caching target data. Turning this on causes Unreal Build Tool to emit
@@ -93,21 +95,8 @@ namespace UnrealBuildTool
 		public bool bUseUBTMakefiles = true;
 
 		/// <summary>
-		/// Whether DMUCS/Distcc may be used.
-		/// Distcc requires some setup -- so by default, disable it so that we do not break local or remote building.
-		/// </summary>
-		[XmlConfigFile]
-		public bool bAllowDistcc = false;
-
-		/// <summary>
-		/// Whether to allow using parallel executor on Windows.
-		/// </summary>
-		[XmlConfigFile]
-		public bool bAllowParallelExecutor = true;
-
-		/// <summary>
 		/// Number of actions that can be executed in parallel. If 0 then code will pick a default based
-		/// on the number of cores available. Only applies to the ParallelExecutor
+		/// on the number of cores and memory available. Applies to the ParallelExecutor, HybridExecutor, and LocalExecutor
 		/// </summary>
 		[XmlConfigFile]
 		[CommandLine("-MaxParallelActions")]
@@ -152,6 +141,12 @@ namespace UnrealBuildTool
 		/// </summary>
 		[CommandLine("-SkipRulesCompile")]
 		public bool bSkipRulesCompile = false;
+
+		/// <summary>
+		/// Whether to force compiling rules assemblies, regardless of whether they are valid
+		/// </summary>
+		[CommandLine("-ForceRulesCompile")]
+		public bool bForceRulesCompile = false;
 
 		/// <summary>
 		/// Maximum recommended root path length.

@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2020 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2022 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -54,12 +54,6 @@ static void Emscripten_SetWindowTitle(_THIS, SDL_Window * window);
 
 /* Emscripten driver bootstrap functions */
 
-static int
-Emscripten_Available(void)
-{
-    return (1);
-}
-
 static void
 Emscripten_DeleteDevice(SDL_VideoDevice * device)
 {
@@ -104,7 +98,7 @@ Emscripten_CreateDevice(int devindex)
     device->MaximizeWindow = Emscripten_MaximizeWindow;
     device->MinimizeWindow = Emscripten_MinimizeWindow;
     device->RestoreWindow = Emscripten_RestoreWindow;
-    device->SetWindowGrab = Emscripten_SetWindowGrab;*/
+    device->SetWindowMouseGrab = Emscripten_SetWindowMouseGrab;*/
     device->DestroyWindow = Emscripten_DestroyWindow;
     device->SetWindowFullscreen = Emscripten_SetWindowFullscreen;
 
@@ -132,7 +126,7 @@ Emscripten_CreateDevice(int devindex)
 
 VideoBootStrap Emscripten_bootstrap = {
     EMSCRIPTENVID_DRIVER_NAME, "SDL emscripten video driver",
-    Emscripten_Available, Emscripten_CreateDevice
+    Emscripten_CreateDevice
 };
 
 
@@ -143,14 +137,7 @@ Emscripten_VideoInit(_THIS)
 
     /* Use a fake 32-bpp desktop mode */
     mode.format = SDL_PIXELFORMAT_RGB888;
-
-    mode.w = EM_ASM_INT_V({
-        return screen.width;
-    });
-
-    mode.h = EM_ASM_INT_V({
-        return screen.height;
-    });
+    emscripten_get_screen_size(&mode.w, &mode.h);
 
     mode.refresh_rate = 0;
     mode.driverdata = NULL;
@@ -365,12 +352,7 @@ Emscripten_SetWindowFullscreen(_THIS, SDL_Window * window, SDL_VideoDisplay * di
 
 static void
 Emscripten_SetWindowTitle(_THIS, SDL_Window * window) {
-    EM_ASM_INT({
-      if (typeof Module['setWindowTitle'] !== 'undefined') {
-        Module['setWindowTitle'](UTF8ToString($0));
-      }
-      return 0;
-    }, window->title);
+    emscripten_set_window_title(window->title);
 }
 
 #endif /* SDL_VIDEO_DRIVER_EMSCRIPTEN */

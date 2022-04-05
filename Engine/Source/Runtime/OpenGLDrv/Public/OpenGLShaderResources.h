@@ -101,15 +101,14 @@ struct FOpenGLShaderBindings
 	TArray<FOpenGLShaderVarying>					InputVaryings;
 	TArray<FOpenGLShaderVarying>					OutputVaryings;
 	FOpenGLShaderResourceTable						ShaderResourceTable;
+	CrossCompiler::FShaderBindingInOutMask			InOutMask;
 
-	uint16	InOutMask;
 	uint8	NumSamplers;
 	uint8	NumUniformBuffers;
 	uint8	NumUAVs;
 	bool	bFlattenUB;
 
 	FOpenGLShaderBindings() :
-		InOutMask(0),
 		NumSamplers(0),
 		NumUniformBuffers(0),
 		NumUAVs(0),
@@ -163,9 +162,9 @@ struct FOpenGLShaderBindings
 	friend uint32 GetTypeHash(const FOpenGLShaderBindings &Binding)
 	{
 		uint32 Hash = 0;
-		Hash = Binding.InOutMask;
-		Hash |= Binding.NumSamplers << 16;
-		Hash |= Binding.NumUniformBuffers << 24;
+		Hash = Binding.InOutMask.Bitmask;
+		Hash ^= Binding.NumSamplers << 16;
+		Hash ^= Binding.NumUniformBuffers << 24;
 		Hash ^= Binding.NumUAVs;
 		Hash ^= Binding.bFlattenUB << 8;
 		Hash ^= FCrc::MemCrc_DEPRECATED( Binding.PackedGlobalArrays.GetData(), Binding.PackedGlobalArrays.GetTypeSize()*Binding.PackedGlobalArrays.Num());
@@ -299,8 +298,6 @@ public:
 typedef TOpenGLShader<FRefCountedObject, GL_VERTEX_SHADER, SF_Vertex> FOpenGLVertexShader;
 typedef TOpenGLShader<FRefCountedObject, GL_FRAGMENT_SHADER, SF_Pixel> FOpenGLPixelShader;
 typedef TOpenGLShader<FRefCountedObject, GL_GEOMETRY_SHADER, SF_Geometry> FOpenGLGeometryShader;
-typedef TOpenGLShader<FRefCountedObject, GL_TESS_CONTROL_SHADER, SF_Hull> FOpenGLHullShader;
-typedef TOpenGLShader<FRefCountedObject, GL_TESS_EVALUATION_SHADER, SF_Domain> FOpenGLDomainShader;
 
 
 class FOpenGLComputeShader : public TOpenGLShader<FRefCountedObject, GL_COMPUTE_SHADER, SF_Compute>

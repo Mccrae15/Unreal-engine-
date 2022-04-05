@@ -50,7 +50,7 @@ namespace
 				FIntPoint(NumTilesX, NumTilesY), PF_R8G8B8A8, FClearValueBinding::None, TexCreate_None, TexCreate_UAV | TexCreate_ShaderResource | TexCreate_GenerateMipCapable | TexCreate_RenderTargetable, false, NumMips);
 			GRenderTargetPool.FindFreeElement(RHICmdList, FinalRenderTargetDesc, FinalRenderTarget, TEXT("FinalTarget"));
 
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FMinMaxTileRenderResources_StagingTextures"));
 			for (int32 MipLevel = 0; MipLevel < NumMips; MipLevel++)
 			{
 				const int32 SizeX = FMath::Max(NumTilesX >> MipLevel, 1);
@@ -120,7 +120,7 @@ namespace VirtualHeightfieldMesh
 		}
 
 		ARuntimeVirtualTextureVolume* VirtualTextureVolume = InComponent->GetVirtualTextureVolume();
-		URuntimeVirtualTextureComponent* VirtualTextureComponent = VirtualTextureVolume != nullptr ? VirtualTextureVolume->VirtualTextureComponent : nullptr;
+		URuntimeVirtualTextureComponent* VirtualTextureComponent = VirtualTextureVolume != nullptr ? ToRawPtr(VirtualTextureVolume->VirtualTextureComponent) : nullptr;
 
 		if (VirtualTextureComponent == nullptr)
 		{
@@ -159,7 +159,7 @@ namespace VirtualHeightfieldMesh
 		FScopedSlowTask Task(TaskWorkRender + TaskWorkDownsample + TaskWorkBuildBulkData, FText::AsCultureInvariant(InComponent->GetMinMaxTexture()->GetName()));
 		Task.MakeDialog(true);
 
-		// Final pixels will contain image data for each virtual texture layer in order
+		// Final pixels will contain image data for MinMax texture
 		TArray64<uint8> FinalPixels;
 		FinalPixels.SetNumUninitialized(RenderTileResources.GetNumFinalTexels() * 4);
 
@@ -190,6 +190,9 @@ namespace VirtualHeightfieldMesh
 					MaxLevel, MipLevel = 0](FRHICommandListImmediate& RHICmdList)
 				{
 					// Rendering one page at a time, but could batch here?
+					FMemMark Mark(FMemStack::Get());
+					FRDGBuilder GraphBuilder(RHICmdList);
+
 					const FBox2D TileBox(FVector2D(0, 0), FVector2D(TileSize, TileSize));
 					const FIntRect TileRect(0, 0, TileSize, TileSize);
 
@@ -213,17 +216,15 @@ namespace VirtualHeightfieldMesh
 					Desc.PageDescs[0].UVRange = UVRange;
 					Desc.PageDescs[0].vLevel = MipLevel;
 
-					RenderPages(RHICmdList, Desc);
+					RenderPagesStandAlone(GraphBuilder, Desc);
 
 					// Downsample page to texel in output
-					FMemMark Mark(FMemStack::Get());
-					FRDGBuilder GraphBuilder(RHICmdList);
-
 					FRDGTextureRef SrcTexture = GraphBuilder.RegisterExternalTexture(RenderTileResources.GetTileRenderTarget());
 					FRDGTextureRef DstTexture = GraphBuilder.RegisterExternalTexture(RenderTileResources.GetFinalRenderTarget());
 					FRDGTextureUAVRef DstTextureUAV = GraphBuilder.CreateUAV(DstTexture);
-
+					
 					DownsampleMinMaxAndCopy(GraphBuilder, SrcTexture, FIntPoint(TileSize, TileSize), DstTextureUAV, FIntPoint(TileX, TileY));
+					
 					GraphBuilder.Execute();
 				});
 			}
@@ -240,12 +241,11 @@ namespace VirtualHeightfieldMesh
 				FRDGBuilder GraphBuilder(RHICmdList);
 
 				FRDGTextureRef Texture = GraphBuilder.RegisterExternalTexture(RenderTileResources.GetFinalRenderTarget());
+				GraphBuilder.SetTextureAccessFinal(Texture, ERHIAccess::CopySrc);
 
 				GenerateMinMaxTextureMips(GraphBuilder, Texture, FIntPoint(NumTilesX, NumTilesY), NumMips);
 
 				GraphBuilder.Execute();
-
-				RHICmdList.Transition(FRHITransitionInfo(RenderTileResources.GetFinalRenderTarget()->GetRenderTargetItem().ShaderResourceTexture, ERHIAccess::WritableMask, ERHIAccess::CopySrc));
 
 				for (int32 MipLevel = 0; MipLevel < NumMips; MipLevel++)
 				{

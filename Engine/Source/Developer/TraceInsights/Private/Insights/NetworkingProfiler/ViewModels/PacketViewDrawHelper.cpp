@@ -14,11 +14,13 @@
 
 #include <limits>
 
+#define INSIGHTS_USE_LEGACY_BORDER 0
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // FNetworkPacketAggregatedSample
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FNetworkPacketAggregatedSample::AddPacket(const int32 PacketIndex, const Trace::FNetProfilerPacket& Packet)
+void FNetworkPacketAggregatedSample::AddPacket(const int32 PacketIndex, const TraceServices::FNetProfilerPacket& Packet)
 {
 	NumPackets++;
 
@@ -40,21 +42,22 @@ void FNetworkPacketAggregatedSample::AddPacket(const int32 PacketIndex, const Tr
 		LargestPacket.TotalSizeInBytes = Packet.TotalPacketSizeInBytes;
 		LargestPacket.TimeStamp = TimeStamp;
 		LargestPacket.Status = Packet.DeliveryStatus;
+		LargestPacket.ConnectionState = Packet.ConnectionState;
 	}
 
 	switch (AggregatedStatus)
 	{
-	case Trace::ENetProfilerDeliveryStatus::Unknown:
+	case TraceServices::ENetProfilerDeliveryStatus::Unknown:
 		AggregatedStatus = Packet.DeliveryStatus;
 		break;
 
-	case Trace::ENetProfilerDeliveryStatus::Dropped:
+	case TraceServices::ENetProfilerDeliveryStatus::Dropped:
 		break;
 
-	case Trace::ENetProfilerDeliveryStatus::Delivered:
-		if (Packet.DeliveryStatus == Trace::ENetProfilerDeliveryStatus::Dropped)
+	case TraceServices::ENetProfilerDeliveryStatus::Delivered:
+		if (Packet.DeliveryStatus == TraceServices::ENetProfilerDeliveryStatus::Dropped)
 		{
-			AggregatedStatus = Trace::ENetProfilerDeliveryStatus::Dropped;
+			AggregatedStatus = TraceServices::ENetProfilerDeliveryStatus::Dropped;
 		}
 		break;
 	}
@@ -81,7 +84,7 @@ FNetworkPacketSeriesBuilder::FNetworkPacketSeriesBuilder(FNetworkPacketSeries& I
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FNetworkPacketAggregatedSample* FNetworkPacketSeriesBuilder::AddPacket(const int32 PacketIndex, const Trace::FNetProfilerPacket& Packet)
+FNetworkPacketAggregatedSample* FNetworkPacketSeriesBuilder::AddPacket(const int32 PacketIndex, const TraceServices::FNetProfilerPacket& Packet)
 {
 	NumAddedPackets++;
 
@@ -108,7 +111,7 @@ FPacketViewDrawHelper::FPacketViewDrawHelper(const FDrawContext& InDrawContext, 
 	//, EventBorderBrush(FInsightsStyle::Get().GetBrush("EventBorder"))
 	, HoveredEventBorderBrush(FInsightsStyle::Get().GetBrush("HoveredEventBorder"))
 	, SelectedEventBorderBrush(FInsightsStyle::Get().GetBrush("SelectedEventBorder"))
-	, SelectionFont(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+	, SelectionFont(FAppStyle::Get().GetFontStyle("SmallFont"))
 	, NumPackets(0)
 	, NumDrawSamples(0)
 {
@@ -133,18 +136,18 @@ void FPacketViewDrawHelper::DrawBackground() const
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-FLinearColor FPacketViewDrawHelper::GetColorByStatus(Trace::ENetProfilerDeliveryStatus Status)
+FLinearColor FPacketViewDrawHelper::GetColorByStatus(TraceServices::ENetProfilerDeliveryStatus Status)
 {
 	constexpr float Alpha = 1.0f;
 	switch (Status)
 	{
-	case Trace::ENetProfilerDeliveryStatus::Unknown:
+	case TraceServices::ENetProfilerDeliveryStatus::Unknown:
 		return FLinearColor(0.25f, 0.25f, 0.25f, Alpha);
 
-	case Trace::ENetProfilerDeliveryStatus::Delivered:
+	case TraceServices::ENetProfilerDeliveryStatus::Delivered:
 		return FLinearColor(0.5f, 1.0f, 0.5f, Alpha);
 
-	case Trace::ENetProfilerDeliveryStatus::Dropped:
+	case TraceServices::ENetProfilerDeliveryStatus::Dropped:
 		return FLinearColor(1.0f, 0.5f, 0.5f, Alpha);
 
 	default:
@@ -237,12 +240,23 @@ void FPacketViewDrawHelper::DrawSampleHighlight(const FNetworkPacketAggregatedSa
 	const float H = ValueY - BaselineY;
 	const float Y = ViewHeight - H;
 
+#if INSIGHTS_USE_LEGACY_BORDER
+	constexpr float BorderOffset = 1.0f;
+#else
+	constexpr float BorderOffset = 2.0f;
+#endif
+
 	if (Mode == EHighlightMode::Hovered)
 	{
 		const FLinearColor Color(1.0f, 1.0f, 0.0f, 1.0f); // yellow
 
 		// Draw border around the hovered box.
-		DrawContext.DrawBox(X - 1.0f, Y - 1.0f, SampleW + 2.0f, H + 2.0f, HoveredEventBorderBrush, Color);
+#if INSIGHTS_USE_LEGACY_BORDER
+		DrawContext.DrawBox(X - BorderOffset, Y - BorderOffset, SampleW + 2 * BorderOffset, H + 2 * BorderOffset, HoveredEventBorderBrush, Color);
+#else
+		FSlateRoundedBoxBrush Brush(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f), 2.0f, Color, 2.0f);
+		DrawContext.DrawBox(X - BorderOffset, Y - BorderOffset, SampleW + 2 * BorderOffset, H + 2 * BorderOffset, &Brush, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
+#endif
 	}
 	else // EHighlightMode::Selected or EHighlightMode::SelectedAndHovered
 	{
@@ -254,7 +268,12 @@ void FPacketViewDrawHelper::DrawSampleHighlight(const FNetworkPacketAggregatedSa
 		const FLinearColor Color(S, S, Blue, 1.0f);
 
 		// Draw border around the selected box.
-		DrawContext.DrawBox(X - 1.0f, Y - 1.0f, SampleW + 2.0f, H + 2.0f, SelectedEventBorderBrush, Color);
+#if INSIGHTS_USE_LEGACY_BORDER
+		DrawContext.DrawBox(X - BorderOffset, Y - BorderOffset, SampleW + 2 * BorderOffset, H + 2 * BorderOffset, SelectedEventBorderBrush, Color);
+#else
+		FSlateRoundedBoxBrush Brush(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f), 2.0f, Color, 2.0f);
+		DrawContext.DrawBox(X - BorderOffset, Y - BorderOffset, SampleW + 2 * BorderOffset, H + 2 * BorderOffset, &Brush, FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
+#endif
 	}
 	DrawContext.LayerId++;
 }
@@ -304,3 +323,5 @@ void FPacketViewDrawHelper::DrawSelection(int32 StartPacketIndex, int32 EndPacke
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#undef INSIGHTS_USE_LEGACY_BORDER

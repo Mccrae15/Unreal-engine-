@@ -12,8 +12,13 @@
 #include "BlueprintNodeSpawner.h"
 #include "EditorCategoryUtils.h"
 #include "BlueprintActionDatabaseRegistrar.h"
+#include "InputActionValue.h"
+#include "GameFramework/InputSettings.h"
+#include "Editor.h"								// for FEditorDelegates::OnEnableGestureRecognizerChanged
 
 #define LOCTEXT_NAMESPACE "UK2Node_InputDebugKey"
+
+static const FName ActionPinName = TEXT("ActionValue");
 
 UK2Node_InputDebugKey::UK2Node_InputDebugKey(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -46,7 +51,8 @@ void UK2Node_InputDebugKey::AllocateDefaultPins()
 	CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, TEXT("Pressed"));
 	CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Exec, TEXT("Released"));
 	CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Struct, FKey::StaticStruct(), TEXT("Key"));
-
+	CreatePin(EGPD_Output, UEdGraphSchema_K2::PC_Struct, FInputActionValue::StaticStruct(), ActionPinName);
+	
 	Super::AllocateDefaultPins();
 }
 
@@ -206,6 +212,11 @@ UEdGraphPin* UK2Node_InputDebugKey::GetReleasedPin() const
 	return FindPin(TEXT("Released"));
 }
 
+UEdGraphPin* UK2Node_InputDebugKey::GetActionValuePin() const
+{
+	return FindPin(ActionPinName);
+}
+
 void UK2Node_InputDebugKey::ValidateNodeDuringCompilation(class FCompilerResultsLog& MessageLog) const
 {
 	Super::ValidateNodeDuringCompilation(MessageLog);
@@ -226,7 +237,8 @@ void UK2Node_InputDebugKey::ExpandNode(FKismetCompilerContext& CompilerContext, 
 
 	UEdGraphPin* InputDebugKeyPressedPin = GetPressedPin();
 	UEdGraphPin* InputDebugKeyReleasedPin = GetReleasedPin();
-
+	UEdGraphPin* ActionValuePin = GetActionValuePin();
+	
 	struct EventPinData
 	{
 		EventPinData(UEdGraphPin* InPin,TEnumAsByte<EInputEvent> InEvent ){	Pin=InPin;EventType=InEvent;};
@@ -282,6 +294,13 @@ void UK2Node_InputDebugKey::ExpandNode(FKismetCompilerContext& CompilerContext, 
 		KeyVar->VariableType.PinSubCategoryObject = KeyStruct;
 		KeyVar->AllocateDefaultPins();
 
+		// Create a temporary variable to copy Action Value in to
+		static UScriptStruct* ActionValueStruct = FInputActionValue::StaticStruct();
+		UK2Node_TemporaryVariable* ActionValueVar = CompilerContext.SpawnIntermediateNode<UK2Node_TemporaryVariable>(this, SourceGraph);
+		ActionValueVar->VariableType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+		ActionValueVar->VariableType.PinSubCategoryObject = ActionValueStruct;
+		ActionValueVar->AllocateDefaultPins();
+
 		for (auto PinIt = ActivePins.CreateIterator(); PinIt; ++PinIt)
 		{
 			UEdGraphPin *EachPin = (*PinIt).Pin;
@@ -293,14 +312,23 @@ void UK2Node_InputDebugKey::ExpandNode(FKismetCompilerContext& CompilerContext, 
 			KeyInitialize->AllocateDefaultPins();
 			Schema->TryCreateConnection(KeyVar->GetVariablePin(), KeyInitialize->GetVariablePin());
 			Schema->TryCreateConnection(KeyInitialize->GetValuePin(), InputDebugKeyEvent->FindPinChecked(TEXT("Key")));
+
+			// Create Assignment nodes to assign the action value
+			UK2Node_AssignmentStatement* ActionValueInitialize = CompilerContext.SpawnIntermediateNode<UK2Node_AssignmentStatement>(this, SourceGraph);
+			ActionValueInitialize->AllocateDefaultPins();
+			Schema->TryCreateConnection(ActionValueVar->GetVariablePin(), ActionValueInitialize->GetVariablePin());
+			Schema->TryCreateConnection(ActionValueInitialize->GetValuePin(), InputDebugKeyEvent->FindPinChecked(ActionPinName));
+			
 			// Connect the events to the assign key nodes
 			Schema->TryCreateConnection(Schema->FindExecutionPin(*InputDebugKeyEvent, EGPD_Output), KeyInitialize->GetExecPin());
-
+			Schema->TryCreateConnection(KeyInitialize->GetThenPin(), ActionValueInitialize->GetExecPin());
+			
 			// Move the original event connections to the then pin of the key assign
-			CompilerContext.MovePinLinksToIntermediate(*EachPin, *KeyInitialize->GetThenPin());
+			CompilerContext.MovePinLinksToIntermediate(*EachPin, *ActionValueInitialize->GetThenPin());
 
 			// Move the original event variable connections to the intermediate nodes
 			CompilerContext.MovePinLinksToIntermediate(*FindPin(TEXT("Key")), *KeyVar->GetVariablePin());
+			CompilerContext.MovePinLinksToIntermediate(*ActionValuePin, *ActionValueVar->GetVariablePin());
 		}
 	}
 	else if( ActivePins.Num() == 1 )
@@ -313,6 +341,7 @@ void UK2Node_InputDebugKey::ExpandNode(FKismetCompilerContext& CompilerContext, 
 
 			CompilerContext.MovePinLinksToIntermediate(*InputDebugKeyPin, *Schema->FindExecutionPin(*InputDebugKeyEvent, EGPD_Output));
 			CompilerContext.MovePinLinksToIntermediate(*FindPin(TEXT("Key")), *InputDebugKeyEvent->FindPin(TEXT("Key")));
+			CompilerContext.MovePinLinksToIntermediate(*ActionValuePin, *InputDebugKeyEvent->FindPin(ActionPinName));
 		}
 	}
 }
@@ -328,12 +357,19 @@ void UK2Node_InputDebugKey::GetMenuActions(FBlueprintActionDatabaseRegistrar& Ac
 		InputNode->InputKey = Key;
 	};
 
+	auto RefreshClassActions = []()
+	{
+		FBlueprintActionDatabase::Get().RefreshClassActions(StaticClass());
+	};
+
 	// actions get registered under specific object-keys; the idea is that
 	// actions might have to be updated (or deleted) if their object-key is
 	// mutated (or removed)... here we use the node's class (so if the node
 	// type disappears, then the action should go with it)
 	UClass* ActionKey = GetClass();
 
+	const bool bAllowGestures = GetDefault<UInputSettings>()->bEnableGestureRecognizer;
+	
 	// to keep from needlessly instantiating a UBlueprintNodeSpawner (and
 	// iterating over keys), first check to make sure that the registrar is
 	// looking for actions of this type (could be regenerating actions for a
@@ -341,10 +377,21 @@ void UK2Node_InputDebugKey::GetMenuActions(FBlueprintActionDatabaseRegistrar& Ac
 	// corresponding to that asset)
 	if (ActionRegistrar.IsOpenForRegistration(ActionKey))
 	{
+		// Refresh the action database of this node when the input settings are changed
+		static bool bRegisterOnce = true;
+		if (bRegisterOnce)
+		{
+			bRegisterOnce = false;
+			FEditorDelegates::OnEnableGestureRecognizerChanged.AddStatic(RefreshClassActions);
+		}
+		
 		for (const FKey& Key : AllKeys)
 		{
-			// AnyKey is not supported as a debug key
-			if (!Key.IsBindableInBlueprints() || Key == EKeys::AnyKey)
+			// Do not show gesture keys if they are not enabled in the settings
+			const bool bInvalidGestureKey = !bAllowGestures && Key.IsGesture();
+			
+			// AnyKey is not supported as a debug key, gestures can only be used if they are turned on in the settings
+			if (!Key.IsBindableInBlueprints() || Key == EKeys::AnyKey || bInvalidGestureKey)
 			{
 				continue;
 			}

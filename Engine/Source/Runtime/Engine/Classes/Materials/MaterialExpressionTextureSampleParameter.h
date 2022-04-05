@@ -50,15 +50,41 @@ class ENGINE_API UMaterialExpressionTextureSampleParameter : public UMaterialExp
 	virtual FName GetParameterName() const override { return ParameterName; }
 	virtual void SetParameterName(const FName& Name) override { ParameterName = Name; }
 	virtual void ValidateParameterName(const bool bAllowDuplicateName) override;
-	virtual void SetValueToMatchingExpression(UMaterialExpression* OtherExpression) override;
+	virtual EMaterialGenerateHLSLStatus GenerateHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, int32 OutputIndex, UE::HLSLTree::FExpression*& OutExpression) override;
+	virtual bool GetParameterValue(FMaterialParameterMetadata& OutMeta) const override
+	{
+		OutMeta.Value = Texture;
+		OutMeta.Description = Desc;
+		OutMeta.ExpressionGuid = ExpressionGUID;
+		OutMeta.Group = Group;
+		OutMeta.SortPriority = SortPriority;
+		OutMeta.ChannelNames = ChannelNames;
+		return true;
+	}
+	virtual bool SetParameterValue(const FName& Name, const FMaterialParameterMetadata& Meta, EMaterialExpressionSetParameterValueFlags Flags) override
+	{
+		if (Meta.Value.Type == EMaterialParameterType::Texture)
+		{
+			if (SetParameterValue(Name, Meta.Value.Texture, Flags))
+			{
+				if (EnumHasAnyFlags(Flags, EMaterialExpressionSetParameterValueFlags::AssignGroupAndSortPriority))
+				{
+					Group = Meta.Group;
+					SortPriority = Meta.SortPriority;
+				}
+				return true;
+			}
+		}
+		return false;
+	}
 #endif
 	//~ End UMaterialExpression Interface
 
-	/** Return whether this is the named parameter, and fill in its value */
+	UE_DEPRECATED(5.0, "Use GetParameterValue and/or GetParameterName")
 	bool IsNamedParameter(const FHashedMaterialParameterInfo& ParameterInfo, UTexture*& OutValue) const;
 
 #if WITH_EDITOR
-	bool SetParameterValue(FName InParameterName, UTexture* InValue);
+	bool SetParameterValue(FName InParameterName, UTexture* InValue, EMaterialExpressionSetParameterValueFlags Flags = EMaterialExpressionSetParameterValueFlags::None);
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	void ApplyChannelNames();
 
@@ -89,5 +115,6 @@ class ENGINE_API UMaterialExpressionTextureSampleParameter : public UMaterialExp
 	}
 #endif
 
+	UE_DEPRECATED(5.0, "Use GetAllParameterInfoOfType or GetAllParametersOfType")
 	void GetAllParameterInfo(TArray<FMaterialParameterInfo> &OutParameterInfo, TArray<FGuid> &OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const;
 };

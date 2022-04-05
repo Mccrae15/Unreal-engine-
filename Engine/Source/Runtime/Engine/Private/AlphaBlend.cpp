@@ -23,6 +23,16 @@ FAlphaBlend::FAlphaBlend(const FAlphaBlend& Other, float NewBlendTime)
 	Reset();
 }
 
+FAlphaBlend::FAlphaBlend(const FAlphaBlendArgs& InArgs)
+	: CustomCurve(InArgs.CustomCurve)
+	, BlendTime(InArgs.BlendTime)
+	, BeginValue(0.0f)
+	, DesiredValue(1.0f)
+	, BlendOption(InArgs.BlendOption)
+{
+	Reset();
+}
+
 void FAlphaBlend::ResetBlendTime()
 {
 	// if blend time is <= 0, then blending is done and complete
@@ -217,3 +227,26 @@ bool FAlphaBlend::IsComplete() const
 	return (CachedDesiredBlendedValue == BlendedValue);
 }
 
+FAlphaBlendArgs::FAlphaBlendArgs()
+	: CustomCurve(nullptr)
+	, BlendTime(0.2f)
+	, BlendOption(EAlphaBlendOption::Linear)
+{
+
+}
+
+FAlphaBlendArgs::FAlphaBlendArgs(float InBlendTime)
+	: CustomCurve(nullptr)
+	, BlendTime(InBlendTime)
+	, BlendOption(EAlphaBlendOption::Linear)
+{
+
+}
+
+FAlphaBlendArgs::FAlphaBlendArgs(const struct FAlphaBlend& InAlphaBlend)
+	: CustomCurve(InAlphaBlend.GetCustomCurve())
+	, BlendTime(InAlphaBlend.GetBlendTime())
+	, BlendOption(InAlphaBlend.GetBlendOption())
+{
+
+}

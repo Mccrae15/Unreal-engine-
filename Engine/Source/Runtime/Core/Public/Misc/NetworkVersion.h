@@ -49,6 +49,12 @@ enum EEngineNetworkVersionHistory
 	HISTORY_CLASSNETCACHE_FULLNAME = 15,			// Bump version to use full paths in GetNetFieldExportGroupForClassNetCache
 	HISTORY_REPLAY_DORMANCY = 16,					// Bump version to support dormancy properly in replays
 	HISTORY_ENUM_SERIALIZATION_COMPAT = 17,			// Bump version to include enum bits required for serialization into compat checksums, as well as unify enum and byte property enum serialization
+	HISTORY_SUBOBJECT_OUTER_CHAIN = 18,				// Bump version to support subobject outer chains matching on client and server
+	HISTORY_HITRESULT_INSTANCEHANDLE = 19,			// Bump version to support FHitResult change of Actor to HitObjectHandle. This change was made in CL 14369221 but a net version wasn't added at the time.
+	HISTORY_INTERFACE_PROPERTY_SERIALIZATION = 20,	// Bump version to support net serialization of FInterfaceProperty
+	HISTORY_MONTAGE_PLAY_INST_ID_SERIALIZATION = 21,// Bump version to support net serialization of FGameplayAbilityRepAnimMontage, addition of PlayInstanceId and removal of bForcePlayBit
+	HISTORY_SERIALIZE_DOUBLE_VECTORS_AS_DOUBLES	= 22,// Bump version to support net serialization of double vector types
+	HISTORY_PACKED_VECTOR_LWC_SUPPORT = 23,			// Bump version to support quantized LWC FVector net serialization
 	// New history items go above here.
 
 	HISTORY_ENGINENETVERSION_PLUS_ONE,
@@ -64,6 +70,10 @@ struct CORE_API FNetworkVersion
 	/** Called in IsNetworkCompatible if bound */
 	DECLARE_DELEGATE_RetVal_TwoParams( bool, FIsNetworkCompatibleOverride, uint32, uint32 );
 	static FIsNetworkCompatibleOverride IsNetworkCompatibleOverride;
+
+	/** Called in GetReplayCompatibleChangelist if bound */
+	DECLARE_DELEGATE_RetVal(uint32, FGetReplayCompatibleChangeListOverride);
+	static FGetReplayCompatibleChangeListOverride GetReplayCompatibleChangeListOverride;
 
 	static uint32 GetNetworkCompatibleChangelist();
 	static uint32 GetReplayCompatibleChangelist();

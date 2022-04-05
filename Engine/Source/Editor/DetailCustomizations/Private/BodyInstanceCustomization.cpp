@@ -121,57 +121,41 @@ void FBodyInstanceCustomization::AddCollisionCategory(TSharedRef<class IProperty
 
 	IDetailGroup& CollisionGroup = StructBuilder.AddGroup( TEXT("Collision"), LOCTEXT("CollisionPresetsLabel", "Collision Presets") );
 	CollisionGroup.HeaderRow()
+	.OverrideResetToDefault(FResetToDefaultOverride::Create(
+		TAttribute<bool>::Create([this]() { return ShouldShowResetToDefaultProfile(); }),
+		FSimpleDelegate::CreateLambda([this]() { SetToDefaultProfile(); })
+	))
 	.NameContent()
 	[
-		SNew(STextBlock)
-		.Text(LOCTEXT("CollisionPresetsLabel", "Collision Presets"))
-		.ToolTip(ProfileTooltip)
-		.Font( IDetailLayoutBuilder::GetDetailFont() )
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.HAlign(HAlign_Right)
+		[ 
+			SNew(STextBlock)
+			.Text(LOCTEXT("CollisionPresetsLabel", "Collision Presets"))
+			.ToolTip(ProfileTooltip)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+		]
 	]
 	.ValueContent()
-	.MinDesiredWidth(131.0f)
 	[
-		SNew(SVerticalBox)
-		+ SVerticalBox::Slot()
-		.Padding(0.f, 0.f, 10.f, 0.f)
+		SNew(SHorizontalBox)
+		.IsEnabled(this, &FBodyInstanceCustomization::IsCollisionEnabled)
+		+ SHorizontalBox::Slot()
+		.VAlign(VAlign_Center)
 		[
-			SNew(SHorizontalBox)
-			.IsEnabled(this, &FBodyInstanceCustomization::IsCollisionEnabled)
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
+			SAssignNew(CollsionProfileComboBox, SComboBox< TSharedPtr<FString> >)
+			.OptionsSource(&CollisionProfileComboList)
+			.OnGenerateWidget(this, &FBodyInstanceCustomization::MakeCollisionProfileComboWidget)
+			.OnSelectionChanged(this, &FBodyInstanceCustomization::OnCollisionProfileChanged, &CollisionGroup)
+			.OnComboBoxOpening(this, &FBodyInstanceCustomization::OnCollisionProfileComboOpening)
+			.InitiallySelectedItem(DisplayName)
+			.Content()
 			[
-				SAssignNew(CollsionProfileComboBox, SComboBox< TSharedPtr<FString> >)
-				.OptionsSource(&CollisionProfileComboList)
-				.OnGenerateWidget(this, &FBodyInstanceCustomization::MakeCollisionProfileComboWidget)
-				.OnSelectionChanged(this, &FBodyInstanceCustomization::OnCollisionProfileChanged, &CollisionGroup)
-				.OnComboBoxOpening(this, &FBodyInstanceCustomization::OnCollisionProfileComboOpening)
-				.InitiallySelectedItem(DisplayName)
-				.Content()
-				[
-					SNew(STextBlock)
-					.Text(this, &FBodyInstanceCustomization::GetCollisionProfileComboBoxContent)
-					.Font(IDetailLayoutBuilder::GetDetailFont())
-					.ToolTipText(this, &FBodyInstanceCustomization::GetCollisionProfileComboBoxToolTip)
-				]
-			]
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Center)
-			.Padding(2.0f)
-			.AutoWidth()
-			[
-				SNew(SButton)
-				.OnClicked(this, &FBodyInstanceCustomization::SetToDefaultProfile)
-				.ContentPadding(0.f)
-				.ToolTipText(LOCTEXT("ResetToDefaultToolTip", "Reset to Default"))
-				.ButtonStyle(FEditorStyle::Get(), "NoBorder")
-				.IsEnabled(this, &FBodyInstanceCustomization::IsCollisionEnabled)
-				.Visibility(this, &FBodyInstanceCustomization::ShouldShowResetToDefaultProfile)
-				.Content()
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
-				]
+				SNew(STextBlock)
+				.Text(this, &FBodyInstanceCustomization::GetCollisionProfileComboBoxContent)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ToolTipText(this, &FBodyInstanceCustomization::GetCollisionProfileComboBoxToolTip)
 			]
 		]
 	];
@@ -401,6 +385,7 @@ void FBodyInstanceCustomization::CreateCustomCollisionSetup( TSharedRef<class IP
 	{
 		CollisionGroup.AddWidgetRow()
 		.Visibility(CustomCollisionVisibility)
+		.IsEnabled(CustomCollisionEnabled)
 		.NameContent()
 		[
 			ObjectTypeHandle->CreatePropertyNameWidget()
@@ -412,7 +397,6 @@ void FBodyInstanceCustomization::CreateCustomCollisionSetup( TSharedRef<class IP
 			.OnGenerateWidget(this, &FBodyInstanceCustomization::MakeObjectTypeComboWidget)
 			.OnSelectionChanged(this, &FBodyInstanceCustomization::OnObjectTypeChanged)
 			.InitiallySelectedItem(ObjectTypeComboList[IndexSelected])
-			.IsEnabled(CustomCollisionEnabled)
 			.ContentPadding(2)
 			.Content()
 			[
@@ -564,6 +548,10 @@ void FBodyInstanceCustomization::CreateCustomCollisionSetup( TSharedRef<class IP
 			CollisionGroup.AddWidgetRow()
 			.IsEnabled(CustomCollisionEnabled)
 			.Visibility(CustomCollisionVisibility)
+			.OverrideResetToDefault(FResetToDefaultOverride::Create(
+				TAttribute<bool>::Create([this, Index]() { return ShouldShowResetToDefaultResponse(Index); }),
+				FSimpleDelegate::CreateLambda([this, Index]() { SetToDefaultResponse(Index); })
+			))
 			.NameContent()
 			[
 				SNew(SBox)
@@ -612,22 +600,6 @@ void FBodyInstanceCustomization::CreateCustomCollisionSetup( TSharedRef<class IP
 					SNew(SCheckBox)
 					.OnCheckStateChanged( this, &FBodyInstanceCustomization::OnCollisionChannelChanged, Index, ECR_Block )
 					.IsChecked( this, &FBodyInstanceCustomization::IsCollisionChannelChecked, Index, ECR_Block )
-				]
-
-				+SHorizontalBox::Slot()
-				.VAlign(VAlign_Center)
-				[
-					SNew(SButton)
-					.OnClicked(this, &FBodyInstanceCustomization::SetToDefaultResponse, Index)
-					.Visibility(this, &FBodyInstanceCustomization::ShouldShowResetToDefaultResponse, Index)
-					.ContentPadding(0.f)
-					.ToolTipText(LOCTEXT("ResetToDefaultToolTip", "Reset to Default"))
-					.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
-					.Content()
-					[
-						SNew(SImage)
-						.Image( FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault") )
-					]
 				]
 			];
 		}
@@ -659,6 +631,10 @@ void FBodyInstanceCustomization::CreateCustomCollisionSetup( TSharedRef<class IP
 			CollisionGroup.AddWidgetRow()
 			.IsEnabled(CustomCollisionEnabled)
 			.Visibility(CustomCollisionVisibility)
+			.OverrideResetToDefault(FResetToDefaultOverride::Create(
+				TAttribute<bool>::Create([this, Index]() { return ShouldShowResetToDefaultResponse(Index); }),
+				FSimpleDelegate::CreateLambda([this, Index]() { SetToDefaultResponse(Index); })
+			))
 			.NameContent()
 			[
 				SNew(SBox)
@@ -707,22 +683,6 @@ void FBodyInstanceCustomization::CreateCustomCollisionSetup( TSharedRef<class IP
 					SNew(SCheckBox)
 					.OnCheckStateChanged( this, &FBodyInstanceCustomization::OnCollisionChannelChanged, Index, ECR_Block )
 					.IsChecked( this, &FBodyInstanceCustomization::IsCollisionChannelChecked, Index, ECR_Block )
-				]
-
-				+SHorizontalBox::Slot()
-				.VAlign(VAlign_Center)
-				[
-					SNew(SButton)
-					.OnClicked(this, &FBodyInstanceCustomization::SetToDefaultResponse, Index)
-					.Visibility(this, &FBodyInstanceCustomization::ShouldShowResetToDefaultResponse, Index)
-					.ContentPadding(0.f)
-					.ToolTipText(LOCTEXT("ResetToDefaultToolTip", "Reset to Default"))
-					.ButtonStyle( FEditorStyle::Get(), "NoBorder" )
-					.Content()
-					[
-						SNew(SImage)
-						.Image( FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault") )
-					]
 				]
 			];
 		}
@@ -847,7 +807,7 @@ void FBodyInstanceCustomization::MarkAllBodiesDefaultCollision(bool bUseDefaultC
 		}
 	}
 
-	CollisionResponsesHandle->NotifyPostChange();
+	CollisionResponsesHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 }
 
 void FBodyInstanceCustomization::OnCollisionProfileChanged( TSharedPtr<FString> NewSelection, ESelectInfo::Type SelectInfo, IDetailGroup* CollisionGroup )
@@ -938,53 +898,45 @@ void FBodyInstanceCustomization::UpdateCollisionProfile()
 	CollsionProfileComboBox.Get()->SetSelectedItem(CollisionProfileComboList[AreAllCollisionUsingDefault() ? GetDefaultIndex() : GetCustomIndex()]);
 }
 
-FReply FBodyInstanceCustomization::SetToDefaultProfile()
+void FBodyInstanceCustomization::SetToDefaultProfile()
 {
 	// trigger transaction before UpdateCollisionProfile
 	const FScopedTransaction Transaction( LOCTEXT( "ResetCollisionProfile", "Reset Collision Profile" ) );
 	MarkAllBodiesDefaultCollision(false);
 	CollisionProfileNameHandle.Get()->ResetToDefault();
 	UpdateCollisionProfile();
-	return FReply::Handled();
 }
 
-EVisibility FBodyInstanceCustomization::ShouldShowResetToDefaultProfile() const
+bool FBodyInstanceCustomization::ShouldShowResetToDefaultProfile() const
 {
-	if (CollisionProfileNameHandle.Get()->DiffersFromDefault())
-	{
-		return EVisibility::Visible;
-	}
-
-	return EVisibility::Hidden;
+	return CollisionProfileNameHandle.Get()->DiffersFromDefault();
 }
 
-FReply FBodyInstanceCustomization::SetToDefaultResponse(int32 ValidIndex)
+void FBodyInstanceCustomization::SetToDefaultResponse(int32 Index)
 {
-	if ( ValidCollisionChannels.IsValidIndex(ValidIndex) )
+	if (ValidCollisionChannels.IsValidIndex(Index))
 	{
 		const FScopedTransaction Transaction( LOCTEXT( "ResetCollisionResponse", "Reset Collision Response" ) );
-		const ECollisionResponse DefaultResponse = FCollisionResponseContainer::GetDefaultResponseContainer().GetResponse(ValidCollisionChannels[ValidIndex].CollisionChannel);
+		const ECollisionResponse DefaultResponse = FCollisionResponseContainer::GetDefaultResponseContainer().GetResponse(ValidCollisionChannels[Index].CollisionChannel);
 
-		SetResponse(ValidIndex, DefaultResponse);
-		return FReply::Handled();
+		SetResponse(Index, DefaultResponse);
 	}
-
-	return FReply::Unhandled();
 }
 
-EVisibility FBodyInstanceCustomization::ShouldShowResetToDefaultResponse(int32 ValidIndex) const
+bool FBodyInstanceCustomization::ShouldShowResetToDefaultResponse(int32 Index) const
 {
-	if ( ValidCollisionChannels.IsValidIndex(ValidIndex) )
+	
+	if (ValidCollisionChannels.IsValidIndex(Index))
 	{
-		const ECollisionResponse DefaultResponse = FCollisionResponseContainer::GetDefaultResponseContainer().GetResponse(ValidCollisionChannels[ValidIndex].CollisionChannel);
+		const ECollisionResponse DefaultResponse = FCollisionResponseContainer::GetDefaultResponseContainer().GetResponse(ValidCollisionChannels[Index].CollisionChannel);
 
-		if (IsCollisionChannelChecked(ValidIndex, DefaultResponse) != ECheckBoxState::Checked)
+		if (IsCollisionChannelChecked(Index, DefaultResponse) != ECheckBoxState::Checked)
 		{
-			return EVisibility::Visible;
+			return true;
 		}
 	}
 
-	return EVisibility::Hidden;
+	return false;
 }
 
 bool FBodyInstanceCustomization::AreAllCollisionUsingDefault() const
@@ -1143,7 +1095,7 @@ void FBodyInstanceCustomization::SetResponse(int32 ValidIndex, ECollisionRespons
 		}
 	}
 
-	CollisionResponsesHandle->NotifyPostChange();
+	CollisionResponsesHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 }
 
 ECheckBoxState FBodyInstanceCustomization::IsCollisionChannelChecked( int32 ValidIndex, ECollisionResponse InCollisionResponse) const
@@ -1257,7 +1209,7 @@ void FBodyInstanceCustomization::SetCollisionResponseContainer(const FCollisionR
 			}
 		}
 
-		CollisionResponsesHandle->NotifyPostChange();
+		CollisionResponsesHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	}
 	
 }
@@ -1578,17 +1530,13 @@ void FBodyInstanceCustomizationHelper::AddMassInKg(IDetailCategoryBuilder& Physi
 			MassInKgOverrideHandle->CreatePropertyNameWidget()
 		]
 		.ValueContent()
+		.VAlign(VAlign_Center)
 		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot()
-			.Padding(0.f, 0.f, 10.f, 0.f)
-			[
-				SNew(SNumericEntryBox<float>)
-				.IsEnabled(this, &FBodyInstanceCustomizationHelper::IsBodyMassEnabled)
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.Value(this, &FBodyInstanceCustomizationHelper::OnGetBodyMass)
-				.OnValueCommitted(this, &FBodyInstanceCustomizationHelper::OnSetBodyMass)
-			]
+			SNew(SNumericEntryBox<float>)
+			.IsEnabled(this, &FBodyInstanceCustomizationHelper::IsBodyMassEnabled)
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Value(this, &FBodyInstanceCustomizationHelper::OnGetBodyMass)
+			.OnValueCommitted(this, &FBodyInstanceCustomizationHelper::OnSetBodyMass)
 		];
 	}
 	else
@@ -1610,7 +1558,7 @@ void FBodyInstanceCustomizationHelper::AddMaxAngularVelocity(IDetailCategoryBuil
 	[
 		SNew(SVerticalBox)
 		+ SVerticalBox::Slot()
-		.Padding(0.f, 0.f, 10.f, 0.f)
+		.VAlign(VAlign_Center)
 		[
 			SNew(SNumericEntryBox<float>)
 			.IsEnabled(false)
@@ -1620,7 +1568,7 @@ void FBodyInstanceCustomizationHelper::AddMaxAngularVelocity(IDetailCategoryBuil
 		]
 
 		+ SVerticalBox::Slot()
-		.Padding(0.f, 0.f, 10.f, 0.f)
+		.VAlign(VAlign_Center)
 		[
 			SNew(SVerticalBox)
 			.Visibility(this, &FBodyInstanceCustomizationHelper::IsMaxAngularVelocityVisible, true)
@@ -1681,6 +1629,7 @@ void FBodyInstanceCustomizationHelper::AddBodyConstraint(IDetailCategoryBuilder&
 			.Text(LOCTEXT("LockPositionLabel", "Lock Position"))
 			.ToolTipText(LOCTEXT("LockPositionTooltip", "Locks movement along the specified axis"))
 			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.Justification(ETextJustify::Right)
 		]
 		.ValueContent()
 		[

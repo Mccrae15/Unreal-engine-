@@ -62,11 +62,8 @@ UVCamComponent::UVCamComponent()
 		FEditorDelegates::BeginPIE.AddUObject(this, &UVCamComponent::OnBeginPIE);
 		FEditorDelegates::EndPIE.AddUObject(this, &UVCamComponent::OnEndPIE);
 
-		if (GEditor)
-		{
-			GEditor->OnObjectsReplaced().AddUObject(this, &UVCamComponent::HandleObjectReplaced);
-		}
 		MultiUserStartup();
+		FCoreUObjectDelegates::OnObjectsReplaced.AddUObject(this, &UVCamComponent::HandleObjectReplaced);
 #endif
 	}
 }
@@ -94,17 +91,14 @@ void UVCamComponent::OnComponentDestroyed(bool bDestroyingHierarchy)
 	FEditorDelegates::BeginPIE.RemoveAll(this);
 	FEditorDelegates::EndPIE.RemoveAll(this);
 
-	if (GEditor)
-	{
-		GEditor->OnObjectsReplaced().RemoveAll(this);
-	}
 	MultiUserShutdown();
+	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
 #endif
 }
 
 void UVCamComponent::HandleObjectReplaced(const TMap<UObject*, UObject*>& ReplacementMap)
 {
-	for (const TPair<UObject*, UObject*> ReplacementPair : ReplacementMap)
+	for (const TPair<UObject*, UObject*>& ReplacementPair : ReplacementMap)
 	{
 		UObject* FromObject = ReplacementPair.Key;
 		UObject* ToObject = ReplacementPair.Value;
@@ -138,7 +132,7 @@ void UVCamComponent::NotifyComponentWasReplaced(UVCamComponent* ReplacementCompo
 bool UVCamComponent::CanUpdate() const
 {
 	UWorld* World = GetWorld();
-	if (bEnabled && !IsPendingKill() && !bIsEditorObjectButPIEIsRunning && World)
+	if (bEnabled && IsValid(this) && !bIsEditorObjectButPIEIsRunning && World)
 	{
 		// Check for an Inactive type of world which means nothing should ever execute on this object
 		// @TODO: This is far from optimal as it means a zombie object has been created that never gets GC'ed
@@ -196,9 +190,12 @@ void UVCamComponent::CheckForErrors()
 {
 	Super::CheckForErrors();
 
-	if (!GetTargetCamera())
+	if (!HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))
 	{
-		UE_LOG(LogVCamComponent, Error, TEXT("Attached Parent should be a CineCamera derived component."));
+		if (!GetTargetCamera())
+		{
+			UE_LOG(LogVCamComponent, Error, TEXT("Attached Parent should be a CineCamera derived component."));
+		}
 	}
 }
 
@@ -768,7 +765,7 @@ void UVCamComponent::GetLiveLinkDataForCurrentFrame(FLiveLinkCameraBlueprintData
 
 		if (FoundSubjectKey)
 		{
-			if (LiveLinkClient.DoesSubjectSupportsRole(*FoundSubjectKey, ULiveLinkCameraRole::StaticClass()))
+			if (LiveLinkClient.DoesSubjectSupportsRole_AnyThread(*FoundSubjectKey, ULiveLinkCameraRole::StaticClass()))
 			{
 				if (LiveLinkClient.EvaluateFrame_AnyThread(LiveLinkSubject, ULiveLinkCameraRole::StaticClass(), EvaluatedFrame))
 				{
@@ -776,7 +773,7 @@ void UVCamComponent::GetLiveLinkDataForCurrentFrame(FLiveLinkCameraBlueprintData
 					GetDefault<ULiveLinkCameraRole>()->InitializeBlueprintData(EvaluatedFrame, WrappedBlueprintData);
 				}
 			}
-			else if (LiveLinkClient.DoesSubjectSupportsRole(*FoundSubjectKey, ULiveLinkTransformRole::StaticClass()))
+			else if (LiveLinkClient.DoesSubjectSupportsRole_AnyThread(*FoundSubjectKey, ULiveLinkTransformRole::StaticClass()))
 			{
 				if (LiveLinkClient.EvaluateFrame_AnyThread(LiveLinkSubject, ULiveLinkTransformRole::StaticClass(), EvaluatedFrame))
 				{
@@ -866,7 +863,7 @@ void UVCamComponent::UpdateActorLock()
 #endif
 		{
 			UWorld* ActorWorld = Context.World();
-			if (ActorWorld)
+			if (ActorWorld && ActorWorld->GetGameInstance())
 			{
 				APlayerController* PlayerController = ActorWorld->GetGameInstance()->GetFirstLocalPlayerController(ActorWorld);
 				if (PlayerController)

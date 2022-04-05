@@ -181,14 +181,14 @@ namespace Audio
 
 			for (int32 Iteration = 0; Iteration < NumIterations; Iteration++)
 			{
-				const VectorRegister A = VectorLoad(&XRealBuffer[Iteration * 4]);
-				const VectorRegister B = VectorLoad(&XImagBuffer[Iteration * 4]);
+				const VectorRegister4Float A = VectorLoad(&XRealBuffer[Iteration * 4]);
+				const VectorRegister4Float B = VectorLoad(&XImagBuffer[Iteration * 4]);
 
-				const VectorRegister C = VectorLoad(&YRealBuffer[Iteration * 4]);
-				const VectorRegister D = VectorLoad(&YImagBuffer[Iteration * 4]);
+				const VectorRegister4Float C = VectorLoad(&YRealBuffer[Iteration * 4]);
+				const VectorRegister4Float D = VectorLoad(&YImagBuffer[Iteration * 4]);
 
-				const VectorRegister ResultReal = VectorSubtract(VectorMultiply(A, C), VectorMultiply(B, D));
-				const VectorRegister ResultImag = VectorAdd(VectorMultiply(A, D), VectorMultiply(B, C));
+				const VectorRegister4Float ResultReal = VectorNegateMultiplyAdd(B, D, VectorMultiply(A, C));
+				const VectorRegister4Float ResultImag = VectorMultiplyAdd(A, D, VectorMultiply(B, C));
 
 				VectorStore(ResultReal, &YRealBuffer[Iteration * 4]);
 				VectorStore(ResultImag, &YImagBuffer[Iteration * 4]);
@@ -222,16 +222,16 @@ namespace Audio
 			float* XRealBuffer = InFreqBuffer.Real.GetData();
 			float* XImagBuffer = InFreqBuffer.Imag.GetData();
 
-			const VectorRegister C = VectorSetFloat1(InReal);
-			const VectorRegister D = VectorSetFloat1(InImag);
+			const VectorRegister4Float C = VectorSetFloat1(InReal);
+			const VectorRegister4Float D = VectorSetFloat1(InImag);
 
 			for (int32 Iteration = 0; Iteration < NumIterations; Iteration++)
 			{
-				const VectorRegister A = VectorLoad(&XRealBuffer[Iteration * 4]);
-				const VectorRegister B = VectorLoad(&XImagBuffer[Iteration * 4]);
+				const VectorRegister4Float A = VectorLoad(&XRealBuffer[Iteration * 4]);
+				const VectorRegister4Float B = VectorLoad(&XImagBuffer[Iteration * 4]);
 
-				const VectorRegister ResultReal = VectorSubtract(VectorMultiply(A, C), VectorMultiply(B, D));
-				const VectorRegister ResultImag = VectorAdd(VectorMultiply(A, D), VectorMultiply(B, C));
+				const VectorRegister4Float ResultReal = VectorNegateMultiplyAdd(B, D, VectorMultiply(A, C));
+				const VectorRegister4Float ResultImag = VectorMultiplyAdd(A, D, VectorMultiply(B, C));
 
 				VectorStore(ResultReal, &XRealBuffer[Iteration * 4]);
 				VectorStore(ResultImag, &XImagBuffer[Iteration * 4]);
@@ -263,18 +263,18 @@ namespace Audio
 			float* ZRealBuffer = OutFrequencyBuffer.Real.GetData();
 			float* ZImagBuffer = OutFrequencyBuffer.Imag.GetData();
 
-			const VectorRegister NegativeOne = VectorSetFloat1(-1.0f);
+			const VectorRegister4Float NegativeOne = VectorSetFloat1(-1.0f);
 
 			for (int32 Iteration = 0; Iteration < NumIterations; Iteration++)
 			{
-				const VectorRegister A = VectorLoad(&XRealBuffer[Iteration * 4]);
-				const VectorRegister B = VectorLoad(&XImagBuffer[Iteration * 4]);
+				const VectorRegister4Float A = VectorLoad(&XRealBuffer[Iteration * 4]);
+				const VectorRegister4Float B = VectorLoad(&XImagBuffer[Iteration * 4]);
 
-				const VectorRegister C = VectorLoad(&YRealBuffer[Iteration * 4]);
-				const VectorRegister D = VectorLoad(&YImagBuffer[Iteration * 4]);
+				const VectorRegister4Float C = VectorLoad(&YRealBuffer[Iteration * 4]);
+				const VectorRegister4Float D = VectorLoad(&YImagBuffer[Iteration * 4]);
 
-				const VectorRegister ResultReal = VectorAdd(VectorMultiply(A, C), VectorMultiply(B, D));
-				const VectorRegister ResultImag = VectorSubtract(VectorMultiply(B, C), VectorMultiply(A, D));
+				const VectorRegister4Float ResultReal = VectorMultiplyAdd(A, C, VectorMultiply(B, D));
+				const VectorRegister4Float ResultImag = VectorNegateMultiplyAdd(A, D, VectorMultiply(B, C));
 
 				VectorStore(ResultReal, &ZRealBuffer[Iteration * 4]);
 				VectorStore(ResultImag, &ZImagBuffer[Iteration * 4]);
@@ -511,8 +511,8 @@ namespace Audio
 			const int32 NumOutputFFTElements;
 			FFTFreqDomainData FreqDomainData;
 
-			AlignedFloatBuffer FreqRealBuffer;
-			AlignedFloatBuffer FreqImagBuffer;
+			FAlignedFloatBuffer FreqRealBuffer;
+			FAlignedFloatBuffer FreqImagBuffer;
 			
 
 		public:
@@ -652,7 +652,7 @@ namespace Audio
 		return MakeUnique<FAudioFFTAlgorithm>(FFTSize);
 	}
 
-	void ComputePowerSpectrumNoScaling(const FFTFreqDomainData& InFrequencyData, int32 FFTSize, AlignedFloatBuffer& OutBuffer)
+	void ComputePowerSpectrumNoScaling(const FFTFreqDomainData& InFrequencyData, int32 FFTSize, FAlignedFloatBuffer& OutBuffer)
 	{
 		check((FFTSize % 2) == 0);
 
@@ -695,7 +695,7 @@ namespace Audio
 		}
 	}
 
-	void ComputePowerSpectrum(const FFTFreqDomainData& InFrequencyData, int32 FFTSize, AlignedFloatBuffer& OutBuffer)
+	void ComputePowerSpectrum(const FFTFreqDomainData& InFrequencyData, int32 FFTSize, FAlignedFloatBuffer& OutBuffer)
 	{
 		if (FFTSize < 1)
 		{
@@ -723,7 +723,7 @@ namespace Audio
 		OutBufferData[NumSpectrumValues - 1] *= FFTScale;
 	}
 
-	void ComputeMagnitudeSpectrum(const FFTFreqDomainData& InFrequencyData, int32 FFTSize, AlignedFloatBuffer& OutBuffer)
+	void ComputeMagnitudeSpectrum(const FFTFreqDomainData& InFrequencyData, int32 FFTSize, FAlignedFloatBuffer& OutBuffer)
 	{
 		if (FFTSize < 1)
 		{
@@ -756,7 +756,7 @@ namespace Audio
 		OutBufferData[NumSpectrumValues - 1] *= FFTScale;
 	}
 
-	void ComputeSpectrum(ESpectrumType InSpectrumType, const FFTFreqDomainData& InFrequencyData, int32 FFTSize, AlignedFloatBuffer& OutBuffer)
+	void ComputeSpectrum(ESpectrumType InSpectrumType, const FFTFreqDomainData& InFrequencyData, int32 FFTSize, FAlignedFloatBuffer& OutBuffer)
 	{
 		switch (InSpectrumType)
 		{
@@ -772,7 +772,7 @@ namespace Audio
 				checkf(false, TEXT("Unhandled Audio::ESpectrumType"));
 		}
 	}
-	SIGNALPROCESSING_API void CrossCorrelate(AlignedFloatBuffer& FirstBuffer, AlignedFloatBuffer& SecondBuffer, AlignedFloatBuffer& OutCorrelation, bool bZeroPad /*= true*/)
+	SIGNALPROCESSING_API void CrossCorrelate(FAlignedFloatBuffer& FirstBuffer, FAlignedFloatBuffer& SecondBuffer, FAlignedFloatBuffer& OutCorrelation, bool bZeroPad /*= true*/)
 	{
 		FrequencyBuffer OutputCorrelationFrequencies;
 		CrossCorrelate(FirstBuffer, SecondBuffer, OutputCorrelationFrequencies, bZeroPad);
@@ -796,7 +796,7 @@ namespace Audio
 		PerformIFFT(FreqDomainData, TimeDomainData);
 	}
 
-	SIGNALPROCESSING_API void CrossCorrelate(AlignedFloatBuffer& FirstBuffer, AlignedFloatBuffer& SecondBuffer, FrequencyBuffer& OutCorrelation, bool bZeroPad /*= true*/)
+	SIGNALPROCESSING_API void CrossCorrelate(FAlignedFloatBuffer& FirstBuffer, FAlignedFloatBuffer& SecondBuffer, FrequencyBuffer& OutCorrelation, bool bZeroPad /*= true*/)
 	{
 		const int32 NumSamples = FMath::Max(FirstBuffer.Num(), SecondBuffer.Num());
 
@@ -1048,7 +1048,7 @@ namespace Audio
 		COLABuffer.AddZeroed(BlockSize);
 	}
 
-	void FFFTConvolver::SetFilter(const AlignedFloatBuffer& TimeDomainBuffer)
+	void FFFTConvolver::SetFilter(const FAlignedFloatBuffer& TimeDomainBuffer)
 	{
 		SetFilter(TimeDomainBuffer.GetData(), TimeDomainBuffer.Num());
 	}

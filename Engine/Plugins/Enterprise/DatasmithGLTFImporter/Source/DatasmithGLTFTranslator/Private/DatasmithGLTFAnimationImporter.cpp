@@ -105,7 +105,7 @@ namespace DatasmithGLTFImporterImpl
 		{
 			float TimeSeconds = FrameRate.AsSeconds(Frame);
 
-			AnimationElement.AddFrame(TransformType, FDatasmithTransformFrameInfo(Frame, ConvertToUE(InterpCurve.Eval(TimeSeconds))));
+			AnimationElement.AddFrame(TransformType, FDatasmithTransformFrameInfo(Frame, (FVector)ConvertToUE(InterpCurve.Eval(TimeSeconds))));
 		}
 	}
 
@@ -121,32 +121,32 @@ namespace DatasmithGLTFImporterImpl
 
 		void ResampleRotation(
 			GLTF::FAnimation::EInterpolation Interpolation,
-			const FQuat* FrameSourceBuffer)
+			const FQuat4f* FrameSourceBuffer)
 		{
-			ResampleTrack<FQuat>(FrameRate, 
+			ResampleTrack<FQuat4f>(FrameRate, 
 				FrameTimeBuffer, FrameSourceBuffer, Interpolation,
-				[](const FQuat& Quat) { return Quat.Euler(); },
+				[](const FQuat4f& Quat) { return Quat.Euler(); },
 				AnimationElement, EDatasmithTransformType::Rotation);
 		}
 
 		void ResampleTranslation(
 			GLTF::FAnimation::EInterpolation Interpolation,
-			const FVector* FrameSourceBuffer,
+			const FVector3f* FrameSourceBuffer,
 			float ScaleFactor)
 		{
-			ResampleTrack<FVector>(FrameRate,
+			ResampleTrack<FVector3f>(FrameRate,
 				FrameTimeBuffer, FrameSourceBuffer, Interpolation,
-				[ScaleFactor](const FVector& Vec) { return Vec * ScaleFactor; },
+				[ScaleFactor](const FVector3f& Vec) { return Vec * ScaleFactor; },
 				AnimationElement, EDatasmithTransformType::Translation);
 		}
 
 		void ResampleScale(
 			GLTF::FAnimation::EInterpolation Interpolation,
-			const FVector* FrameSourceBuffer)
+			const FVector3f* FrameSourceBuffer)
 		{
-			ResampleTrack<FVector>(FrameRate,
+			ResampleTrack<FVector3f>(FrameRate,
 				FrameTimeBuffer, FrameSourceBuffer, Interpolation,
-				[](const FVector& Vec) { return Vec; },
+				[](const FVector3f& Vec) { return Vec; },
 				AnimationElement, EDatasmithTransformType::Scale);
 		}
 
@@ -163,21 +163,45 @@ FDatasmithGLTFAnimationImporter::FDatasmithGLTFAnimationImporter(TArray<GLTF::FL
 {
 }
 
-void FDatasmithGLTFAnimationImporter::CreateAnimations(const GLTF::FAsset& GLTFAsset)
+void FDatasmithGLTFAnimationImporter::CreateAnimations(const GLTF::FAsset& GLTFAsset, bool bAnimationFPSFromFile)
 {
 	using namespace DatasmithGLTFImporterImpl;
 
 	check(CurrentScene);
+	
+	TArray<float> FrameTimes;
 
 	ImportedSequences.Empty();
 	for (const GLTF::FAnimation& Animation : GLTFAsset.Animations)
 	{
 		TSharedRef<IDatasmithLevelSequenceElement> SequenceElement = FDatasmithSceneFactory::CreateLevelSequence(*Animation.Name);
-
+	
 		NodeChannelMap.Empty(GLTFAsset.Nodes.Num() / 2);
+
+		float FramesPerSec = SequenceElement->GetFrameRate();
 
 		for (const GLTF::FAnimation::FChannel& Channel : Animation.Channels)
 		{
+			if (bAnimationFPSFromFile)
+			{
+				// Compute FPS from glTF data
+				const GLTF::FAnimation::FSampler& Sampler = Animation.Samplers[Channel.Sampler];
+
+				FrameTimes.Empty(Sampler.Input.Count);
+				Sampler.Input.GetFloatArray(FrameTimes);
+
+				if (FrameTimes.Num() > 1)
+				{
+					const float StartTime = FrameTimes[0];
+					const float EndTime = FrameTimes.Last();
+
+					if (EndTime > StartTime)
+					{
+						FramesPerSec = FMath::Max(FramesPerSec, static_cast<float>(FrameTimes.Num() - 1) / (EndTime - StartTime));
+					}
+				}
+			}
+
 			if (Channel.Target.Path != GLTF::FAnimation::EPath::Weights)
 			{
 				TArray<GLTF::FAnimation::FChannel>& NodeChannels = NodeChannelMap.FindOrAdd(&Channel.Target.Node);
@@ -187,6 +211,11 @@ void FDatasmithGLTFAnimationImporter::CreateAnimations(const GLTF::FAsset& GLTFA
 				LogMessages.Emplace(GLTF::EMessageSeverity::Error, TEXT("Morph animations aren't supported: ") + Animation.Name);
 		}
 
+		if (bAnimationFPSFromFile)
+		{
+			SequenceElement->SetFrameRate(FramesPerSec);
+		}
+	
 		FFrameRate FrameRate = FFrameRate(FMath::RoundToInt(SequenceElement->GetFrameRate()), 1);
 		for (const auto& NodeChannelPair : NodeChannelMap)
 		{
@@ -242,9 +271,9 @@ uint32 FDatasmithGLTFAnimationImporter::ResampleAnimationFrames(const GLTF::FAni
 		{
 			FrameDataBuffer.SetNumUninitialized(Sampler.Output.Count * 4);
 			// GTFL Accessor public api returns quaternions into FVector4 array
-			Sampler.Output.GetQuatArray(reinterpret_cast<FVector4*>(FrameDataBuffer.GetData()));
+			Sampler.Output.GetQuatArray(reinterpret_cast<FVector4f*>(FrameDataBuffer.GetData()));
 
-			Resampler.ResampleRotation(Sampler.Interpolation, reinterpret_cast<FQuat*>(FrameDataBuffer.GetData()));
+			Resampler.ResampleRotation(Sampler.Interpolation, reinterpret_cast<FQuat4f*>(FrameDataBuffer.GetData()));
 
 			ActiveChannels = ActiveChannels | FDatasmithAnimationUtils::SetChannelTypeComponents(ETransformChannelComponents::All, TransformType);
 			break;
@@ -252,7 +281,7 @@ uint32 FDatasmithGLTFAnimationImporter::ResampleAnimationFrames(const GLTF::FAni
 		case GLTF::FAnimation::EPath::Translation:
 		{
 			FrameDataBuffer.SetNumUninitialized(Sampler.Output.Count * 3);
-			FVector* SourceData = reinterpret_cast<FVector*>(FrameDataBuffer.GetData());
+			FVector3f* SourceData = reinterpret_cast<FVector3f*>(FrameDataBuffer.GetData());
 			Sampler.Output.GetCoordArray(SourceData);
 
 			Resampler.ResampleTranslation(Sampler.Interpolation, SourceData, ScaleFactor);
@@ -263,7 +292,7 @@ uint32 FDatasmithGLTFAnimationImporter::ResampleAnimationFrames(const GLTF::FAni
 		case GLTF::FAnimation::EPath::Scale:
 		{
 			FrameDataBuffer.SetNumUninitialized(Sampler.Output.Count * 3);
-			FVector* SourceData = reinterpret_cast<FVector*>(FrameDataBuffer.GetData());
+			FVector3f* SourceData = reinterpret_cast<FVector3f*>(FrameDataBuffer.GetData());
 			Sampler.Output.GetCoordArray(SourceData);
 
 			Resampler.ResampleScale(Sampler.Interpolation, SourceData);

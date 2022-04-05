@@ -14,7 +14,11 @@
 
 #include "LandscapeProxy.h"
 #include "Landscape.h"
+#include "LandscapeRender.h"
+#include "LandscapeSplineActor.h"
 #include "Engine/Texture2D.h"
+#include "EngineUtils.h"
+
 
 // Register the custom version with core
 FCustomVersionRegistration GRegisterLandscapeCustomVersion(FLandscapeCustomVersion::GUID, FLandscapeCustomVersion::LatestVersion, TEXT("Landscape"));
@@ -25,6 +29,13 @@ public:
 	/** IModuleInterface implementation */
 	void StartupModule() override;
 	void ShutdownModule() override;
+
+private:
+	void OnPostEngineInit();
+	void OnEnginePreExit();
+
+private:
+	TSharedPtr<FLandscapeSceneViewExtension, ESPMode::ThreadSafe> SceneViewExtension;
 };
 
 /**
@@ -46,24 +57,6 @@ void AddPerWorldLandscapeData(UWorld* World)
 		World->PerModuleDataObjects.Add(InfoMap);
 	}
 }
-
-#if WITH_EDITOR
-/**
- * Gets landscape-specific material's static parameters values.
- *
- * @param OutStaticParameterSet A set that should be updated with found parameters values.
- * @param Material Material instance to look for parameters.
- */
-void LandscapeMaterialsParameterValuesGetter(FStaticParameterSet &OutStaticParameterSet, UMaterialInstance* Material);
-
-/**
- * Updates landscape-specific material parameters.
- *
- * @param OutStaticParameterSet A set of parameters.
- * @param Material A material to update.
- */
-bool LandscapeMaterialsParameterSetUpdater(FStaticParameterSet &OutStaticParameterSet, UMaterial* Material);
-#endif // WITH_EDITOR
 
 /**
  * Function that will fire every time a world is created.
@@ -172,23 +165,29 @@ void WorldDuplicateEventFunction(UWorld* World, bool bDuplicateForPIE, TMap<UObj
 	{
 		AddPerWorldLandscapeData(World);
 	}
+
+#if WITH_EDITOR
+	// Fixup LandscapeGuid on World duplication
+	if (!bDuplicateForPIE && !IsRunningCommandlet())
+	{
+		TMap<FGuid, FGuid> NewLandscapeGuids;
+		for (ALandscapeProxy* Proxy : TActorRange<ALandscapeProxy>(World, ALandscapeProxy::StaticClass(), EActorIteratorFlags::SkipPendingKill))
+		{
+			FGuid& NewGuid = NewLandscapeGuids.FindOrAdd(Proxy->GetLandscapeGuid(), FGuid::NewGuid());
+			Proxy->SetLandscapeGuid(NewGuid);
+		}
+
+		for (ALandscapeSplineActor* SplineActor : TActorRange<ALandscapeSplineActor>(World, ALandscapeSplineActor::StaticClass(), EActorIteratorFlags::SkipPendingKill))
+		{
+			FGuid& NewGuid = NewLandscapeGuids.FindOrAdd(SplineActor->GetLandscapeGuid(), FGuid::NewGuid());
+			SplineActor->SetLandscapeGuid(NewGuid);
+		}
+	}
+#endif
 }
 
 void FLandscapeModule::StartupModule()
 {
-#if WITH_EDITOR
-	// This code will execute after your module is loaded into memory (but after global variables are initialized, of course.)
-	UMaterialInstance::CustomStaticParametersGetters.AddStatic(
-		&LandscapeMaterialsParameterValuesGetter
-	);
-
-	UMaterialInstance::CustomParameterSetUpdaters.Add(
-		UMaterialInstance::FCustomParameterSetUpdaterDelegate::CreateStatic(
-			&LandscapeMaterialsParameterSetUpdater
-		)
-	);
-#endif // WITH_EDITOR
-
 	FWorldDelegates::OnPostWorldCreation.AddStatic(
 		&WorldCreationEventFunction
 	);
@@ -205,12 +204,27 @@ void FLandscapeModule::StartupModule()
 	FWorldDelegates::OnPostDuplicate.AddStatic(
 		&WorldDuplicateEventFunction
 	);
+
+	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FLandscapeModule::OnPostEngineInit);
+	FCoreDelegates::OnEnginePreExit.AddRaw(this, &FLandscapeModule::OnEnginePreExit);
+}
+
+void FLandscapeModule::OnPostEngineInit()
+{
+	check(!SceneViewExtension.IsValid());
+	SceneViewExtension = FSceneViewExtensions::NewExtension<FLandscapeSceneViewExtension>();
+}
+
+void FLandscapeModule::OnEnginePreExit()
+{
+	check(SceneViewExtension.IsValid());
+	SceneViewExtension.Reset();
 }
 
 void FLandscapeModule::ShutdownModule()
 {
-	// This function may be called during shutdown to clean up your module.  For modules that support dynamic reloading,
-	// we call this function before unloading the module.
+	FCoreDelegates::OnEnginePreExit.RemoveAll(this);
+	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
 }
 
 IMPLEMENT_MODULE(FLandscapeModule, Landscape);

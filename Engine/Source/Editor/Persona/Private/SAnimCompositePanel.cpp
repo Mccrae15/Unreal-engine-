@@ -84,8 +84,8 @@ void SAnimCompositePanel::Update()
 				.ViewInputMin(ViewInputMin)
 				.ViewInputMax(ViewInputMax)
 				.OnGetNodeColor(this,  &SAnimCompositePanel::HandleGetNodeColor)
-				.TrackMaxValue(Composite->SequenceLength)
-				.TrackNumDiscreteValues(Composite->GetNumberOfFrames())
+				.TrackMaxValue(Composite->GetPlayLength())
+				.TrackNumDiscreteValues(Composite->GetNumberOfSampledKeys())
 				.bChildAnimMontage(AnimMontage && AnimMontage->HasParentAsset())
 				.OnAnimSegmentNodeClicked( this, &SAnimCompositePanel::ShowSegmentInDetailsView )
 				.OnPreAnimUpdate( this, &SAnimCompositePanel::PreAnimUpdate )
@@ -207,12 +207,6 @@ void SAnimCompositePanel::PostUndoRedo()
 	{
 		bIsActiveTimerRegistered = true;
 		RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateSP(this, &SAnimCompositePanel::TriggerRebuildPanel));
-	}
-
-	// when undo or redo happens, we still have to recalculate length, so we can't rely on sequence length changes or not
-	if (Composite->SequenceLength)
-	{
-		Composite->SequenceLength = 0.f;
 	}
 }
 

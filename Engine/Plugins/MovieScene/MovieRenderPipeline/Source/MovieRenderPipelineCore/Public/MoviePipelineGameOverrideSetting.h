@@ -46,7 +46,7 @@ public:
 #endif
 	virtual bool IsValidOnShots() const override { return false; }
 	virtual bool IsValidOnMaster() const override { return true; }
-	virtual void BuildNewProcessCommandLineImpl(FString& InOutUnrealURLParams, FString& InOutCommandLineArgs) const override;
+	virtual void BuildNewProcessCommandLineArgsImpl(TArray<FString>& InOutUnrealURLParams, TArray<FString>& InOutCommandLineArgs, TArray<FString>& InOutDeviceProfileCvars, TArray<FString>& InOutExecCmds) const override;
 	virtual void SetupForPipelineImpl(UMoviePipeline* InPipeline) override;
 	virtual void TeardownForPipelineImpl(UMoviePipeline* InPipeline) override;
 	// Used to ensure we set the default values even if the user forgets to add it.
@@ -123,4 +123,9 @@ private:
 	int32 PreviousNeverMuteNonRealtimeAudio;
 	int32 PreviousSkyLightRealTimeReflectionCaptureTimeSlice;
 	int32 PreviousVolumetricRenderTarget;
+	int32 PreviousIgnoreStreamingPerformance;
+#if WITH_EDITOR
+	int32 PreviousGeoCacheStreamerShowNotification;
+	int32 PreviousGeoCacheStreamerBlockTillFinish;
+#endif
 };

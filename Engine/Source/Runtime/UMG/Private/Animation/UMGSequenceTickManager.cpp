@@ -36,13 +36,21 @@ UUMGSequenceTickManager::UUMGSequenceTickManager(const FObjectInitializer& Init)
 void UUMGSequenceTickManager::AddWidget(UUserWidget* InWidget)
 {
 	TWeakObjectPtr<UUserWidget> WeakWidget = InWidget;
-	WeakUserWidgets.Add(WeakWidget);
+	WeakUserWidgetData.Add(WeakWidget, FSequenceTickManagerWidgetData());
 }
 
 void UUMGSequenceTickManager::RemoveWidget(UUserWidget* InWidget)
 {
 	TWeakObjectPtr<UUserWidget> WeakWidget = InWidget;
-	WeakUserWidgets.Remove(WeakWidget);
+	WeakUserWidgetData.Remove(WeakWidget);
+}
+
+void UUMGSequenceTickManager::OnWidgetTicked(UUserWidget* InWidget)
+{
+	if (FSequenceTickManagerWidgetData* WidgetData = WeakUserWidgetData.Find(InWidget))
+	{
+		WidgetData->bIsTicking = true;
+	}
 }
 
 void UUMGSequenceTickManager::BeginDestroy()
@@ -89,6 +97,8 @@ void UUMGSequenceTickManager::TickWidgetAnimations(float DeltaSeconds)
 	// will queue evaluations on the global sequencer ECS linker. In some specific cases, though (pausing,
 	// stopping, etc.), we might see some blocking (immediate) evaluations running here.
 	//
+	// The WidgetData have one frame delay (they are updated at the end of the frame).
+	// This may delay the animation update by one frame.
 
 	{
 	#if STATS || ENABLE_STATNAMEDEVENTS
@@ -96,9 +106,14 @@ void UUMGSequenceTickManager::TickWidgetAnimations(float DeltaSeconds)
 		FScopeCycleCounterUObject ContextScope(bShouldTrackObject ? this : nullptr);
 	#endif
 
-		for (auto WidgetIter = WeakUserWidgets.CreateIterator(); WidgetIter; ++WidgetIter)
+
+		// Process animations for visible widgets
+		for (auto WidgetIter = WeakUserWidgetData.CreateIterator(); WidgetIter; ++WidgetIter)
 		{
-			UUserWidget* UserWidget = WidgetIter->Get();
+			UUserWidget* UserWidget = WidgetIter.Key().Get();
+			FSequenceTickManagerWidgetData& WidgetData = WidgetIter.Value();
+			WidgetData.bActionsAndAnimationTicked = false;
+
 			if (!UserWidget)
 			{
 				WidgetIter.RemoveCurrent();
@@ -109,6 +124,22 @@ void UUMGSequenceTickManager::TickWidgetAnimations(float DeltaSeconds)
 				UserWidget->AnimationTickManager = nullptr;
 
 				WidgetIter.RemoveCurrent();
+			}
+			else if (!WidgetData.bIsTicking)
+			{
+				// If this widget has not told us it is ticking, and its last known state was
+				// ticking, we disable animations for that widget. Once it ticks again, the animation
+				// will be updated naturally, and doesn't need anything re-enabling.
+				// 
+				// @todo: There is a chance that relative animations hitting this code path will resume with
+				// different relative bases due to the way the ecs data is destroyed and re-created.
+				// In order to fix this we would have to annex that data instead of destroying it.
+				if (WidgetData.bLastKnownTickState)
+				{
+					UserWidget->DisableAnimations();
+				}
+
+				WidgetData.bLastKnownTickState = false;
 			}
 			else
 			{
@@ -124,21 +155,29 @@ void UUMGSequenceTickManager::TickWidgetAnimations(float DeltaSeconds)
 				if (bTickAnimations && UserWidget->IsVisible())
 				{
 					UserWidget->TickActionsAndAnimation(DeltaSeconds);
+					WidgetData.bActionsAndAnimationTicked = true;
 				}
+
+				// Assume this widget will no longer tick, until we're told otherwise by way of OnWidgetTicked
+				WidgetData.bIsTicking = false;
+				WidgetData.bLastKnownTickState = true;
 			}
 		}
 	}
 
 	ForceFlush();
 
-	for (auto WidgetIter = WeakUserWidgets.CreateIterator(); WidgetIter; ++WidgetIter)
+	for (auto WidgetIter = WeakUserWidgetData.CreateIterator(); WidgetIter; ++WidgetIter)
 	{
-		UUserWidget* UserWidget = WidgetIter->Get();
+		UUserWidget* UserWidget = WidgetIter.Key().Get();
 		ensureMsgf(UserWidget, TEXT("Widget became null during animation tick!"));
 
 		if (UserWidget)
 		{
-			UserWidget->PostTickActionsAndAnimation(DeltaSeconds);
+			if (WidgetIter.Value().bActionsAndAnimationTicked)
+			{
+				UserWidget->PostTickActionsAndAnimation(DeltaSeconds);
+			}
 
 			// If this widget no longer has any animations playing, it doesn't need to be ticked any more
 			if (UserWidget->ActiveSequencePlayers.Num() == 0)

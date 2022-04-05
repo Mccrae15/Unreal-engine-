@@ -1,8 +1,10 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MovieScene.h"
+
 #include "MovieSceneTrack.h"
 #include "MovieSceneFolder.h"
+#include "MovieSceneSection.h"
 #include "MovieSceneSequence.h"
 #include "Evaluation/MovieSceneEvaluationCustomVersion.h"
 #include "Compilation/MovieSceneSegmentCompiler.h"
@@ -10,6 +12,8 @@
 #include "Evaluation/IMovieSceneCustomClockSource.h"
 #include "CommonFrameRates.h"
 #include "EntitySystem/IMovieSceneEntityProvider.h"
+#include "Misc/FrameRate.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectHash.h"
 
 #define LOCTEXT_NAMESPACE "MovieScene"
@@ -81,7 +85,6 @@ void UMovieScene::PostLoad()
 
 	Super::PostLoad();
 }
-
 
 void UMovieScene::Serialize( FArchive& Ar )
 {
@@ -331,8 +334,13 @@ bool UMovieScene::ReplacePossessable( const FGuid& OldGuid, const FMovieScenePos
 		{	
 			Modify();
 
+			bool bNullPossessedObjectClass = true;
+#if WITH_EDITORONLY_DATA
+			bNullPossessedObjectClass = InNewPosessable.GetPossessedObjectClass() == nullptr;
+#endif
+
 			// Found it!
-			if (InNewPosessable.GetPossessedObjectClass() == nullptr)
+			if (bNullPossessedObjectClass)
 			{
 				// @todo: delete this when
 				// bool ReplacePossessable(const FGuid& OldGuid, const FGuid& NewGuid, const FString& Name)
@@ -871,7 +879,7 @@ UMovieSceneTrack* UMovieScene::FindTrack(TSubclassOf<UMovieSceneTrack> TrackClas
 
 		for (const auto& Track : Binding.GetTracks())
 		{
-			if (TrackClass.GetDefaultObject() == nullptr ||  Track->GetClass() == TrackClass)
+			if (TrackClass.GetDefaultObject() == nullptr || Track->GetClass()->IsChildOf(TrackClass))
 			{
 				if (TrackName == NAME_None || Track->GetTrackName() == TrackName)
 				{
@@ -884,6 +892,31 @@ UMovieSceneTrack* UMovieScene::FindTrack(TSubclassOf<UMovieSceneTrack> TrackClas
 	return nullptr;
 }
 
+TArray<UMovieSceneTrack*> UMovieScene::FindTracks(TSubclassOf<UMovieSceneTrack> TrackClass, const FGuid& ObjectGuid, const FName& TrackName) const
+{
+	check(ObjectGuid.IsValid());
+	TArray<UMovieSceneTrack*> MovieSceneTracks;
+	for (const auto& Binding : ObjectBindings)
+	{
+		if (Binding.GetObjectGuid() != ObjectGuid)
+		{
+			continue;
+		}
+
+		for (const auto& Track : Binding.GetTracks())
+		{
+			if (TrackClass.GetDefaultObject() == nullptr || Track->GetClass()->IsChildOf(TrackClass))
+			{
+				if (TrackName == NAME_None || Track->GetTrackName() == TrackName)
+				{
+					MovieSceneTracks.Add(Track);
+				}
+			}
+		}
+	}
+
+	return MovieSceneTracks;
+}
 
 UMovieSceneTrack* UMovieScene::AddTrack( TSubclassOf<UMovieSceneTrack> TrackClass, const FGuid& ObjectGuid )
 {
@@ -969,7 +1002,7 @@ UMovieSceneTrack* UMovieScene::FindMasterTrack( TSubclassOf<UMovieSceneTrack> Tr
 
 	for (const auto Track : MasterTracks)
 	{
-		if( Track->GetClass() == TrackClass )
+		if (Track->GetClass()->IsChildOf(TrackClass))
 		{
 			FoundTrack = Track;
 			break;
@@ -1232,7 +1265,14 @@ void UMovieScene::RemoveNullTracks()
 
 void UMovieScene::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UMovieScene::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
 
 #if WITH_EDITORONLY_DATA
 	// compress meta data mappings prior to saving
@@ -1368,6 +1408,49 @@ void UMovieScene::MoveBindingContents(const FGuid& SourceBindingId, const FGuid&
 TSharedPtr<FMovieSceneTimeController> UMovieScene::MakeCustomTimeController(UObject* PlaybackContext)
 {
 	return MakeShared<FMovieSceneTimeController_Custom>(CustomClockSourcePath, PlaybackContext);
+}
+
+FMovieSceneTimecodeSource UMovieScene::GetEarliestTimecodeSource() const
+{
+	FMovieSceneTimecodeSource EarliestTimecodeSource;
+
+#if WITH_EDITORONLY_DATA
+
+	const TArray<UMovieSceneSection*> MovieSceneSections = GetAllSections();
+
+	// Find the first non-default timecode source.
+	const FMovieSceneTimecodeSource DefaultTimecodeSource;
+	int32 Index = 0;
+	while (Index < MovieSceneSections.Num() && EarliestTimecodeSource == DefaultTimecodeSource)
+	{
+		if (MovieSceneSections[Index])
+		{
+			EarliestTimecodeSource = MovieSceneSections[Index]->TimecodeSource;
+		}
+
+		++Index;
+	}
+
+	// Continue searching through the sections where we left off looking for any earlier timecodes.
+	// Any subsequently found default timecode source could be considered earlier.
+	for (; Index < MovieSceneSections.Num(); ++Index)
+	{
+		if (!MovieSceneSections[Index])
+		{
+			continue;
+		}
+
+		const FMovieSceneTimecodeSource SectionTimecodeSource = MovieSceneSections[Index]->TimecodeSource;
+		const FFrameRate ComparisonFrameRate;
+		if (SectionTimecodeSource.Timecode.ToFrameNumber(ComparisonFrameRate) < EarliestTimecodeSource.Timecode.ToFrameNumber(ComparisonFrameRate))
+		{
+			EarliestTimecodeSource = SectionTimecodeSource;
+		}
+	}
+
+#endif
+
+	return EarliestTimecodeSource;
 }
 
 void UMovieScene::SetMarkedFrame(int32 InMarkIndex, FFrameNumber InFrameNumber)

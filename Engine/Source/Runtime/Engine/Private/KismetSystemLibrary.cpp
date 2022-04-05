@@ -99,14 +99,11 @@ FString UKismetSystemLibrary::GetSystemPath(const UObject* Object)
 
 FString UKismetSystemLibrary::GetDisplayName(const UObject* Object)
 {
-#if WITH_EDITOR
 	if (const AActor* Actor = Cast<const AActor>(Object))
 	{
-		return Actor->GetActorLabel();
+		return Actor->GetActorNameOrLabel();
 	}
-#endif
-
-	if (const UActorComponent* Component = Cast<const UActorComponent>(Object))
+	else if (const UActorComponent* Component = Cast<const UActorComponent>(Object))
 	{
 		return Component->GetReadableName();
 	}
@@ -127,6 +124,16 @@ UObject* UKismetSystemLibrary::GetOuterObject(const UObject* Object)
 FString UKismetSystemLibrary::GetEngineVersion()
 {
 	return FEngineVersion::Current().ToString();
+}
+
+FString UKismetSystemLibrary::GetBuildVersion()
+{
+	return FApp::GetBuildVersion();
+}
+
+FString UKismetSystemLibrary::GetBuildConfiguration()
+{
+	return LexToString(FApp::GetBuildConfiguration());
 }
 
 FString UKismetSystemLibrary::GetGameName()
@@ -227,8 +234,13 @@ bool UKismetSystemLibrary::IsStandalone(const UObject* WorldContextObject)
 
 bool UKismetSystemLibrary::IsSplitScreen(const UObject* WorldContextObject)
 {
+	return HasMultipleLocalPlayers(WorldContextObject);
+}
+
+bool UKismetSystemLibrary::HasMultipleLocalPlayers(const UObject* WorldContextObject)
+{
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	return World ? GEngine->IsSplitScreen(World) : false;
+	return World ? GEngine->HasMultipleLocalPlayers(World) : false;
 }
 
 bool UKismetSystemLibrary::IsPackagedForDistribution()
@@ -246,12 +258,31 @@ FString UKismetSystemLibrary::GetDeviceId()
 	return FPlatformMisc::GetDeviceId();
 }
 
+UClass* UKismetSystemLibrary::Conv_ObjectToClass(UObject* Object, TSubclassOf<UObject> Class)
+{
+	return Cast<UClass>(Object);
+}
+
 UObject* UKismetSystemLibrary::Conv_InterfaceToObject(const FScriptInterface& Interface)
 {
 	return Interface.GetObject();
 }
 
-void UKismetSystemLibrary::PrintString(const UObject* WorldContextObject, const FString& InString, bool bPrintToScreen, bool bPrintToLog, FLinearColor TextColor, float Duration)
+void UKismetSystemLibrary::LogString(const FString& InString, bool bPrintToLog)
+{
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) // Do not Print in Shipping or Test
+	if(bPrintToLog)
+	{
+		UE_LOG(LogBlueprintUserMessages, Log, TEXT("%s"), *InString);
+	}
+	else
+	{
+		UE_LOG(LogBlueprintUserMessages, Verbose, TEXT("%s"), *InString);
+	}	
+#endif
+}
+
+void UKismetSystemLibrary::PrintString(const UObject* WorldContextObject, const FString& InString, bool bPrintToScreen, bool bPrintToLog, FLinearColor TextColor, float Duration, const FName Key)
 {
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) // Do not Print in Shipping or Test
 
@@ -313,7 +344,12 @@ void UKismetSystemLibrary::PrintString(const UObject* WorldContextObject, const 
 			{
 				GConfig->GetFloat( TEXT("Kismet"), TEXT("PrintStringDuration"), Duration, GEngineIni );
 			}
-			GEngine->AddOnScreenDebugMessage((uint64)-1, Duration, TextColor.ToFColor(true), FinalDisplayString);
+			uint64 InnerKey = -1;
+			if (Key != NAME_None)
+			{
+				InnerKey = GetTypeHash(Key);
+			}
+			GEngine->AddOnScreenDebugMessage(InnerKey, Duration, TextColor.ToFColor(true), FinalDisplayString);
 		}
 		else
 		{
@@ -323,10 +359,10 @@ void UKismetSystemLibrary::PrintString(const UObject* WorldContextObject, const 
 #endif
 }
 
-void UKismetSystemLibrary::PrintText(const UObject* WorldContextObject, const FText InText, bool bPrintToScreen, bool bPrintToLog, FLinearColor TextColor, float Duration)
+void UKismetSystemLibrary::PrintText(const UObject* WorldContextObject, const FText InText, bool bPrintToScreen, bool bPrintToLog, FLinearColor TextColor, float Duration, const FName Key)
 {
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) // Do not Print in Shipping or Test
-	PrintString(WorldContextObject, InText.ToString(), bPrintToScreen, bPrintToLog, TextColor, Duration);
+	PrintString(WorldContextObject, InText.ToString(), bPrintToScreen, bPrintToLog, TextColor, Duration, Key);
 #endif
 }
 
@@ -468,6 +504,28 @@ FTimerHandle UKismetSystemLibrary::K2_SetTimer(UObject* Object, FString Function
 	return K2_SetTimerDelegate(Delegate, Time, bLooping, InitialStartDelay);
 }
 
+FTimerHandle UKismetSystemLibrary::K2_SetTimerForNextTick(UObject* Object, FString FunctionName)
+{
+	FName const FunctionFName(*FunctionName);
+
+	if (Object)
+	{
+		UFunction* const Func = Object->FindFunction(FunctionFName);
+		if (Func && (Func->ParmsSize > 0))
+		{
+			// User passed in a valid function, but one that takes parameters
+			// FTimerDynamicDelegate expects zero parameters and will choke on execution if it tries
+			// to execute a mismatched function
+			UE_LOG(LogBlueprintUserMessages, Warning, TEXT("SetTimerForNextTick passed a function (%s) that expects parameters."), *FunctionName);
+			return FTimerHandle();
+		}
+	}
+
+	FTimerDynamicDelegate Delegate;
+	Delegate.BindUFunction(Object, FunctionFName);
+	return K2_SetTimerForNextTickDelegate(Delegate);
+}
+
 FTimerHandle UKismetSystemLibrary::K2_SetTimerDelegate(FTimerDynamicDelegate Delegate, float Time, bool bLooping, float InitialStartDelay, float InitialStartDelayVariance)
 {
 	FTimerHandle Handle;
@@ -493,6 +551,28 @@ FTimerHandle UKismetSystemLibrary::K2_SetTimerDelegate(FTimerDynamicDelegate Del
 	{
 		UE_LOG(LogBlueprintUserMessages, Warning, 
 			TEXT("SetTimer passed a bad function (%s) or object (%s)"),
+			*Delegate.GetFunctionName().ToString(), *GetNameSafe(Delegate.GetUObject()));
+	}
+
+	return Handle;
+}
+
+FTimerHandle UKismetSystemLibrary::K2_SetTimerForNextTickDelegate(FTimerDynamicDelegate Delegate)
+{
+	FTimerHandle Handle;
+	if (Delegate.IsBound())
+	{
+		const UWorld* const World = GEngine->GetWorldFromContextObject(Delegate.GetUObject(), EGetWorldErrorMode::LogAndReturnNull);
+		if (World)
+		{
+			FTimerManager& TimerManager = World->GetTimerManager();
+			Handle = TimerManager.SetTimerForNextTick(Delegate);
+		}
+	}
+	else
+	{
+		UE_LOG(LogBlueprintUserMessages, Warning,
+			TEXT("SetTimerForNextTick passed a bad function (%s) or object (%s)"),
 			*Delegate.GetFunctionName().ToString(), *GetNameSafe(Delegate.GetUObject()));
 	}
 
@@ -910,6 +990,24 @@ void UKismetSystemLibrary::SetFloatPropertyByName(UObject* Object, FName Propert
 	}
 }
 
+void UKismetSystemLibrary::SetDoublePropertyByName(UObject* Object, FName PropertyName, double Value)
+{
+	if (Object != nullptr)
+	{
+		if (FDoubleProperty* DoubleProp = FindFProperty<FDoubleProperty>(Object->GetClass(), PropertyName))
+		{
+			DoubleProp->SetPropertyValue_InContainer(Object, Value);
+		}
+		// It's entirely possible that the property refers to a native float property,
+		// so we need to make that check here.
+		else if (FFloatProperty* FloatProp = FindFProperty<FFloatProperty>(Object->GetClass(), PropertyName))
+		{
+			float floatValue = static_cast<float>(Value);
+			FloatProp->SetPropertyValue_InContainer(Object, floatValue);
+		}
+	}
+}
+
 void UKismetSystemLibrary::SetBoolPropertyByName(UObject* Object, FName PropertyName, bool Value)
 {
 	if(Object != NULL)
@@ -1130,10 +1228,10 @@ TSoftClassPtr<UObject> UKismetSystemLibrary::Conv_ClassToSoftClassReference(cons
 
 void UKismetSystemLibrary::SetTextPropertyByName(UObject* Object, FName PropertyName, const FText& Value)
 {
-	if(Object != NULL)
+	if(Object != nullptr)
 	{
 		FTextProperty* TextProp = FindFProperty<FTextProperty>(Object->GetClass(), PropertyName);
-		if(TextProp != NULL)
+		if(TextProp != nullptr)
 		{
 			TextProp->SetPropertyValue_InContainer(Object, Value);
 		}		
@@ -1142,24 +1240,37 @@ void UKismetSystemLibrary::SetTextPropertyByName(UObject* Object, FName Property
 
 void UKismetSystemLibrary::SetVectorPropertyByName(UObject* Object, FName PropertyName, const FVector& Value)
 {
-	if(Object != NULL)
+	if(Object != nullptr)
 	{
 		UScriptStruct* VectorStruct = TBaseStructure<FVector>::Get();
 		FStructProperty* VectorProp = FindFProperty<FStructProperty>(Object->GetClass(), PropertyName);
-		if(VectorProp != NULL && VectorProp->Struct == VectorStruct)
+		if(VectorProp != nullptr && VectorProp->Struct == VectorStruct)
 		{
 			*VectorProp->ContainerPtrToValuePtr<FVector>(Object) = Value;
 		}		
 	}
 }
 
+void UKismetSystemLibrary::SetVector3fPropertyByName(UObject* Object, FName PropertyName, const FVector3f& Value)
+{
+	if (Object != nullptr)
+	{
+		UScriptStruct* Vector3fStruct = TVariantStructure<FVector3f>::Get();
+		FStructProperty* Vector3fProp = FindFProperty<FStructProperty>(Object->GetClass(), PropertyName);
+		if (Vector3fProp != nullptr && Vector3fProp->Struct == Vector3fStruct)
+		{
+			*Vector3fProp->ContainerPtrToValuePtr<FVector3f>(Object) = Value;
+		}
+	}
+}
+
 void UKismetSystemLibrary::SetRotatorPropertyByName(UObject* Object, FName PropertyName, const FRotator& Value)
 {
-	if(Object != NULL)
+	if(Object != nullptr)
 	{
 		UScriptStruct* RotatorStruct = TBaseStructure<FRotator>::Get();
 		FStructProperty* RotatorProp = FindFProperty<FStructProperty>(Object->GetClass(), PropertyName);
-		if(RotatorProp != NULL && RotatorProp->Struct == RotatorStruct)
+		if(RotatorProp != nullptr && RotatorProp->Struct == RotatorStruct)
 		{
 			*RotatorProp->ContainerPtrToValuePtr<FRotator>(Object) = Value;
 		}		
@@ -1194,11 +1305,11 @@ void UKismetSystemLibrary::SetColorPropertyByName(UObject* Object, FName Propert
 
 void UKismetSystemLibrary::SetTransformPropertyByName(UObject* Object, FName PropertyName, const FTransform& Value)
 {
-	if(Object != NULL)
+	if(Object != nullptr)
 	{
 		UScriptStruct* TransformStruct = TBaseStructure<FTransform>::Get();
 		FStructProperty* TransformProp = FindFProperty<FStructProperty>(Object->GetClass(), PropertyName);
-		if(TransformProp != NULL && TransformProp->Struct == TransformStruct)
+		if(TransformProp != nullptr && TransformProp->Struct == TransformStruct)
 		{
 			*TransformProp->ContainerPtrToValuePtr<FTransform>(Object) = Value;
 		}		
@@ -1213,10 +1324,10 @@ void UKismetSystemLibrary::SetCollisionProfileNameProperty(UObject* Object, FNam
 
 void UKismetSystemLibrary::Generic_SetStructurePropertyByName(UObject* OwnerObject, FName StructPropertyName, const void* SrcStructAddr)
 {
-	if (OwnerObject != NULL)
+	if (OwnerObject != nullptr)
 	{
 		FStructProperty* StructProp = FindFProperty<FStructProperty>(OwnerObject->GetClass(), StructPropertyName);
-		if (StructProp != NULL)
+		if (StructProp != nullptr)
 		{
 			void* Dest = StructProp->ContainerPtrToValuePtr<void>(OwnerObject);
 			StructProp->CopyValuesInternal(Dest, SrcStructAddr, 1);
@@ -2169,6 +2280,18 @@ void UKismetSystemLibrary::Delay(const UObject* WorldContextObject, float Durati
 		if (LatentActionManager.FindExistingAction<FDelayAction>(LatentInfo.CallbackTarget, LatentInfo.UUID) == NULL)
 		{
 			LatentActionManager.AddNewAction(LatentInfo.CallbackTarget, LatentInfo.UUID, new FDelayAction(Duration, LatentInfo));
+		}
+	}
+}
+
+void UKismetSystemLibrary::DelayUntilNextTick(const UObject* WorldContextObject, FLatentActionInfo LatentInfo)
+{
+	if (UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull))
+	{
+		FLatentActionManager& LatentActionManager = World->GetLatentActionManager();
+		if (LatentActionManager.FindExistingAction<FDelayAction>(LatentInfo.CallbackTarget, LatentInfo.UUID) == NULL)
+		{
+			LatentActionManager.AddNewAction(LatentInfo.CallbackTarget, LatentInfo.UUID, new FDelayUntilNextTickAction(LatentInfo));
 		}
 	}
 }

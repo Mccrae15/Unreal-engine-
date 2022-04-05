@@ -6,7 +6,8 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -120,12 +121,12 @@ namespace UnrealBuildTool
 			}
 		}
 
-		private static List<InstalledPlatformConfiguration> InstalledPlatformConfigurations;
+		private static List<InstalledPlatformConfiguration>? InstalledPlatformConfigurations;
 
 		static InstalledPlatformInfo()
 		{
-			List<string> InstalledPlatforms;
-			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, (DirectoryReference)null, BuildHostPlatform.Current.Platform);
+			List<string>? InstalledPlatforms;
+			ConfigHierarchy Ini = ConfigCache.ReadHierarchy(ConfigHierarchyType.Engine, (DirectoryReference?)null, BuildHostPlatform.Current.Platform);
 
 			bool bHasInstalledPlatformInfo;
 			if(Ini.TryGetValue("InstalledPlatforms", "HasInstalledPlatformInfo", out bHasInstalledPlatformInfo) && bHasInstalledPlatformInfo)
@@ -203,7 +204,7 @@ namespace UnrealBuildTool
 			string RequiredFile;
 			if (ParseSubValue(PlatformConfiguration, "RequiredFile=", out RequiredFile))
 			{
-				RequiredFile = FileReference.Combine(UnrealBuildTool.RootDirectory, RequiredFile).ToString();
+				RequiredFile = FileReference.Combine(Unreal.RootDirectory, RequiredFile).ToString();
 			}
 
 			string ProjectTypeName;
@@ -227,7 +228,7 @@ namespace UnrealBuildTool
 
 			if (bCanCreateEntry)
 			{
-				InstalledPlatformConfigurations.Add(new InstalledPlatformConfiguration(Configuration, UnrealTargetPlatform.Parse(PlatformName), PlatformType, Architecture, RequiredFile, ProjectType, bCanBeDisplayed));
+				InstalledPlatformConfigurations!.Add(new InstalledPlatformConfiguration(Configuration, UnrealTargetPlatform.Parse(PlatformName), PlatformType, Architecture, RequiredFile, ProjectType, bCanBeDisplayed));
 			}
 		}
 
@@ -288,7 +289,7 @@ namespace UnrealBuildTool
 		public static bool IsValidPlatform(UnrealTargetPlatform Platform, EProjectType ProjectType = EProjectType.Any)
 		{
 			// HACK: For installed builds, we always need to treat Mac as a valid platform for generating project files. When remote building from PC, we won't have all the libraries to do this, so we need to fake it.
-			if(Platform == UnrealTargetPlatform.Mac && ProjectType == EProjectType.Any && BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac && UnrealBuildTool.IsEngineInstalled())
+			if(Platform == UnrealTargetPlatform.Mac && ProjectType == EProjectType.Any && BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac && Unreal.IsEngineInstalled())
 			{
 				return true;
 			}
@@ -333,7 +334,7 @@ namespace UnrealBuildTool
 		/// <returns>True if the target can be built</returns>
 		public static bool IsValid(TargetType? TargetType, UnrealTargetPlatform? Platform, UnrealTargetConfiguration? Configuration, EProjectType ProjectType, InstalledPlatformState State)
 		{
-			if(!UnrealBuildTool.IsEngineInstalled() || InstalledPlatformConfigurations == null)
+			if(!Unreal.IsEngineInstalled() || InstalledPlatformConfigurations == null)
 			{
 				return true;
 			}
@@ -371,7 +372,7 @@ namespace UnrealBuildTool
 
 		private static bool ContainsValidConfiguration(Predicate<InstalledPlatformConfiguration> ConfigFilter)
 		{
-			if (UnrealBuildTool.IsEngineInstalled() && InstalledPlatformConfigurations != null)
+			if (Unreal.IsEngineInstalled() && InstalledPlatformConfigurations != null)
 			{
 				foreach (InstalledPlatformConfiguration PlatformConfiguration in InstalledPlatformConfigurations)
 				{

@@ -13,14 +13,23 @@
  */
 struct FIntVector
 {
-	/** Holds the point's x-coordinate. */
-	int32 X;
-	
-	/** Holds the point's y-coordinate. */
-	int32 Y;
+	union
+	{
+		struct
+		{
+			/** Holds the point's x-coordinate. */
+			int32 X;
 
-	/**  Holds the point's z-coordinate. */
-	int32 Z;
+			/** Holds the point's y-coordinate. */
+			int32 Y;
+
+			/**  Holds the point's z-coordinate. */
+			int32 Z;
+		};
+
+		UE_DEPRECATED(all, "For internal use only")
+		int32 XYZ[3];
+	};
 
 public:
 
@@ -344,25 +353,33 @@ FORCEINLINE FIntVector::FIntVector( EForceInit )
 
 FORCEINLINE const int32& FIntVector::operator()( int32 ComponentIndex ) const
 {
-	return (&X)[ComponentIndex];
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return XYZ[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 
 FORCEINLINE int32& FIntVector::operator()( int32 ComponentIndex )
 {
-	return (&X)[ComponentIndex];
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return XYZ[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 
 FORCEINLINE const int32& FIntVector::operator[]( int32 ComponentIndex ) const
 {
-	return (&X)[ComponentIndex];
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return XYZ[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 
 FORCEINLINE int32& FIntVector::operator[]( int32 ComponentIndex )
 {
-	return (&X)[ComponentIndex];
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return XYZ[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FORCEINLINE bool FIntVector::operator==( const FIntVector& Other ) const
@@ -527,9 +544,142 @@ FORCEINLINE uint32 GetTypeHash(const FIntVector& Vector)
 	return FCrc::MemCrc_DEPRECATED(&Vector,sizeof(FIntVector));
 }
 
+struct FIntVector2
+{
+	union
+	{
+		struct
+		{
+			int32 X, Y;
+		};
+
+		UE_DEPRECATED(all, "For internal use only")
+		int32 XY[2];
+	};
+
+	FORCEINLINE FIntVector2()
+	{
+	}
+
+	FORCEINLINE FIntVector2(int32 InX, int32 InY)
+		: X(InX)
+		, Y(InY)
+	{
+	}
+
+	FORCEINLINE explicit FIntVector2(int32 InValue)
+		: X(InValue)
+		, Y(InValue)
+	{
+	}
+
+	FORCEINLINE FIntVector2(EForceInit)
+		: X(0)
+		, Y(0)
+	{
+	}
+
+	FORCEINLINE const int32& operator[](int32 ComponentIndex) const
+	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XY[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+
+	FORCEINLINE int32& operator[](int32 ComponentIndex)
+	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XY[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	FORCEINLINE bool operator==(const FIntVector2& Other) const
+	{
+		return X==Other.X && Y==Other.Y;
+	}
+
+
+	FORCEINLINE bool operator!=(const FIntVector2& Other) const
+	{
+		return X!=Other.X || Y!=Other.Y;
+	}
+};
+
+struct FUintVector2
+{
+	union
+	{
+		struct
+		{
+			uint32 X, Y;
+		};
+
+		UE_DEPRECATED(all, "For internal use only")
+		uint32 XY[2];
+	};
+
+	FORCEINLINE FUintVector2()
+	{
+	}
+
+	FORCEINLINE FUintVector2(uint32 InX, uint32 InY)
+		: X(InX)
+		, Y(InY)
+	{
+	}
+
+	FORCEINLINE explicit FUintVector2(uint32 InValue)
+		: X(InValue)
+		, Y(InValue)
+	{
+	}
+
+	FORCEINLINE FUintVector2(EForceInit)
+		: X(0)
+		, Y(0)
+	{
+	}
+
+	FORCEINLINE const uint32& operator[](int32 ComponentIndex) const
+	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XY[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+
+	FORCEINLINE uint32& operator[](int32 ComponentIndex)
+	{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XY[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	FORCEINLINE bool operator==(const FUintVector2& Other) const
+	{
+		return X==Other.X && Y==Other.Y;
+	}
+
+
+	FORCEINLINE bool operator!=(const FUintVector2& Other) const
+	{
+		return X!=Other.X || Y!=Other.Y;
+	}
+};
+
 struct FIntVector4
 {
-	int32 X, Y, Z, W;
+	union
+	{
+		struct
+		{
+			int32 X, Y, Z, W;
+		};
+
+		UE_DEPRECATED(all, "For internal use only")
+		int32 XYZW[4];
+	};
 
 	FORCEINLINE FIntVector4()
 	{
@@ -548,6 +698,14 @@ struct FIntVector4
 		, Y(InValue)
 		, Z(InValue)
 		, W(InValue)
+	{
+	}
+
+	FORCEINLINE explicit FIntVector4(const FIntVector& InValue, int32 InW = 0)
+		: X(InValue.X)
+		, Y(InValue.Y)
+		, Z(InValue.Z)
+		, W(InW)
 	{
 	}
 
@@ -722,30 +880,38 @@ struct FIntVector4
 
 FORCEINLINE const int32& FIntVector4::operator()(int32 ComponentIndex) const
 {
-	return (&X)[ComponentIndex];
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return XYZW[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 
 FORCEINLINE int32& FIntVector4::operator()(int32 ComponentIndex)
 {
-	return (&X)[ComponentIndex];
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return XYZW[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 
 FORCEINLINE const int32& FIntVector4::operator[](int32 ComponentIndex) const
 {
-	return (&X)[ComponentIndex];
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return XYZW[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 
 FORCEINLINE int32& FIntVector4::operator[](int32 ComponentIndex)
 {
-	return (&X)[ComponentIndex];
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return XYZW[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 FORCEINLINE bool FIntVector4::operator==(const FIntVector4& Other) const
 {
-	return X == Other.X && Y == Other.Y && Z == Other.Z;
+	return X == Other.X && Y == Other.Y && Z == Other.Z && W == Other.W;
 }
 
 
@@ -860,7 +1026,16 @@ FORCEINLINE FIntVector4 FIntVector4::operator^(int32 Value) const
 
 struct FUintVector4
 {
-	uint32 X, Y, Z, W;
+	union
+	{
+		struct
+		{
+			uint32 X, Y, Z, W;
+		};
+
+		UE_DEPRECATED(all, "For internal use only")
+		uint32 XYZW[4];
+	};
 
 	FORCEINLINE FUintVector4()
 	{
@@ -892,13 +1067,17 @@ struct FUintVector4
 
 	FORCEINLINE const uint32& operator[](int32 ComponentIndex) const
 	{
-		return (&X)[ComponentIndex];
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XYZW[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 
 	FORCEINLINE uint32& operator[](int32 ComponentIndex)
 	{
-		return (&X)[ComponentIndex];
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return XYZW[ComponentIndex];
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FORCEINLINE bool operator==(const FUintVector4& Other) const

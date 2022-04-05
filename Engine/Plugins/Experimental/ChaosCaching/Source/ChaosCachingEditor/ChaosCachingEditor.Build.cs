@@ -24,7 +24,9 @@ namespace UnrealBuildTool.Rules
 					"BlueprintGraph",
 					"ToolMenus",
 					"PhysicsCore",
-					"ChaosCaching"
+					"ChaosCaching",
+					"GeometryCollectionEngine",
+					"LevelEditor"
 				});
 
 			SetupModulePhysicsSupport(Target);

@@ -81,6 +81,46 @@ protected:
 	ECheckBoxState IsTestEnabled( ) const;
 
 	/**
+	* Is the test inside exclude list. This info is taken from Config/DefaultEngine.ini, section [AutomationTestExcludelist].
+	*
+	* @return true if the test is inside the exclude list.
+	*/
+	ECheckBoxState IsToBeSkipped() const;
+
+	/**
+	* Is the test inside exclude list through direct exclusion (not through propagation).
+	*
+	* @return true if the test is inside the exclude list by direct exclusion.
+	*/
+	bool IsDirectlyExcluded() const;
+
+	/**
+	* Return the visibility state based on exclude state.
+	*/
+	EVisibility IsDirectlyExcluded_GetVisibility() const;
+
+	/**
+	* Reason for the exclusion
+	*
+	* @return the exclusion reason
+	*/
+	FText GetExcludeReason() const;
+
+	/**
+	* Add or remove test from exclude list. It will change Config/DefaultEngine.ini, section [AutomationTestExcludelist].
+	*
+	* @param if true, add this item to exclude list, remove otherwise.
+	*/
+	void SetSkipFlag(ECheckBoxState Enable);
+
+	/**
+	* Open Exclude test options editor
+	*
+	* @return respond of dialog
+	*/
+	FReply OnEditExcludeOptionsClicked();
+
+	/**
 	 * Returns color that indicates test status per cluster.
 	 *
 	 * @param ClusterIndex The cluster index.
@@ -105,6 +145,15 @@ protected:
 	EVisibility ItemStatus_GetStatusVisibility( const int32 ClusterIndex, const bool bForInProcessThrobber ) const;
 
 	/**
+	 * Helper for internal nodes to ensure throbber is visible when children are in process and icon is visible when children completed.
+	 *
+	 * @param ClusterIndex The cluster index.
+	 * @param bForInProcessThrobber If throbbing is in process.
+	 * @return The visibility state.
+	 */
+	EVisibility ItemStatus_GetChildrenStatusVisibility( const int32 ClusterIndex, const bool bForInProcessThrobber ) const;
+
+	/**
 	 * Color of progress bar for internal tree test nodes.
 	 *
 	 * @param ClusterIndex The cluster index.
@@ -127,6 +176,14 @@ protected:
 	 * @return the status image.
 	 */
 	const FSlateBrush* ItemStatus_StatusImage( const int32 ClusterIndex ) const;
+
+	/**
+	 * Returns image that denotes the status of a test category as implied by its children, on the given platform cluster.
+	 *
+	 * @param ClusterIndex The cluster index.
+	 * @return the status image.
+	 */
+	const FSlateBrush* ItemChildrenStatus_StatusImage(const int32 ClusterIndex) const;
 	
 	/**
 	 * The number of participants required for this test item in string form.

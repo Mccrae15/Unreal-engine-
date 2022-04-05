@@ -4,12 +4,13 @@
 
 #include "Engine.h"
 #include "HAL/Runnable.h"
+#include "Trace/Analysis.h"
 
 class FEvent;
 class FRunnableThread;
 
-namespace Trace
-{
+namespace UE {
+namespace Trace {
 
 ////////////////////////////////////////////////////////////////////////////////
 class FAnalysisProcessor::FImpl
@@ -34,3 +35,4 @@ private:
 };
 
 } // namespace Trace
+} // namespace UE

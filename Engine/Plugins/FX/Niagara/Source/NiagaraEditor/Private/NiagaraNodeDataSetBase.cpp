@@ -230,6 +230,11 @@ bool UNiagaraNodeDataSetBase::GetSupportedNiagaraTypeDef(const FProperty* Proper
 		TypeDef = FNiagaraTypeDefinition::GetFloatDef();
 		return true;
 	}
+	else if (Property->IsA(FDoubleProperty::StaticClass()))
+	{
+		TypeDef = FNiagaraTypeDefinition::GetFloatDef();
+		return true;
+	}
 	else if (Property->IsA(FBoolProperty::StaticClass()))
 	{
 		TypeDef = FNiagaraTypeDefinition::GetBoolDef();
@@ -260,6 +265,11 @@ bool UNiagaraNodeDataSetBase::GetSupportedNiagaraTypeDef(const FProperty* Proper
 		TypeDef = FNiagaraTypeDefinition::GetColorDef();
 		return true;
 	}
+	else if (StructProp && StructProp->Struct == FNiagaraTypeDefinition::GetPositionStruct())
+	{
+		TypeDef = FNiagaraTypeDefinition::GetPositionDef();
+		return true;
+	}
 	else if (StructProp && StructProp->Struct == FNiagaraTypeDefinition::GetQuatStruct())
 	{
 		TypeDef = FNiagaraTypeDefinition::GetQuatDef();
@@ -267,8 +277,8 @@ bool UNiagaraNodeDataSetBase::GetSupportedNiagaraTypeDef(const FProperty* Proper
 	}
 	else if (StructProp && StructProp->Struct)
 	{
-		TypeDef = FNiagaraTypeDefinition(StructProp->Struct);
-		return FNiagaraTypeRegistry::GetRegisteredPayloadTypes().Contains(TypeDef);
+		TypeDef = FNiagaraTypeDefinition(FNiagaraTypeHelper::FindNiagaraFriendlyTopLevelStruct(StructProp->Struct, ENiagaraStructConversion::UserFacing));
+		return FNiagaraTypeRegistry::GetRegisteredParameterTypes().Contains(TypeDef);
 	}
 	return false;
 }

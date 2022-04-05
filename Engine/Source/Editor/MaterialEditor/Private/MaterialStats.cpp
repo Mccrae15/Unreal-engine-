@@ -67,7 +67,7 @@ void FShaderPlatformSettings::ClearResources()
 			PlatformData[i].MaterialResourcesStats = nullptr;
 		}
 
-		PlatformData[i].ArrShaderNames.Empty();
+		PlatformData[i].ArrShaderEntries.Empty();
 
 		PlatformData[i].bCompilingShaders = false;
 		PlatformData[i].bNeedShaderRecompilation = true;
@@ -78,19 +78,19 @@ void FShaderPlatformSettings::ClearResources()
 
 FText FShaderPlatformSettings::GetSelectedShaderViewComboText(EMaterialQualityLevel::Type QualityLevel) const
 {
-	if (PlatformData[QualityLevel].ArrShaderNames.Num() == 0)
+	if (PlatformData[QualityLevel].ArrShaderEntries.Num() == 0)
 	{
 		return FText::FromString(TEXT("-Compiling-Shaders-"));
 	}
 
-	return FText::FromName(PlatformData[QualityLevel].ComboBoxSelectedName);
+	return FText::FromString(PlatformData[QualityLevel].ComboBoxSelectedEntry.Text);
 }
 
-void FShaderPlatformSettings::OnShaderViewComboSelectionChanged(TSharedPtr<FName> Item, EMaterialQualityLevel::Type QualityType)
+void FShaderPlatformSettings::OnShaderViewComboSelectionChanged(TSharedPtr<FMaterialShaderEntry> Item, EMaterialQualityLevel::Type QualityType)
 {
 	if (Item.IsValid())
 	{
-		PlatformData[QualityType].ComboBoxSelectedName = *Item.Get();
+		PlatformData[QualityType].ComboBoxSelectedEntry = *Item.Get();
 		PlatformData[QualityType].bUpdateShaderCode = true;
 	}
 }
@@ -113,16 +113,21 @@ FText FShaderPlatformSettings::GetShaderCode(const EMaterialQualityLevel::Type Q
 	// check if shader compilation is done and extract shader code
 	if (bCompilationFinished)
 	{
-		TMap<FHashedName, TShaderRef<FShader>> ShaderMap;
+		TMap<FShaderId, TShaderRef<FShader>> ShaderMap;
 		MaterialShaderMap->GetShaderList(ShaderMap);
 
-		const auto Entry = ShaderMap.Find(PlatformData[QualityType].ComboBoxSelectedName);
+		const FShaderId& ShaderId = PlatformData[QualityType].ComboBoxSelectedEntry.ShaderId;
+
+		const auto Entry = ShaderMap.Find(ShaderId);
 		if (Entry != nullptr)
 		{
 			const TShaderRef<FShader>& Shader = *Entry;
 
-			const FName ShaderFName = Shader.GetType()->GetFName();
-			const FMemoryImageString* ShaderSource = MaterialShaderMap->GetShaderSource(ShaderFName);
+			static FName NAME_NullVF(TEXT("NullVF"));
+			FVertexFactoryType* VertexFactory = Shader.GetVertexFactoryType();
+			const FName VertexFactoryName = VertexFactory ? VertexFactory->GetFName() : NAME_NullVF;
+			const FName ShaderTypeName = Shader.GetType()->GetFName();
+			const FMemoryImageString* ShaderSource = MaterialShaderMap->GetShaderSource(VertexFactoryName, ShaderTypeName);
 			if (ShaderSource != nullptr)
 			{
 				PlatformData[QualityType].bUpdateShaderCode = false;
@@ -174,6 +179,9 @@ bool FShaderPlatformSettings::CheckShaders()
 {
 	bool bRetValue = false;
 
+	// prevent stats 
+	const double kMinimumTimeBetweenCompilationsSeconds = 5.0;
+
 	if (Material != nullptr)
 	{
 		// check and triggers shader recompilation if needed
@@ -181,7 +189,8 @@ bool FShaderPlatformSettings::CheckShaders()
 		{
 			auto &Data = PlatformData[QualityLevelIndex];
 			const bool bNeedsShaders = (bPresentInGrid && Data.bExtractStats) || Data.bExtractCode;
-			if (Data.bNeedShaderRecompilation && bNeedsShaders)
+			const double CurrentTime = FPlatformTime::Seconds();
+			if (Data.bNeedShaderRecompilation && bNeedsShaders && (CurrentTime - Data.LastTimeCompilationRequested) > kMinimumTimeBetweenCompilationsSeconds)
 			{
 				Data.MaterialResourcesStats->CancelCompilation();
 
@@ -189,9 +198,10 @@ bool FShaderPlatformSettings::CheckShaders()
 
 				if (MaterialInstance != nullptr)
 				{
-					MaterialInstance->UpdateCachedLayerParameters();
+					MaterialInstance->UpdateCachedData();
 				}
 
+				Data.LastTimeCompilationRequested = CurrentTime;
 				Data.MaterialResourcesStats->CacheShaders(PlatformShaderID);
 
 				Data.bCompilingShaders = true;
@@ -233,15 +243,23 @@ bool FShaderPlatformSettings::Update()
 					TMap<FShaderId, TShaderRef<FShader>> ShaderMap;
 					MaterialShaderMap->GetShaderList(ShaderMap);
 
-					QualityItem.ArrShaderNames.Empty();
+					QualityItem.ArrShaderEntries.Empty();
 					for (const auto& Entry : ShaderMap)
 					{
-						QualityItem.ArrShaderNames.Add(MakeShareable(new FName(Entry.Value.GetType()->GetFName())));
+						FShaderType* EntryShader = Entry.Value.GetType();
+						FVertexFactoryType* VertexFactory = Entry.Value.GetVertexFactoryType();
+						FString ShaderName = FString::Printf(TEXT("%s/%s"), VertexFactory ? VertexFactory->GetName() : TEXT("NullVF"), EntryShader->GetName());
+						QualityItem.ArrShaderEntries.Add(MakeShareable(new FMaterialShaderEntry{ Entry.Key, ShaderName }));
 					}
 
-					if (QualityItem.ArrShaderNames.Num() > 0)
+					if (QualityItem.ArrShaderEntries.Num() > 0)
 					{
-						QualityItem.ComboBoxSelectedName = *QualityItem.ArrShaderNames[0];
+						QualityItem.ArrShaderEntries.Sort([](const TSharedPtr<FMaterialShaderEntry>& First, const TSharedPtr<FMaterialShaderEntry>& Second)
+							{
+								return First->Text < Second->Text;
+							});
+
+						QualityItem.ComboBoxSelectedEntry = *QualityItem.ArrShaderEntries[0];
 					}
 				}
 
@@ -424,10 +442,15 @@ void FMaterialStats::BuildShaderPlatformDB()
 #if PLATFORM_WINDOWS
 	// DirectX
 	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_PCD3D_SM5, TEXT("DirectX SM5"), true, true, TEXT("Desktop, DirectX, Shader Model 5"));
+	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_PCD3D_SM6, TEXT("DirectX SM6"), true, true, TEXT("Desktop, DirectX, Shader Model 6"));
+	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_PCD3D_ES3_1, TEXT("DirectX ES 3.1"), true, true, TEXT("Desktop, DirectX, ES 3.1"));
+
+	// Desktop is the closest fit for Hololens (for now)
+	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_D3D_ES3_1_HOLOLENS, TEXT("DirectX ES 3.1 Hololens"), true, true, TEXT("Hololens, DirectX, ES 3.1"));
 #endif
 
 	// Vulkan
-	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_VULKAN_SM5, TEXT("Vulkan SM5"), false, true, TEXT("Desktop, Vulkan, Shader Model 5"));
+	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_VULKAN_SM5, TEXT("Vulkan SM5"), true, true, TEXT("Desktop, Vulkan, Shader Model 5"));
 
 	// Android
 	AddShaderPlatform(EPlatformCategoryType::Android, SP_OPENGL_ES3_1_ANDROID, TEXT("Android GLES 3.1"), true, true, TEXT("Android, OpenGLES 3.1"));
@@ -436,7 +459,6 @@ void FMaterialStats::BuildShaderPlatformDB()
 
 	// Apple
 	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_METAL_SM5, TEXT("Metal SM5"), bCanCompileMacDesktopSPs, true, TEXT("macOS, Metal, Shader Model 5"));
-	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_METAL_SM5_NOTESS, TEXT("Metal SM5 (no tesselation)"), bCanCompileMacDesktopSPs, true, TEXT("macOS, Metal, Shader Model 5"));
 	AddShaderPlatform(EPlatformCategoryType::Desktop, SP_METAL_MRT_MAC, TEXT("Metal SM5 (MRT)"), bCanCompileMacDesktopSPs, true, TEXT("macOS, Metal, Shader Model 5"));
 	AddShaderPlatform(EPlatformCategoryType::IOS, SP_METAL, TEXT("Metal"), bCanCompileMacMobileSPs, true, TEXT("iOS, Metal, Mobile"));
 	AddShaderPlatform(EPlatformCategoryType::IOS, SP_METAL_MRT, TEXT("Metal MRT"), bCanCompileMacMobileSPs, true, TEXT("iOS, Metal, Shader Model 5"));
@@ -700,10 +722,10 @@ TSharedRef<SDockTab> FMaterialStats::SpawnTab_ShaderCode(const FSpawnTabArgs& Ar
 	TSharedPtr<FShaderPlatformSettings> PlatformPtr = GetPlatformSettings(PlatformID);
 	check(PlatformPtr.IsValid());
 
-	TSharedRef<SComboBox<TSharedPtr<FName>>> ShaderBox = SNew(SComboBox<TSharedPtr<FName>>)
-		.OptionsSource(PlatformPtr->GetShaderNames(QualityLevel))
-		.OnGenerateWidget_Lambda([](TSharedPtr<FName> Value) { return SNew(STextBlock).Text(FText::FromName(*Value.Get())); })
-		.OnSelectionChanged_Lambda([PlatformPtr, QualityLevel](TSharedPtr<FName> Item, ESelectInfo::Type SelectInfo) { PlatformPtr->OnShaderViewComboSelectionChanged(Item, QualityLevel); })
+	TSharedRef<SComboBox<TSharedPtr<FMaterialShaderEntry>>> ShaderBox = SNew(SComboBox<TSharedPtr<FMaterialShaderEntry>>)
+		.OptionsSource(PlatformPtr->GetShaderEntries(QualityLevel))
+		.OnGenerateWidget_Lambda([](TSharedPtr<FMaterialShaderEntry> Value) { return SNew(STextBlock).Text(FText::FromString(Value->Text)); })
+		.OnSelectionChanged_Lambda([PlatformPtr, QualityLevel](TSharedPtr<FMaterialShaderEntry> Item, ESelectInfo::Type SelectInfo) { PlatformPtr->OnShaderViewComboSelectionChanged(Item, QualityLevel); })
 		[
 			SNew(STextBlock)
 			.Text_Lambda([PlatformPtr, QualityLevel]() { return PlatformPtr->GetSelectedShaderViewComboText(QualityLevel); })
@@ -890,7 +912,6 @@ TSharedRef<SDockTab> FMaterialStats::SpawnTab_Stats(const FSpawnTabArgs& Args)
 	FString TabName = FString::Printf(TEXT(""), *GetMaterialName().ToString());
 
 	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("Kismet.Tabs.CompilerResults"))
 		.Label(LOCTEXT("Platform Stats", "Platform Stats"))
 		.OnTabClosed_Lambda([&bShowStats = bShowStats](TSharedRef<SDockTab>) { bShowStats = false; })
 		[
@@ -914,7 +935,6 @@ TSharedRef<SDockTab> FMaterialStats::SpawnTab_OldStats(const FSpawnTabArgs& Args
 	check(Args.GetTabId() == OldStatsTabId);
 
 	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("Kismet.Tabs.CompilerResults"))
 		.Label(LOCTEXT("Stats", "Stats"))
 		.OnTabClosed_Lambda([&bShowStats = bShowOldStats](TSharedRef<SDockTab>) { bShowStats = false; })
 		[
@@ -941,7 +961,7 @@ void FMaterialStats::BuildStatsTab()
 	TabManager->RegisterTabSpawner(StatsTabId, FOnSpawnTab::CreateSP(this, &FMaterialStats::SpawnTab_Stats))
 		.SetDisplayName(LOCTEXT("StatsTab", "Platform Stats"))
 		.SetGroup(ParentCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.StatsViewer"));
+		.SetIcon(FSlateIcon(FAppStyle::Get().GetStyleSetName(),"MaterialEditor.TogglePlatformStats.Tab"));
 }
 
 void FMaterialStats::BuildOldStatsTab()
@@ -952,7 +972,7 @@ void FMaterialStats::BuildOldStatsTab()
 	TabManager->RegisterTabSpawner(OldStatsTabId, FOnSpawnTab::CreateSP(this, &FMaterialStats::SpawnTab_OldStats))
 		.SetDisplayName(LOCTEXT("OldStatsTab", "Stats"))
 		.SetGroup(ParentCategoryRef)
-		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.StatsViewer"));
+		.SetIcon(FSlateIcon(FAppStyle::Get().GetStyleSetName(), "MaterialEditor.ToggleMaterialStats.Tab"));
 }
 
 void FMaterialStats::RegisterTabs()

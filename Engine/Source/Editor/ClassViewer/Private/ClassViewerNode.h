@@ -33,14 +33,6 @@ public:
 	 */
 	void AddChild( TSharedPtr<FClassViewerNode> Child );
 
-	/**
-	 * Adds the specified child to the node. If a child with the same class already exists the function add the child storing more info.
-	 * The function does not persist child order.
-	 *
-	 * @param	NewChild	The child to be added to this node for the tree.
-	 */
-	void AddUniqueChild(TSharedPtr<FClassViewerNode> NewChild);
-
 	/** 
 	 * Retrieves the class name this node is associated with. This is not the literal UClass name as it is missing the _C for blueprints
 	 * @param	bUseDisplayName	Whether to use the display name or class name
@@ -74,6 +66,9 @@ public:
 	/** Rather this class is not allowed for the specific context */
 	bool IsRestricted() const;
 
+	/** Get the parent node for this node. */
+	TSharedPtr< FClassViewerNode > GetParentNode() const;
+
 private:
 	/** The nontranslated internal name for this class. This is not necessarily the UClass's name, as that may have _C for blueprints */
 	TSharedPtr<FString> ClassName;
@@ -83,6 +78,9 @@ private:
 
 	/** List of children. */
 	TArray<TSharedPtr<FClassViewerNode>> ChildrenList;
+
+	/** Pointer to the parent to this object. */
+	TWeakPtr< FClassViewerNode > ParentNode;
 
 public:
 	/** The class this node is associated with. */
@@ -108,9 +106,6 @@ public:
 	 * This could be useful to verify e.g., that the parent class of a IsNodeAllowed() object is also valid (even though that parent will not likely pass the TextFilter).
 	 */
 	bool bPassesFilterRegardlessTextFilter;
-
-	/** Pointer to the parent to this object. */
-	TWeakPtr< FClassViewerNode > ParentNode;
 
 	/** Data for unloaded blueprints, only valid if the class is unloaded. */
 	TSharedPtr< class IUnloadedBlueprintData > UnloadedBlueprintData;

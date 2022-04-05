@@ -30,6 +30,7 @@ public class StaticMeshEditor : ModuleRules
                 "EditorStyle",
 				"RenderCore",
 				"RHI",
+				"EditorFramework",
 				"UnrealEd",
 				"TargetPlatform",
 				"RawMesh",
@@ -39,8 +40,16 @@ public class StaticMeshEditor : ModuleRules
                 "JsonUtilities",
                 "AdvancedPreviewScene",
                 "DesktopPlatform",
-                "DesktopWidgets"
-            }
+                "DesktopWidgets",
+				"EditorSubsystem",
+				"MeshDescription",
+				"StaticMeshDescription",
+				"ToolMenus",
+				"DetailCustomizations",
+				"StatusBar",
+				"WorkspaceMenuStructure",
+				"PhysicsUtilities",
+			}
 		);
 
 		DynamicallyLoadedModuleNames.AddRange(
@@ -48,7 +57,6 @@ public class StaticMeshEditor : ModuleRules
 				"SceneOutliner",
 				"ClassViewer",
 				"ContentBrowser",
-				"WorkspaceMenuStructure",
                 "MeshReductionInterface",
             }
 		);

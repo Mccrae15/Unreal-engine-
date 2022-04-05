@@ -165,7 +165,7 @@ namespace DatasmithRuntime
 
 
 #if !NO_LOGGING
-		LogDatasmith.SetVerbosity( ELogVerbosity::Error );
+		LogDatasmith.SetVerbosity( ELogVerbosity::Warning );
 #ifndef DIRECTLINK_LOG
 		LogDirectLink.SetVerbosity( ELogVerbosity::Warning );
 		LogDirectLinkNet.SetVerbosity( ELogVerbosity::Warning );
@@ -416,7 +416,8 @@ namespace DatasmithRuntime
 
 		for ( const FRawInfo::FStreamInfo& StreamInfo : RawInfo.StreamsInfo)
 		{
-			if (!StreamInfo.bIsActive)
+			if (!(StreamInfo.ConnectionState == DirectLink::EStreamConnectionState::Active 
+				|| StreamInfo.ConnectionState == DirectLink::EStreamConnectionState::RequestSent))
 			{
 				continue;
 			}

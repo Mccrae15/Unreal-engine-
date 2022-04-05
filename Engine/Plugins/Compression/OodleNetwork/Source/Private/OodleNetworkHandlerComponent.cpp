@@ -3,7 +3,7 @@
 #include "OodleNetworkHandlerComponent.h"
 #include "Misc/CoreMisc.h"
 #include "Modules/ModuleManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
@@ -21,6 +21,7 @@
 
 #include "Features/IModularFeature.h"
 #include "Features/IModularFeatures.h"
+#include "Net/Core/Connection/NetCloseResult.h"
 
 DEFINE_LOG_CATEGORY(OodleNetworkHandlerComponentLog);
 
@@ -28,6 +29,9 @@ DEFINE_LOG_CATEGORY(OodleNetworkHandlerComponentLog);
 #define OODLE_HANDLER_VERBOSE_LOG	0
 #endif
 
+#ifndef OODLE_USE_FALLBACK_DICTIONARY
+	#define OODLE_USE_FALLBACK_DICTIONARY PLATFORM_DESKTOP
+#endif
 
 // @todo #JohnB: You're not taking into account, the overhead of sending 'DecompressedLength', in the stats
 
@@ -302,8 +306,8 @@ FOodleNetworkDictionary::~FOodleNetworkDictionary()
 OodleNetworkHandlerComponent::OodleNetworkHandlerComponent()
 	: HandlerComponent(FName(TEXT("OodleNetworkHandlerComponent")))
 	, bEnableOodle(false)
-	, ServerEnableMode(EOodleEnableMode::AlwaysEnabled)
-	, ClientEnableMode(EOodleEnableMode::AlwaysEnabled)
+	, ServerEnableMode(EOodleNetworkEnableMode::AlwaysEnabled)
+	, ClientEnableMode(EOodleNetworkEnableMode::AlwaysEnabled)
 #if !UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING
 	, InPacketLog(nullptr)
 	, OutPacketLog(nullptr)
@@ -348,6 +352,7 @@ void OodleNetworkHandlerComponent::CountBytes(FArchive& Ar) const
 void OodleNetworkHandlerComponent::InitFirstRunConfig()
 {
 	// Check that the OodleNetworkHandlerComponent section exists, and if not, init with defaults
+	// @todo Oodle : this writes to a Saved/ Engine.ini ; unclear that this is desirable, reconsider
 	if (!GConfig->DoesSectionExist(OODLE_INI_SECTION, GEngineIni))
 	{
 		GConfig->SetBool(OODLE_INI_SECTION, TEXT("bEnableOodle"), true, GEngineIni);
@@ -390,10 +395,10 @@ void OodleNetworkHandlerComponent::Initialize()
 	}
 
 	FString CurEnableModeStr;
-	UEnum* EnableModeEnum = StaticEnum<EOodleEnableMode>();
+	UEnum* EnableModeEnum = StaticEnum<EOodleNetworkEnableMode>();
 	bool bSetServerEnableMode = false;
 	bool bSetClientEnableMode = false;
-	auto SetEnableModeFromStr = [&EnableModeEnum](EOodleEnableMode& OutMode, FString ModeStr) -> bool
+	auto SetEnableModeFromStr = [&EnableModeEnum](EOodleNetworkEnableMode& OutMode, FString ModeStr) -> bool
 		{
 			bool bSuccess = false;
 
@@ -401,12 +406,12 @@ void OodleNetworkHandlerComponent::Initialize()
 
 			if (EnumVal != INDEX_NONE)
 			{
-				OutMode = (EOodleEnableMode)EnumVal;
+				OutMode = (EOodleNetworkEnableMode)EnumVal;
 				bSuccess = true;
 			}
 			else
 			{
-				UE_LOG(OodleNetworkHandlerComponentLog, Error, TEXT("Failed to parse EOodleEnableMode value '%s'"), *ModeStr);
+				UE_LOG(OodleNetworkHandlerComponentLog, Error, TEXT("Failed to parse EOodleNetworkEnableMode value '%s'"), *ModeStr);
 			}
 
 			return bSuccess;
@@ -478,9 +483,9 @@ void OodleNetworkHandlerComponent::Initialize()
 
 #endif
 
-		EOodleEnableMode EnableMode = (Handler->Mode == Handler::Mode::Server ? ServerEnableMode : ClientEnableMode);
+		EOodleNetworkEnableMode EnableMode = (Handler->Mode == Handler::Mode::Server ? ServerEnableMode : ClientEnableMode);
 
-		if (EnableMode == EOodleEnableMode::AlwaysEnabled)
+		if (EnableMode == EOodleNetworkEnableMode::AlwaysEnabled)
 		{
 			InitializeDictionaries();
 		}
@@ -515,6 +520,11 @@ void OodleNetworkHandlerComponent::Initialize()
 	Initialized();
 }
 
+void OodleNetworkHandlerComponent::InitFaultRecovery(UE::Net::FNetConnectionFaultRecoveryBase* InFaultRecovery)
+{
+	OodleNetworkFaultHandler.InitFaultRecovery(InFaultRecovery);
+}
+
 void OodleNetworkHandlerComponent::InitializeDictionaries()
 {
 	FString ServerDictionaryPath;
@@ -523,7 +533,7 @@ void OodleNetworkHandlerComponent::InitializeDictionaries()
 
 	bInitializedDictionaries = true;
 
-#if (!UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING) && !(PLATFORM_PS4 || PLATFORM_XBOXONE || PLATFORM_SWITCH)
+#if (!UE_BUILD_SHIPPING || OODLE_DEV_SHIPPING) && OODLE_USE_FALLBACK_DICTIONARY
 	if (bUseDictionaryIfPresent)
 	{
 		bGotDictionaryPath = FindFallbackDictionaries(ServerDictionaryPath, ClientDictionaryPath);
@@ -599,8 +609,15 @@ void OodleNetworkHandlerComponent::InitializeDictionary(FString FilePath, TShare
 				uint32 CompressorStateSize = OodleNetwork1UDP_State_Size();
 				OodleNetwork1UDP_State* CompressorState = (OodleNetwork1UDP_State*)FMemory::Malloc(CompressorStateSize);
 
-				OodleNetwork1UDP_State_Uncompact(CompressorState, (OodleNetwork1UDP_StateCompacted*)CompactCompressorState);
-
+				OO_BOOL UncompactOk = OodleNetwork1UDP_State_Uncompact_ForVersion(CompressorState, (OodleNetwork1UDP_StateCompacted*)CompactCompressorState, BoundArc.Header.OodleMajorHeaderVersion);
+				if ( ! UncompactOk )
+				{
+					UE_LOG(OodleNetworkHandlerComponentLog, Error, TEXT("OodleNetwork1UDP_State_Uncompact failed!"));
+					// @todo Oodle does soft-fail like this work?
+					//	we'd like to have failures just disable OodleNetwork and allow work to continue
+					bEnableOodle = false;
+					return;
+				}
 
 				// Create the shared dictionary state
 				int32 HashTableSize = BoundArc.Header.HashTableSize.Get();
@@ -934,8 +951,13 @@ bool OodleNetworkHandlerComponent::IsValid() const
 	return true;
 }
 
-void OodleNetworkHandlerComponent::Incoming(FBitReader& Packet)
+void OodleNetworkHandlerComponent::Incoming(FIncomingPacketRef PacketRef)
 {
+	using namespace UE::Net;
+
+	FBitReader& Packet = PacketRef.Packet;
+	FInPacketTraits& Traits = PacketRef.Traits;
+
 #if !UE_BUILD_SHIPPING
 	// Oodle must be the first HandlerComponent to process incoming packets, so does not support bit-shifted reads
 	check(Packet.GetPosBits() == 0);
@@ -950,8 +972,8 @@ void OodleNetworkHandlerComponent::Incoming(FBitReader& Packet)
 		{
 			const bool bIsServer = (Handler->Mode == Handler::Mode::Server);
 
-			// Lazy-loading of dictionary when EOodleEnableMode::WhenCompressedPacketReceived is active
-			if (!bInitializedDictionaries && (bIsServer ? ServerEnableMode : ClientEnableMode) == EOodleEnableMode::WhenCompressedPacketReceived)
+			// Lazy-loading of dictionary when EOodleNetworkEnableMode::WhenCompressedPacketReceived is active
+			if (!bInitializedDictionaries && (bIsServer ? ServerEnableMode : ClientEnableMode) == EOodleNetworkEnableMode::WhenCompressedPacketReceived)
 			{
 				RemoteInitializeDictionaries();
 			}
@@ -1014,6 +1036,8 @@ void OodleNetworkHandlerComponent::Incoming(FBitReader& Packet)
 							// Packets which fail to compress are detected before send, and bCompressedPacket is disabled;
 							// failed Oodle decodes are not used to detect this anymore, so this now represents an error.
 							Packet.SetError();
+
+							AddToChainResultPtr(Traits.ExtendedError, EOodleNetResult::OodleDecodeFailed);
 						}
 					}
 					else
@@ -1023,6 +1047,7 @@ void OodleNetworkHandlerComponent::Incoming(FBitReader& Packet)
 #endif
 
 						Packet.SetError();
+						AddToChainResultPtr(Traits.ExtendedError, EOodleNetResult::OodleSerializePayloadFail);
 					}
 
 					if (bSuccess)
@@ -1064,6 +1089,7 @@ void OodleNetworkHandlerComponent::Incoming(FBitReader& Packet)
 #endif
 
 					Packet.SetError();
+					AddToChainResultPtr(Traits.ExtendedError, EOodleNetResult::OodleBadDecompressedLength);
 				}
 			}
 			else
@@ -1071,6 +1097,8 @@ void OodleNetworkHandlerComponent::Incoming(FBitReader& Packet)
 				LowLevelFatalError(TEXT("Received compressed packet, but no dictionary is present for decompression."));
 
 				Packet.SetError();
+				AddToChainResultPtr(Traits.ExtendedError, EOodleNetResult::OodleNoDictionary);
+				AddToChainResultPtr(Traits.ExtendedError, ENetCloseResult::NotRecoverable);
 			}
 		}
 		else
@@ -1140,7 +1168,7 @@ void OodleNetworkHandlerComponent::Outgoing(FBitWriter& Packet, FOutPacketTraits
 #endif
 
 		// Skip compression when we are waiting on the remote side to enable compression
-		if (!bSkipCompression && (!bInitializedDictionaries && (bIsServer ? ServerEnableMode : ClientEnableMode) == EOodleEnableMode::WhenCompressedPacketReceived))
+		if (!bSkipCompression && (!bInitializedDictionaries && (bIsServer ? ServerEnableMode : ClientEnableMode) == EOodleNetworkEnableMode::WhenCompressedPacketReceived))
 		{
 			bSkipCompression = true;
 			bSkipCompressionClientDisabled = true;
@@ -1338,7 +1366,7 @@ bool OodleNetworkHandlerComponent::IsCompressionActive() const
 			(CurDict == nullptr && bCaptureMode) || bOodleCompressionDisabled ||
 #endif
 			// Skip compression when we are waiting on the remote side to enable compression
-			(!bInitializedDictionaries && (bIsServer ? ServerEnableMode : ClientEnableMode) == EOodleEnableMode::WhenCompressedPacketReceived)
+			(!bInitializedDictionaries && (bIsServer ? ServerEnableMode : ClientEnableMode) == EOodleNetworkEnableMode::WhenCompressedPacketReceived)
 			;
 
 		if (CurDict != nullptr && !bSkipCompression)
@@ -1367,11 +1395,11 @@ void OodleNetworkHandlerComponent::NotifyAnalyticsProvider()
 
 			if (bIsServer)
 			{
-				NetAnalyticsData = REGISTER_NET_ANALYTICS(Aggregator, FOodleNetAnalyticsData, TEXT("OodleNetwork.Stats"));
+				NetAnalyticsData = REGISTER_NET_ANALYTICS(Aggregator, FOodleNetAnalyticsData, TEXT("Oodle.Stats"));
 			}
 			else
 			{
-				NetAnalyticsData = REGISTER_NET_ANALYTICS(Aggregator, FClientOodleNetAnalyticsData, TEXT("OodleNetwork.ClientStats"));
+				NetAnalyticsData = REGISTER_NET_ANALYTICS(Aggregator, FClientOodleNetAnalyticsData, TEXT("Oodle.ClientStats"));
 			}
 		}
 

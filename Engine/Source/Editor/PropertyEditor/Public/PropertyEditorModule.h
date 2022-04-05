@@ -2,14 +2,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Widgets/SWidget.h"
-#include "Widgets/SWindow.h"
+#include "IDetailsView.h"
+#include "IPropertyTypeCustomization.h"
+#include "PropertyEditorDelegates.h"
+
 #include "Modules/ModuleInterface.h"
 #include "UObject/StructOnScope.h"
-#include "Toolkits/IToolkitHost.h"
-#include "IDetailsView.h"
-#include "PropertyEditorDelegates.h"
-#include "IPropertyTypeCustomization.h"
+#include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
 
 class FAssetEditorToolkit;
 class FNotifyHook;
@@ -64,6 +64,8 @@ class SWindow;
 class IPropertyTableCellPresenter;
 class IPropertyTypeCustomization;
 class IDetailsView;
+class IToolkitHost;
+class FAssetEditorToolkit;
 
 /**
  * Base class for adding an extra data to identify a custom property type
@@ -108,6 +110,103 @@ struct FStructureDetailsViewArgs
 
 	/** True if we should show interface properties in the details view */
 	bool bShowInterfaces : 1;
+};
+
+/** 
+ * A property section is a group of categories with a name, eg. "Rendering" might contain "Materials" and "Lighting".
+ * Categories may belong to zero or more sections. 
+ */
+class FPropertySection
+{
+public:
+
+	/**
+	 * @param InName		The internal name of this section.
+	 * @param InDisplayName	The localizable display name to show to the user.
+	 */
+	FPropertySection(FName InName, FText InDisplayName) : 
+		Name(InName),
+		DisplayName(InDisplayName)
+	{
+	}
+
+	FPropertySection(const FPropertySection&) = default;
+	virtual ~FPropertySection() = default;
+
+	/** Add a category to this section. */
+	virtual void AddCategory(FName CategoryName);
+
+	/** Remove a category from this section. */
+	virtual void RemoveCategory(FName CategoryName);
+
+	/** Does this section add the given category? */
+	virtual bool HasAddedCategory(FName CategoryName) const;
+
+	/** Does this section remove the given category? */
+	virtual bool HasRemovedCategory(FName CategoryName) const;
+
+	/** Get the internal name of this property section. */
+	virtual FName GetName() const { return Name; }
+
+	/** Get the display name of this section. */
+	virtual FText GetDisplayName() const { return DisplayName; }
+
+private:
+
+	/** The internal name to use for this section. */
+	FName Name;
+
+	/** The display name to use for this section. */
+	FText DisplayName;
+	
+	/** The set of categories that are added to this section. */
+	TSet<FName> AddedCategories;
+
+	/** 
+	 * The set of categories that are removed from this section. 
+	 * This exists to allow users to prevent sections from being crowded when inheriting.
+	 */
+	TSet<FName> RemovedCategories;
+};
+
+/** A mapping of categories to section names for a given class. */
+class FClassSectionMapping
+{
+public:
+	FClassSectionMapping(FName ClassName);
+	FClassSectionMapping(const FClassSectionMapping&) = default;
+
+	/**
+	 * Find or add a section of the given name.
+	 */
+	TSharedPtr<FPropertySection> FindSection(FName SectionName) const;
+
+	/**
+	 * Find or add a section of the given name.
+	 */
+	TSharedRef<FPropertySection> FindOrAddSection(FName SectionName, FText DisplayName);
+
+	/** 
+	 * Remove a section of the given name.
+	 */
+	void RemoveSection(FName SectionName);
+
+	/** 
+	 * Get the sections that the given category belongs to and append them to OutSections. 
+	 * @param CategoryName	The category name to search for.
+	 * @param OutSections	The array to append any found sections. The array will not be cleared.
+	 * @return				true if any sections were found, false otherwise.
+	 */
+	bool GetSectionsForCategory(FName CategoryName, TArray<TSharedPtr<FPropertySection>>& OutSections) const;
+
+private:
+
+	friend class FPropertyEditorModule;
+
+	FName ClassName;
+
+	/** The sections defined for this class. */
+	TMap<FName, TSharedPtr<FPropertySection>> DefinedSections;
 };
 
 
@@ -166,12 +265,6 @@ public:
 	 */
 	virtual void UnregisterCustomClassLayout( FName ClassName );
 
-	UE_DEPRECATED(4.18, "This version of RegisterCustomPropertyTypeLayout has been deprecated.  For per-details instance customization call IDetailsView::RegisterInstancedCustomPropertyTypeLayout")
-	virtual void RegisterCustomPropertyTypeLayout(FName PropertyTypeName, FOnGetPropertyTypeCustomizationInstance PropertyTypeLayoutDelegate, TSharedPtr<IPropertyTypeIdentifier> Identifier, TSharedPtr<IDetailsView> ForSpecificInstance);
-
-	UE_DEPRECATED(4.18, "This version of UnregisterCustomPropertyTypeLayout has been deprecated.  For per-details instance customization call IDetailsView::UnregisterInstancedCustomPropertyTypeLayout")
-	virtual void UnregisterCustomPropertyTypeLayout(FName PropertyTypeName, TSharedPtr<IPropertyTypeIdentifier> InIdentifier, TSharedPtr<IDetailsView> ForSpecificInstance);
-
 	/**
 	 * Registers a property type customization
 	 * A property type is a specific FProperty type, a struct, or enum type
@@ -183,12 +276,43 @@ public:
 	virtual void RegisterCustomPropertyTypeLayout( FName PropertyTypeName, FOnGetPropertyTypeCustomizationInstance PropertyTypeLayoutDelegate, TSharedPtr<IPropertyTypeIdentifier> Identifier = nullptr);
 
 	/**
-	 * Unregisters a custom detail layout for a properrty type
+	 * Unregisters a custom detail layout for a property type
 	 *
 	 * @param PropertyTypeName 	The name of the property type that was registered
 	 * @param Identifier 		An identifier to use to differentiate between two customizations on the same type
 	 */
 	virtual void UnregisterCustomPropertyTypeLayout( FName PropertyTypeName, TSharedPtr<IPropertyTypeIdentifier> InIdentifier = nullptr);
+
+	/**
+	 * Find an existing section or create a section for a class.
+	 * 
+	 * @param ClassName		The class to add a section mapping for.
+	 * @param SectionName	The section to find or create.
+	 * @param DisplayName	The display name to use for the section. If the section already exists for this class, the display name will not be replaced.
+	 * @return				A new section, or the existing one. 
+	 */
+	virtual TSharedRef<FPropertySection> FindOrCreateSection(FName ClassName, FName SectionName, FText DisplayName);
+
+	/** 
+	 * Find the section that the given category in the given struct should be a part of. 
+	 * @param Struct		The struct to start searching from. Note: all super-structs of the given struct will also be searched.
+	 * @param CategoryName	The category to search for.
+	 */
+	virtual TArray<TSharedPtr<FPropertySection>> FindSectionsForCategory(const UStruct* Struct, FName CategoryName) const;
+
+	/** 
+	 * Get all registered sections for the given struct (including the default section). 
+	 * @param Struct		The struct to fetch sections for.
+	 * @param OutSections	Sections will be appended to this parameter. The array will not be cleared beforehand.
+	 */
+	virtual void GetAllSections(const UStruct* Struct, TArray<TSharedPtr<FPropertySection>>& OutSections) const;
+
+	/**
+	 * Remove a given section from the given class.
+	 * @param ClassName		The class to remove the section from.
+	 * @param SectionName	The section to remove.
+	 */
+	virtual void RemoveSection(FName ClassName, FName SectionName);
 
 	/**
 	 * Customization modules should call this when that module has been unloaded, loaded, etc...
@@ -264,9 +388,9 @@ public:
 	/**
 	 *
 	 */
-	virtual TSharedRef< FAssetEditorToolkit > CreatePropertyEditorToolkit( const EToolkitMode::Type Mode, const TSharedPtr< class IToolkitHost >& InitToolkitHost, UObject* ObjectToEdit );
-	virtual TSharedRef< FAssetEditorToolkit > CreatePropertyEditorToolkit( const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray< UObject* >& ObjectsToEdit );
-	virtual TSharedRef< FAssetEditorToolkit > CreatePropertyEditorToolkit( const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray< TWeakObjectPtr< UObject > >& ObjectsToEdit );
+	virtual TSharedRef< FAssetEditorToolkit > CreatePropertyEditorToolkit(const TSharedPtr< class IToolkitHost >& InitToolkitHost, UObject* ObjectToEdit );
+	virtual TSharedRef< FAssetEditorToolkit > CreatePropertyEditorToolkit(const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray< UObject* >& ObjectsToEdit );
+	virtual TSharedRef< FAssetEditorToolkit > CreatePropertyEditorToolkit(const TSharedPtr< IToolkitHost >& InitToolkitHost, const TArray< TWeakObjectPtr< UObject > >& ObjectsToEdit );
 
 	FPropertyTypeLayoutCallback GetPropertyTypeCustomization(const FProperty* InProperty,const IPropertyHandle& PropertyHandle, const FCustomPropertyTypeLayoutMap& InstancedPropertyTypeLayoutMap);
 	FPropertyTypeLayoutCallback FindPropertyTypeLayoutCallback(FName PropertyTypeName, const IPropertyHandle& PropertyHandle, const FCustomPropertyTypeLayoutMap& InstancedPropertyTypeLayoutMapp);
@@ -298,6 +422,10 @@ private:
 	virtual TSharedRef<SPropertyTreeViewImpl> CreatePropertyView( UObject* InObject, bool bAllowFavorites, bool bIsLockable, bool bHiddenPropertyVisibility, bool bAllowSearch, bool ShowTopLevelNodes, FNotifyHook* InNotifyHook, float InNameColumnWidth, FOnPropertySelectionChanged OnPropertySelectionChanged, FOnPropertyClicked OnPropertyMiddleClicked, FConstructExternalColumnHeaders ConstructExternalColumnHeaders, FConstructExternalColumnCell ConstructExternalColumnCell );
 
 	TSharedPtr<FAssetThumbnailPool> GetThumbnailPool();
+
+	void GetAllSectionsHelper(const UStruct* Struct, TArray<TSharedPtr<FPropertySection>>& OutSections, TSet<const UStruct*>& ProcessedStructs) const;
+	void FindSectionsForCategoryHelper(const UStruct* Struct, FName CategoryName, TArray<TSharedPtr<FPropertySection>>& OutSections, TSet<const UStruct*>& SearchedStructs) const;
+
 private:
 	/** All created detail views */
 	TArray< TWeakPtr<class SDetailsView> > AllDetailViews;
@@ -307,6 +435,8 @@ private:
 	FCustomDetailLayoutNameMap ClassNameToDetailLayoutNameMap;
 	/** A mapping of property names to property type layout delegates, called when querying for custom property layouts */
 	FCustomPropertyTypeLayoutMap GlobalPropertyTypeToLayoutMap;
+	/** A mapping of class names to section mappings. */
+	TMap<FName, TSharedPtr<FClassSectionMapping>> ClassSectionMappings;
 	/** Event to be called when a property editor is opened */
 	FPropertyEditorOpenedEvent PropertyEditorOpened;
 	/** Mapping of registered floating UStructs to their struct proxy so they show correctly in the details panel */

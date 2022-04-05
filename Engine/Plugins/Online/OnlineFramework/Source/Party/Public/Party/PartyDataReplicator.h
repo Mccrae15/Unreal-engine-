@@ -64,6 +64,9 @@ public:
 		// If we had a scheduled update run it now.
 		if (UpdateTickerHandle.IsValid())
 		{
+			// Running manually - unregister ticker.
+			FTSTicker::GetCoreTicker().RemoveTicker(UpdateTickerHandle);
+			UpdateTickerHandle.Reset();
 			DeferredHandleReplicateChanges(0.f);
 		}
 	}
@@ -107,7 +110,7 @@ PACKAGE_SCOPE:
 		}
 		if (UpdateTickerHandle.IsValid())
 		{
-			FTicker::GetCoreTicker().RemoveTicker(UpdateTickerHandle);
+			FTSTicker::GetCoreTicker().RemoveTicker(UpdateTickerHandle);
 			UpdateTickerHandle.Reset();
 		}
 	}
@@ -117,7 +120,7 @@ private:
 	{
 		if (!UpdateTickerHandle.IsValid())
 		{
-			UpdateTickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &TPartyDataReplicator::DeferredHandleReplicateChanges));
+			UpdateTickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &TPartyDataReplicator::DeferredHandleReplicateChanges));
 		}
 	}
 
@@ -125,6 +128,7 @@ private:
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_TPartyDataReplicator_DeferredHandleReplicateChanges);
 
+		// Reset ticker handle so that new data changed events will schedule a new ticker.
 		UpdateTickerHandle.Reset();
 
 		FOnlinePartyData OnlinePartyData;
@@ -150,5 +154,5 @@ private:
 	/** Scratch copy of child UStruct for handling replication comparisons */
 	RepDataT* RepDataCopy = nullptr;
 
-	FDelegateHandle UpdateTickerHandle;
+	FTSTicker::FDelegateHandle UpdateTickerHandle;
 };

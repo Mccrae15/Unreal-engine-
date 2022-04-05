@@ -54,7 +54,7 @@ TSharedRef<SWidget> SRCProtocolEntity::CreateStructureDetailView()
 
 	ViewArgs.bAllowSearch = false;
 	ViewArgs.bHideSelectionTip = false;
-	ViewArgs.bShowActorLabel = false;
+	ViewArgs.bShowObjectLabel = false;
 
 	static FName PropertyEditorModuleName = "PropertyEditor";
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>(PropertyEditorModuleName);

@@ -7,14 +7,12 @@
 #include "TextureRenderTargetVolumeResource.h"
 #include "Engine/TextureRenderTargetVolume.h"
 
-#include "NiagaraEmitterInstanceBatcher.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraStats.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraSettings.h"
-#if WITH_EDITOR
 #include "NiagaraGpuComputeDebug.h"
-#endif
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfaceRenderTargetVolume"
 
@@ -58,7 +56,7 @@ public:
 		OutputParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRenderTargetVolume::OutputName + ParameterInfo.DataInterfaceHLSLSymbol));
 
 		InputParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRenderTargetVolume::InputName + ParameterInfo.DataInterfaceHLSLSymbol));
-		InputSamplerStateParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRenderTargetVolume::InputName + TEXT("SamplerState") + ParameterInfo.DataInterfaceHLSLSymbol));
+		InputSamplerStateParam.Bind(ParameterMap, *(UNiagaraDataInterfaceRenderTargetVolume::InputName + ParameterInfo.DataInterfaceHLSLSymbol + TEXT("SamplerState")));
 	}
 
 	void Set(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceSetArgs& Context) const
@@ -80,16 +78,19 @@ public:
 			if (OutputUAV)
 			{
 				RHICmdList.Transition(FRHITransitionInfo(OutputUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+				ProxyData->bWroteThisFrame = true;
 			}
 			else
 			{
-				OutputUAV = Context.Batcher->GetEmptyUAVFromPool(RHICmdList, EPixelFormat::PF_A16B16G16R16, ENiagaraEmptyUAVType::Texture3D);
+				OutputUAV = Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, EPixelFormat::PF_A16B16G16R16, ENiagaraEmptyUAVType::Texture3D);
 			}
 			RHICmdList.SetUAVParameter(ComputeShaderRHI, OutputParam.GetUAVIndex(), OutputUAV);
 		}
 
 		if (InputParam.IsBound())
 		{
+			ProxyData->bReadThisFrame = true;
+
 			FRHITexture* TextureRHI = ProxyData->TextureRHI;
 			if (!ensureMsgf(!OutputParam.IsUAVBound(), TEXT("NiagaraDIRenderTargetVolume(%s) is bound as both read & write, read will be ignored."), *Context.DataInterface->SourceDIName.ToString()))
 			{
@@ -507,12 +508,20 @@ bool UNiagaraDataInterfaceRenderTargetVolume::InitPerInstanceData(void* PerInsta
 {
 	check(Proxy);
 
+	extern bool GetRenderTargetFormat(bool bOverrideFormat, ETextureRenderTargetFormat OverrideFormat, ETextureRenderTargetFormat & OutRenderTargetFormat);
 	extern float GNiagaraRenderTargetResolutionMultiplier;
+
+	ETextureRenderTargetFormat RenderTargetFormat;
+	if (GetRenderTargetFormat(bOverrideFormat, OverrideRenderTargetFormat, RenderTargetFormat) == false)
+	{
+		return false;
+	}
+
 	FRenderTargetVolumeRWInstanceData_GameThread* InstanceData = new (PerInstanceData) FRenderTargetVolumeRWInstanceData_GameThread();
 	InstanceData->Size.X = FMath::Clamp<int>(int(float(Size.X) * GNiagaraRenderTargetResolutionMultiplier), 1, GMaxVolumeTextureDimensions);
 	InstanceData->Size.Y = FMath::Clamp<int>(int(float(Size.Y) * GNiagaraRenderTargetResolutionMultiplier), 1, GMaxVolumeTextureDimensions);
 	InstanceData->Size.Z = FMath::Clamp<int>(int(float(Size.Z) * GNiagaraRenderTargetResolutionMultiplier), 1, GMaxVolumeTextureDimensions);
-	InstanceData->Format = GetPixelFormatFromRenderTargetFormat(bOverrideFormat ? OverrideRenderTargetFormat : GetDefault<UNiagaraSettings>()->DefaultRenderTargetFormat);
+	InstanceData->Format = GetPixelFormatFromRenderTargetFormat(RenderTargetFormat);
 	InstanceData->RTUserParamBinding.Init(SystemInstance->GetInstanceParameters(), RenderTargetUserParameter.Parameter);
 #if WITH_EDITORONLY_DATA
 	InstanceData->bPreviewTexture = bPreviewRenderTarget;
@@ -529,7 +538,7 @@ void UNiagaraDataInterfaceRenderTargetVolume::DestroyPerInstanceData(void* PerIn
 
 	FNiagaraDataInterfaceProxyRenderTargetVolumeProxy* RT_Proxy = GetProxyAs<FNiagaraDataInterfaceProxyRenderTargetVolumeProxy>();
 	ENQUEUE_RENDER_COMMAND(FNiagaraDIDestroyInstanceData) (
-		[RT_Proxy, InstanceID=SystemInstance->GetId(), Batcher=SystemInstance->GetBatcher()](FRHICommandListImmediate& CmdList)
+		[RT_Proxy, InstanceID=SystemInstance->GetId()](FRHICommandListImmediate& CmdList)
 		{
 #if STATS
 			if (FRenderTargetVolumeRWInstanceData_RenderThread* TargetData = RT_Proxy->SystemInstancesToProxyData_RT.Find(InstanceID))
@@ -545,7 +554,8 @@ void UNiagaraDataInterfaceRenderTargetVolume::DestroyPerInstanceData(void* PerIn
 
 	// Make sure to clear out the reference to the render target if we created one.
 	extern int32 GNiagaraReleaseResourceOnRemove;
-	UTextureRenderTargetVolume* ExistingRenderTarget = nullptr;
+	using RenderTargetType = decltype(decltype(ManagedRenderTargets)::ElementType::Value);
+	RenderTargetType ExistingRenderTarget = nullptr;
 	if (ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && GNiagaraReleaseResourceOnRemove)
 	{
 		ExistingRenderTarget->ReleaseResource();
@@ -570,7 +580,7 @@ bool UNiagaraDataInterfaceRenderTargetVolume::GetExposedVariableValue(const FNia
 	return false;
 }
 
-void UNiagaraDataInterfaceRenderTargetVolume::SetSize(FVectorVMContext& Context)
+void UNiagaraDataInterfaceRenderTargetVolume::SetSize(FVectorVMExternalFunctionContext& Context)
 {
 	// This should only be called from a system or emitter script due to a need for only setting up initially.
 	VectorVM::FUserPtrHandler<FRenderTargetVolumeRWInstanceData_GameThread> InstData(Context);
@@ -580,12 +590,12 @@ void UNiagaraDataInterfaceRenderTargetVolume::SetSize(FVectorVMContext& Context)
 	FNDIOutputParam<FNiagaraBool> OutSuccess(Context);
 
 	extern float GNiagaraRenderTargetResolutionMultiplier;
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		const int SizeX = InSizeX.GetAndAdvance();
 		const int SizeY = InSizeY.GetAndAdvance();
 		const int SizeZ = InSizeZ.GetAndAdvance();
-		const bool bSuccess = (InstData.Get() != nullptr && Context.NumInstances == 1 && SizeX > 0 && SizeY > 0 && SizeZ > 0);
+		const bool bSuccess = (InstData.Get() != nullptr && Context.GetNumInstances() == 1 && SizeX > 0 && SizeY > 0 && SizeZ > 0);
 		OutSuccess.SetAndAdvance(bSuccess);
 		if (bSuccess)
 		{
@@ -596,14 +606,14 @@ void UNiagaraDataInterfaceRenderTargetVolume::SetSize(FVectorVMContext& Context)
 	}
 }
 
-void UNiagaraDataInterfaceRenderTargetVolume::GetSize(FVectorVMContext& Context)
+void UNiagaraDataInterfaceRenderTargetVolume::GetSize(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FRenderTargetVolumeRWInstanceData_GameThread> InstData(Context);
 	FNDIOutputParam<int> OutSizeX(Context);
 	FNDIOutputParam<int> OutSizeY(Context);
 	FNDIOutputParam<int> OutSizeZ(Context);
 
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		OutSizeX.SetAndAdvance(InstData->Size.X);
 		OutSizeY.SetAndAdvance(InstData->Size.Y);
@@ -623,7 +633,7 @@ bool UNiagaraDataInterfaceRenderTargetVolume::PerInstanceTick(void* PerInstanceD
 		InstanceData->TargetTexture = UserTargetTexture;
 
 		extern int32 GNiagaraReleaseResourceOnRemove;
-		UTextureRenderTargetVolume* ExistingRenderTarget = nullptr;
+		TObjectPtr<UTextureRenderTargetVolume> ExistingRenderTarget = nullptr;
 		if (ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && GNiagaraReleaseResourceOnRemove)
 		{
 			ExistingRenderTarget->ReleaseResource();
@@ -666,6 +676,15 @@ bool UNiagaraDataInterfaceRenderTargetVolume::PerInstanceTickPostSimulate(void* 
 	InstanceData->bPreviewTexture = bPreviewRenderTarget;
 #endif
 
+	//-TEMP: Until we prune data interface on cook this will avoid consuming memory
+	{
+		extern int32 GNiagaraRenderTargetIgnoreCookedOut;
+		if (GNiagaraRenderTargetIgnoreCookedOut && !IsUsedWithGPUEmitter())
+		{
+			return false;
+		}
+	}
+
 	// Do we need to create a new texture?
 	if (!bInheritUserParameterSettings && (InstanceData->TargetTexture == nullptr))
 	{
@@ -687,7 +706,7 @@ bool UNiagaraDataInterfaceRenderTargetVolume::PerInstanceTickPostSimulate(void* 
 			(InstanceData->TargetTexture->OverrideFormat != InstanceData->Format) ||
 			!InstanceData->TargetTexture->bCanCreateUAV ||
 			//(InstanceData->TargetTexture->bAutoGenerateMips != bAutoGenerateMips) ||
-			!InstanceData->TargetTexture->Resource )
+			!InstanceData->TargetTexture->GetResource())
 		{
 			// resize RT to match what we need for the output
 			InstanceData->TargetTexture->bCanCreateUAV = true;
@@ -737,12 +756,27 @@ bool UNiagaraDataInterfaceRenderTargetVolume::PerInstanceTickPostSimulate(void* 
 
 void FNiagaraDataInterfaceProxyRenderTargetVolumeProxy::PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context)
 {
-#if NIAGARA_COMPUTEDEBUG_ENABLED
 	FRenderTargetVolumeRWInstanceData_RenderThread* ProxyData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
-
-	if (ProxyData && ProxyData->bPreviewTexture && ProxyData->TextureRHI.IsValid())
+	if (ProxyData == nullptr)
 	{
-		if (FNiagaraGpuComputeDebug* GpuComputeDebug = Context.Batcher->GetGpuComputeDebug())
+		return;
+	}
+
+	// We only need to transfer this frame if it was written to.
+	// If also read then we need to notify that the texture is important for the simulation
+	// We also assume the texture is important for rendering, without discovering renderer bindings we don't really know
+	if (ProxyData->bWroteThisFrame)
+	{
+		Context.ComputeDispatchInterface->MultiGPUResourceModified(RHICmdList, ProxyData->TextureRHI, ProxyData->bReadThisFrame, true);
+	}
+
+	ProxyData->bReadThisFrame = false;
+	ProxyData->bWroteThisFrame = false;
+
+#if NIAGARA_COMPUTEDEBUG_ENABLED && WITH_EDITORONLY_DATA
+	if (ProxyData->bPreviewTexture && ProxyData->TextureRHI.IsValid())
+	{
+		if (FNiagaraGpuComputeDebug* GpuComputeDebug = Context.ComputeDispatchInterface->GetGpuComputeDebug())
 		{
 			if ( FRHITexture* RHITexture = ProxyData->TextureRHI )
 			{

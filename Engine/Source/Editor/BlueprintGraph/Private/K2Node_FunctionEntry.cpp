@@ -2,11 +2,13 @@
 
 
 #include "K2Node_FunctionEntry.h"
+
 #include "Engine/Blueprint.h"
 #include "Animation/AnimBlueprint.h"
 #include "UObject/UnrealType.h"
 #include "UObject/BlueprintsObjectVersion.h"
 #include "UObject/FrameworkObjectVersion.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/StructOnScope.h"
 #include "Engine/UserDefinedStruct.h"
 #include "EdGraph/EdGraphSchema.h"
@@ -203,8 +205,15 @@ UK2Node_FunctionEntry::UK2Node_FunctionEntry(const FObjectInitializer& ObjectIni
 
 void UK2Node_FunctionEntry::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	Super::PreSave(TargetPlatform);
-	
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UK2Node_FunctionEntry::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
+
 	const UBlueprint* Blueprint = HasValidBlueprint() ? GetBlueprint() : nullptr;
 	if (Blueprint && LocalVariables.Num() > 0)
 	{
@@ -223,6 +232,13 @@ void UK2Node_FunctionEntry::PostLoad()
 		// This normally won't do anything because it gets called during the duplicate save during BP compilation, but if compilation gets skipped we need to make sure they get updated
 
 		UpdateLoadedDefaultValues();
+	}
+
+	// fix deprecated state.
+	if (HasAllExtraFlags(FUNC_Const | FUNC_Static))
+	{
+		// static functions can't be marked const
+		SetExtraFlags(GetFunctionFlags() & ~FUNC_Const);
 	}
 }
 
@@ -258,7 +274,7 @@ void UK2Node_FunctionEntry::Serialize(FArchive& Ar)
 			}
 		}
 
-		if (Ar.UE4Ver() < VER_UE4_BLUEPRINT_ENFORCE_CONST_IN_FUNCTION_OVERRIDES
+		if (Ar.UEVer() < VER_UE4_BLUEPRINT_ENFORCE_CONST_IN_FUNCTION_OVERRIDES
 			|| ((Ar.CustomVer(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::EnforceConstInAnimBlueprintFunctionGraphs) && GetBlueprint()->IsA<UAnimBlueprint>()))
 		{
 			// Allow legacy implementations to violate const-correctness
@@ -289,7 +305,7 @@ void UK2Node_FunctionEntry::Serialize(FArchive& Ar)
 			for (FBPVariableDescription& LocalVar : LocalVariables)
 			{
 				FString UseDefaultValue;
-				UObject* UseDefaultObject = nullptr;
+				TObjectPtr<UObject> UseDefaultObject = nullptr;
 				FText UseDefaultText;
 
 				if (!LocalVar.DefaultValue.IsEmpty())
@@ -382,7 +398,7 @@ void UK2Node_FunctionEntry::RemoveOutputPin(UEdGraphPin* PinToRemove)
 	UK2Node_FunctionEntry* OwningSeq = Cast<UK2Node_FunctionEntry>( PinToRemove->GetOwningNode() );
 	if (OwningSeq)
 	{
-		PinToRemove->MarkPendingKill();
+		PinToRemove->MarkAsGarbage();
 		OwningSeq->Pins.Remove(PinToRemove);
 	}
 }
@@ -423,17 +439,20 @@ TSharedPtr<FStructOnScope> UK2Node_FunctionEntry::GetFunctionVariableCache(bool 
 		FunctionVariableCache.Reset();
 	}
 
-	if (!FunctionVariableCache.IsValid() || !FunctionVariableCache->IsValid())
+	if (!FunctionVariableCache.IsValid() && HasValidBlueprint() && LocalVariables.Num() > 0)
 	{
-		if (UFunction* const Function = FindSignatureFunction())
+		// Locate the UFunction object in the class hierarchy, starting at the current class. Note that local
+		// variables are generated as fields (properties) within the function context that contains this node,
+		// so for parent class/interface function overrides we want to make sure we're looking at the most-
+		// derived UFunction object. Also note that FunctionFromNode() looks at the skeleton class rather than
+		// the [authoritative] generated class, since the skeleton class is implicitly recompiled after e.g. adding
+		// an input/output argument or local variable, whereas the generated class must be explicitly recompiled.
+		if (UFunction* const Function = FFunctionFromNodeHelper::FunctionFromNode(this))
 		{
-			if (LocalVariables.Num() > 0)
-			{
-				FunctionVariableCache = MakeShared<FStructOnScope>(Function);
-				FunctionVariableCache->SetPackage(GetOutermost());
+			FunctionVariableCache = MakeShared<FStructOnScope>(Function);
+			FunctionVariableCache->SetPackage(GetOutermost());
 
-				RefreshFunctionVariableCache();
-			}
+			RefreshFunctionVariableCache();
 		}
 	}
 	
@@ -792,16 +811,6 @@ void UK2Node_FunctionEntry::ExpandNode(class FKismetCompilerContext& CompilerCon
 		// Find the associated UFunction
 		UFunction* Function = FindUField<UFunction>(CompilerContext.Blueprint->SkeletonGeneratedClass, *OriginalNode->GetOuter()->GetName());
 
-		// When regenerating on load, we may need to import text on certain properties to force load the assets
-		TSharedPtr<FStructOnScope> LocalVarData;
-		if (Function && CompilerContext.Blueprint->bIsRegeneratingOnLoad)
-		{
-			if (Function->GetStructureSize() > 0 || !ensure(Function->PropertyLink == nullptr))
-			{
-				LocalVarData = MakeShareable(new FStructOnScope(Function));
-			}
-		}
-
 		for (TFieldIterator<FProperty> It(Function); It; ++It)
 		{
 			if (const FProperty* Property = *It)
@@ -862,16 +871,6 @@ void UK2Node_FunctionEntry::ExpandNode(class FKismetCompilerContext& CompilerCon
 							}
 							else
 							{
-								if (CompilerContext.Blueprint->bIsRegeneratingOnLoad)
-								{
-									// When regenerating on load, we want to force load assets referenced by local variables.
-									// This functionality is already handled when generating Terms in the Kismet Compiler for Arrays and Structs, so we do not have to worry about them.
-									if (LocalVar.VarType.PinCategory == UEdGraphSchema_K2::PC_Object || LocalVar.VarType.PinCategory == UEdGraphSchema_K2::PC_Class || LocalVar.VarType.PinCategory == UEdGraphSchema_K2::PC_Interface)
-									{
-										FBlueprintEditorUtils::PropertyValueFromString(Property, LocalVar.DefaultValue, LocalVarData->GetStructMemory());
-									}
-								}
-
 								// Set the default value
 								Schema->TrySetDefaultValue(*SetPin, LocalVar.DefaultValue);
 							}

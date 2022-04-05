@@ -53,6 +53,8 @@ struct FTickRecordMessage
 	float PlayRate = 0.0f;
 	float BlendSpacePositionX = 0.0f;
 	float BlendSpacePositionY = 0.0f;
+	float BlendSpaceFilteredPositionX = 0.0f;
+	float BlendSpaceFilteredPositionY = 0.0f;
 	uint16 FrameCounter = 0;
 	bool bLooping = false;
 	bool bIsBlendSpace = false;
@@ -183,6 +185,9 @@ struct FBlendSpacePlayerMessage
 	float PositionX = 0.0f;
 	float PositionY = 0.0f;
 	float PositionZ = 0.0f;
+	float FilteredPositionX = 0.0f;
+	float FilteredPositionY = 0.0f;
+	float FilteredPositionZ = 0.0f;
 };
 
 struct FAnimStateMachineMessage
@@ -224,32 +229,51 @@ struct FAnimMontageMessage
 	uint32 NextSectionNameId = 0;
 	float Weight = 0.0f;
 	float DesiredWeight = 0.0f;
+	float Position = 0.0f;
 	uint16 FrameCounter = 0;
 };
 
-class IAnimationProvider : public Trace::IProvider
+struct FAnimAttributeMessage
+{
+	int32 SourceNodeId = 0;
+	int32 TargetNodeId = 0;
+	uint32 AttributeNameId = 0;
+};
+
+struct FAnimSyncMessage
+{
+	int32 SourceNodeId = 0;
+	uint32 GroupNameId = 0;
+};
+
+class IAnimationProvider : public TraceServices::IProvider
 {
 public:
-	typedef Trace::ITimeline<FTickRecordMessage> TickRecordTimeline;
-	typedef Trace::ITimeline<FSkeletalMeshPoseMessage> SkeletalMeshPoseTimeline;
-	typedef Trace::ITimeline<FAnimGraphMessage> AnimGraphTimeline;
-	typedef Trace::ITimeline<FAnimNodeMessage> AnimNodesTimeline;
-	typedef Trace::ITimeline<FAnimNodeValueMessage> AnimNodeValuesTimeline;
-	typedef Trace::ITimeline<FAnimSequencePlayerMessage> AnimSequencePlayersTimeline;
-	typedef Trace::ITimeline<FAnimStateMachineMessage> StateMachinesTimeline;
-	typedef Trace::ITimeline<FBlendSpacePlayerMessage> BlendSpacePlayersTimeline;
-	typedef Trace::ITimeline<FAnimNotifyMessage> AnimNotifyTimeline;
-	typedef Trace::ITimeline<FAnimMontageMessage> AnimMontageTimeline;
+	typedef TraceServices::ITimeline<FTickRecordMessage> TickRecordTimeline;
+	typedef TraceServices::ITimeline<FSkeletalMeshPoseMessage> SkeletalMeshPoseTimeline;
+	typedef TraceServices::ITimeline<FAnimGraphMessage> AnimGraphTimeline;
+	typedef TraceServices::ITimeline<FAnimNodeMessage> AnimNodesTimeline;
+	typedef TraceServices::ITimeline<FAnimNodeValueMessage> AnimNodeValuesTimeline;
+	typedef TraceServices::ITimeline<FAnimSequencePlayerMessage> AnimSequencePlayersTimeline;
+	typedef TraceServices::ITimeline<FAnimStateMachineMessage> StateMachinesTimeline;
+	typedef TraceServices::ITimeline<FBlendSpacePlayerMessage> BlendSpacePlayersTimeline;
+	typedef TraceServices::ITimeline<FAnimNotifyMessage> AnimNotifyTimeline;
+	typedef TraceServices::ITimeline<FAnimMontageMessage> AnimMontageTimeline;
+	typedef TraceServices::ITimeline<FAnimAttributeMessage> AnimAttributeTimeline;
+	typedef TraceServices::ITimeline<FAnimSyncMessage> AnimSyncTimeline;
 
+	virtual void EnumerateSkeletalMeshPoseTimelines(TFunctionRef<void(uint64 ObjectId, const SkeletalMeshPoseTimeline&)> Callback) const =0;
 	virtual bool ReadSkeletalMeshPoseTimeline(uint64 InObjectId, TFunctionRef<void(const SkeletalMeshPoseTimeline&, bool)> Callback) const = 0;
 	virtual void GetSkeletalMeshComponentSpacePose(const FSkeletalMeshPoseMessage& InMessage, const FSkeletalMeshInfo& InMeshInfo, FTransform& OutComponentToWorld, TArray<FTransform>& OutTransforms) const = 0;
 	virtual void EnumerateSkeletalMeshCurveIds(uint64 InObjectId, TFunctionRef<void(uint32)> Callback) const = 0;
 	virtual void EnumerateSkeletalMeshCurves(const FSkeletalMeshPoseMessage& InMessage, TFunctionRef<void(const FSkeletalMeshNamedCurve&)> Callback) const = 0;
 	virtual bool ReadTickRecordTimeline(uint64 InObjectId, TFunctionRef<void(const TickRecordTimeline&)> Callback) const = 0;
 	virtual void EnumerateTickRecordIds(uint64 InObjectId, TFunctionRef<void(uint64, int32)> Callback) const = 0;
+	virtual void EnumerateAnimGraphTimelines(TFunctionRef<void(uint64 ObjectId, const AnimGraphTimeline&)> Callback) const =0;
 	virtual bool ReadAnimGraphTimeline(uint64 InObjectId, TFunctionRef<void(const AnimGraphTimeline&)> Callback) const = 0;
 	virtual bool ReadAnimNodesTimeline(uint64 InObjectId, TFunctionRef<void(const AnimNodesTimeline&)> Callback) const = 0;
 	virtual bool ReadAnimNodeValuesTimeline(uint64 InObjectId, TFunctionRef<void(const AnimNodeValuesTimeline&)> Callback) const = 0;
+	virtual bool ReadAnimAttributesTimeline(uint64 InObjectId, TFunctionRef<void(const AnimAttributeTimeline&)> Callback) const = 0;
 	virtual bool ReadAnimSequencePlayersTimeline(uint64 InObjectId, TFunctionRef<void(const AnimSequencePlayersTimeline&)> Callback) const = 0;
 	virtual bool ReadAnimBlendSpacePlayersTimeline(uint64 InObjectId, TFunctionRef<void(const BlendSpacePlayersTimeline&)> Callback) const = 0;
 	virtual bool ReadStateMachinesTimeline(uint64 InObjectId, TFunctionRef<void(const StateMachinesTimeline&)> Callback) const = 0;
@@ -257,6 +281,7 @@ public:
 	virtual void EnumerateNotifyStateTimelines(uint64 InObjectId, TFunctionRef<void(uint64, const AnimNotifyTimeline&)> Callback) const = 0;
 	virtual bool ReadMontageTimeline(uint64 InObjectId, TFunctionRef<void(const AnimMontageTimeline&)> Callback) const = 0;
 	virtual void EnumerateMontageIds(uint64 InObjectId, TFunctionRef<void(uint64)> Callback) const = 0;
+	virtual bool ReadAnimSyncTimeline(uint64 InObjectId, TFunctionRef<void(const AnimSyncTimeline&)> Callback) const = 0;
 	virtual const FSkeletalMeshInfo* FindSkeletalMeshInfo(uint64 InObjectId) const = 0;
 	virtual const TCHAR* GetName(uint32 InId) const = 0;
 	virtual FText FormatNodeKeyValue(const FAnimNodeValueMessage& InMessage) const = 0;

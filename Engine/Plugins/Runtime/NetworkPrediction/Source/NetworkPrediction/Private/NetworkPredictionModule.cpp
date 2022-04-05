@@ -13,12 +13,14 @@
 #include "Misc/Parse.h"
 #include "String/ParseTokens.h"
 #include "NetworkPredictionModelDefRegistry.h"
+#include "Async/NetworkPredictionAsyncModelDefRegistry.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
 #include "ISettingsModule.h"
 #include "NetworkPredictionSettings.h"
 #endif
+
 
 #define LOCTEXT_NAMESPACE "FNetworkPredictionModule"
 
@@ -39,14 +41,14 @@ class FNetworkPredictionModule : public INetworkPredictionModule
 void FNetworkPredictionModule::StartupModule()
 {
 	// Disable by default unless in the command line args. This is temp as the existing insights -trace parsing happen before the plugin is loaded
-	Trace::ToggleChannel(TEXT("NetworkPredictionChannel"), false);
+	UE::Trace::ToggleChannel(TEXT("NetworkPredictionChannel"), false);
 
 	FString EnabledChannels;
 	FParse::Value(FCommandLine::Get(), TEXT("-trace="), EnabledChannels, false);
 	UE::String::ParseTokens(EnabledChannels, TEXT(","), [](FStringView Token) {
 		if (Token.Compare(TEXT("NetworkPrediction"), ESearchCase::IgnoreCase)==0 || Token.Compare(TEXT("NP"), ESearchCase::IgnoreCase)==0)
 		{
-			Trace::ToggleChannel(TEXT("NetworkPredictionChannel"), true);
+		UE::Trace::ToggleChannel(TEXT("NetworkPredictionChannel"), true);
 		}
 	});
 
@@ -137,6 +139,7 @@ void FNetworkPredictionModule::FinalizeNetworkPredictionTypes()
 {
 	FGlobalCueTypeTable::Get().FinalizeCueTypes();
 	FNetworkPredictionModelDefRegistry::Get().FinalizeTypes();
+	UE_NP::FNetworkPredictionAsyncModelDefRegistry::Get().FinalizeTypes();
 }
 
 IMPLEMENT_MODULE( FNetworkPredictionModule, NetworkPrediction )

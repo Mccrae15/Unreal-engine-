@@ -1,13 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "IOSCustomIconProjectBuildMutatorFeature.h"
 #include "CoreMinimal.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/Paths.h"
 #include "PlatformInfo.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "Misc/CoreMisc.h"
+#include "Interfaces/IturnkeySupportModule.h"
 
 static bool RequiresBuild()
 {
@@ -47,12 +48,12 @@ static bool RequiresBuild()
 
 bool FIOSCustomIconProjectBuildMutatorFeature ::RequiresProjectBuild(const FName& InPlatformInfoName, FText& OutReason) const
 {
-	const PlatformInfo::FPlatformInfo* const PlatInfo = PlatformInfo::FindPlatformInfo(InPlatformInfoName);
+	const PlatformInfo::FTargetPlatformInfo* const PlatInfo = PlatformInfo::FindPlatformInfo(InPlatformInfoName);
 	check(PlatInfo);
 
-	if (PlatInfo->SDKStatus == PlatformInfo::EPlatformSDKStatus::Installed)
+	if (ITurnkeySupportModule::Get().GetSdkInfo(PlatInfo->IniPlatformName).Status == ETurnkeyPlatformSdkStatus::Valid)
 	{
-		const ITargetPlatform* const Platform = GetTargetPlatformManager()->FindTargetPlatform(PlatInfo->TargetPlatformName.ToString());
+		const ITargetPlatform* const Platform = GetTargetPlatformManager()->FindTargetPlatform(PlatInfo->Name.ToString());
 		if (Platform)
 		{
 			if (InPlatformInfoName.ToString() == TEXT("IOS"))

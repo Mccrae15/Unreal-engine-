@@ -1,5 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+using System.Linq;
+using System.Collections.Generic;
+
 namespace UnrealBuildTool.Rules
 {
     public class Chaos : ModuleRules
@@ -15,8 +18,9 @@ namespace UnrealBuildTool.Rules
 				"ChaosCore",
                 "IntelISPC",
 				"TraceLog",
-                "Voronoi"
-                }
+                "Voronoi",
+				"GeometryCore"
+				}
             );
 
             PublicDefinitions.Add("COMPILE_WITHOUT_UNREAL_SUPPORT=0");
@@ -39,6 +43,8 @@ namespace UnrealBuildTool.Rules
 			{
 				PublicDefinitions.Add("CHAOS_MEMORY_TRACKING=0");
 			}
-        }
+			
+			UnsafeTypeCastWarningLevel = WarningLevel.Error;
+		}
     }
 }

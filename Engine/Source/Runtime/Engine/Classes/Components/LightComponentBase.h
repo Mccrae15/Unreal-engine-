@@ -29,14 +29,14 @@ class ENGINE_API ULightComponentBase : public USceneComponent
 	/** 
 	 * Total energy that the light emits.  
 	 */
-	UPROPERTY(BlueprintReadOnly, interp, Category=Light, meta=(DisplayName = "Intensity", UIMin = "0.0", UIMax = "20.0"))
+	UPROPERTY(BlueprintReadOnly, interp, Category=Light, meta=(DisplayName = "Intensity", UIMin = "0.0", UIMax = "20.0", ShouldShowInViewport = true))
 	float Intensity;
 
 	/** 
 	 * Filter color of the light.
 	 * Note that this can change the light's effective intensity.
 	 */
-	UPROPERTY(BlueprintReadOnly, interp, Category=Light, meta=(HideAlphaChannel))
+	UPROPERTY(BlueprintReadOnly, interp, Category=Light, meta=(HideAlphaChannel, ShouldShowInViewport = true))
 	FColor LightColor;
 
 	/** 
@@ -44,7 +44,7 @@ class ENGINE_API ULightComponentBase : public USceneComponent
 	 * A disabled light will not contribute to the scene in any way.  This setting cannot be changed at runtime and unbuilds lighting when changed.
 	 * Setting this to false has the same effect as deleting the light, so it is useful for non-destructive experiments.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light)
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, meta = (ShouldShowInViewport = true))
 	uint32 bAffectsWorld:1;
 
 	/**
@@ -84,8 +84,11 @@ class ENGINE_API ULightComponentBase : public USceneComponent
 	uint32 bCastDeepShadow : 1;
 
 	/** Whether the light shadows are computed with shadow-mapping or ray-tracing (when available). */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, meta = (DisplayName = "Cast Ray Tracing Shadows"), AdvancedDisplay)
-	uint32 bCastRaytracedShadow : 1;
+	UPROPERTY()
+	uint32 bCastRaytracedShadow_DEPRECATED : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, meta = (DisplayName = "Cast Ray Traced Shadows"), AdvancedDisplay)
+	TEnumAsByte<ECastRayTracedShadow::Type> CastRaytracedShadow;
 
 	/** Whether the light affects objects in reflections, when ray-traced reflection is enabled. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = Light, AdvancedDisplay, meta = (DisplayName = "Affect Ray Tracing Reflections"))
@@ -119,7 +122,7 @@ class ENGINE_API ULightComponentBase : public USceneComponent
 #if WITH_EDITORONLY_DATA
 	/** Sprite for static light in the editor. */
 	UPROPERTY(transient)
-	UTexture2D* StaticEditorTexture;
+	TObjectPtr<UTexture2D> StaticEditorTexture;
 
 	/** Sprite scaling for static light in the editor. */
 	UPROPERTY(transient)
@@ -127,7 +130,7 @@ class ENGINE_API ULightComponentBase : public USceneComponent
 
 	/** Sprite for dynamic light in the editor. */
 	UPROPERTY(transient)
-	UTexture2D* DynamicEditorTexture;
+	TObjectPtr<UTexture2D> DynamicEditorTexture;
 
 	/** Sprite scaling for dynamic light in the editor. */
 	UPROPERTY(transient)
@@ -154,8 +157,11 @@ class ENGINE_API ULightComponentBase : public USceneComponent
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
 	void SetAffectGlobalIllumination(bool bNewValue);
 
-	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light", meta = (DeprecatedFunction, DeprecationMessage = "ULightComponentBase::SetCastRaytracedShadow is deprecated. Use ULightComponentBase::SetCastRaytracedShadows instead."))
 	void SetCastRaytracedShadow(bool bNewValue);
+
+	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
+	void SetCastRaytracedShadows(ECastRayTracedShadow::Type bNewValue);
 
 	UFUNCTION(BlueprintCallable, Category = "Rendering|Components|Light")
 	void SetSamplesPerPixel(int NewValue);

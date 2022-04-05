@@ -3,7 +3,7 @@
 # Build instructions:
 #
 # 1. Make sure LINUX_MULTIARCH_ROOT is set. Ie:
-#   export LINUX_MULTIARCH_ROOT=${UE_SDKS_ROOT}/HostLinux/Linux_x64/v16_clang-9.0.1-centos7
+#   export LINUX_MULTIARCH_ROOT=${UE_SDKS_ROOT}/HostLinux/Linux_x64/v17_clang-10.0.1-centos7/
 #  or
 #   export LINUX_MULTIARCH_ROOT=/epic/v16_clang-9.0.1-centos7
 #
@@ -33,6 +33,14 @@ BuildShaderConductor()
 
     pushd ${BUILD_DIR}
 
+    # In CrossCompile.cmake, it's checking for the existence of
+    #   ${LLVM_${target_name}_BUILD}  ; which is 'NATIVE' in this case
+    # And if it doesn't exist, it launches a couple cmake instances
+    # to configure the targets and cross toolchain flags, etc which
+    # overwrites our cross toolchain information. We create the
+    # NATIVE dir here and it'll skip all that stuff.
+    mkdir NATIVE
+
     set -x
     cmake -G Ninja \
       -DCMAKE_TOOLCHAIN_FILE="/tmp/__cmake_toolchain.cmake" \
@@ -40,7 +48,10 @@ BuildShaderConductor()
       -DCMAKE_BUILD_TYPE=${FLAVOR} \
       -DSC_ARCH_NAME=x64 \
       -DPYTHON_EXECUTABLE=$(which python3) \
+      -DPython3_EXECUTABLE=$(which python3) \
       -DSPIRV_CROSS_ENABLE_TESTS=OFF \
+      -DSC_EXPLICIT_DLLSHUTDOWN=ON \
+      -DDXC_EXPLICIT_DLLSHUTDOWN=ON \
       ${SCRIPT_DIR}/ShaderConductor
     set +x
 
@@ -51,6 +62,12 @@ BuildShaderConductor()
     cp ./External/DirectXShaderCompiler/bin/* ./NATIVE/bin
     ninja
     echo
+    
+    # Copy output into Engine/Binaries folder
+    local DST_DIR="../../../../Binaries/ThirdParty/ShaderConductor/Linux/${ARCH}"
+    cp -vf "./Lib/libdxcompiler.so" "${DST_DIR}/libdxcompiler.so"
+    cp -vf "./Lib/libShaderConductor.so" "${DST_DIR}/libShaderConductor.so"
+    cp -vf "./Bin/ShaderConductorCmd" "${DST_DIR}/ShaderConductorCmd"
 
     popd
 }
@@ -77,10 +94,10 @@ BuildShaderConductor()
   SET(CMAKE_C_COMPILER_TARGET     \${ARCHITECTURE_TRIPLE})
   SET(CMAKE_C_FLAGS "-fms-extensions -target      \${ARCHITECTURE_TRIPLE}")
 
-  include_directories("${THIRD_PARTY}/Linux/LibCxx/include")
-  include_directories("${THIRD_PARTY}/Linux/LibCxx/include/c++/v1")
+  include_directories("${THIRD_PARTY}/Unix/LibCxx/include")
+  include_directories("${THIRD_PARTY}/Unix/LibCxx/include/c++/v1")
 
-  set(CMAKE_LINKER_FLAGS "-stdlib=libc++ -L${THIRD_PARTY}/Linux/LibCxx/lib/Linux/\${ARCHITECTURE_TRIPLE}/ ${THIRD_PARTY}/Linux/LibCxx/lib/Linux/\${ARCHITECTURE_TRIPLE}/libc++.a ${THIRD_PARTY}/Linux/LibCxx/lib/Linux/\${ARCHITECTURE_TRIPLE}/libc++abi.a")
+  set(CMAKE_LINKER_FLAGS "-stdlib=libc++ -L${THIRD_PARTY}/Unix/LibCxx/lib/Unix/\${ARCHITECTURE_TRIPLE}/ ${THIRD_PARTY}/Unix/LibCxx/lib/Unix/\${ARCHITECTURE_TRIPLE}/libc++.a ${THIRD_PARTY}/Unix/LibCxx/lib/Unix/\${ARCHITECTURE_TRIPLE}/libc++abi.a -lpthread")
   set(CMAKE_EXE_LINKER_FLAGS      "\${CMAKE_LINKER_FLAGS}")
   set(CMAKE_MODULE_LINKER_FLAGS   "\${CMAKE_LINKER_FLAGS}")
   set(CMAKE_SHARED_LINKER_FLAGS   "\${CMAKE_LINKER_FLAGS}")
@@ -105,5 +122,8 @@ BuildShaderConductor()
 _EOF_
 ) > /tmp/__cmake_toolchain.cmake
 
-#BuildShaderConductor x86_64-unknown-linux-gnu Debug
-BuildShaderConductor x86_64-unknown-linux-gnu RelWithDebInfo
+if [ "$#" -eq 1 ] && [ "$1" == "-debug" ]; then
+	BuildShaderConductor x86_64-unknown-linux-gnu Debug
+else
+	BuildShaderConductor x86_64-unknown-linux-gnu RelWithDebInfo
+fi

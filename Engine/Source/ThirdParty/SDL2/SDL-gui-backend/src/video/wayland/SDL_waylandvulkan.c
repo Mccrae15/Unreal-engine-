@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2020 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2022 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -30,11 +30,16 @@
 
 #include "SDL_waylandvideo.h"
 #include "SDL_waylandwindow.h"
-#include "SDL_assert.h"
 
 #include "SDL_loadso.h"
 #include "SDL_waylandvulkan.h"
 #include "SDL_syswm.h"
+
+#if defined(__OpenBSD__)
+#define DEFAULT_VULKAN  "libvulkan.so"
+#else
+#define DEFAULT_VULKAN  "libvulkan.so.1"
+#endif
 
 int Wayland_Vulkan_LoadLibrary(_THIS, const char *path)
 {
@@ -50,7 +55,7 @@ int Wayland_Vulkan_LoadLibrary(_THIS, const char *path)
     if(!path)
         path = SDL_getenv("SDL_VULKAN_LIBRARY");
     if(!path)
-        path = "libvulkan.so.1";
+        path = DEFAULT_VULKAN;
     _this->vulkan_config.loader_handle = SDL_LoadObject(path);
     if(!_this->vulkan_config.loader_handle)
         return -1;
@@ -186,33 +191,6 @@ SDL_bool Wayland_Vulkan_CreateSurface(_THIS,
     }
     return SDL_TRUE;
 }
-
-/* EG BEGIN */
-#ifdef SDL_WITH_EPIC_EXTENSIONS
-char**
-Wayland_Vulkan_GetRequiredInstanceExtensions(_THIS, unsigned int* count) {
-    /** If we didn't allocated memory for the strings, let's do it now. */
-    if(NULL == _this->vulkan_config.required_instance_extensions) {
-        size_t length;
-        _this->vulkan_config.required_instance_extensions = (char**)malloc(sizeof(char*) * 3);
-
-        length = SDL_strlen(VK_KHR_SURFACE_EXTENSION_NAME) + 1;
-        _this->vulkan_config.required_instance_extensions[0] = (char*)malloc(sizeof(char) * length );
-        SDL_strlcpy(_this->vulkan_config.required_instance_extensions[0], VK_KHR_SURFACE_EXTENSION_NAME, length);
-
-        length = SDL_strlen(VK_KHR_XLIB_SURFACE_EXTENSION_NAME) + 1;
-        _this->vulkan_config.required_instance_extensions[1] = (char*)malloc(sizeof(char) * length );
-        SDL_strlcpy(_this->vulkan_config.required_instance_extensions[1], VK_KHR_XLIB_SURFACE_EXTENSION_NAME, length);
-
-        length = SDL_strlen(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME) + 1;
-        _this->vulkan_config.required_instance_extensions[2] = (char*)malloc(sizeof(char) * length );
-        SDL_strlcpy(_this->vulkan_config.required_instance_extensions[2], VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME, length);
-    }
-    *count = 3;
-    return _this->vulkan_config.required_instance_extensions;
-}
-#endif /* SDL_WITH_EPIC_EXTENSIONS */
-/* EG END */
 
 #endif
 

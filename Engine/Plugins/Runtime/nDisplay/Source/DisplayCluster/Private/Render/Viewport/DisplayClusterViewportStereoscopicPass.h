@@ -4,30 +4,39 @@
 
 #include "CoreMinimal.h"
 #include "StereoRendering.h"
+#include "Render/Viewport/RenderFrame/DisplayClusterRenderFrameSettings.h"
 
 struct FDisplayClusterViewportStereoscopicPass
 {
-	// Eye stereoscopic pass (mono, left, right)
-	inline static EStereoscopicPass EncodeStereoscopicEye(const uint32 ContextNum, const uint32 ContextAmmount)
-	{
-		EStereoscopicPass EyePass = EStereoscopicPass::eSSP_FULL;
+	// 'EStereoscopicPass': Stereoscopic rendering passes.
+	// FULL implies stereoscopic rendering isn't enabled for this pass
+	// PRIMARY implies the view needs its own pass, while SECONDARY implies the view can be instanced
 
-		// Monoscopic rendering
-		if (ContextAmmount == 1)
+	inline static EStereoscopicPass EncodeStereoscopicPass(const uint32 ContextNum, const uint32 ContextAmount, const FDisplayClusterRenderFrameSettings& InFrameSettings)
+	{
+#if WITH_EDITOR
+		if (InFrameSettings.bIsRenderingInEditor)
 		{
-			EyePass = EStereoscopicPass::eSSP_FULL;
+			return EStereoscopicPass::eSSP_FULL;
 		}
-		// Stereoscopic rendering
-		else
+#endif
+
+		// 'bEnableStereoscopicRenderingOptimization'
+		// When stereoscopic rendering optimization is enabled, one image family and one RTT for both eyes is used. 
+		// The result both eyes are rendered in the same family. It makes sense to use PRIMARY/SECONDARY.
+		// Otherwise, we render each view into a unique family.As a result, only PRIMARY is used.
+		if (InFrameSettings.bEnableStereoscopicRenderingOptimization && ContextAmount > 1)
 		{
 			switch (ContextNum)
 			{
 			case 0:
-				EyePass = EStereoscopicPass::eSSP_LEFT_EYE;
-				break;
+				// Left eye
+				// PRIMARY implies the view needs its own pass
+				return EStereoscopicPass::eSSP_PRIMARY;
 			case 1:
-				EyePass = EStereoscopicPass::eSSP_RIGHT_EYE;
-				break;
+				// Right eye
+				// SECONDARY implies the view can be instanced
+				return EStereoscopicPass::eSSP_SECONDARY;
 			default:
 				// now stereo only with 2 context
 				check(false);
@@ -35,28 +44,8 @@ struct FDisplayClusterViewportStereoscopicPass
 			}
 		}
 
-		return EyePass;
-	}
-
-	// Unique stereoscopic pass (ndisplay viewports hack)
-	// EStereoscopicPass enum used as int value range
-	// Use to encode sceneview in viewFamily
-	inline static EStereoscopicPass EncodeStereoscopicPass(const uint32 ViewIndex)
-	{
-		EStereoscopicPass EncodedPass = EStereoscopicPass::eSSP_FULL;
-
-		// We don't care about mono/stereo. We need to fulfill ViewState and StereoViewStates in a proper way.
-		// Look at ULocalPlayer::CalcSceneViewInitOptions for view states mapping.
-		if (ViewIndex < 2)
-		{
-			EncodedPass = (ViewIndex == 0 ? EStereoscopicPass::eSSP_LEFT_EYE : EStereoscopicPass::eSSP_RIGHT_EYE);
-		}
-		else
-		{
-			EncodedPass = EStereoscopicPass(int(EStereoscopicPass::eSSP_RIGHT_EYE) + ViewIndex - 1);
-		}
-
-		return EncodedPass;
+		// Render as primary
+		return EStereoscopicPass::eSSP_PRIMARY;
 	}
 };
 

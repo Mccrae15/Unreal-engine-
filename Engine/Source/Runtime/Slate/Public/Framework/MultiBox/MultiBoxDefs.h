@@ -26,6 +26,9 @@ enum class EMultiBoxType : uint8
 	/** Vertical tool bar */
 	VerticalToolBar,
 
+	/** Toolbar which is a slim version of the toolbar that aligns an icon and a text element horizontally */
+	SlimHorizontalToolBar,
+
 	/** A toolbar that tries to arrange all toolbar items uniformly (supports only horizontal toolbars for now) */
 	UniformToolBar,
 

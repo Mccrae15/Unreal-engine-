@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 /*=============================================================================
-	MallocTTB.cpp: IntelTTB Malloc
+	MallocMimalloc.cpp: MiMalloc
 =============================================================================*/
 
 #include "HAL/MallocMimalloc.h"
@@ -9,7 +9,7 @@
 #include "HAL/UnrealMemory.h"
 
 // Only use for supported platforms
-#if PLATFORM_SUPPORTS_MIMALLOC && MIMALLOC_ALLOCATOR_ALLOWED
+#if PLATFORM_SUPPORTS_MIMALLOC && MIMALLOC_ALLOCATOR_ALLOWED && PLATFORM_BUILDS_MIMALLOC
 
 /** Value we fill a memory block with after it is free, in UE_BUILD_DEBUG **/
 #define DEBUG_FILL_FREED (0xdd)
@@ -17,15 +17,13 @@
 /** Value we fill a new memory block with, in UE_BUILD_DEBUG **/
 #define DEBUG_FILL_NEW (0xcd)
 
-// Statically linked tbbmalloc requires tbbmalloc_debug.lib in debug
-#if UE_BUILD_DEBUG && !defined(NDEBUG)	// Use !defined(NDEBUG) to check to see if we actually are linking with Debug third party libraries (bDebugBuildsActuallyUseDebugCRT)
-	#ifndef MIMALLOC_USE_DEBUG
-		#define MIMALLOC_USE_DEBUG 1
-	#endif
-#endif
 THIRD_PARTY_INCLUDES_START
 #include <mimalloc.h>
 THIRD_PARTY_INCLUDES_END
+
+FMallocMimalloc::FMallocMimalloc()
+{
+}
 
 void* FMallocMimalloc::TryMalloc( SIZE_T Size, uint32 Alignment )
 {
@@ -102,10 +100,9 @@ void* FMallocMimalloc::TryRealloc(void* Ptr, SIZE_T NewSize, uint32 Alignment)
 	}
 
 #if PLATFORM_MAC
-#error TODO
-	// macOS expects all allocations to be aligned to 16 bytes, but TBBs default alignment is 8, so on Mac we always have to use scalable_aligned_realloc
+	// macOS expects all allocations to be aligned to 16 bytes, so on Mac we always have to use mi_realloc_aligned
 	Alignment = AlignArbitrary(FMath::Max((uint32)16, Alignment), (uint32)16);
-	NewPtr	= scalable_aligned_realloc(Ptr, NewSize, Alignment);
+	NewPtr	= mi_realloc_aligned(Ptr, NewSize, Alignment);
 #else
 	if (Alignment != DEFAULT_ALIGNMENT)
 	{
@@ -159,6 +156,10 @@ bool FMallocMimalloc::GetAllocationSize(void *Original, SIZE_T &SizeOut)
 
 void FMallocMimalloc::Trim(bool bTrimThreadCaches)
 {
+	mi_collect(bTrimThreadCaches);
 }
+
+#undef DEBUG_FILL_FREED
+#undef DEBUG_FILL_NEW
 
 #endif

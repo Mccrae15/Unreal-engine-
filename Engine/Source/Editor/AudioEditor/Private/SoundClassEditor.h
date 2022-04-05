@@ -11,7 +11,6 @@
 #include "ISoundClassEditor.h"
 
 class IDetailsView;
-class SDockableTab;
 class UEdGraph;
 class USoundClass;
 
@@ -49,6 +48,10 @@ public:
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FSoundClassEditor");
+	}
 
 	/** IToolkit interface */
 	virtual FName GetToolkitFName() const override;
@@ -111,9 +114,6 @@ private:
 	/** The SoundClass asset being inspected */
 	USoundClass* SoundClass;
 
-	/** List of open tool panels; used to ensure only one exists at any one time */
-	TMap< FName, TWeakPtr<class SDockableTab> > SpawnedToolPanels;
-
 	/** Graph Editor */
 	TSharedPtr<SGraphEditor> GraphEditor;
 
@@ -123,8 +123,10 @@ private:
 	/** Command list for this editor */
 	TSharedPtr<FUICommandList> GraphEditorCommands;
 
+#if ENABLE_AUDIO_DEBUG
 	/** Cache the audio debugger instance */
 	Audio::FAudioDebugger* Debugger;
+#endif
 
 	/**	The tab ids for all the tabs used */
 	static const FName GraphCanvasTabId;

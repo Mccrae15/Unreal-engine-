@@ -243,7 +243,20 @@ bool UExporter::RunAssetExportTask(class UAssetExportTask* Task)
 	UExporter*	Exporter	= Task->Exporter;
 	FString		Extension	= FPaths::GetExtension(Task->Filename);
 
-	if (!Exporter)
+	// We were provided with an exporter, check to see if its compatible with the asset we want to export
+	if (Exporter)
+	{
+		if (UObject* Object = Task->Object.Get())
+		{
+			if (!Object->IsA(Exporter->SupportedClass))
+			{
+				Task->Errors.Add(FString::Printf(TEXT("Chosen exporter '%s' does not support the exported object's class '%s'!"), *Exporter->GetName(), *Object->GetClass()->GetName()));
+				UE_LOG(LogExporter, Warning, TEXT( "%s" ), *Task->Errors.Last());
+				return false;
+			}
+		}
+	}
+	else
 	{
 		// look for an exporter with all possible extensions, so an exporter can have something like *.xxx.yyy as an extension
 		int32 SearchStart = 0;
@@ -501,7 +514,7 @@ void UExporter::EmitEndObject( FOutputDevice& Ar )
 FExportObjectInnerContext::FExportObjectInnerContext()
 {
 	// For each object . . .
-	for (UObject* InnerObj : TObjectRange<UObject>(RF_ClassDefaultObject, true, EInternalObjectFlags::PendingKill))
+	for (UObject* InnerObj : TObjectRange<UObject>(RF_ClassDefaultObject, true, EInternalObjectFlags::Garbage))
 	{
 		UObject* OuterObj = InnerObj->GetOuter();
 		if ( OuterObj )
@@ -526,12 +539,12 @@ FExportObjectInnerContext::FExportObjectInnerContext()
 FExportObjectInnerContext::FExportObjectInnerContext(const TArray<UObject*>& ObjsToIgnore)
 {
 	// For each object . . .
-	for (UObject* InnerObj : TObjectRange<UObject>(RF_ClassDefaultObject, true, EInternalObjectFlags::PendingKill))
+	for (UObject* InnerObj : TObjectRange<UObject>(RF_ClassDefaultObject, true, EInternalObjectFlags::Garbage))
 	{
 		if (!ObjsToIgnore.Contains(InnerObj))
 		{
 			UObject* OuterObj = InnerObj->GetOuter();
-			if (OuterObj && !OuterObj->IsPendingKill())
+			if (IsValid(OuterObj))
 			{
 				InnerList* Inners = ObjectToInnerMap.Find(OuterObj);
 				if (Inners)
@@ -551,6 +564,20 @@ FExportObjectInnerContext::FExportObjectInnerContext(const TArray<UObject*>& Obj
 }
 
 
+bool FExportObjectInnerContext::IsObjectSelected(const UObject* InObj) const
+{
+	return InObj->IsSelected();
+}
+
+
+bool UExporter::IsObjectSelectedForExport(const FExportObjectInnerContext* Context, const UObject* Object)
+{
+	return Context
+		? Context->IsObjectSelected(Object)
+		: Object->IsSelected();
+}
+
+
 void UExporter::ExportObjectInner(const FExportObjectInnerContext* Context, UObject* Object, FOutputDevice& Ar, uint32 PortFlags)
 {
 	// indent all the text in here
@@ -565,7 +592,7 @@ void UExporter::ExportObjectInner(const FExportObjectInnerContext* Context, UObj
 	else
 	{
 		// NOTE: We ignore inner objects that have been tagged for death
-		GetObjectsWithOuter(Object, TempInners, false, RF_NoFlags, EInternalObjectFlags::PendingKill);
+		GetObjectsWithOuter(Object, TempInners, false, RF_NoFlags, EInternalObjectFlags::Garbage);
 	}
 	FExportObjectInnerContext::InnerList const& UnsortedObjectInners = ContextInners ? *ContextInners : TempInners;
 
@@ -901,31 +928,52 @@ FString DumpObjectToString(UObject* Object)
 
 #if WITH_EDITOR
 FSelectedActorExportObjectInnerContext::FSelectedActorExportObjectInnerContext()
-	//call the empty version of the base class
-	: FExportObjectInnerContext(false)
+	: FExportObjectInnerContext(false) //call the empty version of the base class
 {
 	// For each selected actor...
 	for (FSelectionIterator It(GEditor->GetSelectedActorIterator()); It; ++It)
 	{
 		AActor* Actor = (AActor*)*It;
 		checkSlow(Actor->IsA(AActor::StaticClass()));
-
-		ForEachObjectWithOuter(Actor, [this](UObject* InnerObj)
-		{
-			UObject* OuterObj = InnerObj->GetOuter();
-			InnerList* Inners = ObjectToInnerMap.Find(OuterObj);
-			if (Inners)
-			{
-				// Add object to existing inner list.
-				Inners->Add( InnerObj );
-			}
-			else
-			{
-				// Create a new inner list for the outer object.
-				InnerList& InnersForOuterObject = ObjectToInnerMap.Add(OuterObj, InnerList());
-				InnersForOuterObject.Add(InnerObj);
-			}
-		}, /** bIncludeNestedObjects */ true, RF_NoFlags, EInternalObjectFlags::PendingKill);
+		AddSelectedActor(Actor);
 	}
+}
+
+FSelectedActorExportObjectInnerContext::FSelectedActorExportObjectInnerContext(const TArray<AActor*> InSelectedActors)
+	: FExportObjectInnerContext(false) //call the empty version of the base class
+{
+	// For each selected actor...
+	for (const AActor* Actor : InSelectedActors)
+	{
+		AddSelectedActor(Actor);
+	}
+}
+
+bool FSelectedActorExportObjectInnerContext::IsObjectSelected(const UObject* InObj) const
+{
+	const AActor* Actor = Cast<AActor>(InObj);
+	return Actor && SelectedActors.Contains(Actor);
+}
+
+void FSelectedActorExportObjectInnerContext::AddSelectedActor(const AActor* InActor)
+{
+	SelectedActors.Add(InActor);
+
+	ForEachObjectWithOuter(InActor, [this](UObject* InnerObj)
+	{
+		UObject* OuterObj = InnerObj->GetOuter();
+		InnerList* Inners = ObjectToInnerMap.Find(OuterObj);
+		if (Inners)
+		{
+			// Add object to existing inner list.
+			Inners->Add(InnerObj);
+		}
+		else
+		{
+			// Create a new inner list for the outer object.
+			InnerList& InnersForOuterObject = ObjectToInnerMap.Add(OuterObj, InnerList());
+			InnersForOuterObject.Add(InnerObj);
+		}
+	}, /** bIncludeNestedObjects */ true, RF_NoFlags, EInternalObjectFlags::Garbage);
 }
 #endif

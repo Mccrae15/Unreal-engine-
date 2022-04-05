@@ -40,8 +40,8 @@ const FName& UMaterialShaderQualitySettings::GetPreviewPlatform()
 
 void UMaterialShaderQualitySettings::SetPreviewPlatform(FName PlatformName)
 {
-	 UShaderPlatformQualitySettings** FoundPlatform = ForwardSettingMap.Find(PlatformName);
-	 PreviewPlatformSettings = FoundPlatform == nullptr ? nullptr : *FoundPlatform;
+	 TObjectPtr<UShaderPlatformQualitySettings>* FoundPlatform = ForwardSettingMap.Find(PlatformName);
+	 PreviewPlatformSettings = FoundPlatform == nullptr ? nullptr : FoundPlatform->Get();
 	 PreviewPlatformName = PlatformName;
 }
 #endif
@@ -147,7 +147,7 @@ void UShaderPlatformQualitySettings::AppendToHashState(EMaterialQualityLevel::Ty
 bool FMaterialQualityOverrides::CanOverride(EShaderPlatform ShaderPlatform) const
 {
 	// Only mobile renderer can lower the quality of a shader even without quality level nodes in the material (see TMobileBasePassPSPolicyParamType<>::ModifyCompilationEnvironmentForQualityLevel).
-	// Whitelist the platforms here that are going to use it.
+	// Opt-in the platforms here that are going to use it.
 	return IsMobilePlatform(ShaderPlatform);
 }
 

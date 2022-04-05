@@ -40,6 +40,8 @@ public:
 	// Input simulation via injection. Runs modifiers and triggers delegates as if the input had come through the underlying input system as FKeys. Applies action modifiers and triggers on top.
 	void InjectInputForAction(const UInputAction* Action, FInputActionValue RawValue, const TArray<UInputModifier*>& Modifiers = {}, const TArray<UInputTrigger*>& Triggers = {});
 
+	virtual bool InputKey(const FInputKeyParams& Params) override;
+	
 protected:
 
 	// Applies modifiers and triggers without affecting keys read by the base input system
@@ -62,7 +64,6 @@ private:
 	void InitializeMappingActionModifiers(const FEnhancedActionKeyMapping& Mapping);
 
 	FInputActionValue ApplyModifiers(const TArray<UInputModifier*>& Modifiers, FInputActionValue RawValue, float DeltaTime) const;						// Pre-modified (raw) value
-	ETriggerState CalcTriggerState(const TArray<UInputTrigger*>& Triggers, FInputActionValue ModifiedValue, float DeltaTime) const;						// Post-modified value
 	ETriggerEventInternal GetTriggerStateChangeEvent(ETriggerState LastTriggerState, ETriggerState NewTriggerState) const;
 	ETriggerEvent ConvertInternalTriggerEvent(ETriggerEventInternal Event) const;	// Collapse a detailed internal trigger event into a friendly representation
 	void ProcessActionMappingEvent(const UInputAction* Action, float DeltaTime, bool bGamePaused, FInputActionValue RawValue, EKeyEvent KeyEvent, const TArray<UInputModifier*>& Modifiers, const TArray<UInputTrigger*>& Triggers);
@@ -92,6 +93,13 @@ private:
 	/** Actions which had actuated events at the last call to ProcessInputStack (held/pressed/released) */
 	TSet<const UInputAction*> ActionsWithEventsThisTick;
 
+	/**
+	 * A map of Keys to the amount they were depressed this frame. This is reset with each call to ProcessInputStack
+	 * and is populated within UEnhancedPlayerInput::InputKey.
+	 */
+	UPROPERTY(Transient)
+	TMap<FKey, FVector> KeysPressedThisTick;
+
 	struct FInjectedInput
 	{
 		FInputActionValue RawValue;
@@ -108,4 +116,10 @@ private:
 
 	/** Last frame's injected inputs */
 	TSet<const UInputAction*> LastInjectedActions;
+
+	/** The last time of the last frame that was processed in ProcessPlayerInput */
+	float LastFrameTime = 0.0f;
+
+	/** Delta seconds between frames calculated with UWorld::GetRealTimeSeconds */
+	float RealTimeDeltaSeconds = 0.0f;
 };

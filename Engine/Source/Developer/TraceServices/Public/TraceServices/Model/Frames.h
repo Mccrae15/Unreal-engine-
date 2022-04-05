@@ -8,7 +8,7 @@
 #include "Delegates/Delegate.h"
 #include "Containers/ContainersFwd.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 struct FFrame
@@ -29,8 +29,9 @@ public:
 	virtual const TArray64<double>& GetFrameStartTimes(ETraceFrameType FrameType) const = 0;
 	virtual bool GetFrameFromTime(ETraceFrameType FrameType, double Time, FFrame& OutFrame) const = 0;
 	virtual const FFrame* GetFrame(ETraceFrameType FrameType, uint64 Index) const = 0;
+	virtual uint32 GetFrameNumberForTimestamp(ETraceFrameType FrameType, double Timestamp) const = 0;
 };
 
 TRACESERVICES_API const IFrameProvider& ReadFrameProvider(const IAnalysisSession& Session);
 
-}
+} // namespace TraceServices

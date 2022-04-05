@@ -7,6 +7,8 @@
 #include "Chaos/ImplicitObject.h"
 #include "ChaosArchive.h"
 
+#include "Math/VectorRegister.h"
+
 #include "UObject/ReleaseObjectVersion.h"
 
 namespace Chaos
@@ -62,6 +64,11 @@ namespace Chaos
 
 		virtual ~TSphere() {}
 
+		virtual FImplicitObject* Duplicate() const override
+		{
+			return new TSphere(*this);
+		}
+
 		static constexpr EImplicitObjectType StaticType()
 		{ 
 			return ImplicitObjectType::Sphere; 
@@ -93,7 +100,7 @@ namespace Chaos
 
 		virtual bool Raycast(const TVector<T, d>& StartPoint, const TVector<T, d>& Dir, const T Length, const T Thickness, T& OutTime, TVector<T, d>& OutPosition, TVector<T, d>& OutNormal, int32& OutFaceIndex) const override
 		{
-			ensure(FMath::IsNearlyEqual(Dir.SizeSquared(),1, KINDA_SMALL_NUMBER));
+			ensure(FMath::IsNearlyEqual(Dir.SizeSquared(), (FReal)1, (FReal)KINDA_SMALL_NUMBER));
 			ensure(Length > 0);
 			OutFaceIndex = INDEX_NONE;
 
@@ -122,7 +129,7 @@ namespace Chaos
 				return false;
 			}
 
-			constexpr T Epsilon = 1e-4;
+			constexpr T Epsilon = 1e-4f;
 			//we early out if starting in sphere, so using first time is always acceptable
 			T FirstTime = QuarterUnderRoot < Epsilon ? -HalfB : -HalfB - FMath::Sqrt(QuarterUnderRoot);
 			if (FirstTime >= 0 && FirstTime <= Length)
@@ -182,11 +189,12 @@ namespace Chaos
 			return MakePair(TVector<T, d>(Root2 * Direction + StartPoint), true);
 		}
 
-		TVector<T, d> Support(const TVector<T, d>& Direction, const T Thickness) const
+		TVector<T, d> Support(const TVector<T, d>& Direction, const T Thickness, int32& VertexIndex) const
 		{
 			//We want N / ||N|| and to avoid inf
 			//So we want N / ||N|| < 1 / eps => N eps < ||N||, but this is clearly true for all eps < 1 and N > 0
 			T SizeSqr = Direction.SizeSquared();
+			VertexIndex = 0;
 			if (SizeSqr <= TNumericLimits<T>::Min())
 			{
 				return Center;
@@ -196,21 +204,34 @@ namespace Chaos
 			return Center + Normalized * (GetRadius() + Thickness);
 		}
 
-		FORCEINLINE const TVector<T, d>& SupportCore(const TVector<T, d>& Direction, FReal InMargin) const
+		FORCEINLINE const TVector<T, d>& SupportCore(const TVector<T, d>& Direction, const FReal InMargin, FReal* OutSupportDelta, int32& VertexIndex) const
 		{
+			VertexIndex = 0;
 			// Note: ignores InMargin, assumed Radius
 			return Center;
 		}
 
-		FORCEINLINE TVector<T, d> SupportCoreScaled(const TVector<T, d>& Direction, FReal InMargin, const TVector<T, d>& Scale) const
+		FORCEINLINE VectorRegister4Float SupportCoreSimd(const VectorRegister4Float& Direction, const FReal InMargin) const
 		{
+			return MakeVectorRegisterFloatFromDouble(MakeVectorRegister(Center[0], Center[1], Center[2], 0.0));
+		}
+		FORCEINLINE TVector<T, d> SupportCoreScaled(const TVector<T, d>& Direction, const FReal InMargin, const TVector<T, d>& Scale, FReal* OutSupportDelta, int32& VertexIndex) const
+		{
+			VertexIndex = 0;
 			// Note: ignores InMargin, assumed Radius
 			return Center * Scale;
 		}
 
-		virtual const TAABB<T, d> BoundingBox() const
+		virtual const TAABB<T, d> BoundingBox() const override
 		{
 			return TAABB<T,d>(Center - TVector<T,d>(GetRadius()),Center + TVector<T,d>(GetRadius()));
+		}
+
+		virtual FAABB3 CalculateTransformedBounds(const FRigidTransform3& Transform) const override
+		{
+			const FVec3 TransformedCenter = Transform.TransformPosition(Center);
+			const FVec3 Extents = FVec3(GetRadius());
+			return FAABB3(TransformedCenter - Extents, TransformedCenter + Extents);
 		}
 
 		T GetArea() const 
@@ -258,7 +279,7 @@ namespace Chaos
 			Ar << Center;
 
 			// Radius is now stored in the base class Margin
-			FReal ArRadius = GetRadius();
+			FRealSingle ArRadius = (FRealSingle)GetRadius(); // LWC_TODO : potential precision loss, to be changed when we can serialize FReal as double
 			Ar << ArRadius;
 			SetRadius(ArRadius);
 		}
@@ -323,8 +344,8 @@ namespace Chaos
 
 		static PMatrix<T, d, d> GetInertiaTensor(const T InMass, const T InRadius, const bool bInThinShell = false)
 		{
-			static const T TwoThirds = 2. / 3;
-			static const T TwoFifths = 2. / 5;
+			static const T TwoThirds = static_cast<T>(2.0 / 3.0);
+			static const T TwoFifths = static_cast<T>(2.0 / 5.0);
 			const T Diagonal = bInThinShell ? TwoThirds * InMass * InRadius * InRadius : TwoFifths * InMass * InRadius * InRadius;
 			return PMatrix<T, d, d>(Diagonal, Diagonal, Diagonal);
 		}
@@ -336,7 +357,7 @@ namespace Chaos
 
 		virtual uint32 GetTypeHash() const override
 		{
-			const uint32 CenterHash = ::GetTypeHash(Center);
+			const uint32 CenterHash = UE::Math::GetTypeHash(Center);
 			const uint32 RadiusHash = ::GetTypeHash(GetRadius());
 			return HashCombine(CenterHash, RadiusHash);
 		}
@@ -345,6 +366,23 @@ namespace Chaos
 		{
 			return TUniquePtr<FImplicitObject>(new TSphere<T,d>(Center, GetRadius()));
 		}
+
+		virtual TUniquePtr<FImplicitObject> CopyWithScale(const FVec3& Scale) const override
+		{
+			return  TUniquePtr<FImplicitObject>(new TSphere<T, d>(Center * Scale, GetRadius() * Scale.Min()));
+		}
+
+#if INTEL_ISPC && !UE_BUILD_SHIPPING
+		// See PerParticlePBDCollisionConstraint.cpp
+		// ISPC code has matching structs for interpreting FImplicitObjects.
+		// This is used to verify that the structs stay the same.
+		struct FISPCDataVerifier
+		{
+			static constexpr int32 OffsetOfCenter() { return offsetof(TSphere, Center); }
+			static constexpr int32 SizeOfCenter() { return sizeof(TSphere::Center); }
+		};
+		friend FISPCDataVerifier;
+#endif // #if INTEL_ISPC && !UE_BUILD_SHIPPING
 
 	private:
 		void SetRadius(FReal InRadius) { SetMargin(InRadius); }
@@ -399,15 +437,15 @@ namespace Chaos
 			// Polar sunflower increment: pi * (1 + sqrt(5))
 
 			// Increment = 10.16640738463053...
-			static const T Increment = PI * (1.0 + sqrt(5));
+			static const T Increment = static_cast<T>(PI * (1.0 + sqrt(5)));
 			for (int32 i = 0; i < NumPoints; i++)
 			{
-				const T Z = 0.5 + i;
+				const T Z = static_cast<T>(0.5 + i);
 				// sqrt((i+0.5) / NumPoints) sampling i = [0, NumPoints) varies: (0, 1).
 				// We then scale to the radius of our Sphere.
-				const T R = FMath::Sqrt(Z / NumPoints) * Radius;
+				const T R = FMath::Sqrt(Z / static_cast<T>(NumPoints)) * Radius;
 				// Theta increases linearly from [Increment/2, Increment*NumPoints)
-				const T Theta = Increment * (Z + SpiralSeed);
+				const T Theta = Increment * (Z + static_cast<T>(SpiralSeed));
 
 				// Convert polar coordinates to Cartesian, offset by the Sphere's location.
 				const int32 Index = i + Offset;
@@ -487,7 +525,7 @@ namespace Chaos
 			// Phi is the angle between the positive Z axis and the line from the origin to the point
 
 			// GRIncrement = 10.16640738463053...
-			static const T GRIncrement = PI * (1.0 + sqrt(5));
+			static const T GRIncrement = static_cast<FReal>(PI * (1.0 + sqrt(5)));
 
 			// If PhiSteps is 2X NumPoints, then we'll only generate half the sphere.
 			//const int32 PhiSteps = TopHalf + BottomHalf == 1 ? NumPoints * 2 : NumPoints;
@@ -500,14 +538,14 @@ namespace Chaos
 			{
 				for (int32 i = 0; i < NumPoints; i++)
 				{
-					const T Sample = 0.5 + i;
+					const T Sample = static_cast<T>(0.5 + i);
 					// ((i + 0.5) / (NumPoints * 2)) varies: (0.0, 0.5)
 					// So, (2 * (i + 0.5) / (NumPoints * 2)) varies: (0.0, 1.0)
 					// So, ((2 * (i + 0.5) / (NumPoints * 2)) - 1) varies: (-1, 0.0)
-					const T V = (2.0 * (0.5 + i) / (2.0 * NumPoints)) - 1.0;
+					const T V = static_cast<T>((2.0 * (0.5 + i) / (2.0 * NumPoints)) - 1.0);
 					const T Phi = FMath::Acos(V);
 					checkSlow(Phi > PI / 2 - KINDA_SMALL_NUMBER);
-					const T Theta = GRIncrement * (Sample + SpiralSeed);
+					const T Theta = GRIncrement * (Sample + static_cast<T>(SpiralSeed));
 
 					// Convert spherical coordinates to Cartesian, scaled by the radius of our Sphere, and offset by its location.
 					const T SinPhi = FMath::Sin(Phi);
@@ -526,11 +564,11 @@ namespace Chaos
 			{
 				for (int32 i = 0; i < NumPoints; i++)
 				{
-					const T Sample = 0.5 + i;
-					const T V = (2.0 * (0.5 + i) / (2.0 * NumPoints)); // varies: (0.0, 1.0)
+					const T Sample = static_cast<T>(0.5 + i);
+					const T V = static_cast<T>((2.0 * (0.5 + i) / (2.0 * NumPoints))); // varies: (0.0, 1.0)
 					const T Phi = FMath::Acos(V);
 					checkSlow(Phi < PI / 2 + KINDA_SMALL_NUMBER);
-					const T Theta = GRIncrement * (Sample + SpiralSeed);
+					const T Theta = GRIncrement * (Sample + static_cast<T>(SpiralSeed));
 
 					// Convert spherical coordinates to Cartesian, scaled by the radius of our Sphere, and offset by its location.
 					const T SinPhi = FMath::Sin(Phi);
@@ -549,15 +587,15 @@ namespace Chaos
 			{
 				for (int32 i = 0; i < NumPoints; i++)
 				{
-					const T Sample = 0.5 + i;
+					const T Sample = static_cast<T>(0.5 + i);
 					// arccos(x), where x = [-1, 1] varies: [PI, 0]
 					// ((i + 0.5) / NumPoints) varies: (0.0, 1.0)
 					// So, (2 * (i + 0.5) / NumPoints) varies: (0.0, 2.0)
 					// So, (1 - (2 * (i + 0.5) / NumPoints) varies: (-1.0, 1.0)
 					// So, Phi varies: (PI, 0) as i varies: [0, NumPoints-1].
-					const T Phi = FMath::Acos(1.0 - 2.0 * Sample / NumPoints);
+					const T Phi = static_cast<T>(FMath::Acos(1.0 - 2.0 * Sample / NumPoints));
 					// Theta varies: [5.0832036..., NumPoints*Increment)
-					const T Theta = GRIncrement * (Sample + SpiralSeed);
+					const T Theta = GRIncrement * (Sample + static_cast<T>(SpiralSeed));
 
 					// Convert spherical coordinates to Cartesian, scaled by the radius of our Sphere, and offset by its location.
 					const T SinPhi = FMath::Sin(Phi);

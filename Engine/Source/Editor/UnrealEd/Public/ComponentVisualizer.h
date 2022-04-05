@@ -137,6 +137,8 @@ public:
 
 	/** */
 	virtual void OnRegister() {}
+	/** Only show this visualizer if the actor is selected */
+	virtual bool ShowWhenSelected() { return true; }
 	/** Draw visualization for the supplied component */
 	virtual void DrawVisualization(const UActorComponent* Component, const FSceneView* View, FPrimitiveDrawInterface* PDI) {}
 	/** Draw HUD on viewport for the supplied component */
@@ -150,7 +152,7 @@ public:
 	/** */
 	virtual bool GetCustomInputCoordinateSystem(const FEditorViewportClient* ViewportClient, FMatrix& OutMatrix) const { return false; }
 	/** */
-	virtual bool HandleInputDelta(FEditorViewportClient* ViewportClient, FViewport* Viewport, FVector& DeltaTranslate, FRotator& DeltalRotate, FVector& DeltaScale) { return false; }
+	virtual bool HandleInputDelta(FEditorViewportClient* ViewportClient, FViewport* Viewport, FVector& DeltaTranslate, FRotator& DeltaRotate, FVector& DeltaScale) { return false; }
 	/** */
 	virtual bool HandleInputKey(FEditorViewportClient* ViewportClient,FViewport* Viewport,FKey Key,EInputEvent Event) { return false; }
 	/** Handle click modified by Alt, Ctrl and/or Shift. The input HitProxy may not be on this component. */

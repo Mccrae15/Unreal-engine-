@@ -10,7 +10,7 @@
 #if WITH_FREEIMAGE_LIB
 #include "Engine/Texture.h"
 #include "GenericPlatform/GenericPlatformFile.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "Math/Float16.h"
 #include "Math/UnrealMathUtility.h"
@@ -185,7 +185,7 @@ namespace DatasmithRuntime
 	class NinePoints
 	{
 	public:
-		NinePoints(){ aa = ab = ac = ba = bb = bc = ca = cb = cc; }
+		NinePoints(){ aa = ab = ac = ba = bb = bc = ca = cb = cc = 0; }
 		float aa, ab, ac, ba, bb, bc, ca, cb, cc;
 	};
 

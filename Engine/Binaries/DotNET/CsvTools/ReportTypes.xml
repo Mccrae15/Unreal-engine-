@@ -25,7 +25,7 @@
 	</csvEventsToStrip>
 
 	<!-- Preset summary tables -->
-	<!-- In bulk mode (-csvdir), a metadata summary is produced with data from all summaries -->
+	<!-- In bulk mode (-csvdir), summary table row data is produced for each CSV. This includes data from all active summaries -->
 	<!-- The preset Summary Tables below can be used to provide a filtered and sorted view of that data (see -summaryTable). -->
 	<summaryTables>
 		<summaryTable name="all" rowSort="buildversion,Platform,deviceprofile">
@@ -165,6 +165,19 @@
 			<graph title="Pixels / frame" budget="0" />
 			<graph title="Shader cycles / frame" budget="0" />
 			<graph title="GPU bandwidth / frame" budget="0" />
+		</reporttype>
+
+		<!-- AI5 Fps report -->
+		<reporttype name="AI5" title="AI Performance Report" vsync="1">
+			<metadataToShow>buildversion,platform,deviceprofile</metadataToShow>
+
+			<graph title="All StateTree Costs" budget="0"/>
+			<graph title="StateTree Processor Costs" budget="0"/>
+			<graph title="StateTree Context Costs" budget="0"/>
+			<graph title="Ticked StateTree Count" budget="0"/>
+			<graph title="Mass Signals Count" budget="0"/>
+			<graph title="Deferred Commands Count" budget="0"/>
+			<graph title="Deferred Commands Costs" budget="0"/>
 		</reporttype>
 
 		<reporttype name="Memory" title="Physical Memory Report" vsync="1">

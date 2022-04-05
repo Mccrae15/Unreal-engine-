@@ -29,6 +29,12 @@ namespace ERawImageFormat
 	};
 };
 
+namespace UE {
+	namespace Color {
+		enum class EChromaticAdaptationMethod : uint8;
+	}
+}
+
 
 /**
  * Structure for raw image data.
@@ -104,6 +110,27 @@ public:
 	 * @param DestSRGB - Whether the destination image is in SRGB format.
 	 */
 	IMAGECORE_API void ResizeTo(FImage& DestImage, int32 DestSizeX, int32 DestSizeY, ERawImageFormat::Type DestFormat, EGammaSpace DestGammaSpace) const;
+
+	/**
+	 * Linearize to a RGBA32F destination image by applying the decoding function that corresponds to the specified source encoding.
+	 * If None, this call will be equivalent to CopyTo(DestImage, ERawImageFormat::RGBA32F, EGammaSpace::Linear).
+	 *
+	 * @param SourceEncoding - Opaque source encoding (matching UE::Color::EEncoding).
+	 * @param DestImage - The destination image.
+	 */
+	IMAGECORE_API void Linearize(uint8 SourceEncoding, FImage& DestImage) const;
+
+	/**
+	 * Apply a color space transformation from the source chromaticities to the engine's working color space.
+	 *
+	 * @param SourceRedChromaticity - The red chromaticity coordinate of the source color space.
+	 * @param SourceGreenChromaticity - The green chromaticity coordinate of the source color space.
+	 * @param SourceBlueChromaticity - The blue chromaticity coordinate of the source color space.
+	 * @param SourceWhiteChromaticity - The white chromaticity coordinate of the source color space.
+	 * @param Method - The chromatic adapation method.
+	 * @param EqualityTolerance - The tolerance for the source and working color space chromaticities to be considered equal, bypassing the transform.
+	 */
+	IMAGECORE_API void TransformToWorkingColorSpace(const FVector2D& SourceRedChromaticity, const FVector2D& SourceGreenChromaticity, const FVector2D& SourceBlueChromaticity, const FVector2D& SourceWhiteChromaticity, UE::Color::EChromaticAdaptationMethod Method, double EqualityTolerance = 1.e-7);
 
 	/**
 	 * Gets the number of bytes per pixel.
@@ -241,3 +268,8 @@ public:
 		return GammaSpace != EGammaSpace::Linear;
 	}
 };
+
+
+IMAGECORE_API int32 ImageParallelForComputeNumJobsForPixels(int64 & OutNumPixelsPerJob,int64 NumPixels);
+
+IMAGECORE_API int32 ImageParallelForComputeNumJobsForRows(int32 & OutNumItemsPerJob,int32 SizeX,int32 SizeY);

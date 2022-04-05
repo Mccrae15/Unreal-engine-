@@ -19,4 +19,16 @@ public:
 	TSharedPtr<FUICommandInfo> CreateNewLevelSequenceInLevel;
 	TSharedPtr<FUICommandInfo> CreateNewMasterSequenceInLevel;
 	TSharedPtr<FUICommandInfo> ToggleCinematicViewportCommand;
+	
+	TSharedPtr<FUICommandInfo> SnapSectionsToTimelineUsingSourceTimecode;
+	TSharedPtr<FUICommandInfo> SyncSectionsUsingSourceTimecode;
+
+	TSharedPtr<FUICommandInfo> BakeTransform;
+	TSharedPtr<FUICommandInfo> FixActorReferences;
+
+	TSharedPtr<FUICommandInfo> AddActorsToBinding;
+	TSharedPtr<FUICommandInfo> RemoveActorsFromBinding;
+	TSharedPtr<FUICommandInfo> ReplaceBindingWithActors;
+	TSharedPtr<FUICommandInfo> RemoveAllBindings;
+	TSharedPtr<FUICommandInfo> RemoveInvalidBindings;
 };

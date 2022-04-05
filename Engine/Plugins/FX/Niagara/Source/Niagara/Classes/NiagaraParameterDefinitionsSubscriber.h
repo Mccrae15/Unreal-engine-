@@ -22,16 +22,16 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	FParameterDefinitionsSubscription() 
-		: ParameterDefinitions_DEPRECATED(nullptr)
-		, DefinitionsId()
+		: Definitions(nullptr)
+		, DefinitionsId_DEPRECATED()
 		, CachedChangeIdHash(0)
 	{};
 
-	UPROPERTY(meta = (DeprecatedProperty))
-	UNiagaraParameterDefinitionsBase* ParameterDefinitions_DEPRECATED;
-
 	UPROPERTY()
-	FGuid DefinitionsId;
+	TObjectPtr<UNiagaraParameterDefinitionsBase> Definitions;
+
+	UPROPERTY(meta = (DeprecatedProperty))
+	FGuid DefinitionsId_DEPRECATED;
 
 	UPROPERTY()
 	int32 CachedChangeIdHash;
@@ -46,6 +46,7 @@ public:
 	virtual ~INiagaraParameterDefinitionsSubscriber() = default;
 
 	void PostLoadDefinitionsSubscriptions();
+	void CleanupDefinitionsSubscriptions();
 
 	//~ Begin Pure Virtual Methods
 	virtual const TArray<FParameterDefinitionsSubscription>& GetParameterDefinitionsSubscriptions() const = 0;
@@ -79,10 +80,9 @@ public:
 private:
 	FOnSubscribedParameterDefinitionsChanged OnSubscribedParameterDefinitionsChangedDelegate;
 
-private:
-	/** Get all parameter definitions in the project, including all mounted plugins. */
-	TArray<UNiagaraParameterDefinitionsBase*> GetAllParameterDefinitions() const;
+	FDelegateHandle OnDeferredSyncAllNameMatchParametersHandle;
 
+private:
 	/** Update the cached change Id of specified Synchronized Subscribed Parameter Definition subscriptions so that they are not marked pending sync. */
 	void MarkParameterDefinitionSubscriptionsSynchronized(TArray<FGuid> SynchronizedParameterDefinitionsIds /*= TArray<FGuid>()*/);
 #endif

@@ -192,7 +192,7 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 	EPanningMethod PanningMethod;
 
 	/**
-	* The upmixing method for mono sound sources. Defines up mono channels are up-mixed to stereo channels.
+	* The upmixing method for mono sound sources. Defines how mono channels are up-mixed to stereo channels.
 	*/
 	UPROPERTY(config, EditAnywhere, Category = "Quality", AdvancedDisplay)
 	EMonoChannelUpmixMethod MonoChannelUpmixMethod;
@@ -223,22 +223,29 @@ class ENGINE_API UAudioSettings : public UDeveloperSettings
 	FAudioSettingsChanged AudioSettingsChanged;
 #endif // WITH_EDITOR
 
-	private:
-		UPROPERTY(Transient)
-			USoundClass* DefaultSoundClass;
+private:
+	UPROPERTY(Transient)
+	TObjectPtr<USoundClass> DefaultSoundClass;
 
-		UPROPERTY(Transient)
-			USoundClass* DefaultMediaSoundClass;
+	UPROPERTY(Transient)
+	TObjectPtr<USoundClass> DefaultMediaSoundClass;
 
-		UPROPERTY(Transient)
-			USoundConcurrency* DefaultSoundConcurrency;
+	UPROPERTY(Transient)
+	TObjectPtr<USoundConcurrency> DefaultSoundConcurrency;
 
 public:
+	// Loads default object instances from soft object path properties
 	void LoadDefaultObjects();
 
 	USoundClass* GetDefaultSoundClass() const;
 	USoundClass* GetDefaultMediaSoundClass() const;
 	USoundConcurrency* GetDefaultSoundConcurrency() const;
+
+	// Registers Parameter Interfaces defined by the engine module.
+	// Called on engine start-up. Can be called when engine is not
+	// initialized as well by consuming plugins (ex. on cook by plugins
+	// requiring interface system to be loaded).
+	void RegisterParameterInterfaces();
 
 	// Get the quality level settings at the provided level index
 	const FAudioQualitySettings& GetQualityLevelSettings(int32 QualityLevel) const;
@@ -272,6 +279,8 @@ private:
 #endif // WITH_EDITOR
 
 	void AddDefaultSettings();
+
+	bool bParameterInterfacesRegistered;
 
 	// Whether or not the audio mixer is loaded/enabled. Used to toggle visibility of editor features.
 	bool bIsAudioMixerEnabled;

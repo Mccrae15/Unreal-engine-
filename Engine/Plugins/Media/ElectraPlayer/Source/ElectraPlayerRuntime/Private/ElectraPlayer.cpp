@@ -26,6 +26,10 @@ DECLARE_CYCLE_STAT(TEXT("FElectraPlayer::TickInput"), STAT_ElectraPlayer_Electra
 
 //-----------------------------------------------------------------------------
 
+#define USE_INTERNAL_PLAYBACK_STATE 1
+
+//-----------------------------------------------------------------------------
+
 #if UE_BUILD_SHIPPING
 #define HIDE_URLS_FROM_LOG	1
 #else
@@ -80,15 +84,16 @@ class FMetaDataDecoderOutput : public IMetaDataDecoderOutput
 {
 public:
 	virtual ~FMetaDataDecoderOutput() = default;
-	virtual const void* GetData() override						{ return Data.GetData(); }
-	virtual FTimespan GetDuration() const override				{ return Duration; }
-	virtual uint32 GetSize() const override						{ return (uint32) Data.Num(); }
-	virtual FDecoderTimeStamp GetTime() const override			{ return PresentationTime; }
-	virtual EOrigin GetOrigin() const override					{ return Origin; }
-	virtual EDispatchedMode GetDispatchedMode() const override	{ return DispatchedMode; }
-	virtual const FString& GetSchemeIdUri() const override		{ return SchemeIdUri; }
-	virtual const FString& GetValue() const override			{ return Value; }
-	virtual const FString& GetID() const override				{ return ID; }
+	virtual const void* GetData() override									{ return Data.GetData(); }
+	virtual FTimespan GetDuration() const override							{ return Duration; }
+	virtual uint32 GetSize() const override									{ return (uint32) Data.Num(); }
+	virtual FDecoderTimeStamp GetTime() const override						{ return PresentationTime; }
+	virtual EOrigin GetOrigin() const override								{ return Origin; }
+	virtual EDispatchedMode GetDispatchedMode() const override				{ return DispatchedMode; }
+	virtual const FString& GetSchemeIdUri() const override					{ return SchemeIdUri; }
+	virtual const FString& GetValue() const override						{ return Value; }
+	virtual const FString& GetID() const override							{ return ID; }
+	virtual TOptional<FDecoderTimeStamp> GetTrackBaseTime() const override	{ return TrackBaseTime; }
 
 	TArray<uint8> Data;
 	FDecoderTimeStamp PresentationTime;
@@ -98,6 +103,7 @@ public:
 	FString SchemeIdUri;
 	FString Value;
 	FString ID;
+	TOptional<FDecoderTimeStamp> TrackBaseTime;
 };
 
 //-----------------------------------------------------------------------------
@@ -134,8 +140,9 @@ FElectraPlayer::FElectraPlayer(const TSharedPtr<IElectraPlayerAdapterDelegate, E
 	ReportVideoStreamingErrorDelegate.AddRaw(this, &FElectraPlayer::ReportVideoStreamingError);
 	ReportSubtitlesMetricsDelegate.AddRaw(this, &FElectraPlayer::ReportSubtitlesMetrics);
 
-	State = EPlayerState::Closed;
-	Status = EPlayerStatus::None;
+#if USE_INTERNAL_PLAYBACK_STATE
+	PlayerState.bUseInternal = true;
+#endif
 	bAllowKillAfterCloseEvent = false;
 	bPlayerHasClosed = false;
 	bHasPendingError = false;
@@ -180,14 +187,19 @@ void FElectraPlayer::ClearToDefaultState()
 {
 	FScopeLock lock(&PlayerLock);
 
+	PlayerState.Reset();
 	NumTracksAudio = 0;
 	NumTracksVideo = 0;
+	NumTracksSubtitle = 0;
 	SelectedQuality = 0;
 	SelectedVideoTrackIndex = -1;
 	SelectedAudioTrackIndex = -1;
+	SelectedSubtitleTrackIndex = -1;
 	bAudioTrackIndexDirty = true;
+	bSubtitleTrackIndexDirty = true;
 	bInitialSeekPerformed = false;
 	LastPresentedFrameDimension = FIntPoint::ZeroValue;
+	CurrentlyActiveVideoStreamFormat.Reset();
 	DeferredPlayerEvents.Empty();
 	MediaUrl.Empty();
 }
@@ -206,8 +218,6 @@ bool FElectraPlayer::OpenInternal(const FString& Url, const FParamDict& PlayerOp
 	// Clear out our work variables
 	ClearToDefaultState();
 	bAllowKillAfterCloseEvent = false;
-	State = EPlayerState::Closed;
-	Status = EPlayerStatus::None;
 	bPlayerHasClosed = false;
 	bHasPendingError = false;
 
@@ -224,8 +234,9 @@ bool FElectraPlayer::OpenInternal(const FString& Url, const FParamDict& PlayerOp
 	// Create a new empty player structure. This contains the actual player instance, its associated renderers and sample queues.
 	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> NewPlayer = MakeShared<FInternalPlayerImpl, ESPMode::ThreadSafe>();
 
-	// Get a writable copy of the URL so we can override it for debugging.
+	// Get a writable copy of the URL so we can sanitize it if necessary.
 	MediaUrl = Url;
+	MediaUrl.TrimStartAndEndInline();
 	UE_LOG(LogElectraPlayer, Log, TEXT("[%p][%p] IMediaPlayer::Open(%s)"), this, NewPlayer.Get(), *SanitizeMessage(MediaUrl));
 
 	// Create the renderers so we can pass them to the internal player.
@@ -242,6 +253,12 @@ bool FElectraPlayer::OpenInternal(const FString& Url, const FParamDict& PlayerOp
 	NewPlayer->AdaptivePlayer->AddMetricsReceiver(this);
 	NewPlayer->AdaptivePlayer->SetStaticResourceProviderCallback(StaticResourceProvider);
 	NewPlayer->AdaptivePlayer->SetVideoDecoderResourceDelegate(VideoDecoderResourceDelegate);
+
+	// Create the subtitle receiver and register it with the player.
+	MediaPlayerSubtitleReceiver = MakeSharedTS<FSubtitleEventReceiver>();
+	MediaPlayerSubtitleReceiver->GetSubtitleReceivedDelegate().BindRaw(this, &FElectraPlayer::OnSubtitleDecoded);
+	MediaPlayerSubtitleReceiver->GetSubtitleFlushDelegate().BindRaw(this, &FElectraPlayer::OnSubtitleFlush);
+	NewPlayer->AdaptivePlayer->AddSubtitleReceiver(MediaPlayerSubtitleReceiver);
 
 	// Create a new media player event receiver and register it to receive all non player internal events as soon as they are received.
 	MediaPlayerEventReceiver = MakeSharedTS<FAEMSEventReceiver>();
@@ -264,10 +281,23 @@ bool FElectraPlayer::OpenInternal(const FString& Url, const FParamDict& PlayerOp
 
 	// Set the player member variable to the new player now that it has been fully initialized.
 	CurrentPlayer = MoveTemp(NewPlayer);
+	// Apply options that may have been set prior to calling Open().
+	// Set these only if they have defined values as to not override what might have been set in the PlayerOptions.
+	if (bFrameAccurateSeeking.IsSet())
+	{
+		SetFrameAccurateSeekMode(bFrameAccurateSeeking.GetValue());
+	}
+	if (bEnableLooping.IsSet())
+	{
+		SetLooping(bEnableLooping.GetValue());
+	}
+	if (CurrentPlaybackRange.Start.IsSet() || CurrentPlaybackRange.End.IsSet())
+	{
+		SetPlaybackRange(CurrentPlaybackRange);
+	}
 
 	// Issue load of the playlist.
 	CurrentPlayer->AdaptivePlayer->LoadManifest(MediaUrl);
-
  	return true;
 }
 
@@ -301,10 +331,14 @@ void FElectraPlayer::CloseInternal(bool bKillAfterClose)
 	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe>	Player = CurrentPlayer;
 
 	// For all intents and purposes the player can be considered closed here now already.
-	State = EPlayerState::Closed;
+	PlayerState.State = EPlayerState::Closed;
 	MediaUrl = FString();
 	PlaystartOptions.TimeOffset.Reset();
 	PlaystartOptions.InitialAudioTrackAttributes.Reset();
+	CurrentPlaybackRange.Start.Reset();
+	CurrentPlaybackRange.End.Reset();
+	bFrameAccurateSeeking.Reset();
+	bEnableLooping.Reset();
 
 	// Next we detach ourselves from the renderers. This ensures we do not get any further data from them
 	// via OnVideoDecoded() and OnAudioDecoded(). It also means we do not get any calls to OnVideoFlush() and OnAudioFlush()
@@ -343,6 +377,14 @@ void FElectraPlayer::CloseInternal(bool bKillAfterClose)
 			MediaPlayerEventReceiver->GetEventReceivedDelegate().Unbind();
 			Player->AdaptivePlayer->RemoveAEMSReceiver(MediaPlayerEventReceiver, TEXT("*"), TEXT(""), IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode::OnStart);
 			MediaPlayerEventReceiver.Reset();
+		}
+
+		if (MediaPlayerSubtitleReceiver.IsValid())
+		{
+			Player->AdaptivePlayer->RemoveSubtitleReceiver(MediaPlayerSubtitleReceiver);
+			MediaPlayerSubtitleReceiver->GetSubtitleReceivedDelegate().Unbind();
+			MediaPlayerSubtitleReceiver->GetSubtitleFlushDelegate().Unbind();
+			MediaPlayerSubtitleReceiver.Reset();
 		}
 
 		// Unregister ourselves as the provider for static resources.
@@ -413,6 +455,53 @@ void FElectraPlayer::FInternalPlayerImpl::DoCloseAsync(TSharedPtr<FInternalPlaye
 #endif
 }
 
+
+
+float FElectraPlayer::FPlayerState::GetRate() const
+{
+	return bUseInternal && IntendedPlayRate.IsSet() ? IntendedPlayRate.GetValue() : CurrentPlayRate;
+}
+
+FElectraPlayer::EPlayerState FElectraPlayer::FPlayerState::GetState() const
+{
+	if (bUseInternal && IntendedPlayRate.IsSet() && (State == FElectraPlayer::EPlayerState::Playing || State == FElectraPlayer::EPlayerState::Paused || State == FElectraPlayer::EPlayerState::Stopped))
+	{
+		return IntendedPlayRate.GetValue() != 0.0f ? FElectraPlayer::EPlayerState::Playing : FElectraPlayer::EPlayerState::Paused;
+	}
+	return State;
+}
+
+FElectraPlayer::EPlayerStatus FElectraPlayer::FPlayerState::GetStatus() const
+{
+	return Status;
+}
+
+void FElectraPlayer::FPlayerState::SetIntendedPlayRate(float InIntendedRate)
+{
+	IntendedPlayRate = InIntendedRate;
+}
+
+void FElectraPlayer::FPlayerState::SetPlayRateFromPlayer(float InCurrentPlayerPlayRate)
+{
+	CurrentPlayRate = InCurrentPlayerPlayRate;
+	// If reverse playback is selected even though it is not supported, leave it set as such.
+	if (IntendedPlayRate.IsSet() && IntendedPlayRate.GetValue() >= 0.0f)
+	{
+		IntendedPlayRate.Reset();
+	}
+}
+
+
+//-----------------------------------------------------------------------------
+/**
+* Suspends or resumes decoder instances.
+*/
+void FElectraPlayer::SuspendOrResumeDecoders(bool bSuspend)
+{
+	PlatformSuspendOrResumeDecoders(bSuspend);
+}
+
+
 //-----------------------------------------------------------------------------
 /**
 */
@@ -441,7 +530,7 @@ void FElectraPlayer::Tick(FTimespan DeltaTime, FTimespan Timecode)
 	// Handle the internal player, if we have one.
 	PlayerLock.Lock();
 	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> Player = CurrentPlayer;
-	if (!bPlayerHasClosed && Player.IsValid() && State != EPlayerState::Error)
+	if (!bPlayerHasClosed && Player.IsValid() && PlayerState.State != EPlayerState::Error)
 	{
 		if (Player->RendererVideo.IsValid())
 		{
@@ -484,17 +573,17 @@ void FElectraPlayer::Tick(FTimespan DeltaTime, FTimespan Timecode)
 		if (bHasPendingError)
 		{
 			bHasPendingError = false;
-			if (State == EPlayerState::Preparing)
+			if (PlayerState.State == EPlayerState::Preparing)
 			{
 				DeferredEvents.Enqueue(IElectraPlayerAdapterDelegate::EPlayerEvent::MediaOpenFailed);
 			}
-			else if (State == EPlayerState::Playing)
+			else if (PlayerState.State == EPlayerState::Playing)
 			{
 				DeferredEvents.Enqueue(IElectraPlayerAdapterDelegate::EPlayerEvent::MediaClosed);
 			}
 
 			CloseInternal(true);
-			State = EPlayerState::Error;
+			PlayerState.State = EPlayerState::Error;
 		}
 	}
 	else
@@ -524,7 +613,7 @@ void FElectraPlayer::OnVideoDecoded(const FVideoDecoderOutputPtr& DecoderOutput,
 	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> Player = CurrentPlayer;
 	if (Player.IsValid())
 	{
-		if (State != EPlayerState::Closed)
+		if (PlayerState.State != EPlayerState::Closed)
 		{
 			if (DecoderOutput.IsValid())
 			{
@@ -564,7 +653,7 @@ void FElectraPlayer::OnAudioDecoded(const IAudioDecoderOutputPtr& DecoderOutput)
 	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> Player = CurrentPlayer;
 	if (Player.IsValid())
 	{
-		if (State != EPlayerState::Closed)
+		if (PlayerState.State != EPlayerState::Closed)
 		{
 			PresentAudioFrame(DecoderOutput);
 		}
@@ -583,6 +672,32 @@ void FElectraPlayer::OnAudioFlush()
 		}
 	}
 }
+
+void FElectraPlayer::OnSubtitleDecoded(ISubtitleDecoderOutputPtr DecoderOutput)
+{
+	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> Player = CurrentPlayer;
+	if (Player.IsValid())
+	{
+		if (PlayerState.State != EPlayerState::Closed)
+		{
+			PresentSubtitle(DecoderOutput);
+		}
+	}
+}
+
+void FElectraPlayer::OnSubtitleFlush()
+{
+	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> Player = CurrentPlayer;
+	if (Player.IsValid())
+	{
+		TSharedPtr<IElectraPlayerAdapterDelegate, ESPMode::ThreadSafe> PinnedAdapterDelegate = AdapterDelegate.Pin();
+		if (PinnedAdapterDelegate.IsValid())
+		{
+			PinnedAdapterDelegate->OnSubtitleFlush();
+		}
+	}
+}
+
 
 void FElectraPlayer::OnVideoRenderingStarted()
 {
@@ -655,6 +770,17 @@ bool FElectraPlayer::PresentAudioFrame(const IAudioDecoderOutputPtr& DecoderOutp
 	return true;
 }
 
+
+bool FElectraPlayer::PresentSubtitle(const ISubtitleDecoderOutputPtr& DecoderOutput)
+{
+	TSharedPtr<IElectraPlayerAdapterDelegate, ESPMode::ThreadSafe> PinnedAdapterDelegate = AdapterDelegate.Pin();
+	if (PinnedAdapterDelegate.IsValid())
+	{
+		PinnedAdapterDelegate->PresentSubtitleSample(DecoderOutput);
+	}
+	return true;
+}
+
 //-----------------------------------------------------------------------------
 /**
  * Attempt to drop any old frames from the presentation queue
@@ -696,32 +822,43 @@ bool FElectraPlayer::CanPresentAudioFrames(uint64 NumFrames)
 
 float FElectraPlayer::GetRate() const
 {
-	return CurrentPlayer.Get() && CurrentPlayer->AdaptivePlayer->IsPlaying() ? 1.0f : 0.0f;
+	return PlayerState.GetRate();
+/*
+	if (PlayerState.bUseInternal)
+	{
+		return 0.0f;
+	}
+	else
+	{
+		return CurrentPlayer.Get() && CurrentPlayer->AdaptivePlayer->IsPlaying() ? 1.0f : 0.0f;
+	}
+*/
 }
 
 FElectraPlayer::EPlayerState FElectraPlayer::GetState() const
 {
-	return State;
+	return PlayerState.GetState();
 }
 
 FElectraPlayer::EPlayerStatus FElectraPlayer::GetStatus() const
 {
-	return Status;
+	return PlayerState.GetStatus();
 }
 
 bool FElectraPlayer::IsLooping() const
 {
 	if (CurrentPlayer.Get())
 	{
-		FPlayerLoopState loopState;
+		IAdaptiveStreamingPlayer::FLoopState loopState;
 		CurrentPlayer->AdaptivePlayer->GetLoopState(loopState);
-		return loopState.bLoopEnabled;
+		return loopState.bIsEnabled;
 	}
-	return false;
+	return bEnableLooping.IsSet() ? bEnableLooping.GetValue() : false;
 }
 
 bool FElectraPlayer::SetLooping(bool bLooping)
 {
+	bEnableLooping = bLooping;
 	if (CurrentPlayer.Get())
 	{
 		IAdaptiveStreamingPlayer::FLoopParam loop;
@@ -732,12 +869,24 @@ bool FElectraPlayer::SetLooping(bool bLooping)
 	return false;
 }
 
+int32 FElectraPlayer::GetLoopCount() const
+{
+	if (CurrentPlayer.Get())
+	{
+		IAdaptiveStreamingPlayer::FLoopState loopState;
+		CurrentPlayer->AdaptivePlayer->GetLoopState(loopState);
+		return (int32) loopState.Count;
+	}
+	return -1;
+}
+
+
 FTimespan FElectraPlayer::GetTime() const
 {
 	if (CurrentPlayer.Get())
 	{
 		Electra::FTimeValue playerTime = CurrentPlayer->AdaptivePlayer->GetPlayPosition();
-		return FTimespan(playerTime.GetAsHNS());
+		return playerTime.GetAsTimespan();
 	}
 	else
 	{
@@ -750,14 +899,9 @@ FTimespan FElectraPlayer::GetDuration() const
 	if (CurrentPlayer.Get())
 	{
 		Electra::FTimeValue playDuration = CurrentPlayer->AdaptivePlayer->GetDuration();
-	// HACK: When looping the stream is of infinite duration!
-		if (IsLooping())
-		{
-			return FTimespan::MaxValue();
-		}
 		if (playDuration.IsValid())
 		{
-			return playDuration.IsInfinity() ? FTimespan::MaxValue() : FTimespan(playDuration.GetAsHNS());
+			return playDuration.IsInfinity() ? FTimespan::MaxValue() : playDuration.GetAsTimespan();
 		}
 	}
 	return FTimespan::Zero();
@@ -796,9 +940,13 @@ FTimespan FElectraPlayer::GetSeekableDuration() const
 
 bool FElectraPlayer::SetRate(float Rate)
 {
+	//UE_LOG(LogElectraPlayer, Verbose, TEXT("[%p][%p] IMediaPlayer::SetRate(%.3f)"), this, CurrentPlayer.Get(), Rate);
 	if (CurrentPlayer.Get())
 	{
-		if (Rate == 0.0f)
+		// Set the intended rate, which *may* be set negative. This is not supported and we put the adaptive player into pause
+		// if this happens, but we keep the intended rate set nevertheless.
+		PlayerState.SetIntendedPlayRate(Rate);
+		if (Rate <= 0.0f)
 		{
 			CurrentPlayer->AdaptivePlayer->Pause();
 		}
@@ -922,13 +1070,70 @@ bool FElectraPlayer::Seek(const FTimespan& Time)
 		FTimespan Target;
 		CalculateTargetSeekTime(Target, Time);
 		Electra::IAdaptiveStreamingPlayer::FSeekParam seek;
-		seek.Time.SetFromHNS(Target.GetTicks());
+		seek.Time.SetFromTimespan(Target);
 		bInitialSeekPerformed = true;
 		CurrentPlayer->AdaptivePlayer->SeekTo(seek);
 		return true;
 	}
 	return false;
 }
+
+void FElectraPlayer::SetFrameAccurateSeekMode(bool bEnableFrameAccuracy)
+{
+	bFrameAccurateSeeking = bEnableFrameAccuracy;
+	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> LockedPlayer = CurrentPlayer;
+	if (LockedPlayer.IsValid() && LockedPlayer->AdaptivePlayer.IsValid())
+	{
+		LockedPlayer->AdaptivePlayer->EnableFrameAccurateSeeking(bFrameAccurateSeeking.GetValue());
+	}
+}
+
+void FElectraPlayer::SetPlaybackRange(const FPlaybackRange& InPlaybackRange)
+{
+	CurrentPlaybackRange = InPlaybackRange;
+	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> LockedPlayer = CurrentPlayer;
+	if (LockedPlayer.IsValid() && LockedPlayer->AdaptivePlayer.IsValid())
+	{
+		Electra::IAdaptiveStreamingPlayer::FPlaybackRange Range;
+		if (CurrentPlaybackRange.Start.IsSet())
+		{
+			Range.Start = Electra::FTimeValue().SetFromTimespan(CurrentPlaybackRange.Start.GetValue());
+		}
+		if (CurrentPlaybackRange.End.IsSet())
+		{
+			Range.End = Electra::FTimeValue().SetFromTimespan(CurrentPlaybackRange.End.GetValue());
+		}
+		LockedPlayer->AdaptivePlayer->SetPlaybackRange(Range);
+	}
+}
+
+void FElectraPlayer::GetPlaybackRange(FPlaybackRange& OutPlaybackRange) const
+{
+	OutPlaybackRange = CurrentPlaybackRange;
+	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> LockedPlayer = CurrentPlayer;
+	if (LockedPlayer.IsValid() && LockedPlayer->AdaptivePlayer.IsValid())
+	{
+		Electra::IAdaptiveStreamingPlayer::FPlaybackRange Range;
+		LockedPlayer->AdaptivePlayer->GetPlaybackRange(Range);
+		if (Range.Start.IsSet())
+		{
+			OutPlaybackRange.Start = Range.Start.GetValue().GetAsTimespan();
+		}
+		else
+		{
+			OutPlaybackRange.Start.Reset();
+		}
+		if (Range.End.IsSet())
+		{
+			OutPlaybackRange.End = Range.End.GetValue().GetAsTimespan();
+		}
+		else
+		{
+			OutPlaybackRange.End.Reset();
+		}
+	}
+}
+
 
 TSharedPtr<Electra::FTrackMetadata, ESPMode::ThreadSafe> FElectraPlayer::GetTrackStreamMetadata(EPlayerTrackType TrackType, int32 TrackIndex) const
 {
@@ -943,6 +1148,10 @@ TSharedPtr<Electra::FTrackMetadata, ESPMode::ThreadSafe> FElectraPlayer::GetTrac
 		else if (TrackType == EPlayerTrackType::Audio)
 		{
 			LockedPlayer->AdaptivePlayer->GetTrackMetadata(TrackMetaData, Electra::EStreamType::Audio);
+		}
+		else if (TrackType == EPlayerTrackType::Subtitle)
+		{
+			LockedPlayer->AdaptivePlayer->GetTrackMetadata(TrackMetaData, Electra::EStreamType::Subtitle);
 		}
 		if (TrackIndex >= 0 && TrackIndex < TrackMetaData.Num())
 		{
@@ -993,6 +1202,39 @@ bool FElectraPlayer::GetVideoTrackFormat(int32 TrackIndex, int32 FormatIndex, FV
 }
 
 
+int32 FElectraPlayer::GetNumVideoStreams(int32 TrackIndex) const
+{
+	TSharedPtr<Electra::FTrackMetadata, ESPMode::ThreadSafe> Meta = GetTrackStreamMetadata(EPlayerTrackType::Video, TrackIndex);
+	return Meta.IsValid() ? Meta->StreamDetails.Num() : 0;
+}
+
+bool FElectraPlayer::GetVideoStreamFormat(FVideoStreamFormat& OutFormat, int32 InTrackIndex, int32 InStreamIndex) const
+{
+	TSharedPtr<Electra::FTrackMetadata, ESPMode::ThreadSafe> Meta = GetTrackStreamMetadata(EPlayerTrackType::Video, InTrackIndex);
+	if (Meta.IsValid() && InStreamIndex < Meta->StreamDetails.Num())
+	{
+		const Electra::FStreamCodecInformation& ci = Meta->StreamDetails[InStreamIndex].CodecInformation;
+		OutFormat.Bitrate = Meta->StreamDetails[InStreamIndex].Bandwidth;
+		OutFormat.Resolution.X = ci.GetResolution().Width;
+		OutFormat.Resolution.Y = ci.GetResolution().Height;
+		OutFormat.FrameRate = (float)ci.GetFrameRate().GetAsDouble();
+		return true;
+	}
+	return false;
+}
+
+
+bool FElectraPlayer::GetActiveVideoStreamFormat(FVideoStreamFormat& OutFormat) const
+{
+	FScopeLock lock(&PlayerLock);
+	if (CurrentlyActiveVideoStreamFormat.IsSet())
+	{
+		OutFormat = CurrentlyActiveVideoStreamFormat.GetValue();
+	}
+	return false;
+}
+
+
 int32 FElectraPlayer::GetNumTracks(EPlayerTrackType TrackType) const
 {
 	if (TrackType == EPlayerTrackType::Audio)
@@ -1003,6 +1245,10 @@ int32 FElectraPlayer::GetNumTracks(EPlayerTrackType TrackType) const
 	{
 		return NumTracksVideo;
 	}
+	else if (TrackType == EPlayerTrackType::Subtitle)
+	{
+		return NumTracksSubtitle;
+	}
 	// TODO: Implement missing track types.
 
 	return 0;
@@ -1012,7 +1258,8 @@ int32 FElectraPlayer::GetNumTrackFormats(EPlayerTrackType TrackType, int32 Track
 {
 	// Right now we only have a single format per track
 	if ((TrackType == EPlayerTrackType::Video && NumTracksVideo != 0) ||
-		(TrackType == EPlayerTrackType::Audio && NumTracksAudio != 0))
+		(TrackType == EPlayerTrackType::Audio && NumTracksAudio != 0) ||
+		(TrackType == EPlayerTrackType::Subtitle && NumTracksSubtitle != 0))
 	{
 		return 1;
 	}
@@ -1026,17 +1273,17 @@ int32 FElectraPlayer::GetSelectedTrack(EPlayerTrackType TrackType) const
 	{
 		return SelectedVideoTrackIndex;
 	}
+	/*
+		To reduce the overhead of this function we check for the track the underlying player has
+		actually selected only when we were told the tracks changed.
+
+		It is possible that the underlying player changes the track automatically as playback progresses.
+		For instance, when playing a DASH stream consisting of several periods the player needs to re-select
+		the audio stream when transitioning from one period into the next, which may change the index of
+		the selected track.
+	*/
 	else if (TrackType == EPlayerTrackType::Audio)
 	{
-		/*
-			To reduce the overhead of this function we check for the track the underlying player has
-			actually selected only when we were told the tracks changed.
-
-			It is possible that the underlying player changes the track automatically as playback progresses.
-			For instance, when playing a DASH stream consisting of several periods the player needs to re-select
-			the audio stream when transitioning from one period into the next, which may change the index of
-			the selected track.
-		*/
 		if (bAudioTrackIndexDirty)
 		{
 			if (NumTracksAudio == 0)
@@ -1068,6 +1315,39 @@ int32 FElectraPlayer::GetSelectedTrack(EPlayerTrackType TrackType) const
 		}
 		return SelectedAudioTrackIndex;
 	}
+	else if (TrackType == EPlayerTrackType::Subtitle)
+	{
+		if (bSubtitleTrackIndexDirty)
+		{
+			if (NumTracksSubtitle == 0)
+			{
+				SelectedSubtitleTrackIndex = -1;
+			}
+			else
+			{
+				TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> LockedPlayer = CurrentPlayer;
+				if (LockedPlayer.IsValid() && LockedPlayer->AdaptivePlayer.IsValid())
+				{
+					if (LockedPlayer->AdaptivePlayer->IsTrackDeselected(Electra::EStreamType::Subtitle))
+					{
+						SelectedSubtitleTrackIndex = -1;
+						bSubtitleTrackIndexDirty = false;
+					}
+					else
+					{
+						Electra::FStreamSelectionAttributes Attributes;
+						LockedPlayer->AdaptivePlayer->GetSelectedTrackAttributes(Attributes, Electra::EStreamType::Subtitle);
+						if (Attributes.OverrideIndex.IsSet())
+						{
+							SelectedSubtitleTrackIndex = Attributes.OverrideIndex.GetValue();
+							bSubtitleTrackIndexDirty = false;
+						}
+					}
+				}
+			}
+		}
+		return SelectedSubtitleTrackIndex;
+	}
 	return -1;
 }
 
@@ -1078,11 +1358,32 @@ FText FElectraPlayer::GetTrackDisplayName(EPlayerTrackType TrackType, int32 Trac
 	{
 		if (TrackType == EPlayerTrackType::Video)
 		{
+			if (!Meta->Label.IsEmpty())
+			{
+				return FText::FromString(FString::Printf(TEXT("%s, ID=%s"), *Meta->Label, *Meta->ID));
+			}
 			return FText::FromString(FString::Printf(TEXT("Video Track ID %s"), *Meta->ID));
 		}
 		else if (TrackType == EPlayerTrackType::Audio)
 		{
+			if (!Meta->Label.IsEmpty())
+			{
+				return FText::FromString(FString::Printf(TEXT("%s, ID=%s"), *Meta->Label, *Meta->ID));
+			}
 			return FText::FromString(FString::Printf(TEXT("Audio Track ID %s"), *Meta->ID));
+		}
+		else if (TrackType == EPlayerTrackType::Subtitle)
+		{
+			FString Name;
+			if (!Meta->Label.IsEmpty())
+			{
+				Name = FString::Printf(TEXT("%s (%s), ID=%s"), *Meta->Label, *Meta->HighestBandwidthCodec.GetCodecSpecifierRFC6381(), *Meta->ID);
+			}
+			else
+			{
+				Name = FString::Printf(TEXT("Subtitle Track ID %s (%s)"), *Meta->ID, *Meta->HighestBandwidthCodec.GetCodecSpecifierRFC6381());
+			}
+			return FText::FromString(Name);
 		}
 	}
 	return FText();
@@ -1112,13 +1413,13 @@ FString FElectraPlayer::GetTrackName(EPlayerTrackType TrackType, int32 TrackInde
 
 /**
  * Selects a specified track for playback.
- * 
+ *
  * Note:
  *   There is currently no concept of selecting a track based on metadata, only by index.
  *   The idea being that before selecting a track by index the application needs to check
  *   the metadata beforehand (eg. call GetTrackLanguage()) to figure out the index of the
  *   track it wants to play.
- * 
+ *
  *   The underlying player however needs to select tracks based on metadata alone instead
  *   of an index in case the track layout changes dynamically during playback.
  *   For example, a part of the presentation could have both English and French audio,
@@ -1127,7 +1428,7 @@ FString FElectraPlayer::GetTrackName(EPlayerTrackType TrackType, int32 TrackInde
  *   player needs to automatically switch from French to English and back to French, or
  *   index 1 -> 0 -> 1 (assuming French was the starting language of choice).
  *   Indices are therefore meaningless to the underlying player.
- * 
+ *
  *   SelectTrack() is currently called implicitly by FMediaPlayerFacade::SelectDefaultTracks()
  *   when EMediaEvent::TracksChanged is received. This is why this event is NOT sent out
  *   in HandlePlayerEventTracksChanged() when the underlying player notifies us about a
@@ -1164,6 +1465,9 @@ bool FElectraPlayer::SelectTrack(EPlayerTrackType TrackType, int32 TrackIndex)
 						AudioAttributes.Language_ISO639 = Meta->Language;
 						PlaystartOptions.InitialAudioTrackAttributes.Language_ISO639 = Meta->Language;
 					}
+					AudioAttributes.Codec = Meta->HighestBandwidthCodec.GetCodecName();
+					PlaystartOptions.InitialAudioTrackAttributes.Codec = Meta->HighestBandwidthCodec.GetCodecName();
+
 					TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> LockedPlayer = CurrentPlayer;
 					if (LockedPlayer.IsValid() && LockedPlayer->AdaptivePlayer.IsValid())
 					{
@@ -1188,6 +1492,60 @@ bool FElectraPlayer::SelectTrack(EPlayerTrackType TrackType, int32 TrackIndex)
 			return true;
 		}
 	}
+	else if (TrackType == EPlayerTrackType::Subtitle)
+	{
+		// Select a track or deselect?
+		if (TrackIndex >= 0)
+		{
+			// Check if the track index exists by checking the presence of the track metadata.
+			// If for some reason the index is not valid the selection will not be changed.
+			TSharedPtr<Electra::FTrackMetadata, ESPMode::ThreadSafe> Meta = GetTrackStreamMetadata(EPlayerTrackType::Subtitle, TrackIndex);
+			if (Meta.IsValid())
+			{
+				// Switch only when the track index has changed.
+				if (GetSelectedTrack(TrackType) != TrackIndex)
+				{
+					Electra::FStreamSelectionAttributes SubtitleAttributes;
+					SubtitleAttributes.OverrideIndex = TrackIndex;
+
+					PlaystartOptions.InitialSubtitleTrackAttributes.TrackIndexOverride = TrackIndex;
+					if (!Meta->Kind.IsEmpty())
+					{
+						SubtitleAttributes.Kind = Meta->Kind;
+						PlaystartOptions.InitialSubtitleTrackAttributes.Kind = Meta->Kind;
+					}
+					if (!Meta->Language.IsEmpty())
+					{
+						SubtitleAttributes.Language_ISO639 = Meta->Language;
+						PlaystartOptions.InitialSubtitleTrackAttributes.Language_ISO639 = Meta->Language;
+					}
+					SubtitleAttributes.Codec = Meta->HighestBandwidthCodec.GetCodecName();
+					PlaystartOptions.InitialSubtitleTrackAttributes.Codec = Meta->HighestBandwidthCodec.GetCodecName();
+
+					TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> LockedPlayer = CurrentPlayer;
+					if (LockedPlayer.IsValid() && LockedPlayer->AdaptivePlayer.IsValid())
+					{
+						LockedPlayer->AdaptivePlayer->SelectTrackByAttributes(Electra::EStreamType::Subtitle, SubtitleAttributes);
+					}
+
+					SelectedSubtitleTrackIndex = TrackIndex;
+				}
+				return true;
+			}
+		}
+		else
+		{
+			// Deselect subtitle track.
+			PlaystartOptions.InitialSubtitleTrackAttributes.TrackIndexOverride = -1;
+			SelectedSubtitleTrackIndex = -1;
+			TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> LockedPlayer = CurrentPlayer;
+			if (LockedPlayer.IsValid() && LockedPlayer->AdaptivePlayer.IsValid())
+			{
+				LockedPlayer->AdaptivePlayer->DeselectTrack(Electra::EStreamType::Subtitle);
+			}
+			return true;
+		}
+	}
 	// The player is selecting tracks for now.
 	return false;
 }
@@ -1206,8 +1564,12 @@ void FElectraPlayer::OnMediaPlayerEventReceived(TSharedPtrTS<IAdaptiveStreamingP
 #endif
 
 	TSharedPtr<IElectraPlayerAdapterDelegate, ESPMode::ThreadSafe> PinnedAdapterDelegate = AdapterDelegate.Pin();
-	if (PinnedAdapterDelegate.IsValid())
+	TSharedPtr<FInternalPlayerImpl, ESPMode::ThreadSafe> LockedPlayer = CurrentPlayer;
+	if (PinnedAdapterDelegate.IsValid() && LockedPlayer.IsValid() && LockedPlayer->AdaptivePlayer.IsValid())
 	{
+		Electra::FTimeRange MediaTimeline;
+		LockedPlayer->AdaptivePlayer->GetTimelineRange(MediaTimeline);
+
 		// Create a binary media sample of our extended format and pass it up.
 		TSharedPtr<FMetaDataDecoderOutput, ESPMode::ThreadSafe> Meta = MakeShared<FMetaDataDecoderOutput, ESPMode::ThreadSafe>();
 		switch(InDispatchMode)
@@ -1227,17 +1589,17 @@ void FElectraPlayer::OnMediaPlayerEventReceived(TSharedPtrTS<IAdaptiveStreamingP
 		switch(InEvent->GetOrigin())
 		{
 			default:
-			case IAdaptiveStreamingPlayerAEMSEvent::EOrigin::TimedMetadata:		
+			case IAdaptiveStreamingPlayerAEMSEvent::EOrigin::TimedMetadata:
 			{
 				Meta->Origin = FMetaDataDecoderOutput::EOrigin::TimedMetadata;
 				break;
 			}
-			case IAdaptiveStreamingPlayerAEMSEvent::EOrigin::EventStream:		
+			case IAdaptiveStreamingPlayerAEMSEvent::EOrigin::EventStream:
 			{
 				Meta->Origin = FMetaDataDecoderOutput::EOrigin::EventStream;
 				break;
 			}
-			case IAdaptiveStreamingPlayerAEMSEvent::EOrigin::InbandEventStream:	
+			case IAdaptiveStreamingPlayerAEMSEvent::EOrigin::InbandEventStream:
 			{
 				Meta->Origin = FMetaDataDecoderOutput::EOrigin::InbandEventStream;
 				break;
@@ -1249,6 +1611,10 @@ void FElectraPlayer::OnMediaPlayerEventReceived(TSharedPtrTS<IAdaptiveStreamingP
 		Meta->ID = InEvent->GetID(),
 		Meta->Duration = InEvent->GetDuration().GetAsTimespan();
 		Meta->PresentationTime = FDecoderTimeStamp(InEvent->GetPresentationTime().GetAsTimespan(), 0);
+		// Set the current timeline start as the metadata track's zero point. This is only useful if the timeline does not
+		// actually change over time. The use of the base time is therefore tied to knowledge by the using code that the
+		// timeline will be fixed.
+		Meta->TrackBaseTime = FDecoderTimeStamp(MediaTimeline.Start.GetAsTimespan(), MediaTimeline.Start.GetSequenceIndex());
 		PinnedAdapterDelegate->PresentMetadataSample(Meta);
 	}
 }
@@ -1310,11 +1676,15 @@ void FElectraPlayer::HandleDeferredPlayerEvents()
 				break;
 			}
 			case FPlayerMetricEventBase::EType::ReceivedPlaylists:
+			{
 				HandlePlayerEventReceivedPlaylists();
 				break;
+			}
 			case FPlayerMetricEventBase::EType::TracksChanged:
+			{
 				HandlePlayerEventTracksChanged();
 				break;
+			}
 			case FPlayerMetricEventBase::EType::PlaylistDownload:
 			{
 				FPlayerMetricEvent_PlaylistDownload* Ev = static_cast<FPlayerMetricEvent_PlaylistDownload*>(Event.Get());
@@ -1369,24 +1739,42 @@ void FElectraPlayer::HandleDeferredPlayerEvents()
 				HandlePlayerEventVideoQualityChange(Ev->NewBitrate, Ev->PreviousBitrate, Ev->bIsDrasticDownswitch);
 				break;
 			}
+			case FPlayerMetricEventBase::EType::CodecFormatChange:
+			{
+				FPlayerMetricEvent_CodecFormatChange* Ev = static_cast<FPlayerMetricEvent_CodecFormatChange*>(Event.Get());
+				HandlePlayerEventCodecFormatChange(Ev->NewDecodingFormat);
+				break;
+			}
 			case FPlayerMetricEventBase::EType::PrerollStart:
+			{
 				HandlePlayerEventPrerollStart();
 				break;
+			}
 			case FPlayerMetricEventBase::EType::PrerollEnd:
+			{
 				HandlePlayerEventPrerollEnd();
 				break;
+			}
 			case FPlayerMetricEventBase::EType::PlaybackStart:
+			{
 				HandlePlayerEventPlaybackStart();
 				break;
+			}
 			case FPlayerMetricEventBase::EType::PlaybackPaused:
+			{
 				HandlePlayerEventPlaybackPaused();
 				break;
+			}
 			case FPlayerMetricEventBase::EType::PlaybackResumed:
+			{
 				HandlePlayerEventPlaybackResumed();
 				break;
+			}
 			case FPlayerMetricEventBase::EType::PlaybackEnded:
+			{
 				HandlePlayerEventPlaybackEnded();
 				break;
+			}
 			case FPlayerMetricEventBase::EType::JumpInPlayPosition:
 			{
 				FPlayerMetricEvent_JumpInPlayPosition* Ev = static_cast<FPlayerMetricEvent_JumpInPlayPosition*>(Event.Get());
@@ -1394,8 +1782,15 @@ void FElectraPlayer::HandleDeferredPlayerEvents()
 				break;
 			}
 			case FPlayerMetricEventBase::EType::PlaybackStopped:
+			{
 				HandlePlayerEventPlaybackStopped();
 				break;
+			}
+			case FPlayerMetricEventBase::EType::SeekCompleted:
+			{
+				HandlePlayerEventSeekCompleted();
+				break;
+			}
 			case FPlayerMetricEventBase::EType::Error:
 			{
 				FPlayerMetricEvent_Error* Ev = static_cast<FPlayerMetricEvent_Error*>(Event.Get());
@@ -1409,22 +1804,28 @@ void FElectraPlayer::HandleDeferredPlayerEvents()
 				break;
 			}
 			case FPlayerMetricEventBase::EType::DroppedVideoFrame:
+			{
 				HandlePlayerEventDroppedVideoFrame();
 				break;
+			}
 			case FPlayerMetricEventBase::EType::DroppedAudioFrame:
+			{
 				HandlePlayerEventDroppedAudioFrame();
 				break;
+			}
 			default:
+			{
 				break;
+			}
 		}
 	}
 }
 
 void FElectraPlayer::HandlePlayerEventOpenSource(const FString& URL)
 {
-	Status = Status | EPlayerStatus::Connecting;
+	PlayerState.Status = PlayerState.Status | EPlayerStatus::Connecting;
 
-	State = EPlayerState::Preparing;
+	PlayerState.State = EPlayerState::Preparing;
 	DeferredEvents.Enqueue(IElectraPlayerAdapterDelegate::EPlayerEvent::MediaConnecting);
 
 	UE_LOG(LogElectraPlayer, Log, TEXT("[%p][%p] Opening stream at \"%s\""), this, CurrentPlayer.Get(), *SanitizeMessage(URL));
@@ -1467,9 +1868,9 @@ void FElectraPlayer::HandlePlayerEventReceivedMasterPlaylist(const FString& Effe
 
 void FElectraPlayer::HandlePlayerEventReceivedPlaylists()
 {
-	Status = Status & ~EPlayerStatus::Connecting;
+	PlayerState.Status = PlayerState.Status & ~EPlayerStatus::Connecting;
 
-	//Status = Status | EPlayerStatus::Buffering;
+	//PlayerState.Status = PlayerState.Status | EPlayerStatus::Buffering;
 	//DeferredEvents.Enqueue(EPlayerEvent::MediaBuffering);
 
 	// Player starts in paused mode. We need a SetRate() to start playback...
@@ -1522,12 +1923,23 @@ void FElectraPlayer::HandlePlayerEventReceivedPlaylists()
 	CurrentPlayer->AdaptivePlayer->GetTrackMetadata(AudioStreamMetaData, Electra::EStreamType::Audio);
 	NumTracksAudio = AudioStreamMetaData.Num();
 
+	TArray<Electra::FTrackMetadata> SubtitleStreamMetaData;
+	CurrentPlayer->AdaptivePlayer->GetTrackMetadata(SubtitleStreamMetaData, Electra::EStreamType::Subtitle);
+	NumTracksSubtitle = SubtitleStreamMetaData.Num();
+
 	// Set the initial audio track selection attributes.
 	Electra::FStreamSelectionAttributes InitialAudioAttributes;
 	InitialAudioAttributes.Kind = PlaystartOptions.InitialAudioTrackAttributes.Kind;
 	InitialAudioAttributes.Language_ISO639 = PlaystartOptions.InitialAudioTrackAttributes.Language_ISO639;
 	InitialAudioAttributes.OverrideIndex = PlaystartOptions.InitialAudioTrackAttributes.TrackIndexOverride;
 	CurrentPlayer->AdaptivePlayer->SetInitialStreamAttributes(Electra::EStreamType::Audio, InitialAudioAttributes);
+
+	// Set the initial subtitle track selection attributes.
+	Electra::FStreamSelectionAttributes InitialSubtitleAttributes;
+	InitialSubtitleAttributes.Kind = PlaystartOptions.InitialSubtitleTrackAttributes.Kind;
+	InitialSubtitleAttributes.Language_ISO639 = PlaystartOptions.InitialSubtitleTrackAttributes.Language_ISO639;
+	InitialSubtitleAttributes.OverrideIndex = PlaystartOptions.InitialSubtitleTrackAttributes.TrackIndexOverride;
+	CurrentPlayer->AdaptivePlayer->SetInitialStreamAttributes(Electra::EStreamType::Subtitle, InitialSubtitleAttributes);
 
 	// Trigger preloading unless forbidden.
 	if (PlaystartOptions.bDoNotPreload == false)
@@ -1555,7 +1967,13 @@ void FElectraPlayer::HandlePlayerEventTracksChanged()
 	TArray<Electra::FTrackMetadata> AudioStreamMetaData;
 	CurrentPlayer->AdaptivePlayer->GetTrackMetadata(AudioStreamMetaData, Electra::EStreamType::Audio);
 	NumTracksAudio = AudioStreamMetaData.Num();
+
+	TArray<Electra::FTrackMetadata> SubtitleStreamMetaData;
+	CurrentPlayer->AdaptivePlayer->GetTrackMetadata(SubtitleStreamMetaData, Electra::EStreamType::Subtitle);
+	NumTracksSubtitle = SubtitleStreamMetaData.Num();
+
 	bAudioTrackIndexDirty = true;
+	bSubtitleTrackIndexDirty = true;
 
 	/*
 	Note: Do not send TracksChanged here since this would trigger a re-selecting of the default tracks.
@@ -1632,7 +2050,7 @@ void FElectraPlayer::HandlePlayerEventDataAvailabilityChange(const Electra::Metr
 
 void FElectraPlayer::HandlePlayerEventBufferingStart(Electra::Metrics::EBufferingReason BufferingReason)
 {
-	Status = Status | EPlayerStatus::Buffering;
+	PlayerState.Status = PlayerState.Status | EPlayerStatus::Buffering;
 	DeferredEvents.Enqueue(IElectraPlayerAdapterDelegate::EPlayerEvent::MediaBuffering);
 
 	// Update statistics
@@ -1669,7 +2087,7 @@ void FElectraPlayer::HandlePlayerEventBufferingEnd(Electra::Metrics::EBufferingR
 	// Note: While this event signals the end of buffering the player will now immediately transition into the pre-rolling
 	//       state from which a playback start is not quite possible yet and would incur a slight delay until it is.
 	//       To avoid this we keep the state as buffering until the pre-rolling phase has also completed.
-	//Status = Status & ~EPlayerStatus::Buffering;
+	//PlayerState.Status = PlayerState.Status & ~EPlayerStatus::Buffering;
 
 	// Update statistics
 	FScopeLock Lock(&StatisticsLock);
@@ -1680,7 +2098,7 @@ void FElectraPlayer::HandlePlayerEventBufferingEnd(Electra::Metrics::EBufferingR
 			Statistics.InitialBufferingDuration = BufferingDuration;
 			break;
 		case Electra::Metrics::EBufferingReason::Seeking:
-			MediaStateOnSeekFinished();
+			// End of seek buffering is not relevant here.
 			break;
 		case Electra::Metrics::EBufferingReason::Rebuffering:
 			if (BufferingDuration > Statistics.LongestRebufferingDuration)
@@ -1846,6 +2264,23 @@ void FElectraPlayer::HandlePlayerEventVideoQualityChange(int32 NewBitrate, int32
 	CSV_EVENT(ElectraPlayer, TEXT("QualityChange %d -> %d"), PreviousBitrate, NewBitrate);
 }
 
+void FElectraPlayer::HandlePlayerEventCodecFormatChange(const Electra::FStreamCodecInformation& NewDecodingFormat)
+{
+	if (NewDecodingFormat.IsVideoCodec())
+	{
+		FVideoStreamFormat fmt;
+		fmt.Bitrate = NewDecodingFormat.GetBitrate();
+		fmt.Resolution.X = NewDecodingFormat.GetResolution().Width;
+		fmt.Resolution.Y = NewDecodingFormat.GetResolution().Height;
+		fmt.FrameRate = NewDecodingFormat.GetFrameRate().IsValid() ? NewDecodingFormat.GetFrameRate().GetAsDouble() : 0.0;
+		{
+		FScopeLock lock(&PlayerLock);
+		CurrentlyActiveVideoStreamFormat = fmt;
+		}
+	}
+}
+
+
 void FElectraPlayer::HandlePlayerEventPrerollStart()
 {
 	// Update statistics
@@ -1868,7 +2303,7 @@ void FElectraPlayer::HandlePlayerEventPrerollEnd()
 {
 	// Note: See comments in ReportBufferingEnd()
 	//       Preroll follows at the end of buffering and we keep the buffering state until preroll has finished as well.
-	Status = Status & ~EPlayerStatus::Buffering;
+	PlayerState.Status = PlayerState.Status & ~EPlayerStatus::Buffering;
 
 	// Update statistics
 	FScopeLock Lock(&StatisticsLock);
@@ -1890,7 +2325,7 @@ void FElectraPlayer::HandlePlayerEventPrerollEnd()
 
 void FElectraPlayer::HandlePlayerEventPlaybackStart()
 {
-	Status = Status & ~EPlayerStatus::Buffering;
+	PlayerState.Status = PlayerState.Status & ~EPlayerStatus::Buffering;
 	MediaStateOnPlay();
 
 	// Update statistics
@@ -1995,9 +2430,9 @@ void FElectraPlayer::HandlePlayerEventJumpInPlayPosition(const Electra::FTimeVal
 	else if (TimejumpReason == Electra::Metrics::ETimeJumpReason::Looping)
 	{
 		++Statistics.NumTimesLooped;
-		Electra::FPlayerLoopState loopState;
+		Electra::IAdaptiveStreamingPlayer::FLoopState loopState;
 		CurrentPlayer->AdaptivePlayer->GetLoopState(loopState);
-		UE_LOG(LogElectraPlayer, Log, TEXT("[%p][%p] Looping (%d) from %.3f to %.3f"), this, CurrentPlayer.Get(), loopState.LoopCount, FromTime.GetAsSeconds(), (ToNewTime - loopState.LoopBasetime).GetAsSeconds());
+		UE_LOG(LogElectraPlayer, Log, TEXT("[%p][%p] Looping (%d) from %.3f to %.3f"), this, CurrentPlayer.Get(), loopState.Count, FromTime.GetAsSeconds(), ToNewTime.GetAsSeconds());
 	}
 
 	// Enqueue a "PositionJump" event.
@@ -2035,6 +2470,11 @@ void FElectraPlayer::HandlePlayerEventPlaybackStopped()
 	}
 }
 
+void FElectraPlayer::HandlePlayerEventSeekCompleted()
+{
+	UE_LOG(LogElectraPlayer, Log, TEXT("[%p][%p] Seek completed"), this, CurrentPlayer.Get());
+	MediaStateOnSeekFinished();
+}
 
 void FElectraPlayer::HandlePlayerEventError(const FString& ErrorReason)
 {
@@ -2269,6 +2709,7 @@ void FElectraPlayer::SendAnalyticMetrics(const TSharedPtr<IAnalyticsProviderET>&
 
 	TArray<FAnalyticsEventAttribute> ParamArray;
 	AddCommonAnalyticsAttributes(ParamArray);
+	StatisticsLock.Lock();
 	ParamArray.Add(FAnalyticsEventAttribute(TEXT("URL"), Statistics.InitialURL));
 	ParamArray.Add(FAnalyticsEventAttribute(TEXT("LastState"), Statistics.LastState));
 	ParamArray.Add(FAnalyticsEventAttribute(TEXT("LastError"), Statistics.LastError));
@@ -2316,6 +2757,7 @@ void FElectraPlayer::SendAnalyticMetrics(const TSharedPtr<IAnalyticsProviderET>&
 	ParamArray.Add(FAnalyticsEventAttribute(TEXT("SubtitlesURL"), Statistics.SubtitlesURL));
 	ParamArray.Add(FAnalyticsEventAttribute(TEXT("SubtitlesResponseTime"), Statistics.SubtitlesResponseTime));
 	ParamArray.Add(FAnalyticsEventAttribute(TEXT("SubtitlesLastError"), Statistics.SubtitlesLastError));
+	StatisticsLock.Unlock();
 
 	AnalyticsProvider->RecordEvent(TEXT("Electra.FinalMetrics"), MoveTemp(ParamArray));
 }
@@ -2379,42 +2821,46 @@ void FElectraPlayer::ReportSubtitlesMetrics(const FGuid& InPlayerGuid, const FSt
 
 void FElectraPlayer::MediaStateOnPreparingFinished()
 {
-	if (!ensure(State == EPlayerState::Preparing))
+	if (!ensure(PlayerState.State == EPlayerState::Preparing))
 	{
 		return;
 	}
 
 	CSV_EVENT(ElectraPlayer, TEXT("MediaStateOnPreparingFinished"));
 
-	State = EPlayerState::Stopped;
+	PlayerState.State = EPlayerState::Stopped;
 	DeferredEvents.Enqueue(IElectraPlayerAdapterDelegate::EPlayerEvent::MediaOpened);
 	DeferredEvents.Enqueue(IElectraPlayerAdapterDelegate::EPlayerEvent::TracksChanged);
 }
 
 bool FElectraPlayer::MediaStateOnPlay()
 {
-	if (State != EPlayerState::Stopped && State != EPlayerState::Paused)
+	if (PlayerState.State != EPlayerState::Stopped && PlayerState.State != EPlayerState::Paused)
 	{
 		return false;
 	}
 
 	CSV_EVENT(ElectraPlayer, TEXT("MediaStateOnPlay"));
 
-	State = EPlayerState::Playing;
+	PlayerState.State = EPlayerState::Playing;
+	PlayerState.SetPlayRateFromPlayer(1.0f);
+
 	DeferredEvents.Enqueue(IElectraPlayerAdapterDelegate::EPlayerEvent::PlaybackResumed);
 	return true;
 }
 
 bool FElectraPlayer::MediaStateOnPause()
 {
-	if (State != EPlayerState::Playing)
+	if (PlayerState.State != EPlayerState::Playing)
 	{
 		return false;
 	}
 
 	CSV_EVENT(ElectraPlayer, TEXT("MediaStateOnPause"));
 
-	State = EPlayerState::Paused;
+	PlayerState.State = EPlayerState::Paused;
+	PlayerState.SetPlayRateFromPlayer(0.0f);
+
 	DeferredEvents.Enqueue(IElectraPlayerAdapterDelegate::EPlayerEvent::PlaybackSuspended);
 	return true;
 }
@@ -2423,7 +2869,7 @@ void FElectraPlayer::MediaStateOnEndReached()
 {
 	CSV_EVENT(ElectraPlayer, TEXT("MediaStateOnEndReached"));
 
-	switch (State)
+	switch (PlayerState.State)
 	{
 	case EPlayerState::Preparing:
 	case EPlayerState::Playing:
@@ -2434,7 +2880,7 @@ void FElectraPlayer::MediaStateOnEndReached()
 		// NOP
 		break;
 	}
-	State = EPlayerState::Stopped;
+	PlayerState.State = EPlayerState::Stopped;
 }
 
 void FElectraPlayer::MediaStateOnSeekFinished()

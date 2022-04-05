@@ -22,6 +22,7 @@ public class DetailCustomizations : ModuleRules
 				"Slate",
 				"SlateCore",
 				"EditorStyle",
+				"EditorFramework",
 				"UnrealEd",
 				"EditorWidgets",
 				"Kismet",
@@ -62,7 +63,10 @@ public class DetailCustomizations : ModuleRules
                 "DataTableEditor",
 				"ToolMenus",
 				"PhysicsCore",
-				"RenderCore"
+				"RenderCore",
+				"ToolWidgets",
+				"MaterialEditor",
+				"VirtualTexturingEditor",
 			}
 		);
 

@@ -5,15 +5,17 @@
 #include "Chaos/ConstraintHandle.h"
 #include "Chaos/ParticleHandle.h"
 #include "Chaos/PBDConstraintContainer.h"
+#include "Chaos/Evolution/SolverConstraintContainer.h"
 
 namespace Chaos
 {
 	class FPBDRigidDynamicSpringConstraints;
+	class FPBDIslandSolverData;
 
-	class CHAOS_API FPBDRigidDynamicSpringConstraintHandle : public TContainerConstraintHandle<FPBDRigidDynamicSpringConstraints>
+	class CHAOS_API FPBDRigidDynamicSpringConstraintHandle : public TIndexedContainerConstraintHandle<FPBDRigidDynamicSpringConstraints>
 	{
 	public:
-		using Base = TContainerConstraintHandle<FPBDRigidDynamicSpringConstraints>;
+		using Base = TIndexedContainerConstraintHandle<FPBDRigidDynamicSpringConstraints>;
 		using FConstraintContainer = FPBDRigidDynamicSpringConstraints;
 
 		FPBDRigidDynamicSpringConstraintHandle() 
@@ -21,45 +23,63 @@ namespace Chaos
 		}
 
 		FPBDRigidDynamicSpringConstraintHandle(FConstraintContainer* InConstraintContainer, int32 InConstraintIndex) 
-			: TContainerConstraintHandle<FPBDRigidDynamicSpringConstraints>(StaticType(),InConstraintContainer, InConstraintIndex) 
+			: TIndexedContainerConstraintHandle<FPBDRigidDynamicSpringConstraints>(InConstraintContainer, InConstraintIndex)
 		{
 		}
 
-		static FConstraintHandle::EType StaticType() { return FConstraintHandle::EType::DynamicSpring; }
 		TVec2<FGeometryParticleHandle*> GetConstrainedParticles() const;
+
+		void PreGatherInput(const FReal Dt, FPBDIslandSolverData& SolverData);
+		void GatherInput(const FReal Dt, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData);
+
+		static const FConstraintHandleTypeID& StaticType()
+		{
+			static FConstraintHandleTypeID STypeID(TEXT("FRigidDynamicSpringConstraintHandle"), &FIndexedConstraintHandle::StaticType());
+			return STypeID;
+		}
 
 	protected:
 		using Base::ConstraintIndex;
-		using Base::ConstraintContainer;
+		using Base::ConcreteContainer;
 	};
 
-	class CHAOS_API FPBDRigidDynamicSpringConstraints : public FPBDConstraintContainer
+	class CHAOS_API FPBDRigidDynamicSpringConstraints : public FPBDIndexedConstraintContainer
 	{
 	public:
-		using Base = FPBDConstraintContainer;
+		using Base = FPBDIndexedConstraintContainer;
 		using FConstrainedParticlePair = TVec2<FGeometryParticleHandle*>;
 		//static const int Dimensions = 3;
 		using FConstraintContainerHandle = FPBDRigidDynamicSpringConstraintHandle;
 		using FConstraintHandleAllocator = TConstraintHandleAllocator<FPBDRigidDynamicSpringConstraints>;
 		using FHandles = TArray<FConstraintContainerHandle*>;
+		using FConstraintSolverContainerType = FConstraintSolverContainer;	// @todo(chaos): Add island solver for this constraint type
 
 		FPBDRigidDynamicSpringConstraints(const FReal InStiffness = (FReal)1.)
-			: CreationThreshold(1), MaxSprings(1), Stiffness(InStiffness) 
+			: FPBDIndexedConstraintContainer(FConstraintContainerHandle::StaticType())
+			, CreationThreshold(1)
+			, MaxSprings(1)
+			, Stiffness(InStiffness) 
 		{}
 
 		FPBDRigidDynamicSpringConstraints(TArray<FConstrainedParticlePair>&& InConstraints, const FReal InCreationThreshold = (FReal)1., const int32 InMaxSprings = 1, const FReal InStiffness = (FReal)1.)
-			: Constraints(MoveTemp(InConstraints)), CreationThreshold(InCreationThreshold), MaxSprings(InMaxSprings), Stiffness(InStiffness)
+			: FPBDIndexedConstraintContainer(FConstraintContainerHandle::StaticType())
+			, Constraints(MoveTemp(InConstraints))
+			, CreationThreshold(InCreationThreshold)
+			, MaxSprings(InMaxSprings)
+			, Stiffness(InStiffness)
 		{
 			if (Constraints.Num() > 0)
 			{
 				Handles.Reserve(Constraints.Num());
 				Distances.Reserve(Constraints.Num());
 				SpringDistances.Reserve(Constraints.Num());
+				ConstraintSolverBodies.Reserve(Constraints.Num());
 				for (int32 ConstraintIndex = 0; ConstraintIndex < Constraints.Num(); ++ConstraintIndex)
 				{
 					Handles.Add(HandleAllocator.AllocHandle(this, ConstraintIndex));
 					Distances.Add({});
 					SpringDistances.Add({});
+					ConstraintSolverBodies.Add({ nullptr, nullptr });
 				}
 			}
 		}
@@ -88,6 +108,7 @@ namespace Chaos
 			Constraints.Add(InConstrainedParticles);
 			Distances.Add({});
 			SpringDistances.Add({});
+			ConstraintSolverBodies.Add({ nullptr, nullptr });
 			return Handles.Last();
 		}
 
@@ -108,6 +129,7 @@ namespace Chaos
 			Constraints.RemoveAtSwap(ConstraintIndex);
 			Distances.RemoveAtSwap(ConstraintIndex);
 			SpringDistances.RemoveAtSwap(ConstraintIndex);
+			ConstraintSolverBodies.RemoveAtSwap(ConstraintIndex);
 			Handles.RemoveAtSwap(ConstraintIndex);
 
 			// Update the handle for the constraint that was moved
@@ -137,7 +159,7 @@ namespace Chaos
 		/**
 		 * Set the maximum number of springs
 		 */
-		void SetMaxSprings(const FReal InMaxSprings)
+		void SetMaxSprings(const int32 InMaxSprings)
 		{
 			MaxSprings = InMaxSprings;
 		}
@@ -182,30 +204,16 @@ namespace Chaos
 		//
 
 		void PrepareTick() {}
-
 		void UnprepareTick() {}
-
-		void PrepareIteration(FReal Dt) {}
-
-		void UnprepareIteration(FReal Dt) {}
-
 		void UpdatePositionBasedState(const FReal Dt);
 
-		bool Apply(const FReal Dt, const TArray<FConstraintContainerHandle*>& InConstraintHandles, const int32 It, const int32 NumIts)
-		{
-			for (FConstraintContainerHandle* ConstraintHandle : InConstraintHandles)
-			{
-				ApplySingle(Dt, ConstraintHandle->GetConstraintIndex());
-			}
+		void SetNumIslandConstraints(const int32 NumIslandConstraints, FPBDIslandSolverData& SolverData);
+		void PreGatherInput(const FReal Dt, const int32 ConstraintIndex, FPBDIslandSolverData& SolverData);
+		void GatherInput(const FReal Dt, const int32 ConstraintIndex, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData);
+		void ScatterOutput(FReal Dt, FPBDIslandSolverData& SolverData);
 
-			// TODO: Return true only if more iteration are needed
-			return true;
-		}
-
-		bool ApplyPushOut(const FReal Dt, const TArray<FConstraintContainerHandle*>& InConstraintHandles, const int32 It, const int32 NumIts)
-		{
-			return false;
-		}
+		bool ApplyPhase1Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
+		bool ApplyPhase2Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData) { return false; }
 
 	protected:
 		using Base::GetConstraintIndex;
@@ -222,6 +230,8 @@ namespace Chaos
 		FReal CreationThreshold;
 		int32 MaxSprings;
 		FReal Stiffness;
+
+		TArray<FSolverBodyPtrPair> ConstraintSolverBodies;
 
 		FHandles Handles;
 		FConstraintHandleAllocator HandleAllocator;

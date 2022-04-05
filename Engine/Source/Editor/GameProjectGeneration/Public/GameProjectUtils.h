@@ -34,8 +34,8 @@ struct FProjectInformation
 	TOptional<bool> bEnableXR;
 	TOptional<bool> bEnableRaytracing;
 
-	TOptional<EHardwareClass::Type> TargetedHardware;
-	TOptional<EGraphicsPreset::Type> DefaultGraphicsPerformance;
+	TOptional<EHardwareClass> TargetedHardware;
+	TOptional<EGraphicsPreset> DefaultGraphicsPerformance;
 
 	/** The name of the feature pack to use as starter content. Must be located under FeaturePacks\. */
 	FString StarterContent;
@@ -91,6 +91,16 @@ public:
 		UserCanceled
 	};
 
+	/** Reload status when adding new code to the project */
+	enum class EReloadStatus : uint8
+	{
+		/** Code was built and reloaded */
+		Reloaded,
+
+		/** Code was not reloaded */
+		NotReloaded,
+	};
+
 	/** Returns true if the project filename is properly formed and does not conflict with another project */
 	static bool IsValidProjectFileForCreation(const FString& ProjectFile, FText& OutFailReason);
 
@@ -137,6 +147,9 @@ public:
 
 	/** Adds new source code to the project. When returning Succeeded or FailedToHotReload, OutSyncFileAndLineNumber will be the the preferred target file to sync in the users code editing IDE, formatted for use with GenericApplication::GotoLineInSource */
 	static EAddCodeToProjectResult AddCodeToProject(const FString& NewClassName, const FString& NewClassPath, const FModuleContextInfo& ModuleInfo, const FNewClassInfo ParentClassInfo, const TSet<FString>& DisallowedHeaderNames, FString& OutHeaderFilePath, FString& OutCppFilePath, FText& OutFailReason);
+
+	/** Adds new source code to the project. When returning Succeeded or FailedToHotReload, OutSyncFileAndLineNumber will be the the preferred target file to sync in the users code editing IDE, formatted for use with GenericApplication::GotoLineInSource */
+	static EAddCodeToProjectResult AddCodeToProject(const FString& NewClassName, const FString& NewClassPath, const FModuleContextInfo& ModuleInfo, const FNewClassInfo ParentClassInfo, const TSet<FString>& DisallowedHeaderNames, FString& OutHeaderFilePath, FString& OutCppFilePath, FText& OutFailReason, EReloadStatus& OutReloadStatus);
 
 	/** Loads a list of template categories defined in the TemplateCategories.ini file in the specified folder */
 	static UTemplateCategories* LoadTemplateCategories(const FString& RootDir);
@@ -225,7 +238,7 @@ public:
 	 * Update the list of supported target platforms based upon the parameters provided
 	 * This will take care of checking out and saving the updated .uproject file automatically
 	 *
-	 * @param	InPlatformName		Name of the platform to target (eg, WindowsNoEditor)
+	 * @param	InPlatformName		Name of the platform to target (eg, WindowsClient)
 	 * @param	bIsSupported		true if the platform should be supported by this project, false if it should not
 	 */
 	static void UpdateSupportedTargetPlatforms(const FName& InPlatformName, const bool bIsSupported);
@@ -320,9 +333,6 @@ private:
 
 	/** Returns the include header path for a given fully specified, normalized file path */
 	static FString GetIncludePathForFile(const FString& InFullFilePath, const FString& ModuleRootPath);
-
-	/** Checks the name for an underscore and the existence of XB1 XDK */
-	static bool NameContainsUnderscoreAndXB1Installed(const FString& TestName);
 
 	/** Returns true if the project file exists on disk */
 	static bool ProjectFileExists(const FString& ProjectFile);
@@ -458,7 +468,7 @@ private:
 	static bool CheckoutGameProjectFile(const FString& ProjectFilename, FText& OutFailReason);
 
 	/** Internal handler for AddCodeToProject*/
-	static EAddCodeToProjectResult AddCodeToProject_Internal(const FString& NewClassName, const FString& NewClassPath, const FModuleContextInfo& ModuleInfo, const FNewClassInfo ParentClassInfo, const TSet<FString>& DisallowedHeaderNames, FString& OutHeaderFilePath, FString& OutCppFilePath, FText& OutFailReason);
+	static EAddCodeToProjectResult AddCodeToProject_Internal(const FString& NewClassName, const FString& NewClassPath, const FModuleContextInfo& ModuleInfo, const FNewClassInfo ParentClassInfo, const TSet<FString>& DisallowedHeaderNames, FString& OutHeaderFilePath, FString& OutCppFilePath, FText& OutFailReason, EReloadStatus& OutReloadStatus);
 
 	/** Internal handler for IsValidBaseClassForCreation */
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FDoesClassNeedAPIExportCallback, const FString& /*ClassModuleName*/);

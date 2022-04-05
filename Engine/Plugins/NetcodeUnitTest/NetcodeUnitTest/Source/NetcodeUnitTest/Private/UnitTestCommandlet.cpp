@@ -35,7 +35,7 @@
 
 
 // Enable access to the private UGameEngine.GameInstance value, using the GET_PRIVATE macro
-IMPLEMENT_GET_PRIVATE_VAR(UGameEngine, GameInstance, UGameInstance*);
+IMPLEMENT_GET_PRIVATE_VAR(UGameEngine, GameInstance, decltype(UGameEngine::GameInstance));
 
 /** The exit-confirmation dialog, displayed to the user when all unit tests are complete */
 static TSharedPtr<SWindow> ConfirmDialog=NULL;
@@ -81,9 +81,6 @@ int32 UUnitTestCommandlet::Main(const FString& Params)
 	FModuleManager::Get().LoadModule(TEXT("HTTP"));
 	FModuleManager::Get().LoadModule(TEXT("OnlineSubsystem"));
 	FModuleManager::Get().LoadModule(TEXT("OnlineSubsystemUtils"));
-
-
-	UE_LOG(LogUnitTest, Log, TEXT("NetcodeUnitTest built to target mainline CL '%i'."), TARGET_UE4_CL);
 
 	if (!IsEngineExitRequested())
 	{
@@ -162,8 +159,7 @@ int32 UUnitTestCommandlet::Main(const FString& Params)
 			// Required for FTimerManager to function - as it blocks ticks, if the frame counter doesn't change
 			GFrameCounter++;
 
-			FTicker::GetCoreTicker().Tick(FApp::GetDeltaTime());
-
+			FTSTicker::GetCoreTicker().Tick(FApp::GetDeltaTime());
 
 			// Execute deferred commands
 			for (int32 DeferredCommandsIndex=0; DeferredCommandsIndex<GEngine->DeferredCommands.Num(); DeferredCommandsIndex++)

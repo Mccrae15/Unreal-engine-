@@ -5,6 +5,7 @@
 #include "Interfaces/OnlineIdentityInterface.h"
 #include "OnlineSubsystem.h"
 #include "OnlineSubsystemUtils.h"
+#include "OnlineServicesEngineUtilsImpl.h"
 #include "OnlineDelegates.h"
 #include "OnlinePIESettings.h"
 
@@ -226,8 +227,10 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		ensure(SubsystemNameToHash.Num() == (HashId - 1));
 		ensure(HashToSubsystemName.Num() == (HashId - 1));
 
-		// FUniqueNetIdRepl uses 5 bits to transmit the HashId and 31 is used for OnlineSubsystems not included in this list
-		check(HashId < 31);
+		// FUniqueNetIdRepl uses 5 bits to transmit the HashId
+		// 31 is used for OnlineSubsystems not included in this list
+		// 30 is used for OnlineServices (v2) net ids
+		check(HashId < 30);
 	}
 
 	/** If false it will not try to do online PIE at all */
@@ -246,14 +249,27 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	friend FOnlineSubsystemUtilsModule;
 };
 
+FOnlineSubsystemUtilsModule::FOnlineSubsystemUtilsModule()
+{
+}
+
+FOnlineSubsystemUtilsModule::~FOnlineSubsystemUtilsModule()
+{
+}
+
 void FOnlineSubsystemUtilsModule::StartupModule()
 {
 	TUniquePtr<FOnlineSubsystemUtils> TempUtils = MakeUnique<FOnlineSubsystemUtils>();
 	TempUtils->Init();
 	SubsystemUtils = MoveTemp(TempUtils);
+
+	TUniquePtr<UE::Online::FOnlineServicesEngineUtils> TempServicesUtils = MakeUnique<UE::Online::FOnlineServicesEngineUtils>();
+	TempServicesUtils->Init();
+	OnlineServicesUtils = MoveTemp(TempServicesUtils);
 }
 
 void FOnlineSubsystemUtilsModule::ShutdownModule()
 {
 	SubsystemUtils.Reset();
+	OnlineServicesUtils.Reset();
 }

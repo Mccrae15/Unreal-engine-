@@ -6,16 +6,14 @@
 #include "ShaderDrawDebug.ush"
 
 // The shader used to render the debug element on view
-
-#if PERMUTATION_INPUT_TYPE == 0 
-StructuredBuffer<FPackedShaderDrawElement>	ShaderDrawDebugPrimitive;
-#else
-StructuredBuffer<FPackedShaderDrawElement>	LockedShaderDrawDebugPrimitive;
-#endif
+StructuredBuffer<uint> ShaderDrawDebugPrimitive;
 
 Texture2D<float> DepthTexture;
-int2 DepthTextureResolution;
-float2 DepthTextureInvResolution;
+float2 OutputInvResolution; 
+float2 OriginalViewRectMin;
+float2 OriginalViewSize;
+float2 OriginalBufferInvSize;
+
 SamplerState DepthSampler;
 
 #if GPU_DEBUG_RENDERING_VS 
@@ -25,17 +23,12 @@ void ShaderDrawDebugVS(
 	out float4 Position : SV_POSITION,
 	out float4 ColorAlpha : TEXCOORD0)
 {
-#if PERMUTATION_INPUT_TYPE == 0
-	FPackedShaderDrawElement PackedLine = ShaderDrawDebugPrimitive[InstanceId];
-#else
-	FPackedShaderDrawElement PackedLine = LockedShaderDrawDebugPrimitive[InstanceId];
-#endif
-	FShaderDrawElement Line = UnpackShaderElement(PackedLine);
+	FShaderDrawElement Item = UnpackShaderElement(ShaderDrawDebugPrimitive, InstanceId);
 
-	float4 VertexPosition = float4(VertexId == 0 ? Line.Pos0 : Line.Pos1, 1.0f);
-	float4 VertexColor = VertexId == 0 ? Line.Color0 : Line.Color1;
+	float4 VertexPositionTWS = float4(VertexId == 0 ? Item.Pos0 : Item.Pos1, 1.0f);
+	float4 VertexColor = VertexId == 0 ? Item.Color0 : Item.Color1;
 
-	Position = mul(VertexPosition, View.WorldToClip);
+	Position = mul(VertexPositionTWS, PrimaryView.TranslatedWorldToClip);
 	ColorAlpha = VertexColor;
 }
 #endif
@@ -48,8 +41,9 @@ void ShaderDrawDebugPS(
 {
 	uint2 PixelCoord = Position.xy;
 
-	const float2 DepthUV = float2(PixelCoord) * DepthTextureInvResolution;
-	const float Depth = DepthTexture.SampleLevel(DepthSampler, DepthUV, 0);	
+	const float2 ViewportUV = float2(PixelCoord) * OutputInvResolution;
+	const float2 DepthUV    = (ViewportUV * OriginalViewSize.xy + OriginalViewRectMin) * OriginalBufferInvSize;
+	const float Depth = DepthTexture.SampleLevel(DepthSampler, DepthUV, 0);
 	const bool bIsHidden = Position.z < Depth; // Reverse-Z
 
 	const float ColorScale = bIsHidden ? 0.4f : 1;
@@ -61,47 +55,33 @@ void ShaderDrawDebugPS(
 
 #if GPU_DEBUG_RENDERING_CLEAR_CS
 
-RWStructuredBuffer<FPackedShaderDrawElement>	DataBuffer;
-RWBuffer<uint> IndirectBuffer;
+RWStructuredBuffer<uint> RWElementBuffer;
 
 [numthreads(1, 1, 1)]
 void ShaderDrawDebugClearCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
-	IndirectBuffer[0] = 2;
-	IndirectBuffer[1] = 0;
-	IndirectBuffer[2] = 0;
-	IndirectBuffer[3] = 0;
+	RWElementBuffer[0] = 0; // Only element which really need to be cleared
+	RWElementBuffer[1] = 0;
+	RWElementBuffer[2] = 0;
+	RWElementBuffer[3] = 0;
+	RWElementBuffer[4] = 0;
+	RWElementBuffer[5] = 0;
+	RWElementBuffer[6] = 0;
+	RWElementBuffer[7] = 0;
 }
 #endif
 
 #if GPU_DEBUG_RENDERING_COPY_CS
 
-	#if PERMUTATION_BUFFER_TYPE == 0
-	uint NumElements;
-	StructuredBuffer<FPackedShaderDrawElement>	InStructuredBuffer;
-	RWStructuredBuffer<FPackedShaderDrawElement>	OutStructuredBuffer;
-	[numthreads(1024, 1, 1)]
-	void ShaderDrawDebugCopyCS(uint3 DispatchThreadId : SV_DispatchThreadID)
-	{
-		const uint Index = DispatchThreadId.x;
-		if (Index < NumElements)
-		{
-			OutStructuredBuffer[Index] = InStructuredBuffer[Index];
-		}
-	}
-	#endif
+StructuredBuffer<uint> ElementBuffer;
+RWBuffer<uint> RWIndirectArgs;
 
-	#if PERMUTATION_BUFFER_TYPE == 1
-	Buffer<uint> InBuffer;
-	RWBuffer<uint> OutBuffer;
-	[numthreads(1, 1, 1)]
-	void ShaderDrawDebugCopyCS(uint3 DispatchThreadId : SV_DispatchThreadID)
-	{
-		OutBuffer[0] = InBuffer[0];
-		OutBuffer[1] = InBuffer[1];
-		OutBuffer[2] = InBuffer[2];
-		OutBuffer[3] = InBuffer[3];
-	}
-	#endif
-
+[numthreads(1, 1, 1)]
+void ShaderDrawDebugCopyCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	RWIndirectArgs[0] = 2; // Line primitive
+	RWIndirectArgs[1] = ElementBuffer[0];
+	RWIndirectArgs[2] = 0;
+	RWIndirectArgs[3] = 0;
+}
 #endif

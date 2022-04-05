@@ -37,6 +37,12 @@ public:
 	 */
 	void DisableHLODCleanupOnLoad(bool bInDisableHLODCleanup);
 
+	/**
+	 * By default, when HLODs are saved to HLOD packages, they are spawned as transient on load
+	 * Use this method to disable spawning.
+	 */
+	void DisableHLODSpawningOnLoad(bool bInDisableHLODSpawning);
+
 	// Should be called when the "Save LOD Actors to HLOD Packages" option is toggled.
 	void OnSaveLODActorsToHLODPackagesChanged();
 
@@ -47,7 +53,7 @@ private:
 	// Recreate LOD actors for the given level.
 	void RecreateLODActorsForLevel(ULevel* InLevel, UWorld* InWorld);
 
-	void OnPreSaveWorld(uint32 InSaveFlags, UWorld* InWorld);
+	void OnPreSaveWorld(UWorld* InWorld, FObjectPreSaveContext ObjectSaveContext);
 
 	void UnregisterRecreateLODActorsDelegates();
 	void RegisterRecreateLODActorsDelegates();
@@ -60,6 +66,7 @@ private:
 	FDelegateHandle OnPreSaveWorlDelegateHandle;
 
 	bool bDisableHLODCleanupOnLoad;
+	bool bDisableHLODSpawningOnLoad;
 
 #endif // WITH_EDITOR
 };

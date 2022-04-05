@@ -253,8 +253,8 @@ public:
 
 	CORE_API void Write(FArchive& Ar) const;
 
-	static int32 GetDataOffset();
-	struct FNameStringView MakeView(union FNameBuffer& OptionalDecodeBuffer) const;
+	static CORE_API int32 GetDataOffset();
+	struct CORE_API FNameStringView MakeView(union FNameBuffer& OptionalDecodeBuffer) const;
 private:
 	friend class FName;
 	friend struct FNameHelper;
@@ -349,6 +349,15 @@ struct FMinimalName
 	{
 		return !Index && Number == NAME_NO_NUMBER_INTERNAL;
 	}
+
+	friend FORCEINLINE FArchive& operator<<(FArchive& Ar, FMinimalName& E)
+	{
+		Ar << E.Index;
+		Ar << E.Number;
+		return Ar;
+	}
+
+	FORCEINLINE bool operator<(FMinimalName Rhs) const { return Index == Rhs.Index ? Number < Rhs.Number : Index < Rhs.Index; };
 
 	/** Index into the Names array (used to find String portion of the string/number pair) */
 	FNameEntryId	Index;
@@ -771,10 +780,12 @@ public:
 	 */
 	FName(const WIDECHAR* Name, EFindName FindType=FNAME_Add);
 	FName(const ANSICHAR* Name, EFindName FindType=FNAME_Add);
+	FName(const UTF8CHAR* Name, EFindName FindType=FNAME_Add);
 
 	/** Create FName from non-null string with known length  */
 	FName(int32 Len, const WIDECHAR* Name, EFindName FindType=FNAME_Add);
 	FName(int32 Len, const ANSICHAR* Name, EFindName FindType=FNAME_Add);
+	FName(int32 Len, const UTF8CHAR* Name, EFindName FindType=FNAME_Add);
 
 	template <typename CharRangeType,
 		typename CharType = typename TRemoveCV<typename TRemovePointer<decltype(GetData(DeclVal<CharRangeType>()))>::Type>::Type,
@@ -797,8 +808,10 @@ public:
 	 */
 	FName(const WIDECHAR* Name, int32 InNumber, EFindName FindType = FNAME_Add);
 	FName(const ANSICHAR* Name, int32 InNumber, EFindName FindType = FNAME_Add);
+	FName(const UTF8CHAR* Name, int32 InNumber, EFindName FindType = FNAME_Add);
 	FName(int32 Len, const WIDECHAR* Name, int32 Number, EFindName FindType = FNAME_Add);
 	FName(int32 Len, const ANSICHAR* Name, int32 InNumber, EFindName FindType = FNAME_Add);
+	FName(int32 Len, const UTF8CHAR* Name, int32 InNumber, EFindName FindType = FNAME_Add);
 
 	template <typename CharRangeType,
 		typename CharType = typename TRemoveCV<typename TRemovePointer<decltype(GetData(DeclVal<CharRangeType>()))>::Type>::Type,
@@ -952,6 +965,7 @@ namespace Freeze
 	CORE_API uint32 IntrinsicAppendHash(const FName* DummyObject, const FTypeLayoutDesc& TypeDesc, const FPlatformTypeLayoutParameters& LayoutParams, FSHA1& Hasher);
 	CORE_API void IntrinsicWriteMemoryImage(FMemoryImageWriter& Writer, const FMinimalName& Object, const FTypeLayoutDesc&);
 	CORE_API void IntrinsicWriteMemoryImage(FMemoryImageWriter& Writer, const FScriptName& Object, const FTypeLayoutDesc&);
+	CORE_API uint32 IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const FName& Object, void* OutDst);
 }
 
 DECLARE_INTRINSIC_TYPE_LAYOUT(FName);
@@ -1285,3 +1299,7 @@ public:
 };
 
 template <> struct TIsContiguousContainer<FNameBuilder> { static constexpr bool Value = true; };
+
+/** Update the Hash with the FName's text and number */
+class FBlake3;
+CORE_API void AppendHash(FBlake3& Builder, FName In);

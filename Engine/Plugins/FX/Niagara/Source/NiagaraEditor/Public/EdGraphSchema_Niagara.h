@@ -24,7 +24,7 @@ struct NIAGARAEDITOR_API FNiagaraSchemaAction_NewNode : public FEdGraphSchemaAct
 
 	/** Template of node we want to create */
 	UPROPERTY()
-	class UEdGraphNode* NodeTemplate;
+	TObjectPtr<class UEdGraphNode> NodeTemplate;
 
 	UPROPERTY()
 	FName InternalName;
@@ -90,6 +90,11 @@ class NIAGARAEDITOR_API UEdGraphSchema_Niagara : public UEdGraphSchema
 	static const FName PinCategoryMisc;
 	static const FName PinCategoryClass;
 	static const FName PinCategoryEnum;
+	static const FName PinCategoryStaticType;
+	static const FName PinCategoryStaticClass;
+	static const FName PinCategoryStaticEnum;
+
+	static bool IsStaticPin(const UEdGraphPin* Pin);
 
 	//~ Begin EdGraphSchema Interface
 	virtual void GetContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
@@ -131,7 +136,7 @@ class NIAGARAEDITOR_API UEdGraphSchema_Niagara : public UEdGraphSchema
 	  * bNeedsValue Whether or not the returned variable must be allocated to a valid value. When true if the pin doesn't have a valid default value itself the variable will be reset to default before return.
 	  * returns The newly created variable.
 	  */
-	FNiagaraVariable PinToNiagaraVariable(const UEdGraphPin* Pin, bool bNeedsValue=false)const;
+	static FNiagaraVariable PinToNiagaraVariable(const UEdGraphPin* Pin, bool bNeedsValue=false, ENiagaraStructConversion StructConversion = ENiagaraStructConversion::UserFacing);
 
 	/** 
 	  * Tries to get a default value string for a graph pin from a niagara variable.
@@ -141,8 +146,9 @@ class NIAGARAEDITOR_API UEdGraphSchema_Niagara : public UEdGraphSchema
 	  */
 	bool TryGetPinDefaultValueFromNiagaraVariable(const FNiagaraVariable& Variable, FString& OutPinDefaultValue) const;
 
-	static FNiagaraTypeDefinition PinToTypeDefinition(const UEdGraphPin* Pin);
-	static FNiagaraTypeDefinition PinTypeToTypeDefinition(const FEdGraphPinType& PinType) ;
+	static void ConvertIllegalPinsInPlace(UEdGraphPin* Pin);
+	static FNiagaraTypeDefinition PinToTypeDefinition(const UEdGraphPin* Pin, ENiagaraStructConversion StructConversion = ENiagaraStructConversion::UserFacing);
+	static FNiagaraTypeDefinition PinTypeToTypeDefinition(const FEdGraphPinType& PinType);
 	static FEdGraphPinType TypeDefinitionToPinType(FNiagaraTypeDefinition TypeDef);
 	
 	static bool IsPinWildcard(const UEdGraphPin* Pin);
@@ -163,6 +169,18 @@ class NIAGARAEDITOR_API UEdGraphSchema_Niagara : public UEdGraphSchema
 	static const FLinearColor NodeTitleColor_Event; 
 	static const FLinearColor NodeTitleColor_TranslatorConstant;
 	static const FLinearColor NodeTitleColor_RapidIteration;
+
+	static const FText ReplaceExistingInputConnectionsText;
+	static const FText TypesAreNotCompatibleText;
+	static const FText ConvertText;
+	static const FText ConvertLossyText;
+	static const FText PinNotConnectableText;
+	static const FText SameNodeConnectionForbiddenText;
+	static const FText DirectionsNotCompatibleText;
+	static const FText AddPinIncompatibleTypeText;
+	static const FText CircularConnectionFoundText;
+	
+	bool PinTypesValidForNumericConversion(FEdGraphPinType AType, FEdGraphPinType BType) const;	
 	
 private:
 	void GetNumericConversionToSubMenuActions(class UToolMenu* Menu, const FName SectionName, UEdGraphPin* InGraphPin);
@@ -170,6 +188,8 @@ private:
 	void ConvertNumericPinToType(UEdGraphPin* InPin, FNiagaraTypeDefinition TypeDef);
 	void ConvertNumericPinToTypeAll(UNiagaraNode* InPin, FNiagaraTypeDefinition TypeDef);
 	void ConvertPinToType(UEdGraphPin* InPin, FNiagaraTypeDefinition TypeDef) const;
+
+	void GenerateDataInterfacePinMenu(UToolMenu* ToolMenu, const FName SectionName, const UEdGraphPin* GraphPin, FNiagaraTypeDefinition TypeDef) const;
 
 	static bool CheckCircularConnection(TSet<const UEdGraphNode*>& VisitedNodes, const UEdGraphNode* InNode, const UEdGraphNode* InTestNode);
 };

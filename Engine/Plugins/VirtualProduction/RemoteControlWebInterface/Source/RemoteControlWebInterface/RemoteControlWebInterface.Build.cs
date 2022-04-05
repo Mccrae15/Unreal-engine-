@@ -17,9 +17,12 @@ public class RemoteControlWebInterface : ModuleRules
 				"Slate",
 				"SlateCore",
 				"Projects",
-				"WebRemoteControl"
+				"RemoteControl",
+				"Sockets",
+				"WebRemoteControl",
+				"WebSocketNetworking"
 			}
-			);
+		);
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] 
@@ -29,7 +32,7 @@ public class RemoteControlWebInterface : ModuleRules
 		);
 
 
-        if (Target.Type == TargetType.Editor)
+		if (Target.Type == TargetType.Editor)
 		{
 			PrivateDependencyModuleNames.AddRange(
 				new string[] 
@@ -41,7 +44,8 @@ public class RemoteControlWebInterface : ModuleRules
 					"RemoteControl",
 					"RemoteControlUI",
 					"Settings",
-					"UnrealEd"
+					"UnrealEd",
+					"ToolWidgets",
 				}
 			);
 		}

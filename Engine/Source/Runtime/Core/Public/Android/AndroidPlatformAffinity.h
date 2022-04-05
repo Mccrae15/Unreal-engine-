@@ -12,7 +12,7 @@ class FAndroidAffinity : public FGenericPlatformAffinity
 {
 private:
 	static uint64 GetLittleCoreMask();
-	const static uint64 AllCores = 0xFFFFFFFFFF;
+	const static uint64 AllCores = 0xFFFFFFFFFFFFFFFF;
 public:
 	static const CORE_API uint64 GetMainGameMask()
 	{
@@ -41,7 +41,7 @@ public:
 
 	static const CORE_API uint64 GetTaskGraphThreadMask()
 	{
-		return GetLittleCoreMask();
+		return AllCores;
 	}
 
 	static const CORE_API uint64 GetStatsThreadMask()
@@ -69,19 +69,19 @@ public:
 		return AllCores;
 	}
 
-	static EThreadPriority GetRenderingThreadPriority()
+	static CORE_API EThreadPriority GetRenderingThreadPriority()
 	{
 		return TPri_SlightlyBelowNormal;
 	}
 
-	static EThreadPriority GetRHIThreadPriority()
+	static CORE_API EThreadPriority GetRHIThreadPriority()
 	{
 		return TPri_Normal;
 	}
 
 public:
-	static int64 GameThreadMask;
-	static int64 RenderingThreadMask;
+	static uint64 GameThreadMask;
+	static uint64 RenderingThreadMask;
 };
 
 typedef FAndroidAffinity FPlatformAffinity;

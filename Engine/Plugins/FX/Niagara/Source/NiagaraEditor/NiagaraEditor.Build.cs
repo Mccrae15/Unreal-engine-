@@ -52,12 +52,21 @@ public class NiagaraEditor : ModuleRules
 				"ToolMenus",
 				"Renderer",
 				"EditorWidgets",
+				"Renderer",
 				"DeveloperSettings",
-				"SessionServices",
-				"SessionFrontend",
 				"PythonScriptPlugin"
 			}
         );
+
+		if (Target.bBuildTargetDeveloperTools)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[] {
+					"SessionServices",
+					"SessionFrontend"
+				}
+			);
+		}
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
@@ -77,6 +86,7 @@ public class NiagaraEditor : ModuleRules
                 "Engine",
                 "NiagaraCore",
                 "Niagara",
+				"EditorFramework",
                 "UnrealEd",
             }
         );

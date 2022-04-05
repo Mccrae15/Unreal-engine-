@@ -7,6 +7,7 @@
 #include "Async/AsyncWork.h"
 #include "Misc/EmbeddedCommunication.h"
 #include "Serialization/JsonSerializerMacros.h"
+#include "Containers/Ticker.h"
 
 namespace InstallBundleUtil
 {
@@ -44,6 +45,23 @@ namespace InstallBundleUtil
 		static_assert(TIsEnum<EnumType>::Value, "");
 		using UnderType = __underlying_type(EnumType);
 		return static_cast<UnderType>(Type);
+	}
+
+	template<typename EnumType, typename StringArrType>
+	const TCHAR* TLexToString(EnumType E, const StringArrType& Strings)
+	{
+		constexpr auto Count = InstallBundleUtil::CastToUnderlying(EnumType::Count);
+		static_assert(Count == UE_ARRAY_COUNT(Strings), "");
+
+		auto Idx = InstallBundleUtil::CastToUnderlying(E);
+		if (Idx >= 0 && Idx < Count)
+		{
+			return Strings[Idx];
+		}
+		else
+		{
+			return TEXT("");
+		}
 	}
 
 	// Keep the engine awake via RAII when running as an embedded app
@@ -183,7 +201,7 @@ namespace InstallBundleUtil
 		//_FG stats account for time while the app is active
 		//_BG stats are an estimate of time while the app is inactive (backgrounded, closed, etc.)
 		//		*_BG stats are an estimate as we can not account for unexpected crashes, etc.
-		enum class INSTALLBUNDLEMANAGER_API ETimingStatNames : uint8
+		enum class ETimingStatNames : uint8
 		{
 			  TotalTime_Real
 			, TotalTime_FG
@@ -201,7 +219,7 @@ namespace InstallBundleUtil
 		};
 
 		//Stats used to store count information in an int format
-		enum class INSTALLBUNDLEMANAGER_API ECountStatNames : uint8
+		enum class ECountStatNames : uint8
 		{
 			  NumResumedFromBackground
 			, NumResumedFromLaunch
@@ -330,7 +348,7 @@ namespace InstallBundleUtil
 			
 		//Static Methods
 		public:
-			//Helper function that generates a basic ExpectedAnalyticsID from device and UE4 information
+			//Helper function that generates a basic ExpectedAnalyticsID from device and UE information
 			static const FString GetBaseExpectedAnalyticsID();
 		
 		//Pure Virtual Methods
@@ -504,7 +522,7 @@ namespace InstallBundleUtil
 			TMap<FName, FBundlePersistentStats> PerBundlePersistentStatMap;
 			TMap<FString, FSessionPersistentStats> SessionPersistentStatMap;
 
-			FDelegateHandle TickHandle;
+			FTSTicker::FDelegateHandle TickHandle;
 			FDelegateHandle OnApp_EnteringForegroundHandle;
 			FDelegateHandle OnApp_EnteringBackgroundHandle;
 

@@ -7,6 +7,7 @@
 #include "Engine/ActorChannel.h"
 #include "Engine/LocalPlayer.h"
 #include "GameFramework/Actor.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Net/DataBunch.h"
 #include "UObject/ObjectKey.h"
 #include "UObject/UObjectHash.h"
@@ -42,7 +43,6 @@ REPLICATIONGRAPH_API DECLARE_LOG_CATEGORY_EXTERN( LogReplicationGraph, Log, All 
 	#define RG_QUICK_SCOPE_CYCLE_COUNTER(X)
 #endif
 
-
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)	
 #define REPGRAPH_STR(x) #x
 #define REPGRAPH_DEVCVAR_SHIPCONST(Type,VarName,Var,Value,Help) \
@@ -52,7 +52,6 @@ REPLICATIONGRAPH_API DECLARE_LOG_CATEGORY_EXTERN( LogReplicationGraph, Log, All 
 #define REPGRAPH_DEVCVAR_SHIPCONST(Type,VarName,Var,Value,Help) \
 	const Type Var = Value;
 #endif
-
 
 // --------------------------------------------------------------------------------------------------------------------------------------------
 // --------------------------------------------------------------------------------------------------------------------------------------------
@@ -77,7 +76,7 @@ enum class EActorRepListTypeFlags : uint8
 };
 
 // Tests if an actor is valid for replication: not pending kill, etc. Says nothing about wanting to replicate or should replicate, etc.
-FORCEINLINE bool IsActorValidForReplication(const FActorRepListType& In) { return !In->IsActorBeingDestroyed() && !In->IsPendingKillOrUnreachable(); }
+FORCEINLINE bool IsActorValidForReplication(const FActorRepListType& In) { return !In->IsActorBeingDestroyed() && IsValidChecked(In) && !In->IsUnreachable(); }
 
 // Tests if an actor is valid for replication gathering. Meaning, it can be gathered from the replication graph and considered for replication.
 FORCEINLINE bool IsActorValidForReplicationGather(const FActorRepListType& In)
@@ -617,9 +616,10 @@ struct TClassMap
 		if (InitNewElement)
 		{
 			ValueType NewValue;
+
 			if (InitNewElement(Class, NewValue))
 			{
-				ValueType& NewData = Map.Emplace(ObjKey, NewValue);
+				ValueType& NewData = Map.Emplace(ObjKey, MoveTemp(NewValue));
 				return &NewData;
 			}
 		}
@@ -661,7 +661,7 @@ struct TClassMap
 		Map.Emplace(FObjectKey(InClass), Value);
 		
 		// Sets value for all derived classes. This is probably not useful since all classes may not be loaded anyways. TClassMap will 
-		// climb class heir achy when it encounters a new request. This shouldn't be too expensive, so the lazy approach seems better.
+		// climb the class hierarchy when it encounters a new request. This shouldn't be too expensive, so the lazy approach seems better.
 		/*
 		TArray<UClass*> Classes = { InClass };
 		GetDerivedClasses(InClass, Classes, true);
@@ -670,6 +670,11 @@ struct TClassMap
 			UE_LOG(LogTemp, Display, TEXT("Adding for %s [From %s]"), *GetNameSafe(Class), *GetNameSafe(InClass));
 			Map.Add(FObjectKey(Class)) = Value;
 		}*/
+	}
+
+	void Emplace(UClass* InClass, ValueType&& Value)
+	{
+		Map.Emplace(FObjectKey(InClass), MoveTemp(Value));
 	}
 
 	FORCEINLINE typename TMap<FObjectKey, ValueType>::TIterator CreateIterator() { return Map.CreateIterator(); }
@@ -1417,10 +1422,9 @@ struct FNativeClassAccumulator
 	{
 		FString Str;
 		Sort();
-		for (auto& It: Map)
+		for (auto& It : Map)
 		{
 			Str += FString::Printf(TEXT("[%s, %d] "), *It.Key->GetName(), It.Value);
-			
 		}
 		return Str;
 	}
@@ -1453,6 +1457,9 @@ CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphKBytes);
 CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphChannelsOpened);
 CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphNumReps);
 CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphVisibleLevels);
+CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphForcedUpdates);
+CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphCleanMS);
+CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphCleanNumReps);
 
 #ifndef REPGRAPH_CSV_TRACKER
 #define REPGRAPH_CSV_TRACKER (CSV_PROFILER && WITH_SERVER_CODE)
@@ -1461,12 +1468,31 @@ CSV_DECLARE_CATEGORY_EXTERN(ReplicationGraphVisibleLevels);
 /** Helper struct for tracking finer grained ReplicationGraph stats through the CSV profiler. Intention is that it is setup/configured in the UReplicationGraph subclasses */
 struct FReplicationGraphCSVTracker
 {
-	FReplicationGraphCSVTracker() 
+	FReplicationGraphCSVTracker()
 		: EverythingElse(TEXT("Other"))
 		, EverythingElse_FastPath(TEXT("OtherFastPath"))
 		, ActorDiscovery(TEXT("ActorDiscovery"))
 	{
 		ResetTrackedClasses();
+
+		GConfig->GetBool(TEXT("ReplicationGraphCSVTracker"), TEXT("bReportUntrackedClasses"), bReportUntrackedClasses, GEngineIni);
+	}
+
+	void TearDown()
+	{
+#if REPGRAPH_CSV_TRACKER
+		if (UntrackedReplications.Num())
+		{
+			UE_LOG(LogReplicationGraph, Log, TEXT("Untracked CSV Classes:"));
+
+			UntrackedReplications.ValueSort(TGreater<uint32>());
+
+			for (const TPair<TObjectKey<UClass>, uint32>& Untracked : UntrackedReplications)
+			{
+				UE_LOG(LogReplicationGraph, Log, TEXT("    %s : %u"), *GetNameSafe(Untracked.Key.ResolveObjectPtr()), Untracked.Value);
+			}
+		}
+#endif
 	}
 
 	/** Tracks an explicitly set class. This does NOT include child classes! This is the fastest stat and should be fine to enable in shipping/test builds.  */
@@ -1491,9 +1517,9 @@ struct FReplicationGraphCSVTracker
 	/** Tracks a class and all of its children (under a single stat set). This will be a little slower (TMap lookup) but still probably ok if used in moderation (only track your top 3 or so classes) */
 	void SetImplicitClassTracking(UClass* BaseActorClass, const FString& StatNamePrefix)
 	{
-		TSharedPtr<FTrackedData> NewData(new FTrackedData(StatNamePrefix));
+		TSharedPtr<FTrackedData> NewData = MakeShared<FTrackedData>(StatNamePrefix);
 		UniqueImplicitTrackedData.Add(NewData);
-		ImplicitClassTracker.Set(BaseActorClass, NewData);
+		ImplicitClassTracker.Emplace(BaseActorClass, MoveTemp(NewData));
 	}
 
 	/** Returns true when the level data is created for the first time */
@@ -1562,19 +1588,20 @@ struct FReplicationGraphCSVTracker
 			return;
 		}
 
-		FTrackedData* TrackedData(nullptr);
+		FTrackedData* TrackedData = ExplicitClassTracker.Find(ActorClass);
+		if (TrackedData == nullptr)
+		{
+			TrackedData = ImplicitClassTracker.GetChecked(ActorClass).Get();
+			if (TrackedData == nullptr)
+			{
+				TrackedData = &EverythingElse;
 
-		if (FTrackerItem* Item = ExplicitClassTracker.FindByKey(ActorClass))
-		{
-			TrackedData = &Item->Data;
-		}
-		else if (FTrackedData* Data = ImplicitClassTracker.GetChecked(ActorClass).Get())
-		{
-			TrackedData = Data;
-		}
-		else
-		{
-			TrackedData = &EverythingElse;
+				if (bReportUntrackedClasses)
+				{
+					uint32& Count = UntrackedReplications.FindOrAdd(ActorClass);
+					++Count;
+				}
+			}
 		}
 
 		// When opening actor channels keep all traffic in a separate bucket
@@ -1591,6 +1618,12 @@ struct FReplicationGraphCSVTracker
 			TrackedData->BitsAccumulated += Bits;
 			TrackedData->CPUTimeAccumulated += Time;
 			TrackedData->NumReplications++;
+
+			if (Bits == 0)
+			{
+				TrackedData->CleanCPUTimeAccumulated += Time;
+				TrackedData->CleanNumReplications++;
+			}
 		}
 #endif	
 	}
@@ -1603,11 +1636,11 @@ struct FReplicationGraphCSVTracker
 			return;
 		}
 
-		if (FTrackerItem* Item = ExplicitClassTracker_FastPath.FindByKey(ActorClass))
+		if (FTrackedData* Data = ExplicitClassTracker_FastPath.Find(ActorClass))
 		{
-			Item->Data.BitsAccumulated += Bits;
-			Item->Data.CPUTimeAccumulated += Time;
-			Item->Data.NumReplications++;
+			Data->BitsAccumulated += Bits;
+			Data->CPUTimeAccumulated += Time;
+			Data->NumReplications++;
 		}
 		else
 		{
@@ -1626,18 +1659,39 @@ struct FReplicationGraphCSVTracker
 			return;
 		}
 
-		if (FTrackerItem* Item = ExplicitClassTracker.FindByKey(ActorClass))
+		FTrackedData* TrackedData = ExplicitClassTracker.Find(ActorClass);
+		if (TrackedData == nullptr)
 		{
-			Item->Data.ChannelsOpened++;
+			TrackedData = ImplicitClassTracker.GetChecked(ActorClass).Get();
+			if (TrackedData == nullptr)
+			{
+				TrackedData = &EverythingElse;
+			}
 		}
-		else if (FTrackedData* Data = ImplicitClassTracker.GetChecked(ActorClass).Get())
+
+		TrackedData->ChannelsOpened++;
+#endif
+	}
+
+	void PostActorForceUpdated(UClass* ActorClass)
+	{
+#if REPGRAPH_CSV_TRACKER
+		if (!bIsCapturing)
 		{
-			Data->ChannelsOpened++;
+			return;
 		}
-		else
+
+		FTrackedData* TrackedData = ExplicitClassTracker.Find(ActorClass);
+		if (TrackedData == nullptr)
 		{
-			EverythingElse.ChannelsOpened++;
+			TrackedData = ImplicitClassTracker.GetChecked(ActorClass).Get();
+			if (TrackedData == nullptr)
+			{
+				TrackedData = &EverythingElse;
+			}
 		}
+
+		TrackedData->ForcedUpdates++;
 #endif
 	}
 
@@ -1650,6 +1704,7 @@ struct FReplicationGraphCSVTracker
 		EverythingElse_FastPath.Reset();
 		ActorDiscovery.Reset();
 		VisibleLevelConnectionTracker.Reset();
+		UntrackedReplications.Reset();
 	}
 
 	void EndReplicationFrame()
@@ -1659,22 +1714,22 @@ struct FReplicationGraphCSVTracker
 		bIsCapturing = Profiler->IsCapturing();
 		if (bIsCapturing)
 		{
-			for (FTrackerItem& Item: ExplicitClassTracker)
+			for (TPair<TObjectKey<UClass>, FTrackedData>& Item : ExplicitClassTracker)
 			{
-				PushStats(Profiler, Item.Data);	
+				PushStats(Profiler, Item.Value);	
 			}
-			
+
+			for (TPair<TObjectKey<UClass>, FTrackedData>& Item : ExplicitClassTracker_FastPath)
+			{
+				PushStats(Profiler, Item.Value);
+			}
+
 			for (TSharedPtr<FTrackedData>& SharedPtr : UniqueImplicitTrackedData)
 			{
 				if (FTrackedData* Data = SharedPtr.Get())
 				{
 					PushStats(Profiler, *Data);
 				}
-			}
-
-			for (FTrackerItem& Item : ExplicitClassTracker_FastPath)
-			{
-				PushStats(Profiler, Item.Data);
 			}
 
 			PushStats(Profiler, EverythingElse);
@@ -1699,9 +1754,11 @@ struct FReplicationGraphCSVTracker
 	void CountBytes(FArchive& Ar) const
 	{
 		ExplicitClassTracker.CountBytes(Ar);
+		ExplicitClassTracker_FastPath.CountBytes(Ar);
 		ImplicitClassTracker.CountBytes(Ar);
 		UniqueImplicitTrackedData.CountBytes(Ar);
-		ExplicitClassTracker_FastPath.CountBytes(Ar);
+		VisibleLevelConnectionTracker.CountBytes(Ar);
+		UntrackedReplications.CountBytes(Ar);
 	}
 
 public:
@@ -1723,51 +1780,55 @@ private:
 
 	struct FTrackedData
 	{
-		FTrackedData(FString Suffix)
+		FTrackedData() = default;
+
+		explicit FTrackedData(FString Suffix)
 		{
 #if REPGRAPH_CSV_TRACKER
 			StatName = FName(*Suffix);
 #endif
 		}
 
-		double CPUTimeAccumulated = 0.f;
+		double CPUTimeAccumulated = 0.0;
+		double CleanCPUTimeAccumulated = 0.0;
 		int64 BitsAccumulated = 0;
 		int32 ChannelsOpened = 0;
 		int32 NumReplications = 0;
+		int32 CleanNumReplications = 0;
+		int32 ForcedUpdates = 0;
 
 		FName StatName;
 
 		void Reset()
 		{
-			CPUTimeAccumulated = 0.f;
+			CPUTimeAccumulated = 0.0;
+			CleanCPUTimeAccumulated = 0.0;
 			BitsAccumulated = 0;
 			ChannelsOpened = 0;
 			NumReplications = 0;
+			CleanNumReplications = 0;
+			ForcedUpdates = 0;
 		}
 	};
 
-	struct FTrackerItem
-	{
-		FTrackerItem(UClass* InClass, FString StatsNamePrefix) : Class(InClass), Data(StatsNamePrefix)	{ }
-		bool operator==(const UClass* InClass) const { return Class == InClass; }
-		UClass* Class;
-		FTrackedData Data;
-	};
+	TMap<TObjectKey<UClass>, FTrackedData> ExplicitClassTracker;
+	TMap<TObjectKey<UClass>, FTrackedData> ExplicitClassTracker_FastPath;
 
-	TArray<FTrackerItem, TInlineAllocator<1>> ExplicitClassTracker;
 	TClassMap<TSharedPtr<FTrackedData>> ImplicitClassTracker;
+	
 	TArray<TSharedPtr<FTrackedData>> UniqueImplicitTrackedData;
+
 	FTrackedData EverythingElse;
-
-	TArray<FTrackerItem, TInlineAllocator<1>> ExplicitClassTracker_FastPath;
 	FTrackedData EverythingElse_FastPath;
-
 	FTrackedData ActorDiscovery;
+
+	TMap<TObjectKey<UClass>, uint32> UntrackedReplications;
 
 	// Counts the number of connections who are currently seeing each level name
 	TArray<FVisibleLevelData> VisibleLevelConnectionTracker;
 
 	bool bIsCapturing = false;
+	bool bReportUntrackedClasses = false;
 
 #if REPGRAPH_CSV_TRACKER
 	void PushStats(FCsvProfiler* Profiler, FTrackedData& Data)
@@ -1779,11 +1840,14 @@ private:
 		Profiler->RecordCustomStat(Data.StatName, CSV_CATEGORY_INDEX(ReplicationGraphMS), static_cast<float>(Data.CPUTimeAccumulated) * 1000.f, ECsvCustomStatOp::Set);
 		Profiler->RecordCustomStat(Data.StatName, CSV_CATEGORY_INDEX(ReplicationGraphChannelsOpened), static_cast<float>(Data.ChannelsOpened), ECsvCustomStatOp::Set);
 		Profiler->RecordCustomStat(Data.StatName, CSV_CATEGORY_INDEX(ReplicationGraphNumReps), static_cast<float>(Data.NumReplications), ECsvCustomStatOp::Set);
+		Profiler->RecordCustomStat(Data.StatName, CSV_CATEGORY_INDEX(ReplicationGraphForcedUpdates), static_cast<float>(Data.ForcedUpdates), ECsvCustomStatOp::Set);
+		Profiler->RecordCustomStat(Data.StatName, CSV_CATEGORY_INDEX(ReplicationGraphCleanMS), static_cast<float>(Data.CleanCPUTimeAccumulated) * 1000.f, ECsvCustomStatOp::Set);
+		Profiler->RecordCustomStat(Data.StatName, CSV_CATEGORY_INDEX(ReplicationGraphCleanNumReps), static_cast<float>(Data.CleanNumReplications), ECsvCustomStatOp::Set);
+
 		Data.Reset();
 	}
 #endif
 };
-
 
 // Debug Actor/Connection pair that can be set by code for further narrowing down breakpoints/logging
 struct FActorConnectionPair
@@ -1852,5 +1916,4 @@ private:
 
 	/** Keeps track if a node was already collected since the same node can be shared across connections and visited multiple times */
 	TMap<const UObject*, bool> VisitedNodes;
-	
 };

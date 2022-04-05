@@ -11,11 +11,17 @@
 #include "Templates/RefCounting.h"
 #include "RenderAssetUpdate.h"
 #include "Streaming/StreamableRenderResourceState.h"
+#include "PerQualityLevelProperties.h"
 #include "StreamableRenderAsset.generated.h"
 
 #define STREAMABLERENDERASSET_NODEFAULT(FuncName) LowLevelFatalError(TEXT("UStreamableRenderAsset::%s has no default implementation"), TEXT(#FuncName))
  // Allows yield to lower priority threads
 #define RENDER_ASSET_STREAMING_SLEEP_DT (0.010f)
+
+namespace Nanite
+{
+	class FCoarseMeshStreamingManager;
+}
 
 enum class EStreamableRenderAssetType : uint8
 {
@@ -24,6 +30,7 @@ enum class EStreamableRenderAssetType : uint8
 	StaticMesh,
 	SkeletalMesh,
 	LandscapeMeshMobile,
+	NaniteCoarseMesh,
 };
 
 UCLASS(Abstract, MinimalAPI)
@@ -32,6 +39,10 @@ class UStreamableRenderAsset : public UObject
 	GENERATED_UCLASS_BODY()
 
 public:
+
+	/** Destructor */
+	ENGINE_API virtual ~UStreamableRenderAsset() {};
+
 	/** Get an integer representation of the LOD group */
 	virtual int32 GetLODGroupForStreaming() const
 	{
@@ -147,6 +158,7 @@ public:
 	* @param Seconds					Duration in seconds
 	* @param CinematicTextureGroups	Bitfield indicating which texture groups that use extra high-resolution mips
 	*/
+	UFUNCTION(BlueprintCallable, Category = "Rendering")
 	ENGINE_API void SetForceMipLevelsToBeResident(float Seconds, int32 CinematicLODGroupMask = 0);
 
 	/**
@@ -193,6 +205,18 @@ public:
 	ENGINE_API virtual void BeginDestroy() override;
 	ENGINE_API virtual bool IsReadyForFinishDestroy() override;
 
+	const FPerQualityLevelInt& GetNoRefStreamingLODBias() const
+	{
+		return NoRefStreamingLODBias;
+	}
+
+	void SetNoRefStreamingLODBias(FPerQualityLevelInt NewValue)
+	{
+		NoRefStreamingLODBias = MoveTemp(NewValue);
+	}
+
+	ENGINE_API int32 GetCurrentNoRefStreamingLODBias() const;
+
 protected:
 	
 	// Also returns false if the render resource is non existent, to prevent stalling on an event that will never complete.
@@ -232,6 +256,9 @@ public:
 	int32 NumCinematicMipLevels;
 
 protected:
+	UPROPERTY()
+	FPerQualityLevelInt NoRefStreamingLODBias;
+
 	/** FStreamingRenderAsset index used by the texture streaming system. */
 	UPROPERTY(transient, duplicatetransient, NonTransactional)
 	int32 StreamingIndex = INDEX_NONE;
@@ -270,4 +297,5 @@ protected:
 
 	friend struct FRenderAssetStreamingManager;
 	friend struct FStreamingRenderAsset;
+	friend class Nanite::FCoarseMeshStreamingManager;
 };

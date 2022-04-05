@@ -7,7 +7,7 @@
 #include "NiagaraEditorCommon.h"
 
 #include "Widgets/Input/SSpinBox.h"
-#include "EditorWidgets/Public/SEnumCombobox.h"
+#include "EditorWidgets/Public/SEnumCombo.h"
 #include "EditorStyleSet.h"
 
 class SNiagaraEnumParameterEditor : public SNiagaraParameterEditor
@@ -26,9 +26,8 @@ public:
 		[
 			SNew(SEnumComboBox, Enum)
 			.CurrentValue(this, &SNiagaraEnumParameterEditor::GetValue)
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton.Light")
 			.ContentPadding(FMargin(2, 0))
-			.Font(FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.RegularFont"))
+			.Font(FAppStyle::Get().GetFontStyle("PropertyWindow.NormalFont"))
 			.OnEnumSelectionChanged(SEnumComboBox::FOnEnumSelectionChanged::CreateSP(this, &SNiagaraEnumParameterEditor::ValueChanged))
 		];
 	}
@@ -166,7 +165,7 @@ FText FNiagaraEditorEnumTypeUtilities::GetSearchTextFromValue(const FNiagaraVari
 	return Enum->GetDisplayNameTextByIndex(EnumNameIndex);
 }
 
-FText FNiagaraEditorEnumTypeUtilities::GetStackDisplayText(FNiagaraVariable& Variable) const
+FText FNiagaraEditorEnumTypeUtilities::GetStackDisplayText(const FNiagaraVariable& Variable) const
 {
-	return Variable.GetType().GetEnum()->GetDisplayNameTextByIndex(Variable.GetValue<int32>());
+	return Variable.GetType().GetEnum()->GetDisplayNameTextByValue(Variable.GetValue<int32>());
 }

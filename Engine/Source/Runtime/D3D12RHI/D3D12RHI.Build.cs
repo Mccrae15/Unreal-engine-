@@ -16,8 +16,10 @@ public class D3D12RHI : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
+				"CoreUObject",
 				"Engine",
 				"RHI",
+				"RHICore",
 				"RenderCore",
 				}
 			);
@@ -31,24 +33,38 @@ public class D3D12RHI : ModuleRules
         // Platform specific defines
         ///////////////////////////////////////////////////////////////
 
-        if (!Target.Platform.IsInGroup(UnrealPlatformGroup.Windows) && Target.Platform != UnrealTargetPlatform.XboxOne)
+		if (!Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
         {
             PrecompileForTargets = PrecompileTargetsType.None;
         }
+
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
 
         if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows) ||
             Target.Platform == UnrealTargetPlatform.HoloLens)
 		{
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
-			AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11");
-            if (Target.Platform != UnrealTargetPlatform.HoloLens)
+			AddEngineThirdPartyPrivateStaticDependencies(Target, "AMD_AGS");
+
+			if (Target.WindowsPlatform.bPixProfilingEnabled &&
+				Target.Configuration != UnrealTargetConfiguration.Shipping &&
+				Target.Configuration != UnrealTargetConfiguration.Test)
+            {
+				PublicDefinitions.Add("PROFILE");
+				PublicDependencyModuleNames.Add("WinPixEventRuntime");
+			}
+
+			if (Target.Platform != UnrealTargetPlatform.HoloLens)
             {
 				PrivateDependencyModuleNames.Add("GeForceNOWWrapper");
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAPI");
-				AddEngineThirdPartyPrivateStaticDependencies(Target, "AMD_AGS");
             	AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
 				AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
             }
+            else
+            {
+				PrivateDefinitions.Add("D3D12RHI_USE_D3DDISASSEMBLE=0");
+			}
         }
     }
 }

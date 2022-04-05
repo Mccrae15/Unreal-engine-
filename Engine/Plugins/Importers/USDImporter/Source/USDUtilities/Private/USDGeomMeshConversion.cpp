@@ -10,8 +10,12 @@
 #include "USDErrorUtils.h"
 #include "USDLog.h"
 #include "USDMemory.h"
+#include "USDPrimConversion.h"
+#include "USDShadeConversion.h"
 #include "USDTypesConversion.h"
 
+#include "UsdWrappers/SdfLayer.h"
+#include "UsdWrappers/SdfPath.h"
 #include "UsdWrappers/UsdPrim.h"
 #include "UsdWrappers/UsdStage.h"
 
@@ -37,6 +41,7 @@
 	#include "pxr/usd/sdf/types.h"
 	#include "pxr/usd/usd/editContext.h"
 	#include "pxr/usd/usd/prim.h"
+	#include "pxr/usd/usd/primRange.h"
 	#include "pxr/usd/usdGeom/mesh.h"
 	#include "pxr/usd/usdGeom/primvarsAPI.h"
 	#include "pxr/usd/usdGeom/subset.h"
@@ -132,7 +137,7 @@ namespace UE
 
 							for ( int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex )
 							{
-								FVector VertexPosition = LODRenderMesh.VertexBuffers.PositionVertexBuffer.VertexPosition( VertexIndex );
+								FVector VertexPosition = (FVector)LODRenderMesh.VertexBuffers.PositionVertexBuffer.VertexPosition( VertexIndex );
 								PointsArray.push_back( UnrealToUsd::ConvertVector( StageInfo, VertexPosition ) );
 							}
 
@@ -150,7 +155,7 @@ namespace UE
 
 							for ( int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex )
 							{
-								FVector VertexNormal = LODRenderMesh.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ( VertexIndex );
+								FVector VertexNormal = (FVector4)LODRenderMesh.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ( VertexIndex );
 								Normals.push_back( UnrealToUsd::ConvertVector( StageInfo, VertexNormal ) );
 							}
 
@@ -174,7 +179,7 @@ namespace UE
 
 								for ( int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex )
 								{
-									FVector2D TexCoord = LODRenderMesh.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV( VertexIndex, TexCoordSourceIndex );
+									FVector2D TexCoord = FVector2D(LODRenderMesh.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV( VertexIndex, TexCoordSourceIndex ));
 									TexCoord[ 1 ] = 1.f - TexCoord[ 1 ];
 
 									UVs.push_back( UnrealToUsd::ConvertVector( TexCoord ) );
@@ -371,11 +376,11 @@ namespace UE
 				const FUsdStageInfo StageInfo{ Stage };
 
 				FStaticMeshConstAttributes Attributes(MeshDescription);
-				TVertexAttributesConstRef<FVector> VertexPositions = Attributes.GetVertexPositions();
+				TVertexAttributesConstRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
 				TPolygonGroupAttributesConstRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
-				TVertexInstanceAttributesConstRef<FVector> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
-				TVertexInstanceAttributesConstRef<FVector4> VertexInstanceColors = Attributes.GetVertexInstanceColors();
-				TVertexInstanceAttributesConstRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
+				TVertexInstanceAttributesConstRef<FVector3f> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+				TVertexInstanceAttributesConstRef<FVector4f> VertexInstanceColors = Attributes.GetVertexInstanceColors();
+				TVertexInstanceAttributesConstRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
 				const int32 VertexCount = VertexPositions.GetNumElements();
 				const int32 VertexInstanceCount = VertexInstanceNormals.GetNumElements();
@@ -390,7 +395,7 @@ namespace UE
 
 						for ( const FVertexID VertexID : MeshDescription.Vertices().GetElementIDs() )
 						{
-							FVector UEPosition = AdditionalTransform.TransformPosition( VertexPositions[ VertexID ] );
+							FVector UEPosition = AdditionalTransform.TransformPosition( (FVector)VertexPositions[ VertexID ] );
 							PointsArray.push_back( UnrealToUsd::ConvertVector( StageInfo, UEPosition ) );
 						}
 
@@ -407,7 +412,7 @@ namespace UE
 
 						for ( const FVertexInstanceID InstanceID : MeshDescription.VertexInstances().GetElementIDs() )
 						{
-							FVector UENormal = VertexInstanceNormals[ InstanceID ].GetSafeNormal();
+							FVector UENormal = (FVector)VertexInstanceNormals[ InstanceID ].GetSafeNormal();
 							Normals.push_back( UnrealToUsd::ConvertVector( StageInfo, UENormal ) );
 						}
 
@@ -418,7 +423,7 @@ namespace UE
 
 				// UVs
 				{
-					int32 NumUVs = VertexInstanceUVs.GetNumIndices();
+					int32 NumUVs = VertexInstanceUVs.GetNumChannels();
 
 					for ( int32 UVIndex = 0; UVIndex < NumUVs; ++UVIndex )
 					{
@@ -431,7 +436,7 @@ namespace UE
 
 							for ( const FVertexInstanceID InstanceID : MeshDescription.VertexInstances().GetElementIDs() )
 							{
-								FVector2D UV = VertexInstanceUVs.Get( InstanceID, UVIndex );
+								FVector2D UV = FVector2D(VertexInstanceUVs.Get( InstanceID, UVIndex ));
 								UV[ 1 ] = 1.f - UV[ 1 ];
 								UVs.push_back( UnrealToUsd::ConvertVector( UV ) );
 							}
@@ -495,6 +500,99 @@ namespace UE
 
 				return true;
 			}
+
+			bool RecursivelyCollapseChildMeshes(
+				const pxr::UsdPrim& Prim,
+				const FTransform& CurrentTransform,
+				const pxr::UsdTimeCode& TimeCode,
+				const EUsdPurpose PurposesToLoad,
+				const pxr::TfToken& RenderContext,
+				const TMap< FString, TMap<FString, int32> >& MaterialToPrimvarToUVIndex,
+				FMeshDescription& OutMeshDescription,
+				UsdUtils::FUsdPrimMaterialAssignmentInfo& OutMaterialAssignments,
+				bool bIsFirstPrim
+			)
+			{
+				// Ignore meshes from disabled purposes
+				if ( !EnumHasAllFlags( PurposesToLoad, IUsdPrim::GetPurpose( Prim ) ) )
+				{
+					return true;
+				}
+
+				FTransform ChildTransform = CurrentTransform;
+
+				if ( !bIsFirstPrim )
+				{
+					// Ignore invisible child meshes.
+					//
+					// We used to compute visibility here and flat out ignore any invisible meshes. However, it could be that this mesh is invisible
+					// due to the first prim (the parentmost prim of the recursive calls) being invisible. If the first is invisible but animated
+					// then its possible it will become visible later, so if the child meshes are all invisible due to that fact alone then we should still
+					// consider them. If the first is invisible but *not* animated then we should still consider it in the same way, because that's sort
+					// of what you'd expect by calling ConvertGeomMeshHierarchy: We shouldn't just return nothing if the prim happens to be invisible.
+					// Besides, it could be that first is invisible due to itself having a parent that is invisible but has visibility animations:
+					// In that case we'd also want to generate meshes even if first is effectively invisible, since those parents can become visible
+					// later as well. The only case left is if first is invisible due having parents that are invisible and not animated: Checking for
+					// this would involve checking visibility and animations of all of its parents though, which is probably a bit too much, and like
+					// in the case where first itself is invisible and not animated, the caller may still expect to receive a valid mesh even if the
+					// prim's parents are invisible.
+					//
+					// The only case in which we'll truly discard invisible submeshes now is if they're invisible *by themselves*. If we're collapsing
+					// them then we know they're not animated either, so they will basically never be visible at all, at any time code.
+					//
+					// Note that if we were to ever manually set any of these back to visible again via the editor, the visibility changes are
+					// now resyncs and we'll reparse this entire asset, which will give us the chance to add them back to the collapsed mesh.
+					if ( pxr::UsdGeomImageable UsdGeomImageable = pxr::UsdGeomImageable( Prim ) )
+					{
+						if ( pxr::UsdAttribute VisibilityAttr = UsdGeomImageable.GetVisibilityAttr() )
+						{
+							pxr::TfToken VisibilityToken;
+							if ( VisibilityAttr.Get( &VisibilityToken ) && VisibilityToken == pxr::UsdGeomTokens->invisible )
+							{
+								return true;
+							}
+						}
+					}
+
+					if ( pxr::UsdGeomXformable Xformable = pxr::UsdGeomXformable( Prim ) )
+					{
+						FTransform LocalChildTransform;
+						UsdToUnreal::ConvertXformable( Prim.GetStage(), Xformable, LocalChildTransform, TimeCode.GetValue() );
+
+						ChildTransform = LocalChildTransform * CurrentTransform;
+					}
+				}
+
+				bool bSuccess = true;
+				if ( pxr::UsdGeomMesh Mesh = pxr::UsdGeomMesh( Prim ) )
+				{
+					bSuccess = UsdToUnreal::ConvertGeomMesh( Mesh, OutMeshDescription, OutMaterialAssignments, ChildTransform, MaterialToPrimvarToUVIndex, TimeCode, RenderContext );
+				}
+
+				for ( const pxr::UsdPrim& ChildPrim : Prim.GetFilteredChildren( pxr::UsdTraverseInstanceProxies() ) )
+				{
+					if ( !bSuccess )
+					{
+						break;
+					}
+
+					const bool bChildIsFirstPrim = false;
+
+					bSuccess &= RecursivelyCollapseChildMeshes(
+						ChildPrim,
+						ChildTransform,
+						TimeCode,
+						PurposesToLoad,
+						RenderContext,
+						MaterialToPrimvarToUVIndex,
+						OutMeshDescription,
+						OutMaterialAssignments,
+						bChildIsFirstPrim
+					);
+				}
+
+				return bSuccess;
+			}
 		}
 	}
 }
@@ -553,6 +651,8 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 
 	const double TimeCodeValue = TimeCode.GetValue();
 
+	const int32 MaterialIndexOffset = MaterialAssignments.Slots.Num();
+
 	// Material assignments
 	const bool bProvideMaterialIndices = true;
 	UsdUtils::FUsdPrimMaterialAssignmentInfo LocalInfo = UsdUtils::GetPrimMaterialAssignments( UsdPrim, TimeCode, bProvideMaterialIndices, RenderContext );
@@ -564,12 +664,11 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 	const int32 VertexOffset = MeshDescription.Vertices().Num();
 	const int32 VertexInstanceOffset = MeshDescription.VertexInstances().Num();
 	const int32 PolygonOffset = MeshDescription.Polygons().Num();
-	const int32 MaterialIndexOffset = MaterialAssignments.Slots.Num();
 
 	FStaticMeshAttributes StaticMeshAttributes( MeshDescription );
 
 	// Vertex positions
-	TVertexAttributesRef< FVector > MeshDescriptionVertexPositions = StaticMeshAttributes.GetVertexPositions();
+	TVertexAttributesRef< FVector3f > MeshDescriptionVertexPositions = StaticMeshAttributes.GetVertexPositions();
 	{
 		pxr::UsdAttribute Points = UsdMesh.GetPointsAttr();
 		if ( Points )
@@ -586,7 +685,7 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 				FVector Position = AdditionalTransform.TransformPosition( UsdToUnreal::ConvertVector( StageInfo, Point ) );
 
 				FVertexID AddedVertexId = MeshDescription.CreateVertex();
-				MeshDescriptionVertexPositions[ AddedVertexId ] = Position;
+				MeshDescriptionVertexPositions[ AddedVertexId ] = (FVector3f)Position;
 			}
 		}
 	}
@@ -600,6 +699,22 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 		TArray<FVertexInstanceID> CornerInstanceIDs;
 		TArray<FVertexID> CornerVerticesIDs;
 		int32 CurrentVertexInstanceIndex = 0;
+		TPolygonGroupAttributesRef<FName> MaterialSlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
+
+		// Material slots
+		// Note that we always create these in the order they show up in LocalInfo: If we created these on-demand when parsing polygons (like before)
+		// we could run into polygons in a different order than the material slots and end up with different material assignments.
+		// We could use the StaticMesh's SectionInfoMap to unswitch things, but that's not available at runtime so we better do this here
+		for ( int32 LocalMaterialIndex = 0; LocalMaterialIndex < LocalInfo.Slots.Num(); ++LocalMaterialIndex )
+		{
+			const int32 CombinedMaterialIndex = MaterialIndexOffset + LocalMaterialIndex;
+
+			FPolygonGroupID NewPolygonGroup = MeshDescription.CreatePolygonGroup();
+			PolygonGroupMapping.Add( CombinedMaterialIndex, NewPolygonGroup );
+
+			// This is important for runtime, where the material slots are matched to LOD sections based on their material slot name
+			MaterialSlotNames[ NewPolygonGroup ] = *LexToString( NewPolygonGroup.GetValue() );
+		}
 
 		bool bFlipThisGeometry = false;
 
@@ -639,7 +754,7 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 		pxr::TfToken NormalsInterpType = UsdMesh.GetNormalsInterpolation();
 
 		// UVs
-		TVertexInstanceAttributesRef< FVector2D > MeshDescriptionUVs = StaticMeshAttributes.GetVertexInstanceUVs();
+		TVertexInstanceAttributesRef< FVector2f > MeshDescriptionUVs = StaticMeshAttributes.GetVertexInstanceUVs();
 
 		struct FUVSet
 		{
@@ -652,7 +767,7 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 
 		TArray< FUVSet > UVSets;
 
-		TArray< TUsdStore< UsdGeomPrimvar > > PrimvarsByUVIndex = UsdUtils::GetUVSetPrimvars( UsdMesh, MaterialToPrimvarsUVSetNames );
+		TArray< TUsdStore< UsdGeomPrimvar > > PrimvarsByUVIndex = UsdUtils::GetUVSetPrimvars( UsdMesh, MaterialToPrimvarsUVSetNames, LocalInfo );
 
 		int32 HighestAddedUVChannel = 0;
 		for ( int32 UVChannelIndex = 0; UVChannelIndex < PrimvarsByUVIndex.Num(); ++UVChannelIndex )
@@ -701,24 +816,24 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 
 		// When importing multiple mesh pieces to the same static mesh.  Ensure each mesh piece has the same number of Uv's
 		{
-			int32 ExistingUVCount = MeshDescriptionUVs.GetNumIndices();
+			int32 ExistingUVCount = MeshDescriptionUVs.GetNumChannels();
 			int32 NumUVs = FMath::Max( HighestAddedUVChannel + 1, ExistingUVCount);
 			NumUVs = FMath::Min<int32>(MAX_MESH_TEXTURE_COORDS_MD, NumUVs);
 			// At least one UV set must exist.
 			NumUVs = FMath::Max<int32>(1, NumUVs);
 
 			//Make sure all Vertex instance have the correct number of UVs
-			MeshDescriptionUVs.SetNumIndices(NumUVs);
+			MeshDescriptionUVs.SetNumChannels(NumUVs);
 		}
 
-		TVertexInstanceAttributesRef< FVector > MeshDescriptionNormals = StaticMeshAttributes.GetVertexInstanceNormals();
+		TVertexInstanceAttributesRef< FVector3f > MeshDescriptionNormals = StaticMeshAttributes.GetVertexInstanceNormals();
 
 		MeshDescription.ReserveNewVertexInstances( FaceCounts.size() * 3 );
 		MeshDescription.ReserveNewPolygons( FaceCounts.size() );
 		MeshDescription.ReserveNewEdges( FaceCounts.size() * 2 );
 
 		// Vertex color
-		TVertexInstanceAttributesRef< FVector4 > MeshDescriptionColors = StaticMeshAttributes.GetVertexInstanceColors();
+		TVertexInstanceAttributesRef< FVector4f > MeshDescriptionColors = StaticMeshAttributes.GetVertexInstanceColors();
 
 		UsdGeomPrimvar ColorPrimvar = UsdMesh.GetDisplayColorPrimvar();
 		pxr::TfToken ColorInterpolation = UsdGeomTokens->constant;
@@ -741,7 +856,6 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 			OpacityInterpolation = OpacityPrimvar.GetInterpolation();
 		}
 
-		TPolygonGroupAttributesRef<FName> MaterialSlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
 		for ( int32 PolygonIndex = 0; PolygonIndex < FaceCounts.size(); ++PolygonIndex )
 		{
 			int32 PolygonVertexCount = FaceCounts[PolygonIndex];
@@ -754,7 +868,7 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 				const FVertexInstanceID VertexInstanceID(VertexInstanceIndex);
 				const int32 ControlPointIndex = FaceIndices[CurrentVertexInstanceIndex];
 				const FVertexID VertexID(VertexOffset + ControlPointIndex);
-				const FVector VertexPosition = MeshDescriptionVertexPositions[VertexID];
+				const FVector VertexPosition = (FVector)MeshDescriptionVertexPositions[VertexID];
 
 				// Make sure a face doesn't use the same vertex twice as MeshDescription doesn't like that
 				if ( CornerVerticesIDs.Contains( VertexID ) )
@@ -776,7 +890,7 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 						const GfVec3f& Normal = Normals[NormalIndex];
 						FVector TransformedNormal = AdditionalTransform.TransformVector( UsdToUnreal::ConvertVector( StageInfo, Normal ) ).GetSafeNormal();
 
-						MeshDescriptionNormals[AddedVertexInstanceId] = TransformedNormal.GetSafeNormal();
+						MeshDescriptionNormals[AddedVertexInstanceId] = (FVector3f)TransformedNormal.GetSafeNormal();
 					}
 				}
 
@@ -799,7 +913,7 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 					}
 
 					// Flip V for Unreal uv's which match directx
-					FVector2D FinalUVVector( UV[0], 1.f - UV[1] );
+					FVector2f FinalUVVector( UV[0], 1.f - UV[1] );
 					MeshDescriptionUVs.Set( AddedVertexInstanceId, UVSet.UVSetIndexUE, FinalUVVector );
 				}
 
@@ -849,23 +963,16 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 
 			const int32 CombinedMaterialIndex = MaterialIndexOffset + LocalMaterialIndex;
 
-			if ( !PolygonGroupMapping.Contains( CombinedMaterialIndex ) )
+			if ( bFlipThisGeometry )
 			{
-				FPolygonGroupID NewPolygonGroup = MeshDescription.CreatePolygonGroup();
-				PolygonGroupMapping.Add( CombinedMaterialIndex, NewPolygonGroup );
-
-				// This is important for runtime, where the material slots are matched to LOD sections based on their material slot name
-				MaterialSlotNames[ NewPolygonGroup ] = *LexToString( NewPolygonGroup.GetValue() );
+				for (int32 i = 0; i < CornerInstanceIDs.Num() / 2; ++i)
+				{
+					Swap(CornerInstanceIDs[i], CornerInstanceIDs[CornerInstanceIDs.Num() - i - 1]);
+				}
 			}
-
 			// Insert a polygon into the mesh
 			FPolygonGroupID PolygonGroupID = PolygonGroupMapping[ CombinedMaterialIndex ];
 			const FPolygonID NewPolygonID = MeshDescription.CreatePolygon( PolygonGroupID, CornerInstanceIDs );
-
-			if ( bFlipThisGeometry )
-			{
-				MeshDescription.ReversePolygonFacing( NewPolygonID );
-			}
 		}
 	}
 
@@ -879,6 +986,36 @@ bool UsdToUnreal::ConvertGeomMesh( const pxr::UsdTyped& UsdSchema, FMeshDescript
 	}
 
 	return true;
+}
+
+bool UsdToUnreal::ConvertGeomMeshHierarchy(
+	const pxr::UsdPrim& Prim,
+	const pxr::UsdTimeCode& TimeCode,
+	const EUsdPurpose PurposesToLoad,
+	const pxr::TfToken& RenderContext,
+	const TMap< FString, TMap<FString, int32> >& MaterialToPrimvarToUVIndex,
+	FMeshDescription& OutMeshDescription,
+	UsdUtils::FUsdPrimMaterialAssignmentInfo& OutMaterialAssignments
+)
+{
+	FStaticMeshAttributes StaticMeshAttributes( OutMeshDescription );
+	StaticMeshAttributes.Register();
+
+	// Skip the first transform, because if we're parsing Prim's mesh we don't want to bake its own transform into the vertices,
+	// as that transform will be used on components instead
+	const bool bIsFirstPrim = true;
+
+	return UE::UsdGeomMeshConversion::Private::RecursivelyCollapseChildMeshes(
+		Prim,
+		FTransform::Identity,
+		TimeCode,
+		PurposesToLoad,
+		RenderContext,
+		MaterialToPrimvarToUVIndex,
+		OutMeshDescription,
+		OutMaterialAssignments,
+		bIsFirstPrim
+	);
 }
 
 bool UsdToUnreal::ConvertDisplayColor( const UsdUtils::FDisplayColorMaterial& DisplayColorDescription, UMaterialInstanceConstant& Material )
@@ -934,7 +1071,16 @@ UMaterialInstanceDynamic* UsdUtils::CreateDisplayColorMaterialInstanceDynamic( c
 
 	if ( UMaterialInterface* ParentMaterial = Cast< UMaterialInterface >( FSoftObjectPath( ParentPath ).TryLoad() ) )
 	{
-		if ( UMaterialInstanceDynamic* NewMaterial = UMaterialInstanceDynamic::Create( ParentMaterial, GetTransientPackage() ) )
+		FName AssetName = MakeUniqueObjectName(
+			GetTransientPackage(),
+			UMaterialInstanceConstant::StaticClass(),
+			*FString::Printf( TEXT( "DisplayColor_%s_%s" ),
+				DisplayColorDescription.bHasOpacity ? TEXT( "Opacity" ) : TEXT( "NoOpacity" ),
+				DisplayColorDescription.bIsDoubleSided ? TEXT( "DoubleSided" ) : TEXT( "SingleSided" )
+			)
+		);
+
+		if ( UMaterialInstanceDynamic* NewMaterial = UMaterialInstanceDynamic::Create( ParentMaterial, GetTransientPackage(), AssetName ) )
 		{
 			return NewMaterial;
 		}
@@ -972,7 +1118,16 @@ UMaterialInstanceConstant* UsdUtils::CreateDisplayColorMaterialInstanceConstant(
 
 	if ( UMaterialInterface* ParentMaterial = Cast< UMaterialInterface >( FSoftObjectPath( ParentPath ).TryLoad() ) )
 	{
-		if ( UMaterialInstanceConstant* MaterialInstance = NewObject< UMaterialInstanceConstant >( GetTransientPackage(), NAME_None, RF_NoFlags ) )
+		FName AssetName = MakeUniqueObjectName(
+			GetTransientPackage(),
+			UMaterialInstanceConstant::StaticClass(),
+			*FString::Printf( TEXT( "DisplayColor_%s_%s" ),
+				DisplayColorDescription.bHasOpacity ? TEXT( "Opacity" ) : TEXT( "NoOpacity" ),
+				DisplayColorDescription.bIsDoubleSided ? TEXT( "DoubleSided" ) : TEXT( "SingleSided" )
+			)
+		);
+
+		if ( UMaterialInstanceConstant* MaterialInstance = NewObject< UMaterialInstanceConstant >( GetTransientPackage(), AssetName, RF_NoFlags ) )
 		{
 			UMaterialEditingLibrary::SetMaterialInstanceParent( MaterialInstance, ParentMaterial );
 			return MaterialInstance;
@@ -1099,9 +1254,10 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments( c
 				{
 					FUsdLogManager::LogMessage(
 						EMessageSeverity::Warning,
-						FText::Format( LOCTEXT( "IgnoringMaterialSurface", "Ignoring material '{0}' bound to prim '{1}' as it contains no valid surface shader source" ),
+						FText::Format( LOCTEXT( "IgnoringMaterialSurface", "Ignoring material '{0}' bound to prim '{1}' as it contains no valid surface shader source for render context '{2}'" ),
 							FText::FromString( UsdToUnreal::ConvertPath( TargetMaterialPrimPath ) ),
-							FText::FromString( UsdToUnreal::ConvertPath( UsdPrim.GetPath() ) )
+							FText::FromString( UsdToUnreal::ConvertPath( UsdPrim.GetPath() ) ),
+							FText::FromString( RenderContext == pxr::UsdShadeTokens->universalRenderContext ? TEXT( "universal" ) : UsdToUnreal::ConvertToken( RenderContext ) )
 						)
 					);
 					return {};
@@ -1151,14 +1307,35 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments( c
 		}
 	}
 
-	// Priority 1: unrealMaterial attribute directly on the prim
-	if ( TOptional<FString> UnrealMaterial = FetchFirstUEMaterialFromAttribute( UsdPrim, TimeCode ) )
+	// Priority 1: Material is an unreal asset
+	if ( RenderContext == UnrealIdentifiers::Unreal )
 	{
-		FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
-		Slot.MaterialSource = UnrealMaterial.GetValue();
-		Slot.AssignmentType = UsdUtils::EPrimAssignmentType::UnrealMaterial;
+		// Priority 1.1: unreal rendercontext material prim
+		pxr::UsdShadeMaterialBindingAPI BindingAPI( UsdPrim );
+		if ( BindingAPI )
+		{
+			if ( pxr::UsdShadeMaterial ShadeMaterial = BindingAPI.ComputeBoundMaterial() )
+			{
+				if ( TOptional<FString> UnrealMaterial = UsdUtils::GetUnrealSurfaceOutput( ShadeMaterial.GetPrim() ) )
+				{
+					FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
+					Slot.MaterialSource = UnrealMaterial.GetValue();
+					Slot.AssignmentType = UsdUtils::EPrimAssignmentType::UnrealMaterial;
 
-		return Result;
+					return Result;
+				}
+			}
+		}
+
+		// Priority 1.2: unrealMaterial attribute directly on the prim
+		if ( TOptional<FString> UnrealMaterial = FetchFirstUEMaterialFromAttribute( UsdPrim, TimeCode ) )
+		{
+			FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
+			Slot.MaterialSource = UnrealMaterial.GetValue();
+			Slot.AssignmentType = UsdUtils::EPrimAssignmentType::UnrealMaterial;
+
+			return Result;
+		}
 	}
 
 	// Priority 2: material binding directly on the prim
@@ -1203,13 +1380,39 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments( c
 			const pxr::UsdGeomSubset& GeomSubset = GeomSubsets[ GeomSubsetIndex ];
 			bool bHasAssignment = false;
 
-			// Priority 4.1: unrealMaterial partitions
-			if ( TOptional<FString> UnrealMaterial = FetchFirstUEMaterialFromAttribute( GeomSubset.GetPrim(), TimeCode ) )
+			// Priority 4.1: Material is an unreal asset
+			if ( RenderContext == UnrealIdentifiers::Unreal )
 			{
-				FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
-				Slot.MaterialSource = UnrealMaterial.GetValue();
-				Slot.AssignmentType = UsdUtils::EPrimAssignmentType::UnrealMaterial;
-				bHasAssignment = true;
+				// Priority 4.1.1: Partition has an unreal rendercontext material prim binding
+				if ( !bHasAssignment )
+				{
+					pxr::UsdShadeMaterialBindingAPI BindingAPI( GeomSubset.GetPrim() );
+					if ( BindingAPI )
+					{
+						if ( pxr::UsdShadeMaterial ShadeMaterial = BindingAPI.ComputeBoundMaterial() )
+						{
+							if ( TOptional<FString> UnrealMaterial = UsdUtils::GetUnrealSurfaceOutput( ShadeMaterial.GetPrim() ) )
+							{
+								FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
+								Slot.MaterialSource = UnrealMaterial.GetValue();
+								Slot.AssignmentType = UsdUtils::EPrimAssignmentType::UnrealMaterial;
+								bHasAssignment = true;
+							}
+						}
+					}
+				}
+
+				// Priority 4.1.2: Partitition has an unrealMaterial attribute directly on it
+				if ( !bHasAssignment )
+				{
+					if ( TOptional<FString> UnrealMaterial = FetchFirstUEMaterialFromAttribute( GeomSubset.GetPrim(), TimeCode ) )
+					{
+						FUsdPrimMaterialSlot& Slot = Result.Slots.Emplace_GetRef();
+						Slot.MaterialSource = UnrealMaterial.GetValue();
+						Slot.AssignmentType = UsdUtils::EPrimAssignmentType::UnrealMaterial;
+						bHasAssignment = true;
+					}
+				}
 			}
 
 			// Priority 4.2: computing bound material
@@ -1302,7 +1505,48 @@ UsdUtils::FUsdPrimMaterialAssignmentInfo UsdUtils::GetPrimMaterialAssignments( c
 	return Result;
 }
 
-bool UnrealToUsd::ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim& UsdPrim, const pxr::UsdTimeCode TimeCode, UE::FUsdStage* StageForMaterialAssignments )
+TArray<FString> UsdUtils::GetMaterialUsers( const UE::FUsdPrim& MaterialPrim )
+{
+	TArray<FString> Result;
+
+	FScopedUsdAllocs Allocs;
+
+	pxr::UsdPrim UsdMaterialPrim{ MaterialPrim };
+	if ( !UsdMaterialPrim || !UsdMaterialPrim.IsA<pxr::UsdShadeMaterial>() )
+	{
+		return Result;
+	}
+
+	pxr::UsdStageRefPtr UsdStage = UsdMaterialPrim.GetStage();
+
+	pxr::UsdPrimRange PrimRange = pxr::UsdPrimRange::Stage( UsdStage, pxr::UsdTraverseInstanceProxies() );
+	for ( pxr::UsdPrimRange::iterator PrimRangeIt = PrimRange.begin(); PrimRangeIt != PrimRange.end(); ++PrimRangeIt )
+	{
+		pxr::UsdPrim Prim = *PrimRangeIt;
+
+		if ( !Prim.HasAPI<pxr::UsdShadeMaterialBindingAPI>() )
+		{
+			continue;
+		}
+
+		pxr::UsdShadeMaterialBindingAPI BindingAPI( Prim );
+		pxr::UsdShadeMaterial ShadeMaterial = BindingAPI.ComputeBoundMaterial();
+		if ( !ShadeMaterial )
+		{
+			continue;
+		}
+
+		pxr::UsdPrim ShadeMaterialPrim = ShadeMaterial.GetPrim();
+		if ( ShadeMaterialPrim == UsdMaterialPrim )
+		{
+			Result.Add( UsdToUnreal::ConvertPath( Prim.GetPrimPath() ) );
+		}
+	}
+
+	return Result;
+}
+
+bool UnrealToUsd::ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim& UsdPrim, const pxr::UsdTimeCode TimeCode, UE::FUsdStage* StageForMaterialAssignments, int32 LowestMeshLOD, int32 HighestMeshLOD )
 {
 	FScopedUsdAllocs UsdAllocs;
 
@@ -1319,6 +1563,43 @@ bool UnrealToUsd::ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim
 	{
 		return false;
 	}
+
+	// Make sure they're both >= 0 (the options dialog slider is clamped, but this may be called directly)
+	LowestMeshLOD = FMath::Clamp( LowestMeshLOD, 0, NumLODs -1 );
+	HighestMeshLOD = FMath::Clamp( HighestMeshLOD, 0, NumLODs - 1 );
+
+	// Make sure Lowest <= Highest
+	int32 Temp = FMath::Min( LowestMeshLOD, HighestMeshLOD );
+	HighestMeshLOD = FMath::Max( LowestMeshLOD, HighestMeshLOD );
+	LowestMeshLOD = Temp;
+
+	// Make sure it's at least 1 LOD level
+	NumLODs = FMath::Max( HighestMeshLOD - LowestMeshLOD + 1, 1 );
+
+	// If exporting a Nanite mesh, just use the lowest LOD and write the unrealNanite override attribute,
+	// this way we can guarantee it will have Nanite when it's imported back.
+#if WITH_EDITOR
+	if ( StaticMesh->NaniteSettings.bEnabled )
+	{
+		if ( NumLODs > 1 )
+		{
+			UE_LOG( LogUsd, Log, TEXT( "Not exporting multiple LODs for mesh '%s' onto prim '%s' since the mesh has Nanite enabled: LOD '%d' will be used and the '%s' attribute will be written out instead" ),
+				*StaticMesh->GetName(),
+				*UsdToUnreal::ConvertPath( UsdPrim.GetPrimPath() ),
+				LowestMeshLOD,
+				*UsdToUnreal::ConvertToken( UnrealIdentifiers::UnrealNaniteOverride )
+			);
+		}
+
+		HighestMeshLOD = LowestMeshLOD;
+		NumLODs = 1;
+
+		if ( pxr::UsdAttribute Attr = UsdPrim.CreateAttribute( UnrealIdentifiers::UnrealNaniteOverride, pxr::SdfValueTypeNames->Token ) )
+		{
+			Attr.Set( UnrealIdentifiers::UnrealNaniteOverrideEnable );
+		}
+	}
+#endif // WITH_EDITOR
 
 	pxr::UsdVariantSets VariantSets = UsdPrim.GetVariantSets();
 	if ( NumLODs > 1 && VariantSets.HasVariantSet( UnrealIdentifiers::LOD ) )
@@ -1355,7 +1636,7 @@ bool UnrealToUsd::ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim
 		MaterialAssignments.clear();
 	}
 
-	for ( int32 LODIndex = 0; LODIndex < NumLODs; ++LODIndex )
+	for ( int32 LODIndex = LowestMeshLOD; LODIndex <= HighestMeshLOD; ++LODIndex )
 	{
 		const FStaticMeshLODResources& RenderMesh = StaticMesh->GetLODForExport( LODIndex );
 
@@ -1398,7 +1679,7 @@ bool UnrealToUsd::ConvertStaticMesh( const UStaticMesh* StaticMesh, pxr::UsdPrim
 		pxr::UsdStageRefPtr MaterialStage;
 		if ( StageForMaterialAssignments )
 		{
-			MaterialStage = *StageForMaterialAssignments;
+			MaterialStage = static_cast< pxr::UsdStageRefPtr >( *StageForMaterialAssignments );
 		}
 		else
 		{
@@ -1704,6 +1985,440 @@ bool UsdUtils::IterateLODMeshes( const pxr::UsdPrim& ParentPrim, TFunction<bool(
 
 	LODVariantSet.SetVariantSelection( OriginalVariant );
 	return bHasValidVariant;
+}
+
+void UsdUtils::ReplaceUnrealMaterialsWithBaked(
+	const UE::FUsdStage& Stage,
+	const UE::FSdfLayer& LayerToAuthorIn,
+	const TMap<FString, FString>& BakedMaterials,
+	bool bIsAssetLayer,
+	bool bUsePayload,
+	bool bRemoveUnrealMaterials
+)
+{
+	FScopedUsdAllocs Allocs;
+
+	struct FMaterialScopePrim
+	{
+		FMaterialScopePrim( pxr::UsdStageRefPtr ScopeStage, pxr::UsdPrim ParentPrim )
+		{
+			pxr::SdfPath Path = ParentPrim.GetPrimPath().AppendPath( pxr::SdfPath{ "Materials" } );
+			Prim = ScopeStage->DefinePrim( Path, UnrealToUsd::ConvertToken( TEXT( "Scope" ) ).Get() );
+
+			// Initialize our UsedPrimNames correctly, so we can guarantee we'll never have name collisions
+			if ( Prim )
+			{
+				for ( pxr::UsdPrim Child : Prim.GetFilteredChildren( pxr::UsdTraverseInstanceProxies( pxr::UsdPrimAllPrimsPredicate ) ) )
+				{
+					UsedPrimNames.Add( UsdToUnreal::ConvertToken( Child.GetName() ) );
+				}
+			}
+		}
+
+		pxr::UsdPrim Prim;
+		TSet<FString> UsedPrimNames;
+		TMap<FString, pxr::UsdPrim> BakedFileNameToMatPrim;
+	};
+	TOptional<FMaterialScopePrim> StageMatScope;
+
+	pxr::UsdStageRefPtr UsdStage{ Stage };
+
+	// UsedLayers here instead of layer stack because we may be exporting using payloads, and payload layers
+	// don't show up on the layer stack list but do show up on the UsedLayers list
+	std::vector<pxr::SdfLayerHandle> LayersToTraverse = UsdStage->GetUsedLayers();
+
+	// Recursively traverses the stage, doing the material assignment replacements.
+	// This handles Mesh prims as well as GeomSubset prims.
+	// Note how we receive the stage as an argument instead of capturing it from the outer scope:
+	// This ensures the inner function doesn't hold a reference to the stage
+	TFunction<void( pxr::UsdStageRefPtr StageToTraverse, pxr::UsdPrim Prim, TOptional<FMaterialScopePrim>& MatPrimScope, TOptional<pxr::UsdVariantSet> OuterVariantSet )> TraverseForMaterialReplacement;
+	TraverseForMaterialReplacement =
+		[
+			&TraverseForMaterialReplacement,
+			&LayersToTraverse,
+			&LayerToAuthorIn,
+			&BakedMaterials,
+			bIsAssetLayer,
+			bUsePayload,
+			bRemoveUnrealMaterials,
+			&StageMatScope
+		]
+		(
+			pxr::UsdStageRefPtr StageToTraverse,
+			pxr::UsdPrim Prim,
+			TOptional<FMaterialScopePrim>& MatPrimScope,
+			TOptional<pxr::UsdVariantSet> OuterVariantSet
+		)
+		{
+			// Recurse into children before doing anything as we may need to parse LODs
+			pxr::UsdVariantSet VarSet = Prim.GetVariantSet( UnrealIdentifiers::LOD );
+			std::vector<std::string> LODs = VarSet.GetVariantNames();
+			if ( LODs.size() > 0 )
+			{
+				TOptional<std::string> OriginalSelection = VarSet.HasAuthoredVariantSelection() ? VarSet.GetVariantSelection() : TOptional<std::string>{};
+
+				// Prims within variant sets can't have relationships to prims outside the scope of the prim that
+				// contains the variant set itself. This means we'll need a new material scope prim if we're stepping
+				// into a variant within an asset layer, so that any material proxy prims we author are contained within it.
+				// Note that we only do this for asset layers: If we're parsing the root layer, any LOD variant sets we can step into
+				// are brought in via references to asset files, and we know that referenced subtree only has relationships to
+				// things within that same subtree ( which will be entirely brought in to the root layer ). This means we can
+				// just keep inner_mat_prim_scope as None and default to using the layer's mat scope prim if we need one
+				TOptional<FMaterialScopePrim> InnerMatPrimScope = bIsAssetLayer ? FMaterialScopePrim{ StageToTraverse, Prim } : TOptional<FMaterialScopePrim>{};
+
+				// Switch into each of the LOD variants the prim has, and recurse into the child prims
+				for ( const std::string& Variant : LODs )
+				{
+					{
+						pxr::UsdEditContext Context{ StageToTraverse, StageToTraverse->GetSessionLayer() };
+						VarSet.SetVariantSelection( Variant );
+					}
+
+					for ( const pxr::UsdPrim& Child : Prim.GetChildren() )
+					{
+						TraverseForMaterialReplacement( StageToTraverse, Child, InnerMatPrimScope, VarSet );
+					}
+				}
+
+				// Restore the variant selection to what it originally was
+				pxr::UsdEditContext Context{ StageToTraverse, StageToTraverse->GetSessionLayer() };
+				if ( OriginalSelection.IsSet() )
+				{
+					VarSet.SetVariantSelection( OriginalSelection.GetValue() );
+				}
+				else
+				{
+					VarSet.ClearVariantSelection();
+				}
+			}
+			else
+			{
+				for ( const pxr::UsdPrim& Child : Prim.GetChildren() )
+				{
+					TraverseForMaterialReplacement( StageToTraverse, Child, MatPrimScope, OuterVariantSet );
+				}
+			}
+
+			// Don't try fetching attributes from the pseudoroot as we'll obviously never have a material binding here
+			// and we may get some USD warnings
+			if ( Prim.IsPseudoRoot() )
+			{
+				return;
+			}
+
+			std::string UnrealMaterialAttrAssetPath;
+			FString UnrealMaterialPrimAssetPath;
+
+			pxr::UsdAttribute UnrealMaterialAttr = Prim.GetAttribute( UnrealIdentifiers::MaterialAssignment );
+			pxr::UsdShadeMaterial UnrealMaterial;
+
+			pxr::UsdShadeMaterialBindingAPI MaterialBindingAPI{ Prim };
+			if ( MaterialBindingAPI )
+			{
+				if ( pxr::UsdShadeMaterial BoundMaterial = MaterialBindingAPI.ComputeBoundMaterial() )
+				{
+					UnrealMaterial = BoundMaterial;
+
+					TOptional<FString> ExistingUEAssetReference = UsdUtils::GetUnrealSurfaceOutput( UnrealMaterial.GetPrim() );
+					if ( ExistingUEAssetReference.IsSet() )
+					{
+						UnrealMaterialPrimAssetPath = MoveTemp( ExistingUEAssetReference.GetValue() );
+					}
+				}
+			}
+
+			if ( !UnrealMaterial && ( !UnrealMaterialAttr || !UnrealMaterialAttr.Get<std::string>( &UnrealMaterialAttrAssetPath ) ) )
+			{
+				return;
+			}
+
+			pxr::UsdPrim UnrealMaterialPrim = UnrealMaterial.GetPrim();
+
+			// Prioritize the Unreal material since import will do so too
+			FString UnrealMaterialAssetPath = UnrealMaterialPrimAssetPath.IsEmpty()
+				? UsdToUnreal::ConvertString( UnrealMaterialAttrAssetPath )
+				: UnrealMaterialPrimAssetPath;
+
+			FString BakedFilename = BakedMaterials.FindRef( UnrealMaterialAssetPath );
+
+			// If we have a valid UE asset but just haven't baked it, something went wrong: Just leave everything alone and abort
+			if ( !UnrealMaterialAssetPath.IsEmpty() && BakedFilename.IsEmpty() )
+			{
+				return;
+			}
+
+			pxr::SdfPath UnrealMaterialAttrPath = UnrealMaterialAttr ? UnrealMaterialAttr.GetPath() : pxr::SdfPath{};
+			pxr::SdfPath UnrealMaterialPrimPath = UnrealMaterial ? UnrealMaterialPrim.GetPrimPath() : pxr::SdfPath{};
+
+			// Find out if we need to remove / author material bindings within an actual variant or outside of it, as an over.
+			// We don't do this when using payloads because our override prims aren't inside the actual LOD variants : They just
+			// directly override a mesh called e.g. 'LOD3' as if it's a child prim, so that the override automatically only
+			// does anything when we happen to have the variant that enables the LOD3 Mesh
+			const bool bAuthorInsideVariants = OuterVariantSet.IsSet() && bIsAssetLayer && !bUsePayload;
+
+			if ( bAuthorInsideVariants )
+			{
+				pxr::UsdVariantSet& OuterVariantSetValue = OuterVariantSet.GetValue();
+				pxr::SdfPath VarPrimPath = OuterVariantSetValue.GetPrim().GetPath();
+				pxr::SdfPath VarPrimPathWithVar = VarPrimPath.AppendVariantSelection( OuterVariantSetValue.GetName(), OuterVariantSetValue.GetVariantSelection() );
+
+				if ( UnrealMaterialAttrPath.HasPrefix( VarPrimPath ) )
+				{
+					// This builds a path like '/MyMesh{LOD=LOD0}LOD0.unrealMaterial',
+					// or '/MyMesh{LOD=LOD0}LOD0/Section1.unrealMaterial'.This is required because we'll query the layer
+					// for a spec path below, and this path must contain the variant selection in it, which the path returned
+					// from attr.GetPath() doesn't contain
+					UnrealMaterialAttrPath = UnrealMaterialAttrPath.ReplacePrefix( VarPrimPath, VarPrimPathWithVar );
+				}
+
+				if ( UnrealMaterialPrimPath.HasPrefix( VarPrimPath ) )
+				{
+					UnrealMaterialPrimPath = UnrealMaterialPrimPath.ReplacePrefix( VarPrimPath, VarPrimPathWithVar );
+				}
+			}
+
+			// We always want to replace things in whatever layer they were authored, and not just override with
+			// a stronger opinion, so search through all sublayers to find the ones with the specs we are targeting
+			for ( pxr::SdfLayerHandle Layer : LayersToTraverse )
+			{
+				pxr::SdfAttributeSpecHandle UnrealMaterialAttrSpec = Layer->GetAttributeAtPath( UnrealMaterialAttrPath );
+				pxr::SdfPrimSpecHandle UnrealMaterialPrimSpec = Layer->GetPrimAtPath( UnrealMaterialPrimPath );
+				if ( !UnrealMaterialAttrSpec && !UnrealMaterialPrimSpec )
+				{
+					continue;
+				}
+
+				pxr::UsdEditContext Context{ StageToTraverse, Layer };
+
+				if ( bRemoveUnrealMaterials )
+				{
+					TOptional<pxr::UsdEditContext> VarContext;
+					if ( bAuthorInsideVariants )
+					{
+						VarContext.Emplace( OuterVariantSet.GetValue().GetVariantEditContext() );
+					}
+
+					if ( UnrealMaterialAttrSpec )
+					{
+						Prim.RemoveProperty( UnrealIdentifiers::MaterialAssignment );
+					}
+
+					if ( UnrealMaterialPrimSpec )
+					{
+						UsdUtils::RemoveUnrealSurfaceOutput( UnrealMaterialPrim, UE::FSdfLayer{ Layer } );
+					}
+				}
+
+				// It was just an empty UE asset path, so just cancel now as our BakedFilename can't possibly be useful
+				if ( UnrealMaterialAssetPath.IsEmpty() )
+				{
+					continue;
+				}
+
+				// Get the proxy prim for the material within this layer
+				// (or create one outside the variant edit context)
+				pxr::UsdPrim MatPrim;
+				{
+					pxr::UsdEditContext MatContext( StageToTraverse, pxr::SdfLayerRefPtr{ LayerToAuthorIn } );
+
+					// We are already referencing an unreal material prim: Let's just augment it with a reference to the baked
+					// material usd asset layer.
+					// Note how this will likely not be within MatPrimScope but instead will be a child of the Mesh/GeomSubset.
+					// This is fine, and in the future we'll likely exclusively do this since it will handle mesh-specific
+					// material baking much better, as it will allow even having separate bakes for each LOD
+					if ( UnrealMaterial && UnrealMaterialPrimSpec )
+					{
+						MatPrim = UnrealMaterialPrim;
+
+						bool bAlreadyHasReference = false;
+
+						// Make sure we don't reference it more than once. This shouldn't be needed since we'll only ever run into
+						// these unreal material prims once per Mesh/GeomSubset, but when creating MatScopePrims we can guarantee we
+						// add a reference only once by adding it along with the Material prim creation, so it would be nice to be able to
+						// guarantee it here as well
+						pxr::SdfReferencesProxy ReferencesProxy = UnrealMaterialPrimSpec->GetReferenceList();
+						for ( const pxr::SdfReference& UsdReference : ReferencesProxy.GetAddedOrExplicitItems() )
+						{
+							FString ReferencedFilePath = UsdToUnreal::ConvertString( UsdReference.GetAssetPath() );
+							FString LayerPath = UsdToUnreal::ConvertString( Layer->GetRealPath() );
+
+							if ( !LayerPath.IsEmpty() )
+							{
+								ReferencedFilePath = FPaths::ConvertRelativePathToFull( LayerPath, ReferencedFilePath );
+							}
+
+							if ( FPaths::IsSamePath( ReferencedFilePath, BakedFilename ) )
+							{
+								bAlreadyHasReference = true;
+								break;
+							}
+						}
+
+						if ( !bAlreadyHasReference )
+						{
+							UE::FUsdPrim UEMatPrim{ MatPrim };
+							UsdUtils::AddReference( UEMatPrim, *BakedFilename );
+						}
+					}
+					// Need a MatScopePrim authored somewhere within this layer
+					else
+					{
+						FMaterialScopePrim* MatPrimScopePtr = nullptr;
+
+						if ( MatPrimScope.IsSet() )
+						{
+							MatPrimScopePtr = &MatPrimScope.GetValue();
+						}
+						else
+						{
+							// On-demand create a *single* material scope prim for the stage, if we're not inside a variant set
+							if ( !StageMatScope.IsSet() )
+							{
+								// If a prim from a stage references another layer, USD's composition will effectively
+								// paste the default prim of the referenced layer over the referencing prim. Because of
+								// this, the subprims within the hierarchy of that default prim can't ever have
+								// relationships to other prims outside that of that same hierarchy, as those prims
+								// will not be present on the referencing stage at all. This is why we author our stage
+								// materials scope under the default prim, and not the pseudoroot
+								StageMatScope = FMaterialScopePrim{ StageToTraverse, StageToTraverse->GetDefaultPrim() };
+							}
+							MatPrimScopePtr = &StageMatScope.GetValue();
+						}
+
+						// This should never happen
+						if ( !ensure( MatPrimScopePtr ) )
+						{
+							continue;
+						}
+
+						// We already have a material proxy prim for this UE material within MatPrimScope, so just reuse it
+						if ( pxr::UsdPrim* FoundPrim = MatPrimScopePtr->BakedFileNameToMatPrim.Find( BakedFilename ) )
+						{
+							MatPrim = *FoundPrim;
+						}
+						// Create a new material proxy prim for this UE material within MatPrimScope
+						else
+						{
+							FString MatName = FPaths::GetBaseFilename( UnrealMaterialAssetPath );
+							MatName = UsdToUnreal::ConvertString( pxr::TfMakeValidIdentifier( UnrealToUsd::ConvertString( *MatName ).Get() ) );
+							FString MatPrimName = UsdUtils::GetUniqueName( MatName, MatPrimScopePtr->UsedPrimNames );
+							MatPrimScopePtr->UsedPrimNames.Add( MatPrimName );
+
+							MatPrim = StageToTraverse->DefinePrim(
+								MatPrimScopePtr->Prim.GetPath().AppendChild( UnrealToUsd::ConvertToken( *MatPrimName ).Get() ),
+								UnrealToUsd::ConvertToken( TEXT( "Material" ) ).Get()
+							);
+
+							// We should only keep track and reuse the material proxy prims that we create within the MatPrimScope, not
+							// the ones we have appropriated from within Mesh/GeomSubset from being UnrealPrims
+							MatPrimScopePtr->BakedFileNameToMatPrim.Add( BakedFilename, MatPrim );
+
+							UE::FUsdPrim UEMatPrim{ MatPrim };
+							UsdUtils::AddReference( UEMatPrim, *BakedFilename );
+						}
+					}
+				}
+
+				// Make sure we have a binding to the material prim and the material binding API
+				if( pxr::UsdShadeMaterial MaterialToBind{ MatPrim } )
+				{
+					TOptional<pxr::UsdEditContext> VarContext;
+					if ( bAuthorInsideVariants )
+					{
+						VarContext.Emplace( OuterVariantSet.GetValue().GetVariantEditContext() );
+					}
+
+					if ( pxr::UsdShadeMaterialBindingAPI AppliedMaterialBindingAPI = pxr::UsdShadeMaterialBindingAPI::Apply( Prim ) )
+					{
+						AppliedMaterialBindingAPI.Bind( MaterialToBind );
+					}
+				}
+			}
+		};
+
+	pxr::UsdPrim Root = Stage.GetPseudoRoot();
+	TOptional<FMaterialScopePrim> Empty;
+	TraverseForMaterialReplacement( UsdStage, Root, Empty, {} );
+}
+
+FString UsdUtils::HashGeomMeshPrim( const UE::FUsdStage& Stage, const FString& PrimPath, double TimeCode )
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE( UsdUtils::HashGeomMeshPrim );
+
+	using namespace pxr;
+
+	FScopedUsdAllocs Allocs;
+
+	UsdPrim UsdPrim = pxr::UsdPrim( Stage.GetPrimAtPath( UE::FSdfPath( *PrimPath ) ) );
+	if ( !UsdPrim )
+	{
+		return {};
+	}
+
+	UsdGeomMesh UsdMesh( UsdPrim );
+	if ( !UsdMesh )
+	{
+		return {};
+	}
+
+	FMD5 MD5;
+
+	if ( UsdAttribute Points = UsdMesh.GetPointsAttr() )
+	{
+		VtArray< GfVec3f > PointsArray;
+		Points.Get( &PointsArray, TimeCode );
+		MD5.Update( ( uint8* ) PointsArray.cdata(), PointsArray.size() * sizeof( GfVec3f ) );
+	}
+
+	if ( UsdAttribute NormalsAttribute = UsdMesh.GetNormalsAttr() )
+	{
+		VtArray< GfVec3f > Normals;
+		NormalsAttribute.Get( &Normals, TimeCode );
+		MD5.Update( ( uint8* ) Normals.cdata(), Normals.size() * sizeof( GfVec3f ) );
+	}
+
+	if ( UsdGeomPrimvar ColorPrimvar = UsdMesh.GetDisplayColorPrimvar() )
+	{
+		VtArray< GfVec3f > UsdColors;
+		ColorPrimvar.ComputeFlattened( &UsdColors, TimeCode );
+		MD5.Update( ( uint8* ) UsdColors.cdata(), UsdColors.size() * sizeof( GfVec3f ) );
+	}
+
+	if ( UsdGeomPrimvar OpacityPrimvar = UsdMesh.GetDisplayOpacityPrimvar() )
+	{
+		VtArray< float > UsdOpacities;
+		OpacityPrimvar.ComputeFlattened( &UsdOpacities );
+		MD5.Update( ( uint8* ) UsdOpacities.cdata(), UsdOpacities.size() * sizeof( float ) );
+	}
+
+	TArray< TUsdStore< UsdGeomPrimvar > > PrimvarsByUVIndex = UsdUtils::GetUVSetPrimvars( UsdMesh );
+	for ( int32 UVChannelIndex = 0; UVChannelIndex < PrimvarsByUVIndex.Num(); ++UVChannelIndex )
+	{
+		if ( !PrimvarsByUVIndex.IsValidIndex( UVChannelIndex ) )
+		{
+			break;
+		}
+
+		UsdGeomPrimvar& Primvar = PrimvarsByUVIndex[ UVChannelIndex ].Get();
+		if ( !Primvar )
+		{
+			continue;
+		}
+
+		VtArray< GfVec2f > UsdUVs;
+		Primvar.Get( &UsdUVs, TimeCode );
+		MD5.Update( ( uint8* ) UsdUVs.cdata(), UsdUVs.size() * sizeof( GfVec2f ) );
+	}
+
+	uint8 Digest[ 16 ];
+	MD5.Final( Digest );
+
+	FString Hash;
+	for ( int32 i = 0; i < 16; ++i )
+	{
+		Hash += FString::Printf( TEXT( "%02x" ), Digest[ i ] );
+	}
+	return Hash;
 }
 
 #undef LOCTEXT_NAMESPACE

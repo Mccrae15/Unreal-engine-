@@ -20,9 +20,11 @@
 #include "ShaderCompiler.h"
 #include "Components/BillboardComponent.h"
 #include "UObject/ReleaseObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
 #include "Modules/ModuleManager.h"
 #include "Internationalization/Text.h"
 #include "CoreGlobals.h"
+#include "Engine/TextureCube.h"
 
 #if RHI_RAYTRACING
 #include "GlobalShader.h"
@@ -33,6 +35,8 @@
 
 #if WITH_EDITOR
 #include "Rendering/StaticLightingSystemInterface.h"
+#include "TextureCompiler.h"
+#include "StaticMeshCompiler.h"
 #endif
 
 #define LOCTEXT_NAMESPACE "SkyLightComponent"
@@ -42,7 +46,7 @@ void OnUpdateSkylights(UWorld* InWorld)
 	for (TObjectIterator<USkyLightComponent> It; It; ++It)
 	{
 		USkyLightComponent* SkylightComponent = *It;
-		if (InWorld->ContainsActor(SkylightComponent->GetOwner()) && !SkylightComponent->IsPendingKill())
+		if (InWorld->ContainsActor(SkylightComponent->GetOwner()) && IsValid(SkylightComponent))
 		{			
 			SkylightComponent->SetCaptureIsDirty();			
 		}
@@ -59,7 +63,8 @@ static bool SkipStaticSkyLightCapture(USkyLightComponent& SkyLight)
 	// This is also fine in editor because a static sky light will not contribute to any lighting when drag and drop in a level and captured. 
 	// In this case only a "lighting build" will result in usable lighting on any objects.
 	// One exception however is when ray tracing is enabled as light mobility is not relevant to ray tracing effects, many still requiring information from the sky light even if it is static.
-	return SkyLight.HasStaticLighting() && !IsRayTracingEnabled();
+	// Lumen also operates on static skylights and may be enabled when either Ray Tracing or Mesh Distance Fields are supported for the project
+	return SkyLight.HasStaticLighting() && !IsRayTracingEnabled() && !DoesProjectSupportDistanceFields();
 }
 
 FAutoConsoleCommandWithWorld CaptureConsoleCommand(
@@ -98,8 +103,7 @@ void FSkyTextureCubeResource::InitRHI()
 {
 	if (GetFeatureLevel() >= ERHIFeatureLevel::SM5 || GSupportsRenderTargetFormat_PF_FloatRGBA)
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		CreateInfo.DebugName = TEXT("SkyTextureCube");
+		FRHIResourceCreateInfo CreateInfo(TEXT("SkyTextureCube"));
 		
 		checkf(FMath::IsPowerOfTwo(Size), TEXT("Size of SkyTextureCube must be a power of two; size is %d"), Size);
 		TextureCubeRHI = RHICreateTextureCube(Size, Format, NumMips, TexCreate_None, CreateInfo);
@@ -129,22 +133,23 @@ void FSkyTextureCubeResource::Release()
 	}
 }
 
-void UWorld::UpdateAllSkyCaptures()
+void UWorld::InvalidateAllSkyCaptures()
 {
-	TArray<USkyLightComponent*> UpdatedComponents;
-
 	for (TObjectIterator<USkyLightComponent> It; It; ++It)
 	{
 		USkyLightComponent* CaptureComponent = *It;
 
-		if (ContainsActor(CaptureComponent->GetOwner()) && !CaptureComponent->IsPendingKill())
+		if (ContainsActor(CaptureComponent->GetOwner()) && IsValid(CaptureComponent))
 		{
 			// Purge cached derived data and force an update
 			CaptureComponent->SetCaptureIsDirty();
-			UpdatedComponents.Add(CaptureComponent);
 		}
 	}
+}
 
+void UWorld::UpdateAllSkyCaptures()
+{
+	InvalidateAllSkyCaptures();
 	USkyLightComponent::UpdateSkyCaptureContents(this);
 }
 
@@ -194,7 +199,7 @@ FSkyLightSceneProxy::FSkyLightSceneProxy(const USkyLightComponent* InLightCompon
 	, bWantsStaticShadowing(InLightComponent->Mobility == EComponentMobility::Stationary)
 	, bHasStaticLighting(InLightComponent->HasStaticLighting())
 	, bCastVolumetricShadow(InLightComponent->bCastVolumetricShadow)
-	, bCastRayTracedShadow(InLightComponent->bCastRaytracedShadow)
+	, CastRayTracedShadow(InLightComponent->CastRaytracedShadow)
 	, bAffectReflection(InLightComponent->bAffectReflection)
 	, bAffectGlobalIllumination(InLightComponent->bAffectGlobalIllumination)
 	, bTransmission(InLightComponent->bTransmission)
@@ -217,6 +222,12 @@ FSkyLightSceneProxy::FSkyLightSceneProxy(const USkyLightComponent* InLightCompon
 	, CaptureCubeMapResolution(InLightComponent->CubemapResolution)
 	, LowerHemisphereColor(InLightComponent->LowerHemisphereColor)
 	, bLowerHemisphereIsSolidColor(InLightComponent->bLowerHemisphereIsBlack)
+#if WITH_EDITOR
+	, SecondsToNextIncompleteCapture(0.0f)
+	, bCubemapSkyLightWaitingForCubeMapTexture(false)
+	, bCaptureSkyLightWaitingForShaders(false)
+	, bCaptureSkyLightWaitingForMeshesOrTextures(false)
+#endif
 	, LightColor(FLinearColor(InLightComponent->LightColor) * InLightComponent->Intensity)
 	, bMovable(InLightComponent->IsMovable())
 {
@@ -266,7 +277,8 @@ USkyLightComponent::USkyLightComponent(const FObjectInitializer& ObjectInitializ
 	AverageBrightness = 1.0f;
 	BlendDestinationAverageBrightness = 1.0f;
 	bCastVolumetricShadow = true;
-	bCastRaytracedShadow = false;
+	CastRaytracedShadow = ECastRayTracedShadow::UseProjectSetting;
+	bCastRaytracedShadow_DEPRECATED = false;
 	bAffectReflection = true;
 	bAffectGlobalIllumination = true;
 	SamplesPerPixel = 4;
@@ -276,6 +288,11 @@ USkyLightComponent::USkyLightComponent(const FObjectInitializer& ObjectInitializ
 	CloudAmbientOcclusionStrength = 1.0f;
 	CloudAmbientOcclusionMapResolutionScale = 1.0f;
 	CloudAmbientOcclusionApertureScale = 0.05f;
+
+#if WITH_EDITOR
+	CaptureStatus = ESkyLightCaptureStatus::SLCS_Uninitialized;
+	SecondsSinceLastCapture = 0.0f;
+#endif
 }
 
 FSkyLightSceneProxy* USkyLightComponent::CreateSceneProxy() const
@@ -290,9 +307,13 @@ FSkyLightSceneProxy* USkyLightComponent::CreateSceneProxy() const
 
 void USkyLightComponent::SetCaptureIsDirty()
 { 
-	if (GetVisibleFlag() && bAffectsWorld && !SkipStaticSkyLightCapture(*this) && !IsRealTimeCaptureEnabled())
+	if (GetVisibleFlag() && bAffectsWorld && !SkipStaticSkyLightCapture(*this))
 	{
 		FScopeLock Lock(&SkyCapturesToUpdateLock);
+
+#if WITH_EDITOR
+		this->CaptureStatus = ESkyLightCaptureStatus::SLCS_Uninitialized;
+#endif
 
 		SkyCapturesToUpdate.AddUnique(this);
 
@@ -402,7 +423,7 @@ void USkyLightComponent::PostLoad()
 	if (!GIsCookerLoadingPackage)
 	{
 		// All components are queued for update on creation by default. But we do not want this top happen in some cases.
-		if (!GetVisibleFlag() || HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject) || SkipStaticSkyLightCapture(*this) || IsRealTimeCaptureEnabled())
+		if (!GetVisibleFlag() || HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject) || SkipStaticSkyLightCapture(*this))
 		{
 			FScopeLock Lock(&SkyCapturesToUpdateLock);
 			SkyCapturesToUpdate.Remove(this);
@@ -558,6 +579,11 @@ bool USkyLightComponent::CanEditChange(const FProperty* InProperty) const
 			static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GenerateMeshDistanceFields"));
 			return Mobility == EComponentMobility::Movable && CastShadows && CVar->GetValueOnGameThread() != 0;
 		}
+
+		if (FCString::Strcmp(*PropertyName, TEXT("CastRaytracedShadow")) == 0)
+		{
+			return IsRayTracingEnabled();
+		}
 	}
 
 	return Super::CanEditChange(InProperty);
@@ -579,12 +605,12 @@ void USkyLightComponent::CheckForErrors()
 				USkyLightComponent* Component = *ComponentIt;
 
 				if (Component != this 
-					&& !Component->IsPendingKill()
+					&& IsValid(Component)
 					&& Component->GetVisibleFlag()
 					&& Component->bAffectsWorld
 					&& Component->GetOwner() 
 					&& ThisWorld->ContainsActor(Component->GetOwner())
-					&& !Component->GetOwner()->IsPendingKill())
+					&& IsValid(Component->GetOwner()))
 				{
 					bMultipleFound = true;
 					break;
@@ -665,7 +691,11 @@ void USkyLightComponent::ApplyComponentInstanceData(FPrecomputedSkyLightInstance
 
 void USkyLightComponent::UpdateSkyCaptureContentsArray(UWorld* WorldToUpdate, TArray<USkyLightComponent*>& ComponentArray, bool bOperateOnBlendSource)
 {
-	const bool bIsCompilingShaders = GShaderCompilingManager != NULL && GShaderCompilingManager->IsCompiling();
+	const bool bIsCompilingShaders = GShaderCompilingManager != nullptr && GShaderCompilingManager->IsCompiling();
+	bool bSceneIsAsyncCompiling = false;
+#if WITH_EDITOR
+	bSceneIsAsyncCompiling = FTextureCompilingManager::Get().GetNumRemainingTextures() > 0 || FStaticMeshCompilingManager::Get().GetNumRemainingMeshes() > 0;
+#endif
 
 	// Iterate backwards so we can remove elements without changing the index
 	for (int32 CaptureIndex = ComponentArray.Num() - 1; CaptureIndex >= 0; CaptureIndex--)
@@ -673,14 +703,43 @@ void USkyLightComponent::UpdateSkyCaptureContentsArray(UWorld* WorldToUpdate, TA
 		USkyLightComponent* CaptureComponent = ComponentArray[CaptureIndex];
 		AActor* Owner = CaptureComponent->GetOwner();
 
+		// For specific cubemaps, we must wait until the texture is compiled before capturing the skylight
+		bool bIsCubemapCompiling = false;
+#if WITH_EDITOR
+		bIsCubemapCompiling =
+			CaptureComponent->SourceType == SLS_SpecifiedCubemap &&
+			CaptureComponent->Cubemap &&
+			CaptureComponent->Cubemap->IsDefaultTexture();
+
+		if (bIsCubemapCompiling)
+		{
+			// We should process this texture as soon as possible so we can have a proper skylight.
+			FTextureCompilingManager::Get().RequestPriorityChange(CaptureComponent->Cubemap, EQueuedWorkPriority::Highest);
+		}
+
+		const float SecondsBetweenIncompleteCaptures = 5.0f;
+		const bool bCubemapSkyLightWaitingForCubemapAsset	= CaptureComponent->SourceType == SLS_SpecifiedCubemap	&& bIsCubemapCompiling;
+		const bool bCaptureSkyLightWaitingCompiledShader	= CaptureComponent->SourceType == SLS_CapturedScene		&& bIsCompilingShaders;
+		const bool bCaptureSkyLightWaitingForMeshOrTexAssets= CaptureComponent->SourceType == SLS_CapturedScene		&& bSceneIsAsyncCompiling;
+#endif
+
 		if (((!Owner || !Owner->GetLevel() || Owner->GetLevel()->bIsVisible) && CaptureComponent->GetWorld() == WorldToUpdate)
-			// Only process sky capture requests once async shader compiling completes, otherwise we will capture the scene with temporary shaders
-			&& (!bIsCompilingShaders || CaptureComponent->SourceType == SLS_SpecifiedCubemap))
+			// Only process sky capture requests once async texture and shader compiling completes, otherwise we will capture the scene with temporary shaders/textures
+			&& (
+#if WITH_EDITOR
+				CaptureComponent->CaptureStatus == ESkyLightCaptureStatus::SLCS_Uninitialized
+				|| 
+				(CaptureComponent->CaptureStatus == ESkyLightCaptureStatus::SLCS_CapturedButIncomplete && CaptureComponent->SecondsSinceLastCapture > SecondsBetweenIncompleteCaptures)
+				||
+#endif
+				((!bSceneIsAsyncCompiling) && (!bIsCompilingShaders)) 
+				|| 
+				((CaptureComponent->SourceType == SLS_SpecifiedCubemap) && (!bIsCubemapCompiling)))
+			)
 		{
 			// Only capture valid sky light components
 			if (CaptureComponent->SourceType != SLS_SpecifiedCubemap || CaptureComponent->Cubemap)
 			{
-
 #if WITH_EDITOR
 				FStaticLightingSystemInterface::OnLightComponentUnregistered.Broadcast(CaptureComponent);
 #endif
@@ -725,9 +784,75 @@ void USkyLightComponent::UpdateSkyCaptureContentsArray(UWorld* WorldToUpdate, TA
 #endif
 			}
 
-			// Only remove queued update requests if we processed it for the right world
+#if WITH_EDITOR
+			const bool bCaptureIsComplete = !bCubemapSkyLightWaitingForCubemapAsset && !bCaptureSkyLightWaitingCompiledShader && !bCaptureSkyLightWaitingForMeshOrTexAssets;
+			switch (CaptureComponent->CaptureStatus)
+			{
+			case ESkyLightCaptureStatus::SLCS_Uninitialized:
+			{
+				CaptureComponent->SecondsSinceLastCapture = 0.0f;
+
+				if (bCaptureIsComplete)
+				{
+					// Do not recapture if the first forced capture was with a complete world (to avoid capturing twice each time a level is loaded or a skylight created))
+					CaptureComponent->CaptureStatus = ESkyLightCaptureStatus::SLCS_CapturedAndComplete;
+					ComponentArray.RemoveAt(CaptureIndex);
+				}
+				else
+				{
+					CaptureComponent->CaptureStatus = ESkyLightCaptureStatus::SLCS_CapturedButIncomplete;
+				}
+				break;
+			}
+			case ESkyLightCaptureStatus::SLCS_CapturedButIncomplete:
+			{
+				if (bCaptureIsComplete)
+				{
+					// Only remove queued update requests if we processed it for the a world with all meshes, textures and shaders.
+					ComponentArray.RemoveAt(CaptureIndex);
+					CaptureComponent->CaptureStatus = ESkyLightCaptureStatus::SLCS_CapturedAndComplete;
+				}
+				else if (CaptureComponent->SecondsSinceLastCapture > SecondsBetweenIncompleteCaptures)
+				{
+					// We have just executed another incomplete capture, so reset the timer for the next one.
+					CaptureComponent->SecondsSinceLastCapture = 0.0f;
+				}
+				break;
+			}
+			case ESkyLightCaptureStatus::SLCS_CapturedAndComplete:
+			{
+				// It is valid to recapture a complete skylight.
+				ComponentArray.RemoveAt(CaptureIndex);
+				CaptureComponent->SecondsSinceLastCapture = 0.0f;
+				break;
+			}
+			default:
+			{
+				check(false);
+				break;
+			}
+			}
+#else
 			ComponentArray.RemoveAt(CaptureIndex);
+#endif
 		}
+
+#if WITH_EDITOR
+		CaptureComponent->SecondsSinceLastCapture += CaptureComponent->CaptureStatus == ESkyLightCaptureStatus::SLCS_CapturedButIncomplete ? WorldToUpdate->DeltaTimeSeconds : 0.0f;
+
+		ENQUEUE_RENDER_COMMAND(FUpdateSkyLightProxyStatusForcedCapture)(
+			[CaptureComponent, SecondsBetweenIncompleteCaptures, bCubemapSkyLightWaitingForCubemapAsset, bCaptureSkyLightWaitingCompiledShader, bCaptureSkyLightWaitingForMeshOrTexAssets](FRHICommandList& RHICmdList)
+			{
+				FSkyLightSceneProxy* SkyLightSceneProxy = CaptureComponent->SceneProxy;
+				if (SkyLightSceneProxy)
+				{
+					SkyLightSceneProxy->SecondsToNextIncompleteCapture = FMath::Max(0.0f, SecondsBetweenIncompleteCaptures - CaptureComponent->SecondsSinceLastCapture);
+					SkyLightSceneProxy->bCubemapSkyLightWaitingForCubeMapTexture = bCubemapSkyLightWaitingForCubemapAsset;
+					SkyLightSceneProxy->bCaptureSkyLightWaitingForShaders = bCaptureSkyLightWaitingCompiledShader;
+					SkyLightSceneProxy->bCaptureSkyLightWaitingForMeshesOrTextures = bCaptureSkyLightWaitingForMeshOrTexAssets;
+				}
+			});
+#endif
 	}
 }
 
@@ -742,7 +867,7 @@ void USkyLightComponent::UpdateSkyCaptureContents(UWorld* WorldToUpdate)
 			for (TObjectIterator<USkyLightComponent> It; It; ++It)
 			{
 				USkyLightComponent* SkylightComponent = *It;
-				if (WorldToUpdate->ContainsActor(SkylightComponent->GetOwner()) && !SkylightComponent->IsPendingKill())
+				if (WorldToUpdate->ContainsActor(SkylightComponent->GetOwner()) && IsValid(SkylightComponent))
 				{			
 					SkylightComponent->SetCaptureIsDirty();			
 				}
@@ -752,6 +877,8 @@ void USkyLightComponent::UpdateSkyCaptureContents(UWorld* WorldToUpdate)
 		if (SkyCapturesToUpdate.Num() > 0)
 		{
 			FScopeLock Lock(&SkyCapturesToUpdateLock);
+			// Remove the sky captures if real time capture is enabled. 
+			SkyCapturesToUpdate.RemoveAll([](const USkyLightComponent* CaptureComponent) { return CaptureComponent->IsRealTimeCaptureEnabled(); });
 			UpdateSkyCaptureContentsArray(WorldToUpdate, SkyCapturesToUpdate, true);
 		}
 		
@@ -947,6 +1074,7 @@ bool USkyLightComponent::IsRealTimeCaptureEnabled() const
 	FSceneInterface* LocalScene = GetScene();
 	// We currently disable realtime capture on mobile, OGL requires an additional texture to read SkyIrradianceEnvironmentMap which can break materials already at the texture limit.
 	// See FORT-301037, FORT-302324	
+	// Don't call in PostLoad and SetCaptureIsDirty, because the LocalScene could be null and sky wouldn't be updated on mobile.
 	const bool bIsMobile = LocalScene && LocalScene->GetFeatureLevel() <= ERHIFeatureLevel::ES3_1;
 	return bRealTimeCapture && (Mobility == EComponentMobility::Movable || Mobility == EComponentMobility::Stationary) && GSkylightRealTimeReflectionCapture >0 && !bIsMobile;
 }
@@ -971,14 +1099,20 @@ void USkyLightComponent::RecaptureSky()
 void USkyLightComponent::Serialize(FArchive& Ar)
 {
 	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 
 	Super::Serialize(Ar);
 
 	// if version is between VER_UE4_SKYLIGHT_MOBILE_IRRADIANCE_MAP and FReleaseObjectVersion::SkyLightRemoveMobileIrradianceMap then handle aborted attempt to serialize irradiance data on mobile.
-	if (Ar.UE4Ver() >= VER_UE4_SKYLIGHT_MOBILE_IRRADIANCE_MAP && !(Ar.CustomVer(FReleaseObjectVersion::GUID) >= FReleaseObjectVersion::SkyLightRemoveMobileIrradianceMap))
+	if (Ar.UEVer() >= VER_UE4_SKYLIGHT_MOBILE_IRRADIANCE_MAP && !(Ar.CustomVer(FReleaseObjectVersion::GUID) >= FReleaseObjectVersion::SkyLightRemoveMobileIrradianceMap))
 	{
 		FSHVectorRGB3 DummyIrradianceEnvironmentMap;
 		Ar << DummyIrradianceEnvironmentMap;
+	}
+
+	if (Ar.IsLoading() && (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) < FUE5MainStreamObjectVersion::RayTracedShadowsType))
+	{
+		CastRaytracedShadow = bCastRaytracedShadow_DEPRECATED == 0 ? ECastRayTracedShadow::Disabled : ECastRayTracedShadow::Enabled;
 	}
 }
 
@@ -991,31 +1125,10 @@ ASkyLight::ASkyLight(const FObjectInitializer& ObjectInitializer)
 	RootComponent = LightComponent;
 	SetHidden(false);
 #if WITH_EDITORONLY_DATA
-	if (!IsRunningCommandlet())
+	// Null out the sprite. The Skylight components sprite is the one we use.
+	if (GetSpriteComponent())
 	{
-	// Structure to hold one-time initialization
-	struct FConstructorStatics
-	{
-			ConstructorHelpers::FObjectFinderOptional<UTexture2D> SkyLightTextureObject;
-		FName ID_Sky;
-		FText NAME_Sky;
-
-		FConstructorStatics()
-				: SkyLightTextureObject(TEXT("/Engine/EditorResources/LightIcons/SkyLight"))
-				, ID_Sky(TEXT("Sky"))
-			, NAME_Sky(NSLOCTEXT( "SpriteCategory", "Sky", "Sky" ))
-		{
-		}
-	};
-	static FConstructorStatics ConstructorStatics;
-
-		if (GetSpriteComponent())
-		{
-			GetSpriteComponent()->Sprite = ConstructorStatics.SkyLightTextureObject.Get();
-			GetSpriteComponent()->SpriteInfo.Category = ConstructorStatics.ID_Sky;
-			GetSpriteComponent()->SpriteInfo.DisplayName = ConstructorStatics.NAME_Sky;
-			GetSpriteComponent()->SetupAttachment(LightComponent);
-		}
+		GetSpriteComponent()->Sprite = nullptr;
 	}
 #endif // WITH_EDITORONLY_DATA
 }

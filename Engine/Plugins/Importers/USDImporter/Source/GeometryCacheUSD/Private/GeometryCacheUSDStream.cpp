@@ -1,224 +1,146 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GeometryCacheUSDStream.h"
-#include "Async/Async.h"
+#include "DerivedDataCacheInterface.h"
 #include "GeometryCacheMeshData.h"
-#include "Misc/ScopeLock.h"
+#include "GeometryCacheTrackUSD.h"
+#include "HAL/IConsoleManager.h"
+#include "Misc/CoreMisc.h"
+#include "USDGeomMeshConversion.h"
+
+static bool GUsdStreamCacheInDDC = true;
+static FAutoConsoleVariableRef CVarUsdStreamCacheInDDC(
+	TEXT("GeometryCache.Streamer.UsdStream.CacheInDDC"),
+	GUsdStreamCacheInDDC,
+	TEXT("Cache the streamed USD mesh data in the DDC"));
 
 static int32 kUsdReadConcurrency = 10;
 
-struct FGeometryCacheUsdStreamReadRequest
+// If UsdStream derived data needs to be rebuilt (new format, serialization
+// differences, etc.) replace the version GUID below with a new one.
+// In case of merge conflicts with DDC versions, you MUST generate a new GUID
+// and set this new GUID as the version.
+#define USDSTREAM_DERIVED_DATA_VERSION TEXT("040845A286FE431A846D95D9B77EE756")
+
+class FUsdStreamDDCUtils
 {
-	FGeometryCacheMeshData* MeshData;
-	int32 ReadIndex;
-	int32 FrameIndex;
-	bool Completed;
+private:
+	static const FString& GetUsdStreamDerivedDataVersion()
+	{
+		static FString CachedVersionString(USDSTREAM_DERIVED_DATA_VERSION);
+		return CachedVersionString;
+	}
+
+	static FString BuildDerivedDataKey(const FString& KeySuffix)
+	{
+		return FDerivedDataCacheInterface::BuildCacheKey(TEXT("USDSTREAM_"), *GetUsdStreamDerivedDataVersion(), *KeySuffix);
+	}
+
+public:
+	static FString GetUsdStreamDDCKey(const UE::FUsdStage& Stage, const FString& PrimPath, int32 FrameIndex)
+	{
+#if USE_USD_SDK
+		FString PrimHash = UsdUtils::HashGeomMeshPrim(Stage, PrimPath, FrameIndex);
+
+		if (!PrimHash.IsEmpty())
+		{
+			return BuildDerivedDataKey(PrimHash);
+		}
+#endif
+		return {};
+	}
 };
 
-FGeometryCacheUsdStream::FGeometryCacheUsdStream(UGeometryCacheTrackUsd* InUsdTrack, FReadUsdMeshFunction InReadFunc, const FString& InPrimPath)
-: UsdTrack(InUsdTrack)
+FGeometryCacheUsdStream::FGeometryCacheUsdStream(UGeometryCacheTrackUsd* InUsdTrack, FReadUsdMeshFunction InReadFunc)
+: FGeometryCacheStreamBase(
+	kUsdReadConcurrency,
+	FGeometryCacheStreamDetails{
+		InUsdTrack->GetEndFrameIndex() - InUsdTrack->GetStartFrameIndex(),
+		float((InUsdTrack->GetEndFrameIndex() - InUsdTrack->GetStartFrameIndex()) / InUsdTrack->CurrentStagePinned.GetFramesPerSecond()),
+		float(1.0f / InUsdTrack->CurrentStagePinned.GetFramesPerSecond()),
+		InUsdTrack->GetStartFrameIndex(),
+		InUsdTrack->GetEndFrameIndex()})
+, UsdTrack(InUsdTrack)
 , ReadFunc(InReadFunc)
-, bCancellationRequested(false)
-, PrimPath(InPrimPath)
 {
-	for (int32 Index = 0; Index < kUsdReadConcurrency; ++Index)
-	{
-		// Populate the ReadIndices. Note that it used as a stack
-		ReadIndices.Push(Index);
-
-		// Populate pool of reusable ReadRequests
-		ReadRequestsPool.Add(new FGeometryCacheUsdStreamReadRequest());
-	}
-}
-
-FGeometryCacheUsdStream::~FGeometryCacheUsdStream()
-{
-	CancelRequests();
-
-	// Delete all the cached MeshData
-	FScopeLock Lock(&CriticalSection);
-	for (FFrameIndexToMeshData::TIterator Iterator = FramesAvailable.CreateIterator(); Iterator; ++Iterator)
-	{
-		delete Iterator->Value;
-	}
-
-	// And ReadRequests from the pool
-	for (int32 Index = 0; Index < ReadRequestsPool.Num(); ++Index)
-	{
-		delete ReadRequestsPool[Index];
-	}
-}
-
-int32 FGeometryCacheUsdStream::CancelRequests()
-{
-	TGuardValue<TAtomic<bool>, bool> CancellationRequested(bCancellationRequested, true);
-
-	// Clear the FramesNeeded to prevent scheduling further reads
-	FramesNeeded.Empty();
-
-	// Wait for all read requests to complete
-	TArray<int32> CompletedFrames;
-	while (FramesRequested.Num())
-	{
-		UpdateRequestStatus(CompletedFrames);
-		if (FramesRequested.Num())
-		{
-			FPlatformProcess::Sleep(0.01f);
-		}
-	}
-
-	return CompletedFrames.Num();
-}
-
-bool FGeometryCacheUsdStream::RequestFrameData(int32 FrameIndex)
-{
-	check(IsInGameThread());
-
-	// Don't schedule the same FrameIndex twice
-	for (int32 Index = 0; Index < FramesRequested.Num(); ++Index)
-	{
-		if (FramesRequested[Index]->FrameIndex == FrameIndex)
-		{
-			return true;
-		}
-	}
-
-	if (ReadIndices.Num() > 0)
-	{
-		// Get any ReadIndex available
-		const int32 ReadIndex = ReadIndices.Pop();
-
-		// Take the ReadRequest from the pool at ReadIndex and initialize it
-		FGeometryCacheUsdStreamReadRequest*& ReadRequest = ReadRequestsPool[ReadIndex];
-		ReadRequest->FrameIndex = FrameIndex;
-		ReadRequest->ReadIndex = ReadIndex;
-		ReadRequest->MeshData = new FGeometryCacheMeshData;
-		ReadRequest->Completed = false;
-
-		// Change the frame status from needed to requested
-		FramesNeeded.Remove(FrameIndex);
-		FramesRequested.Add(ReadRequest);
-
-		// Schedule asynchronous read of the MeshData
-		Async(
-#if WITH_EDITOR
-			EAsyncExecution::LargeThreadPool,
-#else
-			EAsyncExecution::ThreadPool,
-#endif // WITH_EDITOR
-			[this, ReadRequest]()
-			{
-				if (!bCancellationRequested)
-				{
-					ReadFunc(*ReadRequest->MeshData, PrimPath, ReadRequest->FrameIndex);
-				}
-				ReadRequest->Completed = true;
-			});
-
-		return true;
-	}
-	return false;
-}
-
-void FGeometryCacheUsdStream::UpdateRequestStatus(TArray<int32>& OutFramesCompleted)
-{
-	check(IsInGameThread());
-
-	FScopeLock Lock(&CriticalSection);
-
-	// Check the completion status of the read requests in progress
-	TArray<FGeometryCacheUsdStreamReadRequest*> CompletedRequests;
-	for (FGeometryCacheUsdStreamReadRequest* ReadRequest : FramesRequested)
-	{
-		if (ReadRequest->Completed)
-		{
-			// Queue for removal after iterating
-			CompletedRequests.Add(ReadRequest);
-
-			// Cache result of read for retrieval later
-			// #ueent_todo: Implement some sort of LRU cache to reduce memory usage
-			FramesAvailable.Add(ReadRequest->FrameIndex, ReadRequest->MeshData);
-
-			// Push back the ReadIndex for reuse
-			ReadIndices.Push(ReadRequest->ReadIndex);
-
-			// Output the completed frame
-			OutFramesCompleted.Add(ReadRequest->FrameIndex);
-		}
-	}
-
-	for (FGeometryCacheUsdStreamReadRequest* ReadRequest : CompletedRequests)
-	{
-		FramesRequested.Remove(ReadRequest);
-	}
-}
-
-void FGeometryCacheUsdStream::Prefetch(int32 StartFrameIndex, int32 NumFrames)
-{
-	const int32 StartIndex = UsdTrack->GetStartFrameIndex();
-	const int32 EndIndex = UsdTrack->GetEndFrameIndex();
-	const int32 MaxNumFrames = EndIndex - StartIndex;
-
-	// Validate the number of frames to be loaded
-	if (NumFrames == 0)
-	{
-		// If no value specified, load the whole stream
-		NumFrames = MaxNumFrames;
-	}
-	else
-	{
-		NumFrames = FMath::Clamp(NumFrames, 1, MaxNumFrames);
-	}
-
-	// Populate the list of frames needed to be loaded starting from given StartFrameIndex up to NumFrames or EndIndex
-	StartFrameIndex = FMath::Clamp(StartFrameIndex, StartIndex, EndIndex);
-	for (int32 Index = StartFrameIndex; NumFrames > 0 && Index < EndIndex; ++Index, --NumFrames)
-	{
-		FramesNeeded.Add(Index);
-	}
-
-	// End of the range might have been reached before the requested NumFrames so add the remaining frames starting from StartIndex
-	for (int32 Index = StartIndex; NumFrames > 0; ++Index, --NumFrames)
-	{
-		FramesNeeded.Add(Index);
-	}
-
-	if (FramesNeeded.Num() > 0)
-	{
-		// Force the first frame to be loaded and ready for retrieval
-		LoadFrameData(FramesNeeded[0]);
-		FramesNeeded.RemoveAt(0);
-	}
-}
-
-const TArray<int32>& FGeometryCacheUsdStream::GetFramesNeeded()
-{
-	return FramesNeeded;
 }
 
 bool FGeometryCacheUsdStream::GetFrameData(int32 FrameIndex, FGeometryCacheMeshData& OutMeshData)
 {
-	FScopeLock Lock(&CriticalSection);
-	if (FGeometryCacheMeshData** MeshDataPtr = FramesAvailable.Find(FrameIndex))
+	if (!FGeometryCacheStreamBase::GetFrameData(FrameIndex, OutMeshData))
 	{
-		OutMeshData = **MeshDataPtr;
-		return true;
+		// If the user requested a frame that isn't loaded yet, synchronously fetch it right away
+		// or else UGeometryCacheTrackUsd::GetSampleInfo may return invalid bounding boxes that may lead
+		// to issues, and wouldn't otherwise be updated until that frame is requested again.
+		// It may lead to a bit of stuttering when animating through an unloaded section with the sequencer
+		// or by dragging the Time property of the stage actor, but the alternative would be a spam of
+		// warnings on the output log and glitchy bounding boxes on the level
+		if (IsInGameThread())
+		{
+			LoadFrameData(FrameIndex);
+			return FGeometryCacheStreamBase::GetFrameData(FrameIndex, OutMeshData);
+		}
+		else
+		{
+			return false;
+		}
 	}
-	return false;
+	return true;
 }
 
-void FGeometryCacheUsdStream::LoadFrameData(int32 FrameIndex)
+void FGeometryCacheUsdStream::UpdateRequestStatus( TArray<int32>& OutFramesCompleted )
 {
-	check(IsInGameThread());
+	FGeometryCacheStreamBase::UpdateRequestStatus( OutFramesCompleted );
 
-	if (FramesAvailable.Contains(FrameIndex))
+	// We're fully done fetching what we need from USD for now, we can drop the track's strong stage reference so that the stage
+	// can close if needed
+	if ( FramesNeeded.Num() == 0 && FramesRequested.Num() == 0 && UsdTrack && UsdTrack->CurrentStagePinned )
+	{
+		UsdTrack->UnloadUsdStage();
+	}
+}
+
+void FGeometryCacheUsdStream::GetMeshData(int32 FrameIndex, int32 ConcurrencyIndex, FGeometryCacheMeshData& OutMeshData)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FGeometryCacheUsdStream::GetMeshData);
+
+	// Do this before calling the ReadFunc as FUsdStreamDDCUtils::GetUsdStreamDDCKey also needs a valid stage to work with
+	if ( !UsdTrack->LoadUsdStage() )
 	{
 		return;
 	}
 
-	// Synchronously load the requested frame data
-	FGeometryCacheMeshData* MeshData = new FGeometryCacheMeshData;
-	ReadFunc(*MeshData, PrimPath, FrameIndex);
+#if USE_USD_SDK
+	// Get the mesh data straight from the Alembic file or from the DDC if it's already cached
+	if (GUsdStreamCacheInDDC)
+	{
+		const FString& UsdPrimPath = UsdTrack->PrimPath;
+		const FString DerivedDataKey = FUsdStreamDDCUtils::GetUsdStreamDDCKey(UsdTrack->CurrentStagePinned, UsdPrimPath, FrameIndex);
 
-	FramesAvailable.Add(FrameIndex, MeshData);
+		if (!DerivedDataKey.IsEmpty())
+		{
+			TArray<uint8> DerivedData;
+			if (GetDerivedDataCacheRef().GetSynchronous(*DerivedDataKey, DerivedData, UsdPrimPath))
+			{
+				FMemoryReader Ar(DerivedData, /*bIsPersistent=*/ true);
+				Ar << OutMeshData;
+			}
+			else
+			{
+				ReadFunc(UsdTrack, FrameIndex, OutMeshData);
+
+				FMemoryWriter Ar(DerivedData, true);
+				Ar << OutMeshData;
+
+				GetDerivedDataCacheRef().Put(*DerivedDataKey, DerivedData, UsdPrimPath);
+			}
+		}
+		// If the key is empty, it means the prim was invalid or not a mesh, so don't do anything
+	}
+	else
+#endif
+	{
+		// Synchronously load the requested frame data
+		ReadFunc(UsdTrack, FrameIndex, OutMeshData);
+	}
 }

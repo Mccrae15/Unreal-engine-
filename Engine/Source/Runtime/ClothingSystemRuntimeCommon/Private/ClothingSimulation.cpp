@@ -35,12 +35,19 @@ FClothingSimulationContextCommon::~FClothingSimulationContextCommon()
 
 void FClothingSimulationContextCommon::Fill(const USkeletalMeshComponent* InComponent, float InDeltaSeconds, float InMaxPhysicsDelta)
 {
+	// Deprecated version always fills RefToLocals with current animation results instead of using reference pose on initialization
+	const bool bIsInitialization = false;
+	Fill(InComponent, InDeltaSeconds, InMaxPhysicsDelta, bIsInitialization);
+}
+
+void FClothingSimulationContextCommon::Fill(const USkeletalMeshComponent* InComponent, float InDeltaSeconds, float InMaxPhysicsDelta, bool bIsInitialization)
+{
 	SCOPE_CYCLE_COUNTER(STAT_ClothFillContext);
 	LLM_SCOPE(ELLMTag::SkeletalMesh);
 
 	check(InComponent);
 	FillBoneTransforms(InComponent);
-	FillRefToLocals(InComponent);
+	FillRefToLocals(InComponent, bIsInitialization);
 	FillComponentToWorld(InComponent);
 	FillWorldGravity(InComponent);
 	FillWindVelocity(InComponent);
@@ -108,9 +115,26 @@ void FClothingSimulationContextCommon::FillBoneTransforms(const USkeletalMeshCom
 	}
 }
 
-void FClothingSimulationContextCommon::FillRefToLocals(const USkeletalMeshComponent* InComponent)
+void FClothingSimulationContextCommon::FillRefToLocals(const USkeletalMeshComponent* InComponent, bool bIsInitialization)
 {
 	RefToLocals.Reset();
+
+	// Constraints are initialized using bone distances upon initialization, so fill out reference pose
+	if (bIsInitialization)
+	{
+		const USkeletalMesh* const SkeletalMesh = InComponent->SkeletalMesh;
+		if (SkeletalMesh)
+		{
+			const int32 NumBones = SkeletalMesh->GetRefSkeleton().GetNum();
+			RefToLocals.AddUninitialized(NumBones);
+			for (int32 BoneIndex = 0; BoneIndex < NumBones; ++BoneIndex)
+			{
+				RefToLocals[BoneIndex] = FMatrix44f::Identity;
+			}
+		}
+		return;
+	}
+
 	InComponent->GetCurrentRefToLocalMatrices(RefToLocals, InComponent->GetPredictedLODLevel());
 }
 
@@ -162,13 +186,20 @@ FClothingSimulationCommon::~FClothingSimulationCommon()
 
 void FClothingSimulationCommon::FillContext(USkeletalMeshComponent* InComponent, float InDeltaTime, IClothingSimulationContext* InOutContext)
 {
+	// Deprecated version always fills RefToLocals with current animation results instead of using reference pose on initialization
+	const bool bIsInitialization = false;
+	FillContext(InComponent, InDeltaTime, InOutContext, bIsInitialization);
+}
+
+void FClothingSimulationCommon::FillContext(USkeletalMeshComponent* InComponent, float InDeltaTime, IClothingSimulationContext* InOutContext, bool bIsInitialization)
+{
 	check(InOutContext);
 	FClothingSimulationContextCommon* const Context = static_cast<FClothingSimulationContextCommon*>(InOutContext);
 
-	Context->Fill(InComponent, InDeltaTime, MaxPhysicsDelta);
+	Context->Fill(InComponent, InDeltaTime, MaxPhysicsDelta, bIsInitialization);
 
 	// Checking the component here to track rare issue leading to invalid contexts
-	if (InComponent->IsPendingKill())
+	if (!IsValid(InComponent))
 	{
 		const AActor* const CompOwner = InComponent->GetOwner();
 		UE_LOG(LogSkeletalMesh, Warning, 

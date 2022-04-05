@@ -42,6 +42,35 @@ void FDatasmithGLTFMaterialElement::SetTwoSided(bool bTwoSided)
 	MaterialElement->SetTwoSided(bTwoSided);
 }
 
+void FDatasmithGLTFMaterialElement::SetShadingModel(GLTF::EGLTFMaterialShadingModel InShadingModel)
+{
+	EDatasmithShadingModel DatasmithShadingModel;
+
+	switch (InShadingModel)
+	{
+		case GLTF::EGLTFMaterialShadingModel::ClearCoat: 
+			DatasmithShadingModel = EDatasmithShadingModel::ClearCoat; 
+			break;
+		case GLTF::EGLTFMaterialShadingModel::Subsurface:
+			DatasmithShadingModel = EDatasmithShadingModel::Subsurface;
+			break;
+		case GLTF::EGLTFMaterialShadingModel::ThinTranslucent:
+			DatasmithShadingModel = EDatasmithShadingModel::ThinTranslucent;
+			break;
+		case GLTF::EGLTFMaterialShadingModel::DefaultLit:
+			DatasmithShadingModel = EDatasmithShadingModel::DefaultLit;
+			break;
+		default: DatasmithShadingModel = EDatasmithShadingModel::DefaultLit;
+	}
+
+	MaterialElement->SetShadingModel(DatasmithShadingModel);
+}
+
+void FDatasmithGLTFMaterialElement::SetTranslucencyLightingMode(int InLightingMode)
+{
+	MaterialElement->SetTranslucencyLightingMode(InLightingMode);
+}
+
 void FDatasmithGLTFMaterialElement::Finalize()
 {
 	check(!bIsFinal);
@@ -56,17 +85,46 @@ void FDatasmithGLTFMaterialElement::Finalize()
 	ConnectInput(Opacity, MaterialExpressions, MaterialElement->GetOpacity());
 	ConnectInput(Refraction, MaterialExpressions, MaterialElement->GetRefraction());
 	ConnectInput(Normal, MaterialExpressions, MaterialElement->GetNormal());
-	ConnectInput(WorldDisplacement, MaterialExpressions, MaterialElement->GetWorldDisplacement());
 	ConnectInput(AmbientOcclusion, MaterialExpressions, MaterialElement->GetAmbientOcclusion());
+	ConnectInput(ClearCoat, MaterialExpressions, MaterialElement->GetClearCoat());
+	ConnectInput(ClearCoatRoughness, MaterialExpressions, MaterialElement->GetClearCoatRoughness());
+
+	if (ThinTranslucentMaterialOutput)
+	{
+		const int32 ThinTranslucentExpressionIndex = Expressions.Find(ThinTranslucentMaterialOutput);
+		check(ThinTranslucentExpressionIndex != INDEX_NONE);
+		IDatasmithMaterialExpression* ThinTranslucentMaterialExpression = MaterialExpressions[ThinTranslucentExpressionIndex];
+
+		GLTF::FMaterialExpressionInput* ThinTranslucentInput = ThinTranslucentMaterialOutput->GetInput(0);
+
+		if (ThinTranslucentInput && ThinTranslucentMaterialExpression)
+		{
+			ConnectInput(*ThinTranslucentInput, MaterialExpressions, *ThinTranslucentMaterialExpression->GetInput(0));
+		}
+	}
+
+	if (ClearCoatBottomNormalOutput)
+	{
+		const int32 ClearCoatBottomNormalOutputIndex = Expressions.Find(ClearCoatBottomNormalOutput);
+		check(ClearCoatBottomNormalOutputIndex != INDEX_NONE);
+		IDatasmithMaterialExpression* ClearCoatBottomNormalMaterialExpression = MaterialExpressions[ClearCoatBottomNormalOutputIndex];
+
+		GLTF::FMaterialExpressionInput* ClearCoatBottomNormalInput = ClearCoatBottomNormalOutput->GetInput(0);
+
+		if (ClearCoatBottomNormalInput && ClearCoatBottomNormalMaterialExpression)
+		{
+			ConnectInput(*ClearCoatBottomNormalInput, MaterialExpressions, *ClearCoatBottomNormalMaterialExpression->GetInput(0));
+		}
+	}
 
 	bIsFinal = true;
 }
 
-void FDatasmithGLTFMaterialElement::CreateExpressions(TArray<IDatasmithMaterialExpression*>& MaterialExpressions) const
+void FDatasmithGLTFMaterialElement::CreateExpressions(TArray<IDatasmithMaterialExpression*>& MaterialExpressions)
 {
 	MaterialExpressions.Empty(Expressions.Num());
 
-	for (const GLTF::FMaterialExpression* Expression : Expressions)
+	for (GLTF::FMaterialExpression* Expression : Expressions)
 	{
 		using namespace DatasmithGLTFImporterImpl;
 
@@ -98,11 +156,22 @@ void FDatasmithGLTFMaterialElement::CreateExpressions(TArray<IDatasmithMaterialE
 			break;
 			case GLTF::EMaterialExpressionType::Generic:
 			{
-				const GLTF::FMaterialExpressionGeneric& GenericExpression = *static_cast<const GLTF::FMaterialExpressionGeneric*>(Expression);
-				IDatasmithMaterialExpressionGeneric*    NewExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionGeneric>();
-				NewExpression->SetExpressionName(GenericExpression.GetExpressionName());
+				GLTF::FMaterialExpressionGeneric* GenericExpression = static_cast<GLTF::FMaterialExpressionGeneric*>(Expression);
+				IDatasmithMaterialExpressionGeneric* NewExpression = MaterialElement->AddMaterialExpression<IDatasmithMaterialExpressionGeneric>();
+				const FString ExprName(GenericExpression->GetExpressionName());
+				NewExpression->SetExpressionName(*ExprName);
 
-				for (const TPair<FString, bool>& NameValue : GenericExpression.GetBoolProperties())
+				// Check for special expressions
+				if (ExprName == "ClearCoatNormalCustomOutput")
+				{
+					ClearCoatBottomNormalOutput = GenericExpression;
+				}
+				else if (ExprName == "ThinTranslucentMaterialOutput")
+				{
+					ThinTranslucentMaterialOutput = GenericExpression;
+				}
+
+				for (const TPair<FString, bool>& NameValue : GenericExpression->GetBoolProperties())
 				{
 					TSharedPtr<IDatasmithKeyValueProperty> PropertyPtr = FDatasmithSceneFactory::CreateKeyValueProperty(*NameValue.Key);
 					PropertyPtr->SetPropertyType(EDatasmithKeyValuePropertyType::Bool);
@@ -110,7 +179,7 @@ void FDatasmithGLTFMaterialElement::CreateExpressions(TArray<IDatasmithMaterialE
 					NewExpression->AddProperty(PropertyPtr);
 				}
 
-				for (const TPair<FString, float>& NameValue : GenericExpression.GetFloatProperties())
+				for (const TPair<FString, float>& NameValue : GenericExpression->GetFloatProperties())
 				{
 					TSharedPtr<IDatasmithKeyValueProperty> PropertyPtr = FDatasmithSceneFactory::CreateKeyValueProperty(*NameValue.Key);
 					PropertyPtr->SetPropertyType(EDatasmithKeyValuePropertyType::Float);

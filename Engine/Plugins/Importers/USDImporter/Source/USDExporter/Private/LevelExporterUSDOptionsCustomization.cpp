@@ -3,7 +3,9 @@
 #include "LevelExporterUSDOptionsCustomization.h"
 
 #include "LevelExporterUSDOptions.h"
+#include "LevelSequenceExporterUSDOptions.h"
 
+#include "Brushes/SlateColorBrush.h"
 #include "CoreMinimal.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
@@ -30,9 +32,11 @@ namespace UE
 				SLATE_BEGIN_ARGS(SLevelPickerRow) {}
 				SLATE_END_ARGS()
 
-				void Construct( const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTableView, TWeakPtr<FString> InEntry, ULevelExporterUSDOptions* Options )
+				void Construct( const FArguments& InArgs, const TSharedRef<STableViewBase>& OwnerTableView, TWeakPtr<FString> InEntry, FLevelExporterUSDOptionsInner* Inner )
 				{
 					STableRow::Construct( STableRow::FArguments(), OwnerTableView );
+
+					SetBorderBackgroundColor( FLinearColor::Transparent );
 
 					FString LevelName;
 					if ( TSharedPtr<FString> PinnedEntry = InEntry.Pin() )
@@ -49,28 +53,28 @@ namespace UE
 						.MaxWidth(20)
 						[
 							SNew( SCheckBox )
-							.IsChecked_Lambda( [ LevelName, Options ]()
+							.IsChecked_Lambda( [ LevelName, Inner ]()
 							{
-								if ( Options )
+								if ( Inner )
 								{
-									return Options->LevelsToIgnore.Contains( LevelName )
+									return Inner->LevelsToIgnore.Contains( LevelName )
 										? ECheckBoxState::Unchecked
 										: ECheckBoxState::Checked;
 								}
 
 								return ECheckBoxState::Undetermined;
 							})
-							.OnCheckStateChanged_Lambda( [ LevelName, Options ]( ECheckBoxState State )
+							.OnCheckStateChanged_Lambda( [ LevelName, Inner ]( ECheckBoxState State )
 							{
-								if ( Options )
+								if ( Inner )
 								{
 									if ( State == ECheckBoxState::Checked )
 									{
-										Options->LevelsToIgnore.Remove( LevelName );
+										Inner->LevelsToIgnore.Remove( LevelName );
 									}
 									else if ( State == ECheckBoxState::Unchecked )
 									{
-										Options->LevelsToIgnore.Add( LevelName );
+										Inner->LevelsToIgnore.Add( LevelName );
 									}
 								}
 							})
@@ -91,44 +95,34 @@ namespace UE
 			class SLevelPickerList : public SListView<TSharedRef<FString>>
 			{
 			public:
-				void Construct( const FArguments& InArgs, ULevelExporterUSDOptions* Options )
+				void Construct( const FArguments& InArgs, FLevelExporterUSDOptionsInner* Inner, UWorld* WorldToExport )
 				{
-					// We'll be writing directly to its LevelsToIgnore, so keep it alive while we're alive
-					OptionsPtr.Reset( Options );
-
-					Options->LevelsToIgnore.Reset();
-
-					if ( UWorld* EditorWorld = GEditor->GetEditorWorldContext().World() )
+					if ( !Inner || !WorldToExport )
 					{
-						// Make sure all streamed levels are loaded so we can query their names and export them
-						const bool bForce = true;
-						EditorWorld->LoadSecondaryLevels( bForce );
+						return;
+					}
 
-						if ( ULevel* PersistentLevel = EditorWorld->PersistentLevel )
+					if ( ULevel* PersistentLevel = WorldToExport->PersistentLevel )
+					{
+						const FString LevelName = TEXT( "Persistent Level" );
+						RootItems.Add( MakeShared< FString >( LevelName ) );
+						if ( !PersistentLevel->bIsVisible )
 						{
-							const FString LevelName = TEXT( "Persistent Level" );
-							RootItems.Add( MakeShared< FString >( LevelName ) );
-
-							if ( !PersistentLevel->bIsVisible )
-							{
-								Options->LevelsToIgnore.Add( LevelName );
-							}
+							Inner->LevelsToIgnore.Add( LevelName );
 						}
+					}
 
-						for ( ULevelStreaming* StreamingLevel : EditorWorld->GetStreamingLevels() )
+					for ( ULevelStreaming* StreamingLevel : WorldToExport->GetStreamingLevels() )
+					{
+						if ( StreamingLevel )
 						{
-							if ( StreamingLevel )
-							{
-								if ( ULevel* Level = StreamingLevel->GetLoadedLevel() )
-								{
-									const FString LevelName = Level->GetTypedOuter<UWorld>()->GetName();
-									RootItems.Add( MakeShared< FString >( *LevelName ) );
+							const FString LevelName = FPaths::GetBaseFilename( StreamingLevel->GetWorldAssetPackageName() );
 
-									if ( !Level->bIsVisible )
-									{
-										Options->LevelsToIgnore.Add( LevelName );
-									}
-								}
+							RootItems.Add( MakeShared< FString >( *LevelName ) );
+
+							if ( !StreamingLevel->GetShouldBeVisibleInEditor() )
+							{
+								Inner->LevelsToIgnore.Add( LevelName );
 							}
 						}
 					}
@@ -138,17 +132,19 @@ namespace UE
 						SListView::FArguments()
 						.ListItemsSource( &RootItems )
 						.SelectionMode( ESelectionMode::None )
-						.OnGenerateRow( this, &SLevelPickerList::OnGenerateRow, Options )
+						.OnGenerateRow( this, &SLevelPickerList::OnGenerateRow, Inner )
 					);
+
+					static FSlateColorBrush TransparentBrush{ FLinearColor::Transparent };
+					SetBackgroundBrush( &TransparentBrush );
 				}
 
 			private:
-				TSharedRef< ITableRow > OnGenerateRow( TSharedRef<FString> InEntry, const TSharedRef<STableViewBase>& OwnerTable, ULevelExporterUSDOptions* Options ) const
+				TSharedRef< ITableRow > OnGenerateRow( TSharedRef<FString> InEntry, const TSharedRef<STableViewBase>& OwnerTable, FLevelExporterUSDOptionsInner* Inner ) const
 				{
-					return SNew( SLevelPickerRow, OwnerTable, InEntry, Options );
+					return SNew( SLevelPickerRow, OwnerTable, InEntry, Inner );
 				}
 
-				TStrongObjectPtr<ULevelExporterUSDOptions> OptionsPtr;
 				TArray< TSharedRef<FString> > RootItems;
 			};
 		}
@@ -169,29 +165,114 @@ void FLevelExporterUSDOptionsCustomization::CustomizeDetails(IDetailLayoutBuilde
 		return;
 	}
 
-	ULevelExporterUSDOptions* Options = Cast< ULevelExporterUSDOptions>( SelectedObjects[ 0 ].Get() );
-	if ( !Options )
+	TSharedPtr< LevelExporterUSDImpl::SLevelPickerList > PickerTree = nullptr;
+	TStrongObjectPtr<UObject> OptionsPtr;
+	FName LevelFilterPropName;
+	FName ExportSublayersPropName;
+	FName TexturesDirPropName;
+	FName SublayersCategoryName;
+	TAttribute<bool> SublayersEditCondition;
+
+	if ( ULevelExporterUSDOptions* Options = Cast< ULevelExporterUSDOptions>( SelectedObjects[ 0 ].Get() ) )
+	{
+		OptionsPtr.Reset( Options );
+
+		UAssetExportTask* Task = Options->CurrentTask.Get();
+
+		UWorld* World = Task
+			? Cast<UWorld>( Task->Object )
+			: GEditor->GetEditorWorldContext().World();
+
+		PickerTree = SNew( LevelExporterUSDImpl::SLevelPickerList, &Options->Inner, World );
+		LevelFilterPropName = TEXT( "Inner.LevelsToIgnore" );
+		ExportSublayersPropName = TEXT( "Inner.bExportSublayers" );
+		TexturesDirPropName = TEXT( "Inner.AssetOptions.MaterialBakingOptions.TexturesDir" );
+		SublayersCategoryName = TEXT( "Sublayers" );
+
+		SublayersEditCondition = true;
+	}
+	else if ( ULevelSequenceExporterUsdOptions* LevelSequenceOptions = Cast< ULevelSequenceExporterUsdOptions>( SelectedObjects[ 0 ].Get() ) )
+	{
+		OptionsPtr.Reset( LevelSequenceOptions );
+
+		// For now there is no easy way of fetching the level to export from a ULevelSequence... we could potentially try to guess what it is
+		// by looking at the soft object paths, but even those aren't exposed, so here we just default to using the current level as the export level.
+		if ( LevelSequenceOptions->Level == nullptr )
+		{
+			LevelSequenceOptions->Level = GWorld;
+		}
+
+		PickerTree = SNew( LevelExporterUSDImpl::SLevelPickerList, &LevelSequenceOptions->LevelExportOptions, LevelSequenceOptions->Level->GetWorld() );
+		LevelFilterPropName = TEXT( "LevelExportOptions.LevelsToIgnore" );
+		ExportSublayersPropName = TEXT( "LevelExportOptions.bExportSublayers" );
+		TexturesDirPropName = TEXT( "LevelExportOptions.AssetOptions.MaterialBakingOptions.TexturesDir" );
+		SublayersCategoryName = TEXT( "Level Export" );
+
+		// Refresh the dialog whenever we pick a new world to export, so that we can show this world's sublevels in the sublevel picker
+		FSimpleDelegate RebuildDisplayDelegate = FSimpleDelegate::CreateLambda( [&DetailLayoutBuilder]()
+		{
+			DetailLayoutBuilder.ForceRefreshDetails();
+		});
+		TSharedRef<IPropertyHandle> LevelToExportProp = DetailLayoutBuilder.GetProperty( GET_MEMBER_NAME_CHECKED( ULevelSequenceExporterUsdOptions, Level ) );
+		LevelToExportProp->SetOnPropertyValueChanged( RebuildDisplayDelegate );
+
+		// Only let us pick the sublayer options if we're exporting a level with the level sequence
+		TSharedRef<IPropertyHandle> ExportLevelProp = DetailLayoutBuilder.GetProperty( GET_MEMBER_NAME_CHECKED( ULevelSequenceExporterUsdOptions, bExportLevel ) );
+		SublayersEditCondition = TAttribute<bool>::Create( [this, ExportLevelProp]()
+		{
+			bool bExportingLevel = true;
+			ExportLevelProp->GetValue( bExportingLevel );
+			return bExportingLevel;
+		});
+	}
+	else
 	{
 		return;
 	}
 
-	TSharedPtr< LevelExporterUSDImpl::SLevelPickerList > PickerTree = SNew( LevelExporterUSDImpl::SLevelPickerList, Options );
-
-	TSharedRef<IPropertyHandle> LevelFilterProp = DetailLayoutBuilder.GetProperty( GET_MEMBER_NAME_CHECKED( ULevelExporterUSDOptions, LevelsToIgnore ) );
-	TSharedRef<IPropertyHandle> ExportSublayersProp = DetailLayoutBuilder.GetProperty( GET_MEMBER_NAME_CHECKED( ULevelExporterUSDOptions, bExportSublayers ) );
+	TSharedRef<IPropertyHandle> LevelFilterProp = DetailLayoutBuilder.GetProperty( LevelFilterPropName );
+	TSharedRef<IPropertyHandle> ExportSublayersProp = DetailLayoutBuilder.GetProperty( ExportSublayersPropName );
 
 	// Touch these properties and categories to enforce this ordering
 	DetailLayoutBuilder.EditCategory( TEXT( "Stage options" ) );
 	DetailLayoutBuilder.EditCategory( TEXT( "Export settings" ) );
-	DetailLayoutBuilder.EditCategory( TEXT( "Sublayers" ) );
-	DetailLayoutBuilder.AddPropertyToCategory( ExportSublayersProp );
+	IDetailCategoryBuilder& AssetOptionsCategory = DetailLayoutBuilder.EditCategory( TEXT( "Asset options" ) );
 
+	// Promote all AssetOptions up a level on LevelExportUsdOptions or else we'll end up with a property named AssetOptions inside the AssetOptions category
+	// This is the same effect as ShowOnlyInnerProperties, but in this case we need to do it manually as it doesn't work recursively
+	if ( TSharedPtr<IPropertyHandle> AssetOptionsProperty = DetailLayoutBuilder.GetProperty( TEXT( "Inner.AssetOptions" ) ) )
+	{
+		DetailLayoutBuilder.HideProperty( AssetOptionsProperty );
+
+		uint32 NumChildren = 0;
+		if ( AssetOptionsProperty->GetNumChildren( NumChildren ) == FPropertyAccess::Result::Success )
+		{
+			for ( uint32 Index = 0; Index < NumChildren; ++Index )
+			{
+				TSharedPtr<IPropertyHandle> ChildProperty = AssetOptionsProperty->GetChildHandle( Index );
+				AssetOptionsCategory.AddProperty( ChildProperty );
+			}
+		}
+	}
+
+	// Hide the textures dir property because we'll add multiple textures folders (one next to each exported material)
+	TSharedPtr<IPropertyHandle> TexturesDirProperty = DetailLayoutBuilder.GetProperty( TexturesDirPropName );
+	if ( TexturesDirProperty->IsValidHandle() )
+	{
+		DetailLayoutBuilder.HideProperty( TexturesDirProperty );
+	}
+
+	DetailLayoutBuilder.EditCategory( TEXT( "Landscape options" ) );
+
+	// Customize the level filter picker widget
 	DetailLayoutBuilder.HideProperty( LevelFilterProp );
-	DetailLayoutBuilder.AddCustomRowToCategory( LevelFilterProp, LevelFilterProp->GetPropertyDisplayName() )
+	IDetailCategoryBuilder& CatBuilder = DetailLayoutBuilder.EditCategory( SublayersCategoryName );
+	CatBuilder.AddProperty( ExportSublayersProp ).EditCondition( SublayersEditCondition, nullptr );
+	CatBuilder.AddCustomRow( LevelFilterProp->GetPropertyDisplayName() )
 	.NameContent()
 	[
 		SNew( STextBlock )
-		.Text( FText::FromString( TEXT( "Levels to export" ) ) )
+		.Text( FText::FromString( TEXT( "Levels To Export" ) ) )
 		.Font( FEditorStyle::GetFontStyle( TEXT( "PropertyWindow.NormalFont" ) ) )
 	]
 	.ValueContent()
@@ -205,7 +286,7 @@ void FLevelExporterUSDOptionsCustomization::CustomizeDetails(IDetailLayoutBuilde
 				PickerTree.ToSharedRef()
 			]
 		]
-	];
+	].EditCondition( SublayersEditCondition, nullptr );
 }
 
 #undef LOCTEXT_NAMESPACE

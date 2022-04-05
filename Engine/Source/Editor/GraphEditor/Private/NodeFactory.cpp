@@ -6,6 +6,7 @@
 #include "InputCoreTypes.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "MaterialGraph/MaterialGraphNode_Comment.h"
+#include "MaterialGraph/MaterialGraphNode_Composite.h"
 #include "MaterialGraph/MaterialGraphNode_Base.h"
 #include "MaterialGraph/MaterialGraphNode.h"
 #include "MaterialGraph/MaterialGraphNode_Root.h"
@@ -32,13 +33,14 @@
 #include "K2Node_SpawnActorFromClass.h"
 #include "K2Node_Switch.h"
 #include "K2Node_Timeline.h"
-
+#include "K2Node_PromotableOperator.h"
 
 #include "SGraphNodeDefault.h"
 #include "SGraphNodeComment.h"
 #include "SGraphNodeDocumentation.h"
 #include "EdGraph/EdGraphNode_Documentation.h"
 #include "SGraphNodeKnot.h"
+#include "SGraphNodePromotableOperator.h"
 
 #include "KismetNodes/SGraphNodeK2Default.h"
 #include "KismetNodes/SGraphNodeK2Var.h"
@@ -75,6 +77,7 @@
 
 #include "MaterialNodes/SGraphNodeMaterialBase.h"
 #include "MaterialNodes/SGraphNodeMaterialComment.h"
+#include "MaterialNodes/SGraphNodeMaterialComposite.h"
 #include "MaterialNodes/SGraphNodeMaterialResult.h"
 #include "MaterialGraphNode_Knot.h"
 
@@ -124,7 +127,14 @@ TSharedPtr<SGraphNode> FNodeFactory::CreateNodeWidget(UEdGraphNode* InNode)
 		}
 		else if (UMaterialGraphNode* MaterialNode = Cast<UMaterialGraphNode>(InNode))
 		{
-			return SNew(SGraphNodeMaterialBase, MaterialNode);
+			if (UMaterialGraphNode_Composite* MaterialComposite = Cast<UMaterialGraphNode_Composite>(InNode))
+			{
+				return SNew(SGraphNodeMaterialComposite, MaterialComposite);
+			}
+			else
+			{
+				return SNew(SGraphNodeMaterialBase, MaterialNode);
+			}
 		}
 	}
 
@@ -141,6 +151,10 @@ TSharedPtr<SGraphNode> FNodeFactory::CreateNodeWidget(UEdGraphNode* InNode)
 		else if (UK2Node_Switch* SwitchNode = Cast<UK2Node_Switch>(InNode))
 		{
 			return SNew(SGraphNodeSwitchStatement, SwitchNode);
+		}
+		else if(UK2Node_PromotableOperator* PromotableOperator = Cast<UK2Node_PromotableOperator>(InNode))
+		{
+			return SNew(SGraphNodePromotableOperator, PromotableOperator);
 		}
 		else if (InNode->GetClass()->ImplementsInterface(UK2Node_AddPinInterface::StaticClass()))
 		{
@@ -307,9 +321,9 @@ TSharedPtr<SGraphPin> FNodeFactory::CreateK2PinWidget(UEdGraphPin* InPin)
 	{
 		return SNew(SGraphPinNum<int64>, InPin);
 	}
-	else if (InPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Float)
+	else if (InPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Real)
 	{
-		return SNew(SGraphPinNum<float>, InPin);
+		return SNew(SGraphPinNum<double>, InPin);
 	}
 	else if (InPin->PinType.PinCategory == UEdGraphSchema_K2::PC_String || InPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Name)
 	{
@@ -320,6 +334,7 @@ TSharedPtr<SGraphPin> FNodeFactory::CreateK2PinWidget(UEdGraphPin* InPin)
 		// If you update this logic you'll probably need to update UEdGraphSchema_K2::ShouldHidePinDefaultValue!
 		UScriptStruct* ColorStruct = TBaseStructure<FLinearColor>::Get();
 		UScriptStruct* VectorStruct = TBaseStructure<FVector>::Get();
+		UScriptStruct* Vector3fStruct = TVariantStructure<FVector3f>::Get();
 		UScriptStruct* Vector2DStruct = TBaseStructure<FVector2D>::Get();
 		UScriptStruct* RotatorStruct = TBaseStructure<FRotator>::Get();
 
@@ -327,7 +342,7 @@ TSharedPtr<SGraphPin> FNodeFactory::CreateK2PinWidget(UEdGraphPin* InPin)
 		{
 			return SNew(SGraphPinColor, InPin);
 		}
-		else if ((InPin->PinType.PinSubCategoryObject == VectorStruct) || (InPin->PinType.PinSubCategoryObject == RotatorStruct))
+		else if ((InPin->PinType.PinSubCategoryObject == VectorStruct) || (InPin->PinType.PinSubCategoryObject == Vector3fStruct) || (InPin->PinType.PinSubCategoryObject == RotatorStruct))
 		{
 			return SNew(SGraphPinVector, InPin);
 		}

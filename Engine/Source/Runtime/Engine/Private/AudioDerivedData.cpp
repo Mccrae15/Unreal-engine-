@@ -11,6 +11,7 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Sound/SoundWave.h"
+#include "Async/Async.h"
 #include "Sound/SoundEffectBase.h"
 #include "DerivedDataCacheInterface.h"
 #include "ProfilingDebugging/CookStats.h"
@@ -18,6 +19,7 @@
 #include "AudioCompressionSettingsUtils.h"
 #include "Sound/SoundSourceBus.h"
 #include "Sound/SoundWave.h"
+#include "Sound/SoundWaveProcedural.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAudioDerivedData, Log, All);
 
@@ -292,6 +294,11 @@ class FStreamedAudioCacheDerivedDataWorker : public FNonAbandonableTask
 	/** Build the streamed audio. This function is safe to call from any thread. */
 	void BuildStreamedAudio()
 	{
+		if (SoundWave.IsA<USoundWaveProcedural>())
+		{
+			return;
+		}
+
 		GetStreamedAudioDerivedDataKeySuffix(SoundWave, AudioFormatName, CompressionOverrides, KeySuffix);
 
 		DerivedData->Chunks.Empty();
@@ -324,7 +331,6 @@ class FStreamedAudioCacheDerivedDataWorker : public FNonAbandonableTask
 				int32 FirstChunkSize = MaxChunkSizeForCurrentWave;
 
 				const int32 MinimumChunkSize = AudioFormat->GetMinimumSizeForInitialChunk(AudioFormatName, CompressedBuffer);
-				const bool bUseStreamCaching = CompressionOverrides && CompressionOverrides->bUseStreamCaching;
 				const bool bForceLegacyStreamChunking = SoundWave.bStreaming && CompressionOverrides && CompressionOverrides->StreamCachingSettings.bForceLegacyStreamChunking;
 
 				// If the initial chunk  for this sound wave was overridden, use that:
@@ -332,7 +338,7 @@ class FStreamedAudioCacheDerivedDataWorker : public FNonAbandonableTask
 				{
 					FirstChunkSize = FMath::Max(MinimumChunkSize, SoundWave.InitialChunkSize);
 				}
-				else if (bUseStreamCaching)
+				else
 				{
 					// Ensure that the minimum chunk size is nonzero if our compressed buffer is not empty.
 					checkf(CompressedBuffer.Num() == 0 || MinimumChunkSize != 0, TEXT("To use Load On Demand, please override GetMinimumSizeForInitialChunk"));
@@ -355,7 +361,7 @@ class FStreamedAudioCacheDerivedDataWorker : public FNonAbandonableTask
 					}
 				}
 
-				if (bUseStreamCaching && !bForceLegacyStreamChunking)
+				if (!bForceLegacyStreamChunking)
 				{
 					// Use the chunk size for this duration:
 					MaxChunkSizeForCurrentWave = FPlatformCompressionUtilities::GetMaxChunkSizeForCookOverrides(CompressionOverrides);
@@ -413,7 +419,7 @@ class FStreamedAudioCacheDerivedDataWorker : public FNonAbandonableTask
 
 						int32 ZeroPadBytes = 0;
 
-						if (!bUseStreamCaching || bForceLegacyStreamChunking)
+						if (bForceLegacyStreamChunking)
 						{
 							// padding when stream caching is enabled will significantly bloat the amount of space soundwaves take up on disk.
 							ZeroPadBytes = FMath::Max(MaxChunkSizeForCurrentWave - AudioDataSize, 0);
@@ -554,7 +560,7 @@ public:
 			}
 			else
 			{
-				bSucceeded = DerivedData->AreDerivedChunksAvailable();
+				bSucceeded = DerivedData->AreDerivedChunksAvailable(SoundWave.GetPathName());
 			}
 			bLoadedFromDDC = true;
 		}
@@ -804,7 +810,7 @@ int32 FStreamedAudioPlatformData::GetChunkFromDDC(int32 ChunkIndex, uint8** OutC
 {
 	if (Chunks.Num() == 0)
 	{
-		UE_LOG(LogAudioDerivedData, Warning, TEXT("No streamed audio chunks found!"));
+		UE_LOG(LogAudioDerivedData, Display, TEXT("No streamed audio chunks found!"));
 		return 0;
 	}
 
@@ -845,22 +851,21 @@ int32 FStreamedAudioPlatformData::GetChunkFromDDC(int32 ChunkIndex, uint8** OutC
 			if (OutChunkData)
 			{
 				ChunkDataSize = Chunk.BulkData.GetBulkDataSize();
-				Chunk.BulkData.GetCopy((void**)OutChunkData, true);
+				Chunk.GetCopy((void**)OutChunkData);
 			}
 		}
 	}
 
 	// Wait for async DDC to complete
-	// TODO: Not necessary since bMakeSureChunkIsLoaded was introduced. 
-	// Also, if you do this- why not just call DDC.GetSynchronous?
-// 	if (Chunk.DerivedDataKey.IsEmpty() == false)
-// 	{
-// 		DDC.WaitAsynchronousCompletion(AsyncHandle);
-// 		if (DDC.GetAsynchronousResults(AsyncHandle, TempData))
-// 		{
-// 			ChunkDataSize = DeserializeChunkFromDDC(TempData, Chunk, ChunkIndex, OutChunkData);
-// 		}
-// 	}
+	// Necessary otherwise we will return a ChunkDataSize of 0 which is considered a failure by most callers and will trigger rebuild. 
+	if (Chunk.DerivedDataKey.IsEmpty() == false && AsyncHandle)
+	{
+		DDC.WaitAsynchronousCompletion(AsyncHandle);
+		if (DDC.GetAsynchronousResults(AsyncHandle, TempData))
+		{
+			ChunkDataSize = DeserializeChunkFromDDC(TempData, Chunk, ChunkIndex, OutChunkData);
+		}
+	}
 #else // #if WITH_EDITORONLY_DATA
 	// Load chunk from bulk data if available. If the chunk is not loaded, GetCopy will load it synchronously.
 	if (Chunk.BulkData.IsBulkDataLoaded() || bMakeSureChunkIsLoaded)
@@ -868,7 +873,7 @@ int32 FStreamedAudioPlatformData::GetChunkFromDDC(int32 ChunkIndex, uint8** OutC
 		if (OutChunkData)
 		{
 			ChunkDataSize = Chunk.BulkData.GetBulkDataSize();
-			Chunk.BulkData.GetCopy((void**)OutChunkData, true);
+			Chunk.GetCopy((void**)OutChunkData);
 		}
 	}
 #endif // #if WITH_EDITORONLY_DATA
@@ -876,20 +881,43 @@ int32 FStreamedAudioPlatformData::GetChunkFromDDC(int32 ChunkIndex, uint8** OutC
 }
 
 #if WITH_EDITORONLY_DATA
-bool FStreamedAudioPlatformData::AreDerivedChunksAvailable() const
+bool FStreamedAudioPlatformData::AreDerivedChunksAvailable(FStringView InContext) const
 {
-	bool bChunksAvailable = true;
-	FDerivedDataCacheInterface& DDC = GetDerivedDataCacheRef();
-	for (int32 ChunkIndex = 0; bChunksAvailable && ChunkIndex < Chunks.Num(); ++ChunkIndex)
+	TArray<FString> ChunkKeys;
+	for (const FStreamedAudioChunk& Chunk : Chunks)
 	{
-		const FStreamedAudioChunk& Chunk = Chunks[ChunkIndex];
-		if (Chunk.DerivedDataKey.IsEmpty() == false)
+		if (!Chunk.DerivedDataKey.IsEmpty())
 		{
-			bChunksAvailable = DDC.CachedDataProbablyExists(*Chunk.DerivedDataKey);
+			ChunkKeys.Add(Chunk.DerivedDataKey);
 		}
 	}
-	return bChunksAvailable;
+	
+	const bool bAllCachedDataProbablyExists = GetDerivedDataCacheRef().AllCachedDataProbablyExists(ChunkKeys);
+
+	// If this is called from the game thread, try to prefetch chunks locally on background thread
+	// to avoid doing high latency remote calls every time we reload this data.
+	if (bAllCachedDataProbablyExists && GIOThreadPool && IsInGameThread())
+	{
+		FString Context{ InContext };
+		AsyncPool(
+			*GIOThreadPool,
+			[ChunkKeys, Context]()
+			{
+				GetDerivedDataCacheRef().TryToPrefetch(ChunkKeys, Context);
+			},
+			nullptr,
+			EQueuedWorkPriority::Low
+		);
+	}
+
+	return bAllCachedDataProbablyExists;
 }
+
+bool FStreamedAudioPlatformData::AreDerivedChunksAvailable() const
+{
+	return AreDerivedChunksAvailable(TEXT("DerivedAudioChunks"_SV));
+}
+
 #endif // #if WITH_EDITORONLY_DATA
 
 void FStreamedAudioPlatformData::Serialize(FArchive& Ar, USoundWave* Owner)
@@ -952,8 +980,8 @@ static void ResampleWaveData(TArray<uint8>& WaveData, size_t& NumBytes, int32 Nu
 	double StartTime = FPlatformTime::Seconds();
 
 	// Set up temporary output buffers:
-	Audio::AlignedFloatBuffer ResamplerInputData;
-	Audio::AlignedFloatBuffer ResamplerOutputData;
+	Audio::FAlignedFloatBuffer ResamplerInputData;
+	Audio::FAlignedFloatBuffer ResamplerOutputData;
 
 	int32 NumSamples = NumBytes / sizeof(int16);
 
@@ -1041,9 +1069,15 @@ static void CookSimpleWave(USoundWave* SoundWave, FName FormatName, const IAudio
 	bool bWasLocked = false;
 
 	int32 WaveSampleRate = 0;
+	int32 ImportSampleRate = 0;
 
 	// Don't need to cook source buses
 	if (USoundSourceBus* SourceBus = Cast<USoundSourceBus>(SoundWave))
+	{
+		return;
+	}
+
+	if (SoundWave->IsA<USoundWaveProcedural>())
 	{
 		return;
 	}
@@ -1087,6 +1121,7 @@ static void CookSimpleWave(USoundWave* SoundWave, FName FormatName, const IAudio
 	else
 	{
 		WaveSampleRate = *WaveInfo.pSamplesPerSec;
+		ImportSampleRate = WaveSampleRate;
 
 		float SampleRateOverride = -1.0f;
 
@@ -1107,20 +1142,20 @@ static void CookSimpleWave(USoundWave* SoundWave, FName FormatName, const IAudio
 		FSoundQualityInfo QualityInfo = { 0 };
 		if (CompressionOverrides)
 		{
-			float ModifiedCompressionQuality = (float)SoundWave->CompressionQuality * CompressionOverrides->CompressionQualityModifier;
+			float ModifiedCompressionQuality = (float)SoundWave->GetCompressionQuality() * CompressionOverrides->CompressionQualityModifier;
 			if (ModifiedCompressionQuality >= 1.0f)
 			{
 				QualityInfo.Quality = FMath::FloorToInt(ModifiedCompressionQuality);
-				UE_LOG(LogAudioDerivedData, Display, TEXT("Compression Quality for %s will be modified from %d to %d."), *SoundWave->GetFullName(), SoundWave->CompressionQuality, QualityInfo.Quality);
+				UE_LOG(LogAudioDerivedData, Display, TEXT("Compression Quality for %s will be modified from %d to %d."), *SoundWave->GetFullName(), SoundWave->GetCompressionQuality(), QualityInfo.Quality);
 			}
 			else
 			{
-				QualityInfo.Quality = SoundWave->CompressionQuality;
+				QualityInfo.Quality = SoundWave->GetCompressionQuality();
 			}
 		}
 		else
 		{
-			QualityInfo.Quality = SoundWave->CompressionQuality;
+			QualityInfo.Quality = SoundWave->GetCompressionQuality();
 		}
 
 		QualityInfo.NumChannels = *WaveInfo.pChannels;
@@ -1131,10 +1166,19 @@ static void CookSimpleWave(USoundWave* SoundWave, FName FormatName, const IAudio
 		QualityInfo.bStreaming = SoundWave->IsStreaming(CompressionOverrides ? *CompressionOverrides : FPlatformAudioCookOverrides());
 		QualityInfo.DebugName = SoundWave->GetFullName();
 
+		static const FName NAME_BINKA(TEXT("BINKA"));
+		if (WaveSampleRate > 48000 &&
+			FormatName == NAME_BINKA)
+		{
+			// We have to do this here because we don't know the name of the wave inside the codec.
+			UE_LOG(LogAudioDerivedData, Warning, TEXT("[%s] High sample rate wave (%d) with Bink Audio - perf waste - high frequencies are discarded by Bink Audio (like most perceptual codecs)."), *SoundWave->GetFullName(), WaveSampleRate);
+		}
+
 		// Cook the data.
 		if(Format.Cook(FormatName, Input, QualityInfo, Output))
 		{
 			SoundWave->SetSampleRate(QualityInfo.SampleRate);
+			SoundWave->SetImportedSampleRate(ImportSampleRate);
 
 			if (SoundWave->NumChannels != *WaveInfo.pChannels)
 			{
@@ -1174,6 +1218,12 @@ static void CookSurroundWave( USoundWave* SoundWave, FName FormatName, const IAu
 	FWaveModInfo			WaveInfo;
 	TArray<TArray<uint8> >	SourceBuffers;
 	TArray<int32>			RequiredChannels;
+
+
+	if (SoundWave->IsA<USoundWaveProcedural>())
+	{
+		return;
+	}
 
 #if WITH_EDITORONLY_DATA
 	FScopeLock ScopeLock(&SoundWave->RawDataCriticalSection);
@@ -1315,11 +1365,11 @@ static void CookSurroundWave( USoundWave* SoundWave, FName FormatName, const IAu
 				CompressionQualityModifier = CompressionOverrides->CompressionQualityModifier;
 			}
 
-			float ModifiedCompressionQuality = (float)SoundWave->CompressionQuality;
+			float ModifiedCompressionQuality = (float)SoundWave->GetCompressionQuality();
 
 			if (!FMath::IsNearlyEqual(CompressionQualityModifier, 1.0f))
 			{
-				ModifiedCompressionQuality = (float)SoundWave->CompressionQuality * CompressionQualityModifier;
+				ModifiedCompressionQuality = (float)SoundWave->GetCompressionQuality() * CompressionQualityModifier;
 			}
 			
 			if (ModifiedCompressionQuality >= 1.0f)
@@ -1328,7 +1378,7 @@ static void CookSurroundWave( USoundWave* SoundWave, FName FormatName, const IAu
 			}
 			else
 			{
-				QualityInfo.Quality = SoundWave->CompressionQuality;
+				QualityInfo.Quality = SoundWave->GetCompressionQuality();
 			}
 
 			QualityInfo.NumChannels = ChannelCount;
@@ -1336,6 +1386,15 @@ static void CookSurroundWave( USoundWave* SoundWave, FName FormatName, const IAu
 			QualityInfo.SampleDataSize = SampleDataSize;
 			QualityInfo.bStreaming = SoundWave->IsStreaming(CompressionOverrides ? *CompressionOverrides : FPlatformAudioCookOverrides());
 			QualityInfo.DebugName = SoundWave->GetFullName();
+
+			static const FName NAME_BINKA(TEXT("BINKA"));
+			if (WaveSampleRate > 48000 &&
+				FormatName == NAME_BINKA)
+			{
+				// We have to do this here because we don't know the name of the wave inside the codec.
+				UE_LOG(LogAudioDerivedData, Warning, TEXT("[%s] High sample rate wave (%d) with Bink Audio - perf waste - high frequencies are discarded by Bink Audio (like most perceptual codecs)."), *SoundWave->GetFullName(), WaveSampleRate);
+			}
+
 			//@todo tighten up the checking for empty results here
 			if(Format.CookSurround(FormatName, SourceBuffers, QualityInfo, Output))
 			{
@@ -1453,11 +1512,8 @@ bool FDerivedAudioDataCompressor::Build(TArray<uint8>& OutData)
 
 void USoundWave::CleanupCachedRunningPlatformData()
 {
-	if (RunningPlatformData != NULL)
-	{
-		delete RunningPlatformData;
-		RunningPlatformData = NULL;
-	}
+	check(SoundWaveDataPtr);
+	SoundWaveDataPtr->RunningPlatformData = FStreamedAudioPlatformData();
 }
 
 
@@ -1473,7 +1529,7 @@ void USoundWave::SerializeCookedPlatformData(FArchive& Ar)
 #if WITH_EDITORONLY_DATA
 	if (Ar.IsCooking() && Ar.IsPersistent())
 	{
-		check(!Ar.CookingTarget()->IsServerOnly());
+		check(Ar.CookingTarget()->AllowAudioVisualData());
 
 		FName PlatformFormat = Ar.CookingTarget()->GetWaveFormat(this);
 		const FPlatformAudioCookOverrides* CompressionOverrides = FPlatformCompressionUtilities::GetCookOverrides(*Ar.CookingTarget()->IniPlatformName());
@@ -1498,32 +1554,28 @@ void USoundWave::SerializeCookedPlatformData(FArchive& Ar)
 #endif // #if WITH_EDITORONLY_DATA
 	{
 		check(!FPlatformProperties::IsServerOnly());
+		check(SoundWaveDataPtr);
 
 		CleanupCachedRunningPlatformData();
-		check(RunningPlatformData == NULL);
 
 		// Don't serialize streaming data on servers, even if this platform supports streaming in theory
-		RunningPlatformData = new FStreamedAudioPlatformData();
-		RunningPlatformData->Serialize(Ar, this);
+		SoundWaveDataPtr->RunningPlatformData.Serialize(Ar, this);
 	}
 }
 
 #if WITH_EDITORONLY_DATA
 void USoundWave::CachePlatformData(bool bAsyncCache)
 {
+	check(SoundWaveDataPtr);
+
 	FString DerivedDataKey;
 	FName AudioFormat = GetWaveFormatForRunningPlatform(*this);
 	const FPlatformAudioCookOverrides* CompressionOverrides = GetCookOverridesForRunningPlatform();
 	GetStreamedAudioDerivedDataKey(*this, AudioFormat, CompressionOverrides, DerivedDataKey);
 
-	if (RunningPlatformData == NULL || RunningPlatformData->DerivedDataKey != DerivedDataKey)
+	if (SoundWaveDataPtr->RunningPlatformData.DerivedDataKey != DerivedDataKey)
 	{
-		if (RunningPlatformData == NULL)
-		{
-			RunningPlatformData = new FStreamedAudioPlatformData();
-		}
-
-		RunningPlatformData->Cache(*this, CompressionOverrides, AudioFormat, bAsyncCache ? EStreamedAudioCacheFlags::Async : EStreamedAudioCacheFlags::None);
+		SoundWaveDataPtr->RunningPlatformData.Cache(*this, CompressionOverrides, AudioFormat, bAsyncCache ? EStreamedAudioCacheFlags::Async : EStreamedAudioCacheFlags::None);
 	}
 }
 
@@ -1551,7 +1603,7 @@ void USoundWave::BeginCacheForCookedPlatformData(const ITargetPlatform *TargetPl
 {
 	const FPlatformAudioCookOverrides* CompressionOverrides = FPlatformCompressionUtilities::GetCookOverrides(*TargetPlatform->IniPlatformName());
 
-	if (TargetPlatform->SupportsFeature(ETargetPlatformFeatures::AudioStreaming) && IsStreaming(*CompressionOverrides))
+	if (TargetPlatform->SupportsFeature(ETargetPlatformFeatures::AudioStreaming) && IsStreaming(*CompressionOverrides) && TargetPlatform->AllowAudioVisualData())
 	{
 		// Retrieve format to cache for targetplatform.
 		FName PlatformFormat = TargetPlatform->GetWaveFormat(this);
@@ -1667,48 +1719,53 @@ void USoundWave::WillNeverCacheCookedPlatformDataAgain()
 
 	// TODO: We can clear these arrays if we never need to cook again.
 	RawData.RemoveBulkData();
-	CompressedFormatData.FlushData();
+
+	check(SoundWaveDataPtr);
+	SoundWaveDataPtr->CompressedFormatData.FlushData();
 }
 #endif
 
 void USoundWave::FinishCachePlatformData()
 {
-	if (RunningPlatformData == NULL)
+	check(SoundWaveDataPtr);
+	if (SoundWaveDataPtr->RunningPlatformData.NumChunks == 0)
 	{
-		// begin cache never called
-		CachePlatformData();
+		// begin cache never called, but we are running with, or targeting platforms that need, audio redner data
+		if (WillNeedAudioVisualData())
+		{
+			CachePlatformData();
+		}
 	}
 	else
 	{
 		// make sure async requests are finished
-		RunningPlatformData->FinishCache();
+		SoundWaveDataPtr->RunningPlatformData.FinishCache();
 	}
 
 #if DO_CHECK
 	// If we're allowing cooked data to be loaded then the derived data key will not have been serialized, so won't match and that's fine
-	if (!GAllowCookedDataInEditorBuilds)
+	if (!GAllowCookedDataInEditorBuilds && SoundWaveDataPtr->RunningPlatformData.NumChunks)
 	{
 		FString DerivedDataKey;
 		FName AudioFormat = GetWaveFormatForRunningPlatform(*this);
 		const FPlatformAudioCookOverrides* CompressionOverrides = GetCookOverridesForRunningPlatform();
 		GetStreamedAudioDerivedDataKey(*this, AudioFormat, CompressionOverrides, DerivedDataKey);
 
-		UE_CLOG(RunningPlatformData->DerivedDataKey != DerivedDataKey, LogAudio, Warning, TEXT("Audio was cooked with the DDC key %s but should've had the DDC key %s. the cook overrides/codec used may be incorrect."), *RunningPlatformData->DerivedDataKey, *DerivedDataKey);
+		UE_CLOG(SoundWaveDataPtr->RunningPlatformData.DerivedDataKey != DerivedDataKey, LogAudio, Warning, TEXT("Audio was cooked with the DDC key %s but should've had the DDC key %s. the cook overrides/codec used may be incorrect."), *SoundWaveDataPtr->RunningPlatformData.DerivedDataKey, *DerivedDataKey);
 	}
 #endif
 }
 
 void USoundWave::ForceRebuildPlatformData()
 {
-	if (RunningPlatformData)
-	{
-		const FPlatformAudioCookOverrides* CompressionOverrides = GetCookOverridesForRunningPlatform();
-		RunningPlatformData->Cache(
-			*this,
-			CompressionOverrides,
-			GetWaveFormatForRunningPlatform(*this),
-			EStreamedAudioCacheFlags::ForceRebuild
-			);
-	}
+	check(SoundWaveDataPtr);
+	const FPlatformAudioCookOverrides* CompressionOverrides = GetCookOverridesForRunningPlatform();
+
+	SoundWaveDataPtr->RunningPlatformData.Cache(
+		*this,
+		CompressionOverrides,
+		GetWaveFormatForRunningPlatform(*this),
+		EStreamedAudioCacheFlags::ForceRebuild
+		);
 }
 #endif //WITH_EDITORONLY_DATA

@@ -44,6 +44,7 @@
 #define SYS_PARAM_ENGINE_Z_AXIS                          INiagaraModule::GetVar_Engine_Owner_ZAxis()
 #define SYS_PARAM_ENGINE_ROTATION                        INiagaraModule::GetVar_Engine_Owner_Rotation()
 #define SYS_PARAM_ENGINE_SCALE                           INiagaraModule::GetVar_Engine_Owner_Scale()
+#define SYS_PARAM_ENGINE_LWC_TILE                        INiagaraModule::GetVar_Engine_Owner_LWC_Tile()
 
 #define SYS_PARAM_ENGINE_LOCAL_TO_WORLD                  INiagaraModule::GetVar_Engine_Owner_SystemLocalToWorld()
 #define SYS_PARAM_ENGINE_WORLD_TO_LOCAL                  INiagaraModule::GetVar_Engine_Owner_SystemWorldToLocal()
@@ -68,6 +69,7 @@
 #define SYS_PARAM_ENGINE_EMITTER_INSTANCE_SEED           INiagaraModule::GetVar_Engine_Emitter_InstanceSeed()
 #define SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS_ALIVE       INiagaraModule::GetVar_Engine_System_NumEmittersAlive()
 #define SYS_PARAM_ENGINE_SYSTEM_SIGNIFICANCE_INDEX		 INiagaraModule::GetVar_Engine_System_SignificanceIndex()
+#define SYS_PARAM_ENGINE_SYSTEM_RANDOM_SEED				INiagaraModule::GetVar_Engine_System_RandomSeed()
 #define SYS_PARAM_ENGINE_SYSTEM_NUM_EMITTERS             INiagaraModule::GetVar_Engine_System_NumEmitters()
 #define SYS_PARAM_ENGINE_NUM_SYSTEM_INSTANCES            INiagaraModule::GetVar_Engine_NumSystemInstances()
 
@@ -80,6 +82,7 @@
 #define SYS_PARAM_EMITTER_AGE                            INiagaraModule::GetVar_Emitter_Age()
 #define SYS_PARAM_EMITTER_LOCALSPACE                     INiagaraModule::GetVar_Emitter_LocalSpace()
 #define SYS_PARAM_EMITTER_DETERMINISM                    INiagaraModule::GetVar_Emitter_Determinism()
+#define SYS_PARAM_EMITTER_INTERP_SPAWN                   INiagaraModule::GetVar_Emitter_InterpolatedSpawn()
 #define SYS_PARAM_EMITTER_OVERRIDE_GLOBAL_SPAWN_COUNT_SCALE       INiagaraModule::GetVar_Emitter_OverrideGlobalSpawnCountScale()
 #define SYS_PARAM_EMITTER_RANDOM_SEED                    INiagaraModule::GetVar_Emitter_RandomSeed()
 #define SYS_PARAM_EMITTER_SPAWNRATE                      INiagaraModule::GetVar_Emitter_SpawnRate()
@@ -145,6 +148,7 @@ struct NIAGARA_API FNiagaraConstants
 	static FNiagaraVariable UpdateEngineConstant(const FNiagaraVariable& InVar);
 	static const FNiagaraVariable *FindEngineConstant(const FNiagaraVariable& InVar);
 	static FText GetEngineConstantDescription(const FNiagaraVariable& InVar);
+	static const TArray<FNiagaraVariable>& GetOldPositionTypeVariables();
 
 	static const TArray<FNiagaraVariable>& GetCommonParticleAttributes();
 	static FText GetAttributeDescription(const FNiagaraVariable& InVar);
@@ -196,13 +200,28 @@ struct NIAGARA_API FNiagaraConstants
 	static const FName OutputScopeName;
 	static const FName UniqueOutputScopeName;
 	static const FName CustomScopeName;
-	
+
+	/** String version of namespaces */
+	static const FString AssignmentNodePrefixString;
+	static const FString EngineNamespaceString;
+	static const FString EmitterNamespaceString;
+	static const FString ModuleNamespaceString;
+	static const FString OutputNamespaceString;
+	static const FString ParameterCollectionNamespaceString;
+	static const FString ParticleAttributeNamespaceString;
+	static const FString RapidIterationParametersNamespaceString;
+	static const FString StackContextNamespaceString;
+	static const FString SystemNamespaceString;
+	static const FString UserNamespaceString;
+
+	static const int32 MaxCategoryNameLength;
 	static const int32 MaxParameterLength;
 	static const int32 MaxScriptNameLength;
 private:
 	static TArray<FNiagaraVariable> SystemParameters;
 	static TArray<FNiagaraVariable> TranslatorParameters;
 	static TArray<FNiagaraVariable> SwitchParameters;
+	static TArray<FNiagaraVariable> OldPositionTypes;
 	static TMap<FName, FNiagaraVariable> UpdatedSystemParameters;
 	static TMap<FNiagaraVariable, FText> SystemStrMap;
 	static TArray<FNiagaraVariable> Attributes;

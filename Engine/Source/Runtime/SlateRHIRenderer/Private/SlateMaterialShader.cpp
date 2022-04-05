@@ -20,7 +20,8 @@ void FSlateMaterialShaderVS::ModifyCompilationEnvironment(const FMaterialShaderP
 	// Set defines based on what this shader will be used for
 	OutEnvironment.SetDefine( TEXT("USE_MATERIALS"), 1 );
 	OutEnvironment.SetDefine( TEXT("NUM_CUSTOMIZED_UVS"), Parameters.MaterialParameters.NumCustomizedUVs );
-	OutEnvironment.SetDefine( TEXT("HAS_SCREEN_POSITION"), (bool)Parameters.MaterialParameters.bHasVertexPositionOffsetConnected );
+	OutEnvironment.SetDefine(TEXT("HAS_SCREEN_POSITION"), (bool)Parameters.MaterialParameters.bHasVertexPositionOffsetConnected);
+	OutEnvironment.SetDefine(TEXT("SCENE_TEXTURES_DISABLED"), 1);
 
 	FMaterialShader::ModifyCompilationEnvironment( Parameters, OutEnvironment );
 }
@@ -30,7 +31,7 @@ bool FSlateMaterialShaderVS::ShouldCompilePermutation(const FMaterialShaderPermu
 	return Parameters.MaterialParameters.MaterialDomain == MD_UI;
 }
 
-void FSlateMaterialShaderVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatrix& InViewProjection )
+void FSlateMaterialShaderVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatrix44f& InViewProjection )
 {
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewProjection, InViewProjection );
 }
@@ -47,18 +48,6 @@ void FSlateMaterialShaderVS::SetVerticalAxisMultiplier(FRHICommandList& RHICmdLi
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), SwitchVerticalAxisMultiplier, InMultiplier );
 }
 
-
-/*bool FSlateMaterialShaderVS::Serialize(FArchive& Ar)
-{
-	bool bShaderHasOutdatedParameters = FMaterialShader::Serialize(Ar);
-
-	Ar << ViewProjection;
-	Ar << SwitchVerticalAxisMultiplier;
-
-	return bShaderHasOutdatedParameters;
-}*/
-
-
 bool FSlateMaterialShaderPS::ShouldCompilePermutation(const FMaterialShaderPermutationParameters& Parameters)
 {
 	return Parameters.MaterialParameters.MaterialDomain == MD_UI;
@@ -70,6 +59,7 @@ void FSlateMaterialShaderPS::ModifyCompilationEnvironment(const FMaterialShaderP
 	// Set defines based on what this shader will be used for
 	OutEnvironment.SetDefine( TEXT("USE_MATERIALS"), 1 );
 	OutEnvironment.SetDefine( TEXT("NUM_CUSTOMIZED_UVS"), Parameters.MaterialParameters.NumCustomizedUVs);
+	OutEnvironment.SetDefine( TEXT("SCENE_TEXTURES_DISABLED"), 1);
 
 	FMaterialShader::ModifyCompilationEnvironment( Parameters, OutEnvironment );
 }
@@ -78,6 +68,7 @@ FSlateMaterialShaderPS::FSlateMaterialShaderPS(const FMaterialShaderType::Compil
 	: FMaterialShader(Initializer)
 {
 	ShaderParams.Bind(Initializer.ParameterMap, TEXT("ShaderParams"));
+	ShaderParams2.Bind(Initializer.ParameterMap, TEXT("ShaderParams2"));
 	GammaAndAlphaValues.Bind(Initializer.ParameterMap, TEXT("GammaAndAlphaValues"));
 	DrawFlags.Bind(Initializer.ParameterMap, TEXT("DrawFlags"));
 	AdditionalTextureParameter.Bind(Initializer.ParameterMap, TEXT("ElementTexture"));
@@ -120,11 +111,12 @@ void FSlateMaterialShaderPS::SetBlendState(FGraphicsPipelineStateInitializer& Gr
 	};
 }
 
-void FSlateMaterialShaderPS::SetParameters(FRHICommandList& RHICmdList, const FSceneView& View, const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial* Material, const FVector4& InShaderParams)
+void FSlateMaterialShaderPS::SetParameters(FRHICommandList& RHICmdList, const FSceneView& View, const FMaterialRenderProxy* MaterialRenderProxy, const FMaterial* Material, const FShaderParams& InShaderParams)
 {
 	FRHIPixelShader* ShaderRHI = RHICmdList.GetBoundPixelShader();
 
-	SetShaderValue( RHICmdList, ShaderRHI, ShaderParams, InShaderParams );
+	SetShaderValue(RHICmdList, ShaderRHI, ShaderParams, (FVector4f)InShaderParams.PixelParams);
+	SetShaderValue(RHICmdList, ShaderRHI, ShaderParams2, (FVector4f)InShaderParams.PixelParams2);
 
 	SetViewParameters(RHICmdList, ShaderRHI, View, View.ViewUniformBuffer);
 	FMaterialShader::SetParameters<FRHIPixelShader>(RHICmdList, ShaderRHI, MaterialRenderProxy, *Material, View);
@@ -137,14 +129,14 @@ void FSlateMaterialShaderPS::SetAdditionalTexture( FRHICommandList& RHICmdList, 
 
 void FSlateMaterialShaderPS::SetDisplayGammaAndContrast(FRHICommandList& RHICmdList, float InDisplayGamma, float InContrast)
 {
-	FVector4 InGammaValues(2.2f / InDisplayGamma, 1.0f / InDisplayGamma, 0.0f, InContrast);
+	FVector4f InGammaValues(2.2f / InDisplayGamma, 1.0f / InDisplayGamma, 0.0f, InContrast);
 
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), GammaAndAlphaValues, InGammaValues);
 }
 
 void FSlateMaterialShaderPS::SetDrawFlags(FRHICommandList& RHICmdList, bool bDrawDisabledEffect)
 {
-	FVector4 InDrawFlags(bDrawDisabledEffect ? 1 : 0, 0, 0, 0);
+	FVector4f InDrawFlags(bDrawDisabledEffect ? 1 : 0, 0, 0, 0);
 
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(), DrawFlags, InDrawFlags);
 }

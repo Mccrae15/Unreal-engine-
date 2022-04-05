@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "HAL/ThreadSafeCounter.h"
-#include "UObject/CoreOnlineFwd.h"
+#include "Online/CoreOnlineFwd.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/Object.h"
@@ -36,10 +36,10 @@ class ACameraActor;
 class AController;
 class AGameModeBase;
 class AGameStateBase;
-class AMatineeActor;
 class APhysicsVolume;
 class APlayerController;
 class AWorldSettings;
+class UWorldPartition;
 class Error;
 class FTimerManager;
 class FWorldInGamePerformanceTrackers;
@@ -139,8 +139,89 @@ private:
 	friend UWorld;
 };
 
+/** Contains all the timings of a gaming frame, to handle pause and time dilation (for instance bullet time) of the world. */
+struct ENGINE_API FGameTime
+{
+	using FTimeType = float;
 
-DECLARE_LOG_CATEGORY_EXTERN(LogSpawn, Warning, All);
+	FORCEINLINE_DEBUGGABLE FGameTime()
+		: RealTimeSeconds(FTimeType(0))
+		, WorldTimeSeconds(FTimeType(0))
+		, DeltaRealTimeSeconds(FTimeType(0))
+		, DeltaWorldTimeSeconds(FTimeType(0))
+	{ }
+
+	FGameTime(const FGameTime&) = default;
+	FGameTime& operator = (const FGameTime&) = default;
+
+	// Returns the game time since GStartTime.
+	static FGameTime GetTimeSinceAppStart();
+
+	static FORCEINLINE_DEBUGGABLE FGameTime CreateUndilated(FTimeType InRealTimeSeconds, FTimeType InDeltaRealTimeSeconds)
+	{
+		return FGameTime::CreateDilated(InRealTimeSeconds, InDeltaRealTimeSeconds, InRealTimeSeconds, InDeltaRealTimeSeconds);
+	}
+
+	static FORCEINLINE_DEBUGGABLE FGameTime CreateDilated(FTimeType InRealTimeSeconds, FTimeType InDeltaRealTimeSeconds, FTimeType InWorldTimeSeconds, FTimeType InDeltaWorldTimeSeconds)
+	{
+		return FGameTime(InRealTimeSeconds, InDeltaRealTimeSeconds, InWorldTimeSeconds, InDeltaWorldTimeSeconds);
+	}
+
+	/** Returns time in seconds since level began play, but IS NOT paused when the game is paused, and IS NOT dilated/clamped. */
+	FORCEINLINE_DEBUGGABLE FTimeType GetRealTimeSeconds() const
+	{
+		return RealTimeSeconds;
+	}
+
+	/** Returns frame delta time in seconds with no adjustment for time dilation and pause. */
+	FORCEINLINE_DEBUGGABLE FTimeType GetDeltaRealTimeSeconds() const
+	{
+		return DeltaRealTimeSeconds;
+	}
+
+	/** Returns time in seconds since level began play, but IS paused when the game is paused, and IS dilated/clamped. */
+	FORCEINLINE_DEBUGGABLE FTimeType GetWorldTimeSeconds() const
+	{
+		return WorldTimeSeconds;
+	}
+
+	/** Returns frame delta time in seconds adjusted by e.g. time dilation. */
+	FORCEINLINE_DEBUGGABLE FTimeType GetDeltaWorldTimeSeconds() const
+	{
+		return DeltaWorldTimeSeconds;
+	}
+
+	/** Returns how much world time is slowed compared to real time. */
+	FORCEINLINE_DEBUGGABLE float GetTimeDilation() const
+	{
+		ensure(DeltaRealTimeSeconds > FTimeType(0));
+		return float(DeltaWorldTimeSeconds / DeltaRealTimeSeconds);
+	}
+
+	/** Returns whether the world time is paused. */
+	FORCEINLINE_DEBUGGABLE bool IsPaused() const
+	{
+		return DeltaWorldTimeSeconds == FTimeType(0);
+	}
+
+private:
+	FTimeType RealTimeSeconds;
+	FTimeType WorldTimeSeconds;
+
+	FTimeType DeltaRealTimeSeconds;
+	FTimeType DeltaWorldTimeSeconds;
+
+	FORCEINLINE_DEBUGGABLE FGameTime(FTimeType InRealTimeSeconds, FTimeType InDeltaRealTimeSeconds, FTimeType InWorldTimeSeconds, FTimeType InDeltaWorldTimeSeconds)
+		: RealTimeSeconds(InRealTimeSeconds)
+		, WorldTimeSeconds(InWorldTimeSeconds)
+		, DeltaRealTimeSeconds(InDeltaRealTimeSeconds)
+		, DeltaWorldTimeSeconds(InDeltaWorldTimeSeconds)
+	{ }
+
+};
+
+
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogSpawn, Warning, All);
 
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnActorSpawned, AActor*);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnFeatureLevelChanged, ERHIFeatureLevel::Type);
@@ -238,8 +319,6 @@ class FSeamlessTravelHandler
 private:
 	/** URL we're traveling to */
 	FURL PendingTravelURL;
-	/** Guid of the destination map (for finding it in the package cache if autodownloaded) */
-	FGuid PendingTravelGuid;
 	/** set to the loaded package once loading is complete. Transition to it is performed in the next tick where it's safe to perform the required operations */
 	UObject* LoadedPackage;
 	/** the world we are travelling from */
@@ -273,7 +352,6 @@ private:
 public:
 	FSeamlessTravelHandler()
 		: PendingTravelURL(NoInit)
-		, PendingTravelGuid(0, 0, 0, 0)
 		, LoadedPackage(NULL)
 		, CurrentWorld(NULL)
 		, LoadedWorld(NULL)
@@ -285,16 +363,14 @@ public:
 
 	/** starts traveling to the given URL. The required packages will be loaded async and Tick() will perform the transition once we are ready
 	 * @param InURL the URL to travel to
-	 * @param InGuid the GUID of the destination map package
 	 * @return whether or not we succeeded in starting the travel
 	 */
+	bool StartTravel(UWorld* InCurrentWorld, const FURL& InURL);
+
 	UE_DEPRECATED(4.27, "UPackage::Guid has not been used by the engine for a long time. Please use StartTravel without a InGuid.")
-	bool StartTravel(UWorld* InCurrentWorld, const FURL& InURL, const FGuid& InGuid);
-	bool StartTravel(UWorld* InCurrentWorld, const FURL& InURL)
+	bool StartTravel(UWorld* InCurrentWorld, const FURL& InURL, const FGuid& InGuid)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return StartTravel(InCurrentWorld, InURL, FGuid());
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		return StartTravel(InCurrentWorld, InURL);
 	}
 
 	/** @return whether a transition is already in progress */
@@ -344,6 +420,8 @@ public:
  */
 struct ENGINE_API FLevelStreamingGCHelper
 {
+	friend UWorld;
+
 	/** Called when streamed out levels are going to be garbage collected  */
 	DECLARE_MULTICAST_DELEGATE(FOnGCStreamedOutLevelsEvent);
 	static FOnGCStreamedOutLevelsEvent OnGCStreamedOutLevels;
@@ -380,12 +458,19 @@ struct ENGINE_API FLevelStreamingGCHelper
 	 * @return	The number of levels pending a purge by the garbage collector
 	 */
 	static int32 GetNumLevelsPendingPurge();
+
+	/**
+	 * Allows FLevelStreamingGCHelper to be used in a commandlet.
+	 */
+	static void EnableForCommandlet();
 	
 private:
 	/** Static array of levels that should be unloaded */
 	static TArray<TWeakObjectPtr<ULevel> > LevelsPendingUnload;
 	/** Static array of level packages that have been marked by PrepareStreamedOutLevelsForGC */
 	static TArray<FName> LevelPackageNames;
+	/** Static bool allows FLevelStreamingGCHelper to be used in a commandlet */
+	static bool bEnabledForCommandlet;
 };
 
 /** Saved editor viewport state information */
@@ -539,12 +624,12 @@ struct ENGINE_API FActorSpawnParameters
 	/* The UPackage to set the Actor in. If left as NULL the Package will not be set and the actor will be saved in the same package as the persistent level. */
 	class	UPackage* OverridePackage;
 
-	/* The parent component to set the Actor in. */
-	class   UChildActorComponent* OverrideParentComponent;
-
 	/** The Guid to set to this actor. Should only be set when reinstancing blueprint actors. */
 	FGuid	OverrideActorGuid;
 #endif
+
+	/* The parent component to set the Actor in. */
+	class   UChildActorComponent* OverrideParentComponent;
 
 	/** Method for resolving collisions at the spawn point. Undefined means no override, use the actor's setting. */
 	ESpawnActorCollisionHandlingMethod SpawnCollisionHandlingOverride;
@@ -576,7 +661,7 @@ public:
 	/* Determines whether or not the actor should be hidden from the Scene Outliner */
 	uint8	bHideFromSceneOutliner:1;
 
-	/** Determines whether to create a new package for the actor or not. */
+	/** Determines whether to create a new package for the actor or not, if the level supports it. */
 	uint16	bCreateActorPackage:1;
 #endif
 
@@ -603,6 +688,35 @@ public:
 	EObjectFlags ObjectFlags;		
 };
 
+/* World actors spawmning helper functions */
+struct ENGINE_API FActorSpawnUtils
+{
+	/**
+	 * Function to generate a locally or globally unique actor name. To generate a globally unique name, we store an epoch number
+	 * in the name number (while maintaining compatibility with fast path name generation, see GFastPathUniqueNameGeneration) and
+	 * also append an unique user id to the name.
+	 *
+	 * @param	Level			the new actor level
+	 * @param	Class			the new actor class
+	 * @param	BaseName		optional base name
+	 * @param	bGloballyUnique	whether to create a globally unique name
+	 * @return	generated actor name
+	**/
+	static FName MakeUniqueActorName(ULevel* Level, const UClass* Class, FName BaseName, bool bGloballyUnique);
+
+	/**
+	 * Determine if an actor name is globally unique or not.
+	 *
+	 * @param	Name			the name to check
+	 * @return true if the provided name is globally unique
+	**/
+	static bool IsGloballyUniqueName(FName Name);
+
+	/**
+	 * Return the base ename (without any number of globally unique identifier).
+	**/
+	static FName GetBaseName(FName Name);
+};
 
 /**
  *  This encapsulate World's async trace functionality. This contains two buffers of trace data buffer and alternates it for each tick. 
@@ -709,7 +823,7 @@ struct ENGINE_API FLevelCollection
 	void SetDemoNetDriver(UDemoNetDriver* const InDemoNetDriver) { DemoNetDriver = InDemoNetDriver; }
 
 	/** Returns the set of levels in this collection. */
-	const TSet<ULevel*>& GetLevels() const { return Levels; }
+	const TSet<TObjectPtr<ULevel>>& GetLevels() const { return Levels; }
 
 	/** Adds a level to this collection and caches the collection pointer on the level for fast access. */
 	void AddLevel(ULevel* const Level);
@@ -744,32 +858,32 @@ private:
 	 * since the source collection and the duplicated collection will have their own instances.
 	 */
 	UPROPERTY()
-	class AGameStateBase* GameState;
+	TObjectPtr<class AGameStateBase> GameState;
 
 	/**
 	 * The network driver associated with this collection.
 	 * The source collection and the duplicated collection will have their own instances.
 	 */
 	UPROPERTY()
-	class UNetDriver* NetDriver;
+	TObjectPtr<class UNetDriver> NetDriver;
 
 	/**
 	 * The demo network driver associated with this collection.
 	 * The source collection and the duplicated collection will have their own instances.
 	 */
 	UPROPERTY()
-	class UDemoNetDriver* DemoNetDriver;
+	TObjectPtr<class UDemoNetDriver> DemoNetDriver;
 
 	/**
 	 * The persistent level associated with this collection.
 	 * The source collection and the duplicated collection will have their own instances.
 	 */
 	UPROPERTY()
-	class ULevel* PersistentLevel;
+	TObjectPtr<class ULevel> PersistentLevel;
 
 	/** All the levels in this collection. */
 	UPROPERTY()
-	TSet<ULevel*> Levels;
+	TSet<TObjectPtr<ULevel>> Levels;
 };
 
 template<>
@@ -830,7 +944,7 @@ private:
 
 	/** Priority sorted array of streaming levels actively being considered. */
 	UPROPERTY()
-	TArray<ULevelStreaming*> StreamingLevels;
+	TArray<TObjectPtr<ULevelStreaming>> StreamingLevels;
 
 	enum class EProcessReason : uint8
 	{
@@ -879,6 +993,17 @@ public:
 	void Reevaluate(ULevelStreaming* StreamingLevel);
 };
 
+/**
+ * Scope can be used to force load all external objects when loading a world. 
+ */
+struct ENGINE_API FScopedLoadAllExternalObjects
+{
+	FScopedLoadAllExternalObjects(FName InPackageName);
+	~FScopedLoadAllExternalObjects();
+
+	FName PackageName;
+};
+
 /** 
  * The World is the top level object representing a map or a sandbox in which Actors and Components will exist and be rendered.  
  *
@@ -899,49 +1024,49 @@ class ENGINE_API UWorld final : public UObject, public FNetworkNotify
 
 #if WITH_EDITORONLY_DATA
 	/** List of all the layers referenced by the world's actors */
-	UPROPERTY()
-	TArray< class ULayer* > Layers; 
+	UPROPERTY(Transient)
+	TArray< TObjectPtr<class ULayer> > Layers; 
 
 	// Group actors currently "active"
 	UPROPERTY(Transient)
-	TArray<AActor*> ActiveGroupActors;
+	TArray<TObjectPtr<AActor>> ActiveGroupActors;
 
 	/** Information for thumbnail rendering */
 	UPROPERTY(VisibleAnywhere, Instanced, Category=Thumbnail)
-	class UThumbnailInfo* ThumbnailInfo;
+	TObjectPtr<class UThumbnailInfo> ThumbnailInfo;
 #endif // WITH_EDITORONLY_DATA
 
 	/** Persistent level containing the world info, default brush and actors spawned during gameplay among other things			*/
 	UPROPERTY(Transient)
-	class ULevel*								PersistentLevel;
+	TObjectPtr<class ULevel>								PersistentLevel;
 
 	/** The NAME_GameNetDriver game connection(s) for client/server communication */
 	UPROPERTY(Transient)
-	class UNetDriver*							NetDriver;
+	TObjectPtr<class UNetDriver>							NetDriver;
 
 	/** Line Batchers. All lines to be drawn in the world. */
 	UPROPERTY(Transient)
-	class ULineBatchComponent*					LineBatcher;
+	TObjectPtr<class ULineBatchComponent>					LineBatcher;
 
 	/** Persistent Line Batchers. They don't get flushed every frame.  */
 	UPROPERTY(Transient)
-	class ULineBatchComponent*					PersistentLineBatcher;
+	TObjectPtr<class ULineBatchComponent>					PersistentLineBatcher;
 
 	/** Foreground Line Batchers. This can't be Persistent.  */
 	UPROPERTY(Transient)
-	class ULineBatchComponent*					ForegroundLineBatcher;
+	TObjectPtr<class ULineBatchComponent>					ForegroundLineBatcher;
 
 	/** Instance of this world's game-specific networking management */
 	UPROPERTY(Transient)
-	class AGameNetworkManager*					NetworkManager;
+	TObjectPtr<class AGameNetworkManager>					NetworkManager;
 
 	/** Instance of this world's game-specific physics collision handler */
 	UPROPERTY(Transient)
-	class UPhysicsCollisionHandler*				PhysicsCollisionHandler;
+	TObjectPtr<class UPhysicsCollisionHandler>				PhysicsCollisionHandler;
 
 	/** Array of any additional objects that need to be referenced by this world, to make sure they aren't GC'd */
 	UPROPERTY(Transient)
-	TArray<UObject*>							ExtraReferencedObjects;
+	TArray<TObjectPtr<UObject>>							ExtraReferencedObjects;
 
 	/**
 	 * External modules can have additional data associated with this UWorld.
@@ -949,12 +1074,12 @@ class ENGINE_API UWorld final : public UObject, public FNetworkNotify
 	 * loaded/saved by default.
 	 */
 	UPROPERTY(Transient)
-	TArray<UObject*>							PerModuleDataObjects;
+	TArray<TObjectPtr<UObject>>							PerModuleDataObjects;
 
 private:
 	/** Level collection. ULevels are referenced by FName (Package name) to avoid serialized references. Also contains offsets in world units */
 	UPROPERTY(Transient)
-	TArray<ULevelStreaming*> StreamingLevels;
+	TArray<TObjectPtr<ULevelStreaming>> StreamingLevels;
 
 	/** This is the list of streaming levels that are actively being considered for what their state should be. It will be a subset of StreamingLevels */
 	UPROPERTY(Transient, DuplicateTransient)
@@ -1022,41 +1147,51 @@ public:
 	/** Examine all streaming levels and determine which ones should be considered. */
 	void PopulateStreamingLevelsToConsider();
 
+	/** Whether the world is currently in a BlockTillLevelStreamingCompleted() call */
+	bool GetIsInBlockTillLevelStreamingCompleted() const { return IsInBlockTillLevelStreamingCompleted > 0; }
+
+	/** Returns BlockTillLevelStreamingCompletedEpoch. */
+	int32 GetBlockTillLevelStreamingCompletedEpoch() const { return BlockTillLevelStreamingCompletedEpoch; }
+
 	/** Prefix we used to rename streaming levels, non empty in PIE and standalone preview */
 	UPROPERTY()
 	FString										StreamingLevelsPrefix;
 
 private:
+
+	/** Returns wether AddToWorld should be skipped on a given level */
+	bool CanAddLoadedLevelToWorld(ULevel* Level) const;
+
 	/** Pointer to the current level in the queue to be made visible, NULL if none are pending. */
 	UPROPERTY(Transient)
-	class ULevel*								CurrentLevelPendingVisibility;
+	TObjectPtr<class ULevel>								CurrentLevelPendingVisibility;
 
 	/** Pointer to the current level in the queue to be made invisible, NULL if none are pending. */
 	UPROPERTY(Transient)
-	class ULevel*								CurrentLevelPendingInvisibility;
+	TObjectPtr<class ULevel>								CurrentLevelPendingInvisibility;
+
+	/** NetDriver for capturing network traffic to record demos */
+	UPROPERTY()
+	TObjectPtr<class UDemoNetDriver>						DemoNetDriver;
 
 public:
-	/** NetDriver for capturing network traffic to record demos */
-	UE_DEPRECATED(4.26, "DemoNetDriver will be made private in a future release.  Please use GetDemoNetDriver/SetDemoNetDriver instead.")
-	UPROPERTY()
-	class UDemoNetDriver*						DemoNetDriver;
-
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	/** Gets the demo net driver for this world. */
 	UDemoNetDriver* GetDemoNetDriver() const { return DemoNetDriver; }
 
 	/** Sets the demo net driver for this world. */
 	void SetDemoNetDriver(UDemoNetDriver* const InDemoNetDriver) { DemoNetDriver = InDemoNetDriver; }
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** Particle event manager **/
 	UPROPERTY()
-	class AParticleEventManager*				MyParticleEventManager;
+	TObjectPtr<class AParticleEventManager>				MyParticleEventManager;
 
 private:
 	/** DefaultPhysicsVolume used for whole game **/
 	UPROPERTY(Transient)
-	APhysicsVolume*								DefaultPhysicsVolume;
+	TObjectPtr<APhysicsVolume>								DefaultPhysicsVolume;
+
+	// Flag for allowing physics state creation deferall during load 
+	bool bAllowDeferredPhysicsStateCreation;
 
 public:
 
@@ -1113,7 +1248,7 @@ public:
 	*  You need Physics Scene if you'd like to trace. This flag changed ticking */
 	uint8 bShouldSimulatePhysics:1;
 
-#if !UE_BUILD_SHIPPING
+#if !UE_BUILD_SHIPPING || WITH_EDITOR
 	/** If TRUE, 'hidden' components will still create render proxy, so can draw info (see USceneComponent::ShouldRender) */
 	uint8 bCreateRenderStateForHiddenComponentsWithCollsion:1;
 #endif // !UE_BUILD_SHIPPING
@@ -1123,6 +1258,12 @@ public:
 	* currently only used by editor level viewport world, and do not use this for in-game scene
 	*/
 	uint8 bEnableTraceCollision:1;
+
+	/** Special flag to enable movement component in non game worlds (see UMovementComponent::OnRegister) */
+	uint8 bForceUseMovementComponentInNonGameWorld:1;
+
+	/** If True, overloaded method IsNameStableForNetworking will always return true. */
+	uint8 bIsNameStableForNetworking:1;
 #endif
 
 	/** frame rate is below DesiredFrameRate, so drop high detail actors */
@@ -1176,6 +1317,12 @@ public:
 #if WITH_EDITOR
 	/** When set, will tell us to pause simulation after one tick.  If a breakpoint is encountered before tick is complete we will stop there instead. */
 	uint8 bDebugFrameStepExecution:1;
+
+	/** Indicates that a single frame advance happened this frame. */
+	uint8 bDebugFrameStepExecutedThisFrame : 1;
+
+	/** Indicates that toggling between Play-in-Editor and Simulate-in-Editor happened this frame. */
+	uint8 bToggledBetweenPIEandSIEThisFrame : 1;
 #endif
 
 	/** Keeps track whether actors moved via PostEditMove and therefore constraint syncup should be performed. */
@@ -1183,7 +1330,6 @@ public:
 	uint8 bAreConstraintsDirty:1;
 
 private:
-
 	/** Whether the render scene for this World should be created with HitProxies or not */
 	uint8 bRequiresHitProxies:1;
 
@@ -1202,29 +1348,38 @@ private:
 	/** Is there at least one material parameter collection instance waiting for a deferred update?								*/
 	uint8 bMaterialParameterCollectionInstanceNeedsDeferredUpdate : 1;
 
+	/** Whether world object has been initialized via Init and has not yet had CleanupWorld called								*/
+	uint8 bInitializedAndNeedsCleanup : 1;
+
+	/** Whether the world is currently in a BlockTillLevelStreamingCompleted() call */
+	uint32 IsInBlockTillLevelStreamingCompleted;
+
+	/** Epoch updated every time BlockTillLevelStreamingCompleted() is called. */
+	int32 BlockTillLevelStreamingCompletedEpoch;
+
 	/** The world's navigation data manager */
 	UPROPERTY(Transient)
-	class UNavigationSystemBase*				NavigationSystem;
+	TObjectPtr<class UNavigationSystemBase>				NavigationSystem;
 
 	/** The current GameMode, valid only on the server */
 	UPROPERTY(Transient)
-	class AGameModeBase*						AuthorityGameMode;
+	TObjectPtr<class AGameModeBase>						AuthorityGameMode;
 
 	/** The replicated actor which contains game state information that can be accessible to clients. Direct access is not allowed, use GetGameState<>() */
 	UPROPERTY(Transient)
-	class AGameStateBase*						GameState;
+	TObjectPtr<class AGameStateBase>						GameState;
 
 	/** The AI System handles generating pathing information and AI behavior */
 	UPROPERTY(Transient)
-	class UAISystemBase*						AISystem;
+	TObjectPtr<class UAISystemBase>						AISystem;
 	
 	/** RVO avoidance manager used by game */
 	UPROPERTY(Transient)
-	class UAvoidanceManager*					AvoidanceManager;
+	TObjectPtr<class UAvoidanceManager>					AvoidanceManager;
 
 	/** Array of levels currently in this world. Not serialized to disk to avoid hard references. */
 	UPROPERTY(Transient)
-	TArray<class ULevel*>						Levels;
+	TArray<TObjectPtr<class ULevel>>						Levels;
 
 	/** Array of level collections currently in this world. */
 	UPROPERTY(Transient, NonTransactional)
@@ -1243,8 +1398,11 @@ public:
 	FAudioDeviceHandle AudioDeviceHandle;
 
 #if WITH_EDITOR
-	/** Hierarchical LOD System. Used when WorldSetting.bEnableHierarchicalLODSystem is true */
-	struct FHierarchicalLODBuilder*						HierarchicalLODBuilder;
+	/** Hierarchical LOD System. */
+	struct FHierarchicalLODBuilder*				HierarchicalLODBuilder;
+
+	/** Original World Name before PostLoad rename. Used to get external actors on disk. */
+	FName OriginalWorldName;
 #endif // WITH_EDITOR
 
 	/** Called from DemoNetDriver when playing back a replay and the timeline is successfully scrubbed */
@@ -1259,25 +1417,25 @@ private:
 #if WITH_EDITORONLY_DATA
 	/** Pointer to the current level being edited. Level has to be in the Levels array and == PersistentLevel in the game. */
 	UPROPERTY(Transient)
-	class ULevel*								CurrentLevel;
+	TObjectPtr<class ULevel>								CurrentLevel;
 #endif
 
 	UPROPERTY(Transient)
-	class UGameInstance*						OwningGameInstance;
+	TObjectPtr<class UGameInstance>						OwningGameInstance;
 
 	/** Parameter collection instances that hold parameter overrides for this world. */
 	UPROPERTY(Transient)
-	TArray<class UMaterialParameterCollectionInstance*> ParameterCollectionInstances;
+	TArray<TObjectPtr<class UMaterialParameterCollectionInstance>> ParameterCollectionInstances;
 
 	/** 
 	 * Canvas object used for drawing to render targets from blueprint functions eg DrawMaterialToRenderTarget.
 	 * This is cached as UCanvas creation takes >100ms.
 	 */
 	UPROPERTY(Transient)
-	UCanvas* CanvasForRenderingToTarget;
+	TObjectPtr<UCanvas> CanvasForRenderingToTarget;
 
 	UPROPERTY(Transient)
-	UCanvas* CanvasForDrawMaterialToRenderTarget;
+	TObjectPtr<UCanvas> CanvasForDrawMaterialToRenderTarget;
 
 public:
 	/** Set the pointer to the Navigation System instance. */
@@ -1320,6 +1478,9 @@ public:
 	/** Initialize all world subsystems */
 	void InitializeSubsystems();
 
+	/** Finalize initialization of all world subsystems */
+	void PostInitializeSubsystems();
+
 #if WITH_EDITOR
 
 	/** Change the feature level that this world is current rendering with */
@@ -1340,7 +1501,11 @@ public:
 	/** Returns whether or not this world is currently ticking. See SetShouldTick. */
 	bool ShouldTick() const { return bShouldTick; }
 
+	static bool ShouldLoadAllExternalObjects(FName InPackageName) { return LoadAllExternalObjects.Contains(InPackageName); }
+
 private:
+	friend struct FScopedLoadAllExternalObjects;
+	static TSet<FName> LoadAllExternalObjects;
 
 	/** List of all the controllers in the world. */
 	TArray<TWeakObjectPtr<class AController> > ControllerList;
@@ -1368,21 +1533,25 @@ public:
 
 	/** Physics Field component. */
 	UPROPERTY(Transient)
-	class UPhysicsFieldComponent* PhysicsField;
+	TObjectPtr<class UPhysicsFieldComponent> PhysicsField;
+
+	/** Tracks the last assigned unique id for light weight instances in this world. */
+	UPROPERTY()
+	uint32 LWILastAssignedUID;
 
 private:
 
 	/** Array of components that need to wait on tasks before end of frame updates */
 	UPROPERTY(Transient, NonTransactional)
-	TSet<UActorComponent*> ComponentsThatNeedPreEndOfFrameSync;
+	TSet<TObjectPtr<UActorComponent>> ComponentsThatNeedPreEndOfFrameSync;
 
 	/** Array of components that need updates at the end of the frame */
 	UPROPERTY(Transient, NonTransactional)
-	TArray<UActorComponent*> ComponentsThatNeedEndOfFrameUpdate;
+	TArray<TObjectPtr<UActorComponent>> ComponentsThatNeedEndOfFrameUpdate;
 
 	/** Array of components that need game thread updates at the end of the frame */
 	UPROPERTY(Transient, NonTransactional)
-	TArray<UActorComponent*> ComponentsThatNeedEndOfFrameUpdate_OnGameThread;
+	TArray<TObjectPtr<UActorComponent>> ComponentsThatNeedEndOfFrameUpdate_OnGameThread;
 
 	/** The state of async tracing - abstracted into its own object for easier reference */
 	FWorldAsyncTraceState AsyncTraceState;
@@ -1393,10 +1562,10 @@ private:
 #endif
 
 	/** a delegate that broadcasts a notification whenever an actor is spawned */
-	FOnActorSpawned OnActorSpawned;
+	mutable FOnActorSpawned OnActorSpawned;
 
 	/** a delegate that broadcasts a notification before a newly spawned actor is initialized */
-	FOnActorSpawned OnActorPreSpawnInitialization;
+	mutable FOnActorSpawned OnActorPreSpawnInitialization;
 
 	/** Reset Async Trace Buffer **/
 	void ResetAsyncTrace();
@@ -1412,10 +1581,15 @@ private:
 
 	/** Utility function to cleanup streaming levels that point to invalid level packages */
 	void RepairStreamingLevels();
-	
+
 #if INCLUDE_CHAOS
 	/** Utility function that is used to ensure that a World has the correct ChaosActor */
 	void RepairChaosActors();
+#endif
+
+#if WITH_EDITOR
+	/** Utility function to make sure there is a valid default builder brush */
+	void RepairDefaultBrush();
 #endif
 
 	/** Gameplay timers. */
@@ -1489,7 +1663,7 @@ private:
 
 	/** Array of selected levels currently in this world. Not serialized to disk to avoid hard references.	*/
 	UPROPERTY(Transient)
-	TArray<class ULevel*>						SelectedLevels;
+	TArray<TObjectPtr<class ULevel>>						SelectedLevels;
 
 	/** Disables the broadcasting of level selection change. Internal use only. */
 	uint32 bBroadcastSelectionChange:1;
@@ -1575,6 +1749,9 @@ public:
 	/** Time in seconds since level began play, but IS paused when the game is paused, and IS NOT dilated/clamped. */
 	float AudioTimeSeconds;
 
+	/** Frame delta time in seconds with no adjustment for time dilation. */
+	float DeltaRealTimeSeconds;
+
 	/** Frame delta time in seconds adjusted by e.g. time dilation. */
 	float DeltaTimeSeconds;
 
@@ -1595,7 +1772,7 @@ public:
 
 	/** All levels information from which our world is composed */
 	UPROPERTY()
-	class UWorldComposition* WorldComposition;
+	TObjectPtr<class UWorldComposition> WorldComposition;
 	
 	/** Whether we flushing level streaming state */ 
 	EFlushLevelStreamingType FlushLevelStreamingType;
@@ -1619,7 +1796,7 @@ public:
 	/** Name of persistent level if we've loaded levels via CommitMapChange() that aren't normally in the StreamingLevels array (to inform newly joining clients) */
 	FName CommittedPersistentLevelName;
 
-#if !UE_BUILD_SHIPPING
+#if !UE_BUILD_SHIPPING || WITH_EDITOR
 	/**
 	 * This is a int on the level which is set when a light that needs to have lighting rebuilt
 	 * is moved.  This is then checked in CheckMap for errors to let you know that this level should
@@ -2200,6 +2377,27 @@ public:
 	FTraceHandle	AsyncOverlapByObjectType(const FVector& Pos, const FQuat& Rot, const FCollisionObjectQueryParams& ObjectQueryParams, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FOverlapDelegate * InDelegate = NULL, uint32 UserData = 0);
 
 	/**
+	 * Interface for Async trace
+	 * Pretty much same parameter set except you can optional set delegate to be called when execution is completed and you can set UserData if you'd like
+	 * if no delegate, you can query trace data using QueryTraceData or QueryOverlapData
+	 * the data is available only in the next frame after request is made - in other words, if request is made in frame X, you can get the result in frame (X+1)
+	 *
+	 *  @param  Pos             Location of center of shape to test against the world
+	 *  @param  ProfileName     The 'profile' used to determine which components to hit
+	 *  @param	CollisionShape		CollisionShape - supports Box, Sphere, Capsule
+	 *  @param  Params          Additional parameters used for the trace
+	 *	@param	InDeleagte		Delegate function to be called - to see example, search FTraceDelegate
+	 *							Example can be void MyActor::TraceDone(const FTraceHandle& TraceHandle, FTraceDatum & TraceData)
+	 *							Before sending to the function,
+	 *
+	 *							FTraceDelegate TraceDelegate;
+	 *							TraceDelegate.BindRaw(this, &MyActor::TraceDone);
+	 *
+	 *	@param UserData			UserData
+	 */
+	FTraceHandle	AsyncOverlapByProfile(const FVector& Pos, const FQuat& Rot, FName ProfileName, const FCollisionShape& CollisionShape, const FCollisionQueryParams& Params = FCollisionQueryParams::DefaultQueryParam, FOverlapDelegate* InDelegate = NULL, uint32 UserData = 0);
+
+	/**
 	 * Query function 
 	 * return true if already done and returning valid result - can be hit or no hit
 	 * return false if either expired or not yet evaluated or invalid
@@ -2349,6 +2547,9 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnWorldBeginPlay);
 	FOnWorldBeginPlay OnWorldBeginPlay;
 
+	DECLARE_MULTICAST_DELEGATE(FOnMatchStarting);
+	FOnMatchStarting OnWorldMatchStarting;
+
 	/** Returns true if gameplay has already started, false otherwise. */
 	bool HasBegunPlay() const;
 
@@ -2387,6 +2588,13 @@ public:
 	 */
 	float GetDeltaSeconds() const;
 	
+	/**
+	 * Returns the dilatable time
+	 *
+	 * @return Returns the dilatable time
+	 */
+	FGameTime GetTime() const;
+
 	/** Helper for getting the time since a certain time. */
 	float TimeSince( float Time ) const;
 
@@ -2404,7 +2612,7 @@ public:
 	 * 
 	 * @return default physics volume
 	 */
-	APhysicsVolume* GetDefaultPhysicsVolume() const { return DefaultPhysicsVolume ? DefaultPhysicsVolume : InternalGetDefaultPhysicsVolume(); }
+	APhysicsVolume* GetDefaultPhysicsVolume() const { return DefaultPhysicsVolume ? ToRawPtr(DefaultPhysicsVolume) : InternalGetDefaultPhysicsVolume(); }
 
 	/** Returns true if a DefaultPhysicsVolume has been created. */
 	bool HasDefaultPhysicsVolume() const { return DefaultPhysicsVolume != nullptr; }
@@ -2420,6 +2628,9 @@ public:
 
 	/** Get the count of all PhysicsVolumes in the world that are not a DefaultPhysicsVolume. */
 	int32 GetNonDefaultPhysicsVolumeCount() const;
+
+	void SetAllowDeferredPhysicsStateCreation(bool bAllow);
+	bool GetAllowDeferredPhysicsStateCreation() const;
 
 	/**
 	 * Returns the current (or specified) level's level scripting actor
@@ -2440,8 +2651,27 @@ public:
 	AWorldSettings* K2_GetWorldSettings();
 	AWorldSettings* GetWorldSettings( bool bCheckStreamingPersistent = false, bool bChecked = true ) const;
 
+	/**
+	 * Returns the AWorldDataLayers actor associated with this world.
+	 *
+	 * @return AWorldDataLayers actor associated with this world
+	 */
+	AWorldDataLayers* GetWorldDataLayers() const;
+	void SetWorldDataLayers(AWorldDataLayers* NewWorldDataLayers);
+
 	/** Returns a human friendly display string for the current world (showing the kind of world when in multiplayer PIE) */
 	FString GetDebugDisplayName() const;
+	/**
+	 * Returns the UWorldPartition associated with this world.
+	 *
+	 * @return UWorldPartition object associated with this world
+	 */
+	UWorldPartition* GetWorldPartition() const;
+
+	/**
+	* Returns true if world contains an associated UWorldPartition object.
+	*/
+	bool IsPartitionedWorld() const { return GetWorldPartition() != nullptr; }
 
 	/**
 	 * Returns the current levels BSP model.
@@ -2517,16 +2747,16 @@ public:
 	void RemoveNetworkActor( AActor* Actor ) const;
 
 	/** Add a listener for OnActorSpawned events */
-	FDelegateHandle AddOnActorSpawnedHandler( const FOnActorSpawned::FDelegate& InHandler );
+	FDelegateHandle AddOnActorSpawnedHandler( const FOnActorSpawned::FDelegate& InHandler ) const;
 
 	/** Remove a listener for OnActorSpawned events */
-	void RemoveOnActorSpawnedHandler( FDelegateHandle InHandle );
+	void RemoveOnActorSpawnedHandler( FDelegateHandle InHandle ) const;
 
 	/** Add a listener for OnActorPreSpawnInitialization events */
-	FDelegateHandle AddOnActorPreSpawnInitialization(const FOnActorSpawned::FDelegate& InHandler);
+	FDelegateHandle AddOnActorPreSpawnInitialization(const FOnActorSpawned::FDelegate& InHandler) const;
 
 	/** Remove a listener for OnActorPreSpawnInitialization events */
-	void RemoveOnActorPreSpawnInitialization(FDelegateHandle InHandle);	
+	void RemoveOnActorPreSpawnInitialization(FDelegateHandle InHandle) const;
 
 	/**
 	 * Returns whether the passed in actor is part of any of the loaded levels actors array.
@@ -2559,15 +2789,23 @@ public:
 	virtual bool IsReadyForFinishDestroy() override;
 	virtual void PostLoad() override;
 	virtual void PreDuplicate(FObjectDuplicationParameters& DupParams) override;
-	virtual bool PreSaveRoot(const TCHAR* Filename) override;
-	virtual void PostSaveRoot( bool bCleanupIsRequired ) override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveRootContext instead.")
+	virtual bool PreSaveRoot(const TCHAR* InFilename) override;
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPostSaveRootContext instead.")
+	virtual void PostSaveRoot(bool bCleanupIsRequired) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext) override;
+	virtual void PostSaveRoot(FObjectPostSaveRootContext ObjectSaveContext) override;
 	virtual UWorld* GetWorld() const override;
 	virtual FPrimaryAssetId GetPrimaryAssetId() const override;
 	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
 #if WITH_EDITOR
 	virtual bool Rename(const TCHAR* NewName = NULL, UObject* NewOuter = NULL, ERenameFlags Flags = REN_None) override;
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+	virtual bool IsNameStableForNetworking() const override;	
 #endif
+	virtual bool ResolveSubobject(const TCHAR* SubObjectPath, UObject*& OutObject, bool bLoadIfExists) override;
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	//~ End UObject Interface
 	
@@ -2618,6 +2856,9 @@ public:
 	 * Commits changes made to the surfaces of the UModels of all levels.
 	 */
 	void CommitModelSurfaces();
+
+	/** Purges all sky capture cached derived data. */
+	void InvalidateAllSkyCaptures();
 
 	/** Purges all sky capture cached derived data and forces a re-render of captured scene data. */
 	void UpdateAllSkyCaptures();
@@ -2686,7 +2927,7 @@ public:
 	 *
 	 * @return true if level load requests are allowed, false otherwise.
 	 */
-	bool AllowLevelLoadRequests();
+	bool AllowLevelLoadRequests() const;
 
 	/** Creates instances for each parameter collection in memory.  Called when a world is created. */
 	void SetupParameterCollectionInstances();
@@ -2695,7 +2936,7 @@ public:
 	void AddParameterCollectionInstance(class UMaterialParameterCollection* Collection, bool bUpdateScene);
 
 	/** Gets this world's instance for a given collection. */
-	UMaterialParameterCollectionInstance* GetParameterCollectionInstance(const UMaterialParameterCollection* Collection);
+	UMaterialParameterCollectionInstance* GetParameterCollectionInstance(const UMaterialParameterCollection* Collection) const;
 
 	/** Updates this world's scene with the list of instances, and optionally updates each instance's uniform buffer. */
 	void UpdateParameterCollectionInstances(bool bUpdateInstanceUniformBuffers, bool bRecreateUniformBuffer);
@@ -2716,8 +2957,10 @@ public:
 			, bCreateAISystem(true)
 			, bShouldSimulatePhysics(true)
 			, bEnableTraceCollision(false)
+			, bForceUseMovementComponentInNonGameWorld(false)
 			, bTransactional(true)
 			, bCreateFXSystem(true)
+			, bCreateWorldPartition(false)
 		{
 		}
 
@@ -2745,11 +2988,17 @@ public:
 		/** Are collision trace calls valid within this world. */
 		uint32 bEnableTraceCollision:1;
 
+		/** Special flag to enable movement component in non game worlds (see UMovementComponent::OnRegister) */
+		uint32 bForceUseMovementComponentInNonGameWorld:1;
+
 		/** Should actions performed to objects in this world be saved to the transaction buffer. */
 		uint32 bTransactional:1;
 
 		/** Should the FX system be created for this world. */
 		uint32 bCreateFXSystem:1;
+
+		/** Should the world be partitioned */
+		uint32 bCreateWorldPartition:1;
 
 		/** The default game mode for this world (if any) */
 		TSubclassOf<class AGameModeBase> DefaultGameMode;
@@ -2762,8 +3011,10 @@ public:
 		InitializationValues& CreateAISystem(const bool bCreate) { bCreateAISystem = bCreate; return *this; }
 		InitializationValues& ShouldSimulatePhysics(const bool bInShouldSimulatePhysics) { bShouldSimulatePhysics = bInShouldSimulatePhysics; return *this; }
 		InitializationValues& EnableTraceCollision(const bool bInEnableTraceCollision) { bEnableTraceCollision = bInEnableTraceCollision; return *this; }
+		InitializationValues& ForceUseMovementComponentInNonGameWorld(const bool bInForceUseMovementComponentInNonGameWorld) { bForceUseMovementComponentInNonGameWorld = bInForceUseMovementComponentInNonGameWorld; return *this; }
 		InitializationValues& SetTransactional(const bool bInTransactional) { bTransactional = bInTransactional; return *this; }
 		InitializationValues& CreateFXSystem(const bool bCreate) { bCreateFXSystem = bCreate; return *this; }
+		InitializationValues& CreateWorldPartition(const bool bCreate) { bCreateWorldPartition = bCreate; return *this; }
 		InitializationValues& SetDefaultGameMode(TSubclassOf<class AGameModeBase> GameMode) { DefaultGameMode = GameMode; return *this; }
 	};
 
@@ -2775,12 +3026,12 @@ public:
 	/**
 	 * Initializes a newly created world.
 	 */
-	void InitializeNewWorld(const InitializationValues IVS = InitializationValues());
+	void InitializeNewWorld(const InitializationValues IVS = InitializationValues(), bool bInSkipInitWorld = false);
 	
 	/**
 	 * Static function that creates a new UWorld and returns a pointer to it
 	 */
-	static UWorld* CreateWorld( const EWorldType::Type InWorldType, bool bInformEngineOfWorld, FName WorldName = NAME_None, UPackage* InWorldPackage = NULL, bool bAddToRoot = true, ERHIFeatureLevel::Type InFeatureLevel = ERHIFeatureLevel::Num );
+	static UWorld* CreateWorld( const EWorldType::Type InWorldType, bool bInformEngineOfWorld, FName WorldName = NAME_None, UPackage* InWorldPackage = NULL, bool bAddToRoot = true, ERHIFeatureLevel::Type InFeatureLevel = ERHIFeatureLevel::Num, const InitializationValues* InIVS = nullptr, bool bInSkipInitWorld = false);
 
 	/** 
 	 * Destroy this World instance. If destroying the world to load a different world, supply it here to prevent GC of the new world or it's sublevels.
@@ -2791,33 +3042,6 @@ public:
 	 * Marks this world and all objects within as pending kill
 	 */
 	void MarkObjectsPendingKill();
-
-	/**
-	 *  Interface to allow WorldSettings to request immediate garbage collection
-	 */
-	UE_DEPRECATED(4.18, "Use GEngine->PerformGarbageCollectionAndCleanupActors instead.")
-	void PerformGarbageCollectionAndCleanupActors();
-
-	/**
-	 *  Requests a one frame delay of Garbage Collection
-	 */
-	UE_DEPRECATED(4.18, "Use GEngine->DelayGarbageCollection instead.")
-	void DelayGarbageCollection();
-
-	/**
-	 * Updates the timer (as a one-off) that is used to trigger garbage collection; this should only be used for things
-	 * like performance tests, using it recklessly can dramatically increase memory usage and cost of the eventual GC.
-	 *
-	 * Note: Things that force a GC will still force a GC after using this method (and they will also reset the timer)
-	 */
-	UE_DEPRECATED(4.18, "Use GEngine->SetTimeUntilNextGarbageCollection instead.")
-	void SetTimeUntilNextGarbageCollection(float MinTimeUntilNextPass);
-
-	/**
-	 * Returns the current desired time between garbage collection passes (not the time remaining)
-	 */
-	UE_DEPRECATED(4.18, "Call GEngine->GetTimeBetweenGarbageCollectionPasses instead")
-	float GetTimeBetweenGarbageCollectionPasses() const;
 
 	/**
 	 *	Remove NULL entries from actor list. Only does so for dynamic actors to avoid resorting. 
@@ -2903,6 +3127,12 @@ public:
 	 * @param OverrideViewLocation Optional position used to override the location used to calculate current streaming volumes
 	 */
 	void ProcessLevelStreamingVolumes(FVector* OverrideViewLocation=NULL);
+
+	/*
+	 * Updates world's level streaming state using active game players view and blocks until all sub - levels are loaded / visible / hidden
+	 * so further calls to UpdateLevelStreaming won't do any work unless state changes.
+	 */
+	void BlockTillLevelStreamingCompleted();
 
 	/**
 	 * Transacts the specified level -- the correct way to modify a level
@@ -3078,6 +3308,9 @@ private:
 	/** Utility function to handle Exec/Console Command for setting the speed of a replay */
 	bool HandleDemoSpeedCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld);
 
+	/** Utility function to handle Exec/Console Command for requesting a replay checkpoint */
+	bool HandleDemoCheckpointCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld);
+
 public:
 
 	// Destroys the current demo net driver
@@ -3099,9 +3332,11 @@ public:
 	bool Listen( FURL& InURL );
 
 	/** @return true if this level is a client */
+	UE_DEPRECATED(5.0, "Use GetNetMode or IsNetMode instead for more accurate results.")
 	bool IsClient() const;
 
 	/** @return true if this level is a server */
+	UE_DEPRECATED(5.0, "Use GetNetMode or IsNetMode instead for more accurate results")
 	bool IsServer() const;
 
 	/** @return true if the world is in the paused state */
@@ -3306,6 +3541,7 @@ public:
 	 * @param InNetPlayerIndex (optional) - the NetPlayerIndex to set on the PlayerController
 	 * @return the PlayerController that was spawned (may fail and return NULL)
 	 */
+	UE_DEPRECATED(5.0, "Use SpawnPlayActor with FUniqueNetIdRepl")
 	APlayerController* SpawnPlayActor(class UPlayer* Player, ENetRole RemoteRole, const FURL& InURL, const FUniqueNetIdPtr& UniqueId, FString& Error, uint8 InNetPlayerIndex = 0);
 	APlayerController* SpawnPlayActor(class UPlayer* Player, ENetRole RemoteRole, const FURL& InURL, const FUniqueNetIdRepl& UniqueId, FString& Error, uint8 InNetPlayerIndex = 0);
 	
@@ -3390,6 +3626,9 @@ private:
 
 	APhysicsVolume* InternalGetDefaultPhysicsVolume() const;
 
+	/** Updates world's required streaming levels */
+	void InternalUpdateStreamingState();
+
 #if WITH_EDITOR
 public:
 	void SetPlayInEditorInitialNetMode(ENetMode InNetMode)
@@ -3459,10 +3698,10 @@ public:
 	FOnBeginTearingDownEvent& OnBeginTearingDown() { return BeginTearingDownEvent; }
 
 	/** Returns the actor count. */
-	int32 GetProgressDenominator();
+	int32 GetProgressDenominator() const;
 	
 	/** Returns the actor count. */
-	int32 GetActorCount();
+	int32 GetActorCount() const;
 	
 public:
 
@@ -3475,14 +3714,14 @@ public:
 	 * @param	OutInteriorSettings		[out] Upon return, the interior settings for a camera at ViewLocation.
 	 * @return							If the settings came from an audio volume, the audio volume object is returned.
 	 */
-	class AAudioVolume* GetAudioSettings( const FVector& ViewLocation, struct FReverbSettings* OutReverbSettings, struct FInteriorSettings* OutInteriorSettings );
+	class AAudioVolume* GetAudioSettings( const FVector& ViewLocation, struct FReverbSettings* OutReverbSettings, struct FInteriorSettings* OutInteriorSettings ) const;
 
 	void SetAudioDevice(const FAudioDeviceHandle& InHandle);
 
 	/**
 	 * Get the audio device used by this world.
 	 */
-	FAudioDeviceHandle GetAudioDevice();
+	FAudioDeviceHandle GetAudioDevice() const;
 
 	/**
 	* Returns the audio device associated with this world.
@@ -3490,10 +3729,10 @@ public:
 	*
 	* @return Audio device to use with this world.
 	*/
-	class FAudioDevice* GetAudioDeviceRaw();
+	class FAudioDevice* GetAudioDeviceRaw() const;
 
 	/** Return the URL of this level on the local machine. */
-	virtual FString GetLocalURL() const;
+	FString GetLocalURL() const;
 
 	/** Returns whether script is executing within the editor. */
 	bool IsPlayInEditor() const;
@@ -3521,7 +3760,7 @@ public:
 
 	// Return the URL of this level, which may possibly
 	// exist on a remote machine.
-	virtual FString GetAddressURL() const;
+	FString GetAddressURL() const;
 
 	/**
 	 * Called after GWorld has been set. Used to load, but not associate, all
@@ -3567,7 +3806,7 @@ public:
 	 * @param bAbsolute whether we are using relative or absolute travel
 	 * @param bShouldSkipGameNotify whether to notify the clients/game or not
 	 */
-	virtual bool ServerTravel(const FString& InURL, bool bAbsolute = false, bool bShouldSkipGameNotify = false);
+	bool ServerTravel(const FString& InURL, bool bAbsolute = false, bool bShouldSkipGameNotify = false);
 
 	/** seamlessly travels to the given URL by first loading the entry level in the background,
 	 * switching to it, and then loading the specified level. Does not disrupt network communication or disconnect clients.
@@ -3578,20 +3817,17 @@ public:
 	 * is reset/reloaded when transitioning. (like UT)
 	 * @param URL - the URL to travel to; must be on the same server as the current URL
 	 * @param bAbsolute (opt) - if true, URL is absolute, otherwise relative
-	 * @param MapPackageGuid (opt) - the GUID of the map package to travel to - this is used to find the file when it has been auto-downloaded,
-	 * 				so it is only needed for clients
 	 */
+	void SeamlessTravel(const FString& InURL, bool bAbsolute = false);
+
 	UE_DEPRECATED(4.27, "UPackage::Guid has not been used by the engine for a long time. Please use SeamlessTravel without a NextMapGuid.")
-	void SeamlessTravel(const FString& InURL, bool bAbsolute, FGuid MapPackageGuid);
-	void SeamlessTravel(const FString& InURL, bool bAbsolute = false)
+	void SeamlessTravel(const FString& InURL, bool bAbsolute, FGuid MapPackageGuid)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		SeamlessTravel(InURL, bAbsolute, FGuid());
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		SeamlessTravel(InURL, bAbsolute);
 	}
 
 	/** @return whether we're currently in a seamless transition */
-	bool IsInSeamlessTravel();
+	bool IsInSeamlessTravel() const;
 
 	/** this function allows pausing the seamless travel in the middle,
 	 * right before it starts loading the destination (i.e. while in the transition level)
@@ -3602,11 +3838,7 @@ public:
 	void SetSeamlessTravelMidpointPause(bool bNowPaused);
 
 	/** @return the current detail mode, like EDetailMode but can be outside of the range */
-	int32 GetDetailMode();
-
-	/** Updates the timer between garbage collection such that at the next opportunity garbage collection will be run. */
-	UE_DEPRECATED(4.18, "Call GEngine->ForceGarbageCollection instead")
-	void ForceGarbageCollection( bool bFullPurge = false );
+	int32 GetDetailMode() const;
 
 	/** asynchronously loads the given levels in preparation for a streaming map transition.
 	 * This codepath is designed for worlds that heavily use level streaming and GameModes where the game state should
@@ -3616,10 +3848,10 @@ public:
 	void PrepareMapChange(const TArray<FName>& LevelNames);
 
 	/** @return true if there's a map change currently in progress */
-	bool IsPreparingMapChange();
+	bool IsPreparingMapChange() const;
 
 	/** @return true if there is a map change being prepared, returns whether that change is ready to be committed, otherwise false */
-	bool IsMapChangeReady();
+	bool IsMapChangeReady() const;
 
 	/** cancels pending map change (@note: we can't cancel pending async loads, so this won't immediately free the memory) */
 	void CancelPendingMapChange();
@@ -3656,6 +3888,16 @@ public:
 	}
 
 	/**
+	 * Reinitialize all subsystems
+	 */
+	void ReinitializeSubSystems()
+	{
+		SubsystemCollection.Deinitialize();
+		SubsystemCollection.Initialize(this);
+		PostInitializeSubsystems();
+	}
+
+	/**
 	 * Get a Subsystem of specified type
 	 */
 	UWorldSubsystem* GetSubsystemBase(TSubclassOf<UWorldSubsystem> SubsystemClass) const
@@ -3684,6 +3926,25 @@ public:
 			return World->GetSubsystem<TSubsystemClass>();
 		}
 		return nullptr;
+	}
+
+	/**
+	 * Check if world has a subsystem of the specified type
+	 */
+	template <typename TSubsystemClass>
+	bool HasSubsystem() const
+	{
+		return GetSubsystem<TSubsystemClass>() != nullptr;
+	}
+
+	/**
+	 * Check if world has a subsystem of the specified type from the provided GameInstance
+	 * returns false if the Subsystem cannot be found or the GameInstance is null
+	 */
+	template <typename TSubsystemClass>
+	static FORCEINLINE bool HasSubsystem(const UWorld* World)
+	{
+		return GetSubsystem<TSubsystemClass>(World) != nullptr;
 	}
 
 	/**
@@ -3736,14 +3997,11 @@ public:
 	/** Sets world origin at specified position and stream-in all relevant levels */
 	void NavigateTo(FIntVector InLocation);
 
-	/** Gets all matinee actors for the current level */
-	void GetMatineeActors( TArray<AMatineeActor*>& OutMatineeActors );
-
 	/** Updates all physics constraint actor joint locations.  */
-	virtual void UpdateConstraintActors();
+	void UpdateConstraintActors();
 
 	/** Gets all LightMaps and ShadowMaps associated with this world. Specify the level or leave null for persistent */
-	void GetLightMapsAndShadowMaps(ULevel* Level, TArray<UTexture2D*>& OutLightMapsAndShadowMaps);
+	void GetLightMapsAndShadowMaps(ULevel* Level, TArray<UTexture2D*>& OutLightMapsAndShadowMaps, bool bForceLazyLoad = true);
 
 public:
 	/** Rename this world such that it has the prefix on names for the given PIE Instance ID */
@@ -3751,6 +4009,16 @@ public:
 
 	/** Given a level script actor, modify the string such that it points to the correct instance of the object. For replays. */
 	bool RemapCompiledScriptActor(FString& Str) const;
+
+	/** Returns true if world package is instanced. */
+	bool IsInstanced() const;
+
+	/** 
+	 * If World Package is instanced return a mapping that can be used to fixup SoftObjectPaths for this world 
+	 *
+	 * returns true if world package is instanced and needs remapping.
+	 */
+	bool GetSoftObjectPathMapping(FString& OutSourceWorldPath, FString& OutRemappedWorldPath) const;
 
 	/** Given a PackageName and a PIE Instance ID return the name of that Package when being run as a PIE world */
 	static FString ConvertToPIEPackageName(const FString& PackageName, int32 PIEInstanceID);
@@ -3767,11 +4035,14 @@ public:
 	/** Given a loaded editor UWorld, duplicate it for play in editor purposes with OwningWorld as the world with the persistent level. */
 	static UWorld* DuplicateWorldForPIE(const FString& PackageName, UWorld* OwningWorld);
 
-	/** Given a string, return that string with any PIE prefix removed */
-	static FString RemovePIEPrefix(const FString &Source);
+	/** Given a string, return that string with any PIE prefix removed. Optionally returns the PIE Instance ID. */
+	static FString RemovePIEPrefix(const FString &Source, int32* OutPIEInstanceID = nullptr);
 
 	/** Given a package, locate the UWorld contained within if one exists */
 	static UWorld* FindWorldInPackage(UPackage* Package);
+
+	/** Given a package, return if package contains UWorld or External Actor */
+	static bool IsWorldOrExternalActorPackage(UPackage* Package);
 
 	/** If the specified package contains a redirector to a UWorld, that UWorld is returned. Otherwise, nullptr is returned. */
 	static UWorld* FollowWorldRedirectorInPackage(UPackage* Package, UObjectRedirector** OptionalOutRedirector = nullptr);
@@ -3810,7 +4081,8 @@ public:
 	DECLARE_MULTICAST_DELEGATE_FourParams(FWorldPostDuplicateEvent, UWorld* /*World*/, bool /*bDuplicateForPIE*/, FReplacementMap& /*ReplacementMap*/, TArray<UObject*>& /*ObjectsToFixReferences*/);
 
 #if WITH_EDITOR
-	DECLARE_MULTICAST_DELEGATE_FiveParams(FWorldRenameEvent, UWorld* /*World*/, const TCHAR* /*InName*/, UObject* /*NewOuter*/, ERenameFlags /*Flags*/, bool& /*bShouldFailRename*/);
+	DECLARE_MULTICAST_DELEGATE_FiveParams(FWorldPreRenameEvent, UWorld* /*World*/, const TCHAR* /*InName*/, UObject* /*NewOuter*/, ERenameFlags /*Flags*/, bool& /*bShouldFailRename*/);
+	DECLARE_MULTICAST_DELEGATE_OneParam(FWorldPostRenameEvent, UWorld*);
 #endif // WITH_EDITOR
 
 	// Delegate type for level change events
@@ -3843,7 +4115,10 @@ public:
 
 #if WITH_EDITOR
 	// Callback for world rename event (pre)
-	static FWorldRenameEvent OnPreWorldRename;
+	static FWorldPreRenameEvent OnPreWorldRename;
+
+	// Callback for world rename event (post)
+	static FWorldPostRenameEvent OnPostWorldRename;
 #endif // WITH_EDITOR
 
 	// Post duplication event.
@@ -3951,6 +4226,13 @@ FORCEINLINE_DEBUGGABLE float UWorld::GetDeltaSeconds() const
 	return DeltaTimeSeconds;
 }
 
+FORCEINLINE_DEBUGGABLE FGameTime UWorld::GetTime() const
+{
+	return FGameTime::CreateDilated(
+		RealTimeSeconds, DeltaRealTimeSeconds,
+		TimeSeconds, DeltaTimeSeconds);
+}
+
 FORCEINLINE_DEBUGGABLE float UWorld::TimeSince(float Time) const
 {
 	return GetTimeSeconds() - Time;
@@ -3976,7 +4258,7 @@ FORCEINLINE_DEBUGGABLE bool UWorld::ComponentOverlapMulti(TArray<struct FOverlap
 FORCEINLINE_DEBUGGABLE bool UWorld::ComponentOverlapMultiByChannel(TArray<struct FOverlapResult>& OutOverlaps, const class UPrimitiveComponent* PrimComp, const FVector& Pos, const FRotator& Rot, ECollisionChannel TraceChannel, const FComponentQueryParams& Params /* = FComponentQueryParams::DefaultComponentQueryParams */, const FCollisionObjectQueryParams& ObjectQueryParams/* =FCollisionObjectQueryParams::DefaultObjectQueryParam */) const
 {
 	// Pass through to FQuat version.
-	return ComponentOverlapMultiByChannel(OutOverlaps, PrimComp, Pos, Rot.Quaternion(), TraceChannel, Params);
+	return ComponentOverlapMultiByChannel(OutOverlaps, PrimComp, Pos, Rot.Quaternion(), TraceChannel, Params, ObjectQueryParams);
 }
 
 FORCEINLINE_DEBUGGABLE bool UWorld::ComponentSweepMulti(TArray<struct FHitResult>& OutHits, class UPrimitiveComponent* PrimComp, const FVector& Start, const FVector& End, const FRotator& Rot, const FComponentQueryParams& Params) const
@@ -4014,5 +4296,6 @@ FORCEINLINE_DEBUGGABLE bool UWorld::IsNetMode(ENetMode Mode) const
 #endif
 }
 
+UE_DEPRECATED(5.0, "Please use LexToString(EWorldType::Type Type) instead")
 FString ENGINE_API ToString(EWorldType::Type Type);
 FString ENGINE_API ToString(ENetMode NetMode);

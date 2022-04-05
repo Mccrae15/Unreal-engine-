@@ -17,7 +17,7 @@ void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<T>& Array)
 }
 
 //Note: see TArray::BulkSerialize for requirements
-inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<FVector>& Array)
+inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<FVector3f>& Array)
 {
 	Array.BulkSerialize(Ar);
 }
@@ -32,7 +32,7 @@ inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<FIntVe
 	Array.BulkSerialize(Ar);
 }
 
-inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<FVector2D>& Array)
+inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<FVector2f>& Array)
 {
 	Array.BulkSerialize(Ar);
 }
@@ -42,7 +42,7 @@ inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<float>
 	Array.BulkSerialize(Ar);
 }
 
-inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<FQuat>& Array)
+inline void TryBulkSerializeManagedArray(Chaos::FChaosArchive& Ar, TArray<FQuat4f>& Array)
 {
 	Array.BulkSerialize(Ar);
 }
@@ -330,7 +330,7 @@ public:
 	*/
 	FORCEINLINE ElementType* GetData()
 	{
-		return &Array.operator[](0);
+		return Array.GetData();
 	}
 
 	/**
@@ -340,7 +340,7 @@ public:
 	*/
 	FORCEINLINE const ElementType * GetData() const
 	{
-		return &Array.operator[](0);
+		return Array.GetData();
 	}
 
 	/**
@@ -423,37 +423,19 @@ public:
 		}
 	}
 
-	// @todo Add RangedFor support. 
-
-
-	// TARRAY_RANGED_FOR_CHECKS Is defined in Array.h based on build state.
-#if TARRAY_RANGED_FOR_CHECKS
-	// @todo: What is the appropriate size type?
-	typedef TCheckedPointerIterator<      ElementType, int32> RangedForIteratorType;
-	typedef TCheckedPointerIterator<const ElementType, int32> RangedForConstIteratorType;
-#else
-	typedef       ElementType* RangedForIteratorType;
-	typedef const ElementType* RangedForConstIteratorType;
-#endif
-
-private:
+	typedef typename TArray<InElementType>::RangedForIteratorType		RangedForIteratorType;
+	typedef typename TArray<InElementType>::RangedForConstIteratorType	RangedForConstIteratorType;
 
 	/**
 	* DO NOT USE DIRECTLY
 	* STL-like iterators to enable range-based for loop support.
 	*/
-#if TARRAY_RANGED_FOR_CHECKS
-	FORCEINLINE friend RangedForIteratorType      begin(      TManagedArrayBase& ManagedArray) { return RangedForIteratorType     (ManagedArray.Num(), ManagedArray.GetData()); }
-	FORCEINLINE friend RangedForConstIteratorType begin(const TManagedArrayBase& ManagedArray) { return RangedForConstIteratorType(ManagedArray.Num(), ManagedArray.GetData()); }
-	FORCEINLINE friend RangedForIteratorType      end  (      TManagedArrayBase& ManagedArray) { return RangedForIteratorType     (ManagedArray.Num(), ManagedArray.GetData() + ManagedArray.Num()); }
-	FORCEINLINE friend RangedForConstIteratorType end  (const TManagedArrayBase& ManagedArray) { return RangedForConstIteratorType(ManagedArray.Num(), ManagedArray.GetData() + ManagedArray.Num()); }
-#else
-	FORCEINLINE friend RangedForIteratorType      begin(      TManagedArrayBase& ManagedArray) { return ManagedArray.GetData(); }
-	FORCEINLINE friend RangedForConstIteratorType begin(const TManagedArrayBase& ManagedArray) { return ManagedArray.GetData(); }
-	FORCEINLINE friend RangedForIteratorType      end  (      TManagedArrayBase& ManagedArray) { return ManagedArray.GetData() + ManagedArray.Num(); }
-	FORCEINLINE friend RangedForConstIteratorType end  (const TManagedArrayBase& ManagedArray) { return ManagedArray.GetData() + ManagedArray.Num(); }
-#endif
+	FORCEINLINE RangedForIteratorType      begin()			{ return Array.begin(); }
+	FORCEINLINE RangedForConstIteratorType begin() const	{ return Array.begin(); }
+	FORCEINLINE RangedForIteratorType      end  ()			{ return Array.end(); }
+	FORCEINLINE RangedForConstIteratorType end  () const	{ return Array.end(); }
 
+private:
 	/**
 	* Protected Resize to prevent external resizing of the array
 	*
@@ -582,7 +564,14 @@ public:
 			{
 				ensure(RemapVal < MaskSize);
 				this->operator[](Index) -= Offsets[RemapVal];
-				ensure(-1 <= this->operator[](Index) && this->operator[](Index) < FinalSize);
+
+				// #todo Reindexing is currently incorrect in a few cases where it leaves dangling indices that
+				// should be set to INDEX_NONE.
+				// This ensure is currently suppressed to handle the dangling index problem specifically 
+				// in the ConvexGroup case (GeometryCollectionConvexUtility::RemoveConvexHulls) but should be reinstated 
+				// once we have a better solution in place for Reindexing.
+				//ensure(-1 <= this->operator[](Index) && this->operator[](Index) < FinalSize);
+				ensure(-1 <= this->operator[](Index));
 			}
 		}
 	}

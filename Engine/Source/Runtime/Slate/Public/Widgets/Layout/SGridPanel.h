@@ -15,9 +15,10 @@ class FArrangedChildren;
 class FPaintArgs;
 class FSlateWindowElementList;
 
-class SLATE_API SGridPanel
-	: public SPanel
+class SLATE_API SGridPanel : public SPanel
 {
+	SLATE_DECLARE_WIDGET(SGridPanel, SPanel)
+
 public:
 	// Used by the mandatory named parameter in FSlot
 	class Layer
@@ -29,16 +30,17 @@ public:
 
 		}
 
-		int TheLayer;
+		int32 TheLayer;
 	};
 
-	class FSlot : public TSlotBase<FSlot>, public TSupportsContentAlignmentMixin<FSlot>, public TSupportsContentPaddingMixin<FSlot>
+	class SLATE_API FSlot : public TBasicLayoutWidgetSlot<FSlot>
 	{
+		friend SGridPanel;
+
 		public:
 			/** Default values for a slot. */
 			FSlot( int32 Column, int32 Row, int32 InLayer )
-				: TSlotBase<FSlot>()
-				, TSupportsContentAlignmentMixin<FSlot>(HAlign_Fill, VAlign_Fill)
+				: TBasicLayoutWidgetSlot<FSlot>(HAlign_Fill, VAlign_Fill)
 				, ColumnParam( Column )
 				, ColumnSpanParam( 1 )
 				, RowParam( Row )
@@ -48,29 +50,31 @@ public:
 			{
 			}
 
-			/** The panel that contains this slot */
-			TWeakPtr<SGridPanel> Panel;
+			SLATE_SLOT_BEGIN_ARGS(FSlot, TBasicLayoutWidgetSlot<FSlot>)
+				/** Which column in the grid this cell belongs to */
+				SLATE_ARGUMENT(TOptional<int32>, Column)
+				/** How many columns this slot spans over */
+				SLATE_ARGUMENT(TOptional<int32>, ColumnSpan)
+				/** Which row in the grid this cell belongs to */
+				SLATE_ARGUMENT(TOptional<int32>, Row)
+				/** How many rows this this slot spans over */
+				SLATE_ARGUMENT(TOptional<int32>, RowSpan)
+				/** Positive values offset this cell to be hit-tested and drawn on top of others. Default is 0; i.e. no offset. */
+				SLATE_ARGUMENT(TOptional<int32>, Layer)
+				/** Offset this slot's content by some amount; positive values offset to lower right*/
+				SLATE_ARGUMENT(TOptional<FVector2D>, Nudge)
+			SLATE_SLOT_END_ARGS()
 
+			void Construct(const FChildren& SlotOwner, FSlotArguments&& InArgs);
+
+		public:
 			/** Which column in the grid this cell belongs to */
-			int32 ColumnParam;
+			int32 GetColumn() const
+			{
+				return ColumnParam;
+			}
 
-			/** How many columns this slot spans over */
-			int32 ColumnSpanParam;
-
-			/** Which row in the grid this cell belongs to */
-			int32 RowParam;
-
-			/** How many rows this this slot spans over */
-			int32 RowSpanParam;
-
-			/** Positive values offset this cell to be hit-tested and drawn on top of others. Default is 0; i.e. no offset. */
-			int32 LayerParam;
-
-			/** Offset this slot's content by some amount; positive values offset to lower right*/
-			FVector2D NudgeParam;
-
-			/**  */
-			FSlot& Column(int32 Column)
+			void SetColumn(int32 Column)
 			{
 				Column = FMath::Max(0, Column);
 				if (Column != ColumnParam)
@@ -78,23 +82,31 @@ public:
 					ColumnParam = Column;
 					NotifySlotChanged();
 				}
-				return *this;
 			}
 
 			/** How many columns this slot spans over */
-			FSlot& ColumnSpan( int32 ColumnSpan )
+			int32 GetColumnSpan() const
 			{
-				ColumnSpan = FMath::Max(1,ColumnSpan);
+				return ColumnSpanParam;
+			}
+
+			void SetColumnSpan(int32 ColumnSpan)
+			{
+				ColumnSpan = FMath::Max(1, ColumnSpan);
 				if (ColumnSpan != ColumnSpanParam)
 				{
 					ColumnSpanParam = ColumnSpan;
 					NotifySlotChanged();
 				}
-				return *this;
 			}
 
-			/**  */
-			FSlot& Row(int32 Row)
+			/** Which row in the grid this cell belongs to */
+			int32 GetRow() const
+			{
+				return RowParam;
+			}
+
+			void SetRow(int32 Row)
 			{
 				Row = FMath::Max(0, Row);
 				if (Row != RowParam)
@@ -102,11 +114,15 @@ public:
 					RowParam = Row;
 					NotifySlotChanged();
 				}
-				return *this;
 			}
 
 			/** How many rows this this slot spans over */
-			FSlot& RowSpan( int32 RowSpan )
+			int32 GetRowSpan() const
+			{
+				return RowSpanParam;
+			}
+
+			void SetRowSpan(int32 RowSpan)
 			{
 				RowSpan = FMath::Max(1, RowSpan);
 				if (RowSpan != RowSpanParam)
@@ -114,11 +130,15 @@ public:
 					RowSpanParam = RowSpan;
 					NotifySlotChanged();
 				}
-				return *this;
 			}
 
 			/** Positive values offset this cell to be hit-tested and drawn on top of others. Default is 0; i.e. no offset. */
-			FSlot& Layer(int32 Layer)
+			int32 GetLayer() const
+			{
+				return LayerParam;
+			}
+
+			void SetLayer(int32 Layer)
 			{
 				if (Layer != LayerParam)
 				{
@@ -126,15 +146,30 @@ public:
 					const bool bSlotLayerChanged = true;
 					NotifySlotChanged(bSlotLayerChanged);
 				}
-				return *this;
 			}
 
 			/** Offset this slot's content by some amount; positive values offset to lower right */
-			FSlot& Nudge( const FVector2D& Nudge )
+			FVector2D GetNudge() const
+			{
+				return NudgeParam;
+			}
+
+			void SetNudge(const FVector2D& Nudge)
 			{
 				NudgeParam = Nudge;
-				return *this;
+				Invalidate(EInvalidateWidgetReason::Paint);
 			}
+
+		private:
+			/** The panel that contains this slot */
+			TWeakPtr<SGridPanel> Panel;
+
+			int32 ColumnParam;
+			int32 ColumnSpanParam;
+			int32 RowParam;
+			int32 RowSpanParam;
+			int32 LayerParam;
+			FVector2D NudgeParam;
 
 			/** Notify that the slot was changed */
 			FORCEINLINE void NotifySlotChanged(bool bSlotLayerChanged = false)
@@ -149,17 +184,15 @@ public:
 	/**
 	 * Used by declarative syntax to create a Slot in the specified Column, Row and Layer.
 	 */
-	static FSlot& Slot( int32 Column, int32 Row, Layer InLayer = Layer(0) )
-	{
-		return *(new FSlot( Column, Row, InLayer.TheLayer ));
-	}
+	static FSlot::FSlotArguments Slot( int32 Column, int32 Row, Layer InLayer = Layer(0) );
 
+	using FScopedWidgetSlotArguments = TPanelChildren<FSlot>::FScopedWidgetSlotArguments;
 	/**
 	 * Dynamically add a new slot to the UI at specified Column and Row. Optionally, specify a layer at which this slot should be added.
 	 *
 	 * @return A reference to the newly-added slot
 	 */
-	FSlot& AddSlot( int32 Column, int32 Row, Layer InLayer = Layer(0) );
+	FScopedWidgetSlotArguments AddSlot( int32 Column, int32 Row, Layer InLayer = Layer(0) );
 
 	/**
 	* Removes a slot from this panel which contains the specified SWidget
@@ -173,7 +206,8 @@ public:
 		{
 			_Visibility = EVisibility::SelfHitTestInvisible;
 		}
-		SLATE_SUPPORTS_SLOT( FSlot )
+
+		SLATE_SLOT_ARGUMENT( FSlot, Slots )
 
 		/** Specify a column to stretch instead of sizing to content. */
 		FArguments& FillColumn( int32 ColumnId, const TAttribute<float>& Coefficient )
@@ -255,12 +289,12 @@ private:
 	static void DistributeSizeContributions( float SizeContribution, TArray<float>& DistributeOverMe, int32 StartIndex, int32 UpperBound );
 
 	/**
-	 * Inserts the given slot into the list of Slots based on its LayerParam, such that Slots are sorter by layer.
+	 * Find the index where the given slot should be inserted into the list of Slots based on its LayerParam, such that Slots are sorter by layer.
 	 *
 	 * @param The newly-allocated slot to insert.
-	 * @return A reference to the added slot
+	 * @return The index where the slot should be inserted.
 	 */
-	FSlot& InsertSlot( FSlot* InSlot );	
+	int32 FindInsertSlotLocation( const FSlot* InSlot );
 
 	/** Compute the sizes of columns and rows needed to fit all the slots in this grid. */
 	void ComputeDesiredCellSizes( TArray<float>& OutColumns, TArray<float>& OutRows ) const;
@@ -274,7 +308,7 @@ private:
 	 * @param InSlot The slot that has just changed.
 	 * @param bSlotLayerChanged Whether the slot layer changed.
 	 */
-	void NotifySlotChanged(FSlot* InSlot, bool bSlotLayerChanged = false);
+	void NotifySlotChanged(const FSlot* InSlot, bool bSlotLayerChanged = false);
 
 private:
 

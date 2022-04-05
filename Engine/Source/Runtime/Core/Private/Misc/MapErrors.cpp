@@ -1,7 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Misc/MapErrors.h"
-	
+
+FLazyName FMapErrors::MatchingActorGUID(TEXT("MatchingActorGUID"));
 FLazyName FMapErrors::MatchingLightGUID(TEXT("MatchingLightGUID"));
 FLazyName FMapErrors::ActorLargeShadowCaster(TEXT("ActorLargeShadowCaster"));
 FLazyName FMapErrors::NoDamageType(TEXT("NoDamageType"));
@@ -30,6 +31,7 @@ FLazyName FMapErrors::DeprecatedClass(TEXT("DeprecatedClass"));
 FLazyName FMapErrors::FoliageMissingStaticMesh(TEXT("FoliageMissingStaticMesh"));
 FLazyName FMapErrors::FoliageMissingClusterComponent(TEXT("FoliageMissingStaticMesh"));
 FLazyName FMapErrors::FixedUpDeletedLayerWeightmap(TEXT("FixedUpDeletedLayerWeightmap"));
+FLazyName FMapErrors::FixedUpInvalidLandscapeMaterialInstances(TEXT("FixedUpInvalidLandscapeMaterialInstances"));
 FLazyName FMapErrors::FixedUpIncorrectLayerWeightmap(TEXT("FixedUpIncorrectLayerWeightmap"));
 FLazyName FMapErrors::FixedUpSharedLayerWeightmap(TEXT("FixedUpSharedLayerWeightmap"));
 FLazyName FMapErrors::LandscapeComponentPostLoad_Warning(TEXT("LandscapeComponentPostLoad_Warning"));
@@ -60,16 +62,16 @@ FLazyName FMapErrors::RepairedPaintedVertexColors(TEXT("RepairedPaintedVertexCol
 FLazyName FMapErrors::LODActorMissingStaticMesh(TEXT("LODActorMissingStaticMesh"));
 FLazyName FMapErrors::LODActorMissingActor(TEXT("LODActorMissingActor"));
 FLazyName FMapErrors::LODActorNoActorFound(TEXT("LODActorNoActor"));
-FLazyName FMapErrors::HLODSystemNotEnabled(TEXT("HLODSystemNotEnabled"));
 FLazyName FMapErrors::InvalidVirtualTextureUsage(TEXT("InvalidVirtualTextureUsage"));
 
 namespace
 {
-	constexpr TCHAR MapErrorsPath[] = TEXT("Shared/Editor/MapErrors");
+	constexpr TCHAR MapErrorsURLPath[] = TEXT("BuildingWorlds/LevelEditor/MapErrors");
+	constexpr TCHAR MapErrorsLocalPath[] = TEXT("Shared/Editor/MapErrors");
 }
 
 FMapErrorToken::FMapErrorToken(const FName& InErrorName)
-	: FDocumentationToken(MapErrorsPath, MapErrorsPath, InErrorName.ToString())
+	: FDocumentationToken(MapErrorsURLPath, MapErrorsLocalPath, InErrorName.ToString())
 {
 }
 

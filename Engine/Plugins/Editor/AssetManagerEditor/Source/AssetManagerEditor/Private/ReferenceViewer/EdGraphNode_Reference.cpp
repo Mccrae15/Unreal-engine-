@@ -3,7 +3,7 @@
 #include "ReferenceViewer/EdGraphNode_Reference.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "EdGraph/EdGraphPin.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "SReferenceViewer.h"
 
 #define LOCTEXT_NAMESPACE "ReferenceViewer"
@@ -57,7 +57,11 @@ void UEdGraphNode_Reference::SetupReferenceNode(const FIntPoint& NodeLoc, const 
 		{
 			NodeComment = First.PackageName.ToString();
 		}
+
+		static const FName NAME_ActorLabel(TEXT("ActorLabel"));
+
 		NodeTitle = FText::FromString(MainAssetName);
+		InAssetData.GetTagValue(NAME_ActorLabel, NodeTitle);
 	}
 	else
 	{

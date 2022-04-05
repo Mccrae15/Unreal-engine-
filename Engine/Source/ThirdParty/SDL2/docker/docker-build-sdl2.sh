@@ -14,7 +14,8 @@
 
 if [ $UID -eq 0 ]; then
   # Centos 7
-  yum install -y cmake make gcc-c++
+  yum install -y epel-release
+  yum install -y cmake3 make gcc-c++
   yum install -y libXcursor-devel libXinerama-devel libxi-dev libXrandr-devel libXScrnSaver-devel libXi-devel mesa-libGL-devel mesa-libEGL-devel pulseaudio-libs-devel wayland-protocols-devel wayland-devel libxkbcommon-devel mesa-libwayland-egl-devel alsa-lib-devel libudev-devel
 
   # Create non-privileged user and workspace
@@ -52,11 +53,11 @@ BuildWithOptions()
 	# Building with OGL breaks SDL_CreateWindow() on embedded devices w/o proper GL libraries
 	#   http://lists.libsdl.org/pipermail/commits-libsdl.org/2017-September/001967.html
 	if [[ ${ARCH} == 'aarch64' ]]; then
-		Options+=' -DVIDEO_OPENGL=OFF'
+		Options+=' -DSDL_VIDEO_OPENGL=OFF'
 	fi
 
 	set -x
-	cmake $Options ${SDL_DIR}
+	cmake3 $Options ${SDL_DIR}
 	set +x
 
 	make -j${CORES}
@@ -70,7 +71,7 @@ set -e
 OPTS=()
 OPTS+=(-DSDL_SHARED_ENABLED_BY_DEFAULT=OFF)
 OPTS+=(-DSDL_STATIC_ENABLED_BY_DEFAULT=ON)
-OPTS+=(-DVIDEO_KMSDRM=OFF)
+OPTS+=(-DSDL_KMSDRM=OFF)
 OPTS+=(-DCMAKE_C_FLAGS=-gdwarf-4)
 
 # build Debug with -fPIC so it's usable in any type of build

@@ -10,12 +10,11 @@
 	"DocsURL": "",
 	"MarketplaceURL": "",
 	"SupportURL": "",
-	"EnabledByDefault": true,
+	"EnabledByDefault": false,
 	"CanContainContent": true,
 	"IsBetaVersion": false,
 	"Installed": false,
 	"SupportedTargetPlatforms": [
-		"Win32",
 		"Win64",
 		"Linux",
 		"HoloLens",
@@ -26,8 +25,7 @@
 			"Name": "OpenXRHandTracking",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
-				"Win32",
+			"PlatformAllowList": [
 				"Win64",
 				"Linux",
 				"HoloLens",
@@ -39,8 +37,7 @@
 		{
 			"Name": "OpenXR",
 			"Enabled": true,
-			"WhitelistPlatforms": [
-				"Win32",
+			"PlatformAllowList": [
 				"Win64",
 				"Linux",
 				"HoloLens",

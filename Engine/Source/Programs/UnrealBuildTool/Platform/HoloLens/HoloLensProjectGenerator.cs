@@ -6,7 +6,8 @@ using System.Text;
 using System.Diagnostics;
 using System.IO;
 using System.Xml.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -77,14 +78,14 @@ namespace UnrealBuildTool
 				VCProjectFileContent.Append("		<WindowsTargetPlatformVersion>" + MaxTestedVersion + "</WindowsTargetPlatformVersion>" + ProjectFileGenerator.NewLine);
 			}
 
-			WindowsCompiler Compiler = WindowsPlatform.GetDefaultCompiler(TargetFilePath);
-			DirectoryReference PlatformWinMDLocation = HoloLens.GetCppCXMetadataLocation(Compiler, "Latest");
+			WindowsCompiler Compiler = WindowsPlatform.GetDefaultCompiler(TargetFilePath, WindowsArchitecture.x64);
+			DirectoryReference? PlatformWinMDLocation = HoloLensPlatform.GetCppCXMetadataLocation(Compiler, "Latest", WindowsArchitecture.x64);
 			if (PlatformWinMDLocation == null || !FileReference.Exists(FileReference.Combine(PlatformWinMDLocation, "platform.winmd")))
 			{
 				throw new BuildException("Unable to find platform.winmd for {0} toolchain; '{1}' is an invalid version", WindowsPlatform.GetCompilerName(Compiler), "Latest");
 			}
-			string FoundationWinMDPath = HoloLens.GetLatestMetadataPathForApiContract("Windows.Foundation.FoundationContract", Compiler);
-			string UniversalWinMDPath = HoloLens.GetLatestMetadataPathForApiContract("Windows.Foundation.UniversalApiContract", Compiler);
+			string FoundationWinMDPath = HoloLensPlatform.GetLatestMetadataPathForApiContract("Windows.Foundation.FoundationContract", Compiler);
+			string UniversalWinMDPath = HoloLensPlatform.GetLatestMetadataPathForApiContract("Windows.Foundation.UniversalApiContract", Compiler);
 			VCProjectFileContent.Append("		<AdditionalOptions>/ZW /ZW:nostdlib</AdditionalOptions>" + ProjectFileGenerator.NewLine);
 			VCProjectFileContent.Append("		<NMakePreprocessorDefinitions>$(NMakePreprocessorDefinitions);PLATFORM_HOLOLENS=1;HOLOLENS=1;</NMakePreprocessorDefinitions>" + ProjectFileGenerator.NewLine);
 			if (PlatformWinMDLocation != null)
@@ -104,8 +105,8 @@ namespace UnrealBuildTool
 			//string SDKFolder = "";
 			string SDKVersion = "";
 
-			DirectoryReference folder;
-			VersionNumber version;
+			DirectoryReference? folder;
+			VersionNumber? version;
 			if(WindowsPlatform.TryGetWindowsSdkDir("Latest", out version, out folder))
 			{
 				//SDKFolder = folder.FullName;
@@ -175,7 +176,7 @@ namespace UnrealBuildTool
 				string TempTargetFilePath = InTargetFilePath.FullName.Replace("\\", "/");
 				if (TempTargetFilePath.Contains("/Templates/"))
 				{
-					string AbsoluteEnginePath = UnrealBuildTool.EngineDirectory.FullName;
+					string AbsoluteEnginePath = Unreal.EngineDirectory.FullName;
 					AbsoluteEnginePath = AbsoluteEnginePath.Replace("\\", "/");
 					if (AbsoluteEnginePath.EndsWith("/") == false)
 					{

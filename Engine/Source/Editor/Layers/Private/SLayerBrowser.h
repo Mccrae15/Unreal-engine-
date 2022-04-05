@@ -16,9 +16,12 @@
 #include "Editor/Layers/Private/ActorsAssignedToSpecificLayersFilter.h"
 #include "ISceneOutlinerColumn.h"
 #include "Editor/Layers/Private/SceneOutlinerLayerContentsColumn.h"
-#include "DragAndDrop/ActorDragDropGraphEdOp.h"
+#include "DragAndDrop/ActorDragDropOp.h"
+#include "DragAndDrop/FolderDragDropOp.h"
+#include "DragAndDrop/CompositeDragDropOp.h"
 #include "Editor/Layers/Private/SLayersView.h"
 #include "Editor/Layers/Private/SLayersCommandsMenu.h"
+#include "EditorActorFolders.h"
 
 class ISceneOutliner;
 
@@ -84,10 +87,10 @@ protected:
 	 */
 	virtual void OnDragLeave( const FDragDropEvent& DragDropEvent ) override
 	{
-		TSharedPtr< FActorDragDropGraphEdOp > DragActorOp = DragDropEvent.GetOperationAs< FActorDragDropGraphEdOp >();
-		if(DragActorOp.IsValid())
+		TSharedPtr< FDecoratedDragDropOp > DragOp = DragDropEvent.GetOperationAs<FDecoratedDragDropOp>();
+		if (DragOp.IsValid())
 		{
-			DragActorOp->ResetToDefaultToolTip();
+			DragOp->ResetToDefaultToolTip();
 		}
 	}
 
@@ -101,49 +104,86 @@ protected:
 	 */
 	virtual FReply OnDragOver( const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent ) override
 	{
-		TSharedPtr< FActorDragDropGraphEdOp > DragActorOp = DragDropEvent.GetOperationAs< FActorDragDropGraphEdOp >();
-		if (!SelectedLayerViewModel->GetDataSource().IsValid() || !DragActorOp.IsValid())
+		if (!SelectedLayerViewModel->GetDataSource().IsValid())
 		{
 			return FReply::Unhandled();
 		}
 
-		const FGeometry LayerContentsHeaderGeometry = SWidget::FindChildGeometry( MyGeometry, LayerContentsHeader.ToSharedRef() );
-		bool bValidDrop = LayerContentsHeaderGeometry.IsUnderLocation( DragDropEvent.GetScreenSpacePosition() );
+		TArray<TWeakObjectPtr<AActor>> Actors;
+		TSharedPtr<FActorDragDropOp> ActorDragOp = nullptr;
+		TSharedPtr<FFolderDragDropOp> FolderDragOp = nullptr;
 
-		if( !bValidDrop && Mode == ELayerBrowserMode::LayerContents )
+		if (const TSharedPtr<FCompositeDragDropOp> CompositeDragOp = DragDropEvent.GetOperationAs<FCompositeDragDropOp>())
 		{
-			const FGeometry LayerContentsSectionGeometry = SWidget::FindChildGeometry( MyGeometry, LayerContentsSection.ToSharedRef() );
-			bValidDrop = LayerContentsSectionGeometry.IsUnderLocation( DragDropEvent.GetScreenSpacePosition() );
-		}
-
-		if( !bValidDrop )
-		{
-			return FReply::Unhandled();
-		}
-
-		if ( !DragActorOp.IsValid() || DragActorOp->Actors.Num() == 0 )
-		{
-			return FReply::Unhandled();
-		}
-
-		bool bCanAssign = false;
-		FText Message;
-		if( DragActorOp->Actors.Num() > 1 )
-		{
-			bCanAssign = SelectedLayerViewModel->CanAssignActors( DragActorOp->Actors, OUT Message );
+			ActorDragOp = CompositeDragOp->GetSubOp<FActorDragDropOp>();
+			FolderDragOp = CompositeDragOp->GetSubOp<FFolderDragDropOp>();
 		}
 		else
 		{
-			bCanAssign = SelectedLayerViewModel->CanAssignActor( DragActorOp->Actors[ 0 ], OUT Message );
+			ActorDragOp = DragDropEvent.GetOperationAs<FActorDragDropOp>();
+			FolderDragOp = DragDropEvent.GetOperationAs<FFolderDragDropOp>();
+		}
+		
+		if (ActorDragOp.IsValid() || FolderDragOp.IsValid())
+		{
+			const FGeometry LayerContentsHeaderGeometry = SWidget::FindChildGeometry( MyGeometry, LayerContentsHeader.ToSharedRef() );
+			bool bValidDrop = LayerContentsHeaderGeometry.IsUnderLocation( DragDropEvent.GetScreenSpacePosition() );
+
+			if( !bValidDrop && Mode == ELayerBrowserMode::LayerContents )
+			{
+				const FGeometry LayerContentsSectionGeometry = SWidget::FindChildGeometry( MyGeometry, LayerContentsSection.ToSharedRef() );
+				bValidDrop = LayerContentsSectionGeometry.IsUnderLocation( DragDropEvent.GetScreenSpacePosition() );
+			}
+
+			if( bValidDrop && ActorDragOp.IsValid() && ActorDragOp->Actors.Num() > 0)
+			{
+				Actors = ActorDragOp->Actors;
+			}
+
+			if (bValidDrop && FolderDragOp.IsValid())
+			{
+				if (UWorld* World = FolderDragOp->World.Get())
+				{
+					FActorFolders::GetWeakActorsFromFolders(*World, FolderDragOp->Folders, Actors, FolderDragOp->RootObject);
+				}
+			}
 		}
 
-		if ( bCanAssign )
+		if (Actors.Num() > 0)
 		{
-			DragActorOp->SetToolTip( FActorDragDropGraphEdOp::ToolTip_CompatibleGeneric, Message );
-		}
-		else
-		{
-			DragActorOp->SetToolTip( FActorDragDropGraphEdOp::ToolTip_IncompatibleGeneric, Message );
+			bool bCanAssign = false;
+			FText Message;
+			if (Actors.Num() > 1)
+			{
+				bCanAssign = SelectedLayerViewModel->CanAssignActors(Actors, OUT Message);
+			}
+			else
+			{
+				bCanAssign = SelectedLayerViewModel->CanAssignActor(Actors[0], OUT Message);
+			}
+
+			if (bCanAssign)
+			{
+				if (ActorDragOp.IsValid())
+				{
+					ActorDragOp->SetToolTip(Message, FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
+				}
+				if (FolderDragOp.IsValid())
+				{
+					FolderDragOp->SetToolTip(Message, FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.OK")));
+				}
+			}
+			else
+			{
+				if (ActorDragOp.IsValid())
+				{
+					ActorDragOp->SetToolTip(Message, FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+				}
+				if (FolderDragOp.IsValid())
+				{
+					FolderDragOp->SetToolTip(Message, FEditorStyle::GetBrush(TEXT("Graph.ConnectorFeedback.Error")));
+				}
+			}
 		}
 
 		// We leave the event unhandled so the children of the ListView get a chance to grab the drag/drop
@@ -160,30 +200,61 @@ protected:
 	 */
 	virtual FReply OnDrop( const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent ) override
 	{
-		TSharedPtr< FActorDragDropGraphEdOp > DragActorOp = DragDropEvent.GetOperationAs< FActorDragDropGraphEdOp >();
-
-		if (!SelectedLayerViewModel->GetDataSource().IsValid() || !DragActorOp.IsValid())
+		if (!SelectedLayerViewModel->GetDataSource().IsValid())
 		{
 			return FReply::Unhandled();
 		}
 
-		const FGeometry LayerContentsHeaderGeometry = SWidget::FindChildGeometry( MyGeometry, LayerContentsHeader.ToSharedRef() );
-		bool bValidDrop = LayerContentsHeaderGeometry.IsUnderLocation( DragDropEvent.GetScreenSpacePosition() );
+		bool bHandled = false;
+		TArray<TWeakObjectPtr<AActor>> ActorsToDrop;
 
-		if( !bValidDrop && Mode == ELayerBrowserMode::LayerContents )
+		TSharedPtr<FActorDragDropOp> ActorDragOp = nullptr;
+		TSharedPtr<FFolderDragDropOp> FolderDragOp = nullptr;
+
+		if (const TSharedPtr<FCompositeDragDropOp> CompositeDragOp = DragDropEvent.GetOperationAs<FCompositeDragDropOp>())
 		{
-			const FGeometry LayerContentsSectionGeometry = SWidget::FindChildGeometry( MyGeometry, LayerContentsSection.ToSharedRef() );
-			bValidDrop = LayerContentsSectionGeometry.IsUnderLocation( DragDropEvent.GetScreenSpacePosition() );
+			ActorDragOp = CompositeDragOp->GetSubOp<FActorDragDropOp>();
+			FolderDragOp = CompositeDragOp->GetSubOp<FFolderDragDropOp>();
+		}
+		else
+		{
+			ActorDragOp = DragDropEvent.GetOperationAs<FActorDragDropOp>();
+			FolderDragOp = DragDropEvent.GetOperationAs<FFolderDragDropOp>();
 		}
 
-		if( !bValidDrop )
+		if (ActorDragOp.IsValid())
 		{
-			return FReply::Unhandled();
+			const FGeometry LayerContentsHeaderGeometry = SWidget::FindChildGeometry(MyGeometry, LayerContentsHeader.ToSharedRef());
+			bool bValidDrop = LayerContentsHeaderGeometry.IsUnderLocation(DragDropEvent.GetScreenSpacePosition());
+
+			if (!bValidDrop && Mode == ELayerBrowserMode::LayerContents)
+			{
+				const FGeometry LayerContentsSectionGeometry = SWidget::FindChildGeometry(MyGeometry, LayerContentsSection.ToSharedRef());
+				bValidDrop = LayerContentsSectionGeometry.IsUnderLocation(DragDropEvent.GetScreenSpacePosition());
+			}
+
+			if (bValidDrop)
+			{
+				ActorsToDrop = ActorDragOp->Actors;
+				bHandled = true;
+			}
 		}
 
-		SelectedLayerViewModel->AddActors( DragActorOp->Actors );
+		if (FolderDragOp.IsValid())
+		{
+			if (UWorld* World = FolderDragOp->World.Get())
+			{
+				FActorFolders::GetWeakActorsFromFolders(*World, FolderDragOp->Folders, ActorsToDrop, FolderDragOp->RootObject);
+				bHandled = true;
+			}
+		}
 
-		return FReply::Handled();
+		if (ActorsToDrop.Num() > 0)
+		{
+			SelectedLayerViewModel->AddActors(ActorsToDrop);
+		}
+
+		return bHandled ? FReply::Handled() : FReply::Unhandled();
 	}
 
 

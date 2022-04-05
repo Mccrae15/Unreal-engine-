@@ -47,7 +47,10 @@ public:
 class FLidarPointCloudRenderBuffer : public FLidarPointCloudBuffer, public FRenderResource
 {
 public:
-	FVertexBufferRHIRef Buffer;
+	FLidarPointCloudRenderBuffer() : FLidarPointCloudBuffer() {}
+	FLidarPointCloudRenderBuffer(uint32 Capacity) : FLidarPointCloudBuffer(Capacity) {}
+
+	FBufferRHIRef Buffer;
 	FShaderResourceViewRHIRef SRV;
 
 	int32 PointCount;
@@ -65,34 +68,34 @@ struct FLidarPointCloudBatchElementUserData
 	FRHIShaderResourceView* TreeBuffer;
 	FRHIShaderResourceView* DataBuffer;
 	int32 bEditorView;
-	FVector SelectionColor;
-	FVector LocationOffset;
+	FVector3f SelectionColor;
+	FVector3f LocationOffset;
 	float RootCellSize;
-	FVector RootExtent;
+	FVector3f RootExtent;
 	int32 bUsePerPointScaling;
 	float VirtualDepth;
 	float SpriteSizeMultiplier;
 	float ReversedVirtualDepthMultiplier;
-	FVector ViewRightVector;
-	FVector ViewUpVector;
+	FVector3f ViewRightVector;
+	FVector3f ViewUpVector;
 	int32 bUseCameraFacing;
 	int32 bUseScreenSizeScaling;
 	int32 bUseStaticBuffers;
-	FVector BoundsSize;
-	FVector ElevationColorBottom;
-	FVector ElevationColorTop;
+	FVector3f BoundsSize;
+	FVector3f ElevationColorBottom;
+	FVector3f ElevationColorTop;
 	int32 bUseCircle;
 	int32 bUseColorOverride;
 	int32 bUseElevationColor;
-	FVector4 Offset;
-	FVector4 Contrast;
-	FVector4 Saturation;
-	FVector4 Gamma;
-	FVector Tint;
+	FVector4f Offset;
+	FVector4f Contrast;
+	FVector4f Saturation;
+	FVector4f Gamma;
+	FVector3f Tint;
 	float IntensityInfluence;
 	int32 bUseClassification;
-	FVector4 ClassificationColors[32];
-	FMatrix ClippingVolume[16];
+	FVector4f ClassificationColors[32];
+	FMatrix44f ClippingVolume[16];
 	uint32 NumClippingVolumes;
 	uint32 bStartClipped;
 
@@ -106,7 +109,7 @@ struct FLidarPointCloudBatchElementUserData
  */
 class FLidarPointCloudVertexFactoryShaderParameters : public FVertexFactoryShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FLidarPointCloudVertexFactoryShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FLidarPointCloudVertexFactoryShaderParameters, NonVirtual);
 
 public:
 	void Bind(const FShaderParameterMap& ParameterMap);
@@ -200,3 +203,4 @@ class FLidarPointCloudSharedVertexFactory : public FLidarPointCloudVertexFactory
 /** A set of global render resources shared between all Lidar Point Cloud proxies */
 extern TGlobalResource<FLidarPointCloudIndexBuffer> GLidarPointCloudIndexBuffer;
 extern TGlobalResource<FLidarPointCloudSharedVertexFactory> GLidarPointCloudSharedVertexFactory;
+extern TGlobalResource<FLidarPointCloudRenderBuffer> GDummyLidarPointCloudRenderBuffer;

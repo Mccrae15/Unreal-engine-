@@ -26,8 +26,10 @@
 #include "Textures/SlateShaderResource.h"
 #include "SlateGlobals.h"
 #include "Types/PaintArgs.h"
+#include "Types/SlateAttribute.h"
 #include "FastUpdate/WidgetProxy.h"
 #include "InvalidateWidgetReason.h"
+#include "Widgets/SlateControlledConstruction.h"
 #include "Widgets/Accessibility/SlateWidgetAccessibleTypes.h"
 
 class FActiveTimerHandle;
@@ -50,55 +52,14 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("SWidget::Tick (Count)"), STAT_SlateNumTi
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Execute Active Timers"), STAT_SlateExecuteActiveTimers, STATGROUP_Slate, SLATECORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Tick Widgets"), STAT_SlateTickWidgets, STATGROUP_Slate, SLATECORE_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("SlatePrepass"), STAT_SlatePrepass, STATGROUP_Slate, SLATECORE_API);
+
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 DECLARE_CYCLE_STAT_EXTERN(TEXT("SWidget MetaData"), STAT_SlateGetMetaData, STATGROUP_Slate, SLATECORE_API);
+#endif
 
 DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Total Widgets"), STAT_SlateTotalWidgets, STATGROUP_SlateMemory, SLATECORE_API);
 DECLARE_MEMORY_STAT_EXTERN(TEXT("SWidget Total Allocated Size"), STAT_SlateSWidgetAllocSize, STATGROUP_SlateMemory, SLATECORE_API);
 
-
-namespace SharedPointerInternals
-{
-	template <typename ObjectType>
-	class TIntrusiveReferenceController;
-}
-
-class SLATECORE_API FSlateControlledConstruction
-{
-public:
-	FSlateControlledConstruction(){}
-	virtual ~FSlateControlledConstruction(){}
-	
-private:
-	/** UI objects cannot be copy-constructed */
-	FSlateControlledConstruction(const FSlateControlledConstruction& Other) = delete;
-	
-	/** UI objects cannot be copied. */
-	void operator= (const FSlateControlledConstruction& Other) = delete;
-
-	/** Widgets should only ever be constructed via SNew or SAssignNew */
-	void* operator new ( const size_t InSize )
-	{
-		return FMemory::Malloc(InSize);
-	}
-
-	/** Widgets should only ever be constructed via SNew or SAssignNew */
-	void* operator new ( const size_t InSize, void* Addr )
-	{
-		return Addr;
-	}
-
-	template<class WidgetType, bool bIsUserWidget>
-	friend struct TWidgetAllocator;
-
-	template <typename ObjectType>
-	friend class SharedPointerInternals::TIntrusiveReferenceController;
-
-public:
-	void operator delete(void* mem)
-	{
-		FMemory::Free(mem);
-	}
-};
 
 enum class EAccessibleType : uint8
 {
@@ -191,15 +152,113 @@ class SLATECORE_API SWidget
 	: public FSlateControlledConstruction,
 	public TSharedFromThis<SWidget>		// Enables 'this->AsShared()'
 {
-	friend struct FCurveSequence;
+	SLATE_DECLARE_WIDGET(SWidget, FSlateControlledConstruction)
+
 	friend class FWidgetProxy;
+	friend class FSlateAttributeMetaData;
 	friend class FSlateInvalidationRoot;
 	friend class FSlateInvalidationWidgetList;
 	friend class FSlateWindowElementList;
 	friend class SWindow;
+	friend class FSlateTrace;
 	friend struct FSlateCachedElementList;
 	template<class WidgetType, typename RequiredArgsPayloadType>
 	friend struct TSlateDecl;
+
+protected:
+	/**
+	 * A SlateAttribute that is member variable of a SWidget.
+	 * @usage: TSlateAttribute<int32> MyAttribute1; TSlateAttribute<int32, EInvalidateWidgetReason::Paint> MyAttribute2; TSlateAttribute<int32, EInvalidateWidgetReason::Paint, TSlateAttributeComparePredicate<>> MyAttribute3;
+	 */
+	template<typename InObjectType, EInvalidateWidgetReason InInvalidationReasonValue = EInvalidateWidgetReason::None, typename InComparePredicate = TSlateAttributeComparePredicate<>>
+	struct TSlateAttribute : public ::SlateAttributePrivate::TSlateMemberAttribute<
+		InObjectType,
+		typename std::conditional<InInvalidationReasonValue == EInvalidateWidgetReason::None, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeInvalidationReason<InInvalidationReasonValue>>::type,
+		InComparePredicate>
+	{
+		using ::SlateAttributePrivate::TSlateMemberAttribute<
+			InObjectType,
+			typename std::conditional<InInvalidationReasonValue == EInvalidateWidgetReason::None, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeInvalidationReason<InInvalidationReasonValue>>::type,
+			InComparePredicate>::TSlateMemberAttribute;
+	};
+
+	//~ Override for FText that use the TSlateAttributeFTextComparePredicate to compare FText
+	template<>
+	struct TSlateAttribute<FText, EInvalidateWidgetReason::None> : public ::SlateAttributePrivate::TSlateMemberAttribute<FText, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeFTextComparePredicate>
+	{
+		using ::SlateAttributePrivate::TSlateMemberAttribute<FText, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeFTextComparePredicate>::TSlateMemberAttribute;
+	};
+
+	//~ Override for FText that use the TSlateAttributeFTextComparePredicate to compare FText
+	template<EInvalidateWidgetReason InInvalidationReasonValue>
+	struct TSlateAttribute<FText, InInvalidationReasonValue> : public ::SlateAttributePrivate::TSlateMemberAttribute<
+		FText,
+		typename std::conditional<InInvalidationReasonValue == EInvalidateWidgetReason::None, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeInvalidationReason<InInvalidationReasonValue>>::type,
+		TSlateAttributeFTextComparePredicate>
+	{
+		using ::SlateAttributePrivate::TSlateMemberAttribute<
+			FText,
+			typename std::conditional<InInvalidationReasonValue == EInvalidateWidgetReason::None, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeInvalidationReason<InInvalidationReasonValue>>::type,
+			TSlateAttributeFTextComparePredicate>::TSlateMemberAttribute;
+	};
+
+	/**
+	 * A SlateAttribute that is NOT a member variable of a SWidget.
+	 * @usage: TSlateManagedAttribute<int32> MyAttribute1; TSlateManagedAttribute<int32, EInvalidateWidgetReason::Paint> MyAttribute2; TSlateManagedAttribute<int32, EInvalidateWidgetReason::Paint, TSlateAttributeComparePredicate<>> MyAttribute3;
+	 */
+	template<typename InObjectType, EInvalidateWidgetReason InInvalidationReasonValue = EInvalidateWidgetReason::None, typename InComparePredicate = TSlateAttributeComparePredicate<>>
+	struct TSlateManagedAttribute : public ::SlateAttributePrivate::TSlateManagedAttribute<
+		InObjectType,
+		typename std::conditional<InInvalidationReasonValue == EInvalidateWidgetReason::None, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeInvalidationReason<InInvalidationReasonValue>>::type,
+		InComparePredicate>
+	{
+		using ::SlateAttributePrivate::TSlateManagedAttribute<
+			InObjectType,
+			typename std::conditional<InInvalidationReasonValue == EInvalidateWidgetReason::None, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeInvalidationReason<InInvalidationReasonValue>>::type,
+			InComparePredicate>::TSlateManagedAttribute;
+	};
+
+	//~ Override for FText that use the TSlateAttributeFTextComparePredicate to compare FText
+	template<>
+	struct TSlateManagedAttribute<FText, EInvalidateWidgetReason::None> : public ::SlateAttributePrivate::TSlateManagedAttribute<FText, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeFTextComparePredicate>
+	{
+		using ::SlateAttributePrivate::TSlateManagedAttribute<FText, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeFTextComparePredicate>::TSlateManagedAttribute;
+	};
+
+	//~ Override for FText that use the TSlateAttributeFTextComparePredicate to compare FText
+	template<EInvalidateWidgetReason InInvalidationReasonValue>
+	struct TSlateManagedAttribute<FText, InInvalidationReasonValue> : public ::SlateAttributePrivate::TSlateManagedAttribute<
+		FText,
+		typename std::conditional<InInvalidationReasonValue == EInvalidateWidgetReason::None, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeInvalidationReason<InInvalidationReasonValue>>::type,
+		TSlateAttributeFTextComparePredicate>
+	{
+		using ::SlateAttributePrivate::TSlateManagedAttribute<
+			FText,
+			typename std::conditional<InInvalidationReasonValue == EInvalidateWidgetReason::None, ::SlateAttributePrivate::FSlateAttributeNoInvalidationReason, TSlateAttributeInvalidationReason<InInvalidationReasonValue>>::type,
+			TSlateAttributeFTextComparePredicate>::TSlateManagedAttribute;
+	};
+
+	/** A Reference to a TSlateAttribute. */
+	template<typename InObjectType, EInvalidateWidgetReason InInvalidationReasonValue = EInvalidateWidgetReason::None, typename InComparePredicate = TSlateAttributeComparePredicate<>>
+	struct TSlateAttributeRef : public ::SlateAttributePrivate::TSlateMemberAttributeRef<TSlateAttribute<InObjectType, InInvalidationReasonValue, InComparePredicate>>
+	{
+		using ::SlateAttributePrivate::TSlateMemberAttributeRef<TSlateAttribute<InObjectType, InInvalidationReasonValue, InComparePredicate>>::TSlateMemberAttributeRef;
+	};
+
+	//~ Override for FText that use the TSlateAttributeFTextComparePredicate to compare FText
+	template<>
+	struct TSlateAttributeRef<FText, EInvalidateWidgetReason::None> : public ::SlateAttributePrivate::TSlateMemberAttributeRef<TSlateAttribute<FText>>
+	{
+		using ::SlateAttributePrivate::TSlateMemberAttributeRef<TSlateAttribute<FText>>::TSlateMemberAttributeRef;
+	};
+
+	//~ Override for FText that use the TSlateAttributeFTextComparePredicate to compare FText
+	template<EInvalidateWidgetReason InInvalidationReasonValue>
+	struct TSlateAttributeRef<FText, InInvalidationReasonValue> : public ::SlateAttributePrivate::TSlateMemberAttributeRef<TSlateAttribute<FText, InInvalidationReasonValue>>
+	{
+		using ::SlateAttributePrivate::TSlateMemberAttributeRef<TSlateAttribute<FText, InInvalidationReasonValue>>::TSlateMemberAttributeRef;
+	};
+
 public:
 
 	/** Construct a SWidget based on initial parameters. */
@@ -285,10 +344,6 @@ public:
 	 * @param InFocusEvent The FocusEvent
 	 */
 	virtual void OnFocusLost(const FFocusEvent& InFocusEvent);
-
-	/** Called whenever a focus path is changing on all the widgets within the old and new focus paths */
-	UE_DEPRECATED(4.13, "Please use the newer version of OnFocusChanging that takes a FocusEvent")
-	virtual void OnFocusChanging(const FWeakWidgetPath& PreviousFocusPath, const FWidgetPath& NewWidgetPath);
 
 	/** Called whenever a focus path is changing on all the widgets within the old and new focus paths */
 	virtual void OnFocusChanging(const FWeakWidgetPath& PreviousFocusPath, const FWidgetPath& NewWidgetPath, const FFocusEvent& InFocusEvent);
@@ -589,10 +644,14 @@ public:
 	UE_DEPRECATED(4.26, "Renaming to TranslateMouseCoordinateForCustomHitTestChild")
 	TSharedPtr<FVirtualPointerPosition> TranslateMouseCoordinateFor3DChild(const TSharedRef<SWidget>& ChildWidget, const FGeometry& MyGeometry, const FVector2D& ScreenSpaceMouseCoordinate, const FVector2D& LastScreenSpaceMouseCoordinate) const
 	{
-		return TranslateMouseCoordinateForCustomHitTestChild(ChildWidget, MyGeometry, ScreenSpaceMouseCoordinate, LastScreenSpaceMouseCoordinate);
+		TOptional<FVirtualPointerPosition> Result = TranslateMouseCoordinateForCustomHitTestChild(ChildWidget.Get(), MyGeometry, ScreenSpaceMouseCoordinate, LastScreenSpaceMouseCoordinate);
+		return Result.IsSet() ? MakeShared<FVirtualPointerPosition>(Result.GetValue()) : TSharedPtr<FVirtualPointerPosition>();
 	}
 
+	UE_DEPRECATED(5.0, "TranslateMouseCoordinateForCustomHitTestChild that returns a shared ptr is deprecated.")
 	virtual TSharedPtr<FVirtualPointerPosition> TranslateMouseCoordinateForCustomHitTestChild(const TSharedRef<SWidget>& ChildWidget, const FGeometry& MyGeometry, const FVector2D& ScreenSpaceMouseCoordinate, const FVector2D& LastScreenSpaceMouseCoordinate) const;
+
+	virtual TOptional<FVirtualPointerPosition> TranslateMouseCoordinateForCustomHitTestChild(const SWidget& ChildWidget, const FGeometry& MyGeometry, const FVector2D ScreenSpaceMouseCoordinate, const FVector2D LastScreenSpaceMouseCoordinate) const;
 
 	/**
 	 * All the pointer (mouse, touch, stylus, etc.) events from this frame have been routed.
@@ -646,6 +705,11 @@ public:
 	void SetCanTick(bool bInCanTick) { bInCanTick ? AddUpdateFlags(EWidgetUpdateFlags::NeedsTick) : RemoveUpdateFlags(EWidgetUpdateFlags::NeedsTick); }
 	bool GetCanTick() const { return HasAnyUpdateFlags(EWidgetUpdateFlags::NeedsTick); }
 
+	/** @return true if the widgets has any bound slate attribute. */
+	bool HasRegisteredSlateAttribute() const { return bHasRegisteredSlateAttribute; }
+	/** @return true if the widgets will update its registered slate attributes automatically or they need to be updated manually. */
+	bool IsAttributesUpdatesEnabled() const { return bEnabledAttributesUpdate; }
+
 	const FSlateWidgetPersistentState& GetPersistentState() const { return PersistentState; }
 	const FWidgetProxyHandle GetProxyHandle() const { return FastPathProxyHandle; }
 
@@ -669,7 +733,14 @@ public:
 	 */
 	FSlateRect CalculateCullingAndClippingRules(const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, bool& bClipToBounds, bool& bAlwaysClip, bool& bIntersectClipBounds) const;
 
+	bool HasAnyUpdateFlags(EWidgetUpdateFlags FlagsToCheck) const
+	{
+		return EnumHasAnyFlags(UpdateFlags, FlagsToCheck);
+	}
+
 protected:
+	void SetVolatilePrepass(bool bVolatile) { bVolatile ? AddUpdateFlags(EWidgetUpdateFlags::NeedsVolatilePrepass) : RemoveUpdateFlags(EWidgetUpdateFlags::NeedsVolatilePrepass); }
+
 	virtual bool CustomPrepass(float LayoutScaleMultiplier) { return false; }
 
 	/**
@@ -693,18 +764,14 @@ protected:
 	 */
 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const = 0;
 
-	bool HasAnyUpdateFlags(EWidgetUpdateFlags FlagsToCheck) const
-	{
-		return EnumHasAnyFlags(UpdateFlags, FlagsToCheck);
-	}
 
 private:
 	void SetFastPathProxyHandle(const FWidgetProxyHandle& Handle) { FastPathProxyHandle = Handle; }
-	void SetFastPathProxyHandle(const FWidgetProxyHandle& Handle, bool bInvisibleDueToParentOrSelfVisibility, bool bParentVolatile);
+	void SetFastPathProxyHandle(const FWidgetProxyHandle& Handle, FSlateInvalidationWidgetVisibility Visibility, bool bParentVolatile);
 	void SetFastPathSortOrder(const FSlateInvalidationWidgetSortOrder SortOrder);
 
-	void UpdateFastPathVisibility(bool bParentVisible, bool bWidgetRemoved, FHittestGrid* ParentHittestGrid);
-
+	void UpdateFastPathVisibility(FSlateInvalidationWidgetVisibility ParentVisibility, FHittestGrid* ParentHittestGrid);
+	void UpdateFastPathWidgetRemoved(FHittestGrid* ParentHittestGrid);
 	void UpdateFastPathVolatility(bool bParentVolatile);
 
 	/**
@@ -713,7 +780,7 @@ private:
 	 */
 	void SetDesiredSize(const FVector2D& InDesiredSize)
 	{
-		DesiredSize = InDesiredSize;
+		DesiredSize = FVector2f(InDesiredSize);
 	}
 
 #if STATS || ENABLE_STATNAMEDEVENTS
@@ -722,21 +789,16 @@ private:
 
 	void AddUpdateFlags(EWidgetUpdateFlags FlagsToAdd)
 	{
+		EWidgetUpdateFlags Previous = UpdateFlags;
 		UpdateFlags |= FlagsToAdd;
-		FastPathProxyHandle.UpdateWidgetFlags(this, UpdateFlags);
+		FastPathProxyHandle.UpdateWidgetFlags(this, Previous, UpdateFlags);
 	}
 
 	void RemoveUpdateFlags(EWidgetUpdateFlags FlagsToRemove)
 	{
+		EWidgetUpdateFlags Previous = UpdateFlags;
 		UpdateFlags &= (~FlagsToRemove);
-		FastPathProxyHandle.UpdateWidgetFlags(this, UpdateFlags);
-
-#if WITH_SLATE_DEBUGGING
-		if (EnumHasAnyFlags(FlagsToRemove, EWidgetUpdateFlags::NeedsRepaint))
-		{
-			Debug_UpdateLastPaintFrame();
-		}
-#endif
+		FastPathProxyHandle.UpdateWidgetFlags(this, Previous, UpdateFlags);
 	}
 
 	void UpdateWidgetProxy(int32 NewLayerId, FSlateCachedElementsHandle& CacheHandle);
@@ -784,20 +846,39 @@ public:
 	 * ArrangeChildren function.
 	 * Compute the Geometry of all the children and add populate the ArrangedChildren list with their values.
 	 * Each type of Layout panel should arrange children based on desired behavior.
+	 * 
+	 * Optionally, update the collapsed attributes (attributes that affect the visibility) of the children before executing the virtual ArrangeChildren function.
+	 * The visibility attribute is updated once per frame (see SlatePrepass).
+	 * Use the option when you are calling ArrangeChildren outside of the regular SWidget Paint/Tick.
 	 *
 	 * @param AllottedGeometry    The geometry allotted for this widget by its parent.
 	 * @param ArrangedChildren    The array to which to add the WidgetGeometries that represent the arranged children.
+	 * @param bUpdateAttributes   Update the collapsed attributes.
 	 */
-	void ArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const;
+	void ArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren, bool bUpdateAttributes = false) const;
 
 	/**
-	 * Every widget that has children must implement this method. This allows for iteration over the Widget's
-	 * children regardless of how they are actually stored.
+	 * Returns the useful children (if any) of this widget. Some widget type may hide widget if they are needed by the system.
+	 * Allows for iteration over the Widget's children regardless of how they are actually stored.
+	 * @note Should be renamed to GetVisibleChildren (not ALL children will be returned in all cases).
 	 */
-	 // @todo Slate: Consider renaming to GetVisibleChildren  (not ALL children will be returned in all cases)
 	virtual FChildren* GetChildren() = 0;
 
+	/**
+	 * Returns the children (if any) of this widget that are used by the invalidation system.
+	 * This is used by the FastPath system to generate the correct information for every widget.
+	 * @note Prefer GetChildren. Some widget may hide widget from you.
+	 * @note Should be name GetFastPathChildren or GetInvalidationChildren
+	 */
 	virtual FChildren* GetAllChildren() { return GetChildren(); }
+
+#if WITH_SLATE_DEBUGGING
+	/**
+	 * Returns all Widgets, including widget hidden from the invalidation system.
+	 * This is used by the WidgetReflector.
+	 */
+	virtual FChildren* Debug_GetChildrenForReflector() { return GetAllChildren(); }
+#endif
 
 	/**
 	 * Checks to see if this widget supports keyboard focus.  Override this in derived classes.
@@ -872,15 +953,15 @@ public:
 	 *
 	 * @param InEnabledState	An attribute containing the enabled state or a delegate to call to get the enabled state.
 	 */
-	void SetEnabled(const TAttribute<bool>& InEnabledState)
+	void SetEnabled(TAttribute<bool> InEnabledState)
 	{
-		SetAttribute(EnabledState, InEnabledState, EInvalidateWidgetReason::Paint);
+		EnabledStateAttribute.Assign(*this, MoveTemp(InEnabledState));
 	}
 
 	/** @return Whether or not this widget is enabled */
 	FORCEINLINE bool IsEnabled() const
 	{
-		return EnabledState.Get();
+		return EnabledStateAttribute.Get();
 	}
 
 	/** @return Is this widget interactive or not? Defaults to false */
@@ -909,19 +990,37 @@ public:
 		return bToolTipForceFieldEnabled;
 	}
 
-	/** @return True if this widget hovered */
-	virtual bool IsHovered() const
+	/**
+	 * @return True if this widget hovered
+	 * @note IsHovered used to be virtual. Use SetHover to assign an attribute if you need to override the default behavior.
+	 */
+	bool IsHovered() const
 	{
-		return bIsHovered;
+		return HoveredAttribute.Get();
 	}
 
 	/** @return True if this widget is directly hovered */
-	virtual bool IsDirectlyHovered() const;
+	bool IsDirectlyHovered() const;
+
+protected:
+	/**
+	 * Set the hover state.
+	 * Once set, the attribute that the ownership and SWidget code will not update the attribute value.
+	 * You can return the control to the SWidget code by setting an empty TAttribute.
+	 */
+	void SetHover(TAttribute<bool> InHovered)
+	{
+		bIsHoveredAttributeSet = InHovered.IsSet();
+		HoveredAttribute.Assign(*this, MoveTemp(InHovered));
+	}
+
+public:
 
 	/**
 	 * @return is this widget visible, hidden or collapsed.
-	 * @note this widget can be visible but if a parent is hidden or collapsed, it would not show on screen. */
-	FORCEINLINE EVisibility GetVisibility() const { return Visibility.Get(); }
+	 * @note this widget can be visible but if a parent is hidden or collapsed, it would not show on screen.
+	 */
+	FORCEINLINE EVisibility GetVisibility() const { return VisibilityAttribute.Get(); }
 
 	/** @param InVisibility  should this widget be */
 	virtual void SetVisibility(TAttribute<EVisibility> InVisibility);
@@ -930,7 +1029,8 @@ public:
 	 * @return is the widget visible and his parents also visible.
 	 * @note only valid if the widget is contained by an InvalidationRoot (the proxy is valid).
 	 */
-	bool IsFastPathVisible() const { return !bInvisibleDueToParentOrSelfVisibility; }
+	UE_DEPRECATED(5.0, "IsFastPathVisible is deprecated and should not be used.")
+	bool IsFastPathVisible() const;
 
 #if WITH_ACCESSIBILITY
 	/**
@@ -1015,7 +1115,7 @@ public:
 		if (bForceVolatile != bForce)
 		{
 			bForceVolatile = bForce;
-			Invalidate(EInvalidateWidgetReason::Volatility);
+			Invalidate(EInvalidateWidgetReason::PaintAndVolatility);
 		}
 	}
 
@@ -1036,7 +1136,14 @@ public:
 		bCachedVolatile = bForceVolatile || ComputeVolatility();
 	}
 
+	UE_DEPRECATED(5.0, "InvalidatePrepass is deprecated. Use the Invalidate(EInvalidateWidgetReason::Prepass) or use MarkPrepassAsDirty()")
 	void InvalidatePrepass();
+
+	/**
+	 * In fast path, if the widget is mark, do a full Prepass on its next update to calculate it's desired size.
+	 * This does not invalidate the widget.
+	 */
+	void MarkPrepassAsDirty() { bNeedsPrepass = true; }
 
 protected:
 
@@ -1083,7 +1190,7 @@ public:
 		if(RenderOpacity != InRenderOpacity)
 		{
 			RenderOpacity = InRenderOpacity;
-			Invalidate(EInvalidateWidget::Paint);
+			Invalidate(EInvalidateWidgetReason::Paint);
 		}
 	}
 
@@ -1095,19 +1202,19 @@ public:
 	/** @return the render transform of the widget. */
 	FORCEINLINE const TOptional<FSlateRenderTransform>& GetRenderTransform() const
 	{
-		return RenderTransform.Get();
+		return RenderTransformAttribute.Get();
 	}
 
 	FORCEINLINE TOptional<FSlateRenderTransform> GetRenderTransformWithRespectToFlowDirection() const
 	{
 		if (LIKELY(GSlateFlowDirection == EFlowDirection::LeftToRight))
 		{
-			return RenderTransform.Get();
+			return RenderTransformAttribute.Get();
 		}
 		else
 		{
 			// If we're going right to left, flip the X translation on render transforms.
-			TOptional<FSlateRenderTransform> Transform = RenderTransform.Get();
+			TOptional<FSlateRenderTransform> Transform = RenderTransformAttribute.Get();
 			if (Transform.IsSet())
 			{
 				FVector2D Translation = Transform.GetValue().GetTranslation();
@@ -1121,12 +1228,12 @@ public:
 	{
 		if (LIKELY(GSlateFlowDirection == EFlowDirection::LeftToRight))
 		{
-			return RenderTransformPivot.Get();
+			return RenderTransformPivotAttribute.Get();
 		}
 		else
 		{
 			// If we're going right to left, flip the X's pivot mirrored about 0.5.
-			FVector2D TransformPivot = RenderTransformPivot.Get();
+			FVector2D TransformPivot = RenderTransformPivotAttribute.Get();
 			TransformPivot.X = 0.5f + (0.5f - TransformPivot.X);
 			return TransformPivot;
 		}
@@ -1135,19 +1242,19 @@ public:
 	/** @param InTransform the render transform to set for the widget (transforms from widget's local space). TOptional<> to allow code to skip expensive overhead if there is no render transform applied. */
 	FORCEINLINE void SetRenderTransform(TAttribute<TOptional<FSlateRenderTransform>> InTransform)
 	{
-		SetAttribute(RenderTransform, InTransform, EInvalidateWidgetReason::Layout | EInvalidateWidgetReason::RenderTransform);
+		RenderTransformAttribute.Assign(*this, MoveTemp(InTransform));
 	}
 
 	/** @return the pivot point of the render transform. */
 	FORCEINLINE FVector2D GetRenderTransformPivot() const
 	{
-		return RenderTransformPivot.Get();
+		return RenderTransformPivotAttribute.Get();
 	}
 
 	/** @param InTransformPivot Sets the pivot point of the widget's render transform (in normalized local space). */
 	FORCEINLINE void SetRenderTransformPivot(TAttribute<FVector2D> InTransformPivot)
 	{
-		SetAttribute(RenderTransformPivot, InTransformPivot, EInvalidateWidgetReason::Layout | EInvalidateWidgetReason::RenderTransform);
+		RenderTransformPivotAttribute.Assign(*this, MoveTemp(InTransformPivot));
 	}
 
 	/**
@@ -1160,7 +1267,7 @@ public:
 			Clipping = InClipping;
 			OnClippingChanged();
 			// @todo - Fast path should this be Paint?
-			Invalidate(EInvalidateWidget::Layout);
+			Invalidate(EInvalidateWidgetReason::Layout);
 		}
 	}
 
@@ -1180,7 +1287,7 @@ public:
 		{
 			CullingBoundsExtension = InCullingBoundsExtension;
 			// @todo - Fast path should this be Paint?
-			Invalidate(EInvalidateWidget::Layout);
+			Invalidate(EInvalidateWidgetReason::Layout);
 		}
 	}
 
@@ -1199,7 +1306,7 @@ public:
 		if (FlowDirectionPreference != InFlowDirectionPreference)
 		{
 			FlowDirectionPreference = InFlowDirectionPreference;
-			Invalidate(EInvalidateWidget::Paint);
+			Invalidate(EInvalidateWidgetReason::Paint);
 		}
 	}
 
@@ -1235,7 +1342,9 @@ public:
 	template<typename MetaDataType>
 	TSharedPtr<MetaDataType> GetMetaData() const
 	{
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 		SCOPE_CYCLE_COUNTER(STAT_SlateGetMetaData);
+#endif
 		for (const auto& MetaDataEntry : MetaData)
 		{
 			if (MetaDataEntry->IsOfType<MetaDataType>())
@@ -1253,7 +1362,9 @@ public:
 	template<typename MetaDataType>
 	TArray<TSharedRef<MetaDataType>> GetAllMetaData() const
 	{
+#if !UE_BUILD_SHIPPING && !UE_BUILD_TEST
 		SCOPE_CYCLE_COUNTER(STAT_SlateGetMetaData);
+#endif
 		TArray<TSharedRef<MetaDataType>> FoundMetaData;
 		for (const auto& MetaDataEntry : MetaData)
 		{
@@ -1282,7 +1393,15 @@ public:
 	template<typename MetaDataType>
 	int32 RemoveMetaData(const TSharedRef<MetaDataType>& RemoveMe)
 	{
-		return MetaData.RemoveSingleSwap(RemoveMe);
+		int32 Index = MetaData.Find(RemoveMe);
+		if (Index == INDEX_NONE)
+		{
+			return 0;
+		}
+
+		checkf(Index != 0 || !HasRegisteredSlateAttribute(), TEXT("The first slot is reserved for SlateAttribute"));
+		MetaData.RemoveAtSwap(Index, 1);
+		return 1;
 	}
 
 private:
@@ -1298,6 +1417,7 @@ private:
 			const auto& MetaDataEntry = MetaData[Index];
 			if (MetaDataEntry->IsOfType<MetaDataType>())
 			{
+				checkf(Index != 0 || !HasRegisteredSlateAttribute(), TEXT("The first slot is reserved for SlateAttribute"));
 				MetaData.RemoveAtSwap(Index);
 			}
 		}
@@ -1312,6 +1432,7 @@ private:
 			const auto& MetaDataEntry = MetaData[Index];
 			if (MetaDataEntry->IsOfType<MetaDataType>())
 			{
+				checkf(Index != 0 || !HasRegisteredSlateAttribute(), TEXT("The first slot is reserved for SlateAttribute"));
 				MetaData.RemoveAtSwap(Index);
 				return true;
 			}
@@ -1361,6 +1482,10 @@ public:
 	/** @return The name this widget was tagged with */
 	virtual FName GetTag() const;
 
+#if STATS
+	size_t GetAllocSize() const { return AllocSize; }
+#endif
+
 #if UE_SLATE_WITH_WIDGET_UNIQUE_IDENTIFIER
 	/** @return The widget's id */
 	uint64 GetId() const { return UniqueIdentifier; }
@@ -1368,6 +1493,9 @@ public:
 
 	/** @return the Foreground color that this widget sets; unset options if the widget does not set a foreground color */
 	virtual FSlateColor GetForegroundColor() const;
+
+	/** @return the Foreground color that this widget sets when this widget or any of its ancestors are disabled; unset options if the widget does not set a foreground color */
+	virtual FSlateColor GetDisabledForegroundColor() const;
 
 	//UE_DEPRECATED(4.23, "GetCachedGeometry has been deprecated, use GetTickSpaceGeometry instead")
 	const FGeometry& GetCachedGeometry() const;
@@ -1410,6 +1538,9 @@ protected:
 
 	/** Construct a SWidget based on initial parameters. */
 	void SWidgetConstruct(const FSlateBaseNamedArgs& Args);
+
+	/** Is the widget construction completed (did we called and returned from the Construct() function) */
+	bool IsConstructed() const { return bIsDeclarativeSyntaxConstructionCompleted; }
 
 	/** 
 	 * Find the geometry of a descendant widget. This method assumes that WidgetsToFind are a descendants of this widget.
@@ -1465,19 +1596,16 @@ protected:
 	 * Recomputes the volatility of the widget.  If you have additional state you automatically want to make
 	 * the widget volatile, you should sample that information here.
 	 */
-	virtual bool ComputeVolatility() const
-	{
-		return Visibility.IsBound() || EnabledState.IsBound() || RenderTransform.IsBound();
-	}
+	virtual bool ComputeVolatility() const { return false; }
 
 	/**
 	 * Protected static helper to allow widgets to access the visibility attribute of other widgets directly
 	 * 
 	 * @param Widget The widget to get the visibility attribute of
 	 */
-	static const TAttribute<EVisibility>& AccessWidgetVisibilityAttribute(const TSharedRef<SWidget>& Widget)
+	static TAttribute<EVisibility> AccessWidgetVisibilityAttribute(const TSharedRef<SWidget>& Widget)
 	{
-		return Widget->Visibility;
+		return Widget->VisibilityAttribute.ToAttribute(Widget.Get());
 	}
 
 	/**
@@ -1571,6 +1699,17 @@ protected:
 		return SetWidgetAttribute(*this, TargetValue, SourceValue, BaseInvalidationReason);
 	}
 
+	/** @return an attribute reference of EnabledStateAttribute */
+	TSlateAttributeRef<bool> GetEnabledStateAttribute() const { return TSlateAttributeRef<bool>(SharedThis(this), EnabledStateAttribute); }
+	/** @return an attribute reference of HoveredAttribute */
+	TSlateAttributeRef<bool> GetHoveredAttribute() const { return TSlateAttributeRef<bool>(SharedThis(this), HoveredAttribute); }
+	/** @return an attribute reference of VisibilityAttribute */
+	TSlateAttributeRef<EVisibility> GetVisibilityAttribute() const { return TSlateAttributeRef<EVisibility>(SharedThis(this), VisibilityAttribute); }
+	/** @return an attribute reference of RenderTransformAttribute */
+	TSlateAttributeRef<TOptional<FSlateRenderTransform>> GetRenderTransformAttribute() const { return TSlateAttributeRef<TOptional<FSlateRenderTransform>>(SharedThis(this), RenderTransformAttribute); }
+	/** @return an attribute reference of RenderTransformPivotAttribute */
+	TSlateAttributeRef<FVector2D> GetRenderTransformPivotAttribute() const { return TSlateAttributeRef<FVector2D>(SharedThis(this), RenderTransformPivotAttribute); }
+
 protected:
 	/** Dtor ensures that active timer handles are UnRegistered with the SlateApplication. */
 	virtual ~SWidget();
@@ -1580,9 +1719,6 @@ private:
 	mutable FWidgetProxyHandle FastPathProxyHandle;
 
 protected:
-	/** Is this widget hovered? */
-	uint8 bIsHovered : 1;
-
 	/** Can the widget ever support keyboard focus */
 	uint8 bCanSupportFocus : 1;
 
@@ -1600,6 +1736,12 @@ protected:
 	  */
 	uint8 bClippingProxy : 1;
 
+#if WITH_EDITORONLY_DATA
+	/** Is this widget hovered? */
+	UE_DEPRECATED(5.0, "Direct access to bIsHovered is now deprecated. Use the IsHovered getter.")
+	uint8 bIsHovered : 1;
+#endif
+
 private:
 	/**
 	 * Whether this widget is a "tool tip force field".  That is, tool-tips should never spawn over the area
@@ -1616,14 +1758,23 @@ private:
 	/** If we're owned by a volatile widget, we need inherit that volatility and use as part of our volatility, but don't cache it. */
 	uint8 bInheritedVolatility : 1;
 
-	/** If the widget is hidden or collapsed to ancestor visibility */
-	uint8 bInvisibleDueToParentOrSelfVisibility : 1;
-
 	/** Are we currently updating the desired size? */
 	uint8 bNeedsPrepass : 1;
 
-	/** Are we currently updating the desired size? */
-	mutable uint8 bUpdatingDesiredSize : 1;
+	/** Is there at least one SlateAttribute currently registered. */
+	uint8 bHasRegisteredSlateAttribute : 1;
+
+	/** Are bound Slate Attributes will be updated once per frame. */
+	uint8 bEnabledAttributesUpdate : 1;
+
+	/** At least one SlateAttributes was updated but the invalidation was delayed. */
+	uint8 bHasPendingAttributesInvalidation : 1;
+
+	/** The SNew or SAssignedNew construction is completed. */
+	uint8 bIsDeclarativeSyntaxConstructionCompleted : 1;
+
+	/** Is the attribute IsHovered is set? */
+	uint8 bIsHoveredAttributeSet : 1;
 
 protected:
 	uint8 bHasCustomPrepass : 1;
@@ -1663,24 +1814,35 @@ protected:
 	}
 
 private:
+
 	/** Flow direction preference */
 	EFlowDirectionPreference FlowDirectionPreference;
 
 	/** The different updates this widget needs next frame. */
 	EWidgetUpdateFlags UpdateFlags;
 
-#if WITH_SLATE_DEBUGGING
-	/** The last time this widget got painted. */
-	uint32 LastPaintFrame = 0;
-#endif
-
 	mutable FSlateWidgetPersistentState PersistentState;
-
-	/** Stores the ideal size this widget wants to be. */
-	TOptional<FVector2D> DesiredSize;
 
 	/** The list of active timer handles for this widget. */
 	TArray<TSharedRef<FActiveTimerHandle>> ActiveTimers;
+
+	/** Stores the ideal size this widget wants to be. */
+	TOptional<FVector2f> DesiredSize;
+
+	/** Is this widget visible, hidden or collapsed */
+	TSlateAttribute<EVisibility> VisibilityAttribute;
+
+	/** Whether or not this widget is enabled */
+	TSlateAttribute<bool> EnabledStateAttribute;
+
+	/** Whether or not this widget is hovered */
+	TSlateAttribute<bool> HoveredAttribute;
+
+	/** Render transform pivot of this widget (in normalized local space) */
+	TSlateAttribute<FVector2D> RenderTransformPivotAttribute;
+
+	/** Render transform of this widget. TOptional<> to allow code to skip expensive overhead if there is no render transform applied. */
+	TSlateAttribute<TOptional<FSlateRenderTransform>> RenderTransformAttribute;
 
 protected:
 
@@ -1693,20 +1855,23 @@ protected:
 	*/
 	FMargin CullingBoundsExtension;
 
+#if WITH_EDITORONLY_DATA
 	/** Whether or not this widget is enabled */
-	TAttribute< bool > EnabledState;
-
+	UE_DEPRECATED(5.0, "Direct access to EnabledState is now deprecated. Use the setter or getter.")
+	TSlateDeprecatedTAttribute<bool> EnabledState;
 	/** Is this widget visible, hidden or collapsed */
-	TAttribute< EVisibility > Visibility;
+	UE_DEPRECATED(5.0, "Direct access to Visibility is now deprecated. Use the setter or getter.")
+	TSlateDeprecatedTAttribute<EVisibility> Visibility;
+	/** Render transform of this widget. TOptional<> to allow code to skip expensive overhead if there is no render transform applied. */
+	UE_DEPRECATED(5.0, "Direct access to RenderTransform is now deprecated. Use the setter or getter.")
+	TSlateDeprecatedTAttribute< TOptional<FSlateRenderTransform> > RenderTransform;
+	/** Render transform pivot of this widget (in normalized local space) */
+	UE_DEPRECATED(5.0, "Direct access to RenderTransformPivot is now deprecated. Use the setter or getter.")
+	TAttribute<FVector2D> RenderTransformPivot;
+#endif
 
 	/** The opacity of the widget. Automatically applied during rendering. */
 	float RenderOpacity;
-
-	/** Render transform of this widget. TOptional<> to allow code to skip expensive overhead if there is no render transform applied. */
-	TAttribute< TOptional<FSlateRenderTransform> > RenderTransform;
-
-	/** Render transform pivot of this widget (in normalized local space) */
-	TAttribute< FVector2D > RenderTransformPivot;
 
 private:
 	/** Metadata associated with this widget. */
@@ -1715,16 +1880,23 @@ private:
 	/** Pointer to this widgets parent widget.  If it is null this is a root widget or it is not in the widget tree */
 	TWeakPtr<SWidget> ParentWidgetPtr;
 
+	/** Tag for this widget */
+	FName Tag;
+
 	/** Debugging information on the type of widget we're creating for the Widget Reflector. */
 	FName TypeOfWidget;
+
+private: 
 
 #if !UE_BUILD_SHIPPING
 	/** Full file path (and line) in which this widget was created */
 	FName CreatedInLocation;
 #endif
 
-	/** Tag for this widget */
-	FName Tag;
+#if WITH_SLATE_DEBUGGING
+	/** The last time this widget got painted. */
+	uint32 LastPaintFrame = 0;
+#endif
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	UE_DEPRECATED(4.27, "Access to SWidget::Cursor is deprecated and will not function. Call SetCursor/GetCursor instead")
@@ -1732,14 +1904,14 @@ private:
 	TAttribute<TOptional<EMouseCursor::Type>> Cursor;
 #endif
 
-private:
-
 #if UE_SLATE_WITH_WIDGET_UNIQUE_IDENTIFIER
 	/** The widget's id */
 	uint64 UniqueIdentifier;
 #endif
 
-	STAT(size_t AllocSize;)
+#if STATS
+	size_t AllocSize;
+#endif
 
 #if STATS || ENABLE_STATNAMEDEVENTS
 	/** Stat id of this object, 0 if nobody asked for it yet */
@@ -1796,7 +1968,7 @@ bool SetWidgetAttribute(SWidget& ThisWidget, TAttribute<TargetValueType>& Target
 		EInvalidateWidgetReason InvalidateReason = BaseInvalidationReason;
 		if (bBoundnessChanged)
 		{
-			InvalidateReason |= EInvalidateWidgetReason::Volatility;
+			InvalidateReason |= EInvalidateWidgetReason::PaintAndVolatility;
 		}
 
 		ThisWidget.Invalidate(InvalidateReason);

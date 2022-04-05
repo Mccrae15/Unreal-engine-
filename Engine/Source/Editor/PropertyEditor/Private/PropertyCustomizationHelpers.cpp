@@ -41,7 +41,7 @@
 
 namespace PropertyCustomizationHelpers
 {
-	class SPropertyEditorButton : public SButton
+	class SPropertyEditorButton : public SCompoundWidget
 	{
 	public:
 
@@ -50,7 +50,7 @@ namespace PropertyCustomizationHelpers
 			, _Image( FEditorStyle::GetBrush("Default") )
 			, _IsFocusable( true )
 		{}
-			SLATE_ARGUMENT( FText, Text )
+			SLATE_ATTRIBUTE( FText, Text )
 			SLATE_ARGUMENT( const FSlateBrush*, Image )
 			SLATE_EVENT( FSimpleDelegate, OnClickAction )
 
@@ -62,20 +62,27 @@ namespace PropertyCustomizationHelpers
 		{
 			OnClickAction = InArgs._OnClickAction;
 
-			SButton::FArguments ButtonArgs = SButton::FArguments()
-				.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
-				.OnClicked( this, &SPropertyEditorButton::OnClick )
-				.ToolTipText( InArgs._Text )
-				.ContentPadding( 4.0f )
-				.ForegroundColor( FSlateColor::UseForeground() )
-				.IsFocusable(InArgs._IsFocusable)
-				[ 
-					SNew( SImage )
-					.Image( InArgs._Image )
-					.ColorAndOpacity( FSlateColor::UseForeground() )
-				]; 
-
-			SButton::Construct( ButtonArgs );
+			ChildSlot
+			[
+				SNew(SBox)
+				.HAlign(HAlign_Center)
+				.VAlign(VAlign_Center)
+				.WidthOverride(22)
+				.HeightOverride(22)
+				.ToolTipText(InArgs._Text)
+				[
+					SNew(SButton)
+					.ButtonStyle( FAppStyle::Get(), "SimpleButton" )
+					.OnClicked( this, &SPropertyEditorButton::OnClick )
+					.ContentPadding(0)
+					.IsFocusable(InArgs._IsFocusable)
+					[ 
+						SNew( SImage )
+						.Image( InArgs._Image )
+						.ColorAndOpacity( FSlateColor::UseForeground() )
+					]
+				]
+			]; 
 		}
 
 
@@ -93,8 +100,7 @@ namespace PropertyCustomizationHelpers
 	{
 		return
 			SNew(SPropertyEditorButton)
-			.Text(LOCTEXT("ResetButtonLabel", "ResetToDefault"))
-			.ToolTipText(OptionalToolTipText.Get().IsEmpty() ? LOCTEXT("ResetButtonToolTipText", "Resets Element to Default Value") : OptionalToolTipText)
+			.Text(OptionalToolTipText.Get().IsEmpty() ? LOCTEXT("ResetButtonToolTipText", "Reset Element to Default Value") : OptionalToolTipText)
 			.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
 			.OnClickAction(OnResetClicked)
 			.IsEnabled(IsEnabled)
@@ -107,9 +113,8 @@ namespace PropertyCustomizationHelpers
 	{
 		return	
 			SNew( SPropertyEditorButton )
-			.Text( LOCTEXT( "AddButtonLabel", "Add" ) )
-			.ToolTipText( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "AddButtonToolTipText", "Adds Element") : OptionalToolTipText )
-			.Image( FEditorStyle::GetBrush("PropertyWindow.Button_AddToArray") )
+			.Text( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "AddButtonToolTipText", "Add Element") : OptionalToolTipText )
+			.Image( FEditorStyle::GetBrush("Icons.PlusCircle") )
 			.OnClickAction( OnAddClicked )
 			.IsEnabled(IsEnabled)
 			.IsFocusable( false );
@@ -119,9 +124,8 @@ namespace PropertyCustomizationHelpers
 	{
 		return	
 			SNew( SPropertyEditorButton )
-			.Text( LOCTEXT( "RemoveButtonLabel", "Remove" ) )
-			.ToolTipText( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "RemoveButtonToolTipText", "Removes Element") : OptionalToolTipText )
-			.Image( FEditorStyle::GetBrush("PropertyWindow.Button_RemoveFromArray") )
+			.Text( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "RemoveButtonToolTipText", "Remove Element") : OptionalToolTipText )
+			.Image( FEditorStyle::GetBrush("Icons.Minus") )
 			.OnClickAction( OnRemoveClicked )
 			.IsEnabled(IsEnabled)
 			.IsFocusable( false );
@@ -131,9 +135,8 @@ namespace PropertyCustomizationHelpers
 	{
 		return
 			SNew( SPropertyEditorButton )
-			.Text( LOCTEXT( "EmptyButtonLabel", "Empty" ) )
-			.ToolTipText( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "EmptyButtonToolTipText", "Removes All Elements") : OptionalToolTipText )
-			.Image( FEditorStyle::GetBrush("PropertyWindow.Button_EmptyArray") )
+			.Text( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "EmptyButtonToolTipText", "Remove All Elements") : OptionalToolTipText )
+			.Image( FEditorStyle::GetBrush("Icons.Delete") )
 			.OnClickAction( OnEmptyClicked )
 			.IsEnabled(IsEnabled)
 			.IsFocusable( false );
@@ -143,9 +146,8 @@ namespace PropertyCustomizationHelpers
 	{
 		return
 			SNew( SPropertyEditorButton )
-			.Text( LOCTEXT( "UseButtonLabel", "Use") )
-			.ToolTipText( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "UseButtonToolTipText", "Use Selected Asset from Content Browser") : OptionalToolTipText )
-			.Image( FEditorStyle::GetBrush("PropertyWindow.Button_Use") )
+			.Text( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "UseButtonToolTipText", "Use Selected Asset from Content Browser") : OptionalToolTipText )
+			.Image( FEditorStyle::GetBrush("Icons.Use") )
 			.OnClickAction( OnUseSelectedClicked )
 			.IsEnabled(IsEnabled)
 			.IsFocusable( false );
@@ -155,9 +157,8 @@ namespace PropertyCustomizationHelpers
 	{
 		return
 			SNew( SPropertyEditorButton )
-			.Text( LOCTEXT( "DeleteButtonLabel", "Delete") )
-			.ToolTipText( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "DeleteButtonToolTipText", "Delete") : OptionalToolTipText )
-			.Image( FEditorStyle::GetBrush("PropertyWindow.Button_Delete") )
+			.Text( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "DeleteButtonToolTipText", "Delete") : OptionalToolTipText )
+			.Image( FEditorStyle::GetBrush("Icons.Delete") )
 			.OnClickAction( OnDeleteClicked )
 			.IsEnabled(IsEnabled)
 			.IsFocusable( false );
@@ -167,9 +168,8 @@ namespace PropertyCustomizationHelpers
 	{
 		return
 			SNew( SPropertyEditorButton )
-			.Text( LOCTEXT( "ClearButtonLabel", "Clear") )
-			.ToolTipText( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "ClearButtonToolTipText", "Clear Path") : OptionalToolTipText )
-			.Image( FEditorStyle::GetBrush("PropertyWindow.Button_Clear") )
+			.Text( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "ClearButtonToolTipText", "Clear") : OptionalToolTipText )
+			.Image(FAppStyle::Get().GetBrush("Icons.X"))
 			.OnClickAction( OnClearClicked )
 			.IsEnabled(IsEnabled)
 			.IsFocusable( false );
@@ -201,13 +201,14 @@ namespace PropertyCustomizationHelpers
 			];
 	}
 
-	TSharedRef<SWidget> MakeBrowseButton( FSimpleDelegate OnFindClicked, TAttribute<FText> OptionalToolTipText, TAttribute<bool> IsEnabled )
+	TSharedRef<SWidget> MakeBrowseButton( FSimpleDelegate OnFindClicked, TAttribute<FText> OptionalToolTipText, TAttribute<bool> IsEnabled, const bool IsActor)
 	{
+		const FSlateBrush* BrowseIcon = IsActor ? FAppStyle::Get().GetBrush("Icons.SelectInViewport") : FAppStyle::Get().GetBrush("Icons.BrowseContent");
+
 		return
 			SNew( SPropertyEditorButton )
-			.Text( LOCTEXT( "BrowseButtonLabel", "Browse") )
-			.ToolTipText( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "BrowseButtonToolTipText", "Browse to Asset in Content Browser") : OptionalToolTipText )
-			.Image( FEditorStyle::GetBrush("PropertyWindow.Button_Browse") )
+			.Text( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "BrowseButtonToolTipText", "Browse to Asset in Content Browser") : OptionalToolTipText )
+			.Image(BrowseIcon)
 			.OnClickAction( OnFindClicked )
 			.IsEnabled(IsEnabled)
 			.IsFocusable( false );
@@ -217,9 +218,8 @@ namespace PropertyCustomizationHelpers
 	{
 		return
 			SNew( SPropertyEditorButton )
-			.Text( LOCTEXT( "NewBlueprintButtonLabel", "New Blueprint") )
-			.ToolTipText( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "NewBlueprintButtonToolTipText", "Create New Blueprint") : OptionalToolTipText )
-			.Image( FEditorStyle::GetBrush("PropertyWindow.Button_CreateNewBlueprint") )
+			.Text( OptionalToolTipText.Get().IsEmpty() ? LOCTEXT( "NewBlueprintButtonToolTipText", "Create New Blueprint") : OptionalToolTipText )
+			.Image( FEditorStyle::GetBrush("Icons.PlusCircle") )
 			.OnClickAction( OnNewBlueprintClicked )
 			.IsEnabled(IsEnabled)
 			.IsFocusable( false );
@@ -250,7 +250,7 @@ namespace PropertyCustomizationHelpers
 
 		return
 			SNew(SComboButton)
-			.ButtonStyle( FEditorStyle::Get(), "HoverHintOnly" )
+			.ComboButtonStyle( FAppStyle::Get(), "SimpleComboButton" )
 			.ContentPadding(2)
 			.ForegroundColor( FSlateColor::UseForeground() )
 			.HasDownArrow(true)
@@ -357,8 +357,7 @@ namespace PropertyCustomizationHelpers
 	{
 		return
 			SNew(SPropertyEditorButton)
-			.Text(LOCTEXT("EditConfigHierarchyButtonLabel", "Edit Config Hierarchy"))
-			.ToolTipText(OptionalToolTipText.Get().IsEmpty() ? LOCTEXT("EditConfigHierarchyButtonToolTipText", "Edit the config values of this property") : OptionalToolTipText)
+			.Text(OptionalToolTipText.Get().IsEmpty() ? LOCTEXT("EditConfigHierarchyButtonToolTipText", "Edit the config values of this property") : OptionalToolTipText)
 			.Image(FEditorStyle::GetBrush("DetailsView.EditConfigProperties"))
 			.OnClickAction(OnEditConfigClicked)
 			.IsEnabled(IsEnabled)
@@ -384,6 +383,17 @@ namespace PropertyCustomizationHelpers
 		}
 
 		return IDocumentation::Get()->CreateAnchor(DocLink, FString(), DocExcerptName);
+	}
+
+	TSharedRef<SWidget> MakeSaveButton(FSimpleDelegate OnSaveClicked, TAttribute<FText> OptionalToolTipText, TAttribute<bool> IsEnabled)
+	{
+		return
+			SNew(SPropertyEditorButton)
+			.Text(OptionalToolTipText.Get().IsEmpty() ? LOCTEXT("SaveButtonTooltipText", "Save the currently selected asset.") : OptionalToolTipText)
+			.Image(FEditorStyle::GetBrush("Icons.Save"))
+			.OnClickAction(OnSaveClicked)
+			.IsEnabled(IsEnabled)
+			.IsFocusable(false);
 	}
 
 	FBoolProperty* GetEditConditionProperty(const FProperty* InProperty, bool& bNegate)
@@ -458,7 +468,7 @@ void SObjectPropertyEntryBox::Construct( const FArguments& InArgs )
 	const TArray<FAssetData>& OwnerAssetDataArray = InArgs._OwnerAssetDataArray;
 
 	bool bDisplayThumbnail = InArgs._DisplayThumbnail;
-	FIntPoint ThumbnailSize(64, 64);
+	FIntPoint ThumbnailSize(48, 48);
 	if (InArgs._ThumbnailSizeOverride.IsSet())
 	{
 		ThumbnailSize = InArgs._ThumbnailSizeOverride.Get();
@@ -495,17 +505,6 @@ void SObjectPropertyEntryBox::Construct( const FArguments& InArgs )
 		}
 	}
 
-	TSharedPtr<SResetToDefaultPropertyEditor> ResetButton = nullptr;
-
-	if (InArgs._CustomResetToDefault.IsSet() || (PropertyHandle.IsValid() && !PropertyHandle->HasMetaData(TEXT("NoResetToDefault")) && !PropertyHandle->IsResetToDefaultCustomized()))
-	{
-		SAssignNew(ResetButton, SResetToDefaultPropertyEditor, PropertyHandle)
-			.IsEnabled(this, &SObjectPropertyEntryBox::IsEnabled)
-			.CustomResetToDefault(InArgs._CustomResetToDefault);		
-	};
-
-	TSharedRef<SWidget> ResetWidget = ResetButton.IsValid() ? ResetButton.ToSharedRef() : SNullWidget::NullWidget;
-
 	ChildSlot
 	[	
 		SNew(SHorizontalBox)
@@ -533,10 +532,6 @@ void SObjectPropertyEntryBox::Construct( const FArguments& InArgs )
 				.CustomContentSlot()
 				[
 					InArgs._CustomContentSlot.Widget
-				]
-				.ResetToDefaultSlot()
-				[
-					ResetWidget
 				]
 		]
 	];
@@ -1364,6 +1359,7 @@ void FSectionList::AddSectionItem(FDetailWidgetRow& Row, int32 LodIndex, const s
 		}
 	}
 
+	Row.RowTag(SectionListName);
 	Row.NameContent()
 		[
 			NewView->CreateNameContent()
@@ -1405,11 +1401,10 @@ void SMaterialSlotWidget::Construct(const FArguments& InArgs, int32 SlotIndex, b
 		]
 		+ SHorizontalBox::Slot()
 		.FillWidth(1.0f)
-		.Padding(5.0f, 3.0f, 0.0f, 3.0f)
+		.Padding(5.0f, 0.0f, 0.0f,0.0f)
 		[
 			SNew(SBox)
 			.VAlign(VAlign_Center)
-			.HAlign(HAlign_Fill)
 			.MinDesiredWidth(160.0f)
 			[
 				SNew(SEditableTextBox)
@@ -1424,14 +1419,13 @@ void SMaterialSlotWidget::Construct(const FArguments& InArgs, int32 SlotIndex, b
 	
 	if (bIsMaterialUsed)
 	{
-		DeleteButton->SetVisibility(EVisibility::Hidden);
+		DeleteButton->SetEnabled(false);
 	}
 	
 
 	SlotNameBox->AddSlot()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
-		.HAlign(HAlign_Left)
 		.Padding(2)
 		[
 			DeleteButton

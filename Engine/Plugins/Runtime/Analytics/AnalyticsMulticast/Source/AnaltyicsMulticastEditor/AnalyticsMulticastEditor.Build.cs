@@ -15,7 +15,8 @@ public class AnalyticsMulticastEditor : ModuleRules
 				"Slate",
 				"SlateCore",
 				"Engine",
-				"UnrealEd", // for FAssetEditorManager
+				"EditorFramework",
+				"UnrealEd", // for Asset Editor Subsystem
 				"PropertyEditor",
 				"WorkspaceMenuStructure",
 				"EditorStyle",

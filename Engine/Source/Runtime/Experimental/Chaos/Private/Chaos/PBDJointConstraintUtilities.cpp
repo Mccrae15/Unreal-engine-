@@ -254,14 +254,14 @@ namespace Chaos
 		FVec3& AxisLocal,
 		FReal& Error)
 	{
-		if (FMath::IsNearlyEqual(SwingLimitY, SwingLimitZ, 1.e-3f))
+		if (FMath::IsNearlyEqual(SwingLimitY, SwingLimitZ, (FReal)1.e-3))
 		{ 
 			GetCircularConeAxisErrorLocal(R0, R1, SwingLimitY, AxisLocal, Error);
 			return;
 		}
 
 		AxisLocal = FJointConstants::Swing1Axis();
-		Error = 0.0f;
+		Error = 0.;
 
 		FRotation3 R01Twist, R01Swing;
 		FPBDJointUtilities::DecomposeSwingTwistLocal(R0, R1, R01Swing, R01Twist);
@@ -317,7 +317,7 @@ namespace Chaos
 		if (Utilities::NormalizeSafe(Axis, KINDA_SMALL_NUMBER))
 		{
 			FReal SwingTwistDot = FVec3::DotProduct(Swing0, Twist1);
-			Angle = FMath::Asin(FMath::Clamp(-SwingTwistDot, -1.0f, 1.0f));
+			Angle = FMath::Asin(FMath::Clamp(-SwingTwistDot, FReal(-1), FReal(1)));
 		}
 	}
 
@@ -334,7 +334,7 @@ namespace Chaos
 		FRotation3 R01Twist, R01Swing;
 		FPBDJointUtilities::DecomposeSwingTwistLocal(R0, R1, R01Swing, R01Twist);
 		const FReal R01SwingYorZ = (FJointConstants::AxisIndex(SwingConstraintIndex) == 2) ? R01Swing.Z : R01Swing.Y;	// Can't index a quat :(
-		Angle = 4.0f * FMath::Atan2(R01SwingYorZ, 1.0f + R01Swing.W);
+		Angle = 4.0f * FMath::Atan2(R01SwingYorZ, (FReal)(1. + R01Swing.W));
 		const FVec3& AxisLocal = (SwingConstraintIndex == EJointAngularConstraintIndex::Swing1) ? FJointConstants::Swing1Axis() : FJointConstants::Swing2Axis();
 		Axis = R0 * AxisLocal;
 	}
@@ -381,7 +381,7 @@ namespace Chaos
 
 		// Elliptical swing limit
 		// @todo(ccaulfield): do elliptical constraints properly (axis is still for circular limit)
-		if (!FMath::IsNearlyEqual(Swing1Limit, Swing2Limit, KINDA_SMALL_NUMBER))
+		if (!FMath::IsNearlyEqual(Swing1Limit, Swing2Limit, (FReal)KINDA_SMALL_NUMBER))
 		{
 			// Map swing axis to ellipse and calculate limit for this swing axis
 			const FReal DotSwing1 = FMath::Abs(FVec3::DotProduct(SwingAxisLocal, FJointConstants::Swing1Axis()));
@@ -601,6 +601,14 @@ namespace Chaos
 		return JointSettings.AngularDriveForceMode == EJointForceMode::Acceleration;
 	}
 
+	FReal FPBDJointUtilities::GetShockPropagationInvMassScale(
+		const FPBDJointSolverSettings& SolverSettings,
+		const FPBDJointSettings& JointSettings)
+	{
+		// ShockProagation setting is a alpha. For an alpha of 0 we want an invmass scale of 1, and vice-versa
+		return (SolverSettings.ShockPropagationOverride >= FReal(0)) ? (FReal(1) - SolverSettings.ShockPropagationOverride) : (FReal(1) - JointSettings.ShockPropagation);
+	}
+
 
 	FVec3 FPBDJointUtilities::ConditionInertia(const FVec3& InI, const FReal MaxRatio)
 	{
@@ -659,12 +667,16 @@ namespace Chaos
 	
 	// @todo(ccaulfield): should also take into account the length of the joint connector to prevent over-rotation
 	void FPBDJointUtilities::ConditionInverseMassAndInertia(
-		FReal& InOutInvMParent,
-		FReal& InOutInvMChild,
-		FVec3& InOutInvIParent,
-		FVec3& InOutInvIChild,
+		const FReal& InInvMParent,
+		const FReal& InInvMChild,
+		const FVec3& InInvIParent,
+		const FVec3& InInvIChild,
 		const FReal MinParentMassRatio,
-		const FReal MaxInertiaRatio)
+		const FReal MaxInertiaRatio,
+		FReal& OutInvMParent,
+		FReal& OutInvMChild,
+		FVec3& OutInvIParent,
+		FVec3& OutInvIChild)
 	{
 		FReal MParent = 0.0f;
 		FVec3 IParent = FVec3(0);
@@ -672,35 +684,56 @@ namespace Chaos
 		FVec3 IChild = FVec3(0);
 
 		// Set up inertia so that it is more uniform (reduce the maximum ratio of the inertia about each axis)
-		if (InOutInvMParent > 0)
+		if (InInvMParent > 0)
 		{
-			MParent = 1.0f / InOutInvMParent;
-			IParent = ConditionInertia(FVec3(1.0f / InOutInvIParent.X, 1.0f / InOutInvIParent.Y, 1.0f / InOutInvIParent.Z), MaxInertiaRatio);
+			MParent = 1.0f / InInvMParent;
+			IParent = ConditionInertia(FVec3(1.0f / InInvIParent.X, 1.0f / InInvIParent.Y, 1.0f / InInvIParent.Z), MaxInertiaRatio);
 		}
-		if (InOutInvMChild > 0)
+		if (InInvMChild > 0)
 		{
-			MChild = 1.0f / InOutInvMChild;
-			IChild = ConditionInertia(FVec3(1.0f / InOutInvIChild.X, 1.0f / InOutInvIChild.Y, 1.0f / InOutInvIChild.Z), MaxInertiaRatio);
+			MChild = 1.0f / InInvMChild;
+			IChild = ConditionInertia(FVec3(1.0f / InInvIChild.X, 1.0f / InInvIChild.Y, 1.0f / InInvIChild.Z), MaxInertiaRatio);
 		}
 
 		// Set up relative mass and inertia so that the parent cannot be much lighter than the child
-		if ((InOutInvMParent > 0) && (InOutInvMChild > 0))
+		if ((InInvMParent > 0) && (InInvMChild > 0))
 		{
 			MParent = ConditionParentMass(MParent, MChild, MinParentMassRatio);
 			IParent = ConditionParentInertia(IParent, IChild, MinParentMassRatio);
 		}
 
 		// Map back to inverses
-		if (InOutInvMParent > 0)
+		if (InInvMParent > 0)
 		{
-			InOutInvMParent = (FReal)1 / MParent;
-			InOutInvIParent = FVec3((FReal)1 / IParent.X, (FReal)1 / IParent.Y, (FReal)1 / IParent.Z);
+			OutInvMParent = (FReal)1 / MParent;
+			OutInvIParent = FVec3((FReal)1 / IParent.X, (FReal)1 / IParent.Y, (FReal)1 / IParent.Z);
 		}
-		if (InOutInvMChild > 0)
+		else
 		{
-			InOutInvMChild = (FReal)1 / MChild;
-			InOutInvIChild = FVec3((FReal)1 / IChild.X, (FReal)1 / IChild.Y, (FReal)1 / IChild.Z);
+			OutInvMParent = 0.f;
+			OutInvIParent = FVec3(0.f);
 		}
+		if (InInvMChild > 0)
+		{
+			OutInvMChild = (FReal)1 / MChild;
+			OutInvIChild = FVec3((FReal)1 / IChild.X, (FReal)1 / IChild.Y, (FReal)1 / IChild.Z);
+		}
+		else
+		{
+			OutInvMChild = 0.f;
+			OutInvIChild = FVec3(0.f);
+		}
+	}
+
+	void FPBDJointUtilities::ConditionInverseMassAndInertia(
+		FReal& InOutInvMParent,
+		FReal& InOutInvMChild,
+		FVec3& InOutInvIParent,
+		FVec3& InOutInvIChild,
+		const FReal MinParentMassRatio,
+		const FReal MaxInertiaRatio)
+	{
+		ConditionInverseMassAndInertia(InOutInvMParent, InOutInvMChild, InOutInvIParent, InOutInvIChild, MinParentMassRatio, MaxInertiaRatio, InOutInvMParent, InOutInvMChild, InOutInvIParent, InOutInvIChild);
 	}
 
 

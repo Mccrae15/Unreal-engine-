@@ -7,6 +7,7 @@
 #include "Layout/WidgetPath.h"
 #include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Types/SlateAttributeMetaData.h"
 #include "EdGraphNode_Comment.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "Editor.h"
@@ -32,6 +33,7 @@
 
 #include "Editor/UnrealEdEngine.h"
 #include "UnrealEdGlobals.h"
+#include "ScopedTransaction.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogGraphPanel, Log, All);
 
@@ -56,6 +58,7 @@ void SGraphPanel::Construct( const SGraphPanel::FArguments& InArgs )
 	this->OnSpawnNodeByShortcut = InArgs._OnSpawnNodeByShortcut;
 	this->OnUpdateGraphPanel = InArgs._OnUpdateGraphPanel;
 	this->OnDisallowedPinConnection = InArgs._OnDisallowedPinConnection;
+	this->OnDoubleClicked = InArgs._OnDoubleClicked;
 
 	this->bPreservePinPreviewConnection = false;
 	this->PinVisibility = SGraphEditor::Pin_Show;
@@ -210,7 +213,7 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 				// Draw the comments and information popups for this node, if it has any.
 				{
 					const SNodePanel::SNode::FNodeSlot* CommentSlot = ChildNode->GetSlot( ENodeZone::TopCenter );
-					float CommentBubbleY = CommentSlot ? -CommentSlot->Offset.Get().Y : 0.f;
+					float CommentBubbleY = CommentSlot ? -CommentSlot->GetSlotOffset().Y : 0.f;
 					Context.bSelected = bSelected;
 					TArray<FGraphInformationPopupInfo> Popups;
 
@@ -266,7 +269,10 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 								// Handle bouncing during PIE
 								const float BounceValue = FMath::Sin(2.0f * PI * BounceCurve.GetLerp());
-								BouncedGeometry.DrawPosition += (OverlayInfo.AnimationEnvelope * BounceValue * ZoomFactor);
+								BouncedGeometry.DrawPosition += FVector2f(OverlayInfo.AnimationEnvelope * BounceValue * ZoomFactor);
+
+								FLinearColor FinalColorAndOpacity(InWidgetStyle.GetColorAndOpacityTint()* OverlayBrush->GetTint(InWidgetStyle));
+								//FinalColorAndOpacity.A = Alpha;
 
 								CurWidgetsMaxLayerId++;
 								FSlateDrawElement::MakeBox(
@@ -275,7 +281,7 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 									BouncedGeometry,
 									OverlayBrush,
 									ESlateDrawEffect::None,
-									FLinearColor(1.0f, 1.0f, 1.0f, Alpha)
+									FinalColorAndOpacity
 									);
 							}
 
@@ -288,14 +294,18 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 						for (int32 WidgetIndex = 0; WidgetIndex < OverlayWidgets.Num(); ++WidgetIndex)
 						{
 							FOverlayWidgetInfo& OverlayInfo = OverlayWidgets[WidgetIndex];
-							if(OverlayInfo.Widget->GetVisibility() == EVisibility::Visible)
+							if (SWidget* Widget = OverlayInfo.Widget.Get())
 							{
-								// call SlatePrepass as these widgets are not in the 'normal' child hierarchy
-								OverlayInfo.Widget->SlatePrepass(AllottedGeometry.GetAccumulatedLayoutTransform().GetScale());
+								FSlateAttributeMetaData::UpdateOnlyVisibilityAttributes(*Widget, FSlateAttributeMetaData::EInvalidationPermission::AllowInvalidationIfConstructed);
+								if (Widget->GetVisibility() == EVisibility::Visible)
+								{
+									// call SlatePrepass as these widgets are not in the 'normal' child hierarchy
+									Widget->SlatePrepass(AllottedGeometry.GetAccumulatedLayoutTransform().GetScale());
 
-								const FGeometry WidgetGeometry = CurWidget.Geometry.MakeChild(OverlayInfo.OverlayOffset, OverlayInfo.Widget->GetDesiredSize());
+									const FGeometry WidgetGeometry = CurWidget.Geometry.MakeChild(OverlayInfo.OverlayOffset, Widget->GetDesiredSize());
 
-								OverlayInfo.Widget->Paint(NewArgs, WidgetGeometry, MyCullingRect, OutDrawElements, CurWidgetsMaxLayerId, InWidgetStyle, bParentEnabled);
+									Widget->Paint(NewArgs, WidgetGeometry, MyCullingRect, OutDrawElements, CurWidgetsMaxLayerId, InWidgetStyle, bParentEnabled);
+								}
 							}
 						}
 					}
@@ -343,13 +353,13 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 			TSharedRef<SGraphNode> ChildNode = StaticCastSharedRef<SGraphNode>(Children[ChildIndex]);
 
 			// If this is a culled node, approximate the pin geometry to the corner of the node it is within
-			if (IsNodeCulled(ChildNode, AllottedGeometry))
+			if (IsNodeCulled(ChildNode, AllottedGeometry) || ChildNode->IsHidingPinWidgets())
 			{
 				TArray< TSharedRef<SWidget> > NodePins;
 				ChildNode->GetPins(NodePins);
 
 				const FVector2D NodeLoc = ChildNode->GetPosition();
-				const FGeometry SynthesizedNodeGeometry(GraphCoordToPanelCoord(NodeLoc) * AllottedGeometry.Scale, AllottedGeometry.AbsolutePosition, FVector2D::ZeroVector, 1.f);
+				const FGeometry SynthesizedNodeGeometry(GraphCoordToPanelCoord(NodeLoc) * AllottedGeometry.Scale, FVector2D(AllottedGeometry.AbsolutePosition), FVector2D::ZeroVector, 1.f);
 
 				for (TArray< TSharedRef<SWidget> >::TConstIterator NodePinIterator(NodePins); NodePinIterator; ++NodePinIterator)
 				{
@@ -358,7 +368,7 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 					{
 						FVector2D PinLoc = NodeLoc + PinWidget.GetNodeOffset();
 
-						const FGeometry SynthesizedPinGeometry(GraphCoordToPanelCoord(PinLoc) * AllottedGeometry.Scale, AllottedGeometry.AbsolutePosition, FVector2D::ZeroVector, 1.f);
+						const FGeometry SynthesizedPinGeometry(GraphCoordToPanelCoord(PinLoc) * AllottedGeometry.Scale, FVector2D(AllottedGeometry.AbsolutePosition), FVector2D::ZeroVector, 1.f);
 						PinGeometries.Add(*NodePinIterator, FArrangedWidget(*NodePinIterator, SynthesizedPinGeometry));
 					}
 				}
@@ -441,7 +451,7 @@ int32 SGraphPanel::OnPaint( const FPaintArgs& Args, const FGeometry& AllottedGeo
 					if (CommentNode == nullptr)
 					{
 						// Wasn't a comment node, disallow the spline interaction
-						OverlapData = FGraphSplineOverlapResult();
+						OverlapData = FGraphSplineOverlapResult(OverlapData.GetCloseToSpline());
 					}
 				}
 			}
@@ -541,7 +551,7 @@ void SGraphPanel::OnArrangeChildren( const FGeometry& AllottedGeometry, FArrange
 		{
 			FOverlayWidgetInfo& OverlayInfo = OverlayWidgets[WidgetIndex];
 
-			MyArrangedChildren.AddWidget(AllottedGeometry.MakeChild( OverlayInfo.Widget.ToSharedRef(), CurWidget.Geometry.Position + OverlayInfo.OverlayOffset, OverlayInfo.Widget->GetDesiredSize(), GetZoomAmount() ));
+			MyArrangedChildren.AddWidget(AllottedGeometry.MakeChild( OverlayInfo.Widget.ToSharedRef(), FVector2D(CurWidget.Geometry.Position) + OverlayInfo.OverlayOffset, OverlayInfo.Widget->GetDesiredSize(), GetZoomAmount() ));
 		}
 	}
 
@@ -560,6 +570,7 @@ TSharedPtr<IToolTip> SGraphPanel::GetToolTip()
 
 void SGraphPanel::UpdateSelectedNodesPositions(FVector2D PositionIncrement)
 {
+	FScopedTransaction Transaction(NSLOCTEXT("GraphEditor", "NudgeNodeAction", "Nudge Node"));
 	for (FGraphPanelSelectionSet::TIterator NodeIt(SelectionManager.SelectedNodes); NodeIt; ++NodeIt)
 	{
 		TSharedRef<SNode>* pWidget = NodeToWidgetLookup.Find(*NodeIt);
@@ -665,6 +676,10 @@ FReply SGraphPanel::OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const 
 		const UEdGraphSchema* Schema = GraphObj->GetSchema();
 		Schema->OnPinConnectionDoubleCicked(Pin1, Pin2, DoubleClickPositionInGraphSpace);
 	}
+	else if (!PreviousFrameSplineOverlap.GetCloseToSpline())
+	{
+		OnDoubleClicked.ExecuteIfBound();
+	}
 
 	return SNodePanel::OnMouseButtonDoubleClick(MyGeometry, MouseEvent);
 }
@@ -766,11 +781,17 @@ bool SGraphPanel::OnHandleLeftMouseRelease(const FGeometry& MyGeometry, const FP
 			if( PinWidgetGeometry.Geometry.IsUnderLocation( MouseEvent.GetScreenSpacePosition() ) )
 			{
 				SGraphPin& TargetPin = static_cast<SGraphPin&>( PinWidgetGeometry.Widget.Get() );
-
+				
 				if (PreviewConnectionPin->TryHandlePinConnection(TargetPin))
 				{
-					NodeList.Add(TargetPin.GetPinObj()->GetOwningNode());
-					NodeList.Add(PreviewConnectionPin->GetPinObj()->GetOwningNode());
+					// We have to do a second check on PinObjs here since TryHandlePinConnection, may invalidate them.
+					UEdGraphPin* PreviewConnectionPinObj = PreviewConnectionPin->GetPinObj();
+					UEdGraphPin* TargetPinObj = TargetPin.GetPinObj();
+					if (TargetPinObj && PreviewConnectionPinObj)
+					{
+						NodeList.Add(TargetPinObj->GetOwningNode());
+						NodeList.Add(PreviewConnectionPinObj->GetOwningNode());
+					}
 				}
 				bHandledDrop = true;
 			}
@@ -1050,6 +1071,8 @@ void SGraphPanel::OnBeginMakingConnection(FGraphPinHandle PinHandle)
 {
 	if (PinHandle.IsValid())
 	{
+		DismissContextMenu();
+
 		PreviewConnectorFromPins.Add(PinHandle);
 	}
 }
@@ -1132,6 +1155,8 @@ TSharedPtr<SWidget> SGraphPanel::SummonContextMenu(const FVector2D& WhereToSummo
 			FocusedContent.OnMenuDismissed.Broadcast();
 		}
 
+		ContextMenu = Menu;
+
 		return FocusedContent.WidgetToFocus;
 	}
 
@@ -1160,6 +1185,16 @@ void SGraphPanel::SummonCreateNodeMenuFromUICommand(uint32 NumNodesAdded)
 		FSlateApplication::Get().SetKeyboardFocus(CreateNodeMenuWidget);
 		return;
 	}
+}
+
+void SGraphPanel::DismissContextMenu()
+{
+	if (TSharedPtr<IMenu> ContextMenuPinned = ContextMenu.Pin())
+	{
+		ContextMenuPinned->Dismiss();
+	}
+
+	ContextMenu.Reset();
 }
 
 void SGraphPanel::AttachGraphEvents(TSharedPtr<SGraphNode> CreatedSubNode)
@@ -1258,9 +1293,15 @@ private:
 				AlignmentDelta += (Node->NodePosY + Pins.SrcPin->GetNodeOffset().Y) - (NodeToPins.Key->NodePosY + Pins.DstPin->GetNodeOffset().Y);
 			}
 
-			NodeToPins.Key->Modify();
-			NodeToPins.Key->NodePosY += AlignmentDelta / NodeToPins.Value.Num();
+			UEdGraph* GraphObj = NodeToPins.Key->GetGraph();
 
+			check(GraphObj);
+
+			const UEdGraphSchema* Schema = GraphObj->GetSchema();
+
+			float NewNodePosY = NodeToPins.Key->NodePosY + (AlignmentDelta / NodeToPins.Value.Num());
+			Schema->SetNodePosition(NodeToPins.Key, FVector2D(NodeToPins.Key->NodePosX, NewNodePosY));
+	
 			VisitedNodes.Add(Node);
 			VisitedNodes.Add(NodeToPins.Key);
 			

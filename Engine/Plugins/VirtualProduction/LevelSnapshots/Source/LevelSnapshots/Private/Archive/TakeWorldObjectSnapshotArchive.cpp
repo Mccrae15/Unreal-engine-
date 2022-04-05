@@ -8,18 +8,21 @@
 #include "Serialization/ArchiveSerializedPropertyChain.h"
 #include "UObject/UnrealType.h"
 
-FTakeWorldObjectSnapshotArchive FTakeWorldObjectSnapshotArchive::MakeArchiveForSavingWorldObject(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject)
+void UE::LevelSnapshots::Private::FTakeWorldObjectSnapshotArchive::TakeSnapshot(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject)
 {
-	ensure(InOriginalObject);
-	return FTakeWorldObjectSnapshotArchive(InObjectData, InSharedData, InOriginalObject);
+	check(InOriginalObject);
+	
+	FTakeWorldObjectSnapshotArchive Archive(InObjectData, InSharedData, InOriginalObject);
+	InOriginalObject->Serialize(Archive);
+	InObjectData.ObjectFlags = InOriginalObject->GetFlags();
 }
 
-FTakeWorldObjectSnapshotArchive::FTakeWorldObjectSnapshotArchive(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject)
+UE::LevelSnapshots::Private::FTakeWorldObjectSnapshotArchive::FTakeWorldObjectSnapshotArchive(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject)
 	:
 	Super(InObjectData, InSharedData, false, InOriginalObject)
 {}
 
-bool FTakeWorldObjectSnapshotArchive::ShouldSkipProperty(const FProperty* InProperty) const
+bool UE::LevelSnapshots::Private::FTakeWorldObjectSnapshotArchive::ShouldSkipProperty(const FProperty* InProperty) const
 {
 	const bool bSuperWantsToSkip = Super::ShouldSkipProperty(InProperty);
 

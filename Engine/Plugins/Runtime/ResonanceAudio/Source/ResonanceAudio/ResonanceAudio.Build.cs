@@ -2,6 +2,7 @@
 // Copyright (C) Google Inc. 2017. All rights reserved.
 //
 using UnrealBuildTool;
+using System.IO;
 
 public class ResonanceAudio : ModuleRules
 {
@@ -60,6 +61,7 @@ public class ResonanceAudio : ModuleRules
 
         if (Target.bBuildEditor == true)
         {
+			PrivateDependencyModuleNames.Add("EditorFramework");
             PrivateDependencyModuleNames.Add("UnrealEd");
             PrivateDependencyModuleNames.Add("Landscape");
         }
@@ -87,40 +89,6 @@ public class ResonanceAudio : ModuleRules
         {
             PrivateDefinitions.Add("PFFFT_SIMD_DISABLE=1");
             PrivateDefinitions.Add("EIGEN_HAS_CXX11_MATH=0");
-        }
-
-        // Always use the official version of IntelTBB
-        string IntelTBBLibs = Target.UEThirdPartyBinariesDirectory + "Intel/TBB/";
-
-		//Embree support:
-        if (Target.Platform == UnrealTargetPlatform.Win64)
-        {
-            string SDKDir = Target.UEThirdPartySourceDirectory + "Intel/Embree/Embree2140/Win64/";
-
-            PublicIncludePaths.Add(SDKDir + "include");
-            PublicAdditionalLibraries.Add(SDKDir + "lib/embree.2.14.0.lib");
-            RuntimeDependencies.Add("$(TargetOutputDir)/embree.2.14.0.dll", SDKDir + "lib/embree.2.14.0.dll");
-            RuntimeDependencies.Add("$(TargetOutputDir)/tbb.dll", IntelTBBLibs + "Win64/tbb.dll");
-            RuntimeDependencies.Add("$(TargetOutputDir)/tbbmalloc.dll", IntelTBBLibs + "Win64/tbbmalloc.dll");
-			PublicDefinitions.Add("USE_EMBREE=1");
-			PrivateDefinitions.Add("USE_EMBRE_FOR_RESONANCE=1");
-		}
-        else if (Target.Platform == UnrealTargetPlatform.Mac)
-        {
-			// In platforms that don't support Embree, we implement no-op versions of the functions.
-			string SDKDir = Target.UEThirdPartySourceDirectory + "Intel/Embree/Embree2140/";
-			PublicIncludePaths.Add(SDKDir + "include");
-			PrivateDefinitions.Add("USE_EMBRE_FOR_RESONANCE=0");
-			PrivateDefinitions.Add("EMBREE_STATIC_LIB=1");
-		}
-		else
-        {
-            // In platforms that don't support Embree, we implement no-op versions of the functions.
-            string SDKDir = Target.UEThirdPartySourceDirectory + "Intel/Embree/Embree2140/";
-            PublicIncludePaths.Add(SDKDir + "include");
-			PrivateDefinitions.Add("USE_EMBRE_FOR_RESONANCE=0");
-			PrivateDefinitions.Add("USE_EMBREE=0");
-			PrivateDefinitions.Add("EMBREE_STATIC_LIB=1");
         }
     }
 }

@@ -44,6 +44,7 @@ public:
 		, _Font()
 		, _ForegroundColor()
 		, _ReadOnlyForegroundColor()
+		, _FocusedForegroundColor()
 		, _Justification(ETextJustify::Left)
 		, _LineHeightPercentage(1.0f)
 		, _IsReadOnly( false )
@@ -72,6 +73,7 @@ public:
 		, _VirtualKeyboardDismissAction(EVirtualKeyboardDismissAction::TextChangeOnDismiss)
 		, _TextShapingMethod()
 		, _TextFlowDirection()
+		, _OverflowPolicy()
 		{}
 
 		/** The styling of the textbox */
@@ -100,6 +102,9 @@ public:
 		
 		/** Text color and opacity when read-only (overrides Style) */
 		SLATE_ATTRIBUTE( FSlateColor, ReadOnlyForegroundColor )
+
+		/** Text color and opacity when this box has keyboard focus (overrides Style) */
+		SLATE_ATTRIBUTE(FSlateColor, FocusedForegroundColor)
 
 		/** How the text should be aligned with the margin. */
 		SLATE_ATTRIBUTE(ETextJustify::Type, Justification)
@@ -232,6 +237,8 @@ public:
 		/** Which text flow direction should we use? (unset to use the default returned by GetDefaultTextFlowDirection) */
 		SLATE_ARGUMENT( TOptional<ETextFlowDirection>, TextFlowDirection )
 
+		/** Determines what happens to text that is clipped and doesn't fit within the allotted area for this widget */
+		SLATE_ARGUMENT(TOptional<ETextOverflowPolicy>, OverflowPolicy)
 	SLATE_END_ARGS()
 	
 	/**
@@ -356,6 +363,9 @@ public:
 	/** See Justification attribute */
 	void SetJustification(const TAttribute<ETextJustify::Type>& InJustification);
 
+	/** Sets the overflow policy for this text block */
+	void SetOverflowPolicy(TOptional<ETextOverflowPolicy> InOverflowPolicy);
+
 	/** See the AllowContextMenu attribute */
 	void SetAllowContextMenu(const TAttribute< bool >& InAllowContextMenu);
 
@@ -431,6 +441,9 @@ public:
 	/** Get the runs currently that are current selected, some of which may be only partially selected */
 	TArray<TSharedRef<const IRun>> GetSelectedRuns() const;
 
+	/** Get the interaction position of the cursor (where to insert, delete, etc, text from/to) */
+	FTextLocation GetCursorLocation() const;
+
 	/** Get the horizontal scroll bar widget */
 	TSharedPtr<const SScrollBar> GetHScrollBar() const;
 
@@ -485,6 +498,9 @@ protected:
 
 	/** Read-only foreground color (overrides style) */
 	TAttribute<FSlateColor> ReadOnlyForegroundColorOverride;
+
+	/** Focused foreground color (overrides style) */
+	TAttribute<FSlateColor> FocusedForegroundColorOverride;
 
 	/** Whether to disable the context menu */
 	TAttribute< bool > AllowContextMenu;

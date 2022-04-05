@@ -8,7 +8,10 @@ class UStaticMesh;
 class FStaticMeshRenderData;
 class FStaticMeshLODGroup;
 class USkeletalMesh;
+class FStaticMeshSectionArray;
 struct FSkeletalMeshBuildParameters;
+struct FStaticMeshBuildVertex;
+struct FStaticMeshSection;
 
 /**
  * Abstract class which is the base class of all builder.
@@ -22,7 +25,11 @@ public:
 	/**
 	 * Build function should be override and is the starting point for static mesh builders
 	 */
-	virtual bool Build(FStaticMeshRenderData& OutRenderData, UStaticMesh* StaticMesh, const FStaticMeshLODGroup& LODGroup) = 0;
+	virtual bool Build(FStaticMeshRenderData& OutRenderData, UStaticMesh* StaticMesh, const FStaticMeshLODGroup& LODGroup, bool bGenerateCoarseMeshStreamingLODs) = 0;
+	virtual bool BuildMeshVertexPositions(
+		UStaticMesh* StaticMesh,
+		TArray<uint32>& Indices,
+		TArray<FVector3f>& Vertices) = 0;
 
 	/**
 	 * Build function should be override and is the starting point for skeletal mesh builders

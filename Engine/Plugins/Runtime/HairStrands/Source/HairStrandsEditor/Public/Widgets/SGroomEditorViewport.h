@@ -29,7 +29,11 @@ public:
 	~SGroomEditorViewport();
 	
 	virtual void AddReferencedObjects( FReferenceCollector& Collector ) override;
-	
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SGroomEditorViewport");
+	}
+
 	virtual void Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime ) override;
 										
 	/** Event handlers */
@@ -58,7 +62,7 @@ public:
 	void OnSetLODModel(int32 InLODSelection);
 
 	void OnViewMode(EHairStrandsDebugMode Mode);
-	bool CanViewMode() const;
+	bool CanViewMode(bool bGuideMode) const;
 
 	void OnCardsGuides();
 	bool CanCardsGuides() const;

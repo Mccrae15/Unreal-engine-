@@ -134,7 +134,7 @@ public:
 		}
 		else
 		{
-			if (FDataDrivenPlatformInfoRegistry::GetPlatformInfo(FPlatformProperties::PlatformName()).bIsConfidential)
+			if (FDataDrivenPlatformInfoRegistry::GetPlatformInfo(FPlatformProperties::IniPlatformName()).bIsConfidential)
 			{
 				LogFileDirectory = FPaths::Combine(OutputDirectoryBase, TEXT("Platforms"), StringCast<TCHAR>(FPlatformProperties::PlatformName()).Get(), TEXT("Build"), TEXT("FileOpenOrder"));
 			}

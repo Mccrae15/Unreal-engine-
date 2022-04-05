@@ -3,6 +3,7 @@
 #include "PerforceSourceControlState.h"
 #include "PerforceSourceControlRevision.h"
 #include "Misc/EngineVersion.h"
+#include "Styling/AppStyle.h"
 
 #define LOCTEXT_NAMESPACE "PerforceSourceControl.State"
 
@@ -78,93 +79,50 @@ TSharedPtr<class ISourceControlRevision, ESPMode::ThreadSafe> FPerforceSourceCon
 	return FindHistoryRevision(PendingResolveRevNumber);
 }
 
-FName FPerforceSourceControlState::GetIconName() const
+FSlateIcon FPerforceSourceControlState::GetIcon() const
 {
-	if( !IsCurrent() )
+	if (!IsCurrent())
 	{
-		return FName("Perforce.NotAtHeadRevision");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Perforce.NotAtHeadRevision");
 	}
 	else if (State != EPerforceState::CheckedOut && State != EPerforceState::CheckedOutOther)
 	{
 		if (IsCheckedOutInOtherBranch())
 		{
-			return FName("Perforce.CheckedOutByOtherUserOtherBranch");
+			return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Perforce.CheckedOutByOtherUserOtherBranch", NAME_None, "SourceControl.LockOverlay");
 		}
 
 		if (IsModifiedInOtherBranch())
 		{
-			return FName("Perforce.ModifiedOtherBranch");
+			return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Perforce.ModifiedOtherBranch");
 		}
 	}
 
 
-	switch(State)
+	switch (State)
 	{
 	default:
 	case EPerforceState::DontCare:
-		return NAME_None;
+		return FSlateIcon();
 	case EPerforceState::CheckedOut:
-		return FName("Perforce.CheckedOut");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Perforce.CheckedOut");
 	case EPerforceState::ReadOnly:
-		return NAME_None;
+		return FSlateIcon();
 	case EPerforceState::NotInDepot:
-		return FName("Perforce.NotInDepot");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Perforce.NotInDepot");
 	case EPerforceState::CheckedOutOther:
-		return FName("Perforce.CheckedOutByOtherUser");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Perforce.CheckedOutByOtherUser", NAME_None, "SourceControl.LockOverlay");
 	case EPerforceState::Ignore:
-		return NAME_None;
+		return FSlateIcon();
 	case EPerforceState::OpenForAdd:
-		return FName("Perforce.OpenForAdd");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Perforce.OpenForAdd");
 	case EPerforceState::MarkedForDelete:
-		return FName("Perforce.MarkedForDelete");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Perforce.MarkedForDelete");
 	case EPerforceState::Branched:
-		return FName("Perforce.Branched");
+		return FSlateIcon(FAppStyle::GetAppStyleSetName(), "Perforce.Branched");
 	}
 }
 
-FName FPerforceSourceControlState::GetSmallIconName() const
-{
-	if( !IsCurrent() )
-	{
-		return FName("Perforce.NotAtHeadRevision_Small");
-	}
-	else if (State != EPerforceState::CheckedOut && State != EPerforceState::CheckedOutOther)
-	{
-		if (IsCheckedOutInOtherBranch())
-		{
-			return FName("Perforce.CheckedOutByOtherUserOtherBranch_Small");
-		}
-
-		if (IsModifiedInOtherBranch())
-		{
-			return FName("Perforce.ModifiedOtherBranch_Small");
-		}
-	}
-
-
-	switch(State)
-	{
-	default:
-	case EPerforceState::DontCare:
-		return NAME_None;
-	case EPerforceState::CheckedOut:
-		return FName("Perforce.CheckedOut_Small");
-	case EPerforceState::ReadOnly:
-		return NAME_None;
-	case EPerforceState::NotInDepot:
-		return FName("Perforce.NotInDepot_Small");
-	case EPerforceState::CheckedOutOther:
-		return FName("Perforce.CheckedOutByOtherUser_Small");
-	case EPerforceState::Ignore:
-		return NAME_None;
-	case EPerforceState::OpenForAdd:
-		return FName("Perforce.OpenForAdd_Small");
-	case EPerforceState::MarkedForDelete:
-		return FName("Perforce.MarkedForDelete_Small");
-	case EPerforceState::Branched:
-		return FName("Perforce.Branched_Small");
-	}
-}
 
 FText FPerforceSourceControlState::GetDisplayName() const
 {
@@ -376,6 +334,94 @@ bool FPerforceSourceControlState::CanRevert() const
 {
 	// Note that this is not entirely true, as for instance conflicted files can technically be reverted by perforce
 	return CanCheckIn();
+}
+
+void FPerforceSourceControlState::Update(const FPerforceSourceControlState& InOther, const FDateTime* InTimeStamp /* = nullptr */)
+{
+	check(InOther.LocalFilename == LocalFilename);
+
+	if (InOther.History.Num() != 0)
+	{
+		History = InOther.History;
+	}
+
+	if (InOther.DepotFilename.Len() != 0)
+	{
+		DepotFilename = InOther.DepotFilename;
+	}
+
+	if (InOther.OtherUserCheckedOut.Len() != 0)
+	{
+		OtherUserCheckedOut = InOther.OtherUserCheckedOut;
+	}
+
+	if (InOther.State != EPerforceState::DontCare)
+	{
+		State = InOther.State;
+	}
+
+	if (InOther.DepotRevNumber != INVALID_REVISION)
+	{
+		DepotRevNumber = InOther.DepotRevNumber;
+	}
+
+	if (InOther.LocalRevNumber != INVALID_REVISION)
+	{
+		LocalRevNumber = InOther.LocalRevNumber;
+	}
+
+	if (InOther.PendingResolveRevNumber != INVALID_REVISION)
+	{
+		PendingResolveRevNumber = InOther.PendingResolveRevNumber;
+	}
+
+	// This flag is true when the current object has been modified.
+	// This is not necessarily known at all times, so we will play it safe and use an OR here.
+	bModifed |= InOther.bModifed;
+
+	// Here we will assume that the type info is always properly intiialized in InOther
+	bBinary = InOther.bBinary;
+	bExclusiveCheckout = InOther.bExclusiveCheckout;
+
+	if (InOther.Changelist.IsInitialized())
+	{
+		Changelist = InOther.Changelist;
+	}
+
+	if (InTimeStamp)
+	{
+		TimeStamp = *InTimeStamp;
+	}
+
+	if (InOther.HeadBranch.Len() != 0)
+	{
+		HeadBranch = InOther.HeadBranch;
+	}
+
+	if (InOther.HeadAction.Len() != 0)
+	{
+		HeadAction = InOther.HeadAction;
+	}
+
+	if (InOther.HeadModTime != 0)
+	{
+		HeadModTime = InOther.HeadModTime;
+	}
+
+	if (InOther.HeadChangeList != 0)
+	{
+		HeadChangeList = InOther.HeadChangeList;
+	}
+
+	if (InOther.CheckedOutBranches.Num() != 0)
+	{
+		CheckedOutBranches = InOther.CheckedOutBranches;
+	}
+
+	if (InOther.OtherUserBranchCheckedOuts.Len() != 0)
+	{
+		OtherUserBranchCheckedOuts = InOther.OtherUserBranchCheckedOuts;
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -15,11 +15,13 @@ namespace UnrealBuildTool.Rules
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[] {
+					"UnrealEd",
 					"GameProjectGeneration",
 					"DesktopPlatform",
 					"AssetRegistry",
 					"AssetTools",
 					"CoreUObject",
+					"SourceControl"
 				}
 			);
 		}

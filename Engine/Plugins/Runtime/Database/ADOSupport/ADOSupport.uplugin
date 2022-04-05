@@ -19,8 +19,7 @@
 			"Name": "ADOSupport",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": [
-				"Win32",
+			"PlatformAllowList": [
 				"Win64"
 			]
 		}

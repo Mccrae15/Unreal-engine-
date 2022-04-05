@@ -35,10 +35,6 @@
 #include "Editor/LevelEditor/Public/LevelEditor.h"
 #endif
 
-#if WITH_HOT_RELOAD
-#include "Misc/HotReloadInterface.h"
-#endif
-
 #include "NavAreas/NavArea_Null.h"
 #include "NavAreas/NavArea_Obstacle.h"
 #include "NavAreas/NavArea_Default.h"
@@ -123,6 +119,36 @@ DEFINE_STAT(STAT_Navigation_OffsetFromCorners);
 DEFINE_STAT(STAT_Navigation_PathVisibilityOptimisation);
 DEFINE_STAT(STAT_Navigation_ObservedPathsCount);
 DEFINE_STAT(STAT_Navigation_RecastMemory);
+
+DEFINE_STAT(STAT_Navigation_DetourTEMP);
+DEFINE_STAT(STAT_Navigation_DetourPERM);
+DEFINE_STAT(STAT_Navigation_DetourPERM_AVOIDANCE);
+DEFINE_STAT(STAT_Navigation_DetourPERM_CROWD);
+DEFINE_STAT(STAT_Navigation_DetourPERM_LOOKUP);
+DEFINE_STAT(STAT_Navigation_DetourPERM_NAVQUERY);
+DEFINE_STAT(STAT_Navigation_DetourPERM_NAVMESH);
+DEFINE_STAT(STAT_Navigation_DetourPERM_NODE_POOL);
+DEFINE_STAT(STAT_Navigation_DetourPERM_PATH_CORRIDOR);
+DEFINE_STAT(STAT_Navigation_DetourPERM_PATH_QUEUE);
+DEFINE_STAT(STAT_Navigation_DetourPERM_PROXY_GRID);
+DEFINE_STAT(STAT_Navigation_DetourPERM_TILE_DATA);
+DEFINE_STAT(STAT_Navigation_DetourPERM_TILE_DYNLINK_OFFMESH);
+DEFINE_STAT(STAT_Navigation_DetourPERM_TILE_DYNLINK_CLUSTER);
+DEFINE_STAT(STAT_Navigation_DetourPERM_TILES);
+
+DEFINE_STAT(STAT_DetourTileMemory);
+DEFINE_STAT(STAT_DetourTileMeshHeaderMemory);
+DEFINE_STAT(STAT_DetourTileNavVertsMemory);
+DEFINE_STAT(STAT_DetourTileNavPolysMemory);
+DEFINE_STAT(STAT_DetourTileLinksMemory);
+DEFINE_STAT(STAT_DetourTileDetailMeshesMemory);
+DEFINE_STAT(STAT_DetourTileDetailVertsMemory);
+DEFINE_STAT(STAT_DetourTileDetailTrisMemory);
+DEFINE_STAT(STAT_DetourTileBVTreeMemory);
+DEFINE_STAT(STAT_DetourTileOffMeshConsMemory);
+DEFINE_STAT(STAT_DetourTileOffMeshSegsMemory);
+DEFINE_STAT(STAT_DetourTileClustersMemory);
+DEFINE_STAT(STAT_DetourTilePolyClustersMemory);
 
 CSV_DEFINE_CATEGORY(NavigationSystem, false);
 CSV_DEFINE_CATEGORY(NavTasks, true);
@@ -378,6 +404,8 @@ UNavigationSystemV1::UNavigationSystemV1(const FObjectInitializer& ObjectInitial
 	, bWholeWorldNavigable(false)
 	, bSkipAgentHeightCheckWhenPickingNavData(false)
 	, DirtyAreaWarningSizeThreshold(-1.0f)
+	, GatheringNavModifiersWarningLimitTime(-1.0f)
+	, BuildBounds(EForceInit::ForceInit)
 	, OperationMode(FNavigationSystemRunMode::InvalidMode)
 	, bAbortAsyncQueriesRequested(false)
 	, NavBuildingLockFlags(0)
@@ -587,7 +615,7 @@ void UNavigationSystemV1::DoInitialSetup()
 
 void UNavigationSystemV1::UpdateAbstractNavData()
 {
-	if (AbstractNavData != nullptr && !AbstractNavData->IsPendingKill())
+	if (IsValid(AbstractNavData))
 	{
 		return;
 	}
@@ -598,7 +626,7 @@ void UNavigationSystemV1::UpdateAbstractNavData()
 	for (TActorIterator<AAbstractNavData> It(NavWorld); It; ++It)
 	{
 		AAbstractNavData* Nav = (*It);
-		if (Nav && !Nav->IsPendingKill())
+		if (IsValid(Nav))
 		{
 			AbstractNavData = Nav;
 			break;
@@ -700,10 +728,7 @@ void UNavigationSystemV1::PostInitProperties()
 		FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UNavigationSystemV1::OnPostLoadMap);
 		UNavigationSystemV1::NavigationDirtyEvent.AddUObject(this, &UNavigationSystemV1::OnNavigationDirtied);
 
-#if WITH_HOT_RELOAD
-		IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>("HotReload");
-		HotReloadDelegateHandle = HotReloadSupport.OnHotReload().AddUObject(this, &UNavigationSystemV1::OnHotReload);
-#endif
+		ReloadCompleteDelegateHandle = FCoreUObjectDelegates::ReloadCompleteDelegate.AddUObject(this, &UNavigationSystemV1::OnReloadComplete);
 	}
 }
 
@@ -712,6 +737,9 @@ void UNavigationSystemV1::ConstructNavOctree()
 	DefaultOctreeController.Reset();
 	DefaultOctreeController.NavOctree = MakeShareable(new FNavigationOctree(FVector(0, 0, 0), 64000));
 	DefaultOctreeController.NavOctree->SetDataGatheringMode(DataGatheringMode);
+#if !UE_BUILD_SHIPPING	
+	DefaultOctreeController.NavOctree->SetGatheringNavModifiersTimeLimitWarning(GatheringNavModifiersWarningLimitTime);
+#endif // !UE_BUILD_SHIPPING	
 }
 
 bool UNavigationSystemV1::ConditionalPopulateNavOctree()
@@ -863,7 +891,7 @@ void UNavigationSystemV1::OnWorldInitDone(FNavigationSystemRunMode Mode)
 		for (TActorIterator<ANavigationData> It(World); It; ++It)
 		{
 			ANavigationData* Nav = (*It);
-			if (Nav != NULL && Nav->IsPendingKill() == false && Nav != GetAbstractNavData())
+			if (IsValid(Nav) && Nav != GetAbstractNavData())
 			{
 				UnregisterNavData(Nav);
 				Nav->CleanUpAndMarkPendingKill();
@@ -899,12 +927,10 @@ void UNavigationSystemV1::OnWorldInitDone(FNavigationSystemRunMode Mode)
 		else
 		{
 			const bool bIsBuildLocked = IsNavigationBuildingLocked();
-			const bool bAllowRebuild = !bIsBuildLocked && GetIsAutoUpdateEnabled();
+			const bool bCanRebuild = !bIsBuildLocked && GetIsAutoUpdateEnabled();
 
 			if (GetDefaultNavDataInstance(FNavigationSystem::DontCreate) != NULL)
 			{
-				const bool bIsInGame = World->IsGameWorld();
-
 				// trigger navmesh update
 				for (TActorIterator<ANavigationData> It(World); It; ++It)
 				{
@@ -916,7 +942,9 @@ void UNavigationSystemV1::OnWorldInitDone(FNavigationSystemRunMode Mode)
 
 						if (Result == RegistrationSuccessful)
 						{
-							if (bAllowRebuild && (!bIsInGame || NavData->SupportsRuntimeGeneration()))
+							// allowing full rebuild of the entire navmesh only for the fully dynamic generation modes
+							// other modes partly rely on the serialized data and full rebuild would wipe it out
+							if (bCanRebuild && IsAllowedToRebuild())
 							{
 								NavData->RebuildAll();
 							}
@@ -997,6 +1025,7 @@ void UNavigationSystemV1::OnWorldInitDone(FNavigationSystemRunMode Mode)
 
 	bWorldInitDone = true;
 	OnNavigationInitDone.Broadcast();
+	UNavigationSystemBase::OnNavigationInitDoneStaticDelegate().Broadcast(*this);
 }
 
 void UNavigationSystemV1::RegisterNavigationDataInstances()
@@ -1007,7 +1036,7 @@ void UNavigationSystemV1::RegisterNavigationDataInstances()
 	for (TActorIterator<ANavigationData> It(World); It; ++It)
 	{
 		ANavigationData* Nav = (*It);
-		if (Nav != NULL && Nav->IsPendingKill() == false && Nav->IsRegistered() == false)
+		if (IsValid(Nav) && Nav->IsRegistered() == false)
 		{
 			RequestRegistrationDeferred(*Nav);
 			bProcessRegistration = true;
@@ -1824,7 +1853,7 @@ ANavigationData* UNavigationSystemV1::GetNavDataForAgentName(const FName AgentNa
 
 	for (ANavigationData* NavData : NavDataSet)
 	{
-		if (NavData && !NavData->IsPendingKill() && NavData->GetConfig().Name == AgentName)
+		if (IsValid(NavData) && NavData->GetConfig().Name == AgentName)
 		{
 			Result = NavData;
 			break;
@@ -1834,11 +1863,81 @@ ANavigationData* UNavigationSystemV1::GetNavDataForAgentName(const FName AgentNa
 	return Result;
 }
 
+FBox UNavigationSystemV1::GetNavigableWorldBounds() const
+{
+	return GetWorldBounds();
+}
+
+void UNavigationSystemV1::SetBuildBounds(const FBox& Bounds)
+{
+	BuildBounds = Bounds;
+}
+
+bool UNavigationSystemV1::ContainsNavData(const FBox& Bounds) const
+{
+	for (const ANavigationData* NavData : NavDataSet)
+	{
+		if (NavData && Bounds.Intersect(NavData->GetBounds()))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FBox UNavigationSystemV1::ComputeNavDataBounds() const
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UNavigationSystemV1::ComputeNavDataBounds);
+	
+	FBox Bounds(ForceInit);
+	for (const ANavigationData* NavData : NavDataSet)
+	{
+		if (NavData)
+		{
+			Bounds += NavData->GetBounds();
+		}
+	}
+	return Bounds;
+}
+
+void UNavigationSystemV1::AddNavigationDataChunk(ANavigationDataChunkActor& DataChunkActor)
+{
+	for (ANavigationData* NavData : NavDataSet)
+	{
+		if (NavData)
+		{
+			NavData->OnStreamingNavDataAdded(DataChunkActor);
+		}
+	}
+}
+
+void UNavigationSystemV1::RemoveNavigationDataChunk(ANavigationDataChunkActor& DataChunkActor)
+{
+	for (ANavigationData* NavData : NavDataSet)
+	{
+		if (NavData)
+		{
+			NavData->OnStreamingNavDataRemoved(DataChunkActor);
+		}
+	}
+}
+
+void UNavigationSystemV1::FillNavigationDataChunkActor(const FBox& QueryBounds, ANavigationDataChunkActor& DataChunkActor, FBox& OutTilesBounds)
+{
+	for (const ANavigationData* NavData : NavDataSet)
+	{
+		if (NavData)
+		{
+			NavData->FillNavigationDataChunkActor(QueryBounds, DataChunkActor, OutTilesBounds);
+		}
+	}
+}
+
 ANavigationData* UNavigationSystemV1::GetDefaultNavDataInstance(FNavigationSystem::ECreateIfMissing CreateNewIfNoneFound)
 {
 	checkSlow(IsInGameThread() == true);
 
-	if (MainNavData == nullptr || MainNavData->IsPendingKill())
+	if (!IsValid(MainNavData))
 	{
 		MainNavData = nullptr;
 
@@ -1846,7 +1945,7 @@ ANavigationData* UNavigationSystemV1::GetDefaultNavDataInstance(FNavigationSyste
 		for (int32 NavDataIndex = 0; NavDataIndex < NavDataSet.Num(); ++NavDataIndex)
 		{
 			ANavigationData* NavData = NavDataSet[NavDataIndex];
-			if (NavData && !NavData->IsPendingKill() && NavData->CanBeMainNavData()
+			if (IsValid(NavData) && NavData->CanBeMainNavData()
 				&& (DefaultAgentName == NAME_None || NavData->GetConfig().Name == DefaultAgentName))
 			{
 				MainNavData = NavData;
@@ -1931,7 +2030,7 @@ bool UNavigationSystemV1::IsThereAnywhereToBuildNavigation() const
 	for (TActorIterator<ANavMeshBoundsVolume> It(GetWorld()); It; ++It)
 	{
 		ANavMeshBoundsVolume const* const V = (*It);
-		if (V != NULL && !V->IsPendingKill())
+		if (IsValid(V))
 		{
 			bCreateNavigation = true;
 			break;
@@ -2157,7 +2256,7 @@ UNavigationSystemV1::ERegistrationResult UNavigationSystemV1::RegisterNavData(AN
 	{
 		return RegistrationError;
 	}
-	else if (NavData->IsPendingKill() == true)
+	else if (!IsValid(NavData))
 	{
 		return RegistrationFailed_DataPendingKill;
 	}
@@ -3259,7 +3358,7 @@ void UNavigationSystemV1::GatherNavigationBounds()
 	for (TActorIterator<ANavMeshBoundsVolume> It(GetWorld()); It; ++It)
 	{
 		ANavMeshBoundsVolume* V = (*It);
-		if (V != nullptr && !V->IsPendingKill())
+		if (IsValid(V))
 		{
 			FNavigationBounds NavBounds;
 			NavBounds.UniqueID = V->GetUniqueID();
@@ -3274,6 +3373,8 @@ void UNavigationSystemV1::GatherNavigationBounds()
 
 void UNavigationSystemV1::Build()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UNavigationSystemV1::Build);
+	
 	UE_LOG(LogNavigationDataBuild, Display, TEXT("UNavigationSystemV1::Build started..."));
 #if PHYSICS_INTERFACE_PHYSX
 	UE_LOG(LogNavigationDataBuild, Display, TEXT("   Building navigation data using PHYSICS_INTERFACE_PHYSX."));
@@ -3320,6 +3421,12 @@ void UNavigationSystemV1::Build()
 	if (bGenerateNavigationOnlyAroundNavigationInvokers)
 	{
 		UpdateInvokers();
+	}
+
+	if (BuildBounds.IsValid)
+	{
+		// Prepare to build tiles overlapping the bounds
+		DirtyTilesInBuildBounds();
 	}
 
 	// and now iterate through all registered and just start building them
@@ -3650,9 +3757,11 @@ void UNavigationSystemV1::RebuildAll(bool bIsLoadTime)
 	{
 		ANavigationData* NavData = NavDataSet[NavDataIndex];
 				
-		if (NavData && (!bIsLoadTime || NavData->NeedsRebuildOnLoad()) && (!bIsInGame || NavData->SupportsRuntimeGeneration()))
+		if (NavData && (!bIsLoadTime || NavData->NeedsRebuildOnLoad()) && (!bIsInGame || NavData->SupportsRuntimeGeneration()) && (BuildBounds.IsValid == 0))
 		{
-			UE_LOG(LogNavigationDataBuild, Display, TEXT("   Building NavData:  %s."), *NavData->GetConfig().GetDescription());
+			UE_LOG(LogNavigationDataBuild, Display, TEXT("   RebuildAll building NavData:  %s."), *NavData->GetConfig().GetDescription());
+			UE_LOG(LogNavigationDataBuild, Verbose, TEXT("   RebuildAll bIsLoadTime=%s, NavData->NeedsRebuildOnLoad()=%s, bIsInGame=%s, NavData->SupportsRuntimeGeneration()=%s, BuildBounds.IsValid=%s"),
+				*LexToString(bIsLoadTime), *LexToString(NavData->NeedsRebuildOnLoad()), *LexToString(bIsInGame), *LexToString(NavData->SupportsRuntimeGeneration()), *LexToString(BuildBounds.IsValid));
 
 #if	WITH_EDITOR
 			NavData->SetIsBuildingOnLoad(bIsLoadTime);
@@ -3706,9 +3815,9 @@ void UNavigationSystemV1::OnNavigationGenerationFinished(ANavigationData& NavDat
 	OnNavigationGenerationFinishedDelegate.Broadcast(&NavData);
 
 #if WITH_EDITOR
-	if (GetWorld()->IsGameWorld() == false && NavData.IsBuildingOnLoad() == false)
+	if (GetWorld()->IsGameWorld() == false)
 	{
-		NavData.MarkPackageDirty();
+		UE_LOG(LogNavigationDataBuild, Log, TEXT("Navigation data generation finished in %s."), *NavData.GetPackage()->GetName());
 	}
 
 	// Reset bIsBuildingOnLoad
@@ -3840,7 +3949,7 @@ void UNavigationSystemV1::AddLevelToOctree(ULevel& Level)
 	{
 		AActor* Actor = Level.Actors[ActorIndex];
 
-		const bool bLegalActor = Actor && !Actor->IsPendingKill();
+		const bool bLegalActor = IsValid(Actor);
 		if (bLegalActor)
 		{
 			UpdateActorAndComponentsInNavOctree(*Actor);
@@ -3898,8 +4007,7 @@ void UNavigationSystemV1::OnNavigationDirtied(const FBox& Bounds)
 	AddDirtyArea(Bounds, ENavigationDirtyFlag::All);
 }
 
-#if WITH_HOT_RELOAD
-void UNavigationSystemV1::OnHotReload(bool bWasTriggeredAutomatically)
+void UNavigationSystemV1::OnReloadComplete(EReloadCompleteReason Reason)
 {
 	if (RequiresNavOctree() && DefaultOctreeController.NavOctree.IsValid() == false)
 	{
@@ -3911,7 +4019,6 @@ void UNavigationSystemV1::OnHotReload(bool bWasTriggeredAutomatically)
 		}
 	}
 }
-#endif // WITH_HOT_RELOAD
 
 void UNavigationSystemV1::CleanUp(FNavigationSystem::ECleanupMode Mode)
 {
@@ -3935,12 +4042,7 @@ void UNavigationSystemV1::CleanUp(FNavigationSystem::ECleanupMode Mode)
 	FWorldDelegates::LevelRemovedFromWorld.RemoveAll(this);
 	FWorldDelegates::OnWorldBeginTearDown.RemoveAll(this);
 
-#if WITH_HOT_RELOAD
-	if (IHotReloadInterface* HotReloadSupport = FModuleManager::GetModulePtr<IHotReloadInterface>("HotReload"))
-	{
-		HotReloadSupport->OnHotReload().Remove(HotReloadDelegateHandle);
-	}
-#endif
+	FCoreUObjectDelegates::ReloadCompleteDelegate.Remove(ReloadCompleteDelegateHandle);
 
 	DestroyNavOctree();
 	
@@ -4061,6 +4163,13 @@ void UNavigationSystemV1::LogNavDataRegistrationResult(ERegistrationResult InRes
 		UE_VLOG_UELOG(this, LogNavigation, Warning, TEXT("Registration not successful default warning."));
 		break;
 	}
+}
+
+bool UNavigationSystemV1::IsAllowedToRebuild() const
+{
+	const UWorld* World = GetWorld();
+	
+	return World && (!World->IsGameWorld() || GetRuntimeGenerationType() == ERuntimeGenerationType::Dynamic);
 }
 
 //----------------------------------------------------------------------//
@@ -4504,6 +4613,17 @@ void UNavigationSystemV1::UpdateInvokers()
 		// once per second
 		NextInvokersUpdateTime = CurrentTime + ActiveTilesUpdateInterval;
 	}
+}
+
+void UNavigationSystemV1::DirtyTilesInBuildBounds()
+{
+#if WITH_RECAST
+	UE_VLOG(this, LogNavigation, Log, TEXT("SetupTilesFromBuildBounds"));
+	for (TActorIterator<ARecastNavMesh> It(GetWorld()); It; ++It)
+	{
+		It->DirtyTilesInBounds(BuildBounds);
+	}
+#endif // WITH_RECAST
 }
 
 void UNavigationSystemV1::RegisterNavigationInvoker(AActor* Invoker, float TileGenerationRadius, float TileRemovalRadius)

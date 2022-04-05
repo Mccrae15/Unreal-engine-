@@ -200,7 +200,7 @@ void FNiagaraComponentRendererPropertiesDetails::CustomizeDetails(IDetailLayoutB
 						.Content()
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::GetBrush("PropertyWindow.Button_EmptyArray"))
+							.Image(FEditorStyle::GetBrush("Icons.Delete"))
 						]
 					]
 				];
@@ -303,7 +303,7 @@ void FNiagaraComponentRendererPropertiesDetails::ChangePropertyBinding(TSharedPt
 		}
 		ComponentProperties->PropertyBindings.Add(NewBinding);
 
-		PropertyHandle->NotifyPostChange();
+		PropertyHandle->NotifyPostChange(EPropertyChangeType::Unspecified);
 		PropertyHandle->NotifyFinishedChangingProperties();
 
 		RefreshPropertiesPanel();
@@ -348,7 +348,7 @@ FReply FNiagaraComponentRendererPropertiesDetails::ResetBindingButtonPressed(TSh
 			ComponentProperties->PropertyBindings.RemoveAt(i);
 		}
 	}
-	PropertyHandle->NotifyPostChange();
+	PropertyHandle->NotifyPostChange(EPropertyChangeType::Unspecified);
 	PropertyHandle->NotifyFinishedChangingProperties();
 
 	RefreshPropertiesPanel();

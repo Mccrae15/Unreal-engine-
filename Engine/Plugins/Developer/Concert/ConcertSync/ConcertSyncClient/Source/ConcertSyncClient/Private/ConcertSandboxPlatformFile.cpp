@@ -8,7 +8,7 @@
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/PackageName.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Modules/ModuleManager.h"
 
 #include "ISourceControlState.h"
@@ -41,12 +41,12 @@ FString GetContentFolderName(const FString& InContentPath)
 	return ContentFolderName;
 }
 
-bool FlushPackageFile(const FString& InFilename, FName* OutPackageName = nullptr)
+bool FlushPackageFile(const FString& InFilename, FName* OutPackageName = nullptr, bool bForceLoad = true)
 {
 	FString PackageName;
 	if (FPackageName::TryConvertFilenameToLongPackageName(InFilename, PackageName))
 	{
-		ConcertSyncClientUtil::FlushPackageLoading(PackageName);
+		ConcertSyncClientUtil::FlushPackageLoading(PackageName, bForceLoad);
 		if (OutPackageName)
 		{
 			*OutPackageName = *PackageName;
@@ -187,6 +187,19 @@ const TCHAR* FConcertSandboxPlatformFile::GetName() const
 	return GetTypeName();
 }
 
+bool FConcertSandboxPlatformFile::DeletedPackageExistsInNonSandbox(FString InFilename) const
+{
+	const FConcertSandboxPlatformFilePath ResolvedPath = ToSandboxPath(MoveTemp(InFilename));
+	if (ResolvedPath.HasSandboxPath())
+	{
+		if (IsPathDeleted(ResolvedPath))
+		{
+			return LowerLevel->FileExists(*ResolvedPath.GetNonSandboxPath());
+		}
+	}
+	return false;
+}
+
 bool FConcertSandboxPlatformFile::FileExists(const TCHAR* Filename)
 {
 	const FConcertSandboxPlatformFilePath ResolvedPath = ToSandboxPath(Filename);
@@ -197,7 +210,7 @@ bool FConcertSandboxPlatformFile::FileExists(const TCHAR* Filename)
 		{
 			return false;
 		}
-		
+
 		if (LowerLevel->FileExists(*ResolvedPath.GetSandboxPath()))
 		{
 			return true;
@@ -217,7 +230,7 @@ int64 FConcertSandboxPlatformFile::FileSize(const TCHAR* Filename)
 		{
 			return -1;
 		}
-		
+
 		if (LowerLevel->FileExists(*ResolvedPath.GetSandboxPath()))
 		{
 			return LowerLevel->FileSize(*ResolvedPath.GetSandboxPath());
@@ -609,6 +622,11 @@ FFileStatData FConcertSandboxPlatformFile::GetStatData(const TCHAR* FilenameOrDi
 		{
 			return LowerLevel->GetStatData(*ResolvedPath.GetSandboxPath());
 		}
+
+		FFileStatData StatData = LowerLevel->GetStatData(*ResolvedPath.GetNonSandboxPath());
+		// Sandbox files are always writeable.
+		StatData.bIsReadOnly = false;
+		return StatData;
 	}
 
 	return LowerLevel->GetStatData(*ResolvedPath.GetNonSandboxPath());
@@ -936,7 +954,7 @@ void FConcertSandboxPlatformFile::DiscardSandbox(TArray<FName>& OutPackagesPendi
 
 					// If this file maps to a package then we need to flush its linker so that we can remove the file from the sandbox
 					FName PackageName;
-					ConcertSandboxPlatformFileUtil::FlushPackageFile(RemappedFilePath.GetNonSandboxPath(), &PackageName);
+					ConcertSandboxPlatformFileUtil::FlushPackageFile(RemappedFilePath.GetNonSandboxPath(), &PackageName, false);
 
 					if (LowerLevel->FileExists(*RemappedFilePath.GetNonSandboxPath()))
 					{
@@ -1126,7 +1144,7 @@ void FConcertSandboxPlatformFile::UnregisterContentMountPath(const FString& InCo
 
 FConcertSandboxPlatformFilePath FConcertSandboxPlatformFile::ToSandboxPath(FString InFilename, const bool bEvenIfDisabled) const
 {
-	return ToSandboxPath_Absolute(FPaths::ConvertRelativePathToFull(InFilename), bEvenIfDisabled);
+	return ToSandboxPath_Absolute(FPaths::ConvertRelativePathToFull(MoveTemp(InFilename)), bEvenIfDisabled);
 }
 
 FConcertSandboxPlatformFilePath FConcertSandboxPlatformFile::ToSandboxPath_Absolute(FString InFilename, const bool bEvenIfDisabled) const
@@ -1152,7 +1170,7 @@ FConcertSandboxPlatformFilePath FConcertSandboxPlatformFile::ToSandboxPath_Absol
 
 FConcertSandboxPlatformFilePath FConcertSandboxPlatformFile::FromSandboxPath(FString InFilename) const
 {
-	return FromSandboxPath_Absolute(FPaths::ConvertRelativePathToFull(InFilename));
+	return FromSandboxPath_Absolute(FPaths::ConvertRelativePathToFull(MoveTemp(InFilename)));
 }
 
 FConcertSandboxPlatformFilePath FConcertSandboxPlatformFile::FromSandboxPath_Absolute(FString InFilename) const

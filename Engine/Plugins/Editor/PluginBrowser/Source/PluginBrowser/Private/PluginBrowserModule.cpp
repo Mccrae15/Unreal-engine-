@@ -16,6 +16,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Interfaces/IPluginManager.h"
+#include "PluginDescriptorEditor.h"
 
 #define LOCTEXT_NAMESPACE "PluginsEditor"
 
@@ -98,6 +99,34 @@ void FPluginBrowserModule::ShutdownModule()
 	IModularFeatures::Get().UnregisterModularFeature( EditorFeatures::PluginsEditor, this );
 }
 
+void FPluginBrowserModule::RegisterPluginTemplate(TSharedRef<FPluginTemplateDescription> Template)
+{
+	AddedPluginTemplates.Add(Template);
+}
+
+void FPluginBrowserModule::UnregisterPluginTemplate(TSharedRef<FPluginTemplateDescription> Template)
+{
+	AddedPluginTemplates.RemoveSingle(Template);
+}
+
+FPluginEditorExtensionHandle FPluginBrowserModule::RegisterPluginEditorExtension(FOnPluginBeingEdited Extension)
+{
+	++EditorExtensionCounter;
+	FPluginEditorExtensionHandle Result = EditorExtensionCounter;
+	CustomizePluginEditingDelegates.Add(MakeTuple(Extension, Result));
+	return Result;
+}
+
+void FPluginBrowserModule::UnregisterPluginEditorExtension(FPluginEditorExtensionHandle ExtensionHandle)
+{
+	CustomizePluginEditingDelegates.RemoveAll([=](TPair<FOnPluginBeingEdited, FPluginEditorExtensionHandle>& Value) { return Value.Value == ExtensionHandle; });
+}
+
+void FPluginBrowserModule::OpenPluginEditor(TSharedRef<IPlugin> PluginToEdit, TSharedPtr<SWidget> ParentWidget, FSimpleDelegate OnEditCommitted)
+{
+	FPluginDescriptorEditor::OpenEditorWindow(PluginToEdit, ParentWidget, OnEditCommitted);
+}
+
 void FPluginBrowserModule::SetPluginPendingEnableState(const FString& PluginName, bool bCurrentlyEnabled, bool bPendingEnabled)
 {
 	if (bCurrentlyEnabled == bPendingEnabled)
@@ -131,7 +160,6 @@ TSharedRef<SDockTab> FPluginBrowserModule::HandleSpawnPluginBrowserTab(const FSp
 {
 	const TSharedRef<SDockTab> MajorTab = 
 		SNew( SDockTab )
-		.Icon( FPluginStyle::Get()->GetBrush("Plugins.TabIcon") )
 		.TabRole( ETabRole::MajorTab );
 
 	MajorTab->SetContent( SNew( SPluginBrowser ) );
@@ -165,11 +193,11 @@ void FPluginBrowserModule::OnMainFrameLoaded(TSharedPtr<SWindow> InRootWindow, b
 	if(!bIsNewProjectWindow && NewlyInstalledPlugins.Num() > 0 && !PluginBrowserTab.IsValid())
 	{
 		FNotificationInfo Info(LOCTEXT("NewPluginsPopupTitle", "New plugins are available"));
-		Info.bFireAndForget = false;
+		Info.bFireAndForget = true;
 		Info.bUseLargeFont = true;
 		Info.bUseThrobber = false;
-		Info.FadeOutDuration = 0.0f;
-		Info.ExpireDuration = 0.0f;
+		// Note this time is large to add padding because this notification is added before the editor UI is visible. 
+		Info.ExpireDuration = 25.0f;
 		Info.ButtonDetails.Add(FNotificationButtonInfo(LOCTEXT("NewPluginsPopupSettings", "Manage Plugins..."), LOCTEXT("NewPluginsPopupSettingsTT", "Open the plugin browser to enable plugins"), FSimpleDelegate::CreateRaw(this, &FPluginBrowserModule::OnNewPluginsPopupSettingsClicked)));
 		Info.ButtonDetails.Add(FNotificationButtonInfo(LOCTEXT("NewPluginsPopupDismiss", "Dismiss"), LOCTEXT("NewPluginsPopupDismissTT", "Dismiss this notification"), FSimpleDelegate::CreateRaw(this, &FPluginBrowserModule::OnNewPluginsPopupDismissClicked)));
 
@@ -182,12 +210,16 @@ void FPluginBrowserModule::OnNewPluginsPopupSettingsClicked()
 {
 	FGlobalTabmanager::Get()->TryInvokeTab(PluginsEditorTabName);
 	NewPluginsNotification.Pin()->SetCompletionState(SNotificationItem::CS_None);
+	NewPluginsNotification.Pin()->SetExpireDuration(0.0f);
+	NewPluginsNotification.Pin()->SetFadeOutDuration(0.0f);
 	NewPluginsNotification.Pin()->ExpireAndFadeout();
 }
 
 void FPluginBrowserModule::OnNewPluginsPopupDismissClicked()
 {
 	NewPluginsNotification.Pin()->SetCompletionState(SNotificationItem::CS_None);
+	NewPluginsNotification.Pin()->SetExpireDuration(0.0f);
+	NewPluginsNotification.Pin()->SetFadeOutDuration(0.0f);
 	NewPluginsNotification.Pin()->ExpireAndFadeout();
 	UpdatePreviousInstalledPlugins();
 }

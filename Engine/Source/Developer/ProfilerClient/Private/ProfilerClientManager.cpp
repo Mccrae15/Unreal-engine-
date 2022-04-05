@@ -49,7 +49,7 @@ FProfilerClientManager::FProfilerClientManager(const TSharedRef<IMessageBus, ESP
 	RetryTime = 5.f;
 
 	LoadConnection = nullptr;
-	MessageDelegateHandle = FTicker::GetCoreTicker().AddTicker(MessageDelegate, 0.1f);
+	MessageDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(MessageDelegate, 0.1f);
 #endif
 }
 
@@ -87,7 +87,7 @@ void FProfilerClientManager::Subscribe(const FGuid& Session)
 			Connections.GenerateKeyArray(Instances);
 			for (int32 i = 0; i < Instances.Num(); ++i)
 			{
-				MessageEndpoint->Publish(new FProfilerServiceUnsubscribe(OldSessionId, Instances[i]), EMessageScope::Network);
+				MessageEndpoint->Publish(FMessageEndpoint::MakeMessage<FProfilerServiceUnsubscribe>(OldSessionId, Instances[i]), EMessageScope::Network);
 
 				// fire the disconnection delegate
 				ProfilerClientDisconnectedDelegate.Broadcast(ActiveSessionId, Instances[i]);
@@ -112,10 +112,10 @@ void FProfilerClientManager::Track(const FGuid& Instance)
 	{
 		PendingInstances.Add(Instance);
 
-		MessageEndpoint->Publish(new FProfilerServiceSubscribe(ActiveSessionId, Instance), EMessageScope::Network);
+		MessageEndpoint->Publish(FMessageEndpoint::MakeMessage<FProfilerServiceSubscribe>(ActiveSessionId, Instance), EMessageScope::Network);
 
 		RetryTime = 5.f;
-		TickDelegateHandle = FTicker::GetCoreTicker().AddTicker(TickDelegate, RetryTime);
+		TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(TickDelegate, RetryTime);
 
 		UE_LOG(LogProfilerClient, Verbose, TEXT("Track Session: %s, Instance: %s"), *ActiveSessionId.ToString(), *Instance.ToString());
 	}
@@ -128,7 +128,7 @@ void FProfilerClientManager::Untrack(const FGuid& Instance)
 #if STATS
 	if (MessageEndpoint.IsValid() && ActiveSessionId.IsValid())
 	{
-		MessageEndpoint->Publish(new FProfilerServiceUnsubscribe(ActiveSessionId, Instance), EMessageScope::Network);
+		MessageEndpoint->Publish(FMessageEndpoint::MakeMessage<FProfilerServiceUnsubscribe>(ActiveSessionId, Instance), EMessageScope::Network);
 		Connections.Remove(Instance);
 
 		// fire the disconnection delegate
@@ -161,13 +161,13 @@ void FProfilerClientManager::SetCaptureState(const bool bRequestedCaptureState, 
 			{
 				Instances.Add(It.Value().ProfilerServiceAddress);
 			}
-			MessageEndpoint->Send(new FProfilerServiceCapture(bRequestedCaptureState), Instances);
+			MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServiceCapture>(bRequestedCaptureState), Instances);
 			UE_LOG(LogProfilerClient, Verbose, TEXT("SetCaptureState Session: %s, Instance: %s, State: %i"), *ActiveSessionId.ToString(), *InstanceId.ToString(), (int32)bRequestedCaptureState);
 		}
 		else
 		{
 			const FMessageAddress& MessageAddress = Connections.Find(InstanceId)->ProfilerServiceAddress;
-			MessageEndpoint->Send(new FProfilerServiceCapture(bRequestedCaptureState), MessageAddress);
+			MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServiceCapture>(bRequestedCaptureState), MessageAddress);
 
 			UE_LOG(LogProfilerClient, Verbose, TEXT("SetCaptureState Session: %s, Instance: %s, State: %i"), *ActiveSessionId.ToString(), *InstanceId.ToString(), (int32)bRequestedCaptureState);
 		}
@@ -188,20 +188,20 @@ void FProfilerClientManager::SetPreviewState(const bool bRequestedPreviewState, 
 			{
 				Instances.Add(It.Value().ProfilerServiceAddress);
 			}
-			MessageEndpoint->Send(new FProfilerServicePreview(bRequestedPreviewState), Instances);
+			MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServicePreview>(bRequestedPreviewState), Instances);
 			UE_LOG(LogProfilerClient, Verbose, TEXT("SetPreviewState Session: %s, Instance: %s, State: %i"), *ActiveSessionId.ToString(), *InstanceId.ToString(), (int32)bRequestedPreviewState);
 		}
 		else
 		{
 			const FMessageAddress& MessageAddress = Connections.Find(InstanceId)->ProfilerServiceAddress;
-			MessageEndpoint->Send(new FProfilerServicePreview(bRequestedPreviewState), MessageAddress);
+			MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServicePreview>(bRequestedPreviewState), MessageAddress);
 			UE_LOG(LogProfilerClient, Verbose, TEXT("SetPreviewState Session: %s, Instance: %s, State: %i"), *ActiveSessionId.ToString(), *InstanceId.ToString(), (int32)bRequestedPreviewState);
 		}
 	}
 #endif
 }
 
-
+#if STATS
 /*-----------------------------------------------------------------------------
 	New read test, still temporary, but around 4x faster
 -----------------------------------------------------------------------------*/
@@ -288,16 +288,18 @@ protected:
 	FProfilerClientManager* ProfilerClientManager;
 	FServiceConnection* LoadConnection;
 };
-
+#endif
 
 void FServiceConnection::LoadCapture(const FString& DataFilepath, FProfilerClientManager* ProfilerClientManager)
 {
+#if STATS
 	StatsReader = FStatsReader<FNewStatsReader>::Create(*DataFilepath);
 	if (StatsReader)
 	{
 		StatsReader->Initialize(ProfilerClientManager, this);
 		StatsReader->ReadAndProcessAsynchronously();
 	}
+#endif
 }
 
 
@@ -313,7 +315,7 @@ void FProfilerClientManager::LoadCapture(const FString& DataFilepath, const FGui
 	LoadConnection->LoadCapture(DataFilepath, this);
 
 	RetryTime = 0.05f;
-	TickDelegateHandle = FTicker::GetCoreTicker().AddTicker(TickDelegate, RetryTime);	
+	TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(TickDelegate, RetryTime);	
 #endif
 }
 
@@ -330,12 +332,12 @@ void FProfilerClientManager::RequestLastCapturedFile(const FGuid& InstanceId /*=
 			{
 				Instances.Add(It.Value().ProfilerServiceAddress);
 			}
-			MessageEndpoint->Send(new FProfilerServiceRequest(EProfilerRequestType::PRT_SendLastCapturedFile), Instances);
+			MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServiceRequest>(EProfilerRequestType::PRT_SendLastCapturedFile), Instances);
 		}
 		else
 		{
 			const FMessageAddress& MessageAddress = Connections.Find(InstanceId)->ProfilerServiceAddress;
-			MessageEndpoint->Send(new FProfilerServiceRequest(EProfilerRequestType::PRT_SendLastCapturedFile), MessageAddress);
+			MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServiceRequest>(EProfilerRequestType::PRT_SendLastCapturedFile), MessageAddress);
 		}
 	}
 #endif
@@ -441,6 +443,7 @@ FServiceConnection::FServiceConnection()
 
 FServiceConnection::~FServiceConnection()
 {
+#if STATS
 	if (StatsReader)
 	{
 		StatsReader->RequestStop();
@@ -454,6 +457,7 @@ FServiceConnection::~FServiceConnection()
 		delete StatsReader;
 		StatsReader = nullptr;
 	}
+#endif
 
 	for (const auto& It : ReceivedData)
 	{
@@ -559,7 +563,7 @@ void FProfilerClientManager::HandleServiceFileChunk(const FProfilerServiceFileCh
 				// File has been successfully sent, so send this information to the profiler service.
 				if(MessageEndpoint.IsValid())
 				{
-					MessageEndpoint->Send(new FProfilerServiceFileChunk(FGuid(),FileChunk.Filename,FProfilerFileChunkHeader(0,0,0,EProfilerFileChunkType::FinalizeFile).AsArray()), Context->GetSender());
+					MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServiceFileChunk>(FGuid(),FileChunk.Filename,FProfilerFileChunkHeader(0,0,0,EProfilerFileChunkType::FinalizeFile).AsArray()), Context->GetSender());
 					ProfilerFileTransferDelegate.Broadcast(FileChunk.Filename, ReceivedFileInfo->Progress, FileChunkHeader.FileSize);
 				}
 				
@@ -584,7 +588,7 @@ void FProfilerClientManager::HandleServiceFileChunk(const FProfilerServiceFileCh
 			// This chunk is a bad chunk, so ask for resending it.
 			if(MessageEndpoint.IsValid())
 			{
-				MessageEndpoint->Send(new FProfilerServiceFileChunk(FileChunk,FProfilerServiceFileChunk::FNullTag()), Context->GetSender());
+				MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServiceFileChunk>(FileChunk,FProfilerServiceFileChunk::FNullTag()), Context->GetSender());
 				UE_LOG(LogProfilerClient, Log, TEXT("Received a bad chunk of file, resending: %5i, %6u, %10u, %s"), FileChunk.HexData.Len(), ReceivedFileInfo->Progress, FileChunkHeader.FileSize, *FileChunk.Filename);
 			}
 		}
@@ -603,7 +607,7 @@ void FProfilerClientManager::HandleServicePingMessage(const FProfilerServicePing
 		{
 			Instances.Add(It.Value().ProfilerServiceAddress);
 		}
-		MessageEndpoint->Send(new FProfilerServicePong(), Instances);
+		MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FProfilerServicePong>(), Instances);
 
 		UE_LOG(LogProfilerClient, Verbose, TEXT("Ping GetSender: %s"), *Context->GetSender().ToString());
 	}
@@ -833,8 +837,8 @@ void FProfilerClientManager::Shutdown()
 		UE_LOG(LogProfilerClient, Log, TEXT("File service-client transfer aborted: %s"), *It.Key());
 	}
 
-	FTicker::GetCoreTicker().RemoveTicker(MessageDelegateHandle);
-	FTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(MessageDelegateHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
 }
 
 
@@ -844,8 +848,10 @@ void FProfilerClientManager::FinalizeLoading(const FGuid InstanceId)
 	{
 		ProfilerLoadCompletedDelegate.Broadcast(InstanceId);
 		LoadConnection = &Connections.FindChecked(InstanceId);
+#if STATS
 		delete LoadConnection->StatsReader;
 		LoadConnection->StatsReader = nullptr;
+#endif
 		LoadConnection = nullptr;
 		Connections.Remove(InstanceId);
 
@@ -860,8 +866,10 @@ void FProfilerClientManager::CancelLoading(const FGuid InstanceId)
 	{
 		ProfilerLoadCancelledDelegate.Broadcast(InstanceId);
 		LoadConnection = &Connections.FindChecked(InstanceId);
+#if STATS
 		delete LoadConnection->StatsReader;
 		LoadConnection->StatsReader = nullptr;
+#endif
 		LoadConnection = nullptr;
 		Connections.Remove(InstanceId);
 	}

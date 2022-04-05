@@ -9,7 +9,6 @@
 #include "Materials/MaterialInterface.h"
 #include "StaticMeshAttributes.h"
 #include "StaticMeshOperations.h"
-#include "TessellationRendering.h"
 
 namespace DataprepOperationsLibraryUtil
 {
@@ -155,15 +154,16 @@ namespace DataprepOperationsLibraryUtil
 
 		TArray< FMeshBuildSettings > BuildSettingsBackup;
 
-		for ( FStaticMeshSourceModel& SourceModel : StaticMesh->GetSourceModels() )
+		int32 NumSourceModels = StaticMesh->GetNumSourceModels();
+		for (int32 LodIndex = 0; LodIndex < NumSourceModels; LodIndex++)
 		{
+			FStaticMeshSourceModel& SourceModel = StaticMesh->GetSourceModel(LodIndex);
 			BuildSettingsBackup.Add( SourceModel.BuildSettings );
 
 			// These were done in the PreBuild step
 			SourceModel.BuildSettings.bGenerateLightmapUVs = false;
 			SourceModel.BuildSettings.bRecomputeNormals = false;
 			SourceModel.BuildSettings.bRecomputeTangents = false;
-			SourceModel.BuildSettings.bBuildAdjacencyBuffer = false;
 			SourceModel.BuildSettings.bBuildReversedIndexBuffer = false;
 			SourceModel.BuildSettings.bComputeWeightedNormals = false;
 		}
@@ -191,7 +191,6 @@ namespace DataprepOperationsLibraryUtil
 				BuildSettings.bGenerateLightmapUVs = CachedBuildSettings.bGenerateLightmapUVs;
 				BuildSettings.bRecomputeNormals = CachedBuildSettings.bRecomputeNormals;
 				BuildSettings.bRecomputeTangents = CachedBuildSettings.bRecomputeTangents;
-				BuildSettings.bBuildAdjacencyBuffer = CachedBuildSettings.bBuildAdjacencyBuffer;
 				BuildSettings.bBuildReversedIndexBuffer = CachedBuildSettings.bBuildReversedIndexBuffer;
 				BuildSettings.bComputeWeightedNormals = CachedBuildSettings.bComputeWeightedNormals;
 			}
@@ -210,15 +209,6 @@ namespace DataprepOperationsLibraryUtil
 				if ( StaticMaterial.MaterialSlotName == NAME_None )
 				{
 					StaticMaterial.MaterialSlotName = NewMaterial->GetFName();
-				}
-
-				// Make sure adjacency information fit new material change
-				if( RequiresAdjacencyInformation( NewMaterial, nullptr, GWorld->FeatureLevel ) )
-				{
-					for( FStaticMeshSourceModel& SourceModel : StaticMesh->GetSourceModels() )
-					{
-						SourceModel.BuildSettings.bBuildAdjacencyBuffer = true;
-					}
 				}
 			}
 		}
@@ -282,13 +272,13 @@ namespace DataprepOperationsLibraryUtil
 
 			for (UStaticMesh* StaticMesh : BuiltMeshes)
 			{
-				TArray<FStaticMeshSourceModel>& SourceModels = StaticMesh->GetSourceModels();
+				int32 NumSourceModels = StaticMesh->GetNumSourceModels();
 				TArray<FMeshBuildSettings> BuildSettings;
-				BuildSettings.Reserve(SourceModels.Num());
+				BuildSettings.Reserve(NumSourceModels);
 
-				for(int32 Index = 0; Index < SourceModels.Num(); ++Index)
+				for(int32 Index = 0; Index < NumSourceModels; ++Index)
 				{
-					FStaticMeshSourceModel& SourceModel = SourceModels[Index];
+					FStaticMeshSourceModel& SourceModel = StaticMesh->GetSourceModel(Index);
 
 					BuildSettings.Add( SourceModel.BuildSettings );
 
@@ -297,17 +287,16 @@ namespace DataprepOperationsLibraryUtil
 						FStaticMeshAttributes Attributes(*MeshDescription);
 						if(SourceModel.BuildSettings.DstLightmapIndex != -1)
 						{
-							TVertexInstanceAttributesConstRef<FVector2D> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
-							SourceModel.BuildSettings.bGenerateLightmapUVs = VertexInstanceUVs.IsValid() && VertexInstanceUVs.GetNumIndices() > SourceModel.BuildSettings.DstLightmapIndex;
+							TVertexInstanceAttributesConstRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
+							SourceModel.BuildSettings.bGenerateLightmapUVs = VertexInstanceUVs.IsValid() && VertexInstanceUVs.GetNumChannels() > SourceModel.BuildSettings.DstLightmapIndex;
 						}
 						else
 						{
 							SourceModel.BuildSettings.bGenerateLightmapUVs = false;
 						}
 
-						SourceModel.BuildSettings.bRecomputeNormals = !(Attributes.GetVertexInstanceNormals().IsValid() && Attributes.GetVertexInstanceNormals().GetNumIndices() > 0);
+						SourceModel.BuildSettings.bRecomputeNormals = !(Attributes.GetVertexInstanceNormals().IsValid() && Attributes.GetVertexInstanceNormals().GetNumChannels() > 0);
 						SourceModel.BuildSettings.bRecomputeTangents = false;
-						//SourceModel.BuildSettings.bBuildAdjacencyBuffer = false;
 						//SourceModel.BuildSettings.bBuildReversedIndexBuffer = false;
 					}
 				}
@@ -329,11 +318,10 @@ namespace DataprepOperationsLibraryUtil
 				UStaticMesh* StaticMesh = BuiltMeshes[Index];
 				TArray<FMeshBuildSettings>& PrevBuildSettings = StaticMeshesSettings[Index];
 
-				TArray<FStaticMeshSourceModel>& SourceModels = StaticMesh->GetSourceModels();
-
-				for(int32 SourceModelIndex = 0; SourceModelIndex < SourceModels.Num(); ++SourceModelIndex)
+				int32 NumSourceModels = StaticMesh->GetNumSourceModels();
+				for(int32 SourceModelIndex = 0; SourceModelIndex < NumSourceModels; ++SourceModelIndex)
 				{
-					SourceModels[SourceModelIndex].BuildSettings = PrevBuildSettings[SourceModelIndex];
+					StaticMesh->GetSourceModel(SourceModelIndex).BuildSettings = PrevBuildSettings[SourceModelIndex];
 				}
 
 				for ( FStaticMeshLODResources& LODResources : StaticMesh->GetRenderData()->LODResources )

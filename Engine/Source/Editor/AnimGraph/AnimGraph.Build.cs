@@ -30,6 +30,7 @@ public class AnimGraph : ModuleRules
 			new string[] {
 				"InputCore",
 				"SlateCore",
+				"EditorFramework",
 				"UnrealEd",
                 "GraphEditor",
 				"PropertyEditor",
@@ -40,6 +41,7 @@ public class AnimGraph : ModuleRules
 				"KismetCompiler",
 				"Kismet",
 				"EditorWidgets",
+				"ToolWidgets",
 			}
 		);
 

@@ -6,6 +6,8 @@
 #include "Components/DirectionalLightComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/VolumetricCloudComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
+#include "Engine/ExponentialHeightFog.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/SkyLight.h"
 
@@ -88,6 +90,10 @@ void SEnvironmentLightingViewer::Construct(const FArguments& InArgs)
 					.HAlign(HAlign_Center)
 					.OnClicked(this, &SEnvironmentLightingViewer::OnButtonCreateVolumetricCloud)
 					.Text(LOCTEXT("CreateVolumetricCloud", "Create Volumetric Cloud"));
+	ButtonCreateHeightFog= SNew(SButton)
+					.HAlign(HAlign_Center)
+					.OnClicked(this, &SEnvironmentLightingViewer::OnButtonCreateHeightFog)
+					.Text(LOCTEXT("CreateHeightFog", "Create Height Fog"));
 
 	this->ChildSlot
 	[
@@ -159,6 +165,13 @@ void SEnvironmentLightingViewer::Construct(const FArguments& InArgs)
 			.VAlign(VAlign_Center)
 			[
 				ButtonCreateVolumetricCloud->AsShared()
+			]
+			+SWrapBox::Slot()
+			.Padding(5.0f)
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			[
+				ButtonCreateHeightFog->AsShared()
 			]
 		]
 		+ SVerticalBox::Slot()
@@ -268,7 +281,7 @@ void SEnvironmentLightingViewer::Tick(const FGeometry& AllottedGeometry, const d
 					/*|| AtmosphericLight->*/)
 					continue;
 
-				float LightLuminance = AtmosphericLight->GetColoredLightBrightness().ComputeLuminance();
+				float LightLuminance = AtmosphericLight->GetColoredLightBrightness().GetLuminance();
 				if (!SelectedAtmosphericLight ||					// Set it if null
 					SelectedLightLuminance < LightLuminance)		// Or choose the brightest atmospheric light
 				{
@@ -336,9 +349,26 @@ void SEnvironmentLightingViewer::Tick(const FGeometry& AllottedGeometry, const d
 	AddComponentDetailView(VolumetricCloudComp, "Volumetric Cloud", VolCloudColor);
 	ButtonCreateVolumetricCloud->SetVisibility(VolumetricCloudComp ? EVisibility::Collapsed : EVisibility::Visible);
 
+	UExponentialHeightFogComponent* HeightFogComp = nullptr;
+	for (TObjectIterator<UExponentialHeightFogComponent> ComponentIt; ComponentIt; ++ComponentIt)
+	{
+		if (ComponentIt->GetWorld() == World && ComponentIt->IsRenderStateCreated())
+		{
+			HeightFogComp = *ComponentIt;
+			break;
+		}
+	}
+	AddComponentDetailView(HeightFogComp, "Height Fog", VolCloudColor);
+	ButtonCreateHeightFog->SetVisibility(HeightFogComp ? EVisibility::Collapsed : EVisibility::Visible);
+
 	for (int i = NumDetailsView; i < ENVLIGHT_MAX_DETAILSVIEWS; ++i)
 	{
-		DetailsViews[i]->SetObject(nullptr);
+		// If the details view selection is already empty, don't call SetObject again.  Calling SetObject
+		// otherwise closes any active color picker (UE-121571).
+		if (DetailsViews[i]->GetSelectedObjects().Num() > 0)
+		{
+			DetailsViews[i]->SetObject(nullptr);
+		}
 	}
 }
 
@@ -370,7 +400,7 @@ FReply SEnvironmentLightingViewer::OnButtonCreateAtmosphericLight(uint32 Index)
 	DirectionalLight->SetMobility(EComponentMobility::Movable);
 	DirectionalLight->SetActorRotation(FRotator(329, 346, -105));
 #if WITH_EDITORONLY_DATA
-	DirectionalLight->GetComponent()->bUsedAsAtmosphereSunLight = 1;
+	DirectionalLight->GetComponent()->bAtmosphereSunLight = 1;
 	DirectionalLight->GetComponent()->AtmosphereSunLightIndex = Index;
 	// The render proxy is create right after AddActor, so we need to mark the render state as dirty again to get the new values set on the render side too.
 	DirectionalLight->MarkComponentsRenderStateDirty();
@@ -403,6 +433,20 @@ FReply SEnvironmentLightingViewer::OnButtonCreateVolumetricCloud()
 
 	const FTransform Transform(FVector(0.0f, 0.0f, 0.0f));
 	AVolumetricCloud* SkyLight = Cast<AVolumetricCloud>(GEditor->AddActor(World->GetCurrentLevel(), AVolumetricCloud::StaticClass(), Transform));
+
+	return FReply::Handled();
+}
+
+FReply SEnvironmentLightingViewer::OnButtonCreateHeightFog()
+{
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!World)
+	{
+		return FReply::Handled();
+	}
+
+	const FTransform Transform(FVector(0.0f, 0.0f, 0.0f));
+	AExponentialHeightFog* HeightFog = Cast<AExponentialHeightFog>(GEditor->AddActor(World->GetCurrentLevel(), AExponentialHeightFog::StaticClass(), Transform));
 
 	return FReply::Handled();
 }
@@ -520,6 +564,21 @@ bool SEnvironmentLightingViewer::GetIsPropertyVisible(const FPropertyAndParent& 
 				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("TracingMaxDistance"))
 				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("GroundAlbedo"))
 				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("Material"));
+		}
+		return true;
+	}
+	else if (OwnerClass == UExponentialHeightFogComponent::StaticClass())
+	{
+		if (bShowMinimalOnly)
+		{
+			return PropertyAndParent.Property.GetNameCPP().Equals(TEXT("FogDensity"))
+				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("FogHeightFalloff"))
+				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("FogInscatteringLuminance"))
+				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("DirectionalInscatteringExponent"))
+				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("DirectionalInscatteringLuminance"))
+				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("StartDistance"))
+				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("FogCutoffDistance"))
+				|| PropertyAndParent.Property.GetNameCPP().Equals(TEXT("bEnableVolumetricFog"));
 		}
 		return true;
 	}

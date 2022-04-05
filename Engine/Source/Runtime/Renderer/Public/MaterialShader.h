@@ -28,8 +28,7 @@ class FDebugUniformExpressionSet
 	DECLARE_TYPE_LAYOUT(FDebugUniformExpressionSet, NonVirtual);
 public:
 	FDebugUniformExpressionSet()
-		: NumVectorExpressions(0)
-		, NumScalarExpressions(0)
+		: NumPreshaders(0)
 	{
 		FMemory::Memzero(NumTextureExpressions);
 	}
@@ -42,8 +41,7 @@ public:
 	/** Initialize from a uniform expression set. */
 	void InitFromExpressionSet(const FUniformExpressionSet& InUniformExpressionSet)
 	{
-		NumVectorExpressions = InUniformExpressionSet.UniformVectorPreshaders.Num();
-		NumScalarExpressions = InUniformExpressionSet.UniformScalarPreshaders.Num();
+		NumPreshaders = InUniformExpressionSet.UniformPreshaders.Num();
 		for (uint32 TypeIndex = 0u; TypeIndex < NumMaterialTextureParameterTypes; ++TypeIndex)
 		{
 			NumTextureExpressions[TypeIndex] = InUniformExpressionSet.UniformTextureParameters[TypeIndex].Num();
@@ -60,12 +58,11 @@ public:
 				return false;
 			}
 		}
-		return NumVectorExpressions == InUniformExpressionSet.UniformVectorPreshaders.Num() && NumScalarExpressions == InUniformExpressionSet.UniformScalarPreshaders.Num();
+		return NumPreshaders == InUniformExpressionSet.UniformPreshaders.Num();
 	}
 	
 	/** The number of each type of expression contained in the set. */
-	LAYOUT_FIELD(int32, NumVectorExpressions);
-	LAYOUT_FIELD(int32, NumScalarExpressions);
+	LAYOUT_FIELD(int32, NumPreshaders);
 	LAYOUT_ARRAY(int32, NumTextureExpressions, NumMaterialTextureParameterTypes);
 };
 
@@ -101,14 +98,15 @@ public:
 		const auto& ViewUniformBufferParameter = GetUniformBufferParameter<FViewUniformShaderParameters>();
 		SetUniformBufferParameter(RHICmdList, ShaderRHI, ViewUniformBufferParameter, ViewUniformBuffer);
 
-		if (View.bShouldBindInstancedViewUB && View.Family->Views.Num() > 0)
+		if (View.bShouldBindInstancedViewUB)
 		{
 			// When drawing the left eye in a stereo scene, copy the right eye view values into the instanced view uniform buffer.
-			const EStereoscopicPass StereoPassIndex = IStereoRendering::IsStereoEyeView(View) ? eSSP_RIGHT_EYE : eSSP_FULL;
-
-			const FSceneView& InstancedView = View.Family->GetStereoEyeView(StereoPassIndex);
-			const auto& InstancedViewUniformBufferParameter = GetUniformBufferParameter<FInstancedViewUniformShaderParameters>();
-			SetUniformBufferParameter(RHICmdList, ShaderRHI, InstancedViewUniformBufferParameter, InstancedView.ViewUniformBuffer);
+			const FSceneView* InstancedView = View.GetInstancedSceneView();
+			if (InstancedView)
+			{
+				const auto& InstancedViewUniformBufferParameter = GetUniformBufferParameter<FInstancedViewUniformShaderParameters>();
+				SetUniformBufferParameter(RHICmdList, ShaderRHI, InstancedViewUniformBufferParameter, InstancedView->ViewUniformBuffer);
+			}
 		}
 	}
 
@@ -148,6 +146,6 @@ private:
 
 protected:
 	LAYOUT_FIELD_EDITORONLY(FDebugUniformExpressionSet, DebugUniformExpressionSet);
-	LAYOUT_FIELD_EDITORONLY(FRHIUniformBufferLayout, DebugUniformExpressionUBLayout);
+	LAYOUT_FIELD_EDITORONLY(FRHIUniformBufferLayoutInitializer, DebugUniformExpressionUBLayout);
 	LAYOUT_FIELD_EDITORONLY(FMemoryImageString, DebugDescription);
 };

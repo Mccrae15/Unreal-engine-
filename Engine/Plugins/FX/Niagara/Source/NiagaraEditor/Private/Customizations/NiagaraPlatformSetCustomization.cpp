@@ -317,7 +317,7 @@ void FNiagaraPlatformSetCustomization::InvalidateSiblingConflicts() const
 		TSharedPtr<IPropertyHandle> SiblingPlatformSet = FindChildPlatformSet(Sibling);
 		if (SiblingPlatformSet.IsValid())
 		{
-			SiblingPlatformSet->NotifyPostChange();
+			SiblingPlatformSet->NotifyPostChange(EPropertyChangeType::ValueSet);
 		}
 	}
 }
@@ -747,9 +747,9 @@ TSharedRef<ITableRow> FNiagaraPlatformSetCustomization::OnGenerateDeviceProfileT
 	//Top level profile. Look for a platform icon.
 	if (InItem->Profile->Parent == nullptr)
 	{
-		if (const PlatformInfo::FPlatformInfo* Info = PlatformInfo::FindPlatformInfo(*InItem->Profile->DeviceType))
+		if (const PlatformInfo::FTargetPlatformInfo* Info = PlatformInfo::FindPlatformInfo(*InItem->Profile->DeviceType))
 		{
-			const FSlateBrush* DeviceProfileTypeIcon = FEditorStyle::GetBrush(Info->GetIconStyleName(PlatformInfo::EPlatformIconSize::Normal));
+			const FSlateBrush* DeviceProfileTypeIcon = FEditorStyle::GetBrush(Info->GetIconStyleName(EPlatformIconSize::Normal));
 			if (DeviceProfileTypeIcon != FEditorStyle::Get().GetDefaultBrush())
 			{
 				RowContainer->AddSlot()
@@ -1253,6 +1253,12 @@ void SNiagaraConsoleInputBox::SuggestionSelectionChanged(TSharedPtr<FString> New
 		return;
 	}
 
+	if (NewValue.IsValid() == false)
+	{
+		SuggestionBox->SetIsOpen(false);
+		return;
+	}
+
 	Suggestions.SelectedSuggestion = Suggestions.SuggestionsList.IndexOfByPredicate([&NewValue](const TSharedPtr<FString>& InSuggestion)
 		{
 			return InSuggestion == NewValue;
@@ -1378,6 +1384,7 @@ void SNiagaraConsoleInputBox::OnTextCommitted(const FText& InText, ETextCommit::
 		WorkingText = InText;
 		IConsoleManager::Get().AddConsoleHistoryEntry(NiagaraCVarHistoryKey, *InText.ToString());
 		OnTextCommittedEvent.ExecuteIfBound(InText);
+		SuggestionBox->SetIsOpen(false);
 	}
 }
 

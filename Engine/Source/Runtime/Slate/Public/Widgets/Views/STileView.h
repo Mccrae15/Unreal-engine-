@@ -58,6 +58,7 @@ public:
 		, _ScrollbarVisibility(EVisibility::Visible)
 		, _ScrollbarDragFocusCause(EFocusCause::Mouse)
 		, _AllowOverscroll(EAllowOverscroll::Yes)
+		, _ScrollBarStyle(&FAppStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar"))
 		, _ConsumeMouseWheel(EConsumeMouseWheel::WhenScrollingPossible)
 		, _WheelScrollMultiplier(GetGlobalScrollAmount())
 		, _HandleGamepadEvents(true)
@@ -113,6 +114,8 @@ public:
 		SLATE_ARGUMENT(EFocusCause, ScrollbarDragFocusCause)
 
 		SLATE_ARGUMENT( EAllowOverscroll, AllowOverscroll );
+
+		SLATE_STYLE_ARGUMENT( FScrollBarStyle, ScrollBarStyle );
 
 		SLATE_ARGUMENT( EConsumeMouseWheel, ConsumeMouseWheel );
 
@@ -203,7 +206,7 @@ public:
 		else
 		{
 			// Make the TableView
-			this->ConstructChildren(InArgs._ItemWidth, InArgs._ItemHeight, InArgs._ItemAlignment, TSharedPtr<SHeaderRow>(), InArgs._ExternalScrollbar, InArgs._Orientation, InArgs._OnTileViewScrolled);
+			this->ConstructChildren(InArgs._ItemWidth, InArgs._ItemHeight, InArgs._ItemAlignment, TSharedPtr<SHeaderRow>(), InArgs._ExternalScrollbar, InArgs._Orientation, InArgs._OnTileViewScrolled, InArgs._ScrollBarStyle);
 			if (this->ScrollBar.IsValid())
 			{
 				this->ScrollBar->SetDragFocusCause(InArgs._ScrollbarDragFocusCause);
@@ -451,7 +454,7 @@ protected:
 				// Only scroll the item into view if it's not already in the visible range
 				const int32 NumItemsPerLine = GetNumItemsPerLine();
 				const double ScrollLineOffset = this->GetTargetScrollOffset() / NumItemsPerLine;
-				const int32 LineOfItem = FMath::FloorToInt(IndexOfItem / NumItemsPerLine);
+				const int32 LineOfItem = FMath::FloorToInt((float)IndexOfItem / (float)NumItemsPerLine);
 				const int32 NumFullLinesInView = FMath::FloorToInt(ScrollLineOffset + NumLinesInView) - FMath::CeilToInt(ScrollLineOffset);
 				
 				const double MinDisplayedLine = this->bNavigateOnScrollIntoView ? FMath::FloorToDouble(ScrollLineOffset) : FMath::CeilToDouble(ScrollLineOffset);

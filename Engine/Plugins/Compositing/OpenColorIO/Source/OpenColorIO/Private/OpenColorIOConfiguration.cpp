@@ -13,6 +13,7 @@
 #include "TextureResource.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
+#include "UObject/ObjectSaveContext.h"
 
 #define LOCTEXT_NAMESPACE "OCIOConfiguration"
 
@@ -80,6 +81,11 @@ bool UOpenColorIOConfiguration::HasTransform(const FString& InSourceColorSpace, 
 	return (TransformData != nullptr);
 }
 
+bool UOpenColorIOConfiguration::HasDesiredColorSpace(const FOpenColorIOColorSpace& ColorSpace) const
+{
+	return DesiredColorSpaces.Find(ColorSpace) != INDEX_NONE;
+}
+
 bool UOpenColorIOConfiguration::Validate() const
 {
 #if WITH_EDITOR 
@@ -116,9 +122,9 @@ void UOpenColorIOConfiguration::ReloadExistingColorspaces()
 	// This will make sure that all colorspaces are up to date in case an index, family or name is changed.
 	for (const FOpenColorIOColorSpace& ExistingColorSpace : ColorSpacesToBeReloaded)
 	{
-		char* ColorSpaceName = TCHAR_TO_ANSI(*ExistingColorSpace.ColorSpaceName);
-		int ColorSpaceIndex = LoadedConfig->getIndexForColorSpace(ColorSpaceName);
-		OCIO_NAMESPACE::ConstColorSpaceRcPtr LibColorSpace = LoadedConfig->getColorSpace(ColorSpaceName);
+		const auto ColorSpaceName = StringCast<ANSICHAR>(*ExistingColorSpace.ColorSpaceName);
+		int ColorSpaceIndex = LoadedConfig->getIndexForColorSpace(ColorSpaceName.Get());
+		OCIO_NAMESPACE::ConstColorSpaceRcPtr LibColorSpace = LoadedConfig->getColorSpace(ColorSpaceName.Get());
 		if (!LibColorSpace)
 		{
 			// Name not found, therefore we don't need to re-add this colorspace.
@@ -127,7 +133,7 @@ void UOpenColorIOConfiguration::ReloadExistingColorspaces()
 
 		FOpenColorIOColorSpace ColorSpace;
 		ColorSpace.ColorSpaceIndex = ColorSpaceIndex;
-		ColorSpace.ColorSpaceName = StringCast<TCHAR>(ColorSpaceName).Get();
+		ColorSpace.ColorSpaceName = ExistingColorSpace.ColorSpaceName;
 		ColorSpace.FamilyName = StringCast<TCHAR>(LibColorSpace->getFamily()).Get();
 		DesiredColorSpaces.Add(ColorSpace);
 	}
@@ -322,9 +328,9 @@ namespace OpenColorIOConfiguration
 	}
 }
 
-void UOpenColorIOConfiguration::PreSave(const class ITargetPlatform* TargetPlatform)
+void UOpenColorIOConfiguration::PreSave(FObjectPreSaveContext SaveContext)
 {
-	Super::PreSave(TargetPlatform);
+	Super::PreSave(SaveContext);
 
 	OpenColorIOConfiguration::SendAnalytics(TEXT("Usage.OpenColorIO.ConfigAssetSaved"), DesiredColorSpaces);
 }

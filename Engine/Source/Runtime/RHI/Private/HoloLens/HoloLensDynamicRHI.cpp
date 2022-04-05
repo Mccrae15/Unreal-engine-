@@ -125,7 +125,7 @@ FDynamicRHI* PlatformCreateDynamicRHI()
 	}
 
 	GMaxRHIFeatureLevel = ERHIFeatureLevel::ES3_1;
-	GMaxRHIShaderPlatform = SP_PCD3D_ES3_1;
+	GMaxRHIShaderPlatform = SP_D3D_ES3_1_HOLOLENS;
 
 	return DynamicRHI;
 }

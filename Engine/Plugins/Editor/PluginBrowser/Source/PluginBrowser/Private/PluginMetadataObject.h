@@ -11,6 +11,8 @@
 class IDetailLayoutBuilder;
 struct FPluginDescriptor;
 struct FPluginReferenceDescriptor;
+class IPlugin;
+struct FPluginEditorExtension;
 
 /**
  * We use this object to display plugin reference properties using details view.
@@ -22,7 +24,7 @@ public:
 	GENERATED_BODY()
 
 	/** Name of the dependency plugin */
-	UPROPERTY(EditAnywhere, Category = "Plugin Reference")
+	UPROPERTY(EditAnywhere, Category = "Plugin Reference", meta=(GetOptions=GetAvailablePluginDependencies))
 	FString Name;
 
 	/** Whether the dependency plugin is optional meaning it will be silently ignored if not present */
@@ -111,18 +113,27 @@ public:
 	bool bIsBetaVersion;
 
 	/** Plugins used by this plugin */
-	UPROPERTY(EditAnywhere, Category = Dependencies)
+	UPROPERTY(EditAnywhere, Category = Dependencies, meta=(TitleProperty=Name))
 	TArray<FPluginReferenceMetadata> Plugins;
+
+	/** Plugin this proxy object was constructed from */
+	TWeakPtr<IPlugin> SourcePlugin;
+
+	/** Editing extensions */
+	TArray<TSharedPtr<FPluginEditorExtension>> Extensions;
 
 	/**
 	 * Populate the fields of this object from an existing descriptor.
 	 */
-	void PopulateFromDescriptor(const FPluginDescriptor& InDescriptor);
+	void PopulateFromPlugin(TSharedPtr<IPlugin> InPlugin);
 
 	/**
 	 * Copy the metadata fields into a plugin descriptor.
 	 */
 	void CopyIntoDescriptor(FPluginDescriptor& OutDescriptor) const;
+
+	UFUNCTION()
+	TArray<FString> GetAvailablePluginDependencies() const;
 };
 
 /**

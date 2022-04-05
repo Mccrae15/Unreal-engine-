@@ -10,13 +10,12 @@
 #include "Misc/PackageName.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "GameProjectGenerationModule.h"
-#include "Misc/HotReloadInterface.h"
 #include "SourceCodeNavigation.h"
 #include "Interfaces/IPluginManager.h"
 #include "Interfaces/IProjectManager.h"
 #include "ProjectDescriptor.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogNativeClassHierarchy, Verbose, All);
+DEFINE_LOG_CATEGORY_STATIC(LogNativeClassHierarchy, Log, All);
 
 TSharedRef<FNativeClassHierarchyNode> FNativeClassHierarchyNode::MakeFolderEntry(FName InEntryName, FString InEntryPath)
 {
@@ -53,26 +52,21 @@ FNativeClassHierarchy::FNativeClassHierarchy()
 	// Register to be notified of module changes
 	FModuleManager::Get().OnModulesChanged().AddRaw(this, &FNativeClassHierarchy::OnModulesChanged);
 
-	// Register to be notified of hot reloads
-	IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>("HotReload");
-	HotReloadSupport.OnHotReload().AddRaw(this, &FNativeClassHierarchy::OnHotReload);
+	// Register to be notified of reloads
+	FCoreUObjectDelegates::ReloadCompleteDelegate.AddRaw(this, &FNativeClassHierarchy::OnReloadComplete);
 }
 
 FNativeClassHierarchy::~FNativeClassHierarchy()
 {
 	FModuleManager::Get().OnModulesChanged().RemoveAll(this);
 
-	if(FModuleManager::Get().IsModuleLoaded("HotReload"))
-	{
-		IHotReloadInterface& HotReloadSupport = FModuleManager::GetModuleChecked<IHotReloadInterface>("HotReload");
-		HotReloadSupport.OnHotReload().RemoveAll(this);
-	}
+	FCoreUObjectDelegates::ReloadCompleteDelegate.RemoveAll(this);
 }
 
 TSharedPtr<const FNativeClassHierarchyNode> FNativeClassHierarchy::FindNode(const FName InClassPath, const ENativeClassHierarchyNodeType InType) const
 {
 	TArray<TSharedRef<FNativeClassHierarchyNode>, TInlineAllocator<4>> NodesFound;
-	GatherMatchingNodesForPaths(TArrayView<const FName>(&InClassPath, 1), NodesFound);
+	GatherMatchingNodesForPaths(TArrayView<const FName>(&InClassPath, 1), NodesFound, InType);
 
 	for(const auto& NodeFound : NodesFound)
 	{
@@ -83,6 +77,27 @@ TSharedPtr<const FNativeClassHierarchyNode> FNativeClassHierarchy::FindNode(cons
 	}
 
 	return nullptr;
+}
+
+bool FNativeClassHierarchy::RootNodePassesFilter(const FName InRootName, const TSharedPtr<const FNativeClassHierarchyNode>& InRootNode, const bool bIncludeEngineClasses, const bool bIncludePluginClasses) const
+{
+	static const FName EngineRootNodeName = "Classes_Engine";
+	static const FName GameRootNodeName = "Classes_Game";
+
+	return (InRootName == GameRootNodeName) ||								// Always include game classes
+			(InRootName == EngineRootNodeName && bIncludeEngineClasses) ||  	// Only include engine classes if we were asked for them
+			(bIncludePluginClasses && InRootNode->LoadedFrom == EPluginLoadedFrom::Project) || // Only include Game plugin classes if we were asked for them
+			(bIncludePluginClasses && bIncludeEngineClasses && InRootNode->LoadedFrom == EPluginLoadedFrom::Engine); //  Only include engine plugin classes if we were asked for them
+}
+
+bool FNativeClassHierarchy::RootNodePassesFilter(const FName InRootName, const bool bIncludeEngineClasses, const bool bIncludePluginClasses) const
+{
+	if (const TSharedPtr<FNativeClassHierarchyNode>* Found = RootNodes.Find(InRootName))
+	{
+		return RootNodePassesFilter(InRootName, *Found, bIncludeEngineClasses, bIncludePluginClasses);
+	}
+
+	return false;
 }
 
 bool FNativeClassHierarchy::HasClasses(const FName InClassPath, const bool bRecursive) const
@@ -248,7 +263,7 @@ void FNativeClassHierarchy::GetFoldersRecursive(const TSharedRef<FNativeClassHie
 	}
 }
 
-void FNativeClassHierarchy::GatherMatchingNodesForPaths(const TArrayView<const FName>& InClassPaths, TArray<TSharedRef<FNativeClassHierarchyNode>, TInlineAllocator<4>>& OutMatchingNodes) const
+void FNativeClassHierarchy::GatherMatchingNodesForPaths(const TArrayView<const FName>& InClassPaths, TArray<TSharedRef<FNativeClassHierarchyNode>, TInlineAllocator<4>>& OutMatchingNodes, const ENativeClassHierarchyNodeType InType) const
 {
 	if(InClassPaths.Num() == 0)
 	{
@@ -271,7 +286,16 @@ void FNativeClassHierarchy::GatherMatchingNodesForPaths(const TArrayView<const F
 			{
 				// Try and find the node associated with this part of the path...
 				const FName ClassPathPartName = *ClassPathPart;
-				CurrentNode = (CurrentNode.IsValid()) ? CurrentNode->Children.FindRef(FNativeClassHierarchyNodeKey(ClassPathPartName, ENativeClassHierarchyNodeType::Folder)) : RootNodes.FindRef(ClassPathPartName);
+
+				if (InType == ENativeClassHierarchyNodeType::Class && ClassPathPart == ClassPathParts.Last())
+				{
+
+					CurrentNode = (CurrentNode.IsValid()) ? CurrentNode->Children.FindRef(FNativeClassHierarchyNodeKey(ClassPathPartName, ENativeClassHierarchyNodeType::Class)) : RootNodes.FindRef(ClassPathPartName);
+				}
+				else
+				{
+					CurrentNode = (CurrentNode.IsValid()) ? CurrentNode->Children.FindRef(FNativeClassHierarchyNodeKey(ClassPathPartName, ENativeClassHierarchyNodeType::Folder)) : RootNodes.FindRef(ClassPathPartName);
+				}
 
 				// ... bail out if we didn't find a valid node
 				if(!CurrentNode.IsValid())
@@ -487,7 +511,7 @@ bool FNativeClassHierarchy::GetFileSystemPath(const FString& InClassPath, FStrin
 	return false;
 }
 
-bool FNativeClassHierarchy::GetClassPath(UClass* InClass, FString& OutClassPath, const bool bIncludeClassName) const
+bool FNativeClassHierarchy::GetClassPath(const UClass* InClass, FString& OutClassPath, FNativeClassHierarchyGetClassPathCache& InCache, const bool bIncludeClassName) const
 {
 	const FName ClassModuleName = GetClassModuleName(InClass);
 	if(ClassModuleName.IsNone())
@@ -502,12 +526,15 @@ bool FNativeClassHierarchy::GetClassPath(UClass* InClass, FString& OutClassPath,
 		return false;
 	}
 
-	TSet<FName> GameModules = GetGameModules();
-	TMap<FName, FNativeClassHierarchyPluginModuleInfo> PluginModules = GetPluginModules();
+	if (InCache.GameModules.Num() == 0 && InCache.PluginModules.Num() == 0)
+	{
+		InCache.GameModules = GetGameModules();
+		InCache.PluginModules = GetPluginModules();
+	}
 
 	// Work out which root this class should go under
 	EPluginLoadedFrom WhereLoadedFrom;
-	const FName RootNodeName = GetClassPathRootForModule(ClassModuleName, GameModules, PluginModules, WhereLoadedFrom);
+	const FName RootNodeName = GetClassPathRootForModule(ClassModuleName, InCache.GameModules, InCache.PluginModules, WhereLoadedFrom);
 
 	// Work out the final path to this class within the hierarchy (which isn't the same as the path on disk)
 	const FString ClassModuleRelativePath = ClassModuleRelativeIncludePath.Left(ClassModuleRelativeIncludePath.Find(TEXT("/"), ESearchCase::CaseSensitive, ESearchDir::FromEnd));
@@ -543,12 +570,12 @@ void FNativeClassHierarchy::OnModulesChanged(FName InModuleName, EModuleChangeRe
 	}
 }
 
-void FNativeClassHierarchy::OnHotReload(bool bWasTriggeredAutomatically)
+void FNativeClassHierarchy::OnReloadComplete(EReloadCompleteReason Reason)
 {
 	PopulateHierarchy();
 }
 
-FName FNativeClassHierarchy::GetClassModuleName(UClass* InClass)
+FName FNativeClassHierarchy::GetClassModuleName(const UClass* InClass)
 {
 	UPackage* const ClassPackage = InClass->GetOuterUPackage();
 

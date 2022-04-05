@@ -214,11 +214,16 @@ class UBodySetup : public UBodySetupCore
 	uint8 bHasCookedCollisionData:1;
 
 	/** Indicates that we will never use convex or trimesh shapes. This is an optimization to skip checking for binary data. */
+	/** 
+	 * TODO Chaos this is to opt out of CreatePhysicsMeshes for certain meshes
+	 * Better long term mesh is to not call CreatePhysicsMeshes until it is known there is a mesh instance that needs it.
+	 */
+	UPROPERTY(EditAnywhere, Category = Collision)
 	uint8 bNeverNeedsCookedCollisionData:1;
 	
 	/** Physical material to use for simple collision on this body. Encodes information about density, friction etc. */
 	UPROPERTY(EditAnywhere, Category=Physics, meta=(DisplayName="Simple Collision Physical Material"))
-	class UPhysicalMaterial* PhysMaterial;
+	TObjectPtr<class UPhysicalMaterial> PhysMaterial;
 
 	/** Custom walkable slope setting for this body. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Physics)
@@ -278,6 +283,11 @@ public:
 #endif
 	FAsyncCookHelper* CurrentCookHelper;
 
+#if WITH_CHAOS
+	// Will contain deserialized data from the serialization function that can be used at PostLoad time.
+	TUniquePtr<FChaosDerivedDataReader<float, 3>> ChaosDerivedDataReader;
+#endif
+
 public:
 	//~ Begin UObject Interface.
 	virtual void Serialize(FArchive& Ar) override;
@@ -315,6 +325,8 @@ public:
 	ENGINE_API void AbortPhysicsMeshAsyncCreation();
 
 private:
+	FByteBulkData* GetCookedFormatData();
+
 #if WITH_PHYSX && PHYSICS_INTERFACE_PHYSX
 	bool ProcessFormatData_PhysX(FByteBulkData* FormatData);
 	bool RuntimeCookPhysics_PhysX();
@@ -323,10 +335,11 @@ private:
 	friend class UMRMeshComponent;
 	/** Finish creating the physics meshes and update the body setup data with cooked data */
 	ENGINE_API void FinishCreatingPhysicsMeshes_PhysX(const TArray<physx::PxConvexMesh*>& ConvexMeshes, const TArray<physx::PxConvexMesh*>& ConvexMeshesNegX, const TArray<physx::PxTriangleMesh*>& TriMeshes);
-#elif WITH_CHAOS
 	// TODO: ProcessFormatData_Chaos is calling ProcessFormatData_Chaos directly - it's better if CreatePhysicsMeshes can be used but that code path requires WITH_EDITOR
+#elif WITH_CHAOS
 	friend class UMRMeshComponent;
 	bool ProcessFormatData_Chaos(FByteBulkData* FormatData);
+	bool ProcessFormatData_Chaos(FChaosDerivedDataReader<float, 3>& Reader);
 	bool RuntimeCookPhysics_Chaos();
 	void FinishCreatingPhysicsMeshes_Chaos(FChaosDerivedDataReader<float, 3>& InReader);
 	void FinishCreatingPhysicsMeshes_Chaos(Chaos::FCookHelper& InHelper);
@@ -442,6 +455,7 @@ public:
 
 #if WITH_EDITOR
 	ENGINE_API virtual void BeginCacheForCookedPlatformData(  const ITargetPlatform* TargetPlatform ) override;
+	ENGINE_API virtual bool IsCachedCookedPlatformDataLoaded(  const ITargetPlatform* TargetPlatform ) override;
 	ENGINE_API virtual void ClearCachedCookedPlatformData(  const ITargetPlatform* TargetPlatform ) override;
 
 	/*

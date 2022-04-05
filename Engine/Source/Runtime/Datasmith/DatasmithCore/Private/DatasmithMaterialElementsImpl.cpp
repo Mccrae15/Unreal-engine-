@@ -201,12 +201,15 @@ FDatasmithUEPbrMaterialElementImpl::FDatasmithUEPbrMaterialElementImpl( const TC
 	, WorldDisplacement(  MakeShared< FDatasmithExpressionInputImpl >( TEXT("WorldDisplacement") ) )
 	, Refraction(         MakeShared< FDatasmithExpressionInputImpl >( TEXT("Refraction") ) )
 	, AmbientOcclusion(   MakeShared< FDatasmithExpressionInputImpl >( TEXT("AmbientOcclusion") ) )
+	, ClearCoat(		  MakeShared< FDatasmithExpressionInputImpl >( TEXT("ClearCoat") ) )
+	, ClearCoatRoughness( MakeShared< FDatasmithExpressionInputImpl >( TEXT("ClearCoatRoughness") ) )
 	, MaterialAttributes( MakeShared< FDatasmithExpressionInputImpl >( TEXT("MaterialAttributes") ) )
 	, BlendMode(0)
 	, bTwoSided( false )
 	, bUseMaterialAttributes( false )
 	, bMaterialFunctionOnly ( false )
 	, OpacityMaskClipValue( 0.3333f )
+	, TranslucencyLightingMode( 0 )
 	, ShadingModel( EDatasmithShadingModel::DefaultLit )
 {
 	RegisterReferenceProxy( BaseColor, "BaseColor" );
@@ -219,6 +222,8 @@ FDatasmithUEPbrMaterialElementImpl::FDatasmithUEPbrMaterialElementImpl( const TC
 	RegisterReferenceProxy( WorldDisplacement, "WorldDisplacement" );
 	RegisterReferenceProxy( Refraction, "Refraction" );
 	RegisterReferenceProxy( AmbientOcclusion, "AmbientOcclusion" );
+	RegisterReferenceProxy( ClearCoat, "ClearCoat" );
+	RegisterReferenceProxy( ClearCoatRoughness, "ClearCoatRoughness" );
 	RegisterReferenceProxy( MaterialAttributes, "MaterialAttributes" );
 
 	RegisterReferenceProxy( Expressions, "Expressions" );
@@ -248,7 +253,7 @@ FMD5Hash FDatasmithUEPbrMaterialElementImpl::CalculateElementHash(bool bForce)
 	MD5.Update(reinterpret_cast<const uint8*>(&OpacityMaskClipValue), sizeof(OpacityMaskClipValue));
 	MD5.Update(reinterpret_cast<const uint8*>(&ShadingModel), sizeof(ShadingModel));
 
-	const FString& NativeParentLabel = ParentLabel.Get(Store);
+	const FString& NativeParentLabel = ParentLabel;
 	if (!NativeParentLabel.IsEmpty())
 	{
 		MD5.Update(reinterpret_cast<const uint8*>(*NativeParentLabel), NativeParentLabel.Len() * sizeof(TCHAR));
@@ -270,6 +275,8 @@ FMD5Hash FDatasmithUEPbrMaterialElementImpl::CalculateElementHash(bool bForce)
 	UpdateMD5(*WorldDisplacement.Edit());
 	UpdateMD5(*Refraction.Edit());
 	UpdateMD5(*AmbientOcclusion.Edit());
+	UpdateMD5(*ClearCoat.Edit());
+	UpdateMD5(*ClearCoatRoughness.Edit());
 	UpdateMD5(*MaterialAttributes.Edit());
 
 	ElementHash.Set(MD5);
@@ -366,19 +373,14 @@ void FDatasmithUEPbrMaterialElementImpl::ResetExpressionGraph( bool bRemoveAllEx
 	WorldDisplacement.Edit()->SetExpression(nullptr);
 	Refraction.Edit()->SetExpression(nullptr);
 	AmbientOcclusion.Edit()->SetExpression(nullptr);
+	ClearCoat.Edit()->SetExpression(nullptr);
+	ClearCoatRoughness.Edit()->SetExpression(nullptr);
 	MaterialAttributes.Edit()->SetExpression(nullptr);
 }
 
 const TCHAR* FDatasmithUEPbrMaterialElementImpl::GetParentLabel() const
 {
-	if ( ParentLabel.Get( Store ).IsEmpty() )
-	{
-		return GetLabel();
-	}
-	else
-	{
-		return *ParentLabel.Get( Store );
-	}
+	return ParentLabel.Get().IsEmpty() ? GetLabel() : *ParentLabel.Get();
 }
 
 
@@ -437,7 +439,7 @@ void FDatasmithMaterialExpressionCustomImpl::SetArgumentName(int32 ArgIndex, con
 		return;
 	}
 
-	auto& Names = ArgNames.Edit(Store);
+	TArray<FString>& Names = ArgNames;
 	while (!Names.IsValidIndex(ArgIndex))
 	{
 		int32 CurrentIndex = Names.Num();

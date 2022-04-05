@@ -6,6 +6,7 @@
 #include "Containers/ArrayView.h"
 #include "HAL/PlatformTime.h"
 #include "Interfaces/IPluginManager.h"
+#include "UObject/UObjectGlobals.h"
 
 /**
  * Type of hierarchy node
@@ -26,6 +27,21 @@ struct FNativeClassHierarchyPluginModuleInfo
 
 	/** Indicator of where the module was loaded from (Engine or GameProject)*/
 	EPluginLoadedFrom LoadedFrom;
+};
+
+/**
+ * Cache to avoid regenerating some necessary data during repeated calls to GetClassPathRootForModule during enumerate
+ */
+struct FNativeClassHierarchyGetClassPathCache
+{
+	TSet<FName> GameModules;
+	TMap<FName, FNativeClassHierarchyPluginModuleInfo> PluginModules;
+
+	void Reset()
+	{
+		GameModules.Reset();
+		PluginModules.Reset();
+	}
 };
 
 /**
@@ -239,7 +255,7 @@ public:
 	 * 
 	 * @return true if the class path could be resolved and OutClassPath was filled in, false otherwise
 	 */
-	bool GetClassPath(UClass* InClass, FString& OutClassPath, const bool bIncludeClassName = true) const;
+	bool GetClassPath(const UClass* InClass, FString& OutClassPath, FNativeClassHierarchyGetClassPathCache& InCache, const bool bIncludeClassName = true) const;
 
 	/**
 	 * This will add a transient folder into the hierarchy
@@ -248,6 +264,16 @@ public:
 	 * @param InClassPath - The location of the new folder (in class path form - eg) "/Classes_Game/MyGame/MyAwesomeCode")
 	 */
 	void AddFolder(const FString& InClassPath);
+
+	/**
+	 * Test if root node passes given rules
+	 */
+	bool RootNodePassesFilter(const FName InRootName, const TSharedPtr<const FNativeClassHierarchyNode>& InRootNode, const bool bIncludeEngineClasses, const bool bIncludePluginClasses) const;
+
+	/**
+	 * Test if root node passes given rules
+	 */
+	bool RootNodePassesFilter(const FName InRootName, const bool bIncludeEngineClasses, const bool bIncludePluginClasses) const;
 
 private:
 	struct FAddClassMetrics
@@ -307,8 +333,9 @@ private:
 	 *
 	 * @param InClassPaths - The class paths to find the nodes for, or an empty list to get all root nodes
 	 * @param OutMatchingNodes - Array to be populated the nodes that correspond to the given class paths
+	 * @param InType - Type of node to search for, ie: class / folder
 	 */
-	void GatherMatchingNodesForPaths(const TArrayView<const FName>& InClassPaths, TArray<TSharedRef<FNativeClassHierarchyNode>, TInlineAllocator<4>>& OutMatchingNodes) const;
+	void GatherMatchingNodesForPaths(const TArrayView<const FName>& InClassPaths, TArray<TSharedRef<FNativeClassHierarchyNode>, TInlineAllocator<4>>& OutMatchingNodes, const ENativeClassHierarchyNodeType InType = ENativeClassHierarchyNodeType::Folder) const;
 
 	/**
 	 * Completely clear and re-populate the known class hierarchy
@@ -348,11 +375,11 @@ private:
 	void OnModulesChanged(FName InModuleName, EModuleChangeReason InModuleChangeReason);
 
 	/**
-	 * Called when we're notified that a module has been hot-reloaded
+	 * Called when we're notified that a module has been reloaded
 	 *
-	 * @param bWasTriggeredAutomatically - True if the hot-reload was automatically triggered, or false if it was from a user action
+	 * @param Reason - The reason why the module was reloaded
 	 */
-	void OnHotReload(bool bWasTriggeredAutomatically);
+	void OnReloadComplete(EReloadCompleteReason Reason);
 
 	/**
 	 * Given a class, work out which module it belongs to
@@ -361,7 +388,7 @@ private:
 	 *
 	 * @return The name of the module that holds the class, eg) "CoreUObject"
 	 */
-	static FName GetClassModuleName(UClass* InClass);
+	static FName GetClassModuleName(const UClass* InClass);
 
 	/**
 	 * Given a module, work out which root path it should use as a parent

@@ -8,7 +8,8 @@ using System.IO;
 using System.Linq;
 using System.Xml;
 using System.Globalization;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -117,7 +118,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Cached list of dependent link libraries.
 		/// </summary>
-		private List<FileReference> DependentLinkLibraries;
+		private List<FileReference>? DependentLinkLibraries;
 
 		/// <summary>
 		/// Create an instance of the class with the given configuration data
@@ -206,7 +207,7 @@ namespace UnrealBuildTool
 
 				if (BinaryLinkEnvironment.Platform != UnrealTargetPlatform.Mac &&
 					BinaryLinkEnvironment.Platform != UnrealTargetPlatform.Linux &&
-					BinaryLinkEnvironment.Platform != UnrealTargetPlatform.LinuxAArch64)
+					BinaryLinkEnvironment.Platform != UnrealTargetPlatform.LinuxArm64)
 				{
 					// Create the import library.
 					OutputFiles.AddRange(ToolChain.LinkAllFiles(BinaryLinkEnvironment, true, Graph));
@@ -302,7 +303,7 @@ namespace UnrealBuildTool
 						// Add actions to copy everything
 						foreach(KeyValuePair<FileReference, FileReference> Pair in Mapping)
 						{
-							FileReference ExistingSourceFile;
+							FileReference? ExistingSourceFile;
 							if(!TargetFileToSourceFile.TryGetValue(Pair.Key, out ExistingSourceFile))
 							{
 								TargetFileToSourceFile[Pair.Key] = Pair.Value;
@@ -335,7 +336,7 @@ namespace UnrealBuildTool
 					if (Type == UEBuildBinaryType.StaticLibrary ||
 						DependentLinkEnvironment.Platform == UnrealTargetPlatform.Mac ||
 						DependentLinkEnvironment.Platform == UnrealTargetPlatform.Linux ||
-						DependentLinkEnvironment.Platform == UnrealTargetPlatform.LinuxAArch64)
+						DependentLinkEnvironment.Platform == UnrealTargetPlatform.LinuxArm64)
 					{
 						LibraryFileName = OutputFilePath;
 					}
@@ -397,7 +398,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ReferencedBy">Map of module to the module that referenced it</param>
 		/// <returns>List of all referenced modules</returns>
-		public void FindModuleReferences(Dictionary<UEBuildModule, UEBuildModule> ReferencedBy)
+		public void FindModuleReferences(Dictionary<UEBuildModule, UEBuildModule?> ReferencedBy)
 		{
 			List<UEBuildModule> ReferencedModules = new List<UEBuildModule>();
 			foreach(UEBuildModule Module in Modules)
@@ -583,7 +584,7 @@ namespace UnrealBuildTool
 			DirectoryReference Directory = BinaryPath.Directory;
 			if (Directory.FullName.EndsWith(".app/Contents/MacOS"))
 			{
-				Directory = Directory.ParentDirectory.ParentDirectory.ParentDirectory;
+				Directory = Directory.ParentDirectory!.ParentDirectory!.ParentDirectory!;
 			}
 
 			return FileReference.Combine(Directory, BinaryPath.GetFileNameWithoutExtension() + "-Cmd" + BinaryPath.GetExtension());
@@ -596,7 +597,7 @@ namespace UnrealBuildTool
 		public bool CheckRestrictedFolders(List<DirectoryReference> RootDirectories, Dictionary<UEBuildModule, Dictionary<RestrictedFolder, DirectoryReference>> ModuleRestrictedFolderCache)
 		{
 			// Find all the modules we depend on
-			Dictionary<UEBuildModule, UEBuildModule> ModuleReferencedBy = new Dictionary<UEBuildModule, UEBuildModule>();
+			Dictionary<UEBuildModule, UEBuildModule?> ModuleReferencedBy = new Dictionary<UEBuildModule, UEBuildModule?>();
 			FindModuleReferences(ModuleReferencedBy);
 
 			// Loop through each of the output binaries and check them separately
@@ -616,7 +617,7 @@ namespace UnrealBuildTool
 				List<RestrictedFolder> AliasedBinaryFolders = new List<RestrictedFolder>();
 				foreach (RestrictedFolder BinaryFolder in BinaryFolders)
 				{
-					string Alias;
+					string? Alias;
 					if (PrimaryModule.AliasRestrictedFolders.TryGetValue(BinaryFolder.ToString(), out Alias))
 					{
 						foreach(RestrictedFolder Folder in RestrictedFolder.GetValues())
@@ -634,7 +635,7 @@ namespace UnrealBuildTool
 				foreach(UEBuildModule Module in ModuleReferencedBy.Keys)
 				{
 					// Find the restricted folders for this module
-					Dictionary<RestrictedFolder, DirectoryReference> ModuleRestrictedFolders;
+					Dictionary<RestrictedFolder, DirectoryReference>? ModuleRestrictedFolders;
 					if (!ModuleRestrictedFolderCache.TryGetValue(Module, out ModuleRestrictedFolders))
 					{
 						ModuleRestrictedFolders = Module.FindRestrictedFolderReferences(RootDirectories);
@@ -647,7 +648,7 @@ namespace UnrealBuildTool
 						if(!BinaryFolders.Contains(Pair.Key))
 						{
 							List<string> ReferenceChain = new List<string>();
-							for(UEBuildModule ReferencedModule = Module; ReferencedModule != null; ReferencedModule = ModuleReferencedBy[ReferencedModule])
+							for(UEBuildModule? ReferencedModule = Module; ReferencedModule != null; ReferencedModule = ModuleReferencedBy[ReferencedModule])
 							{
 								ReferenceChain.Insert(0, ReferencedModule.Name);
 							}
@@ -737,7 +738,7 @@ namespace UnrealBuildTool
 					}
 
 					// Force a reference to initialize module for this binary
-					if(Module.Rules.bRequiresImplementModule.Value)
+					if(Module.Rules.bRequiresImplementModule ?? true)
 					{
 						BinaryLinkEnvironment.IncludeFunctions.Add(String.Format("IMPLEMENT_MODULE_{0}", Module.Name));
 					}
@@ -775,7 +776,7 @@ namespace UnrealBuildTool
 			BinaryLinkEnvironment.bIsBuildingLibrary = IsBuildingLibrary(Type);
 
 			// If we don't have any resource file, use the default or compile a custom one for this module
-			if(BinaryLinkEnvironment.Platform == UnrealTargetPlatform.Win32 || BinaryLinkEnvironment.Platform == UnrealTargetPlatform.Win64)
+			if(BinaryLinkEnvironment.Platform == UnrealTargetPlatform.Win64)
 			{
 				// Figure out if this binary has any custom resource files. Hacky check to ignore the resource file in the Launch module, since it contains dialogs that the engine needs and always needs to be included.
 				FileItem[] CustomResourceFiles = BinaryLinkEnvironment.InputFiles.Where(x => x.Location.HasExtension(".res") && !x.Location.FullName.EndsWith("\\Launch\\PCLaunch.rc.res", StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -803,7 +804,7 @@ namespace UnrealBuildTool
 						ResourceCompileEnvironment.Definitions.Add(String.Format("BUILD_VERSION={0}", Target.BuildVersion));
 
 						// Otherwise compile the default resource file per-binary, so that it gets the correct ORIGINAL_FILE_NAME macro.
-						FileItem DefaultResourceFile = FileItem.GetItemByFileReference(FileReference.Combine(UnrealBuildTool.EngineDirectory, "Build", "Windows", "Resources", "Default.rc2"));
+						FileItem DefaultResourceFile = FileItem.GetItemByFileReference(FileReference.Combine(Unreal.EngineDirectory, "Build", "Windows", "Resources", "Default.rc2"));
 						CPPOutput DefaultResourceOutput = ToolChain.CompileRCFiles(ResourceCompileEnvironment, new List<FileItem> { DefaultResourceFile }, ResourceIntermediateDirectory, Graph);
 						BinaryLinkEnvironment.InputFiles.AddRange(DefaultResourceOutput.ObjectFiles);
 					}

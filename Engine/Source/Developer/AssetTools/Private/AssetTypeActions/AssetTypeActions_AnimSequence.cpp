@@ -27,6 +27,15 @@ UClass* FAssetTypeActions_AnimSequence::GetSupportedClass() const
 	return UAnimSequence::StaticClass(); 
 }
 
+int32 GEnableAnimStreamable = 0;
+static const TCHAR* AnimStreamableCVarName = TEXT("a.EnableAnimStreamable");
+
+static FAutoConsoleVariableRef CVarEnableAnimStreamable(
+	AnimStreamableCVarName,
+	GEnableAnimStreamable,
+	TEXT("1 = Enables ability to make Anim Streamable assets. 0 = off"));
+
+
 void FAssetTypeActions_AnimSequence::GetActions(const TArray<UObject*>& InObjects, FToolMenuSection& Section)
 {
 	auto Sequences = GetTypedWeakObjectPtrs<UAnimSequence>(InObjects);
@@ -49,12 +58,87 @@ void FAssetTypeActions_AnimSequence::GetActions(const TArray<UObject*>& InObject
 		FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_AnimSequence::ExecuteReimportWithNewSource, Sequences))
 		);
 
-	Section.AddMenuEntry(
-		"AnimSequence_AddAnimationModifier",
-		LOCTEXT("AnimSequence_AddAnimationModifier", "Add Animation Modifier(s)"),
-		LOCTEXT("AnimSequence_AddAnimationModifierTooltip", "Apply new animation modifier(s)."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.AnimationModifier"),
-		FUIAction(FExecuteAction::CreateSP(this, &FAssetTypeActions_AnimSequence::ExecuteAddNewAnimationModifier, Sequences))
+	FNewMenuDelegate MenuDelegate = FNewMenuDelegate::CreateLambda([Sequences](FMenuBuilder& MenuBuilder)
+	{
+		MenuBuilder.AddMenuEntry(
+	        LOCTEXT("AnimSequence_AddAnimationModifier", "Add Modifiers"),
+	        LOCTEXT("AnimSequence_AddAnimationModifierTooltip", "Add new animation modifier(s)."),
+	       FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.AnimationModifier"),
+	        FUIAction(FExecuteAction::CreateLambda([Sequences]()
+	        {
+		        TArray<UAnimSequence*> AnimSequences;
+
+			    Algo::TransformIf(Sequences, AnimSequences, 
+			    [](const TWeakObjectPtr<UAnimSequence>& WeakAnimSequence)
+			    {
+			        return WeakAnimSequence.Get() && WeakAnimSequence->IsA<UAnimSequence>();
+			    },
+			    [](const TWeakObjectPtr<UAnimSequence>& WeakAnimSequence)
+			    {
+			        return WeakAnimSequence.Get();
+			    });
+
+			    if (IAnimationModifiersModule* Module = FModuleManager::Get().LoadModulePtr<IAnimationModifiersModule>("AnimationModifiers"))
+			    {
+			        Module->ShowAddAnimationModifierWindow(AnimSequences);
+			    }
+	        }))
+	    );
+	
+	    MenuBuilder.AddMenuEntry(
+	        LOCTEXT("AnimSequence_ApplyAnimationModifier", "Apply Modifiers"),
+	        LOCTEXT("AnimSequence_ApplyAnimationModifierTooltip", "Applies all contained animation modifier(s)."),
+			FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.AnimationModifier"),
+	        FUIAction(FExecuteAction::CreateLambda([Sequences]()
+	        {
+		        TArray<UAnimSequence*> AnimSequences;
+				Algo::TransformIf(Sequences, AnimSequences, 
+				[](const TWeakObjectPtr<UAnimSequence>& WeakAnimSequence)
+				{
+				    return WeakAnimSequence.Get() && WeakAnimSequence->IsA<UAnimSequence>();
+				},
+				[](const TWeakObjectPtr<UAnimSequence>& WeakAnimSequence)
+				{
+				    return WeakAnimSequence.Get();
+				});
+
+				if (IAnimationModifiersModule* Module = FModuleManager::Get().LoadModulePtr<IAnimationModifiersModule>("AnimationModifiers"))
+				{
+				    Module->ApplyAnimationModifiers(AnimSequences);
+				}
+	        }))
+	    );
+
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("AnimSequence_ApplyOutOfDataAnimationModifier", "Apply out-of-date Modifiers"),
+			LOCTEXT("AnimSequence_ApplyOutOfDataAnimationModifierTooltip", "Applies all contained animation modifier(s), if they are out of date."),
+			FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.AnimationModifier"),
+			FUIAction(FExecuteAction::CreateLambda([Sequences]()
+			{
+			TArray<UAnimSequence*> AnimSequences;
+			Algo::TransformIf(Sequences, AnimSequences, 
+			[](const TWeakObjectPtr<UAnimSequence>& WeakAnimSequence)
+			{
+			    return WeakAnimSequence.Get() && WeakAnimSequence->IsA<UAnimSequence>();
+			},
+			[](const TWeakObjectPtr<UAnimSequence>& WeakAnimSequence)
+			{
+			    return WeakAnimSequence.Get();
+			});
+
+			if (IAnimationModifiersModule* Module = FModuleManager::Get().LoadModulePtr<IAnimationModifiersModule>("AnimationModifiers"))
+			{
+			    Module->ApplyAnimationModifiers(AnimSequences, false);
+			}
+			}))
+	    );
+	});
+	
+	Section.AddSubMenu("AnimSequence_AnimationModifiers", LOCTEXT("AnimSequence_AnimationModifiers", "Animation Modifier(s)"),
+	LOCTEXT("AnimSequence_AnimationModifiersTooltip", "Animation Modifier actions"),
+		FNewToolMenuChoice(MenuDelegate),
+		false,
+		FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.AnimationModifier")
 	);
 
 	FAssetTypeActions_AnimationAsset::GetActions(InObjects, Section);
@@ -82,16 +166,18 @@ void FAssetTypeActions_AnimSequence::FillCreateMenu(FMenuBuilder& MenuBuilder, c
 			)
 		);
 
-	// Not supported, streamable animation logic will be ported to UAnimSequence
-	/*MenuBuilder.AddMenuEntry(
-		LOCTEXT("AnimSequence_NewAnimStreamable", "Create AnimStreamable"),
-		LOCTEXT("AnimSequence_NewAnimStreamableTooltip", "Creates an AnimStreamable using the selected anim sequence."),
-		FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.AnimMontage"),
-		FUIAction(
-			FExecuteAction::CreateSP(this, &FAssetTypeActions_AnimSequence::ExecuteNewAnimStreamable, Sequences),
-			FCanExecuteAction()
-		)
-	);*/
+	if(GEnableAnimStreamable == 1)
+	{
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("AnimSequence_NewAnimStreamable", "Create AnimStreamable"),
+			LOCTEXT("AnimSequence_NewAnimStreamableTooltip", "Creates an AnimStreamable using the selected anim sequence."),
+			FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.AnimMontage"),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &FAssetTypeActions_AnimSequence::ExecuteNewAnimStreamable, Sequences),
+				FCanExecuteAction()
+			)
+		);
+	}
 
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("AnimSequence_NewPoseAsset", "Create PoseAsset"),
@@ -170,26 +256,6 @@ void FAssetTypeActions_AnimSequence::ExecuteNewPoseAsset(TArray<TWeakObjectPtr<U
 	const FString DefaultSuffix = TEXT("_PoseAsset");
 	UPoseAssetFactory* Factory = NewObject<UPoseAssetFactory>();
 	CreateAnimationAssets(Objects, UPoseAsset::StaticClass(), Factory, DefaultSuffix, FOnConfigureFactory::CreateSP(this, &FAssetTypeActions_AnimSequence::ConfigureFactoryForPoseAsset));
-}
-
-void FAssetTypeActions_AnimSequence::ExecuteAddNewAnimationModifier(TArray<TWeakObjectPtr<UAnimSequence>> Objects)
-{
-	TArray<UAnimSequence*> AnimSequences;
-
-	Algo::TransformIf(Objects, AnimSequences, 
-	[](const TWeakObjectPtr<UAnimSequence>& WeakAnimSequence)
-	{
-		return WeakAnimSequence.Get() && WeakAnimSequence->IsA<UAnimSequence>();
-	},
-	[](const TWeakObjectPtr<UAnimSequence>& WeakAnimSequence)
-	{
-		return WeakAnimSequence.Get();
-	});
-
-	if (IAnimationModifiersModule* Module = FModuleManager::Get().LoadModulePtr<IAnimationModifiersModule>("AnimationModifiers"))
-	{
-		Module->ShowAddAnimationModifierWindow(AnimSequences);
-	}
 }
 
 bool FAssetTypeActions_AnimSequence::ConfigureFactoryForAnimComposite(UFactory* AssetFactory, UAnimSequence* SourceAnimation) const

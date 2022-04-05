@@ -34,6 +34,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Text/STextBlock.h"
 
 
@@ -119,7 +120,7 @@ void FNiagaraMatrixCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> 
 	}
 }
 
-TArray<FNiagaraVariableBase> FNiagaraStackAssetAction_VarBind::FindVariables(UNiagaraEmitter* InEmitter, bool bSystem, bool bEmitter, bool bParticles, bool bUser)
+TArray<FNiagaraVariableBase> FNiagaraStackAssetAction_VarBind::FindVariables(UNiagaraEmitter* InEmitter, bool bSystem, bool bEmitter, bool bParticles, bool bUser, bool bAllowStatic)
 {
 	TArray<FNiagaraVariableBase> Bindings;
 	TArray<FNiagaraParameterMapHistory> Histories;
@@ -149,6 +150,9 @@ TArray<FNiagaraVariableBase> FNiagaraStackAssetAction_VarBind::FindVariables(UNi
 	{
 		for (const FNiagaraVariable& Var : History.Variables)
 		{
+			if (Var.GetType().IsStatic() && !bAllowStatic)
+				continue;
+
 			if (FNiagaraParameterMapHistory::IsAttribute(Var) && bParticles)
 			{
 				Bindings.AddUnique(Var);
@@ -166,7 +170,7 @@ TArray<FNiagaraVariableBase> FNiagaraStackAssetAction_VarBind::FindVariables(UNi
 			{
 				Bindings.AddUnique(Var);
 			}
-			else if (Var.IsInNameSpace(FNiagaraConstants::EmitterNamespace) && bEmitter)
+			else if (Var.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString) && bEmitter)
 			{
 				Bindings.AddUnique(Var);
 			}
@@ -227,37 +231,69 @@ TSharedRef<SWidget> FNiagaraVariableAttributeBindingCustomization::OnGetMenuCont
 {
 	FGraphActionMenuBuilder MenuBuilder;
 
-	return SNew(SBorder)
+	TSharedPtr<SGraphActionMenu> GraphActionMenu;
+	
+	TSharedPtr<SWidget> Widget = SNew(SBorder)
 		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
 		.Padding(5)
 		[
 			SNew(SBox)
 			[
-				SNew(SGraphActionMenu)
+				SAssignNew(GraphActionMenu, SGraphActionMenu)
 				.OnActionSelected(const_cast<FNiagaraVariableAttributeBindingCustomization*>(this), &FNiagaraVariableAttributeBindingCustomization::OnActionSelected)
 				.OnCreateWidgetForAction(SGraphActionMenu::FOnCreateWidgetForAction::CreateSP(const_cast<FNiagaraVariableAttributeBindingCustomization*>(this), &FNiagaraVariableAttributeBindingCustomization::OnCreateWidgetForAction))
 				.OnCollectAllActions(const_cast<FNiagaraVariableAttributeBindingCustomization*>(this), &FNiagaraVariableAttributeBindingCustomization::CollectAllActions)
 				.AutoExpandActionMenu(false)
+				.bAllowPreselectedItemActivation(true)
 				.ShowFilterTextBox(true)
 			]
 		];
+
+	// the widget to focus is retrieved after this function is called via delegate, so setting it here works
+	TSharedPtr<SWidget> SearchBoxToFocus = GraphActionMenu->GetFilterTextBox();
+	ComboButton->SetMenuContentWidgetToFocus(SearchBoxToFocus);
+	
+	return Widget.ToSharedRef(); 
 }
 
 TArray<FName> FNiagaraVariableAttributeBindingCustomization::GetNames(UNiagaraEmitter* InEmitter) const
 {
 	TArray<FName> Names;
+	if (!PropertyHandle.IsValid() || !PropertyHandle->GetProperty() || !TargetVariableBinding)
+	{
+		return Names;
+	}
 
-	bool bSystem = true;
-	bool bEmitter = true;
-	bool bParticles = true;
-	bool bUser = true;
-	TArray<FNiagaraVariableBase> Vars = FNiagaraStackAssetAction_VarBind::FindVariables(InEmitter, bSystem, bEmitter, bParticles, bUser);
+	const bool bSystem = true;
+	const bool bEmitter = true;
+	const bool bParticles = true;
+	const bool bUser = true;
+	const bool bAllowStatic = true;
+	TArray<FNiagaraVariableBase> Vars = FNiagaraStackAssetAction_VarBind::FindVariables(InEmitter, bSystem, bEmitter, bParticles, bUser, bAllowStatic);
+
 	for (const FNiagaraVariableBase& Var : Vars)
 	{
-		if (RenderProps && PropertyHandle.IsValid() && PropertyHandle->GetProperty() && RenderProps->IsSupportedVariableForBinding(Var, *PropertyHandle->GetProperty()->GetName()))
+		if (!bAllowStatic && Var.GetType() != TargetVariableBinding->GetType() )
 		{
-			if (Var.GetType() == TargetVariableBinding->GetType())
+			continue;
+		}
+		else if (bAllowStatic && !Var.GetType().IsSameBaseDefinition(TargetVariableBinding->GetType()))
+		{
+			continue;
+		}
+
+		if ( RenderProps && RenderProps->IsSupportedVariableForBinding(Var, *PropertyHandle->GetProperty()->GetName()) )
+		{
+			Names.AddUnique(Var.GetName());
+		}
+		else if ( SimulationStage )
+		{
+			// Unless we have an explicit "particles." binding we are not in the particle namespace
+			const bool IsParticleNamespace = !TargetVariableBinding->GetName().IsNone() && TargetVariableBinding->IsParticleBinding();
+			if ( IsParticleNamespace == Var.IsInNameSpace(FNiagaraConstants::ParticleAttributeNamespace) )
+			{
 				Names.AddUnique(Var.GetName());
+			}
 		}
 	}
 
@@ -323,11 +359,12 @@ void FNiagaraVariableAttributeBindingCustomization::ChangeSource(FName InVarName
 		Obj->Modify();
 	}
 	check(BaseEmitter);
-	check(RenderProps);
+	check(RenderProps || SimulationStage);
 
 	PropertyHandle->NotifyPreChange();
-	TargetVariableBinding->SetValue(InVarName, BaseEmitter, RenderProps->GetCurrentSourceMode());
-	PropertyHandle->NotifyPostChange();
+	const ENiagaraRendererSourceDataMode BindingSourceMode = RenderProps ? RenderProps->GetCurrentSourceMode() : ENiagaraRendererSourceDataMode::Emitter;
+	TargetVariableBinding->SetValue(InVarName, BaseEmitter, BindingSourceMode);
+	PropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	PropertyHandle->NotifyFinishedChangingProperties();
 }
 
@@ -339,12 +376,12 @@ void FNiagaraVariableAttributeBindingCustomization::ResetToDefault()
 EVisibility FNiagaraVariableAttributeBindingCustomization::IsResetToDefaultsVisible() const
 {
 	check(BaseEmitter);
-	check(RenderProps);
+	check(RenderProps || SimulationStage);
 	check(TargetVariableBinding);
 	check(DefaultVariableBinding);
-	return (!TargetVariableBinding->MatchesDefault(*DefaultVariableBinding, RenderProps->GetCurrentSourceMode()))
-		? EVisibility::Visible
-		: EVisibility::Hidden;
+
+	const ENiagaraRendererSourceDataMode BindingSourceMode = RenderProps ? RenderProps->GetCurrentSourceMode() : ENiagaraRendererSourceDataMode::Emitter;
+	return TargetVariableBinding->MatchesDefault(*DefaultVariableBinding, BindingSourceMode) ? EVisibility::Hidden : EVisibility::Visible;
 }
 
 FReply FNiagaraVariableAttributeBindingCustomization::OnResetToDefaultsClicked()
@@ -357,13 +394,14 @@ FReply FNiagaraVariableAttributeBindingCustomization::OnResetToDefaultsClicked()
 		Obj->Modify();
 	}
 	check(BaseEmitter);
-	check(RenderProps);
+	check(RenderProps || SimulationStage);
 	check(TargetVariableBinding);
 	check(DefaultVariableBinding);
 
 	PropertyHandle->NotifyPreChange();
-	TargetVariableBinding->ResetToDefault(*DefaultVariableBinding, BaseEmitter, RenderProps->GetCurrentSourceMode());
-	PropertyHandle->NotifyPostChange();
+	const ENiagaraRendererSourceDataMode BindingSourceMode = RenderProps ? RenderProps->GetCurrentSourceMode() : ENiagaraRendererSourceDataMode::Emitter;
+	TargetVariableBinding->ResetToDefault(*DefaultVariableBinding, BaseEmitter, BindingSourceMode);
+	PropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	PropertyHandle->NotifyFinishedChangingProperties();
 	return FReply::Handled();
 }
@@ -371,6 +409,7 @@ FReply FNiagaraVariableAttributeBindingCustomization::OnResetToDefaultsClicked()
 void FNiagaraVariableAttributeBindingCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> InPropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
 {
 	RenderProps = nullptr;
+	SimulationStage = nullptr;
 	BaseEmitter = nullptr;
 	PropertyHandle = InPropertyHandle;
 	TArray<UObject*> Objects;
@@ -387,74 +426,78 @@ void FNiagaraVariableAttributeBindingCustomization::CustomizeHeader(TSharedRef<I
 
 	PropertyRow.OverrideResetToDefault(ResetOverride); */
 	InPropertyHandle->MarkResetToDefaultCustomized(true);
-
+	
 	if (Objects.Num() == 1)
 	{
 		RenderProps = Cast<UNiagaraRendererProperties>(Objects[0]);
 		if (RenderProps)
 		{
 			BaseEmitter = Cast<UNiagaraEmitter>(RenderProps->GetOuter());
+		}
 
-			if (BaseEmitter)
-			{
-				TargetVariableBinding = (FNiagaraVariableAttributeBinding*)PropertyHandle->GetValueBaseAddress((uint8*)Objects[0]);
-				DefaultVariableBinding = (FNiagaraVariableAttributeBinding*)PropertyHandle->GetValueBaseAddress((uint8*)Objects[0]->GetClass()->GetDefaultObject());
+		SimulationStage = Cast<UNiagaraSimulationStageBase>(Objects[0]);
+		if ( SimulationStage )
+		{
+			BaseEmitter = SimulationStage->GetTypedOuter<UNiagaraEmitter>();
+		}
+
+		if (BaseEmitter)
+		{
+			TargetVariableBinding = (FNiagaraVariableAttributeBinding*)PropertyHandle->GetValueBaseAddress((uint8*)Objects[0]);
+			DefaultVariableBinding = (FNiagaraVariableAttributeBinding*)PropertyHandle->GetValueBaseAddress((uint8*)Objects[0]->GetClass()->GetDefaultObject());
 				
-				HeaderRow
-					.NameContent()
+			HeaderRow
+				.NameContent()
+				[
+					PropertyHandle->CreatePropertyNameWidget()
+				]
+				.ValueContent()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 					[
-						PropertyHandle->CreatePropertyNameWidget()
+						SAssignNew(ComboButton, SComboButton)					
+						.OnGetMenuContent(this, &FNiagaraVariableAttributeBindingCustomization::OnGetMenuContent)
+						.ContentPadding(1)
+						.ToolTipText(this, &FNiagaraVariableAttributeBindingCustomization::GetTooltipText)
+						.ButtonContent()
+						[
+							/*SNew(STextBlock)
+							.Text(this, &FNiagaraVariableAttributeBindingCustomization::GetCurrentText)
+							.Font(IDetailLayoutBuilder::GetDetailFont())*/
+							SNew(SNiagaraParameterName)
+							.ParameterName(this, &FNiagaraVariableAttributeBindingCustomization::GetVariableName)
+							.IsReadOnly(true)
+							//SNew(STextBlock)
+							//.Text(InCreateData->Action->GetMenuDescription())
+						]
 					]
-					.ValueContent()
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(2, 1)
 					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.Padding(0.0f, 0.0f, 4.0f, 0.0f)
+						SNew(SButton)
+						.IsFocusable(false)
+						.ToolTipText(LOCTEXT("ResetToDefaultToolTip", "Reset to Default"))
+						.ButtonStyle(FEditorStyle::Get(), "NoBorder")
+						.ContentPadding(0)
+						.Visibility(this, &FNiagaraVariableAttributeBindingCustomization::IsResetToDefaultsVisible)
+						.OnClicked(this, &FNiagaraVariableAttributeBindingCustomization::OnResetToDefaultsClicked)
+						.Content()
 						[
-							SNew(SComboButton)
-							.OnGetMenuContent(this, &FNiagaraVariableAttributeBindingCustomization::OnGetMenuContent)
-							.ContentPadding(1)
-							.ToolTipText(this, &FNiagaraVariableAttributeBindingCustomization::GetTooltipText)
-							.ButtonStyle(FEditorStyle::Get(), "PropertyEditor.AssetComboStyle")
-							.ForegroundColor(FEditorStyle::GetColor("PropertyEditor.AssetName.ColorAndOpacity"))
-							.ButtonContent()
-							[
-								/*SNew(STextBlock)
-								.Text(this, &FNiagaraVariableAttributeBindingCustomization::GetCurrentText)
-								.Font(IDetailLayoutBuilder::GetDetailFont())*/
-								SNew(SNiagaraParameterName)
-								.ParameterName(this, &FNiagaraVariableAttributeBindingCustomization::GetVariableName)
-								.IsReadOnly(true)
-								//SNew(STextBlock)
-								//.Text(InCreateData->Action->GetMenuDescription())
-							]
+							SNew(SImage)
+							.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
+							.ColorAndOpacity(FSlateColor::UseForeground())
 						]
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(2, 1)
-						[
-							SNew(SButton)
-							.IsFocusable(false)
-							.ToolTipText(LOCTEXT("ResetToDefaultToolTip", "Reset to Default"))
-							.ButtonStyle(FEditorStyle::Get(), "NoBorder")
-							.ContentPadding(0)
-							.Visibility(this, &FNiagaraVariableAttributeBindingCustomization::IsResetToDefaultsVisible)
-							.OnClicked(this, &FNiagaraVariableAttributeBindingCustomization::OnResetToDefaultsClicked)
-							.Content()
-							[
-								SNew(SImage)
-								.Image(FEditorStyle::GetBrush("PropertyWindow.DiffersFromDefault"))
-							]
-						]
-					];
-				bAddDefault = false;
-			}
+					]
+				];
+			bAddDefault = false;
 		}
 	}
 	
-
 	if (bAddDefault)
 	{
 		HeaderRow
@@ -462,7 +505,7 @@ void FNiagaraVariableAttributeBindingCustomization::CustomizeHeader(TSharedRef<I
 			[
 				PropertyHandle->CreatePropertyNameWidget()
 			]
-		.ValueContent()
+			.ValueContent()
 			.MaxDesiredWidth(200.f)
 			[
 				SNew(STextBlock)
@@ -477,7 +520,7 @@ void FNiagaraVariableAttributeBindingCustomization::CustomizeHeader(TSharedRef<I
 
 FName FNiagaraUserParameterBindingCustomization::GetVariableName() const
 {
-	if (BaseSystem && TargetUserParameterBinding)
+	if (IsValid() && TargetUserParameterBinding)
 	{
 		return (TargetUserParameterBinding->Parameter.GetName());
 	}
@@ -486,7 +529,7 @@ FName FNiagaraUserParameterBindingCustomization::GetVariableName() const
 
 FText FNiagaraUserParameterBindingCustomization::GetCurrentText() const
 {
-	if (BaseSystem && TargetUserParameterBinding)
+	if (IsValid() && TargetUserParameterBinding)
 	{
 		return FText::FromName(TargetUserParameterBinding->Parameter.GetName());
 	}
@@ -495,7 +538,7 @@ FText FNiagaraUserParameterBindingCustomization::GetCurrentText() const
 
 FText FNiagaraUserParameterBindingCustomization::GetTooltipText() const
 {
-	if (BaseSystem && TargetUserParameterBinding && TargetUserParameterBinding->Parameter.IsValid())
+	if (IsValid() && TargetUserParameterBinding && TargetUserParameterBinding->Parameter.IsValid())
 	{
 		FText TooltipDesc = FText::Format(LOCTEXT("UserParameterBindingTooltip", "Bound to the user parameter \"{0}\""), FText::FromName(TargetUserParameterBinding->Parameter.GetName()));
 		return TooltipDesc;
@@ -508,17 +551,16 @@ TSharedRef<SWidget> FNiagaraUserParameterBindingCustomization::OnGetMenuContent(
 	FGraphActionMenuBuilder MenuBuilder;
 
 	return SNew(SBorder)
-		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
 		.Padding(5)
 		[
 			SNew(SBox)
 			[
 				SNew(SGraphActionMenu)
 				.OnActionSelected(const_cast<FNiagaraUserParameterBindingCustomization*>(this), &FNiagaraUserParameterBindingCustomization::OnActionSelected)
-		.OnCreateWidgetForAction(SGraphActionMenu::FOnCreateWidgetForAction::CreateSP(const_cast<FNiagaraUserParameterBindingCustomization*>(this), &FNiagaraUserParameterBindingCustomization::OnCreateWidgetForAction))
-		.OnCollectAllActions(const_cast<FNiagaraUserParameterBindingCustomization*>(this), &FNiagaraUserParameterBindingCustomization::CollectAllActions)
-		.AutoExpandActionMenu(false)
-		.ShowFilterTextBox(true)
+				.OnCreateWidgetForAction(SGraphActionMenu::FOnCreateWidgetForAction::CreateSP(const_cast<FNiagaraUserParameterBindingCustomization*>(this), &FNiagaraUserParameterBindingCustomization::OnCreateWidgetForAction))
+				.OnCollectAllActions(const_cast<FNiagaraUserParameterBindingCustomization*>(this), &FNiagaraUserParameterBindingCustomization::CollectAllActions)
+				.AutoExpandActionMenu(false)
+				.ShowFilterTextBox(true)
 			]
 		];
 }
@@ -527,8 +569,9 @@ TArray<FName> FNiagaraUserParameterBindingCustomization::GetNames() const
 {
 	TArray<FName> Names;
 
-	if (BaseSystem && TargetUserParameterBinding)
+	if (IsValid() && TargetUserParameterBinding)
 	{
+		UNiagaraSystem* BaseSystem = BaseSystemWeakPtr.Get();
 		for (const FNiagaraVariable Var : BaseSystem->GetExposedParameters().ReadParameterVariables())
 		{
 			if (FNiagaraParameterMapHistory::IsUserParameter(Var) && Var.GetType() == TargetUserParameterBinding->Parameter.GetType())
@@ -604,7 +647,7 @@ void FNiagaraUserParameterBindingCustomization::ChangeSource(FName InVarName)
 	TargetUserParameterBinding->Parameter.SetName(InVarName);
 	//TargetUserParameterBinding->Parameter.SetType(FNiagaraTypeDefinition::GetUObjectDef()); Do not override the type here!
 	//TargetVariableBinding->DataSetVariable = FNiagaraConstants::GetAttributeAsDataSetKey(TargetVariableBinding->BoundVariable);
-	PropertyHandle->NotifyPostChange();
+	PropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	PropertyHandle->NotifyFinishedChangingProperties();
 }
 
@@ -614,10 +657,13 @@ void FNiagaraUserParameterBindingCustomization::CustomizeHeader(TSharedRef<IProp
 	TArray<UObject*> Objects;
 	PropertyHandle->GetOuterObjects(Objects);
 	bool bAddDefault = true;
+
+	ObjectCustomizingWeakPtr.Reset();
+	BaseSystemWeakPtr.Reset();
+
 	if (Objects.Num() == 1)
 	{
-		BaseSystem = Objects[0]->GetTypedOuter<UNiagaraSystem>();
-		
+		UNiagaraSystem* BaseSystem = Objects[0]->GetTypedOuter<UNiagaraSystem>();
 		if (BaseSystem == nullptr)
 		{
 			if (UNiagaraDataInterface* ObjectAsDataInterface = Cast<UNiagaraDataInterface>(Objects[0]))
@@ -630,6 +676,9 @@ void FNiagaraUserParameterBindingCustomization::CustomizeHeader(TSharedRef<IProp
 		
 		if (BaseSystem)
 		{
+			ObjectCustomizingWeakPtr = Objects[0];
+			BaseSystemWeakPtr = BaseSystem;
+
 			TargetUserParameterBinding = (FNiagaraUserParameterBinding*)PropertyHandle->GetValueBaseAddress((uint8*)Objects[0]);
 
 			HeaderRow
@@ -637,15 +686,13 @@ void FNiagaraUserParameterBindingCustomization::CustomizeHeader(TSharedRef<IProp
 				[
 					PropertyHandle->CreatePropertyNameWidget()
 				]
-			.ValueContent()
+				.ValueContent()
 				.MaxDesiredWidth(200.f)
 				[
 					SNew(SComboButton)
 					.OnGetMenuContent(this, &FNiagaraUserParameterBindingCustomization::OnGetMenuContent)
 					.ContentPadding(1)
 					.ToolTipText(this, &FNiagaraUserParameterBindingCustomization::GetTooltipText)
-					.ButtonStyle(FEditorStyle::Get(), "PropertyEditor.AssetComboStyle")
-					.ForegroundColor(FEditorStyle::GetColor("PropertyEditor.AssetName.ColorAndOpacity"))
 					.ButtonContent()
 					[
 
@@ -740,20 +787,25 @@ TSharedRef<SWidget> FNiagaraMaterialAttributeBindingCustomization::OnGetNiagaraM
 {
 	FGraphActionMenuBuilder MenuBuilder;
 
-	return SNew(SBorder)
+	TSharedRef<SGraphActionMenu> GraphActionMenu = SNew(SGraphActionMenu)
+		.OnActionSelected(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::OnNiagaraActionSelected)
+		.OnCreateWidgetForAction(SGraphActionMenu::FOnCreateWidgetForAction::CreateSP(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::OnCreateWidgetForNiagaraAction))
+		.OnCollectAllActions(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::CollectAllNiagaraActions)
+		.AutoExpandActionMenu(false)
+		.ShowFilterTextBox(true);
+	
+	TSharedRef<SWidget> MenuContent =  SNew(SBorder)
 		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
 		.Padding(5)
 		[
 			SNew(SBox)
 			[
-				SNew(SGraphActionMenu)
-				.OnActionSelected(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::OnNiagaraActionSelected)
-				.OnCreateWidgetForAction(SGraphActionMenu::FOnCreateWidgetForAction::CreateSP(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::OnCreateWidgetForNiagaraAction))
-				.OnCollectAllActions(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::CollectAllNiagaraActions)
-				.AutoExpandActionMenu(false)
-				.ShowFilterTextBox(true)
+				GraphActionMenu
 			]
 		];
+
+	NiagaraParameterButton->SetMenuContentWidgetToFocus(GraphActionMenu->GetFilterTextBox());
+	return MenuContent;
 }
 
 
@@ -791,7 +843,8 @@ TArray<TPair<FNiagaraVariableBase, FNiagaraVariableBase> > FNiagaraMaterialAttri
 		bool bEmitter = true;
 		bool bParticles = false;
 		bool bUser = true;
-		BaseVars = FNiagaraStackAssetAction_VarBind::FindVariables(BaseEmitter, bSystem, bEmitter, bParticles, bUser);
+		bool bStatic = false;
+		BaseVars = FNiagaraStackAssetAction_VarBind::FindVariables(BaseEmitter, bSystem, bEmitter, bParticles, bUser, bStatic);
 
 		TArray<UNiagaraScript*> Scripts;
 		Scripts.Add(BaseSystem->GetSystemUpdateScript());
@@ -805,7 +858,7 @@ TArray<TPair<FNiagaraVariableBase, FNiagaraVariableBase> > FNiagaraMaterialAttri
 			[&](const FNiagaraVariableBase& BaseVariable) -> UNiagaraDataInterface*
 			{
 				FName VariableName = BaseVariable.GetName();
-				if (BaseVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespace))
+				if (BaseVariable.IsInNameSpace(FNiagaraConstants::EmitterNamespaceString))
 				{
 					VariableName = FNiagaraUtilities::ResolveAliases(BaseVariable, FNiagaraAliasContext()
 						.ChangeEmitterToEmitterName(BaseEmitter->GetUniqueEmitterName())).GetName();
@@ -957,7 +1010,7 @@ void FNiagaraMaterialAttributeBindingCustomization::ChangeNiagaraSource(FNiagara
 	TargetParameterBinding->CacheValues(BaseEmitter);
 	//TargetParameterBinding->Parameter.SetType(FNiagaraTypeDefinition::GetUObjectDef()); Do not override the type here!
 	//TargetVariableBinding->DataSetVariable = FNiagaraConstants::GetAttributeAsDataSetKey(TargetVariableBinding->BoundVariable);
-	PropertyHandle->NotifyPostChange();
+	PropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	PropertyHandle->NotifyFinishedChangingProperties();
 }
 
@@ -984,20 +1037,25 @@ TSharedRef<SWidget> FNiagaraMaterialAttributeBindingCustomization::OnGetMaterial
 {
 	FGraphActionMenuBuilder MenuBuilder;
 
-	return SNew(SBorder)
+	TSharedRef<SGraphActionMenu> GraphActionMenu = SNew(SGraphActionMenu)
+		.OnActionSelected(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::OnMaterialActionSelected)
+		.OnCreateWidgetForAction(SGraphActionMenu::FOnCreateWidgetForAction::CreateSP(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::OnCreateWidgetForMaterialAction))
+		.OnCollectAllActions(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::CollectAllMaterialActions)
+		.AutoExpandActionMenu(false)
+		.ShowFilterTextBox(true);
+
+	TSharedRef<SWidget> MenuContent = SNew(SBorder)
 		.BorderImage(FEditorStyle::GetBrush("Menu.Background"))
 		.Padding(5)
 		[
 			SNew(SBox)
 			[
-				SNew(SGraphActionMenu)
-				.OnActionSelected(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::OnMaterialActionSelected)
-				.OnCreateWidgetForAction(SGraphActionMenu::FOnCreateWidgetForAction::CreateSP(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::OnCreateWidgetForMaterialAction))
-				.OnCollectAllActions(const_cast<FNiagaraMaterialAttributeBindingCustomization*>(this), &FNiagaraMaterialAttributeBindingCustomization::CollectAllMaterialActions)
-				.AutoExpandActionMenu(false)
-				.ShowFilterTextBox(true)
+				GraphActionMenu
 			]
 		];
+
+	MaterialParameterButton->SetMenuContentWidgetToFocus(GraphActionMenu->GetFilterTextBox());
+	return MenuContent;
 }
 
 TArray<FName> FNiagaraMaterialAttributeBindingCustomization::GetMaterialNames() const
@@ -1116,7 +1174,7 @@ void FNiagaraMaterialAttributeBindingCustomization::ChangeMaterialSource(FName I
 	TargetParameterBinding->MaterialParameterName = InVarName;
 	//TargetParameterBinding->Parameter.SetType(FMaterialTypeDefinition::GetUObjectDef()); Do not override the type here!
 	//TargetVariableBinding->DataSetVariable = FMaterialConstants::GetAttributeAsDataSetKey(TargetVariableBinding->BoundVariable);
-	PropertyHandle->NotifyPostChange();
+	PropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	PropertyHandle->NotifyFinishedChangingProperties();
 }
 
@@ -1171,7 +1229,7 @@ void FNiagaraMaterialAttributeBindingCustomization::CustomizeChildren(TSharedRef
 			.ValueContent()
 				.MaxDesiredWidth(200.f)
 				[
-					SNew(SComboButton)
+					SAssignNew(MaterialParameterButton, SComboButton)
 					.OnGetMenuContent(this, &FNiagaraMaterialAttributeBindingCustomization::OnGetMaterialMenuContent)
 					.ContentPadding(1)
 					.ToolTipText(this, &FNiagaraMaterialAttributeBindingCustomization::GetMaterialTooltipText)
@@ -1195,7 +1253,7 @@ void FNiagaraMaterialAttributeBindingCustomization::CustomizeChildren(TSharedRef
 			.ValueContent()
 				.MaxDesiredWidth(200.f)
 				[
-					SNew(SComboButton)
+					SAssignNew(NiagaraParameterButton, SComboButton)
 					.OnGetMenuContent(this, &FNiagaraMaterialAttributeBindingCustomization::OnGetNiagaraMenuContent)
 					.ContentPadding(1)
 					.ToolTipText(this, &FNiagaraMaterialAttributeBindingCustomization::GetNiagaraTooltipText)
@@ -1390,7 +1448,7 @@ void FNiagaraDataInterfaceBindingCustomization::ChangeSource(FName InVarName)
 
 	PropertyHandle->NotifyPreChange();
 	TargetDataInterfaceBinding->BoundVariable.SetName(InVarName);
-	PropertyHandle->NotifyPostChange();
+	PropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	PropertyHandle->NotifyFinishedChangingProperties();
 }
 
@@ -1729,7 +1787,7 @@ void FNiagaraScriptVariableBindingCustomization::ChangeSource(FName InVarName)
 
 	PropertyHandle->NotifyPreChange();
 	TargetVariableBinding->Name = InVarName;
-	PropertyHandle->NotifyPostChange();
+	PropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	PropertyHandle->NotifyFinishedChangingProperties();
 }
 
@@ -1830,6 +1888,15 @@ void FNiagaraVariableMetaDataCustomization::CustomizeChildren(TSharedRef<IProper
 
 	for (const TSharedRef<IPropertyHandle>& ChildPropertyHandle : ChildPropertyHandles)
 	{
+		/** The customized flag is used for hiding properties.
+		 *  The script variable's customization which contains meta data is hiding these properties already,
+		 *  but the meta data customization would stomp these by readding them. Hence, we skip them here if they were marked as customized.
+		*/
+		if(ChildPropertyHandle->IsCustomized())
+		{
+			continue;
+		}
+		
 		const FProperty* ChildProperty = ChildPropertyHandle->GetProperty();
 		const FName ChildPropertyName = ChildProperty->GetFName();
 

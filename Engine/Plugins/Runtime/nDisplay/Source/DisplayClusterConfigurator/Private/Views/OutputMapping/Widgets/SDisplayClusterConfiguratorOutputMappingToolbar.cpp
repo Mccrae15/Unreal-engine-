@@ -2,9 +2,9 @@
 
 #include "Views/OutputMapping/Widgets/SDisplayClusterConfiguratorOutputMappingToolbar.h"
 
-#include "DisplayClusterConfiguratorCommands.h"
 #include "DisplayClusterConfiguratorStyle.h"
 #include "Interfaces/IDisplayClusterConfigurator.h"
+#include "Views/OutputMapping/DisplayClusterConfiguratorOutputMappingCommands.h"
 #include "Views/OutputMapping/DisplayClusterConfiguratorViewOutputMapping.h"
 
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -35,64 +35,43 @@ void SDisplayClusterConfiguratorOutputMappingToolbar::Construct(const FArguments
 TSharedRef<SWidget> SDisplayClusterConfiguratorOutputMappingToolbar::MakeToolBar(const TSharedPtr<FExtender> InExtenders)
 {
 	FToolBarBuilder ToolbarBuilder(CommandList, FMultiBoxCustomization::None, InExtenders);
-	const FDisplayClusterConfiguratorCommands& Commands = IDisplayClusterConfigurator::Get().GetCommands();
 
-	// Use a custom style
-	FName ToolBarStyle = "ViewportMenu";
-	ToolbarBuilder.SetStyle(&FEditorStyle::Get(), ToolBarStyle);
+	FName ToolBarStyle = "EditorViewportToolBar";
+	ToolbarBuilder.SetStyle(&FAppStyle::Get(), ToolBarStyle);
 	ToolbarBuilder.SetLabelVisibility(EVisibility::Collapsed);
 
 	ToolbarBuilder.BeginSection("Advanced");
 	{
-		// SEditorViewportToolbarMenu buttons are by default 22 pixels high, while the other toolbar buttons are 26 pixels tall
-		// Use an SBox to manually match this button's height with the rest of the toolbar
 		ToolbarBuilder.AddWidget(
-			SNew(SBox)
-			.HeightOverride(26)
-			[
-				SNew(SEditorViewportToolbarMenu)
-				.ParentToolBar(SharedThis(this))
-				.Cursor(EMouseCursor::Default)
-				.Image("EditorViewportToolBar.MenuDropdown")
-				.OnGetMenuContent(this, &SDisplayClusterConfiguratorOutputMappingToolbar::MakeAdvancedMenu)
-			]
+			SNew(SEditorViewportToolbarMenu)
+			.ParentToolBar(SharedThis(this))
+			.Cursor(EMouseCursor::Default)
+			.Image("EditorViewportToolBar.OptionsDropdown")
+			.OnGetMenuContent(this, &SDisplayClusterConfiguratorOutputMappingToolbar::MakeAdvancedMenu)
 		);
+	}
+	ToolbarBuilder.EndSection();
+
+	ToolbarBuilder.BeginSection("ClusterItems");
+	{
+		ToolbarBuilder.AddWidget(
+			SNew(SViewportToolBarIconMenu)
+			.Cursor(EMouseCursor::Default)
+			.Style(ToolBarStyle)
+			.OnGetMenuContent(this, &SDisplayClusterConfiguratorOutputMappingToolbar::MakeWindowDisplayMenu)
+			.Label(this, &SDisplayClusterConfiguratorOutputMappingToolbar::GetWindowDisplayText)
+			.ToolTipText(LOCTEXT("WindowDisplayMenu_ToolTip", "Cluster Node Display"))
+			.Icon(FSlateIcon(FDisplayClusterConfiguratorStyle::Get().GetStyleSetName(), "DisplayClusterConfigurator.OutputMapping.WindowDisplay"))
+			.ParentToolBar(SharedThis(this))
+		);
+
+		ToolbarBuilder.AddToolBarButton(FDisplayClusterConfiguratorOutputMappingCommands::Get().ToggleOutsideViewports);
 	}
 	ToolbarBuilder.EndSection();
 
 	ToolbarBuilder.BeginSection("View");
 	{
-		ToolbarBuilder.AddToolBarButton(Commands.ToggleWindowInfo,
-			NAME_None,
-			TAttribute<FText>(),
-			TAttribute<FText>(),
-			FSlateIcon(FDisplayClusterConfiguratorStyle::GetStyleSetName(), "DisplayClusterConfigurator.OutputMapping.ToggleWindowInfo"),
-			"ToggleWindowInfo"
-			);
-
-		ToolbarBuilder.AddToolBarButton(Commands.ToggleWindowCornerImage,
-			NAME_None,
-			TAttribute<FText>(),
-			TAttribute<FText>(),
-			FSlateIcon(FDisplayClusterConfiguratorStyle::GetStyleSetName(), "DisplayClusterConfigurator.OutputMapping.ToggleWindowCornerImage"),
-			"ToggleWindowCornerImage"
-			);
-
-		ToolbarBuilder.AddToolBarButton(Commands.ToggleOutsideViewports,
-			NAME_None,
-			TAttribute<FText>(),
-			TAttribute<FText>(),
-			FSlateIcon(FDisplayClusterConfiguratorStyle::GetStyleSetName(), "DisplayClusterConfigurator.OutputMapping.ToggleOutsideViewports"),
-			"ToggleOutsideViewports"
-			);
-
-		ToolbarBuilder.AddToolBarButton(Commands.ZoomToFit,
-			NAME_None,
-			TAttribute<FText>(),
-			TAttribute<FText>(),
-			FSlateIcon(FDisplayClusterConfiguratorStyle::GetStyleSetName(), "DisplayClusterConfigurator.OutputMapping.ZoomToFit"),
-			"ZoomToFit"
-			);
+		ToolbarBuilder.AddToolBarButton(FDisplayClusterConfiguratorOutputMappingCommands::Get().ZoomToFit);
 
 		ToolbarBuilder.AddWidget(
 			SNew(SViewportToolBarIconMenu)
@@ -100,33 +79,37 @@ TSharedRef<SWidget> SDisplayClusterConfiguratorOutputMappingToolbar::MakeToolBar
 			.Style(ToolBarStyle)
 			.OnGetMenuContent(this, &SDisplayClusterConfiguratorOutputMappingToolbar::MakeViewScaleMenu)
 			.ToolTipText(LOCTEXT("ViewOptionsMenu_ToolTip", "View Scale"))
-			.Icon(FSlateIcon(FDisplayClusterConfiguratorStyle::GetStyleSetName(), "DisplayClusterConfigurator.OutputMapping.ViewScale"))
+			.Icon(FSlateIcon(FDisplayClusterConfiguratorStyle::Get().GetStyleSetName(), "DisplayClusterConfigurator.OutputMapping.ViewScale"))
 			.Label(this, &SDisplayClusterConfiguratorOutputMappingToolbar::GetViewScaleText)
 			.ParentToolBar(SharedThis(this))
 		);
 	}
 	ToolbarBuilder.EndSection();
 
-	ToolbarBuilder.BeginSection("Placement");
+	ToolbarBuilder.BeginSection("Transform");
 	{
 		ToolbarBuilder.AddWidget(
 			SNew(SViewportToolBarIconMenu)
 			.Cursor(EMouseCursor::Default)
 			.Style(ToolBarStyle)
-			.OnGetMenuContent(this, &SDisplayClusterConfiguratorOutputMappingToolbar::MakePositioningMenu)
-			.ToolTipText(LOCTEXT("PositioningMenu_ToolTip", "Positioning Settings"))
-			.Icon(FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorViewport.TranslateRotate2DMode.Small"))
-			.Label(LOCTEXT("PositioningSettings_Label", "Positioning"))
+			.OnGetMenuContent(this, &SDisplayClusterConfiguratorOutputMappingToolbar::MakeTransformMenu)
+			.ToolTipText(LOCTEXT("TransformMenu_ToolTip", "Transform Operations"))
+			.Icon(FSlateIcon(FDisplayClusterConfiguratorStyle::Get().GetStyleSetName(), "DisplayClusterConfigurator.OutputMapping.Transform"))
+			.Label(LOCTEXT("TransformSettings_Label", "Transform"))
 			.ParentToolBar(SharedThis(this))
 		);
+	}
+	ToolbarBuilder.EndSection();
 
+	ToolbarBuilder.BeginSection("Snapping");
+	{
 		ToolbarBuilder.AddWidget(
 			SNew(SViewportToolBarIconMenu)
 			.Cursor(EMouseCursor::Default)
 			.Style(ToolBarStyle)
 			.OnGetMenuContent(this, &SDisplayClusterConfiguratorOutputMappingToolbar::MakeSnappingMenu)
 			.ToolTipText(LOCTEXT("SnappingMenu_ToolTip", "Node Snapping"))
-			.Icon(FSlateIcon(FEditorStyle::GetStyleSetName(), "EditorViewport.Layer2DSnap"))
+			.Icon(FSlateIcon(FDisplayClusterConfiguratorStyle::Get().GetStyleSetName(), "DisplayClusterConfigurator.OutputMapping.Snapping"))
 			.Label(LOCTEXT("AlignmentSettings_Label", "Snapping"))
 			.ParentToolBar(SharedThis(this))
 		);
@@ -136,22 +119,58 @@ TSharedRef<SWidget> SDisplayClusterConfiguratorOutputMappingToolbar::MakeToolBar
 	return ToolbarBuilder.MakeWidget();
 }
 
-TSharedRef<SWidget> SDisplayClusterConfiguratorOutputMappingToolbar::MakePositioningMenu()
+TSharedRef<SWidget> SDisplayClusterConfiguratorOutputMappingToolbar::MakeWindowDisplayMenu()
 {
 	const bool bShouldCloseWindowAfterMenuSelection = false;
 	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, CommandList);
 
-	MenuBuilder.BeginSection(TEXT("OverlapBoundsSection"), LOCTEXT("OverlapBoundsSectionLabel", "Overlap & Bounds"));
+	MenuBuilder.BeginSection(TEXT("WindowDisplaySection"));
 	{
-		MenuBuilder.AddMenuEntry(IDisplayClusterConfigurator::Get().GetCommands().ToggleClusterItemOverlap);
-		MenuBuilder.AddMenuEntry(IDisplayClusterConfigurator::Get().GetCommands().ToggleLockClusterNodesInHosts);
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().ShowWindowInfo);
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().ShowWindowCorner);
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().ShowWindowNone);
 	}
 	MenuBuilder.EndSection();
 
-	MenuBuilder.BeginSection(TEXT("LockingSection"), LOCTEXT("LockingSectionLabel", "Locking"));
+	return MenuBuilder.MakeWidget();
+}
+
+FText SDisplayClusterConfiguratorOutputMappingToolbar::GetWindowDisplayText() const
+{
+	TSharedPtr<FDisplayClusterConfiguratorViewOutputMapping> ViewOutputMapping = ViewOutputMappingPtr.Pin();
+	check(ViewOutputMapping != nullptr);
+
+	FOutputMappingSettings& OutputMappingSettings = ViewOutputMapping->GetOutputMappingSettings();
+
+	if (OutputMappingSettings.bShowWindowInfo)
 	{
-		MenuBuilder.AddMenuEntry(IDisplayClusterConfigurator::Get().GetCommands().ToggleLockClusterNodes);
-		MenuBuilder.AddMenuEntry(IDisplayClusterConfigurator::Get().GetCommands().ToggleLockViewports);
+		return LOCTEXT("WindowDisplay_Info", "Info Bar");
+	}
+	else if (OutputMappingSettings.bShowWindowCornerImage)
+	{
+		return LOCTEXT("WindowDisplay_Corner", "Corner");
+	}
+	else
+	{
+		return LOCTEXT("WindowDisplay_None", "None");
+	}
+}
+
+TSharedRef<SWidget> SDisplayClusterConfiguratorOutputMappingToolbar::MakeTransformMenu()
+{
+	const bool bShouldCloseWindowAfterMenuSelection = false;
+	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, CommandList);
+
+	MenuBuilder.BeginSection(TEXT("CommonTransformSection"));
+	{
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().RotateViewport90CCW);
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().RotateViewport90CW);
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().RotateViewport180);
+		MenuBuilder.AddSeparator();
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().FlipViewportHorizontal);
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().FlipViewportVertical);
+		MenuBuilder.AddSeparator();
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().ResetViewportTransform);
 	}
 	MenuBuilder.EndSection();
 
@@ -165,70 +184,68 @@ TSharedRef<SWidget> SDisplayClusterConfiguratorOutputMappingToolbar::MakeSnappin
 
 	MenuBuilder.BeginSection(TEXT("AdjacentEdgeSnapping"));
 	{
-		MenuBuilder.AddMenuEntry(IDisplayClusterConfigurator::Get().GetCommands().ToggleAdjacentEdgeSnapping);
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().ToggleAdjacentEdgeSnapping);
 
 		MenuBuilder.AddWidget(
-			SNew(SHorizontalBox)
-			.IsEnabled(this, &SDisplayClusterConfiguratorOutputMappingToolbar::IsAdjacentEdgeSnappingEnabled)
-
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+			SNew(SBox)
+			.HAlign(HAlign_Right)
 			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("AlignmentSettings_AdjacentEdgePadding", "Adjacent Edge Padding"))
-			]
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Bottom)
-			.FillWidth(1.f)
-			[
-				SNew(SNumericEntryBox<int>)
-				.Value(this, &SDisplayClusterConfiguratorOutputMappingToolbar::GetAdjacentEdgePadding)
-				.OnValueChanged(this, &SDisplayClusterConfiguratorOutputMappingToolbar::SetAdjacentEdgePadding)
-				.MinValue(0)
-				.MaxValue(INT_MAX)
-				.MaxSliderValue(100)
-				.AllowSpin(true)
+				SNew(SBox)
+				.Padding(FMargin(8.0f, 0.0f, 0.0f, 0.0f))
+				.WidthOverride(100.0f)
+				[
+					SNew(SBorder)
+					.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+					.Padding(FMargin(1.0f))
+					[
+						SNew(SNumericEntryBox<int>)
+						.Value(this, &SDisplayClusterConfiguratorOutputMappingToolbar::GetAdjacentEdgePadding)
+						.OnValueChanged(this, &SDisplayClusterConfiguratorOutputMappingToolbar::SetAdjacentEdgePadding)
+						.IsEnabled(this, &SDisplayClusterConfiguratorOutputMappingToolbar::IsAdjacentEdgeSnappingEnabled)
+						.MinValue(0)
+						.MaxValue(INT_MAX)
+						.MaxSliderValue(100)
+						.AllowSpin(true)
+					]
+				]
 			],
-			FText::GetEmpty()
+			LOCTEXT("AlignmentSettings_AdjacentEdgePadding", "Adjacent Edge Padding")
 		);
 	}
 	MenuBuilder.EndSection();
 
 	MenuBuilder.BeginSection(TEXT("SameEdgeSnapping"));
 	{
-		MenuBuilder.AddMenuEntry(IDisplayClusterConfigurator::Get().GetCommands().ToggleSameEdgeSnapping);
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().ToggleSameEdgeSnapping);
 	}
 	MenuBuilder.EndSection();
 
 	MenuBuilder.BeginSection(TEXT("GeneralSnapping"));
 	{
 		MenuBuilder.AddWidget(
-			SNew(SHorizontalBox)
-			.IsEnabled(this, &SDisplayClusterConfiguratorOutputMappingToolbar::IsSnappingEnabled)
-			
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+			SNew(SBox)
+			.HAlign(HAlign_Right)
 			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("AlignmentSettings_SnapProximity", "Snap Proximity"))
-			]
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Bottom)
-			.FillWidth(1.f)
-			[
-				SNew(SNumericEntryBox<int>)
-				.Value(this, &SDisplayClusterConfiguratorOutputMappingToolbar::GetSnapProximity)
-				.OnValueChanged(this, &SDisplayClusterConfiguratorOutputMappingToolbar::SetSnapProximity)
-				.MinValue(0)
-				.MaxValue(INT_MAX)
-				.MaxSliderValue(100)
-				.AllowSpin(true)
+				SNew(SBox)
+				.Padding(FMargin(8.0f, 0.0f, 0.0f, 0.0f))
+				.WidthOverride(100.0f)
+				[
+					SNew(SBorder)
+					.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+					.Padding(FMargin(1.0f))
+					[
+						SNew(SNumericEntryBox<int>)
+						.Value(this, &SDisplayClusterConfiguratorOutputMappingToolbar::GetSnapProximity)
+						.OnValueChanged(this, &SDisplayClusterConfiguratorOutputMappingToolbar::SetSnapProximity)
+						.IsEnabled(this, &SDisplayClusterConfiguratorOutputMappingToolbar::IsSnappingEnabled)
+						.MinValue(0)
+						.MaxValue(INT_MAX)
+						.MaxSliderValue(100)
+						.AllowSpin(true)
+					]
+				]
 			],
-			FText::GetEmpty()
+			LOCTEXT("AlignmentSettings_SnapProximity", "Snap Proximity")
 		);
 	}
 	MenuBuilder.EndSection();
@@ -291,7 +308,14 @@ TSharedRef<SWidget> SDisplayClusterConfiguratorOutputMappingToolbar::MakeAdvance
 
 	MenuBuilder.BeginSection(TEXT("General"), LOCTEXT("GeneralSectionLabel", "General"));
 	{
-		MenuBuilder.AddMenuEntry(IDisplayClusterConfigurator::Get().GetCommands().ToggleTintViewports);
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().ToggleTintViewports);
+	}
+	MenuBuilder.EndSection();
+
+	MenuBuilder.BeginSection(TEXT("OverlapBoundsSection"), LOCTEXT("OverlapBoundsSectionLabel", "Overlap & Bounds"));
+	{
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().ToggleClusterItemOverlap);
+		MenuBuilder.AddMenuEntry(FDisplayClusterConfiguratorOutputMappingCommands::Get().ToggleLockClusterNodesInHosts);
 	}
 	MenuBuilder.EndSection();
 
@@ -371,58 +395,56 @@ void SDisplayClusterConfiguratorOutputMappingToolbar::MakeHostArrangementTypeSub
 	MenuBuilder.BeginSection(TEXT("HostArrangementSettings"));
 	{
 		MenuBuilder.AddWidget(
-			SNew(SHorizontalBox)
-			.IsEnabled(this, &SDisplayClusterConfiguratorOutputMappingToolbar::IsHostArrangementTypeChecked, EHostArrangementType::Wrap)
-
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+			SNew(SBox)
+			.HAlign(HAlign_Right)
 			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("HostArrangementSettings_WrapThreshold", "Wrapping Threshold"))
-			]
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Bottom)
-			.FillWidth(1.f)
-			[
-				SNew(SNumericEntryBox<int>)
-				.Value(this, &SDisplayClusterConfiguratorOutputMappingToolbar::GetHostWrapThreshold)
-				.OnValueChanged(this, &SDisplayClusterConfiguratorOutputMappingToolbar::SetHostWrapThreshold)
-				.MinValue(0)
-				.MaxValue(INT_MAX)
-				.MaxSliderValue(10000)
-				.AllowSpin(true)
+				SNew(SBox)
+				.Padding(FMargin(8.0f, 0.0f, 0.0f, 0.0f))
+				.WidthOverride(100.0f)
+				[
+					SNew(SBorder)
+					.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+					.Padding(FMargin(1.0f))
+					[
+						SNew(SNumericEntryBox<int>)
+						.Value(this, &SDisplayClusterConfiguratorOutputMappingToolbar::GetHostWrapThreshold)
+						.OnValueChanged(this, &SDisplayClusterConfiguratorOutputMappingToolbar::SetHostWrapThreshold)
+						.IsEnabled(this, &SDisplayClusterConfiguratorOutputMappingToolbar::IsHostArrangementTypeChecked, EHostArrangementType::Wrap)
+						.MinValue(0)
+						.MaxValue(INT_MAX)
+						.MaxSliderValue(10000)
+						.AllowSpin(true)
+					]
+				]
 			],
-			FText::GetEmpty()
+			LOCTEXT("HostArrangementSettings_WrapThreshold", "Wrapping Threshold")
 		);
 
 		MenuBuilder.AddWidget(
-			SNew(SHorizontalBox)
-			.IsEnabled(this, &SDisplayClusterConfiguratorOutputMappingToolbar::IsHostArrangementTypeChecked, EHostArrangementType::Grid)
-			
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+			SNew(SBox)
+			.HAlign(HAlign_Right)
 			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("HostArrangementSettings_GridSize", "Grid Size"))
-			]
-
-			+ SHorizontalBox::Slot()
-			.VAlign(VAlign_Bottom)
-			.FillWidth(1.f)
-			[
-				SNew(SNumericEntryBox<int>)
-				.Value(this, &SDisplayClusterConfiguratorOutputMappingToolbar::GetHostGridSize)
-				.OnValueChanged(this, &SDisplayClusterConfiguratorOutputMappingToolbar::SetHostGridSize)
-				.MinValue(1)
-				.MaxValue(10)
-				.MinSliderValue(1)
-				.MaxSliderValue(5)
-				.AllowSpin(true)
+				SNew(SBox)
+				.Padding(FMargin(8.0f, 0.0f, 0.0f, 0.0f))
+				.WidthOverride(100.0f)
+				[
+					SNew(SBorder)
+					.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+					.Padding(FMargin(1.0f))
+					[
+						SNew(SNumericEntryBox<int>)
+						.Value(this, &SDisplayClusterConfiguratorOutputMappingToolbar::GetHostGridSize)
+						.OnValueChanged(this, &SDisplayClusterConfiguratorOutputMappingToolbar::SetHostGridSize)
+						.IsEnabled(this, &SDisplayClusterConfiguratorOutputMappingToolbar::IsHostArrangementTypeChecked, EHostArrangementType::Grid)
+						.MinValue(1)
+						.MaxValue(10)
+						.MinSliderValue(1)
+						.MaxSliderValue(5)
+						.AllowSpin(true)
+					]
+				]
 			],
-			FText::GetEmpty()
+			LOCTEXT("HostArrangementSettings_GridSize", "Grid Size")
 		);
 	}
 	MenuBuilder.EndSection();

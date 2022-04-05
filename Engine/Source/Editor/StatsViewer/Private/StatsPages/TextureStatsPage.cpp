@@ -99,7 +99,7 @@ struct TextureStatsGenerator : public FFindReferencedAssets
 			TexturesToIgnore.Find( MakeWeakObjectPtr( Texture ) ) == INDEX_NONE && // texture is not one that should be ignored
 			( Texture->IsA( UTexture2D::StaticClass() ) || Texture->IsA( UTextureCube::StaticClass() ) ); // texture is valid texture class for stat purposes
 
-#if 0 // @todo TextureInfoInUE4 UTextureCube::GetFace doesn't exist
+#if 0 // @todo TextureInfoInUE UTextureCube::GetFace doesn't exist
 		UTextureCube* CubeTex = Cast<UTextureCube>( Texture );
 		if( CubeTex )
 		{
@@ -217,11 +217,13 @@ struct TextureStatsGenerator : public FFindReferencedAssets
 
 			Entry->LODBias = InTexture->GetCachedLODBias();
 
-			const FTexture* Resource = InTexture->Resource; 
+			const FTexture* Resource = InTexture->GetResource();
 			if(Resource)
 			{
 				Entry->LastTimeRendered = (float)FMath::Max( FApp::GetLastTime() - Resource->LastRenderTime, 0.0 );
 			}
+
+			Entry->Virtual = InTexture->IsCurrentlyVirtualTextured() ? TEXT("YES") : TEXT("NO");
 
 			const UTexture2D* Texture2D = Cast<const UTexture2D>(InTexture);
 			if( Texture2D )
@@ -247,7 +249,7 @@ struct TextureStatsGenerator : public FFindReferencedAssets
 					Entry->Format = TextureCube->GetPixelFormat();
 					Entry->Type = TEXT("Cube"); 
 
-#if 0 // @todo TextureInfoInUE4 UTextureCube::GetFace doesn't exist.
+#if 0 // @todo TextureInfoInUE UTextureCube::GetFace doesn't exist.
 					// Calculate in game current dimensions 
 					// Use one face of the texture cube to calculate in game size
 					UTexture2D* Face = TextureCube->GetFace(0);

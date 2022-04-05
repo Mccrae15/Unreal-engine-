@@ -7,10 +7,7 @@
 class FRHIBufferTests
 {
 	// Copies data in the specified vertex buffer back to the CPU, and passes a pointer to that data to the provided verification lambda.
-	static bool VerifyBufferContents(const TCHAR* TestName, FRHICommandListImmediate& RHICmdList, FRHIVertexBuffer* Buffer, TFunctionRef<bool(void* Ptr, uint32 NumBytes)> VerifyCallback);
-
-	// Copies data in the specified vertex buffer back to the CPU, and passes a pointer to that data to the provided verification lambda.
-	static bool VerifyBufferContents(const TCHAR* TestName, FRHICommandListImmediate& RHICmdList, FRHIStructuredBuffer* Buffer, TFunctionRef<bool(void* Ptr, uint32 NumBytes)> VerifyCallback);
+	static bool VerifyBufferContents(const TCHAR* TestName, FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, TFunctionRef<bool(void* Ptr, uint32 NumBytes)> VerifyCallback);
 
 	template <typename BufferType, typename ValueType, uint32 NumTestBytes>
 	static bool RunTest_UAVClear_Buffer(FRHICommandListImmediate& RHICmdList, const FString& TestName, BufferType* BufferRHI, FRHIUnorderedAccessView* UAV, uint32 BufferSize, const ValueType& ClearValue, void(FRHIComputeCommandList::* ClearPtr)(FRHIUnorderedAccessView*, ValueType const&), const uint8(&TestValue)[NumTestBytes])
@@ -77,13 +74,13 @@ class FRHIBufferTests
 			return true;
 		}
 
-		FRHIResourceCreateInfo Info;
-		FVertexBufferRHIRef VertexBuffer = RHICreateVertexBuffer(BufferSize, BUF_ShaderResource | BUF_UnorderedAccess | BUF_SourceCopy, Info);
+		FRHIResourceCreateInfo Info(*TestName);
+		FBufferRHIRef VertexBuffer = RHICreateVertexBuffer(BufferSize, BUF_ShaderResource | BUF_UnorderedAccess | BUF_SourceCopy, Info);
 		FUnorderedAccessViewRHIRef UAV = RHICreateUnorderedAccessView(VertexBuffer, Format);
 		FShaderResourceViewRHIRef SRV = RHICreateShaderResourceView(VertexBuffer, GPixelFormats[Format].BlockBytes, Format);
 		bool bResult = RunTest_UAVClear_Buffer(RHICmdList, TestName, VertexBuffer.GetReference(), UAV, BufferSize, ClearValue, ClearPtr, TestValue);
 
-		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 
 		return bResult;
 	}
@@ -99,29 +96,31 @@ class FRHIBufferTests
 			return true;
 		}
 
-		FRHIResourceCreateInfo Info;
-		FVertexBufferRHIRef VertexBuffer = RHICreateVertexBuffer(BufferSize, BUF_ShaderResource | BUF_UnorderedAccess | BUF_SourceCopy | BUF_ByteAddressBuffer, Info);
+		FRHIResourceCreateInfo Info(*TestName);
+		FBufferRHIRef VertexBuffer = RHICreateVertexBuffer(BufferSize, BUF_ShaderResource | BUF_UnorderedAccess | BUF_SourceCopy | BUF_ByteAddressBuffer, Info);
 		FUnorderedAccessViewRHIRef UAV = RHICreateUnorderedAccessView(VertexBuffer, Format);
 		FShaderResourceViewRHIRef SRV = RHICreateShaderResourceView(VertexBuffer, GPixelFormats[Format].BlockBytes, Format);
 		bool bResult = RunTest_UAVClear_Buffer(RHICmdList, TestName, VertexBuffer.GetReference(), UAV, BufferSize, ClearValue, ClearPtr, TestValue);
 
-		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 
 		return bResult;
 	}
 
 	template <typename ValueType, uint32 NumTestBytes>
-	static bool RunTest_UAVClear_StructuredBuffer(FRHICommandListImmediate& RHICmdList, uint32 Stride, uint32 BufferSize, uint32 InExtraUsage, const ValueType& ClearValue, void(FRHIComputeCommandList::* ClearPtr)(FRHIUnorderedAccessView*, ValueType const&), const uint8(&TestValue)[NumTestBytes])
+	static bool RunTest_UAVClear_StructuredBuffer(FRHICommandListImmediate& RHICmdList, uint32 Stride, uint32 BufferSize, EBufferUsageFlags InExtraUsage, const ValueType& ClearValue, void(FRHIComputeCommandList::* ClearPtr)(FRHIUnorderedAccessView*, ValueType const&), const uint8(&TestValue)[NumTestBytes])
 	{
+		FString TestName = FString::Printf(TEXT("RunTest_UAVClear_StructuredBuffer, Stride: %d, Size: %d, ByteAddress: %d"), Stride, BufferSize, EnumHasAnyFlags(InExtraUsage, BUF_ByteAddressBuffer) ? 1 : 0);
+
 		check(NumTestBytes == Stride);
 
-		FRHIResourceCreateInfo Info;
-		FStructuredBufferRHIRef StructuredBuffer = RHICreateStructuredBuffer(Stride, BufferSize, BUF_ShaderResource | BUF_UnorderedAccess | InExtraUsage, Info);
+		FRHIResourceCreateInfo Info(*TestName);
+		FBufferRHIRef StructuredBuffer = RHICreateStructuredBuffer(Stride, BufferSize, BUF_ShaderResource | BUF_UnorderedAccess | BUF_SourceCopy | InExtraUsage, Info);
 		FUnorderedAccessViewRHIRef UAV = RHICreateUnorderedAccessView(StructuredBuffer, false, false);
 		FShaderResourceViewRHIRef SRV = RHICreateShaderResourceView(StructuredBuffer);
-		bool bResult = RunTest_UAVClear_Buffer(RHICmdList, *FString::Printf(TEXT("RunTest_UAVClear_StructuredBuffer, Stride: %d, Size: %d, ByteAddress: %d"), Stride, BufferSize, (InExtraUsage & BUF_ByteAddressBuffer) ? 1 : 0), StructuredBuffer.GetReference(), UAV, BufferSize, ClearValue, ClearPtr, TestValue);
+		bool bResult = RunTest_UAVClear_Buffer(RHICmdList, TestName, StructuredBuffer.GetReference(), UAV, BufferSize, ClearValue, ClearPtr, TestValue);
 
-		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResourcesFlushDeferredDeletes);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThreadFlushResources);
 
 		return bResult;
 	}
@@ -130,7 +129,7 @@ class FRHIBufferTests
 	static bool RunTest_UAVClear_StructuredBuffer(FRHICommandListImmediate& RHICmdList, uint32 Stride, uint32 BufferSize, const ValueType& ClearValue, void(FRHIComputeCommandList::* ClearPtr)(FRHIUnorderedAccessView*, ValueType const&), const uint8(&TestValue)[NumTestBytes])
 	{
 		return
-			RunTest_UAVClear_StructuredBuffer(RHICmdList, Stride, BufferSize, 0, ClearValue, ClearPtr, TestValue) &&
+			RunTest_UAVClear_StructuredBuffer(RHICmdList, Stride, BufferSize, BUF_None, ClearValue, ClearPtr, TestValue) &&
 			RunTest_UAVClear_StructuredBuffer(RHICmdList, Stride, BufferSize, BUF_ByteAddressBuffer, ClearValue, ClearPtr, TestValue);
 	}
 
@@ -214,7 +213,7 @@ public:
 			// 0.8499  = 0x3f59930c | 0x3acc
 			// 0.00145 = 0x3abe0ded | 0x15f0
 			// 0.417   = 0x3ed58106 | 0x36ac
-			const FVector4 ClearValueFloat(0.2345f, 0.8499f, 0.417f, 0.00145f);
+			const FVector4f ClearValueFloat(0.2345f, 0.8499f, 0.417f, 0.00145f);
 
 			// Half precision float tests
 			RUN_TEST(RunTest_UAVClear_VertexBuffer(RHICmdList, 256, PF_R16F, ClearValueFloat, &FRHICommandListImmediate::ClearUAVFloat, { 0x81, 0x33 }));
@@ -288,7 +287,7 @@ public:
 			// 0.8499  = 0x3f59930c
 			// 0.00145 = 0x3abe0ded
 			// 0.417   = 0x3ed58106
-			const FVector4 ClearValueFloat(0.2345f, 0.8499f, 0.417f, 0.00145f);
+			const FVector4f ClearValueFloat(0.2345f, 0.8499f, 0.417f, 0.00145f);
 
 			// Full precision float tests
 			RUN_TEST(RunTest_UAVClear_StructuredBuffer(RHICmdList, 4, 256, ClearValueFloat, &FRHICommandListImmediate::ClearUAVFloat, { 0xc5, 0x20, 0x70, 0x3e }));

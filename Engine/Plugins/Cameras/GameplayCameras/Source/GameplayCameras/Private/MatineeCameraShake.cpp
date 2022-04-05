@@ -11,27 +11,39 @@
 #include "Evaluation/MovieSceneCameraAnimTemplate.h"
 #include "IXRTrackingSystem.h" // for IsHeadTrackingAllowed()
 
+DEFINE_LOG_CATEGORY_STATIC(LogMatineeCameraShake, Warning, All);
+
 //////////////////////////////////////////////////////////////////////////
 // FFOscillator
 
 // static
 float FFOscillator::UpdateOffset(FFOscillator const& Osc, float& CurrentOffset, float DeltaTime)
 {
+	// LWC_TODO: Perf pessimization
+	double AsDouble = CurrentOffset;
+	float Result = UpdateOffset(Osc, AsDouble, DeltaTime);
+	CurrentOffset = (float)AsDouble;
+	return Result;
+}
+
+// static
+float FFOscillator::UpdateOffset(FFOscillator const& Osc, double& CurrentOffset, float DeltaTime)
+{
 	if (Osc.Amplitude != 0.f)
 	{
 		CurrentOffset += DeltaTime * Osc.Frequency;
 
 		float WaveformSample;
-		switch(Osc.Waveform)
+		switch (Osc.Waveform)
 		{
-			case EOscillatorWaveform::SineWave:
-			default:
-				WaveformSample = FMath::Sin(CurrentOffset);
-				break;
+		case EOscillatorWaveform::SineWave:
+		default:
+			WaveformSample = FMath::Sin(CurrentOffset);
+			break;
 
-			case EOscillatorWaveform::PerlinNoise:
-				WaveformSample = FMath::PerlinNoise1D(CurrentOffset);
-				break;
+		case EOscillatorWaveform::PerlinNoise:
+			WaveformSample = FMath::PerlinNoise1D(CurrentOffset);
+			break;
 		}
 
 		return Osc.Amplitude * WaveformSample;
@@ -117,6 +129,8 @@ void UMatineeCameraShake::DoStopShake(bool bImmediately)
 			}
 		}
 	}
+
+	UE_LOG(LogMatineeCameraShake, Verbose, TEXT("UMatineeCameraShake::DoStopShake %s"), *GetNameSafe(this));
 
 	ReceiveStopShake(bImmediately);
 }
@@ -248,6 +262,8 @@ void UMatineeCameraShake::DoStartShake(const FCameraShakeStartParams& Params)
 		// Start the sequence shake pattern.
 		SequenceShakePattern->StartShakePattern(Params);
 	}
+
+	UE_LOG(LogMatineeCameraShake, Verbose, TEXT("UMatineeCameraShake::DoStartShake %s Duration: %f"), *GetNameSafe(this), OscillationDuration);
 
 	ReceivePlayShake(ShakeScale);
 }
@@ -412,6 +428,9 @@ void UMatineeCameraShake::DoUpdateShake(const FCameraShakeUpdateParams& Params, 
 		OutResult.Rotation = InOutPOV.Rotation;
 		OutResult.FOV = InOutPOV.FOV;
 	}
+
+
+	UE_LOG(LogMatineeCameraShake, Verbose, TEXT("UMatineeCameraShake::DoUpdateShake %s Finished: %i Duration: %f Remaining: %f"), *GetNameSafe(this), bOscillationFinished, OscillationDuration, OscillatorTimeRemaining);
 }
 
 void UMatineeCameraShake::DoScrubShake(const FCameraShakeScrubParams& Params, FCameraShakeUpdateResult& OutResult)

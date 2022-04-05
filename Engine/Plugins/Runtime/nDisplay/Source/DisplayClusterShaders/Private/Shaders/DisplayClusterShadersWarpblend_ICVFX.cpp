@@ -14,8 +14,7 @@
 #include "ShaderParameterStruct.h"
 #include "ShaderPermutation.h"
 
-#include "Render/Containers/DisplayClusterRender_MeshComponent.h"
-#include "Render/Containers/DisplayClusterRender_MeshComponentProxy.h"
+#include "Render/Containers/IDisplayClusterRender_MeshComponentProxy.h"
 
 #include "ShaderParameters/DisplayClusterShaderParameters_WarpBlend.h"
 #include "ShaderParameters/DisplayClusterShaderParameters_ICVFX.h"
@@ -35,7 +34,7 @@ enum class EVarIcvfxMPCDIShaderType : uint8
 
 static TAutoConsoleVariable<int32> CVarIcvfxMPCDIShaderType(
 	TEXT("nDisplay.render.icvfx.shader"),
-	(int)EVarIcvfxMPCDIShaderType::Default,
+	(int32)EVarIcvfxMPCDIShaderType::Default,
 	TEXT("Select shader for icvfx:\n")
 	TEXT(" 0: Warp shader (used by default)\n")
 	TEXT(" 1: Warp shader with disabled blend maps\n")
@@ -55,7 +54,8 @@ enum class EIcvfxShaderType : uint8
 namespace IcvfxShaderPermutation
 {
 	// Shared permutation for picp warp
-	class FIcvfxShaderViewportInput    : SHADER_PERMUTATION_BOOL("VIEWPORT_INPUT");
+	class FIcvfxShaderViewportInput      : SHADER_PERMUTATION_BOOL("VIEWPORT_INPUT");
+	class FIcvfxShaderViewportInputAlpha : SHADER_PERMUTATION_BOOL("VIEWPORT_INPUT_ALPHA");
 
 	class FIcvfxShaderOverlayUnder     : SHADER_PERMUTATION_BOOL("OVERLAY_UNDER");
 	class FIcvfxShaderOverlayOver      : SHADER_PERMUTATION_BOOL("OVERLAY_OVER");
@@ -77,6 +77,8 @@ namespace IcvfxShaderPermutation
 
 	using FCommonPSDomain = TShaderPermutationDomain<
 		FIcvfxShaderViewportInput,
+		FIcvfxShaderViewportInputAlpha,
+
 		FIcvfxShaderOverlayUnder,
 		FIcvfxShaderOverlayOver,
 		FIcvfxShaderOverlayAlpha,
@@ -120,6 +122,11 @@ namespace IcvfxShaderPermutation
 			{
 				return false;
 			}
+
+			if (PermutationVector.Get<FIcvfxShaderViewportInputAlpha>())
+			{
+				return false;
+			}
 		}
 
 		if (!PermutationVector.Get<FIcvfxShaderInnerCamera>())
@@ -153,11 +160,11 @@ namespace IcvfxShaderPermutation
 };
 
 BEGIN_SHADER_PARAMETER_STRUCT(FIcvfxVertexShaderParameters, )
-	SHADER_PARAMETER(FVector4, DrawRectanglePosScaleBias)
-	SHADER_PARAMETER(FVector4, DrawRectangleInvTargetSizeAndTextureSize)
-	SHADER_PARAMETER(FVector4, DrawRectangleUVScaleBias)
+	SHADER_PARAMETER(FVector4f, DrawRectanglePosScaleBias)
+	SHADER_PARAMETER(FVector4f, DrawRectangleInvTargetSizeAndTextureSize)
+	SHADER_PARAMETER(FVector4f, DrawRectangleUVScaleBias)
 
-	SHADER_PARAMETER(FMatrix, MeshToStageProjectionMatrix)
+	SHADER_PARAMETER(FMatrix44f, MeshToStageProjectionMatrix)
 END_SHADER_PARAMETER_STRUCT()
 
 BEGIN_SHADER_PARAMETER_STRUCT(FIcvfxPixelShaderParameters, )
@@ -181,20 +188,24 @@ BEGIN_SHADER_PARAMETER_STRUCT(FIcvfxPixelShaderParameters, )
 	SHADER_PARAMETER_SAMPLER(SamplerState, ChromakeyCameraSampler)
 	SHADER_PARAMETER_SAMPLER(SamplerState, ChromakeyMarkerSampler)
 
-	SHADER_PARAMETER(FMatrix, ViewportTextureProjectionMatrix)
-	SHADER_PARAMETER(FMatrix, OverlayProjectionMatrix)
-	SHADER_PARAMETER(FMatrix, InnerCameraProjectionMatrix)
+	SHADER_PARAMETER(FMatrix44f, ViewportTextureProjectionMatrix)
+	SHADER_PARAMETER(FMatrix44f, OverlayProjectionMatrix)
+	SHADER_PARAMETER(FMatrix44f, InnerCameraProjectionMatrix)
 
 	SHADER_PARAMETER(float, AlphaEmbeddedGamma)
 
-	SHADER_PARAMETER(FVector4, InnerCameraSoftEdge)
+	SHADER_PARAMETER(FVector4f, InnerCameraSoftEdge)
 
-	SHADER_PARAMETER(FVector4, ChromakeyColor)
-	SHADER_PARAMETER(FVector4, ChromakeyMarkerColor)
+	SHADER_PARAMETER(FVector4f, InnerCameraBorderColor)
+	SHADER_PARAMETER(float, InnerCameraBorderThickness)
+	SHADER_PARAMETER(float, InnerCameraFrameAspectRatio)
+
+	SHADER_PARAMETER(FVector4f, ChromakeyColor)
+	SHADER_PARAMETER(FVector4f, ChromakeyMarkerColor)
 
 	SHADER_PARAMETER(float, ChromakeyMarkerScale)
 	SHADER_PARAMETER(float, ChromakeyMarkerDistance)
-	SHADER_PARAMETER(FVector2D, ChromakeyMarkerOffset)
+	SHADER_PARAMETER(FVector2f, ChromakeyMarkerOffset)
 END_SHADER_PARAMETER_STRUCT()
 
 class FIcvfxWarpVS : public FGlobalShader
@@ -274,7 +285,7 @@ private:
 
 	bool bIsBlendDisabled = false;
 	bool bForceMultiCameraPass = false;
-	int CameraIndex = 0;
+	int32 CameraIndex = 0;
 
 private:
 	inline bool IsMultiPassRender() const
@@ -289,7 +300,7 @@ private:
 
 	inline bool IsLastPass() const
 	{
-		int TotalUsedCameras = ICVFXParameters.Cameras.Num();
+		int32 TotalUsedCameras = ICVFXParameters.Cameras.Num();
 
 		if (bForceMultiCameraPass)
 		{
@@ -333,7 +344,7 @@ private:
 		return ICVFXParameters.IsLightcardOverUsed();
 	}
 
-	inline int GetUsedCameraIndex() const
+	inline int32 GetUsedCameraIndex() const
 	{
 		if (bForceMultiCameraPass)
 		{
@@ -359,12 +370,12 @@ private:
 
 	FIntRect GetViewportRect() const
 	{
-		int vpPosX = WarpBlendParameters.Dest.Rect.Min.X;
-		int vpPosY = WarpBlendParameters.Dest.Rect.Min.Y;
-		int vpSizeX = WarpBlendParameters.Dest.Rect.Width();
-		int vpSizeY = WarpBlendParameters.Dest.Rect.Height();
+		const int32 PosX = WarpBlendParameters.Dest.Rect.Min.X;
+		const int32 PosY = WarpBlendParameters.Dest.Rect.Min.Y;
+		const int32 SizeX = WarpBlendParameters.Dest.Rect.Width();
+		const int32 SizeY = WarpBlendParameters.Dest.Rect.Height();
 
-		return FIntRect(FIntPoint(vpPosX, vpPosY), FIntPoint(vpPosX + vpSizeX, vpPosY + vpSizeY));
+		return FIntRect(FIntPoint(PosX, PosY), FIntPoint(PosX + SizeX, PosY + SizeY));
 	}
 
 	EIcvfxShaderType GetPixelShaderType()
@@ -399,6 +410,11 @@ public:
 			RenderPassData.PSParameters.InputSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
 			RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderViewportInput>(true);
+
+			if (WarpBlendParameters.bRenderAlphaChannel)
+			{
+				RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderViewportInputAlpha>(true);
+			}
 		}
 
 		// Vertex shader viewport rect
@@ -410,28 +426,29 @@ public:
 		float USize = WarpBlendParameters.Src.Rect.Width() / (float)WarpDataSrcSize.X;
 		float VSize = WarpBlendParameters.Src.Rect.Height() / (float)WarpDataSrcSize.Y;
 
-		RenderPassData.VSParameters.DrawRectanglePosScaleBias = FVector4(1, 1, 0, 0);
-		RenderPassData.VSParameters.DrawRectangleInvTargetSizeAndTextureSize = FVector4(1, 1, 1, 1);
-		RenderPassData.VSParameters.DrawRectangleUVScaleBias = FVector4(USize, VSize, U, V);
+		RenderPassData.VSParameters.DrawRectanglePosScaleBias = FVector4f(1, 1, 0, 0);
+		RenderPassData.VSParameters.DrawRectangleInvTargetSizeAndTextureSize = FVector4f(1, 1, 1, 1);
+		RenderPassData.VSParameters.DrawRectangleUVScaleBias = FVector4f(USize, VSize, U, V);
 
 		return true;
 	}
 
 	bool GetWarpMapParameters(FIcvfxRenderPassData& RenderPassData)
 	{
-		RenderPassData.PSParameters.ViewportTextureProjectionMatrix = LocalUVMatrix * GetStereoMatrix();
+		RenderPassData.PSParameters.ViewportTextureProjectionMatrix = FMatrix44f(LocalUVMatrix * GetStereoMatrix());
 
 		if (WarpBlendParameters.WarpInterface.IsValid())
 		{
 			switch (WarpBlendParameters.WarpInterface->GetWarpGeometryType())
 			{
 				case EDisplayClusterWarpGeometryType::WarpMesh:
+				case EDisplayClusterWarpGeometryType::WarpProceduralMesh:
 				{
 					// Use mesh inseat of warp texture
 					RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderMeshWarp>(true);
 					RenderPassData.VSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderMeshWarp>(true);
 
-					RenderPassData.VSParameters.MeshToStageProjectionMatrix = WarpBlendParameters.Context.MeshToStageMatrix;
+					RenderPassData.VSParameters.MeshToStageProjectionMatrix = FMatrix44f(WarpBlendParameters.Context.MeshToStageMatrix);
 
 					break;
 				}
@@ -488,7 +505,7 @@ public:
 
 	bool GetOverlayParameters(FIcvfxRenderPassData& RenderPassData)
 	{
-		RenderPassData.PSParameters.OverlayProjectionMatrix = LocalUVMatrix;
+		RenderPassData.PSParameters.OverlayProjectionMatrix = FMatrix44f(LocalUVMatrix);
 
 		if (IsOverlayUnderUsed() || IsOverlayOverUsed())
 		{
@@ -524,7 +541,7 @@ public:
 
 	bool GetCameraParameters(FIcvfxRenderPassData& RenderPassData)
 	{
-		int CurrentCameraIndex = GetUsedCameraIndex();
+		const int32 CurrentCameraIndex = GetUsedCameraIndex();
 		if (!ICVFXParameters.IsCameraUsed(CurrentCameraIndex))
 		{
 			return false;
@@ -540,8 +557,6 @@ public:
 			FPlane(0, 1, 0, 0),
 			FPlane(0, 0, 0, 1));
 
-		static const FMatrix Render2Game = Game2Render.Inverse();
-
 		FRotationTranslationMatrix CameraTranslationMatrix(Camera.CameraViewRotation, Camera.CameraViewLocation);
 
 		FMatrix WorldToCamera = CameraTranslationMatrix.Inverse();
@@ -551,15 +566,19 @@ public:
 		RenderPassData.PSParameters.InnerCameraTexture = Camera.Resource.Texture;
 		RenderPassData.PSParameters.InnerCameraSampler = TStaticSamplerState<SF_Trilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-		RenderPassData.PSParameters.InnerCameraProjectionMatrix = InnerCameraProjectionMatrix;
-		RenderPassData.PSParameters.InnerCameraSoftEdge = Camera.SoftEdge;
+		RenderPassData.PSParameters.InnerCameraProjectionMatrix = FMatrix44f(InnerCameraProjectionMatrix);
+		RenderPassData.PSParameters.InnerCameraSoftEdge = FVector4f(Camera.SoftEdge);
+
+		RenderPassData.PSParameters.InnerCameraBorderColor = Camera.InnerCameraBorderColor;
+		RenderPassData.PSParameters.InnerCameraBorderThickness = Camera.InnerCameraBorderThickness;
+		RenderPassData.PSParameters.InnerCameraFrameAspectRatio = Camera.InnerCameraFrameAspectRatio;
 
 		return true;
 	}
 
 	bool GetCameraChromakeyParameters(FIcvfxRenderPassData& RenderPassData)
 	{
-		int CurrentCameraIndex = GetUsedCameraIndex();
+		const int32 CurrentCameraIndex = GetUsedCameraIndex();
 		const FDisplayClusterShaderParameters_ICVFX::FCameraSettings& Camera = ICVFXParameters.Cameras[CurrentCameraIndex];
 		
 		switch (Camera.ChromakeySource)
@@ -593,7 +612,7 @@ public:
 
 	bool GetCameraChromakeyMarkerParameters(FIcvfxRenderPassData& RenderPassData)
 	{
-		int CurrentCameraIndex = GetUsedCameraIndex();
+		const int32 CurrentCameraIndex = GetUsedCameraIndex();
 		const FDisplayClusterShaderParameters_ICVFX::FCameraSettings& Camera = ICVFXParameters.Cameras[CurrentCameraIndex];
 
 		if (Camera.IsChromakeyMarkerUsed())
@@ -605,7 +624,7 @@ public:
 
 			RenderPassData.PSParameters.ChromakeyMarkerScale    = Camera.ChromakeyMarkersScale;
 			RenderPassData.PSParameters.ChromakeyMarkerDistance = Camera.ChromakeyMarkersDistance;
-			RenderPassData.PSParameters.ChromakeyMarkerOffset   = Camera.ChromakeyMarkersOffset;
+			RenderPassData.PSParameters.ChromakeyMarkerOffset   = FVector2f(Camera.ChromakeyMarkersOffset);
 
 			RenderPassData.PSPermutationVector.Set<IcvfxShaderPermutation::FIcvfxShaderChromakeyMarker>(true);
 			return true;
@@ -653,15 +672,12 @@ public:
 				return true;
 
 			case EDisplayClusterWarpGeometryType::WarpMesh:
+			case EDisplayClusterWarpGeometryType::WarpProceduralMesh:
 			{
-				const FDisplayClusterRender_MeshComponent* DCWarpMeshComponent = WarpBlendParameters.WarpInterface->GetWarpMesh();
-				if (DCWarpMeshComponent)
+				const IDisplayClusterRender_MeshComponentProxy* WarpMeshProxy = WarpBlendParameters.WarpInterface->GetWarpMeshProxy_RenderThread();
+				if (WarpMeshProxy != nullptr)
 				{
-					const FDisplayClusterRender_MeshComponentProxy* WarpMesh = DCWarpMeshComponent->GetProxy();
-					if (WarpMesh)
-					{
-						return WarpMesh->BeginRender_RenderThread(RHICmdList, GraphicsPSOInit);
-					}
+					return WarpMeshProxy->BeginRender_RenderThread(RHICmdList, GraphicsPSOInit);
 				}
 				break;
 			}
@@ -685,15 +701,12 @@ public:
 				return true;
 
 			case EDisplayClusterWarpGeometryType::WarpMesh:
+			case EDisplayClusterWarpGeometryType::WarpProceduralMesh:
 			{
-				const FDisplayClusterRender_MeshComponent* DCWarpMeshComponent = WarpBlendParameters.WarpInterface->GetWarpMesh();
-				if (DCWarpMeshComponent)
+				const IDisplayClusterRender_MeshComponentProxy* WarpMeshProxy = WarpBlendParameters.WarpInterface->GetWarpMeshProxy_RenderThread();
+				if (WarpMeshProxy != nullptr)
 				{
-					const FDisplayClusterRender_MeshComponentProxy* WarpMesh = DCWarpMeshComponent->GetProxy();
-					if (WarpMesh)
-					{
-						return WarpMesh->FinishRender_RenderThread(RHICmdList);
-					}
+					return WarpMeshProxy->FinishRender_RenderThread(RHICmdList);
 				}
 				break;
 			}
@@ -734,7 +747,7 @@ public:
 
 			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 			GraphicsPSOInit.BlendState = TStaticBlendState <>::GetRHI();
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 			// Setup shaders data
 			SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), RenderPassData.VSParameters);
@@ -793,7 +806,7 @@ public:
 				}
 			}
 
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 			// Setup shaders data
 			SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), RenderPassData.VSParameters);
@@ -917,9 +930,14 @@ bool FDisplayClusterShadersWarpblend_ICVFX::RenderWarpBlend_ICVFX(FRHICommandLis
 	// Do single warp render pass
 	bool bIsRenderSuccess = false;
 	FRHIRenderPassInfo RPInfo(InWarpBlendParameters.Dest.Texture, ERenderTargetActions::Load_Store);
+	TransitionRenderPassTargets(RHICmdList, RPInfo);
+
 	RHICmdList.BeginRenderPass(RPInfo, TEXT("nDisplay_IcvfxWarpBlend"));
-	bIsRenderSuccess = IcvfxPassRenderer.Render(RHICmdList);
+	{
+		bIsRenderSuccess = IcvfxPassRenderer.Render(RHICmdList);
+	}
 	RHICmdList.EndRenderPass();
+	RHICmdList.Transition(FRHITransitionInfo(InWarpBlendParameters.Dest.Texture, ERHIAccess::Unknown, ERHIAccess::SRVMask));
 
 	return bIsRenderSuccess;
 };

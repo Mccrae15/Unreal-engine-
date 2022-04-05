@@ -11,7 +11,6 @@
 #include "DetailCategoryBuilder.h"
 #include "DetailWidgetRow.h"
 #include "Widgets/Docking/SDockTab.h"
-#include "SSCSEditor.h"
 #include "BlueprintEditorTabs.h"
 #include "ScopedTransaction.h"
 #include "ISequencerModule.h"
@@ -29,7 +28,7 @@ class SActorSequenceEditorWidgetWrapper : public SActorSequenceEditorWidget
 public:
 	~SActorSequenceEditorWidgetWrapper()
 	{
-		GEditor->OnObjectsReplaced().Remove(OnObjectsReplacedHandle);
+		FCoreUObjectDelegates::OnObjectsReplaced.Remove(OnObjectsReplacedHandle);
 	}
 
 	void Construct(const FArguments& InArgs, TWeakObjectPtr<UActorSequenceComponent> InSequenceComponent)
@@ -39,7 +38,7 @@ public:
 		WeakSequenceComponent = InSequenceComponent;
 		AssignSequence(GetActorSequence());
 
-		OnObjectsReplacedHandle = GEditor->OnObjectsReplaced().AddSP(this, &SActorSequenceEditorWidgetWrapper::OnObjectsReplaced);
+		OnObjectsReplacedHandle = FCoreUObjectDelegates::OnObjectsReplaced.AddSP(this, &SActorSequenceEditorWidgetWrapper::OnObjectsReplaced);
 	}
 
 protected:

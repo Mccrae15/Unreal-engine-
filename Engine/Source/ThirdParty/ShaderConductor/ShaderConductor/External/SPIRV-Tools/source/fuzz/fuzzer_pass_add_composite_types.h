@@ -25,11 +25,10 @@ namespace fuzz {
 class FuzzerPassAddCompositeTypes : public FuzzerPass {
  public:
   FuzzerPassAddCompositeTypes(
-      opt::IRContext* ir_context, FactManager* fact_manager,
+      opt::IRContext* ir_context, TransformationContext* transformation_context,
       FuzzerContext* fuzzer_context,
-      protobufs::TransformationSequence* transformations);
-
-  ~FuzzerPassAddCompositeTypes();
+      protobufs::TransformationSequence* transformations,
+      bool ignore_inapplicable_transformations);
 
   void Apply() override;
 

@@ -9,9 +9,7 @@
 UBTComposite_SimpleParallel::UBTComposite_SimpleParallel(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
 {
 	NodeName = "Simple Parallel";
-	bUseChildExecutionNotify = true;
-	bUseNodeDeactivationNotify = true;
-	bUseDecoratorsDeactivationCheck = true;
+	INIT_COMPOSITE_NODE_NOTIFY_FLAGS();
 	bApplyDecoratorScope = true;
 }
 
@@ -77,7 +75,7 @@ void UBTComposite_SimpleParallel::NotifyChildExecution(UBehaviorTreeComponent& O
 			
 			// notify decorators on main task, ignore observers updates in FakeSearchData - they are not allowed by parallel composite
 			FBehaviorTreeSearchData FakeSearchData(OwnerComp);
-			NotifyDecoratorsOnDeactivation(FakeSearchData, ChildIdx, NodeResult);
+			NotifyDecoratorsOnDeactivation(FakeSearchData, ChildIdx, NodeResult, true /*bIsRequestInSameInstance*/);
 
 			const int32 MyInstanceIdx = OwnerComp.FindInstanceContainingNode(this);
 

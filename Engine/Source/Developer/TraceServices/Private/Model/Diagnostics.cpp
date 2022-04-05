@@ -2,10 +2,8 @@
 #include "TraceServices/Model/Diagnostics.h"
 #include "Model/DiagnosticsPrivate.h"
 
-namespace Trace
+namespace TraceServices
 {
-
-FName FDiagnosticsProvider::ProviderName(TEXT("DiagnosticsProvider"));
 
 FDiagnosticsProvider::FDiagnosticsProvider(IAnalysisSession& InSession)
 	: Session(InSession)
@@ -31,9 +29,15 @@ const FSessionInfo& FDiagnosticsProvider::GetSessionInfo() const
 	return SessionInfo;
 }
 
-const IDiagnosticsProvider& ReadDiagnosticsProvider(const IAnalysisSession& Session)
+FName GetDiagnosticsProviderName()
 {
-	return *Session.ReadProvider<IDiagnosticsProvider>(FDiagnosticsProvider::ProviderName);
+	static FName Name(TEXT("DiagnosticsProvider"));
+	return Name;
 }
 
-} // namespace Trace
+const IDiagnosticsProvider* ReadDiagnosticsProvider(const IAnalysisSession& Session)
+{
+	return Session.ReadProvider<IDiagnosticsProvider>(GetDiagnosticsProviderName());
+}
+
+} // namespace TraceServices

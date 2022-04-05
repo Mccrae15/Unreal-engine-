@@ -9,6 +9,8 @@
 #include "Misc/FileHelper.h"
 #include "Misc/ScopeRWLock.h"
 #include "Async/ParallelFor.h"
+#include "Misc/CommandLine.h"
+#include "SourceControlPreferences.h"
 
 #define LOCTEXT_NAMESPACE "CollectionManager"
 
@@ -268,6 +270,8 @@ FCollectionManager::FCollectionManager()
 
 	CollectionExtension = TEXT("collection");
 
+	bNoFixupRedirectors = FParse::Param(FCommandLine::Get(), TEXT("NoFixupRedirectorsInCollections"));
+
 	LoadCollections();
 
 	// Watch for changes that may happen outside of the collection manager
@@ -293,12 +297,12 @@ FCollectionManager::FCollectionManager()
 		CollectionFileCaches[CacheIdx] = MakeShareable(new DirectoryWatcher::FFileCache(FileCacheConfig));
 	}
 
-	TickFileCacheDelegateHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FCollectionManager::TickFileCache), 1.0f);
+	TickFileCacheDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FCollectionManager::TickFileCache), 1.0f);
 }
 
 FCollectionManager::~FCollectionManager()
 {
-	FTicker::GetCoreTicker().RemoveTicker(TickFileCacheDelegateHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(TickFileCacheDelegateHandle);
 }
 
 bool FCollectionManager::HasCollections() const
@@ -1543,6 +1547,11 @@ bool FCollectionManager::IsValidParentCollection(FName CollectionName, ECollecti
 
 void FCollectionManager::HandleFixupRedirectors(ICollectionRedirectorFollower& InRedirectorFollower)
 {
+	if (bNoFixupRedirectors)
+	{
+		return;
+	}
+
 	const double LoadStartTime = FPlatformTime::Seconds();
 
 	TArray<TPair<FName, FName>> ObjectsToRename;
@@ -1975,7 +1984,27 @@ void FCollectionManager::ReplaceObjectInCollections(const FName& OldObjectPath, 
 bool FCollectionManager::InternalSaveCollection(const TSharedRef<FCollection>& CollectionRef, FText& OutError)
 {
 	TArray<FText> AdditionalChangelistText;
+
+	// Give game specific editors a chance to add lines
 	AddToCollectionCheckinDescriptionEvent.Broadcast(CollectionRef->GetCollectionName(), AdditionalChangelistText);
+
+	// Give settings a chance to add lines
+	TArray<FString> SettingsLines;
+
+	const USourceControlPreferences* Settings = GetDefault<USourceControlPreferences>();
+	if (const FString* SpecificMatch = Settings->SpecificCollectionChangelistTags.Find(CollectionRef->GetCollectionName()))
+	{
+		// Parse input buffer into an array of lines
+		SpecificMatch->ParseIntoArrayLines(SettingsLines, /*bCullEmpty=*/ false);
+	}
+	SettingsLines.Append(Settings->CollectionChangelistTags);
+
+	for (const FString& OneSettingLine : SettingsLines)
+	{
+		AdditionalChangelistText.Add(FText::FromString(*OneSettingLine));
+	}
+
+	// Save the collection
 	return CollectionRef->Save(AdditionalChangelistText, OutError);
 }
 

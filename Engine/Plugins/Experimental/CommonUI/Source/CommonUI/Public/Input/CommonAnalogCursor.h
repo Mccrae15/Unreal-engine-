@@ -40,6 +40,7 @@ public:
 	bool CanReleaseMouseCapture() const;
 
 	virtual bool HandleAnalogInputEvent(FSlateApplication& SlateApp, const FAnalogInputEvent& InAnalogInputEvent) override;
+	virtual bool HandleMouseMoveEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override;
 	virtual bool HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& InPointerEvent) override;
 	virtual bool HandleMouseButtonUpEvent(FSlateApplication& SlateApp, const FPointerEvent& InPointerEvent) override;
 
@@ -48,6 +49,8 @@ public:
 	virtual int32 GetOwnerUserIndex() const override;
 
 	virtual void ShouldHandleRightAnalog(bool bInShouldHandleRightAnalog);
+
+	bool IsAnalogMovementEnabled() const { return bIsAnalogMovementEnabled; }
 
 protected:
 	FCommonAnalogCursor(const UCommonUIActionRouterBase& InActionRouter);

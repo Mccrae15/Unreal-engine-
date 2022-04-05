@@ -39,6 +39,20 @@ public:
 		FMsg::Logf(__FILE__, __LINE__, LogName, ELogVerbosity::Log, TEXT("%s"), *FText::Format(LOCTEXT("BasicMessageLog_NewPage", "New Page: {PageTitle}"), Arguments).ToString());
 	}
 
+	virtual void SetCurrentPage( const FText& Title) override
+	{
+		FFormatNamedArguments Arguments;
+		Arguments.Add(TEXT("PageTitle"), Title);
+		FMsg::Logf(__FILE__, __LINE__, LogName, ELogVerbosity::Log, TEXT("%s"), *FText::Format(LOCTEXT("BasicMessageLog_SetCurrentPageTitle", "Set Current Page: {PageTitle}"), Arguments).ToString());
+	}
+
+	virtual void SetCurrentPage( const uint32 PageIndex) override
+	{
+		FFormatNamedArguments Arguments;
+		Arguments.Add(TEXT("PageIndex"), PageIndex);
+		FMsg::Logf(__FILE__, __LINE__, LogName, ELogVerbosity::Log, TEXT("%s"), *FText::Format(LOCTEXT("BasicMessageLog_SetCurrentPageIndex", "Set Current Page: {PageIndex}"), Arguments).ToString());
+	}
+
 	virtual void NotifyIfAnyMessages( const FText& Message, EMessageSeverity::Type SeverityFilter, bool bForce ) override
 	{
 		FFormatNamedArguments Arguments;
@@ -182,6 +196,12 @@ void FMessageLog::NewPage( const FText& InLabel )
 {
 	Flush();
 	MessageLog->NewPage(InLabel);
+}
+
+void FMessageLog::SetCurrentPage(const FText& InLabel)
+{
+	Flush();
+	MessageLog->SetCurrentPage(InLabel);
 }
 
 FMessageLog& FMessageLog::SuppressLoggingToOutputLog(bool bShouldSuppress)

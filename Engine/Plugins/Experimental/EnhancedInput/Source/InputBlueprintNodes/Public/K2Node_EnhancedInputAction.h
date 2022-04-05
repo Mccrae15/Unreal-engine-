@@ -30,9 +30,10 @@ class INPUTBLUEPRINTNODES_API UK2Node_EnhancedInputAction : public UK2Node, publ
 	virtual FLinearColor GetNodeTitleColor() const override;
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
 	virtual FText GetTooltipText() const override;
-	//virtual FText GetPinHoverText(const UEdGraphPin& Pin, FString& HoverTextOut) const override;
 	virtual FSlateIcon GetIconAndTint(FLinearColor& OutColor) const override;
 	virtual bool IsCompatibleWithGraph(UEdGraph const* Graph) const override;
+	virtual UObject* GetJumpTargetForDoubleClick() const override;
+	virtual void JumpToDefinition() const override;
 	//~ End UEdGraphNode Interface.
 
 	//~ Begin UK2Node Interface
@@ -45,6 +46,7 @@ class INPUTBLUEPRINTNODES_API UK2Node_EnhancedInputAction : public UK2Node, publ
 	virtual FBlueprintNodeSignature GetSignature() const override;
 	virtual void PostReconstructNode();
 	virtual void PinConnectionListChanged(UEdGraphPin* Pin);
+	virtual bool IsConnectionDisallowed(const UEdGraphPin* MyPin, const UEdGraphPin* OtherPin, FString& OutReason) const override;
 	//~ End UK2Node Interface
 
 	//~ Begin IK2Node_EventNodeInterface Interface.
@@ -55,6 +57,9 @@ private:
 	FName GetActionName() const;
 	void HideEventPins(UEdGraphPin* RetainPin);
 
+	/** Gets the ETriggerEvent from an exec pin based on the Pins name. */
+	const ETriggerEvent GetTriggerTypeFromExecPin(const UEdGraphPin* ExecPin) const;
+	
 	/** Constructing FText strings can be costly, so we cache the node's title/tooltip */
 	FNodeTextCache CachedTooltip;
 	FNodeTextCache CachedNodeTitle;

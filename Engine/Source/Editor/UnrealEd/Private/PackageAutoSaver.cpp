@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "PackageAutoSaver.h"
+
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
@@ -29,6 +31,7 @@
 #include "IVREditorModule.h"
 #include "LevelEditorViewport.h"
 #include "Animation/AnimCompressionDerivedDataPublic.h"
+#include "AssetCompilingManager.h"
 
 namespace PackageAutoSaverJson
 {
@@ -98,14 +101,14 @@ FPackageAutoSaver::FPackageAutoSaver()
 	UPackage::PackageMarkedDirtyEvent.AddRaw(this, &FPackageAutoSaver::OnMarkPackageDirty);
 
 	// Register for the package modified callback to catch packages that have been saved
-	UPackage::PackageSavedEvent.AddRaw(this, &FPackageAutoSaver::OnPackageSaved);
+	UPackage::PackageSavedWithContextEvent.AddRaw(this, &FPackageAutoSaver::OnPackageSaved);
 }
 
 FPackageAutoSaver::~FPackageAutoSaver()
 {
 	UPackage::PackageDirtyStateChangedEvent.RemoveAll(this);
 	UPackage::PackageMarkedDirtyEvent.RemoveAll(this);
-	UPackage::PackageSavedEvent.RemoveAll(this);
+	UPackage::PackageSavedWithContextEvent.RemoveAll(this);
 }
 
 void FPackageAutoSaver::UpdateAutoSaveCount(const float DeltaSeconds)
@@ -289,8 +292,8 @@ void FPackageAutoSaver::UpdateRestoreFile(const bool bRestoreEnabled)
 
 bool FPackageAutoSaver::HasPackagesToRestore() const
 {
-	// Don't offer to restore packages during automation testing; the dlg is modal and blocks
-	return !GIsAutomationTesting && PackagesThatCanBeRestored.Num() > 0;
+	// Don't offer to restore packages during automation testing or when unattended; the dlg is modal and blocks
+	return !GIsAutomationTesting && !FApp::IsUnattended() && PackagesThatCanBeRestored.Num() > 0;
 }
 
 void FPackageAutoSaver::OfferToRestorePackages()
@@ -336,10 +339,8 @@ void FPackageAutoSaver::OnMarkPackageDirty(UPackage* Pkg, bool bWasDirty)
 	UpdateDirtyListsForPackage(Pkg);
 }
 
-void FPackageAutoSaver::OnPackageSaved(const FString& Filename, UObject* Obj)
+void FPackageAutoSaver::OnPackageSaved(const FString& Filename, UPackage* Pkg, FObjectPostSaveContext ObjectSaveContext)
 {
-	UPackage* const Pkg = Cast<UPackage>(Obj);
-
 	// If this has come from an auto-save, update the last known filename in the user dirty list so that we can offer is up as a restore file later
 	if(IsAutoSaving())
 	{
@@ -377,38 +378,8 @@ void FPackageAutoSaver::UpdateDirtyListsForPackage(UPackage* Pkg)
 		// Note: Packages get dirtied again after they're auto-saved, so this would add them back again, which we don't want
 		if ( !IsAutoSaving() )
 		{
-			auto FindAssetInPackage = [](UPackage* InPackage)
-			{
-				UObject* Asset = nullptr;
-				ForEachObjectWithPackage(InPackage, [&Asset](UObject* Object)
-					{
-						if (Object->IsAsset())
-						{
-							ensure(Asset == nullptr);
-							Asset = Object;
-							return false;
-						}
-						return true;
-					}, false);
-				return Asset;
-			};
-			UObject* Asset = FindAssetInPackage(Pkg);
-
-			// Get the set of all reference worlds.
-			FWorldContext& EditorContext = GEditor->GetEditorWorldContext();
-
-			bool bPackageIsMap = false;
-			EditorLevelUtils::ForEachWorlds(EditorContext.World(), [&bPackageIsMap, Pkg](UWorld* World)
-			{
-				UPackage* Package = CastChecked<UPackage>(World->GetOuter());
-				bPackageIsMap = Package == Pkg;
-				return !bPackageIsMap;
-			}, true);
-
-			bool bForMapAutosave = Asset && Asset->GetTypedOuter<UWorld>()/** This handles external packages. */;
-
 			// Add package into the appropriate list (map or content)
-			if (bPackageIsMap || bForMapAutosave)
+			if (UWorld::IsWorldOrExternalActorPackage(Pkg))
 			{
 				DirtyMapsForAutoSave.Add(Pkg);
 			}
@@ -451,6 +422,7 @@ bool FPackageAutoSaver::CanAutoSave() const
 	const bool bIsInteracting = FSlateApplication::Get().HasAnyMouseCaptor() || FSlateApplication::Get().IsDragDropping() || GUnrealEd->IsUserInteracting() || (bDidInteractRecently && !bAutoSaveNotificationLaunched && !bDelayingDueToFailedSave);
 	const bool bHasGameOrProjectLoaded = FApp::HasProjectName();
 	const bool bAreShadersCompiling = GShaderCompilingManager->IsCompiling();
+	const bool bAreAssetsCompiling = FAssetCompilingManager::Get().GetNumRemainingAssets() > 0;
 	const bool bIsVREditorActive = IVREditorModule::Get().IsVREditorEnabled();	// @todo vreditor: Eventually we should support this while in VR (modal VR progress, with sufficient early warning)
 	const bool bAreAnimationsCompressing = GAsyncCompressedAnimationsTracker ? GAsyncCompressedAnimationsTracker->GetNumRemainingJobs() > 0 : false;
 
@@ -467,7 +439,7 @@ bool FPackageAutoSaver::CanAutoSave() const
 	// query any active editor modes and allow them to prevent autosave
 	const bool bActiveModesAllowAutoSave = GLevelEditorModeTools().CanAutoSave();
 
-	return (bAutosaveEnabled && !bSlowTask && !bInterpEditMode && !bPlayWorldValid && !bAnyMenusVisible && !bAutomationTesting && !bIsInteracting && !GIsDemoMode && bHasGameOrProjectLoaded && !bAreShadersCompiling && !bAreAnimationsCompressing && !bIsVREditorActive && !bIsSequencerPlaying && bActiveModesAllowAutoSave);
+	return (bAutosaveEnabled && !bSlowTask && !bInterpEditMode && !bPlayWorldValid && !bAnyMenusVisible && !bAutomationTesting && !bIsInteracting && !GIsDemoMode && bHasGameOrProjectLoaded && !bAreShadersCompiling && !bAreAssetsCompiling && !bAreAnimationsCompressing && !bIsVREditorActive && !bIsSequencerPlaying && bActiveModesAllowAutoSave);
 }
 
 bool FPackageAutoSaver::DoPackagesNeedAutoSave() const
@@ -535,8 +507,7 @@ void FPackageAutoSaver::UpdateAutoSaveNotification()
 
 	if (UserAllowsAutosave && // The user has set to allow auto-save in preferences
 		TimeInSecondsUntilAutosave < LoadingSavingSettings->AutoSaveWarningInSeconds && 
-		!InGame && // we want to hide auto-save if we are simulating/playing
-		!GLevelEditorModeTools().IsModeActive(FBuiltinEditorModes::EM_InterpEdit) // we want to hide auto-save if we are in matinee 
+		!InGame // we want to hide auto-save if we are simulating/playing
 		)
 	{		
 		if (!bAutoSaveNotificationLaunched && !bDelayingDueToFailedSave)
@@ -558,7 +529,7 @@ void FPackageAutoSaver::UpdateAutoSaveNotification()
 				static FText AutoSaveSaveButtonToolTipText		= NSLOCTEXT("AutoSaveNotify", "AutoSaveSaveToolTip", "Force Autosave");
 
 				FNotificationInfo Info( GetAutoSaveNotificationText(TimeInSecondsUntilAutosave) );
-				Info.Image = FEditorStyle::GetBrush("MainFrame.AutoSaveImage");
+				Info.Image = FAppStyle::Get().GetBrush("Icons.Save");
 
 				// Add the buttons with text, tooltip and callback
 				Info.ButtonDetails.Add(FNotificationButtonInfo(AutoSaveCancelButtonText, AutoSaveCancelButtonToolTipText, FSimpleDelegate::CreateRaw(this, &FPackageAutoSaver::OnAutoSaveCancel)));

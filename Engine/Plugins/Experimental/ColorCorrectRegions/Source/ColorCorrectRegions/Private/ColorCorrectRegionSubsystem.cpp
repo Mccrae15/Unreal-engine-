@@ -1,6 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "ColorCorrectRegionsSubsystem.h"
-#include "ColorCorrectRegionDatabase.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "EngineUtils.h"
@@ -108,9 +107,6 @@ void UColorCorrectRegionsSubsystem::OnActorDeleted(AActor* InActor)
 	{
 		FScopeLock RegionScopeLock(&RegionAccessCriticalSection);
 		Regions.Remove(AsRegion);
-
-		// Clear all asociated data with this CCR.
-		FColorCorrectRegionDatabase::RemoveCCRData(AsRegion);
 	}
 }
 

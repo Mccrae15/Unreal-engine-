@@ -208,7 +208,7 @@ struct NIAGARAEDITOR_API FNiagaraAction_NewNode : public FNiagaraMenuAction_Gene
 	class UEdGraphNode* CreateNode(UEdGraph* Graph, TArray<UEdGraphPin*>& FromPins, FVector2D NodePosition, bool bSelectNewNode = true) const;
 
 	UPROPERTY()
-	class UEdGraphNode* NodeTemplate = nullptr;
+	TObjectPtr<class UEdGraphNode> NodeTemplate = nullptr;
 };
 
 struct NIAGARAEDITOR_API FNiagaraParameterAction : public FEdGraphSchemaAction
@@ -355,6 +355,11 @@ public:
 
 	const TSharedPtr<FEdGraphSchemaAction>& GetSourceAction() const { return SourceAction; }
 
+	virtual TSharedPtr<SWidget> GetDefaultDecorator() const override;
+
+	void SetAdditionalText(FText InAdditionalText) { CurrentHoverText = InAdditionalText; }
+	EVisibility IsTextVisible() const;
 private:
 	TSharedPtr<FEdGraphSchemaAction> SourceAction;
+	TOptional<FNiagaraVariable> TargetParameter;
 };

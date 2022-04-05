@@ -3,9 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "VirtualTextureShared.h"
-#include "TexturePagePool.h"
+
+#include "Containers/CircularBuffer.h"
 #include "RendererInterface.h"
+#include "TexturePagePool.h"
+#include "VirtualTextureShared.h"
 #include "VirtualTexturing.h"
 
 struct FVTPhysicalSpaceDescription
@@ -40,13 +42,27 @@ inline bool operator!=(const FVTPhysicalSpaceDescription& Lhs, const FVTPhysical
 	return !operator==(Lhs, Rhs);
 }
 
+inline uint32 GetTypeHash(const FVTPhysicalSpaceDescription& Desc)
+{
+	uint32 Hash = GetTypeHash(Desc.TileSize);
+	Hash = HashCombine(Hash, GetTypeHash(Desc.Dimensions));
+	Hash = HashCombine(Hash, GetTypeHash(Desc.NumLayers));
+	Hash = HashCombine(Hash, GetTypeHash(Desc.bContinuousUpdate));
+	for (int32 Layer = 0; Layer < Desc.NumLayers; ++Layer)
+	{
+		Hash = HashCombine(Hash, GetTypeHash(Desc.Format[Layer]));
+	}
+	return Hash;
+}
+
 class FVirtualTexturePhysicalSpace final : public FRenderResource
 {
 public:
-	FVirtualTexturePhysicalSpace(const FVTPhysicalSpaceDescription& InDesc, uint16 InID);
+	FVirtualTexturePhysicalSpace(const FVTPhysicalSpaceDescription& InDesc, uint16 InID, int32 InTileWidthHeight, bool bInEnableResidencyMipMapBias);
 	virtual ~FVirtualTexturePhysicalSpace();
 
 	inline const FVTPhysicalSpaceDescription& GetDescription() const { return Description; }
+	inline const FString& GetFormatString() const { return FormatString; }
 	inline EPixelFormat GetFormat(int32 Layer) const { return Description.Format[Layer]; }
 	inline uint16 GetID() const { return ID; }
 	inline uint32 GetNumTiles() const { return TextureSizeInTiles * TextureSizeInTiles; }
@@ -92,18 +108,20 @@ public:
 		return PooledRenderTarget[Layer];
 	}
 
-#if STATS
-	inline void ResetWorkingSetSize() { WorkingSetSize.Reset(); }
-	inline void IncrementWorkingSetSize(int32 Amount) { WorkingSetSize.Add(Amount); }
-	void UpdateWorkingSetStat();
-#else // STATS
-	inline void ResetWorkingSetSize() {}
-	inline void IncrementWorkingSetSize(int32 Amount) {}
-	inline void UpdateWorkingSetStat() {}
-#endif // !STATS
+	/** Update internal tracking of residency. This is used to update stats and to calculate a mip bias to keep within the pool budget. */
+	void UpdateResidencyTracking(uint32 Frame);
+	/** Get dynamic mip bias used to keep within residency budget. */
+	inline float GetResidencyMipMapBias() const { return ResidencyMipMapBias; }
+	/** Get frame at which residency tracking last saw over-subscription. */
+	inline uint32 GetLastFrameOversubscribed() const { return LastFrameOversubscribed; }
+	/** Draw residency graph on screen. */
+	void DrawResidencyGraph(class FCanvas* Canvas, FBox2D CanvasPosition, bool bDrawKey);
+	/** Write residency stats to CSV profiler */
+	void UpdateCsvStats() const;
 
 private:
 	FVTPhysicalSpaceDescription Description;
+	FString FormatString;
 	FTexturePagePool Pool;
 	TRefCountPtr<IPooledRenderTarget> PooledRenderTarget[VIRTUALTEXTURE_SPACE_MAXLAYERS];
 	FShaderResourceViewRHIRef TextureSRV[VIRTUALTEXTURE_SPACE_MAXLAYERS];
@@ -113,11 +131,16 @@ private:
 	uint32 TextureSizeInTiles;
 	uint32 NumRefs;
 	uint16 ID;
-	bool bPageTableLimit; // True if the physical size was limited by the page table format requested
-	bool bGpuTextureLimit; // True if the physical size was limited by the maximum GPU texture size
+	
+	bool bEnableResidencyMipMapBias;
+	float ResidencyMipMapBias;
+	uint32 LastFrameOversubscribed;
 
-#if STATS
-	TStatId WorkingSetSizeStatID;
-	FThreadSafeCounter WorkingSetSize;
-#endif // STATS
+#if !UE_BUILD_SHIPPING
+	static const int32 HistorySize = 512;
+	TCircularBuffer<float> VisibleHistory;
+	TCircularBuffer<float> LockedHistory;
+	TCircularBuffer<float> MipMapBiasHistory;
+	uint32 HistoryIndex;
+#endif
 };

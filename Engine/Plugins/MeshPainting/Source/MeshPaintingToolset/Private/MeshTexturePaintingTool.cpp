@@ -15,9 +15,11 @@
 #include "Engine/Texture2D.h"
 #include "MeshPaintingToolsetTypes.h"
 #include "CanvasItem.h"
+#include "CanvasTypes.h"
 #include "ScopedTransaction.h"
 #include "BaseGizmos/BrushStampIndicator.h"
 #include "MeshPaintAdapterFactory.h"
+#include "TextureCompiler.h"
 
 #define LOCTEXT_NAMESPACE "MeshTextureBrush"
 
@@ -29,20 +31,9 @@
 
 bool UMeshTexturePaintingToolBuilder::CanBuildTool(const FToolBuilderState& SceneState) const
 {
-	UActorComponent* ActorComponent = ToolBuilderUtil::FindFirstComponent(SceneState, UMeshPaintingToolset::HasPaintableMesh);
-	UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(SceneState.ToolManager);
-	TArray<FPaintableTexture> PaintableTextures;
-	if (ActorComponent && MeshToolManager)
-	{
-		UMeshComponent* MeshComponent = Cast<UMeshComponent>(ActorComponent);
-		if (MeshComponent)
-		{
-			TSharedPtr<IMeshPaintComponentAdapter> MeshAdapter = FMeshPaintComponentAdapterFactory::CreateAdapterForMesh(MeshComponent, 0);
-			UTexturePaintToolset::RetrieveTexturesForComponent(MeshComponent, MeshAdapter.Get(), PaintableTextures);
-		}
-	}
 
-	return PaintableTextures.Num() > 0;
+
+	return GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>()->SelectionHasMaterialValidForTexturePaint();
 }
 
 UInteractiveTool* UMeshTexturePaintingToolBuilder::BuildTool(const FToolBuilderState& SceneState) const
@@ -83,10 +74,20 @@ void UMeshTexturePaintingTool::Setup()
 	bStampPending = false;
 	BrushProperties->RestoreProperties(this);
 
+	// Needed after restoring properties because the brush radius may be an output
+	// property based on selection, so we shouldn't use the last stored value there.
+	// We wouldn't have this problem if we restore properties before getting
+	// BrushRelativeSizeRange, but that happens in the Super::Setup() call earlier.
+	RecalculateBrushRadius();
+
+	BrushStampIndicator->LineColor = FLinearColor::Green;
 
 	GetToolManager()->DisplayMessage(
 		LOCTEXT("OnStartTexturePaintTool", "The Texture Weight Painting mode enables you to paint on textures and access available properties while doing so ."),
 		EToolMessageLevel::UserNotification);
+
+	SelectionMechanic = NewObject<UMeshPaintSelectionMechanic>(this);
+	SelectionMechanic->Setup(this);
 
 }
 
@@ -95,7 +96,7 @@ void UMeshTexturePaintingTool::Shutdown(EToolShutdownType ShutdownType)
 {
 	FinishPainting();
 	// If the user has pending changes and the editor is not exiting, we want to do the commit for all the modified textures.
-	if ((GetNumberOfPendingPaintChanges() > 0) && !IsEngineExitRequested())
+	if ((GetNumberOfPendingPaintChanges() > 0) && !IsEngineExitRequested() && ShutdownType != EToolShutdownType::Cancel)
 	{
 		CommitAllPaintedTextures();
 	}
@@ -108,10 +109,9 @@ void UMeshTexturePaintingTool::Shutdown(EToolShutdownType ShutdownType)
 
 	// Remove any existing texture targets
 	TexturePaintTargetList.Empty();
-	UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(GetToolManager());
-	if (MeshToolManager)
+	if (UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>())
 	{
-		MeshToolManager->Refresh();
+		MeshPaintingSubsystem->Refresh();
 	}
 
 	BrushProperties->SaveProperties(this);
@@ -120,11 +120,11 @@ void UMeshTexturePaintingTool::Shutdown(EToolShutdownType ShutdownType)
 
 void UMeshTexturePaintingTool::Render(IToolsContextRenderAPI* RenderAPI)
 {
-	UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(GetToolManager());
-		Super::Render(RenderAPI);
-		FToolDataVisualizer Draw;
-		Draw.BeginFrame(RenderAPI);
-	if (MeshToolManager && LastBestHitResult.Component != nullptr)
+	Super::Render(RenderAPI);
+	FToolDataVisualizer Draw;
+	Draw.BeginFrame(RenderAPI);
+	UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>();
+	if (MeshPaintingSubsystem && LastBestHitResult.Component != nullptr)
 	{
 		BrushStampIndicator->bDrawIndicatorLines = true;
 		static float WidgetLineThickness = 1.0f;
@@ -138,9 +138,9 @@ void UMeshTexturePaintingTool::Render(IToolsContextRenderAPI* RenderAPI)
 		const FVector NormalLineEnd(LastBestHitResult.Location + LastBestHitResult.Normal * NormalLineSize);
 		Draw.DrawLine(FVector(LastBestHitResult.Location), NormalLineEnd, NormalLineColor, WidgetLineThickness);
 
-		for (UMeshComponent* CurrentComponent : MeshToolManager->GetPaintableMeshComponents())
+		for (UMeshComponent* CurrentComponent : MeshPaintingSubsystem->GetPaintableMeshComponents())
 		{
-			TSharedPtr<IMeshPaintComponentAdapter> MeshAdapter = MeshToolManager->GetAdapterForComponent(Cast<UMeshComponent>(CurrentComponent));
+			TSharedPtr<IMeshPaintComponentAdapter> MeshAdapter = MeshPaintingSubsystem->GetAdapterForComponent(Cast<UMeshComponent>(CurrentComponent));
 
 			if (MeshAdapter->IsValid() && MeshAdapter->SupportsVertexPaint())
 			{
@@ -167,9 +167,10 @@ void UMeshTexturePaintingTool::Render(IToolsContextRenderAPI* RenderAPI)
 
 void UMeshTexturePaintingTool::OnTick(float DeltaTime)
 {
-	if (UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(GetToolManager()))
+	UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>();
+	if (MeshPaintingSubsystem)
 	{
-		if (MeshToolManager->bNeedsRecache)
+		if (MeshPaintingSubsystem->bNeedsRecache)
 		{
 			CacheSelectionData();
 			CacheTexturePaintData();
@@ -199,15 +200,15 @@ void UMeshTexturePaintingTool::OnPropertyModified(UObject* PropertySet, FPropert
 
 double UMeshTexturePaintingTool::EstimateMaximumTargetDimension()
 {
-	UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(GetToolManager());
 	bool bFoundComponentToUse = false;
 	FBoxSphereBounds Bounds = FBoxSphereBounds(0.0);
-	if (MeshToolManager)
+	UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>();
+	if (MeshPaintingSubsystem)
 	{
 		bool bFirstItem = true;
 
 		FBoxSphereBounds Extents;
-		for (UMeshComponent* SelectedComponent : MeshToolManager->GetSelectedMeshComponents())
+		for (UMeshComponent* SelectedComponent : MeshPaintingSubsystem->GetSelectedMeshComponents())
 		{
 			if (bFirstItem)
 			{
@@ -257,30 +258,32 @@ bool UMeshTexturePaintingTool::Paint(const TArrayView<TPair<FVector, FVector>>& 
 
 void UMeshTexturePaintingTool::CacheSelectionData()
 {
-	if (UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(GetToolManager()))
+	UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>();
+	if (MeshPaintingSubsystem)
 	{
-		MeshToolManager->ClearPaintableMeshComponents();
+		MeshPaintingSubsystem->ClearPaintableMeshComponents();
 
 		//Determine LOD level to use for painting(can only paint on LODs in vertex mode)
 		const int32 PaintLODIndex = 0;
 		//Determine UV channel to use while painting textures
 		const int32 UVChannel = 0;
 
-		MeshToolManager->CacheSelectionData(PaintLODIndex, UVChannel);
+		MeshPaintingSubsystem->CacheSelectionData(PaintLODIndex, UVChannel);
 	}
 }
 
 void UMeshTexturePaintingTool::CacheTexturePaintData()
 {
-	if (UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(GetToolManager()))
+	UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>();
+	if (MeshPaintingSubsystem)
 	{
-		TArray<UMeshComponent*> PaintableComponents = MeshToolManager->GetPaintableMeshComponents();
+		TArray<UMeshComponent*> PaintableComponents = MeshPaintingSubsystem->GetPaintableMeshComponents();
 		
 		PaintableTextures.Empty();
 		if (PaintableComponents.Num() == 1 && PaintableComponents[0])
 		{
 			const UMeshComponent* Component = PaintableComponents[0];
-			TSharedPtr<IMeshPaintComponentAdapter> Adapter = MeshToolManager->GetAdapterForComponent(Component);
+			TSharedPtr<IMeshPaintComponentAdapter> Adapter = MeshPaintingSubsystem->GetAdapterForComponent(Component);
 			UTexturePaintToolset::RetrieveTexturesForComponent(Component, Adapter.Get(), PaintableTextures);
 		}
 
@@ -309,10 +312,8 @@ bool UMeshTexturePaintingTool::PaintInternal(const TArrayView<TPair<FVector, FVe
 	const float InStrengthScale = PaintStrength;;
 
 	bool bPaintApplied = false;
-
+	UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>();
 	// Fire out a ray to see if there is a *selected* component under the mouse cursor that can be painted.
-	UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(GetToolManager());
-
 	for (int32 i = 0; i < Rays.Num(); ++i)
 	{
 		const FVector& RayOrigin = Rays[i].Key;
@@ -322,19 +323,22 @@ bool UMeshTexturePaintingTool::PaintInternal(const TArrayView<TPair<FVector, FVe
 		const FVector TraceStart(RayOrigin);
 		const FVector TraceEnd(RayOrigin + RayDirection * HALF_WORLD_MAX);
 
-		for (UMeshComponent* MeshComponent : MeshToolManager->GetPaintableMeshComponents())
+		if (MeshPaintingSubsystem)
 		{
-			TSharedPtr<IMeshPaintComponentAdapter> MeshAdapter = MeshToolManager->GetAdapterForComponent(MeshComponent);
-
-			// Ray trace
-			FHitResult TraceHitResult(1.0f);
-
-			if (MeshAdapter->LineTraceComponent(TraceHitResult, TraceStart, TraceEnd, FCollisionQueryParams(SCENE_QUERY_STAT(Paint), true)))
+			for (UMeshComponent* MeshComponent : MeshPaintingSubsystem->GetPaintableMeshComponents())
 			{
-				// Find the closest impact
-				if ((BestTraceResult.GetComponent() == nullptr) || (TraceHitResult.Time < BestTraceResult.Time))
+				TSharedPtr<IMeshPaintComponentAdapter> MeshAdapter = MeshPaintingSubsystem->GetAdapterForComponent(MeshComponent);
+
+				// Ray trace
+				FHitResult TraceHitResult(1.0f);
+
+				if (MeshAdapter->LineTraceComponent(TraceHitResult, TraceStart, TraceEnd, FCollisionQueryParams(SCENE_QUERY_STAT(Paint), true)))
 				{
-					BestTraceResult = TraceHitResult;
+					// Find the closest impact
+					if ((BestTraceResult.GetComponent() == nullptr) || (TraceHitResult.Time < BestTraceResult.Time))
+					{
+						BestTraceResult = TraceHitResult;
+					}
 				}
 			}
 		}
@@ -408,8 +412,7 @@ bool UMeshTexturePaintingTool::PaintInternal(const TArrayView<TPair<FVector, FVe
 		{
 			UMeshComponent* HoveredComponent = Entry.Key;
 			TArray<int32>& PaintRayResultIds = Entry.Value;
-
-			IMeshPaintComponentAdapter* MeshAdapter = MeshToolManager->GetAdapterForComponent(HoveredComponent).Get();
+			IMeshPaintComponentAdapter* MeshAdapter = MeshPaintingSubsystem ? MeshPaintingSubsystem->GetAdapterForComponent(HoveredComponent).Get() : nullptr;
 			if (!ensure(MeshAdapter))
 			{
 				continue;
@@ -438,7 +441,7 @@ bool UMeshTexturePaintingTool::PaintInternal(const TArrayView<TPair<FVector, FVe
 						const FVector& BestTraceResultLocation = PaintRayResults[PaintRayResultId].BestTraceResult.Location;
 						FViewCameraState CameraState;
 						GetToolManager()->GetContextQueriesAPI()->GetCurrentViewState(CameraState);
-						bPaintApplied |= UMeshPaintingToolset::ApplyPerTrianglePaintAction(MeshAdapter, CameraState.Position, BestTraceResultLocation, BrushProperties, FPerTrianglePaintAction::CreateUObject(this, &UMeshTexturePaintingTool::GatherTextureTriangles, &TrianglePaintInfoArray, &MaterialSections, TextureProperties->UVChannel), TextureProperties->bOnlyFrontFacingTriangles);
+						bPaintApplied |= MeshPaintingSubsystem->ApplyPerTrianglePaintAction(MeshAdapter, CameraState.Position, BestTraceResultLocation, BrushProperties, FPerTrianglePaintAction::CreateUObject(this, &UMeshTexturePaintingTool::GatherTextureTriangles, &TrianglePaintInfoArray, &MaterialSections, TextureProperties->UVChannel), TextureProperties->bOnlyFrontFacingTriangles);
 						break;
 					}
 
@@ -490,6 +493,31 @@ bool UMeshTexturePaintingTool::CanAccept() const
 	return false;
 }
 
+FInputRayHit UMeshTexturePaintingTool::CanBeginClickDragSequence(const FInputDeviceRay& PressPos)
+{
+	FHitResult OutHit;
+	bCachedClickRay = false;
+	if (!HitTest(PressPos.WorldRay, OutHit))
+	{
+		UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>();
+		const bool bFallbackClick = MeshPaintingSubsystem->GetSelectedMeshComponents().Num() > 0;
+		if (SelectionMechanic->IsHitByClick(PressPos, bFallbackClick).bHit)
+		{
+			bCachedClickRay = true;
+			PendingClickRay = PressPos.WorldRay;
+			PendingClickScreenPosition = PressPos.ScreenPosition;
+			return FInputRayHit(0.0);
+		}
+	}
+	return Super::CanBeginClickDragSequence(PressPos);
+}
+
+void UMeshTexturePaintingTool::OnUpdateModifierState(int ModifierID, bool bIsOn)
+{
+	Super::OnUpdateModifierState(ModifierID, bIsOn);
+	SelectionMechanic->SetAddToSelectionSet(bShiftToggle);
+}
+
 void UMeshTexturePaintingTool::OnBeginDrag(const FRay& Ray)
 {
 	Super::OnBeginDrag(Ray);
@@ -501,6 +529,14 @@ void UMeshTexturePaintingTool::OnBeginDrag(const FRay& Ray)
 		// apply initial stamp
 		PendingStampRay = Ray;
 		bStampPending = true;
+	}
+	else if (bCachedClickRay)
+	{
+		FInputDeviceRay InputDeviceRay = FInputDeviceRay(PendingClickRay, PendingClickScreenPosition);
+		SelectionMechanic->SetAddToSelectionSet(bShiftToggle);
+		SelectionMechanic->OnClicked(InputDeviceRay);
+		bCachedClickRay = false;
+		RecalculateBrushRadius();
 	}
 }
 
@@ -518,8 +554,8 @@ void UMeshTexturePaintingTool::OnUpdateDrag(const FRay& Ray)
 
 void UMeshTexturePaintingTool::OnEndDrag(const FRay& Ray)
 {
-	FinishPainting();
 	FinishPaintingTexture();
+	FinishPainting();
 	bStampPending = false;
 	bInDrag = false;
 }
@@ -527,9 +563,9 @@ void UMeshTexturePaintingTool::OnEndDrag(const FRay& Ray)
 bool UMeshTexturePaintingTool::HitTest(const FRay& Ray, FHitResult& OutHit)
 {
 	bool bUsed = false;
-	if (UMeshToolManager* MeshToolManager = Cast<UMeshToolManager>(GetToolManager()))
+	if (UMeshPaintingSubsystem* MeshPaintingSubsystem = GEngine->GetEngineSubsystem<UMeshPaintingSubsystem>())
 	{
-		MeshToolManager->FindHitResult(Ray, OutHit);
+		MeshPaintingSubsystem->FindHitResult(Ray, OutHit);
 		LastBestHitResult = OutHit;
 		bUsed = OutHit.bBlockingHit;
 	}
@@ -632,6 +668,8 @@ void UMeshTexturePaintingTool::StartPaintingTexture(UMeshComponent* InMeshCompon
 
 		if (bIsTextureUsed && !bStartedPainting)
 		{
+			FTextureCompilingManager::Get().FinishCompilation({ Texture2D });
+
 			bool bIsSourceTextureStreamedIn = Texture2D->IsFullyStreamedIn();
 
 			if (!bIsSourceTextureStreamedIn)
@@ -789,7 +827,7 @@ void UMeshTexturePaintingTool::PaintTexture(FMeshPaintParameters& InParams, TArr
 	check(BrushRenderTargetResource != nullptr);
 
 	// Create a canvas for the brush render target.
-	FCanvas BrushPaintCanvas(BrushRenderTargetResource, nullptr, 0, 0, 0, FeatureLevel);
+	FCanvas BrushPaintCanvas(BrushRenderTargetResource, nullptr, FGameTime(), FeatureLevel);
 
 	// Parameters for brush paint
 	TRefCountPtr< FMeshPaintBatchedElementParameters > MeshPaintBatchedElementParameters(new FMeshPaintBatchedElementParameters());
@@ -827,7 +865,7 @@ void UMeshTexturePaintingTool::PaintTexture(FMeshPaintParameters& InParams, TArr
 		check(BrushMaskRenderTargetResource != nullptr);
 
 		// Create a canvas for the brush mask rendertarget and clear it to black.
-		BrushMaskCanvas = TSharedPtr<FCanvas>(new FCanvas(BrushMaskRenderTargetResource, nullptr, 0, 0, 0, FeatureLevel));
+		BrushMaskCanvas = TSharedPtr<FCanvas>(new FCanvas(BrushMaskRenderTargetResource, nullptr, FGameTime(), FeatureLevel));
 		BrushMaskCanvas->Clear(FLinearColor::Black);
 
 		// Parameters for the mask
@@ -1025,7 +1063,7 @@ void UMeshTexturePaintingTool::PaintTexture(FMeshPaintParameters& InParams, TArr
 		// Dilate the paint stroke into the texture seams.
 		{
 			// Create a canvas for the render target.
-			FCanvas Canvas3(RenderTargetResource, nullptr, 0, 0, 0, FeatureLevel);
+			FCanvas Canvas3(RenderTargetResource, nullptr, FGameTime(), FeatureLevel);
 
 
 			TRefCountPtr< FMeshPaintDilateBatchedElementParameters > MeshPaintDilateBatchedElementParameters(new FMeshPaintDilateBatchedElementParameters());
@@ -1152,8 +1190,7 @@ void UMeshTexturePaintingTool::CycleTextures(int32 Direction)
 	{
 		return;
 	}
-
-	UTexture2D*& SelectedTexture = TextureProperties->PaintTexture;
+	TObjectPtr<UTexture2D>& SelectedTexture = TextureProperties->PaintTexture;
 	const int32 TextureIndex = (SelectedTexture != nullptr) ? PaintableTextures.IndexOfByKey(SelectedTexture) : 0;
 	if (TextureIndex != INDEX_NONE)
 	{
@@ -1185,7 +1222,7 @@ void UMeshTexturePaintingTool::CommitAllPaintedTextures()
 		int32 CurStep = 1;
 		int32 TotalSteps = GetNumberOfPendingPaintChanges();
 
-		for (TMap< UTexture2D*, FPaintTexture2DData >::TIterator It(PaintTargetData); It; ++It)
+		for (decltype(PaintTargetData)::TIterator It(PaintTargetData); It; ++It)
 		{
 			FPaintTexture2DData* TextureData = &It.Value();
 
@@ -1249,7 +1286,7 @@ void UMeshTexturePaintingTool::ClearAllTextureOverrides()
 {
 	const auto FeatureLevel = ERHIFeatureLevel::SM5;// GEditor->GetEditorWorldContext().World()->FeatureLevel;
 	/** Remove all texture overrides which are currently stored and active */
-	for (TMap< UTexture2D*, FPaintTexture2DData >::TIterator It(PaintTargetData); It; ++It)
+	for (decltype(PaintTargetData)::TIterator It(PaintTargetData); It; ++It)
 	{
 		FPaintTexture2DData* TextureData = &It.Value();
 
@@ -1266,7 +1303,7 @@ void UMeshTexturePaintingTool::ClearAllTextureOverrides()
 int32 UMeshTexturePaintingTool::GetNumberOfPendingPaintChanges() const
 {
 	int32 Result = 0;
-	for (TMap< UTexture2D*, FPaintTexture2DData >::TConstIterator It(PaintTargetData); It; ++It)
+	for (decltype(PaintTargetData)::TConstIterator It(PaintTargetData); It; ++It)
 	{
 		const FPaintTexture2DData* TextureData = &It.Value();
 
@@ -1304,6 +1341,11 @@ void UMeshTexturePaintingTool::PaintTextureChanged(const FAssetData& AssetData)
 			}
 		}
 	}
+}
+
+bool UMeshTexturePaintingTool::IsMeshAdapterSupported(TSharedPtr<IMeshPaintComponentAdapter> MeshAdapter) const
+{
+	return MeshAdapter.IsValid() ? MeshAdapter->SupportsTexturePaint() : false;
 }
 
 #undef LOCTEXT_NAMESPACE

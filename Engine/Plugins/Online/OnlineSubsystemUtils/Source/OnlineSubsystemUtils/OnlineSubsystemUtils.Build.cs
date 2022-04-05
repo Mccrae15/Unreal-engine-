@@ -20,22 +20,34 @@ public class OnlineSubsystemUtils : ModuleRules
         if (bIsWindowsPlatformBuild)
         {
             AddEngineThirdPartyPrivateStaticDependencies(Target, "DX11Audio");
-            PrivateIncludePaths.Add(RuntimePath + "Windows/XAudio2/Public");
-            PrivateIncludePaths.Add(RuntimePath + "Windows/XAudio2/Private");
         }
 
+        if (Target.bCompileAgainstEngine)
+        {
+            PublicDependencyModuleNames.AddRange(
+                new string[] {
+                    "Engine"
+				}
+            );
 
-		PrivateDependencyModuleNames.AddRange(
+			PrivateDependencyModuleNames.AddRange(
+				new string[] {
+					"Voice",
+					"AudioMixer"
+				}
+			);
+        }
+
+        PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"ImageCore",
 				"Sockets",
-				"Voice",
 				"PacketHandler",
 				"Json",
-				"AudioMixer",
 				"SignalProcessing",
 				"AudioMixerCore",
-				"DeveloperSettings"
+				"DeveloperSettings",
+				"OnlineServicesInterface"
 			}
 		);
 
@@ -43,9 +55,9 @@ public class OnlineSubsystemUtils : ModuleRules
 			new string[]
 			{
 				"Core",
+				"CoreOnline",
 				"CoreUObject",
-				"NetCore",
-				"Engine"
+				"NetCore"
 			}
 		);
 

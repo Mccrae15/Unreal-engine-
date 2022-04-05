@@ -29,8 +29,8 @@ void STextScroller::OnArrangeChildren(const FGeometry& AllottedGeometry, FArrang
 	const EVisibility ChildVisibility = ChildSlot.GetWidget()->GetVisibility();
 	if (ArrangedChildren.Accepts(ChildVisibility))
 	{
-		const FVector2D ThisContentScale = ContentScale.Get();
-		const FMargin SlotPadding(LayoutPaddingWithFlow(GSlateFlowDirection, ChildSlot.SlotPadding.Get()));
+		const FVector2D ThisContentScale = GetContentScale();
+		const FMargin SlotPadding(LayoutPaddingWithFlow(GSlateFlowDirection, ChildSlot.GetPadding()));
 		const AlignmentArrangeResult XResult = AlignChild<Orient_Horizontal>(GSlateFlowDirection, AllottedGeometry.GetLocalSize().X, ChildSlot, SlotPadding, ThisContentScale.X, false);
 		const AlignmentArrangeResult YResult = AlignChild<Orient_Vertical>(AllottedGeometry.GetLocalSize().Y, ChildSlot, SlotPadding, ThisContentScale.Y);
 		const FVector2D MinimumSize = ChildSlot.GetWidget()->GetDesiredSize();

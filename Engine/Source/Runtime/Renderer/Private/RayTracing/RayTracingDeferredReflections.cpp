@@ -146,7 +146,7 @@ class FGenerateReflectionRaysCS : public FGlobalShader
 	SHADER_PARAMETER(float, ReflectionMaxNormalBias)
 	SHADER_PARAMETER(float, ReflectionMaxRoughness)
 	SHADER_PARAMETER(float, ReflectionSmoothBias)
-	SHADER_PARAMETER(FVector2D, UpscaleFactor)
+	SHADER_PARAMETER(FVector2f, UpscaleFactor)
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 	SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 	SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FSortedReflectionRay>, RayBuffer)
@@ -196,13 +196,13 @@ class FRayTracingReflectionResolveCS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(FIntPoint, RayTracingBufferSize)
-		SHADER_PARAMETER(FVector2D, UpscaleFactor)
+		SHADER_PARAMETER(FVector2f, UpscaleFactor)
 		SHADER_PARAMETER(float, SpatialResolveMaxRadius)
 		SHADER_PARAMETER(int, SpatialResolveNumSamples)
 		SHADER_PARAMETER(float, ReflectionMaxRoughness)
 		SHADER_PARAMETER(float, ReflectionSmoothBias)
 		SHADER_PARAMETER(float, ReflectionHistoryWeight)
-		SHADER_PARAMETER(FVector4, HistoryScreenPositionScaleBias)
+		SHADER_PARAMETER(FVector4f, HistoryScreenPositionScaleBias)
 		SHADER_PARAMETER(uint32, ThreadIdOffset)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
@@ -238,10 +238,9 @@ class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 	SHADER_USE_ROOT_PARAMETER_STRUCT(FRayTracingDeferredReflectionsRGS, FGlobalShader)
 
 	class FDeferredMaterialMode : SHADER_PERMUTATION_ENUM_CLASS("DIM_DEFERRED_MATERIAL_MODE", EDeferredMaterialMode);
-	class FMissShaderLighting : SHADER_PERMUTATION_BOOL("DIM_MISS_SHADER_LIGHTING");
 	class FGenerateRays : SHADER_PERMUTATION_BOOL("DIM_GENERATE_RAYS"); // Whether to generate rays in the RGS or in a separate CS
 	class FAMDHitToken : SHADER_PERMUTATION_BOOL("DIM_AMD_HIT_TOKEN");
-	using FPermutationDomain = TShaderPermutationDomain<FDeferredMaterialMode, FMissShaderLighting, FGenerateRays, FAMDHitToken>;
+	using FPermutationDomain = TShaderPermutationDomain<FDeferredMaterialMode, FGenerateRays, FAMDHitToken>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(FIntPoint, RayTracingResolution)
@@ -251,7 +250,7 @@ class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 		SHADER_PARAMETER(float, ReflectionSmoothBias)
 		SHADER_PARAMETER(float, AnyHitMaxRoughness)
 		SHADER_PARAMETER(float, TextureMipBias)
-		SHADER_PARAMETER(FVector2D, UpscaleFactor)
+		SHADER_PARAMETER(FVector2f, UpscaleFactor)
 		SHADER_PARAMETER(int, ShouldDoDirectLighting)
 		SHADER_PARAMETER(int, ShouldDoEmissiveAndIndirectLighting)
 		SHADER_PARAMETER(int, ShouldDoReflectionCaptures)
@@ -262,14 +261,14 @@ class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FDeferredMaterialPayload>, MaterialBuffer)
 		SHADER_PARAMETER_STRUCT_INCLUDE(FSceneTextureParameters, SceneTextures)
 		SHADER_PARAMETER_SRV(StructuredBuffer<FRTLightingData>, LightDataBuffer)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D, SSProfilesTexture)
+		SHADER_PARAMETER_TEXTURE(Texture2D, SSProfilesTexture)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ColorOutput)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, ReflectionDenoiserData)
 		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 		SHADER_PARAMETER_STRUCT_REF(FReflectionUniformParameters, ReflectionStruct)
 		SHADER_PARAMETER_STRUCT_REF(FRaytracingLightDataPacked, LightDataPacked)
 		SHADER_PARAMETER_STRUCT_REF(FReflectionCaptureShaderData, ReflectionCapture)
-		SHADER_PARAMETER_STRUCT_REF(FForwardLightData, Forward)
+		SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FForwardLightData, Forward)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -292,13 +291,6 @@ class FRayTracingDeferredReflectionsRGS : public FGlobalShader
 			return false;
 		}
 
-		if (PermutationVector.Get<FDeferredMaterialMode>() != EDeferredMaterialMode::Shade
-			&& PermutationVector.Get<FMissShaderLighting>())
-		{
-			// DIM_MISS_SHADER_LIGHTING only makes sense for "shade" mode
-			return false;
-		}
-
 		if (PermutationVector.Get<FAMDHitToken>() && !(IsD3DPlatform(Parameters.Platform) && IsPCPlatform(Parameters.Platform)))
 		{
 			return false;
@@ -318,17 +310,20 @@ IMPLEMENT_GLOBAL_SHADER(FRayTracingDeferredReflectionsRGS, "/Engine/Private/RayT
 
 void FDeferredShadingSceneRenderer::PrepareRayTracingDeferredReflections(const FViewInfo& View, const FScene& Scene, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
+	if (!ShouldRenderRayTracingReflections(View))
+	{
+		return;
+	}
+
 	FRayTracingDeferredReflectionsRGS::FPermutationDomain PermutationVector;
 
 	const bool bGenerateRaysWithRGS = CVarRayTracingReflectionsGenerateRaysWithRGS.GetValueOnRenderThread() == 1;
-	const bool bMissShaderLighting = CanUseRayTracingLightingMissShader(View.GetShaderPlatform());
 	const bool bHitTokenEnabled = CanUseRayTracingAMDHitToken();
 
 	PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FAMDHitToken>(bHitTokenEnabled);
 
 	{
 		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FDeferredMaterialMode>(EDeferredMaterialMode::Gather);
-		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FMissShaderLighting>(false);
 		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FGenerateRays>(bGenerateRaysWithRGS);
 		auto RayGenShader = View.ShaderMap->GetShader<FRayTracingDeferredReflectionsRGS>(PermutationVector);
 		OutRayGenShaders.Add(RayGenShader.GetRayTracingShader());
@@ -336,7 +331,6 @@ void FDeferredShadingSceneRenderer::PrepareRayTracingDeferredReflections(const F
 
 	{
 		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FDeferredMaterialMode>(EDeferredMaterialMode::Shade);
-		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FMissShaderLighting>(bMissShaderLighting);
 		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FGenerateRays>(false); // shading is independent of how rays are generated
 		auto RayGenShader = View.ShaderMap->GetShader<FRayTracingDeferredReflectionsRGS>(PermutationVector);
 		OutRayGenShaders.Add(RayGenShader.GetRayTracingShader());
@@ -348,7 +342,7 @@ static void AddReflectionResolvePass(
 	const FViewInfo& View,
 	const FRayTracingDeferredReflectionsRGS::FParameters& CommonParameters,
 	FRDGTextureRef DepthBufferHistory,
-	FRDGTextureRef ReflectionHistory, float ReflectionHistoryWeight, const FVector4& HistoryScreenPositionScaleBias,
+	FRDGTextureRef ReflectionHistory, float ReflectionHistoryWeight, const FVector4f& HistoryScreenPositionScaleBias,
 	FRDGTextureRef RawReflectionColor,
 	FRDGTextureRef ReflectionDenoiserData,
 	FIntPoint RayTracingBufferSize,
@@ -402,6 +396,11 @@ static void AddReflectionResolvePass(
 
 void FDeferredShadingSceneRenderer::PrepareRayTracingDeferredReflectionsDeferredMaterial(const FViewInfo& View, const FScene& Scene, TArray<FRHIRayTracingShader*>& OutRayGenShaders)
 {
+	if (!ShouldRenderRayTracingReflections(View))
+	{
+		return;
+	}
+
 	FRayTracingDeferredReflectionsRGS::FPermutationDomain PermutationVector;
 
 	const bool bGenerateRaysWithRGS = CVarRayTracingReflectionsGenerateRaysWithRGS.GetValueOnRenderThread() == 1;
@@ -457,7 +456,6 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 {
 	const float ResolutionFraction = Options.ResolutionFraction;
 	const bool bGenerateRaysWithRGS = CVarRayTracingReflectionsGenerateRaysWithRGS.GetValueOnRenderThread()==1;
-	const bool bMissShaderLighting = CanUseRayTracingLightingMissShader(View.GetShaderPlatform());
 
 	const bool bExternalDenoiser = DenoiserMode != 0;
 	const bool bSpatialResolve   = !bExternalDenoiser && CVarRayTracingReflectionsSpatialResolve.GetValueOnRenderThread() == 1;
@@ -518,7 +516,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 	const FIntPoint TileAlignedResolution = FIntPoint::DivideAndRoundUp(RayTracingResolution, SortTileSize) * SortTileSize;
 
 	FRayTracingDeferredReflectionsRGS::FParameters CommonParameters;
-	CommonParameters.UpscaleFactor           = UpscaleFactor;
+	CommonParameters.UpscaleFactor           = FVector2f(UpscaleFactor); // LWC_TODO: Precision loss
 	CommonParameters.RayTracingResolution    = RayTracingResolution;
 	CommonParameters.TileAlignedResolution   = TileAlignedResolution;
 	CommonParameters.ReflectionMaxRoughness  = Options.MaxRoughness;
@@ -532,15 +530,15 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 
 	CommonParameters.DenoisingOutputFormat               = bSpatialResolve ? 1 : 0;
 
-	CommonParameters.TLAS                    = View.RayTracingScene.RayTracingSceneRHI->GetShaderResourceView();
+	CommonParameters.TLAS                    = View.GetRayTracingSceneViewChecked();
 	CommonParameters.SceneTextures           = SceneTextures;
 	CommonParameters.ViewUniformBuffer       = View.ViewUniformBuffer;
 	CommonParameters.LightDataPacked         = View.RayTracingLightData.UniformBuffer;
 	CommonParameters.LightDataBuffer         = View.RayTracingLightData.LightBufferSRV;
-	CommonParameters.SSProfilesTexture       = GraphBuilder.RegisterExternalTexture(View.RayTracingSubSurfaceProfileTexture);
+	CommonParameters.SSProfilesTexture       = View.RayTracingSubSurfaceProfileTexture;
 	CommonParameters.ReflectionStruct        = CreateReflectionUniformBuffer(View, EUniformBufferUsage::UniformBuffer_SingleFrame);
 	CommonParameters.ReflectionCapture       = View.ReflectionCaptureUniformBuffer;
-	CommonParameters.Forward                 = View.ForwardLightingResources->ForwardLightDataUniformBuffer;
+	CommonParameters.Forward                 = View.ForwardLightingResources.ForwardLightUniformBuffer;
 	CommonParameters.ReflectionMaxNormalBias = GetRaytracingMaxNormalBias();
 
 	if (!CommonParameters.SceneTextures.GBufferVelocityTexture)
@@ -590,13 +588,13 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 			RDG_EVENT_NAME("RayTracingDeferredReflectionsGather %dx%d", RayTracingResolution.X, RayTracingResolution.Y),
 			&PassParameters,
 			ERDGPassFlags::Compute,
-		[&PassParameters, this, &View, TileAlignedNumRays, RayGenShader](FRHICommandList& RHICmdList)
+		[&PassParameters, this, &View, TileAlignedNumRays, RayGenShader](FRHIRayTracingCommandList& RHICmdList)
 		{
 			FRayTracingPipelineState* Pipeline = View.RayTracingMaterialGatherPipeline;
 
 			FRayTracingShaderBindingsWriter GlobalResources;
 			SetShaderParameters(GlobalResources, RayGenShader, PassParameters);
-			FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+			FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 			RHICmdList.RayTraceDispatch(Pipeline, RayGenShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, TileAlignedNumRays, 1);
 		});
 	}
@@ -619,7 +617,6 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 		FRayTracingDeferredReflectionsRGS::FPermutationDomain PermutationVector;
 		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FAMDHitToken>(bHitTokenEnabled);
 		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FDeferredMaterialMode>(EDeferredMaterialMode::Shade);
-		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FMissShaderLighting>(bMissShaderLighting);
 		PermutationVector.Set<FRayTracingDeferredReflectionsRGS::FGenerateRays>(false);
 
 		auto RayGenShader = View.ShaderMap->GetShader<FRayTracingDeferredReflectionsRGS>(PermutationVector);
@@ -629,11 +626,11 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 			RDG_EVENT_NAME("RayTracingDeferredReflectionsShade %dx%d", RayTracingResolution.X, RayTracingResolution.Y),
 			&PassParameters,
 			ERDGPassFlags::Compute,
-		[&PassParameters, &View, TileAlignedNumRays, RayGenShader](FRHICommandList& RHICmdList)
+		[&PassParameters, &View, TileAlignedNumRays, RayGenShader](FRHIRayTracingCommandList& RHICmdList)
 		{
 			FRayTracingShaderBindingsWriter GlobalResources;
 			SetShaderParameters(GlobalResources, RayGenShader, PassParameters);
-			FRHIRayTracingScene* RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI;
+			FRHIRayTracingScene* RayTracingSceneRHI = View.GetRayTracingSceneChecked();
 			RHICmdList.RayTraceDispatch(View.RayTracingMaterialPipeline, RayGenShader.GetRayTracingShader(), RayTracingSceneRHI, GlobalResources, TileAlignedNumRays, 1);
 		});
 	}
@@ -680,7 +677,7 @@ void FDeferredShadingSceneRenderer::RenderRayTracingDeferredReflections(
 
 		FVector2D InvBufferSize(1.0f / float(BufferSize.X), 1.0f / float(BufferSize.Y));
 
-		FVector4 HistoryScreenPositionScaleBias = FVector4(
+		FVector4f HistoryScreenPositionScaleBias = FVector4f(
 			ViewportExtent.X * 0.5f * InvBufferSize.X,
 			-ViewportExtent.Y * 0.5f * InvBufferSize.Y,
 			(ViewportExtent.X * 0.5f + ViewportOffset.X) * InvBufferSize.X,

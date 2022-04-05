@@ -5,6 +5,7 @@
 #include "AudioDeviceManager.h"
 #include "AudioModulation.h"
 #include "AudioModulationLogging.h"
+#include "AudioModulationStatics.h"
 #include "AudioModulationSystem.h"
 #include "DSP/BufferVectorOperations.h"
 #include "Engine/World.h"
@@ -19,6 +20,11 @@ USoundControlBus::USoundControlBus(const FObjectInitializer& ObjectInitializer)
 #endif // WITH_EDITORONLY_DATA
 	, Parameter(nullptr)
 {
+}
+
+TUniquePtr<Audio::IModulatorSettings> USoundControlBus::CreateProxySettings() const
+{
+	return TUniquePtr<Audio::IModulatorSettings>(new AudioModulation::FControlBusSettings(*this));
 }
 
 #if WITH_EDITOR
@@ -67,7 +73,7 @@ void USoundControlBus::PostEditChangeProperty(FPropertyChangedEvent& InPropertyC
 			}
 		}
 
-		AudioModulation::IterateModulationImpl([this](AudioModulation::FAudioModulation& OutModSystem)
+		AudioModulation::IterateModulationManagers([this](AudioModulation::FAudioModulationManager& OutModSystem)
 		{
 			OutModSystem.UpdateModulator(*this);
 		});
@@ -107,9 +113,9 @@ void USoundControlBus::BeginDestroy()
 		if (AudioDevice.IsValid())
 		{
 			check(AudioDevice->IsModulationPluginEnabled());
-			if (IAudioModulation* ModulationInterface = AudioDevice->ModulationInterface.Get())
+			if (IAudioModulationManager* ModulationInterface = AudioDevice->ModulationInterface.Get())
 			{
-				FAudioModulation* Modulation = static_cast<FAudioModulation*>(ModulationInterface);
+				FAudioModulationManager* Modulation = static_cast<FAudioModulationManager*>(ModulationInterface);
 				check(Modulation);
 				Modulation->DeactivateBus(*this);
 			}
@@ -125,4 +131,16 @@ const Audio::FModulationMixFunction USoundControlBus::GetMixFunction() const
 	}
 
 	return Audio::FModulationParameter::GetDefaultMixFunction();
+}
+
+TUniquePtr<Audio::IProxyData> USoundControlBus::CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams)
+{
+	using namespace AudioModulation;
+	return MakeUnique<FSoundModulatorAssetProxy>(*this);
+}
+
+const Audio::FModulationParameter& USoundControlBus::GetOutputParameter() const
+{
+	const FString Breadcrumb = FString::Format(TEXT("{0} '{1}'"), { *GetClass()->GetName(), *GetName() });
+	return AudioModulation::GetOrRegisterParameter(Parameter, Breadcrumb);
 }

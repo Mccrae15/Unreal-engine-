@@ -28,6 +28,7 @@
 #include "Serialization/MemoryImage.h"
 #include "Serialization/MemoryReader.h"
 #include "Serialization/MemoryWriter.h"
+#include "Hash/Blake3.h"
 #include "Hash/CityHash.h"
 #include "Templates/AlignmentTemplates.h"
 
@@ -49,7 +50,7 @@ const TCHAR* LexToString(EName Ename)
 {
 	switch (Ename)
 	{
-#define REGISTER_NAME(num,namestr) case num: return TEXT(#namestr);
+#define REGISTER_NAME(num,name) case EName::name: return TEXT(PREPROCESSOR_TO_STRING(name));
 #include "UObject/UnrealNames.inl"
 #undef REGISTER_NAME
 		default:
@@ -595,6 +596,9 @@ template<class CharType>
 FORCENOINLINE FNameHash HashLowerCase(const CharType* Str, uint32 Len)
 {
 	CharType LowerStr[NAME_SIZE];
+	UE_CLOG(Len > NAME_SIZE, LogCore, Fatal,
+		TEXT("FName length is too long; HashLowerCase value is undefined. Length = %d, MaxLength = %d, Name=%.*s..."),
+		Len, NAME_SIZE, NAME_SIZE, StringCast<TCHAR>(Str, NAME_SIZE).Get());
 	for (uint32 I = 0; I < Len; ++I)
 	{
 		LowerStr[I] = TChar<CharType>::ToLower(Str[I]);
@@ -1031,7 +1035,7 @@ private:
 	FNamePoolShard<ENameCase::IgnoreCase> ComparisonShards[FNamePoolShards];
 
 	// Put constant lookup on separate cache line to avoid it being constantly invalidated by insertion
-	alignas(PLATFORM_CACHE_LINE_SIZE) FNameEntryId ENameToEntry[NAME_MaxHardcodedNameIndex] = {};
+	alignas(PLATFORM_CACHE_LINE_SIZE) FNameEntryId ENameToEntry[(uint32)EName::MaxHardcodedNameIndex] = {};
 	uint32 LargestEnameUnstableId;
 	TMap<FNameEntryId, EName, TInlineSetAllocator<MaxENames>> EntryToEName;
 };
@@ -1057,9 +1061,9 @@ FNamePool::FNamePool()
 
 	// Make reverse mapping
 	LargestEnameUnstableId = 0;
-	for (uint32 ENameIndex = 0; ENameIndex < NAME_MaxHardcodedNameIndex; ++ENameIndex)
+	for (uint32 ENameIndex = 0; ENameIndex < (uint32)EName::MaxHardcodedNameIndex; ++ENameIndex)
 	{
-		if (ENameIndex == NAME_None || ENameToEntry[ENameIndex])
+		if (ENameIndex == (uint32)NAME_None || ENameToEntry[ENameIndex])
 		{
 			EntryToEName.Add(ENameToEntry[ENameIndex], (EName)ENameIndex);
 			LargestEnameUnstableId = FMath::Max(LargestEnameUnstableId, ENameToEntry[ENameIndex].ToUnstableInt());
@@ -1096,8 +1100,8 @@ static bool IsPureAnsi(const WIDECHAR* Str, const int32 Len)
 
 FNameEntryId FNamePool::Find(EName Ename) const
 {
-	checkSlow(Ename < NAME_MaxHardcodedNameIndex);
-	return ENameToEntry[Ename];
+	checkSlow(Ename < EName::MaxHardcodedNameIndex);
+	return ENameToEntry[(uint32)Ename];
 }
 
 FNameEntryId FNamePool::Find(FNameStringView Name) const
@@ -1302,7 +1306,7 @@ static FNamePool& GetNamePoolPostInit()
 
 bool operator==(FNameEntryId Id, EName Ename)
 {
-	return Id == GetNamePoolPostInit().Find(Ename);
+	return Ename == NAME_None ? !Id : Id == GetNamePoolPostInit().Find(Ename);
 }
 
 static int32 CompareDifferentIdsAlphabetically(FNameEntryId AId, FNameEntryId BId)
@@ -1664,7 +1668,7 @@ FNameEntry const* FName::GetEntry(FNameEntryId Id)
 FString FName::NameToDisplayString( const FString& InDisplayName, const bool bIsBool )
 {
 	// Copy the characters out so that we can modify the string in place
-	const TArray< TCHAR >& Chars = InDisplayName.GetCharArray();
+	const TArray< TCHAR, FString::AllocatorType >& Chars = InDisplayName.GetCharArray();
 
 	// This is used to indicate that we are in a run of uppercase letter and/or digits.  The code attempts to keep
 	// these characters together as breaking them up often looks silly (i.e. "Draw Scale 3 D" as opposed to "Draw Scale 3D"
@@ -1836,6 +1840,15 @@ struct FNameAnsiStringView
 	int32 Len;
 };
 
+struct FNameUtf8StringViewWithWidth
+{
+	using CharType = UTF8CHAR;
+
+	const UTF8CHAR* Str;
+	int32 Len;
+	bool bIsWide;
+};
+
 struct FWideStringViewWithWidth
 {
 	using CharType = WIDECHAR;
@@ -1855,25 +1868,27 @@ static FNameAnsiStringView MakeUnconvertedView(const ANSICHAR* Str)
 	return { Str, Str ? FCStringAnsi::Strlen(Str) : 0 };
 }
 
-static bool IsWide(const WIDECHAR* Str, const int32 Len)
+template <typename CharType>
+static bool IsWide(const CharType* Str, const int32 Len)
 {
 	uint32 UserCharBits = 0;
 	for (int32 I = 0; I < Len; ++I)
 	{
-		UserCharBits |= TChar<WIDECHAR>::ToUnsigned(Str[I]);
+		UserCharBits |= TChar<CharType>::ToUnsigned(Str[I]);
 	}
 	return UserCharBits & 0xffffff80u;
 }
 
-static int32 GetLengthAndWidth(const WIDECHAR* Str, bool& bOutIsWide)
+template <typename CharType>
+static int32 GetLengthAndWidth(const CharType* Str, bool& bOutIsWide)
 {
 	uint32 UserCharBits = 0;
-	const WIDECHAR* It = Str;
+	const CharType* It = Str;
 	if (Str)
 	{
 		while (*It)
 		{
-			UserCharBits |= TChar<WIDECHAR>::ToUnsigned(*It);
+			UserCharBits |= TChar<CharType>::ToUnsigned(*It);
 			++It;
 		}
 	}
@@ -1881,6 +1896,19 @@ static int32 GetLengthAndWidth(const WIDECHAR* Str, bool& bOutIsWide)
 	bOutIsWide = UserCharBits & 0xffffff80u;
 
 	return UE_PTRDIFF_TO_INT32(It - Str);
+}
+
+static FNameUtf8StringViewWithWidth MakeUnconvertedView(const UTF8CHAR* Str, int32 Len)
+{
+	return { Str, Len, IsWide(Str, Len) };
+}
+
+static FNameUtf8StringViewWithWidth MakeUnconvertedView(const UTF8CHAR* Str)
+{
+	FNameUtf8StringViewWithWidth View;
+	View.Str = Str;
+	View.Len = GetLengthAndWidth(Str, View.bIsWide);
+	return View;
 }
 
 static FWideStringViewWithWidth MakeUnconvertedView(const WIDECHAR* Str, int32 Len)
@@ -1965,6 +1993,26 @@ struct FNameHelper
 		}
 
 		return Make(FNameStringView(View.Str, View.Len), FindType, InternalNumber);
+	}
+
+	static FName MakeWithNumber(FNameUtf8StringViewWithWidth View, EFindName FindType, int32 InternalNumber)
+	{
+		// Ignore the supplied number if the name string is empty
+		// to keep the semantics of the old FName implementation
+		if (View.Len == 0)
+		{
+			return FName();
+		}
+
+		if (!View.bIsWide)
+		{
+			return Make(FNameStringView(reinterpret_cast<const ANSICHAR*>(View.Str), View.Len), FindType, InternalNumber);
+		}
+		else
+		{
+			TStringConversion<FUTF8ToTCHAR_Convert, NAME_SIZE> WideName(View.Str, View.Len);
+			return Make(FNameStringView(WideName.Get(), WideName.Length()), FindType, InternalNumber);
+		}
 	}
 
 	static FName MakeWithNumber(const FWideStringViewWithWidth View, EFindName FindType, int32 InternalNumber)
@@ -2107,11 +2155,19 @@ FName::FName(const ANSICHAR* Name, EFindName FindType)
 	: FName(FNameHelper::MakeDetectNumber(MakeUnconvertedView(Name), FindType))
 {}
 
+FName::FName(const UTF8CHAR* Name, EFindName FindType)
+	: FName(FNameHelper::MakeDetectNumber(MakeUnconvertedView(Name), FindType))
+{}
+
 FName::FName(int32 Len, const WIDECHAR* Name, EFindName FindType)
 	: FName(FNameHelper::MakeDetectNumber(MakeUnconvertedView(Name, Len), FindType))
 {}
 
 FName::FName(int32 Len, const ANSICHAR* Name, EFindName FindType)
+	: FName(FNameHelper::MakeDetectNumber(MakeUnconvertedView(Name, Len), FindType))
+{}
+
+FName::FName(int32 Len, const UTF8CHAR* Name, EFindName FindType)
 	: FName(FNameHelper::MakeDetectNumber(MakeUnconvertedView(Name, Len), FindType))
 {}
 
@@ -2123,12 +2179,21 @@ FName::FName(const ANSICHAR* Name, int32 InNumber, EFindName FindType)
 	: FName(FNameHelper::MakeWithNumber(MakeUnconvertedView(Name), FindType, InNumber))
 {}
 
+FName::FName(const UTF8CHAR* Name, int32 InNumber, EFindName FindType)
+	: FName(FNameHelper::MakeWithNumber(MakeUnconvertedView(Name), FindType, InNumber))
+{}
+
 FName::FName(int32 Len, const WIDECHAR* Name, int32 InNumber, EFindName FindType)
 	: FName(InNumber != NAME_NO_NUMBER_INTERNAL ? FNameHelper::MakeWithNumber(MakeUnconvertedView(Name, Len), FindType, InNumber)
 												: FNameHelper::MakeDetectNumber(MakeUnconvertedView(Name, Len), FindType))
 {}
 
 FName::FName(int32 Len, const ANSICHAR* Name, int32 InNumber, EFindName FindType)
+	: FName(InNumber != NAME_NO_NUMBER_INTERNAL ? FNameHelper::MakeWithNumber(MakeUnconvertedView(Name, Len), FindType, InNumber)
+												: FNameHelper::MakeDetectNumber(MakeUnconvertedView(Name, Len), FindType))
+{}
+
+FName::FName(int32 Len, const UTF8CHAR* Name, int32 InNumber, EFindName FindType)
 	: FName(InNumber != NAME_NO_NUMBER_INTERNAL ? FNameHelper::MakeWithNumber(MakeUnconvertedView(Name, Len), FindType, InNumber)
 												: FNameHelper::MakeDetectNumber(MakeUnconvertedView(Name, Len), FindType))
 {}
@@ -2217,12 +2282,12 @@ void FName::ToString(FString& Out) const
 
 	if (GetNumber() == NAME_NO_NUMBER_INTERNAL)
 	{
-		Out.Empty(NameEntry->GetNameLength());
+		Out.Reset(NameEntry->GetNameLength());
 		NameEntry->AppendNameToString(Out);
 	}	
 	else
 	{
-		Out.Empty(NameEntry->GetNameLength() + 6);
+		Out.Reset(NameEntry->GetNameLength() + 6);
 		NameEntry->AppendNameToString(Out);
 
 		Out += TEXT('_');
@@ -2241,18 +2306,18 @@ uint32 FName::GetStringLength() const
 	const FNameEntry& Entry = *GetDisplayNameEntry();
 	uint32 NameLen = Entry.GetNameLength();
 
-	if (GetNumber() == NAME_NO_NUMBER_INTERNAL)
+	if (GetNumber() != NAME_NO_NUMBER_INTERNAL)
 	{
-		return NameLen;
+		// Return the length of the number suffix "_<num>"
+		// We only need to actually compute the size past values of 9.
+		// The minimum suffix length is 2, including the one for a suffix value of 0.
+		NameLen += 2;
+		for (int32 Num = NAME_INTERNAL_TO_EXTERNAL(GetNumber()); Num >= 10; Num /= 10)
+		{
+			++NameLen;
+		}
 	}
-	else
-	{
-		TCHAR NumberSuffixStr[16];
-		int32 SuffixLen = FCString::Sprintf(NumberSuffixStr, TEXT("_%d"), NAME_INTERNAL_TO_EXTERNAL(GetNumber()));
-		check(SuffixLen > 0);
-
-		return NameLen + SuffixLen;
-	}
+	return NameLen;
 }
 
 uint32 FName::ToString(TCHAR* Out, uint32 OutSize) const
@@ -2322,6 +2387,22 @@ bool FName::TryAppendAnsiString(FAnsiStringBuilderBase& Out) const
 	return true;
 }
 
+void AppendHash(FBlake3& Builder, FName In)
+{
+	FNameBuffer DecodeBuffer;
+	FNameStringView NameEntryView = In.GetDisplayNameEntry()->MakeView(DecodeBuffer);
+	if (NameEntryView.IsAnsi())
+	{
+		Builder.Update(NameEntryView.Ansi, NameEntryView.Len * sizeof(NameEntryView.Ansi[0]));
+	}
+	else
+	{
+		Builder.Update(NameEntryView.Wide, NameEntryView.Len * sizeof(NameEntryView.Wide[0]));
+	}
+	int32 Number = INTEL_ORDER64(In.GetNumber());
+	Builder.Update(&Number, sizeof(Number));
+}
+
 void FName::DisplayHash(FOutputDevice& Ar)
 {
 	GetNamePool().LogStats(Ar);
@@ -2334,9 +2415,7 @@ FString FName::SafeString(FNameEntryId InDisplayIndex, int32 InstanceNumber)
 
 bool FName::IsValidXName(const FName InName, const FString& InInvalidChars, FText* OutReason, const FText* InErrorCtx)
 {
-	TStringBuilder<FName::StringBufferSize> NameStr;
-	InName.ToString(NameStr);
-	return IsValidXName(FStringView(NameStr), InInvalidChars, OutReason, InErrorCtx);
+	return IsValidXName(FNameBuilder(InName), InInvalidChars, OutReason, InErrorCtx);
 }
 
 bool FName::IsValidXName(const TCHAR* InName, const FString& InInvalidChars, FText* OutReason, const FText* InErrorCtx)
@@ -2700,7 +2779,7 @@ FArchive& operator<<(FArchive& Ar, FNameEntrySerialized& E)
 		}
 
 		uint16 DummyHashes[2];
-		uint32 SkipPastHashBytes = (Ar.UE4Ver() >= VER_UE4_NAME_HASHES_SERIALIZED) * sizeof(DummyHashes);
+		uint32 SkipPastHashBytes = (Ar.UEVer() >= VER_UE4_NAME_HASHES_SERIALIZED) * sizeof(DummyHashes);
 		Ar.Serialize(&DummyHashes, SkipPastHashBytes);
 	}
 	else
@@ -3909,4 +3988,23 @@ void Freeze::IntrinsicWriteMemoryImage(FMemoryImageWriter& Writer, const FScript
 	Writer.WriteFScriptName(Object);
 }
 
-PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
+uint32 Freeze::IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const FName& Object, void* OutDst)
+{
+	if (Context.FrozenLayoutParameters.WithEditorOnly())
+	{
+		new(OutDst) FName(ScriptNameToName((FScriptName&)Object));
+		return sizeof(FScriptName);
+	}
+	else
+	{
+		new(OutDst) FName(MinimalNameToName((FMinimalName&)Object));
+		return sizeof(FMinimalName);
+	}
+}
+
+bool ShouldReplicateAsInteger(EName Ename, const FName& Name)
+{
+	return Ename <= EName(MAX_NETWORKED_HARDCODED_NAME) && Name.GetNumber() == NAME_NO_NUMBER_INTERNAL;
+}
+
+PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS

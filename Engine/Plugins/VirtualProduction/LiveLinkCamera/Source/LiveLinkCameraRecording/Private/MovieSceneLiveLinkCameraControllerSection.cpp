@@ -9,6 +9,7 @@
 #include "LiveLinkControllerBase.h"
 #include "MovieSceneExecutionToken.h"
 #include "Roles/LiveLinkCameraRole.h"
+#include "Evaluation/PreAnimatedState/MovieScenePreAnimatedCaptureSource.h"
 
 struct FPreAnimatedLensFileTokenProducer : IMovieScenePreAnimatedTokenProducer
 {
@@ -68,7 +69,7 @@ void UMovieSceneLiveLinkCameraControllerSection::Begin(IMovieScenePlayer* Player
 		if (ULiveLinkComponentController* LiveLinkComponent = Cast<ULiveLinkComponentController>(BoundObject.Get()))
 		{
 			// Find the LL camera controller in the component's controller map			
-			if (ULiveLinkControllerBase** Controller = LiveLinkComponent->ControllerMap.Find(ULiveLinkCameraRole::StaticClass()))
+			if (TObjectPtr<ULiveLinkControllerBase>* Controller = LiveLinkComponent->ControllerMap.Find(ULiveLinkCameraRole::StaticClass()))
 			{
 				if (ULiveLinkCameraController* CameraController = Cast<ULiveLinkCameraController>(*Controller))
 				{

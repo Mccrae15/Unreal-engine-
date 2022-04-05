@@ -47,6 +47,22 @@ enum class EGroomBindingMeshType : uint8
 	GeometryCache
 };
 
+/** Binding data */
+struct FHairRootGroupData
+{
+	FHairStrandsRootData			SimRootData;
+	FHairStrandsRootData			RenRootData;
+	TArray<FHairStrandsRootData>	CardsRootData;
+};
+
+/** Binding bulk data */
+struct FHairGroupBulkData
+{
+	FHairStrandsRootBulkData		SimRootBulkData;
+	FHairStrandsRootBulkData		RenRootBulkData;
+	TArray<FHairStrandsRootBulkData>CardsRootBulkData;
+};
+
 /**
  * Implements an asset that can be used to store binding information between a groom and a skeletal mesh
  */
@@ -66,23 +82,23 @@ public:
 	EGroomBindingMeshType GroomBindingType = EGroomBindingMeshType::SkeletalMesh;
 
 	/** Groom to bind. */
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "BuildSettings")
-	UGroomAsset* Groom;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BuildSettings")
+	TObjectPtr<UGroomAsset> Groom;
 
 	/** Skeletal mesh on which the groom has been authored. This is optional, and used only if the hair
 		binding is done a different mesh than the one which it has been authored */
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "BuildSettings")
-	USkeletalMesh* SourceSkeletalMesh;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BuildSettings")
+	TObjectPtr<USkeletalMesh> SourceSkeletalMesh;
 
 	/** Skeletal mesh on which the groom is attached to. */
-	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "BuildSettings")
-	USkeletalMesh* TargetSkeletalMesh;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "BuildSettings")
+	TObjectPtr<USkeletalMesh> TargetSkeletalMesh;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "BuildSettings")
-	UGeometryCache* SourceGeometryCache;
+	TObjectPtr<UGeometryCache> SourceGeometryCache;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "BuildSettings")
-	UGeometryCache* TargetGeometryCache;
+	TObjectPtr<UGeometryCache> TargetGeometryCache;
 
 	/** Number of points used for the rbf interpolation */
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Category = "BuildSettings")
@@ -109,20 +125,20 @@ public:
 	   when the binding asset is recomputed */
 	TQueue<FHairGroupResource> HairGroupResourcesToDelete;
 
-	struct FHairGroupData
-	{
-		FHairStrandsRootData SimRootData;
-		FHairStrandsRootData RenRootData;
-		TArray<FHairStrandsRootData> CardsRootData;
-	};
-	typedef TArray<FHairGroupData> FHairGroupDatas;
-	FHairGroupDatas HairGroupDatas;
+	/** Root bulk data for each hair gruops */
+	TArray<FHairGroupBulkData> HairGroupBulkDatas;
 
 	//~ Begin UObject Interface.
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
 	virtual void PostLoad() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPostSaveRootContext instead.")
 	virtual void PostSaveRoot(bool bCleanupIsRequired) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
+	virtual void PostSaveRoot(FObjectPostSaveRootContext ObjectSaveContext) override;
 	virtual void BeginDestroy() override;
 	virtual void Serialize(FArchive& Ar) override;
 

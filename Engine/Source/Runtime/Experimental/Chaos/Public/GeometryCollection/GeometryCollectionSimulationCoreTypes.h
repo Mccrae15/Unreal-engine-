@@ -13,32 +13,67 @@
 class FGeometryCollection;
 class FGeometryDynamicCollection;
 
-struct FSharedSimulationSizeSpecificData
+
+struct FCollectionLevelSetData
 {
-	FSharedSimulationSizeSpecificData()
-		: MaxSize(0.f)
-		, CollisionType(ECollisionTypeEnum::Chaos_Surface_Volumetric)
-		, ImplicitType(EImplicitTypeEnum::Chaos_Implicit_Sphere)
-		, MinLevelSetResolution(5)
+	FCollectionLevelSetData()
+		: MinLevelSetResolution(5)
 		, MaxLevelSetResolution(10)
 		, MinClusterLevelSetResolution(25)
 		, MaxClusterLevelSetResolution(50)
-		, CollisionObjectReductionPercentage(0.f)
-		, CollisionParticlesFraction(1.f)
-		, MaximumCollisionParticles(60)
-	{
-	}
+	{}
 
-	float MaxSize;
-	ECollisionTypeEnum CollisionType;
-	EImplicitTypeEnum ImplicitType;
 	int32 MinLevelSetResolution;
 	int32 MaxLevelSetResolution;
 	int32 MinClusterLevelSetResolution;
 	int32 MaxClusterLevelSetResolution;
-	float CollisionObjectReductionPercentage;
+};
+
+struct FCollectionCollisionParticleData
+{
+	FCollectionCollisionParticleData()
+		: CollisionParticlesFraction(1.f)
+		, MaximumCollisionParticles(60)
+	{}
+
 	float CollisionParticlesFraction;
 	int32 MaximumCollisionParticles;
+};
+
+
+
+struct FCollectionCollisionTypeData
+{
+	FCollectionCollisionTypeData()
+		: CollisionType(ECollisionTypeEnum::Chaos_Surface_Volumetric)
+		, ImplicitType(EImplicitTypeEnum::Chaos_Implicit_Sphere)
+		, LevelSetData()
+		, CollisionParticleData()
+		, CollisionObjectReductionPercentage(0.f)
+		, CollisionMarginFraction(0.f)
+	{
+	}
+
+	ECollisionTypeEnum CollisionType;
+	EImplicitTypeEnum ImplicitType;
+	FCollectionLevelSetData LevelSetData;
+	FCollectionCollisionParticleData CollisionParticleData;
+	float CollisionObjectReductionPercentage;
+	float CollisionMarginFraction;
+};
+
+struct FSharedSimulationSizeSpecificData
+{
+	FSharedSimulationSizeSpecificData()
+		: MaxSize(0.f)
+		, CollisionShapesData({ FCollectionCollisionTypeData() })
+		, DamageThreshold(5000.f)
+	{
+	}
+
+	float MaxSize;
+	TArray<FCollectionCollisionTypeData> CollisionShapesData;
+	float DamageThreshold;
 
 	bool operator<(const FSharedSimulationSizeSpecificData& Rhs) const { return MaxSize < Rhs.MaxSize; }
 };
@@ -55,11 +90,11 @@ enum ESimulationInitializationState { Unintialized = 0, Activated, Created, Init
 struct FSharedSimulationParameters
 {
 	FSharedSimulationParameters()
-	: bMassAsDensity(false)
-	, Mass(1.0)
-	, MinimumMassClamp(0.1)								// todo : Expose to users with better initial values
+	: bMassAsDensity(true)
+	, Mass(1.0f)
+	, MinimumMassClamp(0.1f)							// todo : Expose to users with better initial values
 	, MaximumMassClamp(1e5f)							// todo : Expose to users with better initial values
-	, MinimumBoundingExtentClamp(0.1)					// todo : Expose to users with better initial values
+	, MinimumBoundingExtentClamp(0.1f)					// todo : Expose to users with better initial values
 	, MaximumBoundingExtentClamp(1e6f)					// todo : Expose to users with better initial values
 	, MinimumInertiaTensorDiagonalClamp(SMALL_NUMBER)	// todo : Expose to users with better initial values
 	, MaximumInertiaTensorDiagonalClamp(1e20f)			// todo : Expose to users with better initial values
@@ -82,8 +117,9 @@ struct FSharedSimulationParameters
 		, float InMaximumBoundingExtentClamp
 		, float InMinimumInertiaTensorDiagonalClamp
 		, float InMaximumInertiaTensorDiagonalClamp
-		,float InCollisionParticlesFraction
-		,int32 InMaximumCollisionParticleCount)
+		, float InCollisionParticlesFraction
+		, int32 InMaximumCollisionParticleCount
+		, float InCollisionMarginFraction)
 	: bMassAsDensity(InMassAsDensity)
 	, Mass(InMass)
 	, MinimumMassClamp(InMinimumMassClamp)
@@ -95,14 +131,18 @@ struct FSharedSimulationParameters
 	, MaximumCollisionParticleCount(InMaximumCollisionParticleCount)
 	{
 		SizeSpecificData.AddDefaulted();
-		SizeSpecificData[0].CollisionType = InCollisionType;
-		SizeSpecificData[0].ImplicitType = InImplicitType;
-		SizeSpecificData[0].MinLevelSetResolution = InMinLevelSetResolution;
-		SizeSpecificData[0].MaxLevelSetResolution = InMaxLevelSetResolution;
-		SizeSpecificData[0].MinClusterLevelSetResolution = InMinClusterLevelSetResolution;
-		SizeSpecificData[0].MaxClusterLevelSetResolution = InMaxClusterLevelSetResolution;
-		SizeSpecificData[0].CollisionParticlesFraction = InCollisionParticlesFraction;
-		SizeSpecificData[0].MaximumCollisionParticles = InMaximumCollisionParticleCount;
+		if (ensure(SizeSpecificData.Num() && SizeSpecificData[0].CollisionShapesData.Num()))
+		{
+			SizeSpecificData[0].CollisionShapesData[0].CollisionType = InCollisionType;
+			SizeSpecificData[0].CollisionShapesData[0].ImplicitType = InImplicitType;
+			SizeSpecificData[0].CollisionShapesData[0].CollisionMarginFraction = InCollisionMarginFraction;
+			SizeSpecificData[0].CollisionShapesData[0].LevelSetData.MinLevelSetResolution = InMinLevelSetResolution;
+			SizeSpecificData[0].CollisionShapesData[0].LevelSetData.MaxLevelSetResolution = InMaxLevelSetResolution;
+			SizeSpecificData[0].CollisionShapesData[0].LevelSetData.MinClusterLevelSetResolution = InMinClusterLevelSetResolution;
+			SizeSpecificData[0].CollisionShapesData[0].LevelSetData.MaxClusterLevelSetResolution = InMaxClusterLevelSetResolution;
+			SizeSpecificData[0].CollisionShapesData[0].CollisionParticleData.CollisionParticlesFraction = InCollisionParticlesFraction;
+			SizeSpecificData[0].CollisionShapesData[0].CollisionParticleData.MaximumCollisionParticles = InMaximumCollisionParticleCount;
+		}
 	}
 
 	bool bMassAsDensity;
@@ -122,104 +162,6 @@ struct FSharedSimulationParameters
 	int32 MaximumCollisionParticleCount;
 };
 
-struct FCollisionDataSimulationParameters
-{
-	FCollisionDataSimulationParameters()
-		: DoGenerateCollisionData(false)
-		, SaveCollisionData(false)
-		, CollisionDataSizeMax(512)
-		, DoCollisionDataSpatialHash(false)
-		, CollisionDataSpatialHashRadius(50.f)
-		, MaxCollisionPerCell(1)
-	{}
-
-	FCollisionDataSimulationParameters(bool InDoGenerateCollisionData
-		, bool InSaveCollisionData
-		, int32 InCollisionDataSizeMax
-		, bool InDoCollisionDataSpatialHash
-		, float InCollisionDataSpatialHashRadius
-		, int32 InMaxCollisionPerCell)
-		: DoGenerateCollisionData(InDoGenerateCollisionData)
-		, SaveCollisionData(InSaveCollisionData)
-		, CollisionDataSizeMax(InCollisionDataSizeMax)
-		, DoCollisionDataSpatialHash(InDoCollisionDataSpatialHash)
-		, CollisionDataSpatialHashRadius(InCollisionDataSpatialHashRadius)
-		, MaxCollisionPerCell(InMaxCollisionPerCell)
-	{}
-
-	bool DoGenerateCollisionData;
-	bool SaveCollisionData;
-	int32 CollisionDataSizeMax;
-	bool DoCollisionDataSpatialHash;
-	float CollisionDataSpatialHashRadius;
-	int32 MaxCollisionPerCell;
-
-	FCollisionFilterData QueryData;
-	FCollisionFilterData SimData;
-};
-
-struct FBreakingDataSimulationParameters
-{
-	FBreakingDataSimulationParameters()
-		: DoGenerateBreakingData(false)
-		, SaveBreakingData(false)
-		, BreakingDataSizeMax(512)
-		, DoBreakingDataSpatialHash(false)
-		, BreakingDataSpatialHashRadius(15.f)
-		, MaxBreakingPerCell(1)
-	{}
-
-	FBreakingDataSimulationParameters(bool InDoGenerateBreakingData
-		, bool InSaveBreakingData
-		, int32 InBreakingDataSizeMax
-		, bool InDoBreakingDataSpatialHash
-		, float InBreakingDataSpatialHashRadius
-		, int32 InMaxBreakingPerCell)
-		: DoGenerateBreakingData(InDoGenerateBreakingData)
-		, SaveBreakingData(InSaveBreakingData)
-		, BreakingDataSizeMax(InBreakingDataSizeMax)
-		, DoBreakingDataSpatialHash(InDoBreakingDataSpatialHash)
-		, BreakingDataSpatialHashRadius(InBreakingDataSpatialHashRadius)
-		, MaxBreakingPerCell(InMaxBreakingPerCell)
-	{}
-
-	bool DoGenerateBreakingData;
-	bool SaveBreakingData;
-	int32 BreakingDataSizeMax;
-	bool DoBreakingDataSpatialHash;
-	float BreakingDataSpatialHashRadius;
-	int32 MaxBreakingPerCell;
-};
-
-struct FTrailingDataSimulationParameters
-{
-	FTrailingDataSimulationParameters()
-		: DoGenerateTrailingData(false)
-		, SaveTrailingData(false)
-		, TrailingDataSizeMax(512)
-		, TrailingMinSpeedThreshold(200.f)
-		, TrailingMinVolumeThreshold(10000.f)
-	{}
-
-	FTrailingDataSimulationParameters(bool InDoGenerateTrailingData
-		, bool InSaveTrailingData
-		, int32 InTrailingDataSizeMax
-		, float InTrailingMinSpeedThreshold
-		, float InTrailingMinVolumeThreshold)
-		: DoGenerateTrailingData(InDoGenerateTrailingData)
-		, SaveTrailingData(InSaveTrailingData)
-		, TrailingDataSizeMax(InTrailingDataSizeMax)
-		, TrailingMinSpeedThreshold(InTrailingMinSpeedThreshold)
-		, TrailingMinVolumeThreshold(InTrailingMinVolumeThreshold)
-	{}
-
-	bool DoGenerateTrailingData;
-	bool SaveTrailingData;
-	int32 TrailingDataSizeMax;
-	float TrailingMinSpeedThreshold;
-	float TrailingMinVolumeThreshold;
-};
-
 struct FSimulationParameters
 {
 	FSimulationParameters()
@@ -232,7 +174,8 @@ struct FSimulationParameters
 		, EnableClustering(true)
 		, ClusterGroupIndex(0)
 		, MaxClusterLevel(100)
-		, DamageThreshold({250.f})
+		, bUseSizeSpecificDamageThresholds(false)
+		, DamageThreshold({500000.f, 50000.f, 5000.f})
 		, ClusterConnectionMethod(Chaos::FClusterCreationParameters::EConnectionMethod::PointImplicit)
 		, CollisionGroup(0)
 		, CollisionSampleFraction(1.0)
@@ -243,6 +186,10 @@ struct FSimulationParameters
 		, CacheBeginTime(0.0f)
 		, ReverseCacheBeginTime(0.0f)
 		, bClearCache(false)
+		, bGenerateBreakingData(false)
+		, bGenerateCollisionData(false)
+		, bGenerateTrailingData(false)
+		, bGenerateRemovalsData(false)
 		, RemoveOnFractureEnabled(false)
 		, SimulationFilterData()
 		, QueryFilterData()
@@ -260,6 +207,7 @@ struct FSimulationParameters
 		, EnableClustering(Other.EnableClustering)
 		, ClusterGroupIndex(Other.ClusterGroupIndex)
 		, MaxClusterLevel(Other.MaxClusterLevel)
+		, bUseSizeSpecificDamageThresholds(Other.bUseSizeSpecificDamageThresholds)
 		, DamageThreshold(Other.DamageThreshold)
 		, ClusterConnectionMethod(Other.ClusterConnectionMethod)
 		, CollisionGroup(Other.CollisionGroup)
@@ -271,10 +219,12 @@ struct FSimulationParameters
 		, CacheBeginTime(Other.CacheBeginTime)
 		, ReverseCacheBeginTime(Other.ReverseCacheBeginTime)
 		, bClearCache(Other.bClearCache)
+		, ObjectType(Other.ObjectType)
 		, PhysicalMaterialHandle(Other.PhysicalMaterialHandle)
-		, CollisionData(Other.CollisionData)
-		, BreakingData(Other.BreakingData)
-		, TrailingData(Other.TrailingData)
+		, bGenerateBreakingData(Other.bGenerateBreakingData)
+		, bGenerateCollisionData(Other.bGenerateCollisionData)
+		, bGenerateTrailingData(Other.bGenerateTrailingData)
+		, bGenerateRemovalsData(Other.bGenerateRemovalsData)
 		, Shared(Other.Shared)
 		, RemoveOnFractureEnabled(false)
 		, SimulationFilterData(Other.SimulationFilterData)
@@ -307,6 +257,7 @@ struct FSimulationParameters
 	bool EnableClustering;
 	int32 ClusterGroupIndex;
 	int32 MaxClusterLevel;
+	bool bUseSizeSpecificDamageThresholds;
 	TArray<float> DamageThreshold;
 	Chaos::FClusterCreationParameters::EConnectionMethod ClusterConnectionMethod;
 
@@ -326,9 +277,10 @@ struct FSimulationParameters
 
 	Chaos::FMaterialHandle PhysicalMaterialHandle;
 
-	FCollisionDataSimulationParameters CollisionData;
-	FBreakingDataSimulationParameters BreakingData;
-	FTrailingDataSimulationParameters TrailingData;
+	bool bGenerateBreakingData;
+	bool bGenerateCollisionData;
+	bool bGenerateTrailingData;
+	bool bGenerateRemovalsData;
 
 	FSharedSimulationParameters Shared;
 

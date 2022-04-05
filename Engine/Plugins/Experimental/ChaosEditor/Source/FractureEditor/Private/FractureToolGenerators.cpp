@@ -11,12 +11,15 @@
 #include "Layers/LayersSubsystem.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
 
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "GeometryCollection/GeometryCollectionActor.h"
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionClusteringUtility.h"
 #include "GeometryCollection/GeometryCollectionConversion.h"
+#include "GeometryCollection/GeometryCollectionUtility.h"
+#include "GeometryCollection/GeometryCollectionProximityUtility.h"
 #include "FractureToolContext.h"
 
 
@@ -30,7 +33,7 @@ FText UFractureToolGenerateAsset::GetDisplayText() const
 
 FText UFractureToolGenerateAsset::GetTooltipText() const
 {
-	return FText(NSLOCTEXT("Fracture", "FractureToolGenerateAssetTooltip", "Generate Geometry Collection Asset from static meshes contained in selected actors."));
+	return FText(NSLOCTEXT("Fracture", "FractureToolGenerateAssetTooltip", "Generate a Geometry Collection Asset from selected Static Meshes and/or Geometry Collections."));
 }
 
 FSlateIcon UFractureToolGenerateAsset::GetToolIcon() const
@@ -40,14 +43,13 @@ FSlateIcon UFractureToolGenerateAsset::GetToolIcon() const
 
 void UFractureToolGenerateAsset::RegisterUICommand(FFractureEditorCommands* BindingContext)
 {
-	UI_COMMAND_EXT(BindingContext, UICommandInfo, "GenerateAsset", "New", "Generate Asset", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND_EXT(BindingContext, UICommandInfo, "GenerateAsset", "New", "Generate a new Geometry Collection Asset from the selected Static Meshes and/or Geometry Collections. Geometry Collections are assets that support fracture.", EUserInterfaceActionType::ToggleButton, FInputChord());
 	BindingContext->GenerateAsset = UICommandInfo;
 }
 
 bool UFractureToolGenerateAsset::CanExecute() const
 {
-	// We can execute this command if only static meshes are selected.
-	return (IsStaticMeshSelected() && (!IsGeometryCollectionSelected()));
+	return (IsStaticMeshSelected() || IsGeometryCollectionSelected());
 }
 
 void UFractureToolGenerateAsset::Execute(TWeakPtr<FFractureEditorModeToolkit> InToolkit)
@@ -59,11 +61,11 @@ void UFractureToolGenerateAsset::Execute(TWeakPtr<FFractureEditorModeToolkit> In
 	TArray<AActor*> SelectedActors;
 	SelectedActors.Reserve(SelectionSet->Num());
 
-	FScopedTransaction Transaction(LOCTEXT("GenerateAsset", "Generate Geometry Collection Asset"));
-
 	SelectionSet->GetSelectedObjects(SelectedActors);
 
 	OpenGenerateAssetDialog(SelectedActors);
+
+	// Note: Transaction for undo history is created after the user completes the UI dialog; see OnGenerateAssetPathChosen()
 }
 
 void UFractureToolGenerateAsset::OpenGenerateAssetDialog(TArray<AActor*>& Actors)
@@ -72,8 +74,8 @@ void UFractureToolGenerateAsset::OpenGenerateAssetDialog(TArray<AActor*>& Actors
 
 	SAssignNew(PickAssetPathWindow, SWindow)
 		.Title(LOCTEXT("SelectPath", "Select Path"))
-		.ToolTipText(LOCTEXT("SelectPathTooltip", "Select the path where the Geometry Collection will be created at"))
-		.ClientSize(FVector2D(400, 400));
+		.ToolTipText(LOCTEXT("SelectPathTooltip", "Select the asset path for your new Geometry Collection"))
+		.ClientSize(FVector2D(500, 500));
 
 	// NOTE - the parent window has to completely exist before this one does so the parent gets set properly.
 	// This is why we do not just put this in the Contents()[ ... ] of the Window above.
@@ -100,13 +102,14 @@ void UFractureToolGenerateAsset::OpenGenerateAssetDialog(TArray<AActor*>& Actors
 }
 
 void UFractureToolGenerateAsset::OnGenerateAssetPathChosen(const FString& InAssetPath, TArray<AActor*> Actors)
-{
-		
+{	
+	FScopedTransaction Transaction(LOCTEXT("GenerateAsset", "Generate Geometry Collection Asset"));
+
 	//Record the path
 	int32 LastSlash = INDEX_NONE;
 	if (InAssetPath.FindLastChar('/', LastSlash))
 	{
-		AssetPath = InAssetPath.LeftChop(LastSlash);
+		AssetPath = InAssetPath.Left(LastSlash);
 	}
 
 	UGeometryCollectionComponent* GeometryCollectionComponent = nullptr;
@@ -116,7 +119,8 @@ void UFractureToolGenerateAsset::OnGenerateAssetPathChosen(const FString& InAsse
 		AActor* FirstActor = Actors[0];
 
 		AGeometryCollectionActor* GeometryCollectionActor = Cast<AGeometryCollectionActor>(FirstActor);
-		GeometryCollectionActor = ConvertStaticMeshToGeometryCollection(InAssetPath, Actors);
+		
+		GeometryCollectionActor = ConvertActorsToGeometryCollection(InAssetPath, Actors);
 
 		GeometryCollectionComponent = GeometryCollectionActor->GetGeometryCollectionComponent();
 
@@ -140,6 +144,11 @@ void UFractureToolGenerateAsset::OnGenerateAssetPathChosen(const FString& InAsse
 			SharedToolkit->SetBoneSelection(GeometryCollectionComponent, EditBoneColor.GetSelectedBones(), true);
 
 			SharedToolkit->OnSetLevelViewValue(-1);
+
+			SharedToolkit->RegenerateOutliner();
+			SharedToolkit->RegenerateHistogram();
+
+			SharedToolkit->UpdateExplodedVectors(GeometryCollectionComponent);
 		}
 		
 		GeometryCollectionComponent->MarkRenderDynamicDataDirty();
@@ -147,12 +156,13 @@ void UFractureToolGenerateAsset::OnGenerateAssetPathChosen(const FString& InAsse
 
 		for (AActor* Actor : Actors)
 		{
+			Actor->Modify();
 			Actor->Destroy();
 		}
 	}
 }
 
-AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertStaticMeshToGeometryCollection(const FString& InAssetPath, TArray<AActor*>& Actors)
+AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertActorsToGeometryCollection(const FString& InAssetPath, TArray<AActor*>& Actors)
 {
 	ensure(Actors.Num() > 0);
 	AActor* FirstActor = Actors[0];
@@ -164,13 +174,12 @@ AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertStaticMeshToGeometr
 
 	FGeometryCollectionEdit GeometryCollectionEdit = NewActor->GetGeometryCollectionComponent()->EditRestCollection(GeometryCollection::EEditUpdate::RestPhysicsDynamic);
 	UGeometryCollection* FracturedGeometryCollection = GeometryCollectionEdit.GetRestCollection();
+	check(FracturedGeometryCollection);
 
 	for (AActor* Actor : Actors)
 	{
 		const FTransform ActorTransform(Actor->GetTransform());
 		const FVector ActorOffset(Actor->GetActorLocation() - FirstActor->GetActorLocation());
-
-		check(FracturedGeometryCollection);
 
 		TArray<UStaticMeshComponent*> StaticMeshComponents;
 		Actor->GetComponents<UStaticMeshComponent>(StaticMeshComponents, true);
@@ -181,7 +190,12 @@ AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertStaticMeshToGeometr
 			if (StaticMeshComponent != nullptr)
 			{
 				UStaticMesh* ComponentStaticMesh = StaticMeshComponent->GetStaticMesh();
-				
+				if (ComponentStaticMesh != nullptr)
+				{
+					// If any of the static meshes have Nanite enabled, also enable on the new geometry collection asset for convenience.
+					FracturedGeometryCollection->EnableNanite |= ComponentStaticMesh->NaniteSettings.bEnabled;
+				}
+
 				FTransform ComponentTransform(StaticMeshComponent->GetComponentTransform());
 				ComponentTransform.SetTranslation((ComponentTransform.GetTranslation() - ActorTransform.GetTranslation()) + ActorOffset);
 
@@ -194,10 +208,60 @@ AGeometryCollectionActor* UFractureToolGenerateAsset::ConvertStaticMeshToGeometr
 			}
 		}
 
-		FracturedGeometryCollection->InitializeMaterials();
+		TArray<UGeometryCollectionComponent*> GeometryCollectionComponents;
+		Actor->GetComponents<UGeometryCollectionComponent>(GeometryCollectionComponents, true);
+		for (int32 ii = 0, ni = GeometryCollectionComponents.Num(); ii < ni; ++ii)
+		{
+			UGeometryCollectionComponent* GeometryCollectionComponent = GeometryCollectionComponents[ii];
+			if (GeometryCollectionComponent != nullptr)
+			{
+				const UGeometryCollection* RestCollection = GeometryCollectionComponent->GetRestCollection();
+				if (RestCollection != nullptr)
+				{
+					// If any of the static meshes have Nanite enabled, also enable on the new geometry collection asset for convenience.
+					FracturedGeometryCollection->EnableNanite |= RestCollection->EnableNanite;
+				}
+
+				FTransform ComponentTransform(GeometryCollectionComponent->GetComponentTransform());
+				ComponentTransform.SetTranslation((ComponentTransform.GetTranslation() - ActorTransform.GetTranslation()) + ActorOffset);
+
+				// Record the contributing source on the asset.
+				FSoftObjectPath SourceSoftObjectPath(RestCollection);
+
+				// We're not interested in recording the final material of the collection since it's inevitably the Selection material.
+				int32 NumMaterials = GeometryCollectionComponent->GetNumMaterials() - 1;
+				TArray<TObjectPtr<UMaterialInterface>> SourceMaterials;
+				SourceMaterials.SetNum(NumMaterials);
+				for (int32 MaterialIndex = 0; MaterialIndex < NumMaterials; ++MaterialIndex)
+				{
+					SourceMaterials[MaterialIndex] = GeometryCollectionComponent->GetMaterial(MaterialIndex);
+				}
+				FracturedGeometryCollection->GeometrySource.Add({ SourceSoftObjectPath, ComponentTransform, SourceMaterials });
+
+				FGeometryCollectionConversion::AppendGeometryCollection(RestCollection, GeometryCollectionComponent, ComponentTransform, FracturedGeometryCollection, false);
+
+			}
+		}
 	}
 
+	FracturedGeometryCollection->InitializeMaterials();
+
 	AddSingleRootNodeIfRequired(FracturedGeometryCollection);
+
+	if (FracturedGeometryCollection->EnableNanite)
+	{
+		FracturedGeometryCollection->InvalidateCollection();
+		FracturedGeometryCollection->EnsureDataIsCooked(true /* init resources */);
+	}
+
+	NewActor->GetGeometryCollectionComponent()->MarkRenderStateDirty();
+
+	// Add and initialize guids
+	::GeometryCollection::GenerateTemporaryGuids(FracturedGeometryCollection->GetGeometryCollection().Get(), 0 , true);
+
+	// Update proximity graph
+	FGeometryCollectionProximityUtility ProximityUtility(FracturedGeometryCollection->GetGeometryCollection().Get());
+	ProximityUtility.UpdateProximity();
 
 	return NewActor;
 }
@@ -213,6 +277,7 @@ class AGeometryCollectionActor* UFractureToolGenerateAsset::CreateNewGeometryAct
 
 	UPackage* Package = CreatePackage(*UniquePackageName);
 	UGeometryCollection* InGeometryCollection = static_cast<UGeometryCollection*>(NewObject<UGeometryCollection>(Package, UGeometryCollection::StaticClass(), FName(*UniqueAssetName), RF_Transactional | RF_Public | RF_Standalone));
+	if(!InGeometryCollection->SizeSpecificData.Num()) InGeometryCollection->SizeSpecificData.Add(FGeometryCollectionSizeSpecificData());
 
 	// Create the new Geometry Collection actor
 	AGeometryCollectionActor* NewActor = Cast<AGeometryCollectionActor>(AddActor(GetSelectedLevel(), AGeometryCollectionActor::StaticClass()));
@@ -220,6 +285,7 @@ class AGeometryCollectionActor* UFractureToolGenerateAsset::CreateNewGeometryAct
 
 	// Set the Geometry Collection asset in the new actor
 	NewActor->GetGeometryCollectionComponent()->SetRestCollection(InGeometryCollection);
+	NewActor->GetGeometryCollectionComponent()->SetPhysMaterialOverride(GEngine->DefaultDestructiblePhysMaterial);
 
 	// copy transform of original static mesh actor to this new actor
 	NewActor->SetActorLabel(UniqueAssetName);
@@ -293,7 +359,7 @@ FText UFractureToolResetAsset::GetDisplayText() const
 
 FText UFractureToolResetAsset::GetTooltipText() const
 {
-	return FText(NSLOCTEXT("Fracture", "FractureToolResetTooltip", "Reset Geometry Collection Asset to its initial unfractured state."));
+	return FText(NSLOCTEXT("Fracture", "FractureToolResetTooltip", "Reset Geometry Collections to their initial unfractured states."));
 }
 
 FSlateIcon UFractureToolResetAsset::GetToolIcon() const
@@ -303,7 +369,7 @@ FSlateIcon UFractureToolResetAsset::GetToolIcon() const
 
 void UFractureToolResetAsset::RegisterUICommand(FFractureEditorCommands* BindingContext)
 {
-	UI_COMMAND_EXT(BindingContext, UICommandInfo, "ResetAsset", "Reset", "Reset", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND_EXT(BindingContext, UICommandInfo, "ResetAsset", "Reset", "Reset selected Geometry Collections to their initial unfractured states.", EUserInterfaceActionType::ToggleButton, FInputChord());
 	BindingContext->ResetAsset = UICommandInfo;
 }
 
@@ -319,17 +385,26 @@ void UFractureToolResetAsset::Execute(TWeakPtr<FFractureEditorModeToolkit> InToo
 		return;
 	}
 
+	FScopedTransaction Transaction(LOCTEXT("ResetCollection", "Reset Geometry Collection"));
+
 	TSet<UGeometryCollectionComponent*> GeomCompSelection;
 	GetSelectedGeometryCollectionComponents(GeomCompSelection);
 	for (UGeometryCollectionComponent* GeometryCollectionComponent : GeomCompSelection)
 	{
+		GeometryCollectionComponent->Modify();
 		FGeometryCollectionEdit GeometryCollectionEdit = GeometryCollectionComponent->EditRestCollection();
 		if (UGeometryCollection* GeometryCollectionObject = GeometryCollectionEdit.GetRestCollection())
 		{
-
 			TSharedPtr<FGeometryCollection, ESPMode::ThreadSafe> GeometryCollectionPtr = GeometryCollectionObject->GetGeometryCollection();
 			if (FGeometryCollection* GeometryCollection = GeometryCollectionPtr.Get())
 			{
+				constexpr bool bKeepPreviousMaterials = true; // written as a flag in case we want to make this optional later
+				TArray<TObjectPtr<UMaterialInterface>> OldMaterials;
+				if (bKeepPreviousMaterials)
+				{
+					OldMaterials = GeometryCollectionObject->Materials;
+				}
+
 				GeometryCollectionObject->Reset();
 
 				// Rebuild Collection from recorded source assets.
@@ -345,19 +420,45 @@ void UFractureToolResetAsset::Execute(TWeakPtr<FFractureEditorModeToolkit> InToo
 						// #todo (bmiller) Once we've settled on the right approach with static meshes, we'll need to apply the same strategy to skeletal mesh reconstruction.
 						// FGeometryCollectionConversion::AppendSkeletalMesh(SourceSkeletalMesh, Source.SourceMaterial, Source.LocalTransform, GeometryCollectionObject, true);
 					}
+					else if (const UGeometryCollection* SourceGeometryCollection = Cast<UGeometryCollection>(SourceMesh))
+					{
+						FGeometryCollectionConversion::AppendGeometryCollection(SourceGeometryCollection, Source.SourceMaterial, Source.LocalTransform, GeometryCollectionObject, true);
+					}
 				}
 
 				GeometryCollectionObject->InitializeMaterials();
+
+				if (bKeepPreviousMaterials)
+				{
+					int32 NewMatNum = GeometryCollectionObject->Materials.Num(), OldMatNum = OldMaterials.Num();
+					// if the source asset was changed, number of materials might have changed; only copy to the extent the two arrays match
+					int32 NumToCopy = FMath::Min(NewMatNum, OldMatNum);
+					for (int32 MatIdx = 0; MatIdx + 1 < NumToCopy; MatIdx++)
+					{
+						GeometryCollectionObject->Materials[MatIdx] = OldMaterials[MatIdx];
+					}
+					if (NumToCopy > 0) // copy the selection material
+					{
+						GeometryCollectionObject->Materials[NewMatNum - 1] = OldMaterials[OldMatNum - 1];
+					}
+				}
+				
+				// Update proximity graph
+				FGeometryCollectionProximityUtility ProximityUtility(GeometryCollection);
+				ProximityUtility.UpdateProximity();
 
 				FGeometryCollectionClusteringUtility::UpdateHierarchyLevelOfChildren(GeometryCollection, -1);
 				AddSingleRootNodeIfRequired(GeometryCollectionObject);
 				GeometryCollectionComponent->MarkRenderDynamicDataDirty();
 				GeometryCollectionComponent->MarkRenderStateDirty();
 			}
+
 			GeometryCollectionObject->MarkPackageDirty();
 		}
 		
-		FScopedColorEdit EditBoneColor = GeometryCollectionComponent->EditBoneSelection();
+		GeometryCollectionComponent->InitializeEmbeddedGeometry();
+		
+		FScopedColorEdit EditBoneColor = GeometryCollectionComponent->EditBoneSelection(true);
 		EditBoneColor.ResetBoneSelection();
 		EditBoneColor.ResetHighlightedBones();
 	}

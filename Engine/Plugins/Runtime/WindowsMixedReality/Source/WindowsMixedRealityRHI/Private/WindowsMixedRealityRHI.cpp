@@ -89,7 +89,7 @@ void FWindowsMixedRealityRHIModule::StartupModule()
 #endif //UE_BUILD_DEBUG
 
 		if (FAILED(D3D11CreateDevice(
-			TempAdapter,
+			TempAdapter.GetReference(),
 			D3D_DRIVER_TYPE_UNKNOWN,
 			NULL,
 			DeviceCreationFlags,
@@ -104,8 +104,8 @@ void FWindowsMixedRealityRHIModule::StartupModule()
 			continue; 
 		}
 
-		ChosenAdapter = FD3D11Adapter(TempAdapter, OutFeatureLevel);
-
+		FD3D11Adapter _adapter(TempAdapter, OutFeatureLevel, false, false);
+		ChosenAdapter = _adapter;
 		ChosenDescription = AdapterDesc;
 		break;
 	}
@@ -146,11 +146,15 @@ FDynamicRHI* FWindowsMixedRealityRHIModule::CreateRHI(ERHIFeatureLevel::Type Req
 {
 #if PLATFORM_HOLOLENS
 	GMaxRHIFeatureLevel = ERHIFeatureLevel::ES3_1;
-	GMaxRHIShaderPlatform = SP_PCD3D_ES3_1;
+	GMaxRHIShaderPlatform = SP_D3D_ES3_1_HOLOLENS;
 #endif
 
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES2_REMOVED] = SP_NumPlatforms;
+#if PLATFORM_HOLOLENS
+	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = SP_D3D_ES3_1_HOLOLENS;
+#else
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = SP_PCD3D_ES3_1;
+#endif
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM4_REMOVED] = SP_NumPlatforms;
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM5] = SP_PCD3D_SM5;
 
@@ -281,8 +285,12 @@ FWindowsMixedRealityViewport::FWindowsMixedRealityViewport(FD3D11DynamicRHI* InD
 	OffscreenBackBuffer = FD3D11Viewport::GetSwapChainSurface(D3DRHI, PixelFormat, SizeX, SizeY, nullptr);
 	UpdateBackBuffer();
 
-	BeginInitResource(&FrameSyncEvent);
-
+	ENQUEUE_RENDER_COMMAND(FD3D11Viewport)(
+	[this](FRHICommandListImmediate& RHICmdList)
+	{
+		// Initialize the query by issuing an initial event.
+		FrameSyncEvent.IssueEvent();
+	});
 }
 
 void FWindowsMixedRealityViewport::UpdateBackBuffer()

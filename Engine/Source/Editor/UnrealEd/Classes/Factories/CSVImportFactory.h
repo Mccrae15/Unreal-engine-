@@ -40,7 +40,7 @@ struct FCSVImportSettings
 	FCSVImportSettings();
 
 	UPROPERTY(BlueprintReadWrite, Category="Misc")
-	UScriptStruct* ImportRowStruct;
+	TObjectPtr<UScriptStruct> ImportRowStruct;
 
 	UPROPERTY(BlueprintReadWrite, Category="Misc")
 	ECSVImportType ImportType;
@@ -48,6 +48,8 @@ struct FCSVImportSettings
 	UPROPERTY(BlueprintReadWrite, Category="Misc")
 	TEnumAsByte<ERichCurveInterpMode> ImportCurveInterpMode;
 
+	/** Despite its name, DataToImport can be JSON instead of CSV if this bool is set */
+	bool bDataIsJson = false;
 	FString DataToImport;
 };
 
@@ -89,6 +91,6 @@ public:
 
 	/** Temporary data table to use to display import options */
 	UPROPERTY()
-	UDataTable* DataTableImportOptions;
+	TObjectPtr<UDataTable> DataTableImportOptions;
 };
 

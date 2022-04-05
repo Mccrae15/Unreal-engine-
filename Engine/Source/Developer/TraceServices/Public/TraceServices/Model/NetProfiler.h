@@ -8,7 +8,7 @@
 #include "TraceServices/Model/AnalysisSession.h"
 #include <limits>
 
-namespace Trace
+namespace TraceServices
 {
 
 enum class ENetProfilerDeliveryStatus : uint8
@@ -35,7 +35,17 @@ enum class ENetProfilerChannelCloseReason : uint8
 	TearOff,
 };
 
+// Mirrored from EConnectionState on the runtime side
+enum class ENetProfilerConnectionState : uint8
+{
+	USOCK_Invalid = 0, // Connection is invalid, possibly uninitialized.
+	USOCK_Closed = 1, // Connection permanently closed.
+	USOCK_Pending = 2, // Connection is awaiting connection.
+	USOCK_Open = 3, // Connection is open.
+};
+
 TRACESERVICES_API const TCHAR* LexToString(const ENetProfilerChannelCloseReason Value);
+TRACESERVICES_API const TCHAR* LexToString(const ENetProfilerConnectionState Value);
 
 struct FNetProfilerName
 {
@@ -123,16 +133,19 @@ struct FNetProfilerPacket
 	uint32 SequenceNumber;
 	uint32 ContentSizeInBits;						// This is the part that is tracked by the PacketContents
 	uint32 TotalPacketSizeInBytes;					// This is the actual size of the packet sent on the socket
-	ENetProfilerDeliveryStatus DeliveryStatus;		// Indicates if the packet was delivered or not, updated as soon as we know
 
 	// Index into Events
 	uint32 StartEventIndex;
 	uint32 EventCount;
+
+	ENetProfilerDeliveryStatus DeliveryStatus;		// Indicates if the packet was delivered or not, updated as soon as we know
+	ENetProfilerConnectionState ConnectionState;
 };
 
 struct FNetProfilerConnection
 {
-	const TCHAR* Name;
+	const TCHAR* Name = nullptr;
+	const TCHAR* AddressString = nullptr;
 	FNetProfilerLifeTime LifeTime;
 	uint32 GameInstanceIndex;
 	uint32 ConnectionIndex : 16;
@@ -146,6 +159,8 @@ struct FNetProfilerGameInstance
 	FNetProfilerLifeTime LifeTime;
 	uint32 GameInstanceIndex;
 	uint32 GameInstanceId;
+	const TCHAR* InstanceName = nullptr;
+	bool bIsServer;
 };
 
 // What do we need?
@@ -164,6 +179,8 @@ struct FNetProfilerAggregatedStats
 class INetProfilerProvider : public IProvider
 {
 public:
+	virtual ~INetProfilerProvider() = default;
+
 	// Return the version reported in the trace
 	// A return value of 0 indicates no network trace data
 	virtual uint32 GetNetTraceVersion() const = 0;
@@ -218,6 +235,7 @@ public:
 	virtual ITable<FNetProfilerAggregatedStats>* CreateAggregation(uint32 ConnectionIndex, ENetProfilerConnectionMode Mode, uint32 PacketIndexIntervalStart, uint32 PacketIndexIntervalEnd, uint32 StartPosition, uint32 EndPosition) const = 0;
 };
 
-TRACESERVICES_API const INetProfilerProvider& ReadNetProfilerProvider(const IAnalysisSession& Session);
+TRACESERVICES_API FName GetNetProfilerProviderName();
+TRACESERVICES_API const INetProfilerProvider* ReadNetProfilerProvider(const IAnalysisSession& Session);
 
-}
+} // namespace TraceServices

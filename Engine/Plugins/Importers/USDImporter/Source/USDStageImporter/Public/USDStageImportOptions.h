@@ -57,6 +57,9 @@ public:
 	UPROPERTY(BlueprintReadWrite, config, EditAnywhere, Category = "DataToImport", meta = (EditCondition = bImportGeometry, DisplayName = "Skeletal Animations"))
 	bool bImportSkeletalAnimations;
 
+	UPROPERTY( BlueprintReadWrite, config, EditAnywhere, Category = "DataToImport", meta = (DisplayName = "LevelSequences" ) )
+	bool bImportLevelSequences;
+
 	UPROPERTY(BlueprintReadWrite, config, EditAnywhere, Category = "DataToImport", meta = (DisplayName = "Materials & Textures"))
 	bool bImportMaterials;
 
@@ -66,13 +69,13 @@ public:
 	UPROPERTY(BlueprintReadWrite, config, EditAnywhere, Category= "USD options", meta = (Bitmask, BitmaskEnum=EUsdPurpose))
 	int32 PurposesToImport;
 
+	/** Try enabling Nanite for static meshes that are generated with at least this many triangles */
+	UPROPERTY(BlueprintReadWrite, config, EditAnywhere, Category = "USD options", meta = ( NoSpinbox = "true", UIMin = "0", ClampMin = "0" ) )
+	int32 NaniteTriangleThreshold;
+
 	/** Specifies which set of shaders to use, defaults to universal. */
 	UPROPERTY(BlueprintReadWrite, config, EditAnywhere, Category= "USD options")
 	FName RenderContextToImport;
-
-	/** Time to evaluate the USD Stage for import */
-	UPROPERTY(BlueprintReadWrite, config, EditAnywhere, Category= "USD options", meta = (DisplayName = "Time"))
-	float ImportTime;
 
 	/** Whether to use the specified StageOptions instead of the stage's own settings */
 	UPROPERTY( BlueprintReadWrite, config, EditAnywhere, Category = "USD options" )
@@ -107,9 +110,12 @@ public:
 	UPROPERTY(BlueprintReadWrite, config, EditAnywhere, Category = "Processing")
 	bool bPrimPathFolderStructure;
 
-	/** Attempt to combine assets and components whenever possible */
-	UPROPERTY(BlueprintReadWrite, config, EditAnywhere, Category = "Processing", meta=(DisplayName="Collapse assets and components"))
-	bool bCollapse;
+	/**
+	 * Whether to try to combine individual assets and components of the same type on a kind-per-kind basis,
+	 * like multiple Mesh prims into a single Static Mesh
+	 */
+	UPROPERTY( BlueprintReadWrite, config, EditAnywhere, Category = "Processing", meta = ( Bitmask, BitmaskEnum = EUsdDefaultKind ) )
+	int32 KindsToCollapse;
 
 	/** When true, if a prim has a "LOD" variant set with variants named "LOD0", "LOD1", etc. where each contains a UsdGeomMesh, the importer will attempt to parse the meshes as separate LODs of a single UStaticMesh. When false, only the selected variant will be parsed as LOD0 of the UStaticMesh.  */
 	UPROPERTY(BlueprintReadWrite, config, EditAnywhere, Category="Processing", meta=(DisplayName="Interpret LOD variant sets", EditCondition=bImportGeometry) )

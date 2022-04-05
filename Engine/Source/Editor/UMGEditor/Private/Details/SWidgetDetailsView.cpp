@@ -41,16 +41,10 @@ void SWidgetDetailsView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetB
 	// Create a property view
 	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	FNotifyHook* NotifyHook = this;
-	FDetailsViewArgs DetailsViewArgs(
-		/*bUpdateFromSelection=*/ false,
-		/*bLockable=*/ false,
-		/*bAllowSearch=*/ true,
-		FDetailsViewArgs::HideNameArea,
-		/*bHideSelectionTip=*/ true,
-		/*InNotifyHook=*/ NotifyHook,
-		/*InSearchInitialKeyFocus=*/ false,
-		/*InViewIdentifier=*/ NAME_None);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
+	DetailsViewArgs.NotifyHook = this;
 	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Automatic;
 
 	PropertyView = EditModule.CreateDetailView(DetailsViewArgs);
@@ -128,6 +122,7 @@ void SWidgetDetailsView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetB
 					[
 						SNew(SImage)
 						.Image(this, &SWidgetDetailsView::GetNameIcon)
+						.ColorAndOpacity(FSlateColor::UseForeground())
 					]
 
 					+ SHorizontalBox::Slot()
@@ -163,6 +158,7 @@ void SWidgetDetailsView::Construct(const FArguments& InArgs, TSharedPtr<FWidgetB
 
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
+					.VAlign(VAlign_Center)
 					.Padding(15,0,0,0)
 					[
 						SAssignNew(ClassLinkArea, SBox)

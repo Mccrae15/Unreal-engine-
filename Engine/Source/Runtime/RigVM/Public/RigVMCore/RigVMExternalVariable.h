@@ -14,6 +14,9 @@ struct RIGVM_API FRigVMExternalVariable
 {
 	FORCEINLINE FRigVMExternalVariable()
 		: Name(NAME_None)
+#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+		, Property(nullptr)
+#endif
 		, TypeName(NAME_None)
 		, TypeObject(nullptr)
 		, bIsArray(false)
@@ -21,18 +24,83 @@ struct RIGVM_API FRigVMExternalVariable
 		, bIsReadOnly(false)
 		, Size(0)
 		, Memory(nullptr)
-		
 	{
 	}
 
-	FORCEINLINE static FRigVMExternalVariable Make(FProperty* InProperty, UObject* InContainer)
+	FORCEINLINE static void GetTypeFromProperty(const FProperty* InProperty, FName& OutTypeName, UObject*& OutTypeObject)
+	{
+		if (CastField<FBoolProperty>(InProperty))
+		{
+			OutTypeName = TEXT("bool");
+			OutTypeObject = nullptr;
+		}
+		else if (CastField<FIntProperty>(InProperty))
+		{
+			OutTypeName = TEXT("int32");
+			OutTypeObject = nullptr;
+		}
+		else if (CastField<FFloatProperty>(InProperty))
+		{
+			OutTypeName = TEXT("float");
+			OutTypeObject = nullptr;
+		}
+		else if (CastField<FDoubleProperty>(InProperty))
+		{
+			OutTypeName = TEXT("double");
+			OutTypeObject = nullptr;
+		}
+		else if (CastField<FStrProperty>(InProperty))
+		{
+			OutTypeName = TEXT("FString");
+			OutTypeObject = nullptr;
+		}
+		else if (CastField<FNameProperty>(InProperty))
+		{
+			OutTypeName = TEXT("FName");
+			OutTypeObject = nullptr;
+		}
+		else if (const FEnumProperty* EnumProperty = CastField<FEnumProperty>(InProperty))
+		{
+			OutTypeName = EnumProperty->GetEnum()->GetFName();
+			OutTypeObject = EnumProperty->GetEnum();
+		}
+		else if (const FByteProperty* ByteProperty = CastField<FByteProperty>(InProperty))
+		{
+			if (UEnum* BytePropertyEnum = ByteProperty->Enum)
+			{
+				OutTypeName = BytePropertyEnum->GetFName();
+				OutTypeObject = BytePropertyEnum;
+			}
+		}
+		else if (const FStructProperty* StructProperty = CastField<FStructProperty>(InProperty))
+		{
+			OutTypeName = *StructProperty->Struct->GetStructCPPName();
+			OutTypeObject = StructProperty->Struct;
+		}
+		else if (const FObjectProperty* ObjectProperty = CastField<FObjectProperty>(InProperty))
+		{
+			OutTypeName = *FString::Printf(TEXT("TObjectPtr<%s%s>"),
+				ObjectProperty->PropertyClass->GetPrefixCPP(),
+				*ObjectProperty->PropertyClass->GetName());
+			OutTypeObject = ObjectProperty->PropertyClass;
+		}
+		else
+		{
+			checkNoEntry();
+		}
+	}
+
+	FORCEINLINE static FRigVMExternalVariable Make(const FProperty* InProperty, void* InContainer, const FName& InOptionalName = NAME_None)
 	{
 		check(InProperty);
 
-		FProperty* Property = InProperty;
+		const FProperty* Property = InProperty;
 
 		FRigVMExternalVariable ExternalVariable;
-		ExternalVariable.Name = InProperty->GetFName();
+		ExternalVariable.Name = InOptionalName.IsNone() ? InProperty->GetFName() : InOptionalName;
+#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+		ExternalVariable.Property = Property;
+#endif
 		ExternalVariable.bIsPublic = !InProperty->HasAllPropertyFlags(CPF_DisableEditOnInstance);
 		ExternalVariable.bIsReadOnly = InProperty->HasAllPropertyFlags(CPF_BlueprintReadOnly);
 
@@ -42,7 +110,7 @@ struct RIGVM_API FRigVMExternalVariable
 		}
 
 		FString TypePrefix, TypeSuffix;
-		if (FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property))
 		{
 			ExternalVariable.bIsArray = true;
 			TypePrefix = TEXT("TArray<");
@@ -51,45 +119,7 @@ struct RIGVM_API FRigVMExternalVariable
 		}
 
 		ExternalVariable.Size = Property->GetSize();
-
-		if (CastField<FBoolProperty>(Property))
-		{
-			ExternalVariable.TypeName = TEXT("bool");
-		}
-		else if (CastField<FIntProperty>(Property))
-		{
-			ExternalVariable.TypeName = TEXT("int32");
-		}
-		else if (CastField<FFloatProperty>(Property))
-		{
-			ExternalVariable.TypeName = TEXT("float");
-		}
-		else if (CastField<FStrProperty>(Property))
-		{
-			ExternalVariable.TypeName = TEXT("FString");
-		}
-		else if (CastField<FNameProperty>(Property))
-		{
-			ExternalVariable.TypeName = TEXT("FName");
-		}
-		else if (FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property))
-		{
-			ExternalVariable.TypeName = EnumProperty->GetEnum()->GetFName();
-			ExternalVariable.TypeObject = EnumProperty->GetEnum();
-		}
-		else if (FByteProperty* ByteProperty = CastField<FByteProperty>(Property))
-		{
-			if (UEnum* BytePropertyEnum = ByteProperty->Enum)
-			{
-				ExternalVariable.TypeName = BytePropertyEnum->GetFName();
-				ExternalVariable.TypeObject = BytePropertyEnum;
-			}
-		}
-		else if (FStructProperty* StructProperty = CastField<FStructProperty>(Property))
-		{
-			ExternalVariable.TypeName = *StructProperty->Struct->GetStructCPPName();
-			ExternalVariable.TypeObject = StructProperty->Struct;
-		}
+		GetTypeFromProperty(Property, ExternalVariable.TypeName, ExternalVariable.TypeObject);
 
 		return ExternalVariable;
 	}
@@ -190,6 +220,30 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
+	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, double& InValue)
+	{
+		FRigVMExternalVariable Variable;
+		Variable.Name = InName;
+		Variable.TypeName = TEXT("double");
+		Variable.TypeObject = nullptr;
+		Variable.bIsArray = false;
+		Variable.Size = sizeof(double);
+		Variable.Memory = (uint8*)&InValue;
+		return Variable;
+	}
+
+	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<double>& InValue)
+	{
+		FRigVMExternalVariable Variable;
+		Variable.Name = InName;
+		Variable.TypeName = TEXT("double");
+		Variable.TypeObject = nullptr;
+		Variable.bIsArray = true;
+		Variable.Size = sizeof(double);
+		Variable.Memory = (uint8*)&InValue;
+		return Variable;
+	}
+
 	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, FString& InValue)
 	{
 		FRigVMExternalVariable Variable;
@@ -278,7 +332,7 @@ struct RIGVM_API FRigVMExternalVariable
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
-		Variable.TypeName = TBaseStructure<T>::Get()->GetFName();
+		Variable.TypeName = *TBaseStructure<T>::Get()->GetStructCPPName();
 		Variable.TypeObject = TBaseStructure<T>::Get();
 		Variable.bIsArray = false;
 		Variable.Size = TBaseStructure<T>::Get()->GetStructureSize();
@@ -294,7 +348,7 @@ struct RIGVM_API FRigVMExternalVariable
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
-		Variable.TypeName = TBaseStructure<T>::Get()->GetFName();
+		Variable.TypeName = *TBaseStructure<T>::Get()->GetStructCPPName();
 		Variable.TypeObject = TBaseStructure<T>::Get();
 		Variable.bIsArray = true;
 		Variable.Size = TBaseStructure<T>::Get()->GetStructureSize();
@@ -310,7 +364,7 @@ struct RIGVM_API FRigVMExternalVariable
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
-		Variable.TypeName = T::StaticStruct()->GetFName();
+		Variable.TypeName = *T::StaticStruct()->GetStructCPPName();
 		Variable.TypeObject = T::StaticStruct();
 		Variable.bIsArray = false;
 		Variable.Size = T::StaticStruct()->GetStructureSize();
@@ -326,7 +380,7 @@ struct RIGVM_API FRigVMExternalVariable
 	{
 		FRigVMExternalVariable Variable;
 		Variable.Name = InName;
-		Variable.TypeName = T::StaticStruct()->GetFName();
+		Variable.TypeName = *T::StaticStruct()->GetStructCPPName();
 		Variable.TypeObject = T::StaticStruct();
 		Variable.bIsArray = true;
 		Variable.Size = T::StaticStruct()->GetStructureSize();
@@ -334,8 +388,54 @@ struct RIGVM_API FRigVMExternalVariable
 		return Variable;
 	}
 
+	template <
+		typename T,
+		typename TEnableIf<TModels<CRigVMUClass, T>::Value>::Type * = nullptr
+	>
+	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, T& InValue)
+	{
+		FRigVMExternalVariable Variable;
+		Variable.Name = InName;
+		Variable.TypeName = *T::StaticClass()->GetStructCPPName();
+		Variable.TypeObject = T::StaticClass();
+		Variable.bIsArray = false;
+		Variable.Size = T::StaticClass()->GetStructureSize();
+		Variable.Memory = (uint8*)&InValue;
+		return Variable;
+	}
+
+	template <
+		typename T,
+		typename TEnableIf<TModels<CRigVMUClass, T>::Value>::Type * = nullptr
+	>
+	FORCEINLINE static FRigVMExternalVariable Make(const FName& InName, TArray<T>& InValue)
+	{
+		FRigVMExternalVariable Variable;
+		Variable.Name = InName;
+		Variable.TypeName = *T::StaticClass()->GetStructCPPName();
+		Variable.TypeObject = T::StaticClass();
+		Variable.bIsArray = true;
+		Variable.Size = T::StaticClass()->GetStructureSize();
+		Variable.Memory = (uint8*)&InValue;
+		return Variable;
+	}
+
 	template<typename T>
-	FORCEINLINE T GetValue()
+	FORCEINLINE T GetValue() const
+	{
+		ensure(IsValid() && !bIsArray);
+		return *(T*)Memory;
+	}
+
+	template<typename T>
+	FORCEINLINE T& GetRef()
+	{
+		ensure(IsValid() && !bIsArray);
+		return *(T*)Memory;
+	}
+
+	template<typename T>
+	FORCEINLINE const T& GetRef() const
 	{
 		ensure(IsValid() && !bIsArray);
 		return *(T*)Memory;
@@ -371,17 +471,43 @@ struct RIGVM_API FRigVMExternalVariable
 			(bAllowNullPtr || Memory != nullptr);
 	}
 
-	FORCEINLINE FRigVMMemoryHandle GetHandle(int32 InOffset = INDEX_NONE) const
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+
+	FORCEINLINE FRigVMMemoryHandle GetHandle() const
 	{
 		return FRigVMMemoryHandle(
 			Memory,
 			Size,
-			bIsArray ? FRigVMMemoryHandle::FType::Dynamic : FRigVMMemoryHandle::FType::Plain,
-			InOffset
+			bIsArray ? FRigVMMemoryHandle::FType::Dynamic : FRigVMMemoryHandle::FType::Plain
 		);
 	}
 
+#endif
+
+	FORCEINLINE static void MergeExternalVariable(TArray<FRigVMExternalVariable>& OutVariables, const FRigVMExternalVariable& InVariable)
+	{
+		if(!InVariable.IsValid(true))
+		{
+			return;
+		}
+
+		for(const FRigVMExternalVariable& ExistingVariable : OutVariables)
+		{
+			if(ExistingVariable.Name == InVariable.Name)
+			{
+				ensure(ExistingVariable.TypeName == InVariable.TypeName);
+				ensure(ExistingVariable.TypeObject == InVariable.TypeObject);
+				return;
+			}
+		}
+
+		OutVariables.Add(InVariable);
+	}
+
 	FName Name;
+#if !UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
+	const FProperty* Property;
+#endif
 	FName TypeName;
 	UObject* TypeObject;
 	bool bIsArray;

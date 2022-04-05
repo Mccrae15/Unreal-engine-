@@ -11,9 +11,27 @@
 #include "PixelFormat.h"
 #include "TextureConverter.h"
 #include "HAL/PlatformProcess.h"
+#include "TextureBuildFunction.h"
+#include "DerivedDataBuildFunctionFactory.h"
+#include "DerivedDataSharedString.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTextureFormatETC2, Log, All);
 
+class FETC2TextureBuildFunction final : public FTextureBuildFunction
+{
+	const UE::DerivedData::FUtf8SharedString& GetName() const final
+	{
+		static const UE::DerivedData::FUtf8SharedString Name(UTF8TEXTVIEW("ETC2Texture"));
+		return Name;
+	}
+
+	void GetVersion(UE::DerivedData::FBuildVersionBuilder& Builder, ITextureFormat*& OutTextureFormatVersioning) const final
+	{
+		static FGuid Version(TEXT("af5192f4-351f-422f-b539-f6bd4abadfae"));
+		Builder << Version;
+		OutTextureFormatVersioning = FModuleManager::GetModuleChecked<ITextureFormatModule>(TEXT("TextureFormatETC2")).GetTextureFormat();
+	}
+};
 
 /**
  * Macro trickery for supported format names.
@@ -131,6 +149,12 @@ class FTextureFormatETC2 : public ITextureFormat
 		return 0;
 	}
 
+	virtual FName GetEncoderName(FName Format) const override
+	{
+		static const FName ETC2Name("ETC2");
+		return ETC2Name;
+	}
+
 	virtual void GetSupportedFormats(TArray<FName>& OutFormats) const override
 	{
 		for (int32 i = 0; i < UE_ARRAY_COUNT(GSupportedTextureFormatNames); ++i)
@@ -165,6 +189,7 @@ class FTextureFormatETC2 : public ITextureFormat
 	virtual bool CompressImage(
 		const FImage& InImage,
 		const struct FTextureBuildSettings& BuildSettings,
+		FStringView DebugTexturePathName,
 		bool bImageHasAlphaChannel,
 		FCompressedImage2D& OutCompressedImage
 		) const override
@@ -207,41 +232,68 @@ static ITextureFormat* Singleton = NULL;
 
 #if PLATFORM_WINDOWS
 	void*	TextureConverterHandle = NULL;
-	FString QualCommBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/QualComm/Win64/");
+	FString AppLocalBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/AppLocalDependencies/Win64/Microsoft.VC.CRT");
+	FString QualCommBinariesRoot = FPaths::EngineDir() / TEXT("Binaries/ThirdParty/QualComm/Win64");
+	FString QualCommBinaryName = TEXT("TextureConverter.dll");
 #endif
 
 
 class FTextureFormatETC2Module : public ITextureFormatModule
 {
 public:
-
-	FTextureFormatETC2Module()
-	{
-#if PLATFORM_WINDOWS
-		TextureConverterHandle = FPlatformProcess::GetDllHandle(*(QualCommBinariesRoot + "TextureConverter.dll"));
-#endif
-	}
-
+	FTextureFormatETC2Module() { }
 	virtual ~FTextureFormatETC2Module()
 	{
-		delete Singleton;
-		Singleton = NULL;
+		ITextureFormat* p = Singleton;
+		Singleton = nullptr;
+		if (p)
+			delete p;
 
 #if PLATFORM_WINDOWS
-		FPlatformProcess::FreeDllHandle(TextureConverterHandle);
+		void* handle = TextureConverterHandle;
+		TextureConverterHandle = nullptr;
+		if (handle)
+			FPlatformProcess::FreeDllHandle(handle);
 #endif
 	}
+
+	virtual void StartupModule() override
+	{
+	}
+
 	virtual ITextureFormat* GetTextureFormat()
 	{
-		if (!Singleton)
-		{
 #if PLATFORM_WINDOWS
-			TextureConverterHandle = FPlatformProcess::GetDllHandle(*(QualCommBinariesRoot + "TextureConverter.dll"));
+		if (TextureConverterHandle == nullptr)
+		{
+			UE_LOG(LogTextureFormatETC2, Display, TEXT("ETC2 Texture loading DLL: %s"), *QualCommBinaryName);
+			FPlatformProcess::PushDllDirectory(*AppLocalBinariesRoot);
+			void* handle = FPlatformProcess::GetDllHandle(*(QualCommBinariesRoot / QualCommBinaryName));
+			FPlatformProcess::PopDllDirectory(*AppLocalBinariesRoot);
+			if (handle == nullptr )
+			{
+				UE_LOG(LogTextureFormatETC2, Warning, TEXT("ETC2 Texture %s requested but could not be loaded"), *QualCommBinaryName);
+				return nullptr;
+			}
+			TextureConverterHandle = handle;
+		}
+
+		if (TextureConverterHandle == nullptr)
+		{
+			UE_LOG(LogTextureFormatETC2, Warning, TEXT("ETC2 Texture %s requested but could not be loaded"), *QualCommBinaryName);
+			return nullptr;
+		}
 #endif
-			Singleton = new FTextureFormatETC2();
+
+		if ( Singleton == nullptr )  // not thread safe
+		{
+			FTextureFormatETC2* ptr = new FTextureFormatETC2();
+			Singleton = ptr;
 		}
 		return Singleton;
 	}
+
+	static inline UE::DerivedData::TBuildFunctionFactory<FETC2TextureBuildFunction> BuildFunctionFactory;
 };
 
 IMPLEMENT_MODULE(FTextureFormatETC2Module, TextureFormatETC2);

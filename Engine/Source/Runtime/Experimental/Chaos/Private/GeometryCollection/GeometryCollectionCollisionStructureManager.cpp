@@ -4,13 +4,16 @@
 #include "ChaosLog.h"
 #include "Chaos/Box.h"
 #include "Chaos/ErrorReporter.h"
+#include "Chaos/ImplicitObjectUnion.h"
 #include "Chaos/Levelset.h"
 #include "Chaos/Particles.h"
 #include "Chaos/Sphere.h"
+#include "Chaos/Capsule.h"
 #include "Chaos/Vector.h"
 #include "HAL/IConsoleManager.h"
 #include "Chaos/TriangleMesh.h"
 #include "Chaos/PBDRigidClustering.h"
+#include "Chaos/PBDRigidClusteringCollisionParticleAlgo.h"
 
 DEFINE_LOG_CATEGORY_STATIC(GCS_Log, NoLogging, All);
 
@@ -52,7 +55,7 @@ FCollisionStructureManager::NewSimplicial(
 		{
 			Extent = Implicit->HasBoundingBox() ? Implicit->BoundingBox().Extents().Size() : 1.f;
 
-			Chaos::FReal Threshold = Extent * 0.01;
+			Chaos::FReal Threshold = Extent * 0.01f;
 
 			//
 			//  Remove particles inside the levelset. (I think this is useless) 
@@ -226,7 +229,7 @@ FCollisionStructureManager::NewImplicitBox(
 	// @todo(chaos): pass margin settings into the collision manager?
 	float CollisionMarginFraction = 0.1f;// FMath::Max(0.0f, UPhysicsSettingsCore::Get()->SolverOptions.CollisionMarginFraction);
 	float CollisionMarginMax = 10.0f;// FMath::Max(0.0f, UPhysicsSettingsCore::Get()->SolverOptions.CollisionMarginMax);
-	const float Margin = FMath::Min(CollisionMarginFraction * 0.5f * HalfExtents.GetMin(), CollisionMarginMax);
+	const Chaos::FReal Margin = FMath::Min(CollisionMarginFraction * 0.5f * HalfExtents.GetMin(), CollisionMarginMax);
 
 	Chaos::FImplicitObject* Implicit = new Chaos::TBox<Chaos::FReal, 3>(Center - HalfExtents, Center + HalfExtents, Margin);
 	UpdateImplicitFlags(Implicit, CollisionType);
@@ -240,6 +243,121 @@ FCollisionStructureManager::NewImplicitSphere(
 	const ECollisionTypeEnum CollisionType)
 {
 	Chaos::FImplicitObject* Implicit = new Chaos::TSphere<Chaos::FReal, 3>(Chaos::FVec3(0), Radius * (1 - CollisionObjectReduction / 100.f));
+	UpdateImplicitFlags(Implicit, CollisionType);
+	return Implicit;
+}
+
+FCollisionStructureManager::FImplicit*
+FCollisionStructureManager::NewImplicitConvex(
+	const TArray<int32>& ConvexIndices,
+	const TManagedArray<TUniquePtr<Chaos::FConvex>>* ConvexGeometry,
+	const ECollisionTypeEnum CollisionType,
+	const FTransform& MassTransform,
+	const Chaos::FReal CollisionMarginFraction)
+{
+	using FConvexVec3 = Chaos::FConvex::FVec3Type;
+
+	if (ConvexIndices.Num())
+	{
+		TArray<TUniquePtr<Chaos::FImplicitObject>> Implicits;
+		for (auto& Index : ConvexIndices)
+		{
+			TArray<FConvexVec3> ConvexVertices = (*ConvexGeometry)[Index]->GetVertices();
+			for (int32 Idx = 0; Idx < ConvexVertices.Num(); Idx++)
+			{
+				ConvexVertices[Idx] = MassTransform.InverseTransformPosition(FVector(ConvexVertices[Idx]));
+			}
+
+			Chaos::FReal Margin = (Chaos::FReal)(*ConvexGeometry)[Index]->BoundingBox().Extents().Min() * CollisionMarginFraction;
+			Chaos::FConvex* MarginConvex = new Chaos::FConvex(ConvexVertices, Margin);
+			if (MarginConvex->NumVertices() > 0)
+			{
+				Chaos::FImplicitObject* Implicit = MarginConvex;
+				UpdateImplicitFlags(Implicit, CollisionType);
+				Implicits.Add(TUniquePtr<Chaos::FImplicitObject>(Implicit));
+			}
+			else
+			{
+				delete MarginConvex;
+			}
+		}
+
+		if (Implicits.Num() == 0)
+		{
+			return nullptr;
+		}
+		else if (Implicits.Num() == 1)
+		{
+			return Implicits[0].Release();
+		}
+		else
+		{
+			Chaos::FImplicitObjectUnion* ImplicitUnion = new Chaos::FImplicitObjectUnion(MoveTemp(Implicits));
+			return ImplicitUnion;
+		}
+	}
+	return nullptr;
+}
+
+FCollisionStructureManager::FImplicit*
+FCollisionStructureManager::NewImplicitCapsule(
+	const Chaos::FReal Radius,
+	const Chaos::FReal Length,
+	const float CollisionObjectReduction,
+	const ECollisionTypeEnum CollisionType)
+{
+	if (Length < SMALL_NUMBER)
+	{
+		// make a more optimized shape : sphere
+		return FCollisionStructureManager::NewImplicitSphere(Radius, CollisionObjectReduction, CollisionType);
+	}
+	
+	const Chaos::FReal HalfLength = (Chaos::FReal)Length * (Chaos::FReal)0.5;
+	Chaos::FImplicitObject* Implicit = new Chaos::FCapsule(Chaos::FVec3(0, 0, -HalfLength), Chaos::FVec3(0, 0, +HalfLength), Radius * (1 - CollisionObjectReduction / 100.f));
+	UpdateImplicitFlags(Implicit, CollisionType);
+	return Implicit;
+}
+
+FCollisionStructureManager::FImplicit*
+FCollisionStructureManager::NewImplicitCapsule(
+	const FBox& CollisionBounds,
+	const float CollisionObjectReduction,
+	const ECollisionTypeEnum CollisionType)
+{
+	const FVector BBoxCenter = CollisionBounds.GetCenter(); 
+	const FVector BBoxExtent = CollisionBounds.GetExtent(); // FBox's extents are 1/2 (Max - Min)
+	const Chaos::FReal XExtent = FMath::Abs(BBoxExtent.X);
+	const Chaos::FReal YExtent = FMath::Abs(BBoxExtent.Y);
+	const Chaos::FReal ZExtent = FMath::Abs(BBoxExtent.Z);
+	Chaos::FVec3 HalfLengthVector;
+
+	Chaos::FReal Radius = 0;
+	if (XExtent > YExtent && XExtent > ZExtent)
+	{
+		Radius = FMath::Min(YExtent, ZExtent);
+		HalfLengthVector = Chaos::FVec3((XExtent - Radius), 0, 0);
+	}
+	else if (YExtent > XExtent && YExtent > ZExtent)
+	{
+		Radius = FMath::Min(XExtent, ZExtent);
+		HalfLengthVector = Chaos::FVec3(0, (YExtent - Radius), 0);
+	}
+	else
+	{
+		Radius = FMath::Min(XExtent, YExtent);
+		HalfLengthVector = Chaos::FVec3(0, 0, (ZExtent - Radius));
+	}
+
+	if (HalfLengthVector.Size() < SMALL_NUMBER)
+	{
+		// make a more optimized shape : sphere
+		return FCollisionStructureManager::NewImplicitSphere(Radius, CollisionObjectReduction, CollisionType);
+	}
+
+	Chaos::FVec3 X1 = BBoxCenter - HalfLengthVector;
+	Chaos::FVec3 X2 = BBoxCenter + HalfLengthVector;
+
+	Chaos::FImplicitObject* Implicit = new Chaos::FCapsule(X1, X2, Radius * (1 - CollisionObjectReduction / 100.f));
 	UpdateImplicitFlags(Implicit, CollisionType);
 	return Implicit;
 }
@@ -361,7 +479,7 @@ FCollisionStructureManager::CalculateUnitMassInertiaTensor(
 	{
 		const Chaos::FVec3 Size = Bounds.GetSize();
 		const Chaos::FMatrix33 I = Chaos::FAABB3::GetInertiaTensor(1.0, Size);
-		Tensor = { I.M[0][0], I.M[1][1], I.M[2][2] };
+		Tensor = FVector(I.M[0][0], I.M[1][1], I.M[2][2]);
 	}
 	else if (ImplicitType == EImplicitTypeEnum::Chaos_Implicit_Sphere)
 	{

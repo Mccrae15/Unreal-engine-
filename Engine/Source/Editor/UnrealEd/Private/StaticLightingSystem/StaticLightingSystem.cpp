@@ -40,7 +40,6 @@
 #include "GameFramework/WorldSettings.h"
 #include "Engine/GeneratedMeshAreaLight.h"
 #include "Components/SkyLightComponent.h"
-#include "Atmosphere/AtmosphericFogComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/ModelComponent.h"
 #include "Engine/LightMapTexture2D.h"
@@ -292,6 +291,7 @@ void FStaticLightingManager::CreateStaticLightingSystem(const FLightingBuildOpti
 		bBuildReflectionCapturesOnFinish = !Options.bOnlyBuildVisibility;
 
 		UWorld* World = GWorld;
+		
 		for (ULevel* Level : World->GetLevels())
 		{
 			if (Level->bIsLightingScenario && Level->bIsVisible)
@@ -661,12 +661,11 @@ bool FStaticLightingSystem::BeginLightmassProcess()
 				}
 				}
 
-				for (TObjectIterator<ULightComponentBase> LightIt(RF_ClassDefaultObject, /** bIncludeDerivedClasses */ true, /** InternalExcludeFlags */ EInternalObjectFlags::PendingKill); LightIt; ++LightIt)
+				for (TObjectIterator<ULightComponentBase> LightIt(RF_ClassDefaultObject, /** bIncludeDerivedClasses */ true, /** InternalExcludeFlags */ EInternalObjectFlags::Garbage); LightIt; ++LightIt)
 				{
 					ULightComponentBase* const Light = *LightIt;
-					const bool bLightIsInWorld = Light->GetOwner() 
-						&& World->ContainsActor(Light->GetOwner())
-						&& !Light->GetOwner()->IsPendingKill();
+					const bool bLightIsInWorld = IsValid(Light->GetOwner()) 
+						&& World->ContainsActor(Light->GetOwner());
 
 					if (bLightIsInWorld && ShouldOperateOnLevel(Light->GetOwner()->GetLevel()))
 					{
@@ -1632,10 +1631,10 @@ void FStaticLightingSystem::AddBSPStaticLightingInfo(ULevel* Level, bool bBuildL
 	{
 		FNodeGroup* NodeGroup = It.Value();
 
-		if (NodeGroup->Nodes.Num())
+		if (NodeGroup->Nodes.Num() && Level->ModelComponents.Num())
 		{
 			// get one of the surfaces/components from the NodeGroup
-			// @todo UE4: Remove need for GetSurfaceLightMapResolution to take a surfaceindex, or a ModelComponent :)
+			// @todo: Remove need for GetSurfaceLightMapResolution to take a surfaceindex, or a ModelComponent :)
 			UModelComponent* SomeModelComponent = Level->ModelComponents[Model->Nodes[NodeGroup->Nodes[0]].ComponentIndex];
 			int32 SurfaceIndex = Model->Nodes[NodeGroup->Nodes[0]].iSurf;
 
@@ -1656,20 +1655,20 @@ void FStaticLightingSystem::AddBSPStaticLightingInfo(ULevel* Level, bool bBuildL
 			{
 				const FBspNode& Node = Model->Nodes[NodeGroup->Nodes[NodeIndex]];
 				const FBspSurf& NodeSurf = Model->Surfs[Node.iSurf];
-				const FVector& TextureBase = Model->Points[NodeSurf.pBase];
-				const FVector& TextureX = Model->Vectors[NodeSurf.vTextureU];
-				const FVector& TextureY = Model->Vectors[NodeSurf.vTextureV];
+				const FVector& TextureBase = (FVector)Model->Points[NodeSurf.pBase];
+				const FVector& TextureX = (FVector)Model->Vectors[NodeSurf.vTextureU];
+				const FVector& TextureY = (FVector)Model->Vectors[NodeSurf.vTextureV];
 				const int32 BaseVertexIndex = NodeGroup->Vertices.Num();
 				// Compute the surface's tangent basis.
-				FVector NodeTangentX = Model->Vectors[NodeSurf.vTextureU].GetSafeNormal();
-				FVector NodeTangentY = Model->Vectors[NodeSurf.vTextureV].GetSafeNormal();
-				FVector NodeTangentZ = Model->Vectors[NodeSurf.vNormal].GetSafeNormal();
+				FVector NodeTangentX = (FVector)Model->Vectors[NodeSurf.vTextureU].GetSafeNormal();
+				FVector NodeTangentY = (FVector)Model->Vectors[NodeSurf.vTextureV].GetSafeNormal();
+				FVector NodeTangentZ = (FVector)Model->Vectors[NodeSurf.vNormal].GetSafeNormal();
 
 				// Generate the node's vertices.
 				for(uint32 VertexIndex = 0;VertexIndex < Node.NumVertices;VertexIndex++)
 				{
 					const FVert& Vert = Model->Verts[Node.iVertPool + VertexIndex];
-					const FVector& VertexWorldPosition = Model->Points[Vert.pVertex];
+					const FVector& VertexWorldPosition = (FVector)Model->Points[Vert.pVertex];
 
 					FStaticLightingVertex* DestVertex = new(NodeGroup->Vertices) FStaticLightingVertex;
 					DestVertex->WorldPosition = VertexWorldPosition;
@@ -1796,7 +1795,7 @@ void FStaticLightingSystem::AddBSPStaticLightingInfo(ULevel* Level, TArray<FNode
 		if (NodeGroup && NodeGroup->Nodes.Num())
 		{
 			// get one of the surfaces/components from the NodeGroup
-			// @todo UE4: Remove need for GetSurfaceLightMapResolution to take a surfaceindex, or a ModelComponent :)
+			// @todo: Remove need for GetSurfaceLightMapResolution to take a surfaceindex, or a ModelComponent :)
 			UModelComponent* SomeModelComponent = Level->ModelComponents[Model->Nodes[NodeGroup->Nodes[0]].ComponentIndex];
 			int32 SurfaceIndex = Model->Nodes[NodeGroup->Nodes[0]].iSurf;
 
@@ -1811,20 +1810,20 @@ void FStaticLightingSystem::AddBSPStaticLightingInfo(ULevel* Level, TArray<FNode
 			{
 				const FBspNode& Node = Model->Nodes[NodeGroup->Nodes[NodeIndex]];
 				const FBspSurf& NodeSurf = Model->Surfs[Node.iSurf];
-				const FVector& TextureBase = Model->Points[NodeSurf.pBase];
-				const FVector& TextureX = Model->Vectors[NodeSurf.vTextureU];
-				const FVector& TextureY = Model->Vectors[NodeSurf.vTextureV];
+				const FVector& TextureBase = (FVector)Model->Points[NodeSurf.pBase];
+				const FVector& TextureX = (FVector)Model->Vectors[NodeSurf.vTextureU];
+				const FVector& TextureY = (FVector)Model->Vectors[NodeSurf.vTextureV];
 				const int32 BaseVertexIndex = NodeGroup->Vertices.Num();
 				// Compute the surface's tangent basis.
-				FVector NodeTangentX = Model->Vectors[NodeSurf.vTextureU].GetSafeNormal();
-				FVector NodeTangentY = Model->Vectors[NodeSurf.vTextureV].GetSafeNormal();
-				FVector NodeTangentZ = Model->Vectors[NodeSurf.vNormal].GetSafeNormal();
+				FVector NodeTangentX = (FVector)Model->Vectors[NodeSurf.vTextureU].GetSafeNormal();
+				FVector NodeTangentY = (FVector)Model->Vectors[NodeSurf.vTextureV].GetSafeNormal();
+				FVector NodeTangentZ = (FVector)Model->Vectors[NodeSurf.vNormal].GetSafeNormal();
 
 				// Generate the node's vertices.
 				for(uint32 VertexIndex = 0;VertexIndex < Node.NumVertices;VertexIndex++)
 				{
 					const FVert& Vert = Model->Verts[Node.iVertPool + VertexIndex];
-					const FVector& VertexWorldPosition = Model->Points[Vert.pVertex];
+					const FVector& VertexWorldPosition = (FVector)Model->Points[Vert.pVertex];
 
 					FStaticLightingVertex* DestVertex = new(NodeGroup->Vertices) FStaticLightingVertex;
 					DestVertex->WorldPosition = VertexWorldPosition;
@@ -2041,7 +2040,7 @@ void FStaticLightingSystem::GatherScene()
 	for( TObjectIterator<ALightmassImportanceVolume> It ; It ; ++It )
 	{
 		ALightmassImportanceVolume* LMIVolume = *It;
-		if (World->ContainsActor(LMIVolume) && !LMIVolume->IsPendingKill() && ShouldOperateOnLevel(LMIVolume->GetLevel()))
+		if (World->ContainsActor(LMIVolume) && IsValid(LMIVolume) && ShouldOperateOnLevel(LMIVolume->GetLevel()))
 		{
 			LightmassExporter->AddImportanceVolume(LMIVolume);
 		}
@@ -2050,7 +2049,7 @@ void FStaticLightingSystem::GatherScene()
 	for( TObjectIterator<ALightmassCharacterIndirectDetailVolume> It ; It ; ++It )
 	{
 		ALightmassCharacterIndirectDetailVolume* LMDetailVolume = *It;
-		if (World->ContainsActor(LMDetailVolume) && !LMDetailVolume->IsPendingKill() && ShouldOperateOnLevel(LMDetailVolume->GetLevel()))
+		if (World->ContainsActor(LMDetailVolume) && IsValid(LMDetailVolume) && ShouldOperateOnLevel(LMDetailVolume->GetLevel()))
 		{
 			LightmassExporter->AddCharacterIndirectDetailVolume(LMDetailVolume);
 		}
@@ -2059,7 +2058,7 @@ void FStaticLightingSystem::GatherScene()
 	for (TObjectIterator<AVolumetricLightmapDensityVolume> It; It; ++It)
 	{
 		AVolumetricLightmapDensityVolume* DetailVolume = *It;
-		if (World->ContainsActor(DetailVolume) && !DetailVolume->IsPendingKill() && ShouldOperateOnLevel(DetailVolume->GetLevel()))
+		if (World->ContainsActor(DetailVolume) && IsValid(DetailVolume) && ShouldOperateOnLevel(DetailVolume->GetLevel()))
 		{
 			LightmassExporter->VolumetricLightmapDensityVolumes.Add(DetailVolume);
 		}
@@ -2068,36 +2067,17 @@ void FStaticLightingSystem::GatherScene()
 	for( TObjectIterator<ULightmassPortalComponent> It ; It ; ++It )
 	{
 		ULightmassPortalComponent* LMPortal = *It;
-		if (LMPortal->GetOwner() && World->ContainsActor(LMPortal->GetOwner()) && !LMPortal->IsPendingKill() && ShouldOperateOnLevel(LMPortal->GetOwner()->GetLevel()))
+		if (LMPortal->GetOwner() && World->ContainsActor(LMPortal->GetOwner()) && IsValid(LMPortal) && ShouldOperateOnLevel(LMPortal->GetOwner()->GetLevel()))
 		{
 			LightmassExporter->AddPortal(LMPortal);
 		}
 	}
 
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	bool LegacyAtmosphericFogRegistered = false;
-	for (TObjectIterator<UAtmosphericFogComponent> It; It; ++It)
-	{
-		UAtmosphericFogComponent* AtmosphericFog = *It;
-		if (AtmosphericFog->GetOwner() && World->ContainsActor(AtmosphericFog->GetOwner()) && !AtmosphericFog->IsPendingKill() && ShouldOperateOnLevel(AtmosphericFog->GetOwner()->GetLevel()))
-		{
-			LightmassExporter->SetAtmosphericComponent(AtmosphericFog);
-			LegacyAtmosphericFogRegistered = true;
-			break;	// We only register the first we find
-		}
-	}
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	for (TObjectIterator<USkyAtmosphereComponent> It; It; ++It)
 	{
 		USkyAtmosphereComponent* SkyAtmosphere = *It;
-		if (SkyAtmosphere->GetOwner() && World->ContainsActor(SkyAtmosphere->GetOwner()) && !SkyAtmosphere->IsPendingKill() && ShouldOperateOnLevel(SkyAtmosphere->GetOwner()->GetLevel()))
+		if (SkyAtmosphere->GetOwner() && World->ContainsActor(SkyAtmosphere->GetOwner()) && IsValid(SkyAtmosphere) && ShouldOperateOnLevel(SkyAtmosphere->GetOwner()->GetLevel()))
 		{
-			if (LegacyAtmosphericFogRegistered)
-			{
-				FMessageLog("LightingResults").Warning(LOCTEXT("LightmassError_BothAtmosphericFogAndSkyAtmosphereSelected", "Both a legacy AtmosphericFog and a new SkyAtmosphere wants to register. Lightmass will not consider the legacy component."));
-			}
-			LightmassExporter->SetAtmosphericComponent(nullptr);
 			LightmassExporter->SetSkyAtmosphereComponent(SkyAtmosphere);
 			break;	// We only register the first we find
 		}
@@ -2359,7 +2339,7 @@ void FStaticLightingSystem::UpdateLightingBuild()
 	}
 	else if ( CurrentBuildStage == FStaticLightingSystem::AutoApplyingImport )
 	{
-		if ( CanAutoApplyLighting() || IsRunningCommandlet() )
+		if (IsRunningCommandlet() || CanAutoApplyLighting())
 		{
 			bool bAutoApplyFailed = false;
 			FStaticLightingManager::Get()->SendBuildDoneNotification(bAutoApplyFailed);

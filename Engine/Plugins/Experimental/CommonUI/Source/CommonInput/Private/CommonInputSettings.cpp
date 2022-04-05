@@ -6,47 +6,14 @@
 #include "Engine/StreamableManager.h"
 #include "Engine/AssetManager.h"
 #include "Misc/DataDrivenPlatformInfoRegistry.h"
+#include "CommonInputBaseTypes.h"
+#include "Engine/PlatformSettings.h"
 
 UCommonInputSettings::UCommonInputSettings(const FObjectInitializer& Initializer)
 	: Super(Initializer)
 	, bInputDataLoaded(false)
 {
-	FCommonInputPlatformBaseData PcPlatformData;
-	PcPlatformData.bSupported = true;
-	PcPlatformData.DefaultInputType = ECommonInputType::MouseAndKeyboard;
-	PcPlatformData.bSupportsMouseAndKeyboard = true;
-	CommonInputPlatformData.Add(FCommonInputDefaults::PlatformPC, PcPlatformData);
-
-	for (const TPair<FString, FDataDrivenPlatformInfoRegistry::FPlatformInfo>& Platform : FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos())
-	{
-		const FName PlatformName = FName(Platform.Key);
-		const FDataDrivenPlatformInfoRegistry::FPlatformInfo& PlatformInfo = Platform.Value;
-
-		if (!PlatformInfo.bDefaultInputStandardKeyboard && PlatformInfo.bIsInteractablePlatform)
-		{
-			FCommonInputPlatformBaseData PlatformData;
-			PlatformData.bSupported = PlatformInfo.bInputSupportConfigurable;
-			if (PlatformInfo.DefaultInputType == "Gamepad")
-			{
-				PlatformData.DefaultInputType = ECommonInputType::Gamepad;
-			}
-			else if (PlatformInfo.DefaultInputType == "Touch")
-			{
-				PlatformData.DefaultInputType = ECommonInputType::Touch;
-			}
-			else if (PlatformInfo.DefaultInputType == "MouseAndKeyboard")
-			{
-				PlatformData.DefaultInputType = ECommonInputType::MouseAndKeyboard;
-			}
-			PlatformData.bSupportsMouseAndKeyboard = PlatformInfo.bSupportsMouseAndKeyboard;
-			PlatformData.bSupportsGamepad = PlatformInfo.bSupportsGamepad;
-			PlatformData.bCanChangeGamepadType = PlatformInfo.bSupportsTouch;
-			PlatformData.bSupportsTouch = PlatformInfo.bCanChangeGamepadType;
-
-			PlatformData.DefaultGamepadName = PlatformName;
-			CommonInputPlatformData.Add(PlatformName, PlatformData);
-		}
-	}
+	PlatformInput.Initialize(UCommonInputPlatformSettings::StaticClass());
 }
 
 void UCommonInputSettings::LoadData()
@@ -61,11 +28,6 @@ void UCommonInputSettings::PostEditChangeProperty(struct FPropertyChangedEvent& 
 	LoadData();
 }
 #endif
-
-const TArray<FName>& UCommonInputSettings::GetRegisteredPlatforms()
-{
-	return FCommonInputPlatformBaseData::GetRegisteredPlatforms();
-}
 
 void UCommonInputSettings::LoadInputData()
 {
@@ -84,18 +46,18 @@ void UCommonInputSettings::LoadInputData()
 			}
 		}
 		
-		CurrentPlatform = CommonInputPlatformData[FCommonInputBase::GetCurrentPlatformName()];
-		for (TSoftClassPtr<UCommonInputBaseControllerData> ControllerData : CurrentPlatform.GetControllerData())
-		{
-			if (TSubclassOf<UCommonInputBaseControllerData> ControllerDataClass = ControllerData.LoadSynchronous())
-			{
-				CurrentPlatform.ControllerDataClasses.Add(ControllerDataClass);
-				if (bIsDisregardForGC)
-				{
-					ControllerDataClass->AddToRoot();
-				}
-			}
-		}
+		//CurrentPlatform = CommonInputPlatformData[FCommonInputBase::GetCurrentPlatformName()];
+		//for (TSoftClassPtr<UCommonInputBaseControllerData> ControllerData : CurrentPlatform.GetControllerData())
+		//{
+		//	if (TSubclassOf<UCommonInputBaseControllerData> ControllerDataClass = ControllerData.LoadSynchronous())
+		//	{
+		//		CurrentPlatform.ControllerDataClasses.Add(ControllerDataClass);
+		//		if (bIsDisregardForGC)
+		//		{
+		//			ControllerDataClass->AddToRoot();
+		//		}
+		//	}
+		//}
 		bInputDataLoaded = true;
 	}
 }
@@ -103,15 +65,15 @@ void UCommonInputSettings::LoadInputData()
 void UCommonInputSettings::ValidateData()
 {
     bInputDataLoaded &= !InputData.IsPending();
-    for (TSoftClassPtr<UCommonInputBaseControllerData> ControllerData : CurrentPlatform.GetControllerData())
-    {
-		bInputDataLoaded &= CurrentPlatform.ControllerDataClasses.ContainsByPredicate([&ControllerData](const TSubclassOf<UCommonInputBaseControllerData>& ControllerDataClass)
-			{
-				return ControllerDataClass.Get() == ControllerData.Get();
-			});
+  //  for (TSoftClassPtr<UCommonInputBaseControllerData> ControllerData : CurrentPlatform.GetControllerData())
+  //  {
+		//bInputDataLoaded &= CurrentPlatform.ControllerDataClasses.ContainsByPredicate([&ControllerData](const TSubclassOf<UCommonInputBaseControllerData>& ControllerDataClass)
+		//	{
+		//		return ControllerDataClass.Get() == ControllerData.Get();
+		//	});
 
-        bInputDataLoaded &= !ControllerData.IsPending();
-    }
+  //      bInputDataLoaded &= !ControllerData.IsPending();
+  //  }
  
 #if !WITH_EDITOR
     UE_CLOG(!bInputDataLoaded, LogCommonInput, Warning, TEXT("Trying to access unloaded CommmonInputSettings data. This may force a sync load."));
@@ -148,18 +110,56 @@ FDataTableRowHandle UCommonInputSettings::GetDefaultBackAction() const
 	return FDataTableRowHandle();
 }
 
-void UCommonInputSettings::GetCurrentPlatformDefaults(ECommonInputType& OutDefaultInputType, FName& OutDefaultGamepadName) const
+void UCommonInputSettings::PostInitProperties()
 {
-	// Defaults can be accessed before platform data is fully loaded, so access them from the array rather than the cached CurrentPlatform.
-	const FCommonInputPlatformBaseData& CurrentPlatformData = CommonInputPlatformData[FCommonInputBase::GetCurrentPlatformName()];
-	OutDefaultInputType = CurrentPlatformData.GetDefaultInputType();
-	OutDefaultGamepadName = CurrentPlatformData.GetDefaultGamepadName();
-}
+	Super::PostInitProperties();
 
-FCommonInputPlatformBaseData UCommonInputSettings::GetCurrentPlatform() const
-{
-    const_cast<UCommonInputSettings*>(this)->ValidateData();
-    
-	ensure(bInputDataLoaded);
-	return CurrentPlatform;
+#if WITH_EDITOR
+	if (CommonInputPlatformData_DEPRECATED.Num())
+	{
+		for (const auto& PlatformData : CommonInputPlatformData_DEPRECATED)
+		{
+			const FCommonInputPlatformBaseData& OriginalData = PlatformData.Value;
+
+			if (UCommonInputPlatformSettings* Settings = UPlatformSettingsManager::Get().GetSettingsForPlatform<UCommonInputPlatformSettings>(PlatformData.Key))
+			{
+				Settings->bSupportsMouseAndKeyboard = OriginalData.bSupportsMouseAndKeyboard;
+				Settings->bSupportsGamepad = OriginalData.bSupportsGamepad;
+				Settings->bSupportsTouch = OriginalData.bSupportsTouch;
+				Settings->bCanChangeGamepadType = OriginalData.bCanChangeGamepadType;
+				Settings->DefaultGamepadName = OriginalData.DefaultGamepadName;
+				Settings->DefaultInputType = OriginalData.DefaultInputType;
+				Settings->ControllerData = OriginalData.ControllerData;
+
+				Settings->TryUpdateDefaultConfigFile();
+			}
+			else if (PlatformData.Key == FCommonInputDefaults::PlatformPC)
+			{
+				TArray<UCommonInputPlatformSettings*> PCPlatforms;
+				PCPlatforms.Add(UPlatformSettingsManager::Get().GetSettingsForPlatform<UCommonInputPlatformSettings>("Windows"));
+				PCPlatforms.Add(UPlatformSettingsManager::Get().GetSettingsForPlatform<UCommonInputPlatformSettings>("WinGDK"));
+				PCPlatforms.Add(UPlatformSettingsManager::Get().GetSettingsForPlatform<UCommonInputPlatformSettings>("Linux"));
+
+				for (UCommonInputPlatformSettings* PCPlatform : PCPlatforms)
+				{
+					if (PCPlatform)
+					{
+						PCPlatform->bSupportsMouseAndKeyboard = OriginalData.bSupportsMouseAndKeyboard;
+						PCPlatform->bSupportsGamepad = OriginalData.bSupportsGamepad;
+						PCPlatform->bSupportsTouch = OriginalData.bSupportsTouch;
+						PCPlatform->bCanChangeGamepadType = OriginalData.bCanChangeGamepadType;
+						PCPlatform->DefaultGamepadName = OriginalData.DefaultGamepadName;
+						PCPlatform->DefaultInputType = OriginalData.DefaultInputType;
+						PCPlatform->ControllerData = OriginalData.ControllerData;
+
+						PCPlatform->TryUpdateDefaultConfigFile();
+					}
+				}
+			}
+		}
+
+		CommonInputPlatformData_DEPRECATED.Reset();
+		TryUpdateDefaultConfigFile();
+	}
+#endif
 }

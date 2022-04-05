@@ -2,14 +2,14 @@
 
 #include "BlackmagicMediaCapture.h"
 
-
 #include "BlackmagicLib.h"
 #include "BlackmagicMediaOutput.h"
 #include "BlackmagicMediaOutputModule.h"
-#include "Engine/RendererSettings.h"
+#include "Engine/Engine.h"
 #include "HAL/Event.h"
 #include "HAL/IConsoleManager.h"
 #include "IBlackmagicMediaModule.h"
+#include "MediaIOCoreSubsystem.h"
 #include "MediaIOCoreFileWriter.h"
 #include "Misc/ScopeLock.h"
 #include "Modules/ModuleManager.h"
@@ -21,6 +21,10 @@
 #include "EngineAnalytics.h"
 #endif
 
+TAutoConsoleVariable<int32> CVarBlackmagicEnableGPUDirect(
+	TEXT("Blackmagic.EnableGPUDirect"), 0,
+	TEXT("Whether to enable GPU direct for faster video frame copies. (Experimental)"),
+	ECVF_RenderThreadSafe);
 
 bool bBlackmagicWritInputRawDataCmdEnable = false;
 static FAutoConsoleCommand BlackmagicWriteInputRawDataCmd(
@@ -66,6 +70,16 @@ namespace BlackmagicMediaCaptureHelpers
 		bool SendVideoFrameData(BlackmagicDesign::FFrameDescriptor& InFrameDescriptor)
 		{
 			return BlackmagicDesign::SendVideoFrameData(ChannelInfo, InFrameDescriptor);
+		}
+
+		bool SendVideoFrameData(BlackmagicDesign::FFrameDescriptor_GPUDMA& InFrameDescriptor)
+		{
+			return BlackmagicDesign::SendVideoFrameData(ChannelInfo, InFrameDescriptor);
+		}
+
+		bool SendAudioSamples(const BlackmagicDesign::FAudioSamplesDescriptor& InAudioDescriptor)
+		{
+			return BlackmagicDesign::SendAudioSamples(ChannelInfo, InAudioDescriptor);
 		}
 
 	private:
@@ -161,9 +175,106 @@ namespace BlackmagicMediaCaptureHelpers
 		BlackmagicDesign::FUniqueIdentifier BlackmagicIdendifier;
 		uint32 LastFramesDroppedCount;
 	};
+
+	BlackmagicDesign::EFieldDominance GetFieldDominanceFromMediaStandard(EMediaIOStandardType StandardType)
+	{
+		switch(StandardType)
+		{
+			case EMediaIOStandardType::Interlaced:
+				return BlackmagicDesign::EFieldDominance::Interlaced;
+			case EMediaIOStandardType::ProgressiveSegmentedFrame:
+				return BlackmagicDesign::EFieldDominance::ProgressiveSegmentedFrame;
+			case EMediaIOStandardType::Progressive:
+			default:
+				return BlackmagicDesign::EFieldDominance::Progressive;
+		}
+	}
+
+	BlackmagicDesign::EPixelFormat ConvertPixelFormat(EBlackmagicMediaOutputPixelFormat PixelFormat)
+	{
+		switch (PixelFormat)
+        {
+	        case EBlackmagicMediaOutputPixelFormat::PF_8BIT_YUV:
+        		return BlackmagicDesign::EPixelFormat::pf_8Bits;
+	        case EBlackmagicMediaOutputPixelFormat::PF_10BIT_YUV:
+	        default:
+        		return BlackmagicDesign::EPixelFormat::pf_10Bits;
+        }
+	}
+	
+	BlackmagicDesign::ETimecodeFormat ConvertTimecodeFormat(EMediaIOTimecodeFormat TimecodeFormat)
+	{
+		switch (TimecodeFormat)
+		{
+			case EMediaIOTimecodeFormat::LTC:
+				return BlackmagicDesign::ETimecodeFormat::TCF_LTC;
+			case EMediaIOTimecodeFormat::VITC:
+				return BlackmagicDesign::ETimecodeFormat::TCF_VITC1;
+			case EMediaIOTimecodeFormat::None:
+			default:
+				return BlackmagicDesign::ETimecodeFormat::TCF_None;
+		}
+	}
+
+	BlackmagicDesign::ELinkConfiguration ConvertTransportType(EMediaIOTransportType TransportType, EMediaIOQuadLinkTransportType QuadlinkTransportType)
+	{
+		switch (TransportType)
+		{
+		case EMediaIOTransportType::SingleLink:
+		case EMediaIOTransportType::HDMI: // Blackmagic support HDMI but it is not shown in UE's UI. It's configured in BMD design tool and it's considered a normal link by UE.
+			return BlackmagicDesign::ELinkConfiguration::SingleLink;
+		case EMediaIOTransportType::DualLink:
+			return BlackmagicDesign::ELinkConfiguration::DualLink;
+		case EMediaIOTransportType::QuadLink:
+		default:
+			if (QuadlinkTransportType == EMediaIOQuadLinkTransportType::SquareDivision)
+			{
+				return BlackmagicDesign::ELinkConfiguration::QuadLinkSqr;
+			}
+			return BlackmagicDesign::ELinkConfiguration::QuadLinkTSI;
+		}
+	}
+
+	BlackmagicDesign::EAudioBitDepth ConvertAudioBitDepth(EBlackmagicMediaOutputAudioBitDepth BitDepth)
+	{
+		switch(BitDepth)
+		{
+		case EBlackmagicMediaOutputAudioBitDepth::Signed_16Bits: return BlackmagicDesign::EAudioBitDepth::Signed_16Bits;
+		case EBlackmagicMediaOutputAudioBitDepth::Signed_32Bits: return BlackmagicDesign::EAudioBitDepth::Signed_32Bits;
+		default:
+			checkNoEntry();
+			return BlackmagicDesign::EAudioBitDepth::Signed_32Bits;
+		}
+	}
+
+	void EncodeTimecodeInTexel(EBlackmagicMediaOutputPixelFormat BlackmagicMediaOutputPixelFormat, EMediaCaptureConversionOperation ConversionOperation, BlackmagicDesign::FTimecode Timecode, void* Buffer, int32 Width, int32 Height)
+	{
+		switch (BlackmagicMediaOutputPixelFormat)
+		{
+			case EBlackmagicMediaOutputPixelFormat::PF_8BIT_YUV:
+			{
+				if (ConversionOperation == EMediaCaptureConversionOperation::RGBA8_TO_YUV_8BIT)
+				{
+					FMediaIOCoreEncodeTime EncodeTime(EMediaIOCoreEncodePixelFormat::CharUYVY, Buffer, Width * 4, Width * 2, Height);
+					EncodeTime.Render(Timecode.Hours, Timecode.Minutes, Timecode.Seconds, Timecode.Frames);
+					break;
+				}
+				else
+				{
+					FMediaIOCoreEncodeTime EncodeTime(EMediaIOCoreEncodePixelFormat::CharBGRA, Buffer, Width * 4, Width, Height);
+					EncodeTime.Render(Timecode.Hours, Timecode.Minutes, Timecode.Seconds, Timecode.Frames);
+					break;
+				}
+			}
+			case EBlackmagicMediaOutputPixelFormat::PF_10BIT_YUV:
+			{
+				FMediaIOCoreEncodeTime EncodeTime(EMediaIOCoreEncodePixelFormat::YUVv210, Buffer, Width * 16, Width * 6, Height);
+				EncodeTime.Render(Timecode.Hours, Timecode.Minutes, Timecode.Seconds, Timecode.Frames);
+				break;
+			}
+		}
+	}
 }
-
-
 
 /* namespace BlackmagicMediaCaptureDevice
 *****************************************************************************/
@@ -207,7 +318,6 @@ namespace BlackmagicMediaCaptureAnalytics
 }
 #endif
 
-
 ///* UBlackmagicMediaCapture implementation
 //*****************************************************************************/
 UBlackmagicMediaCapture::UBlackmagicMediaCapture(const FObjectInitializer& ObjectInitializer)
@@ -222,6 +332,7 @@ UBlackmagicMediaCapture::UBlackmagicMediaCapture(const FObjectInitializer& Objec
 	, WakeUpEvent(nullptr)
 	, LastFrameDropCount_BlackmagicThread(0)
 {
+	bGPUTextureTransferAvailable = FBlackmagicMediaOutputModule::Get().IsGPUTextureTransferAvailable();
 }
 
 bool UBlackmagicMediaCapture::ValidateMediaOutput() const
@@ -282,12 +393,22 @@ void UBlackmagicMediaCapture::StopCaptureImpl(bool bAllowPendingFrameToBeProcess
 		{
 			// Prevent the rendering thread from copying while we are stopping the capture.
 			FScopeLock ScopeLock(&RenderThreadCriticalSection);
+			ENQUEUE_RENDER_COMMAND(BlackmagicMediaCaptureInitialize)(
+				[this](FRHICommandListImmediate& RHICmdList) mutable
+				{
+					for (FTextureRHIRef& Texture : TexturesToRelease)
+					{
+						BlackmagicDesign::UnregisterDMATexture(Texture->GetTexture2D()->GetNativeResource());
+					}
 
-			if (EventCallback)
-			{
-				EventCallback->Uninitialize();
-				EventCallback = nullptr;
-			}
+					TexturesToRelease.Reset();
+
+					if (EventCallback)
+					{
+						EventCallback->Uninitialize();
+						EventCallback = nullptr;
+					}
+				});
 
 			if (WakeUpEvent)
 			{
@@ -297,7 +418,15 @@ void UBlackmagicMediaCapture::StopCaptureImpl(bool bAllowPendingFrameToBeProcess
 		}
 
 		RestoreViewportTextureAlpha(GetCapturingSceneViewport());
+
+		AudioOutput.Reset();
 	}
+}
+
+bool UBlackmagicMediaCapture::ShouldCaptureRHITexture() const
+{
+	// Todo: also test if dvp was initialized correctly.
+	return bGPUTextureTransferAvailable && CVarBlackmagicEnableGPUDirect.GetValueOnAnyThread() == 1;
 }
 
 void UBlackmagicMediaCapture::ApplyViewportTextureAlpha(TSharedPtr<FSceneViewport> InSceneViewport)
@@ -361,6 +490,22 @@ bool UBlackmagicMediaCapture::InitBlackmagic(UBlackmagicMediaOutput* InBlackmagi
 	bLogDropFrame = InBlackmagicMediaOutput->bLogDropFrame;
 	FrameRate = InBlackmagicMediaOutput->GetRequestedFrameRate();
 
+	if (ShouldCaptureRHITexture())
+	{
+		if (InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.Standard != EMediaIOStandardType::Progressive)
+		{
+			UE_LOG(LogBlackmagicMediaOutput, Warning, TEXT("GPU DMA is not supported with interlaced, defaulting to regular path."));
+			bGPUTextureTransferAvailable = false;
+		}
+
+		if (InBlackmagicMediaOutput->PixelFormat != EBlackmagicMediaOutputPixelFormat::PF_8BIT_YUV)
+		{
+			UE_LOG(LogBlackmagicMediaOutput, Warning, TEXT("GPU DMA is not supported with pixel format 10 Bit YUV, defaulting to regular path."));
+			bGPUTextureTransferAvailable = false;
+		}
+	}
+
+
 	// Init Device options
 	BlackmagicDesign::FOutputChannelOptions ChannelOptions;
 	ChannelOptions.FormatInfo.DisplayMode = InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.DeviceModeIdentifier;
@@ -369,77 +514,44 @@ bool UBlackmagicMediaCapture::InitBlackmagic(UBlackmagicMediaOutput* InBlackmagi
 	ChannelOptions.FormatInfo.Height = InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.Resolution.Y;
 	ChannelOptions.FormatInfo.FrameRateNumerator = InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.FrameRate.Numerator;
 	ChannelOptions.FormatInfo.FrameRateDenominator = InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.FrameRate.Denominator;
+	ChannelOptions.bOutputAudio = InBlackmagicMediaOutput->bOutputAudio;
+	ChannelOptions.AudioBitDepth = BlackmagicMediaCaptureHelpers::ConvertAudioBitDepth(InBlackmagicMediaOutput->AudioBitDepth);
+	ChannelOptions.NumAudioChannels = static_cast<BlackmagicDesign::EAudioChannelConfiguration>(InBlackmagicMediaOutput->OutputChannelCount);
+	ChannelOptions.AudioSampleRate = static_cast<BlackmagicDesign::EAudioSampleRate>(InBlackmagicMediaOutput->AudioSampleRate);
 
-	switch(InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.Standard)
-	{
-	case EMediaIOStandardType::Interlaced:
-		ChannelOptions.FormatInfo.FieldDominance = BlackmagicDesign::EFieldDominance::Interlaced;
-		break;
-	case EMediaIOStandardType::ProgressiveSegmentedFrame:
-		ChannelOptions.FormatInfo.FieldDominance = BlackmagicDesign::EFieldDominance::ProgressiveSegmentedFrame;
-		break;
-	case EMediaIOStandardType::Progressive:
-	default:
-		ChannelOptions.FormatInfo.FieldDominance = BlackmagicDesign::EFieldDominance::Progressive;
-		break;
-	}
-
-	switch (InBlackmagicMediaOutput->PixelFormat)
-	{
-	case EBlackmagicMediaOutputPixelFormat::PF_8BIT_YUV:
-		ChannelOptions.PixelFormat = BlackmagicDesign::EPixelFormat::pf_8Bits;
-		break;
-	case EBlackmagicMediaOutputPixelFormat::PF_10BIT_YUV:
-	default:
-		ChannelOptions.PixelFormat = BlackmagicDesign::EPixelFormat::pf_10Bits;
-		break;
-	}
-
-	switch (InBlackmagicMediaOutput->TimecodeFormat)
-	{
-	case EMediaIOTimecodeFormat::LTC:
-		ChannelOptions.TimecodeFormat = BlackmagicDesign::ETimecodeFormat::TCF_LTC;
-		break;
-	case EMediaIOTimecodeFormat::VITC:
-		ChannelOptions.TimecodeFormat = BlackmagicDesign::ETimecodeFormat::TCF_VITC1;
-		break;
-	case EMediaIOTimecodeFormat::None:
-	default:
-		ChannelOptions.TimecodeFormat = BlackmagicDesign::ETimecodeFormat::TCF_None;
-		break;
-	}
-
-	switch (InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaConnection.TransportType)
-	{
-	case EMediaIOTransportType::SingleLink:
-	case EMediaIOTransportType::HDMI: // Blackmagic support HDMI but it is not shown in UE4 UI. It's configured in BMD design tool and it's consider a normal link by UE4.
-		ChannelOptions.LinkConfiguration = BlackmagicDesign::ELinkConfiguration::SingleLink;
-		break;
-	case EMediaIOTransportType::DualLink:
-		ChannelOptions.LinkConfiguration = BlackmagicDesign::ELinkConfiguration::DualLink;
-		break;
-	case EMediaIOTransportType::QuadLink:
-	default:
-		ChannelOptions.LinkConfiguration = BlackmagicDesign::ELinkConfiguration::QuadLinkTSI;
-		if (InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaConnection.QuadTransportType == EMediaIOQuadLinkTransportType::SquareDivision)
-		{
-			ChannelOptions.LinkConfiguration = BlackmagicDesign::ELinkConfiguration::QuadLinkSqr;
-		}
-		break;
-	}
+	ChannelOptions.FormatInfo.FieldDominance = BlackmagicMediaCaptureHelpers::GetFieldDominanceFromMediaStandard(InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.Standard);
+	ChannelOptions.PixelFormat = BlackmagicMediaCaptureHelpers::ConvertPixelFormat(InBlackmagicMediaOutput->PixelFormat);
+	ChannelOptions.TimecodeFormat = BlackmagicMediaCaptureHelpers::ConvertTimecodeFormat(InBlackmagicMediaOutput->TimecodeFormat);
+	ChannelOptions.LinkConfiguration = BlackmagicMediaCaptureHelpers::ConvertTransportType(InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaConnection.TransportType, InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaConnection.QuadTransportType);
 
 	ChannelOptions.bOutputKey = InBlackmagicMediaOutput->OutputConfiguration.OutputType == EMediaIOOutputType::FillAndKey;
 	ChannelOptions.NumberOfBuffers = FMath::Clamp(InBlackmagicMediaOutput->NumberOfBlackmagicBuffers, 3, 4);
 	ChannelOptions.bOutputVideo = true;
 	ChannelOptions.bOutputInterlacedFieldsTimecodeNeedToMatch = InBlackmagicMediaOutput->bInterlacedFieldsTimecodeNeedToMatch && InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaMode.Standard == EMediaIOStandardType::Interlaced && InBlackmagicMediaOutput->TimecodeFormat != EMediaIOTimecodeFormat::None;
 	ChannelOptions.bLogDropFrames = bLogDropFrame;
+	ChannelOptions.bUseGPUDMA = ShouldCaptureRHITexture();
+	ChannelOptions.bScheduleInDifferentThread = InBlackmagicMediaOutput->bUseMultithreadedScheduling;
 
+	AudioBitDepth = InBlackmagicMediaOutput->AudioBitDepth;
+	bOutputAudio = InBlackmagicMediaOutput->bOutputAudio;
+	NumOutputChannels = static_cast<uint8>(InBlackmagicMediaOutput->OutputChannelCount);
+
+	if (GEngine && bOutputAudio)
+	{
+		UMediaIOCoreSubsystem::FCreateAudioOutputArgs Args;
+		Args.NumOutputChannels = static_cast<int32>(ChannelOptions.NumAudioChannels);
+		Args.TargetFrameRate = FrameRate;
+		Args.MaxSampleLatency = Align(InBlackmagicMediaOutput->AudioBufferSize, 4);
+		Args.OutputSampleRate = static_cast<uint32>(InBlackmagicMediaOutput->AudioSampleRate);
+		AudioOutput = GEngine->GetEngineSubsystem<UMediaIOCoreSubsystem>()->CreateAudioOutput(Args);
+	}
+	
 	check(EventCallback == nullptr);
 	BlackmagicDesign::FChannelInfo ChannelInfo;
 	ChannelInfo.DeviceIndex = InBlackmagicMediaOutput->OutputConfiguration.MediaConfiguration.MediaConnection.Device.DeviceIdentifier;
 	EventCallback = new BlackmagicMediaCaptureHelpers::FBlackmagicMediaCaptureEventCallback(this, ChannelInfo);
 
-	bool bSuccess = EventCallback->Initialize(ChannelOptions);
+	const bool bSuccess = EventCallback->Initialize(ChannelOptions);
 	if (!bSuccess)
 	{
 		UE_LOG(LogBlackmagicMediaOutput, Warning, TEXT("The Blackmagic output port for '%s' could not be opened."), *InBlackmagicMediaOutput->GetName());
@@ -461,12 +573,41 @@ bool UBlackmagicMediaCapture::InitBlackmagic(UBlackmagicMediaOutput* InBlackmagi
 		WakeUpEvent = FPlatformProcess::GetSynchEventFromPool(bIsManualReset);
 	}
 
+	if (ShouldCaptureRHITexture())
+	{
+		UE_LOG(LogBlackmagicMediaOutput, Display, TEXT("BlackmagicMedia capture started using GPU Direct"));
+	}
+
 	return true;
 }
 
-void UBlackmagicMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height)
+void UBlackmagicMediaCapture::BeforeFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture)
+{
+	if (ShouldCaptureRHITexture())
+	{
+		if (!TexturesToRelease.Contains(InTexture))
+		{
+			TexturesToRelease.Add(InTexture);
+
+			FRHITexture2D* Texture = InTexture->GetTexture2D();
+			BlackmagicDesign::FRegisterDMATextureArgs Args;
+			Args.RHITexture = Texture->GetNativeResource();
+			//Args.RHIResourceMemory = Texture->GetNativeResource(); todo: VulkanTexture->Surface->GetAllocationHandle for Vulkan
+			BlackmagicDesign::RegisterDMATexture(Args);
+
+		}
+
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(UBlackmagicMediaCapture::LockDMATexture);
+			BlackmagicDesign::LockDMATexture(InTexture->GetTexture2D()->GetNativeResource());
+		}
+	}
+}
+
+void UBlackmagicMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height, int32 BytesPerRow)
 {
 	// Prevent the rendering thread from copying while we are stopping the capture.
+	TRACE_CPUPROFILER_EVENT_SCOPE(UBlackmagicMediaCapture::OnFrameCaptured_RenderingThread);
 	FScopeLock ScopeLock(&RenderThreadCriticalSection);
 	if (EventCallback)
 	{
@@ -474,27 +615,29 @@ void UBlackmagicMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBase
 
 		if (bEncodeTimecodeInTexel)
 		{
-			switch (BlackmagicMediaOutputPixelFormat)
-			{
-			case EBlackmagicMediaOutputPixelFormat::PF_8BIT_YUV:
-				if (GetConversionOperation() == EMediaCaptureConversionOperation::RGBA8_TO_YUV_8BIT)
-				{
-					FMediaIOCoreEncodeTime EncodeTime(EMediaIOCoreEncodePixelFormat::CharUYVY, InBuffer, Width * 4, Width * 2, Height);
-					EncodeTime.Render(Timecode.Hours, Timecode.Minutes, Timecode.Seconds, Timecode.Frames);
-					break;
-				}
-				else
-				{
-					FMediaIOCoreEncodeTime EncodeTime(EMediaIOCoreEncodePixelFormat::CharBGRA, InBuffer, Width * 4, Width, Height);
-					EncodeTime.Render(Timecode.Hours, Timecode.Minutes, Timecode.Seconds, Timecode.Frames);
-					break;
-				}
-			case EBlackmagicMediaOutputPixelFormat::PF_10BIT_YUV:
-				FMediaIOCoreEncodeTime EncodeTime(EMediaIOCoreEncodePixelFormat::YUVv210, InBuffer, Width * 16, Width * 6, Height);
-				EncodeTime.Render(Timecode.Hours, Timecode.Minutes, Timecode.Seconds, Timecode.Frames);
-				break;
-			}
+			BlackmagicMediaCaptureHelpers::EncodeTimecodeInTexel(BlackmagicMediaOutputPixelFormat, GetConversionOperation(), Timecode, InBuffer, Width, Height);
 		}
+
+		BlackmagicDesign::FFrameDescriptor Frame;
+		Frame.VideoBuffer = reinterpret_cast<uint8_t*>(InBuffer);
+		Frame.VideoWidth = Width;
+		Frame.VideoHeight = Height;
+		Frame.Timecode = Timecode;
+		Frame.FrameIdentifier = InBaseData.SourceFrameNumber;
+
+		bool bSent = false;
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(UBlackmagicMediaCapture::SendVideoFrameData);
+			bSent = EventCallback->SendVideoFrameData(Frame);
+		}
+		
+		
+		if (bLogDropFrame && !bSent)
+		{
+			UE_LOG(LogBlackmagicMediaOutput, Warning, TEXT("Frame couldn't be sent to Blackmagic device. Engine might be running faster than output."));
+		}
+
+		OutputAudio_RenderingThread(InBaseData, Timecode);
 
 		if (bBlackmagicWritInputRawDataCmdEnable)
 		{
@@ -526,17 +669,53 @@ void UBlackmagicMediaCapture::OnFrameCaptured_RenderingThread(const FCaptureBase
 			bBlackmagicWritInputRawDataCmdEnable = false;
 		}
 
-		BlackmagicDesign::FFrameDescriptor Frame;
-		Frame.VideoBuffer = reinterpret_cast<uint8_t*>(InBuffer);
-		Frame.VideoWidth = Width;
-		Frame.VideoHeight = Height;
+
+		WaitForSync_RenderingThread();
+	}
+	else if (GetState() != EMediaCaptureState::Stopped)
+	{
+		SetState(EMediaCaptureState::Error);
+	}
+}
+
+void UBlackmagicMediaCapture::OnRHITextureCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture)
+{
+	if (!InTexture)
+	{
+		return;
+	}
+	// Prevent the rendering thread from copying while we are stopping the capture.
+	TRACE_CPUPROFILER_EVENT_SCOPE(UBlackmagicMediaCapture::OnFrameCaptured_RenderingThread);
+
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(UBlackmagicMediaCapture::UnlockDMATexture);
+		BlackmagicDesign::UnlockDMATexture(InTexture->GetTexture2D()->GetNativeResource());
+	}
+
+	FScopeLock ScopeLock(&RenderThreadCriticalSection);
+
+
+	if (EventCallback)
+	{
+		BlackmagicDesign::FTimecode Timecode = BlackmagicMediaCaptureDevice::ConvertToBlackmagicTimecode(InBaseData.SourceFrameTimecode, InBaseData.SourceFrameTimecodeFramerate.AsDecimal(), FrameRate.AsDecimal());
+
+		BlackmagicDesign::FFrameDescriptor_GPUDMA Frame;
+		Frame.RHITexture = InTexture->GetTexture2D()->GetNativeResource();
 		Frame.Timecode = Timecode;
 		Frame.FrameIdentifier = InBaseData.SourceFrameNumber;
-		const bool bSent = EventCallback->SendVideoFrameData(Frame);
+
+		bool bSent = false;
+		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(UBlackmagicMediaCapture::SendVideoFrameData_GPUDirect);
+			bSent = EventCallback->SendVideoFrameData(Frame);
+		}
+
 		if (bLogDropFrame && !bSent)
 		{
 			UE_LOG(LogBlackmagicMediaOutput, Warning, TEXT("Frame couldn't be sent to Blackmagic device. Engine might be running faster than output."));
 		}
+
+		OutputAudio_RenderingThread(InBaseData, Timecode);
 
 		WaitForSync_RenderingThread();
 	}
@@ -559,5 +738,56 @@ void UBlackmagicMediaCapture::WaitForSync_RenderingThread()
 				UE_LOG(LogBlackmagicMediaOutput, Error, TEXT("Could not synchronize with the device."));
 			}
 		}
+	}
+}
+
+void UBlackmagicMediaCapture::OutputAudio_RenderingThread(const FCaptureBaseData& InBaseData, const BlackmagicDesign::FTimecode& InTimecode)
+{
+	if (bOutputAudio && AudioOutput)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(UBlackmagicMediaCapture::OutputAudio);
+
+		const double NewTimestamp = FPlatformTime::Seconds();
+		double CurrentFrameTime = NewTimestamp - OutputAudioTimestamp;
+		
+		const float TargetFrametime = 1 / FrameRate.AsDecimal();
+		if (UNLIKELY(OutputAudioTimestamp == 0))
+		{
+			CurrentFrameTime = TargetFrametime;
+		}
+
+		float FrameTimeRatio = CurrentFrameTime / TargetFrametime;
+
+		uint32_t NumSamplesToPull = FrameTimeRatio * AudioOutput->NumSamplesPerFrame;
+		NumSamplesToPull = FMath::Clamp<uint32_t>(NumSamplesToPull, 0, AudioOutput->NumSamplesPerFrame);
+
+		BlackmagicDesign::FAudioSamplesDescriptor AudioSamples;
+		AudioSamples.Timecode = InTimecode;
+		AudioSamples.FrameIdentifier = InBaseData.SourceFrameNumber;
+		check(NumOutputChannels != 0);
+		
+		if (AudioBitDepth == EBlackmagicMediaOutputAudioBitDepth::Signed_32Bits)
+		{
+			TArray<int32> AudioBuffer = AudioOutput->GetAudioSamples<int32>(NumSamplesToPull);
+			AudioSamples.AudioBuffer = reinterpret_cast<uint8_t*>(AudioBuffer.GetData());
+			AudioSamples.NumAudioSamples = AudioBuffer.Num() / NumOutputChannels;
+			AudioSamples.AudioBufferLength = AudioBuffer.Num() * sizeof(int32);
+			EventCallback->SendAudioSamples(AudioSamples);
+		}
+		else if (AudioBitDepth == EBlackmagicMediaOutputAudioBitDepth::Signed_16Bits)
+		{
+			TArray<int16> AudioBuffer = AudioOutput->GetAudioSamples<int16>(NumSamplesToPull);
+			AudioSamples.AudioBuffer = reinterpret_cast<uint8_t*>(AudioBuffer.GetData());
+			AudioSamples.NumAudioSamples = AudioBuffer.Num() / NumOutputChannels;
+			AudioSamples.AudioBufferLength = AudioBuffer.Num() * sizeof(int16);
+
+			EventCallback->SendAudioSamples(AudioSamples);
+		}
+		else
+		{
+			checkNoEntry();
+		}
+		
+		OutputAudioTimestamp = NewTimestamp;
 	}
 }

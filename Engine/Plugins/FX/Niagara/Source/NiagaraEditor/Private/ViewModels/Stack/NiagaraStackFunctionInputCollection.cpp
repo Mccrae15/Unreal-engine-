@@ -5,6 +5,7 @@
 #include "EdGraphSchema_Niagara.h"
 #include "NiagaraClipboard.h"
 #include "NiagaraDataInterface.h"
+#include "NiagaraEditorUtilities.h"
 #include "NiagaraGraph.h"
 #include "NiagaraNodeAssignment.h"
 #include "NiagaraNodeFunctionCall.h"
@@ -17,15 +18,60 @@
 #include "ViewModels/Stack/NiagaraStackFunctionInput.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "ViewModels/Stack/NiagaraStackInputCategory.h"
+#include "ViewModels/Stack/NiagaraStackModuleItem.h"
+#include "NiagaraEmitterEditorData.h"
 
 #define LOCTEXT_NAMESPACE "UNiagaraStackFunctionInputCollection"
 
-FText UNiagaraStackFunctionInputCollection::UncategorizedName = LOCTEXT("Uncategorized", "Uncategorized");
+FText UNiagaraStackFunctionInputCollectionBase::UncategorizedName = LOCTEXT("Uncategorized", "Uncategorized");
+
+FText UNiagaraStackFunctionInputCollectionBase::AllSectionName = LOCTEXT("All", "All");
+
+static FText GetUserFriendlyFunctionName(UNiagaraNodeFunctionCall* Node)
+{
+	if (Node->IsA<UNiagaraNodeAssignment>())
+	{
+		// The function name of assignment nodes contains a guid, which is just confusing for the user to see 
+		return LOCTEXT("AssignmentNodeName", "SetVariables");
+	}
+	return FText::FromString(Node->GetFunctionName());
+}
+
+static TOptional<FFunctionInputSummaryViewKey> GetSummaryViewInputKeyForFunctionInput(UNiagaraNodeFunctionCall* FunctionCall, const FNiagaraVariable& InputVariable, const TOptional<FNiagaraVariableMetaData>& InputMetaData)
+{
+	FGuid NodeGuid = FunctionCall->NodeGuid;
+	
+	if (FunctionCall->IsA<UNiagaraNodeAssignment>())
+	{
+		return FFunctionInputSummaryViewKey(NodeGuid, InputVariable.GetName());
+	}
+	
+	if (InputMetaData.IsSet())
+	{
+		return FFunctionInputSummaryViewKey(NodeGuid, InputMetaData->GetVariableGuid());
+	}
+	
+	return TOptional<FFunctionInputSummaryViewKey>();
+}
+
+static bool ShouldShowInSummaryView(UNiagaraEmitter* Emitter, UNiagaraNodeFunctionCall* FunctionCall, const FNiagaraVariable& InputVariable, const TOptional<FNiagaraVariableMetaData>& InputMetaData, bool bIsSummaryInEditMode)
+{
+	const UNiagaraEmitterEditorData* EditorData = Emitter? Cast<UNiagaraEmitterEditorData>(Emitter->GetEditorData()) : nullptr;
+	if (EditorData)
+	{
+		TOptional<FFunctionInputSummaryViewKey> SummaryViewKey = GetSummaryViewInputKeyForFunctionInput(FunctionCall, InputVariable, InputMetaData);
+		if (SummaryViewKey.IsSet())
+		{
+			TOptional<FFunctionInputSummaryViewMetadata> SummaryViewMetadata = EditorData->GetSummaryViewMetaData(SummaryViewKey.GetValue());
+			return SummaryViewMetadata.IsSet() && (bIsSummaryInEditMode || SummaryViewMetadata->bVisible);
+		}
+	}
+	return false;
+}
 
 UNiagaraStackFunctionInputCollection::UNiagaraStackFunctionInputCollection()
 	: ModuleNode(nullptr)
 	, InputFunctionCallNode(nullptr)
-	, bShouldShowInStack(true)
 {
 }
 
@@ -64,19 +110,9 @@ FText UNiagaraStackFunctionInputCollection::GetDisplayName() const
 	return LOCTEXT("InputCollectionDisplayName", "Inputs");
 }
 
-bool UNiagaraStackFunctionInputCollection::GetShouldShowInStack() const
-{
-	return bShouldShowInStack;
-}
-
 bool UNiagaraStackFunctionInputCollection::GetIsEnabled() const
 {
 	return InputFunctionCallNode->GetDesiredEnabledState() == ENodeEnabledState::Enabled;
-}
-
-void UNiagaraStackFunctionInputCollection::SetShouldShowInStack(bool bInShouldShowInStack)
-{
-	bShouldShowInStack = bInShouldShowInStack;
 }
 
 void UNiagaraStackFunctionInputCollection::ToClipboardFunctionInputs(UObject* InOuter, TArray<const UNiagaraClipboardFunctionInput*>& OutClipboardFunctionInputs) const
@@ -120,26 +156,127 @@ void UNiagaraStackFunctionInputCollection::GetChildInputs(TArray<UNiagaraStackFu
 	}
 }
 
-struct FNiagaraParentData
+void UNiagaraStackFunctionInputCollection::GetCustomFilteredChildInputs(TArray<UNiagaraStackFunctionInput*>& OutResult, const TArray<FOnFilterChild>& CustomFilters) const
 {
-	const UEdGraphPin* ParentPin;
-	TArray<int32> ChildIndices;
-};
+	TArray<UNiagaraStackInputCategory*> ChildCategories;
+	GetUnfilteredChildrenOfType(ChildCategories);
+	for (UNiagaraStackInputCategory* ChildCategory : ChildCategories)
+	{
+		ChildCategory->GetCustomFilteredChildrenOfType(OutResult, CustomFilters);
+	}
+}
 
-void UNiagaraStackFunctionInputCollection::AddInvalidChildStackIssue(FName PinName, TArray<FStackIssue>& OutIssues)
+TArray<UNiagaraStackFunctionInput*> UNiagaraStackFunctionInputCollection::GetInlineParameterInputs() const
 {
-	FStackIssue InvalidHierarchyWarning(
-        EStackIssueSeverity::Warning,
-        FText::Format(LOCTEXT("InvalidHierarchyWarningSummaryFormat", "Invalid ParentAttribute {0} in module metadata."), FText::FromString(PinName.ToString())),
-        FText::Format(LOCTEXT("InvalidHierarchyWarningFormat", "The attribute {0} was used as parent in the metadata although it is itself the child of another attribute.\nPlease check the module metadata to fix this."),
-            FText::FromString(PinName.ToString())), GetStackEditorDataKey(), true);
-	OutIssues.Add(InvalidHierarchyWarning);
+	TArray<UNiagaraStackFunctionInput*> OutArray;
+	
+	TArray<UNiagaraStackFunctionInput*> FunctionInputs;
+	TArray<FOnFilterChild> CustomChildFilters;
+	CustomChildFilters.Add(FOnFilterChild::CreateUObject(this, &UNiagaraStackFunctionInput::FilterHiddenChildren));
+	GetCustomFilteredChildInputs(FunctionInputs, CustomChildFilters);
+
+	for(UNiagaraStackFunctionInput* FunctionInput : FunctionInputs)
+	{
+		if(FunctionInput->ShouldDisplayInline())
+		{
+			OutArray.Add(FunctionInput);
+		}
+	}
+
+	return OutArray;
 }
 
 void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)
 {
+	RefreshChildrenForFunctionCall(ModuleNode, InputFunctionCallNode, CurrentChildren, NewChildren, NewIssues, false);
+	Super::RefreshChildrenInternal(CurrentChildren, NewChildren, NewIssues);
+}
+
+void UNiagaraStackFunctionInputCollection::GetSectionsInternal(TArray<FNiagaraStackSection>& OutStackSections) const
+{
+	if (InputFunctionCallNode->GetCalledUsage() == ENiagaraScriptUsage::Module)
+	{
+		OutStackSections.Append(InputFunctionCallNode->GetScriptData()->InputSections);
+	}
+}
+
+void UNiagaraStackFunctionInputCollectionBase::Initialize(FRequiredEntryData InRequiredEntryData, FString InOwningStackItemEditorDataKey, FString InStackEditorDataKey)
+{
+	Super::Initialize(InRequiredEntryData, InOwningStackItemEditorDataKey, InStackEditorDataKey);
+	AddChildFilter(FOnFilterChild::CreateUObject(this, &UNiagaraStackFunctionInputCollectionBase::FilterByActiveSection));
+	ActiveSectionCache = GetStackEditorData().GetStackEntryActiveSection(GetStackEditorDataKey(), AllSectionName);
+}
+
+void UNiagaraStackFunctionInputCollectionBase::SetShouldDisplayLabel(bool bInShouldDisplayLabel)
+{
+	bShouldDisplayLabel = bInShouldDisplayLabel;
+}
+
+const TArray<FText>& UNiagaraStackFunctionInputCollectionBase::GetSections() const
+{
+	if (SectionsCache.IsSet() == false)
+	{
+		UpdateCachedSectionData();
+	}
+	return SectionsCache.GetValue();
+}
+
+FText UNiagaraStackFunctionInputCollectionBase::GetActiveSection() const
+{
+	if (ActiveSectionCache.IsSet() == false)
+	{
+		UpdateCachedSectionData();
+	}
+	return ActiveSectionCache.GetValue();
+}
+
+void UNiagaraStackFunctionInputCollectionBase::SetActiveSection(FText InActiveSection)
+{
+	ActiveSectionCache = InActiveSection;
+	GetStackEditorData().SetStackEntryActiveSection(GetStackEditorDataKey(), InActiveSection);
+	RefreshFilteredChildren();
+}
+
+bool UNiagaraStackFunctionInputCollectionBase::GetCanExpand() const
+{
+	return bShouldDisplayLabel;
+}
+
+bool UNiagaraStackFunctionInputCollectionBase::GetShouldShowInStack() const
+{
+	return GetSections().Num() > 0 || bShouldDisplayLabel;
+}
+
+void UNiagaraStackFunctionInputCollectionBase::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)
+{
+	Super::RefreshChildrenInternal(CurrentChildren, NewChildren, NewIssues);
+	LastActiveSection = ActiveSectionCache.IsSet() ? ActiveSectionCache.GetValue() : AllSectionName;
+	SectionsCache.Reset();
+	SectionToCategoryMapCache.Reset();
+	ActiveSectionCache.Reset();
+}
+
+int32 UNiagaraStackFunctionInputCollectionBase::GetChildIndentLevel() const
+{
+	// We don't want the child categories to be indented.
+	return GetIndentLevel();
+}
+
+void UNiagaraStackFunctionInputCollectionBase::RefreshChildrenForFunctionCall(UNiagaraNodeFunctionCall* ModuleNode, UNiagaraNodeFunctionCall* InputFunctionCallNode, 
+	const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues, bool bShouldApplySummaryFilter)
+{	
+	FFunctionCallNodesState State;
+	AppendInputsForFunctionCall(State, ModuleNode, InputFunctionCallNode, NewIssues, bShouldApplySummaryFilter);
+	ApplyAllFunctionInputsToChildren(State, CurrentChildren, NewChildren, NewIssues, bShouldApplySummaryFilter);
+}
+
+void UNiagaraStackFunctionInputCollectionBase::AppendInputsForFunctionCall(FFunctionCallNodesState& State, UNiagaraNodeFunctionCall* ModuleNode, UNiagaraNodeFunctionCall* InputFunctionCallNode, TArray<FStackIssue>& NewIssues, bool bShouldApplySummaryFilter)
+{
+	UNiagaraEmitter* Emitter = GetEmitterViewModel().IsValid() ? GetEmitterViewModel()->GetEmitter() : nullptr;
+
 	TSet<const UEdGraphPin*> HiddenPins;
 	TArray<const UEdGraphPin*> InputPins;
+	TSet<const UEdGraphPin*> SummaryViewPins;
 	FCompileConstantResolver ConstantResolver;
 	if (GetEmitterViewModel().IsValid())
 	{
@@ -161,8 +298,44 @@ void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<
 	TArray<const UEdGraphPin*> PinsWithInvalidTypes;
 
 	UNiagaraGraph* InputFunctionGraph = InputFunctionCallNode->GetCalledGraph();
-	TArray<FInputData> InputDataCollection;
-	TMap<FName, FNiagaraParentData> ParentMapping;
+	
+	
+	const auto GetSummaryViewState = [&](UNiagaraEmitter* Emitter, UNiagaraNodeFunctionCall* FunctionCall, const FNiagaraVariable& InputVariable,
+		const TOptional<FNiagaraVariableMetaData>& InputMetaData, FText& InputCategory, TOptional<FText>& DisplayName, int32& EditorSortPriority ) -> bool
+	{
+		const UNiagaraEmitterEditorData* EditorData = Emitter? Cast<UNiagaraEmitterEditorData>(Emitter->GetEditorData()) : nullptr;
+
+		const TOptional<FFunctionInputSummaryViewKey> SummaryViewKey = GetSummaryViewInputKeyForFunctionInput(InputFunctionCallNode, InputVariable, InputMetaData);
+		if (EditorData && bShouldApplySummaryFilter && SummaryViewKey.IsSet())
+		{
+			TOptional<FFunctionInputSummaryViewMetadata> SummaryViewData = EditorData->GetSummaryViewMetaData(SummaryViewKey.GetValue());
+			if (SummaryViewData.IsSet() && SummaryViewData->Category != NAME_None)
+			{
+				InputCategory = FText::FromName(SummaryViewData->Category);
+			}
+			else
+			{
+				if (!InputCategory.EqualTo(UncategorizedName))
+				{
+					InputCategory = FText::Format(LOCTEXT("EmitterSummaryNodeCategory", "{0} - {1}"), FText::FromString(*InputFunctionCallNode->GetFunctionName()), InputCategory);
+				}
+				else if (FunctionCall->IsA<UNiagaraNodeAssignment>())
+				{
+					InputCategory = LOCTEXT("EmitterSummaryNodeCategoryAssignment", "Set Parameters");									
+				}
+				else
+				{					
+					InputCategory = FText::FromString(*InputFunctionCallNode->GetFunctionName());
+				}				
+			}
+			EditorSortPriority = SummaryViewData.IsSet() && SummaryViewData->SortIndex != INDEX_NONE ? SummaryViewData->SortIndex : EditorSortPriority;
+			DisplayName = SummaryViewData.IsSet() && SummaryViewData->DisplayName != NAME_None ? FText::FromName(SummaryViewData->DisplayName) : TOptional<FText>();		
+		}
+		
+		return ShouldShowInSummaryView(Emitter, InputFunctionCallNode, InputVariable, InputMetaData, GetEmitterViewModel().IsValid() && GetEmitterViewModel()->GetSummaryIsInEditMode());
+	};
+
+
 	
 	// Gather input data
 	for (const UEdGraphPin* InputPin : InputPins)
@@ -193,21 +366,29 @@ void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<
 			? InputMetaData->CategoryName
 			: UncategorizedName;
 
+		int32 EditorSortPriority = InputMetaData.IsSet() ? InputMetaData->EditorSortPriority : 0;
+		TOptional<FText> DisplayName;
+
+		bool bShouldShowInSummary = GetSummaryViewState(Emitter, InputFunctionCallNode, InputVariable, InputMetaData, InputCategory, DisplayName, EditorSortPriority);		
+		if (bShouldShowInSummary)
+		{
+			SummaryViewPins.Add(InputPin);
+		}		
 		bool bIsInputHidden = HiddenPins.Contains(InputPin);
-		FInputData InputData = { InputPin, InputVariable.GetType(), InputMetaData ? InputMetaData->EditorSortPriority : 0, InputCategory, false, bIsInputHidden };
-		int32 Index = InputDataCollection.Add(InputData);
+		FInputData InputData = { InputPin, InputVariable.GetType(), EditorSortPriority, DisplayName, InputCategory, false, bIsInputHidden, bShouldShowInSummary, ModuleNode, InputFunctionCallNode };
+		int32 Index = State.InputDataCollection.Add(InputData);
 
 		// set up the data for the parent-child mapping
-		if (InputMetaData &&  !InputMetaData->ParentAttribute.IsNone())
+		if (InputMetaData && !InputMetaData->ParentAttribute.IsNone())
 		{
 			if (InputMetaData->ParentAttribute.ToString().StartsWith(PARAM_MAP_MODULE_STR))
 			{
-				ParentMapping.FindOrAdd(InputMetaData->ParentAttribute).ChildIndices.Add(Index);
+				State.ParentMapping.FindOrAdd(InputMetaData->ParentAttribute).ChildIndices.Add(Index);
 			}
 			else
 			{
 				FString NamespacedParent = PARAM_MAP_MODULE_STR + InputMetaData->ParentAttribute.ToString();
-				ParentMapping.FindOrAdd(FName(*NamespacedParent)).ChildIndices.Add(Index);
+				State.ParentMapping.FindOrAdd(FName(*NamespacedParent)).ChildIndices.Add(Index);
 			}
 		}
 	}
@@ -215,14 +396,14 @@ void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<
 	// Gather static switch parameters
 	TSet<UEdGraphPin*> HiddenSwitchPins;
 	TArray<UEdGraphPin*> SwitchPins;
-	FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(*InputFunctionCallNode, SwitchPins, HiddenSwitchPins);
+	FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(*InputFunctionCallNode, SwitchPins, HiddenSwitchPins, ConstantResolver);
 	for (UEdGraphPin* InputPin : SwitchPins)
 	{
 		// The static switch pin names to not contain the module namespace, as they are not part of the parameter maps.
 		// We add it here only to check for name clashes with actual module parameters.
 		FString ModuleName = PARAM_MAP_MODULE_STR;
 		InputPin->PinName.AppendString(ModuleName);
-		FName SwitchPinName(*ModuleName); 
+		FName SwitchPinName(*ModuleName);
 
 		if (ProcessedInputNames.Contains(SwitchPinName))
 		{
@@ -247,40 +428,53 @@ void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<
 			InputMetaData = InputFunctionGraph->GetMetaData(InputVariable);
 		}
 
-		FText InputCategory = InputMetaData.IsSet() && InputMetaData->CategoryName.IsEmptyOrWhitespace() == false
+		FText InputCategory = (InputMetaData.IsSet() && InputMetaData->CategoryName.IsEmptyOrWhitespace() == false)
 			? InputMetaData->CategoryName
 			: UncategorizedName;
 
+		int32 EditorSortPriority = InputMetaData.IsSet() ? InputMetaData->EditorSortPriority : 0;
+		TOptional<FText> DisplayName;
+						
+		bool bShouldShowInSummary = GetSummaryViewState(Emitter, InputFunctionCallNode, InputVariable, InputMetaData, InputCategory, DisplayName, EditorSortPriority);		
+		if (bShouldShowInSummary)
+		{
+			SummaryViewPins.Add(InputPin);
+		}		
 		bool bIsInputHidden = HiddenSwitchPins.Contains(InputPin);
-		FInputData InputData = { InputPin, InputVariable.GetType(), InputMetaData ? InputMetaData->EditorSortPriority : 0, InputCategory, true, bIsInputHidden };
-		int32 Index = InputDataCollection.Add(InputData);
+		FInputData InputData = { InputPin, InputVariable.GetType(), EditorSortPriority, DisplayName, InputCategory, true, bIsInputHidden, bShouldShowInSummary, ModuleNode, InputFunctionCallNode };
+		int32 Index = State.InputDataCollection.Add(InputData);
 
 		// set up the data for the parent-child mapping
 		if (InputMetaData)
 		{
-			FNiagaraParentData& ParentData = ParentMapping.FindOrAdd(SwitchPinName);
+			FNiagaraParentData& ParentData = State.ParentMapping.FindOrAdd(SwitchPinName);
 			ParentData.ParentPin = InputPin;
 			if (!InputMetaData->ParentAttribute.IsNone())
 			{
 				if (InputMetaData->ParentAttribute.ToString().StartsWith(PARAM_MAP_MODULE_STR))
 				{
-					ParentMapping.FindOrAdd(InputMetaData->ParentAttribute).ChildIndices.Add(Index);
+					State.ParentMapping.FindOrAdd(InputMetaData->ParentAttribute).ChildIndices.Add(Index);
 				}
 				else
 				{
 					FString NamespacedParent = PARAM_MAP_MODULE_STR + InputMetaData->ParentAttribute.ToString();
-					ParentMapping.FindOrAdd(FName(*NamespacedParent)).ChildIndices.Add(Index);
+					State.ParentMapping.FindOrAdd(FName(*NamespacedParent)).ChildIndices.Add(Index);
 				}
 			}
 		}
 	}
 
+	RefreshIssues(InputFunctionCallNode, DuplicateInputNames, ValidAliasedInputNames, PinsWithInvalidTypes, StaticSwitchInputs, NewIssues);
+}
+
+void UNiagaraStackFunctionInputCollectionBase::ApplyAllFunctionInputsToChildren(FFunctionCallNodesState& State, const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues, bool bShouldApplySummaryFilter)
+{
 	// resolve the parent/child relationships
-	for (auto& Entry : ParentMapping)
+	for (auto& Entry : State.ParentMapping)
 	{
 		FNiagaraParentData& Data = Entry.Value;
-		if (Data.ChildIndices.Num() == 0) {continue;}
-		for (FInputData& InputData : InputDataCollection)
+		if (Data.ChildIndices.Num() == 0) { continue; }
+		for (FInputData& InputData : State.InputDataCollection)
 		{
 			if (InputData.Pin != Data.ParentPin) { continue; }
 			if (InputData.bIsChild)
@@ -290,18 +484,43 @@ void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<
 			}
 			for (int32 ChildIndex : Data.ChildIndices)
 			{
-				if (InputDataCollection[ChildIndex].Children.Num() > 0)
+				if (State.InputDataCollection[ChildIndex].Children.Num() > 0)
 				{
-					AddInvalidChildStackIssue(InputDataCollection[ChildIndex].Pin->PinName, NewIssues);
+					AddInvalidChildStackIssue(State.InputDataCollection[ChildIndex].Pin->PinName, NewIssues);
 					continue;
 				}
-				InputDataCollection[ChildIndex].bIsChild = true;
-				InputDataCollection[ChildIndex].Category = InputData.Category; // children get the parent category to prevent inconsistencies there
-				InputData.Children.Add(&InputDataCollection[ChildIndex]);
+				State.InputDataCollection[ChildIndex].bIsChild = true;
+				State.InputDataCollection[ChildIndex].Category = InputData.Category; // children get the parent category to prevent inconsistencies there
+				InputData.Children.Add(&State.InputDataCollection[ChildIndex]);
 			}
 		}
 	}
+	
+	if (bShouldApplySummaryFilter)
+	{
+		static TFunction<void(FInputData*)> PropagateSummaryViewShowToChildren = [](FInputData* Input)
+		{		
+			const bool bShouldShowChildren = !Input->bIsHidden && Input->bShouldShowInSummary;
 
+			Input->bIsHidden = !bShouldShowChildren;
+
+			for (FInputData* Child : Input->Children)
+			{
+				Child->bShouldShowInSummary = bShouldShowChildren;
+				PropagateSummaryViewShowToChildren(Child);
+			}		
+		};
+
+		// Propagate summary visibility to children
+		for (FInputData& InputData : State.InputDataCollection)
+		{
+			if (!InputData.bIsChild)
+			{
+				PropagateSummaryViewShowToChildren(&InputData);
+			}
+		}
+	}
+	
 	auto SortPredicate = [](const FInputData& A, const FInputData& B)
 	{
 		// keep the uncategorized attributes first
@@ -321,112 +540,38 @@ void UNiagaraStackFunctionInputCollection::RefreshChildrenInternal(const TArray<
 	};
 
 	// Sort child and parent data separately
-	TArray<FInputData*> ParentDataCollection;
-	for (FInputData& InputData : InputDataCollection)
-	{
+	TArray<FInputData> ParentDataCollection;
+	for (FInputData InputData : State.InputDataCollection)
+	{		
 		if (!InputData.bIsChild)
 		{
-			ParentDataCollection.Add(&InputData);
-			InputData.Children.Sort(SortPredicate);
+			InputData.Children.Sort(SortPredicate);			
+			ParentDataCollection.Add(MoveTemp(InputData));
 		}
 	}
 	ParentDataCollection.Sort(SortPredicate);
 
 	// Populate the categories
-	for (FInputData* ParentData : ParentDataCollection)
+	for (FInputData& ParentData : ParentDataCollection)
 	{
-		AddInputToCategory(*ParentData, CurrentChildren, NewChildren);
-		for (FInputData* ChildData : ParentData->Children)
-		{
-			AddInputToCategory(*ChildData, CurrentChildren, NewChildren);			
-		}
-	}
-	RefreshIssues(DuplicateInputNames, ValidAliasedInputNames, PinsWithInvalidTypes, StaticSwitchInputs, NewIssues);
-}
-
-void UNiagaraStackFunctionInputCollection::AddInputToCategory(const FInputData& InputData, const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren)
-{
-	// Try to find an existing category in the already processed children.
-	UNiagaraStackInputCategory* InputCategory = FindCurrentChildOfTypeByPredicate<UNiagaraStackInputCategory>(NewChildren,
-        [&](UNiagaraStackInputCategory* CurrentCategory) { return CurrentCategory->GetCategoryName().CompareTo(InputData.Category) == 0; });
-
-	if (InputCategory == nullptr)
-	{
-		// If we haven't added any children to this category yet see if there is one that can be reused from the current children.
-		InputCategory = FindCurrentChildOfTypeByPredicate<UNiagaraStackInputCategory>(CurrentChildren,
-            [&](UNiagaraStackInputCategory* CurrentCategory) { return CurrentCategory->GetCategoryName().CompareTo(InputData.Category) == 0; });
-		if (InputCategory == nullptr)
-		{
-			// If we don't have a current child for this category make a new one.
-			InputCategory = NewObject<UNiagaraStackInputCategory>(this);
-			InputCategory->Initialize(CreateDefaultChildRequiredData(), *ModuleNode, *InputFunctionCallNode, InputData.Category, GetOwnerStackItemEditorDataKey());
-		}
-		else
-		{
-			// We found a category to reuse, but we need to reset the inputs before we can start adding the current set of inputs.
-			InputCategory->ResetInputs();
-		}
-
-		if (InputData.Category.CompareTo(UncategorizedName) == 0)
-		{
-			InputCategory->SetShouldShowInStack(false);
-		}
-		NewChildren.Add(InputCategory);
-	}
-	InputCategory->AddInput(InputData.Pin->PinName, InputData.Type, InputData.bIsStatic ? EStackParameterBehavior::Static : EStackParameterBehavior::Dynamic, InputData.bIsHidden, InputData.bIsChild);
-}
-
-UNiagaraStackEntry::FStackIssueFix UNiagaraStackFunctionInputCollection::GetNodeRemovalFix(UEdGraphPin* PinToRemove, FText FixDescription)
-{
-	return FStackIssueFix(
-		FixDescription,
-		UNiagaraStackEntry::FStackIssueFixDelegate::CreateLambda([=]()
-	{
-		FScopedTransaction ScopedTransaction(FixDescription);
-		TArray<TWeakObjectPtr<UNiagaraDataInterface>> RemovedDataObjects;
-		FNiagaraStackGraphUtilities::RemoveNodesForStackFunctionInputOverridePin(*PinToRemove, RemovedDataObjects);
-		TArray<UObject*> RemovedObjects;
-		for (TWeakObjectPtr<UNiagaraDataInterface> RemovedDataObject : RemovedDataObjects)
-		{
-			if (RemovedDataObject.IsValid())
+		if (!ParentData.bIsHidden)
+		{			
+			AddInputToCategory(ParentData, CurrentChildren, NewChildren);
+			for (FInputData* ChildData : ParentData.Children)
 			{
-				RemovedObjects.Add(RemovedDataObject.Get());
+				if (!ChildData->bIsHidden)
+				{
+					AddInputToCategory(*ChildData, CurrentChildren, NewChildren);
+				}
 			}
 		}
-		OnDataObjectModified().Broadcast(RemovedObjects, ENiagaraDataObjectChange::Removed);
-		PinToRemove->GetOwningNode()->RemovePin(PinToRemove);
-	}));
-}
-
-UNiagaraStackEntry::FStackIssueFix UNiagaraStackFunctionInputCollection::GetResetPinFix(UEdGraphPin* PinToReset, FText FixDescription)
-{
-	return FStackIssueFix(
-		FixDescription,
-		UNiagaraStackEntry::FStackIssueFixDelegate::CreateLambda([=]()
-	{
-		FScopedTransaction ScopedTransaction(FixDescription);
-		const UEdGraphSchema_Niagara* NiagaraSchema = GetDefault<UEdGraphSchema_Niagara>();
-		UNiagaraNode* OwningNiagaraNode = Cast<UNiagaraNode>(PinToReset->GetOwningNode());
-		NiagaraSchema->ResetPinToAutogeneratedDefaultValue(PinToReset);
-		if (OwningNiagaraNode != nullptr)
-		{
-			OwningNiagaraNode->MarkNodeRequiresSynchronization("Pin reset to default value.", true);
-		}
-	}));
-}
-
-FText GetUserFriendlyFunctionName(UNiagaraNodeFunctionCall* Node)
-{
-	if (Node->IsA<UNiagaraNodeAssignment>())
-	{
-		// The function name of assignment nodes contains a guid, which is just confusing for the user to see 
-		return LOCTEXT("AssignmentNodeName", "SetVariables");
 	}
-	return FText::FromString(Node->GetFunctionName());
 }
 
-void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& DuplicateInputNames, const TArray<FName>& ValidAliasedInputNames, const TArray<const UEdGraphPin*>& PinsWithInvalidTypes,
-                                                         const TMap<FName, UEdGraphPin*>& StaticSwitchInputs, TArray<FStackIssue>& NewIssues)
+
+
+void UNiagaraStackFunctionInputCollectionBase::RefreshIssues(UNiagaraNodeFunctionCall* InputFunctionCallNode, const TArray<FName>& DuplicateInputNames, 
+	const TArray<FName>& ValidAliasedInputNames, const TArray<const UEdGraphPin*>& PinsWithInvalidTypes, const TMap<FName, UEdGraphPin*>& StaticSwitchInputs, TArray<FStackIssue>& NewIssues)
 {
 	if (!GetIsEnabled())
 	{
@@ -444,7 +589,7 @@ void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& Du
 	for (UEdGraphPin* OverridePin : OverridePins)
 	{
 		// Try to find function input overrides which are no longer valid so we can generate errors for them.
-		UEdGraphPin*const* PinReference = StaticSwitchInputs.Find(OverridePin->PinName);
+		UEdGraphPin* const* PinReference = StaticSwitchInputs.Find(OverridePin->PinName);
 		if (PinReference == nullptr)
 		{
 			if (FNiagaraStackGraphUtilities::IsOverridePinForFunction(*OverridePin, *InputFunctionCallNode) &&
@@ -478,24 +623,24 @@ void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& Du
 				FStackIssueFix ConvertInputOverrideFix(
 					ConversionFixDescription,
 					UNiagaraStackEntry::FStackIssueFixDelegate::CreateLambda([=]()
-				{
-					FScopedTransaction ScopedTransaction(ConversionFixDescription);
-					SwitchPin->Modify();
-					SwitchPin->DefaultValue = OverridePin->DefaultValue;
-
-					TArray<TWeakObjectPtr<UNiagaraDataInterface>> RemovedDataObjects;
-					FNiagaraStackGraphUtilities::RemoveNodesForStackFunctionInputOverridePin(*OverridePin, RemovedDataObjects);
-					TArray<UObject*> RemovedObjects;
-					for (TWeakObjectPtr<UNiagaraDataInterface> RemovedDataObject : RemovedDataObjects)
-					{
-						if (RemovedDataObject.IsValid())
 						{
-							RemovedObjects.Add(RemovedDataObject.Get());
-						}
-					}
-					OnDataObjectModified().Broadcast(RemovedObjects, ENiagaraDataObjectChange::Removed);
-					OverridePin->GetOwningNode()->RemovePin(OverridePin);
-				}));
+							FScopedTransaction ScopedTransaction(ConversionFixDescription);
+							SwitchPin->Modify();
+							SwitchPin->DefaultValue = OverridePin->DefaultValue;
+
+							TArray<TWeakObjectPtr<UNiagaraDataInterface>> RemovedDataObjects;
+							FNiagaraStackGraphUtilities::RemoveNodesForStackFunctionInputOverridePin(*OverridePin, RemovedDataObjects);
+							TArray<UObject*> RemovedObjects;
+							for (TWeakObjectPtr<UNiagaraDataInterface> RemovedDataObject : RemovedDataObjects)
+							{
+								if (RemovedDataObject.IsValid())
+								{
+									RemovedObjects.Add(RemovedDataObject.Get());
+								}
+							}
+							OnDataObjectModified().Broadcast(RemovedObjects, ENiagaraDataObjectChange::Removed);
+							OverridePin->GetOwningNode()->RemovePin(OverridePin);
+						}));
 				Fixes.Add(ConvertInputOverrideFix);
 
 				// second possible fix: remove the override completely
@@ -514,7 +659,7 @@ void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& Du
 				break;
 			}
 		}
-		
+
 	}
 
 	// Generate issues for duplicate input names.
@@ -576,9 +721,172 @@ void UNiagaraStackFunctionInputCollection::RefreshIssues(const TArray<FName>& Du
 	}
 }
 
-void UNiagaraStackFunctionInputCollection::OnFunctionInputsChanged()
+void UNiagaraStackFunctionInputCollectionBase::OnFunctionInputsChanged()
 {
 	RefreshChildren();
+}
+
+void UNiagaraStackFunctionInputCollectionBase::AddInvalidChildStackIssue(FName PinName, TArray<FStackIssue>& OutIssues)
+{
+	FStackIssue InvalidHierarchyWarning(
+		EStackIssueSeverity::Warning,
+		FText::Format(LOCTEXT("InvalidHierarchyWarningSummaryFormat", "Invalid ParentAttribute {0} in module metadata."), FText::FromString(PinName.ToString())),
+		FText::Format(LOCTEXT("InvalidHierarchyWarningFormat", "The attribute {0} was used as parent in the metadata although it is itself the child of another attribute.\nPlease check the module metadata to fix this."),
+			FText::FromString(PinName.ToString())), GetStackEditorDataKey(), true);
+	OutIssues.Add(InvalidHierarchyWarning);
+}
+
+void UNiagaraStackFunctionInputCollectionBase::AddInputToCategory(const FInputData& InputData, const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren)
+{	
+	// Try to find an existing category in the already processed children.
+	UNiagaraStackInputCategory* InputCategory = FindCurrentChildOfTypeByPredicate<UNiagaraStackInputCategory>(NewChildren,
+		[&](UNiagaraStackInputCategory* CurrentCategory) { return CurrentCategory->GetCategoryName().CompareTo(InputData.Category) == 0; });
+
+	if (InputCategory == nullptr)
+	{
+		// If we haven't added any children to this category yet see if there is one that can be reused from the current children.
+		InputCategory = FindCurrentChildOfTypeByPredicate<UNiagaraStackInputCategory>(CurrentChildren,
+			[&](UNiagaraStackInputCategory* CurrentCategory) { return CurrentCategory->GetCategoryName().CompareTo(InputData.Category) == 0; });
+		if (InputCategory == nullptr)
+		{
+			// If we don't have a current child for this category make a new one.
+			InputCategory = NewObject<UNiagaraStackInputCategory>(this);
+
+			FString InputCategoryStackEditorDataKey = FString::Printf(TEXT("%s-InputCategory-%s"), *InputData.InputFunctionCallNode->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens), *InputData.Category.ToString());
+			bool bIsTopLevelInput = InputData.InputFunctionCallNode == InputData.ModuleNode;
+			InputCategory->Initialize(CreateDefaultChildRequiredData(), InputCategoryStackEditorDataKey, InputData.Category, bIsTopLevelInput, GetOwnerStackItemEditorDataKey());
+		}
+		else
+		{
+			// We found a category to reuse, but we need to reset the inputs before we can start adding the current set of inputs.
+			InputCategory->ResetInputs();
+		}
+
+		if (InputData.Category.CompareTo(UncategorizedName) == 0)
+		{
+			InputCategory->SetShouldShowInStack(false);
+		}
+		NewChildren.Add(InputCategory);
+	}
+	InputCategory->AddInput(InputData.ModuleNode, InputData.InputFunctionCallNode, InputData.Pin->PinName, InputData.Type, InputData.bIsStatic ? EStackParameterBehavior::Static : EStackParameterBehavior::Dynamic, InputData.DisplayName, InputData.bIsHidden, InputData.bIsChild);
+}
+
+bool UNiagaraStackFunctionInputCollectionBase::FilterByActiveSection(const UNiagaraStackEntry& Child) const
+{
+	const TArray<FText>& Sections = GetSections();
+	FText ActiveSection = GetActiveSection();
+	if (Sections.Num() == 0 || ActiveSection.IdenticalTo(AllSectionName) || SectionToCategoryMapCache.IsSet() == false)
+	{
+		return true;
+	}
+
+	TArray<FText>* ActiveCategoryNames = SectionToCategoryMapCache->Find(ActiveSection.ToString());
+	const UNiagaraStackInputCategory* ChildCategory = Cast<UNiagaraStackInputCategory>(&Child);
+	return ChildCategory == nullptr || ActiveCategoryNames == nullptr || ActiveCategoryNames->ContainsByPredicate(
+		[ChildCategory](const FText& ActiveCategoryName) { return ActiveCategoryName.EqualTo(ChildCategory->GetDisplayName()); });
+}
+
+void UNiagaraStackFunctionInputCollectionBase::UpdateCachedSectionData() const
+{
+	TArray<FText> Sections;
+	TMap<FString, TArray<FText>> SectionToCategoryMap;
+	TArray<FNiagaraStackSection> StackSections;
+	GetSectionsInternal(StackSections);
+
+	if (StackSections.Num() > 0)
+	{
+		// Get the current list of categories.
+		TArray<FText> CategoryNames;
+		TArray<UNiagaraStackInputCategory*> ChildCategories;
+		GetUnfilteredChildrenOfType(ChildCategories);
+		
+		for (UNiagaraStackInputCategory* ChildCategory : ChildCategories)
+		{
+			if (ChildCategory->GetShouldShowInStack())
+			{
+				CategoryNames.Add(ChildCategory->GetDisplayName());
+			}
+		}
+
+		// Match sections to valid categories.
+		for (const FNiagaraStackSection& StackSection : StackSections)
+		{
+			TArray<FText> ContainedCategories;
+			for (FText SectionCategory : StackSection.Categories)
+			{
+				if (CategoryNames.ContainsByPredicate([SectionCategory](FText CategoryName) { return CategoryName.EqualTo(SectionCategory); }))
+				{
+					ContainedCategories.Add(SectionCategory);
+				}
+			}
+			if (ContainedCategories.Num() > 0)
+			{
+				Sections.Add(StackSection.SectionDisplayName);
+				SectionToCategoryMap.Add(StackSection.SectionDisplayName.ToString(), ContainedCategories);
+			}
+		}
+
+		Sections.Add(AllSectionName);
+		SectionToCategoryMap.Add(AllSectionName.ToString(), CategoryNames);
+
+		if (Sections.Num() == 1)
+		{
+			// If there is only one section, it's the "All" section which is not useful.
+			Sections.Empty();
+			SectionToCategoryMap.Empty();
+		}
+	}
+
+	SectionsCache = Sections;
+	SectionToCategoryMapCache = SectionToCategoryMap;
+	FText LastActiveSectionLocal = LastActiveSection;
+	if (Sections.ContainsByPredicate([LastActiveSectionLocal](FText Section) { return Section.EqualTo(LastActiveSectionLocal); }))
+	{
+		ActiveSectionCache = LastActiveSection;
+	}
+	else
+	{
+		ActiveSectionCache = AllSectionName;
+	}
+}
+
+UNiagaraStackEntry::FStackIssueFix UNiagaraStackFunctionInputCollectionBase::GetNodeRemovalFix(UEdGraphPin* PinToRemove, FText FixDescription)
+{
+	return FStackIssueFix(
+		FixDescription,
+		UNiagaraStackEntry::FStackIssueFixDelegate::CreateLambda([=]()
+			{
+				FScopedTransaction ScopedTransaction(FixDescription);
+				TArray<TWeakObjectPtr<UNiagaraDataInterface>> RemovedDataObjects;
+				FNiagaraStackGraphUtilities::RemoveNodesForStackFunctionInputOverridePin(*PinToRemove, RemovedDataObjects);
+				TArray<UObject*> RemovedObjects;
+				for (TWeakObjectPtr<UNiagaraDataInterface> RemovedDataObject : RemovedDataObjects)
+				{
+					if (RemovedDataObject.IsValid())
+					{
+						RemovedObjects.Add(RemovedDataObject.Get());
+					}
+				}
+				OnDataObjectModified().Broadcast(RemovedObjects, ENiagaraDataObjectChange::Removed);
+				PinToRemove->GetOwningNode()->RemovePin(PinToRemove);
+			}));
+}
+
+UNiagaraStackEntry::FStackIssueFix UNiagaraStackFunctionInputCollectionBase::GetResetPinFix(UEdGraphPin* PinToReset, FText FixDescription)
+{
+	return FStackIssueFix(
+		FixDescription,
+		UNiagaraStackEntry::FStackIssueFixDelegate::CreateLambda([=]()
+			{
+				FScopedTransaction ScopedTransaction(FixDescription);
+				const UEdGraphSchema_Niagara* NiagaraSchema = GetDefault<UEdGraphSchema_Niagara>();
+				UNiagaraNode* OwningNiagaraNode = Cast<UNiagaraNode>(PinToReset->GetOwningNode());
+				NiagaraSchema->ResetPinToAutogeneratedDefaultValue(PinToReset);
+				if (OwningNiagaraNode != nullptr)
+				{
+					OwningNiagaraNode->MarkNodeRequiresSynchronization("Pin reset to default value.", true);
+				}
+			}));
 }
 
 #undef LOCTEXT_NAMESPACE

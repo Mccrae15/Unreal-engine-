@@ -70,11 +70,6 @@ void SProfileWizardUI::Construct(const FArguments& InArgs)
 			[
 				SAssignNew(MainWizard, SWizard)
 				.ShowPageList(false)
-				.ButtonStyle(FEditorStyle::Get(), "FlatButton.Default")
-				.CancelButtonStyle(FEditorStyle::Get(), "FlatButton.Default")
-				.FinishButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
-				.ButtonTextStyle(FEditorStyle::Get(), "LargeText")
-				.ForegroundColor(FEditorStyle::Get().GetSlateColor("WhiteBrush"))
 				.CanFinish(this, &SProfileWizardUI::CanFinish)
 				.FinishButtonText(LOCTEXT("FinishButtonText", "Create Profile"))
 				.FinishButtonToolTip(LOCTEXT("FinishButtonToolTip", "Creates the launcher profiles for packaging a simple application and downloadable content."))
@@ -739,10 +734,10 @@ void SProfileWizardUI::CacheCookFlavorsList()
 		
 	DLCFlavorList.Empty();
 
-	FVanillaPlatformEntry PlatformEntry = BuildPlatformHierarchy(TargetPlatformName, EPlatformFilter::CookFlavor);
-	for (const FPlatformInfo* PlatformFlaworInfo : PlatformEntry.PlatformFlavors)
+	const PlatformInfo::FTargetPlatformInfo* Info = FindPlatformInfo(TargetPlatformName);
+	for (const FTargetPlatformInfo* PlatformFlaworInfo : Info->Flavors)
 	{
-		DLCFlavorList.Add(MakeShareable(new FString(PlatformFlaworInfo->PlatformInfoName.ToString())));
+		DLCFlavorList.Add(MakeShareable(new FString(PlatformFlaworInfo->Name.ToString())));
 	}
 
 	// In case no flavors, add vanilla name as cooking target

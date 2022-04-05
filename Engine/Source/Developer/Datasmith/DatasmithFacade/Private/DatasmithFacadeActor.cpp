@@ -7,8 +7,8 @@
 #include "DatasmithFacadeActorMesh.h"
 #include "DatasmithFacadeScene.h"
 
-// OpenEXR third party library.
-#include "ImathMatrixAlgo.h"
+// Imath third party library.
+#include "Imath/ImathMatrixAlgo.h"
 
 
 FDatasmithFacadeActor::FDatasmithFacadeActor(
@@ -57,9 +57,9 @@ void FDatasmithFacadeActor::GetScale(
 {
 	FVector ScaleVector(GetDatasmithActorElement()->GetScale());
 
-	OutX = ScaleVector.X;
-	OutY = ScaleVector.Y;
-	OutZ = ScaleVector.Z;
+	OutX = (float)ScaleVector.X;
+	OutY = (float)ScaleVector.Y;
+	OutZ = (float)ScaleVector.Z;
 }
 
 void FDatasmithFacadeActor::SetRotation(
@@ -79,9 +79,9 @@ void FDatasmithFacadeActor::GetRotation(
 {
 	FRotator Rotator(GetDatasmithActorElement()->GetRotation().Rotator());
 
-	OutPitch = Rotator.Pitch;
-	OutYaw = Rotator.Yaw;
-	OutRoll = Rotator.Roll;
+	OutPitch = (float)Rotator.Pitch;
+	OutYaw = (float)Rotator.Yaw;
+	OutRoll = (float)Rotator.Roll;
 }
 
 void FDatasmithFacadeActor::SetRotation(
@@ -103,10 +103,10 @@ void FDatasmithFacadeActor::GetRotation(
 {
 	FQuat RotationQuat(GetDatasmithActorElement()->GetRotation());
 
-	OutX = RotationQuat.X;
-	OutY = RotationQuat.Y;
-	OutZ = RotationQuat.Z;
-	OutW = RotationQuat.W;
+	OutX = (float)RotationQuat.X;
+	OutY = (float)RotationQuat.Y;
+	OutZ = (float)RotationQuat.Z;
+	OutW = (float)RotationQuat.W;
 }
 
 void FDatasmithFacadeActor::SetTranslation(
@@ -126,9 +126,9 @@ void FDatasmithFacadeActor::GetTranslation(
 {
 	FVector TranslationVector(GetDatasmithActorElement()->GetTranslation());
 
-	OutX = TranslationVector.X;
-	OutY = TranslationVector.Y;
-	OutZ = TranslationVector.Z;
+	OutX = (float)TranslationVector.X;
+	OutY = (float)TranslationVector.Y;
+	OutZ = (float)TranslationVector.Z;
 }
 
 void FDatasmithFacadeActor::SetLayer(

@@ -16,6 +16,7 @@
 class AUsdStageActor;
 class FLevelCollectionModel;
 class FMenuBuilder;
+class ISceneOutliner;
 enum class EMapChangeType : uint8;
 enum class EUsdInitialLoadSet : uint8;
 struct FSlateBrush;
@@ -36,18 +37,24 @@ protected:
 	void ClearStageActorDelegates();
 
 	TSharedRef< SWidget > MakeMainMenu();
+	TSharedRef< SWidget > MakeActorPickerMenu();
+	TSharedRef< SWidget > MakeActorPickerMenuContent();
 	void FillFileMenu( FMenuBuilder& MenuBuilder );
 	void FillActionsMenu( FMenuBuilder& MenuBuilder );
 	void FillOptionsMenu( FMenuBuilder& MenuBuilder );
 	void FillPayloadsSubMenu( FMenuBuilder& MenuBuilder );
 	void FillPurposesToLoadSubMenu( FMenuBuilder& MenuBuilder );
 	void FillRenderContextSubMenu( FMenuBuilder& MenuBuilder );
+	void FillCollapsingSubMenu( FMenuBuilder& MenuBuilder );
+	void FillInterpolationTypeSubMenu( FMenuBuilder& MenuBuilder );
 	void FillSelectionSubMenu( FMenuBuilder& MenuBuilder );
+	void FillNaniteThresholdSubMenu( FMenuBuilder& MenuBuilder );
 
 	void OnNew();
 	void OnOpen();
 	void OnSave();
 	void OnReloadStage();
+	void OnResetStage();
 	void OnClose();
 
 	void OnImport();
@@ -56,17 +63,21 @@ protected:
 
 	void OpenStage( const TCHAR* FilePath );
 
+	void SetActor( AUsdStageActor* InUsdStageActor );
+
 	void Refresh();
 
 	void OnStageActorLoaded( AUsdStageActor* InUsdStageActor );
-	void OnStageActorPropertyChanged( UObject* ObjectBeingModified, FPropertyChangedEvent& PropertyChangedEvent );
 
 	void OnMapChanged( UWorld* World, EMapChangeType ChangeType );
 
 	void OnViewportSelectionChanged( UObject* NewSelection );
 
+	int32 GetNaniteTriangleThresholdValue() const;
+	void OnNaniteTriangleThresholdValueChanged( int32 InValue );
+	void OnNaniteTriangleThresholdValueCommitted( int32 InValue, ETextCommit::Type InCommitType );
+
 protected:
-	TSharedPtr< class SUsdStageInfo > UsdStageInfoWidget;
 	TSharedPtr< class SUsdStageTreeView > UsdStageTreeView;
 	TSharedPtr< class SUsdPrimInfo > UsdPrimInfoWidget;
 	TSharedPtr< class SUsdLayersTreeView > UsdLayersTreeView;
@@ -75,9 +86,9 @@ protected:
 	FDelegateHandle OnActorDestroyedHandle;
 	FDelegateHandle OnStageActorPropertyChangedHandle;
 	FDelegateHandle OnStageChangedHandle;
-	FDelegateHandle OnStageInfoChangedHandle;
 	FDelegateHandle OnStageEditTargetChangedHandle;
 	FDelegateHandle OnPrimChangedHandle;
+	FDelegateHandle OnLayersChangedHandle;
 
 	FDelegateHandle OnViewportSelectionChangedHandle;
 
@@ -87,6 +98,16 @@ protected:
 
 	// True while we're in the middle of setting the viewport selection from the prim selection
 	bool bUpdatingViewportSelection;
+
+	// True while we're in the middle of updating the prim selection from the viewport selection
+	bool bUpdatingPrimSelection;
+
+	// We keep this menu alive instead of recreating it every time because it doesn't expose
+	// setting/getting/responding to the picked world, which resets every time it is reconstructed (see UE-127879)
+	// By keeping it alive it will keep its own state and we just do a full refresh when needed
+	TSharedPtr<ISceneOutliner> ActorPickerMenu;
+
+	int32 CurrentNaniteThreshold = INT32_MAX;
 };
 
 #endif // #if USE_USD_SDK

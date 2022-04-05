@@ -1,8 +1,34 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "SoundModulationParameter.h"
 
+#include "AudioDevice.h"
+#include "AudioDeviceManager.h"
+#include "AudioModulation.h"
+#include "AudioModulationLogging.h"
+#include "IAudioModulation.h"
+
+
+TUniquePtr<Audio::IProxyData> USoundModulationParameter::CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams)
+{
+	using namespace AudioModulation;
+	return MakeUnique<FSoundModulationPluginParameterAssetProxy>(this);
+}
 
 #if WITH_EDITOR
+void USoundModulationParameter::PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	{
+		const FName AssetName = GetFName();
+		if (Audio::IsModulationParameterRegistered(AssetName))
+		{
+			Audio::FModulationParameter NewParam = CreateParameter();
+			Audio::RegisterModulationParameter(NewParam.ParameterName, MoveTemp(NewParam));
+		}
+	}
+}
+
+
 void USoundModulationParameter::RefreshNormalizedValue()
 {
 	const float NewNormalizedValue = ConvertUnitToNormalized(Settings.ValueUnit);
@@ -24,43 +50,55 @@ void USoundModulationParameter::RefreshUnitValue()
 }
 #endif // WITH_EDITOR
 
+Audio::FModulationParameter USoundModulationParameter::CreateParameter() const
+{
+	Audio::FModulationParameter Parameter;
+	Parameter.ParameterName = GetFName();
+	Parameter.bRequiresConversion = RequiresUnitConversion();
+	Parameter.MixFunction = GetMixFunction();
+	Parameter.UnitFunction = GetUnitConversionFunction();
+	Parameter.NormalizedFunction = GetNormalizedConversionFunction();
+	Parameter.DefaultValue = GetUnitDefault();
+	Parameter.MinValue = GetUnitMin();
+	Parameter.MaxValue = GetUnitMax();
+
+#if WITH_EDITORONLY_DATA
+	Parameter.UnitDisplayName = Settings.UnitDisplayName;
+#endif // WITH_EDITORONLY_DATA
+
+	return Parameter;
+}
+
 bool USoundModulationParameterFrequencyBase::RequiresUnitConversion() const
 {
 	return true;
 }
 
-Audio::FModulationUnitConvertFunction USoundModulationParameterFrequencyBase::GetUnitConversionFunction() const
+Audio::FModulationUnitConversionFunction USoundModulationParameterFrequencyBase::GetUnitConversionFunction() const
 {
-	const float InUnitMin = GetUnitMin();
-	const float InUnitMax = GetUnitMax();
-	return [InUnitMin, InUnitMax](float* RESTRICT OutValueBuffer, int32 InNumSamples)
+	return [InUnitMin = GetUnitMin(), InUnitMax = GetUnitMax()](float& InOutValue)
 	{
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] = Audio::GetLogFrequencyClamped(OutValueBuffer[i], FVector2D(0.0f, 1.0f), FVector2D(InUnitMin, InUnitMax));
-		}
+		static const FVector2D Domain(0.0f, 1.0f);
+		const FVector2D Range(InUnitMin, InUnitMax);
+		InOutValue = Audio::GetLogFrequencyClamped(InOutValue, Domain, Range);
 	};
 }
 
 Audio::FModulationNormalizedConversionFunction USoundModulationParameterFrequencyBase::GetNormalizedConversionFunction() const
 {
-	return [InUnitMin = GetUnitMin(), InUnitMax = GetUnitMax()](float* RESTRICT OutValueBuffer, int32 InNumSamples)
+	return [InUnitMin = GetUnitMin(), InUnitMax = GetUnitMax()](float& InOutValue)
 	{
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] = Audio::GetLinearFrequencyClamped(OutValueBuffer[i], FVector2D(0.0f, 1.0f), FVector2D(InUnitMin, InUnitMax));
-		}
+		static const FVector2D Domain(0.0f, 1.0f);
+		const FVector2D Range(InUnitMin, InUnitMax);
+		InOutValue = Audio::GetLinearFrequencyClamped(InOutValue, Domain, Range);
 	};
 }
 
 Audio::FModulationMixFunction USoundModulationParameterHPFFrequency::GetMixFunction() const
 {
-	return [](float* RESTRICT OutValueBuffer, const float* RESTRICT InValueBuffer, int32 InNumSamples)
+	return [](float& InOutValue, float InValue)
 	{
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] = FMath::Max(OutValueBuffer[i], InValueBuffer[i]);
-		}
+		InOutValue = FMath::Max(InOutValue, InValue);
 	};
 }
 
@@ -76,12 +114,9 @@ USoundModulationParameterHPFFrequency::USoundModulationParameterHPFFrequency(con
 
 Audio::FModulationMixFunction USoundModulationParameterLPFFrequency::GetMixFunction() const
 {
-	return [](float* RESTRICT OutValueBuffer, const float* RESTRICT InValueBuffer, int32 InNumSamples)
+	return [](float& InOutValueA, float InValueB)
 	{
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] = FMath::Min(OutValueBuffer[i], InValueBuffer[i]);
-		}
+		InOutValueA = FMath::Min(InOutValueA, InValueB);
 	};
 }
 
@@ -90,26 +125,20 @@ bool USoundModulationParameterScaled::RequiresUnitConversion() const
 	return true;
 }
 
-Audio::FModulationUnitConvertFunction USoundModulationParameterScaled::GetUnitConversionFunction() const
+Audio::FModulationUnitConversionFunction USoundModulationParameterScaled::GetUnitConversionFunction() const
 {
-	return [InUnitMin = UnitMin, InUnitMax = UnitMax](float* RESTRICT OutValueBuffer, int32 InNumSamples)
+	return [InUnitMin = UnitMin, InUnitMax = UnitMax](float& InOutValue)
 	{
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] = FMath::Lerp(InUnitMin, InUnitMax, OutValueBuffer[i]);
-		}
+		InOutValue = FMath::Lerp(InUnitMin, InUnitMax, InOutValue);
 	};
 }
 
 Audio::FModulationNormalizedConversionFunction USoundModulationParameterScaled::GetNormalizedConversionFunction() const
 {
-	return [InUnitMin = UnitMin, InUnitMax = UnitMax](float* RESTRICT OutValueBuffer, int32 InNumSamples)
+	return [InUnitMin = UnitMin, InUnitMax = UnitMax](float& InOutValue)
 	{
 		const float Denom = FMath::Max(SMALL_NUMBER, InUnitMax - InUnitMin);
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] = (OutValueBuffer[i] - InUnitMin) / Denom;
-		}
+		InOutValue = (InOutValue - InUnitMin) / Denom;
 	};
 }
 
@@ -140,34 +169,25 @@ bool USoundModulationParameterBipolar::RequiresUnitConversion() const
 
 Audio::FModulationMixFunction USoundModulationParameterBipolar::GetMixFunction() const
 {
-	return [](float* RESTRICT OutValueBuffer, const float* RESTRICT InValueBuffer, int32 InNumSamples)
+	return [](float& InOutValueA, float InValueB)
 	{
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] += InValueBuffer[i] - 0.5f;
-		}
+		InOutValueA += InValueB - 0.5f;
 	};
 }
 
-Audio::FModulationUnitConvertFunction USoundModulationParameterBipolar::GetUnitConversionFunction() const
+Audio::FModulationUnitConversionFunction USoundModulationParameterBipolar::GetUnitConversionFunction() const
 {
-	return [InUnitRange = UnitRange](float* RESTRICT OutValueBuffer, int32 InNumSamples)
+	return [InUnitRange = UnitRange](float& InOutValue)
 	{
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] = (InUnitRange * OutValueBuffer[i]) - (0.5f * InUnitRange);
-		}
+		InOutValue = (InUnitRange * InOutValue) - (0.5f * InUnitRange);
 	};
 }
 
 Audio::FModulationNormalizedConversionFunction USoundModulationParameterBipolar::GetNormalizedConversionFunction() const
 {
-	return [InUnitRange = UnitRange](float* RESTRICT OutValueBuffer, int32 InNumSamples)
+	return [InUnitRange = UnitRange](float& InOutValue)
 	{
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] = 0.5f + (OutValueBuffer[i] / FMath::Max(InUnitRange, SMALL_NUMBER));
-		}
+		InOutValue = 0.5f + (InOutValue / FMath::Max(InUnitRange, SMALL_NUMBER));
 	};
 }
 
@@ -186,29 +206,23 @@ bool USoundModulationParameterVolume::RequiresUnitConversion() const
 	return true;
 }
 
-Audio::FModulationUnitConvertFunction USoundModulationParameterVolume::GetUnitConversionFunction() const
+Audio::FModulationUnitConversionFunction USoundModulationParameterVolume::GetUnitConversionFunction() const
 {
-	return [InUnitMin = GetUnitMin()](float* RESTRICT OutValueBuffer, int32 InNumSamples)
+	return [InUnitMin = GetUnitMin()](float& InOutValue)
 	{
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] = OutValueBuffer[i] > 0.0f
-				? Audio::ConvertToDecibels(OutValueBuffer[i])
-				: InUnitMin;
-		}
+		InOutValue = InOutValue > 0.0f
+			? Audio::ConvertToDecibels(InOutValue)
+			: InUnitMin;
 	};
 }
 
 Audio::FModulationNormalizedConversionFunction USoundModulationParameterVolume::GetNormalizedConversionFunction() const
 {
-	return [InUnitMin = GetUnitMin()](float* RESTRICT OutValueBuffer, int32 InNumSamples)
+	return [InUnitMin = GetUnitMin()](float& InOutValue)
 	{
-		for (int32 i = 0; i < InNumSamples; ++i)
-		{
-			OutValueBuffer[i] = OutValueBuffer[i] < InUnitMin
-				? 0.0f
-				: Audio::ConvertToLinear(OutValueBuffer[i]);
-		}
+		InOutValue = InOutValue < InUnitMin || FMath::IsNearlyEqual(InOutValue, InUnitMin)
+			? 0.0f
+			: Audio::ConvertToLinear(InOutValue);
 	};
 }
 
@@ -220,4 +234,38 @@ float USoundModulationParameterVolume::GetUnitMin() const
 float USoundModulationParameterVolume::GetUnitMax() const
 {
 	return 0.0f;
+}
+
+namespace AudioModulation
+{
+	const Audio::FModulationParameter& GetOrRegisterParameter(const USoundModulationParameter* InParameter, const FString& InBreadcrumb)
+	{
+		FName ParamName;
+		if (InParameter)
+		{
+			ParamName = InParameter->GetFName();
+			if (!Audio::IsModulationParameterRegistered(ParamName))
+			{
+				UE_LOG(LogAudioModulation, Display,
+					TEXT("Parameter '%s' not registered.  Registration forced via '%s'."),
+					*ParamName.ToString(),
+					*InBreadcrumb);
+
+				Audio::RegisterModulationParameter(ParamName, InParameter->CreateParameter());
+			}
+		}
+
+		// Returns default modulation parameter if no parameter provided.
+		return Audio::GetModulationParameter(ParamName);
+	}
+
+	FSoundModulationPluginParameterAssetProxy::FSoundModulationPluginParameterAssetProxy(USoundModulationParameter* InParameter)
+	{
+		Parameter = GetOrRegisterParameter(InParameter, TEXT("FSoundModulationPluginParameterAssetProxy construction"));
+	}
+
+	Audio::IProxyDataPtr FSoundModulationPluginParameterAssetProxy::Clone() const
+	{
+		return TUniquePtr<FSoundModulationPluginParameterAssetProxy>(new FSoundModulationPluginParameterAssetProxy(*this));
+	}
 }

@@ -31,9 +31,15 @@ public class ApplicationCore : ModuleRules
 			AddEngineThirdPartyPrivateStaticDependencies(Target,
 				"XInput"
 			);
-			if (Target.bCompileWithAccessibilitySupport && !Target.bIsBuildingConsoleApplication)
+			// We only enable UIA with Win64
+			if (Target.bCompileWithAccessibilitySupport && !Target.bIsBuildingConsoleApplication && Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				PublicSystemLibraries.Add("uiautomationcore.lib");
+				PublicDefinitions.Add("UE_WINDOWS_USING_UIA=1");
+			}
+			else
+			{
+				PublicDefinitions.Add("UE_WINDOWS_USING_UIA=0");
 			}
 
 			// Uses DXGI to query GPU hardware prior to RHI startup
@@ -78,7 +84,7 @@ public class ApplicationCore : ModuleRules
 			//Need to add this as BackgroundHTTP files can end up doing work directly from our AppDelegate in iOS and thus we need acccess to correct file locations to save these very early.
 			PrivateDependencyModuleNames.Add("BackgroundHTTPFileHash");
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Android || Target.Platform == UnrealTargetPlatform.Lumin)
+		else if (Target.Platform == UnrealTargetPlatform.Android)
 		{
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {

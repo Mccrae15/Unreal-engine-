@@ -62,7 +62,7 @@ private:
 
 	/** The cached Class or ScriptStruct that was used last to resolve Name to a property. */
 	UPROPERTY(Transient)
-	mutable UStruct* Struct;
+	mutable TObjectPtr<UStruct> Struct;
 
 	/**
 	 * The cached property on the Struct that this Name resolved to on it last time Resolve was called, if 
@@ -170,7 +170,7 @@ struct PROPERTYPATH_API FCachedPropertyPath
 	/** Compares this property path to a string */
 	bool Equals(const FString& Other) const;
 
-#if DO_CHECK
+#if DO_CHECK || USING_CODE_ANALYSIS
 	/** Get the cached container for this property path, for checking purposes */
 	void* GetCachedContainer() const;
 
@@ -196,9 +196,9 @@ private:
 
 	/** Cached function for function-terminated paths */
 	UPROPERTY()
-	mutable UFunction* CachedFunction;
+	mutable TObjectPtr<UFunction> CachedFunction;
 
-#if DO_CHECK
+#if DO_CHECK || USING_CODE_ANALYSIS
 	/** Cached container, used for checking purposes only */
 	mutable void* CachedContainer;
 #endif

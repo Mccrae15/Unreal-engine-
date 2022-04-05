@@ -7,6 +7,8 @@
 
 #define LOCTEXT_NAMESPACE "ConcertVersion"
 
+
+
 namespace ConcertVersionUtil
 {
 
@@ -49,14 +51,17 @@ bool ValidateVersion(const int32 InCurrent, const int32 InOther, const FText InV
 
 void FConcertFileVersionInfo::Initialize()
 {
-	FileVersionUE4 = GPackageFileUE4Version;
-	FileVersionLicenseeUE4 = GPackageFileLicenseeUE4Version;
+	FileVersion = GPackageFileUEVersion.FileVersionUE4;
+	FileVersionUE5 = GPackageFileUEVersion.FileVersionUE5;
+
+	FileVersionLicensee = GPackageFileLicenseeUEVersion;
 }
 
 bool FConcertFileVersionInfo::Validate(const FConcertFileVersionInfo& InOther, const EConcertVersionValidationMode InValidationMode, FText* OutFailureReason) const
 {
-	return ConcertVersionUtil::ValidateVersion(FileVersionUE4, InOther.FileVersionUE4, LOCTEXT("PackageVersionName", "Package Version"), InValidationMode, OutFailureReason)
-		&& ConcertVersionUtil::ValidateVersion(FileVersionLicenseeUE4, InOther.FileVersionLicenseeUE4, LOCTEXT("LicenseePackageVersionName", "Licensee Package Version"), InValidationMode, OutFailureReason);
+	return ConcertVersionUtil::ValidateVersion(FileVersion, InOther.FileVersion, LOCTEXT("UE4PackageVersionName", "UE4 Package Version"), InValidationMode, OutFailureReason)
+		&& ConcertVersionUtil::ValidateVersion(FileVersionUE5, InOther.FileVersionUE5, LOCTEXT("UE5PackageVersionName", "UE5 Package Version"), InValidationMode, OutFailureReason)
+		&& ConcertVersionUtil::ValidateVersion(FileVersionLicensee, InOther.FileVersionLicensee, LOCTEXT("LicenseePackageVersionName", "Licensee Package Version"), InValidationMode, OutFailureReason);
 }
 
 

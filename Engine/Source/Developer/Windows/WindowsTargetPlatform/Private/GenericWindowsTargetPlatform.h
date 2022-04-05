@@ -5,8 +5,11 @@
 #include "CoreMinimal.h"
 #include "Common/TargetPlatformBase.h"
 #include "Misc/ConfigCacheIni.h"
+#if PLATFORM_WINDOWS
 #include "LocalPcTargetDevice.h"
+#endif
 #include "Serialization/MemoryLayout.h"
+#include "SteamDeckDevice.h"
 
 #if WITH_ENGINE
 	#include "Sound/SoundWave.h"
@@ -16,6 +19,7 @@
 	#include "RHI.h"
 	#include "AudioCompressionSettings.h"
 #endif // WITH_ENGINE
+#include "Windows/WindowsPlatformProperties.h"
 
 
 #define LOCTEXT_NAMESPACE "TGenericWindowsTargetPlatform"
@@ -23,12 +27,10 @@
 /**
  * Template for Windows target platforms
  */
-template<bool HAS_EDITOR_DATA, bool IS_DEDICATED_SERVER, bool IS_CLIENT_ONLY>
-class TGenericWindowsTargetPlatform
-	: public TTargetPlatformBase<FWindowsPlatformProperties<HAS_EDITOR_DATA, IS_DEDICATED_SERVER, IS_CLIENT_ONLY> >
+template<typename TProperties>
+class TGenericWindowsTargetPlatform : public TTargetPlatformBase<TProperties>
 {
 public:
-	typedef FWindowsPlatformProperties<HAS_EDITOR_DATA, IS_DEDICATED_SERVER, IS_CLIENT_ONLY> TProperties;
 	typedef TTargetPlatformBase<TProperties> TSuper;
 
 	/**
@@ -39,18 +41,21 @@ public:
 #if PLATFORM_WINDOWS
 		// only add local device if actually running on Windows
 		LocalDevice = MakeShareable(new TLocalPcTargetDevice<PLATFORM_64BITS>(*this));
+
+		// Check if we have any SteamDeck devices around
+		SteamDevices = FSteamDeckDevice::DiscoverDevices(*this);
 #endif
 
 	#if WITH_ENGINE
-		FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *this->IniPlatformName());
 		TextureLODSettings = nullptr; // These are registered by the device profile system.
-		StaticMeshLODSettings.Initialize(EngineSettings);
+		StaticMeshLODSettings.Initialize(this);
 
 
 		// Get the Target RHIs for this platform, we do not always want all those that are supported.
 		TArray<FName> TargetedShaderFormats;
-		GetAllTargetedShaderFormats(TargetedShaderFormats);
+		TGenericWindowsTargetPlatform::GetAllTargetedShaderFormats(TargetedShaderFormats);
 
+		static FName NAME_PCD3D_SM6(TEXT("PCD3D_SM6"));
 		static FName NAME_PCD3D_SM5(TEXT("PCD3D_SM5"));
 		static FName NAME_VULKAN_SM5(TEXT("SF_VULKAN_SM5"));
 
@@ -62,7 +67,11 @@ public:
 			EShaderPlatform ShaderPlatform = SP_NumPlatforms;
 			// Can't use ShaderFormatToLegacyShaderPlatform() because of link dependency
 			{
-				if (TargetedShaderFormat == NAME_PCD3D_SM5)
+				if (TargetedShaderFormat == NAME_PCD3D_SM6)
+				{
+					ShaderPlatform = SP_PCD3D_SM6;
+				}
+				else if (TargetedShaderFormat == NAME_PCD3D_SM5)
 				{
 					ShaderPlatform = SP_PCD3D_SM5;
 				}
@@ -73,13 +82,9 @@ public:
 			}
 
 			// If we're targeting only DX11 we can use DX11 texture formats. Otherwise we'd have to compress fallbacks and increase the size of cooked content significantly.
-			if (ShaderPlatform != SP_PCD3D_SM5 && ShaderPlatform != SP_VULKAN_SM5)
+			if (ShaderPlatform != SP_PCD3D_SM6 && ShaderPlatform != SP_PCD3D_SM5 && ShaderPlatform != SP_VULKAN_SM5)
 			{
 				bSupportDX11TextureFormats = false;
-			}
-			if (!UVolumeTexture::ShaderPlatformSupportsCompression(ShaderPlatform))
-			{
-				bSupportCompressedVolumeTexture = false;
 			}
 		}
 
@@ -90,6 +95,7 @@ public:
 		bRequiresEncodedHDRReflectionCaptures =	TargetedShaderFormats.Contains(NAME_SF_VULKAN_ES31)
 												|| TargetedShaderFormats.Contains(NAME_OPENGL_150_ES3_1)
 												|| TargetedShaderFormats.Contains(NAME_PCD3D_ES3_1);
+
 	#endif
 	}
 
@@ -105,6 +111,14 @@ public:
 		if (LocalDevice.IsValid())
 		{
 			OutDevices.Add(LocalDevice);
+		}
+
+		for (const ITargetDevicePtr& SteamDeck : SteamDevices)
+		{
+			if (SteamDeck.IsValid())
+			{
+				OutDevices.Add(SteamDeck);
+			}
 		}
 	}
 
@@ -130,23 +144,29 @@ public:
 			return LocalDevice;
 		}
 
+		for (const ITargetDevicePtr& SteamDeck : SteamDevices)
+		{
+			if (SteamDeck.IsValid() && DeviceId == SteamDeck->GetId())
+			{
+				return SteamDeck;
+			}
+		}
+
 		return nullptr;
 	}
 
 	virtual bool IsRunningPlatform( ) const override
 	{
 		// Must be Windows platform as editor for this to be considered a running platform
-		return PLATFORM_WINDOWS && !UE_SERVER && !UE_GAME && WITH_EDITOR && HAS_EDITOR_DATA;
+		return PLATFORM_WINDOWS && !UE_SERVER && !UE_GAME && WITH_EDITOR && TProperties::HasEditorOnlyData();
 	}
 
 	virtual void GetShaderCompilerDependencies(TArray<FString>& OutDependencies) const override
 	{		
 		FTargetPlatformBase::AddDependencySCArrayHelper(OutDependencies, TEXT("Binaries/ThirdParty/Windows/DirectX/x64/d3dcompiler_47.dll"));
-		FTargetPlatformBase::AddDependencySCArrayHelper(OutDependencies, TEXT("Binaries/ThirdParty/Windows/DirectX/x64/dxil.dll"));
 		FTargetPlatformBase::AddDependencySCArrayHelper(OutDependencies, TEXT("Binaries/ThirdParty/ShaderConductor/Win64/ShaderConductor.dll"));
 		FTargetPlatformBase::AddDependencySCArrayHelper(OutDependencies, TEXT("Binaries/ThirdParty/ShaderConductor/Win64/dxcompiler.dll"));
-		FTargetPlatformBase::AddDependencySCArrayHelper(OutDependencies, TEXT("Binaries/Win64/dxcompiler.dll"));
-		FTargetPlatformBase::AddDependencySCArrayHelper(OutDependencies, TEXT("Binaries/Win64/dxil.dll"));
+		FTargetPlatformBase::AddDependencySCArrayHelper(OutDependencies, TEXT("Binaries/ThirdParty/ShaderConductor/Win64/dxil.dll"));
 	}
 
 	virtual bool SupportsFeature( ETargetPlatformFeatures Feature ) const override
@@ -154,12 +174,12 @@ public:
 		// we currently do not have a build target for WindowsServer
 		if (Feature == ETargetPlatformFeatures::Packaging)
 		{
-			return (HAS_EDITOR_DATA || !IS_DEDICATED_SERVER);
+			return (TProperties::HasEditorOnlyData() || !TProperties::IsServerOnly());
 		}
 
 		if ( Feature == ETargetPlatformFeatures::ShouldSplitPaksIntoSmallerSizes )
 		{
-			return IS_CLIENT_ONLY;
+			return TProperties::IsClientOnly();
 		}
 
 		if (Feature == ETargetPlatformFeatures::MobileRendering)
@@ -196,22 +216,12 @@ public:
 		InStringKeys.Add(TEXT("MinimumOSVersion"));
 	}
 
-#if WITH_ENGINE
-	virtual void GetReflectionCaptureFormats(TArray<FName>& OutFormats) const override
-	{
-		if (bRequiresEncodedHDRReflectionCaptures)
-		{
-			OutFormats.Add(FName(TEXT("EncodedHDR")));
-		}
-
-		OutFormats.Add(FName(TEXT("FullHDR")));
-	}
-
 	virtual void GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const override
 	{
 		// no shaders needed for dedicated server target
-		if (!IS_DEDICATED_SERVER)
+		if (!TProperties::IsServerOnly())
 		{
+			static FName NAME_PCD3D_SM6(TEXT("PCD3D_SM6"));
 			static FName NAME_PCD3D_SM5(TEXT("PCD3D_SM5"));
 			static FName NAME_VULKAN_ES31(TEXT("SF_VULKAN_ES31"));
 			static FName NAME_OPENGL_150_ES3_1(TEXT("GLSL_150_ES31"));
@@ -219,6 +229,7 @@ public:
 			static FName NAME_PCD3D_ES3_1(TEXT("PCD3D_ES31"));
 
 			OutFormats.AddUnique(NAME_PCD3D_SM5);
+			OutFormats.AddUnique(NAME_PCD3D_SM6);
 			OutFormats.AddUnique(NAME_VULKAN_ES31);
 			OutFormats.AddUnique(NAME_OPENGL_150_ES3_1);
 			OutFormats.AddUnique(NAME_VULKAN_SM5);
@@ -226,7 +237,7 @@ public:
 		}
 	}
 
-	virtual void GetAllTargetedShaderFormats( TArray<FName>& OutFormats ) const override
+	virtual void GetAllTargetedShaderFormats( TArray<FName>& OutFormats ) const override 
 	{
 		// Get the Target RHIs for this platform, we do not always want all those that are supported. (reload in case user changed in the editor)
 		TArray<FString>TargetedShaderFormats;
@@ -250,6 +261,25 @@ public:
 			OutFormats.AddUnique(FName(*ShaderFormat));
 		}
 	}
+
+#if WITH_ENGINE
+	virtual void GetReflectionCaptureFormats(TArray<FName>& OutFormats) const override
+	{
+		if (bRequiresEncodedHDRReflectionCaptures)
+		{
+			OutFormats.Add(FName(TEXT("EncodedHDR")));
+		}
+
+		OutFormats.Add(FName(TEXT("FullHDR")));
+	}
+
+	virtual void GetShaderFormatModuleHints(TArray<FName>& OutModuleNames) const override
+	{
+		OutModuleNames.Add(TEXT("ShaderFormatD3D"));
+		OutModuleNames.Add(TEXT("ShaderFormatOpenGL"));
+		OutModuleNames.Add(TEXT("VulkanShaderFormat"));
+	}
+
 	virtual const class FStaticMeshLODSettings& GetStaticMeshLODSettings( ) const override
 	{
 		return StaticMeshLODSettings;
@@ -257,15 +287,15 @@ public:
 
 	virtual void GetTextureFormats( const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const override
 	{
-		if (!IS_DEDICATED_SERVER)
+		if (!TProperties::IsServerOnly())
 		{
-			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, InTexture, EngineSettings, bSupportDX11TextureFormats, bSupportCompressedVolumeTexture);
+			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, InTexture, bSupportDX11TextureFormats, bSupportCompressedVolumeTexture);
 		}
 	}
 
 	virtual void GetAllTextureFormats(TArray<FName>& OutFormats) const override
 	{
-		if (!IS_DEDICATED_SERVER)
+		if (!TProperties::IsServerOnly())
 		{
 			GetAllDefaultTextureFormats(this, OutFormats, bSupportDX11TextureFormats);
 		}
@@ -298,7 +328,7 @@ public:
 
 		bool bUseDXT5NormalMap = false;
 		FString UseDXT5NormalMapsString;
-		if (EngineSettings.GetString(TEXT("SystemSettings"), TEXT("Compat.UseDXT5NormalMaps"), UseDXT5NormalMapsString))
+		if (this->GetConfigSystem()->GetString(TEXT("SystemSettings"), TEXT("Compat.UseDXT5NormalMaps"), UseDXT5NormalMapsString, GEngineIni))
 		{
 			bUseDXT5NormalMap = FCString::ToBool(*UseDXT5NormalMapsString);
 		}
@@ -411,37 +441,41 @@ public:
 		TextureLODSettings = InTextureLODSettings;
 	}
 
-	virtual FName GetWaveFormat( const class USoundWave* Wave ) const override
+	virtual FName GetWaveFormat(const class USoundWave* Wave) const override
 	{
-		static const FName NAME_ADPCM(TEXT("ADPCM"));
-		static const FName NAME_OGG(TEXT("OGG"));
-		static const FName NAME_OPUS(TEXT("OPUS"));
+		FName FormatName = Audio::ToName(Wave->GetSoundAssetCompressionType());
 
-		// Seekable streams need to pick a codec which allows fixed-sized frames so we can compute stream chunk index to load
-		if (Wave->IsSeekableStreaming())
+		if (FormatName == Audio::NAME_PLATFORM_SPECIFIC)
 		{
-			return NAME_ADPCM;
-		}
-
 #if !USE_VORBIS_FOR_STREAMING
-		if (Wave->IsStreaming())
-		{
-			return NAME_OPUS;
-		}
+			if (Wave->IsStreaming())
+			{
+				return Audio::NAME_OPUS;
+			}
 #endif
 
-		return NAME_OGG;
+			return Audio::NAME_OGG;
+		}
+		else
+		{
+			return FormatName;
+		}
 	}
 
 	virtual void GetAllWaveFormats(TArray<FName>& OutFormats) const override
 	{
-		static const FName NAME_ADPCM(TEXT("ADPCM"));
-		static FName NAME_OGG(TEXT("OGG"));
-		static FName NAME_OPUS(TEXT("OPUS"));
+		OutFormats.Add(Audio::NAME_BINKA);
+		OutFormats.Add(Audio::NAME_ADPCM);
+		OutFormats.Add(Audio::NAME_PCM);
+		OutFormats.Add(Audio::NAME_OGG);
+		OutFormats.Add(Audio::NAME_OPUS);
+	}
 
-		OutFormats.Add(NAME_ADPCM);
-		OutFormats.Add(NAME_OGG);
-		OutFormats.Add(NAME_OPUS);
+	virtual void GetWaveFormatModuleHints(TArray<FName>& OutModuleNames) const override
+	{
+		OutModuleNames.Add(TEXT("AudioFormatOPUS"));
+		OutModuleNames.Add(TEXT("AudioFormatOGG"));
+		OutModuleNames.Add(TEXT("AudioFormatADPCM"));
 	}
 
 #endif //WITH_ENGINE
@@ -451,46 +485,17 @@ public:
 		return true;
 	}
 
-	virtual FText GetVariantDisplayName() const override
-	{
-		if (IS_DEDICATED_SERVER)
-		{
-			return LOCTEXT("WindowsServerVariantTitle", "Dedicated Server");
-		}
-
-		if (HAS_EDITOR_DATA)
-		{
-			return LOCTEXT("WindowsClientEditorDataVariantTitle", "Client with Editor Data");
-		}
-
-		if (IS_CLIENT_ONLY)
-		{
-			return LOCTEXT("WindowsClientOnlyVariantTitle", "Client only");
-		}
-
-		return LOCTEXT("WindowsClientVariantTitle", "Client");
-	}
-
-	virtual FText GetVariantTitle() const override
-	{
-		return LOCTEXT("WindowsVariantTitle", "Build Type");
-	}
-
 	virtual float GetVariantPriority() const override
 	{
 		return TProperties::GetVariantPriority();
 	}
 
-	DECLARE_DERIVED_EVENT(TGenericWindowsTargetPlatform, ITargetPlatform::FOnTargetDeviceDiscovered, FOnTargetDeviceDiscovered);
-	virtual FOnTargetDeviceDiscovered& OnDeviceDiscovered( ) override
+	virtual bool UsesDistanceFields() const override
 	{
-		return DeviceDiscoveredEvent;
-	}
+		bool bEnableDistanceFields = false;
+		GConfig->GetBool(TEXT("/Script/WindowsTargetPlatform.WindowsTargetSettings"), TEXT("bEnableDistanceFields"), bEnableDistanceFields, GEngineIni);
 
-	DECLARE_DERIVED_EVENT(TGenericWindowsTargetPlatform, ITargetPlatform::FOnTargetDeviceLost, FOnTargetDeviceLost);
-	virtual FOnTargetDeviceLost& OnDeviceLost( ) override
-	{
-		return DeviceLostEvent;
+		return bEnableDistanceFields && TSuper::UsesDistanceFields();
 	}
 
 	virtual bool UsesRayTracing() const override
@@ -508,10 +513,9 @@ private:
 	// Holds the local device.
 	ITargetDevicePtr LocalDevice;
 
-#if WITH_ENGINE
-	// Holds the Engine INI settings for quick use.
-	FConfigFile EngineSettings;
+	TArray<ITargetDevicePtr> SteamDevices;
 
+#if WITH_ENGINE
 	// Holds the texture LOD settings.
 	const UTextureLODSettings* TextureLODSettings;
 
@@ -528,13 +532,6 @@ private:
 	bool bSupportCompressedVolumeTexture;
 #endif // WITH_ENGINE
 
-private:
-
-	// Holds an event delegate that is executed when a new target device has been discovered.
-	FOnTargetDeviceDiscovered DeviceDiscoveredEvent;
-
-	// Holds an event delegate that is executed when a target device has been lost, i.e. disconnected or timed out.
-	FOnTargetDeviceLost DeviceLostEvent;
 };
 
 #undef LOCTEXT_NAMESPACE

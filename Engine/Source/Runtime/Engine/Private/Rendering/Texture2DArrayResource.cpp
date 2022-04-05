@@ -73,7 +73,8 @@ void FTexture2DArrayResource::CreateTexture()
 	TArrayView<const FTexture2DMipMap*> MipsView = GetPlatformMipsView();
 	const FTexture2DMipMap& FirstMip = *MipsView[RequestedFirstLODIdx];
 
-	FRHIResourceCreateInfo CreateInfo;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FTexture2DArrayResource"));
+	CreateInfo.ExtData = PlatformData->GetExtData();
 	TRefCountPtr<FRHITexture2DArray> TextureArray = RHICreateTexture2DArray(FirstMip.SizeX, FirstMip.SizeY, FirstMip.SizeZ, PixelFormat, State.NumRequestedLODs, 1, CreationFlags, CreateInfo);
 	TextureRHI = TextureArray;
 
@@ -104,21 +105,19 @@ void FTexture2DArrayResource::CreatePartiallyResidentTexture()
 	TextureRHI.SafeRelease();
 }
 
-#if STATS
-void FTexture2DArrayResource::CalcRequestedMipsSize()
+uint64 FTexture2DArrayResource::GetPlatformMipsSize(uint32 NumMips) const
 {
-	if (PlatformData && State.NumRequestedLODs > 0)
+	if (PlatformData && NumMips > 0)
 	{
-		const FIntPoint MipExtents = CalcMipMapExtent(SizeX, SizeY, PixelFormat, State.RequestedFirstLODIdx());
+		const FIntPoint MipExtents = CalcMipMapExtent(SizeX, SizeY, PixelFormat, State.LODCountToFirstLODIdx(NumMips));
 		uint32 TextureAlign = 0;
-		TextureSize = SizeZ * RHICalcTexture2DPlatformSize(MipExtents.X, MipExtents.Y, PixelFormat, State.NumRequestedLODs, 1, CreationFlags, FRHIResourceCreateInfo(PlatformData->GetExtData()), TextureAlign);
+		return RHICalcTexture2DArrayPlatformSize(MipExtents.X, MipExtents.Y, SizeZ, PixelFormat, NumMips, 1, CreationFlags, FRHIResourceCreateInfo(PlatformData->GetExtData()), TextureAlign);
 	}
 	else
 	{
-		TextureSize = 0;
+		return 0;
 	}
 }
-#endif
 
 void FTexture2DArrayResource::GetData(uint32 SliceIndex, uint32 MipIndex, void* Dest, uint32 DestPitch)
 {

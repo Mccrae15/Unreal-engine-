@@ -1,13 +1,17 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using OpenTracing;
+using OpenTracing.Util;
 using UnrealBuildTool;
 
 namespace BuildGraph.Tasks
@@ -24,7 +28,7 @@ namespace BuildGraph.Tasks
 		public string Project;
 
 		/// <summary>
-		/// The cook platform to target (for example, WindowsNoEditor).
+		/// The cook platform to target (for example, Windows).
 		/// </summary>
 		[TaskParameter]
 		public string Platform;
@@ -46,6 +50,7 @@ namespace BuildGraph.Tasks
 		/// </summary>
 		[TaskParameter(Optional = true)]
 		public string Arguments = "";
+
 
 		/// <summary>
 		/// Optional path to what editor executable to run for cooking.
@@ -100,11 +105,13 @@ namespace BuildGraph.Tasks
 			}
 
 			// Execute the cooker
-			using(TelemetryStopwatch CookStopwatch = new TelemetryStopwatch("Cook.{0}.{1}", (ProjectFile == null)? "UE4" : ProjectFile.GetFileNameWithoutExtension(), Parameters.Platform))
+			using (IScope Scope = GlobalTracer.Instance.BuildSpan("Cook").StartActive())
 			{
+				Scope.Span.SetTag("project", ProjectFile == null ? "UE4" : ProjectFile.GetFileNameWithoutExtension());
+				Scope.Span.SetTag("platform", Parameters.Platform);
 				string[] Maps = (Parameters.Maps == null)? null : Parameters.Maps.Split(new char[]{ '+' });
 				string Arguments = (Parameters.Versioned ? "" : "-Unversioned ") + "-LogCmds=\"LogSavePackage Warning\" " + Parameters.Arguments;
-				string EditorExe = (string.IsNullOrWhiteSpace(Parameters.EditorExe) ? "UE4Editor-Cmd.exe" : Parameters.EditorExe);
+				string EditorExe = (string.IsNullOrWhiteSpace(Parameters.EditorExe) ? "UnrealEditor-Cmd.exe" : Parameters.EditorExe);
 				CommandUtils.CookCommandlet(ProjectFile, EditorExe, Maps, null, null, null, Parameters.Platform, Arguments);
 			}
 

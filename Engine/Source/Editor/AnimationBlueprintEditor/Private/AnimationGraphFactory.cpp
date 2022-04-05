@@ -10,6 +10,7 @@
 #include "AnimGraphNode_LayeredBoneBlend.h"
 #include "AnimGraphNode_BlendSpaceBase.h"
 #include "AnimStateNode.h"
+#include "AnimStateAliasNode.h"
 #include "AnimStateEntryNode.h"
 #include "AnimStateConduitNode.h"
 #include "AnimStateTransitionNode.h"
@@ -18,6 +19,7 @@
 #include "AnimationGraphSchema.h"
 
 #include "AnimationStateNodes/SGraphNodeAnimState.h"
+#include "AnimationStateNodes/SGraphNodeAnimStateAlias.h"
 #include "AnimationStateNodes/SGraphNodeAnimTransition.h"
 #include "AnimationStateNodes/SGraphNodeAnimStateEntry.h"
 
@@ -33,6 +35,10 @@
 #include "StateMachineConnectionDrawingPolicy.h"
 
 #include "KismetPins/SGraphPinExec.h"
+#include "AnimGraphNode_BlendSpaceGraph.h"
+#include "AnimationNodes/SGraphNodeBlendSpaceGraph.h"
+#include "K2Node_AnimNodeReference.h"
+#include "AnimationNodes/SAnimNodeReference.h"
 
 TSharedPtr<class SGraphNode> FAnimationGraphNodeFactory::CreateNode(class UEdGraphNode* InNode) const 
 {
@@ -58,6 +64,10 @@ TSharedPtr<class SGraphNode> FAnimationGraphNodeFactory::CreateNode(class UEdGra
 		{
 			return SNew(SGraphNodeBlendSpacePlayer, BlendSpacePlayer);
 		}
+		else if (UAnimGraphNode_BlendSpaceGraphBase* BlendSpaceGraph = Cast<UAnimGraphNode_BlendSpaceGraphBase>(InNode))
+		{
+			return SNew(SGraphNodeBlendSpaceGraph, BlendSpaceGraph);
+		}
 		else
 		{
 			return SNew(SAnimationGraphNode, BaseAnimNode);
@@ -71,6 +81,10 @@ TSharedPtr<class SGraphNode> FAnimationGraphNodeFactory::CreateNode(class UEdGra
 	{
 		return SNew(SGraphNodeAnimState, StateNode);
 	}
+	else if (UAnimStateAliasNode* StateAliasNode = Cast<UAnimStateAliasNode>(InNode))
+	{
+		return SNew(SGraphNodeAnimStateAlias, StateAliasNode);
+	}
 	else if (UAnimStateConduitNode* ConduitNode = Cast<UAnimStateConduitNode>(InNode))
 	{
 		return SNew(SGraphNodeAnimConduit, ConduitNode);
@@ -79,13 +93,17 @@ TSharedPtr<class SGraphNode> FAnimationGraphNodeFactory::CreateNode(class UEdGra
 	{
 		return SNew(SGraphNodeAnimStateEntry, EntryNode);
 	}
-
+	else if (UK2Node_AnimNodeReference* AnimNodeReference = Cast<UK2Node_AnimNodeReference>(InNode))
+	{
+		return SNew(SAnimNodeReference, AnimNodeReference);
+	}
+	
 	return nullptr;
 }
 
 TSharedPtr<class SGraphPin> FAnimationGraphPinFactory::CreatePin(class UEdGraphPin* InPin) const
 {
-	if (InPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Struct)
+	if (InPin->GetSchema()->IsA<UAnimationGraphSchema>() && InPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Struct)
 	{
 		if ((InPin->PinType.PinSubCategoryObject == FPoseLink::StaticStruct()) || (InPin->PinType.PinSubCategoryObject == FComponentSpacePoseLink::StaticStruct()))
 		{
@@ -93,7 +111,7 @@ TSharedPtr<class SGraphPin> FAnimationGraphPinFactory::CreatePin(class UEdGraphP
 		}
 	}
 
-	if (InPin->PinType.PinCategory == UAnimationStateMachineSchema::PC_Exec)
+	if (InPin->GetSchema()->IsA<UAnimationStateMachineSchema>() && InPin->PinType.PinCategory == UAnimationStateMachineSchema::PC_Exec)
 	{
 		return SNew(SGraphPinExec, InPin);
 	}

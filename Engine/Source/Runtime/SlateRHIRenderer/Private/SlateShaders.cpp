@@ -18,6 +18,7 @@ IMPLEMENT_SHADER_TYPE(, FSlateDebugOverdrawPS, TEXT("/Engine/Private/SlateElemen
 
 IMPLEMENT_SHADER_TYPE(, FSlatePostProcessBlurPS, TEXT("/Engine/Private/SlatePostProcessPixelShader.usf"), TEXT("GaussianBlurMain"), SF_Pixel);
 IMPLEMENT_SHADER_TYPE(, FSlatePostProcessDownsamplePS, TEXT("/Engine/Private/SlatePostProcessPixelShader.usf"), TEXT("DownsampleMain"), SF_Pixel);
+IMPLEMENT_SHADER_TYPE(, FSlatePostProcessUpsamplePS, TEXT("/Engine/Private/SlatePostProcessPixelShader.usf"), TEXT("UpsampleMain"), SF_Pixel);
 IMPLEMENT_SHADER_TYPE(, FSlatePostProcessColorDeficiencyPS, TEXT("/Engine/Private/SlatePostProcessColorDeficiencyPixelShader.usf"), TEXT("ColorDeficiencyMain"), SF_Pixel);
 
 IMPLEMENT_SHADER_TYPE(, FSlateMaskingVS, TEXT("/Engine/Private/SlateMaskingShader.usf"), TEXT("MainVS"), SF_Vertex);
@@ -25,9 +26,9 @@ IMPLEMENT_SHADER_TYPE(, FSlateMaskingPS, TEXT("/Engine/Private/SlateMaskingShade
 
 IMPLEMENT_SHADER_TYPE(, FSlateDebugBatchingPS, TEXT("/Engine/Private/SlateElementPixelShader.usf"), TEXT("DebugBatchingMain"), SF_Pixel );
 
-#define IMPLEMENT_SLATE_PIXELSHADER_TYPE(ShaderType, bDrawDisabledEffect, bUseTextureAlpha) \
-	typedef TSlateElementPS<ESlateShader::ShaderType,bDrawDisabledEffect,bUseTextureAlpha> TSlateElementPS##ShaderType##bDrawDisabledEffect##bUseTextureAlpha##A; \
-	IMPLEMENT_SHADER_TYPE(template<>,TSlateElementPS##ShaderType##bDrawDisabledEffect##bUseTextureAlpha##A,TEXT("/Engine/Private/SlateElementPixelShader.usf"),TEXT("Main"),SF_Pixel);
+#define IMPLEMENT_SLATE_PIXELSHADER_TYPE(ShaderType, bDrawDisabledEffect, bUseTextureAlpha, bIsVirtualTexture) \
+	typedef TSlateElementPS<ESlateShader::ShaderType,bDrawDisabledEffect,bUseTextureAlpha,bIsVirtualTexture> TSlateElementPS##ShaderType##bDrawDisabledEffect##bUseTextureAlpha##bIsVirtualTexture##A; \
+	IMPLEMENT_SHADER_TYPE(template<>,TSlateElementPS##ShaderType##bDrawDisabledEffect##bUseTextureAlpha##bIsVirtualTexture##A,TEXT("/Engine/Private/SlateElementPixelShader.usf"),TEXT("Main"),SF_Pixel);
 
 #if WITH_EDITOR
 IMPLEMENT_SHADER_TYPE(, FHDREditorConvertPS, TEXT("/Engine/Private/CompositeUIPixelShader.usf"), TEXT("HDREditorConvert"), SF_Pixel);
@@ -35,23 +36,30 @@ IMPLEMENT_SHADER_TYPE(, FHDREditorConvertPS, TEXT("/Engine/Private/CompositeUIPi
 /**
 * All the different permutations of shaders used by slate. Uses #defines to avoid dynamic branches
 */
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, false, true);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(Border, false, true);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, true, true);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(Border, true, true);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, false, false);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(Border, false, false);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, true, false);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(Border, true, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, false, true, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, false, true, true);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Border, false, true, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, true, true, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, true, true, true);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Border, true, true, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, false, false, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, false, false, true);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Border, false, false, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, true, false, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Default, true, false, true);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(Border, true, false, false);
 
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(GrayscaleFont, false, true);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(GrayscaleFont, true, true);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(GrayscaleFont, false, true, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(GrayscaleFont, true, true, false);
 
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(ColorFont, false, true);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(ColorFont, true, true);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(ColorFont, false, true, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(ColorFont, true, true, false);
 
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(LineSegment, false, true);
-IMPLEMENT_SLATE_PIXELSHADER_TYPE(LineSegment, true, true);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(LineSegment, false, true, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(LineSegment, true, true, false);
+
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(RoundedBox, false, true, false);
+IMPLEMENT_SLATE_PIXELSHADER_TYPE(RoundedBox, true, true, false);
 
 /** The Slate vertex declaration. */
 TGlobalResource<FSlateVertexDeclaration> GSlateVertexDeclaration;
@@ -70,7 +78,8 @@ void FSlateVertexDeclaration::InitRHI()
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, MaterialTexCoords), VET_Float2, 1, Stride));
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, Position), VET_Float2, 2, Stride));
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, Color), VET_Color, 3, Stride));
-	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, PixelSize), VET_UShort2, 4, Stride));
+	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, SecondaryColor), VET_Color, 4, Stride));
+	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, PixelSize), VET_UShort2, 5, Stride));
 
 	VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 }
@@ -92,7 +101,8 @@ void FSlateInstancedVertexDeclaration::InitRHI()
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, MaterialTexCoords), VET_Float2, 1, Stride));
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, Position), VET_Float2, 2, Stride));
 	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, Color), VET_Color, 3, Stride));
-	Elements.Add(FVertexElement(1, 0, VET_Float4, 4, sizeof(FVector4), true));
+	Elements.Add(FVertexElement(0, STRUCT_OFFSET(FSlateVertex, SecondaryColor), VET_Color, 4, Stride));
+	Elements.Add(FVertexElement(1, 0, VET_Float4, 5, sizeof(FVector4f), true));
 	
 	VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 }
@@ -134,12 +144,12 @@ FSlateElementVS::FSlateElementVS( const ShaderMetaType::CompiledShaderInitialize
 	SwitchVerticalAxisMultiplier.Bind( Initializer.ParameterMap, TEXT("SwitchVerticalAxisMultiplier"));
 }
 
-void FSlateElementVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatrix& InViewProjection )
+void FSlateElementVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatrix44f& InViewProjection )
 {
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewProjection, InViewProjection );
 }
 
-void FSlateElementVS::SetShaderParameters(FRHICommandList& RHICmdList, const FVector4& ShaderParams )
+void FSlateElementVS::SetShaderParameters(FRHICommandList& RHICmdList, const FVector4f& ShaderParams )
 {
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), VertexShaderParams, ShaderParams );
 }
@@ -174,7 +184,7 @@ FSlateMaskingVS::FSlateMaskingVS(const ShaderMetaType::CompiledShaderInitializer
 	SwitchVerticalAxisMultiplier.Bind(Initializer.ParameterMap, TEXT("SwitchVerticalAxisMultiplier"));
 }
 
-void FSlateMaskingVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatrix& InViewProjection)
+void FSlateMaskingVS::SetViewProjection(FRHICommandList& RHICmdList, const FMatrix44f& InViewProjection)
 {
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewProjection, InViewProjection);
 }
@@ -186,8 +196,8 @@ void FSlateMaskingVS::SetVerticalAxisMultiplier(FRHICommandList& RHICmdList, flo
 
 void FSlateMaskingVS::SetMaskRect(FRHICommandList& RHICmdList, const FVector2D& TopLeft, const FVector2D& TopRight, const FVector2D& BotLeft, const FVector2D& BotRight)
 {
-	//FVector4 MaskRectVal[4] = { FVector4(TopLeft, FVector2D::ZeroVector), FVector4(TopRight, FVector2D::ZeroVector), FVector4(BotLeft, FVector2D::ZeroVector), FVector4(BotRight, FVector2D::ZeroVector) };
-	FVector4 MaskRectVal[2] = { FVector4(TopLeft, TopRight), FVector4(BotLeft, BotRight) };
+	//FVector4f MaskRectVal[4] = { FVector4f(TopLeft, FVector2D::ZeroVector), FVector4f(TopRight, FVector2D::ZeroVector), FVector4f(BotLeft, FVector2D::ZeroVector), FVector4f(BotRight, FVector2D::ZeroVector) };
+	FVector4f MaskRectVal[2] = { FVector4f(FVector2f(TopLeft), FVector2f(TopRight)), FVector4f(FVector2f(BotLeft), FVector2f(BotRight)) };	// LWC_TODO: Precision loss
 
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), MaskRect, MaskRectVal);
 }

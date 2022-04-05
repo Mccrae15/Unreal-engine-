@@ -20,6 +20,7 @@
 
 #if WITH_EDITOR
 #include "EdGraphSchema_K2.h"
+#include "Editor.h"
 #endif
 
 // WARNING: This should always be the last include in any file that needs it (except .generated.h)
@@ -28,6 +29,91 @@
 #define LOCTEXT_NAMESPACE "PropertyValue"
 
 DEFINE_LOG_CATEGORY(LogVariantContent);
+
+namespace UE
+{
+	namespace PropertyValue
+	{
+		namespace Private
+		{
+			template<typename OldType, typename NewType>
+			void ConvertRecordedValueSizes( size_t TargetStructSize, TArray<uint8>& ValueBytes )
+			{
+				const int32 NumElements = ValueBytes.Num() / sizeof( OldType );
+				ensure( ValueBytes.Num() % sizeof( OldType ) == 0 );
+				ensure( TargetStructSize == NumElements * sizeof( NewType ) );
+
+				TArray<uint8> ConvertedRecordedData;
+				ConvertedRecordedData.SetNumZeroed( TargetStructSize );
+
+				const OldType* OldValues = reinterpret_cast< const OldType* >( ValueBytes.GetData() );
+				NewType* NewValues = reinterpret_cast< NewType* >( ConvertedRecordedData.GetData() );
+
+				for ( int32 ElementIndex = 0; ElementIndex < NumElements; ++ElementIndex )
+				{
+					*NewValues++ = static_cast< NewType >( *OldValues++ );
+				}
+
+				ValueBytes = MoveTemp( ConvertedRecordedData );
+			}
+
+			size_t GetTargetStructElementSize( UScriptStruct* StructClass )
+			{
+				if ( StructClass )
+				{
+					FName StructName = StructClass->GetFName();
+					if ( StructName == NAME_Vector )
+					{
+						return sizeof( FVector::X );
+					}
+					else if ( StructName == NAME_Rotator )
+					{
+						return sizeof( FRotator::Pitch );
+					}
+					else if ( StructName == NAME_Quat )
+					{
+						return sizeof( FQuat::X );
+					}
+					else if ( StructName == NAME_Vector4 )
+					{
+						return sizeof( FVector4::X );
+					}
+					else if ( StructName == NAME_Vector2D )
+					{
+						return sizeof( FVector2D::X );
+					}
+				}
+
+				return 0;
+			}
+
+			// The purpose of this function is to upgrade ValueBytes to the correct size/values if we last saved our e.g. FVector
+			// recorded data when FVector contained floats, but now it should hold doubles (i.e. ValueBytes holds 12 bytes, but
+			// it should really hold 24 now).
+			void UpdateRecordedDataSizesIfNeeded( UScriptStruct* StructClass, TArray<uint8>& ValueBytes )
+			{
+				if ( !StructClass )
+				{
+					return;
+				}
+
+				const size_t TargetStructSize = StructClass->GetCppStructOps()->GetSize();
+				const size_t TargetElementSize = GetTargetStructElementSize( StructClass );
+				if ( TargetElementSize && TargetStructSize && TargetStructSize != ValueBytes.Num() )
+				{
+					if ( TargetElementSize == sizeof( double ) )
+					{
+						ConvertRecordedValueSizes<float, double>( TargetStructSize, ValueBytes );
+					}
+					else if ( TargetElementSize == sizeof( float ) )
+					{
+						ConvertRecordedValueSizes<double, float>( TargetStructSize, ValueBytes );
+					}
+				}
+			}
+		}
+	}
+}
 
 // Non-asserting way of checking if an Index is valid for an enum.
 // Warning: This will claim that the _MAX entry's index is also invalid
@@ -218,6 +304,12 @@ UPropertyValue::UPropertyValue(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, LeafPropertyClass(nullptr)
 {
+#if WITH_EDITOR
+	if (GIsEditor)
+	{
+		FEditorDelegates::EndPIE.AddUObject(this, &UPropertyValue::OnPIEEnded);
+	}
+#endif
 }
 
 void UPropertyValue::Init(const TArray<FCapturedPropSegment>& InCapturedPropSegments, FFieldClass* InLeafPropertyClass, const FString& InFullDisplayString, const FName& InPropertySetterName, EPropertyValueCategory InCategory)
@@ -238,6 +330,24 @@ void UPropertyValue::Init(const TArray<FCapturedPropSegment>& InCapturedPropSegm
 	DefaultValue.Empty();
 	TempObjPtr.Reset();
 }
+
+void UPropertyValue::BeginDestroy()
+{
+	Super::BeginDestroy();
+
+#if WITH_EDITOR
+	FEditorDelegates::EndPIE.RemoveAll(this);
+#endif
+}
+
+#if WITH_EDITOR
+
+void UPropertyValue::OnPIEEnded(const bool bIsSimulatingInEditor)
+{
+	ClearLastResolve();
+}
+
+#endif
 
 UVariantObjectBinding* UPropertyValue::GetParent() const
 {
@@ -426,6 +536,8 @@ bool UPropertyValue::Resolve(UObject* Object)
 		return false;
 	}
 
+	const bool bStartedUnresolved = !HasValidResolve();
+
 	ParentContainerObject = Object;
 	if (!ResolvePropertiesRecursive(Object->GetClass(), Object, 0))
 	{
@@ -469,6 +581,13 @@ bool UPropertyValue::Resolve(UObject* Object)
 		}
 	}
 
+	if ( bStartedUnresolved && HasValidResolve() && bHasRecordedData )
+	{
+		// We can only do this after we resolve because we need to know the struct property's struct class, which also
+		// means we can't do it on Serialize()
+		UE::PropertyValue::Private::UpdateRecordedDataSizesIfNeeded( GetStructPropertyStruct(), ValueBytes );
+	}
+
 	return true;
 }
 
@@ -492,7 +611,8 @@ bool UPropertyValue::HasValidResolve() const
 			if (this == nullptr ||
 				!GUObjectArray.IsValid(this) ||
 				!Container->GetClass() ||
-				Container->IsPendingKillOrUnreachable() ||
+				!IsValidChecked(Container) ||
+				Container->IsUnreachable() ||
 				Container->HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed))
 			{
 				return false;

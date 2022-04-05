@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -49,9 +49,10 @@ namespace UnrealBuildTool
 		/// <param name="Receipt"></param>
 		/// <param name="SourceProjectDir"></param>
 		/// <param name="DestPackageRoot"></param>
-		public void AddWinMDReferencesFromReceipt(TargetReceipt Receipt, DirectoryReference SourceProjectDir, string DestPackageRoot)
+		/// <param name="SdkVersion"></param>
+		public void AddWinMDReferencesFromReceipt(TargetReceipt Receipt, DirectoryReference SourceProjectDir, string DestPackageRoot, string SdkVersion)
 		{
-			InnerDeploy.AddWinMDReferencesFromReceipt(Receipt, SourceProjectDir, DestPackageRoot);
+			InnerDeploy.AddWinMDReferencesFromReceipt(Receipt, SourceProjectDir, DestPackageRoot, SdkVersion);
 		}
 
 		/// <summary>
@@ -59,7 +60,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ToolName"></param>
 		/// <returns></returns>
-		public static FileReference GetWindowsSdkToolPath(string ToolName)
+		public static FileReference? GetWindowsSdkToolPath(string ToolName)
 		{
 			return HoloLensToolChain.GetWindowsSdkToolPath(ToolName);
 		}

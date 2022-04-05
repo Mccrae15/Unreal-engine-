@@ -10,6 +10,8 @@ using System.IO.Compression;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -53,7 +55,7 @@ namespace UnrealGameSync
 		public int ChangeNumber;
 		public WorkspaceUpdateOptions Options;
 		public string[] SyncFilter;
-		public Dictionary<string, string> ArchiveTypeToDepotPath = new Dictionary<string,string>();
+		public Dictionary<string, Tuple<IArchiveInfo, string>> ArchiveTypeToArchive = new Dictionary<string, Tuple<IArchiveInfo, string>>();
 		public Dictionary<string, bool> DeleteFiles = new Dictionary<string,bool>();
 		public Dictionary<string, bool> ClobberFiles = new Dictionary<string,bool>();
 		public Dictionary<Guid,ConfigObject> DefaultBuildSteps;
@@ -199,6 +201,7 @@ namespace UnrealGameSync
 			public Queue<List<string>> Batches { get; }
 
 			List<string> Commands;
+			List<string> DeleteCommands;
 			long Size;
 
 			public SyncBatchBuilder(int MaxCommandsPerList, long MaxSizePerList)
@@ -210,15 +213,28 @@ namespace UnrealGameSync
 
 			public void Add(string NewCommand, long NewSize)
 			{
-				if (Commands == null || Commands.Count >= MaxCommandsPerList || Size + NewSize >= MaxSizePerList)
+				if (NewSize == 0)
 				{
-					Commands = new List<string>();
-					Batches.Enqueue(Commands);
-					Size = 0;
-				}
+					if (DeleteCommands == null || DeleteCommands.Count >= MaxCommandsPerList)
+					{
+						DeleteCommands = new List<string>();
+						Batches.Enqueue(DeleteCommands);
+					}
 
-				Commands.Add(NewCommand);
-				Size += NewSize;
+					DeleteCommands.Add(NewCommand);
+				}
+				else
+				{
+					if (Commands == null || Commands.Count >= MaxCommandsPerList || Size + NewSize >= MaxSizePerList)
+					{
+						Commands = new List<string>();
+						Batches.Enqueue(Commands);
+						Size = 0;
+					}
+
+					Commands.Add(NewCommand);
+					Size += NewSize;
+				}
 			}
 		}
 
@@ -358,7 +374,7 @@ namespace UnrealGameSync
 				Log.WriteLine("OPERATION ABORTED");
 				if(WorkerThread != null)
 				{
-					WorkerThread.Abort();
+					WorkerThread.Interrupt();
 					WorkerThread.Join();
 					WorkerThread = null;
 				}
@@ -381,12 +397,17 @@ namespace UnrealGameSync
 					Log.WriteLine("{0}", StatusMessage);
 				}
 			}
-			catch(ThreadAbortException)
+			catch (ThreadAbortException)
 			{
 				StatusMessage = "Canceled.";
 				Log.WriteLine("Canceled.");
 			}
-			catch(Exception Ex)
+			catch (ThreadInterruptedException)
+			{
+				StatusMessage = "Canceled.";
+				Log.WriteLine("Canceled.");
+			}
+			catch (Exception Ex)
 			{
 				StatusMessage = "Failed with exception - " + Ex.ToString();
 				Log.WriteException(Ex, "Failed with exception");
@@ -599,6 +620,9 @@ namespace UnrealGameSync
 					List<string> SyncDepotPaths = new List<string>();
 					using(RecordCounter Counter = new RecordCounter(Progress, "Filtering files..."))
 					{
+						// Track the total new bytes that will be required on disk when syncing. Add an extra 100MB for padding.
+						long RequiredFreeSpace = 100 * 1024 * 1024;
+
 						foreach(string SyncPath in SyncPaths)
 						{
 							List<PerforceFileRecord> SyncRecords = new List<PerforceFileRecord>();
@@ -625,6 +649,7 @@ namespace UnrealGameSync
 								{
 									BatchBuilder.Add(String.Format("{0}@{1}", SyncRecord.DepotPath, PendingChangeNumber), SyncRecord.FileSize);
 									SyncDepotPaths.Add(SyncRecord.DepotPath);
+									RequiredFreeSpace += SyncRecord.FileSize;
 									continue;
 								}
 
@@ -642,10 +667,12 @@ namespace UnrealGameSync
 								}
 
 								// Make sure it's under the current directory. Not sure why this would happen, just being safe.
+								// This occurs for files returned from GetOpenFiles as SyncRecord.ClientPath is the client workspace path not local path.
 								if (!FullName.StartsWith(LocalRootPrefix, StringComparison.OrdinalIgnoreCase))
 								{
 									BatchBuilder.Add(String.Format("{0}@{1}", SyncRecord.DepotPath, PendingChangeNumber), SyncRecord.FileSize);
 									SyncDepotPaths.Add(SyncRecord.DepotPath);
+									RequiredFreeSpace += SyncRecord.FileSize;
 									continue;
 								}
 
@@ -661,12 +688,37 @@ namespace UnrealGameSync
 
 									SyncTree.IncludeFile(PerforceUtils.EscapePath(RelativePath), FileSize);
 									SyncDepotPaths.Add(SyncRecord.DepotPath);
+									RequiredFreeSpace += FileSize;
+									FileInfo LocalFileInfo = new FileInfo(FullName);
+
+									// If the file exists the required free space can be reduced as those bytes will be replaced.
+									if (LocalFileInfo.Exists)
+									{
+										RequiredFreeSpace -= LocalFileInfo.Length;
+									}
 								}
 								else
 								{
 									SyncTree.ExcludeFile(PerforceUtils.EscapePath(RelativePath));
 								}
 							}
+						}
+
+						try
+						{
+							DirectoryInfo LocalRootInfo = new DirectoryInfo(LocalRootPrefix);
+							DriveInfo Drive = new DriveInfo(LocalRootInfo.Root.FullName);
+
+							if (Drive.AvailableFreeSpace < RequiredFreeSpace)
+							{
+								Log.WriteLine("Syncing requires {0} which exceeds the {1} available free space on {2}.", EpicGames.Core.StringUtils.FormatBytesString(RequiredFreeSpace), EpicGames.Core.StringUtils.FormatBytesString(Drive.AvailableFreeSpace), Drive.Name);
+								StatusMessage = "Not enough available free space.";
+								return WorkspaceUpdateResult.FailedToSync;
+							}
+						}
+						catch (SystemException)
+						{
+							Log.WriteLine("Unable to check available free space for {0}.", LocalRootPrefix);
 						}
 					}
 					SyncTree.GetOptimizedSyncCommands(ClientRootPath, PendingChangeNumber, BatchBuilder);
@@ -914,39 +966,33 @@ namespace UnrealGameSync
 					Directory.CreateDirectory(ManifestDirectoryName);
 
 					// Sync and extract (or just remove) the given archives
-					foreach(KeyValuePair<string, string> ArchiveTypeAndDepotPath in Context.ArchiveTypeToDepotPath)
+					foreach(KeyValuePair<string, Tuple<IArchiveInfo, string>> ArchiveTypeAndArchive in Context.ArchiveTypeToArchive)
 					{
+						string ArchiveType = ArchiveTypeAndArchive.Key;
+
 						// Remove any existing binaries
-						string ManifestFileName = Path.Combine(ManifestDirectoryName, String.Format("{0}.zipmanifest", ArchiveTypeAndDepotPath.Key));
+						string ManifestFileName = Path.Combine(ManifestDirectoryName, String.Format("{0}.zipmanifest", ArchiveType));
 						if(File.Exists(ManifestFileName))
 						{
-							Log.WriteLine("Removing {0} binaries...", ArchiveTypeAndDepotPath.Key);
-							Progress.Set(String.Format("Removing {0} binaries...", ArchiveTypeAndDepotPath.Key), 0.0f);
+							Log.WriteLine("Removing {0} binaries...", ArchiveType);
+							Progress.Set(String.Format("Removing {0} binaries...", ArchiveType), 0.0f);
 							ArchiveUtils.RemoveExtractedFiles(LocalRootPath, ManifestFileName, Progress, Log);
 							File.Delete(ManifestFileName);
 							Log.WriteLine();
 						}
 
 						// If we have a new depot path, sync it down and extract it
-						if(ArchiveTypeAndDepotPath.Value != null)
+						if(ArchiveTypeAndArchive.Value != null)
 						{
-							string TempZipFileName = Path.GetTempFileName();
-							try
+							IArchiveInfo ArchiveInfo = ArchiveTypeAndArchive.Value.Item1;
+							string ArchiveKey = ArchiveTypeAndArchive.Value.Item2;
+
+							Log.WriteLine("Syncing {0} binaries...", ArchiveType.ToLowerInvariant());
+							Progress.Set(String.Format("Syncing {0} binaries...", ArchiveType.ToLowerInvariant()), 0.0f);
+							if (!ArchiveInfo.DownloadArchive(ArchiveKey, LocalRootPath, ManifestFileName, Log, Progress))
 							{
-								Log.WriteLine("Syncing {0} binaries...", ArchiveTypeAndDepotPath.Key.ToLowerInvariant());
-								Progress.Set(String.Format("Syncing {0} binaries...", ArchiveTypeAndDepotPath.Key.ToLowerInvariant()), 0.0f);
-								if(!Perforce.PrintToFile(ArchiveTypeAndDepotPath.Value, TempZipFileName, Log) || new FileInfo(TempZipFileName).Length == 0)
-								{
-									StatusMessage = String.Format("Couldn't read {0}", ArchiveTypeAndDepotPath.Value);
-									return WorkspaceUpdateResult.FailedToSync;
-								}
-								ArchiveUtils.ExtractFiles(TempZipFileName, LocalRootPath, ManifestFileName, Progress, Log);
-								Log.WriteLine();
-							}
-							finally
-							{
-								File.SetAttributes(TempZipFileName, FileAttributes.Normal);
-								File.Delete(TempZipFileName);
+								StatusMessage = String.Format("Couldn't read {0}", ArchiveKey);
+								return WorkspaceUpdateResult.FailedToSync;
 							}
 						}
 					}
@@ -1011,7 +1057,7 @@ namespace UnrealGameSync
 				BuildStep.MergeBuildStepObjects(BuildStepObjects, Context.UserBuildStepObjects);
 
 				// Construct build steps from them
-				List<BuildStep> BuildSteps = BuildStepObjects.Values.Select(x => new BuildStep(x)).OrderBy(x => x.OrderIndex).ToList();
+				List<BuildStep> BuildSteps = BuildStepObjects.Values.Select(x => new BuildStep(x)).OrderBy(x => (x.OrderIndex == -1) ? 10000 : x.OrderIndex).ToList();
 				if(Context.CustomBuildSteps != null && Context.CustomBuildSteps.Count > 0)
 				{
 					BuildSteps.RemoveAll(x => !Context.CustomBuildSteps.Contains(x.UniqueId));
@@ -1339,7 +1385,7 @@ namespace UnrealGameSync
 			{
 				foreach (Thread ChildThread in ChildThreads)
 				{
-					ChildThread.Abort();
+					ChildThread.Interrupt();
 				}
 				foreach (Thread ChildThread in ChildThreads)
 				{
@@ -1383,7 +1429,16 @@ namespace UnrealGameSync
 
 				// Sync the files
 				string StatusMessage;
-				WorkspaceUpdateResult Result = StaticSyncFileRevisions(Perforce, PendingChangeNumber, Context, SyncCommands, Record => SyncOutput(Record, ThreadLog), ThreadLog, out StatusMessage);
+				WorkspaceUpdateResult Result;
+				try
+				{
+					Result = StaticSyncFileRevisions(Perforce, PendingChangeNumber, Context, SyncCommands, Record => SyncOutput(Record, ThreadLog), ThreadLog, out StatusMessage);
+				}
+				catch (ThreadInterruptedException)
+				{
+					StatusMessage = "Sync cancelled";
+					Result = WorkspaceUpdateResult.Canceled;
+				}
 
 				// If it failed, try to set it on the state if nothing else has failed first
 				if (Result != WorkspaceUpdateResult.Success)
@@ -1597,13 +1652,13 @@ namespace UnrealGameSync
 
 		string UpdateBuildVersion(string Text, int Changelist, int CodeChangelist, string BranchOrStreamName, bool bIsLicenseeVersion)
 		{
-			Dictionary<string, object> Object = Json.Deserialize(Text);
+			Dictionary<string, object> Object = JsonSerializer.Deserialize<Dictionary<string, object>>(Text, Program.DefaultJsonSerializerOptions);
 
 			object PrevCompatibleChangelistObj;
-			int PrevCompatibleChangelist = Object.TryGetValue("CompatibleChangelist", out PrevCompatibleChangelistObj) ? (int)Convert.ChangeType(PrevCompatibleChangelistObj, typeof(int)) : 0;
+			int PrevCompatibleChangelist = Object.TryGetValue("CompatibleChangelist", out PrevCompatibleChangelistObj) ? (int)Convert.ChangeType(PrevCompatibleChangelistObj.ToString(), typeof(int)) : 0;
 
 			object PrevIsLicenseeVersionObj;
-			bool PrevIsLicenseeVersion = Object.TryGetValue("IsLicenseeVersion", out PrevIsLicenseeVersionObj)? ((int)Convert.ChangeType(PrevIsLicenseeVersionObj, typeof(int)) != 0) : false;
+			bool PrevIsLicenseeVersion = Object.TryGetValue("IsLicenseeVersion", out PrevIsLicenseeVersionObj)? ((int)Convert.ChangeType(PrevIsLicenseeVersionObj.ToString(), typeof(int)) != 0) : false;
 
 			Object["Changelist"] = Changelist;
 			if(PrevCompatibleChangelist == 0 || PrevIsLicenseeVersion != bIsLicenseeVersion)
@@ -1615,7 +1670,12 @@ namespace UnrealGameSync
 			Object["IsPromotedBuild"] = 0;
 			Object["IsLicenseeVersion"] = bIsLicenseeVersion ? 1 : 0;
 
-			return Json.Serialize(Object, JsonSerializeOptions.PrettyPrint);
+			return JsonSerializer.Serialize(Object, new JsonSerializerOptions
+			{
+				WriteIndented = true, 
+				// do not escape +
+				Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+			});
 		}
 
 		bool WriteVersionFile(string LocalPath, string DepotPath, string NewText)

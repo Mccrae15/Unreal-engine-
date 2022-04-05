@@ -17,6 +17,7 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 
 class FAssetEditorModeManager;
+class FEditorModeTools;
 class FMenuBuilder;
 struct FToolMenuContext;
 struct FToolMenuSection;
@@ -95,12 +96,13 @@ class UNREALED_API FAssetEditorToolkit
 
 public:
 
+
 	/** Default constructor */
 	FAssetEditorToolkit();
 
 	/**
-	 * Initializes this asset editor.  Called immediately after construction.  If you override this, remember to
-	 * call the base class implementation
+	 * Initializes this asset editor.  Called immediately after construction.
+	 * Override PostInitAssetEditor if you need to do additional initialization
 	 *
 	 * @param	Mode					Asset editing mode for this editor (standalone or world-centric)
 	 * @param	InitToolkitHost			When Mode is WorldCentric, this is the level editor instance to spawn this editor within
@@ -112,9 +114,12 @@ public:
 	 * @param	bInIsToolbarFocusable	Whether the buttons on the default toolbar can receive keyboard focus
 	 * @param	bUseSmallToolbarIcons	Whether the buttons on the default toolbar use the small icons
 	 */
-	virtual void InitAssetEditor(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, const FName AppIdentifier, const TSharedRef<FTabManager::FLayout>& StandaloneDefaultLayout, const bool bCreateDefaultStandaloneMenu, const bool bCreateDefaultToolbar, const TArray<UObject*>& ObjectsToEdit, const bool bInIsToolbarFocusable = false, const bool bInUseSmallToolbarIcons = false);
-	virtual void InitAssetEditor(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, const FName AppIdentifier, const TSharedRef<FTabManager::FLayout>& StandaloneDefaultLayout, const bool bCreateDefaultStandaloneMenu, const bool bCreateDefaultToolbar, UObject* ObjectToEdit, const bool bInIsToolbarFocusable = false, const bool bInUseSmallToolbarIcons = false);
+	void InitAssetEditor(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, const FName AppIdentifier, const TSharedRef<FTabManager::FLayout>& StandaloneDefaultLayout, const bool bCreateDefaultStandaloneMenu, const bool bCreateDefaultToolbar, const TArray<UObject*>& ObjectsToEdit, const bool bInIsToolbarFocusable = false, const bool bInUseSmallToolbarIcons = false);
+	void InitAssetEditor(const EToolkitMode::Type Mode, const TSharedPtr<IToolkitHost>& InitToolkitHost, const FName AppIdentifier, const TSharedRef<FTabManager::FLayout>& StandaloneDefaultLayout, const bool bCreateDefaultStandaloneMenu, const bool bCreateDefaultToolbar, UObject* ObjectToEdit, const bool bInIsToolbarFocusable = false, const bool bInUseSmallToolbarIcons = false);
 
+	FAssetEditorToolkit(const FAssetEditorToolkit&) = delete;
+	FAssetEditorToolkit& operator=(const FAssetEditorToolkit&) = delete;
+	
 	/** Virtual destructor, so that we can clean up our app when destroyed */
 	virtual ~FAssetEditorToolkit();
 
@@ -129,10 +134,7 @@ public:
 	virtual FText GetTabSuffix() const override;
 	virtual FText GetToolkitToolTipText() const override;
 	virtual FString GetWorldCentricTabPrefix() const override = 0;	// Must implement in derived class!
-	virtual class FEdMode* GetEditorMode() const override;
-	virtual class UEdMode* GetScriptableEditorMode() const override;
-	virtual FText GetEditorModeDisplayName() const override;
-	virtual FSlateIcon GetEditorModeIcon() const override;
+	virtual FEditorModeTools& GetEditorModeManager() const final;
 
 	/** IAssetEditorInstance interface */
 	virtual FName GetEditorName() const override;
@@ -140,7 +142,6 @@ public:
 	virtual bool CloseWindow() override;
 	virtual bool IsPrimaryEditor() const override { return true; };
 	virtual void InvokeTab(const FTabId& TabId) override;
-	virtual FName GetToolbarTabId() const override { return ToolbarTabId; }
 	virtual TSharedPtr<FTabManager> GetAssociatedTabManager() override;
 	virtual double GetLastActivationTime() override;
 	virtual void RemoveEditingAsset(UObject* Asset) override;
@@ -176,6 +177,11 @@ public:
 	 */
 	static void SetPreviousWorldCentricToolkitHostForNewAssetEditor(TSharedRef< IToolkitHost > ToolkitHost);
 
+	/**
+	 * Registers a drawer for the asset editor status bar
+	 */
+	void RegisterDrawer(struct FStatusBarDrawer&& Drawer, int32 SlotIndex = INDEX_NONE);
+
 	/** Applies the passed in layout (or the saved user-modified version if available).  Must be called after InitAssetEditor. */
 	void RestoreFromLayout(const TSharedRef<FTabManager::FLayout>& NewLayout);
 
@@ -210,6 +216,14 @@ public:
 	// Called when another toolkit (such as a ed mode toolkit) is no longer being hosted in this asset editor toolkit
 	virtual void OnToolkitHostingFinished(const TSharedRef<IToolkit>& Toolkit) {}
 
+	/* Called when a toolkit requests an overlay widget to be added to the viewport. Not relevant in the absence
+	 * of a viewport.
+	 */
+	virtual void AddViewportOverlayWidget(TSharedRef<SWidget> InViewportOverlayWidget) {}
+
+	/** Called when a toolkit requests the overlay widget to be removed. */
+	virtual void RemoveViewportOverlayWidget(TSharedRef<SWidget> InViewportOverlayWidget) {}
+	
 	/** Adds or removes extenders to the default menu or the toolbar menu this asset editor */
 	void AddMenuExtender(TSharedPtr<FExtender> Extender);
 	void RemoveMenuExtender(TSharedPtr<FExtender> Extender);
@@ -249,14 +263,24 @@ public:
 	static FText GetToolTipTextForObject(const UObject* InObject);
 
 	/** Get the asset editor mode manager we are using */
+	UE_DEPRECATED(4.26, "Use GetEditorModeManager instead.")
 	class FAssetEditorModeManager* GetAssetEditorModeManager() const;
 
 	/** Set the asset editor mode manager we are using */
+	UE_DEPRECATED(4.26, "Override CreateEditorModeManager on the toolkit class instead.")
 	void SetAssetEditorModeManager(class FAssetEditorModeManager* InModeManager);
 
 	virtual void AddGraphEditorPinActionsToContextMenu(FToolMenuSection& InSection) const {};
 
 protected:
+	/**
+	 * Perform any initialization that should happen after the basic toolkit needs are created for the asset editor.
+	 * For example, if you would like to activate a mode that is not the default from a mode manager, do that here.
+	 */
+	virtual void PostInitAssetEditor() {}
+
+	/**	Returns true if this toolkit has any objects being edited */
+	bool HasEditingObject() const { return !EditingObjects.IsEmpty(); }
 
 	/**	Returns the single object currently being edited. Asserts if currently editing no object or multiple objects */
 	UObject* GetEditingObject() const;
@@ -334,10 +358,9 @@ protected:
 	/** @return the color to use for the tab color */
 	virtual FLinearColor GetDefaultTabColor() const;
 
-private:
-	/** Spawns the toolbar tab */
-	TSharedRef<SDockTab> SpawnTab_Toolbar(const FSpawnTabArgs& Args);
+	virtual void CreateEditorModeManager() override;
 
+private:
 	// Callback for persisting the Asset Editor's layout.
 	void HandleTabManagerPersistLayout( const TSharedRef<FTabManager::FLayout>& LayoutToSave )
 	{
@@ -379,7 +402,9 @@ protected:
 	/** Whether only dirty assets should be prompted about on save - otherwise all edited assets will be prompted to the user for save/check-out */
 	bool bCheckDirtyOnAssetSave;
 
-	/** The asset editor mode manager */
+	/** The editor mode manager */
+	TSharedPtr<FEditorModeTools> EditorModeManager;
+	UE_DEPRECATED(4.26, "Use EditorModeManager instead.")
 	FAssetEditorModeManager* AssetEditorModeManager;
 
 	/** Array of layout extenders */
@@ -389,6 +414,7 @@ protected:
 	TSharedPtr<FWorkspaceItem> AssetEditorTabsCategory;
 
 private:
+	static const FName DefaultAssetEditorToolBarName;
 	/** The toolkit standalone host; may be nullptr */
 	TWeakPtr<SStandaloneAssetEditorToolkitHost> StandaloneHost;
 
@@ -400,7 +426,7 @@ private:
 	static TSharedPtr<FExtensibilityManager> SharedToolBarExtensibilityManager;
 
 	/** The object we're currently editing */
-	// @todo toolkit minor: Currently we don't need to serialize this object reference because the FAssetEditorManager is kept in sync (and will always serialize it.)
+	// @todo toolkit minor: Currently we don't need to serialize this object reference because the AssetEditorSubsystem is kept in sync (and will always serialize it.)
 	TArray<UObject*> EditingObjects;
 	
 	/** Asset Editor Default Toolbar */
@@ -420,7 +446,4 @@ private:
 
 	/** Whether the buttons on the default toolbar use small icons */
 	bool bIsToolbarUsingSmallIcons;
-
-	/**	The tab ids for all the tabs used */
-	static const FName ToolbarTabId;
 };

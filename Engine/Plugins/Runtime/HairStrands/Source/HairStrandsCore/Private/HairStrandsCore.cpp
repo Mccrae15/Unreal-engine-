@@ -13,17 +13,15 @@ IMPLEMENT_MODULE(FHairStrandsCore, HairStrandsCore);
 DEFINE_LOG_CATEGORY(LogHairStrands);
 
 void ProcessHairStrandsBookmark(
-	FRDGBuilder& GraphBuilder,
+	FRDGBuilder* GraphBuilder,
 	EHairStrandsBookmark Bookmark,
 	FHairStrandsBookmarkParameters& Parameters);
-
-void ProcessHairStrandsParameters(FHairStrandsBookmarkParameters& Parameters);
 
 FHairAssetHelper HairStrandsCore_AssetHelper;
 
 void FHairStrandsCore::StartupModule()
 {
-	RegisterBookmarkFunction(ProcessHairStrandsBookmark, ProcessHairStrandsParameters);
+	RegisterBookmarkFunction(ProcessHairStrandsBookmark);
 
 	// Maps virtual shader source directory /Plugin/FX/Niagara to the plugin's actual Shaders directory.
 	FString PluginShaderDir = FPaths::Combine(IPluginManager::Get().FindPlugin(TEXT("HairStrands"))->GetBaseDir(), TEXT("Shaders"));
@@ -225,7 +223,7 @@ UGroomBindingAsset* FHairStrandsCore::CreateGroomBindingAsset(EGroomBindingMeshT
 			Out->SourceGeometryCache = Cast<UGeometryCache>(Source);
 			Out->TargetGeometryCache = Cast<UGeometryCache>(Target);
 		}
-		Out->HairGroupDatas.Reserve(GroomAsset->HairGroupsData.Num());
+		Out->HairGroupBulkDatas.Reserve(GroomAsset->HairGroupsData.Num());
 		Out->NumInterpolationPoints = NumInterpolationPoints;
 		Out->MatchingSection = MatchingSection;
 		Out->MarkPackageDirty();

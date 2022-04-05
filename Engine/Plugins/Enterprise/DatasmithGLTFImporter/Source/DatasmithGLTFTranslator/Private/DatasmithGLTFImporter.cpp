@@ -61,6 +61,7 @@ FDatasmithGLTFImporter::FDatasmithGLTFImporter(TSharedRef<IDatasmithScene>& OutS
 	{
 		bGenerateLightmapUVs = InOptions->bGenerateLightmapUVs;
 		ImportScale = InOptions->ImportScale;
+		bAnimationFrameRateFromFile = InOptions->bAnimationFrameRateFromFile;
 	}
 }
 
@@ -72,6 +73,7 @@ void FDatasmithGLTFImporter::SetImportOptions(UDatasmithGLTFImportOptions* InOpt
 	{
 		bGenerateLightmapUVs = InOptions->bGenerateLightmapUVs;
 		ImportScale = InOptions->ImportScale;
+		bAnimationFrameRateFromFile = InOptions->bAnimationFrameRateFromFile;
 	}
 }
 
@@ -98,7 +100,13 @@ bool FDatasmithGLTFImporter::OpenFile(const FString& InFileName)
 
 	// check extensions supported
 	static const TArray<GLTF::EExtension> SupportedExtensions = {GLTF::EExtension::KHR_MaterialsPbrSpecularGlossiness,
-	                                                             GLTF::EExtension::KHR_MaterialsUnlit, GLTF::EExtension::KHR_LightsPunctual};
+																 GLTF::EExtension::KHR_MaterialsUnlit,
+																 GLTF::EExtension::KHR_LightsPunctual,
+																 GLTF::EExtension::KHR_MaterialsClearCoat,
+																 GLTF::EExtension::KHR_MaterialsTransmission,
+																 GLTF::EExtension::KHR_MaterialsSheen,
+																 GLTF::EExtension::KHR_MaterialsVariants};
+
 	for (GLTF::EExtension Extension : GLTFAsset->ExtensionsUsed)
 	{
 		if (SupportedExtensions.Find(Extension) == INDEX_NONE)
@@ -183,7 +191,7 @@ TSharedPtr<IDatasmithActorElement> FDatasmithGLTFImporter::CreateLightActor(int3
 	// https://github.com/KhronosGroup/glTF/blob/master/extensions/2.0/Khronos/KHR_lights_punctual/README.md
 	// "Brightness of light in.The units that this is defined in depend on the type of light.point and spot lights use luminous intensity in candela(lm / sr) while directional lights use illuminance in lux(lm / m2)"
 	LightElement->SetIntensity(Light.Intensity);
-	LightElement->SetColor(Light.Color);
+	LightElement->SetColor(FLinearColor(Light.Color));
 
 	return LightElement;
 }
@@ -239,7 +247,59 @@ TSharedPtr<IDatasmithMeshActorElement> FDatasmithGLTFImporter::CreateStaticMeshA
 
 	MeshActorElement = FDatasmithSceneFactory::CreateMeshActor(TEXT("TempName"));
 	MeshActorElement->SetStaticMeshPathName(*FDatasmithUtils::SanitizeObjectName(GLTFAsset->Meshes[MeshIndex].Name));
+
 	return MeshActorElement;
+}
+
+void FDatasmithGLTFImporter::CreateMaterialVariants(TSharedPtr<IDatasmithMeshActorElement> MeshActorElement, int32 MeshIndex)
+{
+	for (const GLTF::FPrimitive& Primitive : GLTFAsset->Meshes[MeshIndex].Primitives)
+	{
+		for (const GLTF::FVariantMapping& VariantMapping : Primitive.VariantMappings)
+		{
+			for (int32 VariantIndex : VariantMapping.VariantIndices)
+			{
+				if (!VariantSets.IsValid())
+				{
+					VariantSets = FDatasmithSceneFactory::CreateLevelVariantSets(TEXT("LevelVariantSets"));
+					VariantSet = FDatasmithSceneFactory::CreateVariantSet(TEXT("VariantSet"));
+					VariantSets->AddVariantSet(VariantSet.ToSharedRef());
+				}
+
+				ensure(GLTFAsset->Variants.IsValidIndex(VariantIndex));
+				const FString& VariantName = GLTFAsset->Variants[VariantIndex];
+
+				TSharedPtr<IDatasmithVariantElement> Variant;
+
+				if (!VariantNameToVariantElement.Contains(VariantName))
+				{
+					Variant = FDatasmithSceneFactory::CreateVariant(*VariantName);
+					VariantNameToVariantElement.Add(VariantName, Variant.ToSharedRef());
+					VariantSet->AddVariant(Variant.ToSharedRef());
+				}
+				else
+				{
+					Variant = VariantNameToVariantElement[VariantName];
+				}
+
+				const TArray<GLTF::FMaterialElement*>& Materials = MaterialFactory->GetMaterials();
+
+				FDatasmithGLTFMaterialElement* Material = static_cast<FDatasmithGLTFMaterialElement*>(Materials[VariantMapping.MaterialIndex]);
+				check(Material);
+
+				TSharedRef<IDatasmithObjectPropertyCaptureElement> PropCapture = FDatasmithSceneFactory::CreateObjectPropertyCapture();
+				PropCapture->SetCategory(EDatasmithPropertyCategory::Material);
+				PropCapture->SetRecordedObject(Material->GetMaterial());
+
+				// Assign mesh material to variant
+				TSharedRef<IDatasmithActorBindingElement> Binding = FDatasmithSceneFactory::CreateActorBinding();
+				Binding->SetActor(MeshActorElement);
+				Binding->AddPropertyCapture(PropCapture);
+			
+				Variant->AddActorBinding(Binding);
+			}
+		}
+	}
 }
 
 TSharedPtr<IDatasmithActorElement> FDatasmithGLTFImporter::ConvertNode(int32 NodeIndex)
@@ -261,6 +321,8 @@ TSharedPtr<IDatasmithActorElement> FDatasmithGLTFImporter::ConvertNode(int32 Nod
 
 				ActorElement = MeshActorElement;
 				ActorElement->SetName(*Node.Name);
+
+				CreateMaterialVariants(MeshActorElement, Node.MeshIndex);
 			}
 			break;
 		case GLTF::FNode::EType::Camera:
@@ -336,7 +398,12 @@ bool FDatasmithGLTFImporter::SendSceneToDatasmith()
 	}
 
 	AnimationImporter->CurrentScene = &DatasmithScene.Get();
-	AnimationImporter->CreateAnimations(*GLTFAsset);
+	AnimationImporter->CreateAnimations(*GLTFAsset, bAnimationFrameRateFromFile);
+
+	if (VariantSets.IsValid())
+	{
+		DatasmithScene->AddLevelVariantSets(VariantSets);
+	}
 
 	return true;
 }

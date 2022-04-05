@@ -5,12 +5,12 @@
 #include "Trace/Analyzer.h"
 
 class FAnimationProvider;
-namespace Trace { class IAnalysisSession; }
+namespace TraceServices { class IAnalysisSession; }
 
-class FAnimationAnalyzer : public Trace::IAnalyzer
+class FAnimationAnalyzer : public UE::Trace::IAnalyzer
 {
 public:
-	FAnimationAnalyzer(Trace::IAnalysisSession& InSession, FAnimationProvider& InAnimationProvider);
+	FAnimationAnalyzer(TraceServices::IAnalysisSession& InSession, FAnimationProvider& InAnimationProvider);
 
 	virtual void OnAnalysisBegin(const FOnAnalysisContext& Context) override;
 	virtual void OnAnalysisEnd() override {}
@@ -27,6 +27,7 @@ private:
 		RouteId_SkeletalMeshFrame,
 		RouteId_AnimGraph,
 		RouteId_AnimNodeStart,
+		RouteId_AnimNodeAttribute,
 		RouteId_AnimNodeValueBool,
 		RouteId_AnimNodeValueInt,
 		RouteId_AnimNodeValueFloat,
@@ -42,8 +43,9 @@ private:
 		RouteId_Notify,
 		RouteId_SyncMarker,
 		RouteId_Montage,
+		RouteId_Sync,
 	};
 
-	Trace::IAnalysisSession& Session;
+	TraceServices::IAnalysisSession& Session;
 	FAnimationProvider& AnimationProvider;
 };

@@ -18,6 +18,7 @@
 #include "BlueprintActionDatabaseRegistrar.h"
 #include "DiffResults.h"
 #include "MathExpressionHandler.h"
+#include "Misc/DefaultValueHelper.h"
 #include "BlueprintNodeSpawner.h"
 
 #define LOCTEXT_NAMESPACE "K2Node"
@@ -78,7 +79,8 @@ static bool PromoteIntToFloat(FEdGraphPinType& InOutType)
 {
 	if (InOutType.PinCategory == UEdGraphSchema_K2::PC_Int)
 	{
-		InOutType.PinCategory = UEdGraphSchema_K2::PC_Float;
+		InOutType.PinCategory = UEdGraphSchema_K2::PC_Real;
+		InOutType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
 		InOutType.PinSubCategoryObject = nullptr;
 		return true;
 	}
@@ -547,7 +549,7 @@ public:
 class FFunctionExpression : public IFExpressionNode
 {
 public:
-	FFunctionExpression(FString const& InFuncName, TSharedRef<FExpressionList> InParamList)
+	FFunctionExpression(const FString& InFuncName, TSharedRef<FExpressionList> InParamList)
 		: FuncName(InFuncName)
 		, ParamList(InParamList)
 	{
@@ -574,13 +576,13 @@ public:
 	/** For debug purposes, constructs a textual representation of this expression */
 	virtual FString ToString() const override
 	{
-		FString const ParamsString = ParamList->ToString();
+		const FString ParamsString = ParamList->ToString();
 		return FString::Printf(TEXT("(%s%s)"), *FuncName, *ParamsString);
 	}
 
 	virtual FString ToDisplayString(UBlueprint* InBlueprint) const
 	{
-		FString const ParamsString = ParamList->ToDisplayString(InBlueprint);
+		const FString ParamsString = ParamList->ToDisplayString(InBlueprint);
 		return FString::Printf(TEXT("(%s%s)"), *FuncName, *ParamsString);
 	}
 public:
@@ -706,7 +708,7 @@ public:
 	 * Checks to see if there are any functions associated with the specified 
 	 * operator. 
 	 */
-	bool Contains(FString const& Operator) const
+	bool Contains(const FString& Operator) const
 	{
 		return LookupTable.Contains(Operator);
 	}	
@@ -721,7 +723,7 @@ public:
 	 * @param  InputTypeList	A list of parameter types you want to feed the function.
 	 * @return A pointer to the matching function (if one was found), otherwise nullptr.
 	 */
-	UFunction* FindMatchingFunction(FString const& Operator, TArray<FEdGraphPinType> const& InputTypeList) const
+	UFunction* FindMatchingFunction(const FString& Operator, const TArray<FEdGraphPinType>& InputTypeList) const
 	{
 		// make a local copy of the desired input types so that we can promote 
 		// those types as needed
@@ -735,7 +737,7 @@ public:
 		// float), and see if we can lookup a function with those types
 		for (int32 promoterIndex = 0; (promoterIndex < OrderedTypePromoters.Num()) && (MatchingFunc == NULL); ++promoterIndex)
 		{
-			FTypePromoter const& PromotionOperator = OrderedTypePromoters[promoterIndex];
+			const FTypePromoter& PromotionOperator = OrderedTypePromoters[promoterIndex];
 
 			// Apply the promotion operator to any values that match
 			bool bMadeChanges = false;
@@ -765,7 +767,7 @@ public:
 	 * Flags the specified function as one associated with the supplied 
 	 * operator.
 	 */
-	void Add(FString const& Operator, UFunction* OperatorFunc)
+	void Add(const FString& Operator, UFunction* OperatorFunc)
 	{
 		LookupTable.FindOrAdd(Operator).Add(OperatorFunc);
 	}
@@ -797,12 +799,12 @@ public:
 					}
 					
 					FString FunctionName = TestFunction->GetName();
-					TArray<FString> const& OperatorAliases = GetOperatorAliases(FunctionName);
+					const TArray<FString>& OperatorAliases = GetOperatorAliases(FunctionName);
 					
 					// if there are aliases, use those instead of the function's standard name
 					if (OperatorAliases.Num() > 0)
 					{
-						for (FString const& Alias : OperatorAliases)
+						for (const FString& Alias : OperatorAliases)
 						{
 							Add(Alias, TestFunction);
 						}
@@ -817,6 +819,10 @@ public:
 						{
 							FunctionName = TestFunction->GetMetaData(FBlueprintMetadata::MD_DisplayName);
 						}
+
+						// Remove spaces from display name as the parser cannot handle it
+						FunctionName = FDefaultValueHelper::RemoveWhitespaces(FunctionName);
+
 						Add(FunctionName, TestFunction);
 					}
 				}
@@ -842,14 +848,14 @@ private:
 	 * @param  InputTypeList	A list of parameter types you want to feed the function.
 	 * @return A pointer to the matching function (if one was found), otherwise nullptr.
 	 */
-	UFunction* FindFunctionInternal(FString const& Operator, TArray<FEdGraphPinType> const& InputTypeList) const
+	UFunction* FindFunctionInternal(const FString& Operator, const TArray<FEdGraphPinType>& InputTypeList) const
 	{
 		UFunction* MatchedFunction = nullptr;
 
-		FFunctionsList const* OperatorFunctions = LookupTable.Find(Operator);
+		const FFunctionsList* OperatorFunctions = LookupTable.Find(Operator);
 		if (OperatorFunctions != nullptr)
 		{
-			UEdGraphSchema_K2 const* K2Schema = GetDefault<UEdGraphSchema_K2>();
+			const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 			for (UFunction* TestFunction : *OperatorFunctions)
 			{
 				int32 ArgumentIndex = 0;
@@ -863,7 +869,7 @@ private:
 							FEdGraphPinType ParamType;
 							if (K2Schema->ConvertPropertyToPinType(Param, /*out*/ParamType))
 							{
-								FEdGraphPinType const& TypeToMatch = InputTypeList[ArgumentIndex];
+								const FEdGraphPinType& TypeToMatch = InputTypeList[ArgumentIndex];
 								if (!K2Schema->ArePinTypesCompatible(TypeToMatch, ParamType))
 								{
 									break; // type mismatch
@@ -904,7 +910,7 @@ private:
 	 * @param  FunctionName		The raw name of the function you're looking to replace (not the friendly name)
 	 * @return A reference to the array of aliases for the specified function (an empty array if none were found).
 	 */
-	static TArray<FString> const& GetOperatorAliases(FString const& FunctionName)
+	static const TArray<FString>& GetOperatorAliases(const FString& FunctionName)
 	{
 #define FUNC_ALIASES_BEGIN(FuncName) \
 		if (FunctionName == FString(TEXT(FuncName))) \
@@ -1091,7 +1097,7 @@ public:
 	 * 
 	 * @return The pin type of this fragment's output.
 	 */
-	FEdGraphPinType const& GetOutputType() const
+	const FEdGraphPinType& GetOutputType() const
 	{
 		return FragmentType;
 	}
@@ -1133,7 +1139,7 @@ private:
 class FCodeGenFragment_VariableGet : public FCodeGenFragment
 {
 public:
-	FCodeGenFragment_VariableGet(UK2Node_VariableGet* InNode, FEdGraphPinType const& InType)
+	FCodeGenFragment_VariableGet(UK2Node_VariableGet* InNode, const FEdGraphPinType& InType)
 		: FCodeGenFragment(InType)
 		, GeneratedNode(InNode)
 	{
@@ -1172,7 +1178,7 @@ private:
 class FCodeGenFragment_FuntionCall : public FCodeGenFragment
 {
 public:
-	FCodeGenFragment_FuntionCall(UK2Node_CallFunction* InNode, FEdGraphPinType const& InType)
+	FCodeGenFragment_FuntionCall(UK2Node_CallFunction* InNode, const FEdGraphPinType& InType)
 		: FCodeGenFragment(InType)
 		, GeneratedNode(InNode)
 	{
@@ -1210,7 +1216,7 @@ private:
 class FCodeGenFragment_Literal : public FCodeGenFragment
 {
 public:
-	FCodeGenFragment_Literal(FString const& LiteralVal, FEdGraphPinType const& ResultType) 
+	FCodeGenFragment_Literal(const FString& LiteralVal, const FEdGraphPinType& ResultType)
 		: FCodeGenFragment(ResultType) 
 		, DefaultValue(LiteralVal)
 	{}
@@ -1220,7 +1226,7 @@ public:
 	/// Begin FCodeGenFragment Interface
 	virtual bool ConnectToInput(UEdGraphPin* InputPin, FCompilerResultsLog& MessageLog) override
 	{
-		UEdGraphSchema_K2 const* K2Schema = Cast<UEdGraphSchema_K2>(InputPin->GetSchema());
+		const UEdGraphSchema_K2* K2Schema = Cast<UEdGraphSchema_K2>(InputPin->GetSchema());
 		bool bSuccess = true;//K2Schema->ArePinTypesCompatible(GetOutputType(), InputPin->PinType);
 		if (bSuccess)
 		{
@@ -1318,7 +1324,7 @@ public:
 		if (RootFragment.IsValid())
 		{
 			// connect the final node of the expression with the math-node's output
-			UEdGraphPin* ReturnPin = ExitNode->CreateUserDefinedPin(TEXT("ReturnValue"), RootFragment->GetOutputType(), EGPD_Input);
+			UEdGraphPin* ReturnPin = ExitNode->CreateUserDefinedPin(UEdGraphSchema_K2::PN_ReturnValue, RootFragment->GetOutputType(), EGPD_Input);
 			if (!RootFragment->ConnectToInput(ReturnPin, MessageLog))
 			{
 				MessageLog.Error(*LOCTEXT("ResultConnectError", "Failed to connect the generated nodes with expression's result pin: '@@'").ToString(),
@@ -1327,8 +1333,10 @@ public:
 		}
 		else
 		{
-			MessageLog.Error(*LOCTEXT("NoGraphGenerated", "No root node generated from the expression: '@@'").ToString(),
-				CompilingNode);
+			if (MessageLog.NumErrors == 0)
+			{
+				MessageLog.Error(*LOCTEXT("NoGraphGenerated", "No root node generated from the expression: '@@'").ToString(), CompilingNode);
+			}
 		}
 
 		// position the entry and exit nodes somewhere sane
@@ -1373,7 +1381,7 @@ public:
 
 		if (ExpressionNode.Token.TokenType == FBasicToken::TOKEN_Identifier || ExpressionNode.Token.TokenType == FBasicToken::TOKEN_Guid)
 		{
-			FString const VariableIdentifier = ExpressionNode.Token.Identifier;
+			const FString VariableIdentifier = ExpressionNode.Token.Identifier;
 			// first we try to match up variables with existing variable properties on the blueprint
 
 			FMemberReference VariableReference;
@@ -1627,7 +1635,7 @@ private:
 	TSharedPtr<FCodeGenFragment_InputPin> GenerateInputPinFragment(const FName VariableIdentifier)
 	{
 		TSharedPtr<FCodeGenFragment_InputPin> InputPinFragment;
-		UEdGraphSchema_K2 const* K2Schema = GetDefault<UEdGraphSchema_K2>();
+		const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 		
 		UK2Node_Tunnel* EntryNode = CompilingNode->GetEntryNode();
 		// if a pin under this name already exists, use that
@@ -1641,7 +1649,8 @@ private:
 			// Create an input pin (using the default guessed type)
 			FEdGraphPinType DefaultType;
 			// currently, generated expressions ALWAYS take a float (it is the most versatile type)
-			DefaultType.PinCategory = UEdGraphSchema_K2::PC_Float;
+			DefaultType.PinCategory = UEdGraphSchema_K2::PC_Real;
+			DefaultType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
 			
 			UEdGraphPin* NewInputPin = EntryNode->CreateUserDefinedPin(VariableIdentifier, DefaultType, EGPD_Output);
 			InputPinFragment = MakeShareable(new FCodeGenFragment_InputPin(NewInputPin));
@@ -1671,7 +1680,7 @@ private:
 	{
 		check(ExpressionContext.Token.TokenType == FBasicToken::TOKEN_Identifier || ExpressionContext.Token.TokenType == FBasicToken::TOKEN_Guid);
 		check(VariableProperty != nullptr);
-		UEdGraphSchema_K2 const* K2Schema = GetDefault<UEdGraphSchema_K2>();
+		const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 		
 		TSharedPtr<FCodeGenFragment_VariableGet> VariableGetFragment;
 		
@@ -1713,7 +1722,7 @@ private:
 	 * @param  ExpressionNode	The expression node that we're generating this fragment for.
      * @return A new literal fragment.
      */
-	TSharedPtr<FCodeGenFragment_Literal> GenerateLiteralFragment(FBasicToken const& Token, FCompilerResultsLog& MessageLog)
+	TSharedPtr<FCodeGenFragment_Literal> GenerateLiteralFragment(const FBasicToken& Token, FCompilerResultsLog& MessageLog)
 	{
 		check(Token.TokenType == FBasicToken::TOKEN_Const);
 		
@@ -1724,7 +1733,8 @@ private:
 				LiteralType.PinCategory = UEdGraphSchema_K2::PC_Boolean;
 				break;
 			case CPT_Float:
-				LiteralType.PinCategory = UEdGraphSchema_K2::PC_Float;
+				LiteralType.PinCategory = UEdGraphSchema_K2::PC_Real;
+				LiteralType.PinSubCategory = UEdGraphSchema_K2::PC_Double;
 				break;
 			case CPT_Int:
 				LiteralType.PinCategory = UEdGraphSchema_K2::PC_Int;
@@ -1797,7 +1807,7 @@ private:
 			}
 			else
 			{
-				UEdGraphSchema_K2 const* K2Schema = GetDefault<UEdGraphSchema_K2>();
+				const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 				
 				FEdGraphPinType ReturnType;
 				if (K2Schema->ConvertPropertyToPinType(ReturnProperty, /*out*/ReturnType))
@@ -2442,7 +2452,7 @@ UK2Node_MathExpression::UK2Node_MathExpression(const FObjectInitializer& ObjectI
 	bCanRenameNode = true;
 
 	bMadeAfterRotChange = false;
-	OrphanedPinSaveMode = ESaveOrphanPinMode::SaveNone;
+	OrphanedPinSaveMode = ESaveOrphanPinMode::SaveAll;
 }
 
 void UK2Node_MathExpression::Serialize(FArchive& Ar)
@@ -2620,7 +2630,10 @@ void UK2Node_MathExpression::RebuildExpression(FString InExpression)
 				// a series of errors being attached to the node).
 				if (!GraphGenerator.GenerateCode(ExpressionRoot.ToSharedRef(), *CachedMessageLog))
 				{
-					CachedMessageLog->Error(*LOCTEXT("MathExprGFailedGen", "Failed to generate full expression graph for: '@@'").ToString(), this);
+					if (CachedMessageLog->NumErrors == 0)
+					{
+						CachedMessageLog->Error(*LOCTEXT("MathExprGFailedGen", "Failed to generate full expression graph for: '@@'").ToString(), this);
+					}
 				}
 				else
 				{
@@ -2654,8 +2667,8 @@ void UK2Node_MathExpression::RebuildExpression(FString InExpression)
 			}
 		}
 
-		// refresh the node since the connections may have changed
-		Super::ReconstructNode();
+		// refresh the node since the connections may have changed, this won't be reentrant due to bool above
+		ReconstructNode();
 
 		// finally, recompile
 		UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForNodeChecked(this);
@@ -2694,6 +2707,7 @@ void UK2Node_MathExpression::ClearExpression()
 	// becoming the "CurrentEventTarget", we pass false - we append logs 
 	// collected by this one to the full compiler log later on anyways (so they won't be missed)
 	CachedMessageLog = MakeShareable(new FCompilerResultsLog(/*bIsCompatibleWithEvents =*/false));
+	CachedMessageLog->bSilentMode = true;
 	
 	Expression.Empty();
 }
@@ -2705,14 +2719,14 @@ void UK2Node_MathExpression::ValidateNodeDuringCompilation(FCompilerResultsLog& 
 
 	if (CachedMessageLog.IsValid())
 	{
-		MessageLog.Append(*CachedMessageLog);
+		MessageLog.Append(*CachedMessageLog, true);
 	}
 	// else, this may be some intermediate node in the compile, let's look at the errors from the original...
 	else 
 	{
-		if(UObject const* SourceObject = MessageLog.FindSourceObject(this))
+		if(const UObject* SourceObject = MessageLog.FindSourceObject(this))
 		{
-			UK2Node_MathExpression const* MathExpression = MessageLog.FindSourceObjectTypeChecked<UK2Node_MathExpression>(this);
+			const UK2Node_MathExpression* MathExpression = MessageLog.FindSourceObjectTypeChecked<UK2Node_MathExpression>(this);
 
 			// Should always be able to find the source math expression
 			check(MathExpression);
@@ -2724,7 +2738,7 @@ void UK2Node_MathExpression::ValidateNodeDuringCompilation(FCompilerResultsLog& 
 			// re-parse/re-gen to fish out the same errors)
 			if (MathExpression->CachedMessageLog.IsValid())
 			{
-				MessageLog.Append(*MathExpression->CachedMessageLog);
+				MessageLog.Append(*MathExpression->CachedMessageLog, true);
 			}
 		}
 	}
@@ -2789,6 +2803,20 @@ void UK2Node_MathExpression::ReconstructNode()
 	const FString OldErrorMessage = ErrorMsg;
 	Super::ReconstructNode();
 	ErrorMsg = OldErrorMessage;
+
+	// Mark our input pins as not saved, but we want to save orphaned output pins to show compile errors
+	for (UEdGraphPin* Pin : Pins)
+	{
+		// Recombine the sub pins back into the OptionPin
+		if (Pin->Direction == EEdGraphPinDirection::EGPD_Input)
+		{
+			Pin->SetSavePinIfOrphaned(false);
+		}
+		else
+		{
+			Pin->SetSavePinIfOrphaned(true);
+		}
+	}
 }
 
 //------------------------------------------------------------------------------

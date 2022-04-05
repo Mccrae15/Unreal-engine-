@@ -8,7 +8,8 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 public class BuildDerivedDataCache : BuildCommand
 {
@@ -38,7 +39,7 @@ public class BuildDerivedDataCache : BuildCommand
 		{
 			if (!String.IsNullOrWhiteSpace(FeaturePack))
 			{
-				string FeaturePackPath = CommandUtils.CombinePaths(CommandUtils.RootDirectory.FullName, FeaturePack);
+				string FeaturePackPath = CommandUtils.CombinePaths(Unreal.RootDirectory.FullName, FeaturePack);
 				if (!CommandUtils.FileExists(FeaturePackPath))
 				{
 					throw new AutomationException("Could not find project: " + FeaturePack);
@@ -95,6 +96,10 @@ public class BuildDerivedDataCache : BuildCommand
 			ProjectPakFiles.Add(Path.GetFileName(ProjectPakFile));
 
 		}
+
+		// Before running the Engine, delete any stale saved Config files from previous runs of the Engine. The list of enabled plugins can change, and the config file needs to be
+		// recomputed after they do, but there is currently nothing that makes that happen automatically
+		CommandUtils.DeleteDirectory(CommandUtils.CombinePaths(TempDir, "Engine", "Saved", "Config"));
 
 		// Generate DDC for the editor, and merge all the other PAK files in
 		CommandUtils.LogInformation("Generating DDC data for engine content on {0}", TargetPlatforms);

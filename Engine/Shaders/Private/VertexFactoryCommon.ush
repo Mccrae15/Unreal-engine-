@@ -1,65 +1,136 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Common.ush"
+#include "SceneData.ush"
 
-float3 TransformLocalToWorld(float3 LocalPosition, uint PrimitiveId)
+//  
+// Required VF inputs to support dynamic instancing 
+//
+#if (VF_USE_PRIMITIVE_SCENE_DATA == 1)
+	#define VF_GPUSCENE_DECLARE_INPUT_BLOCK(Attr0) \
+		uint InstanceIdOffset : ATTRIBUTE##Attr0; \
+		uint DrawInstanceId : SV_InstanceID;
+	
+	#define VF_GPUSCENE_GET_INTERMEDIATES(VFInput) \
+		GetSceneDataIntermediates( \
+			VFInput.InstanceIdOffset, \
+			VFInput.DrawInstanceId)
+
+	#define VF_GPUSCENE_GET_LIGHTMAP_UV_SCALE_BIAS(VFInput, LightmapDataIndex) \
+		GetLightmapData(LightmapDataIndex).LightMapCoordinateScaleBias
+	
+	#define VF_GPUSCENE_GET_SHADOWMAP_UV_SCALE_BIAS(VFInput, LightmapDataIndex) \
+		GetLightmapData(LightmapDataIndex).ShadowMapCoordinateScaleBias
+
+	#define VF_GPUSCENE_SET_INPUT_FOR_RT(_VFInputOut_, _PrimitiveId_, _DrawInstanceId_) \
+		_VFInputOut_.InstanceIdOffset = (_PrimitiveId_) | VF_TREAT_INSTANCE_ID_OFFSET_AS_PRIMITIVE_ID_FLAG;	\
+		_VFInputOut_.DrawInstanceId = _DrawInstanceId_;
+
+
+#elif (VF_USE_PRIMITIVE_SCENE_DATA == 2)	
+	#define VF_GPUSCENE_DECLARE_INPUT_BLOCK(Attr0) \
+		float4 InstanceOrigin : ATTRIBUTE8; \
+		float4 InstanceTransform1 : ATTRIBUTE9; \
+		float4 InstanceTransform2 : ATTRIBUTE10; \
+		float4 InstanceTransform3 : ATTRIBUTE11; \
+		float4 InstanceAuxData : ATTRIBUTE12; \
+		uint DrawInstanceId : SV_InstanceID;
+
+	#define VF_GPUSCENE_GET_INTERMEDIATES(VFInput) \
+		GetSceneDataIntermediates( \
+			VFInput.DrawInstanceId, \
+			VFInput.InstanceOrigin,\
+			VFInput.InstanceTransform1, \
+			VFInput.InstanceTransform2, \
+			VFInput.InstanceTransform3, \
+			VFInput.InstanceAuxData)
+
+	#define VF_GPUSCENE_GET_LIGHTMAP_UV_SCALE_BIAS(VFInput, LightmapDataIndex) \
+		float4(UnpackUnorm2x16(asuint(VFInput.InstanceAuxData.x)), UnpackSnorm2x16(asuint(VFInput.InstanceAuxData.y)))
+	
+	#define VF_GPUSCENE_GET_SHADOWMAP_UV_SCALE_BIAS(VFInput, LightmapDataIndex) \
+		float4(UnpackUnorm2x16(asuint(VFInput.InstanceAuxData.z)), UnpackSnorm2x16(asuint(VFInput.InstanceAuxData.w)))
+
+	#define VF_GPUSCENE_SET_INPUT_FOR_RT(_VFInputOut_, _PrimitiveId_, _DrawInstanceId_)
+
+#else
+	#define VF_GPUSCENE_DECLARE_INPUT_BLOCK(Attr0) 
+	#define VF_GPUSCENE_GET_INTERMEDIATES(VFInput) GetSceneDataIntermediates()
+	#define VF_GPUSCENE_GET_LIGHTMAP_UV_SCALE_BIAS(VFInput, LightmapDataIndex) PrecomputedLightingBuffer.LightMapCoordinateScaleBias
+	#define VF_GPUSCENE_GET_SHADOWMAP_UV_SCALE_BIAS(VFInput, LightmapDataIndex) PrecomputedLightingBuffer.ShadowMapCoordinateScaleBias
+	#define VF_GPUSCENE_SET_INPUT_FOR_RT(_VFInputOut_, _PrimitiveId_, _DrawInstanceId_)
+#endif
+
+
+FLWCVector3 TransformLocalToWorld(float3 LocalPosition, FLWCMatrix LocalToWorld)
 {
-	//expand the matrix multiply to avoid a code-gen bug on PS4.
-	//float3 RotatedPosition = mul(LocalPosition.xyz, (float3x3)Primitive.LocalToWorld); 
 	//invariant code!
-	float4x4 LocalToWorld = GetPrimitiveData(PrimitiveId).LocalToWorld;
-	return INVARIANT((LocalToWorld[0].xyz * LocalPosition.xxx + LocalToWorld[1].xyz * LocalPosition.yyy + LocalToWorld[2].xyz * LocalPosition.zzz) + LocalToWorld[3].xyz);	
+	return LWCInvariantMultiply(LocalPosition, LocalToWorld);
 }
 
-float4 TransformLocalToWorld(float3 LocalPosition)
+FLWCVector3 TransformLocalToWorld(float3 LocalPosition)
 {
-	float3 RotatedPosition = Primitive.LocalToWorld[0].xyz * LocalPosition.xxx + Primitive.LocalToWorld[1].xyz * LocalPosition.yyy + Primitive.LocalToWorld[2].xyz * LocalPosition.zzz;
-	return float4(RotatedPosition + Primitive.LocalToWorld[3].xyz ,1);
+	return TransformLocalToWorld(LocalPosition, GetPrimitiveDataFromUniformBuffer().LocalToWorld);
 }
 
-float4 TransformLocalToTranslatedWorld(float3 LocalPosition, uint PrimitiveId)
+float4 TransformLocalToTranslatedWorld(float3 LocalPosition, FLWCMatrix LocalToWorld)
 {
-	float4x4 LocalToWorld = GetPrimitiveData(PrimitiveId).LocalToWorld;
-	float3 RotatedPosition = LocalToWorld[0].xyz * LocalPosition.xxx + LocalToWorld[1].xyz * LocalPosition.yyy + LocalToWorld[2].xyz * LocalPosition.zzz;
-	return float4(RotatedPosition + (LocalToWorld[3].xyz + ResolvedView.PreViewTranslation.xyz),1);
+	FLWCVector3 WorldPosition = LWCMultiply(LocalPosition, LocalToWorld);
+	FLWCVector3 TranslatedWorldPosition = LWCAdd(WorldPosition, ResolvedView.PreViewTranslation);
+	return float4(LWCToFloat(TranslatedWorldPosition), 1.0f);
 }
+
+float4 TransformLocalToTranslatedWorld(float3 LocalPosition, float4x4 LocalToWorld)
+{
+	return TransformLocalToTranslatedWorld(LocalPosition, LWCPromote(LocalToWorld));
+}
+
+float3 RotateLocalToWorld(float3 LocalDirection, float3x3 LocalToWorld, float3 InvScale)
+{
+	return
+		InvScale.x * LocalToWorld[0] * LocalDirection.xxx +
+		InvScale.y * LocalToWorld[1] * LocalDirection.yyy +
+		InvScale.z * LocalToWorld[2] * LocalDirection.zzz;
+}
+
+float3 RotateLocalToWorld(float3 LocalDirection, float4x4 LocalToWorld, float3 InvScale)
+{
+	return RotateLocalToWorld(LocalDirection, (float3x3)LocalToWorld, InvScale);
+}
+
+float3 RotateLocalToWorld(float3 LocalDirection, FLWCMatrix LocalToWorld, float3 InvScale)
+{
+	return RotateLocalToWorld(LocalDirection, LWCToFloat3x3(LocalToWorld), InvScale);
+}
+
+#if !VF_USE_PRIMITIVE_SCENE_DATA
 
 float4 TransformLocalToTranslatedWorld(float3 LocalPosition)
 {
-	float3 RotatedPosition = Primitive.LocalToWorld[0].xyz * LocalPosition.xxx + Primitive.LocalToWorld[1].xyz * LocalPosition.yyy + Primitive.LocalToWorld[2].xyz * LocalPosition.zzz;
-	return float4(RotatedPosition + (Primitive.LocalToWorld[3].xyz + ResolvedView.PreViewTranslation.xyz),1);
-}
-
-float3 RotateLocalToWorld(float3 LocalDirection, uint PrimitiveId)
-{
-	const float4x4 LocalToWorld = GetPrimitiveData(PrimitiveId).LocalToWorld;
-	const float3 InvScale = GetPrimitiveData(PrimitiveId).InvNonUniformScaleAndDeterminantSign.xyz;
-	return 
-		InvScale.x * LocalToWorld[0].xyz * LocalDirection.xxx + 
-		InvScale.y * LocalToWorld[1].xyz * LocalDirection.yyy + 
-		InvScale.z * LocalToWorld[2].xyz * LocalDirection.zzz;	
+	return TransformLocalToTranslatedWorld(LocalPosition, GetPrimitiveDataFromUniformBuffer().LocalToWorld);
 }
 
 float3 RotateLocalToWorld(float3 LocalDirection)
 {
-	const float3 InvScale = Primitive.InvNonUniformScaleAndDeterminantSign.xyz;
-	return 
-		InvScale.x * Primitive.LocalToWorld[0].xyz * LocalDirection.xxx + 
-		InvScale.y * Primitive.LocalToWorld[1].xyz * LocalDirection.yyy + 
-		InvScale.z * Primitive.LocalToWorld[2].xyz * LocalDirection.zzz;
+	FPrimitiveSceneData PrimitiveData = GetPrimitiveDataFromUniformBuffer();
+	return RotateLocalToWorld(LocalDirection, PrimitiveData.LocalToWorld, PrimitiveData.InvNonUniformScale);
 }
 
 float3 RotateWorldToLocal(float3 WorldDirection)
 {
-	const float3 InvScale = Primitive.InvNonUniformScaleAndDeterminantSign.xyz;
+	FPrimitiveSceneData PrimitiveData = GetPrimitiveDataFromUniformBuffer();
+	const float3 InvScale = PrimitiveData.InvNonUniformScale;
+	const float3x3 LocalToWorld = LWCToFloat3x3(PrimitiveData.LocalToWorld);
 	float3x3 InvRot = {
-		InvScale.x * Primitive.LocalToWorld[0].xyz,
-		InvScale.y * Primitive.LocalToWorld[1].xyz,
-		InvScale.z * Primitive.LocalToWorld[2].xyz
+		InvScale.x * LocalToWorld[0],
+		InvScale.y * LocalToWorld[1],
+		InvScale.z * LocalToWorld[2]
 	};
 	InvRot = transpose(InvRot);
 	return mul(WorldDirection, InvRot);
 }
+
+#endif // !VF_USE_PRIMITIVE_SCENE_DATA
 
 // Octahedron Normal Vectors
 // [Cigolle 2014, "A Survey of Efficient Representations for Independent Unit Vectors"]
@@ -112,3 +183,4 @@ float3 OffsetODS(float3 WorldPosition, float3 WorldCameraPosition, float IPD)
 	return -A * D + B * T;
 }
 #endif
+

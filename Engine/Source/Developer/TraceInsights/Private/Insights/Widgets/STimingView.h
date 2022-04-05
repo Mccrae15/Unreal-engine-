@@ -8,6 +8,7 @@
 #include "Input/Reply.h"
 #include "Layout/Geometry.h"
 #include "Styling/SlateTypes.h"
+#include "Templates/Function.h"
 #include "TraceServices/AnalysisService.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
@@ -29,10 +30,13 @@ class FFrameSharedState;
 class FLoadingSharedState;
 class FMarkersTimingTrack;
 class FMenuBuilder;
+class FSpawnTabArgs;
 class FThreadTimingSharedState;
 class FTimeRulerTrack;
 class FTimingGraphTrack;
 class FTimingViewDrawHelper;
+class FUICommandList;
+class SDockTab;
 class SOverlay;
 class SScrollBar;
 
@@ -40,6 +44,9 @@ namespace Insights
 {
 	class ITimingViewExtender;
 	class FTimeMarker;
+	class FQuickFind;
+	class SQuickFind;
+	enum class ETimingEventsColoringMode : uint32;
 }
 
 /** A custom widget used to display timing events. */
@@ -65,16 +72,17 @@ public:
 	 */
 	void Construct(const FArguments& InArgs);
 
-	TSharedRef<SWidget> MakeAutoScrollOptionsMenu();
-
-	TSharedRef<SWidget> MakeTracksFilterMenu();
-	void CreateAllTracksMenu(FMenuBuilder& MenuBuilder);
-
-	bool ShowHideGraphTrack_IsChecked() const;
-	void ShowHideGraphTrack_Execute();
+	bool IsCompactModeEnabled() const;
+	void ToggleCompactMode();
 
 	bool IsAutoHideEmptyTracksEnabled() const;
 	void ToggleAutoHideEmptyTracks();
+
+	bool IsPanningOnScreenEdgesEnabled() const;
+	void TogglePanningOnScreenEdges();
+
+	bool QuickFind_CanExecute() const;
+	void QuickFind_Execute();
 
 	bool ToggleTrackVisibility_IsChecked(uint64 InTrackId) const;
 	void ToggleTrackVisibility_Execute(uint64 InTrackId);
@@ -88,6 +96,14 @@ public:
 	void EnableAssetLoadingMode() { bAssetLoadingMode = true; }
 
 	void HideAllDefaultTracks();
+
+	/** Gets the time ruler track. It includes the custom time markers (ones user can drag with mouse). */
+	TSharedRef<FTimeRulerTrack> GetTimeRulerTrack() { return TimeRulerTrack; }
+	const TSharedRef<const FTimeRulerTrack> GetTimeRulerTrack() const { return TimeRulerTrack; }
+
+	/** Gets the default (custom) time marker (for backward compatibility). */
+	TSharedRef<Insights::FTimeMarker> GetDefaultTimeMarker() { return DefaultTimeMarker; }
+	const TSharedRef<const Insights::FTimeMarker> GetDefaultTimeMarker() const { return DefaultTimeMarker; }
 
 	/** Resets internal widget's data to the default one. */
 	void Reset(bool bIsFirstReset = false);
@@ -251,17 +267,30 @@ public:
 
 	virtual Insights::FSelectionChangedDelegate& OnSelectionChanged() override { return OnSelectionChangedDelegate; }
 	virtual Insights::FTimeMarkerChangedDelegate& OnTimeMarkerChanged() override { return OnTimeMarkerChangedDelegate; }
+	virtual Insights::FCustomTimeMarkerChangedDelegate& OnCustomTimeMarkerChanged() override { return OnCustomTimeMarkerChangedDelegate; }
 	virtual Insights::FHoveredTrackChangedDelegate& OnHoveredTrackChanged() override { return OnHoveredTrackChangedDelegate; }
 	virtual Insights::FHoveredEventChangedDelegate& OnHoveredEventChanged() override { return OnHoveredEventChangedDelegate; }
 	virtual Insights::FSelectedTrackChangedDelegate& OnSelectedTrackChanged() override { return OnSelectedTrackChangedDelegate; }
 	virtual Insights::FSelectedEventChangedDelegate& OnSelectedEventChanged() override { return OnSelectedEventChangedDelegate; }
+
+	virtual void ResetSelectedEvent() override
+	{
+		if (SelectedEvent)
+		{
+			SelectedEvent.Reset();
+			OnSelectedEventChanged();
+		}
+	}
+
+	virtual void ResetEventFilter() override { SetEventFilter(nullptr); }
 
 	virtual void PreventThrottling() override;
 	virtual void AddOverlayWidget(const TSharedRef<SWidget>& InWidget) override;
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 
-	static const TCHAR* GetLocationName(ETimingTrackLocation Location);
+	// The callback should return 'true' to continue the enumeration.
+	void EnumerateAllTracks(TFunctionRef<bool(TSharedPtr<FBaseTimingTrack>&)> Callback);
 
 	const TArray<TSharedPtr<FBaseTimingTrack>>& GetTrackList(ETimingTrackLocation TrackLocation) const
 	{
@@ -275,6 +304,12 @@ public:
 			default:                                 return EmptyTrackList;
 		}
 	}
+
+	static const TCHAR* GetLocationName(ETimingTrackLocation Location);
+
+	void ChangeTrackLocation(TSharedRef<FBaseTimingTrack> Track, ETimingTrackLocation NewLocation);
+	bool CanChangeTrackLocation(TSharedRef<FBaseTimingTrack> Track, ETimingTrackLocation NewLocation) const;
+	bool CheckTrackLocation(TSharedRef<FBaseTimingTrack> Track, ETimingTrackLocation Location) const;
 
 	void UpdateScrollableTracksOrder();
 	int32 GetFirstScrollableTrackOrder() const;
@@ -303,8 +338,11 @@ public:
 	bool IsTimeSelectedInclusive(double Time) const { return Time >= SelectionStartTime && Time <= SelectionEndTime; }
 
 	void ScrollAtPosY(float ScrollPosY);
+	void BringIntoViewY(float InTopY, float InBottomY);
+	void BringScrollableTrackIntoView(const FBaseTimingTrack& Track);
 	void ScrollAtTime(double StartTime);
 	void CenterOnTimeInterval(double IntervalStartTime, double IntervalDuration);
+	void ZoomOnTimeInterval(double IntervalStartTime, double IntervalDuration);
 	void BringIntoView(double StartTime, double EndTime);
 	void SelectTimeInterval(double IntervalStartTime, double IntervalDuration);
 	void SelectToTimeMarker(double InTimeMarker);
@@ -322,6 +360,9 @@ public:
 	const TSharedPtr<FBaseTimingTrack> GetSelectedTrack() const { return SelectedTrack; }
 	const TSharedPtr<const ITimingEvent> GetSelectedEvent() const { return SelectedEvent; }
 
+	void SelectTimingTrack(const TSharedPtr<FBaseTimingTrack> InTrack, bool bBringTrackIntoView);
+	void SelectTimingEvent(const TSharedPtr<const ITimingEvent> InEvent, bool bBringEventIntoView);
+
 	const TSharedPtr<ITimingEventFilter> GetEventFilter() const { return TimingEventFilter; }
 	void SetEventFilter(const TSharedPtr<ITimingEventFilter> InEventFilter);
 
@@ -331,20 +372,57 @@ public:
 
 	const TSharedPtr<FBaseTimingTrack> GetTrackAt(float InPosX, float InPosY) const;
 
+	const TArray<TUniquePtr<ITimingEventRelation>>& GetCurrentRelations() const { return CurrentRelations; }
+	TArray<TUniquePtr<ITimingEventRelation>>& EditCurrentRelations() { return CurrentRelations; }
+	void AddRelation(TUniquePtr<ITimingEventRelation>& Relation) { CurrentRelations.Add(MoveTemp(Relation)); }
+	void ClearRelations();
+
+	TSharedPtr<FUICommandList> GetCommandList() { return CommandList; }
+
+	void CloseQuickFindTab();
+
+	TSharedPtr<Insights::FFilterConfigurator> GetFilterConfigurator() { return FilterConfigurator; }
+
 protected:
 	virtual FVector2D ComputeDesiredSize(float) const override
 	{
 		return FVector2D(16.0f, 16.0f);
 	}
 
-	void ShowContextMenu(const FPointerEvent& MouseEvent);
-	void CreateTrackLocationMenu(FMenuBuilder& MenuBuilder, TSharedRef<FBaseTimingTrack> Track);
-
-	void ChangeTrackLocation(TSharedRef<FBaseTimingTrack> Track, ETimingTrackLocation NewLocation);
-	bool CanChangeTrackLocation(TSharedRef<FBaseTimingTrack> Track, ETimingTrackLocation NewLocation) const;
-
 	/** Binds our UI commands to delegates. */
 	void BindCommands();
+
+	void CreateCompactMenuLine(FMenuBuilder& MenuBuilder, FText Label, TSharedRef<SWidget> InnerWidget) const;
+	TSharedRef<SWidget> MakeCompactAutoScrollOptionsMenu();
+	TSharedRef<SWidget> MakeAutoScrollOptionsMenu();
+
+	TSharedRef<SWidget> MakeAllTracksMenu();
+	void CreateAllTracksMenu(FMenuBuilder& MenuBuilder);
+
+	TSharedRef<SWidget> MakeCpuGpuTracksFilterMenu();
+
+	TSharedRef<SWidget> MakeOtherTracksFilterMenu();
+	bool ShowHideGraphTrack_IsChecked() const;
+	void ShowHideGraphTrack_Execute();
+
+	TSharedRef<SWidget> MakePluginTracksFilterMenu();
+
+	TSharedRef<SWidget> MakeViewModeMenu();
+
+	void CreateDepthLimitMenu(FMenuBuilder& MenuBuilder);
+	FText GetEventDepthLimitKeybindingText(uint32 DepthLimit) const;
+	uint32 GetNextEventDepthLimit(uint32 DepthLimit) const;
+	void ChooseNextEventDepthLimit();
+	void SetEventDepthLimit(uint32 DepthLimit);
+	bool CheckEventDepthLimit(uint32 DepthLimit) const;
+
+	void CreateCpuThreadTrackColoringModeMenu(FMenuBuilder& MenuBuilder);
+	void ChooseNextCpuThreadTrackColoringMode();
+	void SetCpuThreadTrackColoringMode(Insights::ETimingEventsColoringMode Mode);
+	bool CheckCpuThreadTrackColoringMode(Insights::ETimingEventsColoringMode Mode);
+
+	void ShowContextMenu(const FPointerEvent& MouseEvent);
+	void CreateTrackLocationMenu(FMenuBuilder& MenuBuilder, TSharedRef<FBaseTimingTrack> Track);
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Auto-Scroll
@@ -352,18 +430,14 @@ protected:
 	void AutoScroll_OnCheckStateChanged(ECheckBoxState NewRadioState);
 	ECheckBoxState AutoScroll_IsChecked() const;
 
-	void AutoScrollFrameAligned_Execute();
-	bool AutoScrollFrameAligned_IsChecked() const;
+	void SetAutoScrollFrameAlignment(int32 FrameType);
+	bool CompareAutoScrollFrameAlignment(int32 FrameType) const;
 
-	void AutoScrollFrameType_Execute(ETraceFrameType FrameType);
-	bool AutoScrollFrameType_CanExecute(ETraceFrameType FrameType) const;
-	bool AutoScrollFrameType_IsChecked(ETraceFrameType FrameType) const;
+	void SetAutoScrollViewportOffset(double Percent);
+	bool CompareAutoScrollViewportOffset(double Percent) const;
 
-	void AutoScrollViewportOffset_Execute(double Percent);
-	bool AutoScrollViewportOffset_IsChecked(double Percent) const;
-
-	void AutoScrollDelay_Execute(double Delay);
-	bool AutoScrollDelay_IsChecked(double Delay) const;
+	void SetAutoScrollDelay(double Delay);
+	bool CompareAutoScrollDelay(double Delay) const;
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -393,8 +467,8 @@ protected:
 	void RaiseSelectionChanging();
 	void RaiseSelectionChanged();
 
-	void RaiseTimeMarkerChanging();
-	void RaiseTimeMarkerChanged();
+	void RaiseTimeMarkerChanging(TSharedRef<Insights::FTimeMarker> InTimeMarker);
+	void RaiseTimeMarkerChanged(TSharedRef<Insights::FTimeMarker> InTimeMarker);
 
 	void UpdateAggregatedStats();
 
@@ -418,6 +492,22 @@ protected:
 	FReply AllowTracksToProcessOnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent);
 	FReply AllowTracksToProcessOnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent);
 	FReply AllowTracksToProcessOnMouseButtonDoubleClick(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent);
+
+	void SetTrackPosY(TSharedPtr<FBaseTimingTrack>& TrackPtr, float TrackPosY) const;
+	
+	void FindFirstEvent();
+	void FindPrevEvent();
+	void FindNextEvent();
+	void FindLastEvent();
+	void FilterAllTracks();
+	void ClearFilters();
+
+	TSharedRef<SDockTab> SpawnQuickFindTab(const FSpawnTabArgs& Args);
+	void PopulateTrackSuggestionList(const FString& Text, TArray<FString>& OutSuggestions);
+	void PopulateTimerNameSuggestionList(const FString& Text, TArray<FString>& OutSuggestions);
+
+	typedef TFunctionRef<void(TSharedPtr<FBaseTimingTrack>& Track)> EnumerateFilteredTracksCallback;
+	void EnumerateFilteredTracks(TSharedPtr<Insights::FFilterConfigurator> FilterConfigurator, EnumerateFilteredTracksCallback Callback);
 
 protected:
 	/** The track's viewport. Encapsulates info about position and scale. */
@@ -505,11 +595,11 @@ protected:
 	/** True if the viewport scrolls automatically. */
 	bool bAutoScroll;
 
-	/** True, if auto-scroll should align center of viewport with start of a frame. */
-	bool bIsAutoScrollFrameAligned;
-
-	/** Type of frame to align with (Game or Rendering), if bIsAutoScrollFrameAligned is enabled. */
-	ETraceFrameType AutoScrollFrameType;
+	/**
+	 * Frame Alignment. Controls if auto-scroll should align center of the viewport with start of a frame or not.
+	 * Valid options: -1 to disable frame alignment or the type of frame to align with (0 = Game or 1 = Rendering; see ETraceFrameType).
+	 */
+	int32 AutoScrollFrameAlignment;
 
 	/**
 	 * Viewport offset while auto-scrolling, as percent of viewport width.
@@ -529,6 +619,14 @@ protected:
 
 	/** True, if the user is currently interactively panning the view (horizontally and/or vertically). */
 	bool bIsPanning;
+
+	/** If enabled, the panning is allowed to continue when mouse cursor reaches the edges of the screen. */
+	bool bAllowPanningOnScreenEdges;
+
+	float DPIScaleFactor;
+
+	uint32 EdgeFrameCountX;
+	uint32 EdgeFrameCountY;
 
 	/** How to pan. */
 	enum class EPanningMode : uint8
@@ -604,8 +702,22 @@ protected:
 
 	Insights::FSelectionChangedDelegate OnSelectionChangedDelegate;
 	Insights::FTimeMarkerChangedDelegate OnTimeMarkerChangedDelegate;
+	Insights::FCustomTimeMarkerChangedDelegate OnCustomTimeMarkerChangedDelegate;
 	Insights::FHoveredTrackChangedDelegate OnHoveredTrackChangedDelegate;
 	Insights::FHoveredEventChangedDelegate OnHoveredEventChangedDelegate;
 	Insights::FSelectedTrackChangedDelegate OnSelectedTrackChangedDelegate;
 	Insights::FSelectedEventChangedDelegate OnSelectedEventChangedDelegate;
+
+	TSharedPtr<FUICommandList> CommandList;
+
+	TArray<TUniquePtr<ITimingEventRelation>> CurrentRelations;
+
+	TSharedPtr<Insights::FQuickFind> QuickFindVm;
+	TSharedPtr<Insights::FFilterConfigurator> FilterConfigurator;
+	static uint32 TimingViewId;
+	const FName QuickFindTabId;
+	
+	// Used only between the creation of the widget and the spawning of the owning tab. When the tab is spawned, we relinquish ownership.
+	TSharedPtr<Insights::SQuickFind> QuickFindWidgetSharedPtr;
+	TWeakPtr<Insights::SQuickFind> QuickFindWidgetWeakPtr;
 };

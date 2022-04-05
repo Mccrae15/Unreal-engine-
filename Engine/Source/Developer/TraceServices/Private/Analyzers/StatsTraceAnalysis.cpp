@@ -4,7 +4,10 @@
 #include "Common/Utils.h"
 #include "TraceServices/Model/Counters.h"
 
-FStatsAnalyzer::FStatsAnalyzer(Trace::IAnalysisSession& InSession, Trace::ICounterProvider& InCounterProvider)
+namespace TraceServices
+{
+
+FStatsAnalyzer::FStatsAnalyzer(IAnalysisSession& InSession, ICounterProvider& InCounterProvider)
 	: Session(InSession)
 	, CounterProvider(InCounterProvider)
 {
@@ -21,7 +24,7 @@ void FStatsAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 
 bool FStatsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
 {
-	Trace::FAnalysisSessionEditScope _(Session);
+	FAnalysisSessionEditScope _(Session);
 
 	const auto& EventData = Context.EventData;
 	switch (RouteId)
@@ -29,21 +32,33 @@ bool FStatsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext
 	case RouteId_Spec:
 	{
 		uint32 StatId = EventData.GetValue<uint32>("Id");
-		Trace::IEditableCounter* Counter = CountersMap.FindRef(StatId);
+		IEditableCounter* Counter = CountersMap.FindRef(StatId);
 		if (!Counter)
 		{
 			Counter = CounterProvider.CreateCounter();
 			CountersMap.Add(StatId, Counter);
 		}
-		const ANSICHAR* Name = reinterpret_cast<const ANSICHAR*>(EventData.GetAttachment());
-		const TCHAR* Description = reinterpret_cast<const TCHAR*>(EventData.GetAttachment() + strlen(Name) + 1);
-		Trace::ECounterDisplayHint DisplayHint = Trace::CounterDisplayHint_None;
+
+		FString Name;
+		FString Description;
+		if (EventData.GetString("Name", Name))
+		{
+			EventData.GetString("Description", Description);
+		}
+		else
+		{
+			Name = reinterpret_cast<const ANSICHAR*>(EventData.GetAttachment());
+			Description = reinterpret_cast<const TCHAR*>(EventData.GetAttachment() + Name.Len() + 1);
+		}
+
+
+		ECounterDisplayHint DisplayHint = CounterDisplayHint_None;
 		if (EventData.GetValue<bool>("IsMemory"))
 		{
-			DisplayHint = Trace::CounterDisplayHint_Memory;
+			DisplayHint = CounterDisplayHint_Memory;
 		}
-		Counter->SetName(Session.StoreString(ANSI_TO_TCHAR(Name)));
-		Counter->SetDescription(Session.StoreString(Description));
+		Counter->SetName(Session.StoreString(*Name));
+		Counter->SetDescription(Session.StoreString(*Description));
 		Counter->SetIsFloatingPoint(EventData.GetValue<bool>("IsFloatingPoint"));
 		Counter->SetDisplayHint(DisplayHint);
 		break;
@@ -52,8 +67,9 @@ bool FStatsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext
 	{
 		uint32 ThreadId = FTraceAnalyzerUtils::GetThreadIdField(Context);
 		TSharedRef<FThreadState> ThreadState = GetThreadState(ThreadId);
-		uint64 BufferSize = EventData.GetAttachmentSize();
-		const uint8* BufferPtr = EventData.GetAttachment();
+		TArrayView<const uint8> DataView = FTraceAnalyzerUtils::LegacyAttachmentArray("Data", Context);
+		uint64 BufferSize = DataView.Num();
+		const uint8* BufferPtr = DataView.GetData();
 		const uint8* BufferEnd = BufferPtr + BufferSize;
 		while (BufferPtr < BufferEnd)
 		{
@@ -69,7 +85,7 @@ bool FStatsAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext
 
 			uint64 DecodedIdAndOp = FTraceAnalyzerUtils::Decode7bit(BufferPtr);
 			uint32 StatId = DecodedIdAndOp >> 3;
-			Trace::IEditableCounter* Counter = CountersMap.FindRef(StatId);
+			IEditableCounter* Counter = CountersMap.FindRef(StatId);
 			if (!Counter)
 			{
 				Counter = CounterProvider.CreateCounter();
@@ -144,3 +160,5 @@ TSharedRef<FStatsAnalyzer::FThreadState> FStatsAnalyzer::GetThreadState(uint32 T
 		return ThreadStatesMap[ThreadId];
 	}
 }
+
+} // namespace TraceServices

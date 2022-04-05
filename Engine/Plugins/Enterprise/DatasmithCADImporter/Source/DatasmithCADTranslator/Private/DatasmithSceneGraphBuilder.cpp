@@ -3,12 +3,11 @@
 
 #include "CADData.h"
 #include "CADSceneGraph.h"
-#include "CoreTechFileParser.h"
-#include "CoreTechHelper.h"
 #include "DatasmithSceneFactory.h"
 #include "DatasmithSceneSource.h"
+#include "DatasmithUtils.h"
 #include "IDatasmithSceneElements.h"
-
+#include "MeshDescriptionHelper.h"
 #include "Misc/FileHelper.h"
 
 namespace DatasmithSceneGraphBuilderImpl
@@ -32,31 +31,54 @@ namespace DatasmithSceneGraphBuilderImpl
 		}
 	}
 
-	void AddTransformToActor(CADLibrary::FArchiveInstance& Instance, TSharedPtr< IDatasmithActorElement > Actor, const CADLibrary::FImportParameters& ImportParameters)
+	void AddTransformToActor(const CADLibrary::FCADArchiveObject& Object, TSharedPtr< IDatasmithActorElement > Actor, const CADLibrary::FImportParameters& ImportParameters)
 	{
 		if (!Actor.IsValid())
 		{
 			return;
 		}
 
-		FTransform LocalTransform(Instance.TransformMatrix);
-		FTransform LocalUETransform = FDatasmithUtils::ConvertTransform(ImportParameters.ModelCoordSys, LocalTransform);
+		FTransform LocalTransform(Object.TransformMatrix);
+		FTransform LocalUETransform = FDatasmithUtils::ConvertTransform(ImportParameters.GetModelCoordSys(), LocalTransform);
 
-		Actor->SetTranslation(LocalUETransform.GetTranslation() * ImportParameters.ScaleFactor);
+		Actor->SetTranslation(LocalUETransform.GetTranslation() * ImportParameters.GetScaleFactor());
 		Actor->SetScale(LocalUETransform.GetScale3D());
 		Actor->SetRotation(LocalUETransform.GetRotation());
 	}
+
+	// Method to reduce the size of huge label. The length of the package path, based on label, cannot be bigger than ~256
+	void CleanName(FString& Label)
+	{
+		const int32 MaxLabelSize = 50; // If the label is smaller than this value, the label is not modified. This size of package name is "acceptable"
+		const int32 ReasonableLabelSize = 20; // If the label has to be cut, a label that is not too long is preferred. 
+		const int32 MinLabelSize = 5; // If the label is smaller than this value, the label is too much reduce. Therefore a ReasonableLabelSize is preferred 
+
+		if (Label.Len() < MaxLabelSize)
+		{
+			return;
+		}
+
+		FString NewLabel;
+		NewLabel = FPaths::GetCleanFilename(Label);
+		if ((NewLabel.Len() < MaxLabelSize) && (NewLabel.Len() > MinLabelSize))
+		{
+			Label = NewLabel;
+			return;
+		}
+
+		Label = Label.Right(ReasonableLabelSize);
+	}
 }
 
+
 FDatasmithSceneGraphBuilder::FDatasmithSceneGraphBuilder(
-	TMap<uint32, FString>& InCADFileToUE4FileMap, 
+	TMap<uint32, FString>& InCADFileToUnrealFileMap, 
 	const FString& InCachePath, 
 	TSharedRef<IDatasmithScene> InScene, 
 	const FDatasmithSceneSource& InSource, 
 	const CADLibrary::FImportParameters& InImportParameters)
-		: FDatasmithSceneBaseGraphBuilder(nullptr, InScene, InSource, InImportParameters)
-		, CADFileToSceneGraphDescriptionFile(InCADFileToUE4FileMap)
-		, CachePath(InCachePath)
+		: FDatasmithSceneBaseGraphBuilder(nullptr, InCachePath, InScene, InSource, InImportParameters)
+		, CADFileToSceneGraphDescriptionFile(InCADFileToUnrealFileMap)
 {
 }
 
@@ -64,13 +86,13 @@ bool FDatasmithSceneGraphBuilder::Build()
 {
 	LoadSceneGraphDescriptionFiles();
 
-	uint32 rootHash = GetTypeHash(rootFileDescription);
-	SceneGraph = CADFileToSceneGraphArchive.FindRef(rootHash);
+	uint32 RootHash = RootFileDescription.GetDescriptorHash();
+	SceneGraph = CADFileToSceneGraphArchive.FindRef(RootHash);
 	if (!SceneGraph)
 	{
 		return false;
 	}
-	AncestorSceneGraphHash.Add(rootHash);
+	AncestorSceneGraphHash.Add(RootHash);
 
 	return FDatasmithSceneBaseGraphBuilder::Build();
 }
@@ -105,15 +127,15 @@ void FDatasmithSceneGraphBuilder::LoadSceneGraphDescriptionFiles()
 
 void FDatasmithSceneGraphBuilder::FillAnchorActor(const TSharedRef<IDatasmithActorElement>& ActorElement, const FString& CleanFilenameOfCADFile)
 {
-	CADLibrary::FFileDescription AnchorDescription(*CleanFilenameOfCADFile);
+	CADLibrary::FFileDescriptor AnchorDescription(*CleanFilenameOfCADFile);
 	SceneGraph = CADFileToSceneGraphArchive.FindRef(GetTypeHash(AnchorDescription));
 	if (!SceneGraph)
 	{
 		return;
 	}
 
-	CadId RootId = 1;
-	int32* Index = SceneGraph->CADIdToComponentIndex.Find(RootId);
+	FCadId RootId = 1;
+	const int32* Index = SceneGraph->CADIdToComponentIndex.Find(RootId);
 	if (!Index)
 	{
 		return;
@@ -123,12 +145,12 @@ void FDatasmithSceneGraphBuilder::FillAnchorActor(const TSharedRef<IDatasmithAct
 
 	// TODO: check ParentData and Index validity?
 	ActorData ParentData(ActorElement->GetName());
-	CADLibrary::FArchiveComponent& Component = SceneGraph->ComponentSet[*Index];
+	CADLibrary::FArchiveComponent& Component = SceneGraph->Components[*Index];
 
 	TMap<FString, FString> InstanceNodeMetaDataMap;
 	FString ActorUUID;
 	FString ActorLabel;
-	GetNodeUUIDAndName(InstanceNodeMetaDataMap, Component.MetaData, 1, ParentData.Uuid, ActorUUID, ActorLabel);
+	GetNodeUUIDAndName(InstanceNodeMetaDataMap, Component.MetaData, Component.ObjectId, ParentData.Uuid, ActorUUID, ActorLabel);
 
 	AddMetaData(ActorElement, InstanceNodeMetaDataMap, Component.MetaData);
 
@@ -140,25 +162,15 @@ void FDatasmithSceneGraphBuilder::FillAnchorActor(const TSharedRef<IDatasmithAct
 	ActorElement->SetLabel(*ActorLabel);
 }
 
-TSharedPtr<IDatasmithMeshElement> FDatasmithSceneGraphBuilder::FindOrAddMeshElement(CADLibrary::FArchiveBody & Body, FString & InLabel)
-{
-	if (TSharedPtr<IDatasmithMeshElement> MeshElement = FDatasmithSceneBaseGraphBuilder::FindOrAddMeshElement(Body, InLabel))
-	{
-		FString BodyFile = FString::Printf(TEXT("UEx%08x"), Body.MeshActorName);
-		MeshElement->SetFile(*FPaths::Combine(CachePath, TEXT("body"), BodyFile + TEXT(".ct")));
-
-		return MeshElement;
-	}
-
-	return TSharedPtr<IDatasmithMeshElement>();
-}
-
-FDatasmithSceneBaseGraphBuilder::FDatasmithSceneBaseGraphBuilder(CADLibrary::FArchiveSceneGraph* InSceneGraph, TSharedRef<IDatasmithScene> InScene, const FDatasmithSceneSource& InSource, const CADLibrary::FImportParameters& InImportParameters)
+FDatasmithSceneBaseGraphBuilder::FDatasmithSceneBaseGraphBuilder(CADLibrary::FArchiveSceneGraph* InSceneGraph, const FString& InCachePath,  TSharedRef<IDatasmithScene> InScene, const FDatasmithSceneSource& InSource, const CADLibrary::FImportParameters& InImportParameters)
 	: SceneGraph(InSceneGraph)
+	, CachePath(InCachePath)
 	, DatasmithScene(InScene)
 	, ImportParameters(InImportParameters)
 	, ImportParametersHash(ImportParameters.GetHash())
-	, rootFileDescription(*InSource.GetSourceFile())
+	, RootFileDescription(*InSource.GetSourceFile())
+	, bPreferMaterial(false)
+	, bMaterialPropagationIsTopDown(ImportParameters.GetPropagation() == CADLibrary::EDisplayDataPropagationMode::TopDown)
 {
 	if (InSceneGraph)
 	{
@@ -178,84 +190,92 @@ FDatasmithSceneBaseGraphBuilder::FDatasmithSceneBaseGraphBuilder(CADLibrary::FAr
 
 bool FDatasmithSceneBaseGraphBuilder::Build()
 {
-	CadId RootId = 1;
-	int32* Index = SceneGraph->CADIdToComponentIndex.Find(RootId);
+	FCadId RootId = 1;
+	const int32* Index = SceneGraph->CADIdToComponentIndex.Find(RootId);
 	if (!Index)
 	{
 		return false;
 	}
 
 	ActorData Data(TEXT(""));
-	CADLibrary::FArchiveComponent& Component = SceneGraph->ComponentSet[*Index];
+	CADLibrary::FArchiveComponent& Component = SceneGraph->Components[*Index];
 	TSharedPtr< IDatasmithActorElement > RootActor = BuildComponent(Component, Data);
 	DatasmithScene->AddActor(RootActor);
 
 	// Set ProductName, ProductVersion in DatasmithScene for Analytics purpose
 	// application_name is something like "Catia V5"
-	DatasmithScene->SetVendor(TEXT("CoreTechnologie"));
+	DatasmithScene->SetVendor(TEXT("Techsoft"));
 
+	if (const FString* ProductVersion = Component.MetaData.Find(TEXT("TechsoftVersion")))
 	{
-		if (rootFileDescription.Extension == TEXT("jt"))
+		DatasmithScene->SetProductVersion(**ProductVersion);
+	}
+
+	FString ProductName;
+	const FString* ProductNamePtr = Component.MetaData.Find(TEXT("Input_Format_and_Emitter"));
+	if(ProductNamePtr)
+	{
+		ProductName = *ProductNamePtr;
+		ProductName.TrimStartAndEndInline();
+		if (!ProductName.IsEmpty())
 		{
-			DatasmithScene->SetProductName(TEXT("Jt"));
-		}
-		else if (rootFileDescription.Extension == TEXT("sldprt") || rootFileDescription.Extension == TEXT("sldasm"))
-		{
-			DatasmithScene->SetProductName(TEXT("SolidWorks"));
-		}
-		else if (rootFileDescription.Extension == TEXT("catpart") || rootFileDescription.Extension == TEXT("catproduct") || rootFileDescription.Extension == TEXT("cgr"))
-		{
-			DatasmithScene->SetProductName(TEXT("CATIA V5"));
-		}
-		else if (rootFileDescription.Extension == TEXT("3dxml") || rootFileDescription.Extension == TEXT("3drep"))
-		{
-			DatasmithScene->SetProductName(TEXT("3D XML"));
-		}
-		else if (rootFileDescription.Extension == TEXT("iam") || rootFileDescription.Extension == TEXT("ipt"))
-		{
-			DatasmithScene->SetProductName(TEXT("Inventor"));
-		}
-		else if (rootFileDescription.Extension == TEXT("prt") || rootFileDescription.Extension == TEXT("asm"))
-		{
-			DatasmithScene->SetProductName(TEXT("NX"));
-		}
-		else if (rootFileDescription.Extension == TEXT("stp") || rootFileDescription.Extension == TEXT("step"))
-		{
-			DatasmithScene->SetProductName(TEXT("STEP"));
-		}
-		else if (rootFileDescription.Extension == TEXT("igs") || rootFileDescription.Extension == TEXT("iges"))
-		{
-			DatasmithScene->SetProductName(TEXT("IGES"));
-		}
-		else if (rootFileDescription.Extension == TEXT("x_t") || rootFileDescription.Extension == TEXT("x_b"))
-		{
-			DatasmithScene->SetProductName(TEXT("Parasolid"));
-		}
-		else if (rootFileDescription.Extension == TEXT("dwg"))
-		{
-			DatasmithScene->SetProductName(TEXT("AutoCAD"));
-		}
-		else if (rootFileDescription.Extension == TEXT("dgn"))
-		{
-			DatasmithScene->SetProductName(TEXT("Micro Station"));
-		}
-		else if (rootFileDescription.Extension == TEXT("sat"))
-		{
-			DatasmithScene->SetProductName(TEXT("3D ACIS"));
-		}
-		else if (rootFileDescription.Extension.StartsWith(TEXT("asm")) || rootFileDescription.Extension.StartsWith(TEXT("creo")) || rootFileDescription.Extension.StartsWith(TEXT("prt")) || rootFileDescription.Extension.StartsWith(TEXT("neu")))
-		{
-			DatasmithScene->SetProductName(TEXT("Creo"));
-		}
-		else
-		{
-			DatasmithScene->SetProductName(TEXT("Unknown"));
+			DatasmithScene->SetProductName(*ProductName);
 		}
 	}
 
-	if (FString* ProductVersion = Component.MetaData.Find(TEXT("Input_Format_and_Emitter")))
+	if(ProductName.IsEmpty())
 	{
-		DatasmithScene->SetProductVersion(**ProductVersion);
+		switch (RootFileDescription.GetFileFormat())
+		{
+		case CADLibrary::ECADFormat::JT:
+			DatasmithScene->SetProductName(TEXT("Jt"));
+			break;
+		case CADLibrary::ECADFormat::SOLIDWORKS:
+			DatasmithScene->SetProductName(TEXT("SolidWorks"));
+			break;
+		case CADLibrary::ECADFormat::ACIS:
+			DatasmithScene->SetProductName(TEXT("3D ACIS"));
+			break;
+		case CADLibrary::ECADFormat::CATIA:
+			DatasmithScene->SetProductName(TEXT("CATIA V5"));
+			break;
+		case CADLibrary::ECADFormat::CATIA_CGR:
+			DatasmithScene->SetProductName(TEXT("CATIA V5"));
+			break;
+		case CADLibrary::ECADFormat::CATIAV4:
+			DatasmithScene->SetProductName(TEXT("CATIA V4"));
+			break;
+		case CADLibrary::ECADFormat::CATIA_3DXML:
+			DatasmithScene->SetProductName(TEXT("3D XML"));
+			break;
+		case CADLibrary::ECADFormat::CREO:
+			DatasmithScene->SetProductName(TEXT("Creo"));
+			break;
+		case CADLibrary::ECADFormat::IGES:
+			DatasmithScene->SetProductName(TEXT("IGES"));
+			break;
+		case CADLibrary::ECADFormat::INVENTOR:
+			DatasmithScene->SetProductName(TEXT("Inventor"));
+			break;
+		case CADLibrary::ECADFormat::NX:
+			DatasmithScene->SetProductName(TEXT("NX"));
+			break;
+		case CADLibrary::ECADFormat::PARASOLID:
+			DatasmithScene->SetProductName(TEXT("Parasolid"));
+			break;
+		case CADLibrary::ECADFormat::STEP:
+			DatasmithScene->SetProductName(TEXT("STEP"));
+			break;
+		case CADLibrary::ECADFormat::DWG:
+			DatasmithScene->SetProductName(TEXT("AutoCAD"));
+			break;
+		case CADLibrary::ECADFormat::DGN:
+			DatasmithScene->SetProductName(TEXT("Micro Station"));
+			break;
+		default:
+			DatasmithScene->SetProductName(TEXT("Unknown"));
+			break;
+		}
 	}
 
 	return true;
@@ -269,11 +289,11 @@ TSharedPtr< IDatasmithActorElement >  FDatasmithSceneBaseGraphBuilder::BuildInst
 	CADLibrary::FArchiveInstance& Instance = SceneGraph->Instances[InstanceIndex];
 
 	CADLibrary::FArchiveSceneGraph* InstanceSceneGraph = SceneGraph;
-	if (Instance.bIsExternalRef)
+	if (Instance.bIsExternalReference)
 	{
-		if (!Instance.ExternalRef.Path.IsEmpty())
+		if (!Instance.ExternalReference.GetSourcePath().IsEmpty())
 		{
-			uint32 InstanceSceneGraphHash = GetTypeHash(Instance.ExternalRef);
+			uint32 InstanceSceneGraphHash = GetTypeHash(Instance.ExternalReference);
 			SceneGraph = CADFileToSceneGraphArchive.FindRef(InstanceSceneGraphHash);
 			if (SceneGraph)
 			{
@@ -281,11 +301,11 @@ TSharedPtr< IDatasmithActorElement >  FDatasmithSceneBaseGraphBuilder::BuildInst
 				{
 					AncestorSceneGraphHash.Add(InstanceSceneGraphHash);
 
-					CadId RootId = 1;
-					int32* Index = SceneGraph->CADIdToComponentIndex.Find(RootId);
+					FCadId RootId = 1;
+					const int32* Index = SceneGraph->CADIdToComponentIndex.Find(RootId);
 					if (Index)
 					{
-						Reference = &(SceneGraph->ComponentSet[*Index]);
+						Reference = &(SceneGraph->Components[*Index]);
 					}
 				}
 			}
@@ -294,18 +314,19 @@ TSharedPtr< IDatasmithActorElement >  FDatasmithSceneBaseGraphBuilder::BuildInst
 		if(!Reference)
 		{
 			SceneGraph = InstanceSceneGraph;
-			int32* Index = SceneGraph->CADIdToUnloadedComponentIndex.Find(Instance.ReferenceNodeId);
+			const int32* Index = SceneGraph->CADIdToUnloadedComponentIndex.Find(Instance.ReferenceNodeId);
 			if (Index)
 			{
-				Reference = &(SceneGraph->UnloadedComponentSet[*Index]);
+				Reference = &(SceneGraph->UnloadedComponents[*Index]);
 			}
 		}
 	}
-	else {
-		int32* Index = SceneGraph->CADIdToComponentIndex.Find(Instance.ReferenceNodeId);
+	else 
+	{
+		const int32* Index = SceneGraph->CADIdToComponentIndex.Find(Instance.ReferenceNodeId);
 		if (Index)
 		{
-			Reference = &(SceneGraph->ComponentSet[*Index]);
+			Reference = &(SceneGraph->Components[*Index]);
 		}
 	}
 
@@ -316,9 +337,9 @@ TSharedPtr< IDatasmithActorElement >  FDatasmithSceneBaseGraphBuilder::BuildInst
 
 	FString ActorUUID;
 	FString ActorLabel;
-	GetNodeUUIDAndName(Instance.MetaData, Reference->MetaData, InstanceIndex, ParentData.Uuid, ActorUUID, ActorLabel);
+	GetNodeUUIDAndName(Instance.MetaData, Reference->MetaData, Instance.ObjectId, ParentData.Uuid, ActorUUID, ActorLabel);
 
-	TSharedPtr< IDatasmithActorElement > Actor = CreateActor(*ActorUUID, *ActorLabel);
+	TSharedPtr<IDatasmithActorElement> Actor = CreateActor(*ActorUUID, *ActorLabel);
 	if (!Actor.IsValid())
 	{
 		return TSharedPtr< IDatasmithActorElement >();
@@ -350,28 +371,28 @@ TSharedPtr< IDatasmithActorElement >  FDatasmithSceneBaseGraphBuilder::CreateAct
 		Actor->SetLabel(InLabel);
 		return Actor;
 	}
-	return TSharedPtr< IDatasmithActorElement >();
+	return TSharedPtr<IDatasmithActorElement>();
 }
 
 void FDatasmithSceneBaseGraphBuilder::GetNodeUUIDAndName(
-	TMap<FString, FString>& InInstanceNodeMetaDataMap,
-	TMap<FString, FString>& InReferenceNodeMetaDataMap,
+	const TMap<FString, FString>& InInstanceNodeMetaDataMap,
+	const TMap<FString, FString>& InReferenceNodeMetaDataMap,
 	int32 InComponentIndex,
 	const TCHAR* InParentUEUUID,
 	FString& OutUEUUID,
 	FString& OutName
 )
 {
-	FString* InstanceKernelIOName = InInstanceNodeMetaDataMap.Find(TEXT("CTName"));
-	FString* InstanceCADName = InInstanceNodeMetaDataMap.Find(TEXT("Name"));
-	FString* InstanceUUID = InInstanceNodeMetaDataMap.Find(TEXT("UUID"));
+	const FString* InstanceSDKName = InInstanceNodeMetaDataMap.Find(TEXT("SDKName"));
+	const FString* InstanceCADName = InInstanceNodeMetaDataMap.Find(TEXT("Name"));
+	const FString* InstanceUUID = InInstanceNodeMetaDataMap.Find(TEXT("UUID"));
 
-	FString* ReferenceKernelIOName = InReferenceNodeMetaDataMap.Find(TEXT("CTName"));
-	FString* ReferenceCADName = InReferenceNodeMetaDataMap.Find(TEXT("Name"));
-	FString* ReferenceUUID = InReferenceNodeMetaDataMap.Find(TEXT("UUID"));
+	const FString* ReferenceSDKName = InReferenceNodeMetaDataMap.Find(TEXT("SDKName"));
+	const FString* ReferenceCADName = InReferenceNodeMetaDataMap.Find(TEXT("Name"));
+	const FString* ReferenceUUID = InReferenceNodeMetaDataMap.Find(TEXT("UUID"));
 
 	// Outname Name
-	// IName and RName are KernelIO build Name. Original names (CAD system name) are preferred
+	// Instance SDK Name and Reference SDName are build Name. Original names (CAD system name / "Name") are preferred
 	if (InstanceCADName && !InstanceCADName->IsEmpty())
 	{
 		OutName = *InstanceCADName;
@@ -380,20 +401,20 @@ void FDatasmithSceneBaseGraphBuilder::GetNodeUUIDAndName(
 	{
 		OutName = *ReferenceCADName;
 	}
-	else if (InstanceKernelIOName && !InstanceKernelIOName->IsEmpty())
+	else if (InstanceSDKName && !InstanceSDKName->IsEmpty())
 	{
-		OutName = *InstanceKernelIOName;
+		OutName = *InstanceSDKName;
 	}
-	else if (ReferenceKernelIOName && !ReferenceKernelIOName->IsEmpty())
+	else if (ReferenceSDKName && !ReferenceSDKName->IsEmpty())
 	{
-		OutName = *ReferenceKernelIOName;
+		OutName = *ReferenceSDKName;
 	}
 	else
 	{
 		OutName = "NoName";
 	}
 
-	CADUUID UEUUID = HashCombine(GetTypeHash(InParentUEUUID), GetTypeHash(InComponentIndex));
+	FCADUUID UEUUID = HashCombine(GetTypeHash(InParentUEUUID), GetTypeHash(InComponentIndex));
 
 	if (InstanceUUID)
 	{
@@ -403,9 +424,9 @@ void FDatasmithSceneBaseGraphBuilder::GetNodeUUIDAndName(
 	{
 		UEUUID = HashCombine(UEUUID, GetTypeHash(*InstanceCADName));
 	}
-	if (InstanceKernelIOName)
+	if (InstanceSDKName)
 	{
-		UEUUID = HashCombine(UEUUID, GetTypeHash(*InstanceKernelIOName));
+		UEUUID = HashCombine(UEUUID, GetTypeHash(*InstanceSDKName));
 	}
 
 	if (ReferenceUUID)
@@ -416,22 +437,21 @@ void FDatasmithSceneBaseGraphBuilder::GetNodeUUIDAndName(
 	{
 		UEUUID = HashCombine(UEUUID, GetTypeHash(*ReferenceCADName));
 	}
-	if (ReferenceKernelIOName)
+	if (ReferenceSDKName)
 	{
-		UEUUID = HashCombine(UEUUID, GetTypeHash(*ReferenceKernelIOName));
+		UEUUID = HashCombine(UEUUID, GetTypeHash(*ReferenceSDKName));
 	}
 
 	OutUEUUID = FString::Printf(TEXT("0x%08x"), UEUUID);
 }
 
-TSharedPtr< IDatasmithActorElement > FDatasmithSceneBaseGraphBuilder::BuildComponent(CADLibrary::FArchiveComponent& Component, const ActorData& ParentData)
+TSharedPtr<IDatasmithActorElement> FDatasmithSceneBaseGraphBuilder::BuildComponent(CADLibrary::FArchiveComponent& Component, const ActorData& ParentData)
 {
 	TMap<FString, FString> InstanceNodeMetaDataMap;
 
-	FString ActorUUID = TEXT("");
-	FString ActorLabel = TEXT("");
-	
-	GetNodeUUIDAndName(InstanceNodeMetaDataMap, Component.MetaData, 1, ParentData.Uuid, ActorUUID, ActorLabel);
+	FString ActorUUID;
+	FString ActorLabel;
+	GetNodeUUIDAndName(InstanceNodeMetaDataMap, Component.MetaData, Component.ObjectId, ParentData.Uuid, ActorUUID, ActorLabel);
 
 	TSharedPtr< IDatasmithActorElement > Actor = CreateActor(*ActorUUID, *ActorLabel);
 	if (!Actor.IsValid())
@@ -446,36 +466,43 @@ TSharedPtr< IDatasmithActorElement > FDatasmithSceneBaseGraphBuilder::BuildCompo
 
 	AddChildren(Actor, Component, ComponentData);
 
+	DatasmithSceneGraphBuilderImpl::AddTransformToActor(Component, Actor, ImportParameters);
+
 	return Actor;
 }
 
-TSharedPtr< IDatasmithActorElement > FDatasmithSceneBaseGraphBuilder::BuildBody(int32 BodyIndex, const ActorData& ParentData)
+TSharedPtr<IDatasmithActorElement> FDatasmithSceneBaseGraphBuilder::BuildBody(int32 BodyIndex, const ActorData& ParentData)
 {
 	TMap<FString, FString> InstanceNodeMetaDataMap;
 
-	CADLibrary::FArchiveBody& Body = SceneGraph->BodySet[BodyIndex];
+	CADLibrary::FArchiveBody& Body = SceneGraph->Bodies[BodyIndex];
+
+	if (Body.ParentId == 0 || Body.MeshActorName == 0)
+	{
+		return TSharedPtr<IDatasmithActorElement>();
+	}
 
 	FString BodyUUID;
 	FString BodyLabel;
-	GetNodeUUIDAndName(InstanceNodeMetaDataMap, Body.MetaData, BodyIndex, ParentData.Uuid, BodyUUID, BodyLabel);
+	GetNodeUUIDAndName(InstanceNodeMetaDataMap, Body.MetaData, Body.ObjectId, ParentData.Uuid, BodyUUID, BodyLabel);
 
 	// Apply materials on the current part
 	uint32 MaterialUuid = 0;
 	MaterialUuid = ParentData.MaterialUuid ? ParentData.MaterialUuid : ParentData.ColorUuid;
 
-	if (!Body.ColorFaceSet.Num())
+	if (!(Body.ColorFaceSet.Num() + Body.MaterialFaceSet.Num()))
 	{
 		Body.ColorFaceSet.Add(MaterialUuid);
 	}
 
-	TSharedPtr< IDatasmithMeshElement > MeshElement = FindOrAddMeshElement(Body, BodyLabel);
+	TSharedPtr<IDatasmithMeshElement> MeshElement = FindOrAddMeshElement(Body, BodyLabel);
 	if (!MeshElement.IsValid())
 	{
 		return TSharedPtr< IDatasmithActorElement >();
 	}
 
 
-	TSharedPtr< IDatasmithMeshActorElement > ActorElement = FDatasmithSceneFactory::CreateMeshActor(*BodyUUID);
+	TSharedPtr<IDatasmithMeshActorElement> ActorElement = FDatasmithSceneFactory::CreateMeshActor(*BodyUUID);
 	if (!ActorElement.IsValid())
 	{
 		return TSharedPtr< IDatasmithActorElement >();
@@ -484,7 +511,9 @@ TSharedPtr< IDatasmithActorElement > FDatasmithSceneBaseGraphBuilder::BuildBody(
 	ActorElement->SetLabel(*BodyLabel);
 	ActorElement->SetStaticMeshPathName(MeshElement->GetName());
 
-	if (MaterialUuid && ImportParameters.Propagation != CADLibrary::EDisplayDataPropagationMode::BodyOnly)
+	DatasmithSceneGraphBuilderImpl::AddTransformToActor(Body, ActorElement, ImportParameters);
+
+	if (MaterialUuid && ImportParameters.GetPropagation() != CADLibrary::EDisplayDataPropagationMode::BodyOnly)
 	{
 		TSharedPtr< IDatasmithMaterialIDElement > PartMaterialIDElement = FindOrAddMaterial(MaterialUuid);
 		const TCHAR* MaterialIDElementName = PartMaterialIDElement->GetName();
@@ -526,31 +555,25 @@ TSharedPtr< IDatasmithMeshElement > FDatasmithSceneBaseGraphBuilder::FindOrAddMe
 	Hash.Set(MD5);
 	MeshElement->SetFileHash(Hash);
 
-	MeshElement->SetFile(*(ShellUuidName + TEXT(".ct")));
-
-
-	// TODO: Set bounding box 
-	//float BoundingBox[6];
-	//FString Buffer = GetStringAttribute(GeomID, TEXT("UE_MESH_BBOX"));
-	//if (FString::ToHexBlob(Buffer, (uint8*)BoundingBox, sizeof(BoundingBox)))
-	//{
-	//	MeshElement->SetDimensions(BoundingBox[3] - BoundingBox[0], BoundingBox[4] - BoundingBox[1], BoundingBox[5] - BoundingBox[2], 0.0f);
-	//}
-
-	// Currently we assume that face has only colors
-	TSet<uint32>& MaterialSet = Body.ColorFaceSet;
-
-	for (uint32 MaterialSlotId : MaterialSet)
+	TFunction<void(TSet<uint32>&)> SetMaterialToDatasmithMeshElement = [&](TSet<uint32>& MaterialSet)
 	{
-		TSharedPtr< IDatasmithMaterialIDElement > PartMaterialIDElement;
-		PartMaterialIDElement = FindOrAddMaterial(MaterialSlotId);
+		for (uint32 MaterialSlotId : MaterialSet)
+		{
+			TSharedPtr< IDatasmithMaterialIDElement > PartMaterialIDElement;
+			PartMaterialIDElement = FindOrAddMaterial(MaterialSlotId);
+			MeshElement->SetMaterial(PartMaterialIDElement->GetName(), MaterialSlotId);
+		}
+	};
 
-		MeshElement->SetMaterial(PartMaterialIDElement->GetName(), MaterialSlotId);
-	}
+	SetMaterialToDatasmithMeshElement(Body.ColorFaceSet);
+	SetMaterialToDatasmithMeshElement(Body.MaterialFaceSet);
 
 	DatasmithScene->AddMesh(MeshElement);
 
 	BodyUuidToMeshElement.Add(Body.MeshActorName, MeshElement);
+
+	FString BodyCachePath = CADLibrary::BuildCacheFilePath(*CachePath, TEXT("body"), Body.MeshActorName);
+	MeshElement->SetFile(*BodyCachePath);
 
 	return MeshElement;
 }
@@ -656,7 +679,7 @@ void FDatasmithSceneBaseGraphBuilder::AddMetaData(TSharedPtr< IDatasmithActorEle
 			}
 			else
 			{
-				FString FileDir = FPaths::GetPath(rootFileDescription.Path);
+				FString FileDir = RootFileDescription.GetRootFolder();
 				FString FilePath = FPaths::Combine(FileDir, OFilePath);
 
 				if (FPaths::FileExists(FilePath))
@@ -728,7 +751,7 @@ bool FDatasmithSceneBaseGraphBuilder::DoesActorHaveChildrenOrIsAStaticMesh(const
 }
 
 
-void FDatasmithSceneBaseGraphBuilder::AddChildren(TSharedPtr< IDatasmithActorElement > Actor, CADLibrary::FArchiveComponent& Component, const ActorData& ParentData)
+void FDatasmithSceneBaseGraphBuilder::AddChildren(TSharedPtr< IDatasmithActorElement > Actor, const CADLibrary::FArchiveComponent& Component, const ActorData& ParentData)
 {
 	for (const int32 ChildId : Component.Children)
 	{

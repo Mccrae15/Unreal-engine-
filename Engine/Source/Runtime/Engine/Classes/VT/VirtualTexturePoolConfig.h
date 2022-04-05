@@ -18,7 +18,16 @@ struct FVirtualTextureSpacePoolConfig
 {
 	GENERATED_USTRUCT_BODY()
 
-	FVirtualTextureSpacePoolConfig() : MinTileSize(0), MaxTileSize(0), SizeInMegabyte(0), bAllowSizeScale(false), ScalabilityGroup(0) {}
+	FVirtualTextureSpacePoolConfig() 
+		: MinTileSize(0)
+		, MaxTileSize(0)
+		, SizeInMegabyte(0)
+		, bEnableResidencyMipMapBias(false)
+		, bAllowSizeScale(false)
+		, ScalabilityGroup(0)
+		, MinScaledSizeInMegabyte(0)
+		, MaxScaledSizeInMegabyte(0)
+	{}
 
 	/** Minimum tile size to match (including tile border). */
 	UPROPERTY()
@@ -32,9 +41,13 @@ struct FVirtualTextureSpacePoolConfig
 	UPROPERTY()
 	TArray< TEnumAsByte<EPixelFormat> > Formats;
 
-	/** Upper limit of size in megabytes to allocate for the pool. The allocator will allocate as close as possible to this limit. */
+	/** Size in megabytes to allocate for the pool. The allocator will allocate as close as possible below this limit. */
 	UPROPERTY()
 	int32 SizeInMegabyte;
+
+	/** Enable MipMapBias based on pool residency tracking. */
+	UPROPERTY()
+	bool bEnableResidencyMipMapBias;
 
 	/** Allow the size to allocate for the pool to be scaled by some factor. */
 	UPROPERTY()
@@ -44,8 +57,16 @@ struct FVirtualTextureSpacePoolConfig
 	UPROPERTY()
 	uint32 ScalabilityGroup;
 
+	/** Lower limit of size in megabytes to allocate for the pool after size scaling. */
+	UPROPERTY()
+	int32 MinScaledSizeInMegabyte;
+
+	/** Upper limit of size in megabytes to allocate for the pool after size scaling. */
+	UPROPERTY()
+	int32 MaxScaledSizeInMegabyte;
+
 	/** Is this the default config? Use this setting when we can't find any other match. */
-	bool IsDefault() const { return Formats.Num() == 0; }
+	bool IsDefault() const { return Formats.Num() == 0 && SizeInMegabyte > 0; }
 };
 
 UCLASS(config = Engine, transient)

@@ -10,6 +10,7 @@ public class OculusEditor : ModuleRules
 			new string[] {
 				"Projects",
 				"InputCore",
+				"EditorFramework",
 				"UnrealEd",
 				"LevelEditor",
 				"CoreUObject",
@@ -26,6 +27,7 @@ public class OculusEditor : ModuleRules
 				"DesktopPlatform",
                 "LauncherServices",
                 "GameProjectGeneration",
+				"SharedSettingsWidgets",
             }
 			);
 

@@ -16,6 +16,8 @@
 #include "HAL/LowLevelMemTracker.h"
 #include "Misc/IQueuedWork.h"
 #include "Misc/QueuedThreadPool.h"
+#include "ProfilingDebugging/TagTrace.h"
+#include "Async/Fundamental/Scheduler.h"
 
 /**
 	FAutoDeleteAsyncTask - template task for jobs that delete themselves when complete
@@ -63,13 +65,20 @@ class FAutoDeleteAsyncTask
 	TTask Task;
 	/** optional LLM tag */
 	LLM(const UE::LLMPrivate::FTagData* InheritedLLMTag);
+#if UE_MEMORY_TAGS_TRACE_ENABLED
+	/** optional Trace tag */
+	int32 InheritedTraceTag;
+#endif
 
 	/* Generic start function, not called directly
 	 * @param bForceSynchronous if true, this job will be started synchronously, now, on this thread
 	 **/
-	void Start(bool bForceSynchronous, FQueuedThreadPool* InQueuedPool)
+	void Start(bool bForceSynchronous, FQueuedThreadPool* InQueuedPool, EQueuedWorkPriority InPriority = EQueuedWorkPriority::Normal)
 	{
 		LLM(InheritedLLMTag = FLowLevelMemTracker::bIsDisabled ? nullptr : FLowLevelMemTracker::Get().GetActiveTagData(ELLMTracker::Default));
+#if UE_MEMORY_TAGS_TRACE_ENABLED
+		InheritedTraceTag = MemoryTrace_GetActiveTag();
+#endif
 
 		FPlatformMisc::MemoryBarrier();
 		FQueuedThreadPool* QueuedPool = InQueuedPool;
@@ -79,7 +88,7 @@ class FAutoDeleteAsyncTask
 		}
 		if (QueuedPool)
 		{
-			QueuedPool->AddQueuedWork(this);
+			QueuedPool->AddQueuedWork(this, InPriority);
 		}
 		else
 		{
@@ -94,6 +103,7 @@ class FAutoDeleteAsyncTask
 	void DoWork()
 	{
 		LLM_SCOPE(InheritedLLMTag);
+		UE_MEMSCOPE(InheritedTraceTag);
 		FScopeCycleCounter Scope(Task.GetStatId(), true);
 
 		Task.DoWork();
@@ -137,15 +147,15 @@ public:
 	**/
 	void StartSynchronousTask()
 	{
-		Start(true, GThreadPool);
+		Start(true, nullptr);
 	}
 
 	/** 
 	* Run this task on the lo priority thread pool. It is not safe to use this object after this call.
 	**/
-	void StartBackgroundTask(FQueuedThreadPool* InQueuedPool = GThreadPool)
+	void StartBackgroundTask(FQueuedThreadPool* InQueuedPool = GThreadPool, EQueuedWorkPriority InPriority = EQueuedWorkPriority::Normal)
 	{
-		Start(false, InQueuedPool);
+		Start(false, InQueuedPool, InPriority);
 	}
 };
 
@@ -215,8 +225,18 @@ class FAsyncTask
 	FEvent*				DoneEvent;
 	/** Pool we are queued into, maintained by the calling thread */
 	FQueuedThreadPool*	QueuedPool;
+	/** Current priority */
+	EQueuedWorkPriority Priority;
+	/** Current flags */
+	EQueuedWorkFlags Flags;
+	/** Approximation of the peak memory (in bytes) this task could require during it's execution. */
+	int64 RequiredMemory = -1;
 	/** optional LLM tag */
 	LLM(const UE::LLMPrivate::FTagData* InheritedLLMTag);
+	/** Memory trace tag */
+#if UE_MEMORY_TAGS_TRACE_ENABLED
+	int32 InheritedTraceTag;
+#endif
 
 	/* Internal function to destroy the completion event
 	**/
@@ -226,19 +246,30 @@ class FAsyncTask
 		DoneEvent = nullptr;
 	}
 
+	EQueuedWorkFlags GetQueuedWorkFlags() const override
+	{
+		return Flags;
+	}
+
 	/* Generic start function, not called directly
 		* @param bForceSynchronous if true, this job will be started synchronously, now, on this thread
 	**/
-	void Start(bool bForceSynchronous, FQueuedThreadPool* InQueuedPool)
+	void Start(bool bForceSynchronous, FQueuedThreadPool* InQueuedPool, EQueuedWorkPriority InQueuedWorkPriority, EQueuedWorkFlags InQueuedWorkFlags, int64 InRequiredMemory)
 	{
 		FScopeCycleCounter Scope( Task.GetStatId(), true );
 		DECLARE_SCOPE_CYCLE_COUNTER( TEXT( "FAsyncTask::Start" ), STAT_FAsyncTask_Start, STATGROUP_ThreadPoolAsyncTasks );
 		LLM(InheritedLLMTag = FLowLevelMemTracker::bIsDisabled ? nullptr : FLowLevelMemTracker::Get().GetActiveTagData(ELLMTracker::Default));
+#if UE_MEMORY_TAGS_TRACE_ENABLED
+		InheritedTraceTag = MemoryTrace_GetActiveTag();
+#endif
+		RequiredMemory = InRequiredMemory;
 
 		FPlatformMisc::MemoryBarrier();
 		CheckIdle();  // can't start a job twice without it being completed first
 		WorkNotFinishedCounter.Increment();
 		QueuedPool = InQueuedPool;
+		Priority = InQueuedWorkPriority;
+		Flags = InQueuedWorkFlags;
 		if (bForceSynchronous)
 		{
 			QueuedPool = 0;
@@ -250,7 +281,7 @@ class FAsyncTask
 				DoneEvent = FPlatformProcess::GetSynchEventFromPool(true);
 			}
 			DoneEvent->Reset();
-			QueuedPool->AddQueuedWork(this);
+			QueuedPool->AddQueuedWork(this, InQueuedWorkPriority);
 		}
 		else 
 		{
@@ -266,6 +297,7 @@ class FAsyncTask
 	void DoWork()
 	{	
 		LLM_SCOPE(InheritedLLMTag);
+		UE_MEMSCOPE(InheritedTraceTag);
 		FScopeCycleCounter Scope(Task.GetStatId(), true); 
 
 		Task.DoWork();		
@@ -326,14 +358,22 @@ class FAsyncTask
 
 	/** 
 	* Internal call to synchronize completion between threads, never called from a pool thread
+	* @param bIsLatencySensitive specifies if waiting for the task should return as soon as possible even if this delays other tasks
 	**/
-	void SyncCompletion()
+	void SyncCompletion(bool bIsLatencySensitive)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FAsyncTask::SyncCompletion);
+
 		FPlatformMisc::MemoryBarrier();
 		if (QueuedPool)
 		{
 			FScopeCycleCounter Scope( Task.GetStatId() );
 			DECLARE_SCOPE_CYCLE_COUNTER( TEXT( "FAsyncTask::SyncCompletion" ), STAT_FAsyncTask_SyncCompletion, STATGROUP_ThreadPoolAsyncTasks );
+
+			if (LowLevelTasks::FScheduler::Get().IsWorkerThread() && !bIsLatencySensitive)
+			{
+				LowLevelTasks::BusyWaitUntil([this]() { return IsWorkDone(); });
+			}
 
 			check(DoneEvent); // if it is not done yet, we must have an event
 			DoneEvent->Wait();
@@ -395,28 +435,37 @@ public:
 		return Task;
 	}
 
+	/**
+	 * Returns an approximation of the peak memory (in bytes) this task could require during it's execution.
+	 **/
+	int64 GetRequiredMemory() const override
+	{
+		return RequiredMemory;
+	}
+
 	/** 
 	* Run this task on this thread
 	* @param bDoNow if true then do the job now instead of at EnsureCompletion
 	**/
-	void StartSynchronousTask()
+	void StartSynchronousTask(EQueuedWorkPriority InQueuedWorkPriority = EQueuedWorkPriority::Normal, EQueuedWorkFlags InQueuedWorkFlags = EQueuedWorkFlags::None, int64 InRequiredMemory = -1)
 	{
-		Start(true, GThreadPool);
+		Start(true, GThreadPool, InQueuedWorkPriority, InQueuedWorkFlags, InRequiredMemory);
 	}
 
 	/** 
 	* Queue this task for processing by the background thread pool
 	**/
-	void StartBackgroundTask(FQueuedThreadPool* InQueuedPool = GThreadPool)
+	void StartBackgroundTask(FQueuedThreadPool* InQueuedPool = GThreadPool, EQueuedWorkPriority InQueuedWorkPriority = EQueuedWorkPriority::Normal, EQueuedWorkFlags InQueuedWorkFlags = EQueuedWorkFlags::None, int64 InRequiredMemory = -1)
 	{
-		Start(false, InQueuedPool);
+		Start(false, InQueuedPool, InQueuedWorkPriority, InQueuedWorkFlags, InRequiredMemory);
 	}
 
 	/** 
 	* Wait until the job is complete
 	* @param bDoWorkOnThisThreadIfNotStarted if true and the work has not been started, retract the async task and do it now on this thread
+	* @param specifies if waiting for the task should return as soon as possible even if this delays other tasks
 	**/
-	void EnsureCompletion(bool bDoWorkOnThisThreadIfNotStarted = true)
+	void EnsureCompletion(bool bDoWorkOnThisThreadIfNotStarted = true, bool bIsLatencySensitive = false)
 	{
 		bool DoSyncCompletion = true;
 		if (bDoWorkOnThisThreadIfNotStarted)
@@ -439,9 +488,29 @@ public:
 		}
 		if (DoSyncCompletion)
 		{
-			SyncCompletion();
+			SyncCompletion(bIsLatencySensitive);
 		}
 		CheckIdle(); // Must have had bDoWorkOnThisThreadIfNotStarted == false and needed it to be true for a synchronous job
+	}
+	
+	/**
+	* If not already being processed, will be rescheduled on given thread pool and priority.
+	* @return true if the reschedule was successful, false if was already being processed.
+	**/
+	bool Reschedule(FQueuedThreadPool* InQueuedPool = GThreadPool, EQueuedWorkPriority InQueuedWorkPriority = EQueuedWorkPriority::Normal)
+	{
+		if (QueuedPool)
+		{
+			if (QueuedPool->RetractQueuedWork(this))
+			{
+				QueuedPool = InQueuedPool;
+				Priority = InQueuedWorkPriority;
+				QueuedPool->AddQueuedWork(this, InQueuedWorkPriority);
+				
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -504,7 +573,7 @@ public:
 		{
 			return false;
 		}
-		SyncCompletion();
+		SyncCompletion(/*bIsLatencySensitive = */false);
 		return true;
 	}
 
@@ -527,6 +596,11 @@ public:
 	bool IsIdle() const
 	{
 		return WorkNotFinishedCounter.GetValue() == 0 && QueuedPool == 0;
+	}
+
+	EQueuedWorkPriority GetPriority() const
+	{
+		return Priority;
 	}
 };
 

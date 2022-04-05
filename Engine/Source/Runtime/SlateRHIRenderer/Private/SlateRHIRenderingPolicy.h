@@ -26,21 +26,17 @@ class FSlateMaterialShaderVS;
 
 struct FSlateRenderingParams
 {
-	FMatrix ViewProjectionMatrix;
+	FMatrix44f ViewProjectionMatrix;
 	FVector2D ViewOffset;
-	float CurrentWorldTime;
-	float DeltaTimeSeconds;
-	float CurrentRealTime;
+	FGameTime Time;
 	bool bAllowSwitchVerticalAxis;
 	bool bWireFrame;
 	bool bIsHDR;
 
-	FSlateRenderingParams(const FMatrix& InViewProjectionMatrix, float InCurrentWorldTime, float InDeltaTimeSeconds, float InCurrentRealTime)
+	FSlateRenderingParams(const FMatrix& InViewProjectionMatrix, FGameTime InTime)
 		: ViewProjectionMatrix(InViewProjectionMatrix)
 		, ViewOffset(0, 0)
-		, CurrentWorldTime(InCurrentWorldTime)
-		, DeltaTimeSeconds(InDeltaTimeSeconds)
-		, CurrentRealTime(InCurrentRealTime)
+		, Time(InTime)
 		, bAllowSwitchVerticalAxis(true)
 		, bWireFrame(false)
 		, bIsHDR(false)
@@ -85,9 +81,8 @@ private:
 	 * @param DrawEffects	Draw effects being used
 	 * @return The pixel shader for use with the shader type and draw effects
 	 */
-	TShaderRef<FSlateElementPS> GetTexturePixelShader(FGlobalShaderMap* ShaderMap, ESlateShader ShaderType, ESlateDrawEffect DrawEffects );
-	TShaderRef<FSlateMaterialShaderPS> GetMaterialPixelShader( const class FMaterial* Material, ESlateShader ShaderType );
-	TShaderRef<FSlateMaterialShaderVS> GetMaterialVertexShader( const class FMaterial* Material, bool bUseInstancing );
+	TShaderRef<FSlateElementPS> GetTexturePixelShader(FGlobalShaderMap* ShaderMap, ESlateShader ShaderType, ESlateDrawEffect DrawEffects, bool bIsVirtualTexture);
+	void ChooseMaterialShaderTypes(ESlateShader ShaderType, bool bUseInstancing, FMaterialShaderTypes& OutShaderTypes);
 
 	/** @return The RHI primitive type from the Slate primitive type */
 	EPrimitiveType GetRHIPrimitiveType(ESlateDrawPrimitive SlateType);

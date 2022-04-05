@@ -12,6 +12,7 @@
 #include "Subsystems/EngineSubsystem.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Subsystems/LocalPlayerSubsystem.h"
+#include "Subsystems/AudioEngineSubsystem.h"
 #include "EditorSubsystem.h"
 #include "Subsystems/SubsystemBlueprintLibrary.h"
 #include "Subsystems/EditorSubsystemBlueprintLibrary.h"
@@ -19,7 +20,8 @@
 #include "GameFramework/PlayerController.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Subsystems/WorldSubsystem.h"
-
+#include "SourceCodeNavigation.h"
+#include "BlueprintEditorSettings.h"
 
 // ************************************************************************************
 //    UK2Node_GetSubsystem
@@ -141,6 +143,10 @@ void UK2Node_GetSubsystem::ExpandNode(class FKismetCompilerContext& CompilerCont
 	{
 		Get_FunctionName = GET_FUNCTION_NAME_CHECKED(USubsystemBlueprintLibrary, GetLocalPlayerSubsystem);
 	}
+	else if (CustomClass->IsChildOf<UAudioEngineSubsystem>())
+	{
+		Get_FunctionName = GET_FUNCTION_NAME_CHECKED(USubsystemBlueprintLibrary, GetAudioEngineSubsystem);
+	}
 	else
 	{
 		CompilerContext.MessageLog.Error(*NSLOCTEXT("K2Node", "GetSubsystem_Error", "Node @@ must have a class specified.").ToString(), GetSubsystemNode);
@@ -216,6 +222,7 @@ void UK2Node_GetSubsystem::GetMenuActions(FBlueprintActionDatabaseRegistrar& Act
 	GetDerivedClasses(UGameInstanceSubsystem::StaticClass(), Subclasses);
 	GetDerivedClasses(UWorldSubsystem::StaticClass(), Subclasses);
 	GetDerivedClasses(ULocalPlayerSubsystem::StaticClass(), Subclasses);
+	GetDerivedClasses(UAudioEngineSubsystem::StaticClass(), Subclasses);
 
 	auto CustomizeCallback = [](UEdGraphNode* Node, bool bIsTemplateNode, UClass* Subclass)
 	{
@@ -256,6 +263,10 @@ FText UK2Node_GetSubsystem::GetMenuCategory() const
 	{
 		return NSLOCTEXT("K2Node", "GetSubsystem_WorldSubsystemsMenuCategory", "World Subsystems");
 	}
+	else if (CustomClass->IsChildOf<UAudioEngineSubsystem>())
+	{
+		return NSLOCTEXT("K2Node", "GetSubsystem_AudioEngineSubsystemsMenuCategory", "AudioEngine Subsystems");
+	}
 
 	return NSLOCTEXT("K2Node", "GetSubsystem_InvalidSubsystemTypeMenuCategory", "Invalid Subsystem Type");
 }
@@ -273,11 +284,18 @@ FText UK2Node_GetSubsystem::GetTooltipText() const
 		{
 			SubsystemTypeText = NSLOCTEXT("K2Node", "GetSubsystem_WorldSubsystemTooltip", "World Subsystem");
 		}
+		else if (CustomClass->IsChildOf<UAudioEngineSubsystem>())
+		{
+			SubsystemTypeText = NSLOCTEXT("K2Node", "GetSubsystem_AudioEngineSubsystemTooltip", "AudioEngine Subsystem");
+		}
 		else
 		{
 			SubsystemTypeText = NSLOCTEXT("K2Node", "GetSubsystem_LocalPlayerSubsystemTooltip", "LocalPlayer Subsystem");
 		}
-		return FText::FormatNamed(NSLOCTEXT("K2Node", "GetSubsystem_TooltipFormat", "Get {ClassName} a {SubsystemType}"), TEXT("ClassName"), CustomClass->GetDisplayNameText(), TEXT("SubsystemType"), SubsystemTypeText);
+		return FText::FormatNamed(NSLOCTEXT("K2Node", "GetSubsystem_TooltipFormat", "Get {ClassName} ({SubsystemType})\n\n{ClassTooltip}"),
+			TEXT("ClassName"), CustomClass->GetDisplayNameText(),
+			TEXT("SubsystemType"), SubsystemTypeText,
+			TEXT("ClassTooltip"), CustomClass->GetToolTipText(/*bShortTooltip=*/ true));
 	}
 
 	return NSLOCTEXT("K2Node", "GetSubsystem_InvalidSubsystemTypeTooltip", "Invalid Subsystem Type");
@@ -713,8 +731,34 @@ FText UK2Node_GetEditorSubsystem::GetTooltipText() const
 	{
 		return FText::FormatNamed(NSLOCTEXT("K2Node", "GetEditorSubsystem_TooltipFormat", "Get {ClassName} an Editor Subsystem"), TEXT("ClassName"), CustomClass->GetDisplayNameText());
 	}
-
+	 
 	return NSLOCTEXT("K2Node", "GetEditorSubsystem_InvalidSubsystemTypeTooltip", "Invalid Subsystem Type");
+}
+
+bool UK2Node_GetSubsystem::CanJumpToDefinition() const
+{
+	return CustomClass != nullptr;
+}
+
+void UK2Node_GetSubsystem::JumpToDefinition() const
+{
+	bool bSucceeded = false;
+	
+	// Attempt to navigate to the header file where the class is defined if the 
+	// blueprint preferences allow for it
+	if (GetDefault<UBlueprintEditorSettings>()->bNavigateToNativeFunctionsFromCallNodes)
+	{
+		if (FSourceCodeNavigation::CanNavigateToClass(CustomClass))
+		{
+			bSucceeded = FSourceCodeNavigation::NavigateToClass(CustomClass);
+		}
+	}
+
+	// Otherwise fall back to the base class which will just bring focus to this node
+	if (!bSucceeded)
+	{
+		Super::JumpToDefinition();
+	}
 }
 
 bool UK2Node_GetEditorSubsystem::IsActionFilteredOut(class FBlueprintActionFilter const& Filter)

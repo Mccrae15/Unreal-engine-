@@ -10,9 +10,12 @@
 #include "HAL/CriticalSection.h"
 #include "Templates/Atomic.h"
 
+namespace UE
+{
 namespace Trace
 {
 	class FStoreClient;
+}
 }
 
 namespace Insights
@@ -23,9 +26,9 @@ namespace Insights
 struct FStoreBrowserTraceInfo
 {
 	uint32 TraceId = 0;
+	int32 TraceIndex = -1;
 
 	uint64 ChangeSerial = 0;
-	int32 TraceIndex = -1;
 
 	FString Name;
 	//FString Uri;
@@ -33,15 +36,19 @@ struct FStoreBrowserTraceInfo
 	FDateTime Timestamp = 0;
 	uint64 Size = 0;
 
-	bool bIsLive = false;
-	uint32 IpAddress = 0;
-
-	bool bIsMetadataUpdated = false;
 	FString Platform;
 	FString AppName;
 	FString CommandLine;
+	FString Branch;
+	FString BuildVersion;
+	uint32 Changelist;
 	EBuildConfiguration ConfigurationType = EBuildConfiguration::Unknown;
 	EBuildTargetType TargetType = EBuildTargetType::Unknown;
+
+	bool bIsMetadataUpdated = false;
+	bool bIsLive = false;
+
+	uint32 IpAddress = 0;
 
 	FStoreBrowserTraceInfo() = default;
 
@@ -81,7 +88,7 @@ public:
 	void Unlock() { check(bTracesLocked); bTracesLocked = false; TracesCriticalSection.Unlock(); }
 
 private:
-	Trace::FStoreClient* GetStoreClient() const;
+	UE::Trace::FStoreClient* GetStoreClient() const;
 
 	void UpdateTraces();
 	void ResetTraces();

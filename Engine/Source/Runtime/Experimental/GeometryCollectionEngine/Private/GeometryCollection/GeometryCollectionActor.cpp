@@ -32,12 +32,7 @@ AGeometryCollectionActor::AGeometryCollectionActor(const FObjectInitializer& Obj
 	GeometryCollectionComponent = CreateDefaultSubobject<UGeometryCollectionComponent>(TEXT("GeometryCollectionComponent0"));
 	RootComponent = GeometryCollectionComponent;
 
-#if GEOMETRYCOLLECTION_DEBUG_DRAW
-	GeometryCollectionDebugDrawComponent = CreateDefaultSubobject<UGeometryCollectionDebugDrawComponent>(TEXT("GeometryCollectionDrawComponent0"));
-	GeometryCollectionDebugDrawComponent->GeometryCollectionComponent = GeometryCollectionComponent;
-#else
-	GeometryCollectionDebugDrawComponent = nullptr;
-#endif
+	GeometryCollectionDebugDrawComponent_DEPRECATED = nullptr;
 
 	PrimaryActorTick.bCanEverTick = true;
 	SetActorTickEnabled(true);
@@ -49,6 +44,9 @@ AGeometryCollectionActor::AGeometryCollectionActor(const FObjectInitializer& Obj
 void AGeometryCollectionActor::Tick(float DeltaTime) 
 {
 	UE_LOG(AGeometryCollectionActorLogging, Verbose, TEXT("AGeometryCollectionActor::Tick()"));
+
+	Super::Tick(DeltaTime);
+
 	if (GeometryCollectionComponent)
 	{
 		GeometryCollectionComponent->SetRenderStateDirty();
@@ -68,17 +66,14 @@ const Chaos::FPhysicsSolver* GetSolver(const AGeometryCollectionActor& GeomColle
 
 bool LowLevelRaycastImp(const Chaos::FVec3& Start, const Chaos::FVec3& Dir, float DeltaMag, const AGeometryCollectionActor& GeomCollectionActor, FHitResult& OutHit)
 {
+#if TODO_REIMPLEMENT_GET_RIGID_PARTICLES
 	using namespace Chaos;
-	//todo(ocohen): need to add thread safety / lock semantics
-	//const TManagedArray<int32>& RigidBodyIdArray = GeomCollectionActor.GetGeometryCollectionComponent()->GetRigidBodyIdArray();
-	const TManagedArray<FGuid>& RigidBodyIdArray = GeomCollectionActor.GetGeometryCollectionComponent()->GetRigidBodyGuidArray();
 	FPhysScene_Chaos* Scene = GeomCollectionActor.GetGeometryCollectionComponent()->GetInnerChaosScene();
 	ensure(Scene);
 
 	const Chaos::FPhysicsSolver* Solver = GetSolver(GeomCollectionActor);
 	if(ensure(Solver))
 	{
-#if TODO_REIMPLEMENT_GET_RIGID_PARTICLES
 		const TPBDRigidParticles<float, 3>& Particles = Solver->GetRigidParticles();	//todo(ocohen): should these just get passed in instead of hopping through scene?
 		FAABB3 RayBox(Start, Start);
 		RayBox.Thicken(Dir * DeltaMag);
@@ -112,8 +107,8 @@ bool LowLevelRaycastImp(const Chaos::FVec3& Start, const Chaos::FVec3& Dir, floa
 				return true;
 			}
 		}
-#endif
 	}
+#endif
 
 	return false;
 }

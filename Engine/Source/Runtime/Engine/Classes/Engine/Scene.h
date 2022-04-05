@@ -13,6 +13,7 @@
 #include "Engine/BlendableInterface.h"
 #include "RHIDefinitions.h"
 #include "SceneUtils.h"
+#include "Engine/EngineTypes.h"
 #include "Scene.generated.h"
 
 
@@ -27,18 +28,6 @@ enum EDepthOfFieldMethod
 	DOFM_Gaussian UMETA(DisplayName="GaussianDOF"),
 	DOFM_CircleDOF UMETA(DisplayName="CircleDOF"),
 	DOFM_MAX,
-};
-
-/** Used by rendering project settings. */
-UENUM()
-enum EAntiAliasingMethod
-{
-	AAM_None UMETA(DisplayName="None"),
-	AAM_FXAA UMETA(DisplayName="FXAA"),
-	AAM_TemporalAA UMETA(DisplayName="TemporalAA"),
-	/** Only supported with forward shading.  MSAA sample count is controlled by r.MSAACount. */
-	AAM_MSAA UMETA(DisplayName="MSAA"),
-	AAM_MAX,
 };
 
 /** Used by FPostProcessSettings Auto Exposure */
@@ -87,6 +76,17 @@ enum class EReflectionsType : uint8
 {
 	ScreenSpace	UMETA(DisplayName = "Screen Space"),
 	RayTracing	UMETA(DisplayName = "Ray Tracing"),
+};
+
+UENUM()
+enum class ELumenRayLightingModeOverride : uint8
+{
+	/* Use the project default method */
+	Default			UMETA(DisplayName = "Project Default"),
+	/* Use the Lumen Surface Cache to light reflection rays.  This method gives the best reflection performance. */
+	SurfaceCache	UMETA(DisplayName = "Surface Cache"),
+	/* Calculate lighting at the ray hit point.  This method gives the highest reflection quality, but greatly increases GPU cost, as the material needs to be evaluated and shadow rays traced.  The Surface Cache will still be used for Diffuse Indirect lighting (GI seen in Reflections). */
+	HitLighting		UMETA(DisplayName = "Hit Lighting for Reflections"),
 };
 
 UENUM()
@@ -216,11 +216,14 @@ struct FColorGradingSettings
 	UPROPERTY(Interp, BlueprintReadWrite, Category = "Color Grading", meta = (UIMin = "-1.0", UIMax = "1.0", DisplayName = "HighlightsMin"))
 	float HighlightsMin;
 
+	UPROPERTY(Interp, BlueprintReadWrite, Category = "Color Grading", meta = (UIMin = "1.0", UIMax = "10.0", DisplayName = "HighlightsMax"))
+	float HighlightsMax;
 
 	FColorGradingSettings()
 	{
 		ShadowsMax = 0.09f;
 		HighlightsMin = 0.5f;
+		HighlightsMax = 1.0f;
 	}
 
 	/* Exports to post process settings with overrides. */
@@ -390,7 +393,11 @@ struct FConvolutionBloomSettings
 
 	/** Texture to replace default convolution bloom kernel */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens|Bloom", meta = (DisplayName = "Convolution Kernel"))
-	class UTexture2D* Texture;
+	TObjectPtr<class UTexture2D> Texture;
+
+	/** Intensity multiplier on the scatter dispersion energy of the kernel. 1.0 means exactly use the same energy as the kernel scatter dispersion. */
+	UPROPERTY(Interp, BlueprintReadWrite, Category = "Lens|Bloom", AdvancedDisplay, meta = (ClampMin = "0.0", UIMax = "1.0", DisplayName = "Scatter Dispersion"))
+	float ScatterDispersion;
 
 	/** Relative size of the convolution kernel image compared to the minor axis of the viewport  */
 	UPROPERTY(Interp, BlueprintReadWrite, Category = "Lens|Bloom", AdvancedDisplay, meta = (ClampMin = "0.0", UIMax = "1.0", DisplayName = "Convolution Scale"))
@@ -420,6 +427,7 @@ struct FConvolutionBloomSettings
 	FConvolutionBloomSettings()
 	{
 		Texture = nullptr;
+		ScatterDispersion = 1.0f;
 		Size = 1.f;
 		CenterUV = FVector2D(0.5f, 0.5f);
 		PreFilterMin = 7.f;
@@ -468,7 +476,7 @@ struct FLensImperfectionSettings
 	 * Texture that defines the dirt on the camera lens where the light of very bright objects is scattered.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lens|Dirt Mask", meta=(DisplayName = "Dirt Mask Texture"))
-	class UTexture* DirtMask;	
+	TObjectPtr<class UTexture> DirtMask;	
 	
 	/** BloomDirtMask intensity */
 	UPROPERTY(Interp, BlueprintReadWrite, Category="Lens|Dirt Mask", meta=(ClampMin = "0.0", UIMax = "8.0", DisplayName = "Dirt Mask Intensity"))
@@ -586,14 +594,14 @@ struct FCameraExposureSettings
 	 * 0: no adjustment, -1:2x darker, -2:4x darker, 1:2x brighter, 2:4x brighter, ...
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Exposure", meta = (DisplayName = "Exposure Bias Curve"))
-	class UCurveFloat* BiasCurve = nullptr;
+	TObjectPtr<class UCurveFloat> BiasCurve = nullptr;
 
 	/**
 	 * Exposure metering mask. Bright spots on the mask will have high influence on auto-exposure metering
 	 * and dark spots will have low influence.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Exposure", meta=(DisplayName = "Exposure Metering Mask"))
-	class UTexture* MeterMask = nullptr;	
+	TObjectPtr<class UTexture> MeterMask = nullptr;	
 
 	/** temporary exposed until we found good values, -8: 1/256, -10: 1/1024 */
 	UPROPERTY(Interp, BlueprintReadWrite, Category="Exposure", AdvancedDisplay, meta=(UIMin = "-16", UIMax = "0.0"))
@@ -628,7 +636,7 @@ struct FWeightedBlendable
 
 	/** should be of the IBlendableInterface* type but UProperties cannot express that */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=FWeightedBlendable, meta=( AllowedClasses="BlendableInterface", Keywords="PostProcess" ))
-	UObject* Object;
+	TObjectPtr<UObject> Object;
 
 	// default constructor
 	FWeightedBlendable()
@@ -661,6 +669,15 @@ public:
 	TArray<FWeightedBlendable> Array;
 };
 
+struct FPostProcessSettingsDebugInfo
+{
+	FString Name;
+
+	float Priority;
+	float CurrentBlendWeight;
+	bool bIsEnabled;
+	bool bIsUnbound;
+};
 
 /** To be able to use struct PostProcessSettings. */
 // Each property consists of a bool to enable it (by default off),
@@ -731,6 +748,8 @@ struct FPostProcessSettings
 	uint8 bOverride_ColorCorrectionShadowsMax : 1;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_ColorCorrectionHighlightsMin : 1;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_ColorCorrectionHighlightsMax : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_BlueCorrection : 1;
@@ -738,42 +757,6 @@ struct FPostProcessSettings
 	uint8 bOverride_ExpandGamut : 1;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_ToneCurveAmount : 1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmWhitePoint:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmSaturation:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmChannelMixerRed:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmChannelMixerGreen:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmChannelMixerBlue:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmContrast:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmDynamicRange:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmHealAmount:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmToeAmount:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmShadowTint:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmShadowTintBlend:1;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_FilmShadowTintAmount:1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_FilmSlope:1;
@@ -850,6 +833,9 @@ struct FPostProcessSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_BloomConvolutionTexture : 1;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_BloomConvolutionScatterDispersion : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_BloomConvolutionSize : 1;
@@ -930,6 +916,21 @@ struct FPostProcessSettings
 	uint8 bOverride_HistogramLogMax:1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_LocalExposureContrastScale:1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_LocalExposureDetailStrength:1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_LocalExposureBlurredLuminanceBlend:1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_LocalExposureBlurredLuminanceKernelSizePercent:1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_LocalExposureMiddleGreyBias:1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_LensFlareIntensity:1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
@@ -950,11 +951,38 @@ struct FPostProcessSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_VignetteIntensity:1;
 
+	UPROPERTY()
+	uint8 bOverride_GrainIntensity_DEPRECATED:1;
+
+	UPROPERTY()
+	uint8 bOverride_GrainJitter_DEPRECATED:1;
+	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_GrainIntensity:1;
+	uint8 bOverride_FilmGrainIntensity:1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_FilmGrainIntensityShadows : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_FilmGrainIntensityMidtones : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_FilmGrainIntensityHighlights : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_FilmGrainShadowsMax : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_FilmGrainHighlightsMin : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_FilmGrainHighlightsMax : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_GrainJitter:1;
+	uint8 bOverride_FilmGrainTexelSize:1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_FilmGrainTexture : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_AmbientOcclusionIntensity:1;
@@ -1010,50 +1038,50 @@ struct FPostProcessSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint32 bOverride_RayTracingAORadius : 1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_LPVIntensity:1;
+	UPROPERTY()
+	uint8 bOverride_LPVIntensity_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, Category=Overrides, meta=(InlineEditConditionToggle))
-	uint8 bOverride_LPVDirectionalOcclusionIntensity:1;
+	UPROPERTY()
+	uint8 bOverride_LPVDirectionalOcclusionIntensity_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, Category=Overrides, meta=(InlineEditConditionToggle))
-	uint8 bOverride_LPVDirectionalOcclusionRadius:1;
+	UPROPERTY()
+	uint8 bOverride_LPVDirectionalOcclusionRadius_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, Category=Overrides, meta=(InlineEditConditionToggle))
-	uint8 bOverride_LPVDiffuseOcclusionExponent:1;
+	UPROPERTY()
+	uint8 bOverride_LPVDiffuseOcclusionExponent_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, Category=Overrides, meta=(InlineEditConditionToggle))
-	uint8 bOverride_LPVSpecularOcclusionExponent:1;
+	UPROPERTY()
+	uint8 bOverride_LPVSpecularOcclusionExponent_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, Category=Overrides, meta=(InlineEditConditionToggle))
-	uint8 bOverride_LPVDiffuseOcclusionIntensity:1;
+	UPROPERTY()
+	uint8 bOverride_LPVDiffuseOcclusionIntensity_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, Category=Overrides, meta=(InlineEditConditionToggle))
-	uint8 bOverride_LPVSpecularOcclusionIntensity:1;
+	UPROPERTY()
+	uint8 bOverride_LPVSpecularOcclusionIntensity_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_LPVSize:1;
+	UPROPERTY()
+	uint8 bOverride_LPVSize_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_LPVSecondaryOcclusionIntensity:1;
+	UPROPERTY()
+	uint8 bOverride_LPVSecondaryOcclusionIntensity_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_LPVSecondaryBounceIntensity:1;
+	UPROPERTY()
+	uint8 bOverride_LPVSecondaryBounceIntensity_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_LPVGeometryVolumeBias:1;
+	UPROPERTY()
+	uint8 bOverride_LPVGeometryVolumeBias_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_LPVVplInjectionBias:1;
+	UPROPERTY()
+	uint8 bOverride_LPVVplInjectionBias_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_LPVEmissiveInjectionIntensity:1;
+	UPROPERTY()
+	uint8 bOverride_LPVEmissiveInjectionIntensity_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_LPVFadeRange : 1;
+	UPROPERTY()
+	uint8 bOverride_LPVFadeRange_DEPRECATED:1;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_LPVDirectionalOcclusionFadeRange : 1;
+	UPROPERTY()
+	uint8 bOverride_LPVDirectionalOcclusionFadeRange_DEPRECATED:1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_IndirectLightingColor:1;
@@ -1130,8 +1158,14 @@ struct FPostProcessSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_MotionBlurPerObjectSize:1;
 
+	UPROPERTY()
+	uint8 bOverride_ScreenPercentage_DEPRECATED:1;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
-	uint8 bOverride_ScreenPercentage:1;
+	uint8 bOverride_ReflectionMethod:1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_LumenReflectionQuality:1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
 	uint8 bOverride_ScreenSpaceReflectionIntensity:1;
@@ -1149,8 +1183,8 @@ struct FPostProcessSettings
 
 	// Ray Tracing
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
-	uint32 bOverride_ReflectionsType : 1;
+	UPROPERTY()
+	uint32 bOverride_ReflectionsType_DEPRECATED : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint32 bOverride_RayTracingReflectionsMaxRoughness : 1;
@@ -1186,6 +1220,33 @@ struct FPostProcessSettings
 	uint32 bOverride_RayTracingTranslucencyRefraction : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverride_DynamicGlobalIlluminationMethod : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverride_LumenSceneLightingQuality : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverride_LumenSceneDetail : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverride_LumenSceneViewDistance : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverride_LumenSceneLightingUpdateSpeed : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverride_LumenFinalGatherQuality : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverride_LumenFinalGatherLightingUpdateSpeed : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverride_LumenMaxTraceDistance : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Overrides, meta=(PinHiddenByDefault, InlineEditConditionToggle))
+	uint8 bOverride_LumenRayLightingMode:1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint32 bOverride_RayTracingGI : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
@@ -1208,6 +1269,9 @@ struct FPostProcessSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint32 bOverride_PathTracingMaxPathExposure : 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
+	uint32 bOverride_PathTracingEnableReferenceDOF : 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Overrides, meta = (PinHiddenByDefault, InlineEditConditionToggle))
 	uint32 bOverride_PathTracingEnableDenoiser : 1;
@@ -1289,6 +1353,9 @@ struct FPostProcessSettings
 	FVector4 ColorOffsetHighlights;
 	UPROPERTY(interp, BlueprintReadWrite, Category = "Color Grading|Highlights", meta = (UIMin = "-1.0", UIMax = "1.0", editcondition = "bOverride_ColorCorrectionHighlightsMin", DisplayName = "HighlightsMin"))
 	float ColorCorrectionHighlightsMin;
+	/** Should be set larger than HighlightsMin. Default is 1.0, for backwards compatibility */
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Color Grading|Highlights", meta = (UIMin = "1.0", UIMax = "10.0", editcondition = "bOverride_ColorCorrectionHighlightsMax", DisplayName = "HighlightsMax"))
+	float ColorCorrectionHighlightsMax;
 
 	UPROPERTY(interp, BlueprintReadWrite, Category = "Color Grading|Shadows", meta = (UIMin = "-1.0", UIMax = "1.0", editcondition = "bOverride_ColorCorrectionShadowsMax", DisplayName = "ShadowsMax"))
 	float ColorCorrectionShadowsMax;
@@ -1313,33 +1380,6 @@ struct FPostProcessSettings
 	float FilmBlackClip;
 	UPROPERTY(interp, BlueprintReadWrite, Category="Film", meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmWhiteClip", DisplayName = "White clip"))
 	float FilmWhiteClip;
-
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", meta=(editcondition = "bOverride_FilmWhitePoint", DisplayName = "Tint", HideAlphaChannel, LegacyTonemapper))
-	FLinearColor FilmWhitePoint;
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", AdvancedDisplay, meta=(editcondition = "bOverride_FilmShadowTint", DisplayName = "Tint Shadow", HideAlphaChannel, LegacyTonemapper))
-	FLinearColor FilmShadowTint;
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", AdvancedDisplay, meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmShadowTintBlend", DisplayName = "Tint Shadow Blend", LegacyTonemapper))
-	float FilmShadowTintBlend;
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", AdvancedDisplay, meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmShadowTintAmount", DisplayName = "Tint Shadow Amount", LegacyTonemapper))
-	float FilmShadowTintAmount;
-
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", meta=(UIMin = "0.0", UIMax = "2.0", editcondition = "bOverride_FilmSaturation", DisplayName = "Saturation", LegacyTonemapper))
-	float FilmSaturation;
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", AdvancedDisplay, meta=(editcondition = "bOverride_FilmChannelMixerRed", DisplayName = "Channel Mixer Red", HideAlphaChannel, LegacyTonemapper))
-	FLinearColor FilmChannelMixerRed;
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", AdvancedDisplay, meta=(editcondition = "bOverride_FilmChannelMixerGreen", DisplayName = "Channel Mixer Green", HideAlphaChannel, LegacyTonemapper))
-	FLinearColor FilmChannelMixerGreen;
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", AdvancedDisplay, meta=(editcondition = "bOverride_FilmChannelMixerBlue", DisplayName = " Channel Mixer Blue", HideAlphaChannel, LegacyTonemapper))
-	FLinearColor FilmChannelMixerBlue;
-
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmContrast", DisplayName = "Contrast", LegacyTonemapper))
-	float FilmContrast;
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", AdvancedDisplay, meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmToeAmount", DisplayName = "Crush Shadows", LegacyTonemapper))
-	float FilmToeAmount;
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", AdvancedDisplay, meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmHealAmount", DisplayName = "Crush Highlights", LegacyTonemapper))
-	float FilmHealAmount;
-	UPROPERTY(interp, BlueprintReadWrite, Category="Film", AdvancedDisplay, meta=(UIMin = "1.0", UIMax = "4.0", editcondition = "bOverride_FilmDynamicRange", DisplayName = "Dynamic Range", LegacyTonemapper))
-	float FilmDynamicRange;
 
 	/** Scene tint color */
 	UPROPERTY(interp, BlueprintReadWrite, Category="Color Grading|Misc", meta=(editcondition = "bOverride_SceneColorTint", HideAlphaChannel))
@@ -1432,13 +1472,17 @@ struct FPostProcessSettings
 	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Bloom", AdvancedDisplay, meta=(editcondition = "bOverride_Bloom6Tint", DisplayName = "#6 Tint", HideAlphaChannel))
 	FLinearColor Bloom6Tint;
 
+	/** Intensity multiplier on the scatter dispersion energy of the kernel. 1.0 means exactly use the same energy as the kernel scatter dispersion. */
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Lens|Bloom", meta = (ClampMin = "0.0", UIMax = "20.0", editcondition = "bOverride_BloomConvolutionScatterDispersion", DisplayName = "Convolution Scatter Dispersion"))
+	float BloomConvolutionScatterDispersion;
+
 	/** Relative size of the convolution kernel image compared to the minor axis of the viewport  */
 	UPROPERTY(interp, BlueprintReadWrite, Category = "Lens|Bloom", AdvancedDisplay, meta = (ClampMin = "0.0", UIMax = "1.0", editcondition = "bOverride_BloomConvolutionSize", DisplayName = "Convolution Scale"))
 	float BloomConvolutionSize;
 
 	/** Texture to replace default convolution bloom kernel */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens|Bloom", meta = (editcondition = "bOverride_BloomConvolutionTexture", DisplayName = "Convolution Kernel"))
-	class UTexture2D* BloomConvolutionTexture;
+	TObjectPtr<class UTexture2D> BloomConvolutionTexture;
 
 	/** The UV location of the center of the kernel.  Should be very close to (.5,.5) */
 	UPROPERTY(interp, BlueprintReadWrite, Category = "Lens|Bloom", AdvancedDisplay, meta = (editcondition = "bOverride_BloomConvolutionCenterUV", DisplayName = "Convolution Center"))
@@ -1446,7 +1490,7 @@ struct FPostProcessSettings
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	FVector BloomConvolutionPreFilter_DEPRECATED;
+	FVector3f BloomConvolutionPreFilter_DEPRECATED;
 #endif
 	
 	/** Boost intensity of select pixels  prior to computing bloom convolution (Min, Max, Multiplier).  Max < Min disables */
@@ -1469,7 +1513,7 @@ struct FPostProcessSettings
 	 * Texture that defines the dirt on the camera lens where the light of very bright objects is scattered.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lens|Dirt Mask", meta=(editcondition = "bOverride_BloomDirtMask", DisplayName = "Dirt Mask Texture"))
-	class UTexture* BloomDirtMask;	
+	TObjectPtr<class UTexture> BloomDirtMask;	
 	
 	/** BloomDirtMask intensity */
 	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Dirt Mask", meta=(ClampMin = "0.0", UIMax = "8.0", editcondition = "bOverride_BloomDirtMaskIntensity", DisplayName = "Dirt Mask Intensity"))
@@ -1478,6 +1522,110 @@ struct FPostProcessSettings
 	/** BloomDirtMask tint color */
 	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Dirt Mask", meta=(editcondition = "bOverride_BloomDirtMaskTint", DisplayName = "Dirt Mask Tint", HideAlphaChannel))
 	FLinearColor BloomDirtMaskTint;
+
+	/** Chooses the Dynamic Global Illumination method.  Not compatible with Forward Shading. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination", meta = (editcondition = "bOverride_DynamicGlobalIlluminationMethod", DisplayName = "Method"))
+	TEnumAsByte<EDynamicGlobalIlluminationMethod::Type> DynamicGlobalIlluminationMethod;
+
+	/** Adjusts indirect lighting color. (1,1,1) is default. (0,0,0) to disable GI. The show flag 'Global Illumination' must be enabled to use this property. */
+	UPROPERTY(interp, BlueprintReadWrite, AdvancedDisplay, Category="Global Illumination", meta=(editcondition = "bOverride_IndirectLightingColor", DisplayName = "Indirect Lighting Color", HideAlphaChannel))
+	FLinearColor IndirectLightingColor;
+
+	/** Scales the indirect lighting contribution. A value of 0 disables GI. Default is 1. The show flag 'Global Illumination' must be enabled to use this property. */
+	UPROPERTY(interp, BlueprintReadWrite, AdvancedDisplay, Category="Global Illumination", meta=(ClampMin = "0", UIMax = "4.0", editcondition = "bOverride_IndirectLightingIntensity", DisplayName = "Indirect Lighting Intensity"))
+	float IndirectLightingIntensity;
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	uint32 RayTracingGI_DEPRECATED : 1;
+#endif
+
+	/** Scales Lumen Scene's quality.  Larger scales cause Lumen Scene to be calculated with a higher fidelity, which can be visible in reflections, but increase GPU cost. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination|Lumen Global Illumination", meta = (ClampMin = ".25", UIMax = "2", editcondition = "bOverride_LumenSceneLightingQuality", DisplayName = "Lumen Scene Lighting Quality"))
+	float LumenSceneLightingQuality;
+
+	/** Controls the size of instances that can be represented in Lumen Scene.  Larger values will ensure small objects are represented, but increase GPU cost. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination|Lumen Global Illumination", meta = (ClampMin = ".25", UIMax = "4", editcondition = "bOverride_LumenSceneDetail", DisplayName = "Lumen Scene Detail"))
+	float LumenSceneDetail;
+
+	/** Sets the maximum view distance of the scene that Lumen maintains for ray tracing against.  Larger values will increase the effective range of sky shadowing and Global Illumination, but increase GPU cost. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination|Lumen Global Illumination", meta = (ClampMin = "1", UIMax = "2097152", editcondition = "bOverride_LumenSceneViewDistance", DisplayName = "Lumen Scene View Distance"))
+	float LumenSceneViewDistance;
+
+	/** Controls how much Lumen Scene is allowed to cache lighting results to improve performance.  Larger scales cause lighting changes to propagate faster, but increase GPU cost. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination|Lumen Global Illumination", AdvancedDisplay, meta = (ClampMin = ".5", UIMax = "4", editcondition = "bOverride_LumenSceneLightingUpdateSpeed", DisplayName = "Lumen Scene Lighting Update Speed"))
+	float LumenSceneLightingUpdateSpeed;
+
+	/** Scales Lumen's Final Gather quality.  Larger scales reduce noise, but greatly increase GPU cost. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination|Lumen Global Illumination", meta = (ClampMin = ".25", UIMax = "2", editcondition = "bOverride_LumenFinalGatherQuality", DisplayName = "Final Gather Quality"))
+	float LumenFinalGatherQuality;
+
+	/** Controls how much Lumen Final Gather is allowed to cache lighting results to improve performance.  Larger scales cause lighting changes to propagate faster, but increase GPU cost and noise. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination|Lumen Global Illumination", AdvancedDisplay, meta = (ClampMin = ".5", UIMax = "4", editcondition = "bOverride_LumenFinalGatherLightingUpdateSpeed", DisplayName = "Final Gather Lighting Update Speed"))
+	float LumenFinalGatherLightingUpdateSpeed;
+
+	/** Controls the maximum distance that Lumen should trace while solving lighting.  Values that are too small will cause lighting to leak into large caves, while values that are large will increase GPU cost. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination|Lumen Global Illumination", meta = (ClampMin = "1", UIMax = "2097152", editcondition = "bOverride_LumenMaxTraceDistance", DisplayName = "Max Trace Distance"))
+	float LumenMaxTraceDistance;
+
+	/** Sets the ray tracing global illumination type. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination|Ray Tracing Global Illumination", meta = (editcondition = "bOverride_RayTracingGI", DisplayName = "Type"))
+	ERayTracingGlobalIlluminationType RayTracingGIType;
+
+	/** Sets the ray tracing global illumination maximum bounces. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination|Ray Tracing Global Illumination", meta = (ClampMin = "0", ClampMax = "50", editcondition = "bOverride_RayTracingGIMaxBounces", DisplayName = "Max. Bounces"))
+	int32 RayTracingGIMaxBounces;
+
+	/** Sets the samples per pixel for ray tracing global illumination. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Global Illumination|Ray Tracing Global Illumination", meta = (ClampMin = "1", ClampMax = "64", editcondition = "bOverride_RayTracingGISamplesPerPixel", DisplayName = "Samples Per Pixel"))
+	int32 RayTracingGISamplesPerPixel;
+	
+	/** Chooses the Reflection method. Not compatible with Forward Shading. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Reflections", meta = (editcondition = "bOverride_ReflectionMethod", DisplayName = "Method"))
+	TEnumAsByte<EReflectionMethod::Type> ReflectionMethod;
+
+	UPROPERTY()
+	EReflectionsType ReflectionsType_DEPRECATED;
+
+	/** Scales the Reflection quality.  Larger scales reduce noise in reflections, but increase GPU cost. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Reflections|Lumen Reflections", meta = (ClampMin = ".25", UIMax = "2", editcondition = "bOverride_LumenReflectionQuality", DisplayName = "Quality"))
+	float LumenReflectionQuality;
+
+	/** Controls how Lumen rays are lit when Lumen is using Hardware Ray Tracing.  By default, Lumen uses the Surface Cache for best performance, but can be set to 'Hit Lighting' for higher quality. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Reflections|Lumen Reflections", meta = (editcondition = "bOverride_LumenRayLightingMode", DisplayName = "Ray Lighting Mode"))
+	ELumenRayLightingModeOverride LumenRayLightingMode;
+
+	/** Enable/Fade/disable the Screen Space Reflection feature, in percent, avoid numbers between 0 and 1 fo consistency */
+	UPROPERTY(interp, BlueprintReadWrite, Category="Reflections|Screen Space Reflections", meta=(ClampMin = "0.0", ClampMax = "100.0", editcondition = "bOverride_ScreenSpaceReflectionIntensity", DisplayName = "Intensity"))
+	float ScreenSpaceReflectionIntensity;
+
+	/** 0=lowest quality..100=maximum quality, only a few quality levels are implemented, no soft transition, 50 is the default for better performance. */
+	UPROPERTY(interp, BlueprintReadWrite, Category="Reflections|Screen Space Reflections", meta=(ClampMin = "0.0", UIMax = "100.0", editcondition = "bOverride_ScreenSpaceReflectionQuality", DisplayName = "Quality"))
+	float ScreenSpaceReflectionQuality;
+
+	/** Until what roughness we fade the screen space reflections, 0.8 works well, smaller can run faster */
+	UPROPERTY(interp, BlueprintReadWrite, Category="Reflections|Screen Space Reflections", meta=(ClampMin = "0.01", ClampMax = "1.0", editcondition = "bOverride_ScreenSpaceReflectionMaxRoughness", DisplayName = "Max Roughness"))
+	float ScreenSpaceReflectionMaxRoughness;
+
+	/** Sets the maximum roughness until which ray tracing reflections will be visible (lower value is faster). Reflection contribution is smoothly faded when close to roughness threshold. This parameter behaves similarly to ScreenSpaceReflectionMaxRoughness. */
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Reflections|Ray Tracing Reflections", meta = (ClampMin = "0.01", ClampMax = "1.0", editcondition = "bOverride_RayTracingReflectionsMaxRoughness", DisplayName = "Max Roughness"))
+	float RayTracingReflectionsMaxRoughness;
+
+	/** Sets the maximum number of ray tracing reflection bounces. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Reflections|Ray Tracing Reflections", meta = (ClampMin = "0", ClampMax = "50", editcondition = "bOverride_RayTracingReflectionsMaxBounces", DisplayName = "Max. Bounces"))
+	int32 RayTracingReflectionsMaxBounces;
+
+	/** Sets the samples per pixel for ray traced reflections. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Reflections|Ray Tracing Reflections", meta = (ClampMin = "1", ClampMax = "64", editcondition = "bOverride_RayTracingReflectionsSamplesPerPixel", DisplayName = "Samples Per Pixel"))
+	int32 RayTracingReflectionsSamplesPerPixel;
+
+	/** Sets the reflected shadows type. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Reflections|Ray Tracing Reflections", meta = (editcondition = "bOverride_RayTracingReflectionsShadows", DisplayName = "Shadows"))
+	EReflectedAndRefractedRayTracedShadows RayTracingReflectionsShadows;
+
+	/** Enables ray tracing translucency in reflections. */
+	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Reflections|Ray Tracing Reflections", meta = (editcondition = "bOverride_RayTracingReflectionsTranslucency", DisplayName = "Include Translucent Objects"))
+	uint8 RayTracingReflectionsTranslucency : 1;
 
 	/** AmbientCubemap tint color */
 	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Ambient Cubemap", meta=(editcondition = "bOverride_AmbientCubemapTint", DisplayName = "Tint", HideAlphaChannel))
@@ -1492,7 +1640,7 @@ struct FPostProcessSettings
 
 	/** The Ambient cubemap (Affects diffuse and specular shading), blends additively which if different from all other settings here */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rendering Features|Ambient Cubemap", meta=(DisplayName = "Cubemap Texture"))
-	class UTextureCube* AmbientCubemap;
+	TObjectPtr<class UTextureCube> AmbientCubemap;
 
 	/** The camera shutter in seconds.*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lens|Camera", meta=(ClampMin = "1.0", ClampMax = "2000.0", editcondition = "bOverride_CameraShutterSpeed", DisplayName = "Shutter Speed (1/s)"))
@@ -1545,14 +1693,14 @@ struct FPostProcessSettings
 	 * 0: no adjustment, -1:2x darker, -2:4x darker, 1:2x brighter, 2:4x brighter, ...
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens|Exposure", meta = (editcondition = "bOverride_AutoExposureBiasCurve", DisplayName = "Exposure Compensation Curve"))
-	class UCurveFloat* AutoExposureBiasCurve = nullptr;
+	TObjectPtr<class UCurveFloat> AutoExposureBiasCurve = nullptr;
 
 	/**
 	 * Exposure metering mask. Bright spots on the mask will have high influence on auto-exposure metering
 	 * and dark spots will have low influence.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lens|Exposure", meta=(editcondition = "bOverride_AutoExposureMeterMask", DisplayName = "Exposure Metering Mask"))
-	class UTexture* AutoExposureMeterMask = nullptr;	
+	TObjectPtr<class UTexture> AutoExposureMeterMask = nullptr;	
 
 	/**
 	 * The eye adaptation will adapt to a value extracted from the luminance histogram of the scene color.
@@ -1610,6 +1758,45 @@ struct FPostProcessSettings
 	UPROPERTY()
 	float AutoExposureCalibrationConstant_DEPRECATED;
 
+	/** 
+	 * Local Exposure decomposes luminance of the frame into a base layer and a detail layer.
+	 * Contrast of the base layer is reduced based on this value.
+	 * Value less than 1 will enable local exposure.
+	 * Good values are usually in the range 0.6 .. 1.0.
+	*/
+	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Local Exposure", meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_LocalExposureContrastScale", DisplayName = "Contrast Scale"))
+	float LocalExposureContrastScale;
+
+	/**
+	 * Local Exposure decomposes luminance of the frame into a base layer and a detail layer.
+	 * Value different than 1 will enable local exposure.
+	 * This value should be set to 1 in most cases.
+	*/
+	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Local Exposure", meta=(UIMin = "0.0", UIMax = "4.0", editcondition = "bOverride_LocalExposureDetailStrength", DisplayName = "Detail Strength"))
+	float LocalExposureDetailStrength;
+
+	/**
+	 * Local Exposure decomposes luminance of the frame into a base layer and a detail layer.
+	 * Blend between bilateral filtered and blurred luminance as the base layer.
+	 * Blurred luminance helps preserve image appearance and specular highlights, and reduce ringing.
+	 * Good values are usually in the range 0.4 .. 0.6
+	*/
+	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Local Exposure", meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_LocalExposureBlurredLuminanceBlend", DisplayName = "Blurred Luminance Blend"))
+	float LocalExposureBlurredLuminanceBlend;
+
+	/**
+	 * Kernel size (percentage of screen) used to blur frame luminance.
+	*/
+	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Local Exposure", meta=(UIMin = "0.0", UIMax = "100.0", editcondition = "bOverride_LocalExposureBlurredLuminanceKernelSizePercent", DisplayName = "Blurred Luminance Kernel Size Percent"))
+	float LocalExposureBlurredLuminanceKernelSizePercent;
+
+	/**
+	 * Logarithmic adjustment for the local exposure middle grey.
+	 * 0: no adjustment, -1:2x darker, -2:4x darker, 1:2x brighter, 2:4x brighter, ...
+	 */
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Lens|Local Exposure", meta = (UIMin = "-15.0", UIMax = "15.0", editcondition = "bOverride_LocalExposureMiddleGreyBias", DisplayName = "Middle Grey Bias"))
+	float LocalExposureMiddleGreyBias;
+
 	/** Brightness scale of the image cased lens flares (linear) */
 	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Lens Flares", meta=(UIMin = "0.0", UIMax = "16.0", editcondition = "bOverride_LensFlareIntensity", DisplayName = "Intensity"))
 	float LensFlareIntensity;
@@ -1628,7 +1815,7 @@ struct FPostProcessSettings
 
 	/** Defines the shape of the Bokeh when the image base lens flares are blurred, cannot be blended */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lens|Lens Flares", meta=(editcondition = "bOverride_LensFlareBokehShape", DisplayName = "BokehShape"))
-	class UTexture* LensFlareBokehShape;
+	TObjectPtr<class UTexture> LensFlareBokehShape;
 
 	/** RGB defines the lens flare color, A it's position. This is a temporary solution. */
 	UPROPERTY(EditAnywhere, Category="Lens|Lens Flares", meta=(editcondition = "bOverride_LensFlareTints", DisplayName = "Tints"))
@@ -1638,13 +1825,42 @@ struct FPostProcessSettings
 	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Image Effects", meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_VignetteIntensity"))
 	float VignetteIntensity;
 
-	/** 0..1 grain jitter */
-	UPROPERTY(interp, BlueprintReadWrite, Category = "Lens|Image Effects", meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_GrainJitter"))
-	float GrainJitter;
+	UPROPERTY()
+	float GrainJitter_DEPRECATED;
 
-	/** 0..1 grain intensity */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Lens|Image Effects", meta=(UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_GrainIntensity"))
-	float GrainIntensity;
+	UPROPERTY()
+	float GrainIntensity_DEPRECATED;
+
+	/** 0..1 Film grain intensity to apply. LinearSceneColor *= lerp(1.0, DecodedFilmGrainTexture, FilmGrainIntensity) */
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Film Grain", meta = (UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmGrainIntensity"))
+	float FilmGrainIntensity;
+
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Film Grain", meta = (UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmGrainIntensityShadows"))
+	float FilmGrainIntensityShadows;
+
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Film Grain", meta = (UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmGrainIntensityMidtones"))
+	float FilmGrainIntensityMidtones;
+
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Film Grain", meta = (UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmGrainIntensityHighlights"))
+	float FilmGrainIntensityHighlights;
+
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Film Grain", meta = (UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmGrainShadowsMax"))
+	float FilmGrainShadowsMax;
+	
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Film Grain", meta = (UIMin = "0.0", UIMax = "1.0", editcondition = "bOverride_FilmGrainHighlightsMin"))
+	float FilmGrainHighlightsMin;
+
+	/** Should be set larger than HighlightsMin. Default is 1.0, for backwards compatibility */
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Film Grain", meta = (UIMin = "1.0", UIMax = "10.0", editcondition = "bOverride_FilmGrainHighlightsMax"))
+	float FilmGrainHighlightsMax;
+
+	/** Size of texel of FilmGrainTexture on screen. */
+	UPROPERTY(interp, BlueprintReadWrite, Category = "Film Grain", meta = (UIMin = "0.0", UIMax = "4.0", editcondition = "bOverride_FilmGrainTexelSize"))
+	float FilmGrainTexelSize;
+
+	/** Defines film grain texture to use. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Film Grain", meta = (editcondition = "bOverride_FilmGrainTexture"))
+	TObjectPtr<class UTexture2D> FilmGrainTexture;
 
 	/** 0..1 0=off/no ambient occlusion .. 1=strong ambient occlusion, defines how much it affects the non direct lighting after base pass */
 	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Ambient Occlusion", meta=(ClampMin = "0.0", ClampMax = "1.0", editcondition = "bOverride_AmbientOcclusionIntensity", DisplayName = "Intensity"))
@@ -1718,38 +1934,13 @@ struct FPostProcessSettings
 	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|Ray Tracing Ambient Occlusion", meta = (ClampMin = "0.0", ClampMax = "10000.0", editcondition = "bOverride_RayTracingAORadius", DisplayName = "Radius"))
 	float RayTracingAORadius;
 
-	/** Adjusts indirect lighting color. (1,1,1) is default. (0,0,0) to disable GI. The show flag 'Global Illumination' must be enabled to use this property. */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Global Illumination", meta=(editcondition = "bOverride_IndirectLightingColor", DisplayName = "Indirect Lighting Color", HideAlphaChannel))
-	FLinearColor IndirectLightingColor;
-
-	/** Scales the indirect lighting contribution. A value of 0 disables GI. Default is 1. The show flag 'Global Illumination' must be enabled to use this property. */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Global Illumination", meta=(ClampMin = "0", UIMax = "4.0", editcondition = "bOverride_IndirectLightingIntensity", DisplayName = "Indirect Lighting Intensity"))
-	float IndirectLightingIntensity;
-
-#if WITH_EDITORONLY_DATA
-	UPROPERTY()
-	uint32 RayTracingGI_DEPRECATED : 1;
-#endif
-
-	/** Sets the ray tracing global illumination type. */
-	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|Ray Tracing Global Illumination", meta = (editcondition = "bOverride_RayTracingGI", DisplayName = "Type"))
-	ERayTracingGlobalIlluminationType RayTracingGIType;
-
-	/** Sets the ray tracing global illumination maximum bounces. */
-	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|Ray Tracing Global Illumination", meta = (ClampMin = "0", ClampMax = "50", editcondition = "bOverride_RayTracingGIMaxBounces", DisplayName = "Max. Bounces"))
-	int32 RayTracingGIMaxBounces;
-
-	/** Sets the samples per pixel for ray tracing global illumination. */
-	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|Ray Tracing Global Illumination", meta = (ClampMin = "1", ClampMax = "64", editcondition = "bOverride_RayTracingGISamplesPerPixel", DisplayName = "Samples Per Pixel"))
-	int32 RayTracingGISamplesPerPixel;
-
 	/** Color grading lookup table intensity. 0 = no intensity, 1=full intensity */
 	UPROPERTY(interp, BlueprintReadWrite, Category="Color Grading|Misc", meta=(ClampMin = "0", ClampMax = "1.0", editcondition = "bOverride_ColorGradingIntensity", DisplayName = "Color Grading LUT Intensity"))
 	float ColorGradingIntensity;
 
 	/** Look up table texture to use or none of not used*/
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Color Grading|Misc", meta=(editcondition = "bOverride_ColorGradingLUT", DisplayName = "Color Grading LUT"))
-	class UTexture* ColorGradingLUT;
+	TObjectPtr<class UTexture> ColorGradingLUT;
 
 	/** Width of the camera sensor to assume, in mm. */
 	UPROPERTY(BlueprintReadWrite, Category="Lens|Depth of Field", meta=(ForceUnits=mm, ClampMin = "0.1", UIMin="0.1", UIMax= "1000.0", editcondition = "bOverride_DepthOfFieldSensorWidth", DisplayName = "Sensor Width (mm)"))
@@ -1824,93 +2015,44 @@ struct FPostProcessSettings
 	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Motion Blur", meta=(ClampMin = "0.0", UIMax = "100.0", editcondition = "bOverride_MotionBlurPerObjectSize", DisplayName = "Per Object Size"))
 	float MotionBlurPerObjectSize;
 
-	/** How strong the dynamic GI from the LPV should be. 0.0 is off, 1.0 is the "normal" value, but higher values can be used to boost the effect*/
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", meta=(editcondition = "bOverride_LPVIntensity", UIMin = "0", UIMax = "20", DisplayName = "Intensity"))
-	float LPVIntensity;
+	UPROPERTY()
+	float LPVIntensity_DEPRECATED;
 
-	/** Bias applied to light injected into the LPV in cell units. Increase to reduce bleeding through thin walls*/
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", AdvancedDisplay, meta=(editcondition = "bOverride_LPVVplInjectionBias", UIMin = "0", UIMax = "2", DisplayName = "Light Injection Bias"))
-	float LPVVplInjectionBias;
+	UPROPERTY()
+	float LPVVplInjectionBias_DEPRECATED;
 
-	/** The size of the LPV volume, in Unreal units*/
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", meta=(editcondition = "bOverride_LPVSize", UIMin = "100", UIMax = "20000", DisplayName = "Size"))
-	float LPVSize;
+	UPROPERTY()
+	float LPVSize_DEPRECATED;
 
-	/** Secondary occlusion strength (bounce light shadows). Set to 0 to disable*/
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", meta=(editcondition = "bOverride_LPVSecondaryOcclusionIntensity", UIMin = "0", UIMax = "1", DisplayName = "Secondary Occlusion Intensity"))
-	float LPVSecondaryOcclusionIntensity;
+	UPROPERTY()
+	float LPVSecondaryOcclusionIntensity_DEPRECATED;
 
-	/** Secondary bounce light strength (bounce light shadows). Set to 0 to disable*/
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", AdvancedDisplay, meta=(editcondition = "bOverride_LPVSecondaryBounceIntensity", UIMin = "0", UIMax = "1", DisplayName = "Secondary Bounce Intensity"))
-	float LPVSecondaryBounceIntensity;
+	UPROPERTY()
+	float LPVSecondaryBounceIntensity_DEPRECATED;
 
-	/** Bias applied to the geometry volume in cell units. Increase to reduce darkening due to secondary occlusion */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", AdvancedDisplay, meta=(editcondition = "bOverride_LPVGeometryVolumeBias", UIMin = "0", UIMax = "2", DisplayName = "Geometry Volume Bias"))
-	float LPVGeometryVolumeBias;
+	UPROPERTY()
+	float LPVGeometryVolumeBias_DEPRECATED;
 
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", AdvancedDisplay, meta=(editcondition = "bOverride_LPVEmissiveInjectionIntensity", UIMin = "0", UIMax = "20", DisplayName = "Emissive Injection Intensity"))
-	float LPVEmissiveInjectionIntensity;
+	UPROPERTY()
+	float LPVEmissiveInjectionIntensity_DEPRECATED;
 
-	/** Controls the amount of directional occlusion. Requires LPV. Values very close to 1.0 are recommended */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", meta=(editcondition = "bOverride_LPVDirectionalOcclusionIntensity", UIMin = "0", UIMax = "1", DisplayName = "Occlusion Intensity"))
-	float LPVDirectionalOcclusionIntensity;
+	UPROPERTY()
+	float LPVDirectionalOcclusionIntensity_DEPRECATED;
 
-	/** Occlusion Radius - 16 is recommended for most scenes */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", AdvancedDisplay, meta=(editcondition = "bOverride_LPVDirectionalOcclusionRadius", UIMin = "1", UIMax = "16", DisplayName = "Occlusion Radius"))
-	float LPVDirectionalOcclusionRadius;
+	UPROPERTY()
+	float LPVDirectionalOcclusionRadius_DEPRECATED;
 
-	/** Diffuse occlusion exponent - increase for more contrast. 1 to 2 is recommended */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", meta=(editcondition = "bOverride_LPVDiffuseOcclusionExponent", UIMin = "0.5", UIMax = "5", DisplayName = "Diffuse occlusion exponent"))
-	float LPVDiffuseOcclusionExponent;
+	UPROPERTY()
+	float LPVDiffuseOcclusionExponent_DEPRECATED;
 
-	/** Specular occlusion exponent - increase for more contrast. 6 to 9 is recommended */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", meta=(editcondition = "bOverride_LPVSpecularOcclusionExponent", UIMin = "1", UIMax = "16", DisplayName = "Specular occlusion exponent"))
-	float LPVSpecularOcclusionExponent;
+	UPROPERTY()
+	float LPVSpecularOcclusionExponent_DEPRECATED;
 
-	/** Diffuse occlusion intensity - higher values provide increased diffuse occlusion.*/
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", AdvancedDisplay, meta=(editcondition = "bOverride_LPVDiffuseOcclusionIntensity", UIMin = "0", UIMax = "4", DisplayName = "Diffuse occlusion intensity"))
-	float LPVDiffuseOcclusionIntensity;
+	UPROPERTY()
+	float LPVDiffuseOcclusionIntensity_DEPRECATED;
 
-	/** Specular occlusion intensity - higher values provide increased specular occlusion.*/
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Light Propagation Volume", AdvancedDisplay, meta=(editcondition = "bOverride_LPVSpecularOcclusionIntensity", UIMin = "0", UIMax = "4", DisplayName = "Specular occlusion intensity"))
-	float LPVSpecularOcclusionIntensity;
-
-	/** Sets the reflections type */
-	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|Reflections", meta = (editcondition = "bOverride_ReflectionsType", DisplayName = "Type"))
-	EReflectionsType ReflectionsType;
-
-	/** Enable/Fade/disable the Screen Space Reflection feature, in percent, avoid numbers between 0 and 1 fo consistency */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Screen Space Reflections", meta=(ClampMin = "0.0", ClampMax = "100.0", editcondition = "bOverride_ScreenSpaceReflectionIntensity", DisplayName = "Intensity"))
-	float ScreenSpaceReflectionIntensity;
-
-	/** 0=lowest quality..100=maximum quality, only a few quality levels are implemented, no soft transition, 50 is the default for better performance. */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Screen Space Reflections", meta=(ClampMin = "0.0", UIMax = "100.0", editcondition = "bOverride_ScreenSpaceReflectionQuality", DisplayName = "Quality"))
-	float ScreenSpaceReflectionQuality;
-
-	/** Until what roughness we fade the screen space reflections, 0.8 works well, smaller can run faster */
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Screen Space Reflections", meta=(ClampMin = "0.01", ClampMax = "1.0", editcondition = "bOverride_ScreenSpaceReflectionMaxRoughness", DisplayName = "Max Roughness"))
-	float ScreenSpaceReflectionMaxRoughness;
-
-	/** Sets the maximum roughness until which ray tracing reflections will be visible (lower value is faster). Reflection contribution is smoothly faded when close to roughness threshold. This parameter behaves similarly to ScreenSpaceReflectionMaxRoughness. */
-	UPROPERTY(interp, BlueprintReadWrite, Category = "Rendering Features|Ray Tracing Reflections", meta = (ClampMin = "0.01", ClampMax = "1.0", editcondition = "bOverride_RayTracingReflectionsMaxRoughness", DisplayName = "Max Roughness"))
-	float RayTracingReflectionsMaxRoughness;
-
-	/** Sets the maximum number of ray tracing reflection bounces. */
-	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|Ray Tracing Reflections", meta = (ClampMin = "0", ClampMax = "50", editcondition = "bOverride_RayTracingReflectionsMaxBounces", DisplayName = "Max. Bounces"))
-	int32 RayTracingReflectionsMaxBounces;
-
-	/** Sets the samples per pixel for ray traced reflections. */
-	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|Ray Tracing Reflections", meta = (ClampMin = "1", ClampMax = "64", editcondition = "bOverride_RayTracingReflectionsSamplesPerPixel", DisplayName = "Samples Per Pixel"))
-	int32 RayTracingReflectionsSamplesPerPixel;
-
-	/** Sets the reflected shadows type. */
-	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|Ray Tracing Reflections", meta = (editcondition = "bOverride_RayTracingReflectionsShadows", DisplayName = "Shadows"))
-	EReflectedAndRefractedRayTracedShadows RayTracingReflectionsShadows;
-
-	/** Enables ray tracing translucency in reflections. */
-	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|Ray Tracing Reflections", meta = (editcondition = "bOverride_RayTracingReflectionsTranslucency", DisplayName = "Include Translucent Objects"))
-	uint8 RayTracingReflectionsTranslucency : 1;
-
+	UPROPERTY()
+	float LPVSpecularOcclusionIntensity_DEPRECATED;
 
 	/** Sets the translucency type */
 	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|Translucency", meta = (editcondition = "bOverride_TranslucencyType", DisplayName = "Type"))
@@ -1954,32 +2096,27 @@ struct FPostProcessSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|PathTracing", meta = (editcondition = "bOverride_PathTracingEnableEmissive", DisplayName = "Emissive Materials"))
 	uint32 PathTracingEnableEmissive : 1;
 
-	/** Sets the maximum exposure allowed in the path tracer to reduce fireflies. This should be set a few steps higher than the scene exposure. */
+	/** Sets the maximum exposure allowed in the path tracer to reduce fireflies. This should be set a few stops higher than the scene exposure. */
 	UPROPERTY(interp, EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|PathTracing", meta = (ClampMin = "-10.0", ClampMax = "30.0", editcondition = "bOverride_PathTracingMaxPathExposure", DisplayName = "Max Path Exposure"))
 	float PathTracingMaxPathExposure;
+
+	/** Enables a reference quality depth-of-field which replaces the post-process effect. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|PathTracing", meta = (editcondition = "bOverride_PathTracingEnableReferenceDOF", DisplayName = "Reference Depth Of Field"))
+	uint32 PathTracingEnableReferenceDOF : 1;
 
 	/** Run the currently loaded denoiser plugin on the last sample to remove noise from the output. Has no effect if a plug-in is not loaded. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering Features|PathTracing", meta = (editcondition = "bOverride_PathTracingEnableDenoiser", DisplayName = "Denoiser"))
 	uint32 PathTracingEnableDenoiser : 1;
 
 
-	/** LPV Fade range - increase to fade more gradually towards the LPV edges.*/
-	UPROPERTY(interp, BlueprintReadWrite, Category = "Rendering Features|Light Propagation Volume", AdvancedDisplay, meta = (editcondition = "bOverride_LPVFadeRange", UIMin = "0", UIMax = "9", DisplayName = "Fade range"))
-	float LPVFadeRange;
+	UPROPERTY()
+	float LPVFadeRange_DEPRECATED;
 
-	/** LPV Directional Occlusion Fade range - increase to fade more gradually towards the LPV edges.*/
-	UPROPERTY(interp, BlueprintReadWrite, Category = "Rendering Features|Light Propagation Volume", AdvancedDisplay, meta = (editcondition = "bOverride_LPVDirectionalOcclusionFadeRange", UIMin = "0", UIMax = "9", DisplayName = "DO Fade range"))
-	float LPVDirectionalOcclusionFadeRange;
+	UPROPERTY()
+	float LPVDirectionalOcclusionFadeRange_DEPRECATED;
 
-	/**
-	* To render with lower or high resolution than it is presented,
-	* controlled by console variable,
-	* 100:off, needs to be <99 to get upsampling and lower to get performance,
-	* >100 for super sampling (slower but higher quality),
-	* only applied in game
-	*/
-	UPROPERTY(interp, BlueprintReadWrite, Category="Rendering Features|Misc", meta=(ClampMin = "0.0", ClampMax = "400.0", editcondition = "bOverride_ScreenPercentage"))
-	float ScreenPercentage;
+	UPROPERTY()
+	float ScreenPercentage_DEPRECATED;
 
 
 
@@ -1997,7 +2134,7 @@ struct FPostProcessSettings
 #if WITH_EDITORONLY_DATA
 	// for backwards compatibility
 	UPROPERTY()
-	TArray<UObject*> Blendables_DEPRECATED;
+	TArray<TObjectPtr<UObject>> Blendables_DEPRECATED;
 
 	// for backwards compatibility
 	void OnAfterLoad()

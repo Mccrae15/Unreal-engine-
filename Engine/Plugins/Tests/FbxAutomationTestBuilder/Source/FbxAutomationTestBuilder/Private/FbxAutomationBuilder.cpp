@@ -156,7 +156,6 @@ namespace FbxAutomationBuilder
 		FDetailsViewArgs DetailsViewArgs;
 		DetailsViewArgs.bAllowSearch = true;
 		DetailsViewArgs.bLockable = false;
-		DetailsViewArgs.bShowActorLabel = false;
 		DetailsViewArgs.bShowOptions = false;
 		DetailsViewArgs.bUpdatesFromSelection = false;
 		DetailsViewArgs.bHideSelectionTip = true;
@@ -259,7 +258,7 @@ namespace FbxAutomationBuilder
 
 		FString ImportTestDirectory;
 		check(GConfig);
-		GConfig->GetString(TEXT("AutomationTesting.FbxImport"), TEXT("FbxImportTestPath"), ImportTestDirectory, GEngineIni);
+		GConfig->GetString(TEXT("AutomationTesting.FbxImport"), TEXT("FbxImportEditorTestPath"), ImportTestDirectory, GEngineIni);
 
 
 		// Find all files in the GenericImport directory

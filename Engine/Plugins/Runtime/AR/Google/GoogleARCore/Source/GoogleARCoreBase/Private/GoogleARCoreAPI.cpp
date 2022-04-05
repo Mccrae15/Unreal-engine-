@@ -75,7 +75,7 @@ namespace
 
 		FVector ArPosePosition = ARCorePoseMatrix.GetOrigin();
 		FQuat ArPoseRotation = ARCorePoseMatrix.ToQuat();
-		float ArPoseData[7] = { ArPoseRotation.X, ArPoseRotation.Y, ArPoseRotation.Z, ArPoseRotation.W, ArPosePosition.X, ArPosePosition.Y, ArPosePosition.Z };
+		float ArPoseData[7] = { (float)ArPoseRotation.X, (float)ArPoseRotation.Y, (float)ArPoseRotation.Z, (float)ArPoseRotation.W, (float)ArPosePosition.X, (float)ArPosePosition.Y, (float)ArPosePosition.Z };	// LWC_TODO: Precision loss.
 		ArPose_create(SessionHandle, ArPoseData, OutARPose);
 	}
 
@@ -160,9 +160,9 @@ EARTrackingState ToARTrackingState(ArTrackingState State)
 
 FTransform ARCorePoseToUnrealTransform(ArPose* ArPoseHandle, const ArSession* SessionHandle, float WorldToMeterScale)
 {
-	FMatrix ARCorePoseMatrix;
+	FMatrix44f ARCorePoseMatrix;
 	ArPose_getMatrix(SessionHandle, ArPoseHandle, ARCorePoseMatrix.M[0]);
-	FTransform Result = FTransform(ARCoreToUnrealTransform * ARCorePoseMatrix * ARCoreToUnrealTransformInverse);
+	FTransform Result = FTransform(ARCoreToUnrealTransform * FMatrix(ARCorePoseMatrix) * ARCoreToUnrealTransformInverse);
 	Result.SetLocation(Result.GetLocation() * WorldToMeterScale);
 
 	return Result;
@@ -1113,8 +1113,11 @@ EGoogleARCoreTrackingFailureReason FGoogleARCoreFrame::GetCameraTrackingFailureR
 static FARCameraIntrinsics FromCameraIntrinsics(const ArSession* SessionHandle, const ArCameraIntrinsics* NativeCameraIntrinsics)
 {
 	FARCameraIntrinsics ConvertedIntrinsics;
-	ArCameraIntrinsics_getFocalLength(SessionHandle, NativeCameraIntrinsics, &ConvertedIntrinsics.FocalLength.X, &ConvertedIntrinsics.FocalLength.Y);
-	ArCameraIntrinsics_getPrincipalPoint(SessionHandle, NativeCameraIntrinsics, &ConvertedIntrinsics.PrincipalPoint.X, &ConvertedIntrinsics.PrincipalPoint.Y);
+	FVector2f FocalLength, PrincipalPoint;
+	ArCameraIntrinsics_getFocalLength(SessionHandle, NativeCameraIntrinsics, &FocalLength.X, &FocalLength.Y);
+	ConvertedIntrinsics.FocalLength = FVector2D(FocalLength);
+	ArCameraIntrinsics_getPrincipalPoint(SessionHandle, NativeCameraIntrinsics, &PrincipalPoint.X, &PrincipalPoint.Y);
+	ConvertedIntrinsics.PrincipalPoint = FVector2D(PrincipalPoint);
 	ArCameraIntrinsics_getImageDimensions(SessionHandle, NativeCameraIntrinsics, &ConvertedIntrinsics.ImageResolution.X, &ConvertedIntrinsics.ImageResolution.Y);
 	return ConvertedIntrinsics;
 }
@@ -1211,9 +1214,9 @@ void FGoogleARCoreFrame::ARLineTrace(const FVector& Start, const FVector& End, E
 	}
 
 	float WorldToMeterScale = Session->GetWorldToMeterScale();
-	FVector StartInARCore = UnrealPositionToARCorePosition(Start, WorldToMeterScale);
-	FVector EndInARCore = UnrealPositionToARCorePosition(End, WorldToMeterScale);
-	FVector DirectionInARCore = (EndInARCore - StartInARCore).GetSafeNormal();
+	FVector3f StartInARCore = (FVector3f)UnrealPositionToARCorePosition(Start, WorldToMeterScale);	// LWC_TODO: Precision loss
+	FVector3f EndInARCore = (FVector3f)UnrealPositionToARCorePosition(End, WorldToMeterScale);
+	FVector3f DirectionInARCore = (EndInARCore - StartInARCore).GetSafeNormal();
 	float RayOrigin[3] = { StartInARCore.X, StartInARCore.Y, StartInARCore.Z };
 	float RayDirection[3] = { DirectionInARCore.X, DirectionInARCore.Y, DirectionInARCore.Z };
 
@@ -1247,12 +1250,12 @@ bool FGoogleARCoreFrame::IsDisplayRotationChanged() const
 
 FMatrix FGoogleARCoreFrame::GetProjectionMatrix() const
 {
-	FMatrix ProjectionMatrix;
+	FMatrix44f ProjectionMatrix;
 
 #if PLATFORM_ANDROID
 	if (SessionHandle == nullptr)
 	{
-		return ProjectionMatrix;
+		return FMatrix();
 	}
 
 	ArCamera_getProjectionMatrix(SessionHandle, CameraHandle, GNearClippingPlane, 100.0f, ProjectionMatrix.M[0]);
@@ -1267,7 +1270,7 @@ FMatrix FGoogleARCoreFrame::GetProjectionMatrix() const
 	ProjectionMatrix.M[2][3] = 1.0f;
 	ProjectionMatrix.M[3][2] = GNearClippingPlane;
 #endif
-	return ProjectionMatrix;
+	return FMatrix(ProjectionMatrix);
 }
 
 void FGoogleARCoreFrame::TransformDisplayUvCoords(const TArray<float>& UvCoords, TArray<float>& OutUvCoords) const

@@ -48,6 +48,16 @@ enum class EHairStrandsProjectionMeshType
 	TargetMesh
 };
 
+enum EHairBufferSwapType
+{
+	BeginOfFrame,
+	EndOfFrame,
+	Tick,
+	RenderFrame
+};
+
+EHairBufferSwapType GetHairSwapBufferType();
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // Registrations & update
 

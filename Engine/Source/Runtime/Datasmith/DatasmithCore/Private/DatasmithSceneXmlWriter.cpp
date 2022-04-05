@@ -125,6 +125,11 @@ FString FDatasmithSceneXmlWriterImpl::GetLabelAndLayer(const TSharedPtr<IDatasmi
 		LabelAndLayer += TEXT(" visible=\"0\"");
 	}
 
+	if (ActorElement->IsAComponent())
+	{
+		LabelAndLayer += TEXT(" component=\"true\"");
+	}
+
 	return LabelAndLayer;
 }
 
@@ -666,13 +671,6 @@ void FDatasmithSceneXmlWriterImpl::WriteBeginOfMeshActorElement(const TSharedPtr
 
 	XmlString += GetLabelAndLayer(MeshActorElement);
 
-	if (MeshActorElement->IsAComponent())
-	{
-		FString ComponentText = MeshActorElement->IsAComponent() ? TEXT("true") : TEXT("false");
-
-		XmlString += TEXT(" component=\"") + ComponentText + TEXT("\"");
-	}
-
 	XmlString += FString(TEXT(">")) + LINE_TERMINATOR;
 
 	SerializeToArchive(Archive, XmlString);
@@ -1191,16 +1189,6 @@ void FDatasmithSceneXmlWriterImpl::WriteShaderElement(const TSharedPtr< IDatasmi
 		WriteBool(Archive, Indent + 1, DATASMITH_TWOSIDEDVALUENAME, ShaderElement->GetTwoSided());
 	}
 
-	if (ShaderElement->GetDisplace() > 0)
-	{
-		WriteValue(Archive, Indent + 1, DATASMITH_DISPLACEVALNAME, (float)ShaderElement->GetDisplace());
-	}
-
-	if (ShaderElement->GetDisplaceSubDivision() > 0)
-	{
-		WriteValue(Archive, Indent + 1, DATASMITH_DISPLACESUBNAME, (float)ShaderElement->GetDisplaceSubDivision());
-	}
-
 	if (ShaderElement->GetMetal() > 0)
 	{
 		WriteValue(Archive, Indent + 1, DATASMITH_METALVALUENAME, (float)ShaderElement->GetMetal());
@@ -1223,7 +1211,6 @@ void FDatasmithSceneXmlWriterImpl::WriteShaderElement(const TSharedPtr< IDatasmi
 	WriteCompTex(ShaderElement->GetBumpComp(), Archive, Indent + 1);
 	WriteCompTex(ShaderElement->GetTransComp(), Archive, Indent + 1);
 	WriteCompTex(ShaderElement->GetMaskComp(), Archive, Indent + 1);
-	WriteCompTex(ShaderElement->GetDisplaceComp(), Archive, Indent + 1);
 	WriteCompTex(ShaderElement->GetMetalComp(), Archive, Indent + 1);
 	WriteCompTex(ShaderElement->GetEmitComp(), Archive, Indent + 1);
 	WriteCompTex(ShaderElement->GetWeightComp(), Archive, Indent + 1);
@@ -1428,7 +1415,6 @@ void FDatasmithSceneXmlWriterImpl::WriteUEPbrMaterialElement( const TSharedRef< 
 	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetEmissiveColor(), Archive, Indent + 1 );
 	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetOpacity(), Archive, Indent + 1 );
 	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetNormal(), Archive, Indent + 1 );
-	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetWorldDisplacement(), Archive, Indent + 1 );
 	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetRefraction(), Archive, Indent + 1 );
 	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetAmbientOcclusion(), Archive, Indent + 1 );
 	WriteUEPbrMaterialExpressionInput( MaterialElement, MaterialElement->GetMaterialAttributes(), Archive, Indent + 1 );
@@ -1447,6 +1433,7 @@ void FDatasmithSceneXmlWriterImpl::WriteUEPbrMaterialElement( const TSharedRef< 
 	}
 	WriteValue( Archive, Indent + 1, DATASMITH_BLENDMODE, MaterialElement->GetBlendMode() );
 	WriteValue( Archive, Indent + 1, DATASMITH_OPACITYMASKCLIPVALUE, MaterialElement->GetOpacityMaskClipValue() );
+	WriteValue( Archive, Indent + 1, DATASMITH_TRANSLUCENCYLIGHTINGMODE, MaterialElement->GetTranslucencyLightingMode() );
 
 	if ( MaterialElement->GetShadingModel() != EDatasmithShadingModel::DefaultLit && (int32)MaterialElement->GetShadingModel() < UE_ARRAY_COUNT( DatasmithShadingModelStrings ) )
 	{
@@ -1873,13 +1860,15 @@ void FDatasmithSceneXmlWriter::Serialize( TSharedRef< IDatasmithScene > Datasmit
 
 	FDatasmithSceneXmlWriterImpl::WriteIndent(Archive, 1);
 
-	XmlString = TEXT("<Host>") + FString( DatasmithScene->GetHost() ) + TEXT("</Host>") + LINE_TERMINATOR;
+	XmlString = TEXT("<Host>") + FDatasmithSceneXmlWriterImpl::SanitizeXMLText( DatasmithScene->GetHost() ) + TEXT("</Host>") + LINE_TERMINATOR;
 	FDatasmithSceneXmlWriterImpl::SerializeToArchive( Archive, XmlString );
 
 	FDatasmithSceneXmlWriterImpl::WriteIndent(Archive, 1);
 
 	// Add Vendor, ProductName, ProductVersion
-	XmlString = TEXT("<Application Vendor=\"") + FString( DatasmithScene->GetVendor() ) + TEXT("\" ProductName=\"") + FString( DatasmithScene->GetProductName() ) + TEXT("\" ProductVersion=\"") + FString( DatasmithScene->GetProductVersion() ) + TEXT("\"/>") + LINE_TERMINATOR;
+	XmlString = TEXT("<Application Vendor=\"") + FDatasmithSceneXmlWriterImpl::SanitizeXMLText( DatasmithScene->GetVendor() )
+		+ TEXT("\" ProductName=\"") + FDatasmithSceneXmlWriterImpl::SanitizeXMLText( DatasmithScene->GetProductName() )
+		+ TEXT("\" ProductVersion=\"") + FDatasmithSceneXmlWriterImpl::SanitizeXMLText( DatasmithScene->GetProductVersion() ) + TEXT("\"/>") + LINE_TERMINATOR;
 	FDatasmithSceneXmlWriterImpl::SerializeToArchive(Archive, XmlString);
 
 	FDatasmithSceneXmlWriterImpl::WriteIndent(Archive, 1);

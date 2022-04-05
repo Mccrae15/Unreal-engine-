@@ -40,26 +40,26 @@ bool FDisplayClusterConfigManager::StartSession(UDisplayClusterConfigurationData
 void FDisplayClusterConfigManager::EndSession()
 {
 	ClusterNodeId.Empty();
-	ConfigData.Reset(nullptr);
+	ConfigData.Reset();
 }
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 // IDisplayClusterConfigManager
 //////////////////////////////////////////////////////////////////////////////////////////////
-FString FDisplayClusterConfigManager::GetMasterNodeId() const
+FString FDisplayClusterConfigManager::GetPrimaryNodeId() const
 {
-	return ConfigData ? ConfigData->Cluster->MasterNode.Id : FString();
+	return ConfigData ? ConfigData->Cluster->PrimaryNode.Id : FString();
 }
 
-const UDisplayClusterConfigurationClusterNode* FDisplayClusterConfigManager::GetMasterNode() const
+const UDisplayClusterConfigurationClusterNode* FDisplayClusterConfigManager::GetPrimaryNode() const
 {
-	return ConfigData ? ConfigData->GetClusterNode(GetMasterNodeId()) : nullptr;
+	return ConfigData ? ConfigData->Cluster->GetNode(GetPrimaryNodeId()) : nullptr;
 }
 
 const UDisplayClusterConfigurationClusterNode* FDisplayClusterConfigManager::GetLocalNode() const
 {
-	return ConfigData ? ConfigData->GetClusterNode(GetLocalNodeId()) : nullptr;
+	return ConfigData ? ConfigData->Cluster->GetNode(GetLocalNodeId()) : nullptr;
 }
 
 const UDisplayClusterConfigurationViewport* FDisplayClusterConfigManager::GetLocalViewport(const FString& ViewportId) const

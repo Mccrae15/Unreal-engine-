@@ -6,6 +6,7 @@ NiagaraRendererSprites.h: Renderer for rendering Niagara particles as sprites.
 
 #pragma once
 
+#include "Engine/EngineTypes.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraSpriteVertexFactory.h"
@@ -22,7 +23,7 @@ public:
 	~FNiagaraRendererSprites();
 
 	//FNiagaraRenderer interface
-	virtual void CreateRenderThreadResources(NiagaraEmitterInstanceBatcher* Batcher) override;
+	virtual void CreateRenderThreadResources() override;
 	virtual void ReleaseRenderThreadResources() override;
 
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const override;
@@ -41,13 +42,14 @@ private:
 		const FNiagaraDynamicDataSprites*	DynamicDataSprites = nullptr;
 		class FNiagaraDataBuffer*			SourceParticleData = nullptr;
 
+		EBlendMode							BlendMode = BLEND_Opaque;
 		bool								bHasTranslucentMaterials = false;
 		bool								bSortCullOnGpu = false;
 		bool								bNeedsSort = false;
 		bool								bNeedsCull = false;
 
 		const FNiagaraRendererLayout*		RendererLayout = nullptr;
-		ENiagaraSpriteVFLayout::Type		SortVariable;
+		ENiagaraSpriteVFLayout::Type		SortVariable = ENiagaraSpriteVFLayout::Type(INDEX_NONE);
 
 		FRHIShaderResourceView*				ParticleFloatSRV = nullptr;
 		FRHIShaderResourceView*				ParticleHalfSRV = nullptr;
@@ -104,8 +106,9 @@ private:
 	ENiagaraSpriteAlignment Alignment;
 	ENiagaraSpriteFacingMode FacingMode;
 	ENiagaraSortMode SortMode;
-	FVector2D PivotInUVSpace;
-	FVector2D SubImageSize;
+	FVector2f PivotInUVSpace;
+	float MacroUVRadius;
+	FVector2f SubImageSize;
 
 	uint32 NumIndicesPerInstance;
 
@@ -119,9 +122,12 @@ private:
 	uint32 bSetAnyBoundVars : 1;
 	uint32 bVisTagInParamStore : 1;
 
+	ENiagaraRendererPixelCoverageMode PixelCoverageMode = ENiagaraRendererPixelCoverageMode::Automatic;
+	float PixelCoverageBlend = 0.0f;
+
 	float MinFacingCameraBlendDistance;
 	float MaxFacingCameraBlendDistance;
-	FVector2D DistanceCullRange;
+	FVector2f DistanceCullRange;
 	FNiagaraCutoutVertexBuffer CutoutVertexBuffer;
 	int32 NumCutoutVertexPerSubImage = 0;
 	uint32 MaterialParamValidMask = 0;

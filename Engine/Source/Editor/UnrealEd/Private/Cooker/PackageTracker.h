@@ -7,8 +7,9 @@
 #include "Containers/Set.h"
 #include "CookRequests.h"
 #include "CookTypes.h"
+#include "CookOnTheFlyServerInterface.h"
+#include "Engine/ICookInfo.h"
 #include "HAL/CriticalSection.h"
-#include "INetworkFileSystemModule.h"
 #include "Misc/ScopeLock.h"
 #include "Templates/UnrealTemplate.h"
 #include "UObject/NameTypes.h"
@@ -21,16 +22,7 @@ namespace UE
 {
 namespace Cook
 {
-
 	struct FPackageDatas;
-	struct FRecompileRequest;
-
-	/** Helper to pass a recompile request to game thread */
-	struct FRecompileRequest
-	{
-		struct FShaderRecompileData RecompileData;
-		volatile bool bComplete = false;
-	};
 
 	template<typename Type>
 	struct FThreadSafeQueue
@@ -43,6 +35,12 @@ namespace Cook
 		{
 			FScopeLock ScopeLock(&SynchronizationObject);
 			Items.Add(Item);
+		}
+		
+		void Enqueue(Type&& Item)
+		{
+			FScopeLock ScopeLock(&SynchronizationObject);
+			Items.Add(MoveTempIfPossible(Item));
 		}
 
 		void EnqueueUnique(const Type& Item)
@@ -177,7 +175,7 @@ namespace Cook
 		~FPackageTracker();
 
 		/* Returns all packages that have been loaded since the last time GetNewPackages was called */
-		TArray<UPackage*> GetNewPackages();
+		TMap<UPackage*, FInstigator> GetNewPackages();
 
 		virtual void NotifyUObjectCreated(const class UObjectBase* Object, int32 Index) override;
 		virtual void NotifyUObjectDeleted(const class UObjectBase* Object, int32 Index) override;
@@ -187,13 +185,13 @@ namespace Cook
 		void RemapTargetPlatforms(const TMap<ITargetPlatform*, ITargetPlatform*>& Remap);
 
 		// This is the set of packages which have already had PostLoadFixup called 
-		TSet<UPackage*>			PostLoadFixupPackages;
+		TSet<UPackage*> PostLoadFixupPackages;
 
 		// This is a complete list of currently loaded UPackages
 		TFastPointerSet<UPackage*> LoadedPackages;
 
 		// This list contains the UPackages loaded since last call to GetNewPackages
-		TArray<UPackage*>		NewPackages;
+		TMap<UPackage*, FInstigator> NewPackages;
 
 		/** The package currently being loaded at CookOnTheFlyServer's direct request. Used to determine which load dependencies were not preloaded. */
 		FPackageData* LoadingPackageData = nullptr;
@@ -201,8 +199,9 @@ namespace Cook
 		FPackageDatas& PackageDatas;
 
 		FThreadSafeUnsolicitedPackagesList UnsolicitedCookedPackages;
-		FThreadSafeQueue<FRecompileRequest*> RecompileRequests;
+		FThreadSafeQueue<FRecompileShaderRequest> RecompileRequests;
 
+		/** Packages to never cook - entries are localpaths in FPaths::MakeStandardFilename format. */
 		FThreadSafeSet<FName> NeverCookPackageList;
 		FThreadSafeSet<FName> UncookedEditorOnlyPackages; // set of packages that have been rejected due to being referenced by editor-only properties
 		TFastPointerMap<const ITargetPlatform*, TSet<FName>> PlatformSpecificNeverCookPackages;

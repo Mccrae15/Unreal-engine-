@@ -11,7 +11,6 @@
 #include "IAssetTools.h"
 #include "IAssetTypeActions.h"
 #include "AssetToolsModule.h"
-#include "Toolkits/AssetEditorManager.h"
 #include "Toolkits/SimpleAssetEditor.h"
 #include "ARFilter.h"
 
@@ -51,24 +50,6 @@ public:
 		FSimpleAssetEditor::CreateEditor(EToolkitMode::Standalone, EditWithinLevelEditor, InObjects);
 	}
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-UE_DEPRECATED(4.24, "Use AssetsActivatedOverride instead to provide any non-default behavior. Using AssetsActivatedOverride, you no longer need a call to FAssetTypeActions_Base::AssetsActivated.")
-	virtual void AssetsActivated( const TArray<UObject*>& InObjects, EAssetTypeActivationMethod::Type ActivationType ) override
-	{
-		if (ActivationType == EAssetTypeActivationMethod::DoubleClicked || ActivationType == EAssetTypeActivationMethod::Opened)
-		{
-			if (InObjects.Num() == 1)
-			{
-				FAssetEditorManager::Get().OpenEditorForAsset(InObjects[0]);
-			}
-			else if (InObjects.Num() > 1)
-			{
-				FAssetEditorManager::Get().OpenEditorForAssets(InObjects);
-			}
-		}
-	}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 	virtual bool AssetsActivatedOverride(const TArray<UObject*>& InObjects, EAssetTypeActivationMethod::Type ActivationType) override
 	{
 		return false;
@@ -77,6 +58,16 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual TArray<FAssetData> GetValidAssetsForPreviewOrEdit(TArrayView<const FAssetData> InAssetDatas, bool bIsPreview) override
 	{
 		return TArray<FAssetData>(InAssetDatas);
+	}
+
+	virtual bool CanRename(const FAssetData& InAsset, FText* OutErrorMsg) const override
+	{
+		return true;
+	}
+
+	virtual bool CanDuplicate(const FAssetData& InAsset, FText* OutErrorMsg) const override
+	{
+		return true;
 	}
 
 	virtual bool CanFilter() override
@@ -167,7 +158,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual void BuildBackendFilter(FARFilter& InFilter) override
 	{
 		// Add the supported class for this type to a filter
-		InFilter.ClassNames.Add(GetSupportedClass()->GetFName());
+		InFilter.ClassNames.Add(GetFilterName());
 		InFilter.bRecursiveClasses = true;
 	}
 	
@@ -184,6 +175,11 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	virtual bool IsSupported() const final
 	{
 		return bIsSupported;
+	}
+
+	virtual FName GetFilterName() const override
+	{
+		return GetSupportedClass()->GetFName();
 	}
 
 protected:

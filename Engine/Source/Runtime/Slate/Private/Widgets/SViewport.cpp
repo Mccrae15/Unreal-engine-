@@ -12,21 +12,21 @@ DECLARE_CYCLE_STAT(TEXT("Game UI Tick"), STAT_ViewportTickTime, STATGROUP_Slate)
 DECLARE_CYCLE_STAT(TEXT("Game UI Paint"), STAT_ViewportPaintTime, STATGROUP_Slate);
 
 
-static const FVector2D DefaultViewportSize(320.0f, 240.0f);
-
 
 /* SViewport::FArguments interface
 *****************************************************************************/
 FVector2D SViewport::FArguments::GetDefaultViewportSize()
 {
-	return DefaultViewportSize;
+	return FVector2D(320.0f, 240.0f);
 }
 
 /* SViewport constructors
  *****************************************************************************/
 
 SViewport::SViewport()
-	: bRenderDirectlyToWindow(false)
+	: ShowDisabledEffect(*this, true)
+	, ViewportSize(*this, SViewport::FArguments::GetDefaultViewportSize())
+	, bRenderDirectlyToWindow(false)
 	, bEnableGammaCorrection(true)
 	, bReverseGammaCorrection(false)
 	, bEnableStereoRendering(false)
@@ -38,7 +38,7 @@ SViewport::SViewport()
 
 void SViewport::Construct( const FArguments& InArgs )
 {
-	ShowDisabledEffect = InArgs._ShowEffectWhenDisabled;
+	ShowDisabledEffect.Assign(*this, InArgs._ShowEffectWhenDisabled);
 	bRenderDirectlyToWindow = InArgs._RenderDirectlyToWindow;
 	bEnableGammaCorrection = InArgs._EnableGammaCorrection;
 	bReverseGammaCorrection = InArgs._ReverseGammaCorrection;
@@ -47,7 +47,7 @@ void SViewport::Construct( const FArguments& InArgs )
 	bIgnoreTextureAlpha = InArgs._IgnoreTextureAlpha;
 	bPreMultipliedAlpha = InArgs._PreMultipliedAlpha;
 	ViewportInterface = InArgs._ViewportInterface;
-	ViewportSize = InArgs._ViewportSize;
+	ViewportSize.Assign(*this, InArgs._ViewportSize);
 
 #if UE_WITH_SLATE_SIMULATEDNAVIGATIONMETADATA
 	AddMetadata(MakeShared<FSimulatedNavigationMetaData>(EUINavigationRule::Stop));
@@ -59,9 +59,36 @@ void SViewport::Construct( const FArguments& InArgs )
 	];
 }
 
+void SViewport::SetViewportInterface(TSharedRef<ISlateViewport> InViewportInterface)
+{
+	if (ViewportInterface != InViewportInterface)
+	{
+		ViewportInterface = InViewportInterface;
+		Invalidate(EInvalidateWidgetReason::Paint);
+	}
+}
+
+void SViewport::SetRenderDirectlyToWindow(const bool bInRenderDirectlyToWindow)
+{
+	if (bRenderDirectlyToWindow != bInRenderDirectlyToWindow)
+	{
+		bRenderDirectlyToWindow = bInRenderDirectlyToWindow;
+		Invalidate(EInvalidateWidgetReason::Paint);
+	}
+}
+
+void SViewport::SetIgnoreTextureAlpha(const bool bInIgnoreTextureAlpha)
+{
+	if (bIgnoreTextureAlpha != bInIgnoreTextureAlpha)
+	{
+		bIgnoreTextureAlpha = bInIgnoreTextureAlpha;
+		Invalidate(EInvalidateWidgetReason::Paint);
+	}
+}
+
 void SViewport::SetActive(bool bActive)
 {
-	// In game enviroments the viewport is always active
+	// In game environments the viewport is always active
 	if(GIsEditor || IS_PROGRAM)
 	{
 		if (bActive && !ActiveTimerHandle.IsValid())
@@ -297,7 +324,11 @@ void SViewport::SetContent( TSharedPtr<SWidget> InContent )
 
 void SViewport::SetCustomHitTestPath( TSharedPtr<ICustomHitTestPath> InCustomHitTestPath )
 {
-	CustomHitTestPath = InCustomHitTestPath;
+	if (CustomHitTestPath != InCustomHitTestPath)
+	{
+		CustomHitTestPath = InCustomHitTestPath;
+		Invalidate(EInvalidateWidgetReason::Paint);
+	}
 }
 
 TSharedPtr<ICustomHitTestPath> SViewport::GetCustomHitTestPath()
@@ -315,6 +346,7 @@ void SViewport::OnWindowClosed( const TSharedRef<SWindow>& WindowBeingClosed )
 
 FReply SViewport::OnViewportActivated(const FWindowActivateEvent& InActivateEvent)
 {
+	CachedParentWindow = FSlateApplication::Get().FindWidgetWindow(SharedThis(this));
 	return ViewportInterface.IsValid() ? ViewportInterface.Pin()->OnViewportActivated(InActivateEvent) : FReply::Unhandled();
 }
 
@@ -397,14 +429,14 @@ void SViewport::OnArrangeChildren( const FGeometry& AllottedGeometry, FArrangedC
 	}
 }
 
-TSharedPtr<FVirtualPointerPosition> SViewport::TranslateMouseCoordinateForCustomHitTestChild(const TSharedRef<SWidget>& ChildWidget, const FGeometry& MyGeometry, const FVector2D& ScreenSpaceMouseCoordinate, const FVector2D& LastScreenSpaceMouseCoordinate) const
+TOptional<FVirtualPointerPosition> SViewport::TranslateMouseCoordinateForCustomHitTestChild(const SWidget& ChildWidget, const FGeometry& MyGeometry, const FVector2D ScreenSpaceMouseCoordinate, const FVector2D LastScreenSpaceMouseCoordinate) const
 {
 	if( CustomHitTestPath.IsValid() )
 	{
 		return CustomHitTestPath->TranslateMouseCoordinateForCustomHitTestChild( ChildWidget, MyGeometry, ScreenSpaceMouseCoordinate, LastScreenSpaceMouseCoordinate );
 	}
 
-	return nullptr;
+	return TOptional<FVirtualPointerPosition>();
 }
 
 FNavigationReply SViewport::OnNavigation(const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent)

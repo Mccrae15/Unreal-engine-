@@ -70,17 +70,10 @@ void FNiagaraParameterCollectionToolkit::Initialize(const EToolkitMode::Type Mod
 
 	ParameterCollectionViewModel = MakeShareable(new FNiagaraParameterCollectionAssetViewModel(Collection, FText::FromString(Collection->GetName()), ENiagaraParameterEditMode::EditAll));
 
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_ParameterCollection_Layout_V0")
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_ParameterCollection_Layout_V1")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-				->SetHideTabWell(true)
-			)
 			->Split
 			(
 				FTabManager::NewStack()
@@ -109,17 +102,10 @@ void FNiagaraParameterCollectionToolkit::Initialize(const EToolkitMode::Type Mod
 
 	ParameterCollectionViewModel = MakeShareable(new FNiagaraParameterCollectionAssetViewModel(InInstance, FText::FromString(InInstance->GetName()), ENiagaraParameterEditMode::EditAll));
 
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_ParameterCollection_Layout_V0")
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_ParameterCollection_Layout_V1")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-				->SetHideTabWell(true)
-			)
 			->Split
 			(
 				FTabManager::NewStack()
@@ -175,7 +161,10 @@ TSharedRef<SDockTab> FNiagaraParameterCollectionToolkit::SpawnTab_Main(const FSp
 	DetailArgs.bAllowSearch = false;
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	FDetailsViewArgs DetailsViewArgs(false, false, true, FDetailsViewArgs::HideNameArea, true, ParameterCollectionViewModel.Get());
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
+	DetailsViewArgs.NotifyHook = ParameterCollectionViewModel.Get();
 	TSharedRef<IDetailsView> DetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 
 	if (Instance->IsDefaultInstance())
@@ -240,7 +229,7 @@ void FNiagaraParameterCollectionToolkit::ExtendToolbar()
 	// 					GetEmitterMenuContent,
 	// 					LOCTEXT("AddEmitterButtonText", "Add Emitter"),
 	// 					LOCTEXT("AddEmitterButtonTextToolTip", "Adds an emitter to the system from an existing emitter asset."),
-	// 					FSlateIcon(FNiagaraEditorStyle::GetStyleSetName(), "NiagaraEditor.AddEmitter"));
+	// 					FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "NiagaraEditor.AddEmitter"));
 	// 			}
 	// 			ToolbarBuilder.EndSection();
 	// 		}

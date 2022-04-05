@@ -22,10 +22,12 @@
 
 #include "ClearQuad.h"
 
-#include "Render/Containers/DisplayClusterRender_MeshComponent.h"
-#include "Render/Containers/DisplayClusterRender_MeshComponentProxy.h"
-#include "Render/Containers/DisplayClusterRender_MeshComponentProxyData.h"
+#include "Render/Containers/IDisplayClusterRender_MeshComponent.h"
+#include "Render/Containers/IDisplayClusterRender_MeshComponentProxy.h"
 #include "Render/Containers/DisplayClusterRender_MeshGeometry.h"
+
+#include "IDisplayCluster.h"
+#include "Render/IDisplayClusterRenderManager.h"
 
 #define OutputRemapShaderFileName TEXT("/Plugin/nDisplay/Private/OutputRemapShaders.usf")
 
@@ -39,25 +41,13 @@ enum class EVarOutputRemapShaderType : uint8
 
 static TAutoConsoleVariable<int32> CVarOutputRemapShaderType(
 	TEXT("nDisplay.render.output_remap.shader"),
-	(int)EVarOutputRemapShaderType::Default,
+	(int32)EVarOutputRemapShaderType::Default,
 	TEXT("Select shader for output remap:\n")	
 	TEXT(" 0: default remap shader\n")
 	TEXT(" 1: pass throught shader, test rect mesh\n")
 	TEXT(" 2: Disable remap shaders\n")
 	,ECVF_RenderThreadSafe
 );
-
-// Enable/Disable ClearTexture for OutputRemap RTT
-static TAutoConsoleVariable<int32> CVarClearOutputRemapFrameTextureEnabled(
-	TEXT("nDisplay.render.output_remap.ClearTextureEnabled"),
-	1,
-	TEXT("Enables OutputRemap RTT clearing before postprocessing.\n")
-	TEXT("0 : disabled\n")
-	TEXT("1 : enabled\n")
-	,
-	ECVF_RenderThreadSafe
-);
-
 
 BEGIN_SHADER_PARAMETER_STRUCT(FOutputRemapVertexShaderParameters, )
 END_SHADER_PARAMETER_STRUCT()
@@ -99,15 +89,16 @@ IMPLEMENT_SHADER_TYPE(, FOutputRemapVS, OutputRemapShaderFileName, TEXT("OutputR
 
 DECLARE_GPU_STAT_NAMED(nDisplay_PostProcess_OutputRemap, TEXT("nDisplay PostProcess::OutputRemap"));
 
-bool FDisplayClusterShadersPostprocess_OutputRemap::RenderPostprocess_OutputRemap(FRHICommandListImmediate& RHICmdList, FRHITexture2D* InSourceTexture, FRHITexture2D* InRenderTargetableDestTexture, const FDisplayClusterRender_MeshComponentProxy& InMeshProxy)
+bool FDisplayClusterShadersPostprocess_OutputRemap::RenderPostprocess_OutputRemap(FRHICommandListImmediate& RHICmdList, FRHITexture2D* InSourceTexture, FRHITexture2D* InRenderTargetableDestTexture, const IDisplayClusterRender_MeshComponentProxy& InMeshProxy)
 {
 	check(IsInRenderingThread());
+
 	if (InSourceTexture == nullptr || InRenderTargetableDestTexture == nullptr)
 	{
 		return false;
 	}
 
-	FDisplayClusterRender_MeshComponentProxy const* MeshProxy = &InMeshProxy;
+	IDisplayClusterRender_MeshComponentProxy const* MeshProxy = &InMeshProxy;
 
 	const EVarOutputRemapShaderType ShaderType = (EVarOutputRemapShaderType)CVarOutputRemapShaderType.GetValueOnAnyThread();
 	switch (ShaderType)
@@ -115,18 +106,24 @@ bool FDisplayClusterShadersPostprocess_OutputRemap::RenderPostprocess_OutputRema
 		case EVarOutputRemapShaderType::Passthrough:
 		{
 			// Use simple 1:1 test mesh for shader forwarding
-			static FDisplayClusterRender_MeshComponent TestMesh_Passthrough;
-			if (TestMesh_Passthrough.GetProxy())
-			{
-				if (!TestMesh_Passthrough.GetProxy()->IsValid_RenderThread())
-				{
-					FDisplayClusterRender_MeshGeometry PassthroughMeshGeometry(EDisplayClusterRender_MeshGeometryCreateType::Passthrough);
-					FDisplayClusterRender_MeshComponentProxyData ProxyData(FDisplayClusterRender_MeshComponentProxyDataFunc::OutputRemapScreenSpace, PassthroughMeshGeometry);
-					TestMesh_Passthrough.GetProxy()->UpdateRHI_RenderThread(RHICmdList, &ProxyData);
-				}
+			static TSharedPtr<IDisplayClusterRender_MeshComponent, ESPMode::ThreadSafe> TestMesh_Passthrough = IDisplayCluster::Get().GetRenderMgr()->CreateMeshComponent();
 
-				MeshProxy = TestMesh_Passthrough.GetProxy();
+			if (TestMesh_Passthrough.IsValid())
+			{
+				IDisplayClusterRender_MeshComponentProxy* TestMeshMeshComponentProxy = TestMesh_Passthrough->GetMeshComponentProxy_RenderThread();
+				if (TestMeshMeshComponentProxy != nullptr)
+				{
+					if (!TestMeshMeshComponentProxy->IsEnabled_RenderThread())
+					{
+						// Initialize once:
+						FDisplayClusterRender_MeshGeometry PassthroughMeshGeometry(EDisplayClusterRender_MeshGeometryCreateType::Passthrough);
+						TestMesh_Passthrough->AssignMeshGeometry_RenderThread(&PassthroughMeshGeometry, EDisplayClusterRender_MeshComponentProxyDataFunc::OutputRemapScreenSpace);
+					}
+
+					MeshProxy = TestMeshMeshComponentProxy;
+				}
 			}
+
 			break;
 		}
 
@@ -143,42 +140,35 @@ bool FDisplayClusterShadersPostprocess_OutputRemap::RenderPostprocess_OutputRema
 	SCOPED_GPU_STAT(RHICmdList, nDisplay_PostProcess_OutputRemap);
 	SCOPED_DRAW_EVENT(RHICmdList, nDisplay_PostProcess_OutputRemap);
 
-	const ERHIFeatureLevel::Type RenderFeatureLevel = GMaxRHIFeatureLevel;
-	const auto GlobalShaderMap = GetGlobalShaderMap(RenderFeatureLevel);
-
-	const FIntPoint TargetSizeXY = InRenderTargetableDestTexture->GetSizeXY();
-
-	TShaderMapRef<FOutputRemapVS> VertexShader(GlobalShaderMap);
-	TShaderMapRef<FOutputRemapPS> PixelShader(GlobalShaderMap);
-
-	FRHIRenderPassInfo RPInfo(InRenderTargetableDestTexture, ERenderTargetActions::DontLoad_Store);
+	FRHIRenderPassInfo RPInfo(InRenderTargetableDestTexture, ERenderTargetActions::Load_Store);
 	TransitionRenderPassTargets(RHICmdList, RPInfo);
-	RHICmdList.BeginRenderPass(RPInfo, TEXT("nDisplay_OutputRemap"));
 
-	const bool bClearOutputRemapFrameTextureEnabled = CVarClearOutputRemapFrameTextureEnabled.GetValueOnRenderThread() != 0;
-	if (bClearOutputRemapFrameTextureEnabled)
+	RHICmdList.BeginRenderPass(RPInfo, TEXT("nDisplay_OutputRemap"));
 	{
-		// Do clear
-		const FIntPoint Size = InRenderTargetableDestTexture->GetSizeXY();
-		RHICmdList.SetViewport(0, 0, 0.0f, Size.X, Size.Y, 1.0f);
-		DrawClearQuad(RHICmdList, FLinearColor::Black);
-	}
-	{
+		const FIntPoint TargetSizeXY = InRenderTargetableDestTexture->GetSizeXY();
+		RHICmdList.SetViewport(0, 0, 0.0f, TargetSizeXY.X, TargetSizeXY.Y, 1.0f);
+
+		const ERHIFeatureLevel::Type RenderFeatureLevel = GMaxRHIFeatureLevel;
+		const auto GlobalShaderMap = GetGlobalShaderMap(RenderFeatureLevel);
+
+		TShaderMapRef<FOutputRemapVS> VertexShader(GlobalShaderMap);
+		TShaderMapRef<FOutputRemapPS> PixelShader(GlobalShaderMap);
+
 		FGraphicsPipelineStateInitializer GraphicsPSOInit;
+		// Set the graphic pipeline state.
 		RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 		if (MeshProxy->BeginRender_RenderThread(RHICmdList, GraphicsPSOInit))
 		{
-			GraphicsPSOInit.BlendState = TStaticBlendState <>::GetRHI();
+			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Never>::GetRHI();
 			GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
 			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-			FPixelShaderUtils::DrawFullscreenQuad(RHICmdList, 1);
 
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
+			GraphicsPSOInit.BlendState = TStaticBlendState <>::GetRHI();
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 			FOutputRemapPixelShaderParameters PSParameters;
 			{
@@ -192,6 +182,7 @@ bool FDisplayClusterShadersPostprocess_OutputRemap::RenderPostprocess_OutputRema
 		}
 	}
 	RHICmdList.EndRenderPass();
+	RHICmdList.Transition(FRHITransitionInfo(InRenderTargetableDestTexture, ERHIAccess::Unknown, ERHIAccess::SRVMask));
 
 	return bResult;
 }

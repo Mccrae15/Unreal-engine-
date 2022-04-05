@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <errno.h>
 
+namespace UE {
 namespace Trace {
 namespace Private {
 
@@ -22,6 +23,7 @@ UPTRINT ThreadCreate(const ANSICHAR* Name, void (*Entry)())
 {
 	void* (*PthreadThunk)(void*) = [] (void* Param) -> void * {
 		typedef void (*EntryType)(void);
+		pthread_setname_np(pthread_self(), "Trace");
 		(EntryType(Param))();
 		return nullptr;
 	};
@@ -224,5 +226,6 @@ UPTRINT FileOpen(const ANSICHAR* Path)
 
 } // namespace Private
 } // namespace Trace
+} // namespace UE
 
 #endif // UE_TRACE_ENABLED

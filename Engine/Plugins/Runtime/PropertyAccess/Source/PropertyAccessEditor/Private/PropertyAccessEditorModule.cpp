@@ -6,10 +6,9 @@
 #include "SPropertyBinding.h"
 #include "EdGraphUtilities.h"
 #include "PropertyAccessEditor.h"
+#include "Algo/Accumulate.h"
 #include "Modules/ModuleInterface.h"
 #include "Features/IModularFeatures.h"
-#include "IAnimBlueprintCompilerHandlerCollection.h"
-#include "AnimBlueprintCompilerHandler_PropertyAccess.h"
 
 class FPropertyAccessEditorModule : public IPropertyAccessEditor, public IModuleInterface
 {
@@ -18,34 +17,37 @@ public:
 	virtual void StartupModule() override
 	{
 		IModularFeatures::Get().RegisterModularFeature("PropertyAccessEditor", this);
-
-		// Register node compilation handlers
-		IAnimBlueprintCompilerHandlerCollection::RegisterHandler("PropertyAccessCompilerHandler", [](IAnimBlueprintCompilerCreationContext& InCreationContext)
-		{
-			return MakeUnique<FAnimBlueprintCompilerHandler_PropertyAccess>(InCreationContext);
-		});
 	}
 
 	virtual void ShutdownModule() override
 	{
-		// Register node compilation handlers
-		IAnimBlueprintCompilerHandlerCollection::UnregisterHandler("PropertyAccessCompilerHandler");
-
 		IModularFeatures::Get().UnregisterModularFeature("PropertyAccessEditor", this);
 	}
 
 	// IPropertyAccessEditor interface
 	virtual TSharedRef<SWidget> MakePropertyBindingWidget(UBlueprint* InBlueprint, const FPropertyBindingWidgetArgs& InArgs) const override
 	{
-		return SNew(SPropertyBinding, InBlueprint)
+		TArray<FBindingContextStruct> BindingContextStructs;
+		return SNew(SPropertyBinding, InBlueprint, BindingContextStructs)
 			.Args(InArgs);
 	}
 
-	virtual EPropertyAccessResolveResult ResolveLeafProperty(const UStruct* InStruct, TArrayView<FString> InPath, FProperty*& OutProperty, int32& OutArrayIndex) const override
+	virtual TSharedRef<SWidget> MakePropertyBindingWidget(const TArray<FBindingContextStruct>& InBindingContextStructs, const FPropertyBindingWidgetArgs& InArgs) const override
 	{
-		return PropertyAccess::ResolveLeafProperty(InStruct, InPath, OutProperty, OutArrayIndex);
+		return SNew(SPropertyBinding, nullptr, InBindingContextStructs)
+			.Args(InArgs);
 	}
 
+	virtual FPropertyAccessResolveResult ResolvePropertyAccess(const UStruct* InStruct, TArrayView<const FString> InPath, FProperty*& OutProperty, int32& OutArrayIndex) const override
+	{
+		return PropertyAccess::ResolvePropertyAccess(InStruct, InPath, OutProperty, OutArrayIndex);
+	}
+
+	virtual FPropertyAccessResolveResult ResolvePropertyAccess(const UStruct* InStruct, TArrayView<const FString> InPath, const FResolvePropertyAccessArgs& InArgs) const override
+	{
+		return PropertyAccess::ResolvePropertyAccess(InStruct, InPath, InArgs);
+	}
+	
 	virtual EPropertyAccessCompatibility GetPropertyCompatibility(const FProperty* InPropertyA, const FProperty* InPropertyB) const override
 	{
 		return PropertyAccess::GetPropertyCompatibility(InPropertyA, InPropertyB);
@@ -60,6 +62,16 @@ public:
 	{
 		PropertyAccess::MakeStringPath(InBindingChain, OutStringPath);
 	}
+
+	virtual TUniquePtr<IPropertyAccessLibraryCompiler> MakePropertyAccessCompiler(const FPropertyAccessLibraryCompilerArgs& InArgs) const override
+	{
+		return MakeUnique<FPropertyAccessLibraryCompiler>(&InArgs.Library, InArgs.ClassContext, InArgs.OnDetermineBatchId);
+	}
+
+	virtual FText MakeTextPath(const TArray<FString>& InPath, const UStruct* InStruct = nullptr) const override
+	{
+		return PropertyAccess::MakeTextPath(InPath, InStruct);
+	};
 };
 
 IMPLEMENT_MODULE(FPropertyAccessEditorModule, PropertyAccessEditor)

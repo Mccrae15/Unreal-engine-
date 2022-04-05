@@ -122,7 +122,8 @@ namespace EDateTimeStyle
 		Short,
 		Medium,
 		Long,
-		Full
+		Full,
+		Custom,	// Internal use only
 		// Add new enum types at the end only! They are serialized by index.
 	};
 }
@@ -367,17 +368,7 @@ class CORE_API FText
 {
 public:
 
-#if ( !PLATFORM_WINDOWS ) || ( !defined(__clang__) )
-	static const FText& GetEmpty()
-	{
-		// This is initialized inside this function as we need to be able to control the initialization order of the empty FText instance
-		// If this were a file-scope static, we can end up with other statics trying to construct an empty FText before our empty FText has itself been constructed
-		static const FText StaticEmptyText = FText(FText::EInitToEmptyString::Value);
-		return StaticEmptyText;
-	}
-#else
-	static const FText& GetEmpty(); // @todo clang: Workaround for missing symbol export
-#endif
+	static const FText& GetEmpty();
 
 public:
 
@@ -432,10 +423,12 @@ public:
 
 	/**
 	 * Generate an FText that represents the passed number as a date and/or time in the current culture
+	 * @note The overload using a custom pattern uses strftime-like syntax (see FDateTime::ToFormattedString)
 	 */
-	static FText AsDate(const FDateTime& DateTime, const EDateTimeStyle::Type DateStyle = EDateTimeStyle::Default, const FString& TimeZone = TEXT(""), const FCulturePtr& TargetCulture = NULL);
-	static FText AsDateTime(const FDateTime& DateTime, const EDateTimeStyle::Type DateStyle = EDateTimeStyle::Default, const EDateTimeStyle::Type TimeStyle = EDateTimeStyle::Default, const FString& TimeZone = TEXT(""), const FCulturePtr& TargetCulture = NULL);
-	static FText AsTime(const FDateTime& DateTime, const EDateTimeStyle::Type TimeStyle = EDateTimeStyle::Default, const FString& TimeZone = TEXT(""), const FCulturePtr& TargetCulture = NULL);
+	static FText AsDate(const FDateTime& DateTime, const EDateTimeStyle::Type DateStyle = EDateTimeStyle::Default, const FString& TimeZone = FString(), const FCulturePtr& TargetCulture = NULL);
+	static FText AsDateTime(const FDateTime& DateTime, const EDateTimeStyle::Type DateStyle = EDateTimeStyle::Default, const EDateTimeStyle::Type TimeStyle = EDateTimeStyle::Default, const FString& TimeZone = FString(), const FCulturePtr& TargetCulture = NULL);
+	static FText AsDateTime(const FDateTime& DateTime, const FString& CustomPattern, const FString& TimeZone = FString(), const FCulturePtr& TargetCulture = NULL);
+	static FText AsTime(const FDateTime& DateTime, const EDateTimeStyle::Type TimeStyle = EDateTimeStyle::Default, const FString& TimeZone = FString(), const FCulturePtr& TargetCulture = NULL);
 	static FText AsTimespan(const FTimespan& Timespan, const FCulturePtr& TargetCulture = NULL);
 
 	/**
@@ -475,6 +468,11 @@ public:
 	 */
 	static FText FromString( const FString& String );
 	static FText FromString( FString&& String );
+
+	/**
+	 * Generate a FText representing the passed string view
+	 */
+	static FText FromStringView(FStringView InString);
 
 	/**
 	 * Generate a culture invariant FText representing the passed in string
@@ -710,7 +708,7 @@ public:
 
 	bool ShouldGatherForLocalization() const;
 
-#if WITH_EDITOR
+#if WITH_EDITORONLY_DATA
 	/**
 	 * Constructs a new FText with the SourceString of the specified text but with the specified namespace and key
 	 */
@@ -728,15 +726,10 @@ private:
 
 	FText( FName InTableId, FString InKey, const EStringTableLoadingPolicy InLoadingPolicy );
 
-	FText( FString&& InSourceString, FTextDisplayStringRef InDisplayString );
-
 	FText( FString&& InSourceString, const FTextKey& InNamespace, const FTextKey& InKey, uint32 InFlags=0 );
 
 	static void SerializeText( FArchive& Ar, FText& Value );
 	static void SerializeText(FStructuredArchive::FSlot Slot, FText& Value);
-
-	/** Returns the source string of the FText */
-	const FString& GetSourceString() const;
 
 	/** Get any historic text format data from the history used by this FText */
 	void GetHistoricFormatData(TArray<FHistoricTextFormatData>& OutHistoricFormatData) const;
@@ -947,8 +940,9 @@ struct CORE_API FFormatArgumentData
 	// It's used as a marshaller to create a real FFormatArgumentValue when performing a format
 	TEnumAsByte<EFormatArgumentType::Type> ArgumentValueType;
 	FText ArgumentValue;
-	int32 ArgumentValueInt;
+	int64 ArgumentValueInt;
 	float ArgumentValueFloat;
+	double ArgumentValueDouble;
 	ETextGender ArgumentValueGender;
 };
 
@@ -1085,14 +1079,17 @@ private:
 	/** A pointer to the text data for the FText that we took a snapshot of (used for an efficient pointer compare) */
 	TSharedPtr<ITextData, ESPMode::ThreadSafe> TextDataPtr;
 
-	/** Global revision index of localization manager when we took the snapshot, or 0 if there was no history */
-	uint16 GlobalHistoryRevision;
+	/** The localized string of the text when we took the snapshot (if any) */
+	FTextConstDisplayStringPtr LocalizedStringPtr;
 
-	/** Local revision index of the display string we took a snapshot of, or 0 if there was no history */
-	uint16 LocalHistoryRevision;
+	/** Global revision index of the text when we took the snapshot, or 0 if there was no history */
+	uint16 GlobalHistoryRevision = 0;
+
+	/** Local revision index of the text when we took the snapshot, or 0 if there was no history */
+	uint16 LocalHistoryRevision = 0;
 
 	/** Flags with various information on what sort of FText we took a snapshot of */
-	uint32 Flags;
+	uint32 Flags = 0;
 };
 
 class CORE_API FTextInspector
@@ -1105,13 +1102,17 @@ public:
 	static bool ShouldGatherForLocalization(const FText& Text);
 	static TOptional<FString> GetNamespace(const FText& Text);
 	static TOptional<FString> GetKey(const FText& Text);
+	static FTextId GetTextId(const FText& Text);
 	static const FString* GetSourceString(const FText& Text);
 	static const FString& GetDisplayString(const FText& Text);
-	static const FTextDisplayStringRef GetSharedDisplayString(const FText& Text);
+	UE_DEPRECATED(5.0, "GetSharedDisplayString is no longer guaranteed to return a valid result and should NOT be used! If you wanted to get the text ID, use FTextInspector::GetTextId instead. If you wanted a key for unique text instances, use FTextInspector::GetSharedDataId instead.")
+	static FTextConstDisplayStringPtr GetSharedDisplayString(const FText& Text);
 	static bool GetTableIdAndKey(const FText& Text, FName& OutTableId, FString& OutKey);
+	static bool GetTableIdAndKey(const FText& Text, FName& OutTableId, FTextKey& OutKey);
 	static uint32 GetFlags(const FText& Text);
 	static void GetHistoricFormatData(const FText& Text, TArray<FHistoricTextFormatData>& OutHistoricFormatData);
 	static bool GetHistoricNumericData(const FText& Text, FHistoricTextNumericData& OutHistoricNumericData);
+	static const void* GetSharedDataId(const FText& Text);
 };
 
 class CORE_API FTextStringHelper
@@ -1246,20 +1247,6 @@ private:
 
 	TArray<FText> Lines;
 	int32 IndentCount = 0;
-};
-
-class CORE_API FScopedTextIdentityPreserver
-{
-public:
-	FScopedTextIdentityPreserver(FText& InTextToPersist);
-	~FScopedTextIdentityPreserver();
-
-private:
-	FText& TextToPersist;
-	bool HadFoundNamespaceAndKey;
-	FString Namespace;
-	FString Key;
-	uint32 Flags;
 };
 
 /** Unicode character helper functions */

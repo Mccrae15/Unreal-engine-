@@ -36,11 +36,13 @@ public class Kismet : ModuleRules
 				"Json",
 				"Merge",
 				"MessageLog",
+				"EditorFramework",
 				"UnrealEd",
 				"GraphEditor",
 				"KismetWidgets",
 				"KismetCompiler",
 				"BlueprintGraph",
+				"BlueprintEditorLibrary",
 				"AnimGraph",
 				"PropertyEditor",
 				"SourceControl",
@@ -49,14 +51,16 @@ public class Kismet : ModuleRules
 				"EngineSettings",
                 "Projects",
                 "JsonUtilities",
-                "DerivedDataCache",
 				"DesktopPlatform",
 				"HotReload",
-                "BlueprintNativeCodeGen",
                 "UMGEditor",
                 "UMG", // for SBlueprintDiff
                 "WorkspaceMenuStructure",
+				"DeveloperSettings",
 				"ToolMenus",
+				"SubobjectEditor",
+				"SubobjectDataInterface",
+				"ToolWidgets",
             }
 			);
 
@@ -66,7 +70,6 @@ public class Kismet : ModuleRules
                 "ClassViewer",
 				"Documentation",
 				"GameProjectGeneration",
-                "BlueprintCompilerCppBackend",
 			}
             );
 
@@ -74,7 +77,6 @@ public class Kismet : ModuleRules
 		CircularlyReferencedDependentModules.AddRange(
 			new string[] {
 				"BlueprintGraph",
-				"BlueprintNativeCodeGen",
 				"UMGEditor",
 				"Merge"
             }

@@ -14,13 +14,16 @@
 class AActor;
 class FSoundSource;
 class UPrimitiveComponent;
-class USoundWave;
+class FSoundWaveData;
+class FSoundWaveProxy;
 class ICompressedAudioInfo;
 class UTexture2D;
 struct FRenderAssetStreamingManager;
 struct FWaveInstance;
 class UAnimStreamable;
 struct FCompressedAnimSequence;
+
+using FSoundWaveProxyPtr = TSharedPtr<FSoundWaveProxy, ESPMode::ThreadSafe>;
 
 /*-----------------------------------------------------------------------------
 	Stats.
@@ -35,9 +38,13 @@ class USkeletalMesh;
 class ULandscapeLODStreamingProxy;
 class UStreamableRenderAsset;
 class FSoundSource;
-class USoundWave;
 struct FWaveInstance;
 struct FRenderAssetStreamingManager;
+
+namespace Nanite
+{
+	class FCoarseMeshStreamingManager;
+}
 
 /** Helper function to flush resource streaming. */
 void FlushResourceStreaming();
@@ -117,20 +124,16 @@ public:
 
 private:
 	// This constructor should only be called by an implementation of IAudioStreamingManager.
-	FAudioChunkHandle(const uint8* InData, uint32 NumBytes, const USoundWave* InSoundWave, const FName& SoundWaveName, uint32 InChunkIndex, uint64 InCacheLookupID);
+	FAudioChunkHandle(const uint8* InData, uint32 NumBytes, const FSoundWaveProxyPtr&  InSoundWave, const FName& SoundWaveName, uint32 InChunkIndex, uint64 InCacheLookupID);
 
 	const uint8*  CachedData;
 	int32 CachedDataNumBytes;
 
-	const USoundWave* CorrespondingWave;
+	TWeakPtr<FSoundWaveData, ESPMode::ThreadSafe> CorrespondingWave;
 	FName CorrespondingWaveName;
 
 	// The index of this chunk in the sound wave's full set of chunks of compressed audio.
 	int32 ChunkIndex;
-
-	// This ID can be used to access the element this handle is for directly,
-	// rather than linearly searching the cache. This should only be used by the stream cache itself.
-	uint64 CacheLookupID;
 
 #if WITH_EDITOR
 	uint32 ChunkGeneration;
@@ -502,10 +505,10 @@ enum class EAudioChunkLoadResult : uint8
 struct IAudioStreamingManager : public IStreamingManager
 {
 	/** Adds a new Sound Wave to the streaming manager. */
-	virtual void AddStreamingSoundWave(USoundWave* SoundWave) = 0;
+	virtual void AddStreamingSoundWave(const FSoundWaveProxyPtr& SoundWave) = 0;
 
 	/** Removes a Sound Wave from the streaming manager. */
-	virtual void RemoveStreamingSoundWave(USoundWave* SoundWave) = 0;
+	virtual void RemoveStreamingSoundWave(const FSoundWaveProxyPtr& SoundWave) = 0;
 
 	/** Adds the decoder to the streaming manager to prevent stream chunks from getting reaped from underneath it */
 	virtual void AddDecoder(ICompressedAudioInfo* CompressedAudioInfo) = 0;
@@ -514,10 +517,10 @@ struct IAudioStreamingManager : public IStreamingManager
 	virtual void RemoveDecoder(ICompressedAudioInfo* CompressedAudioInfo) = 0;
 
 	/** Returns true if this is a Sound Wave that is managed by the streaming manager. */
-	virtual bool IsManagedStreamingSoundWave(const USoundWave* SoundWave) const = 0;
+	virtual bool IsManagedStreamingSoundWave(const FSoundWaveProxyPtr&  SoundWave) const = 0;
 
 	/** Returns true if this Sound Wave is currently streaming a chunk. */
-	virtual bool IsStreamingInProgress(const USoundWave* SoundWave) = 0;
+	virtual bool IsStreamingInProgress(const FSoundWaveProxyPtr&  SoundWave) = 0;
 
 	virtual bool CanCreateSoundSource(const FWaveInstance* WaveInstance) const = 0;
 
@@ -538,7 +541,7 @@ struct IAudioStreamingManager : public IStreamingManager
 	 * @param ThreadToCallOnLoadCompleteOn. Optional specifier for which thread OnLoadCompleted should be called on.
 	 * @param bForImmediatePlaybac if true, this will optionally reprioritize this chunk's load request.
 	 */
-	virtual bool RequestChunk(USoundWave* SoundWave, uint32 ChunkIndex, TFunction<void(EAudioChunkLoadResult)> OnLoadCompleted = [](EAudioChunkLoadResult) {}, ENamedThreads::Type ThreadToCallOnLoadCompletedOn = ENamedThreads::AnyThread, bool bForImmediatePlayback = false) = 0;
+	virtual bool RequestChunk(const FSoundWaveProxyPtr& SoundWave, uint32 ChunkIndex, TFunction<void(EAudioChunkLoadResult)> OnLoadCompleted = [](EAudioChunkLoadResult) {}, ENamedThreads::Type ThreadToCallOnLoadCompletedOn = ENamedThreads::AnyThread, bool bForImmediatePlayback = false) = 0;
 
 	/**
 	 * Gets a pointer to a chunk of audio data
@@ -549,7 +552,7 @@ struct IAudioStreamingManager : public IStreamingManager
 	 * @param bForImmediatePlayback if true, will optionally reprioritize this chunk's load request. See au.streamcaching.PlaybackRequestPriority.
 	 * @return a handle to the loaded chunk. Can return a default constructed FAudioChunkHandle if the chunk is not loaded yet.
 	 */
-	virtual FAudioChunkHandle GetLoadedChunk(const USoundWave* SoundWave, uint32 ChunkIndex,  bool bBlockForLoad = false, bool bForImmediatePlayback = false) const = 0;
+	virtual FAudioChunkHandle GetLoadedChunk(const FSoundWaveProxyPtr&  SoundWave, uint32 ChunkIndex,  bool bBlockForLoad = false, bool bForImmediatePlayback = false) const = 0;
 
 	/**
 	 * This will start evicting elements from the cache until either hit our target of bytes or run out of chunks we can free.
@@ -578,7 +581,7 @@ protected:
 	friend FAudioChunkHandle;
 
 	/** This can be called by implementers of IAudioStreamingManager to construct an FAudioChunkHandle using an otherwise inaccessible constructor. */
-	static FAudioChunkHandle BuildChunkHandle(const uint8* InData, uint32 NumBytes, const USoundWave* InSoundWave, const FName& SoundWaveName, uint32 InChunkIndex, uint64 CacheLookupID);
+	static FAudioChunkHandle BuildChunkHandle(const uint8* InData, uint32 NumBytes, const FSoundWaveProxyPtr& InSoundWave, const FName& SoundWaveName, uint32 InChunkIndex, uint64 CacheLookupID);
 
 	/**
 	 * This can be used to increment reference counted handles to audio chunks. Called by the copy constructor of FAudioChunkHandle.
@@ -720,6 +723,11 @@ struct FStreamingManagerCollection : public IStreamingManager
 	ENGINE_API struct FVirtualTextureChunkStreamingManager& GetVirtualTextureStreamingManager() const;
 
 	/**
+	 * Gets a reference to the Nanite Coarse Mesh Streaming Manager
+	*/
+	ENGINE_API Nanite::FCoarseMeshStreamingManager* GetNaniteCoarseMeshStreamingManager() const;
+
+	/**
 	 * Adds a streaming manager to the array of managers to route function calls to.
 	 *
 	 * @param StreamingManager	Streaming manager to add
@@ -819,6 +827,9 @@ protected:
 
 	/** The virtual texture streaming manager, should always exist */
 	FVirtualTextureChunkStreamingManager* VirtualTextureStreamingManager;
+
+	/** The nanite coarse mesh streaming manager, should always exist */
+	Nanite::FCoarseMeshStreamingManager* NaniteCoarseMeshStreamingManager;
 
 #if WITH_EDITOR
 	// Locks out any audio streaming manager call when we are re-initializing the audio streaming manager.

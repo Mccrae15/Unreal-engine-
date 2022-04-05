@@ -27,11 +27,12 @@ namespace Chaos
 			, MinLength(0)
 			, MaxLength(0)
 			, Axis(0,0,1)
-			, Target(0,0,0)
+			, Target(0, 0, 0)
+			, Normal(0, 0, 0)
 		{
 		}
 
-		FPBDSuspensionSettings(bool InEnabled, FReal InHardstopStiffness, FReal InHardstopVelocityCompensation, FReal InSpringPreload, FReal InSpringStiffness, FReal InDamping, FReal InMinLength, FReal InMaxLength, const FVec3& InAxis, const FVec3& InTarget)
+		FPBDSuspensionSettings(bool InEnabled, FReal InHardstopStiffness, FReal InHardstopVelocityCompensation, FReal InSpringPreload, FReal InSpringStiffness, FReal InDamping, FReal InMinLength, FReal InMaxLength, const FVec3& InAxis, const FVec3& InTarget, const FVec3& InNormal)
 			: Enabled(InEnabled)
 			, HardstopStiffness(InHardstopStiffness)
 			, HardstopVelocityCompensation(InHardstopVelocityCompensation)
@@ -42,6 +43,7 @@ namespace Chaos
 			, MaxLength(InMaxLength)
 			, Axis(InAxis)
 			, Target(InTarget)
+			, Normal(InNormal)
 		{
 		}
 
@@ -55,6 +57,27 @@ namespace Chaos
 		FReal MaxLength;
 		FVec3 Axis;
 		FVec3 Target;
+		FVec3 Normal;
+	};
+
+	class CHAOS_API FPBDSuspensionResults
+	{
+	public:
+		FPBDSuspensionResults()
+			: NetPushOut(FVec3(0))
+			, Length(0)
+		{
+		}
+
+		void Reset()
+		{
+			*this = FPBDSuspensionResults();
+		}
+
+		FVec3 NetPushOut;
+		FVec3 HardStopNetPushOut;
+		FVec3 HardStopNetImpulse;
+		FReal Length;
 	};
 
 	class CHAOS_API FPBDSuspensionSolverSettings

@@ -41,16 +41,16 @@ namespace ArrangeUtils
 			{
 			default:
 			case EFlowDirection::LeftToRight:
-				return static_cast<int32>(InSlot.HAlignment);
+				return static_cast<int32>(InSlot.GetHorizontalAlignment());
 			case EFlowDirection::RightToLeft:
-				switch (InSlot.HAlignment)
+				switch (InSlot.GetHorizontalAlignment())
 				{
 				case HAlign_Left:
 					return static_cast<int32>(HAlign_Right);
 				case HAlign_Right:
 					return static_cast<int32>(HAlign_Left);
 				default:
-					return static_cast<int32>(InSlot.HAlignment);
+					return static_cast<int32>(InSlot.GetHorizontalAlignment());
 				}
 			}
 		}
@@ -63,7 +63,7 @@ namespace ArrangeUtils
 		static int32 AsInt(EFlowDirection InFlowDirection, const SlotType& InSlot )
 		{
 			// InFlowDirection has no effect in vertical orientations.
-			return static_cast<int32>(InSlot.VAlignment);
+			return static_cast<int32>(InSlot.GetVerticalAlignment());
 		}
 	};
 }
@@ -94,10 +94,10 @@ static AlignmentArrangeResult AlignChild(EFlowDirection InLayoutFlow, float Allo
 	switch (Alignment)
 	{
 	case HAlign_Fill:
-		return AlignmentArrangeResult(MarginPre, (AllottedSize - TotalMargin) * ContentScale);
+		return AlignmentArrangeResult(MarginPre, FMath::Max((AllottedSize - TotalMargin) * ContentScale, 0.f));
 	}
 	
-	const float ChildSize = bClampToParent ? FMath::Min(ChildDesiredSize, AllottedSize - TotalMargin) : ChildDesiredSize;
+	const float ChildSize = FMath::Max((bClampToParent ? FMath::Min(ChildDesiredSize, AllottedSize - TotalMargin) : ChildDesiredSize), 0.f);
 
 	switch( Alignment )
 	{
@@ -110,7 +110,7 @@ static AlignmentArrangeResult AlignChild(EFlowDirection InLayoutFlow, float Allo
 	}
 
 	// Same as Fill
-	return AlignmentArrangeResult(MarginPre, ( AllottedSize - TotalMargin ) * ContentScale);
+	return AlignmentArrangeResult(MarginPre, FMath::Max(( AllottedSize - TotalMargin ) * ContentScale, 0.f));
 }
 
 template<EOrientation Orientation, typename SlotType>
@@ -132,14 +132,14 @@ static AlignmentArrangeResult AlignChild(EFlowDirection InLayoutFlow, float Allo
 	switch (Alignment)
 	{
 	case HAlign_Fill:
-		return AlignmentArrangeResult(MarginPre, (AllottedSize - TotalMargin) * ContentScale);
+		return AlignmentArrangeResult(MarginPre, FMath::Max((AllottedSize - TotalMargin) * ContentScale, 0.f));
 	}
 
 	const float ChildDesiredSize = ( Orientation == Orient_Horizontal )
 		? ( ChildToArrange.GetWidget()->GetDesiredSize().X * ContentScale )
 		: ( ChildToArrange.GetWidget()->GetDesiredSize().Y * ContentScale );
 
-	const float ChildSize = bClampToParent ? FMath::Min(ChildDesiredSize, AllottedSize - TotalMargin) : ChildDesiredSize;
+	const float ChildSize = FMath::Max((bClampToParent ? FMath::Min(ChildDesiredSize, AllottedSize - TotalMargin) : ChildDesiredSize), 0.f);
 
 	switch ( Alignment )
 	{
@@ -152,7 +152,7 @@ static AlignmentArrangeResult AlignChild(EFlowDirection InLayoutFlow, float Allo
 	}
 
 	// Same as Fill
-	return AlignmentArrangeResult(MarginPre, (AllottedSize - TotalMargin) * ContentScale);
+	return AlignmentArrangeResult(MarginPre, FMath::Max((AllottedSize - TotalMargin) * ContentScale, 0.f));
 }
 
 template<EOrientation Orientation, typename SlotType>
@@ -179,7 +179,7 @@ static void ArrangeSingleChild(EFlowDirection InFlowDirection, const FGeometry& 
 	if ( ArrangedChildren.Accepts(ChildVisibility) )
 	{
 		const FVector2D ThisContentScale = ContentScale.Get();
-		const FMargin SlotPadding(LayoutPaddingWithFlow(InFlowDirection, ChildSlot.SlotPadding.Get()));
+		const FMargin SlotPadding(LayoutPaddingWithFlow(InFlowDirection, ChildSlot.GetPadding()));
 		const AlignmentArrangeResult XResult = AlignChild<Orient_Horizontal>(InFlowDirection, AllottedGeometry.GetLocalSize().X, ChildSlot, SlotPadding, ThisContentScale.X);
 		const AlignmentArrangeResult YResult = AlignChild<Orient_Vertical>(AllottedGeometry.GetLocalSize().Y, ChildSlot, SlotPadding, ThisContentScale.Y);
 
@@ -188,6 +188,31 @@ static void ArrangeSingleChild(EFlowDirection InFlowDirection, const FGeometry& 
 				FVector2D(XResult.Offset, YResult.Offset),
 				FVector2D(XResult.Size, YResult.Size)
 		) );
+	}
+}
+
+template<typename SlotType>
+static void ArrangeSingleChild(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren, const SlotType& ChildSlot, const FVector2D& ContentScale)
+{
+	ArrangeSingleChild<SlotType>(EFlowDirection::LeftToRight, AllottedGeometry, ArrangedChildren, ChildSlot, ContentScale);
+}
+
+template<typename SlotType>
+static void ArrangeSingleChild(EFlowDirection InFlowDirection, const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren, const SlotType& ChildSlot, const FVector2D& ContentScale)
+{
+	const EVisibility ChildVisibility = ChildSlot.GetWidget()->GetVisibility();
+	if (ArrangedChildren.Accepts(ChildVisibility))
+	{
+		const FVector2D ThisContentScale = ContentScale;
+		const FMargin SlotPadding(LayoutPaddingWithFlow(InFlowDirection, ChildSlot.GetPadding()));
+		const AlignmentArrangeResult XResult = AlignChild<Orient_Horizontal>(InFlowDirection, AllottedGeometry.GetLocalSize().X, ChildSlot, SlotPadding, ThisContentScale.X);
+		const AlignmentArrangeResult YResult = AlignChild<Orient_Vertical>(AllottedGeometry.GetLocalSize().Y, ChildSlot, SlotPadding, ThisContentScale.Y);
+
+		ArrangedChildren.AddWidget(ChildVisibility, AllottedGeometry.MakeChild(
+			ChildSlot.GetWidget(),
+			FVector2D(XResult.Offset, YResult.Offset),
+			FVector2D(XResult.Size, YResult.Size)
+		));
 	}
 }
 

@@ -299,7 +299,7 @@ bool UPackageMap::StaticSerializeName(FArchive& Ar, FName& InName)
 				Ar.SerializeIntPacked(NameIndex);
 			}
 
-			if (NameIndex < NAME_MaxHardcodedNameIndex)
+			if (NameIndex < (uint32)EName::MaxHardcodedNameIndex)
 			{
 				InName = EName(NameIndex);
 				// hardcoded names never have a Number
@@ -321,13 +321,13 @@ bool UPackageMap::StaticSerializeName(FArchive& Ar, FName& InName)
 	else if (Ar.IsSaving())
 	{
 		const EName* InEName = InName.ToEName();
-		uint8 bHardcoded = InEName && ShouldReplicateAsInteger(*InEName);
+		uint8 bHardcoded = InEName && ShouldReplicateAsInteger(*InEName, InName);
 		Ar.SerializeBits(&bHardcoded, 1);
 		if (bHardcoded && /* silence static analyzer */ InEName)
 		{
 			// send by hardcoded index
 			checkSlow(InName.GetNumber() <= 0); // hardcoded names should never have a Number
-			uint32 NameIndex = *InEName;
+			uint32 NameIndex = (uint32)*InEName;
 			Ar.SerializeIntPacked(NameIndex);
 		}
 		else
@@ -443,6 +443,11 @@ FArchive& FNetBitWriter::operator<<(FSoftObjectPtr& Value)
 	return FArchiveUObject::SerializeSoftObjectPtr(*this, Value);
 }
 
+FArchive& FNetBitWriter::operator<<(FObjectPtr& Value)
+{
+	return FArchiveUObject::SerializeObjectPtr(*this, Value);
+}
+
 FArchive& FNetBitWriter::operator<<(struct FWeakObjectPtr& WeakObjectPtr)
 {
 	return FArchiveUObject::SerializeWeakObjectPtr(*this, WeakObjectPtr);
@@ -499,6 +504,11 @@ FArchive& FNetBitReader::operator<<(FSoftObjectPtr& Value)
 	return FArchiveUObject::SerializeSoftObjectPtr(*this, Value);
 }
 
+FArchive& FNetBitReader::operator<<(FObjectPtr& Value)
+{
+	return FArchiveUObject::SerializeObjectPtr(*this, Value);
+}
+
 FArchive& FNetBitReader::operator<<(struct FWeakObjectPtr& WeakObjectPtr)
 {
 	return FArchiveUObject::SerializeWeakObjectPtr(*this, WeakObjectPtr);
@@ -545,29 +555,4 @@ const TCHAR* LexToString(const EChannelCloseReason Value)
 	}
 
 	return TEXT("Unknown");
-}
-
-void INetSerializeCB::NetSerializeStruct(
-	class UScriptStruct* Struct,
-	class FBitArchive& Ar,
-	class UPackageMap* Map,
-	void* Data,
-	bool& bHasUnmapped)
-{
-	FNetDeltaSerializeInfo Params;
-	Params.Struct = Struct;
-	Params.Map = Map;
-	Params.Data = Data;
-
-	if (Ar.IsSaving())
-	{
-		Params.Writer = static_cast<FBitWriter*>(&Ar);
-	}
-	else
-	{
-		Params.Reader = static_cast<FBitReader*>(&Ar);
-	}
-
-	NetSerializeStruct(Params);
-	bHasUnmapped = Params.bOutHasMoreUnmapped;
 }

@@ -4,6 +4,7 @@
 
 #include "Party/PartyTypes.h"
 #include "OnlineSubsystem.h"
+#include "Containers/Ticker.h"
 #include "Interfaces/OnlineSessionInterface.h"
 
 class USocialManager;
@@ -138,6 +139,6 @@ private:
 		Complete
 	} ShutdownState = EMonitorShutdownState::None;
 	
-	FDelegateHandle RetryTickerHandle;
+	FTSTicker::FDelegateHandle RetryTickerHandle;
 	FDelegateHandle UpdateOssSessionHandle;
 };

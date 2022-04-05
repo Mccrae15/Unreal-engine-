@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "ThumbnailRendering/BlueprintThumbnailRenderer.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "ShowFlags.h"
 #include "SceneView.h"
 #include "Misc/App.h"
@@ -11,6 +12,12 @@
 UBlueprintThumbnailRenderer::UBlueprintThumbnailRenderer(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
+	FKismetEditorUtilities::OnBlueprintUnloaded.AddUObject(this, &UBlueprintThumbnailRenderer::OnBlueprintUnloaded);
+}
+
+UBlueprintThumbnailRenderer::~UBlueprintThumbnailRenderer()
+{
+	FKismetEditorUtilities::OnBlueprintUnloaded.RemoveAll(this);
 }
 
 bool UBlueprintThumbnailRenderer::CanVisualizeAsset(UObject* Object)
@@ -98,14 +105,13 @@ void UBlueprintThumbnailRenderer::Draw(UObject* Object, int32 X, int32 Y, uint32
 
 		ThumbnailScene->SetBlueprint(Blueprint);
 		FSceneViewFamilyContext ViewFamily( FSceneViewFamily::ConstructionValues( RenderTarget, ThumbnailScene->GetScene(), FEngineShowFlags(ESFIM_Game) )
-			.SetWorldTimes(FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime)
+			.SetTime(UThumbnailRenderer::GetTime())
 			.SetAdditionalViewFamily(bAdditionalViewFamily));
 
 		ViewFamily.EngineShowFlags.DisableAdvancedFeatures();
 		ViewFamily.EngineShowFlags.MotionBlur = 0;
 
-		ThumbnailScene->GetView(&ViewFamily, X, Y, Width, Height);
-		RenderViewFamily(Canvas,&ViewFamily);
+		RenderViewFamily(Canvas, &ViewFamily, ThumbnailScene->CreateView(&ViewFamily, X, Y, Width, Height));
 	}
 }
 
@@ -116,7 +122,7 @@ void UBlueprintThumbnailRenderer::BeginDestroy()
 	Super::BeginDestroy();
 }
 
-void UBlueprintThumbnailRenderer::BlueprintChanged(class UBlueprint* Blueprint)
+void UBlueprintThumbnailRenderer::BlueprintChanged(UBlueprint* Blueprint)
 {
 	if (Blueprint && Blueprint->GeneratedClass)
 	{
@@ -125,5 +131,13 @@ void UBlueprintThumbnailRenderer::BlueprintChanged(class UBlueprint* Blueprint)
 		{
 			ThumbnailScene->BlueprintChanged(Blueprint);
 		}
+	}
+}
+
+void UBlueprintThumbnailRenderer::OnBlueprintUnloaded(UBlueprint* Blueprint)
+{
+	if (Blueprint && Blueprint->GeneratedClass)
+	{
+		ThumbnailScenes.RemoveThumbnailScene(Blueprint->GeneratedClass);
 	}
 }

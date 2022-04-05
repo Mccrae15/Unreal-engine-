@@ -766,8 +766,6 @@ Parser::ParseExternalDeclaration(ParsedAttributesWithRange &attrs,
   // HLSL Change Starts: Start parsing declaration of cbuffer and tbuffers
   case tok::kw_cbuffer:
   case tok::kw_tbuffer:
-  case tok::kw_ConstantBuffer:
-  case tok::kw_TextureBuffer:
     // HLSL Change Ends
   case tok::kw_using:
   case tok::kw_namespace:
@@ -1750,7 +1748,8 @@ bool Parser::TryAnnotateTypeOrScopeTokenAfterScopeSpec(bool EnteringContext,
                                    /*hasTemplateKeyword=*/false, TemplateName,
                                    /*ObjectType=*/ ParsedType(),
                                    EnteringContext,
-                                   Template, MemberOfUnknownSpecialization)) {
+                                   Template, MemberOfUnknownSpecialization,
+                                   /*NextIsLess*/ true)) {  // HLSL Change - additional flag
         // Consume the identifier.
         ConsumeToken();
         if (AnnotateTemplateIdToken(Template, TNK, SS, SourceLocation(),

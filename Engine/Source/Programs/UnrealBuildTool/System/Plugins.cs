@@ -5,7 +5,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Diagnostics;
 using System.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -34,11 +35,6 @@ namespace UnrealBuildTool
 		/// Plugin is built-in to the engine
 		/// </summary>
 		Engine,
-
-		/// <summary>
-		/// Enterprise plugin
-		/// </summary>
-		Enterprise,
 
 		/// <summary>
 		/// Project-specific plugin, stored within a game project directory
@@ -93,6 +89,11 @@ namespace UnrealBuildTool
 		public PluginType Type;
 
 		/// <summary>
+		/// Used to indicate whether a plugin is being explicitly packaged via the -plugin command line
+		/// </summary>
+		public bool bExplicitPluginTarget = false;
+
+		/// <summary>
 		/// Constructs a PluginInfo object
 		/// </summary>
 		/// <param name="InFile">Path to the plugin descriptor</param>
@@ -135,7 +136,7 @@ namespace UnrealBuildTool
 		{
 			get
 			{
-				if(Type == PluginType.Engine || Type == PluginType.Enterprise)
+				if(Type == PluginType.Engine)
 				{
 					return PluginLoadedFrom.Engine;
 				}
@@ -158,18 +159,13 @@ namespace UnrealBuildTool
 		static Dictionary<DirectoryReference, List<PluginInfo>> PluginInfoCache = new Dictionary<DirectoryReference, List<PluginInfo>>();
 
 		/// <summary>
-		/// Cache of plugin filenames under each directory
-		/// </summary>
-		static Dictionary<DirectoryReference, List<FileReference>> PluginFileCache = new Dictionary<DirectoryReference, List<FileReference>>();
-
-		/// <summary>
 		/// Invalidate cached plugin data so that we can pickup new things
 		/// Warning: Will make subsequent plugin lookups and directory scans slow until the caches are repopulated
 		/// </summary>
 		public static void InvalidateCaches_SLOW()
 		{
 			PluginInfoCache = new Dictionary<DirectoryReference, List<PluginInfo>>();
-			PluginFileCache = new Dictionary<DirectoryReference, List<FileReference>>();
+			PluginsBase.InvalidateCache_SLOW();
 			DirectoryItem.ResetAllCachedInfo_SLOW();
 		}
 
@@ -184,7 +180,7 @@ namespace UnrealBuildTool
 			Dictionary<string, PluginInfo> NameToPluginInfo = new Dictionary<string, PluginInfo>(StringComparer.InvariantCultureIgnoreCase);
 			foreach (PluginInfo Plugin in Plugins)
 			{
-				PluginInfo ExistingPluginInfo;
+				PluginInfo? ExistingPluginInfo;
 				if (!NameToPluginInfo.TryGetValue(Plugin.Name, out ExistingPluginInfo))
 				{
 					NameToPluginInfo.Add(Plugin.Name, Plugin);
@@ -220,7 +216,7 @@ namespace UnrealBuildTool
 		/// <param name="ProjectDir">Path to the project directory (or null)</param>
 		/// <param name="AdditionalDirectories">List of additional directories to scan for available plugins</param>
 		/// <returns>Sequence of PluginInfo objects, one for each discovered plugin</returns>
-		public static List<PluginInfo> ReadAvailablePlugins(DirectoryReference EngineDir, DirectoryReference ProjectDir, List<DirectoryReference> AdditionalDirectories)
+		public static List<PluginInfo> ReadAvailablePlugins(DirectoryReference EngineDir, DirectoryReference? ProjectDir, List<DirectoryReference>? AdditionalDirectories)
 		{
 			List<PluginInfo> Plugins = new List<PluginInfo>();
 
@@ -246,24 +242,6 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Enumerates all the plugin files available to the given project
-		/// </summary>
-		/// <param name="ProjectFile">Path to the project file</param>
-		/// <returns>List of project files</returns>
-		public static IEnumerable<FileReference> EnumeratePlugins(FileReference ProjectFile)
-		{
-			List<DirectoryReference> BaseDirs = new List<DirectoryReference>();
-			BaseDirs.AddRange(UnrealBuildTool.GetExtensionDirs(UnrealBuildTool.EngineDirectory, "Plugins"));
-			BaseDirs.AddRange(UnrealBuildTool.GetExtensionDirs(UnrealBuildTool.EnterpriseDirectory, "Plugins"));
-			if(ProjectFile != null)
-			{
-				BaseDirs.AddRange(UnrealBuildTool.GetExtensionDirs(ProjectFile.Directory, "Plugins"));
-				BaseDirs.AddRange(UnrealBuildTool.GetExtensionDirs(ProjectFile.Directory, "Mods"));
-			}
-			return BaseDirs.SelectMany(x => EnumeratePlugins(x)).ToList();
-		}
-
-		/// <summary>
 		/// Read all the plugin descriptors under the given engine directory
 		/// </summary>
 		/// <param name="EngineDirectory">The parent directory to look in.</param>
@@ -271,16 +249,6 @@ namespace UnrealBuildTool
 		public static IReadOnlyList<PluginInfo> ReadEnginePlugins(DirectoryReference EngineDirectory)
 		{
 			return ReadPluginsFromDirectory(EngineDirectory, "Plugins", PluginType.Engine);
-		}
-
-		/// <summary>
-		/// Read all the plugin descriptors under the given enterprise directory
-		/// </summary>
-		/// <param name="EnterpriseDirectory">The parent directory to look in.</param>
-		/// <returns>Sequence of the found PluginInfo object.</returns>
-		public static IReadOnlyList<PluginInfo> ReadEnterprisePlugins(DirectoryReference EnterpriseDirectory)
-		{
-			return ReadPluginsFromDirectory(EnterpriseDirectory, "Plugins", PluginType.Enterprise);
 		}
 
 		/// <summary>
@@ -346,7 +314,7 @@ namespace UnrealBuildTool
 		private static void TryMergeWithParent(PluginInfo Child, FileReference Filename)
 		{
 			// find the parent
-			PluginInfo Parent = null;
+			PluginInfo? Parent = null;
 
 			string[] Tokens = Filename.GetFileNameWithoutAnyExtensions().Split("_".ToCharArray());
 			if (Tokens.Length == 2)
@@ -376,7 +344,7 @@ namespace UnrealBuildTool
 			string PlatformName = Tokens[1];
 			if (!IsValidChildPluginSuffix(PlatformName))
 			{
-				Log.TraceWarning("Ignoring child plugin: {0} - Unknown suffix \"{1}\". Expected valid platform or group", Child.File.GetFileName(), PlatformName);
+				Log.TraceWarningTask(Filename, $"Ignoring child plugin: {Child.File.GetFileName()} - Unknown suffix \"{PlatformName}\": expected valid platform or group.");
 				return;
 			}
 
@@ -399,7 +367,7 @@ namespace UnrealBuildTool
 				}
 			}
 
-			// make sure we are whitelisted for any modules we list
+			// make sure we are allowed for any modules we list
 			if (Child.Descriptor.Modules != null)
 			{
 				if (Parent.Descriptor.Modules == null)
@@ -413,27 +381,27 @@ namespace UnrealBuildTool
 						ModuleDescriptor ParentModule = Parent.Descriptor.Modules.FirstOrDefault(x => x.Name.Equals(ChildModule.Name) && x.Type == ChildModule.Type);
 						if (ParentModule != null)
 						{
-							// merge white/blacklists (if the parent had a list, and child didn't specify a list, just add the child platform to the parent list - for white and black!)
-							if (ChildModule.WhitelistPlatforms != null)
+							// merge allow/deny lists (if the parent had a list, and child didn't specify a list, just add the child platform to the parent list - for allow/deny lists!)
+							if (ChildModule.PlatformAllowList != null)
 							{
-								if (ParentModule.WhitelistPlatforms == null)
+								if (ParentModule.PlatformAllowList == null)
 								{
-									ParentModule.WhitelistPlatforms = ChildModule.WhitelistPlatforms;
+									ParentModule.PlatformAllowList = ChildModule.PlatformAllowList;
 								}
 								else
 								{
-									ParentModule.WhitelistPlatforms = ParentModule.WhitelistPlatforms.Union(ChildModule.WhitelistPlatforms).ToList();
+									ParentModule.PlatformAllowList = ParentModule.PlatformAllowList.Union(ChildModule.PlatformAllowList).ToList();
 								}
 							}
-							if (ChildModule.BlacklistPlatforms != null)
+							if (ChildModule.PlatformDenyList != null)
 							{
-								if (ParentModule.BlacklistPlatforms == null)
+								if (ParentModule.PlatformDenyList == null)
 								{
-									ParentModule.BlacklistPlatforms = ChildModule.BlacklistPlatforms;
+									ParentModule.PlatformDenyList = ChildModule.PlatformDenyList;
 								}
 								else
 								{
-									ParentModule.BlacklistPlatforms = ParentModule.BlacklistPlatforms.Union(ChildModule.BlacklistPlatforms).ToList();
+									ParentModule.PlatformDenyList = ParentModule.PlatformDenyList.Union(ChildModule.PlatformDenyList).ToList();
 								}
 							}
 						}
@@ -445,7 +413,7 @@ namespace UnrealBuildTool
 				}
 			}
 
-			// make sure we are whitelisted for any plugins we list
+			// make sure we are allowed for any plugins we list
 			if (Child.Descriptor.Plugins != null)
 			{
 				if (Parent.Descriptor.Plugins == null)
@@ -459,25 +427,25 @@ namespace UnrealBuildTool
 						PluginReferenceDescriptor ParentPluginReference = Parent.Descriptor.Plugins.FirstOrDefault(x => x.Name.Equals(ChildPluginReference.Name));
 						if (ParentPluginReference != null)
 						{
-							// we only need to whitelist the platform if the parent had a whitelist (otherwise, we could mistakenly remove all other platforms)
-							if (ParentPluginReference.WhitelistPlatforms != null)
+							// we only need to explicitly list the platform in an allow list if the parent also had an allow list (otherwise, we could mistakenly remove all other platforms)
+							if (ParentPluginReference.PlatformAllowList != null)
 							{
-								if (ChildPluginReference.WhitelistPlatforms != null)
+								if (ChildPluginReference.PlatformAllowList != null)
 								{
-									ParentPluginReference.WhitelistPlatforms = ParentPluginReference.WhitelistPlatforms.Union(ChildPluginReference.WhitelistPlatforms).ToList();
+									ParentPluginReference.PlatformAllowList = ParentPluginReference.PlatformAllowList.Union(ChildPluginReference.PlatformAllowList).ToArray();
 								}
 							}
 
-							// if we want to blacklist a platform, add it even if the parent didn't have a blacklist. this won't cause problems with other platforms
-							if (ChildPluginReference.BlacklistPlatforms != null)
+							// if we want to deny a platform, add it even if the parent didn't have a deny list. this won't cause problems with other platforms
+							if (ChildPluginReference.PlatformDenyList != null)
 							{
-								if (ParentPluginReference.BlacklistPlatforms == null)
+								if (ParentPluginReference.PlatformDenyList == null)
 								{
-									ParentPluginReference.BlacklistPlatforms = ChildPluginReference.BlacklistPlatforms;
+									ParentPluginReference.PlatformDenyList = ChildPluginReference.PlatformDenyList;
 								}
 								else
 								{
-									ParentPluginReference.BlacklistPlatforms = ParentPluginReference.BlacklistPlatforms.Union(ChildPluginReference.BlacklistPlatforms).ToList();
+									ParentPluginReference.PlatformDenyList = ParentPluginReference.PlatformDenyList.Union(ChildPluginReference.PlatformDenyList).ToArray();
 								}
 							}
 						}
@@ -502,7 +470,7 @@ namespace UnrealBuildTool
 		public static IReadOnlyList<PluginInfo> ReadPluginsFromDirectory(DirectoryReference RootDirectory, string Subdirectory, PluginType Type)
 		{
 			// look for directories in RootDirectory and and extension directories under RootDirectory
-			List<DirectoryReference> RootDirectories = UnrealBuildTool.GetExtensionDirs(RootDirectory, Subdirectory);
+			List<DirectoryReference> RootDirectories = Unreal.GetExtensionDirs(RootDirectory, Subdirectory);
 
 			Dictionary<PluginInfo, FileReference> ChildPlugins = new Dictionary<PluginInfo, FileReference>();
 			List<PluginInfo> AllParentPlugins = new List<PluginInfo>();
@@ -514,11 +482,11 @@ namespace UnrealBuildTool
 					continue;
 				}
 
-				List<PluginInfo> Plugins;
+				List<PluginInfo>? Plugins;
 				if (!PluginInfoCache.TryGetValue(Dir, out Plugins))
 				{
 					Plugins = new List<PluginInfo>();
-					foreach (FileReference PluginFileName in EnumeratePlugins(Dir))
+					foreach (FileReference PluginFileName in PluginsBase.EnumeratePlugins(Dir))
 					{
 						PluginInfo Plugin = new PluginInfo(PluginFileName, Type);
 
@@ -546,64 +514,6 @@ namespace UnrealBuildTool
 			}
 
 			return AllParentPlugins;
-		}
-
-		/// <summary>
-		/// Find paths to all the plugins under a given parent directory (recursively)
-		/// </summary>
-		/// <param name="ParentDirectory">Parent directory to look in. Plugins will be found in any *subfolders* of this directory.</param>
-		public static IEnumerable<FileReference> EnumeratePlugins(DirectoryReference ParentDirectory)
-		{
-			List<FileReference> FileNames;
-			if (!PluginFileCache.TryGetValue(ParentDirectory, out FileNames))
-			{
-				FileNames = new List<FileReference>();
-
-				DirectoryItem ParentDirectoryItem = DirectoryItem.GetItemByDirectoryReference(ParentDirectory);
-				if (ParentDirectoryItem.Exists)
-				{
-					using(ThreadPoolWorkQueue Queue = new ThreadPoolWorkQueue())
-					{
-						EnumeratePluginsInternal(ParentDirectoryItem, FileNames, Queue);
-					}
-				}
-
-				// Sort the filenames to ensure that the plugin order is deterministic; otherwise response files will change with each build.
-				FileNames = FileNames.OrderBy(x => x.FullName, StringComparer.OrdinalIgnoreCase).ToList();
-
-				PluginFileCache.Add(ParentDirectory, FileNames);
-			}
-			return FileNames;
-		}
-
-		/// <summary>
-		/// Find paths to all the plugins under a given parent directory (recursively)
-		/// </summary>
-		/// <param name="ParentDirectory">Parent directory to look in. Plugins will be found in any *subfolders* of this directory.</param>
-		/// <param name="FileNames">List of filenames. Will have all the discovered .uplugin files appended to it.</param>
-		/// <param name="Queue">Queue for tasks to be executed</param>
-		static void EnumeratePluginsInternal(DirectoryItem ParentDirectory, List<FileReference> FileNames, ThreadPoolWorkQueue Queue)
-		{
-			foreach (DirectoryItem ChildDirectory in ParentDirectory.EnumerateDirectories())
-			{
-				bool bSearchSubDirectories = true;
-				foreach (FileItem PluginFile in ChildDirectory.EnumerateFiles())
-				{
-					if(PluginFile.HasExtension(".uplugin"))
-					{
-						lock(FileNames)
-						{
-							FileNames.Add(PluginFile.Location);
-						}
-						bSearchSubDirectories = false;
-					}
-				}
-
-				if (bSearchSubDirectories)
-				{
-					Queue.Enqueue(() => EnumeratePluginsInternal(ChildDirectory, FileNames, Queue));
-				}
-			}
 		}
 
 		/// <summary>

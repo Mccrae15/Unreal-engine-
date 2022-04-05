@@ -24,8 +24,9 @@ void FSlatePostProcessResource::Update(const FIntPoint& NewSize)
 		{
 			InitResource();
 		}
-	
-		ResizeTargets(NewSize);
+
+		FIntPoint NewMaxSize(FMath::Max(NewSize.X, RenderTargetSize.X), FMath::Max(NewSize.Y, RenderTargetSize.Y));
+		ResizeTargets(NewMaxSize);
 	}
 }
 
@@ -43,7 +44,7 @@ void FSlatePostProcessResource::ResizeTargets(const FIntPoint& NewSize)
 		{
 			FTexture2DRHIRef RenderTargetTextureRHI;
 			FTexture2DRHIRef ShaderResourceUnused;
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FSlatePostProcessResource"));
 			RHICreateTargetableShaderResource2D(
 				RenderTargetSize.X,
 				RenderTargetSize.Y,

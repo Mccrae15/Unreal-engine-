@@ -33,8 +33,8 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "StaticMeshAttributes.h"
 #include "StaticMeshOperations.h"
-#include "TessellationRendering.h"
 #include "UObject/SoftObjectPath.h"
+#include "StaticMeshEditorSubsystem.h"
 
 DEFINE_LOG_CATEGORY(LogDataprep);
 
@@ -42,9 +42,16 @@ DEFINE_LOG_CATEGORY(LogDataprep);
 
 extern UNREALED_API UEditorEngine* GEditor;
 
-void UDataprepOperationsLibrary::SetLods(const TArray<UObject*>& SelectedObjects, const FEditorScriptingMeshReductionOptions& ReductionOptions, TArray<UObject*>& ModifiedObjects)
+void UDataprepOperationsLibrary::SetLods(const TArray<UObject*>& SelectedObjects, const FStaticMeshReductionOptions& ReductionOptions, TArray<UObject*>& ModifiedObjects)
 {
 	TSet<UStaticMesh*> SelectedMeshes = DataprepOperationsLibraryUtil::GetSelectedMeshes(SelectedObjects);
+
+	UStaticMeshEditorSubsystem* StaticMeshEditorSubsystem = GEditor->GetEditorSubsystem<UStaticMeshEditorSubsystem>();
+
+	if (!StaticMeshEditorSubsystem)
+	{
+		return;
+	}
 
 	// Create LODs but do not commit changes
 	for (UStaticMesh* StaticMesh : SelectedMeshes)
@@ -53,26 +60,33 @@ void UDataprepOperationsLibrary::SetLods(const TArray<UObject*>& SelectedObjects
 		{
 			DataprepOperationsLibraryUtil::FScopedStaticMeshEdit StaticMeshEdit( StaticMesh );
 
-			UEditorStaticMeshLibrary::SetLodsWithNotification(StaticMesh, ReductionOptions, false);
+			StaticMeshEditorSubsystem->SetLodsWithNotification(StaticMesh, ReductionOptions, false);
 
 			ModifiedObjects.Add( StaticMesh );
 		}
 	}
 }
 
-void UDataprepOperationsLibrary::SetSimpleCollision(const TArray<UObject*>& SelectedObjects, const EScriptingCollisionShapeType ShapeType, TArray<UObject*>& ModifiedObjects)
+void UDataprepOperationsLibrary::SetSimpleCollision(const TArray<UObject*>& SelectedObjects, const EScriptCollisionShapeType ShapeType, TArray<UObject*>& ModifiedObjects)
 {
+	UStaticMeshEditorSubsystem* StaticMeshEditorSubsystem = GEditor->GetEditorSubsystem<UStaticMeshEditorSubsystem>();
+
+	if (!StaticMeshEditorSubsystem)
+	{
+		return;
+	}
+
 	TSet<UStaticMesh*> SelectedMeshes = DataprepOperationsLibraryUtil::GetSelectedMeshes(SelectedObjects);
 
 	// Make sure all static meshes to be processed have render data for NDOP types
 	bool bNeedRenderData = false;
 	switch (ShapeType)
 	{
-		case EScriptingCollisionShapeType::NDOP10_X:
-		case EScriptingCollisionShapeType::NDOP10_Y:
-		case EScriptingCollisionShapeType::NDOP10_Z:
-		case EScriptingCollisionShapeType::NDOP18:
-		case EScriptingCollisionShapeType::NDOP26:
+		case EScriptCollisionShapeType::NDOP10_X:
+		case EScriptCollisionShapeType::NDOP10_Y:
+		case EScriptCollisionShapeType::NDOP10_Z:
+		case EScriptCollisionShapeType::NDOP18:
+		case EScriptCollisionShapeType::NDOP26:
 		{
 			bNeedRenderData = true;
 			break;
@@ -93,9 +107,9 @@ void UDataprepOperationsLibrary::SetSimpleCollision(const TArray<UObject*>& Sele
 			DataprepOperationsLibraryUtil::FScopedStaticMeshEdit StaticMeshEdit( StaticMesh );
 
 			// Remove existing simple collisions
-			UEditorStaticMeshLibrary::RemoveCollisionsWithNotification( StaticMesh, false );
+			StaticMeshEditorSubsystem->RemoveCollisionsWithNotification( StaticMesh, false );
 
-			UEditorStaticMeshLibrary::AddSimpleCollisionsWithNotification( StaticMesh, ShapeType, false );
+			StaticMeshEditorSubsystem->AddSimpleCollisionsWithNotification( StaticMesh, ShapeType, false );
 
 			ModifiedObjects.Add( StaticMesh );
 		}
@@ -115,12 +129,16 @@ void UDataprepOperationsLibrary::SetConvexDecompositionCollision(const TArray<UO
 	StaticMeshes.RemoveAll([](UStaticMesh* StaticMesh) { return StaticMesh == nullptr; });
 
 	// Build complex collision
-	UEditorStaticMeshLibrary::BulkSetConvexDecompositionCollisionsWithNotification(StaticMeshes, HullCount, MaxHullVerts, HullPrecision, false);
+	UStaticMeshEditorSubsystem* StaticMeshEditorSubsystem = GEditor->GetEditorSubsystem<UStaticMeshEditorSubsystem>();\
 
-	for (UStaticMesh* StaticMesh : StaticMeshes)
+	if (!StaticMeshEditorSubsystem)
 	{
-		ModifiedObjects.Add( StaticMesh );
+		return;
 	}
+
+	StaticMeshEditorSubsystem->BulkSetConvexDecompositionCollisionsWithNotification(StaticMeshes, HullCount, MaxHullVerts, HullPrecision, false);
+
+	ModifiedObjects.Append(StaticMeshes);
 }
 
 void UDataprepOperationsLibrary::SubstituteMaterial(const TArray<UObject*>& SelectedObjects, const FString& MaterialSearch, EEditorScriptingStringMatchType StringMatch, UMaterialInterface* MaterialSubstitute)
@@ -444,6 +462,14 @@ void UDataprepOperationsLibrary::ConsolidateObjects(const TArray< UObject* >& Se
 	UObject* ObjectToConsolidateTo = SelectedObjects[0];
 	check(ObjectToConsolidateTo);
 
+	UObject* Outer = ObjectToConsolidateTo->GetOuter();
+
+	if (nullptr == Outer || !Outer->IsA(UPackage::StaticClass()))
+	{
+		UE_LOG(LogDataprep, Warning, TEXT("Consolidate failed: the object %s is not an asset"), *ObjectToConsolidateTo->GetName());
+		return;
+	}
+
 	const UClass* ComparisonClass = ObjectToConsolidateTo->GetClass();
 	check(ComparisonClass);
 
@@ -670,7 +696,7 @@ void UDataprepOperationsLibrary::SetSubOuputFolder(const TArray<UObject*>& Selec
 	for (UObject* Object : SelectedObjects)
 	{
 		const bool bValidObject = Object->HasAnyFlags(RF_Public)
-		&& !Object->IsPendingKill()
+		&& IsValid(Object)
 		&& Object->GetClass()->ImplementsInterface(UInterface_AssetUserData::StaticClass());
 
 		if (bValidObject)
@@ -703,7 +729,7 @@ void UDataprepOperationsLibrary::AddToLayer(const TArray<UObject*>& SelectedObje
 	{
 		if (AActor* Actor = Cast< AActor >(Object))
 		{
-			if (Actor && !Actor->IsPendingKill())
+			if (IsValid(Actor))
 			{
 				Actor->Layers.AddUnique(LayerName);
 			}
@@ -752,6 +778,33 @@ void UDataprepOperationsLibrary::ResizeTextures(const TArray<UTexture2D*>& InTex
 		Texture->MaxTextureSize = InMaxSize;
 		Texture->PostEditChangeProperty(PropertyChangedEvent);
 	}
+}
+
+void UDataprepOperationsLibrary::SetNaniteSettings(const TArray<UObject*>& SelectedObjects, bool bEnabled, int32 PositionPrecision, float PercentTriangles, TArray<UObject*>& ModifiedObjects)
+{
+#if WITH_EDITORONLY_DATA
+	TSet<UStaticMesh*> SelectedMeshes = DataprepOperationsLibraryUtil::GetSelectedMeshes(SelectedObjects);
+
+	FMeshNaniteSettings NewSettings;
+	NewSettings.bEnabled = bEnabled;
+	NewSettings.PositionPrecision = PositionPrecision;
+	NewSettings.FallbackPercentTriangles = FMath::Clamp(PercentTriangles, 0.f, 1.f);
+
+	// Apply Nanite settings but do not commit changes
+	TArray<UStaticMesh*> ModifiedMeshes;
+	ModifiedMeshes.Reserve(SelectedMeshes.Num());
+
+	for (UStaticMesh* StaticMesh : SelectedMeshes)
+	{
+		if (StaticMesh && StaticMesh->NaniteSettings != NewSettings)
+		{
+			StaticMesh->NaniteSettings = NewSettings;
+			ModifiedMeshes.Add(StaticMesh);
+		}
+	}
+
+	ModifiedObjects.Append(ModifiedMeshes);
+#endif // #if WITH_EDITORONLY_DATA
 }
 
 #undef LOCTEXT_NAMESPACE

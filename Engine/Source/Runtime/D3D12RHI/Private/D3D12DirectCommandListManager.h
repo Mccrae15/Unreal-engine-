@@ -206,6 +206,22 @@ private:
 	const D3D12_COMMAND_LIST_TYPE Type;
 };
 
+// Counterpart to UEDiagnosticBuffer in D3DCommon.ush
+struct FD3D12DiagnosticBufferData
+{
+	uint32 Counter;
+	uint32 MessageID;
+	union
+	{
+		int32  AsInt[4];
+		uint32 AsUint[4];
+		float  AsFloat[4];
+	} Payload;
+};
+
+static_assert(sizeof(FD3D12DiagnosticBufferData) == 6*sizeof(uint32),
+	"Remember to change UEDiagnosticBuffer layout in the shaders when changing FD3D12DiagnosticBufferData");
+
 class FD3D12CommandListManager : public FD3D12DeviceChild, public FD3D12SingleNodeGPUObject
 {
 public:
@@ -239,8 +255,9 @@ public:
 	FD3D12CommandListHandle ObtainCommandList(FD3D12CommandAllocator& CommandAllocator, bool bHasBackbufferWriteTransition = false);
 	void ReleaseCommandList(FD3D12CommandListHandle& hList);
 
-	void ExecuteCommandList(FD3D12CommandListHandle& hList, bool WaitForCompletion = false);
-	virtual void ExecuteCommandLists(TArray<FD3D12CommandListHandle>& Lists, bool WaitForCompletion = false);
+	FD3D12SyncPoint ExecuteCommandListNoCopyQueueSync(FD3D12CommandListHandle& hList, bool WaitForCompletion);
+	FD3D12SyncPoint ExecuteCommandList(FD3D12CommandListHandle& hList, FD3D12SyncPoint& CopyQueueSyncPoint, bool WaitForCompletion);
+	virtual FD3D12SyncPoint ExecuteCommandLists(TArray<FD3D12CommandListHandle>& Lists, FD3D12SyncPoint& CopyQueueSyncPoint, bool WaitForCompletion);
 
 	void WaitOnExecuteTask();
 
@@ -267,6 +284,15 @@ public:
 
 	/** Get the CPU readable data from the breadcrumb data - this data is still valid after the Device is Lost */
 	const void* GetBreadCrumbResourceAddress() const { return BreadCrumbResourceAddress; }
+	const FD3D12DiagnosticBufferData* GetDiagnosticBufferData() const
+	{ 
+		const uint8* Address = BreadCrumbResourceAddress ? reinterpret_cast<const uint8*>(GetBreadCrumbResourceAddress()) + DiagnosticBufferOffset : nullptr;
+		return reinterpret_cast<const FD3D12DiagnosticBufferData*>(Address);
+	}
+	const D3D12_GPU_VIRTUAL_ADDRESS GetDiagnosticBufferGPUAddress() const
+	{ 
+		return BreadCrumbResourceGPUAddress ? BreadCrumbResourceGPUAddress + DiagnosticBufferOffset : 0;
+	}
 
 	void WaitForCommandQueueFlush();
 
@@ -313,8 +339,18 @@ protected:
 		{}
 	};
 
-	void ExecuteCommandListInteral(TArray<FD3D12CommandListHandle>& Lists, bool WaitForCompletion);
-	uint32 GetResourceBarrierCommandList(FD3D12CommandListHandle& hList, FD3D12CommandListHandle& hResourceBarrierList);
+	FD3D12SyncPoint ExecuteCommandListInternal(TArray<FD3D12CommandListHandle>& Lists, FD3D12SyncPoint& CopyQueueSyncPoint, bool WaitForCompletion);
+	struct FBarrierDescInfo
+	{
+		TArray<D3D12_RESOURCE_BARRIER> BarrierDescs;
+		TArray<D3D12_RESOURCE_BARRIER, TInlineAllocator<2>> BackBufferBarrierDescs;
+#if ENABLE_RESIDENCY_MANAGEMENT
+		TArray<FD3D12ResidencyHandle*> ResidencyHandles;
+#endif // ENABLE_RESIDENCY_MANAGEMENT
+		bool bHasGraphicStates;
+	};
+	static uint32 CollectInitialResourceBarriersAndUpdateFinalState(FD3D12CommandListHandle& InCommandListHandle, FBarrierDescInfo& BarrierDescInfo);
+	uint32 GetResourceBarrierCommandList(FBarrierDescInfo& InBarrierDescInfo, FD3D12CommandListHandle& hResourceBarrierList);
 
 	// Returns signaled Fence
 	uint64 ExecuteAndIncrementFence(FD3D12CommandListPayload& Payload, FD3D12Fence &Fence);
@@ -346,7 +382,9 @@ protected:
 	void* BreadCrumbResourceAddress;
 	TRefCountPtr<FD3D12Heap> BreadCrumbHeap;
 	TRefCountPtr<FD3D12Resource> BreadCrumbResource;
-	
+	D3D12_GPU_VIRTUAL_ADDRESS BreadCrumbResourceGPUAddress = {};
+	uint32 DiagnosticBufferOffset = 0;
+
 #if WITH_PROFILEGPU || D3D12_SUBMISSION_GAP_RECORDER
 	uint64 CmdListTimingQueryBatchTokens[2];
 	TArray<FResolvedCmdListExecTime> ResolvedTimingPairs;

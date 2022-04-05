@@ -3,6 +3,7 @@
 #include "SequencerSettings.h"
 #include "KeyParams.h"
 #include "ISequencer.h"
+#include "SSequencer.h"
 
 USequencerSettings::USequencerSettings( const FObjectInitializer& ObjectInitializer )
 	: Super( ObjectInitializer )
@@ -21,14 +22,15 @@ USequencerSettings::USequencerSettings( const FObjectInitializer& ObjectInitiali
 	bSnapSectionTimesToInterval = true;
 	bSnapSectionTimesToSections = true;
 	bSnapPlayTimeToKeys = false;
+	bSnapPlayTimeToSections = false;
+	bSnapPlayTimeToMarkers = false;
 	bSnapPlayTimeToInterval = true;
 	bSnapPlayTimeToPressedKey = true;
 	bSnapPlayTimeToDraggedKey = true;
 	CurveValueSnapInterval = 0.1f;
 	GridSpacing = TOptional<float>();
-	bSnapCurveValueToInterval = true;
+	bSnapCurveValueToInterval = false;
 	bShowSelectedNodesOnly = false;
-	bRewindOnRecord = true;
 	ZoomPosition = ESequencerZoomPosition::SZP_CurrentTime;
 	bAutoScrollEnabled = false;
 	bLinkCurveEditorTimeRange = false;
@@ -45,6 +47,7 @@ USequencerSettings::USequencerSettings( const FObjectInitializer& ObjectInitiali
 	bInfiniteKeyAreas = false;
 	bShowChannelColors = false;
 	ReduceKeysTolerance = KINDA_SMALL_NUMBER;
+	KeyAreaHeightWithCurves = SequencerLayoutConstants::KeyAreaHeight;
 	bDeleteKeysWhenTrimming = true;
 	bDisableSectionsAfterBaking = true;
 	bCleanPlaybackMode = true;
@@ -53,7 +56,6 @@ USequencerSettings::USequencerSettings( const FObjectInitializer& ObjectInitiali
 	bRerunConstructionScripts = true;
 	bVisualizePreAndPostRoll = true;
 	TrajectoryPathCap = 250;
-	bShowOutlinerInfoColumn = true;
 	FrameNumberDisplayFormat = EFrameNumberDisplayFormats::Seconds;
 }
 
@@ -260,6 +262,34 @@ void USequencerSettings::SetSnapPlayTimeToKeys(bool InbSnapPlayTimeToKeys)
 	}
 }
 
+bool USequencerSettings::GetSnapPlayTimeToSections() const
+{
+	return bSnapPlayTimeToSections;
+}
+
+void USequencerSettings::SetSnapPlayTimeToSections(bool InbSnapPlayTimeToSections)
+{
+	if (bSnapPlayTimeToSections != InbSnapPlayTimeToSections)
+	{
+		bSnapPlayTimeToSections = InbSnapPlayTimeToSections;
+		SaveConfig();
+	}
+}
+
+bool USequencerSettings::GetSnapPlayTimeToMarkers() const
+{
+	return bSnapPlayTimeToMarkers;
+}
+
+void USequencerSettings::SetSnapPlayTimeToMarkers(bool InbSnapPlayTimeToMarkers)
+{
+	if ( bSnapPlayTimeToMarkers != InbSnapPlayTimeToMarkers )
+	{
+		bSnapPlayTimeToMarkers = InbSnapPlayTimeToMarkers;
+		SaveConfig();
+	}
+}
+
 bool USequencerSettings::GetSnapPlayTimeToInterval() const
 {
 	return bSnapPlayTimeToInterval;
@@ -357,20 +387,6 @@ void USequencerSettings::SetShowSelectedNodesOnly(bool Visible)
 		SaveConfig();
 
 		OnShowSelectedNodesOnlyChangedEvent.Broadcast();
-	}
-}
-
-bool USequencerSettings::ShouldRewindOnRecord() const
-{
-	return bRewindOnRecord;
-}
-
-void USequencerSettings::SetRewindOnRecord(bool bInRewindOnRecord)
-{
-	if (bInRewindOnRecord != bRewindOnRecord)
-	{
-		bRewindOnRecord = bInRewindOnRecord;
-		SaveConfig();
 	}
 }
 
@@ -550,6 +566,92 @@ void USequencerSettings::SetShowChannelColors(bool InbShowChannelColors)
 	}
 }
 
+bool USequencerSettings::HasKeyAreaCurveExtents(const FString& ChannelName) const
+{
+	TArray<FString> ChannelsArray;
+	KeyAreaCurveExtents.ParseIntoArray(ChannelsArray, TEXT(":"));
+
+	for (int32 ChannelIndex = 0; ChannelIndex < ChannelsArray.Num(); ++ChannelIndex)
+	{
+		TArray<FString> ExtentsArray;
+		ChannelsArray[ChannelIndex].ParseIntoArray(ExtentsArray, TEXT(","));	
+
+		if (ExtentsArray.Num() == 3 && ExtentsArray[0] == ChannelName)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void USequencerSettings::RemoveKeyAreaCurveExtents(const FString& ChannelName)
+{
+	TArray<FString> ChannelsArray;
+	KeyAreaCurveExtents.ParseIntoArray(ChannelsArray, TEXT(":"));
+
+	FString NewKeyAreaCurveExtents;
+	for (int32 ChannelIndex = 0; ChannelIndex < ChannelsArray.Num(); ++ChannelIndex)
+	{
+		TArray<FString> ExtentsArray;
+		ChannelsArray[ChannelIndex].ParseIntoArray(ExtentsArray, TEXT(","));	
+
+		if (ExtentsArray.Num() == 3 && ExtentsArray[0] == ChannelName)
+		{
+			continue;
+		}
+
+		NewKeyAreaCurveExtents.Append(TEXT(":"));
+		NewKeyAreaCurveExtents.Append(ChannelsArray[ChannelIndex]);
+	}
+
+	KeyAreaCurveExtents = NewKeyAreaCurveExtents;
+	SaveConfig();
+}
+
+void USequencerSettings::SetKeyAreaCurveExtents(const FString& ChannelName, float InMin, float InMax)
+{
+	RemoveKeyAreaCurveExtents(ChannelName);
+
+	FString NewChannelExtents = FString::Printf(TEXT("%s,%0.3f,%0.3f"), *ChannelName, InMin, InMax);
+	KeyAreaCurveExtents.Append(TEXT(":"));
+	KeyAreaCurveExtents.Append(NewChannelExtents);
+
+	SaveConfig();
+}
+
+void USequencerSettings::GetKeyAreaCurveExtents(const FString& ChannelName, float& InMin, float& InMax) const
+{
+	TArray<FString> ChannelsArray;
+	KeyAreaCurveExtents.ParseIntoArray(ChannelsArray, TEXT(":"));
+
+	for (int32 ChannelIndex = 0; ChannelIndex < ChannelsArray.Num(); ++ChannelIndex)
+	{
+		TArray<FString> ExtentsArray;
+		ChannelsArray[ChannelIndex].ParseIntoArray(ExtentsArray, TEXT(","));	
+
+		if (ExtentsArray.Num() == 3 && ExtentsArray[0] == ChannelName)
+		{
+			InMin = FCString::Atof(*ExtentsArray[1]);
+			InMax = FCString::Atof(*ExtentsArray[2]);
+			return;
+		}
+	}
+}
+
+float USequencerSettings::GetKeyAreaHeightWithCurves() const
+{
+	return KeyAreaHeightWithCurves;
+}
+
+void USequencerSettings::SetKeyAreaHeightWithCurves(float InKeyAreaHeightWithCurves)
+{
+	if (KeyAreaHeightWithCurves != InKeyAreaHeightWithCurves)
+	{
+		KeyAreaHeightWithCurves = InKeyAreaHeightWithCurves;
+		SaveConfig();
+	}
+}
+
 float USequencerSettings::GetReduceKeysTolerance() const
 {
 	return ReduceKeysTolerance;
@@ -703,20 +805,6 @@ void USequencerSettings::SetCompileDirectorOnEvaluate(bool bInCompileDirectorOnE
 	if (bInCompileDirectorOnEvaluate != bCompileDirectorOnEvaluate)
 	{
 		bCompileDirectorOnEvaluate = bInCompileDirectorOnEvaluate;
-		SaveConfig();
-	}
-}
-
-bool USequencerSettings::GetShowOutlinerInfoColumn() const
-{
-	return bShowOutlinerInfoColumn;
-}
-
-void USequencerSettings::SetShowOutlinerInfoColumn(bool bInShowOutlinerInfoColumn)
-{
-	if (bInShowOutlinerInfoColumn != bShowOutlinerInfoColumn)
-	{
-		bShowOutlinerInfoColumn = bInShowOutlinerInfoColumn;
 		SaveConfig();
 	}
 }

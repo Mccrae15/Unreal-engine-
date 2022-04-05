@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Diagnostics;
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -70,6 +70,31 @@ namespace UnrealBuildTool
 		{
 			// By default, return the platform string
 			return InPlatform.ToString();
+		}
+
+		/// <summary>
+		/// Return the VisualStudio platform name for this build platform
+		/// </summary>
+		/// <param name="InPlatform">  The UnrealTargetPlatform being built</param>
+		/// <param name="InConfiguration"> The UnrealTargetConfiguration being built</param>
+		/// <param name="InProjectDir">  The root directory for the current project</param>
+		/// <returns>string    The name of the platform that VisualStudio recognizes</returns>
+		public virtual string GetVisualStudioPlatformName(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration, DirectoryReference InProjectDir)
+		{
+			// By default, return the project-independent platform string
+			return GetVisualStudioPlatformName(InPlatform, InConfiguration);
+		}
+
+		/// <summary>
+		/// Return whether we need a distinct platform name - for cases where there are two targets of the same VS solution platform
+		/// </summary>
+		/// <param name="InPlatform">  The UnrealTargetPlatform being built</param>
+		/// <param name="InConfiguration"> The UnrealTargetConfiguration being built</param>
+		/// <param name="InProjectDir">  The root directory for the current project</param>
+		/// <returns>bool</returns>
+		public virtual bool RequiresDistinctVisualStudioConfigurationName(UnrealTargetPlatform InPlatform, UnrealTargetConfiguration InConfiguration, DirectoryReference InProjectDir)
+		{
+			return false;
 		}
 
 		/// <summary>
@@ -252,7 +277,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="ProjectFile">Project file this will be related to</param>
 		/// <returns>Project file written out, Solution folder it should be put in</returns>
-		public virtual Tuple<ProjectFile, string> WriteAdditionalProjFile(ProjectFile ProjectFile)
+		public virtual Tuple<ProjectFile, string>? WriteAdditionalProjFile(ProjectFile ProjectFile)
 		{
 			return null;
 		}

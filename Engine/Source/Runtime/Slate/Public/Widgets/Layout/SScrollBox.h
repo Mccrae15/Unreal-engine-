@@ -12,6 +12,7 @@
 #include "Input/NavigationReply.h"
 #include "Widgets/SWidget.h"
 #include "Widgets/SPanel.h"
+#include "Widgets/SBoxPanel.h"
 #include "Layout/Children.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
@@ -69,46 +70,21 @@ class SLATE_API SScrollBox : public SCompoundWidget
 {
 public:
 	/** A Slot that provides layout options for the contents of a scrollable box. */
-	class SLATE_API FSlot : public TSlotBase<FSlot>, public TSupportsContentPaddingMixin<FSlot>
-	{
-	public:
-		FSlot()
-			: TSlotBase<FSlot>()
-			// Set both vertical and horizontal alignment to fill by default.  During layout, the
-			// alignment direction parallel to the scroll direction is assumed to be top, or left
-			// since that is how the items are stacked.
-			, HAlignment(HAlign_Fill)
-			, VAlignment(VAlign_Fill)
-		{
-		}
-
-		FSlot& HAlign( EHorizontalAlignment InHAlignment )
-		{
-			HAlignment = InHAlignment;
-			return *this;
-		}
-
-		FSlot& VAlign(EVerticalAlignment InVAlignment)
-		{
-			VAlignment = InVAlignment;
-			return *this;
-		}
-		
-		EHorizontalAlignment HAlignment;
-		EVerticalAlignment VAlignment;
-	};
+	using FSlot = FBasicLayoutWidgetSlot;
 
 	SLATE_BEGIN_ARGS(SScrollBox)
-		: _Style( &FCoreStyle::Get().GetWidgetStyle<FScrollBoxStyle>("ScrollBox") )
-		, _ScrollBarStyle( &FCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar") )
+		: _Style( &FAppStyle::Get().GetWidgetStyle<FScrollBoxStyle>("ScrollBox") )
+		, _ScrollBarStyle( &FAppStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar") )
 		, _ExternalScrollbar()
 		, _Orientation(Orient_Vertical)
 		, _ScrollBarVisibility(EVisibility::Visible)
 		, _ScrollBarAlwaysVisible(false)
 		, _ScrollBarDragFocusCause(EFocusCause::Mouse)
-		, _ScrollBarThickness(FVector2D(9.0f, 9.0f))
+		, _ScrollBarThickness(FVector2D(_Style->BarThickness, _Style->BarThickness))
 		, _ScrollBarPadding(2.0f)
 		, _AllowOverscroll(EAllowOverscroll::Yes)
+		, _BackPadScrolling(false)
+		, _FrontPadScrolling(false)
 		, _AnimateWheelScrolling(false)
 		, _WheelScrollMultiplier(1.f)
 		, _NavigationDestination(EDescendantScrollDestination::IntoView)
@@ -120,7 +96,7 @@ public:
 			_Clipping = EWidgetClipping::ClipToBounds;
 		}
 		
-		SLATE_SUPPORTS_SLOT( FSlot )
+		SLATE_SLOT_ARGUMENT( FSlot, Slots )
 
 		/** Style used to draw this scrollbox */
 		SLATE_STYLE_ARGUMENT( FScrollBoxStyle, Style )
@@ -146,6 +122,10 @@ public:
 
 		SLATE_ARGUMENT(EAllowOverscroll, AllowOverscroll);
 
+		SLATE_ARGUMENT(bool, BackPadScrolling);
+
+		SLATE_ARGUMENT(bool, FrontPadScrolling);
+
 		SLATE_ARGUMENT(bool, AnimateWheelScrolling);
 
 		SLATE_ARGUMENT(float, WheelScrollMultiplier);
@@ -170,12 +150,13 @@ public:
 	SScrollBox();
 
 	/** @return a new slot. Slots contain children for SScrollBox */
-	static FSlot& Slot();
+	static FSlot::FSlotArguments Slot();
 
 	void Construct( const FArguments& InArgs );
 
+	using FScopedWidgetSlotArguments = TPanelChildren<FSlot>::FScopedWidgetSlotArguments;
 	/** Adds a slot to SScrollBox */
-	SScrollBox::FSlot& AddSlot();
+	FScopedWidgetSlotArguments AddSlot();
 
 	/** Removes a slot at the specified location */
 	void RemoveSlot( const TSharedRef<SWidget>& WidgetToRemove );
@@ -225,6 +206,8 @@ public:
 
 	/** Get the current orientation of the scrollbox. */
 	EOrientation GetOrientation();
+
+	void SetNavigationDestination(const EDescendantScrollDestination NewNavigationDestination);
 
 	void SetConsumeMouseWheel(EConsumeMouseWheel NewConsumeMouseWheel);
 
@@ -298,9 +281,6 @@ private:
 	/** Scroll offset that the user asked for. We will clamp it before actually scrolling there. */
 	float DesiredScrollOffset;
 
-	/** Scrolls or begins scrolling a widget into view, only valid to call when we have layout geometry. */
-	bool InternalScrollDescendantIntoView(const FGeometry& MyGeometry, const TSharedPtr<SWidget>& WidgetToFind, bool InAnimateScroll = true, EDescendantScrollDestination InDestination = EDescendantScrollDestination::IntoView, float Padding = 0);
-
 	/**
 	 * Scroll the view by ScrollAmount given its currently AllottedGeometry.
 	 *
@@ -328,9 +308,22 @@ private:
 
 	void BeginInertialScrolling();
 
-	TSharedPtr<SWidget> GetKeyboardFocusableWidget(TSharedPtr<SWidget> InWidget);
+	/** Padding to the scrollbox */
+	FMargin ScrollBarSlotPadding;
+
+	union
+	{
+		// vertical scroll bar is stored in horizontal box and vice versa
+		SHorizontalBox::FSlot* VerticalScrollBarSlot; // valid when Orientation == Orient_Vertical
+		SVerticalBox::FSlot* HorizontalScrollBarSlot; // valid when Orientation == Orient_Horizontal
+	};
 
 protected:
+	/** Scrolls or begins scrolling a widget into view, only valid to call when we have layout geometry. */
+	bool InternalScrollDescendantIntoView(const FGeometry& MyGeometry, const TSharedPtr<SWidget>& WidgetToFind, bool InAnimateScroll = true, EDescendantScrollDestination InDestination = EDescendantScrollDestination::IntoView, float Padding = 0);
+
+	/** returns widget that can receive keyboard focus or nullprt **/
+	TSharedPtr<SWidget> GetKeyboardFocusableWidget(TSharedPtr<SWidget> InWidget);
 
 	/** The panel which stacks the child slots */
 	TSharedPtr<class SScrollPanel> ScrollPanel;
@@ -358,6 +351,18 @@ protected:
 
 	/** Whether to permit overscroll on this scroll box */
 	EAllowOverscroll AllowOverscroll;
+
+#if WITH_EDITORONLY_DATA
+	/** Padding to the scrollbox */
+	UE_DEPRECATED(5.0, "ScrollBarPadding is deprecated, Use SetScrollBarPadding")
+	FMargin ScrollBarPadding;
+#endif
+
+	/** Whether to back pad this scroll box, allowing user to scroll backward until child contents are no longer visible */
+	bool BackPadScrolling;
+
+	/** Whether to front pad this scroll box, allowing user to scroll forward until child contents are no longer visible */
+	bool FrontPadScrolling;
 
 	/**
 	 * The amount of padding to ensure exists between the item being navigated to, at the edge of the
@@ -438,6 +443,8 @@ public:
 	}
 
 	SLATE_ARGUMENT(EOrientation, Orientation)
+	SLATE_ARGUMENT(bool, BackPadScrolling)
+	SLATE_ARGUMENT(bool, FrontPadScrolling)
 
 		SLATE_END_ARGS()
 
@@ -446,7 +453,10 @@ public:
 	{
 	}
 
+	UE_DEPRECATED(5.0, "Direct construction of FSlot is deprecated")
 	void Construct(const FArguments& InArgs, const TArray<SScrollBox::FSlot*>& InSlots);
+
+	void Construct(const FArguments& InArgs, TArray<SScrollBox::FSlot::FSlotArguments> InSlots);
 
 public:
 
@@ -483,4 +493,6 @@ private:
 private:
 
 	EOrientation Orientation;
+	bool BackPadScrolling;
+	bool FrontPadScrolling;
 };

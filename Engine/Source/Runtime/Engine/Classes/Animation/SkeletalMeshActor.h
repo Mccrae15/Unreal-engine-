@@ -5,7 +5,6 @@
 #include "UObject/ObjectMacros.h"
 #include "Engine/EngineTypes.h"
 #include "GameFramework/Actor.h"
-#include "Matinee/MatineeAnimInterface.h"
 #include "SkeletalMeshActor.generated.h"
 
 class UAnimMontage;
@@ -20,7 +19,7 @@ class UAnimSequence;
  * @see USkeletalMesh
  */
 UCLASS(ClassGroup=ISkeletalMeshes, Blueprintable, ComponentWrapperClass, ConversionRoot, meta=(ChildCanTick))
-class ENGINE_API ASkeletalMeshActor : public AActor, public IMatineeAnimInterface
+class ENGINE_API ASkeletalMeshActor : public AActor
 {
 	GENERATED_UCLASS_BODY()
 
@@ -35,23 +34,23 @@ class ENGINE_API ASkeletalMeshActor : public AActor, public IMatineeAnimInterfac
 
 private:
 	UPROPERTY(Category = SkeletalMeshActor, VisibleAnywhere, BlueprintReadOnly, meta = (ExposeFunctionCategories = "Mesh,Components|SkeletalMesh,Animation,Physics", AllowPrivateAccess = "true"))
-	class USkeletalMeshComponent* SkeletalMeshComponent;
+	TObjectPtr<class USkeletalMeshComponent> SkeletalMeshComponent;
 public:
 
 	/** Used to replicate mesh to clients */
 	UPROPERTY(replicatedUsing=OnRep_ReplicatedMesh, transient)
-	class USkeletalMesh* ReplicatedMesh;
+	TObjectPtr<class USkeletalMesh> ReplicatedMesh;
 
 	/** Used to replicate physics asset to clients */
 	UPROPERTY(replicatedUsing=OnRep_ReplicatedPhysAsset, transient)
-	class UPhysicsAsset* ReplicatedPhysAsset;
+	TObjectPtr<class UPhysicsAsset> ReplicatedPhysAsset;
 
 	/** used to replicate the material in index 0 */
 	UPROPERTY(replicatedUsing=OnRep_ReplicatedMaterial0)
-	class UMaterialInterface* ReplicatedMaterial0;
+	TObjectPtr<class UMaterialInterface> ReplicatedMaterial0;
 
 	UPROPERTY(replicatedUsing=OnRep_ReplicatedMaterial1)
-	class UMaterialInterface* ReplicatedMaterial1;
+	TObjectPtr<class UMaterialInterface> ReplicatedMaterial1;
 
 	/** Replication Notification Callbacks */
 	UFUNCTION()
@@ -82,18 +81,6 @@ public:
 #endif
 	virtual void PostInitializeComponents() override;
 	//~ End AActor Interface
-
-	//~ Begin IMatineeAnimInterface Interface
-	virtual void PreviewBeginAnimControl(class UInterpGroup* InInterpGroup) override;
-	virtual void PreviewSetAnimPosition(FName SlotName, int32 ChannelIndex, UAnimSequence* InAnimSequence, float InPosition, bool bLooping, bool bFireNotifies, float AdvanceTime) override;
-	virtual void PreviewSetAnimWeights(TArray<FAnimSlotInfo>& SlotInfos) override;
-	virtual void PreviewFinishAnimControl(class UInterpGroup* InInterpGroup) override;
-	virtual void GetAnimControlSlotDesc(TArray<struct FAnimSlotDesc>& OutSlotDescs) override {};
-	virtual void SetAnimWeights( const TArray<struct FAnimSlotInfo>& SlotInfos ) override;
-	virtual void BeginAnimControl(class UInterpGroup* InInterpGroup) override;
-	virtual void SetAnimPosition(FName SlotName, int32 ChannelIndex, class UAnimSequence* InAnimSequence, float InPosition, bool bFireNotifies, bool bLooping) override;
-	virtual void FinishAnimControl(class UInterpGroup* InInterpGroup) override;
-	//~ End IMatineeAnimInterface Interface
 
 private:
 	// utility function to see if it can play animation or not

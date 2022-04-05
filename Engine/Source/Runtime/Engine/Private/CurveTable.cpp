@@ -28,13 +28,12 @@ namespace
 		FScopedCurveTableChange(UCurveTable* InTable)
 			: Table(InTable)
 		{
-			FScopeLock Lock(&CriticalSection);
+			CriticalSection.Lock();
 			int32& Count = ScopeCount.FindOrAdd(Table);
 			++Count;
 		}
 		~FScopedCurveTableChange()
 		{
-			FScopeLock Lock(&CriticalSection);
 			int32& Count = ScopeCount.FindChecked(Table);
 			--Count;
 			if (Count == 0)
@@ -42,12 +41,16 @@ namespace
 				Table->OnCurveTableChanged().Broadcast();
 				ScopeCount.Remove(Table);
 			}
+
+			CriticalSection.Unlock();
 		}
 
 	private:
 		UCurveTable* Table;
 
 		static TMap<UCurveTable*, int32> ScopeCount;
+
+	public:
 		static FCriticalSection CriticalSection;
 	};
 
@@ -55,6 +58,11 @@ namespace
 	FCriticalSection FScopedCurveTableChange::CriticalSection;
 
 #define CURVETABLE_CHANGE_SCOPE()	FScopedCurveTableChange ActiveScope(this);
+}
+
+FCriticalSection& UCurveTable::GetCurveTableChangeCriticalSection()
+{
+	return FScopedCurveTableChange::CriticalSection;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -69,7 +77,7 @@ FName UCurveTable::MakeValidName(const FString& InString)
 	FString InvalidChars(INVALID_NAME_CHARACTERS);
 
 	FString FixedString;
-	TArray<TCHAR>& FixedCharArray = FixedString.GetCharArray();
+	TArray<TCHAR, FString::AllocatorType>& FixedCharArray = FixedString.GetCharArray();
 
 	// Iterate over input string characters
 	for (int32 CharIdx=0; CharIdx<InString.Len(); CharIdx++)
@@ -522,6 +530,16 @@ void UCurveTable::EmptyTable()
 	UCurveTable::InvalidateAllCachedCurves();
 }
 
+void UCurveTable::RemoveRow(FName RowName)
+{
+	FRealCurve* Curve = nullptr;
+	RowMap.RemoveAndCopyValue(RowName, Curve);
+	if (Curve != nullptr)
+	{
+		delete Curve;
+	}
+}
+
 FRichCurve& UCurveTable::AddRichCurve(FName RowName)
 {
 	check(CurveTableMode != ECurveTableMode::SimpleCurves);
@@ -729,6 +747,8 @@ void CopyRowsToTable(const TMap<FName, CurveType*>& SourceRows, TMap<FName, FRea
 
 TArray<FString> UCurveTable::CreateTableFromOtherTable(const UCurveTable* InTable)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UCurveTable::CreateTableFromOtherTable);
+
 	CURVETABLE_CHANGE_SCOPE();
 
 	// Array used to store problems about table creation
@@ -759,7 +779,8 @@ TArray<FString> UCurveTable::CreateTableFromOtherTable(const UCurveTable* InTabl
 
 	CurveTableMode = InTable->CurveTableMode;
 
-	OnCurveTableChanged().Broadcast();
+	// This is already called when getting out of scope because of CURVETABLE_CHANGE_SCOPE() above.
+	// OnCurveTableChanged().Broadcast();
 
 	return OutProblems;
 }

@@ -7,8 +7,11 @@
 #include "UObject/UnrealType.h"
 #include "PropertyPath.h"
 #include "PropertyEditorModule.h"
+#include "EditConditionParser.h"
 
 class FComplexPropertyNode;
+class FEditConditionContext;
+class FEditConditionExpression;
 class FNotifyHook;
 class FObjectPropertyNode;
 class FPropertyItemValueDataTrackerSlate;
@@ -61,6 +64,8 @@ namespace EPropertyNodeFlags
 	const Type	HasCustomResetToDefault			= 1 << 23;	/** true if this node's visual representation of reset to default has been customized*/
 
 	const Type	IsSparseClassData				= 1 << 24;	/** true if the property on this node is part of a sparse class data structure */
+
+	const Type	ShouldShowInViewport			= 1 << 25; /** true if the property should be shown in the viewport context menu */
 
 	const Type 	NoFlags							= 0;
 
@@ -141,7 +146,7 @@ public:
 		bAllValuesTheSame = false;
 		bRequiresCache = true;
 	}
-	
+
 	bool bAllValuesTheSame;
 	bool bRequiresCache;
 private:
@@ -193,6 +198,13 @@ private:
  */
 struct FPropertyNodeInitParams
 {
+	enum class EIsSparseDataProperty : uint8
+	{
+		False,
+		True,
+		Inherit,
+	};
+
 	/** The parent of the property node */
 	TSharedPtr<FPropertyNode> ParentNode;
 	/** The property that the node observes and modifies*/
@@ -210,7 +222,7 @@ struct FPropertyNodeInitParams
 	/** Whether or not to create nodes for properties marked CPF_DisableEditOnInstance */
 	bool bCreateDisableEditOnInstanceNodes;
 	/** Whether or not this property is sparse data */
-	bool bIsSparseProperty;
+	EIsSparseDataProperty IsSparseProperty;
 
 	FPropertyNodeInitParams()
 		: ParentNode(nullptr)
@@ -221,7 +233,7 @@ struct FPropertyNodeInitParams
 		, bForceHiddenPropertyVisibility( false )
 		, bCreateCategoryNodes( true )
 		, bCreateDisableEditOnInstanceNodes( true )
-		, bIsSparseProperty( false )
+		, IsSparseProperty( EIsSparseDataProperty::Inherit )
 	{}
 };
 
@@ -265,7 +277,7 @@ enum EPropertyDataValidationResult : uint8
 };
 
 /**
- * The base class for all property nodes                                                              
+ * The base class for all property nodes
  */
 class FPropertyNode : public TSharedFromThis<FPropertyNode>
 {
@@ -366,7 +378,7 @@ public:
 
 	//////////////////////////////////////////////////////////////////////////
 	//Flags
-	uint32 HasNodeFlags(const EPropertyNodeFlags::Type InTestFlags) const { return PropertyNodeFlags & InTestFlags; }
+	bool HasNodeFlags(const EPropertyNodeFlags::Type InTestFlags) const { return (PropertyNodeFlags & InTestFlags) != 0; }
 	/**
 	 * Sets the flags used by the window and the root node
 	 * @param InFlags - flags to turn on or off
@@ -500,6 +512,12 @@ public:
 	virtual uint8* GetValueAddress(uint8* StartAddress, bool bIsSparseData) const;
 
 	/**
+	 * Caclulates the memory address for the starting point of the structure that contains the property this node uses.
+	 * This will often be Obj but may also point to a sidecar data structure.
+	 */
+	uint8* GetStartAddressFromObject(const UObject* Obj) const;
+
+	/**
 	 * Calculates the memory address for the data associated with this item's property.  This is typically the value of a FProperty or a UObject address.
 	 *
 	 * @param	Obj	The object that contains this property; used as the starting point for the calculation
@@ -532,16 +550,6 @@ public:
 	* @return true if the property is mark as a favorite
 	*/
 	virtual bool IsFavorite() const { return false; }
-
-	/**
-	* Set the permission to display the favorite icon
-	*/
-	virtual void SetCanDisplayFavorite(bool CanDisplayFavoriteIcon) {}
-
-	/**
-	* Set the permission to display the favorite icon
-	*/
-	virtual bool CanDisplayFavorite() const { return false; }
 
 	/**
 	 * @return The formatted display name for the property in this node
@@ -874,14 +882,14 @@ public:
 
 	/**
 	 * Get metadata value for 'Key' for this property instance (as opposed to the class)
-	 * 
+	 *
 	 * @return Pointer to metadata value; nullptr if Key not found
 	 */
 	const FString* GetInstanceMetaData(const FName& Key) const;
 
 	/**
 	 * Get metadata map for this property instance (as opposed to the class)
-	 * 
+	 *
 	 * @return Map ptr containing metadata pairs
 	 */
 	const TMap<FName, FString>* GetInstanceMetaDataMap() const;
@@ -915,6 +923,22 @@ public:
 	 */
 	void BroadcastPropertyResetToDefault();
 
+	/** @return Whether this property should have an edit condition toggle. */
+	bool SupportsEditConditionToggle() const;
+
+	/** Toggle the current state of the edit condition if this SupportsEditConditionToggle() */
+	void ToggleEditConditionState();
+
+	/**	@return Whether the property has a condition which must be met before allowing editing of it's value */
+	bool HasEditCondition() const;
+
+	/**	@return Whether the condition has been met to allow editing of this property's value */
+	bool IsEditConditionMet() const;
+
+	/**	@return Whether this property derives its visibility from its edit condition */
+	bool IsOnlyVisibleWhenEditConditionMet() const;
+
+
 	/**
 	 * Helper to fetch a list of child property nodes that are expanded
 	 */
@@ -926,10 +950,6 @@ public:
 	void SetExpandedChildPropertyNodes(const TSet<FString>& InNodesToExpand);
 
 protected:
-
-	// Returns a pointer to the starting point of the structure that contains the property this node uses.
-	// This will often be Obj but may also point to a sidecar data structure
-	uint8* GetStartAddress(const UObject* Obj) const;
 
 	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange );
 	TSharedRef<FEditPropertyChain> BuildPropertyChain( FProperty* PropertyAboutToChange, const TSet<UObject*>& InAffectedArchetypeInstances );
@@ -945,12 +965,12 @@ protected:
 	/**
 	 * Interface function for Custom Setup of Node (prior to node flags being set)
 	 */
-	virtual void InitBeforeNodeFlags () {};
+	virtual void InitBeforeNodeFlags() {};
 
 	/**
 	 * Interface function for Custom expansion Flags.  Default is objects and categories which always expand
 	 */
-	virtual void InitExpansionFlags (){ SetNodeFlags(EPropertyNodeFlags::CanBeExpanded, true); };
+	virtual void InitExpansionFlags() { SetNodeFlags(EPropertyNodeFlags::CanBeExpanded, true); };
 
 	/**
 	 * Interface function for Creating Child Nodes
@@ -982,10 +1002,10 @@ protected:
 	 *
 	 * @return	true if the DisplayName has been changed
 	 */
-	bool AdjustEnumPropDisplayName( UEnum *InEnum, FString& DisplayName ) const;
+	bool AdjustEnumPropDisplayName(UEnum* InEnum, FString& DisplayName) const;
 
 	/**
-	 * Helper function for derived members to be able to 
+	 * Helper function for derived members to be able to
 	 * broadcast property changed notifications
 	 */
 	void BroadcastPropertyChangedDelegates();
@@ -1018,6 +1038,9 @@ protected:
 	static bool DoesChildPropertyRequireValidation(FProperty* InChildProp);
 
 protected:
+
+	static FEditConditionParser EditConditionParser;
+
 	/**
 	 * The node that is the parent of this node or nullptr for the root
 	 */
@@ -1048,7 +1071,7 @@ protected:
 
 	/** Called when this node's property value has changed (called during NotifyPostChange) */
 	FPropertyValueChangedEvent PropertyValueChangedEvent;
-	
+
 	/** Called when a child's property value has changed */
 	FPropertyValueChangedEvent ChildPropertyValueChangedEvent;
 
@@ -1089,7 +1112,7 @@ protected:
 	TWeakPtr< class FDetailTreeNode > TreeNode;
 
 	/**
-	 * Stores metadata for this instasnce of the property (in contrast
+	 * Stores metadata for this instance of the property (in contrast
 	 * to regular metadata, which is stored per-class)
 	 */
 	TMap<FName, FString> InstanceMetaData;
@@ -1098,6 +1121,10 @@ protected:
 	* The property path for this property
 	*/
 	FString PropertyPath;
+
+	/** Edit condition expression used to determine if this property editor can modify its property */
+	TSharedPtr<FEditConditionExpression> EditConditionExpression;
+	TSharedPtr<FEditConditionContext> EditConditionContext;
 
 	/**
 	* Cached state of flags that are expensive to update
@@ -1122,8 +1149,8 @@ public:
 	FComplexPropertyNode() : FPropertyNode() {}
 	virtual ~FComplexPropertyNode() {}
 
-	virtual FComplexPropertyNode* AsComplexNode() override{ return this; }
-	virtual const FComplexPropertyNode* AsComplexNode() const override{ return this; }
+	virtual FComplexPropertyNode* AsComplexNode() override { return this; }
+	virtual const FComplexPropertyNode* AsComplexNode() const override { return this; }
 
 	virtual class FStructurePropertyNode* AsStructureNode() { return nullptr; }
 	virtual const FStructurePropertyNode* AsStructureNode() const { return nullptr; }
@@ -1136,13 +1163,13 @@ public:
 	virtual TArray<const UStruct*> GetAllStructures() const = 0;
 
 	virtual int32 GetInstancesNum() const = 0;
-	virtual uint8* GetMemoryOfInstance(int32 Index) = 0;
+	virtual uint8* GetMemoryOfInstance(int32 Index) const = 0;
 
 	/**
 	 * Returns a pointer to the stored value of InProperty on InParentNode's Index'th instance.
 	 */
-	virtual uint8* GetValuePtrOfInstance(int32 Index, const FProperty* InProperty, FPropertyNode* InParentNode) = 0;
-	virtual TWeakObjectPtr<UObject> GetInstanceAsUObject(int32 Index) = 0;
+	virtual uint8* GetValuePtrOfInstance(int32 Index, const FProperty* InProperty, const FPropertyNode* InParentNode) const = 0;
+	virtual TWeakObjectPtr<UObject> GetInstanceAsUObject(int32 Index) const = 0;
 	virtual EPropertyType GetPropertyType() const = 0;
 
 	virtual void Disconnect() = 0;

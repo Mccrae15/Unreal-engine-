@@ -513,7 +513,7 @@ void FUnixPlatformProcess::ClosePipe( void* ReadPipe, void* WritePipe )
 	}
 }
 
-bool FUnixPlatformProcess::CreatePipe( void*& ReadPipe, void*& WritePipe )
+bool FUnixPlatformProcess::CreatePipe(void*& ReadPipe, void*& WritePipe, bool bWritePipeLocal)
 {
 	int PipeFd[2];
 	if (-1 == pipe(PipeFd))
@@ -565,9 +565,9 @@ bool FUnixPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FS
 	UTF8CHAR * Buffer = new UTF8CHAR[BytesAvailable + 2];
 	for (uint32 i = 0; i < BytesAvailable; i++)
 	{
-		Buffer[i] = Message[i];
+		Buffer[i] = (UTF8CHAR)Message[i];
 	}
-	Buffer[BytesAvailable] = '\n';
+	Buffer[BytesAvailable] = (UTF8CHAR)'\n';
 
 	// write to pipe
 	uint32 BytesWritten = write(*(int*)WritePipe, Buffer, BytesAvailable + 1);
@@ -575,7 +575,7 @@ bool FUnixPlatformProcess::WritePipe(void* WritePipe, const FString& Message, FS
 	// Get written message
 	if (OutWritten)
 	{
-		Buffer[BytesWritten] = '\0';
+		Buffer[BytesWritten] = (UTF8CHAR)'\0';
 		*OutWritten = FUTF8ToTCHAR((const ANSICHAR*)Buffer).Get();
 	}
 
@@ -756,31 +756,56 @@ namespace UnixPlatformProcess
 	}
 }
 
-FProcHandle FUnixPlatformProcess::CreateProc(const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void * PipeReadChild)
+FProcHandle FUnixPlatformProcess::CreateProc(const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild)
+{
+	// CreateProc used to only have a single "write" pipe argument, which Windows and Mac would pipe both stdout and stderr into.
+	// On Unix though, only stdout was piped to it, and stderr wasn't available at all, so we'll preserve that behaviour in this overload for compatibility with existing code
+	return CreateProc(URL, Parms, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, OutProcessID, PriorityModifier, OptionalWorkingDirectory, PipeWriteChild, PipeReadChild, PipeWriteChild);
+}
+
+FProcHandle FUnixPlatformProcess::CreateProc(const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild, void* PipeStdErrChild)
 {
 	// @TODO bLaunchHidden bLaunchReallyHidden are not handled
-	// We need an absolute path to executable
+
 	FString ProcessPath = URL;
-	if (*URL != TEXT('/'))
+
+	// - If the first character is /, we use the provided absolute path as-is.
+	// - If no leading slash, prefer the result of FPaths::ConvertRelativePathToFull if it exists. This is roughly
+	//   morally equivalent to prepending the basedir to $PATH (and in turn, Windows' cwd (==basedir) priority).
+	// - If there was a (non-leading) slash, and ConvertRelativePathToFull missed, return failure.
+	// - If there were no path separators in the input string, allow posix_spawnp to search the $PATH.
+
+	int32 PathSepIdx = INDEX_NONE;
+	const bool bInputHasPathSep = ProcessPath.FindChar(TEXT('/'), PathSepIdx);
+	bool bAbsolutePath = PathSepIdx == 0;
+
+	if (!bAbsolutePath)
 	{
-		ProcessPath = FPaths::ConvertRelativePathToFull(ProcessPath);
+		const FString CandidatePath = FPaths::ConvertRelativePathToFull(ProcessPath);
+		if (bInputHasPathSep || FPaths::FileExists(CandidatePath))
+		{
+			ProcessPath = CandidatePath;
+			bAbsolutePath = true;
+		}
 	}
 
-	if (!FPaths::FileExists(ProcessPath))
+	// Even if we weren't passed an absolute path, we may have expanded to one above.
+	if (bAbsolutePath)
 	{
-		return FProcHandle();
+		if (!FPaths::FileExists(ProcessPath))
+		{
+			UE_LOG(LogHAL, Error, TEXT("FUnixPlatformProcess::CreateProc: File does not exist (%s)"), *ProcessPath);
+			return FProcHandle();
+		}
+
+		if (!UnixPlatformProcess::AttemptToMakeExecIfNotAlready(ProcessPath))
+		{
+			UE_LOG(LogHAL, Error, TEXT("FUnixPlatformProcess::CreateProc: File not executable (%s)"), *ProcessPath);
+			return FProcHandle();
+		}
 	}
 
-	// check if it's worth attemptting to execute the file
-	if (!UnixPlatformProcess::AttemptToMakeExecIfNotAlready(ProcessPath))
-	{
-		return FProcHandle();
-	}
-
-	FString Commandline = FString::Printf(TEXT("\"%s\""), *ProcessPath);
-	Commandline += TEXT(" ");
-	Commandline += Parms;
-
+	const FString Commandline = FString::Printf(TEXT("\"%s\" %s"), *ProcessPath, Parms);
 	UE_LOG(LogHAL, Verbose, TEXT("FUnixPlatformProcess::CreateProc: '%s'"), *Commandline);
 
 	TArray<FString> ArgvArray;
@@ -924,7 +949,7 @@ FProcHandle FUnixPlatformProcess::CreateProc(const TCHAR* URL, const TCHAR* Parm
 	SpawnFlags |= POSIX_SPAWN_SETPGROUP;
 
 	int PosixSpawnErrNo = -1;
-	if (PipeWriteChild || PipeReadChild)
+	if (PipeWriteChild || PipeReadChild || PipeStdErrChild)
 	{
 		posix_spawn_file_actions_t FileActions;
 		posix_spawn_file_actions_init(&FileActions);
@@ -941,8 +966,14 @@ FProcHandle FUnixPlatformProcess::CreateProc(const TCHAR* URL, const TCHAR* Parm
 			posix_spawn_file_actions_adddup2(&FileActions, PipeReadHandle->GetHandle(), STDIN_FILENO);
 		}
 
+		if (PipeStdErrChild)
+		{
+			const FPipeHandle* PipeStdErrorHandle = reinterpret_cast<const FPipeHandle*>(PipeStdErrChild);
+			posix_spawn_file_actions_adddup2(&FileActions, PipeStdErrorHandle->GetHandle(), STDERR_FILENO);
+		}
+
 		posix_spawnattr_setflags(&SpawnAttr, SpawnFlags);
-		PosixSpawnErrNo = posix_spawn(&ChildPid, TCHAR_TO_UTF8(*ProcessPath), &FileActions, &SpawnAttr, Argv, environ);
+		PosixSpawnErrNo = posix_spawnp(&ChildPid, TCHAR_TO_UTF8(*ProcessPath), &FileActions, &SpawnAttr, Argv, environ);
 		posix_spawn_file_actions_destroy(&FileActions);
 	}
 	else
@@ -957,14 +988,14 @@ FProcHandle FUnixPlatformProcess::CreateProc(const TCHAR* URL, const TCHAR* Parm
 		SpawnFlags |= POSIX_SPAWN_USEVFORK;
 
 		posix_spawnattr_setflags(&SpawnAttr, SpawnFlags);
-		PosixSpawnErrNo = posix_spawn(&ChildPid, TCHAR_TO_UTF8(*ProcessPath), nullptr, &SpawnAttr, Argv, environ);
+		PosixSpawnErrNo = posix_spawnp(&ChildPid, TCHAR_TO_UTF8(*ProcessPath), nullptr, &SpawnAttr, Argv, environ);
 	}
 	posix_spawnattr_destroy(&SpawnAttr);
 
 	if (PosixSpawnErrNo != 0)
 	{
-		UE_LOG(LogHAL, Fatal, TEXT("FUnixPlatformProcess::CreateProc: posix_spawn() failed (%d, %s)"), PosixSpawnErrNo, UTF8_TO_TCHAR(strerror(PosixSpawnErrNo)));
-		return FProcHandle();	// produce knowingly invalid handle if for some reason Fatal log (above) returns
+		UE_LOG(LogHAL, Error, TEXT("FUnixPlatformProcess::CreateProc: posix_spawnp() failed (%d, %s)"), PosixSpawnErrNo, UTF8_TO_TCHAR(strerror(PosixSpawnErrNo)));
+		return FProcHandle();
 	}
 
 	// renice the child (subject to race condition).
@@ -1112,7 +1143,7 @@ FProcState::~FProcState()
 	else if (IsRunning())
 	{
 		// warn about leaking a thread ;/
-		UE_LOG(LogHAL, Warning, TEXT("Process (pid=%d) is still running - we will reap it in a waiter thread, but the thread handle is going to be leaked."),
+		UE_LOG(LogHAL, Verbose, TEXT("Process (pid=%d) is still running - we will reap it in a waiter thread, but the thread handle is going to be leaked."),
 				 GetProcessId()
 			);
 
@@ -1652,20 +1683,42 @@ bool FUnixPlatformProcess::IsApplicationRunning( const TCHAR* ProcName )
 	return !system(TCHAR_TO_UTF8(*Commandline));
 }
 
-bool FUnixPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory)
+static bool ReadPipeToStr(void *PipeRead, FString *OutStr)
+{
+	if (PipeRead)
+	{
+		FString NewLine = FPlatformProcess::ReadPipe(PipeRead);
+
+		if (NewLine.Len() > 0)
+		{
+			if (OutStr != nullptr)
+			{
+				*OutStr += NewLine;
+			}
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool FUnixPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory, bool bShouldEndWithParentProcess)
 {
 	FString CmdLineParams = Params;
 	FString ExecutableFileName = URL;
 	int32 ReturnCode = -1;
-	FString DefaultError;
-	if (!OutStdErr)
-	{
-		OutStdErr = &DefaultError;
-	}
 
-	void* PipeRead = nullptr;
-	void* PipeWrite = nullptr;
-	verify(FPlatformProcess::CreatePipe(PipeRead, PipeWrite));
+	void* PipeReadStdOut = nullptr;
+	void* PipeWriteStdOut = nullptr;
+	verify(FPlatformProcess::CreatePipe(PipeReadStdOut, PipeWriteStdOut));
+
+	void* PipeReadStdErr = nullptr;
+	void* PipeWriteStdErr = nullptr;
+	if (OutStdErr)
+	{
+		verify(FPlatformProcess::CreatePipe(PipeReadStdErr, PipeWriteStdErr));
+	}
 
 	bool bInvoked = false;
 
@@ -1673,34 +1726,30 @@ bool FUnixPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, in
 	const bool bLaunchHidden = false;
 	const bool bLaunchReallyHidden = bLaunchHidden;
 
-	FProcHandle ProcHandle = FPlatformProcess::CreateProc(*ExecutableFileName, *CmdLineParams, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, NULL, 0, OptionalWorkingDirectory, PipeWrite);
+	FProcHandle ProcHandle = FPlatformProcess::CreateProc(*ExecutableFileName, *CmdLineParams, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, NULL, 0, OptionalWorkingDirectory, PipeWriteStdOut, nullptr, PipeWriteStdErr);
+
 	if (ProcHandle.IsValid())
 	{
 		while (FPlatformProcess::IsProcRunning(ProcHandle))
 		{
-			FString NewLine = FPlatformProcess::ReadPipe(PipeRead);
-			if (NewLine.Len() > 0)
-			{
-				if (OutStdOut != nullptr)
-				{
-					*OutStdOut += NewLine;
-				}
-			}
+			ReadPipeToStr(PipeReadStdOut, OutStdOut);
+			ReadPipeToStr(PipeReadStdErr, OutStdErr);
 			FPlatformProcess::Sleep(0.5);
 		}
 
-		// read the remainder
-		for(;;)
+		// Read the remainder
+		bool bReadingStdOut = true;
+		bool bReadingStdErr = true;
+		while (bReadingStdOut || bReadingStdErr)
 		{
-			FString NewLine = FPlatformProcess::ReadPipe(PipeRead);
-			if (NewLine.Len() <= 0)
+			if (bReadingStdOut && !ReadPipeToStr(PipeReadStdOut, OutStdOut))
 			{
-				break;
+				bReadingStdOut = false;
 			}
 
-			if (OutStdOut != nullptr)
+			if (bReadingStdErr && !ReadPipeToStr(PipeReadStdErr, OutStdErr))
 			{
-				*OutStdOut += NewLine;
+				bReadingStdErr = false;
 			}
 		}
 
@@ -1727,13 +1776,19 @@ bool FUnixPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, in
 		{
 			*OutStdOut = "";
 		}
+		if (OutStdErr != nullptr)
+		{
+			*OutStdErr = "";
+		}
 		UE_LOG(LogHAL, Warning, TEXT("Failed to launch Tool. (%s)"), *ExecutableFileName);
 	}
-	FPlatformProcess::ClosePipe(PipeRead, PipeWrite);
+
+	FPlatformProcess::ClosePipe(PipeReadStdOut, PipeWriteStdOut);
+	FPlatformProcess::ClosePipe(PipeReadStdErr, PipeWriteStdErr);
 	return bInvoked;
 }
 
-void FUnixPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms, ELaunchVerb::Type Verb )
+bool FUnixPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms, ELaunchVerb::Type Verb, bool bPromptToOpenOnFailure)
 {
 	// TODO This ignores parms and verb
 	pid_t pid = fork();
@@ -1741,6 +1796,8 @@ void FUnixPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHAR* 
 	{
 		exit(execl("/usr/bin/xdg-open", "xdg-open", TCHAR_TO_UTF8(FileName), (char *)0));
 	}
+
+	return pid != -1;
 }
 
 void FUnixPlatformProcess::ExploreFolder( const TCHAR* FilePath )

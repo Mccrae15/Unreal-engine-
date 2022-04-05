@@ -7,10 +7,9 @@
 #include "HAL/IConsoleManager.h"
 #include "Input/Reply.h"
 #include "Framework/Commands/Commands.h"
-#include "Settings/ProjectPackagingSettings.h"
 
 class FUICommandList;
-
+struct FRecentProjectFile;
 
 /**
  * Unreal editor main frame actions
@@ -27,15 +26,16 @@ public:
 	TSharedPtr< FUICommandInfo > SaveAll;
 	TSharedPtr< FUICommandInfo > Exit;
 	TSharedPtr< FUICommandInfo > ChooseFilesToSave;
-	TSharedPtr< FUICommandInfo > ChooseFilesToCheckIn;
+	TSharedPtr< FUICommandInfo > ViewChangelists;
+	TSharedPtr< FUICommandInfo > SubmitContent;
 	TSharedPtr< FUICommandInfo > ConnectToSourceControl;
+	TSharedPtr< FUICommandInfo > ChangeSourceControlSettings;
 	TSharedPtr< FUICommandInfo > NewProject;
 	TSharedPtr< FUICommandInfo > OpenProject;
 	TSharedPtr< FUICommandInfo > AddCodeToProject;
 	TSharedPtr< FUICommandInfo > OpenIDE;
 	TSharedPtr< FUICommandInfo > RefreshCodeProject;
 	TSharedPtr< FUICommandInfo > ZipUpProject;
-	TSharedPtr< FUICommandInfo > PackagingSettings;
 	TSharedPtr< FUICommandInfo > LocalizeProject;
 	TArray< TSharedPtr< FUICommandInfo > > SwitchProjectCommands;
 
@@ -50,10 +50,13 @@ public:
 	TSharedPtr< FUICommandInfo > OpenDebugView;
 	TSharedPtr< FUICommandInfo > OpenClassViewer;
 	TSharedPtr< FUICommandInfo > OpenWidgetReflector;
+	TSharedPtr< FUICommandInfo > OpenMarketplace;
 
+	TSharedPtr< FUICommandInfo > DocumentationHome;
 	TSharedPtr< FUICommandInfo > VisitOnlineLearning;
+	TSharedPtr< FUICommandInfo > BrowseAPIReference;
+	TSharedPtr< FUICommandInfo > BrowseCVars;
 	TSharedPtr< FUICommandInfo > VisitForums;
-	TSharedPtr< FUICommandInfo > VisitAskAQuestionPage;
 	TSharedPtr< FUICommandInfo > VisitSearchForAnswersPage;
 	TSharedPtr< FUICommandInfo > ReportABug;
 	TSharedPtr< FUICommandInfo > OpenIssueTracker;
@@ -108,11 +111,11 @@ public:
 	/** Opens a dialog to choose packages to save */
 	static void ChoosePackagesToSave();
 
-	/** Opens a dialog to choose packages to submit */
-	static void ChoosePackagesToCheckIn();
+	/** Opens a dialog to view the pending changelists */
+	static void ViewChangelists();
 
-	/** Determines whether we can choose packages to check in (we cant if an operation is already in progress) */
-	static bool CanChoosePackagesToCheckIn();
+	/** Determines whether we can show the changelist view */
+	static bool CanViewChangelists();
 
 	/** Enable source control features */
 	static void ConnectToSourceControl();
@@ -146,9 +149,6 @@ public:
 	/** Opens the issue tracker page */
 	static void OpenIssueTracker();
 
-	/** Visits the "ask a question" page on UDN */
-	static void VisitAskAQuestionPage();
-
 	/** Visits the "search for answers" page on UDN */
 	static void VisitSearchForAnswersPage();
 
@@ -158,8 +158,17 @@ public:
 	/** Visits EpicGames.com */
 	static void VisitEpicGamesDotCom();
 
+	/** Opens the documentation home page*/
+	static void DocumentationHome();
+
 	/** Visits The Unreal Online Learning page*/
 	static void VisitOnlineLearning();
+
+	/** Opens the API documentation site */
+	static void BrowseAPIReference();
+
+	/** Creates an HTML file to browse the console variables and commands */
+	static void BrowseCVars();
 
 	static void VisitForums();
 
@@ -174,30 +183,6 @@ public:
 
 	/** Adds code to the current project if it does not already have any */
 	static void AddCodeToProject();
-
-	/** Cooks the project's content for the specified platform. */
-	static void CookContent( const FName InPlatformInfoName );
-
-	/** Checks whether a menu action for cooking the project's content can execute. */
-	static bool CookContentCanExecute( const FName PlatformInfoName );
-
-	/** Sets the project packaging build configuration. */
-	static void PackageBuildConfiguration( EProjectPackagingBuildConfigurations BuildConfiguration );
-
-	/** Determines if the packaging build configuration can be used. */
-	static bool CanPackageBuildConfiguration( EProjectPackagingBuildConfigurations BuildConfiguration );
-
-	/** Determines whether the specified build configuration option is checked. */
-	static bool PackageBuildConfigurationIsChecked( EProjectPackagingBuildConfigurations BuildConfiguration );
-
-	/** Sets the project packaging build configuration. */
-	static void PackageBuildTarget( FString TargetName );
-
-	/** Determines whether the specified build configuration option is checked. */
-	static bool PackageBuildTargetIsChecked( FString TargetName );
-
-	/** Packages the project for the specified platform. */
-	static void PackageProject( const FName InPlatformInfoName );
 
 	/** Checks whether a menu action for packaging the project can execute. */
 	static bool PackageProjectCanExecute( const FName PlatformInfoName );
@@ -216,9 +201,6 @@ public:
 
 	/** Zips up the project */
 	static void ZipUpProject();
-
-	/** Opens the Packaging settings tab */
-	static void PackagingSettings();
 
 	/** Opens the Project Localization Dashboard */
 	static void LocalizeProject();
@@ -259,11 +241,12 @@ public:
 	/** Gathers all available projects the user can switch to from main menu */
 	static void CacheProjectNames();
 
-
+	/** Opens the marketplace */
+	static void OpenMarketplace();
 public:
 
 	// List of projects that the user can switch to.
-	static TArray<FString> ProjectNames;
+	static TArray<FRecentProjectFile> RecentProjects;
 
 protected:
 

@@ -4,13 +4,14 @@
 #include "PixelFormat.h"
 #include "RHI.h"
 #include "GPUSkinVertexFactory.h"
+#include "ColorSpace.h"
 
 #if WITH_EDITOR
 #include "Editor/EditorEngine.h"
 #include "Misc/MessageDialog.h"
 #include "UnrealEdMisc.h"
 #include "Misc/ConfigCacheIni.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 
 /** The editor object. */
 extern UNREALED_API class UEditorEngine* GEditor;
@@ -67,15 +68,22 @@ URendererSettings::URendererSettings(const FObjectInitializer& ObjectInitializer
 	TranslucentSortAxis = FVector(0.0f, -1.0f, 0.0f);
 	bSupportStationarySkylight = true;
 	bSupportPointLightWholeSceneShadows = true;
-	bSupportAtmosphericFog = true;
 	bSupportSkyAtmosphere = true;
 	bSupportSkinCacheShaders = false;
 	GPUSimulationTextureSizeX = 1024;
 	GPUSimulationTextureSizeY = 1024;
 	bEnableRayTracing = 0;
+	bUseHardwareRayTracingForLumen = 0;
+	bEnableRayTracingShadows = 0;
+	bEnableRayTracingSkylight = 0;
+	bEnablePathTracing = 0;
 	bEnableRayTracingTextureLOD = 0;
-	bLPV = 1;
 	MaxSkinBones = FGPUBaseSkinVertexFactory::GHardwareMaxGPUSkinBones;
+	WorkingColorSpaceChoice = EWorkingColorSpace::sRGB;
+	RedChromaticityCoordinate = FVector2D::ZeroVector;
+	GreenChromaticityCoordinate = FVector2D::ZeroVector;
+	BlueChromaticityCoordinate = FVector2D::ZeroVector;
+	WhiteChromaticityCoordinate = FVector2D::ZeroVector;
 }
 
 void URendererSettings::PostInitProperties()
@@ -83,6 +91,8 @@ void URendererSettings::PostInitProperties()
 	Super::PostInitProperties();
 	
 	SanatizeReflectionCaptureResolution();
+
+	UpdateWorkingColorSpaceAndChromaticities();
 
 #if WITH_EDITOR
 	if (IsTemplate())
@@ -98,6 +108,40 @@ void URendererSettings::PreEditChange(FProperty* PropertyAboutToChange)
 	Super::PreEditChange(PropertyAboutToChange);
 
 	PreEditReflectionCaptureResolution = ReflectionCaptureResolution;
+}
+
+void UpdateDependentPropertyInConfigFile(URendererSettings* RendererSettings, FName PropertyName)
+{
+	// Duplicate SSettingsEditor::NotifyPostChange functionality to make sure we are able to write to the file before we modify the ini
+	// Only duplicating the MakeWriteable behavior, SSettingsEditor::NotifyPostChange will be called after this on the main property and handle source control
+	//@todo - unify with SSettingsEditor::NotifyPostChange 
+
+	check(RendererSettings->GetClass()->HasAnyClassFlags(CLASS_DefaultConfig));
+	
+	FString RelativePath = RendererSettings->GetDefaultConfigFilename();
+	FString FullPath = FPaths::ConvertRelativePathToFull(RelativePath);
+
+	const bool bIsWriteable = !FPlatformFileManager::Get().GetPlatformFile().IsReadOnly(*FullPath);
+
+	if (!bIsWriteable)
+	{
+		FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*FullPath, false);
+	}
+
+	for (TFieldIterator<FProperty> PropIt(RendererSettings->GetClass()); PropIt; ++PropIt)
+	{
+		FProperty* Property = *PropIt;
+		if (Property->GetFName() == PropertyName)
+		{
+			RendererSettings->UpdateSinglePropertyInConfigFile(Property, RendererSettings->GetDefaultConfigFilename());
+		}
+	}
+
+	// Restore original state for source control
+	if (!bIsWriteable)
+	{
+		FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*FullPath, true);
+	}
 }
 
 void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
@@ -128,28 +172,37 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 			if (FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("Skin Cache Disabled", "Ray Tracing requires enabling skin cache. Do you want to automatically enable skin cache now?")) == EAppReturnType::Yes)
 			{
 				bSupportSkinCacheShaders = 1;
-
-				for (TFieldIterator<FProperty> PropIt(GetClass()); PropIt; ++PropIt)
-				{
-					FProperty* Property = *PropIt;
-					if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bSupportSkinCacheShaders))
-					{
-						UpdateSinglePropertyInConfigFile(Property, GetDefaultConfigFilename());
-					}
-				}
+				UpdateDependentPropertyInConfigFile(this, GET_MEMBER_NAME_CHECKED(URendererSettings, bSupportSkinCacheShaders));
 			}
 			else
 			{
 				bEnableRayTracing = 0;
+				UpdateDependentPropertyInConfigFile(this, GET_MEMBER_NAME_CHECKED(URendererSettings, bEnableRayTracing));
+			}
+		}
 
-				for (TFieldIterator<FProperty> PropIt(GetClass()); PropIt; ++PropIt)
-				{
-					FProperty* Property = *PropIt;
-					if (Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bEnableRayTracing))
-					{
-						UpdateSinglePropertyInConfigFile(Property, GetDefaultConfigFilename());
-					}
-				}
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, DynamicGlobalIllumination) 
+			&& DynamicGlobalIllumination == EDynamicGlobalIlluminationMethod::Lumen)
+		{
+			if (Reflections != EReflectionMethod::Lumen)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("Lumen Reflections automatically enabled", "Lumen Reflections are designed to work with Lumen Global Illumination, and have been automatically enabled."));
+
+				Reflections = EReflectionMethod::Lumen;
+
+				IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.ReflectionMethod"));
+				CVar->Set((int32)Reflections, ECVF_SetByProjectSetting);
+
+				UpdateDependentPropertyInConfigFile(this, GET_MEMBER_NAME_CHECKED(URendererSettings, Reflections));
+			}
+
+			if (!bGenerateMeshDistanceFields)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("'Generate Mesh Distance Fields' automatically enabled", "Lumen Global Illumination requires 'Generate Mesh Distance Fields'.  This has been enabled automatically, and requires an editor restart."));
+
+				bGenerateMeshDistanceFields = true;
+
+				UpdateDependentPropertyInConfigFile(this, GET_MEMBER_NAME_CHECKED(URendererSettings, bGenerateMeshDistanceFields));
 			}
 		}
 
@@ -169,6 +222,13 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 			{
 				bSupportSkyAtmosphereAffectsHeightFog = 0; // Always disable sky affecting height fog if sky is disabled.
 			}
+		}
+
+		if ((PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, StrataBytePerPixel)))
+		{
+			// We enforce at least 20 bytes per pixel because this is the minimal Strata GBuffer footprint of the simplest material.
+			StrataBytePerPixel = FMath::Clamp(StrataBytePerPixel, 20u, 128u);
+
 		}
 
 		ExportValuesToConsoleVariables(PropertyChangedEvent.Property);
@@ -195,25 +255,61 @@ void URendererSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyCh
 				}
 			}
 		}
+
+		if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, WorkingColorSpaceChoice))
+		{
+			UpdateWorkingColorSpaceAndChromaticities();
+
+			UpdateDependentPropertyInConfigFile(this, GET_MEMBER_NAME_CHECKED(URendererSettings, RedChromaticityCoordinate));
+			UpdateDependentPropertyInConfigFile(this, GET_MEMBER_NAME_CHECKED(URendererSettings, GreenChromaticityCoordinate));
+			UpdateDependentPropertyInConfigFile(this, GET_MEMBER_NAME_CHECKED(URendererSettings, BlueChromaticityCoordinate));
+			UpdateDependentPropertyInConfigFile(this, GET_MEMBER_NAME_CHECKED(URendererSettings, WhiteChromaticityCoordinate));
+		}
+
+		if ((PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, RedChromaticityCoordinate)) ||
+			(PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, GreenChromaticityCoordinate)) ||
+			(PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, BlueChromaticityCoordinate)) ||
+			(PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, WhiteChromaticityCoordinate)))
+		{
+			UpdateWorkingColorSpaceAndChromaticities();
+		}
 	}
 }
 
 bool URendererSettings::CanEditChange(const FProperty* InProperty) const
 {
-	const bool ParentVal = Super::CanEditChange(InProperty);
+	if (!Super::CanEditChange(InProperty))
+	{
+		return false;
+	}
 
 	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bSupportSkinCacheShaders)))
 	{
 		//only allow DISABLE of skincache shaders if raytracing is also disabled as skincache is a dependency of raytracing.
-		return ParentVal && (!bSupportSkinCacheShaders || !bEnableRayTracing);
+		return !bSupportSkinCacheShaders || !bEnableRayTracing;
+	}
+
+	// the following settings can only be edited if ray tracing is enabled
+	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bEnablePathTracing)) ||
+		(InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bEnableRayTracingShadows)) ||
+		(InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bEnableRayTracingTextureLOD)))
+	{
+		return bEnableRayTracing;
 	}
 
 	if ((InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, bSupportSkyAtmosphereAffectsHeightFog)))
 	{
-		return ParentVal && bSupportSkyAtmosphere;
+		return bSupportSkyAtmosphere;
 	}
 
-	return ParentVal;
+	if (InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, DynamicGlobalIllumination)
+		|| InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, Reflections)
+		|| InProperty->GetFName() == GET_MEMBER_NAME_CHECKED(URendererSettings, ShadowMapMethod))
+	{
+		return !bForwardShading;
+	}
+
+	return true;
 }
 #endif // #if WITH_EDITOR
 
@@ -259,6 +355,45 @@ void URendererSettings::SanatizeReflectionCaptureResolution()
 	}
 #endif // WITH_EDITOR
 }
+
+void URendererSettings::UpdateWorkingColorSpaceAndChromaticities()
+{
+	using namespace UE::Color;
+
+	switch (WorkingColorSpaceChoice)
+	{
+	case EWorkingColorSpace::sRGB:
+		FColorSpace::SetWorking(FColorSpace(EColorSpace::sRGB));
+		break;
+	case EWorkingColorSpace::Rec2020:
+		FColorSpace::SetWorking(FColorSpace(EColorSpace::Rec2020));
+		break;
+	case EWorkingColorSpace::ACESAP0:
+		FColorSpace::SetWorking(FColorSpace(EColorSpace::ACESAP0));
+		break;
+	case EWorkingColorSpace::ACESAP1:
+		FColorSpace::SetWorking(FColorSpace(EColorSpace::ACESAP1));
+		break;
+	case EWorkingColorSpace::P3DCI:
+		FColorSpace::SetWorking(FColorSpace(EColorSpace::P3DCI));
+		break;
+	case EWorkingColorSpace::P3D65:
+		FColorSpace::SetWorking(FColorSpace(EColorSpace::P3D65));
+		break;
+	case EWorkingColorSpace::Custom:
+		FColorSpace::SetWorking(FColorSpace(RedChromaticityCoordinate, GreenChromaticityCoordinate, BlueChromaticityCoordinate, WhiteChromaticityCoordinate));
+		break;
+	default:
+		check(false);
+		break;
+	}
+
+	if (WorkingColorSpaceChoice != EWorkingColorSpace::Custom)
+	{
+		FColorSpace::GetWorking().GetChromaticities(RedChromaticityCoordinate, GreenChromaticityCoordinate, BlueChromaticityCoordinate, WhiteChromaticityCoordinate);
+	}
+}
+
 
 URendererOverrideSettings::URendererOverrideSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)

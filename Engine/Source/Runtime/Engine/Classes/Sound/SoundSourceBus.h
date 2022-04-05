@@ -37,9 +37,9 @@ public:
 	UPROPERTY(EditAnywhere, Category = BusProperties, meta = (UIMin = 0.0, ClampMin = 0.0))
 	float SourceBusDuration;
 
-	/** Audio bus to use to use as audio for this source bus. This source bus will sonify the audio from the audio bus. */
+	/** Audio bus to use as audio for this source bus. This source bus will sonify the audio from the audio bus. */
 	UPROPERTY(EditAnywhere, Category = BusProperties)
-	UAudioBus* AudioBus;
+	TObjectPtr<UAudioBus> AudioBus;
 
 	/** Stop the source bus when the volume goes to zero. */
 	UPROPERTY(meta = (DeprecatedProperty))
@@ -48,13 +48,18 @@ public:
 	//~ Begin UObject Interface.
 	virtual void PostLoad() override;
 #if WITH_EDITOR
+	virtual bool CanVisualizeAsset() const override
+	{
+		return false;
+	}
+
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 	//~ End UObject Interface.
 
 	//~ Begin USoundBase Interface.
 	virtual bool IsPlayable() const override;
-	virtual float GetDuration() override;
+	virtual float GetDuration() const override;
 	//~ End USoundBase Interface.
 
 protected:

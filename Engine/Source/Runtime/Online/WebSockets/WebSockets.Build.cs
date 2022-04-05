@@ -9,13 +9,11 @@ public class WebSockets : ModuleRules
 		get
 		{
 			return
-				Target.Platform == UnrealTargetPlatform.Win32 ||
 				Target.Platform == UnrealTargetPlatform.Win64 ||
 				Target.Platform == UnrealTargetPlatform.Android ||
 				Target.Platform == UnrealTargetPlatform.Mac ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Unix) ||
-				Target.Platform == UnrealTargetPlatform.IOS ||
-				Target.Platform == UnrealTargetPlatform.Switch;
+				Target.Platform == UnrealTargetPlatform.IOS;
 		}
 	}
 
@@ -30,10 +28,7 @@ public class WebSockets : ModuleRules
 
 	protected virtual bool UsePlatformSSL
 	{
-		get
-		{
-			return Target.Platform == UnrealTargetPlatform.Switch;
-		}
+		get => false;
 	}
 
 	protected virtual bool ShouldUseModule

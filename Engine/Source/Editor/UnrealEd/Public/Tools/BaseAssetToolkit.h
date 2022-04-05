@@ -8,6 +8,7 @@
 #include "Toolkits/AssetEditorToolkit.h"
 #include "Templates/SharedPointer.h"
 #include "Framework/Docking/TabManager.h"
+#include "AssetEditorViewportLayout.h"
 
 class SDockTab;
 class FSpawnTabArgs;
@@ -46,6 +47,7 @@ public:
 	virtual const TSharedRef<FTabManager::FLayout> GetDefaultLayout() const;
 	virtual void CreateWidgets();
 	virtual void SetEditingObject(class UObject* InObject);
+	virtual void CreateEditorModeManager() override;
 
 public:
 	static const FName ViewportTabID;
@@ -53,7 +55,7 @@ public:
 
 protected:
 	virtual void RegisterToolbar();
-	virtual TFunction<TSharedRef<SEditorViewport>(void)> GetViewportDelegate();
+	virtual AssetEditorViewportFactoryFunction GetViewportDelegate();
 	virtual TSharedPtr<FEditorViewportClient> CreateEditorViewportClient() const;
 	TSharedRef<SDockTab> SpawnTab_Viewport(const FSpawnTabArgs& Args);
 	TSharedRef<SDockTab> SpawnTab_Details(const FSpawnTabArgs& Args);
@@ -64,7 +66,7 @@ protected:
 	// Tracking the active viewports in this editor.
 	TSharedPtr<class FEditorViewportTabContent> ViewportTabContent;
 	/** Storage for our viewport creation function that will be passed to the viewport layout system*/
-	TFunction<TSharedRef<SEditorViewport>(void)> ViewportDelegate;
+	AssetEditorViewportFactoryFunction ViewportDelegate;
 	TSharedPtr<FEditorViewportClient> ViewportClient;
 	/** Extender for adding to the default layout for this asset editor */
 	TSharedPtr<FLayoutExtender> LayoutExtender;

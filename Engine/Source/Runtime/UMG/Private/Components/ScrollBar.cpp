@@ -2,13 +2,21 @@
 
 #include "Components/ScrollBar.h"
 #include "UObject/EditorObjectVersion.h"
+#include "Styling/UMGCoreStyle.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
 /////////////////////////////////////////////////////
 // UScrollBar
 
-static FScrollBarStyle* DefaultScrollBarStyle = nullptr;
+namespace
+{
+	static FScrollBarStyle* DefaultScrollBarStyle = nullptr;
+}
+
+#if WITH_EDITOR
+static FScrollBarStyle* EditorScrollBarStyle = nullptr;
+#endif 
 
 UScrollBar::UScrollBar(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -23,14 +31,31 @@ UScrollBar::UScrollBar(const FObjectInitializer& ObjectInitializer)
 
 	if (DefaultScrollBarStyle == nullptr)
 	{
-		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
-		DefaultScrollBarStyle = new FScrollBarStyle(FCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("Scrollbar"));
+		DefaultScrollBarStyle = new FScrollBarStyle(FUMGCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("Scrollbar"));
 
-		// Unlink UMG default colors from the editor settings colors.
+		// Unlink UMG default colors.
 		DefaultScrollBarStyle->UnlinkColors();
 	}
 	
 	WidgetStyle = *DefaultScrollBarStyle;
+
+#if WITH_EDITOR 
+	if (EditorScrollBarStyle == nullptr)
+	{
+		EditorScrollBarStyle = new FScrollBarStyle(FCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("Scrollbar"));
+
+		// Unlink UMG Editor colors from the editor settings colors.
+		EditorScrollBarStyle->UnlinkColors();
+	}
+
+	if (IsEditorWidget())
+	{
+		WidgetStyle = *EditorScrollBarStyle;
+
+		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
+		PostEditChange();
+	}
+#endif // WITH_EDITOR
 }
 
 void UScrollBar::ReleaseSlateResources(bool bReleaseChildren)
@@ -96,7 +121,7 @@ void UScrollBar::PostLoad()
 {
 	Super::PostLoad();
 
-	if ( GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
+	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
 	{
 		if ( Style_DEPRECATED != nullptr )
 		{

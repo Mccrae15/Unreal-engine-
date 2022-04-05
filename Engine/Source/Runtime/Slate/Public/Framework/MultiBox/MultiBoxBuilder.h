@@ -154,7 +154,55 @@ protected:
 	bool bExtendersEnabled;
 };
 
+/** Helper struct that holds FMenuEntry params for construction */
+struct FMenuEntryParams : public FMultiBlock::FMultiBlockParams
+{
+	/** Optional overridden text label for this menu entry.  If not set, then the action's label will be used instead. */
+	TAttribute<FText> LabelOverride;
 
+	/** Optional overridden tool tip for this menu entry.  If not set, then the action's tool tip will be used instead. */
+	TAttribute<FText> ToolTipOverride;
+
+	/** Optional overridden input binding text for this menu entry.  If not set, then the UI action's binding will be used if available. */
+	TAttribute<FText> InputBindingOverride;
+
+	/** Optional overridden icon for this tool bar button.  IF not set, then the action's icon will be used instead. */
+	FSlateIcon IconOverride;
+
+	/** Optional menu entry builder associated with this entry for building sub-menus and pull down menus */
+	FNewMenuDelegate EntryBuilder;
+
+	/** Delegate that returns an entire menu */
+	FOnGetContent MenuBuilder;
+
+	/** Widget to be added to the menu */
+	TSharedPtr<SWidget> EntryWidget;
+
+	/** True if this menu entry opens a sub-menu */
+	bool bIsSubMenu = false;
+
+	/** True if the search algorithm should walk down this menu sub menus. Usually true, unless the menu has circular/infinite expansion (happens in some menus generated on the fly by reflection). */
+	bool bIsRecursivelySearchable = true;;
+
+	/** True if this menu entry opens a sub-menu by clicking on it only */
+	bool bOpenSubMenuOnClick = false;
+
+	/** In the case where a command is not bound, the user interface action type to use.  If a command is bound, we
+		simply use the action type associated with that command. */
+	EUserInterfaceActionType UserInterfaceActionType;
+
+	/** True if the menu should close itself and all its children or the entire open menu stack */
+	bool bCloseSelfOnly = false;
+
+	/** An extender that this menu entry should pass down to its children, so they get extended properly */
+	TSharedPtr<FExtender> Extender;
+
+	/** For submenus, whether the menu should be closed after something is selected */
+	bool bShouldCloseWindowAfterMenuSelection = true;
+
+	/** Display name for tutorials */
+	FName TutorialHighlightName;
+};
 
 /**
  * Base menu builder
@@ -199,8 +247,21 @@ public:
 	 * @param	InTutorialHighlightName	Optional name to identify this widget and highlight during tutorials
 	 */
 	void AddMenuEntry( const TAttribute<FText>& InLabel, const TAttribute<FText>& InToolTip, const FSlateIcon& InIcon, const FUIAction& UIAction, FName InExtensionHook = NAME_None, const EUserInterfaceActionType UserInterfaceActionType = EUserInterfaceActionType::Button, FName InTutorialHighlightName = NAME_None );
-
+	
+	/**
+	 * Adds a menu entry with a custom widget
+	 *
+	 * @param	UIAction				Actions to execute on this menu item.
+	 * @param	Contents				Custom widget to display
+	 * @param	InExtensionHook			The section hook. Can be NAME_None
+	 * @param	InToolTip				Tool tip used when hovering over the menu entry
+	 * @param	UserInterfaceActionType	Type of interface action
+	 * @param	InTutorialHighlightName	Optional name to identify this widget and highlight during tutorials
+	 */
 	void AddMenuEntry( const FUIAction& UIAction, const TSharedRef< SWidget > Contents, const FName& InExtensionHook = NAME_None, const TAttribute<FText>& InToolTip = TAttribute<FText>(), const EUserInterfaceActionType UserInterfaceActionType = EUserInterfaceActionType::Button, FName InTutorialHighlightName = NAME_None );
+
+	/** Adds a menu entry with given param struct */
+	void AddMenuEntry( const FMenuEntryParams& InMenuEntryParams );
 
 protected:
 	/** True if clicking on a menu entry closes itself only and its children and not the entire stack */
@@ -221,11 +282,17 @@ public:
 	 * @param	bInShouldCloseWindowAfterMenuSelection	Sets whether or not the window that contains this multibox should be destroyed after the user clicks on a menu item in this box
 	 * @param	InCommandList	The action list that maps command infos to delegates that should be called for each command associated with a multiblock widget
 	 * @param	bInCloseSelfOnly	True if clicking on a menu entry closes itself only and its children but not the entire stack
+	 * @param	bInSearchable	True if the menu is searchable
+	 * @param	bInRecursivelySearchable True if search algorithm should go down the sub-menus when searching. If false, the search will not scan the sub-menus. Recursive search is usually disabled on
+	 *                                   menus that are automatically generated in a way that the menu can expand indefinitely in a circular fashion. For example, the Blueprint API binding reflected on
+	 *                                   function return type can do that. Think about a function like "A* A::GetParent()". If a root menu expands "A" functions and expands on the function return types, then
+	 *                                   selecting "GetParent()" will expand another "A" menu. Without simulation, the reflection API don't know when the recursion finishes, nor does the recursive search algorithm.
 	 */
-	FMenuBuilder( const bool bInShouldCloseWindowAfterMenuSelection, TSharedPtr< const FUICommandList > InCommandList, TSharedPtr<FExtender> InExtender = TSharedPtr<FExtender>(), const bool bCloseSelfOnly = false, const ISlateStyle* InStyleSet = &FCoreStyle::Get(), bool bInSearchable = true, FName InMenuName = NAME_None)
+	FMenuBuilder( const bool bInShouldCloseWindowAfterMenuSelection, TSharedPtr< const FUICommandList > InCommandList, TSharedPtr<FExtender> InExtender = TSharedPtr<FExtender>(), const bool bCloseSelfOnly = false, const ISlateStyle* InStyleSet = &FCoreStyle::Get(), bool bInSearchable = true, FName InMenuName = NAME_None, bool bInRecursivelySearchable = true)
 		: FBaseMenuBuilder( EMultiBoxType::Menu, bInShouldCloseWindowAfterMenuSelection, InCommandList, bCloseSelfOnly, InExtender, InStyleSet, NAME_None, InMenuName )
 		, bSectionNeedsToBeApplied(false)
 		, bSearchable(bInSearchable)
+		, bRecursivelySearchable(bInRecursivelySearchable)
 		, bIsEditing(false)
 	{
 		if(bSearchable)
@@ -342,6 +409,9 @@ private:
 	/** Whether this menu is searchable */
 	bool bSearchable;
 
+	/** Whether the search algorithm should walk down this menu sub-menu(s) (if the menu is searchable in first place). */
+	bool bRecursivelySearchable;
+
 	/** Whether menu is currently being edited */
 	bool bIsEditing;
 };
@@ -364,6 +434,7 @@ public:
 	FMenuBarBuilder( TSharedPtr< const FUICommandList > InCommandList, TSharedPtr<FExtender> InExtender = TSharedPtr<FExtender>(), const ISlateStyle* InStyleSet = &FCoreStyle::Get(), FName InMenuName = NAME_None)
 		: FBaseMenuBuilder( EMultiBoxType::MenuBar, false, InCommandList, false, InExtender, InStyleSet, NAME_None, InMenuName )
 	{
+		MultiBox->SetStyle(InStyleSet, "WindowMenuBar");
 	}
 
 
@@ -374,8 +445,17 @@ public:
 	 * @param	InToolTip			The tooltip that should be shown when the menu is hovered over
 	 * @param	InPullDownMenu		Pull down menu object for the menu to add.
 	 */
-	void AddPullDownMenu( const FText& InMenuLabel, const FText& InToolTip, const FNewMenuDelegate& InPullDownMenu, FName InExtensionHook = NAME_None, FName InTutorialHighlightName = NAME_None);
-	
+	void AddPullDownMenu( const TAttribute<FText>& InMenuLabel, const TAttribute<FText>& InToolTip, const FNewMenuDelegate& InPullDownMenu, FName InExtensionHook = NAME_None, FName InTutorialHighlightName = NAME_None);
+
+	/**
+	 * Adds a pull down menu
+	 *
+	 * @param	InMenuLabel				The text that should be shown for the menu
+	 * @param	InToolTip				The tooltip that should be shown when the menu is hovered over
+	 * @param	InMenuContentGenerator	Delegate that generates a widget for this pulldown menu's content.  Called when the menu is summoned.
+	 */
+	void AddPullDownMenu(const TAttribute<FText>& InMenuLabel, const TAttribute<FText>& InToolTip, const FOnGetContent& InMenuContentGenerator, FName InExtensionHook = NAME_None, FName InTutorialHighlightName = NAME_None);
+
 protected:
 	/** FMultiBoxBuilder interface */
 	virtual void ApplyHook(FName InExtensionHook, EExtensionHook::Position HookPosition) override;
@@ -395,7 +475,7 @@ public:
 	FToolBarBuilder(TSharedPtr< const FUICommandList > InCommandList, FMultiBoxCustomization InCustomization, TSharedPtr<FExtender> InExtender, EOrientation Orientation, const bool InForceSmallIcons = false, const bool bUniform = false)
 		: FMultiBoxBuilder(bUniform ? EMultiBoxType::UniformToolBar : (Orientation == Orient_Horizontal) ? EMultiBoxType::ToolBar : EMultiBoxType::VerticalToolBar, InCustomization, false, InCommandList, InExtender)
 		, bSectionNeedsToBeApplied(false)
-		, bIsFocusable(false)
+		, bIsFocusable(true)
 		, bForceSmallIcons(InForceSmallIcons)
 	{
 	}
@@ -408,14 +488,15 @@ public:
 	FToolBarBuilder(TSharedPtr<const FUICommandList> InCommandList, FMultiBoxCustomization InCustomization, TSharedPtr<FExtender> InExtender = nullptr, const bool InForceSmallIcons = false)
 		: FMultiBoxBuilder(EMultiBoxType::ToolBar, InCustomization, false, InCommandList, InExtender)
 		, bSectionNeedsToBeApplied(false)
-		, bIsFocusable(false)
+		, bIsFocusable(true)
 		, bForceSmallIcons(InForceSmallIcons)
 	{
+		MultiBox->bIsFocusable = bIsFocusable;
 	}
 
 	void SetLabelVisibility( EVisibility InLabelVisibility ) { LabelVisibility  = InLabelVisibility ; }
 
-	void SetIsFocusable( bool bInIsFocusable ) { bIsFocusable = bInIsFocusable; }
+	void SetIsFocusable(bool bInIsFocusable);
 
 	/**
 	 * Adds a tool bar button
@@ -425,8 +506,9 @@ public:
 	 * @param	InToolTipOverride		Optional tool tip override.	 If omitted, then the action's label will be used instead.
 	 * @param	InIconOverride			Optional name of the slate brush to use for the tool bar image.  If omitted, then the action's icon will be used instead.
 	 * @param	InTutorialHighlightName	Name to identify this widget and highlight during tutorials
+	 * @param	CustomMenuDelegate  Optional custom menu delegate for cases where the toolbar is compressed into a menu
 	 */
-	void AddToolBarButton(const TSharedPtr< const FUICommandInfo > InCommand, FName InExtensionHook = NAME_None, const TAttribute<FText>& InLabelOverride = TAttribute<FText>(), const TAttribute<FText>& InToolTipOverride = TAttribute<FText>(), const TAttribute<FSlateIcon>& InIconOverride = TAttribute<FSlateIcon>(), FName InTutorialHighlightName = NAME_None );
+	void AddToolBarButton(const TSharedPtr< const FUICommandInfo > InCommand, FName InExtensionHook = NAME_None, const TAttribute<FText>& InLabelOverride = TAttribute<FText>(), const TAttribute<FText>& InToolTipOverride = TAttribute<FText>(), const TAttribute<FSlateIcon>& InIconOverride = TAttribute<FSlateIcon>(), FName InTutorialHighlightName = NAME_None, FNewMenuDelegate InCustomMenuDelegate = FNewMenuDelegate());
 	
 	/**
 	 * Adds a tool bar button
@@ -471,8 +553,10 @@ public:
 	 * @param	InWidget				The widget that should be shown in the toolbar
 	 * @param	InTutorialHighlightName	Name to identify this widget and highlight during tutorials
 	 * @param	bSearchable			If true, widget will be searchable (default == true)
+	 * @param	Alignment			Horizontal alignment for the widget inside the toolbar
+	 * @param	CustomMenuDelegate  Optional custom menu delegate for cases where the toolbar is compressed into a menu
 	 */
-	void AddWidget(TSharedRef<SWidget> InWidget, FName InTutorialHighlightName = NAME_None, bool bSearchable = true);
+	void AddWidget(TSharedRef<SWidget> InWidget, FName InTutorialHighlightName = NAME_None, bool bSearchable = true, EHorizontalAlignment Alignment = HAlign_Fill, FNewMenuDelegate InCustomMenuDelegate = FNewMenuDelegate());
 	
 	/**
 	 * Adds a toolbar separator
@@ -501,6 +585,12 @@ public:
 	 */
 	void EndBlockGroup();
 
+	/**
+	 * Overrides the style being used by this toolbar with a different one for the
+	 * The override will be used for any added blocks until EndStyleOverride is called
+	 */
+	void BeginStyleOverride(FName StyleOverrideName);
+	void EndStyleOverride();
 protected:
 
 	FToolBarBuilder(EMultiBoxType InType, TSharedPtr<const FUICommandList> InCommandList, FMultiBoxCustomization InCustomization, TSharedPtr<FExtender> InExtender = TSharedPtr<FExtender>(), const bool InForceSmallIcons = false)
@@ -519,6 +609,8 @@ protected:
 private:
 	/** Current extension hook name for sections to determine where sections begin and end */
 	FName CurrentSectionExtensionHook;
+
+	FName CurrentStyleOverride;
 
 	TOptional< EVisibility > LabelVisibility;
 
@@ -557,6 +649,20 @@ public:
 	 */
 	FUniformToolBarBuilder(TSharedPtr<const FUICommandList> InCommandList, FMultiBoxCustomization InCustomization, TSharedPtr<FExtender> InExtender = nullptr, const bool InForceSmallIcons = false)
 		: FToolBarBuilder(EMultiBoxType::UniformToolBar, InCommandList, InCustomization, InExtender, InForceSmallIcons)
+	{
+	}
+};
+
+class SLATE_API FSlimHorizontalToolBarBuilder : public FToolBarBuilder
+{
+public:
+	/**
+	 * Constructor
+	 *
+	 * @param	InCommandList	The action list that maps command infos to delegates that should be called for each command associated with a multiblock widget
+	 */
+	FSlimHorizontalToolBarBuilder(TSharedPtr<const FUICommandList> InCommandList, FMultiBoxCustomization InCustomization, TSharedPtr<FExtender> InExtender = nullptr, const bool InForceSmallIcons = false)
+		: FToolBarBuilder(EMultiBoxType::SlimHorizontalToolBar, InCommandList, InCustomization, InExtender, InForceSmallIcons)
 	{
 	}
 };

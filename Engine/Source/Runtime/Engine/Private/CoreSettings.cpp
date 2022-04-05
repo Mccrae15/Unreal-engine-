@@ -18,11 +18,16 @@ float GLevelStreamingActorsUpdateTimeLimit = 5.0f;
 float GPriorityLevelStreamingActorsUpdateExtraTime = 5.0f;
 float GLevelStreamingUnregisterComponentsTimeLimit = 1.0f;
 int32 GLevelStreamingComponentsRegistrationGranularity = 10;
+int32 GLevelStreamingAddPrimitiveGranularity = 120;
 int32 GLevelStreamingComponentsUnregistrationGranularity = 5;
+int32 GLevelStreamingRouteActorInitializationGranularity = 10;
 int32 GLevelStreamingForceGCAfterLevelStreamedOut = 1;
 int32 GLevelStreamingContinuouslyIncrementalGCWhileLevelsPendingPurge = 1;
+int32 GLevelStreamingContinuouslyIncrementalGCWhileLevelsPendingPurgeOverride = 0;
 int32 GLevelStreamingAllowLevelRequestsWhileAsyncLoadingInMatch = 1;
 int32 GLevelStreamingMaxLevelRequestsAtOnceWhileInMatch = 0;
+int32 GLevelStreamingForceVerifyLevelsGotRemovedByGC = 0;
+int32 GLevelStreamingForceRouteActorInitializeNextFrame = 0;
 
 static FAutoConsoleVariableRef CVarUseBackgroundLevelStreaming(
 	TEXT("s.UseBackgroundLevelStreaming"),
@@ -80,6 +85,13 @@ static FAutoConsoleVariableRef CVarLevelStreamingComponentsRegistrationGranulari
 	ECVF_Default
 	);
 
+static FAutoConsoleVariableRef CVarLevelStreamingAddPrimitiveGranularity(
+	TEXT("s.LevelStreamingAddPrimitiveGranularity"),
+	GLevelStreamingAddPrimitiveGranularity,
+	TEXT("Batching granularity used to add primitives to scene in parallel when registering actor components during level streaming."),
+	ECVF_Default
+);
+
 static FAutoConsoleVariableRef CVarLevelStreamingComponentsUnregistrationGranularity(
 	TEXT("s.LevelStreamingComponentsUnregistrationGranularity"),
 	GLevelStreamingComponentsUnregistrationGranularity,
@@ -87,10 +99,31 @@ static FAutoConsoleVariableRef CVarLevelStreamingComponentsUnregistrationGranula
 	ECVF_Default
 	);
 
+static FAutoConsoleVariableRef CVarLevelStreamingRouteActorInitializationGranularity(
+	TEXT("s.LevelStreamingRouteActorInitializationGranularity"),
+	GLevelStreamingRouteActorInitializationGranularity,
+	TEXT("Batching granularity used to initialize actors during level streaming. If this is zero, we process all actors and stages in one pass."),
+	ECVF_Default
+);
+
 static FAutoConsoleVariableRef CVarForceGCAfterLevelStreamedOut(
 	TEXT("s.ForceGCAfterLevelStreamedOut"),
 	GLevelStreamingForceGCAfterLevelStreamedOut,
 	TEXT("Whether to force a GC after levels are streamed out to instantly reclaim the memory at the expensive of a hitch."),
+	ECVF_Default
+);
+
+static FAutoConsoleVariableRef CVarForceVerifyLevelsGotRemovedByGC(
+	TEXT("s.ForceVerifyLevelsGotRemovedByGC"),
+	GLevelStreamingForceVerifyLevelsGotRemovedByGC,
+	TEXT("Whether to force a verification of objects residing in a GC'ed level package (ignored in shipping builds)."),
+	ECVF_Default
+);
+
+static FAutoConsoleVariableRef CVarForceRouteActorInitializeNextFrame(
+	TEXT("s.ForceRouteActorInitializeNextFrame"),
+	GLevelStreamingForceRouteActorInitializeNextFrame,
+	TEXT("Whether to force routing actor initialize phase in its own frame."),
 	ECVF_Default
 );
 
@@ -132,6 +165,7 @@ UStreamingSettings::UStreamingSettings()
 	LevelStreamingActorsUpdateTimeLimit = 5.0f;
 	PriorityLevelStreamingActorsUpdateExtraTime = 5.0f;
 	LevelStreamingComponentsRegistrationGranularity = 10;
+	LevelStreamingAddPrimitiveGranularity = 120;
 	LevelStreamingUnregisterComponentsTimeLimit = 1.0f;
 	LevelStreamingComponentsUnregistrationGranularity = 5;
 	EventDrivenLoaderEnabled = false;
@@ -149,34 +183,6 @@ void UStreamingSettings::PostInitProperties()
 	}
 #endif // #if WITH_EDITOR
 }
-
-#if WITH_EDITOR
-void UStreamingSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
-{
-	static FName NAME_EventDrivenLoaderEnabled(TEXT("EventDrivenLoaderEnabled"));
-
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-	
-	if (PropertyChangedEvent.Property)
-	{
-		ExportValuesToConsoleVariables(PropertyChangedEvent.Property);
-
-		bool bDisableEDLWarning = false;
-		GConfig->GetBool(TEXT("/Script/Engine.StreamingSettings"), TEXT("s.DisableEDLDeprecationWarnings"), /* out */ bDisableEDLWarning, GEngineIni);
-
-		if (PropertyChangedEvent.Property->GetFName() == NAME_EventDrivenLoaderEnabled && !EventDrivenLoaderEnabled && !bDisableEDLWarning)
-		{
-			FNotificationInfo Info(NSLOCTEXT("CoreSettings", "EventDrivenLoaderDisabled", "Disabling the Event Driven Loader will result in using deprecated loading path"));
-			Info.bFireAndForget = true;
-			Info.bUseLargeFont = true;
-			Info.bUseThrobber = false;
-			Info.bUseSuccessFailIcons = false;
-			Info.ExpireDuration = 3.0f;
-			FSlateNotificationManager::Get().AddNotification(Info);
-		}
-	}
-}
-#endif // #if WITH_EDITOR
 
 UGarbageCollectionSettings::UGarbageCollectionSettings()
 : Super()
@@ -196,9 +202,12 @@ UGarbageCollectionSettings::UGarbageCollectionSettings()
 	CreateGCClusters = true;	
 	MinGCClusterSize = 5;
 	AssetClusteringEnabled = true;
-	ActorClusteringEnabled = true;	
+	ActorClusteringEnabled = true;
 	BlueprintClusteringEnabled = false;
 	UseDisregardForGCOnDedicatedServers = false;
+	VerifyGCObjectNames = true;
+	VerifyUObjectsAreNotFGCObjects = true;
+	PendingKillEnabled = false;
 }
 
 void UGarbageCollectionSettings::PostInitProperties()

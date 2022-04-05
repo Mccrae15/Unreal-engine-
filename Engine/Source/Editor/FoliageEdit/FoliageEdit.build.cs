@@ -13,6 +13,7 @@ public class FoliageEdit : ModuleRules
 				"CoreUObject",
 				"InputCore",
 				"Engine",
+				"EditorFramework",
 				"UnrealEd",
 				"Slate",
 				"SlateCore",
@@ -25,16 +26,9 @@ public class FoliageEdit : ModuleRules
                 "DetailCustomizations",
                 "AssetTools",
                 "Foliage",
-				"ViewportInteraction",
-				"VREditor"
-			}
-		);
-
-		CircularlyReferencedDependentModules.AddRange(
-			new string[]
-			{
-				"ViewportInteraction",
-				"VREditor"
+				"DataLayerEditor",
+				"EditorWidgets",
+				"ToolWidgets",
 			}
 		);
 

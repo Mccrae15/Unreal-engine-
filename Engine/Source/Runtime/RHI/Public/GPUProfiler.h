@@ -29,6 +29,20 @@ public:
 	{
 	}
 
+	FGPUProfilerEventNodeStats(const FGPUProfilerEventNodeStats& rhs)
+	{
+		NumDraws = rhs.NumDraws;
+		NumPrimitives = rhs.NumPrimitives;
+		NumVertices = rhs.NumVertices;
+		NumDispatches = rhs.NumDispatches;
+		NumTotalDispatches = rhs.NumTotalDispatches;
+		NumTotalDraws = rhs.NumDraws;
+		NumTotalPrimitives = rhs.NumPrimitives;
+		NumTotalVertices = rhs.NumVertices;
+		TimingResult = rhs.TimingResult;
+		NumEvents = rhs.NumEvents;
+	}
+
 	/** Exclusive number of draw calls rendered in this event. */
 	uint32 NumDraws;
 
@@ -279,15 +293,20 @@ struct RHI_API FGPUProfiler
 	{
 	}
 
-	void RegisterGPUWork(uint32 NumPrimitives = 0, uint32 NumVertices = 0)
+	void RegisterGPUWork(uint32 NumDraws, uint32 NumPrimitives, uint32 NumVertices)
 	{
 		if (bTrackingEvents && CurrentEventNode)
 		{
 			check(IsInRenderingThread() || IsInRHIThread());
-			CurrentEventNode->NumDraws++;
+			CurrentEventNode->NumDraws += NumDraws;
 			CurrentEventNode->NumPrimitives += NumPrimitives;
 			CurrentEventNode->NumVertices += NumVertices;
 		}
+	}
+
+	void RegisterGPUWork(uint32 NumPrimitives = 0, uint32 NumVertices = 0)
+	{
+		RegisterGPUWork(1, NumPrimitives, NumVertices);
 	}
 
 	void RegisterGPUDispatch(FIntVector GroupCount)

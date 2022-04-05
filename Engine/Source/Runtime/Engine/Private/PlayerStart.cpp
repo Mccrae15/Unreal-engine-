@@ -61,6 +61,8 @@ APlayerStart::APlayerStart(const FObjectInitializer& ObjectInitializer)
 			ArrowComponent->bIsScreenSizeScaled = true;
 		}
 	}
+
+	bIsSpatiallyLoaded = false;
 #endif // WITH_EDITORONLY_DATA
 }
 

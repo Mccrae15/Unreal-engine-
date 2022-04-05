@@ -15,10 +15,10 @@ FSlateClippingZone::FSlateClippingZone(const FShortRect& AxisAlignedRect)
 	int16 Top = FMath::Min(AxisAlignedRect.Top, AxisAlignedRect.Bottom);
 	int16 Bottom = FMath::Max(AxisAlignedRect.Top, AxisAlignedRect.Bottom);
 
-	TopLeft = FVector2D(Left, Top);
-	TopRight = FVector2D(Right, Top);
-	BottomLeft = FVector2D(Left, Bottom);
-	BottomRight = FVector2D(Right, Bottom);
+	TopLeft = FVector2f(Left, Top);
+	TopRight = FVector2f(Right, Top);
+	BottomLeft = FVector2f(Left, Bottom);
+	BottomRight = FVector2f(Right, Bottom);
 }
 
 FSlateClippingZone::FSlateClippingZone(const FSlateRect& AxisAlignedRect)
@@ -32,10 +32,10 @@ FSlateClippingZone::FSlateClippingZone(const FSlateRect& AxisAlignedRect)
 	float Top = FMath::Min(RoundedAxisAlignedRect.Top, RoundedAxisAlignedRect.Bottom);
 	float Bottom = FMath::Max(RoundedAxisAlignedRect.Top, RoundedAxisAlignedRect.Bottom);
 
-	TopLeft = FVector2D(Left, Top);
-	TopRight = FVector2D(Right, Top);
-	BottomLeft = FVector2D(Left, Bottom);
-	BottomRight = FVector2D(Right, Bottom);
+	TopLeft = FVector2f(Left, Top);
+	TopRight = FVector2f(Right, Top);
+	BottomLeft = FVector2f(Left, Bottom);
+	BottomRight = FVector2f(Right, Bottom);
 }
 
 FSlateClippingZone::FSlateClippingZone(const FGeometry& BooundingGeometry)
@@ -107,17 +107,17 @@ void FSlateClippingZone::InitializeFromArbitraryPoints(const FVector2D& InTopLef
 		const float Top = FMath::Min(RoundedAxisAlignedRect.Top, RoundedAxisAlignedRect.Bottom);
 		const float Bottom = FMath::Max(RoundedAxisAlignedRect.Top, RoundedAxisAlignedRect.Bottom);
 
-		TopLeft = FVector2D(Left, Top);
-		TopRight = FVector2D(Right, Top);
-		BottomLeft = FVector2D(Left, Bottom);
-		BottomRight = FVector2D(Right, Bottom);
+		TopLeft = FVector2f(Left, Top);
+		TopRight = FVector2f(Right, Top);
+		BottomLeft = FVector2f(Left, Bottom);
+		BottomRight = FVector2f(Right, Bottom);
 	}
 	else
 	{
-		TopLeft = InTopLeft;
-		TopRight = InTopRight;
-		BottomLeft = InBottomLeft;
-		BottomRight = InBottomRight;
+		TopLeft = FVector2f(InTopLeft);
+		TopRight = FVector2f(InTopRight);
+		BottomLeft = FVector2f(InBottomLeft);
+		BottomRight = FVector2f(InBottomRight);
 	}
 }
 
@@ -144,7 +144,7 @@ FSlateClippingZone FSlateClippingZone::Intersect(const FSlateClippingZone& Other
 
 FSlateRect FSlateClippingZone::GetBoundingBox() const
 {
-	FVector2D Points[4] =
+	FVector2f Points[4] =
 	{
 		TopLeft,
 		TopRight,
@@ -186,7 +186,7 @@ bool FSlateClippingZone::IsPointInside(const FVector2D& Point) const
 	}
 	else
 	{
-		if (IsPointInTriangle(Point, TopLeft, TopRight, BottomLeft) || IsPointInTriangle(Point, BottomLeft, TopRight, BottomRight))
+		if (IsPointInTriangle(Point, FVector2D(TopLeft), FVector2D(TopRight), FVector2D(BottomLeft)) || IsPointInTriangle(Point, FVector2D(BottomLeft), FVector2D(TopRight), FVector2D(BottomRight)))
 		{
 			return true;
 		}

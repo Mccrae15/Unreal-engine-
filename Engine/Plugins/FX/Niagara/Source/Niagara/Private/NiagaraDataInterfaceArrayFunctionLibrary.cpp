@@ -1,19 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NiagaraDataInterfaceArrayFunctionLibrary.h"
+
+#include "NiagaraComponent.h"
 #include "NiagaraDataInterfaceArrayFloat.h"
 #include "NiagaraDataInterfaceArrayInt.h"
 #include "NiagaraDataInterfaceArrayImpl.h"
+#include "NiagaraComponent.h"
+#include "NiagaraSystemInstance.h"
 #include "NiagaraFunctionLibrary.h"
 
+// If / when we share user parameter UObjects we will need to make this per instance which introduces some tricky things about allocating before the instance is active
 template<typename TArrayType, typename TDataInterace>
 void SetNiagaraArray(UNiagaraComponent* NiagaraSystem, FName OverrideName, const TArray<TArrayType>& InArray)
 {
 	if (TDataInterace* ArrayDI = UNiagaraFunctionLibrary::GetDataInterface<TDataInterace>(NiagaraSystem, OverrideName))
 	{
-		FRWScopeLock WriteLock(ArrayDI->ArrayRWGuard, SLT_Write);
-		ArrayDI->GetArrayReference() = InArray;
-		ArrayDI->MarkRenderDataDirty();
+		auto* ArrayProxy = static_cast<FNDIArrayProxyImpl<TArrayType, TDataInterace>*>(ArrayDI->GetProxy());
+		ArrayProxy->SetArrayData(InArray);
 	}
 }
 
@@ -22,8 +26,8 @@ TArray<TArrayType> GetNiagaraArray(UNiagaraComponent* NiagaraSystem, FName Overr
 {
 	if (TDataInterace* ArrayDI = UNiagaraFunctionLibrary::GetDataInterface<TDataInterace>(NiagaraSystem, OverrideName))
 	{
-		FRWScopeLock WriteLock(ArrayDI->ArrayRWGuard, SLT_ReadOnly);
-		return ArrayDI->GetArrayReference();
+		auto* ArrayProxy = static_cast<FNDIArrayProxyImpl<TArrayType, TDataInterace>*>(ArrayDI->GetProxy());
+		return ArrayProxy->GetArrayData();
 	}
 	return TArray<TArrayType>();
 }
@@ -33,20 +37,8 @@ void SetNiagaraArrayValue(UNiagaraComponent* NiagaraSystem, FName OverrideName, 
 {
 	if (TDataInterace* ArrayDI = UNiagaraFunctionLibrary::GetDataInterface<TDataInterace>(NiagaraSystem, OverrideName))
 	{
-		FRWScopeLock WriteLock(ArrayDI->ArrayRWGuard, SLT_Write);
-		auto& ArrayData = ArrayDI->GetArrayReference();
-
-		if (!ArrayData.IsValidIndex(Index))
-		{
-			if (!bSizeToFit)
-			{
-				return;
-			}
-			ArrayData.AddDefaulted(Index + 1 - ArrayData.Num());
-		}
-
-		ArrayData[Index] = Value;
-		ArrayDI->MarkRenderDataDirty();
+		auto* ArrayProxy = static_cast<FNDIArrayProxyImpl<TArrayType, TDataInterace>*>(ArrayDI->GetProxy());
+		ArrayProxy->SetArrayValue(Index, Value, bSizeToFit);
 	}
 }
 
@@ -55,11 +47,23 @@ TArrayType GetNiagaraArrayValue(UNiagaraComponent* NiagaraSystem, FName Override
 {
 	if (TDataInterace* ArrayDI = UNiagaraFunctionLibrary::GetDataInterface<TDataInterace>(NiagaraSystem, OverrideName))
 	{
-		FRWScopeLock WriteLock(ArrayDI->ArrayRWGuard, SLT_ReadOnly);
-		auto& ArrayData = ArrayDI->GetArrayReference();
-		return ArrayData.IsValidIndex(Index) ? ArrayData[Index] : TArrayType();
+		auto* ArrayProxy = static_cast<FNDIArrayProxyImpl<TArrayType, TDataInterace>*>(ArrayDI->GetProxy());
+		return ArrayProxy->GetArrayValue(Index);
 	}
+	//-TODO: Should be DefaultValue
 	return TArrayType();
+}
+
+FNiagaraLWCConverter GetLWCConverter(UNiagaraComponent* NiagaraSystem)
+{
+	FNiagaraSystemInstanceControllerPtr SystemInstanceController = NiagaraSystem->GetSystemInstanceController();
+	if (!SystemInstanceController.IsValid())
+	{
+		// the instance controller can be invalid if there is no simulation, for example when fx.SuppressNiagaraSystems is set 
+		return FNiagaraLWCConverter();
+	}
+	FNiagaraSystemInstance* SystemInstance = SystemInstanceController->GetSystemInstance_Unsafe();
+	return SystemInstance->GetLWCConverter();
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -77,6 +81,18 @@ void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector2D(UNiagara
 void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector(UNiagaraComponent* NiagaraSystem, FName OverrideName, const TArray<FVector>& ArrayData)
 {
 	SetNiagaraArray<FVector, UNiagaraDataInterfaceArrayFloat3>(NiagaraSystem, OverrideName, ArrayData);
+}
+
+void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayPosition(UNiagaraComponent* NiagaraSystem, FName OverrideName, const TArray<FVector>& ArrayData)
+{
+	FNiagaraLWCConverter LwcConverter = GetLWCConverter(NiagaraSystem);
+	TArray<FNiagaraPosition> ConvertedData;
+	ConvertedData.SetNumUninitialized(ArrayData.Num());
+	for (int i = 0; i < ArrayData.Num(); i++)
+	{
+		ConvertedData[i] = LwcConverter.ConvertWorldToSimulationPosition(ArrayData[i]);
+	}
+	SetNiagaraArray<FNiagaraPosition, UNiagaraDataInterfaceArrayPosition>(NiagaraSystem, OverrideName, ConvertedData);
 }
 
 void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector4(UNiagaraComponent* NiagaraSystem, FName OverrideName, const TArray<FVector4>& ArrayData)
@@ -121,6 +137,21 @@ TArray<FVector> UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayVector
 	return GetNiagaraArray<FVector, UNiagaraDataInterfaceArrayFloat3>(NiagaraSystem, OverrideName);
 }
 
+TArray<FVector> UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayPosition(UNiagaraComponent* NiagaraSystem, FName OverrideName)
+{
+	const TArray<FNiagaraPosition> SimData = GetNiagaraArray<FNiagaraPosition, UNiagaraDataInterfaceArrayPosition>(NiagaraSystem, OverrideName);
+	
+	FNiagaraLWCConverter LwcConverter = GetLWCConverter(NiagaraSystem);
+	TArray<FVector> ConvertedData;
+	ConvertedData.SetNumUninitialized(SimData.Num());
+	for (int i = 0; i < SimData.Num(); i++)
+	{
+		ConvertedData[i] = LwcConverter.ConvertSimulationPositionToWorld(SimData[i]);
+	}
+	
+	return ConvertedData;
+}
+
 TArray<FVector4> UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayVector4(UNiagaraComponent* NiagaraSystem, FName OverrideName)
 {
 	return GetNiagaraArray<FVector4, UNiagaraDataInterfaceArrayFloat4>(NiagaraSystem, OverrideName);
@@ -163,6 +194,13 @@ void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVectorValue(UNiag
 	SetNiagaraArrayValue<FVector, UNiagaraDataInterfaceArrayFloat3>(NiagaraSystem, OverrideName, Index, Value, bSizeToFit);
 }
 
+void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayPositionValue(UNiagaraComponent* NiagaraSystem, FName OverrideName, int Index, const FVector& Value, bool bSizeToFit)
+{
+	FNiagaraLWCConverter LwcConverter = GetLWCConverter(NiagaraSystem);
+	FNiagaraPosition SimulationPosition = LwcConverter.ConvertWorldToSimulationPosition(Value);
+	SetNiagaraArrayValue<FNiagaraPosition, UNiagaraDataInterfaceArrayPosition>(NiagaraSystem, OverrideName, Index, SimulationPosition, bSizeToFit);
+}
+
 void UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector4Value(UNiagaraComponent* NiagaraSystem, FName OverrideName, int Index, const FVector4& Value, bool bSizeToFit)
 {
 	SetNiagaraArrayValue<FVector4, UNiagaraDataInterfaceArrayFloat4>(NiagaraSystem, OverrideName, Index, Value, bSizeToFit);
@@ -203,6 +241,13 @@ FVector2D UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayVector2DValu
 FVector UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayVectorValue(UNiagaraComponent* NiagaraSystem, FName OverrideName, int Index)
 {
 	return GetNiagaraArrayValue<FVector, UNiagaraDataInterfaceArrayFloat3>(NiagaraSystem, OverrideName, Index);
+}
+
+FVector UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayPositionValue(UNiagaraComponent* NiagaraSystem, FName OverrideName, int Index)
+{
+	FNiagaraPosition SimPosition = GetNiagaraArrayValue<FNiagaraPosition, UNiagaraDataInterfaceArrayPosition>(NiagaraSystem, OverrideName, Index);
+	FNiagaraLWCConverter LwcConverter = GetLWCConverter(NiagaraSystem);
+	return LwcConverter.ConvertSimulationPositionToWorld(SimPosition);
 }
 
 FVector4 UNiagaraDataInterfaceArrayFunctionLibrary::GetNiagaraArrayVector4Value(UNiagaraComponent* NiagaraSystem, FName OverrideName, int Index)

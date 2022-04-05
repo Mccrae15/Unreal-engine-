@@ -6,6 +6,8 @@
 #define HAIR_CONTROLPOINT_START	1
 #define HAIR_CONTROLPOINT_END	2
 
+#define USE_HAIR_TRIANGLE_STRIP 0
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Hair control points
 
@@ -13,25 +15,39 @@ struct FHairControlPoint
 {
 	float3 Position;
 	float  WorldRadius;
-	float  WorldLength;
+	float  UCoord;
 	uint   Type;
 };
+
+uint4 PackHairControlPoint(
+	FHairControlPoint CP,
+	float3 InVF_PositionOffset,
+	float InVF_Radius)
+{
+	uint PackedAttribute =  (uint(clamp(CP.UCoord * 0xFFu, 0u, 0xFFu)) << 8) |
+							(uint(clamp((CP.WorldRadius / InVF_Radius) * 63u, 0u, 63u)) << 2u) |
+							(CP.Type & 0x3);
+	return uint4(f32tof16(CP.Position - InVF_PositionOffset), PackedAttribute);
+}
 
 FHairControlPoint UnpackHairControlPoint(
 	uint4 InPackedData,
 	float3 InVF_PositionOffset,
 	float InVF_Radius,
-	float InVF_Length)
+	float InVF_RootScale,
+	float InVF_TipScale)
 {
 	const uint PackedAlpha	= asuint(InPackedData.a);
 
 	FHairControlPoint Out = (FHairControlPoint)0;
 	Out.Position	= f16tof32(InPackedData.xyz) + InVF_PositionOffset;
-	Out.WorldRadius	= ((PackedAlpha & 0x00FC) >> 2) / 63.f * InVF_Radius;
-	Out.WorldLength	= ((PackedAlpha & 0xFF00) >> 8) / 255.f * InVF_Length;
+	Out.UCoord		= ((PackedAlpha & 0xFF00) >> 8) / 255.f;
+	Out.WorldRadius	= ((PackedAlpha & 0x00FC) >> 2) / 63.f;
 	Out.Type		= PackedAlpha & 0x3;
 
-	return Out;
+	Out.WorldRadius *= InVF_Radius * lerp(InVF_RootScale, InVF_TipScale, Out.UCoord);
+
+	return Out;	
 }
 
 bool IsValidHairStrandsSegment(const FHairControlPoint CP0, const FHairControlPoint CP1)
@@ -45,21 +61,24 @@ bool IsValidHairStrandsSegment(const FHairControlPoint CP0, const FHairControlPo
 struct FHairAttributes
 {
 	float2 RootUV;
-	float	Seed;
-	float	UCoord;
+	float Seed;
+	float WorldLength;
 };
 
-FHairAttributes DecodeHairAttribute(uint4 Attributes)
+FHairAttributes DecodeHairAttribute(float2 Attributes0, uint Attributes1, float InVF_Length)
 {
 	float2 RootUV, RootIndex;
-	RootUV.x = float(Attributes.x & 0xFF) / 255.f;
-	RootUV.y = 1.0 - (float((Attributes.x >> 8) & 0xFF) / 255.f); // Invert V to compensate image origin flip
-	RootIndex.x = float(Attributes.z & 0xFF);
-	RootIndex.y = float((Attributes.z >> 8) & 0xFF);
+	RootUV.x		= ((Attributes1    ) & 0x7FF) / 2047.f;	// Coord are encoded on 11 bits
+	RootUV.y		= ((Attributes1>>11) & 0x7FF) / 2047.f;	// Coord are encoded on 11 bits 
+	RootIndex.x		= ((Attributes1>>22) & 0x1F);			// UDIM tile are encoded on 5bits
+	RootIndex.y		= ((Attributes1>>27) & 0x1F);			// UDIM tile are encoded on 5bits
+
+	// Invert V to compensate image origin flip. Similar to GetHairStrandsRootUV in HairCardsAttributeCommon.ush
+	RootUV.y = 1.0f - RootUV.y;
 
 	FHairAttributes Out;
-	Out.RootUV = RootUV + RootIndex;
-	Out.UCoord = (Attributes.y & 0xFF) / 255.f;
-	Out.Seed = ((Attributes.y >> 8) & 0xFF) / 255.f;
+	Out.RootUV		= RootUV + RootIndex;
+	Out.WorldLength = Attributes0.x * InVF_Length;
+	Out.Seed		= Attributes0.y;
 	return Out;
 }

@@ -193,11 +193,12 @@ public:
 	virtual FIntPoint GenerateDynamicImageResource(const FName InTextureName) override;
 	virtual bool GenerateDynamicImageResource( FName ResourceName, uint32 Width, uint32 Height, const TArray< uint8 >& Bytes ) override;
 	virtual bool GenerateDynamicImageResource( FName ResourceName, FSlateTextureDataRef TextureData ) override;
-	virtual FSlateResourceHandle GetResourceHandle( const FSlateBrush& Brush ) override;
+	virtual FSlateResourceHandle GetResourceHandle(const FSlateBrush& Brush, FVector2D LocalSize, float DrawScale) override;
 	virtual bool CanRenderResource(UObject& InResourceObject) const override;
 	virtual void* GetViewportResource( const SWindow& Window ) override;
 	virtual void SetColorVisionDeficiencyType(EColorVisionDeficiency Type, int32 Severity, bool bCorrectDeficiency, bool bShowCorrectionWithDeficiency) override;
 	virtual FSlateUpdatableTexture* CreateUpdatableTexture(uint32 Width, uint32 Height) override;
+	virtual FSlateUpdatableTexture* CreateSharedHandleTexture(void* SharedHandle) override;
 	virtual void ReleaseUpdatableTexture(FSlateUpdatableTexture* Texture) override;
 	virtual ISlateAtlasProvider* GetTextureAtlasProvider() override;
 	virtual FCriticalSection* GetResourceCriticalSection() override;

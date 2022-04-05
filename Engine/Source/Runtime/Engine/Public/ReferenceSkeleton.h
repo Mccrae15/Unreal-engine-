@@ -15,7 +15,7 @@ struct FMeshBoneInfo
 	// Bone's name.
 	FName Name;
 
-	// 0/NULL if this is the root bone. 
+	// INDEX_NONE if this is the root bone. 
 	int32 ParentIndex;
 
 #if WITH_EDITORONLY_DATA
@@ -76,6 +76,7 @@ private:
 	const USkeleton*	Skeleton;
 public:
 	FReferenceSkeletonModifier(FReferenceSkeleton& InRefSkel, const USkeleton* InSkeleton) : RefSkeleton(InRefSkel), Skeleton(InSkeleton) {}
+	FReferenceSkeletonModifier(USkeleton* InSkeleton);
 	~FReferenceSkeletonModifier();
 
 	// Update the reference pose transform of the specified bone
@@ -349,20 +350,23 @@ public:
 
 	bool BoneIsChildOf(const int32 ChildBoneIndex, const int32 ParentBoneIndex) const
 	{
-		// Bones are in strictly increasing order.
-		// So child must have an index greater than his parent.
-		if( ChildBoneIndex > ParentBoneIndex )
+		if (ParentBoneIndex != INDEX_NONE)
 		{
-			int32 BoneIndex = GetParentIndex(ChildBoneIndex);
-			do
+			// Bones are in strictly increasing order.
+			// So child must have an index greater than his parent.
+			if (ChildBoneIndex > ParentBoneIndex)
 			{
-				if( BoneIndex == ParentBoneIndex )
+				int32 BoneIndex = GetParentIndex(ChildBoneIndex);
+				do
 				{
-					return true;
-				}
-				BoneIndex = GetParentIndex(BoneIndex);
+					if (BoneIndex == ParentBoneIndex)
+					{
+						return true;
+					}
+					BoneIndex = GetParentIndex(BoneIndex);
 
-			} while (BoneIndex != INDEX_NONE);
+				} while (BoneIndex != INDEX_NONE);
+			}
 		}
 
 		return false;

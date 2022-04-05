@@ -1,12 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "SCreateNewFilterWidget.h"
+#include "Widgets/Filter/SCreateNewFilterWidget.h"
 
-#include "ConjunctionFilter.h"
+#include "Data/Filters/ConjunctionFilter.h"
+#include "Data/FavoriteFilterContainer.h"
+#include "Widgets/Filter/SFilterSearchMenu.h"
+
 #include "EditorStyleSet.h"
-
-#include "FavoriteFilterContainer.h"
-#include "SFilterSearchMenu.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SSearchBox.h"
 
@@ -24,36 +24,27 @@ void SCreateNewFilterWidget::Construct(const FArguments& InArgs, UFavoriteFilter
 
 	ChildSlot
 	[
-		SNew(SBorder)
-		.Padding(2.f)
-		.BorderBackgroundColor( FLinearColor(0.2f, 0.2f, 0.2f, 0.2f) )
-		.BorderImage(FEditorStyle::GetBrush("ContentBrowser.FilterButtonBorder"))
+		SAssignNew(ComboButton, SComboButton)
+		.ContentPadding(0)
+		.ToolTipText( LOCTEXT( "SelectFilterToUseToolTip", "Select filters you want to use." ) )
+		.OnGetMenuContent(FOnGetContent::CreateLambda([this, InAvailableFilters, InFilterToAddTo]()
+		{
+			const TSharedRef<SFilterSearchMenu> Result = SNew(SFilterSearchMenu, InAvailableFilters)
+				.OnSelectFilter_Lambda([this, InFilterToAddTo](const TSubclassOf<ULevelSnapshotFilter>& SelectedFilter)
+				{
+					InFilterToAddTo->CreateChild(SelectedFilter);
+				});
+			ComboButton->SetMenuContentWidgetToFocus(Result->GetSearchBox());
+			return Result;
+		}))
+		.HasDownArrow( true )
+		.ContentPadding( FMargin( 1, 0 ) )
+		.Visibility(EVisibility::Visible)
+		.ButtonContent()
 		[
-			SAssignNew(ComboButton, SComboButton)
-	        .ComboButtonStyle( FEditorStyle::Get(), "GenericFilters.ComboButtonStyle" )
-	        .ForegroundColor(FLinearColor::White)
-	        .ContentPadding(0)
-	        .ToolTipText( LOCTEXT( "SelectFilterToUseToolTip", "Select filters you want to use." ) )
-	        .OnGetMenuContent(FOnGetContent::CreateLambda([this, InAvailableFilters, InFilterToAddTo]()
-			{
-	        	const TSharedRef<SFilterSearchMenu> Result = SNew(SFilterSearchMenu, InAvailableFilters)
-	        		.OnSelectFilter_Lambda([this, InFilterToAddTo](const TSubclassOf<ULevelSnapshotFilter>& SelectedFilter)
-	        		{
-	        			InFilterToAddTo->CreateChild(SelectedFilter);
-	        		});
-	        	ComboButton->SetMenuContentWidgetToFocus(Result->GetSearchBox());
-	        	return Result;
-	        }))
-	        .HasDownArrow( true )
-	        .ContentPadding( FMargin( 1, 0 ) )
-	        .Visibility(EVisibility::Visible)
-	        .ButtonContent()
-	        [
-	            SNew(STextBlock)
-	               .Text(LOCTEXT("AddFilter", "Add filter"))
-	        ]
+			SNew(STextBlock)
+			.Text(LOCTEXT("AddFilter", "Add filter"))
 		]
-		
 	];
 }
 

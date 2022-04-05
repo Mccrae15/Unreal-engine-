@@ -5,9 +5,15 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleInterface.h"
 #include "Templates/SharedPointer.h"
+#include "Templates/UnrealTypeTraits.h"
+#include "Templates/EnableIf.h"
 
-class ILandscapeHeightmapFileFormat;
-class ILandscapeWeightmapFileFormat;
+template<class T>
+class ILandscapeFileFormat;
+
+using ILandscapeHeightmapFileFormat = ILandscapeFileFormat<uint16>;
+using ILandscapeWeightmapFileFormat = ILandscapeFileFormat<uint8>;
+
 class FUICommandList;
 
 /**
@@ -31,6 +37,18 @@ public:
 	// Gets the heightmap/weightmap format associated with a given extension (null if no plugin is registered for this extension)
 	virtual const ILandscapeHeightmapFileFormat* GetHeightmapFormatByExtension(const TCHAR* Extension) const = 0;
 	virtual const ILandscapeWeightmapFileFormat* GetWeightmapFormatByExtension(const TCHAR* Extension) const = 0;
+
+	template<typename T>
+	typename TEnableIf<TIsSame<T, uint16>::Value, const ILandscapeHeightmapFileFormat*>::Type GetFormatByExtension(const TCHAR* Extension)
+	{
+		return GetHeightmapFormatByExtension(Extension);
+	}
+
+	template<typename T>
+	typename TEnableIf<TIsSame<T, uint8>::Value, const ILandscapeWeightmapFileFormat*>::Type GetFormatByExtension(const TCHAR* Extension)
+	{
+		return GetWeightmapFormatByExtension(Extension);
+	}
 
 	virtual TSharedPtr<FUICommandList> GetLandscapeLevelViewportCommandList() const = 0;
 };

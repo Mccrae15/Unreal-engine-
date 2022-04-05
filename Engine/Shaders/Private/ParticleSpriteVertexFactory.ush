@@ -125,7 +125,14 @@ struct FVertexFactoryIntermediates
 	float3x3 TangentToLocal;
 	/** Size of the particle */
 	float2 ParticleSize;
+	/** Cached primitive and instance data */
+	FSceneDataIntermediates SceneData;
 };
+
+FPrimitiveSceneData GetPrimitiveData(FVertexFactoryIntermediates Intermediates)
+{
+	return Intermediates.SceneData.Primitive;
+}
 
 #if NUM_TEX_COORD_INTERPOLATORS
 bool UVIndexUseZW(int UVIndex)
@@ -240,6 +247,7 @@ FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVS
 FMaterialVertexParameters GetMaterialVertexParameters(FVertexFactoryInput Input, FVertexFactoryIntermediates Intermediates, float3 WorldPosition, float3x3 TangentToLocal)
 {
 	FMaterialVertexParameters Result = (FMaterialVertexParameters)0;
+	Result.SceneData = Intermediates.SceneData;
 	Result.WorldPosition = WorldPosition;
 	Result.VertexColor = Input.Color;
 	Result.TangentToWorld = mul(TangentToLocal, GetLocalToWorld3x3()); 
@@ -251,7 +259,7 @@ FMaterialVertexParameters GetMaterialVertexParameters(FVertexFactoryInput Input,
 
 	// Previous frame not handled deliberately. Lacks necessary information and
 	// primitives using this VF are usually transparent and hence don't output velocity
-	Result.PrevFrameLocalToWorld = Primitive.LocalToWorld;
+	Result.PrevFrameLocalToWorld = GetPrimitiveDataFromUniformBuffer().LocalToWorld;
 
 #if USE_DYNAMIC_PARAMETERS
 	Result.Particle.DynamicParameter = Intermediates.DynamicParameter;
@@ -310,7 +318,7 @@ void GetTangents(FVertexFactoryInput Input, float3 WorldPosition, float3 OldWorl
 	float3 CameraUp = lerp(-ResolvedViewUp, SpriteVF.AxisLockUp.xyz, SpriteVF.AxisLockUp.w);
 
 	// Determine the vector from the particle to the camera and the particle's movement direction.
-	float3 CameraDirection	= SafeNormalize(ResolvedView.WorldCameraOrigin - WorldPosition.xyz);
+	float3 CameraDirection	= SafeNormalize(LWCHackToFloat(ResolvedView.WorldCameraOrigin) - WorldPosition.xyz);
 	float3 RightVector = CameraRight.xyz;
 	float3 UpVector = CameraUp.xyz;
 
@@ -320,7 +328,7 @@ void GetTangents(FVertexFactoryInput Input, float3 WorldPosition, float3 OldWorl
 	if (SpriteVF.CameraFacingBlend.x > 0.f)
 	{
 		// Blend between PSA_FacingCamera and PSA_Square over distance
-		float3 CameraVector = ResolvedView.WorldCameraOrigin.xyz - WorldPosition.xyz;
+		float3 CameraVector = LWCHackToFloat(ResolvedView.WorldCameraOrigin) - WorldPosition.xyz;
 		float CameraDistanceSq = dot(CameraVector, CameraVector);
 		float AlignmentMode = saturate(CameraDistanceSq * SpriteVF.CameraFacingBlend.y - SpriteVF.CameraFacingBlend.z);
 
@@ -460,10 +468,11 @@ void ComputeBillboardUVs(FVertexFactoryInput Input, out float2 UVForPosition, ou
 FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput Input)
 {
 	FVertexFactoryIntermediates Intermediates = (FVertexFactoryIntermediates)0;
+	Intermediates.SceneData = VF_GPUSCENE_GET_INTERMEDIATES(Input);
 
 	// World position.
-	float4 ParticleWorldPosition = mul(float4(Input.Position.xyz,1), Primitive.LocalToWorld);
-	float4 ParticleOldWorldPosition = mul(float4(Input.OldPosition.xyz,1), Primitive.LocalToWorld);
+	float3 ParticleWorldPosition = LWCHackToFloat(LWCMultiply(Input.Position.xyz, GetPrimitiveDataFromUniformBuffer().LocalToWorld));
+	float3 ParticleOldWorldPosition = LWCHackToFloat(LWCMultiply(Input.OldPosition.xyz, GetPrimitiveDataFromUniformBuffer().LocalToWorld));
 	Intermediates.ParticleWorldPosition = ParticleWorldPosition.xyz;
 
 	// Tangents.
@@ -478,7 +487,7 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	ComputeBillboardUVs(Input, UVForPosition, UVForTexturing, UVForTexturingUnflipped);
 
 	// Vertex position.
-	float4 VertexWorldPosition = float4(ParticleWorldPosition.xyz + ResolvedView.PreViewTranslation,1);
+	float4 VertexWorldPosition = float4(ParticleWorldPosition.xyz + LWCHackToFloat(ResolvedView.PreViewTranslation), 1);
 	float2 Size = abs(Input.SizeRotSubImage.xy);
 	VertexWorldPosition += Size.x * (UVForPosition.x + SpriteVF.PivotOffset.x) * float4(Right,0);
 	VertexWorldPosition += Size.y * (UVForPosition.y + SpriteVF.PivotOffset.y) * float4(Up,0);
@@ -487,10 +496,12 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	// SubUV.
 	float SubImageIndex = Input.SizeRotSubImage.w;
 	float SubImageLerp = frac(SubImageIndex);
-	float SubImageA = SubImageIndex - SubImageLerp;
+
+	// add a bias to SubImageA to avoid numerical precision issues around SubImageSize.x vs SubImageSize.z
+	float SubImageA = SubImageIndex - SubImageLerp + 0.5f;
 	float SubImageB = SubImageA + 1;
-	float SubImageAH = fmod( SubImageA, SpriteVF.SubImageSize.x );
-	float SubImageBH = fmod( SubImageB, SpriteVF.SubImageSize.x );
+	float SubImageAH = floor( fmod( SubImageA, SpriteVF.SubImageSize.x ) );
+	float SubImageBH = floor( fmod( SubImageB, SpriteVF.SubImageSize.x ) );
 	float SubImageAV = floor( SubImageA * SpriteVF.SubImageSize.z );
 	float SubImageBV = floor( SubImageB * SpriteVF.SubImageSize.z );
 	Intermediates.TexCoord.xy = (float2( SubImageAH, SubImageAV ) + UVForTexturing) * SpriteVF.SubImageSize.zw ;
@@ -510,7 +521,7 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 
 #if USE_PARTICLE_POSITION
 	float ParticleRadius = .5f * min(Input.SizeRotSubImage.x, Input.SizeRotSubImage.y);
-	float3 ParticleTranslatedWorldPosition = ParticleWorldPosition.xyz + ResolvedView.PreViewTranslation.xyz;
+	float3 ParticleTranslatedWorldPosition = ParticleWorldPosition.xyz + LWCHackToFloat(ResolvedView.PreViewTranslation);
 	Intermediates.TranslatedWorldPositionAndSize = float4(ParticleTranslatedWorldPosition, ParticleRadius);
 
 #if GENERATE_SPHERICAL_PARTICLE_NORMALS
@@ -572,7 +583,7 @@ float3 VertexFactoryGetPositionForVertexLighting(FVertexFactoryInput Input, FVer
 {
 #if SUPPORTS_PARTICLE_CUTOUTS && (TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_DIRECTIONAL || TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_NONDIRECTIONAL)
 	// Do per-vertex lighting with particle position instead of vertex position when we're using SubUV cutouts, since the vertex positions vary per-frame which would cause popping
-	return NumCutoutVerticesPerFrame > 0 ? (Intermediates.ParticleWorldPosition.xyz + ResolvedView.PreViewTranslation.xyz) : TranslatedWorldPosition;
+	return NumCutoutVerticesPerFrame > 0 ? (Intermediates.ParticleWorldPosition.xyz + LWCHackToFloat(ResolvedView.PreViewTranslation)) : TranslatedWorldPosition;
 #else
 	return TranslatedWorldPosition;
 #endif
@@ -681,3 +692,5 @@ uint VertexFactoryGetPrimitiveId(FVertexFactoryInterpolantsVSToPS Interpolants)
 {
 	return 0;
 }
+
+#include "VertexFactoryDefaultInterface.ush"

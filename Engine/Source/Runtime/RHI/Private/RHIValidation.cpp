@@ -6,11 +6,15 @@
 
 #include "RHIValidation.h"
 #include "RHIValidationContext.h"
+#include "RHIValidationTransientResourceAllocator.h"
 #include "HAL/PlatformStackWalk.h"
+#include "Misc/OutputDeviceRedirector.h"
 
 #if ENABLE_RHI_VALIDATION
 
 bool GRHIValidationEnabled = false;
+
+bool GRHIValidateBufferSourceCopy = true;
 
 // When set to 1, callstack for each uniform buffer allocation will be tracked 
 // (slow and leaks memory, but can be handy to find the location where an invalid
@@ -18,40 +22,81 @@ bool GRHIValidationEnabled = false;
 #define CAPTURE_UNIFORMBUFFER_ALLOCATION_BACKTRACES 0
 
 // When set to 1, logs resource transitions on all unnamed resources, useful for
-// tracking down missing barriers when GAutoLogResourceNames cannot be used.
+// tracking down missing barriers when "-RHIValidationLog" cannot be used.
 // Don't leave this enabled. Log backtraces are leaked.
 #define LOG_UNNAMED_RESOURCES 0
 
-static const TCHAR* GAutoLogResourceNames[] =
+namespace RHIValidation
 {
-	//
-	// Add resource names here to automatically enable barrier logging for those resources.
-	// e.g.
-	//  TEXT("SceneDepthZ"),
-	//
+	int32 GBreakOnTransitionError = 1;
+	FAutoConsoleVariableRef CVarBreakOnTransitionError(
+		TEXT("r.RHIValidation.DebugBreak.Transitions"),
+		GBreakOnTransitionError,
+		TEXT("Controls whether the debugger should break when a validation error is encountered.\n")
+		TEXT(" 0: disabled;\n")
+		TEXT(" 1: break in the debugger if a validation error is encountered."),
+		ECVF_RenderThreadSafe);
 
-	// ----------------------
-	// Add names above this line
-	nullptr
-};
+	// Returns an array of resource names parsed from the "-RHIValidationLog" command line switch.
+	// RHI validation logging is automatically enabled for resources whose debug names match those in this list.
+	// Multiple values are comma separated, e.g. -RHIValidationLog="SceneDepthZ,GBufferA"
+	static TArray<FString> const& GetAutoLogResourceNames()
+	{
+		struct FInit
+		{
+			TArray<FString> Strings;
+
+			FInit()
+			{
+				FString ResourceNames;
+				if (FParse::Value(FCommandLine::Get(), TEXT("-RHIValidationLog="), ResourceNames, false))
+				{
+					FString Left, Right;
+					while (ResourceNames.Split(TEXT(","), &Left, &Right))
+					{
+						Left.TrimStartAndEndInline();
+						Strings.Add(Left);
+						ResourceNames = Right;
+					}
+
+					ResourceNames.TrimStartAndEndInline();
+					Strings.Add(ResourceNames);
+				}
+			}
+		} static Init;
+
+		return Init.Strings;
+	}
+}
+
+TSet<uint32> FValidationRHI::SeenFailureHashes;
+FCriticalSection FValidationRHI::SeenFailureHashesMutex;
 
 FValidationRHI::FValidationRHI(FDynamicRHI* InRHI)
 	: RHI(InRHI)
 {
 	check(RHI);
-	UE_LOG(LogRHI, Warning, TEXT("FValidationRHI on, intercepting %s RHI!"), InRHI && InRHI->GetName() ? InRHI->GetName() : TEXT("<NULL>"));
+	UE_LOG(LogRHI, Log, TEXT("FValidationRHI on, intercepting %s RHI!"), InRHI && InRHI->GetName() ? InRHI->GetName() : TEXT("<NULL>"));
 	GRHIValidationEnabled = true;
+	SeenFailureHashes.Reserve(256);
 }
-
-static inline bool IsTessellationPrimitive(EPrimitiveType Type)
-{
-	return (Type >= PT_1_ControlPointPatchList && Type <= PT_32_ControlPointPatchList);
-}
-
 
 FValidationRHI::~FValidationRHI()
 {
 	GRHIValidationEnabled = false;
+}
+
+IRHITransientResourceAllocator* FValidationRHI::RHICreateTransientResourceAllocator()
+{
+	// Wrap around validation allocator
+	if (IRHITransientResourceAllocator* RHIAllocator = RHI->RHICreateTransientResourceAllocator())
+	{
+		return new FValidationTransientResourceAllocator(RHIAllocator);
+	}
+	else
+	{
+		return nullptr;
+	}
 }
 
 IRHICommandContext* FValidationRHI::RHIGetDefaultContext()
@@ -99,7 +144,7 @@ void FValidationRHI::ValidatePipeline(const FGraphicsPipelineStateInitializer& P
 		{
 			if (!bHasStencil)
 			{
-				ensureMsgf(!Initializer.bEnableFrontFaceStencil
+				RHI_VALIDATION_CHECK(!Initializer.bEnableFrontFaceStencil
 					&& Initializer.FrontFaceStencilTest == CF_Always
 					&& Initializer.FrontFaceStencilFailStencilOp == SO_Keep
 					&& Initializer.FrontFaceDepthFailStencilOp == SO_Keep
@@ -110,33 +155,286 @@ void FValidationRHI::ValidatePipeline(const FGraphicsPipelineStateInitializer& P
 					&& Initializer.BackFaceDepthFailStencilOp == SO_Keep
 					&& Initializer.BackFacePassStencilOp == SO_Keep, TEXT("No stencil render target set, yet PSO wants to use stencil operations!"));
 /*
-				ensureMsgf(PSOInitializer.StencilTargetLoadAction == ERenderTargetLoadAction::ENoAction,
+				RHI_VALIDATION_CHECK(PSOInitializer.StencilTargetLoadAction == ERenderTargetLoadAction::ENoAction,
 					TEXT("No stencil target set, yet PSO wants to load from it!"));
-				ensureMsgf(PSOInitializer.StencilTargetStoreAction == ERenderTargetStoreAction::ENoAction,
+				RHI_VALIDATION_CHECK(PSOInitializer.StencilTargetStoreAction == ERenderTargetStoreAction::ENoAction,
 					TEXT("No stencil target set, yet PSO wants to store into it!"));
 */
 			}
 		}
 		else
 		{
-			ensureMsgf(!Initializer.bEnableDepthWrite && Initializer.DepthTest == CF_Always, TEXT("No depth render target set, yet PSO wants to use depth operations!"));
-			ensureMsgf(PSOInitializer.DepthTargetLoadAction == ERenderTargetLoadAction::ENoAction
+			RHI_VALIDATION_CHECK(!Initializer.bEnableDepthWrite && Initializer.DepthTest == CF_Always, TEXT("No depth render target set, yet PSO wants to use depth operations!"));
+			RHI_VALIDATION_CHECK(PSOInitializer.DepthTargetLoadAction == ERenderTargetLoadAction::ENoAction
 				&& PSOInitializer.StencilTargetLoadAction == ERenderTargetLoadAction::ENoAction,
 				TEXT("No depth/stencil target set, yet PSO wants to load from it!"));
-			ensureMsgf(PSOInitializer.DepthTargetStoreAction == ERenderTargetStoreAction::ENoAction
+			RHI_VALIDATION_CHECK(PSOInitializer.DepthTargetStoreAction == ERenderTargetStoreAction::ENoAction
 				&& PSOInitializer.StencilTargetStoreAction == ERenderTargetStoreAction::ENoAction,
 				TEXT("No depth/stencil target set, yet PSO wants to store into it!"));
 		}
 	}
+}
 
-	if (IsTessellationPrimitive(PSOInitializer.PrimitiveType ))
+void FValidationRHI::RHICreateTransition(FRHITransition* Transition, const FRHITransitionCreateInfo& CreateInfo)
+{
+	using namespace RHIValidation;
+
+	const ERHIPipeline SrcPipelines = CreateInfo.SrcPipelines;
+	const ERHIPipeline DstPipelines = CreateInfo.DstPipelines;
+
+	struct FFenceEdge
 	{
-		ensureMsgf(RHISupportsTessellation(GMaxRHIShaderPlatform), TEXT("Tried to create a tessellation PSO but RHI doesn't support it!"));
-		ensureMsgf(PSOInitializer.BoundShaderState.HullShaderRHI && PSOInitializer.BoundShaderState.DomainShaderRHI, 
-			TEXT("Tried to create a tessellation PSO but no Hull or Domain shader set!"));
+		FFence* Fence = nullptr;
+		ERHIPipeline SrcPipe = ERHIPipeline::None;
+		ERHIPipeline DstPipe = ERHIPipeline::None;
+	};
+
+	TArray<FFenceEdge> Fences;
+
+	if (SrcPipelines != DstPipelines)
+	{
+		for (ERHIPipeline SrcPipe : GetRHIPipelines())
+		{
+			if (!EnumHasAnyFlags(SrcPipelines, SrcPipe))
+			{
+				continue;
+			}
+
+			for (ERHIPipeline DstPipe : GetRHIPipelines())
+			{
+				if (!EnumHasAnyFlags(DstPipelines, DstPipe) || SrcPipe == DstPipe)
+				{
+					continue;
+				}
+
+				FFenceEdge FenceEdge;
+				FenceEdge.Fence = new FFence;
+				FenceEdge.SrcPipe = SrcPipe;
+				FenceEdge.DstPipe = DstPipe;
+				Fences.Add(FenceEdge);
+			}
+		}
+	}
+
+	TArray<FOperation> SignalOps, WaitOps, AliasingOps, AliasingOverlapOps, BeginOps, EndOps;
+	SignalOps .Reserve(Fences.Num());
+	WaitOps   .Reserve(Fences.Num());
+	AliasingOps.Reserve(CreateInfo.AliasingInfos.Num());
+	AliasingOverlapOps.Reserve(CreateInfo.AliasingInfos.Num());
+	BeginOps  .Reserve(CreateInfo.TransitionInfos.Num());
+	EndOps    .Reserve(CreateInfo.TransitionInfos.Num());
+
+	for (const FFenceEdge& FenceEdge : Fences)
+	{
+		WaitOps.Emplace(FOperation::Wait(FenceEdge.Fence, FenceEdge.DstPipe));
+	}
+
+	// Take a backtrace of this transition creation if any of the resources it contains have logging enabled.
+	bool bDoTrace = false;
+
+	for (const FRHITransientAliasingInfo& Info : CreateInfo.AliasingInfos)
+	{
+		if (!Info.Resource)
+		{
+			continue;
+		}
+
+		FResource* Resource = nullptr;
+
+		if (Info.Type == FRHITransientAliasingInfo::EType::Texture)
+		{
+			Resource = Info.Texture->GetTrackerResource();
+		}
+		else
+		{
+			Resource = Info.Buffer;
+		}
+
+		bDoTrace |= (Resource->LoggingMode != RHIValidation::ELoggingMode::None);
+
+		if (Info.IsAcquire())
+		{
+			checkf(Resource->TransientState.bTransient, TEXT("Acquiring resource %s which is not transient. Only transient resources can be acquired."), Resource->GetDebugName());
+			checkf(SrcPipelines == ERHIPipeline::Graphics, TEXT("Acquiring a transient resource (%s) must begin on the graphics pipe."), Resource->GetDebugName());
+
+			AliasingOps.Emplace(FOperation::AcquireTransientResource(Resource, nullptr));
+
+			for (const FRHITransientAliasingOverlap& Overlap : Info.Overlaps)
+			{
+				FResource* ResourceBefore = nullptr;
+
+				if (Overlap.Type == FRHITransientAliasingOverlap::EType::Texture)
+				{
+					ResourceBefore = Overlap.Texture->GetTrackerResource();
+				}
+				else
+				{
+					ResourceBefore = Overlap.Buffer;
+				}
+
+				checkf(ResourceBefore, TEXT("Null resource provided as an aliasing overlap of %s"), Resource->GetDebugName());
+
+				AliasingOverlapOps.Emplace(FOperation::AliasingOverlap(ResourceBefore, Resource, nullptr));
+			}
+		}
+		else
+		{
+			checkf(Info.Overlaps.IsEmpty(), TEXT("Aliasing overlaps provided on a Discard for resource %s. Overlaps must be provided on an acquire."), Resource->GetDebugName());
+			checkf(Resource->TransientState.bTransient, TEXT("Discarding resource %s which is not transient. Only transient resources can be discarded."), Resource->GetDebugName());
+			checkf(DstPipelines == ERHIPipeline::Graphics, TEXT("Discarding a transient resource (%s) must end on the graphics pipe."), Resource->GetDebugName());
+
+			AliasingOps.Emplace(FOperation::DiscardTransientResource(Resource, nullptr));
+		}
+	}
+
+	for (int32 Index = 0; Index < CreateInfo.TransitionInfos.Num(); ++Index)
+	{
+		const FRHITransitionInfo& Info = CreateInfo.TransitionInfos[Index];
+		if (!Info.Resource)
+			continue;
+
+		checkf(Info.Type != FRHITransitionInfo::EType::Unknown, TEXT("FRHITransitionInfo::Type cannot be Unknown when creating a resource transition."));
+
+		FResourceIdentity Identity;
+
+		switch (Info.Type)
+		{
+		default: checkNoEntry(); // fall through
+		case FRHITransitionInfo::EType::Texture:
+			Identity = Info.Texture->GetTransitionIdentity(Info);
+			break;
+
+		case FRHITransitionInfo::EType::Buffer:
+			Identity = Info.Buffer->GetWholeResourceIdentity();
+			break;
+
+		case FRHITransitionInfo::EType::UAV:
+			Identity = Info.UAV->ViewIdentity;
+			break;
+
+		case FRHITransitionInfo::EType::BVH:
+			Identity = Info.BVH->GetWholeResourceIdentity();
+			break;
+		}
+
+		bDoTrace |= (Identity.Resource->LoggingMode != RHIValidation::ELoggingMode::None);
+
+		FState PreviousState = FState(Info.AccessBefore, SrcPipelines);
+		FState NextState = FState(Info.AccessAfter, DstPipelines);
+
+		BeginOps.Emplace(FOperation::BeginTransitionResource(Identity, PreviousState, NextState, Info.Flags, nullptr));
+		EndOps  .Emplace(FOperation::EndTransitionResource(Identity, PreviousState, NextState, nullptr));
+	}
+
+	if (bDoTrace)
+	{
+		void* Backtrace = CaptureBacktrace();
+
+		for (FOperation& Op : AliasingOps)
+		{
+			switch (Op.Type)
+			{
+			case EOpType::AcquireTransient:
+				Op.Data_AcquireTransient.CreateBacktrace = Backtrace;
+				break;
+			case EOpType::DiscardTransient:
+				Op.Data_DiscardTransient.CreateBacktrace = Backtrace;
+				break;
+			}
+		}
+
+		for (FOperation& Op : AliasingOverlapOps) { Op.Data_AliasingOverlap.CreateBacktrace = Backtrace; }
+		for (FOperation& Op : BeginOps) { Op.Data_BeginTransition.CreateBacktrace = Backtrace; }
+		for (FOperation& Op : EndOps) { Op.Data_EndTransition.CreateBacktrace = Backtrace; }
+	}
+
+	for (const FFenceEdge& FenceEdge : Fences)
+	{
+		SignalOps.Emplace(FOperation::Signal(FenceEdge.Fence, FenceEdge.SrcPipe));
+	}
+
+	Transition->PendingSignals.Operations = MoveTemp(SignalOps);
+	Transition->PendingWaits.Operations = MoveTemp(WaitOps);
+	Transition->PendingAliases.Operations = MoveTemp(AliasingOps);
+	Transition->PendingAliasingOverlaps.Operations = MoveTemp(AliasingOverlapOps);
+	Transition->PendingOperationsBegin.Operations = MoveTemp(BeginOps);
+	Transition->PendingOperationsEnd.Operations = MoveTemp(EndOps);
+
+	return RHI->RHICreateTransition(Transition, CreateInfo);
+}
+
+namespace RHIValidation
+{
+	static inline FString GetReasonString_LockBufferInsideRenderPass(FResource* Buffer)
+	{
+		const TCHAR* DebugName = Buffer->GetDebugName();
+		return FString::Printf(TEXT("Locking non-volatile buffers for writing inside a render pass is not allowed. Resource: \"%s\" (0x%p)."), DebugName ? DebugName : TEXT("Unnamed"), Buffer);
 	}
 }
 
+void FValidationRHI::LockBufferValidate(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, EResourceLockMode LockMode)
+{
+	using namespace RHIValidation;
+
+	if (!EnumHasAnyFlags(Buffer->GetUsage(), BUF_Volatile) && LockMode == RLM_WriteOnly)
+	{
+		bool bIsInsideRenderPass;
+		if (RHICmdList.IsTopOfPipe())
+		{
+			bIsInsideRenderPass = RHICmdList.IsInsideRenderPass();
+		}
+		else
+		{
+			FValidationContext& Ctx = static_cast<FValidationContext&>(RHICmdList.GetContext());
+			bIsInsideRenderPass = Ctx.State.bInsideBeginRenderPass;
+		}
+		RHI_VALIDATION_CHECK(!bIsInsideRenderPass, *GetReasonString_LockBufferInsideRenderPass(Buffer));
+	}
+}
+
+void* FValidationRHI::RHILockBuffer(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
+{
+	LockBufferValidate(RHICmdList, Buffer, LockMode);
+
+	return RHI->RHILockBuffer(RHICmdList, Buffer, Offset, SizeRHI, LockMode);
+}
+
+void* FValidationRHI::RHILockBufferMGPU(class FRHICommandListImmediate& RHICmdList, FRHIBuffer* Buffer, uint32 GPUIndex, uint32 Offset, uint32 SizeRHI, EResourceLockMode LockMode)
+{
+	LockBufferValidate(RHICmdList, Buffer, LockMode);
+
+	return RHI->RHILockBufferMGPU(RHICmdList, Buffer, GPUIndex, Offset, SizeRHI, LockMode);
+}
+
+void FValidationRHI::ReportValidationFailure(const TCHAR* InMessage)
+{
+	// Report failures only once per session, since many of them will happen repeatedly. This is similar to what ensure() does, but
+	// ensure() looks at the source location to determine if it's seen the error before. We want to look at the actual message, since
+	// all failures of a given kind will come from the same place, but (hopefully) the error message contains the name of the resource
+	// and a description of the state, so it should be unique for each failure.
+	uint32 Hash = FCrc::StrCrc32<TCHAR>(InMessage);
+	
+	SeenFailureHashesMutex.Lock();
+	bool bIsAlreadyInSet;
+	SeenFailureHashes.Add(Hash, &bIsAlreadyInSet);
+	SeenFailureHashesMutex.Unlock();
+
+	if (bIsAlreadyInSet)
+	{
+		return;
+	}
+
+	UE_LOG(LogRHI, Error, TEXT("%s"), InMessage);
+
+	if (FPlatformMisc::IsDebuggerPresent() && RHIValidation::GBreakOnTransitionError)
+	{
+		// Print the message again using the debug output function, because UE_LOG doesn't always reach
+		// the VS output window before the breakpoint is triggered, despite the log flush call below.
+		FPlatformMisc::LowLevelOutputDebugStringf(TEXT("%s\n"), InMessage);
+		GLog->PanicFlushThreadedLogs();
+		PLATFORM_BREAK();
+	}
+}
 
 FValidationComputeContext::FValidationComputeContext()
 	: RHIContext(nullptr)
@@ -150,14 +448,28 @@ void FValidationComputeContext::FState::Reset()
 	ComputePassName.Reset();
 	bComputeShaderSet = false;
 	TrackerInstance.ResetAllUAVState();
+	GlobalUniformBuffers.Reset();
 }
-
 
 FValidationContext::FValidationContext()
 	: RHIContext(nullptr)
 {
 	State.Reset();
 	Tracker = &State.TrackerInstance;
+}
+
+void FValidationContext::RHIBeginFrame()
+{
+	++State.BeginEndFrameCounter;
+	if (State.BeginEndFrameCounter != 1)
+	{
+		ensureMsgf(0, TEXT("RHIBeginFrame called twice in a row! Previous callstack: (void**)0x%p,32"), State.PreviousBeginFrame);
+	}
+	delete [] (uint64*)State.PreviousBeginFrame;
+	State.PreviousBeginFrame = RHIValidation::CaptureBacktrace();
+
+	State.Reset();
+	RHIContext->RHIBeginFrame();
 }
 
 void FValidationContext::RHIEndFrame()
@@ -168,6 +480,46 @@ void FValidationContext::RHIEndFrame()
 	// The RenderThread FrameID is update in RHIAdvanceFrameFence which is called on the RenderThread
 	FValidationRHI* ValidateRHI = (FValidationRHI*)GDynamicRHI;
 	ValidateRHI->RHIThreadFrameID++;
+
+	--State.BeginEndFrameCounter;
+	if (State.BeginEndFrameCounter != 0)
+	{
+		ensureMsgf(0, TEXT("RHIEndFrame called twice in a row! Previous callstack: (void**)0x%p,32"), State.PreviousEndFrame);
+		State.BeginEndFrameCounter = 0;
+	}
+	delete [] (uint64*)State.PreviousEndFrame;
+	State.PreviousEndFrame = RHIValidation::CaptureBacktrace();
+}
+
+namespace RHIValidation
+{
+	static inline FString GetReasonString_SourceCopyFlagMissing(FRHIBuffer* Buffer)
+	{
+		return FString::Printf(TEXT("Buffers used as copy source need to be created with BUF_SourceCopy! Resource: \"%s\" (0x%p)."), 
+			(Buffer->GetName().GetStringLength() > 0) ? *Buffer->GetName().ToString() : TEXT("Unnamed"), Buffer);
+	}
+}
+
+void FValidationContext::RHICopyToStagingBuffer(FRHIBuffer* SourceBufferRHI, FRHIStagingBuffer* DestinationStagingBufferRHI, uint32 InOffset, uint32 InNumBytes)
+{
+	using namespace RHIValidation;
+	Tracker->Assert(SourceBufferRHI->GetWholeResourceIdentity(), ERHIAccess::CopySrc);
+	if (GRHIValidateBufferSourceCopy)
+	{
+		RHI_VALIDATION_CHECK(EnumHasAnyFlags(SourceBufferRHI->GetUsage(), BUF_SourceCopy), *GetReasonString_SourceCopyFlagMissing(SourceBufferRHI));
+	}
+	RHIContext->RHICopyToStagingBuffer(SourceBufferRHI, DestinationStagingBufferRHI, InOffset, InNumBytes);
+}
+
+void FValidationComputeContext::RHICopyToStagingBuffer(FRHIBuffer* SourceBufferRHI, FRHIStagingBuffer* DestinationStagingBufferRHI, uint32 InOffset, uint32 InNumBytes)
+{
+	using namespace RHIValidation;
+	Tracker->Assert(SourceBufferRHI->GetWholeResourceIdentity(), ERHIAccess::CopySrc);
+	if (GRHIValidateBufferSourceCopy)
+	{
+		RHI_VALIDATION_CHECK(EnumHasAnyFlags(SourceBufferRHI->GetUsage(), BUF_SourceCopy), *GetReasonString_SourceCopyFlagMissing(SourceBufferRHI));
+	}
+	RHIContext->RHICopyToStagingBuffer(SourceBufferRHI, DestinationStagingBufferRHI, InOffset, InNumBytes);
 }
 
 void FValidationContext::FState::Reset()
@@ -179,36 +531,149 @@ void FValidationContext::FState::Reset()
 	ComputePassName.Reset();
 	bComputeShaderSet = false;
 	TrackerInstance.ResetAllUAVState();
+	GlobalUniformBuffers.Reset();
 }
 
 namespace RHIValidation
 {
-#define BARRIER_TRACKER_LOG_PREFIX TEXT("\n\n")\
+	void FGlobalUniformBuffers::Reset()
+	{
+		Bindings.Reset();
+		check(!bInSetPipelineStateCall);
+	}
+
+	void FGlobalUniformBuffers::ValidateSetShaderUniformBuffer(FRHIUniformBuffer* UniformBuffer)
+	{
+		check(UniformBuffer);
+		UniformBuffer->ValidateLifeTime();
+
+		// Skip validating global uniform buffers that are set internally by the RHI as part of the pipeline state.
+		if (bInSetPipelineStateCall)
+		{
+			return;
+		}
+
+		const FRHIUniformBufferLayout& Layout = UniformBuffer->GetLayout();
+
+		checkf(EnumHasAnyFlags(Layout.BindingFlags, EUniformBufferBindingFlags::Shader), TEXT("Uniform buffer '%s' does not have the 'Shader' binding flag."), *Layout.GetDebugName());
+
+		if (Layout.StaticSlot < Bindings.Num())
+		{
+			check(Layout.BindingFlags == EUniformBufferBindingFlags::StaticAndShader);
+
+			ensureMsgf(Bindings[Layout.StaticSlot] == nullptr,
+				TEXT("Uniform buffer '%s' was bound statically and is now being bound on a specific RHI shader. Only one binding model should be used at a time."),
+				*Layout.GetDebugName());
+		}
+	}
+
+	ERHIAccess DecayResourceAccess(ERHIAccess AccessMask, ERHIAccess RequiredAccess, bool bAllowUAVOverlap)
+	{
+		using T = __underlying_type(ERHIAccess);
+		checkf((T(RequiredAccess) & (T(RequiredAccess) - 1)) == 0, TEXT("Only one required access bit may be set at once."));
+		
+		if (EnumHasAnyFlags(RequiredAccess, ERHIAccess::UAVMask | ERHIAccess::BVHWrite))
+		{
+			// UAV writes decay to no allowed resource access when overlaps are disabled. A barrier is always required after the dispatch/draw.
+			// Otherwise keep the same accessmask and don't touch or decay the state
+			return !bAllowUAVOverlap ? ERHIAccess::None : AccessMask;
+		}
+
+		// Handle DSV modes
+		if (EnumHasAnyFlags(RequiredAccess, ERHIAccess::DSVWrite))
+		{
+			constexpr ERHIAccess CompatibleStates =
+				ERHIAccess::DSVRead |
+				ERHIAccess::DSVWrite;
+
+			return AccessMask & CompatibleStates;
+		}
+		if (EnumHasAnyFlags(RequiredAccess, ERHIAccess::DSVRead))
+		{
+			constexpr ERHIAccess CompatibleStates =
+				ERHIAccess::DSVRead |
+				ERHIAccess::DSVWrite |
+				ERHIAccess::SRVGraphics |
+				ERHIAccess::SRVCompute |
+				ERHIAccess::CopySrc;
+
+			return AccessMask & CompatibleStates;
+		}
+
+		if (EnumHasAnyFlags(RequiredAccess, ERHIAccess::WritableMask))
+		{
+			// Decay to only 1 allowed state for all other writable states.
+			return RequiredAccess;
+		}
+
+		// Else, the state is readable. All readable states are compatible.
+		return AccessMask;
+	}
+
+#define BARRIER_TRACKER_LOG_PREFIX_REASON(ReasonString) TEXT("RHI validation failed: " ReasonString ":\n\n")\
 	TEXT("--------------------------------------------------------------------\n")\
 	TEXT("              RHI Resource Transition Validation Error              \n")\
 	TEXT("--------------------------------------------------------------------\n")\
 	TEXT("\n\n")
+	
+// Warning: this prefix expects a string argument for the resource name, make sure you add it.
+#define BARRIER_TRACKER_LOG_PREFIX_RESNAME TEXT("RHI validation failed for resource: %s:\n\n")\
+	TEXT("--------------------------------------------------------------------\n")\
+	TEXT("              RHI Resource Transition Validation Error              \n")\
+	TEXT("--------------------------------------------------------------------\n")\
+	TEXT("\n\n")
+
 #define BARRIER_TRACKER_LOG_SUFFIX TEXT("\n\n")\
 	TEXT("--------------------------------------------------------------------\n")\
 	TEXT("\n\n")
+
+#define BARRIER_TRACKER_LOG_ENABLE_TRANSITION_BACKTRACE \
+	TEXT("    --- Enable barrier logging for this resource to see a callstack backtrace for the RHIBeginTransitions() call ") \
+	TEXT("which has not been completed. Use -RHIValidationLog=X,Y,Z to enable backtrace logging for individual resources.\n\n")
+
+	static inline FString GetResourceDebugName(FResource const* Resource, FSubresourceIndex const& SubresourceIndex)
+	{
+		const TCHAR* DebugName = Resource->GetDebugName();
+		if (!DebugName)
+		{
+			DebugName = TEXT("Unnamed");
+		}
+
+		if (SubresourceIndex.IsWholeResource())
+		{
+			return FString::Printf(
+				TEXT("\"%s\" (0x%p) (Whole Resource)"),
+				DebugName,
+				Resource);
+		}
+		else
+		{
+			return FString::Printf(
+				TEXT("\"%s\" (0x%p) (Mip %d, Slice %d, Plane %d)"),
+				DebugName,
+				Resource, 
+				SubresourceIndex.MipIndex,
+				SubresourceIndex.ArraySlice,
+				SubresourceIndex.PlaneIndex);
+		}
+	}
 
 	static inline FString GetReasonString_MissingBarrier(
 		FResource* Resource, FSubresourceIndex const& SubresourceIndex, 
 		const FState& CurrentState,
 		const FState& RequiredState)
 	{
-		const TCHAR* DebugName = Resource->GetDebugName();
+		FString DebugName = GetResourceDebugName(Resource, SubresourceIndex);
 		return FString::Printf(
-			BARRIER_TRACKER_LOG_PREFIX
-			TEXT("Attempted to access resource \"%s\" (0x%p) (%s) from a hardware unit it is not currently accessible from. A resource transition is required.\n\n")
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to access resource %s from a hardware unit it is not currently accessible from. A resource transition is required.\n\n")
 			TEXT("    --- Allowed access states for this resource are: %s\n")
 			TEXT("    --- Required access states are:                  %s\n")
 			TEXT("    --- Allowed pipelines for this resource are:     %s\n")
 			TEXT("    --- Required pipelines are:                      %s\n")
 			BARRIER_TRACKER_LOG_SUFFIX,
-			DebugName ? DebugName : TEXT("Unnamed"),
-			Resource,
-			*SubresourceIndex.ToString(),
+			*DebugName,
+			*DebugName,
 			*GetRHIAccessName(CurrentState.Access),
 			*GetRHIAccessName(RequiredState.Access),
 			*GetRHIPipelineName(CurrentState.Pipelines),
@@ -228,7 +693,38 @@ namespace RHIValidation
 		}
 		else
 		{
-			return TEXT("    --- Enable barrier logging for this resource to see a callstack backtrace for the RHIBeginTransitions() call which has not been completed. See RHIValidation.cpp.\n\n");
+			return BARRIER_TRACKER_LOG_ENABLE_TRANSITION_BACKTRACE;
+		}
+	}
+
+	static inline FString GetReasonString_Backtrace(const TCHAR* OperationPrefix, const TCHAR* TracePrefix, void* Trace)
+	{
+		if (Trace)
+		{
+			return FString::Printf(
+				TEXT("    --- Callstack backtrace for %s operation (resolve in the Watch window):\n")
+				TEXT("        %s: (void**)0x%p,32\n"),
+				OperationPrefix,
+				TracePrefix,
+				Trace);
+		}
+		else
+		{
+			return FString(BARRIER_TRACKER_LOG_ENABLE_TRANSITION_BACKTRACE);
+		}
+	}
+
+	static inline FString GetReasonString_DuplicateBackTrace(void* PreviousTrace, void* CurrentTrace)
+	{
+		if (PreviousTrace || CurrentTrace)
+		{
+			return
+				GetReasonString_Backtrace(TEXT("previous"), TEXT("RHICreateTransition"), PreviousTrace) +
+				GetReasonString_Backtrace(TEXT("current"), TEXT("RHICreateTransition"), CurrentTrace);
+		}
+		else
+		{
+			return BARRIER_TRACKER_LOG_ENABLE_TRANSITION_BACKTRACE;
 		}
 	}
 
@@ -238,24 +734,124 @@ namespace RHIValidation
 		const FState& AttemptedState,
 		void* CreateTrace, void* BeginTrace)
 	{
-		const TCHAR* DebugName = Resource->GetDebugName();
+		FString DebugName = GetResourceDebugName(Resource, SubresourceIndex);
 		return FString::Printf(
-			BARRIER_TRACKER_LOG_PREFIX
-			TEXT("Attempted to access resource \"%s\" (0x%p) (%s) whilst an asynchronous resource transition is in progress. A call to RHIEndTransitions() must be made before the resource can be accessed again.\n\n")
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to access resource %s whilst an asynchronous resource transition is in progress. A call to RHIEndTransitions() must be made before the resource can be accessed again.\n\n")
 			TEXT("    --- Pending access states for this resource are: %s\n")
 			TEXT("    --- Attempted access states are:                 %s\n")
 			TEXT("    --- Pending pipelines for this resource are:     %s\n")
 			TEXT("    --- Attempted pipelines are:                     %s\n")
 			TEXT("%s")
 			BARRIER_TRACKER_LOG_SUFFIX,
-			DebugName ? DebugName : TEXT("Unnamed"),
-			Resource,
-			*SubresourceIndex.ToString(),
+			*DebugName,
+			*DebugName,
 			*GetRHIAccessName(PendingState.Access),
 			*GetRHIAccessName(AttemptedState.Access),
 			*GetRHIPipelineName(PendingState.Pipelines),
 			*GetRHIPipelineName(AttemptedState.Pipelines),
 			*GetReasonString_BeginBacktrace(CreateTrace, BeginTrace));
+	}
+
+	static inline FString GetReasonString_TransitionWithoutAcquire(FResource* Resource)
+	{
+		FString DebugName = GetResourceDebugName(Resource, {});
+		return FString::Printf(
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted a resource transition for transient resource %s without acquiring it. Transient resources must be acquired before any transitions are begun and discarded after all transitions are complete.\n")
+			BARRIER_TRACKER_LOG_SUFFIX,
+			*DebugName,
+			*DebugName);
+	}
+
+	static inline FString GetReasonString_AcquireNonTransient(FResource* Resource)
+	{
+		FString DebugName = GetResourceDebugName(Resource, {});
+		return FString::Printf(
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to acquire non-transient resource %s. Only transient resources may be acquired with the transient aliasing API.\n")
+			BARRIER_TRACKER_LOG_SUFFIX,
+			*DebugName,
+			*DebugName);
+	}
+
+	static inline FString GetReasonString_DiscardNonTransient(FResource* Resource)
+	{
+		FString DebugName = GetResourceDebugName(Resource, {});
+		return FString::Printf(
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to discard non-transient resource %s. Only transient resources may be discarded with the transient aliasing API.\n")
+			BARRIER_TRACKER_LOG_SUFFIX,
+			*DebugName,
+			*DebugName);
+	}
+
+	static inline FString GetReasonString_AliasingOverlapNonDiscarded(FResource* ResourceBefore, FResource* ResourceAfter, void* CreateTrace)
+	{
+		FString DebugNameBefore = GetResourceDebugName(ResourceBefore, {});
+		FString DebugNameAfter = GetResourceDebugName(ResourceAfter, {});
+		return FString::Printf(
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to overlap resource %s (before) with resource %s (after), but %s (before) has not been discarded.\n")
+			TEXT("%s")
+			BARRIER_TRACKER_LOG_SUFFIX,
+			*DebugNameAfter,
+			*DebugNameBefore,
+			*DebugNameAfter,
+			*DebugNameBefore,
+			*GetReasonString_Backtrace(TEXT("acquire"), TEXT("RHICreateTransition"), CreateTrace));
+	}
+
+	static inline FString GetReasonString_AliasingOverlapNonTransient(FResource* ResourceBefore, FResource* ResourceAfter)
+	{
+		FString DebugNameBefore = GetResourceDebugName(ResourceBefore, {});
+		FString DebugNameAfter = GetResourceDebugName(ResourceAfter, {});
+		return FString::Printf(
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to overlap non-transient resource %s when acquiring resource %s. Only transient resources may be used in an aliasing overlap operation.\n")
+			BARRIER_TRACKER_LOG_SUFFIX,
+			*DebugNameBefore,
+			*DebugNameBefore,
+			*DebugNameAfter);
+	}
+
+	static inline FString GetReasonString_DuplicateAcquireTransient(FResource* Resource, void* PreviousAcquireTrace, void* CurrentAcquireTrace)
+	{
+		FString DebugName = GetResourceDebugName(Resource, {});
+		return FString::Printf(
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Mismatched acquire of transient resource %s. A transient resource may only be acquired once in its lifetime.\n")
+			TEXT("%s")
+			BARRIER_TRACKER_LOG_SUFFIX,
+			*DebugName,
+			*DebugName,
+			*GetReasonString_DuplicateBackTrace(PreviousAcquireTrace, CurrentAcquireTrace));
+	}
+
+	static inline FString GetReasonString_DuplicateDiscardTransient(FResource* Resource, void* PreviousDiscardTrace, void* CurrentDiscardTrace)
+	{
+		FString DebugName = GetResourceDebugName(Resource, {});
+		return FString::Printf(
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Mismatched discard of transient resource %s. A transient resource may only be discarded once in its lifetime.\n")
+			TEXT("%s")
+			BARRIER_TRACKER_LOG_SUFFIX,
+			*DebugName,
+			*DebugName,
+			*GetReasonString_DuplicateBackTrace(PreviousDiscardTrace, CurrentDiscardTrace));
+	}
+
+	static inline FString GetReasonString_DiscardWithoutAcquireTransient(FResource* Resource, void* DiscardTrace)
+	{
+		FString DebugName = GetResourceDebugName(Resource, {});
+		return FString::Printf(
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to discard transient resource %s, but it was never acquired.\n")
+			TEXT("%s")
+			BARRIER_TRACKER_LOG_SUFFIX,
+			*DebugName,
+			*DebugName,
+			*GetReasonString_Backtrace(TEXT("acquire"), TEXT("RHICreateTransition"), DiscardTrace));
 	}
 
 	static inline FString GetReasonString_DuplicateBeginTransition(
@@ -264,19 +860,18 @@ namespace RHIValidation
 		const FState& TargetState,
 		void* CreateTrace, void* BeginTrace)
 	{
-		const TCHAR* DebugName = Resource->GetDebugName();
+		FString DebugName = GetResourceDebugName(Resource, SubresourceIndex);
 		return FString::Printf(
-			BARRIER_TRACKER_LOG_PREFIX
-			TEXT("Attempted to begin a resource transition for resource \"%s\" (0x%p) (%s) whilst a previous asynchronous resource transition is already in progress. A call to RHIEndTransitions() must be made before the resource can be transitioned again.\n\n")
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to begin a resource transition for resource %s whilst a previous asynchronous resource transition is already in progress. A call to RHIEndTransitions() must be made before the resource can be transitioned again.\n\n")
 			TEXT("    --- Pending access states for this resource are:              %s\n")
 			TEXT("    --- Attempted access states for the duplicate transition are: %s\n")
 			TEXT("    --- Pending pipelines for this resource are:                  %s\n")
 			TEXT("    --- Attempted pipelines for the duplicate transition are:     %s\n")
 			TEXT("%s")
 			BARRIER_TRACKER_LOG_SUFFIX,
-			DebugName ? DebugName : TEXT("Unnamed"),
-			Resource,
-			*SubresourceIndex.ToString(),
+			*DebugName,
+			*DebugName,
 			*GetRHIAccessName(PendingState.Access),
 			*GetRHIAccessName(TargetState.Access),
 			*GetRHIPipelineName(PendingState.Pipelines),
@@ -289,17 +884,16 @@ namespace RHIValidation
 		const FState& ActualCurrentState,
 		const FState& CurrentStateFromRHI)
 	{
-		const TCHAR* DebugName = Resource->GetDebugName();
+		FString DebugName = GetResourceDebugName(Resource, SubresourceIndex);
 		return FString::Printf(
-			BARRIER_TRACKER_LOG_PREFIX
-			TEXT("Attempted to begin a resource transition for resource \"%s\" (0x%p) (%s) on the wrong pipeline(s) (\"%s\"). The resource is currently accessible on the \"%s\" pipeline(s).\n\n")
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to begin a resource transition for resource %s on the wrong pipeline(s) (\"%s\"). The resource is currently accessible on the \"%s\" pipeline(s).\n\n")
 			TEXT("    --- Current access states for this resource are: %s\n")
 			TEXT("    --- Attempted access states are:                 %s\n\n")
 			TEXT("    --- Ensure that resource transitions are issued on the correct pipeline.\n")
 			BARRIER_TRACKER_LOG_SUFFIX,
-			DebugName ? DebugName : TEXT("Unnamed"),
-			Resource,
-			*SubresourceIndex.ToString(),
+			*DebugName,
+			*DebugName,
 			*GetRHIPipelineName(CurrentStateFromRHI.Pipelines),
 			*GetRHIPipelineName(ActualCurrentState.Pipelines),
 			*GetRHIAccessName(ActualCurrentState.Access),
@@ -311,38 +905,55 @@ namespace RHIValidation
 		const FState& CurrentState,
 		const FState& CurrentStateFromRHI)
 	{
-		const TCHAR* DebugName = Resource->GetDebugName();
+		FString DebugName = GetResourceDebugName(Resource, SubresourceIndex);
 		return FString::Printf(
-			BARRIER_TRACKER_LOG_PREFIX
-			TEXT("The explicit previous state \"%s\" does not match the tracked current state \"%s\" for the resource \"%s\" (0x%p) (%s).\n")
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("The explicit previous state \"%s\" does not match the tracked current state \"%s\" for the resource %s.\n")
 			TEXT("    --- Allowed pipelines for this resource are:                           %s\n")
 			TEXT("    --- Previous pipelines passed as part of the resource transition were: %s\n\n")
 			TEXT("    --- The best solution is to correct the explicit previous state passed for the resource in the call to RHICreateTransition().\n")
 			TEXT("    --- Alternatively, use ERHIAccess::Unknown if the actual previous state cannot be determined. Unknown previous resource states have a performance impact so should be avoided if possible.\n")
 			BARRIER_TRACKER_LOG_SUFFIX,
+			*DebugName,
 			*GetRHIAccessName(CurrentStateFromRHI.Access),
 			*GetRHIAccessName(CurrentState.Access),
-			DebugName ? DebugName : TEXT("Unnamed"),
-			Resource,
-			*SubresourceIndex.ToString(),
+			*DebugName,
 			*GetRHIPipelineName(CurrentState.Pipelines),
 			*GetRHIPipelineName(CurrentStateFromRHI.Pipelines));
+	}
+
+	static inline FString GetReasonString_MismatchedEndTransition(
+		FResource* Resource, FSubresourceIndex const& SubresourceIndex,
+		const FState& TargetState,
+		const FState& TargetStateFromRHI)
+	{
+		FString DebugName = GetResourceDebugName(Resource, SubresourceIndex);
+		return FString::Printf(
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("The expected target state \"%s\" on pipe \"%s\" in end transition does not match the tracked target state \"%s\" on pipe \"%s\" for the resource %s.\n")
+			TEXT("    --- The call to EndTransition() is mismatched with the another BeginTransition() with different states.\n")
+			BARRIER_TRACKER_LOG_SUFFIX,
+			*DebugName,
+			*GetRHIAccessName(TargetStateFromRHI.Access),
+			*GetRHIPipelineName(TargetState.Pipelines),
+			*GetRHIAccessName(TargetState.Access),
+			*GetRHIPipelineName(TargetStateFromRHI.Pipelines),
+			*DebugName);
 	}
 
 	static inline FString GetReasonString_UnnecessaryTransition(
 		FResource* Resource, FSubresourceIndex const& SubresourceIndex,
 		const FState& CurrentState)
 	{
-		const TCHAR* DebugName = Resource->GetDebugName();
+		FString DebugName = GetResourceDebugName(Resource, SubresourceIndex);
 		return FString::Printf(
-			BARRIER_TRACKER_LOG_PREFIX
-			TEXT("Attempted to begin a resource transition for the resource \"%s\" (0x%p) (%s) to the \"%s\" state on the \"%s\" pipe, but the resource is already in this state. The resource transition is unnecessary.\n")
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to begin a resource transition for the resource %s to the \"%s\" state on the \"%s\" pipe, but the resource is already in this state. The resource transition is unnecessary.\n")
 			TEXT("    --- This is not fatal, but does have an effect on CPU and GPU performance. Consider refactoring rendering code to avoid unnecessary resource transitions.\n")
 			TEXT("    --- RenderGraph (RDG) is capable of handling resource transitions automatically.\n")
 			BARRIER_TRACKER_LOG_SUFFIX,
-			DebugName ? DebugName : TEXT("Unnamed"),
-			Resource,
-			*SubresourceIndex.ToString(),
+			*DebugName,
+			*DebugName,
 			*GetRHIAccessName(CurrentState.Access),
 			*GetRHIPipelineName(CurrentState.Pipelines));
 	}
@@ -350,20 +961,26 @@ namespace RHIValidation
 	static inline FString GetReasonString_MismatchedAllUAVsOverlapCall(bool bAllow)
 	{
 		return FString::Printf(
-			BARRIER_TRACKER_LOG_PREFIX
-			TEXT("Mismatched call to %sUAVOverlap. Ensure all calls to RHICmdList.BeginUAVOverlap() are paired with a call to RHICmdList.EndUAVOverlap().")
+			BARRIER_TRACKER_LOG_PREFIX_REASON("UAV overlap mismatch")
+			TEXT("Mismatched call to %sUAVOverlap.\n\n")
+			TEXT("    --- Ensure all calls to RHICmdList.BeginUAVOverlap() are paired with a call to RHICmdList.EndUAVOverlap().\n")
 			BARRIER_TRACKER_LOG_SUFFIX,
 			bAllow ? TEXT("Begin") : TEXT("End")
 		);
 	}
 
-	static inline FString GetReasonString_MismatchedExplicitUAVOverlapCall(bool bAllow)
+	static inline FString GetReasonString_MismatchedExplicitUAVOverlapCall(
+		FResource* Resource, FSubresourceIndex const& SubresourceIndex,
+		bool bAllow)
 	{
+		FString DebugName = GetResourceDebugName(Resource, SubresourceIndex);
 		return FString::Printf(
-			BARRIER_TRACKER_LOG_PREFIX
-			TEXT("Mismatched call to %sUAVOverlap(FRHIUnorderedAccessView*). Ensure all calls to RHICmdList.BeginUAVOverlap() are paired with a call to RHICmdList.EndUAVOverlap().")
+			BARRIER_TRACKER_LOG_PREFIX_REASON("UAV overlap mismatch")
+			TEXT("Mismatched call to %sUAVOverlap(FRHIUnorderedAccessView*) for the resource %s.\n\n")
+			TEXT("    --- Ensure all calls to RHICmdList.BeginUAVOverlap() are paired with a call to RHICmdList.EndUAVOverlap().\n")
 			BARRIER_TRACKER_LOG_SUFFIX,
-			bAllow ? TEXT("Begin") : TEXT("End")
+			bAllow ? TEXT("Begin") : TEXT("End"),
+			*DebugName
 		);
 	}
 
@@ -371,22 +988,103 @@ namespace RHIValidation
 		FResource* Resource, FSubresourceIndex const& SubresourceIndex,
 		const FState& CurrentState, const FState& RequiredState)
 	{
-		const TCHAR* DebugName = Resource->GetDebugName();
+		FString DebugName = GetResourceDebugName(Resource, SubresourceIndex);
 		return FString::Printf(
-			BARRIER_TRACKER_LOG_PREFIX
-			TEXT("Attempted to access resource \"%s\" (0x%p) (%s) which was previously used with overlapping UAV access, but has not been transitioned since UAV overlap was disabled. A resource transition is required.\n\n")
+			BARRIER_TRACKER_LOG_PREFIX_RESNAME
+			TEXT("Attempted to access resource %s which was previously used with overlapping UAV access, but has not been transitioned since UAV overlap was disabled. A resource transition is required.\n\n")
 			TEXT("    --- Allowed access states for this resource are: %s\n")
 			TEXT("    --- Required access states are:                  %s\n")
 			TEXT("    --- Allowed pipelines for this resource are:     %s\n")
 			TEXT("    --- Required pipelines are:                      %s\n")
 			BARRIER_TRACKER_LOG_SUFFIX,
-			DebugName ? DebugName : TEXT("Unnamed"),
-			Resource,
-			*SubresourceIndex.ToString(),
+			*DebugName,
+			*DebugName,
 			*GetRHIAccessName(CurrentState.Access),
 			*GetRHIAccessName(RequiredState.Access),
 			*GetRHIPipelineName(CurrentState.Pipelines),
 			*GetRHIPipelineName(RequiredState.Pipelines));
+	}
+
+	static inline void* Log(FResource* Resource, FSubresourceIndex const& SubresourceIndex, void* CreateTrace, const TCHAR* TracePrefix, const TCHAR* Type, const TCHAR* LogStr)
+	{
+		void* Trace = CaptureBacktrace();
+
+		if (CreateTrace)
+		{
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("\n%s: Type: %s, %s, CreateTrace: 0x%p, %sTrace: 0x%p\n"),
+				*GetResourceDebugName(Resource, SubresourceIndex),
+				Type,
+				LogStr,
+				CreateTrace,
+				TracePrefix,
+				Trace);
+		}
+		else
+		{
+			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("\n%s: Type: %s, %s, Trace: 0x%p\n"),
+				*GetResourceDebugName(Resource, SubresourceIndex),
+				Type,
+				LogStr,
+				Trace);
+		}
+
+		return Trace;
+	}
+
+	void FTransientState::Acquire(FResource* Resource, void* CreateTrace)
+	{
+		RHI_VALIDATION_CHECK(bTransient, *GetReasonString_AcquireNonTransient(Resource));
+		RHI_VALIDATION_CHECK(Status == EStatus::None, *GetReasonString_DuplicateAcquireTransient(Resource, AcquireBacktrace, CreateTrace));
+		Status = EStatus::Acquired;
+
+		if (!AcquireBacktrace)
+		{
+			AcquireBacktrace = CreateTrace;
+		}
+
+		if (Resource->LoggingMode != ELoggingMode::None)
+		{
+			Log(Resource, {}, CreateTrace, TEXT("Acquire"), TEXT("Acquire"), TEXT("Transient Acquire"));
+		}
+	}
+
+	void FTransientState::Discard(FResource* Resource, void* CreateTrace)
+	{
+		RHI_VALIDATION_CHECK(bTransient, *GetReasonString_DiscardNonTransient(Resource));
+
+		RHI_VALIDATION_CHECK(Status != EStatus::None, *GetReasonString_DiscardWithoutAcquireTransient(Resource, CreateTrace));
+		RHI_VALIDATION_CHECK(Status != EStatus::Discarded, *GetReasonString_DuplicateDiscardTransient(Resource, DiscardBacktrace, CreateTrace));
+		Status = EStatus::Discarded;
+
+		if (!DiscardBacktrace)
+		{
+			DiscardBacktrace = CreateTrace;
+		}
+
+		if (Resource->LoggingMode != ELoggingMode::None)
+		{
+			Log(Resource, {}, CreateTrace, TEXT("Discard"), TEXT("Discard"), TEXT("Transient Discard"));
+		}
+	}
+
+	void FTransientState::AliasingOverlap(FResource* ResourceBefore, FResource* ResourceAfter, void* CreateTrace)
+	{
+		FTransientState& TransientStateBefore = ResourceBefore->TransientState;
+		FTransientState& TransientStateAfter = ResourceAfter->TransientState;
+
+		// Acquire should validate whether ResourceAfter is transient. We assume it is here.
+		RHI_VALIDATION_CHECK(TransientStateBefore.bTransient, *GetReasonString_AliasingOverlapNonTransient(ResourceBefore, ResourceAfter));
+		RHI_VALIDATION_CHECK(TransientStateBefore.IsDiscarded(), *GetReasonString_AliasingOverlapNonDiscarded(ResourceBefore, ResourceAfter, CreateTrace));
+
+		if (ResourceBefore->LoggingMode != ELoggingMode::None)
+		{
+			Log(ResourceBefore, {}, CreateTrace, TEXT("AliasingOverlap"), TEXT("AliasingOverlap"), TEXT("Aliasing Overlap (Before)"));
+		}
+
+		if (ResourceAfter->LoggingMode != ELoggingMode::None)
+		{
+			Log(ResourceAfter, {}, CreateTrace, TEXT("AliasingOverlap"), TEXT("AliasingOverlap"), TEXT("Aliasing Overlap (After)"));
+		}
 	}
 
 	void FResource::SetDebugName(const TCHAR* Name, const TCHAR* Suffix)
@@ -401,13 +1099,9 @@ namespace RHIValidation
 			// does/doesn't match one in the AutoLogResourceNames array.
 			if (Name)
 			{
-				for (int32 NameIndex = 0; NameIndex < UE_ARRAY_COUNT(GAutoLogResourceNames); ++NameIndex)
+				for (FString const& Str : GetAutoLogResourceNames())
 				{
-					const TCHAR* Str = GAutoLogResourceNames[NameIndex];
-					if (!Str)
-						break;
-
-					if (FCString::Strcmp(Name, Str) == 0)
+					if (FCString::Stricmp(Name, *Str) == 0)
 					{
 						LoggingMode = ELoggingMode::Automatic;
 						return;
@@ -419,37 +1113,10 @@ namespace RHIValidation
 		}
 	}
 
-	void* FSubresourceState::Log(FResource* Resource, FSubresourceIndex const& SubresourceIndex, void* CreateTrace, const TCHAR* Type, const TCHAR* LogStr)
+	void FSubresourceState::BeginTransition(FResource* Resource, FSubresourceIndex const& SubresourceIndex, const FState& CurrentStateFromRHI, const FState& TargetState, EResourceTransitionFlags NewFlags, ERHIPipeline ExecutingPipeline, void* CreateTrace)
 	{
-		void* Trace = CaptureBacktrace();
+		FPipelineState& State = States[ExecutingPipeline];
 
-		if (CreateTrace)
-		{
-			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("\n%s: (0x%p) (%s), Type: %s, %s, CreateTrace: 0x%p, BeginTrace: 0x%p\n"),
-				*Resource->DebugName,
-				Resource,
-				*SubresourceIndex.ToString(),
-				Type,
-				LogStr,
-				CreateTrace,
-				Trace);
-		}
-		else
-		{
-			FPlatformMisc::LowLevelOutputDebugStringf(TEXT("\n%s: (0x%p) (%s), Type: %s, %s, Trace: 0x%p\n"),
-				*Resource->DebugName,
-				Resource,
-				*SubresourceIndex.ToString(),
-				Type,
-				LogStr,
-				Trace);
-		}
-
-		return Trace;
-	}
-
-	void FSubresourceState::BeginTransition(FResource* Resource, FSubresourceIndex const& SubresourceIndex, const FState& CurrentStateFromRHI, const FState& TargetState, EResourceTransitionFlags NewFlags, void* CreateTrace)
-	{
 		void* BeginTrace = nullptr;
 		if (Resource->LoggingMode != ELoggingMode::None 
 #if LOG_UNNAMED_RESOURCES
@@ -457,42 +1124,57 @@ namespace RHIValidation
 #endif
 			)
 		{
-			BeginTrace = Log(Resource, SubresourceIndex, CreateTrace, TEXT("BeginTransition"), *FString::Printf(TEXT("Current: (%s) New: (%s), Flags: %s"),
-				*CurrentState.ToString(),
+			BeginTrace = Log(Resource, SubresourceIndex, CreateTrace, TEXT("Begin"), TEXT("BeginTransition"), *FString::Printf(TEXT("Current: (%s) New: (%s), Flags: %s, Executing Pipeline: %s"),
+				*State.Current.ToString(),
 				*TargetState.ToString(),
-				*GetResourceTransitionFlagsName(NewFlags)
+				*GetResourceTransitionFlagsName(NewFlags),
+				*GetRHIPipelineName(ExecutingPipeline)
 			));
 		}
 
+		if (Resource->TransientState.bTransient)
+		{
+			RHI_VALIDATION_CHECK(Resource->TransientState.IsAcquired() || (Resource->TransientState.IsDiscarded() && TargetState.Access == ERHIAccess::Discard), *GetReasonString_TransitionWithoutAcquire(Resource));
+		}
+
 		// Check we're not already transitioning
-		ensureMsgf(!bTransitioning, TEXT("%s"), *GetReasonString_DuplicateBeginTransition(Resource, SubresourceIndex, CurrentState, TargetState, CreateTransitionBacktrace, BeginTransitionBacktrace));
+		RHI_VALIDATION_CHECK(!State.bTransitioning, *GetReasonString_DuplicateBeginTransition(Resource, SubresourceIndex, State.Current, TargetState, State.CreateTransitionBacktrace, BeginTrace));
 
 		// Validate the explicit previous state from the RHI matches what we expect...
 		{
 			// Check for the correct pipeline
-			ensureMsgf(EnumHasAllFlags(CurrentState.Pipelines, CurrentStateFromRHI.Pipelines), TEXT("%s"), *GetReasonString_WrongPipeline(Resource, SubresourceIndex, CurrentState, TargetState));
+			RHI_VALIDATION_CHECK(EnumHasAllFlags(CurrentStateFromRHI.Pipelines, ExecutingPipeline), *GetReasonString_WrongPipeline(Resource, SubresourceIndex, State.Current, TargetState));
 
 			// Check the current RHI state passed in matches the tracked state for the resource, or is "unknown".
-			ensureMsgf(CurrentStateFromRHI.Access == ERHIAccess::Unknown || CurrentStateFromRHI.Access == PreviousState.Access, TEXT("%s"), *GetReasonString_IncorrectPreviousState(Resource, SubresourceIndex, PreviousState, CurrentStateFromRHI));
+			RHI_VALIDATION_CHECK(CurrentStateFromRHI.Access == ERHIAccess::Unknown || (CurrentStateFromRHI.Access == State.Previous.Access && CurrentStateFromRHI.Pipelines == State.Previous.Pipelines),
+				*GetReasonString_IncorrectPreviousState(Resource, SubresourceIndex, State.Previous, CurrentStateFromRHI));
 		}
 
 		// Check for unnecessary transitions
 		// @todo: this check is not particularly useful at the moment, as there are many unnecessary resource transitions.
-		//ensureMsgf(CurrentState != TargetState, TEXT("%s"), *GetReasonString_UnnecessaryTransition(Resource, SubresourceIndex, CurrentState));
+		//RHI_VALIDATION_CHECK(CurrentState != TargetState, *GetReasonString_UnnecessaryTransition(Resource, SubresourceIndex, CurrentState));
 
-		// Update the tracked state
-		PreviousState = TargetState;
-		CurrentState = TargetState;
-		Flags = NewFlags;
-		CreateTransitionBacktrace = CreateTrace;
-		BeginTransitionBacktrace = BeginTrace;
-		bUsedWithAllUAVsOverlap = false;
-		bUsedWithExplicitUAVsOverlap = false;
+		// Update the tracked state once all pipes have begun.
+		State.Previous = TargetState;
+		State.Current = TargetState;
+		State.Flags = NewFlags;
+		State.CreateTransitionBacktrace = CreateTrace;
+		State.BeginTransitionBacktrace = BeginTrace;
+		State.bUsedWithAllUAVsOverlap = false;
+		State.bUsedWithExplicitUAVsOverlap = false;
+		State.bTransitioning = true;
 
-		bTransitioning = true;
+		// Replicate the state to other pipes that are not part of the begin pipe mask.
+		for (ERHIPipeline OtherPipeline : GetRHIPipelines())
+		{
+			if (!EnumHasAnyFlags(CurrentStateFromRHI.Pipelines, OtherPipeline))
+			{
+				States[OtherPipeline] = State;
+			}
+		}
 	}
 
-	void FSubresourceState::EndTransition(FResource* Resource, FSubresourceIndex const& SubresourceIndex, void* CreateTrace)
+	void FSubresourceState::EndTransition(FResource* Resource, FSubresourceIndex const& SubresourceIndex, const FState& CurrentStateFromRHI, const FState& TargetState, ERHIPipeline ExecutingPipeline, void* CreateTrace)
 	{
 		if (Resource->LoggingMode != ELoggingMode::None
 #if LOG_UNNAMED_RESOURCES
@@ -500,16 +1182,36 @@ namespace RHIValidation
 #endif
 			)
 		{
-			Log(Resource, SubresourceIndex, CreateTrace, TEXT("EndTransition"), *FString::Printf(TEXT("Access: %s, Pipeline: %s"),
-				*GetRHIAccessName(CurrentState.Access),
-				*GetRHIPipelineName(CurrentState.Pipelines)
+			Log(Resource, SubresourceIndex, CreateTrace, TEXT("End"), TEXT("EndTransition"), *FString::Printf(TEXT("Access: %s, Pipeline: %s, Executing Pipeline: %s"),
+				*GetRHIAccessName(TargetState.Access),
+				*GetRHIPipelineName(TargetState.Pipelines),
+				*GetRHIPipelineName(ExecutingPipeline)
 			));
 		}
 
-		// This should not really be possible given the RHI API design. If this fires, it's more likely an RHI bug.
-		ensureMsgf(bTransitioning, TEXT("Unsolicited resource end transition call."));
-		bTransitioning = false;
-		BeginTransitionBacktrace = nullptr;
+		FPipelineState& State = States[ExecutingPipeline];
+
+		// Check that we aren't ending a transition that never began.
+		RHI_VALIDATION_CHECK(State.bTransitioning, TEXT("Unsolicited resource end transition call."));
+		State.bTransitioning = false;
+		State.BeginTransitionBacktrace = nullptr;
+
+		if (Resource->TransientState.bTransient)
+		{
+			RHI_VALIDATION_CHECK(Resource->TransientState.IsAcquired() || (Resource->TransientState.IsDiscarded() && TargetState.Access == ERHIAccess::Discard), *GetReasonString_TransitionWithoutAcquire(Resource));
+		}
+
+		// Check that the end matches the begin.
+		RHI_VALIDATION_CHECK(TargetState == State.Current, *GetReasonString_MismatchedEndTransition(Resource, SubresourceIndex, State.Current, TargetState));
+
+		// Replicate the state to other pipes that are not part of the end pipe mask.
+		for (ERHIPipeline OtherPipeline : GetRHIPipelines())
+		{
+			if (!EnumHasAnyFlags(TargetState.Pipelines, OtherPipeline))
+			{
+				States[OtherPipeline] = State;
+			}
+		}
 	}
 
 	void FSubresourceState::Assert(FResource* Resource, FSubresourceIndex const& SubresourceIndex, const FState& RequiredState, bool bAllowAllUAVsOverlap)
@@ -520,34 +1222,35 @@ namespace RHIValidation
 #endif
 			)
 		{
-			Log(Resource, SubresourceIndex, nullptr, TEXT("Assert"), *FString::Printf(TEXT("Access: %s, Pipeline: %s"), 
+			Log(Resource, SubresourceIndex, nullptr, nullptr, TEXT("Assert"), *FString::Printf(TEXT("Access: %s, Pipeline: %s"), 
 				*GetRHIAccessName(RequiredState.Access),
 				*GetRHIPipelineName(RequiredState.Pipelines)));
 		}
 
+		FPipelineState& State = States[RequiredState.Pipelines];
+
 		// Check we're not trying to access the resource whilst a pending resource transition is in progress.
-		ensureMsgf(!bTransitioning, TEXT("%s"), *GetReasonString_AccessDuringTransition(Resource, SubresourceIndex, CurrentState, RequiredState, CreateTransitionBacktrace, BeginTransitionBacktrace));
+		RHI_VALIDATION_CHECK(!State.bTransitioning, *GetReasonString_AccessDuringTransition(Resource, SubresourceIndex, State.Current, RequiredState, State.CreateTransitionBacktrace, State.BeginTransitionBacktrace));
 
 		// If UAV overlaps are now disabled, ensure the resource has been transitioned if it was previously used in UAV overlap state.
-		ensureMsgf((bAllowAllUAVsOverlap || !bUsedWithAllUAVsOverlap) && (bExplicitAllowUAVOverlap || !bUsedWithExplicitUAVsOverlap), TEXT("%s"), *GetReasonString_UAVOverlap(Resource, SubresourceIndex, CurrentState, RequiredState));
+		RHI_VALIDATION_CHECK((bAllowAllUAVsOverlap || !State.bUsedWithAllUAVsOverlap) && (State.bExplicitAllowUAVOverlap || !State.bUsedWithExplicitUAVsOverlap), *GetReasonString_UAVOverlap(Resource, SubresourceIndex, State.Current, RequiredState));
 
 		// Ensure the resource is in the required state for this operation
-		ensureMsgf(EnumHasAllFlags(CurrentState.Access, RequiredState.Access) && EnumHasAllFlags(CurrentState.Pipelines, RequiredState.Pipelines), TEXT("%s"), *GetReasonString_MissingBarrier(Resource, SubresourceIndex, CurrentState, RequiredState));
+		RHI_VALIDATION_CHECK(EnumHasAllFlags(State.Current.Access, RequiredState.Access) && EnumHasAllFlags(State.Current.Pipelines, RequiredState.Pipelines), *GetReasonString_MissingBarrier(Resource, SubresourceIndex, State.Current, RequiredState));
 
-		PreviousState = CurrentState;
+		State.Previous = State.Current;
 
-		if (EnumHasAnyFlags(RequiredState.Access, ERHIAccess::UAVMask))
+		if (EnumHasAnyFlags(RequiredState.Access, ERHIAccess::UAVMask | ERHIAccess::BVHWrite))
 		{
-			if (bAllowAllUAVsOverlap) { bUsedWithAllUAVsOverlap = true; }
-			if (bExplicitAllowUAVOverlap) { bUsedWithExplicitUAVsOverlap = true; }
+			if (bAllowAllUAVsOverlap) { State.bUsedWithAllUAVsOverlap = true; }
+			if (State.bExplicitAllowUAVOverlap) { State.bUsedWithExplicitUAVsOverlap = true; }
 		}
 
 		// Disable all non-compatible access types
-		CurrentState.Access = RHIDecayResourceAccess(CurrentState.Access, RequiredState.Access, bAllowAllUAVsOverlap || bExplicitAllowUAVOverlap);
-		CurrentState.Pipelines = CurrentState.Pipelines & RequiredState.Pipelines;
+		State.Current.Access = DecayResourceAccess(State.Current.Access, RequiredState.Access, bAllowAllUAVsOverlap || State.bExplicitAllowUAVOverlap);
 	}
 
-	void FSubresourceState::SpecificUAVOverlap(FResource* Resource, FSubresourceIndex const& SubresourceIndex, bool bAllow)
+	void FSubresourceState::SpecificUAVOverlap(FResource* Resource, FSubresourceIndex const& SubresourceIndex, ERHIPipeline Pipeline, bool bAllow)
 	{
 		if (Resource->LoggingMode != ELoggingMode::None
 #if LOG_UNNAMED_RESOURCES
@@ -555,11 +1258,12 @@ namespace RHIValidation
 #endif
 			)
 		{
-			Log(Resource, SubresourceIndex, nullptr, TEXT("UAVOverlap"), *FString::Printf(TEXT("Allow: %s"), bAllow ? TEXT("True") : TEXT("False")));
+			Log(Resource, SubresourceIndex, nullptr, nullptr, TEXT("UAVOverlap"), *FString::Printf(TEXT("Allow: %s"), bAllow ? TEXT("True") : TEXT("False")));
 		}
 
-		ensureMsgf(bExplicitAllowUAVOverlap != bAllow, TEXT("%s"), *GetReasonString_MismatchedExplicitUAVOverlapCall(bAllow));
-		bExplicitAllowUAVOverlap = bAllow;
+		FPipelineState& State = States[Pipeline];
+		RHI_VALIDATION_CHECK(State.bExplicitAllowUAVOverlap != bAllow, *GetReasonString_MismatchedExplicitUAVOverlapCall(Resource, SubresourceIndex, bAllow));
+		State.bExplicitAllowUAVOverlap = bAllow;
 	}
 
 	inline void FResource::EnumerateSubresources(FSubresourceRange const& SubresourceRange, TFunctionRef<void(FSubresourceState&, FSubresourceIndex const&)> Callback, bool bBeginTransition)
@@ -608,7 +1312,7 @@ namespace RHIValidation
 		}
 	}
 
-	RHI_API EReplayStatus FOperation::Replay(bool& bAllowAllUAVsOverlap) const
+	RHI_API EReplayStatus FOperation::Replay(ERHIPipeline Pipeline, bool& bAllowAllUAVsOverlap) const
 	{
 		switch (Type)
 		{
@@ -619,7 +1323,7 @@ namespace RHIValidation
 			break;
 
 		case EOpType::BeginTransition:
-			Data_BeginTransition.Identity.Resource->EnumerateSubresources(Data_BeginTransition.Identity.SubresourceRange, [this](FSubresourceState& State, FSubresourceIndex const& SubresourceIndex)
+			Data_BeginTransition.Identity.Resource->EnumerateSubresources(Data_BeginTransition.Identity.SubresourceRange, [this, Pipeline](FSubresourceState& State, FSubresourceIndex const& SubresourceIndex)
 			{
 				State.BeginTransition(
 					Data_BeginTransition.Identity.Resource,
@@ -627,6 +1331,7 @@ namespace RHIValidation
 					Data_BeginTransition.PreviousState,
 					Data_BeginTransition.NextState,
 					Data_BeginTransition.Flags,
+					Pipeline,
 					Data_BeginTransition.CreateBacktrace);
 
 			}, true);
@@ -634,18 +1339,37 @@ namespace RHIValidation
 			break;
 
 		case EOpType::EndTransition:
-			Data_EndTransition.Identity.Resource->EnumerateSubresources(Data_EndTransition.Identity.SubresourceRange, [this](FSubresourceState& State, FSubresourceIndex const& SubresourceIndex)
+			Data_EndTransition.Identity.Resource->EnumerateSubresources(Data_EndTransition.Identity.SubresourceRange, [this, Pipeline](FSubresourceState& State, FSubresourceIndex const& SubresourceIndex)
 			{
 				State.EndTransition(
-					Data_EndTransition.Identity.Resource, 
+					Data_EndTransition.Identity.Resource,
 					SubresourceIndex,
+					Data_EndTransition.PreviousState,
+					Data_EndTransition.NextState,
+					Pipeline,
 					Data_EndTransition.CreateBacktrace);
 			});
 			Data_EndTransition.Identity.Resource->ReleaseOpRef();
 			break;
 
+		case EOpType::AliasingOverlap:
+			FTransientState::AliasingOverlap(Data_AliasingOverlap.ResourceBefore, Data_AliasingOverlap.ResourceAfter, Data_AliasingOverlap.CreateBacktrace);
+			Data_AliasingOverlap.ResourceBefore->ReleaseOpRef();
+			Data_AliasingOverlap.ResourceAfter->ReleaseOpRef();
+			break;
+
+		case EOpType::AcquireTransient:
+			Data_AcquireTransient.Resource->TransientState.Acquire(Data_AcquireTransient.Resource, Data_AcquireTransient.CreateBacktrace);
+			Data_AcquireTransient.Resource->ReleaseOpRef();
+			break;
+
+		case EOpType::DiscardTransient:
+			Data_DiscardTransient.Resource->TransientState.Discard(Data_DiscardTransient.Resource, Data_DiscardTransient.CreateBacktrace);
+			Data_AcquireTransient.Resource->ReleaseOpRef();
+			break;
+
 		case EOpType::Assert:
-			Data_Assert.Identity.Resource->EnumerateSubresources(Data_Assert.Identity.SubresourceRange, [this, &bAllowAllUAVsOverlap](FSubresourceState& State, FSubresourceIndex const& SubresourceIndex)
+			Data_Assert.Identity.Resource->EnumerateSubresources(Data_Assert.Identity.SubresourceRange, [this, Pipeline, &bAllowAllUAVsOverlap](FSubresourceState& State, FSubresourceIndex const& SubresourceIndex)
 			{
 				State.Assert(
 					Data_Assert.Identity.Resource,
@@ -657,10 +1381,20 @@ namespace RHIValidation
 			break;
 
 		case EOpType::Signal:
+			if (Data_Signal.Pipeline != Pipeline)
+			{
+				break;
+			}
+
 			Data_Signal.Fence->bSignaled = true;
 			return EReplayStatus::Signaled;
 
 		case EOpType::Wait:
+			if (Data_Wait.Pipeline != Pipeline)
+			{
+				break;
+			}
+
 			if (Data_Wait.Fence->bSignaled)
 			{
 				// The fence has been completed. Free it now.
@@ -674,16 +1408,17 @@ namespace RHIValidation
 			}
 
 		case EOpType::AllUAVsOverlap:
-			ensureMsgf(bAllowAllUAVsOverlap != Data_AllUAVsOverlap.bAllow, TEXT("%s"), *GetReasonString_MismatchedAllUAVsOverlapCall(Data_AllUAVsOverlap.bAllow));
+			RHI_VALIDATION_CHECK(bAllowAllUAVsOverlap != Data_AllUAVsOverlap.bAllow, *GetReasonString_MismatchedAllUAVsOverlapCall(Data_AllUAVsOverlap.bAllow));
 			bAllowAllUAVsOverlap = Data_AllUAVsOverlap.bAllow;
 			break;
 
 		case EOpType::SpecificUAVOverlap:
-			Data_SpecificUAVOverlap.Identity.Resource->EnumerateSubresources(Data_SpecificUAVOverlap.Identity.SubresourceRange, [this](FSubresourceState& State, FSubresourceIndex const& SubresourceIndex)
+			Data_SpecificUAVOverlap.Identity.Resource->EnumerateSubresources(Data_SpecificUAVOverlap.Identity.SubresourceRange, [this, Pipeline](FSubresourceState& State, FSubresourceIndex const& SubresourceIndex)
 			{
 				State.SpecificUAVOverlap(
-					Data_SpecificUAVOverlap.Identity.Resource, 
+					Data_SpecificUAVOverlap.Identity.Resource,
 					SubresourceIndex,
+					Pipeline,
 					Data_SpecificUAVOverlap.bAllow);
 			});
 			Data_SpecificUAVOverlap.Identity.Resource->ReleaseOpRef();
@@ -706,16 +1441,17 @@ namespace RHIValidation
 			Status = EReplayStatus::Normal;
 			for (int32 CurrentIndex = 0; CurrentIndex < int32(ERHIPipeline::Num); ++CurrentIndex)
 			{
+				const ERHIPipeline CurrentPipeline = ERHIPipeline(1 << CurrentIndex);
 				FOpQueueState& CurrentQueue = OpQueues[CurrentIndex];
 				if (CurrentQueue.bWaiting)
 				{
-					Status = CurrentQueue.Ops.Replay(CurrentQueue.bAllowAllUAVsOverlap);
+					Status = CurrentQueue.Ops.Replay(CurrentPipeline, CurrentQueue.bAllowAllUAVsOverlap);
 					if (!EnumHasAllFlags(Status, EReplayStatus::Waiting))
 					{
 						CurrentQueue.Ops.Reset();
 						if (CurrentIndex == DstOpQueueIndex && InOpsList.Incomplete())
 						{
-							Status |= InOpsList.Replay(CurrentQueue.bAllowAllUAVsOverlap);
+							Status |= InOpsList.Replay(CurrentPipeline, CurrentQueue.bAllowAllUAVsOverlap);
 							CurrentQueue.bWaiting = InOpsList.Incomplete();
 						}
 						else
@@ -776,7 +1512,7 @@ namespace RHIValidation
 			{
 				ErrorMessage += FString::Printf(TEXT("\nAllocation callstack: (void**)0x%p,32"), AllocatedCallstack);
 			}
-			ensureMsgf(false, TEXT("%s"), *ErrorMessage);
+			RHI_VALIDATION_CHECK(false, *ErrorMessage);
 		}		
 	}
 
@@ -795,5 +1531,187 @@ namespace RHIValidation
 }
 
 TLockFreePointerListUnordered<FValidationContext, PLATFORM_CACHE_LINE_SIZE> FValidationRHICommandContextContainer::ParallelCommandContexts;
+
+
+//-----------------------------------------------------------------------------
+//	Validation Transient Resource Allocator
+//-----------------------------------------------------------------------------
+
+#define TRANSIENT_RESOURCE_LOG_PREFIX_REASON(ReasonString) TEXT("RHI validation failed: " ReasonString "\n\n")\
+	TEXT("--------------------------------------------------------------------\n")\
+	TEXT("         RHI Transient Resource Allocation Validation Error		  \n")\
+	TEXT("--------------------------------------------------------------------\n")\
+	TEXT("\n")
+
+#define TRANSIENT_RESOURCE_LOG_SUFFIX TEXT("\n")\
+	TEXT("--------------------------------------------------------------------\n")\
+	TEXT("\n")
+
+FValidationTransientResourceAllocator::~FValidationTransientResourceAllocator()
+{
+	checkf(!RHIAllocator, TEXT("Release was not called on FRHITransientResourceAllocator."));
+}
+
+FRHITransientTexture* FValidationTransientResourceAllocator::CreateTexture(const FRHITextureCreateInfo& InCreateInfo, const TCHAR* InDebugName, uint32 InPassIndex)
+{
+	check(FRHITextureCreateInfo::CheckValidity(InCreateInfo, InDebugName));
+
+	FRHITransientTexture* TransientTexture = RHIAllocator->CreateTexture(InCreateInfo, InDebugName, InPassIndex);
+
+	if (!TransientTexture)
+	{
+		return nullptr;
+	}
+
+	FRHITexture* RHITexture = TransientTexture->GetRHI();
+
+	// Store allocation data
+	FAllocatedResourceData ResourceData;
+	ResourceData.DebugName = InDebugName;
+	ResourceData.ResourceType = FAllocatedResourceData::EType::Texture;
+	ResourceData.Texture.Flags = InCreateInfo.Flags;
+	ResourceData.Texture.Format = InCreateInfo.Format;
+	ResourceData.Texture.ArraySize = InCreateInfo.ArraySize;
+	ResourceData.Texture.NumMips = InCreateInfo.NumMips;
+	AllocatedResourceMap.Add(RHITexture, ResourceData);
+
+	if (RHIValidation::FResource* Resource = RHITexture->GetTrackerResource())
+	{
+		if (!Resource->IsBarrierTrackingInitialized())
+		{
+			RHITexture->InitBarrierTracking(InCreateInfo.NumMips, InCreateInfo.ArraySize * (InCreateInfo.IsTextureCube() ? 6 : 1), InCreateInfo.Format, InCreateInfo.Flags, ERHIAccess::Discard, InDebugName);
+		}
+		else
+		{
+			AllocatedResourcesToInit.Emplace(RHITexture, ResourceData);
+		}
+	}
+
+	return TransientTexture;
+}
+
+FRHITransientBuffer* FValidationTransientResourceAllocator::CreateBuffer(const FRHIBufferCreateInfo& InCreateInfo, const TCHAR* InDebugName, uint32 InPassIndex)
+{
+	FRHITransientBuffer* TransientBuffer = RHIAllocator->CreateBuffer(InCreateInfo, InDebugName, InPassIndex);
+
+	if (!TransientBuffer)
+	{
+		return nullptr;
+	}
+
+	FRHIBuffer* RHIBuffer = TransientBuffer->GetRHI();
+
+	// Store allocation data
+	FAllocatedResourceData ResourceData;
+	ResourceData.DebugName = InDebugName;
+	ResourceData.ResourceType = FAllocatedResourceData::EType::Buffer;
+	AllocatedResourceMap.Add(RHIBuffer, ResourceData);
+
+	if (!RHIBuffer->IsBarrierTrackingInitialized())
+	{
+		RHIBuffer->InitBarrierTracking(ERHIAccess::Discard, InDebugName);
+	}
+	else
+	{
+		AllocatedResourcesToInit.Emplace(RHIBuffer, ResourceData);
+	}
+
+	return TransientBuffer;
+}
+
+void FValidationTransientResourceAllocator::DeallocateMemory(FRHITransientTexture* InTransientTexture, uint32 InPassIndex)
+{
+	check(InTransientTexture);
+
+	RHIAllocator->DeallocateMemory(InTransientTexture, InPassIndex);
+
+	checkf(AllocatedResourceMap.Contains(InTransientTexture->GetRHI()), TEXT("DeallocateMemory called on texture %s, but it is not marked as allocated."), InTransientTexture->GetName());
+	AllocatedResourceMap.Remove(InTransientTexture->GetRHI());
+}
+
+void FValidationTransientResourceAllocator::DeallocateMemory(FRHITransientBuffer* InTransientBuffer, uint32 InPassIndex)
+{
+	check(InTransientBuffer);
+
+	RHIAllocator->DeallocateMemory(InTransientBuffer, InPassIndex);
+
+	checkf(AllocatedResourceMap.Contains(InTransientBuffer->GetRHI()), TEXT("DeallocateMemory called on buffer %s, but it is not marked as allocated."), InTransientBuffer->GetName());
+	AllocatedResourceMap.Remove(InTransientBuffer->GetRHI());
+}
+
+void FValidationTransientResourceAllocator::Flush(FRHICommandListImmediate& RHICmdList, FRHITransientAllocationStats* OutHeapStats)
+{
+	RHICmdList.EnqueueLambda([AllocatedResourcesToInit = MoveTemp(AllocatedResourcesToInit)](FRHICommandListImmediate& InRHICmdList)
+	{
+		// Tracking will be re-initialized, so we need to flush any remaining references.
+		static_cast<FValidationContext&>(InRHICmdList.GetContext()).FlushValidationOps();
+		InitBarrierTracking(AllocatedResourcesToInit);
+	});
+
+	RHIAllocator->Flush(RHICmdList, OutHeapStats);
+}
+
+void FValidationTransientResourceAllocator::Release(FRHICommandListImmediate& RHICmdList)
+{
+	// Check all allocated resource data and make sure all memory is freed again
+	{
+		if (AllocatedResourceMap.Num() > 0)
+		{
+			FString ErrorMessage = FString::Printf(
+				TRANSIENT_RESOURCE_LOG_PREFIX_REASON("Open transient allocations")
+				TEXT("%d Transient Resource allocations still have memory allocated. Call 'DeallocateMemory' on all transient allocated resources prior to releasing the allocator.\n\n")
+				TEXT("Resources with Allocated Memory:\n"),
+				AllocatedResourceMap.Num());
+
+			for (const auto KeyValue : AllocatedResourceMap)
+			{
+				const FAllocatedResourceData& ResourceData = KeyValue.Value;
+
+				ErrorMessage += FString::Printf(TEXT("         %s (%s)\n"), ResourceData.DebugName, ResourceData.ResourceType == FAllocatedResourceData::EType::Texture ? TEXT("Texture") : TEXT("Buffer"));
+			}
+			ErrorMessage += FString::Printf(TRANSIENT_RESOURCE_LOG_SUFFIX);
+			FValidationRHI::ReportValidationFailure(*ErrorMessage);
+		}
+	}
+
+	RHIAllocator->Release(RHICmdList);
+	RHIAllocator = nullptr;
+	delete this;
+}
+
+void FValidationTransientResourceAllocator::InitBarrierTracking(const FAllocatedResourceDataArray& AllocatedResourcesToInit)
+{
+	// Barrier tracking initialization has to happen on the RHI thread, because RHI resources are pooled and reused.
+
+	for (const auto& Entry : AllocatedResourcesToInit)
+	{
+		FRHIResource* Resource = Entry.Key;
+		const FAllocatedResourceData& ResourceData = Entry.Value;
+
+		switch (ResourceData.ResourceType)
+		{
+		case FAllocatedResourceData::EType::Texture:
+		{
+			FRHITexture* Texture = static_cast<FRHITexture*>(Resource);
+
+			int32 ArraySize = ResourceData.Texture.ArraySize;
+
+			if (Texture->GetTextureCube() != nullptr)
+			{
+				ArraySize *= 6;
+			}
+
+			Texture->InitBarrierTracking(ResourceData.Texture.NumMips, ArraySize, ResourceData.Texture.Format, ResourceData.Texture.Flags, ERHIAccess::Discard, ResourceData.DebugName);
+		}
+		break;
+		case FAllocatedResourceData::EType::Buffer:
+		{
+			FRHIBuffer* Buffer = static_cast<FRHIBuffer*>(Resource);
+			Buffer->InitBarrierTracking(ERHIAccess::Discard, ResourceData.DebugName);
+		}
+		break;
+		}
+	}
+}
 
 #endif	// ENABLE_RHI_VALIDATION

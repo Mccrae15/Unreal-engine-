@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "OnlineSubsystem.h"
 #include "Interfaces/OnlineUserInterface.h"
 #include "Interfaces/OnlineIdentityInterface.h"
@@ -18,8 +18,8 @@ class FOnlineSubsystemEOSPlus;
 
 #define BASE_NETID_TYPE_SIZE 1
 
-using FUniqueNetIdEOSPlusPtr = TSharedPtr<const class FUniqueNetIdEOSPlus, UNIQUENETID_ESPMODE>;
-using FUniqueNetIdEOSPlusRef = TSharedRef<const class FUniqueNetIdEOSPlus, UNIQUENETID_ESPMODE>;
+using FUniqueNetIdEOSPlusPtr = TSharedPtr<const class FUniqueNetIdEOSPlus>;
+using FUniqueNetIdEOSPlusRef = TSharedRef<const class FUniqueNetIdEOSPlus>;
 
 /**
  * Unique net id wrapper for a EOS plus another account id. The underlying string is a combination
@@ -32,11 +32,8 @@ public:
 	template<typename... TArgs>
 	static FUniqueNetIdEOSPlusRef Create(TArgs&&... Args)
 	{
-		return MakeShared<FUniqueNetIdEOSPlus, UNIQUENETID_ESPMODE>(Forward<TArgs>(Args)...);
+		return MakeShareable(new FUniqueNetIdEOSPlus(Forward<TArgs>(Args)...));
 	}
-
-	/** Allow MakeShared to see private constructors */
-	friend class SharedPointerInternals::TIntrusiveReferenceController<FUniqueNetIdEOSPlus>;
 
 // FUniqueNetId interface
 	virtual const uint8* GetBytes() const override;
@@ -67,12 +64,17 @@ PACKAGE_SCOPE:
 	TArray<uint8> RawBytes;
 
 private:
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FUniqueNetIdEOSPlus()
 	{
 	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	explicit FUniqueNetIdEOSPlus(FUniqueNetIdPtr InBaseUniqueNetId, FUniqueNetIdPtr InEOSUniqueNetId);
 };
+
+using FUniqueNetIdBinaryPtr = TSharedPtr<const class FUniqueNetIdBinary>;
+using FUniqueNetIdBinaryRef = TSharedRef<const class FUniqueNetIdBinary>;
 
 class FUniqueNetIdBinary :
 	public FUniqueNetId
@@ -80,17 +82,10 @@ class FUniqueNetIdBinary :
 public:
 	virtual ~FUniqueNetIdBinary() = default;
 
-	FUniqueNetIdBinary(const TArray<uint8>& InRawBytes, const FName InType)
-		: RawBytes(InRawBytes)
-		, Type(InType)
+	template<typename... TArgs>
+	static FUniqueNetIdBinaryRef Create(TArgs&&... Args)
 	{
-	}
-
-	FUniqueNetIdBinary(const uint8* InRawBytes, const int32 InSize, const FName InType)
-		: Type(InType)
-	{
-		RawBytes.AddZeroed(InSize);
-		FMemory::Memcpy(RawBytes.GetData(), InRawBytes, InSize);
+		return MakeShareable(new FUniqueNetIdBinary(Forward<TArgs>(Args)...));
 	}
 
 	virtual FName GetType() const override
@@ -136,6 +131,19 @@ public:
 protected:
 	TArray<uint8> RawBytes;
 	FName Type;
+
+	FUniqueNetIdBinary(const TArray<uint8>& InRawBytes, const FName InType)
+		: RawBytes(InRawBytes)
+		, Type(InType)
+	{
+	}
+
+	FUniqueNetIdBinary(const uint8* InRawBytes, const int32 InSize, const FName InType)
+		: Type(InType)
+	{
+		RawBytes.AddZeroed(InSize);
+		FMemory::Memcpy(RawBytes.GetData(), InRawBytes, InSize);
+	}
 };
 
 template<class AggregateUserType>

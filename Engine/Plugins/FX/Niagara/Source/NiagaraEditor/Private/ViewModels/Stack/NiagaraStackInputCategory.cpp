@@ -7,18 +7,17 @@
 
 void UNiagaraStackInputCategory::Initialize(
 	FRequiredEntryData InRequiredEntryData,
-	UNiagaraNodeFunctionCall& InModuleNode,
-	UNiagaraNodeFunctionCall& InInputFunctionCallNode,
+	FString InputCategoryStackEditorDataKey,
 	FText InCategoryName,
+	bool bInIsTopLevelCategory,
 	FString InOwnerStackItemEditorDataKey)
 {
 	bool bCategoryIsAdvanced = false;
-	FString InputCategoryStackEditorDataKey = FString::Printf(TEXT("%s-InputCategory-%s"), *InInputFunctionCallNode.NodeGuid.ToString(EGuidFormats::DigitsWithHyphens), *InCategoryName.ToString());
 	Super::Initialize(InRequiredEntryData, InOwnerStackItemEditorDataKey, InputCategoryStackEditorDataKey);
-	ModuleNode = &InModuleNode;
-	InputFunctionCallNode = &InInputFunctionCallNode;
 	CategoryName = InCategoryName;
 	bShouldShowInStack = true;
+	bIsTopLevelCategory = bInIsTopLevelCategory;
+	CategorySpacer = nullptr;
 	
 	AddChildFilter(FOnFilterChild::CreateUObject(this, &UNiagaraStackInputCategory::FilterForVisibleCondition));
 	AddChildFilter(FOnFilterChild::CreateUObject(this, &UNiagaraStackInputCategory::FilterForIsInlineEditConditionToggle));
@@ -34,9 +33,9 @@ void UNiagaraStackInputCategory::ResetInputs()
 	Inputs.Empty();
 }
 
-void UNiagaraStackInputCategory::AddInput(FName InInputParameterHandle, FNiagaraTypeDefinition InInputType, EStackParameterBehavior InParameterBehavior, bool bIsInputHidden, bool bIsChildInput)
+void UNiagaraStackInputCategory::AddInput(UNiagaraNodeFunctionCall* InModuleNode, UNiagaraNodeFunctionCall* InInputFunctionCallNode, FName InInputParameterHandle, FNiagaraTypeDefinition InInputType, EStackParameterBehavior InParameterBehavior, TOptional<FText> InOptionalDisplayName, bool bIsInputHidden, bool bIsChildInput)
 {
-	Inputs.Add({ InInputParameterHandle, InInputType, InParameterBehavior, bIsInputHidden, bIsChildInput });
+	Inputs.Add({ InModuleNode, InInputFunctionCallNode, InInputParameterHandle, InInputType, InParameterBehavior, InOptionalDisplayName, bIsInputHidden, bIsChildInput });
 }
 
 void UNiagaraStackInputCategory::RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues)
@@ -45,19 +44,38 @@ void UNiagaraStackInputCategory::RefreshChildrenInternal(const TArray<UNiagaraSt
 	{
 		UNiagaraStackFunctionInput* InputChild = FindCurrentChildOfTypeByPredicate<UNiagaraStackFunctionInput>(CurrentChildren, [&](UNiagaraStackFunctionInput* CurrentInput) 
 		{ 
-			return CurrentInput->GetInputParameterHandle() == Input.ParameterHandle && CurrentInput->GetInputFunctionCallInitialScript() == InputFunctionCallNode->FunctionScript; 
+			return CurrentInput->GetInputParameterHandle() == Input.ParameterHandle && CurrentInput->GetInputType() == Input.Type && CurrentInput->GetInputFunctionCallInitialScript() == Input.InputFunctionCallNode->FunctionScript;
 		});
 
 		if (InputChild == nullptr)
 		{
 			InputChild = NewObject<UNiagaraStackFunctionInput>(this);
-			InputChild->Initialize(CreateDefaultChildRequiredData(), *ModuleNode, *InputFunctionCallNode,
+			InputChild->Initialize(CreateDefaultChildRequiredData(), *Input.ModuleNode, *Input.InputFunctionCallNode,
 				Input.ParameterHandle, Input.Type, Input.ParameterBehavior, GetOwnerStackItemEditorDataKey());
 		}
 		InputChild->SetIsHidden(Input.bIsHidden);
 		InputChild->SetSemanticChild(Input.bIsChildInput);
+		InputChild->SetSummaryViewDisiplayName(Input.DisplayName);
 		NewChildren.Add(InputChild);
 	}
+
+	if (bIsTopLevelCategory)
+	{
+		if (CategorySpacer == nullptr)
+		{
+			CategorySpacer = NewObject<UNiagaraStackSpacer>(this);
+			TAttribute<bool> ShouldShowSpacerInStack;
+			ShouldShowSpacerInStack.BindUObject(this, &UNiagaraStackInputCategory::GetShouldShowInStack);
+			CategorySpacer->Initialize(CreateDefaultChildRequiredData(), 6, ShouldShowSpacerInStack, GetStackEditorDataKey());
+		}
+		NewChildren.Add(CategorySpacer);
+	}
+}
+
+int32 UNiagaraStackInputCategory::GetChildIndentLevel() const
+{
+	// We want to keep inputs under a top level category at the same indent level as the category.
+	return bIsTopLevelCategory ? GetIndentLevel() : Super::GetChildIndentLevel();
 }
 
 FText UNiagaraStackInputCategory::GetDisplayName() const
@@ -71,17 +89,26 @@ bool UNiagaraStackInputCategory::GetShouldShowInStack() const
 	// in the case where all children have been hidden, don't show the category in the stack.
 	TArray<UNiagaraStackEntry*> CurrentFilteredChildren;
 	GetFilteredChildren(CurrentFilteredChildren);
-	return bShouldShowInStack && CurrentFilteredChildren.Num() > 0;
+	int32 EmptyCount = CategorySpacer == nullptr ? 0 : 1;
+	return bShouldShowInStack && CurrentFilteredChildren.Num() > EmptyCount;
 }
 
 UNiagaraStackEntry::EStackRowStyle UNiagaraStackInputCategory::GetStackRowStyle() const
 {
-	return EStackRowStyle::ItemCategory;
+	return bIsTopLevelCategory ? EStackRowStyle::ItemCategory : EStackRowStyle::ItemSubCategory;
 }
 
 bool UNiagaraStackInputCategory::GetIsEnabled() const
 {
-	return InputFunctionCallNode->GetDesiredEnabledState() == ENodeEnabledState::Enabled;
+	for (const auto& Input : Inputs)
+	{
+		if (Input.InputFunctionCallNode->GetDesiredEnabledState() == ENodeEnabledState::Enabled)
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 void UNiagaraStackInputCategory::GetSearchItems(TArray<FStackSearchItem>& SearchItems) const

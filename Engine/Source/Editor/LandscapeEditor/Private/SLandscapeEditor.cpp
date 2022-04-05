@@ -9,7 +9,6 @@
 #include "SlateOptMacros.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Notifications/SErrorText.h"
-#include "Classes/EditorStyleSettings.h"
 #include "EditorStyleSet.h"
 #include "EditorModeManager.h"
 #include "EditorModes.h"
@@ -17,7 +16,6 @@
 #include "LandscapeEditorObject.h"
 #include "IDetailsView.h"
 #include "PropertyEditorModule.h"
-#include "IIntroTutorials.h"
 
 #define LOCTEXT_NAMESPACE "LandscapeEditor"
 
@@ -69,13 +67,7 @@ void SLandscapeAssetThumbnail::SetAsset(UObject* Asset)
 
 //////////////////////////////////////////////////////////////////////////
 
-void FLandscapeToolKit::RegisterTabSpawners(const TSharedRef<FTabManager>& TabManager)
-{
-}
 
-void FLandscapeToolKit::UnregisterTabSpawners(const TSharedRef<FTabManager>& TabManager)
-{
-}
 
 void FLandscapeToolKit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost)
 {
@@ -93,6 +85,7 @@ void FLandscapeToolKit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost)
 #define MAP_TOOL(ToolName) CommandList->MapAction(NameToCommandMap.FindChecked("Tool_" ToolName), FUIAction(FExecuteAction::CreateSP(this, &FLandscapeToolKit::OnChangeTool, FName(ToolName)), FCanExecuteAction::CreateSP(this, &FLandscapeToolKit::IsToolEnabled, FName(ToolName)), FIsActionChecked::CreateSP(this, &FLandscapeToolKit::IsToolActive, FName(ToolName)), FIsActionButtonVisible::CreateSP(this, &FLandscapeToolKit::IsToolAvailable, FName(ToolName))));
 	MAP_TOOL("NewLandscape");
 	MAP_TOOL("ResizeLandscape");
+	MAP_TOOL("ImportExport");
 
 	MAP_TOOL("Sculpt");
 	MAP_TOOL("Erase");
@@ -135,11 +128,7 @@ void FLandscapeToolKit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost)
 #undef MAP_BRUSH
 
 	LandscapeEditorWidgets = SNew(SLandscapeEditor, SharedThis(this));
-
-	if (!GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI)
-	{
-		BrushesWidgets = StaticCastSharedRef<FLandscapeEditorDetails>(FLandscapeEditorDetails::MakeInstance());
-	}
+	BrushesWidgets = StaticCastSharedRef<FLandscapeEditorDetails>(FLandscapeEditorDetails::MakeInstance());
 
 	FModeToolkit::Init(InitToolkitHost);
 }
@@ -168,10 +157,7 @@ const TArray<FName> FLandscapeToolKit::PaletteNames = { LandscapeEditorNames::Ma
 
 void FLandscapeToolKit::GetToolPaletteNames(TArray<FName>& InPaletteName) const
 {
-	if (!GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI)
-	{
-		InPaletteName = PaletteNames;
-	}
+	InPaletteName = PaletteNames;
 }
 
 FText FLandscapeToolKit::GetToolPaletteDisplayName(FName PaletteName) const
@@ -202,17 +188,18 @@ void FLandscapeToolKit::BuildToolPalette(FName PaletteName, class FToolBarBuilde
 		ToolBarBuilder.BeginSection("Manage");
 
 		ToolBarBuilder.AddToolBarButton(Commands.NewLandscape);
-		ToolBarBuilder.AddSeparator();	
-
+		ToolBarBuilder.AddToolBarButton(Commands.ImportExportTool);
 		ToolBarBuilder.AddToolBarButton(Commands.SelectComponentTool);
 		ToolBarBuilder.AddToolBarButton(Commands.AddComponentTool);
 		ToolBarBuilder.AddToolBarButton(Commands.DeleteComponentTool);
-		ToolBarBuilder.AddToolBarButton(Commands.MoveToLevelTool);
-		ToolBarBuilder.AddToolBarButton(Commands.ResizeLandscape);
-
-		ToolBarBuilder.AddSeparator();	
+		// MoveToLevel isn't supported because in GridBased worlds don't support Proxies in different Levels
+		// Resize isn't supported and instead should be done through a Commandlet for GridBased worlds
+		if (!LandscapeEdMode->IsGridBased())
+		{
+			ToolBarBuilder.AddToolBarButton(Commands.MoveToLevelTool);
+			ToolBarBuilder.AddToolBarButton(Commands.ResizeLandscape);
+		}
 		ToolBarBuilder.AddToolBarButton(Commands.SplineTool);
-		ToolBarBuilder.EndSection();
 	}
 
 	else if (PaletteName == LandscapeEditorNames::Sculpt)
@@ -231,17 +218,8 @@ void FLandscapeToolKit::BuildToolPalette(FName PaletteName, class FToolBarBuilde
 		ToolBarBuilder.AddToolBarButton(Commands.BlueprintBrushTool);
 		ToolBarBuilder.AddToolBarButton(Commands.MirrorTool);
 
-		ToolBarBuilder.AddSeparator();
-
 		ToolBarBuilder.AddToolBarButton(Commands.RegionSelectTool);
 		ToolBarBuilder.AddToolBarButton(Commands.RegionCopyPasteTool);
-
-		ToolBarBuilder.AddSeparator();
-
-		if (BrushesWidgets)
-		{
-			BrushesWidgets->CustomizeToolBarPalette(ToolBarBuilder, SharedThis(this));
-		}
 
 	}
 
@@ -251,12 +229,9 @@ void FLandscapeToolKit::BuildToolPalette(FName PaletteName, class FToolBarBuilde
 		ToolBarBuilder.AddToolBarButton(Commands.SmoothTool);
 		ToolBarBuilder.AddToolBarButton(Commands.FlattenTool);
 		ToolBarBuilder.AddToolBarButton(Commands.NoiseTool);
-		ToolBarBuilder.AddToolBarButton(Commands.BlueprintBrushTool);
-		ToolBarBuilder.AddSeparator();	
-
-		if (BrushesWidgets)
+		if (LandscapeEdMode->CanHaveLandscapeLayersContent())
 		{
-			BrushesWidgets->CustomizeToolBarPalette(ToolBarBuilder, SharedThis(this));
+			ToolBarBuilder.AddToolBarButton(Commands.BlueprintBrushTool);
 		}
 	}
 
@@ -459,18 +434,11 @@ BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SLandscapeEditor::Construct(const FArguments& InArgs, TSharedRef<FLandscapeToolKit> InParentToolkit)
 {
 	ParentToolkit = InParentToolkit;
-	TSharedRef<FUICommandList> CommandList = InParentToolkit->GetToolkitCommands();
-
-	// Modes:
-	FToolBarBuilder ModeSwitchButtons(CommandList, FMultiBoxCustomization::None);
-	{
-		ModeSwitchButtons.AddToolBarButton(FLandscapeEditorCommands::Get().ManageMode, NAME_None, LOCTEXT("Mode.Manage", "Manage"), LOCTEXT("Mode.Manage.Tooltip", "Contains tools to add a new landscape, import/export landscape, add/remove components and manage streaming"));
-		ModeSwitchButtons.AddToolBarButton(FLandscapeEditorCommands::Get().SculptMode, NAME_None, LOCTEXT("Mode.Sculpt", "Sculpt"), LOCTEXT("Mode.Sculpt.Tooltip", "Contains tools that modify the shape of a landscape"));
-		ModeSwitchButtons.AddToolBarButton(FLandscapeEditorCommands::Get().PaintMode,  NAME_None, LOCTEXT("Mode.Paint",  "Paint"),  LOCTEXT("Mode.Paint.Tooltip",  "Contains tools that paint materials on to a landscape"));
-	}
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	FDetailsViewArgs DetailsViewArgs(false, false, false,FDetailsViewArgs::HideNameArea);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bAllowSearch = false;
 
 	DetailsPanel = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 	DetailsPanel->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateSP(this, &SLandscapeEditor::GetIsPropertyVisible));
@@ -480,8 +448,6 @@ void SLandscapeEditor::Construct(const FArguments& InArgs, TSharedRef<FLandscape
 	{
 		DetailsPanel->SetObject(LandscapeEdMode->UISettings);
 	}
-
-	IIntroTutorials& IntroTutorials = FModuleManager::LoadModuleChecked<IIntroTutorials>(TEXT("IntroTutorials"));
 
 	ChildSlot
 	[
@@ -497,32 +463,6 @@ void SLandscapeEditor::Construct(const FArguments& InArgs, TSharedRef<FLandscape
 		[
 			SNew(SVerticalBox)
 			.IsEnabled(this, &SLandscapeEditor::GetLandscapeEditorIsEnabled)
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(4, 0, 4, 5)
-			[
-				SNew(SOverlay)
-				+ SOverlay::Slot()
-				[
-					SNew(SBorder)
-					.Visibility_Lambda( [] () -> EVisibility { return GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI ? EVisibility::Visible : EVisibility::Collapsed; } )
-					.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
-					.HAlign(HAlign_Center)
-					[
-
-						ModeSwitchButtons.MakeWidget()
-					]
-				]
-
-				// Tutorial link
-				+ SOverlay::Slot()
-				.HAlign(HAlign_Right)
-				.VAlign(VAlign_Bottom)
-				.Padding(4)
-				[
-					IntroTutorials.CreateTutorialsWidget(TEXT("LandscapeMode"))
-				]
-			]
 			+ SVerticalBox::Slot()
 			.Padding(0)
 			[

@@ -71,11 +71,7 @@ struct FAndroidPlatformProperties
 
 	static FORCEINLINE bool SupportsLowQualityLightmaps()
 	{
-#if PLATFORM_ANDROIDGL4
-		return false;
-#else
 		return true;
-#endif
 	}
 
 	static FORCEINLINE bool SupportsDistanceFieldShadows()
@@ -119,6 +115,11 @@ struct FAndroidPlatformProperties
 	}
 
 	static FORCEINLINE bool SupportsMeshLODStreaming()
+	{
+		return true;
+	}
+
+	static FORCEINLINE bool SupportsVirtualTextureStreaming()
 	{
 		return true;
 	}

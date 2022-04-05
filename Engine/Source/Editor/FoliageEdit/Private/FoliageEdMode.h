@@ -5,9 +5,10 @@
 #include "CoreMinimal.h"
 #include "InputCoreTypes.h"
 #include "InstancedFoliage.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "EdMode.h"
 #include "Widgets/Views/SHeaderRow.h"
+#include "WorldPartition/DataLayer/ActorDataLayer.h"
 
 class AInstancedFoliageActor;
 class FCanvas;
@@ -20,8 +21,8 @@ class UFoliageType;
 class ULandscapeComponent;
 class UPrimitiveComponent;
 class UStaticMeshComponent;
-class UViewportInteractor;
 struct FViewportClick;
+struct FScopeChangeDataLayerEditorContext;
 
 //
 // Forward declarations.
@@ -84,6 +85,8 @@ struct FFoliageUISettings
 	void SetPaintDensity(float InPaintDensity) { PaintDensity = InPaintDensity; }
 	float GetUnpaintDensity() const { return UnpaintDensity; }
 	void SetUnpaintDensity(float InUnpaintDensity) { UnpaintDensity = InUnpaintDensity; }
+	const FActorDataLayer& GetDataLayer() const { return DataLayer; }
+	void SetDataLayer(const FActorDataLayer& InDataLayer) { DataLayer = InDataLayer; }
 	bool GetFilterLandscape() const { return bFilterLandscape ? true : false; }
 	void SetFilterLandscape(bool InbFilterLandscape) { bFilterLandscape = InbFilterLandscape; }
 	bool GetFilterStaticMesh() const { return bFilterStaticMesh ? true : false; }
@@ -184,6 +187,8 @@ private:
 	float Radius;
 	float PaintDensity;
 	float UnpaintDensity;
+
+	FActorDataLayer DataLayer;
 
 	bool IsInSingleInstantiationMode;
 	bool IsInQuickSingleInstantiationMode;
@@ -410,7 +415,7 @@ public:
 	virtual bool AllowWidgetMove() override;
 	virtual bool ShouldDrawWidget() const override;
 	virtual bool UsesTransformWidget() const override;
-	virtual EAxisList::Type GetWidgetAxisToDraw(FWidget::EWidgetMode InWidgetMode) const override;
+	virtual EAxisList::Type GetWidgetAxisToDraw(UE::Widget::EWidgetMode InWidgetMode) const override;
 
 	virtual bool DisallowMouseDeltaTracking() const override;
 
@@ -503,6 +508,9 @@ public:
 	/** Set/Clear selection for foliage instances of specific type  */
 	void SelectInstances(const UFoliageType* Settings, bool bSelect);
 
+	/*Focus on selected instances*/
+	void FocusSelectedInstances() const;
+
 	/** Find and select instances that don't have valid base or 'off-ground' */
 	void SelectInvalidInstances(const TArray<const UFoliageType*>& FoliageTypes);
 
@@ -523,12 +531,6 @@ public:
 
 	/** Add desired instances. Uses foliage settings to determine location/scale/rotation and whether instances should be ignored */
 	static void AddInstances(UWorld* InWorld, const TArray<FDesiredFoliageInstance>& DesiredInstances, const FFoliagePaintingGeometryFilter& OverrideGeometryFilter, bool InRebuildFoliageTree = true);
-
-	/** Called when the user presses a button on their motion controller device */
-	void OnVRAction(class FEditorViewportClient& ViewportClient, class UViewportInteractor* Interactor, const struct FViewportActionKeyInput& Action, bool& bOutIsInputCaptured, bool& bWasHandled);
-
-	/** Called on VR hovering */
-	void OnVRHoverUpdate(UViewportInteractor* Interactor, FVector& HoverImpactPoint, bool& bWasHandled);
 
 	/** Called as PIE ends */
 	void OnEndPIE(const bool bIsSimulating);
@@ -569,7 +571,16 @@ public:
 
 	/** Remove currently selected instances*/
 	void RemoveSelectedInstances(UWorld* InWorld);
-			
+
+	/** Returns the list of valid FoliageType class filters */
+	void GetFoliageTypeFilters(TArray<const UClass*>& OutFilters) const;
+
+	/*Find the relevant foliage actor with the foliage type and run the operation*/
+	static void ForEachFoliageInfo(UWorld* InWorld, const UFoliageType* FoliageType, const FSphere& BrushSphere, TFunctionRef<bool(AInstancedFoliageActor* IFA, FFoliageInfo* FoliageInfo, const UFoliageType* FoliageType)> InOperation);
+	
+	/** Changes the Data Layer editing context */
+	void SetDataLayerEditorContext(const FActorDataLayer& DataLayer);
+
 private:
 
 	void BindCommands();
@@ -632,7 +643,7 @@ private:
 	void UpdateWidgetLocationToInstanceSelection();
 
 	/** Snap instance to the ground   */
-	bool SnapInstanceToGround(AInstancedFoliageActor* InIFA, float AlignMaxAngle, FFoliageInfo& Mesh, int32 InstanceIdx);
+	bool SnapInstanceToGround(AInstancedFoliageActor* InIFA, const UFoliageType* Settings, FFoliageInfo& Mesh, int32 InstanceIdx);
 	void SnapSelectedInstancesToGround(UWorld* InWorld);
 
 	/** Callback for when an actor is spawned (to check if it's a new IFA) */
@@ -645,10 +656,10 @@ private:
 	static bool AddInstancesImp(UWorld* InWorld, const UFoliageType* Settings, const TArray<FDesiredFoliageInstance>& DesiredInstances, const TArray<int32>& ExistingInstances = TArray<int32>(), const float Pressure = 1.f, LandscapeLayerCacheData* LandscapeLayerCaches = nullptr, const FFoliageUISettings* UISettings = nullptr, const FFoliagePaintingGeometryFilter* OverrideGeometryFilter = nullptr, bool InRebuildFoliageTree = true);
 
 	/** Logic for determining which instances can be placed in the world*/
-	static void CalculatePotentialInstances(const UWorld* InWorld, const UFoliageType* Settings, const TArray<FDesiredFoliageInstance>& DesiredInstances, TArray<FPotentialInstance> OutPotentialInstances[NUM_INSTANCE_BUCKETS], LandscapeLayerCacheData* LandscaleLayerCachesPtr, const FFoliageUISettings* UISettings, const FFoliagePaintingGeometryFilter* OverrideGeometryFilter = nullptr);
+	static void CalculatePotentialInstances(UWorld* InWorld, const UFoliageType* Settings, const TArray<FDesiredFoliageInstance>& DesiredInstances, TArray<FPotentialInstance> OutPotentialInstances[NUM_INSTANCE_BUCKETS], LandscapeLayerCacheData* LandscaleLayerCachesPtr, const FFoliageUISettings* UISettings, const FFoliagePaintingGeometryFilter* OverrideGeometryFilter = nullptr);
 
 	/** Similar to CalculatePotentialInstances, but it doesn't do any overlap checks which are much harder to thread. Meant to be run in parallel for placing lots of instances */
-	static void CalculatePotentialInstances_ThreadSafe(const UWorld* InWorld, const UFoliageType* Settings, const TArray<FDesiredFoliageInstance>* DesiredInstances, TArray<FPotentialInstance> OutPotentialInstances[NUM_INSTANCE_BUCKETS], const FFoliageUISettings* UISettings, const int32 StartIdx, const int32 LastIdx, const FFoliagePaintingGeometryFilter* OverrideGeometryFilter = nullptr);
+	static void CalculatePotentialInstances_ThreadSafe(UWorld* InWorld, const UFoliageType* Settings, const TArray<FDesiredFoliageInstance>* DesiredInstances, TArray<FPotentialInstance> OutPotentialInstances[NUM_INSTANCE_BUCKETS], const FFoliageUISettings* UISettings, const int32 StartIdx, const int32 LastIdx, const FFoliagePaintingGeometryFilter* OverrideGeometryFilter = nullptr);
 
 	/** Lookup the vertex color corresponding to a location traced on a static mesh */
 	static bool GetStaticMeshVertexColorForHit(const UStaticMeshComponent* InStaticMeshComponent, int32 InTriangleIndex, const FVector& InHitLocation, FColor& OutVertexColor);
@@ -702,9 +713,6 @@ private:
 
 	FDelegateHandle OnActorSpawnedHandle;
 
-	/** When painting in VR, this is the hand index that we're painting with.  Otherwise INDEX_NONE. */
-	class UViewportInteractor* FoliageInteractor;
-
 	int32 UpdateSelectionCounter;
 	bool bHasDeferredSelectionNotification;
 	friend class FEdModeFoliageSelectionUpdate;
@@ -714,5 +722,7 @@ private:
 
 	/** Flag to know when we are tracking a transaction in mouse delta */
 	bool bTracking;
+
+	TUniquePtr<FScopeChangeDataLayerEditorContext> DataLayerEditorContext;
 };
 

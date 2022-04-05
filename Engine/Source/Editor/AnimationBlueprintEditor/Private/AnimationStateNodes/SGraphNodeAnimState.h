@@ -39,9 +39,15 @@ public:
 	virtual TSharedPtr<SToolTip> GetComplexTooltip() override;
 	// End of SGraphNode interface
 
+	// SWidget interface
+	void OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	void OnMouseLeave(const FPointerEvent& MouseEvent) override;
+	// End of SWidget interface
+
 	static void GetStateInfoPopup(UEdGraphNode* GraphNode, TArray<FGraphInformationPopupInfo>& Popups);
 protected:
 	FSlateColor GetBorderBackgroundColor() const;
+	virtual FSlateColor GetBorderBackgroundColor_Internal(FLinearColor InactiveStateColor, FLinearColor ActiveStateColorDim, FLinearColor ActiveStateColorBright) const;
 
 	virtual FText GetPreviewCornerText() const;
 	virtual const FSlateBrush* GetNameIcon() const;

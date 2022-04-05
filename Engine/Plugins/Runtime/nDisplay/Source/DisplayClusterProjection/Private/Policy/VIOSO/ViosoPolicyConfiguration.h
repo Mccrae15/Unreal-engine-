@@ -13,14 +13,14 @@ struct FViosoPolicyConfiguration
 
 	// Calibration file and display segment with geometry
 	FString CalibrationFile;
-	int     CalibrationIndex = -1;
+	int32     CalibrationIndex = -1;
 
 	FMatrix BaseMatrix;
 
 	//@todo add more vioso options, if required
 	float Gamma = 1.f;
 
-	bool Initialize(const TMap<FString, FString>& InParameters, const FString& InViewportId);
+	bool Initialize(const TMap<FString, FString>& InParameters, class IDisplayClusterViewport* InViewport);
 
 	FString ToString() const;
 };

@@ -37,19 +37,9 @@ class ENGINE_API AHUD : public AActor
 {
 	GENERATED_UCLASS_BODY()
 
-	/** Pre-defined FColors for convenience. */
-	UE_DEPRECATED(4.13, "Use FColor::White instead")
-	static const FColor WhiteColor;
-
-	UE_DEPRECATED(4.13, "Use FColor::Green instead")
-	static const FColor GreenColor;
-
-	UE_DEPRECATED(4.13, "Use FColor::Red instead")
-	static const FColor RedColor;
-
 	/** PlayerController which owns this HUD. */
 	UPROPERTY(BlueprintReadOnly, Category=HUD)
-	APlayerController* PlayerOwner;    
+	TObjectPtr<APlayerController> PlayerOwner;    
 
 	/** Tells whether the game was paused due to lost focus */
 	UPROPERTY(BlueprintReadOnly, Category=HUD)
@@ -86,7 +76,7 @@ private:
 public:
 	/** Holds a list of Actors that need PostRender() calls. */
 	UPROPERTY()
-	TArray<AActor*> PostRenderedActors;
+	TArray<TObjectPtr<AActor>> PostRenderedActors;
 
 	/** Used to calculate delta time between HUD rendering. */
 	float LastHUDRenderTime;
@@ -105,11 +95,11 @@ public:
 protected:
 	/** Canvas to Draw HUD on.  Only valid during PostRender() event.  */
 	UPROPERTY()
-	UCanvas* Canvas;
+	TObjectPtr<UCanvas> Canvas;
 
 	/** 'Foreground' debug canvas, will draw in front of Slate UI. */
 	UPROPERTY()
-	UCanvas* DebugCanvas;
+	TObjectPtr<UCanvas> DebugCanvas;
 
 	/** List of debug strings attached to actors, sorted by actor first, then by order of addition */
 	UPROPERTY()
@@ -147,7 +137,7 @@ protected:
 
 	/** Show Debug Actor used if 'bShowDebugForReticleTarget' is true, only updated if trace from reticle hit a new Actor of class 'ShowDebugTargetDesiredClass'*/
 	UPROPERTY()
-	AActor* ShowDebugTargetActor;
+	TObjectPtr<AActor> ShowDebugTargetActor;
 
 public:
 	/**
@@ -333,9 +323,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = HUD)
 	void DrawMaterialTriangle(UMaterialInterface* Material, FVector2D V0_Pos, FVector2D V1_Pos, FVector2D V2_Pos, FVector2D V0_UV, FVector2D V1_UV, FVector2D V2_UV, FLinearColor V0_Color = FLinearColor::White, FLinearColor V1_Color = FLinearColor::White, FLinearColor V2_Color = FLinearColor::White);
 	
-	/** Transforms a 3D world-space vector into 2D screen coordinates */
+	/** Transforms a 3D world-space vector into 2D screen coordinates
+	 * @param Location			The world-space position to transform
+	 * @param bClampToZeroPlane	If true, 2D screen coordinates behind the viewing plane (-Z) will have Z set to 0 (leaving X and Y alone)
+	 * @return The transformed vector
+	 */
 	UFUNCTION(BlueprintCallable, Category = HUD)
-	FVector Project(FVector Location) const;
+	FVector Project(FVector Location, bool bClampToZeroPlane = true) const;
 	
 	/** Transforms a 2D screen location into a 3D location and direction */
 	UFUNCTION(BlueprintCallable, Category = HUD)

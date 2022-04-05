@@ -9,7 +9,6 @@
 #include "Interfaces/Views/TreeViews/IDisplayClusterConfiguratorViewTree.h"
 
 #include "BlueprintEditorTabs.h"
-#include "SSCSEditor.h"
 #include "Widgets/Docking/SDockTab.h"
 
 #define LOCTEXT_NAMESPACE "DisplayClusterConfiguratorTabSpawners"
@@ -31,7 +30,7 @@ FDisplayClusterViewOutputMappingSummoner::FDisplayClusterViewOutputMappingSummon
 	TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> InHostingApp) : FDisplayClusterViewSummoner(FDisplayClusterConfiguratorEditorConfigurationMode::TabID_OutputMapping, InHostingApp)
 {
 	TabLabel = LOCTEXT("OutputMappingTabTitle", "OutputMapping");
-	TabIcon = FSlateIcon(FDisplayClusterConfiguratorStyle::GetStyleSetName(), "DisplayClusterConfigurator.Tabs.OutputMapping");
+	TabIcon = FSlateIcon(FDisplayClusterConfiguratorStyle::Get().GetStyleSetName(), "DisplayClusterConfigurator.Tabs.OutputMapping");
 	
 	ViewMenuDescription = LOCTEXT("OutputMappingTabDescription", "OutputMapping");
 	ViewMenuTooltip = LOCTEXT("OutputMapping_ToolTip", "Shows output mappings");
@@ -47,7 +46,7 @@ FDisplayClusterViewClusterSummoner::FDisplayClusterViewClusterSummoner(
 	TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> InHostingApp) : FDisplayClusterViewSummoner(FDisplayClusterConfiguratorEditorConfigurationMode::TabID_Cluster, InHostingApp)
 {
 	TabLabel = LOCTEXT("ClusterTabTitle", "Cluster");
-	TabIcon = FSlateIcon(FDisplayClusterConfiguratorStyle::GetStyleSetName(), "DisplayClusterConfigurator.Tabs.Cluster");
+	TabIcon = FSlateIcon(FDisplayClusterConfiguratorStyle::Get().GetStyleSetName(), "DisplayClusterConfigurator.Tabs.Cluster");
 	
 	ViewMenuDescription = LOCTEXT("ClusterTabDescription", "Cluster view");
 	ViewMenuTooltip = LOCTEXT("Cluster_ToolTip", "Shows the cluster view");
@@ -62,7 +61,7 @@ TSharedRef<SWidget> FDisplayClusterViewClusterSummoner::CreateTabBody(const FWor
 FDisplayClusterSCSSummoner::FDisplayClusterSCSSummoner(TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> InHostingApp) : FDisplayClusterViewSummoner(FDisplayClusterConfiguratorEditorConfigurationMode::TabID_Scene, InHostingApp)
 {
 	TabLabel = LOCTEXT("ComponentsTabLabel", "Components");
-	TabIcon = FSlateIcon(FEditorStyle::GetStyleSetName(), "Kismet.Tabs.Components");
+	TabIcon = FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Kismet.Tabs.Components");
 
 	bIsSingleton = true;
 
@@ -80,7 +79,7 @@ FDisplayClusterSCSViewportSummoner::FDisplayClusterSCSViewportSummoner(
 	TSharedPtr<FDisplayClusterConfiguratorBlueprintEditor> InHostingApp) : FDisplayClusterViewSummoner(FDisplayClusterConfiguratorEditorConfigurationMode::TabID_Viewport, InHostingApp)
 {
 	TabLabel = LOCTEXT("ViewportTabTitle", "Preview");
-	TabIcon = FSlateIcon(FDisplayClusterConfiguratorStyle::GetStyleSetName(), "DisplayClusterConfigurator.Tabs.Viewport");
+	TabIcon = FSlateIcon(FSlateIcon(FAppStyle::Get().GetStyleSetName(), "LevelEditor.Tabs.Viewports"));
 
 	ViewMenuDescription = LOCTEXT("ViewportTabDescription", "Viewport");
 	ViewMenuTooltip = LOCTEXT("Viewport_ToolTip", "Shows the viewport");

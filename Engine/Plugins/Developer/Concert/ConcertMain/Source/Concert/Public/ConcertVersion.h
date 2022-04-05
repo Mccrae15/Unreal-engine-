@@ -29,13 +29,17 @@ struct FConcertFileVersionInfo
 	/** Validate this version info against another */
 	CONCERT_API bool Validate(const FConcertFileVersionInfo& InOther, const EConcertVersionValidationMode InValidationMode, FText* OutFailureReason = nullptr) const;
 
-	/* UE4 file version */
+	/* UE4 File version */
 	UPROPERTY()
-	int32 FileVersionUE4 = 0;
+	int32 FileVersion = 0; // Ideally we would rename this FileVersionUE4
+
+	/* UE5 File version */
+	UPROPERTY()
+	int32 FileVersionUE5 = 0;
 
 	/* Licensee file version */
 	UPROPERTY()
-	int32 FileVersionLicenseeUE4 = 0;
+	int32 FileVersionLicensee = 0;
 };
 
 /** Holds engine version information */

@@ -32,6 +32,11 @@ ALevelBounds::ALevelBounds(const FObjectInitializer& ObjectInitializer)
 	bLevelBoundsDirty = true;
 	bUsingDefaultBounds = false;
 #endif
+
+#if WITH_EDITORONLY_DATA
+	bIsSpatiallyLoaded = false;
+#endif
+
 }
 
 void ALevelBounds::PostLoad()
@@ -56,7 +61,7 @@ FBox ALevelBounds::GetComponentsBoundingBox(bool bNonColliding, bool bIncludeFro
 				BoundsCenter + BoundsExtent);
 }
 
-FBox ALevelBounds::CalculateLevelBounds(ULevel* InLevel)
+FBox ALevelBounds::CalculateLevelBounds(const ULevel* InLevel)
 {
 	FBox LevelBounds(ForceInit);
 	
@@ -145,6 +150,11 @@ ETickableTickType ALevelBounds::GetTickableTickType() const
 
 bool ALevelBounds::IsTickable() const
 {
+	if (!IsValidChecked(this) || HasAnyFlags(RF_BeginDestroyed|RF_FinishDestroyed))
+	{
+		return false;
+	}
+
 	if (bAutoUpdateBounds)
 	{
 		UWorld* World = GetWorld();

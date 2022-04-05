@@ -6,6 +6,7 @@
 
 #include "Components/SpotLightComponent.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Misc/LargeWorldRenderPosition.h"
 #include "Engine/Texture2D.h"
 #include "SceneManagement.h"
 #include "PointLightSceneProxy.h"
@@ -51,15 +52,15 @@ public:
 	}
 
 	/** Accesses parameters needed for rendering the light. */
-	virtual void GetLightShaderParameters(FLightShaderParameters& LightParameters) const override
+	virtual void GetLightShaderParameters(FLightRenderParameters& LightParameters) const override
 	{
-		LightParameters.Position = GetOrigin();
+		LightParameters.WorldPosition = GetOrigin();
 		LightParameters.InvRadius = InvRadius;
-		LightParameters.Color = FVector(GetColor());
+		LightParameters.Color = GetColor();
 		LightParameters.FalloffExponent = FalloffExponent;
-		LightParameters.Direction = -GetDirection();
-		LightParameters.Tangent = FVector(WorldToLight.M[0][2], WorldToLight.M[1][2], WorldToLight.M[2][2]);
-		LightParameters.SpotAngles = FVector2D(CosOuterCone, InvCosConeDifference);
+		LightParameters.Direction = FVector3f(-GetDirection());
+		LightParameters.Tangent = FVector3f(WorldToLight.M[0][2], WorldToLight.M[1][2], WorldToLight.M[2][2]);
+		LightParameters.SpotAngles = FVector2f(CosOuterCone, InvCosConeDifference);
 		LightParameters.SpecularScale = SpecularScale;
 		LightParameters.SourceRadius = SourceRadius;
 		LightParameters.SoftSourceRadius = SoftSourceRadius;
@@ -104,8 +105,7 @@ public:
 		FWholeSceneProjectedShadowInitializer& OutInitializer = *new(OutInitializers) FWholeSceneProjectedShadowInitializer;
 		OutInitializer.PreShadowTranslation = -GetLightToWorld().GetOrigin();
 		OutInitializer.WorldToLight = GetWorldToLight().RemoveTranslation();
-		OutInitializer.Scales = FVector(1.0f,InvTanOuterCone,InvTanOuterCone);
-		OutInitializer.FaceDirection = FVector(1,0,0);
+		OutInitializer.Scales = FVector2D(InvTanOuterCone,InvTanOuterCone);
 
 		const FSphere AbsoluteBoundingSphere = FSpotLightSceneProxy::GetBoundingSphere();
 		OutInitializer.SubjectBounds = FBoxSphereBounds(
@@ -125,7 +125,7 @@ public:
 
 	virtual FSphere GetBoundingSphere() const override
 	{
-		return FMath::ComputeBoundingSphereForCone(GetOrigin(), GetDirection(), Radius, CosOuterCone, SinOuterCone);
+		return FMath::ComputeBoundingSphereForCone(GetOrigin(), GetDirection(), (FSphere::FReal)Radius, (FSphere::FReal)CosOuterCone, (FSphere::FReal)SinOuterCone);
 	}
 
 	virtual float GetEffectiveScreenRadius(const FViewMatrices& ShadowViewMatrices) const override
@@ -243,6 +243,12 @@ void USpotLightComponent::SetLightBrightness(float InBrightness)
 		ULightComponent::SetLightBrightness(InBrightness);
 	}
 }
+
+FBox USpotLightComponent::GetStreamingBounds() const
+{
+	const FSphere BoundingSphere = GetBoundingSphere();
+	return FBox(BoundingSphere.Center - BoundingSphere.W, BoundingSphere.Center + BoundingSphere.W);
+}
 #endif // WITH_EDITOR
 
 static bool IsSpotLightSupported(const USpotLightComponent* InLight)
@@ -271,10 +277,10 @@ FLightSceneProxy* USpotLightComponent::CreateSceneProxy() const
 
 FSphere USpotLightComponent::GetBoundingSphere() const
 {
-	float ConeAngle = GetHalfConeAngle();
-	float CosConeAngle = FMath::Cos(ConeAngle);
-	float SinConeAngle = FMath::Sin(ConeAngle);
-	return FMath::ComputeBoundingSphereForCone(GetComponentTransform().GetLocation(), GetDirection(), AttenuationRadius, CosConeAngle, SinConeAngle);
+	FSphere::FReal ConeAngle = GetHalfConeAngle();
+	FSphere::FReal CosConeAngle = FMath::Cos(ConeAngle);
+	FSphere::FReal SinConeAngle = FMath::Sin(ConeAngle);
+	return FMath::ComputeBoundingSphereForCone(GetComponentTransform().GetLocation(), GetDirection(), (FSphere::FReal)AttenuationRadius, CosConeAngle, SinConeAngle);
 }
 
 bool USpotLightComponent::AffectsBounds(const FBoxSphereBounds& InBounds) const

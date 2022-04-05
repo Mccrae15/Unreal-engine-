@@ -19,6 +19,32 @@
 #include "Serialization/MemoryWriter.h"
 #include "ChaosCooking.h"
 
+class FChaosDerivedDataCookerRefHolder : public FGCObject
+{
+public:
+	FChaosDerivedDataCookerRefHolder(FChaosDerivedDataCooker* InCooker)
+		: Cooker(InCooker)
+	{
+	}
+
+	// FGCObject Interface
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override
+	{
+		if (Cooker && Cooker->Setup)
+		{
+			Collector.AddReferencedObject(Cooker->Setup);
+		}
+	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("ChaosDerivedDataCooker");
+	}
+	// End FGCObject Interface
+
+private:
+	FChaosDerivedDataCooker* Cooker;
+};
+
 const TCHAR* FChaosDerivedDataCooker::GetPluginName() const
 {
 	return TEXT("ChaosGeometryData");
@@ -33,6 +59,20 @@ const TCHAR* FChaosDerivedDataCooker::GetVersionString() const
 	return *Chaos::ChaosVersionString;
 }
 
+FString FChaosDerivedDataCooker::GetDebugContextString() const
+{
+	if (Setup)
+	{
+		UObject* Outer = Setup->GetOuter();
+		if (Outer)
+		{
+			return Outer->GetFullName();
+		}
+	}
+
+	return FDerivedDataPluginInterface::GetDebugContextString();
+}
+
 FString FChaosDerivedDataCooker::GetPluginSpecificCacheKeySuffix() const
 {
 	FString SetupGeometryKey(TEXT("INVALID"));
@@ -42,9 +82,10 @@ FString FChaosDerivedDataCooker::GetPluginSpecificCacheKeySuffix() const
 		Setup->GetGeometryDDCKey(SetupGeometryKey);
 	}
 
-	return FString::Printf(TEXT("%s_%s"),
+	return FString::Printf(TEXT("%s_%s_REAL%d"),
 		*RequestedFormat.ToString(),
-		*SetupGeometryKey);
+		*SetupGeometryKey,
+		(int)sizeof(Chaos::FReal));
 }
 
 bool FChaosDerivedDataCooker::IsBuildThreadsafe() const
@@ -77,19 +118,14 @@ bool FChaosDerivedDataCooker::Build(TArray<uint8>& OutData)
 	return bSucceeded;
 }
 
-void FChaosDerivedDataCooker::AddReferencedObjects(FReferenceCollector& Collector)
-{
-	if(Setup)
-	{
-		Collector.AddReferencedObject(Setup);
-	}
-}
-
-FChaosDerivedDataCooker::FChaosDerivedDataCooker(UBodySetup* InSetup, FName InFormat)
+FChaosDerivedDataCooker::FChaosDerivedDataCooker(UBodySetup* InSetup, FName InFormat, bool bInUseRefHolder)
 	: Setup(InSetup)
 	, RequestedFormat(InFormat)
 {
-
+	if (bInUseRefHolder)
+	{
+		RefHolder = MakeUnique<FChaosDerivedDataCookerRefHolder>(this);
+	}
 }
 
 

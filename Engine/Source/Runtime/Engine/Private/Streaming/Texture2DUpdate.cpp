@@ -23,7 +23,7 @@ FTexture2DUpdateContext::FTexture2DUpdateContext(const UTexture2D* InTexture, ET
 {
 	check(InTexture);
 	checkSlow(InCurrentThread != FTexture2DUpdate::TT_Render || IsInRenderingThread());
-	Resource = Texture && Texture->Resource ? Texture->Resource->GetTexture2DResource() : nullptr;
+	Resource = Texture && Texture->GetResource() ? const_cast<UTexture2D*>(Texture)->GetResource()->GetTexture2DResource() : nullptr;
 	if (Resource)
 	{
 		MipsView = Resource->GetPlatformMipsView();
@@ -37,7 +37,7 @@ FTexture2DUpdateContext::FTexture2DUpdateContext(const UStreamableRenderAsset* I
 FTexture2DUpdate::FTexture2DUpdate(UTexture2D* InTexture) 
 	: TRenderAssetUpdate<FTexture2DUpdateContext>(InTexture)
 {
-	if (!InTexture->Resource)
+	if (!InTexture->GetResource())
 	{
 		bIsCancelled = true;
 	}
@@ -94,7 +94,7 @@ void FTexture2DUpdate::DoConvertToVirtualWithNewMips(const FContext& Context)
 			ensure(!IntermediateTextureRHI);
 
 			// Create a copy of the texture that is a virtual texture.
-			FRHIResourceCreateInfo CreateInfo(Context.Resource->ResourceMem);
+			FRHIResourceCreateInfo CreateInfo(TEXT("FTexture2DUpdate"), Context.Resource->ResourceMem);
 			IntermediateTextureRHI = RHICreateTexture2D(
 				MipMap0.SizeX, 
 				MipMap0.SizeY, 
@@ -128,7 +128,7 @@ bool FTexture2DUpdate::DoConvertToNonVirtual(const FContext& Context)
 			const FTexture2DMipMap& PendingFirstMipMap = *Context.MipsView[PendingFirstLODIdx];
 
 			ensure(!IntermediateTextureRHI);
-			FRHIResourceCreateInfo CreateInfo(Context.Resource->ResourceMem);
+			FRHIResourceCreateInfo CreateInfo(TEXT("FTexture2DUpdate"), Context.Resource->ResourceMem);
 			IntermediateTextureRHI = RHICreateTexture2D(
 				PendingFirstMipMap.SizeX, 
 				PendingFirstMipMap.SizeY, 

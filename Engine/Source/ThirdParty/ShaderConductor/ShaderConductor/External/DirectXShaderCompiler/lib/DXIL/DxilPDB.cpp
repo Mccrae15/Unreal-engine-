@@ -188,7 +188,9 @@ struct MSFWriter {
     MSF_SuperBlock SB = CalculateSuperblock();
     const uint32_t NumDirectoryBlocks = GetNumBlocks(SB.NumDirectoryBytes);
     const uint32_t StreamDirectoryAddr = SB.BlockMapAddr;
-    const uint32_t StreamDirectoryStart = StreamDirectoryAddr + 1;
+    const uint32_t BlockAddrSize = NumDirectoryBlocks * sizeof(support::ulittle32_t);
+    const uint32_t NumBlockAddrBlocks = GetNumBlocks(BlockAddrSize);
+    const uint32_t StreamDirectoryStart = StreamDirectoryAddr + NumBlockAddrBlocks;
     const uint32_t StreamStart = StreamDirectoryStart + NumDirectoryBlocks;
 
     BlockWriter Writer(OS);
@@ -207,7 +209,8 @@ struct MSFWriter {
         V = Start++;
         BlockAddr.push_back(V);
       }
-      Writer.WriteBlocks(1, BlockAddr.data(), sizeof(BlockAddr[0])*BlockAddr.size());
+      assert(BlockAddrSize == sizeof(BlockAddr[0])*BlockAddr.size());
+      Writer.WriteBlocks(NumBlockAddrBlocks, BlockAddr.data(), BlockAddrSize);
     }
 
     // Stream Directory. Describes where all the streams are
@@ -294,7 +297,13 @@ SmallVector<char, 0> WritePdbStream(ArrayRef<BYTE> Hash) {
 }
 
 HRESULT hlsl::pdb::WriteDxilPDB(IMalloc *pMalloc, IDxcBlob *pContainer, ArrayRef<BYTE> HashData, IDxcBlob **ppOutBlob) {
-  if (!hlsl::IsValidDxilContainer((hlsl::DxilContainerHeader *)pContainer->GetBufferPointer(), pContainer->GetBufferSize()))
+  return hlsl::pdb::WriteDxilPDB(pMalloc,
+    llvm::ArrayRef<BYTE>((const BYTE *)pContainer->GetBufferPointer(), pContainer->GetBufferSize()),
+    HashData, ppOutBlob);
+}
+
+HRESULT hlsl::pdb::WriteDxilPDB(IMalloc *pMalloc, llvm::ArrayRef<BYTE> ContainerData, llvm::ArrayRef<BYTE> HashData, IDxcBlob **ppOutBlob) {
+  if (!hlsl::IsValidDxilContainer((const hlsl::DxilContainerHeader *)ContainerData.data(), ContainerData.size()))
     return E_FAIL;
 
   SmallVector<char, 0> PdbStream = WritePdbStream(HashData);
@@ -308,7 +317,7 @@ HRESULT hlsl::pdb::WriteDxilPDB(IMalloc *pMalloc, IDxcBlob *pContainer, ArrayRef
   Writer.AddEmptyStream(); // DBI
   Writer.AddEmptyStream(); // IPI
   
-  Writer.AddStream({ (char *)pContainer->GetBufferPointer(), pContainer->GetBufferSize() }); // Actual data block
+  Writer.AddStream(llvm::ArrayRef<char>((const char *)ContainerData.data(), ContainerData.size() )); // Actual data block
   
   CComPtr<hlsl::AbstractMemoryStream> pStream;
   IFR(hlsl::CreateMemoryStream(pMalloc, &pStream));

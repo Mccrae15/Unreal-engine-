@@ -160,6 +160,11 @@ struct CORE_API FMemory
 		return FPlatformMemory::StreamingMemcpy(Dest,Src,Count);
 	}
 
+	static FORCEINLINE void* ParallelMemcpy(void* Dest, const void* Src, SIZE_T Count, EMemcpyCachePolicy Policy = EMemcpyCachePolicy::StoreCached)
+	{
+		return FPlatformMemory::ParallelMemcpy(Dest, Src, Count, Policy);
+	}
+
 	static FORCEINLINE void Memswap( void* Ptr1, void* Ptr2, SIZE_T Size )
 	{
 		FPlatformMemory::Memswap(Ptr1,Ptr2,Size);
@@ -170,11 +175,13 @@ struct CORE_API FMemory
 	//
 	static FORCEINLINE void* SystemMalloc(SIZE_T Size)
 	{
+		/* TODO: Trace! */
 		return ::malloc(Size);
 	}
 
 	static FORCEINLINE void SystemFree(void* Ptr)
 	{
+		/* TODO: Trace! */
 		::free(Ptr);
 	}
 

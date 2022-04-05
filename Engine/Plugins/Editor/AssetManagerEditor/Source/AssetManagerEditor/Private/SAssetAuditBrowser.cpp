@@ -20,6 +20,7 @@
 #include "ClassViewerFilter.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
+#include "ContentBrowserDataSource.h"
 #include "AssetRegistryModule.h"
 #include "Toolkits/GlobalEditorCommonCommands.h"
 #include "FrontendFilterBase.h"
@@ -295,6 +296,8 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 	// Hide path and type by default
 	Config.HiddenColumnNames.Add(TEXT("Class"));
 	Config.HiddenColumnNames.Add(TEXT("Path"));
+	// Hide item disk size since we display a custom version here
+	Config.HiddenColumnNames.Add(ContentBrowserItemAttributes::ItemDiskSize.ToString());
 
 	// Add custom columns
 	Config.CustomColumns.Emplace(FPrimaryAssetId::PrimaryAssetTypeTag, LOCTEXT("AssetType", "Primary Type"), LOCTEXT("AssetTypeTooltip", "Primary Asset Type of this asset, if set"), UObject::FAssetRegistryTag::TT_Alphabetical, FOnGetCustomAssetColumnData::CreateSP(this, &SAssetAuditBrowser::GetStringValueForCustomColumn), FOnGetCustomAssetColumnDisplayText::CreateSP(this, &SAssetAuditBrowser::GetDisplayTextForCustomColumn));
@@ -452,26 +455,43 @@ void SAssetAuditBrowser::Construct(const FArguments& InArgs)
 						.Text(LOCTEXT("RefreshAssets", "Refresh"))
 						.OnClicked(this, &SAssetAuditBrowser::RefreshAssets)
 					]
-					
-					+ SHorizontalBox::Slot()
+
+					+SHorizontalBox::Slot()
 					.FillWidth(1.0f)
 					.HAlign(HAlign_Fill)
 					[
-						SNew(SHorizontalBox)						
+						SNew(SHorizontalBox)
 						+ SHorizontalBox::Slot()
-						.FillWidth(1.0f)
-						.HAlign(HAlign_Right)
 						.VAlign(VAlign_Center)
+						.HAlign(HAlign_Fill)
+						.FillWidth(1.0f)
 						[
-							SNew(STextBlock)
-							.ToolTipText(LOCTEXT("Platform_Tooltip", "Select which platform to display data for. Platforms are only available if a cooked AssetRegistry.bin is available in Saved/Cooked/Platform or Build/Platform."))
-							.Text(LOCTEXT("PlatformLabel", "Selected Platform: "))
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.Padding(6.0f)
+							.VAlign(VAlign_Center)
+							.HAlign(HAlign_Left)
+							.FillWidth(1.0f)
+							[
+								SAssignNew(RegistrySourceTimeText, STextBlock)
+								.ToolTipText(LOCTEXT("RegistryTime_TT", "If viewing cooked data, the timestamp for the AssetRegistry.bin file. Changes to assets are not picked up until a new cook. Otherwise, viewing preview data from the editor."))
+							]
+							+ SHorizontalBox::Slot()
+							.Padding(6.0f)
+							.AutoWidth()
+							.HAlign(HAlign_Right)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.ToolTipText(LOCTEXT("Platform_Tooltip", "Select which platform to display data for. Platforms are only available if a cooked AssetRegistry.bin is available in Saved/Cooked/Platform or Build/Platform."))
+								.Text(LOCTEXT("PlatformLabel", "Selected Platform: "))
+							]
 						]
 						+ SHorizontalBox::Slot()
 						.AutoWidth()
 						.HAlign(HAlign_Right)
 						[
-							SNew(SComboBox<TSharedPtr<FString>>)							
+							SNew(SComboBox<TSharedPtr<FString>>)
 							.OptionsSource(&SourceComboList)
 							.OnGenerateWidget(this, &SAssetAuditBrowser::GenerateSourceComboItem)
 							.OnSelectionChanged(this, &SAssetAuditBrowser::HandleSourceComboChanged)
@@ -870,6 +890,23 @@ FText SAssetAuditBrowser::GetSourceComboText() const
 void SAssetAuditBrowser::SetCurrentRegistrySource(const FAssetManagerEditorRegistrySource* RegistrySource)
 {
 	CurrentRegistrySource = RegistrySource;
+
+	if (CurrentRegistrySource->bIsEditor)
+	{
+		RegistrySourceTimeText->SetText(LOCTEXT("AssetRegistryTimestampEditor", "Preview data"));
+	}
+	else
+	{
+		
+		if (CurrentRegistrySource->SourceTimestamp.Len() == 0)
+		{
+			RegistrySourceTimeText->SetText(LOCTEXT("AssetRegistryTimestampError", "Unable to get AssetRegistry.bin timestamp (recook?)"));
+		}
+		else
+		{
+			RegistrySourceTimeText->SetText(FText::Format(LOCTEXT("AssetRegistryTimestampFormat", "AssetRegistry.bin from {0}"), FText::FromString(CurrentRegistrySource->SourceTimestamp)));
+		}
+	}
 
 	// Refresh dropdown
 	TArray<const FAssetManagerEditorRegistrySource*> AvailableSources;

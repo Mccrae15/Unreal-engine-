@@ -6,11 +6,6 @@
 
 #pragma once
 
-// Assume D3DX is available
-#ifndef WITH_D3DX_LIBS
-#define WITH_D3DX_LIBS	1
-#endif
-
 // Disable macro redefinition warning for compatibility with Windows SDK 8+
 #pragma warning(push)
 #pragma warning(disable : 4005)	// macro redefinition
@@ -37,6 +32,9 @@ THIRD_PARTY_INCLUDES_END
 
 #define D3D12RHI_RESOURCE_FLAG_ALLOW_INDIRECT_BUFFER D3D12_RESOURCE_FLAG_NONE
 #define D3D12RHI_HEAP_FLAG_ALLOW_INDIRECT_BUFFERS		D3D12_HEAP_FLAG_NONE
+
+#define D3D12RHI_NEEDS_VENDOR_EXTENSIONS     1
+#define D3D12RHI_NEEDS_SHADER_FEATURE_CHECKS 1
 
 #include "../Public/D3D12Util.h"
 #include "WindowsD3D12DiskCache.h"

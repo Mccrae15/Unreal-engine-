@@ -21,63 +21,7 @@
 	#include "pxr/usd/usdShade/material.h"
 #include "USDIncludesEnd.h"
 
-namespace UE
-{
-	namespace UsdShadeMaterialTranslator
-	{
-		namespace Private
-		{
-			bool IsMaterialUsingUDIMs(const pxr::UsdShadeMaterial& UsdShadeMaterial)
-			{
-				FScopedUsdAllocs UsdAllocs;
 
-				pxr::UsdShadeShader SurfaceShader = UsdShadeMaterial.ComputeSurfaceSource();
-				if (!SurfaceShader)
-				{
-					return false;
-				}
-
-				for (const pxr::UsdShadeInput& ShadeInput : SurfaceShader.GetInputs())
-				{
-					pxr::UsdShadeConnectableAPI Source;
-					pxr::TfToken SourceName;
-					pxr::UsdShadeAttributeType AttributeType;
-
-					if (ShadeInput.GetConnectedSource(&Source, &SourceName, &AttributeType))
-					{
-						pxr::UsdShadeInput FileInput;
-
-						// UsdUVTexture: Get its file input
-						if (AttributeType == pxr::UsdShadeAttributeType::Output)
-						{
-							FileInput = Source.GetInput(UnrealIdentifiers::File);
-						}
-						// Check if we are being directly passed an asset
-						else
-						{
-							FileInput = Source.GetInput(SourceName);
-						}
-
-						if (FileInput && FileInput.GetTypeName() == pxr::SdfValueTypeNames->Asset) // Check that FileInput is of type Asset
-						{
-							pxr::SdfAssetPath TextureAssetPath;
-							FileInput.GetAttr().Get< pxr::SdfAssetPath >(&TextureAssetPath);
-
-							FString TexturePath = UsdToUnreal::ConvertString(TextureAssetPath.GetAssetPath());
-
-							if (TexturePath.Contains(TEXT("<UDIM>")))
-							{
-								return true;
-							}
-						}
-					}
-				}
-
-				return false;
-			}
-		}
-	}
-}
 void FUsdShadeMaterialTranslator::CreateAssets()
 {
 	pxr::UsdShadeMaterial ShadeMaterial( GetPrim() );
@@ -91,12 +35,17 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 
 	FString MaterialHashString = UsdUtils::HashShadeMaterial( ShadeMaterial ).ToString();
 
-	UMaterialInterface* ConvertedMaterial = Cast<UMaterialInterface>( Context->AssetCache->GetCachedAsset( MaterialHashString ) );
+	UMaterialInterface* ConvertedMaterial = nullptr;
+
+	if ( Context->AssetCache )
+	{
+		ConvertedMaterial = Cast< UMaterialInterface >( Context->AssetCache->GetCachedAsset( MaterialHashString ) );
+	}
 
 	if ( !ConvertedMaterial )
 	{
 		const bool bIsTranslucent = UsdUtils::IsMaterialTranslucent( ShadeMaterial );
-		const bool bNeedsVirtualTextures = UE::UsdShadeMaterialTranslator::Private::IsMaterialUsingUDIMs( ShadeMaterial );
+		const bool bNeedsVirtualTextures = UsdUtils::IsMaterialUsingUDIMs( ShadeMaterial );
 
 		FString MasterMaterialName = TEXT("UsdPreviewSurface");
 
@@ -114,10 +63,11 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 
 		if ( UMaterialInterface* MasterMaterial = Cast< UMaterialInterface >( FSoftObjectPath( MasterMaterialPath ).TryLoad() ) )
 		{
+			FName InstanceName = MakeUniqueObjectName( GetTransientPackage(), UMaterialInstance::StaticClass(), *FPaths::GetBaseFilename( PrimPath.GetString() ) );
 			if ( GIsEditor ) // Also have to prevent Standalone game from going with MaterialInstanceConstants
 			{
 #if WITH_EDITOR
-				if ( UMaterialInstanceConstant* NewMaterial = NewObject<UMaterialInstanceConstant>( GetTransientPackage(), NAME_None, Context->ObjectFlags ) )
+				if ( UMaterialInstanceConstant* NewMaterial = NewObject<UMaterialInstanceConstant>( GetTransientPackage(), InstanceName, Context->ObjectFlags ) )
 				{
 					NewMaterial->SetParentEditorOnly( MasterMaterial );
 
@@ -128,38 +78,45 @@ void FUsdShadeMaterialTranslator::CreateAssets()
 					TMap<FString, int32> Unused;
 					TMap<FString, int32>& PrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex ? Context->MaterialToPrimvarToUVIndex->FindOrAdd( PrimPath.GetString() ) : Unused;
 
-					UsdToUnreal::ConvertMaterial( ShadeMaterial, *NewMaterial, Context->AssetCache.Get(), PrimvarToUVIndex );
+					if ( UsdToUnreal::ConvertMaterial( ShadeMaterial, *NewMaterial, Context->AssetCache.Get(), PrimvarToUVIndex, *Context->RenderContext.ToString() ) )
+					{
+						// We can't blindly recreate all component render states when a level is being added, because we may end up first creating
+						// render states for some components, and UWorld::AddToWorld calls FScene::AddPrimitive which expects the component to not have
+						// primitives yet
+						FMaterialUpdateContext::EOptions::Type Options = FMaterialUpdateContext::EOptions::Default;
+						if ( Context->Level->bIsAssociatingLevel )
+						{
+							Options = ( FMaterialUpdateContext::EOptions::Type ) ( Options & ~FMaterialUpdateContext::EOptions::RecreateRenderStates );
+						}
 
-					FMaterialUpdateContext UpdateContext( FMaterialUpdateContext::EOptions::Default, GMaxRHIShaderPlatform );
-					UpdateContext.AddMaterialInstance( NewMaterial );
-					NewMaterial->PreEditChange( nullptr );
-					NewMaterial->PostEditChange();
+						FMaterialUpdateContext UpdateContext( Options, GMaxRHIShaderPlatform );
+						UpdateContext.AddMaterialInstance( NewMaterial );
+						NewMaterial->PreEditChange( nullptr );
+						NewMaterial->PostEditChange();
 
-					ConvertedMaterial = NewMaterial;
+						ConvertedMaterial = NewMaterial;
+					}
 				}
 #endif // WITH_EDITOR
 			}
-			else if ( UMaterialInstanceDynamic* NewMaterial = UMaterialInstanceDynamic::Create( MasterMaterial, GetTransientPackage() ) )
+			else if ( UMaterialInstanceDynamic* NewMaterial = UMaterialInstanceDynamic::Create( MasterMaterial, GetTransientPackage(), InstanceName ) )
 			{
 				TMap<FString, int32> Unused;
 				TMap<FString, int32>& PrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex ? Context->MaterialToPrimvarToUVIndex->FindOrAdd( PrimPath.GetString() ) : Unused;
 
-				UsdToUnreal::ConvertMaterial( ShadeMaterial, *NewMaterial, Context->AssetCache.Get(), PrimvarToUVIndex );
-
-				ConvertedMaterial = NewMaterial;
+				if ( UsdToUnreal::ConvertMaterial( ShadeMaterial, *NewMaterial, Context->AssetCache.Get(), PrimvarToUVIndex, *Context->RenderContext.ToString() ) )
+				{
+					ConvertedMaterial = NewMaterial;
+				}
 			}
 		}
 	}
 	else if ( Context->MaterialToPrimvarToUVIndex && Context->AssetCache )
 	{
-		const TMap<FString, UObject*> AssetPrimLinks = Context->AssetCache->GetAssetPrimLinks();
-		if ( const FString* PrimPathForCachedAsset = AssetPrimLinks.FindKey( ConvertedMaterial ) )
+		if ( TMap<FString, int32>* PrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex->Find( Context->AssetCache->GetPrimForAsset( ConvertedMaterial ) ) )
 		{
-			if ( TMap<FString, int32>* PrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex->Find(*PrimPathForCachedAsset) )
-			{
-				// Copy the Material -> Primvar -> UV index mapping from the cached material prim path to this prim path
-				Context->MaterialToPrimvarToUVIndex->FindOrAdd(PrimPath.GetString()) = *PrimvarToUVIndex;
-			}
+			// Copy the Material -> Primvar -> UV index mapping from the cached material prim path to this prim path
+			Context->MaterialToPrimvarToUVIndex->FindOrAdd( PrimPath.GetString() ) = *PrimvarToUVIndex;
 		}
 	}
 

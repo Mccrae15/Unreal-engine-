@@ -10,6 +10,7 @@
 #include "UObject/UObjectThreadContext.h"
 #include "UObject/CoreRedirects.h"
 #include "Misc/RedirectCollector.h"
+#include "String/Find.h"
 
 FSoftObjectPath::FSoftObjectPath(const UObject* InObject)
 {
@@ -39,7 +40,7 @@ FString FSoftObjectPath::ToString() const
 	// Preallocate to correct size and then append strings
 	FullPathString.Reserve(AssetPathString.Len() + SubPathString.Len() + 1);
 	FullPathString += AssetPathString;
-	FullPathString += ':';
+	FullPathString += SUBOBJECT_DELIMITER_CHAR;
 	FullPathString += SubPathString;
 	return FullPathString;
 }
@@ -53,8 +54,16 @@ void FSoftObjectPath::ToString(FStringBuilderBase& Builder) const
 
 	if (SubPathString.Len() > 0)
 	{
-		Builder << ':' << SubPathString;
+		Builder << SUBOBJECT_DELIMITER_CHAR << SubPathString;
 	}
+}
+
+FName FSoftObjectPath::GetLongPackageFName() const
+{
+	TCHAR Buffer[NAME_SIZE];
+	FStringView PlainAssetPath(Buffer, /* len */ AssetPathName.GetPlainNameString(Buffer));
+	int32 DotPos = UE::String::FindFirstChar(PlainAssetPath, '.');
+	return DotPos == INDEX_NONE ? AssetPathName : FName(PlainAssetPath.Left(DotPos));
 }
 
 /** Helper function that adds info about the object currently being serialized when triggering an ensure about invalid soft object path */
@@ -85,7 +94,7 @@ void FSoftObjectPath::SetPath(FWideStringView Path)
 		}
 
 		int32 ColonIndex;
-		if (Path.FindChar(':', ColonIndex))
+		if (Path.FindChar(SUBOBJECT_DELIMITER_CHAR, ColonIndex))
 		{
 			// Has a subobject, split on that then create a name from the temporary path
 			AssetPathName = FName(Path.Left(ColonIndex));
@@ -101,6 +110,13 @@ void FSoftObjectPath::SetPath(FWideStringView Path)
 }
 
 void FSoftObjectPath::SetPath(FAnsiStringView Path)
+{
+	TStringBuilder<256> Wide;
+	Wide << Path;
+	SetPath(Wide);
+}
+
+void FSoftObjectPath::SetPath(FUtf8StringView Path)
 {
 	TStringBuilder<256> Wide;
 	Wide << Path;
@@ -127,7 +143,7 @@ void FSoftObjectPath::SetPath(FName PathName)
 			}
 
 			int32 ColonIndex;
-			if (Path.FindChar(':', ColonIndex))
+			if (Path.FindChar(SUBOBJECT_DELIMITER_CHAR, ColonIndex))
 			{
 				// Has a subobject, split on that then create a name from the temporary path
 				AssetPathName = FName(Path.Left(ColonIndex));
@@ -227,12 +243,12 @@ void FSoftObjectPath::SerializePath(FArchive& Ar)
 
 	if (bSerializeInternals)
 	{
-		if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_ADDED_SOFT_OBJECT_PATH)
+		if (Ar.IsLoading() && Ar.UEVer() < VER_UE4_ADDED_SOFT_OBJECT_PATH)
 		{
 			FString Path;
 			Ar << Path;
 
-			if (Ar.UE4Ver() < VER_UE4_KEEP_ONLY_PACKAGE_NAMES_IN_STRING_ASSET_REFERENCES_MAP)
+			if (Ar.UEVer() < VER_UE4_KEEP_ONLY_PACKAGE_NAMES_IN_STRING_ASSET_REFERENCES_MAP)
 			{
 				Path = FPackageName::GetNormalizedObjectPath(Path);
 			}
@@ -290,7 +306,16 @@ bool FSoftObjectPath::ExportTextItem(FString& ValueStr, FSoftObjectPath const& D
 		FSoftObjectPath Temp = *this;
 		Temp.PreSavePath();
 
-		ValueStr += Temp.ToString();
+		if (PortFlags & PPF_Delimited)
+		{
+			ValueStr += TEXT("\"");
+			ValueStr += Temp.ToString().ReplaceQuotesWithEscapedQuotes();
+			ValueStr += TEXT("\"");
+		}
+		else
+		{
+			ValueStr += Temp.ToString();
+		}
 	}
 	else
 	{
@@ -424,39 +449,48 @@ UObject* FSoftObjectPath::TryLoad(FUObjectSerializeContext* InLoadContext) const
 			UObject* TopLevelObject = TopLevelPath.TryLoad(InLoadContext);
 
 			// This probably loaded the top-level object, so re-resolve ourselves
-			return ResolveObject();
-		}
+			LoadedObject = ResolveObject();
 
-		FString PathString = ToString();
-#if WITH_EDITOR
-		if (GPlayInEditorID != INDEX_NONE)
-		{
-			// If we are in PIE and this hasn't already been fixed up, we need to fixup at resolution time. We cannot modify the path as it may be somewhere like a blueprint CDO
-			FSoftObjectPath FixupObjectPath = *this;
-			if (FixupObjectPath.FixupForPIE())
+			// If the the top-level object exists but we can't find the object, defer the loading to the top-level container object in case
+			// it knows how to load that specific object.
+			if (!LoadedObject && TopLevelObject)
 			{
-				PathString = FixupObjectPath.ToString();
+				TopLevelObject->ResolveSubobject(*SubPathString, LoadedObject, /*bLoadIfExists*/true);
 			}
 		}
+		else
+		{
+			FString PathString = ToString();
+#if WITH_EDITOR
+			if (GPlayInEditorID != INDEX_NONE)
+			{
+				// If we are in PIE and this hasn't already been fixed up, we need to fixup at resolution time. We cannot modify the path as it may be somewhere like a blueprint CDO
+				FSoftObjectPath FixupObjectPath = *this;
+				if (FixupObjectPath.FixupForPIE())
+				{
+					PathString = FixupObjectPath.ToString();
+				}
+			}
 #endif
 
-		LoadedObject = StaticLoadObject(UObject::StaticClass(), nullptr, *PathString, nullptr, LOAD_None, nullptr, true);
+			LoadedObject = StaticLoadObject(UObject::StaticClass(), nullptr, *PathString, nullptr, LOAD_None, nullptr, true);
 
 #if WITH_EDITOR
-		// Look at core redirects if we didn't find the object
-		if (!LoadedObject)
-		{
-			FSoftObjectPath FixupObjectPath = *this;
-			if (FixupObjectPath.FixupCoreRedirects())
+			// Look at core redirects if we didn't find the object
+			if (!LoadedObject)
 			{
-				LoadedObject = LoadObject<UObject>(nullptr, *FixupObjectPath.ToString());
+				FSoftObjectPath FixupObjectPath = *this;
+				if (FixupObjectPath.FixupCoreRedirects())
+				{
+					LoadedObject = LoadObject<UObject>(nullptr, *FixupObjectPath.ToString());
+				}
 			}
-		}
 #endif
 
-		while (UObjectRedirector* Redirector = Cast<UObjectRedirector>(LoadedObject))
-		{
-			LoadedObject = Redirector->DestinationObject;
+			while (UObjectRedirector* Redirector = Cast<UObjectRedirector>(LoadedObject))
+			{
+				LoadedObject = Redirector->DestinationObject;
+			}
 		}
 	}
 
@@ -505,6 +539,20 @@ UObject* FSoftObjectPath::ResolveObjectInternal(const TCHAR* PathString) const
 {
 	UObject* FoundObject = FindObject<UObject>(nullptr, PathString);
 
+	if (!FoundObject && IsSubobject())
+	{
+		// Try to resolve through the top level object
+		FSoftObjectPath TopLevelPath = FSoftObjectPath(AssetPathName, FString());
+		UObject* TopLevelObject = TopLevelPath.ResolveObject();
+
+		// If the the top-level object exists but we can't find the object, defer the resolving to the top-level container object in case
+		// it knows how to load that specific object.
+		if (TopLevelObject)
+		{
+			TopLevelObject->ResolveSubobject(*SubPathString, FoundObject, /*bLoadIfExists*/false);
+		}
+	}
+
 #if WITH_EDITOR
 	// Look at core redirects if we didn't find the object
 	if (!FoundObject)
@@ -541,11 +589,13 @@ void FSoftObjectPath::ClearPIEPackageNames()
 	PIEPackageNames.Empty();
 }
 
-bool FSoftObjectPath::FixupForPIE(int32 PIEInstance)
+bool FSoftObjectPath::FixupForPIE(int32 InPIEInstance, TFunctionRef<void(int32, FSoftObjectPath&)> InPreFixupForPIECustomFunction)
 {
 #if WITH_EDITOR
-	if (PIEInstance != INDEX_NONE && !IsNull())
+	if (InPIEInstance != INDEX_NONE && !IsNull())
 	{
+		InPreFixupForPIECustomFunction(InPIEInstance, *this);
+
 		const FString Path = ToString();
 
 		// Determine if this reference has already been fixed up for PIE
@@ -555,7 +605,7 @@ bool FSoftObjectPath::FixupForPIE(int32 PIEInstance)
 			// Name of the ULevel subobject of UWorld, set in InitializeNewWorld
 			const bool bIsChildOfLevel = SubPathString.StartsWith(TEXT("PersistentLevel."));
 
-			FString PIEPath = FString::Printf(TEXT("%s/%s_%d_%s"), *FPackageName::GetLongPackagePath(Path), PLAYWORLD_PACKAGE_PREFIX, PIEInstance, *ShortPackageOuterAndName);
+			FString PIEPath = FString::Printf(TEXT("%s/%s_%d_%s"), *FPackageName::GetLongPackagePath(Path), PLAYWORLD_PACKAGE_PREFIX, InPIEInstance, *ShortPackageOuterAndName);
 			const FName PIEPackage = (!bIsChildOfLevel ? FName(*FPackageName::ObjectPathToPackageName(PIEPath)) : NAME_None);
 
 			// Duplicate if this an already registered PIE package or this looks like a level subobject reference
@@ -572,9 +622,9 @@ bool FSoftObjectPath::FixupForPIE(int32 PIEInstance)
 	return false;
 }
 
-bool FSoftObjectPath::FixupForPIE()
+bool FSoftObjectPath::FixupForPIE(TFunctionRef<void(int32, FSoftObjectPath&)> InPreFixupForPIECustomFunction)
 {
-	return FixupForPIE(GPlayInEditorID);
+	return FixupForPIE(GPlayInEditorID, InPreFixupForPIECustomFunction);
 }
 
 bool FSoftObjectPath::FixupCoreRedirects()
@@ -589,12 +639,13 @@ bool FSoftObjectPath::FixupCoreRedirects()
 
 	if (OldName != NewName)
 	{
-		// Only do the fixup if the old object isn't in memory, this avoids false positives
+		// Only do the fixup if the old object isn't in memory (or was redirected to new name), this avoids false positives
 		UObject* FoundOldObject = FindObjectSafe<UObject>(nullptr, *OldString);
+		FString NewString = NewName.ToString();
 
-		if (!FoundOldObject)
+		if (!FoundOldObject || FoundOldObject->GetPathName() == NewString)
 		{
-			SetPath(NewName.ToString());
+			SetPath(NewString);
 			return true;
 		}
 	}
@@ -680,7 +731,7 @@ bool FSoftObjectPathThreadContext::GetSerializationOptions(FName& OutPackageName
 		{
 			if (CurrentPackageName == NAME_None)
 			{
-				CurrentPackageName = FName(*FPackageName::FilenameToLongPackageName(Linker->Filename));
+				CurrentPackageName = Linker->GetPackagePath().GetPackageFName();
 			}
 			if (Archive == nullptr)
 			{
@@ -705,10 +756,10 @@ bool FSoftObjectPathThreadContext::GetSerializationOptions(FName& OutPackageName
 		bEditorOnly = Archive->IsEditorOnlyPropertyOnTheStack();
 
 		static FName UntrackedName = TEXT("Untracked");
-		if (CurrentProperty && CurrentProperty->HasMetaData(UntrackedName))
+		if (CurrentProperty && CurrentProperty->GetOwnerProperty()->HasMetaData(UntrackedName))
 		{
-			// Property has the Untracked metadata, so set to never collect references
-			CurrentCollectType = ESoftObjectPathCollectType::NeverCollect;
+			// Property has the Untracked metadata, so set to never collect references if it's higher than NeverCollect
+			CurrentCollectType = FMath::Min(ESoftObjectPathCollectType::NeverCollect, CurrentCollectType);
 		}
 #endif
 		// If we were always collect before and not overridden by stack options, set to editor only

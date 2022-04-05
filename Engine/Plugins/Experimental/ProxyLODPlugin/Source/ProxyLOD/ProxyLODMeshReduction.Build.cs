@@ -6,12 +6,10 @@ namespace UnrealBuildTool.Rules
 	{
 		public ProxyLODMeshReduction(ReadOnlyTargetRules Target) : base(Target)
 		{
+			// For boost:: and TBB:: code
+			bUseRTTI = true;
 
-
-            // For boost:: and TBB:: code
-            bUseRTTI = true;
-
-            PublicIncludePaths.AddRange(
+			PublicIncludePaths.AddRange(
 				new string[] {
 					// ... add public include paths required here ...
 				}
@@ -26,49 +24,46 @@ namespace UnrealBuildTool.Rules
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
-                    "UVAtlas",
-                    "DirectXMesh",
-                    "OpenVDB",
-                    "UEOpenExr",
-                    "TraceLog",
-                    "Core",
-                    "CoreUObject",
-                    "Engine",
-                    "InputCore",
-                    "UnrealEd",
-                    "RawMesh",
-                    "MeshDescription",
+					"TraceLog",
+					"Core",
+					"CoreUObject",
+					"Engine",
+					"InputCore",
+					"UnrealEd",
+					"RawMesh",
+					"MeshDescription",
 					"StaticMeshDescription",
-                    "MeshUtilities",
-                    "MaterialUtilities",
-                    "PropertyEditor",
-                    "SlateCore",
-                    "Slate",
-                    "EditorStyle",
-                    "RenderCore",
-                    "RHI",
-                    "QuadricMeshReduction"
+					"MeshUtilities",
+					"MaterialUtilities",
+					"PropertyEditor",
+					"SlateCore",
+					"Slate",
+					"EditorStyle",
+					"RenderCore",
+					"RHI",
+					"QuadricMeshReduction"
 					// ... add other public dependencies that you statically link with here ...
 				}
-				);
+			);
 
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
-                    "Core",
-                    "CoreUObject",
-                    "Engine",
-                    "UnrealEd",
+					"Core",
+					"CoreUObject",
+					"EditorFramework",
+					"Engine",
+					"UnrealEd"
 					// ... add private dependencies that you statically link with here ...
 				}
 				);
 
-			DynamicallyLoadedModuleNames.AddRange(
-				new string[]
-				{
-					// ... add any modules that your module loads dynamically here ...
-				}
-				);
+			AddEngineThirdPartyPrivateStaticDependencies(Target,
+				"IntelTBB",
+				"UVAtlas",
+				"DirectXMesh",
+				"OpenVDB"
+			);
 		}
 	}
 }

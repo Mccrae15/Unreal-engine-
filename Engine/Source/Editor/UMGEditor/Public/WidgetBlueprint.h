@@ -16,6 +16,7 @@
 class FCompilerResultsLog;
 class UEdGraph;
 class UMovieScene;
+class UTexture2D;
 class UUserWidget;
 class UWidget;
 class UWidgetAnimation;
@@ -63,7 +64,7 @@ private:
 
 	/** The owner of the path segment (ie. What class or structure was this property from) */
 	UPROPERTY()
-	UStruct* Struct;
+	TObjectPtr<UStruct> Struct;
 
 	/** The member name in the structure this segment represents. */
 	UPROPERTY()
@@ -175,7 +176,7 @@ struct FWidgetAnimation_DEPRECATED
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	UMovieScene* MovieScene = nullptr;
+	TObjectPtr<UMovieScene> MovieScene = nullptr;
 
 	UPROPERTY()
 	TArray<FWidgetAnimationBinding> AnimationBindings;
@@ -200,6 +201,18 @@ enum class EWidgetSupportsDynamicCreation : uint8
 	Yes,
 	No,
 };
+
+
+UENUM()
+enum class EThumbnailPreviewSizeMode : uint8
+{
+	MatchDesignerMode,
+	FillScreen,
+	Custom,
+	Desired
+};
+
+
 
 /**
  * This represents the tickability of a widget computed at compile time
@@ -238,7 +251,7 @@ public:
 	TArray<FWidgetAnimation_DEPRECATED> AnimationData_DEPRECATED;
 
 	UPROPERTY()
-	TArray<UWidgetAnimation*> Animations;
+	TArray<TObjectPtr<UWidgetAnimation>> Animations;
 
 	/**
 	 * Don't directly modify this property to change the palette category.  The actual value is stored 
@@ -257,7 +270,11 @@ public:
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 
 #if WITH_EDITORONLY_DATA
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 #endif // WITH_EDITORONLY_DATA
 
 #if WITH_EDITOR
@@ -278,6 +295,8 @@ public:
 	virtual UClass* GetBlueprintClass() const override;
 
 	virtual bool AllowsDynamicBinding() const override;
+
+	virtual bool SupportsInputEvents() const override;
 
 	virtual bool SupportedByDefaultBlueprintFactory() const override
 	{
@@ -303,11 +322,7 @@ public:
 
 	bool ArePropertyBindingsAllowed() const;
 
-	/** Does the editor support widget from an editor package. */
-	virtual bool AllowEditorWidget() const { return false; }
-
 protected:
-#if WITH_EDITOR
 	virtual void LoadModulesRequiredForCompilation() override;
 
 private:
@@ -337,5 +352,14 @@ public:
 	 */
 	UPROPERTY(AssetRegistrySearchable)
 	int32 PropertyBindings;
-#endif
+
+	UPROPERTY(EditDefaultsOnly, Category = ThumbnailSettings)
+	EThumbnailPreviewSizeMode ThumbnailSizeMode;
+
+	UPROPERTY(EditDefaultsOnly, Category = ThumbnailSettings)
+	FVector2D ThumbnailCustomSize;
+
+	UPROPERTY(EditDefaultsOnly, Category = ThumbnailSettings)
+	TObjectPtr<UTexture2D> ThumbnailImage;
+
 };

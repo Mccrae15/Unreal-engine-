@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LandscapeEditorModule.h"
+
 #include "Modules/ModuleManager.h"
 #include "Textures/SlateIcon.h"
 #include "Framework/Commands/UICommandList.h"
@@ -24,11 +25,16 @@
 #include "LandscapeEditorDetails.h"
 #include "LandscapeEditorDetailCustomization_NewLandscape.h"
 #include "LandscapeEditorDetailCustomization_CopyPaste.h"
+#include "LandscapeEditorDetailCustomization_ImportLayers.h"
 #include "LandscapeSplineDetails.h"
 
 #include "LevelEditor.h"
+#include "ToolMenus.h"
+#include "Editor/EditorEngine.h"
+#include "LandscapeSubsystem.h"
 
 #include "LandscapeRender.h"
+#include "UObject/ObjectSaveContext.h"
 
 #define LOCTEXT_NAMESPACE "LandscapeEditor"
 
@@ -61,8 +67,6 @@ public:
 	{
 		FLandscapeEditorCommands::Register();
 
-		PreSaveWorldHandle = FEditorDelegates::PreSaveWorld.AddRaw(this, &FLandscapeEditorModule::OnPreSaveWorld);
-
 		// register the editor mode
 		FEditorModeRegistry::Get().RegisterMode<FEdModeLandscape>(
 			FBuiltinEditorModes::EM_Landscape,
@@ -71,7 +75,7 @@ public:
 			true,
 			300
 			);
-	
+
 		// register customizations
 		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.RegisterCustomClassLayout("LandscapeEditorObject", FOnGetDetailCustomizationInstance::CreateStatic(&FLandscapeEditorDetails::MakeInstance));
@@ -111,6 +115,23 @@ public:
 		RegisterWeightmapFileFormat(MakeShareable(new FLandscapeWeightmapFileFormat_Png()));
 		RegisterHeightmapFileFormat(MakeShareable(new FLandscapeHeightmapFileFormat_Raw()));
 		RegisterWeightmapFileFormat(MakeShareable(new FLandscapeWeightmapFileFormat_Raw()));
+
+		//Landscape extended menu
+		UToolMenu* BuildMenu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Build");
+		if (BuildMenu)
+		{
+			FToolMenuSection& Section = BuildMenu->FindOrAddSection("LevelEditorLandscape");
+
+			FUIAction ActionBakeTextures(FExecuteAction::CreateStatic(&BuildGITextures), FCanExecuteAction());
+			Section.AddMenuEntry(NAME_None, LOCTEXT("BuildGITexturesOnly", "Build GI Textures Only"),LOCTEXT("BuildGIBakedTextures ", "Build GI baked base color textures"), TAttribute<FSlateIcon>(), ActionBakeTextures,EUserInterfaceActionType::Button);
+			
+			FUIAction ActionBuildGrassMaps(FExecuteAction::CreateStatic(&BuildGrassMaps), FCanExecuteAction());
+			Section.AddMenuEntry(NAME_None, LOCTEXT("BuildGrassMapsOnly","Build Grass Maps Only"), LOCTEXT("BuildLandscapeGrassMaps","Build landscape grass maps"),TAttribute<FSlateIcon>(), ActionBuildGrassMaps, EUserInterfaceActionType::Button);
+
+			FUIAction ActionBuildPhysicalMaterial(FExecuteAction::CreateStatic(&BuildPhysicalMaterial), FCanExecuteAction());
+			Section.AddMenuEntry(NAME_None, LOCTEXT("BuildPhysicalMaterialOnly", "Build Physical Material Only"), LOCTEXT("BuildLandscapePhysicalMaterial", "Build landscape physical material"), TAttribute<FSlateIcon>(), ActionBuildPhysicalMaterial, EUserInterfaceActionType::Button);
+		}
+
 	}
 
 	/**
@@ -119,8 +140,6 @@ public:
 	virtual void ShutdownModule() override
 	{
 		FLandscapeEditorCommands::Unregister();
-
-		FEditorDelegates::PreSaveWorld.Remove(PreSaveWorldHandle);
 
 		// unregister the editor mode
 		FEditorModeRegistry::Get().UnregisterMode(FBuiltinEditorModes::EM_Landscape);
@@ -175,7 +194,46 @@ public:
 				InMenuBuilder.EndSection();
 			}
 		};
-		MenuBuilder.AddSubMenu(LOCTEXT("LandscapeSubMenu", "Visualizers"), LOCTEXT("LandscapeSubMenu_ToolTip", "Select a Landscape visualiser"), FNewMenuDelegate::CreateStatic(&Local::BuildLandscapeVisualizersMenu));
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("LandscapeSubMenu", "Visualizers"), 
+			LOCTEXT("LandscapeSubMenu_ToolTip", "Select a Landscape visualiser"), 
+			FNewMenuDelegate::CreateStatic(&Local::BuildLandscapeVisualizersMenu), 
+			false, 
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "EditorViewport.Visualizers")
+		);
+	}
+
+	static void BuildGITextures()
+	{
+		if (UWorld* World = GEditor->GetEditorWorldContext().World())
+		{
+			if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+			{
+				LandscapeSubsystem->BuildGIBakedTextures();
+			}
+		}
+	}
+
+	static void BuildGrassMaps()
+	{
+		if (UWorld* World = GEditor->GetEditorWorldContext().World())
+		{
+			if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+			{
+				LandscapeSubsystem->BuildGrassMaps();
+			}
+		}
+	}
+
+	static void BuildPhysicalMaterial()
+	{
+		if (UWorld* World = GEditor->GetEditorWorldContext().World())
+		{
+			if (ULandscapeSubsystem* LandscapeSubsystem = World->GetSubsystem<ULandscapeSubsystem>())
+			{
+				LandscapeSubsystem->BuildPhysicalMaterial();
+			}
+		}
 	}
 
 	static void ChangeLandscapeViewMode(ELandscapeViewMode::Type ViewMode)
@@ -232,15 +290,6 @@ public:
 		}
 	}
 
-	void OnPreSaveWorld(uint32 SaveFlags, class UWorld* World)
-	{
-		FEdModeLandscape* EdMode = (FEdModeLandscape*)GLevelEditorModeTools().GetActiveMode(FBuiltinEditorModes::EM_Landscape);
-		if (EdMode)
-		{
-			EdMode->OnPreSaveWorld(SaveFlags, World);
-		}
-	}
-
 	virtual const TCHAR* GetHeightmapImportDialogTypeString() const override;
 	virtual const TCHAR* GetWeightmapImportDialogTypeString() const override;
 
@@ -253,7 +302,6 @@ public:
 	virtual TSharedPtr<FUICommandList> GetLandscapeLevelViewportCommandList() const override;
 		
 protected:
-	FDelegateHandle PreSaveWorldHandle;
 	TSharedPtr<FExtender> ViewportMenuExtender;
 	TSharedPtr<FUICommandList> GlobalUICommandList;
 	TArray<FRegisteredLandscapeHeightmapFileFormat> HeightmapFormats;

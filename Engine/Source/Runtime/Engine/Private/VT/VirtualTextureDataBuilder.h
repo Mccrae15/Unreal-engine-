@@ -16,6 +16,7 @@ struct FVTSourceTileEntry
 {
 	int32 BlockIndex;
 	int32 TileIndex;
+	int32 MipIndex;
 	int32 MipIndexInBlock;
 	int32 TileInBlockX;
 	int32 TileInBlockY;
@@ -61,7 +62,7 @@ struct FVirtualTextureSourceLayerData
 class FVirtualTextureDataBuilder
 {
 public:
-	FVirtualTextureDataBuilder(FVirtualTextureBuiltData &SetOutData, ITextureCompressorModule *InCompressor = nullptr, IImageWrapperModule* InImageWrapper = nullptr);
+	FVirtualTextureDataBuilder(FVirtualTextureBuiltData &SetOutData, const FString& DebugTexturePathName, ITextureCompressorModule *InCompressor = nullptr, IImageWrapperModule* InImageWrapper = nullptr);
 	~FVirtualTextureDataBuilder();
 
 	void Build(const FTextureSourceData& InSourceData, const FTextureSourceData& InCompositeSourceData, const FTextureBuildSettings* InSettingsPerLayer, bool bAllowAsync);
@@ -100,6 +101,8 @@ private:
 
 	ITextureCompressorModule *Compressor;
 	IImageWrapperModule *ImageWrapper;
+
+	const FString& DebugTexturePathName;
 
 	bool DetectAlphaChannel(const FImage &image);
 };

@@ -6,9 +6,10 @@ using System.IO;
 using System.Linq;
 using AutomationTool;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Text.RegularExpressions;
 using System.Threading;
+using UnrealBuildBase;
 
 abstract class SyncProjectBase : BuildCommand
 {
@@ -113,7 +114,7 @@ class SyncProject : SyncProjectBase
 		string[] ForceSyncFiles = new string[]
 		{
 			"Engine/Build/Build.version",
-			"Engine/Source/Programs/DotNETCommon/MetaData.cs"
+			"Engine/Source/Programs/Shared/MetaData.cs"
 		};
 
 		// Parse the project filename (as a local path)
@@ -196,13 +197,13 @@ class SyncProject : SyncProjectBase
 			// See if the engine is in P4 too by checking the p4 location of a local file
 			if (!ProjectOnly)
 			{
-				string LocalEngineFile = CommandUtils.CombinePaths(CmdEnv.LocalRoot, "Engine", "Source", "UE4Editor.target.cs");
+				string LocalEngineFile = CommandUtils.CombinePaths(CmdEnv.LocalRoot, "Engine", "Source", "UnrealEditor.target.cs");
 				P4WhereRecord EngineRecord = GetP4RecordForPath(LocalEngineFile);
 
 				if (P4.FileExistsInDepot(EngineRecord.DepotFile))
 				{
 					// make sure to sync with //workspace/path as it cleans up files if the user has stream switched
-					P4EnginePath = EngineRecord.ClientFile.Replace("Engine/Source/UE4Editor.target.cs", "");
+					P4EnginePath = EngineRecord.ClientFile.Replace("Engine/Source/UnrealEditor.target.cs", "");
 					SyncPaths.Add(CommandUtils.CombinePaths(PathSeparator.Slash, P4EnginePath + "*"));
 					SyncPaths.Add(CommandUtils.CombinePaths(PathSeparator.Slash, P4EnginePath, "Engine", "..."));
 				}
@@ -284,8 +285,7 @@ class SyncProject : SyncProjectBase
 			{
 				Log.TraceVerbose("Generating project files for {0}", ProjectArgForEditor);
 
-				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 ||
-					BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win32)
+				if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64)
 				{
 					CommandUtils.Run("GenerateProjectFiles.bat", ProjectArgForEditor);
 				}
@@ -295,7 +295,7 @@ class SyncProject : SyncProjectBase
 				}
 			}
 
-			UE4Build Build = new UE4Build(this);
+			UnrealBuild Build = new UnrealBuild(this);
 			if (!Unversioned && !ProjectOnly)
 			{
 				LogInformation("Updating Version files to CL: {0}", CL);
@@ -311,7 +311,7 @@ class SyncProject : SyncProjectBase
 				if (ProjectFile != null)
 				{
 					string TargetSourceDir = CommandUtils.CombinePaths(Path.GetDirectoryName(ProjectFile.FullName), "Source");
-					RulesCompiler.InvalidateRulesFileCache(TargetSourceDir);
+					Rules.InvalidateRulesFileCache(TargetSourceDir);
 				}
 
 				BuildEditor BuildCmd = new BuildEditor();

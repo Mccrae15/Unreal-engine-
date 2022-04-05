@@ -20,6 +20,7 @@ FActorSequenceObjectReference FActorSequenceObjectReference::CreateForComponent(
 		return NewReference;
 	}
 
+#if WITH_EDITORONLY_DATA
 	UBlueprintGeneratedClass* GeneratedClass = InComponent->GetTypedOuter<UBlueprintGeneratedClass>();
 	if (GeneratedClass && GeneratedClass->SimpleConstructionScript)
 	{
@@ -36,6 +37,7 @@ FActorSequenceObjectReference FActorSequenceObjectReference::CreateForComponent(
 			}
 		}
 	}
+#endif
 
 	ensureMsgf(false, TEXT("Unable to find parent actor for component. Reference will be unresolvable."));
 	return NewReference;
@@ -76,7 +78,7 @@ UObject* FActorSequenceObjectReference::Resolve(AActor* SourceActor) const
 		if (ActorId.IsValid())
 		{
 			// Fixup for PIE
-			int32 PIEInstanceID = SourceActor->GetOutermost()->PIEInstanceID;
+			int32 PIEInstanceID = SourceActor->GetOutermost()->GetPIEInstanceID();
 			FUniqueObjectGuid FixedUpId(ActorId);
 			if (PIEInstanceID != -1)
 			{

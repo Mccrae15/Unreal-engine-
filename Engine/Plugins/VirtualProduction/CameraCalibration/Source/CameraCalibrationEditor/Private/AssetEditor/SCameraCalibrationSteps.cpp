@@ -18,13 +18,16 @@
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateStyle.h"
 #include "UI/CameraCalibrationWidgetHelpers.h"
+#include "Widgets/Colors/SColorPicker.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Layout/SSpacer.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/Text/STextBlock.h"
@@ -32,6 +35,21 @@
 
 #define LOCTEXT_NAMESPACE "CameraCalibrationSteps"
 
+void SCameraCalibrationSteps::AddReferencedObjects(FReferenceCollector& Collector)
+{
+ 	if (CurrentOverlayMID)
+ 	{
+		Collector.AddReferencedObject(CurrentOverlayMID);
+	}
+
+	for (TPair<FName, TObjectPtr<UMaterialInstanceDynamic>>& Pair : OverlayMIDs)
+	{
+		if (Pair.Value)
+		{
+			Collector.AddReferencedObject(Pair.Value);
+		}
+	}
+}
 
 void SCameraCalibrationSteps::Construct(const FArguments& InArgs, TWeakPtr<FCameraCalibrationStepsController> InCalibrationStepsController)
 {
@@ -68,96 +86,113 @@ void SCameraCalibrationSteps::Construct(const FArguments& InArgs, TWeakPtr<FCame
 			[
 				SNew(SSimulcamViewport, CalibrationStepsController.Pin()->GetRenderTarget())
 				.OnSimulcamViewportClicked_Raw(CalibrationStepsController.Pin().Get(), &FCameraCalibrationStepsController::OnSimulcamViewportClicked)
+				.OnSimulcamViewportInputKey_Raw(CalibrationStepsController.Pin().Get(), &FCameraCalibrationStepsController::OnSimulcamViewportInputKey)
 			]
 		]
 
 		+ SHorizontalBox::Slot() // Right toolbar
 		.FillWidth(0.25f)
 		[ 
-			SNew(SVerticalBox)
-
-			+ SVerticalBox::Slot() // Viewport Title
-			.Padding(0, 5)
-			.AutoHeight()
-			.VAlign(EVerticalAlignment::VAlign_Center)
+			SNew(SScrollBox)
+			+ SScrollBox::Slot()
 			[
-				SNew(SBox)
-				.MinDesiredHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
-				.MaxDesiredHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
+				SNew(SVerticalBox)
+
+				+ SVerticalBox::Slot() // Viewport Title
+				.Padding(0, 5)
+				.AutoHeight()
+				.VAlign(EVerticalAlignment::VAlign_Center)
 				[
-					SNew(SBorder) // Background color for title
-					.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
-					.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
-					.VAlign(EVerticalAlignment::VAlign_Center)
+					SNew(SBox)
+					.MinDesiredHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
+					.MaxDesiredHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
 					[
-						SNew(SOverlay) 
-						+ SOverlay::Slot() // Used to add left padding to the title
-						.Padding(5,0,0,0)
+						SNew(SBorder) // Background color for title
+						.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+						.BorderBackgroundColor(FLinearColor::White)
+						.VAlign(EVerticalAlignment::VAlign_Center)
 						[
-							SNew(STextBlock) // Title text
-							.Text(LOCTEXT("ViewportSettings", "Viewport Settings"))
-							.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
-							.ShadowOffset(FVector2D(1.0f, 1.0f))
+							SNew(SOverlay) 
+							+ SOverlay::Slot() // Used to add left padding to the title
+							.Padding(5,0,0,0)
+							[
+								SNew(STextBlock) // Title text
+								.Text(LOCTEXT("ViewportSettings", "Viewport Settings"))
+								.TransformPolicy(ETextTransformPolicy::ToUpper)
+								.Font(FAppStyle::Get().GetFontStyle(TEXT("PropertyWindow.BoldFont")))
+								.TextStyle(FAppStyle::Get(), "DetailsView.CategoryTextStyle")
+							]
 						]
 					]
 				]
-			]
 
-			+ SVerticalBox::Slot() // Wiper
-			.MaxHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
-			[ FCameraCalibrationWidgetHelpers::BuildLabelWidgetPair(LOCTEXT("Transparency", "Transparency"), BuildSimulcamWiperWidget())]
+				+ SVerticalBox::Slot() // Wiper
+				.MaxHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
+				[ FCameraCalibrationWidgetHelpers::BuildLabelWidgetPair(LOCTEXT("Transparency", "Transparency"), BuildSimulcamWiperWidget())]
 				
-			+ SVerticalBox::Slot() // Camera picker
-			.MaxHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
-			[ FCameraCalibrationWidgetHelpers::BuildLabelWidgetPair(LOCTEXT("Camera", "Camera"), BuildCameraPickerWidget())]
+				+ SVerticalBox::Slot() // Camera picker
+				.MaxHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
+				[ FCameraCalibrationWidgetHelpers::BuildLabelWidgetPair(LOCTEXT("Camera", "Camera"), BuildCameraPickerWidget())]
 				
-			+ SVerticalBox::Slot() // Media Source picker
-			.MaxHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
-			[FCameraCalibrationWidgetHelpers::BuildLabelWidgetPair(LOCTEXT("MediaSource", "Media Source"), BuildMediaSourceWidget())]
+				+ SVerticalBox::Slot() // Media Source picker
+				.MaxHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
+				[FCameraCalibrationWidgetHelpers::BuildLabelWidgetPair(LOCTEXT("MediaSource", "Media Source"), BuildMediaSourceWidget())]
 
-			+ SVerticalBox::Slot() // Step Title
-			.Padding(0, 5)
-			.AutoHeight()
-			.VAlign(EVerticalAlignment::VAlign_Center)
-			[
-				SNew(SBox) // Constrain the height
-				.MinDesiredHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
-				.MaxDesiredHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
+				+ SVerticalBox::Slot() // Overlay picker
+				.MaxHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
+				[FCameraCalibrationWidgetHelpers::BuildLabelWidgetPair(LOCTEXT("Overlay", "Overlay"), BuildOverlayWidget())]
+
+				+ SVerticalBox::Slot() // Overlay parameters
+				.AutoHeight()
 				[
-					SNew(SBorder) // Background color of title
-					.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
-					.BorderBackgroundColor(FLinearColor(.6, .6, .6, 1.0f))
-					.VAlign(EVerticalAlignment::VAlign_Center)
+					OverlayParameterWidget.ToSharedRef()
+				]
+
+				+ SVerticalBox::Slot() // Step Title
+				.Padding(0, 5)
+				.AutoHeight()
+				.VAlign(EVerticalAlignment::VAlign_Center)
+				[
+					SNew(SBox) // Constrain the height
+					.MinDesiredHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
+					.MaxDesiredHeight(FCameraCalibrationWidgetHelpers::DefaultRowHeight)
 					[
-						SNew(SOverlay) 
-						+ SOverlay::Slot() // Used to add left padding to the title
-						.Padding(5, 0, 0, 0)
+						SNew(SBorder) // Background color of title
+						.BorderImage(FEditorStyle::GetBrush("DetailsView.CategoryTop"))
+						.BorderBackgroundColor(FLinearColor::White)
+						.VAlign(EVerticalAlignment::VAlign_Center)
 						[
-							SNew(STextBlock) // Title text
-							.Text_Lambda([&]() -> FText
-							{
-								for (const TStrongObjectPtr<UCameraCalibrationStep>& Step : CalibrationStepsController.Pin()->GetCalibrationSteps())
+							SNew(SOverlay) 
+							+ SOverlay::Slot() // Used to add left padding to the title
+							.Padding(5, 0, 0, 0)
+							[
+								SNew(STextBlock) // Title text
+								.Text_Lambda([&]() -> FText
 								{
-									if (!Step.IsValid() || !Step->IsActive())
+									for (const TStrongObjectPtr<UCameraCalibrationStep>& Step : CalibrationStepsController.Pin()->GetCalibrationSteps())
 									{
-										continue;
+										if (!Step.IsValid() || !Step->IsActive())
+										{
+											continue;
+										}
+
+										return FText::FromName(Step->FriendlyName());
 									}
 
-									return FText::FromName(Step->FriendlyName());
-								}
-
-								return LOCTEXT("StepSettings", "Step");
-							})
-							.Font(FEditorStyle::GetFontStyle("DetailsView.CategoryFontStyle"))
-							.ShadowOffset(FVector2D(1.0f, 1.0f))
+									return LOCTEXT("StepSettings", "Step");
+								})
+								.TransformPolicy(ETextTransformPolicy::ToUpper)
+								.Font(FAppStyle::Get().GetFontStyle(TEXT("PropertyWindow.BoldFont")))
+								.TextStyle(FAppStyle::Get(), "DetailsView.CategoryTextStyle")
+							]
 						]
 					]
 				]
-			]
 
-			+ SVerticalBox::Slot() // Step UI
-			.AutoHeight()
-			[StepWidgetSwitcher.ToSharedRef()]
+				+ SVerticalBox::Slot() // Step UI
+				.AutoHeight()
+				[StepWidgetSwitcher.ToSharedRef()]
+			]
 		]
 	];
 
@@ -224,7 +259,7 @@ void SCameraCalibrationSteps::UpdateMediaSourcesOptions()
 	}
 
 	// Add a "None" option
-	CurrentMediaSources.Add(MakeShareable(new FString(TEXT("None"))));
+	CurrentMediaSources.Add(MakeShared<FString>(TEXT("None")));
 
 	check(MediaSourcesComboBox.IsValid());
 
@@ -285,6 +320,267 @@ TSharedRef<SWidget> SCameraCalibrationSteps::BuildMediaSourceWidget()
 	UpdateMediaSourcesOptions();
 
 	return MediaSourcesComboBox.ToSharedRef();
+}
+
+TSharedRef<SWidget> SCameraCalibrationSteps::BuildOverlayWidget()
+{
+	const UCameraCalibrationSubsystem* const SubSystem = GEngine->GetEngineSubsystem<UCameraCalibrationSubsystem>();
+
+	for (const FName& Name : SubSystem->GetOverlayMaterialNames())
+	{
+		SharedOverlayNames.Add(MakeShared<FName>(Name));
+
+		if (UMaterialInterface* OverlayMaterial = SubSystem->GetOverlayMaterial(Name))
+		{
+			OverlayMIDs.Add(Name, UMaterialInstanceDynamic::Create(OverlayMaterial, GetTransientPackage()));
+		}
+	}
+
+	SharedOverlayNames.Sort([](const TSharedPtr<FName>& LHS, const TSharedPtr<FName>& RHS) { return LHS->Compare(*RHS) <= 0; });
+
+	SharedOverlayNames.Insert(MakeShared<FName>(FName(TEXT("None"))), 0);
+
+	OverlayComboBox = SNew(SComboBox<TSharedPtr<FName>>)
+		.OptionsSource(&SharedOverlayNames)
+		.OnSelectionChanged_Lambda([&](TSharedPtr<FName> NewValue, ESelectInfo::Type Type) -> void
+		{
+			if (CalibrationStepsController.IsValid())
+			{
+				CurrentOverlayMID = OverlayMIDs.FindRef(*NewValue).Get();
+				CalibrationStepsController.Pin()->SetOverlayMaterial(CurrentOverlayMID, true, EOverlayPassType::UserOverlay);
+				UpdateOverlayMaterialParameterWidget();
+			}
+		})
+		.OnGenerateWidget_Lambda([&](TSharedPtr<FName> InOption) -> TSharedRef<SWidget>
+		{
+			return SNew(STextBlock).Text(FText::FromName(*InOption));
+		})
+		.InitiallySelectedItem(nullptr)
+		[
+			SNew(STextBlock)
+			.Text_Lambda([&]() -> FText
+			{
+				if (OverlayComboBox.IsValid() && OverlayComboBox->GetSelectedItem().IsValid())
+				{
+					return FText::FromName(*OverlayComboBox->GetSelectedItem());
+				}
+
+				return LOCTEXT("NoneComboOption", "None");
+			})
+		];
+
+	OverlayParameterWidget = SNew(SHorizontalBox);
+	OverlayParameterListWidget = SNew(SVerticalBox);
+
+	return OverlayComboBox.ToSharedRef();
+}
+
+void SCameraCalibrationSteps::UpdateOverlayMaterialParameterWidget()
+{
+	OverlayParameterWidget->ClearChildren();
+	OverlayParameterListWidget->ClearChildren();
+
+	if (!CalibrationStepsController.IsValid())
+	{
+		return;
+	}
+
+	if (CalibrationStepsController.Pin()->IsOverlayEnabled(EOverlayPassType::UserOverlay))
+	{
+		if (CurrentOverlayMID)
+		{
+			TMap<FMaterialParameterInfo, FMaterialParameterMetadata> ScalarParams;
+			CurrentOverlayMID->GetAllParametersOfType(EMaterialParameterType::Scalar, ScalarParams);
+
+			TMap<FMaterialParameterInfo, FMaterialParameterMetadata> VectorParams;
+			CurrentOverlayMID->GetAllParametersOfType(EMaterialParameterType::Vector, VectorParams);
+
+			// Early-exit if there are no material parameters to display
+			if (ScalarParams.Num() + VectorParams.Num() == 0)
+			{
+				return;
+			}
+
+			for (const TPair<FMaterialParameterInfo, FMaterialParameterMetadata>& Param : ScalarParams)
+			{
+				const FMaterialParameterInfo ParameterInfo = Param.Key;
+				const FMaterialParameterMetadata ParameterData = Param.Value;
+
+				OverlayParameterListWidget->AddSlot()
+				.Padding(5, 5)
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(ParameterInfo.Name.ToString()))
+					]
+
+					+ SHorizontalBox::Slot()
+					[
+						SNew(SNumericEntryBox<float>)
+						.AllowSpin(true)
+						.MinValue(TOptional<float>())
+						.MaxValue(TOptional<float>())
+						.Delta(0.0f)
+						.Value_Lambda([=]() 
+						{ 
+							float ScalarValue = 0.0f;
+							
+							if (UMaterialInstanceDynamic* Overlay = CurrentOverlayMID.Get())
+							{
+								Overlay->GetScalarParameterValue(ParameterInfo.Name, ScalarValue);
+							}
+
+							return ScalarValue;
+						})
+						.MinSliderValue_Lambda([=]() 
+						{ 
+							float MinValue = 0.0f;
+							float MaxValue = 0.0f;
+
+							if (UMaterialInstanceDynamic* Overlay = CurrentOverlayMID.Get())
+							{
+								Overlay->GetScalarParameterSliderMinMax(ParameterInfo.Name, MinValue, MaxValue);
+							}
+
+							return MinValue;
+						})
+						.MaxSliderValue_Lambda([=]() 
+						{ 
+							float MinValue = 0.0f;
+							float MaxValue = 0.0f;
+								
+							if (UMaterialInstanceDynamic* Overlay = CurrentOverlayMID.Get())
+							{
+								Overlay->GetScalarParameterSliderMinMax(ParameterInfo.Name, MinValue, MaxValue);
+							}
+
+							return MaxValue;
+						})
+						.OnValueChanged_Lambda([=](float NewValue) 
+						{ 
+							if (UMaterialInstanceDynamic* Overlay = CurrentOverlayMID.Get())
+							{
+								Overlay->SetScalarParameterValue(ParameterInfo.Name, NewValue);
+
+								if (CalibrationStepsController.IsValid())
+								{
+									CalibrationStepsController.Pin()->RefreshOverlay(EOverlayPassType::UserOverlay);
+								}
+							}
+						})
+						.OnValueCommitted_Lambda([=](float NewValue, ETextCommit::Type)	
+						{
+							if (UMaterialInstanceDynamic* Overlay = CurrentOverlayMID.Get())
+							{
+								Overlay->SetScalarParameterValue(ParameterInfo.Name, NewValue);
+
+								if (CalibrationStepsController.IsValid())
+								{
+									CalibrationStepsController.Pin()->RefreshOverlay(EOverlayPassType::UserOverlay);
+								}
+							}
+						})
+					]
+				]
+				;
+			}
+
+			for (const TPair<FMaterialParameterInfo, FMaterialParameterMetadata>& Param : VectorParams)
+			{
+				const FMaterialParameterInfo ParameterInfo = Param.Key;
+				const FMaterialParameterMetadata ParameterData = Param.Value;
+
+				OverlayParameterListWidget->AddSlot()
+				.Padding(5, 5)
+				.AutoHeight()
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(ParameterInfo.Name.ToString()))
+					]
+
+					+ SHorizontalBox::Slot()
+					[
+						SNew(SComboButton)
+						.ContentPadding(0)
+						.HasDownArrow(false)
+						.CollapseMenuOnParentFocus(true)
+						.ButtonStyle(FEditorStyle::Get(), "Sequencer.AnimationOutliner.ColorStrip") // Style matches the button used in cinematic film overlays
+						.OnGetMenuContent_Lambda([=]() -> TSharedRef<SWidget>
+						{
+							return SNew(SColorPicker)
+								.UseAlpha(true)
+								.TargetColorAttribute_Lambda([=]() 
+								{
+									FLinearColor ColorValue = FLinearColor(1.0f, 1.0f, 1.0f, 1.0f);
+										
+									if (UMaterialInstanceDynamic* Overlay = CurrentOverlayMID.Get())
+									{
+										Overlay->GetVectorParameterValue(ParameterInfo.Name, ColorValue);
+									}
+
+									return ColorValue;
+								})
+								.OnColorCommitted_Lambda([=](FLinearColor NewColor) 
+								{
+									if (UMaterialInstanceDynamic* Overlay = CurrentOverlayMID.Get())
+									{
+										Overlay->SetVectorParameterValue(ParameterInfo.Name, NewColor);
+
+										if (CalibrationStepsController.IsValid())
+										{
+											CalibrationStepsController.Pin()->RefreshOverlay(EOverlayPassType::UserOverlay);
+										}
+									}
+								});
+						})
+						.ButtonContent()
+						[
+							SNew(SColorBlock)
+							.ShowBackgroundForAlpha(true)
+							.Size(FVector2D(10.0f, 20.0f))
+							.Color_Lambda([=]()
+							{
+								FLinearColor ColorValue = FLinearColor(1.0f, 1.0f, 1.0f, 1.0f);
+
+								if (UMaterialInstanceDynamic* Overlay = CurrentOverlayMID.Get())
+								{
+									Overlay->GetVectorParameterValue(ParameterInfo.Name, ColorValue);
+								}
+
+								return ColorValue;
+							})
+						]
+					]
+				]
+				;
+			}
+
+			OverlayParameterWidget->AddSlot()
+				.VAlign(VAlign_Top)
+				.Padding(5, 10)
+				.FillWidth(0.35f)
+				[
+					SNew(STextBlock).Text(LOCTEXT("OverlayParams", "Overlay Parameters"))
+				]
+			;
+
+			OverlayParameterWidget->AddSlot()
+				.VAlign(VAlign_Center)
+				.Padding(10, 5)
+				.FillWidth(0.65f)
+				[
+					OverlayParameterListWidget.ToSharedRef()
+				]
+			;
+		}
+	}
 }
 
 TSharedRef<SWidget> SCameraCalibrationSteps::BuildStepSelectionWidget()

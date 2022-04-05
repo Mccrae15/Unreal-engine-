@@ -19,11 +19,11 @@
 #include "RHI.h"
 #include "AudioDeviceManager.h"
 #include "Templates/UniqueObj.h"
+#include "Containers/Ticker.h"
 #include "Engine.generated.h"
 
 #define WITH_DYNAMIC_RESOLUTION (!UE_SERVER)
 
-class AMatineeActor;
 class APlayerController;
 class Error;
 class FCanvas;
@@ -49,6 +49,7 @@ class UGameViewportClient;
 class ULocalPlayer;
 class UNetDriver;
 class UTimecodeProvider;
+class UActorFolder;
 
 #if ALLOW_DEBUG_FILES
 class FFineGrainedPerformanceTracker;
@@ -158,7 +159,7 @@ struct FFullyLoadedPackagesInfo
 
 	/** List of objects that were loaded, for faster cleanup */
 	UPROPERTY()
-	TArray<class UObject*> LoadedObjects;
+	TArray<TObjectPtr<class UObject>> LoadedObjects;
 
 
 	FFullyLoadedPackagesInfo()
@@ -243,7 +244,7 @@ struct FNamedNetDriver
 
 	/** Instantiation of named net driver */
 	UPROPERTY(transient)
-	class UNetDriver* NetDriver;
+	TObjectPtr<class UNetDriver> NetDriver;
 
 	/** Definition associated with this net driver */
 	FNetDriverDefinition* NetDriverDef;
@@ -312,7 +313,7 @@ struct FWorldContext
 	struct FURL LastRemoteURL;
 
 	UPROPERTY()
-	UPendingNetGame * PendingNetGame;
+	TObjectPtr<UPendingNetGame>  PendingNetGame;
 
 	/** A list of tag/array pairs that is used at LoadMap time to fully load packages that may be needed for the map/game with DLC, but we can't use DynamicLoadObject to load from the packages */
 	UPROPERTY()
@@ -326,7 +327,7 @@ struct FWorldContext
 
 	/** Array of already loaded levels. The ordering is arbitrary and depends on what is already loaded and such.	*/
 	UPROPERTY()
-	TArray<class ULevel*> LoadedLevelsForPendingMapChange;
+	TArray<TObjectPtr<class ULevel>> LoadedLevelsForPendingMapChange;
 
 	/** Human readable error string for any failure during a map change request. Empty if there were no failures.	*/
 	FString PendingMapChangeFailureDescription;
@@ -336,16 +337,16 @@ struct FWorldContext
 
 	/** Handles to object references; used by the engine to e.g. the prevent objects from being garbage collected.	*/
 	UPROPERTY()
-	TArray<class UObjectReferencer*> ObjectReferencers;
+	TArray<TObjectPtr<class UObjectReferencer>> ObjectReferencers;
 
 	UPROPERTY()
 	TArray<struct FLevelStreamingStatus> PendingLevelStreamingStatusUpdates;
 
 	UPROPERTY()
-	class UGameViewportClient* GameViewport;
+	TObjectPtr<class UGameViewportClient> GameViewport;
 
 	UPROPERTY()
-	class UGameInstance* OwningGameInstance;
+	TObjectPtr<class UGameInstance> OwningGameInstance;
 
 	/** A list of active net drivers */
 	UPROPERTY(transient)
@@ -626,9 +627,10 @@ enum class EFrameHitchType : uint8;
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FEngineHitchDetectedDelegate, EFrameHitchType /*HitchType*/, float /*HitchDurationInSeconds*/);
 
-
 DECLARE_MULTICAST_DELEGATE(FPreRenderDelegate);
+DECLARE_MULTICAST_DELEGATE_OneParam(FPreRenderDelegateEx, class FRDGBuilder&);
 DECLARE_MULTICAST_DELEGATE(FPostRenderDelegate);
+DECLARE_MULTICAST_DELEGATE_OneParam(FPostRenderDelegateEx, class FRDGBuilder&);
 
 /**
  * Abstract base class of all Engine classes, responsible for management of systems critical to editor or game systems.
@@ -643,52 +645,52 @@ class ENGINE_API UEngine
 
 private:
 	UPROPERTY()
-	class UFont* TinyFont;
+	TObjectPtr<class UFont> TinyFont;
 
 public:
 	/** Sets the font used for the smallest engine text */
-	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Tiny Font"))
+	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Tiny Font", ConfigRestartRequired=true))
 	FSoftObjectPath TinyFontName;
 
 private:
 	UPROPERTY()
-	class UFont* SmallFont;
+	TObjectPtr<class UFont> SmallFont;
 
 public:
 	/** Sets the font used for small engine text, used for most debug displays */
-	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Small Font"))
+	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Small Font", ConfigRestartRequired=true))
 	FSoftObjectPath SmallFontName;
 
 private:
 	UPROPERTY()
-	class UFont* MediumFont;
+	TObjectPtr<class UFont> MediumFont;
 
 public:
 	/** Sets the font used for medium engine text */
-	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Medium Font"))
+	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Medium Font", ConfigRestartRequired=true))
 	FSoftObjectPath MediumFontName;
 
 private:
 	UPROPERTY()
-	class UFont* LargeFont;
+	TObjectPtr<class UFont> LargeFont;
 
 public:
 	/** Sets the font used for large engine text */
-	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Large Font"))
+	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Large Font", ConfigRestartRequired=true))
 	FSoftObjectPath LargeFontName;
 
 private:
 	UPROPERTY()
-	class UFont* SubtitleFont;
+	TObjectPtr<class UFont> SubtitleFont;
 
 public:
 	/** Sets the font used by the default Subtitle Manager */
-	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Subtitle Font"), AdvancedDisplay)
+	UPROPERTY(globalconfig, EditAnywhere, Category=Fonts, meta=(AllowedClasses="Font", DisplayName="Subtitle Font", ConfigRestartRequired=true), AdvancedDisplay)
 	FSoftObjectPath SubtitleFontName;
 
 private:
 	UPROPERTY()
-	TArray<class UFont*> AdditionalFonts;
+	TArray<TObjectPtr<class UFont>> AdditionalFonts;
 
 public:
 	/** Sets additional fonts that will be loaded at startup and available using GetAdditionalFont. */
@@ -699,28 +701,28 @@ public:
 	TSubclassOf<class UConsole>  ConsoleClass;
 
 	/** Sets the class to use for the game console summoned with ~ */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="Console", DisplayName="Console Class"))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="Console", DisplayName="Console Class", ConfigRestartRequired=true))
 	FSoftClassPath ConsoleClassName;
 
 	UPROPERTY()
 	TSubclassOf<class UGameViewportClient>  GameViewportClientClass;
 
 	/** Sets the class to use for the game viewport client, which can be overridden to change game-specific input and display behavior. */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="GameViewportClient", DisplayName="Game Viewport Client Class"))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="GameViewportClient", DisplayName="Game Viewport Client Class", ConfigRestartRequired=true))
 	FSoftClassPath GameViewportClientClassName;
 
 	UPROPERTY()
 	TSubclassOf<class ULocalPlayer>  LocalPlayerClass;
 
 	/** Sets the class to use for local players, which can be overridden to store game-specific information for a local player. */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="LocalPlayer", DisplayName="Local Player Class"))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="LocalPlayer", DisplayName="Local Player Class", ConfigRestartRequired=true))
 	FSoftClassPath LocalPlayerClassName;
 
 	UPROPERTY()
 	TSubclassOf<class AWorldSettings>  WorldSettingsClass;
 
 	/** Sets the class to use for WorldSettings, which can be overridden to store game-specific information on map/world. */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="WorldSettings", DisplayName="World Settings Class"))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="WorldSettings", DisplayName="World Settings Class", ConfigRestartRequired=true))
 	FSoftClassPath WorldSettingsClassName;
 
 	UPROPERTY(globalconfig, noclear, meta=(MetaClass="NavigationSystem", DisplayName="Navigation System Class"))
@@ -752,11 +754,11 @@ public:
 	TSubclassOf<class UPhysicsCollisionHandler>	PhysicsCollisionHandlerClass;
 
 	/** Sets the PhysicsCollisionHandler class to use by default, which can be overridden to change game-specific behavior when objects collide using physics. */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="PhysicsCollisionHandler", DisplayName="Physics Collision Handler Class"), AdvancedDisplay)
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="PhysicsCollisionHandler", DisplayName="Physics Collision Handler Class", ConfigRestartRequired=true), AdvancedDisplay)
 	FSoftClassPath PhysicsCollisionHandlerClassName;
 
 	/** Sets the GameUserSettings class, which can be overridden to support game-specific options for Graphics/Sound/Gameplay. */
-	UPROPERTY(globalconfig, noclear, meta=(MetaClass="GameUserSettings", DisplayName="Game User Settings Class"))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="GameUserSettings", DisplayName="Game User Settings Class", ConfigRestartRequired=true), AdvancedDisplay)
 	FSoftClassPath GameUserSettingsClassName;
 
 	UPROPERTY()
@@ -764,13 +766,13 @@ public:
 
 	/** Global instance of the user game settings */
 	UPROPERTY()
-	class UGameUserSettings* GameUserSettings;
+	TObjectPtr<class UGameUserSettings> GameUserSettings;
 
 	UPROPERTY()
 	TSubclassOf<class ALevelScriptActor>  LevelScriptActorClass;
 
 	/** Sets the Level Script Actor class, which can be overridden to allow game-specific behavior in per-map blueprint scripting */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="LevelScriptActor", DisplayName="Level Script Actor Class"))
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="LevelScriptActor", DisplayName="Level Script Actor Class", ConfigRestartRequired=true))
 	FSoftClassPath LevelScriptActorClassName;
 	
 	/** Sets the base class to use for new blueprints created in the editor, configurable on a per-game basis */
@@ -778,24 +780,24 @@ public:
 	FSoftClassPath DefaultBlueprintBaseClassName;
 
 	/** Sets the class for a global object spawned at startup to handle game-specific data. If empty, it will not spawn one */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="Object", DisplayName="Game Singleton Class"), AdvancedDisplay)
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="Object", DisplayName="Game Singleton Class", ConfigRestartRequired=true), AdvancedDisplay)
 	FSoftClassPath GameSingletonClassName;
 
 	/** A UObject spawned at initialization time to handle game-specific data */
 	UPROPERTY()
-	UObject *GameSingleton;
+	TObjectPtr<UObject> GameSingleton;
 
 	/** Sets the class to spawn as the global AssetManager, configurable per game. If empty, it will not spawn one */
-	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="Object", DisplayName="Asset Manager Class"), AdvancedDisplay)
+	UPROPERTY(globalconfig, noclear, EditAnywhere, Category=DefaultClasses, meta=(MetaClass="Object", DisplayName="Asset Manager Class", ConfigRestartRequired=true), AdvancedDisplay)
 	FSoftClassPath AssetManagerClassName;
 
 	/** A UObject spawned at initialization time to handle runtime asset loading and management */
 	UPROPERTY()
-	class UAssetManager *AssetManager;
+	TObjectPtr<class UAssetManager> AssetManager;
 
 	/** A global default texture. */
 	UPROPERTY()
-	class UTexture2D* DefaultTexture;
+	TObjectPtr<class UTexture2D> DefaultTexture;
 
 	/** Path of the global default texture that is used when no texture is specified. */
 	UPROPERTY(globalconfig)
@@ -803,7 +805,7 @@ public:
 
 	/** A global default diffuse texture.*/
 	UPROPERTY()
-	class UTexture* DefaultDiffuseTexture;
+	TObjectPtr<class UTexture> DefaultDiffuseTexture;
 
 	/** Path of the global default diffuse texture.*/
 	UPROPERTY(globalconfig)
@@ -811,7 +813,7 @@ public:
 
 	/** Texture used to render a vertex in the editor */
 	UPROPERTY()
-	class UTexture2D* DefaultBSPVertexTexture;
+	TObjectPtr<class UTexture2D> DefaultBSPVertexTexture;
 
 	/** Path of the texture used to render a vertex in the editor */
 	UPROPERTY(globalconfig)
@@ -819,7 +821,7 @@ public:
 
 	/** Texture used to get random image grain values for post processing */
 	UPROPERTY()
-	class UTexture2D* HighFrequencyNoiseTexture;
+	TObjectPtr<class UTexture2D> HighFrequencyNoiseTexture;
 
 	/** Path of the texture used to get random image grain values for post processing */
 	UPROPERTY(globalconfig)
@@ -827,7 +829,7 @@ public:
 
 	/** Texture used to blur out of focus content, mimics the Bokeh shape of actual cameras */
 	UPROPERTY()
-	class UTexture2D* DefaultBokehTexture;
+	TObjectPtr<class UTexture2D> DefaultBokehTexture;
 
 	/** Path of the texture used to blur out of focus content, mimics the Bokeh shape of actual cameras */
 	UPROPERTY(globalconfig)
@@ -835,15 +837,23 @@ public:
 
 	/** Texture used to bloom when using FFT, mimics characteristic bloom produced in a camera from a signle bright source */
 	UPROPERTY()
-	class UTexture2D* DefaultBloomKernelTexture;
+	TObjectPtr<class UTexture2D> DefaultBloomKernelTexture;
 
 	/** Path of the texture used to bloom when using FFT, mimics characteristic bloom produced in a camera from a signle bright source */
 	UPROPERTY(globalconfig)
 	FSoftObjectPath DefaultBloomKernelTextureName;
+	
+	/** Texture used to film grain by default. */
+	UPROPERTY()
+	TObjectPtr<class UTexture2D> DefaultFilmGrainTexture;
+
+	/** Path of the texture used by film grain by default. */
+	UPROPERTY(globalconfig)
+	FSoftObjectPath DefaultFilmGrainTextureName;
 
 	/** The material used to render wireframe meshes. */
 	UPROPERTY()
-	class UMaterial* WireframeMaterial;
+	TObjectPtr<class UMaterial> WireframeMaterial;
 	
 	/** Path of the material used to render wireframe meshes in the editor and debug tools. */
 	UPROPERTY(globalconfig)
@@ -852,7 +862,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** A translucent material used to render things in geometry mode. */
 	UPROPERTY()
-	class UMaterial* GeomMaterial;
+	TObjectPtr<class UMaterial> GeomMaterial;
 
 	/** Path of the translucent material used to render things in geometry mode. */
 	UPROPERTY(globalconfig)
@@ -861,7 +871,7 @@ public:
 
 	/** A material used to render debug meshes. */
 	UPROPERTY()
-	class UMaterial* DebugMeshMaterial;
+	TObjectPtr<class UMaterial> DebugMeshMaterial;
 
 	/** Path of the default material for debug mesh */
 	UPROPERTY(globalconfig)
@@ -869,7 +879,7 @@ public:
 
 	/** A material used to render emissive meshes (e.g. light source surface). */
 	UPROPERTY()
-	class UMaterial* EmissiveMeshMaterial;
+	TObjectPtr<class UMaterial> EmissiveMeshMaterial;
 
 	/** Path of the default material for emissive mesh */
 	UPROPERTY(globalconfig)
@@ -877,7 +887,7 @@ public:
 
 	/** Material used for visualizing level membership in lit view port modes. */
 	UPROPERTY()
-	class UMaterial* LevelColorationLitMaterial;
+	TObjectPtr<class UMaterial> LevelColorationLitMaterial;
 
 	/** Path of the material used for visualizing level membership in lit view port modes. */
 	UPROPERTY(globalconfig)
@@ -885,7 +895,7 @@ public:
 
 	/** Material used for visualizing level membership in unlit view port modes. */
 	UPROPERTY()
-	class UMaterial* LevelColorationUnlitMaterial;
+	TObjectPtr<class UMaterial> LevelColorationUnlitMaterial;
 
 	/** Path of the material used for visualizing level membership in unlit view port modes. */
 	UPROPERTY(globalconfig)
@@ -893,7 +903,7 @@ public:
 
 	/** Material used for visualizing lighting only w/ lightmap texel density. */
 	UPROPERTY()
-	class UMaterial* LightingTexelDensityMaterial;
+	TObjectPtr<class UMaterial> LightingTexelDensityMaterial;
 
 	/** Path of the material used for visualizing lighting only w/ lightmap texel density. */
 	UPROPERTY(globalconfig)
@@ -901,7 +911,7 @@ public:
 
 	/** Material used for visualizing level membership in lit view port modes. Uses shading to show axis directions. */
 	UPROPERTY()
-	class UMaterial* ShadedLevelColorationLitMaterial;
+	TObjectPtr<class UMaterial> ShadedLevelColorationLitMaterial;
 
 	/** Path of the material used for visualizing level membership in lit view port modes. Uses shading to show axis directions. */
 	UPROPERTY(globalconfig)
@@ -909,7 +919,7 @@ public:
 
 	/** Material used for visualizing level membership in unlit view port modes.  Uses shading to show axis directions. */
 	UPROPERTY()
-	class UMaterial* ShadedLevelColorationUnlitMaterial;
+	TObjectPtr<class UMaterial> ShadedLevelColorationUnlitMaterial;
 
 	/** Path of the material used for visualizing level membership in unlit view port modes.  Uses shading to show axis directions. */
 	UPROPERTY(globalconfig)
@@ -917,7 +927,7 @@ public:
 
 	/** Material used to indicate that the associated BSP surface should be removed. */
 	UPROPERTY()
-	class UMaterial* RemoveSurfaceMaterial;
+	TObjectPtr<class UMaterial> RemoveSurfaceMaterial;
 
 	/** Path of the material used to indicate that the associated BSP surface should be removed. */
 	UPROPERTY(globalconfig)
@@ -925,7 +935,7 @@ public:
 
 	/** Material used to visualize vertex colors as emissive */
 	UPROPERTY()
-	class UMaterial* VertexColorMaterial;
+	TObjectPtr<class UMaterial> VertexColorMaterial;
 
 	/** Path of the material used to visualize vertex colors as emissive */
 	UPROPERTY(globalconfig)
@@ -933,7 +943,7 @@ public:
 
 	/** Material for visualizing vertex colors on meshes in the scene (color only, no alpha) */
 	UPROPERTY()
-	class UMaterial* VertexColorViewModeMaterial_ColorOnly;
+	TObjectPtr<class UMaterial> VertexColorViewModeMaterial_ColorOnly;
 
 	/** Path of the material for visualizing vertex colors on meshes in the scene (color only, no alpha) */
 	UPROPERTY(globalconfig)
@@ -941,7 +951,7 @@ public:
 
 	/** Material for visualizing vertex colors on meshes in the scene (alpha channel as color) */
 	UPROPERTY()
-	class UMaterial* VertexColorViewModeMaterial_AlphaAsColor;
+	TObjectPtr<class UMaterial> VertexColorViewModeMaterial_AlphaAsColor;
 
 	/** Path of the material for visualizing vertex colors on meshes in the scene (alpha channel as color) */
 	UPROPERTY(globalconfig)
@@ -949,7 +959,7 @@ public:
 
 	/** Material for visualizing vertex colors on meshes in the scene (red only) */
 	UPROPERTY()
-	class UMaterial* VertexColorViewModeMaterial_RedOnly;
+	TObjectPtr<class UMaterial> VertexColorViewModeMaterial_RedOnly;
 
 	/** Path of the material for visualizing vertex colors on meshes in the scene (red only) */
 	UPROPERTY(globalconfig)
@@ -957,7 +967,7 @@ public:
 
 	/** Material for visualizing vertex colors on meshes in the scene (green only) */
 	UPROPERTY()
-	class UMaterial* VertexColorViewModeMaterial_GreenOnly;
+	TObjectPtr<class UMaterial> VertexColorViewModeMaterial_GreenOnly;
 
 	/** Path of the material for visualizing vertex colors on meshes in the scene (green only) */
 	UPROPERTY(globalconfig)
@@ -965,7 +975,7 @@ public:
 
 	/** Material for visualizing vertex colors on meshes in the scene (blue only) */
 	UPROPERTY()
-	class UMaterial* VertexColorViewModeMaterial_BlueOnly;
+	TObjectPtr<class UMaterial> VertexColorViewModeMaterial_BlueOnly;
 
 	/** Path of the material for visualizing vertex colors on meshes in the scene (blue only) */
 	UPROPERTY(globalconfig)
@@ -974,7 +984,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Material used to render bone weights on skeletal meshes */
 	UPROPERTY()
-	class UMaterial* BoneWeightMaterial;
+	TObjectPtr<class UMaterial> BoneWeightMaterial;
 
 	/** Path of the material used to render bone weights on skeletal meshes */
 	UPROPERTY(globalconfig)
@@ -982,13 +992,13 @@ public:
 
 	/** Materials used to render cloth properties on skeletal meshes */
 	UPROPERTY()
-	class UMaterial* ClothPaintMaterial;
+	TObjectPtr<class UMaterial> ClothPaintMaterial;
 	UPROPERTY()
-	class UMaterial* ClothPaintMaterialWireframe;
+	TObjectPtr<class UMaterial> ClothPaintMaterialWireframe;
 	UPROPERTY()
-	class UMaterialInstanceDynamic* ClothPaintMaterialInstance;
+	TObjectPtr<class UMaterialInstanceDynamic> ClothPaintMaterialInstance;
 	UPROPERTY()
-	class UMaterialInstanceDynamic* ClothPaintMaterialWireframeInstance;
+	TObjectPtr<class UMaterialInstanceDynamic> ClothPaintMaterialWireframeInstance;
 
 	/** Name of the material used to render cloth in the clothing tools */
 	UPROPERTY(globalconfig)
@@ -1000,7 +1010,7 @@ public:
 
 	/** A material used to render physical material mask on mesh. */
 	UPROPERTY()
-	class UMaterial* PhysicalMaterialMaskMaterial;
+	TObjectPtr<class UMaterial> PhysicalMaterialMaskMaterial;
 
 	/** A material used to render physical material mask on mesh. */
 	UPROPERTY(globalconfig)
@@ -1008,7 +1018,27 @@ public:
 
 	/** A material used to render debug meshes. */
 	UPROPERTY()
-	class UMaterial* DebugEditorMaterial;
+	TObjectPtr<class UMaterial> DebugEditorMaterial;
+
+	/** A material used to flatten materials. */
+	UPROPERTY(globalconfig)
+	FSoftObjectPath DefaultFlattenMaterialName;
+
+	/** A material used to flatten materials to VT textures. */
+	UPROPERTY(globalconfig)
+	FSoftObjectPath DefaultHLODFlattenMaterialName;
+
+	/** A material used to flatten materials to VT textures, with the normals being in world space. */
+	UPROPERTY(globalconfig)
+	FSoftObjectPath DefaultLandscapeFlattenMaterialName;
+
+	/** Materials used when flattening materials */
+	UPROPERTY()
+	TObjectPtr<class UMaterial> DefaultFlattenMaterial;
+	UPROPERTY()
+	TObjectPtr<class UMaterial> DefaultHLODFlattenMaterial;
+	UPROPERTY()
+	TObjectPtr<class UMaterial> DefaultLandscapeFlattenMaterial;
 #endif
 
 	/** A material used to render debug opaque material. Used in various animation editor viewport features. */
@@ -1017,30 +1047,30 @@ public:
 
 	/** Material used to render constraint limits */
 	UPROPERTY()
-	class UMaterial* ConstraintLimitMaterial;
+	TObjectPtr<class UMaterial> ConstraintLimitMaterial;
 
 	UPROPERTY()
-	class UMaterialInstanceDynamic* ConstraintLimitMaterialX;
+	TObjectPtr<class UMaterialInstanceDynamic> ConstraintLimitMaterialX;
 
 	UPROPERTY()
-	class UMaterialInstanceDynamic* ConstraintLimitMaterialXAxis;
+	TObjectPtr<class UMaterialInstanceDynamic> ConstraintLimitMaterialXAxis;
 
 	UPROPERTY()
-	class UMaterialInstanceDynamic* ConstraintLimitMaterialY;
+	TObjectPtr<class UMaterialInstanceDynamic> ConstraintLimitMaterialY;
 	UPROPERTY()
-	class UMaterialInstanceDynamic* ConstraintLimitMaterialYAxis;
+	TObjectPtr<class UMaterialInstanceDynamic> ConstraintLimitMaterialYAxis;
 
 	UPROPERTY()
-	class UMaterialInstanceDynamic* ConstraintLimitMaterialZ;
+	TObjectPtr<class UMaterialInstanceDynamic> ConstraintLimitMaterialZ;
 	UPROPERTY()
-	class UMaterialInstanceDynamic* ConstraintLimitMaterialZAxis;
+	TObjectPtr<class UMaterialInstanceDynamic> ConstraintLimitMaterialZAxis;
 
 	UPROPERTY()
-	class UMaterialInstanceDynamic* ConstraintLimitMaterialPrismatic;
+	TObjectPtr<class UMaterialInstanceDynamic> ConstraintLimitMaterialPrismatic;
 
 	/** Material that renders a message about lightmap settings being invalid. */
 	UPROPERTY()
-	class UMaterial* InvalidLightmapSettingsMaterial;
+	TObjectPtr<class UMaterial> InvalidLightmapSettingsMaterial;
 
 	/** Path of the material that renders a message about lightmap settings being invalid. */
 	UPROPERTY(globalconfig)
@@ -1048,7 +1078,7 @@ public:
 
 	/** Material that renders a message about preview shadows being used. */
 	UPROPERTY()
-	class UMaterial* PreviewShadowsIndicatorMaterial;
+	TObjectPtr<class UMaterial> PreviewShadowsIndicatorMaterial;
 
 	/** Path of the material that renders a message about preview shadows being used. */
 	UPROPERTY(globalconfig, EditAnywhere, Category=DefaultMaterials, meta=(AllowedClasses="Material", DisplayName="Preview Shadows Indicator Material"))
@@ -1056,11 +1086,11 @@ public:
 
 	/** Material that 'fakes' lighting, used for arrows, widgets. */
 	UPROPERTY()
-	class UMaterial* ArrowMaterial;
+	TObjectPtr<class UMaterial> ArrowMaterial;
 
 	/** Arrow material instance with yellow color. */
 	UPROPERTY()
-	class UMaterialInstanceDynamic* ArrowMaterialYellow;
+	TObjectPtr<class UMaterialInstanceDynamic> ArrowMaterialYellow;
 
 	/** Path of the material that 'fakes' lighting, used for arrows, widgets. */
 	UPROPERTY(globalconfig)
@@ -1147,7 +1177,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** A material used to render the sides of the builder brush/volumes/etc. */
 	UPROPERTY()
-	class UMaterial* EditorBrushMaterial;
+	TObjectPtr<class UMaterial> EditorBrushMaterial;
 
 	/** Path of the material used to render the sides of the builder brush/volumes/etc. */
 	UPROPERTY(globalconfig)
@@ -1156,11 +1186,19 @@ public:
 
 	/** PhysicalMaterial to use if none is defined for a particular object. */
 	UPROPERTY()
-	class UPhysicalMaterial* DefaultPhysMaterial;
+	TObjectPtr<class UPhysicalMaterial> DefaultPhysMaterial;
 
 	/** Path of the PhysicalMaterial to use if none is defined for a particular object. */
 	UPROPERTY(globalconfig)
 	FSoftObjectPath DefaultPhysMaterialName;
+
+	/** PhysicalMaterial to use if none is defined for a Destructible object. */
+	UPROPERTY()
+	TObjectPtr<class UPhysicalMaterial> DefaultDestructiblePhysMaterial;
+
+	/** Path of the PhysicalMaterial to use if none is defined for a particular object. */
+	UPROPERTY(globalconfig, EditAnywhere, Category = DefaultMaterials, meta = (AllowedClasses = "Physics", DisplayName = "Destructible Physics Material"))
+	FSoftObjectPath DefaultDestructiblePhysMaterialName;
 
 	/** Deprecated rules for redirecting renamed objects, replaced by the CoreRedirects system*/
 	UPROPERTY(config)
@@ -1177,7 +1215,7 @@ public:
 
 	/** Texture used for pre-integrated skin shading */
 	UPROPERTY()
-	class UTexture2D* PreIntegratedSkinBRDFTexture;
+	TObjectPtr<class UTexture2D> PreIntegratedSkinBRDFTexture;
 
 	/** Path of the texture used for pre-integrated skin shading */
 	UPROPERTY(globalconfig)
@@ -1185,7 +1223,7 @@ public:
 
 	/** Tiled blue-noise texture */
 	UPROPERTY()
-	class UTexture2D* BlueNoiseTexture;
+	TObjectPtr<class UTexture2D> BlueNoiseTexture;
 
 	/** Path of the tiled blue-noise texture */
 	UPROPERTY(globalconfig)
@@ -1193,7 +1231,7 @@ public:
 
 	/** Texture used to do font rendering in shaders */
 	UPROPERTY()
-	class UTexture2D* MiniFontTexture;
+	TObjectPtr<class UTexture2D> MiniFontTexture;
 
 	/** Path of the texture used to do font rendering in shaders */
 	UPROPERTY(globalconfig)
@@ -1201,7 +1239,7 @@ public:
 
 	/** Texture used as a placeholder for terrain weight-maps to give the material the correct texture format. */
 	UPROPERTY()
-	class UTexture* WeightMapPlaceholderTexture;
+	TObjectPtr<class UTexture> WeightMapPlaceholderTexture;
 
 	/** Path of the texture used as a placeholder for terrain weight-maps to give the material the correct texture format. */
 	UPROPERTY(globalconfig)
@@ -1209,7 +1247,7 @@ public:
 
 	/** Texture used to display LightMapDensity */
 	UPROPERTY()
-	class UTexture2D* LightMapDensityTexture;
+	TObjectPtr<class UTexture2D> LightMapDensityTexture;
 
 	/** Path of the texture used to display LightMapDensity */
 	UPROPERTY(globalconfig)
@@ -1222,7 +1260,7 @@ public:
 
 	/** The view port representing the current game instance. Can be 0 so don't use without checking. */
 	UPROPERTY()
-	class UGameViewportClient* GameViewport;
+	TObjectPtr<class UGameViewportClient> GameViewport;
 
 	/** Array of deferred command strings/ execs that get executed at the end of the frame */
 	UPROPERTY()
@@ -1286,7 +1324,7 @@ public:
 private:
 	/** Controls how the Engine process the Framerate/Timestep */
 	UPROPERTY(transient)
-	UEngineCustomTimeStep* CustomTimeStep;
+	TObjectPtr<UEngineCustomTimeStep> CustomTimeStep;
 
 	/** Broadcasts whenever the custom time step changed. */
 	FSimpleMulticastDelegate CustomTimeStepChangedEvent;
@@ -1306,7 +1344,7 @@ public:
 private:
 	/** Controls the Engine's timecode. */
 	UPROPERTY(transient)
-	UTimecodeProvider* TimecodeProvider;
+	TObjectPtr<UTimecodeProvider> TimecodeProvider;
 
 	/** Broadcasts whenever the timecode provider changed. */
 	FSimpleMulticastDelegate TimecodeProviderChangedEvent;
@@ -1403,6 +1441,9 @@ public:
 	/** The save directory for newly created screenshots */
 	UPROPERTY(config, EditAnywhere, Category = Screenshots)
 	FDirectoryPath GameScreenshotSaveDirectory;
+
+	UPROPERTY(config, EditAnywhere, Category = PerQualityLevelProperty, AdvancedDisplay)
+	bool UseStaticMeshMinLODPerQualityLevels;
 
 	/** The state of the current map transition.  */
 	UPROPERTY()
@@ -1541,9 +1582,6 @@ public:
 	UPROPERTY(transient)
 	float SelectionHighlightIntensityBillboards;
 
-	/** The "outermost" active matinee, if any. */
-	TWeakObjectPtr<AMatineeActor> ActiveMatinee;
-
 	/** Delegate handling when streaming pause begins. Set initially in FStreamingPauseRenderingModule::StartupModule() but can then be overridden by games. */
 	void RegisterBeginStreamingPauseRenderingDelegate( FBeginStreamingPauseDelegate* InDelegate );
 	FBeginStreamingPauseDelegate* BeginStreamingPauseDelegate;
@@ -1552,13 +1590,21 @@ public:
 	void RegisterEndStreamingPauseRenderingDelegate( FEndStreamingPauseDelegate* InDelegate );
 	FEndStreamingPauseDelegate* EndStreamingPauseDelegate;
 
-
+private:
 	/** Delegate called just prior to rendering. */
 	FPreRenderDelegate PreRenderDelegate;
-	FPreRenderDelegate& GetPreRenderDelegate() { return PreRenderDelegate; }
+	FPreRenderDelegateEx PreRenderDelegateEx;
 	/** Delegate called just after to rendering. */
 	FPostRenderDelegate PostRenderDelegate;
+	FPostRenderDelegateEx PostRenderDelegateEx;
+
+public:
+	UE_DEPRECATED(5.0, "Please use GetPreRenderDelegateEx().")
+	FPreRenderDelegate& GetPreRenderDelegate() { return PreRenderDelegate; }
+	FPreRenderDelegateEx& GetPreRenderDelegateEx() { return PreRenderDelegateEx; }
+	UE_DEPRECATED(5.0, "Please use GetPostRenderDelegateEx().")
 	FPostRenderDelegate& GetPostRenderDelegate() { return PostRenderDelegate; }
+	FPostRenderDelegateEx& GetPostRenderDelegateEx() { return PostRenderDelegateEx; }
 
 	/** 
 	 * Error message event relating to server travel failures 
@@ -1701,6 +1747,18 @@ public:
 		#endif
 	}
 
+	/** Delay loading this texture until it is needed by the renderer.
+	* The texture is uncompressed and contains no mips so it can't be streamed.
+	*/
+	void LoadDefaultBloomTexture();
+
+	/** Delay loading this texture until it is needed by the renderer.
+	* The texture is uncompressed and contains no mips so it can't be streamed.
+	*/
+	void LoadBlueNoiseTexture();
+
+	/** Delay loading this texture until it is needed by the renderer. */
+	void LoadDefaultFilmGrainTexture();
 
 private:
 	#if WITH_DYNAMIC_RESOLUTION
@@ -1795,8 +1853,8 @@ public:
 	virtual ERHIFeatureLevel::Type GetDefaultWorldFeatureLevel() const;
 
 #if WITH_EDITOR
-	/** Return the platform group name and vanilla platform name the current preview platform, or false if there is no preview platform. */
-	virtual bool GetPreviewPlatformName(FName& PlatformGroupName, FName& VanillaPlatformName) const;
+	/** Return the ini platform name the current preview platform, or false if there is no preview platform. */
+	virtual bool GetPreviewPlatformName(FName& PlatformName) const;
 
 	/** Editor-only event triggered when the actor list of the world has changed */
 	DECLARE_EVENT( UEngine, FLevelActorListChangedEvent );
@@ -1818,6 +1876,27 @@ public:
 
 	/** Called by internal engine systems after level actors have changed to notify other subsystems */
 	void BroadcastLevelActorDeleted(AActor* InActor) { LevelActorDeletedEvent.Broadcast(InActor); }
+
+	/** Editor-only event triggered when an actor folder is added to the world */
+	DECLARE_EVENT_OneParam(UEngine, FActorFolderAddedEvent, UActorFolder*);
+	FActorFolderAddedEvent& OnActorFolderAdded() { return ActorFolderAddedEvent; }
+
+	/** Called by internal engine systems after actor folder is added  */
+	void BroadcastActorFolderAdded(UActorFolder* InActorFolder) { ActorFolderAddedEvent.Broadcast(InActorFolder); }
+
+	/** Editor-only event triggered when an actor folder is removed from the world */
+	DECLARE_EVENT_OneParam(UEngine, FActorFolderRemovedEvent, UActorFolder*);
+	FActorFolderRemovedEvent& OnActorFolderRemoved() { return ActorFolderRemovedEvent; }
+
+	/** Called by internal engine systems after actor folder is removed  */
+	void BroadcastActorFolderRemoved(UActorFolder* InActorFolder) { ActorFolderRemovedEvent.Broadcast(InActorFolder); }
+
+	/** Editor-only event triggered when actor folders are updated for a level */
+	DECLARE_EVENT_OneParam(UEngine, FActorFoldersUpdatedEvent, ULevel*);
+	FActorFoldersUpdatedEvent& OnActorFoldersUpdatedEvent() { return ActorFoldersUpdatedEvent; }
+
+	/** Called by internal engine systems after a level has finished updating its actor folder list */
+	void BroadcastActorFoldersUpdated(ULevel* InLevel) { ActorFoldersUpdatedEvent.Broadcast(InLevel); }
 
 	/** Editor-only event triggered when actors outer changes */
 	DECLARE_EVENT_TwoParams(UEngine, FLevelActorOuterChangedEvent, AActor*, UObject*);
@@ -1989,6 +2068,10 @@ public:
 	bool HandleProfileGPUCommand( const TCHAR* Cmd, FOutputDevice& Ar );	
 #endif
 
+#if WITH_DUMPGPU
+	bool HandleDumpGPUCommand( const TCHAR* Cmd, FOutputDevice& Ar );
+#endif
+
 	// Compile in Debug or Development
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) && WITH_HOT_RELOAD
 	bool HandleHotReloadCommand( const TCHAR* Cmd, FOutputDevice& Ar );
@@ -2010,6 +2093,9 @@ public:
 	bool HandleRecompileGlobalShadersCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleDumpShaderStatsCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleDumpMaterialStatsCommand( const TCHAR* Cmd, FOutputDevice& Ar );
+#if WITH_EDITOR
+	bool HandleDumpShaderCompileStatsCommand( const TCHAR* Cmd, FOutputDevice& Ar );
+#endif
 	bool HandleProfileCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleProfileGPUHitchesCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleShaderComplexityCommand( const TCHAR* Cmd, FOutputDevice& Ar );
@@ -2028,6 +2114,7 @@ public:
 	bool HandleLogoutStatLevelsCommand( const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld );
 	bool HandleMemReportCommand( const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld );
 	bool HandleMemReportDeferredCommand( const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld );
+	bool HandleSkeletalMeshReportCommand(const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld);
 	bool HandleParticleMeshUsageCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleDumpParticleCountsCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleListLoadedPackagesCommand( const TCHAR* Cmd, FOutputDevice& Ar );
@@ -2180,7 +2267,27 @@ public:
 	 *	Returns the first ULocalPlayer that matches the given ControllerId. 
 	 *  This will search across all world contexts.
 	 */
-	class ULocalPlayer* FindFirstLocalPlayerFromControllerId(int32 ControllerId) const;
+	ULocalPlayer* FindFirstLocalPlayerFromControllerId(int32 ControllerId) const;
+
+	/** 
+	 * If true, we're running in a backward compatible mode where FPlatformUserId and ControllerId are the same.
+	 * If false, there can be more than one local player with the same platform user id
+	 */
+	virtual bool IsControllerIdUsingPlatformUserId() const { return true; }
+
+	/**
+	 * Returns the first ULocalPlayer that matches the given platform user id, or the first player if the id is invalid
+	 * This will search across all world contexts.
+	 */
+	ULocalPlayer* FindFirstLocalPlayerFromPlatformUserId(FPlatformUserId PlatformUserId) const;
+
+	/**
+	 * Returns the first LocalPlayer that matches the given platform user id
+	 *
+	 * @param	PlatformUserId	Platform user id to search for
+	 * @return	The player that has the PlatformUserId specified, or nullptr if no players have that PlatformUserId
+	 */
+	ULocalPlayer* GetLocalPlayerFromPlatformUserId(UWorld* InWorld, const FPlatformUserId PlatformUserId) const;
 
 	/**
 	 * return the number of entries in the GamePlayers array
@@ -2238,6 +2345,11 @@ public:
 	{
 		// Intentionally empty.
 	}
+
+	/**
+	 * @return true if property coloration color has a valid implementation
+	 */
+	virtual bool IsPropertyColorationColorFeatureActivated() const { return false; }
 
 	/**
 	 * Computes a color to use for property coloration for the given object.
@@ -2417,6 +2529,11 @@ protected:
 	 */
 	 bool PerformError(const TCHAR* Cmd, FOutputDevice& Out = *GLog);
 
+	 /**
+	  * Dispatches EndOfFrameUpdates for all UWorlds
+	  */
+	 static void SendWorldEndOfFrameUpdates();
+
 public:
 	/** @return the GIsEditor flag setting */
 	bool IsEditor();
@@ -2434,8 +2551,12 @@ public:
 	/** @return the currently active audio device */
 	FAudioDeviceHandle GetActiveAudioDevice();
 
-	/** @return whether we're currently running in split screen (more than one local player) */
+	/** @return whether we currently have more than one local player */
+	UE_DEPRECATED(5.0, "IsSplitScreen was only ever checking if there are more than one local player. Use HasMultipleLocalPlayers instead.")
 	virtual bool IsSplitScreen(UWorld *InWorld);
+
+	/** @returns whether there are currently multiple local players in the given world */
+	virtual bool HasMultipleLocalPlayers(UWorld* InWorld);
 
 	/** @return whether we're currently running with stereoscopic 3D enabled for the specified viewport (or globally, if viewport is nullptr) */
 	bool IsStereoscopic3D(FViewport* InViewport = nullptr);
@@ -2469,16 +2590,6 @@ public:
 	UWorld* GetWorldFromContextObjectChecked(const UObject* Object) const
 	{
 		return GetWorldFromContextObject(Object, EGetWorldErrorMode::Assert);
-	}
-
-	/** 
-	 * This function is deprecated
-	 */
-	UE_DEPRECATED(4.17, "GetWorldFromContextObject(Object) and GetWorldFromContextObject(Object, boolean) are replaced by GetWorldFromContextObject(Object, Enum) or GetWorldFromContextObjectChecked(Object)")
-	UWorld* GetWorldFromContextObject(const UObject* Object, bool bChecked = true) const
-	{
-		// Note: The behavior in 4.16 and before was similar to Assert if bChecked was true, but almost no callers actually wanted to pass in bChecked=true
-		return GetWorldFromContextObject(Object, bChecked ? EGetWorldErrorMode::LogAndReturnNull : EGetWorldErrorMode::ReturnNull);
 	}
 
 	/** 
@@ -2614,11 +2725,13 @@ public:
 		bool bReplaceObjectClassReferences;
 		bool bCopyDeprecatedProperties;
 		bool bPreserveRootComponent;
+		bool bPerformDuplication;
 
 		/** Skips copying properties with BlueprintCompilerGeneratedDefaults metadata */
 		bool bSkipCompilerGeneratedDefaults;
 		bool bNotifyObjectReplacement;
 		bool bClearReferences;
+		bool bDontClearReferenceIfNewerClassExists;
 
 		FCopyPropertiesForUnrelatedObjectsParams()
 			: bAggressiveDefaultSubobjectReplacement(false)
@@ -2626,9 +2739,11 @@ public:
 			, bReplaceObjectClassReferences(true)
 			, bCopyDeprecatedProperties(false)
 			, bPreserveRootComponent(true)
+			, bPerformDuplication(false)
 			, bSkipCompilerGeneratedDefaults(false)
 			, bNotifyObjectReplacement(false)
 			, bClearReferences(true)
+			, bDontClearReferenceIfNewerClassExists(false)
 		{}
 	};
 	static void CopyPropertiesForUnrelatedObjects(UObject* OldObject, UObject* NewObject, FCopyPropertiesForUnrelatedObjectsParams Params = FCopyPropertiesForUnrelatedObjectsParams());//bool bAggressiveDefaultSubobjectReplacement = false, bool bDoDelta = true);
@@ -2638,6 +2753,7 @@ public:
 
 	// This should only ever be called for a EditorEngine
 	virtual UWorld* CreatePIEWorldByDuplication(FWorldContext &Context, UWorld* InWorld, FString &PlayWorldMapName) { check(false); return nullptr; }
+	virtual void PostCreatePIEWorld(UWorld* InWorld) { check(false); }
 
 	/** 
 	 *	If this function returns true, the DynamicSourceLevels collection will be duplicated for the given map.
@@ -2698,6 +2814,15 @@ private:
 
 	/** Broadcasts whenever an actor is removed. */
 	FLevelActorDeletedEvent LevelActorDeletedEvent;
+
+	/** Broadcasts whenever an actor folder is added. */
+	FActorFolderAddedEvent ActorFolderAddedEvent;
+
+	/** Broadcasts whenever an actor folder is removed. */
+	FActorFolderRemovedEvent ActorFolderRemovedEvent;
+
+	/** Broadcasts whenever a level rebuilds its actor folder list. */
+	FActorFoldersUpdatedEvent ActorFoldersUpdatedEvent;
 
 	/** Broadcasts whenever an actor's outer changes */
 	FLevelActorOuterChangedEvent LevelActorOuterChangedEvent;
@@ -2873,9 +2998,6 @@ public:
 
 #if WITH_SERVER_CODE
 	virtual bool HandleServerTravelCommand( const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld );
-
-	UE_DEPRECATED(4.14, "Say Command moved to GameMode as an exec function")
-	virtual bool HandleSayCommand( const TCHAR* Cmd, FOutputDevice& Ar, UWorld* InWorld );
 #endif
 
 	virtual bool HandleDisconnectCommand( const TCHAR* Cmd, FOutputDevice& Ar, UWorld *InWorld );
@@ -3011,6 +3133,13 @@ public:
 
 	/** Verify any remaining World(s) are valid after ::LoadMap destroys a world */
 	virtual void VerifyLoadMapWorldCleanup();
+
+	/**
+	 * Attempts to find what is referencing a world that should have been garbage collected
+	 * @param ObjectToFindReferencesTo World or its package (or any object from the world package that should've been destroyed)
+	 * @param Verbosity Verbosity (can be fatal or non-fatal) with which to print the error message with
+	 */
+	static void FindAndPrintStaleReferencesToObject(UObject* ObjectToFindReferencesTo, ELogVerbosity::Type Verbosity);
 
 	FWorldContext& CreateNewWorldContext(EWorldType::Type WorldType);
 
@@ -3206,6 +3335,7 @@ public:
 	//~ Begin Transaction Interfaces.
 	virtual int32 BeginTransaction(const TCHAR* TransactionContext, const FText& Description, UObject* PrimaryObject) { return INDEX_NONE; }
 	virtual int32 EndTransaction() { return INDEX_NONE; }
+	virtual bool CanTransact() { return false; }
 	virtual void CancelTransaction(int32 Index) { }
 #endif
 
@@ -3393,7 +3523,7 @@ private:
 		bool Tick(float Seconds);
 
 		TMap<uint32, uint32>	MessagesToCountMap;
-		FDelegateHandle			TickerHandle;
+		FTSTicker::FDelegateHandle			TickerHandle;
 		float					DisplayTime;
 	};
 
@@ -3412,6 +3542,7 @@ private:
 	bool ToggleStatDetailed(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatHitches(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatNamedEvents(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
+	bool ToggleStatVerboseNamedEvents(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatUnit(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 #if !UE_BUILD_SHIPPING
 	bool PostStatSoundModulatorHelp(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
@@ -3419,12 +3550,6 @@ private:
 	bool ToggleStatUnitGraph(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatUnitTime(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatRaw(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
-	bool ToggleStatSoundWaves(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
-	bool ToggleStatSoundCues(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
-	bool ToggleStatSounds(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
-	bool ToggleStatAudioStreaming(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
-	bool ToggleStatSoundMixes(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
-	bool ToggleStatSoundModulators(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 	bool ToggleStatParticlePerf(UWorld* World, FCommonViewportClient* ViewportClient, const TCHAR* Stream = nullptr);
 #endif
 

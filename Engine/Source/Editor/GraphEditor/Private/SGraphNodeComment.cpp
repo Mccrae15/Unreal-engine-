@@ -54,6 +54,9 @@ void SGraphNodeComment::Construct(const FArguments& InArgs, UEdGraphNode_Comment
 	UserSize.X = InNode->NodeWidth;
 	UserSize.Y = InNode->NodeHeight;
 
+	// Cache desired size so we cull correctly. We can do this as our ComputeDesiredSize ignores the layout scale.
+	CacheDesiredSize(1.0f);
+
 	MouseZone = CRWZ_NotInWindow;
 	bUserIsDragging = false;
 }
@@ -81,7 +84,7 @@ void SGraphNodeComment::Tick( const FGeometry& AllottedGeometry, const double In
 		bCachedBubbleVisibility = CommentNode->bCommentBubbleVisible_InDetailsPanel;
 	}
 
-	if (CachedFontSize != CommentNode->FontSize)
+	if (CachedFontSize != CommentNode->GetFontSize())
 	{
 		UpdateGraphNode();
 	}
@@ -139,12 +142,12 @@ void SGraphNodeComment::UpdateGraphNode()
 	FGraphNodeMetaData TagMeta(TEXT("Graphnode"));
 	PopulateMetaTag(&TagMeta);
 
-	CommentStyle = FEditorStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("Graph.CommentBlock.TitleInlineEditableText");
-	CommentStyle.EditableTextBoxStyle.Font.Size = CommentNode->FontSize;
-	CommentStyle.TextStyle.Font.Size = CommentNode->FontSize;
-	CachedFontSize = CommentNode->FontSize;
+	CachedFontSize = CommentNode->GetFontSize();
 
-	bool bIsSet = GraphNode->IsA(UEdGraphNode_Comment::StaticClass());
+	CommentStyle = FAppStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("Graph.CommentBlock.TitleInlineEditableText");
+	CommentStyle.EditableTextBoxStyle.Font.Size = CachedFontSize;
+	CommentStyle.TextStyle.Font.Size = CachedFontSize;
+
 	this->ContentScale.Bind( this, &SGraphNode::GetContentScale );
 	this->GetOrAddSlot( ENodeZone::Center )
 		.HAlign(HAlign_Fill)
@@ -198,7 +201,7 @@ void SGraphNodeComment::UpdateGraphNode()
 					SNew(SBorder)
 					.BorderImage( FEditorStyle::GetBrush("NoBorder") )
 				]
-			]			
+			]
 		];
 
 	// Create comment bubble
@@ -264,7 +267,7 @@ FReply SGraphNodeComment::OnMouseButtonUp( const FGeometry& MyGeometry, const FP
 	{
 		bUserIsDragging = false;
 
-		// Resize the node	
+		// Resize the node
 		UserSize.X = FMath::RoundToFloat(UserSize.X);
 		UserSize.Y = FMath::RoundToFloat(UserSize.Y);
 
@@ -347,7 +350,7 @@ void SGraphNodeComment::GetOverlayBrushes(bool bSelected, const FVector2D Widget
 
 	HandleSelection(bSelected);
 
-	FOverlayBrushInfo HandleBrush = FEditorStyle::GetBrush( TEXT("Kismet.Comment.Handle") );
+	FOverlayBrushInfo HandleBrush = FEditorStyle::GetBrush( TEXT("Graph.Node.Comment.Handle") );
 
 	HandleBrush.OverlayOffset.X = WidgetSize.X - HandleBrush.Brush->ImageSize.X - Fudge;
 	HandleBrush.OverlayOffset.Y = WidgetSize.Y - HandleBrush.Brush->ImageSize.Y - Fudge;

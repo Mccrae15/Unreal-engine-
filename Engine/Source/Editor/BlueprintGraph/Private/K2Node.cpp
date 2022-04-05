@@ -18,7 +18,7 @@
 #include "Editor/EditorEngine.h"
 #include "Misc/OutputDeviceNull.h"
 
-#include "Engine/Breakpoint.h"
+#include "Kismet2/Breakpoint.h"
 #include "Kismet2/KismetDebugUtilities.h"
 #include "KismetCompiler.h"
 #include "PropertyCustomizationHelpers.h"
@@ -26,6 +26,8 @@
 #include "ObjectEditorUtils.h"
 #include "UObject/UObjectAnnotation.h"
 #include "UObject/FrameworkObjectVersion.h"
+
+#include "Kismet2/WatchedPin.h"
 
 #define LOCTEXT_NAMESPACE "K2Node"
 
@@ -53,7 +55,6 @@ namespace UK2Node_Private
 UK2Node::UK2Node(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
-	bAllowSplitPins_DEPRECATED = true;
 	OrphanedPinSaveMode = ESaveOrphanPinMode::SaveAllButExec;
 }
 
@@ -100,7 +101,7 @@ void UK2Node::PostLoad()
 			{
 				if (UEdGraphPin* NewPin = UEdGraphPin::FindPinCreatedFromDeprecatedPin(WatchedPin))
 				{
-					BP->WatchedPins.Add(NewPin);
+					FKismetDebugUtilities::AddPinWatch(BP, NewPin);
 				}
 
 				BP->DeprecatedPinWatches.RemoveAt(WatchIdx);
@@ -148,12 +149,12 @@ bool UK2Node::HasNonEditorOnlyReferences() const
 
 void UK2Node::FixupPinDefaultValues()
 {
-	const int32 LinkerUE4Version = GetLinkerUE4Version();
+	const FPackageFileVersion LinkerUEVersion = GetLinkerUEVersion();
 	const int32 LinkerFrameworkVersion = GetLinkerCustomVersion(FFrameworkObjectVersion::GUID);
 	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 
 	// Swap "new" default error tolerance value with zero on vector/rotator equality nodes, in order to preserve current behavior in existing blueprints.
-	if(LinkerUE4Version < VER_UE4_BP_MATH_VECTOR_EQUALITY_USES_EPSILON)
+	if(LinkerUEVersion < VER_UE4_BP_MATH_VECTOR_EQUALITY_USES_EPSILON)
 	{
 		static const FString VectorsEqualFunctionEpsilonPinName = TEXT("KismetMathLibrary.EqualEqual_VectorVector.ErrorTolerance");
 		static const FString VectorsNotEqualFunctionEpsilonPinName = TEXT("KismetMathLibrary.NotEqual_VectorVector.ErrorTolerance");
@@ -289,7 +290,7 @@ FText UK2Node::GetToolTipHeading() const
 
 	if (Blueprint)
 	{
-		if (UBreakpoint* ExistingBreakpoint = FKismetDebugUtilities::FindBreakpointForNode(Blueprint, this))
+		if (FBlueprintBreakpoint* ExistingBreakpoint = FKismetDebugUtilities::FindBreakpointForNode(this, Blueprint))
 		{
 			if (ExistingBreakpoint->IsEnabled())
 			{
@@ -412,14 +413,24 @@ void UK2Node::AutowireNewNode(UEdGraphPin* FromPin)
 
 				// null out the backup connection (so we don't attempt to make it 
 				// once we exit the loop... we successfully made this connection!)
-				BackupConnection = NULL;
+				BackupConnection = nullptr;
+				break;
+			}
+			else if(ConnectResponse == ECanCreateConnectionResponse::CONNECT_RESPONSE_MAKE_WITH_PROMOTION)
+			{
+				if (K2Schema->CreatePromotedConnection(FromPin, Pin))
+				{
+					NodeList.Add(FromPin->GetOwningNode());
+					NodeList.Add(this);
+				}
+				BackupConnection = nullptr;
 				break;
 			}
 		}
 
 		// if we didn't find an ideal connection, then lets connect this pin to 
 		// the BackupConnection (something, like a connection that requires a conversion node, etc.)
-		if ((BackupConnection != NULL) && K2Schema->TryCreateConnection(FromPin, BackupConnection))
+		if ((BackupConnection != nullptr) && K2Schema->TryCreateConnection(FromPin, BackupConnection))
 		{
 			NodeList.Add(FromPin->GetOwningNode());
 			NodeList.Add(this);
@@ -433,7 +444,7 @@ void UK2Node::AutowireNewNode(UEdGraphPin* FromPin)
 
 			UEdGraphPin* ToExecutePin = FindPin(UEdGraphSchema_K2::PN_Execute);
 
-			if ((FromThenPin != NULL) && (FromThenPin->LinkedTo.Num() == 0) && (ToExecutePin != NULL) && K2Schema->ArePinsCompatible(FromThenPin, ToExecutePin, NULL))
+			if ((FromThenPin != nullptr) && (FromThenPin->LinkedTo.Num() == 0) && (ToExecutePin != nullptr) && K2Schema->ArePinsCompatible(FromThenPin, ToExecutePin, NULL))
 			{
 				if (K2Schema->TryCreateConnection(FromThenPin, ToExecutePin))
 				{
@@ -550,7 +561,7 @@ void UK2Node::PinConnectionListChanged(UEdGraphPin* Pin)
 					}
 				}
 
-				NestedPin->MarkPendingKill();
+				NestedPin->MarkAsGarbage();
 			};
 
 			RemoveNestedPin(Pin);
@@ -596,6 +607,30 @@ void UK2Node::JumpToDefinition() const
 	{
 		FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(HyperlinkTarget);
 	}
+}
+
+bool UK2Node::CanPlaceBreakpoints() const
+{
+	// Pure nodes have no execs and therefore cannot have breakpoints placed on them
+	if(IsNodePure())
+	{
+		return false;
+	}
+
+	// If this node is within a macro or interface blueprint then it cannot have breakpoints
+	// added to it as they will get expanded during compilation and never get hit. 
+	if(const UEdGraph* Graph = GetGraph())
+	{
+		if (const UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(Graph))
+		{
+			return
+				!(Blueprint->BlueprintType == BPTYPE_MacroLibrary ||
+				Blueprint->BlueprintType == BPTYPE_Interface ||
+				Blueprint->MacroGraphs.Contains(Graph));
+		}
+	}
+	
+	return true;
 }
 
 void UK2Node::ReallocatePinsDuringReconstruction(TArray<UEdGraphPin*>& OldPins)
@@ -681,7 +716,7 @@ void UK2Node::ReconstructNode()
 				Pin->LinkedTo.Remove(OtherPin);
 			}
 
-			if (Blueprint->bIsRegeneratingOnLoad && Linker->UE4Ver() < VER_UE4_INJECT_BLUEPRINT_STRUCT_PIN_CONVERSION_NODES)
+			if (Blueprint->bIsRegeneratingOnLoad && Linker->UEVer() < VER_UE4_INJECT_BLUEPRINT_STRUCT_PIN_CONVERSION_NODES)
 			{
 				if (OtherPin == nullptr || (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Struct))
 				{
@@ -837,8 +872,8 @@ UK2Node::ERedirectType UK2Node::DoPinsMatchForReconstruction(const UEdGraphPin* 
 {
 	ERedirectType RedirectType = ERedirectType_None;
 
-	// if the pin names do match
-	if (NewPin->PinName == OldPin->PinName)
+	// if the pin names and directions do match
+	if (NewPin->PinName == OldPin->PinName && NewPin->Direction == OldPin->Direction)
 	{
 		// If the old pin had a default value, only match the new pin if the type is compatible:
 		const UEdGraphSchema_K2* K2Schema = Cast<const UEdGraphSchema_K2>(GetSchema());
@@ -985,15 +1020,26 @@ void UK2Node::ReconstructSinglePin(UEdGraphPin* NewPin, UEdGraphPin* OldPin, ERe
 		}
 	}
 
-	// Update the blueprints watched pins as the old pin will be going the way of the dodo
-	for (int32 WatchIndex = 0; WatchIndex < Blueprint->WatchedPins.Num(); ++WatchIndex)
-	{
-		UEdGraphPin* WatchedPin = Blueprint->WatchedPins[WatchIndex].Get();
-		if( WatchedPin == OldPin )
+	// if OldPin has any watches, swap the watches for NewPin
+	TArray<TArray<FName>> WatchedPropertyPaths;
+	FKismetDebugUtilities::RemovePinPropertyWatchesByPredicate(
+		Blueprint, 
+		[OldPin, &WatchedPropertyPaths](const FBlueprintWatchedPin& WatchedPin)
 		{
-			WatchedPin = NewPin;
-			break;
+			if (WatchedPin.Get() == OldPin)
+			{
+				WatchedPropertyPaths.Add(WatchedPin.GetPathToProperty());
+				return true;
+			}
+
+			return false;
 		}
+	);
+
+	for (TArray<FName>& WatchedPropertyPath : WatchedPropertyPaths)
+	{
+		FBlueprintWatchedPin WatchedPin(NewPin, MoveTemp(WatchedPropertyPath));
+		FKismetDebugUtilities::AddPinWatch(Blueprint, MoveTemp(WatchedPin));
 	}
 }
 
@@ -1164,7 +1210,7 @@ void UK2Node::RewireOldPinsToNewPins(TArray<UEdGraphPin*>& InOldPins, TArray<UEd
 							if (!SubPin->bOrphanedPin)
 							{
 								OldPin->SubPins.RemoveAt(SubPinIndex, 1, false);
-								SubPin->MarkPendingKill();
+								SubPin->MarkAsGarbage();
 							}
 						}
 					}
@@ -1245,14 +1291,7 @@ void UK2Node::DestroyPinList(TArray<UEdGraphPin*>& InPins)
 
 bool UK2Node::CanSplitPin(const UEdGraphPin* Pin) const
 {
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	// AllowSplitPins is deprecated. Remove this block when that function is eventually removed.
-	if (AllowSplitPins())
-	{
-		return (Pin->GetOwningNode() == this && !Pin->bNotConnectable && Pin->LinkedTo.Num() == 0 && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Struct);
-	}
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
-	return false;
+	return (Pin->GetOwningNode() == this && !Pin->bNotConnectable && Pin->LinkedTo.Num() == 0 && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Struct);
 }
 
 UK2Node* UK2Node::ExpandSplitPin(FKismetCompilerContext* CompilerContext, UEdGraph* SourceGraph, UEdGraphPin* Pin)
@@ -1304,7 +1343,7 @@ UK2Node* UK2Node::ExpandSplitPin(FKismetCompilerContext* CompilerContext, UEdGra
 		{
 			Pins.Remove(SubPin);
 			SubPin->ParentPin = nullptr;
-			SubPin->MarkPendingKill();
+			SubPin->MarkAsGarbage();
 		}
 		Pin->SubPins.Empty();
 	}

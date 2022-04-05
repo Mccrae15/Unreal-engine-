@@ -18,8 +18,10 @@ public class AESGCMHandlerComponent : ModuleRules
 			new string[]
 			{
 				"Core",
+				"CoreUObject",
 				"PacketHandler",
 				"PlatformCrypto",
+				"NetCore"
 			}
 			);
 
@@ -30,16 +32,7 @@ public class AESGCMHandlerComponent : ModuleRules
 			}
 			);
 
-		if (Target.Platform == UnrealTargetPlatform.XboxOne)
-		{
-			PublicDependencyModuleNames.AddRange(
-				new string[]
-				{
-					"PlatformCryptoBCrypt",
-				}
-				);
-		}
-		else if (DefaultToSSL)
+		if (DefaultToSSL)
 		{
 			PublicDependencyModuleNames.AddRange(
 				new string[]

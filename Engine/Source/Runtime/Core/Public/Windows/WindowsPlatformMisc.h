@@ -10,7 +10,6 @@
 
 class GenericApplication;
 struct FGuid;
-struct FVector2D;
 class IPlatformChunkInstall;
 
 /** Helper struct used to get the string version of the Windows version. */
@@ -51,6 +50,7 @@ struct CORE_API FWindowsPlatformMisc
 
 #if !UE_BUILD_SHIPPING
 	static bool IsDebuggerPresent();
+	static EProcessDiagnosticFlags GetProcessDiagnostics();
 #endif
 
 #if STATS || ENABLE_STATNAMEDEVENTS
@@ -77,6 +77,7 @@ struct CORE_API FWindowsPlatformMisc
 	static bool Is64bitOperatingSystem();
 	static bool IsValidAbsolutePathFormat(const FString& Path);
 	static int32 NumberOfCores();
+	static const FProcessorGroupDesc& GetProcessorGroupDesc();
 	static int32 NumberOfCoresIncludingHyperthreads();
 	static int32 NumberOfWorkerThreadsToSpawn();
 
@@ -155,6 +156,13 @@ struct CORE_API FWindowsPlatformMisc
 	 */
 	static bool HasCPUIDInstruction();
 
+	/**
+	 * Determines if AVX2 instruction set is supported on this platform
+	 *
+	 * @return	Returns true if instruction-set is supported
+	 */
+	static bool HasAVX2InstructionSupport();
+
 	static FString GetCPUVendor();
 	static FString GetCPUBrand();
 	static FString GetPrimaryGPUBrand();
@@ -162,6 +170,8 @@ struct CORE_API FWindowsPlatformMisc
 	static void GetOSVersions( FString& out_OSVersionLabel, FString& out_OSSubVersionLabel );
 	static FString GetOSVersion();
 	static bool GetDiskTotalAndFreeSpace( const FString& InPath, uint64& TotalNumberOfBytes, uint64& NumberOfFreeBytes );
+	static bool GetPageFaultStats(FPageFaultStats& OutStats, EPageFaultFlags Flags=EPageFaultFlags::All);
+	static bool GetBlockingIOStats(FProcessIOStats& OutStats, EInputOutputFlags Flags=EInputOutputFlags::All);
 
 	/**
 	 * Uses cpuid instruction to get the vendor string
@@ -258,6 +268,7 @@ struct CORE_API FWindowsPlatformMisc
 
 	static uint64 GetFileVersion(const FString &FileName);
 
+	static int32 GetMaxRefreshRate();
 };
 
 

@@ -35,6 +35,7 @@
 	#include "Editor/UnrealEdEngine.h"
 	#include "PackageTools.h"
 	#include "ObjectTools.h"
+	#include "Selection.h"
 	#include "Subsystems/AssetEditorSubsystem.h"
 	#include "GameMapsSettings.h"
 	#include "FileHelpers.h"
@@ -42,6 +43,31 @@
 
 namespace ConcertSyncClientUtil
 {
+
+static TAutoConsoleVariable<int32> CVarDelayApplyingTransactionsWhileEditing(
+	TEXT("Concert.DelayTransactionsWhileEditing"), 0,
+	TEXT("Focus is lost by the editor when a transaction is applied. This variable suspends applying a transaction until the user has removed focus on editable UI."));
+
+bool UserIsEditing()
+{
+#if WITH_EDITOR
+	if (CVarDelayApplyingTransactionsWhileEditing.GetValueOnAnyThread() > 0)
+	{
+		static FName SEditableTextType(TEXT("SEditableText"));
+		static FName SMultiLineEditableTextType(TEXT("SMultiLineEditableText"));
+
+		bool bEditable = false;
+		FSlateApplication::Get().ForEachUser([&bEditable](FSlateUser& User) {
+			TSharedPtr<SWidget> FocusedWidget = User.GetFocusedWidget();
+
+			bool bCanEdit = FocusedWidget && (FocusedWidget->GetType() == SEditableTextType || FocusedWidget->GetType() == SMultiLineEditableTextType);
+			bEditable |= bCanEdit;
+		});
+		return bEditable;
+	}
+#endif
+	return false;
+}
 
 bool CanPerformBlockingAction(const bool bBlockDuringInteraction)
 {
@@ -54,11 +80,11 @@ void UpdatePendingKillState(UObject* InObj, const bool bIsPendingKill)
 {
 	if (bIsPendingKill)
 	{
-		InObj->MarkPendingKill();
+		InObj->MarkAsGarbage();
 	}
 	else
 	{
-		InObj->ClearPendingKill();
+		InObj->ClearGarbage();
 	}
 }
 
@@ -148,7 +174,7 @@ FGetObjectResult GetObject(const FConcertObjectId& InObjectId, const FName InNew
 					if (UObject* NewObject = StaticFindObject(ObjectClass, NewObjectOuter ? NewObjectOuter : ExistingObjectOuter, *ObjectNameToCreate.ToString(), /*bExactClass*/true))
 					{
 						UE_LOG(LogConcert, Warning, TEXT("Attempted to rename '%s' over '%s'. Re-using the found object instead of performing the rename!"), *ExistingObject->GetPathName(), *NewObject->GetPathName());
-						ExistingObject->MarkPendingKill();
+						ExistingObject->MarkAsGarbage();
 						ResultFlags |= EGetObjectResultFlags::NeedsGC;
 
 						ExistingObject = NewObject;
@@ -322,7 +348,7 @@ void FlushPackageLoading(const FName InPackageName)
 	FlushPackageLoading(InPackageName.ToString());
 }
 
-void FlushPackageLoading(const FString& InPackageName)
+void FlushPackageLoading(const FString& InPackageName, bool bForceBulkDataLoad)
 {
 	UPackage* ExistingPackage = FindPackage(nullptr, *InPackageName);
 	if (ExistingPackage)
@@ -332,7 +358,15 @@ void FlushPackageLoading(const FString& InPackageName)
 			FlushAsyncLoading();
 			ExistingPackage->FullyLoad();
 		}
-		ResetLoaders(ExistingPackage);
+
+		if (bForceBulkDataLoad)
+		{
+			ResetLoaders(ExistingPackage);
+		}
+		else if (ExistingPackage->GetLinker())
+		{
+			ExistingPackage->GetLinker()->Detach();
+		}
 	}
 }
 
@@ -399,6 +433,7 @@ void PurgePackages(TArrayView<const FName> InPackageNames)
 		if (InObject->IsAsset() && GIsEditor)
 		{
 			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(InObject);
+			GEditor->GetSelectedObjects()->Deselect(InObject);
 		}
 		ObjectsToPurge.Add(InObject);
 	};

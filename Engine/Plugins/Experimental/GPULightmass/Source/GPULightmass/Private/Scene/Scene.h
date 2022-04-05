@@ -9,6 +9,7 @@
 #include "MeshPassProcessor.h"
 #include "IrradianceCaching.h"
 #include "GPULightmassSettings.h"
+#include "Templates/UniquePtr.h"
 
 class FGPULightmass;
 
@@ -60,13 +61,25 @@ struct FCachedRayTracingSceneData
 	TArray<TArray<FVisibleRayTracingMeshCommand>> VisibleRayTracingMeshCommandsPerLOD;
 	TChunkedArray<FRayTracingMeshCommand> MeshCommandStorage;
 
-	FStructuredBufferRHIRef PrimitiveSceneDataBufferRHI;
+	FBufferRHIRef PrimitiveSceneDataBufferRHI;
 	FShaderResourceViewRHIRef PrimitiveSceneDataBufferSRV;
 
-	FStructuredBufferRHIRef LightmapSceneDataBufferRHI;
+	FBufferRHIRef LightmapSceneDataBufferRHI;
 	FShaderResourceViewRHIRef LightmapSceneDataBufferSRV;
 
+	FBufferRHIRef InstanceSceneDataBufferRHI;
+	FShaderResourceViewRHIRef InstanceSceneDataBufferSRV;
+	uint32 InstanceSceneDataSOAStride;
+
+	FBufferRHIRef InstancePayloadDataBufferRHI;
+	FShaderResourceViewRHIRef InstancePayloadDataBufferSRV;
+
+	FBufferRHIRef InstanceIdsIdentityBufferRHI;
+	FShaderResourceViewRHIRef InstanceIdsIdentityBufferSRV;
+	TArray<uint32> InstanceDataOriginalOffsets;
+
 	TArray<TArray<FRayTracingGeometryInstance>> RayTracingGeometryInstancesPerLOD;
+	TArray<TUniquePtr<FMatrix>> OwnedRayTracingInstanceTransforms;
 
 	TUniformBufferRef<FViewUniformShaderParameters> CachedViewUniformBuffer;
 
@@ -83,8 +96,12 @@ public:
 	void BackgroundTick();
 
 	FRayTracingSceneRHIRef RayTracingScene;
+	FShaderResourceViewRHIRef RayTracingSceneSRV;
+	FBufferRHIRef RayTracingSceneBuffer;
+	FBufferRHIRef RayTracingScratchBuffer;
+
 	FRayTracingPipelineState* RayTracingPipelineState;
-	TUniquePtr<FViewInfo> ReferenceView;
+	TSharedPtr<FViewInfo> ReferenceView;
 
 	TUniquePtr<FCachedRayTracingSceneData> CachedRayTracingScene;
 
@@ -100,7 +117,9 @@ public:
 	TUniquePtr<FVolumetricLightmapRenderer> VolumetricLightmapRenderer;
 	TUniquePtr<FIrradianceCache> IrradianceCache;
 
-	void SetupRayTracingScene(int32 LODIndex = 0);
+	int32 GetPrimitiveIdForGPUScene(const FGeometryInstanceRenderStateRef& GeometryInstanceRef) const;
+
+	bool SetupRayTracingScene(int32 LODIndex = 0);
 	void DestroyRayTracingScene();
 
 	void CalculateDistributionPrefixSumForAllLightmaps();

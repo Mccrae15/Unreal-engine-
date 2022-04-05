@@ -97,7 +97,7 @@ float3 normalizeFast( float3 v )
 
 float4 fastClamp(float4 x, float4 Min, float4 Max)
 {
-#if PS4_PROFILE  
+#if COMPILER_PSSL
 	// Warning: only correct if Min is smaller than Max
 	return med3(x, Min, Max);
 #else
@@ -107,7 +107,7 @@ float4 fastClamp(float4 x, float4 Min, float4 Max)
 
 float3 fastClamp(float3 x, float3 Min, float3 Max)
 {
-#if PS4_PROFILE  
+#if COMPILER_PSSL
 	// Warning: only correct if Min is smaller than Max
 	return med3(x, Min, Max);
 #else
@@ -117,7 +117,7 @@ float3 fastClamp(float3 x, float3 Min, float3 Max)
 
 float2 fastClamp(float2 x, float2 Min, float2 Max)
 {
-#if PS4_PROFILE  
+#if COMPILER_PSSL
 	// Warning: only correct if Min is smaller than Max
 	return med3(x, Min, Max);
 #else
@@ -127,7 +127,47 @@ float2 fastClamp(float2 x, float2 Min, float2 Max)
 
 float fastClamp(float x, float Min, float Max)
 {
-#if PS4_PROFILE  
+#if COMPILER_PSSL
+	// Warning: only correct if Min is smaller than Max
+	return med3(x, Min, Max);
+#else
+	return clamp(x, Min, Max);
+#endif
+}
+
+int4 fastClamp(int4 x, int4 Min, int4 Max)
+{
+#if COMPILER_PSSL
+	// Warning: only correct if Min is smaller than Max
+	return med3(x, Min, Max);
+#else
+	return clamp(x, Min, Max);
+#endif
+}
+
+int3 fastClamp(int3 x, int3 Min, int3 Max)
+{
+#if COMPILER_PSSL
+	// Warning: only correct if Min is smaller than Max
+	return med3(x, Min, Max);
+#else
+	return clamp(x, Min, Max);
+#endif
+}
+
+int2 fastClamp(int2 x, int2 Min, int2 Max)
+{
+#if COMPILER_PSSL
+	// Warning: only correct if Min is smaller than Max
+	return med3(x, Min, Max);
+#else
+	return clamp(x, Min, Max);
+#endif
+}
+
+int fastClamp(int x, int Min, int Max)
+{
+#if COMPILER_PSSL
 	// Warning: only correct if Min is smaller than Max
 	return med3(x, Min, Max);
 #else
@@ -151,12 +191,42 @@ float acosFast(float inX)
     return (inX >= 0) ? res : PI - res;
 }
 
+float2 acosFast( float2 x )
+{
+	return float2( acosFast(x.x), acosFast(x.y) );
+}
+
+float3 acosFast( float3 x )
+{
+	return float3( acosFast(x.x), acosFast(x.y), acosFast(x.z) );
+}
+
+float4 acosFast( float4 x )
+{
+	return float4( acosFast(x.x), acosFast(x.y), acosFast(x.z), acosFast(x.w) );
+}
+
 // Same cost as acosFast + 1 FR
 // Same error
 // input [-1, 1] and output [-PI/2, PI/2]
 float asinFast( float x )
 {
     return (0.5 * PI) - acosFast(x);
+}
+
+float2 asinFast( float2 x)
+{
+	return float2( asinFast(x.x), asinFast(x.y) );
+}
+
+float3 asinFast( float3 x)
+{
+	return float3( asinFast(x.x), asinFast(x.y), asinFast(x.z) );
+}
+
+float4 asinFast( float4 x )
+{
+	return float4( asinFast(x.x), asinFast(x.y), asinFast(x.z), asinFast(x.w) );
 }
 
 // max absolute error 1.3x10^-3
@@ -182,6 +252,21 @@ float atanFast( float x )
     return (x < 0) ? -t0: t0;
 }
 
+float2 atanFast( float2 x )
+{
+	return float2( atanFast(x.x), atanFast(x.y) );
+}
+
+float3 atanFast( float3 x )
+{
+	return float3( atanFast(x.x), atanFast(x.y), atanFast(x.z) );
+}
+
+float4 atanFast( float4 x )
+{
+	return float4( atanFast(x.x), atanFast(x.y), atanFast(x.z), atanFast(x.w) );
+}
+
 float atan2Fast( float y, float x )
 {
 	float t0 = max( abs(x), abs(y) );
@@ -200,6 +285,21 @@ float atan2Fast( float y, float x )
 	t3 = y < 0 ? -t3 : t3;
 
 	return t3;
+}
+
+float2 atan2Fast( float2 y, float2 x )
+{
+	return float2( atan2Fast(y.x, x.x), atan2Fast(y.y, x.y) );
+}
+
+float3 atan2Fast( float3 y, float3 x )
+{
+	return float3( atan2Fast(y.x, x.x), atan2Fast(y.y, x.y), atan2Fast(y.z, x.z) );
+}
+
+float4 atan2Fast( float4 y, float4 x )
+{
+	return float4( atan2Fast(y.x, x.x), atan2Fast(y.y, x.y), atan2Fast(y.z, x.z), atan2Fast(y.w, x.w) );
 }
 
 // 4th order polynomial approximation

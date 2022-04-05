@@ -70,6 +70,8 @@ public:
 	virtual FOnVoiceChatPlayerTalkingUpdatedDelegate& OnVoiceChatPlayerTalkingUpdated() override { return OnVoiceChatPlayerTalkingUpdatedDelegate; }
 	virtual void SetPlayerMuted(const FString& PlayerName, bool bAudioMuted) override;
 	virtual bool IsPlayerMuted(const FString& PlayerName) const override;
+	virtual void SetChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName, bool bAudioMuted) override;
+	virtual bool IsChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName) const override;
 	virtual FOnVoiceChatPlayerMuteUpdatedDelegate& OnVoiceChatPlayerMuteUpdated() override { return OnVoiceChatPlayerMuteUpdatedDelegate; }
 	virtual void SetPlayerVolume(const FString& PlayerName, float Volume) override;
 	virtual float GetPlayerVolume(const FString& PlayerName) const override;
@@ -125,10 +127,10 @@ protected:
 		FString PlayerName;
 		// Current talking state
 		bool bTalking = false;
-		// Current audio mute state
-		bool bAudioMuted = false;
-		// Current block state
-		bool bBlocked = false;
+		// Combined audio mute and isListening state
+		bool bAudioDisabled = false;
+		// Desired channel mute state
+		bool bMutedInChannel = false;
 		// Current audio status
 		TOptional<EOS_ERTCAudioStatus> AudioStatus;
 	};
@@ -153,6 +155,7 @@ protected:
 	{
 		~FChannelSession();
 
+		bool IsLocalUser(const FChannelParticipant& Participant);
 		bool IsLobbySession() const;
 		
 		// The channel name
@@ -302,9 +305,10 @@ protected:
 	void ApplyAudioInputOptions();
 	void ApplyAudioOutputOptions();
 	void ApplyPlayerBlock(const FGlobalParticipant& GlobalParticipant, const FChannelSession& ChannelSession, FChannelParticipant& ChannelParticipant);
-	void ApplyPlayerReceivingOptions(const FGlobalParticipant& GlobalParticipant, const FChannelSession& ChannelSession, FChannelParticipant& ChannelParticipant, bool bForce = false);
+	void ApplyReceivingOptions(const FChannelSession& ChannelSession);
+	void ApplyPlayerReceivingOptions(const FGlobalParticipant& GlobalParticipant, const FChannelSession& ChannelSession, FChannelParticipant& ChannelParticipant);
 	void ApplySendingOptions();
-	void ApplySendingOptions(FChannelSession& ChannelSession, const bool bForce = false);
+	void ApplySendingOptions(FChannelSession& ChannelSession);
 	void BindChannelCallbacks(FChannelSession& ChannelSession);
 	void UnbindChannelCallbacks(FChannelSession& ChannelSession);
 	void LeaveChannelInternal(const FString& ChannelName, const FOnVoiceChatChannelLeaveCompleteDelegate& Delegate);

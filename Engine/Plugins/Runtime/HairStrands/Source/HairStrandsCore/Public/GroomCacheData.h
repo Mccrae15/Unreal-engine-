@@ -13,6 +13,12 @@ enum class EGroomCacheAttributes : uint8
 	Position = 1,
 	Width = 1 << 1,
 	Color = 1 << 2,
+
+	// For display names
+	PositionWidth = (Position | Width) UMETA(DisplayName = "Position & Width"),
+	PositionColor = (Position | Color) UMETA(DisplayName = "Position & Color"),
+	WidthColor = (Position | Color) UMETA(DisplayName = "Width & Color"),
+	PositionWidthColor = (Position | Width | Color) UMETA(DisplayName = "Position, Width, Color")
 };
 
 ENUM_CLASS_FLAGS(EGroomCacheAttributes)
@@ -90,7 +96,7 @@ struct FGroomCacheVertexData
 	FGroomCacheVertexData() = default;
 	FGroomCacheVertexData(struct FHairStrandsPoints&& PointsData);
 
-	TArray<FVector> PointsPosition;
+	TArray<FVector3f> PointsPosition;
 	TArray<float> PointsRadius;
 	TArray<float> PointsCoordU;
 	TArray<FLinearColor> PointsBaseColor;
@@ -129,7 +135,7 @@ struct FGroomCacheGroupData
 struct FGroomCacheAnimationData
 {
 	FGroomCacheAnimationData() = default;
-	FGroomCacheAnimationData(TArray<struct FHairGroupData>&& HairGroupData, int32 Version, EGroomCacheType Type, EGroomCacheAttributes Attributes);
+	FGroomCacheAnimationData(TArray<struct FHairDescriptionGroup>&& HairGroupData, int32 Version, EGroomCacheType Type, EGroomCacheAttributes Attributes);
 
 	TArray<FGroomCacheGroupData> GroupsData;
 	EGroomCacheAttributes Attributes;

@@ -115,7 +115,7 @@ bool FVirtualTextureTest::RequestPageData( uint8 vLevel, uint64 vAddress, void* 
 
 class FVirtualTextureTestPS : public FGlobalShader
 {
-	DECLARE_SHADER_TYPE(FVirtualTextureTestPS, Global);
+	DECLARE_GLOBAL_SHADER(FVirtualTextureTestPS);
 
 	static bool ShouldCache( EShaderPlatform Platform )
 	{
@@ -206,7 +206,7 @@ void FVirtualTextureTest::ProducePageData( FRHICommandList& RHICmdList, ERHIFeat
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GFilterVertexDeclaration.VertexDeclarationRHI;
 		GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+		SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 		DrawRectangle(
 			RHICmdList,

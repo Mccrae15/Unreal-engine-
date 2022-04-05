@@ -32,6 +32,7 @@
 #include "K2Node_FunctionResult.h"
 #include "K2Node_Timeline.h"
 #include "K2Node_Variable.h"
+#include "KismetCastingUtils.h"
 #include "KismetCompiledFunctionContext.h"
 #include "KismetCompiler.h"
 
@@ -120,10 +121,23 @@ static bool DoesTypeNotMatchProperty(UEdGraphPin* SourcePin, const FEdGraphPinTy
 			}
 		}
 	}
-	else if (PinCategory == UEdGraphSchema_K2::PC_Float)
+	else if (PinCategory == UEdGraphSchema_K2::PC_Real)
 	{
-		FFloatProperty* SpecificProperty = CastField<FFloatProperty>(TestProperty);
-		bTypeMismatch = (SpecificProperty == nullptr);
+		if (PinSubCategory == UEdGraphSchema_K2::PC_Float)
+		{
+			FFloatProperty* SpecificProperty = CastField<FFloatProperty>(TestProperty);
+			bTypeMismatch = (SpecificProperty == nullptr);
+		}
+		else if (PinSubCategory == UEdGraphSchema_K2::PC_Double)
+		{
+			FDoubleProperty* SpecificProperty = CastField<FDoubleProperty>(TestProperty);
+			bTypeMismatch = (SpecificProperty == nullptr);
+		}
+		else
+		{
+			checkf(false, TEXT("Erroneous pin subcategory for PC_Real: %s"), *PinSubCategory.ToString());
+			bTypeMismatch = true;
+		}
 	}
 	else if (PinCategory == UEdGraphSchema_K2::PC_Int)
 	{
@@ -159,7 +173,7 @@ static bool DoesTypeNotMatchProperty(UEdGraphPin* SourcePin, const FEdGraphPinTy
 			MessageLog.Error(*LOCTEXT("FindClassForPin_Error", "Failed to find class for pin @@").ToString(), SourcePin);
 		}
 		// If the object type has been marked as transient and is no longer rooted in the GUObjectArray,
-		// then then it has been "consigned to oblivion". This can be the case if a BP asset has been force 
+		// then then it has been "consigned to oblvion". This can be the case if a BP asset has been force 
 		// deleted and references to it are still laying around
 		else if(
 			ObjectType->HasAnyFlags(RF_Transient) &&
@@ -522,98 +536,73 @@ void FKismetCompilerUtilities::RemoveObjectRedirectorIfPresent(UObject* Package,
 }
 
 /** Finds a property by name, starting in the specified scope; Validates property type and returns NULL along with emitting an error if there is a mismatch. */
-FProperty* FKismetCompilerUtilities::FindPropertyInScope(UStruct* Scope, UEdGraphPin* Pin, FCompilerResultsLog& MessageLog, const UEdGraphSchema_K2* Schema, UClass* SelfClass, bool& bIsSparseProperty, bool bSuppressMissingMemberErrors)
+FProperty* FKismetCompilerUtilities::FindPropertyInScope(UStruct* Scope, UEdGraphPin* Pin, FCompilerResultsLog& MessageLog, const UEdGraphSchema_K2* Schema, UClass* SelfClass, bool& bIsSparseProperty)
 {
-	bIsSparseProperty = false;
-	UStruct* InitialScope = Scope;
-	while (Scope != nullptr)
+	if (FProperty* Property = FKismetCompilerUtilities::FindNamedPropertyInScope(Scope, Pin->PinName, bIsSparseProperty, /*bAllowDeprecated*/true))
 	{
-		// If this is a class, check the sparse data for the property
-		UClass* Class = Cast<UClass>(Scope);
-		if (Class)
+		if (FKismetCompilerUtilities::IsTypeCompatibleWithProperty(Pin, Property, MessageLog, Schema, SelfClass))
 		{
-			UStruct* SparseData = Class->GetSparseClassDataStruct();
-			if (SparseData)
-			{
-				FProperty* Prop = FindPropertyInScope(SparseData, Pin, MessageLog, Schema, SelfClass, bIsSparseProperty, true);
-				if (Prop)
-	{
-					bIsSparseProperty = true;
-					return Prop;
-				}
-			}
+			return Property;
 		}
-
-		for (TFieldIterator<FProperty> It(Scope, EFieldIteratorFlags::IncludeSuper); It; ++It)
-		{
-			FProperty* Property = *It;
-
-			if (Property->GetFName() == Pin->PinName)
-			{
-				if (FKismetCompilerUtilities::IsTypeCompatibleWithProperty(Pin, Property, MessageLog, Schema, SelfClass))
-				{
-					return Property;
-				}
-				else
-				{
-					// Exit now, we found one with the right name but the type mismatched (and there was a type mismatch error)
-					return nullptr;
-				}
-			}
-		}
-
-		// Functions don't automatically check their class when using a field iterator
-		UFunction* Function = Cast<UFunction>(Scope);
-		Scope = (Function != nullptr) ? Cast<UStruct>(Function->GetOuter()) : nullptr;
 	}
-
-	// Couldn't find the name
-	if (!FKismetCompilerUtilities::IsMissingMemberPotentiallyLoading(Cast<UBlueprint>(SelfClass->ClassGeneratedBy), InitialScope) && !bSuppressMissingMemberErrors)
+	else if (!FKismetCompilerUtilities::IsMissingMemberPotentiallyLoading(Cast<UBlueprint>(SelfClass->ClassGeneratedBy), Scope))
 	{
 		MessageLog.Error(*FText::Format(LOCTEXT("PropertyNotFound_Error", "The property associated with @@ could not be found in '{0}'"), FText::FromString(SelfClass->GetPathName())).ToString(), Pin);
 	}
+
 	return nullptr;
 }
 
 // Finds a property by name, starting in the specified scope, returning NULL if it's not found
-FProperty* FKismetCompilerUtilities::FindNamedPropertyInScope(UStruct* Scope, FName PropertyName, bool& bIsSparseProperty)
+FProperty* FKismetCompilerUtilities::FindNamedPropertyInScope(UStruct* Scope, FName PropertyName, bool& bIsSparseProperty, const bool bAllowDeprecated)
 {
-	bIsSparseProperty = false;
-	while (Scope != NULL)
+	auto FindProperty = [PropertyName, bAllowDeprecated](UStruct* CurrentScope) -> FProperty*
 	{
-		for (TFieldIterator<FProperty> It(Scope, EFieldIteratorFlags::IncludeSuper); It; ++It)
+		for (TFieldIterator<FProperty> It(CurrentScope); It; ++It)
 		{
 			FProperty* Property = *It;
 
-			// If we match by name, and var is not deprecated...
-			if (Property->GetFName() == PropertyName && !Property->HasAllPropertyFlags(CPF_Deprecated))
+			if (Property->GetFName() == PropertyName)
 			{
-				return Property;
+				if (bAllowDeprecated || !Property->HasAllPropertyFlags(CPF_Deprecated))
+				{
+					return Property;
+				}
+				break;
 			}
 		}
 
-		// If this is a class, check the sparse data for the property
-		UClass* Class = Cast<UClass>(Scope);
-		if (Class)
+		return nullptr;
+	};
+
+	bIsSparseProperty = false;
+	while (Scope)
+	{
+		// Check the given scope first
+		if (FProperty* Property = FindProperty(Scope))
 		{
-			UStruct* SparseData = Class->GetSparseClassDataStruct();
-			if (SparseData)
+			return Property;
+		}
+
+		// If this is a class, check the sparse data for the property
+		if (UClass* Class = Cast<UClass>(Scope))
+		{
+			if (UStruct* SparseData = Class->GetSparseClassDataStruct())
 			{
-				FProperty* Prop = FindNamedPropertyInScope(SparseData, PropertyName, bIsSparseProperty);
-				if (Prop)
+				if (FProperty* Property = FindProperty(SparseData))
 				{
 					bIsSparseProperty = true;
-					return Prop;
+					return Property;
 				}
 			}
 		}
 
 		// Functions don't automatically check their class when using a field iterator
 		UFunction* Function = Cast<UFunction>(Scope);
-		Scope = (Function != NULL) ? Cast<UStruct>(Function->GetOuter()) : NULL;
+		Scope = Function ? Cast<UStruct>(Function->GetOuter()) : nullptr;
 	}
 
-	return NULL;
+	return nullptr;
 }
 
 void FKismetCompilerUtilities::CompileDefaultProperties(UClass* Class)
@@ -853,6 +842,12 @@ UEdGraphPin* FKismetCompilerUtilities::GenerateAssignmentNodes(class FKismetComp
 					}
 					else
 					{
+						// For interface pins we need to copy over the subcategory
+						if (OrgPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Interface)
+						{
+							ValuePin->PinType.PinSubCategoryObject = OrgPin->PinType.PinSubCategoryObject;
+						}
+
 						CompilerContext.MovePinLinksToIntermediate(*OrgPin, *ValuePin);
 						SetVarNode->PinConnectionListChanged(ValuePin);
 					}
@@ -865,7 +860,7 @@ UEdGraphPin* FKismetCompilerUtilities::GenerateAssignmentNodes(class FKismetComp
 	return LastThen;
 }
 
-void FKismetCompilerUtilities::CreateObjectAssignmentStatement(FKismetFunctionContext& Context, UEdGraphNode* Node, FBPTerminal* SrcTerm, FBPTerminal* DstTerm)
+void FKismetCompilerUtilities::CreateObjectAssignmentStatement(FKismetFunctionContext& Context, UEdGraphNode* Node, FBPTerminal* SrcTerm, FBPTerminal* DstTerm, UEdGraphPin* DstPin)
 {
 	UClass* InputObjClass = Cast<UClass>(SrcTerm->Type.PinSubCategoryObject.Get());
 	UClass* OutputObjClass = Cast<UClass>(DstTerm->Type.PinSubCategoryObject.Get());
@@ -892,10 +887,34 @@ void FKismetCompilerUtilities::CreateObjectAssignmentStatement(FKismetFunctionCo
 	}
 	else
 	{
+		FBPTerminal* RHSTerm = SrcTerm;
+
+		using namespace UE::KismetCompiler;
+
+		FBPTerminal* ImplicitCastTerm = nullptr;
+
+		// Some pins can share a single terminal (eg: those in UK2Node_FunctionResult)
+		// In those cases, it's preferable to use a specific pin instead of relying on what DstTerm points to.
+		UEdGraphPin* DstPinSearchKey = DstPin ? DstPin : DstTerm->SourcePin;
+
+		// Some terms don't necessarily have a valid SourcePin (eg: FKCHandler_FunctionEntry)
+		if (DstPinSearchKey)
+		{
+			TOptional<TPair<FBPTerminal*, EKismetCompiledStatementType>> ImplicitCastEntry =
+				CastingUtils::InsertImplicitCastStatement(Context, DstPinSearchKey, RHSTerm);
+
+			ImplicitCastTerm = ImplicitCastEntry ? ImplicitCastEntry->Get<0>() : nullptr;
+		}
+
+		if (ImplicitCastTerm != nullptr)
+		{
+			RHSTerm = ImplicitCastTerm;
+		}
+
 		FBlueprintCompiledStatement& Statement = Context.AppendStatementForNode(Node);
 		Statement.Type = KCST_Assignment;
 		Statement.LHS = DstTerm;
-		Statement.RHS.Add(SrcTerm);
+		Statement.RHS.Add(RHSTerm);
 	}
 }
 
@@ -939,6 +958,10 @@ FProperty* FKismetCompilerUtilities::CreatePrimitiveProperty(FFieldVariant Prope
 				else if (bIsWeakPointer)
 				{
 					NewPropertyObj = new FWeakObjectProperty(PropertyScope, ValidatedPropertyName, ObjectFlags);
+				}
+				else if (FLinkerLoad::IsImportLazyLoadEnabled())
+				{
+					NewPropertyObj = new FObjectPtrProperty(PropertyScope, ValidatedPropertyName, ObjectFlags);
 				}
 				else
 				{
@@ -1048,10 +1071,22 @@ FProperty* FKismetCompilerUtilities::CreatePrimitiveProperty(FFieldVariant Prope
 		NewProperty = new FInt64Property(PropertyScope, ValidatedPropertyName, ObjectFlags);
 		NewProperty->SetPropertyFlags(CPF_HasGetValueTypeHash);
 	}
-	else if (PinCategory == UEdGraphSchema_K2::PC_Float)
+	else if (PinCategory == UEdGraphSchema_K2::PC_Real)
 	{
-		NewProperty = new FFloatProperty(PropertyScope, ValidatedPropertyName, ObjectFlags);
-		NewProperty->SetPropertyFlags(CPF_HasGetValueTypeHash);
+		if (PinSubCategory == UEdGraphSchema_K2::PC_Float)
+		{
+			NewProperty = new FFloatProperty(PropertyScope, ValidatedPropertyName, ObjectFlags);
+			NewProperty->SetPropertyFlags(CPF_HasGetValueTypeHash);
+		}
+		else if (PinSubCategory == UEdGraphSchema_K2::PC_Double)
+		{
+			NewProperty = new FDoubleProperty(PropertyScope, ValidatedPropertyName, ObjectFlags);
+			NewProperty->SetPropertyFlags(CPF_HasGetValueTypeHash);
+		}
+		else
+		{
+			checkf(false, TEXT("Erroneous pin subcategory for PC_Real: %s"), *PinSubCategory.ToString());
+		}
 	}
 	else if (PinCategory == UEdGraphSchema_K2::PC_Boolean)
 	{
@@ -1680,6 +1715,364 @@ void FKismetCompilerUtilities::UpdateDependentBlueprints(UBlueprint* ForBP)
 	}
 }
 
+bool FKismetCompilerUtilities::CheckFunctionThreadSafety(const FKismetFunctionContext& InContext, FCompilerResultsLog& InMessageLog, bool InbEmitErrors)
+{
+	bool bIsThreadSafe = true;
+
+	// 1st pass: Build set of 'thread safe' object terms
+	TSet<const FBPTerminal*> ThreadSafeObjectTerms;
+	
+	// Input params to functions (is is assumed that this function is marked thread-safe)
+	if(FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(InContext.Function))
+	{
+		for(const FBPTerminal& Parameter : InContext.Parameters)
+		{
+			if(Parameter.IsObjectContextType() && Parameter.IsLocalVarTerm() && Parameter.AssociatedVarProperty && Parameter.AssociatedVarProperty->IsA<FObjectProperty>())
+			{
+				ThreadSafeObjectTerms.Add(&Parameter);
+			}
+		}
+	}
+
+	for(const TPair<UEdGraphNode*, TArray<FBlueprintCompiledStatement*>>& StatementPair : InContext.StatementsPerNode)
+	{
+		for(const FBlueprintCompiledStatement* Statement : StatementPair.Value)
+		{
+			// Return values from thread-safe functions
+			if(Statement->Type == KCST_CallFunction && Statement->FunctionToCall != nullptr)
+			{
+				if(FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(Statement->FunctionToCall))
+				{
+					if(Statement->LHS)
+					{
+						ThreadSafeObjectTerms.Add(Statement->LHS);
+					}
+				}
+			}
+
+
+		}
+	}
+
+	// 2nd pass, multiple times: Propagate thread safe terms down the statement lists via supported links
+	// @TODO: we can probably reduce the order of this algorithm by keeping a working set of unchecked terms and only checking them each loop
+	bool bPropagated = false;
+	do
+	{
+		bPropagated = false;
+		
+		for(const TPair<UEdGraphNode*, TArray<FBlueprintCompiledStatement*>>& StatementPair : InContext.StatementsPerNode)
+		{
+			for(const FBlueprintCompiledStatement* Statement : StatementPair.Value)
+			{
+				switch(Statement->Type)
+				{
+				case KCST_CastObjToInterface:
+				case KCST_DynamicCast:
+				case KCST_MetaCast:
+				case KCST_CastInterfaceToObj:
+					if(Statement->LHS)
+					{
+						for(const FBPTerminal* RHSTerm : Statement->RHS)
+						{
+							if(ThreadSafeObjectTerms.Contains(RHSTerm) && !ThreadSafeObjectTerms.Contains(Statement->LHS))
+							{
+								check(Statement->LHS->AssociatedVarProperty && (Statement->LHS->AssociatedVarProperty->IsA<FObjectProperty>() || Statement->LHS->AssociatedVarProperty->IsA<FInterfaceProperty>()));
+								ThreadSafeObjectTerms.Add(Statement->LHS); 
+								bPropagated = true;
+							}
+						}
+					}
+					break;
+				default:
+					break;
+				}
+			}
+		}	
+	}
+	while (bPropagated);
+
+	// 3rd pass: Check statement lists
+	for(const TPair<UEdGraphNode*, TArray<FBlueprintCompiledStatement*>>& StatementPair : InContext.StatementsPerNode)
+	{
+		bIsThreadSafe &= CheckFunctionCompiledStatementsThreadSafety(StatementPair.Key, InContext.SourceGraph, StatementPair.Value, InMessageLog, InbEmitErrors, &ThreadSafeObjectTerms);
+	}
+
+	return bIsThreadSafe;
+}
+
+// Helper used to emit to log as errors/warnings 
+struct FLogThreadSafetyHelper
+{
+	FLogThreadSafetyHelper(FCompilerResultsLog& InLog, bool bInEmitErrors)
+		: Log(InLog)
+		, bEmitErrors(bInEmitErrors)
+	{}
+		
+	FCompilerResultsLog& Log;
+	bool bEmitErrors;
+		
+	template<typename... Args>
+	void Message(const TCHAR* Format, Args... args)
+	{
+		if(bEmitErrors)
+		{
+			Log.Error(Format, args...);
+		}
+		else
+		{
+			Log.Warning(Format, args...);
+		}
+	}
+};
+
+#define LOG_THREADSAFETY_HELPER(EmitErrors, CategoryName, Format, ...) \
+	if(EmitErrors) \
+	{ \
+		UE_LOG(CategoryName, Error, Format, ##__VA_ARGS__); \
+	} \
+	else \
+	{ \
+		UE_LOG(CategoryName, Warning, Format, ##__VA_ARGS__); \
+	}
+
+bool FKismetCompilerUtilities::CheckFunctionCompiledStatementsThreadSafety(const UEdGraphNode* InNode, const UEdGraph* InSourceGraph, const TArray<FBlueprintCompiledStatement*>& InStatements, FCompilerResultsLog& InMessageLog, bool InbEmitErrors, TSet<const FBPTerminal*>* InThreadSafeObjectTerms)
+{
+	bool bIsThreadSafe = true;
+
+	const FText GenericThreadSafetyErrorOneParam = LOCTEXT("ThreadSafety_Error_Generic", "This is not thread safe when compiled. See the output log for more details.");
+
+	FLogThreadSafetyHelper LogHelper(InMessageLog, InbEmitErrors);
+	
+	for(const FBlueprintCompiledStatement* Statement : InStatements)
+	{
+		auto LogDelegateUsage = [&bIsThreadSafe, &LogHelper, InNode, InbEmitErrors]()
+		{
+			LogHelper.Message(*LOCTEXT("ThreadSafety_Error_Delegate", "@@ Delegate usage is not thread-safe").ToString(), InNode);
+			bIsThreadSafe = false;
+		};
+
+		auto CheckForInvalidInstancedObjectContext = [&bIsThreadSafe, &LogHelper, InNode, &GenericThreadSafetyErrorOneParam, InbEmitErrors, InThreadSafeObjectTerms](const FBPTerminal* InTerm)
+		{
+			const FBPTerminal* Context = InTerm;
+			while(Context)
+			{
+				if(Context != nullptr)
+				{
+					if(InThreadSafeObjectTerms == nullptr || !InThreadSafeObjectTerms->Contains(Context))
+					{
+						if(Context->IsObjectContextType() && Context->Type.PinSubCategoryObject.IsValid() && (Context->IsInstancedVarTerm() || Context->IsLocalVarTerm()))
+						{
+							if(Context->SourcePin && Context->SourcePin->GetOwningNode())
+							{
+								// @TODO: we could possibly make exceptions for 'assets' here
+								LogHelper.Message(*LOCTEXT("ThreadSafety_Error_InstancedObjectWithPin", "@@ Accessing an object reference is not thread-safe").ToString(), Context->SourcePin->GetOwningNode());
+							}
+							else
+							{
+								LogHelper.Message(*GenericThreadSafetyErrorOneParam.ToString(), InNode);
+								LOG_THREADSAFETY_HELPER(InbEmitErrors, LogBlueprint, TEXT("Expression that accesses an instanced object context is not thread-safe"));
+							}
+							bIsThreadSafe = false;
+						}
+					}
+
+					Context = Context->Context;
+				}
+			}
+		};
+
+		auto CheckForPrivateMemberUsage = [&bIsThreadSafe, &LogHelper, InNode, &GenericThreadSafetyErrorOneParam, InbEmitErrors](FBPTerminal* InTerm)
+		{
+			static const FBoolConfigValueHelper ThreadSafetyStrictPrivateMemberChecks(TEXT("Kismet"), TEXT("bThreadSafetyStrictPrivateMemberChecks"), GEngineIni);
+			if (ThreadSafetyStrictPrivateMemberChecks)
+			{
+				const FBPTerminal* Context = InTerm;
+				while(Context)
+				{
+					// Check for assignment only to private object variables
+					if(Context->AssociatedVarProperty && !FBlueprintEditorUtils::IsPropertyPrivate(InTerm->AssociatedVarProperty))
+					{
+						if(Context->Context == nullptr && Context->IsInstancedVarTerm() && Context->IsObjectContextType())
+						{
+							UEdGraphNode* OwningNode = Context->SourcePin ? Context->SourcePin->GetOwningNode() : nullptr;
+							if(OwningNode)
+							{
+								LogHelper.Message(*LOCTEXT("ThreadSafety_Error_NonPrivateMemberAccess", "@@ Accessing non-private member variables is not thread-safe. Make the variable private or use a local variable.").ToString(), OwningNode);
+								UE_LOG(LogBlueprint, Display, TEXT("Expression that accesses non-private property '%s' is not thread-safe. This message can be disabled using bThreadSafetyStrictPrivateMemberChecks in Engine.ini"), *Context->AssociatedVarProperty->GetName())
+							}
+							else 
+							{
+								LogHelper.Message(*GenericThreadSafetyErrorOneParam.ToString(), InNode);
+								LOG_THREADSAFETY_HELPER(InbEmitErrors, LogBlueprint, TEXT("Expression that accesses non-private property '%s' is not thread-safe. This message can be disabled using bThreadSafetyStrictPrivateMemberChecks in Engine.ini"), *Context->AssociatedVarProperty->GetName());
+							}
+						}
+
+						bIsThreadSafe = false;
+					}
+
+					Context = Context->Context;
+				}
+			}
+		};
+		
+		switch (Statement->Type)
+		{
+			case KCST_Nop:
+				break;
+			case KCST_CallFunction:
+			{
+				check(Statement->FunctionToCall);
+
+				if(Statement->FunctionContext)
+				{
+					CheckForInvalidInstancedObjectContext(Statement->FunctionContext);
+				}
+
+				// Check RHS (function inputs) for invalid object access 
+				for(FBPTerminal* RHSTerm : Statement->RHS)
+				{
+					if(RHSTerm->Context)
+					{
+						CheckForInvalidInstancedObjectContext(RHSTerm->Context);
+					}
+
+					CheckForPrivateMemberUsage(RHSTerm);
+				}
+
+				UFunction* SkeletonClassFunction = FBlueprintEditorUtils::GetMostUpToDateFunction(Statement->FunctionToCall);
+				if(SkeletonClassFunction && !FBlueprintEditorUtils::HasFunctionBlueprintThreadSafeMetaData(SkeletonClassFunction))
+				{
+					// Check LHS (function return value) for invalid object access.
+					// Note we only do this for BP functions and those that are not declared thread safe. This is to
+					// allow already-useful cases where native code is able to make assumptions about multi-threaded
+					// object access.
+					// A good example of this is returning a 'hosting' anim instance in the context of a linked anim
+					// instance.
+					if(Statement->LHS)
+					{
+						CheckForInvalidInstancedObjectContext(Statement->LHS);
+					}
+					
+					LogHelper.Message(*LOCTEXT("ThreadSafety_Error_NonThreadSafeFunction", "@@ Non-thread safe function @@ called from thread-safe graph @@").ToString(), InNode, Statement->FunctionToCall, InSourceGraph);
+					bIsThreadSafe = false;
+				}
+				break;
+			}
+			case KCST_Assignment:
+			{
+				// Check LHS/RHS for invalid object access.
+				if(Statement->LHS)
+				{
+					if(Statement->LHS->Context)
+					{
+						CheckForInvalidInstancedObjectContext(Statement->LHS->Context);
+					}
+					
+					CheckForPrivateMemberUsage(Statement->LHS);
+				}
+					
+				for(FBPTerminal* RHSTerm : Statement->RHS)
+				{
+					if(RHSTerm->Context)
+					{
+						CheckForInvalidInstancedObjectContext(RHSTerm->Context);
+					}
+
+					CheckForPrivateMemberUsage(RHSTerm);
+				}
+				break;
+			}
+			case KCST_CompileError:
+		    case KCST_UnconditionalGoto:
+			case KCST_PushState:
+			case KCST_GotoIfNot:
+			case KCST_Return:
+			case KCST_EndOfThread:
+			case KCST_Comment:
+			case KCST_ComputedGoto:
+			case KCST_EndOfThreadIfNot:
+			case KCST_DebugSite:
+			case KCST_CastObjToInterface:
+			case KCST_DynamicCast:
+			case KCST_DoubleToFloatCast:
+			case KCST_DoubleToFloatArrayCast:
+			case KCST_DoubleToFloatSetCast:
+			case KCST_FloatToDoubleCast:
+			case KCST_FloatToDoubleArrayCast:
+			case KCST_FloatToDoubleSetCast:
+			case KCST_VectorToVector3fCast:
+			case KCST_VectorToVector3fArrayCast:
+			case KCST_VectorToVector3fSetCast:
+			case KCST_Vector3fToVectorCast:
+			case KCST_Vector3fToVectorArrayCast:
+			case KCST_Vector3fToVectorSetCast:
+			case KCST_FloatToDoubleKeys_MapCast:
+			case KCST_DoubleToFloatKeys_MapCast:
+			case KCST_FloatToDoubleValues_MapCast:
+			case KCST_DoubleToFloatValues_MapCast:
+			case KCST_FloatToDoubleKeys_FloatToDoubleValues_MapCast:
+			case KCST_DoubleToFloatKeys_FloatToDoubleValues_MapCast:
+			case KCST_DoubleToFloatKeys_DoubleToFloatValues_MapCast:
+			case KCST_FloatToDoubleKeys_DoubleToFloatValues_MapCast:
+			case KCST_ObjectToBool:
+				break;
+			case KCST_AddMulticastDelegate:
+			case KCST_ClearMulticastDelegate:
+				LogDelegateUsage();
+				break;
+			case KCST_WireTraceSite:
+				break;
+			case KCST_BindDelegate:
+			case KCST_RemoveMulticastDelegate:
+			case KCST_CallDelegate:
+				LogDelegateUsage();
+				break;
+			case KCST_CreateArray:
+			case KCST_CrossInterfaceCast:
+			case KCST_MetaCast:
+				break;
+			case KCST_AssignmentOnPersistentFrame:
+				LogHelper.Message(*GenericThreadSafetyErrorOneParam.ToString(), InSourceGraph);
+				LOG_THREADSAFETY_HELPER(InbEmitErrors, LogBlueprint, TEXT("Persistent frame assignment is not supported in thread-safe function"));
+				bIsThreadSafe = false;
+				break;
+			case KCST_CastInterfaceToObj:
+			case KCST_GotoReturn:
+			case KCST_GotoReturnIfNot:
+			case KCST_SwitchValue:
+				break;
+			case KCST_InstrumentedEvent:
+			case KCST_InstrumentedEventStop:
+			case KCST_InstrumentedPureNodeEntry:
+			case KCST_InstrumentedWireEntry:
+			case KCST_InstrumentedWireExit:
+			case KCST_InstrumentedStatePush:
+			case KCST_InstrumentedStateRestore:
+			case KCST_InstrumentedStateReset:
+			case KCST_InstrumentedStateSuspend:
+			case KCST_InstrumentedStatePop:
+			case KCST_InstrumentedTunnelEndOfThread:
+				// No way to test instrumentation right now, so this can potentially be removed
+				LogHelper.Message(*GenericThreadSafetyErrorOneParam.ToString(), InSourceGraph);
+				LOG_THREADSAFETY_HELPER(InbEmitErrors, LogBlueprint, TEXT("Instrumentation not supported in thread-safe function"));
+				bIsThreadSafe = false;
+				break;
+			case KCST_ArrayGetByRef:
+			case KCST_CreateSet:
+			case KCST_CreateMap:
+				break;
+			default:
+				LogHelper.Message(*GenericThreadSafetyErrorOneParam.ToString(), InSourceGraph);
+				LOG_THREADSAFETY_HELPER(InbEmitErrors, LogBlueprint, TEXT("Non-thread safe unknown statement type %d (from %s) used in thread-safe context %s"), (int32)Statement->Type, *InNode->GetName(), *InSourceGraph->GetName());
+				bIsThreadSafe = false;
+				break;
+		}
+	}
+
+	return bIsThreadSafe;
+}
+
 //////////////////////////////////////////////////////////////////////////
 // FNodeHandlingFunctor
 
@@ -1699,7 +2092,6 @@ void FNodeHandlingFunctor::ResolveAndRegisterScopedTerm(FKismetFunctionContext& 
 	FProperty* BoundProperty = FKismetCompilerUtilities::FindPropertyInScope(SearchScope, Net, CompilerContext.MessageLog, CompilerContext.GetSchema(), Context.NewClass, bIsSparseProperty);
 	if (BoundProperty != NULL)
 	{
-		UBlueprintEditorSettings* Settings = GetMutableDefault<UBlueprintEditorSettings>();
 		// Create the term in the list
 		FBPTerminal* Term = new FBPTerminal();
 		NetArray.Add(Term);
@@ -1893,7 +2285,9 @@ FString FNetNameMapping::MakeBaseName(const UObject* Net)
 //////////////////////////////////////////////////////////////////////////
 // FKismetFunctionContext
 
-FKismetFunctionContext::FKismetFunctionContext(FCompilerResultsLog& InMessageLog, const UEdGraphSchema_K2* InSchema, UBlueprintGeneratedClass* InNewClass, UBlueprint* InBlueprint, bool bInGeneratingCpp)
+// @todo: BP2CPP_remove - remove disable/enable deprecation warning once deprecated members are removed
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+FKismetFunctionContext::FKismetFunctionContext(FCompilerResultsLog& InMessageLog, const UEdGraphSchema_K2* InSchema, UBlueprintGeneratedClass* InNewClass, UBlueprint* InBlueprint)
 	: Blueprint(InBlueprint)
 	, SourceGraph(nullptr)
 	, EntryPoint(nullptr)
@@ -1912,7 +2306,7 @@ FKismetFunctionContext::FKismetFunctionContext(FCompilerResultsLog& InMessageLog
 	, bIsSimpleStubGraphWithNoParams(false)
 	, NetFlags(0)
 	, SourceEventFromStubGraph(nullptr)
-	, bGeneratingCpp(bInGeneratingCpp)
+	, bGeneratingCpp(false)		// @todo: BP2CPP_remove
 	, bUseFlowStack(true)
 {
 	NetNameMap = new FNetNameMapping();
@@ -1925,7 +2319,10 @@ FKismetFunctionContext::FKismetFunctionContext(FCompilerResultsLog& InMessageLog
 		bCreateDebugData = false;
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+// @todo: BP2CPP_remove - remove disable/enable deprecation warning once deprecated members are removed
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FKismetFunctionContext::~FKismetFunctionContext()
 {
 	if (bAllocatedNetNameMap)
@@ -1939,6 +2336,7 @@ FKismetFunctionContext::~FKismetFunctionContext()
 		delete AllGeneratedStatements[i];
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void FKismetFunctionContext::SetExternalNetNameMap(FNetNameMapping* NewMap)
 {
@@ -1951,38 +2349,6 @@ void FKismetFunctionContext::SetExternalNetNameMap(FNetNameMapping* NewMap)
 	bAllocatedNetNameMap = false;
 
 	NetNameMap = NewMap;
-}
-
-bool FKismetFunctionContext::DoesStatementRequiresSwitch(const FBlueprintCompiledStatement* Statement)
-{
-	return Statement && (
-		Statement->Type == KCST_UnconditionalGoto ||
-		Statement->Type == KCST_PushState ||
-		Statement->Type == KCST_GotoIfNot ||
-		Statement->Type == KCST_ComputedGoto ||
-		Statement->Type == KCST_EndOfThread ||
-		Statement->Type == KCST_EndOfThreadIfNot ||
-		Statement->Type == KCST_GotoReturn ||
-		Statement->Type == KCST_GotoReturnIfNot);
-}
-
-bool FKismetFunctionContext::MustUseSwitchState(const FBlueprintCompiledStatement* ExcludeThisOne) const
-{
-	for (UEdGraphNode* Node : LinearExecutionList)
-	{
-		const TArray<FBlueprintCompiledStatement*>* StatementList = StatementsPerNode.Find(Node);
-		if (StatementList)
-		{
-			for (FBlueprintCompiledStatement* Statement : (*StatementList))
-			{
-				if (Statement && (Statement != ExcludeThisOne) && DoesStatementRequiresSwitch(Statement))
-				{
-					return true;
-				}
-			}
-		}
-	}
-	return false;
 }
 
 void FKismetFunctionContext::MergeAdjacentStates()
@@ -2017,8 +2383,7 @@ void FKismetFunctionContext::MergeAdjacentStates()
 	const UEdGraphNode* LastExecutedNode = LinearExecutionList.Num() ? LinearExecutionList.Last() : nullptr;
 	TArray<FBlueprintCompiledStatement*>* StatementList = StatementsPerNode.Find(LastExecutedNode);
 	FBlueprintCompiledStatement* LastStatementInLastNode = (StatementList && StatementList->Num()) ? StatementList->Last() : nullptr;
-	const bool SafeForNativeCode = !bGeneratingCpp || !MustUseSwitchState(LastStatementInLastNode);
-	if (LastStatementInLastNode && SafeForNativeCode && (KCST_GotoReturn == LastStatementInLastNode->Type) && !LastStatementInLastNode->bIsJumpTarget)
+	if (LastStatementInLastNode && (KCST_GotoReturn == LastStatementInLastNode->Type) && !LastStatementInLastNode->bIsJumpTarget)
 	{
 		StatementList->RemoveAt(StatementList->Num() - 1);
 	}
@@ -2401,9 +2766,8 @@ FBPTerminal* FKismetFunctionContext::CreateLocalTerminalFromPinAutoChooseScope(U
 	check(Net);
 	bool bSharedTerm = IsEventGraph();
 	static FBoolConfigValueHelper UseLocalGraphVariables(TEXT("Kismet"), TEXT("bUseLocalGraphVariables"), GEngineIni);
-	static FBoolConfigValueHelper UseLocalGraphVariablesInCpp(TEXT("BlueprintNativizationSettings"), TEXT("bUseLocalEventGraphVariables"));
 
-	const bool bUseLocalGraphVariables = UseLocalGraphVariables || (bGeneratingCpp && UseLocalGraphVariablesInCpp);
+	const bool bUseLocalGraphVariables = UseLocalGraphVariables;
 
 	const bool OutputPin = EEdGraphPinDirection::EGPD_Output == Net->Direction;
 	if (bSharedTerm && bUseLocalGraphVariables && OutputPin)

@@ -10,7 +10,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "HAL/FileManager.h"
 #include "IPlatformFilePak.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Paths.h"
 #include "Misc/App.h"
@@ -119,7 +119,7 @@ TMap<FName,FPackage*> FPackage::NameToPackageMap;
 bool ExportDependencies(const TCHAR * PakFilename, const TCHAR* GameName, const TCHAR* OutputFilenameBase, bool bSigned)
 {
 	// Example command line used for this tool
-	// C:\Development\BB\WEX\Saved\StagedBuilds\WindowsNoEditor\WorldExplorers\Content\Paks\WorldExplorers-WindowsNoEditor.pak WorldExplorers WEX -exportdependencies=c:\dvtemp\output -debug -NoAssetRegistryCache -ForceDependsGathering
+	// C:\Development\BB\WEX\Saved\StagedBuilds\WindowsClient\WorldExplorers\Content\Paks\WorldExplorers-WindowsNoEditor.pak WorldExplorers WEX -exportdependencies=c:\dvtemp\output -debug -NoAssetRegistryCache -ForceDependsGathering
 	
 	TRefCountPtr<FPakFile> PakFilePtr = new FPakFile(&FPlatformFileManager::Get().GetPlatformFile(), PakFilename, bSigned);
 	FPakFile& PakFile = *PakFilePtr;

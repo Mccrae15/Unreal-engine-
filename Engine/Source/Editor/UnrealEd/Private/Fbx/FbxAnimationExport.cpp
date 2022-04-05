@@ -18,7 +18,8 @@
 #include "Animation/SkeletalMeshActor.h"
 #include "FbxExporter.h"
 #include "Exporters/FbxExportOption.h"
-#include "Animation/CustomAttributesRuntime.h"
+#include "Animation/AttributesRuntime.h"
+#include "Animation/BuiltInAttributeTypes.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogFbxAnimationExport, Log, All);
 
@@ -27,13 +28,13 @@ namespace UnFbx
 
 	bool FFbxExporter::SetupAnimStack(const UAnimSequence* AnimSeq)
 	{
-		if (AnimSeq->SequenceLength == 0.f)
+		if (AnimSeq->GetPlayLength() == 0.f)
 		{
 			// something is wrong
 			return false;
 		}
 
-		const float FrameRate = FMath::TruncToFloat(((AnimSeq->GetRawNumberOfFrames() - 1) / AnimSeq->SequenceLength) + 0.5f);
+		const float FrameRate = AnimSeq->GetDataModel()->GetFrameRate().AsDecimal();
 		//Configure the scene time line
 		{
 			FbxGlobalSettings& SceneGlobalSettings = Scene->GetGlobalSettings();
@@ -54,7 +55,7 @@ namespace UnFbx
 		// set time correctly
 		FbxTime ExportedStartTime, ExportedStopTime;
 		ExportedStartTime.SetSecondDouble(0.f);
-		ExportedStopTime.SetSecondDouble(AnimSeq->SequenceLength);
+		ExportedStopTime.SetSecondDouble(AnimSeq->GetPlayLength());
 
 		FbxTimeSpan ExportedTimeSpan;
 		ExportedTimeSpan.Set(ExportedStartTime, ExportedStopTime);
@@ -116,7 +117,7 @@ void FFbxExporter::ExportAnimSequenceToFbx(const UAnimSequence* AnimSeq,
 
 	ExportCustomAnimCurvesToFbx(CustomCurveMap, AnimSeq, AnimStartOffset, AnimEndOffset, AnimPlayRate, StartTime);
 
-	TArray<FCustomAttribute> CustomAttributes;
+	TArray<const FAnimatedBoneAttribute*> CustomAttributes;
 
 	// Add the animation data to the bone nodes
 	for(int32 BoneIndex = 0; BoneIndex < BoneNodes.Num(); ++BoneIndex)
@@ -127,7 +128,7 @@ void FFbxExporter::ExportAnimSequenceToFbx(const UAnimSequence* AnimSeq,
 		FName BoneName = Skeleton->GetReferenceSkeleton().GetBoneName(BoneTreeIndex);
 		
 		CustomAttributes.Reset();
-		AnimSeq->GetCustomAttributesForBone(BoneName, CustomAttributes);
+		AnimSeq->GetDataModel()->GetAttributesForBone(BoneName, CustomAttributes);
 
 		TArray<TPair<int32, FbxAnimCurve*>> FloatCustomAttributeIndices;
 		TArray<TPair<int32, FbxAnimCurve*>> IntCustomAttributeIndices;
@@ -135,45 +136,49 @@ void FFbxExporter::ExportAnimSequenceToFbx(const UAnimSequence* AnimSeq,
 		// Setup custom attribute properties and curves
 		for (int32 AttributeIndex = 0; AttributeIndex < CustomAttributes.Num(); ++AttributeIndex)
 		{
-			const FCustomAttribute& Attribute = CustomAttributes[AttributeIndex];
-			const FName& AttributeName = Attribute.Name;
-
-			const EVariantTypes VariantType = static_cast<EVariantTypes>(Attribute.VariantType);
-
-			if (VariantType == EVariantTypes::Int32)
+			const FAnimatedBoneAttribute* AttributePtr = CustomAttributes[AttributeIndex];
+			if (AttributePtr)
 			{
-				FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxIntDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
-				AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eAnimatable, true);
-				AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+				const FAnimatedBoneAttribute& Attribute = *AttributePtr;
 
-				FbxAnimCurve* AnimFbxCurve = AnimCurveFbxProp.GetCurve(InAnimLayer, true);
-				AnimFbxCurve->KeyModifyBegin();
-				IntCustomAttributeIndices.Emplace(AttributeIndex, AnimFbxCurve);
-			}
-			else if (VariantType == EVariantTypes::Float)
-			{
-				FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxFloatDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
-				AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eAnimatable, true);
-				AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+				const FName& AttributeName = Attribute.Identifier.GetName();
+				const UScriptStruct* AttributeType = Attribute.Identifier.GetType();
 
-				FbxAnimCurve* AnimFbxCurve = AnimCurveFbxProp.GetCurve(InAnimLayer, true);
-				AnimFbxCurve->KeyModifyBegin();
-				FloatCustomAttributeIndices.Emplace(AttributeIndex, AnimFbxCurve);
-			}
-			else if (VariantType == EVariantTypes::String)
-			{
-				FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxStringDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
-				AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+				if (AttributeType == FIntegerAnimationAttribute::StaticStruct())
+				{
+					FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxIntDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
+					AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eAnimatable, true);
+					AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
 
-				// String attributes can't be keyed, simply set a normal value.
-				FString AttributeValue;
-				FCustomAttributesRuntime::GetAttributeValue(Attribute, 0.f, AttributeValue);
-				FbxString FbxValueString(TCHAR_TO_UTF8(*AttributeValue));
-				AnimCurveFbxProp.Set(FbxValueString);
-			}
-			else
-			{
-				ensureMsgf(false, TEXT("Trying to export unsupported custom attribte (float, int32 and FString are currently supported)"));
+					FbxAnimCurve* AnimFbxCurve = AnimCurveFbxProp.GetCurve(InAnimLayer, true);
+					AnimFbxCurve->KeyModifyBegin();
+					IntCustomAttributeIndices.Emplace(AttributeIndex, AnimFbxCurve);
+				}
+				else if (AttributeType == FFloatAnimationAttribute::StaticStruct())
+				{
+					FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxFloatDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
+					AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eAnimatable, true);
+					AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+
+					FbxAnimCurve* AnimFbxCurve = AnimCurveFbxProp.GetCurve(InAnimLayer, true);
+					AnimFbxCurve->KeyModifyBegin();
+					FloatCustomAttributeIndices.Emplace(AttributeIndex, AnimFbxCurve);
+				}
+				else if (AttributeType == FStringAnimationAttribute::StaticStruct())
+				{
+					FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxStringDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
+					AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+
+					// String attributes can't be keyed, simply set a normal value.
+					FStringAnimationAttribute EvaluatedAttribute = Attribute.Curve.Evaluate<FStringAnimationAttribute>(0.f);
+
+					FbxString FbxValueString(TCHAR_TO_UTF8(*EvaluatedAttribute.Value));
+					AnimCurveFbxProp.Set(FbxValueString);
+				}
+				else
+				{
+					ensureMsgf(false, TEXT("Trying to export unsupported custom attribte (float, int32 and FString are currently supported)"));
+				}
 			}
 		}
 
@@ -235,18 +240,31 @@ void FFbxExporter::ExportAnimSequenceToFbx(const UAnimSequence* AnimSeq,
 
 			for (TPair<int32, FbxAnimCurve*>& CurrentAttributeCurve : FloatCustomAttributeIndices)
 			{
-				float AttributeValue = 0.f;
-				FCustomAttributesRuntime::GetAttributeValue(CustomAttributes[CurrentAttributeCurve.Key], AnimTime, AttributeValue);
-				int32 KeyIndex = CurrentAttributeCurve.Value->KeyAdd(ExportTime);
-				CurrentAttributeCurve.Value->KeySetValue(KeyIndex, AttributeValue);
+				const FAnimatedBoneAttribute* AttributePtr = CustomAttributes[CurrentAttributeCurve.Key];
+
+				if (AttributePtr)
+				{
+					ensure(AttributePtr->Identifier.GetType() == FFloatAnimationAttribute::StaticStruct());
+
+					FFloatAnimationAttribute EvaluatedAttribute = AttributePtr->Curve.Evaluate<FFloatAnimationAttribute>(AnimTime);
+					int32 KeyIndex = CurrentAttributeCurve.Value->KeyAdd(ExportTime);
+					CurrentAttributeCurve.Value->KeySetValue(KeyIndex, EvaluatedAttribute.Value);
+
+				}
 			}
 
 			for (TPair<int32, FbxAnimCurve*>& CurrentAttributeCurve : IntCustomAttributeIndices)
 			{
-				int32 AttributeValue = 0;
-				FCustomAttributesRuntime::GetAttributeValue(CustomAttributes[CurrentAttributeCurve.Key], AnimTime, AttributeValue);
-				int32 KeyIndex = CurrentAttributeCurve.Value->KeyAdd(ExportTime);
-				CurrentAttributeCurve.Value->KeySetValue(KeyIndex, static_cast<float>(AttributeValue));
+				const FAnimatedBoneAttribute* AttributePtr = CustomAttributes[CurrentAttributeCurve.Key];
+
+				if (AttributePtr)
+				{
+					ensure(AttributePtr->Identifier.GetType() == FIntegerAnimationAttribute::StaticStruct());
+
+					FIntegerAnimationAttribute EvaluatedAttribute = AttributePtr->Curve.Evaluate<FIntegerAnimationAttribute>(AnimTime);
+					int32 KeyIndex = CurrentAttributeCurve.Value->KeyAdd(ExportTime);
+					CurrentAttributeCurve.Value->KeySetValue(KeyIndex, static_cast<float>(EvaluatedAttribute.Value));
+				}
 			}
 		};
 
@@ -332,9 +350,8 @@ void FFbxExporter::ExportCustomAnimCurvesToFbx(const TMap<FName, FbxAnimCurve*>&
 void FFbxExporter::IterateInsideAnimSequence(const UAnimSequence* AnimSeq, float AnimStartOffset, float AnimEndOffset, float AnimPlayRate, float StartTime, TFunctionRef<void(float, FbxTime, bool)> IterationLambda)
 {
 	float AnimTime = AnimStartOffset;
-	float AnimEndTime = (AnimSeq->SequenceLength - AnimEndOffset);
-	// Subtracts 1 because NumFrames includes an initial pose for 0.0 second
-	double TimePerKey = (AnimSeq->SequenceLength / (AnimSeq->GetRawNumberOfFrames() - 1));
+	float AnimEndTime = (AnimSeq->GetPlayLength() - AnimEndOffset);
+	double TimePerKey = AnimSeq->GetDataModel()->GetFrameRate().AsInterval();
 	const float AnimTimeIncrement = TimePerKey * AnimPlayRate;
 	uint32 AnimFrameIndex = 0;
 
@@ -608,7 +625,7 @@ void FFbxExporter::ExportMatineeGroup(class AMatineeActor* MatineeActor, USkelet
 	if(Owner && Owner->GetRootComponent())
 	{
 		// Set the default position of the actor on the transforms
-		// The UE3 transformation is different from FBX's Z-up: invert the Y-axis for translations and the Y/Z angle values in rotations.
+		// The UE transformation is different from FBX's Z-up: invert the Y-axis for translations and the Y/Z angle values in rotations.
 		BaseNode->LclTranslation.Set(Converter.ConvertToFbxPos(Owner->GetActorLocation()));
 		BaseNode->LclRotation.Set(Converter.ConvertToFbxRot(Owner->GetActorRotation().Euler()));
 		BaseNode->LclScaling.Set(Converter.ConvertToFbxScale(Owner->GetRootComponent()->GetRelativeScale3D()));
@@ -650,7 +667,7 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 		}
 	}
 	
-	TArray<FCustomAttribute> CustomAttributes;
+	TArray<const FAnimatedBoneAttribute*> CustomAttributes;
 	
 	FTransform InitialInvParentTransform;
 
@@ -722,7 +739,7 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 		if( NextUpdateTime <= 0.0f )
 		{
 			NextUpdateTime = UpdateFrequency;
-			GWarn->StatusUpdate( FMath::RoundToInt( SampleTime ), FMath::RoundToInt(AnimationLength), NSLOCTEXT("FbxExporter", "ExportingToFbxStatus", "Exporting to FBX") );
+			GWarn->StatusUpdate( FMath::RoundToInt( SampleTime ), AnimationLength, NSLOCTEXT("FbxExporter", "ExportingToFbxStatus", "Exporting to FBX") );
 		}
 
 		TArray<FTransform> LocalBoneTransforms = InSkeletalMeshComponent->GetBoneSpaceTransforms();
@@ -739,7 +756,7 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 			FbxNode* CurrentBoneNode = BoneNodes[BoneIndex];
 
 			// Create the AnimCurves
-			FbxAnimCurve* Curves[6];
+			FbxAnimCurve* Curves[9];
 			Curves[0] = CurrentBoneNode->LclTranslation.GetCurve(AnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
 			Curves[1] = CurrentBoneNode->LclTranslation.GetCurve(AnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
 			Curves[2] = CurrentBoneNode->LclTranslation.GetCurve(AnimLayer, FBXSDK_CURVENODE_COMPONENT_Z, true);
@@ -748,7 +765,11 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 			Curves[4] = CurrentBoneNode->LclRotation.GetCurve(AnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
 			Curves[5] = CurrentBoneNode->LclRotation.GetCurve(AnimLayer, FBXSDK_CURVENODE_COMPONENT_Z, true);
 
-			for(int32 i = 0; i < 6; ++i)
+			Curves[6] = CurrentBoneNode->LclScaling.GetCurve(AnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
+			Curves[7] = CurrentBoneNode->LclScaling.GetCurve(AnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
+			Curves[8] = CurrentBoneNode->LclScaling.GetCurve(AnimLayer, FBXSDK_CURVENODE_COMPONENT_Z, true);
+
+			for(int32 i = 0; i < 9; ++i)
 			{
 				Curves[i]->KeyModifyBegin();
 			}
@@ -762,10 +783,11 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 
 			FbxVector4 Translation = Converter.ConvertToFbxPos(BoneTransform.GetLocation());
 			FbxVector4 Rotation = Converter.ConvertToFbxRot(BoneTransform.GetRotation().Euler());
+			FbxVector4 Scale = Converter.ConvertToFbxScale(BoneTransform.GetScale3D());
 
 			int32 lKeyIndex;
 
-			for(int32 i = 0, j=3; i < 3; ++i, ++j)
+			for(int32 i = 0, j=3, k=6; i < 3; ++i, ++j, ++k)
 			{
 				lKeyIndex = Curves[i]->KeyAdd(ExportTime);
 				Curves[i]->KeySetValue(lKeyIndex, Translation[i]);
@@ -774,9 +796,13 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 				lKeyIndex = Curves[j]->KeyAdd(ExportTime);
 				Curves[j]->KeySetValue(lKeyIndex, Rotation[i]);
 				Curves[j]->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
+
+				lKeyIndex = Curves[k]->KeyAdd(ExportTime);
+				Curves[k]->KeySetValue(lKeyIndex, Scale[i]);
+				Curves[k]->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
 			}
 
-			for(int32 i = 0; i < 6; ++i)
+			for(int32 i = 0; i < 9; ++i)
 			{
 				Curves[i]->KeyModifyEnd();
 			}
@@ -788,7 +814,7 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 			}
 
 			CustomAttributes.Reset();
-			AnimSeq->GetCustomAttributesForBone(BoneName, CustomAttributes);
+			AnimSeq->GetDataModel()->GetAttributesForBone(BoneName, CustomAttributes);
 
 			TArray<TPair<int32, FbxAnimCurve*>> FloatCustomAttributeIndices;
 			TArray<TPair<int32, FbxAnimCurve*>> IntCustomAttributeIndices;
@@ -796,61 +822,71 @@ void FFbxExporter::ExportAnimTrack(IAnimTrackAdapter& AnimTrackAdapter, AActor* 
 			// Setup custom attribute properties and curves
 			for (int32 AttributeIndex = 0; AttributeIndex < CustomAttributes.Num(); ++AttributeIndex)
 			{
-				const FCustomAttribute& Attribute = CustomAttributes[AttributeIndex];
-				const FName& AttributeName = Attribute.Name;
-
-				const EVariantTypes VariantType = static_cast<EVariantTypes>(Attribute.VariantType);
-
-				if (VariantType == EVariantTypes::Int32)
+				const FAnimatedBoneAttribute* AttributePtr = CustomAttributes[AttributeIndex];
+				if (AttributePtr)
 				{
-					FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxIntDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
-					AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eAnimatable, true);
-					AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+					const FAnimatedBoneAttribute& Attribute = *AttributePtr;
 
-					FbxAnimCurve* AnimFbxCurve = AnimCurveFbxProp.GetCurve(AnimLayer, true);
-					AnimFbxCurve->KeyModifyBegin();
-					IntCustomAttributeIndices.Emplace(AttributeIndex, AnimFbxCurve);
-				}
-				else if (VariantType == EVariantTypes::Float)
-				{
-					FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxFloatDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
-					AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eAnimatable, true);
-					AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+					const FName& AttributeName = Attribute.Identifier.GetName();
+					const UScriptStruct* AttributeType = Attribute.Identifier.GetType();
 
-					FbxAnimCurve* AnimFbxCurve = AnimCurveFbxProp.GetCurve(AnimLayer, true);
-					AnimFbxCurve->KeyModifyBegin();
-					FloatCustomAttributeIndices.Emplace(AttributeIndex, AnimFbxCurve);
-				}
-				else if (VariantType == EVariantTypes::String)
-				{
-					FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxStringDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
-					AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
+					if (AttributeType == FIntegerAnimationAttribute::StaticStruct())
+					{
+						FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxIntDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
+						AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eAnimatable, true);
+						AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
 
-					// String attributes can't be keyed, simply set a normal value.
-					FString AttributeValue;
-					FCustomAttributesRuntime::GetAttributeValue(Attribute, 0.f, AttributeValue);
-					FbxString FbxValueString(TCHAR_TO_UTF8(*AttributeValue));
-					AnimCurveFbxProp.Set(FbxValueString);
-				}
-				else
-				{
-					ensureMsgf(false, TEXT("Trying to export unsupported custom attribte (float, int32 and FString are currently supported)"));
-				}
+						FbxAnimCurve* AnimFbxCurve = AnimCurveFbxProp.GetCurve(AnimLayer, true);
+						AnimFbxCurve->KeyModifyBegin();
+						IntCustomAttributeIndices.Emplace(AttributeIndex, AnimFbxCurve);
+					}
+					else if (AttributeType == FFloatAnimationAttribute::StaticStruct())
+					{
+						FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxFloatDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
+						AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eAnimatable, true);
+						AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
 
-				for (TPair<int32, FbxAnimCurve*>& CurrentAttributeCurve : FloatCustomAttributeIndices)
-				{
-					float AttributeValue = 0.f;
-					FCustomAttributesRuntime::GetAttributeValue(CustomAttributes[CurrentAttributeCurve.Key], AnimTime, AttributeValue);
-					int32 KeyIndex = CurrentAttributeCurve.Value->KeyAdd(ExportTime);
-					CurrentAttributeCurve.Value->KeySetValue(KeyIndex, AttributeValue);
-				}
+						FbxAnimCurve* AnimFbxCurve = AnimCurveFbxProp.GetCurve(AnimLayer, true);
+						AnimFbxCurve->KeyModifyBegin();
+						FloatCustomAttributeIndices.Emplace(AttributeIndex, AnimFbxCurve);
+					}
+					else if (AttributeType == FStringAnimationAttribute::StaticStruct())
+					{
+						FbxProperty AnimCurveFbxProp = FbxProperty::Create(CurrentBoneNode, FbxStringDT, TCHAR_TO_UTF8(*AttributeName.ToString()));
+						AnimCurveFbxProp.ModifyFlag(FbxPropertyFlags::eUserDefined, true);
 
-				for (TPair<int32, FbxAnimCurve*>& CurrentAttributeCurve : IntCustomAttributeIndices)
-				{
-					int32 AttributeValue = 0;
-					FCustomAttributesRuntime::GetAttributeValue(CustomAttributes[CurrentAttributeCurve.Key], AnimTime, AttributeValue);
-					int32 KeyIndex = CurrentAttributeCurve.Value->KeyAdd(ExportTime);
-					CurrentAttributeCurve.Value->KeySetValue(KeyIndex, static_cast<float>(AttributeValue));
+						// String attributes can't be keyed, simply set a normal value.
+						FStringAnimationAttribute EvaluatedAttribute = Attribute.Curve.Evaluate<FStringAnimationAttribute>(0.f);
+
+						FbxString FbxValueString(TCHAR_TO_UTF8(*EvaluatedAttribute.Value));
+						AnimCurveFbxProp.Set(FbxValueString);
+					}
+					else
+					{
+						ensureMsgf(false, TEXT("Trying to export unsupported custom attribte (float, int32 and FString are currently supported)"));
+					}
+
+					for (TPair<int32, FbxAnimCurve*>& CurrentAttributeCurve : FloatCustomAttributeIndices)
+					{
+						const FAnimatedBoneAttribute* FloatAttributePtr = CustomAttributes[CurrentAttributeCurve.Key];
+						ensure(FloatAttributePtr->Identifier.GetType() == FFloatAnimationAttribute::StaticStruct());
+
+						FFloatAnimationAttribute EvaluatedAttribute = FloatAttributePtr->Curve.Evaluate<FFloatAnimationAttribute>(AnimTime);
+
+						int32 KeyIndex = CurrentAttributeCurve.Value->KeyAdd(ExportTime);
+						CurrentAttributeCurve.Value->KeySetValue(KeyIndex, EvaluatedAttribute.Value);
+					}
+
+					for (TPair<int32, FbxAnimCurve*>& CurrentAttributeCurve : IntCustomAttributeIndices)
+					{
+						const FAnimatedBoneAttribute* IntAttributePtr = CustomAttributes[CurrentAttributeCurve.Key];
+						ensure(IntAttributePtr->Identifier.GetType() == FIntegerAnimationAttribute::StaticStruct());
+
+						FIntegerAnimationAttribute EvaluatedAttribute = IntAttributePtr->Curve.Evaluate< FIntegerAnimationAttribute>(AnimTime);
+
+						int32 KeyIndex = CurrentAttributeCurve.Value->KeyAdd(ExportTime);
+						CurrentAttributeCurve.Value->KeySetValue(KeyIndex, static_cast<float>(EvaluatedAttribute.Value));
+					}
 				}
 			}
 

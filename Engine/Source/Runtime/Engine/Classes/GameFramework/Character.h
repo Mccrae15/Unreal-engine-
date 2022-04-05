@@ -27,6 +27,8 @@ class UPawnMovementComponent;
 class UPrimitiveComponent;
 class USkeletalMeshComponent;
 struct FAnimMontageInstance;
+struct FCharacterAsyncInput;
+struct FCharacterAsyncOutput;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FMovementModeChangedSignature, class ACharacter*, Character, EMovementMode, PrevMovementMode, uint8, PreviousCustomMode);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FCharacterMovementUpdatedSignature, float, DeltaSeconds, FVector, OldLocation, FVector, OldVelocity);
@@ -45,7 +47,7 @@ struct FRepRootMotionMontage
 
 	/** AnimMontage providing Root Motion */
 	UPROPERTY()
-	UAnimMontage* AnimMontage = nullptr;
+	TObjectPtr<UAnimMontage> AnimMontage = nullptr;
 
 	/** Track position of Montage */
 	UPROPERTY()
@@ -61,7 +63,7 @@ struct FRepRootMotionMontage
 
 	/** Movement Relative to Base */
 	UPROPERTY()
-	UPrimitiveComponent* MovementBase = nullptr;
+	TObjectPtr<UPrimitiveComponent> MovementBase = nullptr;
 
 	/** Bone on the MovementBase, if a skeletal mesh. */
 	UPROPERTY()
@@ -156,7 +158,7 @@ struct FBasedMovementInfo
 
 	/** Component we are based on */
 	UPROPERTY()
-	UPrimitiveComponent* MovementBase = nullptr;
+	TObjectPtr<UPrimitiveComponent> MovementBase = nullptr;
 
 	/** Bone name on component, for skeletal meshes. NAME_None if not a skeletal mesh or if bone is invalid. */
 	UPROPERTY()
@@ -223,20 +225,20 @@ public:
 private:
 	/** The main skeletal mesh associated with this Character (optional sub-object). */
 	UPROPERTY(Category=Character, VisibleAnywhere, BlueprintReadOnly, meta=(AllowPrivateAccess = "true"))
-	USkeletalMeshComponent* Mesh;
+	TObjectPtr<USkeletalMeshComponent> Mesh;
 
 	/** Movement component used for movement logic in various movement modes (walking, falling, etc), containing relevant settings and functions to control movement. */
 	UPROPERTY(Category=Character, VisibleAnywhere, BlueprintReadOnly, meta=(AllowPrivateAccess = "true"))
-	UCharacterMovementComponent* CharacterMovement;
+	TObjectPtr<UCharacterMovementComponent> CharacterMovement;
 
 	/** The CapsuleComponent being used for movement collision (by CharacterMovement). Always treated as being vertically aligned in simple collision check functions. */
 	UPROPERTY(Category=Character, VisibleAnywhere, BlueprintReadOnly, meta=(AllowPrivateAccess = "true"))
-	UCapsuleComponent* CapsuleComponent;
+	TObjectPtr<UCapsuleComponent> CapsuleComponent;
 
 #if WITH_EDITORONLY_DATA
 	/** Component shown in the editor only to indicate character facing */
 	UPROPERTY()
-	UArrowComponent* ArrowComponent;
+	TObjectPtr<UArrowComponent> ArrowComponent;
 #endif
 
 public:
@@ -466,7 +468,7 @@ public:
 	virtual FQuat GetBaseRotationOffset() const { return BaseRotationOffset; }
 
 	/** Get the saved rotation offset of mesh. This is how much extra rotation is applied from the capsule rotation. */
-	UFUNCTION(BlueprintCallable, Category=Character, meta=(DisplayName="GetBaseRotationOffset", ScriptName="GetBaseRotationOffset"))
+	UFUNCTION(BlueprintCallable, Category=Character, meta=(DisplayName="Get Base Rotation Offset", ScriptName="GetBaseRotationOffset"))
 	FRotator GetBaseRotationOffsetRotator() const { return GetBaseRotationOffset().Rotator(); }
 
 	/** Default crouched eye height */
@@ -663,6 +665,7 @@ protected:
 	UFUNCTION(BlueprintNativeEvent, Category=Character, meta=(DisplayName="CanJump"))
 	bool CanJumpInternal() const;
 	virtual bool CanJumpInternal_Implementation() const;
+	bool JumpIsAllowedInternal() const;
 
 public:
 
@@ -820,6 +823,9 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, meta=(DisplayName="OnStartCrouch", ScriptName="OnStartCrouch"))
 	void K2_OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust);
 
+	/** Calculates the crouched eye height based on movement component settings */
+	void RecalculateCrouchedEyeHeight();
+
 	/**
 	 * Called from CharacterMovementComponent to notify the character that the movement mode has changed.
 	 * @param	PrevMovementMode	Movement mode before the change
@@ -951,7 +957,7 @@ public:
 	FAnimMontageInstance * GetRootMotionAnimMontageInstance() const;
 
 	/** True if we are playing Anim root motion right now */
-	UFUNCTION(BlueprintCallable, Category=Animation, meta=(DisplayName="IsPlayingAnimRootMotion"))
+	UFUNCTION(BlueprintCallable, Category=Animation, meta=(DisplayName="Is Playing Anim Root Motion"))
 	bool IsPlayingRootMotion() const;
 
 	/** True if we are playing root motion from any source right now (anim root motion, root motion source) */
@@ -983,4 +989,9 @@ public:
 	 * Called for everyone when recording a Client Replay, including Simulated Proxies.
 	 */
 	virtual void PreReplicationForReplay(IRepChangedPropertyTracker& ChangedPropertyTracker) override;
+
+	/** Async simulation API */
+	void FillAsyncInput(FCharacterAsyncInput& Input) const;
+	void InitializeAsyncOutput(FCharacterAsyncOutput& Output) const;
+	void ApplyAsyncOutput(const FCharacterAsyncOutput& Output);
 };

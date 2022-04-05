@@ -27,16 +27,15 @@ namespace GLTF
 			int32                                          NumUVs,
 			bool                                           bMeshHasTagents,
 			bool                                           bMeshHasColors,
-			const TVertexInstanceAttributesRef<FVector>&   VertexInstanceNormals,
-			const TVertexInstanceAttributesRef<FVector>&   VertexInstanceTangents,
+			const TVertexInstanceAttributesRef<FVector3f>&   VertexInstanceNormals,
+			const TVertexInstanceAttributesRef<FVector3f>&   VertexInstanceTangents,
 			const TVertexInstanceAttributesRef<float>&     VertexInstanceBinormalSigns,
-			const TVertexInstanceAttributesRef<FVector2D>& VertexInstanceUVs,
-			const TVertexInstanceAttributesRef<FVector4>&  VertexInstanceColors,
+			const TVertexInstanceAttributesRef<FVector2f>& VertexInstanceUVs,
+			const TVertexInstanceAttributesRef<FVector4f>&  VertexInstanceColors,
 			const TEdgeAttributesRef<bool>&                EdgeHardnesses,
-			const TEdgeAttributesRef<float>&               EdgeCreaseSharpnesses,
 			FMeshDescription* MeshDescription);
 
-		inline TArray<FVector4>& GetVector4dBuffer(int32 Index)
+		inline TArray<FVector4f>& GetVector4dBuffer(int32 Index)
 		{
 			check(Index < (sizeof(Vector4dBuffers) / sizeof(Vector4dBuffers[0])));
 			uint32 ReserveSize = Vector4dBuffers[Index].Num() + Vector4dBuffers[Index].GetSlack();
@@ -44,7 +43,7 @@ namespace GLTF
 			return Vector4dBuffers[Index];
 		}
 
-		inline TArray<FVector>& GetVectorBuffer(int32 Index)
+		inline TArray<FVector3f>& GetVectorBuffer(int32 Index)
 		{
 			check(Index < (sizeof(VectorBuffers) / sizeof(VectorBuffers[0])));
 			uint32 ReserveSize = VectorBuffers[Index].Num() + VectorBuffers[Index].GetSlack();
@@ -52,7 +51,7 @@ namespace GLTF
 			return VectorBuffers[Index];
 		}
 
-		inline TArray<FVector2D>& GetVector2dBuffer(int32 Index)
+		inline TArray<FVector2f>& GetVector2dBuffer(int32 Index)
 		{
 			check(Index < (sizeof(Vector2dBuffers) / sizeof(Vector2dBuffers[0])));
 			uint32 ReserveSize = Vector2dBuffers[Index].Num() + Vector2dBuffers[Index].GetSlack();
@@ -89,9 +88,9 @@ namespace GLTF
 		TMap<int32, FPolygonGroupID> MaterialIndexToPolygonGroupID;
 		TArray<FIndexVertexIdMap>    PositionIndexToVertexIdPerPrim;
 
-		TArray<FVector2D>                       Vector2dBuffers[MAX_MESH_TEXTURE_COORDS_MD + 1];
-		TArray<FVector>                         VectorBuffers[VectorBufferCount];
-		TArray<FVector4>                        Vector4dBuffers[Vector4dBufferCount];
+		TArray<FVector2f>                       Vector2dBuffers[MAX_MESH_TEXTURE_COORDS_MD + 1];
+		TArray<FVector3f>                       VectorBuffers[VectorBufferCount];
+		TArray<FVector4f>                       Vector4dBuffers[Vector4dBufferCount];
 		TArray<uint32>                          IntBuffer;
 		TArray<FVertexInstanceID>				CornerVertexInstanceIDs;
 		uint32                                  MaxReserveSize;
@@ -113,7 +112,7 @@ namespace GLTF
 			}
 		}
 
-		void GenerateFlatNormals(const TArray<FVector>& Positions, const TArray<uint32>& Indices, TArray<FVector>& Normals)
+		void GenerateFlatNormals(const TArray<FVector3f>& Positions, const TArray<uint32>& Indices, TArray<FVector3f>& Normals)
 		{
 			Normals.Empty();
 
@@ -123,11 +122,11 @@ namespace GLTF
 
 			for (uint32 i = 0; i < N; i += 3)
 			{
-				const FVector& A = Positions[Indices[i]];
-				const FVector& B = Positions[Indices[i + 1]];
-				const FVector& C = Positions[Indices[i + 2]];
+				const FVector3f& A = Positions[Indices[i]];
+				const FVector3f& B = Positions[Indices[i + 1]];
+				const FVector3f& C = Positions[Indices[i + 2]];
 
-				const FVector Normal = FVector::CrossProduct(A - B, A - C).GetSafeNormal();
+				const FVector3f Normal = FVector3f::CrossProduct(A - B, A - C).GetSafeNormal();
 				// Same for each corner of the triangle.
 				Normals[i] = Normal;
 				Normals[i + 1] = Normal;
@@ -164,16 +163,15 @@ namespace GLTF
 		const int32 NumUVs = FMath::Max(1, GetNumUVs(Mesh));
 
 		FStaticMeshAttributes StaticMeshAttributes(*MeshDescription);
-		TVertexAttributesRef<FVector> VertexPositions = StaticMeshAttributes.GetVertexPositions();
+		TVertexAttributesRef<FVector3f> VertexPositions = StaticMeshAttributes.GetVertexPositions();
 		TEdgeAttributesRef<bool>  EdgeHardnesses = StaticMeshAttributes.GetEdgeHardnesses();
-		TEdgeAttributesRef<float> EdgeCreaseSharpnesses = StaticMeshAttributes.GetEdgeCreaseSharpnesses();
 		TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
-		TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = StaticMeshAttributes.GetVertexInstanceNormals();
-		TVertexInstanceAttributesRef<FVector> VertexInstanceTangents = StaticMeshAttributes.GetVertexInstanceTangents();
+		TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = StaticMeshAttributes.GetVertexInstanceNormals();
+		TVertexInstanceAttributesRef<FVector3f> VertexInstanceTangents = StaticMeshAttributes.GetVertexInstanceTangents();
 		TVertexInstanceAttributesRef<float> VertexInstanceBinormalSigns = StaticMeshAttributes.GetVertexInstanceBinormalSigns();
-		TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
-		TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = StaticMeshAttributes.GetVertexInstanceColors();
-		VertexInstanceUVs.SetNumIndices(NumUVs);
+		TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
+		TVertexInstanceAttributesRef<FVector4f> VertexInstanceColors = StaticMeshAttributes.GetVertexInstanceColors();
+		VertexInstanceUVs.SetNumChannels(NumUVs);
 
 		MaterialIndicesUsed.Empty(10);
 		// Add the vertex position
@@ -184,7 +182,7 @@ namespace GLTF
 			// Remember which primitives use which materials.
 			MaterialIndicesUsed.Add(Primitive.MaterialIndex);
 
-			TArray<FVector>& Positions = GetVectorBuffer(PositionBufferIndex);
+			TArray<FVector3f>& Positions = GetVectorBuffer(PositionBufferIndex);
 			Primitive.GetPositions(Positions);
 
 			FIndexVertexIdMap& PositionIndexToVertexId = PositionIndexToVertexIdPerPrim[Index];
@@ -218,7 +216,7 @@ namespace GLTF
 				ImportPrimitive(Primitive, Index, NumUVs, Mesh.HasTangents(), Mesh.HasColors(),  //
 					VertexInstanceNormals, VertexInstanceTangents, VertexInstanceBinormalSigns, VertexInstanceUVs,
 					VertexInstanceColors,  //
-					EdgeHardnesses, EdgeCreaseSharpnesses, MeshDescription);
+					EdgeHardnesses, MeshDescription);
 
 			bMeshUsesEmptyMaterial |= Primitive.MaterialIndex == INDEX_NONE;
 			for (int32 UVIndex = 0; UVIndex < NumUVs; ++UVIndex)
@@ -247,13 +245,12 @@ namespace GLTF
 		int32                                          NumUVs,
 		bool                                           bMeshHasTagents,
 		bool                                           bMeshHasColors,
-		const TVertexInstanceAttributesRef<FVector>&   VertexInstanceNormals,
-		const TVertexInstanceAttributesRef<FVector>&   VertexInstanceTangents,
+		const TVertexInstanceAttributesRef<FVector3f>&   VertexInstanceNormals,
+		const TVertexInstanceAttributesRef<FVector3f>&   VertexInstanceTangents,
 		const TVertexInstanceAttributesRef<float>&     VertexInstanceBinormalSigns,
-		const TVertexInstanceAttributesRef<FVector2D>& VertexInstanceUVs,
-		const TVertexInstanceAttributesRef<FVector4>&  VertexInstanceColors,
+		const TVertexInstanceAttributesRef<FVector2f>& VertexInstanceUVs,
+		const TVertexInstanceAttributesRef<FVector4f>&  VertexInstanceColors,
 		const TEdgeAttributesRef<bool>&                EdgeHardnesses,
-		const TEdgeAttributesRef<float>&               EdgeCreaseSharpnesses,
 		FMeshDescription* MeshDescription)
 	{
 
@@ -263,7 +260,7 @@ namespace GLTF
 		TArray<uint32>& Indices = GetIntBuffer();
 		Primitive.GetTriangleIndices(Indices);
 
-		TArray<FVector>& Normals = GetVectorBuffer(NormalBufferIndex);
+		TArray<FVector3f>& Normals = GetVectorBuffer(NormalBufferIndex);
 		// glTF does not guarantee each primitive within a mesh has the same attributes.
 		// Fill in gaps as needed:
 		// - missing normals will be flat, based on triangle orientation
@@ -271,22 +268,22 @@ namespace GLTF
 		// - missing tangents will be (0,0,1)
 		if (Primitive.HasNormals())
 		{
-			TArray<FVector>& ReindexBuffer = GetVectorBuffer(ReindexBufferIndex);
+			TArray<FVector3f>& ReindexBuffer = GetVectorBuffer(ReindexBufferIndex);
 			Primitive.GetNormals(Normals);
 			ReIndex(Normals, Indices, ReindexBuffer);
 			Swap(Normals, ReindexBuffer);
 		}
 		else
 		{
-			TArray<FVector>& Positions = GetVectorBuffer(PositionBufferIndex);
+			TArray<FVector3f>& Positions = GetVectorBuffer(PositionBufferIndex);
 			Primitive.GetPositions(Positions);
 			GenerateFlatNormals(Positions, Indices, Normals);
 		}
 
-		TArray<FVector>& Tangents = GetVectorBuffer(TangentBufferIndex);
+		TArray<FVector3f>& Tangents = GetVectorBuffer(TangentBufferIndex);
 		if (Primitive.HasTangents())
 		{
-			TArray<FVector>& ReindexBuffer = GetVectorBuffer(ReindexBufferIndex);
+			TArray<FVector3f>& ReindexBuffer = GetVectorBuffer(ReindexBufferIndex);
 			Primitive.GetTangents(Tangents);
 			ReIndex(Tangents, Indices, ReindexBuffer);
 			Swap(Tangents, ReindexBuffer);
@@ -294,13 +291,13 @@ namespace GLTF
 		else if (bMeshHasTagents)
 		{
 			// If other primitives in this mesh have tangents, generate filler ones for this primitive, to avoid gaps.
-			Tangents.Init(FVector(0.0f, 0.0f, 1.0f), Primitive.VertexCount());
+			Tangents.Init(FVector3f(0.0f, 0.0f, 1.0f), Primitive.VertexCount());
 		}
 
-		TArray<FVector4>& Colors = GetVector4dBuffer(ColorBufferIndex);
+		TArray<FVector4f>& Colors = GetVector4dBuffer(ColorBufferIndex);
 		if (Primitive.HasColors())
 		{
-			TArray<FVector4>& ReindexBuffer = GetVector4dBuffer(Reindex4dBufferIndex);
+			TArray<FVector4f>& ReindexBuffer = GetVector4dBuffer(Reindex4dBufferIndex);
 			Primitive.GetColors(Colors);
 			ReIndex(Colors, Indices, ReindexBuffer);
 			Swap(Colors, ReindexBuffer);
@@ -308,17 +305,17 @@ namespace GLTF
 		else if (bMeshHasColors)
 		{
 			// If other primitives in this mesh have colors, generate filler ones for this primitive, to avoid gaps.
-			Colors.Init(FVector4(1.0f), Primitive.VertexCount());
+			Colors.Init(FVector4f(1.0f), Primitive.VertexCount());
 		}
 
 		int32_t            AvailableBufferIndex = 0;
-		TArray<FVector2D>* UVs[MAX_MESH_TEXTURE_COORDS_MD];
+		TArray<FVector2f>* UVs[MAX_MESH_TEXTURE_COORDS_MD];
 		for (int32 UVIndex = 0; UVIndex < NumUVs; ++UVIndex)
 		{
 			UVs[UVIndex] = &GetVector2dBuffer(AvailableBufferIndex++);
 			if (Primitive.HasTexCoords(UVIndex))
 			{
-				TArray<FVector2D>& ReindexBuffer = GetVector2dBuffer(UvReindexBufferIndex);
+				TArray<FVector2f>& ReindexBuffer = GetVector2dBuffer(UvReindexBufferIndex);
 				Primitive.GetTexCoords(UVIndex, *UVs[UVIndex]);
 				ReIndex(*UVs[UVIndex], Indices, ReindexBuffer);
 				Swap(*UVs[UVIndex], ReindexBuffer);
@@ -369,9 +366,9 @@ namespace GLTF
 
 				VertexInstanceNormals[VertexInstanceID] = Normals[IndiceIndex];
 				VertexInstanceBinormalSigns[VertexInstanceID] =
-					GetBasisDeterminantSign(VertexInstanceTangents[VertexInstanceID].GetSafeNormal(),
-					(VertexInstanceNormals[VertexInstanceID] ^ VertexInstanceTangents[VertexInstanceID]).GetSafeNormal(),
-						VertexInstanceNormals[VertexInstanceID].GetSafeNormal());
+					GetBasisDeterminantSign((FVector)VertexInstanceTangents[VertexInstanceID].GetSafeNormal(),
+						(FVector)(VertexInstanceNormals[VertexInstanceID] ^ VertexInstanceTangents[VertexInstanceID]).GetSafeNormal(),
+						(FVector)VertexInstanceNormals[VertexInstanceID].GetSafeNormal());
 
 				for (int32 UVIndex = 0; UVIndex < NumUVs; ++UVIndex)
 				{
@@ -394,7 +391,6 @@ namespace GLTF
 				// (Is there a way to set auto-gen smoothing threshold? glTF spec says to generate flat normals if they're not specified.
 				//   We want to combine identical verts whether they're smooth neighbors or triangles belonging to the same flat polygon.)
 				EdgeHardnesses[NewEdgeID] = false;
-				EdgeCreaseSharpnesses[NewEdgeID] = 0.0f;
 			}
 		}
 		return bHasDegenerateTriangles;
@@ -405,16 +401,16 @@ namespace GLTF
 		const uint32 ReserveSize = FMath::Min(uint32(IntBuffer.Num() + IntBuffer.GetSlack()), MaxReserveSize);  // cap reserved size
 		IntBuffer.Empty(ReserveSize);
 		Vector2dBuffers[0].Empty(ReserveSize);
-		for (TArray<FVector>& Array : VectorBuffers)
+		for (TArray<FVector3f>& Array : VectorBuffers)
 		{
 			Array.Empty(ReserveSize);
 		}
 		for (int32 Index = 1; Index < MAX_MESH_TEXTURE_COORDS_MD + 1; ++Index)
 		{
-			TArray<FVector2D>& Array = Vector2dBuffers[Index];
+			TArray<FVector2f>& Array = Vector2dBuffers[Index];
 			Array.Empty();
 		}
-		for (TArray<FVector4>& Array : Vector4dBuffers)
+		for (TArray<FVector4f>& Array : Vector4dBuffers)
 		{
 			Array.Empty();
 		}

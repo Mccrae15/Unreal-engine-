@@ -19,14 +19,17 @@ public:
 
 	FTexture2DArrayResource(UTexture2DArray* InOwner, const FStreamableRenderResourceState& InState);
 
+	// Dynamic cast methods.
+	ENGINE_API virtual FTexture2DArrayResource* GetTexture2DArrayResource() { return this; }
+	// Dynamic cast methods (const).
+	ENGINE_API virtual const FTexture2DArrayResource* GetTexture2DArrayResource() const { return this; }
+
+	virtual uint64 GetPlatformMipsSize(uint32 NumMips) const override;
+
 protected:
 
 	void CreateTexture() final override;
 	void CreatePartiallyResidentTexture() final override;
-
-#if STATS
-	virtual void CalcRequestedMipsSize() final override;
-#endif
 
 	void GetData(uint32 SliceIndex, uint32 MipIndex, void* Dest, uint32 DestPitch);
 

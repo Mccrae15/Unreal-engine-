@@ -4,6 +4,12 @@
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateTypes.h"
 #include "Styling/CoreStyle.h"
+#include "Styling/StarshipCoreStyle.h"
+#include "SlateOptMacros.h"
+#include "Styling/SlateStyleMacros.h"
+
+// This is to fix the issue that SlateStyleMacros like IMAGE_BRUSH look for RootToContentDir but StyleSet->RootToContentDir is how this style is set up
+#define RootToContentDir StyleSet->RootToContentDir
 
 FSlateBrush* FSourceFilterStyle::FilterBrush = nullptr;
 FSlateBrush* FSourceFilterStyle::FilterSetBrush = nullptr;
@@ -12,11 +18,8 @@ TSharedPtr< FSlateStyleSet > FSourceFilterStyle::StyleSet = nullptr;
 
 FTextBlockStyle FSourceFilterStyle::NormalText;
 
-#define IMAGE_BRUSH( RelativePath, ... ) FSlateImageBrush( StyleSet->RootToContentDir( RelativePath, TEXT(".png") ), __VA_ARGS__ )
-#define BOX_BRUSH( RelativePath, ... ) FSlateBoxBrush( StyleSet->RootToContentDir( RelativePath, TEXT(".png") ), __VA_ARGS__ )
-#define BORDER_BRUSH( RelativePath, ... ) FSlateBorderBrush( StyleSet->RootToContentDir( RelativePath, TEXT(".png") ), __VA_ARGS__ )
-#define DEFAULT_FONT(...) FCoreStyle::GetDefaultFontStyle(__VA_ARGS__)
-#define ICON_FONT(...) FSlateFontInfo(StyleSet->RootToContentDir("Fonts/FontAwesome", TEXT(".ttf")), __VA_ARGS__)
+
+#define ICON_FONT(...) FSlateFontInfo(RootToContentDir("Fonts/FontAwesome", TEXT(".ttf")), __VA_ARGS__)
 
 // Const icon sizes
 static const FVector2D Icon8x8(8.0f, 8.0f);
@@ -146,11 +149,12 @@ void FSourceFilterStyle::Initialize()
 		.SetMenuBorderPadding(FMargin(0.0f));
 	StyleSet->Set("SourceFilter.ComboButton", ToolbarComboButton);
 
-	StyleSet->Set("SourceFilter.TabIcon", new IMAGE_BRUSH("Icons/AssetIcons/Character_16x", Icon16x16));
+	StyleSet->Set("SourceFilter.ToolBarIcon", new IMAGE_BRUSH_SVG("Starship/AssetIcons/Character_64", Icon32x32));
+	StyleSet->Set("SourceFilter.TabIcon", new IMAGE_BRUSH_SVG("Starship/AssetIcons/Character_16", Icon16x16));
 
 	StyleSet->Set("SourceFilter.NewPreset", new IMAGE_BRUSH("Icons/icon_file_saveas_16px", Icon16x16));
 	StyleSet->Set("SourceFilter.LoadPreset", new IMAGE_BRUSH("Icons/icon_file_open_16px", Icon16x16));
-	StyleSet->Set("SourceFilter.SavePreset", new IMAGE_BRUSH("Icons/icon_file_save_16px", Icon16x16));
+	StyleSet->Set("SourceFilter.SavePreset", new IMAGE_BRUSH_SVG("Starship/Common/SaveCurrent", Icon16x16));
 
 
 	StyleSet->Set("SourceFilter.TextStyle", FTextBlockStyle(NormalText)

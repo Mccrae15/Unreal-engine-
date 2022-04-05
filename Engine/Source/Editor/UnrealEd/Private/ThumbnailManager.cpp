@@ -15,6 +15,7 @@
 #include "Engine/TextureCube.h"
 #include "Engine/Texture2DArray.h"
 #include "ImageUtils.h"
+#include "AssetThumbnail.h"
 
 
 DEFINE_LOG_CATEGORY_STATIC(LogThumbnailManager, Log, All);
@@ -70,6 +71,8 @@ void UThumbnailManager::Initialize(void)
 	{
 		InitializeRenderTypeArray(RenderableThumbnailTypes);
 
+		SharedThumbnailPool = MakeShared<FAssetThumbnailPool>(100);
+
 		bIsInitialized = true;
 	}
 }
@@ -121,7 +124,7 @@ FThumbnailRenderingInfo* UThumbnailManager::GetRenderingInfo(UObject* Object)
 	TArray<FThumbnailRenderingInfo>& ThumbnailTypes = RenderableThumbnailTypes;
 
 	// Get the class to check against.
-	UClass *ClassToCheck = ClassToCheck = Object->GetClass();
+	UClass *ClassToCheck = Object->GetClass();
 	
 	// Search for the cached entry and do the slower if not found
 	FThumbnailRenderingInfo* RenderInfo = RenderInfoMap.FindRef(ClassToCheck);

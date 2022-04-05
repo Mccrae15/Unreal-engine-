@@ -7,8 +7,9 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
+using UnrealBuildBase;
 
 namespace AutomationTool.Benchmark
 {
@@ -62,7 +63,7 @@ namespace AutomationTool.Benchmark
 			if (TaskOptions.HasFlag(DDCTaskOptions.HotDDC))
 			{
 				// will throw an exception if it fails
-				CommandUtils.RunCommandlet(ProjectFile, "UE4Editor-Cmd.exe", "Cook", String.Format("-TargetPlatform={0} ", CookPlatformName));
+				CommandUtils.RunCommandlet(ProjectFile, "UnrealEditor-Cmd.exe", "Cook", String.Format("-TargetPlatform={0} ", CookPlatformName));
 			}
 
 			base.PerformPrequisites();
@@ -101,7 +102,7 @@ namespace AutomationTool.Benchmark
 			}
 
 			// will throw an exception if it fails
-			CommandUtils.RunCommandlet(ProjectFile, "UE4Editor-Cmd.exe", "Cook", String.Format("-TargetPlatform={0} {1}", CookPlatformName, ExtraArgs));
+			CommandUtils.RunCommandlet(ProjectFile, "UnrealEditor-Cmd.exe", "Cook", String.Format("-TargetPlatform={0} {1}", CookPlatformName, ExtraArgs));
 
 			return true;
 		}

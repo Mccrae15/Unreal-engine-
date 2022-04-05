@@ -40,7 +40,7 @@ namespace
 
 void FEdGraphSchemaAction_BlueprintVariableBase::MovePersistentItemToCategory(const FText& NewCategoryName)
 {
-	FBlueprintEditorUtils::SetBlueprintVariableCategory(GetSourceBlueprint(), VarName, GetVariableScope(), NewCategoryName);
+	FBlueprintEditorUtils::SetBlueprintVariableCategory(GetSourceBlueprint(), VarName, Cast<UStruct>(GetVariableScope()), NewCategoryName);
 }
 
 int32 FEdGraphSchemaAction_BlueprintVariableBase::GetReorderIndexInContainer() const
@@ -64,10 +64,10 @@ bool FEdGraphSchemaAction_BlueprintVariableBase::ReorderToBeforeAction(TSharedRe
 		FName TargetVarName = VarAction->GetVariableName();
 		if ((BP != nullptr) && (VarName != TargetVarName) && (VariableSource == VarAction->GetVariableScope()))
 		{
-			if (FBlueprintEditorUtils::MoveVariableBeforeVariable(BP, VarAction->GetVariableScope(), VarName, TargetVarName, true))
+			if (FBlueprintEditorUtils::MoveVariableBeforeVariable(BP, Cast<UStruct>(VarAction->GetVariableScope()), VarName, TargetVarName, true))
 			{
 				// Change category of var to match the one we dragged on to as well
-				FText TargetVarCategory = FBlueprintEditorUtils::GetBlueprintVariableCategory(BP, TargetVarName, GetVariableScope());
+				FText TargetVarCategory = FBlueprintEditorUtils::GetBlueprintVariableCategory(BP, TargetVarName, Cast<UStruct>(GetVariableScope()));
 				MovePersistentItemToCategory(TargetVarCategory);
 
 				// Update Blueprint after changes so they reflect in My Blueprint tab.
@@ -110,7 +110,7 @@ UBlueprint* FEdGraphSchemaAction_BlueprintVariableBase::GetSourceBlueprint() con
 
 int32 FEdGraphSchemaAction_K2LocalVar::GetReorderIndexInContainer() const
 {
-	return FBlueprintEditorUtils::FindLocalVariableIndex(GetSourceBlueprint(), GetVariableScope(), GetVariableName());
+	return FBlueprintEditorUtils::FindLocalVariableIndex(GetSourceBlueprint(), Cast<UStruct>(GetVariableScope()), GetVariableName());
 }
 
 /////////////////////////////////////////////////////
@@ -609,13 +609,13 @@ UEdGraphNode* FEdGraphSchemaAction_K2AddCustomEvent::PerformAction(class UEdGrap
 UEdGraphNode* FEdGraphSchemaAction_K2AddCallOnActor::PerformAction(class UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode/* = true*/)
 {
 	// Snap the node placement location to the grid, ensures calculations later match up better
-	const float GridSnapSize = (float)GetDefault<UEditorStyleSettings>()->GridSnapSize;
-	FVector2D LocalLocation;
-	LocalLocation.X = FMath::GridSnap( Location.X, GridSnapSize);
-	LocalLocation.Y = FMath::GridSnap( Location.Y, GridSnapSize);
+	const float  GridSnapSize = (float)GetDefault<UEditorStyleSettings>()->GridSnapSize;
+	FVector2f LocalLocation;	// LWC_TODO: Precision loss
+	LocalLocation.X = FMath::GridSnap( (float)Location.X, GridSnapSize);
+	LocalLocation.Y = FMath::GridSnap( (float)Location.Y, GridSnapSize);
 
 	// First use the base functionality to spawn the 'call function' node
-	UEdGraphNode* CallNode = FEdGraphSchemaAction_K2NewNode::PerformAction(ParentGraph, FromPin, LocalLocation);
+	UEdGraphNode* CallNode = FEdGraphSchemaAction_K2NewNode::PerformAction(ParentGraph, FromPin, FVector2D(LocalLocation));
 	const float FunctionNodeHeightUnsnapped = UEdGraphSchema_K2::EstimateNodeHeight( CallNode );
 
 	// this is the guesstimate of the function node's height, snapped to grid units

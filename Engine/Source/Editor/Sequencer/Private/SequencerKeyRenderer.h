@@ -141,6 +141,15 @@ private:
 		 */
 		void CacheViewDependentData(const TRange<double>& VisibleRange, ECacheFlags CacheFlags);
 
+
+		/**
+		 * Draw additional content in addition to keys for a particular IKeyArea
+		 *
+		 * @param Painter			 The painter to add the created geometry
+		 * @param KeyGeometry		 Allocated geometry to draw in
+		 */
+		void DrawExtra(FSequencerSectionPainter& Painter, const FGeometry& KeyGeometry) const;
+
 	public:
 
 		/** Index into the array views for the next unhandled key */
@@ -179,6 +188,15 @@ private:
 		EKeyRenderingFlags Flags = EKeyRenderingFlags::None;
 	};
 
+	struct FCurveKey
+	{
+		/** Key value */
+		float Value;
+
+		/** The time in seconds that this key should be drawn - represents the average time for overlapping keys */
+		double FinalKeyPositionSeconds;
+	};
+
 
 	struct FPaintStyle
 	{
@@ -214,6 +232,11 @@ private:
 
 
 		/**
+		 * Draw this batch's curve
+		 */
+		void DrawCurve(FSequencer* Sequencer, FSequencerSectionPainter& Painter, const FGeometry& KeyGeometry, const FPaintStyle& Style, const FKeyRendererPaintArgs& Args) const;
+
+		/**
 		 * Draw this batch
 		 */
 		void Draw(FSequencer* Sequencer, FSequencerSectionPainter& Painter, const FGeometry& KeyGeometry, const FPaintStyle& Style, const FKeyRendererPaintArgs& Args) const;
@@ -225,6 +248,9 @@ private:
 
 		/** Computed final draw info */
 		TArray<FKey> PrecomputedKeys;
+
+		/** Computed final draw curve info */
+		TArray<FCurveKey> PrecomputedCurve;
 	};
 
 private:

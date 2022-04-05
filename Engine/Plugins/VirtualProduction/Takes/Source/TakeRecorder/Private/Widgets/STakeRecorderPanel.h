@@ -9,6 +9,7 @@
 
 enum class ECheckBoxState : uint8;
 enum class ETakeRecorderMode : uint8;
+enum class ETakeRecorderPanelMode : uint8;
 
 struct FAssetData;
 struct ITakeRecorderSourceTreeItem;
@@ -71,9 +72,15 @@ public:
 
 	void ClearPendingTake();
 
+	TOptional<ETakeRecorderPanelMode> GetMode() const;
+
 private:
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("STakeRecorderPanel");
+	}
 
 private:
 

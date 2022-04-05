@@ -12,7 +12,7 @@ All common code shared between the editor side debugger and debugger clients run
 #include "NiagaraCommon.h"
 #include "NiagaraDebuggerCommon.generated.h"
 
-#define WITH_NIAGARA_DEBUGGER !UE_BUILD_SHIPPING
+#define WITH_NIAGARA_DEBUGGER (!UE_BUILD_SHIPPING)// || WITH_EDITOR)
 
 //////////////////////////////////////////////////////////////////////////
 // Niagara Outliner.
@@ -49,17 +49,22 @@ struct FNiagaraOutlinerEmitterInstanceData
 	UPROPERTY(VisibleAnywhere, Category = "Emitter")
 	int32 NumParticles = 0;
 
+	UPROPERTY(VisibleAnywhere, Category = "Emitter")
+	uint32 bRequiresPersistentIDs : 1;
+
+	FNiagaraOutlinerEmitterInstanceData()
+		: bRequiresPersistentIDs(false)
+	{}
+
 	//Mem Usage?
 	//Scalability info?
 };
 
 /** Outliner information on a specific system instance. */
 USTRUCT()
-struct NIAGARA_API FNiagaraOutlinerSystemInstanceData
+struct FNiagaraOutlinerSystemInstanceData
 {
 	GENERATED_BODY()
-
-	FNiagaraOutlinerSystemInstanceData();
 
 	/** Name of the component object for this instance, if there is one. */
 	UPROPERTY(VisibleAnywhere, Category = "System")
@@ -79,15 +84,51 @@ struct NIAGARA_API FNiagaraOutlinerSystemInstanceData
 	
 	UPROPERTY(VisibleAnywhere, Category = "State")
 	uint32 bPendingKill : 1;
+
+	UPROPERTY(VisibleAnywhere, Category = "State")
+	uint32 bUsingCullProxy : 1;
 	
 	UPROPERTY(VisibleAnywhere, Category = "State")
-	ENCPoolMethod PoolMethod;
+	ENCPoolMethod PoolMethod = ENCPoolMethod::None;
 
 	UPROPERTY(VisibleAnywhere, Category = "Performance")
 	FNiagaraOutlinerTimingData AverageTime;
 
 	UPROPERTY(VisibleAnywhere, Category = "Performance")
 	FNiagaraOutlinerTimingData MaxTime;
+
+	UPROPERTY(VisibleAnywhere, Category = "Ticking")
+	TEnumAsByte<ETickingGroup> TickGroup;
+
+	UPROPERTY(VisibleAnywhere, Category = "Gpu")
+	uint32 bIsSolo : 1;
+
+	UPROPERTY(VisibleAnywhere, Category = "Gpu")
+	uint32 bRequiresDistanceFieldData : 1;
+
+	UPROPERTY(VisibleAnywhere, Category = "Gpu")
+	uint32 bRequiresDepthBuffer : 1;
+
+	UPROPERTY(VisibleAnywhere, Category = "Gpu")
+	uint32 bRequiresEarlyViewData : 1;
+
+	UPROPERTY(VisibleAnywhere, Category = "Gpu")
+	uint32 bRequiresViewUniformBuffer : 1;
+
+	UPROPERTY(VisibleAnywhere, Category = "Gpu")
+	uint32 bRequiresRayTracingScene : 1;
+
+	FNiagaraOutlinerSystemInstanceData()
+		: bPendingKill(false)
+		, bUsingCullProxy(false)
+		, TickGroup(0)
+		, bIsSolo(false)
+		, bRequiresDistanceFieldData(false)
+		, bRequiresDepthBuffer(false)
+		, bRequiresEarlyViewData(false)
+		, bRequiresViewUniformBuffer(false)
+		, bRequiresRayTracingScene(false)
+	{}
 
 	//TODO:
 	//Tick info, solo, tick group etc.
@@ -338,6 +379,31 @@ struct NIAGARA_API FNiagaraDebugHUDVariable
 	static void InitFromString(const FString& VariablesString, TArray<FNiagaraDebugHUDVariable>& OutVariables);
 };
 
+UENUM()
+enum class ENiagaraDebugHUDOverviewMode
+{
+	Overview,
+	Scalability,	
+	Performance,
+	GpuComputePerformance,
+}; 
+
+UENUM()
+enum class ENiagaraDebugHUDPerfGraphMode
+{
+	None,
+	GameThread,
+	RenderThread,
+	GPU,
+}; 
+
+UENUM()
+enum class ENiagaraDebugHUDPerfSampleMode
+{
+	FrameTotal,
+	PerInstanceAverage,	
+};
+
 /** Settings for Niagara debug HUD. Contained in it's own struct so that we can pass it whole in a message to the debugger client. */
 USTRUCT()
 struct NIAGARA_API FNiagaraDebugHUDSettingsData
@@ -346,9 +412,23 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 
 	FNiagaraDebugHUDSettingsData();
 
+	bool IsEnabled() const
+	{
+	#if WITH_EDITORONLY_DATA
+		return bWidgetEnabled && bHudEnabled;
+	#else
+		return bHudEnabled;
+	#endif
+	}
+
+#if WITH_EDITORONLY_DATA
+	UPROPERTY(transient)
+	bool bWidgetEnabled = false;
+#endif
+
 	/** Master control for all HUD features. */
 	UPROPERTY(EditAnywhere, Category = "Debug General", meta = (DisplayName = "Debug HUD Enabled"))
-	bool bEnabled = true;
+	bool bHudEnabled = true;
 
 	/**
 	When enabled all Niagara systems that pass the filter will have the simulation data buffers validation.
@@ -369,6 +449,9 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	/** When enabled the overview display will be enabled. */
 	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (DisplayName = "Debug Overview Enabled"))
 	bool bOverviewEnabled = false;
+
+	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (DisplayName = "Debug Overview Mode"))
+	ENiagaraDebugHUDOverviewMode OverviewMode = ENiagaraDebugHUDOverviewMode::Overview;
 
 	/** Overview display font to use. */
 	UPROPERTY(EditAnywhere, Category = "Debug Overview", meta = (DisplayName = "Debug Overview Font", EditCondition = "bOverviewEnabled"))
@@ -462,6 +545,13 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	bool bEnableGpuParticleReadback = false;
 
 	/**
+	When enabled the particle index will be displayed along with any attributes.
+	Note: This is the index in the particle data buffer and not the persistent ID index.
+	*/
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables"))
+	bool bShowParticleIndex = false;
+
+	/**
 	List of attributes to show per particle, each entry uses wildcard matching.
 	For example, "*Position" would match all attributes that end in Position.
 	*/
@@ -479,8 +569,27 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables", DisplayName="Show Particles Attributes With System"))
 	bool bShowParticlesVariablesWithSystem = false;
 
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables", DisplayName = "Show Particle Attributes Vertical"))
+	bool bShowParticleVariablesVertical = false;
+
 	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables"))
 	bool bUseMaxParticlesToDisplay = true;
+
+	/** When enabled we use the clip planes to narrow down which particles to display */
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables"))
+	bool bUseParticleDisplayClip = false;
+
+	/** Clipping planes used to display particle attributes. */
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables", UIMin = "0", ClampMin = "0"))
+	FVector2D ParticleDisplayClip = FVector2D(0.0f, 10000.0f);
+
+	/** When enabled we use a radius from the display center to avoid showing too many particle attributes. */
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables"))
+	bool bUseParticleDisplayCenterRadius = false;
+
+	/** Radius from screen center where 0 is center to 1.0 is edge to avoid display too many particle attributes. */
+	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bShowParticleVariables", UIMin = "0", ClampMin = "0"))
+	float ParticleDisplayCenterRadius = 1.0f;
 
 	/**
 	When enabled, the maximum number of particles to show information about.
@@ -488,6 +597,91 @@ struct NIAGARA_API FNiagaraDebugHUDSettingsData
 	*/
 	UPROPERTY(Config, EditAnywhere, Category = "Debug Particles", meta = (EditCondition = "bUseMaxParticlesToDisplay && bShowParticleVariables", UIMin="1", ClampMin="1"))
 	int32 MaxParticlesToDisplay = 32;
+
+	/** How many frames to capture in between updates to the max and average perf report values. */
+	UPROPERTY(Config, EditAnywhere, Category = "Perf Overview")
+	int32 PerfReportFrames = 60;
+
+	UPROPERTY(Config, EditAnywhere, Category = "Perf Overview")
+	ENiagaraDebugHUDPerfSampleMode PerfSampleMode = ENiagaraDebugHUDPerfSampleMode::FrameTotal;
+
+	/** Time range of the Y Axis of the perf graph */
+	UPROPERTY(Config, EditAnywhere, Category = "Perf Overview")
+	ENiagaraDebugHUDPerfGraphMode PerfGraphMode = ENiagaraDebugHUDPerfGraphMode::GameThread;
+
+	/** How many frames of history to display in the perf graphs. */
+	UPROPERTY(Config, EditAnywhere, Category = "Perf Overview")
+	int32 PerfHistoryFrames = 600;
+
+	/** Time range of the Y Axis of the perf graph */
+	UPROPERTY(Config, EditAnywhere, Category = "Perf Overview")
+	float PerfGraphTimeRange = 500.0f;
+
+	/** Pixel size of the perf graph. */
+	UPROPERTY(Config, EditAnywhere, Category = "Perf Overview")
+	FVector2D PerfGraphSize = FVector2D(500,500);
+
+	UPROPERTY(Config, EditAnywhere, Category = "Perf Overview")
+	FLinearColor PerfGraphAxisColor = FLinearColor::White;
+
+	// True if perf graphs should be smoothed.
+	UPROPERTY(Config, EditAnywhere, Category = "Perf Overview", meta = (InlineEditConditionToggle))
+	bool bEnableSmoothing = true;
+
+	//Number of samples to use either size of a value when smoothing perf graphs.
+	UPROPERTY(Config, EditAnywhere, Category = "Perf Overview", meta = (EditCondition = "bEnableSmoothing"))
+	int32 SmoothingWidth = 4;
+
+	// Default background color used generally for panels
+	UPROPERTY(EditAnywhere, Category = "Colors")
+	FLinearColor DefaultBackgroundColor = FLinearColor(0.0f, 0.0f, 0.0f, 0.5f);
+
+	// Overview heading text color
+	UPROPERTY(EditAnywhere, Category = "Colors")
+	FLinearColor OverviewHeadingColor = FLinearColor::Green;
+
+	// Overview detail text color
+	UPROPERTY(EditAnywhere, Category = "Colors")
+	FLinearColor OverviewDetailColor = FLinearColor::White;
+
+	// Overview detail highlight text color
+	UPROPERTY(EditAnywhere, Category = "Colors")
+	FLinearColor OverviewDetailHighlightColor = FLinearColor::Yellow;
+
+	// In world text if an error is detected
+	UPROPERTY(EditAnywhere, Category = "Colors")
+	FLinearColor InWorldErrorTextColor = FLinearColor(1.0f, 0.4, 0.3, 1.0f);
+	// In world text color
+	UPROPERTY(EditAnywhere, Category = "Colors")
+	FLinearColor InWorldTextColor = FLinearColor::White;
+
+	// Message display text color
+	UPROPERTY(EditAnywhere, Category = "Colors")
+	FLinearColor MessageInfoTextColor = FLinearColor::White;
+
+	// Message display warning text color
+	UPROPERTY(EditAnywhere, Category = "Colors")
+	FLinearColor MessageWarningTextColor = FLinearColor(0.9f, 0.7f, 0.0, 1.0f);
+
+	// Message display error text color
+	UPROPERTY(EditAnywhere, Category = "Colors")
+	FLinearColor MessageErrorTextColor = FLinearColor(1.0f, 0.4, 0.3, 1.0f);
+	
+	/** Opacity of the system color background tile in overview table rows. */
+	UPROPERTY(Config, EditAnywhere, Category = "Colors")
+	float SystemColorTableOpacity = 0.2f;
+
+	/** Additional seed value for random system colors. Useful if current colors of systems are too similar. */
+	UPROPERTY(Config, EditAnywhere, Category = "Colors")
+	uint32 SystemColorSeed = 0;
+
+	/** Minimum HSV values for the random colors generated for each System. */
+	UPROPERTY(Config, EditAnywhere, Category = "Colors")
+	FVector SystemColorHSVMin = FVector(0, 200, 200);
+
+	/** Maximum HSV values for the random colors generated for each System. */
+	UPROPERTY(Config, EditAnywhere, Category = "Colors")
+	FVector SystemColorHSVMax = FVector(255, 255, 255);
 
 	UPROPERTY()
 	ENiagaraDebugPlaybackMode PlaybackMode = ENiagaraDebugPlaybackMode::Play;

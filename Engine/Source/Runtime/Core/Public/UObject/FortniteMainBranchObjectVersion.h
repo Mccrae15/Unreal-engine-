@@ -152,6 +152,45 @@ struct CORE_API FFortniteMainBranchObjectVersion
 		// Remove the WaterVelocityHeightTexture dependency on MPC_Landscape and LandscapeWaterIndo 
 		RemoveLandscapeWaterInfo,
 
+		// Added the weighted value property type to store the cloths weight maps' low/high ranges
+		ChaosClothAddWeightedValue,
+
+		// Added the Long Range Attachment stiffness weight map
+		ChaosClothAddTetherStiffnessWeightMap,
+
+		// Fix corrupted LOD transition maps
+		ChaosClothFixLODTransitionMaps,
+
+		// Enable a few more weight maps to better art direct the cloth simulation
+		ChaosClothAddTetherScaleAndDragLiftWeightMaps,
+
+		// Enable material (edge, bending, and area stiffness) weight maps
+		ChaosClothAddMaterialWeightMaps,
+
+		// Added bShowCurve for movie scene float channel serialization
+		SerializeFloatChannelShowCurve,
+
+		// Minimize slack waste by using a single array for grass data
+		LandscapeGrassSingleArray,
+
+		// Add loop counters to sequencer's compiled sub-sequence data
+		AddedSubSequenceEntryWarpCounter,
+
+		// Water plugin is now component-based rather than actor based
+		WaterBodyComponentRefactor,
+
+		// Cooked BPGC storing editor-only asset tags
+		BPGCCookedEditorTags,
+
+		// Terrain layer weights are no longer considered material parameters
+		TerrainLayerWeightsAreNotParameters,
+
+		// Anim Dynamics Node Gravity Override vector is now defined in world space, not simulation space. 
+		// Legacy behavior can be maintained with a flag, which is set false by default for new nodes, 
+		// true for nodes predating this change.
+		GravityOverrideDefinedInWorldSpace,
+
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1

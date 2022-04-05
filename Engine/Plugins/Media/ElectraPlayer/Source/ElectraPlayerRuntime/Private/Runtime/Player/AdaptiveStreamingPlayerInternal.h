@@ -7,10 +7,12 @@
 #include "Player/AdaptiveStreamingPlayerInternalConfig.h"
 
 #include "HTTP/HTTPManager.h"
+#include "HTTP/HTTPResponseCache.h"
 #include "Player/PlayerSessionServices.h"
 #include "SynchronizedClock.h"
 
 #include "Demuxer/ParserISO14496-12.h"
+#include "Decoder/SubtitleDecoder.h"
 
 #include "Player/AdaptiveStreamingPlayerResourceRequest.h"
 #include "Player/PlayerStreamReader.h"
@@ -26,6 +28,9 @@
 #define INTERR_UNSUPPORTED_FORMAT				2
 #define INTERR_COULD_NOT_LOCATE_START_SEGMENT	3
 #define INTERR_COULD_NOT_LOCATE_START_PERIOD	4
+#define INTERR_UNSUPPORTED_CODEC				5
+#define INTERR_CODEC_CHANGE_NOT_SUPPORTED		6
+#define INTERR_NO_STREAM_INFORMATION			7
 #define INTERR_FRAGMENT_NOT_AVAILABLE			0x101
 #define INTERR_FRAGMENT_READER_REQUEST			0x102
 #define INTERR_CREATE_FRAGMENT_READER			0x103
@@ -70,7 +75,9 @@ public:
 			FTimeValue Now(MEDIAutcTime::Current());
 			FMediaCriticalSection::ScopedLock lock(Lock);
 			FTimeValue diff = !bIsPaused ? Now - Clk->LastSystemBaseTime : FTimeValue::GetZero();
-			return Clk->RenderTime + Clk->RunningTimeOffset + diff;
+			FTimeValue r(Clk->RenderTime);
+			r += Clk->RunningTimeOffset + diff;
+			return r;
 		}
 		return FTimeValue();
 	}
@@ -166,13 +173,14 @@ struct FPlaybackState
 		SeekableRange.Reset();
 		Duration.SetToInvalid();
 		CurrentPlayPosition.SetToInvalid();
-		LoopState.Reset();
+		LoopState = {};
 		bHaveMetadata = false;
-		bHasEnded     = false;
-		bIsSeeking    = false;
-		bIsBuffering  = false;
-		bIsPlaying    = false;
-		bIsPaused     = false;
+		bHasEnded = false;
+		bIsSeeking = false;
+		bIsBuffering = false;
+		bIsPlaying = false;
+		bIsPaused = false;
+		bPlayrateHasChanged = false;
 	}
 
 	mutable FMediaCriticalSection			Lock;
@@ -180,15 +188,17 @@ struct FPlaybackState
 	FTimeRange								TimelineRange;
 	FTimeValue								Duration;
 	FTimeValue								CurrentPlayPosition;
-	FPlayerLoopState						LoopState;
+	IAdaptiveStreamingPlayer::FLoopState	LoopState;
 	bool									bHaveMetadata;
 	bool									bHasEnded;
 	bool									bIsSeeking;
 	bool									bIsBuffering;
 	bool									bIsPlaying;
 	bool									bIsPaused;
+	bool									bPlayrateHasChanged;
 	TArray<FTrackMetadata>					VideoTracks;
 	TArray<FTrackMetadata>					AudioTracks;
+	TArray<FTrackMetadata>					SubtitleTracks;
 	TArray<FTimespan>						SeekablePositions;
 
 
@@ -320,7 +330,7 @@ struct FPlaybackState
 		bIsPlaying = bInIsPlaying;
 	}
 
-	bool SetTrackMetadata(const TArray<FTrackMetadata> &InVideoTracks, const TArray<FTrackMetadata>& InAudioTracks)
+	bool SetTrackMetadata(const TArray<FTrackMetadata> &InVideoTracks, const TArray<FTrackMetadata>& InAudioTracks, const TArray<FTrackMetadata>& InSubtitleTracks)
 	{
 		FMediaCriticalSection::ScopedLock lock(Lock);
 
@@ -340,24 +350,26 @@ struct FPlaybackState
 			return true;
 		};
 
-		bool bChanged = ChangedTrackMetadata(VideoTracks, InVideoTracks) || ChangedTrackMetadata(AudioTracks, InAudioTracks);
+		bool bChanged = ChangedTrackMetadata(VideoTracks, InVideoTracks) || ChangedTrackMetadata(AudioTracks, InAudioTracks) || ChangedTrackMetadata(SubtitleTracks, InSubtitleTracks);
 		VideoTracks = InVideoTracks;
 		AudioTracks = InAudioTracks;
+		SubtitleTracks = InSubtitleTracks;
 		return bChanged;
 	}
-	void GetTrackMetadata(TArray<FTrackMetadata> &OutVideoTracks, TArray<FTrackMetadata>& OutAudioTracks) const
+	void GetTrackMetadata(TArray<FTrackMetadata> &OutVideoTracks, TArray<FTrackMetadata>& OutAudioTracks, TArray<FTrackMetadata>& OutSubtitleTracks) const
 	{
 		FMediaCriticalSection::ScopedLock lock(Lock);
 		OutVideoTracks = VideoTracks;
 		OutAudioTracks = AudioTracks;
+		OutSubtitleTracks = SubtitleTracks;
 	}
 
-	void SetLoopState(const FPlayerLoopState& InLoopState)
+	void SetLoopState(const IAdaptiveStreamingPlayer::FLoopState& InLoopState)
 	{
 		FMediaCriticalSection::ScopedLock lock(Lock);
 		LoopState = InLoopState;
 	}
-	void GetLoopState(FPlayerLoopState& OutLoopState) const
+	void GetLoopState(IAdaptiveStreamingPlayer::FLoopState& OutLoopState) const
 	{
 		FMediaCriticalSection::ScopedLock lock(Lock);
 		OutLoopState = LoopState;
@@ -365,9 +377,19 @@ struct FPlaybackState
 	void SetLoopStateEnable(bool bEnable)
 	{
 		FMediaCriticalSection::ScopedLock lock(Lock);
-		LoopState.bLoopEnabled = bEnable;
+		LoopState.bIsEnabled = bEnable;
 	}
 
+	void SetPlayRangeHasChanged(bool bWasChanged)
+	{
+		FMediaCriticalSection::ScopedLock lock(Lock);
+		bPlayrateHasChanged = bWasChanged;
+	}
+	bool GetPlayRangeHasChanged()
+	{
+		FMediaCriticalSection::ScopedLock lock(Lock);
+		return bPlayrateHasChanged;
+	}
 };
 
 
@@ -391,6 +413,7 @@ struct FMetricEvent
 		SegmentDownload,
 		DataAvailabilityChange,
 		VideoQualityChange,
+		CodecFormatChange,
 		PrerollStart,
 		PrerollEnd,
 		PlaybackStart,
@@ -399,6 +422,7 @@ struct FMetricEvent
 		PlaybackEnded,
 		PlaybackJumped,
 		PlaybackStopped,
+		SeekCompleted,
 		LicenseKey,
 		Errored,
 		LogMessage,
@@ -440,6 +464,7 @@ struct FMetricEvent
 		Metrics::FDataAvailabilityChange	DataAvailability;
 		FBandwidth							Bandwidth;
 		FQualityChange						QualityChange;
+		FStreamCodecInformation				CodecFormatChange;
 		FTimeJumped							TimeJump;
 		FErrorDetail						ErrorDetail;
 		FLogMessage							LogMessage;
@@ -543,6 +568,13 @@ struct FMetricEvent
 		Evt->Param.QualityChange.bIsDrastic = bIsDrasticDownswitch;
 		return Evt;
 	}
+	static TSharedPtrTS<FMetricEvent> ReportCodecFormatChange(const FStreamCodecInformation& NewDecodingFormat)
+	{
+		TSharedPtrTS<FMetricEvent> Evt = MakeSharedTS<FMetricEvent>();
+		Evt->Type = EType::CodecFormatChange;
+		Evt->Param.CodecFormatChange = NewDecodingFormat;
+		return Evt;
+	}
 	static TSharedPtrTS<FMetricEvent> ReportPrerollStart()
 	{
 		TSharedPtrTS<FMetricEvent> Evt = MakeSharedTS<FMetricEvent>();
@@ -594,6 +626,12 @@ struct FMetricEvent
 		Evt->Type = EType::PlaybackStopped;
 		return Evt;
 	}
+	static TSharedPtrTS<FMetricEvent> ReportSeekCompleted()
+	{
+		TSharedPtrTS<FMetricEvent> Evt = MakeSharedTS<FMetricEvent>();
+		Evt->Type = EType::SeekCompleted;
+		return Evt;
+	}
 	static TSharedPtrTS<FMetricEvent> ReportError(const FErrorDetail& ErrorDetail)
 	{
 		TSharedPtrTS<FMetricEvent> Evt = MakeSharedTS<FMetricEvent>();
@@ -615,13 +653,49 @@ struct FMetricEvent
 
 
 
+class FAdaptiveStreamingPlayerWorkerThread
+{
+public:
+	static TSharedPtrTS<FAdaptiveStreamingPlayerWorkerThread> Create();
+
+	void AddPlayerInstance(FAdaptiveStreamingPlayer* Instance)
+	{
+		FScopeLock lock(&SingletonLock);
+		PlayerInstances.Emplace(Instance);
+	}
+	void RemovePlayerInstance(FAdaptiveStreamingPlayer* Instance)
+	{
+		FScopeLock lock(&SingletonLock);
+		PlayerInstances.Remove(Instance);
+	}
+
+	void TriggerWork()
+	{
+		HaveWorkSignal.Signal();
+	}
+
+	virtual ~FAdaptiveStreamingPlayerWorkerThread();
+private:
+	void StartWorkerThread();
+	void StopWorkerThread();
+	void WorkerThreadFN();
+
+	FMediaThread						WorkerThread;
+	TArray<FAdaptiveStreamingPlayer*>	PlayerInstances;
+	FMediaEvent							HaveWorkSignal;
+	bool								bTerminate = false;
+
+	static TWeakPtrTS<FAdaptiveStreamingPlayerWorkerThread>	SingletonSelf;
+	static FCriticalSection									SingletonLock;
+};
+
+
 class FAdaptiveStreamingPlayerEventHandler
 {
 public:
-	static TSharedPtr<FAdaptiveStreamingPlayerEventHandler, ESPMode::ThreadSafe> Create();
+	static TSharedPtrTS<FAdaptiveStreamingPlayerEventHandler> Create();
 
 	void DispatchEvent(TSharedPtrTS<FMetricEvent> InEvent);
-	void DispatchEventAndWait(TSharedPtrTS<FMetricEvent> InEvent);
 
 	virtual ~FAdaptiveStreamingPlayerEventHandler();
 private:
@@ -630,9 +704,9 @@ private:
 	void WorkerThreadFN();
 
 	FMediaThread													WorkerThread;
-	TMediaMessageQueueDynamicNoTimeout<TSharedPtrTS<FMetricEvent>>		EventQueue;
-	static TWeakPtr<FAdaptiveStreamingPlayerEventHandler, ESPMode::ThreadSafe>	SingletonSelf;
-	static FCriticalSection														SingletonLock;
+	TMediaMessageQueueDynamicNoTimeout<TSharedPtrTS<FMetricEvent>>	EventQueue;
+	static TWeakPtrTS<FAdaptiveStreamingPlayerEventHandler>			SingletonSelf;
+	static FCriticalSection											SingletonLock;
 };
 
 
@@ -654,6 +728,8 @@ public:
 	virtual void AddMetricsReceiver(IAdaptiveStreamingPlayerMetrics* InMetricsReceiver) override;
 	virtual void RemoveMetricsReceiver(IAdaptiveStreamingPlayerMetrics* InMetricsReceiver) override;
 
+	void HandleOnce();
+
 	// Metrics receiver accessor for event dispatcher thread.
 	void LockMetricsReceivers()
 	{
@@ -672,15 +748,21 @@ public:
 	virtual void AddAEMSReceiver(TWeakPtrTS<IAdaptiveStreamingPlayerAEMSReceiver> InReceiver, FString InForSchemeIdUri, FString InForValue, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode InDispatchMode) override;
 	virtual void RemoveAEMSReceiver(TWeakPtrTS<IAdaptiveStreamingPlayerAEMSReceiver> InReceiver, FString InForSchemeIdUri, FString InForValue, IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode InDispatchMode) override;
 
+	virtual void AddSubtitleReceiver(TWeakPtrTS<IAdaptiveStreamingPlayerSubtitleReceiver> InReceiver) override;
+	virtual void RemoveSubtitleReceiver(TWeakPtrTS<IAdaptiveStreamingPlayerSubtitleReceiver> InReceiver) override;
+
 	virtual void Initialize(const FParamDict& Options) override;
 
 	virtual void SetInitialStreamAttributes(EStreamType StreamType, const FStreamSelectionAttributes& InitialSelection) override;
+	virtual void EnableFrameAccurateSeeking(bool bEnabled) override;
 	virtual void LoadManifest(const FString& manifestURL) override;
 
 	virtual void SeekTo(const FSeekParam& NewPosition) override;
 	virtual void Pause() override;
 	virtual void Resume() override;
 	virtual void Stop() override;
+	virtual void SetPlaybackRange(const FPlaybackRange& InPlaybackRange) override;
+	virtual void GetPlaybackRange(FPlaybackRange& OutPlaybackRange) override;
 	virtual void SetLooping(const FLoopParam& InLoopParams) override;
 
 	virtual FErrorDetail GetError() const override;
@@ -697,7 +779,7 @@ public:
 	virtual bool IsPlaying() const override;
 	virtual bool IsPaused() const override;
 
-	virtual void GetLoopState(FPlayerLoopState& OutLoopState) const override;
+	virtual void GetLoopState(FLoopState& OutLoopState) const override;
 	virtual void GetTrackMetadata(TArray<FTrackMetadata>& OutTrackMetadata, EStreamType StreamType) const override;
 	//virtual void GetSelectedTrackMetadata(TOptional<FTrackMetadata>& OutSelectedTrackMetadata, EStreamType StreamType) const override;
 	virtual void GetSelectedTrackAttributes(FStreamSelectionAttributes& OutAttributes, EStreamType StreamType) const override;
@@ -712,6 +794,8 @@ public:
 
 #if PLATFORM_ANDROID
 	virtual void Android_UpdateSurface(const TSharedPtr<IOptionPointerValueContainer>& Surface) override;
+	virtual void Android_SuspendOrResumeDecoder(bool bSuspend) override;
+	static FParamDict& Android_Workarounds(FStreamCodecInformation::ECodec InForCodec);
 #endif
 
 	void DebugPrint(void* pPlayer, void (*debugDrawPrintf)(void* pPlayer, const char *pFmt, ...));
@@ -729,14 +813,18 @@ private:
 	virtual TSharedPtrTS<IAdaptiveStreamSelector> GetStreamSelector() override;
 	virtual void GetStreamBufferStats(FAccessUnitBufferInfo& OutBufferStats, EStreamType ForStream) override;
 	virtual IPlayerStreamFilter* GetStreamFilter() override;
+	virtual const FCodecSelectionPriorities& GetCodecSelectionPriorities(EStreamType ForStream) override;
 	virtual	TSharedPtrTS<IPlaylistReader> GetManifestReader() override;
 	virtual TSharedPtrTS<IPlayerEntityCache> GetEntityCache() override;
+	virtual TSharedPtrTS<IHTTPResponseCache> GetHTTPResponseCache() override;
+
 	virtual IAdaptiveStreamingPlayerAEMSHandler* GetAEMSEventHandler() override;
 	virtual FParamDict& GetOptions() override;
 	virtual TSharedPtrTS<FDRMManager> GetDRMManager() override;
 
 	// Methods from IPlayerStreamFilter
 	virtual bool CanDecodeStream(const FStreamCodecInformation& InStreamCodecInfo) const override;
+	virtual bool CanDecodeSubtitle(const FString& MimeType, const FString& Codec) const override;
 
 
 	enum class EPlayerState
@@ -853,12 +941,7 @@ private:
 	};
 
 	struct FVideoDecoder : public IAccessUnitBufferListener, public IDecoderOutputBufferListener
-		{
-		FVideoDecoder()
-			: Parent(nullptr)
-			, Decoder(nullptr)
-		{
-		}
+	{
 		void Close()
 		{
 			if (Decoder)
@@ -868,12 +951,39 @@ private:
 			}
 			delete Decoder;
 			Decoder = nullptr;
+			LastSentAUCodecData.Reset();
 		}
 		void Flush()
 		{
 			if (Decoder)
 			{
 				Decoder->AUdataFlushEverything();
+			}
+		}
+		void ClearEOD()
+		{
+			if (Decoder)
+			{
+				Decoder->AUdataClearEOD();
+			}
+		}
+		void SuspendOrResume(bool bInSuspend)
+		{
+			if (Decoder && ((bInSuspend && !bSuspended) || (!bInSuspend && bSuspended)))
+			{
+#if PLATFORM_ANDROID
+				Decoder->Android_SuspendOrResumeDecoder(bInSuspend);
+#endif
+			}
+			bSuspended = bInSuspend;
+		}
+		void CheckIfNewDecoderMustBeSuspendedImmediately()
+		{
+			if (Decoder && bSuspended)
+			{
+#if PLATFORM_ANDROID
+				Decoder->Android_SuspendOrResumeDecoder(bSuspended);
+#endif
 			}
 		}
 		virtual void DecoderInputNeeded(const IAccessUnitBufferListener::FBufferStats& currentInputBufferStats)
@@ -892,17 +1002,18 @@ private:
 			}
 		}
 
-		FAdaptiveStreamingPlayer*		Parent;
-		IVideoDecoderH264*				Decoder;
-		};
+		FStreamCodecInformation CurrentCodecInfo;
+		TSharedPtrTS<FAccessUnit::CodecData> LastSentAUCodecData;
+		FAdaptiveStreamingPlayer* Parent = nullptr;
+		IVideoDecoderBase* Decoder = nullptr;
+		bool bDrainingForCodecChange = false;
+		bool bDrainingForCodecChangeDone = false;
+		bool bApplyNewLimits = false;
+		bool bSuspended = false;
+	};
 
 	struct FAudioDecoder : public IAccessUnitBufferListener, public IDecoderOutputBufferListener
-		{
-		FAudioDecoder()
-			: Parent(nullptr)
-			, Decoder(nullptr)
-		{
-		}
+	{
 		void Close()
 		{
 			if (Decoder)
@@ -912,12 +1023,39 @@ private:
 			}
 			delete Decoder;
 			Decoder = nullptr;
+			LastSentAUCodecData.Reset();
 		}
 		void Flush()
 		{
 			if (Decoder)
 			{
 				Decoder->AUdataFlushEverything();
+			}
+		}
+		void ClearEOD()
+		{
+			if (Decoder)
+			{
+				Decoder->AUdataClearEOD();
+			}
+		}
+		void SuspendOrResume(bool bInSuspend)
+		{
+			if (Decoder && ((bInSuspend && !bSuspended) || (!bInSuspend && bSuspended)))
+			{
+#if PLATFORM_ANDROID
+				Decoder->Android_SuspendOrResumeDecoder(bInSuspend);
+#endif
+			}
+			bSuspended = bInSuspend;
+		}
+		void CheckIfNewDecoderMustBeSuspendedImmediately()
+		{
+			if (Decoder && bSuspended)
+			{
+#if PLATFORM_ANDROID
+				Decoder->Android_SuspendOrResumeDecoder(bSuspended);
+#endif
 			}
 		}
 		virtual void DecoderInputNeeded(const IAccessUnitBufferListener::FBufferStats& currentInputBufferStats)
@@ -936,17 +1074,85 @@ private:
 			}
 		}
 
-		FAdaptiveStreamingPlayer*		Parent;
-		IAudioDecoderAAC*				Decoder;
-		};
+		FStreamCodecInformation CurrentCodecInfo;
+		TSharedPtrTS<FAccessUnit::CodecData> LastSentAUCodecData;
+		FAdaptiveStreamingPlayer* Parent = nullptr;
+		IAudioDecoderAAC* Decoder = nullptr;
+		bool bSuspended = false;
+	};
 
+	struct FSubtitleDecoder
+	{
+		void Close()
+		{
+			if (Decoder)
+			{
+				Stop();
+				Decoder->Close();
+				Decoder->GetDecodedSubtitleReceiveDelegate().Unbind();
+				Decoder->GetDecodedSubtitleFlushDelegate().Unbind();
+				delete Decoder;
+				Decoder = nullptr;
+				bIsRunning = false;
+			}
+			LastSentAUCodecData.Reset();
+		}
+		void Flush()
+		{
+			if (Decoder)
+			{
+				Decoder->AUdataFlushEverything();
+			}
+		}
+		void ClearEOD()
+		{
+			if (Decoder)
+			{
+				Decoder->AUdataClearEOD();
+			}
+		}
+		
+		void Start()
+		{
+			if (Decoder)
+			{
+				if (!bIsRunning)
+				{
+					Decoder->Start();
+					bIsRunning = true;
+				}
+			}
+		}
+		
+		void Stop()
+		{
+			if (bIsRunning)
+			{
+				if (Decoder)
+				{
+					Decoder->Stop();
+				}
+				bIsRunning = false;
+			}
+		}
 
-	class FWorkerThread
+		FStreamCodecInformation CurrentCodecInfo;
+		TSharedPtrTS<FAccessUnit::CodecData> LastSentAUCodecData;
+		ISubtitleDecoder* Decoder = nullptr;
+		bool bIsRunning = false;
+		bool bRequireCodecChange = false;
+	};
+
+	class FWorkerThreadMessages
 	{
 	public:
-		FWorkerThread()
-			: bStarted(false)
+		~FWorkerThreadMessages()
 		{
+			check(WorkMessages.IsEmpty());
+		}
+		void SetSharedWorkerThread(TSharedPtrTS<FAdaptiveStreamingPlayerWorkerThread> InSharedWorkerThread)
+		{
+			SharedWorkerThread = InSharedWorkerThread;
 		}
 
 		struct FMessage
@@ -955,10 +1161,8 @@ private:
 			{
 				// Commands
 				LoadManifest,
-				Quit,
 				Pause,
 				Resume,
-				Seek,
 				Loop,
 				Close,
 				ChangeBitrate,
@@ -1001,10 +1205,6 @@ private:
 					}
 					FMediaEvent*									Event;
 				};
-				struct FStartPlay
-				{
-					FSeekParam										Position;
-				};
 				struct FLoop
 				{
 					FLoop()
@@ -1043,7 +1243,6 @@ private:
 				FLoadManifest				ManifestToLoad;
 				FStreamReader				StreamReader;
 				FEvent						MediaEvent;
-				FStartPlay					StartPlay;
 				FLoop						Looping;
 				FBitrate					Bitrate;
 				FSession					Session;
@@ -1055,25 +1254,25 @@ private:
 			FData   				Data;
 		};
 
-		void SendMessage(FMessage::EType type)
+		void Enqueue(FMessage::EType type)
 		{
 			FMessage Msg;
 			Msg.Type = type;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
-		void SendMessage(FMessage::EType type, TSharedPtrTS<IStreamSegment> pRequest)
+		void Enqueue(FMessage::EType type, TSharedPtrTS<IStreamSegment> pRequest)
 		{
 			FMessage Msg;
 			Msg.Type = type;
 			Msg.Data.StreamReader.Request = pRequest;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
-		void SendMessage(FMessage::EType type, FMediaEvent* pEventSignal)
+		void Enqueue(FMessage::EType type, FMediaEvent* pEventSignal)
 		{
 			FMessage Msg;
 			Msg.Type = type;
 			Msg.Data.MediaEvent.Event = pEventSignal;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendLoadManifestMessage(const FString& URL, const FString& MimeType)
 		{
@@ -1081,54 +1280,47 @@ private:
 			Msg.Type = FMessage::EType::LoadManifest;
 			Msg.Data.ManifestToLoad.URL = URL;
 			Msg.Data.ManifestToLoad.MimeType = MimeType;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendPauseMessage()
 		{
 			FMessage Msg;
 			Msg.Type = FMessage::EType::Pause;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendResumeMessage()
 		{
 			FMessage Msg;
 			Msg.Type = FMessage::EType::Resume;
-			WorkMessages.SendMessage(Msg);
-		}
-		void SendSeekMessage(const FSeekParam& NewPosition)
-		{
-			FMessage Msg;
-			Msg.Type = FMessage::EType::Seek;
-			Msg.Data.StartPlay.Position = NewPosition;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendLoopMessage(const FLoopParam& InLoopParams)
 		{
 			FMessage Msg;
 			Msg.Type = FMessage::EType::Loop;
 			Msg.Data.Looping.Loop = InLoopParams;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendCloseMessage(FMediaEvent* pEventSignal)
 		{
 			FMessage Msg;
 			Msg.Type = FMessage::EType::Close;
 			Msg.Data.MediaEvent.Event = pEventSignal;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendBitrateMessage(EStreamType type, int32 value, int32 which)
 		{
 			FMessage Msg;
 			Msg.Type = FMessage::EType::ChangeBitrate;
 			Msg.Data.Bitrate.Value = value;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendPlayerSessionMessage(const TSharedPtrTS<IPlayerMessage>& message)
 		{
 			FMessage Msg;
 			Msg.Type = FMessage::EType::PlayerSession;
 			Msg.Data.Session.PlayerMessage = message;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendResolutionMessage(int32 Width, int32 Height)
 		{
@@ -1136,7 +1328,7 @@ private:
 			Msg.Type = FMessage::EType::LimitResolution;
 			Msg.Data.Resolution.Width = Width;
 			Msg.Data.Resolution.Height = Height;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendInitialStreamAttributeMessage(EStreamType StreamType, const FStreamSelectionAttributes& InitialSelection)
 		{
@@ -1144,7 +1336,7 @@ private:
 			Msg.Type = FMessage::EType::InitialStreamAttributes;
 			Msg.Data.InitialStreamAttribute.StreamType = StreamType;
 			Msg.Data.InitialStreamAttribute.InitialSelection = InitialSelection;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendTrackSelectByMetadataMessage(EStreamType StreamType, const FTrackMetadata& TrackMetadata)
 		{
@@ -1152,7 +1344,7 @@ private:
 			Msg.Type = FMessage::EType::SelectTrackByMetadata;
 			Msg.Data.TrackSelection.StreamType = StreamType;
 			Msg.Data.TrackSelection.TrackMetadata = TrackMetadata;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendTrackSelectByAttributeMessage(EStreamType StreamType, const FStreamSelectionAttributes& TrackAttributes)
 		{
@@ -1160,28 +1352,50 @@ private:
 			Msg.Type = FMessage::EType::SelectTrackByAttributes;
 			Msg.Data.TrackSelection.StreamType = StreamType;
 			Msg.Data.TrackSelection.TrackAttributes = TrackAttributes;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 		void SendTrackDeselectMessage(EStreamType StreamType)
 		{
 			FMessage Msg;
 			Msg.Type = FMessage::EType::DeselectTrack;
 			Msg.Data.TrackSelection.StreamType = StreamType;
-			WorkMessages.SendMessage(Msg);
+			TriggerSharedWorkerThread(MoveTemp(Msg));
 		}
 
-		FMediaThread									MediaThread;
-		TMediaMessageQueueDynamicWithTimeout<FMessage>	WorkMessages;
-		bool											bStarted;
+		void TriggerSharedWorkerThread(FMessage Mesg)
+		{
+			WorkMessages.Enqueue(MoveTemp(Mesg));
+			if (SharedWorkerThread.IsValid())
+			{
+				SharedWorkerThread->TriggerWork();
+			}
+		}
+
+		void TriggerSharedWorkerThread()
+		{
+			if (SharedWorkerThread.IsValid())
+			{
+				SharedWorkerThread->TriggerWork();
+			}
+		}
+
+		TSharedPtrTS<FAdaptiveStreamingPlayerWorkerThread>	SharedWorkerThread;
+		TQueue<FMessage, EQueueMode::Spsc>					WorkMessages;
 	};
 
 	struct FPendingStartRequest
 	{
+		enum class EStartType
+		{
+			PlayStart,
+			LoopPoint,
+			Seeking,
+		};
 		FPlayStartPosition										StartAt;
-		IManifest::ESearchType									SearchType;
+		TOptional<int32>										StartingBitrate;
+		IManifest::ESearchType									SearchType = IManifest::ESearchType::Closest;
 		FTimeValue												RetryAtTime;
-		bool													bIsPlayStart = false;
-		bool													bForLooping = false;
+		EStartType												StartType = EStartType::PlayStart;
 		TMultiMap<EStreamType, TSharedPtrTS<IStreamSegment>>	FinishedRequests;
 	};
 
@@ -1249,6 +1463,27 @@ private:
 		FStallMonitor										DecoderOutputStalledMonitor;
 	};
 
+	struct FLiveSyncVars
+	{
+		FLiveSyncVars()
+		{
+			Clear();
+		}
+		void Clear()
+		{
+			bSyncLiveToNow = false;
+			StartTime.SetToInvalid();
+			DroppedDurationVid.SetToZero();
+			DroppedDurationAud.SetToZero();
+			LastDropRatio = 0.0;
+		}
+		bool bSyncLiveToNow;
+		FTimeValue StartTime;
+		FTimeValue DroppedDurationVid;
+		FTimeValue DroppedDurationAud;
+		double LastDropRatio;
+	};
+
 	struct FPrerollVars
 	{
 		FPrerollVars()
@@ -1258,16 +1493,18 @@ private:
 		}
 		void Clear()
 		{
-			StartTime  	  = -1;
+			StartTime = -1;
 			bHaveEnoughVideo = false;
 			bHaveEnoughAudio = false;
 			bHaveEnoughText  = false;
+			bIsMidSequencePreroll = false;
 		}
-		int64					StartTime;
-		bool					bHaveEnoughVideo;
-		bool					bHaveEnoughAudio;
-		bool					bHaveEnoughText;
-		bool					bIsVeryFirstStart;
+		int64		StartTime;
+		bool		bHaveEnoughVideo;
+		bool		bHaveEnoughAudio;
+		bool		bHaveEnoughText;
+		bool		bIsVeryFirstStart;
+		bool		bIsMidSequencePreroll;
 	};
 
 	struct FPostrollVars
@@ -1302,6 +1539,47 @@ private:
 		FRenderState		Audio;
 	};
 
+	struct FSeekVars
+	{
+		void ClearWorkVars()
+		{
+			bForScrubbing = false;
+			bScrubPrerollDone = false;
+		}
+
+		void Reset()
+		{
+			FScopeLock lock(&Lock);
+			PendingRequest.Reset();
+			ActiveRequest.Reset();
+			LastFinishedRequest.Reset();
+			bForScrubbing = false;
+			bScrubPrerollDone = false;
+		}
+
+		void SetFinished()
+		{
+			LastFinishedRequest = ActiveRequest;
+			ActiveRequest.Reset();
+		}
+
+		void InvalidateLastFinished()
+		{
+			LastFinishedRequest.Reset();
+		}
+
+		bool	bForScrubbing = false;
+		bool	bScrubPrerollDone = false;
+		bool	bIsPlayStart = true;
+
+		TOptional<FSeekParam> ActiveRequest;
+		TOptional<FSeekParam> LastFinishedRequest;
+
+		FCriticalSection Lock;
+		// The pending request must be accessed under lock since it is written to by the main thread and read from the worker thread!
+		TOptional<FSeekParam> PendingRequest;
+	};
+
 	struct FStreamBitrateInfo
 	{
 		FStreamBitrateInfo()
@@ -1321,22 +1599,84 @@ private:
 	{
 		TSharedPtrTS<IStreamSegment>				Request;
 		FTimeValue									AtTime;
-		TSharedPtrTS<IManifest::IPlayPeriod>		Period;					//!< Set if transitioning between periods. This is the new period that needs to be readied.
-		bool										bStartOver = false;
+		TSharedPtrTS<IManifest::IPlayPeriod>		Period;							//!< Set if transitioning between periods. This is the new period that needs to be readied.
+		bool										bStartOver = false;				//!< True when switching tracks within an ongoing period
+		bool										bPlayPosAutoReselect = false;	//!< True when trying to re-select a stream at the start of a new period when it was not available before.
 		EStreamType									StreamType = EStreamType::Unsupported;
 		FPlayStartPosition							StartoverPosition;
 	};
 
-	struct FUpcomingPeriod
+	struct FPeriodInformation
 	{
 		TSharedPtrTS<ITimelineMediaAsset>		Period;
 		FString									ID;
 		FTimeRange								TimeRange;
+		int64									LoopCount = 0;
+
+		// Currently selected buffer source per stream type in this period.
+		TSharedPtrTS<FBufferSourceInfo>			BufferSourceInfoVid;
+		TSharedPtrTS<FBufferSourceInfo>			BufferSourceInfoAud;
+		TSharedPtrTS<FBufferSourceInfo>			BufferSourceInfoTxt;
 	};
 
 
+	struct FInternalStreamSelectionAttributes : public FStreamSelectionAttributes
+	{
+		bool IsDeselected() const
+		{ return !bIsSelected; }
+		void Select()
+		{ bIsSelected = true; }
+		void Deselect()
+		{ bIsSelected = false; }
+	private:
+		bool bIsSelected = true;
+	};
+
+
+
+	struct FStreamDataBuffers
+	{
+		TSharedPtrTS<FMultiTrackAccessUnitBuffer>	VidBuffer;
+		TSharedPtrTS<FMultiTrackAccessUnitBuffer>	AudBuffer;
+		TSharedPtrTS<FMultiTrackAccessUnitBuffer>	TxtBuffer;
+		TSharedPtrTS<FMultiTrackAccessUnitBuffer> GetBuffer(EStreamType InStreamType)
+		{
+			switch(InStreamType)
+			{
+				case EStreamType::Video: return VidBuffer;
+				case EStreamType::Audio: return AudBuffer;
+				case EStreamType::Subtitle: return TxtBuffer;
+				default: return TSharedPtrTS<FMultiTrackAccessUnitBuffer>();
+			}
+		}
+	};
+
+
+	struct FInternalLoopState : public FLoopState
+	{
+		FTimeValue From;
+		FTimeValue To;
+	};
+
+
+	struct FMetadataHandlingState
+	{
+		FMetadataHandlingState()
+		{
+			Reset();
+		}
+		void Reset()
+		{
+			LastSentPeriodID.Empty();
+			LastHandlingTime.SetToInvalid();
+		}
+		FString LastSentPeriodID;
+		FTimeValue LastHandlingTime;
+	};
+
 	void InternalLoadManifest(const FString& URL, const FString& MimeType);
 	void InternalCancelLoadManifest();
+	void InternalCloseManifestReader();
 	bool SelectManifest();
 	void UpdateManifest();
 	void OnManifestGetMimeTypeComplete(TSharedPtrTS<FHTTPResourceRequest> InRequest);
@@ -1347,20 +1687,23 @@ private:
 	void AudioDecoderInputNeeded(const IAccessUnitBufferListener::FBufferStats& currentInputBufferStats);
 	void AudioDecoderOutputReady(const IDecoderOutputBufferListener::FDecodeReadyStats& currentReadyStats);
 
+	void OnDecodedSubtitleReceived(ISubtitleDecoderOutputPtr Subtitle);
+	void OnFlushSubtitleReceivers();
 
-
-	void WorkerThreadFN();
 	void StartWorkerThread();
 	void StopWorkerThread();
 
 	int32 CreateRenderers();
 	void DestroyRenderers();
 
-	int32 CreateInitialDecoder(EStreamType type);
+	int32 CreateDecoder(EStreamType type);
 	void DestroyDecoders();
-	bool FindMatchingStreamInfo(FStreamCodecInformation& OutStreamInfo, int32 MaxWidth, int32 MaxHeight);
+	bool FindMatchingStreamInfo(FStreamCodecInformation& OutStreamInfo, const FTimeValue& AtTime, int32 MaxWidth, int32 MaxHeight);
 	void UpdateStreamResolutionLimit();
 	void AddUpcomingPeriod(TSharedPtrTS<IManifest::IPlayPeriod> InUpcomingPeriod);
+	void UpdatePeriodStreamBufferSourceInfo(TSharedPtrTS<IManifest::IPlayPeriod> InForPeriod, EStreamType InStreamType, TSharedPtrTS<FBufferSourceInfo> InBufferSourceInfo);
+	TSharedPtrTS<FBufferSourceInfo> GetStreamBufferInfoAtTime(bool& bOutHavePeriods, bool& bOutFoundTime, EStreamType InStreamType, const FTimeValue& InAtTime) const;
+
 
 	// AU memory / generic stream reader memory
 	void* AUAllocate(IAccessUnitMemoryProvider::EDataType type, SIZE_T size, SIZE_T alignment) override;
@@ -1372,19 +1715,27 @@ private:
 	void OnFragmentReachedEOS(EStreamType InStreamType, TSharedPtr<const FBufferSourceInfo, ESPMode::ThreadSafe> InStreamSourceInfo) override;
 	void OnFragmentClose(TSharedPtrTS<IStreamSegment> pRequest) override;
 
+	void InternalHandleOnce();
+	bool InternalHandleThreadMessages();
+	void InternalHandleManifestReader();
 	void InternalHandlePendingStartRequest(const FTimeValue& CurrentTime);
 	void InternalHandlePendingFirstSegmentRequest(const FTimeValue& CurrentTime);
 	void InternalHandleCompletedSegmentRequests(const FTimeValue& CurrentTime);
 	void InternalHandleSegmentTrackChanges(const FTimeValue& CurrentTime);
+	void InternalStartoverAtCurrentPosition();
+	void InternalHandleLiveSync();
 
 	void UpdateDiagnostics();
 	void HandleNewBufferedData();
 	void HandleNewOutputData();
 	void HandleSessionMessage(TSharedPtrTS<IPlayerMessage> SessionMessage);
 	void HandlePlayStateChanges();
+	void HandleSeeking();
 	void HandlePendingMediaSegmentRequests();
+	void CancelPendingMediaSegmentRequests(EStreamType StreamType);
 	void HandleDeselectedBuffers();
 	void HandleDecoderChanges();
+	void HandleSubtitleDecoder();
 	void HandleMetadataChanges();
 	void HandleAEMSEvents();
 
@@ -1392,9 +1743,49 @@ private:
 
 	void CheckForErrors();
 
-	void FeedDecoder(EStreamType Type, FMultiTrackAccessUnitBuffer& FromMultistreamBuffer, IAccessUnitBufferInterface* Decoder);
+	double GetMinBufferTimeBeforePlayback();
+	bool HaveEnoughBufferedDataToStartPlayback();
 
-	bool InternalStartAt(const FSeekParam& NewPosition);
+	FTimeValue ClampTimeToCurrentRange(const FTimeValue& InTime, bool bClampToStart, bool bClampToEnd);
+
+	TSharedPtrTS<FMultiTrackAccessUnitBuffer> GetStreamBuffer(EStreamType InStreamType, const TSharedPtrTS<FStreamDataBuffers>& InFromStreamBuffers)
+	{
+		if (InFromStreamBuffers.IsValid())
+		{
+			if (InStreamType == EStreamType::Video)
+			{
+				return InFromStreamBuffers->VidBuffer;
+			}
+			else if (InStreamType == EStreamType::Audio)
+			{
+				return InFromStreamBuffers->AudBuffer;
+			}
+			else if (InStreamType == EStreamType::Subtitle)
+			{
+				return InFromStreamBuffers->TxtBuffer;
+			}
+		}
+		return TSharedPtrTS<FMultiTrackAccessUnitBuffer>();
+	}
+
+	TSharedPtrTS<FMultiTrackAccessUnitBuffer> GetCurrentOutputStreamBuffer(EStreamType InStreamType)
+	{
+		return GetStreamBuffer(InStreamType, ActiveDataOutputBuffers);
+	}
+
+	TSharedPtrTS<FMultiTrackAccessUnitBuffer> GetCurrentReceiveStreamBuffer(EStreamType InStreamType)
+	{
+		return GetStreamBuffer(InStreamType, CurrentDataReceiveBuffers);
+	}
+
+	bool IsSeamlessBufferSwitchPossible(EStreamType InStreamType, const TSharedPtrTS<FStreamDataBuffers>& InFromStreamBuffers);
+
+	void GetStreamBufferUtilization(FAccessUnitBufferInfo& OutInfo, EStreamType BufferType);
+
+	void FeedDecoder(EStreamType Type, IAccessUnitBufferInterface* Decoder, bool bHandleUnderrun);
+	void ClearAllDecoderEODs();
+
+	void InternalStartAt(const FSeekParam& NewPosition);
 	void InternalPause();
 	void InternalResume();
 	void InternalRebuffer();
@@ -1402,9 +1793,9 @@ private:
 	void InternalClose();
 	void InternalSetLoop(const FLoopParam& LoopParam);
 	void InternalSetPlaybackEnded();
+	void InternalDeselectStream(EStreamType StreamType);
 
 	void DispatchEvent(TSharedPtrTS<FMetricEvent> Event);
-	void DispatchEventAndWait(TSharedPtrTS<FMetricEvent> Event);
 	void DispatchBufferingEvent(bool bBegin, EPlayerState Reason);
 	void DispatchSegmentDownloadedEvent(TSharedPtrTS<IStreamSegment> Request);
 	void DispatchBufferUtilizationEvent(EStreamType BufferType);
@@ -1425,8 +1816,9 @@ private:
 	TWeakPtr<IAdaptiveStreamingPlayerResourceProvider, ESPMode::ThreadSafe> StaticResourceProvider;
 	TWeakPtr<IVideoDecoderResourceDelegate, ESPMode::ThreadSafe>		VideoDecoderResourceDelegate;
 
-	FWorkerThread															WorkerThread;
-	TSharedPtr<FAdaptiveStreamingPlayerEventHandler, ESPMode::ThreadSafe>	EventDispatcher;
+	TSharedPtrTS<FAdaptiveStreamingPlayerEventHandler>					EventDispatcher;
+	TSharedPtrTS<FAdaptiveStreamingPlayerWorkerThread>					SharedWorkerThread;
+	FWorkerThreadMessages												WorkerThread;
 
 	FParamDict															PlayerOptions;
 	FPlaybackState														PlaybackState;
@@ -1437,6 +1829,7 @@ private:
 
 	TSharedPtrTS<IElectraHttpManager>									HttpManager;
 	TSharedPtrTS<IPlayerEntityCache>									EntityCache;
+	TSharedPtrTS<IHTTPResponseCache>									HttpResponseCache;
 
 	TSharedPtrTS<FDRMManager>											DrmManager;
 
@@ -1453,10 +1846,13 @@ private:
 	TMediaOptionalValue<bool> 											bHaveAudioReader;
 	TMediaOptionalValue<bool> 											bHaveTextReader;
 
-
-	FMultiTrackAccessUnitBuffer											MultiStreamBufferVid;
-	FMultiTrackAccessUnitBuffer											MultiStreamBufferAud;
-	FMultiTrackAccessUnitBuffer											MultiStreamBufferTxt;
+	FCriticalSection													DataBuffersCriticalSection;
+	TArray<TSharedPtrTS<FStreamDataBuffers>>							NextDataBuffers;
+	TSharedPtrTS<FStreamDataBuffers>									CurrentDataReceiveBuffers;
+	TSharedPtrTS<FStreamDataBuffers>									ActiveDataOutputBuffers;
+	bool																bIsVideoDeselected;
+	bool																bIsAudioDeselected;
+	bool																bIsTextDeselected;
 
 	Metrics::FDataAvailabilityChange									DataAvailabilityStateVid;
 	Metrics::FDataAvailabilityChange									DataAvailabilityStateAud;
@@ -1466,27 +1862,34 @@ private:
 	FStreamSelectionAttributes											StreamSelectionAttributesAud;
 	FStreamSelectionAttributes											StreamSelectionAttributesTxt;
 
-	FStreamSelectionAttributes											SelectedStreamAttributesVid;
-	FStreamSelectionAttributes											SelectedStreamAttributesAud;
-	FStreamSelectionAttributes											SelectedStreamAttributesTxt;
+	FInternalStreamSelectionAttributes									SelectedStreamAttributesVid;
+	FInternalStreamSelectionAttributes									SelectedStreamAttributesAud;
+	FInternalStreamSelectionAttributes									SelectedStreamAttributesTxt;
 
 	TSharedPtrTS<FStreamSelectionAttributes>							PendingTrackSelectionVid;
 	TSharedPtrTS<FStreamSelectionAttributes>							PendingTrackSelectionAud;
 	TSharedPtrTS<FStreamSelectionAttributes>							PendingTrackSelectionTxt;
+
+	TArray<FString>														ExcludedVideoDecoderPrefixes;
+	TArray<FString>														ExcludedAudioDecoderPrefixes;
+	TArray<FString>														ExcludedSubtitleDecoderPrefixes;
+	FCodecSelectionPriorities											CodecPrioritiesVideo;
+	FCodecSelectionPriorities											CodecPrioritiesAudio;
+	FCodecSelectionPriorities											CodecPrioritiesSubtitles;
 
 	EPlayerState														CurrentState;
 	EPipelineState														PipelineState;
 	EDecoderState														DecoderState;
 	EStreamState														StreamState;
 
+	FLiveSyncVars														LiveSyncVars;
 	FPrerollVars														PrerollVars;
 	FPostrollVars														PostrollVars;
+	FSeekVars															SeekVars;
 	EPlayerState														LastBufferingState;
-	FSeekParam															StartAtTime;
 	double																PlaybackRate;
 	FTimeValue															RebufferDetectedAtPlayPos;
 	bool																bRebufferPending;
-	bool																bIsPlayStart;
 	bool																bIsClosing;
 
 	TSharedPtrTS<IAdaptiveStreamSelector>								StreamSelector;
@@ -1498,13 +1901,15 @@ private:
 
 	bool																bShouldBePaused;
 	bool																bShouldBePlaying;
-	bool																bSeekPending;
 
-	FPlayerLoopState													CurrentLoopState;
+	FInternalLoopState													CurrentLoopState;
 	FLoopParam															CurrentLoopParam;
-	TMediaQueueDynamicNoLock<FPlayerLoopState>							NextLoopStates;
+	TQueue<FInternalLoopState>											NextLoopStates;
 
-	TArray<FUpcomingPeriod>												UpcomingPeriods;
+	mutable FCriticalSection											ActivePeriodCriticalSection;
+	TArray<FPeriodInformation>											ActivePeriods;
+	TArray<FPeriodInformation>											UpcomingPeriods;
+	FMetadataHandlingState												MetadataHandlingState;
 	TSharedPtrTS<IManifest::IPlayPeriod>								InitialPlayPeriod;
 	TSharedPtrTS<IManifest::IPlayPeriod>								CurrentPlayPeriodVideo;
 	TSharedPtrTS<IManifest::IPlayPeriod>								CurrentPlayPeriodAudio;
@@ -1512,8 +1917,12 @@ private:
 	TSharedPtrTS<FPendingStartRequest>									PendingStartRequest;
 	TSharedPtrTS<IStreamSegment>										PendingFirstSegmentRequest;
 	TQueue<FPendingSegmentRequest>										NextPendingSegmentRequests;
+	TArray<FPendingSegmentRequest>										PlayPosPendingSegmentRequests;
+	TQueue<TSharedPtrTS<IStreamSegment>>								ReadyWaitingSegmentRequests;
 	TMultiMap<EStreamType, TSharedPtrTS<IStreamSegment>>				CompletedSegmentRequests;
 	bool																bFirstSegmentRequestIsForLooping;
+
+	FPlayerSequenceState												CurrentPlaybackSequenceState;
 
 	uint32																CurrentPlaybackSequenceID[4]; // 0=video, 1=audio, 2=subtitiles, 3=UNSUPPORTED
 
@@ -1521,6 +1930,10 @@ private:
 	FAudioRenderer														AudioRender;
 	FVideoDecoder														VideoDecoder;
 	FAudioDecoder														AudioDecoder;
+	FSubtitleDecoder													SubtitleDecoder;
+	FCriticalSection													SubtitleReceiversCriticalSection;
+	TArray<TWeakPtrTS<IAdaptiveStreamingPlayerSubtitleReceiver>>		SubtitleReceivers;
+
 
 	FMediaCriticalSection												MetricListenerCriticalSection;
 	TArray<IAdaptiveStreamingPlayerMetrics*, TInlineAllocator<4>>		MetricListeners;

@@ -16,9 +16,8 @@
 			"Name": "OnlineSubsystemEOS",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
-				"Win32",
 				"Mac",
 				"Android"
 			]
@@ -27,9 +26,8 @@
 			"Name": "OnlineSubsystemEOSPlus",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
-				"Win32",
 				"Mac",
 				"Android"
 			]
@@ -50,6 +48,10 @@
 		},
 		{
 			"Name": "EOSVoiceChat",
+			"Enabled": true
+		},
+		{
+			"Name": "SocketSubsystemEOS",
 			"Enabled": true
 		}
 	]

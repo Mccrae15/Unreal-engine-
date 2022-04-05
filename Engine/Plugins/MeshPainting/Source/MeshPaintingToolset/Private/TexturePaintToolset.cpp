@@ -28,7 +28,7 @@ void UTexturePaintToolset::CopyTextureToRenderTargetTexture(UTexture* SourceText
 	check(RenderTargetResource != nullptr);
 	
 	// Create a canvas for the render target and clear it to black
-	FCanvas Canvas(RenderTargetResource, nullptr, 0, 0, 0, FeatureLevel);
+	FCanvas Canvas(RenderTargetResource, nullptr, FGameTime(), FeatureLevel);
 
 	const uint32 Width = RenderTargetTexture->GetSurfaceWidth();
 	const uint32 Height = RenderTargetTexture->GetSurfaceHeight();
@@ -46,7 +46,7 @@ void UTexturePaintToolset::CopyTextureToRenderTargetTexture(UTexture* SourceText
 	UTexture2D* Texture2D = Cast<UTexture2D>(SourceTexture);
 	if (Texture2D != nullptr)
 	{
-		TextureResource = Texture2D->Resource;
+		TextureResource = Texture2D->GetResource();
 	}
 	else
 	{
@@ -204,7 +204,7 @@ bool UTexturePaintToolset::GenerateSeamMask(UMeshComponent* MeshComponent, int32
 
 	{
 		// Create a canvas for the render target and clear it to white
-		FCanvas Canvas(RenderTargetResource, nullptr, 0, 0, 0, GEditor->GetEditorWorldContext().World()->FeatureLevel);
+		FCanvas Canvas(RenderTargetResource, nullptr, FGameTime(), GEditor->GetEditorWorldContext().World()->FeatureLevel);
 		Canvas.Clear(FLinearColor::White);
 
 		TArray<FCanvasUVTri> TriList;
@@ -224,7 +224,7 @@ bool UTexturePaintToolset::GenerateSeamMask(UMeshComponent* MeshComponent, int32
 			for (int32 TriVertexNum = 0; TriVertexNum < 3; ++TriVertexNum)
 			{
 				const int32 VertexIndex = Indices[TriIndex * 3 + TriVertexNum];
-				TriUVs[TriVertexNum] = LODModel.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, UVSet);
+				TriUVs[TriVertexNum] = FVector2D(LODModel.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIndex, UVSet));
 
 				// Update bounds
 				float U = TriUVs[TriVertexNum].X;
@@ -340,7 +340,7 @@ UTexture2D* UTexturePaintToolset::CreateTempUncompressedTexture(UTexture2D* Sour
 	UTexture2D* NewTexture2D = UTexture2D::CreateTransient(Width, Height, GetTempUncompressedTexturePixelFormat());
 
 	// Fill in the base mip for the texture we created
-	uint8* MipData = (uint8*)NewTexture2D->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+	uint8* MipData = (uint8*)NewTexture2D->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
 	for (int32 y = 0; y < Height; y++)
 	{
 		uint8* DestPtr = &MipData[(Height - 1 - y) * Width * sizeof(FColor)];
@@ -354,7 +354,7 @@ UTexture2D* UTexturePaintToolset::CreateTempUncompressedTexture(UTexture2D* Sour
 			SrcPtr++;
 		}
 	}
-	NewTexture2D->PlatformData->Mips[0].BulkData.Unlock();
+	NewTexture2D->GetPlatformData()->Mips[0].BulkData.Unlock();
 
 	// Set options
 	NewTexture2D->SRGB = bUseSRGB;
@@ -485,14 +485,17 @@ bool UTexturePaintToolset::DoesMeshComponentUseTexture(UMeshComponent* MeshCompo
 
 void UTexturePaintToolset::RetrieveTexturesForComponent(const UMeshComponent* Component, IMeshPaintComponentAdapter* Adapter, TArray<FPaintableTexture>& OutTextures)
 {
-	// Get the materials used by the mesh
-	TArray<UMaterialInterface*> UsedMaterials;
-	Component->GetUsedMaterials(UsedMaterials);
-
-	for (int32 MaterialIndex = 0; MaterialIndex < UsedMaterials.Num(); ++MaterialIndex)
+	if (Component && Adapter)
 	{
-		int32 OutDefaultIndex = 0;
-		Adapter->QueryPaintableTextures(MaterialIndex, OutDefaultIndex, OutTextures);
+		// Get the materials used by the mesh
+		TArray<UMaterialInterface*> UsedMaterials;
+		Component->GetUsedMaterials(UsedMaterials);
+
+		for (int32 MaterialIndex = 0; MaterialIndex < UsedMaterials.Num(); ++MaterialIndex)
+		{
+			int32 OutDefaultIndex = 0;
+			Adapter->QueryPaintableTextures(MaterialIndex, OutDefaultIndex, OutTextures);
+		}
 	}
 }
 

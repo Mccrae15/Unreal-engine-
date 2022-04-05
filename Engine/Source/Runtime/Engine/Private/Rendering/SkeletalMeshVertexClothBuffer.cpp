@@ -3,7 +3,6 @@
 #include "Rendering/SkeletalMeshVertexClothBuffer.h"
 #include "Rendering/SkeletalMeshVertexBuffer.h"
 #include "EngineUtils.h"
-#include "SkeletalMeshTypes.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
 
 /**
@@ -73,34 +72,34 @@ void FSkeletalMeshVertexClothBuffer::ClearMetaData()
 }
 
 template <bool bRenderThread>
-FVertexBufferRHIRef FSkeletalMeshVertexClothBuffer::CreateRHIBuffer_Internal()
+FBufferRHIRef FSkeletalMeshVertexClothBuffer::CreateRHIBuffer_Internal()
 {
 	if (NumVertices)
 	{
 		FResourceArrayInterface* ResourceArray = VertexData ? VertexData->GetResourceArray() : nullptr;
 		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
-		const uint32 BuffFlags = BUF_Static | BUF_ShaderResource;
-		FRHIResourceCreateInfo CreateInfo(ResourceArray);
+		const EBufferUsageFlags BufferFlags = BUF_Static | BUF_ShaderResource;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FSkeletalMeshVertexClothBuffer"), ResourceArray);
 		CreateInfo.bWithoutNativeResource = !VertexData;
 
 		if (bRenderThread)
 		{
-			return RHICreateVertexBuffer(SizeInBytes, BuffFlags, CreateInfo);
+			return RHICreateVertexBuffer(SizeInBytes, BufferFlags, CreateInfo);
 		}
 		else
 		{
-			return RHIAsyncCreateVertexBuffer(SizeInBytes, BuffFlags, CreateInfo);
+			return RHIAsyncCreateVertexBuffer(SizeInBytes, BufferFlags, CreateInfo);
 		}
 	}
 	return nullptr;
 }
 
-FVertexBufferRHIRef FSkeletalMeshVertexClothBuffer::CreateRHIBuffer_RenderThread()
+FBufferRHIRef FSkeletalMeshVertexClothBuffer::CreateRHIBuffer_RenderThread()
 {
 	return CreateRHIBuffer_Internal<true>();
 }
 
-FVertexBufferRHIRef FSkeletalMeshVertexClothBuffer::CreateRHIBuffer_Async()
+FBufferRHIRef FSkeletalMeshVertexClothBuffer::CreateRHIBuffer_Async()
 {
 	return CreateRHIBuffer_Internal<false>();
 }
@@ -139,7 +138,7 @@ void FSkeletalMeshVertexClothBuffer::ReleaseRHI()
 */
 FArchive& operator<<(FArchive& Ar, FSkeletalMeshVertexClothBuffer& VertexBuffer)
 {
-	FStripDataFlags StripFlags(Ar, 0, VER_UE4_STATIC_SKELETAL_MESH_SERIALIZATION_FIX);
+	FStripDataFlags StripFlags(Ar, 0, FPackageFileVersion::CreateUE4Version(VER_UE4_STATIC_SKELETAL_MESH_SERIALIZATION_FIX));
 
 	if (Ar.IsLoading())
 	{
@@ -174,7 +173,7 @@ void FSkeletalMeshVertexClothBuffer::SerializeMetaData(FArchive& Ar)
 * Initializes the buffer with the given vertices.
 * @param InVertices - The vertices to initialize the buffer with.
 */
-void FSkeletalMeshVertexClothBuffer::Init(const TArray<FMeshToMeshVertData>& InMappingData, const TArray<uint64>& InClothIndexMapping)
+void FSkeletalMeshVertexClothBuffer::Init(const TArray<FMeshToMeshVertData>& InMappingData, const TArray<FClothBufferIndexMapping>& InClothIndexMapping)
 {
 	// Allocate new data
 	AllocateData();

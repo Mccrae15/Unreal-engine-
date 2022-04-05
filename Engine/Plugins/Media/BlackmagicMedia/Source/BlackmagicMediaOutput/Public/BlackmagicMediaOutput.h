@@ -19,6 +19,28 @@ enum class EBlackmagicMediaOutputPixelFormat : uint8
 	PF_10BIT_YUV UMETA(DisplayName = "10bit YUV"),
 };
 
+UENUM()
+enum class EBlackmagicMediaOutputAudioSampleRate : uint32
+{
+	SR_48k = 48000 UMETA(DisplayName = "48 kHz")
+};
+
+UENUM()
+enum class EBlackmagicMediaAudioOutputChannelCount : uint8
+{
+	CH_2  =  2 UMETA(DisplayName = "2"),
+	CH_8  =  8 UMETA(DisplayName = "8"),
+	CH_16 = 16 UMETA(DisplayName = "16")
+};
+
+UENUM()
+enum class EBlackmagicMediaOutputAudioBitDepth : uint8
+{
+	Signed_16Bits = 16 UMETA(DisplayName = "16 bits signed"),
+	Signed_32Bits = 32 UMETA(DisplayName = "32 bits signed")
+};
+
+
 /**
  * Output information for a MediaCapture.
  * @note	'Frame Buffer Pixel Format' must be set to at least 8 bits of alpha to enabled the Key.
@@ -35,6 +57,22 @@ public:
 	FMediaIOOutputConfiguration OutputConfiguration;
 
 public:
+	/** Size of the buffer that holds rendered audio samples, a bigger buffer will produce an output of greater quality but will introduce more delay. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Output")
+	int32 AudioBufferSize = 5*1024;
+
+	/** Sample rate of the audio output. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Output")
+	EBlackmagicMediaOutputAudioSampleRate AudioSampleRate = EBlackmagicMediaOutputAudioSampleRate::SR_48k;
+
+	/** Number of audio channels to output. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Output")
+	EBlackmagicMediaAudioOutputChannelCount OutputChannelCount = EBlackmagicMediaAudioOutputChannelCount::CH_2; 
+	
+	/** Bit depth of each audio sample. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Output")
+	EBlackmagicMediaOutputAudioBitDepth AudioBitDepth = EBlackmagicMediaOutputAudioBitDepth::Signed_16Bits; 
+	
 	/** Whether to embed the Engine's timecode to the output frame. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Output")
 	EMediaIOTimecodeFormat TimecodeFormat;
@@ -46,6 +84,10 @@ public:
 	/** Invert Key Output */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Output")
 	bool bInvertKeyOutput;
+
+	/** Whether to capture and output audio from the engine. */
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Output")
+	bool bOutputAudio;
 
 	/**
 	 * Number of frame used to transfer from the system memory to the Blackmagic card.
@@ -62,6 +104,12 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Output")
 	bool bInterlacedFieldsTimecodeNeedToMatch;
+
+	/**
+	 * Whether to use multi threaded scheduling which should improve performance when outputting 4k and 8k content. (Experimental)
+	 */
+	UPROPERTY(BlueprintReadWrite, AdvancedDisplay, EditAnywhere, Category = "Output")
+	bool bUseMultithreadedScheduling = false;
 	
 	/** Try to maintain a the engine "Genlock" with the VSync signal. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Synchronization")

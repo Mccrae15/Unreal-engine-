@@ -17,6 +17,7 @@ class FSlateWindowElementList;
 struct FShaderParams;
 struct FSlateCachedElementData;
 struct FSlateCachedElementList;
+enum class ETextOverflowDirection : uint8;
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Add Elements Time"), STAT_SlateAddElements, STATGROUP_Slate, SLATECORE_API);
 
@@ -59,7 +60,7 @@ public:
 	int32 GetInstanceCount() const { return BatchKey.InstanceCount; }
 	uint32 GetInstanceOffset() const { return BatchKey.InstanceOffset; }
 	const ISlateUpdatableInstanceBuffer* GetInstanceData() const { return BatchKey.InstanceData; }
-	int32 GetSceneIndex() const { return BatchKey.SceneIndex; }
+	int8 GetSceneIndex() const { return BatchKey.SceneIndex; }
 private:
 	struct FBatchKey
 	{
@@ -73,9 +74,9 @@ private:
 		const int32 InstanceCount;
 		const uint32 InstanceOffset;
 		const ISlateUpdatableInstanceBuffer* InstanceData;
-		const int32 SceneIndex;
+		const int8 SceneIndex;
 
-		FBatchKey(const FShaderParams& InShaderParams, ESlateShader InShaderType, ESlateDrawPrimitive InDrawPrimitiveType, ESlateDrawEffect InDrawEffects, ESlateBatchDrawFlag InDrawFlags, const FClipStateHandle InClipStateHandle, int32 InInstanceCount, uint32 InInstanceOffset, ISlateUpdatableInstanceBuffer* InInstanceBuffer, int32 InSceneIndex)
+		FBatchKey(const FShaderParams& InShaderParams, ESlateShader InShaderType, ESlateDrawPrimitive InDrawPrimitiveType, ESlateDrawEffect InDrawEffects, ESlateBatchDrawFlag InDrawFlags, const FClipStateHandle InClipStateHandle, int32 InInstanceCount, uint32 InInstanceOffset, ISlateUpdatableInstanceBuffer* InInstanceBuffer, int8 InSceneIndex)
 			: ShaderParams(InShaderParams)
 			, DrawFlags(InDrawFlags)
 			, ShaderType(InShaderType)
@@ -283,7 +284,7 @@ private:
 	 * Creates vertices necessary to draw a Quad element 
 	 */
 	template<ESlateVertexRounding Rounding>
-	void AddQuadElement( const FSlateDrawElement& DrawElement );
+	void AddDebugQuadElement( const FSlateDrawElement& DrawElement);
 
 	/** 
 	 * Creates vertices necessary to draw a 3x3 element
@@ -350,6 +351,33 @@ private:
 
 	const FSlateClippingState* ResolveClippingState(const FSlateDrawElement& DrawElement) const;
 
+	struct FShapedTextBuildContext
+	{
+		const class FShapedGlyphSequence* ShapedGlyphSequence;
+		const class FShapedGlyphSequence* OverflowGlyphSequence;
+		const UObject* FontMaterial;
+		const UObject* OutlineFontMaterial;
+		const struct FFontOutlineSettings* OutlineSettings;
+		const FSlateDrawElement* DrawElement;
+		class FSlateFontCache* FontCache;
+		const FSlateRenderTransform* RenderTransform;
+		float TextBaseline;
+		float MaxHeight;
+		float StartLineX;
+		float StartLineY;
+		float LocalClipBoundingBoxLeft = 0;
+		float LocalClipBoundingBoxRight = 0;
+		int32 LayerId;
+		FColor FontTint;
+		ETextOverflowDirection OverflowDirection;
+		bool bEnableOutline : 1;
+		bool bEnableCulling : 1;
+		bool bForceEllipsis : 1;
+		
+	};
+
+	template<ESlateVertexRounding Rounding>
+	void BuildShapedTextSequence(const FShapedTextBuildContext& Context);
 private:
 	/** Uncached Batch data currently being filled in */
 	FSlateBatchData* BatchData;

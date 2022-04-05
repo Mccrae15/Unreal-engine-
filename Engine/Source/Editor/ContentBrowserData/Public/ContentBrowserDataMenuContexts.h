@@ -28,6 +28,13 @@ public:
 	UPROPERTY()
 	TArray<FName> SelectedPaths;
 
+	// At least one of the selected paths maps to a mounted content root
+	UPROPERTY()
+	bool bContainsValidPackagePath = false;
+
+	UPROPERTY()
+	bool bCanBeModified = true;
+
 	UPROPERTY()
 	EContentBrowserDataMenuContext_AddNewMenuDomain OwnerDomain = EContentBrowserDataMenuContext_AddNewMenuDomain::Toolbar;
 
@@ -40,7 +47,7 @@ class CONTENTBROWSERDATA_API UContentBrowserDataMenuContext_FolderMenu : public 
 	GENERATED_BODY()
 
 public:
-	UPROPERTY()
+	UPROPERTY(BlueprintReadOnly, Category=ContentBrowser)
 	TArray<FContentBrowserItem> SelectedItems;
 
 	UPROPERTY()

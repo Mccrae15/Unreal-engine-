@@ -34,15 +34,15 @@ public:
 	virtual bool SupportsChangeEnabled() const { return false; }
 	void SetIsEnabled(bool bInIsEnabled);
 
-	virtual bool SupportsHighlights() const { return false; }
-	virtual const TArray<FNiagaraScriptHighlight>& GetHighlights() const;
-
-	virtual bool SupportsIcon() const { return false; }
-	virtual const FSlateBrush* GetIconBrush() const;
-
 	virtual bool SupportsResetToBase() const { return false; }
 	virtual bool TestCanResetToBaseWithMessage(FText& OutCanResetToBaseMessage) const { return false; }
 	virtual void ResetToBase() { }
+
+	virtual bool SupportsEditMode() const { return false; }
+	virtual bool GetEditModeIsActive() const { return false; }
+	virtual void SetEditModeIsActive(bool bInEditModeIsActive) { }
+
+	virtual bool GetIsInherited() const { return false; }
 	
 protected:
 	virtual void RefreshChildrenInternal(const TArray<UNiagaraStackEntry*>& CurrentChildren, TArray<UNiagaraStackEntry*>& NewChildren, TArray<FStackIssue>& NewIssues) override;
@@ -67,7 +67,7 @@ protected:
 
 private:
 	UPROPERTY()
-	UNiagaraStackItemFooter* ItemFooter;
+	TObjectPtr<UNiagaraStackItemFooter> ItemFooter;
 };
 
 UCLASS()
@@ -89,6 +89,7 @@ public:
 	// Returns true if this stack entry was changed by a user and differs from the default value
 	virtual bool HasOverridenContent() const;
 
+	bool FilterHiddenChildren(const UNiagaraStackEntry& Child) const;
 protected:
 	FString GetOwnerStackItemEditorDataKey() const;
 
@@ -96,8 +97,6 @@ protected:
 
 private:
 	bool FilterAdvancedChildren(const UNiagaraStackEntry& Child) const;
-
-	bool FilterHiddenChildren(const UNiagaraStackEntry& Child) const;
 
 private:
 	FString OwningStackItemEditorDataKey;

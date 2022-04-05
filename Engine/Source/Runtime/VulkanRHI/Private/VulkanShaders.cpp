@@ -13,9 +13,9 @@
 
 TAutoConsoleVariable<int32> GDynamicGlobalUBs(
 	TEXT("r.Vulkan.DynamicGlobalUBs"),
-	1,
-	TEXT("2 to treat ALL uniform buffers as dynamic\n")\
-	TEXT("1 to treat global/packed uniform buffers as dynamic [default]\n")\
+	2,
+	TEXT("2 to treat ALL uniform buffers as dynamic [default]\n")\
+	TEXT("1 to treat global/packed uniform buffers as dynamic\n")\
 	TEXT("0 to treat them as regular"),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
@@ -26,7 +26,16 @@ static TAutoConsoleVariable<int32> GDescriptorSetLayoutMode(
 	0,
 	TEXT("0 to not change layouts (eg Set 0 = Vertex, 1 = Pixel, etc\n")\
 	TEXT("1 to use a new set for common Uniform Buffers\n")\
-	TEXT("2 to collapse all sets into Set 0\n"),
+	TEXT("2 to collapse all sets into Set 0"),
+	ECVF_ReadOnly | ECVF_RenderThreadSafe
+);
+
+static int32 GVulkanCompressSPIRV = 0;
+static FAutoConsoleVariableRef GVulkanCompressSPIRVCVar(
+	TEXT("r.Vulkan.CompressSPIRV"),
+	GVulkanCompressSPIRV,
+	TEXT("0 SPIRV source is stored in RAM as-is. (default)\n")
+	TEXT("1 SPIRV source is compressed on load and decompressed as when needed, this saves RAM but can introduce hitching when creating shaders."),
 	ECVF_ReadOnly | ECVF_RenderThreadSafe
 );
 
@@ -53,7 +62,13 @@ ShaderType* FVulkanShaderFactory::CreateShader(TArrayView<const uint8> Code, FVu
 			
 		FRWScopeLock ScopedLock(Lock, SLT_Write);
 		ShaderMap[ShaderType::StaticFrequency].Add(ShaderKey, RetShader);
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+		FShaderCodeReader ShaderCode(Code);
+		RetShader->ShaderName = ShaderCode.FindOptionalData(FShaderCodeName::Key);
+#endif
 	}
+
 	return RetShader;
 }
 
@@ -83,6 +98,65 @@ void FVulkanShaderFactory::OnDeleteShader(const FVulkanShader& Shader)
 	ShaderMap[Shader.Frequency].Remove(ShaderKey);
 }
 
+FArchive& operator<<(FArchive& Ar, FVulkanShader::FSpirvContainer& SpirvContainer)
+{
+	uint32 SpirvCodeSizeInBytes;
+	Ar << SpirvCodeSizeInBytes;
+	check(SpirvCodeSizeInBytes);
+	check(Ar.IsLoading());
+
+	TArray<uint8>& SpirvCode = SpirvContainer.SpirvCode;
+
+	if (!GVulkanCompressSPIRV)
+	{
+		SpirvCode.Reserve(SpirvCodeSizeInBytes);
+		SpirvCode.SetNumUninitialized(SpirvCodeSizeInBytes);
+		Ar.Serialize(SpirvCode.GetData(), SpirvCodeSizeInBytes);
+	}
+	else
+	{
+		const int32 CompressedUpperBound = FCompression::CompressMemoryBound(NAME_Zlib, SpirvCodeSizeInBytes);
+		SpirvCode.Reserve(CompressedUpperBound);
+		SpirvCode.SetNumUninitialized(CompressedUpperBound);
+
+		TArray<uint8> UncompressedSpirv;
+		UncompressedSpirv.SetNumUninitialized(SpirvCodeSizeInBytes);
+		Ar.Serialize(UncompressedSpirv.GetData(), SpirvCodeSizeInBytes);
+
+		int32 CompressedSizeBytes = CompressedUpperBound;
+		if (FCompression::CompressMemory(NAME_Zlib, SpirvCode.GetData(), CompressedSizeBytes, UncompressedSpirv.GetData(), UncompressedSpirv.GetTypeSize() * UncompressedSpirv.Num()))
+		{
+			SpirvContainer.UncompressedSizeBytes = SpirvCodeSizeInBytes;
+			SpirvCode.SetNumUninitialized(CompressedSizeBytes);
+		}
+		else
+		{
+			SpirvCode = MoveTemp(UncompressedSpirv);
+		}
+	}
+
+	return Ar;
+}
+
+FVulkanShader::FSpirvCode FVulkanShader::GetSpirvCode()
+{
+	if (SpirvContainer.IsCompressed())
+	{
+		TArray<uint32> UncompressedSpirv;
+		const size_t ElementSize = UncompressedSpirv.GetTypeSize();
+		UncompressedSpirv.Reserve(SpirvContainer.GetSizeBytes() / ElementSize);
+		UncompressedSpirv.SetNumUninitialized(SpirvContainer.GetSizeBytes() / ElementSize);
+		FCompression::UncompressMemory(NAME_Zlib, UncompressedSpirv.GetData(), SpirvContainer.GetSizeBytes(), SpirvContainer.SpirvCode.GetData(), SpirvContainer.SpirvCode.Num());
+
+		return FSpirvCode(MoveTemp(UncompressedSpirv));
+	}
+	else
+	{
+		return FSpirvCode(TArrayView<uint32>((uint32*)SpirvContainer.SpirvCode.GetData(), SpirvContainer.SpirvCode.Num() / sizeof(uint32)));
+	}
+}
+
+
 void FVulkanShader::Setup(TArrayView<const uint8> InShaderHeaderAndCode, uint64 InShaderKey)
 {
 	LLM_SCOPE_VULKAN(ELLMTagVulkan::VulkanShaders);
@@ -94,20 +168,12 @@ void FVulkanShader::Setup(TArrayView<const uint8> InShaderHeaderAndCode, uint64 
 
 	Ar << CodeHeader;
 
-	Ar << Spirv;
+	Ar << SpirvContainer;
 
-	checkf(Spirv.Num() != 0, TEXT("Empty SPIR-V! %s"), *CodeHeader.DebugName);
+	checkf(SpirvContainer.GetSizeBytes() != 0, TEXT("Empty SPIR-V! %s"), *CodeHeader.DebugName);
 
-	SpirvSize = Spirv.Num() * sizeof(uint32);
+	check(CodeHeader.UniformBufferSpirvInfos.Num() == CodeHeader.UniformBuffers.Num());
 
-	if (CodeHeader.bHasRealUBs)
-	{
-		check(CodeHeader.UniformBufferSpirvInfos.Num() == CodeHeader.UniformBuffers.Num());
-	}
-	else
-	{
-		checkSlow(CodeHeader.UniformBufferSpirvInfos.Num() == 0);
-	}
 	check(CodeHeader.GlobalSpirvInfos.Num() == CodeHeader.Globals.Num());
 
 	StaticSlots.Reserve(CodeHeader.UniformBuffers.Num());
@@ -132,8 +198,9 @@ void FVulkanShader::Setup(TArrayView<const uint8> InShaderHeaderAndCode, uint64 
 #endif
 }
 
-static VkShaderModule CreateShaderModule(FVulkanDevice* Device, const TArray<uint32>& Spirv)
+static VkShaderModule CreateShaderModule(FVulkanDevice* Device, FVulkanShader::FSpirvCode& SpirvCode)
 {
+	const TArrayView<uint32> Spirv = SpirvCode.GetCodeView();
 	VkShaderModule ShaderModule;
 	VkShaderModuleCreateInfo ModuleCreateInfo;
 	ZeroVulkanStruct(ModuleCreateInfo, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
@@ -160,8 +227,9 @@ static VkShaderModule CreateShaderModule(FVulkanDevice* Device, const TArray<uin
  *  Replace all subpassInput declarations with subpassInputMS
  *  Replace all subpassLoad(Input) with subpassLoad(Input, 0)
  */
-static void PatchSpirvInputAttachments(TArray<uint32>& InSpirv)
+FVulkanShader::FSpirvCode FVulkanShader::PatchSpirvInputAttachments(FVulkanShader::FSpirvCode& SpirvCode)
 {
+	TArrayView<uint32> InSpirv = SpirvCode.GetCodeView();
 	const uint32 kHeaderLength = 5;
 	const uint32 kOpTypeImage = 25;
 	const uint32 kDimSubpassData = 6;
@@ -174,7 +242,7 @@ static void PatchSpirvInputAttachments(TArray<uint32>& InSpirv)
 	// Make sure we at least have a header
 	if (Len < kHeaderLength)
 	{
-		return;
+		return SpirvCode;
 	}
 
 	TArray<uint32> OutSpirv;
@@ -231,8 +299,7 @@ static void PatchSpirvInputAttachments(TArray<uint32>& InSpirv)
 		}
 		Pos += InstLen;
 	}
-
-	Swap(InSpirv, OutSpirv);
+	return FVulkanShader::FSpirvCode(MoveTemp(OutSpirv));
 }
 
 bool FVulkanShader::NeedsSpirvInputAttachmentPatching(const FGfxPipelineDesc& Desc) const
@@ -242,10 +309,12 @@ bool FVulkanShader::NeedsSpirvInputAttachmentPatching(const FGfxPipelineDesc& De
 
 VkShaderModule FVulkanShader::CreateHandle(const FGfxPipelineDesc& Desc, const FVulkanLayout* Layout, uint32 LayoutHash)
 {
+	FSpirvCode Spirv = GetSpirvCode();
+
 	Layout->PatchSpirvBindings(Spirv, Frequency, CodeHeader, StageFlag);
 	if (NeedsSpirvInputAttachmentPatching(Desc))
 	{
-		PatchSpirvInputAttachments(Spirv);
+		Spirv = PatchSpirvInputAttachments(Spirv);
 	}
 
 	VkShaderModule Module = CreateShaderModule(Device, Spirv);
@@ -255,6 +324,8 @@ VkShaderModule FVulkanShader::CreateHandle(const FGfxPipelineDesc& Desc, const F
 
 VkShaderModule FVulkanShader::CreateHandle(const FVulkanLayout* Layout, uint32 LayoutHash)
 {
+	FSpirvCode Spirv = GetSpirvCode();
+
 	Layout->PatchSpirvBindings(Spirv, Frequency, CodeHeader, StageFlag);
 	VkShaderModule Module = CreateShaderModule(Device, Spirv);
 	ShaderModules.Add(LayoutHash, Module);
@@ -277,26 +348,24 @@ void FVulkanShader::PurgeShaderModules()
 	ShaderModules.Empty(0);
 }
 
-void FVulkanLayout::PatchSpirvBindings(TArray<uint32>& Spirv, EShaderFrequency Frequency, const FVulkanShaderHeader& CodeHeader, VkShaderStageFlagBits InStageFlag) const
+void FVulkanLayout::PatchSpirvBindings(FVulkanShader::FSpirvCode& SprivCode, EShaderFrequency Frequency, const FVulkanShaderHeader& CodeHeader, VkShaderStageFlagBits InStageFlag) const
 {
-	//#todo-rco: Do we need an actual copy of the SPIR-V?
+	TArrayView<uint32> Spirv = SprivCode.GetCodeView();	//#todo-rco: Do we need an actual copy of the SPIR-V?
 	ShaderStage::EStage Stage = ShaderStage::GetStageForFrequency(Frequency);
 	const FDescriptorSetRemappingInfo::FStageInfo& StageInfo = DescriptorSetLayout.RemappingInfo.StageInfos[Stage];
-	if (CodeHeader.bHasRealUBs)
+	
+	checkSlow(StageInfo.UniformBuffers.Num() == CodeHeader.UniformBufferSpirvInfos.Num());
+	for (int32 Index = 0; Index < CodeHeader.UniformBufferSpirvInfos.Num(); ++Index)
 	{
-		checkSlow(StageInfo.UniformBuffers.Num() == CodeHeader.UniformBufferSpirvInfos.Num());
-		for (int32 Index = 0; Index < CodeHeader.UniformBufferSpirvInfos.Num(); ++Index)
+		if (StageInfo.UniformBuffers[Index].bHasConstantData)
 		{
-			if (StageInfo.UniformBuffers[Index].bHasConstantData)
-			{
-				const uint32 OffsetDescriptorSet = CodeHeader.UniformBufferSpirvInfos[Index].DescriptorSetOffset;
-				const uint32 OffsetBindingIndex = CodeHeader.UniformBufferSpirvInfos[Index].BindingIndexOffset;
-				check(OffsetDescriptorSet != UINT32_MAX && OffsetBindingIndex != UINT32_MAX);
-				uint16 NewDescriptorSet = StageInfo.UniformBuffers[Index].Remapping.NewDescriptorSet;
-				Spirv[OffsetDescriptorSet] = NewDescriptorSet;
-				uint16 NewBindingIndex = StageInfo.UniformBuffers[Index].Remapping.NewBindingIndex;
-				Spirv[OffsetBindingIndex] = NewBindingIndex;
-			}
+			const uint32 OffsetDescriptorSet = CodeHeader.UniformBufferSpirvInfos[Index].DescriptorSetOffset;
+			const uint32 OffsetBindingIndex = CodeHeader.UniformBufferSpirvInfos[Index].BindingIndexOffset;
+			check(OffsetDescriptorSet != UINT32_MAX && OffsetBindingIndex != UINT32_MAX);
+			uint16 NewDescriptorSet = StageInfo.UniformBuffers[Index].Remapping.NewDescriptorSet;
+			Spirv[OffsetDescriptorSet] = NewDescriptorSet;
+			uint16 NewBindingIndex = StageInfo.UniformBuffers[Index].Remapping.NewBindingIndex;
+			Spirv[OffsetBindingIndex] = NewBindingIndex;
 		}
 	}
 
@@ -333,16 +402,6 @@ FPixelShaderRHIRef FVulkanDynamicRHI::RHICreatePixelShader(TArrayView<const uint
 	return Device->GetShaderFactory().CreateShader<FVulkanPixelShader>(Code, Device);
 }
 
-FHullShaderRHIRef FVulkanDynamicRHI::RHICreateHullShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{ 
-	return Device->GetShaderFactory().CreateShader<FVulkanHullShader>(Code, Device);
-}
-
-FDomainShaderRHIRef FVulkanDynamicRHI::RHICreateDomainShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{ 
-	return Device->GetShaderFactory().CreateShader<FVulkanDomainShader>(Code, Device);
-}
-
 FGeometryShaderRHIRef FVulkanDynamicRHI::RHICreateGeometryShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 { 
 	return Device->GetShaderFactory().CreateShader<FVulkanGeometryShader>(Code, Device);
@@ -353,6 +412,29 @@ FComputeShaderRHIRef FVulkanDynamicRHI::RHICreateComputeShader(TArrayView<const 
 	return Device->GetShaderFactory().CreateShader<FVulkanComputeShader>(Code, Device);
 }
 
+#if VULKAN_RHI_RAYTRACING
+FRayTracingShaderRHIRef FVulkanDynamicRHI::RHICreateRayTracingShader(TArrayView<const uint8> Code, const FSHAHash& Hash, EShaderFrequency ShaderFrequency)
+{
+	switch (ShaderFrequency)
+	{
+	case EShaderFrequency::SF_RayGen:
+		 return Device->GetShaderFactory().CreateShader<FVulkanRayGenShader>(Code, Device);
+
+	case EShaderFrequency::SF_RayMiss:
+		return Device->GetShaderFactory().CreateShader<FVulkanRayMissShader>(Code, Device);
+
+	case EShaderFrequency::SF_RayCallable:
+		return Device->GetShaderFactory().CreateShader<FVulkanRayCallableShader>(Code, Device);
+
+	case EShaderFrequency::SF_RayHitGroup:
+		return Device->GetShaderFactory().CreateShader<FVulkanRayHitGroupShader>(Code, Device);
+
+	default:
+		check(false);
+		return nullptr;
+	}
+}
+#endif // VULKAN_RHI_RAYTRACING
 
 FVulkanLayout::FVulkanLayout(FVulkanDevice* InDevice)
 	: VulkanRHI::FDeviceChild(InDevice)
@@ -404,6 +486,10 @@ bool FVulkanGfxLayout::UsesInputAttachment(FVulkanShaderHeader::EAttachmentType 
 uint32 FVulkanDescriptorSetWriter::SetupDescriptorWrites(
 	const TArray<VkDescriptorType>& Types, FVulkanHashableDescriptorInfo* InHashableDescriptorInfos,
 	VkWriteDescriptorSet* InWriteDescriptors, VkDescriptorImageInfo* InImageInfo, VkDescriptorBufferInfo* InBufferInfo, uint8* InBindingToDynamicOffsetMap,
+#if VULKAN_RHI_RAYTRACING
+	VkWriteDescriptorSetAccelerationStructureKHR* InAccelerationStructuresWriteDescriptors,
+	VkAccelerationStructureKHR* InAccelerationStructures,
+#endif // VULKAN_RHI_RAYTRACING
 	const FVulkanSamplerState& DefaultSampler, const FVulkanTextureView& DefaultImageView)
 {
 	HashableDescriptorInfos = InHashableDescriptorInfos;
@@ -457,6 +543,15 @@ uint32 FVulkanDescriptorSetWriter::SetupDescriptorWrites(
 		case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
 		case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
 			break;
+#if VULKAN_RHI_RAYTRACING
+		case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+			InAccelerationStructuresWriteDescriptors->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+			InAccelerationStructuresWriteDescriptors->pNext = nullptr;
+			InAccelerationStructuresWriteDescriptors->accelerationStructureCount = 1;
+			InAccelerationStructuresWriteDescriptors->pAccelerationStructures = InAccelerationStructures++;
+			InWriteDescriptors->pNext = InAccelerationStructuresWriteDescriptors++;
+			break;
+#endif // VULKAN_RHI_RAYTRACING
 		default:
 			checkf(0, TEXT("Unsupported descriptor type %d"), (int32)Types[Index]);
 			break;
@@ -485,7 +580,7 @@ void FVulkanDescriptorSetsLayoutInfo::ProcessBindingsForStage(VkShaderStageFlagB
 			{
 				//#todo-rco: Only process constant data part of the UB
 				Found = (UBInfo.ConstantDataOriginalBindingIndex == UINT16_MAX) ? nullptr : OutUBGatherInfo.UBLayoutsToUsedStageMap.Find(UBInfo.LayoutHash);
-				if (Found)
+				if (Found && *Found != StageFlags)
 				{
 					// Move from per stage to common UBs
 					VkShaderStageFlags PrevStage = (VkShaderStageFlags)0;
@@ -510,7 +605,7 @@ void FVulkanDescriptorSetsLayoutInfo::ProcessBindingsForStage(VkShaderStageFlagB
 }
 
 template<bool bIsCompute>
-void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings(const FUniformBufferGatherInfo& UBGatherInfo, const TArrayView<FRHISamplerState*>& ImmutableSamplers)
+void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings(const FVulkanDevice& Device, const FUniformBufferGatherInfo& UBGatherInfo, const TArrayView<FRHISamplerState*>& ImmutableSamplers)
 {
 	checkSlow(RemappingInfo.IsEmpty());
 
@@ -524,6 +619,7 @@ void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings(const FUniformBufferGathe
 	const bool bConvertAllUBsToDynamic = (GDynamicGlobalUBs.GetValueOnAnyThread() > 1);
 	const bool bConvertPackedUBsToDynamic = bConvertAllUBsToDynamic || (GDynamicGlobalUBs.GetValueOnAnyThread() == 1);
 	const bool bConsolidateAllIntoOneSet = GDescriptorSetLayoutMode.GetValueOnAnyThread() == 2;
+	const uint32 MaxDescriptorSetUniformBuffersDynamic = Device.GetLimits().maxDescriptorSetUniformBuffersDynamic;
 
 	uint8	DescriptorStageToSetMapping[ShaderStage::NumStages];
 	FMemory::Memset(DescriptorStageToSetMapping, UINT8_MAX);
@@ -568,57 +664,59 @@ void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings(const FUniformBufferGathe
 				AddDescriptor(DescriptorSet, Binding);
 			}
 
-			if (ShaderHeader->bHasRealUBs)
+			RemappingInfo.StageInfos[Stage].UniformBuffers.Reserve(ShaderHeader->UniformBuffers.Num());
+			for (int32 Index = 0; Index < ShaderHeader->UniformBuffers.Num(); ++Index)
 			{
-				RemappingInfo.StageInfos[Stage].UniformBuffers.Reserve(ShaderHeader->UniformBuffers.Num());
-				for (int32 Index = 0; Index < ShaderHeader->UniformBuffers.Num(); ++Index)
+				VkDescriptorType Type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+				if (bConvertAllUBsToDynamic && LayoutTypes[VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC] < MaxDescriptorSetUniformBuffersDynamic)
 				{
-					VkDescriptorType Type = bConvertAllUBsToDynamic ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-					// Here we might mess up with the stageFlags, so reset them every loop
-					Binding.stageFlags = StageFlags;
-					Binding.descriptorType = Type;
-					const FVulkanShaderHeader::FUniformBufferInfo& UBInfo = ShaderHeader->UniformBuffers[Index];
-					const uint32 LayoutHash = UBInfo.LayoutHash;
-					const bool bUBHasConstantData = UBInfo.ConstantDataOriginalBindingIndex != UINT16_MAX;
-					if (bUBHasConstantData)
+					Type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+				}
+				
+				// Here we might mess up with the stageFlags, so reset them every loop
+				Binding.stageFlags = StageFlags;
+				Binding.descriptorType = Type;
+				const FVulkanShaderHeader::FUniformBufferInfo& UBInfo = ShaderHeader->UniformBuffers[Index];
+				const uint32 LayoutHash = UBInfo.LayoutHash;
+				const bool bUBHasConstantData = UBInfo.ConstantDataOriginalBindingIndex != UINT16_MAX;
+				if (bUBHasConstantData)
+				{
+					bool bProcessRegularUB = true;
+					const VkShaderStageFlags* FoundFlags = bMoveCommonUBsToExtraSet ? UBGatherInfo.CommonUBLayoutsToStageMap.Find(LayoutHash) : nullptr;
+					if (FoundFlags)
 					{
-						bool bProcessRegularUB = true;
-						const VkShaderStageFlags* FoundFlags = bMoveCommonUBsToExtraSet ? UBGatherInfo.CommonUBLayoutsToStageMap.Find(LayoutHash) : nullptr;
-						if (FoundFlags)
+						if (const FDescriptorSetRemappingInfo::FUBRemappingInfo* UBRemapInfo = AlreadyProcessedUBs.Find(LayoutHash))
 						{
-							if (const FDescriptorSetRemappingInfo::FUBRemappingInfo* UBRemapInfo = AlreadyProcessedUBs.Find(LayoutHash))
-							{
-								RemappingInfo.AddRedundantUB(Stage, Index, UBRemapInfo);
-							}
-							else
-							{
-								//#todo-rco: Only process constant data part of the UB
-								check(bUBHasConstantData);
-
-								Binding.stageFlags = *FoundFlags;
-								uint32 NewBindingIndex;
-								AlreadyProcessedUBs.Add(LayoutHash, RemappingInfo.AddUBWithData(Stage, Index, CommonUBDescriptorSet, Type, NewBindingIndex));
-								Binding.binding = NewBindingIndex;
-
-								AddDescriptor(CommonUBDescriptorSet, Binding);
-							}
-							bProcessRegularUB = false;
+							RemappingInfo.AddRedundantUB(Stage, Index, UBRemapInfo);
 						}
-
-						if (bProcessRegularUB)
+						else
 						{
-							int32 DescriptorSet = FindOrAddDescriptorSet(Stage);
+							//#todo-rco: Only process constant data part of the UB
+							check(bUBHasConstantData);
+
+							Binding.stageFlags = *FoundFlags;
 							uint32 NewBindingIndex;
-							RemappingInfo.AddUBWithData(Stage, Index, DescriptorSet, Type, NewBindingIndex);
+							AlreadyProcessedUBs.Add(LayoutHash, RemappingInfo.AddUBWithData(Stage, Index, CommonUBDescriptorSet, Type, NewBindingIndex));
 							Binding.binding = NewBindingIndex;
 
-							AddDescriptor(FindOrAddDescriptorSet(Stage), Binding);
+							AddDescriptor(CommonUBDescriptorSet, Binding);
 						}
+						bProcessRegularUB = false;
 					}
-					else
+
+					if (bProcessRegularUB)
 					{
-						RemappingInfo.AddUBResourceOnly(Stage, Index);
+						int32 DescriptorSet = FindOrAddDescriptorSet(Stage);
+						uint32 NewBindingIndex;
+						RemappingInfo.AddUBWithData(Stage, Index, DescriptorSet, Type, NewBindingIndex);
+						Binding.binding = NewBindingIndex;
+
+						AddDescriptor(FindOrAddDescriptorSet(Stage), Binding);
 					}
+				}
+				else
+				{
+					RemappingInfo.AddUBResourceOnly(Stage, Index);
 				}
 			}
 
@@ -628,7 +726,7 @@ void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings(const FUniformBufferGathe
 			{
 				const FVulkanShaderHeader::FGlobalInfo& GlobalInfo = ShaderHeader->Globals[Index];
 				int32 DescriptorSet = FindOrAddDescriptorSet(Stage);
-				VkDescriptorType Type = ShaderHeader->GlobalDescriptorTypes[GlobalInfo.TypeIndex];
+				VkDescriptorType Type = BindingToDescriptorType(ShaderHeader->GlobalDescriptorTypes[GlobalInfo.TypeIndex]);
 				uint16 CombinedSamplerStateAlias = GlobalInfo.CombinedSamplerStateAliasIndex;
 				uint32 NewBindingIndex = RemappingInfo.AddGlobal(Stage, Index, DescriptorSet, Type, CombinedSamplerStateAlias);
 				Binding.binding = NewBindingIndex;
@@ -662,7 +760,7 @@ void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings(const FUniformBufferGathe
 				{
 					int32 OriginalGlobalIndex = ShaderHeader->InputAttachments[SrcIndex].GlobalIndex;
 					const FVulkanShaderHeader::FGlobalInfo& OriginalGlobalInfo = ShaderHeader->Globals[OriginalGlobalIndex];
-					check(ShaderHeader->GlobalDescriptorTypes[OriginalGlobalInfo.TypeIndex] == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT);
+					check(BindingToDescriptorType(ShaderHeader->GlobalDescriptorTypes[OriginalGlobalInfo.TypeIndex]) == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT);
 					int32 RemappingIndex = RemappingInfo.InputAttachmentData.AddDefaulted();
 					FInputAttachmentData& AttachmentData = RemappingInfo.InputAttachmentData[RemappingIndex];
 					AttachmentData.BindingIndex = RemappingInfo.StageInfos[Stage].Globals[OriginalGlobalIndex].NewBindingIndex;
@@ -757,9 +855,8 @@ void FVulkanGfxPipelineDescriptorInfo::Initialize(const FDescriptorSetRemappingI
 
 
 FVulkanBoundShaderState::FVulkanBoundShaderState(FRHIVertexDeclaration* InVertexDeclarationRHI, FRHIVertexShader* InVertexShaderRHI,
-	FRHIPixelShader* InPixelShaderRHI, FRHIHullShader* InHullShaderRHI,
-	FRHIDomainShader* InDomainShaderRHI, FRHIGeometryShader* InGeometryShaderRHI)
-	: CacheLink(InVertexDeclarationRHI, InVertexShaderRHI, InPixelShaderRHI, InHullShaderRHI, InDomainShaderRHI, InGeometryShaderRHI, this)
+	FRHIPixelShader* InPixelShaderRHI, FRHIGeometryShader* InGeometryShaderRHI)
+	: CacheLink(InVertexDeclarationRHI, InVertexShaderRHI, InPixelShaderRHI, InGeometryShaderRHI, this)
 {
 	CacheLink.AddToCache();
 }
@@ -772,8 +869,6 @@ FVulkanBoundShaderState::~FVulkanBoundShaderState()
 FBoundShaderStateRHIRef FVulkanDynamicRHI::RHICreateBoundShaderState(
 	FRHIVertexDeclaration* VertexDeclarationRHI,
 	FRHIVertexShader* VertexShaderRHI,
-	FRHIHullShader* HullShaderRHI,
-	FRHIDomainShader* DomainShaderRHI,
 	FRHIPixelShader* PixelShaderRHI,
 	FRHIGeometryShader* GeometryShaderRHI
 	)
@@ -783,8 +878,6 @@ FBoundShaderStateRHIRef FVulkanDynamicRHI::RHICreateBoundShaderState(
 		VertexDeclarationRHI,
 		VertexShaderRHI,
 		PixelShaderRHI,
-		HullShaderRHI,
-		DomainShaderRHI,
 		GeometryShaderRHI
 	);
 	if (CachedBoundShaderState.GetReference())
@@ -793,9 +886,9 @@ FBoundShaderStateRHIRef FVulkanDynamicRHI::RHICreateBoundShaderState(
 		return CachedBoundShaderState;
 	}
 
-	return new FVulkanBoundShaderState(VertexDeclarationRHI, VertexShaderRHI, PixelShaderRHI, HullShaderRHI, DomainShaderRHI, GeometryShaderRHI);
+	return new FVulkanBoundShaderState(VertexDeclarationRHI, VertexShaderRHI, PixelShaderRHI, GeometryShaderRHI);
 }
 
 
-template void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings<true>(const FUniformBufferGatherInfo& UBGatherInfo, const TArrayView<FRHISamplerState*>& ImmutableSamplers);
-template void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings<false>(const FUniformBufferGatherInfo& UBGatherInfo, const TArrayView<FRHISamplerState*>& ImmutableSamplers);
+template void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings<true>(const FVulkanDevice& Device, const FUniformBufferGatherInfo& UBGatherInfo, const TArrayView<FRHISamplerState*>& ImmutableSamplers);
+template void FVulkanDescriptorSetsLayoutInfo::FinalizeBindings<false>(const FVulkanDevice& Device, const FUniformBufferGatherInfo& UBGatherInfo, const TArrayView<FRHISamplerState*>& ImmutableSamplers);

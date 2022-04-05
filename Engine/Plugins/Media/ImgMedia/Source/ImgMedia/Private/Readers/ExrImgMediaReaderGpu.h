@@ -9,6 +9,7 @@
 #include "IImgMediaReader.h"
 #include "IMediaTextureSampleConverter.h"
 
+class FExrImgMediaReaderGpu;
 struct FImgMediaTileSelection;
 
 struct FStructuredBufferPoolItem
@@ -16,7 +17,7 @@ struct FStructuredBufferPoolItem
 	/**
 	* This is the actual buffer reference that we need to keep after it is locked and until it is unlocked.
 	*/
-	FStructuredBufferRHIRef BufferRef;
+	FBufferRHIRef BufferRef;
 
 	/** 
 	* A pointer to mapped GPU memory.
@@ -33,6 +34,11 @@ struct FStructuredBufferPoolItem
 	* is currently using it.
 	*/
 	bool bWillBeSignaled = false;
+
+	/**
+	* Keep track of our reader in case it gets destroyed.
+	*/
+	TWeakPtr<FExrImgMediaReaderGpu, ESPMode::ThreadSafe> Reader;
 };
 
 /**
@@ -43,13 +49,15 @@ typedef TSharedPtr<FStructuredBufferPoolItem, ESPMode::ThreadSafe> FStructuredBu
 /**
  * Implements a reader for EXR image sequences.
  */
-class FExrImgMediaReaderGpu : public FExrImgMediaReader
+class FExrImgMediaReaderGpu
+	: public FExrImgMediaReader
+	, public TSharedFromThis<FExrImgMediaReaderGpu, ESPMode::ThreadSafe>
 {
 public:
 
 	/** Default constructor. */
 	FExrImgMediaReaderGpu(const TSharedRef<FImgMediaLoader, ESPMode::ThreadSafe>& InLoader):FExrImgMediaReader(InLoader),
-		LastTickedFrameCounter((uint64)-1), bIsShuttingDown(false) {};
+		LastTickedFrameCounter((uint64)-1), bIsShuttingDown(false), bFallBackToCPU(false) {};
 	virtual ~FExrImgMediaReaderGpu();
 
 public:
@@ -65,11 +73,18 @@ public:
 
 protected:
 
+	enum EReadResult
+	{
+		Fail,
+		Success,
+		Cancelled
+	};
+
 	/** 
 	 * This function reads file in 16 MB chunks and if it detects that
 	 * Frame is pending for cancellation stops reading the file and returns false.
 	*/
-	bool ReadInChunks(uint16* Buffer, const FString& ImagePath, int32 FrameId, const FIntPoint& Dim, int32 BufferSize, int32 PixelSize, int32 NumChannels);
+	EReadResult ReadInChunks(uint16* Buffer, const FString& ImagePath, int32 FrameId, const FIntPoint& Dim, int32 BufferSize, int32 PixelSize, int32 NumChannels);
 
 	/**
 	 * Get the size of the buffer needed to load in an image.
@@ -85,7 +100,7 @@ public:
 	FStructuredBufferPoolItemSharedPtr AllocateGpuBufferFromPool(uint32 AllocSize, bool bWait = true);
 
 	/** Either return or Add new chunk of memory to the pool based on its size. */
-	void ReturnGpuBufferToStagingPool(uint32 AllocSize, FStructuredBufferPoolItem* Buffer);
+	static void ReturnGpuBufferToStagingPool(uint32 AllocSize, FStructuredBufferPoolItem* Buffer);
 
 	/** Transfer from Staging buffer to Memory pool. */
 	void TransferFromStagingBuffer();
@@ -109,6 +124,9 @@ private:
 
 	/** A flag indicating this reader is being destroyed, therefore memory should not be returned. */
 	bool bIsShuttingDown;
+
+	/** If true, then just use the CPU to read the file. */
+	bool bFallBackToCPU;
 };
 
 FUNC_DECLARE_DELEGATE(FExrConvertBufferCallback, bool, FRHICommandListImmediate& /*RHICmdList*/, FTexture2DRHIRef /*RenderTargetTextureRHI*/)

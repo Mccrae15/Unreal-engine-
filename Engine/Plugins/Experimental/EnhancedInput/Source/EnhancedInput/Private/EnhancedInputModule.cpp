@@ -20,6 +20,8 @@
 
 #define LOCTEXT_NAMESPACE "EnhancedInput"
 
+DEFINE_LOG_CATEGORY(LogEnhancedInput);
+
 class FEnhancedInputModule : public IEnhancedInputModule, public FTickableGameObject
 {
 public:
@@ -64,6 +66,12 @@ public:
 			for (int32 i = 1; i < Args.Num(); ++i)
 			{
 				ValueStr += Args[i];
+				// There must be a space beteen the values of axis types for InitFromString to work correctly
+				// There is no need add a space to the end
+				if(i < Args.Num() - 1)
+				{
+					ValueStr += " ";
+				}
 			}
 
 			FVector2D Value2D;
@@ -224,35 +232,36 @@ void FEnhancedInputModule::StartupModule()
 
 	if (!IsRunningDedicatedServer())
 	{
+#if ENABLE_DRAW_DEBUG
 		AHUD::OnShowDebugInfo.AddStatic(&FEnhancedInputModule::OnShowDebugInfo);
-
+#endif
 	    // Register console commands
 	    ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
 		    TEXT("Input.+action"),
 		    TEXT("Provide the named action with a constant input value each frame"),
 		    FConsoleCommandWithWorldAndArgsDelegate::CreateRaw(this, &FEnhancedInputModule::EnableForcedAction),
-		    ECVF_Default
+		    ECVF_Cheat
 	    ));
 
 		ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
 			TEXT("Input.-action"),
 			TEXT("Stop forcing the named action value each frame"),
 			FConsoleCommandWithWorldAndArgsDelegate::CreateRaw(this, &FEnhancedInputModule::DisableForcedAction),
-			ECVF_Default
+			ECVF_Cheat
 		));
 
 		ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
 			TEXT("Input.+key"),
 			TEXT("Provide the named key with a constant input value each frame"),
 			FConsoleCommandWithWorldAndArgsDelegate::CreateRaw(this, &FEnhancedInputModule::EnableForcedKey),
-			ECVF_Default
+			ECVF_Cheat
 		));
 
 		ConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
 			TEXT("Input.-key"),
 			TEXT("Stop forcing the named key each frame"),
 			FConsoleCommandWithWorldAndArgsDelegate::CreateRaw(this, &FEnhancedInputModule::DisableForcedKey),
-			ECVF_Default
+			ECVF_Cheat
 		));
 	}
 }

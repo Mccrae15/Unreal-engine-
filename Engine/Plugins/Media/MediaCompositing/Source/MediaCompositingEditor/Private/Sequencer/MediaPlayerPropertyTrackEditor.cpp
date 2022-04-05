@@ -155,6 +155,7 @@ TSharedPtr<SWidget> FMediaPlayerPropertyTrackEditor::BuildOutlinerEditWidget(con
 			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 			AssetPickerConfig.Filter.bRecursiveClasses = true;
 			AssetPickerConfig.Filter.ClassNames.Add(UMediaSource::StaticClass()->GetFName());
+			AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
 		}
 
 		FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
@@ -186,7 +187,8 @@ TSharedRef<ISequencerSection> FMediaPlayerPropertyTrackEditor::MakeSectionInterf
 
 bool FMediaPlayerPropertyTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
 {
-	return InSequence && InSequence->IsA(ULevelSequence::StaticClass());
+	ETrackSupport TrackSupported = InSequence ? InSequence->IsTrackSupported(UMovieSceneMediaPlayerPropertyTrack::StaticClass()) : ETrackSupport::NotSupported;    
+	return (InSequence && InSequence->IsA(ULevelSequence::StaticClass())) || TrackSupported == ETrackSupport::Supported; 
 }
 
 const FSlateBrush* FMediaPlayerPropertyTrackEditor::GetIconBrush() const

@@ -252,8 +252,8 @@ FORCEINLINE void FLiveLinkMessageBusSource::UpdateConnectionLastActive()
 
 void FLiveLinkMessageBusSource::SendConnectMessage()
 {
-	FLiveLinkConnectMessage* ConnectMessage = new FLiveLinkConnectMessage();
-	ConnectMessage->LiveLinkVersion = 2;
+	FLiveLinkConnectMessage* ConnectMessage = FMessageEndpoint::MakeMessage<FLiveLinkConnectMessage>();
+	ConnectMessage->LiveLinkVersion = ILiveLinkClient::LIVELINK_VERSION;
 	MessageEndpoint->Send(ConnectMessage, ConnectionAddress);
 	FLiveLinkHeartbeatEmitter& HeartbeatEmitter = ILiveLinkModule::Get().GetHeartbeatEmitter();
 	HeartbeatEmitter.StartHeartbeat(ConnectionAddress, MessageEndpoint);

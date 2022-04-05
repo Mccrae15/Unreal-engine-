@@ -52,8 +52,8 @@ namespace Audio
 			// @param OutComplex - Interleaved complex data with (2 * FFTSize) num floats.
 			void ForwardComplexToComplex(const float* RESTRICT InComplex, float* RESTRICT OutComplex)
 			{
-				checkf(IsAligned<const float*>(InComplex, AUDIO_SIMD_FLOAT_ALIGNMENT), TEXT("Memory must be aligned.")); 
-				checkf(IsAligned<float*>(OutComplex, AUDIO_SIMD_FLOAT_ALIGNMENT), TEXT("Memory must be aligned.")); 
+				checkf(IsAligned<const float*>(InComplex, AUDIO_SIMD_BYTE_ALIGNMENT), TEXT("Memory must be aligned."));
+				checkf(IsAligned<float*>(OutComplex, AUDIO_SIMD_BYTE_ALIGNMENT), TEXT("Memory must be aligned."));
 
 				// To perform FFT, must complete Log2FFTSize stages.  Each radix pass performs 2^m stages
 				// where 2^m is the radix number. So a radix-4 stage is radix-2^m or radix-2^2. Hence radix
@@ -108,8 +108,8 @@ namespace Audio
 
 			void InverseComplexToComplex(const float* RESTRICT InComplex, float* RESTRICT OutComplex)
 			{
-				checkf(IsAligned<const float*>(InComplex, AUDIO_SIMD_FLOAT_ALIGNMENT), TEXT("Memory must be aligned.")); 
-				checkf(IsAligned<float*>(OutComplex, AUDIO_SIMD_FLOAT_ALIGNMENT), TEXT("Memory must be aligned.")); 
+				checkf(IsAligned<const float*>(InComplex, AUDIO_SIMD_BYTE_ALIGNMENT), TEXT("Memory must be aligned."));
+				checkf(IsAligned<float*>(OutComplex, AUDIO_SIMD_BYTE_ALIGNMENT), TEXT("Memory must be aligned."));
 
 				// Perform inverse FFT by complex conjugating the input and output.
 				
@@ -380,10 +380,9 @@ namespace Audio
 					VectorRegister C5ConjSwizzle = VectorSwizzle(C5Conj, 1, 0, 3, 2);
 					VectorRegister T5 = VectorAdd(C5, C5ConjSwizzle);
 
-					VectorRegister C7Conj = VectorMultiply(SignFlipImag, C7);
 					VectorRegister C7Swizzle = VectorSwizzle(C7, 1, 0, 3, 2);
 
-					VectorRegister T7 = VectorAdd(C7Swizzle, C7Conj);
+					VectorRegister T7 = VectorMultiplyAdd(SignFlipImag, C7, C7Swizzle);
 					VectorRegister T7Conj = VectorMultiply(T7, SignFlipImag);
 
 					VectorRegister D0 = VectorAdd(C0, C1);
@@ -1001,7 +1000,7 @@ namespace Audio
 			TArray<FFinalIndices> FinalIndices;
 			TArray<FFinalWeights> FinalWeights;
 
-			AlignedFloatBuffer InverseWorkBuffer;
+			FAlignedFloatBuffer InverseWorkBuffer;
 	};
 
 	// Maximum log 2 size of fft
@@ -1099,15 +1098,15 @@ namespace Audio
 				// Out2 = [ I * Ai,  R * Ai]
 				// Out3 = [NR * Br, NI * Br]
 				// Out4 = [NI * Bi, NR * Bi]
-				VectorRegister Out1 = VectorMultiply(VIn, VAlphaReal);
+				//VectorRegister Out1 = VectorMultiply(VIn, VAlphaReal);
 				VectorRegister Out2 = VectorMultiply(VInRISwap, VAlphaImag);
-				VectorRegister Out3 = VectorMultiply(VInRev, VBetaReal);
+				//VectorRegister Out3 = VectorMultiply(VInRev, VBetaReal);
 				VectorRegister Out4 = VectorMultiply(VInRevRISwap, VBetaImag);
 
 				// Out12 = [(R * Ar) + (I * Ai), (I * Ar) + (R * Ai)]
-				VectorRegister Out12 = VectorAdd(Out1, Out2);
+				VectorRegister Out12 = VectorMultiplyAdd(VIn, VAlphaReal, Out2);
 				// Out34 = [(NR * Br) + (NI * Bi), (NR * Bi) + (NI * Br)]
-				VectorRegister Out34 = VectorAdd(Out3, Out4);
+				VectorRegister Out34 = VectorMultiplyAdd(VInRev, VBetaReal, Out4);
 
 				// Out = [
 				// 	(R * Ar) + (I * Ai) + (NR * Br) + (NI * Bi),
@@ -1152,8 +1151,8 @@ namespace Audio
 
 	void FVectorRealToComplexFFT::ForwardRealToComplex(const float* RESTRICT InReal, float* RESTRICT OutComplex)
 	{
-		checkf(IsAligned<const float*>(InReal, AUDIO_SIMD_FLOAT_ALIGNMENT), TEXT("Memory must be aligned.")); 
-		checkf(IsAligned<float*>(OutComplex, AUDIO_SIMD_FLOAT_ALIGNMENT), TEXT("Memory must be aligned.")); 
+		checkf(IsAligned<const float*>(InReal, AUDIO_SIMD_BYTE_ALIGNMENT), TEXT("Memory must be aligned."));
+		checkf(IsAligned<float*>(OutComplex, AUDIO_SIMD_BYTE_ALIGNMENT), TEXT("Memory must be aligned."));
 
 		// Performs a N sized real-to-complex FFT using an N/2 complex-to-complex FFT.
 		float* WorkData = WorkBuffer.GetData();
@@ -1197,8 +1196,8 @@ namespace Audio
 
 	void FVectorRealToComplexFFT::InverseComplexToReal(const float* RESTRICT InComplex, float* RESTRICT OutReal)
 	{
-		checkf(IsAligned<const float*>(InComplex, AUDIO_SIMD_FLOAT_ALIGNMENT), TEXT("Memory must be aligned.")); 
-		checkf(IsAligned<float*>(OutReal, AUDIO_SIMD_FLOAT_ALIGNMENT), TEXT("Memory must be aligned.")); 
+		checkf(IsAligned<const float*>(InComplex, AUDIO_SIMD_BYTE_ALIGNMENT), TEXT("Memory must be aligned."));
+		checkf(IsAligned<float*>(OutReal, AUDIO_SIMD_BYTE_ALIGNMENT), TEXT("Memory must be aligned."));
 
 		// Performs a N sized complex-to-real FFT using an N/2 complex-to-complex FFT.
 

@@ -28,8 +28,6 @@ UMaterialExpressionLandscapeLayerSwitch::UMaterialExpressionLandscapeLayerSwitch
 	};
 	static FConstructorStatics ConstructorStatics;
 
-	bIsParameterExpression = true;
-
 #if WITH_EDITORONLY_DATA
 	MenuCategories.Add(ConstructorStatics.NAME_Landscape);
 
@@ -113,7 +111,7 @@ void UMaterialExpressionLandscapeLayerSwitch::Serialize(FStructuredArchive::FRec
 {
 	Super::Serialize(Record);
 
-	if (Record.GetUnderlyingArchive().UE4Ver() < VER_UE4_FIX_TERRAIN_LAYER_SWITCH_ORDER)
+	if (Record.GetUnderlyingArchive().UEVer() < VER_UE4_FIX_TERRAIN_LAYER_SWITCH_ORDER)
 	{
 		Swap(LayerUsed, LayerNotUsed);
 	}
@@ -124,29 +122,17 @@ void UMaterialExpressionLandscapeLayerSwitch::PostLoad()
 {
 	Super::PostLoad();
 
-	if (GetLinkerUE4Version() < VER_UE4_FIXUP_TERRAIN_LAYER_NODES)
+	if (GetLinkerUEVersion() < VER_UE4_FIXUP_TERRAIN_LAYER_NODES)
 	{
 		UpdateParameterGuid(true, true);
 	}
 }
 
-
-FGuid& UMaterialExpressionLandscapeLayerSwitch::GetParameterExpressionId()
+#if WITH_EDITOR
+void UMaterialExpressionLandscapeLayerSwitch::GetLandscapeLayerNames(TArray<FName>& OutLayers) const
 {
-	return ExpressionGUID;
+	OutLayers.AddUnique(ParameterName);
 }
-
-
-void UMaterialExpressionLandscapeLayerSwitch::GetAllParameterInfo(TArray<FMaterialParameterInfo> &OutParameterInfo, TArray<FGuid> &OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const
-{
-	int32 CurrentSize = OutParameterInfo.Num();
-	FMaterialParameterInfo NewParameter(ParameterName, InBaseParameterInfo.Association, InBaseParameterInfo.Index);
-	OutParameterInfo.AddUnique(NewParameter);
-
-	if (CurrentSize != OutParameterInfo.Num())
-	{
-		OutParameterIds.Add(ExpressionGUID);
-	}
-}
+#endif // WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE

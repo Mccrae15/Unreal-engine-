@@ -621,28 +621,10 @@ inline uint32 CViewSubresourceSubset::MaxSubresource() const
 
 class FD3D12OfflineDescriptorManager;
 
-template<typename TDesc> 
-struct TIsD3D12SRVDescriptorHandle
-{
-	enum { Value = false };
-};
-
-template<>
-struct TIsD3D12SRVDescriptorHandle<D3D12_SHADER_RESOURCE_VIEW_DESC>
-{
-	enum { Value = true };
-};
-
 template <typename TDesc>
 class TD3D12ViewDescriptorHandle : public FD3D12DeviceChild
 {
-	template <typename TDesc> struct TCreateViewMap;
-	template<> struct TCreateViewMap<D3D12_SHADER_RESOURCE_VIEW_DESC>	{ static decltype(&ID3D12Device::CreateShaderResourceView)	GetCreate()	{ return &ID3D12Device::CreateShaderResourceView;	} };
-	template<> struct TCreateViewMap<D3D12_RENDER_TARGET_VIEW_DESC>		{ static decltype(&ID3D12Device::CreateRenderTargetView)	GetCreate()	{ return &ID3D12Device::CreateRenderTargetView;		} };
-	template<> struct TCreateViewMap<D3D12_DEPTH_STENCIL_VIEW_DESC>		{ static decltype(&ID3D12Device::CreateDepthStencilView)	GetCreate()	{ return &ID3D12Device::CreateDepthStencilView;		} };
-	template<> struct TCreateViewMap<D3D12_UNORDERED_ACCESS_VIEW_DESC>	{ static decltype(&ID3D12Device::CreateUnorderedAccessView)	GetCreate()	{ return &ID3D12Device::CreateUnorderedAccessView;	} };
-
-	CD3DX12_CPU_DESCRIPTOR_HANDLE Handle;
+	D3D12_CPU_DESCRIPTOR_HANDLE Handle;
 	uint32 Index;
 
 public:
@@ -665,25 +647,11 @@ public:
 		AllocateDescriptorSlot();
 	}
 
-	void CreateView(const TDesc& Desc, ID3D12Resource* Resource)
-	{
-#if D3D12_RHI_RAYTRACING
-		// NOTE (from D3D Debug runtime): When ViewDimension is D3D12_SRV_DIMENSION_RAYTRACING_ACCELLERATION_STRUCTURE, pResource must be NULL, since the resource location comes from a GPUVA in pDesc
-		if (TIsD3D12SRVDescriptorHandle<TDesc>::Value && ((int)Desc.ViewDimension == (int)D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE))
-		{
-			Resource = nullptr;
-		}
-#endif // D3D12_RHI_RAYTRACING
+	// Implemented in D3D12Device.h due to dependencies on FD3D12Device
+	inline void CreateView(const TDesc& Desc, ID3D12Resource* Resource);
+	inline void CreateViewWithCounter(const TDesc& Desc, ID3D12Resource* Resource, ID3D12Resource* CounterResource);
 
-		(GetParentDevice()->GetDevice()->*TCreateViewMap<TDesc>::GetCreate()) (Resource, &Desc, Handle);
-	}
-
-	void CreateViewWithCounter(const TDesc& Desc, ID3D12Resource* Resource, ID3D12Resource* CounterResource)
-	{
-		(GetParentDevice()->GetDevice()->*TCreateViewMap<TDesc>::GetCreate()) (Resource, CounterResource, &Desc, Handle);
-	}
-
-	inline const CD3DX12_CPU_DESCRIPTOR_HANDLE& GetHandle() const { return Handle; }
+	inline const D3D12_CPU_DESCRIPTOR_HANDLE& GetHandle() const { return Handle; }
 	inline uint32 GetIndex() const { return Index; }
 
 private:
@@ -698,86 +666,123 @@ typedef TD3D12ViewDescriptorHandle<D3D12_DEPTH_STENCIL_VIEW_DESC>		FD3D12Descrip
 typedef TD3D12ViewDescriptorHandle<D3D12_UNORDERED_ACCESS_VIEW_DESC>	FD3D12DescriptorHandleUAV;
 
 template <typename TDesc>
-class FD3D12View
+class FD3D12View : public FD3D12ShaderResourceRenameListener
 {
-private:
+protected:
 	TD3D12ViewDescriptorHandle<TDesc> Descriptor;
 
-protected:
 	ViewSubresourceSubsetFlags Flags;
+	FD3D12BaseShaderResource* BaseShaderResource;
 	FD3D12ResourceLocation* ResourceLocation;
 	FD3D12ResidencyHandle* ResidencyHandle;
 	FD3D12Resource* Resource;
 	CViewSubresourceSubset ViewSubresourceSubset;
 	TDesc Desc;
 
-#if DO_CHECK
+#if DO_CHECK || USING_CODE_ANALYSIS
 	bool bInitialized;
 #endif
 
 	explicit FD3D12View(FD3D12Device* InParent, ViewSubresourceSubsetFlags InFlags)
 		: Descriptor(InParent)
 		, Flags(InFlags)
-#if DO_CHECK
+		, BaseShaderResource(nullptr)
+#if DO_CHECK || USING_CODE_ANALYSIS
 		, bInitialized(false)
 #endif
 	{}
 
 	virtual ~FD3D12View()
 	{
-#if DO_CHECK
+		if (BaseShaderResource)
+		{
+			BaseShaderResource->RemoveRenameListener(this);
+		}
+
+#if DO_CHECK || USING_CODE_ANALYSIS
 		bInitialized = false;
 #endif
 	}
 
-private:
-	void Initialize(const TDesc& InDesc, FD3D12ResourceLocation& InResourceLocation)
+protected:
+	void SetDesc(const TDesc& InDesc)
 	{
+		Desc = InDesc;
+	}
+
+	void InitializeInternal(FD3D12BaseShaderResource* InBaseShaderResource, FD3D12ResourceLocation& InResourceLocation)
+	{
+		check(InBaseShaderResource);
+		checkf(BaseShaderResource == nullptr || BaseShaderResource == InBaseShaderResource, TEXT("Either BaseShaderResource is not set yet or when it is it can't change (after rename)"));
+
+		// Only register the first time - init can be called again during rename
+		if (BaseShaderResource == nullptr)
+		{
+			InBaseShaderResource->AddRenameListener(this);
+		}
+
+		BaseShaderResource = InBaseShaderResource;
 		ResourceLocation = &InResourceLocation;
 		Resource = ResourceLocation->GetResource();
-		check(Resource);
 
-		ResidencyHandle = Resource->GetResidencyHandle();
+		// Transient resources might not have an actual resource yet
+		if (Resource)
+		{
+			ResidencyHandle = Resource->GetResidencyHandle();
+			ViewSubresourceSubset = CViewSubresourceSubset(Desc,
+				Resource->GetMipLevels(),
+				Resource->GetArraySize(),
+				Resource->GetDesc().Format,
+				Flags);
+		}
+		else
+		{
+			ResidencyHandle = nullptr;
+			ViewSubresourceSubset = CViewSubresourceSubset();
+		}
 
-		Desc = InDesc;
-
-		ViewSubresourceSubset = CViewSubresourceSubset(Desc,
-			Resource->GetMipLevels(),
-			Resource->GetArraySize(),
-			Resource->GetDesc().Format,
-			Flags);
-
-#if DO_CHECK
-		bInitialized = true;
+#if DO_CHECK || USING_CODE_ANALYSIS
+		// Only mark initialize if an actual resource is created for the base shader resource
+		bInitialized = (Resource != nullptr);
 #endif
 	}
 
-protected:
-	void CreateView(const TDesc& InDesc, FD3D12ResourceLocation& InResourceLocation)
+	virtual void ResourceRenamed(FD3D12BaseShaderResource* InRenamedResource, FD3D12ResourceLocation* InNewResourceLocation) override
 	{
-		Initialize(InDesc, InResourceLocation);
-
-		ID3D12Resource* D3DResource = ResourceLocation->GetResource()->GetResource();
-		Descriptor.CreateView(Desc, D3DResource);
+		check(InRenamedResource == BaseShaderResource);
+		if (InNewResourceLocation)
+		{
+			// Only recreate the view if new location is valid
+			if (InNewResourceLocation->IsValid())
+			{
+				RecreateView();
+			}
+			else
+			{
+#if DO_CHECK || USING_CODE_ANALYSIS
+				// Mark as invalid for usage
+				bInitialized = false;
+#endif
+			}
+		}
+		else
+		{
+			// Marking not initialized will currently assert because views are used after the resource has been registered for delete
+			// Is that wrong?
+			BaseShaderResource = nullptr;
+		}
 	}
 
-	void CreateViewWithCounter(const TDesc& InDesc, FD3D12ResourceLocation& InResourceLocation, FD3D12Resource* InCounterResource)
-	{
-		Initialize(InDesc, InResourceLocation);
-
-		ID3D12Resource* D3DResource = ResourceLocation->GetResource()->GetResource();
-		ID3D12Resource* D3DCounterResource = InCounterResource ? InCounterResource->GetResource() : nullptr;
-		Descriptor.CreateViewWithCounter(Desc, D3DResource, D3DCounterResource);
-	}
+	virtual void RecreateView() = 0;
 
 public:
 	inline FD3D12Device*					GetParentDevice()			const { return Descriptor.GetParentDevice(); }
 	inline FD3D12Device*					GetParentDevice_Unsafe()	const { return Descriptor.GetParentDevice_Unsafe(); }
+	inline FD3D12ResourceLocation*			GetResourceLocation()		const { return ResourceLocation; }
 	inline const TDesc&						GetDesc()					const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return Desc; }
-	inline CD3DX12_CPU_DESCRIPTOR_HANDLE	GetView()					const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return Descriptor.GetHandle(); }
+	inline D3D12_CPU_DESCRIPTOR_HANDLE		GetView()					const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return Descriptor.GetHandle(); }
 	inline uint32							GetDescriptorHeapIndex()	const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return Descriptor.GetIndex(); }
 	inline FD3D12Resource*					GetResource()				const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return Resource; }
-	inline FD3D12ResourceLocation*			GetResourceLocation()		const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return ResourceLocation; }
 	inline FD3D12ResidencyHandle*			GetResidencyHandle()		const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return ResidencyHandle; }
 	inline const CViewSubresourceSubset&	GetViewSubresourceSubset()	const { checkf(bInitialized, TEXT("Uninitialized D3D12View size %d"), (uint32)sizeof(TDesc)); return ViewSubresourceSubset; }
 
@@ -794,13 +799,14 @@ public:
 };
 
 /** Shader resource view class. */
-class FD3D12ShaderResourceView : public FD3D12BaseShaderResourceView, public FRHIShaderResourceView, public FD3D12View<D3D12_SHADER_RESOURCE_VIEW_DESC>, public FD3D12LinkedAdapterObject<FD3D12ShaderResourceView>
+class FD3D12ShaderResourceView : public FRHIShaderResourceView, public FD3D12View<D3D12_SHADER_RESOURCE_VIEW_DESC>, public FD3D12LinkedAdapterObject<FD3D12ShaderResourceView>
 {
 	bool bContainsDepthPlane;
 	bool bContainsStencilPlane;
 	bool bSkipFastClearFinalize;
 	bool bRequiresResourceStateTracking;
 	uint32 Stride;
+	uint32 StartOffsetBytes;
 
 public:
 	// Used for dynamic buffer SRVs, which can be renamed. Must be explicitly Initialize()'d before it can be used.
@@ -810,45 +816,66 @@ public:
 
 	// Used for all other SRV resource types. Initialization is immediate on the calling thread.
 	// Should not be used for dynamic resources which can be renamed.
-	FD3D12ShaderResourceView(FD3D12Device* InParent, D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12ResourceLocation& InResourceLocation, uint32 InStride = -1, bool InSkipFastClearFinalize = false)
+	FD3D12ShaderResourceView(FD3D12Device* InParent, D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, uint32 InStride = -1, uint32 InStartOffsetBytes = 0, bool InSkipFastClearFinalize = false)
 		: FD3D12ShaderResourceView(InParent)
 	{
-		Initialize(InDesc, InResourceLocation, InStride, InSkipFastClearFinalize);
+		Initialize(InDesc, InBaseShaderResource, InBaseShaderResource->ResourceLocation, InStride, InStartOffsetBytes, InSkipFastClearFinalize);
+	}
+
+	template<typename TextureType>
+	FD3D12ShaderResourceView(TextureType* InTexture, D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc)
+		: FD3D12ShaderResourceView(InTexture->GetParentDevice(), InDesc, InTexture)
+	{
 	}
 
 	~FD3D12ShaderResourceView()
 	{
-		// Non-resident mesh LODs can lead to null SRVs being created
-		check(bInitialized || !GetParentDevice_Unsafe());
-		FD3D12BaseShaderResourceView::Remove();
 	}
 
-	void Initialize(D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12ResourceLocation& InResourceLocation, uint32 InStride, bool InSkipFastClearFinalize = false)
+	void PreCreateView(FD3D12ResourceLocation& InResourceLocation, uint32 InStride, uint32 InStartOffsetBytes, bool InSkipFastClearFinalize)
 	{
 		Stride = InStride;
-		bContainsDepthPlane   = InResourceLocation.GetResource()->IsDepthStencilResource() && GetPlaneSliceFromViewFormat(InResourceLocation.GetResource()->GetDesc().Format, InDesc.Format) == 0;
-		bContainsStencilPlane = InResourceLocation.GetResource()->IsDepthStencilResource() && GetPlaneSliceFromViewFormat(InResourceLocation.GetResource()->GetDesc().Format, InDesc.Format) == 1;
-		bRequiresResourceStateTracking = InResourceLocation.GetResource()->RequiresResourceStateTracking();
+		StartOffsetBytes = InStartOffsetBytes;
 		bSkipFastClearFinalize = InSkipFastClearFinalize;
 
+		if (InResourceLocation.GetResource())
+		{
+			bContainsDepthPlane = InResourceLocation.GetResource()->IsDepthStencilResource() && GetPlaneSliceFromViewFormat(InResourceLocation.GetResource()->GetDesc().Format, Desc.Format) == 0;
+			bContainsStencilPlane = InResourceLocation.GetResource()->IsDepthStencilResource() && GetPlaneSliceFromViewFormat(InResourceLocation.GetResource()->GetDesc().Format, Desc.Format) == 1;
+			bRequiresResourceStateTracking = InResourceLocation.GetResource()->RequiresResourceStateTracking();
+
 #if DO_CHECK
-		// Check the plane slice of the SRV matches the texture format
-		// Texture2DMS does not have explicit plane index (it's implied by the format)
-		if (InDesc.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D)
-		{
-			check(GetPlaneSliceFromViewFormat(InResourceLocation.GetResource()->GetDesc().Format, InDesc.Format) == InDesc.Texture2D.PlaneSlice);
-		}
+			// Check the plane slice of the SRV matches the texture format
+			// Texture2DMS does not have explicit plane index (it's implied by the format)
+			if (Desc.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D)
+			{
+				check(GetPlaneSliceFromViewFormat(InResourceLocation.GetResource()->GetDesc().Format, Desc.Format) == Desc.Texture2D.PlaneSlice);
+			}
 
-		if (InDesc.ViewDimension == D3D12_SRV_DIMENSION_BUFFER)
-		{
-			//check(InResourceLocation.GetOffsetFromBaseOfResource() == InDesc.Buffer.FirstElement * Stride);
-		}
+			if (Desc.ViewDimension == D3D12_SRV_DIMENSION_BUFFER)
+			{
+				//check(InResourceLocation.GetOffsetFromBaseOfResource() == Desc.Buffer.FirstElement * Stride);
+			}
 #endif
-
-		CreateView(InDesc, InResourceLocation);
+		}
 	}
 
-	void Initialize(FD3D12Device* InParent, D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12ResourceLocation& InResourceLocation, uint32 InStride, bool InSkipFastClearFinalize = false)
+	void CreateView(const D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, FD3D12ResourceLocation& InResourceLocation);
+
+	void Initialize(D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, FD3D12ResourceLocation& InResourceLocation, uint32 InStride, uint32 InStartOffsetBytes, bool InSkipFastClearFinalize)
+	{
+		SetDesc(InDesc);
+
+		PreCreateView(InResourceLocation, InStride, InStartOffsetBytes, InSkipFastClearFinalize);
+		CreateView(InDesc, InBaseShaderResource, InResourceLocation);
+	}
+
+	void Initialize(D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, uint32 InStride, uint32 InStartOffsetBytes, bool InSkipFastClearFinalize = false)
+	{
+		Initialize(InDesc, InBaseShaderResource, InBaseShaderResource->ResourceLocation, InStride, InStartOffsetBytes, InSkipFastClearFinalize);
+	}
+
+	void Initialize(FD3D12Device* InParent, D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, uint32 InStride, bool InSkipFastClearFinalize = false)
 	{
 		if (!this->GetParentDevice_Unsafe())
 		{
@@ -857,18 +884,22 @@ public:
 			this->SetParentDevice(InParent);
 		}
 		check(GetParentDevice() == InParent);
-		Initialize(InDesc, InResourceLocation, InStride, InSkipFastClearFinalize);
+		Initialize(InDesc, InBaseShaderResource, InBaseShaderResource->ResourceLocation, InStride, 0, InSkipFastClearFinalize);
 	}
 
-	void Rename(FD3D12ResourceLocation& InResourceLocation)
+	void Rename(FD3D12BaseShaderResource* InBaseShaderResource)
 	{
+		check(InBaseShaderResource == BaseShaderResource);
+		check(&InBaseShaderResource->ResourceLocation == ResourceLocation);
+
 		// Update the first element index, then reinitialize the SRV
 		if (Desc.ViewDimension == D3D12_SRV_DIMENSION_BUFFER)
 		{
-			Desc.Buffer.FirstElement = InResourceLocation.GetOffsetFromBaseOfResource() / Stride;
+			uint32 StartElement = StartOffsetBytes / Stride;
+			Desc.Buffer.FirstElement = ResourceLocation->GetOffsetFromBaseOfResource() / Stride + StartElement;
 		}
 
-		Initialize(Desc, InResourceLocation, Stride);
+		Initialize(Desc, BaseShaderResource, Stride, StartOffsetBytes);
 	}
 
 	void Rename(float ResourceMinLODClamp)
@@ -879,7 +910,12 @@ public:
 
 		// Update the LODClamp, the reinitialize the SRV
 		Desc.Texture2D.ResourceMinLODClamp = ResourceMinLODClamp;
-		CreateView(Desc, *ResourceLocation);
+		CreateView(Desc, BaseShaderResource, *ResourceLocation);
+	}
+
+	virtual void RecreateView() override
+	{
+		Rename(BaseShaderResource);
 	}
 
 	FORCEINLINE bool IsDepthStencilResource()	const { return bContainsDepthPlane || bContainsStencilPlane; }
@@ -897,10 +933,19 @@ public:
 		, ViewLocation(InParent)
 	{}
 
-	FD3D12ShaderResourceViewWithLocation(FD3D12Device* InParent, D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12ResourceLocation& InResourceLocation, uint32 InStride = -1, bool InSkipFastClearFinalize = false)
-		: FD3D12ShaderResourceView(InParent, InDesc, ViewLocation, InStride, InSkipFastClearFinalize)
+	FD3D12ShaderResourceViewWithLocation(FD3D12Device* InParent, D3D12_SHADER_RESOURCE_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, uint32 InStride = -1, bool InSkipFastClearFinalize = false)
+		: FD3D12ShaderResourceView(InParent)
 		, ViewLocation(InParent)
 	{
+		// Should not be pool allocated
+		check(InBaseShaderResource->ResourceLocation.GetAllocatorType() != FD3D12ResourceLocation::EAllocatorType::AT_Pool);
+		Initialize(InDesc, InBaseShaderResource, ViewLocation, InStride, 0, InSkipFastClearFinalize);
+	}
+
+	virtual void RecreateView() override
+	{
+		// Currently unsupported because the view location resource would also need to be recreated then
+		check(false);
 	}
 
 	FD3D12ResourceLocation ViewLocation;
@@ -910,12 +955,31 @@ class FD3D12UnorderedAccessView : public FRHIUnorderedAccessView, public FD3D12V
 {
 public:
 
-	FD3D12UnorderedAccessView(FD3D12Device* InParent, D3D12_UNORDERED_ACCESS_VIEW_DESC& InDesc, FD3D12ResourceLocation& InResourceLocation, FD3D12Resource* InCounterResource = nullptr)
+	FD3D12UnorderedAccessView(FD3D12Device* InParent)
+		: FD3D12View(InParent, ViewSubresourceSubsetFlags_None)
+	{
+	}
+
+	FD3D12UnorderedAccessView(FD3D12Device* InParent, D3D12_UNORDERED_ACCESS_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, FD3D12Resource* InCounterResource = nullptr)
 		: FD3D12View(InParent, ViewSubresourceSubsetFlags_None)
 		, CounterResource(InCounterResource)
-		, CounterResourceInitialized(false)
 	{
-		CreateViewWithCounter(InDesc, InResourceLocation, InCounterResource);
+		Initialize(InDesc, InBaseShaderResource, InBaseShaderResource->ResourceLocation, InCounterResource);
+	}
+
+	void CreateView(const D3D12_UNORDERED_ACCESS_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, FD3D12ResourceLocation& InResourceLocation, FD3D12Resource* InCounterResource);
+
+	void Initialize(D3D12_UNORDERED_ACCESS_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, FD3D12ResourceLocation& InResourceLocation, FD3D12Resource* InCounterResource = nullptr)
+	{
+		SetDesc(InDesc);
+		CreateView(InDesc, InBaseShaderResource, InResourceLocation, InCounterResource);
+	}
+
+	virtual void RecreateView() override
+	{
+		check(CounterResource == nullptr);
+		check(ResourceLocation->GetOffsetFromBaseOfResource() == 0);
+		CreateView(Desc, BaseShaderResource, *ResourceLocation, nullptr);
 	}
 
 	bool IsCounterResourceInitialized() const { return CounterResourceInitialized; }
@@ -923,10 +987,27 @@ public:
 
 	FD3D12Resource* GetCounterResource() { return CounterResource; }
 
-private:
-
+protected:
 	TRefCountPtr<FD3D12Resource> CounterResource;
-	bool CounterResourceInitialized;
+	bool CounterResourceInitialized = false;
+};
+
+class FD3D12UnorderedAccessViewWithLocation : public FD3D12UnorderedAccessView
+{
+public:
+	FD3D12UnorderedAccessViewWithLocation(FD3D12Device* InParent)
+	: FD3D12UnorderedAccessView(InParent)
+	, ViewLocation(InParent)
+	{
+	}
+
+	virtual void RecreateView() override
+	{
+		// Currently unsupported because the view location resource would also need to be recreated then
+		check(false);
+	}
+
+	FD3D12ResourceLocation ViewLocation;
 };
 
 #if USE_STATIC_ROOT_SIGNATURE
@@ -935,7 +1016,7 @@ class FD3D12ConstantBufferView : public FD3D12DeviceChild
 			public:
 //protected:
 	/** The handle to the descriptor in the offline descriptor heap */
-	CD3DX12_CPU_DESCRIPTOR_HANDLE OfflineDescriptorHandle;
+	D3D12_CPU_DESCRIPTOR_HANDLE OfflineDescriptorHandle;
 
 	/** Index of the descriptor in the offline heap */
 	uint32 OfflineHeapIndex;
@@ -984,10 +1065,26 @@ public:
 class FD3D12RenderTargetView : public FD3D12View<D3D12_RENDER_TARGET_VIEW_DESC>, public FRHIResource, public FD3D12LinkedAdapterObject<FD3D12RenderTargetView>
 {
 public:
-	FD3D12RenderTargetView(FD3D12Device* InParent, const D3D12_RENDER_TARGET_VIEW_DESC& InRTVDesc, FD3D12ResourceLocation& InResourceLocation)
+	FD3D12RenderTargetView(FD3D12Device* InParent, const D3D12_RENDER_TARGET_VIEW_DESC& InRTVDesc, FD3D12BaseShaderResource* InBaseShaderResource)
 		: FD3D12View(InParent, ViewSubresourceSubsetFlags_None)
+		, FRHIResource(RRT_None)
 	{
-		CreateView(InRTVDesc, InResourceLocation);
+		CreateView(InRTVDesc, InBaseShaderResource, InBaseShaderResource->ResourceLocation);
+	}
+
+	FD3D12RenderTargetView(FD3D12Device* InParent, const D3D12_RENDER_TARGET_VIEW_DESC& InRTVDesc, FD3D12BaseShaderResource* InBaseShaderResource, FD3D12ResourceLocation& InResourceLocation)
+		: FD3D12View(InParent, ViewSubresourceSubsetFlags_None)
+		, FRHIResource(RRT_None)
+	{
+		CreateView(InRTVDesc, InBaseShaderResource, InResourceLocation);
+	}
+
+	void CreateView(const D3D12_RENDER_TARGET_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, FD3D12ResourceLocation& InResourceLocation);
+
+	virtual void RecreateView() override
+	{
+		check(ResourceLocation->GetOffsetFromBaseOfResource() == 0);
+		CreateView(Desc, BaseShaderResource, BaseShaderResource->ResourceLocation);
 	}
 };
 
@@ -999,34 +1096,17 @@ class FD3D12DepthStencilView : public FD3D12View<D3D12_DEPTH_STENCIL_VIEW_DESC>,
 	CViewSubresourceSubset StencilOnlyViewSubresourceSubset;
 
 public:
-	FD3D12DepthStencilView(FD3D12Device* InParent, const D3D12_DEPTH_STENCIL_VIEW_DESC& InDSVDesc, FD3D12ResourceLocation& InResourceLocation, bool InHasStencil)
+	FD3D12DepthStencilView(FD3D12Device* InParent, const D3D12_DEPTH_STENCIL_VIEW_DESC& InDSVDesc, FD3D12BaseShaderResource* InBaseShaderResource, bool InHasStencil)
 		: FD3D12View(InParent, ViewSubresourceSubsetFlags_DepthAndStencilDsv)
+		, FRHIResource(RRT_None)
 		, bHasDepth(true)				// Assume all DSVs have depth bits in their format
 		, bHasStencil(InHasStencil)		// Only some DSVs have stencil bits in their format
 	{
-		CreateView(InDSVDesc, InResourceLocation);
-
-		check(Resource);
-
-		// Create individual subresource subsets for each plane
-		if (bHasDepth)
-		{
-			DepthOnlyViewSubresourceSubset = CViewSubresourceSubset(InDSVDesc,
-				Resource->GetMipLevels(),
-				Resource->GetArraySize(),
-				Resource->GetDesc().Format,
-				ViewSubresourceSubsetFlags_DepthOnlyDsv);
-		}
-
-		if (bHasStencil)
-		{
-			StencilOnlyViewSubresourceSubset = CViewSubresourceSubset(InDSVDesc,
-				Resource->GetMipLevels(),
-				Resource->GetArraySize(),
-				Resource->GetDesc().Format,
-				ViewSubresourceSubsetFlags_StencilOnlyDsv);
-		}
+		CreateView(InDSVDesc, InBaseShaderResource, InBaseShaderResource->ResourceLocation);
+		SetupDepthStencilViewSubresourceSubset();
 	}
+
+	void CreateView(const D3D12_DEPTH_STENCIL_VIEW_DESC& InDesc, FD3D12BaseShaderResource* InBaseShaderResource, FD3D12ResourceLocation& InResourceLocation);
 
 	bool HasDepth() const
 	{
@@ -1036,6 +1116,31 @@ public:
 	bool HasStencil() const
 	{
 		return bHasStencil;
+	}
+
+	void SetupDepthStencilViewSubresourceSubset()
+	{
+		if (Resource)
+		{
+			// Create individual subresource subsets for each plane
+			if (bHasDepth)
+			{
+				DepthOnlyViewSubresourceSubset = CViewSubresourceSubset(Desc,
+					Resource->GetMipLevels(),
+					Resource->GetArraySize(),
+					Resource->GetDesc().Format,
+					ViewSubresourceSubsetFlags_DepthOnlyDsv);
+			}
+
+			if (bHasStencil)
+			{
+				StencilOnlyViewSubresourceSubset = CViewSubresourceSubset(Desc,
+					Resource->GetMipLevels(),
+					Resource->GetArraySize(),
+					Resource->GetDesc().Format,
+					ViewSubresourceSubsetFlags_StencilOnlyDsv);
+			}
+		}
 	}
 
 	CViewSubresourceSubset& GetDepthOnlyViewSubresourceSubset()
@@ -1048,6 +1153,13 @@ public:
 	{
 		check(bHasStencil);
 		return StencilOnlyViewSubresourceSubset;
+	}
+
+	virtual void RecreateView() override
+	{
+		check(ResourceLocation->GetOffsetFromBaseOfResource() == 0);
+		CreateView(Desc, BaseShaderResource, BaseShaderResource->ResourceLocation);
+		SetupDepthStencilViewSubresourceSubset();
 	}
 };
 

@@ -53,27 +53,27 @@ namespace DistortionRenderingUtils
 				Parameters.DistortionMap = DistortionMapResource->TextureRHI;
 				Parameters.DistortionMapSampler = TStaticSamplerState<SF_Bilinear, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 
-				TResourceArray<FVector2D> InputPointsResourceArray;
+				TResourceArray<FVector2f> InputPointsResourceArray;
 				InputPointsResourceArray.Reserve(NumPoints);
 				for (int32 Index = 0; Index < NumPoints; Index++)
 				{
-					InputPointsResourceArray.Add(Points[Index]);
+					InputPointsResourceArray.Add(FVector2f(Points[Index]));	// LWC_TODO: Precision loss
 				}
 
-				TResourceArray<FVector2D> EmptyBuffer;
+				TResourceArray<FVector2f> EmptyBuffer;
 				EmptyBuffer.AddZeroed(NumPoints);
 
-				const uint32 BufferSize = sizeof(FVector2D) * NumPoints;
+				const uint32 BufferSize = sizeof(FVector2f) * NumPoints;
 
 				// Create an SRV for the input buffer of image points
-				FRHIResourceCreateInfo CreateInfo(&InputPointsResourceArray);
-				FStructuredBufferRHIRef InputPointsBuffer = RHICreateStructuredBuffer(sizeof(FVector2D), BufferSize, BUF_Static | BUF_ShaderResource, CreateInfo);
+				FRHIResourceCreateInfo CreateInfo(TEXT("ImagePointsInitialData"), &InputPointsResourceArray);
+				FBufferRHIRef InputPointsBuffer = RHICreateStructuredBuffer(sizeof(FVector2f), BufferSize, BUF_Static | BUF_ShaderResource, CreateInfo);
 				FShaderResourceViewRHIRef InputPointsSRV = RHICreateShaderResourceView(InputPointsBuffer);
 				Parameters.InputPoints = InputPointsSRV;
 
 				// Create a RWBuffer to use as a UAV for the output buffer of undistorted points
 				FRWBuffer UndistortedPointsBuffer;
-				UndistortedPointsBuffer.Initialize(sizeof(FVector2D), NumPoints, PF_G32R32F, ERHIAccess::UAVCompute, BUF_SourceCopy | BUF_UnorderedAccess, TEXT("UndistortedPoints"), &EmptyBuffer);
+				UndistortedPointsBuffer.Initialize(TEXT("UndistortedPointsBuffer"), sizeof(FVector2f), NumPoints, PF_G32R32F, ERHIAccess::UAVCompute, BUF_SourceCopy | BUF_UnorderedAccess, &EmptyBuffer);
 				Parameters.UndistortedPoints = UndistortedPointsBuffer.UAV;
 
 				// Dispatch compute shader
@@ -86,16 +86,17 @@ namespace DistortionRenderingUtils
 				RHICmdList.CopyToStagingBuffer(UndistortedPointsBuffer.Buffer, DestinationStagingBuffer, 0, BufferSize);
 
 				// Wait to ensure that the staging buffer is ready to read
+				RHICmdList.SubmitCommandsAndFlushGPU();
 				RHICmdList.BlockUntilGPUIdle();
 
 				// Copy data out of the staging buffer
-				FVector2D* UndistortedPointData = static_cast<FVector2D*>(DestinationStagingBuffer->Lock(0, BufferSize));
+				FVector2f* UndistortedPointData = static_cast<FVector2f*>(DestinationStagingBuffer->Lock(0, BufferSize));
 
 				if (UndistortedPointData)
 				{
 					for (int32 Index = 0; Index < NumPoints; ++Index)
 					{
-						OutUndistortedPoints[Index] = UndistortedPointData[Index];
+						OutUndistortedPoints[Index] = FVector2D(UndistortedPointData[Index]);
 					}
 				}
 

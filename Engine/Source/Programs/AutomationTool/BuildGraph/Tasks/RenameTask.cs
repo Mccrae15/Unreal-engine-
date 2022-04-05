@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using AutomationTool;
+using EpicGames.BuildGraph;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -9,8 +10,9 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using UnrealBuildTool;
+using UnrealBuildBase;
 
 namespace BuildGraph.Tasks
 {
@@ -110,7 +112,7 @@ namespace BuildGraph.Tasks
 			}
 
 			// Find the input files
-			HashSet<FileReference> InputFiles = ResolveFilespec(CommandUtils.RootDirectory, Parameters.Files, TagNameToFileSet);
+			HashSet<FileReference> InputFiles = ResolveFilespec(Unreal.RootDirectory, Parameters.Files, TagNameToFileSet);
 
 			// Find all the corresponding output files
 			Dictionary<FileReference, FileReference> RenameFiles = new Dictionary<FileReference, FileReference>();

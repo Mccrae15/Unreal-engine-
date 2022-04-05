@@ -15,7 +15,6 @@
 	"IsBetaVersion": false,
 	"Installed": false,
 	"SupportedTargetPlatforms": [
-		"Win32",
 		"Win64"
 	],
 	"Modules": [
@@ -23,8 +22,7 @@
 			"Name": "HPMotionController",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
-				"Win32",
+			"PlatformAllowList": [
 				"Win64"
 			]
 		}
@@ -33,8 +31,7 @@
 		{
 			"Name": "OpenXR",
 			"Enabled": true,
-			"WhitelistPlatforms": [
-				"Win32",
+			"PlatformAllowList": [
 				"Win64"
 			]
 		}

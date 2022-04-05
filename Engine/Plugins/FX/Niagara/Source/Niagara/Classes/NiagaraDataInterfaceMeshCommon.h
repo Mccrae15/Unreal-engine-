@@ -17,28 +17,27 @@ struct FMeshTriCoordinate
 	int32 Tri;
 
 	UPROPERTY(EditAnywhere, Category="Coordinate")
-	FVector BaryCoord;
+	FVector3f BaryCoord;
 
 	FMeshTriCoordinate()
 	: Tri(INDEX_NONE)
-	, BaryCoord(FVector::ZeroVector)
+	, BaryCoord(FVector3f::ZeroVector)
 	{}
 
-	FMeshTriCoordinate(int32 InTri, FVector InBaryCoord)
+	FMeshTriCoordinate(int32 InTri, FVector3f InBaryCoord)
 		: Tri(InTri)
 		, BaryCoord(InBaryCoord)
 	{}
 };
 
-FORCEINLINE FVector RandomBarycentricCoord(FRandomStream& RandStream)
+FORCEINLINE FVector3f RandomBarycentricCoord(FRandomStream& RandStream)
 {
 	//TODO: This is gonna be slooooow. Move to an LUT possibly or find faster method.
 	//Can probably handle lower quality randoms / uniformity for a decent speed win.
 	float r0 = RandStream.GetFraction();
 	float r1 = RandStream.GetFraction();
 	float sqrt0 = FMath::Sqrt(r0);
-	float sqrt1 = FMath::Sqrt(r1);
-	return FVector(1.0f - sqrt0, sqrt0 * (1.0 - r1), r1 * sqrt0);
+	return FVector3f(1.0f - sqrt0, sqrt0 * (1.0 - r1), r1 * sqrt0);
 }
 
 template<typename T>
@@ -54,13 +53,13 @@ FORCEINLINE FVector4 BarycentricInterpolate(float BaryX, float BaryY, float Bary
 }
 
 template<typename T>
-FORCEINLINE T BarycentricInterpolate(FVector BaryCoord, T V0, T V1, T V2)
+FORCEINLINE T BarycentricInterpolate(FVector3f BaryCoord, T V0, T V1, T V2)
 {
 	return V0 * BaryCoord.X + V1 * BaryCoord.Y + V2 * BaryCoord.Z;
 }
 
 // Overload for FVector4 to work around C2719: (formal parameter with requested alignment of 16 won't be aligned)
-FORCEINLINE FVector4 BarycentricInterpolate(FVector BaryCoord, const FVector4& V0, const FVector4& V1, const FVector4& V2)
+FORCEINLINE FVector4 BarycentricInterpolate(FVector3f BaryCoord, const FVector4& V0, const FVector4& V1, const FVector4& V2)
 {
 	return V0 * BaryCoord.X + V1 * BaryCoord.Y + V2 * BaryCoord.Z;
 }

@@ -11,83 +11,102 @@
 #include "Dom/JsonObject.h"
 #include "Delegates/IDelegateInstance.h"
 #include "Engine/EngineTypes.h"
-#include "PlayerId.h"
+#include "PixelStreamingPlayerId.h"
 
 class IWebSocket;
 
-// callback interface for `FSignallingServerConnection`
-class FSignallingServerConnectionObserver
-{
-public:
-	virtual ~FSignallingServerConnectionObserver()
-	{}
+namespace UE {
+	namespace PixelStreaming {
 
-	virtual void OnSignallingServerDisconnected() = 0;
-	virtual void OnConfig(const webrtc::PeerConnectionInterface::RTCConfiguration& Config) = 0;
+		// callback interface for `FSignallingServerConnection`
+		class FSignallingServerConnectionObserver
+		{
+		public:
+			virtual ~FSignallingServerConnectionObserver()
+			{
+			}
 
-	// Streamer-only
-	virtual void OnOffer(FPlayerId PlayerId, TUniquePtr<webrtc::SessionDescriptionInterface> Sdp)
-	{ unimplemented(); }
-	virtual void OnRemoteIceCandidate(FPlayerId PlayerId, const std::string& SdpMid, int SdpMLineIndex, const std::string& Sdp)
-	{ unimplemented(); }
-	virtual void OnPlayerDisconnected(FPlayerId PlayerId)
-	{ unimplemented(); }
+			virtual void OnSignallingServerDisconnected() = 0;
+			virtual void OnConfig(const webrtc::PeerConnectionInterface::RTCConfiguration& Config) = 0;
+			virtual void OnSessionDescription(FPixelStreamingPlayerId PlayerId, webrtc::SdpType Type, const FString& Sdp)
+			{
+				unimplemented();
+			}
 
-	// Player-only
-	virtual void OnAnswer(TUniquePtr<webrtc::SessionDescriptionInterface> Sdp)
-	{ unimplemented(); }
-	virtual void OnRemoteIceCandidate(TUniquePtr<webrtc::IceCandidateInterface> Candidate)
-	{ unimplemented(); }
-	virtual void OnPlayerCount(uint32 Count)
-	{ unimplemented(); }
-};
+			// Streamer-only
+			virtual void OnRemoteIceCandidate(FPixelStreamingPlayerId PlayerId, const std::string& SdpMid, int SdpMLineIndex, const std::string& Sdp)
+			{
+				unimplemented();
+			}
+			virtual void OnPlayerConnected(FPixelStreamingPlayerId PlayerId, int Flags)
+			{
+				unimplemented();
+			}
+			virtual void OnPlayerDisconnected(FPixelStreamingPlayerId PlayerId)
+			{
+				unimplemented();
+			}
 
-class FSignallingServerConnection final
-{
-public:
-	explicit FSignallingServerConnection(FSignallingServerConnectionObserver& Observer, const FString& StreamerId);
-	~FSignallingServerConnection();
-	void Connect(const FString& Url);
-	void Disconnect();
+			// Player-only
+			virtual void OnRemoteIceCandidate(TUniquePtr<webrtc::IceCandidateInterface> Candidate)
+			{
+				unimplemented();
+			}
+			virtual void OnPlayerCount(uint32 Count)
+			{
+				unimplemented();
+			}
+		};
 
-	void SendOffer(const webrtc::SessionDescriptionInterface& SDP);
-	void SendAnswer(FPlayerId PlayerId, const webrtc::SessionDescriptionInterface& SDP);
-	void SendIceCandidate(const webrtc::IceCandidateInterface& IceCandidate);
-	void SendIceCandidate(FPlayerId PlayerId, const webrtc::IceCandidateInterface& IceCandidate);
-	void SendDisconnectPlayer(FPlayerId PlayerId, const FString& Reason);
+		class FSignallingServerConnection final
+		{
+		public:
+			explicit FSignallingServerConnection(FSignallingServerConnectionObserver& Observer, const FString& StreamerId);
+			~FSignallingServerConnection();
+			void Connect(const FString& Url);
+			void Disconnect();
 
-private:
-	void KeepAlive();
+			void SendOffer(FPixelStreamingPlayerId PlayerId, const webrtc::SessionDescriptionInterface& SDP);
+			void SendAnswer(FPixelStreamingPlayerId PlayerId, const webrtc::SessionDescriptionInterface& SDP);
+			void SendIceCandidate(const webrtc::IceCandidateInterface& IceCandidate);
+			void SendIceCandidate(FPixelStreamingPlayerId PlayerId, const webrtc::IceCandidateInterface& IceCandidate);
+			void SendDisconnectPlayer(FPixelStreamingPlayerId PlayerId, const FString& Reason);
 
-	void OnConnected();
-	void OnConnectionError(const FString& Error);
-	void OnClosed(int32 StatusCode, const FString& Reason, bool bWasClean);
-	void OnMessage(const FString& Msg);
+		private:
+			void KeepAlive();
 
-	using FJsonObjectPtr = TSharedPtr<FJsonObject>;
+			void OnConnected();
+			void OnConnectionError(const FString& Error);
+			void OnClosed(int32 StatusCode, const FString& Reason, bool bWasClean);
+			void OnMessage(const FString& Msg);
 
-	void OnIdRequested();
-	void OnConfig(const FJsonObjectPtr& Json);
-	void OnSessionDescription(const FJsonObjectPtr& Json);
-	void OnStreamerIceCandidate(const FJsonObjectPtr& Json);
-	void OnPlayerIceCandidate(const FJsonObjectPtr& Json);
-	void OnPlayerCount(const FJsonObjectPtr& Json);
-	void OnPlayerDisconnected(const FJsonObjectPtr& Json);
-	void SetPlayerIdJson(FJsonObjectPtr& JsonObject, FPlayerId PlayerId);
-	bool GetPlayerIdJson(const FJsonObjectPtr& Json, FPlayerId& OutPlayerId);
+			using FJsonObjectPtr = TSharedPtr<FJsonObject>;
 
-private:
-	FSignallingServerConnectionObserver& Observer;
-	FString StreamerId;
+			void OnIdRequested();
+			void OnConfig(const FJsonObjectPtr& Json);
+			void OnSessionDescription(const FJsonObjectPtr& Json);
+			void OnStreamerIceCandidate(const FJsonObjectPtr& Json);
+			void OnPlayerIceCandidate(const FJsonObjectPtr& Json);
+			void OnPlayerCount(const FJsonObjectPtr& Json);
+			void OnPlayerConnected(const FJsonObjectPtr& Json);
+			void OnPlayerDisconnected(const FJsonObjectPtr& Json);
+			void SetPlayerIdJson(FJsonObjectPtr& JsonObject, FPixelStreamingPlayerId PlayerId);
+			bool GetPlayerIdJson(const FJsonObjectPtr& Json, FPixelStreamingPlayerId& OutPlayerId);
 
-	FDelegateHandle OnConnectedHandle;
-	FDelegateHandle OnConnectionErrorHandle;
-	FDelegateHandle OnClosedHandle;
-	FDelegateHandle OnMessageHandle;
+		private:
+			FSignallingServerConnectionObserver& Observer;
+			FString StreamerId;
 
-	/** Handle for efficient management of KeepAlive timer */
-	FTimerHandle TimerHandle_KeepAlive;
-	const float KEEP_ALIVE_INTERVAL = 60.0f;
+			FDelegateHandle OnConnectedHandle;
+			FDelegateHandle OnConnectionErrorHandle;
+			FDelegateHandle OnClosedHandle;
+			FDelegateHandle OnMessageHandle;
 
-	TSharedPtr<IWebSocket> WS;
-};
+			/** Handle for efficient management of KeepAlive timer */
+			FTimerHandle TimerHandle_KeepAlive;
+			const float KEEP_ALIVE_INTERVAL = 60.0f;
+
+			TSharedPtr<IWebSocket> WS;
+		};
+	}
+}

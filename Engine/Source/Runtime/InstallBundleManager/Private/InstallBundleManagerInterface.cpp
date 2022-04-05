@@ -3,6 +3,8 @@
 #include "InstallBundleManagerInterface.h"
 #include "InstallBundleManagerModule.h"
 
+FInstallBundleManagerInitCompleteMultiDelegate IInstallBundleManager::InitCompleteDelegate;
+
 FInstallBundleCompleteMultiDelegate IInstallBundleManager::InstallBundleCompleteDelegate;
 
 FInstallBundlePausedMultiDelegate IInstallBundleManager::PausedBundleDelegate;
@@ -51,12 +53,12 @@ TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> IInstallBundleMan
 	return RequestUpdateContent(MakeArrayView(&BundleName, 1), Flags, LogVerbosityOverride);
 }
 
-void IInstallBundleManager::GetContentState(FName BundleName, EInstallBundleGetContentStateFlags Flags, bool bAddDependencies, FInstallBundleGetContentStateDelegate Callback, FName RequestTag /*= NAME_None*/)
+FDelegateHandle IInstallBundleManager::GetContentState(FName BundleName, EInstallBundleGetContentStateFlags Flags, bool bAddDependencies, FInstallBundleGetContentStateDelegate Callback, FName RequestTag /*= NAME_None*/)
 {
 	return GetContentState(MakeArrayView(&BundleName, 1), Flags, bAddDependencies, MoveTemp(Callback), RequestTag);
 }
 
-void IInstallBundleManager::GetInstallState(FName BundleName, bool bAddDependencies, FInstallBundleGetInstallStateDelegate Callback, FName RequestTag /*= NAME_None*/)
+FDelegateHandle IInstallBundleManager::GetInstallState(FName BundleName, bool bAddDependencies, FInstallBundleGetInstallStateDelegate Callback, FName RequestTag /*= NAME_None*/)
 {
 	return GetInstallState(MakeArrayView(&BundleName, 1), bAddDependencies, MoveTemp(Callback), RequestTag);
 }
@@ -69,6 +71,11 @@ TValueOrError<FInstallBundleCombinedInstallState, EInstallBundleResult> IInstall
 TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> IInstallBundleManager::RequestReleaseContent(FName ReleaseName, EInstallBundleReleaseRequestFlags Flags, TArrayView<const FName> KeepNames /*= TArrayView<const FName>()*/, ELogVerbosity::Type LogVerbosityOverride /*= ELogVerbosity::NoLogging*/)
 {
 	return RequestReleaseContent(MakeArrayView(&ReleaseName, 1), Flags, KeepNames, LogVerbosityOverride);
+}
+
+EInstallBundleResult IInstallBundleManager::FlushCache(FInstallBundleManagerFlushCacheCompleteDelegate Callback, ELogVerbosity::Type LogVerbosityOverride /*= ELogVerbosity::NoLogging*/)
+{
+	return FlushCache({}, MoveTemp(Callback), LogVerbosityOverride);
 }
 
 void IInstallBundleManager::RequestRemoveContentOnNextInit(FName RemoveName, TArrayView<const FName> KeepNames /*= TArrayView<const FName>()*/)

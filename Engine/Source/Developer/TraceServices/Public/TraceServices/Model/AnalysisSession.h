@@ -7,12 +7,20 @@
 
 class FName;
 
-namespace Trace
+namespace UE {
+namespace Trace {
+
+class IAnalyzer;
+
+} // namespace Trace
+} // namespace UE
+
+namespace TraceServices
 {
 
 class ILinearAllocator;
-class IAnalyzer;
-
+class IAnalysisCache;
+	
 class IProvider
 {
 public:
@@ -27,6 +35,7 @@ public:
 	virtual void Wait() const = 0;
 	
 	virtual const TCHAR* GetName() const = 0;
+	virtual uint32 GetTraceId() const = 0;
 	virtual bool IsAnalysisComplete() const = 0;
 	virtual double GetDurationSeconds() const = 0;
 	virtual void UpdateDurationSeconds(double Duration) = 0;
@@ -42,8 +51,10 @@ public:
 	virtual ILinearAllocator& GetLinearAllocator() = 0;
 	virtual const TCHAR* StoreString(const TCHAR* String) = 0;
 	virtual const TCHAR* StoreString(const FStringView& String) = 0;
+
+	virtual IAnalysisCache& GetCache() = 0;
 	
-	virtual void AddAnalyzer(IAnalyzer* Analyzer) = 0;
+	virtual void AddAnalyzer(UE::Trace::IAnalyzer* Analyzer) = 0;
 
 	virtual void AddProvider(const FName& Name, IProvider* Provider) = 0;
 	template<typename ProviderType>
@@ -95,4 +106,4 @@ struct FAnalysisSessionEditScope
 	IAnalysisSession& AnalysisSession;
 };
 	
-}
+} // namespace TraceServices

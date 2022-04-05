@@ -13,6 +13,7 @@
 #include "Misc/FileHelper.h"
 #include "VulkanPlatform.h"
 #include "VulkanLLM.h"
+#include "VulkanTransientResourceAllocator.h"
 
 TAutoConsoleVariable<int32> GRHIAllowAsyncComputeCvar(
 	TEXT("r.Vulkan.AllowAsyncCompute"),
@@ -41,6 +42,14 @@ static TAutoConsoleVariable<int32> CVarVulkanUseD24(
 	0,
 	TEXT("0: Use 32-bit float depth buffer (default)\n1: Use 24-bit fixed point depth buffer\n"),
 	ECVF_ReadOnly
+);
+
+TAutoConsoleVariable<int32> GRHIAllow64bitShaderAtomicsCvar(
+	TEXT("r.Vulkan.Allow64bitShaderAtomics"),
+	1,
+	TEXT("Whether to enable 64bit buffer/image atomics required by Nanite/Lumen\n")
+	TEXT("0 to disable 64bit atomics\n")
+	TEXT("1 to enable (default)")
 );
 
 #if NV_AFTERMATH
@@ -325,7 +334,7 @@ void FVulkanDevice::CreateDevice()
 	FVulkanPlatform::RestrictEnabledPhysicalDeviceFeatures(PhysicalFeatures);
 	DeviceInfo.pEnabledFeatures = &PhysicalFeatures;
 
-	FVulkanPlatform::EnablePhysicalDeviceFeatureExtensions(DeviceInfo);
+	FVulkanPlatform::EnablePhysicalDeviceFeatureExtensions(DeviceInfo, *this);
 
 #if VULKAN_SUPPORTS_NV_DIAGNOSTICS
 	VkPhysicalDeviceDiagnosticsConfigFeaturesNV DeviceDiagnosticsNV;
@@ -362,24 +371,22 @@ void FVulkanDevice::CreateDevice()
 #endif
 
 #if VULKAN_SUPPORTS_SEPARATE_DEPTH_STENCIL_LAYOUTS
-	VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR SeparateDepthStencilLayoutsFeatures;
 	if (bHasSeparateDepthStencilLayouts)
 	{
-		ZeroVulkanStruct(SeparateDepthStencilLayoutsFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SEPARATE_DEPTH_STENCIL_LAYOUTS_FEATURES_KHR);
-		SeparateDepthStencilLayoutsFeatures.separateDepthStencilLayouts = VK_TRUE;
-		SeparateDepthStencilLayoutsFeatures.pNext = const_cast<void*>(DeviceInfo.pNext);
-		DeviceInfo.pNext = &SeparateDepthStencilLayoutsFeatures;
+		ZeroVulkanStruct(OptionalFeatures.SeparateDepthStencilLayoutsFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SEPARATE_DEPTH_STENCIL_LAYOUTS_FEATURES_KHR);
+		OptionalFeatures.SeparateDepthStencilLayoutsFeatures.separateDepthStencilLayouts = VK_TRUE;
+		OptionalFeatures.SeparateDepthStencilLayoutsFeatures.pNext = const_cast<void*>(DeviceInfo.pNext);
+		DeviceInfo.pNext = &OptionalFeatures.SeparateDepthStencilLayoutsFeatures;
 	}
 #endif
 
 #if VULKAN_SUPPORTS_SCALAR_BLOCK_LAYOUT
-	VkPhysicalDeviceScalarBlockLayoutFeaturesEXT ScalarBlockLayoutFeatures;
 	if (OptionalDeviceExtensions.HasScalarBlockLayoutFeatures)
 	{
-		ZeroVulkanStruct(ScalarBlockLayoutFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES_EXT);
-		ScalarBlockLayoutFeatures.scalarBlockLayout = VK_TRUE;
-		ScalarBlockLayoutFeatures.pNext = (void*)DeviceInfo.pNext;
-		DeviceInfo.pNext = &ScalarBlockLayoutFeatures;
+		ZeroVulkanStruct(OptionalFeatures.ScalarBlockLayoutFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES_EXT);
+		OptionalFeatures.ScalarBlockLayoutFeatures.scalarBlockLayout = VK_TRUE;
+		OptionalFeatures.ScalarBlockLayoutFeatures.pNext = (void*)DeviceInfo.pNext;
+		DeviceInfo.pNext = &OptionalFeatures.ScalarBlockLayoutFeatures;
 	}
 #endif
 
@@ -391,6 +398,38 @@ void FVulkanDevice::CreateDevice()
 		DeviceMultiviewFeatures.multiview = VK_TRUE;
 		DeviceMultiviewFeatures.pNext = (void*)DeviceInfo.pNext;
 		DeviceInfo.pNext = &DeviceMultiviewFeatures;
+	}
+#endif
+
+#if VULKAN_SUPPORTS_BUFFER_64BIT_ATOMICS && VULKAN_SUPPORTS_IMAGE_64BIT_ATOMICS
+	const bool bEnable64bitAtomics = (GRHIAllow64bitShaderAtomicsCvar.GetValueOnAnyThread() != 0);
+
+	// Ensure we have both to enable atomic code paths
+	VkPhysicalDeviceShaderAtomicInt64Features BufferAtomicFeatures;
+	VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT ImageAtomicFeatures;
+	if (bEnable64bitAtomics && OptionalDeviceExtensions.HasBufferAtomicInt64 && OptionalDeviceExtensions.HasImageAtomicInt64)
+	{
+		ZeroVulkanStruct(BufferAtomicFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR);
+		BufferAtomicFeatures.shaderBufferInt64Atomics = VK_TRUE;
+
+		ZeroVulkanStruct(ImageAtomicFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT);
+		ImageAtomicFeatures.shaderImageInt64Atomics = VK_TRUE;
+
+		BufferAtomicFeatures.pNext = &ImageAtomicFeatures;
+		ImageAtomicFeatures.pNext = (void*)DeviceInfo.pNext;
+		DeviceInfo.pNext = &BufferAtomicFeatures;
+
+		GRHISupportsAtomicUInt64 = true;
+	}
+#endif
+
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+	VkPhysicalDeviceFragmentShadingRateFeaturesKHR RequestedFragmentShadingRateFeatures;
+	if (OptionalDeviceExtensions.HasKHRFragmentShadingRate)
+	{
+		RequestedFragmentShadingRateFeatures = GetFragmentShadingRateFeatures();
+		RequestedFragmentShadingRateFeatures.pNext = (void*)DeviceInfo.pNext;
+		DeviceInfo.pNext = &RequestedFragmentShadingRateFeatures;
 	}
 #endif
 
@@ -531,6 +570,17 @@ void FVulkanDevice::SetupFormats()
 
 	static_assert(sizeof(VkFormat) <= sizeof(GPixelFormats[0].PlatformFormat), "PlatformFormat must be increased!");
 
+	// Create shortcuts for the possible component mappings
+	const VkComponentMapping ComponentMappingRGBA = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A };
+	const VkComponentMapping ComponentMappingRGB1 = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_ONE };
+	const VkComponentMapping ComponentMappingRG01 = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE };
+	const VkComponentMapping ComponentMappingR001 = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE };
+	const VkComponentMapping ComponentMappingRIII = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+	const VkComponentMapping ComponentMapping000R = { VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R };
+	const VkComponentMapping ComponentMappingR000 = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO };
+	const VkComponentMapping ComponentMappingRR01 = { VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE };
+
+
 	// Initialize the platform pixel format map.
 	for (int32 Index = 0; Index < PF_MAX; ++Index)
 	{
@@ -539,239 +589,221 @@ void FVulkanDevice::SetupFormats()
 		GVulkanBufferFormat[Index] = VK_FORMAT_UNDEFINED;
 		
 		// Set default component mapping
-		VkComponentMapping& ComponentMapping = PixelFormatComponentMapping[Index];
-		ComponentMapping.r = VK_COMPONENT_SWIZZLE_R;
-		ComponentMapping.g = VK_COMPONENT_SWIZZLE_G;
-		ComponentMapping.b = VK_COMPONENT_SWIZZLE_B;
-		ComponentMapping.a = VK_COMPONENT_SWIZZLE_A;
+		PixelFormatComponentMapping[Index] = ComponentMappingRGBA;
 	}
 
-	// Required feature flags for color render targets
-	uint32 ColorRenderTargetRequiredFeatures =	VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-												VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
-
+	const EPixelFormatCapabilities ColorRenderTargetRequiredCapabilities = (EPixelFormatCapabilities::TextureSample | EPixelFormatCapabilities::RenderTarget);
 
 	// Default formats
-	MapFormatSupport(PF_B8G8R8A8, VK_FORMAT_B8G8R8A8_UNORM);
-	SetComponentMapping(PF_B8G8R8A8, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
+	MapFormatSupport(PF_B8G8R8A8, { VK_FORMAT_B8G8R8A8_UNORM }, ComponentMappingRGBA);
+	MapFormatSupport(PF_G8, { VK_FORMAT_R8_UNORM }, ComponentMappingR001);
+	MapFormatSupport(PF_G16, { VK_FORMAT_R16_UNORM, VK_FORMAT_R16_SFLOAT }, ComponentMappingR001);
+	MapFormatSupport(PF_FloatRGB, { VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_FORMAT_R16G16B16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT }, ComponentMappingRGB1, ColorRenderTargetRequiredCapabilities);
+	MapFormatSupport(PF_FloatRGBA, { VK_FORMAT_R16G16B16A16_SFLOAT }, ComponentMappingRGBA, 8);
+	MapFormatSupport(PF_ShadowDepth, { VK_FORMAT_D16_UNORM }, ComponentMappingRIII);
+	MapFormatSupport(PF_G32R32F, { VK_FORMAT_R32G32_SFLOAT }, ComponentMappingRG01, 8);  // Requirement for GPU particles
+	MapFormatSupport(PF_A32B32G32R32F, { VK_FORMAT_R32G32B32A32_SFLOAT }, ComponentMappingRGBA, 16);
+	MapFormatSupport(PF_G16R16, { VK_FORMAT_R16G16_UNORM, VK_FORMAT_R16G16_SFLOAT }, ComponentMappingRG01);
+	MapFormatSupport(PF_G16R16F, { VK_FORMAT_R16G16_SFLOAT }, ComponentMappingRG01);
+	MapFormatSupport(PF_G16R16F_FILTER, { VK_FORMAT_R16G16_SFLOAT }, ComponentMappingRG01);
+	MapFormatSupport(PF_R16_UINT, { VK_FORMAT_R16_UINT }, ComponentMappingR001);
+	MapFormatSupport(PF_R16_SINT, { VK_FORMAT_R16_SINT }, ComponentMappingR001);
+	MapFormatSupport(PF_R32_UINT, { VK_FORMAT_R32_UINT }, ComponentMappingR001);
+	MapFormatSupport(PF_R32_SINT, { VK_FORMAT_R32_SINT }, ComponentMappingR001);
+	MapFormatSupport(PF_R8_UINT, { VK_FORMAT_R8_UINT }, ComponentMappingR001);
+	MapFormatSupport(PF_D24, { VK_FORMAT_X8_D24_UNORM_PACK32, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT }, ComponentMappingR000);
+	MapFormatSupport(PF_R16F, { VK_FORMAT_R16_SFLOAT }, ComponentMappingR001);
+	MapFormatSupport(PF_R16F_FILTER, { VK_FORMAT_R16_SFLOAT }, ComponentMappingR001);
+	MapFormatSupport(PF_FloatR11G11B10, { VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_FORMAT_R16G16B16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT }, ComponentMappingRGB1, ColorRenderTargetRequiredCapabilities);
+	MapFormatSupport(PF_A2B10G10R10, { VK_FORMAT_A2B10G10R10_UNORM_PACK32 }, ComponentMappingRGBA, 4);
+	MapFormatSupport(PF_A16B16G16R16, { VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT }, ComponentMappingRGBA, 8);
+	MapFormatSupport(PF_A8, { VK_FORMAT_R8_UNORM }, ComponentMapping000R);
+	MapFormatSupport(PF_R5G6B5_UNORM, { VK_FORMAT_R5G6B5_UNORM_PACK16 }, ComponentMappingRGBA);
+	MapFormatSupport(PF_B5G5R5A1_UNORM, { VK_FORMAT_A1R5G5B5_UNORM_PACK16, VK_FORMAT_R5G5B5A1_UNORM_PACK16, VK_FORMAT_B8G8R8A8_UNORM }, ComponentMappingRGBA);
+	MapFormatSupport(PF_R8G8B8A8, { VK_FORMAT_R8G8B8A8_UNORM }, ComponentMappingRGBA);
+	MapFormatSupport(PF_R8G8B8A8_UINT, { VK_FORMAT_R8G8B8A8_UINT }, ComponentMappingRGBA);
+	MapFormatSupport(PF_R8G8B8A8_SNORM, { VK_FORMAT_R8G8B8A8_SNORM }, ComponentMappingRGBA);
+	MapFormatSupport(PF_R16G16_UINT, { VK_FORMAT_R16G16_UINT }, ComponentMappingRG01);
+	MapFormatSupport(PF_R16G16B16A16_UINT, { VK_FORMAT_R16G16B16A16_UINT }, ComponentMappingRGBA);
+	MapFormatSupport(PF_R16G16B16A16_SINT, { VK_FORMAT_R16G16B16A16_SINT }, ComponentMappingRGBA);
+	MapFormatSupport(PF_R32G32_UINT, { VK_FORMAT_R32G32_UINT }, ComponentMappingRG01);
+	MapFormatSupport(PF_R32G32B32A32_UINT, { VK_FORMAT_R32G32B32A32_UINT }, ComponentMappingRGBA);
+	MapFormatSupport(PF_R16G16B16A16_SNORM, { VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_R16G16B16A16_SFLOAT }, ComponentMappingRGBA);
+	MapFormatSupport(PF_R16G16B16A16_UNORM, { VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT }, ComponentMappingRGBA);
+	MapFormatSupport(PF_R8G8, { VK_FORMAT_R8G8_UNORM }, ComponentMappingRG01);
+	MapFormatSupport(PF_V8U8, { VK_FORMAT_R8G8_UNORM }, ComponentMappingRG01);
+	MapFormatSupport(PF_R32_FLOAT, { VK_FORMAT_R32_SFLOAT }, ComponentMappingR001);
+	MapFormatSupport(PF_R8, { VK_FORMAT_R8_UNORM }, ComponentMappingR001);
+	MapFormatSupport(PF_G16R16_SNORM, { VK_FORMAT_R16G16_SNORM }, ComponentMappingRG01);
+	MapFormatSupport(PF_R8G8_UINT, { VK_FORMAT_R8G8_UINT }, ComponentMappingRG01);
+	MapFormatSupport(PF_R32G32B32_UINT, { VK_FORMAT_R32G32B32_UINT }, ComponentMappingRGB1);
+	MapFormatSupport(PF_R32G32B32_SINT, { VK_FORMAT_R32G32B32_SINT }, ComponentMappingRGB1);
+	MapFormatSupport(PF_R32G32B32F, { VK_FORMAT_R32G32B32_SFLOAT }, ComponentMappingRGB1);
+	MapFormatSupport(PF_R8_SINT, { VK_FORMAT_R8_SINT }, ComponentMappingR001);
 
-	MapFormatSupport(PF_G8, VK_FORMAT_R8_UNORM);
-	SetComponentMapping(PF_G8, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupportWithFallback(PF_G16, VK_FORMAT_R16_UNORM, {VK_FORMAT_R16_SFLOAT});
-	SetComponentMapping(PF_G16, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupportWithFallback(PF_FloatRGB, ColorRenderTargetRequiredFeatures, VK_FORMAT_B10G11R11_UFLOAT_PACK32, {VK_FORMAT_R16G16B16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT});
-	SetComponentMapping(PF_FloatRGB, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_FloatRGBA, VK_FORMAT_R16G16B16A16_SFLOAT, 8);
-	SetComponentMapping(PF_FloatRGBA, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
+	// This will be the format used for 64bit image atomics
+#if VULKAN_HAS_DEBUGGING_ENABLED
+	const EPixelFormatCapabilities RequiredCaps64U = GRenderDocFound ? EPixelFormatCapabilities::UAV : (EPixelFormatCapabilities::UAV | EPixelFormatCapabilities::TextureAtomics);
+#else
+	const EPixelFormatCapabilities RequiredCaps64U = (EPixelFormatCapabilities::UAV | EPixelFormatCapabilities::TextureAtomics);
+#endif
+	MapFormatSupport(PF_R64_UINT, { VK_FORMAT_R64_UINT, VK_FORMAT_R32G32_UINT }, ComponentMappingR001, RequiredCaps64U);
+	// Shaders were patched to use UAV, make sure we don't expose texture sampling
+	GPixelFormats[PF_R64_UINT].Capabilities &= ~(EPixelFormatCapabilities::AnyTexture | EPixelFormatCapabilities::TextureSample);
+	if (GRHISupportsAtomicUInt64 && !EnumHasAnyFlags(GPixelFormats[PF_R64_UINT].Capabilities, EPixelFormatCapabilities::UAV))
+	{
+		UE_LOG(LogVulkanRHI, Warning, TEXT("64bit image atomics were enabled, but the R64 format does not have UAV capabilities.  Disabling support."));
+		GRHISupportsAtomicUInt64 = false;
+	}
 
 	if (CVarVulkanUseD24.GetValueOnAnyThread() != 0)
 	{
 		// prefer VK_FORMAT_D24_UNORM_S8_UINT
-		MapFormatSupportWithFallback(PF_DepthStencil, VK_FORMAT_D24_UNORM_S8_UINT, {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT});
+		MapFormatSupport(PF_DepthStencil, { VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT }, ComponentMappingRIII);
+		MapFormatSupport(PF_X24_G8, { VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT }, ComponentMappingRR01);
 	}
 	else
 	{
 		// prefer VK_FORMAT_D32_SFLOAT_S8_UINT
-		MapFormatSupportWithFallback(PF_DepthStencil, VK_FORMAT_D32_SFLOAT_S8_UINT, {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT});
+		MapFormatSupport(PF_DepthStencil, { VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT }, ComponentMappingRIII);
+		MapFormatSupport(PF_X24_G8, { VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT }, ComponentMappingRR01);
 	}
-	SetComponentMapping(PF_DepthStencil, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY);
-
-	MapFormatSupport(PF_ShadowDepth, VK_FORMAT_D16_UNORM);
-	SetComponentMapping(PF_ShadowDepth, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY);
-
-	// Requirement for GPU particles
-	MapFormatSupport(PF_G32R32F, VK_FORMAT_R32G32_SFLOAT, 8);
-	SetComponentMapping(PF_G32R32F, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_A32B32G32R32F, VK_FORMAT_R32G32B32A32_SFLOAT, 16);
-	SetComponentMapping(PF_A32B32G32R32F, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupportWithFallback(PF_G16R16, VK_FORMAT_R16G16_UNORM, {VK_FORMAT_R16G16_SFLOAT});
-	SetComponentMapping(PF_G16R16, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_G16R16F, VK_FORMAT_R16G16_SFLOAT);
-	SetComponentMapping(PF_G16R16F, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_G16R16F_FILTER, VK_FORMAT_R16G16_SFLOAT);
-	SetComponentMapping(PF_G16R16F_FILTER, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_R16_UINT, VK_FORMAT_R16_UINT);
-	SetComponentMapping(PF_R16_UINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_R16_SINT, VK_FORMAT_R16_SINT);
-	SetComponentMapping(PF_R16_SINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_R32_UINT, VK_FORMAT_R32_UINT);
-	SetComponentMapping(PF_R32_UINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_R32_SINT, VK_FORMAT_R32_SINT);
-	SetComponentMapping(PF_R32_SINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_R8_UINT, VK_FORMAT_R8_UINT);
-	SetComponentMapping(PF_R8_UINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupportWithFallback(PF_D24, VK_FORMAT_X8_D24_UNORM_PACK32, {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT});
-	SetComponentMapping(PF_D24, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO);
-
-	MapFormatSupport(PF_R16F, VK_FORMAT_R16_SFLOAT);
-	SetComponentMapping(PF_R16F, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_R16F_FILTER, VK_FORMAT_R16_SFLOAT);
-	SetComponentMapping(PF_R16F_FILTER, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupportWithFallback(PF_FloatR11G11B10, ColorRenderTargetRequiredFeatures, VK_FORMAT_B10G11R11_UFLOAT_PACK32, {VK_FORMAT_R16G16B16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT});
-	SetComponentMapping(PF_FloatR11G11B10, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_A2B10G10R10, VK_FORMAT_A2B10G10R10_UNORM_PACK32, 4);
-	SetComponentMapping(PF_A2B10G10R10, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupportWithFallback(PF_A16B16G16R16, VK_FORMAT_R16G16B16A16_UNORM, {VK_FORMAT_R16G16B16A16_SFLOAT});
-	GPixelFormats[PF_A16B16G16R16].BlockBytes = 8;
-	SetComponentMapping(PF_A16B16G16R16, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupport(PF_A8, VK_FORMAT_R8_UNORM);
-	SetComponentMapping(PF_A8, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R);
-
-	MapFormatSupport(PF_R5G6B5_UNORM, VK_FORMAT_R5G6B5_UNORM_PACK16);
-	SetComponentMapping(PF_R5G6B5_UNORM, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupport(PF_R8G8B8A8, VK_FORMAT_R8G8B8A8_UNORM);
-	SetComponentMapping(PF_R8G8B8A8, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupport(PF_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_UINT);
-	SetComponentMapping(PF_R8G8B8A8_UINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupport(PF_R8G8B8A8_SNORM, VK_FORMAT_R8G8B8A8_SNORM);
-	SetComponentMapping(PF_R8G8B8A8_SNORM, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupport(PF_R16G16_UINT, VK_FORMAT_R16G16_UINT);
-	SetComponentMapping(PF_R16G16_UINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_R16G16B16A16_UINT, VK_FORMAT_R16G16B16A16_UINT);
-	SetComponentMapping(PF_R16G16B16A16_UINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupport(PF_R16G16B16A16_SINT, VK_FORMAT_R16G16B16A16_SINT);
-	SetComponentMapping(PF_R16G16B16A16_SINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupport(PF_R32G32_UINT, VK_FORMAT_R32G32_UINT);
-	SetComponentMapping(PF_R32G32_UINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_R32G32B32A32_UINT, VK_FORMAT_R32G32B32A32_UINT);
-	SetComponentMapping(PF_R32G32B32A32_UINT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupportWithFallback(PF_R16G16B16A16_SNORM, VK_FORMAT_R16G16B16A16_SNORM, {VK_FORMAT_R16G16B16A16_SFLOAT});
-	SetComponentMapping(PF_R16G16B16A16_SNORM, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupportWithFallback(PF_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_UNORM, {VK_FORMAT_R16G16B16A16_SFLOAT});
-	SetComponentMapping(PF_R16G16B16A16_UNORM, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-	MapFormatSupport(PF_R8G8, VK_FORMAT_R8G8_UNORM);
-	SetComponentMapping(PF_R8G8, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_V8U8, VK_FORMAT_R8G8_UNORM);
-	SetComponentMapping(PF_V8U8, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_R32_FLOAT, VK_FORMAT_R32_SFLOAT);
-	SetComponentMapping(PF_R32_FLOAT, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-
-	MapFormatSupport(PF_R8, VK_FORMAT_R8_UNORM);
-	SetComponentMapping(PF_R8, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
 
 	if (FVulkanPlatform::SupportsBCTextureFormats())
 	{
-		MapFormatSupport(PF_DXT1, VK_FORMAT_BC1_RGB_UNORM_BLOCK);	// Also what OpenGL expects (RGBA instead RGB, but not SRGB)
-		SetComponentMapping(PF_DXT1, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_ONE);
-
-		MapFormatSupport(PF_DXT3, VK_FORMAT_BC2_UNORM_BLOCK);
-		SetComponentMapping(PF_DXT3, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-		MapFormatSupport(PF_DXT5, VK_FORMAT_BC3_UNORM_BLOCK);
-		SetComponentMapping(PF_DXT5, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-		MapFormatSupport(PF_BC4, VK_FORMAT_BC4_UNORM_BLOCK);
-		SetComponentMapping(PF_BC4, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-		MapFormatSupport(PF_BC5, VK_FORMAT_BC5_UNORM_BLOCK);
-		SetComponentMapping(PF_BC5, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-		MapFormatSupport(PF_BC6H, VK_FORMAT_BC6H_UFLOAT_BLOCK);
-		SetComponentMapping(PF_BC6H, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-
-		MapFormatSupport(PF_BC7, VK_FORMAT_BC7_UNORM_BLOCK);
-		SetComponentMapping(PF_BC7, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
+		MapFormatSupport(PF_DXT1, { VK_FORMAT_BC1_RGB_UNORM_BLOCK }, ComponentMappingRGB1);	// Also what OpenGL expects (RGBA instead RGB, but not SRGB)
+		MapFormatSupport(PF_DXT3, { VK_FORMAT_BC2_UNORM_BLOCK },     ComponentMappingRGBA);
+		MapFormatSupport(PF_DXT5, { VK_FORMAT_BC3_UNORM_BLOCK },     ComponentMappingRGBA);
+		MapFormatSupport(PF_BC4,  { VK_FORMAT_BC4_UNORM_BLOCK },     ComponentMappingRGBA);
+		MapFormatSupport(PF_BC5,  { VK_FORMAT_BC5_UNORM_BLOCK },     ComponentMappingRGBA);
+		MapFormatSupport(PF_BC6H, { VK_FORMAT_BC6H_UFLOAT_BLOCK },   ComponentMappingRGBA);
+		MapFormatSupport(PF_BC7,  { VK_FORMAT_BC7_UNORM_BLOCK },     ComponentMappingRGBA);
 	}
 
 	if (FVulkanPlatform::SupportsASTCTextureFormats())
 	{
-		MapFormatSupport(PF_ASTC_4x4, VK_FORMAT_ASTC_4x4_UNORM_BLOCK);
-		if (GPixelFormats[PF_ASTC_4x4].Supported)
-		{
-			SetComponentMapping(PF_ASTC_4x4, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-		}
-
-		MapFormatSupport(PF_ASTC_6x6, VK_FORMAT_ASTC_6x6_UNORM_BLOCK);
-		if (GPixelFormats[PF_ASTC_6x6].Supported)
-		{
-			SetComponentMapping(PF_ASTC_6x6, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-		}
-
-		MapFormatSupport(PF_ASTC_8x8, VK_FORMAT_ASTC_8x8_UNORM_BLOCK);
-		if (GPixelFormats[PF_ASTC_8x8].Supported)
-		{
-			SetComponentMapping(PF_ASTC_8x8, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-		}
-
-		MapFormatSupport(PF_ASTC_10x10, VK_FORMAT_ASTC_10x10_UNORM_BLOCK);
-		if (GPixelFormats[PF_ASTC_10x10].Supported)
-		{
-			SetComponentMapping(PF_ASTC_10x10, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-		}
-
-		MapFormatSupport(PF_ASTC_12x12, VK_FORMAT_ASTC_12x12_UNORM_BLOCK);
-		if (GPixelFormats[PF_ASTC_12x12].Supported)
-		{
-			SetComponentMapping(PF_ASTC_12x12, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-		}
-
-		MapFormatSupport(PF_ETC2_RGB, VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK);
-		if (GPixelFormats[PF_ETC2_RGB].Supported)
-		{
-			SetComponentMapping(PF_ETC2_RGB, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_ONE);
-		}
-
-		MapFormatSupport(PF_ETC2_RGBA, VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK);
-		if (GPixelFormats[PF_ETC2_RGB].Supported)
-		{
-			SetComponentMapping(PF_ETC2_RGBA, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B, VK_COMPONENT_SWIZZLE_A);
-		}
-
-		MapFormatSupport(PF_ETC2_R11_EAC, VK_FORMAT_EAC_R11_UNORM_BLOCK);
-		if (GPixelFormats[PF_ETC2_R11_EAC].Supported)
-		{
-			SetComponentMapping(PF_ETC2_R11_EAC, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-		}
-
-		MapFormatSupport(PF_ETC2_RG11_EAC, VK_FORMAT_EAC_R11G11_UNORM_BLOCK);
-		if (GPixelFormats[PF_ETC2_RG11_EAC].Supported)
-		{
-			SetComponentMapping(PF_ETC2_RG11_EAC, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ONE);
-		}
+		MapFormatSupport(PF_ASTC_4x4,   { VK_FORMAT_ASTC_4x4_UNORM_BLOCK },   ComponentMappingRGBA);
+		MapFormatSupport(PF_ASTC_6x6,   { VK_FORMAT_ASTC_6x6_UNORM_BLOCK },   ComponentMappingRGBA);
+		MapFormatSupport(PF_ASTC_8x8,   { VK_FORMAT_ASTC_8x8_UNORM_BLOCK },   ComponentMappingRGBA);
+		MapFormatSupport(PF_ASTC_10x10, { VK_FORMAT_ASTC_10x10_UNORM_BLOCK }, ComponentMappingRGBA);
+		MapFormatSupport(PF_ASTC_12x12, { VK_FORMAT_ASTC_12x12_UNORM_BLOCK }, ComponentMappingRGBA);
 	}
+
+	if (FVulkanPlatform::SupportsETC2TextureFormats())
+	{
+		MapFormatSupport(PF_ETC2_RGB,      { VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK },   ComponentMappingRGB1);
+		MapFormatSupport(PF_ETC2_RGBA,     { VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK }, ComponentMappingRGBA);
+		MapFormatSupport(PF_ETC2_R11_EAC,  { VK_FORMAT_EAC_R11_UNORM_BLOCK },       ComponentMappingR001);
+		MapFormatSupport(PF_ETC2_RG11_EAC, { VK_FORMAT_EAC_R11G11_UNORM_BLOCK },    ComponentMappingRG01);
+	}
+
+	if (GetOptionalExtensions().HasEXTASTCDecodeMode)
+	{
+		MapFormatSupport(PF_ASTC_4x4_HDR,   { VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT },   ComponentMappingRGBA);
+		MapFormatSupport(PF_ASTC_6x6_HDR,   { VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK_EXT },   ComponentMappingRGBA);
+		MapFormatSupport(PF_ASTC_8x8_HDR,   { VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK_EXT },   ComponentMappingRGBA);
+		MapFormatSupport(PF_ASTC_10x10_HDR, { VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK_EXT }, ComponentMappingRGBA);
+		MapFormatSupport(PF_ASTC_12x12_HDR, { VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK_EXT }, ComponentMappingRGBA);
+	}
+
 
 	// Verify available Vertex Formats
-	static_assert(VET_None == 0, "Change loop below to skip VET_None");
-	for (int32 Index = (int32)VET_None + 1; Index < VET_MAX; ++Index)
 	{
-		EVertexElementType UEType = (EVertexElementType)Index;
-		VkFormat VulkanFormat = UEToVkBufferFormat(UEType);
-		if (!IsBufferFormatSupported(VulkanFormat))
+		static_assert(VET_None == 0, "Change loop below to skip VET_None");
+		for (int32 VETIndex = (int32)VET_None + 1; VETIndex < VET_MAX; ++VETIndex)
 		{
-			UE_LOG(LogVulkanRHI, Warning, TEXT("EVertexFormat(%d) is not supported with Vk format %d"), (int32)UEType, (int32)VulkanFormat);
+			const EVertexElementType UEType = (EVertexElementType)VETIndex;
+			const VkFormat VulkanFormat = UEToVkBufferFormat(UEType);
+			const VkFormatProperties& VertexFormatProperties = GetFormatProperties(VulkanFormat);
+			if (VertexFormatProperties.bufferFeatures == 0)
+			{
+				UE_LOG(LogVulkanRHI, Warning, TEXT("EVertexElementType(%d) is not supported with VkFormat %d"), (int32)UEType, (int32)VulkanFormat);
+			}
 		}
 	}
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
+	// Print the resulting pixel format support
+	if (FParse::Param(FCommandLine::Get(), TEXT("PrintVulkanPixelFormatMappings")))
+	{
+		auto GetFormatCapabilities = [](EPixelFormatCapabilities FormatCapabilities)
+		{
+#define VULKAN_CHECK_FORMAT_CAPABILITY(PF_Name) if (EnumHasAllFlags(FormatCapabilities, EPixelFormatCapabilities::PF_Name)) { CapabilitiesString += TEXT(#PF_Name) TEXT(", ");}
+			FString CapabilitiesString;
+
+			VULKAN_CHECK_FORMAT_CAPABILITY(TextureSample);
+			VULKAN_CHECK_FORMAT_CAPABILITY(TextureCube);
+			VULKAN_CHECK_FORMAT_CAPABILITY(RenderTarget);
+			VULKAN_CHECK_FORMAT_CAPABILITY(DepthStencil);
+			VULKAN_CHECK_FORMAT_CAPABILITY(TextureBlendable);
+			VULKAN_CHECK_FORMAT_CAPABILITY(TextureAtomics);
+
+			VULKAN_CHECK_FORMAT_CAPABILITY(Buffer);
+			VULKAN_CHECK_FORMAT_CAPABILITY(VertexBuffer);
+			VULKAN_CHECK_FORMAT_CAPABILITY(IndexBuffer);
+			VULKAN_CHECK_FORMAT_CAPABILITY(BufferAtomics);
+
+			VULKAN_CHECK_FORMAT_CAPABILITY(UAV);
+
+			return CapabilitiesString;
+#undef VULKAN_CHECK_FORMAT_CAPABILITY
+		};
+
+		UE_LOG(LogVulkanRHI, Warning, TEXT("Pixel Format Mappings for Vulkan:"));
+		UE_LOG(LogVulkanRHI, Warning, TEXT("%24s | VulkanFormat | BlockBytes | Components | ComponentMapping | BufferFormat | Capabilities "), TEXT("PixelFormatName"));
+		for (int32 PixelFormatIndex = 0; PixelFormatIndex < PF_MAX; ++PixelFormatIndex)
+		{
+			if (GPixelFormats[PixelFormatIndex].Supported)
+			{
+				const VkComponentMapping& ComponentMapping = PixelFormatComponentMapping[PixelFormatIndex];
+
+				FString CapabilitiesString = GetFormatCapabilities(GPixelFormats[PixelFormatIndex].Capabilities);
+
+				UE_LOG(LogVulkanRHI, Warning, TEXT("%24s | %12d | %10d | %10d | %10d,%d,%d,%d | %12d | 0x%08X (%s)"),
+					GPixelFormats[PixelFormatIndex].Name,
+					GPixelFormats[PixelFormatIndex].PlatformFormat,
+					GPixelFormats[PixelFormatIndex].BlockBytes,
+					GPixelFormats[PixelFormatIndex].NumComponents,
+					ComponentMapping.r, ComponentMapping.g, ComponentMapping.b, ComponentMapping.a,
+					(int32)GVulkanBufferFormat[PixelFormatIndex],
+					(uint32)GPixelFormats[PixelFormatIndex].Capabilities,
+					*CapabilitiesString
+					);
+			}
+		}
+
+#define VULKAN_CHECK_FORMAT_CAPABILITY(PF_Name) if (EnumHasAllFlags(GPixelFormats[PixelFormatIndex].Capabilities, EPixelFormatCapabilities::PF_Name)) { CapabilitiesString += TEXT(#PF_Name) TEXT(", ");}
+
+		UE_LOG(LogVulkanRHI, Warning, TEXT("Pixel Format Capabilities for Vulkan:"));
+		for (int32 PixelFormatIndex = 0; PixelFormatIndex < PF_MAX; ++PixelFormatIndex)
+		{
+			if (GPixelFormats[PixelFormatIndex].Supported)
+			{
+				FString CapabilitiesString;
+
+				VULKAN_CHECK_FORMAT_CAPABILITY(TextureSample);
+				VULKAN_CHECK_FORMAT_CAPABILITY(TextureCube);
+				VULKAN_CHECK_FORMAT_CAPABILITY(RenderTarget);
+				VULKAN_CHECK_FORMAT_CAPABILITY(DepthStencil);
+				VULKAN_CHECK_FORMAT_CAPABILITY(TextureBlendable);
+				VULKAN_CHECK_FORMAT_CAPABILITY(TextureAtomics);
+				
+				VULKAN_CHECK_FORMAT_CAPABILITY(Buffer);
+				VULKAN_CHECK_FORMAT_CAPABILITY(VertexBuffer);
+				VULKAN_CHECK_FORMAT_CAPABILITY(IndexBuffer);
+				VULKAN_CHECK_FORMAT_CAPABILITY(BufferAtomics);
+
+				VULKAN_CHECK_FORMAT_CAPABILITY(UAV);
+
+				UE_LOG(LogVulkanRHI, Warning, TEXT("%24s : %s"), GPixelFormats[PixelFormatIndex].Name, *CapabilitiesString);
+			}
+		}
+
+#undef VULKAN_CHECK_FORMAT_CAPABILITY
+
+	}
+#endif
 }
 
 #if VULKAN_SUPPORTS_COLOR_CONVERSIONS
@@ -793,61 +825,185 @@ VkSamplerYcbcrConversion FVulkanDevice::CreateSamplerColorConversion(const VkSam
 }
 #endif
 
-void FVulkanDevice::MapFormatSupport(EPixelFormat UEFormat, VkFormat VulkanFormat)
+
+const VkFormatProperties& FVulkanDevice::GetFormatProperties(VkFormat InFormat)
 {
-	MapFormatSupportWithFallback(UEFormat, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, VulkanFormat, TArrayView<VkFormat>());
+	if (InFormat >= 0 && InFormat < VK_FORMAT_RANGE_SIZE)
+	{
+		return FormatProperties[InFormat];
+	}
+
+	// Check for extension formats
+	const VkFormatProperties* FoundProperties = ExtensionFormatProperties.Find(InFormat);
+	if (FoundProperties)
+	{
+		return *FoundProperties;
+	}
+
+	// Add it for faster caching next time
+	VkFormatProperties& NewProperties = ExtensionFormatProperties.Add(InFormat);
+	FMemory::Memzero(NewProperties);
+	VulkanRHI::vkGetPhysicalDeviceFormatProperties(Gpu, InFormat, &NewProperties);
+	return NewProperties;
 }
 
-void FVulkanDevice::MapFormatSupportWithFallback(EPixelFormat UEFormat, uint32 RequiredTextureFeatures, VkFormat VulkanFormat, TArrayView<const VkFormat> FallbackTextureFormats)
+void FVulkanDevice::MapBufferFormatSupport(FPixelFormatInfo& PixelFormatInfo, EPixelFormat UEFormat, VkFormat VulkanFormat)
 {
-	VkFormat SupportedTextureFormat = IsTextureFormatSupported(VulkanFormat, RequiredTextureFeatures) ? VulkanFormat : VK_FORMAT_UNDEFINED;
-	VkFormat SupportedBufferFormat = IsBufferFormatSupported(VulkanFormat) ? VulkanFormat : VK_FORMAT_UNDEFINED;
-	
-	FPixelFormatInfo& FormatInfo = GPixelFormats[UEFormat];
-	// at this point we don't know if high level code will use this pixel format for buffers or textures
-	FormatInfo.Supported = (SupportedTextureFormat != VK_FORMAT_UNDEFINED || SupportedBufferFormat!= VK_FORMAT_UNDEFINED);
-	FormatInfo.PlatformFormat = SupportedTextureFormat;
-	
-	GVulkanBufferFormat[UEFormat] = SupportedBufferFormat;
-		
-	if (SupportedTextureFormat == VK_FORMAT_UNDEFINED)
+	check(GVulkanBufferFormat[UEFormat] == VK_FORMAT_UNDEFINED);
+
+	const VkFormatProperties& LocalFormatProperties = GetFormatProperties(VulkanFormat);
+	EPixelFormatCapabilities Capabilities = EPixelFormatCapabilities::None;
+
+	auto ConvertBufferCap = [&Capabilities, &LocalFormatProperties](EPixelFormatCapabilities UnrealCap, VkFormatFeatureFlags InFlag)
 	{
-		for (int32 Idx = 0; Idx < FallbackTextureFormats.Num(); ++Idx)
+		const bool HasBufferFeature = VKHasAllFlags(LocalFormatProperties.bufferFeatures, InFlag);
+		if (HasBufferFeature)
 		{
-			VkFormat FallbackTextureFormat = FallbackTextureFormats[Idx];
-			if (IsTextureFormatSupported(FallbackTextureFormat, RequiredTextureFeatures))
+			EnumAddFlags(Capabilities, UnrealCap);
+		}
+
+		// Make sure we aren't looking in the wrong place for a bit
+		check(!VKHasAnyFlags(LocalFormatProperties.linearTilingFeatures, InFlag));
+		check(!VKHasAnyFlags(LocalFormatProperties.optimalTilingFeatures, InFlag));
+	};
+
+	// Check for buffer caps, use the first one with any caps
+	if (LocalFormatProperties.bufferFeatures != 0)
+	{
+		EnumAddFlags(Capabilities, EPixelFormatCapabilities::Buffer);
+
+		ConvertBufferCap(EPixelFormatCapabilities::VertexBuffer, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT);
+		ConvertBufferCap(EPixelFormatCapabilities::BufferLoad, VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT);
+		ConvertBufferCap(EPixelFormatCapabilities::BufferStore, VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT);
+		ConvertBufferCap(EPixelFormatCapabilities::BufferAtomics, VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT);
+
+		// Vulkan index buffers aren't tied to formats, so any 16 or 32 bit UINT format with a single component will do...
+		// But because we can't check for uint vs float, hardcode supported formats for now
+		if (EnumHasAllFlags(Capabilities, (EPixelFormatCapabilities::BufferLoad | EPixelFormatCapabilities::BufferStore)) &&
+			((VulkanFormat == VK_FORMAT_R16_UINT) || (VulkanFormat == VK_FORMAT_R32_UINT)))
+		{
+			EnumAddFlags(Capabilities, EPixelFormatCapabilities::IndexBuffer);
+		}
+
+		GVulkanBufferFormat[UEFormat] = VulkanFormat;
+		PixelFormatInfo.Capabilities |= Capabilities;
+	}
+}
+
+void FVulkanDevice::MapImageFormatSupport(FPixelFormatInfo& PixelFormatInfo, const TArrayView<const VkFormat>& PrioritizedFormats, EPixelFormatCapabilities RequiredCapabilities)
+{
+	// Query for MipMap support with typical parameters
+	auto SupportsMipMap = [this](VkFormat InFormat)
+	{
+		VkImageFormatProperties ImageFormatProperties;
+		VkResult RetVal = VulkanRHI::vkGetPhysicalDeviceImageFormatProperties(Gpu, InFormat, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT, 0, &ImageFormatProperties);
+		return (RetVal == VK_SUCCESS) && (ImageFormatProperties.maxMipLevels > 1);
+	};
+
+	EPixelFormatCapabilities Capabilities = EPixelFormatCapabilities::None;
+	auto ConvertImageCap = [&Capabilities](const VkFormatProperties& InFormatProperties, EPixelFormatCapabilities UnrealCap, VkFormatFeatureFlags InFlag)
+	{
+		// Do not distinguish between Linear and Optimal for now.
+		const bool HasImageFeature = VKHasAllFlags(InFormatProperties.linearTilingFeatures, InFlag) || VKHasAllFlags(InFormatProperties.optimalTilingFeatures, InFlag);
+		if (HasImageFeature)
+		{
+			EnumAddFlags(Capabilities, UnrealCap);
+		}
+
+		// Make sure we aren't looking in the wrong place for a bit
+		check(!VKHasAnyFlags(InFormatProperties.bufferFeatures, InFlag));
+	};
+
+	// Go through the PrioritizedFormats and use the first one that meets RequiredCapabilities
+	for (int32 FormatIndex = 0; FormatIndex < PrioritizedFormats.Num(); ++FormatIndex)
+	{
+		Capabilities = EPixelFormatCapabilities::None;
+
+		const VkFormat VulkanFormat = PrioritizedFormats[FormatIndex];
+		const VkFormatProperties& LocalFormatProperties = GetFormatProperties(VulkanFormat);
+
+		// Check for individual texture caps
+		ConvertImageCap(LocalFormatProperties, EPixelFormatCapabilities::AnyTexture | EPixelFormatCapabilities::TextureSample | EPixelFormatCapabilities::TextureLoad, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+		ConvertImageCap(LocalFormatProperties, EPixelFormatCapabilities::DepthStencil, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+		ConvertImageCap(LocalFormatProperties, EPixelFormatCapabilities::RenderTarget, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT);
+		ConvertImageCap(LocalFormatProperties, EPixelFormatCapabilities::TextureBlendable, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT);
+		ConvertImageCap(LocalFormatProperties, EPixelFormatCapabilities::UAV | EPixelFormatCapabilities::TypedUAVLoad | EPixelFormatCapabilities::TypedUAVStore, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
+
+		ConvertImageCap(LocalFormatProperties, EPixelFormatCapabilities::TextureAtomics, VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT);
+
+		if (EnumHasAllFlags(Capabilities, EPixelFormatCapabilities::AnyTexture))
+		{
+			// We support gather, but some of our shaders assume offsets so check against features
+			if (GetPhysicalFeatures().shaderImageGatherExtended)
 			{
-				SupportedTextureFormat = FallbackTextureFormat;
-				FormatInfo.PlatformFormat = FallbackTextureFormat;
-				FormatInfo.Supported = true;
-								
-				UE_LOG(LogVulkanRHI, Display, TEXT("MapFormatSupport: %s (images) is not supported with Vk format %d, falling back to Vk format %d"), FormatInfo.Name, (int32)VulkanFormat, (int32)FallbackTextureFormat);
+				EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureGather);
+			}
+
+			if (SupportsMipMap(VulkanFormat))
+			{
+				EnumAddFlags(Capabilities, EPixelFormatCapabilities::TextureMipmaps);
 			}
 		}
+
+		if (EnumHasAllFlags(Capabilities, RequiredCapabilities))
+		{
+			PixelFormatInfo.PlatformFormat = VulkanFormat;
+			PixelFormatInfo.Capabilities |= Capabilities;
+
+			if (FormatIndex > 0)
+			{
+				UE_LOG(LogVulkanRHI, Display, TEXT("MapImageFormatSupport: %s is not supported with VkFormat %d, falling back to VkFormat %d"), PixelFormatInfo.Name, (int32)PrioritizedFormats[0], (int32)PrioritizedFormats[FormatIndex]);
+			}
+
+			break;
+		}
 	}
-			
-	if (!FormatInfo.Supported)
+}
+
+// Minimum capabilities required for a Vulkan format to be considered as supported
+static constexpr EPixelFormatCapabilities kDefaultTextureCapabilities = EPixelFormatCapabilities::TextureSample;
+// Passthrough to specify we want to keep the initial BlockBytes value set in the PixelFormat
+static constexpr int32 kDefaultBlockBytes = -1;
+
+void FVulkanDevice::MapFormatSupport(EPixelFormat UEFormat, std::initializer_list<VkFormat> InPrioritizedFormats, const VkComponentMapping& ComponentMapping, EPixelFormatCapabilities RequiredCapabilities, int32 BlockBytes)
+{
+	TArrayView<const VkFormat> PrioritizedFormats = MakeArrayView(InPrioritizedFormats);
+	FPixelFormatInfo& PixelFormatInfo = GPixelFormats[UEFormat];
+
+	check(PrioritizedFormats.Num() > 0);
+	check(!PixelFormatInfo.Supported);
+	check(PixelFormatInfo.Capabilities == EPixelFormatCapabilities::None);
+
+	MapBufferFormatSupport(PixelFormatInfo, UEFormat, PrioritizedFormats[0]);
+	MapImageFormatSupport(PixelFormatInfo, PrioritizedFormats, RequiredCapabilities);
+
+	// Flag the pixel format as supported if we can do anything with it
+	PixelFormatInfo.Supported = EnumHasAllFlags(PixelFormatInfo.Capabilities, RequiredCapabilities) || EnumHasAnyFlags(PixelFormatInfo.Capabilities, EPixelFormatCapabilities::Buffer);
+	if (PixelFormatInfo.Supported)
 	{
-		UE_LOG(LogVulkanRHI, Error, TEXT("MapFormatSupport: %s is not supported with Vk format %d"), FormatInfo.Name, (int32)VulkanFormat);
+		PixelFormatComponentMapping[UEFormat] = ComponentMapping;
+		if (BlockBytes > 0)
+		{
+			PixelFormatInfo.BlockBytes = BlockBytes;
+		}
+	}
+	else
+	{
+		UE_LOG(LogVulkanRHI, Error, TEXT("MapFormatSupport: %s is not supported with VkFormat %d"), PixelFormatInfo.Name, (int32)PrioritizedFormats[0]);
 	}
 }
 
-void FVulkanDevice::SetComponentMapping(EPixelFormat UEFormat, VkComponentSwizzle r, VkComponentSwizzle g, VkComponentSwizzle b, VkComponentSwizzle a)
+void FVulkanDevice::MapFormatSupport(EPixelFormat UEFormat, std::initializer_list<VkFormat> PrioritizedFormats, const VkComponentMapping& ComponentMapping)
 {
-	// Please ensure that we support the mapping, otherwise there is no point setting it.
-	check(GPixelFormats[UEFormat].Supported);
-	VkComponentMapping& ComponentMapping = PixelFormatComponentMapping[UEFormat];
-	ComponentMapping.r = r;
-	ComponentMapping.g = g;
-	ComponentMapping.b = b;
-	ComponentMapping.a = a;
+	MapFormatSupport(UEFormat, PrioritizedFormats, ComponentMapping, kDefaultTextureCapabilities, kDefaultBlockBytes);
 }
-
-void FVulkanDevice::MapFormatSupport(EPixelFormat UEFormat, VkFormat VulkanFormat, int32 BlockBytes)
+void FVulkanDevice::MapFormatSupport(EPixelFormat UEFormat, std::initializer_list<VkFormat> PrioritizedFormats, const VkComponentMapping& ComponentMapping, int32 BlockBytes)
 {
-	MapFormatSupport(UEFormat, VulkanFormat);
-	FPixelFormatInfo& FormatInfo = GPixelFormats[UEFormat];
-	FormatInfo.BlockBytes = BlockBytes;
+	MapFormatSupport(UEFormat, PrioritizedFormats, ComponentMapping, kDefaultTextureCapabilities, BlockBytes);
+}
+void FVulkanDevice::MapFormatSupport(EPixelFormat UEFormat, std::initializer_list<VkFormat> PrioritizedFormats, const VkComponentMapping& ComponentMapping, EPixelFormatCapabilities RequiredCapabilities)
+{
+	MapFormatSupport(UEFormat, PrioritizedFormats, ComponentMapping, RequiredCapabilities, kDefaultBlockBytes);
 }
 
 bool FVulkanDevice::QueryGPU(int32 DeviceIndex)
@@ -880,30 +1036,38 @@ bool FVulkanDevice::QueryGPU(int32 DeviceIndex)
 		GpuProps2.pNext = &GpuIdProps;
 		ZeroVulkanStruct(GpuIdProps, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES_KHR);
 
-		void** NextPropsAddr = nullptr;
-		NextPropsAddr = &GpuIdProps.pNext;
-
 #if VULKAN_SUPPORTS_DRIVER_PROPERTIES
 		if (GetOptionalExtensions().HasDriverProperties)
 		{
-			*NextPropsAddr = &PhysicalDeviceProperties;
-			NextPropsAddr = &PhysicalDeviceProperties.pNext;
+			PhysicalDeviceProperties.pNext = GpuProps2.pNext;
+			GpuProps2.pNext = &PhysicalDeviceProperties;
 		}
 #endif
 
 #if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
 		if (GetOptionalExtensions().HasEXTFragmentDensityMap)
 		{
-			*NextPropsAddr = &FragmentDensityMapProperties;
-			NextPropsAddr = &FragmentDensityMapProperties.pNext;
+			FragmentDensityMapProperties.pNext = GpuProps2.pNext;
+			GpuProps2.pNext = &FragmentDensityMapProperties;
 		}
 #endif
 
 #if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
 		if (GetOptionalExtensions().HasKHRFragmentShadingRate)
 		{
-			*NextPropsAddr = &FragmentShadingRateProperties;
-			NextPropsAddr = &FragmentShadingRateProperties.pNext;
+			FragmentShadingRateProperties.pNext = GpuProps2.pNext;
+			GpuProps2.pNext = &FragmentShadingRateProperties;
+		}
+#endif
+
+#if VULKAN_RHI_RAYTRACING
+		if (OptionalDeviceExtensions.HasRaytracingExtensions())
+		{
+			ZeroVulkanStruct(RayTracingProperties.AccelerationStructure, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR);
+			ZeroVulkanStruct(RayTracingProperties.RayTracingPipeline, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR);
+			RayTracingProperties.RayTracingPipeline.pNext = GpuProps2.pNext;
+			RayTracingProperties.AccelerationStructure.pNext = &RayTracingProperties.RayTracingPipeline;
+			GpuProps2.pNext = &RayTracingProperties.AccelerationStructure;
 		}
 #endif
 
@@ -921,7 +1085,7 @@ bool FVulkanDevice::QueryGPU(int32 DeviceIndex)
 #endif
 
 	}
-#endif
+#endif // VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 
 	VulkanRHI::vkGetPhysicalDeviceProperties(Gpu, &GpuProps);
 	bool bDiscrete = false;
@@ -990,22 +1154,16 @@ bool FVulkanDevice::QueryGPU(int32 DeviceIndex)
 #endif
 
 #if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-	// TODO: the VK_KHR_fragment_shading_rate extension is dependent on vkCreateRenderPass2, VkRenderPassCreateInfo2, VkAttachmentDescription2 and VkSubpassDescription2.
-	// Disabling this path for now; adding this support in a later checkin.
 	if (GetOptionalExtensions().HasKHRFragmentShadingRate)
 	{
-		GRHISupportsAttachmentVariableRateShading = FragmentShadingRateFeatures.attachmentFragmentShadingRate ? true : false;
-		GRHISupportsPipelineVariableRateShading = FragmentShadingRateFeatures.pipelineFragmentShadingRate ? true : false;
-
 		GRHIVariableRateShadingImageTileMinWidth = FragmentShadingRateProperties.minFragmentShadingRateAttachmentTexelSize.width;
 		GRHIVariableRateShadingImageTileMinHeight = FragmentShadingRateProperties.minFragmentShadingRateAttachmentTexelSize.height;
 		GRHIVariableRateShadingImageTileMaxWidth = FragmentShadingRateProperties.maxFragmentShadingRateAttachmentTexelSize.width;
 		GRHIVariableRateShadingImageTileMaxHeight = FragmentShadingRateProperties.maxFragmentShadingRateAttachmentTexelSize.height;
 
-		GRHIVariableRateShadingImageDataType = VRSImage_Palette;
-		GRHIVariableRateShadingImageFormat = PF_R8_UINT;
+		// todo: We don't currently care much about the other properties here, but at some point in the future we probably will.
 
-		// UE_LOG(LogVulkanRHI, Display, TEXT("Image-based Variable Rate Shading supported via KHRFragmentShadingRate extension. Selected VRS tile size %u by %u pixels per VRS image texel."));
+		UE_LOG(LogVulkanRHI, Verbose, TEXT("Image-based Variable Rate Shading supported via KHRFragmentShadingRate extension. Selected VRS tile size %u by %u pixels per VRS image texel."), GRHIVariableRateShadingImageTileMinWidth, GRHIVariableRateShadingImageTileMinHeight);
 	}
 #endif
 
@@ -1045,12 +1203,15 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 		void** NextPropsAddr = nullptr;
 		NextPropsAddr = &Features2.pNext;
 
-		VkPhysicalDeviceShaderAtomicInt64Features AtomicFeatures;
+#if VULKAN_SUPPORTS_BUFFER_64BIT_ATOMICS
+		VkPhysicalDeviceShaderAtomicInt64FeaturesKHR BufferAtomicFeatures;
+		ZeroVulkanStruct(BufferAtomicFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR);
+		if (OptionalDeviceExtensions.HasBufferAtomicInt64)  // Set by QueryGPU if extension is supported
 		{
-			*NextPropsAddr = &AtomicFeatures;
-			NextPropsAddr = &AtomicFeatures.pNext;
-			ZeroVulkanStruct(AtomicFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR);
+			*NextPropsAddr = &BufferAtomicFeatures;
+			NextPropsAddr = &BufferAtomicFeatures.pNext;
 		}
+#endif
 
 #if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
 		if (GetOptionalExtensions().HasEXTFragmentDensityMap)
@@ -1101,13 +1262,29 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 		}
 #endif
 
-		Features2.pNext = &AtomicFeatures;
-		VulkanRHI::vkGetPhysicalDeviceFeatures2KHR(Gpu, &Features2);
-		OptionalDeviceExtensions.HasBufferAtomicInt64 = (AtomicFeatures.shaderBufferInt64Atomics == VK_TRUE);
-	}
+#if VULKAN_SUPPORTS_IMAGE_64BIT_ATOMICS
+		VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT ImageAtomicFeatures;
+		ZeroVulkanStruct(ImageAtomicFeatures, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT);
+		if (OptionalDeviceExtensions.HasImageAtomicInt64)  // Set by QueryGPU if extension is supported
+		{
+			*NextPropsAddr = &ImageAtomicFeatures;
+			NextPropsAddr = &ImageAtomicFeatures.pNext;
+		}
 #endif
 
-	UE_LOG(LogVulkanRHI, Display, TEXT("Using Device %d: Geometry %d Tessellation %d BufferAtomic64 %d"), DeviceIndex, PhysicalFeatures.geometryShader, PhysicalFeatures.tessellationShader, OptionalDeviceExtensions.HasBufferAtomicInt64);
+		VulkanRHI::vkGetPhysicalDeviceFeatures2KHR(Gpu, &Features2);
+
+		// If we have the extension but the feature is not supported, clear the bits.
+#if VULKAN_SUPPORTS_BUFFER_64BIT_ATOMICS
+		OptionalDeviceExtensions.HasBufferAtomicInt64 = (BufferAtomicFeatures.shaderBufferInt64Atomics == VK_TRUE);
+#endif
+#if VULKAN_SUPPORTS_IMAGE_64BIT_ATOMICS
+		OptionalDeviceExtensions.HasImageAtomicInt64 = (ImageAtomicFeatures.shaderImageInt64Atomics == VK_TRUE);
+#endif
+	}
+#endif // VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
+
+	UE_LOG(LogVulkanRHI, Display, TEXT("Using Device %d: Geometry %d BufferAtomic64 %d ImageAtomic64 %d"), DeviceIndex, PhysicalFeatures.geometryShader, OptionalDeviceExtensions.HasBufferAtomicInt64, OptionalDeviceExtensions.HasImageAtomicInt64);
 
 	CreateDevice();
 
@@ -1120,17 +1297,6 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 	FenceManager.Init(this);
 
 	StagingManager.Init(this);
-
-	// Update bMemoryless support
-	{
-		bSupportsMemoryless = false;
-		const VkPhysicalDeviceMemoryProperties& MemoryProperties = DeviceMemoryManager.GetMemoryProperties();
-		for (uint32 i = 0; i < MemoryProperties.memoryTypeCount && !bSupportsMemoryless; ++i)
-		{
-			bSupportsMemoryless = ((MemoryProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) == VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT);
-		}
-	}
-
 
 #if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
 	if (GGPUCrashDebuggingEnabled)
@@ -1172,11 +1338,9 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 	{
 		DescriptorSetCache = new FVulkanDescriptorSetCache(this);
 	}
-	else
-	{
-		DescriptorPoolsManager = new FVulkanDescriptorPoolsManager();
-		DescriptorPoolsManager->Init(this);
-	}
+	
+	DescriptorPoolsManager = new FVulkanDescriptorPoolsManager();
+	DescriptorPoolsManager->Init(this);
 
 	PipelineStateCache = new FVulkanPipelineStateCacheManager(this);
 
@@ -1215,6 +1379,25 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 	}
 #endif
 
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+	if (GetOptionalExtensions().HasKHRFragmentShadingRate)
+	{
+		GRHISupportsAttachmentVariableRateShading = FragmentShadingRateFeatures.attachmentFragmentShadingRate ? true : false;
+		GRHISupportsPipelineVariableRateShading = FragmentShadingRateFeatures.pipelineFragmentShadingRate ? true : false;
+
+		if (GRHISupportsAttachmentVariableRateShading)
+		{
+			GRHIVariableRateShadingImageDataType = VRSImage_Palette;
+			GRHIVariableRateShadingImageFormat = PF_R8_UINT;
+		}
+		else
+		{
+			GRHIVariableRateShadingImageDataType = VRSImage_NotSupported;
+			GRHIVariableRateShadingImageFormat = PF_Unknown;
+		}
+	}
+#endif
+
 	PipelineStateCache->InitAndLoad(CacheFilenames);
 
 	// Setup default resource
@@ -1222,7 +1405,7 @@ void FVulkanDevice::InitGPU(int32 DeviceIndex)
 		FSamplerStateInitializerRHI Default(SF_Point);
 		DefaultSampler = ResourceCast(RHICreateSamplerState(Default).GetReference());
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FVulkanDevice_DefaultImage"));
 		DefaultImage = new FVulkanSurface(*this, 0, VK_IMAGE_VIEW_TYPE_2D, PF_B8G8R8A8, 1, 1, 1, 1, 1, 1, TexCreate_RenderTargetable | TexCreate_ShaderResource, ERHIAccess::SRVMask, CreateInfo);
 		DefaultTextureView.Create(*this, DefaultImage->Image, VK_IMAGE_VIEW_TYPE_2D, DefaultImage->GetFullAspectMask(), PF_B8G8R8A8, VK_FORMAT_B8G8R8A8_UNORM, 0, 1, 0, 1);
 	}
@@ -1246,8 +1429,28 @@ void FVulkanDevice::Destroy()
 	}
 #endif
 
+	// Release pending state that might hold references to RHI resources before we do final FlushPendingDeletes
+	ImmediateContext->ReleasePendingState();
+	if (ComputeContext && ComputeContext != ImmediateContext)
+	{
+		ComputeContext->ReleasePendingState();
+	}
+
+	if (TransientHeapCache)
+	{
+		delete TransientHeapCache;
+		TransientHeapCache = nullptr;
+	}
+
 	// Flush all pending deletes before destroying the device and any Vulkan context objects.
-	FRHIResource::FlushPendingDeletes();
+	// Repeat until no new deletes are added
+	int32 NumDeletes = 0;
+	do
+	{
+		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+		NumDeletes = FRHIResource::FlushPendingDeletes(RHICmdList);
+		RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
+	} while (NumDeletes > 0);
 
 	VulkanRHI::vkDestroyImageView(GetInstanceHandle(), DefaultTextureView.View, VULKAN_CPU_ALLOCATOR);
 	DefaultTextureView = {};
@@ -1323,7 +1526,6 @@ void FVulkanDevice::Destroy()
 #endif
 	}
 
-	
 	DeferredDeletionQueue.Clear();
 
 	MemoryManager.Deinit();
@@ -1347,74 +1549,41 @@ void FVulkanDevice::WaitUntilIdle()
 	GetImmediateContext().GetCommandBufferManager()->RefreshFenceStatus();
 }
 
-bool FVulkanDevice::IsTextureFormatSupported(VkFormat Format, uint32 RequiredFeatures) const
-{
-	check(RequiredFeatures != 0u);
-		
-	auto ArePropertiesSupported = [](const VkFormatProperties& Prop, uint32 RequiredFeatures) -> bool
-	{
-		return	(Prop.linearTilingFeatures & RequiredFeatures) == RequiredFeatures || 
-				(Prop.optimalTilingFeatures & RequiredFeatures) == RequiredFeatures;
-	};
-
-	if (Format >= 0 && Format < VK_FORMAT_RANGE_SIZE)
-	{
-		const VkFormatProperties& Prop = FormatProperties[Format];
-		return ArePropertiesSupported(Prop, RequiredFeatures);
-	}
-
-	// Check for extension formats
-	const VkFormatProperties* FoundProperties = ExtensionFormatProperties.Find(Format);
-	if (FoundProperties)
-	{
-		return ArePropertiesSupported(*FoundProperties, RequiredFeatures);
-	}
-
-	// Add it for faster caching next time
-	VkFormatProperties& NewProperties = ExtensionFormatProperties.Add(Format);
-	FMemory::Memzero(NewProperties);
-	VulkanRHI::vkGetPhysicalDeviceFormatProperties(Gpu, Format, &NewProperties);
-
-	return ArePropertiesSupported(NewProperties, RequiredFeatures);
-}
-
-bool FVulkanDevice::IsBufferFormatSupported(VkFormat Format) const
-{
-	auto ArePropertiesSupported = [](const VkFormatProperties& Prop) -> bool
-	{
-		return (Prop.bufferFeatures != 0);
-	};
-
-	if (Format >= 0 && Format < VK_FORMAT_RANGE_SIZE)
-	{
-		const VkFormatProperties& Prop = FormatProperties[Format];
-		return Prop.bufferFeatures != 0;
-	}
-
-	// Check for extension formats
-	const VkFormatProperties* FoundProperties = ExtensionFormatProperties.Find(Format);
-	if (FoundProperties)
-	{
-		return FoundProperties->bufferFeatures != 0;
-	}
-
-	// Add it for faster caching next time
-	VkFormatProperties& NewProperties = ExtensionFormatProperties.Add(Format);
-	FMemory::Memzero(NewProperties);
-	VulkanRHI::vkGetPhysicalDeviceFormatProperties(Gpu, Format, &NewProperties);
-
-	return NewProperties.bufferFeatures != 0;
-}
-
 const VkComponentMapping& FVulkanDevice::GetFormatComponentMapping(EPixelFormat UEFormat) const
 {
-	if (UEFormat == PF_X24_G8)
-	{
-		return GetFormatComponentMapping(PF_DepthStencil);
-	}
 	check(GPixelFormats[UEFormat].Supported);
 	return PixelFormatComponentMapping[UEFormat];
 }
+
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+VkExtent2D FVulkanDevice::GetBestMatchedShadingRateExtents(EVRSShadingRate ShadingRate) const
+{
+	// Given that for Vulkan we need to query available device shading rates, we're not guaranteed to have everything that's in our enum;
+	// This function walks the list of supported fragment rates returned by the device, and returns the closest match to the rate requested.
+	const VkExtent2D DirectMappedExtent = { (uint32)(ShadingRate >> 2) + 1, (uint32)((ShadingRate & 0x03) + 1) };
+	VkExtent2D BestMatchedExtent = { 1, 1 };
+	
+	if (BestMatchedExtent.width != DirectMappedExtent.width && BestMatchedExtent.height != DirectMappedExtent.height)
+	{
+		for (auto const& Rate : FragmentShadingRates)
+		{
+			if (Rate.fragmentSize.width == DirectMappedExtent.width && Rate.fragmentSize.height == DirectMappedExtent.height)
+			{
+				BestMatchedExtent = DirectMappedExtent;
+				break;
+			}
+
+			if ((Rate.fragmentSize.width >= BestMatchedExtent.width && Rate.fragmentSize.width <= DirectMappedExtent.width && Rate.fragmentSize.height <= DirectMappedExtent.height && Rate.fragmentSize.height >= BestMatchedExtent.height) ||
+				(Rate.fragmentSize.height >= BestMatchedExtent.height && Rate.fragmentSize.height <= DirectMappedExtent.height && Rate.fragmentSize.width <= DirectMappedExtent.width && Rate.fragmentSize.width >= BestMatchedExtent.width))
+			{
+				BestMatchedExtent = Rate.fragmentSize;
+			}
+		}
+	}
+
+	return BestMatchedExtent;
+}
+#endif
 
 void FVulkanDevice::NotifyDeletedImage(VkImage Image, bool bRenderTarget)
 {
@@ -1467,7 +1636,7 @@ void FVulkanDevice::NotifyDeletedGfxPipeline(class FVulkanRHIGraphicsPipelineSta
 	}
 
 	//#todo-rco: Loop through all contexts!
-	if (ImmediateContext)
+	if (ImmediateContext && ImmediateContext->PendingGfxState)
 	{
 		ImmediateContext->PendingGfxState->NotifyDeletedPipeline(Pipeline);
 	}
@@ -1475,15 +1644,20 @@ void FVulkanDevice::NotifyDeletedGfxPipeline(class FVulkanRHIGraphicsPipelineSta
 
 void FVulkanDevice::NotifyDeletedComputePipeline(class FVulkanComputePipeline* Pipeline)
 {
-	if (ComputeContext && ComputeContext != ImmediateContext)
+	if (ComputeContext && ComputeContext != ImmediateContext && ComputeContext->PendingComputeState)
 	{
 		ComputeContext->PendingComputeState->NotifyDeletedPipeline(Pipeline);
 	}
 
 	//#todo-rco: Loop through all contexts!
-	if (ImmediateContext)
+	if (ImmediateContext && ImmediateContext->PendingComputeState)
 	{
 		ImmediateContext->PendingComputeState->NotifyDeletedPipeline(Pipeline);
+	}
+
+	if (PipelineStateCache)
+	{
+		PipelineStateCache->NotifyDeletedComputePipeline(Pipeline);
 	}
 }
 
@@ -1521,4 +1695,13 @@ void FVulkanDevice::VulkanSetObjectName(VkObjectType Type, uint64_t Handle, cons
 		DebugMarkers.SetDebugName(Device, &Info);
 	}
 #endif // VULKAN_ENABLE_DRAW_MARKERS
+}
+
+FVulkanTransientHeapCache& FVulkanDevice::GetOrCreateTransientHeapCache()
+{
+	if (!TransientHeapCache)
+	{
+		TransientHeapCache = FVulkanTransientHeapCache::Create(this);
+	}
+	return *TransientHeapCache;
 }

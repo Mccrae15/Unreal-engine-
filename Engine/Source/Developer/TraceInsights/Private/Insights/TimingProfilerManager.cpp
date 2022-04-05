@@ -2,6 +2,7 @@
 
 #include "TimingProfilerManager.h"
 
+#include "MessageLog/Public/MessageLogModule.h"
 #include "Modules/ModuleManager.h"
 #include "TraceServices/AnalysisService.h"
 #include "WorkspaceMenuStructure.h"
@@ -58,7 +59,7 @@ FTimingProfilerManager::FTimingProfilerManager(TSharedRef<FUICommandList> InComm
 	, bIsAvailable(false)
 	, CommandList(InCommandList)
 	, ActionManager(this)
-	, ProfilerWindow(nullptr)
+	, ProfilerWindowWeakPtr()
 	, bIsFramesTrackVisible(false)
 	, bIsTimingViewVisible(false)
 	, bIsTimersViewVisible(false)
@@ -70,6 +71,7 @@ FTimingProfilerManager::FTimingProfilerManager(TSharedRef<FUICommandList> InComm
 	, SelectionEndTime(0.0)
 	, SelectedTimerId(InvalidTimerId)
 	, TimerButterflyAggregator(MakeShared<Insights::FTimerButterflyAggregator>())
+	, LogListingName(TEXT("TimingInsights"))
 {
 }
 
@@ -88,10 +90,12 @@ void FTimingProfilerManager::Initialize(IUnrealInsightsModule& InsightsModule)
 
 	// Register tick functions.
 	OnTick = FTickerDelegate::CreateSP(this, &FTimingProfilerManager::Tick);
-	OnTickHandle = FTicker::GetCoreTicker().AddTicker(OnTick, 0.0f);
+	OnTickHandle = FTSTicker::GetCoreTicker().AddTicker(OnTick, 0.0f);
 
 	FTimingProfilerCommands::Register();
 	BindCommands();
+
+	InsightsModule.OnRegisterMajorTabExtension(FInsightsManagerTabs::TimingProfilerTabId);
 
 	FInsightsManager::Get()->GetSessionChangedEvent().AddSP(this, &FTimingProfilerManager::OnSessionChanged);
 	OnSessionChanged();
@@ -107,12 +111,22 @@ void FTimingProfilerManager::Shutdown()
 	}
 	bIsInitialized = false;
 
+	// If the MessageLog module was already unloaded as part of the global Shutdown process, do not load it again.
+	if (FModuleManager::Get().IsModuleLoaded("MessageLog"))
+	{
+		FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
+		if (MessageLogModule.IsRegisteredLogListing(GetLogListingName()))
+		{
+			MessageLogModule.UnregisterLogListing(GetLogListingName());
+		}
+	}
+
 	FInsightsManager::Get()->GetSessionChangedEvent().RemoveAll(this);
 
 	FTimingProfilerCommands::Unregister();
 
 	// Unregister tick function.
-	FTicker::GetCoreTicker().RemoveTicker(OnTickHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(OnTickHandle);
 
 	FTimingProfilerManager::Instance.Reset();
 
@@ -151,7 +165,7 @@ void FTimingProfilerManager::RegisterMajorTabs(IUnrealInsightsModule& InsightsMo
 			FOnSpawnTab::CreateRaw(this, &FTimingProfilerManager::SpawnTab), FCanSpawnTab::CreateRaw(this, &FTimingProfilerManager::CanSpawnTab))
 			.SetDisplayName(Config.TabLabel.IsSet() ? Config.TabLabel.GetValue() : LOCTEXT("TimingProfilerTabTitle", "Timing Insights"))
 			.SetTooltipText(Config.TabTooltip.IsSet() ? Config.TabTooltip.GetValue() : LOCTEXT("TimingProfilerTooltipText", "Open the Timing Insights tab."))
-			.SetIcon(Config.TabIcon.IsSet() ? Config.TabIcon.GetValue() : FSlateIcon(FInsightsStyle::GetStyleSetName(), "TimingProfiler.Icon.Small"));
+			.SetIcon(Config.TabIcon.IsSet() ? Config.TabIcon.GetValue() : FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.TimingProfiler"));
 
 		TSharedRef<FWorkspaceItem> Group = Config.WorkspaceGroup.IsValid() ? Config.WorkspaceGroup.ToSharedRef() : FInsightsManager::Get()->GetInsightsMenuBuilder()->GetInsightsToolsGroup();
 		TabSpawnerEntry.SetGroup(Group);
@@ -199,6 +213,7 @@ bool FTimingProfilerManager::CanSpawnTab(const FSpawnTabArgs& Args) const
 
 void FTimingProfilerManager::OnTabClosed(TSharedRef<SDockTab> TabBeingClosed)
 {
+	OnWindowClosedEvent();
 	RemoveProfilerWindow();
 
 	// Disable TabClosed delegate.
@@ -230,13 +245,20 @@ FTimingProfilerActionManager& FTimingProfilerManager::GetActionManager()
 
 bool FTimingProfilerManager::Tick(float DeltaTime)
 {
-	// Check if session has Timing events (to spawn the tab), but not too often.
-	if (!bIsAvailable && AvailabilityCheck.Tick())
+	TSharedPtr<FInsightsManager> InsightsManager = FInsightsManager::Get();
+	check(InsightsManager.IsValid());
+
+	TSharedPtr<const TraceServices::IAnalysisSession> Session = InsightsManager->GetSession();
+	if (Session.IsValid())
 	{
-		TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
-		if (Session.IsValid())
+		// Check if session has Timing events (to spawn the tab), but not too often.
+		if (!bIsAvailable && AvailabilityCheck.Tick())
 		{
 			bIsAvailable = true;
+
+			FMessageLogModule& MessageLogModule = FModuleManager::LoadModuleChecked<FMessageLogModule>("MessageLog");
+			MessageLogModule.RegisterLogListing(GetLogListingName(), LOCTEXT("TimingInsights", "Timing Insights"));
+			MessageLogModule.EnableMessageLogDisplay(true);
 
 #if !WITH_EDITOR
 			const FName& TabId = FInsightsManagerTabs::TimingProfilerTabId;
@@ -252,9 +274,9 @@ bool FTimingProfilerManager::Tick(float DeltaTime)
 			// Do not check again until the next session changed event (see OnSessionChanged).
 			AvailabilityCheck.Disable();
 		}
-	}
 
-	TimerButterflyAggregator->Tick(FInsightsManager::Get()->GetSession(), 0.0f, DeltaTime, [this]() { FinishTimerButterflyAggregation(); });
+		TimerButterflyAggregator->Tick(Session, 0.0f, DeltaTime, [this]() { FinishTimerButterflyAggregation(); });
+	}
 
 	return true;
 }
@@ -269,16 +291,16 @@ void FTimingProfilerManager::FinishTimerButterflyAggregation()
 		TSharedPtr<STimerTreeView> CallersTreeView = Wnd->GetCallersTreeView();
 		if (CallersTreeView)
 		{
-			Trace::ITimingProfilerButterfly* TimingProfilerButterfly = TimerButterflyAggregator->GetResultButterfly();
-			const Trace::FTimingProfilerButterflyNode& Callers = TimingProfilerButterfly->GenerateCallersTree(SelectedTimerId);
+			TraceServices::ITimingProfilerButterfly* TimingProfilerButterfly = TimerButterflyAggregator->GetResultButterfly();
+			const TraceServices::FTimingProfilerButterflyNode& Callers = TimingProfilerButterfly->GenerateCallersTree(SelectedTimerId);
 			CallersTreeView->SetTree(Callers);
 		}
 
 		TSharedPtr<STimerTreeView> CalleesTreeView = Wnd->GetCalleesTreeView();
 		if (CalleesTreeView)
 		{
-			Trace::ITimingProfilerButterfly* TimingProfilerButterfly = TimerButterflyAggregator->GetResultButterfly();
-			const Trace::FTimingProfilerButterflyNode& Callees = TimingProfilerButterfly->GenerateCalleesTree(SelectedTimerId);
+			TraceServices::ITimingProfilerButterfly* TimingProfilerButterfly = TimerButterflyAggregator->GetResultButterfly();
+			const TraceServices::FTimingProfilerButterflyNode& Callees = TimingProfilerButterfly->GenerateCalleesTree(SelectedTimerId);
 			CalleesTreeView->SetTree(Callees);
 		}
 	}
@@ -584,6 +606,21 @@ void FTimingProfilerManager::UpdateAggregatedCounterStats()
 		if (StatsView)
 		{
 			StatsView->UpdateStats(SelectionStartTime, SelectionEndTime);
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FTimingProfilerManager::OnWindowClosedEvent()
+{
+	TSharedPtr<STimingProfilerWindow> Wnd = GetProfilerWindow();
+	if (Wnd)
+	{
+		TSharedPtr<STimingView> TimingView = Wnd->GetTimingView();
+		if (TimingView.IsValid())
+		{
+			TimingView->CloseQuickFindTab();
 		}
 	}
 }

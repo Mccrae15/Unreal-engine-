@@ -5,12 +5,18 @@
 #include "Framework/Docking/LayoutService.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "ISourceCodeAccessModule.h"
+#include "ISourceCodeAccessor.h"
+#include "Logging/MessageLog.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "Trace/StoreClient.h"
 #include "Trace/StoreService.h"
 #include "TraceServices/ITraceServicesModule.h"
 
 // Insights
+#include "Insights/ContextSwitches/ContextSwitchesProfilerManager.h"
 #include "Insights/InsightsManager.h"
 #include "Insights/InsightsStyle.h"
 #include "Insights/IUnrealInsightsModule.h"
@@ -18,8 +24,10 @@
 #include "Insights/Log.h"
 #include "Insights/MemoryProfiler/MemoryProfilerManager.h"
 #include "Insights/NetworkingProfiler/NetworkingProfilerManager.h"
+#include "Insights/TaskGraphProfiler/TaskGraphProfilerManager.h"
 #include "Insights/Tests/InsightsTestRunner.h"
 #include "Insights/TimingProfilerManager.h"
+#include "Insights/Widgets/SStartPageWindow.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -40,6 +48,9 @@ void FTraceInsightsModule::StartupModule()
 	TraceModuleService = TraceServicesModule.GetModuleService();
 
 	FInsightsStyle::Initialize();
+#if !WITH_EDITOR
+	FAppStyle::SetAppStyleSet(FInsightsStyle::Get());
+#endif
 
 	// Register FInsightsManager first, as the main component (first to init, last to shutdown).
 	RegisterComponent(FInsightsManager::CreateInstance(TraceAnalysisService.ToSharedRef(), TraceModuleService.ToSharedRef()));
@@ -49,14 +60,30 @@ void FTraceInsightsModule::StartupModule()
 	RegisterComponent(FLoadingProfilerManager::CreateInstance());
 	RegisterComponent(FNetworkingProfilerManager::CreateInstance());
 	RegisterComponent(FMemoryProfilerManager::CreateInstance());
+	RegisterComponent(Insights::FTaskGraphProfilerManager::CreateInstance());
+	RegisterComponent(Insights::FContextSwitchesProfilerManager::CreateInstance());
 
-	UnrealInsightsLayoutIni = FPaths::GetPath(GEngineIni) + "/UnrealInsightsLayout.ini";
+#if !WITH_EDITOR
+	ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>("SourceCodeAccess");
+	SourceCodeAccessModule.OnOpenFileFailed().AddRaw(this, &FTraceInsightsModule::HandleCodeAccessorOpenFileFailed);
+#endif
+
+	UnrealInsightsLayoutIni = GConfig->GetConfigFilename(TEXT("UnrealInsightsLayout"));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+PRAGMA_DISABLE_OPTIMIZATION
 void FTraceInsightsModule::ShutdownModule()
 {
+#if !WITH_EDITOR
+	if (FModuleManager::Get().IsModuleLoaded("SourceCodeAccess"))
+	{
+		ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::GetModuleChecked<ISourceCodeAccessModule>("SourceCodeAccess");
+		SourceCodeAccessModule.OnOpenFileFailed().RemoveAll(this);
+	}
+#endif
+
 	if (PersistentLayout.IsValid())
 	{
 		// Save application layout.
@@ -66,13 +93,52 @@ void FTraceInsightsModule::ShutdownModule()
 
 	UnregisterTabSpawners();
 
+#define INSIGHTS_CHECK_SHARED_REFERENCES 1
+#if INSIGHTS_CHECK_SHARED_REFERENCES
+	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+	auto TimingInsightsWindow = FTimingProfilerManager::Get()->GetProfilerWindow();
+	auto AssetLoadingInsightsWindow = FLoadingProfilerManager::Get()->GetProfilerWindow();
+	auto NetworkingInsightsWindow0 = FNetworkingProfilerManager::Get()->GetProfilerWindow(0);
+	auto MemoryInsightsWindow = FMemoryProfilerManager::Get()->GetProfilerWindow();
+#endif
+
 	// Unregister components. Shutdown in the reverse order they were registered.
 	for (int32 ComponentIndex = Components.Num() - 1; ComponentIndex >= 0; --ComponentIndex)
 	{
 		Components[ComponentIndex]->Shutdown();
 	}
 	Components.Reset();
+
+#if INSIGHTS_CHECK_SHARED_REFERENCES
+	ensure(MemoryInsightsWindow.GetSharedReferenceCount() <= 1);
+	MemoryInsightsWindow.Reset();
+
+	ensure(NetworkingInsightsWindow0.GetSharedReferenceCount() <= 1);
+	NetworkingInsightsWindow0.Reset();
+
+	ensure(AssetLoadingInsightsWindow.GetSharedReferenceCount() <= 1);
+	AssetLoadingInsightsWindow.Reset();
+
+	ensure(TimingInsightsWindow.GetSharedReferenceCount() <= 1);
+	TimingInsightsWindow.Reset();
+
+	if (ensure(Session.GetSharedReferenceCount() <= 1))
+	{
+		Session.Reset();
+	}
+	else // Some component(s) failed to release the references to Session shared ptr!
+	{
+		UE_LOG(TraceInsights, Warning, TEXT("The analysis Session is still referenced! Force delete!"));
+		const TraceServices::IAnalysisSession* SessionPtr = Session.Get();
+		Session.Reset();
+		delete SessionPtr;
+	}
+#endif
+#undef INSIGHTS_CHECK_SHARED_REFERENCES
+
+	FInsightsStyle::Shutdown();
 }
+PRAGMA_ENABLE_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -100,26 +166,28 @@ void FTraceInsightsModule::UnregisterComponent(TSharedPtr<IInsightsComponent> Co
 
 void FTraceInsightsModule::CreateDefaultStore()
 {
+#if WITH_TRACE_STORE
 	const FString StoreDir = FPaths::ProjectSavedDir() / TEXT("TraceSessions");
 
-	FInsightsManager::Get()->SetStoreDir(StoreDir);
-
 	// Create the Store Service.
-	Trace::FStoreService::FDesc StoreServiceDesc;
+	UE::Trace::FStoreService::FDesc StoreServiceDesc;
 	StoreServiceDesc.StoreDir = *StoreDir;
-	StoreServiceDesc.RecorderPort = 1980;
+	StoreServiceDesc.RecorderPort = 1981;
 	StoreServiceDesc.ThreadCount = 2;
-	StoreService = TUniquePtr<Trace::FStoreService>(Trace::FStoreService::Create(StoreServiceDesc));
+	StoreService = TUniquePtr<UE::Trace::FStoreService>(UE::Trace::FStoreService::Create(StoreServiceDesc));
 
 	if (StoreService.IsValid())
 	{
 		ConnectToStore(TEXT("127.0.0.1"), StoreService->GetPort());
 	}
+#else
+	ConnectToStore(TEXT("127.0.0.1"));
+#endif // WITH_TRACE_STORE
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-Trace::FStoreClient* FTraceInsightsModule::GetStoreClient()
+UE::Trace::FStoreClient* FTraceInsightsModule::GetStoreClient()
 {
 	return FInsightsManager::Get()->GetStoreClient();
 }
@@ -155,78 +223,88 @@ void FTraceInsightsModule::UnregisterTabSpawners()
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FTraceInsightsModule::CreateSessionBrowser(bool bAllowDebugTools, bool bSingleProcess)
+void FTraceInsightsModule::CreateSessionBrowser(const FCreateSessionBrowserParams& Params)
 {
-	FInsightsManager::Get()->SetOpenAnalysisInSeparateProcess(!bSingleProcess);
-
 	RegisterTabSpawners();
 
-	const float DPIScaleFactor = FPlatformApplicationMisc::GetDPIScaleFactorAtPoint(10.0f, 10.0f);
+	//////////////////////////////////////////////////
+	// Create the main window.
 
-	TSharedRef<FTabManager::FLayout> DefaultLayout = FTabManager::NewLayout("TraceSessionBrowserLayout_v1.0");
-	float WindowWidth = 0.0f;
-	float WindowHeight = 0.0f;
+	const bool bEmbedTitleAreaContent = false;
 
-	if (!bSingleProcess)
-	{
-		WindowWidth = 920.0f;
-		WindowHeight = 665.0f;
+	// Get desktop metrics. It also ensures the correct metrics will be used later in SWindow.
+	FDisplayMetrics DisplayMetrics;
+	FSlateApplication::Get().GetDisplayMetrics(DisplayMetrics);
+	const float DPIScaleFactor = FPlatformApplicationMisc::GetDPIScaleFactorAtPoint(DisplayMetrics.PrimaryDisplayWorkAreaRect.Left, DisplayMetrics.PrimaryDisplayWorkAreaRect.Top);
 
-		DefaultLayout->AddArea
-		(
-			FTabManager::NewPrimaryArea()
-			->Split
-			(
-				FTabManager::NewStack()
-				->AddTab(FInsightsManagerTabs::StartPageTabId, ETabState::OpenedTab)
-			)
-		);
-	}
-	else
-	{
-		WindowWidth = 1280.0f;
-		WindowHeight = 720.0f;
-
-		DefaultLayout->AddArea
-		(
-			FTabManager::NewPrimaryArea()
-			->Split
-			(
-				FTabManager::NewStack()
-				->AddTab(FInsightsManagerTabs::StartPageTabId, ETabState::OpenedTab)
-				->AddTab(FInsightsManagerTabs::SessionInfoTabId, ETabState::ClosedTab)
-				->AddTab(FInsightsManagerTabs::TimingProfilerTabId, ETabState::ClosedTab)
-				->AddTab(FInsightsManagerTabs::LoadingProfilerTabId, ETabState::ClosedTab)
-				->AddTab(FInsightsManagerTabs::NetworkingProfilerTabId, ETabState::ClosedTab)
-				->AddTab(FInsightsManagerTabs::MemoryProfilerTabId, ETabState::ClosedTab)
-				->SetForegroundTab(FTabId(FInsightsManagerTabs::StartPageTabId))
-			)
-		);
-	}
+	const FVector2D ClientSize(960.0f * DPIScaleFactor, 640.0f * DPIScaleFactor);
 
 	TSharedRef<SWindow> RootWindow = SNew(SWindow)
-		.AutoCenter(EAutoCenter::PreferredWorkArea)
 		.Title(NSLOCTEXT("TraceInsightsModule", "UnrealInsightsBrowserAppName", "Unreal Insights Session Browser"))
-		.IsInitiallyMaximized(false)
-		.ClientSize(FVector2D(WindowWidth * DPIScaleFactor, WindowHeight * DPIScaleFactor))
+		.CreateTitleBar(!bEmbedTitleAreaContent)
 		.SupportsMaximize(true)
-		.SupportsMinimize(true);
+		.SupportsMinimize(true)
+		.IsInitiallyMaximized(false)
+		.IsInitiallyMinimized(false)
+		.SizingRule(ESizingRule::UserSized)
+		.AutoCenter(EAutoCenter::PreferredWorkArea)
+		.ClientSize(ClientSize)
+		.AdjustInitialSizeAndPositionForDPIScale(false);
 
-	FSlateApplication::Get().AddWindow(RootWindow, true);
+	//RootWindow->GetTitleBar()->SetAllowMenuBar(true);
+
+	const bool bShowRootWindowImmediately = false;
+	FSlateApplication::Get().AddWindow(RootWindow, bShowRootWindowImmediately);
 
 	FGlobalTabmanager::Get()->SetRootWindow(RootWindow);
+	FGlobalTabmanager::Get()->SetAllowWindowMenuBar(true);
+
 	FSlateNotificationManager::Get().SetRootWindow(RootWindow);
 
-	AddAreaForWidgetReflector(DefaultLayout, bAllowDebugTools);
+	//////////////////////////////////////////////////
+	// Setup the window's content.
+
+	TSharedRef<FTabManager::FLayout> DefaultLayout = FTabManager::NewLayout("TraceSessionBrowserLayout_v1.1");
+	DefaultLayout->AddArea
+	(
+		FTabManager::NewPrimaryArea()
+		->Split
+		(
+			FTabManager::NewStack()
+			->AddTab(FInsightsManagerTabs::TraceStoreTabId, ETabState::OpenedTab)
+			->AddTab(FInsightsManagerTabs::ConnectionTabId, ETabState::OpenedTab)
+			//->AddTab(FInsightsManagerTabs::LauncherTabId, ETabState::ClosedTab)
+			->SetForegroundTab(FInsightsManagerTabs::TraceStoreTabId)
+		)
+	);
+
+	AddAreaForWidgetReflector(DefaultLayout, Params.bAllowDebugTools);
 
 	// Load layout from ini file.
 	PersistentLayout = FLayoutSaveRestore::LoadFromConfig(UnrealInsightsLayoutIni, DefaultLayout);
 
 	// Restore application layout.
-	const bool bEmbedTitleAreaContent = false;
 	const EOutputCanBeNullptr OutputCanBeNullptr = EOutputCanBeNullptr::Never;
 	TSharedPtr<SWidget> Content = FGlobalTabmanager::Get()->RestoreFrom(PersistentLayout.ToSharedRef(), RootWindow, bEmbedTitleAreaContent, OutputCanBeNullptr);
 	RootWindow->SetContent(Content.ToSharedRef());
+
+	//////////////////////////////////////////////////
+	// Show the window.
+
+	RootWindow->ShowWindow();
+	const bool bForceWindowToFront = true;
+	RootWindow->BringToFront(bForceWindowToFront);
+
+	//////////////////////////////////////////////////
+	// Set up command line parameter forwarding.
+
+	TSharedPtr<class STraceStoreWindow> TraceStoreWnd = FInsightsManager::Get()->GetTraceStoreWindow();
+	if (TraceStoreWnd.IsValid())
+	{
+		TraceStoreWnd->SetEnableAutomaticTesting(Params.bInitializeTesting);
+		TraceStoreWnd->SetEnableDebugTools(Params.bAllowDebugTools);
+		TraceStoreWnd->SetStartProcessWithStompMalloc(Params.bStartProcessWithStompMalloc);
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -236,41 +314,69 @@ void FTraceInsightsModule::CreateSessionViewer(bool bAllowDebugTools)
 	RegisterTabSpawners();
 
 #if !WITH_EDITOR
-	const float DPIScaleFactor = FPlatformApplicationMisc::GetDPIScaleFactorAtPoint(10.0f, 10.0f);
 
-	TSharedRef<SWindow> RootWindow = SNew(SWindow)
-		.AutoCenter(EAutoCenter::PreferredWorkArea)
-		.Title(NSLOCTEXT("TraceInsightsModule", "UnrealInsightsAppName", "Unreal Insights"))
-		.IsInitiallyMaximized(false)
-		.ClientSize(FVector2D(1280.f * DPIScaleFactor, 720.0f * DPIScaleFactor))
-		.SupportsMaximize(true)
-		.SupportsMinimize(true);
+	//////////////////////////////////////////////////
+	// Create the main window.
 
-	FSlateApplication::Get().AddWindow(RootWindow, true);
-
-	FGlobalTabmanager::Get()->SetRootWindow(RootWindow);
-	FSlateNotificationManager::Get().SetRootWindow(RootWindow);
-
-	TSharedRef<FTabManager::FLayout> DefaultLayout = FTabManager::NewLayout("UnrealInsightsLayout_v1.0");
-
-	AddAreaForSessionViewer(DefaultLayout);
-
-	AddAreaForWidgetReflector(DefaultLayout, bAllowDebugTools);
-
-	// Load layout from ini file.
-	PersistentLayout = FLayoutSaveRestore::LoadFromConfig(UnrealInsightsLayoutIni, DefaultLayout);
-
-	// Restore application layout.
 #if PLATFORM_MAC
 	const bool bEmbedTitleAreaContent = true;
 #else
 	const bool bEmbedTitleAreaContent = false;
 #endif
+
+	// Get desktop metrics. It also ensures the correct metrics will be used later in SWindow.
+	FDisplayMetrics DisplayMetrics;
+	FSlateApplication::Get().GetDisplayMetrics(DisplayMetrics);
+	const float DPIScaleFactor = FPlatformApplicationMisc::GetDPIScaleFactorAtPoint(DisplayMetrics.PrimaryDisplayWorkAreaRect.Left, DisplayMetrics.PrimaryDisplayWorkAreaRect.Top);
+	
+	const FVector2D ClientSize(1280.f * DPIScaleFactor, 720.0f * DPIScaleFactor);
+
+	TSharedRef<SWindow> RootWindow = SNew(SWindow)
+		.Title(NSLOCTEXT("TraceInsightsModule", "UnrealInsightsAppName", "Unreal Insights"))
+		.CreateTitleBar(!bEmbedTitleAreaContent)
+		.SupportsMaximize(true)
+		.SupportsMinimize(true)
+		.IsInitiallyMaximized(false)
+		.IsInitiallyMinimized(false)
+		.SizingRule(ESizingRule::UserSized)
+		.AutoCenter(EAutoCenter::PreferredWorkArea)
+		.ClientSize(ClientSize)
+		.AdjustInitialSizeAndPositionForDPIScale(false);
+
+	const bool bShowRootWindowImmediately = false;
+	FSlateApplication::Get().AddWindow(RootWindow, bShowRootWindowImmediately);
+
+	FGlobalTabmanager::Get()->SetRootWindow(RootWindow);
+	FGlobalTabmanager::Get()->SetAllowWindowMenuBar(true);
+
+	FSlateNotificationManager::Get().SetRootWindow(RootWindow);
+
+	//////////////////////////////////////////////////
+	// Setup the window's content.
+
+	TSharedRef<FTabManager::FLayout> DefaultLayout = FTabManager::NewLayout("UnrealInsightsLayout_v1.0");
+
+	AddAreaForSessionViewer(DefaultLayout);
+
+	AddAreaForWidgetReflector(DefaultLayout, false);
+
+	// Load layout from ini file.
+	PersistentLayout = FLayoutSaveRestore::LoadFromConfig(UnrealInsightsLayoutIni, DefaultLayout);
+
+	// Restore application layout.
 	const EOutputCanBeNullptr OutputCanBeNullptr = EOutputCanBeNullptr::Never;
 	TSharedPtr<SWidget> Content = FGlobalTabmanager::Get()->RestoreFrom(PersistentLayout.ToSharedRef(), RootWindow, bEmbedTitleAreaContent, OutputCanBeNullptr);
 
 	RootWindow->SetContent(Content.ToSharedRef());
 	RootWindow->GetOnWindowClosedEvent().AddRaw(this, &FTraceInsightsModule::OnWindowClosedEvent);
+
+	//////////////////////////////////////////////////
+	// Show the window.
+
+	RootWindow->ShowWindow();
+	const bool bForceWindowToFront = true;
+	RootWindow->BringToFront(bForceWindowToFront);
+
 #endif
 }
 
@@ -282,7 +388,6 @@ void FTraceInsightsModule::AddAreaForSessionViewer(TSharedRef<FTabManager::FLayo
 
 #if WITH_EDITOR
 	// In editor, we default to all tabs closed.
-	Stack->AddTab(FInsightsManagerTabs::StartPageTabId, ETabState::ClosedTab);
 	Stack->AddTab(FInsightsManagerTabs::SessionInfoTabId, ETabState::ClosedTab);
 	Stack->AddTab(FInsightsManagerTabs::TimingProfilerTabId, ETabState::ClosedTab);
 	Stack->AddTab(FInsightsManagerTabs::LoadingProfilerTabId, ETabState::ClosedTab);
@@ -298,7 +403,6 @@ void FTraceInsightsModule::AddAreaForSessionViewer(TSharedRef<FTabManager::FLayo
 		->Split(Stack)
 	);
 #else
-	Stack->AddTab(FInsightsManagerTabs::StartPageTabId, ETabState::ClosedTab);
 	Stack->AddTab(FInsightsManagerTabs::SessionInfoTabId, ETabState::OpenedTab);
 	Stack->AddTab(FInsightsManagerTabs::TimingProfilerTabId, ETabState::OpenedTab);
 	Stack->AddTab(FInsightsManagerTabs::LoadingProfilerTabId, ETabState::ClosedTab);
@@ -316,18 +420,18 @@ void FTraceInsightsModule::AddAreaForSessionViewer(TSharedRef<FTabManager::FLayo
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FTraceInsightsModule::AddAreaForWidgetReflector(TSharedRef<FTabManager::FLayout> Layout, bool bAllowDebugTools)
+void FTraceInsightsModule::AddAreaForWidgetReflector(TSharedRef<FTabManager::FLayout> Layout, bool bIsOpenedTab)
 {
 	const float DPIScaleFactor = FPlatformApplicationMisc::GetDPIScaleFactorAtPoint(10.0f, 10.0f);
 
 	// Create area and tab for Slate's WidgetReflector.
 	Layout->AddArea
 	(
-		FTabManager::NewArea(600.0f * DPIScaleFactor, 600.0f * DPIScaleFactor)
+		FTabManager::NewArea(800.0f * DPIScaleFactor, 400.0f * DPIScaleFactor)
 		->SetWindow(FVector2D(10.0f * DPIScaleFactor, 10.0f * DPIScaleFactor), false)
 		->Split
 		(
-			FTabManager::NewStack()->AddTab("WidgetReflector", bAllowDebugTools ? ETabState::OpenedTab : ETabState::ClosedTab)
+			FTabManager::NewStack()->AddTab(FTabId("WidgetReflector"), bIsOpenedTab ? ETabState::OpenedTab : ETabState::ClosedTab)
 		)
 	);
 }
@@ -336,11 +440,12 @@ void FTraceInsightsModule::AddAreaForWidgetReflector(TSharedRef<FTabManager::FLa
 
 void FTraceInsightsModule::ShutdownUserInterface()
 {
-	check(PersistentLayout.IsValid());
-
-	// Save application layout.
-	FLayoutSaveRestore::SaveToConfig(UnrealInsightsLayoutIni, PersistentLayout.ToSharedRef());
-	GConfig->Flush(false, UnrealInsightsLayoutIni);
+	if (PersistentLayout.IsValid())
+	{
+		// Save application layout.
+		FLayoutSaveRestore::SaveToConfig(UnrealInsightsLayoutIni, PersistentLayout.ToSharedRef());
+		GConfig->Flush(false, UnrealInsightsLayoutIni);
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -381,7 +486,7 @@ const FInsightsMajorTabConfig& FTraceInsightsModule::FindMajorTabConfig(const FN
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const FOnRegisterMajorTabExtensions* FTraceInsightsModule::FindMajorTabLayoutExtension(const FName& InMajorTabId) const
+FOnRegisterMajorTabExtensions* FTraceInsightsModule::FindMajorTabLayoutExtension(const FName& InMajorTabId)
 {
 	return MajorTabExtensionDelegates.Find(InMajorTabId);
 }
@@ -402,7 +507,7 @@ void FTraceInsightsModule::SetUnrealInsightsLayoutIni(const FString& InIniPath)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-TSharedPtr<const Trace::IAnalysisSession> FTraceInsightsModule::GetAnalysisSession() const
+TSharedPtr<const TraceServices::IAnalysisSession> FTraceInsightsModule::GetAnalysisSession() const
 {
 	return FInsightsManager::Get()->GetSession();
 }
@@ -415,6 +520,7 @@ void FTraceInsightsModule::StartAnalysisForTrace(uint32 InTraceId, bool InAutoQu
 	{
 		FInsightsManager::Get()->LoadTrace(InTraceId, InAutoQuit);
 	}
+	UpdateAppTitle();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -422,6 +528,7 @@ void FTraceInsightsModule::StartAnalysisForTrace(uint32 InTraceId, bool InAutoQu
 void FTraceInsightsModule::StartAnalysisForLastLiveSession()
 {
 	FInsightsManager::Get()->LoadLastLiveSession();
+	UpdateAppTitle();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -432,12 +539,18 @@ void FTraceInsightsModule::StartAnalysisForTraceFile(const TCHAR* InTraceFile, b
 	{
 		FInsightsManager::Get()->LoadTraceFile(FString(InTraceFile), InAutoQuit);
 	}
+	UpdateAppTitle();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void FTraceInsightsModule::OnWindowClosedEvent(const TSharedRef<SWindow>&)
 {
+	for (TSharedRef<IInsightsComponent>& Component : Components)
+	{
+		Component->OnWindowClosedEvent();
+	}
+
 	FGlobalTabmanager::Get()->SaveAllVisualState();
 }
 
@@ -462,6 +575,24 @@ void FTraceInsightsModule::InitializeTesting(bool InInitAutomationModules, bool 
 
 	RegisterComponent(TestRunner);
 #endif
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FTraceInsightsModule::UpdateAppTitle()
+{
+	FInsightsManager::Get()->UpdateAppTitle();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FTraceInsightsModule::HandleCodeAccessorOpenFileFailed(const FString& Filename)
+{
+	FMessageLog ReportMessageLog(FInsightsManager::Get()->GetLogListingName());
+	FText Text = FText::Format(NSLOCTEXT("TraceInsightsModule", "FailedToOpenSourceFile", "Failed to open source file!\n\"{0}\""), FText::FromString(Filename));
+	TSharedRef<FTokenizedMessage> Message = FTokenizedMessage::Create(EMessageSeverity::Warning, Text);
+	ReportMessageLog.AddMessage(Message);
+	ReportMessageLog.Notify();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

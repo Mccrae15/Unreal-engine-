@@ -77,39 +77,50 @@ void SDMXPortSelector::Construct(const FArguments& InArgs)
 
 bool SDMXPortSelector::IsInputPortSelected() const
 {
-	const TSharedPtr<FDMXPortSelectorItem> CurrentSelection = PortNameComboBox->GetSelectedItem();
-	if (CurrentSelection.IsValid())
+	if (!bHasMultipleValues)
 	{
-		return CurrentSelection->GetType() == EDMXPortSelectorItemType::Input;
+		const TSharedPtr<FDMXPortSelectorItem> CurrentSelection = PortNameComboBox->GetSelectedItem();
+		if (CurrentSelection.IsValid())
+		{
+			return CurrentSelection->GetType() == EDMXPortSelectorItemType::Input;
+		}
 	}
+
 	return false;
 }
 
 bool SDMXPortSelector::IsOutputPortSelected() const
 {
-	const TSharedPtr<FDMXPortSelectorItem> CurrentSelection = PortNameComboBox->GetSelectedItem();
-	if (CurrentSelection.IsValid())
+	if (!bHasMultipleValues)
 	{
-		return CurrentSelection->GetType() == EDMXPortSelectorItemType::Output;
+		const TSharedPtr<FDMXPortSelectorItem> CurrentSelection = PortNameComboBox->GetSelectedItem();
+		if (CurrentSelection.IsValid())
+		{
+			return CurrentSelection->GetType() == EDMXPortSelectorItemType::Output;
+		}
 	}
+
 	return false;
 }
 
 FDMXInputPortSharedPtr SDMXPortSelector::GetSelectedInputPort() const
 {
-	const TSharedPtr<FDMXPortSelectorItem> CurrentSelection = PortNameComboBox->GetSelectedItem();
-	if (CurrentSelection.IsValid() &&
-		CurrentSelection->GetType() == EDMXPortSelectorItemType::Input)
+	if (!bHasMultipleValues)
 	{
-		const TArray<FDMXInputPortSharedRef>& InputPorts = FDMXPortManager::Get().GetInputPorts();
-
-		const FDMXInputPortSharedRef* SelectedPortPtr = InputPorts.FindByPredicate([&CurrentSelection](const FDMXInputPortSharedRef& InputPort) {
-			return InputPort->GetPortGuid() == CurrentSelection->GetGuid();
-		});
-
-		if (SelectedPortPtr)
+		const TSharedPtr<FDMXPortSelectorItem> CurrentSelection = PortNameComboBox->GetSelectedItem();
+		if (CurrentSelection.IsValid() &&
+			CurrentSelection->GetType() == EDMXPortSelectorItemType::Input)
 		{
-			return *SelectedPortPtr;
+			const TArray<FDMXInputPortSharedRef>& InputPorts = FDMXPortManager::Get().GetInputPorts();
+
+			const FDMXInputPortSharedRef* SelectedPortPtr = InputPorts.FindByPredicate([&CurrentSelection](const FDMXInputPortSharedRef& InputPort) {
+				return InputPort->GetPortGuid() == CurrentSelection->GetGuid();
+				});
+
+			if (SelectedPortPtr)
+			{
+				return *SelectedPortPtr;
+			}
 		}
 	}
 
@@ -118,19 +129,22 @@ FDMXInputPortSharedPtr SDMXPortSelector::GetSelectedInputPort() const
 
 FDMXOutputPortSharedPtr SDMXPortSelector::GetSelectedOutputPort() const
 {
-	const TSharedPtr<FDMXPortSelectorItem> CurrentSelection = PortNameComboBox->GetSelectedItem();
-	if (CurrentSelection.IsValid() &&
-		CurrentSelection->GetType() == EDMXPortSelectorItemType::Output)
+	if (!bHasMultipleValues)
 	{
-		const TArray<FDMXOutputPortSharedRef>& OutputPorts = FDMXPortManager::Get().GetOutputPorts();
-
-		const FDMXOutputPortSharedRef* SelectedPortPtr = OutputPorts.FindByPredicate([&CurrentSelection](const FDMXOutputPortSharedRef& OutputPort) {
-			return OutputPort->GetPortGuid() == CurrentSelection->GetGuid();
-			});
-
-		if (SelectedPortPtr)
+		const TSharedPtr<FDMXPortSelectorItem> CurrentSelection = PortNameComboBox->GetSelectedItem();
+		if (CurrentSelection.IsValid() &&
+			CurrentSelection->GetType() == EDMXPortSelectorItemType::Output)
 		{
-			return *SelectedPortPtr;
+			const TArray<FDMXOutputPortSharedRef>& OutputPorts = FDMXPortManager::Get().GetOutputPorts();
+
+			const FDMXOutputPortSharedRef* SelectedPortPtr = OutputPorts.FindByPredicate([&CurrentSelection](const FDMXOutputPortSharedRef& OutputPort) {
+				return OutputPort->GetPortGuid() == CurrentSelection->GetGuid();
+				});
+
+			if (SelectedPortPtr)
+			{
+				return *SelectedPortPtr;
+			}
 		}
 	}
 
@@ -144,6 +158,8 @@ bool SDMXPortSelector::HasSelection() const
 
 void SDMXPortSelector::SelectPort(const FGuid& PortGuid)
 {
+	bHasMultipleValues = false;
+
 	TSharedPtr<FDMXPortSelectorItem> PortItem = FindPortItem(PortGuid);
 	if (PortItem != PortNameComboBox->GetSelectedItem())
 	{
@@ -158,6 +174,13 @@ void SDMXPortSelector::SelectPort(const FGuid& PortGuid)
 
 		OnPortSelected.ExecuteIfBound();
 	}
+}
+
+void SDMXPortSelector::SetHasMultipleValues()
+{
+	bHasMultipleValues = true;
+
+	PortNameTextBlock->SetText(LOCTEXT("ShowAsMultipleValues", "Mutiple Values"));
 }
 
 TSharedRef<SWidget> SDMXPortSelector::GenerateComboBoxEntry(TSharedPtr<FDMXPortSelectorItem> Item)
@@ -188,6 +211,8 @@ void SDMXPortSelector::OnPortItemSelectionChanged(TSharedPtr<FDMXPortSelectorIte
 	
 	if (Item.IsValid())
 	{
+		bHasMultipleValues = false;
+
 		if (Item->IsTitleRow())
 		{
 			// Restore the previous selection if possible
@@ -234,11 +259,11 @@ TArray<TSharedPtr<FDMXPortSelectorItem>> SDMXPortSelector::MakeComboBoxSource()
 			// Only show ports with valid guids. Let the config log and mend invalid Guids and ignore them quietly here.
 			if (InputPortConfig.GetPortGuid().IsValid())
 			{
-				TSharedRef<FDMXPortSelectorItem> Item = FDMXPortSelectorItem::CreateItem(InputPortConfig);
+			TSharedRef<FDMXPortSelectorItem> Item = FDMXPortSelectorItem::CreateItem(InputPortConfig);
 
-				NewComboBoxSource.Add(Item);
-			}
+			NewComboBoxSource.Add(Item);
 		}
+	}
 	}
 
 	if (Mode == EDMXPortSelectorMode::SelectFromAvailableOutputs ||
@@ -247,15 +272,15 @@ TArray<TSharedPtr<FDMXPortSelectorItem>> SDMXPortSelector::MakeComboBoxSource()
 		NewComboBoxSource.Add(FDMXPortSelectorItem::CreateTitleRowItem(TEXT("Outputs")));
 
 		for (const FDMXOutputPortConfig& OutputPortConfig : ProtocolSettings->OutputPortConfigs)
-		{			
+		{
 			// Only show ports with valid guids. Let the config log and mend invalid Guids and ignore them quietly here.
 			if (OutputPortConfig.GetPortGuid().IsValid())
 			{
-				TSharedRef<FDMXPortSelectorItem> Item = FDMXPortSelectorItem::CreateItem(OutputPortConfig);
+			TSharedRef<FDMXPortSelectorItem> Item = FDMXPortSelectorItem::CreateItem(OutputPortConfig);
 
-				NewComboBoxSource.Add(Item);
-			}
+			NewComboBoxSource.Add(Item);
 		}
+	}
 	}
 
 	return NewComboBoxSource;

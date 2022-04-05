@@ -6,6 +6,7 @@
 #include "AudioModulation.h"
 #include "Containers/Queue.h"
 #include "CoreMinimal.h"
+#include "HAL/CriticalSection.h"
 #include "IAudioModulation.h"
 #include "SoundControlBus.h"
 #include "SoundControlBusMix.h"
@@ -17,17 +18,22 @@
 #include "SoundModulationValue.h"
 #include "SoundModulationGenerator.h"
 #include "SoundModulationGeneratorProxy.h"
+#include "Templates/Atomic.h"
 #include "Templates/Function.h"
 
 #if WITH_AUDIOMODULATION
-
 #if !UE_BUILD_SHIPPING
 #include "AudioModulationDebugger.h"
 #endif // !UE_BUILD_SHIPPING
+#endif // WITH_AUDIOMODULATION
 
 namespace AudioModulation
 {
 	// Forward Declarations
+	struct FControlBusSettings;
+	struct FModulationGeneratorSettings;
+	struct FModulationPatchSettings;
+
 	class FControlBusProxy;
 	class FModulationInputProxy;
 	class FModulationPatchProxy;
@@ -42,20 +48,27 @@ namespace AudioModulation
 		FPatchProxyMap Patches;
 	};
 
+	using FModulatorHandleSet = TSet<Audio::FModulatorHandleId>;
+
 	struct FReferencedModulators
 	{
-		TMap<FPatchHandle, TArray<uint32>> PatchMap;
-		TMap<FBusHandle, TArray<uint32>> BusMap;
-		TMap<FGeneratorHandle, TArray<uint32>> GeneratorMap;
+		TMap<FPatchHandle, FModulatorHandleSet> PatchMap;
+		TMap<FBusHandle, FModulatorHandleSet> BusMap;
+		TMap<FGeneratorHandle, FModulatorHandleSet> GeneratorMap;
 	};
+} // namespace AudioModulation
 
+
+#if WITH_AUDIOMODULATION
+namespace AudioModulation
+{
 	class FAudioModulationSystem
 	{
 	public:
 		void Initialize(const FAudioPluginInitializationParams& InitializationParams);
 
 		void ActivateBus(const USoundControlBus& InBus);
-		void ActivateBusMix(const FModulatorBusMixSettings& InSettings);
+		void ActivateBusMix(FModulatorBusMixSettings&& InSettings);
 		void ActivateBusMix(const USoundControlBusMix& InBusMix);
 		void ActivateGenerator(const USoundModulationGenerator& InGenerator);
 
@@ -68,16 +81,27 @@ namespace AudioModulation
 		void DeactivateAllBusMixes();
 		void DeactivateGenerator(const USoundModulationGenerator& InGenerator);
 
-		Audio::FModulationParameter GetParameter(FName InParamName) const;
-
 		void ProcessModulators(const double InElapsed);
 		void SoloBusMix(const USoundControlBusMix& InBusMix);
 
 		Audio::FDeviceId GetAudioDeviceId() const;
 
-		Audio::FModulatorTypeId RegisterModulator(Audio::FModulatorHandleId InHandleId, const USoundModulatorBase* InModulatorBase, Audio::FModulationParameter& OutParameter);
+		/* Register new handle with given a given modulator that may or may not already be active (i.e. registered).
+		 * If already registered, depending on modulator type, may or may not refresh proxy based on provided settings.
+		 */
+		Audio::FModulatorTypeId RegisterModulator(Audio::FModulatorHandleId InHandleId, const FControlBusSettings& InSettings);
+		Audio::FModulatorTypeId RegisterModulator(Audio::FModulatorHandleId InHandleId, const FModulationGeneratorSettings& InSettings);
+		Audio::FModulatorTypeId RegisterModulator(Audio::FModulatorHandleId InHandleId, const FModulationPatchSettings& InSettings);
+
+		/* Register new handle with given Id with a modulator that is already active (i.e. registered). Used primarily for copying modulation handles. */
 		void RegisterModulator(Audio::FModulatorHandleId InHandleId, Audio::FModulatorId InModulatorId);
+
+		/* Attempts to get the modulator value from the AudioRender Thread. */
 		bool GetModulatorValue(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const;
+
+		/* Attempts to get the modulator value from any thread (lock contentious).*/
+		bool GetModulatorValueThreadSafe(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const;
+
 		void UnregisterModulator(const Audio::FModulatorHandle& InHandle);
 
 		/* Saves mix to .ini profile for fast iterative development that does not require re-cooking a mix */
@@ -99,6 +123,15 @@ namespace AudioModulation
 		 */
 		void UpdateMix(const USoundControlBusMix& InMix, float InFadeTime = -1.0f);
 
+		/* Sets the global bus mix value if over the prescribed time. If FadeTime is non-positive, applies the value immediately. */
+		void SetGlobalBusMixValue(USoundControlBus& Bus, float Value, float FadeTime = -1.0f);
+
+		/* Clears the global bus mix value over the prescribed FadeTime. If FadeTime is non-positive, returns to the bus's respective parameter default immediately. */
+		void ClearGlobalBusMixValue(const USoundControlBus& InBus, float FadeTime = -1.0f);
+
+		/* Clears all global bus mix values over the prescribed FadeTime. If FadeTime is non-positive, returns to the bus's respective parameter default immediately. */
+		void ClearAllGlobalBusMixValues(float FadeTime = -1.0f);
+
 		/*
 		 * Commits any changes from a modulator type applied to a UObject definition
 		 * to modulator instance if active (i.e. Control Bus, Control Bus Modulator)
@@ -117,72 +150,90 @@ namespace AudioModulation
 		/* Runs the provided command on the audio render thread (at the beginning of the ProcessModulators call) */
 		void RunCommandOnProcessingThread(TUniqueFunction<void()> Cmd);
 
-		template <typename THandleType, typename TModType, typename TModSettings, typename TMapType>
-		bool RegisterModulator(Audio::FModulatorHandleId InHandleId, const USoundModulatorBase* InModulatorBase, TMapType& ProxyMap, TMap<THandleType, TArray<uint32>>& ModMap)
+		/* Template for register calls that move the modulator settings objects onto the Audio Processing Thread & create proxies.
+		 * If the proxy is already found, adds provided HandleId as reference to given proxy. Does *not* update the proxy with the
+		 * given settings.  If update is desired on an existing proxy, UpdateModulator must be explicitly called.
+		 * @tparam THandleType Type of modulator handle used to access the proxy on the Processing Thread
+		 * @tparam TModSettings Modulation settings to move and use if proxy construction is required on the Audio Processing Thread
+		 * @tparam TMapType MapType used to cache the corresponding proxy id & proxy
+		 * @tparam TInitFunction (Optional) Function type used to call on the AudioProcessingThread immediately following proxy construction
+		 * @param InHandleId HandleId associated with the proxy to be retrieved/generated.
+		 * @param InModSettings ModulatorSettings to be used if construction of proxy is required on Audio Processing Thread
+		 * @param OutProxyMap Map to find or add proxy to if constructed
+		 * @param InInitFunction Function type used to call on the AudioProcessingThread immediately following proxy generation
+		 */
+		template <typename THandleType, typename TModSettings, typename TMapType, typename TInitFunction = TUniqueFunction<void(THandleType)>>
+		void RegisterModulator(Audio::FModulatorHandleId InHandleId, TModSettings&& InModSettings, TMapType& OutProxyMap, TMap<THandleType, FModulatorHandleSet>& OutModMap, TInitFunction InInitFunction = TInitFunction())
 		{
 			check(InHandleId != INDEX_NONE);
 
-			if (const TModType* Mod = Cast<TModType>(InModulatorBase))
+			RunCommandOnProcessingThread([
+				this,
+				InHandleId,
+				ModSettings = MoveTemp(InModSettings),
+				InitFunction = MoveTemp(InInitFunction),
+				PassedProxyMap = &OutProxyMap,
+				PassedModMap = &OutModMap
+			]() mutable
 			{
-				RunCommandOnProcessingThread([this, Modulator = TModSettings(*Mod, AudioDeviceId), InHandleId, PassedProxyMap = &ProxyMap, PassedModMap = &ModMap]()
-				{
-					check(PassedProxyMap);
-					check(PassedModMap);
+				check(PassedProxyMap);
+				check(PassedModMap);
 
-					THandleType Handle = THandleType::Create(Modulator, *PassedProxyMap, *this);
-					PassedModMap->FindOrAdd(Handle).Add(InHandleId);
-				});
-
-				return true;
-			}
-
-			return false;
+				THandleType Handle = THandleType::Create(MoveTemp(ModSettings), *PassedProxyMap, *this);
+				PassedModMap->FindOrAdd(Handle).Add(InHandleId);
+			});
 		}
 
 		template <typename THandleType>
-		bool UnregisterModulator(THandleType PatchHandle, TMap<THandleType, TArray<uint32>>& HandleMap, const uint32 ParentId)
+		bool UnregisterModulator(THandleType InModHandle, TMap<THandleType, FModulatorHandleSet>& OutHandleMap, const Audio::FModulatorHandleId InHandleId)
 		{
-			if (!PatchHandle.IsValid())
+			bool bHandleRemoved = false;
+
+			if (!InModHandle.IsValid())
 			{
-				return false;
+				return bHandleRemoved;
 			}
 
-			if (TArray<uint32>* ObjectIds = HandleMap.Find(PatchHandle))
+			if (FModulatorHandleSet* HandleSet = OutHandleMap.Find(InModHandle))
 			{
-				for (int32 i = 0; i < ObjectIds->Num(); ++i)
+				bHandleRemoved = HandleSet->Remove(InHandleId) > 0;
+				if (HandleSet->IsEmpty())
 				{
-					const uint32 ObjectId = (*ObjectIds)[i];
-					if (ObjectId == ParentId)
-					{
-						ObjectIds->RemoveAtSwap(i, 1, false /* bAllowShrinking */);
-						if (ObjectIds->Num() == 0)
-						{
-							HandleMap.Remove(PatchHandle);
-						}
-						return true;
-					}
+					OutHandleMap.Remove(InModHandle);
 				}
 			}
 
-			return false;
+			return bHandleRemoved;
 		}
 
 		FReferencedProxies RefProxies;
+
+		// Critical section & map of copied, computed modulation values for
+		// use from the decoder threads & respective MetaSound getter nodes.
+		mutable FCriticalSection ThreadSafeModValueCritSection;
+		TMap<Audio::FModulatorId, float> ThreadSafeModValueMap;
 
 		TSet<FBusHandle> ManuallyActivatedBuses;
 		TSet<FBusMixHandle> ManuallyActivatedBusMixes;
 		TSet<FGeneratorHandle> ManuallyActivatedGenerators;
 
+		// Global mixes each containing a single stage for any globally manipulated bus stage value.
+		TMap<uint32, TObjectPtr<USoundControlBusMix>> ActiveGlobalBusValueMixes;
+
 		// Command queue to be consumed on processing thread 
 		TQueue<TUniqueFunction<void()>, EQueueMode::Mpsc> ProcessingThreadCommandQueue;
 
 		// Thread modulators are processed on
-		uint32 ProcessingThreadId = 0;
+		TAtomic<uint32> ProcessingThreadId { 0 };
 
 		// Collection of maps with modulator handles to referencing object ids used by externally managing objects
 		FReferencedModulators RefModulators;
 
 		Audio::FDeviceId AudioDeviceId = INDEX_NONE;
+
+		// Registered Parameters
+		using FParameterRegistry = TMap<FName, Audio::FModulationParameter>;
+		FParameterRegistry ParameterRegistry;
 
 #if !UE_BUILD_SHIPPING
 	public:
@@ -208,7 +259,7 @@ namespace AudioModulation
 	};
 } // namespace AudioModulation
 
-#else // WITH_AUDIOMODULATION
+#else // !WITH_AUDIOMODULATION
 
 namespace AudioModulation
 {
@@ -216,7 +267,6 @@ namespace AudioModulation
 	class FAudioModulationSystem
 	{
 	public:
-		Audio::FModulationParameter GetParameter(FName InParamName) { return Audio::FModulationParameter(); }
 		void Initialize(const FAudioPluginInitializationParams& InitializationParams) { }
 
 #if WITH_EDITOR
@@ -238,29 +288,48 @@ namespace AudioModulation
 #endif // !UE_BUILD_SHIPPING
 
 		void ActivateBus(const USoundControlBus& InBus) { }
-		void ActivateBusMix(const FModulatorBusMixSettings& InSettings) { }
+		void ActivateBusMix(FModulatorBusMixSettings&& InSettings) { }
 		void ActivateBusMix(const USoundControlBusMix& InBusMix) { }
 		void ActivateGenerator(const USoundModulationGenerator& InGenerator) { }
 
 		void DeactivateAllBusMixes() { }
 		void DeactivateBus(const USoundControlBus& InBus) { }
-		void DeactivateBusMix(const USoundControlBus& InBusMix) { }
+		void DeactivateBusMix(const USoundControlBusMix& InBusMix) { }
 		void DeactivateGenerator(const USoundModulationGenerator& InGenerator) { }
 
+		Audio::FDeviceId GetAudioDeviceId() const { return 0; }
+
 		void SaveMixToProfile(const USoundControlBusMix& InBusMix, const int32 InProfileIndex) { }
-		void LoadMixFromProfile(const int32 InProfileIndex, USoundControlBusMix& OutBusMix) { }
+		TArray<FSoundControlBusMixStage> LoadMixFromProfile(const int32 InProfileIndex, USoundControlBusMix& OutBusMix) { }
+
+		void SetGlobalBusMixValue(USoundControlBus& Bus, float Value, float FadeTime) { }
+		void ClearGlobalBusMixValue(const USoundControlBus& InBus, float FadeTime) { }
+		void ClearAllGlobalBusMixValues(float FadeTime) { }
 
 		void ProcessModulators(const double InElapsed) { }
 
-		Audio::FModulatorTypeId RegisterModulator(Audio::FModulatorHandleId InHandleId, const USoundModulatorBase* InModulatorBase, Audio::FModulationParameter& OutParameter) { return INDEX_NONE; }
+		Audio::FModulatorTypeId RegisterModulator(Audio::FModulatorHandleId InHandleId, const FControlBusSettings& InSettings) { return 0; }
+		Audio::FModulatorTypeId RegisterModulator(Audio::FModulatorHandleId InHandleId, const FModulationGeneratorSettings& InSettings) { return 0; }
+		Audio::FModulatorTypeId RegisterModulator(Audio::FModulatorHandleId InHandleId, const FModulationPatchSettings& InSettings) { return 0; }
+
 		void RegisterModulator(Audio::FModulatorHandleId InHandleId, Audio::FModulatorId InModulatorId) { }
 		bool GetModulatorValue(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const { return false; }
+		bool GetModulatorValueThreadSafe(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const { return false; }
 		void UnregisterModulator(const Audio::FModulatorHandle& InHandle) { }
 
-		void UpdateMix(const USoundControlBusMix& InMix, float InFadeTime) { }
-		void UpdateMix(const TArray<FSoundControlBusMixStage>& InStages, USoundControlBusMix& InOutMix, bool bUpdateObject = false) { }
+		void UpdateMix(const USoundControlBusMix& InMix, float InFadeTime = -1.0f) { }
+		void UpdateMix(const TArray<FSoundControlBusMixStage>& InStages, USoundControlBusMix& InOutMix, bool bUpdateObject = false, float InFadeTime = -1.0f) { }
 		void UpdateMixByFilter(const FString& InAddressFilter, const TSubclassOf<USoundModulationParameter>& InParamClassFilter, USoundModulationParameter* InParamFilter, float InValue, float InFadeTime, USoundControlBusMix& InOutMix, bool bUpdateObject = false) { }
 		void UpdateModulator(const USoundModulatorBase& InModulator) { }
+
+		private:
+			FReferencedProxies RefProxies;
+
+			friend FControlBusProxy;
+			friend FModulationInputProxy;
+			friend FModulationPatchProxy;
+			friend FModulationPatchRefProxy;
+			friend FModulatorBusMixStageProxy;
 	};
 } // namespace AudioModulation
 #endif // WITH_AUDIOMODULATION

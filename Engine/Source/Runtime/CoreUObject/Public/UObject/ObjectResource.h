@@ -276,7 +276,7 @@ struct FObjectExport : public FObjectResource
 	 * The index into the FLinker's ExportMap for the next export in the linker's export hash table.
 	 * Transient
 	 */
-	int32				HashNext;
+	int32			HashNext;
 
 	/**
 	 * Whether the export was forced into the export table via OBJECTMARK_ForceTagExp.
@@ -310,21 +310,31 @@ struct FObjectExport : public FObjectResource
 	bool			bIsAsset;
 
 	/**
+	 * True if this export should have its iostore public hash generated even if not RF_Public.
+	 */
+	bool			bGeneratePublicHash;
+
+	/**
 	 * Force this export to not load, it failed because the outer didn't exist.
 	 */
 	bool			bExportLoadFailed;
 
+	// @todo: BP2CPP_remove
 	/**
 	 * Export is a dynamic type.
 	 */
-	enum class EDynamicType : uint8
+	enum class UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") EDynamicType : uint8
 	{
 		NotDynamicExport,
 		DynamicType,
 		ClassDefaultObject,
 	};
 
+	// @todo: BP2CPP_remove
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.0, "FObjectExport::DynamicType is no longer in use and will be removed.")
 	EDynamicType	DynamicType;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/**
 	 * Export was filtered out on load
@@ -445,26 +455,31 @@ struct FObjectImport : public FObjectResource
 #endif
 
 	/**
-	 * The UObject represented by this resource.  Assigned the first time CreateImport is called for this import.
-	 * Transient
-	 */
-	UObject*		XObject;
-
-	/**
-	 * The linker that contains the original FObjectExport resource associated with this import.
-	 * Transient
-	 */
-	FLinkerLoad*	SourceLinker;
-
-	/**
 	 * Index into SourceLinker's ExportMap for the export associated with this import's UObject.
 	 * Transient
 	 */
 	int32             SourceIndex;
 
+	/** 
+	 * Indicate if the import comes from an optional package, used to generate the proper chunk id in the io store
+	 */
+	bool			bImportOptional;
+
 	bool			bImportPackageHandled;
 	bool			bImportSearchedFor;
 	bool			bImportFailed;
+
+	/**
+	 * The UObject represented by this resource.  Assigned the first time CreateImport is called for this import.
+	 * Transient
+	 */
+	UObject* XObject;
+
+	/**
+	 * The linker that contains the original FObjectExport resource associated with this import.
+	 * Transient
+	 */
+	FLinkerLoad* SourceLinker;
 
 	/**
 	 * Constructors

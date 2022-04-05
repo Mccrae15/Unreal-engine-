@@ -13,6 +13,8 @@
 #include "MovieSceneEventBlueprintExtension.h"
 
 #include "ScopedTransaction.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #include "GameFramework/Actor.h"
 #include "Engine/Blueprint.h"
@@ -492,6 +494,77 @@ void FMovieSceneEventUtils::BindEventSectionToBlueprint(UMovieSceneEventSectionB
 	UMovieSceneEventBlueprintExtension* EventExtension = NewObject<UMovieSceneEventBlueprintExtension>(DirectorBP);
 	EventExtension->Add(EventSection);
 	DirectorBP->Extensions.Add(EventExtension);
+}
+
+void FMovieSceneEventUtils::RemoveEndpointsForEventSection(UMovieSceneEventSectionBase* EventSection, UBlueprint* DirectorBP)
+{
+	check(EventSection && DirectorBP);
+
+	static const TCHAR* const EventGraphName = TEXT("Sequencer Events");
+	UEdGraph* SequenceEventGraph = FindObject<UEdGraph>(DirectorBP, EventGraphName);
+
+	if (SequenceEventGraph)
+	{
+		for (FMovieSceneEvent& EntryPoint : EventSection->GetAllEntryPoints())
+		{
+			UEdGraphNode* Endpoint = FMovieSceneEventUtils::FindEndpoint(&EntryPoint, EventSection, DirectorBP);
+			if (Endpoint)
+			{
+				UE_LOG(LogMovieScene, Display, TEXT("Removing event: %s from: %s"), *GetNameSafe(Endpoint), *GetNameSafe(DirectorBP));
+				SequenceEventGraph->RemoveNode(Endpoint);
+			}
+		}
+	}
+}
+
+void FMovieSceneEventUtils::RemoveUnusedCustomEvents(const TArray<TWeakObjectPtr<UMovieSceneEventSectionBase>>& EventSections, UBlueprint* DirectorBP)
+{
+	check(DirectorBP);
+
+	static const TCHAR* const EventGraphName = TEXT("Sequencer Events");
+	UEdGraph* SequenceEventGraph = FindObject<UEdGraph>(DirectorBP, EventGraphName);
+	if (SequenceEventGraph)
+	{
+		TArray<UK2Node_CustomEvent*> ExistingNodes;
+		SequenceEventGraph->GetNodesOfClass(ExistingNodes);
+
+		TSet<UEdGraphNode*> Endpoints;
+		for (TWeakObjectPtr<UMovieSceneEventSectionBase> WeakEventSection : EventSections)
+		{
+			UMovieSceneEventSectionBase* EventSection = WeakEventSection.Get();
+			if (!EventSection)
+			{
+				continue;
+			}
+
+			for (FMovieSceneEvent& EntryPoint : EventSection->GetAllEntryPoints())
+			{
+				if (UEdGraphNode* Endpoint = FMovieSceneEventUtils::FindEndpoint(&EntryPoint, EventSection, DirectorBP))
+				{
+					Endpoints.Add(Endpoint);
+				}
+			}
+		}
+				
+		FScopedTransaction RemoveUnusedCustomEvents(LOCTEXT("RemoveUnusedCustomEvents", "Remove Unused Custom Events"));
+	
+		for (UK2Node_CustomEvent* ExistingNode : ExistingNodes)
+		{
+			const bool bHasEntryPoint = Endpoints.Contains(ExistingNode);
+			if (!bHasEntryPoint)
+			{
+				FNotificationInfo Info(FText::Format(LOCTEXT("RemoveUnusedCustomEventNotify", "Remove unused custom event {0} from {1}"), FText::FromString(GetNameSafe(ExistingNode)), FText::FromString(GetNameSafe(DirectorBP))));
+				Info.ExpireDuration = 3.f;
+				FSlateNotificationManager::Get().AddNotification(Info);
+				
+				UE_LOG(LogMovieScene, Display, TEXT("Remove unused custom event %s from %s"), *GetNameSafe(ExistingNode), *GetNameSafe(DirectorBP));
+
+				DirectorBP->Modify();
+
+				SequenceEventGraph->RemoveNode(ExistingNode);
+			}
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

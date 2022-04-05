@@ -34,7 +34,7 @@ public:
 	{
 		return PlatformData ? PlatformData->SizeY : 0;
 	}
-	FORCEINLINE int32 GetNumSlices() const
+	FORCEINLINE int32 GetArraySize() const
 	{
 		return PlatformData ? PlatformData->GetNumSlices() : 0;
 	}
@@ -53,8 +53,13 @@ public:
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
 	virtual FString GetDesc() override;
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
-	virtual float GetSurfaceWidth() const override { return GetSizeX(); }
-	virtual float GetSurfaceHeight() const override { return GetSizeY(); }
+	virtual float GetSurfaceWidth() const override { return static_cast<float>(GetSizeX()); }
+	virtual float GetSurfaceHeight() const override { return static_cast<float>(GetSizeY()); }
+	virtual float GetSurfaceDepth() const override { return 0.0f; }
+	virtual uint32 GetSurfaceArraySize() const override { return GetArraySize(); }
+	virtual TextureAddress GetTextureAddressX() const override { return AddressX; }
+	virtual TextureAddress GetTextureAddressY() const override { return AddressY; }
+	virtual TextureAddress GetTextureAddressZ() const override{ return AddressZ; }
 	virtual FTextureResource* CreateResource() override;
 #if WITH_EDITOR
 	ENGINE_API virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
@@ -83,7 +88,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Add Textures*/
 	UPROPERTY(EditAnywhere, Category = Source2D, meta = (DisplayName = "Source Textures"))
-	TArray<UTexture2D*> SourceTextures;
+	TArray<TObjectPtr<UTexture2D>> SourceTextures;
 #endif
 
 	/**
@@ -120,5 +125,6 @@ protected:
 
 #if WITH_EDITOR
 	void UpdateMipGenSettings();
+	virtual bool GetStreamableRenderResourceState(FTexturePlatformData* InPlatformData, FStreamableRenderResourceState& OutState) const override;
 #endif
 };

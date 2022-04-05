@@ -77,6 +77,10 @@ class ENGINE_API UCameraComponent : public USceneComponent
 #endif
 
 #if WITH_EDITORONLY_DATA
+	// The Frustum visibility flag for draw frustum component initialization
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Camera)
+	bool bDrawFrustumAllowed = true;
+
 	/** If the camera mesh is visible in game. Only relevant when running editor builds. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Camera)
 	uint8 bCameraMeshHiddenInGame : 1;
@@ -157,7 +161,7 @@ protected:
 	class UDrawFrustumComponent* DrawFrustum;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = Camera)
-	class UStaticMesh* CameraMesh;
+	TObjectPtr<class UStaticMesh> CameraMesh;
 
 	// The camera mesh to show visually where the camera is placed
 	class UStaticMeshComponent* ProxyMeshComponent;

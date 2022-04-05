@@ -8,12 +8,16 @@
 
 #include "Modules/ModuleManager.h"
 #include "LevelEditor.h"
+#include "LevelEditorViewport.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 
 #include "MovieSceneCommonHelpers.h"
 #include "MovieSceneSequencePlayer.h"
 #include "MovieSceneSection.h"
 #include "Channels/MovieSceneChannelProxy.h"
+
+//For custom colors on channels, stored in editor pref's
+#include "CurveEditorSettings.h"
 
 namespace
 {
@@ -266,6 +270,54 @@ void ULevelSequenceEditorBlueprintLibrary::EmptySelection()
 	}
 }
 
+void ULevelSequenceEditorBlueprintLibrary::SetSelectionRangeStart(int32 NewFrame)
+{
+	if (CurrentSequencer.IsValid())
+	{
+		FFrameRate DisplayRate = CurrentSequencer.Pin()->GetFocusedDisplayRate();
+		FFrameRate TickResolution = CurrentSequencer.Pin()->GetFocusedTickResolution();
+
+		CurrentSequencer.Pin()->SetSelectionRangeStart(ConvertFrameTime(NewFrame, DisplayRate, TickResolution));
+	}
+}
+
+void ULevelSequenceEditorBlueprintLibrary::SetSelectionRangeEnd(int32 NewFrame)
+{
+	if (CurrentSequencer.IsValid())
+	{
+		FFrameRate DisplayRate = CurrentSequencer.Pin()->GetFocusedDisplayRate();
+		FFrameRate TickResolution = CurrentSequencer.Pin()->GetFocusedTickResolution();
+
+		CurrentSequencer.Pin()->SetSelectionRangeEnd(ConvertFrameTime(NewFrame, DisplayRate, TickResolution));
+	}
+}
+
+int32 ULevelSequenceEditorBlueprintLibrary::GetSelectionRangeStart()
+{
+	if (CurrentSequencer.IsValid())
+	{
+		FFrameRate DisplayRate = CurrentSequencer.Pin()->GetFocusedDisplayRate();
+		FFrameRate TickResolution = CurrentSequencer.Pin()->GetFocusedTickResolution();
+
+		return ConvertFrameTime(CurrentSequencer.Pin()->GetSelectionRange().GetLowerBoundValue(), TickResolution, DisplayRate).FloorToFrame().Value;
+	}
+
+	return 0;
+}
+
+int32 ULevelSequenceEditorBlueprintLibrary::GetSelectionRangeEnd()
+{
+	if (CurrentSequencer.IsValid())
+	{
+		FFrameRate DisplayRate = CurrentSequencer.Pin()->GetFocusedDisplayRate();
+		FFrameRate TickResolution = CurrentSequencer.Pin()->GetFocusedTickResolution();
+
+		return ConvertFrameTime(CurrentSequencer.Pin()->GetSelectionRange().GetUpperBoundValue(), TickResolution, DisplayRate).FloorToFrame().Value;
+	}
+
+	return 0;
+}
+
 void ULevelSequenceEditorBlueprintLibrary::SetSequencer(TSharedRef<ISequencer> InSequencer)
 {
 	CurrentSequencer = TWeakPtr<ISequencer>(InSequencer);
@@ -357,6 +409,156 @@ void ULevelSequenceEditorBlueprintLibrary::SetLockLevelSequence(bool bLock)
 
 			Sequencer->NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::Unknown);
 		}
+	}
+}
+
+bool ULevelSequenceEditorBlueprintLibrary::IsTrackFilterEnabled(const FText& TrackFilterName)
+{
+	if (CurrentSequencer.IsValid())
+	{
+		TSharedPtr<ISequencer> Sequencer = CurrentSequencer.Pin();
+
+		return Sequencer->IsTrackFilterEnabled(TrackFilterName);
+	}
+	return false;
+}
+
+void ULevelSequenceEditorBlueprintLibrary::SetTrackFilterEnabled(const FText& TrackFilterName, bool bEnabled)
+{
+	if (CurrentSequencer.IsValid())
+	{
+		TSharedPtr<ISequencer> Sequencer = CurrentSequencer.Pin();
+
+		Sequencer->SetTrackFilterEnabled(TrackFilterName, bEnabled);
+	}
+}
+
+TArray<FText> ULevelSequenceEditorBlueprintLibrary::GetTrackFilterNames()
+{
+	if (CurrentSequencer.IsValid())
+	{
+		TSharedPtr<ISequencer> Sequencer = CurrentSequencer.Pin();
+
+		return Sequencer->GetTrackFilterNames();
+	}
+
+	return TArray<FText>();
+}
+
+bool ULevelSequenceEditorBlueprintLibrary::HasCustomColorForChannel(UClass* Class, const FString& Identifier)
+{
+	const UCurveEditorSettings* Settings = GetDefault<UCurveEditorSettings>();
+	if (Settings)
+	{
+		TOptional<FLinearColor> OptColor = Settings->GetCustomColor(Class, Identifier);
+		return OptColor.IsSet();
+	}
+	return false;
+}
+
+FLinearColor ULevelSequenceEditorBlueprintLibrary::GetCustomColorForChannel(UClass* Class, const FString& Identifier)
+{
+	FLinearColor Color(FColor::White);
+	const UCurveEditorSettings* Settings = GetDefault<UCurveEditorSettings>();
+	if (Settings)
+	{
+		TOptional<FLinearColor> OptColor = Settings->GetCustomColor(Class, Identifier);
+		if (OptColor.IsSet())
+		{
+			return OptColor.GetValue();
+		}
+	}
+	return Color;
+}
+
+void ULevelSequenceEditorBlueprintLibrary::SetCustomColorForChannel(UClass* Class, const FString& Identifier, const FLinearColor& NewColor)
+{
+	UCurveEditorSettings* Settings = GetMutableDefault<UCurveEditorSettings>();
+	if (Settings)
+	{
+		Settings->SetCustomColor(Class, Identifier, NewColor);
+	}
+}
+
+void ULevelSequenceEditorBlueprintLibrary::SetCustomColorForChannels(UClass* Class, const TArray<FString>& Identifiers, const TArray<FLinearColor>& NewColors)
+{
+	if (Identifiers.Num() != NewColors.Num())
+	{
+		return;
+	}
+	UCurveEditorSettings* Settings = GetMutableDefault<UCurveEditorSettings>();
+	if (Settings)
+	{
+		for (int32 Index = 0; Index < Identifiers.Num(); ++Index)
+		{
+			const FString& Identifier = Identifiers[Index];
+			const FLinearColor& NewColor = NewColors[Index];
+			Settings->SetCustomColor(Class, Identifier, NewColor);
+		}
+	}
+}
+
+void ULevelSequenceEditorBlueprintLibrary::DeleteColorForChannels(UClass* Class, FString& Identifier)
+{
+	UCurveEditorSettings* Settings = GetMutableDefault<UCurveEditorSettings>();
+	if (Settings)
+	{
+		Settings->DeleteCustomColor(Class, Identifier);
+	}
+}
+
+void ULevelSequenceEditorBlueprintLibrary::SetRandomColorForChannels(UClass* Class, const TArray<FString>& Identifiers)
+{
+	UCurveEditorSettings* Settings = GetMutableDefault<UCurveEditorSettings>();
+	if (Settings)
+	{
+		for (int32 Index = 0; Index < Identifiers.Num(); ++Index)
+		{
+			const FString& Identifier = Identifiers[Index];
+			FLinearColor NewColor = UCurveEditorSettings::GetNextRandomColor();
+			Settings->SetCustomColor(Class, Identifier, NewColor);
+		}
+	}
+}
+
+bool ULevelSequenceEditorBlueprintLibrary::IsCameraCutLockedToViewport()
+{
+	if (CurrentSequencer.IsValid())
+	{
+		TSharedPtr<ISequencer> Sequencer = CurrentSequencer.Pin();
+		return Sequencer->IsPerspectiveViewportCameraCutEnabled();
+	}
+
+	return false;
+}
+
+void ULevelSequenceEditorBlueprintLibrary::SetLockCameraCutToViewport(bool bLock)
+{
+	if (CurrentSequencer.IsValid())
+	{
+		TSharedPtr<ISequencer> Sequencer = CurrentSequencer.Pin();
+
+		if (bLock)
+		{
+			for(FLevelEditorViewportClient* LevelVC : GEditor->GetLevelViewportClients())
+			{
+				if (LevelVC && LevelVC->AllowsCinematicControl() && LevelVC->GetViewMode() != VMI_Unknown)
+				{
+					LevelVC->SetActorLock(nullptr);
+					LevelVC->bLockedCameraView = false;
+					LevelVC->UpdateViewForLockedActor();
+					LevelVC->Invalidate();
+				}
+			}
+			Sequencer->SetPerspectiveViewportCameraCutEnabled(true);
+		}
+		else
+		{
+			Sequencer->UpdateCameraCut(nullptr, EMovieSceneCameraCutParams());
+			Sequencer->SetPerspectiveViewportCameraCutEnabled(false);
+		}
+
+		Sequencer->ForceEvaluate();
 	}
 }
 

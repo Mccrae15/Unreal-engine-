@@ -15,6 +15,7 @@ public class DMXEditor : ModuleRules
 				"DMXProtocol",
 				"DMXProtocolEditor",
 				"DMXRuntime",
+				"ToolMenus"
 			}
 		);
 
@@ -26,6 +27,7 @@ public class DMXEditor : ModuleRules
 				"AssetTools",
 				"CoreUObject",
 				"Kismet",
+				"EditorFramework",
 				"UnrealEd",
 				"EditorStyle",
 				"PropertyEditor",

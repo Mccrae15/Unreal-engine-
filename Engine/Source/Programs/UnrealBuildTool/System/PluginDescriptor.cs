@@ -6,7 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -67,52 +67,52 @@ namespace UnrealBuildTool
 		/// Name of the version for this plugin.  This is the front-facing part of the version number.  It doesn't need to match
 		/// the version number numerically, but should be updated when the version number is increased accordingly.
 		/// </summary>
-		public string VersionName;
+		public string? VersionName;
 
 		/// <summary>
 		/// Friendly name of the plugin
 		/// </summary>
-		public string FriendlyName;
+		public string? FriendlyName;
 
 		/// <summary>
 		/// Description of the plugin
 		/// </summary>
-		public string Description;
+		public string? Description;
 
 		/// <summary>
 		/// The name of the category this plugin
 		/// </summary>
-		public string Category;
+		public string? Category;
 
 		/// <summary>
 		/// The company or individual who created this plugin.  This is an optional field that may be displayed in the user interface.
 		/// </summary>
-		public string CreatedBy;
+		public string? CreatedBy;
 
 		/// <summary>
 		/// Hyperlink URL string for the company or individual who created this plugin.  This is optional.
 		/// </summary>
-		public string CreatedByURL;
+		public string? CreatedByURL;
 
 		/// <summary>
 		/// Documentation URL string.
 		/// </summary>
-		public string DocsURL;
+		public string? DocsURL;
 
 		/// <summary>
 		/// Marketplace URL for this plugin. This URL will be embedded into projects that enable this plugin, so we can redirect to the marketplace if a user doesn't have it installed.
 		/// </summary>
-		public string MarketplaceURL;
+		public string? MarketplaceURL;
 
 		/// <summary>
 		/// Support URL/email for this plugin.
 		/// </summary>
-		public string SupportURL;
+		public string? SupportURL;
 
 		/// <summary>
 		/// Sets the version of the engine that this plugin is compatible with.
 		/// </summary>
-		public string EngineVersion;
+		public string? EngineVersion;
 
 		/// <summary>4
 		/// If true, this plugin from a platform extension extending another plugin */
@@ -122,22 +122,22 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// List of platforms supported by this plugin. This list will be copied to any plugin reference from a project file, to allow filtering entire plugins from staged builds.
 		/// </summary>
-		public List<UnrealTargetPlatform> SupportedTargetPlatforms;
+		public List<UnrealTargetPlatform>? SupportedTargetPlatforms;
 
 		/// <summary>
 		/// List of programs supported by this plugin.
 		/// </summary>
-		public string[] SupportedPrograms;
+		public string[]? SupportedPrograms;
 
 		/// <summary>
 		/// List of all modules associated with this plugin
 		/// </summary>
-		public List<ModuleDescriptor> Modules;
+		public List<ModuleDescriptor>? Modules;
 
 		/// <summary>
 		/// List of all localization targets associated with this plugin
 		/// </summary>
-		public LocalizationTargetDescriptor[] LocalizationTargets;
+		public LocalizationTargetDescriptor[]? LocalizationTargets;
 
 		/// <summary>
 		/// Whether this plugin should be enabled by default for all projects
@@ -148,6 +148,11 @@ namespace UnrealBuildTool
 		/// Can this plugin contain content?
 		/// </summary>
 		public bool bCanContainContent;
+
+		/// <summary>
+		/// Can this plugin contain Verse code (either in content directory or in any of its modules)?
+		/// </summary>
+		public bool bCanContainVerse;
 
 		/// <summary>
 		/// Marks the plugin as beta in the UI
@@ -165,7 +170,7 @@ namespace UnrealBuildTool
 		public bool bInstalled;
 
 		/// <summary>
-		/// For plugins that are under a platform folder (eg. /PS4/), determines whether compiling the plugin requires the build platform and/or SDK to be available
+		/// For plugins that are under a platform folder (eg. /IOS/), determines whether compiling the plugin requires the build platform and/or SDK to be available
 		/// </summary>
 		public bool bRequiresBuildPlatform;
 
@@ -175,19 +180,24 @@ namespace UnrealBuildTool
 		public bool bExplicitlyLoaded;
 
 		/// <summary>
+		/// When true, an empty SupportedTargetPlatforms is interpeted as 'no platforms' with the expectation that explict platforms will be added in plugin platform extensions
+		/// </summary>
+		public bool bHasExplicitPlatforms;
+
+		/// <summary>
 		/// Set of pre-build steps to execute, keyed by host platform name.
 		/// </summary>
-		public CustomBuildSteps PreBuildSteps;
+		public CustomBuildSteps? PreBuildSteps;
 
 		/// <summary>
 		/// Set of post-build steps to execute, keyed by host platform name.
 		/// </summary>
-		public CustomBuildSteps PostBuildSteps;
+		public CustomBuildSteps? PostBuildSteps;
 
 		/// <summary>
 		/// Additional plugins that this plugin depends on
 		/// </summary>
-		public List<PluginReferenceDescriptor> Plugins;
+		public List<PluginReferenceDescriptor>? Plugins;
 
 		/// <summary>
 		/// Private constructor. This object should not be created directly; read it from disk using FromFile() instead.
@@ -201,8 +211,9 @@ namespace UnrealBuildTool
 		/// Reads a plugin descriptor from a json object
 		/// </summary>
 		/// <param name="RawObject">The object to read from</param>
+		/// <param name="PluginPath"></param>
 		/// <returns>New plugin descriptor</returns>
-		public PluginDescriptor(JsonObject RawObject)
+		public PluginDescriptor(JsonObject RawObject, FileReference PluginPath)
 		{
 			// Read the version
 			if (!RawObject.TryGetIntegerField("FileVersion", out FileVersion))
@@ -247,7 +258,7 @@ namespace UnrealBuildTool
 			RawObject.TryGetStringArrayField("SupportedPrograms", out SupportedPrograms);
 			RawObject.TryGetBoolField("bIsPluginExtension", out bIsPluginExtension);
 
-			string[] SupportedTargetPlatformNames;
+			string[]? SupportedTargetPlatformNames;
 			if (RawObject.TryGetStringArrayField("SupportedTargetPlatforms", out SupportedTargetPlatformNames))
 			{
 				SupportedTargetPlatforms = new List<UnrealTargetPlatform>();
@@ -260,18 +271,18 @@ namespace UnrealBuildTool
 					}
 					else
 					{
-						Log.TraceWarning("Unknown platform {0} listed in plugin with FriendlyName {1}", TargetPlatformName, FriendlyName);
+						Log.TraceWarningTask(PluginPath, $"Unknown platform {TargetPlatformName} listed in plugin with FriendlyName \"{FriendlyName}\"");
 					}
 				}
 			}
 
-			JsonObject[] ModulesArray;
+			JsonObject[]? ModulesArray;
 			if (RawObject.TryGetObjectArrayField("Modules", out ModulesArray))
 			{
-				Modules = Array.ConvertAll(ModulesArray, x => ModuleDescriptor.FromJsonObject(x)).ToList();
+				Modules = Array.ConvertAll(ModulesArray, x => ModuleDescriptor.FromJsonObject(x, PluginPath)).ToList();
 			}
 
-			JsonObject[] LocalizationTargetsArray;
+			JsonObject[]? LocalizationTargetsArray;
 			if (RawObject.TryGetObjectArrayField("LocalizationTargets", out LocalizationTargetsArray))
 			{
 				LocalizationTargets = Array.ConvertAll(LocalizationTargetsArray, x => LocalizationTargetDescriptor.FromJsonObject(x));
@@ -284,6 +295,7 @@ namespace UnrealBuildTool
 			}
 
 			RawObject.TryGetBoolField("CanContainContent", out bCanContainContent);
+			RawObject.TryGetBoolField("CanContainVerse", out bCanContainVerse);
 			RawObject.TryGetBoolField("IsBetaVersion", out bIsBetaVersion);
 			RawObject.TryGetBoolField("IsExperimentalVersion", out bIsExperimentalVersion);
 			RawObject.TryGetBoolField("Installed", out bInstalled);
@@ -297,11 +309,12 @@ namespace UnrealBuildTool
 
 			RawObject.TryGetBoolField("RequiresBuildPlatform", out bRequiresBuildPlatform);
 			RawObject.TryGetBoolField("ExplicitlyLoaded", out bExplicitlyLoaded);
+			RawObject.TryGetBoolField("HasExplicitPlatforms", out bHasExplicitPlatforms);
 
 			CustomBuildSteps.TryRead(RawObject, "PreBuildSteps", out PreBuildSteps);
 			CustomBuildSteps.TryRead(RawObject, "PostBuildSteps", out PostBuildSteps);
 
-			JsonObject[] PluginsArray;
+			JsonObject[]? PluginsArray;
 			if(RawObject.TryGetObjectArrayField("Plugins", out PluginsArray))
 			{
 				Plugins = Array.ConvertAll(PluginsArray, x => PluginReferenceDescriptor.FromJsonObject(x)).ToList();
@@ -318,7 +331,7 @@ namespace UnrealBuildTool
 			JsonObject RawObject = JsonObject.Read(FileName);
 			try
 			{
-				PluginDescriptor Descriptor = new PluginDescriptor(RawObject);
+				PluginDescriptor Descriptor = new PluginDescriptor(RawObject, FileName);
 				if (Descriptor.Modules != null)
 				{
 					foreach (ModuleDescriptor Module in Descriptor.Modules)
@@ -374,6 +387,10 @@ namespace UnrealBuildTool
 				Writer.WriteValue("EnabledByDefault", bEnabledByDefault.Value);
 			}
 			Writer.WriteValue("CanContainContent", bCanContainContent);
+			if (bCanContainVerse)
+			{
+				Writer.WriteValue("CanContainVerse", bCanContainVerse);
+			}
 			if (bIsBetaVersion)
 			{
 				Writer.WriteValue("IsBetaVersion", bIsBetaVersion);
@@ -395,6 +412,11 @@ namespace UnrealBuildTool
 			if (bExplicitlyLoaded)
 			{
 				Writer.WriteValue("ExplicitlyLoaded", bExplicitlyLoaded);
+			}
+
+			if (bHasExplicitPlatforms)
+			{
+				Writer.WriteValue("HasExplicitPlatforms", bHasExplicitPlatforms);
 			}
 
 			if(SupportedTargetPlatforms != null && SupportedTargetPlatforms.Count > 0)
@@ -441,7 +463,23 @@ namespace UnrealBuildTool
 		/// <returns>True if the plugin should be enabled</returns>
 		public bool SupportsTargetPlatform(UnrealTargetPlatform Platform)
 		{
-			return SupportedTargetPlatforms == null || SupportedTargetPlatforms.Count == 0 || SupportedTargetPlatforms.Contains(Platform);
+			if (bHasExplicitPlatforms)
+			{
+				return SupportedTargetPlatforms != null && SupportedTargetPlatforms.Contains(Platform);
+			}
+			else
+			{
+				return SupportedTargetPlatforms == null || SupportedTargetPlatforms.Count == 0 || SupportedTargetPlatforms.Contains(Platform);
+			}
+		}
+
+		/// <summary>
+		/// Retrieve the list of supported target platforms as a string list
+		/// </summary>
+		/// <returns>String list of supported target platforms</returns>
+		public string[]? GetSupportedTargetPlatformNames()
+		{
+			return SupportedTargetPlatforms?.Select( P => P.ToString() ).ToArray();
 		}
 	}
 }

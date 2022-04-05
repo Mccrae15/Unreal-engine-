@@ -418,7 +418,7 @@ struct ENGINE_API FRootMotionSource_ConstantForce : public FRootMotionSource
 	FVector Force;
 
 	UPROPERTY()
-	UCurveFloat* StrengthOverTime;
+	TObjectPtr<UCurveFloat> StrengthOverTime;
 
 	virtual FRootMotionSource* Clone() const override;
 
@@ -469,7 +469,7 @@ struct ENGINE_API FRootMotionSource_RadialForce : public FRootMotionSource
 	FVector Location;
 
 	UPROPERTY()
-	AActor* LocationActor;
+	TObjectPtr<AActor> LocationActor;
 
 	UPROPERTY()
 	float Radius;
@@ -484,10 +484,10 @@ struct ENGINE_API FRootMotionSource_RadialForce : public FRootMotionSource
 	bool bNoZForce;
 
 	UPROPERTY()
-	UCurveFloat* StrengthDistanceFalloff;
+	TObjectPtr<UCurveFloat> StrengthDistanceFalloff;
 
 	UPROPERTY()
-	UCurveFloat* StrengthOverTime;
+	TObjectPtr<UCurveFloat> StrengthOverTime;
 
 	UPROPERTY()
 	bool bUseFixedWorldDirection;
@@ -550,9 +550,9 @@ struct ENGINE_API FRootMotionSource_MoveToForce : public FRootMotionSource
 	bool bRestrictSpeedToExpected;
 
 	UPROPERTY()
-	UCurveVector* PathOffsetCurve;
+	TObjectPtr<UCurveVector> PathOffsetCurve;
 
-	FVector GetPathOffsetInWorldSpace(float MoveFraction) const;
+	FVector GetPathOffsetInWorldSpace(const float MoveFraction) const;
 
 	virtual FRootMotionSource* Clone() const override;
 
@@ -617,14 +617,14 @@ struct ENGINE_API FRootMotionSource_MoveToDynamicForce : public FRootMotionSourc
 	bool bRestrictSpeedToExpected;
 
 	UPROPERTY()
-	UCurveVector* PathOffsetCurve;
+	TObjectPtr<UCurveVector> PathOffsetCurve;
 
 	UPROPERTY()
-	UCurveFloat* TimeMappingCurve;
+	TObjectPtr<UCurveFloat> TimeMappingCurve;
 
 	void SetTargetLocation(FVector NewTargetLocation);
 
-	FVector GetPathOffsetInWorldSpace(float MoveFraction) const;
+	FVector GetPathOffsetInWorldSpace(const float MoveFraction) const;
 
 	virtual FRootMotionSource* Clone() const override;
 
@@ -686,10 +686,10 @@ struct ENGINE_API FRootMotionSource_JumpForce : public FRootMotionSource
 	bool bDisableTimeout;
 
 	UPROPERTY()
-	UCurveVector* PathOffsetCurve;
+	TObjectPtr<UCurveVector> PathOffsetCurve;
 
 	UPROPERTY()
-	UCurveFloat* TimeMappingCurve;
+	TObjectPtr<UCurveFloat> TimeMappingCurve;
 
 	FVector SavedHalfwayLocation;
 
@@ -860,7 +860,7 @@ struct ENGINE_API FRootMotionSourceGroup
 	void UpdateStateFrom(const FRootMotionSourceGroup& GroupToTakeStateFrom, bool bMarkForSimulatedCatchup = false);
 
 	/** Serialize the root motion sources and their states for this group */
-	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess);
+	bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess, uint8 MaxNumRootMotionSourcesToSerialize = MAX_uint8);
 
 	/** Clear the contents to return it to "empty" */
 	void Clear();
@@ -889,7 +889,7 @@ protected:
 	void AccumulateRootMotionVelocityFromSource(const FRootMotionSource& RootMotionSource, float DeltaTime, const ACharacter& Character, const UCharacterMovementComponent& MoveComponent, FVector& InOutVelocity) const;
 
 	/** Helper function for serializing array of root motion sources */
-	static void NetSerializeRMSArray(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess, TArray< TSharedPtr<FRootMotionSource> >& RootMotionSourceArray);
+	static void NetSerializeRMSArray(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess, TArray< TSharedPtr<FRootMotionSource> >& RootMotionSourceArray, uint8 MaxNumRootMotionSourcesToSerialize = MAX_uint8);
 
 };
 

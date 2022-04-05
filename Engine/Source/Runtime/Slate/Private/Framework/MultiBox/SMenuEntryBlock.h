@@ -114,16 +114,26 @@ public:
 
 	FMenuEntryBlock( const FName& InExtensionHook, const FUIAction& UIAction, const TAttribute<FText>& InLabel, const TAttribute<FText>& InToolTip, const FOnGetContent& InMenuBuilder, TSharedPtr<FExtender> InExtender, bool bInSubMenu, bool bInSubMenuOnClick, bool bInCloseSelfOnly, const FSlateIcon& InIcon = FSlateIcon(), bool bInShouldCloseWindowAfterMenuSelection = true);
 
+	/** Construct a menu entry given param struct */
+	FMenuEntryBlock(const FMenuEntryParams& InMenuEntryParams);
+
 	/** FMultiBlock interface */
 	virtual void CreateMenuEntry(class FMenuBuilder& MenuBuilder) const override;
 	virtual bool HasIcon() const override;
 
+	/** Returns whether this menu entry block opens a sub-menu. */
+	bool IsSubMenu() const { return bIsSubMenu; }
+
+	/** Sets whether the menu search algorithm should walk down this menu sub-menus. */
+	void SetRecursivelySearchable(bool bInRecursivelySearchable) { bIsRecursivelySearchable = bInRecursivelySearchable; }
+
+	/** Returns whether the menu search algorithm should walk down this menu sub-menus. */
+	bool IsRecursivelySearchable() const { return bIsRecursivelySearchable; }
 
 private:
 
 	/** FMultiBlock private interface */
 	virtual TSharedRef< class IMultiBlockBaseWidget > ConstructWidget() const override;
-
 
 private:
 
@@ -136,6 +146,9 @@ private:
 
 	/** Optional overridden tool tip for this menu entry.  If not set, then the action's tool tip will be used instead. */
 	TAttribute<FText> ToolTipOverride;
+
+	/** Optional overridden input binding text for this menu entry.  If not set, then the UI action's binding will be used if available. */
+	TAttribute<FText> InputBindingOverride;
 
 	/** Optional overridden icon for this tool bar button.  IF not set, then the action's icon will be used instead. */
 	FSlateIcon IconOverride;
@@ -151,6 +164,9 @@ private:
 
 	/** True if this menu entry opens a sub-menu */
 	bool bIsSubMenu;
+
+	/** True if the search algorithm should walk down this menu sub menus. Usually true, unless the menu has circular/infinite expansion (happens in some menus generated on the fly by reflection). */
+	bool bIsRecursivelySearchable;
 
 	/** True if this menu entry opens a sub-menu by clicking on it only */
 	bool bOpenSubMenuOnClick;
@@ -201,6 +217,14 @@ public:
 	 */
 	void Construct( const FArguments& InArgs );
 
+	/**
+	 * Called to create content for a pull-down or sub-menu window when it's summoned by the user
+	 *
+	 * @return	The widget content for the new menu
+	 */
+	TSharedRef< SWidget > MakeNewMenuWidget() const;
+
+
 protected:
 	/** Struct for creating menu entry widgets */
 	struct FMenuEntryBuildParams
@@ -215,6 +239,8 @@ protected:
 		TAttribute<FText> Label;
 		/** The tooltip to display */
 		TAttribute<FText> ToolTip;
+		/** The input binding to display */
+		TAttribute<FText> InputBinding;
 		/** The style set to use */
 		const ISlateStyle* StyleSet;
 		/** The style name to use */
@@ -273,19 +299,14 @@ protected:
 	//virtual void Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime ) override;
 	// End of SWidget interface
 
-	/**
-	 * Called to create content for a pull-down or sub-menu window when it's summoned by the user
-	 *
-	 * @return	The widget content for the new menu
-	 */
-	TSharedRef< SWidget > MakeNewMenuWidget() const;
 
 	/**
 	 * Called to get the appropriate border for Buttons on Menu Bars based on whether or not submenu is open
 	 *
 	 * @return	The appropriate border to use
 	 */
-	const FSlateBrush* GetMenuBarButtonBorder( ) const;
+	const FSlateBrush* GetMenuBarButtonBorder() const;
+	FSlateColor GetMenuBarForegroundColor() const;
 
 	/**
 	 * Called to create content for a pull-down menu widget
@@ -378,20 +399,5 @@ private:
 	/** For pull-down or sub-menu entries, this stores a weak reference to the menu anchor widget that we'll use to summon the menu */
 	TWeakPtr< SMenuAnchor > MenuAnchor;
 	
-	/** The time until a SubMenu action is taken (open or close).  <0 means no action taken */
-	//float TimeToSubMenuOpen;
-
-	/** Style for menu bar button with sub menu opened */
-	const FSlateBrush* MenuBarButtonBorderSubmenuOpen;
-	/** Style for menu bar button with no sub menu opened */
-	const FSlateBrush* MenuBarButtonBorderSubmenuClosed;
-
-	///** The pending SubMenu request state */
-	//enum
-	//{
-	//	Idle,
-	//	WantOpen,
-	//	WantClose
-	//} 
-	//SubMenuRequestState;
+	const FButtonStyle* MenuBarButtonStyle;
 };

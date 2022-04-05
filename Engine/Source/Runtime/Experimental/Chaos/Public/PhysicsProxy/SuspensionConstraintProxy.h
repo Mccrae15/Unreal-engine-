@@ -57,6 +57,8 @@ public:
 
 	void DestroyOnPhysicsThread(Chaos::FPBDRigidsSolver* InSolver);
 
+	void UpdateTargetOnPhysicsThread(Chaos::FPBDRigidsSolver* InSolver, const FVector& TargetPos, const FVector& Normal, bool Enabled);
+
 	void SyncBeforeDestroy() {}
 	void OnRemoveFromScene() {}
 

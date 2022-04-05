@@ -5,12 +5,19 @@
 	"Description": "",
 	"Plugins": [
 		{
-			"Name": "PhysXVehicles",
+			"Name": "ChaosVehiclesPlugin",
 			"Enabled": true
 		},
 		{
 			"Name": "RawInput",
 			"Enabled": true
-		}
+		},
+		{
+			"Name": "ModelingToolsEditorMode",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		}		
 	]
 }

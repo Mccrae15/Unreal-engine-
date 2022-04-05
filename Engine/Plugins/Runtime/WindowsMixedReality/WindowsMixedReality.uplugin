@@ -3,7 +3,7 @@
 	"Version": 1,
 	"VersionName": "1.0",
 	"FriendlyName": "Microsoft Windows Mixed Reality",
-	"Description": "Support for Microsoft Windows Mixed Reality compatible devices.",
+	"Description": "Support for Microsoft Windows Mixed Reality compatible devices. This plugin is deprecated and will be removed in a future engine release. Please use the Microsoft OpenXR plugin from the Marketplace instead.",
 	"Category": "Virtual Reality",
 	"CreatedBy": "Microsoft Corporation",
 	"CreatedByURL": "http://www.microsoft.com",
@@ -23,7 +23,7 @@
 			"Name": "WindowsMixedRealityRuntimeSettings",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
 				"HoloLens"
 			]
@@ -32,7 +32,7 @@
 			"Name": "WindowsMixedRealityHMD",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
 				"HoloLens"
 			]
@@ -41,7 +41,7 @@
 			"Name": "WindowsMixedRealitySpatialInput",
 			"Type": "Runtime",
 			"LoadingPhase": "PreDefault",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
 				"HoloLens"
 			]
@@ -50,7 +50,7 @@
 			"Name": "WindowsMixedRealityHandTracking",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
 				"HoloLens"
 			]
@@ -59,7 +59,7 @@
 			"Name": "WindowsMixedRealityPlatformEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
 				"HoloLens"
 			]
@@ -68,7 +68,7 @@
 			"Name": "WindowsMixedRealityEyeTracker",
 			"Type": "Runtime",
 			"LoadingPhase": "PreDefault",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
 				"HoloLens"
 			]
@@ -77,7 +77,7 @@
 			"Name": "WindowsMixedRealityRHI",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"HoloLens"
 			]
 		},
@@ -85,7 +85,7 @@
 			"Name": "WindowsMixedRealityInputSimulation",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64"
 			]
 		},
@@ -93,7 +93,7 @@
 			"Name": "HoloLensAR",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"HoloLens",
 				"Win64"
 			]

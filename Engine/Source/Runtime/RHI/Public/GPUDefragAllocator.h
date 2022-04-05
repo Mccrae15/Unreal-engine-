@@ -9,6 +9,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Containers/List.h"
 #include "HAL/LowLevelMemTracker.h"
+#include "ProfilingDebugging/MemoryTrace.h"
 
 #define LOG_EVERY_ALLOCATION			0
 #define DUMP_ALLOC_FREQUENCY			0 // 100
@@ -792,6 +793,8 @@ protected:
 	*/
 	void Relocate(FRelocationStats& Stats, FMemoryChunk* Dest, int64 DestOffset, const void* Source, int64 Size, void* UserPayload)
 	{
+		MemoryTrace_ReallocFree((uint64)Source);
+		MemoryTrace_ReallocAlloc((uint64) Dest, Size, 4);
 		LLM(FLowLevelMemTracker::Get().OnLowLevelAllocMoved(ELLMTracker::Default, Dest->Base, Source));
 
 		uint8* DestAddr = Dest->Base + DestOffset;
@@ -1059,12 +1062,7 @@ protected:
 	/** Cumulative time spent in allocator.							*/
 	double			TimeSpentInAllocator;
 	/** Allocated memory in uint8s.									*/
-#if PLATFORM_WINDOWS && (WINVER < 0x0600)
-	// Interlock...64 functions are only available from Vista onwards
-	typedef int32 memsize_t;
-#else
 	typedef int64 memsize_t;
-#endif
 
 	volatile memsize_t	PaddingWasteSize;
 

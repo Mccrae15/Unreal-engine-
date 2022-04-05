@@ -6,6 +6,9 @@
 #include "UObject/AnimPhysObjectVersion.h"
 #include "HAL/IConsoleManager.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "PhysicsEngine/PhysicsConstraintComponent.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 #include "PhysicsPublic.h"
 #include "Physics/PhysicsInterfaceTypes.h"
 
@@ -48,6 +51,10 @@ TAutoConsoleVariable<float> CVarConstraintAngularStiffnessScale(
 
 bool bEnableSkeletalMeshConstraints = true;
 FAutoConsoleVariableRef CVarEnableSkeletalMeshConstraints(TEXT("p.EnableSkeletalMeshConstraints"), bEnableSkeletalMeshConstraints, TEXT("Enable skeletal mesh constraints defined within the Physics Asset Editor"));
+
+// warning : setting the value to false can have negative impact on ragdoll, if they start in a kinematic state and then have their bodies turned dynamic
+bool bAllowKinematicKinematicConstraints = true;
+FAutoConsoleVariableRef CVarAllowKinematicKinematicConstraints(TEXT("p.AllowKinematicKinematicConstraints"), bAllowKinematicKinematicConstraints, TEXT("Do not create constraints between two rigid kinematics."));
 
 /** Handy macro for setting BIT of VAR based on the bool CONDITION */
 #define SET_DRIVE_PARAM(VAR, CONDITION, BIT)   (VAR) = (CONDITION) ? ((VAR) | (BIT)) : ((VAR) & ~(BIT))
@@ -128,18 +135,24 @@ FConstraintProfileProperties::FConstraintProfileProperties()
 	, ProjectionAngularTolerance(180.f)
 	, ProjectionLinearAlpha(1.0f)
 	, ProjectionAngularAlpha(0.0f)
+	, ShockPropagationAlpha(0.3f)
 	, LinearBreakThreshold(300.f)
-	, LinearPlasticityThreshold(10.f)
+	, LinearPlasticityThreshold(0.1f)
 	, AngularBreakThreshold(500.f)
 	, AngularPlasticityThreshold(10.f)
+	, ContactTransferScale(0.f)
 	, bDisableCollision(false)
 	, bParentDominates(false)
-	, bEnableProjection(true)
-	, bEnableSoftProjection(false)
+	, bEnableLinearProjection(false)
+	, bEnableAngularProjection(false)
+	, bEnableShockPropagation(false)
+	, bEnableProjection(true)		// to be deprecated
+	, bEnableSoftProjection(false)	// to be deprecated
 	, bAngularBreakable(false)
 	, bAngularPlasticity(false)
 	, bLinearBreakable(false)
 	, bLinearPlasticity(false)
+	, LinearPlasticityType(EConstraintPlasticityType::CCPT_Free)
 {
 }
 
@@ -184,13 +197,30 @@ void FConstraintInstance::UpdatePlasticity()
 		});
 }
 
+void FConstraintInstance::UpdateContactTransferScale()
+{
+#if WITH_CHAOS
+	FPhysicsInterface::ExecuteOnUnbrokenConstraintReadWrite(ConstraintHandle, [&](const FPhysicsConstraintHandle& InConstraint)
+		{
+			ProfileInstance.UpdateContactTransferScale_AssumesLocked(InConstraint);
+		});
+#endif
+}
+
 void FConstraintProfileProperties::UpdatePlasticity_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef) const
 {
+#if WITH_CHAOS
 	const float LinearPlasticityLimit = bLinearPlasticity ? LinearPlasticityThreshold : FLT_MAX;
 	const float AngularPlasticityLimit = bAngularPlasticity ? FMath::DegreesToRadians(AngularPlasticityThreshold) : MAX_FLT;
 
+	FPhysicsInterface::SetPlasticityLimits_AssumesLocked(InConstraintRef, LinearPlasticityLimit, AngularPlasticityLimit, LinearPlasticityType);
+#endif
+}
+
+void FConstraintProfileProperties::UpdateContactTransferScale_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef) const
+{
 #if WITH_CHAOS
-	FPhysicsInterface::SetPlasticityLimits_AssumesLocked(InConstraintRef, LinearPlasticityLimit, AngularPlasticityLimit);
+	FPhysicsInterface::SetContactTransferScale_AssumesLocked(InConstraintRef, ContactTransferScale);
 #endif
 }
 
@@ -215,6 +245,11 @@ void FConstraintInstanceBase::Reset()
 	ConstraintHandle.Reset();
 #endif
 	PhysScene = nullptr;
+}
+
+void FConstraintInstanceBase::SetConstraintBrokenDelegate(FOnConstraintBroken InConstraintBrokenDelegate)
+{
+	OnConstraintBrokenDelegate = InConstraintBrokenDelegate;
 }
 
 
@@ -390,7 +425,7 @@ bool GetActorRefs(FBodyInstance* Body1, FBodyInstance* Body2, FPhysicsActorHandl
 bool FConstraintInstance::CreateJoint_AssumesLocked(const FPhysicsActorHandle& InActorRef1, const FPhysicsActorHandle& InActorRef2)
 {
 #if WITH_CHAOS
-	LLM_SCOPE(ELLMTag::Chaos);
+	LLM_SCOPE(ELLMTag::ChaosConstraint);
 #else
 	LLM_SCOPE(ELLMTag::PhysX);
 #endif
@@ -434,7 +469,8 @@ void FConstraintProfileProperties::UpdateConstraintFlags_AssumesLocked(const FPh
 
 	FPhysicsInterface::SetCollisionEnabled(InConstraintRef, !bDisableCollision);
 #if WITH_CHAOS
-	FPhysicsInterface::SetProjectionEnabled_AssumesLocked(InConstraintRef, bEnableProjection, ProjectionLinearAlpha, ProjectionAngularAlpha);
+	FPhysicsInterface::SetProjectionEnabled_AssumesLocked(InConstraintRef, bEnableLinearProjection || bEnableAngularProjection, ProjectionLinearAlpha, ProjectionAngularAlpha);
+	FPhysicsInterface::SetShockPropagationEnabled_AssumesLocked(InConstraintRef, bEnableShockPropagation, ShockPropagationAlpha);
 #else
 	FPhysicsInterface::SetProjectionEnabled_AssumesLocked(InConstraintRef, bEnableProjection, ProjectionLinearTolerance, ProjectionAngularTolerance);
 #endif
@@ -450,7 +486,7 @@ void FConstraintInstance::UpdateAverageMass_AssumesLocked(const FPhysicsActorHan
 /** 
  *	Create physics engine constraint.
  */
-void FConstraintInstance::InitConstraint(FBodyInstance* Body1, FBodyInstance* Body2, float InScale, UObject* DebugOwner, FOnConstraintBroken InConstraintBrokenDelegate)
+void FConstraintInstance::InitConstraint(FBodyInstance* Body1, FBodyInstance* Body2, float InScale, UObject* DebugOwner, FOnConstraintBroken InConstraintBrokenDelegate, FOnPlasticDeformation InPlasticDeformationDelegate)
 {
 	FPhysicsActorHandle Actor1;
 	FPhysicsActorHandle Actor2;
@@ -462,17 +498,25 @@ void FConstraintInstance::InitConstraint(FBodyInstance* Body1, FBodyInstance* Bo
 			return;
 		}
 
+#if WITH_CHAOS
+		if (!bAllowKinematicKinematicConstraints && (!FPhysicsInterface::IsValid(Actor1) || FPhysicsInterface::IsKinematic(Actor1)) && (!FPhysicsInterface::IsValid(Actor2) || FPhysicsInterface::IsKinematic(Actor2)))
+		{
+			return;
+		}
+#endif
+
 		FPhysicsCommand::ExecuteWrite(Actor1, Actor2, [&](const FPhysicsActorHandle& ActorA, const FPhysicsActorHandle& ActorB)
 		{
-			InitConstraint_AssumesLocked(ActorA, ActorB, InScale, InConstraintBrokenDelegate);
+			InitConstraint_AssumesLocked(ActorA, ActorB, InScale, InConstraintBrokenDelegate, InPlasticDeformationDelegate);
 		});
 	}
 
 }
 
-void FConstraintInstance::InitConstraint_AssumesLocked(const FPhysicsActorHandle& ActorRef1, const FPhysicsActorHandle& ActorRef2, float InScale, FOnConstraintBroken InConstraintBrokenDelegate)
+void FConstraintInstance::InitConstraint_AssumesLocked(const FPhysicsActorHandle& ActorRef1, const FPhysicsActorHandle& ActorRef2, float InScale, FOnConstraintBroken InConstraintBrokenDelegate, FOnPlasticDeformation InPlasticDeformationDelegate)
 {
 	OnConstraintBrokenDelegate = InConstraintBrokenDelegate;
+	OnPlasticDeformationDelegate = InPlasticDeformationDelegate;
 	LastKnownScale = InScale;
 
 	UserData = FChaosUserData(this);
@@ -495,7 +539,7 @@ void FConstraintInstance::InitConstraint_AssumesLocked(const FPhysicsActorHandle
 	// update mass
 	UpdateAverageMass_AssumesLocked(ActorRef1, ActorRef2);
 
-	ProfileInstance.Update_AssumesLocked(ConstraintHandle, AverageMass, bScaleLinearLimits ? LastKnownScale : 1.f);
+	ProfileInstance.Update_AssumesLocked(ConstraintHandle, AverageMass, bScaleLinearLimits ? LastKnownScale : 1.f, true);
 
 	// Put the bodies back to sleep both bodies were asleep
 	if (bActor1WasAsleep && bActor2WasAsleep)
@@ -512,12 +556,7 @@ void FConstraintInstance::InitConstraint_AssumesLocked(const FPhysicsActorHandle
 	}
 }
 
-void FConstraintInstance::SetConstraintBrokenDelegate(FOnConstraintBroken InConstraintBrokenDelegate)
-{
-	OnConstraintBrokenDelegate = InConstraintBrokenDelegate;
-}
-
-void FConstraintProfileProperties::Update_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float AverageMass, float UseScale) const
+void FConstraintProfileProperties::Update_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float AverageMass, float UseScale, bool InInitialize) const
 {
 	// flags and projection settings
 	UpdateConstraintFlags_AssumesLocked(InConstraintRef);
@@ -529,13 +568,10 @@ void FConstraintProfileProperties::Update_AssumesLocked(const FPhysicsConstraint
 
 	UpdateBreakable_AssumesLocked(InConstraintRef);
 	UpdatePlasticity_AssumesLocked(InConstraintRef);
-
-	// Motors
-	FPhysicsInterface::UpdateLinearDrive_AssumesLocked(InConstraintRef, LinearDrive);
-	FPhysicsInterface::UpdateAngularDrive_AssumesLocked(InConstraintRef, AngularDrive);
+	UpdateContactTransferScale_AssumesLocked(InConstraintRef);
 
 	// Target
-	FPhysicsInterface::UpdateDriveTarget_AssumesLocked(InConstraintRef, LinearDrive, AngularDrive);
+	FPhysicsInterface::UpdateDriveTarget_AssumesLocked(InConstraintRef, LinearDrive, AngularDrive, InInitialize);
 }
 
 void FConstraintInstance::TermConstraint()
@@ -597,6 +633,38 @@ void FConstraintInstance::CopyConstraintParamsFrom(const FConstraintInstance* Fr
 	check(FromInstance->PhysScene == nullptr);
 
 	*this = *FromInstance;
+}
+
+void FConstraintInstance::CopyConstraintPhysicalPropertiesFrom(const FConstraintInstance* FromInstance, bool bKeepPosition, bool bKeepRotation)
+{
+	check(FromInstance);
+
+	FConstraintInstance OldInstance = *this;
+	CopyConstraintParamsFrom(FromInstance);
+
+	// Recover internal data we'd like to keep - i.e. bone indices, etc.
+	ConstraintIndex = OldInstance.ConstraintIndex;
+#if WITH_PHYSX
+	ConstraintHandle = OldInstance.ConstraintHandle;
+#endif	//WITH_PHYSX
+	JointName = OldInstance.JointName;
+	ConstraintBone1 = OldInstance.ConstraintBone1;
+	ConstraintBone2 = OldInstance.ConstraintBone2;
+
+	if (bKeepPosition)
+	{
+		Pos1 = OldInstance.Pos1;
+		Pos2 = OldInstance.Pos2;
+	}
+
+	if (bKeepRotation)
+	{
+		PriAxis1 = OldInstance.PriAxis1;
+		SecAxis1 = OldInstance.SecAxis1;
+		PriAxis2 = OldInstance.PriAxis2;
+		SecAxis2 = OldInstance.SecAxis2;
+		AngularRotationOffset = OldInstance.AngularRotationOffset;
+	}
 }
 
 FTransform FConstraintInstance::GetRefFrame(EConstraintFrame::Type Frame) const
@@ -735,6 +803,12 @@ void FConstraintInstance::SetOrientationDriveTwistAndSwing(bool InEnableTwistDri
 	});
 }
 
+void FConstraintInstance::GetOrientationDriveTwistAndSwing(bool& bOutEnableTwistDrive, bool& bOutEnableSwingDrive)
+{
+	bOutEnableTwistDrive = ProfileInstance.AngularDrive.TwistDrive.bEnablePositionDrive;
+	bOutEnableSwingDrive = ProfileInstance.AngularDrive.SwingDrive.bEnablePositionDrive;
+}
+
 void FConstraintInstance::SetOrientationDriveSLERP(bool InEnableSLERP)
 {
 	ProfileInstance.AngularDrive.SetOrientationDriveSLERP(InEnableSLERP);
@@ -754,6 +828,12 @@ void FConstraintInstance::SetAngularVelocityDriveTwistAndSwing(bool bInEnableTwi
 	{
 		FPhysicsInterface::UpdateAngularDrive_AssumesLocked(InUnbrokenConstraint, ProfileInstance.AngularDrive);
 	});
+}
+
+void FConstraintInstance::GetAngularVelocityDriveTwistAndSwing(bool& bOutEnableTwistDrive, bool& bOutEnableSwingDrive)
+{
+	bOutEnableTwistDrive = ProfileInstance.AngularDrive.TwistDrive.bEnableVelocityDrive;
+	bOutEnableSwingDrive = ProfileInstance.AngularDrive.SwingDrive.bEnableVelocityDrive;	
 }
 
 /** Set whether the SLERP angular velocity drive is enabled. Only applicable when SLERP drive mode is used */
@@ -815,6 +895,13 @@ void FConstraintInstance::SetLinearDriveParams(float InSpring, float InDamping, 
 	});
 }
 
+/** Get the linear drive's strength parameters */
+void FConstraintInstance::GetLinearDriveParams(float& OutPositionStrength, float& OutVelocityStrength, float& OutForceLimit)
+{
+	ProfileInstance.LinearDrive.GetDriveParams(OutPositionStrength, OutVelocityStrength, OutForceLimit);
+}
+
+
 /** Function for setting target angular position. */
 void FConstraintInstance::SetAngularOrientationTarget(const FQuat& InOrientationTarget)
 {
@@ -868,6 +955,11 @@ void FConstraintInstance::SetAngularDriveParams(float InSpring, float InDamping,
 	{
 		FPhysicsInterface::UpdateAngularDrive_AssumesLocked(InUnbrokenConstraint, ProfileInstance.AngularDrive);
 	});
+}
+
+void FConstraintInstance::GetAngularDriveParams(float& OutSpring, float& OutDamping, float& OutForceLimit) const
+{
+	ProfileInstance.AngularDrive.GetDriveParams(OutSpring, OutDamping, OutForceLimit);
 }
 
 /** Scale Angular Limit Constraints (as defined in RB_ConstraintSetup) */
@@ -944,7 +1036,7 @@ bool FConstraintInstance::Serialize(FArchive& Ar)
 #if WITH_EDITORONLY_DATA
 void FConstraintInstance::PostSerialize(const FArchive& Ar)
 {
-	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_FIXUP_STIFFNESS_AND_DAMPING_SCALE)
+	if (Ar.IsLoading() && Ar.UEVer() < VER_UE4_FIXUP_STIFFNESS_AND_DAMPING_SCALE)
 	{
 		LinearLimitStiffness_DEPRECATED		/= CVarConstraintAngularStiffnessScale.GetValueOnGameThread();
 		SwingLimitStiffness_DEPRECATED		/= CVarConstraintAngularStiffnessScale.GetValueOnGameThread();
@@ -954,12 +1046,12 @@ void FConstraintInstance::PostSerialize(const FArchive& Ar)
 		TwistLimitDamping_DEPRECATED		/=  CVarConstraintAngularDampingScale.GetValueOnGameThread();
 	}
 
-	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_FIXUP_MOTOR_UNITS)
+	if (Ar.IsLoading() && Ar.UEVer() < VER_UE4_FIXUP_MOTOR_UNITS)
 	{
 		AngularVelocityTarget_DEPRECATED *= 1.f / (2.f * PI);	//we want to use revolutions per second - old system was using radians directly
 	}
 
-	if (Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_CONSTRAINT_INSTANCE_MOTOR_FLAGS)
+	if (Ar.IsLoading() && Ar.UEVer() < VER_UE4_CONSTRAINT_INSTANCE_MOTOR_FLAGS)
 	{
 		bLinearXVelocityDrive_DEPRECATED = LinearVelocityTarget_DEPRECATED.X != 0.f;
 		bLinearYVelocityDrive_DEPRECATED = LinearVelocityTarget_DEPRECATED.Y != 0.f;
@@ -1091,24 +1183,87 @@ FConstraintInstance * FConstraintInstance::Alloc()
 	return new (Memory)FConstraintInstance();
 }
 
+void FConstraintInstance::GetProjectionAlphasOrTolerances(float& ProjectionLinearAlphaOrTolerance, float& ProjectionAngularAlphaOrTolerance) const
+{
+#if WITH_CHAOS
+	ProjectionLinearAlphaOrTolerance = ProfileInstance.ProjectionLinearAlpha;
+	ProjectionAngularAlphaOrTolerance = ProfileInstance.ProjectionAngularAlpha;
+#else
+	ProjectionLinearAlphaOrTolerance = ProfileInstance.ProjectionLinearTolerance;
+	ProjectionAngularAlphaOrTolerance = ProfileInstance.ProjectionAngularTolerance;
+
+#endif
+}
+
+void FConstraintInstance::SetProjectionParams(bool bEnableLinearProjection, bool bEnableAngularProjection, float ProjectionLinearAlphaOrTolerance, float ProjectionAngularAlphaOrTolerance)
+{
+	ProfileInstance.bEnableLinearProjection = bEnableLinearProjection;
+	ProfileInstance.bEnableAngularProjection = bEnableAngularProjection;
+#if WITH_CHAOS
+	ProfileInstance.ProjectionLinearAlpha = ProjectionLinearAlphaOrTolerance;
+	ProfileInstance.ProjectionAngularAlpha = ProjectionAngularAlphaOrTolerance;
+#else
+	ProfileInstance.ProjectionLinearTolerance = ProjectionLinearAlphaOrTolerance;
+	ProfileInstance.ProjectionAngularTolerance = ProjectionAngularAlphaOrTolerance;
+#endif
+
+	FPhysicsCommand::ExecuteWrite(ConstraintHandle, [&](const FPhysicsConstraintHandle& Constraint)
+		{
+#if WITH_CHAOS
+			const bool bEnableProjection = bEnableAngularProjection || ProjectionLinearAlphaOrTolerance;
+			const float LinearAlpha = bEnableLinearProjection ? ProjectionLinearAlphaOrTolerance : 0.0f;
+			const float AngularAlpha = bEnableAngularProjection ? ProjectionAngularAlphaOrTolerance : 0.0f;
+			FPhysicsInterface::SetProjectionEnabled_AssumesLocked(Constraint, bEnableProjection, LinearAlpha, AngularAlpha);
+#else
+			if (bEnableLinearProjection)
+			{
+				FPhysicsInterface::SetProjectionEnabled_AssumesLocked(Constraint, true, ProjectionLinearAlphaOrTolerance, ProjectionAngularAlphaOrTolerance);
+			}
+			else
+			{
+				FPhysicsInterface::SetProjectionEnabled_AssumesLocked(Constraint, false);
+			}
+#endif
+		});
+}
+
+float FConstraintInstance::GetShockPropagationAlpha() const
+{
+#if WITH_CHAOS
+	return ProfileInstance.ShockPropagationAlpha;
+#else
+	return 0;
+#endif
+}
+
+void FConstraintInstance::SetShockPropagationParams(bool bEnableShockPropagation, float ShockPropagationAlpha)
+{
+#if WITH_CHAOS
+	ProfileInstance.bEnableShockPropagation = bEnableShockPropagation;
+	ProfileInstance.ShockPropagationAlpha = ShockPropagationAlpha;
+	FPhysicsCommand::ExecuteWrite(ConstraintHandle, [&](const FPhysicsConstraintHandle& Constraint)
+		{
+			FPhysicsInterface::SetShockPropagationEnabled_AssumesLocked(Constraint, bEnableShockPropagation, ShockPropagationAlpha);
+		});
+#endif
+}
+
 void FConstraintInstance::EnableProjection()
 {
-	ProfileInstance.bEnableProjection = true;
-	
-	FPhysicsCommand::ExecuteWrite(ConstraintHandle, [&](const FPhysicsConstraintHandle& Constraint)
-	{
-		FPhysicsInterface::SetProjectionEnabled_AssumesLocked(Constraint, true, ProfileInstance.ProjectionLinearTolerance, ProfileInstance.ProjectionAngularTolerance);
-	});
+#if WITH_CHAOS
+	SetProjectionParams(true, true, ProfileInstance.ProjectionLinearAlpha, ProfileInstance.ProjectionAngularAlpha);
+#else
+	SetProjectionParams(true, ProfileInstance.ProjectionLinearTolerance, ProfileInstance.ProjectionAngularTolerance);
+#endif
 }
 
 void FConstraintInstance::DisableProjection()
 {
-	ProfileInstance.bEnableProjection = false;
-	
-	FPhysicsCommand::ExecuteWrite(ConstraintHandle, [&](const FPhysicsConstraintHandle& Constraint)
-	{
-		FPhysicsInterface::SetProjectionEnabled_AssumesLocked(Constraint, false);
-	});
+#if WITH_CHAOS
+	SetProjectionParams(false, false, ProfileInstance.ProjectionLinearAlpha, ProfileInstance.ProjectionAngularAlpha);
+#else
+	SetProjectionParams(false, ProfileInstance.ProjectionLinearTolerance, ProfileInstance.ProjectionAngularTolerance);
+#endif
 }
 
 void FConstraintInstance::EnableParentDominates()
@@ -1131,5 +1286,34 @@ void FConstraintInstance::DisableParentDominates()
 	});
 }
 
+FConstraintInstance* FConstraintInstanceAccessor::Get() const
+{
+	if (Owner.IsValid())
+	{
+		if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(Owner.Get()))
+		{
+			return SkeletalMeshComponent->GetConstraintInstanceByIndex(Index);
+		}
+		if (UPhysicsConstraintComponent* PhysicsConstraintComponent = Cast<UPhysicsConstraintComponent>(Owner.Get()))
+		{
+			return &(PhysicsConstraintComponent->ConstraintInstance);
+		}
+#if WITH_EDITOR
+		if (UPhysicsAsset* PhysicsAsset = Cast<UPhysicsAsset>(Owner.Get()))
+		{
+			return PhysicsAsset->GetConstraintInstanceByIndex(Index);
+		}
+#endif
+	}
+	return nullptr;
+}
+
+void FConstraintInstanceAccessor::Modify()
+{
+	if (Owner.IsValid())
+	{
+		Owner->Modify();
+	}
+}
 
 #undef LOCTEXT_NAMESPACE

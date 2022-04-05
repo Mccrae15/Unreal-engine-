@@ -8,13 +8,14 @@
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "EngineModule.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "ImageUtils.h"
 #include "LegacyScreenPercentageDriver.h"
 #include "Rendering/Texture2DResource.h"
 #include "RenderUtils.h"
 
 #if WITH_EDITOR
+#include "TextureCompiler.h"
 #include "ObjectTools.h"
 #include "LevelEditor.h"
 #endif
@@ -40,11 +41,11 @@ namespace ThumbnailGeneratorImpl
 
 		FSceneViewFamilyContext ViewFamily(
 			FSceneViewFamily::ConstructionValues(RenderTargetResource, Scene, FEngineShowFlags(ESFIM_Game))
-			.SetWorldTimes(FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime)
+			.SetTime(FGameTime::GetTimeSinceAppStart())
 		);
 
 		ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
-			ViewFamily, /* GlobalResolutionFraction = */ 1.0f, /* AllowPostProcessSettingsScreenPercentage = */ false));
+			ViewFamily, /* GlobalResolutionFraction = */ 1.0f));
 
 		FSceneViewInitOptions ViewInitOptions;
 		ViewInitOptions.SetViewRectangle(FIntRect(0, 0, TargetSize.X, TargetSize.Y));
@@ -56,7 +57,7 @@ namespace ThumbnailGeneratorImpl
 		FSceneView* NewView = new FSceneView(ViewInitOptions);
 		ViewFamily.Views.Add(NewView);
 
-		FCanvas Canvas(RenderTargetResource, NULL, FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime, Scene->GetFeatureLevel());
+		FCanvas Canvas(RenderTargetResource, NULL, FGameTime::GetTimeSinceAppStart(), Scene->GetFeatureLevel());
 		Canvas.Clear(FLinearColor::Transparent);
 		GetRendererModule().BeginRenderingViewFamily(&Canvas, &ViewFamily);
 
@@ -112,13 +113,13 @@ namespace ThumbnailGeneratorImpl
 			else
 #endif // WITH_EDITOR
 			{
-				void* Data = Texture->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+				void* Data = Texture->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
 				{
 					FMemory::Memcpy(Data, Bytes, NumBytes);
 				}
-				Texture->PlatformData->Mips[0].BulkData.Unlock();
+				Texture->GetPlatformData()->Mips[0].BulkData.Unlock();
 
-				Texture->PlatformData->SetNumSlices(1);
+				Texture->GetPlatformData()->SetNumSlices(1);
 				Texture->UpdateResource();
 			}
 		}
@@ -135,13 +136,16 @@ UTexture2D* ThumbnailGenerator::GenerateThumbnailFromTexture(UTexture2D* Texture
 	}
 
     // Force all mips to stream in, as we may need to use mip 0 for the thumbnail
+#if WITH_EDITOR
+	FTextureCompilingManager::Get().FinishCompilation( { Texture } );
+#endif // WITH_EDITOR
 	Texture->SetForceMipLevelsToBeResident(30.0f);
 	Texture->WaitForStreaming();
 
 	int32 TargetWidth = Texture->GetSizeX();
 	int32 TargetHeight = Texture->GetSizeY();
 
-	if (TargetWidth == 0 || TargetHeight == 0 || !Texture->Resource)
+	if (TargetWidth == 0 || TargetHeight == 0 || !Texture->GetResource())
 	{
 		UE_LOG(LogVariantContent, Error, TEXT("Failed create a thumbnail from texture '%s'"), *Texture->GetName());
 		return nullptr;
@@ -170,7 +174,7 @@ UTexture2D* ThumbnailGenerator::GenerateThumbnailFromTexture(UTexture2D* Texture
 	FTextureRenderTargetResource* RenderTargetResource = RenderTargetTexture->GameThread_GetRenderTargetResource();
 
 	const double Time = FApp::GetCurrentTime() - GStartTime;
-	FCanvas Canvas(RenderTargetResource, NULL, Time, FApp::GetDeltaTime(), Time, GWorld->Scene->GetFeatureLevel());
+	FCanvas Canvas(RenderTargetResource, NULL, FGameTime::GetTimeSinceAppStart(), GWorld->Scene->GetFeatureLevel());
 	Canvas.Clear(FLinearColor::Black);
 
 	const bool bAlphaBlend = false;
@@ -185,7 +189,7 @@ UTexture2D* ThumbnailGenerator::GenerateThumbnailFromTexture(UTexture2D* Texture
 		1.0f,
 		1.0f,
 		FLinearColor::White,
-		Texture->Resource,
+		Texture->GetResource(),
 		bAlphaBlend);
 	Canvas.Flush_GameThread();
 
@@ -207,12 +211,12 @@ UTexture2D* ThumbnailGenerator::GenerateThumbnailFromTexture(UTexture2D* Texture
 		bSetSourceData
 	);
 
-	if (Thumbnail == nullptr)
+    if (Thumbnail == nullptr)
 	{
 		UE_LOG(LogVariantContent, Warning, TEXT("Failed to generate thumbnail from texture '%s'"), *Texture->GetName());
 	}
 
-	return Thumbnail;
+    return Thumbnail;
 }
 
 UTexture2D* ThumbnailGenerator::GenerateThumbnailFromFile(FString FilePath)

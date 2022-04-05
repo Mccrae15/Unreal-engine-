@@ -4,16 +4,18 @@
 #include "MaterialUtilities.h"
 #include "MeshMergeUtilities.h"
 #include "IMeshMergeExtension.h"
-#include "ProxyMaterialUtilities.h"
 #include "IMeshReductionInterfaces.h"
 #include "IMeshReductionManagerModule.h"
 #include "Modules/ModuleManager.h"
 #include "StaticMeshAttributes.h"
 #include "Stats/Stats.h"
+#include "Algo/ForEach.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
 #include "MeshMergeHelpers.h"
+#include "ObjectCacheEventSink.h"
+#include "Materials/MaterialInstanceConstant.h"
 #endif // WITH_EDITOR
 
 FProxyGenerationProcessor::FProxyGenerationProcessor(const FMeshMergeUtilities* InOwner)
@@ -144,6 +146,10 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 
 	if (!Data->RawMesh.IsEmpty())
 	{
+		// Don't recreate render states with the material update context as we will manually do it through
+		// the FStaticMeshComponentRecreateRenderStateContext below
+		FMaterialUpdateContext MaterialUpdateContext(FMaterialUpdateContext::EOptions::Default & ~FMaterialUpdateContext::EOptions::RecreateRenderStates);
+
 		// Retrieve flattened material data
 		FFlattenMaterial& FlattenMaterial = Data->Material;
 
@@ -154,7 +160,7 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 		FMaterialUtilities::OptimizeFlattenMaterial(FlattenMaterial);
 
 		// Create a new proxy material instance
-		ProxyMaterial = ProxyMaterialUtilities::CreateProxyMaterialInstance(Data->MergeData->InOuter, Data->MergeData->InProxySettings.MaterialSettings, Data->MergeData->BaseMaterial, FlattenMaterial, AssetBasePath, AssetBaseName, OutAssetsToSync);
+		ProxyMaterial = FMaterialUtilities::CreateFlattenMaterialInstance(Data->MergeData->InOuter, Data->MergeData->InProxySettings.MaterialSettings, Data->MergeData->BaseMaterial, FlattenMaterial, AssetBasePath, AssetBaseName, OutAssetsToSync, &MaterialUpdateContext);
 
 		for (IMeshMergeExtension* Extension : Owner->MeshMergeExtensions)
 		{
@@ -180,7 +186,9 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 		MeshPackage->Modify();
 	}
 
-	FStaticMeshComponentRecreateRenderStateContext RecreateRenderStateContext(FindObject<UStaticMesh>(MeshPackage, *MeshAssetName));
+	UStaticMesh* OldStaticMesh = FindObject<UStaticMesh>(MeshPackage, *MeshAssetName);
+
+	FStaticMeshComponentRecreateRenderStateContext RecreateRenderStateContext(OldStaticMesh);
 
 	UStaticMesh* StaticMesh = NewObject<UStaticMesh>(MeshPackage, FName(*MeshAssetName), RF_Public | RF_Standalone);
 	StaticMesh->InitResources();
@@ -205,7 +213,6 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 	SrcModel.BuildSettings.bUseFullPrecisionUVs = false;
 	SrcModel.BuildSettings.bGenerateLightmapUVs = Data->MergeData->InProxySettings.bGenerateLightmapUVs;
 	SrcModel.BuildSettings.bBuildReversedIndexBuffer = false;
-	SrcModel.BuildSettings.bBuildAdjacencyBuffer = Data->MergeData->InProxySettings.bAllowAdjacency;
 	if (!Data->MergeData->InProxySettings.bAllowDistanceField)
 	{
 		SrcModel.BuildSettings.DistanceFieldResolutionScale = 0.0f;
@@ -214,18 +221,18 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 	const bool bContainsImposters = Data->MergeData->ImposterComponents.Num() > 0;
 	FBox ImposterBounds(EForceInit::ForceInit);
 
-	TPolygonGroupAttributesConstRef<FName> PolygonGroupMaterialSlotName = Data->RawMesh.PolygonGroupAttributes().GetAttributesRef<FName>(MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
+	TPolygonGroupAttributesConstRef<FName> PolygonGroupMaterialSlotName = FStaticMeshAttributes(Data->RawMesh).GetPolygonGroupMaterialSlotNames();
 
 	auto RemoveVertexColorAndCommitMeshDescription = [&StaticMesh, &Data, &ProxyMaterial, &PolygonGroupMaterialSlotName]()
 	{
 		if (!Data->MergeData->InProxySettings.bAllowVertexColors)
 		{
 			//We cannot remove the vertex color with the mesh description so we assign a white value to all color
-			TVertexInstanceAttributesRef<FVector4> VertexInstanceColors = Data->RawMesh.VertexInstanceAttributes().GetAttributesRef<FVector4>(MeshAttribute::VertexInstance::Color);
+			TVertexInstanceAttributesRef<FVector4f> VertexInstanceColors = FStaticMeshAttributes(Data->RawMesh).GetVertexInstanceColors();
 			//set all value to white
 			for (const FVertexInstanceID VertexInstanceID : Data->RawMesh.VertexInstances().GetElementIDs())
 			{
-				VertexInstanceColors[VertexInstanceID] = FVector4(1.0f, 1.0f, 1.0f);
+				VertexInstanceColors[VertexInstanceID] = FVector4f(1.0f, 1.0f, 1.0f);
 			}
 		}
 
@@ -246,7 +253,9 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 				StaticMesh->GetStaticMaterials().Add(NewMaterial);
 			}
 
-			StaticMesh->CommitMeshDescription(SourceModelIndex);
+			UStaticMesh::FCommitMeshDescriptionParams CommitParams;
+			CommitParams.bUseHashAsGuid = true;
+			StaticMesh->CommitMeshDescription(SourceModelIndex, CommitParams);
 		}
 	};
 
@@ -256,7 +265,7 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 
 		// Merge imposter meshes to rawmesh
 		// The base material index is always one here as we assume we only have one HLOD material
-		FMeshMergeHelpers::MergeImpostersToRawMesh(Data->MergeData->ImposterComponents, Data->RawMesh, FVector::ZeroVector, 1, ImposterMaterials);
+		FMeshMergeHelpers::MergeImpostersToMesh(Data->MergeData->ImposterComponents, Data->RawMesh, FVector::ZeroVector, 1, ImposterMaterials);
 
 		for (const UStaticMeshComponent* Component : Data->MergeData->ImposterComponents)
 		{
@@ -282,6 +291,11 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 	{
 		RemoveVertexColorAndCommitMeshDescription();
 	}
+
+	// Nanite settings
+	StaticMesh->NaniteSettings.bEnabled = Data->MergeData->InProxySettings.bGenerateNaniteEnabledMesh;
+	StaticMesh->NaniteSettings.FallbackPercentTriangles = Data->MergeData->InProxySettings.NaniteProxyTrianglePercent * 0.01f;
+	StaticMesh->NaniteSettings.PositionPrecision = MIN_int32;
 
 	//Set the Imported version before calling the build
 	StaticMesh->ImportVersion = EImportStaticMeshVersion::LastVersion;
@@ -337,6 +351,14 @@ void FProxyGenerationProcessor::ProcessJob(const FGuid& JobGuid, FProxyGeneratio
 	StaticMesh->PostEditChange();	
 
 	OutAssetsToSync.Add(StaticMesh);
+
+	if (OldStaticMesh != nullptr)
+	{
+		Algo::ForEach(RecreateRenderStateContext.GetComponentsUsingMesh(OldStaticMesh), [](UStaticMeshComponent* Component)
+		{
+			FObjectCacheEventSink::NotifyStaticMeshChanged_Concurrent(Component);
+		});
+	}
 
 	// Execute the delegate received from the user
 	Data->MergeData->CallbackDelegate.ExecuteIfBound(JobGuid, OutAssetsToSync);

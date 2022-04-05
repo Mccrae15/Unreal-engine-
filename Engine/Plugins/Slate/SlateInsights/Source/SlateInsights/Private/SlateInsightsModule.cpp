@@ -36,7 +36,7 @@ FSlateInsightsModule& FSlateInsightsModule::Get()
 
 void FSlateInsightsModule::StartupModule()
 {
-	IModularFeatures::Get().RegisterModularFeature(Trace::ModuleFeatureName, &TraceModule);
+	IModularFeatures::Get().RegisterModularFeature(TraceServices::ModuleFeatureName, &TraceModule);
 	IModularFeatures::Get().RegisterModularFeature(Insights::TimingViewExtenderFeatureName, &TimingViewExtender);
 
 	IUnrealInsightsModule& UnrealInsightsModule = FModuleManager::LoadModuleChecked<IUnrealInsightsModule>("TraceInsights");
@@ -52,7 +52,7 @@ void FSlateInsightsModule::ShutdownModule()
 		TimingProfilerLayoutExtension.RemoveAll(this);
 	}
 
-	IModularFeatures::Get().UnregisterModularFeature(Trace::ModuleFeatureName, &TraceModule);
+	IModularFeatures::Get().UnregisterModularFeature(TraceServices::ModuleFeatureName, &TraceModule);
 	IModularFeatures::Get().UnregisterModularFeature(Insights::TimingViewExtenderFeatureName, &TimingViewExtender);
 }
 
@@ -75,12 +75,12 @@ void FSlateInsightsModule::RegisterTimingProfilerLayoutExtensions(FInsightsMajor
 	//TSharedRef<FWorkspaceItem> Category = InOutExtender.GetTabManager()->AddLocalWorkspaceMenuCategory(LOCTEXT("SlateCategoryLabel", "Slate"));
 	//TSharedRef<FWorkspaceItem> Category = ;
 
-	FInsightsMinorTabConfig& MinorTabConfig = InOutExtender.AddMinorTabConfig();
+	FMinorTabConfig& MinorTabConfig = InOutExtender.AddMinorTabConfig();
 	MinorTabConfig.TabId = Private::FrameViewTab;
 	MinorTabConfig.TabLabel = LOCTEXT("SlateTabTitle", "Slate Frame View");
 	MinorTabConfig.TabTooltip = LOCTEXT("SlateTabTitleTooltip", "Opens the Slate Frame View tab, allows for diagnostics  of a Slate frame.");
 	MinorTabConfig.TabIcon = FSlateIcon(FSlateInsightsStyle::Get().GetStyleSetName(), "SlateProfiler.Icon.Small");
-	//MinorTabConfig.WorkspaceGroup = InOutExtender.GetMinorTabs();
+	MinorTabConfig.WorkspaceGroup = InOutExtender.GetWorkspaceGroup();
 	MinorTabConfig.OnSpawnTab = FOnSpawnTab::CreateLambda([this](const FSpawnTabArgs& Args)
 		{
 			TSharedRef<SSlateFrameSchematicView> Content = SNew(SSlateFrameSchematicView);

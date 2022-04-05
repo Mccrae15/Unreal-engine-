@@ -108,7 +108,7 @@ void UPrimitiveComponent::SetConstraintMode(EDOFMode::Type ConstraintMode)
 {
 	FBodyInstance * RootBI = GetBodyInstance(NAME_None, false);
 
-	if (RootBI == NULL || IsPendingKill())
+	if (RootBI == NULL || !IsValid(this))
 	{
 		return;
 	}
@@ -140,6 +140,15 @@ void UPrimitiveComponent::AddImpulseAtLocation(FVector Impulse, FVector Location
 	{
 		WarnInvalidPhysicsOperations(LOCTEXT("AddImpulseAtLocation", "AddImpulseAtLocation"), BI, BoneName);
 		BI->AddImpulseAtPosition(Impulse, Location);
+	}
+}
+
+void UPrimitiveComponent::AddVelocityChangeImpulseAtLocation(FVector Impulse, FVector Location, FName BoneName)
+{
+	if (FBodyInstance* BI = GetBodyInstance(BoneName))
+	{
+		WarnInvalidPhysicsOperations(LOCTEXT("AddImpulseAtLocation", "AddImpulseAtLocation"), BI, BoneName);
+		BI->AddVelocityChangeImpulseAtLocation(Impulse, Location);
 	}
 }
 
@@ -296,13 +305,13 @@ void UPrimitiveComponent::SetAllPhysicsAngularVelocityInRadians(FVector const& N
 
 void UPrimitiveComponent::SetAllPhysicsPosition(FVector NewPos)
 {
-	SetWorldLocation(NewPos, NAME_None);
+	SetWorldLocation(NewPos);
 }
 
 
 void UPrimitiveComponent::SetAllPhysicsRotation(FRotator NewRot)
 {
-	SetWorldRotation(NewRot, NAME_None);
+	SetWorldRotation(NewRot);
 }
 
 void UPrimitiveComponent::SetAllPhysicsRotation(const FQuat& NewRot)
@@ -552,13 +561,13 @@ void UPrimitiveComponent::SyncComponentToRBPhysics()
 	AActor* Owner = GetOwner();
 	if(Owner != NULL)
 	{
-		if (Owner->IsPendingKill() || !Owner->CheckStillInWorld())
+		if (!IsValid(Owner) || !Owner->CheckStillInWorld())
 		{
 			return;
 		}
 	}
 
-	if (IsPendingKill() || !IsSimulatingPhysics() || !RigidBodyIsAwake())
+	if (!IsValid(this) || !IsSimulatingPhysics() || !RigidBodyIsAwake())
 	{
 		return;
 	}
@@ -720,7 +729,7 @@ void UPrimitiveComponent::UnWeldFromParent()
 
 	FBodyInstance* NewRootBI = GetBodyInstance(NAME_None, false);
 	UWorld* CurrentWorld = GetWorld();
-	if (NewRootBI == NULL || NewRootBI->WeldParent == nullptr || CurrentWorld == nullptr || CurrentWorld->GetPhysicsScene() == nullptr || IsPendingKillOrUnreachable())
+	if (NewRootBI == NULL || NewRootBI->WeldParent == nullptr || CurrentWorld == nullptr || CurrentWorld->GetPhysicsScene() == nullptr || !IsValidChecked(this) || IsUnreachable())
 	{
 		return;
 	}
@@ -739,7 +748,7 @@ void UPrimitiveComponent::UnWeldFromParent()
 	{
 		if (FBodyInstance* RootBI = RootComponent->GetBodyInstance(SocketName, false))
 		{
-			bool bRootIsBeingDeleted = RootComponent->IsPendingKillOrUnreachable();
+			bool bRootIsBeingDeleted = !IsValidChecked(RootComponent) || RootComponent->IsUnreachable();
 			const FBodyInstance* PrevWeldParent = NewRootBI->WeldParent;
 			RootBI->UnWeld(NewRootBI);
 			
@@ -803,7 +812,7 @@ void UPrimitiveComponent::UnWeldChildren()
 	}
 }
 
-FBodyInstance* UPrimitiveComponent::GetBodyInstance(FName BoneName, bool bGetWelded) const
+FBodyInstance* UPrimitiveComponent::GetBodyInstance(FName BoneName, bool bGetWelded, int32 Index) const
 {
 	return const_cast<FBodyInstance*>((bGetWelded && BodyInstance.WeldParent) ? BodyInstance.WeldParent : &BodyInstance);
 }

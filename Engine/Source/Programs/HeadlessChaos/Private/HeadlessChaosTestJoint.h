@@ -29,14 +29,16 @@ namespace ChaosTest
 
 		FJointChainTest(const int32 NumIterations, const FReal Gravity)
 			: Base(NumIterations, Gravity)
-			, JointsRule(Joints)
 		{
-			Evolution.AddConstraintRule(&JointsRule);
 		}
 
 		FPBDJointConstraintHandle* AddJoint(const TVec2<TGeometryParticleHandle<FReal, 3>*>& InConstrainedParticleIndices, const int32 JointIndex)
 		{
-			FPBDJointConstraintHandle* Joint = Joints.AddConstraint(InConstrainedParticleIndices, FRigidTransform3(JointPositions[JointIndex], FRotation3::FromIdentity()));
+			FPBDJointConstraintHandle* Joint = Evolution.GetJointConstraints().AddConstraint(InConstrainedParticleIndices, FRigidTransform3(JointPositions[JointIndex], FRotation3::FromIdentity()));
+
+			// @todo(chaos): this indicates we need to change the AddConstraint API (since ConnectorTransforms were added to Settings). 
+			// Calling AddConstraint followed by SetSettings will overwrite the ConnectorTransforms
+			JointSettings[JointIndex].ConnectorTransforms = Joint->GetSettings().ConnectorTransforms;
 
 			if (JointIndex < JointSettings.Num())
 			{
@@ -93,10 +95,6 @@ namespace ChaosTest
 		TArray<FVec3> JointPositions;
 		TArray<TVec2<int32>> JointParticleIndices;
 		TArray<FPBDJointSettings> JointSettings;
-
-		// Solver state
-		FPBDJointConstraints Joints;
-		TPBDConstraintIslandRule<FPBDJointConstraints> JointsRule;
 	};
 
 }

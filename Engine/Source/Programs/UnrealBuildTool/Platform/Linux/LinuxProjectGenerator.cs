@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Diagnostics;
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -29,7 +29,7 @@ namespace UnrealBuildTool
 		public override IEnumerable<UnrealTargetPlatform> GetPlatforms()
 		{
 			yield return UnrealTargetPlatform.Linux;
-			yield return UnrealTargetPlatform.LinuxAArch64;
+			yield return UnrealTargetPlatform.LinuxArm64;
 		}
 
 		///

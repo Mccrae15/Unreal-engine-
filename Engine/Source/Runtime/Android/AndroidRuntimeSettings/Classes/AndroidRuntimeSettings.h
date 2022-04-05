@@ -137,29 +137,6 @@ namespace EAndroidAudio
 }
 
 UENUM()
-namespace EGoogleVRMode
-{
-	enum Type
-	{
-		Cardboard = 0 UMETA(DisplayName = "Cardboard", ToolTip = "Configure GoogleVR to run in Cardboard-only mode."),
-		Daydream = 1 UMETA(DisplayName = "Daydream", ToolTip = "Configure GoogleVR to run in Daydream-only mode. In this mode, app won't be able to run on Non Daydream-ready phone."),
-		DaydreamAndCardboard = 2 UMETA(DisplayName = "Daydream & Cardboard", ToolTip = "Configure GoogleVR to run in Daydream mode on Daydream-ready phone and fallback to Cardboard mode on Non Daydream-ready phone.")
-	};
-}
-
-UENUM()
-namespace EGoogleVRCaps
-{
-	enum Type
-	{
-		Cardboard = 0 UMETA(DisplayName = "Cardboard", ToolTip = "Head orientation, no controller."),
-		Daydream33 = 1 UMETA(DisplayName = "Daydream (3.3 DoF)", ToolTip = "Head orientation, controller orientation. Daydream without positional tracking."),
-		Daydream63 = 2 UMETA(DisplayName = "Daydream (6.3 DoF)", ToolTip = "Head position and orientation, controller orientation. Daydream with positional tracking."),
-		Daydream66 = 3 UMETA(DisplayName = "Daydream (6.6 DoF)", ToolTip = "Head position and orientation, 2 controllers with position and orientation. Daydream with positional tracking.")
-	};
-}
-
-UENUM()
 namespace EAndroidGraphicsDebugger
 {
 	enum Type
@@ -167,20 +144,6 @@ namespace EAndroidGraphicsDebugger
 		None = 0 UMETA(DisplayName = "None"),
 		Mali = 1 UMETA(DisplayName = "Mali Graphics Debugger", ToolTip = "Configure for Mali Graphics Debugger."),
 		Adreno = 2 UMETA(DisplayName = "Adreno Profiler", ToolTip = "Configure for Adreno Profiler."),
-	};
-}
-
-UENUM()
-namespace EClangSanitizer
-{
-	enum Type
-	{
-		None = 0 UMETA(DisplayName = "None"),
-		Address = 1 UMETA(DisplayName = "Address Sanitizer"),
-		HwAddress = 2 UMETA(DisplayName = "Hardware Address Sanitizer. For flashed Pixel devices only!"),
-		UndefinedBehavior = 3 UMETA(DisplayName = "Undefined Behavior Sanitizer"),
-		UndefinedBehaviorMinimal = 4 UMETA(DisplayName = "Minimal Undefined Behavior Sanitizer"),
-		//Thread = 5 UMETA(DisplayName = "Thread Sanitizer"),
 	};
 }
 
@@ -270,12 +233,12 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Allow overflow OBB files."))
 	bool bAllowOverflowOBBFiles;
 
-	// If checked, UE4Game files will be placed in ExternalFilesDir which is removed on uninstall.
+	// If checked, UnrealGame files will be placed in ExternalFilesDir which is removed on uninstall.
 	// You should also check this if you need to save you game progress without requesting runtime WRITE_EXTERNAL_STORAGE permission in android api 23+
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Use ExternalFilesDir for UE4Game files?"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Use ExternalFilesDir for UnrealGame files?"))
 	bool bUseExternalFilesDir;
 
-	// If checked, log files will always be placed in a publicly available directory (either /sdcard/Android or /sdcard/UE4Game).
+	// If checked, log files will always be placed in a publicly available directory (either /sdcard/Android or /sdcard/UnrealGame).
 	// You may require WRITE_EXTERNAL_STORAGE permission if you do not use ExternalFilesDir checkbox in android api 23+
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Make log files always publicly accessible?"))
 	bool bPublicLogFiles;
@@ -311,6 +274,14 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Validate texture formats"))
 	bool bValidateTextureFormats;
 
+	// When building for MinSDKVersion >= 23 gradle will leave native libs uncompressed in the apk. This flag might be helpful for builds that are not intended to be distributed via Google Play
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Force Gradle to compress native libs irregardless of MinSDKVersion setting"))
+	bool bForceCompressNativeLibs;
+
+	// Generates Android binary with RELR and APS2 relocation tables when building for MinSDKVersion >= 28 or just APS2 when building for MinSDKVersion >= 23
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "APK Packaging", Meta = (DisplayName = "Enable compression of relocation tables (and more). Depends on MinSDKVersion setting"))
+	bool bEnableAdvancedBinaryCompression;
+
 	// Enables generating AAB bundle
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "App Bundles", Meta = (DisplayName = "Generate bundle (AAB)"))
 	bool bEnableBundle;
@@ -339,12 +310,12 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Extra Tags for <application> node"))
 	TArray<FString> ExtraApplicationNodeTags;
 
-	// Any extra tags for the com.epicgames.UE4.GameActivity <activity> node
+	// Any extra tags for the com.epicgames.unreal.GameActivity <activity> node
 	// Any extra settings for the <application> section (an optional file <Project>/Build/Android/ManifestApplicationAdditions.txt will also be included)
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Extra Settings for <application> section (\\n to separate lines)"))
 	FString ExtraApplicationSettings;
 
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Extra Tags for UE4.GameActivity <activity> node"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Extra Tags for com.epicgames.unreal.GameActivity <activity> node"))
 	TArray<FString> ExtraActivityNodeTags;
 
 	// Any extra settings for the main <activity> section (an optional file <Project>/Build/Android/ManifestApplicationActivtyAdditions.txt will also be included)
@@ -368,14 +339,6 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Remove Oculus Signature Files from Distribution APK"))
 	bool bRemoveOSIG;
 
-	// Configure AndroidManifest.xml to support specific hardward configurations, position and orientation of the head and controller.
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Configure GoogleVR to support specific hardware configurations"))
-	TArray<TEnumAsByte<EGoogleVRCaps::Type>> GoogleVRCaps;
-
-	// Configure the Android to run in sustained performance with lower max speeds, but no FPS fluctuations due to temperature
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Advanced APK Packaging", Meta = (DisplayName = "Configure GoogleVR for sustained-performance mode"))
-	bool bGoogleVRSustainedPerformance;
-
 	// This is the file that keytool outputs, specified with the -keystore parameter (file should be in <Project>/Build/Android)
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = DistributionSigning, Meta = (DisplayName = "Key Store (output of keytool, placed in <Project>/Build/Android)"))
 	FString KeyStore;
@@ -392,10 +355,6 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = DistributionSigning, Meta = (DisplayName = "Key Password (leave blank to use Key Store Password)"))
 	FString KeyPassword;
 
-	// Enable ArmV7 support? (this will be used if all type are unchecked)
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support armv7 [aka armeabi-v7a]"))
-	bool bBuildForArmV7;
-
 	// Enable Arm64 support?
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support arm64 [aka arm64-v8a]"))
 	bool bBuildForArm64;
@@ -404,8 +363,8 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support x86_64 [aka x64]"))
 	bool bBuildForX8664;
 
-	// Include shaders for devices supporting OpenGL ES 3.1 and above (default)
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support OpenGL ES3.1"))
+	// Include shaders for devices supporting OpenGL ES 3.2 and above (default)
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support OpenGL ES3.2"))
 	bool bBuildForES31;
 
 	// Support the Vulkan RHI and include Vulkan shaders
@@ -416,9 +375,17 @@ public:
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support Vulkan Desktop [Experimental]"))
 	bool bSupportsVulkanSM5;
 
-	// Select a Clang's sanitizer to build the project with
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build)
-	TEnumAsByte<EClangSanitizer::Type> ClangSanitizer;
+	/** Directory for Debug Vulkan Layers to package */
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Debug Vulkan Layer Directory"))
+	FDirectoryPath DebugVulkanLayerDirectory;
+
+	/** Debug Vulkan Device Layers to enable */
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Debug Vulkan Device Layers"))
+	TArray<FString> DebugVulkanDeviceLayers;
+
+	/** Debug Vulkan Instance Layers to enable */
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Debug Vulkan Instance Layers"))
+	TArray<FString> DebugVulkanInstanceLayers;
 
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = Build, meta = (DisplayName = "Support Backbuffer Sampling on OpenGL",
 	ToolTip = "Whether to render to an offscreen surface instead of render to backbuffer directly on android opengl platform. Enable it if you'd like to support UMG background blur on android opengl."))
@@ -433,7 +400,7 @@ public:
 	bool bBuildWithHiddenSymbolVisibility;
 
 	// Always save .so file with symbols allowing use of addr2line on raw callstack addresses.
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = AdvancedBuild, meta = (DisplayName = "Always save a copy of the libUE4.so with symbols. [Experimental]"))
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = AdvancedBuild, meta = (DisplayName = "Always save a copy of the libUnreal.so with symbols. [Experimental]"))
 	bool bSaveSymbols;
 
 	// Use legacy ld instead of new lld linker.
@@ -535,25 +502,21 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Audio", meta = (ClampMin = "0", UIMin = "0", DisplayName = "Number of Source Workers"))
 	int32 AudioNumSourceWorkers;
 
-	/** Which of the currently enabled spatialization plugins to use on Windows. */
+	/** Which of the currently enabled spatialization plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString SpatializationPlugin;
 
-	/** Which of the currently enabled reverb plugins to use on Windows. */
+	/** Which of the currently enabled reverb plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString ReverbPlugin;
 
-	/** Which of the currently enabled occlusion plugins to use on Windows. */
+	/** Which of the currently enabled occlusion plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString OcclusionPlugin;
 
 	/** Various overrides for how this platform should handle compression and decompression */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FPlatformRuntimeAudioCompressionOverrides CompressionOverrides;
-
-	/** When this is enabled, Actual compressed data will be separated from the USoundWave, and loaded into a cache. */
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio|CookOverrides", meta = (DisplayName = "Use Stream Caching (Experimental)"))
-	bool bUseAudioStreamCaching;
 
 	/** This determines the max amount of memory that should be used for the cache at any given time. If set low (<= 8 MB), it lowers the size of individual chunks of audio during cook. */
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio|CookOverrides|Stream Caching", meta = (DisplayName = "Max Cache Size (KB)"))
@@ -592,7 +555,7 @@ public:
 	float CompressionQualityModifier;
 
 	// When set to anything beyond 0, this will ensure any SoundWaves longer than this value, in seconds, to stream directly off of the disk.
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio|CookOverrides", meta = (DisplayName = "Stream All Soundwaves Longer Than: "))
+	UPROPERTY(GlobalConfig)
 	float AutoStreamingThreshold;
 
 	// Several Android graphics debuggers require configuration changes to be made to your application in order to operate. Choosing an option from this menu will configure your project to work with that graphics debugger. 
@@ -639,6 +602,10 @@ public:
 	// Which NDK to compile with (a specific version or (without quotes) 'latest' for latest version on disk). Note that choosing android-21 or later won't run on pre-5.0 devices.
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Project SDK Override", Meta = (DisplayName = "NDK API Level (specific version or 'latest' - see tooltip)"))
 	FString NDKAPILevelOverride;
+
+	// Which build-tools to package with (a specific version or (without quotes) 'latest' for latest version on disk).
+	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Project SDK Override", Meta = (DisplayName = "Build-Tools Version (specific version or 'latest')"))
+	FString BuildToolsOverride;
 
 	/** Whether to enable LOD streaming for landscape visual meshes. Only supported on feature level ES3.1 or above. */
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Misc", Meta = (DisplayName = "Stream landscape visual mesh LODs"))

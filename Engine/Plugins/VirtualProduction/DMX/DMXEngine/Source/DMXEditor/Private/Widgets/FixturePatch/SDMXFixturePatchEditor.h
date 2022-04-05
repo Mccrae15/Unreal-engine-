@@ -5,14 +5,15 @@
 #include "Widgets/SDMXEntityEditor.h"
 
 #include "CoreMinimal.h"
-#include "Widgets/SDMXEntityList.h"
 
 class FDMXEditor;
-class SDMXEntityInspector;
+class FDMXFixturePatchSharedData;
 class SDMXFixturePatcher;
+class SDMXFixturePatchTree;
 class UDMXEntityFixturePatch;
 
 struct FPropertyChangedEvent;
+class IDetailsView;
 
 
 /** Editor for Fixture Patches */
@@ -28,7 +29,7 @@ public:
 
 	SLATE_END_ARGS()
 
-public:
+public:	
 	/** Constructs this widget */
 	void Construct(const FArguments& InArgs);
 
@@ -40,41 +41,31 @@ public:
 	TArray<UDMXEntity*> GetSelectedEntities() const;
 	/** ~End SDMXEntityEditorTab interface */
 
-protected:
+private:
 	/** Selects the patch */
 	void SelectUniverse(int32 UniverseID);
-
-	/** Callback for when entities list changes the auto assign flag of a patch */
-	void OnEntitiyListChangedAutoAssignAddress(TArray<UDMXEntityFixturePatch*> ChangedPatches);
-
-	/** Called when the entity list added entities to the library */
-	void OnEntityListAddedEntities();
-
-	/** Called when the entity list changed the entity order */
-	void OnEntityListChangedEntityOrder();
-
-	/** Called when the entity list removed entities from the library */
-	void OnEntityListRemovedEntities();
-
-	/** Called when the fixture patcher patched a fixture patch */
-	void OnFixturePatcherPatchedFixturePatch();
 
 	/** Callback for when some property has changed in the inspector */
 	virtual void OnFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent);
 
-protected:
-	/** Makes an initial selection in shared data if required */
-	void MakeInitialSelection();
+	/** Called whewn Fixture Patches were selected in Fixture Patch Shared Data */
+	void OnFixturePatchesSelected();
 
-	/** Pointer back to the DMXEditor tool that owns us */
-	TWeakPtr<FDMXEditor> DMXEditorPtr;
+	/** Generates a Detail View for the edited Fixture Patch */
+	TSharedRef<IDetailsView> GenerateFixturePatchDetailsView() const;
 
-	/** Left child widget */
-	TSharedPtr<SDMXEntityList> EntityList;
+	/** Tree View of available Fixture Patches */
+	TSharedPtr<SDMXFixturePatchTree> FixturePatchTree;
 
-	/** Right child widget */
-	TSharedPtr<SDMXEntityInspector> InspectorWidget;
+	/** Details View for the selected Fixture Patches */
+	TSharedPtr<IDetailsView> FixturePatchDetailsView;
 
 	/** Widget where the user can drag drop fixture patches */
 	TSharedPtr<SDMXFixturePatcher> FixturePatcher;
+
+	/** Shared data for Fixture Patches */
+	TSharedPtr<FDMXFixturePatchSharedData> FixturePatchSharedData;
+
+	/** Pointer back to the DMXEditor tool that owns us */
+	TWeakPtr<FDMXEditor> DMXEditorPtr;
 }; 

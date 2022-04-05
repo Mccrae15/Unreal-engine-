@@ -261,6 +261,16 @@ namespace IncludeTool
 			PreprocessorTests.Run(false);
 			PreprocessorExpressionTests.Run();
 
+			// Apply all the custom mutators
+			foreach (Type Type in Assembly.GetExecutingAssembly().GetTypes())
+			{
+				if (Type.IsClass && !Type.IsAbstract && Type.IsSubclassOf(typeof(RulesMutator)))
+				{
+					RulesMutator Instance = (RulesMutator)Activator.CreateInstance(Type);
+					Instance.Run();
+				}
+			}
+
 			// Parse the command line options
 			CommandLineOptions Options = new CommandLineOptions();
 			if(!CommandLine.Parse(Args, Options))
@@ -284,7 +294,7 @@ namespace IncludeTool
 				}
 				else
 				{
-					InputDir = new DirectoryReference(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "..\\..\\.."));
+					InputDir = new DirectoryReference(Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "..\\..\\..\\.."));
 				}
 
 				// Generate the exported task list 
@@ -565,7 +575,7 @@ namespace IncludeTool
 					{
 						if(PreprocessedFile.Location.HasExtension("PCH.h") && (PreprocessedFile.Flags & SourceFileFlags.Aggregate) == 0)
 						{
-							Log.WriteLine("warning: File appears to be PCH but also contains declarations. Will not be optimized out: {0}", PreprocessedFile.Location);
+							Log.WriteWarning(PreprocessedFile.Location, "file appears to be PCH but also contains declarations, will not be optimized out.");
 						}
 					}
 
@@ -574,7 +584,7 @@ namespace IncludeTool
 					{
 						if(PreprocessedFile.HasHeaderGuard && PreprocessedFile.BodyMaxIdx < PreprocessedFile.Markup.Length && (PreprocessedFile.Flags & SourceFileFlags.External) == 0 && Rules.IgnoreOldStyleHeaderGuards("/" + PreprocessedFile.Location.MakeRelativeTo(InputDir).ToLowerInvariant()))
 						{
-							Log.WriteLine("warning: file has old-style header guard: {0}", PreprocessedFile.Location.FullName);
+							Log.WriteWarning(PreprocessedFile.Location, "file has old-style header guard");
 						}
 					}
 
@@ -585,7 +595,7 @@ namespace IncludeTool
 						{
 							if(!PreprocessedFile.Location.GetFileName().Equals("MonolithicHeaderBoilerplate.h", StringComparison.OrdinalIgnoreCase))
 							{
-								Log.WriteLine("warning: missing header guard: {0}", PreprocessedFile.Location.FullName);
+								Log.WriteWarning(PreprocessedFile.Location, "missing header guard");
 							}
 						}
 					}
@@ -601,7 +611,7 @@ namespace IncludeTool
 								int LastIncludeIdx = Array.FindLastIndex(PreprocessedFile.Markup, x => x.Type == PreprocessorMarkupType.Include && x.IsActive && (x.IncludedFile.Flags & (SourceFileFlags.Pinned | SourceFileFlags.Inline)) == 0);
 								if(FirstTextIdx < LastIncludeIdx)
 								{
-									Log.WriteLine("warning: includes after first code block: {0}", PreprocessedFile.Location);
+									Log.WriteWarning(PreprocessedFile.Location, "includes after first code block");
 								}
 							}
 						}
@@ -614,11 +624,24 @@ namespace IncludeTool
 						{
 							if(PreprocessedFile.Fragments.Length != 1)
 							{
-								Log.WriteLine("warning: expected only one fragment in forward declaration header: {0}", PreprocessedFile.Location);
+								Log.WriteWarning(PreprocessedFile.Location, "expected only one fragment in forward declaration header");
 							}
 							else if(PreprocessedFile.Markup.Skip(PreprocessedFile.BodyMinIdx).Any(x => x.Type != PreprocessorMarkupType.Include && x.Type != PreprocessorMarkupType.Text))
 							{
-								Log.WriteLine("warning: expected only include directives and text in forward declaration header: {0}", PreprocessedFile.Location);
+								Log.WriteWarning(PreprocessedFile.Location, "expected only include directives and text in forward declaration header");
+							}
+						}
+					}
+
+					// Make sure include directives only use forward slashes
+					foreach (SourceFile PreprocessedFile in PreprocessedFiles)
+					{
+						PreprocessorMarkup[] Results = Array.FindAll(PreprocessedFile.Markup, x => x.Type == PreprocessorMarkupType.Include && x.IsActive);
+						foreach (PreprocessorMarkup Result in Results)
+						{
+							if (Result.ToString().Contains("\\"))
+							{
+								Log.WriteWarning(PreprocessedFile.Location, "include directive using '\\' as path separator {0}", Result);
 							}
 						}
 					}
@@ -856,7 +879,7 @@ namespace IncludeTool
 		/// <summary>
 		/// Create a task list for compiling a given target
 		/// </summary>
-		/// <param name="RootDirectory">The root directory for the branch</param>
+		/// <param name="RootDir">The root directory for the branch</param>
 		/// <param name="Target">The target to compile (eg. UE4Editor Win64 Development)</param>
 		/// <param name="TaskListFile">The output file for the task list</param>
 		/// <param name="Log">Log to output messages to</param>
@@ -873,7 +896,7 @@ namespace IncludeTool
 
 			DirectoryReference WorkingDir = DirectoryReference.Combine(RootDir, "Engine");
 
-			FileReference UnrealBuildTool = FileReference.Combine(RootDir, "Engine", "Binaries", "DotNET", "UnrealBuildTool.exe");
+			FileReference UnrealBuildTool = FileReference.Combine(RootDir, "Engine", "Binaries", "DotNET", "UnrealBuildTool", "UnrealBuildTool.exe");
 			if (Utility.Run(UnrealBuildTool, String.Format("-Mode=JsonExport {0} {1} {2}{3} -disableunity -xgeexport -nobuilduht -nopch -nodebuginfo -define:UE_INCLUDE_TOOL=1 -execcodegenactions -outputfile=\"{4}\"", Target, Configuration, Platform, Precompile? " -precompile" : "", TaskListFile.ChangeExtension(".json").FullName), WorkingDir, Log) != 0)
 			{
 				throw new Exception("UnrealBuildTool failed");
@@ -1026,7 +1049,15 @@ namespace IncludeTool
 				{
 					foreach(PreprocessorMarkup Markup in File.Markup)
 					{
-						if(Markup.IncludedFile != null && (Markup.IncludedFile.Flags & SourceFileFlags.External) == 0 && !File.Location.FullName.Contains("PhyaLib") && !File.Location.GetFileName().Contains("Recast") && !File.Location.GetFileName().Contains("FramePro") && !File.Location.FullName.Contains("libSampleRate") && !File.Location.FullName.Contains("lz4"))
+						if (Markup.IncludedFile != null && (Markup.IncludedFile.Flags & SourceFileFlags.External) == 0
+							&& !File.Location.GetFileName().Contains("FramePro")
+							&& !File.Location.GetFileName().Contains("Recast")
+							&& !File.Location.FullName.Contains("libSampleRate")
+							&& !File.Location.FullName.Contains("lz4")
+							&& !File.Location.FullName.Contains("NeuralNetworkInference")
+							&& !File.Location.FullName.Contains("NNI")
+							&& !File.Location.FullName.Contains("PhyaLib")
+							)
 						{
 							Log.WriteLine("{0}({1}): warning: external file is including non-external file ('{2}')", IncludedFile.Location.FullName, Markup.Location.LineIdx + 1, Markup.IncludedFile.Location);
 						}

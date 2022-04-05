@@ -32,7 +32,7 @@ void SetShaderValue(
 {
 	static_assert(!TIsPointer<ParameterType>::Value, "Passing by value is not valid.");
 
-	const uint32 AlignedTypeSize = Align(sizeof(ParameterType), SHADER_PARAMETER_ARRAY_ELEMENT_ALIGNMENT);
+	const uint32 AlignedTypeSize = (uint32)Align(sizeof(ParameterType), SHADER_PARAMETER_ARRAY_ELEMENT_ALIGNMENT);
 	const int32 NumBytesToSet = FMath::Min<int32>(sizeof(ParameterType),Parameter.GetNumBytes() - ElementIndex * AlignedTypeSize);
 
 	// This will trigger if the parameter was not serialized
@@ -49,6 +49,7 @@ void SetShaderValue(
 			);
 	}
 }
+
 
 template<typename ShaderRHIParamRef, class ParameterType>
 void SetShaderValueOnContext(
@@ -78,7 +79,6 @@ void SetShaderValueOnContext(
 			);
 	}
 }
-
 
 
 /** Specialization of the above for C++ bool type. */
@@ -142,7 +142,7 @@ void SetShaderValueArray(
 	uint32 BaseElementIndex = 0
 	)
 {
-	const uint32 AlignedTypeSize = Align(sizeof(ParameterType), SHADER_PARAMETER_ARRAY_ELEMENT_ALIGNMENT);
+	const uint32 AlignedTypeSize = (uint32)Align(sizeof(ParameterType), SHADER_PARAMETER_ARRAY_ELEMENT_ALIGNMENT);
 	const int32 NumBytesToSet = FMath::Min<int32>(NumElements * AlignedTypeSize,Parameter.GetNumBytes() - BaseElementIndex * AlignedTypeSize);
 
 	// This will trigger if the parameter was not serialized
@@ -173,6 +173,31 @@ void SetShaderValueArray(
 {
 	UE_LOG(LogShaders, Fatal, TEXT("SetShaderValueArray does not support bool arrays."));
 }
+
+
+// LWC_TODO: Setting guards to catch attempts to pass a type with double components. Could just convert these to the correct type internally, but would prefer to catch potential issues + optimize where possible.
+#define GUARD_SETSHADERVALUE(_TYPE)																																						\
+template<typename ShaderRHIParamRef, typename TRHICmdList>																																\
+void SetShaderValue(  TRHICmdList& RHICmdList,	const ShaderRHIParamRef& Shader, const FShaderParameter& Parameter,																		\
+	const _TYPE##d& Value, uint32 ElementIndex = 0) { static_assert(sizeof(ShaderRHIParamRef) == 0, "Passing unsupported "#_TYPE"d. Requires "#_TYPE"f"); }								\
+template<typename ShaderRHIParamRef>																																					\
+void SetShaderValueOnContext(IRHICommandContext& RHICmdListContext,	const ShaderRHIParamRef& Shader, const FShaderParameter& Parameter,													\
+	const _TYPE##d& Value, uint32 ElementIndex = 0) { static_assert(sizeof(ShaderRHIParamRef) == 0, "Passing unsupported "#_TYPE"d. Requires "#_TYPE"f"); }								\
+template<typename ShaderRHIParamRef, typename TRHICmdList>																																\
+void SetShaderValueArray(TRHICmdList& RHICmdList, const ShaderRHIParamRef& Shader, const FShaderParameter& Parameter,																	\
+	const _TYPE##d* Values, uint32 NumElements, uint32 BaseElementIndex = 0) { static_assert(sizeof(ShaderRHIParamRef) == 0, "Passing unsupported "#_TYPE"d*. Requires "#_TYPE"f*"); }	\
+
+// Primary
+GUARD_SETSHADERVALUE(FMatrix44)
+GUARD_SETSHADERVALUE(FVector2)
+GUARD_SETSHADERVALUE(FVector3)
+GUARD_SETSHADERVALUE(FVector4)
+GUARD_SETSHADERVALUE(FPlane4)
+GUARD_SETSHADERVALUE(FQuat4)
+// Secondary
+GUARD_SETSHADERVALUE(FSphere3)
+GUARD_SETSHADERVALUE(FBox3)
+
 
 /**
  * Sets the value of a pixel shader bool parameter.
@@ -228,7 +253,7 @@ FORCEINLINE void SetTextureParameter(
 		}
 	}
 	
-	// @todo ue4 samplerstate Should we maybe pass in two separate values? SamplerElement and TextureElement? Or never allow an array of samplers? Unsure best
+	// @todo UE samplerstate Should we maybe pass in two separate values? SamplerElement and TextureElement? Or never allow an array of samplers? Unsure best
 	// if there is a matching sampler for this texture array index (ElementIndex), then set it. This will help with this case:
 	//			Texture2D LightMapTextures[NUM_LIGHTMAP_COEFFICIENTS];
 	//			SamplerState LightMapTexturesSampler;
@@ -267,7 +292,7 @@ FORCEINLINE void SetTextureParameter(
 			RHICmdList.SetShaderTexture( Shader, TextureParameter.GetBaseIndex() + ElementIndex, TextureRHI);
 		}
 	}
-	// @todo ue4 samplerstate Should we maybe pass in two separate values? SamplerElement and TextureElement? Or never allow an array of samplers? Unsure best
+	// @todo UE samplerstate Should we maybe pass in two separate values? SamplerElement and TextureElement? Or never allow an array of samplers? Unsure best
 	// if there is a matching sampler for this texture array index (ElementIndex), then set it. This will help with this case:
 	//			Texture2D LightMapTextures[NUM_LIGHTMAP_COEFFICIENTS];
 	//			SamplerState LightMapTexturesSampler;
@@ -423,18 +448,6 @@ inline bool SetUAVParameterIfCS(TRHICmdList& RHICmdList, FRHIPixelShader* Shader
 }
 
 template<typename TRHICmdList>
-inline bool SetUAVParameterIfCS(TRHICmdList& RHICmdList, FRHIHullShader* Shader, const FShaderResourceParameter& UAVParameter, FRHIUnorderedAccessView* UAV)
-{
-	return false;
-}
-
-template<typename TRHICmdList>
-inline bool SetUAVParameterIfCS(TRHICmdList& RHICmdList, FRHIDomainShader* Shader, const FShaderResourceParameter& UAVParameter, FRHIUnorderedAccessView* UAV)
-{
-	return false;
-}
-
-template<typename TRHICmdList>
 inline bool SetUAVParameterIfCS(TRHICmdList& RHICmdList, FRHIGeometryShader* Shader, const FShaderResourceParameter& UAVParameter, FRHIUnorderedAccessView* UAV)
 {
 	return false;
@@ -568,11 +581,13 @@ inline void SetUniformBufferParameterImmediate(
 	checkSlow(Parameter.IsInitialized());
 	if(Parameter.IsBound())
 	{
-		RHICmdList.SetShaderUniformBuffer(
+		const FRHIUniformBufferLayout* UniformBufferLayout = TBufferStruct::StaticStructMetadata.GetLayoutPtr();
+		FLocalUniformBuffer UniformBuffer = RHICmdList.BuildLocalUniformBuffer(&UniformBufferValue, UniformBufferLayout->ConstantBufferSize, UniformBufferLayout);
+
+		RHICmdList.SetLocalShaderUniformBuffer(
 			Shader,
 			Parameter.GetBaseIndex(),
-			RHICreateUniformBuffer(&UniformBufferValue,TBufferStruct::StaticStructMetadata.GetLayout(),UniformBuffer_SingleDraw)
-			);
+			UniformBuffer);
 	}
 }
 
@@ -589,10 +604,12 @@ inline void SetUniformBufferParameterImmediate(
 	checkSlow(Parameter.IsInitialized());
 	if(Parameter.IsBound())
 	{
-		RHICmdList.SetShaderUniformBuffer(
+		const FRHIUniformBufferLayout* UniformBufferLayout = TBufferStruct::StaticStructMetadata.GetLayoutPtr();
+		FLocalUniformBuffer UniformBuffer = RHICmdList.BuildLocalUniformBuffer(&UniformBufferValue, UniformBufferLayout->ConstantBufferSize, UniformBufferLayout);
+
+		RHICmdList.SetLocalShaderUniformBuffer(
 			Shader,
 			Parameter.GetBaseIndex(),
-			RHICreateUniformBuffer(&UniformBufferValue,TBufferStruct::StaticStructMetadata.GetLayout(),UniformBuffer_SingleDraw)
-			);
+			UniformBuffer);
 	}
 }

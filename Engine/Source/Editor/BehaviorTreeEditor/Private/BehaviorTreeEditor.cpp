@@ -1,10 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "BehaviorTreeEditor.h"
+
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Engine/Blueprint.h"
 #include "Widgets/Layout/SBorder.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/Package.h"
 #include "BehaviorTree/BTDecorator.h"
 #include "BehaviorTree/BTCompositeNode.h"
@@ -72,7 +74,7 @@ FBehaviorTreeEditor::FBehaviorTreeEditor()
 	: IBehaviorTreeEditor()
 {
 	// listen for package change events to update injected nodes
-	OnPackageSavedDelegateHandle     = UPackage::PackageSavedEvent.AddRaw(this, &FBehaviorTreeEditor::OnPackageSaved);
+	OnPackageSavedDelegateHandle     = UPackage::PackageSavedWithContextEvent.AddRaw(this, &FBehaviorTreeEditor::OnPackageSaved);
 
 	bShowDecoratorRangeLower = false;
 	bShowDecoratorRangeSelf = false;
@@ -91,7 +93,7 @@ FBehaviorTreeEditor::FBehaviorTreeEditor()
 
 FBehaviorTreeEditor::~FBehaviorTreeEditor()
 {
-	UPackage::PackageSavedEvent.Remove(OnPackageSavedDelegateHandle);
+	UPackage::PackageSavedWithContextEvent.Remove(OnPackageSavedDelegateHandle);
 
 	Debugger.Reset();
 }
@@ -692,14 +694,10 @@ TSharedRef<SWidget> FBehaviorTreeEditor::SpawnBlackboardEditor()
 
 TSharedRef<SWidget> FBehaviorTreeEditor::SpawnBlackboardDetails()
 {
-	const bool bIsUpdatable = false;
-	const bool bAllowFavorites = true;
-	const bool bIsLockable = false;
-	const bool bAllowSearch = true;
-	const bool bObjectsUseNameArea = false;
-	const bool bHideSelectionTip = true;
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>( "PropertyEditor" );
-	FDetailsViewArgs DetailsViewArgs( bIsUpdatable, bIsLockable, bAllowSearch, FDetailsViewArgs::HideNameArea, bHideSelectionTip );
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
 	DetailsViewArgs.NotifyHook = this;
 	BlackboardDetailsView = PropertyEditorModule.CreateDetailView( DetailsViewArgs );
 
@@ -892,7 +890,8 @@ void FBehaviorTreeEditor::GetAbortModePreview(const class UBTDecorator* Decorato
 void FBehaviorTreeEditor::CreateInternalWidgets()
 {
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>( "PropertyEditor" );
-	FDetailsViewArgs DetailsViewArgs( false, false, true, FDetailsViewArgs::HideNameArea, false );
+	FDetailsViewArgs DetailsViewArgs; 
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
 	DetailsViewArgs.NotifyHook = this;
 	DetailsViewArgs.DefaultsOnlyVisibility = EEditDefaultsOnlyNodeVisibility::Hide;
 	DetailsView = PropertyEditorModule.CreateDetailView( DetailsViewArgs );
@@ -1110,7 +1109,7 @@ void FBehaviorTreeEditor::OnFinishedChangingProperties(const FPropertyChangedEve
 	BehaviorTree->BTGraph->GetSchema()->ForceVisualizationCacheClear();
 }
 
-void FBehaviorTreeEditor::OnPackageSaved(const FString& PackageFileName, UObject* Outer)
+void FBehaviorTreeEditor::OnPackageSaved(const FString& PackageFileName, UPackage* Package, FObjectPostSaveContext ObjectSaveContext)
 {
 	UBehaviorTreeGraph* MyGraph = BehaviorTree ? Cast<UBehaviorTreeGraph>(BehaviorTree->BTGraph) : NULL;
 	if (MyGraph)
@@ -1646,7 +1645,7 @@ UBehaviorTree* FBehaviorTreeEditor::GetBehaviorTree() const
 
 UBlackboardData* FBehaviorTreeEditor::GetBlackboardData() const 
 {
-	return BehaviorTree == nullptr ? BlackboardData : BehaviorTree->BlackboardAsset; 
+	return BehaviorTree == nullptr ? BlackboardData : ToRawPtr(BehaviorTree->BlackboardAsset);
 }
 
 void FBehaviorTreeEditor::RefreshDebugger()
@@ -1695,7 +1694,7 @@ TSharedRef<SWidget> FBehaviorTreeEditor::HandleCreateNewTaskMenu() const
 {
 	FClassViewerInitializationOptions Options;
 	Options.bShowUnloadedBlueprints = true;
-	Options.ClassFilter = MakeShareable( new FBehaviorTreeEditorUtils::FNewNodeClassFilter<UBTTask_BlueprintBase> );
+	Options.ClassFilters.Add(MakeShareable( new FBehaviorTreeEditorUtils::FNewNodeClassFilter<UBTTask_BlueprintBase> ));
 
 	FOnClassPicked OnPicked( FOnClassPicked::CreateSP( this, &FBehaviorTreeEditor::HandleNewNodeClassPicked ) );
 
@@ -1706,7 +1705,7 @@ TSharedRef<SWidget> FBehaviorTreeEditor::HandleCreateNewDecoratorMenu() const
 {
 	FClassViewerInitializationOptions Options;
 	Options.bShowUnloadedBlueprints = true;
-	Options.ClassFilter = MakeShareable( new FBehaviorTreeEditorUtils::FNewNodeClassFilter<UBTDecorator_BlueprintBase> );
+	Options.ClassFilters.Add(MakeShareable( new FBehaviorTreeEditorUtils::FNewNodeClassFilter<UBTDecorator_BlueprintBase> ));
 
 	FOnClassPicked OnPicked( FOnClassPicked::CreateSP( this, &FBehaviorTreeEditor::HandleNewNodeClassPicked ) );
 
@@ -1717,13 +1716,12 @@ TSharedRef<SWidget> FBehaviorTreeEditor::HandleCreateNewServiceMenu() const
 {
 	FClassViewerInitializationOptions Options;
 	Options.bShowUnloadedBlueprints = true;
-	Options.ClassFilter = MakeShareable( new FBehaviorTreeEditorUtils::FNewNodeClassFilter<UBTService_BlueprintBase> );
+	Options.ClassFilters.Add(MakeShareable( new FBehaviorTreeEditorUtils::FNewNodeClassFilter<UBTService_BlueprintBase> ));
 
 	FOnClassPicked OnPicked( FOnClassPicked::CreateSP( this, &FBehaviorTreeEditor::HandleNewNodeClassPicked ) );
 
 	return FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer").CreateClassViewer(Options, OnPicked);
 }
-
 void FBehaviorTreeEditor::HandleNewNodeClassPicked(UClass* InClass) const
 {
 	UE_CLOG(InClass == nullptr, LogBehaviorTreeEditor, Error, TEXT("Trying to handle new node of NULL class for Behavior Treee %s ")
@@ -1731,30 +1729,41 @@ void FBehaviorTreeEditor::HandleNewNodeClassPicked(UClass* InClass) const
 
 	if(BehaviorTree != nullptr && InClass != nullptr && BehaviorTree->GetOutermost())
 	{
-		FString ClassName = FBlueprintEditorUtils::GetClassNameWithoutSuffix(InClass);
+		const FString ClassName = FBlueprintEditorUtils::GetClassNameWithoutSuffix(InClass);
 
 		FString PathName = BehaviorTree->GetOutermost()->GetPathName();
 		PathName = FPaths::GetPath(PathName);
-		PathName /= ClassName;
+		
+		// Now that we've generated some reasonable default locations/names for the package, allow the user to have the final say
+		// before we create the package and initialize the blueprint inside of it.
+		FSaveAssetDialogConfig SaveAssetDialogConfig;
+		SaveAssetDialogConfig.DialogTitleOverride = LOCTEXT("SaveAssetDialogTitle", "Save Asset As");
+		SaveAssetDialogConfig.DefaultPath = PathName;
+		SaveAssetDialogConfig.DefaultAssetName = ClassName + TEXT("_New");
+		SaveAssetDialogConfig.ExistingAssetPolicy = ESaveAssetDialogExistingAssetPolicy::Disallow;
 
-		FString Name;
-		FString PackageName;
-		FAssetToolsModule& AssetToolsModule = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools");
-		AssetToolsModule.Get().CreateUniqueAssetName(PathName, TEXT("_New"), PackageName, Name);
-
-		UPackage* Package = CreatePackage( *PackageName);
-		if (ensure(Package))
+		const FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+		const FString SaveObjectPath = ContentBrowserModule.Get().CreateModalSaveAssetDialog(SaveAssetDialogConfig);
+		if (!SaveObjectPath.IsEmpty())
 		{
-			// Create and init a new Blueprint
-			if (UBlueprint* NewBP = FKismetEditorUtilities::CreateBlueprint(InClass, Package, FName(*Name), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass()))
+			const FString SavePackageName = FPackageName::ObjectPathToPackageName(SaveObjectPath);
+			const FString SavePackagePath = FPaths::GetPath(SavePackageName);
+			const FString SaveAssetName = FPaths::GetBaseFilename(SavePackageName);
+
+			UPackage* Package = CreatePackage(*SavePackageName);
+			if (ensure(Package))
 			{
-				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(NewBP);
+				// Create and init a new Blueprint
+				if (UBlueprint* NewBP = FKismetEditorUtilities::CreateBlueprint(InClass, Package, FName(*SaveAssetName), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass()))
+				{
+					GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(NewBP);
 
-				// Notify the asset registry
-				FAssetRegistryModule::AssetCreated(NewBP);
+					// Notify the asset registry
+					FAssetRegistryModule::AssetCreated(NewBP);
 
-				// Mark the package dirty...
-				Package->MarkPackageDirty();
+					// Mark the package dirty...
+					Package->MarkPackageDirty();
+				}
 			}
 		}
 	}

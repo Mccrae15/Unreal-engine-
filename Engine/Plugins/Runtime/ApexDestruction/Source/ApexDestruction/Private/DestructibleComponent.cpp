@@ -101,9 +101,14 @@ FBoxSphereBounds UDestructibleComponent::CalcBounds(const FTransform& LocalToWor
 		return Super::CalcBounds(LocalToWorld);
 	}
 
-	const PxBounds3& PBounds = ApexDestructibleActor->getBounds();
-
-	return FBoxSphereBounds(FBox(P2UVector(PBounds.minimum), P2UVector(PBounds.maximum)));
+	// getLocalBounds and getChunkLocalBounds are non-updating in the APEX actor, so using those will not
+	// get us the correct bounds. Instead we take the world bounds and recalculate the local bounds
+	// from it.
+	const PxBounds3 PWorldBounds = ApexDestructibleActor->getBounds();
+	
+	return FBoxSphereBounds(FBox(P2UVector(PWorldBounds.minimum), P2UVector(PWorldBounds.maximum)))
+		.TransformBy(GetComponentToWorld().Inverse())
+		.TransformBy(LocalToWorld);
 
 #else	// #if WITH_APEX
 	return Super::CalcBounds(LocalToWorld);
@@ -1099,7 +1104,7 @@ bool UDestructibleComponent::DoCustomNavigableGeometryExport(FNavigableGeometryE
 #if WITH_EDITORONLY_DATA
 		if (DestructibleMesh && DestructibleMesh->SourceStaticMesh)
 		{
-			GeomExport.ExportRigidBodySetup(*DestructibleMesh->SourceStaticMesh->BodySetup, GetComponentTransform());
+			GeomExport.ExportRigidBodySetup(*DestructibleMesh->SourceStaticMesh->GetBodySetup(), GetComponentTransform());
 			bExportFromBodySetup = false;
 		}
 #endif	// WITH_EDITORONLY_DATA
@@ -1431,7 +1436,7 @@ void UDestructibleComponent::SetEnableGravity(bool bGravityEnabled)
 #endif //WITH_APEX
 }
 
-FBodyInstance* UDestructibleComponent::GetBodyInstance( FName BoneName /*= NAME_None*/, bool) const
+FBodyInstance* UDestructibleComponent::GetBodyInstance( FName BoneName /*= NAME_None*/, bool, int) const
 {
 #if WITH_APEX
 	if (ApexDestructibleActor != NULL)

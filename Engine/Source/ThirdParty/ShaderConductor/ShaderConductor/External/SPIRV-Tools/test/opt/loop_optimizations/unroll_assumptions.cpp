@@ -42,6 +42,10 @@ class PartialUnrollerTestPass : public Pass {
   Status Process() override {
     bool changed = false;
     for (Function& f : *context()->module()) {
+      if (f.IsDeclaration()) {
+        continue;
+      }
+
       LoopDescriptor& loop_descriptor = *context()->GetLoopDescriptor(&f);
       for (auto& loop : loop_descriptor) {
         LoopUtils loop_utils{context(), &loop};
@@ -463,6 +467,73 @@ OpReturn
 OpFunctionEnd
 )";
   // clang-format on
+  SetDisassembleOptions(SPV_BINARY_TO_TEXT_OPTION_NO_HEADER);
+  SinglePassRunAndCheck<LoopUnroller>(text, text, false);
+}
+
+TEST_F(PassClassTest, KillInBody) {
+  const std::string text = R"(OpCapability Shader
+OpMemoryModel Logical Simple
+OpEntryPoint Fragment %1 "main"
+OpExecutionMode %1 OriginUpperLeft
+%2 = OpTypeVoid
+%3 = OpTypeFunction %2
+%4 = OpTypeBool
+%5 = OpTypeInt 32 0
+%6 = OpConstant %5 0
+%7 = OpConstant %5 1
+%8 = OpConstant %5 5
+%1 = OpFunction %2 None %3
+%9 = OpLabel
+OpBranch %10
+%10 = OpLabel
+%11 = OpPhi %5 %6 %9 %12 %13
+%14 = OpULessThan %4 %11 %8
+OpLoopMerge %15 %13 Unroll
+OpBranchConditional %14 %16 %15
+%16 = OpLabel
+OpKill
+%13 = OpLabel
+%12 = OpIAdd %5 %11 %7
+OpBranch %10
+%15 = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+  SetDisassembleOptions(SPV_BINARY_TO_TEXT_OPTION_NO_HEADER);
+  SinglePassRunAndCheck<LoopUnroller>(text, text, false);
+}
+
+TEST_F(PassClassTest, TerminateInvocationInBody) {
+  const std::string text = R"(OpCapability Shader
+OpExtension "SPV_KHR_terminate_invocation"
+OpMemoryModel Logical Simple
+OpEntryPoint Fragment %1 "main"
+OpExecutionMode %1 OriginUpperLeft
+%2 = OpTypeVoid
+%3 = OpTypeFunction %2
+%4 = OpTypeBool
+%5 = OpTypeInt 32 0
+%6 = OpConstant %5 0
+%7 = OpConstant %5 1
+%8 = OpConstant %5 5
+%1 = OpFunction %2 None %3
+%9 = OpLabel
+OpBranch %10
+%10 = OpLabel
+%11 = OpPhi %5 %6 %9 %12 %13
+%14 = OpULessThan %4 %11 %8
+OpLoopMerge %15 %13 Unroll
+OpBranchConditional %14 %16 %15
+%16 = OpLabel
+OpTerminateInvocation
+%13 = OpLabel
+%12 = OpIAdd %5 %11 %7
+OpBranch %10
+%15 = OpLabel
+OpReturn
+OpFunctionEnd
+)";
   SetDisassembleOptions(SPV_BINARY_TO_TEXT_OPTION_NO_HEADER);
   SinglePassRunAndCheck<LoopUnroller>(text, text, false);
 }
@@ -1441,6 +1512,33 @@ OpFunctionEnd
   SinglePassRunAndCheck<LoopUnroller>(text, text, false);
   SinglePassRunAndCheck<PartialUnrollerTestPass<1>>(text, text, false);
   SinglePassRunAndCheck<PartialUnrollerTestPass<2>>(text, text, false);
+}
+
+TEST_F(PassClassTest, FunctionDeclaration) {
+  // Make sure the pass works with a function declaration that is called.
+  const std::string text = R"(OpCapability Addresses
+OpCapability Linkage
+OpCapability Kernel
+OpCapability Int8
+%1 = OpExtInstImport "OpenCL.std"
+OpMemoryModel Physical64 OpenCL
+OpEntryPoint Kernel %2 "_Z23julia__1166_kernel_77094Bool"
+OpExecutionMode %2 ContractionOff
+OpSource Unknown 0
+OpDecorate %3 LinkageAttributes "julia_error_7712" Import
+%void = OpTypeVoid
+%5 = OpTypeFunction %void
+%3 = OpFunction %void None %5
+OpFunctionEnd
+%2 = OpFunction %void None %5
+%6 = OpLabel
+%7 = OpFunctionCall %void %3
+OpReturn
+OpFunctionEnd
+)";
+
+  SinglePassRunAndCheck<LoopUnroller>(text, text, false);
+  SinglePassRunAndCheck<PartialUnrollerTestPass<1>>(text, text, false);
 }
 
 }  // namespace

@@ -22,9 +22,24 @@ class UNiagaraSystemAuditCommandlet : public UCommandlet
 	TSet<FString> NiagaraSystemsWithGPUEmitters;
 	/** All Niagara systems with prerequisites */
 	TSet<FString> NiagaraSystemsWithPrerequisites;
+	/** All Niagara systems that contain emitters with dynamic bounds */
+	TSet<FString> NiagaraSystemsWithDynamicBounds;
 
 	/** All Niagara systems that use a user requested data interface */
 	TSet<FString> NiagaraSystemsWithUserDataInterface;
+
+	/** Optional list of data interface usage */
+	struct FDataInterfaceUsage
+	{
+		int32			UsageCount = 0;
+		TSet<FName>		Systems;
+	};
+	bool bCaptureDataInterfaceUsage = false;
+	TMap<FName, FDataInterfaceUsage>  NiagaraDataInterfaceUsage;
+
+	/** Detailed renderer information. */
+	bool bRendererDetailed = false;
+	TSet<FString> NiagaraRibbonRenderers;
 
 	/** The folder in which the commandlet's output files will be stored */
 	FString AuditOutputFolder;
@@ -37,6 +52,9 @@ class UNiagaraSystemAuditCommandlet : public UCommandlet
 
 	/** Systems using specific data interfaces to find */
 	TSet<UClass*> UserDataInterfacesToFind;
+
+	/** DeviceProfiles we want to disable GPU emitters for. */
+	TArray<class UDeviceProfile*> DeviceProfilesToDisableGpu;
 
 	/** Entry point */
 	int32 Main(const FString& Params) override;

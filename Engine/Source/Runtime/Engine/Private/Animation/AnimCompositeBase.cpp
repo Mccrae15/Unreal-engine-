@@ -10,7 +10,7 @@
 #include "BonePose.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimationPoseData.h"
-#include "Animation/CustomAttributesRuntime.h"
+#include "Animation/AttributesRuntime.h"
 
 ///////////////////////////////////////////////////////
 // FAnimSegment
@@ -70,11 +70,12 @@ float FAnimSegment::ConvertTrackPosToAnimPos(const float& TrackPosition) const
 
 void FAnimSegment::GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, TArray<const FAnimNotifyEvent *> & OutActiveNotifies) const
 {
-	TArray<FAnimNotifyEventReference> NotifyRefs;
-	GetAnimNotifiesFromTrackPositions(PreviousTrackPosition, CurrentTrackPosition, NotifyRefs);
+	FAnimTickRecord TickRecord;
+	FAnimNotifyContext NotifyContext(TickRecord);
+	GetAnimNotifiesFromTrackPositions(PreviousTrackPosition, CurrentTrackPosition, NotifyContext);
 
-	OutActiveNotifies.Reset(NotifyRefs.Num());
-	for (FAnimNotifyEventReference& NotifyRef : NotifyRefs)
+	OutActiveNotifies.Reset(NotifyContext.ActiveNotifies.Num());
+	for (FAnimNotifyEventReference& NotifyRef : NotifyContext.ActiveNotifies)
 	{
 		if (const FAnimNotifyEvent* Notify = NotifyRef.GetNotify())
 		{
@@ -84,6 +85,15 @@ void FAnimSegment::GetAnimNotifiesFromTrackPositions(const float& PreviousTrackP
 }
 
 void FAnimSegment::GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, TArray<FAnimNotifyEventReference> & OutActiveNotifies) const
+{
+	FAnimTickRecord TickRecord;
+	FAnimNotifyContext NotifyContext(TickRecord);
+	GetAnimNotifiesFromTrackPositions(PreviousTrackPosition, CurrentTrackPosition, NotifyContext);
+	// Slow copy due assumption of calling code that OutActiveNotifies is only extended
+	OutActiveNotifies.Append(NotifyContext.ActiveNotifies);
+}
+
+void FAnimSegment::GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, FAnimNotifyContext& NotifyContext) const
 {
 	if( PreviousTrackPosition == CurrentTrackPosition )
 	{
@@ -130,14 +140,14 @@ void FAnimSegment::GetAnimNotifiesFromTrackPositions(const float& PreviousTrackP
 				{
 					const float PlayRate = ValidPlayRate * (bTrackPlayingBackwards ? -1.f : 1.f);
 					const float AnimEndPosition = (TrackTimeToGo * PlayRate) + AnimStartPosition;
-					AnimSequenceBase->GetAnimNotifiesFromDeltaPositions(AnimStartPosition, AnimEndPosition, OutActiveNotifies);
+					AnimSequenceBase->GetAnimNotifiesFromDeltaPositions(AnimStartPosition, AnimEndPosition, NotifyContext);
 					break;
 				}
 				// Otherwise we hit the end point of the animation first...
 				else
 				{
 					// Add that piece for extraction.
-					AnimSequenceBase->GetAnimNotifiesFromDeltaPositions(AnimStartPosition, AnimEndPoint, OutActiveNotifies);
+					AnimSequenceBase->GetAnimNotifiesFromDeltaPositions(AnimStartPosition, AnimEndPoint, NotifyContext);
 
 					// decrease our TrackTimeToGo if we have to do another iteration.
 					// and put ourselves back at the beginning of the animation.
@@ -408,9 +418,9 @@ void FAnimTrack::ValidateSegmentTimes()
 				Segment.StartPos = AnimSegments[J - 1].StartPos + AnimSegments[J - 1].GetLength();
 			}
 
-			if(Segment.AnimReference && Segment.AnimEndTime > Segment.AnimReference->SequenceLength)
+			if(Segment.AnimReference && Segment.AnimEndTime > Segment.AnimReference->GetPlayLength())
 			{
-				Segment.AnimEndTime = Segment.AnimReference->SequenceLength;
+				Segment.AnimEndTime = Segment.AnimReference->GetPlayLength();
 			}
 		}
 	}
@@ -545,7 +555,7 @@ void FAnimTrack::SortAnimSegments()
 
 void FAnimTrack::GetAnimationPose(/*out*/ FCompactPose& OutPose, /*out*/ FBlendedCurve& OutCurve, const FAnimExtractContext& ExtractionContext) const
 {
-	FStackCustomAttributes TempAttributes;
+	UE::Anim::FStackAttributeContainer TempAttributes;
 	FAnimationPoseData OutAnimationPoseData(OutPose, OutCurve, TempAttributes);
 	GetAnimationPose(OutAnimationPoseData, ExtractionContext);
 }
@@ -559,14 +569,14 @@ void FAnimTrack::GetAnimationPose(FAnimationPoseData& OutAnimationPoseData, cons
 	{
 		if (AnimSegment->bValid)
 		{
-			float PositionInAnim = 0.f;
-			if (const UAnimSequenceBase* const AnimRef = AnimSegment->GetAnimationData(ClampedTime, PositionInAnim))
+			// Copy passed in Extraction Context, but override position and root motion parameters.
+			FAnimExtractContext SequenceExtractionContext(ExtractionContext);
+			if (const UAnimSequenceBase* const AnimRef = AnimSegment->GetAnimationData(ClampedTime, SequenceExtractionContext.CurrentTime))
 			{
-				// Copy passed in Extraction Context, but override position and root motion parameters.
-				FAnimExtractContext SequenceExtractionContext(ExtractionContext);
-				SequenceExtractionContext.CurrentTime = PositionInAnim;
+				SequenceExtractionContext.DeltaTimeRecord.SetPrevious(
+					SequenceExtractionContext.CurrentTime - SequenceExtractionContext.DeltaTimeRecord.Delta);
 				SequenceExtractionContext.bExtractRootMotion &= AnimRef->HasRootMotion();
-
+				SequenceExtractionContext.bLooping = AnimSegment->LoopingCount > 1;
 				AnimRef->GetAnimationPose(OutAnimationPoseData, SequenceExtractionContext);
 				bExtractedPose = true;
 			}
@@ -644,11 +654,12 @@ bool FAnimTrack::ContainRecursive(const TArray<UAnimCompositeBase*>& CurrentAccu
 
 void FAnimTrack::GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, TArray<const FAnimNotifyEvent *> & OutActiveNotifies) const
 {
-	TArray<FAnimNotifyEventReference> NotifyRefs;
-	GetAnimNotifiesFromTrackPositions(PreviousTrackPosition, CurrentTrackPosition, NotifyRefs);
+	FAnimTickRecord TickRecord;
+	FAnimNotifyContext NotifyContext(TickRecord);
+	GetAnimNotifiesFromTrackPositions(PreviousTrackPosition, CurrentTrackPosition, NotifyContext);
 
-	OutActiveNotifies.Reset(NotifyRefs.Num());
-	for (FAnimNotifyEventReference& NotifyRef : NotifyRefs)
+	OutActiveNotifies.Reset(NotifyContext.ActiveNotifies.Num());
+	for (FAnimNotifyEventReference& NotifyRef : NotifyContext.ActiveNotifies)
 	{
 		if (const FAnimNotifyEvent* Notify = NotifyRef.GetNotify())
 		{
@@ -659,11 +670,25 @@ void FAnimTrack::GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPos
 
 void FAnimTrack::GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, TArray<FAnimNotifyEventReference> & OutActiveNotifies) const
 {
+	FAnimTickRecord TickRecord;
+	FAnimNotifyContext NotifyContext(TickRecord);
 	for (int32 SegmentIndex = 0; SegmentIndex<AnimSegments.Num(); ++SegmentIndex)
 	{
 		if (AnimSegments[SegmentIndex].IsValid())
 		{
-			AnimSegments[SegmentIndex].GetAnimNotifiesFromTrackPositions(PreviousTrackPosition, CurrentTrackPosition, OutActiveNotifies);
+			AnimSegments[SegmentIndex].GetAnimNotifiesFromTrackPositions(PreviousTrackPosition, CurrentTrackPosition, NotifyContext);
+		}
+	}
+	Swap(OutActiveNotifies, NotifyContext.ActiveNotifies);
+}
+
+void FAnimTrack::GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, FAnimNotifyContext& NotifyContext) const
+{
+	for (int32 SegmentIndex = 0; SegmentIndex<AnimSegments.Num(); ++SegmentIndex)
+	{
+		if (AnimSegments[SegmentIndex].IsValid())
+		{
+			AnimSegments[SegmentIndex].GetAnimNotifiesFromTrackPositions(PreviousTrackPosition, CurrentTrackPosition, NotifyContext);
 		}
 	}
 }
@@ -687,7 +712,7 @@ bool FAnimTrack::IsValidToAdd(const UAnimSequenceBase* SequenceBase) const
 	// remove asset if invalid
 	if (SequenceBase)
 	{
-		if (SequenceBase->SequenceLength <= 0.f)
+		if (SequenceBase->GetPlayLength() <= 0.f)
 		{
 			UE_LOG(LogAnimation, Warning, TEXT("Remove Empty Sequence (%s)"), *SequenceBase->GetFullName());
 		}
@@ -719,13 +744,6 @@ UAnimCompositeBase::UAnimCompositeBase(const FObjectInitializer& ObjectInitializ
 	: Super(ObjectInitializer)
 {
 }
-
-#if WITH_EDITOR
-void UAnimCompositeBase::SetSequenceLength(float InSequenceLength)
-{
-	SequenceLength = InSequenceLength;
-}
-#endif
 
 void UAnimCompositeBase::ExtractRootMotionFromTrack(const FAnimTrack &SlotAnimTrack, float StartTrackPosition, float EndTrackPosition, FRootMotionMovementParams &RootMotion) const
 {

@@ -7,6 +7,7 @@
 #include "Widgets/SWidget.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
+#include "Settings/WidgetDesignerSettings.h"
 #include "AssetData.h"
 #include "PreviewScene.h"
 #include "GraphEditor.h"
@@ -23,6 +24,7 @@ class UPanelSlot;
 class UWidgetAnimation;
 class UWidgetBlueprint;
 class FPaletteViewModel;
+class FLibraryViewModel;
 
 struct FNamedSlotSelection
 {
@@ -44,6 +46,9 @@ public:
 
 	/** Called after the widget preview has been updated */
 	DECLARE_MULTICAST_DELEGATE(FOnWidgetPreviewUpdated)
+
+	/** Called when animation list changes */
+	DECLARE_MULTICAST_DELEGATE(FOnWidgetAnimationsUpdated)
 
 	DECLARE_EVENT(FWidgetBlueprintEditor, FOnEnterWidgetDesigner)
 
@@ -90,8 +95,17 @@ public:
 	/** Creates a widget reference using the preview.  Which is used to lookup the stable template pointer. */
 	FWidgetReference GetReferenceFromPreview(UWidget* PreviewWidget);
 
-	/** @return The sequencer used to create widget animations */
+	/** @return The currently active sequencer used to create widget animations */
 	TSharedPtr<ISequencer>& GetSequencer();
+
+	/** @return The sequencer used to create widget animations */
+	TSharedPtr<ISequencer>& GetTabSequencer();
+
+	/** @return The sequencer used to create widget animations in drawer */
+	TSharedPtr<ISequencer>& GetDrawerSequencer();
+
+	/** Callback to dock anim tab into layout */
+	void DockInLayoutClicked();
 
 	/** Changes the currently viewed animation in Sequencer to the new one*/
 	void ChangeViewedAnimation( UWidgetAnimation& InAnimationToView );
@@ -148,7 +162,25 @@ public:
 	FOnWidgetBlueprintTransaction& GetOnWidgetBlueprintTransaction() { return OnWidgetBlueprintTransaction; }
 
 	/** Creates a sequencer widget */
-	TSharedRef<SWidget> CreateSequencerWidget();
+	TSharedRef<SWidget> CreateSequencerTabWidget();
+
+	/** Creates a sequencer widget, for anim drawer */
+	TSharedRef<SWidget> CreateSequencerDrawerWidget();
+
+	/** Gets sequencer widget, for anim drawer */
+	TSharedRef<SWidget> OnGetWidgetAnimSequencer();
+
+	/** Toggles Anim Drawer, only used for keyboard shortcut */
+	void ToggleAnimDrawer();
+
+	/** Callback for when widget animation list has been updated */
+	void NotifyWidgetAnimListChanged();
+
+	/** Callback for anim drawer opening */
+	void OnWidgetAnimSequencerOpened(FName StatusBarWithDrawerName);
+
+	/** Callback for anim drawer closing */
+	void OnWidgetAnimSequencerDismissed(const TSharedPtr<SWidget>& NewlyFocusedWidget);
 
 	/**
 	 * The widget we're now hovering over in any particular context, allows multiple views to 
@@ -177,6 +209,7 @@ public:
 	void SetIsRespectingLocks(bool Value);
 
 	TSharedPtr<FPaletteViewModel> GetPaletteViewModel() { return PaletteViewModel; };
+	TSharedPtr<FLibraryViewModel> GetLibraryViewModel() { return LibraryViewModel; };
 
 public:
 	/** Fires whenever a new widget is being hovered over */
@@ -194,6 +227,9 @@ public:
 	/** Notification for when the preview widget has been updated */
 	FOnWidgetPreviewUpdated OnWidgetPreviewUpdated;
 
+	/** Notification for when the preview widget has been updated */
+	FOnWidgetAnimationsUpdated OnWidgetAnimationsUpdated;
+
 	/** Fires after the mode change to Designer*/
 	FOnEnterWidgetDesigner OnEnterWidgetDesigner;
 
@@ -207,10 +243,27 @@ protected:
 	virtual void InitalizeExtenders() override;
 	TSharedPtr<FExtender> CreateMenuExtender();
 	void FillFileMenu(FMenuBuilder& MenuBuilder);
+	void FillAssetMenu(FMenuBuilder& MenuBuilder);
 	void BindToolkitCommands();
+
+	void TakeSnapshot();
+	void CaptureThumbnail();
+	void ClearThumbnail();
+	bool IsImageUsedAsThumbnail();
+	bool IsPreviewWidgetInitialized();
+
+	void CustomizeWidgetCompileOptions(FMenuBuilder& InMenuBuilder);
+
+	static void AddCreateCompileTabSubMenu(FMenuBuilder& InMenuBuilder);
+	static void AddDismissCompileTabSubMenu(FMenuBuilder& InMenuBuilder);
+	static void SetDismissOnCompileSetting(EDisplayOnCompile InDismissOnCompile);
+	static void SetCreateOnCompileSetting(EDisplayOnCompile InCreateOnCompile);
+	static bool IsDismissOnCompileSet(EDisplayOnCompile InDismissOnCompile);
+	static bool IsCreateOnCompileSet(EDisplayOnCompile InCreateOnCompile);
 
 	void OpenCreateNativeBaseClassDialog();
 	void OnCreateNativeBaseClassSuccessfully(const FString& InClassName, const FString& InClassPath, const FString& InModuleName);
+	TSharedPtr<ISequencer> CreateSequencerWidgetInternal();
 
 	// Begin FBlueprintEditor
 	virtual void RegisterApplicationModes(const TArray<UBlueprint*>& InBlueprints, bool bShouldOpenInDefaultsMode, bool bNewlyCreated = false) override;
@@ -284,6 +337,9 @@ private:
 	/** Add an animation track for the supplied slot to the current animation. */
 	void AddSlotTrack( UPanelSlot* Slot );
 
+	/** Add an animation track for the supplied slot to the current animation. */
+	void AddSlotTrack(TObjectPtr<UPanelSlot> Slot) { return AddSlotTrack(Slot.Get()); }
+
 	/** Add an animation track for the supplied material property path to the current animation. */
 	void AddMaterialTrack( UWidget* Widget, TArray<FProperty*> MaterialPropertyPath, FText MaterialPropertyDisplayName );
 
@@ -299,6 +355,9 @@ private:
 	/** Tell sequencer the selected widgets changed */
 	void SyncSequencerSelectionToSelectedWidgets();
 
+	/** Tell sequencers movie data changed */
+	void SyncSequencersMovieSceneData();
+
 	/** Get the animation playback context */
 	UObject* GetAnimationPlaybackContext() const { return GetPreview(); }
 
@@ -312,14 +371,29 @@ private:
 	/** The preview scene that owns the preview GUI */
 	FPreviewScene PreviewScene;
 
-	/** Sequencer for creating and previewing widget animations */
-	TSharedPtr<ISequencer> Sequencer;
+	/** List of created sequencers */
+	TArray<TWeakPtr<ISequencer>> Sequencers;
 
-	/** Overlay used to display UI on top of sequencer */
-	TWeakPtr<SOverlay> SequencerOverlay;
+	/** Sequencer for creating and previewing widget animations in tabs */
+	TSharedPtr<ISequencer> TabSequencer;
+
+	/** Overlay used to display UI on top of tab sequencer */
+	TWeakPtr<SOverlay> TabSequencerOverlay;
+
+	/** Sequencer for creating and previewing widget animations in drawer */
+	TSharedPtr<ISequencer> DrawerSequencer;
+
+	/** Overlay used to display UI on top of drawer sequencer */
+	TWeakPtr<SOverlay> DrawerSequencerOverlay;
+
+	/** Widget created for anim drawer */
+	TSharedPtr<SWidget> AnimDrawerWidget;
 
 	/** A text block which is displayed in the overlay when no animation is selected. */
-	TWeakPtr<STextBlock> NoAnimationTextBlock;
+	TWeakPtr<STextBlock> NoAnimationTextBlockTab;
+
+	/** A text block which is displayed in the overlay when no animation is selected in drawer. */
+	TWeakPtr<STextBlock> NoAnimationTextBlockDrawer;
 
 	/** The Blueprint associated with the current preview */
 	UWidgetBlueprint* PreviewBlueprint;
@@ -376,11 +450,17 @@ private:
 
 	FDelegateHandle SequencerAddTrackExtenderHandle;
 
+	/** True if sequencer drawer is open */
+	bool bIsSequencerDrawerOpen;
+
 	/** When true the animation data in the generated class should be replaced with the current animation data. */
 	bool bRefreshGeneratedClassAnimations;
 
 	/** ViewModel used by the Palette and Palette Favorite Views */
 	TSharedPtr<FPaletteViewModel> PaletteViewModel;
+
+	/** ViewModel used by the Library View */
+	TSharedPtr<FLibraryViewModel> LibraryViewModel;
 
 	/** When true the sequencer selection is being updated from changes to the external selection. */
 	bool bUpdatingSequencerSelection;

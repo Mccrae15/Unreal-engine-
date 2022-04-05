@@ -311,7 +311,7 @@ private:
 			FVector4 ProjectedVertice = GeometryToFrustum.TransformFVector4(InPoint);
 
 			// Use only points over view plane, ignore backside pts
-			if (isnan(ProjectedVertice.X) || isnan(ProjectedVertice.Y) || isnan(ProjectedVertice.Z) || ProjectedVertice.X <= 0 || FMath::IsNearlyZero(ProjectedVertice.X, 1.e-6f))
+			if (isnan(ProjectedVertice.X) || isnan(ProjectedVertice.Y) || isnan(ProjectedVertice.Z) || ProjectedVertice.X <= 0 || FMath::IsNearlyZero(ProjectedVertice.X, (FVector4::FReal)1.e-6f))
 			{
 				// This point out of view plane
 				return false;
@@ -337,9 +337,9 @@ private:
 		bool bOutOfFrustumPoints = false;
 
 		// Search a camera space frustum
-		for (int i = 0; i < 8; ++i)
+		for (int32 AABBPointIndex = 0; AABBPointIndex < 8; ++AABBPointIndex)
 		{
-			bOutOfFrustumPoints |= !GetProjectionClip(GeometryContext.AABBoxPts[i]);
+			bOutOfFrustumPoints |= !GetProjectionClip(GeometryContext.AABBoxPts[AABBPointIndex]);
 		}
 
 		return bOutOfFrustumPoints == false;
@@ -355,6 +355,9 @@ private:
 		case EDisplayClusterWarpGeometryType::WarpMesh:
 			return ImplCalcFrustum_FULL_WarpMesh();
 
+		case EDisplayClusterWarpGeometryType::WarpProceduralMesh:
+			return ImplCalcFrustum_FULL_WarpProceduralMesh();
+
 		default:
 			break;
 		}
@@ -369,8 +372,12 @@ private:
 			return ImplCalcFrustum_LOD_WarpMap();
 
 		case EDisplayClusterWarpGeometryType::WarpMesh:
-			// LOD not implemened for WarpMesh, use full
+			// LOD not implemented for WarpMesh, use full
 			return ImplCalcFrustum_FULL_WarpMesh();
+
+		case EDisplayClusterWarpGeometryType::WarpProceduralMesh:
+			// LOD not implemented for WarpProceduralMesh, use full
+			return ImplCalcFrustum_FULL_WarpProceduralMesh();
 		default:
 			break;
 		}
@@ -381,6 +388,7 @@ private:
 	// Frustum build logics:
 	bool ImplCalcFrustum_FULL_WarpMap();
 	bool ImplCalcFrustum_FULL_WarpMesh();
+	bool ImplCalcFrustum_FULL_WarpProceduralMesh();
 
 	bool ImplCalcFrustum_LOD_WarpMap();
 
@@ -391,7 +399,7 @@ private:
 	const FDisplayClusterWarpEye& Eye;
 
 	// legacy WarpMap, now always use x16 downscale ratio
-	const int WarpMapLODRatio = 16;
+	const int32 WarpMapLODRatio = 16;
 
 	// Build
 	FDisplayClusterWarpContext Frustum;

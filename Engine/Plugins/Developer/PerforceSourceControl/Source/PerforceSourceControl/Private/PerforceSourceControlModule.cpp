@@ -27,7 +27,19 @@ void FPerforceSourceControlModule::StartupModule()
 	PerforceSourceControlProvider.RegisterWorker( "GetWorkspaces", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceGetWorkspacesWorker> ) );
 	PerforceSourceControlProvider.RegisterWorker( "Copy", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceCopyWorker> ) );
 	PerforceSourceControlProvider.RegisterWorker( "Resolve", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceResolveWorker> ) );
-	PerforceSourceControlProvider.RegisterWorker( "ChangeStatus", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceChangeStatusWorker> ) );
+	PerforceSourceControlProvider.RegisterWorker( "ChangeStatus", FGetPerforceSourceControlWorker::CreateStatic(&CreateWorker<FPerforceChangeStatusWorker>));
+	PerforceSourceControlProvider.RegisterWorker( "UpdateChangelistsStatus", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceGetPendingChangelistsWorker> ) );
+	PerforceSourceControlProvider.RegisterWorker( "NewChangelist", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceNewChangelistWorker> ) );
+	PerforceSourceControlProvider.RegisterWorker( "DeleteChangelist", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceDeleteChangelistWorker> ) );
+	PerforceSourceControlProvider.RegisterWorker( "EditChangelist", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceEditChangelistWorker> ) );
+	PerforceSourceControlProvider.RegisterWorker( "RevertUnchanged", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceRevertUnchangedWorker> ) );
+	PerforceSourceControlProvider.RegisterWorker( "MoveToChangelist", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceReopenWorker>) );
+	PerforceSourceControlProvider.RegisterWorker( "Shelve", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceShelveWorker>) );
+	PerforceSourceControlProvider.RegisterWorker( "Unshelve", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceUnshelveWorker>) );
+	PerforceSourceControlProvider.RegisterWorker( "DeleteShelved", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceDeleteShelveWorker>) );
+	PerforceSourceControlProvider.RegisterWorker( "DownloadFile", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceDownloadFileWorker>) );
+	PerforceSourceControlProvider.RegisterWorker( "CreateWorkspace", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceCreateWorkspaceWorker>) );
+	PerforceSourceControlProvider.RegisterWorker( "DeleteWorkspace", FGetPerforceSourceControlWorker::CreateStatic( &CreateWorker<FPerforceDeleteWorkspaceWorker>) );
 
 	// load our settings
 	PerforceSourceControlSettings.LoadSettings();

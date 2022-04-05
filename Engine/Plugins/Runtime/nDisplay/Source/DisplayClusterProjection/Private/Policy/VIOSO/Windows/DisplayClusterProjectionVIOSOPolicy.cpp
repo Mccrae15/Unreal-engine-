@@ -34,41 +34,8 @@
 // D3D12
 //-------------------------------------------------------------------------------------------------
 #if VIOSO_USE_GRAPHICS_API_D3D12
-#define GetD3D11CubeFace GetD3D12CubeFace
-#define VerifyD3D11Result VerifyD3D12Result
-#define GetD3D11TextureFromRHITexture GetD3D12TextureFromRHITexture
-#define FRingAllocation FRingAllocation_D3D12
-#define GetRenderTargetFormat GetRenderTargetFormat_D3D12
-#define ED3D11ShaderOffsetBuffer ED3D12ShaderOffsetBuffer
-#define FindShaderResourceDXGIFormat FindShaderResourceDXGIFormat_D3D12
-#define FindUnorderedAccessDXGIFormat FindUnorderedAccessDXGIFormat_D3D12
-#define FindDepthStencilDXGIFormat FindDepthStencilDXGIFormat_D3D12
-#define HasStencilBits HasStencilBits_D3D12
-#define FVector4VertexDeclaration FVector4VertexDeclaration_D3D12
-#define GLOBAL_CONSTANT_BUFFER_INDEX GLOBAL_CONSTANT_BUFFER_INDEX_D3D12
-#define MAX_CONSTANT_BUFFER_SLOTS MAX_CONSTANT_BUFFER_SLOTS_D3D12
-#define FD3DGPUProfiler FD3D12GPUProfiler
-#define FRangeAllocator FRangeAllocator_D3D12
-
 #include "D3D12RHIPrivate.h"
 #include "D3D12Util.h"
-
-#undef GetD3D11CubeFace
-#undef VerifyD3D11Result
-#undef GetD3D11TextureFromRHITexture
-#undef FRingAllocation
-#undef GetRenderTargetFormat
-#undef ED3D11ShaderOffsetBuffer
-#undef FindShaderResourceDXGIFormat
-#undef FindUnorderedAccessDXGIFormat
-#undef FindDepthStencilDXGIFormat
-#undef HasStencilBits
-#undef FVector4VertexDeclaration
-#undef GLOBAL_CONSTANT_BUFFER_INDEX
-#undef MAX_CONSTANT_BUFFER_SLOTS
-#undef FD3DGPUProfiler
-#undef FRangeAllocator
-
 #endif // VIOSO_USE_GRAPHICS_API_D3D12
 
 #if VIOSO_USE_GRAPHICS_API_D3D11
@@ -146,7 +113,7 @@ public:
 			DeviceContext->RSSetViewports(1, &RenderViewportData);
 
 			// Clear RTV
-			static FVector4 ClearColor(0, 0, 0, 1);
+			static FVector4f ClearColor(0, 0, 0, 1);
 			DeviceContext->ClearRenderTargetView(DestTextureRTV, &ClearColor[0]);
 
 			DeviceContext->Flush();
@@ -201,9 +168,9 @@ bool FDisplayClusterProjectionVIOSOPolicy::HandleStartScene(class IDisplayCluste
 	check(IsInGameThread());	
 
 	// Read VIOSO config data from nDisplay config file
-	if (!ViosoConfigData.Initialize(GetParameters(), InViewport->GetId()))
+	if (!ViosoConfigData.Initialize(GetParameters(), InViewport))
 	{
-		if (!IsEditorOperationMode())
+		if (!IsEditorOperationMode(InViewport))
 		{
 			UE_LOG(LogDisplayClusterProjectionVIOSO, Error, TEXT("Couldn't read VIOSO configuration from the config file for viewport -'%s'"), *InViewport->GetId());
 		}
@@ -254,7 +221,7 @@ void FDisplayClusterProjectionVIOSOPolicy::ImplRelease()
 
 bool FDisplayClusterProjectionVIOSOPolicy::CalculateView(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP)
 {
-	check(Views.Num() > (int)InContextNum);
+	check(Views.Num() > (int32)InContextNum);
 
 	// Get view location in local space
 	const USceneComponent* const OriginComp = GetOriginComp();
@@ -269,7 +236,7 @@ bool FDisplayClusterProjectionVIOSOPolicy::CalculateView(IDisplayClusterViewport
 	FScopeLock lock(&DllAccessCS);
 	if (!Views[InContextNum].UpdateVIOSO(InViewport, InContextNum, LocalEyeOrigin, LocalRotator, WorldToMeters, NCP, FCP))
 	{
-		if (Views[InContextNum].IsValid() && !FDisplayClusterProjectionPolicyBase::IsEditorOperationMode())
+		if (Views[InContextNum].IsValid() && !FDisplayClusterProjectionPolicyBase::IsEditorOperationMode(InViewport))
 		{
 			// Vioso api used, but failed inside math. The config base matrix or vioso geometry is invalid
 			UE_LOG(LogDisplayClusterProjectionVIOSO, Error, TEXT("Couldn't Calculate View for VIOSO viewport '%s'"), *InViewport->GetId());
@@ -301,15 +268,19 @@ bool FDisplayClusterProjectionVIOSOPolicy::IsWarpBlendSupported()
 
 void FDisplayClusterProjectionVIOSOPolicy::ApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const class IDisplayClusterViewportProxy* InViewportProxy)
 {
+	check(IsInRenderingThread());
+
 	if (!ImplApplyWarpBlend_RenderThread(RHICmdList, InViewportProxy))
 	{
 		// warp failed, just resolve texture to frame
-		InViewportProxy->ResolveResources(RHICmdList, EDisplayClusterViewportResourceType::InputShaderResource, InViewportProxy->GetOutputResourceType());
+		InViewportProxy->ResolveResources_RenderThread(RHICmdList, EDisplayClusterViewportResourceType::InputShaderResource, InViewportProxy->GetOutputResourceType_RenderThread());
 	}
 }
 
 bool FDisplayClusterProjectionVIOSOPolicy::ImplApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const class IDisplayClusterViewportProxy* InViewportProxy)
 {
+	check(IsInRenderingThread());
+
 	// Get in\out remp resources ref from viewport
 	TArray<FRHITexture2D*> InputTextures, OutputTextures;
 
@@ -341,7 +312,7 @@ bool FDisplayClusterProjectionVIOSOPolicy::ImplApplyWarpBlend_RenderThread(FRHIC
 	{
 		FScopeLock lock(&DllAccessCS);
 
-		for (int ContextNum = 0; ContextNum < InputTextures.Num(); ContextNum++)
+		for (int32 ContextNum = 0; ContextNum < InputTextures.Num(); ContextNum++)
 		{
 			if (!Views[ContextNum].RenderVIOSO_RenderThread(RHICmdList, InputTextures[ContextNum], OutputTextures[ContextNum], ViosoConfigData))
 			{
@@ -351,7 +322,7 @@ bool FDisplayClusterProjectionVIOSOPolicy::ImplApplyWarpBlend_RenderThread(FRHIC
 	}
 
 	// resolve warp result images from temp targetable to FrameTarget
-	return InViewportProxy->ResolveResources(RHICmdList, EDisplayClusterViewportResourceType::AdditionalTargetableResource, InViewportProxy->GetOutputResourceType());
+	return InViewportProxy->ResolveResources_RenderThread(RHICmdList, EDisplayClusterViewportResourceType::AdditionalTargetableResource, InViewportProxy->GetOutputResourceType_RenderThread());
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -430,7 +401,7 @@ bool FDisplayClusterProjectionVIOSOPolicy::FViewData::RenderVIOSO_RenderThread(F
 				FD3D12Texture2D* DestTexture2D = FD3D12DynamicRHI::ResourceCast(RenderTargetTexture);
 
 				FD3D12RenderTargetView* RTV = DestTexture2D->GetRenderTargetView(0, 0);
-				CD3DX12_CPU_DESCRIPTOR_HANDLE RTVHandle = RTV->GetView();
+				D3D12_CPU_DESCRIPTOR_HANDLE RTVHandle = RTV->GetView();
 
 				FD3D12Device* Device = DestTexture2D->GetParentDevice();
 				FD3D12CommandListHandle& hCommandList = Device->GetDefaultCommandContext().CommandListHandle;

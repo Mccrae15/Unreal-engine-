@@ -1316,7 +1316,7 @@ void UIpNetDriver::TickDispatch(float DeltaTime)
 					// players slide...which means if the client's game crashes, they
 					// might get flooded to some degree with packets until they timeout.
 					// Either way, this should close up the usual DoS attacks.
-					if ((Connection->State != USOCK_Open) || (!AllowPlayerPortUnreach))
+					if ((Connection->GetConnectionState() != USOCK_Open) || (!AllowPlayerPortUnreach))
 					{
 						if (LogPortUnreach)
 						{
@@ -1486,6 +1486,8 @@ UNetConnection* UIpNetDriver::ProcessConnectionlessPacket(FReceivedPacketView& P
 							RecentlyDisconnectedClients.RemoveAt(RecentDisconnectIdx);
 						}
 
+						// Reinitialize the stateless handshake component with the current address, to allow challenge ack retries
+						CurComp->InitFromConnectionless(StatelessConnect.Get());
 
 						ReturnVal = FoundConn;
 

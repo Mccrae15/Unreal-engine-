@@ -70,7 +70,7 @@ namespace OculusHMD
 	/** Converts FQuat to ovrpQuatf */
 	FORCEINLINE ovrpQuatf ToOvrpQuatf(const FQuat& InQuat)
 	{
-		return ovrpQuatf { InQuat.Y, InQuat.Z, -InQuat.X, -InQuat.W };
+		return ovrpQuatf { float(InQuat.Y), float(InQuat.Z), float(-InQuat.X), float(-InQuat.W) };
 	}
 
 	/** Converts vector from Oculus to Unreal */
@@ -82,7 +82,7 @@ namespace OculusHMD
 	/** Converts vector from Unreal to Oculus. */
 	FORCEINLINE ovrpVector3f ToOvrpVector3f(const FVector& InVec)
 	{
-		return ovrpVector3f { InVec.Y, InVec.Z, -InVec.X };
+		return ovrpVector3f{ float(InVec.Y), float(InVec.Z), float(-InVec.X) };
 	}
 
 	FORCEINLINE FMatrix ToFMatrix(const ovrpMatrix4f& vtm)

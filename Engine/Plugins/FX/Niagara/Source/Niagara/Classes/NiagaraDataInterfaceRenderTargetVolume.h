@@ -39,7 +39,9 @@ struct FRenderTargetVolumeRWInstanceData_RenderThread
 	}
 
 	FIntVector Size = FIntVector(EForceInit::ForceInitToZero);
-	
+	bool bWroteThisFrame = false;
+	bool bReadThisFrame = false;
+
 	FSamplerStateRHIRef SamplerStateRHI;
 	FTexture3DRHIRef TextureRHI;
 	FUnorderedAccessViewRHIRef UnorderedAccessViewRHI;
@@ -91,6 +93,9 @@ public:
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
 #endif
+#if WITH_EDITOR
+	virtual ENiagaraGpuDispatchType GetGpuDispatchType() const override { return ENiagaraGpuDispatchType::ThreeD; }
+#endif
 
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override {}
 	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
@@ -106,8 +111,8 @@ public:
 	virtual bool GetExposedVariableValue(const FNiagaraVariableBase& InVariable, void* InPerInstanceData, FNiagaraSystemInstance* InSystemInstance, void* OutData) const override;
 	//~ UNiagaraDataInterface interface END
 	
-	void GetSize(FVectorVMContext& Context); 
-	void SetSize(FVectorVMContext& Context);
+	void GetSize(FVectorVMExternalFunctionContext& Context); 
+	void SetSize(FVectorVMExternalFunctionContext& Context);
 
 	static const FName SetValueFunctionName;
 	static const FName GetValueFunctionName;
@@ -153,5 +158,5 @@ protected:
 	static FNiagaraVariableBase ExposedRTVar;
 	
 	UPROPERTY(Transient, DuplicateTransient)
-	TMap<uint64, UTextureRenderTargetVolume*> ManagedRenderTargets;
+	TMap<uint64, TObjectPtr<UTextureRenderTargetVolume>> ManagedRenderTargets;
 };

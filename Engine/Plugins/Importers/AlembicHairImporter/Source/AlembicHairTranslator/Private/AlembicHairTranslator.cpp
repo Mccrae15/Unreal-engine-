@@ -2,10 +2,9 @@
 
 #include "AlembicHairTranslator.h"
 
+#include "HairDescription.h"
 #include "GroomCache.h"
 #include "GroomImportOptions.h"
-#include "HAL/IConsoleManager.h"
-#include "HairDescription.h"
 #include "Misc/Paths.h"
 
 #if PLATFORM_WINDOWS
@@ -25,12 +24,6 @@ THIRD_PARTY_INCLUDES_END
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogAlembicHairImporter, Log, All);
-
-static float GGroomCacheImportFrameRate = 24.0f;
-static FAutoConsoleVariableRef CVarGroomCacheImportFrameRate(
-	TEXT("GroomCache.ImportFrameRate"),
-	GGroomCacheImportFrameRate,
-	TEXT("The frame rate at which to import a GroomCache"));
 
 namespace AlembicHairFormat
 {
@@ -181,10 +174,10 @@ namespace AlembicHairTranslatorUtils
 						SetGroomAttributes<Alembic::AbcGeom::IFloatGeomParam, Alembic::Abc::FloatArraySamplePtr, float>(HairDescription, Parameters, PropName);
 						break;
 					case 2:
-						SetGroomAttributes<Alembic::AbcGeom::IV2fGeomParam, Alembic::Abc::V2fArraySamplePtr, FVector2D>(HairDescription, Parameters, PropName, Extent);
+						SetGroomAttributes<Alembic::AbcGeom::IV2fGeomParam, Alembic::Abc::V2fArraySamplePtr, FVector2f>(HairDescription, Parameters, PropName, Extent);
 						break;
 					case 3:
-						SetGroomAttributes<Alembic::AbcGeom::IV3fGeomParam, Alembic::Abc::V3fArraySamplePtr, FVector>(HairDescription, Parameters, PropName, Extent);
+						SetGroomAttributes<Alembic::AbcGeom::IV3fGeomParam, Alembic::Abc::V3fArraySamplePtr, FVector3f>(HairDescription, Parameters, PropName, Extent);
 						break;
 					}
 				}
@@ -197,10 +190,10 @@ namespace AlembicHairTranslatorUtils
 						SetGroomAttributes<Alembic::AbcGeom::IDoubleGeomParam, Alembic::Abc::DoubleArraySamplePtr, float>(HairDescription, Parameters, PropName);
 						break;
 					case 2:
-						SetGroomAttributes<Alembic::AbcGeom::IV2dGeomParam, Alembic::Abc::V2dArraySamplePtr, FVector2D>(HairDescription, Parameters, PropName, Extent);
+						SetGroomAttributes<Alembic::AbcGeom::IV2dGeomParam, Alembic::Abc::V2dArraySamplePtr, FVector2f>(HairDescription, Parameters, PropName, Extent);
 						break;
 					case 3:
-						SetGroomAttributes<Alembic::AbcGeom::IV3dGeomParam, Alembic::Abc::V3dArraySamplePtr, FVector>(HairDescription, Parameters, PropName, Extent);
+						SetGroomAttributes<Alembic::AbcGeom::IV3dGeomParam, Alembic::Abc::V3dArraySamplePtr, FVector3f>(HairDescription, Parameters, PropName, Extent);
 						break;
 					}
 				}
@@ -209,6 +202,27 @@ namespace AlembicHairTranslatorUtils
 			}
 		}
 	}
+
+	// Default conversion traits
+	template<typename TAttributeType>
+	struct TConvertor
+	{
+		template<typename InType>
+		static TAttributeType ConvertType(const InType& In)
+		{
+			return In;
+		}
+	};
+	// String conversion traits
+	template<>
+	struct TConvertor<FName>
+	{
+		template<typename InType>
+		static FName ConvertType(const InType& In)
+		{
+			return FName(ANSI_TO_TCHAR(In.c_str()));
+		}
+	};
 
 	template <typename AbcParamType, typename AbcArraySampleType, typename AttributeType>
 	void ConvertAlembicAttribute(FHairDescription& HairDescription, int32 StartStrandID, int32 NumStrands, int32 StartVertexID, int32 NumVertices, const Alembic::AbcGeom::ICompoundProperty& Parameters, const std::string& PropName)
@@ -236,7 +250,7 @@ namespace AlembicHairTranslatorUtils
 			bool bIsConstantValue = Scope == Alembic::AbcGeom::kConstantScope && NumValues != NumStrands;
 			for (int32 StrandIndex = 0; StrandIndex < NumStrands; ++StrandIndex)
 			{
-				StrandAttributeRef[FStrandID(StartStrandID + StrandIndex)] = (*ParamValues)[bIsConstantValue ? 0 : StrandIndex];
+				StrandAttributeRef[FStrandID(StartStrandID + StrandIndex)] = TConvertor<AttributeType>::ConvertType((*ParamValues)[bIsConstantValue ? 0 : StrandIndex]);
 			}
 		}
 		else if (Scope == Alembic::AbcGeom::kVertexScope || NumValues == NumVertices)
@@ -250,7 +264,7 @@ namespace AlembicHairTranslatorUtils
 
 			for (int32 VertexIndex = 0; VertexIndex < NumVertices; ++VertexIndex)
 			{
-				VertexAttributeRef[FVertexID(StartVertexID + VertexIndex)] = (*ParamValues)[VertexIndex];
+				VertexAttributeRef[FVertexID(StartVertexID + VertexIndex)] = TConvertor<AttributeType>::ConvertType((*ParamValues)[VertexIndex]);
 			}
 		}
 	}
@@ -355,6 +369,11 @@ namespace AlembicHairTranslatorUtils
 
 				switch (DataType.getPod())
 				{
+				case Alembic::Util::kStringPOD:
+				{
+					ConvertAlembicAttribute<Alembic::AbcGeom::IStringGeomParam, Alembic::Abc::StringArraySamplePtr, FName>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName);
+				}
+				break;
 				case Alembic::Util::kBooleanPOD:
 				{
 					ConvertAlembicAttribute<Alembic::AbcGeom::IBoolGeomParam, Alembic::Abc::BoolArraySamplePtr, bool>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName);
@@ -378,7 +397,7 @@ namespace AlembicHairTranslatorUtils
 						ConvertAlembicAttribute<Alembic::AbcGeom::IInt32GeomParam, Alembic::Abc::Int32ArraySamplePtr, int>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName);
 						break;
 					case 3:
-						ConvertAlembicAttribute<Alembic::AbcGeom::IV3iGeomParam, Alembic::Abc::V3iArraySamplePtr, FVector>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName, DataType.getExtent());
+						ConvertAlembicAttribute<Alembic::AbcGeom::IV3iGeomParam, Alembic::Abc::V3iArraySamplePtr, FVector3f>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName, DataType.getExtent());
 						break;
 					}
 				}
@@ -391,10 +410,10 @@ namespace AlembicHairTranslatorUtils
 						ConvertAlembicAttribute<Alembic::AbcGeom::IFloatGeomParam, Alembic::Abc::FloatArraySamplePtr, float>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName);
 						break;
 					case 2:
-						ConvertAlembicAttribute<Alembic::AbcGeom::IV2fGeomParam, Alembic::Abc::V2fArraySamplePtr, FVector2D>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName, DataType.getExtent());
+						ConvertAlembicAttribute<Alembic::AbcGeom::IV2fGeomParam, Alembic::Abc::V2fArraySamplePtr, FVector2f>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName, DataType.getExtent());
 						break;
 					case 3:
-						ConvertAlembicAttribute<Alembic::AbcGeom::IV3fGeomParam, Alembic::Abc::V3fArraySamplePtr, FVector>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName, DataType.getExtent());
+						ConvertAlembicAttribute<Alembic::AbcGeom::IV3fGeomParam, Alembic::Abc::V3fArraySamplePtr, FVector3f>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName, DataType.getExtent());
 						break;
 					}
 				}
@@ -407,10 +426,10 @@ namespace AlembicHairTranslatorUtils
 						ConvertAlembicAttribute<Alembic::AbcGeom::IDoubleGeomParam, Alembic::Abc::DoubleArraySamplePtr, float>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName);
 						break;
 					case 2:
-						ConvertAlembicAttribute<Alembic::AbcGeom::IV2dGeomParam, Alembic::Abc::V2dArraySamplePtr, FVector2D>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName, DataType.getExtent());
+						ConvertAlembicAttribute<Alembic::AbcGeom::IV2dGeomParam, Alembic::Abc::V2dArraySamplePtr, FVector2f>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName, DataType.getExtent());
 						break;
 					case 3:
-						ConvertAlembicAttribute<Alembic::AbcGeom::IV3dGeomParam, Alembic::Abc::V3dArraySamplePtr, FVector>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName, DataType.getExtent());
+						ConvertAlembicAttribute<Alembic::AbcGeom::IV3dGeomParam, Alembic::Abc::V3dArraySamplePtr, FVector3f>(HairDescription, StartStrandID, NumStrands, StartVertexID, NumVertices, Parameters, PropName, DataType.getExtent());
 						break;
 					}
 				}
@@ -432,7 +451,7 @@ FMatrix ConvertAlembicMatrix(const Alembic::Abc::M44d& AbcMatrix)
 	return Matrix;
 }
 
-static void ParseObject(const Alembic::Abc::IObject& InObject, int32 FrameIndex, FHairDescription& HairDescription, const FMatrix& ParentMatrix, const FMatrix& ConversionMatrix, float Scale, bool bCheckGroomAttributes, FGroomAnimationInfo* AnimInfo)
+static void ParseObject(const Alembic::Abc::IObject& InObject, float FrameTime, FHairDescription& HairDescription, const FMatrix& ParentMatrix, const FMatrix& ConversionMatrix, float Scale, bool bCheckGroomAttributes, FGroomAnimationInfo* AnimInfo)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(ParseObject);
 
@@ -460,7 +479,7 @@ static void ParseObject(const Alembic::Abc::IObject& InObject, int32 FrameIndex,
 			{
 				AnimInfo->Attributes |= EGroomCacheAttributes::Position;
 			}
-			else if (bIsWidthAnimated)
+			if (bIsWidthAnimated)
 			{
 				AnimInfo->Attributes |= EGroomCacheAttributes::Width;
 			}
@@ -497,8 +516,7 @@ static void ParseObject(const Alembic::Abc::IObject& InObject, int32 FrameIndex,
 			}
 		}
 
-		const float FrameRate = FMath::Max(1.f, GGroomCacheImportFrameRate);
-		Alembic::Abc::ISampleSelector SampleSelector((Alembic::Abc::chrono_t) (FrameIndex / FrameRate));
+		Alembic::Abc::ISampleSelector SampleSelector((Alembic::Abc::chrono_t) FrameTime);
 		Alembic::AbcGeom::ICurves::schema_type::Sample Sample = Curves.getSchema().getValue(SampleSelector);
 
 		Alembic::Abc::FloatArraySamplePtr Widths = Curves.getSchema().getWidthsParam() ? Curves.getSchema().getWidthsParam().getExpandedValue(SampleSelector).getVals() : nullptr;
@@ -543,7 +561,7 @@ static void ParseObject(const Alembic::Abc::IObject& InObject, int32 FrameIndex,
 
 				Alembic::Abc::P3fArraySample::value_type Position = (*Positions)[GlobalIndex];
 
-				FVector ConvertedPosition = ConvertedMatrix.TransformPosition(FVector(Position.x, Position.y, Position.z));
+				FVector3f ConvertedPosition = (FVector4f)ConvertedMatrix.TransformPosition(FVector(Position.x, Position.y, Position.z));
 				SetHairVertexAttribute(HairDescription, VertexID, HairAttribute::Vertex::Position, ConvertedPosition);
 			}
 		}
@@ -649,7 +667,7 @@ static void ParseObject(const Alembic::Abc::IObject& InObject, int32 FrameIndex,
 	{
 		for (uint32 ChildIndex = 0; ChildIndex < NumChildren; ++ChildIndex)
 		{
-			ParseObject(InObject.getChild(ChildIndex), FrameIndex, HairDescription, LocalMatrix, ConversionMatrix, Scale, bCheckGroomAttributes, AnimInfo);
+			ParseObject(InObject.getChild(ChildIndex), FrameTime, HairDescription, LocalMatrix, ConversionMatrix, Scale, bCheckGroomAttributes, AnimInfo);
 		}
 	}
 }
@@ -701,7 +719,7 @@ bool FAlembicHairTranslator::Translate(const FString& FileName, FHairDescription
 	FMatrix ConversionMatrix = FScaleMatrix::Make(ConversionSettings.Scale) * FRotationMatrix::Make(FQuat::MakeFromEuler(ConversionSettings.Rotation));
 	FMatrix ParentMatrix = FMatrix::Identity;
 	const float StrandsWidthScale = FMath::Abs(ConversionSettings.Scale.X); // Assume uniform scaling
-	ParseObject(TopObject, 0, HairDescription, ParentMatrix, ConversionMatrix, StrandsWidthScale, true, OutAnimInfo);
+	ParseObject(TopObject, 0.0f, HairDescription, ParentMatrix, ConversionMatrix, StrandsWidthScale, true, OutAnimInfo);
 
 	return HairDescription.IsValid();
 }
@@ -749,7 +767,7 @@ bool FAlembicHairTranslator::BeginTranslation(const FString& FileName)
 	return Abc->IsValid();
 }
 
-bool FAlembicHairTranslator::Translate(uint32 FrameIndex, FHairDescription& HairDescription, const struct FGroomConversionSettings& ConversionSettings)
+bool FAlembicHairTranslator::Translate(float FrameTime, FHairDescription& HairDescription, const struct FGroomConversionSettings& ConversionSettings)
 {
 	if (!Abc || !Abc->IsValid())
 	{
@@ -759,7 +777,7 @@ bool FAlembicHairTranslator::Translate(uint32 FrameIndex, FHairDescription& Hair
 	FMatrix ConversionMatrix = FScaleMatrix::Make(ConversionSettings.Scale) * FRotationMatrix::Make(FQuat::MakeFromEuler(ConversionSettings.Rotation));
 	FMatrix ParentMatrix = FMatrix::Identity;
 	const float StrandsWidthScale = FMath::Abs(ConversionSettings.Scale.X); // Assume uniform scaling
-	ParseObject(Abc->TopObject, FrameIndex, HairDescription, ParentMatrix, ConversionMatrix, StrandsWidthScale, true, nullptr);
+	ParseObject(Abc->TopObject, FrameTime, HairDescription, ParentMatrix, ConversionMatrix, StrandsWidthScale, true, nullptr);
 
 	return HairDescription.IsValid();
 }

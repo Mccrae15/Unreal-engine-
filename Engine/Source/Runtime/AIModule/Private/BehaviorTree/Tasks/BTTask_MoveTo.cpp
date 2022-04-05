@@ -14,9 +14,7 @@
 UBTTask_MoveTo::UBTTask_MoveTo(const FObjectInitializer& ObjectInitializer) : Super(ObjectInitializer)
 {
 	NodeName = "Move To";
-	bUseGameplayTasks = GET_AI_CONFIG_VAR(bEnableBTAITasks);
-	bNotifyTick = !bUseGameplayTasks;
-	bNotifyTaskFinished = true;
+	INIT_TASK_NODE_NOTIFY_FLAGS();
 
 	AcceptableRadius = GET_AI_CONFIG_VAR(AcceptanceRadius);
 	bReachTestIncludesGoalRadius = bReachTestIncludesAgentRadius = bStopOnOverlap = GET_AI_CONFIG_VAR(bFinishMoveOnGoalOverlap);
@@ -44,14 +42,14 @@ EBTNodeResult::Type UBTTask_MoveTo::ExecuteTask(UBehaviorTreeComponent& OwnerCom
 	MyMemory->MoveRequestID = FAIRequestID::InvalidRequest;
 
 	AAIController* MyController = OwnerComp.GetAIOwner();
-	MyMemory->bWaitingForPath = bUseGameplayTasks ? false : MyController->ShouldPostponePathUpdates();
-	if (!MyMemory->bWaitingForPath)
+	if (MyController == nullptr)
 	{
-		NodeResult = PerformMoveTask(OwnerComp, NodeMemory);
+		UE_VLOG(OwnerComp.GetOwner(), LogBehaviorTree, Error, TEXT("UBTTask_MoveTo::ExecuteTask failed since AIController is missing."));
+		NodeResult = EBTNodeResult::Failed;
 	}
 	else
 	{
-		UE_VLOG(MyController, LogBehaviorTree, Log, TEXT("Pathfinding requests are freezed, waiting..."));
+		NodeResult = PerformMoveTask(OwnerComp, NodeMemory);
 	}
 
 	if (NodeResult == EBTNodeResult::InProgress && bObserveBlackboardValue)
@@ -157,7 +155,7 @@ EBTNodeResult::Type UBTTask_MoveTo::PerformMoveTask(UBehaviorTreeComponent& Owne
 			}
 			else
 			{
-				FPathFollowingRequestResult RequestResult = MyController->MoveTo(MoveReq);
+				const FPathFollowingRequestResult RequestResult = MyController->MoveTo(MoveReq);
 				if (RequestResult.Code == EPathFollowingRequestResult::RequestSuccessful)
 				{
 					MyMemory->MoveRequestID = RequestResult.MoveId;
@@ -196,7 +194,7 @@ EBlackboardNotificationResult UBTTask_MoveTo::OnBlackboardValueChange(const UBla
 		return EBlackboardNotificationResult::RemoveObserver;
 	}
 
-	AAIController* MyController = BehaviorComp->GetAIOwner();
+	const AAIController* MyController = BehaviorComp->GetAIOwner();
 	uint8* RawMemory = BehaviorComp->GetNodeMemory(this, BehaviorComp->FindInstanceContainingNode(this));
 	FBTMoveToTaskMemory* MyMemory = CastInstanceNodeMemory<FBTMoveToTaskMemory>(RawMemory);
 
@@ -212,9 +210,8 @@ EBlackboardNotificationResult UBTTask_MoveTo::OnBlackboardValueChange(const UBla
 		return EBlackboardNotificationResult::RemoveObserver;
 	}
 	
-	// this means the move has already started. MyMemory->bWaitingForPath == true would mean we're waiting for right moment to start it anyway,
-	// so we don't need to do anything due to BB value change 
-	if (MyMemory != nullptr && MyMemory->bWaitingForPath == false && BehaviorComp->GetAIOwner() != nullptr)
+	// this means the move has already started. 
+	if (MyMemory != nullptr && BehaviorComp->GetAIOwner() != nullptr)
 	{
 		check(BehaviorComp->GetAIOwner()->GetPathFollowingComponent());
 
@@ -237,18 +234,10 @@ EBlackboardNotificationResult UBTTask_MoveTo::OnBlackboardValueChange(const UBla
 				BehaviorComp->GetAIOwner()->GetPathFollowingComponent()->AbortMove(*this, FPathFollowingResultFlags::NewRequest, MyMemory->MoveRequestID, EPathFollowingVelocityMode::Keep);
 			}
 
-			if (!bUseGameplayTasks && BehaviorComp->GetAIOwner()->ShouldPostponePathUpdates())
+			const EBTNodeResult::Type NodeResult = PerformMoveTask(*BehaviorComp, RawMemory);
+			if (NodeResult != EBTNodeResult::InProgress)
 			{
-				// NodeTick will take care of requesting move
-				MyMemory->bWaitingForPath = true;
-			}
-			else
-			{
-				const EBTNodeResult::Type NodeResult = PerformMoveTask(*BehaviorComp, RawMemory);
-				if (NodeResult != EBTNodeResult::InProgress)
-				{
-					FinishLatentTask(*BehaviorComp, NodeResult);
-				}
+				FinishLatentTask(*BehaviorComp, NodeResult);
 			}
 		}
 	}
@@ -259,28 +248,21 @@ EBlackboardNotificationResult UBTTask_MoveTo::OnBlackboardValueChange(const UBla
 EBTNodeResult::Type UBTTask_MoveTo::AbortTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory)
 {
 	FBTMoveToTaskMemory* MyMemory = CastInstanceNodeMemory<FBTMoveToTaskMemory>(NodeMemory);
-	if (!MyMemory->bWaitingForPath)
+	if (MyMemory->MoveRequestID.IsValid())
 	{
-		if (MyMemory->MoveRequestID.IsValid())
+		AAIController* MyController = OwnerComp.GetAIOwner();
+		if (MyController && MyController->GetPathFollowingComponent())
 		{
-			AAIController* MyController = OwnerComp.GetAIOwner();
-			if (MyController && MyController->GetPathFollowingComponent())
-			{
-				MyController->GetPathFollowingComponent()->AbortMove(*this, FPathFollowingResultFlags::OwnerFinished, MyMemory->MoveRequestID);
-			}
+			MyController->GetPathFollowingComponent()->AbortMove(*this, FPathFollowingResultFlags::OwnerFinished, MyMemory->MoveRequestID);
 		}
-		else
+	}
+	else
+	{
+		MyMemory->bObserverCanFinishTask = false;
+		UAITask_MoveTo* MoveTask = MyMemory->Task.Get();
+		if (MoveTask)
 		{
-			MyMemory->bObserverCanFinishTask = false;
-			UAITask_MoveTo* MoveTask = MyMemory->Task.Get();
-			if (MoveTask)
-			{
-				MoveTask->ExternalCancel();
-			}
-			else
-			{
-				UE_VLOG(OwnerComp.GetAIOwner(), LogBehaviorTree, Error, TEXT("Can't abort path following! bWaitingForPath:false, MoveRequestID:invalid, MoveTask:none!"));
-			}
+			MoveTask->ExternalCancel();
 		}
 	}
 
@@ -306,26 +288,6 @@ void UBTTask_MoveTo::OnTaskFinished(UBehaviorTreeComponent& OwnerComp, uint8* No
 	Super::OnTaskFinished(OwnerComp, NodeMemory, TaskResult);
 }
 
-void UBTTask_MoveTo::TickTask(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, float DeltaSeconds)
-{
-	FBTMoveToTaskMemory* MyMemory = (FBTMoveToTaskMemory*)NodeMemory;
-	if (MyMemory->bWaitingForPath && !OwnerComp.IsPaused())
-	{
-		AAIController* MyController = OwnerComp.GetAIOwner();
-		if (MyController && !MyController->ShouldPostponePathUpdates())
-		{
-			UE_VLOG(MyController, LogBehaviorTree, Log, TEXT("Pathfinding requests are unlocked!"));
-			MyMemory->bWaitingForPath = false;
-
-			const EBTNodeResult::Type NodeResult = PerformMoveTask(OwnerComp, NodeMemory);
-			if (NodeResult != EBTNodeResult::InProgress)
-			{
-				FinishLatentTask(OwnerComp, NodeResult);
-			}
-		}
-	}
-}
-
 void UBTTask_MoveTo::OnMessage(UBehaviorTreeComponent& OwnerComp, uint8* NodeMemory, FName Message, int32 SenderID, bool bSuccess)
 {
 	// AIMessage_RepathFailed means task has failed
@@ -343,7 +305,7 @@ void UBTTask_MoveTo::OnGameplayTaskDeactivated(UGameplayTask& Task)
 		if (BehaviorComp)
 		{
 			uint8* RawMemory = BehaviorComp->GetNodeMemory(this, BehaviorComp->FindInstanceContainingNode(this));
-			FBTMoveToTaskMemory* MyMemory = CastInstanceNodeMemory<FBTMoveToTaskMemory>(RawMemory);
+			const FBTMoveToTaskMemory* MyMemory = CastInstanceNodeMemory<FBTMoveToTaskMemory>(RawMemory);
 
 			if (MyMemory && MyMemory->bObserverCanFinishTask && (MoveTask == MyMemory->Task))
 			{
@@ -376,13 +338,10 @@ void UBTTask_MoveTo::DescribeRuntimeValues(const UBehaviorTreeComponent& OwnerCo
 	{
 		const FString KeyValue = BlackboardComp->DescribeKeyValue(BlackboardKey.GetSelectedKeyID(), EBlackboardDescription::OnlyValue);
 
-		FBTMoveToTaskMemory* MyMemory = (FBTMoveToTaskMemory*)NodeMemory;
+		const FBTMoveToTaskMemory* MyMemory = CastInstanceNodeMemory<FBTMoveToTaskMemory>(NodeMemory);
 		const bool bIsUsingTask = MyMemory->Task.IsValid();
 		
-		const FString ModeDesc =
-			MyMemory->bWaitingForPath ? TEXT("(WAITING)") :
-			bIsUsingTask ? TEXT("(task)") :
-			TEXT("");
+		const FString ModeDesc = bIsUsingTask ? TEXT("(task)") : TEXT("");
 
 		Values.Add(FString::Printf(TEXT("move target: %s%s"), *KeyValue, *ModeDesc));
 	}

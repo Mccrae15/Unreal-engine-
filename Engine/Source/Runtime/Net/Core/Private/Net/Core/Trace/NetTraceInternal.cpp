@@ -73,7 +73,8 @@ void FNetTrace::SetTraceVerbosity(uint32 Verbosity)
 	// Enable
 	if (!GetTraceVerbosity() && NewVerbosity)
 	{
-		Trace::ToggleChannel(TEXT("NetChannel"), true);
+		UE::Trace::ToggleChannel(TEXT("NetChannel"), true);
+		UE::Trace::ToggleChannel(TEXT("FrameChannel"), true);
 
 		FNetTraceInternal::Reporter::ReportInitEvent(FNetTraceInternal::NetTraceVersion);
 	}
@@ -81,7 +82,7 @@ void FNetTrace::SetTraceVerbosity(uint32 Verbosity)
 	{
 		if (FNetTraceInternal::ThreadBuffer)
 		{
-			Trace::ToggleChannel(TEXT("NetChannel"), false);
+			UE::Trace::ToggleChannel(TEXT("NetChannel"), false);
 
 			delete FNetTraceInternal::ThreadBuffer;
 			FNetTraceInternal::ThreadBuffer = nullptr;
@@ -96,6 +97,14 @@ void FNetTrace::TraceEndSession(uint32 GameInstanceId)
 	if (GNetTraceRuntimeVerbosity)
 	{
 		FNetTraceInternal::Reporter::ReportInstanceDestroyed(GameInstanceId);
+	}
+}
+
+void FNetTrace::TraceInstanceUpdated(uint32 GameInstanceId, bool bIsServer, const TCHAR* Name)
+{
+	if (GNetTraceRuntimeVerbosity)
+	{
+		FNetTraceInternal::Reporter::ReportInstanceUpdated(GameInstanceId, bIsServer, Name);
 	}
 }
 
@@ -457,6 +466,22 @@ void FNetTrace::TraceConnectionCreated(uint32 GameInstanceId, uint32 ConnectionI
 	}
 }
 
+void FNetTrace::TraceConnectionStateUpdated(uint32 GameInstanceId, uint32 ConnectionId, uint8 ConnectionStateValue)
+{
+	if (GNetTraceRuntimeVerbosity)
+	{
+		FNetTraceInternal::Reporter::ReportConnectionStateUpdated(GameInstanceId, ConnectionId, ConnectionStateValue);
+	}
+}
+
+void FNetTrace::TraceConnectionUpdated(uint32 GameInstanceId, uint32 ConnectionId, const TCHAR* AddressString, const TCHAR* OwningActor)
+{
+	if (GNetTraceRuntimeVerbosity)
+	{
+		FNetTraceInternal::Reporter::ReportConnectionUpdated(GameInstanceId, ConnectionId, AddressString, OwningActor);
+	}
+}
+
 void FNetTrace::TraceConnectionClosed(uint32 GameInstanceId, uint32 ConnectionId)
 {
 	if (GNetTraceRuntimeVerbosity)
@@ -491,7 +516,7 @@ FNetDebugNameId FNetTrace::TraceName(const TCHAR* Name)
 		ThreadBuffer->DynamicNameHashToNameIdMap.Add(HashedName, NameId);
 
 		FTCHARToUTF8 Converter(Name);
-		FNetTraceInternal::Reporter::ReportAnsiName(NameId, Converter.Length() + 1, Converter.Get());		
+		FNetTraceInternal::Reporter::ReportAnsiName(NameId, Converter.Length() + 1, (const char*)Converter.Get());		
 		
 		return NameId;
 	}
@@ -524,7 +549,7 @@ FNetDebugNameId FNetTrace::TraceName(FName Name)
 		TCHAR Buffer[StringBufferSize];
 		uint32 NameLen = Name.ToString(Buffer);
 		FTCHARToUTF8 Converter(Buffer);
-		FNetTraceInternal::Reporter::ReportAnsiName(NameId, Converter.Length() + 1, Converter.Get());		
+		FNetTraceInternal::Reporter::ReportAnsiName(NameId, Converter.Length() + 1, (const char*)Converter.Get());		
 		
 		return NameId;
 	}

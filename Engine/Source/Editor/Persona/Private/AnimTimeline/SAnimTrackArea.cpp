@@ -14,11 +14,9 @@
 #include "AnimTimeSliderController.h"
 
 FAnimTrackAreaSlot::FAnimTrackAreaSlot(const TSharedPtr<SAnimTrack>& InSlotContent)
+	: TAlignmentWidgetSlotMixin<FAnimTrackAreaSlot>(HAlign_Fill, VAlign_Top)
 {
 	TrackWidget = InSlotContent;
-	
-	HAlignment = HAlign_Fill;
-	VAlignment = VAlign_Top;
 
 	AttachWidget(
 		SNew(SWeakWidget)
@@ -53,7 +51,7 @@ void SAnimTrackArea::Empty()
 void SAnimTrackArea::AddTrackSlot(const TSharedRef<FAnimTimelineTrack>& InTrack, const TSharedPtr<SAnimTrack>& InSlot)
 {
 	TrackSlots.Add(InTrack, InSlot);
-	Children.Add(new FAnimTrackAreaSlot(InSlot));
+	Children.AddSlot(FAnimTrackAreaSlot::FSlotArguments(MakeUnique<FAnimTrackAreaSlot>(InSlot)));
 }
 
 TSharedPtr<SAnimTrack> SAnimTrackArea::FindTrackSlot(const TSharedRef<FAnimTimelineTrack>& InTrack)

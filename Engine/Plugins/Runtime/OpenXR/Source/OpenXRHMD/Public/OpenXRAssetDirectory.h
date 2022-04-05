@@ -13,7 +13,6 @@ public:
 	OPENXRHMD_API static void ReleaseAll();
 #endif
 
-	OPENXRHMD_API static FSoftObjectPath GoogleDaydream;
 	OPENXRHMD_API static FSoftObjectPath HPMixedRealityLeft;
 	OPENXRHMD_API static FSoftObjectPath HPMixedRealityRight;
 	OPENXRHMD_API static FSoftObjectPath HTCVive;
@@ -21,7 +20,6 @@ public:
 	OPENXRHMD_API static FSoftObjectPath HTCViveCosmosRight;
 	OPENXRHMD_API static FSoftObjectPath HTCViveFocus;
 	OPENXRHMD_API static FSoftObjectPath HTCViveFocusPlus;
-	OPENXRHMD_API static FSoftObjectPath MagicLeapOne;
 	OPENXRHMD_API static FSoftObjectPath MicrosoftMixedRealityLeft;
 	OPENXRHMD_API static FSoftObjectPath MicrosoftMixedRealityRight;
 	OPENXRHMD_API static FSoftObjectPath OculusGo;

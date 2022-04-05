@@ -209,7 +209,7 @@ struct FCameraFocusSettings
 	uint8 bSmoothFocusChanges : 1;
 	
 	/** Controls interpolation speed when smoothing focus distance changes. Ignored if bSmoothFocusChanges is false. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Focus Settings", meta = (EditCondition = "bSmoothFocusChanges"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Focus Settings")
 	float FocusSmoothingInterpSpeed;
 
 	/** Additional focus depth offset, used for manually tweaking if your chosen focus method needs adjustment */
@@ -361,19 +361,19 @@ protected:
 #if WITH_EDITORONLY_DATA
 	/** Mesh used for debug focus plane visualization */
 	UPROPERTY(transient)
-	UStaticMesh* FocusPlaneVisualizationMesh;
+	TObjectPtr<UStaticMesh> FocusPlaneVisualizationMesh;
 
 	/** Material used for debug focus plane visualization */
 	UPROPERTY(transient)
-	UMaterial* FocusPlaneVisualizationMaterial;
+	TObjectPtr<UMaterial> FocusPlaneVisualizationMaterial;
 
 	/** Component for the debug focus plane visualization */
 	UPROPERTY(transient)
-	UStaticMeshComponent* DebugFocusPlaneComponent;
+	TObjectPtr<UStaticMeshComponent> DebugFocusPlaneComponent;
 
 	/** Dynamic material instance for the debug focus plane visualization */
 	UPROPERTY(transient)
-	UMaterialInstanceDynamic* DebugFocusPlaneMID;
+	TObjectPtr<UMaterialInstanceDynamic> DebugFocusPlaneMID;
 
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void ResetProxyMeshTransform() override;

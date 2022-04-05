@@ -289,7 +289,7 @@ using namespace ChaosTest;
 		FFramework UnitTest;
 		for (int i=0; i<10; i++)
 		{
-			TManagedArray<FReal>& Mass = Collection[i]->RestCollection->template GetAttribute<FReal>("Mass", FTransformCollection::TransformGroup);
+			TManagedArray<float>& Mass = Collection[i]->RestCollection->template GetAttribute<float>("Mass", FTransformCollection::TransformGroup);
 			Mass[0] = i + 1;
 			UnitTest.AddSimulationObject(Collection[i]);
 		}
@@ -319,7 +319,7 @@ using namespace ChaosTest;
 			if (Impact)
 			{
 				// any objects with a mass of less than 6 are removed from returned collision data
-				EXPECT_EQ(AllCollisionsArray.Num(), 4);
+				EXPECT_LE(AllCollisionsArray.Num(), 4);
 
 				for (const auto& Collision : AllCollisionsArray)
 				{ 

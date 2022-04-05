@@ -16,19 +16,45 @@
 class Error;
 
 // this is for the protocol, not the data, bump if FShaderCompilerInput or ProcessInputFromArchive changes.
-const int32 ShaderCompileWorkerInputVersion = 13;
+const int32 ShaderCompileWorkerInputVersion = 16;
 // this is for the protocol, not the data, bump if FShaderCompilerOutput or WriteToOutputArchive changes.
-const int32 ShaderCompileWorkerOutputVersion = 6;
+const int32 ShaderCompileWorkerOutputVersion = 7;
 // this is for the protocol, not the data.
 const int32 ShaderCompileWorkerSingleJobHeader = 'S';
 // this is for the protocol, not the data.
 const int32 ShaderCompileWorkerPipelineJobHeader = 'P';
 
-/** Returns true if debug information should be kept for a given platform. */
-extern RENDERCORE_API bool ShouldKeepShaderDebugInfo(EShaderPlatform Platform);
+/** Returns true if shader symbols should be kept for a given platform. */
+extern RENDERCORE_API bool ShouldGenerateShaderSymbols(FName ShaderFormat);
 
-/** Returns true if debug information should be exported to separate files for a given platform . */
-extern RENDERCORE_API bool ShouldExportShaderDebugInfo(EShaderPlatform Platform);
+/** Returns true if shader symbols should be exported to separate files for a given platform. */
+extern RENDERCORE_API bool ShouldWriteShaderSymbols(FName ShaderFormat);
+
+/** Returns true if the shader symbol path is overriden and OutPathOverride contains the override path. */
+extern RENDERCORE_API bool GetShaderSymbolPathOverride(FString& OutPathOverride, FName ShaderFormat);
+
+/** Returns true if (external) shader symbols should be specific to each shader rather than be de-duplicated. */
+extern RENDERCORE_API bool ShouldAllowUniqueShaderSymbols(FName ShaderFormat);
+
+/** Returns true if shaders should be combined into a single zip file instead of individual files. */
+extern RENDERCORE_API bool ShouldWriteShaderSymbolsAsZip(FName ShaderFormat);
+
+/** Returns true if the user wants more runtime shader data (names, extra info) */
+extern RENDERCORE_API bool ShouldEnableExtraShaderData(FName ShaderFormat);
+
+extern RENDERCORE_API bool ShouldOptimizeShaders(FName ShaderFormat);
+
+UE_DEPRECATED(5.0, "ShouldGenerateShaderSymbols should be called to determine if symbols (debug data) should be generated")
+bool ShouldKeepShaderDebugInfo(EShaderPlatform Platform);
+UE_DEPRECATED(5.0, "ShouldWriteShaderSymbols should be called to determine if symbols (debug data) should be written")
+bool ShouldExportShaderDebugInfo(EShaderPlatform Platform);
+
+/** Returns true is shader compiling is allowed */
+extern RENDERCORE_API bool AllowShaderCompiling();
+
+/** Returns true if the global shader cache should be loaded (and potentially compiled if allowed/needed */
+extern RENDERCORE_API bool AllowGlobalShaderLoad();
+
 
 enum ECompilerFlags
 {
@@ -41,10 +67,13 @@ enum ECompilerFlags
 	CFLAG_StandardOptimization,
 	// Always optimize, even when CFLAG_Debug is set. Required for some complex shaders and features.
 	CFLAG_ForceOptimization,
-	// Shader should use on chip memory instead of main memory ring buffer memory.
-	CFLAG_OnChip,
+	// Shader should generate symbols for debugging.
+	CFLAG_GenerateSymbols,
+	CFLAG_KeepDebugInfo UE_DEPRECATED(5.0, "CFLAG_GenerateSymbols should be used to signal if debug data needs to be generated") = CFLAG_GenerateSymbols,
 	// Shader should insert debug/name info at the risk of generating non-deterministic libraries
-	CFLAG_KeepDebugInfo,
+	CFLAG_ExtraShaderData,
+	// Allows the (external) symbols to be specific to each shader rather than trying to deduplicate.
+	CFLAG_AllowUniqueSymbols,
 	CFLAG_NoFastMath,
 	// Explicitly enforce zero initialization on shader platforms that may omit it.
 	CFLAG_ZeroInitialise,
@@ -52,8 +81,6 @@ enum ECompilerFlags
 	CFLAG_BoundsChecking,
 	// Force removing unused interpolators for platforms that can opt out
 	CFLAG_ForceRemoveUnusedInterpolators,
-	// Set default precision to highp in a pixel shader (default is mediump on ES platforms)
-	CFLAG_UseFullPrecisionInPS,
 	// Hint that it is a vertex to geometry shader
 	CFLAG_VertexToGeometryShader,
 	// Hint that it is a vertex to primitive shader
@@ -77,15 +104,23 @@ enum ECompilerFlags
 	CFLAG_SkipOptimizationsDXC,
 	// Typed UAV loads are disallowed by default, as Windows 7 D3D 11.0 does not support them; this flag allows a shader to use them.
 	CFLAG_AllowTypedUAVLoads,
-
+	// Prefer shader execution in wave32 mode if possible.
+	CFLAG_Wave32,
+	// Enable support of inline raytracing in compute shader.
+	CFLAG_InlineRayTracing,
 	// Force using the SC rewrite functionality before calling DXC on D3D12
 	CFLAG_D3D12ForceShaderConductorRewrite,
 	// Enable support of C-style data types for platforms that can. Check for PLATFORM_SUPPORTS_REAL_TYPES.
 	CFLAG_AllowRealTypes,
+	// Precompile HLSL to optimized HLSL, then forward to FXC. Speeds up some shaders that take longer with FXC and works around crashes in FXC.
+	CFLAG_PrecompileWithDXC,
+
+	// Allow warnings to be treated as errors
+	CFLAG_WarningsAsErrors,
 
 	CFLAG_Max,
 };
-static_assert(CFLAG_Max < 32, "Out of bitfields!");
+static_assert(CFLAG_Max < 64, "Out of bitfield space! Modify FShaderCompilerFlags");
 
 struct FShaderCompilerResourceTable
 {
@@ -125,19 +160,27 @@ struct FExtraShaderCompilerSettings
 
 	friend FArchive& operator<<(FArchive& Ar, FExtraShaderCompilerSettings& StatsSettings)
 	{
-		// Note: this serialize is used to pass between UE4 and the shader compile worker, recompile both when modifying
+		// Note: this serialize is used to pass between UE and the shader compile worker, recompile both when modifying
 		return Ar << StatsSettings.bExtractShaderSource << StatsSettings.OfflineCompilerPath;
 	}
 };
+
+namespace FOodleDataCompression
+{
+	enum class ECompressor : uint8;
+	enum class ECompressionLevel : int8;
+}
 
 /** Struct that gathers all readonly inputs needed for the compilation of a single shader. */
 struct FShaderCompilerInput
 {
 	FShaderTarget Target;
 	FName ShaderFormat;
+	FName CompressionFormat;
 	FString SourceFilePrefix;
 	FString VirtualSourceFilePath;
 	FString EntryPointName;
+	FString ShaderName;
 
 	// Skips the preprocessor and instead loads the usf file directly
 	bool bSkipPreprocessedCache;
@@ -149,7 +192,7 @@ struct FShaderCompilerInput
 	bool bIncludeUsedOutputs;
 	TArray<FString> UsedOutputs;
 
-	// Dump debug path (up to platform) e.g. "D:/MMittring-Z3941-A/UE4-Orion/OrionGame/Saved/ShaderDebugInfo/PCD3D_SM5"
+	// Dump debug path (up to platform) e.g. "D:/Project/Saved/ShaderDebugInfo/PCD3D_SM5"
 	FString DumpDebugInfoRootPath;
 	// only used if enabled by r.DumpShaderDebugInfo (platform/groupname) e.g. ""
 	FString DumpDebugInfoPath;
@@ -165,33 +208,20 @@ struct FShaderCompilerInput
 	FShaderCompilerEnvironment Environment;
 	TRefCountPtr<FSharedShaderCompilerEnvironment> SharedEnvironment;
 
-
-	struct FRootParameterBinding
-	{
-		/** Name of the constant buffer stored parameter. */
-		FString Name;
-
-		/** Type expected in the shader code to ensure the binding is bug free. */
-		FString ExpectedShaderType;
-
-		/** The offset of the parameter in the root shader parameter struct. */
-		uint16 ByteOffset;
-
-		friend FArchive& operator<<(FArchive& Ar, FRootParameterBinding& RootParameterBinding)
-		{
-			Ar << RootParameterBinding.Name;
-			Ar << RootParameterBinding.ExpectedShaderType;
-			Ar << RootParameterBinding.ByteOffset;
-			return Ar;
-		}
-	};
-
-	TArray<FRootParameterBinding> RootParameterBindings;
+	// The root of the shader parameter structures / uniform buffers bound to this shader to generate shader resource table from.
+	// This only set if a shader class is defining the 
+	const FShaderParametersMetadata* RootParametersStructure = nullptr;
 
 
 	// Additional compilation settings that can be filled by FMaterial::SetupExtaCompilationSettings
 	// FMaterial::SetupExtaCompilationSettings is usually called by each (*)MaterialShaderType::BeginCompileShader() function
 	FExtraShaderCompilerSettings ExtraSettings;
+
+	/** Oodle-specific compression algorithm - used if CompressionFormat is set to NAME_Oodle. */
+	FOodleDataCompression::ECompressor OodleCompressor;
+
+	/** Oodle-specific compression level - used if CompressionFormat is set to NAME_Oodle. */
+	FOodleDataCompression::ECompressionLevel OodleLevel;
 
 	FShaderCompilerInput() :
 		Target(SF_NumFrequencies, SP_NumPlatforms),
@@ -225,7 +255,10 @@ struct FShaderCompilerInput
 		return FPaths::GetCleanFilename(VirtualSourceFilePath);
 	}
 
-	void GatherSharedInputs(TMap<FString,FString>& ExternalIncludes, TArray<TRefCountPtr<FSharedShaderCompilerEnvironment>>& SharedEnvironments)
+	void GatherSharedInputs(
+		TMap<FString, FString>& ExternalIncludes,
+		TArray<TRefCountPtr<FSharedShaderCompilerEnvironment>>& SharedEnvironments,
+		TArray<const FShaderParametersMetadata*>& ParametersStructures)
 	{
 		check(!SharedEnvironment || SharedEnvironment->IncludeVirtualPathToExternalContentsMap.Num() == 0);
 
@@ -243,9 +276,14 @@ struct FShaderCompilerInput
 		{
 			SharedEnvironments.AddUnique(SharedEnvironment);
 		}
+
+		if (RootParametersStructure)
+		{
+			ParametersStructures.AddUnique(RootParametersStructure);
+		}
 	}
 
-	void SerializeSharedInputs(FArchive& Ar, const TArray<TRefCountPtr<FSharedShaderCompilerEnvironment>>& SharedEnvironments)
+	void SerializeSharedInputs(FArchive& Ar, const TArray<TRefCountPtr<FSharedShaderCompilerEnvironment>>& SharedEnvironments, const TArray<const FShaderParametersMetadata*>& ParametersStructures)
 	{
 		check(Ar.IsSaving());
 
@@ -261,9 +299,21 @@ struct FShaderCompilerInput
 
 		int32 SharedEnvironmentIndex = SharedEnvironments.Find(SharedEnvironment);
 		Ar << SharedEnvironmentIndex;
+
+		int32 ShaderParameterStructureIndex = INDEX_NONE;
+		if (RootParametersStructure)
+		{
+			ShaderParameterStructureIndex = ParametersStructures.Find(RootParametersStructure);
+			check(ShaderParameterStructureIndex != INDEX_NONE);
+		}
+		Ar << ShaderParameterStructureIndex;
 	}
 
-	void DeserializeSharedInputs(FArchive& Ar, const TMap<FString, FThreadSafeSharedStringPtr>& ExternalIncludes, const TArray<FShaderCompilerEnvironment>& SharedEnvironments)
+	void DeserializeSharedInputs(
+		FArchive& Ar,
+		const TMap<FString, FThreadSafeSharedStringPtr>& ExternalIncludes,
+		const TArray<FShaderCompilerEnvironment>& SharedEnvironments,
+		const TArray<TUniquePtr<FShaderParametersMetadata>>& ShaderParameterStructures)
 	{
 		check(Ar.IsLoading());
 
@@ -284,55 +334,16 @@ struct FShaderCompilerInput
 		{
 			Environment.Merge(SharedEnvironments[SharedEnvironmentIndex]);
 		}
-	}
 
-	friend FArchive& operator<<(FArchive& Ar,FShaderCompilerInput& Input)
-	{
-		// Note: this serialize is used to pass between UE4 and the shader compile worker, recompile both when modifying
-		Ar << Input.Target;
+		int32 ShaderParameterStructureIndex;
+		Ar << ShaderParameterStructureIndex;
+		if (ShaderParameterStructureIndex != INDEX_NONE)
 		{
-			FString ShaderFormatString(Input.ShaderFormat.ToString());
-			Ar << ShaderFormatString;
-			Input.ShaderFormat = FName(*ShaderFormatString);
-		}
-		Ar << Input.SourceFilePrefix;
-		Ar << Input.VirtualSourceFilePath;
-		Ar << Input.EntryPointName;
-		Ar << Input.bSkipPreprocessedCache;
-		Ar << Input.bCompilingForShaderPipeline;
-		Ar << Input.bGenerateDirectCompileFile;
-		Ar << Input.bIncludeUsedOutputs;
-		Ar << Input.UsedOutputs;
-		Ar << Input.DumpDebugInfoRootPath;
-		Ar << Input.DumpDebugInfoPath;
-		Ar << Input.DebugExtension;
-		Ar << Input.DebugGroupName;
-		Ar << Input.DebugDescription;
-		Ar << Input.Environment;
-		Ar << Input.ExtraSettings;
-		Ar << Input.RootParameterBindings;
-
-		// Note: skipping Input.SharedEnvironment, which is handled by FShaderCompileUtilities::DoWriteTasks in order to maintain sharing
-
-		return Ar;
-	}
-
-	bool IsUsingTessellation() const
-	{
-		switch (Target.GetFrequency())
-		{
-		case SF_Vertex:
-		{
-			const FString* UsingTessellationDefine = Environment.GetDefinitions().Find(TEXT("USING_TESSELLATION"));
-			return (UsingTessellationDefine != nullptr && *UsingTessellationDefine == TEXT("1"));
-		}
-		case SF_Hull:
-		case SF_Domain:
-			return true;
-		default:
-			return false;
+			RootParametersStructure = ShaderParameterStructures[ShaderParameterStructureIndex].Get();
 		}
 	}
+
+	friend RENDERCORE_API FArchive& operator<<(FArchive& Ar, FShaderCompilerInput& Input);
 
 	bool IsRayTracingShader() const
 	{
@@ -381,33 +392,14 @@ struct FShaderCompilerError
 	FString HighlightedLine;
 	FString HighlightedLineMarker;
 
-	/** Returns the error message with source file and source line (if present). */
-	FString GetErrorString() const
-	{
-		if (ErrorVirtualFilePath.IsEmpty())
-		{
-			return StrippedErrorMessage;
-		}
-		else
-		{
-			return ErrorVirtualFilePath + TEXT("(") + ErrorLineString + TEXT("): ") + StrippedErrorMessage;
-		}
-	}
-
 	/** Returns the error message with source file and source line (if present), as well as a line marker separated with a LINE_TERMINATOR. */
-	FString GetErrorStringWithLineMarker() const
-	{
-		if (HasLineMarker())
-		{
-			// Append highlighted line and its marker to the same error message with line terminators
-			// to get a similar multiline error output as with DXC
-			return (GetErrorString() + LINE_TERMINATOR + TEXT("\t") + HighlightedLine + LINE_TERMINATOR + TEXT("\t") + HighlightedLineMarker);
-		}
-		else
-		{
-			return GetErrorString();
-		}
-	}
+	FString RENDERCORE_API GetErrorStringWithSourceLocation() const;
+	
+	/** Returns the error message with source file and source line (if present), as well as a line marker separated with a LINE_TERMINATOR. */
+	FString RENDERCORE_API GetErrorStringWithLineMarker() const;
+
+	/** Returns the error message with source file and source line (if present). */
+	FString RENDERCORE_API GetErrorString(bool bOmitLineMarker = false) const;
 
 	/**
 	Returns true if this error message has a marker string for the highlighted source line where the error occurred. Example:
@@ -415,10 +407,13 @@ struct FShaderCompilerError
 		float b = a;
 				  ^
 	*/
-	bool HasLineMarker() const
+	FORCEINLINE bool HasLineMarker() const
 	{
 		return !HighlightedLine.IsEmpty() && !HighlightedLineMarker.IsEmpty();
 	}
+
+	/** Extracts the file path and source line from StrippedErrorMessage to ErrorVirtualFilePath and ErrorLineString. */
+	bool RENDERCORE_API ExtractSourceLocation();
 
 	/** Returns the path of the underlying source file relative to the process base dir. */
 	FString RENDERCORE_API GetShaderSourceFilePath() const;
@@ -461,6 +456,7 @@ struct FShaderCompilerOutput
 	bool bUsedHLSLccCompiler;
 	TArray<FString> UsedAttributes;
 
+	FString OptionalPreprocessedShaderSource;
 	FString OptionalFinalShaderSource;
 
 	TArray<uint8> PlatformDebugData;
@@ -468,12 +464,16 @@ struct FShaderCompilerOutput
 	/** Generates OutputHash from the compiler output. */
 	RENDERCORE_API void GenerateOutputHash();
 
+	/** Calls GenerateOutputHash() before the compression, replaces FShaderCode with the compressed data (if compression result was smaller). */
+	RENDERCORE_API void CompressOutput(FName ShaderCompressionFormat, FOodleDataCompression::ECompressor OodleCompressor, FOodleDataCompression::ECompressionLevel OodleLevel);
+
 	friend FArchive& operator<<(FArchive& Ar, FShaderCompilerOutput& Output)
 	{
-		// Note: this serialize is used to pass between UE4 and the shader compile worker, recompile both when modifying
-		Ar << Output.ParameterMap << Output.Errors << Output.Target << Output.ShaderCode << Output.NumInstructions << Output.NumTextureSamplers << Output.bSucceeded;
+		// Note: this serialize is used to pass between UE and the shader compile worker, recompile both when modifying
+		Ar << Output.ParameterMap << Output.Errors << Output.Target << Output.ShaderCode << Output.OutputHash << Output.NumInstructions << Output.NumTextureSamplers << Output.bSucceeded;
 		Ar << Output.bFailedRemovingUnused << Output.bSupportsQueryingUsedAttributes << Output.UsedAttributes;
 		Ar << Output.CompileTime;
+		Ar << Output.OptionalPreprocessedShaderSource;
 		Ar << Output.OptionalFinalShaderSource;
 		Ar << Output.PlatformDebugData;
 
@@ -495,14 +495,29 @@ enum class ESCWErrorCode
 	NoTargetShaderFormatsFound,
 	CantCompileForSpecificFormat,
 	CrashInsidePlatformCompiler,
+	BadInputFile
 };
+
+
+inline bool ShouldUseStableConstantBuffer(const FShaderCompilerInput& Input)
+{
+	// stable constant buffer is for the FShaderParameterBindings::BindForLegacyShaderParameters() code path.
+	// Ray tracing shaders use FShaderParameterBindings::BindForRootShaderParameters instead.
+	if (Input.IsRayTracingShader())
+	{
+		return false;
+	}
+
+	return Input.RootParametersStructure != nullptr;
+}
+
 
 /**
  * Validates the format of a virtual shader file path.
  * Meant to be use as such: check(CheckVirtualShaderFilePath(VirtualFilePath));
  * CompileErrors output array is optional.
  */
-extern RENDERCORE_API bool CheckVirtualShaderFilePath(const FString& VirtualPath, TArray<FShaderCompilerError>* CompileErrors = nullptr);
+extern RENDERCORE_API bool CheckVirtualShaderFilePath(FStringView VirtualPath, TArray<FShaderCompilerError>* CompileErrors = nullptr);
 
 /**
  * Loads the shader file with the given name.

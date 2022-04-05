@@ -4,13 +4,21 @@
 
 #include "MediaCapture.h"
 #include "AjaMediaOutput.h"
+#include "DSP/BufferVectorOperations.h"
 #include "HAL/CriticalSection.h"
 #include "MediaIOCoreEncodeTime.h"
 #include "Misc/FrameRate.h"
+
 #include "AjaMediaCapture.generated.h"
+
 
 class FEvent;
 class UAjaMediaOutput;
+
+namespace AJA
+{
+	struct AJAOutputFrameBufferData;
+}
 
 /**
  * Output Media for AJA streams.
@@ -19,10 +27,12 @@ class UAjaMediaOutput;
 UCLASS(BlueprintType)
 class AJAMEDIAOUTPUT_API UAjaMediaCapture : public UMediaCapture
 {
-	GENERATED_UCLASS_BODY()
+	GENERATED_BODY()
+
+public:
+	UAjaMediaCapture();
 
 	//~ UMediaCapture interface
-public:
 	virtual bool HasFinishedProcessing() const override;
 protected:
 	virtual bool ValidateMediaOutput() const override;
@@ -31,8 +41,11 @@ protected:
 	virtual bool UpdateSceneViewportImpl(TSharedPtr<FSceneViewport>& InSceneViewport) override;
 	virtual bool UpdateRenderTargetImpl(UTextureRenderTarget2D* InRenderTarget) override;
 	virtual void StopCaptureImpl(bool bAllowPendingFrameToBeProcess) override;
-
-	virtual void OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height) override;
+	virtual bool ShouldCaptureRHITexture() const override;
+	
+	virtual void BeforeFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture) override;
+	virtual void OnFrameCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, void* InBuffer, int32 Width, int32 Height, int32 BytesPerRow) override;
+	virtual void OnRHITextureCaptured_RenderingThread(const FCaptureBaseData& InBaseData, TSharedPtr<FMediaCaptureUserData, ESPMode::ThreadSafe> InUserData, FTextureRHIRef InTexture) override;
 
 private:
 	struct FAjaOutputCallback;
@@ -42,13 +55,20 @@ private:
 private:
 	bool InitAJA(UAjaMediaOutput* InMediaOutput);
 	void WaitForSync_RenderingThread() const;
+	void OutputAudio_RenderingThread(const AJA::AJAOutputFrameBufferData& FrameBuffer) const;
 	void ApplyViewportTextureAlpha(TSharedPtr<FSceneViewport> InSceneViewport);
 	void RestoreViewportTextureAlpha(TSharedPtr<FSceneViewport> InSceneViewport);
 
+	struct FAudioBuffer
+	{
+		Audio::FAlignedFloatBuffer Data;
+		int32 NumChannels = 0;
+	};
+	
 private:
 	/** AJA Port for outputting */
-	FAJAOutputChannel* OutputChannel;
-	FAjaOutputCallback* OutputCallback;
+	TPimplPtr<FAJAOutputChannel> OutputChannel;
+	TPimplPtr<FAjaOutputCallback> OutputCallback;
 
 	/** Name of this output port */
 	FString PortName;
@@ -72,4 +92,15 @@ private:
 
 	/** Event to wakeup When waiting for sync */
 	FEvent* WakeUpEvent;
+
+	/** Holds an audio output that captures audio from the engine. */
+	TSharedPtr<class FMediaIOAudioOutput> AudioOutput;
+
+	bool bOutputAudio = false;
+	
+	/** Textures to release when the capture has stopped. Must be released after GPUTextureTransfer textures have been unregistered. */
+	TArray<FTextureRHIRef> TexturesToRelease;
+
+	/** Whether or not GPUTextureTransfer was initialized successfully. */
+	bool bGPUTextureTransferAvailable = false;
 };

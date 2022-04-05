@@ -7,6 +7,8 @@
 #include "HAL/ThreadSafeCounter.h"
 #include "HAL/ThreadSingleton.h"
 #include "UObject/Class.h"
+#include "UObject/ObjectPtr.h"
+#include "UObject/UObjectHash.h"
 
 /**
  * A struct that contains a string reference to an object, either a top level asset or a subobject.
@@ -50,6 +52,17 @@ struct COREUOBJECT_API FSoftObjectPath
 	/** Construct from an existing object in memory */
 	FSoftObjectPath(const UObject* InObject);
 
+	FSoftObjectPath(FObjectPtr InObject)
+	{
+		SetPath(InObject.GetPath());
+	}
+
+	template <typename T>
+	FSoftObjectPath(const TObjectPtr<T>& InObject)
+	{
+		SetPath(InObject.GetPath());
+	}
+
 	~FSoftObjectPath() {}
 	
 	FSoftObjectPath& operator=(const FSoftObjectPath& Path)	= default;
@@ -74,6 +87,11 @@ struct COREUOBJECT_API FSoftObjectPath
 		return AssetPathName;
 	}
 
+	FORCEINLINE void SetAssetPathName(FName InAssetPathName)
+	{
+		AssetPathName = InAssetPathName;
+	}
+
 	/** Returns string version of asset path, including both package and asset but not sub object */
 	FORCEINLINE FString GetAssetPathString() const
 	{
@@ -91,6 +109,11 @@ struct COREUOBJECT_API FSoftObjectPath
 		return SubPathString;
 	}
 
+	FORCEINLINE void SetSubPathString(const FString& InSubPathString)
+	{
+		SubPathString = InSubPathString;
+	}
+
 	/** Returns /package/path, leaving off the asset name and sub object */
 	FString GetLongPackageName() const
 	{
@@ -98,6 +121,9 @@ struct COREUOBJECT_API FSoftObjectPath
 		GetAssetPathString().Split(TEXT("."), &PackageName, nullptr, ESearchCase::CaseSensitive, ESearchDir::FromStart);
 		return PackageName;
 	}
+
+	/** Returns /package/path, leaving off the asset name and sub object */
+	FName GetLongPackageFName() const;
 
 	/** Returns assetname string, leaving off the /package/path part and sub object */
 	FString GetAssetName() const
@@ -110,6 +136,7 @@ struct COREUOBJECT_API FSoftObjectPath
 	/** Sets asset path of this reference based on a string path */
 	void SetPath(FWideStringView Path);
 	void SetPath(FAnsiStringView Path);
+	void SetPath(FUtf8StringView Path);
 	void SetPath(FName Path);
 	void SetPath(const WIDECHAR* Path)			{ SetPath(FWideStringView(Path)); }
 	void SetPath(const ANSICHAR* Path)			{ SetPath(FAnsiStringView(Path)); }
@@ -186,10 +213,10 @@ struct COREUOBJECT_API FSoftObjectPath
 	void PostLoadPath(FArchive* InArchive) const;
 
 	/** Fixes up this SoftObjectPath to add the PIE prefix depending on what is currently active, returns true if it was modified. The overload that takes an explicit PIE instance is preferred, if it's available. */
-	bool FixupForPIE();
+	bool FixupForPIE(TFunctionRef<void(int32, FSoftObjectPath&)> InPreFixupForPIECustomFunction = [](int32, FSoftObjectPath&) {});
 
 	/** Fixes up this SoftObjectPath to add the PIE prefix for the given PIEInstance index, returns true if it was modified */
-	bool FixupForPIE(int32 PIEInstance);
+	bool FixupForPIE(int32 PIEInstance, TFunctionRef<void(int32, FSoftObjectPath&)> InPreFixupForPIECustomFunction = [](int32, FSoftObjectPath&) {});
 
 	/** Fixes soft object path for CoreRedirects to handle renamed native objects, returns true if it was modified */
 	bool FixupCoreRedirects();
@@ -332,16 +359,17 @@ private:
 	static FSoftObjectPath GetOrCreateIDForObject(const UObject *Object);
 };
 
-// Not deprecating these yet as it will lead to too many warnings in games
-//UE_DEPRECATED(4.18, "FStringAssetReference was renamed to FSoftObjectPath as it is now not always a string and can also refer to a subobject")
+UE_DEPRECATED(5.0, "FStringAssetReference was renamed to FSoftObjectPath as it is now not always a string and can also refer to a subobject")
 typedef FSoftObjectPath FStringAssetReference;
 
-//UE_DEPRECATED(4.18, "FStringClassReference was renamed to FSoftClassPath")
+UE_DEPRECATED(5.0, "FStringClassReference was renamed to FSoftClassPath")
 typedef FSoftClassPath FStringClassReference;
 
 /** Options for how to set soft object path collection */
 enum class ESoftObjectPathCollectType : uint8
 {
+	/** The SoftObjectPath being loaded is not in a package, so we do not need to record it in inclusion or exclusion lists*/
+	NonPackage,
 	/** References is not tracked in any situation, transient reference */
 	NeverCollect,
 	/** Editor only reference, this is tracked for redirector fixup but not for cooking */
@@ -411,4 +439,58 @@ struct FSoftObjectPathSerializationScope
 	{
 		FSoftObjectPathThreadContext::Get().OptionStack.Pop();
 	}
+};
+
+/** Structure for file paths that are displayed in the editor with a picker UI. */
+struct FFilePath
+{
+	/**
+	 * The path to the file.
+	 */
+	FString FilePath;
+};
+
+/** Structure for directory paths that are displayed in the editor with a picker UI. */
+struct FDirectoryPath
+{
+	/**
+	 * The path to the directory.
+	 */
+	FString Path;
+};
+
+// Fixup archive
+struct FSoftObjectPathFixupArchive : public FArchiveUObject
+{
+	FSoftObjectPathFixupArchive(TFunction<void(FSoftObjectPath&)> InFixupFunction)
+		: FixupFunction(InFixupFunction)
+	{
+		this->SetIsSaving(true);
+		this->ArShouldSkipBulkData = true;
+	}
+
+	FSoftObjectPathFixupArchive(const FString& InOldAssetPathString, const FString& InNewAssetPathString)
+		: FSoftObjectPathFixupArchive([OldAssetPathString = InOldAssetPathString, NewAssetPathString = InNewAssetPathString](FSoftObjectPath& Value)
+		{
+			if (!Value.IsNull() && Value.GetAssetPathString().Equals(OldAssetPathString, ESearchCase::IgnoreCase))
+			{
+				Value.SetAssetPathName(FName(*NewAssetPathString));
+			}
+		})
+	{
+	}
+
+	FArchive& operator<<(FSoftObjectPath& Value) override
+	{
+		FixupFunction(Value);
+		return *this;
+	}
+
+	void Fixup(UObject* Root)
+	{
+		Root->Serialize(*this);
+		ForEachObjectWithOuter(Root, [this](UObject* InObject) { InObject->Serialize(*this);  });
+	}
+
+	TFunction<void(FSoftObjectPath&)> FixupFunction;
 };

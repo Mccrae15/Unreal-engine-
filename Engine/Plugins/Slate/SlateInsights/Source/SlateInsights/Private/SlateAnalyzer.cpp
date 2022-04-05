@@ -13,7 +13,7 @@ namespace UE
 namespace SlateInsights
 {
 
-FSlateAnalyzer::FSlateAnalyzer(Trace::IAnalysisSession& InSession, FSlateProvider& InSlateProvider)
+FSlateAnalyzer::FSlateAnalyzer(TraceServices::IAnalysisSession& InSession, FSlateProvider& InSlateProvider)
 	: Session(InSession)
 	, SlateProvider(InSlateProvider)
 {
@@ -21,7 +21,7 @@ FSlateAnalyzer::FSlateAnalyzer(Trace::IAnalysisSession& InSession, FSlateProvide
 
 void FSlateAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 {
-	Trace::IAnalyzer::FInterfaceBuilder& Builder = Context.InterfaceBuilder;
+	UE::Trace::IAnalyzer::FInterfaceBuilder& Builder = Context.InterfaceBuilder;
 
 	Builder.RouteEvent(RouteId_ApplicationTickAndDrawWidgets, "SlateTrace", "ApplicationTickAndDrawWidgets");
 	Builder.RouteEvent(RouteId_AddWidget, "SlateTrace", "AddWidget");
@@ -31,13 +31,15 @@ void FSlateAnalyzer::OnAnalysisBegin(const FOnAnalysisContext& Context)
 	Builder.RouteEvent(RouteId_WidgetInvalidated, "SlateTrace", "WidgetInvalidated");
 	Builder.RouteEvent(RouteId_RootInvalidated, "SlateTrace", "RootInvalidated");
 	Builder.RouteEvent(RouteId_RootChildOrderInvalidated, "SlateTrace", "RootChildOrderInvalidated");
+	Builder.RouteEvent(RouteId_InvalidationCallstack, "SlateTrace", "InvalidationCallstack");
+	Builder.RouteEvent(RouteId_WidgetUpdateSteps, "SlateTrace", "WidgetUpdateSteps");
 }
 
 bool FSlateAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext& Context)
 {
-	Trace::FAnalysisSessionEditScope _(Session);
+	TraceServices::FAnalysisSessionEditScope _(Session);
 
-	const Trace::IAnalyzer::FEventData& EventData = Context.EventData;
+	const UE::Trace::IAnalyzer::FEventData& EventData = Context.EventData;
 	switch (RouteId)
 	{
 	case RouteId_ApplicationTickAndDrawWidgets:
@@ -74,7 +76,7 @@ bool FSlateAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext
 	{
 		const double Time = Context.EventTime.AsSeconds(EventData.GetValue<uint64>("Cycle"));
 
-		SlateProvider.AddWidgetUpdatedEvent(Time, Message::FWidgetUpdatedMessage(EventData));
+		SlateProvider.AddWidgetUpdatedEvent(Time, Message::FWidgetUpdatedMessage(EventData, Context.EventTime));
 		break;
 	}
 	case RouteId_WidgetInvalidated:
@@ -96,6 +98,16 @@ bool FSlateAnalyzer::OnEvent(uint16 RouteId, EStyle Style, const FOnEventContext
 		const double Time = Context.EventTime.AsSeconds(EventData.GetValue<uint64>("Cycle"));
 
 		SlateProvider.AddWidgetInvalidatedEvent(Time, Message::FWidgetInvalidatedMessage::FromChildOrder(EventData));
+		break;
+	}
+	case RouteId_InvalidationCallstack:
+	{
+		SlateProvider.ProcessInvalidationCallstack(Message::FInvalidationCallstackMessage(EventData));
+		break;
+	}
+	case RouteId_WidgetUpdateSteps:
+	{
+		SlateProvider.ProcessWidgetUpdateSteps(Context.EventTime, EventData);
 		break;
 	}
 	}

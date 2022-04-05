@@ -21,7 +21,8 @@
 #define VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2	1
 #define VULKAN_SUPPORTS_ASTC_DECODE_MODE			(VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2)
 #define VULKAN_SUPPORTS_NV_DIAGNOSTIC_CHECKPOINT	0
-#define VULKAN_SUPPORTS_NV_DIAGNOSTIC_CONFIG		0
+#define VULKAN_RHI_RAYTRACING						0
+#define VULKAN_SUPPORTS_TRANSIENT_RESOURCE_ALLOCATOR 0
 
 // crashing during callback setup on Android, code will fallback to VK_EXT_debug_report instead
 #define VULKAN_SUPPORTS_DEBUG_UTILS					0
@@ -43,6 +44,8 @@
 	EnumMacro(PFN_vkGetPhysicalDeviceProperties2KHR, vkGetPhysicalDeviceProperties2KHR) \
 	EnumMacro(PFN_vkGetPhysicalDeviceFeatures2KHR, vkGetPhysicalDeviceFeatures2KHR) \
 	EnumMacro(PFN_vkGetPhysicalDeviceMemoryProperties2, vkGetPhysicalDeviceMemoryProperties2) \
+	EnumMacro(PFN_vkCreateRenderPass2KHR, vkCreateRenderPass2KHR) \
+	EnumMacro(PFN_vkCmdBeginRenderPass2KHR, vkCmdBeginRenderPass2KHR) \
 	EnumMacro(PFN_vkGetPhysicalDeviceFragmentShadingRatesKHR, vkGetPhysicalDeviceFragmentShadingRatesKHR)
 
 // and now, include the GenericPlatform class
@@ -58,13 +61,16 @@ public:
 	static void FreeVulkanLibrary();
 
 	static void GetInstanceExtensions(TArray<const ANSICHAR*>& OutExtensions);
+	static void GetInstanceLayers(TArray<const ANSICHAR*>& OutLayers);
 	static void GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions);
+	static void GetDeviceLayers(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutLayers);
 	static void NotifyFoundDeviceLayersAndExtensions(VkPhysicalDevice PhysicalDevice, const TArray<FString>& Layers, const TArray<FString>& Extensions);
 
 	static void CreateSurface(void* WindowHandle, VkInstance Instance, VkSurfaceKHR* OutSurface);
 
 	static bool SupportsBCTextureFormats() { return false; }
 	static bool SupportsASTCTextureFormats() { return true; }
+	static bool SupportsETC2TextureFormats() { return true; }
 	static bool SupportsQuerySurfaceProperties() { return false; }
 
 	static void SetupFeatureLevels()
@@ -105,13 +111,6 @@ public:
 
 	static bool RegisterGPUWork() { return false; }
 
-	static bool UseRealUBsOptimization(bool bCodeHeaderUseRealUBs)
-	{
-		return !RequiresMobileRenderer();
-	}
-
-	static bool SupportsUniformBufferPatching();
-
 	// Assume most devices can't use the extra cores for running parallel tasks
 	static bool SupportParallelRenderingTasks() { return false; }
 
@@ -132,6 +131,12 @@ public:
 
 	static void DestroySwapchainKHR(VkDevice Device, VkSwapchainKHR Swapchain, const VkAllocationCallbacks* Allocator);
 
+	static VkFormat GetPlatform5551FormatWithFallback(VkFormat& OutFallbackFormat0, VkFormat& OutFallbackFormat1) 
+	{ 
+		OutFallbackFormat0 = VK_FORMAT_A1R5G5B5_UNORM_PACK16; 
+		OutFallbackFormat1 = VK_FORMAT_B8G8R8A8_UNORM;
+		return VK_FORMAT_R5G5B5A1_UNORM_PACK16; 
+	};
 protected:
 	static void* VulkanLib;
 	static bool bAttemptedLoad;
@@ -145,8 +150,10 @@ protected:
 	static int32 CachedFramePace;
 	static int32 CachedRefreshRate;
 	static int32 CachedSyncInterval;
-
-	static bool bSupportsUniformBufferPatching;
+	static int32 SuccessfulRefreshRateFrames;
+	static int32 UnsuccessfulRefreshRateFrames;
+	static TArray<TArray<ANSICHAR>> DebugVulkanDeviceLayers;
+	static TArray<TArray<ANSICHAR>> DebugVulkanInstanceLayers;
 };
 
 #if VULKAN_SUPPORTS_GOOGLE_DISPLAY_TIMING

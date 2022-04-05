@@ -17,7 +17,7 @@ DECLARE_DWORD_ACCUMULATOR_STAT_EXTERN(TEXT("Total RayTracing Pipeline State Coun
 
 /**
  * PSO_COOKONLY_DATA
- * - Is a transitory data area that should only be used during the cook and stablepc.csv file generation processes.
+ * - Is a transitory data area that should only be used during the cook and stable pipeline cache file generation processes.
  * - If def'ing it out in GAME builds helps to reduce confusion as to where the actual data resides
  * - Should not be serialized or used in comparsion operations (e.g. UsageMask: PSO need to be able to compare equal with different Masks during cook).
  */
@@ -79,37 +79,6 @@ struct RHI_API FPipelineFileCacheRasterizerState
 class FRayTracingPipelineStateInitializer;
 class FRHIRayTracingShader;
 
-struct RHI_API FPipelineFileCacheRayTracingDesc
-{
-	FSHAHash ShaderHash;
-	uint32 MaxPayloadSizeInBytes = 0;
-	EShaderFrequency Frequency = SF_RayGen;
-	bool bAllowHitGroupIndexing = true;
-
-	FPipelineFileCacheRayTracingDesc() = default;
-	FPipelineFileCacheRayTracingDesc(const FRayTracingPipelineStateInitializer& Initializer, const FRHIRayTracingShader* ShaderRHI);
-
-	FString ToString() const;
-	FString HeaderLine() const;
-	void FromString(const FString& Src);
-
-	friend uint32 GetTypeHash(const FPipelineFileCacheRayTracingDesc& Desc)
-	{
-		return GetTypeHash(Desc.ShaderHash) ^
-			GetTypeHash(Desc.MaxPayloadSizeInBytes) ^
-			GetTypeHash(Desc.Frequency) ^
-			GetTypeHash(Desc.bAllowHitGroupIndexing);
-	}
-
-	bool operator == (const FPipelineFileCacheRayTracingDesc& Other) const
-	{
-		return ShaderHash == Other.ShaderHash &&
-			MaxPayloadSizeInBytes == Other.MaxPayloadSizeInBytes &&
-			Frequency == Other.Frequency &&
-			bAllowHitGroupIndexing == Other.bAllowHitGroupIndexing;
-	}
-};
-
 /**
  * Tracks stats for the current session between opening & closing the file-cache.
  */
@@ -141,11 +110,14 @@ struct RHI_API FPipelineStateStats
 
 struct RHI_API FPipelineCacheFileFormatPSO
 {
+	using TReadableStringBuilder = TStringBuilder<1024>;
+
 	struct RHI_API ComputeDescriptor
 	{
 		FSHAHash ComputeShader;
 
 		FString ToString() const;
+		void AddToReadableString(TReadableStringBuilder& OutBuilder) const;
 		static FString HeaderLine();
 		void FromString(const FStringView& Src);
 	};
@@ -154,9 +126,9 @@ struct RHI_API FPipelineCacheFileFormatPSO
 		FSHAHash VertexShader;
 		FSHAHash FragmentShader;
 		FSHAHash GeometryShader;
-		FSHAHash HullShader;
-		FSHAHash DomainShader;
-		
+		FSHAHash MeshShader;
+		FSHAHash AmplificationShader;
+
 		FVertexDeclarationElementList VertexDescriptor;
 		FBlendStateInitializerRHI BlendState;
 		FPipelineFileCacheRasterizerState RasterizerState;
@@ -168,7 +140,7 @@ struct RHI_API FPipelineCacheFileFormatPSO
 		uint32 MSAASamples;
 		
 		EPixelFormat DepthStencilFormat;
-		uint32 DepthStencilFlags;
+		ETextureCreateFlags DepthStencilFlags;
 		ERenderTargetLoadAction DepthLoad;
 		ERenderTargetLoadAction StencilLoad;
 		ERenderTargetStoreAction DepthStore;
@@ -178,18 +150,59 @@ struct RHI_API FPipelineCacheFileFormatPSO
 		
 		uint8 SubpassHint;	
 		uint8 SubpassIndex;
+
+		uint8	MultiViewCount;
+		bool	bHasFragmentDensityAttachment;
 		
 		FString ToString() const;
+		void AddToReadableString(TReadableStringBuilder& OutBuilder) const;
 		static FString HeaderLine();
 		bool FromString(const FStringView& Src);
 
 		FString ShadersToString() const;
+		void AddShadersToReadableString(TReadableStringBuilder& OutBuilder) const;
+
 		static FString ShaderHeaderLine();
 		void ShadersFromString(const FStringView& Src);
 
 		FString StateToString() const;
+		void AddStateToReadableString(TReadableStringBuilder& OutBuilder) const;
 		static FString StateHeaderLine();
 		bool StateFromString(const FStringView& Src);
+
+		/** Not all RT flags make sense for the replayed PSO, only those that can influence the RT formats */
+		static ETextureCreateFlags ReduceRTFlags(ETextureCreateFlags InFlags);
+	};
+	struct RHI_API FPipelineFileCacheRayTracingDesc
+	{
+		FSHAHash ShaderHash;
+		uint32 MaxPayloadSizeInBytes = 0;
+		EShaderFrequency Frequency = SF_RayGen;
+		bool bAllowHitGroupIndexing = true;
+
+		FPipelineFileCacheRayTracingDesc() = default;
+		FPipelineFileCacheRayTracingDesc(const FRayTracingPipelineStateInitializer& Initializer, const FRHIRayTracingShader* ShaderRHI);
+
+		FString ToString() const;
+		void AddToReadableString(TReadableStringBuilder& OutBuilder) const;
+		FString HeaderLine() const;
+		void FromString(const FString& Src);
+
+		friend uint32 GetTypeHash(const FPipelineFileCacheRayTracingDesc& Desc)
+		{
+			return GetTypeHash(Desc.ShaderHash) ^
+				GetTypeHash(Desc.MaxPayloadSizeInBytes) ^
+				GetTypeHash(Desc.Frequency) ^
+				GetTypeHash(Desc.bAllowHitGroupIndexing);
+		}
+
+		bool operator == (const FPipelineFileCacheRayTracingDesc& Other) const
+		{
+			return ShaderHash == Other.ShaderHash &&
+				MaxPayloadSizeInBytes == Other.MaxPayloadSizeInBytes &&
+				Frequency == Other.Frequency &&
+				bAllowHitGroupIndexing == Other.bAllowHitGroupIndexing;
+		}
 	};
 	enum class DescriptorType : uint32
 	{
@@ -228,6 +241,9 @@ struct RHI_API FPipelineCacheFileFormatPSO
 	FString CommonToString() const;
 	static FString CommonHeaderLine();
 	void CommonFromString(const FStringView& Src);
+
+	/** Prints out human-readable representation of the PSO, for any type */
+	FString ToStringReadable();
 	
 	// Potential cases for seperating verify logic if requiired: RunTime-Logging, RunTime-UserCaching, RunTime-PreCompile, CommandLet-Cooking
 	bool Verify() const;
@@ -356,6 +372,8 @@ public:
 	static bool IsPipelineFileCacheEnabled();
 	static bool LogPSOtoFileCache();
     static bool ReportNewPSOs();
+	/* Report additional data about new PSOs to the log. */
+	static bool LogPSODetails();
 	
 	/**
 	 * Define the Current Game Usage Mask and a comparison function to compare this mask against the recorded mask in each PSO

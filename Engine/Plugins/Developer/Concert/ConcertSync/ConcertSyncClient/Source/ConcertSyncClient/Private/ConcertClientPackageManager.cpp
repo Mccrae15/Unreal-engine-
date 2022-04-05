@@ -20,7 +20,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 
 #include "ISourceControlModule.h"
 
@@ -207,7 +207,7 @@ void FConcertClientPackageManager::QueueDirtyPackagesForReload()
 		if (WorldPackage && WorldPackage->IsDirty() &&
 			(WorldPackage->HasAnyPackageFlags(PKG_PlayInEditor | PKG_InMemoryOnly) ||
 			WorldPackage->HasAnyFlags(RF_Transient) ||
-			WorldPackage->FileName != WorldPackage->GetFName()))
+			WorldPackage->GetLoadedPath().GetPackageFName() != WorldPackage->GetFName()))
 		{
 			DirtyPkgs.Remove(WorldPackage);
 		}
@@ -288,6 +288,50 @@ bool FConcertClientPackageManager::HasSessionChanges() const
 	return bHasSessionChanges;
 }
 
+TOptional<FString> FConcertClientPackageManager::GetValidPackageSessionPath(FName PackageName) const
+{
+#if WITH_EDITOR
+	FString Filename;
+	if (FPackageName::DoesPackageExist(PackageName.ToString(), &Filename))
+	{
+		return Filename;
+	}
+	return GetDeletedPackagePath(PackageName);
+#else
+	return {};
+#endif
+}
+
+TOptional<FString> FConcertClientPackageManager::GetDeletedPackagePath(FName PackageName) const
+{
+#if WITH_EDITOR
+	check(SandboxPlatformFile.IsValid());
+	FConcertSandboxPlatformFile* PlatformFile = SandboxPlatformFile.Get();
+	auto ShouldPersistPackageWithExtension = [PlatformFile](const FString& PackageName, const FString& Extension) -> TOptional<FString>
+	{
+		FString FullPath;
+		if (FPackageName::TryConvertLongPackageNameToFilename(PackageName, FullPath, Extension))
+		{
+			if (PlatformFile->DeletedPackageExistsInNonSandbox(FullPath))
+			{
+				return MoveTemp(FullPath);
+			}
+		}
+		return {};
+	};
+	FString PackageNameAsString = PackageName.ToString();
+	if (TOptional<FString> AsMap = ShouldPersistPackageWithExtension(PackageNameAsString, FPackageName::GetMapPackageExtension()))
+	{
+		return AsMap;
+	}
+	if (TOptional<FString> AsAsset = ShouldPersistPackageWithExtension(PackageNameAsString, FPackageName::GetAssetPackageExtension()))
+	{
+		return AsAsset;
+	}
+#endif
+	return {};
+}
+
 bool FConcertClientPackageManager::PersistSessionChanges(TArrayView<const FName> InPackagesToPersist, ISourceControlProvider* SourceControlProvider, TArray<FText>* OutFailureReasons)
 {
 #if WITH_EDITOR
@@ -295,12 +339,11 @@ bool FConcertClientPackageManager::PersistSessionChanges(TArrayView<const FName>
 	{
 		// Transform all the package names into actual filenames
 		TArray<FString, TInlineAllocator<8>> FilesToPersist;
-		FString Filename;
 		for (const FName& PackageName : InPackagesToPersist)
 		{
-			if (FPackageName::DoesPackageExist(PackageName.ToString(), nullptr, &Filename))
+			if (TOptional<FString> ValidPath = GetValidPackageSessionPath(PackageName))
 			{
-				FilesToPersist.Add(MoveTemp(Filename));
+				FilesToPersist.Add(MoveTemp(ValidPath.GetValue()));
 			}
 		}
 		return SandboxPlatformFile->PersistSandbox(FilesToPersist, SourceControlProvider, OutFailureReasons);
@@ -529,6 +572,15 @@ void FConcertClientPackageManager::DeletePackageFile(const FConcertPackageInfo& 
 	}
 }
 
+bool FConcertClientPackageManager::IsReloadingPackage(FName PackageName) const
+{
+	if (bHotReloading)
+	{
+		return Algo::Find(PackagesPendingHotReload,PackageName) != nullptr;
+	}
+	return false;
+}
+
 bool FConcertClientPackageManager::CanHotReloadOrPurge() const
 {
 	return ConcertSyncClientUtil::CanPerformBlockingAction() && !LiveSession->GetSession().IsSuspended();
@@ -539,6 +591,7 @@ void FConcertClientPackageManager::HotReloadPendingPackages()
 	SCOPED_CONCERT_TRACE(FConcertClientPackageManager_HotReloadPendingPackages);
 	if (CanHotReloadOrPurge())
 	{
+		TGuardValue<bool> HotReloadGuard(bHotReloading, true);
 		LiveSession->GetSessionDatabase().FlushAsynchronousTasks();
 		ConcertSyncClientUtil::HotReloadPackages(PackagesPendingHotReload);
 		PackagesPendingHotReload.Reset();

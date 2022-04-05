@@ -21,14 +21,8 @@ namespace TextureShareStrings
 		static constexpr auto GBufferE = TEXT("GBufferE");
 		static constexpr auto GBufferF = TEXT("GBufferF");
 
-		static constexpr auto LightAttenuation = TEXT("LightAttenuation");
-		static constexpr auto LightAccumulation = TEXT("LightAccumulation");
-		static constexpr auto LightingChannels = TEXT("LightingChannels");
-
 		static constexpr auto GBufferVelocity = TEXT("GBufferVelocity");
 		static constexpr auto ShadingRate = TEXT("ShadingRate");
-
-		static constexpr auto DirectionalOcclusion = TEXT("DirectionalOcclusion");
 
 		static constexpr auto BackBuffer = TEXT("BackBuffer");
 	}

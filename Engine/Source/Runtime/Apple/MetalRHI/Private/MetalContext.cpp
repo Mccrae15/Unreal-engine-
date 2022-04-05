@@ -821,7 +821,7 @@ FMetalBuffer FMetalDeviceContext::CreatePooledBuffer(FMetalPooledBufferArgs cons
 	
 	uint32 RequestedBufferOffsetAlignment = BufferOffsetAlignment;
 	
-	if((Args.Flags & (BUF_UnorderedAccess | BUF_ShaderResource)) != 0)
+	if(EnumHasAnyFlags(Args.Flags, BUF_UnorderedAccess | BUF_ShaderResource))
 	{
 		// Buffer backed linear textures have specific align requirements
 		// We don't know upfront the pixel format that may be requested for an SRV so we can't use minimumLinearTextureAlignmentForPixelFormat:
@@ -1260,21 +1260,17 @@ void FMetalContext::ResetRenderCommandEncoder()
 	SetRenderPassInfo(StateCache.GetRenderPassInfo(), true);
 }
 
-bool FMetalContext::PrepareToDraw(uint32 PrimitiveType, EMetalIndexType IndexType)
+bool FMetalContext::PrepareToDraw(uint32 PrimitiveType)
 {
 	SCOPE_CYCLE_COUNTER(STAT_MetalPrepareDrawTime);
 	TRefCountPtr<FMetalGraphicsPipelineState> CurrentPSO = StateCache.GetGraphicsPSO();
 	check(IsValidRef(CurrentPSO));
 	
 	// Enforce calls to SetRenderTarget prior to issuing draw calls.
-#if PLATFORM_MAC
-	check(StateCache.GetHasValidRenderTarget());
-#else
 	if (!StateCache.GetHasValidRenderTarget())
 	{
 		return false;
 	}
-#endif
 	
 	FMetalHashedVertexDescriptor const& VertexDesc = CurrentPSO->VertexDeclaration->Layout;
 	
@@ -1297,8 +1293,7 @@ bool FMetalContext::PrepareToDraw(uint32 PrimitiveType, EMetalIndexType IndexTyp
 					
 					uint32 BufferIndex = METAL_TO_UNREAL_BUFFER_INDEX(Attribute.bufferIndex);
 					
-					uint32 InOutMask = CurrentPSO->VertexShader->Bindings.InOutMask;
-					if (InOutMask & (1 << BufferIndex))
+					if (CurrentPSO->VertexShader->Bindings.InOutMask.IsFieldEnabled(BufferIndex))
 					{
 						uint64 MetalSize = StateCache.GetVertexBufferSize(BufferIndex);
 						
@@ -1316,7 +1311,7 @@ bool FMetalContext::PrepareToDraw(uint32 PrimitiveType, EMetalIndexType IndexTyp
 #endif
 	
 	// @todo Handle the editor not setting a depth-stencil target for the material editor's tiles which render to depth even when they shouldn't.
-	bool const bNeedsDepthStencilWrite = (IsValidRef(CurrentPSO->PixelShader) && (CurrentPSO->PixelShader->Bindings.InOutMask & 0x8000));
+	bool const bNeedsDepthStencilWrite = (IsValidRef(CurrentPSO->PixelShader) && (CurrentPSO->PixelShader->Bindings.InOutMask.IsFieldEnabled(CrossCompiler::FShaderBindingInOutMask::DepthStencilMaskIndex)));
 	
 	// @todo Improve the way we handle binding a dummy depth/stencil so we can get pure UAV raster operations...
 	bool const bNeedsDepthStencilForUAVRaster = (StateCache.GetRenderPassInfo().GetNumColorRenderTargets() == 0);
@@ -1407,9 +1402,6 @@ bool FMetalContext::PrepareToDraw(uint32 PrimitiveType, EMetalIndexType IndexTyp
 		
 		check(StateCache.GetHasValidRenderTarget());
 	}
-	
-	// make sure the BSS has a valid pipeline state object
-	StateCache.SetIndexType(IndexType);
 	
 	return true;
 }
@@ -1548,7 +1540,7 @@ void FMetalContext::DrawPrimitiveIndirect(uint32 PrimitiveType, FMetalVertexBuff
 void FMetalContext::DrawIndexedPrimitive(FMetalBuffer const& IndexBuffer, uint32 IndexStride, mtlpp::IndexType IndexType, uint32 PrimitiveType, int32 BaseVertexIndex, uint32 FirstInstance, uint32 NumVertices, uint32 StartIndex, uint32 NumPrimitives, uint32 NumInstances)
 {
 	// finalize any pending state
-	if(!PrepareToDraw(PrimitiveType, GetRHIMetalIndexType(IndexType)))
+	if(!PrepareToDraw(PrimitiveType))
 	{
 		return;
 	}

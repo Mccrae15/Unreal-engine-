@@ -63,11 +63,21 @@ class ENGINE_API APostProcessVolume : public AVolume, public IInterface_PostProc
 		Ret.Settings = &Settings;
 		return Ret;
 	}
+#if DEBUG_POST_PROCESS_VOLUME_ENABLE
+	virtual FString GetDebugName() const override
+	{
+		return GetName();
+	}
+#endif
 	//~ End IInterface_PostProcessVolume Interface
 
 
 	//~ Begin AActor Interface
 	virtual void PostUnregisterAllComponents( void ) override;
+
+#if WITH_EDITOR
+	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return false; }
+#endif
 
 protected:
 	virtual void PostRegisterAllComponents() override;

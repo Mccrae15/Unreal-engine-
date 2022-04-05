@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "OnlineSubsystemTypes.h"
 #include "OnlineDelegateMacros.h"
 #include "OnlineIdentityErrors.h"
@@ -207,7 +207,7 @@ class IOnlineIdentity
 {
 
 protected:
-	IOnlineIdentity() {};	
+	ONLINESUBSYSTEM_API IOnlineIdentity() {};
 
 public:
 
@@ -239,7 +239,7 @@ public:
 		NetworkConnectionUnavailable =	1 << 10,
 	};
 
-	virtual ~IOnlineIdentity() {};
+	ONLINESUBSYSTEM_API virtual ~IOnlineIdentity() {};
 
 	/**
 	 * Delegate called when a player logs in/out
@@ -435,6 +435,18 @@ public:
 	virtual void RevokeAuthToken(const FUniqueNetId& LocalUserId, const FOnRevokeAuthTokenCompleteDelegate& Delegate) = 0;
 
 	/**
+	 * Clear an auth token associated with the user, if one was cached.
+	 *
+	 * If an auth token is obtained for some other purpose than user account login, it would
+	 * be ignored an replaced with another when an actual login attempt is made, wasting the
+	 * previously obtained one.  Caching avoids that potential waste, but must be manually
+	 * cleared client-side when the login completes due to the remote side has consuming it.
+	 *
+	 * @param UserId the unique net of the associated user
+	 */
+	virtual void ClearCachedAuthToken(const FUniqueNetId& UserId) {};
+
+	/**
 	 * Delegate executed when the user's auth ticket has arrived
 	 *
 	 * @param LocalUserNum the controller number of the associated user
@@ -473,13 +485,31 @@ public:
 	virtual void GetUserPrivilege(const FUniqueNetId& LocalUserId, EUserPrivileges::Type Privilege, const FOnGetUserPrivilegeCompleteDelegate& Delegate) = 0;
 
 	/**
-	 * Temporary hack to get a corresponding FUniqueNetId from a PlatformUserId
+	 * Converts from an online unique id to a PlatformUserId used by application code
 	 *
 	 * @param UniqueNetId The unique id to look up
 	 *
 	 * @return The corresponding id or PLATFORMID_NONE if not found
 	 */
 	virtual FPlatformUserId GetPlatformUserIdFromUniqueNetId(const FUniqueNetId& UniqueNetId) const = 0;
+
+	/**
+	 * Converts from a local user num used by the online system to a PlatformUserId used by application code
+	 *
+	 * @param LocalUserNum the controller number of the associated user
+	 *
+	 * @return The corresponding id or PLATFORMID_NONE if invalid
+	 */
+	ONLINESUBSYSTEM_API virtual FPlatformUserId GetPlatformUserIdFromLocalUserNum(int32 LocalUserNum) const;
+
+	/**
+	 * Converts from a PlatformUserId used by application code to a local user num used by the online system
+	 *
+	 * @param PlatformUserId The application-level platform user id
+	 *
+	 * @return The corresponding user number of INDEX_NONE if invalid
+	 */
+	ONLINESUBSYSTEM_API virtual int32 GetLocalUserNumFromPlatformUserId(FPlatformUserId PlatformUserId) const;
 
 	/**
 	 * Get the auth type associated with accounts for this platform
@@ -494,3 +524,5 @@ typedef TSharedPtr<IOnlineIdentity, ESPMode::ThreadSafe> IOnlineIdentityPtr;
 ONLINESUBSYSTEM_API FString ToDebugString(IOnlineIdentity::EPrivilegeResults PrivilegeResult);
 
 ONLINESUBSYSTEM_API FString ToDebugString(EUserPrivileges::Type UserPrivilege);
+
+ONLINESUBSYSTEM_API FString ToDebugString(const FControllerPairingChangedUserInfo& ControllerPairingChangedUserInfo);

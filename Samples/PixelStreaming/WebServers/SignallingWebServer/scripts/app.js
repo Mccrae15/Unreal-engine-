@@ -10,15 +10,16 @@ let rAF = window.mozRequestAnimationFrame ||
 let kbEvent = document.createEvent("KeyboardEvent");
 let initMethod = typeof kbEvent.initKeyboardEvent !== 'undefined' ? "initKeyboardEvent" : "initKeyEvent";
 
+
 let webRtcPlayerObj = null;
 let print_stats = false;
 let print_inputs = false;
 let connect_on_load = false;
-
 let is_reconnection = false;
 let ws;
 const WS_OPEN_STATE = 1;
 
+let qualityController = false;
 let qualityControlOwnershipCheckBox;
 let matchViewportResolution;
 // TODO: Remove this - workaround because of bug causing UE to crash when switching resolutions too quickly
@@ -32,7 +33,7 @@ let freezeFrameOverlay = null;
 let shouldShowPlayOverlay = true;
 // A freeze frame is a still JPEG image shown instead of the video.
 let freezeFrame = {
-	receiving: false,
+    receiving: false,
     size: 0,
     jpeg: undefined,
     height: 0,
@@ -40,9 +41,19 @@ let freezeFrame = {
     valid: false
 };
 
+let file = {
+    mimetype: "",
+    extension: "",
+	receiving: false,
+    size: 0,
+    data: [],
+    valid: false,
+    timestampStart: undefined
+};
+
 // Optionally detect if the user is not interacting (AFK) and disconnect them.
 let afk = {
-	enabled: false,   // Set to true to enable the AFK system.
+    enabled: false,   // Set to true to enable the AFK system.
     warnTimeout: 120,   // The time to elapse before warning the user they are inactive.
     closeTimeout: 10,   // The time after the warning when we disconnect the user.
 
@@ -77,6 +88,10 @@ function scanGamepads() {
     }
 }
 
+var script = document.createElement('script');
+script.src = 'https://code.jquery.com/jquery-3.4.1.min.js';
+script.type = 'text/javascript';
+document.getElementsByTagName('head')[0].appendChild(script);
 
 function updateStatus() {
     scanGamepads();
@@ -85,7 +100,7 @@ function updateStatus() {
         let controller = controllers[j];
         let currentState = controller.currentState;
         let prevState = controller.prevState;
-		// Iterate over buttons
+        // Iterate over buttons
         for (let i = 0; i < currentState.buttons.length; i++) {
             let currButton = currentState.buttons[i];
             let prevButton = prevState.buttons[i];
@@ -173,7 +188,7 @@ function emitControllerAxisMove(controllerIndex, axisIndex, analogValue) {
 function gamepadConnectHandler(e) {
     console.log("Gamepad connect handler");
     gamepad = e.gamepad;
-	controllers[gamepad.index] = {};
+    controllers[gamepad.index] = {};
     controllers[gamepad.index].currentState = gamepad;
     controllers[gamepad.index].prevState = gamepad;
     console.log("gamepad: " + gamepad.id + " connected");
@@ -221,40 +236,25 @@ function setupHtmlEvents() {
     let encoderParamsSubmit = document.getElementById('encoder-params-submit');
     if (encoderParamsSubmit !== null) {
         encoderParamsSubmit.onclick = function(event) {
-            let rateControl = document.getElementById('encoder-rate-control').value;
-            let targetBitrate = document.getElementById('encoder-target-bitrate-text').value * 1000;
-            let maxBitrate = document.getElementById('encoder-max-bitrate-text').value * 1000;
+
             let minQP = document.getElementById('encoder-min-qp-text').value;
             let maxQP = document.getElementById('encoder-max-qp-text').value;
-            let fillerData = document.getElementById('encoder-filler-data-tgl').checked ? 1 : 0;
-            let multipass = document.getElementById('encoder-multipass').value;
 
-            emitUIInteraction({ Console: 'PixelStreaming.Encoder.RateControl ' + rateControl });
-            emitUIInteraction({ Console: 'PixelStreaming.Encoder.TargetBitrate ' + targetBitrate > 0 ? targetBitrate : -1 });
-            emitUIInteraction({ Console: 'PixelStreaming.Encoder.MaxBitrateVBR ' + maxBitrate > 0 ? maxBitrate : -1 });
-            emitUIInteraction({ Console: 'PixelStreaming.Encoder.MinQP ' + minQP });
-            emitUIInteraction({ Console: 'PixelStreaming.Encoder.MaxQP ' + maxQP });
-            emitUIInteraction({ Console: 'PixelStreaming.Encoder.EnableFillerData ' + fillerData });
-            emitUIInteraction({ Console: 'PixelStreaming.Encoder.Multipass ' + multipass });
+            emitCommand({ ConsoleCommand: 'PixelStreaming.Encoder.MinQP ' + minQP });
+            emitCommand({ ConsoleCommand: 'PixelStreaming.Encoder.MaxQP ' + maxQP });
         };
     }
 
     let webrtcParamsSubmit = document.getElementById('webrtc-params-submit');
     if (webrtcParamsSubmit !== null) {
         webrtcParamsSubmit.onclick = function(event) {
-            let degradationPref = document.getElementById('webrtc-degradation-pref').value;
-            let maxFPS = document.getElementById('webrtc-max-fps-text').value;
+            let FPS = document.getElementById('webrtc-fps-text').value;
             let minBitrate = document.getElementById('webrtc-min-bitrate-text').value * 1000;
             let maxBitrate = document.getElementById('webrtc-max-bitrate-text').value * 1000;
-            let lowQP = document.getElementById('webrtc-low-qp-text').value;
-            let highQP = document.getElementById('webrtc-high-qp-text').value;
 
-            emitUIInteraction({ Console: 'PixelStreaming.WebRTC.DegradationPreference ' + degradationPref });
-            emitUIInteraction({ Console: 'PixelStreaming.WebRTC.MaxFps ' + maxFPS });
-            emitUIInteraction({ Console: 'PixelStreaming.WebRTC.MinBitrate ' + minBitrate });
-            emitUIInteraction({ Console: 'PixelStreaming.WebRTC.MaxBitrate ' + maxBitrate });
-            emitUIInteraction({ Console: 'PixelStreaming.WebRTC.LowQpThreshold ' + lowQP });
-            emitUIInteraction({ Console: 'PixelStreaming.WebRTC.HighQpThreshold ' + highQP });
+            emitCommand({ ConsoleCommand: 'PixelStreaming.WebRTC.Fps ' + FPS });
+            emitCommand({ ConsoleCommand: 'PixelStreaming.WebRTC.MinBitrate ' + minBitrate });
+            emitCommand({ ConsoleCommand: 'PixelStreaming.WebRTC.MaxBitrate ' + maxBitrate });
         };
     }
 
@@ -262,9 +262,9 @@ function setupHtmlEvents() {
     if (showFPSButton !== null) {
         showFPSButton.onclick = function (event) {
             let consoleDescriptor = {
-                Console: 'stat fps'
+                ConsoleCommand: 'Stat FPS'
             };
-            emitUIInteraction(consoleDescriptor);
+            emitCommand(consoleDescriptor);
         };
     }
 
@@ -283,21 +283,102 @@ function setupHtmlEvents() {
         };
     }
 
-    let kickButton = document.getElementById('kick-other-players-button');
-    if (kickButton) {
-        kickButton.onclick = function (event) {
-            console.log(`-> SS: kick`);
-            ws.send(JSON.stringify({
-                type: 'kick'
-            }));
-        };
-    }
-
     let latencyButton = document.getElementById('test-latency-button');
     if (latencyButton) {
         latencyButton.onclick = () => {
             sendStartLatencyTest();
         };
+    }
+
+    // Setup toggle and pair with some URL query string param.
+    setupToggleWithUrlParams("prefer-sfu-tgl", "preferSFU");
+    setupToggleWithUrlParams("use-mic-tgl", "useMic");
+    setupToggleWithUrlParams("force-turn-tgl", "ForceTURN");
+ 
+    var streamSelector = document.getElementById('stream-select');
+    var trackSelector = document.getElementById('track-select');
+    if (streamSelector) {
+        streamSelector.onchange = function(event) {
+            const stream = webRtcPlayerObj.availableVideoStreams.get(streamSelector.value);
+            webRtcPlayerObj.video.srcObject = stream;
+            streamTrackSource = stream;
+            webRtcPlayerObj.video.play();
+            updateTrackList();
+        }
+
+        if (trackSelector) {
+            trackSelector.onchange = function(event) {
+                if (!streamTrackSource) {
+                    streamTrackSource = webRtcPlayerObj.availableVideoStreams.get(streamSelector.value);
+                }
+                if (streamTrackSource) {
+                    for (const track of streamTrackSource.getVideoTracks()) {
+                        if (track.id == trackSelector.value) {
+                            webRtcPlayerObj.video.srcObject = new MediaStream([track]);
+                            webRtcPlayerObj.video.play();
+                            streamSelector.value = "";
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+function setupToggleWithUrlParams(toggleId, urlParameterKey){
+    let toggleElem = document.getElementById(toggleId);
+    if(toggleElem) {
+        toggleElem.checked = new URLSearchParams(window.location.search).has(urlParameterKey);
+        toggleElem.addEventListener('change', (event) => {
+            const urlParams = new URLSearchParams(window.location.search);
+            if (event.currentTarget.checked) {
+                urlParams.set(urlParameterKey, "true");
+            } else {
+                urlParams.delete(urlParameterKey);
+            }
+            window.history.replaceState({}, '', urlParams.toString() !== "" ? `${location.pathname}?${urlParams}` : `${location.pathname}`);
+        });
+    }
+}
+
+var streamTrackSource = null;
+
+function updateStreamList() {
+    const streamSelector = document.getElementById('stream-select');
+    for (i = streamSelector.options.length - 1; i >= 0; i--) {
+        streamSelector.remove(i);
+    }
+    streamSelector.value = null;
+    for (const [streamId, stream] of webRtcPlayerObj.availableVideoStreams) {
+        var opt = document.createElement('option');
+        opt.value = streamId;
+        opt.innerHTML = streamId;
+        streamSelector.appendChild(opt);
+        if (streamSelector.value == null) {
+            streamSelector.value = streamId;
+        }
+    }
+
+    updateTrackList();
+}
+
+function updateTrackList() {
+    const streamSelector = document.getElementById('stream-select');
+    const trackSelector = document.getElementById('track-select');
+    const stream = webRtcPlayerObj.availableVideoStreams.get(streamSelector.value);
+    for (i = trackSelector.options.length - 1; i >= 0; i--) {
+        trackSelector.remove(i);
+    }
+    trackSelector.value = null;
+    for (const track of stream.getVideoTracks()) {
+        var opt = document.createElement('option');
+        opt.value = track.id;
+        opt.innerHTML = track.label;
+        trackSelector.appendChild(opt);
+        if (track.selected) {
+            trackSelector.value = track.id;
+        }
     }
 }
 
@@ -495,7 +576,10 @@ const ToClientMessageType = {
     UnfreezeFrame: 4,
     VideoEncoderAvgQP: 5,
     LatencyTest: 6,
-    InitialSettings: 7
+    InitialSettings: 7,
+    FileExtension: 8,
+    FileMimeType: 9,
+    FileContents: 10
 };
 
 let VideoEncoderQP = "N/A";
@@ -508,18 +592,25 @@ function setupWebRtcPlayer(htmlElement, config) {
     webRtcPlayerObj.onWebRtcOffer = function(offer) {
         if (ws && ws.readyState === WS_OPEN_STATE) {
             let offerStr = JSON.stringify(offer);
-            console.log(`-> SS: offer:\n${offerStr}`);
+            console.log("%c[Outbound SS message (offer)]", "background: lightgreen; color: black", offer);
             ws.send(offerStr);
         }
     };
 
     webRtcPlayerObj.onWebRtcCandidate = function(candidate) {
         if (ws && ws.readyState === WS_OPEN_STATE) {
-            console.log(`-> SS: iceCandidate\n${JSON.stringify(candidate, undefined, 4)}`);
             ws.send(JSON.stringify({
                 type: 'iceCandidate',
                 candidate: candidate
             }));
+        }
+    };
+
+    webRtcPlayerObj.onWebRtcAnswer = function (answer) {
+        if (ws && ws.readyState === WS_OPEN_STATE) {
+            let answerStr = JSON.stringify(answer);
+            console.log("%c[Outbound SS message (answer)]", "background: lightgreen; color: black", answer);
+            ws.send(answerStr);
         }
     };
 
@@ -538,11 +629,8 @@ function setupWebRtcPlayer(htmlElement, config) {
 
     webRtcPlayerObj.onDataChannelConnected = function() {
         if (ws && ws.readyState === WS_OPEN_STATE) {
-            showTextOverlay('WebRTC connected, waiting for video');
-
-            if (webRtcPlayerObj.video && webRtcPlayerObj.video.srcObject && webRtcPlayerObj.onVideoInitialised) {
-                webRtcPlayerObj.onVideoInitialised();
-            }
+            showTextOverlay('WebRTC data channel connected... waiting for video');
+            requestQualityControl();
         }
     };
 
@@ -562,6 +650,94 @@ function setupWebRtcPlayer(htmlElement, config) {
             }
             webRtcPlayerObj.setVideoEnabled(false);
         };
+    }
+
+    
+
+    function processFileExtension(view) {
+        // Reset file if we got a file message and we are not "receiving" it yet
+        if(!file.receiving)
+        {
+            file.mimetype = "";
+            file.extension = "";
+            file.receiving = true;
+            file.valid = false;
+            file.size = 0;
+            file.data = [];
+            file.timestampStart = (new Date()).getTime();
+            console.log('Received first chunk of file'); 
+        }
+
+        let extensionAsString = new TextDecoder("utf-16").decode(view.slice(1));
+        console.log(extensionAsString);
+        file.extension = extensionAsString;
+    }
+
+    function processFileMimeType(view) {
+        // Reset file if we got a file message and we are not "receiving" it yet
+        if(!file.receiving)
+        {
+            file.mimetype = "";
+            file.extension = "";
+            file.receiving = true;
+            file.valid = false;
+            file.size = 0;
+            file.data = [];
+            file.timestampStart = (new Date()).getTime();
+            console.log('Received first chunk of file'); 
+        }
+
+        let mimeAsString = new TextDecoder("utf-16").decode(view.slice(1));
+        console.log(mimeAsString);
+        file.mimetype = mimeAsString;
+    }
+
+
+    function processFileContents(view) {
+        // If we haven't received the intial setup instructions, return
+        if(!file.receiving) return;
+
+        // Extract the toal size of the file (across all chunks)
+        file.size = Math.ceil((new DataView(view.slice(1, 5).buffer)).getInt32(0, true) / 16379 /* The maximum number of payload bits per message*/);
+        
+        // Get the file part of the payload
+        let fileBytes = view.slice(1 + 4);
+
+        // Append to existing data that holds the file
+        file.data.push(fileBytes);
+        
+        // Uncomment for debug
+        console.log(`Received file chunk: ${ file.data.length }/${ file.size }`);
+
+        if(file.data.length === file.size)
+        {
+            file.receiving = false;
+            file.valid = true;
+            console.log("Received complete file")
+            const transferDuration = ((new Date()).getTime() - file.timestampStart);
+            const transferBitrate = Math.round(file.size * 16 * 1024  / transferDuration);
+            console.log(`Average transfer bitrate: ${transferBitrate}kb/s over ${transferDuration / 1000} seconds`);
+
+            // File reconstruction
+            /**
+             * Example code to reconstruct the file
+             * 
+             * This code reconstructs the received data into the original file based on the mime type and extension provided and then downloads the reconstructed file
+             */
+            var received = new Blob(file.data, { type: file.mimetype })
+            var a = document.createElement('a');
+            a.setAttribute('href', URL.createObjectURL(received));
+            a.setAttribute('download', `transfer.${file.extension}`);
+            var aj = $(a);
+            aj.appendTo('body');
+            // aj[0].click();
+            aj.remove();
+        } 
+        else if(file.data.length > file.size)
+        {
+            file.receiving = false;
+            console.error(`Received bigger file than advertised: ${file.data.length}/${file.size}`);
+        }
     }
 
     function processFreezeFrameMessage(view) {
@@ -611,13 +787,21 @@ function setupWebRtcPlayer(htmlElement, config) {
         }
     }
 
+    webRtcPlayerObj.onNewVideoTrack = function(streams) {
+        if (webRtcPlayerObj.video && webRtcPlayerObj.video.srcObject && webRtcPlayerObj.onVideoInitialised) {
+            webRtcPlayerObj.onVideoInitialised();
+        }
+        updateStreamList();
+    }
+
     webRtcPlayerObj.onDataChannelMessage = function(data) {
         let view = new Uint8Array(data);
 
         if (view[0] === ToClientMessageType.QualityControlOwnership) {
             let ownership = view[1] === 0 ? false : true;
             console.log("Received quality controller message, will control quality: " + ownership);
-            // If we own the quality control, we can't relenquish it. We only loose
+            qualityController = ownership;
+            // If we own the quality control, we can't relinquish it. We only lose
             // quality control when another peer asks for it
             if (qualityControlOwnershipCheckBox !== null) {
                 qualityControlOwnershipCheckBox.disabled = ownership;
@@ -654,25 +838,59 @@ function setupWebRtcPlayer(htmlElement, config) {
             let settingsString = new TextDecoder("utf-16").decode(data.slice(1));
             let settingsJSON = JSON.parse(settingsString);
 
-            // reminder bitrates are sent in bps but displayed in kbps
+            if(settingsJSON.PixelStreaming) {
+                let allowConsoleCommands = settingsJSON.PixelStreaming.AllowPixelStreamingCommands;
+                if(allowConsoleCommands === false){
+                    document.getElementById('encoder-min-qp-text').disabled = true;
+                    document.getElementById('encoder-max-qp-text').disabled = true;
+                    document.getElementById("webrtc-fps-text").disabled = true;
+                    document.getElementById("webrtc-min-bitrate-text").disabled = true;
+                    document.getElementById("webrtc-max-bitrate-text").disabled = true;
+                    document.getElementById("show-fps-button").disabled = true;
+                    document.getElementById("encoder-params-submit").disabled = true;
+                    document.getElementById("webrtc-params-submit").disabled = true;
 
+                    if(!document.getElementById("warning-elem-webrtc")) {
+                        let warningElem1 = document.createElement("p");
+                        warningElem1.innerText = "(Disabled by -AllowPixelStreamingCommands=false)";
+                        warningElem1.classList = "subtitle-text";
+                        warningElem1.id = "warning-elem-webrtc";
+                        document.getElementById("webRTCSettingsHeader").appendChild(warningElem1);
+                    }
+                    
+                    if(!document.getElementById("warning-elem-encoder")) {
+                        let warningElem2 = document.createElement("p");
+                        warningElem2.innerText = "(Disabled by -AllowPixelStreamingCommands=false)";
+                        warningElem2.classList = "subtitle-text";
+                        warningElem2.id = "warning-elem-encoder";
+                        document.getElementById("encoderSettingsHeader").appendChild(warningElem2);
+                    }
+
+                    console.warn("-AllowPixelStreamingCommands=false, sending console commands from browser to UE is disabled, including toggling FPS and changing encoder settings from the browser.")
+                }
+                let disableLatencyTest = settingsJSON.PixelStreaming.DisableLatencyTest;
+                if(disableLatencyTest) {
+                    document.getElementById("test-latency-button").disabled = true;
+                    document.getElementById("test-latency-button").title = "Disabled by -PixelStreamingDisableLatencyTester=true";
+                    console.warn("-PixelStreamingDisableLatencyTester=true, requesting latency report from the the browser to UE is disabled.")
+                }
+            }
             if (settingsJSON.Encoder) {
-                document.getElementById('encoder-rate-control').value = settingsJSON.Encoder.RateControl;
-                document.getElementById('encoder-target-bitrate-text').value = settingsJSON.Encoder.TargetBitrate > 0 ? settingsJSON.Encoder.TargetBitrate / 1000 : settingsJSON.Encoder.TargetBitrate;
-                document.getElementById('encoder-max-bitrate-text').value = settingsJSON.Encoder.MaxBitrate > 0 ? settingsJSON.Encoder.MaxBitrate / 1000 : settingsJSON.Encoder.MaxBitrate;
                 document.getElementById('encoder-min-qp-text').value = settingsJSON.Encoder.MinQP;
                 document.getElementById('encoder-max-qp-text').value = settingsJSON.Encoder.MaxQP;
-                document.getElementById('encoder-filler-data-tgl').checked = settingsJSON.Encoder.FillerData == 1;
-                document.getElementById('encoder-multipass').value = settingsJSON.Encoder.MultiPass;
             }
             if (settingsJSON.WebRTC) {
-                document.getElementById('webrtc-degradation-pref').value = settingsJSON.WebRTC.DegradationPref;
-                document.getElementById("webrtc-max-fps-text").value = settingsJSON.WebRTC.MaxFPS;
+                document.getElementById("webrtc-fps-text").value = settingsJSON.WebRTC.FPS;
+                // reminder bitrates are sent in bps but displayed in kbps
                 document.getElementById("webrtc-min-bitrate-text").value = settingsJSON.WebRTC.MinBitrate / 1000;
                 document.getElementById("webrtc-max-bitrate-text").value = settingsJSON.WebRTC.MaxBitrate / 1000;
-                document.getElementById("webrtc-low-qp-text").value = settingsJSON.WebRTC.LowQP;
-                document.getElementById("webrtc-high-qp-text").value = settingsJSON.WebRTC.HighQP;
             }
+        } else if (view[0] == ToClientMessageType.FileExtension) {
+            processFileExtension(view);
+        } else if (view[0] == ToClientMessageType.FileMimeType) {
+            processFileMimeType(view);
+        } else if (view[0] == ToClientMessageType.FileContents) {
+            processFileContents(view);
         } else {
             console.error(`unrecognized data received, packet ID ${view[0]}`);
         }
@@ -685,13 +903,13 @@ function setupWebRtcPlayer(htmlElement, config) {
         createOnScreenKeyboardHelpers(htmlElement);
     }
 
-    createWebRtcOffer();
+    //createWebRtcOffer();
 
     return webRtcPlayerObj.video;
 }
 
-function onWebRtcAnswer(webRTCData) {
-    webRtcPlayerObj.receiveAnswer(webRTCData);
+function setupStats(){
+    webRtcPlayerObj.aggregateStats(1 * 1000 /*Check every 1 second*/ );
 
     let printInterval = 5 * 60 * 1000; /*Print every 5 minutes*/
     let nextPrintDuration = printInterval;
@@ -761,28 +979,28 @@ function onWebRtcAnswer(webRTCData) {
         if (VideoEncoderQP > redQP) {
             color = "red";
             blinkQualityStatus(2);
-            statsText += `<div style="color: ${color}">Bad network connection</div>`;
+            statsText += `<div style="color: ${color}">Very blocky encoding quality</div>`;
         } else if (VideoEncoderQP > orangeQP) {
             color = "orange";
             blinkQualityStatus(1);
-            statsText += `<div style="color: ${color}">Spotty network connection</div>`;
+            statsText += `<div style="color: ${color}">Blocky encoding quality</div>`;
         }
 
         qualityStatus.className = `${color}Status`;
 
         statsText += `<div>Duration: ${timeFormat.format(runTimeHours)}:${timeFormat.format(runTimeMinutes)}:${timeFormat.format(runTimeSeconds)}</div>`;
         statsText += `<div>Video Resolution: ${
-			aggregatedStats.hasOwnProperty('frameWidth') && aggregatedStats.frameWidth && aggregatedStats.hasOwnProperty('frameHeight') && aggregatedStats.frameHeight ?
-				aggregatedStats.frameWidth + 'x' + aggregatedStats.frameHeight : 'Chrome only'
-			}</div>`;
+            aggregatedStats.hasOwnProperty('frameWidth') && aggregatedStats.frameWidth && aggregatedStats.hasOwnProperty('frameHeight') && aggregatedStats.frameHeight ?
+                aggregatedStats.frameWidth + 'x' + aggregatedStats.frameHeight : 'Chrome only'
+            }</div>`;
         statsText += `<div>Received (${receivedBytesMeasurement}): ${numberFormat.format(receivedBytes)}</div>`;
         statsText += `<div>Frames Decoded: ${aggregatedStats.hasOwnProperty('framesDecoded') ? numberFormat.format(aggregatedStats.framesDecoded) : 'Chrome only'}</div>`;
         statsText += `<div>Packets Lost: ${aggregatedStats.hasOwnProperty('packetsLost') ? numberFormat.format(aggregatedStats.packetsLost) : 'Chrome only'}</div>`;
-        statsText += `<div style="color: ${color}">Bitrate (kbps): ${aggregatedStats.hasOwnProperty('bitrate') ? numberFormat.format(aggregatedStats.bitrate) : 'Chrome only'}</div>`;
         statsText += `<div>Framerate: ${aggregatedStats.hasOwnProperty('framerate') ? numberFormat.format(aggregatedStats.framerate) : 'Chrome only'}</div>`;
         statsText += `<div>Frames dropped: ${aggregatedStats.hasOwnProperty('framesDropped') ? numberFormat.format(aggregatedStats.framesDropped) : 'Chrome only'}</div>`;
         statsText += `<div>Net RTT (ms): ${aggregatedStats.hasOwnProperty('currentRoundTripTime') ? numberFormat.format(aggregatedStats.currentRoundTripTime * 1000) : 'Can\'t calculate'}</div>`;
         statsText += `<div>Browser receive to composite (ms): ${aggregatedStats.hasOwnProperty('receiveToCompositeMs') ? numberFormat.format(aggregatedStats.receiveToCompositeMs) : 'Chrome only'}</div>`;
+        statsText += `<div style="color: ${color}">Bitrate (kbps): ${aggregatedStats.hasOwnProperty('bitrate') ? numberFormat.format(aggregatedStats.bitrate) : 'Chrome only'}</div>`;
         statsText += `<div style="color: ${color}">Video Quantization Parameter: ${VideoEncoderQP}</div>`;
 
         let statsDiv = document.getElementById("stats");
@@ -804,8 +1022,6 @@ function onWebRtcAnswer(webRTCData) {
         }
     };
 
-    webRtcPlayerObj.aggregateStats(1 * 1000 /*Check every 1 second*/ );
-
     webRtcPlayerObj.latencyTestTimings.OnAllLatencyTimingsReady = function(timings) {
 
         if (!timings.BrowserReceiptTimeMs) {
@@ -813,40 +1029,46 @@ function onWebRtcAnswer(webRTCData) {
         }
 
         let latencyExcludingDecode = timings.BrowserReceiptTimeMs - timings.TestStartTimeMs;
-        let uePixelStreamLatency = timings.UEPreEncodeTimeMs == 0 || timings.UEPreCaptureTimeMs == 0 ? "???" : timings.UEPostEncodeTimeMs - timings.UEPreCaptureTimeMs;
-        let captureLatency = timings.UEPostCaptureTimeMs - timings.UEPreCaptureTimeMs;
-        let encodeLatency = timings.UEPostEncodeTimeMs - timings.UEPreEncodeTimeMs;
-        let ueLatency = timings.UETransmissionTimeMs - timings.UEReceiptTimeMs;
-        let networkLatency = latencyExcludingDecode - ueLatency;
-        let browserSendLatency = latencyExcludingDecode - networkLatency - ueLatency;
+        let encodeLatency = timings.UEEncodeMs;
+        let uePixelStreamLatency = timings.UECaptureToSendMs;
+        let ueTestDuration = timings.UETransmissionTimeMs - timings.UEReceiptTimeMs;
+        let networkLatency = latencyExcludingDecode - ueTestDuration;
 
         //these ones depend on FrameDisplayDeltaTimeMs
         let endToEndLatency = null;
         let browserSideLatency = null;
 
         if (timings.FrameDisplayDeltaTimeMs && timings.BrowserReceiptTimeMs) {
-            endToEndLatency = timings.FrameDisplayDeltaTimeMs + latencyExcludingDecode;
-            browserSideLatency = endToEndLatency - networkLatency - ueLatency;
+            endToEndLatency = timings.FrameDisplayDeltaTimeMs + networkLatency + (typeof uePixelStreamLatency === "string" ? 0 : uePixelStreamLatency);
+            browserSideLatency = timings.FrameDisplayDeltaTimeMs + (latencyExcludingDecode - networkLatency - ueTestDuration);
         }
 
         let latencyStatsInnerHTML = '';
-        latencyStatsInnerHTML += `<div>Net latency RTT (ms): ${networkLatency}</div>`;
-        latencyStatsInnerHTML += `<div>UE Capture+Encode (ms): ${uePixelStreamLatency}</div>`;
-        latencyStatsInnerHTML += `<div>UE Capture (ms): ${captureLatency}</div>`;
-        latencyStatsInnerHTML += `<div>UE Encode (ms): ${encodeLatency}</div>`;
-        latencyStatsInnerHTML += `<div>Total UE latency (ms): ${ueLatency}</div>`;
-        latencyStatsInnerHTML += `<div>Browser send latency (ms): ${browserSendLatency}</div>`
-        latencyStatsInnerHTML += timings.FrameDisplayDeltaTimeMs && timings.BrowserReceiptTimeMs ? `<div>Browser receive latency (ms): ${timings.FrameDisplayDeltaTimeMs}</div>` : "";
-        latencyStatsInnerHTML += browserSideLatency ? `<div>Total browser latency (ms): ${browserSideLatency}</div>` : "";
-        latencyStatsInnerHTML += `<div>Total latency (excluding browser) (ms): ${latencyExcludingDecode}</div>`;
-        latencyStatsInnerHTML += endToEndLatency ? `<div>Total latency (ms): ${endToEndLatency}</div>` : "";
+        latencyStatsInnerHTML += `<div>Net latency RTT (ms): ${networkLatency.toFixed(2)}</div>`;
+        latencyStatsInnerHTML += `<div>UE Encode (ms): ${(typeof encodeLatency === "string" ? encodeLatency : encodeLatency.toFixed(2))}</div>`;
+        latencyStatsInnerHTML += `<div>UE Send to capture (ms): ${(typeof uePixelStreamLatency === "string" ? uePixelStreamLatency : uePixelStreamLatency.toFixed(2))}</div>`;
+        latencyStatsInnerHTML += `<div>UE probe duration (ms): ${ueTestDuration.toFixed(2)}</div>`;
+        latencyStatsInnerHTML += timings.FrameDisplayDeltaTimeMs && timings.BrowserReceiptTimeMs ? `<div>Browser composite latency (ms): ${timings.FrameDisplayDeltaTimeMs.toFixed(2)}</div>` : "";
+        latencyStatsInnerHTML += browserSideLatency ? `<div>Total browser latency (ms): ${browserSideLatency.toFixed(2)}</div>` : "";
+        latencyStatsInnerHTML += endToEndLatency ? `<div>Total latency (ms): ${endToEndLatency.toFixed(2)}</div>` : "";
         document.getElementById("LatencyStats").innerHTML = latencyStatsInnerHTML;
     }
 }
 
+function onWebRtcOffer(webRTCData) {
+    webRtcPlayerObj.receiveOffer(webRTCData);
+    setupStats();
+}
+
+function onWebRtcAnswer(webRTCData) {
+    webRtcPlayerObj.receiveAnswer(webRTCData);
+    setupStats();
+}
+
 function onWebRtcIce(iceCandidate) {
-    if (webRtcPlayerObj)
+    if (webRtcPlayerObj){
         webRtcPlayerObj.handleCandidateFromServer(iceCandidate);
+    }
 }
 
 let styleWidth;
@@ -1071,9 +1293,9 @@ function updateVideoStreamSize() {
             return;
 
         let descriptor = {
-            Console: 'setres ' + playerElement.clientWidth + 'x' + playerElement.clientHeight
+            ConsoleCommand: 'setres ' + playerElement.clientWidth + 'x' + playerElement.clientHeight
         };
-        emitUIInteraction(descriptor);
+        emitCommand(descriptor);
         console.log(descriptor);
         lastTimeResized = new Date().getTime();
     } else {
@@ -1104,7 +1326,7 @@ const MessageType = {
      */
     IFrameRequest: 0,
     RequestQualityControl: 1,
-    MaxFpsRequest: 2,
+    FpsRequest: 2,
     AverageBitrateRequest: 3,
     StartStreaming: 4,
     StopStreaming: 5,
@@ -1193,7 +1415,9 @@ function requestInitialSettings() {
 }
 
 function requestQualityControl() {
-    sendInputData(new Uint8Array([MessageType.RequestQualityControl]).buffer);
+    if(!qualityController){
+        sendInputData(new Uint8Array([MessageType.RequestQualityControl]).buffer);
+    }
 }
 
 let playerElementClientRect = undefined;
@@ -1830,14 +2054,6 @@ function start() {
     } else {
         connect();
     }
-
-    updateKickButton(0);
-}
-
-function updateKickButton(playersCount) {
-    let kickButton = document.getElementById('kick-other-players-button');
-    if (kickButton)
-        kickButton.value = `Kick (${playersCount})`;
 }
 
 function connect() {
@@ -1853,18 +2069,24 @@ function connect() {
     ws = new WebSocket(window.location.href.replace('http://', 'ws://').replace('https://', 'wss://'));
 
     ws.onmessage = function(event) {
-        console.log(`<- SS: ${event.data}`);
         let msg = JSON.parse(event.data);
         if (msg.type === 'config') {
+            console.log("%c[Inbound SS (config)]", "background: lightblue; color: black", msg);
             onConfig(msg);
         } else if (msg.type === 'playerCount') {
-            updateKickButton(msg.count - 1);
+            console.log("%c[Inbound SS (playerCount)]", "background: lightblue; color: black", msg);
+        } else if (msg.type === 'offer') {
+            console.log("%c[Inbound SS (offer)]", "background: lightblue; color: black", msg);
+            onWebRtcOffer(msg);
         } else if (msg.type === 'answer') {
+            console.log("%c[Inbound SS (answer)]", "background: lightblue; color: black", msg);
             onWebRtcAnswer(msg);
         } else if (msg.type === 'iceCandidate') {
             onWebRtcIce(msg.candidate);
+        } else if(msg.type === 'warning' && msg.warning) {
+            console.warn(msg.warning);
         } else {
-            console.log(`invalid SS message type: ${msg.type}`);
+            console.error("Invalid SS message type", msg.type);
         }
     };
 

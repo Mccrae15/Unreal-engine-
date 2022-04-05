@@ -125,21 +125,18 @@ namespace JSON426
 
 		// Cluster
 		{
-			// Master node
+			// Primary node
 			{
-				Config->Cluster->MasterNode.Id = CfgJson.Cluster.MasterNode.Id;
+				Config->Cluster->PrimaryNode.Id = CfgJson.Cluster.MasterNode.Id;
 
 				const uint16* ClusterSyncPort = CfgJson.Cluster.MasterNode.Ports.Find(DisplayClusterConfigurationStrings::config::cluster::ports::PortClusterSync);
-				Config->Cluster->MasterNode.Ports.ClusterSync = (ClusterSyncPort ? *ClusterSyncPort : 41001);
-
-				const uint16* RenderSyncPort = CfgJson.Cluster.MasterNode.Ports.Find(DisplayClusterConfigurationStrings::config::cluster::ports::PortRenderSync);
-				Config->Cluster->MasterNode.Ports.RenderSync = (RenderSyncPort ? *RenderSyncPort : 41002);
+				Config->Cluster->PrimaryNode.Ports.ClusterSync = (ClusterSyncPort ? *ClusterSyncPort : 41001);
 
 				const uint16* ClusterEventsJsonPort = CfgJson.Cluster.MasterNode.Ports.Find(DisplayClusterConfigurationStrings::config::cluster::ports::PortClusterEventsJson);
-				Config->Cluster->MasterNode.Ports.ClusterEventsJson = (ClusterEventsJsonPort ? *ClusterEventsJsonPort : 41003);
+				Config->Cluster->PrimaryNode.Ports.ClusterEventsJson = (ClusterEventsJsonPort ? *ClusterEventsJsonPort : 41003);
 
 				const uint16* ClusterEventsBinaryPort = CfgJson.Cluster.MasterNode.Ports.Find(DisplayClusterConfigurationStrings::config::cluster::ports::PortClusterEventsBinary);
-				Config->Cluster->MasterNode.Ports.ClusterEventsBinary = (ClusterEventsBinaryPort ? *ClusterEventsBinaryPort : 41004);
+				Config->Cluster->PrimaryNode.Ports.ClusterEventsBinary = (ClusterEventsBinaryPort ? *ClusterEventsBinaryPort : 41004);
 			}
 
 			// Cluster sync
@@ -197,12 +194,6 @@ namespace JSON426
 					Viewport->Camera = CfgViewport.Value.Camera;
 					Viewport->Region = FDisplayClusterConfigurationRectangle(CfgViewport.Value.Region.X, CfgViewport.Value.Region.Y, CfgViewport.Value.Region.W, CfgViewport.Value.Region.H);
 					Viewport->GPUIndex = CfgViewport.Value.GPUIndex;
-
-					// TextureShare
-					Viewport->TextureShare.bIsEnabled = CfgViewport.Value.TextureShare.bIsEnabled;
-					Viewport->TextureShare.SyncSettings.Connection = (ETextureShareSyncConnectDisplayCluster)((uint8)CfgViewport.Value.TextureShare.SyncPolicy_Connection);
-					Viewport->TextureShare.SyncSettings.Frame      = (ETextureShareSyncFrameDisplayCluster)((uint8)CfgViewport.Value.TextureShare.SyncPolicy_Frame);
-					Viewport->TextureShare.SyncSettings.Texture    = (ETextureShareSyncSurfaceDisplayCluster)((uint8)CfgViewport.Value.TextureShare.SyncPolicy_Texture);
 
 					// Projection policy
 					Viewport->ProjectionPolicy.Type = CfgViewport.Value.ProjectionPolicy.Type;

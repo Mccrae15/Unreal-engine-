@@ -43,18 +43,13 @@ public:
 	UPROPERTY(EditAnywhere, config, Category=Editing, meta=( DisplayName = "Preserve Actor Scale on Replace" ))
 	uint32 bReplaceRespectsScale:1;
 
-
-	/** If enabled, the modes tab will revert to the original mesh paint */
-	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category = Editing, meta = (ConfigRestartRequired = true))
-	uint32 bEnableLegacyMeshPaintMode : 1;
+	/** If enabled, the experimental level editor will be available */
+	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category = Editing)
+	bool bEnableExperimentalLevelEditor = false;
 
 	/** If enabled, will avoid relabeling actors in UUnrealEdEngine::edactPasteSelected */
 	UPROPERTY(EditAnywhere, config, Category = Editing, meta = (DisplayName = "Avoid Actor Relabel on Paste Selected"))
 	uint32 bAvoidRelabelOnPasteSelected:1;
-
-	/** If enabled, will force checking references during a delete. Note: disabling this is for advanced usage only and not recommended.*/
-	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category = Editing, meta = (DisplayName = "Check References on Delete"))
-	uint32 bCheckReferencesOnDelete:1;
 
 public:
 	/** If checked audio playing in the editor will continue to play even if the editor is in the background */

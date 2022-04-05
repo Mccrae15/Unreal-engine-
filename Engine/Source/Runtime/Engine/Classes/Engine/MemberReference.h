@@ -71,7 +71,7 @@ protected:
 	 * be NULL if bSelfContext is true.  
 	 */
 	UPROPERTY()
-	mutable UObject* MemberParent;
+	mutable TObjectPtr<UObject> MemberParent;
 
 	/**  */
 	UPROPERTY()
@@ -140,18 +140,17 @@ public:
 #endif
 	}
 
+#if WITH_EDITOR
 	template<class TFieldType>
 	void SetFromField(const typename TFieldType::BaseFieldClass* InField, UClass* SelfScope)
 	{
 		UClass* OwnerClass = InField->GetOwnerClass();
 
 		FGuid FieldGuid;
-#if WITH_EDITOR
 		if (OwnerClass != nullptr)
 		{
 			UBlueprint::GetGuidFromClassByFieldName<TFieldType>(OwnerClass, InField->GetFName(), FieldGuid);
 		}
-#endif
 
 		SetGivenSelfScope(InField->GetFName(), FieldGuid, OwnerClass, SelfScope);
 	}
@@ -163,9 +162,7 @@ public:
 		UClass* ParentAsClass = GetMemberParentClass();
 		if ((ParentAsClass != nullptr) && (SelfScope != nullptr))
 		{
-#if WITH_EDITOR
 			UBlueprint::GetGuidFromClassByFieldName<TFieldType>((ParentAsClass), MemberName, MemberGuid);
-#endif
 			SetGivenSelfScope(MemberName, MemberGuid, ParentAsClass, SelfScope);
 		}
 		else
@@ -173,6 +170,7 @@ public:
 			// We no longer have enough information to known if we've done the right thing, and just have to hope...
 		}
 	}
+#endif
 
 	/** Set to a non-'self' member, so must include reference to class owning the member. */
 	ENGINE_API void SetExternalMember(FName InMemberName, TSubclassOf<class UObject> InMemberParentClass);
@@ -273,8 +271,10 @@ private:
 #endif
 
 protected:
+#if WITH_EDITOR
 	/** Only intended for backwards compat! */
 	ENGINE_API void SetGivenSelfScope(const FName InMemberName, const FGuid InMemberGuid, TSubclassOf<class UObject> InMemberParentClass, TSubclassOf<class UObject> SelfScope) const;
+#endif
 
 	template<class TFieldType>
 	TFieldType* ResolveUFunction() const
@@ -372,7 +372,7 @@ public:
 			UStruct* MemberScopeStruct = FindUField<UStruct>(SelfScope, *MemberScope);
 
 			// Find in target scope
-			ReturnField = FindUFieldOrFProperty(MemberScopeStruct, MemberName).Get<TFieldType>();
+			ReturnField = FindUFieldOrFProperty(MemberScopeStruct, MemberName, EFieldIterationFlags::IncludeAll).Get<TFieldType>();
 
 #if WITH_EDITOR
 			if(ReturnField == nullptr)
@@ -381,7 +381,7 @@ public:
 				const FName RenamedMemberName = RefreshLocalVariableName(SelfScope);
 				if (RenamedMemberName != NAME_None)
 				{
-					ReturnField = FindUFieldOrFProperty(MemberScopeStruct, MemberName).Get<TFieldType>();
+					ReturnField = FindUFieldOrFProperty(MemberScopeStruct, MemberName, EFieldIterationFlags::IncludeAll).Get<TFieldType>();
 				}
 			}
 #endif
@@ -431,11 +431,11 @@ public:
 					UScriptStruct* SparseClassDataStruct = TargetScope->GetSparseClassDataStruct();
 					if (SparseClassDataStruct)
 					{
-						ReturnField = FindUFieldOrFProperty(SparseClassDataStruct, MemberName).Get<TFieldType>();
+						ReturnField = FindUFieldOrFProperty(SparseClassDataStruct, MemberName, EFieldIterationFlags::IncludeAll).Get<TFieldType>();
 					}
 					if (ReturnField == nullptr)
 					{
-						ReturnField = FindUFieldOrFProperty(TargetScope, MemberName).Get<TFieldType>();
+						ReturnField = FindUFieldOrFProperty(TargetScope, MemberName, EFieldIterationFlags::IncludeAll).Get<TFieldType>();
 					}
 				}
 
@@ -454,7 +454,7 @@ public:
 					if (RenamedMemberName != NAME_None)
 					{
 						MemberName = RenamedMemberName;
-						ReturnField = FindUFieldOrFProperty(TargetScope, MemberName).Get<TFieldType>();
+						ReturnField = FindUFieldOrFProperty(TargetScope, MemberName, EFieldIterationFlags::IncludeAll).Get<TFieldType>();
 					}
 				}
 #endif

@@ -28,10 +28,10 @@ void SNiagaraStackRowPerfWidget::Construct(const FArguments& InArgs, UNiagaraSta
 {
 	StackEntry = InStackEntry;
 	SetToolTipText(CreateTooltipText());
+	SetVisibility(TAttribute<EVisibility>::CreateSP(this, &SNiagaraStackRowPerfWidget::IsVisible));
 	
 	TSharedRef<SWidget> PerfWidget =
 		SNew(SBox)
-		.Visibility(this, &SNiagaraStackRowPerfWidget::IsVisible)
         .HeightOverride(16)
 		.WidthOverride(70)
         .HAlign(HAlign_Right)
@@ -123,7 +123,8 @@ void SNiagaraStackRowPerfWidget::Tick(const FGeometry& AllottedGeometry, const d
 	{
 		if (GetUsage() == ENiagaraScriptUsage::ParticleUpdateScript)
 		{
-			GroupOverallTime = CalculateGroupOverallTime("GPU_Stage_SpawnUpdate");
+			static const FString GpuStatName = TEXT("GPU_Stage_") + UNiagaraSimulationStageBase::ParticleSpawnUpdateName.ToString();
+			GroupOverallTime = CalculateGroupOverallTime(GpuStatName);
 		}
 		if (GetUsage() == ENiagaraScriptUsage::ParticleSimulationStageScript)
 		{

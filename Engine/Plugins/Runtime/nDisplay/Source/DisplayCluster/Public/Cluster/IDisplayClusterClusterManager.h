@@ -30,10 +30,10 @@ public:
 	virtual ~IDisplayClusterClusterManager() = default;
 
 public:
-	/** Returns true if current node has master role. */
-	virtual bool IsMaster() const = 0;
-	/** Returns true if current node has slave role. */
-	virtual bool IsSlave()  const = 0;
+	/** Returns true if current node has primary role. */
+	virtual bool IsPrimary() const = 0;
+	/** Returns true if current node has secondary role. */
+	virtual bool IsSecondary()  const = 0;
 	/** Returns true if current node has backup role. */
 	virtual bool IsBackup() const = 0;
 	/** Returns cluster node role. */
@@ -46,6 +46,8 @@ public:
 	/** Returns IDs of available cluster nodes. */
 	virtual void GetNodeIds(TArray<FString>& OutNodeIds) const = 0;
 
+	/** Drop specific cluster node */
+	virtual bool DropClusterNode(const FString& NodeId) = 0;
 
 	/** Registers object to synchronize. */
 	virtual void RegisterSyncObject(IDisplayClusterClusterSyncObject* SyncObj, EDisplayClusterSyncGroup SyncGroup) = 0;
@@ -75,14 +77,14 @@ public:
 	virtual void RemoveClusterEventBinaryListener(const FOnClusterEventBinaryListener& Listener) = 0;
 
 	/** Emits JSON cluster event. */
-	virtual void EmitClusterEventJson(const FDisplayClusterClusterEventJson& Event, bool bMasterOnly) = 0;
+	virtual void EmitClusterEventJson(const FDisplayClusterClusterEventJson& Event, bool bPrimaryOnly) = 0;
 
 	/** Emits binary cluster event. */
-	virtual void EmitClusterEventBinary(const FDisplayClusterClusterEventBinary& Event, bool bMasterOnly) = 0;
+	virtual void EmitClusterEventBinary(const FDisplayClusterClusterEventBinary& Event, bool bPrimaryOnly) = 0;
 
 	/** Sends JSON cluster event to a specific target (outside of the cluster). */
-	virtual void SendClusterEventTo(const FString& Address, const int32 Port, const FDisplayClusterClusterEventJson& Event, bool bMasterOnly) = 0;
+	virtual void SendClusterEventTo(const FString& Address, const uint16 Port, const FDisplayClusterClusterEventJson& Event, bool bPrimaryOnly) = 0;
 
 	/** Sends binary cluster event to a specific target (outside of the cluster). */
-	virtual void SendClusterEventTo(const FString& Address, const int32 Port, const FDisplayClusterClusterEventBinary& Event, bool bMasterOnly) = 0;
+	virtual void SendClusterEventTo(const FString& Address, const uint16 Port, const FDisplayClusterClusterEventBinary& Event, bool bPrimaryOnly) = 0;
 };

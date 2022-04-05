@@ -23,6 +23,7 @@ class COREUOBJECT_API UObjectBase
 	friend struct Z_Construct_UClass_UObject_Statics;
 	friend class FUObjectArray; // for access to InternalIndex without revealing it to anyone else
 	friend class FUObjectAllocator; // for access to destructor without revealing it to anyone else
+	friend struct FInternalUObjectBaseUtilityIsValidFlagsChecker; // for access to InternalIndex
 	friend COREUOBJECT_API void UObjectForceRegistration(UObjectBase* Object, bool bCheckForModuleRelease);
 	friend COREUOBJECT_API void InitializePrivateStaticClass(
 		class UClass* TClass_Super_StaticClass,
@@ -228,8 +229,10 @@ private:
 	friend class FBlueprintCompileReinstancer;
 	friend class FContextObjectManager;
 
+#if WITH_EDITOR
 	/** This is used by the reinstancer to re-class and re-archetype the current instances of a class before recompiling */
 	void SetClass(UClass* NewClass);
+#endif
 
 #if HACK_HEADER_GENERATOR
 	// Required by UHT makefiles for internal data serialization.
@@ -250,10 +253,176 @@ COREUOBJECT_API bool UObjectInitialized();
  */
 COREUOBJECT_API void UObjectForceRegistration(UObjectBase* Object, bool bCheckForModuleRelease = true);
 
-/** 
+/**
+ * Structure that represents the registration information for a given class, structure, or enumeration
+ */
+template <typename T, typename V>
+struct TRegistrationInfo
+{
+	using TType = T;
+	using TVersion = V;
+
+	TType* InnerSingleton = nullptr;
+	TType* OuterSingleton = nullptr;
+	TVersion ReloadVersionInfo;
+};
+
+/**
+ * Helper class to perform registration of object information.  It blindly forwards a call to RegisterCompiledInInfo
+ */
+struct FRegisterCompiledInInfo
+{
+	template <typename ... Args>
+	FRegisterCompiledInInfo(Args&& ... args)
+	{
+		RegisterCompiledInInfo(std::forward<Args>(args)...);
+	}
+};
+
+/**
+ * Reload version information for classes
+ */
+struct FClassReloadVersionInfo
+{
+#if WITH_RELOAD
+	SIZE_T Size = 0;
+	uint32 Hash = 0;
+#endif
+};
+
+/**
+ * Registration information for classes
+ */
+using FClassRegistrationInfo = TRegistrationInfo<UClass, FClassReloadVersionInfo>;
+
+/**
+ * Composite class register compiled in info
+ */
+struct FClassRegisterCompiledInInfo
+{
+	class UClass* (*OuterRegister)();
+	class UClass* (*InnerRegister)();
+	const TCHAR* Name;
+	FClassRegistrationInfo* Info;
+	FClassReloadVersionInfo VersionInfo;
+};
+
+/**
+ * Adds a class registration and version information. The InInfo parameter must be static.
+ */
+COREUOBJECT_API void RegisterCompiledInInfo(class UClass* (*InOuterRegister)(), class UClass* (*InInnerRegister)(), const TCHAR* InPackageName, const TCHAR* InName, FClassRegistrationInfo& InInfo, const FClassReloadVersionInfo& InVersionInfo);
+
+/**
+ * Reload version information for structures
+ */
+struct FStructReloadVersionInfo
+{
+#if WITH_RELOAD
+	SIZE_T Size = 0;
+	uint32 Hash = 0;
+#endif
+};
+
+/**
+ * Registration information for structures
+ */
+using FStructRegistrationInfo = TRegistrationInfo<UScriptStruct, FStructReloadVersionInfo>;
+
+/**
+ * Composite structures register compiled in info
+ */
+struct FStructRegisterCompiledInInfo
+{
+	class UScriptStruct* (*OuterRegister)();
+	void* (*CreateCppStructOps)();
+	const TCHAR* Name;
+	FStructRegistrationInfo* Info;
+	FStructReloadVersionInfo VersionInfo;
+};
+
+/**
+ * Adds a struct registration and version information. The InInfo parameter must be static.
+ */
+COREUOBJECT_API void RegisterCompiledInInfo(class UScriptStruct* (*InOuterRegister)(), const TCHAR* InPackageName, const TCHAR* InName, FStructRegistrationInfo& InInfo, const FStructReloadVersionInfo& InVersionInfo);
+
+/**
+ * Invoke the registration method wrapped in notifications.
+ */
+COREUOBJECT_API class UScriptStruct* GetStaticStruct(class UScriptStruct* (*InRegister)(), UObject* StructOuter, const TCHAR* StructName);
+
+UE_DEPRECATED(5.0, "GetStaticStruct with size and hash has been deprecated, use the version without the size and hash.")
+inline class UScriptStruct* GetStaticStruct(class UScriptStruct* (*InRegister)(), UObject* StructOuter, const TCHAR* StructName, SIZE_T Size, uint32 Hash)
+{
+	return GetStaticStruct(InRegister, StructOuter, StructName);
+}
+
+/**
+ * Reload version information for enumerations
+ */
+struct FEnumReloadVersionInfo
+{
+#if WITH_RELOAD
+	uint32 Hash = 0;
+#endif
+};
+
+/**
+ * Registration information for enums
+ */
+using FEnumRegistrationInfo = TRegistrationInfo<UEnum, FEnumReloadVersionInfo>;
+
+/**
+ * Composite enumeration register compiled in info
+ */
+struct FEnumRegisterCompiledInInfo
+{
+	class UEnum* (*OuterRegister)();
+	const TCHAR* Name;
+	FEnumRegistrationInfo* Info;
+	FEnumReloadVersionInfo VersionInfo;
+};
+
+/**
+ * Adds a static enum registration and version information. The InInfo parameter must be static.
+ */
+COREUOBJECT_API void RegisterCompiledInInfo(class UEnum* (*InOuterRegister)(), const TCHAR* InPackageName, const TCHAR* InName, FEnumRegistrationInfo& InInfo, const FEnumReloadVersionInfo& InVersionInfo);
+
+/**
+ * Invoke the registration method wrapped in notifications.
+ */
+COREUOBJECT_API class UEnum* GetStaticEnum(class UEnum* (*InRegister)(), UObject* EnumOuter, const TCHAR* EnumName);
+
+/**
+ * Reload version information for packages 
+ */
+struct FPackageReloadVersionInfo
+{
+#if WITH_RELOAD
+	uint32 BodyHash = 0;
+	uint32 DeclarationsHash = 0;
+#endif
+};
+
+/**
+ * Registration information for packages
+ */
+using FPackageRegistrationInfo = TRegistrationInfo<UPackage, FPackageReloadVersionInfo>;
+
+/**
+ * Adds a static package registration and version information. The InInfo parameter must be static.
+ */
+COREUOBJECT_API void RegisterCompiledInInfo(UPackage* (*InOuterRegister)(), const TCHAR* InPackageName, FPackageRegistrationInfo& InInfo, const FPackageReloadVersionInfo& InVersionInfo);
+
+
+/**
+ * Register compiled in information for multiple classes, structures, and enumerations
+ */
+COREUOBJECT_API void RegisterCompiledInInfo(const TCHAR* PackageName, const FClassRegisterCompiledInInfo* ClassInfo, size_t NumClassInfo, const FStructRegisterCompiledInInfo* StructInfo, size_t NumStructInfo, const FEnumRegisterCompiledInInfo* EnumInfo, size_t NumEnumInfo);
+
+/**
  * Base class for deferred native class registration
  */
-struct FFieldCompiledInInfo
+struct UE_DEPRECATED(5.0, "FFieldCompiledInInfo has been deprecated, use the RegistrationInfo structures below.") FFieldCompiledInInfo
 {
 	FFieldCompiledInInfo(SIZE_T InClassSize, uint32 InCrc)
 		: Size(InClassSize)
@@ -282,13 +451,17 @@ struct FFieldCompiledInInfo
 /**
 * Adds a class to deferred registration queue.
 */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+UE_DEPRECATED(5.0, "UClassCompiledInDefer has been deprecated, use RegisterCompiledInInfo.")
 COREUOBJECT_API void UClassCompiledInDefer(FFieldCompiledInInfo* Class, const TCHAR* Name, SIZE_T ClassSize, uint32 Crc);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /**
  * Specialized version of the deferred class registration structure.
  */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 template <typename TClass>
-struct TClassCompiledInDefer : public FFieldCompiledInInfo
+struct UE_DEPRECATED(5.0, "TClassCompiledInDefer has been deprecated, use FRegisterCompiledInInfo.") TClassCompiledInDefer : public FFieldCompiledInInfo
 {
 	TClassCompiledInDefer(const TCHAR* InName, SIZE_T InClassSize, uint32 InCrc)
 	: FFieldCompiledInInfo(InClassSize, InCrc)
@@ -305,81 +478,68 @@ struct TClassCompiledInDefer : public FFieldCompiledInInfo
 		return TClass::StaticPackage();
 	}
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /**
  * Stashes the singleton function that builds a compiled in class. Later, this is executed.
  */
+UE_DEPRECATED(5.0, "UObjectCompiledInDefer has been deprecated, use RegisterCompiledInInfo.")
 COREUOBJECT_API void UObjectCompiledInDefer(class UClass *(*InRegister)(), class UClass *(*InStaticClass)(), const TCHAR* Name, const TCHAR* PackageName, bool bDynamic, const TCHAR* DynamicPathName, void (*InInitSearchableValues)(TMap<FName, FName>&));
 
-struct FCompiledInDefer
+struct UE_DEPRECATED(5.0, "FCompiledInDefer has been deprecated, use FRegisterCompiledInInfo.") FCompiledInDefer
 {
 	FCompiledInDefer(class UClass *(*InRegister)(), class UClass *(*InStaticClass)(), const TCHAR* PackageName, const TCHAR* Name, bool bDynamic, const TCHAR* DynamicPackageName = nullptr, const TCHAR* DynamicPathName = nullptr, void (*InInitSearchableValues)(TMap<FName, FName>&) = nullptr)
 	{
-		if (bDynamic)
-		{
-			GetConvertedDynamicPackageNameToTypeName().Add(FName(DynamicPackageName), FName(Name));
-		}
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		UObjectCompiledInDefer(InRegister, InStaticClass, Name, PackageName, bDynamic, DynamicPathName, InInitSearchableValues);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 };
 
 /**
  * Stashes the singleton function that builds a compiled in struct (StaticStruct). Later, this is executed.
  */
+UE_DEPRECATED(5.0, "UObjectCompiledInDeferStruct has been deprecated, use RegisterCompiledInInfo.")
 COREUOBJECT_API void UObjectCompiledInDeferStruct(class UScriptStruct *(*InRegister)(), const TCHAR* PackageName, const TCHAR* ObjectName, bool bDynamic, const TCHAR* DynamicPathName);
 
-struct FCompiledInDeferStruct
+struct UE_DEPRECATED(5.0, "FCompiledInDeferStruct has been deprecated, use FRegisterCompiledInInfo.") FCompiledInDeferStruct
 {
 	FCompiledInDeferStruct(class UScriptStruct *(*InRegister)(), const TCHAR* PackageName, const TCHAR* Name, bool bDynamic, const TCHAR* DynamicPackageName, const TCHAR* DynamicPathName)
 	{
-		if (bDynamic)
-		{
-			GetConvertedDynamicPackageNameToTypeName().Add(FName(DynamicPackageName), FName(Name));
-		}
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		UObjectCompiledInDeferStruct(InRegister, PackageName, Name, bDynamic, DynamicPathName);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 };
-
-/**
- * Either call the passed in singleton, or if this is hot reload, find the existing struct
- */
-COREUOBJECT_API class UScriptStruct *GetStaticStruct(class UScriptStruct *(*InRegister)(), UObject* StructOuter, const TCHAR* StructName, SIZE_T Size, uint32 Crc);
 
 /**
  * Stashes the singleton function that builds a compiled in enum. Later, this is executed.
  */
+UE_DEPRECATED(5.0, "UObjectCompiledInDeferEnum has been deprecated, use RegisterCompiledInInfo.")
 COREUOBJECT_API void UObjectCompiledInDeferEnum(class UEnum *(*InRegister)(), const TCHAR* PackageName, const TCHAR* ObjectName, bool bDynamic, const TCHAR* DynamicPathName);
 
-struct FCompiledInDeferEnum
+struct UE_DEPRECATED(5.0, "FCompiledInDeferEnum has been deprecated, use FRegisterCompiledInInfo.") FCompiledInDeferEnum
 {
 	FCompiledInDeferEnum(class UEnum *(*InRegister)(), const TCHAR* PackageName, const TCHAR* Name, bool bDynamic, const TCHAR* DynamicPackageName, const TCHAR* DynamicPathName)
 	{
-		if (bDynamic)
-		{
-			GetConvertedDynamicPackageNameToTypeName().Add(FName(DynamicPackageName), FName(Name));
-		}
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		UObjectCompiledInDeferEnum(InRegister, PackageName, Name, bDynamic, DynamicPathName);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 };
 
-/**
- * Either call the passed in singleton, or if this is hot reload, find the existing enum
- */
-COREUOBJECT_API class UEnum *GetStaticEnum(class UEnum *(*InRegister)(), UObject* EnumOuter, const TCHAR* EnumName);
-
+// @todo: BP2CPP_remove
 /** Called during HotReload to hook up an existing structure */
+UE_DEPRECATED(5.0, "This API is no longer in use and will be removed.")
 COREUOBJECT_API class UScriptStruct* FindExistingStructIfHotReloadOrDynamic(UObject* Outer, const TCHAR* StructName, SIZE_T Size, uint32 Crc, bool bIsDynamic);
 
+// @todo: BP2CPP_remove
 /** Called during HotReload to hook up an existing enum */
+UE_DEPRECATED(5.0, "This API is no longer in use and will be removed.")
 COREUOBJECT_API class UEnum* FindExistingEnumIfHotReloadOrDynamic(UObject* Outer, const TCHAR* EnumName, SIZE_T Size, uint32 Crc, bool bIsDynamic);
 
 /** Must be called after a module has been loaded that contains UObject classes */
 COREUOBJECT_API void ProcessNewlyLoadedUObjects(FName Package = NAME_None, bool bCanProcessNewlyLoadedObjects = true);
-
-#if WITH_HOT_RELOAD
-/** Map of duplicated CDOs for reinstancing during hot-reload purposes. */
-COREUOBJECT_API TMap<UObject*, UObject*>& GetDuplicatedCDOMap();
-#endif // WITH_HOT_RELOAD
 
 /**
  * Final phase of UObject initialization. all auto register objects are added to the main data structures.

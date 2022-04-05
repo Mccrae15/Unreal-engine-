@@ -83,7 +83,9 @@ void FDisplayClusterRenderTextureResource::InitRHI()
 
 	const uint32 DataSize = CalculateImageBytes(Width, Height, 1, PixelFormat);
 	FDisplayClusterResourceBulkData BulkDataInterface(TextureData, DataSize);
-	FRHIResourceCreateInfo CreateInfo(&BulkDataInterface);
+
+	// @todo: Changed for CIS but needs to be fixed.
+	FRHIResourceCreateInfo CreateInfo(TEXT("DisplayClusterRenderTexture"), &BulkDataInterface);
 
 	TextureRHI = RHICreateTexture2D(Width, Height, PixelFormat, 1, 1, TexCreate_ShaderResource, CreateInfo);
 

@@ -109,7 +109,6 @@ public:
 	//~ ITargetDevice interface
 
 	virtual bool Connect() override;
-	virtual bool Deploy(const FString& SourceFolder, FString& OutAppId) override;
 	virtual void Disconnect() override;
 	virtual int32 GetProcessSnapshot(TArray<FTargetDeviceProcessInfo>& OutProcessInfos) override;
 	virtual ETargetDeviceTypes GetDeviceType() const override;
@@ -119,13 +118,11 @@ public:
 	virtual const class ITargetPlatform& GetTargetPlatform() const override;
 	virtual bool IsConnected() override;
 	virtual bool IsDefault() const override;
-	virtual bool Launch(const FString& InAppId, EBuildConfiguration InBuildConfiguration, EBuildTargetType TargetType, const FString& Params, uint32* OutProcessId) override;
 	virtual bool PowerOff(bool Force) override;
 	virtual bool PowerOn() override;
+	virtual bool IsAuthorized() const override { return bIsDeviceAuthorized; }
 	virtual bool Reboot(bool bReconnect = false) override;
-	virtual bool Run(const FString& ExecutablePath, const FString& Params, uint32* OutProcessId) override;
 	virtual bool SupportsFeature(ETargetDeviceFeatures Feature) const;
-	virtual bool SupportsSdkVersion(const FString& VersionString) const override;
 	virtual bool TerminateProcess(const int64 ProcessId) override;
 	virtual void SetUserCredentials(const FString& UserName, const FString& UserPassword) override;
 	virtual bool GetUserCredentials(FString& OutUserName, FString& OutUserPassword) override;
@@ -177,6 +174,9 @@ private:
 	/** Name of device */
 	FString DeviceName;
 
+	// Holds a flag indicating whether the device is USB / OTA comms authorized
+	bool bIsDeviceAuthorized;
+
 	/** Type of device */
 	ETargetDeviceTypes DeviceType;
 
@@ -208,6 +208,16 @@ public:
 	void SetDeviceName(const FString InDeviceName)
 	{
 		DeviceName = InDeviceName;
+	}
+
+	/**
+ * Sets the device's authorization state.
+ *
+ * @param bInIsAuthorized - Whether the device is authorized for USB communications.
+ */
+	void SetAuthorized(bool bInIsAuthorized)
+	{
+		bIsDeviceAuthorized = bInIsAuthorized;
 	}
 
 	/** Sets the type of the device */

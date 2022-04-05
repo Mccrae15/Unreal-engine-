@@ -32,6 +32,7 @@ void SEditableTextBox::Construct( const FArguments& InArgs )
 	ForegroundColorOverride = InArgs._ForegroundColor;
 	BackgroundColorOverride = InArgs._BackgroundColor;
 	ReadOnlyForegroundColorOverride = InArgs._ReadOnlyForegroundColor;
+	FocusedForegroundColorOverride = InArgs._FocusedForegroundColor;
 	OnTextChanged = InArgs._OnTextChanged;
 	OnVerifyTextChanged = InArgs._OnVerifyTextChanged;
 	OnTextCommitted = InArgs._OnTextCommitted;
@@ -40,7 +41,7 @@ void SEditableTextBox::Construct( const FArguments& InArgs )
 		.BorderImage( this, &SEditableTextBox::GetBorderImage )
 		.BorderBackgroundColor( this, &SEditableTextBox::DetermineBackgroundColor )
 		.ForegroundColor( this, &SEditableTextBox::DetermineForegroundColor )
-		.Padding( 0 )
+		.Padding(0.f)
 		[
 			SAssignNew( Box, SHorizontalBox)
 
@@ -81,6 +82,7 @@ void SEditableTextBox::Construct( const FArguments& InArgs )
 					.VirtualKeyboardDismissAction( InArgs._VirtualKeyboardDismissAction )
 					.TextShapingMethod(InArgs._TextShapingMethod)
 					.TextFlowDirection( InArgs._TextFlowDirection )
+					.OverflowPolicy(InArgs._OverflowPolicy)
 				]
 			]
 		]
@@ -173,6 +175,11 @@ void SEditableTextBox::SetTextFlowDirection(const TOptional<ETextFlowDirection>&
 	EditableText->SetTextFlowDirection(InTextFlowDirection);
 }
 
+
+void SEditableTextBox::SetOverflowPolicy(TOptional<ETextOverflowPolicy> InOverflowPolicy)
+{
+	EditableText->SetOverflowPolicy(InOverflowPolicy);
+}
 
 bool SEditableTextBox::AnyTextSelected() const
 {
@@ -303,6 +310,10 @@ FSlateColor SEditableTextBox::DetermineForegroundColor() const
 
 		return Style->ReadOnlyForegroundColor;
 	}
+	else if(HasKeyboardFocus())
+	{
+		return FocusedForegroundColorOverride.IsSet() ? FocusedForegroundColorOverride.Get() : Style->FocusedForegroundColor;
+	}
 	else
 	{
 		return ForegroundColorOverride.IsSet() ? ForegroundColorOverride.Get() : Style->ForegroundColor;
@@ -354,12 +365,15 @@ void SEditableTextBox::SetTextBoxBackgroundColor(const TAttribute<FSlateColor>& 
 	BackgroundColorOverride = InBackgroundColor;
 }
 
-
 void SEditableTextBox::SetReadOnlyForegroundColor(const TAttribute<FSlateColor>& InReadOnlyForegroundColor)
 {
 	ReadOnlyForegroundColorOverride = InReadOnlyForegroundColor;
 }
 
+void SEditableTextBox::SetFocusedForegroundColor(const TAttribute<FSlateColor>& InFocusedForegroundColor)
+{
+	FocusedForegroundColorOverride = InFocusedForegroundColor;
+}
 
 void SEditableTextBox::SetMinimumDesiredWidth(const TAttribute<float>& InMinimumDesiredWidth)
 {
@@ -461,22 +475,17 @@ void SEditableTextBox::OnEditableTextCommitted(const FText& InText, ETextCommit:
 		FText OutErrorMessage;
 		if (!OnVerifyTextChanged.Execute(InText, OutErrorMessage))
 		{
-           		// Display as an error.
+           	// Display as an error.
 			if (InCommitType == ETextCommit::OnEnter)
 			{
 				SetError(OutErrorMessage);
 			}
 			return;
 		}
-		else
-		{
-			if (InCommitType == ETextCommit::OnEnter)
-			{
-				SetError(FText::GetEmpty());
-			}
-			
-		}		
 	}
+
+	// Text commited without errors, so clear error text
+	SetError(FText::GetEmpty());
 
 	OnTextCommitted.ExecuteIfBound(InText, InCommitType);
 }

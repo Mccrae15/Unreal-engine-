@@ -12,6 +12,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "SequenceRecorderUtils.h"
+#include "Animation/AnimData/AnimDataModel.h"
 
 
 DEFINE_LOG_CATEGORY(TransformSerialization);
@@ -135,16 +136,16 @@ void UMovieScene3DTransformTrackRecorder::FinalizeTrackImpl()
 					FVector Translation = DT.GetTranslation();
 					FVector EulerRotation = DT.GetRotation().Rotator().Euler();
 					FVector Scale = DT.GetScale3D();
-					TArrayView<FMovieSceneFloatChannel*> FloatChannels = MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
-					FloatChannels[0]->SetDefault(Translation.X);
-					FloatChannels[1]->SetDefault(Translation.Y);
-					FloatChannels[2]->SetDefault(Translation.Z);
-					FloatChannels[3]->SetDefault(EulerRotation.X);
-					FloatChannels[4]->SetDefault(EulerRotation.Y);
-					FloatChannels[5]->SetDefault(EulerRotation.Z);
-					FloatChannels[6]->SetDefault(Scale.X);
-					FloatChannels[7]->SetDefault(Scale.Y);
-					FloatChannels[8]->SetDefault(Scale.Z);
+					TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
+					DoubleChannels[0]->SetDefault(Translation.X);
+					DoubleChannels[1]->SetDefault(Translation.Y);
+					DoubleChannels[2]->SetDefault(Translation.Z);
+					DoubleChannels[3]->SetDefault(EulerRotation.X);
+					DoubleChannels[4]->SetDefault(EulerRotation.Y);
+					DoubleChannels[5]->SetDefault(EulerRotation.Z);
+					DoubleChannels[6]->SetDefault(Scale.X);
+					DoubleChannels[7]->SetDefault(Scale.Y);
+					DoubleChannels[8]->SetDefault(Scale.Z);
 				}
 				if (BufferedTransforms.Times.Num() > 0)
 				{
@@ -170,52 +171,52 @@ void UMovieScene3DTransformTrackRecorder::FinalizeTrackImpl()
  	SlowTask.EnterProgressFrame();
   
  	// add buffered transforms
- 	TArrayView<FMovieSceneFloatChannel*> FloatChannels = MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
+ 	TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
  
 	ERichCurveInterpMode LocalInterpMode = InterpolationMode;
- 	auto Transformation = [LocalInterpMode](float In)
+ 	auto Transformation = [LocalInterpMode](double In)
  	{
- 		FMovieSceneFloatValue NewValue(In);
+ 		FMovieSceneDoubleValue NewValue(In);
  		NewValue.InterpMode = LocalInterpMode;
  		return NewValue;
  	};
- 	TArray<FMovieSceneFloatValue> FloatValues;
+ 	TArray<FMovieSceneDoubleValue> DoubleValues;
  
- 	FloatValues.Reset(BufferedTransforms.LocationX.Num());
- 	Algo::Transform(BufferedTransforms.LocationX, FloatValues, Transformation);
- 	FloatChannels[0]->Set(BufferedTransforms.Times, MoveTemp(FloatValues));
+ 	DoubleValues.Reset(BufferedTransforms.LocationX.Num());
+ 	Algo::Transform(BufferedTransforms.LocationX, DoubleValues, Transformation);
+ 	DoubleChannels[0]->Set(BufferedTransforms.Times, MoveTemp(DoubleValues));
  
- 	FloatValues.Reset(BufferedTransforms.LocationY.Num());
- 	Algo::Transform(BufferedTransforms.LocationY, FloatValues, Transformation);
- 	FloatChannels[1]->Set(BufferedTransforms.Times, MoveTemp(FloatValues));
+ 	DoubleValues.Reset(BufferedTransforms.LocationY.Num());
+ 	Algo::Transform(BufferedTransforms.LocationY, DoubleValues, Transformation);
+ 	DoubleChannels[1]->Set(BufferedTransforms.Times, MoveTemp(DoubleValues));
  
- 	FloatValues.Reset(BufferedTransforms.LocationZ.Num());
- 	Algo::Transform(BufferedTransforms.LocationZ, FloatValues, Transformation);
- 	FloatChannels[2]->Set(BufferedTransforms.Times, MoveTemp(FloatValues));
+ 	DoubleValues.Reset(BufferedTransforms.LocationZ.Num());
+ 	Algo::Transform(BufferedTransforms.LocationZ, DoubleValues, Transformation);
+ 	DoubleChannels[2]->Set(BufferedTransforms.Times, MoveTemp(DoubleValues));
  
- 	FloatValues.Reset(BufferedTransforms.RotationX.Num());
- 	Algo::Transform(BufferedTransforms.RotationX, FloatValues, Transformation);
- 	FloatChannels[3]->Set(BufferedTransforms.Times, MoveTemp(FloatValues));
+ 	DoubleValues.Reset(BufferedTransforms.RotationX.Num());
+ 	Algo::Transform(BufferedTransforms.RotationX, DoubleValues, Transformation);
+ 	DoubleChannels[3]->Set(BufferedTransforms.Times, MoveTemp(DoubleValues));
  
- 	FloatValues.Reset(BufferedTransforms.RotationY.Num());
- 	Algo::Transform(BufferedTransforms.RotationY, FloatValues, Transformation);
- 	FloatChannels[4]->Set(BufferedTransforms.Times, MoveTemp(FloatValues));
+ 	DoubleValues.Reset(BufferedTransforms.RotationY.Num());
+ 	Algo::Transform(BufferedTransforms.RotationY, DoubleValues, Transformation);
+ 	DoubleChannels[4]->Set(BufferedTransforms.Times, MoveTemp(DoubleValues));
  
- 	FloatValues.Reset(BufferedTransforms.RotationZ.Num());
- 	Algo::Transform(BufferedTransforms.RotationZ, FloatValues, Transformation);
- 	FloatChannels[5]->Set(BufferedTransforms.Times, MoveTemp(FloatValues));
+ 	DoubleValues.Reset(BufferedTransforms.RotationZ.Num());
+ 	Algo::Transform(BufferedTransforms.RotationZ, DoubleValues, Transformation);
+ 	DoubleChannels[5]->Set(BufferedTransforms.Times, MoveTemp(DoubleValues));
  
- 	FloatValues.Reset(BufferedTransforms.ScaleX.Num());
- 	Algo::Transform(BufferedTransforms.ScaleX, FloatValues, Transformation);
- 	FloatChannels[6]->Set(BufferedTransforms.Times, MoveTemp(FloatValues));
+ 	DoubleValues.Reset(BufferedTransforms.ScaleX.Num());
+ 	Algo::Transform(BufferedTransforms.ScaleX, DoubleValues, Transformation);
+ 	DoubleChannels[6]->Set(BufferedTransforms.Times, MoveTemp(DoubleValues));
  
- 	FloatValues.Reset(BufferedTransforms.ScaleY.Num());
- 	Algo::Transform(BufferedTransforms.ScaleY, FloatValues, Transformation);
- 	FloatChannels[7]->Set(BufferedTransforms.Times, MoveTemp(FloatValues));
+ 	DoubleValues.Reset(BufferedTransforms.ScaleY.Num());
+ 	Algo::Transform(BufferedTransforms.ScaleY, DoubleValues, Transformation);
+ 	DoubleChannels[7]->Set(BufferedTransforms.Times, MoveTemp(DoubleValues));
  
- 	FloatValues.Reset(BufferedTransforms.ScaleZ.Num());
- 	Algo::Transform(BufferedTransforms.ScaleZ, FloatValues, Transformation);
- 	FloatChannels[8]->Set(BufferedTransforms.Times, MoveTemp(FloatValues));
+ 	DoubleValues.Reset(BufferedTransforms.ScaleZ.Num());
+ 	Algo::Transform(BufferedTransforms.ScaleZ, DoubleValues, Transformation);
+ 	DoubleChannels[8]->Set(BufferedTransforms.Times, MoveTemp(DoubleValues));
  
  	FTransform FirstTransform = FTransform::Identity;
 	if (DefaultTransform.IsSet())
@@ -240,14 +241,14 @@ void UMovieScene3DTransformTrackRecorder::FinalizeTrackImpl()
 		FKeyDataOptimizationParams Params;
 		Params.bAutoSetInterpolation = true;
 		Params.Tolerance = TrackRecorderSettings.ReduceKeysTolerance;
-		for (FMovieSceneFloatChannel* Channel : FloatChannels)
+		for (FMovieSceneDoubleChannel* Channel : DoubleChannels)
 		{
 			Channel->Optimize(Params);
 		}
 	}
 	else
 	{
-		for (FMovieSceneFloatChannel* Channel : FloatChannels)
+		for (FMovieSceneDoubleChannel* Channel : DoubleChannels)
 		{
 			Channel->AutoSetTangents();
 		}
@@ -260,7 +261,7 @@ void UMovieScene3DTransformTrackRecorder::FinalizeTrackImpl()
  		if(!bWasAttached)
  		{
  			bool bCanReset = true;
-			for (FMovieSceneFloatChannel* Channel : MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>())
+			for (FMovieSceneDoubleChannel* Channel : MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>())
 			{
 				if (Channel->GetNumKeys() > 1)
 				{
@@ -271,20 +272,20 @@ void UMovieScene3DTransformTrackRecorder::FinalizeTrackImpl()
 
 			if (bCanReset)
 			{
-				for (FMovieSceneFloatChannel* Channel : MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>())
+				for (FMovieSceneDoubleChannel* Channel : MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>())
 				{
 					Channel->Reset();
 				}
 
-				FloatChannels[0]->SetDefault(FirstTransform.GetTranslation()[0]);
-				FloatChannels[1]->SetDefault(FirstTransform.GetTranslation()[1]);
-				FloatChannels[2]->SetDefault(FirstTransform.GetTranslation()[2]);
-				FloatChannels[3]->SetDefault(FirstTransform.GetRotation().Euler().X);
-				FloatChannels[4]->SetDefault(FirstTransform.GetRotation().Euler().Y);
-				FloatChannels[5]->SetDefault(FirstTransform.GetRotation().Euler().Z);
-				FloatChannels[6]->SetDefault(FirstTransform.GetScale3D()[0]);
-				FloatChannels[7]->SetDefault(FirstTransform.GetScale3D()[1]);
-				FloatChannels[8]->SetDefault(FirstTransform.GetScale3D()[2]);
+				DoubleChannels[0]->SetDefault(FirstTransform.GetTranslation()[0]);
+				DoubleChannels[1]->SetDefault(FirstTransform.GetTranslation()[1]);
+				DoubleChannels[2]->SetDefault(FirstTransform.GetTranslation()[2]);
+				DoubleChannels[3]->SetDefault(FirstTransform.GetRotation().Euler().X);
+				DoubleChannels[4]->SetDefault(FirstTransform.GetRotation().Euler().Y);
+				DoubleChannels[5]->SetDefault(FirstTransform.GetRotation().Euler().Z);
+				DoubleChannels[6]->SetDefault(FirstTransform.GetScale3D()[0]);
+				DoubleChannels[7]->SetDefault(FirstTransform.GetScale3D()[1]);
+				DoubleChannels[8]->SetDefault(FirstTransform.GetScale3D()[2]);
 
 				//no longer remove spawnable transform tracks since they may not match the template
 			}
@@ -375,16 +376,16 @@ void UMovieScene3DTransformTrackRecorder::SetUpDefaultTransform()
 	
 	DefaultTransform = DT;
 	PreviousValue = DT;
-	TArrayView<FMovieSceneFloatChannel*> FloatChannels = MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
-	FloatChannels[0]->SetDefault(Translation.X);
-	FloatChannels[1]->SetDefault(Translation.Y);
-	FloatChannels[2]->SetDefault(Translation.Z);
-	FloatChannels[3]->SetDefault(EulerRotation.X);
-	FloatChannels[4]->SetDefault(EulerRotation.Y);
-	FloatChannels[5]->SetDefault(EulerRotation.Z);
-	FloatChannels[6]->SetDefault(Scale.X);
-	FloatChannels[7]->SetDefault(Scale.Y);
-	FloatChannels[8]->SetDefault(Scale.Z);
+	TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
+	DoubleChannels[0]->SetDefault(Translation.X);
+	DoubleChannels[1]->SetDefault(Translation.Y);
+	DoubleChannels[2]->SetDefault(Translation.Z);
+	DoubleChannels[3]->SetDefault(EulerRotation.X);
+	DoubleChannels[4]->SetDefault(EulerRotation.Y);
+	DoubleChannels[5]->SetDefault(EulerRotation.Z);
+	DoubleChannels[6]->SetDefault(Scale.X);
+	DoubleChannels[7]->SetDefault(Scale.Y);
+	DoubleChannels[8]->SetDefault(Scale.Z);
 }
 
 bool UMovieScene3DTransformTrackRecorder::ResolveTransformToRecord(FTransform& OutTransform)
@@ -462,8 +463,7 @@ void UMovieScene3DTransformTrackRecorder::PostProcessAnimationData(UMovieSceneAn
 	{
 		return;
 	}
-	UMovieSceneAnimationTrackRecorderSettings* AnimSettings = CastChecked<UMovieSceneAnimationTrackRecorderSettings>(AnimTrackRecorder->GetTrackRecorderSettings());
-	if (AnimSettings->bRemoveRootAnimation)
+	if (AnimTrackRecorder->RootWasRemoved())
 	{
 		//Get All Animation Keys
 		FBufferedTransformKeys  AnimationKeys;
@@ -489,21 +489,23 @@ void UMovieScene3DTransformTrackRecorder::PostProcessAnimationData(UMovieSceneAn
 
 			}
 			// Search for the Root Bone in the Skeleton
-			const USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->MasterPoseComponent != nullptr ? SkeletalMeshComponent->MasterPoseComponent->SkeletalMesh : SkeletalMeshComponent->SkeletalMesh;
+			const USkeletalMesh* SkeletalMesh = SkeletalMeshComponent->MasterPoseComponent != nullptr ? ToRawPtr(SkeletalMeshComponent->MasterPoseComponent->SkeletalMesh) : ToRawPtr(SkeletalMeshComponent->SkeletalMesh);
 			const UAnimSequence* AnimSequence = AnimTrackRecorder->GetAnimSequence();
 			if (AnimSequence && SkeletalMesh && AnimSequence->GetSkeleton())
 			{
 				// Find the root bone
 				int32 RootIndex = INDEX_NONE;
 				USkeleton* AnimSkeleton = AnimSequence->GetSkeleton();
-				for (int32 TrackIndex = 0; TrackIndex < AnimSequence->GetRawAnimationData().Num(); ++TrackIndex)
+
+				const TArray<FBoneAnimationTrack>& BoneAnimationTracks = AnimSequence->GetDataModel()->GetBoneAnimationTracks();
+				for (const FBoneAnimationTrack& AnimationTrack : BoneAnimationTracks)
 				{
-					// Vverify that this bone exists in skeleton
-					int32 BoneTreeIndex = AnimSequence->GetSkeletonIndexFromRawDataTrackIndex(TrackIndex);
+					// Verify if this bone exists in skeleton
+					const int32 BoneTreeIndex = AnimationTrack.BoneTreeIndex;
 					if (BoneTreeIndex != INDEX_NONE)
 					{
-						int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkeletalMesh, BoneTreeIndex);
-						int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
+						const int32 BoneIndex = AnimSkeleton->GetMeshBoneIndexFromSkeletonBoneIndex(SkeletalMesh, BoneTreeIndex);
+						const int32 ParentIndex = SkeletalMesh->GetRefSkeleton().GetParentIndex(BoneIndex);
 						if (ParentIndex == INDEX_NONE)
 						{
 							// We've found the root (root bones do not have a valid parent)
@@ -520,41 +522,43 @@ void UMovieScene3DTransformTrackRecorder::PostProcessAnimationData(UMovieSceneAn
 					return;
 				}
 
+				ensure(BoneAnimationTracks.IsValidIndex(RootIndex));
+
 				const FFrameRate TickResolution = MovieSceneSection->GetTypedOuter<UMovieScene>()->GetTickResolution();
 				const FFrameNumber StartTime = MovieSceneSection->GetInclusiveStartFrame();
 
 				FTransform InvComponentTransform = AnimTrackRecorder->GetComponentTransform().Inverse();
 
-				const FRawAnimSequenceTrack& RawTrack = AnimSequence->GetRawAnimationData()[RootIndex];
+				const FRawAnimSequenceTrack& RawTrack = BoneAnimationTracks[RootIndex].InternalTrackData;
 				const int32 KeyCount = FMath::Max(FMath::Max(RawTrack.PosKeys.Num(), RawTrack.RotKeys.Num()), RawTrack.ScaleKeys.Num());
 				for (int32 KeyIndex = 0; KeyIndex < KeyCount; KeyIndex++)
 				{
 					FTransform Transform;
 					if (RawTrack.PosKeys.IsValidIndex(KeyIndex))
 					{
-						Transform.SetTranslation(RawTrack.PosKeys[KeyIndex]);
+						Transform.SetTranslation(FVector(RawTrack.PosKeys[KeyIndex]));
 					}
 					else if (RawTrack.PosKeys.Num() > 0)
 					{
-						Transform.SetTranslation(RawTrack.PosKeys[0]);
+						Transform.SetTranslation(FVector(RawTrack.PosKeys[0]));
 					}
 
 					if (RawTrack.RotKeys.IsValidIndex(KeyIndex))
 					{
-						Transform.SetRotation(RawTrack.RotKeys[KeyIndex]);
+						Transform.SetRotation(FQuat(RawTrack.RotKeys[KeyIndex]));
 					}
 					else if (RawTrack.RotKeys.Num() > 0)
 					{
-						Transform.SetRotation(RawTrack.RotKeys[0]);
+						Transform.SetRotation(FQuat(RawTrack.RotKeys[0]));
 					}
 
 					if (RawTrack.ScaleKeys.IsValidIndex(KeyIndex))
 					{
-						Transform.SetScale3D(RawTrack.ScaleKeys[KeyIndex]);
+						Transform.SetScale3D(FVector(RawTrack.ScaleKeys[KeyIndex]));
 					}
 					else if (RawTrack.ScaleKeys.Num() > 0)
 					{
-						Transform.SetScale3D(RawTrack.ScaleKeys[0]);
+						Transform.SetScale3D(FVector(RawTrack.ScaleKeys[0]));
 					}
 
 					FFrameNumber AnimationFrame = (AnimSequence->GetTimeAtFrame(KeyIndex) * TickResolution).FloorToFrame();
@@ -619,35 +623,34 @@ bool UMovieScene3DTransformTrackRecorder::LoadRecordedFile(const FString& FileNa
 							MovieSceneSection = Cast<UMovieScene3DTransformSection>(MovieSceneTrack->CreateNewSection());
 
 							MovieSceneTrack->AddSection(*MovieSceneSection);
-							TArrayView<FMovieSceneFloatChannel*> FloatChannels = MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>();
-							//MovieSceneSection->TimecodeSource = SequenceRecorderUtils::GetTimecodeSource();
+							TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = MovieSceneSection->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>();
 
 							bool InFirst = true;
 							// @todo: sequencer-timecode: this was previously never actually used - should it be??
 							const ERichCurveInterpMode Interpolation = RCIM_Cubic;//AnimRecorder.IsValid() ? RCIM_Linear : RCIM_Cubic;
-							TArray<FMovieSceneFloatValue> TransX;
+							TArray<FMovieSceneDoubleValue> TransX;
 							TransX.SetNumUninitialized(InFrames.Num());
-							TArray<FMovieSceneFloatValue> TransY;
+							TArray<FMovieSceneDoubleValue> TransY;
 							TransY.SetNumUninitialized(InFrames.Num());
-							TArray<FMovieSceneFloatValue> TransZ;
+							TArray<FMovieSceneDoubleValue> TransZ;
 							TransZ.SetNumUninitialized(InFrames.Num());
-							TArray<FMovieSceneFloatValue> RotX;
+							TArray<FMovieSceneDoubleValue> RotX;
 							RotX.SetNumUninitialized(InFrames.Num());
-							TArray<FMovieSceneFloatValue> RotY;
+							TArray<FMovieSceneDoubleValue> RotY;
 							RotY.SetNumUninitialized(InFrames.Num());
-							TArray<FMovieSceneFloatValue> RotZ;
+							TArray<FMovieSceneDoubleValue> RotZ;
 							RotZ.SetNumUninitialized(InFrames.Num());
-							TArray<FMovieSceneFloatValue> ScaleX;
+							TArray<FMovieSceneDoubleValue> ScaleX;
 							ScaleX.SetNumUninitialized(InFrames.Num());
-							TArray<FMovieSceneFloatValue> ScaleY;
+							TArray<FMovieSceneDoubleValue> ScaleY;
 							ScaleY.SetNumUninitialized(InFrames.Num());
-							TArray<FMovieSceneFloatValue> ScaleZ;
+							TArray<FMovieSceneDoubleValue> ScaleZ;
 							ScaleZ.SetNumUninitialized(InFrames.Num());
 							TArray<FFrameNumber> Times;
 							Times.SetNumUninitialized(InFrames.Num());
 
 							int Index = 0;
-							FMovieSceneFloatValue NewValue;
+							FMovieSceneDoubleValue NewValue;
 							NewValue.InterpMode = RCIM_Cubic; //Linear if animation ? mz
 
 							for (const FTransformSerializedFrame& SerializedFrame : InFrames)
@@ -662,15 +665,15 @@ bool UMovieScene3DTransformTrackRecorder::LoadRecordedFile(const FString& FileNa
 								{
 									MovieSceneSection->SetRange(TRange<FFrameNumber>::Inclusive(CurrentFrame, CurrentFrame));
 
-									FloatChannels[0]->SetDefault(Frame.Values[0]);
-									FloatChannels[1]->SetDefault(Frame.Values[1]);
-									FloatChannels[2]->SetDefault(Frame.Values[2]);
-									FloatChannels[3]->SetDefault(Frame.Values[3]);
-									FloatChannels[4]->SetDefault(Frame.Values[4]);
-									FloatChannels[5]->SetDefault(Frame.Values[5]);
-									FloatChannels[6]->SetDefault(Frame.Values[6]);
-									FloatChannels[7]->SetDefault(Frame.Values[7]);
-									FloatChannels[8]->SetDefault(Frame.Values[8]);
+									DoubleChannels[0]->SetDefault(Frame.Values[0]);
+									DoubleChannels[1]->SetDefault(Frame.Values[1]);
+									DoubleChannels[2]->SetDefault(Frame.Values[2]);
+									DoubleChannels[3]->SetDefault(Frame.Values[3]);
+									DoubleChannels[4]->SetDefault(Frame.Values[4]);
+									DoubleChannels[5]->SetDefault(Frame.Values[5]);
+									DoubleChannels[6]->SetDefault(Frame.Values[6]);
+									DoubleChannels[7]->SetDefault(Frame.Values[7]);
+									DoubleChannels[8]->SetDefault(Frame.Values[8]);
 									InFirst = false;
 								}
 
@@ -696,15 +699,15 @@ bool UMovieScene3DTransformTrackRecorder::LoadRecordedFile(const FString& FileNa
 								MovieSceneSection->ExpandToFrame(CurrentFrame);
 								++Index;
 							}
-							FloatChannels[0]->Set(Times, MoveTemp(TransX));
-							FloatChannels[1]->Set(Times, MoveTemp(TransY));
-							FloatChannels[2]->Set(Times, MoveTemp(TransZ));
-							FloatChannels[3]->Set(Times, MoveTemp(RotX));
-							FloatChannels[4]->Set(Times, MoveTemp(RotY));
-							FloatChannels[5]->Set(Times, MoveTemp(RotZ));
-							FloatChannels[6]->Set(Times, MoveTemp(ScaleX));
-							FloatChannels[7]->Set(Times, MoveTemp(ScaleY));
-							FloatChannels[8]->Set(Times, MoveTemp(ScaleZ));
+							DoubleChannels[0]->Set(Times, MoveTemp(TransX));
+							DoubleChannels[1]->Set(Times, MoveTemp(TransY));
+							DoubleChannels[2]->Set(Times, MoveTemp(TransZ));
+							DoubleChannels[3]->Set(Times, MoveTemp(RotX));
+							DoubleChannels[4]->Set(Times, MoveTemp(RotY));
+							DoubleChannels[5]->Set(Times, MoveTemp(RotZ));
+							DoubleChannels[6]->Set(Times, MoveTemp(ScaleX));
+							DoubleChannels[7]->Set(Times, MoveTemp(ScaleY));
+							DoubleChannels[8]->Set(Times, MoveTemp(ScaleZ));
 
 						}
 					}

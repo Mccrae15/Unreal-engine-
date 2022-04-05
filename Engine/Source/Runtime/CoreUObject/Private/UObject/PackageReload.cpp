@@ -46,6 +46,11 @@ struct FExistingPackageReferences : public FGCObject
 		}
 	}
 
+	virtual FString GetReferencerName() const
+	{
+		return TEXT("FExistingPackageReferences");
+	}
+
 	TArray<FExistingPackageReference> Refs;
 };
 
@@ -80,6 +85,11 @@ struct FNewPackageReferences : public FGCObject
 				Ref.EventData->AddReferencedObjects(Collector);
 			}
 		}
+	}
+
+	virtual FString GetReferencerName() const
+	{
+		return TEXT("FNewPackageReferences");
 	}
 
 	TArray<FNewPackageReference> Refs;
@@ -253,10 +263,12 @@ void DumpExternalReferences(UObject* InObject, UPackage* InPackage)
 			for (int32 NodeIndex = 0; NodeIndex < ObjectRefChain->Num(); ++NodeIndex)
 			{
 				const FReferenceChainSearch::FGraphNode* ObjectRefChainLink = ObjectRefChain->GetNode(NodeIndex);
-				const bool bIsExternalRef = ObjectRefChainLink->Object->GetOutermost() != InPackage;
+				UObject* LinkObject = ObjectRefChainLink->ObjectInfo->TryResolveObject();
+				checkf(LinkObject, TEXT("Unable to resolve object: %s when dumping external references"), *ObjectRefChainLink->ObjectInfo->GetPathName());
+				const bool bIsExternalRef = LinkObject->GetOutermost() != InPackage;
 				if (bIsExternalRef)
 				{
-					ExternalRefDumps.Emplace(ObjectRefChainLink->Object->GetFullName());
+					ExternalRefDumps.Emplace(ObjectRefChainLink->ObjectInfo->GetFullName());
 				}
 			}
 		}
@@ -478,8 +490,8 @@ void ReloadPackages(const TArrayView<FReloadPackageData>& InPackagesToReload, TA
 	}
 	UE_LOG(LogUObjectGlobals, Log, TEXT("%s"), *Msg);
 
-	FScopedSlowTask ReloadingPackagesSlowTask(InPackagesToReload.Num(), NSLOCTEXT("CoreUObject", "ReloadingPackages", "Reloading Packages"));
-	ReloadingPackagesSlowTask.MakeDialog();
+	FScopedSlowTask ReloadingPackagesSlowTask((float)InPackagesToReload.Num(), NSLOCTEXT("CoreUObject", "ReloadingPackages", "Reloading Packages"));
+	ReloadingPackagesSlowTask.MakeDialogDelayed(3.0f);
 
 	// Cache the current dirty state of all packages so we can restore it after the reload
 	TSet<FName> DirtyPackages;
@@ -496,7 +508,7 @@ void ReloadPackages(const TArrayView<FReloadPackageData>& InPackagesToReload, TA
 	PackageReloadInternal::FExistingPackageReferences ExistingPackages;
 	ExistingPackages.Refs.Reserve(InPackagesToReload.Num());
 	{
-		FScopedSlowTask PreparingPackagesForReloadSlowTask(InPackagesToReload.Num(), NSLOCTEXT("CoreUObject", "PreparingPackagesForReload", "Preparing Packages for Reload"));
+		FScopedSlowTask PreparingPackagesForReloadSlowTask((float)InPackagesToReload.Num(), NSLOCTEXT("CoreUObject", "PreparingPackagesForReload", "Preparing Packages for Reload"));
 
 		for (const FReloadPackageData& PackageToReloadData : InPackagesToReload)
 		{
@@ -552,7 +564,7 @@ void ReloadPackages(const TArrayView<FReloadPackageData>& InPackagesToReload, TA
 
 			const int32 NumPackagesInBatch = PackageIndex - BatchStartIndex;
 
-			FScopedSlowTask FixingUpReferencesSlowTask((NumPackagesInBatch * 4) + GUObjectArray.GetObjectArrayNum(), NSLOCTEXT("CoreUObject", "FixingUpReferences", "Fixing-Up References"));
+			FScopedSlowTask FixingUpReferencesSlowTask((float)((NumPackagesInBatch * 4) + GUObjectArray.GetObjectArrayNum()), NSLOCTEXT("CoreUObject", "FixingUpReferences", "Fixing-Up References"));
 
 			// Pre-pass to notify things that the package old package is about to be fixed-up
 			TMap<UObject*, PackageReloadInternal::FObjectAndPackageIndex> OldObjectToNewData;
@@ -577,7 +589,7 @@ void ReloadPackages(const TArrayView<FReloadPackageData>& InPackagesToReload, TA
 
 			// Main pass to go through and fix-up any references pointing to data from the old package to point to data from the new package
 			// todo: multi-thread this like FHotReloadModule::ReplaceReferencesToReconstructedCDOs?
-			for (FThreadSafeObjectIterator ObjIter(UObject::StaticClass(), false, RF_NoFlags, EInternalObjectFlags::PendingKill); ObjIter; ++ObjIter)
+			for (FThreadSafeObjectIterator ObjIter(UObject::StaticClass(), false, RF_NoFlags, EInternalObjectFlags::Garbage); ObjIter; ++ObjIter)
 			{
 				UObject* PotentialReferencer = *ObjIter;
 
@@ -683,7 +695,7 @@ void ReloadPackages(const TArrayView<FReloadPackageData>& InPackagesToReload, TA
 				//{
 				//	PackageReloadInternal::DumpExternalReferences(InExistingObject, ExistingPackage);
 				//	return true; // continue
-				//}, true, RF_NoFlags, EInternalObjectFlags::PendingKill);
+				//}, true, RF_NoFlags, EInternalObjectFlags::Garbage);
 			}
 		}
 	}

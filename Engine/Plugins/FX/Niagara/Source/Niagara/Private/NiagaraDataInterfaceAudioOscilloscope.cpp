@@ -9,7 +9,6 @@
 #include "ClearQuad.h"
 #include "TextureResource.h"
 #include "Engine/Texture2D.h"
-#include "NiagaraEmitterInstanceBatcher.h"
 #include "NiagaraSystemInstance.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/Engine.h"
@@ -152,7 +151,7 @@ float FNiagaraDataInterfaceProxyOscilloscope::SampleAudio(float NormalizedPositi
 	return FMath::Lerp<float>(LowerFrameAmplitude, HigherFrameAmplitude, Fraction);
 }
 
-void UNiagaraDataInterfaceAudioOscilloscope::SampleAudio(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioOscilloscope::SampleAudio(FVectorVMExternalFunctionContext& Context)
 {
 	const int32 NumSamplesInDownsampledBuffer = GetProxyAs<FNiagaraDataInterfaceProxyOscilloscope>()->DownsampleAudioToBuffer();
 
@@ -162,7 +161,7 @@ void UNiagaraDataInterfaceAudioOscilloscope::SampleAudio(FVectorVMContext& Conte
 
 	const int32 NumChannelsInDownsampledBuffer = GetProxyAs<FNiagaraDataInterfaceProxyOscilloscope>()->GetNumChannels();
 
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		float Position = InNormalizedPos.Get();
 		int32 Channel = InChannel.Get();
@@ -179,11 +178,11 @@ int32 FNiagaraDataInterfaceProxyOscilloscope::GetNumChannels()
 	return NumChannelsInDownsampledBuffer.GetValue();
 }
 
-void UNiagaraDataInterfaceAudioOscilloscope::GetNumChannels(FVectorVMContext& Context)
+void UNiagaraDataInterfaceAudioOscilloscope::GetNumChannels(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FExternalFuncRegisterHandler<int32> OutChannel(Context);
 
-	for (int32 InstanceIdx = 0; InstanceIdx < Context.NumInstances; ++InstanceIdx)
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		*OutChannel.GetDestAndAdvance() = GetProxyAs<FNiagaraDataInterfaceProxyOscilloscope>()->GetNumChannels();
 	}
@@ -321,7 +320,7 @@ void UNiagaraDataInterfaceAudioOscilloscope::GetParameterDefinitionHLSL(const FN
 
 struct FNiagaraDataInterfaceParametersCS_AudioOscilloscope : public FNiagaraDataInterfaceParametersCS
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_AudioOscilloscope, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_AudioOscilloscope, NonVirtual);
 
 	void Bind(const FNiagaraDataInterfaceGPUParamInfo& ParameterInfo, const class FShaderParameterMap& ParameterMap)
 	{
@@ -346,6 +345,8 @@ struct FNiagaraDataInterfaceParametersCS_AudioOscilloscope : public FNiagaraData
 	LAYOUT_FIELD(FShaderResourceParameter, AudioBuffer);
 };
 
+IMPLEMENT_TYPE_LAYOUT(FNiagaraDataInterfaceParametersCS_AudioOscilloscope);
+
 IMPLEMENT_NIAGARA_DI_PARAMETER(UNiagaraDataInterfaceAudioOscilloscope, FNiagaraDataInterfaceParametersCS_AudioOscilloscope);
 
 void FNiagaraDataInterfaceProxyOscilloscope::OnUpdateResampling(int32 InResolution, float InScopeInMilliseconds)
@@ -364,7 +365,7 @@ void FNiagaraDataInterfaceProxyOscilloscope::OnUpdateResampling(int32 InResoluti
 				GPUDownsampledBuffer.Release();
 			}
 
-			GPUDownsampledBuffer.Initialize(sizeof(float), NumSamplesInBuffer, EPixelFormat::PF_R32_FLOAT, BUF_Static);
+			GPUDownsampledBuffer.Initialize(TEXT("FNiagaraDataInterfaceProxyOscilloscope_GPUDownsampledBuffer"), sizeof(float), NumSamplesInBuffer, EPixelFormat::PF_R32_FLOAT, BUF_Static);
 		});
 
 		VectorVMReadBuffer.SetNumZeroed(Resolution * AUDIO_MIXER_MAX_OUTPUT_CHANNELS);
@@ -478,15 +479,15 @@ void FNiagaraDataInterfaceProxyOscilloscope::PostAudioToGPU()
 		size_t BufferSize = DownsampledBuffer.Num() * sizeof(float);
 		if (BufferSize != 0 && !GPUDownsampledBuffer.NumBytes)
 		{
-			GPUDownsampledBuffer.Initialize(sizeof(float), Resolution * NumChannelsInDownsampledBuffer.GetValue(), EPixelFormat::PF_R32_FLOAT, BUF_Static);
+			GPUDownsampledBuffer.Initialize(TEXT("GPUDownsampledBuffer"), sizeof(float), Resolution * NumChannelsInDownsampledBuffer.GetValue(), EPixelFormat::PF_R32_FLOAT, BUF_Static);
 		}
 
 		if (GPUDownsampledBuffer.NumBytes > 0)
 		{
-			float *BufferData = static_cast<float*>(RHILockVertexBuffer(GPUDownsampledBuffer.Buffer, 0, BufferSize, EResourceLockMode::RLM_WriteOnly));
+			float *BufferData = static_cast<float*>(RHILockBuffer(GPUDownsampledBuffer.Buffer, 0, BufferSize, EResourceLockMode::RLM_WriteOnly));
 			FScopeLock ScopeLock(&DownsampleBufferLock);
 			FPlatformMemory::Memcpy(BufferData, DownsampledBuffer.GetData(), BufferSize);
-			RHIUnlockVertexBuffer(GPUDownsampledBuffer.Buffer);
+			RHIUnlockBuffer(GPUDownsampledBuffer.Buffer);
 		}
 	});
 }

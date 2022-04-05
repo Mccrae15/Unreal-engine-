@@ -144,7 +144,11 @@ bool FProjectDescriptor::Read(const FJsonObject& Object, const FString& PathToPr
 		if (FPlatformProperties::RequiresCookedData() && AdditionalPluginDirectoriesValue->Num() > 0)
 		{
 			AdditionalPluginDirectories.Empty();
-			FString RemappedDir = FPaths::ProjectDir() + TEXT("../RemappedPlugins/");
+			FString RemappedDir = FPaths::ProjectDir() / TEXT("../RemappedPlugins/");
+			if (FPaths::IsRelative(RemappedDir))
+			{
+				RemappedDir = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*RemappedDir);
+			}
 			AddPluginDirectory(RemappedDir);
 		}
 	}
@@ -184,23 +188,30 @@ bool FProjectDescriptor::Read(const FJsonObject& Object, const FString& PathToPr
 	}
 
 	// check if the project has directories for extended platforms, and assume support if it does
-	TArray<FString> ExtendedPlatforms;
-	IFileManager::Get().IterateDirectory(*(FPaths::Combine(PathToProject, TEXT("Platforms"))), [&ExtendedPlatforms](const TCHAR* InFilenameOrDirectory, const bool bInIsDirectory) -> bool
+	// however, if there were no platforms already listed, then all platforms are supported, and we don't
+	// want to add a platform or two here, because then _only_ those platforms will be supported
+	// (empty TargetPlatforms array means _all_ platforms are supported)
+	if (TargetPlatforms.Num() > 0)
 	{
-		if (bInIsDirectory)
+		TArray<FString> ExtendedPlatforms;
+		IFileManager::Get().IterateDirectory(*(FPaths::Combine(PathToProject, TEXT("Platforms"))), [&ExtendedPlatforms](const TCHAR* InFilenameOrDirectory, const bool bInIsDirectory) -> bool
 		{
-			FString LastDirectory = FPaths::GetBaseFilename(FString(InFilenameOrDirectory));
-			ExtendedPlatforms.Emplace(LastDirectory);
-		}
-		return true;
-	});
+			if (bInIsDirectory)
+			{
+				FString LastDirectory = FPaths::GetBaseFilename(FString(InFilenameOrDirectory));
+				ExtendedPlatforms.Emplace(LastDirectory);
+			}
+			return true;
+		});
 
-	const TMap<FString, FDataDrivenPlatformInfoRegistry::FPlatformInfo>& AllPlatformInfos = FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos();
-	for (const FString& ExtendedPlatform : ExtendedPlatforms)
-	{
-		if (AllPlatformInfos.Contains(ExtendedPlatform))
+		const TMap<FName, FDataDrivenPlatformInfo>& AllPlatformInfos = FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos();
+		for (const FString& ExtendedPlatform : ExtendedPlatforms)
 		{
-			TargetPlatforms.AddUnique(*ExtendedPlatform);
+			FName PlatformName(*ExtendedPlatform);
+			if (AllPlatformInfos.Contains(PlatformName))
+			{
+				TargetPlatforms.AddUnique(PlatformName);
+			}
 		}
 	}
 
@@ -339,7 +350,9 @@ const FString FProjectDescriptor::MakePathRelativeToProject(const FString& Dir, 
 
 bool FProjectDescriptor::AddPluginDirectory(const FString& Dir)
 {
+#if WITH_EDITOR
 	checkf(!FPaths::IsRelative(Dir), TEXT("%s is not an absolute path"), *Dir);
+#endif
 	check(!Dir.StartsWith(IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FPaths::ProjectPluginsDir())));
 	check(!Dir.StartsWith(IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FPaths::EnginePluginsDir())));
 

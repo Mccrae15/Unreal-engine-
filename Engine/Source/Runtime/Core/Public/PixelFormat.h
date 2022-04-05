@@ -4,6 +4,7 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Misc/EnumClassFlags.h"
 
 #if defined(PF_MAX)
 #undef PF_MAX
@@ -83,7 +84,20 @@ enum EPixelFormat
 	PF_ETC2_R11_EAC			=69,
 	PF_ETC2_RG11_EAC		=70,
 	PF_R8		            =71,
-	PF_MAX					=72,
+	PF_B5G5R5A1_UNORM       =72,
+	PF_ASTC_4x4_HDR         =73,	
+	PF_ASTC_6x6_HDR         =74,	
+	PF_ASTC_8x8_HDR         =75,	
+	PF_ASTC_10x10_HDR       =76,	
+	PF_ASTC_12x12_HDR       =77,
+	PF_G16R16_SNORM			=78,
+	PF_R8G8_UINT			=79,
+	PF_R32G32B32_UINT		=80,
+	PF_R32G32B32_SINT		=81,
+	PF_R32G32B32F			=82,
+	PF_R8_SINT				=83,	
+	PF_R64_UINT				=84,
+	PF_MAX					=85,
 };
 #define FOREACH_ENUM_EPIXELFORMAT(op) \
 	op(PF_Unknown) \
@@ -145,7 +159,6 @@ enum EPixelFormat
 	op(PF_BC7) \
 	op(PF_R8_UINT) \
 	op(PF_L8) \
-	op(PF_R8) \
 	op(PF_XGXR8) \
 	op(PF_R8G8B8A8_UINT) \
 	op(PF_R8G8B8A8_SNORM) \
@@ -155,5 +168,40 @@ enum EPixelFormat
 	op(PF_PLATFORM_HDR_1) \
 	op(PF_PLATFORM_HDR_2) \
 	op(PF_NV12) \
-	op(PF_R32G32_UINT)
+	op(PF_R32G32_UINT) \
+	op(PF_ETC2_R11_EAC) \
+	op(PF_ETC2_RG11_EAC) \
+	op(PF_R8) \
+	op(PF_B5G5R5A1_UNORM) \
+	op(PF_ASTC_4x4_HDR) \
+	op(PF_ASTC_6x6_HDR) \
+	op(PF_ASTC_8x8_HDR) \
+	op(PF_ASTC_10x10_HDR) \
+	op(PF_ASTC_12x12_HDR) \
+	op(PF_G16R16_SNORM) \
+	op(PF_R8G8_UINT) \
+	op(PF_R32G32B32_UINT) \
+	op(PF_R32G32B32_SINT) \
+	op(PF_R32G32B32F) \
+	op(PF_R8_SINT) \
+	op(PF_R64_UINT)
 
+// Defines which channel is valid for each pixel format
+enum class EPixelFormatChannelFlags : uint8
+{
+	R = 1 << 0,
+	G = 1 << 1,
+	B = 1 << 2,
+	A = 1 << 3,
+	RG = R | G,
+	RGB = R | G | B,
+	RGBA = R | G | B | A,
+
+	None = 0,
+};
+ENUM_CLASS_FLAGS(EPixelFormatChannelFlags);
+
+// EPixelFormat is currently used interchangably with uint8, and most call sites taking a uint8
+// should be updated to take an EPixelFormat instead, but in the interim this allows fixing
+// type conversion warnings
+#define UE_PIXELFORMAT_TO_UINT8(argument) static_cast<uint8>(argument)

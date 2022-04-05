@@ -12,7 +12,7 @@
 #include "Engine/EngineTypes.h"
 #include "Input/Reply.h"
 #include "Engine/GameViewportClient.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "SceneTypes.h"
 #include "Engine/Player.h"
 #include "GameFramework/OnlineReplStructs.h"
@@ -178,7 +178,7 @@ public:
 
 	/** The master viewport containing this player's view. */
 	UPROPERTY()
-	class UGameViewportClient* ViewportClient;
+	TObjectPtr<class UGameViewportClient> ViewportClient;
 
 	/** The coordinates for the upper left corner of the master viewport subregion allocated to this player. 0-1 */
 	FVector2D Origin;
@@ -204,6 +204,10 @@ public:
 	DECLARE_EVENT_TwoParams(ULocalPlayer, FOnControllerIdChanged, int32 /*NewId*/, int32 /*OldId*/);
 	FOnControllerIdChanged& OnControllerIdChanged() const { return OnControllerIdChangedEvent; }
 
+	/** Event called when this local player has been assigned to a new platform-level user */
+	DECLARE_EVENT_TwoParams(ULocalPlayer, FOnPlatformUserIdChanged, FPlatformUserId /*NewId*/, FPlatformUserId /*OldId*/);
+	FOnPlatformUserIdChanged& OnPlatformUserIdChanged() { return OnPlatformUserIdChangedEvent; }
+
 private:
 	TArray<FSceneViewStateReference> ViewStates;
 
@@ -212,6 +216,12 @@ private:
 	int32 ControllerId = INVALID_CONTROLLERID;
 
 	mutable FOnControllerIdChanged OnControllerIdChangedEvent;
+
+	/** The platform user this player is assigned to, could correspond to multiple input devices */
+	FPlatformUserId PlatformUserId;
+
+	/** Event called when platform user id changes */
+	FOnPlatformUserIdChanged OnPlatformUserIdChangedEvent;
 
 	FSubsystemCollection<ULocalPlayerSubsystem> SubsystemCollection;
 
@@ -241,15 +251,13 @@ public:
 	bool HandleExecCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleToggleDrawEventsCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	bool HandleToggleStreamingVolumesCommand( const TCHAR* Cmd, FOutputDevice& Ar );
-	bool HandleCancelMatineeCommand( const TCHAR* Cmd, FOutputDevice& Ar );
 	
 protected:
 	/**
 	 * Retrieve the viewpoint of this player.
 	 * @param OutViewInfo - Upon return contains the view information for the player.
-	 * @param StereoPass - Which stereoscopic pass, if any, to get the viewport for.  This will include eye offsetting
 	 */
-	virtual void GetViewPoint(FMinimalViewInfo& OutViewInfo, EStereoscopicPass StereoPass = eSSP_FULL) const;
+	virtual void GetViewPoint(FMinimalViewInfo& OutViewInfo) const;
 
 	/** @todo document */
 	void ExecMacro( const TCHAR* Filename, FOutputDevice& Ar );
@@ -266,8 +274,8 @@ public:
 	const FReply& GetSlateOperations() const { return SlateOperations; }
 
 	/** Get the SlateUser that this LocalPlayer corresponds to */
-	TSharedPtr<FSlateUser> GetSlateUser();
-	TSharedPtr<const FSlateUser> GetSlateUser() const;
+	virtual TSharedPtr<FSlateUser> GetSlateUser();
+	virtual TSharedPtr<const FSlateUser> GetSlateUser() const;
 
 	/**
 	 * Get the world the players actor belongs to
@@ -282,6 +290,13 @@ public:
 	 * @return GameInstance related to local player
 	 */
 	UGameInstance* GetGameInstance() const;
+
+	/**
+	 * Returns the index of this player in the Game instances local players array
+	 *
+	 * @return Index in array, will be >= 0 if this is a fully registered player
+	 */
+	int32 GetIndexInGameInstance() const;
 
 	/**
 	 * Get a Subsystem of specified type
@@ -331,14 +346,14 @@ public:
 	* @param	OutInitOptions - output view struct. Not every field is initialized, some of them are only filled in by CalcSceneView
 	* @param	Viewport - current client viewport
 	* @param	ViewDrawer - optional drawing in the view
-	* @param	StereoPass - whether we are drawing the full viewport, or a stereo left / right pass
+	* @param	StereoViewIndex - index of the view when using stereoscopy
 	* @return	true if the view options were filled in. false in various fail conditions.
 	*/
-	bool CalcSceneViewInitOptions(
-		struct FSceneViewInitOptions& OutInitOptions, 
+	virtual bool CalcSceneViewInitOptions(
+		struct FSceneViewInitOptions& OutInitOptions,
 		FViewport* Viewport,
 		class FViewElementDrawer* ViewDrawer = NULL,
-		EStereoscopicPass StereoPass = eSSP_FULL);
+		int32 StereoViewIndex = INDEX_NONE);
 
 	/**
 	 * Calculate the view settings for drawing from this view actor
@@ -348,14 +363,14 @@ public:
 	 * @param	OutViewRotation - output actor rotation
 	 * @param	Viewport - current client viewport
 	 * @param	ViewDrawer - optional drawing in the view
-	 * @param	StereoPass - whether we are drawing the full viewport, or a stereo left / right pass
+	 * @param	StereoViewIndex - index of the view when using stereoscopy
 	 */
 	virtual FSceneView* CalcSceneView(class FSceneViewFamily* ViewFamily,
-		FVector& OutViewLocation, 
-		FRotator& OutViewRotation, 
+		FVector& OutViewLocation,
+		FRotator& OutViewRotation,
 		FViewport* Viewport,
 		class FViewElementDrawer* ViewDrawer = NULL,
-		EStereoscopicPass StereoPass = eSSP_FULL );
+		int32 StereoViewIndex = INDEX_NONE);
 
 	/**
 	 * Called at creation time for internal setup
@@ -392,7 +407,7 @@ public:
 	virtual void SendSplitJoin(TArray<FString>& Options);
 	
 	/**
-	 * Change the ControllerId for this player; if the specified ControllerId is already taken by another player, changes the ControllerId
+	 * Change the physical ControllerId for this player; if the specified ControllerId is already taken by another player, changes the ControllerId
 	 * for the other player to the ControllerId currently in use by this player.
 	 *
 	 * @param	NewControllerId		the ControllerId to assign to this player.
@@ -400,9 +415,25 @@ public:
 	virtual void SetControllerId(int32 NewControllerId);
 
 	/**
-	 * Returns the controller ID for the player
+	 * Returns the physical controller ID for the player
 	 */
 	int32 GetControllerId() const { return ControllerId; }
+
+	/**
+	 * Changes the platform user that is assigned to this player
+	 */
+	virtual void SetPlatformUserId(FPlatformUserId InPlatformUserId);
+
+	/**
+	 * Returns the platform user that is assigned to this player
+	 */
+	FPlatformUserId GetPlatformUserId() const { return PlatformUserId; }
+
+	/**
+	 * Returns the logical local player index where 0 is the first player
+	 * By default, this uses index in the game instance array
+	 */
+	virtual int32 GetLocalPlayerIndex() const;
 
 	/** 
 	 * Retrieves this player's name/tag from the online subsystem
@@ -423,12 +454,16 @@ public:
 	 */
 	virtual FString GetGameLoginOptions() const { return TEXT(""); }
 
-	/** 
-	 * Retrieves this player's unique net ID from the online subsystem 
+	// This should be deprecated when engine code has been changed to expect FPlatformUserId
+	// UE_DEPRECATED(5.x, "Use GetUniqueNetIdForPlatformUser instead")
+	FUniqueNetIdRepl GetUniqueNetIdFromCachedControllerId() const;
+
+	/**
+	 * Retrieves this player's unique net ID from the online subsystem using the platform user Id
 	 *
 	 * @return unique Id associated with this player
 	 */
-	FUniqueNetIdRepl GetUniqueNetIdFromCachedControllerId() const;
+	virtual FUniqueNetIdRepl GetUniqueNetIdForPlatformUser() const;
 
 	/** 
 	 * Retrieves this player's unique net ID that was previously cached
@@ -438,16 +473,22 @@ public:
 	FUniqueNetIdRepl GetCachedUniqueNetId() const;
 
 	/** Sets the players current cached unique net id */
+	UE_DEPRECATED(5.0, "Use SetCachedUniqueNetId with FUniqueNetIdRepl")
 	void SetCachedUniqueNetId(FUniqueNetIdPtr NewUniqueNetId);
+	/** Sets the players current cached unique net id */
+	UE_DEPRECATED(5.0, "Use SetCachedUniqueNetId with FUniqueNetIdRepl")
+	void SetCachedUniqueNetId(TYPE_OF_NULLPTR);
+	/** Sets the players current cached unique net id */
+	void SetCachedUniqueNetId(const FUniqueNetIdRepl& NewUniqueNetId);
 
 	/** 
 	 * Retrieves the preferred unique net id. This is for backwards compatibility for games that don't use the cached unique net id logic
 	 *
 	 * @return unique Id associated with this player
 	 */
-	FUniqueNetIdRepl GetPreferredUniqueNetId() const;
+	virtual FUniqueNetIdRepl GetPreferredUniqueNetId() const;
 
-	/** Returns true if the cached unique net id, is the one assigned to the controller id from the OSS */
+	UE_DEPRECATED(5.0, "Platform User Id now has priority over ControllerId, these are not expected to be the same")
 	bool IsCachedUniqueNetIdPairedWithControllerId() const;
 
 	/**
@@ -475,11 +516,11 @@ public:
 	 * Helper function for deriving various bits of data needed for projection
 	 *
 	 * @param	Viewport				The ViewClient's viewport
-     * @param	StereoPass			    Whether this is a full viewport pass, or a left/right eye pass
 	 * @param	ProjectionData			The structure to be filled with projection data
+     * @param	StereoViewIndex		    The index of the view when using stereoscopy
 	 * @return  False if there is no viewport, or if the Actor is null
 	 */
-	virtual bool GetProjectionData(FViewport* Viewport, EStereoscopicPass StereoPass, FSceneViewProjectionData& ProjectionData) const;
+	virtual bool GetProjectionData(FViewport* Viewport, FSceneViewProjectionData& ProjectionData, int32 StereoViewIndex = INDEX_NONE) const;
 
 	/**
 	 * Determines whether this player is the first and primary player on their machine.
@@ -490,7 +531,7 @@ public:
 	/**
 	 * Clear cached view state.  Suitable for calling when cleaning up the world but the view state has some references objects (usually mids) owned by the world (thus preventing GC) 
 	 */
-	void CleanupViewState();
+	virtual void CleanupViewState();
 
 	/** Locked view state needs access to GetViewPoint. */
 	friend class FLockedViewState;

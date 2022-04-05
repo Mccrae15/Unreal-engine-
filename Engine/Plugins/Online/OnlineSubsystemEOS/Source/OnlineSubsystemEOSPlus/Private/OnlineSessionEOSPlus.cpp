@@ -125,6 +125,16 @@ TArray<FUniqueNetIdRef> FOnlineSessionEOSPlus::GetEOSNetIds(const TArray<FUnique
 	return EOSIds;
 }
 
+void FOnlineSessionEOSPlus::OnLoginComplete(int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId, const FString& Error)
+{
+	FUniqueNetIdRef BaseUserIdRef = GetNetIdPlus(UserId.ToString())->GetBaseNetId().ToSharedRef();
+
+	if (bWasSuccessful && PendingInviteResultsPerUser.Contains(BaseUserIdRef))
+	{
+		OnSessionUserInviteAcceptedBase(bWasSuccessful, LocalUserNum, BaseUserIdRef, *PendingInviteResultsPerUser[BaseUserIdRef]);
+	}
+}
+
 void FOnlineSessionEOSPlus::OnSessionUserInviteAcceptedBase(const bool bWasSuccessful, const int32 ControllerId, FUniqueNetIdPtr UserId, const FOnlineSessionSearchResult& InviteResult)
 {
 	if (!bWasSuccessful || !UserId.IsValid() || !InviteResult.IsValid())
@@ -151,15 +161,36 @@ void FOnlineSessionEOSPlus::OnSessionUserInviteAcceptedBase(const bool bWasSucce
 		if (!EOSUserId.IsValid())
 		{
 			UE_LOG_ONLINE(Error, TEXT("Failed to get EOS user id (%d)"), ControllerId);
+
+			FUniqueNetIdRef UserIdRef = UserId.ToSharedRef();
+
+			if (!PendingInviteResultsPerUser.Contains(UserIdRef))
+			{
+				UE_LOG_ONLINE(Verbose, TEXT("Retrying platform session invitation on successful login for user (%d)."), ControllerId);
+
+				PendingInviteResultsPerUser.Add(UserIdRef, MakeShared<FOnlineSessionSearchResult>(InviteResult));
+
+				EOSPlus->GetIdentityInterface()->AddOnLoginCompleteDelegate_Handle(ControllerId, FOnLoginCompleteDelegate::CreateRaw(this, &FOnlineSessionEOSPlus::OnLoginComplete));
+			}
+
 			return;
 		}
 		// Do a search for the EOS session
-		EOSSessionInterface->FindSessionById(*EOSUserId, *SessionId, FUniqueNetIdString(),
+		EOSSessionInterface->FindSessionById(*EOSUserId, *SessionId, *FUniqueNetIdString::EmptyId(),
 			FOnSingleSessionResultCompleteDelegate::CreateLambda([this, UserId](int32 LocalUserNum, bool bWasSuccessful, const FOnlineSessionSearchResult& EOSResult)
 			{
+				FUniqueNetIdRef UserIdRef = UserId.ToSharedRef();
+
 				FUniqueNetIdPtr PlusUserId = EOSPlus->UserInterfacePtr->GetUniquePlayerId(LocalUserNum);
 				// Now that we have the proper session trigger the invite
 				TriggerOnSessionUserInviteAcceptedDelegates(bWasSuccessful, LocalUserNum, PlusUserId, EOSResult);
+
+				if (PendingInviteResultsPerUser.Contains(UserIdRef))
+				{
+					EOSPlus->EosOSS->GetIdentityInterface()->ClearOnLoginCompleteDelegates(LocalUserNum, this);
+
+					PendingInviteResultsPerUser.Remove(UserIdRef);
+				}
 			}));
 	}
 	else
@@ -204,7 +235,7 @@ void FOnlineSessionEOSPlus::OnSessionInviteReceivedBase(const FUniqueNetId& User
 			return;
 		}
 		// Do a search for the EOS session
-		EOSSessionInterface->FindSessionById(*Id->GetEOSNetId(), *SessionId, FUniqueNetIdString(),
+		EOSSessionInterface->FindSessionById(*Id->GetEOSNetId(), *SessionId, *FUniqueNetIdString::EmptyId(),
 			FOnSingleSessionResultCompleteDelegate::CreateLambda([this, Id, FriendId, AppStr = FString(AppId)](int32 LocalUserNum, bool bWasSuccessful, const FOnlineSessionSearchResult& EOSResult)
 			{
 				// Now that we have the proper session trigger the invite
@@ -387,7 +418,7 @@ bool FOnlineSessionEOSPlus::CreateSession(const FUniqueNetId& HostingPlayerId, F
 		return EOSSessionInterface->CreateSession(*Id->GetEOSNetId(), SessionName, NewSessionSettings);
 	}
 	// Otherwise create the platform version
-	return EOSSessionInterface->CreateSession(*Id->GetBaseNetId(), SessionName, NewSessionSettings);;
+	return BaseSessionInterface->CreateSession(*Id->GetBaseNetId(), SessionName, NewSessionSettings);;
 }
 
 bool FOnlineSessionEOSPlus::StartSession(FName SessionName)

@@ -8,7 +8,8 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using OpenTracing.Util;
 
 namespace UnrealBuildTool
 {
@@ -22,7 +23,7 @@ namespace UnrealBuildTool
 		/// Whether we should just export the outdated actions list
 		/// </summary>
 		[CommandLine("-Actions=", Required = true)]
-		public FileReference ActionsFile = null;
+		public FileReference? ActionsFile = null;
 
 		/// <summary>
 		/// Main entry point
@@ -42,20 +43,20 @@ namespace UnrealBuildTool
 			Arguments.ApplyTo(BuildConfiguration);
 
 			// Read the actions file
-			List<Action> Actions;
-			using(Timeline.ScopeEvent("ActionGraph.ReadActions()"))
+			List<LinkedAction> Actions;
+			using (GlobalTracer.Instance.BuildSpan("ActionGraph.ReadActions()").StartActive())
 			{
-				Actions = ActionGraph.ImportJson(ActionsFile);
+				Actions = ActionGraph.ImportJson(ActionsFile!).ConvertAll(x => new LinkedAction(x, null));
 			}
 
 			// Link the action graph
-			using(Timeline.ScopeEvent("ActionGraph.Link()"))
+			using (GlobalTracer.Instance.BuildSpan("ActionGraph.Link()").StartActive())
 			{
 				ActionGraph.Link(Actions);
 			}
 
 			// Execute the actions
-			using (Timeline.ScopeEvent("ActionGraph.ExecuteActions()"))
+			using (GlobalTracer.Instance.BuildSpan("ActionGraph.ExecuteActions()").StartActive())
 			{
 				ActionGraph.ExecuteActions(BuildConfiguration, Actions);
 			}

@@ -4,6 +4,7 @@
 #include "HairStrandsCore.h"
 #include "HairStrandsDatas.h"
 #include "HairCardsDatas.h"
+#include "GroomBuilder.h"
 
 #include "Math/Box.h"
 #include "RenderGraphBuilder.h"
@@ -16,7 +17,7 @@
 #include "Containers/ResourceArray.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "HAL/ConsoleManager.h"
-#include "GpuDebugRendering.h"
+#include "ShaderDebug.h"
 #include "Async/ParallelFor.h"
 #include "Misc/ScopedSlowTask.h"
 #include "CommonRenderResources.h"
@@ -32,12 +33,14 @@
 #pragma warning(push)
 #pragma warning(disable:6294) // Ill-defined for-loop:  initial condition does not satisfy test.  Loop body not executed.
 #endif
+PRAGMA_DEFAULT_VISIBILITY_START
 THIRD_PARTY_INCLUDES_START
 #include <Eigen/Core>
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
 #include <Eigen/SparseLU>
 THIRD_PARTY_INCLUDES_END
+PRAGMA_DEFAULT_VISIBILITY_END
 #if defined(_MSC_VER) && USING_CODE_ANALYSIS
 #pragma warning(pop)
 #endif
@@ -65,14 +68,21 @@ static FAutoConsoleVariableRef CVarHairCardsAtlasMaxSample(TEXT("r.HairStrands.C
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+static FBox ToFBox3d(const FBox3f& In)
+{
+	return FBox(FVector(In.Min), FVector(In.Max));
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
 class FHairCardAtlasTextureRectVS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FHairCardAtlasTextureRectVS);
 	SHADER_USE_PARAMETER_STRUCT(FHairCardAtlasTextureRectVS, FGlobalShader)
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER(FVector, Raster_MinBound)
-		SHADER_PARAMETER(FVector, Raster_MaxBound)
+		SHADER_PARAMETER(FVector3f, Raster_MinBound)
+		SHADER_PARAMETER(FVector3f, Raster_MaxBound)
 
 		SHADER_PARAMETER(uint32, SampleCount)
 
@@ -80,9 +90,9 @@ class FHairCardAtlasTextureRectVS : public FGlobalShader
 		SHADER_PARAMETER(FIntPoint, Atlas_RectOffset)
 		SHADER_PARAMETER(FIntPoint, Atlas_RectResolution)
 
-		SHADER_PARAMETER(FVector, Raster_AxisX)
-		SHADER_PARAMETER(FVector, Raster_AxisY)
-		SHADER_PARAMETER(FVector, Raster_AxisZ)
+		SHADER_PARAMETER(FVector3f, Raster_AxisX)
+		SHADER_PARAMETER(FVector3f, Raster_AxisY)
+		SHADER_PARAMETER(FVector3f, Raster_AxisZ)
 
 		SHADER_PARAMETER(uint32, Curve_VertexOffset)
 		SHADER_PARAMETER(uint32, Curve_VertexCount)
@@ -108,9 +118,9 @@ class FHairCardAtlasTextureRectPS : public FGlobalShader
 	using FPermutationDomain = TShaderPermutationDomain<FOutput>;
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
-		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderDrawDebugParameters, ShaderDrawParameters)
-		SHADER_PARAMETER(FVector, Raster_MinBound)
-		SHADER_PARAMETER(FVector, Raster_MaxBound)
+		SHADER_PARAMETER_STRUCT_INCLUDE(ShaderDrawDebug::FShaderParameters, ShaderDrawParameters)
+		SHADER_PARAMETER(FVector3f, Raster_MinBound)
+		SHADER_PARAMETER(FVector3f, Raster_MaxBound)
 		
 		SHADER_PARAMETER(uint32, SampleCount)
 
@@ -118,9 +128,9 @@ class FHairCardAtlasTextureRectPS : public FGlobalShader
 		SHADER_PARAMETER(FIntPoint, Atlas_RectOffset)
 		SHADER_PARAMETER(FIntPoint, Atlas_RectResolution)
 
-		SHADER_PARAMETER(FVector, Raster_AxisX)
-		SHADER_PARAMETER(FVector, Raster_AxisY)
-		SHADER_PARAMETER(FVector, Raster_AxisZ)
+		SHADER_PARAMETER(FVector3f, Raster_AxisX)
+		SHADER_PARAMETER(FVector3f, Raster_AxisY)
+		SHADER_PARAMETER(FVector3f, Raster_AxisZ)
 
 		SHADER_PARAMETER(uint32,	Curve_TotalVertexCount)
 		SHADER_PARAMETER(uint32,	Curve_VertexOffset)
@@ -144,6 +154,7 @@ IMPLEMENT_GLOBAL_SHADER(FHairCardAtlasTextureRectPS, "/Engine/Private/HairStrand
 
 static void AddCardsTracingPass(
 	FRDGBuilder& GraphBuilder,
+	FGlobalShaderMap* ShaderMap,
 	const bool bOutputCoverageOnly,
 	const bool bClear,
 	const FHairCardsProceduralAtlas& InAtlas,
@@ -198,7 +209,6 @@ static void AddCardsTracingPass(
 		ParametersPS->RenderTargets.DepthStencil = FDepthStencilBinding(OutDepthTestTexture, bClear ? ERenderTargetLoadAction::EClear : ERenderTargetLoadAction::ELoad, ERenderTargetLoadAction::ELoad, FExclusiveDepthStencil::DepthWrite_StencilNop);
 	}
 
-	FGlobalShaderMap* ShaderMap = GetGlobalShaderMap(ERHIFeatureLevel::SM5);
 	FHairCardAtlasTextureRectPS::FPermutationDomain PermutationVector;
 	PermutationVector.Set<FHairCardAtlasTextureRectPS::FOutput>(bOutputCoverageOnly ? 1 : 0);
 	TShaderMapRef<FHairCardAtlasTextureRectVS> VertexShader(ShaderMap);
@@ -251,7 +261,7 @@ static void AddCardsTracingPass(
 			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 			GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 			SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), ParametersVS);
 			SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), *ParametersPS);
@@ -266,6 +276,7 @@ static void AddCardsTracingPass(
 
 static void AddHairCardAtlasTexturePass(
 	FRDGBuilder& GraphBuilder,
+	FGlobalShaderMap* ShaderMap,
 	const FHairCardsProceduralAtlas& InAtlas,
 	const FShaderDrawDebugData* ShaderDrawData,
 	const uint32 TotalVertexCount,
@@ -276,7 +287,7 @@ static void AddHairCardAtlasTexturePass(
 	FRDGTextureRef OutCoverageTexture,
 	FRDGTextureRef OutAttributeTexture)
 {
-	FRDGTextureRef DepthTestTexture = GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(OutAttributeTexture->Desc.Extent, PF_DepthStencil, FClearValueBinding::DepthOne, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource, 1), TEXT("CardsDepthTest"));
+	FRDGTextureRef DepthTestTexture = GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(OutAttributeTexture->Desc.Extent, PF_DepthStencil, FClearValueBinding::DepthOne, TexCreate_DepthStencilTargetable | TexCreate_ShaderResource, 1), TEXT("Hair.CardsDepthTest"));
 
 	bool bClear = true;
 	for (const FHairCardsProceduralAtlas::Rect& Rect : InAtlas.Rects)
@@ -284,6 +295,7 @@ static void AddHairCardAtlasTexturePass(
 		// 1. Generate depth/tangent/attribute
 		AddCardsTracingPass(
 			GraphBuilder,
+			ShaderMap,
 			false,
 			bClear,
 			InAtlas,
@@ -301,6 +313,7 @@ static void AddHairCardAtlasTexturePass(
 		// 2. Generate Coverage
 		AddCardsTracingPass(
 			GraphBuilder,
+			ShaderMap,
 			true,
 			bClear,
 			InAtlas,
@@ -330,14 +343,14 @@ namespace HairCards
 	{
 		float VoxelSize = 0;
 		FIntVector Resolution = FIntVector::ZeroValue;
-		FVector MinBound = FVector::ZeroVector;
-		FVector MaxBound = FVector::ZeroVector;
+		FVector3f MinBound = FVector3f::ZeroVector;
+		FVector3f MaxBound = FVector3f::ZeroVector;
 		TArray<uint32> Density;
-		TArray<FVector> Normal;
-		TArray<FVector> Tangent;
+		TArray<FVector3f> Normal;
+		TArray<FVector3f> Tangent;
 	};
 
-	inline uint32 To8bits(const FVector& T)
+	inline uint32 To8bits(const FVector3f& T)
 	{
 		uint32 X = FMath::Clamp((T.X + 1) * 0.5f, 0.f, 1.f) * 255.f;
 		uint32 Y = FMath::Clamp((T.Y + 1) * 0.5f, 0.f, 1.f) * 255.f;
@@ -345,17 +358,17 @@ namespace HairCards
 		return (0xFF & X) | ((0xFF & Y)<<8) | ((0xFF & Z)<<16);
 	}
 
-	inline FVector From8bits(const uint32& T)
+	inline FVector3f From8bits(const uint32& T)
 	{
-		return FVector(
+		return FVector3f(
 			((0xFF & (T))     / 255.f) * 2.f - 1.f,
 			((0xFF & (T>>8))  / 255.f) * 2.f - 1.f,
 			((0xFF & (T>>16)) / 255.f) * 2.f - 1.f);
 	}
 
-	inline FIntVector ToCoord(const FVector& T, const FVoxelVolume& V)
+	inline FIntVector ToCoord(const FVector3f& T, const FVoxelVolume& V)
 	{
-		const FVector C = (T  - V.MinBound) / V.VoxelSize;
+		const FVector3f C = (T  - V.MinBound) / V.VoxelSize;
 		return FIntVector(
 			FMath::Clamp(FMath::FloorToInt(C.X), 0, V.Resolution.X-1), 
 			FMath::Clamp(FMath::FloorToInt(C.Y), 0, V.Resolution.Y-1), 
@@ -424,7 +437,7 @@ namespace HairCards
 		NonVisibleCoord.Reserve(Out.Density.Num() * 0.5f); // Guesstimate
 		VisibleCoord.Reserve(Out.Density.Num() * 0.5f); // Guesstimate
 
-		const FVector CenterBoundCoord = FVector(Out.Resolution) * 0.5f;
+		const FVector3f CenterBoundCoord = FVector3f(Out.Resolution) * 0.5f;
 
 		const TArray<FIntVector> Kernel1 = CreateKernelCoord(1, Out);
 		const TArray<FIntVector> Kernel2 = CreateKernelCoord(2, Out);
@@ -437,7 +450,7 @@ namespace HairCards
 			{
 				const FIntVector Coord(X,Y,Z);
 				const uint32 LinearCoord = ToLinearCoord(Coord, Out);
-				Out.Normal[LinearCoord] = FVector::ZeroVector;
+				Out.Normal[LinearCoord] = FVector3f::ZeroVector;
 
 				const uint32 CenterDensity = Out.Density[LinearCoord];
 				if (CenterDensity == 0)
@@ -454,13 +467,13 @@ namespace HairCards
 				}
 
 				uint32 ValidCount = 0;
-				FVector OutDirection = FVector::ZeroVector;
+				FVector3f OutDirection = FVector3f::ZeroVector;
 				for (const FIntVector& Offset : Kernel1)
 				{
 					const FIntVector C = Coord + Offset;
 					if (Offset != FIntVector::ZeroValue && IsEmpty(C, Out))
 					{
-						OutDirection += FVector(Offset).GetSafeNormal();
+						OutDirection += FVector3f(Offset).GetSafeNormal();
 						ValidCount++;
 					}
 				}
@@ -469,16 +482,16 @@ namespace HairCards
 				Out.Normal[LinearCoord] = OutDirection.GetSafeNormal();
 
 				// If nothing has been found in a 1x1 kernel, try to look for further
-				if (Out.Normal[LinearCoord] == FVector::ZeroVector)
+				if (Out.Normal[LinearCoord] == FVector3f::ZeroVector)
 				{
 					ValidCount = 0;
-					OutDirection = FVector::ZeroVector;
+					OutDirection = FVector3f::ZeroVector;
 					for (const FIntVector& Offset : Kernel2)
 					{
 						const FIntVector C = Coord + Offset;
 						if (Offset != FIntVector::ZeroValue && IsEmpty(C, Out))
 						{
-							OutDirection += FVector(Offset).GetSafeNormal();
+							OutDirection += FVector3f(Offset).GetSafeNormal();
 							ValidCount++;
 						}
 					}
@@ -486,9 +499,9 @@ namespace HairCards
 					Out.Normal[LinearCoord] = OutDirection.GetSafeNormal();
 
 					// Nothing has been found, so use the center of the bound
-					if (Out.Normal[LinearCoord] != FVector::ZeroVector)
+					if (Out.Normal[LinearCoord] != FVector3f::ZeroVector)
 					{
-						Out.Normal[LinearCoord] = (FVector(Coord) - CenterBoundCoord).GetSafeNormal();
+						Out.Normal[LinearCoord] = (FVector3f(Coord) - CenterBoundCoord).GetSafeNormal();
 					}
 				}
 			}
@@ -496,8 +509,8 @@ namespace HairCards
 
 		// Filter normal on the iso surface
 		{	
-			TArray<FVector> OutNormal;
-			OutNormal.Init(FVector::ZeroVector, Out.Normal.Num());
+			TArray<FVector3f> OutNormal;
+			OutNormal.Init(FVector3f::ZeroVector, Out.Normal.Num());
 
 			// Filter only voxel which have valid normals
 			for (const FIntVector& Coord : VisibleCoord)
@@ -505,7 +518,7 @@ namespace HairCards
 				const uint32 LinearCoord = ToLinearCoord(Coord, Out);
 
 				uint32 ValidCount = 0;
-				FVector OutDirection = FVector::ZeroVector;
+				FVector3f OutDirection = FVector3f::ZeroVector;
 				for (const FIntVector& Offset : Kernel2)
 				{
 					const FIntVector C = Coord + Offset;
@@ -514,7 +527,7 @@ namespace HairCards
 					{
 						const uint32 LinearC = ToLinearCoord(C, Out);
 
-						const bool bIsSampleValid = Out.Normal[LinearC] != FVector::ZeroVector;
+						const bool bIsSampleValid = Out.Normal[LinearC] != FVector3f::ZeroVector;
 						if (bIsSampleValid)
 						{
 							OutNormal[LinearCoord]  += Out.Normal[LinearC].GetSafeNormal() * w;
@@ -530,7 +543,7 @@ namespace HairCards
 				else
 				{
 					// Generate normal oriented as a surounding sphere
-					OutNormal[LinearCoord] = (FVector(Coord) - FVector(CenterBoundCoord)).GetSafeNormal();
+					OutNormal[LinearCoord] = (FVector3f(Coord) - FVector3f(CenterBoundCoord)).GetSafeNormal();
 				}
 			}
 
@@ -547,19 +560,19 @@ namespace HairCards
 			for (const FIntVector& Coord : NonVisibleCoord)
 			{
 				const uint32 LinearCoord = ToLinearCoord(Coord, Out);
-				check(Out.Normal[LinearCoord] == FVector::ZeroVector);
-				Out.Normal[LinearCoord] = FVector::ZeroVector;
+				check(Out.Normal[LinearCoord] == FVector3f::ZeroVector);
+				Out.Normal[LinearCoord] = FVector3f::ZeroVector;
 
 				uint32 ValidCount = 0;
-				FVector OutDirection = FVector::ZeroVector;
+				FVector3f OutDirection = FVector3f::ZeroVector;
 				for (const FIntVector& Offset : Kernel1)
 				{
 					const FIntVector C = Coord + Offset;
 					if (IsInside(C, Out) && Offset != FIntVector::ZeroValue)
 					{
 						const uint32 LinearC = ToLinearCoord(C, Out);
-						const FVector SNormal = Out.Normal[LinearC];
-						if (SNormal != FVector::ZeroVector)
+						const FVector3f SNormal = Out.Normal[LinearC];
+						if (SNormal != FVector3f::ZeroVector)
 						{
 							OutDirection += SNormal;
 							ValidCount++;
@@ -587,7 +600,7 @@ namespace HairCards
 	{	
 		const TArray<FIntVector> Kernel2 = CreateKernelCoord(2, Out);
 
-		TArray<FVector> OutTangent;
+		TArray<FVector3f> OutTangent;
 		OutTangent.SetNum(Out.Tangent.Num());
 
 		for (int32 Z = 0; Z < Out.Resolution.Z; ++Z)
@@ -596,14 +609,14 @@ namespace HairCards
 		{
 			const FIntVector Coord(X,Y,Z);
 			const uint32 LinearCoord = ToLinearCoord(Coord, Out);
-			OutTangent[LinearCoord] = FVector::ZeroVector;
+			OutTangent[LinearCoord] = FVector3f::ZeroVector;
 
 			const uint32 CenterDensity = Out.Density[LinearCoord];
 			if (CenterDensity == 0)
 				continue;
 
 			uint32 ValidCount = 0;
-			FVector OutDirection = FVector::ZeroVector;
+			FVector3f OutDirection = FVector3f::ZeroVector;
 			for (const FIntVector& Offset : Kernel2)
 			{
 				const FIntVector C = Coord + Offset;
@@ -629,16 +642,16 @@ namespace HairCards
 
 	void VoxelizeGroom(const FHairStrandsDatas& InData, const uint32 InResolution, FVoxelVolume& Out)
 	{
-		const FVector BoundSize = InData.BoundingBox.Max - InData.BoundingBox.Min;
+		const FVector3f BoundSize = FVector3f(InData.BoundingBox.Max - InData.BoundingBox.Min);
 		Out.VoxelSize = FMath::Max3(BoundSize.X, BoundSize.Y, BoundSize.Z) / InResolution;
 
 		Out.Resolution = FIntVector(FMath::CeilToFloat(BoundSize.X / Out.VoxelSize), FMath::CeilToFloat(BoundSize.Y / Out.VoxelSize), FMath::CeilToFloat(BoundSize.Z / Out.VoxelSize));
-		Out.MinBound   = InData.BoundingBox.Min;
-		Out.MaxBound   = FVector(Out.Resolution) * Out.VoxelSize + InData.BoundingBox.Min;
+		Out.MinBound   = (FVector3f)InData.BoundingBox.Min;
+		Out.MaxBound   = (FVector3f)Out.Resolution * Out.VoxelSize + (FVector3f)InData.BoundingBox.Min;
 
 		const uint32 TotalVoxelCount = Out.Resolution.X * Out.Resolution.Y * Out.Resolution.Z;
 		Out.Density.Init(0, TotalVoxelCount);
-		Out.Tangent.Init(FVector::ZeroVector, TotalVoxelCount);
+		Out.Tangent.Init(FVector3f::ZeroVector, TotalVoxelCount);
 
 		// Fill in voxel (TODO: make it parallel)
 		const uint32 CurveCount = InData.StrandsCurves.Num();
@@ -649,10 +662,10 @@ namespace HairCards
 			
 			for (uint32 PointIndex = 0; PointIndex < PointCount-1; ++PointIndex)
 			{
-				const FVector& P0 = InData.StrandsPoints.PointsPosition[PointOffset + PointIndex];
-				const FVector& P1 = InData.StrandsPoints.PointsPosition[PointOffset + PointIndex + 1];
-				const FVector Segment = P1 - P0;
-				const FVector T = Segment.GetSafeNormal();
+				const FVector3f& P0 = InData.StrandsPoints.PointsPosition[PointOffset + PointIndex];
+				const FVector3f& P1 = InData.StrandsPoints.PointsPosition[PointOffset + PointIndex + 1];
+				const FVector3f Segment = P1 - P0;
+				const FVector3f T = Segment.GetSafeNormal();
 				//const uint32 T8bits = To8bits(T);
 
 				const float Length = Segment.Size();
@@ -660,7 +673,7 @@ namespace HairCards
 				uint32 PrevLinearCoord = ~0;
 				for (uint32 StepIt = 0; StepIt < StepCount+1; ++StepIt)
 				{
-					const FVector P = P0 + Segment * StepIt / float(StepCount);
+					const FVector3f P = P0 + Segment * StepIt / float(StepCount);
 					const FIntVector Coord = ToCoord(P, Out);
 					const uint32 LinearCoord = ToLinearCoord(Coord, Out);
 					if (LinearCoord != PrevLinearCoord)
@@ -680,7 +693,7 @@ namespace HairCards
 		FilterTangent(Out);
 	}
 
-	FVector GetTangent(const FVector InP, const FVoxelVolume& InV)
+	FVector3f GetTangent(const FVector3f InP, const FVoxelVolume& InV)
 	{
 		const FIntVector Coord = ToCoord(InP, InV);
 		const uint32 LinearCoord = ToLinearCoord(Coord, InV);
@@ -688,7 +701,7 @@ namespace HairCards
 		return InV.Tangent[LinearCoord].GetSafeNormal();
 	}
 
-	FVector GetNormal(const FVector InP, const FVoxelVolume& InV)
+	FVector3f GetNormal(const FVector3f InP, const FVoxelVolume& InV)
 	{
 		const FIntVector Coord = ToCoord(InP, InV);
 		const uint32 LinearCoord = ToLinearCoord(Coord, InV);
@@ -696,7 +709,7 @@ namespace HairCards
 		return InV.Normal[LinearCoord].GetSafeNormal();
 	}
 
-	void GetFrame(const FVector InP, const FVoxelVolume& InV, FVector& OutT, FVector& OutB, FVector& OutN)
+	void GetFrame(const FVector3f InP, const FVoxelVolume& InV, FVector3f& OutT, FVector3f& OutB, FVector3f& OutN)
 	{
 		const FIntVector Coord = ToCoord(InP, InV);
 		const uint32 LinearCoord = ToLinearCoord(Coord, InV);
@@ -705,13 +718,13 @@ namespace HairCards
 		// Build ortho-normal frame
 		OutT = InV.Tangent[LinearCoord].GetSafeNormal();
 		OutN = InV.Normal[LinearCoord].GetSafeNormal();
-		OutB = FVector::CrossProduct(OutN, OutT).GetSafeNormal();
-		OutN = FVector::CrossProduct(OutT, OutN).GetSafeNormal();
+		OutB = FVector3f::CrossProduct(OutN, OutT).GetSafeNormal();
+		OutN = FVector3f::CrossProduct(OutT, OutN).GetSafeNormal();
 #else
 		// Return a non-ortho-normal frame
 		OutT = InV.Tangent[LinearCoord].GetSafeNormal();
 		OutN = InV.Normal[LinearCoord].GetSafeNormal();
-		OutB = FVector::CrossProduct(OutN, OutT).GetSafeNormal();
+		OutB = FVector3f::CrossProduct(OutN, OutT).GetSafeNormal();
 #endif
 	}
 }
@@ -724,15 +737,15 @@ namespace HairCards
 {
 	struct FHairRoot
 	{
-		FVector Position;
+		FVector3f Position;
 		uint32  VertexCount;
-		FVector Normal;
+		FVector3f Normal;
 		uint32  Index;
 		float   Length;
 	};
 
 	template<uint32 NumSamples>
-	inline FVector GetCurvePosition(const FHairStrandsDatas& CurvesDatas, const uint32 CurveIndex, const uint32 SampleIndex)
+	inline FVector3f GetCurvePosition(const FHairStrandsDatas& CurvesDatas, const uint32 CurveIndex, const uint32 SampleIndex)
 	{
 		const float PointCount = CurvesDatas.StrandsCurves.CurvesCount[CurveIndex]-1.0;
 		const uint32 PointOffset = CurvesDatas.StrandsCurves.CurvesOffset[CurveIndex];
@@ -762,15 +775,15 @@ namespace HairCards
 
 		static const float DeltaCoord = 1.0f / static_cast<float>(NumSamples-1);
 
-		const FVector& RenderRoot = RenderCurvesDatas.StrandsPoints.PointsPosition[RenderCurvesDatas.StrandsCurves.CurvesOffset[RenderCurveIndex]];
-		const FVector& GuideRoot = GuideCurvesDatas.StrandsPoints.PointsPosition[GuideCurvesDatas.StrandsCurves.CurvesOffset[GuideCurveIndex]];
+		const FVector3f& RenderRoot = RenderCurvesDatas.StrandsPoints.PointsPosition[RenderCurvesDatas.StrandsCurves.CurvesOffset[RenderCurveIndex]];
+		const FVector3f& GuideRoot = GuideCurvesDatas.StrandsPoints.PointsPosition[GuideCurvesDatas.StrandsCurves.CurvesOffset[GuideCurveIndex]];
 
 		float CurveProximityMetric = 0.0;
 		float CurveShapeMetric = 0.0;
 		for (uint32 SampleIndex = 0; SampleIndex < NumSamples; ++SampleIndex)
 		{
-			const FVector GuidePosition = GetCurvePosition<NumSamples>(GuideCurvesDatas, GuideCurveIndex, SampleIndex);
-			const FVector RenderPosition = GetCurvePosition<NumSamples>(RenderCurvesDatas, RenderCurveIndex, SampleIndex);
+			const FVector3f GuidePosition = GetCurvePosition<NumSamples>(GuideCurvesDatas, GuideCurveIndex, SampleIndex);
+			const FVector3f RenderPosition = GetCurvePosition<NumSamples>(RenderCurvesDatas, RenderCurveIndex, SampleIndex);
 			const float RootWeight = FMath::Exp(-RootImportance*SampleIndex*DeltaCoord);
 
 			CurveProximityMetric += (GuidePosition - RenderPosition).Size() * RootWeight;
@@ -827,7 +840,7 @@ namespace HairCards
 		const int32 RenCurveIndex,
 		const int32 SimCurveIndex)
 	{
-		const float Metric = FVector::Dist(GuideRoot.Position, RenRoot.Position);
+		const float Metric = FVector3f::Dist(GuideRoot.Position, RenRoot.Position);
 		if (Metric < Metrics1.KMinMetrics[FMetrics::Count - 1])
 		{
 			int32 LastGuideIndex = SimCurveIndex;
@@ -869,8 +882,8 @@ namespace HairCards
 
 	struct FRootsGrid
 	{
-		FVector MinBound = FVector::ZeroVector;
-		FVector MaxBound = FVector::ZeroVector;
+		FVector3f MinBound = FVector3f::ZeroVector;
+		FVector3f MaxBound = FVector3f::ZeroVector;
 		
 		const uint32 MaxLookupDistance = 31;
 		const FIntVector GridResolution = FIntVector(32, 32, 32);
@@ -894,10 +907,10 @@ namespace HairCards
 				FMath::Clamp(CellCoord.Z, 0, GridResolution.Z - 1));
 		}
 
-		FORCEINLINE FIntVector ToCellCoord(const FVector& P) const
+		FORCEINLINE FIntVector ToCellCoord(const FVector3f& P) const
 		{
 			bool bIsValid = false;
-			const FVector F = ((P - MinBound) / (MaxBound - MinBound));
+			const FVector3f F = ((P - MinBound) / (MaxBound - MinBound));
 			const FIntVector CellCoord = FIntVector(FMath::FloorToInt(F.X * GridResolution.X), FMath::FloorToInt(F.Y * GridResolution.Y), FMath::FloorToInt(F.Z * GridResolution.Z));			
 			return ClampToVolume(CellCoord, bIsValid);
 		}
@@ -909,7 +922,7 @@ namespace HairCards
 			return CellIndex;
 		}
 
-		void InsertRoots(TArray<FHairRoot>& Roots, const FVector& InMinBound, const FVector& InMaxBound)
+		void InsertRoots(TArray<FHairRoot>& Roots, const FVector3f& InMinBound, const FVector3f& InMaxBound)
 		{
 			MinBound = InMinBound;
 			MaxBound = InMaxBound;
@@ -1180,10 +1193,10 @@ namespace HairCards
 	}
 
 	// Extract strand roots
-	static void ExtractRoots(const FHairStrandsDatas& InData, TArray<FHairRoot>& OutRoots, FVector& MinBound, FVector& MaxBound)
+	static void ExtractRoots(const FHairStrandsDatas& InData, TArray<FHairRoot>& OutRoots, FVector3f& MinBound, FVector3f& MaxBound)
 	{
-		MinBound = FVector(FLT_MAX, FLT_MAX, FLT_MAX);
-		MaxBound = FVector(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+		MinBound = FVector3f(FLT_MAX, FLT_MAX, FLT_MAX);
+		MaxBound = FVector3f(-FLT_MAX, -FLT_MAX, -FLT_MAX);
 		const uint32 CurveCount = InData.StrandsCurves.Num();
 		OutRoots.Reserve(CurveCount);
 		for (uint32 CurveIndex = 0; CurveIndex < CurveCount; ++CurveIndex)
@@ -1192,14 +1205,14 @@ namespace HairCards
 			const uint32 PointCount = InData.StrandsCurves.CurvesCount[CurveIndex];
 			const float  CurveLength = InData.StrandsCurves.CurvesLength[CurveIndex] * InData.StrandsCurves.MaxLength;
 			check(PointCount > 1);
-			const FVector& P0 = InData.StrandsPoints.PointsPosition[PointOffset];
-			const FVector& P1 = InData.StrandsPoints.PointsPosition[PointOffset + 1];
-			FVector N = (P1 - P0).GetSafeNormal();
+			const FVector3f& P0 = InData.StrandsPoints.PointsPosition[PointOffset];
+			const FVector3f& P1 = InData.StrandsPoints.PointsPosition[PointOffset + 1];
+			FVector3f N = (P1 - P0).GetSafeNormal();
 
 			// Fallback in case the initial points are too close (this happens on certain assets)
-			if (FVector::DotProduct(N, N) == 0)
+			if (FVector3f::DotProduct(N, N) == 0)
 			{
-				N = FVector(0, 0, 1);
+				N = FVector3f(0, 0, 1);
 			}
 			OutRoots.Add({ P0, PointCount, N, PointOffset, CurveLength });
 
@@ -1258,7 +1271,7 @@ namespace HairCards
 
 		if (HairStrands.GetNumCurves() > 0 && HairStrands.GetNumPoints() > 0)
 		{
-			TArray<FVector>::TIterator PositionIterator = Points.PointsPosition.CreateIterator();
+			TArray<FVector3f>::TIterator PositionIterator = Points.PointsPosition.CreateIterator();
 			TArray<float>::TIterator RadiusIterator = Points.PointsRadius.CreateIterator();
 			TArray<float>::TIterator CoordUIterator = Points.PointsCoordU.CreateIterator();
 
@@ -1280,10 +1293,10 @@ namespace HairCards
 				*OffsetIterator = StrandOffset;
 
 				float StrandLength = 0.0;
-				FVector PreviousPosition(0.0, 0.0, 0.0);
+				FVector3f PreviousPosition(0.0, 0.0, 0.0);
 				for (uint32 PointIndex = 0; PointIndex < StrandCount; ++PointIndex, ++PositionIterator, ++RadiusIterator, ++CoordUIterator)
 				{
-					HairStrands.BoundingBox += *PositionIterator;
+					HairStrands.BoundingBox += (FVector)*PositionIterator;
 
 					if (PointIndex > 0)
 					{
@@ -1381,16 +1394,16 @@ namespace HairCards
 
 		TArray<uint32>  GuidePointCount;
 		TArray<uint32>  GuidePointOffset;
-		TArray<FVector> GuidePoints;
-		TArray<FVector2D> GuideRootUVs;
+		TArray<FVector3f> GuidePoints;
+		TArray<FVector2f> GuideRootUVs;
 
 		TArray<FHairOrientedBound> Bounds;
 
 		// Cluster bound/envelop
-		TArray<FVector> BoundPositions;
-		TArray<FVector> BoundAxis_T;
-		TArray<FVector> BoundAxis_B;
-		TArray<FVector> BoundAxis_N;
+		TArray<FVector3f> BoundPositions;
+		TArray<FVector3f> BoundAxis_T;
+		TArray<FVector3f> BoundAxis_B;
+		TArray<FVector3f> BoundAxis_N;
 
 		TArray<uint32> BoundOffset;
 		TArray<uint32> BoundCount;
@@ -1455,8 +1468,8 @@ namespace HairCards
 		FRoots RenRoots, SimRoots;
 		FRootsGrid RootsGrid;
 		{
-			FVector RenMinBound, RenMaxBound;
-			FVector SimMinBound, SimMaxBound;
+			FVector3f RenMinBound, RenMaxBound;
+			FVector3f SimMinBound, SimMaxBound;
 			ExtractRoots(RenStrandsData, RenRoots, RenMinBound, RenMaxBound);
 			ExtractRoots(SimStrandsData, SimRoots, SimMinBound, SimMaxBound);
 
@@ -1464,8 +1477,8 @@ namespace HairCards
 			{
 				// Build a conservative bound, to insure all queries will fall 
 				// into the grid volume.
-				const FVector MinBound = RenMinBound.ComponentMin(SimMinBound);
-				const FVector MaxBound = RenMaxBound.ComponentMax(SimMaxBound);
+				const FVector3f MinBound = RenMinBound.ComponentMin(SimMinBound);
+				const FVector3f MaxBound = RenMaxBound.ComponentMax(SimMaxBound);
 				RootsGrid.InsertRoots(SimRoots, MinBound, MaxBound);
 			}
 		}
@@ -1624,7 +1637,7 @@ namespace HairCards
 		{
 			const uint32 SimCount  = SimStrandsData.StrandsCurves.CurvesCount[GuideIndex];
 			const uint32 SimOffset = SimStrandsData.StrandsCurves.CurvesOffset[GuideIndex];
-			const FVector2D SimRootUV = SimStrandsData.StrandsCurves.CurvesRootUV[GuideIndex];
+			const FVector2f SimRootUV = SimStrandsData.StrandsCurves.CurvesRootUV[GuideIndex];
 
 			const uint32 ClusterIt = GuideIndexToClusterIndex[GuideIndex];
 			if (GuideIndexToClusterIndex[GuideIndex] >= 0)
@@ -1642,12 +1655,12 @@ namespace HairCards
 		}
 	}
 
-	static Eigen::Matrix3f ComputeCovarianceMatrix(TArray<FVector> InPoints, FVector& Mean)
+	static Eigen::Matrix3f ComputeCovarianceMatrix(TArray<FVector3f> InPoints, FVector3f& Mean)
 	{
 		// Mean
 		const uint32 PointCount = InPoints.Num();
-		Mean = FVector::ZeroVector;
-		for (FVector& P : InPoints)
+		Mean = FVector3f::ZeroVector;
+		for (FVector3f& P : InPoints)
 		{
 			Mean += P;
 		}
@@ -1656,7 +1669,7 @@ namespace HairCards
 		// Covariance
 		Eigen::Matrix3f Out;
 		Out << 0, 0, 0, 0, 0, 0, 0, 0, 0;
-		for (FVector& P : InPoints)
+		for (FVector3f& P : InPoints)
 		{
 			Out(0, 0) += (P.X - Mean.X) * (P.X - Mean.X);
 			Out(1, 0) += (P.X - Mean.X) * (P.Y - Mean.Y);
@@ -1684,31 +1697,31 @@ namespace HairCards
 		return Out;
 	}
 
-	//static void ComputePCA(const TArray<FVector>& InPoints, FVector& Mean, FVector& B0, FVector& B1, FVector& B2)
-	static void ComputePCA(const TArray<FVector>& InPoints, const uint32 InPointOffset, const uint32 InPointCount, FVector& Mean, FVector& B0, FVector& B1, FVector& B2)
+	//static void ComputePCA(const TArray<FVector3f>& InPoints, FVector3f& Mean, FVector3f& B0, FVector3f& B1, FVector3f& B2)
+	static void ComputePCA(const TArray<FVector3f>& InPoints, const uint32 InPointOffset, const uint32 InPointCount, FVector3f& Mean, FVector3f& B0, FVector3f& B1, FVector3f& B2)
 	{
 		Eigen::Matrix3f covariance = ComputeCovarianceMatrix(InPoints, Mean);
 		Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> eigen_solver(covariance, Eigen::ComputeEigenvectors);
 		Eigen::Matrix3f eigenVectorsPCA = eigen_solver.eigenvectors();
 
-		B0 = FVector(eigenVectorsPCA.col(0)(0), eigenVectorsPCA.col(0)(1), eigenVectorsPCA.col(0)(2));
-		B1 = FVector(eigenVectorsPCA.col(1)(0), eigenVectorsPCA.col(1)(1), eigenVectorsPCA.col(1)(2));
-		B2 = FVector(eigenVectorsPCA.col(2)(0), eigenVectorsPCA.col(2)(1), eigenVectorsPCA.col(2)(2));
+		B0 = FVector3f(eigenVectorsPCA.col(0)(0), eigenVectorsPCA.col(0)(1), eigenVectorsPCA.col(0)(2));
+		B1 = FVector3f(eigenVectorsPCA.col(1)(0), eigenVectorsPCA.col(1)(1), eigenVectorsPCA.col(1)(2));
+		B2 = FVector3f(eigenVectorsPCA.col(2)(0), eigenVectorsPCA.col(2)(1), eigenVectorsPCA.col(2)(2));
 
 		B0 = B0.GetSafeNormal();
 		B1 = B1.GetSafeNormal();
 		B2 = B2.GetSafeNormal();
 
-		FVector LocalMinBound( FLT_MAX);
-		FVector LocalMaxBound(-FLT_MAX);
-		//for (const FVector& P : InPoints)
+		FVector3f LocalMinBound( FLT_MAX);
+		FVector3f LocalMaxBound(-FLT_MAX);
+		//for (const FVector3f& P : InPoints)
 		for (uint32 PointIt=0;PointIt<InPointCount;++PointIt)
 		{
-			FVector PLocal = InPoints[InPointOffset+PointIt] - Mean;
-			PLocal = FVector(
-				FVector::DotProduct(PLocal, B0),
-				FVector::DotProduct(PLocal, B1),
-				FVector::DotProduct(PLocal, B2));
+			FVector3f PLocal = InPoints[InPointOffset+PointIt] - Mean;
+			PLocal = FVector3f(
+				FVector3f::DotProduct(PLocal, B0),
+				FVector3f::DotProduct(PLocal, B1),
+				FVector3f::DotProduct(PLocal, B2));
 
 			LocalMinBound.X = FMath::Min(LocalMinBound.X, PLocal.X);
 			LocalMinBound.Y = FMath::Min(LocalMinBound.Y, PLocal.Y);
@@ -1720,17 +1733,17 @@ namespace HairCards
 		}
 
 		// Recompte the new mean in local space, and then compute its world position
-		const FVector LocalMean(
+		const FVector3f LocalMean(
 			(LocalMaxBound.X + LocalMinBound.X) * 0.5f,
 			(LocalMaxBound.Y + LocalMinBound.Y) * 0.5f,
 			(LocalMaxBound.Z + LocalMinBound.Z) * 0.5f);
 
-		const FVector LocalExtent(
+		const FVector3f LocalExtent(
 			(LocalMaxBound.X - LocalMinBound.X) * 0.5f,
 			(LocalMaxBound.Y - LocalMinBound.Y) * 0.5f,
 			(LocalMaxBound.Z - LocalMinBound.Z) * 0.5f);
 
-		const FVector MeanPrime = Mean + B0 * LocalMean.X + B1 * LocalMean.Y + B2 * LocalMean.Z;
+		const FVector3f MeanPrime = Mean + B0 * LocalMean.X + B1 * LocalMean.Y + B2 * LocalMean.Z;
 		Mean = MeanPrime;
 
 		B0 *= LocalExtent.X;
@@ -1738,14 +1751,14 @@ namespace HairCards
 		B2 *= LocalExtent.Z;
 	}
 
-	static FHairOrientedBound ComputeOrientedBoundingBox(const TArray<FVector>& InPoints)
+	static FHairOrientedBound ComputeOrientedBoundingBox(const TArray<FVector3f>& InPoints)
 	{
 		FHairOrientedBound Out;
 		ComputePCA(InPoints, 0, InPoints.Num(), Out.Center, Out.ExtentX, Out.ExtentY, Out.ExtentZ);
 		return Out;
 	}
 
-	static FHairOrientedBound ComputeOrientedBoundingBox(const TArray<FVector>& InPoints, const uint32 InPointOffset, const uint32 InPointCount)
+	static FHairOrientedBound ComputeOrientedBoundingBox(const TArray<FVector3f>& InPoints, const uint32 InPointOffset, const uint32 InPointCount)
 	{
 		FHairOrientedBound Out;
 		ComputePCA(InPoints, InPointOffset, InPointCount, Out.Center, Out.ExtentX, Out.ExtentY, Out.ExtentZ);
@@ -1764,7 +1777,7 @@ namespace HairCards
 	// Returns the axis index by decreasing size
 	static void GetSortedAxis(const FHairOrientedBound& B, uint8& Axis0, uint8& Axis1, uint8& Axis2)
 	{
-		float Size[3] = { B.ExtentX.Size(), B.ExtentY.Size(), B.ExtentZ.Size() };
+		float Size[3] = { (float)B.ExtentX.Size(), (float)B.ExtentY.Size(), (float)B.ExtentZ.Size() };
 		uint8 Axis[3] = { 0, 1, 2 };
 		if (Size[0] < Size[1]) { Swap(Axis[0], Axis[1]); Swap(Size[0], Size[1]); }
 		if (Size[1] < Size[2]) { Swap(Axis[1], Axis[2]); Swap(Size[1], Size[2]); }
@@ -1776,26 +1789,26 @@ namespace HairCards
 	}
 
 
-	inline FVector ToLocal(
-		const FVector& InCenter, 
-		const FVector& InAxisX, 
-		const FVector& InAxisY, 
-		const FVector& InAxisZ, 
-		const FVector& InP)
+	inline FVector3f ToLocal(
+		const FVector3f& InCenter, 
+		const FVector3f& InAxisX, 
+		const FVector3f& InAxisY, 
+		const FVector3f& InAxisZ, 
+		const FVector3f& InP)
 	{
-		const FVector Local = InP - InCenter;
-		return FVector(
-			FVector::DotProduct(Local, InAxisX),
-			FVector::DotProduct(Local, InAxisY),
-			FVector::DotProduct(Local, InAxisZ));
+		const FVector3f Local = InP - InCenter;
+		return FVector3f(
+			FVector3f::DotProduct(Local, InAxisX),
+			FVector3f::DotProduct(Local, InAxisY),
+			FVector3f::DotProduct(Local, InAxisZ));
 	}
 
-	inline FVector ToWorld(
-		const FVector& InCenter,
-		const FVector& InAxisX,
-		const FVector& InAxisY,
-		const FVector& InAxisZ,
-		const FVector& InP)
+	inline FVector3f ToWorld(
+		const FVector3f& InCenter,
+		const FVector3f& InAxisX,
+		const FVector3f& InAxisY,
+		const FVector3f& InAxisZ,
+		const FVector3f& InP)
 	{
 		return 
 			InCenter + 
@@ -1804,13 +1817,13 @@ namespace HairCards
 			InP.Z * InAxisZ;
 	}
 
-	inline FVector ToLocal(const FHairOrientedBound& InB, const FVector& InP)
+	inline FVector3f ToLocal(const FHairOrientedBound& InB, const FVector3f& InP)
 	{
 		return ToLocal(InB.Center, InB.ExtentX, InB.ExtentY, InB.ExtentZ, InP);
 	}
 
 
-	static void GetOBBPlane(const FHairOrientedBound& InB, FVector& OutT, FVector& OutB, FVector& OutN)
+	static void GetOBBPlane(const FHairOrientedBound& InB, FVector3f& OutT, FVector3f& OutB, FVector3f& OutN)
 	{
 		uint8 Axis0;
 		uint8 Axis1; 
@@ -1833,13 +1846,13 @@ namespace HairCards
 		Out1.Extent(Axis) = In.Extent(Axis) * 0.5f;
 	}
 
-	static TArray<FVector> Inside(const TArray<FVector>& InPoints, const FHairOrientedBound& InBound)
+	static TArray<FVector3f> Inside(const TArray<FVector3f>& InPoints, const FHairOrientedBound& InBound)
 	{
-		TArray<FVector> Out;
+		TArray<FVector3f> Out;
 		Out.Reserve(InPoints.Num() / 2);
-		for (const FVector& P : InPoints)
+		for (const FVector3f& P : InPoints)
 		{
-			FVector PLocal = ToLocal(InBound, P);
+			FVector3f PLocal = ToLocal(InBound, P);
 			const bool bInside =
 				FMath::Abs(PLocal.X) <= 1 &&
 				FMath::Abs(PLocal.Y) <= 1 &&
@@ -1854,7 +1867,7 @@ namespace HairCards
 		return Out;
 	}
 
-	static void ComputeOrientedBoundingBoxes(const TArray<FVector>& InPoints, float MinSectionLength, TArray<FHairOrientedBound>& Out, TArray<FHairOrientedBound>& OutAll, uint8 Depth=0, uint8 MaxDepth=0)
+	static void ComputeOrientedBoundingBoxes(const TArray<FVector3f>& InPoints, float MinSectionLength, TArray<FHairOrientedBound>& Out, TArray<FHairOrientedBound>& OutAll, uint8 Depth=0, uint8 MaxDepth=0)
 	{
 		const float Scale = 1.2f;
 		FHairOrientedBound B;
@@ -1880,8 +1893,8 @@ namespace HairCards
 			OutAll.Add(B0);
 			OutAll.Add(B1);
 
-			const TArray<FVector> InPoints0 = Inside(InPoints, B0);
-			const TArray<FVector> InPoints1 = Inside(InPoints, B1);
+			const TArray<FVector3f> InPoints0 = Inside(InPoints, B0);
+			const TArray<FVector3f> InPoints1 = Inside(InPoints, B1);
 			ComputeOrientedBoundingBoxes(InPoints0, MinSectionLength, Out, OutAll, Depth + 1, MaxDepth);
 			ComputeOrientedBoundingBoxes(InPoints1, MinSectionLength, Out, OutAll, Depth + 1, MaxDepth);
 		}
@@ -1891,15 +1904,15 @@ namespace HairCards
 		}
 	}
 
-	static void FindTBN(FHairOrientedBound& B0, FHairOrientedBound& B1, FVector& T, FVector& B, FVector& N)
+	static void FindTBN(FHairOrientedBound& B0, FHairOrientedBound& B1, FVector3f& T, FVector3f& B, FVector3f& N)
 	{
-		const FVector& C0 = B0.Center;
-		const FVector& C1 = B1.Center;
-		T = FVector(C1 - C0).GetSafeNormal();
+		const FVector3f& C0 = B0.Center;
+		const FVector3f& C1 = B1.Center;
+		T = FVector3f(C1 - C0).GetSafeNormal();
 
-		const float DX = FVector::DotProduct(T, B0.ExtentX);
-		const float DY = FVector::DotProduct(T, B0.ExtentY);
-		const float DZ = FVector::DotProduct(T, B0.ExtentZ);
+		const float DX = FVector3f::DotProduct(T, B0.ExtentX);
+		const float DY = FVector3f::DotProduct(T, B0.ExtentY);
+		const float DZ = FVector3f::DotProduct(T, B0.ExtentZ);
 
 		uint8 T_Axis = 0;
 		float MaxD = DX;
@@ -1923,7 +1936,7 @@ namespace HairCards
 		B = B0.Extent(B_Axis);
 	}
 
-	static void DecimateCurve(const float InAngularThresholdInDegree, const float OutTargetCount, TArray<FVector>& OutPoints)
+	static void DecimateCurve(const float InAngularThresholdInDegree, const float OutTargetCount, TArray<FVector3f>& OutPoints)
 	{
 		check(OutPoints.Num() > 2);
 		check(OutTargetCount >= 2 && OutTargetCount <= OutPoints.Num());
@@ -1939,11 +1952,11 @@ namespace HairCards
 			const uint32 Count = OutPoints.Num();
 			for (uint32 IndexIt = 1; IndexIt < Count - 1; ++IndexIt)
 			{
-				const FVector& P0 = OutPoints[IndexIt - 1];
-				const FVector& P1 = OutPoints[IndexIt];
-				const FVector& P2 = OutPoints[IndexIt + 1];
+				const FVector3f& P0 = OutPoints[IndexIt - 1];
+				const FVector3f& P1 = OutPoints[IndexIt];
+				const FVector3f& P2 = OutPoints[IndexIt + 1];
 
-				const float Area = FVector::CrossProduct(P0 - P1, P2 - P1).Size() * 0.5f;
+				const float Area = FVector3f::CrossProduct(P0 - P1, P2 - P1).Size() * 0.5f;
 
 				//     P0 .       . P2
 				//         \Inner/
@@ -1951,9 +1964,9 @@ namespace HairCards
 				// Thres(` . \^/ ) Angle
 				//    --------.---------
 				//            P1
-				const FVector V0 = (P0 - P1).GetSafeNormal();
-				const FVector V1 = (P2 - P1).GetSafeNormal();
-				const float InnerAngle = FMath::Abs(FMath::Acos(FVector::DotProduct(V0, V1)));
+				const FVector3f V0 = (P0 - P1).GetSafeNormal();
+				const FVector3f V1 = (P2 - P1).GetSafeNormal();
+				const float InnerAngle = FMath::Abs(FMath::Acos(FVector3f::DotProduct(V0, V1)));
 				const float Angle = (PI - InnerAngle) * 0.5f;
 
 				if (Area < MinError && Angle < AngularThresholdInRad)
@@ -1998,11 +2011,11 @@ namespace HairCards
 			// Select the longest strands
 			// Compute initial size based on the root positions
 			float RootRadius = 0;
-			FVector RootCenter = FVector::ZeroVector;
+			FVector3f RootCenter = FVector3f::ZeroVector;
 			uint32 LongestCurveIndex = 0;
 			float LongestLength = 0;
-			FVector2D RootUV(0, 0);
-			TArray<FVector> Points;
+			FVector2f RootUV(0, 0);
+			TArray<FVector3f> Points;
 			Points.Reserve(CurveCount * 20); // Guess number for avoiding too much reallocation
 			for (uint32 StrandIt = 0; StrandIt < CurveCount; ++StrandIt)
 			{
@@ -2019,7 +2032,7 @@ namespace HairCards
 
 				for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 				{
-					FVector P0 = In.StrandsPoints.PointsPosition[StrandOffset + PointIt];
+					FVector3f P0 = In.StrandsPoints.PointsPosition[StrandOffset + PointIt];
 					Points.Add(P0);
 				}
 
@@ -2040,19 +2053,19 @@ namespace HairCards
 			{
 				const uint32 GuidePointCount  = Out.GuidePointCount[ClusterIt];
 				const uint32 GuidePointOffset = Out.GuidePointOffset[ClusterIt];
-				const FVector2D GuideRootUV = Out.GuideRootUVs[ClusterIt];
-				TArray<FVector> BoundPoints;
+				const FVector2f GuideRootUV = Out.GuideRootUVs[ClusterIt];
+				TArray<FVector3f> BoundPoints;
 				TArray<float> BoundLengths;
 				float TotalLength = 0;
 				for (uint32 VertexIt = 0; VertexIt < GuidePointCount; ++VertexIt)
 				{
-					const FVector& P0 = Out.GuidePoints[GuidePointOffset + VertexIt];
+					const FVector3f& P0 = Out.GuidePoints[GuidePointOffset + VertexIt];
 					BoundPoints.Add(P0);
 					BoundLengths.Add(TotalLength);
 
 					if (VertexIt > 0)
 					{
-						const FVector& PPrev = Out.GuidePoints[GuidePointOffset + VertexIt - 1];
+						const FVector3f& PPrev = Out.GuidePoints[GuidePointOffset + VertexIt - 1];
 						TotalLength += (P0 - PPrev).Size();
 					}
 				}
@@ -2068,20 +2081,20 @@ namespace HairCards
 				const float UseCurveOrientation = 1;
 				const float OrientationU = FMath::Clamp(UseCurveOrientation, 0.f, 1.0f);
 
-				FVector PrevN;
+				FVector3f PrevN;
 				for (uint32 VertexIt = 0; VertexIt < VertexCount; ++VertexIt)
 				{
-					const FVector& P0 = BoundPoints[VertexIt];
+					const FVector3f& P0 = BoundPoints[VertexIt];
 
-					FVector T = FVector::ZeroVector;
-					FVector B = FVector::ZeroVector;
-					FVector N = FVector::ZeroVector;
+					FVector3f T = FVector3f::ZeroVector;
+					FVector3f B = FVector3f::ZeroVector;
+					FVector3f N = FVector3f::ZeroVector;
 					GetFrame(P0, InVoxels, T, B, N);
 
 					if (VertexIt == 0)
 					{
 						// Bias the initial normal by assuming the groom is centered aroung a head (spherical hypothesis)
-						const FVector StartN = (P0- In.BoundingBox.GetCenter()).GetSafeNormal();
+						const FVector3f StartN = (FVector3f)((FVector)P0 - In.BoundingBox.GetCenter()).GetSafeNormal();
 						//PrevN = N;
 						PrevN = StartN;
 					}
@@ -2089,30 +2102,30 @@ namespace HairCards
 					const float LengthU = BoundLengths[VertexIt] / TotalLength;
 					PrevN = FMath::Lerp(N, PrevN, FMath::Lerp(LengthU, 1.f, OrientationU));
 
-					FVector PT;
+					FVector3f PT;
 					if (VertexIt > 0 && VertexIt < VertexCount - 1)
 					{
-						const FVector& PPrev = BoundPoints[VertexIt - 1];
-						const FVector& PNext = BoundPoints[VertexIt + 1];
+						const FVector3f& PPrev = BoundPoints[VertexIt - 1];
+						const FVector3f& PNext = BoundPoints[VertexIt + 1];
 
 						PT = ((P0 - PPrev).GetSafeNormal() + (PNext - P0).GetSafeNormal()).GetSafeNormal();
 					}
 					else if (VertexIt == 0)
 					{
-						const FVector& PNext = BoundPoints[VertexIt + 1];
+						const FVector3f& PNext = BoundPoints[VertexIt + 1];
 						PT = (PNext - P0).GetSafeNormal();
 					}
 					else if (VertexIt == VertexCount - 1)
 					{
-						const FVector& PPrev = BoundPoints[VertexIt - 1];
+						const FVector3f& PPrev = BoundPoints[VertexIt - 1];
 						PT = (P0 - PPrev).GetSafeNormal();
 					}
 
 					if (PT.Size() > 0)
 					{
 						T = PT;
-						B = FVector::CrossProduct(PrevN, T).GetSafeNormal();
-						N = FVector::CrossProduct(T, B).GetSafeNormal();
+						B = FVector3f::CrossProduct(PrevN, T).GetSafeNormal();
+						N = FVector3f::CrossProduct(T, B).GetSafeNormal();
 					}
 
 					Out.BoundAxis_T.Add(T);
@@ -2234,19 +2247,19 @@ namespace HairCards
 
 				float CardMaxWidth = 0;
 				float CardLength = 0;
-				FVector PrevP0(0, 0, 0);
-				FVector PrevT(0, 0, 0);
+				FVector3f PrevP0(0, 0, 0);
+				FVector3f PrevT(0, 0, 0);
 				const uint32 StartVertexIt = VertexIt;
 				const uint32 StartIndexIt = IndexIt;
 				for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 				{
 					// Simple geometric normal based on adjacent vertices
-					const FVector P0 = InClusters.BoundPositions[PointOffset + PointIt];
-					FVector T;
+					const FVector3f P0 = InClusters.BoundPositions[PointOffset + PointIt];
+					FVector3f T;
 					float SegmentLength = 0;
 					if (PointIt < PointCount - 1)
 					{
-						const FVector P1 = InClusters.BoundPositions[PointOffset + PointIt + 1];
+						const FVector3f P1 = InClusters.BoundPositions[PointOffset + PointIt + 1];
 						SegmentLength = (P1 - P0).Size();
 						T = (P1 - P0).GetSafeNormal();
 					}
@@ -2255,8 +2268,8 @@ namespace HairCards
 						T = PrevT;
 					}
 
-					const FVector Cluster_N = InClusters.BoundAxis_N[PointOffset + PointIt];
-					const FVector B = InClusters.BoundAxis_B[PointOffset + PointIt].GetSafeNormal();
+					const FVector3f Cluster_N = InClusters.BoundAxis_N[PointOffset + PointIt];
+					const FVector3f B = InClusters.BoundAxis_B[PointOffset + PointIt].GetSafeNormal();
 					const float CardWidth = InClusters.BoundAxis_B[PointOffset + PointIt].Size();
 					CardMaxWidth = FMath::Max(CardWidth, CardMaxWidth);
 
@@ -2265,14 +2278,14 @@ namespace HairCards
 					check(FMath::IsFinite(OutCards.Positions[VertexIt].X)     && FMath::IsFinite(OutCards.Positions[VertexIt].Y)     && FMath::IsFinite(OutCards.Positions[VertexIt].Z));
 					check(FMath::IsFinite(OutCards.Positions[VertexIt + 1].X) && FMath::IsFinite(OutCards.Positions[VertexIt + 1].Y) && FMath::IsFinite(OutCards.Positions[VertexIt + 1].Z));
 
-					OutCards.Normals[VertexIt    ] = FVector::ZeroVector; //MinorAxis0;
-					OutCards.Normals[VertexIt + 1] = FVector::ZeroVector; //MinorAxis0;
+					OutCards.Normals[VertexIt    ] = FVector3f::ZeroVector; //MinorAxis0;
+					OutCards.Normals[VertexIt + 1] = FVector3f::ZeroVector; //MinorAxis0;
 
 					// Compute smooth tangent from the previous & next vertices
 					if (PointIt > 0)
 					{
-						const FVector T00 = OutCards.Positions[VertexIt]     - OutCards.Positions[VertexIt - 2];
-						const FVector T01 = OutCards.Positions[VertexIt + 1] - OutCards.Positions[VertexIt - 2 + 1];
+						const FVector3f T00 = OutCards.Positions[VertexIt]     - OutCards.Positions[VertexIt - 2];
+						const FVector3f T01 = OutCards.Positions[VertexIt + 1] - OutCards.Positions[VertexIt - 2 + 1];
 
 						OutCards.Tangents[VertexIt-2    ] = T00.GetSafeNormal();
 						OutCards.Tangents[VertexIt-2 + 1] = T01.GetSafeNormal();
@@ -2285,9 +2298,9 @@ namespace HairCards
 						}
 					}
 
-					const FVector2D& RootUV = InClusters.GuideRootUVs[ClusterIt];
-					OutCards.UVs[VertexIt    ] = FVector4(CardLength, 0, RootUV.X, RootUV.Y);
-					OutCards.UVs[VertexIt + 1] = FVector4(CardLength, 1, RootUV.X, RootUV.Y);
+					const FVector2f& RootUV = InClusters.GuideRootUVs[ClusterIt];
+					OutCards.UVs[VertexIt    ] = FVector4f(CardLength, 0, RootUV.X, RootUV.Y);
+					OutCards.UVs[VertexIt + 1] = FVector4f(CardLength, 1, RootUV.X, RootUV.Y);
 
 					OutCards.CardIndices[VertexIt]	   = CardIndex;
 					OutCards.CardIndices[VertexIt + 1] = CardIndex;
@@ -2319,19 +2332,19 @@ namespace HairCards
 					const uint32 I1 = OutCards.Indices[InnerIndexIt + 1];
 					const uint32 I2 = OutCards.Indices[InnerIndexIt + 2];
 
-					const FVector P0 = OutCards.Positions[I0];
-					const FVector P1 = OutCards.Positions[I1];
-					const FVector P2 = OutCards.Positions[I2];
+					const FVector3f P0 = OutCards.Positions[I0];
+					const FVector3f P1 = OutCards.Positions[I1];
+					const FVector3f P2 = OutCards.Positions[I2];
 
-					const FVector E0 = (P1 - P0).GetSafeNormal();
-					const FVector E1 = (P2 - P1).GetSafeNormal();
-					const FVector E2 = (P0 - P2).GetSafeNormal();
+					const FVector3f E0 = (P1 - P0).GetSafeNormal();
+					const FVector3f E1 = (P2 - P1).GetSafeNormal();
+					const FVector3f E2 = (P0 - P2).GetSafeNormal();
 
-					const FVector N = -FVector::CrossProduct(E0, -E2).GetSafeNormal();
+					const FVector3f N = -FVector3f::CrossProduct(E0, -E2).GetSafeNormal();
 
-					OutCards.Normals[I0] += N * FMath::Acos(FVector::DotProduct(E0, -E0));
-					OutCards.Normals[I1] += N * FMath::Acos(FVector::DotProduct(E1, -E1));
-					OutCards.Normals[I2] += N * FMath::Acos(FVector::DotProduct(E2, -E2));
+					OutCards.Normals[I0] += N * FMath::Acos(FVector3f::DotProduct(E0, -E0));
+					OutCards.Normals[I1] += N * FMath::Acos(FVector3f::DotProduct(E1, -E1));
+					OutCards.Normals[I2] += N * FMath::Acos(FVector3f::DotProduct(E2, -E2));
 				}
 
 				const uint32 RepresentativeRectIndex = InClusters.AtlasRectIndex[ClusterIt];
@@ -2348,10 +2361,10 @@ namespace HairCards
 					{
 						const uint32 VIndex = StartVertexIt + PointIt*2 + InnerVertexIt;
 
-						const FVector N = OutCards.Normals[VIndex].GetSafeNormal();
-						FVector T		= OutCards.Tangents[VIndex];
-						const FVector B = FVector::CrossProduct(N, T);
-						T = FVector::CrossProduct(B, N).GetSafeNormal();
+						const FVector3f N = OutCards.Normals[VIndex].GetSafeNormal();
+						FVector3f T		= OutCards.Tangents[VIndex];
+						const FVector3f B = FVector3f::CrossProduct(N, T);
+						T = FVector3f::CrossProduct(B, N).GetSafeNormal();
 
 						OutCards.Normals [VIndex] = N;
 						OutCards.Tangents[VIndex] = T;
@@ -2361,7 +2374,7 @@ namespace HairCards
 						OutCards.CoordU[VIndex] = OutCards.UVs[VIndex].X;
 						
 						// Absolute/Global UVs
-						const FVector2D AtlasCoord = FVector2D(OutCards.UVs[VIndex].X, OutCards.UVs[VIndex].Y) * Rect.Resolution + FVector2D(Rect.Offset.X, Rect.Offset.Y) + FVector2D(0.5f, 0.5f);
+						const FVector2f AtlasCoord = FVector2f(OutCards.UVs[VIndex].X, OutCards.UVs[VIndex].Y) * Rect.Resolution + FVector2f(Rect.Offset.X, Rect.Offset.Y) + FVector2f(0.5f, 0.5f);
 						OutCards.UVs[VIndex].X = AtlasCoord.X / AtlasResolution.X;
 						OutCards.UVs[VIndex].Y = AtlasCoord.Y / AtlasResolution.Y;
 					}
@@ -2766,7 +2779,7 @@ namespace HairCards
 			OutGuides.StrandsCurves.CurvesCount[ClusterIt] = PointCount;
 			OutGuides.StrandsCurves.CurvesOffset[ClusterIt] = PointOffset;
 			OutGuides.StrandsCurves.CurvesLength[ClusterIt] = TotalLength;
-			OutGuides.StrandsCurves.CurvesRootUV[ClusterIt] = FVector2D(0, 0);
+			OutGuides.StrandsCurves.CurvesRootUV[ClusterIt] = FVector2f(0, 0);
 			//OutGuides.StrandsCurves.StrandIDs[ClusterIt] = ClusterIt;
 			//OutGuides.StrandsCurves.GroomIDToIndex[ClusterIt] = ;
 			OutGuides.StrandsCurves.MaxLength = FMath::Max(OutGuides.StrandsCurves.MaxLength, TotalLength);
@@ -2776,12 +2789,12 @@ namespace HairCards
 			for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 			{
 				const uint32 PointIndex = PointOffset + PointIt;
-				const FVector P0 = InClusters.BoundPositions[PointIndex];
+				const FVector3f P0 = InClusters.BoundPositions[PointIndex];
 
-				OutGuides.BoundingBox += P0;
+				OutGuides.BoundingBox += (FVector)P0;
 
 				OutGuides.StrandsPoints.PointsPosition[PointIndex] = P0;
-				OutGuides.StrandsPoints.PointsBaseColor[PointIndex] = FVector::ZeroVector;
+				OutGuides.StrandsPoints.PointsBaseColor[PointIndex] = FLinearColor(FVector3f::ZeroVector);
 				OutGuides.StrandsPoints.PointsRoughness[PointIndex] = 0;
 				OutGuides.StrandsPoints.PointsCoordU[PointIndex] = FMath::Clamp(CurrentLength / TotalLength, 0.f, 1.f);
 				OutGuides.StrandsPoints.PointsRadius[PointIndex] = 1;
@@ -2789,7 +2802,7 @@ namespace HairCards
 				// Simple geometric normal based on adjacent vertices
 				if (PointIt < PointCount - 1)
 				{
-					const FVector P1 = InClusters.BoundPositions[PointOffset + PointIt + 1];
+					const FVector3f P1 = InClusters.BoundPositions[PointOffset + PointIt + 1];
 					const float SegmentLength = (P1 - P0).Size();
 					CurrentLength += SegmentLength;
 				}
@@ -2829,7 +2842,7 @@ namespace HairCards
 
 		const float GuideRadius = 0.01f;
 
-		FVector4 TriangleUVs[3];
+		FVector4f TriangleUVs[3];
 		for (uint32 CardIt = 0; CardIt < NumCards; ++CardIt)
 		{
 			const uint32 NumTriangles = InCards.IndexCounts[CardIt] / 3;
@@ -2876,7 +2889,7 @@ namespace HairCards
 				for (uint32 VertexIt = 0; VertexIt < 3; ++VertexIt)
 				{
 					const uint32 VertexIndex = InCards.Indices[VertexIndexOffset + VertexIt];
-					const FVector4 UV = TriangleUVs[VertexIt] = InCards.UVs[VertexIndex];
+					const FVector4f UV = TriangleUVs[VertexIt] = InCards.UVs[VertexIndex];
 					AddSimilarUV(SimilarVertexU, VertexIndex, UV.X, UVCoordTreshold);
 					AddSimilarUV(SimilarVertexV, VertexIndex, UV.Y, UVCoordTreshold);
 				}
@@ -2884,7 +2897,7 @@ namespace HairCards
 
 			// Find the perpendicular direction by comparing the number of segment along U and along V
 			const bool bIsMainDirectionU = SimilarVertexU.Num() >= SimilarVertexV.Num();
-			TArray<FVector> CenterPoints;
+			TArray<FVector3f> CenterPoints;
 			{
 				// Sort vertices along the main axis so that, when we iterate through them, we get a correct linear ordering
 				TArray<FSimilarUVVertices>& SimilarVertex = bIsMainDirectionU ? SimilarVertexU : SimilarVertexV;
@@ -2894,12 +2907,12 @@ namespace HairCards
 				});
 
 				CenterPoints.Reserve(SimilarVertex.Num());
-				FVector PrevCenterPoint = FVector::ZeroVector;
+				FVector3f PrevCenterPoint = FVector3f::ZeroVector;
 				float TotalLength = 0;
 				for (const FSimilarUVVertices& Similar : SimilarVertex)
 				{
 					// Compute avg center point of the guide
-					FVector CenterPoint = FVector::ZeroVector;
+					FVector3f CenterPoint = FVector3f::ZeroVector;
 					for (uint32 VertexIndex : Similar.Indices)
 					{
 						CenterPoint += InCards.Positions[VertexIndex];
@@ -2941,9 +2954,9 @@ namespace HairCards
 			check(CenterPoints.Num() > 0);
 			if (CenterPoints.Num() == 1)
 			{
-				const FVector CenterPoint = CenterPoints[0];
+				const FVector3f CenterPoint = CenterPoints[0];
 				const float SegmentSize = 0.5f;
-				const FVector P1 = CenterPoint + SegmentSize * (CenterPoint - InCards.BoundingBox.GetCenter()).GetSafeNormal();
+				const FVector3f P1 = CenterPoint + SegmentSize * (CenterPoint - InCards.BoundingBox.GetCenter()).GetSafeNormal();
 				CenterPoints.Add(P1);
 			}
 
@@ -2961,19 +2974,19 @@ namespace HairCards
 			OutGuides.StrandsCurves.CurvesCount[CardIt] = PointCount;
 			OutGuides.StrandsCurves.CurvesOffset[CardIt] = PointOffset;
 			OutGuides.StrandsCurves.CurvesLength[CardIt] = TotalLength;
-			OutGuides.StrandsCurves.CurvesRootUV[CardIt] = FVector2D(0, 0);
+			OutGuides.StrandsCurves.CurvesRootUV[CardIt] = FVector2f(0, 0);
 			OutGuides.StrandsCurves.MaxLength = FMath::Max(OutGuides.StrandsCurves.MaxLength, TotalLength);
 			OutGuides.StrandsCurves.MaxRadius = GuideRadius;
 
 			float CurrentLength = 0;
 			for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 			{
-				const FVector P0 = CenterPoints[PointIt];
+				const FVector3f P0 = CenterPoints[PointIt];
 
-				OutGuides.BoundingBox += P0;
+				OutGuides.BoundingBox += (FVector)P0;
 
 				OutGuides.StrandsPoints.PointsPosition.Add(P0);
-				OutGuides.StrandsPoints.PointsBaseColor.Add(FVector::ZeroVector);
+				OutGuides.StrandsPoints.PointsBaseColor.Add(FLinearColor(FVector3f::ZeroVector));
 				OutGuides.StrandsPoints.PointsRoughness.Add(0);
 				OutGuides.StrandsPoints.PointsCoordU.Add(FMath::Clamp(CurrentLength / TotalLength, 0.f, 1.f));
 				OutGuides.StrandsPoints.PointsRadius.Add(1);
@@ -2981,7 +2994,7 @@ namespace HairCards
 				// Simple geometric normal based on adjacent vertices
 				if (PointIt < PointCount - 1)
 				{
-					const FVector P1 = CenterPoints[PointIt + 1];
+					const FVector3f P1 = CenterPoints[PointIt + 1];
 					const float SegmentLength = (P1 - P0).Size();
 					CurrentLength += SegmentLength;
 				}
@@ -3092,40 +3105,40 @@ namespace HairCards
 			const uint32 CurveOffset  = InClusters.CurveOffset[ClusterIndex];
 			const uint32 CurveCount   = InClusters.CurveCount[ClusterIndex];
 
-			OutRect.MinBound = FVector( FLT_MAX);
-			OutRect.MaxBound = FVector(-FLT_MAX);
+			OutRect.MinBound = FVector3f( FLT_MAX);
+			OutRect.MaxBound = FVector3f(-FLT_MAX);
 
 			// Precompute guide rest & deformed position as well as the length of the guides.
-			TArray<FVector> Guide_RestPositions;
-			TArray<FVector> Guide_DeformedPositions;
+			TArray<FVector3f> Guide_RestPositions;
+			TArray<FVector3f> Guide_DeformedPositions;
 			TArray<float>   Guide_Lengths;
-			FVector AlignmentDir = FVector::ZeroVector;
+			FVector3f AlignmentDir = FVector3f::ZeroVector;
 			{
 				const uint32 GuidePointCount  = InClusters.GuidePointCount[ClusterIndex];
 				const uint32 GuidePointOffset = InClusters.GuidePointOffset[ClusterIndex];
 
 				check(GuidePointCount >= 2);
-				const FVector Dir_P0 = InClusters.GuidePoints[GuidePointOffset];
-				const FVector Dir_P1 = InClusters.GuidePoints[GuidePointOffset + 1];
+				const FVector3f Dir_P0 = InClusters.GuidePoints[GuidePointOffset];
+				const FVector3f Dir_P1 = InClusters.GuidePoints[GuidePointOffset + 1];
 				AlignmentDir = (Dir_P1 - Dir_P0).GetSafeNormal();
 
 				// Align the direction onto one of the cardinal axis for easing the projection
 				{
-					FVector MajorAxis = FVector(1,0,0) * FMath::Sign(AlignmentDir.X);
+					FVector3f MajorAxis = FVector3f(1,0,0) * FMath::Sign(AlignmentDir.X);
 					float S = FMath::Abs(AlignmentDir.X);
-					if (FMath::Abs(AlignmentDir.Y) > S) { MajorAxis = FMath::Sign(AlignmentDir.Y) * FVector(0, 1, 0); S = FMath::Abs(AlignmentDir.Y); }
-					if (FMath::Abs(AlignmentDir.Z) > S) { MajorAxis = FMath::Sign(AlignmentDir.Z) * FVector(0, 0, 1); S = FMath::Abs(AlignmentDir.Z); }
+					if (FMath::Abs(AlignmentDir.Y) > S) { MajorAxis = FMath::Sign(AlignmentDir.Y) * FVector3f(0, 1, 0); S = FMath::Abs(AlignmentDir.Y); }
+					if (FMath::Abs(AlignmentDir.Z) > S) { MajorAxis = FMath::Sign(AlignmentDir.Z) * FVector3f(0, 0, 1); S = FMath::Abs(AlignmentDir.Z); }
 					AlignmentDir = MajorAxis;
 				}
-				const FVector Root = Dir_P0;
+				const FVector3f Root = Dir_P0;
 
 				float Length = 0;
 				for (uint32 PointIt = 0; PointIt < GuidePointCount; ++PointIt)
 				{
 					const uint32 GuidePointIt = GuidePointOffset + PointIt;
 
-					const FVector& P0_Rest = InClusters.GuidePoints[GuidePointIt];
-					const FVector  P0_Deformed = Root + AlignmentDir * Length;
+					const FVector3f& P0_Rest = InClusters.GuidePoints[GuidePointIt];
+					const FVector3f  P0_Deformed = Root + AlignmentDir * Length;
 
 					Guide_RestPositions.Add(P0_Rest);
 					Guide_DeformedPositions.Add(P0_Deformed);
@@ -3133,7 +3146,7 @@ namespace HairCards
 
 					if (PointIt < GuidePointCount-1)
 					{
-						const FVector& P1_Rest = InClusters.GuidePoints[GuidePointIt+1];
+						const FVector3f& P1_Rest = InClusters.GuidePoints[GuidePointIt+1];
 						const float L = (P1_Rest - P0_Rest).Size();
 						Length += L > 0 ? L : 0.001f;
 					}
@@ -3157,10 +3170,10 @@ namespace HairCards
 					const uint32 PointIndex = PointOffset + PointIt;
 
 					const float StrandsU = InStrands.StrandsPoints.PointsCoordU[PointIndex];
-					const FVector2D RootUV = InStrands.StrandsCurves.CurvesRootUV[CurveIndex];
-					const float Seed = float(InStrands.RenderData.Attributes[PointIndex].Seed) / 255.f;
+					const FVector2f RootUV = InStrands.StrandsCurves.CurvesRootUV[CurveIndex];
+					const float Seed = 0.f; // TODO float(InStrands.RenderData.Attributes[PointIndex].Seed) / 255.f;
 
-					const FVector& P0_Rest = InStrands.StrandsPoints.PointsPosition[PointIndex];
+					const FVector3f& P0_Rest = InStrands.StrandsPoints.PointsPosition[PointIndex];
 					const float Radius = InStrands.StrandsPoints.PointsRadius[PointIndex] * InStrands.StrandsCurves.MaxRadius;
 
 					// Find the closest guide point using parametric length at a correspondance/matching metric
@@ -3173,38 +3186,38 @@ namespace HairCards
 					}
 
 					// Once the bounded indices are compute the displacement vector used for deforming the curves
-					FVector Displacement = FVector::ZeroVector;
+					FVector3f Displacement = FVector3f::ZeroVector;
 					if (ClosestGuidePointIt1 < GuidePointCount)
 					{
 						const float U = (Length - Guide_Lengths[ClosestGuidePointIt0]) / (Guide_Lengths[ClosestGuidePointIt1] - Guide_Lengths[ClosestGuidePointIt0]);
-						const FVector& GuideP_Rest = FMath::Lerp(Guide_RestPositions[ClosestGuidePointIt0], Guide_RestPositions[ClosestGuidePointIt1], U);
-						const FVector& GuideP_Deformed = FMath::Lerp(Guide_DeformedPositions[ClosestGuidePointIt0], Guide_DeformedPositions[ClosestGuidePointIt1], U);
+						const FVector3f& GuideP_Rest = FMath::Lerp(Guide_RestPositions[ClosestGuidePointIt0], Guide_RestPositions[ClosestGuidePointIt1], U);
+						const FVector3f& GuideP_Deformed = FMath::Lerp(Guide_DeformedPositions[ClosestGuidePointIt0], Guide_DeformedPositions[ClosestGuidePointIt1], U);
 						Displacement = GuideP_Deformed - GuideP_Rest;
 					}
 					else
 					{
 						// Extrapolate the guide rest position, and guide deformed position to compute the displacement
-						const FVector& GuideP_Rest0 = Guide_RestPositions[GuidePointCount - 2];
-						const FVector& GuideP_Rest1 = Guide_RestPositions[GuidePointCount - 1];
+						const FVector3f& GuideP_Rest0 = Guide_RestPositions[GuidePointCount - 2];
+						const FVector3f& GuideP_Rest1 = Guide_RestPositions[GuidePointCount - 1];
 
-						const FVector& GuideP_Deformed0 = Guide_DeformedPositions[GuidePointCount - 2];
-						const FVector& GuideP_Deformed1 = Guide_DeformedPositions[GuidePointCount - 1];
+						const FVector3f& GuideP_Deformed0 = Guide_DeformedPositions[GuidePointCount - 2];
+						const FVector3f& GuideP_Deformed1 = Guide_DeformedPositions[GuidePointCount - 1];
 
-						const FVector GuideDir_Rest		= (GuideP_Rest1 - GuideP_Rest0).GetSafeNormal();
-						const FVector GuideDir_Deformed = (GuideP_Deformed1 - GuideP_Deformed0).GetSafeNormal();
+						const FVector3f GuideDir_Rest		= (GuideP_Rest1 - GuideP_Rest0).GetSafeNormal();
+						const FVector3f GuideDir_Deformed = (GuideP_Deformed1 - GuideP_Deformed0).GetSafeNormal();
 
 						const float ExtraLength = Length - Guide_Lengths[GuidePointCount - 1];
-						const FVector& GuideP_RestExtrapolated		= GuideP_Rest1 + GuideDir_Rest * ExtraLength;
-						const FVector& GuideP_DeformedExtrapolated	= GuideP_Deformed1 + GuideDir_Deformed * ExtraLength;
+						const FVector3f& GuideP_RestExtrapolated		= GuideP_Rest1 + GuideDir_Rest * ExtraLength;
+						const FVector3f& GuideP_DeformedExtrapolated	= GuideP_Deformed1 + GuideDir_Deformed * ExtraLength;
 
 						Displacement = GuideP_DeformedExtrapolated - GuideP_RestExtrapolated;
 					}
 
-					const FVector P0_Deformed = P0_Rest + Displacement;
+					const FVector3f P0_Deformed = P0_Rest + Displacement;
 
 					if (PointIt < PointCount - 1)
 					{
-						const FVector& P1_Rest = InStrands.StrandsPoints.PointsPosition[PointOffset + PointIt + 1];
+						const FVector3f& P1_Rest = InStrands.StrandsPoints.PointsPosition[PointOffset + PointIt + 1];
 						Length += (P1_Rest - P0_Rest).Size();
 					}
 
@@ -3216,8 +3229,8 @@ namespace HairCards
 					OutRect.MaxBound.X = FMath::Max(P0_Deformed.X, OutRect.MaxBound.X);
 					OutRect.MaxBound.Y = FMath::Max(P0_Deformed.Y, OutRect.MaxBound.Y);
 					OutRect.MaxBound.Z = FMath::Max(P0_Deformed.Z, OutRect.MaxBound.Z);
-					InAtlas.StrandsPositions.Add(FVector4(P0_Deformed, (PointIt < PointCount - 1) ? Radius : 0));
-					InAtlas.StrandsAttributes.Add(FVector4(RootUV.X, RootUV.Y, StrandsU, Seed));
+					InAtlas.StrandsPositions.Add(FVector4f(P0_Deformed, (PointIt < PointCount - 1) ? Radius : 0));
+					InAtlas.StrandsAttributes.Add(FVector4f(RootUV.X, RootUV.Y, StrandsU, Seed));
 						
 					++VertexCount;
 				}
@@ -3226,28 +3239,28 @@ namespace HairCards
 			// Compute rasterization info (rasterization axis) and cards dimension (width/length)
 			{
 
-				float Size[3] = 
+				FVector3f::FReal Size[3] = 
 				{ 
 					OutRect.MaxBound.X - OutRect.MinBound.X, 
 					OutRect.MaxBound.Y - OutRect.MinBound.Y, 
 					OutRect.MaxBound.Z - OutRect.MinBound.Z 
 				};
-				FVector Axis[3] = 
+				FVector3f Axis[3] = 
 				{ 
-					Size[0] * FVector(1,0,0),
-					Size[1] * FVector(0,1,0), 
-					Size[2] * FVector(0,0,1) 
+					Size[0] * FVector3f(1,0,0),
+					Size[1] * FVector3f(0,1,0), 
+					Size[2] * FVector3f(0,0,1) 
 				};
 
 				if (Size[0] < Size[1]) { Swap(Axis[0], Axis[1]); Swap(Size[0], Size[1]); }
 				if (Size[1] < Size[2]) { Swap(Axis[1], Axis[2]); Swap(Size[1], Size[2]); }
 				if (Size[0] < Size[1]) { Swap(Axis[0], Axis[1]); Swap(Size[0], Size[1]); }
 
-				FVector T = Axis[0];
-				FVector B = Axis[1];
-				FVector N = Axis[2];
+				FVector3f T = Axis[0];
+				FVector3f B = Axis[1];
+				FVector3f N = Axis[2];
 
-				const FVector NormalizedT = T.GetSafeNormal();
+				const FVector3f NormalizedT = T.GetSafeNormal();
 
 				if (FMath::Sign(T.X) != FMath::Sign(AlignmentDir.X) ||
 					FMath::Sign(T.Y) != FMath::Sign(AlignmentDir.Y) ||
@@ -3322,7 +3335,7 @@ namespace FHairCardsBuilder
 FString GetVersion()
 {
 	// Important to update the version when cards building or importing changes
-	return TEXT("8");
+	return TEXT("9e");
 }
 
 void AllocateAtlasTexture(UTexture2D* Out, const FIntPoint& Resolution, uint32 MipCount, EPixelFormat PixelFormat, ETextureSourceFormat SourceFormat)
@@ -3345,12 +3358,15 @@ void AllocateAtlasTexture(UTexture2D* Out, const FIntPoint& Resolution, uint32 M
 	Out->SetLayerFormatSettings(0, FormatSettings);
 #endif // #if WITH_EDITORONLY_DATA
 
+	// No need to allocate the platform data as they will be allocating once the source data are filled in
+#if 0
 	Out->PlatformData = new FTexturePlatformData();
 	Out->PlatformData->SizeX = Resolution.X;
 	Out->PlatformData->SizeY = Resolution.Y;
 	Out->PlatformData->PixelFormat = PixelFormat;
 
 	Out->UpdateResource();
+#endif
 }
 
 void AllocateAtlasTexture_Depth(UTexture2D* Out, const FIntPoint& Resolution, uint32 MipCount)		{ AllocateAtlasTexture(Out, Resolution, MipCount, PF_R8G8B8A8, ETextureSourceFormat::TSF_BGRA8); }
@@ -3376,8 +3392,9 @@ void BuildGeometry(
 	const FHairStrandsDatas& InSim,
 	const FHairGroupsProceduralCards& Settings,
 	FHairCardsProceduralDatas& Out,
+	FHairCardsBulkData& OutBulk,
 	FHairStrandsDatas& OutGuides,
-	FHairCardsInterpolationDatas& OutInterpolation,
+	FHairCardsInterpolationBulkData& OutInterpolationBulk,
 	FHairGroupCardsTextures& OutTextures)
 {
 	// Basic algo:
@@ -3405,6 +3422,7 @@ void BuildGeometry(
 	//
 	// 
 	// TODO: add some caching about the different par so that we don't reprocess the entire group when something change
+	FHairCardsInterpolationDatas OutInterpolation;
 	HairCards::FVoxelVolume Voxels;
 	{
 		// Build voxel structure
@@ -3431,10 +3449,10 @@ void BuildGeometry(
 		HairCards::CreateCardsInterpolation(Out.Cards, OutGuides, OutInterpolation);
 		check(Out.Cards.GetNum() > 0);
 
-		AllocateAtlasTexture(OutTextures.DepthTexture,		Out.Atlas.Resolution, LODName, TEXT("_CardsAtlas_Depth"), AllocateAtlasTexture_Depth);
-		AllocateAtlasTexture(OutTextures.CoverageTexture,	Out.Atlas.Resolution, LODName, TEXT("_CardsAtlas_Coverage"), AllocateAtlasTexture_Coverage);
-		AllocateAtlasTexture(OutTextures.TangentTexture,	Out.Atlas.Resolution, LODName, TEXT("_CardsAtlas_Tangent"), AllocateAtlasTexture_Tangent);
-		AllocateAtlasTexture(OutTextures.AttributeTexture,	Out.Atlas.Resolution, LODName, TEXT("_CardsAtlas_Attribute"), AllocateAtlasTexture_Attribute);
+		AllocateAtlasTexture(static_cast<UTexture2D*&>(OutTextures.DepthTexture),		Out.Atlas.Resolution, LODName, TEXT("_CardsAtlas_Depth"), AllocateAtlasTexture_Depth);
+		AllocateAtlasTexture(static_cast<UTexture2D*&>(OutTextures.CoverageTexture),	Out.Atlas.Resolution, LODName, TEXT("_CardsAtlas_Coverage"), AllocateAtlasTexture_Coverage);
+		AllocateAtlasTexture(static_cast<UTexture2D*&>(OutTextures.TangentTexture),		Out.Atlas.Resolution, LODName, TEXT("_CardsAtlas_Tangent"), AllocateAtlasTexture_Tangent);
+		AllocateAtlasTexture(static_cast<UTexture2D*&>(OutTextures.AttributeTexture),	Out.Atlas.Resolution, LODName, TEXT("_CardsAtlas_Attribute"), AllocateAtlasTexture_Attribute);
 	}
 
 	Out.Cards.BoundingBox.Init();
@@ -3447,12 +3465,12 @@ void BuildGeometry(
 	for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 	{
 		check(FMath::IsFinite(Out.Cards.Positions[PointIt].X) && FMath::IsFinite(Out.Cards.Positions[PointIt].Y) && FMath::IsFinite(Out.Cards.Positions[PointIt].Z));
-		Out.RenderData.Positions[PointIt] = FVector4(Out.Cards.Positions[PointIt], *((float*)&Out.Cards.CardIndices[PointIt]));
+		Out.RenderData.Positions[PointIt] = FVector4f(Out.Cards.Positions[PointIt], *((float*)&Out.Cards.CardIndices[PointIt]));
 		Out.RenderData.UVs[PointIt] = Out.Cards.UVs[PointIt];
-		Out.RenderData.Normals[PointIt * 2] = FVector4(Out.Cards.Tangents[PointIt], 0);
-		Out.RenderData.Normals[PointIt * 2 + 1] = FVector4(Out.Cards.Normals[PointIt], 1);
+		Out.RenderData.Normals[PointIt * 2] = FVector4f(Out.Cards.Tangents[PointIt], 0);
+		Out.RenderData.Normals[PointIt * 2 + 1] = FVector4f(Out.Cards.Normals[PointIt], 1);
 
-		Out.Cards.BoundingBox += Out.RenderData.Positions[PointIt];
+		Out.Cards.BoundingBox += FVector4f(Out.RenderData.Positions[PointIt]);
 	}
 
 	const uint32 IndexCount = Out.Cards.Indices.Num();
@@ -3461,6 +3479,13 @@ void BuildGeometry(
 	{
 		Out.RenderData.Indices[IndexIt] = Out.Cards.Indices[IndexIt];
 	}
+
+	// Copy transient Procedural cards bulk data into the final bulk data
+	OutBulk.Positions 	= Out.RenderData.Positions;
+	OutBulk.Normals 	= Out.RenderData.Normals;
+	OutBulk.Indices 	= Out.RenderData.Indices;
+	OutBulk.UVs 		= Out.RenderData.UVs;
+	OutBulk.BoundingBox = ToFBox3d(Out.Cards.BoundingBox);
 
 	const uint32 CardCount = Out.Cards.Lengths.Num();
 	Out.RenderData.CardsRect.SetNum(CardCount);
@@ -3524,7 +3549,7 @@ void BuildGeometry(
 	}
 
 	// Interpolation data
-	OutInterpolation.RenderData.Interpolation.SetNum(PointCount);
+	OutInterpolationBulk.Interpolation.SetNum(PointCount);
 	for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 	{
 		const uint32 VertexIndex = OutInterpolation.PointsSimCurvesVertexIndex[PointIt];
@@ -3532,7 +3557,7 @@ void BuildGeometry(
 		FHairCardsInterpolationVertex PackedData;
 		PackedData.VertexIndex = VertexIndex;
 		PackedData.VertexLerp  = FMath::Clamp(uint32(VertexLerp * 0xFF), 0u, 0xFFu);
-		OutInterpolation.RenderData.Interpolation[PointIt] = PackedData;
+		OutInterpolationBulk.Interpolation[PointIt] = PackedData;
 	}
 }
 
@@ -3546,7 +3571,7 @@ void SanitizeMeshDescription(FMeshDescription* MeshDescription)
 	FStaticMeshOperations::AreNormalsAndTangentsValid(*MeshDescription, bHasInvalidNormals, bHasInvalidTangents);
 	if (!bHasInvalidNormals || !bHasInvalidTangents)
 	{
-		FStaticMeshOperations::ComputePolygonTangentsAndNormals(*MeshDescription, THRESH_POINTS_ARE_SAME);
+		FStaticMeshOperations::ComputeTriangleTangentsAndNormals(*MeshDescription, THRESH_POINTS_ARE_SAME);
 
 		EComputeNTBsFlags Options = EComputeNTBsFlags::UseMikkTSpace | EComputeNTBsFlags::BlendOverlappingNormals;
 		Options |= bHasInvalidNormals ? EComputeNTBsFlags::Normals : EComputeNTBsFlags::None;
@@ -3555,11 +3580,14 @@ void SanitizeMeshDescription(FMeshDescription* MeshDescription)
 	}
 }
 
-bool ImportGeometry(
+bool InternalImportGeometry(
 	const UStaticMesh* StaticMesh,
+	const FHairStrandsDatas& InStrandsData,			// Used for extracting & assigning root UV to cards data
+	const FHairStrandsVoxelData& InStrandsVoxelData,// Used for transfering & assigning group index to cards data
 	FHairCardsDatas& Out,
+	FHairCardsBulkData& OutBulk,
 	FHairStrandsDatas& OutGuides,
-	FHairCardsInterpolationDatas& OutInterpolationData)
+	FHairCardsInterpolationBulkData& OutInterpolationBulkData)
 {
 	const uint32 MeshLODIndex = 0;
 
@@ -3621,10 +3649,11 @@ bool ImportGeometry(
 		Out.Cards.IndexCounts.Add(TrianglesCard.Num()*3);
 		for (const FTriangleID& TriangleId : TrianglesCard)
 		{
-			FMeshTriangle MeshTriangle = MeshDescription->Triangles()[TriangleId];
-			FVertexInstanceID VI0 = MeshTriangle.GetVertexInstanceID(0);
-			FVertexInstanceID VI1 = MeshTriangle.GetVertexInstanceID(1);
-			FVertexInstanceID VI2 = MeshTriangle.GetVertexInstanceID(2);
+			TArrayView<const FVertexInstanceID> VertexInstanceIDs = MeshDescription->GetTriangleVertexInstances(TriangleId);
+			check(VertexInstanceIDs.Num() == 3);
+			FVertexInstanceID VI0 = VertexInstanceIDs[0];
+			FVertexInstanceID VI1 = VertexInstanceIDs[1];
+			FVertexInstanceID VI2 = VertexInstanceIDs[2];
 
 			FVertexID V0 = MeshDescription->GetVertexInstanceVertex(VI0);
 			FVertexID V1 = MeshDescription->GetVertexInstanceVertex(VI1);
@@ -3649,15 +3678,15 @@ bool ImportGeometry(
 	Out.Cards.BoundingBox.Init();
 
 	SanitizeMeshDescription(MeshDescription);
-	const TVertexAttributesRef<const FVector> VertexPositions					= MeshDescription->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-	const TVertexInstanceAttributesRef<const FVector> VertexInstanceNormals		= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-	const TVertexInstanceAttributesRef<const FVector> VertexInstanceTangents	= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Tangent);
+	const TVertexAttributesRef<const FVector3f> VertexPositions					= MeshDescription->VertexAttributes().GetAttributesRef<FVector3f>(MeshAttribute::Vertex::Position);
+	const TVertexInstanceAttributesRef<const FVector3f> VertexInstanceNormals	= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector3f>(MeshAttribute::VertexInstance::Normal);
+	const TVertexInstanceAttributesRef<const FVector3f> VertexInstanceTangents	= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector3f>(MeshAttribute::VertexInstance::Tangent);
 	const TVertexInstanceAttributesRef<const float> VertexInstanceBinormalSigns	= MeshDescription->VertexInstanceAttributes().GetAttributesRef<float>(MeshAttribute::VertexInstance::BinormalSign);
-	const TVertexInstanceAttributesRef<const FVector2D> VertexInstanceUVs		= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
+	const TVertexInstanceAttributesRef<const FVector2f> VertexInstanceUVs		= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2f>(MeshAttribute::VertexInstance::TextureCoordinate);
 
 	for (const FVertexID VertexId : MeshDescription->Vertices().GetElementIDs())
 	{
-		const TArray<FVertexInstanceID>& VertexInstanceIds = MeshDescription->GetVertexVertexInstances(VertexId);
+		TArrayView<const FVertexInstanceID> VertexInstanceIds = MeshDescription->GetVertexVertexInstanceIDs(VertexId);
 		if (VertexInstanceIds.Num() == 0)
 		{
 			continue;
@@ -3668,7 +3697,7 @@ bool ImportGeometry(
 		const uint32 VertexIndex = VertexId.GetValue();
 		check(VertexIndex < VertexCount);
 		Out.Cards.Positions[VertexIndex]	= VertexPositions[VertexId];
-		Out.Cards.UVs[VertexIndex]			= FVector4(VertexInstanceUVs[VertexInstanceId0].Component(0), VertexInstanceUVs[VertexInstanceId0].Component(1), 0, 0);
+		Out.Cards.UVs[VertexIndex]			= FVector4f(VertexInstanceUVs[VertexInstanceId0].Component(0), VertexInstanceUVs[VertexInstanceId0].Component(1), 0, 0); // RootUV are not set here, but will be 'patched' later once guides & interpolation data are built
 		Out.Cards.Tangents[VertexIndex]		= VertexInstanceTangents[VertexInstanceId0];
 		Out.Cards.Normals[VertexIndex]		= VertexInstanceNormals[VertexInstanceId0];
 
@@ -3676,62 +3705,264 @@ bool ImportGeometry(
 
 		Out.Cards.BoundingBox += Out.Cards.Positions[VertexIndex];
 	}
+	OutBulk.BoundingBox = ToFBox3d(Out.Cards.BoundingBox);
 
 	// Fill in render resources (do we need to keep it separated? e.g, format compression, packing)
 	const uint32 PointCount = Out.Cards.Positions.Num();
-	Out.RenderData.Positions.SetNum(PointCount);
-	Out.RenderData.Normals.SetNum(PointCount * FHairCardsNormalFormat::ComponentCount);
-	Out.RenderData.UVs.SetNum(PointCount);
+	OutBulk.Positions.SetNum(PointCount);
+	OutBulk.Normals.SetNum(PointCount * FHairCardsNormalFormat::ComponentCount);
+	OutBulk.UVs.SetNum(PointCount);
+	OutBulk.Materials.SetNum(PointCount);
 	for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 	{
-		Out.RenderData.Positions[PointIt] = FVector4(Out.Cards.Positions[PointIt], 0);
-		Out.RenderData.UVs[PointIt] = Out.Cards.UVs[PointIt];
-		Out.RenderData.Normals[PointIt * 2] = FVector4(Out.Cards.Tangents[PointIt], 0);
-		Out.RenderData.Normals[PointIt * 2 + 1] = FVector4(Out.Cards.Normals[PointIt], TangentFrameSigns[PointIt]);
+		OutBulk.Positions[PointIt] = FVector4f(Out.Cards.Positions[PointIt], 0);
+		OutBulk.UVs[PointIt] = Out.Cards.UVs[PointIt];
+		OutBulk.Normals[PointIt * 2] = FVector4f(Out.Cards.Tangents[PointIt], 0);
+		OutBulk.Normals[PointIt * 2 + 1] = FVector4f(Out.Cards.Normals[PointIt], TangentFrameSigns[PointIt]);
+		OutBulk.Materials[PointIt] = 0;
 	}
 
-	Out.RenderData.Indices.SetNum(IndexCount);
+	OutBulk.Indices.SetNum(IndexCount);
 	for (uint32 IndexIt = 0; IndexIt < IndexCount; ++IndexIt)
 	{
-		Out.RenderData.Indices[IndexIt] = Out.Cards.Indices[IndexIt];
+		OutBulk.Indices[IndexIt] = Out.Cards.Indices[IndexIt];
 	}
 
-	Out.DepthTexture = nullptr;
-	Out.TangentTexture = nullptr;
-	Out.CoverageTexture = nullptr;
-	Out.AttributeTexture = nullptr;
+	OutBulk.DepthTexture = nullptr;
+	OutBulk.TangentTexture = nullptr;
+	OutBulk.CoverageTexture = nullptr;
+	OutBulk.AttributeTexture = nullptr;
+
+	const uint32 CardsCount = Out.Cards.IndexOffsets.Num();
 
 	TArray<float> CardLengths;
-	CardLengths.Reserve(Out.Cards.IndexOffsets.Num());
+	CardLengths.Reserve(CardsCount);
 	bool bSuccess = HairCards::CreateCardsGuides(Out.Cards, OutGuides, CardLengths);
 	if (bSuccess)
 	{
-		HairCards::CreateCardsInterpolation(Out.Cards, OutGuides, OutInterpolationData, CardLengths);
+		FHairCardsInterpolationDatas InterpolationData;
+		HairCards::CreateCardsInterpolation(Out.Cards, OutGuides, InterpolationData, CardLengths);
 
 		// Fill out the interpolation data
-		OutInterpolationData.RenderData.Interpolation.SetNum(PointCount);
+		OutInterpolationBulkData.Interpolation.SetNum(PointCount);
 		for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 		{
-			const uint32 InterpVertexIndex = OutInterpolationData.PointsSimCurvesVertexIndex[PointIt];
-			const float VertexLerp = OutInterpolationData.PointsSimCurvesVertexLerp[PointIt];
+			const uint32 InterpVertexIndex = InterpolationData.PointsSimCurvesVertexIndex[PointIt];
+			const float VertexLerp = InterpolationData.PointsSimCurvesVertexLerp[PointIt];
 			FHairCardsInterpolationVertex PackedData;
 			PackedData.VertexIndex = InterpVertexIndex;
 			PackedData.VertexLerp = FMath::Clamp(uint32(VertexLerp * 0xFF), 0u, 0xFFu);
-			OutInterpolationData.RenderData.Interpolation[PointIt] = PackedData;
+			OutInterpolationBulkData.Interpolation[PointIt] = PackedData;
+		}
+	}
+
+	// Used voxelized hair group (from hair strands) to assign hair group index to card vertices
+	TArray<FVector3f> CardBaseColor;
+	TArray<float> CardsRoughness;
+	TArray<uint8> CardGroupIndices;
+	CardGroupIndices.Init(0u, CardsCount);					// Per-card
+	CardBaseColor.Init(FVector3f::ZeroVector, PointCount);	// Per-vertex
+	CardsRoughness.Init(0.f, PointCount);					// Per-vertex
+	if (InStrandsVoxelData.IsValid())
+	{
+		for (uint32 CardIt = 0; CardIt < CardsCount; ++CardIt)
+		{
+			// 1. For each cards' vertex, query the closest group index, and build an histogram 
+			//    of the group index covering the card
+			TArray<uint8> GroupBins;
+			GroupBins.Init(0, 64u);
+			const uint32 CardsIndexCount = Out.Cards.IndexCounts[CardIt];
+			const uint32 CardsIndexOffset = Out.Cards.IndexOffsets[CardIt];
+
+			for (uint32 IndexIt = 0; IndexIt < CardsIndexCount; ++IndexIt)
+			{
+				const uint32 VertexIndex = Out.Cards.Indices[CardsIndexOffset + IndexIt];
+				const FVector3f& P = Out.Cards.Positions[VertexIndex];
+
+				FHairStrandsVoxelData::FData VoxelData = InStrandsVoxelData.GetData(P);
+				if (VoxelData.GroupIndex != FHairStrandsVoxelData::InvalidGroupIndex)
+				{
+					check(VoxelData.GroupIndex < GroupBins.Num());
+					GroupBins[VoxelData.GroupIndex]++;
+					CardBaseColor[VertexIndex] = VoxelData.BaseColor;
+					CardsRoughness[VertexIndex] = VoxelData.Roughness;
+				}
+			}
+
+			// 2. Since a cards can covers several group, select the group index covering the larger 
+			//    number of cards' vertices
+			uint32 MaxBinCount = 0u;
+			for (uint8 GroupIndex=0,GroupCount=GroupBins.Num(); GroupIndex<GroupCount; ++GroupIndex)
+			{
+				if (GroupBins[GroupIndex] > MaxBinCount)
+				{
+					CardGroupIndices[CardIt] = GroupIndex;
+					MaxBinCount = GroupBins[GroupIndex];
+				}
+			}
+		}
+	}
+
+	// Patch Cards Position to store cards length into the W component
+	for (uint32 CardIt = 0; CardIt < CardsCount; ++CardIt)
+	{
+		const uint32 CardsIndexCount = Out.Cards.IndexCounts[CardIt];
+		const uint32 CardsIndexOffset = Out.Cards.IndexOffsets[CardIt];
+
+		const float CardLength = CardLengths[CardIt];
+		for (uint32 IndexIt = 0; IndexIt < CardsIndexCount; ++IndexIt)
+		{
+			const uint32 VertexIndex = Out.Cards.Indices[CardsIndexOffset + IndexIt];
+			const float CoordU = Out.Cards.CoordU[VertexIndex];
+			const float InterpolatedCardLength = FMath::Lerp(0.f, CardLength, CoordU);
+
+			// Instead of storing the interpolated card length, store the actual max length of the card, 
+			// as reconstructing the strands length, based on interpolated CardLength will be too prone to numerical issue.
+			// This means that the strand length retrieves in shader will be an over estimate of the actual length
+			const FFloat16 hCardLength = CardLength;  // InterpolatedCardLength;
+
+			// Encode cards length & group index into the .W component of position
+			const uint32 EncodedW = hCardLength.Encoded | (CardGroupIndices[CardIt] << 16u);
+			OutBulk.Positions[VertexIndex].W = *(float*)&EncodedW;
+
+			// Encode the base color in (cheap) sRGB in XYZ. The W component remains unused
+			OutBulk.Materials[VertexIndex] =
+				(uint32(FMath::Sqrt(CardBaseColor[VertexIndex].X) * 255.f)    )|
+				(uint32(FMath::Sqrt(CardBaseColor[VertexIndex].Y) * 255.f)<<8 )|
+				(uint32(FMath::Sqrt(CardBaseColor[VertexIndex].Z) * 255.f)<<16)|
+				(uint32(CardsRoughness[VertexIndex]               * 255.f)<<24);
+		}
+	}
+
+	// Patch Cards RootUV by transferring the guides root UV onto the cards
+	if (InStrandsData.IsValid())
+	{
+		// 1. Extract all roots
+		struct FStrandsRootData
+		{
+			FVector3f Position;
+			uint32    CurveIndex;
+			FVector2f RootUV;
+		};
+		TArray<FStrandsRootData> StrandsRoots;
+		{
+			const uint32 CurveCount = InStrandsData.StrandsCurves.Num();
+			StrandsRoots.Reserve(CurveCount);
+			for (uint32 CurveIt = 0; CurveIt < CurveCount; ++CurveIt)
+			{
+				const uint32 Offset = InStrandsData.StrandsCurves.CurvesOffset[CurveIt];
+				FStrandsRootData& RootData = StrandsRoots.AddDefaulted_GetRef();
+				RootData.Position = InStrandsData.StrandsPoints.PointsPosition[Offset];
+				RootData.RootUV = InStrandsData.StrandsCurves.CurvesRootUV[CurveIt];
+				RootData.CurveIndex = CurveIt;
+			}
+		}
+
+		// 2. Extract cards root points
+		struct FCardsRootData
+		{
+			FVector3f Position;
+			uint32  CardsIndex;
+		};
+		TArray<FCardsRootData> CardsRoots;
+		{
+			CardsRoots.Reserve(CardsCount);
+			for (uint32 CardIt = 0; CardIt < CardsCount; ++CardIt)
+			{
+				const uint32 CardsIndexCount = Out.Cards.IndexCounts[CardIt];
+				const uint32 CardsIndexOffset = Out.Cards.IndexOffsets[CardIt];
+
+				uint32 AverageCount = 0;
+				FVector3f AverageRootPosition = FVector3f::ZeroVector;
+				for (uint32 IndexIt = 0; IndexIt < CardsIndexCount; ++IndexIt)
+				{
+					const uint32 VertexIndex = Out.Cards.Indices[CardsIndexOffset + IndexIt];
+					if (Out.Cards.CoordU[VertexIndex] == 0)
+					{
+						AverageRootPosition += Out.Cards.Positions[VertexIndex];
+						++AverageCount;
+					}
+				}
+
+				FCardsRootData& Cards = CardsRoots.AddDefaulted_GetRef();
+				Cards.CardsIndex = CardIt;
+				Cards.Position = AverageCount > 0 ? AverageRootPosition / AverageCount : FVector3f::ZeroVector;
+			}
+		}
+
+		// 3. Find cards root / curve root
+		{
+			for (const FCardsRootData& CardsRoot : CardsRoots)
+			{
+				// 3.1 Find closet root UV
+				// /!\ N^2 loop: the number of cards should be relatively small
+				uint32 CurveIndex = ~0;
+				float ClosestDistance = FLT_MAX;
+				FVector2f RootUV = FVector2f::ZeroVector;
+				for (const FStrandsRootData& StrandsRoot : StrandsRoots)
+				{
+					const float Distance = FVector3f::Distance(StrandsRoot.Position, CardsRoot.Position);
+					if (Distance < ClosestDistance)
+					{
+						ClosestDistance = Distance;
+						CurveIndex = StrandsRoot.CurveIndex;
+						RootUV = StrandsRoot.RootUV;
+					}
+				}
+
+				// 3.2 Apply root UV to all cards vertices
+				{
+					const uint32 CardsIndexCount = Out.Cards.IndexCounts[CardsRoot.CardsIndex];
+					const uint32 CardsIndexOffset = Out.Cards.IndexOffsets[CardsRoot.CardsIndex];
+					for (uint32 IndexIt = 0; IndexIt < CardsIndexCount; ++IndexIt)
+					{
+						const uint32 VertexIndex = Out.Cards.Indices[CardsIndexOffset + IndexIt];
+						Out.Cards.UVs[VertexIndex].Z = RootUV.X;
+						Out.Cards.UVs[VertexIndex].W = RootUV.Y;
+						OutBulk.UVs[VertexIndex].Z   = RootUV.X;
+						OutBulk.UVs[VertexIndex].W   = RootUV.Y;
+					}
+				}
+			}
 		}
 	}
 
 	return bSuccess;
 }
 
-void Convert(const FHairCardsProceduralDatas& In, FHairCardsDatas& Out)
+bool ImportGeometry(
+	const UStaticMesh* StaticMesh,
+	const FHairStrandsDatas& InStrandsData,
+	const FHairStrandsVoxelData& InStrandsVoxelData,
+	FHairCardsBulkData& OutBulk,
+	FHairStrandsDatas& OutGuides,
+	FHairCardsInterpolationBulkData& OutInterpolationBulkData)
 {
-	Out.Cards = In.Cards;
+	FHairCardsDatas CardData;
+	return InternalImportGeometry(
+		StaticMesh,
+		InStrandsData,
+		InStrandsVoxelData,
+		CardData,
+		OutBulk,
+		OutGuides,
+		OutInterpolationBulkData);
+}
 
-	Out.RenderData.Positions = In.RenderData.Positions;
-	Out.RenderData.Normals = In.RenderData.Normals;
-	Out.RenderData.Indices = In.RenderData.Indices;
-	Out.RenderData.UVs = In.RenderData.UVs;
+bool ExtractCardsData(const UStaticMesh* StaticMesh, const FHairStrandsDatas& InStrandsData, FHairCardsDatas& Out)
+{
+	FHairStrandsVoxelData DummyStrandsVoxelData;
+	FHairCardsBulkData OutBulk;
+	FHairStrandsDatas OutGuides;
+	FHairCardsInterpolationBulkData OutInterpolationBulkData;
+	return InternalImportGeometry(
+		StaticMesh,
+		InStrandsData,
+		DummyStrandsVoxelData,
+		Out,
+		OutBulk,
+		OutGuides,
+		OutInterpolationBulkData); 
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -3780,10 +4011,10 @@ static void AddCardsTextureReadbackPass(
 	[InputTexture, OutTexture, BytePerPixel](FRHICommandListImmediate& RHICmdList)
 	{
 		const FIntPoint Resolution = InputTexture->Desc.Extent;
-		check(OutTexture->GetSurfaceWidth() == Resolution.X);
-		check(OutTexture->GetSurfaceHeight() == Resolution.Y);
+		check(OutTexture->Source.GetSizeX() == Resolution.X);
+		check(OutTexture->Source.GetSizeY() == Resolution.Y);
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("CardsTextureReadbackPass_StagingTexture"));
 		FTexture2DRHIRef StagingTexture = RHICreateTexture2D(
 			InputTexture->Desc.Extent.X,
 			InputTexture->Desc.Extent.Y,
@@ -3845,12 +4076,13 @@ void RunHairCardsAtlasQueries(
 			continue;
 
 		// Allocate resources for generating the atlas texture (for editor mode only)
-		FRDGTextureRef DepthTexture		= GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(Q.ProceduralData->Atlas.Resolution, PF_R8G8B8A8, FClearValueBinding::Black, TexCreate_RenderTargetable | TexCreate_ShaderResource, 1), TEXT("CardsDepth"));
-		FRDGTextureRef TangentTexture	= GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(Q.ProceduralData->Atlas.Resolution, PF_R8G8B8A8, FClearValueBinding::Black, TexCreate_RenderTargetable | TexCreate_ShaderResource, 1), TEXT("CardTangent"));
-		FRDGTextureRef CoverageTexture	= GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(Q.ProceduralData->Atlas.Resolution, PF_R8G8B8A8, FClearValueBinding::Black, TexCreate_RenderTargetable | TexCreate_ShaderResource, 1), TEXT("CardCoverage"));
-		FRDGTextureRef AttributeTexture = GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(Q.ProceduralData->Atlas.Resolution, PF_R8G8B8A8, FClearValueBinding::Black, TexCreate_RenderTargetable | TexCreate_ShaderResource, 1), TEXT("CardAttribute"));
+		FRDGTextureRef DepthTexture		= GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(Q.ProceduralData->Atlas.Resolution, PF_R8G8B8A8, FClearValueBinding::Black, TexCreate_RenderTargetable | TexCreate_ShaderResource, 1), TEXT("Hair.CardsDepth"));
+		FRDGTextureRef TangentTexture	= GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(Q.ProceduralData->Atlas.Resolution, PF_R8G8B8A8, FClearValueBinding::Black, TexCreate_RenderTargetable | TexCreate_ShaderResource, 1), TEXT("Hair.CardTangent"));
+		FRDGTextureRef CoverageTexture	= GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(Q.ProceduralData->Atlas.Resolution, PF_R8G8B8A8, FClearValueBinding::Black, TexCreate_RenderTargetable | TexCreate_ShaderResource, 1), TEXT("Hair.CardCoverage"));
+		FRDGTextureRef AttributeTexture = GraphBuilder.CreateTexture(FRDGTextureDesc::Create2D(Q.ProceduralData->Atlas.Resolution, PF_R8G8B8A8, FClearValueBinding::Black, TexCreate_RenderTargetable | TexCreate_ShaderResource, 1), TEXT("Hair.CardAttribute"));
 		AddHairCardAtlasTexturePass(
 			GraphBuilder,
+			ShaderMap,
 			Q.ProceduralData->Atlas,
 			DebugShaderData,
 			Q.ProceduralResource->CardsStrandsPositions.Buffer->Desc.NumElements,
@@ -3890,16 +4122,17 @@ FString GetVersion()
 }
 
 void BuildGeometry(
-	const FHairStrandsDatas& InRen,
-	const FHairStrandsDatas& InSim,
-	FHairMeshesDatas& Out)
+	const FBox& InBox,
+	FHairMeshesBulkData& OutBulk)
 {
-	const FVector Center = InRen.BoundingBox.GetCenter();
-	const FVector Extent = InRen.BoundingBox.GetExtent();
+	const FVector3f Center = (FVector3f)InBox.GetCenter();
+	const FVector3f Extent = (FVector3f)InBox.GetExtent();
 
 	// Simple (incorrect normal/tangent) cube geomtry in place of the hair rendering
 	const uint32 TotalPointCount = 8;
 	const uint32 TotalIndexCount = 36;
+
+	FHairMeshesDatas Out;
 
 	Out.Meshes.Positions.SetNum(TotalPointCount);
 	Out.Meshes.Normals.SetNum(TotalPointCount);
@@ -3907,41 +4140,41 @@ void BuildGeometry(
 	Out.Meshes.UVs.SetNum(TotalPointCount);
 	Out.Meshes.Indices.SetNum(TotalIndexCount);
 
-	Out.Meshes.Positions[0] = Center + FVector(-Extent.X, -Extent.Y, -Extent.Z);
-	Out.Meshes.Positions[1] = Center + FVector(+Extent.X, -Extent.Y, -Extent.Z);
-	Out.Meshes.Positions[2] = Center + FVector(+Extent.X, +Extent.Y, -Extent.Z);
-	Out.Meshes.Positions[3] = Center + FVector(-Extent.X, +Extent.Y, -Extent.Z);
-	Out.Meshes.Positions[4] = Center + FVector(-Extent.X, -Extent.Y, +Extent.Z);
-	Out.Meshes.Positions[5] = Center + FVector(+Extent.X, -Extent.Y, +Extent.Z);
-	Out.Meshes.Positions[6] = Center + FVector(+Extent.X, +Extent.Y, +Extent.Z);
-	Out.Meshes.Positions[7] = Center + FVector(-Extent.X, +Extent.Y, +Extent.Z);
+	Out.Meshes.Positions[0] = Center + FVector3f(-Extent.X, -Extent.Y, -Extent.Z);
+	Out.Meshes.Positions[1] = Center + FVector3f(+Extent.X, -Extent.Y, -Extent.Z);
+	Out.Meshes.Positions[2] = Center + FVector3f(+Extent.X, +Extent.Y, -Extent.Z);
+	Out.Meshes.Positions[3] = Center + FVector3f(-Extent.X, +Extent.Y, -Extent.Z);
+	Out.Meshes.Positions[4] = Center + FVector3f(-Extent.X, -Extent.Y, +Extent.Z);
+	Out.Meshes.Positions[5] = Center + FVector3f(+Extent.X, -Extent.Y, +Extent.Z);
+	Out.Meshes.Positions[6] = Center + FVector3f(+Extent.X, +Extent.Y, +Extent.Z);
+	Out.Meshes.Positions[7] = Center + FVector3f(-Extent.X, +Extent.Y, +Extent.Z);
 
-	Out.Meshes.UVs[0] = FVector2D(0, 0);
-	Out.Meshes.UVs[1] = FVector2D(1, 0);
-	Out.Meshes.UVs[2] = FVector2D(1, 1);
-	Out.Meshes.UVs[3] = FVector2D(0, 1);
-	Out.Meshes.UVs[4] = FVector2D(0, 0);
-	Out.Meshes.UVs[5] = FVector2D(1, 0);
-	Out.Meshes.UVs[6] = FVector2D(1, 1);
-	Out.Meshes.UVs[7] = FVector2D(0, 1);
+	Out.Meshes.UVs[0] = FVector2f(0, 0);
+	Out.Meshes.UVs[1] = FVector2f(1, 0);
+	Out.Meshes.UVs[2] = FVector2f(1, 1);
+	Out.Meshes.UVs[3] = FVector2f(0, 1);
+	Out.Meshes.UVs[4] = FVector2f(0, 0);
+	Out.Meshes.UVs[5] = FVector2f(1, 0);
+	Out.Meshes.UVs[6] = FVector2f(1, 1);
+	Out.Meshes.UVs[7] = FVector2f(0, 1);
 
-	Out.Meshes.Normals[0] = FVector(0, 0, 1);
-	Out.Meshes.Normals[1] = FVector(0, 0, 1);
-	Out.Meshes.Normals[2] = FVector(0, 0, 1);
-	Out.Meshes.Normals[3] = FVector(0, 0, 1);
-	Out.Meshes.Normals[4] = FVector(0, 0, 1);
-	Out.Meshes.Normals[5] = FVector(0, 0, 1);
-	Out.Meshes.Normals[6] = FVector(0, 0, 1);
-	Out.Meshes.Normals[7] = FVector(0, 0, 1);
+	Out.Meshes.Normals[0] = FVector3f(0, 0, 1);
+	Out.Meshes.Normals[1] = FVector3f(0, 0, 1);
+	Out.Meshes.Normals[2] = FVector3f(0, 0, 1);
+	Out.Meshes.Normals[3] = FVector3f(0, 0, 1);
+	Out.Meshes.Normals[4] = FVector3f(0, 0, 1);
+	Out.Meshes.Normals[5] = FVector3f(0, 0, 1);
+	Out.Meshes.Normals[6] = FVector3f(0, 0, 1);
+	Out.Meshes.Normals[7] = FVector3f(0, 0, 1);
 
-	Out.Meshes.Tangents[0] = FVector(1, 0, 0);
-	Out.Meshes.Tangents[1] = FVector(1, 0, 0);
-	Out.Meshes.Tangents[2] = FVector(1, 0, 0);
-	Out.Meshes.Tangents[3] = FVector(1, 0, 0);
-	Out.Meshes.Tangents[4] = FVector(1, 0, 0);
-	Out.Meshes.Tangents[5] = FVector(1, 0, 0);
-	Out.Meshes.Tangents[6] = FVector(1, 0, 0);
-	Out.Meshes.Tangents[7] = FVector(1, 0, 0);
+	Out.Meshes.Tangents[0] = FVector3f(1, 0, 0);
+	Out.Meshes.Tangents[1] = FVector3f(1, 0, 0);
+	Out.Meshes.Tangents[2] = FVector3f(1, 0, 0);
+	Out.Meshes.Tangents[3] = FVector3f(1, 0, 0);
+	Out.Meshes.Tangents[4] = FVector3f(1, 0, 0);
+	Out.Meshes.Tangents[5] = FVector3f(1, 0, 0);
+	Out.Meshes.Tangents[6] = FVector3f(1, 0, 0);
+	Out.Meshes.Tangents[7] = FVector3f(1, 0, 0);
 
 	Out.Meshes.Indices[0] = 0;
 	Out.Meshes.Indices[1] = 1;
@@ -3989,31 +4222,34 @@ void BuildGeometry(
 
 	// Fill in render resources (do we need to keep it separated? e.g, format compression, packing)
 	const uint32 PointCount = Out.Meshes.Positions.Num();
-	Out.RenderData.Positions.SetNum(PointCount);
-	Out.RenderData.Normals.SetNum(PointCount * FHairCardsNormalFormat::ComponentCount);
-	Out.RenderData.UVs.SetNum(PointCount);
+	OutBulk.Positions.SetNum(PointCount);
+	OutBulk.Normals.SetNum(PointCount * FHairCardsNormalFormat::ComponentCount);
+	OutBulk.UVs.SetNum(PointCount);
 	for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 	{
-		Out.RenderData.Positions[PointIt] = FVector4(Out.Meshes.Positions[PointIt], 0);
-		Out.RenderData.UVs[PointIt] = FVector4(Out.Meshes.UVs[PointIt].X, Out.Meshes.UVs[PointIt].Y, 0, 0);
-		Out.RenderData.Normals[PointIt * 2] = FVector4(Out.Meshes.Tangents[PointIt], 0);
-		Out.RenderData.Normals[PointIt * 2 + 1] = FVector4(Out.Meshes.Normals[PointIt], 1);
+		OutBulk.Positions[PointIt] = FVector4f(Out.Meshes.Positions[PointIt], 0);
+		OutBulk.UVs[PointIt] = FVector4f(Out.Meshes.UVs[PointIt].X, Out.Meshes.UVs[PointIt].Y, 0, 0);
+		OutBulk.Normals[PointIt * 2] = FVector4f(Out.Meshes.Tangents[PointIt], 0);
+		OutBulk.Normals[PointIt * 2 + 1] = FVector4f(Out.Meshes.Normals[PointIt], 1);
 
-		Out.Meshes.BoundingBox += Out.RenderData.Positions[PointIt];
+		Out.Meshes.BoundingBox += FVector4f(OutBulk.Positions[PointIt]);
 	}
+	OutBulk.BoundingBox = ToFBox3d(Out.Meshes.BoundingBox);
 
 	const uint32 IndexCount = Out.Meshes.Indices.Num();
-	Out.RenderData.Indices.SetNum(IndexCount);
+	OutBulk.Indices.SetNum(IndexCount);
 	for (uint32 IndexIt = 0; IndexIt < IndexCount; ++IndexIt)
 	{
-		Out.RenderData.Indices[IndexIt] = Out.Meshes.Indices[IndexIt];
+		OutBulk.Indices[IndexIt] = Out.Meshes.Indices[IndexIt];
 	}
 }
 
 void ImportGeometry(
 	const UStaticMesh* StaticMesh,
-	FHairMeshesDatas& Out)
+	FHairMeshesBulkData& OutBulk)
 {
+	FHairMeshesDatas Out;
+
 	const uint32 MeshLODIndex = 0;
 
 	// Note: if there are multiple section we only import the first one. Support for multiple section could be added later on. 
@@ -4032,8 +4268,8 @@ void ImportGeometry(
 	{
 		Out.Meshes.Positions[VertexIt]	= LODData.VertexBuffers.PositionVertexBuffer.VertexPosition(VertexIt);
 		Out.Meshes.UVs[VertexIt]		= LODData.VertexBuffers.StaticMeshVertexBuffer.GetVertexUV(VertexIt, 0);
-		Out.Meshes.Tangents[VertexIt]	= LODData.VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexIt);
-		Out.Meshes.Normals[VertexIt]	= LODData.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexIt);
+		Out.Meshes.Tangents[VertexIt]	= FVector4f(LODData.VertexBuffers.StaticMeshVertexBuffer.VertexTangentX(VertexIt));
+		Out.Meshes.Normals[VertexIt]	= FVector4f(LODData.VertexBuffers.StaticMeshVertexBuffer.VertexTangentZ(VertexIt));
 
 		Out.Meshes.BoundingBox += Out.Meshes.Positions[VertexIt];
 	}
@@ -4044,22 +4280,24 @@ void ImportGeometry(
 	}
 
 	// Fill in render resources (do we need to keep it separated? e.g, format compression, packing)
+	OutBulk.BoundingBox = ToFBox3d(Out.Meshes.BoundingBox);
+
 	const uint32 PointCount = Out.Meshes.Positions.Num();
-	Out.RenderData.Positions.SetNum(PointCount);
-	Out.RenderData.Normals.SetNum(PointCount * FHairCardsNormalFormat::ComponentCount);
-	Out.RenderData.UVs.SetNum(PointCount);
+	OutBulk.Positions.SetNum(PointCount);
+	OutBulk.Normals.SetNum(PointCount * FHairCardsNormalFormat::ComponentCount);
+	OutBulk.UVs.SetNum(PointCount);
 	for (uint32 PointIt = 0; PointIt < PointCount; ++PointIt)
 	{
-		Out.RenderData.Positions[PointIt] = FVector4(Out.Meshes.Positions[PointIt], 0);
-		Out.RenderData.UVs[PointIt] = FVector4(Out.Meshes.UVs[PointIt].X, Out.Meshes.UVs[PointIt].Y, 0, 0);
-		Out.RenderData.Normals[PointIt * 2] = FVector4(Out.Meshes.Tangents[PointIt], 0);
-		Out.RenderData.Normals[PointIt * 2 + 1] = FVector4(Out.Meshes.Normals[PointIt], 1);
+		OutBulk.Positions[PointIt] = FVector4f(Out.Meshes.Positions[PointIt], 0);
+		OutBulk.UVs[PointIt] = FVector4f(Out.Meshes.UVs[PointIt].X, Out.Meshes.UVs[PointIt].Y, 0, 0);
+		OutBulk.Normals[PointIt * 2] = FVector4f(Out.Meshes.Tangents[PointIt], 0);
+		OutBulk.Normals[PointIt * 2 + 1] = FVector4f(Out.Meshes.Normals[PointIt], 1);
 	}
 
-	Out.RenderData.Indices.SetNum(IndexCount);
+	OutBulk.Indices.SetNum(IndexCount);
 	for (uint32 IndexIt = 0; IndexIt < IndexCount; ++IndexIt)
 	{
-		Out.RenderData.Indices[IndexIt] = Out.Meshes.Indices[IndexIt];
+		OutBulk.Indices[IndexIt] = Out.Meshes.Indices[IndexIt];
 	}
 }
 
@@ -4076,16 +4314,16 @@ public:
 	void SetMeshDescription(FMeshDescription* Description);
 
 	/** Append vertex and return new vertex ID */
-	FVertexID AppendVertex(const FVector& Position);
+	FVertexID AppendVertex(const FVector3f& Position);
 
 	/** Append new vertex instance and return ID */
 	FVertexInstanceID AppendInstance(const FVertexID& VertexID);
 
 	/** Set the Normal of a vertex instance*/
-	void SetInstanceNormal(const FVertexInstanceID& InstanceID, const FVector& Normal);
+	void SetInstanceNormal(const FVertexInstanceID& InstanceID, const FVector3f& Normal);
 
 	/** Set the UV of a vertex instance */
-	void SetInstanceUV(const FVertexInstanceID& InstanceID, const FVector2D& InstanceUV, int32 UVLayerIndex = 0);
+	void SetInstanceUV(const FVertexInstanceID& InstanceID, const FVector2f& InstanceUV, int32 UVLayerIndex = 0);
 
 	/** Set the number of UV layers */
 	void SetNumUVLayers(int32 NumUVLayers);
@@ -4103,13 +4341,13 @@ public:
 	FPolygonID AppendTriangle(const FVertexID& Vertex0, const FVertexID& Vertex1, const FVertexID& Vertex2, const FPolygonGroupID& PolygonGroup);
 
 	/** Append a triangle to the mesh with the given PolygonGroup ID, and optionally with triangle-vertex UVs and Normals */
-	FPolygonID AppendTriangle(const FVertexID* Triangle, const FPolygonGroupID& PolygonGroup, const FVector2D* VertexUVs = nullptr, const FVector* VertexNormals = nullptr);
+	FPolygonID AppendTriangle(const FVertexID* Triangle, const FPolygonGroupID& PolygonGroup, const FVector2f* VertexUVs = nullptr, const FVector3f* VertexNormals = nullptr);
 
 	/**
 	 * Append an arbitrary polygon to the mesh with the given PolygonGroup ID, and optionally with polygon-vertex UVs and Normals
 	 * Unique Vertex instances will be created for each polygon-vertex.
 	 */
-	FPolygonID AppendPolygon(const TArray<FVertexID>& Vertices, const FPolygonGroupID& PolygonGroup, const TArray<FVector2D>* VertexUVs = nullptr, const TArray<FVector>* VertexNormals = nullptr);
+	FPolygonID AppendPolygon(const TArray<FVertexID>& Vertices, const FPolygonGroupID& PolygonGroup, const TArray<FVector2f>* VertexUVs = nullptr, const TArray<FVector3f>* VertexNormals = nullptr);
 
 	/**
 	 * Append a triangle to the mesh using the given vertex instances and PolygonGroup ID
@@ -4119,10 +4357,10 @@ public:
 protected:
 	FMeshDescription* MeshDescription;
 
-	TVertexAttributesRef<FVector> VertexPositions;
-	TVertexInstanceAttributesRef<FVector2D> InstanceUVs;
-	TVertexInstanceAttributesRef<FVector> InstanceNormals;
-	TVertexInstanceAttributesRef<FVector4> InstanceColors;
+	TVertexAttributesRef<FVector3f> VertexPositions;
+	TVertexInstanceAttributesRef<FVector2f> InstanceUVs;
+	TVertexInstanceAttributesRef<FVector3f> InstanceNormals;
+	TVertexInstanceAttributesRef<FVector4f> InstanceColors;
 
 	TPolygonAttributesRef<int> PolyGroups;
 };
@@ -4135,10 +4373,10 @@ namespace ExtendedMeshAttribute
 void FMeshDescriptionBuilder::SetMeshDescription(FMeshDescription* Description)
 {
 	this->MeshDescription	= Description;
-	this->VertexPositions	= MeshDescription->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-	this->InstanceUVs		= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
-	this->InstanceNormals	= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-	this->InstanceColors	= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector4>(MeshAttribute::VertexInstance::Color);
+	this->VertexPositions	= MeshDescription->VertexAttributes().GetAttributesRef<FVector3f>(MeshAttribute::Vertex::Position);
+	this->InstanceUVs		= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2f>(MeshAttribute::VertexInstance::TextureCoordinate);
+	this->InstanceNormals	= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector3f>(MeshAttribute::VertexInstance::Normal);
+	this->InstanceColors	= MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector4f>(MeshAttribute::VertexInstance::Color);
 }
 
 void FMeshDescriptionBuilder::EnablePolyGroups()
@@ -4152,7 +4390,7 @@ void FMeshDescriptionBuilder::EnablePolyGroups()
 	}
 }
 
-FVertexID FMeshDescriptionBuilder::AppendVertex(const FVector& Position)
+FVertexID FMeshDescriptionBuilder::AppendVertex(const FVector3f& Position)
 {
 	FVertexID VertexID = MeshDescription->CreateVertex();
 	VertexPositions.Set(VertexID, Position);
@@ -4170,7 +4408,7 @@ FVertexInstanceID FMeshDescriptionBuilder::AppendInstance(const FVertexID& Verte
 	return MeshDescription->CreateVertexInstance(VertexID);
 }
 
-void FMeshDescriptionBuilder::SetInstanceNormal(const FVertexInstanceID& InstanceID, const FVector& Normal)
+void FMeshDescriptionBuilder::SetInstanceNormal(const FVertexInstanceID& InstanceID, const FVector3f& Normal)
 {
 	if (InstanceNormals.IsValid())
 	{
@@ -4178,9 +4416,9 @@ void FMeshDescriptionBuilder::SetInstanceNormal(const FVertexInstanceID& Instanc
 	}
 }
 
-void FMeshDescriptionBuilder::SetInstanceUV(const FVertexInstanceID& InstanceID, const FVector2D& InstanceUV, int32 UVLayerIndex)
+void FMeshDescriptionBuilder::SetInstanceUV(const FVertexInstanceID& InstanceID, const FVector2f& InstanceUV, int32 UVLayerIndex)
 {
-	if (InstanceUVs.IsValid() && ensure(UVLayerIndex < InstanceUVs.GetNumIndices()))
+	if (InstanceUVs.IsValid() && ensure(UVLayerIndex < InstanceUVs.GetNumChannels()))
 	{
 		InstanceUVs.Set(InstanceID, UVLayerIndex, InstanceUV);
 	}
@@ -4190,7 +4428,7 @@ void FMeshDescriptionBuilder::SetNumUVLayers(int32 NumUVLayers)
 {
 	if (ensure(InstanceUVs.IsValid()))
 	{
-		InstanceUVs.SetNumIndices(NumUVLayers);
+		InstanceUVs.SetNumChannels(NumUVLayers);
 	}
 }
 
@@ -4228,7 +4466,7 @@ void ConvertCardsGeometryToMeshDescription(const FHairCardsGeometry& In, FMeshDe
 	{
 		FVertexID VertexID = Builder.AppendVertex(In.Positions[VIndex]);
 		FVertexInstanceID InstanceID = Builder.AppendInstance(VertexID);
-		FVector2D UV = FVector2D(In.UVs[VIndex].X, In.UVs[VIndex].Y);
+		FVector2f UV = FVector2f(In.UVs[VIndex].X, In.UVs[VIndex].Y);
 		Builder.SetInstanceNormal(InstanceID, In.Normals[VIndex]);
 		Builder.SetInstanceUV(InstanceID, UV, 0);
 

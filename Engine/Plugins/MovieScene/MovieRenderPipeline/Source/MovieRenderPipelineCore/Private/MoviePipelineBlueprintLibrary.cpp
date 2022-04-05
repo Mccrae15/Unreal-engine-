@@ -28,6 +28,11 @@
 #include "MovieSceneSequenceVisitor.h"
 #include "MovieSceneSequenceID.h"
 #include "MoviePipelineUtils.h"
+#include "UObject/UObjectHash.h"
+#include "MovieRenderPipelineCoreModule.h"
+#include "Features/IModularFeatures.h"
+#include "Misc/EngineVersion.h"
+#include "GenericPlatform/GenericPlatformProcess.h"
 
 // For camera settings
 #include "GameFramework/PlayerController.h"
@@ -68,11 +73,25 @@ FText UMoviePipelineBlueprintLibrary::GetJobName(UMoviePipeline* InMoviePipeline
 	return FText();
 }
 
+namespace MoviePipeline
+{
+	FString GetJobAuthor(const UMoviePipelineExecutorJob* InJob)
+	{
+		if (InJob && InJob->Author.Len() > 0)
+		{
+			return InJob->Author;
+		}
+
+		// If they didn't specify an author in the job, default to the local username.
+		return FPlatformProcess::UserName(false);
+	}
+}
+
 FText UMoviePipelineBlueprintLibrary::GetJobAuthor(UMoviePipeline* InMoviePipeline)
 {
 	if (InMoviePipeline)
 	{
-		return FText::FromString(InMoviePipeline->GetCurrentJob()->Author);
+		return FText::FromString(MoviePipeline::GetJobAuthor(InMoviePipeline->GetCurrentJob()));
 	}
 
 	return FText();
@@ -344,6 +363,32 @@ FString UMoviePipelineBlueprintLibrary::GetMapPackageName(UMoviePipelineExecutor
 	return InJob->Map.GetLongPackageName();
 }
 
+UMoviePipelineQueue* UMoviePipelineBlueprintLibrary::LoadManifestFileFromString(const FString& InManifestFilePath)
+{
+	FString InFileName = TEXT("QueueManifest");
+	FString InPackagePath = TEXT("/Engine/MovieRenderPipeline/Editor/Transient");
+
+	FString NewPackageName = FPackageName::GetLongPackagePath(InPackagePath) + TEXT("/") + InFileName;
+
+	// Relative paths are considered relative to the game's save directory to avoid having to hard code
+	// game names into relative paths.
+	FString ConfigAssetPath = InManifestFilePath;
+	if (FPaths::IsRelative(InManifestFilePath))
+	{
+		ConfigAssetPath = FPaths::Combine(FPaths::ProjectSavedDir(), InManifestFilePath);
+	}
+
+	UPackage* OuterPackage = CreatePackage(*NewPackageName);
+	UPackage* QueuePackage = LoadPackage(OuterPackage, *ConfigAssetPath, LOAD_None);
+	UMoviePipelineQueue* OutQueue = nullptr;
+	if (QueuePackage)
+	{
+		OutQueue = Cast<UMoviePipelineQueue>((UObject*)FindObjectWithOuter(QueuePackage, UMoviePipelineQueue::StaticClass()));
+	}
+
+	return OutQueue;
+}
+
 
 void UMoviePipelineBlueprintLibrary::UpdateJobShotListFromSequence(ULevelSequence* InSequence, UMoviePipelineExecutorJob* InJob, bool& bShotsChanged)
 {
@@ -361,19 +406,22 @@ void UMoviePipelineBlueprintLibrary::UpdateJobShotListFromSequence(ULevelSequenc
 
 			for (UMovieSceneSection* Section : InTrack->GetAllSections())
 			{
+				if(!Section)
+				{
+					continue;
+				}
+				
 				if (!Section->IsActive())
 				{
 					continue;
 				}
 
-
-				// Intersect it with our local range so that any sections that fall outside our playback bounds gets discarded
+				// When a sequence is contained by a Shot Section, it can offset/clip the playback range. So we want to scan for any sections that
+				// fall entirely out of the actually evaluated range, and discard them. To do this, we transform from our parent (RootToSequenceTransform)
+				// to local space, and then compare the local camera range to that and discard it. When there is no parent, the RootToSequence transform
+				// is identity, and thus it just clips it against the normal Playback Range.
 				UMovieScene* OwningScene = Section->GetTypedOuter<UMovieScene>();
-				TRange<FFrameNumber> LocalCameraRange = TRange<FFrameNumber>::Intersection(OwningScene->GetPlaybackRange(), Section->GetRange());
-				if (LocalCameraRange.IsEmpty())
-				{
-					continue;
-				}
+				TRange<FFrameNumber> LocalCameraRange = Section->GetRange();
 
 				// Intersect it with the root range so that if the parent has trimmed down the sub-section we don't render outside that.
 				TRange<FFrameNumber> RootCameraRange = TRange<FFrameNumber>::Intersection(LocalSpace.RootClampRange, LocalCameraRange * LocalSpace.RootToSequenceTransform.InverseLinearOnly());
@@ -835,6 +883,7 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 	{
 		OutMergedFormatArgs.FilenameArguments.Add(TEXT("date"), InParams.InitializationTime.ToString(TEXT("%Y.%m.%d")));
 		OutMergedFormatArgs.FilenameArguments.Add(TEXT("time"), InParams.InitializationTime.ToString(TEXT("%H.%M.%S")));
+		OutMergedFormatArgs.FilenameArguments.Add(TEXT("job_author"), MoviePipeline::GetJobAuthor(InParams.Job));
 
 		FString VersionText = FString::Printf(TEXT("v%0*d"), 3, InParams.InitializationVersion);
 
@@ -844,7 +893,7 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 		OutMergedFormatArgs.FileMetadata.Add(TEXT("unreal/jobTime"), InParams.InitializationTime.ToString(TEXT("%H.%M.%S")));
 		OutMergedFormatArgs.FileMetadata.Add(TEXT("unreal/jobVersion"), FString::FromInt(InParams.InitializationVersion));
 		OutMergedFormatArgs.FileMetadata.Add(TEXT("unreal/jobName"), InParams.Job->JobName);
-		OutMergedFormatArgs.FileMetadata.Add(TEXT("unreal/jobAuthor"), InParams.Job->Author);
+		OutMergedFormatArgs.FileMetadata.Add(TEXT("unreal/jobAuthor"), MoviePipeline::GetJobAuthor(InParams.Job));
 
 		// By default, we don't want to show frame duplication numbers. If we need to start writing them,
 		// they need to come before the frame number (so that tools recognize them as a sequence).
@@ -910,3 +959,54 @@ void UMoviePipelineBlueprintLibrary::ResolveFilenameFormatArguments(const FStrin
 	}
 }
 
+ULevelSequence* UMoviePipelineBlueprintLibrary::GetCurrentSequence(const UMoviePipeline* InMoviePipeline)
+{
+	if (InMoviePipeline)
+	{
+		return InMoviePipeline->GetTargetSequence();
+	}
+
+	return nullptr;
+}
+
+UMoviePipelineExecutorShot* UMoviePipelineBlueprintLibrary::GetCurrentExecutorShot(const UMoviePipeline* InMoviePipeline)
+{
+	if (InMoviePipeline)
+	{
+		const TArray<UMoviePipelineExecutorShot*>& ActiveShotList = InMoviePipeline->GetActiveShotList();
+		int32 CurrentShotIndex = InMoviePipeline->GetCurrentShotIndex();
+		if (ActiveShotList.IsValidIndex(CurrentShotIndex))
+		{
+			return ActiveShotList[CurrentShotIndex];
+		}
+	}
+
+	return nullptr;
+}
+
+FText UMoviePipelineBlueprintLibrary::GetMoviePipelineEngineChangelistLabel(const UMoviePipeline*)
+{
+	// This is a modular feature so that you can write a plugin that provides the string. If you don't write a plugin
+	// then it falls back to the existing logic which pulls the engine build version.
+	if(IModularFeatures::Get().IsModularFeatureAvailable(IMoviePipelineBurnInExtension::ModularFeatureName))
+	{
+		IMoviePipelineBurnInExtension& Extension = IModularFeatures::Get().GetModularFeature<IMoviePipelineBurnInExtension>(IMoviePipelineBurnInExtension::ModularFeatureName);
+		const FText Label = Extension.GetEngineChangelistLabel();
+		if (!Label.IsEmpty())
+		{
+			return Label;
+		}
+	}
+
+	FString EngineVersion = FEngineVersion::Current().ToString();
+	int32 ChangeListIndexStart = EngineVersion.Find(TEXT("-"));
+	int32 ChangeListIndexEnd = EngineVersion.Find(TEXT("+"));
+
+	if (ChangeListIndexStart > 0 && ChangeListIndexEnd > 0)
+	{
+		FString Substr = EngineVersion.Mid(ChangeListIndexStart + 1, (ChangeListIndexEnd - ChangeListIndexStart) - 1);
+		return FText::FromString(Substr);
+	}
+
+	return FText();
+}

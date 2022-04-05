@@ -14,35 +14,69 @@
 
 void INiagaraParameterDefinitionsSubscriber::PostLoadDefinitionsSubscriptions()
 {
+	// First remove any subscriptions that are pointing to null parameter definitions assets. 
+	// The null entries are either definitions assets that have been deleted, or definitions assets in a content plugin that is not mounted.
+	// For the second scenario, we will rediscover the definitions asset in the content plugin the next time it is mounted in the bSubscribeAllNameMatchParameters pass.
 	TArray<FParameterDefinitionsSubscription>& Subscriptions = GetParameterDefinitionsSubscriptions();
-	for (FParameterDefinitionsSubscription& Subscription : Subscriptions)
+	for (int32 Idx = Subscriptions.Num() - 1; Idx > -1; --Idx)
 	{
-		if (Subscription.DefinitionsId.IsValid() == false && Subscription.ParameterDefinitions_DEPRECATED != nullptr)
+		if (Subscriptions[Idx].Definitions == nullptr)
 		{
-			Subscription.DefinitionsId = Subscription.ParameterDefinitions_DEPRECATED->GetDefinitionsUniqueId();
+			Subscriptions.RemoveAtSwap(Idx);
 		}
 	}
 
-	// When postloading definition subscriptions, we want to synchronize all parameters with all parameter definitions that are matching by name.
-	// As such; Set bForceGatherDefinitions so that all NiagaraParameterDefinitions assets are gathered to consider for linking, and;
-	// Set bSubscribeAllNameMatchParameters so that name matches are considered for linking parameters to parameter definitions.
-	FSynchronizeWithParameterDefinitionsArgs Args;
-	Args.bForceGatherDefinitions = true;
-	Args.bSubscribeAllNameMatchParameters = true;
-	SynchronizeWithParameterDefinitions(Args);
+	auto SyncAllNameMatchParameters = [this]() {
+		// When postloading definition subscriptions, we want to synchronize all parameters with all parameter definitions that are matching by name.
+		// As such; Set bForceGatherDefinitions so that all NiagaraParameterDefinitions assets are gathered to consider for linking, and;
+		// Set bSubscribeAllNameMatchParameters so that name matches are considered for linking parameters to parameter definitions.
+		FSynchronizeWithParameterDefinitionsArgs Args;
+		Args.bForceGatherDefinitions = true;
+		Args.bSubscribeAllNameMatchParameters = true;
+		SynchronizeWithParameterDefinitions(Args);
+	};
+
+	// Check the asset registry for asset discovery having been completed.
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	const bool bAllParameterDefinitionsDiscovered = AssetRegistryModule.Get().IsLoadingAssets() == false;
+
+	// If the asset registry has not discovered all parameter definitions yet;
+	// Immediately synchronize parameters we are already linked to so that we can sync changes to default value.
+	// Then, wait for the callback asset registry discovery completion to sync all name match parameters.
+	if (bAllParameterDefinitionsDiscovered == false)
+	{
+		SynchronizeWithParameterDefinitions();
+		OnDeferredSyncAllNameMatchParametersHandle = AssetRegistryModule.Get().OnFilesLoaded().AddLambda(SyncAllNameMatchParameters);
+	}
+	// Else the asset registry has discovered all parameter definitions assets;
+	// Process linking name matched parameters and synchronizing existing definitions now.
+	else
+	{
+		SyncAllNameMatchParameters();
+	}
+}
+
+void INiagaraParameterDefinitionsSubscriber::CleanupDefinitionsSubscriptions()
+{
+	if(OnDeferredSyncAllNameMatchParametersHandle.IsValid())
+	{
+		if(FAssetRegistryModule* AssetRegistryModule = FModuleManager::GetModulePtr<FAssetRegistryModule>("AssetRegistry"))
+		{
+			AssetRegistryModule->Get().OnFilesLoaded().Remove(OnDeferredSyncAllNameMatchParametersHandle);
+		}
+	}
 }
 
 TArray<UNiagaraParameterDefinitionsBase*> INiagaraParameterDefinitionsSubscriber::GetSubscribedParameterDefinitions() const
 {
-	TArray<UNiagaraParameterDefinitionsBase*> Definitions = GetAllParameterDefinitions();
 	const TArray<FParameterDefinitionsSubscription>& Subscriptions = GetParameterDefinitionsSubscriptions();
 	TArray<UNiagaraParameterDefinitionsBase*> SubscribedDefinitions;
 
 	for (const FParameterDefinitionsSubscription& Subscription : Subscriptions)
 	{
-		if (UNiagaraParameterDefinitionsBase* const* DefinitionPtr = Definitions.FindByPredicate([&Subscription](const UNiagaraParameterDefinitionsBase* Definition) { return Definition->GetDefinitionsUniqueId() == Subscription.DefinitionsId; }))
+		if (Subscription.Definitions != nullptr)
 		{
-			SubscribedDefinitions.Add(*DefinitionPtr);
+			SubscribedDefinitions.Add(Subscription.Definitions);
 		}
 	}
 	return SubscribedDefinitions;
@@ -54,7 +88,7 @@ bool INiagaraParameterDefinitionsSubscriber::GetIsSubscribedToParameterDefinitio
 
 	for (const FParameterDefinitionsSubscription& Subscription : Subscriptions)
 	{
-		if (Definition->GetDefinitionsUniqueId() == Subscription.DefinitionsId)
+		if (Subscription.Definitions == Definition)
 		{
 			return true;
 		}
@@ -79,10 +113,9 @@ UNiagaraParameterDefinitionsBase* INiagaraParameterDefinitionsSubscriber::FindSu
 void INiagaraParameterDefinitionsSubscriber::SubscribeToParameterDefinitions(UNiagaraParameterDefinitionsBase* NewParameterDefinitions, bool bDoNotAssertIfAlreadySubscribed /*= false*/)
 {
 	TArray<FParameterDefinitionsSubscription>& Subscriptions = GetParameterDefinitionsSubscriptions();
-	const FGuid& NewParameterDefinitionsId = NewParameterDefinitions->GetDefinitionsUniqueId();
 	for (const FParameterDefinitionsSubscription& Subscription : Subscriptions)
 	{
-		if (Subscription.DefinitionsId == NewParameterDefinitionsId)
+		if (Subscription.Definitions == NewParameterDefinitions)
 		{
 			if (bDoNotAssertIfAlreadySubscribed == false)
 			{
@@ -93,7 +126,7 @@ void INiagaraParameterDefinitionsSubscriber::SubscribeToParameterDefinitions(UNi
 	}
 
 	FParameterDefinitionsSubscription& NewSubscription = Subscriptions.AddDefaulted_GetRef();
-	NewSubscription.DefinitionsId = NewParameterDefinitionsId;
+	NewSubscription.Definitions = NewParameterDefinitions;
 	NewSubscription.CachedChangeIdHash = NewParameterDefinitions->GetChangeIdHash();
 
 	OnSubscribedParameterDefinitionsChangedDelegate.Broadcast();
@@ -104,7 +137,7 @@ void INiagaraParameterDefinitionsSubscriber::UnsubscribeFromParameterDefinitions
 	TArray<FParameterDefinitionsSubscription>& Subscriptions = GetParameterDefinitionsSubscriptions();
 	for (int32 Idx = Subscriptions.Num() - 1; Idx > -1; --Idx)
 	{
-		if (Subscriptions[Idx].DefinitionsId == ParameterDefinitionsToRemoveId)
+		if (Subscriptions[Idx].Definitions->GetDefinitionsUniqueId() == ParameterDefinitionsToRemoveId)
 		{
 			Subscriptions.RemoveAtSwap(Idx);
 			//Synchronize after removing the subscription to remove the subscribed flag from all parameters that were subscribed to the removed definition.
@@ -124,15 +157,33 @@ void INiagaraParameterDefinitionsSubscriber::SynchronizeWithParameterDefinitions
 		int32 ChangeIdHash;
 	};
 
-	const TArray<UNiagaraParameterDefinitionsBase*> AllDefinitions = GetAllParameterDefinitions();
+	// Get all available parameter definitions.
+	// Depending on whether asset discovery is complete we will either get all parameter definitions via asset registry or get all in subscriptions, respectively.
+	TArray<FParameterDefinitionsSubscription>& Subscriptions = GetParameterDefinitionsSubscriptions();
+	TArray<UNiagaraParameterDefinitionsBase*> AllDefinitions;
 
-	// Cache the definition assets ChangeIdHash for comparison.
-	TArray<FDefinitionAndChangeIdHash> AllDefinitionAndChangeIdHashes;
-	for (UNiagaraParameterDefinitionsBase* AllDefinitionsItr : AllDefinitions)
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	if (AssetRegistryModule.Get().IsLoadingAssets() == false)
 	{
-		FDefinitionAndChangeIdHash& DefinitionAndChangeIdHash = AllDefinitionAndChangeIdHashes.Emplace_GetRef();
-		DefinitionAndChangeIdHash.Definition = AllDefinitionsItr;
-		DefinitionAndChangeIdHash.ChangeIdHash = AllDefinitionsItr->GetChangeIdHash();
+		TArray<FAssetData> ParameterDefinitionsAssetData;
+		AssetRegistryModule.GetRegistry().GetAssetsByClass(TEXT("NiagaraParameterDefinitions"), ParameterDefinitionsAssetData);
+		for (const FAssetData& ParameterDefinitionsAssetDatum : ParameterDefinitionsAssetData)
+		{
+			UNiagaraParameterDefinitionsBase* ParameterDefinitions = Cast<UNiagaraParameterDefinitionsBase>(ParameterDefinitionsAssetDatum.GetAsset());
+			if (ParameterDefinitions == nullptr)
+			{
+				ensureMsgf(false, TEXT("Failed to load parameter definition from asset registry!"));
+				continue;
+			}
+			AllDefinitions.Add(ParameterDefinitions);
+		}
+	}
+	else
+	{
+		for (const FParameterDefinitionsSubscription& Subscription : Subscriptions)
+		{
+			AllDefinitions.Add(Subscription.Definitions);
+		}
 	}
 
 	// Collect the FGuid ParameterIds for every parameter in every definition asset.
@@ -143,25 +194,24 @@ void INiagaraParameterDefinitionsSubscriber::SynchronizeWithParameterDefinitions
 	}
 
 	// Filter out Target Definitions that do not have a subscription associated with their unique id.
-	TArray<FParameterDefinitionsSubscription>& Subscriptions = GetParameterDefinitionsSubscriptions();
 	TArray<FDefinitionAndChangeIdHash> TargetDefinitionAndChangeIdHashes;
 	TArray<UNiagaraParameterDefinitionsBase*> TargetDefinitions;
 
-	for (const FDefinitionAndChangeIdHash& DefinitionAndChangeIdHash : AllDefinitionAndChangeIdHashes)
+	for (const FParameterDefinitionsSubscription& Subscription : Subscriptions)
 	{
-		if (const FParameterDefinitionsSubscription* Subscription = Subscriptions.FindByPredicate(
-			[&DefinitionAndChangeIdHash](const FParameterDefinitionsSubscription& inSubscription){ return inSubscription.DefinitionsId == DefinitionAndChangeIdHash.Definition->GetDefinitionsUniqueId(); }))
+		if (Args.bForceGatherDefinitions)
 		{
-			if (Args.bForceGatherDefinitions)
-			{
-				TargetDefinitionAndChangeIdHashes.Add(DefinitionAndChangeIdHash);
-				TargetDefinitions.Add(DefinitionAndChangeIdHash.Definition);
-			}
-			else if (Subscription->CachedChangeIdHash != DefinitionAndChangeIdHash.ChangeIdHash)
-			{
-				TargetDefinitionAndChangeIdHashes.Add(DefinitionAndChangeIdHash);
-				TargetDefinitions.Add(DefinitionAndChangeIdHash.Definition);
-			}
+			FDefinitionAndChangeIdHash& DefinitionAndChangeIdHash = TargetDefinitionAndChangeIdHashes.Emplace_GetRef();
+			DefinitionAndChangeIdHash.Definition = Subscription.Definitions;
+			DefinitionAndChangeIdHash.ChangeIdHash = Subscription.Definitions->GetChangeIdHash();
+			TargetDefinitions.Add(Subscription.Definitions);
+		}
+		else if (Subscription.CachedChangeIdHash != Subscription.Definitions->GetChangeIdHash())
+		{
+			FDefinitionAndChangeIdHash& DefinitionAndChangeIdHash = TargetDefinitionAndChangeIdHashes.Emplace_GetRef();
+			DefinitionAndChangeIdHash.Definition = Subscription.Definitions;
+			DefinitionAndChangeIdHash.ChangeIdHash = Subscription.Definitions->GetChangeIdHash();
+			TargetDefinitions.Add(Subscription.Definitions);
 		}
 	}
 
@@ -221,40 +271,19 @@ void INiagaraParameterDefinitionsSubscriber::SynchronizeWithParameterDefinitions
 	OnSubscribedParameterDefinitionsChangedDelegate.Broadcast();
 }
 
-TArray<UNiagaraParameterDefinitionsBase*> INiagaraParameterDefinitionsSubscriber::GetAllParameterDefinitions() const
-{
-	TArray<UNiagaraParameterDefinitionsBase*> OutParameterDefinitions;
-
-	TArray<FAssetData> ParameterDefinitionsAssetData;
-	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-	AssetRegistryModule.GetRegistry().GetAssetsByClass(TEXT("NiagaraParameterDefinitions"), ParameterDefinitionsAssetData);
-	for (const FAssetData& ParameterDefinitionsAssetDatum : ParameterDefinitionsAssetData)
-	{
-		UNiagaraParameterDefinitionsBase* ParameterDefinitions = Cast<UNiagaraParameterDefinitionsBase>(ParameterDefinitionsAssetDatum.GetAsset());
-		if (ParameterDefinitions == nullptr)
-		{
-			ensureMsgf(false, TEXT("Failed to load parameter definition from asset registry!"));
-			continue;
-		}
-		OutParameterDefinitions.Add(ParameterDefinitions);
-	}
-	return OutParameterDefinitions;
-}
-
 void INiagaraParameterDefinitionsSubscriber::MarkParameterDefinitionSubscriptionsSynchronized(TArray<FGuid> SynchronizedParameterDefinitionsIds /*= TArray<FGuid>()*/)
 {
-	TArray<UNiagaraParameterDefinitionsBase*> Definitions = GetAllParameterDefinitions();
 	TArray<FParameterDefinitionsSubscription>& Subscriptions = GetParameterDefinitionsSubscriptions();
 
 	for (FParameterDefinitionsSubscription& Subscription : Subscriptions)
 	{
-		if (SynchronizedParameterDefinitionsIds.Num() > 0 && SynchronizedParameterDefinitionsIds.Contains(Subscription.DefinitionsId) == false)
+		if (SynchronizedParameterDefinitionsIds.Num() > 0 && SynchronizedParameterDefinitionsIds.Contains(Subscription.Definitions->GetDefinitionsUniqueId()) == false)
 		{
 			continue;
 		}
-		else if (UNiagaraParameterDefinitionsBase* const* DefinitionPtr = Definitions.FindByPredicate([&Subscription](const UNiagaraParameterDefinitionsBase* Definition) { return Definition->GetDefinitionsUniqueId() == Subscription.DefinitionsId; }))
+		else
 		{
-			Subscription.CachedChangeIdHash = (*DefinitionPtr)->GetChangeIdHash();
+			Subscription.CachedChangeIdHash = Subscription.Definitions->GetChangeIdHash();
 		}
 	}
 }

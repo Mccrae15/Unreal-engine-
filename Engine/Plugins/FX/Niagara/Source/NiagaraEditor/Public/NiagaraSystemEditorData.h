@@ -38,7 +38,7 @@ private:
 	FName FolderName;
 
 	UPROPERTY()
-	TArray<UNiagaraSystemEditorFolder*> ChildFolders;
+	TArray<TObjectPtr<UNiagaraSystemEditorFolder>> ChildFolders;
 
 	UPROPERTY()
 	TArray<FGuid> ChildEmitterHandleIds;
@@ -99,10 +99,10 @@ private:
 
 private:
 	UPROPERTY(Instanced)
-	UNiagaraSystemEditorFolder* RootFolder;
+	TObjectPtr<UNiagaraSystemEditorFolder> RootFolder;
 
 	UPROPERTY(Instanced)
-	UNiagaraStackEditorData* StackEditorData;
+	TObjectPtr<UNiagaraStackEditorData> StackEditorData;
 
 	UPROPERTY()
 	FTransform OwnerTransform;
@@ -115,7 +115,7 @@ private:
 
 	/** Graph presenting overview of the current system and its emitters. */
 	UPROPERTY()
-	UEdGraph* SystemOverviewGraph;
+	TObjectPtr<UEdGraph> SystemOverviewGraph;
 
 	UPROPERTY()
 	FNiagaraGraphViewSettings OverviewGraphViewSettings;

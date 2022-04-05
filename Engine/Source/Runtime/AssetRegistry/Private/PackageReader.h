@@ -18,17 +18,27 @@ public:
 
 	enum class EOpenPackageResult : uint8
 	{
+		/** The package summary loaded successfully */
 		Success,
+		/** The package reader was not given a valid archive to load from */
 		NoLoader,
+		/** The package tag could not be found, the package is probably corrupted */
 		MalformedTag,
+		/** The package is too old to be loaded */
 		VersionTooOld,
+		/** The package is from a newer version of the engine */
 		VersionTooNew,
+		/** The package contains an unknown custom version */
 		CustomVersionMissing,
+		/** The package contains a custom version that failed it's validator */
 		CustomVersionInvalid,
+		/** Package was unversioned but the process cannot load unversioned packages */
+		Unversioned,
 	};
 
 	/** Creates a loader for the filename */
-	bool OpenPackageFile(const FString& PackageFilename, EOpenPackageResult* OutErrorCode = nullptr);
+	bool OpenPackageFile(FStringView PackageFilename, EOpenPackageResult* OutErrorCode = nullptr);
+	bool OpenPackageFile(FStringView LongPackageName, FStringView PackageFilename, EOpenPackageResult* OutErrorCode = nullptr);
 	bool OpenPackageFile(FArchive* Loader, EOpenPackageResult* OutErrorCode = nullptr);
 	bool OpenPackageFile(EOpenPackageResult* OutErrorCode = nullptr);
 
@@ -48,6 +58,7 @@ public:
 	bool SerializeNameMap();
 	bool SerializeImportMap(TArray<FObjectImport>& OutImportMap);
 	bool SerializeExportMap(TArray<FObjectExport>& OutExportMap);
+	bool SerializeImportedClasses(const TArray<FObjectImport>& ImportMap, TArray<FName>& OutClassNames);
 	bool SerializeSoftPackageReferenceList(TArray<FName>& OutSoftPackageReferenceList);
 	bool SerializeSearchableNamesMap(FPackageDependencyData& OutDependencyData);
 	bool SerializeAssetRegistryDependencyData(FPackageDependencyData& DependencyData);
@@ -68,8 +79,10 @@ public:
 	}
 
 private:
+	bool TryGetLongPackageName(FString& OutLongPackageName) const;
 	bool StartSerializeSection(int64 Offset);
 
+	FString LongPackageName;
 	FString PackageFilename;
 	/* Loader is the interface used to read the bytes from the package's repository. All interpretation of the bytes is done by serializing into *this, which is also an FArchive. */
 	FArchive* Loader;
@@ -77,4 +90,5 @@ private:
 	TArray<FName> NameMap;
 	int64 PackageFileSize;
 	int64 AssetRegistryDependencyDataOffset;
+	bool bLoaderOwner;
 };

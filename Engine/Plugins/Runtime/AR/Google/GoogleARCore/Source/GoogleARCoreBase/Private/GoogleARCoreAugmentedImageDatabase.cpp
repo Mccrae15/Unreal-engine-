@@ -10,7 +10,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Misc/FileHelper.h"
 #include "Misc/AssertionMacros.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "Containers/StringConv.h"
@@ -25,7 +25,7 @@ int UGoogleARCoreAugmentedImageDatabase::AddRuntimeAugmentedImageFromTexture(UTe
 	if (PixelFormat == EPixelFormat::PF_B8G8R8A8 || PixelFormat == EPixelFormat::PF_G8)
 	{
 		ensure(ImageTexture->GetNumMips() > 0);
-		FTexture2DMipMap* Mip0 = &ImageTexture->PlatformData->Mips[0];
+		FTexture2DMipMap* Mip0 = &ImageTexture->GetPlatformData()->Mips[0];
 		FByteBulkData* RawImageData = &Mip0->BulkData;
 
 		int ImageWidth = ImageTexture->GetSizeX();

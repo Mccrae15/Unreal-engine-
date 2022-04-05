@@ -55,7 +55,7 @@ static FUObjectAnnotationDense<FArchetypeInfo, true> ArchetypeAnnotation;
 UObject* GetArchetypeFromRequiredInfoImpl(const UClass* Class, const UObject* Outer, FName Name, EObjectFlags ObjectFlags, bool bUseUpToDateClass)
 {
 	UObject* Result = NULL;
-	const bool bIsCDO = !!(ObjectFlags&RF_ClassDefaultObject);
+	const bool bIsCDO = !!(ObjectFlags & RF_ClassDefaultObject);
 	if (bIsCDO)
 	{
 		Result = bUseUpToDateClass ? Class->GetAuthoritativeClass()->GetArchetypeForCDO() : Class->GetArchetypeForCDO();
@@ -85,7 +85,7 @@ UObject* GetArchetypeFromRequiredInfoImpl(const UClass* Class, const UObject* Ou
 			{
 				Result = MyArchetype; // found that my outers archetype had a matching component, that must be my archetype
 			}
-			else if (!!(ObjectFlags&RF_InheritableComponentTemplate) && Outer->IsA<UClass>())
+			else if (!!(ObjectFlags & RF_InheritableComponentTemplate) && Outer->IsA<UClass>())
 			{
 				const UClass* OuterSuperClass = static_cast<const UClass*>(Outer)->GetSuperClass();
 				for (const UClass* SuperClassArchetype = bUseUpToDateClass && OuterSuperClass ? OuterSuperClass->GetAuthoritativeClass() : OuterSuperClass;
@@ -101,7 +101,7 @@ UObject* GetArchetypeFromRequiredInfoImpl(const UClass* Class, const UObject* Ou
 					}
 					Result = static_cast<UObject*>(FindObjectWithOuter(SuperClassArchetype, Class, Name));
 					// We can have invalid archetypes halfway through the hierarchy, keep looking if it's pending kill or transient
-					if (Result && !Result->IsPendingKill() && !Result->HasAnyFlags(RF_Transient))
+					if (IsValid(Result) && !Result->HasAnyFlags(RF_Transient))
 					{
 						break;
 					}

@@ -15,7 +15,23 @@ struct FPostProcessSettings;
 struct FWorldContext;
 class UTexture;
 class FSceneViewFamily;
+class FViewInfo;
+class FRHICommandListImmediate;
 class FTexture;
+
+struct FHeadMountedDisplayPassContext
+{
+	FHeadMountedDisplayPassContext(FRHICommandListImmediate& InRHICmdList, const FViewInfo& InView)
+		: RHICmdList(InRHICmdList)
+		, View(InView)
+	{}
+
+	FRHICommandListImmediate& RHICmdList;
+	const FViewInfo& View;
+};
+
+UE_DEPRECATED(5.0, "FRenderingCompositePassContext has been refactored to FHeadMountedDisplayPassContext.")
+typedef FHeadMountedDisplayPassContext FRenderingCompositePassContext;
 
 /**
  * HMD device interface
@@ -59,6 +75,7 @@ public:
 		int		DesktopX, DesktopY;
 		int		ResolutionX, ResolutionY;
 		int		WindowSizeX, WindowSizeY;
+		bool	bShouldTestResolution;
 
 		MonitorInfo() : MonitorId(0)
 			, DesktopX(0)
@@ -67,6 +84,7 @@ public:
 			, ResolutionY(0)
 			, WindowSizeX(0)
 			, WindowSizeY(0)
+			, bShouldTestResolution(false)
 		{
 		}
 
@@ -93,7 +111,7 @@ public:
 	/**
 	 * Returns eye render params, used from PostProcessHMD, RenderThread.
 	 */
-	virtual void	GetEyeRenderParams_RenderThread(const struct FRenderingCompositePassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const {}
+	virtual void	GetEyeRenderParams_RenderThread(const struct FHeadMountedDisplayPassContext& Context, FVector2D& EyeToSrcUVScaleValue, FVector2D& EyeToSrcUVOffsetValue) const {}
 
 	/**
 	 * Accessors to modify the interpupillary distance (meters)
@@ -197,15 +215,15 @@ public:
 	* Optional method to draw a view's hidden area mesh where supported.
 	* This can be used to avoid rendering pixels which are not included as input into the final distortion pass.
 	*/
-	virtual void DrawHiddenAreaMesh_RenderThread(class FRHICommandList& RHICmdList, EStereoscopicPass StereoPass) const {};
+	virtual void DrawHiddenAreaMesh(class FRHICommandList& RHICmdList, int32 ViewIndex) const {};
 
 	/**
 	* Optional method to draw a view's visible area mesh where supported.
 	* This can be used instead of a full screen quad to avoid rendering pixels which are not included as input into the final distortion pass.
 	*/
-	virtual void DrawVisibleAreaMesh_RenderThread(class FRHICommandList& RHICmdList, EStereoscopicPass StereoPass) const {};
+	virtual void DrawVisibleAreaMesh(class FRHICommandList& RHICmdList, int32 ViewIndex) const {};
 
-	virtual void DrawDistortionMesh_RenderThread(struct FRenderingCompositePassContext& Context, const FIntPoint& TextureSize) {}
+	virtual void DrawDistortionMesh_RenderThread(struct FHeadMountedDisplayPassContext& Context, const FIntPoint& TextureSize) {}
 
 	/**
 	 * This method is able to change screen settings right before any drawing occurs. 

@@ -4,19 +4,16 @@
 	BasePassCommon.ush: Base pass definitions used by both vertex and pixel shader
 =============================================================================*/
 
-// Defining SSProfilesTexture here overrides the default definition in SubsurfaceProfileCommon.ush
 #if MATERIALBLENDING_ANY_TRANSLUCENT
 	#define ForwardLightData TranslucentBasePass.Shared.Forward
 	#define ReflectionStruct TranslucentBasePass.Shared.Reflection
 	#define PlanarReflectionStruct TranslucentBasePass.Shared.PlanarReflection
 	#define FogStruct TranslucentBasePass.Shared.Fog
-	#define ActualSSProfilesTexture TranslucentBasePass.Shared.SSProfilesTexture
 #else
 	#define ForwardLightData OpaqueBasePass.Shared.Forward
 	#define ReflectionStruct OpaqueBasePass.Shared.Reflection
 	#define PlanarReflectionStruct OpaqueBasePass.Shared.PlanarReflection
 	#define FogStruct OpaqueBasePass.Shared.Fog
-	#define ActualSSProfilesTexture OpaqueBasePass.Shared.SSProfilesTexture
 #endif 
 
 #undef NEEDS_LIGHTMAP_COORDINATE
@@ -53,16 +50,13 @@
 #define SUPPORTS_WRITING_VELOCITY_TO_BASE_PASS	(FEATURE_LEVEL >= FEATURE_LEVEL_SM4 && (MATERIALBLENDING_SOLID || MATERIALBLENDING_MASKED) && !SIMPLE_FORWARD_SHADING) 
 #define WRITES_VELOCITY_TO_GBUFFER				((SUPPORTS_WRITING_VELOCITY_TO_BASE_PASS || USES_GBUFFER) && GBUFFER_HAS_VELOCITY && (!SELECTIVE_BASEPASS_OUTPUTS || !(STATICLIGHTING_TEXTUREMASK || STATICLIGHTING_SIGNEDDISTANCEFIELD || HQ_TEXTURE_LIGHTMAP || LQ_TEXTURE_LIGHTMAP || WATER_MESH_FACTORY)))
 
-
-// Use an extra interpolator for position
-#define WRITES_VELOCITY_TO_GBUFFER_USE_POS_INTERPOLATOR		(WRITES_VELOCITY_TO_GBUFFER && USING_TESSELLATION)
-
 #define TRANSLUCENCY_ANY_PERVERTEX_LIGHTING (TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_NONDIRECTIONAL || TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_DIRECTIONAL)
 #define TRANSLUCENCY_ANY_VOLUMETRIC (TRANSLUCENCY_LIGHTING_VOLUMETRIC_NONDIRECTIONAL || TRANSLUCENCY_LIGHTING_VOLUMETRIC_DIRECTIONAL || TRANSLUCENCY_ANY_PERVERTEX_LIGHTING)
 #define TRANSLUCENCY_PERVERTEX_LIGHTING_VOLUME (!FORWARD_SHADING && (TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_DIRECTIONAL || TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_NONDIRECTIONAL))
 #define TRANSLUCENCY_PERVERTEX_FORWARD_SHADING (FORWARD_SHADING && (TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_DIRECTIONAL || TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_NONDIRECTIONAL))
 
-#define TESSELLATION_SUPPORTED (PC_D3D || SWITCH_PROFILE || SWITCH_PROFILE_FORWARD || METAL_TESSELLATION_PROFILE || VULKAN_PROFILE_SM5)
+// We consider that the cloud shadow is always enabled but the interpolator is only used when render lit translucent with forward shading. We only support per vertex cloud shadow as of today.
+#define NEEDS_BASEPASS_CLOUD_SHADOW_INTERPOLATOR (SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT && IS_MATERIAL_TRANSLUCENT_AND_LIT && !TRANSLUCENCY_PERVERTEX_FORWARD_SHADING && !TRANSLUCENCY_PERVERTEX_LIGHTING_VOLUME)
 
 struct FSharedBasePassInterpolants
 {
@@ -71,12 +65,12 @@ struct FSharedBasePassInterpolants
 	float4 VertexFog		: TEXCOORD7;
 #endif
 
-#if !TESSELLATION_SUPPORTED
-	// Note: TEXCOORD8 is unused
+#if NEEDS_BASEPASS_CLOUD_SHADOW_INTERPOLATOR
+	float  VertexCloudShadow: TEXCOORD8;
+#endif
 
-	#if USE_WORLD_POSITION_EXCLUDING_SHADER_OFFSETS
+#if USE_WORLD_POSITION_EXCLUDING_SHADER_OFFSETS && !IS_NANITE_PASS
 	float3 PixelPositionExcludingWPO : TEXCOORD9;
-	#endif
 #endif
 
 #if TRANSLUCENCY_PERVERTEX_LIGHTING_VOLUME
@@ -99,60 +93,24 @@ struct FSharedBasePassInterpolants
 	#endif
 #endif
 
-#if WRITES_VELOCITY_TO_GBUFFER
+#if WRITES_VELOCITY_TO_GBUFFER && !IS_NANITE_PASS
 	// .xy is clip position, pre divide by w; .w is clip W; .z is 0 or 1 to mask out the velocity output
 	float4 VelocityPrevScreenPosition : VELOCITY_PREV_POS;
-	#if WRITES_VELOCITY_TO_GBUFFER_USE_POS_INTERPOLATOR
-		float4 VelocityScreenPosition : VELOCITY_POS;
-	#endif
 #endif
 };
 
-#if TESSELLATION_SUPPORTED
-
-/** Interpolants passed from the vertex shader to the pixel shader. */
-struct FBasePassInterpolantsVSToPS : FSharedBasePassInterpolants
-{
-	// Note: TEXCOORD8 is unused
-
-	#if USE_WORLD_POSITION_EXCLUDING_SHADER_OFFSETS
-	float3 PixelPositionExcludingWPO : TEXCOORD9;
-	#endif
-};
-
-/** Interpolants passed from the vertex shader to the domain shader. */
-struct FBasePassInterpolantsVSToDS : FSharedBasePassInterpolants
-{
-	#if USE_WORLD_POSITION_EXCLUDING_SHADER_OFFSETS
-	float3 WorldPositionExcludingWPO : TEXCOORD9;
-	#endif
-};
-
-#else
-
-// Only the PC shader compiler supports HLSL inheritance
 #define FBasePassInterpolantsVSToPS FSharedBasePassInterpolants
 
-#endif
+#define SharedAmbientInnerSampler View.SharedBilinearClampedSampler
+#define SharedAmbientOuterSampler View.SharedBilinearClampedSampler
+#define SharedDirectionalInnerSampler View.SharedBilinearClampedSampler
+#define SharedDirectionalOuterSampler View.SharedBilinearClampedSampler
 
-
-#if SUPPORTS_INDEPENDENT_SAMPLERS
-	#define SharedAmbientInnerSampler View.SharedBilinearClampedSampler
-	#define SharedAmbientOuterSampler View.SharedBilinearClampedSampler
-	#define SharedDirectionalInnerSampler View.SharedBilinearClampedSampler
-	#define SharedDirectionalOuterSampler View.SharedBilinearClampedSampler
-#else
-	#define SharedAmbientInnerSampler TranslucentBasePass.TranslucencyLightingVolumeAmbientInnerSampler
-	#define SharedAmbientOuterSampler TranslucentBasePass.TranslucencyLightingVolumeAmbientOuterSampler
-	#define SharedDirectionalInnerSampler TranslucentBasePass.TranslucencyLightingVolumeDirectionalInnerSampler
-	#define SharedDirectionalOuterSampler TranslucentBasePass.TranslucencyLightingVolumeDirectionalOuterSampler
-#endif
-
-void ComputeVolumeUVs(float3 WorldPosition, float3 LightingPositionOffset, out float3 InnerVolumeUVs, out float3 OuterVolumeUVs, out float FinalLerpFactor)
+void ComputeVolumeUVs(float3 TranslatedWorldPosition, float3 LightingPositionOffset, out float3 InnerVolumeUVs, out float3 OuterVolumeUVs, out float FinalLerpFactor)
 {
 	// Apply a stable offset to the world position used for lighting, which breaks up artifacts from using a low res volume texture
-	InnerVolumeUVs = (WorldPosition + LightingPositionOffset - View.TranslucencyLightingVolumeMin[0].xyz) * View.TranslucencyLightingVolumeInvSize[0].xyz;
-	OuterVolumeUVs = (WorldPosition + LightingPositionOffset - View.TranslucencyLightingVolumeMin[1].xyz) * View.TranslucencyLightingVolumeInvSize[1].xyz;
+	InnerVolumeUVs = (TranslatedWorldPosition + LightingPositionOffset - View.TranslucencyLightingVolumeMin[0].xyz) * View.TranslucencyLightingVolumeInvSize[0].xyz;
+	OuterVolumeUVs = (TranslatedWorldPosition + LightingPositionOffset - View.TranslucencyLightingVolumeMin[1].xyz) * View.TranslucencyLightingVolumeInvSize[1].xyz;
 
 	// Controls how fast the lerp between the inner and outer cascades happens
 	// Larger values result in a shorter transition distance

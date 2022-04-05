@@ -157,15 +157,15 @@ src_process (SRC_STATE *state, SRC_DATA *data)
 		{	/*-printf ("\n\ndata_in: %p    data_out: %p\n",
 				(void*) (data->data_in + data->input_frames * psrc->channels), (void*) data->data_out) ;-*/
 			return SRC_ERR_DATA_OVERLAP ;
-			} ;
 		}
+	}
 	else if (data->data_out + data->output_frames * state->channels > data->data_in)
 	{	/*-printf ("\n\ndata_in : %p   ouput frames: %ld    data_out: %p\n", (void*) data->data_in, data->output_frames, (void*) data->data_out) ;
 
 		printf ("data_out: %p (%p)    data_in: %p\n", (void*) data->data_out,
 			(void*) (data->data_out + data->input_frames * psrc->channels), (void*) data->data_in) ;-*/
 		return SRC_ERR_DATA_OVERLAP ;
-		} ;
+	}
 
 	/* Set the input and output counts to zero. */
 	data->input_frames_used = 0 ;
@@ -332,34 +332,40 @@ src_reset (SRC_STATE *state)
 
 const char *
 src_get_name (int converter_type)
-{	const char *desc ;
+{	const char *desc = NULL;
 
+#ifndef LIBSAMPLERATE_WITHOUT_SINC
 	if ((desc = sinc_get_name (converter_type)) != NULL)
 		return desc ;
-
+#endif
+#ifndef LIBSAMPLERATE_WITHOUT_ZERO_ORDER_HOLD
 	if ((desc = zoh_get_name (converter_type)) != NULL)
 		return desc ;
-
+#endif
+#ifndef LIBSAMPLERATE_WITHOUT_LINEAR
 	if ((desc = linear_get_name (converter_type)) != NULL)
 		return desc ;
-
-	return NULL ;
+#endif
+	return desc;
 } /* src_get_name */
 
 const char *
 src_get_description (int converter_type)
-{	const char *desc ;
+{	const char *desc = NULL;
 
+#ifndef LIBSAMPLERATE_WITHOUT_SINC
 	if ((desc = sinc_get_description (converter_type)) != NULL)
 		return desc ;
-
+#endif
+#ifndef LIBSAMPLERATE_WITHOUT_ZERO_ORDER_HOLD
 	if ((desc = zoh_get_description (converter_type)) != NULL)
 		return desc ;
-
+#endif
+#ifndef LIBSAMPLERATE_WITHOUT_LINEAR
 	if ((desc = linear_get_description (converter_type)) != NULL)
 		return desc ;
-
-	return NULL ;
+#endif
+	return desc ;
 } /* src_get_description */
 
 const char *
@@ -543,15 +549,18 @@ src_float_to_int_array (const float *in, int *out, int len)
 static int
 psrc_set_converter (SRC_STATE	*state, int converter_type)
 {
+#ifndef LIBSAMPLERATE_WITHOUT_SINC
 	if (sinc_set_converter (state, converter_type) == SRC_ERR_NO_ERROR)
 		return SRC_ERR_NO_ERROR ;
-
+#endif
+#ifndef LIBSAMPLERATE_WITHOUT_ZERO_ORDER_HOLD
 	if (zoh_set_converter (state, converter_type) == SRC_ERR_NO_ERROR)
 		return SRC_ERR_NO_ERROR ;
-
+#endif
+#ifndef LIBSAMPLERATE_WITHOUT_LINEAR
 	if (linear_set_converter (state, converter_type) == SRC_ERR_NO_ERROR)
 		return SRC_ERR_NO_ERROR ;
-
+#endif
 	return SRC_ERR_BAD_CONVERTER ;
 } /* psrc_set_converter */
 

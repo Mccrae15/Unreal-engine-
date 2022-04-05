@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "SPropertyView.h"
 
@@ -72,8 +72,6 @@ int32 SPropertyView::DesiredWidth = 400.f;
 
 void SPropertyView::Construct(const FArguments& InArgs)
 {
-	bHasCustomPrepass = true;
-	bRefreshObjectToDisplay = false;
 	Object = TStrongObjectPtr<UObject>(InArgs._Object);
 	RootPropertyName = InArgs._RootPropertyName;
 	NameVisibility = InArgs._NameVisibility;
@@ -113,7 +111,7 @@ void SPropertyView::Construct(const FArguments& InArgs)
 
 	if (GEditor)
 	{
-		OnObjectReplacedHandle = GEditor->OnObjectsReplaced().AddSP(this, &SPropertyView::OnObjectReplaced);
+		OnObjectReplacedHandle = FCoreUObjectDelegates::OnObjectsReplaced.AddSP(this, &SPropertyView::OnObjectReplaced);
 		OnObjectPropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(this, &SPropertyView::OnObjectPropertyChanged);
 		OnObjectTransactedHandle = FCoreUObjectDelegates::OnObjectTransacted.AddSP(this, &SPropertyView::OnObjectTransacted);
 	}
@@ -176,7 +174,7 @@ SPropertyView::~SPropertyView()
 
 	if (GEditor)
 	{
-		GEditor->OnObjectsReplaced().Remove(OnObjectReplacedHandle);
+		FCoreUObjectDelegates::OnObjectsReplaced.Remove(OnObjectReplacedHandle);
 		FCoreUObjectDelegates::OnObjectTransacted.Remove(OnObjectTransactedHandle);
 		FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(OnObjectPropertyChangedHandle);
 	}
@@ -209,31 +207,9 @@ TSharedPtr<IPropertyHandle> SPropertyView::GetPropertyHandle() const
 	return Property;
 }
 
-bool SPropertyView::CustomPrepass(float InLayoutScaleMultiplier)
-{
-	if (bRefreshObjectToDisplay)
-	{
-		if (Object.IsValid())
-		{
-			Generator->SetObjects({Object.Get()});
-		}
-		else if (Struct.IsValid())
-		{
-			Generator->SetStructure(Struct);
-		}
-		ConstructInternal();
-		bRefreshObjectToDisplay = false;
-	}
-
-	return true;
-}
-
 void SPropertyView::Refresh()
 {
-	// forces CustomPrepass to be called, recreating widgets ie. for array items. Without this array items won't add/remove.
-	// @note: that this breaks current property handle references
-	InvalidatePrepass();
-	bRefreshObjectToDisplay = true;
+	MarkPrepassAsDirty();
 }
 
 void SPropertyView::AddWidgets(const TArray<TSharedRef<IDetailTreeNode>>& InDetailTree, int32& InIndex, float InLeftPadding)

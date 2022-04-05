@@ -54,6 +54,16 @@ FGuid UTemplateSequence::GetRootObjectBindingID() const
 	return FGuid();
 }
 
+const UObject* UTemplateSequence::GetRootObjectSpawnableTemplate() const
+{
+	if (MovieScene != nullptr && MovieScene->GetSpawnableCount() > 0)
+	{
+		const FMovieSceneSpawnable& FirstSpawnable = MovieScene->GetSpawnable(0);
+		return FirstSpawnable.GetObjectTemplate();
+	}
+	return nullptr;
+}
+
 void UTemplateSequence::BindPossessableObject(const FGuid& ObjectId, UObject& PossessedObject, UObject* Context)
 {
 	if (UActorComponent* Component = Cast<UActorComponent>(&PossessedObject))
@@ -130,16 +140,19 @@ FGuid UTemplateSequence::FindOrAddBinding(UObject* InObject)
 	}
 
 	// Perform a potentially slow lookup of every possessable binding in the sequence to see if we already have this
-	UWorld* World = GetWorld();
+	UWorld* World = InObject->GetWorld();
 	ensure(World);
 	{
 		ATemplateSequenceActor* OutActor = nullptr;
 		UTemplateSequencePlayer* Player = UTemplateSequencePlayer::CreateTemplateSequencePlayer(World, this, FMovieSceneSequencePlaybackSettings(), OutActor);
 		ensure(Player);
+		
+		// Don't override the default, the default assignment should remain bound so that objects will spawn
+		OutActor->BindingOverride.bOverridesDefault = false;
 
 		Player->Initialize(this, World, FMovieSceneSequencePlaybackSettings());
 		Player->State.AssignSequence(MovieSceneSequenceID::Root, *this, *Player);
-		Player->PlayTo(FMovieSceneSequencePlaybackParams(MovieScene->GetPlaybackRange().GetLowerBoundValue(), EUpdatePositionMethod::Play));
+		Player->PlayTo(FMovieSceneSequencePlaybackParams(MovieScene->GetPlaybackRange().GetLowerBoundValue(), EUpdatePositionMethod::Play), FMovieSceneSequencePlayToParams());
 
 		FGuid FoundBinding;
 		for (int32 BindingIndex = 0; !FoundBinding.IsValid() && BindingIndex < GetMovieScene()->GetBindings().Num(); ++BindingIndex)

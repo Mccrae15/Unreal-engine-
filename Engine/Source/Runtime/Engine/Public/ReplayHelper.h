@@ -103,6 +103,8 @@ private:
 
 	void SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InProvider);
 
+	void RequestCheckpoint();
+
 private:
 	// Hooks used to determine when levels are streamed in, streamed out, or if there's a map change.
 	void OnLevelAddedToWorld(ULevel* Level, UWorld* World);
@@ -141,8 +143,12 @@ private:
 	static const EReadPacketState ReadPacket(FArchive& Archive, TArray<uint8>& OutBuffer, const EReadPacketMode Mode);
 
 	void CacheNetGuids(UNetConnection* Connection);
+	void CacheDeletedActors(UNetConnection* Connection);
 
 	bool SerializeGuidCache(UNetConnection* Connection, const FRepActorsCheckpointParams& Params, FArchive* CheckpointArchive);
+	bool SerializeDeletedStartupActors(UNetConnection* Connection, const FRepActorsCheckpointParams& Params, FArchive* CheckpointArchive);
+	bool SerializeDeltaDynamicDestroyed(UNetConnection* Connection, const FRepActorsCheckpointParams& Params, FArchive* CheckpointArchive);
+	bool SerializeDeltaClosedChannels(UNetConnection* Connection, const FRepActorsCheckpointParams& Params, FArchive* CheckpointArchive);
 
 	/**
 	* Replicates the given prioritized actors, so their packets can be captured for recording.
@@ -158,18 +164,22 @@ private:
 
 	bool ReplicateActor(AActor* Actor, UNetConnection* Connection, bool bMustReplicate);
 
-	struct FReplayExternalOutData
+	TMap<TWeakObjectPtr<UObject>, FNetworkGUID, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<TWeakObjectPtr<UObject>, FNetworkGUID>> ObjectsWithExternalDataMap;
+
+	struct FExternalDataWrapper
 	{
-		TWeakObjectPtr<UObject> Object;
-		FNetworkGUID GUID;
+		FNetworkGUID NetGUID;
+		TArray<uint8> Data;
+		int32 NumBits;
 	};
 
-	TArray<FReplayExternalOutData> ObjectsWithExternalData;
+	TMap<TWeakObjectPtr<UObject>, FExternalDataWrapper, FDefaultSetAllocator, TWeakObjectPtrMapKeyFuncs<TWeakObjectPtr<UObject>, FExternalDataWrapper>> ExternalDataMap;
 
 	void SaveExternalData(UNetConnection* Connection, FArchive& Ar);
 	void LoadExternalData(FArchive& Ar, const float TimeSeconds);
 
-	bool UpdateExternalDataForActor(UNetConnection* Connection, AActor* Actor);
+	bool UpdateExternalDataForObject(UNetConnection* Connection, UObject* OwningObject);
+	bool SetExternalDataForObject(UNetConnection* Connection, UObject* OwningObject, const uint8* Src, const int32 NumBits);
 
 	// Cached replay URL
 	FURL DemoURL;
@@ -228,7 +238,10 @@ private:
 	{
 		Idle,
 		ProcessCheckpointActors,
+		CacheDeletedActors,
 		SerializeDeletedStartupActors,
+		SerializeDeltaDynamicDestroyed,
+		SerializeDeltaClosedChannels,
 		CacheNetGuids,
 		SerializeGuidCache,
 		SerializeNetFieldExportGroupMap,
@@ -261,7 +274,7 @@ private:
 			, TotalCheckpointActors(0)
 			, CheckpointOffset(0)
 			, GuidCacheSize(0)
-			, NextNetGuidForRecording(0)
+			, NextAmortizedItem(0)
 			, NumNetGuidsForRecording(0)
 			, NetGuidsCountPos(0)
 		{}
@@ -278,11 +291,14 @@ private:
 		uint32				GuidCacheSize;
 
 		FDeltaCheckpointData DeltaCheckpointData;
+		TArray<FNetworkGUID> DeltaChannelCloseKeys;
 
 		TArray<FNetGuidCacheItem> NetGuidCacheSnapshot;
-		int32 NextNetGuidForRecording;
+		int32 NextAmortizedItem;
 		int32 NumNetGuidsForRecording;
 		FArchivePos NetGuidsCountPos;
+
+		TArray<FString> CheckpointDeletedNetStartupActors;
 
 		TMap<FName, uint32> NameTableMap;
 
@@ -291,7 +307,9 @@ private:
 			CheckpointAckState.CountBytes(Ar);
 			PendingCheckpointActors.CountBytes(Ar);
 			DeltaCheckpointData.CountBytes(Ar);
+			DeltaChannelCloseKeys.CountBytes(Ar);
 			NetGuidCacheSnapshot.CountBytes(Ar);
+			CheckpointDeletedNetStartupActors.CountBytes(Ar);
 			NameTableMap.CountBytes(Ar);
 		}
 	};
@@ -383,6 +401,8 @@ private:
 	// Using raw pointers, because we manually keep when levels are added and removed.
 	TSet<class ULevel*> LevelsPendingFastForward;
 
+	bool bPendingCheckpointRequest;
+
 	static FString GetLevelPackageName(const ULevel& InLevel);
 
 	void ResetLevelStatuses();
@@ -445,12 +465,14 @@ private:
 	TMap<float, TMap<FString, TArray<uint8>>> PlaybackFrames;
 
 	/** Net startup actors that need to be destroyed after checkpoints are loaded */
-	TSet<FString> DeletedNetStartupActors;
+	TArray<FString> RecordingDeletedNetStartupActors;
+
+	/** Net startup actors that need to be destroyed after checkpoints are loaded */
+	TSet<FString> PlaybackDeletedNetStartupActors;
 
 	TSharedPtr<IAnalyticsProvider> AnalyticsProvider;
 
 	void ReadDeletedStartupActors(UNetConnection* Connection, FArchive& Ar, TSet<FString>& DeletedStartupActors);
-	void WriteDeletedStartupActors(UNetConnection* Connection, FArchive& Ar, const TSet<FString>& DeletedStartupActors);
 
 	ECheckpointSaveState GetCheckpointSaveState() const { return CheckpointSaveContext.CheckpointSaveState; }
 

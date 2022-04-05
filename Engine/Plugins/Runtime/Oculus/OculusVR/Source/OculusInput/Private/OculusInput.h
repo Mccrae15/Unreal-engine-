@@ -54,6 +54,7 @@ public:
 	virtual bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar ) override;
 	virtual void SetChannelValue( int32 ControllerId, FForceFeedbackChannelType ChannelType, float Value ) override;
 	virtual void SetChannelValues( int32 ControllerId, const FForceFeedbackValues& Values ) override;
+	virtual bool SupportsForceFeedback(int32 ControllerId) override;
 
 	// IMotionController overrides
 	virtual FName GetMotionControllerDeviceTypeName() const override;
@@ -103,6 +104,10 @@ private:
 	ovrpHapticsDesc OvrpHapticsDesc;
 
 	int LocalTrackingSpaceRecenterCount;
+
+	// Maintain a cache of resampled raw data so we don't resample it on every play.  This is a map of OriginalRawData pointers, used only as a key, to ResampledRawData buffers.
+	// The values are pointers because the map could be reallocated and we cache raw pointers to the uint8 array data elsewhere.
+	TMap<const uint8*, TSharedPtr<TArray<uint8>>> ResampledRawDataCache;
 };
 
 

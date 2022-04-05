@@ -2,6 +2,10 @@
 
 #include "Serialization/NameAsStringIndexProxyArchive.h"
 #include "Serialization/VarInt.h"
+#include "Containers/UnrealString.h"
+#include "UObject/NameTypes.h"
+#include "Containers/Array.h"
+#include "Containers/Set.h"
 
 FArchive& FNameAsStringIndexProxyArchive::operator<<(class FName& N)
 {
@@ -38,7 +42,7 @@ FArchive& FNameAsStringIndexProxyArchive::operator<<(class FName& N)
 		if (Id.IsValidId())
 		{
 			int32 Index = Id.AsInteger();
-			WriteVarUIntToArchive(InnerArchive, uint64(Index + 1));
+			WriteVarUIntToArchive(InnerArchive, uint64(Index) + 1);
 		}
 		else
 		{

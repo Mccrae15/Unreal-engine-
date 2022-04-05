@@ -36,10 +36,6 @@ USTRUCT()
 struct FNiagaraBakerTextureSettings
 {
 	GENERATED_BODY()
-
-	/** Optional output name, if left empty a name will be auto generated using the index of the texture/ */
-	UPROPERTY(EditAnywhere, Category = "Texture")
-	FName OutputName;
 	
 	/** Source visualization we should capture, i.e. Scene Color, World Normal, etc */
 	UPROPERTY(EditAnywhere, Category = "Texture")
@@ -62,12 +58,14 @@ struct FNiagaraBakerTextureSettings
 
 	/** Final texture generated, an existing entry will be updated with new capture data. */
 	UPROPERTY(EditAnywhere, Category = "Texture")
-	UTexture2D* GeneratedTexture = nullptr;
+	TObjectPtr<UTexture2D> GeneratedTexture = nullptr;
+
+	bool IsValidForBake() const { return FrameSize.X > 0 && FrameSize.Y > 0; }
 
 	bool Equals(const FNiagaraBakerTextureSettings& Other) const;
 
-	FNiagaraBakerTextureSettings() :
-		bUseFrameSize(false)
+	FNiagaraBakerTextureSettings()
+		: bUseFrameSize(false)
 	{}
 };
 
@@ -170,6 +168,8 @@ public:
 	float GetAspectRatio(int32 iOutputTextureIndex) const;
 	FVector2D GetOrthoSize(int32 iOutputTextureIndex) const;
 	FVector GetCameraLocation() const;
+	FRotator GetCameraRotation() const;
+	FMatrix GetViewportMatrix() const;
 	FMatrix GetViewMatrix() const;
 	FMatrix GetProjectionMatrixForTexture(int32 iOutputTextureIndex) const;
 

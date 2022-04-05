@@ -29,7 +29,7 @@ class FAnimGraphNodeBindingExtension : public IDetailPropertyExtensionHandler
 public:
 	// IDetailPropertyExtensionHandler interface
 	virtual bool IsPropertyExtendable(const UClass* InObjectClass, const IPropertyHandle& PropertyHandle) const override;
-	virtual TSharedRef<SWidget> GenerateExtensionWidget(const IDetailLayoutBuilder& InDetailBuilder, const UClass* InObjectClass, TSharedPtr<IPropertyHandle> PropertyHandle) override;
+	virtual void ExtendWidgetRow(FDetailWidgetRow& InWidgetRow, const IDetailLayoutBuilder& InDetailBuilder, const UClass* InObjectClass, TSharedPtr<IPropertyHandle> PropertyHandle) override;
 
 private:
 	// Helper function
@@ -63,11 +63,17 @@ protected:
 	/** Called when a blend profile is selected */
 	void OnBlendProfileChanged(UBlendProfile* NewProfile, TSharedPtr<IPropertyHandle> PropertyHandle);
 
+	/** Called when pin visibility changes */
+	void OnPinVisibilityChanged(bool bInIsVisible, int32 InOptionalPinIndex);
+	
 	/** The skeleton we're operating on */
-	USkeleton* TargetSkeleton;
+	USkeleton* TargetSkeleton = nullptr;
 
 	/** Path to the current blueprints skeleton to allow us to filter asset pickers */
 	FString TargetSkeletonName;
+
+	/** Builder that built this customization (used for refresh) */
+	IDetailLayoutBuilder* DetailLayoutBuilder = nullptr;
 };
 
 /////////////////////////////////////////////////////

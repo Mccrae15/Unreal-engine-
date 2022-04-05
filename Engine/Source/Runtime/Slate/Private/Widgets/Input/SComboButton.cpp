@@ -36,7 +36,8 @@ void SComboButton::Construct( const FArguments& InArgs )
 			.ButtonStyle( OurButtonStyle )
 			.ClickMethod( EButtonClickMethod::MouseDown )
 			.OnClicked( this, &SComboButton::OnButtonClicked )
-			.ContentPadding( InArgs._ContentPadding )
+			.ToolTipText( this, &SComboButton::GetFilteredToolTipText, InArgs._ToolTipText)
+			.ContentPadding( InArgs._ContentPadding.IsSet() ? InArgs._ContentPadding : InArgs._ComboButtonStyle->ContentPadding )
 			.ForegroundColor( InArgs._ForegroundColor )
 			.ButtonColorAndOpacity( InArgs._ButtonColorAndOpacity )
 			.IsFocusable( InArgs._IsFocusable )
@@ -56,11 +57,12 @@ void SComboButton::Construct( const FArguments& InArgs )
 				[
 					InArgs._ButtonContent.Widget
 				]
-				+ SHorizontalBox::Slot()
+
+				+SHorizontalBox::Slot()
 				.AutoWidth()
-				.HAlign( HAlign_Center )
-				.VAlign( VAlign_Center )
-				.Padding( InArgs._HasDownArrow ? 2 : 0 )
+				.HAlign( HAlign_Right )
+				.VAlign(InArgs._HasDownArrow ? (EVerticalAlignment) InArgs._ComboButtonStyle->DownArrowAlign : VAlign_Center)
+				.Padding(InArgs._HasDownArrow ? InArgs._ComboButtonStyle->DownArrowPadding : FMargin(0))
 				[
 					SNew(SOverlay)
 					// drop shadow
@@ -94,6 +96,16 @@ void SComboButton::Construct( const FArguments& InArgs )
 	SetMenuContent( InArgs._MenuContent.Widget );
 }
 
+FText SComboButton::GetFilteredToolTipText(TAttribute<FText> ToolTipText) const
+{
+	if (IsOpen())
+	{
+		return FText::GetEmpty();
+	}
+
+	return ToolTipText.Get();
+}
+
 FReply SComboButton::OnButtonClicked()
 {
 	// Button was clicked; show the popup.
@@ -111,9 +123,10 @@ FReply SComboButton::OnButtonClicked()
 	// Focusing any newly-created widgets must occur after they have been added to the UI root.
 	FReply ButtonClickedReply = FReply::Handled();
 	
+	TSharedPtr<SWidget> WidgetToFocus = WidgetToFocusPtr.Pin();
+	
 	if (bIsFocusable)
 	{
-		TSharedPtr<SWidget> WidgetToFocus = WidgetToFocusPtr.Pin();
 		if (!WidgetToFocus.IsValid())
 		{
 			// no explicitly focused widget, try to focus the content that is a child of the border
@@ -134,11 +147,11 @@ FReply SComboButton::OnButtonClicked()
 			// no content, so try to focus the original widget set on construction
 			WidgetToFocus = ContentWidgetPtr.Pin();
 		}
+	}
 
-		if (WidgetToFocus.IsValid())
-		{
-			ButtonClickedReply.SetUserFocus(WidgetToFocus.ToSharedRef(), EFocusCause::SetDirectly);
-		}
+	if (WidgetToFocus.IsValid())
+	{
+		ButtonClickedReply.SetUserFocus(WidgetToFocus.ToSharedRef(), EFocusCause::SetDirectly);
 	}
 
 	return ButtonClickedReply;

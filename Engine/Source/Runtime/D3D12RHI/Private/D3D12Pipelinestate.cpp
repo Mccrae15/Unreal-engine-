@@ -35,14 +35,7 @@ FD3D12LowLevelGraphicsPipelineStateDesc GetLowLevelGraphicsPipelineStateDesc(con
 	Desc.Desc.DepthStencilState = Initializer.DepthStencilState ? CD3DX12_DEPTH_STENCIL_DESC1(FD3D12DynamicRHI::ResourceCast(Initializer.DepthStencilState)->Desc) : CD3DX12_DEPTH_STENCIL_DESC1(D3D12_DEFAULT);
 #endif // !D3D12_USE_DERIVED_PSO
 
-	if (Initializer.BoundShaderState.HullShaderRHI && Initializer.BoundShaderState.DomainShaderRHI)
-	{
-		Desc.Desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
-	}
-	else
-	{
-		Desc.Desc.PrimitiveTopologyType = D3D12PrimitiveTypeToTopologyType(TranslatePrimitiveType(Initializer.PrimitiveType));
-	}
+	Desc.Desc.PrimitiveTopologyType = D3D12PrimitiveTypeToTopologyType(TranslatePrimitiveType(Initializer.PrimitiveType));
 
 	TranslateRenderTargetFormats(Initializer, Desc.Desc.RTFormatArray, Desc.Desc.DSVFormat);
 
@@ -57,21 +50,21 @@ FD3D12LowLevelGraphicsPipelineStateDesc GetLowLevelGraphicsPipelineStateDesc(con
 	}
 
 #define COPY_SHADER(Initial, Name) \
-	if (FD3D12##Name##Shader* Shader = (FD3D12##Name##Shader*) Initializer.BoundShaderState.##Name##ShaderRHI) \
+	if (FD3D12##Name##Shader* Shader = (FD3D12##Name##Shader*) Initializer.BoundShaderState.Get##Name##Shader()) \
 	{ \
-		Desc.Desc.Initial##S = Shader->ShaderBytecode.GetShaderBytecode(); \
-		Desc.Initial##SHash = Shader->ShaderBytecode.GetHash(); \
+		Desc.Desc.Initial##S = Shader->GetShaderBytecode(); \
+		Desc.Initial##SHash = Shader->GetBytecodeHash(); \
 	}
 	COPY_SHADER(V, Vertex);
+	COPY_SHADER(M, Mesh);
+	COPY_SHADER(A, Amplification);
 	COPY_SHADER(P, Pixel);
-	COPY_SHADER(D, Domain);
-	COPY_SHADER(H, Hull);
 	COPY_SHADER(G, Geometry);
 #undef COPY_SHADER
 
-#if PLATFORM_WINDOWS
+#if D3D12RHI_NEEDS_VENDOR_EXTENSIONS
 #define EXT_SHADER(Initial, Name) \
-	if (FD3D12##Name##Shader* Shader = (FD3D12##Name##Shader*) Initializer.BoundShaderState.##Name##ShaderRHI) \
+	if (FD3D12##Name##Shader* Shader = (FD3D12##Name##Shader*) Initializer.BoundShaderState.Get##Name##Shader()) \
 	{ \
 		if (Shader->VendorExtensions.Num() > 0) \
 		{ \
@@ -79,9 +72,9 @@ FD3D12LowLevelGraphicsPipelineStateDesc GetLowLevelGraphicsPipelineStateDesc(con
 		} \
 	}
 	EXT_SHADER(V, Vertex);
+	EXT_SHADER(M, Mesh);
+	EXT_SHADER(A, Amplification);
 	EXT_SHADER(P, Pixel);
-	EXT_SHADER(D, Domain);
-	EXT_SHADER(H, Hull);
 	EXT_SHADER(G, Geometry);
 #undef EXT_SHADER
 #endif
@@ -104,9 +97,9 @@ FD3D12ComputePipelineStateDesc GetComputePipelineStateDesc(const FD3D12ComputeSh
 
 	Desc.pRootSignature = ComputeShader->pRootSignature;
 	Desc.Desc.pRootSignature = Desc.pRootSignature->GetRootSignature();
-	Desc.Desc.CS = ComputeShader->ShaderBytecode.GetShaderBytecode();
-	Desc.CSHash = ComputeShader->ShaderBytecode.GetHash();
-#if PLATFORM_WINDOWS
+	Desc.Desc.CS = ComputeShader->GetShaderBytecode();
+	Desc.CSHash = ComputeShader->GetBytecodeHash();
+#if D3D12RHI_NEEDS_VENDOR_EXTENSIONS
 	if (ComputeShader->VendorExtensions.Num() > 0)
 	{
 		Desc.Extensions = &ComputeShader->VendorExtensions;
@@ -144,8 +137,8 @@ uint64 FD3D12PipelineStateCacheBase::HashPSODesc(const FD3D12LowLevelGraphicsPip
 	struct GraphicsPSOData
 	{
 		ShaderBytecodeHash VSHash;
-		ShaderBytecodeHash HSHash;
-		ShaderBytecodeHash DSHash;
+		ShaderBytecodeHash MSHash;
+		ShaderBytecodeHash ASHash;
 		ShaderBytecodeHash GSHash;
 		ShaderBytecodeHash PSHash;
 		uint32 InputLayoutHash;
@@ -191,8 +184,8 @@ uint64 FD3D12PipelineStateCacheBase::HashPSODesc(const FD3D12LowLevelGraphicsPip
 	RenderTargetData* RTData = (RenderTargetData*) (Data + GraphicsPSODataSize);
 
 	PSOData->VSHash          = Desc.VSHash;
-	PSOData->HSHash          = Desc.HSHash;
-	PSOData->DSHash          = Desc.DSHash;
+	PSOData->MSHash          = Desc.MSHash;
+	PSOData->ASHash          = Desc.ASHash;
 	PSOData->GSHash          = Desc.GSHash;
 	PSOData->PSHash          = Desc.PSHash;
 	PSOData->InputLayoutHash = Desc.InputLayoutHash;
@@ -333,10 +326,13 @@ FD3D12GraphicsPipelineState::FD3D12GraphicsPipelineState(
 	else
 		FMemory::Memzero(StreamStrides, sizeof(StreamStrides));
 	bShaderNeedsGlobalConstantBuffer[SF_Vertex] = GetVertexShader() && GetVertexShader()->ResourceCounts.bGlobalUniformBufferUsed;
+	bShaderNeedsGlobalConstantBuffer[SF_Mesh] = GetMeshShader() && GetMeshShader()->ResourceCounts.bGlobalUniformBufferUsed;
+	bShaderNeedsGlobalConstantBuffer[SF_Amplification] = GetAmplificationShader() && GetAmplificationShader()->ResourceCounts.bGlobalUniformBufferUsed;
 	bShaderNeedsGlobalConstantBuffer[SF_Pixel] = GetPixelShader() && GetPixelShader()->ResourceCounts.bGlobalUniformBufferUsed;
-	bShaderNeedsGlobalConstantBuffer[SF_Hull] = GetHullShader() && GetHullShader()->ResourceCounts.bGlobalUniformBufferUsed;
-	bShaderNeedsGlobalConstantBuffer[SF_Domain] = GetDomainShader() && GetDomainShader()->ResourceCounts.bGlobalUniformBufferUsed;
 	bShaderNeedsGlobalConstantBuffer[SF_Geometry] = GetGeometryShader() && GetGeometryShader()->ResourceCounts.bGlobalUniformBufferUsed;
+
+	// GRHISupportsPipelineStateSortKey
+	SetSortKey(InPipelineState->GetContextSortKey());
 }
 
 FD3D12GraphicsPipelineState::~FD3D12GraphicsPipelineState()

@@ -121,7 +121,7 @@ void CGDebugInfo::setLocation(SourceLocation Loc) {
 
   SourceManager &SM = CGM.getContext().getSourceManager();
   auto *Scope = cast<llvm::DIScope>(LexicalBlockStack.back());
-  PresumedLoc PCLoc = SM.getPresumedLoc(CurLoc);
+  PresumedLoc PCLoc = SM.getPresumedLoc(CurLoc, /*UseLineDirectives*/ false); // HLSL Change
 
   if (PCLoc.isInvalid() || Scope->getFilename() == PCLoc.getFilename())
     return;
@@ -243,7 +243,7 @@ llvm::DIFile *CGDebugInfo::getOrCreateFile(SourceLocation Loc) {
     return DBuilder.createFile(TheCU->getFilename(), TheCU->getDirectory());
 
   SourceManager &SM = CGM.getContext().getSourceManager();
-  PresumedLoc PLoc = SM.getPresumedLoc(Loc);
+  PresumedLoc PLoc = SM.getPresumedLoc(Loc, /*UseLineDirectives*/ false); // HLSL Change
 
   if (PLoc.isInvalid() || StringRef(PLoc.getFilename()).empty())
     // If the location is not valid then use main input file.
@@ -274,7 +274,7 @@ unsigned CGDebugInfo::getLineNumber(SourceLocation Loc) {
   if (Loc.isInvalid() && CurLoc.isInvalid())
     return 0;
   SourceManager &SM = CGM.getContext().getSourceManager();
-  PresumedLoc PLoc = SM.getPresumedLoc(Loc.isValid() ? Loc : CurLoc);
+  PresumedLoc PLoc = SM.getPresumedLoc(Loc.isValid() ? Loc : CurLoc, /*UseLineDirectives*/ false); // HLSL Change
   return PLoc.isValid() ? PLoc.getLine() : 0;
 }
 
@@ -287,7 +287,7 @@ unsigned CGDebugInfo::getColumnNumber(SourceLocation Loc, bool Force) {
   if (Loc.isInvalid() && CurLoc.isInvalid())
     return 0;
   SourceManager &SM = CGM.getContext().getSourceManager();
-  PresumedLoc PLoc = SM.getPresumedLoc(Loc.isValid() ? Loc : CurLoc);
+  PresumedLoc PLoc = SM.getPresumedLoc(Loc.isValid() ? Loc : CurLoc, /*UseLineDirectives*/ false); // HLSL Change
   return PLoc.isValid() ? PLoc.getColumn() : 0;
 }
 
@@ -312,7 +312,7 @@ void CGDebugInfo::CreateCompileUnit() {
   // because that's what the SourceManager says)
 
   // Get absolute path name.
-  SourceManager &SM = CGM.getContext().getSourceManager();
+  // SourceManager &SM = CGM.getContext().getSourceManager(); // HLSL Change - unused
   std::string MainFileName = CGM.getCodeGenOpts().MainFileName;
   if (MainFileName.empty())
     MainFileName = "<stdin>";
@@ -321,17 +321,18 @@ void CGDebugInfo::CreateCompileUnit() {
   // the file name itself with no path information. This file name may have had
   // a relative path, so we look into the actual file entry for the main
   // file to determine the real absolute path for the file.
-  if (!llvm::sys::path::is_absolute(MainFileName)) { // HLSL Change: we put the full path in -main-file-name
-    std::string MainFileDir;
-    if (const FileEntry *MainFile = SM.getFileEntryForID(SM.getMainFileID())) {
-      MainFileDir = MainFile->getDir()->getName();
-      if (MainFileDir != ".") {
-        llvm::SmallString<1024> MainFileDirSS(MainFileDir);
-        llvm::sys::path::append(MainFileDirSS, MainFileName);
-        MainFileName = MainFileDirSS.str();
-      }
+
+#if 0  // HLSL change. The directory is already part of the name, this would duplicate it
+  std::string MainFileDir;
+  if (const FileEntry *MainFile = SM.getFileEntryForID(SM.getMainFileID())) {
+    MainFileDir = MainFile->getDir()->getName();
+    if (MainFileDir != ".") {
+      llvm::SmallString<1024> MainFileDirSS(MainFileDir);
+      llvm::sys::path::append(MainFileDirSS, MainFileName);
+      MainFileName = MainFileDirSS.str();
     }
-  } // HLSL Change
+  }
+#endif  // HLSL change. The full path is already here
 
   // Save filename string.
   StringRef Filename = internString(MainFileName);
@@ -464,9 +465,6 @@ llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
   case BuiltinType::OCLSampler:
   case BuiltinType::OCLEvent:
     llvm_unreachable("No ObjC or OpenCL support");
-  case BuiltinType::LitInt:
-  case BuiltinType::LitFloat:
-    llvm_unreachable("Unsupported HLSL types");
 #endif // HLSL Change - no ObjC or OpenCL support
 
   case BuiltinType::UChar:
@@ -482,7 +480,9 @@ llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
     Encoding = llvm::dwarf::DW_ATE_UTF;
     break;
   case BuiltinType::UShort:
-  case BuiltinType::Min16UInt: // HLSL Change
+  case BuiltinType::Min16UInt:      // HLSL Change
+  case BuiltinType::Int8_4Packed:   // HLSL Change
+  case BuiltinType::UInt8_4Packed:  // HLSL Change
   case BuiltinType::UInt:
   case BuiltinType::UInt128:
   case BuiltinType::ULong:
@@ -500,6 +500,7 @@ llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
   case BuiltinType::Long:
   case BuiltinType::WChar_S:
   case BuiltinType::LongLong:
+  case BuiltinType::LitInt:
     Encoding = llvm::dwarf::DW_ATE_signed;
     break;
   case BuiltinType::Bool:
@@ -514,6 +515,7 @@ llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
   case BuiltinType::Float:
   case BuiltinType::LongDouble:
   case BuiltinType::Double:
+  case BuiltinType::LitFloat:
     Encoding = llvm::dwarf::DW_ATE_float;
     break;
   }
@@ -523,13 +525,15 @@ llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
     BTName = "long int";
     break;
   case BuiltinType::LongLong:
-    BTName = "long long int";
+    // BTName = "long long int"; // HLSL Change
+    BTName = "int64_t"; // HLSL Change
     break;
   case BuiltinType::ULong:
     BTName = "long unsigned int";
     break;
   case BuiltinType::ULongLong:
-    BTName = "long long unsigned int";
+    // BTName = "long long unsigned int"; // HLSL Change
+    BTName = "uint64_t"; // HLSL Change
     break;
   default:
     BTName = BT->getName(CGM.getLangOpts());
@@ -1040,7 +1044,7 @@ bool CGDebugInfo::TryCollectHLSLRecordElements(const RecordType *Ty,
     unsigned VecSize = hlsl::GetHLSLVecSize(QualTy);
     unsigned ElemSizeInBits = CGM.getContext().getTypeSize(ElemQualTy);
     for (unsigned ElemIdx = 0; ElemIdx < VecSize; ++ElemIdx) {
-      StringRef FieldName = StringRef("xyzw" + ElemIdx, 1);
+      StringRef FieldName = StringRef(&"xyzw"[ElemIdx], 1);
       unsigned OffsetInBits = ElemSizeInBits * ElemIdx;
       llvm::DIType *FieldType = createFieldType(FieldName, ElemQualTy, 0,
         SourceLocation(), AccessSpecifier::AS_public, OffsetInBits,

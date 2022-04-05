@@ -19,7 +19,6 @@
 #include "Sound/SoundWave.h"
 #include "StaticMeshResources.h"
 #endif // WITH_ENGINE
-#include "Interfaces/IProjectManager.h"
 #include "InstalledPlatformInfo.h"
 #include "LinuxTargetDevice.h"
 #include "Linux/LinuxPlatformProperties.h"
@@ -48,7 +47,7 @@ public:
 #endif // WITH_ENGINE
 	{
 #if PLATFORM_LINUX
-		if (!TProperties::IsAArch64())
+		if (!TProperties::IsArm64())
 		{
 			// only add local device if actually running on Linux
 			LocalDevice = MakeShareable(new FLinuxTargetDevice(*this, FPlatformProcess::ComputerName(), nullptr));
@@ -56,15 +55,14 @@ public:
 #endif
 
 #if WITH_ENGINE
-		FConfigCacheIni::LoadLocalIniFile(EngineSettings, TEXT("Engine"), true, *this->IniPlatformName());
 		TextureLODSettings = nullptr;
-		StaticMeshLODSettings.Initialize(EngineSettings);
+		StaticMeshLODSettings.Initialize(this);
 
 		InitDevicesFromConfig();
 
 		// Get the Target RHIs for this platform, we do not always want all those that are supported.
 		TArray<FName> TargetedShaderFormats;
-		GetAllTargetedShaderFormats(TargetedShaderFormats);
+		TLinuxTargetPlatform::GetAllTargetedShaderFormats(TargetedShaderFormats);
 
 		// If we are targeting ES 2.0/3.1, we also must cook encoded HDR reflection captures
 		static FName NAME_SF_VULKAN_ES31(TEXT("SF_VULKAN_ES31"));
@@ -109,7 +107,7 @@ public:
 			Device->SetUserCredentials(Username, Password);
 		}
 
-		DeviceDiscoveredEvent.Broadcast(Device.ToSharedRef());
+		this->OnDeviceDiscovered().Broadcast(Device.ToSharedRef());
 		return true;
 	}
 
@@ -218,7 +216,7 @@ public:
 		int32 ReadyToBuild = TSuper::CheckRequirements(bProjectHasCode, Configuration, bRequiresAssetNativization, OutTutorialPath, OutDocumentationPath, CustomizedLogMessage);
 
 		// do not support code/plugins in Installed builds if the required libs aren't bundled (on Windows/Mac)
-		if (!PLATFORM_LINUX && !FInstalledPlatformInfo::Get().IsValidPlatform(TSuper::GetPlatformInfo().BinaryFolderName, EProjectType::Code))
+		if (!PLATFORM_LINUX && !FInstalledPlatformInfo::Get().IsValidPlatform(TSuper::GetPlatformInfo().UBTPlatformString, EProjectType::Code))
 		{
 			if (bProjectHasCode)
 			{
@@ -235,29 +233,13 @@ public:
 		return ReadyToBuild;
 	}
 
-
-#if WITH_ENGINE
-	virtual void GetReflectionCaptureFormats(TArray<FName>& OutFormats) const override
-	{
-		if (bRequiresEncodedHDRReflectionCaptures)
-		{
-			OutFormats.Add(FName(TEXT("EncodedHDR")));
-		}
-
-		OutFormats.Add(FName(TEXT("FullHDR")));
-	}
-
 	virtual void GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const override
 	{
-		// no shaders needed for dedicated server target
-		if (!TProperties::IsServerOnly())
-		{
-			static FName NAME_VULKAN_SM5(TEXT("SF_VULKAN_SM5"));
-			static FName NAME_VULKAN_ES31(TEXT("SF_VULKAN_ES31"));
+		static FName NAME_VULKAN_SM5(TEXT("SF_VULKAN_SM5"));
+		static FName NAME_VULKAN_ES31(TEXT("SF_VULKAN_ES31"));
 
-			OutFormats.AddUnique(NAME_VULKAN_SM5);
-			OutFormats.AddUnique(NAME_VULKAN_ES31);
-		}
+		OutFormats.AddUnique(NAME_VULKAN_SM5);
+		OutFormats.AddUnique(NAME_VULKAN_ES31);
 	}
 
 	virtual void GetAllTargetedShaderFormats( TArray<FName>& OutFormats ) const override
@@ -284,25 +266,35 @@ public:
 			OutFormats.AddUnique(FName(*ShaderFormat));
 		}
 	}
+
+#if WITH_ENGINE
+	virtual void GetReflectionCaptureFormats(TArray<FName>& OutFormats) const override
+	{
+		if (bRequiresEncodedHDRReflectionCaptures)
+		{
+			OutFormats.Add(FName(TEXT("EncodedHDR")));
+		}
+
+		OutFormats.Add(FName(TEXT("FullHDR")));
+	}
+
 	virtual const class FStaticMeshLODSettings& GetStaticMeshLODSettings( ) const override
 	{
 		return StaticMeshLODSettings;
 	}
 
-
 	virtual void GetTextureFormats( const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const override
 	{
-		if (!TProperties::IsServerOnly())
+		if (this->AllowAudioVisualData())
 		{
 			// just use the standard texture format name for this texture
-			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, InTexture, EngineSettings, true);
+			GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, InTexture, true);
 		}
 	}
 
-
 	virtual void GetAllTextureFormats(TArray<FName>& OutFormats) const override
 	{
-		if (!TProperties::IsServerOnly())
+		if (this->AllowAudioVisualData())
 		{
 			// just use the standard texture format name for this texture
 			GetAllDefaultTextureFormats(this, OutFormats, true);
@@ -321,32 +313,30 @@ public:
 
 	virtual FName GetWaveFormat( const class USoundWave* Wave ) const override
 	{
-		static const FName NAME_ADPCM(TEXT("ADPCM"));
-		static const FName NAME_OGG(TEXT("OGG"));
-		static const FName NAME_OPUS(TEXT("OPUS"));
+		FName FormatName = Audio::ToName(Wave->GetSoundAssetCompressionType());
 
-		if (Wave->IsSeekableStreaming())
+		if (FormatName == Audio::NAME_PLATFORM_SPECIFIC)
 		{
-			return NAME_ADPCM;
-		}
+			if (Wave->IsStreaming(*this->IniPlatformName()))
+			{
+				return Audio::NAME_OPUS;
+			}
 
-		if (Wave->IsStreaming(*this->IniPlatformName()))
+			return Audio::NAME_OGG;
+		}
+		else
 		{
-			return NAME_OPUS;
+			return FormatName;
 		}
-
-		return NAME_OGG;
 	}
 
 	virtual void GetAllWaveFormats(TArray<FName>& OutFormats) const override
 	{
-		static const FName NAME_ADPCM(TEXT("ADPCM"));
-		static const FName NAME_OGG(TEXT("OGG"));
-		static const FName NAME_OPUS(TEXT("OPUS"));
-
-		OutFormats.Add(NAME_ADPCM);
-		OutFormats.Add(NAME_OGG);
-		OutFormats.Add(NAME_OPUS);
+		OutFormats.Add(Audio::NAME_BINKA);
+		OutFormats.Add(Audio::NAME_ADPCM);
+		OutFormats.Add(Audio::NAME_PCM);
+		OutFormats.Add(Audio::NAME_OGG);
+		OutFormats.Add(Audio::NAME_OPUS);
 	}
 
 #endif //WITH_ENGINE
@@ -356,46 +346,9 @@ public:
 		return true;
 	}
 
-	virtual FText GetVariantDisplayName() const override
-	{
-		if (TProperties::IsServerOnly())
-		{
-			return LOCTEXT("LinuxServerVariantTitle", "Dedicated Server");
-		}
-
-		if (TProperties::HasEditorOnlyData())
-		{
-			return LOCTEXT("LinuxClientEditorDataVariantTitle", "Client with Editor Data");
-		}
-
-		if (TProperties::IsClientOnly())
-		{
-			return LOCTEXT("LinuxClientOnlyVariantTitle", "Client only");
-		}
-
-		return LOCTEXT("LinuxClientVariantTitle", "Client");
-	}
-
-	virtual FText GetVariantTitle() const override
-	{
-		return LOCTEXT("LinuxVariantTitle", "Build Type");
-	}
-
 	virtual float GetVariantPriority() const override
 	{
 		return TProperties::GetVariantPriority();
-	}
-
-	DECLARE_DERIVED_EVENT(TLinuxTargetPlatform, ITargetPlatform::FOnTargetDeviceDiscovered, FOnTargetDeviceDiscovered);
-	virtual FOnTargetDeviceDiscovered& OnDeviceDiscovered( ) override
-	{
-		return DeviceDiscoveredEvent;
-	}
-
-	DECLARE_DERIVED_EVENT(TLinuxTargetPlatform, ITargetPlatform::FOnTargetDeviceLost, FOnTargetDeviceLost);
-	virtual FOnTargetDeviceLost& OnDeviceLost( ) override
-	{
-		return DeviceLostEvent;
 	}
 
 	//~ End ITargetPlatform Interface
@@ -506,9 +459,6 @@ protected:
 
 
 #if WITH_ENGINE
-	// Holds the Engine INI settings for quick use.
-	FConfigFile EngineSettings;
-
 	// Holds the texture LOD settings.
 	const UTextureLODSettings* TextureLODSettings;
 
@@ -518,14 +468,6 @@ protected:
 	// True if the project requires encoded HDR reflection captures
 	bool bRequiresEncodedHDRReflectionCaptures;
 #endif // WITH_ENGINE
-
-private:
-
-	// Holds an event delegate that is executed when a new target device has been discovered.
-	FOnTargetDeviceDiscovered DeviceDiscoveredEvent;
-
-	// Holds an event delegate that is executed when a target device has been lost, i.e. disconnected or timed out.
-	FOnTargetDeviceLost DeviceLostEvent;
 };
 
 #undef LOCTEXT_NAMESPACE

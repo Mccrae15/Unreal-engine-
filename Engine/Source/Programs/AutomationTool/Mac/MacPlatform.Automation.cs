@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 using System.IO;
 using AutomationTool;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 public class MacPlatform : Platform
 {
@@ -50,7 +50,7 @@ public class MacPlatform : Platform
 
 	public override string GetCookPlatform(bool bDedicatedServer, bool bIsClientOnly)
 	{
-		const string NoEditorCookPlatform = "MacNoEditor";
+		const string NoEditorCookPlatform = "Mac";
 		const string ServerCookPlatform = "MacServer";
 		const string ClientCookPlatform = "MacClient";
 
@@ -70,7 +70,7 @@ public class MacPlatform : Platform
 
 	public override string GetEditorCookPlatform()
 	{
-		return "Mac";
+		return "MacEditor";
 	}
 
 	/// <summary>
@@ -79,9 +79,9 @@ public class MacPlatform : Platform
 	/// <param name="InTarget"></param>
 	/// <param name="InParams"></param>
 	/// <returns></returns>
-	protected bool CanBuildTargetForAllArchitectures(UE4Build.BuildTarget InTarget, ProjectParams InParams)
+	protected bool CanBuildTargetForAllArchitectures(UnrealBuild.BuildTarget InTarget, ProjectParams InParams)
 	{
-		return MacExports.TargetsWhitelistedForAppleSilicon.Contains(InTarget.TargetName, StringComparer.OrdinalIgnoreCase);
+		return MacExports.TargetsAllowedForAppleSilicon.Contains(InTarget.TargetName, StringComparer.OrdinalIgnoreCase);
 	}
 
 	/// <summary>
@@ -91,7 +91,7 @@ public class MacPlatform : Platform
 	/// <param name="Build"></param>
 	/// <param name="Agenda"></param>
 	/// <param name="Params"></param>
-	public override void PreBuildAgenda(UE4Build Build, UE4Build.BuildAgenda Agenda, ProjectParams Params)
+	public override void PreBuildAgenda(UnrealBuild Build, UnrealBuild.BuildAgenda Agenda, ProjectParams Params)
 	{
 		base.PreBuildAgenda(Build, Agenda, Params);
 
@@ -100,7 +100,7 @@ public class MacPlatform : Platform
 		bool ProjectIsUniversal = ProjectTargetArchitectures.Count() > 1;
 
 		// Go through the agenda for all targets and set the architecture appropriately
-		foreach (UE4Build.BuildTarget Target in Agenda.Targets)
+		foreach (UnrealBuild.BuildTarget Target in Agenda.Targets)
 		{
 			bool IsTarget = Params.ClientCookedTargets.Contains(Target.TargetName) || Params.ServerCookedTargets.Contains(Target.TargetName);
 
@@ -371,7 +371,7 @@ public class MacPlatform : Platform
 			string DestInfoPlist = File.ReadAllText(DestInfoPlistPath);
 
 			string AppIdentifier = GetValueFromInfoPlist(SrcInfoPlist, "CFBundleIdentifier");
-			if (AppIdentifier == "com.epicgames.UE4Game")
+			if (AppIdentifier == "com.epicgames.UnrealGame")
 			{
 				AppIdentifier = "";
 			}
@@ -445,12 +445,6 @@ public class MacPlatform : Platform
 	{
 		// package up the program, potentially with an installer for Mac
 		PrintRunTime();
-
-		if (Params.Archive)
-		{
-			// Remove extra RPATHs if we will be archiving the project
-			RemoveExtraRPaths(Params, SC);
-		}
 	}
 
 	public override void ProcessArchivedProject(ProjectParams Params, DeploymentContext SC)
@@ -471,7 +465,7 @@ public class MacPlatform : Platform
 				}
 			}
 
-			string TargetPath = CombinePaths(BundlePath, "Contents", "UE4");
+			string TargetPath = CombinePaths(BundlePath, "Contents", "UE");
 			if (!SC.bIsCombiningMultiplePlatforms)
 			{
 				if (Directory.Exists(BundlePath))
@@ -525,7 +519,7 @@ public class MacPlatform : Platform
 				File.Delete(GameExePath);
 				File.Move(UE4GamePath, GameExePath);
 
-				string DefaultIconPath = CombinePaths(BundlePath, "Contents", "Resources", "UE4Game.icns");
+				string DefaultIconPath = CombinePaths(BundlePath, "Contents", "Resources", "UnrealGame.icns");
 				string CustomIconSrcPath = CombinePaths(BundlePath, "Contents", "Resources", "Application.icns");
 				string CustomIconDestPath = CombinePaths(BundlePath, "Contents", "Resources", SC.ShortProjectName + ".icns");
 				if (File.Exists(CustomIconSrcPath))
@@ -549,7 +543,7 @@ public class MacPlatform : Platform
 				string InfoPlistPath = CombinePaths(BundlePath, "Contents", "Info.plist");
 				string InfoPlistContents = File.ReadAllText(InfoPlistPath);
 				InfoPlistContents = InfoPlistContents.Replace(ExeName, SC.ShortProjectName);
-				InfoPlistContents = InfoPlistContents.Replace("<string>UE4Game</string>", "<string>" + SC.ShortProjectName + "</string>");
+				InfoPlistContents = InfoPlistContents.Replace("<string>UnrealGame</string>", "<string>" + SC.ShortProjectName + "</string>");
 				File.Delete(InfoPlistPath);
 				File.WriteAllText(InfoPlistPath, InfoPlistContents);
 			}
@@ -660,6 +654,13 @@ public class MacPlatform : Platform
 	{
 		if (UnrealBuildTool.BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
 		{
+			if (Params.Archive)
+			{
+				// Remove extra RPATHs if we will be archiving the project
+				LogInformation("Removing extraneous rpath entries");
+				RemoveExtraRPaths(Params, SC);
+			}
+
 			// Sign everything we built
 			List<FileReference> FilesToSign = GetExecutableNames(SC);
 			LogInformation("RuntimeProjectRootDir: " + SC.RuntimeProjectRootDir);
@@ -677,6 +678,7 @@ public class MacPlatform : Platform
 					LogInformation("Starts with Engine/Binaries");
 					AppBundlePath = CombinePaths("Engine/Binaries", SC.PlatformDir, Path.GetFileNameWithoutExtension(Exe.FullName) + ".app");
 				}
+
 				LogInformation("Signing: " + AppBundlePath);
 				CodeSign.SignMacFileOrFolder(AppBundlePath);
 			}

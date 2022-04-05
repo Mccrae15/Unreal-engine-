@@ -16,7 +16,6 @@ LandscapeRender.cpp: New terrain rendering
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "ShaderParameterUtils.h"
-#include "TessellationRendering.h"
 #include "LandscapeEdit.h"
 #include "Engine/LevelStreaming.h"
 #include "LevelUtils.h"
@@ -46,18 +45,10 @@ IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeUniformShaderParameters, "Lan
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeFixedGridUniformShaderParameters, "LandscapeFixedGrid");
 IMPLEMENT_TYPE_LAYOUT(FLandscapeVertexFactoryPixelShaderParameters);
 
-int32 GLandscapeMeshLODBias = 0;
-FAutoConsoleVariableRef CVarLandscapeMeshLODBias(
-	TEXT("r.LandscapeLODBias"),
-	GLandscapeMeshLODBias,
-	TEXT("LOD bias for landscape/terrain meshes."),
-	ECVF_Scalability
-);
-
 #if !UE_BUILD_SHIPPING
 static void OnLODDistributionScaleChanged(IConsoleVariable* CVar)
 {
-	for (auto* LandscapeComponent : TObjectRange<ULandscapeComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::PendingKill))
+	for (auto* LandscapeComponent : TObjectRange<ULandscapeComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
 	{
 		LandscapeComponent->MarkRenderStateDirty();
 	}
@@ -103,6 +94,8 @@ static FAutoConsoleVariableRef CVarAllowLandscapeShadows(
 #if WITH_EDITOR
 extern TAutoConsoleVariable<int32> CVarLandscapeShowDirty;
 #endif
+
+extern RENDERER_API TAutoConsoleVariable<float> CVarStaticMeshLODDistanceScale;
 
 #if !UE_BUILD_SHIPPING
 int32 GVarDumpLandscapeLODsCurrentFrame = 0;
@@ -512,68 +505,49 @@ namespace
 
 } // namespace 
 
-struct FLandscapeDebugOptions
+
+//
+// FLandscapeDebugOptions
+//
+FLandscapeDebugOptions::FLandscapeDebugOptions()
+	: bShowPatches(false)
+	, bDisableStatic(false)
+	, CombineMode(eCombineMode_Default)
+	, PatchesConsoleCommand(
+		TEXT("Landscape.Patches"),
+		TEXT("Show/hide Landscape patches"),
+		FConsoleCommandDelegate::CreateRaw(this, &FLandscapeDebugOptions::Patches))
+	, StaticConsoleCommand(
+		TEXT("Landscape.Static"),
+		TEXT("Enable/disable Landscape static drawlists"),
+		FConsoleCommandDelegate::CreateRaw(this, &FLandscapeDebugOptions::Static))
+	, CombineConsoleCommand(
+		TEXT("Landscape.Combine"),
+		TEXT("Set landscape component combining mode : 0 = Default, 1 = Combine All, 2 = Disabled"),
+		FConsoleCommandWithArgsDelegate::CreateRaw(this, &FLandscapeDebugOptions::Combine))
 {
-	FLandscapeDebugOptions()
-		: bShowPatches(false)
-		, bDisableStatic(false)
-		, CombineMode(eCombineMode_Default)
-		, PatchesConsoleCommand(
-			TEXT("Landscape.Patches"),
-			TEXT("Show/hide Landscape patches"),
-			FConsoleCommandDelegate::CreateRaw(this, &FLandscapeDebugOptions::Patches))
-		, StaticConsoleCommand(
-			TEXT("Landscape.Static"),
-			TEXT("Enable/disable Landscape static drawlists"),
-			FConsoleCommandDelegate::CreateRaw(this, &FLandscapeDebugOptions::Static))
-		, CombineConsoleCommand(
-			TEXT("Landscape.Combine"),
-			TEXT("Set landscape component combining mode : 0 = Default, 1 = Combine All, 2 = Disabled"),
-			FConsoleCommandWithArgsDelegate::CreateRaw(this, &FLandscapeDebugOptions::Combine))
+}
+
+void FLandscapeDebugOptions::Patches()
+{
+	bShowPatches = !bShowPatches;
+	UE_LOG(LogLandscape, Display, TEXT("Landscape.Patches: %s"), bShowPatches ? TEXT("Show") : TEXT("Hide"));
+}
+
+void FLandscapeDebugOptions::Static()
+{
+	bDisableStatic = !bDisableStatic;
+	UE_LOG(LogLandscape, Display, TEXT("Landscape.Static: %s"), bDisableStatic ? TEXT("Disabled") : TEXT("Enabled"));
+}
+
+void FLandscapeDebugOptions::Combine(const TArray<FString>& Args)
+{
+	if (Args.Num() >= 1)
 	{
+		CombineMode = (eCombineMode)FCString::Atoi(*Args[0]);
+		UE_LOG(LogLandscape, Display, TEXT("Landscape.Combine: %d"), (int32)CombineMode);
 	}
-
-	enum eCombineMode
-	{
-		eCombineMode_Default = 0,
-		eCombineMode_CombineAll = 1,
-		eCombineMode_Disabled = 2
-	};
-
-	bool bShowPatches;
-	bool bDisableStatic;
-	eCombineMode CombineMode;
-
-	FORCEINLINE bool IsCombinedDisabled() const { return CombineMode == eCombineMode_Disabled; }
-	FORCEINLINE bool IsCombinedAll() const { return CombineMode == eCombineMode_CombineAll; }
-	FORCEINLINE bool IsCombinedDefault() const { return CombineMode == eCombineMode_Default; }
-
-private:
-	FAutoConsoleCommand PatchesConsoleCommand;
-	FAutoConsoleCommand StaticConsoleCommand;
-	FAutoConsoleCommand CombineConsoleCommand;
-
-	void Patches()
-	{
-		bShowPatches = !bShowPatches;
-		UE_LOG(LogLandscape, Display, TEXT("Landscape.Patches: %s"), bShowPatches ? TEXT("Show") : TEXT("Hide"));
-	}
-
-	void Static()
-	{
-		bDisableStatic = !bDisableStatic;
-		UE_LOG(LogLandscape, Display, TEXT("Landscape.Static: %s"), bDisableStatic ? TEXT("Disabled") : TEXT("Enabled"));
-	}
-
-	void Combine(const TArray<FString>& Args)
-	{
-		if (Args.Num() >= 1)
-		{
-			CombineMode = (eCombineMode)FCString::Atoi(*Args[0]);
-			UE_LOG(LogLandscape, Display, TEXT("Landscape.Combine: %d"), (int32)CombineMode);
-		}
-	}
-};
+}
 
 FLandscapeDebugOptions GLandscapeDebugOptions;
 
@@ -652,7 +626,7 @@ void ULandscapeComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMater
 static int32 GetViewLodOverride(FSceneView const& View)
 {
 	// Apply r.ForceLOD override
-	int32 LodOverride = GetCVarForceLOD();
+	int32 LodOverride = GetCVarForceLOD_AnyThread();
 #if WITH_EDITOR
 	// Apply editor landscape lod override
 	LodOverride = View.Family->LandscapeLODOverride >= 0 ? View.Family->LandscapeLODOverride : LodOverride;
@@ -684,108 +658,239 @@ static int32 GetDrawCollisionLodOverride(FSceneView const& View, FCollisionRespo
 #endif
 }
 
+
+//
+// FGetSectionLODBiasesTask
+//
+struct FGetSectionLODBiasesTask
+{
+	FLandscapeRenderSystem& RenderSystem;
+
+	FGetSectionLODBiasesTask(FLandscapeRenderSystem& InRenderSystem)
+		: RenderSystem(InRenderSystem)
+	{
+	}
+
+	FORCEINLINE TStatId GetStatId() const
+	{
+		RETURN_QUICK_DECLARE_CYCLE_STAT(FGetSectionLODBiasesTask, STATGROUP_TaskGraphTasks);
+	}
+
+	ENamedThreads::Type GetDesiredThread()
+	{
+		return ENamedThreads::AnyNormalThreadNormalTask;
+	}
+
+	static ESubsequentsMode::Type GetSubsequentsMode()
+	{
+		return ESubsequentsMode::TrackSubsequents;
+	}
+
+	void AnyThreadTask()
+	{
+		FOptionalTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
+		RenderSystem.FetchHeightmapLODBiases();
+	}
+
+	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+	{
+		AnyThreadTask();
+	}
+};
+
+
 //
 // FLandscapeComponentSceneProxy
 //
 TMap<uint32, FLandscapeSharedBuffers*>FLandscapeComponentSceneProxy::SharedBuffersMap;
-TMap<FLandscapeNeighborInfo::FLandscapeKey, TMap<FIntPoint, const FLandscapeNeighborInfo*> > FLandscapeNeighborInfo::SharedSceneProxyMap;
 
 const static FName NAME_LandscapeResourceNameForDebugging(TEXT("Landscape"));
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeSectionLODUniformParameters, "LandscapeContinuousLODParameters");
 
-TGlobalResource<FNullLandscapeRenderSystemResources> GNullLandscapeRenderSystemResources;
-TMap<FLandscapeNeighborInfo::FLandscapeKey, FLandscapeRenderSystem*> LandscapeRenderSystems;
+TMap<uint32, FLandscapeRenderSystem*> LandscapeRenderSystems;
 
-void FLandscapeRenderSystem::RegisterEntity(FLandscapeComponentSceneProxy* SceneProxy)
+TBitArray<> FLandscapeRenderSystem::LandscapeIndexAllocator;
+
+
+//
+// FLandscapeRenderSystem
+//
+FLandscapeRenderSystem::FLandscapeRenderSystem()
+	: Min(MAX_int32, MAX_int32)
+	, Size(EForceInit::ForceInitToZero)
+	, ReferenceCount(0)
+{
+	SectionLODBiases.SetAllowCPUAccess(true);
+
+	LandscapeIndex = LandscapeIndexAllocator.FindAndSetFirstZeroBit();
+	if (LandscapeIndex == INDEX_NONE)
+	{
+		LandscapeIndex = LandscapeIndexAllocator.Add(true);
+	}
+
+	FLandscapeSectionLODUniformParameters Parameters;
+	Parameters.LandscapeIndex = LandscapeIndex;
+	Parameters.Size = FIntPoint(1, 1);
+	Parameters.SectionLODBias = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
+	SectionLODUniformBuffer = TUniformBufferRef<FLandscapeSectionLODUniformParameters>::CreateUniformBufferImmediate(Parameters, UniformBuffer_MultiFrame);
+}
+
+FLandscapeRenderSystem::~FLandscapeRenderSystem()
+{
+	WaitForTasksCompletion();
+
+	check(LandscapeIndexAllocator[LandscapeIndex]);
+	LandscapeIndexAllocator[LandscapeIndex] = false;
+
+	// Clear slack in the array
+	int32 LastSetIndex = LandscapeIndexAllocator.FindLast(true);
+	LandscapeIndexAllocator.SetNumUninitialized(LastSetIndex + 1);
+}
+
+void FLandscapeRenderSystem::CreateResources(FLandscapeSectionInfo* SectionInfo)
 {
 	check(IsInRenderingThread());
-	check(SceneProxy != nullptr);
 
-	if (NumRegisteredEntities > 0)
+	FLandscapeRenderSystem*& LandscapeRenderSystem = LandscapeRenderSystems.FindOrAdd(SectionInfo->LandscapeKey);
+	if (!LandscapeRenderSystem)
+	{
+		LandscapeRenderSystem = new FLandscapeRenderSystem();
+	}
+
+	LandscapeRenderSystem->CreateResources_Internal(SectionInfo);
+}
+
+void FLandscapeRenderSystem::DestroyResources(FLandscapeSectionInfo* SectionInfo)
+{
+	check(IsInRenderingThread());
+
+	FLandscapeRenderSystem* LandscapeRenderSystem = LandscapeRenderSystems.FindChecked(SectionInfo->LandscapeKey);
+	LandscapeRenderSystem->DestroyResources_Internal(SectionInfo);
+
+	if (LandscapeRenderSystem->ReferenceCount == 0)
+	{
+		delete LandscapeRenderSystem;
+		LandscapeRenderSystems.Remove(SectionInfo->LandscapeKey);
+	}
+}
+
+void FLandscapeRenderSystem::CreateResources_Internal(FLandscapeSectionInfo* SectionInfo)
+{
+	check(IsInRenderingThread());
+	check(SectionInfo != nullptr);
+	check(!SectionInfo->bRegistered);
+
+	if (!SectionInfos.IsEmpty())
 	{
 		// Calculate new bounding rect of landscape components
 		FIntPoint OriginalMin = Min;
 		FIntPoint OriginalMax = Min + Size - FIntPoint(1, 1);
-		FIntPoint NewMin(FMath::Min(Min.X, SceneProxy->ComponentBase.X), FMath::Min(Min.Y, SceneProxy->ComponentBase.Y));
-		FIntPoint NewMax(FMath::Max(OriginalMax.X, SceneProxy->ComponentBase.X), FMath::Max(OriginalMax.Y, SceneProxy->ComponentBase.Y));
+		FIntPoint NewMin(FMath::Min(Min.X, SectionInfo->ComponentBase.X), FMath::Min(Min.Y, SectionInfo->ComponentBase.Y));
+		FIntPoint NewMax(FMath::Max(OriginalMax.X, SectionInfo->ComponentBase.X), FMath::Max(OriginalMax.Y, SectionInfo->ComponentBase.Y));
 
 		FIntPoint SizeRequired = (NewMax - NewMin) + FIntPoint(1, 1);
 
 		if (NewMin != Min || Size != SizeRequired)
 		{
 			ResizeAndMoveTo(NewMin, SizeRequired);
-			RecreateBuffers();
-		}
-
-		// Validate system-wide global parameters
-		check(TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff == SceneProxy->UseTessellationComponentScreenSizeFalloff);
-		check(TessellationFalloffSettings.TessellationComponentSquaredScreenSize == SceneProxy->TessellationComponentSquaredScreenSize);
-		check(TessellationFalloffSettings.TessellationComponentScreenSizeFalloff == SceneProxy->TessellationComponentScreenSizeFalloff);
-
-		if (SceneProxy->MaterialHasTessellationEnabled.Find(true) != INDEX_NONE)
-		{
-			NumEntitiesWithTessellation++;
 		}
 	}
 	else
 	{
-		TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff = SceneProxy->UseTessellationComponentScreenSizeFalloff;
-		TessellationFalloffSettings.TessellationComponentSquaredScreenSize = SceneProxy->TessellationComponentSquaredScreenSize;
-		TessellationFalloffSettings.TessellationComponentScreenSizeFalloff = SceneProxy->TessellationComponentScreenSizeFalloff;
-
-		ResizeAndMoveTo(SceneProxy->ComponentBase, FIntPoint(1, 1));
-		RecreateBuffers();
+		ResizeAndMoveTo(SectionInfo->ComponentBase, FIntPoint(1, 1));
 	}
 
-	NumRegisteredEntities++;
-	SetSectionLODSettings(SceneProxy->ComponentBase, SceneProxy->LODSettings);
-	SetSectionOriginAndRadius(SceneProxy->ComponentBase, FVector4(SceneProxy->GetBounds().Origin, SceneProxy->GetBounds().SphereRadius));
-	SetSceneProxy(SceneProxy->ComponentBase, SceneProxy);
+	ReferenceCount++;
 }
 
-void FLandscapeRenderSystem::UnregisterEntity(FLandscapeComponentSceneProxy* SceneProxy)
+void FLandscapeRenderSystem::DestroyResources_Internal(FLandscapeSectionInfo* SectionInfo)
 {
 	check(IsInRenderingThread());
-	check(SceneProxy != nullptr);
+	check(SectionInfo != nullptr);
+	check(!SectionInfo->bRegistered);
 
-	SetSceneProxy(SceneProxy->ComponentBase, nullptr);
-	SetSectionOriginAndRadius(SceneProxy->ComponentBase, FVector4(ForceInitToZero));
+	ReferenceCount--;
+}
 
-	LODSettingsComponent LODSettings;
-	FMemory::Memzero(&LODSettings, sizeof(LODSettingsComponent));
-	SetSectionLODSettings(SceneProxy->ComponentBase, LODSettings);
+void FLandscapeRenderSystem::RegisterSection(FLandscapeSectionInfo* SectionInfo)
+{
+	check(IsInRenderingThread());
+	check(SectionInfo != nullptr);
+	check(!SectionInfo->bRegistered);
 
-	if (SceneProxy->MaterialHasTessellationEnabled.Find(true) != INDEX_NONE)
+	// With HLODs, it's possible to have multiple loaded sections representing the same
+	// landscape patch. For example, raytracing may keep the HLOD proxy around (far field),
+	// even if the actual landscape is loaded & visible.
+	// We keep a linked list of the section infos, sorted by priority, so that unregistration can
+	// properly restore a previously registered section info.
+
+	FLandscapeRenderSystem*& LandscapeRenderSystem = LandscapeRenderSystems.FindChecked(SectionInfo->LandscapeKey);
+	FLandscapeSectionInfo* ExistingSection = LandscapeRenderSystem->GetSectionInfo(SectionInfo->ComponentBase);
+	if (ExistingSection == nullptr)
 	{
-		NumEntitiesWithTessellation--;
+		LandscapeRenderSystem->SetSectionInfo(SectionInfo->ComponentBase, SectionInfo);
+	}
+	else
+	{
+		FLandscapeSectionInfo* CurrentSection = nullptr;
+		FLandscapeSectionInfo::TIterator SectionIt(ExistingSection);
+		for (; SectionIt; ++SectionIt)
+		{
+			CurrentSection = &*SectionIt;
+
+			// Sort on insertion
+			if (SectionInfo->GetSectionPriority() < CurrentSection->GetSectionPriority())
+			{
+				SectionInfo->LinkBefore(CurrentSection);
+				break;
+			}
+		}
+
+		if (!SectionIt)
+		{
+			// Set as tail
+			SectionInfo->LinkAfter(CurrentSection);
+		}
+		else if (CurrentSection == ExistingSection)
+		{
+			// Set as head
+			LandscapeRenderSystem->SetSectionInfo(SectionInfo->ComponentBase, SectionInfo);
+		}
 	}
 
-	NumRegisteredEntities--;
+	SectionInfo->bRegistered = true;
+}
+
+void FLandscapeRenderSystem::UnregisterSection(FLandscapeSectionInfo* SectionInfo)
+{
+	check(IsInRenderingThread());
+	check(SectionInfo != nullptr);
+	
+	if (SectionInfo->bRegistered)
+	{
+		FLandscapeRenderSystem* LandscapeRenderSystem = LandscapeRenderSystems.FindChecked(SectionInfo->LandscapeKey);
+		FLandscapeSectionInfo* ExistingSection = LandscapeRenderSystem->GetSectionInfo(SectionInfo->ComponentBase);
+		if (ExistingSection == SectionInfo)
+		{
+			LandscapeRenderSystem->SetSectionInfo(SectionInfo->ComponentBase, SectionInfo->GetNextLink());
+		}
+
+		SectionInfo->Unlink();
+
+		SectionInfo->bRegistered = false;
+	}
 }
 
 void FLandscapeRenderSystem::ResizeAndMoveTo(FIntPoint NewMin, FIntPoint NewSize)
 {
-	SectionLODBuffer.SafeRelease();
 	SectionLODBiasBuffer.SafeRelease();
-	SectionTessellationFalloffCBuffer.SafeRelease();
-	SectionTessellationFalloffKBuffer.SafeRelease();
 
-	TResourceArray<float> NewSectionLODValues;
 	TResourceArray<float> NewSectionLODBiases;
-	TResourceArray<float> NewSectionTessellationFalloffC;
-	TResourceArray<float> NewSectionTessellationFalloffK;
-	TArray<LODSettingsComponent> NewSectionLODSettings;
-	TArray<FVector4> NewSectionOriginAndRadius;
-	TArray<FLandscapeComponentSceneProxy*> NewSceneProxies;
+	TArray<FLandscapeSectionInfo*> NewSectionInfos;
 
-	NewSectionLODValues.AddZeroed(NewSize.X * NewSize.Y);
 	NewSectionLODBiases.AddZeroed(NewSize.X * NewSize.Y);
-	NewSectionTessellationFalloffC.AddZeroed(NewSize.X * NewSize.Y);
-	NewSectionTessellationFalloffK.AddZeroed(NewSize.X * NewSize.Y);
-	NewSectionLODSettings.AddZeroed(NewSize.X * NewSize.Y);
-	NewSectionOriginAndRadius.AddZeroed(NewSize.X * NewSize.Y);
-	NewSceneProxies.AddZeroed(NewSize.X * NewSize.Y);
+	NewSectionInfos.AddZeroed(NewSize.X * NewSize.Y);
 
 	for (int32 Y = 0; Y < Size.Y; Y++)
 	{
@@ -796,305 +901,104 @@ void FLandscapeRenderSystem::ResizeAndMoveTo(FIntPoint NewMin, FIntPoint NewSize
 
 			if (NewLinearIndex >= 0 && NewLinearIndex < NewSize.X * NewSize.Y)
 			{
-				NewSectionLODValues[NewLinearIndex] = SectionLODValues[LinearIndex];
 				NewSectionLODBiases[NewLinearIndex] = SectionLODBiases[LinearIndex];
-				if (TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0)
-				{
-					NewSectionTessellationFalloffC[NewLinearIndex] = SectionTessellationFalloffC[LinearIndex];
-					NewSectionTessellationFalloffK[NewLinearIndex] = SectionTessellationFalloffK[LinearIndex];
-				}
-				NewSectionLODSettings[NewLinearIndex] = SectionLODSettings[LinearIndex];
-				NewSectionOriginAndRadius[NewLinearIndex] = SectionOriginAndRadius[LinearIndex];
-				NewSceneProxies[NewLinearIndex] = SceneProxies[LinearIndex];
+				NewSectionInfos[NewLinearIndex] = SectionInfos[LinearIndex];
 			}
 		}
 	}
 
 	Min = NewMin;
 	Size = NewSize;
-	SectionLODValues = NewSectionLODValues;
-	SectionLODBiases = NewSectionLODBiases;
-	SectionTessellationFalloffC = NewSectionTessellationFalloffC;
-	SectionTessellationFalloffK = NewSectionTessellationFalloffK;
-	SectionLODSettings = NewSectionLODSettings;
-	SectionOriginAndRadius = NewSectionOriginAndRadius;
-	SceneProxies = NewSceneProxies;
+	SectionLODBiases = MoveTemp(NewSectionLODBiases);
+	SectionInfos = MoveTemp(NewSectionInfos);
 
-	if (!(TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0))
-	{
-		for (float& Value : SectionTessellationFalloffC)
-		{
-			Value = 1.0f;
-		}
-
-		for (float& Value : SectionTessellationFalloffK)
-		{
-			Value = 0.0f;
-		}
-	}
-
-	SectionLODValues.SetAllowCPUAccess(true);
 	SectionLODBiases.SetAllowCPUAccess(true);
-	SectionTessellationFalloffC.SetAllowCPUAccess(true);
-	SectionTessellationFalloffK.SetAllowCPUAccess(true);
 }
 
-void FLandscapeRenderSystem::PrepareView(const FSceneView* View)
+void FLandscapeRenderSystem::BeginRender()
 {
-#if PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING
-	const int32 NumSceneProxies = SceneProxies.Num();
-	SectionCurrentFirstLODIndices.Empty(NumSceneProxies);
-	SectionCurrentFirstLODIndices.AddUninitialized(NumSceneProxies);
+	check(IsInRenderingThread());
 
-	for (int32 Idx = 0; Idx < NumSceneProxies; ++Idx)
-	{
-		const FLandscapeComponentSceneProxy* Proxy = SceneProxies[Idx];
-		SectionCurrentFirstLODIndices[Idx] = Proxy ? Proxy->GetCurrentFirstLODIdx_RenderThread() : 0;
-	}
-#endif
-	
-	const bool bExecuteInParallel = FApp::ShouldUseThreadingForPerformance()
-		&& GIsThreadedRendering; // Rendering thread is required to safely use rendering resources in parallel.
+	TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeRenderSystem::BeginRender());
 
-	if (bExecuteInParallel)
-	{
-		PerViewParametersTasks.Add(View, TGraphTask<FComputeSectionPerViewParametersTask>::CreateTask(
-			nullptr, ENamedThreads::GetRenderThread()).ConstructAndDispatchWhenReady(*this, View));
-	}
-	else
-	{
-		FComputeSectionPerViewParametersTask Task(*this, View);
-		Task.AnyThreadTask();
-	}
+	WaitForTasksCompletion();
+
+	UpdateBuffers();
 }
 
-void FLandscapeRenderSystem::BeginRenderView(const FSceneView* View)
+const TResourceArray<float>& FLandscapeRenderSystem::ComputeSectionsLODForView(const FSceneView& InView)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeRenderSystem::BeginRenderView());
+	TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeRenderSystem::ComputeSectionsLODForView);
 
-	if (FetchHeightmapLODBiasesEventRef.IsValid())
+	TResourceArray<float>& SectionLODValues = CachedSectionLODValues.Add(InView.GetViewKey());
+	SectionLODValues.AddZeroed(SectionInfos.Num());
+
+	for (int32 SectionIndex = 0; SectionIndex < SectionInfos.Num(); SectionIndex++)
 	{
-		FTaskGraphInterface::Get().WaitUntilTaskCompletes(FetchHeightmapLODBiasesEventRef, ENamedThreads::GetRenderThread_Local());
-		FetchHeightmapLODBiasesEventRef.SafeRelease();
+		const float DefaultLODValue = 0.0f;
+
+		FLandscapeSectionInfo* SectionInfo = SectionInfos[SectionIndex];
+		SectionLODValues[SectionIndex] = SectionInfo ? SectionInfo->ComputeLODForView(InView) : DefaultLODValue;
 	}
 
-	if (PerViewParametersTasks.Contains(View))
-	{
-		FTaskGraphInterface::Get().WaitUntilTaskCompletes(PerViewParametersTasks[View], ENamedThreads::GetRenderThread_Local());
-		PerViewParametersTasks.Remove(View);
-	}
-
-	{
-		FScopeLock Lock(&CachedValuesCS);
-
-		SectionLODValues = CachedSectionLODValues[View];
-
-		if (TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0)
-		{
-			SectionTessellationFalloffC = CachedSectionTessellationFalloffC[View];
-			SectionTessellationFalloffK = CachedSectionTessellationFalloffK[View];
-		}
-	}
-
-	RecreateBuffers(View);
-}
-
-void FLandscapeRenderSystem::ComputeSectionPerViewParameters(
-	const FSceneView* ViewPtrAsIdentifier,
-	int32 ViewLODOverride,
-	float ViewLODDistanceFactor,
-	bool bDrawCollisionPawn,
-	bool bDrawCollisionCollision,
-	FVector ViewOrigin,
-	FMatrix ViewProjectionMarix
-)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeRenderSystem::ComputeSectionPerViewParameters());
-
-	TResourceArray<float> NewSectionLODValues;
-	TResourceArray<float> NewSectionTessellationFalloffC;
-	TResourceArray<float> NewSectionTessellationFalloffK;
-
-	NewSectionLODValues.AddZeroed(SectionLODSettings.Num());
-
-	if (TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0)
-	{
-		NewSectionTessellationFalloffC.AddZeroed(SectionLODSettings.Num());
-		NewSectionTessellationFalloffK.AddZeroed(SectionLODSettings.Num());
-	}
-
-	float LODScale = ViewLODDistanceFactor * CVarStaticMeshLODDistanceScale.GetValueOnRenderThread();
-
-	for (int32 EntityIndex = 0; EntityIndex < SectionLODSettings.Num(); EntityIndex++)
-	{
-		float MeshScreenSizeSquared = ComputeBoundsScreenRadiusSquared(FVector(SectionOriginAndRadius[EntityIndex]), SectionOriginAndRadius[EntityIndex].W, ViewOrigin, ViewProjectionMarix);
-
-		float FractionalLOD;
-		GetLODFromScreenSize(SectionLODSettings[EntityIndex], MeshScreenSizeSquared, LODScale * LODScale, FractionalLOD);
-
-		int32 ForcedLODLevel = SectionLODSettings[EntityIndex].ForcedLOD;
-		ForcedLODLevel = ViewLODOverride >= 0 ? ViewLODOverride : ForcedLODLevel;
-		const int32 DrawCollisionLODOverride = GetDrawCollisionLodOverride(bDrawCollisionPawn, bDrawCollisionCollision, SectionLODSettings[EntityIndex].DrawCollisionPawnLOD, SectionLODSettings[EntityIndex].DrawCollisionVisibilityLOD);
-		ForcedLODLevel = DrawCollisionLODOverride >= 0 ? DrawCollisionLODOverride : ForcedLODLevel;
-		ForcedLODLevel = FMath::Min<int32>(ForcedLODLevel, SectionLODSettings[EntityIndex].LastLODIndex);
-
-#if PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING
-		const float CurFirstLODIdx = (float)SectionCurrentFirstLODIndices[EntityIndex];
-#else
-		constexpr float CurFirstLODIdx = 0.f;
-#endif
-
-		NewSectionLODValues[EntityIndex] = FMath::Max(ForcedLODLevel >= 0 ? ForcedLODLevel : FractionalLOD, CurFirstLODIdx);
-
-		if (TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0)
-		{
-			float MaxTesselationDistance = ComputeBoundsDrawDistance(FMath::Sqrt(TessellationFalloffSettings.TessellationComponentSquaredScreenSize), SectionOriginAndRadius[EntityIndex].W / 2.0f, ViewProjectionMarix);
-			float FallOffStartingDistance = FMath::Min(
-				ComputeBoundsDrawDistance(FMath::Sqrt(FMath::Min(
-					FMath::Square(TessellationFalloffSettings.TessellationComponentScreenSizeFalloff),
-					TessellationFalloffSettings.TessellationComponentSquaredScreenSize)), SectionOriginAndRadius[EntityIndex].W / 2.0f, ViewProjectionMarix) - MaxTesselationDistance, MaxTesselationDistance);
-
-			// Calculate the falloff using a = C - K * d by sending C & K into the shader
-			NewSectionTessellationFalloffC[EntityIndex] = MaxTesselationDistance / (MaxTesselationDistance - FallOffStartingDistance);
-			NewSectionTessellationFalloffK[EntityIndex] = -(1 / (-MaxTesselationDistance + FallOffStartingDistance));
-		}
-	}
-
-	{
-		FScopeLock Lock(&CachedValuesCS);
-
-		CachedSectionLODValues.Add(ViewPtrAsIdentifier, NewSectionLODValues);
-
-		if (TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0)
-		{
-			CachedSectionTessellationFalloffC.Add(ViewPtrAsIdentifier, NewSectionTessellationFalloffC);
-			CachedSectionTessellationFalloffK.Add(ViewPtrAsIdentifier, NewSectionTessellationFalloffK);
-		}
-	}
+	return SectionLODValues;
 }
 
 void FLandscapeRenderSystem::FetchHeightmapLODBiases()
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeRenderSystem::FetchHeightmapLODBiases());
+	TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeRenderSystem::FetchHeightmapLODBiases);
 
-	// TODO: this function generates A LOT OF cache misses - it should be much better if we have an event of FTexture2DResource::UpdateTexture
-	for (int32 EntityIndex = 0; EntityIndex < SceneProxies.Num(); EntityIndex++)
+	for (int32 SectionIndex = 0; SectionIndex < SectionInfos.Num(); SectionIndex++)
 	{
-		FLandscapeComponentSceneProxy* SceneProxy = SceneProxies[EntityIndex];
-		if (SceneProxy)
-		{
-			if (SceneProxy->HeightmapTexture && SceneProxy->HeightmapTexture->Resource != nullptr)
-			{
-				SectionLODBiases[EntityIndex] = SceneProxy->HeightmapTexture->GetNumMips() - SceneProxy->HeightmapTexture->GetNumResidentMips();
+		const float DefaultLODBias = 0.0f;
 
-				// TODO: support mipmap LOD bias of XY offset map
-				//XYOffsetmapTexture ? ((FTexture2DResource*)XYOffsetmapTexture->Resource)->GetCurrentFirstMip() : 0.0f);
-			}
-		}
+		FLandscapeSectionInfo* SectionInfo = SectionInfos[SectionIndex];
+		SectionLODBiases[SectionIndex] = SectionInfo ? SectionInfo->ComputeLODBias() : DefaultLODBias;
 	}
 }
 
-void FLandscapeRenderSystem::RecreateBuffers(const FSceneView* InView /* = nullptr */)
+void FLandscapeRenderSystem::UpdateBuffers()
 {
-	if (InView == nullptr || CachedView != InView)
+	check(IsInRenderingThread());
+
+	TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeRenderSystem::RecreateBuffers());
+
+	bool bUpdateUB = false;
+
+	if (Size != FIntPoint::ZeroValue)
 	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeRenderSystem::RecreateBuffers());
-
-		if (Size != FIntPoint::ZeroValue)
+		if (!SectionLODBiasBuffer.IsValid())
 		{
-			if (!SectionLODBuffer.IsValid())
-			{
-				FRHIResourceCreateInfo CreateInfo(&SectionLODValues);
-				SectionLODBuffer = RHICreateVertexBuffer(SectionLODValues.GetResourceDataSize(), BUF_ShaderResource | BUF_Dynamic, CreateInfo);
-				SectionLODSRV = RHICreateShaderResourceView(SectionLODBuffer, sizeof(float), PF_R32_FLOAT);
-			}
-			else
-			{
-				float* Data = (float*)RHILockVertexBuffer(SectionLODBuffer, 0, SectionLODValues.GetResourceDataSize(), RLM_WriteOnly);
-				FMemory::Memcpy(Data, SectionLODValues.GetData(), SectionLODValues.GetResourceDataSize());
-				RHIUnlockVertexBuffer(SectionLODBuffer);
-			}
-
-			if (!SectionLODBiasBuffer.IsValid())
-			{
-				FRHIResourceCreateInfo CreateInfo(&SectionLODBiases);
-				SectionLODBiasBuffer = RHICreateVertexBuffer(SectionLODBiases.GetResourceDataSize(), BUF_ShaderResource | BUF_Dynamic, CreateInfo);
-				SectionLODBiasSRV = RHICreateShaderResourceView(SectionLODBiasBuffer, sizeof(float), PF_R32_FLOAT);
-			}
-			else
-			{
-				float* Data = (float*)RHILockVertexBuffer(SectionLODBiasBuffer, 0, SectionLODBiases.GetResourceDataSize(), RLM_WriteOnly);
-				FMemory::Memcpy(Data, SectionLODBiases.GetData(), SectionLODBiases.GetResourceDataSize());
-				RHIUnlockVertexBuffer(SectionLODBiasBuffer);
-			}
-
-			if (!SectionTessellationFalloffCBuffer.IsValid())
-			{
-				FRHIResourceCreateInfo CreateInfo(&SectionTessellationFalloffC);
-				SectionTessellationFalloffCBuffer = RHICreateVertexBuffer(SectionTessellationFalloffC.GetResourceDataSize(), BUF_ShaderResource | BUF_Dynamic, CreateInfo);
-				SectionTessellationFalloffCSRV = RHICreateShaderResourceView(SectionTessellationFalloffCBuffer, sizeof(float), PF_R32_FLOAT);
-			}
-			else
-			{
-				// If we use tessellation falloff, update the buffer, otherwise use the one already filled with default parameters
-				if (TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0)
-				{
-					float* Data = (float*)RHILockVertexBuffer(SectionTessellationFalloffCBuffer, 0, SectionTessellationFalloffC.GetResourceDataSize(), RLM_WriteOnly);
-					FMemory::Memcpy(Data, SectionTessellationFalloffC.GetData(), SectionTessellationFalloffC.GetResourceDataSize());
-					RHIUnlockVertexBuffer(SectionTessellationFalloffCBuffer);
-				}
-			}
-
-			if (!SectionTessellationFalloffKBuffer.IsValid())
-			{
-				FRHIResourceCreateInfo CreateInfo(&SectionTessellationFalloffK);
-				SectionTessellationFalloffKBuffer = RHICreateVertexBuffer(SectionTessellationFalloffK.GetResourceDataSize(), BUF_ShaderResource | BUF_Dynamic, CreateInfo);
-				SectionTessellationFalloffKSRV = RHICreateShaderResourceView(SectionTessellationFalloffKBuffer, sizeof(float), PF_R32_FLOAT);
-			}
-			else
-			{
-				// If we use tessellation falloff, update the buffer, otherwise use the one already filled with default parameters
-				if (TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0)
-				{
-					float* Data = (float*)RHILockVertexBuffer(SectionTessellationFalloffKBuffer, 0, SectionTessellationFalloffK.GetResourceDataSize(), RLM_WriteOnly);
-					FMemory::Memcpy(Data, SectionTessellationFalloffK.GetData(), SectionTessellationFalloffK.GetResourceDataSize());
-					RHIUnlockVertexBuffer(SectionTessellationFalloffKBuffer);
-				}
-			}
-
-			FLandscapeSectionLODUniformParameters Parameters;
-			Parameters.Min = Min;
-			Parameters.Size = Size;
-			Parameters.SectionLOD = SectionLODSRV;
-			Parameters.SectionLODBias = SectionLODBiasSRV;
-			Parameters.SectionTessellationFalloffC = SectionTessellationFalloffCSRV;
-			Parameters.SectionTessellationFalloffK = SectionTessellationFalloffKSRV;
-
-			if (UniformBuffer.IsValid())
-			{
-				UniformBuffer.UpdateUniformBufferImmediate(Parameters);
-			}
-			else
-			{
-				UniformBuffer = TUniformBufferRef<FLandscapeSectionLODUniformParameters>::CreateUniformBufferImmediate(Parameters, UniformBuffer_SingleFrame);
-			}
+			FRHIResourceCreateInfo CreateInfo(TEXT("SectionLODBiasBuffer"), &SectionLODBiases);
+			SectionLODBiasBuffer = RHICreateVertexBuffer(SectionLODBiases.GetResourceDataSize(), BUF_ShaderResource | BUF_Dynamic, CreateInfo);
+			SectionLODBiasSRV = RHICreateShaderResourceView(SectionLODBiasBuffer, sizeof(float), PF_R32_FLOAT);
+			bUpdateUB = true;
+		}
+		else
+		{
+			float* Data = (float*)RHILockBuffer(SectionLODBiasBuffer, 0, SectionLODBiases.GetResourceDataSize(), RLM_WriteOnly);
+			FMemory::Memcpy(Data, SectionLODBiases.GetData(), SectionLODBiases.GetResourceDataSize());
+			RHIUnlockBuffer(SectionLODBiasBuffer);
 		}
 
-		CachedView = InView;
+		if (bUpdateUB)
+		{
+			FLandscapeSectionLODUniformParameters Parameters;
+			Parameters.LandscapeIndex = LandscapeIndex;
+			Parameters.Min = Min;
+			Parameters.Size = Size;
+			Parameters.SectionLODBias = SectionLODBiasSRV;
+
+			RHIUpdateUniformBuffer(SectionLODUniformBuffer, &Parameters);
+		}
 	}
 }
 
 void FLandscapeRenderSystem::BeginFrame()
 {
-	CachedView = nullptr;
+	check(IsInRenderingThread());
 
-	CachedSectionLODValues.Empty();
-
-	if (TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0)
-	{
-		CachedSectionTessellationFalloffC.Empty();
-		CachedSectionTessellationFalloffK.Empty();
-	}
+	CachedSectionLODValues.Reset();
 
 	const bool bExecuteInParallel = FApp::ShouldUseThreadingForPerformance()
 		&& GIsThreadedRendering; // Rendering thread is required to safely use rendering resources in parallel.
@@ -1113,90 +1017,147 @@ void FLandscapeRenderSystem::BeginFrame()
 
 void FLandscapeRenderSystem::EndFrame()
 {
-	// Finalize any outstanding jobs before ~FSceneRenderer() so we don't have corrupted accesses
+	check(IsInRenderingThread());
+
+	WaitForTasksCompletion();
+}
+
+void FLandscapeRenderSystem::WaitForTasksCompletion()
+{
 	if (FetchHeightmapLODBiasesEventRef.IsValid())
 	{
 		FTaskGraphInterface::Get().WaitUntilTaskCompletes(FetchHeightmapLODBiasesEventRef, ENamedThreads::GetRenderThread_Local());
 		FetchHeightmapLODBiasesEventRef.SafeRelease();
 	}
-
-	for (auto& Pair : PerViewParametersTasks)
-	{
-		const FSceneView* View = Pair.Key;
-		FTaskGraphInterface::Get().WaitUntilTaskCompletes(PerViewParametersTasks[View], ENamedThreads::GetRenderThread_Local());
-	}
-
-	PerViewParametersTasks.Empty();
 }
 
-FLandscapeRenderSystem::FComputeSectionPerViewParametersTask::FComputeSectionPerViewParametersTask(FLandscapeRenderSystem& InRenderSystem, const FSceneView* InView)
-	: RenderSystem(InRenderSystem)
-	, ViewPtrAsIdentifier(InView)
-	, ViewLODOverride(GetViewLodOverride(*InView))
-	, ViewLODDistanceFactor(InView->LODDistanceFactor)
-	, ViewEngineShowFlagCollisionPawn(InView->Family->EngineShowFlags.CollisionPawn)
-	, ViewEngineShowFlagCollisionVisibility(InView->Family->EngineShowFlags.CollisionVisibility)
-	, ViewOrigin(GetLODView(*InView).ViewMatrices.GetViewOrigin())
-	, ViewProjectionMatrix(GetLODView(*InView).ViewMatrices.GetProjectionMatrix())
+
+//
+// FLandscapeSceneViewExtension
+//
+FLandscapeSceneViewExtension::FLandscapeSceneViewExtension(const FAutoRegister& AutoReg) : FSceneViewExtensionBase(AutoReg)
 {
+	FCoreDelegates::OnBeginFrameRT.AddRaw(this, &FLandscapeSceneViewExtension::BeginFrame_RenderThread);
+	FCoreDelegates::OnEndFrameRT.AddRaw(this, &FLandscapeSceneViewExtension::EndFrame_RenderThread);
 }
 
-class FLandscapePersistentViewUniformBufferExtension : public IPersistentViewUniformBufferExtension
+FLandscapeSceneViewExtension::~FLandscapeSceneViewExtension()
 {
-public:
-	virtual void BeginFrame() override
+	FCoreDelegates::OnBeginFrameRT.RemoveAll(this);
+	FCoreDelegates::OnEndFrameRT.RemoveAll(this);
+}
+
+void FLandscapeSceneViewExtension::BeginFrame_RenderThread()
+{
+	for (auto& Pair : LandscapeRenderSystems)
 	{
+		FLandscapeRenderSystem& RenderSystem = *Pair.Value;
+		RenderSystem.BeginFrame();
+	}
+}
+
+void FLandscapeSceneViewExtension::PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+{
+	for (auto& Pair : LandscapeRenderSystems)
+	{
+		FLandscapeRenderSystem& RenderSystem = *Pair.Value;
+		RenderSystem.BeginRender();
+	}
+}
+
+void FLandscapeSceneViewExtension::PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView)
+{
+	FShaderResourceViewRHIRef LODDataSRV;
+	FShaderResourceViewRHIRef IndirectionSRV;
+
+	if (!LandscapeRenderSystems.IsEmpty())
+	{
+		TResourceArray<uint32> LandscapeIndirection;
+		TResourceArray<float> LandscapeLODData;
+
+		LandscapeIndirection.SetNum(FLandscapeRenderSystem::LandscapeIndexAllocator.Num());
+
 		for (auto& Pair : LandscapeRenderSystems)
 		{
 			FLandscapeRenderSystem& RenderSystem = *Pair.Value;
 
-			RenderSystem.BeginFrame();
-		}
-	}
+			// Store index where the LOD data for this landscape starts
+			uint32& IndirectionEntry = LandscapeIndirection[RenderSystem.LandscapeIndex];
+			IndirectionEntry = LandscapeLODData.Num();
 
-	virtual void PrepareView(const FSceneView* View) override
+			// Compute sections lod values for this view & append to the global landscape LOD data
+			const TResourceArray<float>& SectionsLODValues = RenderSystem.ComputeSectionsLODForView(InView);
+			LandscapeLODData.Append(SectionsLODValues);
+		}
+
+		FRHIResourceCreateInfo CreateInfoLODBuffer(TEXT("LandscapeLODDataBuffer"), &LandscapeLODData);
+		LandscapeLODDataBuffer = RHICreateVertexBuffer(LandscapeLODData.GetResourceDataSize(), BUF_ShaderResource | BUF_Volatile, CreateInfoLODBuffer);
+		LODDataSRV = RHICreateShaderResourceView(LandscapeLODDataBuffer, sizeof(float), PF_R32_FLOAT);
+
+		FRHIResourceCreateInfo CreateInfoIndirection(TEXT("LandscapeIndirectionBuffer"), &LandscapeIndirection);
+		LandscapeIndirectionBuffer = RHICreateVertexBuffer(LandscapeIndirection.GetResourceDataSize(), BUF_ShaderResource | BUF_Volatile, CreateInfoIndirection);
+		IndirectionSRV = RHICreateShaderResourceView(LandscapeIndirectionBuffer, sizeof(uint32), PF_R32_UINT);
+	}
+	else
 	{
-		for (auto& Pair : LandscapeRenderSystems)
-		{
-			FLandscapeRenderSystem& RenderSystem = *Pair.Value;
-
-			RenderSystem.PrepareView(View);
-		}
+		LODDataSRV = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
+		IndirectionSRV = GWhiteVertexBufferWithSRV->ShaderResourceViewRHI;
 	}
 
-	virtual void BeginRenderView(const FSceneView* View, bool bShouldWaitForJobs = true) override
+	InView.LandscapePerComponentDataBuffer = LODDataSRV;
+	InView.LandscapeIndirectionBuffer = IndirectionSRV;
+}
+
+void FLandscapeSceneViewExtension::EndFrame_RenderThread()
+{
+	for (auto& Pair : LandscapeRenderSystems)
 	{
-		if (!bShouldWaitForJobs)
-		{
-			return;
-		}
+		FLandscapeRenderSystem& RenderSystem = *Pair.Value;
 
-		for (auto& Pair : LandscapeRenderSystems)
-		{
-			FLandscapeRenderSystem& RenderSystem = *Pair.Value;
-
-			RenderSystem.BeginRenderView(View);
-		}
+		RenderSystem.EndFrame();
 	}
 
-	virtual void EndFrame() override
+	LandscapeLODDataBuffer = FBufferRHIRef();
+	LandscapeIndirectionBuffer = FBufferRHIRef();
+}
+
+//
+// FLandscapeVisibilityHelper
+//
+void FLandscapeVisibilityHelper::Init(UPrimitiveComponent* LandscapeComponent, FPrimitiveSceneProxy* ProxyIn)
+{
+	// Flag components to render only after level will be fully added to the world
+	ULevel* ComponentLevel = LandscapeComponent->GetComponentLevel();
+	bRequiresVisibleLevelToRender = (ComponentLevel && ComponentLevel->bRequireFullVisibilityToRender);
+	bIsComponentLevelVisible = (!ComponentLevel || ComponentLevel->bIsVisible);
+}
+
+bool FLandscapeVisibilityHelper::OnAddedToWorld()
+{
+	if (bIsComponentLevelVisible)
 	{
-		for (auto& Pair : LandscapeRenderSystems)
-		{
-			FLandscapeRenderSystem& RenderSystem = *Pair.Value;
+		return false;
+	}
+	
+	bIsComponentLevelVisible = true;
+	return true;
+}
 
-			RenderSystem.EndFrame();
-		}
+bool FLandscapeVisibilityHelper::OnRemoveFromWorld()
+{
+	if (!bIsComponentLevelVisible)
+	{
+		return false;
 	}
 
-} LandscapePersistentViewUniformBufferExtension;
+	bIsComponentLevelVisible = false;
+	return true;
+}
 
 FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent* InComponent)
 	: FPrimitiveSceneProxy(InComponent, NAME_LandscapeResourceNameForDebugging)
-	, FLandscapeNeighborInfo(InComponent->GetWorld(), InComponent->GetLandscapeProxy()->GetLandscapeGuid(), InComponent->GetSectionBase() / InComponent->ComponentSizeQuads, InComponent->GetHeightmap(), InComponent->ForcedLOD, InComponent->LODBias)
+	, FLandscapeSectionInfo(InComponent->GetWorld(), InComponent->GetLandscapeProxy()->GetLandscapeGuid(), InComponent->GetSectionBase() / InComponent->ComponentSizeQuads)
 	, MaxLOD(FMath::CeilLogTwo(InComponent->SubsectionSizeQuads + 1) - 1)
-	, UseTessellationComponentScreenSizeFalloff(InComponent->GetLandscapeProxy()->UseTessellationComponentScreenSizeFalloff)
-	, bRequiresAdjacencyInformation(false)
 	, NumWeightmapLayerAllocations(InComponent->GetWeightmapLayerAllocations().Num())
 	, StaticLightingLOD(InComponent->GetLandscapeProxy()->StaticLightingLOD)
 	, WeightmapSubsectionOffset(InComponent->WeightmapSubsectionOffset)
@@ -1204,8 +1165,6 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	, LastLOD(MaxLOD)
 	, ComponentMaxExtend(0.0f)
 	, ComponentSquaredScreenSizeToUseSubSections(FMath::Square(InComponent->GetLandscapeProxy()->ComponentScreenSizeToUseSubSections))
-	, TessellationComponentSquaredScreenSize(FMath::Square(InComponent->GetLandscapeProxy()->TessellationComponentScreenSize))
-	, TessellationComponentScreenSizeFalloff(InComponent->GetLandscapeProxy()->TessellationComponentScreenSizeFalloff)
 	, NumSubsections(InComponent->NumSubsections)
 	, SubsectionSizeQuads(InComponent->SubsectionSizeQuads)
 	, SubsectionSizeVerts(InComponent->SubsectionSizeQuads + 1)
@@ -1217,6 +1176,7 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	, WeightmapTextures(InComponent->GetWeightmapTextures())
 	, VisibilityWeightmapTexture(nullptr)
 	, VisibilityWeightmapChannel(-1)
+	, HeightmapTexture(InComponent->GetHeightmap())
 	, NormalmapTexture(InComponent->GetHeightmap())
 	, BaseColorForGITexture(InComponent->GIBakedBaseColorTexture)
 	, HeightmapScaleBias(InComponent->HeightmapScaleBias)
@@ -1239,8 +1199,25 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	, LightMapResolution(InComponent->GetStaticLightMapResolution())
 #endif
 {
-	const auto FeatureLevel = GetScene().GetFeatureLevel();
+	// Landscape meshes do not deform internally (save by material effects such as WPO and PDO, which is allowed).
+	// They do however have continuous LOD which is problematic, considered static as the LODs (are intended to) represent the same static surface.
+	bHasDeformableMesh = false;
 
+	VisibilityHelper.Init(InComponent, this);
+
+	if (!VisibilityHelper.ShouldBeVisible())
+	{
+		SetForceHidden(true);
+	}
+
+	if (VisibilityHelper.RequiresVisibleLevelToRender())
+	{
+		bShouldNotifyOnWorldAddRemove = true;
+	}
+
+	EnableGPUSceneSupportFlags();
+	
+	const ERHIFeatureLevel::Type FeatureLevel = GetScene().GetFeatureLevel();
 	if (FeatureLevel >= ERHIFeatureLevel::SM5)
 	{
 		if (InComponent->GetLandscapeProxy()->bUseDynamicMaterialInstance)
@@ -1257,14 +1234,8 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 		AvailableMaterials.Append(InComponent->MobileMaterialInterfaces);
 	}
 
-	MaterialIndexToDisabledTessellationMaterial = InComponent->MaterialIndexToDisabledTessellationMaterial;
 	LODIndexToMaterialIndex = InComponent->LODIndexToMaterialIndex;
 	check(LODIndexToMaterialIndex.Num() == MaxLOD+1);
-
-	if (!IsComponentLevelVisible())
-	{
-		bNeedsLevelAddedToWorldNotification = true;
-	}
 
 	SetLevelColor(FLinearColor(1.f, 1.f, 1.f));
 
@@ -1317,6 +1288,7 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	}
 
 	// Clamp ForcedLOD to the valid range and then apply
+	int8 ForcedLOD = InComponent->ForcedLOD;
 	ForcedLOD = ForcedLOD >= 0 ? FMath::Clamp<int32>(ForcedLOD, FirstLOD, LastLOD) : ForcedLOD;
 	FirstLOD = ForcedLOD >= 0 ? ForcedLOD : FirstLOD;
 	LastLOD = ForcedLOD >= 0 ? ForcedLOD : LastLOD;
@@ -1324,12 +1296,6 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	LODSettings.LastLODIndex = LastLOD;
 	LODSettings.LastLODScreenSizeSquared = LODScreenRatioSquared[LastLOD];
 	LODSettings.ForcedLOD = ForcedLOD;
-
-	LODBias = FMath::Clamp<int8>(LODBias, -MaxLOD, MaxLOD);
-
-	int8 LocalLODBias = LODBias + (int8)GLandscapeMeshLODBias;
-	MinValidLOD = FMath::Clamp<int8>(LocalLODBias, -MaxLOD, MaxLOD);
-	MaxValidLOD = FMath::Min<int32>(MaxLOD, MaxLOD + LocalLODBias);
 
 	LastVirtualTextureLOD = MaxLOD;
 	FirstVirtualTextureLOD = FMath::Max(MaxLOD - InComponent->GetLandscapeProxy()->VirtualTextureNumLods, 0);
@@ -1409,19 +1375,6 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 			{
 				MaterialRelevances.Add(MaterialInterface->GetRelevance_Concurrent(FeatureLevel));
 			}
-
-			bRequiresAdjacencyInformation |= RequiresAdjacencyInformation(MaterialInterface, XYOffsetmapTexture == nullptr ? &FLandscapeVertexFactory::StaticType : &FLandscapeXYOffsetVertexFactory::StaticType, InComponent->GetWorld()->FeatureLevel.GetValue());
-
-			bool HasTessellationEnabled = false;
-
-			if (FeatureLevel >= ERHIFeatureLevel::SM5)
-			{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				HasTessellationEnabled = LandscapeMaterial->D3D11TessellationMode != EMaterialTessellationMode::MTM_NoTessellation;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-			}
-
-			MaterialHasTessellationEnabled.Add(HasTessellationEnabled);
 		}
 	}
 
@@ -1446,12 +1399,12 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	SharedBuffersKey = (SubsectionSizeLog2 & 0xf) | ((NumSubsections & 0xf) << 4) |
 		(FeatureLevel <= ERHIFeatureLevel::ES3_1 ? 0 : 1 << 30) | (XYOffsetmapTexture == nullptr ? 0 : 1 << 31);
 
-	bSupportsHeightfieldRepresentation = FeatureLevel <= ERHIFeatureLevel::ES3_1 ? false : true;
+	bSupportsHeightfieldRepresentation = FeatureLevel > ERHIFeatureLevel::ES3_1;
+	bSupportsMeshCardRepresentation = true;
 
 #if WITH_EDITOR
-	TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = InComponent->GetWeightmapLayerAllocations();
-	
-	for (auto& Allocation : ComponentWeightmapLayerAllocations)
+	const TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = InComponent->GetWeightmapLayerAllocations();
+	for (const FWeightmapLayerAllocationInfo& Allocation : ComponentWeightmapLayerAllocations)
 	{
 		if (Allocation.LayerInfo != nullptr)
 		{
@@ -1461,7 +1414,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	for (int32 Idx = 0; Idx < InComponent->WeightmapLayerAllocations.Num(); Idx++)
 	{
-		FWeightmapLayerAllocationInfo& Allocation = InComponent->WeightmapLayerAllocations[Idx];
+		const FWeightmapLayerAllocationInfo& Allocation = InComponent->WeightmapLayerAllocations[Idx];
 		if (Allocation.LayerInfo == ALandscapeProxy::VisibilityLayer && Allocation.IsAllocated())
 		{
 			VisibilityWeightmapTexture = WeightmapTextures[Allocation.WeightmapTextureIndex];
@@ -1470,6 +1423,9 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 	}
 #endif
+
+	bSupportsInstanceDataBuffer = true;
+	UpdateDefaultInstanceSceneData();
 }
 
 void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
@@ -1478,9 +1434,11 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 
 	check(HeightmapTexture != nullptr);
 
-	if (IsComponentLevelVisible())
+	FLandscapeRenderSystem::CreateResources(this);
+
+	if (VisibilityHelper.ShouldBeVisible())
 	{
-		RegisterNeighbors(this);
+		RegisterSection();
 	}
 
 	auto FeatureLevel = GetScene().GetFeatureLevel();
@@ -1490,7 +1448,7 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 	{
 		SharedBuffers = new FLandscapeSharedBuffers(
 			SharedBuffersKey, SubsectionSizeQuads, NumSubsections,
-			FeatureLevel, bRequiresAdjacencyInformation, /*NumOcclusionVertices*/ 0);
+			FeatureLevel);
 
 		FLandscapeComponentSceneProxy::SharedBuffersMap.Add(SharedBuffersKey, SharedBuffers);
 
@@ -1528,34 +1486,6 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 
 	SharedBuffers->AddRef();
 
-	if (bRequiresAdjacencyInformation)
-	{
-		if (SharedBuffers->AdjacencyIndexBuffers == nullptr)
-		{
-			ensure(SharedBuffers->NumIndexBuffers > 0);
-			if (SharedBuffers->IndexBuffers[0])
-			{
-				// Recreate Index Buffers, this case happens only there are Landscape Components using different material (one uses tessellation, other don't use it) 
-				if (SharedBuffers->bUse32BitIndices && !((FRawStaticIndexBuffer16or32<uint32>*)SharedBuffers->IndexBuffers[0])->Num())
-				{
-					SharedBuffers->CreateIndexBuffers<uint32>(FeatureLevel, bRequiresAdjacencyInformation);
-				}
-				else if (!((FRawStaticIndexBuffer16or32<uint16>*)SharedBuffers->IndexBuffers[0])->Num())
-				{
-					SharedBuffers->CreateIndexBuffers<uint16>(FeatureLevel, bRequiresAdjacencyInformation);
-				}
-			}
-
-			SharedBuffers->AdjacencyIndexBuffers = new FLandscapeSharedAdjacencyIndexBuffer(SharedBuffers);
-		}
-
-		// Delayed Initialize for IndexBuffers
-		for (int32 i = 0; i < SharedBuffers->NumIndexBuffers; i++)
-		{
-			SharedBuffers->IndexBuffers[i]->InitResource();
-		}
-	}
-
 	// Assign vertex factory
 	VertexFactory = SharedBuffers->VertexFactory;
 	FixedGridVertexFactory = SharedBuffers->FixedGridVertexFactory;
@@ -1571,7 +1501,7 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 	{
 		LandscapeFixedGridUniformShaderParameters[LodIndex].InitResource();
 		FLandscapeFixedGridUniformShaderParameters Parameters;
-		Parameters.LodValues = FVector4(
+		Parameters.LodValues = FVector4f(
 			LodIndex, 
 			0.f,
 			(float)((SubsectionSizeVerts >> LodIndex) - 1),
@@ -1606,6 +1536,7 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 		FLandscapeBatchElementParams* BatchElementParams = &GrassBatchParams[0];
 		BatchElementParams->LandscapeUniformShaderParametersResource = &LandscapeUniformShaderParameters;
 		BatchElementParams->FixedGridUniformShaderParameters = &LandscapeFixedGridUniformShaderParameters;
+		BatchElementParams->LandscapeSectionLODUniformParameters = nullptr; // Not needed for grass rendering
 		BatchElementParams->SceneProxy = this;
 		BatchElementParams->CurrentLOD = 0;
 		GrassBatchElement->UserData = BatchElementParams;
@@ -1646,16 +1577,15 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 				static const FName DebugName("FLandscapeComponentSceneProxy");
 				static int32 DebugNumber = 0;
 				Initializer.DebugName = FName(DebugName, DebugNumber++);
-
-				FRHIResourceCreateInfo CreateInfo;
 				Initializer.IndexBuffer = nullptr;
 				Initializer.GeometryType = RTGT_Triangles;
 				Initializer.bFastBuild = true;
 				Initializer.bAllowUpdate = true;
 				FRayTracingGeometrySegment Segment;
 				Segment.VertexBuffer = nullptr;
-				Segment.VertexBufferStride = sizeof(FVector);
+				Segment.VertexBufferStride = sizeof(FVector3f);
 				Segment.VertexBufferElementType = VET_Float3;
+				Segment.MaxVertices = FMath::Square(SubsectionSizeVerts);
 				Initializer.Segments.Add(Segment);
 				SectionRayTracingStates[SubSectionIdx].Geometry.SetInitializer(Initializer);
 				SectionRayTracingStates[SubSectionIdx].Geometry.InitResource();
@@ -1672,12 +1602,28 @@ void FLandscapeComponentSceneProxy::CreateRenderThreadResources()
 void FLandscapeComponentSceneProxy::DestroyRenderThreadResources()
 {
 	FPrimitiveSceneProxy::DestroyRenderThreadResources();
-	UnregisterNeighbors(this);
+	FLandscapeRenderSystem::UnregisterSection(this);
+	FLandscapeRenderSystem::DestroyResources(this);
 }
 
-void FLandscapeComponentSceneProxy::OnLevelAddedToWorld()
+bool FLandscapeComponentSceneProxy::OnLevelAddedToWorld_RenderThread()
 {
-	RegisterNeighbors(this);
+	if (VisibilityHelper.OnAddedToWorld())
+	{
+		SetForceHidden(false);
+		FLandscapeRenderSystem::RegisterSection(this);
+		return true;
+	}
+	return false;
+}
+
+void FLandscapeComponentSceneProxy::OnLevelRemovedFromWorld_RenderThread()
+{
+	if (VisibilityHelper.OnRemoveFromWorld())
+	{
+		SetForceHidden(true);
+		FLandscapeRenderSystem::UnregisterSection(this);
+	}
 }
 
 FLandscapeComponentSceneProxy::~FLandscapeComponentSceneProxy()
@@ -1969,32 +1915,32 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 	LandscapeParams.LastLOD = LastLOD;
 	LandscapeParams.HeightmapUVScaleBias = HeightmapScaleBias;
 	LandscapeParams.WeightmapUVScaleBias = WeightmapScaleBias;
-	LandscapeParams.LocalToWorldNoScaling = LocalToWorldNoScaling;
+	LandscapeParams.LocalToWorldNoScaling = FMatrix44f(LocalToWorldNoScaling);			// LWC_TODO: Precision loss
 
-	LandscapeParams.LandscapeLightmapScaleBias = FVector4(
+	LandscapeParams.LandscapeLightmapScaleBias = FVector4f(
 		LightmapScaleX,
 		LightmapScaleY,
 		LightmapBiasY,
 		LightmapBiasX);
-	LandscapeParams.SubsectionSizeVertsLayerUVPan = FVector4(
+	LandscapeParams.SubsectionSizeVertsLayerUVPan = FVector4f(
 		SubsectionSizeVerts,
 		1.f / (float)SubsectionSizeQuads,
 		SectionBase.X,
 		SectionBase.Y
 	);
-	LandscapeParams.SubsectionOffsetParams = FVector4(
+	LandscapeParams.SubsectionOffsetParams = FVector4f(
 		HeightmapSubsectionOffsetU,
 		HeightmapSubsectionOffsetV,
 		WeightmapSubsectionOffset,
 		SubsectionSizeQuads
 	);
-	LandscapeParams.LightmapSubsectionOffsetParams = FVector4(
+	LandscapeParams.LightmapSubsectionOffsetParams = FVector4f(
 		LightmapExtendFactorX,
 		LightmapExtendFactorY,
 		0,
 		0
 	);
-	LandscapeParams.BlendableLayerMask = FVector4(
+	LandscapeParams.BlendableLayerMask = FVector4f(
 		BlendableLayerMask & (1 << 0) ? 1 : 0,
 		BlendableLayerMask & (1 << 1) ? 1 : 0,
 		BlendableLayerMask & (1 << 2) ? 1 : 0,
@@ -2036,16 +1982,10 @@ void FLandscapeComponentSceneProxy::OnTransformChanged()
 
 	LandscapeUniformShaderParameters.SetContents(LandscapeParams);
 
-	if (bRegistered)
-	{
-		FVector4 OriginAndSphereRadius(GetBounds().Origin, GetBounds().SphereRadius);
-
-		FLandscapeRenderSystem& RenderSystem = *LandscapeRenderSystems.FindChecked(LandscapeKey);
-		RenderSystem.SetSectionOriginAndRadius(ComponentBase, OriginAndSphereRadius);
-	}
-
 	// Recache mesh draw commands for changed uniform buffers
 	GetScene().UpdateCachedRenderStates(this);
+
+	UpdateDefaultInstanceSceneData();
 }
 
 /** Creates a mesh batch for virtual texture rendering. Will render a simple fixed grid with combined subsections. */
@@ -2072,10 +2012,13 @@ bool FLandscapeComponentSceneProxy::GetMeshElementForVirtualTexture(int32 InLodI
 
 	OutMeshBatch.Elements.Empty(1);
 
+	const FLandscapeRenderSystem& RenderSystem = *LandscapeRenderSystems.FindChecked(LandscapeKey);
+
 	FLandscapeBatchElementParams* BatchElementParams = new(OutStaticBatchParamArray) FLandscapeBatchElementParams;
 	BatchElementParams->SceneProxy = this;
 	BatchElementParams->LandscapeUniformShaderParametersResource = &LandscapeUniformShaderParameters;
 	BatchElementParams->FixedGridUniformShaderParameters = &LandscapeFixedGridUniformShaderParameters;
+	BatchElementParams->LandscapeSectionLODUniformParameters = RenderSystem.SectionLODUniformBuffer;
 	BatchElementParams->CurrentLOD = InLodIndex;
 
 	int32 LodSubsectionSizeVerts = SubsectionSizeVerts >> InLodIndex;
@@ -2112,7 +2055,7 @@ void FLandscapeComponentSceneProxy::ApplyWorldOffset(FVector InOffset)
 }
 
 template<class ArrayType>
-bool FLandscapeComponentSceneProxy::GetStaticMeshElement(int32 LODIndex, bool bForToolMesh, bool bForcedLOD, FMeshBatch& MeshBatch, ArrayType& OutStaticBatchParamArray) const
+bool FLandscapeComponentSceneProxy::GetStaticMeshElement(int32 LODIndex, bool bForToolMesh, FMeshBatch& MeshBatch, ArrayType& OutStaticBatchParamArray) const
 {
 	UMaterialInterface* MaterialInterface = nullptr;
 
@@ -2126,42 +2069,7 @@ bool FLandscapeComponentSceneProxy::GetStaticMeshElement(int32 LODIndex, bool bF
 		{
 			return false;
 		}
-
-		UMaterialInstance* MaterialInstance = Cast<UMaterialInstance>(AvailableMaterials[MaterialIndex]);
-		bool HasTessellationEnabled = (GetScene().GetFeatureLevel() >= ERHIFeatureLevel::SM5) ? MaterialInstance != nullptr && RequiresAdjacencyInformation(MaterialInstance, VertexFactory->GetType(), GetScene().GetFeatureLevel()) && MaterialIndexToDisabledTessellationMaterial[MaterialIndex] != INDEX_NONE : false;
-
-		if (HasTessellationEnabled)
-		{
-			{
-				// Sanity check non-tessellated materials
-				UMaterialInstance* NonTessellatedLandscapeMI = Cast<UMaterialInstance>(AvailableMaterials[MaterialIndexToDisabledTessellationMaterial[MaterialIndex]]);
-
-				// Make sure that the Material instance we are going to use has the tessellation disabled
-				UMaterialInstanceDynamic* NonTessellatedLandscapeMID = Cast<UMaterialInstanceDynamic>(NonTessellatedLandscapeMI);
-				ULandscapeMaterialInstanceConstant* NonTessellatedLandscapeMIC = Cast<ULandscapeMaterialInstanceConstant>(NonTessellatedLandscapeMI);
-
-				if (NonTessellatedLandscapeMID != nullptr)
-				{
-					NonTessellatedLandscapeMIC = Cast<ULandscapeMaterialInstanceConstant>(NonTessellatedLandscapeMID->Parent);
-				}
-
-				check(NonTessellatedLandscapeMIC != nullptr && NonTessellatedLandscapeMIC->bDisableTessellation);
-			}
-
-			float TessellationLODScreenSizeThreshold = LODIndex == 0 ? FLT_MAX : LODScreenRatioSquared[LODIndex];
-			if (TessellationLODScreenSizeThreshold < TessellationComponentSquaredScreenSize || bForToolMesh)
-			{
-				// Selectively disable tessellation
-				MaterialInterface = AvailableMaterials[MaterialIndexToDisabledTessellationMaterial[MaterialIndex]];
-			}
-		}
 	}
-
-	// Based on the final material we selected, detect if it has tessellation
-	// Could be different from bRequiresAdjacencyInformation during shader compilation
-	bool bCurrentRequiresAdjacencyInformation = RequiresAdjacencyInformation(MaterialInterface, VertexFactory->GetType(), GetScene().GetFeatureLevel());
-
-	check(!bCurrentRequiresAdjacencyInformation || (bCurrentRequiresAdjacencyInformation && SharedBuffers->AdjacencyIndexBuffers));
 
 	{
 		MeshBatch.VertexFactory = VertexFactory;
@@ -2173,23 +2081,25 @@ bool FLandscapeComponentSceneProxy::GetStaticMeshElement(int32 LODIndex, bool bF
 		MeshBatch.bUseForDepthPass = true;
 		MeshBatch.bUseAsOccluder = ShouldUseAsOccluder() && GetScene().GetShadingPath() == EShadingPath::Deferred && !IsMovable();
 		MeshBatch.bUseForMaterial = true;
-		MeshBatch.Type = bCurrentRequiresAdjacencyInformation ? PT_12_ControlPointPatchList : PT_TriangleList;
+		MeshBatch.Type = PT_TriangleList;
 		MeshBatch.DepthPriorityGroup = SDPG_World;
 		MeshBatch.LODIndex = LODIndex;
 		MeshBatch.bDitheredLODTransition = false;
 
-		// Combined batch element
-		FMeshBatchElement& BatchElement = MeshBatch.Elements[0];
+		const FLandscapeRenderSystem& RenderSystem = *LandscapeRenderSystems.FindChecked(LandscapeKey);
 
 		FLandscapeBatchElementParams* BatchElementParams = new(OutStaticBatchParamArray) FLandscapeBatchElementParams;
 		BatchElementParams->LandscapeUniformShaderParametersResource = &LandscapeUniformShaderParameters;
 		BatchElementParams->FixedGridUniformShaderParameters = &LandscapeFixedGridUniformShaderParameters;
+		BatchElementParams->LandscapeSectionLODUniformParameters = RenderSystem.SectionLODUniformBuffer;
 		BatchElementParams->SceneProxy = this;
 		BatchElementParams->CurrentLOD = LODIndex;
 
+		// Combined batch element
+		FMeshBatchElement& BatchElement = MeshBatch.Elements[0];
 		BatchElement.UserData = BatchElementParams;
 		BatchElement.PrimitiveUniformBuffer = GetUniformBuffer();
-		BatchElement.IndexBuffer = bCurrentRequiresAdjacencyInformation ? SharedBuffers->AdjacencyIndexBuffers->IndexBuffers[LODIndex] : SharedBuffers->IndexBuffers[LODIndex];
+		BatchElement.IndexBuffer = SharedBuffers->IndexBuffers[LODIndex];
 		BatchElement.NumPrimitives = FMath::Square((SubsectionSizeVerts >> LODIndex) - 1) * FMath::Square(NumSubsections) * 2;
 		BatchElement.FirstIndex = 0;
 		BatchElement.MinVertexIndex = SharedBuffers->IndexRanges[LODIndex].MinIndexFull;
@@ -2234,7 +2144,7 @@ void FLandscapeComponentSceneProxy::DrawStaticElements(FStaticPrimitiveDrawInter
 	{
 		FMeshBatch MeshBatch;
 
-		if (GetStaticMeshElement(LODIndex, false, false, MeshBatch, StaticBatchParamArray))
+		if (GetStaticMeshElement(LODIndex, false, MeshBatch, StaticBatchParamArray))
 		{
 			PDI->DrawMesh(MeshBatch, LODIndex == FirstLOD ? FLT_MAX : (FMath::Sqrt(LODScreenRatioSquared[LODIndex]) * 2.0f));
 		}
@@ -2281,10 +2191,17 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FLandscapeComponentSceneProxy_GetMeshElements);
 	SCOPE_CYCLE_COUNTER(STAT_LandscapeDynamicDrawTime);
 
+	if (!bRegistered)
+	{
+		return;
+	}
+
 	int32 NumPasses = 0;
 	int32 NumTriangles = 0;
 	int32 NumDrawCalls = 0;
 	const bool bIsWireframe = ViewFamily.EngineShowFlags.Wireframe;
+
+	const FLandscapeRenderSystem& RenderSystem = *LandscapeRenderSystems.FindChecked(LandscapeKey);
 
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
@@ -2295,32 +2212,15 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 
 			const FSceneView* View = Views[ViewIndex];
 
-			int32 ForcedLODLevel = ForcedLOD;
+			int32 LODToRender = RenderSystem.GetSectionLODValue(*View, ComponentBase);
 
-			const int32 ViewLodOverride = GetViewLodOverride(*View);
-			ForcedLODLevel = ViewLodOverride >= 0 ? ViewLodOverride : ForcedLODLevel;
-
-#if WITH_EDITOR || !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
-			const int32 DrawCollisionLodOverride = GetDrawCollisionLodOverride(*View, CollisionResponse, CollisionMipLevel, SimpleCollisionMipLevel);
-			ForcedLODLevel = DrawCollisionLodOverride >= 0 ? DrawCollisionLodOverride : ForcedLODLevel;
-#endif
-
-			ForcedLODLevel = FMath::Min(ForcedLODLevel, (int32)LODSettings.LastLODIndex);
-
-			const float LODScale = View->LODDistanceFactor * CVarStaticMeshLODDistanceScale.GetValueOnRenderThread();
-			const float MeshScreenSizeSquared = ComputeBoundsScreenRadiusSquared(GetBounds().Origin, GetBounds().SphereRadius, *View);
-			int32 LODToRender = ForcedLODLevel >= 0 ? ForcedLODLevel : GetLODFromScreenSize(MeshScreenSizeSquared, LODScale * LODScale);
-
-#if PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING
-			LODToRender = FMath::Max<int32>(LODToRender, GetCurrentFirstLODIdx_RenderThread());
-#endif
 			FMeshBatch& Mesh = Collector.AllocateMesh();
-			GetStaticMeshElement(LODToRender, false, ForcedLODLevel >= 0, Mesh, ParameterArray.ElementParams);
+			GetStaticMeshElement(LODToRender, false, Mesh, ParameterArray.ElementParams);
 
 #if WITH_EDITOR
 			FMeshBatch& MeshTools = Collector.AllocateMesh();
 			// No Tessellation on tool material
-			GetStaticMeshElement(LODToRender, true, ForcedLODLevel >= 0, MeshTools, ParameterArray.ElementParams);
+			GetStaticMeshElement(LODToRender, true, MeshTools, ParameterArray.ElementParams);
 #endif
 
 			// Render the landscape component
@@ -2406,7 +2306,7 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 					LODMesh.Elements.Add(TemplateMesh.Elements[i]);
 					int32 CurrentLOD = ((FLandscapeBatchElementParams*)TemplateMesh.Elements[i].UserData)->CurrentLOD;
 					LODMesh.VisualizeLODIndex = CurrentLOD;
-					FLinearColor Color = GetColorForLod(CurrentLOD, ForcedLOD, true);
+					FLinearColor Color = GetColorForLod(CurrentLOD, LODSettings.ForcedLOD, true);
 					FMaterialRenderProxy* LODMaterialProxy = (FMaterialRenderProxy*)new FColoredMaterialRenderProxy(GEngine->LevelColorationUnlitMaterial->GetRenderProxy(), Color);
 					Collector.RegisterOneFrameMaterialProxy(LODMaterialProxy);
 					LODMesh.MaterialRenderProxy = LODMaterialProxy;
@@ -2456,7 +2356,7 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 
 				FMeshBatch& MaskMesh = Collector.AllocateMesh();
 				MaskMesh = MeshTools;
-				auto ColorMaskMaterialInstance = new FLandscapeMaskMaterialRenderProxy(GColorMaskRegionMaterial->GetRenderProxy(), EditToolRenderData.LayerContributionTexture ? EditToolRenderData.LayerContributionTexture : GLandscapeBlackTexture, true);
+				auto ColorMaskMaterialInstance = new FLandscapeMaskMaterialRenderProxy(GColorMaskRegionMaterial->GetRenderProxy(), EditToolRenderData.LayerContributionTexture ? ToRawPtr(EditToolRenderData.LayerContributionTexture) : GLandscapeBlackTexture, true);
 				MaskMesh.MaterialRenderProxy = ColorMaskMaterialInstance;
 				Collector.RegisterOneFrameMaterialProxy(ColorMaskMaterialInstance);
 				Collector.AddMesh(ViewIndex, MaskMesh);
@@ -2508,7 +2408,7 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 					FMeshBatch& MaskMesh = Collector.AllocateMesh();
 					MaskMesh = MeshTools;
 										
-					auto DirtyMaterialInstance = new FLandscapeMaskMaterialRenderProxy(GLandscapeDirtyMaterial->GetRenderProxy(), EditToolRenderData.DirtyTexture ? EditToolRenderData.DirtyTexture : GLandscapeBlackTexture, true);
+					auto DirtyMaterialInstance = new FLandscapeMaskMaterialRenderProxy(GLandscapeDirtyMaterial->GetRenderProxy(), EditToolRenderData.DirtyTexture ? ToRawPtr(EditToolRenderData.DirtyTexture) : GLandscapeBlackTexture, true);
 					MaskMesh.MaterialRenderProxy = DirtyMaterialInstance;
 					Collector.RegisterOneFrameMaterialProxy(DirtyMaterialInstance);
 					Collector.AddMesh(ViewIndex, MaskMesh);
@@ -2557,7 +2457,7 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 					{
 						FMeshBatch& SelectMesh = Collector.AllocateMesh();
 						SelectMesh = MeshTools;
-						auto SelectMaterialInstance = new FLandscapeSelectMaterialRenderProxy(GSelectionRegionMaterial->GetRenderProxy(), EditToolRenderData.DataTexture ? EditToolRenderData.DataTexture : GLandscapeBlackTexture);
+						auto SelectMaterialInstance = new FLandscapeSelectMaterialRenderProxy(GSelectionRegionMaterial->GetRenderProxy(), EditToolRenderData.DataTexture ? ToRawPtr(EditToolRenderData.DataTexture) : GLandscapeBlackTexture);
 						SelectMesh.MaterialRenderProxy = SelectMaterialInstance;
 						Collector.RegisterOneFrameMaterialProxy(SelectMaterialInstance);
 						Collector.AddMesh(ViewIndex, SelectMesh);
@@ -2585,7 +2485,7 @@ void FLandscapeComponentSceneProxy::GetDynamicMeshElements(const TArray<const FS
 					{
 						FMeshBatch& MaskMesh = Collector.AllocateMesh();
 						MaskMesh = MeshTools;
-						auto MaskMaterialInstance = new FLandscapeMaskMaterialRenderProxy(GMaskRegionMaterial->GetRenderProxy(), EditToolRenderData.DataTexture ? EditToolRenderData.DataTexture : GLandscapeBlackTexture, !!(GLandscapeEditRenderMode & ELandscapeEditRenderMode::InvertedMask));
+						auto MaskMaterialInstance = new FLandscapeMaskMaterialRenderProxy(GMaskRegionMaterial->GetRenderProxy(), EditToolRenderData.DataTexture ? ToRawPtr(EditToolRenderData.DataTexture) : GLandscapeBlackTexture, !!(GLandscapeEditRenderMode & ELandscapeEditRenderMode::InvertedMask));
 						MaskMesh.MaterialRenderProxy = MaskMaterialInstance;
 						Collector.RegisterOneFrameMaterialProxy(MaskMaterialInstance);
 						Collector.AddMesh(ViewIndex, MaskMesh);
@@ -2657,14 +2557,10 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 		return;
 	}
 
-	int32 ForcedLODLevel = ForcedLOD;
-
-	int32 ViewLodOveride = GetViewLodOverride(*Context.ReferenceView);
-	ForcedLODLevel = ViewLodOveride >= 0 ? ViewLodOveride : ForcedLODLevel;
-
-	float MeshScreenSizeSquared = ComputeBoundsScreenRadiusSquared(GetBounds().Origin, GetBounds().SphereRadius, *Context.ReferenceView);
-	float LODScale = Context.ReferenceView->LODDistanceFactor * CVarStaticMeshLODDistanceScale.GetValueOnRenderThread();
-	int32 LODToRender = ForcedLODLevel >= 0 ? ForcedLODLevel : GetLODFromScreenSize(MeshScreenSizeSquared, LODScale * LODScale);
+	const FSceneView& SceneView = *Context.ReferenceView;
+	const FLandscapeRenderSystem& RenderSystem = *LandscapeRenderSystems.FindChecked(LandscapeKey);
+	
+	int32 LODToRender = RenderSystem.GetSectionLODValue(SceneView, ComponentBase);
 	
 	FLandscapeElementParamArray& ParameterArray = Context.RayTracingMeshResourceCollector.AllocateOneFrameResource<FLandscapeElementParamArray>();
 	ParameterArray.ElementParams.AddDefaulted(NumSubsections * NumSubsections);
@@ -2695,8 +2591,6 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 
 	BaseMeshBatch.Elements.Empty();
 
-	FLandscapeRenderSystem& RenderSystem = *LandscapeRenderSystems.FindChecked(LandscapeKey);
-
 	for (int32 SubY = 0; SubY < NumSubsections; SubY++)
 	{
 		for (int32 SubX = 0; SubX < NumSubsections; SubX++)
@@ -2711,6 +2605,7 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 
 			BatchElementParams.LandscapeUniformShaderParametersResource = &LandscapeUniformShaderParameters;
 			BatchElementParams.FixedGridUniformShaderParameters = &LandscapeFixedGridUniformShaderParameters;
+			BatchElementParams.LandscapeSectionLODUniformParameters = RenderSystem.SectionLODUniformBuffer;
 			BatchElementParams.SceneProxy = this;
 			BatchElementParams.CurrentLOD = CurrentLOD;
 			BatchElement.UserData = &BatchElementParams;
@@ -2756,10 +2651,10 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 					SectionRayTracingStates[SubSectionIdx].HeightmapLODBias = RenderSystem.GetSectionLODBias(ComponentBase);
 				}
 
-				if (SectionRayTracingStates[SubSectionIdx].FractionalLOD != RenderSystem.GetSectionLODValue(ComponentBase))
+				if (SectionRayTracingStates[SubSectionIdx].FractionalLOD != RenderSystem.GetSectionLODValue(SceneView, ComponentBase))
 				{
 					bNeedsRayTracingGeometryUpdate = true;
-					SectionRayTracingStates[SubSectionIdx].FractionalLOD = RenderSystem.GetSectionLODValue(ComponentBase);
+					SectionRayTracingStates[SubSectionIdx].FractionalLOD = RenderSystem.GetSectionLODValue(SceneView, ComponentBase);
 				}
 			}
 
@@ -2787,12 +2682,12 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 
 			FRayTracingInstance RayTracingInstance;
 			RayTracingInstance.Geometry = &SectionRayTracingStates[SubSectionIdx].Geometry;
-			RayTracingInstance.InstanceTransforms.Add(FMatrix::Identity);
+			RayTracingInstance.InstanceTransforms.Add(GetLocalToWorld());
 			RayTracingInstance.Materials.Add(MeshBatch);
-			RayTracingInstance.BuildInstanceMaskAndFlags();
+			RayTracingInstance.BuildInstanceMaskAndFlags(GetScene().GetFeatureLevel());
 			OutRayTracingInstances.Add(RayTracingInstance);
 
-			if (bNeedsRayTracingGeometryUpdate)
+			if (bNeedsRayTracingGeometryUpdate && VertexFactory->GetType()->SupportsRayTracingDynamicGeometry())
 			{
 				// Use the internal managed vertex buffer because landscape dynamic RT geometries are not updated every frame
 				// which is a requirement for the shared vertex buffer usage
@@ -2803,7 +2698,7 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 						RayTracingInstance.Materials,
 						false,
 						(uint32)FMath::Square(LodSubsectionSizeVerts),
-						FMath::Square(LodSubsectionSizeVerts) * (uint32)sizeof(FVector),
+						FMath::Square(LodSubsectionSizeVerts) * (uint32)sizeof(FVector3f),
 						(uint32)FMath::Square(LodSubsectionSizeVerts - 1) * 2,
 						&SectionRayTracingStates[SubSectionIdx].Geometry,
 						&SectionRayTracingStates[SubSectionIdx].RayTracingDynamicVertexBuffer,
@@ -2815,12 +2710,6 @@ void FLandscapeComponentSceneProxy::GetDynamicRayTracingInstances(FRayTracingMat
 	}
 }
 #endif
-
-int32 FLandscapeComponentSceneProxy::CollectOccluderElements(FOccluderElementsCollector& Collector) const
-{
-	// TODO: implement
-	return 0;
-}
 
 //
 // FLandscapeVertexBuffer
@@ -2834,10 +2723,9 @@ void FLandscapeVertexBuffer::InitRHI()
 	SCOPED_LOADTIMER(FLandscapeVertexBuffer_InitRHI);
 
 	// create a static vertex buffer
-	FRHIResourceCreateInfo CreateInfo;
-	void* BufferData = nullptr;
-	VertexBufferRHI = RHICreateAndLockVertexBuffer(NumVertices * sizeof(FLandscapeVertex), BUF_Static, CreateInfo, BufferData);
-	FLandscapeVertex* Vertex = (FLandscapeVertex*)BufferData;
+	FRHIResourceCreateInfo CreateInfo(TEXT("FLandscapeVertexBuffer"));
+	VertexBufferRHI = RHICreateBuffer(NumVertices * sizeof(FLandscapeVertex), BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+	FLandscapeVertex* Vertex = (FLandscapeVertex*)RHILockBuffer(VertexBufferRHI, 0, NumVertices * sizeof(FLandscapeVertex), RLM_WriteOnly);
 	int32 VertexIndex = 0;
 	for (int32 SubY = 0; SubY < NumSubsections; SubY++)
 	{
@@ -2858,7 +2746,7 @@ void FLandscapeVertexBuffer::InitRHI()
 		}
 	}
 	check(NumVertices == VertexIndex);
-	RHIUnlockVertexBuffer(VertexBufferRHI);
+	RHIUnlockBuffer(VertexBufferRHI);
 }
 
 //
@@ -2866,7 +2754,7 @@ void FLandscapeVertexBuffer::InitRHI()
 //
 
 template <typename INDEX_TYPE>
-void FLandscapeSharedBuffers::CreateIndexBuffers(ERHIFeatureLevel::Type InFeatureLevel, bool bRequiresAdjacencyInformation)
+void FLandscapeSharedBuffers::CreateIndexBuffers(ERHIFeatureLevel::Type InFeatureLevel)
 {
 	if (InFeatureLevel <= ERHIFeatureLevel::ES3_1)
 	{
@@ -3024,11 +2912,7 @@ void FLandscapeSharedBuffers::CreateIndexBuffers(ERHIFeatureLevel::Type InFeatur
 		}
 		IndexBuffer->AssignNewBuffer(NewIndices);
 
-		// Delay init resource to keep CPU data until create AdjacencyIndexbuffers
-		if (!bRequiresAdjacencyInformation)
-		{
-			IndexBuffer->InitResource();
-		}
+		IndexBuffer->InitResource();
 
 		IndexBuffers[Mip] = IndexBuffer;
 
@@ -3063,45 +2947,6 @@ void FLandscapeSharedBuffers::CreateIndexBuffers(ERHIFeatureLevel::Type InFeatur
 		}
 #endif
 	}
-}
-
-void FLandscapeSharedBuffers::CreateOccluderIndexBuffer(int32 NumOccluderVertices)
-{
-	if (NumOccluderVertices <= 0 || NumOccluderVertices > MAX_uint16)
-	{
-		return;
-	}
-
-	uint16 NumLineQuads = ((uint16)FMath::Sqrt(NumOccluderVertices) - 1);
-	uint16 NumLineVtx = NumLineQuads + 1;
-	check(NumLineVtx*NumLineVtx == NumOccluderVertices);
-
-	int32 NumTris = NumLineQuads*NumLineQuads * 2;
-	int32 NumIndices = NumTris * 3;
-	OccluderIndicesSP = MakeShared<FOccluderIndexArray, ESPMode::ThreadSafe>();
-	OccluderIndicesSP->SetNumUninitialized(NumIndices, false);
-
-	uint16* OcclusionIndices = OccluderIndicesSP->GetData();
-	const uint16 NumLineVtxPlusOne = NumLineVtx + 1;
-	const uint16 QuadIndices[2][3] = { {0, NumLineVtx, NumLineVtxPlusOne}, {0, NumLineVtxPlusOne, 1} };
-	uint16 QuadOffset = 0;
-	int32 Index = 0;
-	for (int32 y = 0; y < NumLineQuads; y++)
-	{
-		for (int32 x = 0; x < NumLineQuads; x++)
-		{
-			for (int32 i = 0; i < 2; i++)
-			{
-				OcclusionIndices[Index++] = QuadIndices[i][0] + QuadOffset;
-				OcclusionIndices[Index++] = QuadIndices[i][1] + QuadOffset;
-				OcclusionIndices[Index++] = QuadIndices[i][2] + QuadOffset;
-			}
-			QuadOffset++;
-		}
-		QuadOffset++;
-	}
-
-	INC_DWORD_STAT_BY(STAT_LandscapeOccluderMem, OccluderIndicesSP->GetAllocatedSize());
 }
 
 #if WITH_EDITOR
@@ -3151,7 +2996,7 @@ void FLandscapeSharedBuffers::CreateGrassIndexBuffer()
 }
 #endif
 
-FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey, const int32 InSubsectionSizeQuads, const int32 InNumSubsections, const ERHIFeatureLevel::Type InFeatureLevel, const bool bRequiresAdjacencyInformation, int32 NumOccluderVertices)
+FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey, const int32 InSubsectionSizeQuads, const int32 InNumSubsections, const ERHIFeatureLevel::Type InFeatureLevel)
 	: SharedBuffersKey(InSharedBuffersKey)
 	, NumIndexBuffers(FMath::CeilLogTwo(InSubsectionSizeQuads + 1))
 	, SubsectionSizeVerts(InSubsectionSizeQuads + 1)
@@ -3159,7 +3004,6 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 	, VertexFactory(nullptr)
 	, FixedGridVertexFactory(nullptr)
 	, VertexBuffer(nullptr)
-	, AdjacencyIndexBuffers(nullptr)
 	, bUse32BitIndices(false)
 #if WITH_EDITOR
 	, GrassIndexBuffer(nullptr)
@@ -3186,7 +3030,7 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 	if (NumVertices > 65535)
 	{
 		bUse32BitIndices = true;
-		CreateIndexBuffers<uint32>(InFeatureLevel, bRequiresAdjacencyInformation);
+		CreateIndexBuffers<uint32>(InFeatureLevel);
 #if WITH_EDITOR
 		if (InFeatureLevel > ERHIFeatureLevel::ES3_1)
 		{
@@ -3196,7 +3040,7 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 	}
 	else
 	{
-		CreateIndexBuffers<uint16>(InFeatureLevel, bRequiresAdjacencyInformation);
+		CreateIndexBuffers<uint16>(InFeatureLevel);
 #if WITH_EDITOR
 		if (InFeatureLevel > ERHIFeatureLevel::ES3_1)
 		{
@@ -3204,8 +3048,6 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 		}
 #endif
 	}
-
-	CreateOccluderIndexBuffer(NumOccluderVertices);
 }
 
 FLandscapeSharedBuffers::~FLandscapeSharedBuffers()
@@ -3240,104 +3082,7 @@ FLandscapeSharedBuffers::~FLandscapeSharedBuffers()
 	}
 #endif
 
-	delete AdjacencyIndexBuffers;
 	delete VertexFactory;
-
-	if (OccluderIndicesSP.IsValid())
-	{
-		DEC_DWORD_STAT_BY(STAT_LandscapeOccluderMem, OccluderIndicesSP->GetAllocatedSize());
-	}
-}
-
-template<typename IndexType>
-static void BuildLandscapeAdjacencyIndexBuffer(int32 LODSubsectionSizeQuads, int32 NumSubsections, const FRawStaticIndexBuffer16or32<IndexType>* Indices, TArray<IndexType>& OutPnAenIndices)
-{
-	if (Indices && Indices->Num())
-	{
-		// Landscape use regular grid, so only expand Index buffer works
-		// PN AEN Dominant Corner
-		uint32 TriCount = LODSubsectionSizeQuads*LODSubsectionSizeQuads * 2;
-
-		uint32 ExpandedCount = 12 * TriCount * NumSubsections * NumSubsections;
-
-		OutPnAenIndices.Empty(ExpandedCount);
-		OutPnAenIndices.AddUninitialized(ExpandedCount);
-
-		for (int32 SubY = 0; SubY < NumSubsections; SubY++)
-		{
-			for (int32 SubX = 0; SubX < NumSubsections; SubX++)
-			{
-				uint32 SubsectionTriIndex = (SubX + SubY * NumSubsections) * TriCount;
-
-				for (uint32 TriIdx = SubsectionTriIndex; TriIdx < SubsectionTriIndex + TriCount; ++TriIdx)
-				{
-					uint32 OutStartIdx = TriIdx * 12;
-					uint32 InStartIdx = TriIdx * 3;
-					OutPnAenIndices[OutStartIdx + 0] = Indices->Get(InStartIdx + 0);
-					OutPnAenIndices[OutStartIdx + 1] = Indices->Get(InStartIdx + 1);
-					OutPnAenIndices[OutStartIdx + 2] = Indices->Get(InStartIdx + 2);
-
-					OutPnAenIndices[OutStartIdx + 3] = Indices->Get(InStartIdx + 0);
-					OutPnAenIndices[OutStartIdx + 4] = Indices->Get(InStartIdx + 1);
-					OutPnAenIndices[OutStartIdx + 5] = Indices->Get(InStartIdx + 1);
-					OutPnAenIndices[OutStartIdx + 6] = Indices->Get(InStartIdx + 2);
-					OutPnAenIndices[OutStartIdx + 7] = Indices->Get(InStartIdx + 2);
-					OutPnAenIndices[OutStartIdx + 8] = Indices->Get(InStartIdx + 0);
-
-					OutPnAenIndices[OutStartIdx + 9] = Indices->Get(InStartIdx + 0);
-					OutPnAenIndices[OutStartIdx + 10] = Indices->Get(InStartIdx + 1);
-					OutPnAenIndices[OutStartIdx + 11] = Indices->Get(InStartIdx + 2);
-				}
-			}
-		}
-	}
-	else
-	{
-		OutPnAenIndices.Empty();
-	}
-}
-
-
-FLandscapeSharedAdjacencyIndexBuffer::FLandscapeSharedAdjacencyIndexBuffer(FLandscapeSharedBuffers* Buffers)
-{
-	check(Buffers && Buffers->IndexBuffers);
-
-	// Currently only support PN-AEN-Dominant Corner, which is the only mode for UE4 for now
-	IndexBuffers.Empty(Buffers->NumIndexBuffers);
-
-	bool b32BitIndex = Buffers->NumVertices > 65535;
-	for (int32 i = 0; i < Buffers->NumIndexBuffers; ++i)
-	{
-		if (b32BitIndex)
-		{
-			TArray<uint32> OutPnAenIndices;
-			BuildLandscapeAdjacencyIndexBuffer<uint32>((Buffers->SubsectionSizeVerts >> i) - 1, Buffers->NumSubsections, (FRawStaticIndexBuffer16or32<uint32>*)Buffers->IndexBuffers[i], OutPnAenIndices);
-
-			FRawStaticIndexBuffer16or32<uint32>* IndexBuffer = new FRawStaticIndexBuffer16or32<uint32>();
-			IndexBuffer->AssignNewBuffer(OutPnAenIndices);
-			IndexBuffers.Add(IndexBuffer);
-		}
-		else
-		{
-			TArray<uint16> OutPnAenIndices;
-			BuildLandscapeAdjacencyIndexBuffer<uint16>((Buffers->SubsectionSizeVerts >> i) - 1, Buffers->NumSubsections, (FRawStaticIndexBuffer16or32<uint16>*)Buffers->IndexBuffers[i], OutPnAenIndices);
-
-			FRawStaticIndexBuffer16or32<uint16>* IndexBuffer = new FRawStaticIndexBuffer16or32<uint16>();
-			IndexBuffer->AssignNewBuffer(OutPnAenIndices);
-			IndexBuffers.Add(IndexBuffer);
-		}
-
-		IndexBuffers[i]->InitResource();
-	}
-}
-
-FLandscapeSharedAdjacencyIndexBuffer::~FLandscapeSharedAdjacencyIndexBuffer()
-{
-	for (int32 i = 0; i < IndexBuffers.Num(); ++i)
-	{
-		IndexBuffers[i]->ReleaseResource();
-		delete IndexBuffers[i];
-	}
 }
 
 //
@@ -3347,7 +3092,7 @@ FLandscapeSharedAdjacencyIndexBuffer::~FLandscapeSharedAdjacencyIndexBuffer()
 /** Shader parameters for use with FLandscapeVertexFactory */
 class FLandscapeVertexFactoryVertexShaderParameters : public FVertexFactoryShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FLandscapeVertexFactoryVertexShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FLandscapeVertexFactoryVertexShaderParameters, NonVirtual);
 public:
 	/**
 	* Bind shader constants by name
@@ -3377,15 +3122,7 @@ public:
 		const FLandscapeComponentSceneProxy* SceneProxy = BatchElementParams->SceneProxy;
 
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeUniformShaderParameters>(), *BatchElementParams->LandscapeUniformShaderParametersResource);
-
-		if (SceneProxy && SceneProxy->bRegistered)
-		{
-			ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeSectionLODUniformParameters>(), LandscapeRenderSystems.FindChecked(SceneProxy->LandscapeKey)->UniformBuffer);
-		}
-		else
-		{
-			ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeSectionLODUniformParameters>(), GNullLandscapeRenderSystemResources.UniformBuffer);
-		}
+		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeSectionLODUniformParameters>(), BatchElementParams->LandscapeSectionLODUniformParameters);
 
 #if RHI_RAYTRACING
 		if (IsRayTracingEnabled())
@@ -3396,13 +3133,15 @@ public:
 	}
 };
 
+IMPLEMENT_TYPE_LAYOUT(FLandscapeVertexFactoryVertexShaderParameters);
+
 /** 
   * Shader parameters for use with FLandscapeFixedGridVertexFactory
   * Simple grid rendering (without dynamic lod blend) needs a simpler fixed setup.
   */
 class FLandscapeFixedGridVertexFactoryVertexShaderParameters : public FLandscapeVertexFactoryVertexShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FLandscapeFixedGridVertexFactoryVertexShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FLandscapeFixedGridVertexFactoryVertexShaderParameters, NonVirtual);
 public:
 	void GetElementShaderBindings(
 		const class FSceneInterface* Scene,
@@ -3432,6 +3171,8 @@ public:
 #endif
 	}
 };
+
+IMPLEMENT_TYPE_LAYOUT(FLandscapeFixedGridVertexFactoryVertexShaderParameters);
 
 //
 // FLandscapeVertexFactoryPixelShaderParameters
@@ -3470,6 +3211,7 @@ void FLandscapeVertexFactory::InitRHI()
 	// position decls
 	Elements.Add(AccessStreamComponent(Data.PositionComponent, 0));
 
+	AddPrimitiveIdStreamElement(EVertexInputStreamType::Default, Elements, 1, 0xff);
 	// create the actual device decls
 	InitDeclaration(Elements);
 }
@@ -3490,6 +3232,11 @@ bool FLandscapeVertexFactory::ShouldCompilePermutation(const FVertexFactoryShade
 void FLandscapeVertexFactory::ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 {
 	FVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+	OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), Parameters.VertexFactoryType->SupportsPrimitiveIdStream() && UseGPUScene(Parameters.Platform, GetMaxSupportedFeatureLevel(Parameters.Platform)));
+
+	// Make sure landscape vertices go back to local space so that we have consistency between the transform on normals and geometry
+	OutEnvironment.SetDefine(TEXT("RAY_TRACING_DYNAMIC_MESH_IN_LOCAL_SPACE"), TEXT("1"));
 }
 
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeVertexFactory, SF_Vertex, FLandscapeVertexFactoryVertexShaderParameters);
@@ -3499,7 +3246,15 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeVertexFactory, SF_RayHitGroup,
 #endif // RHI_RAYTRACING
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeVertexFactory, SF_Pixel, FLandscapeVertexFactoryPixelShaderParameters);
 
-IMPLEMENT_VERTEX_FACTORY_TYPE_EX(FLandscapeVertexFactory, "/Engine/Private/LandscapeVertexFactory.ush", true, true, true, false, false, true, false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FLandscapeVertexFactory, "/Engine/Private/LandscapeVertexFactory.ush", 
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsStaticLighting
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsCachingMeshDrawCommands
+	| EVertexFactoryFlags::SupportsRayTracing
+	| EVertexFactoryFlags::SupportsRayTracingDynamicGeometry
+	| EVertexFactoryFlags::SupportsPrimitiveIdStream
+);
 
 /**
 * Copy the data from another vertex factory
@@ -3535,7 +3290,15 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeXYOffsetVertexFactory, SF_RayH
 #endif // RHI_RAYTRACING
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeXYOffsetVertexFactory, SF_Pixel, FLandscapeVertexFactoryPixelShaderParameters);
 
-IMPLEMENT_VERTEX_FACTORY_TYPE_EX(FLandscapeXYOffsetVertexFactory, "/Engine/Private/LandscapeVertexFactory.ush", true, true, true, false, false, true, false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FLandscapeXYOffsetVertexFactory, "/Engine/Private/LandscapeVertexFactory.ush", 
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsStaticLighting
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsCachingMeshDrawCommands
+	| EVertexFactoryFlags::SupportsRayTracing
+	| EVertexFactoryFlags::SupportsRayTracingDynamicGeometry
+	| EVertexFactoryFlags::SupportsPrimitiveIdStream
+);
 
 //
 // FLandscapeFixedGridVertexFactory
@@ -3554,8 +3317,15 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeFixedGridVertexFactory, SF_Ray
 #endif
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeFixedGridVertexFactory, SF_Pixel, FLandscapeVertexFactoryPixelShaderParameters);
 
-IMPLEMENT_VERTEX_FACTORY_TYPE_EX(FLandscapeFixedGridVertexFactory, "/Engine/Private/LandscapeVertexFactory.ush", true, true, true, false, false, true, false);
-
+IMPLEMENT_VERTEX_FACTORY_TYPE(FLandscapeFixedGridVertexFactory, "/Engine/Private/LandscapeVertexFactory.ush", 
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsStaticLighting
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsCachingMeshDrawCommands
+	| EVertexFactoryFlags::SupportsRayTracing
+	| EVertexFactoryFlags::SupportsRayTracingDynamicGeometry
+	| EVertexFactoryFlags::SupportsPrimitiveIdStream
+);
 
 /** ULandscapeMaterialInstanceConstant */
 ULandscapeMaterialInstanceConstant::ULandscapeMaterialInstanceConstant(const FObjectInitializer& ObjectInitializer)
@@ -3644,36 +3414,15 @@ void ULandscapeMaterialInstanceConstant::UpdateCachedTextureStreaming()
 class FLandscapeMaterialResource : public FMaterialResource
 {
 	const bool bIsLayerThumbnail;
-	const bool bDisableTessellation;
 	const bool bMobile;
 	const bool bEditorToolUsage;
 
 public:
 	FLandscapeMaterialResource(ULandscapeMaterialInstanceConstant* Parent)
 		: bIsLayerThumbnail(Parent->bIsLayerThumbnail)
-		, bDisableTessellation(Parent->bDisableTessellation)
 		, bMobile(Parent->bMobile)
 		, bEditorToolUsage(Parent->bEditorToolUsage)
 	{
-	}
-
-	void GetShaderMapId(EShaderPlatform Platform, const ITargetPlatform* TargetPlatform, FMaterialShaderMapId& OutId) const override
-	{
-		FMaterialResource::GetShaderMapId(Platform, TargetPlatform, OutId);
-
-#if WITH_EDITOR
-		if (bIsLayerThumbnail || bDisableTessellation)
-		{
-			FSHA1 Hash;
-			Hash.Update(OutId.BasePropertyOverridesHash.Hash, UE_ARRAY_COUNT(OutId.BasePropertyOverridesHash.Hash));
-
-			const FString HashString = TEXT("bOverride_TessellationMode");
-			Hash.UpdateWithString(*HashString, HashString.Len());
-
-			Hash.Final();
-			Hash.GetHash(OutId.BasePropertyOverridesHash.Hash);
-		}
-#endif
 	}
 
 	bool IsUsedWithLandscape() const override
@@ -3703,7 +3452,6 @@ public:
 	bool IsUsedWithInstancedStaticMeshes() const override { return false; }
 	bool IsUsedWithAPEXCloth()             const override { return false; }
 	bool IsUsedWithGeometryCache()         const override { return false; }
-	EMaterialTessellationMode GetTessellationMode() const override { return (bIsLayerThumbnail || bDisableTessellation) ? MTM_NoTessellation : FMaterialResource::GetTessellationMode(); };
 
 	bool ShouldCache(EShaderPlatform Platform, const FShaderType* ShaderType, const FVertexFactoryType* VertexFactoryType) const override
 	{
@@ -3729,7 +3477,10 @@ public:
 					}
 					else
 					{
-						if (Algo::Find(GetExcludedShaderTypesInThumbnailRender(), ShaderType->GetFName()))
+						// No ray tracing on thumbnails : we don't need any variation of ray hit group shaders : 
+						const bool bIsRayHitGroupShader = (ShaderType->GetFrequency() == SF_RayHitGroup);
+						if (bIsRayHitGroupShader 
+							|| Algo::Find(GetExcludedShaderTypesInThumbnailRender(), ShaderType->GetFName()))
 						{
 							UE_LOG(LogLandscape, VeryVerbose, TEXT("Excluding shader %s from landscape thumbnail material"), ShaderType->GetName());
 							return false;
@@ -3791,17 +3542,13 @@ public:
 			FName(TEXT("TBasePassPSFNoLightMapPolicy")),
 			FName(TEXT("TBasePassVSFCachedPointIndirectLightingPolicy")),
 			FName(TEXT("TBasePassPSFCachedPointIndirectLightingPolicy")),
-			FName(TEXT("TShadowDepthVSVertexShadowDepth_OutputDepthfalse")),
-			FName(TEXT("TShadowDepthVSVertexShadowDepth_OutputDepthtrue")), // used by LPV
-			FName(TEXT("TShadowDepthPSPixelShadowDepth_NonPerspectiveCorrectfalse")),
-			FName(TEXT("TShadowDepthPSPixelShadowDepth_NonPerspectiveCorrecttrue")), // used by LPV
 			FName(TEXT("TBasePassPSFSimpleDirectionalLightLightingPolicy")),
 			FName(TEXT("TBasePassPSFSimpleDirectionalLightLightingPolicySkylight")),
 			FName(TEXT("TBasePassVSFSimpleDirectionalLightLightingPolicy")),
 			FName(TEXT("TBasePassPSFSimpleNoLightmapLightingPolicy")),
 			FName(TEXT("TBasePassPSFSimpleNoLightmapLightingPolicySkylight")),
 			FName(TEXT("TBasePassVSFSimpleNoLightmapLightingPolicy")),
-			FName(TEXT("TBasePassVSFSimpleNoLightmapLightingPolicyAtmosphericFog")),
+			FName(TEXT("TBasePassVSFSimpleNoLightmapLightingPolicySkyAtmosphereAP")),
 			FName(TEXT("FAnisotropyVS")),
 			FName(TEXT("FAnisotropyPS")),
 			FName(TEXT("TDepthOnlyVS<false>")),
@@ -3820,9 +3567,7 @@ public:
 			FName(TEXT("TBasePassPSFSimpleStationaryLightPrecomputedShadowsLightingPolicy")),
 			FName(TEXT("TBasePassPSFSimpleStationaryLightPrecomputedShadowsLightingPolicySkylight")),
 			FName(TEXT("TBasePassVSFSimpleStationaryLightPrecomputedShadowsLightingPolicy")),
-			FName(TEXT("TBasePassVSFNoLightMapPolicyAtmosphericFog")),
-			FName(TEXT("TBasePassDSFNoLightMapPolicy")),
-			FName(TEXT("TBasePassHSFNoLightMapPolicy")),
+			FName(TEXT("TBasePassVSFNoLightMapPolicySkyAtmosphereAP")),
 			FName(TEXT("TLightMapDensityVSFNoLightMapPolicy")),
 			FName(TEXT("TLightMapDensityPSFNoLightMapPolicy")),
 
@@ -3856,10 +3601,12 @@ public:
 			FName(TEXT("TVirtualTextureVSBaseColor")),
 			FName(TEXT("TVirtualTextureVSBaseColorNormal")),
 			FName(TEXT("TVirtualTextureVSBaseColorNormalSpecular")),
+			FName(TEXT("TVirtualTextureVSBaseColorNormalRoughness")),
 			FName(TEXT("TVirtualTextureVSWorldHeight")),
 			FName(TEXT("TVirtualTexturePSBaseColor")),
 			FName(TEXT("TVirtualTexturePSBaseColorNormal")),
 			FName(TEXT("TVirtualTexturePSBaseColorNormalSpecular")),
+			FName(TEXT("TVirtualTexturePSBaseColorNormalRoughness")),
 			FName(TEXT("TVirtualTexturePSWorldHeight")),
 		};
 		return AllowedShaderTypes;
@@ -3872,8 +3619,6 @@ public:
 		{
 			// This is not an exhaustive list
 			FName(TEXT("FDebugViewModeVS")),
-			FName(TEXT("FConvertToUniformMeshVS")),
-			FName(TEXT("FConvertToUniformMeshGS")),
 
 			// No lightmap on thumbnails
 			FName(TEXT("TLightMapDensityVSFDummyLightMapPolicy")),
@@ -3894,12 +3639,7 @@ public:
 			FName(TEXT("TBasePassVSFSimpleStationaryLightVolumetricLightmapShadowsLightingPolicy")),
 
 			// Debug materials : 
-			FName(TEXT("FMaterialTexCoordScalePS")),
-			FName(TEXT("FMeshTexCoordSizeAccuracyPS")),
-			FName(TEXT("FPrimitiveDistanceAccuracyPS")),
-			FName(TEXT("FRequiredTextureResolutionPS")),
-			FName(TEXT("FComplexityAccumulatePS")),
-			FName(TEXT("FLODColorationPS")),
+			FName(TEXT("FDebugViewModePS")),
 
 			// Mobile
 			FName(TEXT("TMobileBasePassPSFMobileMovableDirectionalLightCSMWithLightmapPolicyINT32_MAXHDRLinear64Skylight")),
@@ -3937,29 +3677,36 @@ public:
 
 			FName(TEXT("TBasePassPSFSimpleStationaryLightVolumetricLightmapShadowsLightingPolicy")),
 
-			FName(TEXT("TBasePassVSFCachedPointIndirectLightingPolicyAtmosphericFog")),
+			FName(TEXT("TBasePassVSFCachedPointIndirectLightingPolicy")),
 			FName(TEXT("TBasePassVSFSelfShadowedCachedPointIndirectLightingPolicy")),
 			FName(TEXT("TBasePassPSFSelfShadowedCachedPointIndirectLightingPolicy")),
 			FName(TEXT("TBasePassPSFSelfShadowedCachedPointIndirectLightingPolicySkylight")),
-			FName(TEXT("TBasePassVSFSelfShadowedCachedPointIndirectLightingPolicyAtmosphericFog")),
 			FName(TEXT("TBasePassVSFSelfShadowedTranslucencyPolicy")),
 			FName(TEXT("TBasePassPSFSelfShadowedTranslucencyPolicy")),
 			FName(TEXT("TBasePassPSFSelfShadowedTranslucencyPolicySkylight")),
-			FName(TEXT("TBasePassVSFSelfShadowedTranslucencyPolicyAtmosphericFog")),
 
-			FName(TEXT("TShadowDepthVSVertexShadowDepth_PerspectiveCorrectfalse")),
-			FName(TEXT("TShadowDepthVSVertexShadowDepth_PerspectiveCorrecttrue")),
-			FName(TEXT("TShadowDepthVSVertexShadowDepth_OnePassPointLightfalse")),
-			FName(TEXT("TShadowDepthPSPixelShadowDepth_PerspectiveCorrectfalse")),
-			FName(TEXT("TShadowDepthPSPixelShadowDepth_PerspectiveCorrecttrue")),
-			FName(TEXT("TShadowDepthPSPixelShadowDepth_OnePassPointLightfalse")),
-			FName(TEXT("TShadowDepthPSPixelShadowDepth_OnePassPointLighttrue")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_PerspectiveCorrect")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_OutputDepth")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_OnePassPointLight")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_VirtualShadowMap")),
 
-			FName(TEXT("TShadowDepthVSForGSVertexShadowDepth_OutputDepthfalse")),
-			FName(TEXT("TShadowDepthVSForGSVertexShadowDepth_OutputDepthtrue")),
-			FName(TEXT("TShadowDepthVSForGSVertexShadowDepth_PerspectiveCorrectfalse")),
-			FName(TEXT("TShadowDepthVSForGSVertexShadowDepth_PerspectiveCorrecttrue")),
-			FName(TEXT("TShadowDepthVSForGSVertexShadowDepth_OnePassPointLightfalse")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_PerspectiveCorrectPositionOnly")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_OutputDepthPositionOnly")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_OnePassPointLightPositionOnly")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_VirtualShadowMapPositionOnly")),
+
+			FName(TEXT("TShadowDepthPSPixelShadowDepth_VirtualShadowMap")),
+			FName(TEXT("TShadowDepthPSPixelShadowDepth_PerspectiveCorrect")),
+			FName(TEXT("TShadowDepthPSPixelShadowDepth_OnePassPointLight")),
+			FName(TEXT("TShadowDepthPSPixelShadowDepth_NonPerspectiveCorrect")),
+
+			FName(TEXT("TShadowDepthVSForGSVertexShadowDepth_OnePassPointLight")),
+			FName(TEXT("TShadowDepthVSForGSVertexShadowDepth_OnePassPointLightPositionOnly")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_VSLayer")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_VSLayerPositionOnly")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_VSLayerGS")),
+			FName(TEXT("TShadowDepthVSVertexShadowDepth_VSLayerGSPositionOnly")),
+
 			FName(TEXT("FOnePassPointShadowDepthGS")),
 
 			FName(TEXT("TTranslucencyShadowDepthVS<TranslucencyShadowDepth_Standard>")),
@@ -3967,76 +3714,26 @@ public:
 			FName(TEXT("TTranslucencyShadowDepthVS<TranslucencyShadowDepth_PerspectiveCorrect>")),
 			FName(TEXT("TTranslucencyShadowDepthPS<TranslucencyShadowDepth_PerspectiveCorrect>")),
 
-			FName(TEXT("TShadowDepthVSForGSVertexShadowDepth_OnePassPointLight")),
-			FName(TEXT("TShadowDepthVSForGSVertexShadowDepth_OnePassPointLightPositionOnly")),
-			FName(TEXT("TShadowDepthVSVertexShadowDepth_OnePassPointLightPositionOnly")),
-			FName(TEXT("TShadowDepthVSVertexShadowDepth_OutputDepthPositionOnly")),
-			FName(TEXT("TShadowDepthVSVertexShadowDepth_PerspectiveCorrectPositionOnly")),
-
-			FName(TEXT("TBasePassVSTDistanceFieldShadowsAndLightMapPolicyHQAtmosphericFog")),
-			FName(TEXT("TBasePassVSTLightMapPolicyHQAtmosphericFog")),
-			FName(TEXT("TBasePassVSTLightMapPolicyLQAtmosphericFog")),
-			FName(TEXT("TBasePassVSFPrecomputedVolumetricLightmapLightingPolicyAtmosphericFog")),
+			FName(TEXT("TBasePassVSTDistanceFieldShadowsAndLightMapPolicyHQ")),
+			FName(TEXT("TBasePassVSTLightMapPolicyHQ")),
+			FName(TEXT("TBasePassVSTLightMapPolicyLQ")),
 			FName(TEXT("TBasePassPSFSelfShadowedVolumetricLightmapPolicy")),
 			FName(TEXT("TBasePassPSFSelfShadowedVolumetricLightmapPolicySkylight")),
-			FName(TEXT("TBasePassVSFSelfShadowedVolumetricLightmapPolicyAtmosphericFog")),
 			FName(TEXT("TBasePassVSFSelfShadowedVolumetricLightmapPolicy")),
 
 			FName(TEXT("TBasePassPSFSimpleLightmapOnlyLightingPolicy")),
 			FName(TEXT("TBasePassPSFSimpleLightmapOnlyLightingPolicySkylight")),
 			FName(TEXT("TBasePassVSFSimpleLightmapOnlyLightingPolicy")),
 
-			FName(TEXT("TShadowDepthDSVertexShadowDepth_OnePassPointLightfalse")),
-			FName(TEXT("TShadowDepthHSVertexShadowDepth_OnePassPointLightfalse")),
-			FName(TEXT("TShadowDepthDSVertexShadowDepth_OutputDepthfalse")),
-			FName(TEXT("TShadowDepthHSVertexShadowDepth_OutputDepthfalse")),
-			FName(TEXT("TShadowDepthDSVertexShadowDepth_OutputDepthtrue")),
-			FName(TEXT("TShadowDepthHSVertexShadowDepth_OutputDepthtrue")),
-
-			FName(TEXT("TShadowDepthDSVertexShadowDepth_PerspectiveCorrectfalse")),
-			FName(TEXT("TShadowDepthHSVertexShadowDepth_PerspectiveCorrectfalse")),
-			FName(TEXT("TShadowDepthDSVertexShadowDepth_PerspectiveCorrecttrue")),
-			FName(TEXT("TShadowDepthHSVertexShadowDepth_PerspectiveCorrecttrue")),
-
-			FName(TEXT("FVelocityDS")),
-			FName(TEXT("FVelocityHS")),
-			FName(TEXT("FHitProxyDS")),
-			FName(TEXT("FHitProxyHS")),
-
-			FName(TEXT("TLightMapDensityDSTLightMapPolicyHQ")),
-			FName(TEXT("TLightMapDensityHSTLightMapPolicyHQ")),
-			FName(TEXT("TLightMapDensityDSTLightMapPolicyLQ")),
-			FName(TEXT("TLightMapDensityHSTLightMapPolicyLQ")),
-			FName(TEXT("TLightMapDensityDSFDummyLightMapPolicy")),
-			FName(TEXT("TLightMapDensityHSFDummyLightMapPolicy")),
-			FName(TEXT("TLightMapDensityDSFNoLightMapPolicy")),
-			FName(TEXT("TLightMapDensityHSFNoLightMapPolicy")),
-			FName(TEXT("FDepthOnlyDS")),
-			FName(TEXT("FDepthOnlyHS")),
-			FName(TEXT("FDebugViewModeDS")),
-			FName(TEXT("FDebugViewModeHS")),
-			FName(TEXT("TBasePassDSTDistanceFieldShadowsAndLightMapPolicyHQ")),
-			FName(TEXT("TBasePassHSTDistanceFieldShadowsAndLightMapPolicyHQ")),
-
-			FName(TEXT("TBasePassDSTLightMapPolicyHQ")),
-			FName(TEXT("TBasePassHSTLightMapPolicyHQ")),
-			FName(TEXT("TBasePassDSTLightMapPolicyLQ")),
-			FName(TEXT("TBasePassHSTLightMapPolicyLQ")),
-			FName(TEXT("TBasePassDSFCachedPointIndirectLightingPolicy")),
-			FName(TEXT("TBasePassHSFCachedPointIndirectLightingPolicy")),
-			FName(TEXT("TBasePassDSFCachedVolumeIndirectLightingPolicy")),
-			FName(TEXT("TBasePassHSFCachedVolumeIndirectLightingPolicy")),
-
-			FName(TEXT("TBasePassDSFPrecomputedVolumetricLightmapLightingPolicy")),
-			FName(TEXT("TBasePassHSFPrecomputedVolumetricLightmapLightingPolicy")),
-
 #if RHI_RAYTRACING
-				// No ray tracing on thumbnails
-				FName(TEXT("TMaterialCHSFPrecomputedVolumetricLightmapLightingPolicy")),
-				FName(TEXT("TMaterialCHSFNoLightMapPolicy")),
-				FName(TEXT("FRayTracingDynamicGeometryConverterCS")),
-				FName(TEXT("FTrivialMaterialCHS"))
+			// No ray tracing on thumbnails
+			FName(TEXT("FRayTracingDynamicGeometryConverterCS")),
+			FName(TEXT("FTrivialMaterialCHS")),
 #endif // RHI_RAYTRACING
+
+			FName(TEXT("FLumenCardVS")),
+			FName(TEXT("FLumenCardPS<true>")),
+			FName(TEXT("FLumenCardPS<false>")),
 		};
 		return ExcludedShaderTypes;
 	}
@@ -4075,10 +3772,12 @@ public:
 			FName(TEXT("TVirtualTextureVSBaseColor")),
 			FName(TEXT("TVirtualTextureVSBaseColorNormal")),
 			FName(TEXT("TVirtualTextureVSBaseColorNormalSpecular")),
+			FName(TEXT("TVirtualTextureVSBaseColorNormalRoughness")),
 			FName(TEXT("TVirtualTextureVSWorldHeight")),
 			FName(TEXT("TVirtualTexturePSBaseColor")),
 			FName(TEXT("TVirtualTexturePSBaseColorNormal")),
 			FName(TEXT("TVirtualTexturePSBaseColorNormalSpecular")),
+			FName(TEXT("TVirtualTexturePSBaseColorNormalRoughness")),
 			FName(TEXT("TVirtualTexturePSWorldHeight")),
 		};
 		return ShaderTypes;
@@ -4096,11 +3795,6 @@ bool ULandscapeMaterialInstanceConstant::HasOverridenBaseProperties() const
 	{
 		// force a static permutation for ULandscapeMaterialInstanceConstants
 		if (!Parent->IsA<ULandscapeMaterialInstanceConstant>())
-		{
-			return true;
-		}
-		ULandscapeMaterialInstanceConstant* LandscapeMICParent = CastChecked<ULandscapeMaterialInstanceConstant>(Parent);
-		if (bDisableTessellation != LandscapeMICParent->bDisableTessellation)
 		{
 			return true;
 		}
@@ -4128,7 +3822,7 @@ void ULandscapeComponent::GetStreamingRenderAssetInfo(FStreamingTextureLevelCont
 
 	for (int32 MaterialIndex = 0; MaterialIndex < MaterialInstanceCount; ++MaterialIndex)
 	{
-		const UMaterialInterface* MaterialInterface = FeatureLevel >= ERHIFeatureLevel::SM5 ? GetMaterialInstance(MaterialIndex) : MobileMaterialInterfaces[MaterialIndex];
+		const UMaterialInterface* MaterialInterface = FeatureLevel >= ERHIFeatureLevel::SM5 ? GetMaterialInstance(MaterialIndex) : ToRawPtr(MobileMaterialInterfaces[MaterialIndex]);
 
 		// Normal usage...
 		// Enumerate the textures used by the material.
@@ -4256,37 +3950,6 @@ void ULandscapeComponent::GetStreamingRenderAssetInfo(FStreamingTextureLevelCont
 	}
 }
 
-void ALandscapeProxy::ChangeTessellationComponentScreenSize(float InTessellationComponentScreenSize)
-{
-	TessellationComponentScreenSize = FMath::Clamp<float>(InTessellationComponentScreenSize, 0.01f, 1.0f);
-
-	if (LandscapeComponents.Num() > 0)
-	{
-		int32 ComponentCount = LandscapeComponents.Num();
-		FLandscapeComponentSceneProxy** RenderProxies = new FLandscapeComponentSceneProxy*[ComponentCount];
-		for (int32 Idx = 0; Idx < ComponentCount; ++Idx)
-		{
-			RenderProxies[Idx] = (FLandscapeComponentSceneProxy*)(LandscapeComponents[Idx]->SceneProxy);
-		}
-
-		float TessellationComponentScreenSizeLocal = TessellationComponentScreenSize;
-		ENQUEUE_RENDER_COMMAND(LandscapeChangeTessellationComponentScreenSizeCommand)(
-			[RenderProxies, ComponentCount, TessellationComponentScreenSizeLocal](FRHICommandListImmediate& RHICmdList)
-			{
-				for (int32 Idx = 0; Idx < ComponentCount; ++Idx)
-				{
-					if (RenderProxies[Idx] != nullptr)
-					{
-						RenderProxies[Idx]->ChangeTessellationComponentScreenSize_RenderThread(TessellationComponentScreenSizeLocal);
-					}
-				}
-
-				delete[] RenderProxies;
-			}
-		);
-	}
-}
-
 void ALandscapeProxy::ChangeComponentScreenSizeToUseSubSections(float InComponentScreenSizeToUseSubSections)
 {
 	ComponentScreenSizeToUseSubSections = FMath::Clamp<float>(InComponentScreenSizeToUseSubSections, 0.01f, 1.0f);
@@ -4318,75 +3981,9 @@ void ALandscapeProxy::ChangeComponentScreenSizeToUseSubSections(float InComponen
 	}
 }
 
-void ALandscapeProxy::ChangeUseTessellationComponentScreenSizeFalloff(bool InUseTessellationComponentScreenSizeFalloff)
-{
-	UseTessellationComponentScreenSizeFalloff = InUseTessellationComponentScreenSizeFalloff;
-
-	if (LandscapeComponents.Num() > 0)
-	{
-		int32 ComponentCount = LandscapeComponents.Num();
-		FLandscapeComponentSceneProxy** RenderProxies = new FLandscapeComponentSceneProxy*[ComponentCount];
-		for (int32 Idx = 0; Idx < ComponentCount; ++Idx)
-		{
-			RenderProxies[Idx] = (FLandscapeComponentSceneProxy*)(LandscapeComponents[Idx]->SceneProxy);
-		}
-
-		ENQUEUE_RENDER_COMMAND(LandscapeChangeUseTessellationComponentScreenSizeFalloffCommand)(
-			[RenderProxies, ComponentCount, InUseTessellationComponentScreenSizeFalloff](FRHICommandListImmediate& RHICmdList)
-			{
-				for (int32 Idx = 0; Idx < ComponentCount; ++Idx)
-				{
-					if (RenderProxies[Idx] != nullptr)
-					{
-						RenderProxies[Idx]->ChangeUseTessellationComponentScreenSizeFalloff_RenderThread(InUseTessellationComponentScreenSizeFalloff);
-					}
-				}
-
-				delete[] RenderProxies;
-			}
-		);
-	}
-}
-
-void ALandscapeProxy::ChangeTessellationComponentScreenSizeFalloff(float InTessellationComponentScreenSizeFalloff)
-{
-	TessellationComponentScreenSizeFalloff = FMath::Clamp<float>(TessellationComponentScreenSizeFalloff, 0.01f, 1.0f);
-
-	if (LandscapeComponents.Num() > 0)
-	{
-		int32 ComponentCount = LandscapeComponents.Num();
-		FLandscapeComponentSceneProxy** RenderProxies = new FLandscapeComponentSceneProxy*[ComponentCount];
-		for (int32 Idx = 0; Idx < ComponentCount; ++Idx)
-		{
-			RenderProxies[Idx] = (FLandscapeComponentSceneProxy*)(LandscapeComponents[Idx]->SceneProxy);
-		}
-
-		float TessellationComponentScreenSizeFalloffLocal = TessellationComponentScreenSizeFalloff;
-		ENQUEUE_RENDER_COMMAND(LandscapeChangeTessellationComponentScreenSizeFalloffCommand)(
-			[RenderProxies, ComponentCount, TessellationComponentScreenSizeFalloffLocal](FRHICommandListImmediate& RHICmdList)
-			{
-				for (int32 Idx = 0; Idx < ComponentCount; ++Idx)
-				{
-					if (RenderProxies[Idx] != nullptr)
-					{
-						RenderProxies[Idx]->ChangeTessellationComponentScreenSizeFalloff_RenderThread(TessellationComponentScreenSizeFalloffLocal);
-					}
-				}
-
-				delete[] RenderProxies;
-			}
-		);
-	}
-}
-
 void ALandscapeProxy::ChangeLODDistanceFactor(float InLODDistanceFactor)
 {
 	// Deprecated
-}
-
-void FLandscapeComponentSceneProxy::ChangeTessellationComponentScreenSize_RenderThread(float InTessellationComponentScreenSize)
-{
-	TessellationComponentSquaredScreenSize = FMath::Square(InTessellationComponentScreenSize);
 }
 
 void FLandscapeComponentSceneProxy::ChangeComponentScreenSizeToUseSubSections_RenderThread(float InComponentScreenSizeToUseSubSections)
@@ -4394,22 +3991,32 @@ void FLandscapeComponentSceneProxy::ChangeComponentScreenSizeToUseSubSections_Re
 	ComponentSquaredScreenSizeToUseSubSections = FMath::Square(InComponentScreenSizeToUseSubSections);
 }
 
-void FLandscapeComponentSceneProxy::ChangeUseTessellationComponentScreenSizeFalloff_RenderThread(bool InUseTessellationComponentScreenSizeFalloff)
-{
-	UseTessellationComponentScreenSizeFalloff = InUseTessellationComponentScreenSizeFalloff;
-}
-
-void FLandscapeComponentSceneProxy::ChangeTessellationComponentScreenSizeFalloff_RenderThread(float InTessellationComponentScreenSizeFalloff)
-{
-	TessellationComponentScreenSizeFalloff = InTessellationComponentScreenSizeFalloff;
-}
-
 bool FLandscapeComponentSceneProxy::HeightfieldHasPendingStreaming() const
 {
-	return HeightmapTexture && HeightmapTexture->bHasStreamingUpdatePending;
+	bool bHeightmapTextureStreaming = false;
+
+	if (HeightmapTexture)
+	{
+		bHeightmapTextureStreaming |= HeightmapTexture->bHasStreamingUpdatePending;
+#if WITH_EDITOR
+		bHeightmapTextureStreaming |= HeightmapTexture->IsCompiling();
+#endif
+	}
+
+	bool bVisibilityTextureStreaming = false;
+
+	if (VisibilityWeightmapTexture)
+	{
+		bVisibilityTextureStreaming |= VisibilityWeightmapTexture->bHasStreamingUpdatePending;
+#if WITH_EDITOR
+		bVisibilityTextureStreaming |= VisibilityWeightmapTexture->IsCompiling();
+#endif
+	}
+
+	return bHeightmapTextureStreaming || bVisibilityTextureStreaming;
 }
 
-void FLandscapeComponentSceneProxy::GetHeightfieldRepresentation(UTexture2D*& OutHeightmapTexture, UTexture2D*& OutDiffuseColorTexture, UTexture2D*& OutVisibilityTexture, FHeightfieldComponentDescription& OutDescription)
+void FLandscapeComponentSceneProxy::GetHeightfieldRepresentation(UTexture2D*& OutHeightmapTexture, UTexture2D*& OutDiffuseColorTexture, UTexture2D*& OutVisibilityTexture, FHeightfieldComponentDescription& OutDescription) const
 {
 	OutHeightmapTexture = HeightmapTexture;
 	OutDiffuseColorTexture = BaseColorForGITexture;
@@ -4417,7 +4024,7 @@ void FLandscapeComponentSceneProxy::GetHeightfieldRepresentation(UTexture2D*& Ou
 	
 	OutDescription.HeightfieldScaleBias = HeightmapScaleBias;
 
-	OutDescription.MinMaxUV = FVector4(
+	OutDescription.MinMaxUV = FVector4f(
 		HeightmapScaleBias.Z,
 		HeightmapScaleBias.W,
 		HeightmapScaleBias.Z + SubsectionSizeVerts * NumSubsections * HeightmapScaleBias.X - HeightmapScaleBias.X,
@@ -4441,138 +4048,146 @@ void FLandscapeComponentSceneProxy::GetLCIs(FLCIArray& LCIs)
 	}
 }
 
-//
-// FLandscapeNeighborInfo
-//
-void FLandscapeNeighborInfo::RegisterNeighbors(FLandscapeComponentSceneProxy* SceneProxy /* = nullptr */)
+float FLandscapeComponentSceneProxy::ComputeLODForView(const FSceneView& InView) const
 {
-	check(IsInRenderingThread());
-	if (!bRegistered)
+	// TODO: this function generates A LOT OF cache misses - it should be much better if we have an event of FTexture2DResource::UpdateTexture
+
+	int32 ViewLODOverride = GetViewLodOverride(InView);
+	float ViewLODDistanceFactor = InView.LODDistanceFactor;
+	bool ViewEngineShowFlagCollisionPawn = InView.Family->EngineShowFlags.CollisionPawn;
+	bool ViewEngineShowFlagCollisionVisibility = InView.Family->EngineShowFlags.CollisionVisibility;
+	const FVector& ViewOrigin = GetLODView(InView).ViewMatrices.GetViewOrigin();
+	const FMatrix& ViewProjectionMatrix = GetLODView(InView).ViewMatrices.GetProjectionMatrix();
+
+	float LODScale = ViewLODDistanceFactor * CVarStaticMeshLODDistanceScale.GetValueOnRenderThread();
+
+	int32 ForcedLODLevel = LODSettings.ForcedLOD;
+	ForcedLODLevel = ViewLODOverride >= 0 ? ViewLODOverride : ForcedLODLevel;
+	const int32 DrawCollisionLODOverride = GetDrawCollisionLodOverride(ViewEngineShowFlagCollisionPawn, ViewEngineShowFlagCollisionVisibility, LODSettings.DrawCollisionPawnLOD, LODSettings.DrawCollisionVisibilityLOD);
+	ForcedLODLevel = DrawCollisionLODOverride >= 0 ? DrawCollisionLODOverride : ForcedLODLevel;
+	ForcedLODLevel = FMath::Min<int32>(ForcedLODLevel, LODSettings.LastLODIndex);
+
+	float LODLevel = ForcedLODLevel;
+	if (ForcedLODLevel < 0)
 	{
-		if (!SharedSceneProxyMap.Find(LandscapeKey))
-		{
-			LandscapeRenderSystems.Add(LandscapeKey, new FLandscapeRenderSystem {});
+		float MeshScreenSizeSquared = ComputeBoundsScreenRadiusSquared(GetBounds().Origin, GetBounds().SphereRadius, ViewOrigin, ViewProjectionMatrix);
 
-			GetRendererModule().RegisterPersistentViewUniformBufferExtension(&LandscapePersistentViewUniformBufferExtension);
-		}
-
-		// Register ourselves in the map.
-		TMap<FIntPoint, const FLandscapeNeighborInfo*>& SceneProxyMap = SharedSceneProxyMap.FindOrAdd(LandscapeKey);
-
-		const FLandscapeNeighborInfo* Existing = SceneProxyMap.FindRef(ComponentBase);
-		if (Existing == nullptr)//(ensure(Existing == nullptr))
-		{
-			SceneProxyMap.Add(ComponentBase, this);
-			bRegistered = true;
-
-			// Find Neighbors
-			Neighbors[0] = SceneProxyMap.FindRef(ComponentBase + FIntPoint(0, -1));
-			Neighbors[1] = SceneProxyMap.FindRef(ComponentBase + FIntPoint(-1, 0));
-			Neighbors[2] = SceneProxyMap.FindRef(ComponentBase + FIntPoint(1, 0));
-			Neighbors[3] = SceneProxyMap.FindRef(ComponentBase + FIntPoint(0, 1));
-
-			// Add ourselves to our neighbors
-			if (Neighbors[0])
-			{
-				Neighbors[0]->Neighbors[3] = this;
-			}
-			if (Neighbors[1])
-			{
-				Neighbors[1]->Neighbors[2] = this;
-			}
-			if (Neighbors[2])
-			{
-				Neighbors[2]->Neighbors[1] = this;
-			}
-			if (Neighbors[3])
-			{
-				Neighbors[3]->Neighbors[0] = this;
-			}
-
-			if (SceneProxy != nullptr)
-			{
-				FLandscapeRenderSystem& RenderSystem = *LandscapeRenderSystems.FindChecked(LandscapeKey);
-				RenderSystem.RegisterEntity(SceneProxy);
-			}
-		}
-		else
-		{
-			UE_LOG(LogLandscape, Warning, TEXT("Duplicate ComponentBase %d, %d"), ComponentBase.X, ComponentBase.Y);
-		}
+		float FractionalLOD;
+		FLandscapeRenderSystem::GetLODFromScreenSize(LODSettings, MeshScreenSizeSquared, LODScale * LODScale, FractionalLOD);
+		LODLevel = FractionalLOD;
 	}
+
+#if PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING
+	const float CurFirstLODIdx = GetCurrentFirstLODIdx_RenderThread();
+#else
+	constexpr float CurFirstLODIdx = 0.f;
+#endif
+
+	return FMath::Max(LODLevel, CurFirstLODIdx);
 }
 
-void FLandscapeNeighborInfo::UnregisterNeighbors(FLandscapeComponentSceneProxy* SceneProxy /* = nullptr */)
+float FLandscapeComponentSceneProxy::ComputeLODBias() const
 {
-	check(IsInRenderingThread());
-	
-	if (bRegistered)
+	float ComputedLODBias = 0;
+
+	if (HeightmapTexture)
 	{
-		// Remove ourselves from the map
-		TMap<FIntPoint, const FLandscapeNeighborInfo*>* SceneProxyMap = SharedSceneProxyMap.Find(LandscapeKey);
-		check(SceneProxyMap);
-
-		const FLandscapeNeighborInfo* MapEntry = SceneProxyMap->FindRef(ComponentBase);
-		if (MapEntry == this) //(/*ensure*/(MapEntry == this))
+		if (const FTexture2DResource* TextureResource = (const FTexture2DResource*)HeightmapTexture->GetResource())
 		{
-			SceneProxyMap->Remove(ComponentBase);
-
-			if (SceneProxy != nullptr)
-			{
-				FLandscapeRenderSystem& RenderSystem = *LandscapeRenderSystems.FindChecked(LandscapeKey);
-				RenderSystem.UnregisterEntity(SceneProxy);
-			}
-
-			if (SceneProxyMap->Num() == 0)
-			{
-				FLandscapeRenderSystem* RenderSystemPtr = LandscapeRenderSystems.FindChecked(LandscapeKey);
-				check(RenderSystemPtr->NumRegisteredEntities == 0);
-
-				delete RenderSystemPtr;
-				LandscapeRenderSystems.Remove(LandscapeKey);
-
-				// remove the entire LandscapeKey entry as this is the last scene proxy
-				SharedSceneProxyMap.Remove(LandscapeKey);
-			}
-			else
-			{
-				// remove reference to us from our neighbors
-				if (Neighbors[0])
-				{
-					Neighbors[0]->Neighbors[3] = nullptr;
-				}
-				if (Neighbors[1])
-				{
-					Neighbors[1]->Neighbors[2] = nullptr;
-				}
-				if (Neighbors[2])
-				{
-					Neighbors[2]->Neighbors[1] = nullptr;
-				}
-				if (Neighbors[3])
-				{
-					Neighbors[3]->Neighbors[0] = nullptr;
-				}
-			}
+			ComputedLODBias = HeightmapTexture->GetNumMips() - HeightmapTexture->GetNumResidentMips();
 		}
 	}
+
+	// TODO: support mipmap LOD bias of XY offset map
+	//XYOffsetmapTexture ? ((FTexture2DResource*)XYOffsetmapTexture->Resource)->GetCurrentFirstMip() : 0.0f);
+
+	return ComputedLODBias;
 }
+
+//
+// FLandscapeSectionInfo
+//
+FLandscapeSectionInfo::FLandscapeSectionInfo(const UWorld* InWorld, const FGuid& InLandscapeGuid, const FIntPoint& InSectionBase)
+	: LandscapeKey(HashCombine(GetTypeHash(InWorld), GetTypeHash(InLandscapeGuid)))
+	, ComponentBase(InSectionBase)
+	, bRegistered(false)
+{
+}
+
+void FLandscapeSectionInfo::RegisterSection()
+{
+	FLandscapeRenderSystem::RegisterSection(this);
+}
+
+void FLandscapeSectionInfo::UnregisterSection()
+{
+	FLandscapeRenderSystem::UnregisterSection(this);
+}
+
+//
+// FLandscapeProxySectionInfo
+//
+class FLandscapeProxySectionInfo : public FLandscapeSectionInfo
+{
+public:
+	FLandscapeProxySectionInfo(const UWorld* InWorld, const FGuid& InLandscapeGuid, const FIntPoint& InSectionBase, int8 InProxyLOD)
+		: FLandscapeSectionInfo(InWorld, InLandscapeGuid, InSectionBase)
+		, ProxyLOD(InProxyLOD)
+	{
+	}
+
+	virtual float ComputeLODForView(const FSceneView& InView) const override
+	{
+		return ProxyLOD;
+	}
+
+	virtual float ComputeLODBias() const override
+	{
+		return 0.0f;
+	}
+
+	virtual int32 GetSectionPriority() const override
+	{
+		return ProxyLOD;
+	}
+
+private:
+	int8 ProxyLOD;
+};
 
 //
 // FLandscapeMeshProxySceneProxy
 //
-FLandscapeMeshProxySceneProxy::FLandscapeMeshProxySceneProxy(UStaticMeshComponent* InComponent, const FGuid& InGuid, const TArray<FIntPoint>& InProxyComponentBases, int8 InProxyLOD)
+FLandscapeMeshProxySceneProxy::FLandscapeMeshProxySceneProxy(UStaticMeshComponent* InComponent, const FGuid& InLandscapeGuid, const TArray<FIntPoint>& InProxySectionsBases, int8 InProxyLOD)
 	: FStaticMeshSceneProxy(InComponent, false)
 {
-	if (!IsComponentLevelVisible())
+	VisibilityHelper.Init(InComponent, this);
+
+	if (VisibilityHelper.RequiresVisibleLevelToRender())
 	{
-		bNeedsLevelAddedToWorldNotification = true;
+		bShouldNotifyOnWorldAddRemove = true;
 	}
 
-	ProxyNeighborInfos.Empty(InProxyComponentBases.Num());
-	for (FIntPoint ComponentBase : InProxyComponentBases)
+	ProxySectionsInfos.Empty(InProxySectionsBases.Num());
+	for (FIntPoint SectionBase : InProxySectionsBases)
 	{
-		new(ProxyNeighborInfos) FLandscapeNeighborInfo(InComponent->GetWorld(), InGuid, ComponentBase, nullptr, InProxyLOD, 0);
+		ProxySectionsInfos.Emplace(MakeUnique<FLandscapeProxySectionInfo>(InComponent->GetWorld(), InLandscapeGuid, SectionBase, InProxyLOD));
+	}
+}
+
+void FLandscapeMeshProxySceneProxy::RegisterSections()
+{
+	for (auto& Info : ProxySectionsInfos)
+	{
+		Info->RegisterSection();
+	}
+}
+
+void FLandscapeMeshProxySceneProxy::UnregisterSections()
+{
+	for (auto& Info : ProxySectionsInfos)
+	{
+		Info->UnregisterSection();
 	}
 }
 
@@ -4586,42 +4201,59 @@ SIZE_T FLandscapeMeshProxySceneProxy::GetTypeHash() const
 void FLandscapeMeshProxySceneProxy::CreateRenderThreadResources()
 {
 	FStaticMeshSceneProxy::CreateRenderThreadResources();
-
-	if (IsComponentLevelVisible())
+	
+	for (auto& Info : ProxySectionsInfos)
 	{
-		for (FLandscapeNeighborInfo& Info : ProxyNeighborInfos)
-		{
-			Info.RegisterNeighbors();
-		}
+		FLandscapeRenderSystem::CreateResources(Info.Get());
+	}
+
+	if (VisibilityHelper.ShouldBeVisible())
+	{
+		RegisterSections();
 	}
 }
 
-void FLandscapeMeshProxySceneProxy::OnLevelAddedToWorld()
+bool FLandscapeMeshProxySceneProxy::OnLevelAddedToWorld_RenderThread()
 {
-	for (FLandscapeNeighborInfo& Info : ProxyNeighborInfos)
+	if (VisibilityHelper.OnAddedToWorld())
 	{
-		Info.RegisterNeighbors();
+		SetForceHidden(false);
+		RegisterSections();
+		return true;
+	}
+
+	return false;
+}
+
+void FLandscapeMeshProxySceneProxy::OnLevelRemovedFromWorld_RenderThread()
+{
+	if (VisibilityHelper.OnRemoveFromWorld())
+	{
+		SetForceHidden(true);
+		UnregisterSections();
 	}
 }
 
 void FLandscapeMeshProxySceneProxy::DestroyRenderThreadResources()
 {
 	FStaticMeshSceneProxy::DestroyRenderThreadResources();
-
-	for (FLandscapeNeighborInfo& Info : ProxyNeighborInfos)
+	UnregisterSections();
+	
+	for (auto& Info : ProxySectionsInfos)
 	{
-		Info.UnregisterNeighbors();
+		FLandscapeRenderSystem::DestroyResources(Info.Get());
 	}
 }
 
 FPrimitiveSceneProxy* ULandscapeMeshProxyComponent::CreateSceneProxy()
 {
-	if (GetStaticMesh() == NULL
-		|| GetStaticMesh()->GetRenderData() == NULL
+	if (GetStaticMesh() == nullptr 
+		|| GetStaticMesh()->IsCompiling()
+		|| GetStaticMesh()->GetRenderData() == nullptr
 		|| GetStaticMesh()->GetRenderData()->LODResources.Num() == 0
 		|| GetStaticMesh()->GetRenderData()->LODResources[0].VertexBuffers.StaticMeshVertexBuffer.GetNumVertices() == 0)
 	{
-		return NULL;
+		return nullptr;
 	}
 
 	return new FLandscapeMeshProxySceneProxy(this, LandscapeGuid, ProxyComponentBases, ProxyLOD);

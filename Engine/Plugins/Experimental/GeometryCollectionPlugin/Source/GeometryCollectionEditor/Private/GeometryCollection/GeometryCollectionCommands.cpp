@@ -657,7 +657,7 @@ void FGeometryCollectionCommands::SelectLessThenVolume(const TArray<FString>& Ar
 					EditBoneColor.SetSelectedBones(SelectedBones);
 					EditBoneColor.SetHighlightedBones(SelectedBones);
 
- 					SceneOutliner::FSceneOutlinerDelegates::Get().OnComponentSelectionChanged.Broadcast(Actor->GetGeometryCollectionComponent());
+ 					FSceneOutlinerDelegates::Get().OnComponentSelectionChanged.Broadcast(Actor->GetGeometryCollectionComponent());
 				}
 			}
 		}
@@ -696,7 +696,8 @@ void FGeometryCollectionCommands::BuildProximityDatabase(const TArray<FString>& 
 
 				if (2 <= RestCollection->GetGeometryCollection().Get()->NumElements(FGeometryCollection::GeometryGroup))
 				{
-					FGeometryCollectionProximityUtility::UpdateProximity(RestCollection->GetGeometryCollection().Get());
+					FGeometryCollectionProximityUtility ProximityUtility(RestCollection->GetGeometryCollection().Get());
+					ProximityUtility.UpdateProximity();
 				}
 			}
 		}

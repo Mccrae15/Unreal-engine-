@@ -12,6 +12,7 @@ public class PackagesDialog : ModuleRules
 			new string[] {
 				"Core", 
 				"CoreUObject", 
+				"EditorFramework",
 				"Engine", 
                 "InputCore",
 				"Slate", 
@@ -19,7 +20,9 @@ public class PackagesDialog : ModuleRules
                 "EditorStyle",
 				"UnrealEd",
 				"SourceControl",
-				"AssetRegistry"
+				"EditorWidgets",
+				"AssetRegistry",
+				"ToolWidgets",
 			}
 		);
 

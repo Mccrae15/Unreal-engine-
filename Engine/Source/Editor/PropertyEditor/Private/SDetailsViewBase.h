@@ -3,24 +3,27 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Misc/Attribute.h"
-#include "Layout/Visibility.h"
-#include "PropertyPath.h"
-#include "Input/Reply.h"
 #include "AssetThumbnail.h"
-#include "IPropertyUtilities.h"
-#include "DetailTreeNode.h"
-#include "Widgets/Views/STableViewBase.h"
-#include "Widgets/Views/STableRow.h"
-#include "PropertyNode.h"
-#include "Widgets/SWindow.h"
-#include "PropertyEditorModule.h"
-#include "Framework/Commands/UICommandList.h"
-#include "Widgets/Layout/SSplitter.h"
-#include "Widgets/Views/STreeView.h"
 #include "IDetailsView.h"
 #include "IDetailsViewPrivate.h"
+#include "IPropertyUtilities.h"
+#include "DetailFilter.h"
+#include "DetailTreeNode.h"
+#include "DetailsViewConfig.h"
+#include "PropertyCustomizationHelpers.h"
+#include "PropertyEditorModule.h"
+#include "PropertyNode.h"
+#include "PropertyPath.h"
 #include "PropertyRowGenerator.h"
+#include "Framework/Commands/UICommandList.h"
+#include "Input/Reply.h"
+#include "Layout/Visibility.h"
+#include "Misc/Attribute.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/Views/STableViewBase.h"
+#include "Widgets/Views/STableRow.h"
+#include "Widgets/Views/STreeView.h"
 
 class FDetailCategoryImpl;
 class FDetailLayoutBuilderImpl;
@@ -30,67 +33,15 @@ class IDetailKeyframeHandler;
 class IDetailPropertyExtensionHandler;
 class SDetailNameArea;
 class IPropertyGenerationUtilities;
+class SSearchBox;
 struct FDetailsViewObjectRoot;
 
-
 typedef STreeView< TSharedRef<class FDetailTreeNode> > SDetailTree;
-
-
-
-/** Represents a filter which controls the visibility of items in the details view */
-struct FDetailFilter
-{
-	FDetailFilter()
-		: bShowOnlyModifiedProperties(false)
-		, bShowAllAdvanced(false)
-		, bShowOnlyDiffering(false)
-		, bShowAllChildrenIfCategoryMatches(true)
-		, bShowKeyable(false)
-		, bShowAnimated(false)
-	{}
-
-	bool IsEmptyFilter() const { return FilterStrings.Num() == 0 && bShowOnlyModifiedProperties == false && bShowAllAdvanced == false && bShowOnlyDiffering == false && bShowAllChildrenIfCategoryMatches == false && bShowKeyable == false && bShowAnimated == false; }
-
-	/** Any user search terms that items must match */
-	TArray<FString> FilterStrings;
-	/** If we should only show modified properties */
-	bool bShowOnlyModifiedProperties;
-	/** If we should show all advanced properties */
-	bool bShowAllAdvanced;
-	/** If we should only show differing properties */
-	bool bShowOnlyDiffering;
-	/** If we should show all the children if their category name matches the search */
-	bool bShowAllChildrenIfCategoryMatches;
-	/** If we should only show keyable properties */
-	bool bShowKeyable;
-	/** If we should only show animated properties */
-	bool bShowAnimated;
-	TSet<FPropertyPath> WhitelistedProperties;
-};
-
-struct FDetailColumnSizeData
-{
-	TAttribute<float> LeftColumnWidth;
-	TAttribute<float> RightColumnWidth;
-	SSplitter::FOnSlotResized OnWidthChanged;
-
-	void SetColumnWidth(float InWidth) { OnWidthChanged.ExecuteIfBound(InWidth); }
-};
 
 class SDetailsViewBase : public IDetailsViewPrivate
 {
 public:
-	SDetailsViewBase()
-		: ColumnWidth(.65f)
-		, bHasActiveFilter(false)
-		, bIsLocked(false)
-		, bHasOpenColorPicker(false)
-		, bDisableCustomDetailLayouts( false )
-		, NumVisibleTopLevelObjectNodes(0)
-		, bPendingCleanupTimerSet(false)
-	{
-	}
-
+	SDetailsViewBase();
 	virtual ~SDetailsViewBase();
 
 	/**
@@ -132,24 +83,24 @@ public:
 	virtual FOnDisplayedPropertiesChanged& GetOnDisplayedPropertiesChanged() override { return OnDisplayedPropertiesChangedDelegate; }
 	virtual void SetDisableCustomDetailLayouts( bool bInDisableCustomDetailLayouts ) override { bDisableCustomDetailLayouts = bInDisableCustomDetailLayouts; }
 	virtual void SetIsPropertyVisibleDelegate(FIsPropertyVisible InIsPropertyVisible) override;
-	virtual FIsCustomRowVisibilityFiltered& GetIsCustomRowVisibilityFilteredDelegate() override { return IsCustomRowVisibilityFilteredDelegate; };
-	virtual void SetIsCustomRowVisibilityFilteredDelegate(FIsCustomRowVisibilityFiltered InIsCustomRowVisibilityFilteredDelegate) override;
 	virtual FIsPropertyVisible& GetIsPropertyVisibleDelegate() override { return IsPropertyVisibleDelegate; }
 	virtual void SetIsCustomRowVisibleDelegate(FIsCustomRowVisible InIsCustomRowVisible) override;
 	virtual FIsCustomRowVisible& GetIsCustomRowVisibleDelegate() override { return IsCustomRowVisibleDelegate; }
 	virtual void SetIsPropertyReadOnlyDelegate(FIsPropertyReadOnly InIsPropertyReadOnly) override;
+	virtual FIsCustomRowReadOnly& GetIsCustomRowReadOnlyDelegate() override { return IsCustomRowReadOnlyDelegate; }
+	virtual void SetIsCustomRowReadOnlyDelegate(FIsCustomRowReadOnly InIsCustomRowReadOnly) override;
 	virtual FIsPropertyReadOnly& GetIsPropertyReadOnlyDelegate() override { return IsPropertyReadOnlyDelegate; }
 	virtual void SetIsPropertyEditingEnabledDelegate(FIsPropertyEditingEnabled IsPropertyEditingEnabled) override;
 	virtual FIsPropertyEditingEnabled& GetIsPropertyEditingEnabledDelegate() override { return IsPropertyEditingEnabledDelegate; }
 	virtual bool IsPropertyEditingEnabled() const override;
 	virtual void SetKeyframeHandler(TSharedPtr<class IDetailKeyframeHandler> InKeyframeHandler) override;
-	virtual TSharedPtr<IDetailKeyframeHandler> GetKeyframeHandler() override;
+	virtual TSharedPtr<IDetailKeyframeHandler> GetKeyframeHandler() const override { return KeyframeHandler; }
 	virtual void SetExtensionHandler(TSharedPtr<class IDetailPropertyExtensionHandler> InExtensionHandler) override;
-	virtual TSharedPtr<IDetailPropertyExtensionHandler> GetExtensionHandler() override;
+	virtual TSharedPtr<IDetailPropertyExtensionHandler> GetExtensionHandler() const override { return ExtensionHandler; }
 	virtual bool IsPropertyVisible(const struct FPropertyAndParent& PropertyAndParent) const override;
 	virtual bool IsPropertyReadOnly(const struct FPropertyAndParent& PropertyAndParent) const override;
-    virtual bool IsCustomRowVisibilityFiltered() const override;
 	virtual bool IsCustomRowVisible(FName InRowName, FName InParentName) const override;
+	virtual bool IsCustomRowReadOnly(FName InRowName, FName InParentName) const override;
 	virtual void SetGenericLayoutDetailsDelegate(FOnGetDetailCustomizationInstance OnGetGenericDetails) override;
 	virtual FOnGetDetailCustomizationInstance& GetGenericLayoutDetailsDelegate() override { return GenericLayoutDelegate; }
 	virtual bool IsLocked() const override { return bIsLocked; }
@@ -159,7 +110,10 @@ public:
 	virtual void RegisterInstancedCustomPropertyTypeLayout(FName PropertyTypeName, FOnGetPropertyTypeCustomizationInstance PropertyTypeLayoutDelegate, TSharedPtr<IPropertyTypeIdentifier> Identifier = nullptr) override;
 	virtual void UnregisterInstancedCustomPropertyLayout(UStruct* Class) override;
 	virtual void UnregisterInstancedCustomPropertyTypeLayout(FName PropertyTypeName, TSharedPtr<IPropertyTypeIdentifier> Identifier = nullptr) override;
-
+	virtual void SetCustomValidatePropertyNodesFunction(FOnValidatePropertyRowGeneratorNodes InCustomValidatePropertyNodesFunction) override
+	{
+		CustomValidatePropertyNodesFunction = MoveTemp(InCustomValidatePropertyNodesFunction);
+	}
 	/** IDetailsViewPrivate interface */
 	virtual void RerunCurrentFilter() override;
 	void SetNodeExpansionState(TSharedRef<FDetailTreeNode> InTreeNode, bool bIsItemExpanded, bool bRecursive) override;
@@ -168,7 +122,7 @@ public:
 	virtual void NotifyFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent) override;
 	void RefreshTree() override;
 	TSharedPtr<class FAssetThumbnailPool> GetThumbnailPool() const override;
-	TSharedPtr<FEditConditionParser> GetEditConditionParser() const override;
+	virtual const TArray<TSharedRef<class IClassViewerFilter>>& GetClassViewerFilters() const override;
 	TSharedPtr<IPropertyUtilities> GetPropertyUtilities() override;
 	void CreateColorPickerWindow(const TSharedRef< class FPropertyEditor >& PropertyEditor, bool bUseAlpha) override;
 	virtual void UpdateSinglePropertyMap(TSharedPtr<FComplexPropertyNode> InRootPropertyNode, FDetailLayoutData& LayoutData, bool bIsExternal) override;
@@ -176,7 +130,10 @@ public:
 	virtual const FCustomPropertyTypeLayoutMap& GetCustomPropertyTypeLayoutMap() const { return InstancedTypeToLayoutMap; }
 	virtual void SaveExpandedItems( TSharedRef<FPropertyNode> StartNode ) override;
 	virtual void RestoreExpandedItems(TSharedRef<FPropertyNode> StartNode) override;
-
+	virtual void MarkNodeAnimating(TSharedPtr<FPropertyNode> InNode, float InAnimationDuration) override;
+	virtual bool IsNodeAnimating(TSharedPtr<FPropertyNode> InNode) override;
+	virtual FDetailColumnSizeData& GetColumnSizeData() override { return ColumnSizeData; }
+	virtual bool IsFavoritingEnabled() const override { return DetailsViewArgs.bAllowFavoriteSystem; }
 	virtual bool IsConnected() const = 0;
 	virtual FRootPropertyNodeList& GetRootNodes() = 0;
 
@@ -201,16 +158,13 @@ public:
 	 */
 	void SetRootExpansionStates(const bool bExpand, const bool bRecurse);
 
-	/** Column width accessibility */
-	float OnGetLeftColumnWidth() const { return 1.0f - ColumnWidth; }
-	float OnGetRightColumnWidth() const { return ColumnWidth; }
-	void OnSetColumnWidth(float InWidth) { ColumnWidth = InWidth; }
-
 	/**
 	 * Adds an action to execute next tick
 	 */
 	virtual void EnqueueDeferredAction(FSimpleDelegate& DeferredAction) override;
 
+	/** Restore all expanded items in root nodes and external root nodes. */
+	void RestoreAllExpandedItems();
 
 	// SWidget interface
 	virtual bool SupportsKeyboardFocus() const override;
@@ -223,6 +177,9 @@ protected:
 	 * Called when a color property is changed from a color picker
 	 */
 	void SetColorPropertyFromColorPicker(FLinearColor NewColor);
+
+	/** Called when node animation completes */
+	void HandleNodeAnimationComplete();
 
 	/** Updates the property map for access when customizing the details view.  Generates default layout for properties */
 	void UpdatePropertyMaps();
@@ -271,7 +228,7 @@ protected:
 	TSharedRef<ITableRow> OnGenerateRowForDetailTree( TSharedRef<FDetailTreeNode> InTreeNode, const TSharedRef<STableViewBase>& OwnerTable );
 
 	/** @return true if show only modified is checked */
-	bool IsShowOnlyModifiedChecked() const { return CurrentFilter.bShowOnlyModifiedProperties; }
+	bool IsShowOnlyModifiedChecked() const { return CurrentFilter.bShowOnlyModified; }
 
 	/** @return true if custom filter is checked */
 	bool IsCustomFilterChecked() const { return bCustomFilterActive; }
@@ -280,16 +237,16 @@ protected:
 	bool IsShowAllAdvancedChecked() const { return CurrentFilter.bShowAllAdvanced; }
 
 	/** @return true if show only differing is checked */
-	bool IsShowOnlyDifferingChecked() const { return CurrentFilter.bShowOnlyDiffering; }
+	bool IsShowOnlyAllowedChecked() const { return CurrentFilter.bShowOnlyAllowed; }
 
 	/** @return true if show all advanced is checked */
 	bool IsShowAllChildrenIfCategoryMatchesChecked() const { return CurrentFilter.bShowAllChildrenIfCategoryMatches; }
 	
 	/** @return true if show keyable is checked */
-	bool IsShowKeyableChecked() const { return CurrentFilter.bShowKeyable; }
+	bool IsShowKeyableChecked() const { return CurrentFilter.bShowOnlyKeyable; }
 	
 	/** @return true if show animated is checked */
-	bool IsShowAnimatedChecked() const { return CurrentFilter.bShowAnimated; }
+	bool IsShowAnimatedChecked() const { return CurrentFilter.bShowOnlyAnimated; }
 
 	/** Called when show only modified is clicked */
 	void OnShowOnlyModifiedClicked();
@@ -301,7 +258,7 @@ protected:
 	void OnShowAllAdvancedClicked();
 
 	/** Called when show only differing is clicked */
-	void OnShowOnlyDifferingClicked();
+	void OnShowOnlyAllowedClicked();
 
 	/** Called when show all children if category matches is clicked */
 	void OnShowAllChildrenIfCategoryMatchesClicked();
@@ -324,9 +281,10 @@ protected:
 	void OnFilterTextCommitted(const FText& InSearchText, ETextCommit::Type InCommitType);
 
 	/** Called when the list of currently differing properties changes */
-	virtual void UpdatePropertiesWhitelist(const TSet<FPropertyPath> InWhitelistedProperties) override { CurrentFilter.WhitelistedProperties = InWhitelistedProperties; }
+	virtual void UpdatePropertyAllowList(const TSet<FPropertyPath> InAllowedProperties) override { CurrentFilter.PropertyAllowList = InAllowedProperties; }
 
 	virtual TSharedPtr<SWidget> GetNameAreaWidget() override;
+	virtual void SetNameAreaCustomContent(TSharedRef<SWidget>& InCustomContent) override;
 	virtual TSharedPtr<SWidget> GetFilterAreaWidget() override;
 	virtual TSharedPtr<class FUICommandList> GetHostCommandList() const override;
 	virtual TSharedPtr<FTabManager> GetHostTabManager() const override;
@@ -368,6 +326,21 @@ protected:
 	void SavePreSearchExpandedItems();
 	void RestorePreSearchExpandedItems();
 
+	/** 
+	 * Get a mutable version of the view config for setting values.
+	 * @returns		The view config for this view. 
+	 * @note		If DetailsViewArgs.ViewIdentifier is not set, it is not possible to store settings for this view.
+	 */
+	struct FDetailsViewConfig* GetMutableViewConfig();
+
+	/**
+	 * Get a const version of the view config for getting values.
+	 * @returns		The view config for this view. 
+	 * @note		If DetailsViewArgs.ViewIdentifier is not set, it is not possible to retrieve settings for this view.
+	 */
+	const FDetailsViewConfig* GetConstViewConfig() const;
+	void SaveViewConfig();
+
 protected:
 	/** The user defined args for the details view */
 	FDetailsViewArgs DetailsViewArgs;
@@ -376,9 +349,9 @@ protected:
 	/** A mapping of type names to detail layout delegates, called when querying for custom detail layouts in this instance of the details view only */
 	FCustomPropertyTypeLayoutMap InstancedTypeToLayoutMap;
 	/** The current detail layout based on objects in this details panel.  There is one layout for each top level object node.*/
-	FDetailLayoutList DetailLayouts;
+	TArray<FDetailLayoutData> DetailLayouts;
 	/** Row for searching and view options */
-	TSharedPtr<SHorizontalBox>  FilterRow;
+	TSharedPtr<SWidget> FilterRow;
 	/** Search box */
 	TSharedPtr<SSearchBox> SearchBox;
 	/** Customization instances that need to be destroyed when safe to do so */
@@ -395,20 +368,18 @@ protected:
 	FDetailNodeList RootTreeNodes;
 	/** Delegate executed to determine if a property should be visible */
 	FIsPropertyVisible IsPropertyVisibleDelegate;
-	/** Delegate executed to check if custom row visibility is filtered. */
-	FIsCustomRowVisibilityFiltered IsCustomRowVisibilityFilteredDelegate;
 	/** Delegate executed to determine if a custom row should be visible. */
 	FIsCustomRowVisible IsCustomRowVisibleDelegate;
 	/** Delegate executed to determine if a property should be read-only */
 	FIsPropertyReadOnly IsPropertyReadOnlyDelegate;
+	/** Delegate executed to determine if a custom row should be read-only. */
+	FIsCustomRowReadOnly IsCustomRowReadOnlyDelegate;
 	/** Delegate called to see if a property editing is enabled */
 	FIsPropertyEditingEnabled IsPropertyEditingEnabledDelegate;
 	/** Delegate called when the details panel finishes editing a property (after post edit change is called) */
 	mutable FOnFinishedChangingProperties OnFinishedChangingPropertiesDelegate;
 	/** Container for passing around column size data to rows in the tree (each row has a splitter which can affect the column size)*/
 	FDetailColumnSizeData ColumnSizeData;
-	/** The actual width of the right column.  The left column is 1-ColumnWidth */
-	float ColumnWidth;
 	/** True if there is an active filter (text in the filter box) */
 	UE_DEPRECATED(4.26, "Use HasActiveSearch function instead.")
 	bool bHasActiveFilter;
@@ -424,8 +395,6 @@ protected:
 	TSharedPtr<IPropertyGenerationUtilities> PropertyGenerationUtilities;
 	/** The name area which is not recreated when selection changes */
 	TSharedPtr<class SDetailNameArea> NameArea;
-	/** Asset pool for rendering and managing asset thumbnails visible in this view*/
-	mutable TSharedPtr<class FAssetThumbnailPool> ThumbnailPool;
 	/** The current filter */
 	FDetailFilter CurrentFilter;
 	/** Delegate called to get generic details not specific to an object being viewed */
@@ -438,8 +407,12 @@ protected:
 	TSharedPtr<IDetailKeyframeHandler> KeyframeHandler;
 	/** Property extension handler returns additional UI to apply after the customization is applied to the property. */
 	TSharedPtr<IDetailPropertyExtensionHandler> ExtensionHandler;
-	/** The tree node that is currently highlighted, may be none: */
+	/** The tree node that is currently highlighted, may be none. */
 	TWeakPtr<FDetailTreeNode> CurrentlyHighlightedNode;
+	/** The property node whose widget-equivalent should be animating, may be none. */
+	TSharedPtr<FPropertyPath> CurrentlyAnimatingNodePath;
+	/** Timer for that current node's widget animation duration. */
+	FTimerHandle AnimateNodeTimer;
 
 	TSet<FString> PreSearchExpandedItems;
 	TSet<FString> PreSearchExpandedCategories;
@@ -451,6 +424,10 @@ protected:
 	bool bDisableCustomDetailLayouts;
 
 	int32 NumVisibleTopLevelObjectNodes;
+
+	/** Used to refresh the tree when the allow list filter changes */
+	FDelegateHandle PropertyPermissionListChangedDelegate;
+	FDelegateHandle PropertyPermissionListEnabledDelegate;
 
 	/** Delegate for overriding the show modified filter */
 	FSimpleDelegate CustomFilterDelegate;
@@ -464,4 +441,10 @@ protected:
 	FText CustomFilterLabel;
 
 	mutable TSharedPtr<FEditConditionParser> EditConditionParser;
+	
+	/** Optional custom filter(s) to be applied when selecting values for class properties */
+	TArray<TSharedRef<class IClassViewerFilter>> ClassViewerFilters;
+
+	/** The EnsureDataIsValid function can be skipped with this member, if set. Useful if your implementation doesn't require this kind of validation each Tick. */
+	FOnValidateDetailsViewPropertyNodes CustomValidatePropertyNodesFunction;
 };

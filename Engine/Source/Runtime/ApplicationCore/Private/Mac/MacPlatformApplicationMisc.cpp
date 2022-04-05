@@ -277,6 +277,7 @@ void FMacPlatformApplicationMisc::PreInit()
 
 	FMacApplication::UpdateScreensArray();
 	MessageBoxExtCallback = MessageBoxExtImpl;
+	FApp::SetHasFocusFunction(&FMacPlatformApplicationMisc::IsThisApplicationForeground);
 }
 
 void FMacPlatformApplicationMisc::PostInit()
@@ -440,7 +441,7 @@ float FMacPlatformApplicationMisc::GetDPIScaleFactorAtPoint(float X, float Y)
 {
 	if (MacApplication && FPlatformApplicationMisc::IsHighDPIModeEnabled())
 	{
-		TSharedRef<FMacScreen> Screen = FMacApplication::FindScreenBySlatePosition(X, Y);
+		FMacScreenRef Screen = FMacApplication::FindScreenBySlatePosition(X, Y);
 		return Screen->Screen.backingScaleFactor;
 	}
 	return 1.0f;

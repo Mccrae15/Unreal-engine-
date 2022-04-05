@@ -19,7 +19,7 @@ namespace Electra
 
 	static inline const TCHAR* GetStreamTypeName(EStreamType StreamType)
 	{
-		switch (StreamType)
+		switch(StreamType)
 		{
 			case EStreamType::Video:
 				return TEXT("Video");
@@ -54,6 +54,9 @@ namespace Electra
 			EAC3,
 			// --- Subtitle / Caption ---
 			WebVTT = 200,
+			TTML,
+			TX3G,
+			OtherSubtitle
 		};
 
 		EStreamType GetStreamType() const
@@ -61,6 +64,10 @@ namespace Electra
 			return StreamType;
 		}
 
+		void SetMimeType(const FString& InMimeType)
+		{
+			MimeType = InMimeType;
+		}
 		FString GetMimeType() const;
 		FString GetMimeTypeWithCodec() const;
 		FString GetMimeTypeWithCodecAndFeatures() const;
@@ -82,9 +89,11 @@ namespace Electra
 			Codec = InCodec;
 		}
 
+		FString GetCodecName() const;
+
 		bool IsVideoCodec() const
 		{
-			switch (GetCodec())
+			switch(GetCodec())
 			{
 				case ECodec::H264:
 				case ECodec::H265:
@@ -96,7 +105,7 @@ namespace Electra
 
 		bool IsAudioCodec() const
 		{
-			switch (GetCodec())
+			switch(GetCodec())
 			{
 				case ECodec::AAC:
 				case ECodec::EAC3:
@@ -108,9 +117,12 @@ namespace Electra
 
 		bool IsSubtitleCodec() const
 		{
-			switch (GetCodec())
+			switch(GetCodec())
 			{
 				case ECodec::WebVTT:
+				case ECodec::TTML:
+				case ECodec::TX3G:
+				case ECodec::OtherSubtitle:
 					return true;
 				default:
 					return false;
@@ -181,6 +193,40 @@ namespace Electra
 		void SetResolution(const FResolution& InResolution)
 		{
 			Resolution = InResolution;
+		}
+
+
+		struct FTranslation
+		{
+			FTranslation(int32 x = 0, int32 y = 0)
+				: Left(x)
+				, Top(y)
+			{
+			}
+			void Clear()
+			{
+				Left = Top = 0;
+			}
+			int32 GetX() const
+			{
+				return Left;
+			}
+			int32 GetY() const
+			{
+				return Top;
+			}
+			int32 Left;
+			int32 Top;
+		};
+
+		const FTranslation& GetTranslation() const
+		{
+			return Translation;
+		}
+
+		void SetTranslation(const FTranslation& InTranslation)
+		{
+			Translation = InTranslation;
 		}
 
 
@@ -275,6 +321,16 @@ namespace Electra
 			FrameRate = InFrameRate;
 		}
 
+		void SetProfileSpace(int32 InProfileSpace)
+		{
+			ProfileLevel.ProfileSpace = InProfileSpace;
+		}
+
+		int32 GetProfileSpace() const
+		{
+			return ProfileLevel.ProfileSpace;
+		}
+
 		void SetProfile(int32 InProfile)
 		{
 			ProfileLevel.Profile = InProfile;
@@ -295,12 +351,22 @@ namespace Electra
 			return ProfileLevel.Level;
 		}
 
-		void SetProfileConstraints(int32 InConstraints)
+		void SetProfileCompatibilityFlags(uint32 InCompatibilityFlags)
+		{
+			ProfileLevel.CompatibilityFlags = InCompatibilityFlags;
+		}
+
+		uint32 GetProfileCompatibilityFlags() const
+		{
+			return ProfileLevel.CompatibilityFlags;
+		}
+
+		void SetProfileConstraints(uint64 InConstraints)
 		{
 			ProfileLevel.Constraints = InConstraints;
 		}
 
-		int32 GetProfileConstraints() const
+		uint64 GetProfileConstraints() const
 		{
 			return ProfileLevel.Constraints;
 		}
@@ -385,6 +451,26 @@ namespace Electra
 			return StreamLanguageCode;
 		}
 
+		void SetCodecSpecificData(const TArray<uint8>& InCSD)
+		{
+			CSD = InCSD;
+		}
+
+		const TArray<uint8>& GetCodecSpecificData() const
+		{
+			return CSD;
+		}
+
+		void SetBitrate(int32 InBitrate)
+		{
+			Bitrate = InBitrate;
+		}
+		
+		int32 GetBitrate() const
+		{
+			return Bitrate;
+		}
+
 		FParamDict& GetExtras()
 		{
 			return Extras;
@@ -399,13 +485,16 @@ namespace Electra
 		{
 			StreamType = EStreamType::Unsupported;
 			CodecSpecifier.Empty();
+			MimeType.Empty();
 			Codec = ECodec::Unknown;
 			Resolution.Clear();
 			Crop.Clear();
+			Translation.Clear();
 			AspectRatio.Clear();
 			FrameRate = FTimeFraction::GetInvalid();
 			ProfileLevel.Clear();
 			StreamLanguageCode.Empty();
+			Bitrate = 0;
 			SampleRate = 0;
 			NumChannels = 0;
 			ChannelConfiguration = 0;
@@ -413,6 +502,7 @@ namespace Electra
 			AudioAccessibility = 0;
 			NumberOfAudioObjects = 0;
 			Extras.Clear();
+			CSD.Empty();
 		}
 
 		bool IsDifferentFromOtherVideo(const FStreamCodecInformation& Other) const
@@ -459,19 +549,23 @@ namespace Electra
 			}
 			void Clear()
 			{
+				ProfileSpace = 0;
 				Profile = 0;
 				Level = 0;
+				CompatibilityFlags = 0;
 				Constraints = 0;
 				Tier = 0;
 			}
+			int32		ProfileSpace;
 			int32		Profile;
 			int32		Level;
-			int32		Constraints;
+			uint32		CompatibilityFlags;
+			uint64		Constraints;
 			int32		Tier;
 
 			bool operator == (const FProfileLevel& rhs) const
 			{
-				return Profile == rhs.Profile && Level == rhs.Level && Constraints == rhs.Constraints && Tier == rhs.Tier;
+				return ProfileSpace == rhs.ProfileSpace && Profile == rhs.Profile && Level == rhs.Level && Constraints == rhs.Constraints && Tier == rhs.Tier;
 			}
 
 			bool operator != (const FProfileLevel& rhs) const
@@ -482,13 +576,16 @@ namespace Electra
 
 		EStreamType		StreamType;
 		FString			CodecSpecifier;				//!< Codec specifier as per RFC 6381
+		FString			MimeType;					//!< Explicitly set mime type if it cannot be inferred.
 		ECodec			Codec;
 		FResolution		Resolution;					//!< Resolution, if this is a video stream
 		FCrop			Crop;						//!< Cropping, if this is a video stream
+		FTranslation	Translation;				//!< Top-left corner offset for subtitles
 		FAspectRatio	AspectRatio;				//!< Aspect ratio, if this is a video stream
 		FTimeFraction	FrameRate;					//!< Frame rate, if this is a video stream
 		FProfileLevel	ProfileLevel;
 		FString			StreamLanguageCode;			//!< Language code from the stream itself, if present.
+		int32			Bitrate;
 		int32			SampleRate;					//!< Decoded sample rate, if this is an audio stream.
 		int32			NumChannels;				//!< Number of decoded channels, if this is an audio stream.
 		uint32			ChannelConfiguration;		//!< Format specific audio channel configuration
@@ -496,6 +593,7 @@ namespace Electra
 		int32			AudioAccessibility;			//!< Format specific audio accessibility
 		int32			NumberOfAudioObjects;		//!< Format specific number of audio objects
 		FParamDict		Extras;						//!< Additional details/properties, depending on playlist.
+		TArray<uint8>	CSD;						//!< Codec specific data, if available.
 	};
 
 
@@ -571,32 +669,46 @@ namespace Electra
 		// RFC-4646 and of RFC-5646
 		TOptional<FString> Language_ISO639;
 
+		// Preferred codec. Typically set to ensure the same track remains selected after a seek in case the same content
+		// is provided with different formats. See GetCodecName()
+		TOptional<FString> Codec;
+
 		// Rarely used. Unconditionally selects a track by its index where the index is a sequential numbering from [0..n)
 		// of the tracks as they are found. If the index is invalid the selection rules for kind and language are applied.
 		TOptional<int32> OverrideIndex;
 
-		bool IsCompatibleWith(const FStreamSelectionAttributes& Other)
+		virtual ~FStreamSelectionAttributes() = default;
+
+		virtual bool IsCompatibleWith(const FStreamSelectionAttributes& Other)
 		{
+			if (OverrideIndex.IsSet() && Other.OverrideIndex.IsSet() && OverrideIndex.GetValue() >= 0 && Other.OverrideIndex.GetValue() >= 0 && OverrideIndex.GetValue() != Other.OverrideIndex.GetValue())
+			{
+				return false;
+			}
 			FString Kind1 = Kind.IsSet() ? Kind.GetValue() : FString();
 			FString Kind2 = Other.Kind.IsSet() ? Other.Kind.GetValue() : FString();
 
 			FString Lang1 = Language_ISO639.IsSet() ? Language_ISO639.GetValue() : FString();
 			FString Lang2 = Other.Language_ISO639.IsSet() ? Other.Language_ISO639.GetValue() : FString();
 
+			FString Codec1 = Codec.IsSet() ? Codec.GetValue() : FString();
+			FString Codec2 = Other.Codec.IsSet() ? Other.Codec.GetValue() : FString();
+
 			if (Kind1.IsEmpty() || Kind2.IsEmpty() || Kind1.Equals(Kind2))
 			{
-				return Lang1.Equals(Lang2);
+				return Lang1.Equals(Lang2) && Codec1.Equals(Codec2);
 			}
 			return false;
 		}
 
-		void Reset()
+		virtual void Reset()
 		{
 			Kind.Reset();
 			Language_ISO639.Reset();
+			Codec.Reset();
 			OverrideIndex.Reset();
 		}
-		void UpdateWith(const FString& InKind, const FString& InLanguage, int32 InOverrideIndex)
+		virtual void UpdateWith(const FString& InKind, const FString& InLanguage, const FString& InCodec, int32 InOverrideIndex)
 		{
 			Reset();
 			if (!InKind.IsEmpty())
@@ -607,44 +719,95 @@ namespace Electra
 			{
 				Language_ISO639 = InLanguage;
 			}
+			if (!InCodec.IsEmpty())
+			{
+				Codec = InCodec;
+			}
 			if (InOverrideIndex >= 0)
 			{
 				OverrideIndex = InOverrideIndex;
 			}
 		}
-		void UpdateIfOverrideSet(const FString& InKind, const FString& InLanguage)
+		virtual void UpdateIfOverrideSet(const FString& InKind, const FString& InLanguage, const FString& InCodec)
 		{
 			if (OverrideIndex.IsSet())
 			{
 				ClearOverrideIndex();
 				Kind = InKind;
 				Language_ISO639 = InLanguage;
+				Codec = InCodec;
 			}
 		}
-		void ClearOverrideIndex()
+		virtual void ClearOverrideIndex()
 		{
 			OverrideIndex.Reset();
 		}
 	};
 
 
-
-
-	struct FPlayerLoopState
+	
+	class FCodecSelectionPriorities
 	{
-		FPlayerLoopState()
+	public:
+		/**
+		 * Initializes this selector with a priority string in the following FORMAT:
+		 *   FORMAT = CLASSPRIO 0*[COMMA CLASSPRIO]
+		 *   COMMA = ,
+		 *   EQ = =
+		 *   PRIO = 1*DIGIT
+		 *   PREFIX = 1*VCHAR    ; except , = { }
+		 *   CLASS = PREFIX
+		 *   CODECPRIO = CLASS EQ PRIO
+		 *   CLASSWITHPRIO = CODECPRIO 0*[ { CODECPRIO 0*[ COMMA CODECPRIO ] } ]
+		 *   CLASSWITHOUTPRIO = CLASS 1*[ { CODECPRIO 0*[ COMMA CODECPRIO ] } ]
+		 *   CLASSPRIO = CLASSWITHPRIO / CLASSWITHOUTPRIO
+		 * 
+		 * Examples: hvc=2,hev=2,avc=1
+		 *           mp4a{mp4a.40.5=0,mp4a.40.2=1}
+		 * 
+		 * First codec priorities are given for an entire codec class (eg. "hvc").
+		 * Within each class, where it makes sense, individual streams can be prioritized.
+		 * Say within a class "mp4a" there are two AAC streams. One LC and one HE.
+		 * To use the LC over the HE stream the "mp4a" class gives more detailed codec
+		 * prefixes and their priorities like the above example.
+		 * 
+		 * If used with DASH streams the class priority can be thought of the priority
+		 * of an AdaptationSet and the stream priority of that of a Representation.
+		 * User defined priorities override the @selectionPriority attribute of a
+		 * DASH AdaptationSet or Representation.
+		 */
+		bool Initialize(const FString& ConfigurationString);
+		int32 GetClassPriority(const FString& CodecSpecifierRFC6381) const;
+		int32 GetStreamPriority(const FString& CodecSpecifierRFC6381) const;
+	private:
+		bool ParseInternal(const FString& ConfigurationString);
+		struct FStreamPriority
+		{
+			FString Prefix;
+			int32 Priority = -1;
+		};
+		struct FClassPriority
+		{
+			FString Prefix;
+			int32 Priority = -1;
+			TArray<FStreamPriority> StreamPriorities;
+		};
+		TArray<FClassPriority> ClassPriorities;
+	};
+
+
+
+	struct FPlayerSequenceState
+	{
+		FPlayerSequenceState()
 		{
 			Reset();
 		}
 		void Reset()
 		{
-			LoopBasetime.SetToZero();
-			LoopCount = 0;
-			bLoopEnabled = false;
+			SequenceIndex = 0;
 		}
-		FTimeValue	LoopBasetime;				//!< Base time added to the play position to have it monotonously increasing. Subtract this from the current play position to get the local time into the media.
-		int32		LoopCount;					//!< Number of times playback jumped back to loop. 0 on first playthrough, 1 on first loop, etc.
-		bool		bLoopEnabled;
+		int64	SequenceIndex;
 	};
 
 

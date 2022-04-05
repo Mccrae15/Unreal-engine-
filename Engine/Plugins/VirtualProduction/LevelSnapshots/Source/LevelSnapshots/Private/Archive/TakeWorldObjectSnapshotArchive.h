@@ -9,19 +9,28 @@ struct FObjectSnapshotData;
 struct FWorldSnapshotData;
 class UObject;
 
-/* Used when we're taking a snapshot of the world. */
-class FTakeWorldObjectSnapshotArchive final : public FSnapshotArchive
+namespace UE::LevelSnapshots::Private
 {
-	using Super = FSnapshotArchive;
-public:
+	/* Used when we're taking a snapshot of the world. */
+	class FTakeWorldObjectSnapshotArchive final : public FSnapshotArchive
+	{
+		using Super = FSnapshotArchive;
+	public:
 
-	UE_NODISCARD static FTakeWorldObjectSnapshotArchive MakeArchiveForSavingWorldObject(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject);
+		static void TakeSnapshot(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject);
 
-	//~ Begin FSnapshotArchive Interface
-	virtual bool ShouldSkipProperty(const FProperty* InProperty) const override;
-	//~ End FSnapshotArchive Interface
+		//~ Begin FSnapshotArchive Interface
+		virtual bool ShouldSkipProperty(const FProperty* InProperty) const override;
+		//~ End FSnapshotArchive Interface
+
+		protected:
 	
-private:
+		//~ Begin FSnapshotArchive Interface
+		virtual UObject* ResolveObjectDependency(int32 ObjectIndex) const { checkNoEntry(); return nullptr; }
+		//~ End FSnapshotArchive Interface
+
+	private:
 	
-	FTakeWorldObjectSnapshotArchive(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject);
-};
+		FTakeWorldObjectSnapshotArchive(FObjectSnapshotData& InObjectData, FWorldSnapshotData& InSharedData, UObject* InOriginalObject);
+	};
+}

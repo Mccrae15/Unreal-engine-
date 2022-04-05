@@ -48,7 +48,7 @@ FBoxSphereBounds UOceanCollisionComponent::CalcBounds(const FTransform& LocalToW
 
 void UOceanCollisionComponent::CreateOceanBodySetupIfNeeded()
 {
-	if (CachedBodySetup == nullptr || CachedBodySetup->IsPendingKill())
+	if (!IsValid(CachedBodySetup))
 	{
 		CachedBodySetup = NewObject<UBodySetup>(this, TEXT("BodySetup")); // a name needs to be provided to ensure determinism
 		CachedBodySetup->CollisionTraceFlag = CTF_UseSimpleAsComplex;
@@ -94,7 +94,7 @@ void UOceanCollisionComponent::UpdateBodySetup(const TArray<FKConvexElem>& Conve
 	for (FKConvexElem& Elem : CachedBodySetup->AggGeom.ConvexElems)
 	{
 		int32 NumHullVerts = Elem.VertexData.Num();
-		TArray<Chaos::FVec3> ConvexVertices;
+		TArray<Chaos::FConvex::FVec3Type> ConvexVertices;
 		ConvexVertices.SetNum(NumHullVerts);
 		for (int32 VertIndex = 0; VertIndex < NumHullVerts; ++VertIndex)
 		{
@@ -115,19 +115,12 @@ void UOceanCollisionComponent::UpdateBodySetup(const TArray<FKConvexElem>& Conve
 	UpdateBounds();
 }
 
-
 UBodySetup* UOceanCollisionComponent::GetBodySetup()
 {
 	return CachedBodySetup;
 }
 
-
-
-
-
-
-
-
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 FPrimitiveSceneProxy* UOceanCollisionComponent::CreateSceneProxy()
 {
@@ -143,9 +136,14 @@ FPrimitiveSceneProxy* UOceanCollisionComponent::CreateSceneProxy()
 
 		FOceanCollisionSceneProxy(const UOceanCollisionComponent* InComponent)
 			: FPrimitiveSceneProxy(InComponent)
-			, BodySetup(InComponent->CachedBodySetup)
 		{
 			bWillEverBeLit = false;
+
+			if (InComponent->CachedBodySetup)
+			{
+				// copy the geometry for being able to access it on the render thread : 
+				AggregateGeom = InComponent->CachedBodySetup->AggGeom;
+			}
 		}
 
 		virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override
@@ -155,26 +153,23 @@ FPrimitiveSceneProxy* UOceanCollisionComponent::CreateSceneProxy()
 
 			const bool bDrawCollision = ViewFamily.EngineShowFlags.Collision && IsCollisionEnabled();
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 			{
 				if (VisibilityMap & (1 << ViewIndex))
 				{
 					const FSceneView* View = Views[ViewIndex];
 
-					if (bDrawCollision && BodySetup && AllowDebugViewmodes())
+					if (bDrawCollision && AllowDebugViewmodes())
 					{
 						FColor CollisionColor(157, 149, 223, 255);
 						const bool bPerHullColor = false;
 						const bool bDrawSolid = false;
-						BodySetup->AggGeom.GetAggGeom(LocalToWorldTransform, GetSelectionColor(CollisionColor, IsSelected(), IsHovered()).ToFColor(true), nullptr, bPerHullColor, bDrawSolid, DrawsVelocity(), ViewIndex, Collector);
+						AggregateGeom.GetAggGeom(LocalToWorldTransform, GetSelectionColor(CollisionColor, IsSelected(), IsHovered()).ToFColor(true), nullptr, bPerHullColor, bDrawSolid, DrawsVelocity(), ViewIndex, Collector);
 					}
 
 					RenderBounds(Collector.GetPDI(ViewIndex), View->Family->EngineShowFlags, GetBounds(), IsSelected());
-
 				}
 			}
-#endif
 		}
 
 		virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override
@@ -193,23 +188,21 @@ FPrimitiveSceneProxy* UOceanCollisionComponent::CreateSceneProxy()
 		uint32 GetAllocatedSize(void) const { return(FPrimitiveSceneProxy::GetAllocatedSize()); }
 
 	private:
-		UBodySetup* BodySetup;
+		FKAggregateGeom AggregateGeom;
 	};
 
 	return new FOceanCollisionSceneProxy(this);
 }
 
-
-
-
+#endif // !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 
 bool UOceanCollisionComponent::DoCustomNavigableGeometryExport(FNavigableGeometryExport& GeomExport) const
 {
 	const AWaterBody* OwningBody = GetTypedOuter<AWaterBody>();
-	if (CachedBodySetup && OwningBody)
+	if (CachedBodySetup && OwningBody && OwningBody->GetWaterBodyComponent())
 	{
 		FTransform GeomTransform(GetComponentTransform());
-		GeomTransform.AddToTranslation(OwningBody->GetWaterNavCollisionOffset());
+		GeomTransform.AddToTranslation(OwningBody->GetWaterBodyComponent()->GetWaterNavCollisionOffset());
 		GeomExport.ExportRigidBodySetup(*CachedBodySetup, GeomTransform);
 		return false;
 	}
@@ -217,11 +210,7 @@ bool UOceanCollisionComponent::DoCustomNavigableGeometryExport(FNavigableGeometr
 	return true;
 }
 
-
-
-
-
-
+// ----------------------------------------------------------------------------------
 
 UOceanBoxCollisionComponent::UOceanBoxCollisionComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -231,10 +220,10 @@ UOceanBoxCollisionComponent::UOceanBoxCollisionComponent(const FObjectInitialize
 bool UOceanBoxCollisionComponent::DoCustomNavigableGeometryExport(FNavigableGeometryExport& GeomExport) const
 {
 	const AWaterBody* OwningBody = GetTypedOuter<AWaterBody>();
-	if (ShapeBodySetup && OwningBody)
+	if (ShapeBodySetup && OwningBody && OwningBody->GetWaterBodyComponent())
 	{
 		FTransform GeomTransform(GetComponentTransform());
-		GeomTransform.AddToTranslation(OwningBody->GetWaterNavCollisionOffset());
+		GeomTransform.AddToTranslation(OwningBody->GetWaterBodyComponent()->GetWaterNavCollisionOffset());
 		GeomExport.ExportRigidBodySetup(*ShapeBodySetup, GeomTransform);
 		return false;
 	}

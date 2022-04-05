@@ -5,6 +5,8 @@
 #include "GraphEditorSettings.h"
 #include "EdGraphSchema_K2.h"
 #include "DynamicCastHandler.h"
+#include "Engine/Blueprint.h"
+#include "UObject/Interface.h"
 
 #define LOCTEXT_NAMESPACE "K2Node_ClassDynamicCast"
 
@@ -74,6 +76,20 @@ FText UK2Node_ClassDynamicCast::GetNodeTitle(ENodeTitleType::Type TitleType) con
 		CachedNodeTitle.SetCachedText(FText::Format(LOCTEXT("NodeTitle", "{0} Class"), Super::GetNodeTitle(TitleType)), this);
 	}
 	return CachedNodeTitle;
+}
+
+FText UK2Node_ClassDynamicCast::GetTooltipText() const
+{
+	if (TargetType && TargetType->IsChildOf(UInterface::StaticClass()))
+	{
+		return LOCTEXT("CastToInterfaceTooltip", "Tries to access class as an interface it may implement.");
+	}
+	UBlueprint* CastToBP = UBlueprint::GetBlueprintFromClass(TargetType);
+	if (CastToBP)
+	{
+		return LOCTEXT("CastToBPTooltip", "Tries to access class as a blueprint class it may inherit from.\n\nNOTE: This will cause the blueprint to always be loaded, which can be expensive.");
+	}
+	return LOCTEXT("CastToNativeTooltip", "Tries to access class as one it may inherit from.");
 }
 
 UEdGraphPin* UK2Node_ClassDynamicCast::GetCastSourcePin() const

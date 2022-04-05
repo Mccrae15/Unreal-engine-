@@ -35,7 +35,8 @@
 			PRAGMA_DISABLE_DEPRECATION_WARNINGS \
 			PRAGMA_DISABLE_OVERLOADED_VIRTUAL_WARNINGS \
 			PRAGMA_DISABLE_MISSING_BRACES_WARNINGS \
-	        PRAGMA_DISABLE_UNINITIALIZED_CONST_REFERENCE_WARNINGS
+	        PRAGMA_DISABLE_UNINITIALIZED_CONST_REFERENCE_WARNINGS \
+			PRAGMA_DISABLE_ORDERED_COMPARE_FUNCTION_POINTERS
 	#endif // THIRD_PARTY_INCLUDES_START
 
 	#ifndef THIRD_PARTY_INCLUDES_END
@@ -46,7 +47,8 @@
 			PRAGMA_ENABLE_DEPRECATION_WARNINGS \
 			PRAGMA_ENABLE_UNDEFINED_IDENTIFIER_WARNINGS \
 			PRAGMA_ENABLE_SHADOW_VARIABLE_WARNINGS \
-			PRAGMA_ENABLE_REORDER_WARNINGS
+			PRAGMA_ENABLE_REORDER_WARNINGS \
+			PRAGMA_ENABLE_ORDERED_COMPARE_FUNCTION_POINTERS
 	#endif // THIRD_PARTY_INCLUDES_END
 #else
 	#ifndef DISABLE_DEPRECATION
@@ -79,13 +81,26 @@
 	#ifndef PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 		#define PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS \
 			__pragma (warning(push)) \
-			__pragma (warning(disable: 4244)) /* 'argument': conversion from 'type1' to 'type2', possible loss of data */
+			__pragma (warning(disable: 4244)) /* 'argument': conversion from 'type1' to 'type2', possible loss of data */	\
+			__pragma (warning(disable: 4838)) /* 'argument': conversion from 'type1' to 'type2' requires a narrowing conversion */
 	#endif // PRAGMA_DISABLE_UNSAFE_TYPECAST_WARNINGS
 
 	#ifndef PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
 		#define PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS \
-			__pragma(warning(pop))
+			DEPRECATED_MACRO(5.0, "The PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS macro has been deprecated in favor of PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS. To force enable warnings use PRAGMA_FORCE_UNSAFE_TYPECAST_WARNINGS.")
 	#endif // PRAGMA_ENABLE_UNSAFE_TYPECAST_WARNINGS
+
+	#ifndef PRAGMA_FORCE_UNSAFE_TYPECAST_WARNINGS
+		#define PRAGMA_FORCE_UNSAFE_TYPECAST_WARNINGS \
+			__pragma (warning(push)) \
+			__pragma (warning(error: 4244)) /* 'argument': conversion from 'type1' to 'type2', possible loss of data */	\
+			__pragma (warning(error: 4838)) /* 'argument': conversion from 'type1' to 'type2' requires a narrowing conversion */
+	#endif // PRAGMA_FORCE_UNSAFE_TYPECAST_WARNINGS
+
+	#ifndef PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS
+		#define PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS \
+			__pragma(warning(pop))
+	#endif // PRAGMA_RESTORE_UNSAFE_TYPECAST_WARNINGS
 
 	#ifndef PRAGMA_DISABLE_UNDEFINED_IDENTIFIER_WARNINGS
 		#define PRAGMA_DISABLE_UNDEFINED_IDENTIFIER_WARNINGS \
@@ -131,6 +146,16 @@
 			__pragma(warning(pop))
 	#endif // PRAGMA_ENABLE_REGISTER_WARNINGS
 
+	#ifndef PRAGMA_DISABLE_UNUSED_PRIVATE_FIELDS_WARNINGS
+	#define PRAGMA_DISABLE_UNUSED_PRIVATE_FIELDS_WARNINGS
+			// MSVC doesn't seem to have a warning similar to -Wunused-private-field
+	#endif // PRAGMA_DISABLE_UNUSED_PRIVATE_FIELDS_WARNINGS
+
+	#ifndef PRAGMA_ENABLE_UNUSED_PRIVATE_FIELDS_WARNINGS
+	#define PRAGMA_ENABLE_UNUSED_PRIVATE_FIELDS_WARNINGS
+			// MSVC doesn't seem to have a warning similar to -Wunused-private-field
+	#endif // PRAGMA_ENABLE_UNUSED_PRIVATE_FIELDS_WARNINGS
+
 	#ifndef PRAGMA_DISABLE_UNINITIALIZED_CONST_REFERENCE_WARNINGS
 	#define PRAGMA_DISABLE_UNINITIALIZED_CONST_REFERENCE_WARNINGS
 		// MSVC doesn't seem to have a warning similar to -Wuninitialized-const-reference
@@ -151,14 +176,12 @@
 	#ifdef _WIN64
 		#ifndef PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
 			#define PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING \
-				__pragma(pack(push)) \
-				__pragma(pack(16))
+				__pragma(pack(push, 16))
 		#endif // PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
 	#else // _WIN64
 		#ifndef PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
 			#define PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING \
-				__pragma(pack(push)) \
-				__pragma(pack(8))
+				__pragma(pack(push, 8))
 		#endif // PRAGMA_PUSH_PLATFORM_DEFAULT_PACKING
 	#endif // _WIN64
 	
@@ -171,10 +194,11 @@
 	#ifndef THIRD_PARTY_INCLUDES_START
 		#define THIRD_PARTY_INCLUDES_START \
 			__pragma(warning(push)) \
+			__pragma(warning(disable: 4125))  /* decimal digit terminates octal escape sequence. */ \
 			__pragma(warning(disable: 4510))  /* '<class>': default constructor could not be generated. */ \
 			__pragma(warning(disable: 4610))  /* object '<class>' can never be instantiated - user-defined constructor required. */ \
 			__pragma(warning(disable: 4800))  /* Implicit conversion from '<type>' to bool. Possible information loss. */ \
-			__pragma(warning(disable: 4946))  /* reinterpret_cast used between related classes: '<class1>' and '<class1>' */ \
+			__pragma(warning(disable: 4946))  /* reinterpret_cast used between related classes: '<class1>' and '<class2>' */ \
 			__pragma(warning(disable: 4996))  /* '<obj>' was declared deprecated. */ \
 			__pragma(warning(disable: 6011))  /* Dereferencing NULL pointer '<ptr>'. */ \
 			__pragma(warning(disable: 6101))  /* Returning uninitialized memory '<expr>'.  A successful path through the function does not set the named _Out_ parameter. */ \

@@ -23,7 +23,6 @@ struct FCanDeleteAssetResult;
 class FMenuBuilder;
 class FWidgetRenderer;
 class IDetailsView;
-class ILevelViewport;
 class SImage;
 class SSplitter;
 class SVirtualWindow;
@@ -104,6 +103,10 @@ public:
 
 	//~ Begin FGCObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SRemoteSessionStream");
+	}
 	//~ End FGCObject interface
 
 	//~ Begin FTickableEditorObject interface
@@ -154,7 +157,6 @@ private:
 	TSharedPtr<IRemoteSessionUnmanagedRole> RemoteSessionHost;
 	TSharedPtr<SVirtualWindow> VirtualWindow;
 	FWidgetRenderer* WidgetRenderer;
-	TWeakPtr<ILevelViewport> ActiveLevelViewport;
 	FVector2D WidgetSize;
 
 	bool bIsStreaming;

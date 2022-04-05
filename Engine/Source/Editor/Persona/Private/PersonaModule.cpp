@@ -2,7 +2,7 @@
 
 
 #include "PersonaModule.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/ScopedSlowTask.h"
@@ -20,6 +20,7 @@
 #include "SkeletalMeshSocketDetails.h"
 #include "AnimNotifyDetails.h"
 #include "AnimGraphNodeDetails.h"
+#include "BlendProfileCustomization.h"
 #include "AnimInstanceDetails.h"
 #include "IEditableSkeleton.h"
 #include "IPersonaToolkit.h"
@@ -39,7 +40,6 @@
 #include "Animation/BlendSpace.h"
 #include "SAnimationBlendSpace.h"
 #include "Animation/BlendSpace1D.h"
-#include "SAnimationBlendSpace1D.h"
 #include "Animation/AimOffsetBlendSpace.h"
 #include "Animation/AimOffsetBlendSpace1D.h"
 #include "SAnimationDlgs.h"
@@ -91,6 +91,8 @@
 #include "SAnimSequenceCurveEditor.h"
 #include "AnimSequenceTimelineCommands.h"
 #include "SAnimMontageSectionsPanel.h"
+#include "Animation/AnimSequenceHelpers.h"
+#include "SkeletalMeshReferenceSectionDetails.h"
 
 IMPLEMENT_MODULE( FPersonaModule, Persona );
 
@@ -111,40 +113,15 @@ void FPersonaModule::StartupModule()
 	// Make sure the advanced preview scene module is loaded 
 	FModuleManager::Get().LoadModuleChecked("AdvancedPreviewScene");
 
-	// Load all blueprint animnotifies from asset registry so they are available from drop downs in anim segment detail views
-	// TODO: Currently disabled when I/O store is enabled in editor builds because this triggers loading cooked SkeletalMeshes
-	// that currently crashes
-	FString Commandline = FCommandLine::Get();
-	const bool bIsCookCommandlet = Commandline.Contains(TEXT("cookcommandlet")) || Commandline.Contains(TEXT("run=cook"));
-	const bool bLoadAnimNotifiesBlueprints = !bIsCookCommandlet && !WITH_IOSTORE_IN_EDITOR;
-	if(bLoadAnimNotifiesBlueprints)
-	{
-		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
-
-		// Collect a full list of assets with the specified class
-		TArray<FAssetData> AssetData;
-		AssetRegistryModule.Get().GetAssetsByClass(UBlueprint::StaticClass()->GetFName(), AssetData);
-
-		const FString BPAnimNotify( TEXT("Class'/Script/Engine.AnimNotify'" ));
-
-		for (int32 AssetIndex = 0; AssetIndex < AssetData.Num(); ++AssetIndex)
-		{
-			FString TagValue = AssetData[ AssetIndex ].GetTagValueRef<FString>(FBlueprintTags::ParentClassPath);
-			if (TagValue == BPAnimNotify)
-			{
-				FString BlueprintPath = AssetData[AssetIndex].ObjectPath.ToString();
-				LoadObject<UBlueprint>(NULL, *BlueprintPath, NULL, 0, NULL);
-			}
-		}
-	}
 	{
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		PropertyModule.RegisterCustomClassLayout( "SkeletalMeshSocket", FOnGetDetailCustomizationInstance::CreateStatic( &FSkeletalMeshSocketDetails::MakeInstance ) );
 		PropertyModule.RegisterCustomClassLayout( "EditorNotifyObject", FOnGetDetailCustomizationInstance::CreateStatic(&FAnimNotifyDetails::MakeInstance));
 		PropertyModule.RegisterCustomClassLayout( "AnimGraphNode_Base", FOnGetDetailCustomizationInstance::CreateStatic( &FAnimGraphNodeDetails::MakeInstance ) );
 		PropertyModule.RegisterCustomClassLayout( "AnimInstance", FOnGetDetailCustomizationInstance::CreateStatic(&FAnimInstanceDetails::MakeInstance));
-		PropertyModule.RegisterCustomClassLayout("BlendSpaceBase", FOnGetDetailCustomizationInstance::CreateStatic(&FBlendSpaceDetails::MakeInstance));	
+		PropertyModule.RegisterCustomClassLayout("BlendSpace", FOnGetDetailCustomizationInstance::CreateStatic(&FBlendSpaceDetails::MakeInstance));	
 
+		PropertyModule.RegisterCustomPropertyTypeLayout("BlendProfile", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FBlendProfileCustomization::MakeInstance));
 		PropertyModule.RegisterCustomPropertyTypeLayout( "InputScaleBias", FOnGetPropertyTypeCustomizationInstance::CreateStatic( &FInputScaleBiasCustomization::MakeInstance ) );
 		PropertyModule.RegisterCustomPropertyTypeLayout( "BoneReference", FOnGetPropertyTypeCustomizationInstance::CreateStatic( &FBoneReferenceCustomization::MakeInstance ) );
 		PropertyModule.RegisterCustomPropertyTypeLayout("BoneSocketTarget", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FBoneSocketTargetCustomization::MakeInstance));
@@ -157,6 +134,8 @@ void FPersonaModule::StartupModule()
 
 		PropertyModule.RegisterCustomPropertyTypeLayout("SkeletalMeshSamplingRegionBoneFilter", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraSkeletalMeshRegionBoneFilterDetails::MakeInstance));
 		PropertyModule.RegisterCustomPropertyTypeLayout("SkeletalMeshSamplingRegionMaterialFilter", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNiagaraSkeletalMeshRegionMaterialFilterDetails::MakeInstance));
+
+		PropertyModule.RegisterCustomPropertyTypeLayout("SectionReference", FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FSectionReferenceCustomization::MakeInstance));
 	}
 
 	// Register the editor modes
@@ -187,7 +166,7 @@ void FPersonaModule::ShutdownModule()
 		PropertyModule.UnregisterCustomClassLayout("EditorNotifyObject");
 		PropertyModule.UnregisterCustomClassLayout("AnimGraphNode_Base");
 		PropertyModule.UnregisterCustomClassLayout("AnimInstance");
-		PropertyModule.UnregisterCustomClassLayout("BlendSpaceBase");
+		PropertyModule.UnregisterCustomClassLayout("BlendSpace");
 
 		PropertyModule.UnregisterCustomPropertyTypeLayout("InputScaleBias");
 		PropertyModule.UnregisterCustomPropertyTypeLayout("BoneReference");
@@ -208,11 +187,11 @@ static void SetupPersonaToolkit(const TSharedRef<FPersonaToolkit>& Toolkit, cons
 	}
 }
 
-TSharedRef<IPersonaToolkit> FPersonaModule::CreatePersonaToolkit(UObject* InAsset, const FPersonaToolkitArgs& PersonaToolkitArgs) const
+TSharedRef<IPersonaToolkit> FPersonaModule::CreatePersonaToolkit(UObject* InAsset, const FPersonaToolkitArgs& PersonaToolkitArgs, USkeleton* InSkeleton) const
 {
 	TSharedRef<FPersonaToolkit> NewPersonaToolkit(new FPersonaToolkit());
 
-	NewPersonaToolkit->Initialize(InAsset);
+	NewPersonaToolkit->Initialize(InAsset, InSkeleton);
 
 	SetupPersonaToolkit(NewPersonaToolkit, PersonaToolkitArgs);
 
@@ -309,12 +288,17 @@ TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateAnimNotifiesTabFacto
 
 TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateCurveViewerTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, FSimpleMulticastDelegate& InOnPostUndo, FOnObjectsSelected InOnObjectsSelected) const
 {
-	return MakeShareable(new FAnimCurveViewerTabSummoner(InHostingApp, InEditableSkeleton, InPreviewScene, InOnPostUndo, InOnObjectsSelected));
+	return MakeShareable(new FAnimCurveViewerTabSummoner(InHostingApp, InEditableSkeleton, InPreviewScene, InOnObjectsSelected));
 }
 
-TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateRetargetManagerTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, FSimpleMulticastDelegate& InOnPostUndo) const
+TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateCurveViewerTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, FOnObjectsSelected InOnObjectsSelected) const
 {
-	return MakeShareable(new FRetargetManagerTabSummoner(InHostingApp, InEditableSkeleton, InPreviewScene, InOnPostUndo));
+	return MakeShareable(new FAnimCurveViewerTabSummoner(InHostingApp, InEditableSkeleton, InPreviewScene, InOnObjectsSelected));
+}
+
+TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateRetargetSourcesTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, const TSharedRef<IPersonaPreviewScene>& InPreviewScene, FSimpleMulticastDelegate& InOnPostUndo) const
+{
+	return MakeShareable(new FRetargetSourcesTabSummoner(InHostingApp, InEditableSkeleton, InPreviewScene, InOnPostUndo));
 }
 
 TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateAdvancedPreviewSceneTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<IPersonaPreviewScene>& InPreviewScene) const
@@ -342,6 +326,11 @@ TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateAnimBlueprintPreview
 	return MakeShareable(new FAnimBlueprintPreviewEditorSummoner(InBlueprintEditor, InPreviewScene));
 }
 
+TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreatePoseWatchTabFactory(const TSharedRef<class FBlueprintEditor>& InBlueprintEditor) const
+{
+	return MakeShareable(new FPoseWatchManagerSummoner(InBlueprintEditor));
+}
+
 TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateAnimBlueprintAssetOverridesTabFactory(const TSharedRef<class FBlueprintEditor>& InBlueprintEditor, UAnimBlueprint* InAnimBlueprint, FSimpleMulticastDelegate& InOnPostUndo) const
 {
 	return MakeShareable(new FAnimBlueprintParentPlayerEditorSummoner(InBlueprintEditor, InOnPostUndo));
@@ -349,19 +338,38 @@ TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateAnimBlueprintAssetOv
 
 TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateSkeletonSlotNamesTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, FSimpleMulticastDelegate& InOnPostUndo, FOnObjectSelected InOnObjectSelected) const
 {
-	return MakeShareable(new FSkeletonSlotNamesSummoner(InHostingApp, InEditableSkeleton, InOnPostUndo, InOnObjectSelected));
+	return MakeShareable(new FSkeletonSlotNamesSummoner(InHostingApp, InEditableSkeleton, InOnObjectSelected));
 }
 
-TSharedRef<SWidget> FPersonaModule::CreateBlendSpacePreviewWidget(TAttribute<const UBlendSpaceBase*> InBlendSpace, TAttribute<FVector> InPosition) const
+TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateSkeletonSlotNamesTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<class IEditableSkeleton>& InEditableSkeleton, FOnObjectSelected InOnObjectSelected) const
+{
+	return MakeShareable(new FSkeletonSlotNamesSummoner(InHostingApp, InEditableSkeleton, InOnObjectSelected));
+}
+
+TSharedRef<SWidget> FPersonaModule::CreateBlendSpacePreviewWidget(const FBlendSpacePreviewArgs& InArgs) const
 {
 	return
 		SNew(SBlendSpaceGridWidget)
 		.Cursor(EMouseCursor::Crosshairs)
-		.BlendSpaceBase(InBlendSpace)
-		.Position(InPosition)
+		.BlendSpaceBase(InArgs.PreviewBlendSpace)
+		.Position(InArgs.PreviewPosition)
+		.FilteredPosition(InArgs.PreviewFilteredPosition)
 		.ReadOnly(true)
 		.ShowAxisLabels(false)
-		.ShowSettingsButtons(false);
+		.ShowSettingsButtons(false)
+		.OnGetBlendSpaceSampleName(InArgs.OnGetBlendSpaceSampleName);
+}
+
+TSharedRef<SWidget> FPersonaModule::CreateBlendSpacePreviewWidget(TAttribute<const UBlendSpace*> InBlendSpace, TAttribute<FVector> InPosition, TAttribute<FVector> InFilteredPosition) const
+{
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FBlendSpacePreviewArgs Args;
+	Args.PreviewBlendSpace = InBlendSpace;
+	Args.PreviewPosition = InPosition;
+	Args.PreviewFilteredPosition = InFilteredPosition;
+
+	return CreateBlendSpacePreviewWidget(Args);
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 }
 
 TSharedRef<class FWorkflowTabFactory> FPersonaModule::CreateAnimMontageSectionsTabFactory(const TSharedRef<class FWorkflowCentricApplication>& InHostingApp, const TSharedRef<IPersonaToolkit>& InPersonaToolkit, FSimpleMulticastDelegate& InOnSectionsChanged) const
@@ -441,7 +449,7 @@ TSharedRef<SWidget> FPersonaModule::CreateEditorWidgetForAnimDocument(const TSha
 		}
 		else if (UBlendSpace* BlendSpace = Cast<UBlendSpace>(InAnimAsset))
 		{
-			Result = SNew(SBlendSpaceEditor, InArgs.PreviewScene.Pin().ToSharedRef(), InArgs.OnPostUndo)
+			Result = SNew(SBlendSpaceEditor, InArgs.PreviewScene.Pin().ToSharedRef())
 				.BlendSpace(BlendSpace);
 
 			if (Cast<UAimOffsetBlendSpace>(InAnimAsset))
@@ -455,8 +463,8 @@ TSharedRef<SWidget> FPersonaModule::CreateEditorWidgetForAnimDocument(const TSha
 		}
 		else if (UBlendSpace1D* BlendSpace1D = Cast<UBlendSpace1D>(InAnimAsset))
 		{
-			Result = SNew(SBlendSpaceEditor1D, InArgs.PreviewScene.Pin().ToSharedRef(), InArgs.OnPostUndo)
-				.BlendSpace1D(BlendSpace1D);
+			Result = SNew(SBlendSpaceEditor, InArgs.PreviewScene.Pin().ToSharedRef())
+				.BlendSpace(BlendSpace1D);
 
 			if (Cast<UAimOffsetBlendSpace1D>(InAnimAsset))
 			{
@@ -615,7 +623,7 @@ void FPersonaModule::TestSkeletonCurveNamesForUse(const TSharedRef<IEditableSkel
 					UAnimSequence* Seq = Cast<UAnimSequence>(Anim.GetAsset());
 
 					TSharedPtr<FTokenizedMessage> Message;
-					for (FFloatCurve& Curve : Seq->RawCurveData.FloatCurves)
+					for (const FFloatCurve& Curve : Seq->GetDataModel()->GetCurveData().FloatCurves)
 					{
 						if (UnusedNames.Contains(Curve.Name.DisplayName))
 						{
@@ -830,15 +838,18 @@ bool FPersonaModule::ExportToFBX(TArray<TWeakObjectPtr<UAnimSequence>>& AnimSequ
 
 void FPersonaModule::AddLoopingInterpolation(TArray<TWeakObjectPtr<UAnimSequence>>& AnimSequences)
 {
-	FText WarningMessage = LOCTEXT("AddLoopiingInterpolation", "This will add an extra first frame at the end of the animation to create a better looping interpolation. This action cannot be undone. Would you like to proceed?");
+	FText WarningMessage = LOCTEXT("AddLoopingInterpolation", "This will add an extra first frame at the end of the animation to create a better looping interpolation. This action cannot be undone. Would you like to proceed?");
 
 	if (FMessageDialog::Open(EAppMsgType::YesNo, WarningMessage) == EAppReturnType::Yes)
 	{
-		for (auto Animation : AnimSequences)
+		for (TWeakObjectPtr<UAnimSequence>& Animation : AnimSequences)
 		{
 			// get first frame and add to the last frame and go through track
 			// now calculating old animated space bases
-			Animation->AddLoopingInterpolation();
+			if (UAnimSequence* AnimSequence = Animation.Get())
+			{
+				UE::Anim::AnimationData::AddLoopingInterpolation(AnimSequence);
+			}
 		}
 	}
 }
@@ -881,6 +892,7 @@ void FPersonaModule::AddCommonToolbarExtensions(FToolBarBuilder& InToolbarBuilde
 			TSharedPtr<SNotificationItem> Notification;
 		};
 
+		static TWeakPtr<SNotificationItem> WeakPendingApplyMeshNotification = nullptr;
 		auto CreatePreviewMeshComboButtonContents = [WeakPersonaToolkit]()
 		{
 			FMenuBuilder MenuBuilder(true, nullptr);
@@ -888,7 +900,8 @@ void FPersonaModule::AddCommonToolbarExtensions(FToolBarBuilder& InToolbarBuilde
 			MenuBuilder.BeginSection(TEXT("ChoosePreviewMesh"), LOCTEXT("ChoosePreviewMesh", "Choose Preview Mesh"));
 			{
 				FAssetPickerConfig AssetPickerConfig;
-				AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateLambda([WeakPersonaToolkit](const FAssetData& AssetData)
+
+				auto HandleAssetSelected = [WeakPersonaToolkit](const FAssetData& AssetData)
 				{
 					if (WeakPersonaToolkit.IsValid())
 					{
@@ -909,7 +922,15 @@ void FPersonaModule::AddCommonToolbarExtensions(FToolBarBuilder& InToolbarBuilde
 								FSimpleDelegate::CreateStatic(&FNotificationHandler::HandleApplyPreviewMesh, NotificationHandler, WeakPersonaToolkit),
 								SNotificationItem::CS_Success));
 
+						// Fade-out previously added SetPreviewMesh notification (if any)
+						const TSharedPtr<SNotificationItem> PendingNotification = WeakPendingApplyMeshNotification.Pin();
+						if(PendingNotification.IsValid())
+						{
+							PendingNotification->Fadeout();
+						}
+
 						NotificationHandler->Notification = FSlateNotificationManager::Get().AddNotification(Info);
+						WeakPendingApplyMeshNotification = NotificationHandler->Notification;
 						if (NotificationHandler->Notification.IsValid())
 						{
 							NotificationHandler->Notification->SetCompletionState(SNotificationItem::CS_Success);
@@ -917,7 +938,16 @@ void FPersonaModule::AddCommonToolbarExtensions(FToolBarBuilder& InToolbarBuilde
 
 						FSlateApplication::Get().DismissAllMenus();
 					}
+				};
+				
+				AssetPickerConfig.OnAssetEnterPressed = FOnAssetEnterPressed::CreateLambda([HandleAssetSelected](const TArray<FAssetData>& SelectedAssetData)
+				{
+					if (SelectedAssetData.Num() == 1)
+					{
+						HandleAssetSelected(SelectedAssetData[0]);
+					}
 				});
+				AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateLambda(HandleAssetSelected);
 				AssetPickerConfig.bAllowNullSelection = false;
 				AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 				AssetPickerConfig.Filter.bRecursiveClasses = false;
@@ -934,14 +964,14 @@ void FPersonaModule::AddCommonToolbarExtensions(FToolBarBuilder& InToolbarBuilde
 						FString TagValue;
 						if (AssetData.GetTagValue("Skeleton", TagValue))
 						{
-							return TagValue != FAssetData(WeakPersonaToolkit.Pin()->GetSkeleton()).GetExportTextName();
+							return !WeakPersonaToolkit.Pin()->GetSkeleton()->IsCompatibleSkeletonByAssetData(AssetData);
 						}
 					}
 					return true;
 				});
 				if (WeakPersonaToolkit.IsValid())
 				{
-					AssetPickerConfig.InitialAssetSelection = FAssetData(WeakPersonaToolkit.Pin()->GetPreviewMesh());
+					AssetPickerConfig.InitialAssetSelection = FAssetData(WeakPersonaToolkit.Pin()->GetPreviewScene()->GetPreviewMesh());
 				}
 
 				FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
@@ -1006,7 +1036,7 @@ void FPersonaModule::AddCommonToolbarExtensions(FToolBarBuilder& InToolbarBuilde
 						FString TagValue;
 						if (AssetData.GetTagValue("Skeleton", TagValue))
 						{
-							return TagValue != FAssetData(WeakPersonaToolkit.Pin()->GetSkeleton()).GetExportTextName();
+							return !WeakPersonaToolkit.Pin()->GetSkeleton()->IsCompatibleSkeletonByAssetData(AssetData);
 						}
 					}
 					return true;
@@ -1488,6 +1518,26 @@ void FPersonaModule::HandleNewAnimNotifyStateBlueprintCreated(UBlueprint* InBlue
 		FBlueprintEditorUtils::AddFunctionGraph(InBlueprint, NewGraph, /*bIsUserCreated=*/ false, UAnimNotifyState::StaticClass());
 		InBlueprint->LastEditedDocuments.Add(NewGraph);
 	}
+}
+
+TSharedRef<SWidget> FPersonaModule::CreateBlendSpaceEditWidget(UBlendSpace* InBlendSpace, const FBlendSpaceEditorArgs& InArgs) const
+{
+	return SNew(SBlendSpaceEditor)
+		.BlendSpace(InBlendSpace)
+		.DisplayScrubBar(false)
+		.OnBlendSpaceNavigateUp(InArgs.OnBlendSpaceNavigateUp)
+		.OnBlendSpaceNavigateDown(InArgs.OnBlendSpaceNavigateDown)
+		.OnBlendSpaceCanvasDoubleClicked(InArgs.OnBlendSpaceCanvasDoubleClicked)
+		.OnBlendSpaceSampleDoubleClicked(InArgs.OnBlendSpaceSampleDoubleClicked)
+		.OnBlendSpaceSampleAdded(InArgs.OnBlendSpaceSampleAdded)
+		.OnBlendSpaceSampleRemoved(InArgs.OnBlendSpaceSampleRemoved)
+		.OnBlendSpaceSampleReplaced(InArgs.OnBlendSpaceSampleReplaced)
+		.OnGetBlendSpaceSampleName(InArgs.OnGetBlendSpaceSampleName)
+		.OnExtendSampleTooltip(InArgs.OnExtendSampleTooltip)
+		.OnSetPreviewPosition(InArgs.OnSetPreviewPosition)
+		.PreviewPosition(InArgs.PreviewPosition)
+		.PreviewFilteredPosition(InArgs.PreviewFilteredPosition)
+		.StatusBarName(InArgs.StatusBarName);
 }
 
 #undef LOCTEXT_NAMESPACE

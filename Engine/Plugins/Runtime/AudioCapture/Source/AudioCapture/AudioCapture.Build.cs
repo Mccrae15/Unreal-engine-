@@ -21,21 +21,13 @@ namespace UnrealBuildTool.Rules
             {
                 PrivateDependencyModuleNames.Add("AudioCaptureRtAudio");
             }
-            else if (Target.Platform == UnrealTargetPlatform.PS4)
-            {
-                PrivateDependencyModuleNames.Add("AudioCaptureSony");
-            }
             else if (Target.Platform == UnrealTargetPlatform.IOS)
             {
                 PrivateDependencyModuleNames.Add("AudioCaptureAudioUnit");
             }
-            else if (Target.Platform == UnrealTargetPlatform.Android && Target.Platform != UnrealTargetPlatform.Lumin)
+            else if (Target.Platform == UnrealTargetPlatform.Android)
             {
                 PrivateDependencyModuleNames.Add("AudioCaptureAndroid");
-            }
-            else if (Target.Platform == UnrealTargetPlatform.Switch)
-            {
-                PrivateDependencyModuleNames.Add("AudioCaptureSwitch");
             }
         }
 	}

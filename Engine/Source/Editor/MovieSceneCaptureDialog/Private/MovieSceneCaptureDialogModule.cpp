@@ -23,7 +23,7 @@
 
 #include "HAL/IConsoleManager.h"
 #include "HAL/PlatformProcess.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/FileManager.h"
 #include "Misc/CommandLine.h"
 #include "Misc/FileHelper.h"
@@ -147,6 +147,10 @@ class SRenderMovieSceneSettings : public SCompoundWidget, public FGCObject
 	{
 		Collector.AddReferencedObject(MovieSceneCapture);
 	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SRenderMovieSceneSettings");
+	}
 
 private:
 
@@ -251,9 +255,8 @@ public:
 
 		ChildSlot
 		[
-			SNew(SBorder)
+			SNew(SBox)
 			.Padding(FMargin(15.0f))
-			.BorderImage(FCoreStyle::Get().GetBrush("NotificationList.ItemBackground"))
 			[
 				SNew(SVerticalBox)
 

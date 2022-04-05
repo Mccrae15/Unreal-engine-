@@ -137,7 +137,7 @@ void FD3D11DynamicRHI::ResolveTextureUsingShader(
 	GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
 
 	CurrentDepthTexture = DestTexture;
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 	RHICmdList.SetBlendFactor(FLinearColor::White);
 
 	ResolveVertexShader->SetParameters(RHICmdList, SourceRect, DestRect, ResolveTargetDesc.Width, ResolveTargetDesc.Height);
@@ -149,7 +149,7 @@ void FD3D11DynamicRHI::ResolveTextureUsingShader(
 
 	if (SourceTexture)
 	{
-		SetShaderResourceView<SF_Pixel>(SourceTexture, SourceTexture->GetShaderResourceView(), TextureIndex, SourceTexture->GetName());
+		SetShaderResourceView<SF_Pixel>(SourceTexture, SourceTexture->GetShaderResourceView(), TextureIndex);
 	}
 
 	RHICmdList.DrawPrimitive(0, 2, 1);
@@ -188,8 +188,6 @@ void FD3D11DynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FRH
 		return;
 	}
 
-	// @todo fix this RHITransitionResources(EResourceTransitionAccess::EReadable, &SourceTextureRHI, 1);
-
 	FRHICommandList_RecursiveHazardous RHICmdList(this);
 	
 
@@ -209,8 +207,7 @@ void FD3D11DynamicRHI::RHICopyToResolveTarget(FRHITexture* SourceTextureRHI, FRH
 		{
 			GPUProfilingData.RegisterGPUWork();
 		
-			if((FeatureLevel == D3D_FEATURE_LEVEL_11_0 || FeatureLevel == D3D_FEATURE_LEVEL_11_1)
-				&& DestTexture2D->GetDepthStencilView(FExclusiveDepthStencil::DepthWrite_StencilWrite)
+			if(DestTexture2D->GetDepthStencilView(FExclusiveDepthStencil::DepthWrite_StencilWrite)
 				&& SourceTextureRHI->IsMultisampled()
 				&& !DestTextureRHI->IsMultisampled())
 			{
@@ -356,6 +353,8 @@ static uint32 ComputeBytesPerPixel(DXGI_FORMAT Format)
 		case DXGI_FORMAT_R16_UINT:
 		case DXGI_FORMAT_R16_SNORM:
 		case DXGI_FORMAT_R16_SINT:
+		case DXGI_FORMAT_B5G6R5_UNORM:
+		case DXGI_FORMAT_B5G5R5A1_UNORM:
 			BytesPerPixel = 2;
 			break;
 		case DXGI_FORMAT_B8G8R8A8_TYPELESS:
@@ -404,7 +403,7 @@ static uint32 ComputeBytesPerPixel(DXGI_FORMAT Format)
 		case DXGI_FORMAT_R32G8X24_TYPELESS:
 		case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
 		case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
-			BytesPerPixel = 5;
+			BytesPerPixel = 8;
 			break;
 		case DXGI_FORMAT_R8_TYPELESS:
 		case DXGI_FORMAT_R8_UNORM:

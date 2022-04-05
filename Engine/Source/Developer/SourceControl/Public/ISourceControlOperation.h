@@ -69,13 +69,22 @@ public:
 		// Implemented in subclasses
 	}
 
-	/** Factory method for easier operation creation */
-	template<typename Type>
-	static TSharedRef<Type, ESPMode::ThreadSafe> Create()
+	/**
+	 * This will return true if the operation can be safely called from a background thread.
+	 * Currently it is assumed to only the operation 'FDownloadFile' will return true at least
+	 * until the API is made thread safe.
+	 */
+	virtual bool CanBeCalledFromBackgroundThreads() const
 	{
-		return MakeShareable( new Type() );
+		return false;
 	}
 
+	/** Factory method for easier operation creation */
+	template<typename Type, typename... TArgs>
+	static TSharedRef<Type, ESPMode::ThreadSafe> Create(TArgs&&... Args)
+	{
+		return MakeShareable( new Type(Forward<TArgs>(Args)...));
+	}
 };
 
 typedef TSharedRef<class ISourceControlOperation, ESPMode::ThreadSafe> FSourceControlOperationRef;

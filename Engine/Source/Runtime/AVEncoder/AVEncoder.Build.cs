@@ -4,6 +4,7 @@ using UnrealBuildTool;
 using System.IO;
 using System;
 
+[SupportedPlatforms("Win64", "Linux")]
 public class AVEncoder : ModuleRules
 {
 	public AVEncoder(ReadOnlyTargetRules Target) : base(Target)
@@ -60,18 +61,15 @@ public class AVEncoder : ModuleRules
 				"D3D12RHI"
 			});
 
-			if (Target.Platform != UnrealTargetPlatform.XboxOne)
-			{
-				PublicSystemLibraries.AddRange(new string[] {
-					"DXGI.lib",
-					"d3d11.lib",
-					"d3d12.lib"
-				});
-				
-				PublicDelayLoadDLLs.Add("mfplat.dll");
-				PublicDelayLoadDLLs.Add("mfuuid.dll");
-				PublicDelayLoadDLLs.Add("Mfreadwrite.dll");
-			}
+			PublicSystemLibraries.AddRange(new string[] {
+				"DXGI.lib",
+				"d3d11.lib",
+				"d3d12.lib"
+			});
+			
+			PublicDelayLoadDLLs.Add("mfplat.dll");
+			PublicDelayLoadDLLs.Add("mfuuid.dll");
+			PublicDelayLoadDLLs.Add("Mfreadwrite.dll");
 		}
 	}
 }

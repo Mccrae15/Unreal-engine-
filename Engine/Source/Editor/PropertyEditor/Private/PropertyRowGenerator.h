@@ -67,12 +67,14 @@ struct FDetailLayoutData
 	TArray<TSharedPtr<IDetailCustomization>> CustomizationClassInstances;
 };
 
-typedef TArray<FDetailLayoutData> FDetailLayoutList;
-
 class FPropertyRowGenerator : public IPropertyRowGenerator, public FTickableEditorObject, public TSharedFromThis<FPropertyRowGenerator>
 {
 public:
+	FPropertyRowGenerator(const FPropertyRowGeneratorArgs& InArgs);
+
+	UE_DEPRECATED(5.0, "FPropertyRowGenerator which takes in a thumbnail pool parameter is no longer necessary.")
 	FPropertyRowGenerator(const FPropertyRowGeneratorArgs& InArgs, TSharedPtr<FAssetThumbnailPool> InThumbnailPool);
+
 	~FPropertyRowGenerator();
 
 	DECLARE_DERIVED_EVENT(FPropertyRowGenerator, IPropertyRowGenerator::FOnRowsRefreshed, FOnRowsRefreshed);
@@ -89,14 +91,11 @@ public:
 	virtual void RegisterInstancedCustomPropertyTypeLayout(FName PropertyTypeName, FOnGetPropertyTypeCustomizationInstance PropertyTypeLayoutDelegate, TSharedPtr<IPropertyTypeIdentifier> Identifier = nullptr) override;
 	virtual void UnregisterInstancedCustomPropertyLayout(UStruct* Class) override;
 	virtual void UnregisterInstancedCustomPropertyTypeLayout(FName PropertyTypeName, TSharedPtr<IPropertyTypeIdentifier> Identifier = nullptr) override;
-	virtual TSharedPtr<FAssetThumbnailPool> GetGeneratedThumbnailPool() override
-	{ 
-		return GetThumbnailPool();
-	}
 	virtual void SetCustomValidatePropertyNodesFunction(FOnValidatePropertyRowGeneratorNodes InCustomValidatePropertyNodesFunction) override
 	{
 		CustomValidatePropertyNodesFunction = MoveTemp(InCustomValidatePropertyNodesFunction);
 	}
+	virtual void InvalidateCachedState() override;
 
 	/** FTickableEditorObject interface */
 	virtual ETickableTickType GetTickableTickType() const override { return ETickableTickType::Always; }
@@ -110,6 +109,7 @@ public:
 	virtual void ForceRefresh();
 	virtual TSharedPtr<class FAssetThumbnailPool> GetThumbnailPool() const;
 	virtual bool HasClassDefaultObject() const { return bViewingClassDefaultObject; }
+	virtual const TArray<TSharedRef<class IClassViewerFilter>>& GetClassViewerFilters() const;
 
 	const FCustomPropertyTypeLayoutMap& GetInstancedPropertyTypeLayoutMap() const;
 	void UpdateDetailRows();
@@ -133,7 +133,7 @@ private:
 	/** Root tree nodes visible in the tree */
 	TArray<TSharedRef<IDetailTreeNode>> RootTreeNodes;
 	/** The current detail layout based on objects in this details panel.  There is one layout for each top level object node.*/
-	FDetailLayoutList DetailLayouts;
+	TArray<FDetailLayoutData> DetailLayouts;
 	/** Customization instances that need to be destroyed when safe to do so */
 	TArray<TSharedPtr<IDetailCustomization>> CustomizationClassInstancesPendingDelete;
 	/** Actions that should be executed next tick */
@@ -146,8 +146,6 @@ private:
 	FCustomPropertyTypeLayoutMap InstancedTypeToLayoutMap;
 	/** A mapping of classes to detail layout delegates, called when querying for custom detail layouts in this instance of the details view only*/
 	FCustomDetailLayoutMap InstancedClassToDetailLayoutMap;
-	/** Asset pool for rendering and managing asset thumbnails visible in this view */
-	TSharedPtr<FAssetThumbnailPool> ThumbnailPool;
 	/** Utility class for accessing commonly used helper methods from customizations */
 	TSharedRef<IPropertyUtilities> PropertyUtilities;
 	/** Utility class for accessing internal helper methods */

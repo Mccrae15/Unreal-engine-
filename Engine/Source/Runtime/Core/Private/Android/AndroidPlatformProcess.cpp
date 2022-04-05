@@ -6,9 +6,7 @@
 
 #include "Android/AndroidPlatformProcess.h"
 #include "Android/AndroidPlatformRunnableThread.h"
-#if !PLATFORM_LUMIN
 #include "Android/AndroidPlatformAffinity.h"
-#endif
 #include "Async/TaskGraphInterfaces.h"
 
 #include <sys/syscall.h>
@@ -20,19 +18,15 @@
 #include "Misc/CoreDelegates.h"
 
 // RTLD_NOLOAD not defined for all platforms before NDK15
-#if !PLATFORM_LUMIN
 #if PLATFORM_ANDROID_NDK_VERSION < 150000
 	// not defined for NDK platform before 21
 	#if PLATFORM_USED_NDK_VERSION_INTEGER < 21
 		#define RTLD_NOLOAD   0x00004
 	#endif
 #endif
-#endif
 
-#if !PLATFORM_LUMIN
-int64 FAndroidAffinity::GameThreadMask = FPlatformAffinity::GetNoAffinityMask();
-int64 FAndroidAffinity::RenderingThreadMask = FPlatformAffinity::GetNoAffinityMask();
-#endif
+uint64 FAndroidAffinity::GameThreadMask = FPlatformAffinity::GetNoAffinityMask();
+uint64 FAndroidAffinity::RenderingThreadMask = FPlatformAffinity::GetNoAffinityMask();
 
 void* FAndroidPlatformProcess::GetDllHandle(const TCHAR* Filename)
 {
@@ -161,7 +155,7 @@ FString FAndroidPlatformProcess::GetGameBundleId()
 	JNIEnv* JEnv = AndroidJavaEnv::GetJavaEnv();
 	if (nullptr != JEnv)
 	{
-		jclass Class = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/ue4/GameActivity");
+		jclass Class = AndroidJavaEnv::FindJavaClassGlobalRef("com/epicgames/unreal/GameActivity");
 		if (nullptr != Class)
 		{
 			jmethodID getAppPackageNameMethodId = JEnv->GetStaticMethodID(Class, "getAppPackageName", "()Ljava/lang/String;");
@@ -172,6 +166,11 @@ FString FAndroidPlatformProcess::GetGameBundleId()
 	}
 #endif
 	return TEXT("");
+}
+
+void FAndroidPlatformProcess::SetThreadName(const TCHAR* ThreadName)
+{
+	pthread_setname_np(pthread_self(), TCHAR_TO_ANSI(ThreadName));
 }
 
 // Can be specified per device profile
@@ -209,7 +208,6 @@ static void ApplyDefaultThreadAffinity(IConsoleVariable* Var)
 				Aff = 0xFFFFFFFFFFFFFFFF;
 			}
 
-#if !PLATFORM_LUMIN
 			if (Args[Index] == TEXT("GT"))
 			{
 				FAndroidAffinity::GameThreadMask = Aff;
@@ -218,7 +216,6 @@ static void ApplyDefaultThreadAffinity(IConsoleVariable* Var)
 			{
 				FAndroidAffinity::RenderingThreadMask = Aff;
 			}
-#endif
 		}
 
 		if (FTaskGraphInterface::IsRunning())
@@ -246,13 +243,12 @@ void AndroidSetupDefaultThreadAffinity()
 	CVarAndroidDefaultThreadAffinity->SetOnChangedCallback(FConsoleVariableDelegate::CreateStatic(&ApplyDefaultThreadAffinity));
 }
 
-#if !PLATFORM_LUMIN
 static bool EnableLittleCoreAffinity = false;
 static int32 BigCoreMask = 0;
 static int32 LittleCoreMask = 0;
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeSetAffinityInfo(boolean bEnableAffinity, int bigCoreMask, int littleCoreMask);
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetAffinityInfo(JNIEnv* jenv, jobject thiz, jboolean bEnableAffinity, jint bigCoreMask, jint littleCoreMask)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeSetAffinityInfo(JNIEnv* jenv, jobject thiz, jboolean bEnableAffinity, jint bigCoreMask, jint littleCoreMask)
 {
 	EnableLittleCoreAffinity = bEnableAffinity;
 	BigCoreMask = bigCoreMask;
@@ -273,4 +269,3 @@ uint64 FAndroidAffinity::GetLittleCoreMask()
 	}
 	return Mask;
 }
-#endif

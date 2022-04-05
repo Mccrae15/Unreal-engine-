@@ -79,7 +79,7 @@ void FSlateLoadingSynchronizationMechanism::DestroySlateThread()
 		{
 			FPlatformApplicationMisc::PumpMessages(false);
 
-			FPlatformProcess::Sleep(0.f);
+			FPlatformProcess::Sleep(0.001f);
 		}
 
 		delete SlateLoadingThread;
@@ -186,6 +186,8 @@ bool FSlateLoadingThreadTask::Init()
 
 uint32 FSlateLoadingThreadTask::Run()
 {
+	FTaskTagScope Scope(ETaskTag::ESlateThread);
+
 	check( GSlateLoadingThreadId == FPlatformTLS::GetCurrentThreadId() );
 
 	SyncMechanism->SlateThreadRunMainLoop();

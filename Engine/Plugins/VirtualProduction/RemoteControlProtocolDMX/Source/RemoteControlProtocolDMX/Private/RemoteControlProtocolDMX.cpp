@@ -2,9 +2,12 @@
 
 #include "RemoteControlProtocolDMX.h"
 
+#include "DMXConversions.h"
 #include "DMXProtocolSettings.h"
 #include "DMXProtocolTypes.h"
 #include "RemoteControlLogger.h"
+#include "RemoteControlProtocolDMXObjectVersion.h"
+#include "RemoteControlProtocolDMXSettings.h"
 #include "Interfaces/IDMXProtocol.h"
 #include "IO/DMXInputPort.h"
 #include "IO/DMXPortManager.h"
@@ -18,18 +21,10 @@
 
 const FName FRemoteControlProtocolDMX::ProtocolName = TEXT("DMX");
 
-FRemoteControlDMXProtocolEntity::~FRemoteControlDMXProtocolEntity()
-{
-	UDMXProtocolSettings* ProtocolSettings = GetMutableDefault<UDMXProtocolSettings>();
-	if (PortsChangedHandle.IsValid())
-	{
-		FDMXPortManager::Get().OnPortsChanged.Remove(PortsChangedHandle);
-	}
-}
 
 uint8 FRemoteControlDMXProtocolEntity::GetRangePropertySize() const
 {
-	switch (DataType)
+	switch (ExtraSetting.DataType)
 	{
 		default:
 		case EDMXFixtureSignalFormat::E8Bit:
@@ -49,7 +44,7 @@ uint8 FRemoteControlDMXProtocolEntity::GetRangePropertySize() const
 
 const FString& FRemoteControlDMXProtocolEntity::GetRangePropertyMaxValue() const
 {
-	switch (DataType)
+	switch (ExtraSetting.DataType)
 	{
 		default:
 		case EDMXFixtureSignalFormat::E8Bit:
@@ -82,10 +77,12 @@ const FString& FRemoteControlDMXProtocolEntity::GetRangePropertyMaxValue() const
 
 void FRemoteControlDMXProtocolEntity::Initialize()
 {
-	UDMXProtocolSettings* ProtocolSettings = GetMutableDefault<UDMXProtocolSettings>();
+	// Handle port changes
+	FDMXPortManager::Get().OnPortsChanged.AddRaw(this, &FRemoteControlDMXProtocolEntity::UpdateInputPort);
 
-	// Add Delegates
-	PortsChangedHandle = FDMXPortManager::Get().OnPortsChanged.AddRaw(this, &FRemoteControlDMXProtocolEntity::UpdateInputPort);
+	// Handle project setting changes
+	const URemoteControlProtocolDMXSettings* ProtocolDMXSettings = GetDefault<URemoteControlProtocolDMXSettings>();
+	ProtocolDMXSettings->GetOnRemoteControlProtocolDMXSettingsChanged().AddRaw(this, &FRemoteControlDMXProtocolEntity::UpdateInputPort);
 
     // Assign InputPortReference
 	UpdateInputPort();
@@ -93,29 +90,43 @@ void FRemoteControlDMXProtocolEntity::Initialize()
 
 void FRemoteControlDMXProtocolEntity::UpdateInputPort()
 {
-	// Reset port Id;
-	InputPortId = FGuid();
-	
-	UDMXProtocolSettings* ProtocolSettings = GetMutableDefault<UDMXProtocolSettings>();
-	
-	const TArray<FDMXInputPortSharedRef>& InputPorts = FDMXPortManager::Get().GetInputPorts();
-	for (const FDMXInputPortConfig& PortConfig : ProtocolSettings->InputPortConfigs)
+	if (ExtraSetting.bUseDefaultInputPort || !ExtraSetting.InputPortId.IsValid() || !FDMXPortManager::Get().FindInputPortByGuid(ExtraSetting.InputPortId))
 	{
-		const FGuid& InputPortGuid = PortConfig.GetPortGuid();
-
-		const FDMXInputPortSharedRef* InputPortPtr = InputPorts.FindByPredicate([&InputPortGuid](const FDMXInputPortSharedRef& InputPort) {
-            return InputPort->GetPortGuid() == InputPortGuid;
-            });
-
-		if (InputPortPtr == nullptr)
+		URemoteControlProtocolDMXSettings* RemoteControlDMXSettings = GetMutableDefault<URemoteControlProtocolDMXSettings>();
+		if (RemoteControlDMXSettings)
 		{
-			break;
+			const FGuid& DefaultInputPortId = RemoteControlDMXSettings->GetOrCreateDefaultInputPortId();
+			FDMXInputPortSharedPtr DefaultInputPort = FDMXPortManager::Get().FindInputPortByGuid(DefaultInputPortId);
+			if (DefaultInputPort.IsValid())
+			{
+				ExtraSetting.InputPortId = DefaultInputPortId;
+			}
 		}
+	}
+}
 
-		const FDMXInputPortSharedRef& InputPort = *InputPortPtr;
-		if (InputPort->IsLocalUniverseInPortRange(Universe))
+bool FRemoteControlDMXProtocolEntity::Serialize(FArchive& Ar)
+{
+	Ar.UsingCustomVersion(FRemoteControlProtocolDMXObjectVersion::GUID);
+	
+	// Don't actually serialize, just write the custom version for PostSerialize
+	return false;
+}
+
+void FRemoteControlDMXProtocolEntity::PostSerialize(const FArchive& Ar)
+{
+	if (Ar.IsLoading())
+	{
+		if (Ar.CustomVer(FRemoteControlProtocolDMXObjectVersion::GUID) < FRemoteControlProtocolDMXObjectVersion::MoveRemoteControlProtocolDMXEntityPropertiesToExtraSettingStruct)
 		{
-			InputPortId = InputPortGuid;
+			// Move relevant properties that were moved to the the ExtraSetting member in 5.0 to the ExtraSetting member, so they can be customized. 
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			ExtraSetting.bUseDefaultInputPort = bUseDefaultInputPort_DEPRECATED;
+			ExtraSetting.bUseLSB = bUseLSB_DEPRECATED;
+			ExtraSetting.DataType = DataType_DEPRECATED;
+			ExtraSetting.InputPortId = InputPortId_DEPRECATED;
+			ExtraSetting.Universe = Universe_DEPRECATED;
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 	}
 }
@@ -135,7 +146,7 @@ void FRemoteControlProtocolDMX::Bind(FRemoteControlProtocolEntityPtr InRemoteCon
 			{
 				const FRemoteControlDMXProtocolEntity* ComparedDMXProtocolEntity = ProtocolEntity->CastChecked<FRemoteControlDMXProtocolEntity>();
 
-				if (ComparedDMXProtocolEntity->Universe == DMXProtocolEntity->Universe &&
+				if (ComparedDMXProtocolEntity->ExtraSetting.Universe == DMXProtocolEntity->ExtraSetting.Universe &&
 					ComparedDMXProtocolEntity->ExtraSetting.StartingChannel == DMXProtocolEntity->ExtraSetting.StartingChannel &&
 					ComparedDMXProtocolEntity->GetPropertyId() == DMXProtocolEntity->GetPropertyId())
 				{
@@ -180,7 +191,7 @@ void FRemoteControlProtocolDMX::OnEndFrame()
 		{
 			FRemoteControlDMXProtocolEntity* DMXProtocolEntity = ProtocolEntity->CastChecked<FRemoteControlDMXProtocolEntity>();
 
-			const FGuid& PortId =  DMXProtocolEntity->InputPortId;				
+			const FGuid& PortId =  DMXProtocolEntity->ExtraSetting.InputPortId;				
 
 			const FDMXInputPortSharedRef* InputPortPtr = InputPorts.FindByPredicate([&PortId](const FDMXInputPortSharedRef& InputPort) {
                 return InputPort->GetPortGuid() == PortId;
@@ -194,7 +205,7 @@ void FRemoteControlProtocolDMX::OnEndFrame()
 			const FDMXInputPortSharedRef& InputPort = *InputPortPtr;
 
 			// Get universe DMX signal
-			InputPort->GameThreadGetDMXSignal(DMXProtocolEntity->Universe, DMXProtocolEntity->LastSignalPtr);
+			InputPort->GameThreadGetDMXSignal(DMXProtocolEntity->ExtraSetting.Universe, DMXProtocolEntity->LastSignalPtr);
 			if (DMXProtocolEntity->LastSignalPtr.IsValid())
 			{
 				const FDMXSignalSharedPtr& LastSignalPtr = DMXProtocolEntity->LastSignalPtr;
@@ -222,12 +233,12 @@ void FRemoteControlProtocolDMX::ProcessAndApplyProtocolValue(const FDMXSignalSha
 	
 	FRemoteControlDMXProtocolEntity* DMXProtocolEntity = InProtocolEntityPtr->CastChecked<FRemoteControlDMXProtocolEntity>();
 	const uint8* ChannelData = &InSignal->ChannelData[InDMXOffset];	
-	const uint8 NumChannelsToOccupy = UDMXEntityFixtureType::NumChannelsToOccupy(DMXProtocolEntity->DataType);
+	const uint8 NumChannelsToOccupy = FDMXConversions::GetSizeOfSignalFormat(DMXProtocolEntity->ExtraSetting.DataType);
 
 	if(DMXProtocolEntity->CacheDMXBuffer.Num() != NumChannelsToOccupy ||
 		FMemory::Memcmp(DMXProtocolEntity->CacheDMXBuffer.GetData(), ChannelData, NumChannelsToOccupy) != 0)
 	{
-		const uint32 DMXValue = UDMXEntityFixtureType::BytesToInt(DMXProtocolEntity->DataType, DMXProtocolEntity->bUseLSB, ChannelData);
+		const uint32 DMXValue = UDMXEntityFixtureType::BytesToInt(DMXProtocolEntity->ExtraSetting.DataType, DMXProtocolEntity->ExtraSetting.bUseLSB, ChannelData);
 		
 #if WITH_EDITOR
 		FRemoteControlLogger::Get().Log(ProtocolName, [&InSignal, DMXValue]
@@ -235,7 +246,7 @@ void FRemoteControlProtocolDMX::ProcessAndApplyProtocolValue(const FDMXSignalSha
 			return FText::Format(LOCTEXT("DMXEventLog","ExternUniverseID {0}, DMXValue {1}"), InSignal->ExternUniverseID, DMXValue);
 		});
 #endif
-	
+
 		QueueValue(InProtocolEntityPtr, DMXValue);
 
 		// update cached buffer
@@ -301,7 +312,7 @@ void FRemoteControlProtocolDMX::ProcessAutoBinding(const FRemoteControlProtocolE
 				FRemoteControlLogger::Get().Log(ProtocolName, [&LastSignalPtr, FinalChannelValue, FoundChannelDifferenceValue]
 				{
 					return FText::Format(
-						LOCTEXT("DMXEventLog",
+						LOCTEXT("DMXEventLog2",
 								"AutoBinding new value. ExternUniverseID {0}, Channel {1}, New Value {2}"),
 						LastSignalPtr->ExternUniverseID, FinalChannelValue, FoundChannelDifferenceValue);
 				});

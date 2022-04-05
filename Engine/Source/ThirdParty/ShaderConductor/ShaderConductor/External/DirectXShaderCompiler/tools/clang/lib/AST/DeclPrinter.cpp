@@ -49,6 +49,10 @@ namespace {
 
     void PrintObjCTypeParams(ObjCTypeParamList *Params);
 
+    // UE Change Being: Print #line directive
+    void PrintLineDirective(Decl *D);
+    // UE Change End: Print #line directive
+
   public:
     DeclPrinter(raw_ostream &Out, const PrintingPolicy &Policy,
                 unsigned Indentation = 0, bool PrintInstantiation = false)
@@ -455,6 +459,10 @@ void DeclPrinter::VisitEnumConstantDecl(EnumConstantDecl *D) {
 }
 
 void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
+  // UE Change Begin: Print #line directive
+  PrintLineDirective(D);
+  // UE Change End: Print #line directive
+
   CXXConstructorDecl *CDecl = dyn_cast<CXXConstructorDecl>(D);
   CXXConversionDecl *ConversionDecl = dyn_cast<CXXConversionDecl>(D);
   if (!Policy.SuppressSpecifiers) {
@@ -488,9 +496,13 @@ void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
   // HLSL Change Begin
   DeclContext *Namespace = D->getEnclosingNamespaceContext();
   DeclContext *Enclosing = D->getLexicalParent();
-  if (!Enclosing->isNamespace() && Namespace->isNamespace()) {
+  if (!Enclosing->isNamespace() && Namespace->isNamespace() &&
+      !Policy.HLSLOnlyDecl) {
     NamespaceDecl* ns = (NamespaceDecl*)Namespace;
     Proto = ns->getName().str() + "::" + Proto;
+  }
+  if (Policy.HLSLNoinlineMethod) {
+    Proto = D->getQualifiedNameAsString();
   }
   // HLSL Change End
 
@@ -677,8 +689,15 @@ void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
     } else
       Out << ' ';
 
-    if (D->getBody())
-      D->getBody()->printPretty(Out, nullptr, SubPolicy, Indentation);
+    if (D->getBody()) {
+      // HLSL Change Begin - only print decl.
+      if (Policy.HLSLOnlyDecl) {
+        Out << ";";
+      } else {
+        // HLSL Change end.
+        D->getBody()->printPretty(Out, nullptr, SubPolicy, Indentation);
+      }
+    }
     Out << '\n';
   }
 }
@@ -745,6 +764,13 @@ void DeclPrinter::VisitLabelDecl(LabelDecl *D) {
 }
 
 void DeclPrinter::VisitVarDecl(VarDecl *D) {
+  // UE Change Begin: Print #line directive
+  DeclContext *DC = D->getDeclContext();
+  if (D->isDefinedOutsideFunctionOrMethod() &&
+      (DC == nullptr || dyn_cast<HLSLBufferDecl>(DC) == nullptr))
+    PrintLineDirective(D);
+  // UE Change End: Print #line directive
+
   if (!Policy.SuppressSpecifiers) {
     StorageClass SC = D->getStorageClass();
     if (SC != SC_None)
@@ -867,6 +893,10 @@ void DeclPrinter::VisitEmptyDecl(EmptyDecl *D) {
 }
 
 void DeclPrinter::VisitCXXRecordDecl(CXXRecordDecl *D) {
+  // UE Change Begin: Print #line directive
+  PrintLineDirective(D);
+  // UE Change End: Print #line directive
+
   if (!Policy.SuppressSpecifiers && D->isModulePrivate())
     Out << "__module_private__ ";
 
@@ -1094,6 +1124,15 @@ void DeclPrinter::PrintObjCTypeParams(ObjCTypeParamList *Params) {
   }
   Out << ">";
 }
+
+// UE Change Being: Print #line directive
+void DeclPrinter::PrintLineDirective(Decl *D) {
+  const auto Loc = D->getLocation();
+  const auto &SM = D->getASTContext().getSourceManager();
+  PresumedLoc PLoc = SM.getPresumedLoc(Loc);
+  Out << "#line " << PLoc.getLine() << " \"" << PLoc.getFilename() << "\"\n";
+}
+// UE Change End: Print #line directive
 
 void DeclPrinter::VisitObjCMethodDecl(ObjCMethodDecl *OMD) {
   if (OMD->isInstanceMethod())
@@ -1421,6 +1460,10 @@ void DeclPrinter::VisitOMPThreadPrivateDecl(OMPThreadPrivateDecl *D) {
 
 // HLSL Change Begin
 void DeclPrinter::VisitHLSLBufferDecl(HLSLBufferDecl *D) {
+  // UE Change Begin: Print #line directive
+  PrintLineDirective(D);
+  // UE Change End: Print #line directive
+
   if (D->isCBuffer()) {
     Out << "cbuffer ";
   }
@@ -1469,6 +1512,9 @@ void DeclPrinter::VisitHLSLUnusualAnnotation(const hlsl::UnusualAnnotation *UA) 
       if (ra->RegisterOffset) {
         Out << "[" << ra->RegisterOffset << "]";
       }
+      if (ra->RegisterSpace.hasValue() != 0) {
+        Out << ", space" << ra->RegisterSpace.getValue();
+      }
       Out << ")";
     }
     break;
@@ -1488,6 +1534,23 @@ void DeclPrinter::VisitHLSLUnusualAnnotation(const hlsl::UnusualAnnotation *UA) 
         Out << ".w";
         break;
       }
+    }
+    Out << ")";
+    break;
+  }
+  case hlsl::UnusualAnnotation::UA_PayloadAccessQualifier: {
+    const hlsl::PayloadAccessAnnotation *annotation =
+        cast<hlsl::PayloadAccessAnnotation>(UA);
+    Out << " : "
+        << (annotation->qualifier == hlsl::DXIL::PayloadAccessQualifier::Read
+                ? "read"
+                : "write")
+        << "(";
+    StringRef shaderStageNames[] = { "caller", "closesthit", "miss", "anyhit"};
+    for (unsigned i = 0; i < annotation->ShaderStages.size(); ++i) {
+      Out << shaderStageNames[static_cast<unsigned>(annotation->ShaderStages[i])];
+      if (i < annotation->ShaderStages.size() - 1)
+        Out << ", ";
     }
     Out << ")";
     break;

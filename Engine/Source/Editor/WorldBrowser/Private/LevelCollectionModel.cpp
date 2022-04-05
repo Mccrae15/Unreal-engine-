@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "LevelCollectionModel.h"
+#include "Algo/AnyOf.h"
 #include "Misc/PackageName.h"
 #include "AssetData.h"
 #include "Misc/MessageDialog.h"
@@ -17,7 +18,6 @@
 #include "EditorModeManager.h"
 #include "EditorModes.h"
 #include "FileHelpers.h"
-#include "EditorModeInterpolation.h"
 #include "ScopedTransaction.h"
 #include "EditorLevelUtils.h"
 #include "LevelCollectionCommands.h"
@@ -26,7 +26,6 @@
 #include "IAssetTypeActions.h"
 #include "AssetToolsModule.h"
 #include "EditorSupportDelegates.h"
-#include "Matinee/MatineeActor.h"
 #include "GameFramework/WorldSettings.h"
 
 #include "ShaderCompiler.h"
@@ -620,12 +619,22 @@ void FLevelCollectionModel::SaveLevels(const FLevelModelList& InLevelList)
 	}
 
 	TArray< UPackage* > PackagesNotNeedingCheckout;
+
+	// Check dirtiness in case of level using external actors to avoid taking in checkout all actors
+	bool bCheckDirty = Algo::AnyOf(LevelsToSave, [](const ULevel* InLevel) -> bool { return (InLevel != nullptr) && InLevel->IsUsingExternalActors(); });
+
 	// Prompt the user to check out the levels from source control before saving
-	if (FEditorFileUtils::PromptToCheckoutLevels(false, LevelsToSave, &PackagesNotNeedingCheckout))
+	if (FEditorFileUtils::PromptToCheckoutLevels(bCheckDirty, LevelsToSave, &PackagesNotNeedingCheckout))
 	{
 		for (auto It = LevelsToSave.CreateIterator(); It; ++It)
 		{
 			FEditorFileUtils::SaveLevel(*It);
+		}
+
+		// Add all files that needs to be marked for add in one command, if any
+		if (GEditor)
+		{
+			GEditor->RunDeferredMarkForAddFiles();
 		}
 	}
 	else if (PackagesNotNeedingCheckout.Num() > 0)
@@ -691,19 +700,7 @@ void FLevelCollectionModel::UnloadLevels(const FLevelModelList& InLevelList)
 	UWorld* ThisWorld = GetWorld();
 	check(ThisWorld != nullptr);
 
-	// If matinee is opened, and if it belongs to the level being removed, close it
-	if (GLevelEditorModeTools().IsModeActive(FBuiltinEditorModes::EM_InterpEdit))
-	{
-		TArray<ULevel*> LevelsToRemove = GetLevelObjectList(InLevelList);
-		
-		const FEdModeInterpEdit* InterpEditMode = (const FEdModeInterpEdit*)GLevelEditorModeTools().GetActiveMode(FBuiltinEditorModes::EM_InterpEdit);
-
-		if (InterpEditMode && InterpEditMode->MatineeActor && LevelsToRemove.Contains(InterpEditMode->MatineeActor->GetLevel()))
-		{
-			GLevelEditorModeTools().ActivateDefaultMode();
-		}
-	}
-	else if(GLevelEditorModeTools().IsModeActive(FBuiltinEditorModes::EM_Landscape))
+	if(GLevelEditorModeTools().IsModeActive(FBuiltinEditorModes::EM_Landscape))
 	{
 		GLevelEditorModeTools().ActivateDefaultMode();
 	}
@@ -736,20 +733,16 @@ void FLevelCollectionModel::UnloadLevels(const FLevelModelList& InLevelList)
 				
 				if (ULevelStreaming*const* StreamingLevel = ThisWorld->GetStreamingLevels().FindByPredicate(Predicate))
 				{
-					(*StreamingLevel)->MarkPendingKill();
+					(*StreamingLevel)->MarkAsGarbage();
 					ThisWorld->RemoveStreamingLevel(*StreamingLevel);
 				}
 			}
-			
-			// Unload sub-level
-			{
-				FUnmodifiableObject ImmuneWorld(CurrentWorld.Get());
-				EditorLevelUtils::RemoveLevelFromWorld(Level);
-			}
+
+			EditorLevelUtils::RemoveLevelFromWorld(Level);
 		}
 		else if (ULevelStreaming* StreamingLevel = Cast<ULevelStreaming>(LevelModel->GetNodeObject()))
 		{
-			StreamingLevel->MarkPendingKill();
+			StreamingLevel->MarkAsGarbage();
 			ThisWorld->RemoveStreamingLevel(StreamingLevel);
 		}
 	}
@@ -768,12 +761,12 @@ void FLevelCollectionModel::TranslateLevels(const FLevelModelList& InLevels, FVe
 {
 }
 
-FVector2D FLevelCollectionModel::SnapTranslationDelta(const FLevelModelList& InLevelList, FVector2D InTranslationDelta, bool bBoundsSnapping, float InSnappingValue)
+FVector2D FLevelCollectionModel::SnapTranslationDelta(const FLevelModelList& InLevelList, FVector2D InTranslationDelta, bool bBoundsSnapping, FVector2D::FReal InSnappingValue)
 {
 	return InTranslationDelta;
 }
 
-void FLevelCollectionModel::UpdateTranslationDelta(const FLevelModelList& InLevelList, FVector2D InTranslationDelta, bool bBoundsSnapping, float InSnappingValue)
+void FLevelCollectionModel::UpdateTranslationDelta(const FLevelModelList& InLevelList, FVector2D InTranslationDelta, bool bBoundsSnapping, FVector2D::FReal InSnappingValue)
 {
 	FLevelModelList EditableLevels;
 	// Only editable levels could be moved
@@ -1088,14 +1081,18 @@ bool FLevelCollectionModel::AreActorsSelected() const
 
 bool FLevelCollectionModel::CanConvertAnyLevelToExternalActors(bool bExternal) const
 {
-	for (const TSharedPtr<FLevelModel>& LevelModel : SelectedLevelsList)
+	if (SelectedLevelsList.Num())
 	{
-		if (!LevelModel->CanConvertLevelToExternalActors(bExternal))
+		for (const TSharedPtr<FLevelModel>& LevelModel : SelectedLevelsList)
 		{
-			return false;
+			if (!LevelModel->CanConvertLevelToExternalActors(bExternal))
+			{
+				return false;
+			}
 		}
+		return true;
 	}
-	return true;
+	return false;
 }
 
 bool FLevelCollectionModel::GetDisplayPathsState() const
@@ -1309,7 +1306,7 @@ void FLevelCollectionModel::SCCDiffAgainstDepot(const FLevelModelList& InList, U
 		{
 			// Get the file name of package
 			FString RelativeFileName;
-			if(FPackageName::DoesPackageExist(PackageName, NULL, &RelativeFileName))
+			if(FPackageName::DoesPackageExist(PackageName, &RelativeFileName))
 			{
 				if (SourceControlState->GetHistorySize() > 0)
 				{
@@ -1754,34 +1751,6 @@ bool FLevelCollectionModel::IsValidFindInContentBrowser()
 
 void FLevelCollectionModel::MoveActorsToSelected_Executed()
 {
-	// If matinee is open, and if an actor being moved belongs to it, message the user
-	if (GLevelEditorModeTools().IsModeActive(FBuiltinEditorModes::EM_InterpEdit))
-	{
-		const FEdModeInterpEdit* InterpEditMode = (const FEdModeInterpEdit*)GLevelEditorModeTools().GetActiveMode(FBuiltinEditorModes::EM_InterpEdit);
-		if (InterpEditMode && InterpEditMode->MatineeActor)
-		{
-			TArray<AActor*> ControlledActors;
-			InterpEditMode->MatineeActor->GetControlledActors(ControlledActors);
-
-			// are any of the selected actors in the matinee
-			USelection* SelectedActors = GEditor->GetSelectedActors();
-			for (FSelectionIterator Iter(*SelectedActors); Iter; ++Iter)
-			{
-				AActor* Actor = CastChecked<AActor>(*Iter);
-				if (Actor != nullptr && (Actor == InterpEditMode->MatineeActor || ControlledActors.Contains(Actor)))
-				{
-					const bool ExitInterp = EAppReturnType::Yes == FMessageDialog::Open(EAppMsgType::YesNo, NSLOCTEXT("UnrealEd", "MatineeUnableToMove", "You must close Matinee before moving actors.\nDo you wish to do this now and continue?"));
-					if (!ExitInterp)
-					{
-						return;
-					}
-					GLevelEditorModeTools().DeactivateMode(FBuiltinEditorModes::EM_InterpEdit);
-					break;
-				}
-			}
-		}
-	}
-
 	MakeLevelCurrent_Executed();
 
 	const FScopedTransaction Transaction(LOCTEXT("MoveSelectedActorsToSelectedLevel", "Move Selected Actors to Level"));

@@ -8,6 +8,7 @@
 #include "Widgets/SWidget.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Components/PanelWidget.h"
+#include "Containers/Ticker.h"
 #include "ScrollBox.generated.h"
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnUserScrolledEvent, float, CurrentOffset);
@@ -31,10 +32,10 @@ public:
 	FScrollBarStyle WidgetBarStyle;
 
 	UPROPERTY()
-	USlateWidgetStyleAsset* Style_DEPRECATED;
+	TObjectPtr<USlateWidgetStyleAsset> Style_DEPRECATED;
 
 	UPROPERTY()
-	USlateWidgetStyleAsset* BarStyle_DEPRECATED;
+	TObjectPtr<USlateWidgetStyleAsset> BarStyle_DEPRECATED;
 
 	/** The orientation of the scrolling and stacking in the box. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Scroll")
@@ -67,6 +68,14 @@ public:
 	/**  Disable to stop scrollbars from activating inertial overscrolling */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
 	bool AllowOverscroll;
+
+	/** Whether to back pad this scroll box, allowing user to scroll backward until child contents are no longer visible */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
+	bool BackPadScrolling;
+
+	/** Whether to front pad this scroll box, allowing user to scroll forward until child contents are no longer visible */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
+	bool FrontPadScrolling;
 	
 	/** True to lerp smoothly when wheel scrolling along the scroll box */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll")
@@ -125,6 +134,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Scroll")
 	void SetScrollWhenFocusChanges(EScrollWhenFocusChanges NewScrollWhenFocusChanges);
+
+	UFUNCTION(BlueprintCallable, Category = "Scroll")
+	void SetNavigationDestination(const EDescendantScrollDestination NewNavigationDestination);
 
 	/** Instantly stops any inertial scrolling that is currently in progress */
 	UFUNCTION(BlueprintCallable, Category = "Scroll")
@@ -213,6 +225,6 @@ protected:
 	//~ End UWidget Interface
 
 #if WITH_EDITOR
-	FDelegateHandle TickHandle;
+	FTSTicker::FDelegateHandle TickHandle;
 #endif //WITH_EDITOR
 };

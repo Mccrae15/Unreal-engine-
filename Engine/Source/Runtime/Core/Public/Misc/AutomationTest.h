@@ -29,7 +29,7 @@
 #include "HAL/PlatformProcess.h"
 #include "Misc/AutomationEvent.h"
 #include "Internationalization/Regex.h"
-
+#include <atomic>
 
 #ifndef WITH_AUTOMATION_TESTS
 	#define WITH_AUTOMATION_TESTS (WITH_DEV_AUTOMATION_TESTS || WITH_PERF_AUTOMATION_TESTS)
@@ -129,6 +129,20 @@ namespace EAutomationExpectedErrorFlags
 	}
 }
 
+struct FAutomationTelemetryData
+{
+	FString DataPoint;
+	double Measurement;
+	FString Context;
+
+	FAutomationTelemetryData(const FString& InDataPoint, double InMeasurement, const FString& InContext)
+		:DataPoint(InDataPoint)
+		, Measurement(InMeasurement)
+		, Context(InContext)
+	{
+	}
+};
+
 /** Simple class to store the results of the execution of a automation test */
 class CORE_API FAutomationTestExecutionInfo
 {
@@ -191,6 +205,12 @@ public:
 	
 	/** Any analytics items that occurred during execution */
 	TArray<FString> AnalyticsItems;
+
+	/** Telemetry items that occurred during execution */
+	TArray<FAutomationTelemetryData> TelemetryItems;
+
+	/** Telemetry storage name set by the test */
+	FString TelemetryStorage;
 
 	/** Time to complete the task */
 	double Duration;
@@ -486,19 +506,19 @@ public:
 	{
 		if (!Future.IsValid())
 		{
-			Future = Async(EAsyncExecution::Thread, Function);
+			Future = Async(EAsyncExecution::Thread, MoveTemp(Function));
 		}
 
 		return Future.IsReady();
 	}
 
-	FThreadedAutomationLatentCommand(TFunction<void()> InFunction)
-		: Function(InFunction)
+	FThreadedAutomationLatentCommand(TUniqueFunction<void()> InFunction)
+		: Function(MoveTemp(InFunction))
 	{ }
 
 protected:
 
-	const TFunction<void()> Function;
+	TUniqueFunction<void()> Function;
 
 	TFuture<void> Future;
 
@@ -594,6 +614,8 @@ struct FAutomationScreenshotData
 	int32 ViewDistanceQuality;
 	int32 AntiAliasingQuality;
 	int32 ShadowQuality;
+	int32 GlobalIlluminationQuality;
+	int32 ReflectionQuality;
 	int32 PostProcessQuality;
 	int32 TextureQuality;
 	int32 EffectsQuality;
@@ -626,6 +648,8 @@ struct FAutomationScreenshotData
 		, ViewDistanceQuality(0)
 		, AntiAliasingQuality(0)
 		, ShadowQuality(0)
+		, GlobalIlluminationQuality(0)
+		, ReflectionQuality(0)
 		, PostProcessQuality(0)
 		, TextureQuality(0)
 		, EffectsQuality(0)
@@ -658,6 +682,60 @@ struct CORE_API FAutomationScreenshotCompareResults
 	FAutomationEvent ToAutomationEvent(const FString& ScreenhotName) const;
 };
 
+enum class EAutomationComparisonToleranceLevel : uint8
+{
+	Zero,
+	Low,
+	Medium,
+	High
+};
+
+struct FAutomationComparisonToleranceAmount
+{
+public:
+
+	FAutomationComparisonToleranceAmount()
+		: Red(0)
+		, Green(0)
+		, Blue(0)
+		, Alpha(0)
+		, MinBrightness(0)
+		, MaxBrightness(255)
+	{
+	}
+
+	FAutomationComparisonToleranceAmount(uint8 R, uint8 G, uint8 B, uint8 A, uint8 InMinBrightness, uint8 InMaxBrightness)
+		: Red(R)
+		, Green(G)
+		, Blue(B)
+		, Alpha(A)
+		, MinBrightness(InMinBrightness)
+		, MaxBrightness(InMaxBrightness)
+	{
+	}
+
+	static FAutomationComparisonToleranceAmount FromToleranceLevel(EAutomationComparisonToleranceLevel InTolerance)
+	{
+		switch (InTolerance)
+		{
+		case EAutomationComparisonToleranceLevel::Low:
+			return FAutomationComparisonToleranceAmount(16, 16, 16, 16, 16, 240);
+		case EAutomationComparisonToleranceLevel::Medium:
+			return FAutomationComparisonToleranceAmount(24, 24, 24, 24, 24, 220);
+		case EAutomationComparisonToleranceLevel::High:
+			return FAutomationComparisonToleranceAmount(32, 32, 32, 32, 64, 96);
+		}
+		// Zero
+		return FAutomationComparisonToleranceAmount(0, 0, 0, 0, 0, 255);
+	}
+
+	uint8 Red;
+	uint8 Green;
+	uint8 Blue;
+	uint8 Alpha;
+	uint8 MinBrightness;
+	uint8 MaxBrightness;
+};
 
 /**
  * Delegate type for when a test screenshot has been captured
@@ -675,15 +753,23 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnTestDataRetrieved, bool /*bWasNew*/, con
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPerformanceDataRetrieved, bool /*bSuccess*/, const FString& /*ErrorMessage*/);
 
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnTestEvent, FAutomationTestBase*);
+
 /** Class representing the main framework for running automation tests */
 class CORE_API FAutomationTestFramework
 {
 public:
-	/** Called right before unit testing is about to begin */
+	/** Called right before automated test is about to begin */
 	FSimpleMulticastDelegate PreTestingEvent;
-	
-	/** Called after all unit tests have completed */
+
+	/** Called after all automated tests have completed */
 	FSimpleMulticastDelegate PostTestingEvent;
+
+	/** Called when each automated test is starting */
+	FOnTestEvent OnTestStartEvent;
+
+	/** Called when each automated test is ending */
+	FOnTestEvent OnTestEndEvent;
 
 	/** Called when a screenshot comparison completes. */
 	FOnTestScreenshotComparisonComplete OnScreenshotCompared;
@@ -807,11 +893,6 @@ public:
 	void LoadTestModules();
 
 	/**
-	 * Load the test Blacklist from the config.
-	 */
-	void BuildTestBlacklistFromConfig();
-
-	/**
 	 * Populates the provided array with the names of all tests in the framework that are valid to run for the current
 	 * application settings.
 	 *
@@ -922,6 +1003,9 @@ private:
 	private:
 		/** Associated automation test; all warnings, errors, etc. are routed to the automation test to track */
 		class FAutomationTestBase* CurTest;
+
+		/** Tests that we've logged the failure cause when an error is involved */
+		TSet<FAutomationTestBase*> LoggedFailureCause;
 	};
 
 	 /** Special feedback context used during automated testing to filter messages that happen during tests */
@@ -929,10 +1013,12 @@ private:
 	 {
 	 public:
 		 FAutomationTestMessageFilter()
-			 : CurTest(nullptr) {}
+			: CurTest(nullptr)
+			, DestinationContext(nullptr) {}
 
 		 ~FAutomationTestMessageFilter()
 		 {
+			 DestinationContext = nullptr;
 			 CurTest = nullptr;
 		 }
 
@@ -969,21 +1055,8 @@ private:
 
 	 private:
 		 class FAutomationTestBase* CurTest;
-		 FFeedbackContext* DestinationContext = nullptr;
+		 std::atomic<FFeedbackContext*> DestinationContext;
 	 };
-
-	//** Store information about blacklisted test */
-	struct FBlacklistEntry
-	{
-		FBlacklistEntry() :
-			bWarn(false) {}
-
-		FString Map;
-		FString Test;
-		FString Reason;
-		TArray<FString> RHIs;
-		bool bWarn;
-	};
 
 	friend class FAutomationTestOutputDevice;
 	/** Helper method called to prepare settings for automation testing to follow */
@@ -1015,17 +1088,6 @@ private:
 	 *			the current application settings
 	 */
 	bool InternalStopTest(FAutomationTestExecutionInfo& OutExecutionInfo);
-
-
-	/**
-	 * Internal helper method that verify if a test is black listed.
-	 *
-	 * @param	TestName		Beautified test name to be checked
-	 * @param	OutReason		Output the reason for the test being blacklisted
-	 * @param	OutWarn			Output true if the config ask for a warning message
-	 * @return	true if the TestName is part of the blacklist.
-	 */
-	bool IsBlacklisted(const FString& TestName, FString* OutReason = nullptr, bool* OutWarn = nullptr) const;
 
 	/** Constructor */
 	FAutomationTestFramework();
@@ -1085,8 +1147,6 @@ private:
 	bool bForceSmokeTests;
 
 	bool bCaptureStack;
-
-	TMap<FString, FBlacklistEntry> TestBlacklist;
 };
 
 
@@ -1126,6 +1186,14 @@ public:
 
 	/** Gets the parameter context of the test. */
 	FString GetTestContext() const { return TestParameterContext; }
+
+	/**
+	 * Returns the beautified test name with test context. Should return what is displayed in the Test Automation UI. See GenerateTestNames()
+	 */
+	virtual FString GetTestFullName() const {
+		if (GetTestContext().IsEmpty()) { return GetBeautifiedTestName(); }
+		return FString::Printf(TEXT("%s.%s"), *GetBeautifiedTestName(), *GetTestContext());
+	}
 
 	/**
 	 * Pure virtual method; returns the number of participants for this test
@@ -1177,12 +1245,6 @@ public:
 	 */
 	virtual void AddWarning( const FString& InWarning, int32 StackOffset = 0);
 
-	UE_DEPRECATED(4.16, "Use AddInfo")
-	FORCEINLINE void AddLogItem(const FString& InLogItem)
-	{
-		AddInfo(InLogItem, 0);
-	}
-
 	/**
 	 * Adds a log item to this test
 	 *
@@ -1205,6 +1267,30 @@ public:
 	virtual void AddAnalyticsItem(const FString& InAnalyticsItem);
 
 	/**
+	 * Adds a telemetry data point measurement
+	 *
+	 * @param	DataPoint	Name of the Data point
+	 * @param	Measurement	Value to associate to the data point
+	 * @param	Context		optional context associated with the data point
+	 */
+	virtual void AddTelemetryData(const FString& DataPoint, double Measurement, const FString& Context = TEXT(""));
+
+	/**
+	 * Adds several telemetry data point measurements
+	 *
+	 * @param	ValuePairs	value pair of Name and Measurement of several Data points
+	 * @param	Context		optional context associated with the data point
+	 */
+	virtual void AddTelemetryData(const TMap<FString, double>& ValuePairs, const FString& Context = TEXT(""));
+
+	/**
+	 * Set telemetry storage name
+	 *
+	 * @param	StorageName	Name of the data storage
+	 */
+	virtual void SetTelemetryStorage(const FString& StorageName);
+
+	/**
 	 * Returns whether this test has any errors associated with it or not
 	 *
 	 * @return true if this test has at least one error associated with it; false if not
@@ -1224,6 +1310,11 @@ public:
 	 * @param	bSuccessful	true to mark the test successful, false to mark the test as failed
 	 */
 	void SetSuccessState( bool bSuccessful );
+
+	/**
+	 * Return the test success state
+	 */
+	bool GetSuccessState();
 
 	/**
 	 * Populate the provided execution info object with the execution info contained within the test. Not particularly efficient,
@@ -1361,6 +1452,7 @@ public:
 	bool TestEqual(const TCHAR* What, FVector Actual, FVector Expected, float Tolerance = KINDA_SMALL_NUMBER);
 	bool TestEqual(const TCHAR* What, FRotator Actual, FRotator Expected, float Tolerance = KINDA_SMALL_NUMBER);
 	bool TestEqual(const TCHAR* What, FColor Actual, FColor Expected);
+	bool TestEqual(const TCHAR* What, FLinearColor Actual, FLinearColor Expected);
 	bool TestEqual(const TCHAR* What, const TCHAR* Actual, const TCHAR* Expected);
 	bool TestEqualInsensitive(const TCHAR* What, const TCHAR* Actual, const TCHAR* Expected);
 
@@ -2882,6 +2974,22 @@ class EXPORT_API CommandName : public IAutomationLatentCommand \
 	ParamType ParamName; \
 }
 
+#define DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND_TWO_PARAMETER(EXPORT_API, CommandName,ParamType0,ParamName0,ParamType1,ParamName1)	\
+class EXPORT_API CommandName : public IAutomationLatentCommand \
+	{ \
+	public: \
+	CommandName(ParamType0 InputParam0, ParamType1 InputParam1) \
+	: ParamName0(InputParam0) \
+	, ParamName1(InputParam1) \
+		{} \
+		virtual ~CommandName() \
+		{} \
+		virtual bool Update() override; \
+	private: \
+	ParamType0 ParamName0; \
+	ParamType1 ParamName1; \
+}
+
 #define DEFINE_ENGINE_LATENT_AUTOMATION_COMMAND(CommandName)	\
 	DEFINE_EXPORTED_LATENT_AUTOMATION_COMMAND(ENGINE_API, CommandName)
 
@@ -3280,8 +3388,8 @@ public: \
 // Basic Latent Commands
 
 /**
- * Run some code latently with a predicate lambda.  If the predicate returns true, the latent action will be called 
- * again next frame.  If it returns false, the command will stop running.
+ * Run some code latently with a predicate lambda.  If the predicate returns false, the latent action will be called 
+ * again next frame.  If it returns true, the command will stop running.
  */
 class FFunctionLatentCommand : public IAutomationLatentCommand
 {
@@ -3361,3 +3469,4 @@ private:
 	TFunction<bool()> TimeoutCallback;
 	float Timeout;
 };
+

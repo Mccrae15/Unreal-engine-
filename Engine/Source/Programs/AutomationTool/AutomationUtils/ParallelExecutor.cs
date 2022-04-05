@@ -8,7 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Xml;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace AutomationTool
 {
@@ -78,7 +78,7 @@ namespace AutomationTool
 
 		public static int Execute(string ActionsFileName, bool bStopOnErrors)
 		{
-			return Execute(ActionsFileName, UnrealBuildTool.Utils.GetLogicalProcessorCount(), bStopOnErrors);
+			return Execute(ActionsFileName, UnrealBuildTool.ParallelExecutorConfiguration.MaxParallelProcesses, bStopOnErrors);
 		}
 
 		public static int Execute(string ActionsFileName, int MaxProcesses, bool bStopOnErrors)

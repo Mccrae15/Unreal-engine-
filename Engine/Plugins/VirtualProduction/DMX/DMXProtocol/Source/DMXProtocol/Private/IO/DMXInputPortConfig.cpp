@@ -18,6 +18,8 @@ FDMXInputPortConfigParams::FDMXInputPortConfigParams(const FDMXInputPortConfig& 
 	, LocalUniverseStart(InputPortConfig.GetLocalUniverseStart())
 	, NumUniverses(InputPortConfig.GetNumUniverses())
 	, ExternUniverseStart(InputPortConfig.GetExternUniverseStart())
+	, PriorityStrategy(InputPortConfig.GetPortPriorityStrategy())
+	, Priority(InputPortConfig.GetPriority())
 {}
 
 
@@ -32,8 +34,6 @@ FDMXInputPortConfig::FDMXInputPortConfig(const FGuid& InPortGuid)
 	check(FModuleManager::Get().IsModuleLoaded("DMXProtocol"));
 	check(PortGuid.IsValid());
 
-	GenerateUniquePortName();
-
 	MakeValid();
 }
 
@@ -45,14 +45,14 @@ FDMXInputPortConfig::FDMXInputPortConfig(const FGuid& InPortGuid, const FDMXInpu
 	, LocalUniverseStart(InitializationData.LocalUniverseStart)
 	, NumUniverses(InitializationData.NumUniverses)
 	, ExternUniverseStart(InitializationData.ExternUniverseStart)
+	, PriorityStrategy(InitializationData.PriorityStrategy)
+	, Priority(InitializationData.Priority)
 	, PortGuid(InPortGuid)
 {
 	// Cannot create port configs before the protocol module is up (it is required to sanetize protocol names).
 	check(FModuleManager::Get().IsModuleLoaded("DMXProtocol"));
 	check(PortGuid.IsValid());
 	check(!ProtocolName.IsNone())
-
-	GenerateUniquePortName();
 
 	MakeValid();
 }
@@ -114,6 +114,12 @@ void FDMXInputPortConfig::MakeValid()
 			}
 		}
 	}
+
+	if (PortName.IsEmpty())
+	{
+		UDMXProtocolSettings* ProtocolSettings = GetMutableDefault<UDMXProtocolSettings>();
+		PortName = ProtocolSettings->GetUniqueInputPortName();
+	}
 }
 
 FString FDMXInputPortConfig::GetDeviceAddress() const
@@ -127,30 +133,4 @@ FString FDMXInputPortConfig::GetDeviceAddress() const
 		return OverrideIP;
 	}
 	return DeviceAddress;
-}
-
-void FDMXInputPortConfig::GenerateUniquePortName()
-{
-	if (!PortName.IsEmpty())
-	{
-		return;
-	}
-
-	const UDMXProtocolSettings* ProtocolSettings = GetDefault<UDMXProtocolSettings>();
-	check(ProtocolSettings);
-
-	TSet<FString> OtherPortNames;
-	for (const FDMXInputPortConfig& InputPortConfig : ProtocolSettings->InputPortConfigs)
-	{
-		if (&InputPortConfig == this)
-		{
-			continue;
-		}
-
-		OtherPortNames.Add(InputPortConfig.PortName);
-	}
-
-	FString BaseName = TEXT("InputPort_1");
-
-	PortName = FDMXProtocolUtils::GenerateUniqueNameFromExisting(OtherPortNames, BaseName);
 }

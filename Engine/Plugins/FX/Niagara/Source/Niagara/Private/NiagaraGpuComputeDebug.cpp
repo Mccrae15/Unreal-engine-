@@ -74,16 +74,19 @@ void FNiagaraGpuComputeDebug::Tick(FRHICommandListImmediate& RHICmdList)
 		DebugDrawData->StaticLineCount = DebugDrawData->StaticLines.Num();
 		if (DebugDrawData->StaticLineCount > 0 )
 		{
-			const uint32 NumElements = FMath::DivideAndRoundUp(DebugDrawData->StaticLineCount, 64u) * 64u * 7u;
+			constexpr uint32 NumFloatsPerLine = 7;
+			static_assert(sizeof(FNiagaraSimulationDebugDrawData::FGpuLine) == (NumFloatsPerLine * sizeof(float)), "Line size does not match expected GPU size");
+
+			const uint32 NumElements = FMath::DivideAndRoundUp(DebugDrawData->StaticLineCount, 64u) * 64u * NumFloatsPerLine;
 			const uint32 RequiredBytes = NumElements * sizeof(float);
 			if ( DebugDrawData->StaticLineBuffer.NumBytes < RequiredBytes )
 			{
 				DebugDrawData->StaticLineBuffer.Release();
-				DebugDrawData->StaticLineBuffer.Initialize(sizeof(float), NumElements, EPixelFormat::PF_R32_FLOAT, 0, TEXT("NiagaraGpuComputeDebug::StaticLineBuffer"));
+				DebugDrawData->StaticLineBuffer.Initialize(TEXT("NiagaraGpuComputeDebug::StaticLineBuffer"), sizeof(float), NumElements, EPixelFormat::PF_R32_FLOAT);
 			}
-			void* VertexData = RHILockVertexBuffer(DebugDrawData->StaticLineBuffer.Buffer, 0, RequiredBytes, RLM_WriteOnly);
+			void* VertexData = RHILockBuffer(DebugDrawData->StaticLineBuffer.Buffer, 0, RequiredBytes, RLM_WriteOnly);
 			FMemory::Memcpy(VertexData, DebugDrawData->StaticLines.GetData(), DebugDrawData->StaticLineCount * DebugDrawData->StaticLines.GetTypeSize());
-			RHIUnlockVertexBuffer(DebugDrawData->StaticLineBuffer.Buffer);
+			RHIUnlockBuffer(DebugDrawData->StaticLineBuffer.Buffer);
 
 			DebugDrawData->StaticLines.Reset();
 		}
@@ -168,27 +171,24 @@ void FNiagaraGpuComputeDebug::AddAttributeTexture(FRHICommandList& RHICmdList, F
 	FTextureRHIRef Destination;
 	if ( bCreateTexture )
 	{
+		FRHIResourceCreateInfo CreateInfo(TEXT("FNiagaraGpuComputeDebug"));
 		if (SrcTexture2D != nullptr)
 		{
-			FRHIResourceCreateInfo CreateInfo;
 			Destination = RHICreateTexture2D(SrcSize.X, SrcSize.Y, SrcFormat, 1, 1, TexCreate_ShaderResource, CreateInfo);
 			VisualizeEntry->Texture = Destination;
 		}
 		else if (SrcTexture2DArray != nullptr)
 		{
-			FRHIResourceCreateInfo CreateInfo;
 			Destination = RHICreateTexture2DArray(SrcSize.X, SrcSize.Y, SrcSize.Z, SrcFormat, 1, 1, TexCreate_ShaderResource, CreateInfo);
 			VisualizeEntry->Texture = Destination;
 		}
 		else if (SrcTexture3D != nullptr)
 		{
-			FRHIResourceCreateInfo CreateInfo;
 			Destination = RHICreateTexture3D(SrcSize.X, SrcSize.Y, SrcSize.Z, SrcFormat, 1, TexCreate_ShaderResource, CreateInfo);
 			VisualizeEntry->Texture = Destination;
 		}
 		else if (SrcTextureCube != nullptr)
 		{
-			FRHIResourceCreateInfo CreateInfo;
 			Destination = RHICreateTextureCube(SrcSize.X, SrcFormat, 1, TexCreate_ShaderResource, CreateInfo);
 			VisualizeEntry->Texture = Destination;
 		}
@@ -222,7 +222,7 @@ void FNiagaraGpuComputeDebug::AddAttributeTexture(FRHICommandList& RHICmdList, F
 	}
 }
 
-FNiagaraSimulationDebugDrawData* FNiagaraGpuComputeDebug::GetSimulationDebugDrawData(FNiagaraSystemInstanceID SystemInstanceID, bool bRequiresGpuBuffers)
+FNiagaraSimulationDebugDrawData* FNiagaraGpuComputeDebug::GetSimulationDebugDrawData(FNiagaraSystemInstanceID SystemInstanceID, bool bRequiresGpuBuffers, uint32 OverrideMaxDebugLines)
 {
 	TUniquePtr<FNiagaraSimulationDebugDrawData>& DebugDrawDataPtr = DebugDrawBuffers.FindOrAdd(SystemInstanceID);
 	if (!DebugDrawDataPtr.IsValid())
@@ -230,22 +230,24 @@ FNiagaraSimulationDebugDrawData* FNiagaraGpuComputeDebug::GetSimulationDebugDraw
 		DebugDrawDataPtr.Reset(new FNiagaraSimulationDebugDrawData());
 	}
 
-	if (bRequiresGpuBuffers && (DebugDrawDataPtr->GpuLineMaxInstances != GNiagaraGpuComputeDebug_MaxLineInstances))
+	int MaxLineInstancesToUse = FMath::Max3(DebugDrawDataPtr->GpuLineMaxInstances, (uint32) GNiagaraGpuComputeDebug_MaxLineInstances, OverrideMaxDebugLines);
+
+	if (bRequiresGpuBuffers && (DebugDrawDataPtr->GpuLineMaxInstances != MaxLineInstancesToUse))
 	{
 		check(IsInRenderingThread());
 		DebugDrawDataPtr->GpuLineBufferArgs.Release();
 		DebugDrawDataPtr->GpuLineVertexBuffer.Release();
-		DebugDrawDataPtr->GpuLineMaxInstances = GNiagaraGpuComputeDebug_MaxLineInstances;
+		DebugDrawDataPtr->GpuLineMaxInstances = MaxLineInstancesToUse;
 		if (DebugDrawDataPtr->GpuLineMaxInstances > 0)
 		{
-			DebugDrawDataPtr->GpuLineBufferArgs.Initialize(sizeof(uint32), 4, EPixelFormat::PF_R32_UINT, BUF_Static | BUF_DrawIndirect, TEXT("NiagaraGpuComputeDebug::DrawLineBufferArgs"));
-			DebugDrawDataPtr->GpuLineVertexBuffer.Initialize(sizeof(float), 7 * DebugDrawDataPtr->GpuLineMaxInstances, EPixelFormat::PF_R32_FLOAT, BUF_Static, TEXT("NiagaraGpuComputeDebug::DrawLineVertexBuffer"));
+			DebugDrawDataPtr->GpuLineBufferArgs.Initialize(TEXT("NiagaraGpuComputeDebug::DrawLineBufferArgs"), sizeof(uint32), 4, EPixelFormat::PF_R32_UINT, BUF_Static | BUF_DrawIndirect);
+			DebugDrawDataPtr->GpuLineVertexBuffer.Initialize(TEXT("NiagaraGpuComputeDebug::DrawLineVertexBuffer"), sizeof(float), 7 * DebugDrawDataPtr->GpuLineMaxInstances, EPixelFormat::PF_R32_FLOAT, BUF_Static);
 
 			auto& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 			{
-				FUintVector4* IndirectArgs = reinterpret_cast<FUintVector4*>(RHILockVertexBuffer(DebugDrawDataPtr->GpuLineBufferArgs.Buffer, 0, sizeof(uint32) * 4, RLM_WriteOnly));
+				FUintVector4* IndirectArgs = reinterpret_cast<FUintVector4*>(RHILockBuffer(DebugDrawDataPtr->GpuLineBufferArgs.Buffer, 0, sizeof(uint32) * 4, RLM_WriteOnly));
 				*IndirectArgs = FUintVector4(2, 0, 0, 0);
-				RHIUnlockVertexBuffer(DebugDrawDataPtr->GpuLineBufferArgs.Buffer);
+				RHIUnlockBuffer(DebugDrawDataPtr->GpuLineBufferArgs.Buffer);
 			}
 
 			FRHITransitionInfo Transitions[] =

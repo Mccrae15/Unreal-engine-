@@ -4,7 +4,7 @@
 #include "ToolMenus.h"
 
 #include "Kismet2/CompilerResultsLog.h"
-#include "GraphEditorActions.h"
+#include "AnimGraphCommands.h"
 
 /////////////////////////////////////////////////////
 // UAnimGraphNode_PoseByName
@@ -120,13 +120,13 @@ void UAnimGraphNode_PoseByName::ValidateAnimNodeDuringCompilation(class USkeleto
 			MessageLog.Error(TEXT("@@ references an unknown pose asset"), this);
 		}
 	}
-	else
+	else if (ForSkeleton)
 	{
 		USkeleton* SeqSkeleton = PoseAssetToCheck->GetSkeleton();
-		if (SeqSkeleton&& // if anim sequence doesn't have skeleton, it might be due to anim sequence not loaded yet, @todo: wait with anim blueprint compilation until all assets are loaded?
-			!SeqSkeleton->IsCompatible(ForSkeleton))
+		if (SeqSkeleton && // if anim sequence doesn't have skeleton, it might be due to anim sequence not loaded yet, @todo: wait with anim blueprint compilation until all assets are loaded?
+			!ForSkeleton->IsCompatible(SeqSkeleton))
 		{
-			MessageLog.Error(TEXT("@@ references sequence that uses different skeleton @@"), this, SeqSkeleton);
+			MessageLog.Error(TEXT("@@ references sequence that uses an incompatible skeleton @@"), this, SeqSkeleton);
 		}
 	}
 }
@@ -155,7 +155,7 @@ void UAnimGraphNode_PoseByName::GetNodeContextMenuActions(UToolMenu* Menu, UGrap
 		// add an option to convert to single frame
 		{
 			FToolMenuSection& Section = Menu->AddSection("AnimGraphNodePoseByName", LOCTEXT("PoseByNameHeading", "Pose By Name"));
-			Section.AddMenuEntry(FGraphEditorCommands::Get().ConvertToPoseBlender);
+			Section.AddMenuEntry(FAnimGraphCommands::Get().ConvertToPoseBlender);
 		}
 	}
 }

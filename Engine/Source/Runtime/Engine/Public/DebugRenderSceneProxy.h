@@ -22,6 +22,8 @@ DECLARE_DELEGATE_TwoParams(FDebugDrawDelegate, class UCanvas*, class APlayerCont
 class FDebugRenderSceneProxy : public FPrimitiveSceneProxy
 {
 public:
+	ENGINE_API virtual ~FDebugRenderSceneProxy() {};
+	
 	ENGINE_API SIZE_T GetTypeHash() const override;
 
 	enum EDrawType
@@ -31,19 +33,19 @@ public:
 		SolidAndWireMeshes = 2,
 	};
 	ENGINE_API FDebugRenderSceneProxy(const UPrimitiveComponent* InComponent);
+	ENGINE_API FDebugRenderSceneProxy(FDebugRenderSceneProxy const&) = default;
+
 	// FPrimitiveSceneProxy interface.
 
 	/** 
 	 * Draw the scene proxy as a dynamic element
-	 *
-	 * @param	PDI - draw interface to render to
-	 * @param	View - current view
 	 */
 	ENGINE_API virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 
 	/**
 	 * Draws a line with an arrow at the end.
 	 *
+	 * @param PDI		Draw interface to render to
 	 * @param Start		Starting point of the line.
 	 * @param End		Ending point of the line.
 	 * @param Color		Color of the line.
@@ -178,7 +180,7 @@ public:
 
 		FString Text;
 		FVector Location;
-		FLinearColor Color;
+		FColor Color;
 	};
 
 	struct FCone
@@ -206,9 +208,9 @@ public:
 	struct FCapsule
 	{
 		FCapsule() {}
-		FCapsule(const FVector& InLocation, const float& InRadius, const FVector& x, const FVector& y, const FVector &z, const float& InHalfHeight, const FLinearColor& InColor)
+		FCapsule(const FVector& InBase, const float& InRadius, const FVector& x, const FVector& y, const FVector &z, const float& InHalfHeight, const FLinearColor& InColor)
 			: Radius(InRadius)
-			, Location(InLocation)
+			, Base(InBase)
 			, Color(InColor.ToFColor(true))
 			, HalfHeight(InHalfHeight)
 			, X(x)
@@ -219,7 +221,7 @@ public:
 		}
 
 		float Radius;
-		FVector Location; //Center pointer of the base of the cylinder.
+		FVector Base; //Center point of the base of the cylinder.
 		FColor Color;
 		float HalfHeight;
 		FVector X, Y, Z; //X, Y, and Z alignment axes to draw along.
@@ -235,7 +237,7 @@ public:
 	TArray<FText3d> Texts;
 	TArray<FCone> Cones;
 	TArray<FMesh> Meshes;
-	TArray<FCapsule> Capsles;
+	TArray<FCapsule> Capsules;
 
 	uint32 ViewFlagIndex;
 	float TextWithoutShadowDistance;
@@ -263,9 +265,9 @@ protected:
 	typedef TArray<FDebugRenderSceneProxy::FText3d> TextArray;
 
 public:
-	virtual void InitDelegateHelper(const FDebugRenderSceneProxy* InSceneProxy)
+	void InitDelegateHelper(const FDebugRenderSceneProxy* InSceneProxy)
 	{
-		check(IsInGameThread());
+		check(IsInParallelGameThread() || IsInGameThread());
 
 		Texts.Reset();
 		Texts.Append(InSceneProxy->Texts);
@@ -274,14 +276,39 @@ public:
 		State = (State == UndefinedState) ? InitializedState : State;
 	}
 
-	/** called to set up debug drawing delegate in UDebugDrawService if you want to draw labels */
-	ENGINE_API virtual void RegisterDebugDrawDelgate();
-	/** called to clean up debug drawing delegate in UDebugDrawService */
-	ENGINE_API virtual void UnregisterDebugDrawDelgate();
+	UE_DEPRECATED(5.0, "This method is deprecated. Call RequestRegisterDebugDrawDelegate or override RegisterDebugDrawDelegateInternal instead.")
+	ENGINE_API virtual void RegisterDebugDrawDelgate() final { RegisterDebugDrawDelegateInternal(); }
+	UE_DEPRECATED(5.0, "This method is deprecated. Use UnregisterDebugDrawDelegate instead.")
+	ENGINE_API virtual void UnregisterDebugDrawDelgate() { UnregisterDebugDrawDelegate(); }
+	UE_DEPRECATED(5.0, "This method is deprecated. Use ReregisterDebugDrawDelegate instead.")
+	ENGINE_API void ReregisterDebugDrawDelgate() { ReregisterDebugDrawDelegate(); }
+	UE_DEPRECATED(5.0, "This method is deprecated. Call RequestRegisterDebugDrawDelegate or override RegisterDebugDrawDelegateInternal instead.")
+	ENGINE_API virtual void RegisterDebugDrawDelegate() final { RegisterDebugDrawDelegateInternal(); }
 
-	ENGINE_API void ReregisterDebugDrawDelgate();
+	/**
+	 * Method that should be called at render state creation (i.e. CreateRenderState_Concurrent).
+	 * It will either call `RegisterDebugDrawDelegate` when deferring context is not provided
+	 * or mark for deferred registration that should be flushed by calling `ProcessDeferredRegister`
+	 * on scene proxy creation.
+	 * @param Context valid context is provided when primitives are batched for deferred 'add'
+	 */
+	ENGINE_API void RequestRegisterDebugDrawDelegate(FRegisterComponentContext* Context);
+
+	/**
+	 * Method that should be called when creating scene proxy (i.e. CreateSceneProxy) to process any pending registration that might have
+	 * been requested from deferred primitive batching (i.e. CreateRenderState_Concurrent(FRegisterComponentContext != nullptr)).
+	 */
+	ENGINE_API void ProcessDeferredRegister();
+
+	/** called to clean up debug drawing delegate in UDebugDrawService */
+	ENGINE_API virtual void UnregisterDebugDrawDelegate();
+
+	ENGINE_API void ReregisterDebugDrawDelegate();
 
 protected:
+	/** called to set up debug drawing delegate in UDebugDrawService if you want to draw labels */
+	ENGINE_API virtual void RegisterDebugDrawDelegateInternal();
+
 	ENGINE_API virtual void DrawDebugLabels(UCanvas* Canvas, APlayerController*);
 	ENGINE_API void ResetTexts() { Texts.Reset(); }
 
@@ -294,6 +321,8 @@ protected:
 		InitializedState,
 		RegisteredState,
 	} State;
+
+	bool bDeferredRegister = false;
 
 private:
 	TextArray Texts;

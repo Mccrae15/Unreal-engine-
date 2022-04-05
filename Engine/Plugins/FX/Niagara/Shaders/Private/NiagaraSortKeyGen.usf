@@ -51,6 +51,7 @@ uint MeshIndexAttributeOffset;
 float2 CullDistanceRangeSquared;
 float4 LocalBoundingSphere;
 float3 CullingWorldSpaceOffset;
+float3 SystemLWCTile;
 
 RWBuffer<uint> OutKeys;
 RWBuffer<int> OutParticleIndices;
@@ -63,9 +64,9 @@ groupshared uint CullGroupCount;
 float GetFloat(uint RegisterIdx, uint InstanceID)
 {
 	BRANCH
-	if (RegisterIdx & (1 << 31U))
+	if (RegisterIdx & (1u << 31U))
 	{
-		RegisterIdx &= ~(1 << 31U);
+		RegisterIdx &= ~(1u << 31U);
 		return NiagaraParticleDataHalf[RegisterIdx * HalfDataStride + InstanceID];
 	}
 	else
@@ -119,7 +120,7 @@ void CullingEpilogue(in bool bCulled, in uint GroupTID)
 
 #if USE_WAVE_INTRINSICS
 	uint CullWaveCount = WaveActiveCountBits(!bCulled);
-	if (WaveOnce())
+	if (WaveIsFirstLane())
 	{
 		InterlockedAdd(OutCulledParticleCounts[CountOffset], CullWaveCount);
 	}
@@ -142,6 +143,7 @@ bool CullParticle(in uint ParticleIndex)
 	if (CullPositionAttributeOffset != -1)
 	{
 		Pos = GetVec3(CullPositionAttributeOffset, ParticleIndex);
+		Pos = LWCHackToFloat(MakeLWCVector3(SystemLWCTile, Pos));
 	}
 
 	float4 Quat = { 0, 0, 0, 1 };

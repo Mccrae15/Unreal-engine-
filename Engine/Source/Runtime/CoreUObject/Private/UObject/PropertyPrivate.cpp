@@ -164,7 +164,7 @@ void UEnumProperty::AddReferencedObjects(UObject* InThis, FReferenceCollector& C
 	Super::AddReferencedObjects(InThis, Collector);
 }
 
-namespace UE4UEnumProperty_Private
+namespace UEEnumProperty_Private
 {
 	struct FEnumPropertyFriend
 	{
@@ -175,8 +175,8 @@ namespace UE4UEnumProperty_Private
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UEnumProperty, UProperty,
 	{
-		Class->EmitObjectReference(UE4UEnumProperty_Private::FEnumPropertyFriend::EnumOffset, TEXT("Enum"));
-		Class->EmitObjectReference(UE4UEnumProperty_Private::FEnumPropertyFriend::UnderlyingPropOffset, TEXT("UnderlyingProp"));
+		Class->EmitObjectReference(UEEnumProperty_Private::FEnumPropertyFriend::EnumOffset, TEXT("Enum"));
+		Class->EmitObjectReference(UEEnumProperty_Private::FEnumPropertyFriend::UnderlyingPropOffset, TEXT("UnderlyingProp"));
 	}
 );
 
@@ -184,7 +184,7 @@ void UArrayProperty::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 	Ar << Inner;
-	checkSlow(Inner || HasAnyFlags(RF_ClassDefaultObject) || IsPendingKill());
+	checkSlow(Inner || HasAnyFlags(RF_ClassDefaultObject) || !IsValidChecked(this));
 }
 void UArrayProperty::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
 {
@@ -324,6 +324,7 @@ void UBoolProperty::SetBoolSize(const uint32 InSize, const bool bIsNativeBool, c
 	check(ByteMask != 0);
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void UBoolProperty::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
@@ -335,17 +336,18 @@ void UBoolProperty::Serialize(FArchive& Ar)
 	if (Ar.IsLoading())
 	{
 		Ar << NativeBool;
-		if (!IsPendingKill())
+		if (IsValidChecked(this))
 		{
 			SetBoolSize(BoolSize, !!NativeBool);
 		}
 	}
 	else
 	{
-		NativeBool = (!HasAnyFlags(RF_ClassDefaultObject) && !IsPendingKill() && Ar.IsSaving()) ? (IsNativeBool() ? 1 : 0) : 0;
+		NativeBool = (!HasAnyFlags(RF_ClassDefaultObject) && IsValidChecked(this) && Ar.IsSaving()) ? (IsNativeBool() ? 1 : 0) : 0;
 		Ar << NativeBool;
 	}
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 IMPLEMENT_CORE_INTRINSIC_CLASS(UBoolProperty, UProperty,
 	{

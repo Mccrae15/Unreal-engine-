@@ -66,7 +66,7 @@
 // used below in BlueprintActionDatabaseImpl::GetNodeSpectificActions()
 #include "EdGraph/EdGraphNode_Documentation.h"
 
-#include "Misc/HotReloadInterface.h"
+#include "BlueprintTypePromotion.h"
 
 #define LOCTEXT_NAMESPACE "BlueprintActionDatabase"
 
@@ -516,7 +516,7 @@ namespace BlueprintActionDatabaseImpl
 	/**
 	 * Refreshes database after project was hot-reloaded.
 	 */
-	static void OnProjectHotReloaded(bool bWasTriggeredAutomatically);
+	static void OnReloadComplete(EReloadCompleteReason Reason);
 
 	/** 
 	 * Assets that we cleared from the database (to remove references, and make 
@@ -542,7 +542,7 @@ static void BlueprintActionDatabaseImpl::OnModulesChanged(FName InModuleName, EM
 }
 
 //------------------------------------------------------------------------------
-static void BlueprintActionDatabaseImpl::OnProjectHotReloaded(bool bWasTriggeredAutomatically)
+static void BlueprintActionDatabaseImpl::OnReloadComplete(EReloadCompleteReason Reason)
 {
 	BlueprintActionDatabaseImpl::bRefreshAllRequested = true;
 }
@@ -645,7 +645,15 @@ static void BlueprintActionDatabaseImpl::AddClassFunctionActions(UClass const* c
 				ActionListOut.Add(NodeSpawner);
 			}
 		}
-		
+
+		// If this is a promotable function, and it has already been registered
+		// than do NOT add it to the asset action database. We should
+		// probably have some better logic for this, like adding our own node spawner
+		const bool bIsRegisteredPromotionFunc =
+			TypePromoDebug::IsTypePromoEnabled() &&
+			FTypePromotion::IsFunctionPromotionReady(Function) &&
+			FTypePromotion::IsOperatorSpawnerRegistered(Function);
+
 		if (UEdGraphSchema_K2::CanUserKismetCallFunction(Function))
 		{
 			// @TODO: if this is a Blueprint, and this function is from a 
@@ -653,13 +661,17 @@ static void BlueprintActionDatabaseImpl::AddClassFunctionActions(UClass const* c
 			//        include it (the function is accounted for in from the 
 			//        interface class).
 			UBlueprintFunctionNodeSpawner* FuncSpawner = UBlueprintFunctionNodeSpawner::Create(Function);
-			ActionListOut.Add(FuncSpawner);
+			
+			// Only add this action to the list of the operator function is not already registered. Otherwise we will 
+			// get a bunch of duplicate operator actions
+			if (!bIsRegisteredPromotionFunc)
+			{
+				ActionListOut.Add(FuncSpawner);
+			}
 
 			if (FKismetEditorUtilities::IsClassABlueprintInterface(Class))
 			{
-				FuncSpawner->DefaultMenuSignature.MenuName = FText::Format(LOCTEXT("InterfaceCallMenuName", "{0} (Interface Call)"), 
-					FuncSpawner->DefaultMenuSignature.MenuName);
-
+				// Use the default function name
 				ActionListOut.Add(MakeMessageNodeSpawner(Function));
 			}
 		}
@@ -913,7 +925,9 @@ static void BlueprintActionDatabaseImpl::GetNodeSpecificActions(TSubclassOf<UEdG
 	else if (NodeClass == UEdGraphNode_Documentation::StaticClass())
 	{
 		// @TODO: BOOOOOOO! (see comment above)
-		Registrar.AddBlueprintAction(MakeDocumentationNodeSpawner<UEdGraphNode_Documentation>());
+		UBlueprintNodeSpawner* DocumentationSpawner = MakeDocumentationNodeSpawner<UEdGraphNode_Documentation>();
+		DocumentationSpawner->DefaultMenuSignature.Category = LOCTEXT("DocumentationNodeCategory", "Documentation");
+		Registrar.AddBlueprintAction(DocumentationSpawner);
 	}
 }
 
@@ -1153,8 +1167,7 @@ FBlueprintActionDatabase::FBlueprintActionDatabase()
 
 	OnModulesChangedDelegateHandle = FModuleManager::Get().OnModulesChanged().AddStatic(&BlueprintActionDatabaseImpl::OnModulesChanged);
 
-	IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>("HotReload");
-	OnHotReloadDelegateHandle = HotReloadSupport.OnHotReload().AddStatic(&BlueprintActionDatabaseImpl::OnProjectHotReloaded);
+	OnReloadCompleteDelegateHandle = FCoreUObjectDelegates::ReloadCompleteDelegate.AddStatic(&BlueprintActionDatabaseImpl::OnReloadComplete);
 }
 
 //------------------------------------------------------------------------------
@@ -1166,8 +1179,8 @@ FBlueprintActionDatabase::~FBlueprintActionDatabase()
 	{
 		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
 		AssetRegistry.OnAssetAdded().Remove(OnAssetAddedDelegateHandle);
-		AssetRegistry.OnAssetAdded().Remove(OnAssetRemovedDelegateHandle);
-		AssetRegistry.OnAssetAdded().Remove(OnAssetRenamedDelegateHandle);
+		AssetRegistry.OnAssetRemoved().Remove(OnAssetRemovedDelegateHandle);
+		AssetRegistry.OnAssetRenamed().Remove(OnAssetRenamedDelegateHandle);
 	}
 
 	FEditorDelegates::OnAssetsPreDelete.Remove(OnAssetsPreDeleteDelegateHandle);
@@ -1176,16 +1189,14 @@ FBlueprintActionDatabase::~FBlueprintActionDatabase()
 	if (GEngine)
 	{
 		GEngine->OnWorldAdded().Remove(OnWorldAddedDelegateHandle);
-		GEngine->OnWorldAdded().Remove(OnWorldDestroyedDelegateHandle);
+		GEngine->OnWorldDestroyed().Remove(OnWorldDestroyedDelegateHandle);
 	}
 
 	FWorldDelegates::RefreshLevelScriptActions.Remove(RefreshLevelScriptActionsDelegateHandle);
 	FModuleManager::Get().OnModulesChanged().Remove(OnModulesChangedDelegateHandle);
 
-	if (IHotReloadInterface* HotReloadSupport = FModuleManager::GetModulePtr<IHotReloadInterface>("HotReload"))
-	{
-		HotReloadSupport->OnHotReload().Remove(OnHotReloadDelegateHandle);
-	}
+
+	FCoreUObjectDelegates::ReloadCompleteDelegate.Remove(OnReloadCompleteDelegateHandle);
 }
 
 //------------------------------------------------------------------------------
@@ -1383,10 +1394,11 @@ void FBlueprintActionDatabase::RefreshClassActions(UClass* const Class)
 	check(Class != nullptr);
 
 	bool const bOutOfDateClass   = Class->HasAnyClassFlags(CLASS_NewerVersionExists);
+	bool const bHiddenClass		 = Class->HasAnyClassFlags(CLASS_Hidden);
 	bool const bIsBlueprintClass = (Cast<UBlueprintGeneratedClass>(Class) != nullptr);
 	bool const bIsLevelScript	 = Class->ClassGeneratedBy && Cast<UBlueprint>(Class->ClassGeneratedBy)->BlueprintType == EBlueprintType::BPTYPE_LevelScript;
 
-	if (bOutOfDateClass || bIsLevelScript)
+	if (bOutOfDateClass || bIsLevelScript || bHiddenClass)
 	{
 		ActionRegistry.Remove(Class);
 		return;
@@ -1576,7 +1588,7 @@ void FBlueprintActionDatabase::RefreshAssetActions(UObject* const AssetObject)
 	// Will clear up any unloaded asset actions associated with this object, if any
 	ClearUnloadedAssetActions(*AssetObject->GetPathName());
 
-	if (AssetObject->IsPendingKill())
+	if (!IsValid(AssetObject))
 	{
 		ClearAssetActions(AssetObject);
 	}

@@ -35,10 +35,11 @@ struct FCurveEditorSnapMetrics;
 class ICurveEditorExtension;
 class ICurveEditorToolExtension;
 class IBufferedCurveModel;
+class FCurveEditor;
 
 DECLARE_DELEGATE_OneParam(FOnSetBoolean, bool)
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnActiveToolChanged, FCurveEditorToolID)
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnCurveArrayChanged, FCurveModel*, bool /*displayed*/);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnCurveArrayChanged, FCurveModel*, bool /*displayed*/,const FCurveEditor*);
 
 
 class CURVEEDITOR_API FCurveEditor 
@@ -174,6 +175,11 @@ public:
 	ICurveEditorToolExtension* GetCurrentTool() const;
 
 	FCurveEditorToolID AddTool(TUniquePtr<ICurveEditorToolExtension>&& InTool);
+	
+	/** Nudge left or right*/
+	void TranslateSelectedKeys(double SecondsToAdd);
+	void TranslateSelectedKeysLeft();
+	void TranslateSelectedKeysRight();
 
 	/** Step to next or previous key from the current time */
 	void StepToNextKey();
@@ -189,6 +195,9 @@ public:
 	void SetSelectionRangeStart();
 	void SetSelectionRangeEnd();
 	void ClearSelectionRange();
+
+	/** Selection */
+	void SelectAllKeys();
 
 	/** Toggle the expansion state of the selected nodes or all nodes if none selected */
 	void ToggleExpandCollapseNodes(bool bRecursive);
@@ -272,7 +281,7 @@ public:
 	// ~FCurveEditor
 
 	// FEditorUndoClient
-	virtual void PostUndo(bool bSuccess);
+	virtual void PostUndo(bool bSuccess) override;
 	// ~FEditorUndoClient
 
 	const TArray<TSharedRef<ICurveEditorExtension>> GetEditorExtensions() const
@@ -364,6 +373,15 @@ public:
 	}
 
 	/**
+	Whether or not we are are doign a direct selection, could be used to see why a curve model is being created or destroyed, by direct selection or by sequencer filtering?
+	*/
+	bool IsDoingDirectSelection() const
+	{
+		return Tree.IsDoingDirectSelection();
+	}
+
+
+	/**
 	 * Retrieve a serial number that is incremented any time a curve is added or removed
 	 */
 	uint32 GetActiveCurvesSerialNumber() const
@@ -433,6 +451,16 @@ public:
 	 * Straighten the tangents on the selected keys
 	 */
 	void StraightenSelection();
+
+	/**
+	 * Set random curve colors
+	 */
+	void SetRandomCurveColorsForSelected();
+
+	/**
+	 * Pick a curve color and set on selected
+	 */	
+	void SetCurveColorsForSelected();
 
 	/**
 	* Do we currently have keys to flatten or straighten?

@@ -9,7 +9,7 @@ using Gauntlet;
 using System.IO;
 using System.IO.Compression;
 
-namespace UE4Game
+namespace UnrealGame
 {
 
 	/// <summary>
@@ -22,10 +22,10 @@ namespace UE4Game
 		{
 		}
 
-		public override UE4TestConfig GetConfiguration()
+		public override UnrealTestConfig GetConfiguration()
 		{
 			// just need a single client
-			UE4TestConfig Config = base.GetConfiguration();
+			UnrealTestConfig Config = base.GetConfiguration();
 
 			UnrealTestRole ClientRole = Config.RequireRole(UnrealTargetRole.Client);
 			ClientRole.CommandLine += " -unattended";
@@ -33,16 +33,16 @@ namespace UE4Game
 			return Config;
 		}
 
-		public override void CreateReport(TestResult Result, UnrealTestContext Contex, UnrealBuildSource Build, IEnumerable<UnrealRoleArtifacts> Artifacts, string ArtifactPath)
+		public override ITestReport CreateReport(TestResult Result, UnrealTestContext Contex, UnrealBuildSource Build, IEnumerable<UnrealRoleResult> RoleResults, string ArtifactPath)
 		{
-			UnrealRoleArtifacts ClientArtifacts = Artifacts.Where(A => A.SessionRole.RoleType == UnrealTargetRole.Client).FirstOrDefault();
+			UnrealRoleArtifacts ClientArtifacts = RoleResults.Where(R => R.Artifacts.SessionRole.RoleType == UnrealTargetRole.Client).Select(R => R.Artifacts).FirstOrDefault();
 
 			var SnapshotSummary = new UnrealSnapshotSummary<UnrealHealthSnapshot>(ClientArtifacts.AppInstance.StdOut);
 
 			Log.Info("Elemental Performance Report");
 			Log.Info(SnapshotSummary.ToString());
 
-			base.CreateReport(Result, Contex, Build, Artifacts, ArtifactPath);
+			return base.CreateReport(Result, Contex, Build, RoleResults, ArtifactPath);
 		}
 
 		public override void SaveArtifacts_DEPRECATED(string OutputPath)

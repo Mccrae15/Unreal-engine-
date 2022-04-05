@@ -46,13 +46,13 @@ void* FGenericRHIStagingBuffer::Lock(uint32 InOffset, uint32 NumBytes)
 	check(ShadowBuffer);
 	check(!bIsLocked);
 	bIsLocked = true;
-	return reinterpret_cast<void*>(reinterpret_cast<uint8*>(RHILockVertexBuffer(ShadowBuffer, InOffset, NumBytes, RLM_ReadOnly)) + Offset);
+	return reinterpret_cast<void*>(reinterpret_cast<uint8*>(RHILockBuffer(ShadowBuffer, InOffset, NumBytes, RLM_ReadOnly)) + Offset);
 }
 
 void FGenericRHIStagingBuffer::Unlock()
 {
 	check(bIsLocked);
-	RHIUnlockVertexBuffer(ShadowBuffer);
+	RHIUnlockBuffer(ShadowBuffer);
 	bIsLocked = false;
 }
 
@@ -62,23 +62,40 @@ void FGenericRHIStagingBuffer::Unlock()
 
 FRHIGPUBufferReadback::FRHIGPUBufferReadback(FName RequestName) : FRHIGPUMemoryReadback(RequestName)
 {
-	DestinationStagingBuffer = RHICreateStagingBuffer();
 }
 
-void FRHIGPUBufferReadback::EnqueueCopy(FRHICommandList& RHICmdList, FRHIVertexBuffer* SourceBuffer, uint32 NumBytes)
+void FRHIGPUBufferReadback::EnqueueCopy(FRHICommandList& RHICmdList, FRHIBuffer* SourceBuffer, uint32 NumBytes)
 {
 	Fence->Clear();
-	RHICmdList.CopyToStagingBuffer(SourceBuffer, DestinationStagingBuffer, 0, NumBytes ? NumBytes : SourceBuffer->GetSize());
-	RHICmdList.WriteGPUFence(Fence);
 	LastCopyGPUMask = RHICmdList.GetGPUMask();
+
+	for (uint32 GPUIndex : LastCopyGPUMask)
+	{
+		SCOPED_GPU_MASK(RHICmdList, FRHIGPUMask::FromIndex(GPUIndex));
+
+		if (!DestinationStagingBuffers[GPUIndex])
+		{
+			DestinationStagingBuffers[GPUIndex] = RHICreateStagingBuffer();
+		}
+
+		RHICmdList.CopyToStagingBuffer(SourceBuffer, DestinationStagingBuffers[GPUIndex], 0, NumBytes ? NumBytes : SourceBuffer->GetSize());
+		RHICmdList.WriteGPUFence(Fence);
+	}
 }
 
 void* FRHIGPUBufferReadback::Lock(uint32 NumBytes)
 {
-	if (DestinationStagingBuffer)
+	// We arbitrarily read from the first GPU set in the mask.  The assumption is that in cases where the buffer is written on multiple GPUs,
+	// that it will have the same data generated in lockstep on all GPUs, so it doesn't matter which GPU we read the data from.  We could
+	// easily in the future allow the caller to pass in a GPU index (defaulting to INDEX_NONE) to allow reading from a specific GPU index.
+	uint32 GPUIndex = LastCopyGPUMask.GetFirstIndex();
+
+	if (DestinationStagingBuffers[GPUIndex])
 	{
+		LastLockGPUIndex = GPUIndex;
+
 		ensure(Fence->Poll());
-		return RHILockStagingBuffer(DestinationStagingBuffer, Fence.GetReference(), 0, NumBytes);
+		return RHILockStagingBuffer(DestinationStagingBuffers[GPUIndex], Fence.GetReference(), 0, NumBytes);
 	}
 	else
 	{
@@ -88,8 +105,8 @@ void* FRHIGPUBufferReadback::Lock(uint32 NumBytes)
 
 void FRHIGPUBufferReadback::Unlock()
 {
-	ensure(DestinationStagingBuffer);
-	RHIUnlockStagingBuffer(DestinationStagingBuffer);
+	ensure(DestinationStagingBuffers[LastLockGPUIndex]);
+	RHIUnlockStagingBuffer(DestinationStagingBuffers[LastLockGPUIndex]);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -154,10 +171,12 @@ void* FRHIGPUTextureReadback::Lock(uint32 NumBytes)
 {
 	if (DestinationStagingTexture)
 	{
+		LastLockGPUIndex = LastCopyGPUMask.ToIndex();
+
 		void* ResultsBuffer = nullptr;
 		int32 BufferWidth = 0, BufferHeight = 0;
 		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-		RHICmdList.MapStagingSurface(DestinationStagingTexture, Fence.GetReference(), ResultsBuffer, BufferWidth, BufferHeight);
+		RHICmdList.MapStagingSurface(DestinationStagingTexture, Fence.GetReference(), ResultsBuffer, BufferWidth, BufferHeight, LastLockGPUIndex);
 		return ResultsBuffer;
 	}
 	else
@@ -166,21 +185,35 @@ void* FRHIGPUTextureReadback::Lock(uint32 NumBytes)
 	}
 }
 
-void FRHIGPUTextureReadback::LockTexture(FRHICommandListImmediate& RHICmdList, void*& OutBufferPtr, int32& OutRowPitchInPixels)
+void* FRHIGPUTextureReadback::Lock(int32& OutRowPitchInPixels, int32 *OutBufferHeight)
 {
 	if (DestinationStagingTexture)
 	{
+		LastLockGPUIndex = LastCopyGPUMask.ToIndex();
+
 		void* ResultsBuffer = nullptr;
 		int32 BufferWidth = 0, BufferHeight = 0;
-		RHICmdList.MapStagingSurface(DestinationStagingTexture, Fence.GetReference(), ResultsBuffer, BufferWidth, BufferHeight);
-		OutBufferPtr = ResultsBuffer;
+		FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+		RHICmdList.MapStagingSurface(DestinationStagingTexture, Fence.GetReference(), ResultsBuffer, BufferWidth, BufferHeight, LastLockGPUIndex);
+		if (OutBufferHeight)
+		{
+			*OutBufferHeight = BufferHeight;
+		}
 		OutRowPitchInPixels = BufferWidth;
+		return ResultsBuffer;
 	}
-	else
+
+	OutRowPitchInPixels = 0;
+	if (OutBufferHeight)
 	{
-		OutBufferPtr = nullptr;
-		OutRowPitchInPixels = 0;
+		*OutBufferHeight = 0;
 	}
+	return nullptr;
+}
+
+void FRHIGPUTextureReadback::LockTexture(FRHICommandListImmediate& RHICmdList, void*& OutBufferPtr, int32& OutRowPitchInPixels)
+{
+	OutBufferPtr = Lock(OutRowPitchInPixels);
 }
 
 void FRHIGPUTextureReadback::Unlock()
@@ -188,5 +221,5 @@ void FRHIGPUTextureReadback::Unlock()
 	ensure(DestinationStagingTexture);
 
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
-	RHICmdList.UnmapStagingSurface(DestinationStagingTexture);
+	RHICmdList.UnmapStagingSurface(DestinationStagingTexture, LastLockGPUIndex);
 }

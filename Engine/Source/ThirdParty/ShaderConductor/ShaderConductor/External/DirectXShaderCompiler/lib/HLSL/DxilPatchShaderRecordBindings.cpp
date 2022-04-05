@@ -423,7 +423,7 @@ DxilResourceBase &GetResourceFromID(DxilModule &DM, DXIL::ResourceClass resClass
         break;
     default:
         ThrowFailure();
-        return *(DxilResourceBase*)nullptr;
+        llvm_unreachable("invalid resource class");
     }
 }
 
@@ -777,7 +777,7 @@ bool DxilPatchShaderRecordBindings::GetHandleInfo(
     shaderRegister = Resource->GetLowerBound();
     kind = Resource->GetKind();
     resClass = Resource->GetClass();
-    resType = Resource->GetGlobalSymbol()->getType()->getPointerElementType();
+    resType = Resource->GetHLSLType()->getPointerElementType();
   }
   return Resource != nullptr;
 }

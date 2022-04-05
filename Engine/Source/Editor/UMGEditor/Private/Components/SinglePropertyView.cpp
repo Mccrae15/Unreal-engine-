@@ -42,8 +42,8 @@ void USinglePropertyView::BuildContentWidget()
 		UObject* ViewedObject = GetObject();
 		if (ViewedObject == nullptr)
 		{
-			bool bIsLazyObjectNull = LazyObject.IsNull();
-			if (bIsLazyObjectNull)
+			bool bIsObjectNull = Object.IsNull();
+			if (bIsObjectNull)
 			{
 				MissingWidgetText = FPropertyViewHelper::UndefinedObjectText;
 			}
@@ -121,6 +121,20 @@ void USinglePropertyView::SetPropertyName(FName InPropertyName)
 	}
 }
 
+FText USinglePropertyView::GetNameOverride() const
+{
+	return NameOverride;
+}
+
+
+void USinglePropertyView::SetNameOverride(FText InNameOverride)
+{
+	if (!NameOverride.EqualTo(InNameOverride))
+	{
+		NameOverride = InNameOverride;
+		BuildContentWidget();
+	}
+}
 
 void USinglePropertyView::OnObjectChanged()
 {

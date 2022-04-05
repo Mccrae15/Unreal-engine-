@@ -25,6 +25,10 @@ MapBuildData.cpp
 #include "Components/ReflectionCaptureComponent.h"
 #include "Interfaces/ITargetPlatform.h"
 #if WITH_EDITOR
+#include "LandscapeComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "VT/LightmapVirtualTexture.h"
+#include "AssetCompilingManager.h"
 #include "Factories/TextureFactory.h"
 #endif
 #include "Engine/TextureCube.h"
@@ -51,17 +55,27 @@ FArchive& operator<<(FArchive& Ar, FSkyAtmosphereMapBuildData& Data)
 
 ULevel* UWorld::GetActiveLightingScenario() const
 {
-	for (int32 LevelIndex = 0; LevelIndex < Levels.Num(); LevelIndex++)
+	if (PersistentLevel && PersistentLevel->bIsPartitioned)
 	{
-		ULevel* LocalLevel = Levels[LevelIndex];
-
-		if (LocalLevel->bIsVisible && LocalLevel->bIsLightingScenario)
+		if (PersistentLevel->bIsLightingScenario)
 		{
-			return LocalLevel;
+			return PersistentLevel;
+		}
+	}
+	else
+	{
+		for (int32 LevelIndex = 0; LevelIndex < Levels.Num(); LevelIndex++)
+		{
+			ULevel* LocalLevel = Levels[LevelIndex];
+
+			if (LocalLevel->bIsVisible && LocalLevel->bIsLightingScenario)
+			{
+				return LocalLevel;
+			}
 		}
 	}
 
-	return NULL;
+	return nullptr;
 }
 
 void UWorld::PropagateLightingScenarioChange()
@@ -77,7 +91,7 @@ void UWorld::PropagateLightingScenarioChange()
 		}
 	}
 
-	for (USceneComponent* Component : TObjectRange<USceneComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::PendingKill))
+	for (USceneComponent* Component : TObjectRange<USceneComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
 	{
 		if (Component->GetWorld() == this)
 		{
@@ -285,10 +299,19 @@ FArchive& operator<<(FArchive& Ar, FReflectionCaptureMapBuildData& ReflectionCap
 	Ar << ReflectionCaptureMapBuildData.CubemapSize;
 	Ar << ReflectionCaptureMapBuildData.AverageBrightness;
 
-	if (Ar.CustomVer(FRenderingObjectVersion::GUID) >= FRenderingObjectVersion::StoreReflectionCaptureBrightnessForCooking)
+	float Brightness = 1.0f;
+	if (Ar.CustomVer(FRenderingObjectVersion::GUID) >= FRenderingObjectVersion::StoreReflectionCaptureBrightnessForCooking 
+		&& Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::ExcludeBrightnessFromEncodedHDRCubemap)
 	{
-		Ar << ReflectionCaptureMapBuildData.Brightness;
+		Ar << Brightness;
 	}
+
+#if WITH_EDITOR
+	if (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::ExcludeBrightnessFromEncodedHDRCubemap && Brightness != 1.0f)
+	{
+		ReflectionCaptureMapBuildData.bBrightnessBakedInEncodedHDRCubemap = true;
+	}
+#endif
 
 	static FName FullHDR(TEXT("FullHDR"));
 	static FName EncodedHDR(TEXT("EncodedHDR"));
@@ -350,7 +373,81 @@ UMapBuildDataRegistry::UMapBuildDataRegistry(const FObjectInitializer& ObjectIni
 {
 	LevelLightingQuality = Quality_MAX;
 	bSetupResourceClusters = false;
+
+#if WITH_EDITOR
+	FAssetCompilingManager::Get().OnAssetPostCompileEvent().AddUObject(this, &ThisClass::HandleAssetPostCompileEvent);
+#endif
 }
+
+#if WITH_EDITOR
+void UMapBuildDataRegistry::HandleAssetPostCompileEvent(const TArray<FAssetCompileData>& CompiledAssets)
+{
+	TSet<FLightmapResourceCluster*> ClustersToUpdate;
+	for (const FAssetCompileData& CompileData : CompiledAssets)
+	{
+		if (ULightMapVirtualTexture2D* LightMapVirtualTexture2D = Cast<ULightMapVirtualTexture2D>(CompileData.Asset.Get()))
+		{
+			// If our lightmap clusters are affected by the virtual textures that just finished compiling, 
+			// we need to update their uniform buffer.
+			for (FLightmapResourceCluster& Cluster : LightmapResourceClusters)
+			{
+				if (Cluster.Input.LightMapVirtualTextures[0] == LightMapVirtualTexture2D ||
+					Cluster.Input.LightMapVirtualTextures[1] == LightMapVirtualTexture2D)
+				{
+					ClustersToUpdate.Add(&Cluster);
+				}
+			}
+		}
+	}
+
+	if (ClustersToUpdate.Num())
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(UMapBuildDataRegistry::HandleAssetPostCompileEvent);
+
+		for (FLightmapResourceCluster* Cluster : ClustersToUpdate)
+		{
+			ENQUEUE_RENDER_COMMAND(UpdateClusterUniformBuffer)(
+				[Cluster](FRHICommandList& RHICmdList)
+				{
+					Cluster->UpdateUniformBuffer_RenderThread();
+				});
+		}
+
+		for (TObjectIterator<ULandscapeComponent> It; It; ++It)
+		{
+			if (It->IsRenderStateCreated() && It->SceneProxy != nullptr)
+			{
+				if (FMeshMapBuildData* BuildData = MeshBuildData.Find(It->MapBuildDataId))
+				{
+					if (ClustersToUpdate.Contains(BuildData->ResourceCluster))
+					{
+						It->MarkRenderStateDirty();
+					}
+				}
+			}
+		}
+
+		for (TObjectIterator<UStaticMeshComponent> It; It; ++It)
+		{
+			if (It->IsRenderStateCreated() && It->SceneProxy != nullptr)
+			{
+				for (const FStaticMeshComponentLODInfo& LODInfo : It->LODData)
+				{
+					if (FMeshMapBuildData* BuildData = MeshBuildData.Find(LODInfo.MapBuildDataId))
+					{
+						if (ClustersToUpdate.Contains(BuildData->ResourceCluster))
+						{
+							It->MarkRenderStateDirty();
+							break;
+						}
+					}
+				}
+			}
+		}
+	}
+
+}
+#endif // #if WITH_EDITOR
 
 void UMapBuildDataRegistry::Serialize(FArchive& Ar)
 {
@@ -361,6 +458,7 @@ void UMapBuildDataRegistry::Serialize(FArchive& Ar)
 	Ar.UsingCustomVersion(FRenderingObjectVersion::GUID);
 	Ar.UsingCustomVersion(FMobileObjectVersion::GUID);
 	Ar.UsingCustomVersion(FReflectionCaptureObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 
 	if (!StripFlags.IsDataStrippedForServer())
 	{
@@ -445,7 +543,7 @@ void UMapBuildDataRegistry::HandleLegacyEncodedCubemapData()
 		for (TMap<FGuid, FReflectionCaptureMapBuildData>::TIterator It(ReflectionCaptureBuildData); It; ++It)
 		{
 			FReflectionCaptureMapBuildData& CaptureBuildData = It.Value();
-			if (CaptureBuildData.EncodedCaptureData == nullptr && CaptureBuildData.FullHDRCapturedData.Num() != 0)
+			if ((CaptureBuildData.EncodedCaptureData == nullptr || CaptureBuildData.bBrightnessBakedInEncodedHDRCubemap) && CaptureBuildData.FullHDRCapturedData.Num() != 0)
 			{
 				FString TextureName = TEXT("DeprecatedTexture");
 				TextureName += LexToString(It.Key());
@@ -973,7 +1071,7 @@ void UMapBuildDataRegistry::EmptyLevelData(const TSet<FGuid>* ResourcesToKeep)
 
 void UMapBuildDataRegistry::CleanupTransientOverrideMapBuildData()
 {
-	for (UHierarchicalInstancedStaticMeshComponent* Component : TObjectRange<UHierarchicalInstancedStaticMeshComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::PendingKill))
+	for (UHierarchicalInstancedStaticMeshComponent* Component : TObjectRange<UHierarchicalInstancedStaticMeshComponent>(RF_ClassDefaultObject | RF_ArchetypeObject, true, EInternalObjectFlags::Garbage))
 	{
 		for (auto& LOD : Component->LODData)
 		{

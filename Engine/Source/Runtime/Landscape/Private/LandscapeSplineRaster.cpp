@@ -101,7 +101,7 @@ protected:
 		}
 		else
 		{
-			float Value = FMath::Lerp((float)Dest, Interpolant.Z, Alpha);
+			float Value = FMath::Lerp<float>((float)Dest, Interpolant.Z, Alpha);
 			uint16 DValue = (uint16)FMath::Clamp<float>(Value, 0, (float)LandscapeDataAccess::MaxValue);
 			if ((bRaiseTerrain && DValue > Dest) ||
 				(bLowerTerrain && DValue < Dest))
@@ -233,7 +233,7 @@ protected:
 		}
 
 		uint8& Dest = Data[(Y - MinY)*(1 + MaxX - MinX) + X - MinX];
-		float Value = FMath::Lerp((float)Dest, Interpolant.Z, Alpha);
+		float Value = FMath::Lerp<float>((float)Dest, Interpolant.Z, Alpha);
 		Dest = (uint32)FMath::Clamp<float>(Value, 0, LandscapeDataAccess::MaxValue);
 	}
 
@@ -432,6 +432,8 @@ void RasterizeControlPointAlpha(int32& MinX, int32& MinY, int32& MaxX, int32& Ma
 
 void RasterizeSegmentHeight(int32& MinX, int32& MinY, int32& MaxX, int32& MaxY, FLandscapeEditDataInterface& LandscapeEdit, const TArray<FLandscapeSplineInterpPoint>& Points, bool bRaiseTerrain, bool bLowerTerrain, TSet<ULandscapeComponent*>& ModifiedComponents)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(LandscapeSpline_RasterizeSegmentHeight);
+
 	RasterizeHeight(MinX, MinY, MaxX, MaxY, LandscapeEdit, bRaiseTerrain, bLowerTerrain, ModifiedComponents, [&](FTriangleRasterizer<FLandscapeSplineHeightsRasterPolicy>& Rasterizer)
 	{
 		for (int32 j = 1; j < Points.Num(); j++)
@@ -470,6 +472,8 @@ void RasterizeSegmentHeight(int32& MinX, int32& MinY, int32& MaxX, int32& MaxY, 
 
 void RasterizeSegmentAlpha(int32& MinX, int32& MinY, int32& MaxX, int32& MaxY, FLandscapeEditDataInterface& LandscapeEdit, const TArray<FLandscapeSplineInterpPoint>& Points, ULandscapeLayerInfoObject* LayerInfo, TSet<ULandscapeComponent*>& ModifiedComponents, const TSharedPtr<FModulateAlpha>& ModulateAlpha = nullptr)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(LandscapeSpline_RasterizeSegmentAlpha);
+
 	if (LayerInfo == nullptr)
 	{
 		return;
@@ -548,8 +552,10 @@ void RasterizeSegmentAlpha(int32& MinX, int32& MinY, int32& MaxX, int32& MaxY, F
 	LandscapeEdit.GetComponentsInRegion(MinX, MinY, MaxX, MaxY, &ModifiedComponents);
 }
 
-bool ULandscapeInfo::ApplySplines(bool bOnlySelected, TSet<ULandscapeComponent*>* OutModifiedComponents, bool bMarkPackageDirty)
+bool ULandscapeInfo::ApplySplines(bool bOnlySelected, TSet<TObjectPtr<ULandscapeComponent>>* OutModifiedComponents, bool bMarkPackageDirty)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(LandscapeInfo_ApplySplines);
+
 	bool bResult = false;
 
 	ALandscape* Landscape = LandscapeActor.Get();
@@ -577,29 +583,39 @@ bool ULandscapeInfo::ApplySplines(bool bOnlySelected, TSet<ULandscapeComponent*>
 		return SharedPtr;
 	};
 
-	ForAllLandscapeProxies([&](ALandscapeProxy* Proxy)
+	ForAllSplineActors([&](TScriptInterface<ILandscapeSplineInterface> SplineOwner)
 	{
-		bResult |= ApplySplinesInternal(bOnlySelected, Proxy, OutModifiedComponents, bMarkPackageDirty, LandscapeMinX, LandscapeMinY, LandscapeMaxX, LandscapeMaxY, GetOrCreateModulate);
+		bResult |= ApplySplinesInternal(bOnlySelected, SplineOwner, OutModifiedComponents, bMarkPackageDirty, LandscapeMinX, LandscapeMinY, LandscapeMaxX, LandscapeMaxY, GetOrCreateModulate);
 	});
 
 	return bResult;
 }
 
-bool ULandscapeInfo::ApplySplinesInternal(bool bOnlySelected, ALandscapeProxy* Proxy, TSet<ULandscapeComponent*>* OutModifiedComponents, bool bMarkPackageDirty, int32 LandscapeMinX, int32 LandscapeMinY, int32 LandscapeMaxX, int32 LandscapeMaxY, TFunctionRef<TSharedPtr<FModulateAlpha>(ULandscapeLayerInfoObject*)> GetOrCreateModulate)
+bool ULandscapeInfo::ApplySplinesInternal(bool bOnlySelected, TScriptInterface<ILandscapeSplineInterface> SplineOwner, TSet<TObjectPtr<ULandscapeComponent>>* OutModifiedComponents, bool bMarkPackageDirty, int32 LandscapeMinX, int32 LandscapeMinY, int32 LandscapeMaxX, int32 LandscapeMaxY, TFunctionRef<TSharedPtr<FModulateAlpha>(ULandscapeLayerInfoObject*)> GetOrCreateModulate)
 {
-	if (!Proxy || !Proxy->SplineComponent || !Proxy->SplineComponent->IsRegistered() || Proxy->SplineComponent->ControlPoints.Num() == 0 || Proxy->SplineComponent->Segments.Num() == 0)
+	TRACE_CPUPROFILER_EVENT_SCOPE(LandscapeInfo_ApplySplinesInternal);
+
+	if (!SplineOwner)
 	{
 		return false;
 	}
 
-	const FTransform SplineToLandscape = Proxy->SplineComponent->GetComponentTransform().GetRelativeTransform(Proxy->LandscapeActorToWorld());
+	ULandscapeSplinesComponent* SplineComponent = SplineOwner->GetSplinesComponent();
+	
+	if (!SplineComponent || !SplineComponent->IsRegistered() || SplineComponent->ControlPoints.Num() == 0 || SplineComponent->Segments.Num() == 0)
+	{
+		return false;
+	}
+
+
+	const FTransform SplineToLandscape = SplineComponent->GetComponentTransform().GetRelativeTransform(SplineOwner->LandscapeActorToWorld());
 
 	FLandscapeEditDataInterface LandscapeEdit(this);
 	FLandscapeDoNotDirtyScope DoNotDirtyScope(LandscapeEdit, !bMarkPackageDirty);
 	TSet<ULandscapeComponent*> ModifiedComponents;
 	
 
-	for (const ULandscapeSplineControlPoint* ControlPoint : Proxy->SplineComponent->ControlPoints)
+	for (const ULandscapeSplineControlPoint* ControlPoint : SplineComponent->ControlPoints)
 	{
 		if (bOnlySelected && !ControlPoint->IsSplineSelected())
 		{
@@ -675,7 +691,7 @@ bool ULandscapeInfo::ApplySplinesInternal(bool bOnlySelected, ALandscapeProxy* P
 		}
 	}
 
-	for (const ULandscapeSplineSegment* Segment : Proxy->SplineComponent->Segments)
+	for (const ULandscapeSplineSegment* Segment : SplineComponent->Segments)
 	{
 		if (bOnlySelected && !Segment->IsSplineSelected())
 		{
@@ -750,7 +766,7 @@ bool ULandscapeInfo::ApplySplinesInternal(bool bOnlySelected, ALandscapeProxy* P
 
 	LandscapeEdit.Flush();
 		
-	if (!Proxy->HasLayersContent())
+	if (!CanHaveLayersContent())
 	{
 		ALandscapeProxy::InvalidateGeneratedComponentData(ModifiedComponents);
 	}

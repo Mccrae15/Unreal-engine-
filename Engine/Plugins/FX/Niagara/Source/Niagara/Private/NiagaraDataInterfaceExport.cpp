@@ -3,13 +3,14 @@
 #include "NiagaraDataInterfaceExport.h"
 #include "NiagaraTypes.h"
 #include "NiagaraCustomVersion.h"
-#include "NiagaraEmitterInstanceBatcher.h"
+#include "NiagaraComputeExecutionContext.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraGpuReadbackManager.h"
+#include "NiagaraGPUSystemTick.h"
 #include "NiagaraSystemInstance.h"
 #include "Internationalization/Internationalization.h"
 #include "ShaderParameterUtils.h"
 #include "ShaderCompilerCore.h"
-#include "RHIGPUReadback.h"
 
 namespace NDIExportLocal
 {
@@ -42,12 +43,14 @@ class FNiagaraExportCallbackAsyncTask
 	TWeakObjectPtr<UObject> WeakCallbackHandler;
 	TArray<FBasicParticleData> Data;
 	TWeakObjectPtr<UNiagaraSystem> WeakSystem;
+	FVector3f SystemTileOffset;
 
 public:
-	FNiagaraExportCallbackAsyncTask(TWeakObjectPtr<UObject> InCallbackHandler, TArray<FBasicParticleData> Data, TWeakObjectPtr<UNiagaraSystem> InSystem)
+	FNiagaraExportCallbackAsyncTask(TWeakObjectPtr<UObject> InCallbackHandler, TArray<FBasicParticleData> Data, TWeakObjectPtr<UNiagaraSystem> InSystem, FVector3f InSystemTileOffset)
 		: WeakCallbackHandler(InCallbackHandler)
 		, Data(Data)
 		, WeakSystem(InSystem)
+		, SystemTileOffset(InSystemTileOffset)
 	{
 	}
 
@@ -71,7 +74,7 @@ public:
 			return;
 		}
 
-		INiagaraParticleCallbackHandler::Execute_ReceiveParticleData(CallbackHandler, Data, System);
+		INiagaraParticleCallbackHandler::Execute_ReceiveParticleData(CallbackHandler, Data, System, FVector(SystemTileOffset) * FLargeWorldRenderScalar::GetTileSize());
 	}
 };
 
@@ -143,7 +146,7 @@ struct FNDIExportProxy : public FNiagaraDataInterfaceProxy
 		if (InstanceData->WriteBuffer.NumBytes != RequiredBytes)
 		{
 			InstanceData->WriteBuffer.Release();
-			InstanceData->WriteBuffer.Initialize(sizeof(float), RequiredElements, PF_R32_UINT, BUF_SourceCopy);
+			InstanceData->WriteBuffer.Initialize(TEXT("FNDIExportProxy_WriteBuffer"), sizeof(float), RequiredElements, PF_R32_UINT, BUF_SourceCopy);
 
 			// Clear counter when we initialize the buffer
 			ClearCounter(RHICmdList, InstanceData);
@@ -164,17 +167,16 @@ struct FNDIExportProxy : public FNiagaraDataInterfaceProxy
 
 			RHICmdList.Transition(FRHITransitionInfo(InstanceData->WriteBuffer.UAV, ERHIAccess::UAVCompute, ERHIAccess::CopySrc));
 
-			FNiagaraGpuReadbackManager* ReadbackManager = Context.Batcher->GetGpuReadbackManager();
+			FNiagaraGpuReadbackManager* ReadbackManager = Context.ComputeDispatchInterface->GetGpuReadbackManager();
 			ReadbackManager->EnqueueReadback(
 				RHICmdList,
 				InstanceData->WriteBuffer.Buffer,
-				[MaxInstances=InstanceData->WriteBufferInstanceCount, WeakCallbackHandler=InstanceData->WeakCallbackHandler, WeakSystem=InstanceData->WeakSystem](TConstArrayView<TPair<void*, uint32>> Buffers)
+				[MaxInstances=InstanceData->WriteBufferInstanceCount, WeakCallbackHandler=InstanceData->WeakCallbackHandler, WeakSystem=InstanceData->WeakSystem, SystemLWCTile=Context.SystemLWCTile](TConstArrayView<TPair<void*, uint32>> Buffers)
 				{
-					uint32 ReadbackInstanceCount = *reinterpret_cast<uint32*>(Buffers[0].Key);
+					const uint32 ReadbackInstanceCount = *reinterpret_cast<uint32*>(Buffers[0].Key);
+					check(ReadbackInstanceCount <= MaxInstances);
 					if (ReadbackInstanceCount > 0)
 					{
-						ReadbackInstanceCount = FMath::Min(ReadbackInstanceCount, MaxInstances);
-
 						// Translate float data into Export Data
 						TArray<FBasicParticleData> ExportParticleData;
 						ExportParticleData.AddUninitialized(ReadbackInstanceCount);
@@ -193,7 +195,7 @@ struct FNDIExportProxy : public FNiagaraDataInterfaceProxy
 							FloatData += NDIExportLocal::NumFloatsPerInstance;
 						}
 
-						TGraphTask<FNiagaraExportCallbackAsyncTask>::CreateTask().ConstructAndDispatchWhenReady(WeakCallbackHandler, MoveTemp(ExportParticleData), WeakSystem);
+						TGraphTask<FNiagaraExportCallbackAsyncTask>::CreateTask().ConstructAndDispatchWhenReady(WeakCallbackHandler, MoveTemp(ExportParticleData), WeakSystem, SystemLWCTile);
 					}
 				}
 			);
@@ -248,7 +250,7 @@ public:
 			if (InstanceData->WeakCallbackHandler.IsExplicitlyNull())
 			{
 				WriteBufferSize = 0;
-				RHICmdList.SetUAVParameter(Context.Shader.GetComputeShader(), WriteBufferParam.GetUAVIndex(), Context.Batcher->GetEmptyUAVFromPool(RHICmdList, PF_R32_UINT, ENiagaraEmptyUAVType::Buffer));
+				RHICmdList.SetUAVParameter(Context.Shader.GetComputeShader(), WriteBufferParam.GetUAVIndex(), Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, PF_R32_UINT, ENiagaraEmptyUAVType::Buffer));
 			}
 			else
 			{
@@ -327,7 +329,7 @@ void UNiagaraDataInterfaceExport::DestroyPerInstanceData(void* PerInstanceData, 
 
 	ENQUEUE_RENDER_COMMAND(FNDIExport_RemoveProxy)
 	(
-		[RT_Proxy=GetProxyAs<FNDIExportProxy>(), InstanceID=SystemInstance->GetId(), Batcher=SystemInstance->GetBatcher()](FRHICommandListImmediate& CmdList)
+		[RT_Proxy=GetProxyAs<FNDIExportProxy>(), InstanceID=SystemInstance->GetId()](FRHICommandListImmediate& CmdList)
 		{
 			RT_Proxy->SystemInstancesToProxyData_RT.Remove(InstanceID);
 		}
@@ -396,7 +398,7 @@ bool UNiagaraDataInterfaceExport::PerInstanceTickPostSimulate(void* PerInstanceD
 				Data.Add(Value);
 			}
 
-			TGraphTask<FNiagaraExportCallbackAsyncTask>::CreateTask().ConstructAndDispatchWhenReady(PIData->CallbackHandler, MoveTemp(Data), SystemInstance->GetSystem());
+			TGraphTask<FNiagaraExportCallbackAsyncTask>::CreateTask().ConstructAndDispatchWhenReady(PIData->CallbackHandler, MoveTemp(Data), SystemInstance->GetSystem(), SystemInstance->GetLWCTile());
 		}
 	}
 	return false;
@@ -504,32 +506,32 @@ void UNiagaraDataInterfaceExport::GetVMExternalFunction(const FVMExternalFunctio
 	}
 	else
 	{
-		UE_LOG(LogNiagara, Error, TEXT("Could not find data interface external function. Expected Name: %s  Actual Name: %s"), *NDIExportLocal::ExportDataName.ToString(), *BindingInfo.Name.ToString());
+		UE_LOG(LogNiagara, Display, TEXT("Could not find data interface external function in %s. Expected Name: %s  Actual Name: %s"), *GetPathNameSafe(this), *NDIExportLocal::ExportDataName.ToString(), *BindingInfo.Name.ToString());
 	}
 }
 
-void UNiagaraDataInterfaceExport::StoreData(FVectorVMContext& Context)
+void UNiagaraDataInterfaceExport::StoreData(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIExportInstanceData_GameThread> InstData(Context);
 
 	FNDIInputParam<FNiagaraBool> StoreDataParam(Context);
-	FNDIInputParam<FVector> PositionParam(Context);
+	FNDIInputParam<FVector3f> PositionParam(Context);
 	FNDIInputParam<float> SizeParam(Context);
-	FNDIInputParam<FVector> VelocityParam(Context);
+	FNDIInputParam<FVector3f> VelocityParam(Context);
 
 	FNDIOutputParam<FNiagaraBool> OutSample(Context);
 
 	checkfSlow(InstData.Get(), TEXT("Export data interface has invalid instance data. %s"), *GetPathName());
 	bool ValidHandlerData = InstData->UserParamBinding.BoundVariable.IsValid() && InstData->CallbackHandler.IsValid();
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		const bool ShouldStore = StoreDataParam.GetAndAdvance();
 
 		FBasicParticleData Data;
-		Data.Position = PositionParam.GetAndAdvance();
+		Data.Position = (FVector)PositionParam.GetAndAdvance();
 		Data.Size = SizeParam.GetAndAdvance();
-		Data.Velocity = VelocityParam.GetAndAdvance();
+		Data.Velocity = (FVector)VelocityParam.GetAndAdvance();
 
 		bool Valid = false;
 		if (ValidHandlerData && ShouldStore)
@@ -540,28 +542,28 @@ void UNiagaraDataInterfaceExport::StoreData(FVectorVMContext& Context)
 	}
 }
 
-void UNiagaraDataInterfaceExport::ExportData(FVectorVMContext& Context)
+void UNiagaraDataInterfaceExport::ExportData(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIExportInstanceData_GameThread> InstData(Context);
 
 	FNDIInputParam<FNiagaraBool> StoreDataParam(Context);
-	FNDIInputParam<FVector> PositionParam(Context);
+	FNDIInputParam<FVector3f> PositionParam(Context);
 	FNDIInputParam<float> SizeParam(Context);
-	FNDIInputParam<FVector> VelocityParam(Context);
+	FNDIInputParam<FVector3f> VelocityParam(Context);
 
 	FNDIOutputParam<FNiagaraBool> OutWasExported(Context);
 
 	checkfSlow(InstData.Get(), TEXT("Export data interface has invalid instance data. %s"), *GetPathName());
 	bool ValidHandlerData = InstData->UserParamBinding.BoundVariable.IsValid() && InstData->CallbackHandler.IsValid();
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		const bool ShouldStore = StoreDataParam.GetAndAdvance();
 
 		FBasicParticleData Data;
-		Data.Position = PositionParam.GetAndAdvance();
+		Data.Position = (FVector)PositionParam.GetAndAdvance();
 		Data.Size = SizeParam.GetAndAdvance();
-		Data.Velocity = VelocityParam.GetAndAdvance();
+		Data.Velocity = (FVector)VelocityParam.GetAndAdvance();
 
 		bool Valid = false;
 		if (ValidHandlerData && ShouldStore)

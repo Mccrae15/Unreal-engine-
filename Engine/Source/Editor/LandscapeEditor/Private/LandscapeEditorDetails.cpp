@@ -8,12 +8,14 @@
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Input/SSpinBox.h"
+#include "Widgets/Input/SSegmentedControl.h"
 #include "LandscapeEdMode.h"
 #include "LandscapeEditorDetailCustomization_NewLandscape.h"
 #include "LandscapeEditorDetailCustomization_ResizeLandscape.h"
 #include "LandscapeEditorDetailCustomization_CopyPaste.h"
 #include "LandscapeEditorDetailCustomization_MiscTools.h"
 #include "LandscapeEditorDetailCustomization_AlphaBrush.h"
+#include "LandscapeEditorDetailCustomization_ImportExport.h"
 #include "DetailWidgetRow.h"
 #include "LandscapeEditorDetailCustomization_TargetLayers.h"
 #include "DetailCategoryBuilder.h"
@@ -45,7 +47,7 @@ void FLandscapeEditorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuild
 	static const FLinearColor BorderColor = FLinearColor(0.2f, 0.2f, 0.2f, 0.2f);
 	static const FSlateBrush* BorderStyle = FEditorStyle::GetBrush("DetailsView.GroupSection");
 
-	IDetailCategoryBuilder& LandscapeEditorCategory = DetailBuilder.EditCategory("LandscapeEditor", FText::GetEmpty(), ECategoryPriority::TypeSpecific);
+	IDetailCategoryBuilder& LandscapeEditorCategory = DetailBuilder.EditCategory("LandscapeEditor", NSLOCTEXT("Contexts", "LandscapeEditor", "Landscape Editor"), ECategoryPriority::TypeSpecific);
 
 	LandscapeEditorCategory.AddCustomRow(FText::GetEmpty())
 	.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateStatic(&FLandscapeEditorDetails::GetTargetLandscapeSelectorVisibility)))
@@ -83,51 +85,64 @@ void FLandscapeEditorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuild
 		return;
 	}
 
-	FToolSelectorBuilder ToolBrushSelectorButtons(CommandList, FMultiBoxCustomization::None);
+	// Custom Brush Selectors 
+
+	TSharedPtr<SSegmentedControl<FName>> BrushSelectors = SNew(SSegmentedControl<FName>)
+	.OnValueChanged(this, &FLandscapeEditorDetails::SetBrushCommand)
+	.Value(this, &FLandscapeEditorDetails::GetCurrentBrushFName) ;
+	for (FName BrushName : LandscapeEdMode->CurrentTool->ValidBrushes)
 	{
-		FUIAction ToolSelectorUIAction;
-		//ToolSelectorUIAction.IsActionVisibleDelegate.BindSP(this, &FLandscapeEditorDetails::GetToolSelectorIsVisible);
-		ToolBrushSelectorButtons.AddComboButton(
-			ToolSelectorUIAction,
-			FOnGetContent::CreateSP(this, &FLandscapeEditorDetails::GetToolSelector),
-			LOCTEXT("ToolSelector", "Tool"),
-			TAttribute<FText>(this, &FLandscapeEditorDetails::GetCurrentToolName),
-			LOCTEXT("ToolSelector.Tooltip", "Select Tool"),
-			TAttribute<FSlateIcon>(this, &FLandscapeEditorDetails::GetCurrentToolIcon)
-			);
-
-		FUIAction BrushSelectorUIAction;
-		BrushSelectorUIAction.IsActionVisibleDelegate.BindSP(this, &FLandscapeEditorDetails::GetBrushSelectorIsVisible);
-		ToolBrushSelectorButtons.AddComboButton(
-			BrushSelectorUIAction,
-			FOnGetContent::CreateSP(this, &FLandscapeEditorDetails::GetBrushSelector),
-			LOCTEXT("BrushSelector", "Brush"),
-			TAttribute<FText>(this, &FLandscapeEditorDetails::GetCurrentBrushName),
-			LOCTEXT("BrushSelector.Tooltip", "Select Brush"),
-			TAttribute<FSlateIcon>(this, &FLandscapeEditorDetails::GetCurrentBrushIcon)
-			);
-
-		FUIAction BrushFalloffSelectorUIAction;
-		BrushFalloffSelectorUIAction.IsActionVisibleDelegate.BindSP(this, &FLandscapeEditorDetails::GetBrushFalloffSelectorIsVisible);
-		ToolBrushSelectorButtons.AddComboButton(
-			BrushFalloffSelectorUIAction,
-			FOnGetContent::CreateSP(this, &FLandscapeEditorDetails::GetBrushFalloffSelector),
-			LOCTEXT("BrushFalloffSelector", "Falloff"),
-			TAttribute<FText>(this, &FLandscapeEditorDetails::GetCurrentBrushFalloffName),
-			LOCTEXT("BrushFalloffSelector.Tooltip", "Select Brush Falloff Type"),
-			TAttribute<FSlateIcon>(this, &FLandscapeEditorDetails::GetCurrentBrushFalloffIcon)
-			);
+		TSharedPtr<FUICommandInfo> Command = FLandscapeEditorCommands::Get().NameToCommandMap.FindRef(BrushName);
+		if (Command.IsValid())
+		{
+			BrushSelectors->AddSlot(BrushName)
+			.Icon(Command->GetIcon().GetIcon())
+			.ToolTip(Command->GetDescription());
+		}
 	}
+	BrushSelectors->RebuildChildren();
+
+	TSharedPtr<SSegmentedControl<FName>> FalloffSelectors = SNew(SSegmentedControl<FName>)
+		.OnValueChanged(this, &FLandscapeEditorDetails::SetBrushCommand)
+		.Value(this, &FLandscapeEditorDetails::GetCurrentBrushFalloffFName)
+		+ SSegmentedControl<FName>::Slot(FName("Circle_Smooth")).Icon(FLandscapeEditorCommands::Get().CircleBrush_Smooth->GetIcon().GetIcon()).ToolTip(FLandscapeEditorCommands::Get().CircleBrush_Smooth->GetDescription())
+		+ SSegmentedControl<FName>::Slot(FName("Circle_Linear")).Icon(FLandscapeEditorCommands::Get().CircleBrush_Linear->GetIcon().GetIcon()).ToolTip(FLandscapeEditorCommands::Get().CircleBrush_Linear->GetDescription())
+		+ SSegmentedControl<FName>::Slot(FName("Circle_Spherical")).Icon(FLandscapeEditorCommands::Get().CircleBrush_Spherical->GetIcon().GetIcon()).ToolTip(FLandscapeEditorCommands::Get().CircleBrush_Spherical->GetDescription())
+		+ SSegmentedControl<FName>::Slot(FName("Circle_Tip")).Icon(FLandscapeEditorCommands::Get().CircleBrush_Tip->GetIcon().GetIcon()).ToolTip(FLandscapeEditorCommands::Get().CircleBrush_Tip->GetDescription());
 
 	LandscapeEditorCategory.AddCustomRow(FText::GetEmpty())
-	.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FLandscapeEditorDetails::GetToolSelectorVisibility)))
+	.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FLandscapeEditorDetails::GetBrushSelectorVisibility)))
+	.NameContent()
 	[
-		ToolBrushSelectorButtons.MakeWidget()
+		SNew(STextBlock)
+		.TextStyle( &FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>( "SmallText" ) )
+		.Text(LOCTEXT("BrushSelector", "Brush Type"))
+
+	]
+	.ValueContent()
+	[
+		BrushSelectors.ToSharedRef()
+	];
+
+	LandscapeEditorCategory.AddCustomRow(FText::GetEmpty())
+	.Visibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &FLandscapeEditorDetails::GetBrushFalloffSelectorVisibility)))
+	.NameContent()
+	[
+		SNew(STextBlock)
+		.TextStyle( &FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>( "SmallText" ) )
+		.Text(LOCTEXT("BrushFalloff", "Brush Falloff"))
+
+	]
+	.ValueContent()
+	[
+		FalloffSelectors.ToSharedRef()
 	];
 
 	// Tools:
 	Customization_NewLandscape = MakeShareable(new FLandscapeEditorDetailCustomization_NewLandscape);
 	Customization_NewLandscape->CustomizeDetails(DetailBuilder);
+	Customization_ImportExport = MakeShareable(new FLandscapeEditorDetailCustomization_ImportExport);
+	Customization_ImportExport->CustomizeDetails(DetailBuilder);
 	Customization_ResizeLandscape = MakeShareable(new FLandscapeEditorDetailCustomization_ResizeLandscape);
 	Customization_ResizeLandscape->CustomizeDetails(DetailBuilder);
 	Customization_CopyPaste = MakeShareable(new FLandscapeEditorDetailCustomization_CopyPaste);
@@ -154,151 +169,6 @@ void FLandscapeEditorDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuild
 	Customization_TargetLayers = MakeShareable(new FLandscapeEditorDetailCustomization_TargetLayers);
 	Customization_TargetLayers->CustomizeDetails(DetailBuilder);
 }
-
-void FLandscapeEditorDetails::CustomizeToolBarPalette(FToolBarBuilder& ToolBarBuilder, const TSharedRef<FLandscapeToolKit> LandscapeToolkit)
-{
-
-	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
-	CommandList = LandscapeEdMode->GetUICommandList();
-
-	TSharedPtr<INumericTypeInterface<float>> NumericInterface = MakeShareable(new FVariablePrecisionNumericInterface());
-
-	// Tool Strength
-	{
-		FProperty* ToolStrengthProperty = LandscapeEdMode->UISettings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, ToolStrength));
-		const FString& UIMinString = ToolStrengthProperty->GetMetaData("UIMin");
-		const FString& UIMaxString = ToolStrengthProperty->GetMetaData("UIMax");
-		const FString& SliderExponentString = ToolStrengthProperty->GetMetaData("SliderExponent");
-		float UIMin = TNumericLimits<float>::Lowest();
-		float UIMax = TNumericLimits<float>::Max();
-		TTypeFromString<float>::FromString(UIMin, *UIMinString);
-		TTypeFromString<float>::FromString(UIMax, *UIMaxString);
-		float SliderExponent = 1.0f;
-		if (SliderExponentString.Len())
-		{
-			TTypeFromString<float>::FromString(SliderExponent, *SliderExponentString);
-		}
-
-		TSharedRef<SWidget> StrengthControl = SNew(SSpinBox<float>)
-			.Style(&FEditorStyle::Get().GetWidgetStyle<FSpinBoxStyle>("LandscapeEditor.SpinBox"))
-			.PreventThrottling(true)
-			.MinValue(UIMin)
-			.MaxValue(UIMax)
-			.SliderExponent(SliderExponent)
-			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
-			.MinDesiredWidth(40.f)
-			.TypeInterface(NumericInterface)
-			.Justification(ETextJustify::Center)
-			.ContentPadding( FMargin(0.f, 2.f, 0.f, 0.f) )
-
-			.Visibility_Lambda( [ToolStrengthProperty, LandscapeToolkit]() -> EVisibility { return LandscapeToolkit->GetIsPropertyVisibleFromProperty(*ToolStrengthProperty) ? EVisibility::Visible : EVisibility::Collapsed;} )
-			.IsEnabled(this, &FLandscapeEditorDetails::IsBrushSetEnabled) 
-			.Value_Lambda([LandscapeEdMode]() -> float { return LandscapeEdMode->UISettings->ToolStrength; })
-			.OnValueChanged_Lambda([LandscapeEdMode](float NewValue) { LandscapeEdMode->UISettings->ToolStrength = NewValue; });
-
-		ToolBarBuilder.AddToolBarWidget( StrengthControl, LOCTEXT("BrushStrength", "Strength") );
-	}
-
-	//  Brush
-	FUIAction BrushSelectorUIAction;
-	BrushSelectorUIAction.IsActionVisibleDelegate.BindSP(this, &FLandscapeEditorDetails::GetBrushSelectorIsVisible);
-	BrushSelectorUIAction.CanExecuteAction.BindSP(this, &FLandscapeEditorDetails::IsBrushSetEnabled);
-
-	ToolBarBuilder.AddComboButton(
-		BrushSelectorUIAction,
-		FOnGetContent::CreateSP(this, &FLandscapeEditorDetails::GetBrushSelector),
-		TAttribute<FText>(this, &FLandscapeEditorDetails::GetCurrentBrushName),
-		LOCTEXT("BrushSelector.Tooltip", "Select Brush"),
-		TAttribute<FSlateIcon>(this, &FLandscapeEditorDetails::GetCurrentBrushIcon)
-		);
-
-	//  Brush Size 
-	{
-
-		FProperty* BrushRadiusProperty = LandscapeEdMode->UISettings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, BrushRadius));
-		const FString& UIMinString = BrushRadiusProperty->GetMetaData("UIMin");
-		const FString& UIMaxString = BrushRadiusProperty->GetMetaData("UIMax");
-		const FString& SliderExponentString = BrushRadiusProperty->GetMetaData("SliderExponent");
-		float UIMin = TNumericLimits<float>::Lowest();
-		float UIMax = TNumericLimits<float>::Max();
-		TTypeFromString<float>::FromString(UIMin, *UIMinString);
-		TTypeFromString<float>::FromString(UIMax, *UIMaxString);
-		float SliderExponent = 1.0f;
-		if (SliderExponentString.Len())
-		{
-			TTypeFromString<float>::FromString(SliderExponent, *SliderExponentString);
-		}
-
-		TSharedRef<SWidget> SizeControl = 
-			SNew(SSpinBox<float>)
-			.Style(&FEditorStyle::Get().GetWidgetStyle<FSpinBoxStyle>("LandscapeEditor.SpinBox"))
-			.Visibility_Lambda( [BrushRadiusProperty, LandscapeToolkit]() -> EVisibility { return LandscapeToolkit->GetIsPropertyVisibleFromProperty(*BrushRadiusProperty) ? EVisibility::Visible : EVisibility::Collapsed;} )
-			.IsEnabled(this, &FLandscapeEditorDetails::IsBrushSetEnabled) 
-			.PreventThrottling(true)
-			.Value_Lambda([LandscapeEdMode]() -> float { return LandscapeEdMode->UISettings->BrushRadius; })
-			.OnValueChanged_Lambda([LandscapeEdMode](float NewValue) { LandscapeEdMode->UISettings->BrushRadius = NewValue; })
-
-			.MinValue(UIMin)
-			.MaxValue(UIMax)
-			.SliderExponent(SliderExponent)
-			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
-			.MinDesiredWidth(40.f)
-			.TypeInterface(NumericInterface)
-			.Justification(ETextJustify::Center);
-		ToolBarBuilder.AddToolBarWidget( SizeControl, LOCTEXT("BrushRadius", "Radius") );
-	}
-
-	//  Brush Falloff Curve
-	FUIAction BrushFalloffSelectorUIAction;
-	BrushFalloffSelectorUIAction.IsActionVisibleDelegate.BindSP(this, &FLandscapeEditorDetails::GetBrushFalloffSelectorIsVisible);
-	BrushFalloffSelectorUIAction.CanExecuteAction.BindSP(this, &FLandscapeEditorDetails::IsBrushSetEnabled);
-	ToolBarBuilder.AddComboButton(
-		BrushFalloffSelectorUIAction,
-		FOnGetContent::CreateSP(this, &FLandscapeEditorDetails::GetBrushFalloffSelector),
-		TAttribute<FText>(this, &FLandscapeEditorDetails::GetCurrentBrushFalloffName),
-		LOCTEXT("BrushFalloffSelector.Tooltip", "Select Brush Falloff Type"),
-		TAttribute<FSlateIcon>(this, &FLandscapeEditorDetails::GetCurrentBrushFalloffIcon)
-		);
-
-	//  Brush Falloff Percentage 
-	{
-		FProperty* BrushFalloffProperty = LandscapeEdMode->UISettings->GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(ULandscapeEditorObject, BrushFalloff));
-
-		const FString& UIMinString = BrushFalloffProperty->GetMetaData("UIMin");
-		const FString& UIMaxString = BrushFalloffProperty->GetMetaData("UIMax");
-		const FString& SliderExponentString = BrushFalloffProperty->GetMetaData("SliderExponent");
-		float UIMin = TNumericLimits<float>::Lowest();
-		float UIMax = TNumericLimits<float>::Max();
-		TTypeFromString<float>::FromString(UIMin, *UIMinString);
-		TTypeFromString<float>::FromString(UIMax, *UIMaxString);
-		float SliderExponent = 1.0f;
-		if (SliderExponentString.Len())
-		{
-			TTypeFromString<float>::FromString(SliderExponent, *SliderExponentString);
-		}
-
-		TSharedRef<SWidget> FalloffControl = 
-			SNew(SSpinBox<float>)
-			.Style(&FEditorStyle::Get().GetWidgetStyle<FSpinBoxStyle>("LandscapeEditor.SpinBox"))
-			.Visibility_Lambda( [BrushFalloffProperty, LandscapeToolkit, this]() -> EVisibility { return GetBrushFalloffSelectorIsVisible() && LandscapeToolkit->GetIsPropertyVisibleFromProperty(*BrushFalloffProperty) ? EVisibility::Visible : EVisibility::Collapsed;} )
-			.IsEnabled(this, &FLandscapeEditorDetails::IsBrushSetEnabled) 
-			.PreventThrottling(true)
-			.Value_Lambda([LandscapeEdMode]() -> float { return LandscapeEdMode->UISettings->BrushFalloff; })
-			.OnValueChanged_Lambda([LandscapeEdMode](float NewValue) { LandscapeEdMode->UISettings->BrushFalloff = NewValue; })
-
-			.MinValue(UIMin)
-			.MaxValue(UIMax)
-			.SliderExponent(SliderExponent)
-			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 11))
-			.MinDesiredWidth(40.f)
-			.TypeInterface(NumericInterface)
-			.Justification(ETextJustify::Center);
-
-		ToolBarBuilder.AddToolBarWidget( FalloffControl, LOCTEXT("BrushFalloff", "Falloff") );
-	}
-
-}
-
 
 FText FLandscapeEditorDetails::GetLocalizedName(FString Name)
 {
@@ -468,7 +338,7 @@ TSharedRef<SWidget> FLandscapeEditorDetails::GetToolSelector()
 		if (LandscapeEdMode->CurrentToolMode->ToolModeName == "ToolMode_Sculpt")
 		{
 			MenuBuilder.BeginSection(NAME_None, LOCTEXT("SculptToolsTitle", "Sculpting Tools"));
-			MenuBuilder.AddToolButton(NameToCommandMap.FindChecked("Tool_Sculpt"), NAME_None, LOCTEXT("Tool.Sculpt", "Sculpt"), LOCTEXT("Tool.Sculpt.Tooltip", "Sculpt height data.\nCtrl+Click to Raise, Ctrl+Shift+Click to lower"));
+			MenuBuilder.AddToolButton(NameToCommandMap.FindChecked("Tool_Sculpt"), NAME_None, LOCTEXT("Tool.Sculpt", "Sculpt"), LOCTEXT("Tool.Sculpt.Tooltip", "Sculpt height data.\nClick to Raise, Shift+Click to lower"));
 			
 			if (LandscapeEdMode->CanHaveLandscapeLayersContent())
 			{
@@ -501,7 +371,7 @@ TSharedRef<SWidget> FLandscapeEditorDetails::GetToolSelector()
 		if (LandscapeEdMode->CurrentToolMode->ToolModeName == "ToolMode_Paint")
 		{
 			MenuBuilder.BeginSection(NAME_None, LOCTEXT("PaintToolsTitle", "Paint Tools"));
-			MenuBuilder.AddToolButton(NameToCommandMap.FindChecked("Tool_Paint"), NAME_None, LOCTEXT("Tool.Paint", "Paint"), LOCTEXT("Tool.Paint.Tooltip", "Paints weight data.\nCtrl+Click to paint, Ctrl+Shift+Click to erase"));
+			MenuBuilder.AddToolButton(NameToCommandMap.FindChecked("Tool_Paint"), NAME_None, LOCTEXT("Tool.Paint", "Paint"), LOCTEXT("Tool.Paint.Tooltip", "Paints weight data.\nClick to paint, Shift+Click to erase"));
 			MenuBuilder.AddToolButton(NameToCommandMap.FindChecked("Tool_Smooth"), NAME_None, LOCTEXT("Tool.Smooth", "Smooth"), LOCTEXT("Tool.Smooth.Tooltip", "Smooths heightmaps or blend layers"));
 			MenuBuilder.AddToolButton(NameToCommandMap.FindChecked("Tool_Flatten"), NAME_None, LOCTEXT("Tool.Flatten", "Flatten"), LOCTEXT("Tool.Flatten.Tooltip", "Flattens an area of heightmap or blend layer"));
 			MenuBuilder.AddToolButton(NameToCommandMap.FindChecked("Tool_Noise"), NAME_None, LOCTEXT("Tool.Noise", "Noise"), LOCTEXT("Tool.Noise.Tooltip", "Adds noise to the heightmap or blend layer"));
@@ -522,11 +392,6 @@ TSharedRef<SWidget> FLandscapeEditorDetails::GetToolSelector()
 
 bool FLandscapeEditorDetails::GetToolSelectorIsVisible() const
 {
-	if (!GetDefault<UEditorStyleSettings>()->bEnableLegacyEditorModeUI)
-	{
-		return false;
-	}
-
 	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
 	if (LandscapeEdMode && LandscapeEdMode->CurrentTool)
 	{
@@ -552,6 +417,19 @@ EVisibility FLandscapeEditorDetails::GetToolSelectorVisibility() const
 	}
 	return EVisibility::Collapsed;
 }
+
+
+FName FLandscapeEditorDetails::GetCurrentBrushFName() const
+{
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	if (LandscapeEdMode != NULL && LandscapeEdMode->CurrentBrush != NULL)
+	{
+		return LandscapeEdMode->LandscapeBrushSets[LandscapeEdMode->CurrentBrushSetIndex].BrushSetName;
+	}
+
+	return NAME_None;
+}
+
 
 FText FLandscapeEditorDetails::GetCurrentBrushName() const
 {
@@ -637,6 +515,22 @@ bool FLandscapeEditorDetails::GetBrushSelectorIsVisible() const
 	return false;
 }
 
+EVisibility FLandscapeEditorDetails::GetBrushSelectorVisibility() const
+{
+	return GetBrushSelectorIsVisible() ? EVisibility::Visible : EVisibility::Collapsed;
+}
+
+FName FLandscapeEditorDetails::GetCurrentBrushFalloffFName() const
+{
+	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
+	if (LandscapeEdMode != NULL && LandscapeEdMode->CurrentBrush != NULL && GetBrushFalloffSelectorIsVisible())
+	{
+		return LandscapeEdMode->CurrentBrush->GetBrushName();
+	}
+
+	return NAME_None;
+}
+
 FText FLandscapeEditorDetails::GetCurrentBrushFalloffName() const
 {
 	FEdModeLandscape* LandscapeEdMode = GetEditorMode();
@@ -663,6 +557,15 @@ FSlateIcon FLandscapeEditorDetails::GetCurrentBrushFalloffIcon() const
 	}
 
 	return FSlateIcon(FEditorStyle::GetStyleSetName(), "Default");
+}
+
+void FLandscapeEditorDetails::SetBrushCommand(FName InBrush)
+{
+	TSharedPtr<FUICommandInfo> BrushCommand = FLandscapeEditorCommands::Get().NameToCommandMap.FindRef(InBrush);
+	if (CommandList.IsValid() && BrushCommand.IsValid())
+	{
+		CommandList->ExecuteAction( BrushCommand.ToSharedRef() );
+	}
 }
 
 TSharedRef<SWidget> FLandscapeEditorDetails::GetBrushFalloffSelector()
@@ -700,6 +603,11 @@ bool FLandscapeEditorDetails::GetBrushFalloffSelectorIsVisible() const
 	}
 
 	return false;
+}
+
+EVisibility FLandscapeEditorDetails::GetBrushFalloffSelectorVisibility() const
+{
+	return GetBrushFalloffSelectorIsVisible() ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 bool FLandscapeEditorDetails::IsBrushSetEnabled() const

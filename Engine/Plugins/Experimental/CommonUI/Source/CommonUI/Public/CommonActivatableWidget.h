@@ -6,6 +6,8 @@
 #include "Input/UIActionBindingHandle.h"
 #include "CommonActivatableWidget.generated.h"
 
+class FActivatableTreeNode;
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnWidgetActivationChanged);
 
 /** 
@@ -26,7 +28,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnWidgetActivationChanged);
  *
  * TODO: ADD MORE INFO ON INPUTS
  */
-UCLASS()
+UCLASS(meta = (DisableNativeTick))
 class COMMONUI_API UCommonActivatableWidget : public UCommonUserWidget
 {
 	GENERATED_BODY()
@@ -40,15 +42,35 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = ActivatableWidget)
 	void DeactivateWidget();
+	
+	/**
+	 * Visibilities to use for when bound widgets in BindVisibilityToActivation are activated.
+	 *
+	 * @param	OnActivatedVisibility	- Visibility for when bound widgets are active
+	 * @param	OnDeactivatedVisibility - Visibility for when bound widgets are not active, not used if this widget has activation / deactivation visibilities
+	 * @param	bInAllActive			- True if we should switch to activated visibility only when all bound widgets are active
+	 */
+	UFUNCTION(BlueprintCallable, Category = ActivatableWidget, meta=(BlueprintProtected = "true"))
+	void SetBindVisibilities(ESlateVisibility OnActivatedVisibility, ESlateVisibility OnDeactivatedVisibility, UPARAM(DisplayName = "All Active") bool bInAllActive);
+
+	/**
+	 * Bind our visibility to the activation of another widget, useful for making mouse collisions behave similiar to console navigation w.r.t activation
+	 * Will immediately update visibility based on the bound widget activation & visibilites set by SetBindVisibilities.
+	 *
+	 * @param	ActivatableWidget		- The widget whose activation / deactivation will modify our visibility 
+	 */
+	UFUNCTION(BlueprintCallable, Category = ActivatableWidget)
+	void BindVisibilityToActivation(UCommonActivatableWidget* ActivatableWidget);
+
+	/** Returns the desired widget to focus when this Widget Activates. */
+	UFUNCTION(BlueprintCallable, Category = ActivatableWidget)
+	UWidget* GetDesiredFocusTarget() const;
 
 	FSimpleMulticastDelegate& OnActivated() const { return OnActivatedEvent; }
 	FSimpleMulticastDelegate& OnDeactivated() const { return OnDeactivatedEvent; }
 
 //COMMONUI_SCOPE:
 public:
-
-	/** Returns the desired widget to focus when this Widget Activates. */
-	UWidget* GetDesiredFocusTarget() const;
 	
 	virtual TOptional<FUICameraConfig> GetDesiredCameraConfig() const;
 	/**
@@ -70,6 +92,9 @@ public:
 
 	bool SetsVisibilityOnActivated() const { return bSetVisibilityOnActivated; }
 	bool SetsVisibilityOnDeactivated() const { return bSetVisibilityOnDeactivated; }
+
+	void RegisterInputTreeNode(const TSharedPtr<FActivatableTreeNode>& OwnerNode);
+	void ClearActiveHoldInputs();
 
 protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
@@ -117,13 +142,17 @@ protected:
 
 	void HandleBackAction();
 
+	/** True to receive "Back" actions automatically. Custom back handler behavior can be provided, default is to deactivate. */
+	UPROPERTY(EditAnywhere, Category = Back)
+	bool bIsBackHandler = false;
+
+	/** True to receive "Back" actions automatically. Custom back handler behavior can be provided, default is to deactivate. */
+	UPROPERTY(EditAnywhere, Category = Back)
+	bool bIsBackActionDisplayedInActionBar = false;
+
 	/** True to automatically activate upon construction */
 	UPROPERTY(EditAnywhere, Category = Activation)
 	bool bAutoActivate = false;
-
-	/** True to receive "Back" actions automatically. Custom back handler behavior can be provided, default is to deactivate. */
-	UPROPERTY(EditAnywhere, Category = Activation)
-	bool bIsBackHandler = false;
 
 	//@todo DanH: This property name suuucks, need to circle back and pick something better
 	/**
@@ -150,17 +179,8 @@ protected:
 	bool bAutoRestoreFocus = false;
 	
 private:
-	UPROPERTY(EditAnywhere, Category = Activation, meta = (InlineEditConditionToggle = "ActivatedVisibility"))
-	bool bSetVisibilityOnActivated = false;
-
-	UPROPERTY(EditAnywhere, Category = Activation, meta = (EditCondition = "bSetVisibilityOnActivated"))
-	ESlateVisibility ActivatedVisibility = ESlateVisibility::SelfHitTestInvisible;
-
-	UPROPERTY(EditAnywhere, Category = Activation, meta = (InlineEditConditionToggle = "DeactivatedVisibility"))
-	bool bSetVisibilityOnDeactivated = false;
-
-	UPROPERTY(EditAnywhere, Category = Activation, meta = (EditCondition = "bSetVisibilityOnDeactivated"))
-	ESlateVisibility DeactivatedVisibility = ESlateVisibility::Collapsed;
+	/** See BindVisibilityToMultipleActivations */
+	void HandleVisibilityBoundWidgetActivations();
 
 	/** Fires when the widget is activated. */
 	UPROPERTY(BlueprintAssignable, Category = Events, meta = (AllowPrivateAccess = true, DisplayName = "On Widget Activated"))
@@ -173,12 +193,44 @@ private:
 	UPROPERTY(BlueprintReadOnly, Category = ActivatableWidget, meta = (AllowPrivateAccess = true))
 	bool bIsActive = false;
 
+	/** List of widgets whose collective activation controls our visibility. */
+	UPROPERTY(Transient)
+	TArray<TWeakObjectPtr<UCommonActivatableWidget>> VisibilityBoundWidgets;
+
+	/** Visibility to use when widgets we are bound to are activated */
+	ESlateVisibility ActivatedBindVisibility = ESlateVisibility::SelfHitTestInvisible;
+
+	/** Visibility to use when widgets we are bound to are deactivated, not used if widget has activation / deactivation visibilities */
+	ESlateVisibility DeactivatedBindVisibility = ESlateVisibility::SelfHitTestInvisible;
+
+	/** True if we should switch to activated visibility only when all bound widgets are active */
+	bool bAllActive = true;
+
+	/** Handle to default back action, if bound */
+	FUIActionBindingHandle DefaultBackActionHandle;
+
+	/** Input tree node referencing this widget */
+	TWeakPtr<FActivatableTreeNode> InputTreeNode;
+
 	mutable FSimpleMulticastDelegate OnActivatedEvent;
 	mutable FSimpleMulticastDelegate OnDeactivatedEvent;
 	mutable FSimpleMulticastDelegate OnSlateReleasedEvent;
 	mutable FSimpleMulticastDelegate OnRequestRefreshFocusEvent;
 
 protected:
+	
+	UPROPERTY(EditAnywhere, Category = Activation, meta = (InlineEditConditionToggle = "ActivatedVisibility"))
+	bool bSetVisibilityOnActivated = false;
+
+	UPROPERTY(EditAnywhere, Category = Activation, meta = (EditCondition = "bSetVisibilityOnActivated"))
+	ESlateVisibility ActivatedVisibility = ESlateVisibility::SelfHitTestInvisible;
+
+	UPROPERTY(EditAnywhere, Category = Activation, meta = (InlineEditConditionToggle = "DeactivatedVisibility"))
+	bool bSetVisibilityOnDeactivated = false;
+
+	UPROPERTY(EditAnywhere, Category = Activation, meta = (EditCondition = "bSetVisibilityOnDeactivated"))
+	ESlateVisibility DeactivatedVisibility = ESlateVisibility::Collapsed;
+	
 	virtual void InternalProcessActivation();
 	virtual void InternalProcessDeactivation();
 	void Reset();

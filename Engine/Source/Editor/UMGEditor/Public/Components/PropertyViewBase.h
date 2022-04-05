@@ -5,8 +5,8 @@
 #include "CoreMinimal.h"
 #include "Components/Widget.h"
 #include "Widgets/SWidget.h"
-#include "UObject/LazyObjectPtr.h"
 #include "UObject/SoftObjectPath.h"
+#include "UObject/SoftObjectPtr.h"
 #include "PropertyViewBase.generated.h"
 
 class SBorder;
@@ -26,10 +26,10 @@ class UMGEDITOR_API UPropertyViewBase : public UWidget
 protected:
 	/** The object to view. */
 	UPROPERTY(meta = (DisplayName="Object"))
-	TLazyObjectPtr<UObject> LazyObject;
+	TSoftObjectPtr<UObject> Object;
 
 	UPROPERTY()
-	FSoftObjectPath SoftObjectPath;
+	FSoftObjectPath SoftObjectPath_DEPRECATED;
 
 	/** Load the object (if it's an asset) when the widget is created. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "View")
@@ -53,11 +53,6 @@ protected:
 	TSharedPtr<SBorder> GetDisplayWidget() const { return DisplayedWidget; }
 	void OnPropertyChangedBroadcast(FName PropertyName);
 
-private:
-	void InternalOnAssetLoaded(UObject* LoadedAsset);
-	void InternalOnMapChange(uint32);
-	void InternalPostLoadMapWithWorld(UWorld* LoadedWorld);
-
 	//~ UWidget interface
 public:
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
@@ -75,7 +70,4 @@ public:
 
 private:
 	TSharedPtr<SBorder> DisplayedWidget;
-	FDelegateHandle AssetLoadedHandle;
-	FDelegateHandle PostLoadMapHandle;
-	FDelegateHandle MapChangeHandle;
 };

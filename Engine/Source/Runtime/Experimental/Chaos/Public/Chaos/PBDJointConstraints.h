@@ -9,27 +9,31 @@
 #include "Chaos/Vector.h"
 
 #include "Chaos/ConstraintHandle.h"
+#include "Chaos/Collision/CollisionApplyType.h"
+#include "Chaos/Evolution/SolverDatas.h"
 #include "Chaos/Joint/JointSolverConstraints.h"
 #include "Chaos/Joint/PBDJointSolverGaussSeidel.h"
+#include "Chaos/Joint/PBDJointCachedSolverGaussSeidel.h"
 #include "Chaos/ParticleHandleFwd.h"
 #include "Chaos/PBDConstraintContainer.h"
 #include "Chaos/PBDJointConstraintTypes.h"
 #include "Chaos/PBDJointConstraintData.h"
+#include "Chaos/GeometryParticles.h"
 
 namespace Chaos
 {
 	class FJointSolverConstraints;
-	class FJointSolverGaussSeidel;
+	class FPBDJointSolver;
+	class FPBDIslandSolverData;
 
-	class CHAOS_API FPBDJointConstraintHandle : public TContainerConstraintHandle<FPBDJointConstraints>
+	class CHAOS_API FPBDJointConstraintHandle : public TIndexedContainerConstraintHandle<FPBDJointConstraints>
 	{
 	public:
-		using Base = TContainerConstraintHandle<FPBDJointConstraints>;
+		using Base = TIndexedContainerConstraintHandle<FPBDJointConstraints>;
 		using FConstraintContainer = FPBDJointConstraints;
 
 		FPBDJointConstraintHandle();
 		FPBDJointConstraintHandle(FConstraintContainer* InConstraintContainer, int32 InConstraintIndex);
-		static FConstraintHandle::EType StaticType() { return FConstraintHandle::EType::Joint; }
 
 		void SetConstraintEnabled(bool bEnabled);
 
@@ -37,9 +41,12 @@ namespace Chaos
 		int32 GetConstraintIsland() const;
 		int32 GetConstraintLevel() const;
 		int32 GetConstraintColor() const;
-		int32 GetConstraintBatch() const;
 
 		bool IsConstraintEnabled() const;
+		bool IsConstraintBreaking() const;
+		void ClearConstraintBreaking();
+		bool IsDriveTargetChanged() const;
+		void ClearDriveTargetChanged();
 		FVec3 GetLinearImpulse() const;
 		FVec3 GetAngularImpulse() const;
 
@@ -48,9 +55,27 @@ namespace Chaos
 		void SetSettings(const FPBDJointSettings& Settings);
 		TVec2<FGeometryParticleHandle*> GetConstrainedParticles() const;
 
+		void PreGatherInput(const FReal Dt, FPBDIslandSolverData& SolverData);
+		void GatherInput(const FReal Dt, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData);
+
+		static const FConstraintHandleTypeID& StaticType()
+		{
+			static FConstraintHandleTypeID STypeID(TEXT("FJointConstraintHandle"), &FIndexedConstraintHandle::StaticType());
+			return STypeID;
+		}
+
+		ESyncState SyncState() const;
+		void SetSyncState(ESyncState SyncState);
+
+		void SetEnabledDuringResim(bool bEnabled);
+		EResimType ResimType() const;
+
 	protected:
 		using Base::ConstraintIndex;
-		using Base::ConstraintContainer;
+		using Base::ConcreteContainer;
+	private:
+		bool bLinearPlasticityInitialized;
+		bool bAngularPlasticityInitialized;
 	};
 
 	class CHAOS_API FPBDJointState
@@ -58,23 +83,27 @@ namespace Chaos
 	public:
 		FPBDJointState();
 
-		int32 Batch;
 		int32 Island;
 		int32 Level;
 		int32 Color;
 		int32 IslandSize;
 		bool bDisabled;
+		bool bBreaking;
+		bool bDriveTargetChanged;
 		FVec3 LinearImpulse;
 		FVec3 AngularImpulse;
+		EResimType ResimType = EResimType::FullResim;
+		ESyncState SyncState = ESyncState::InSync;
+		bool bEnabledDuringResim = true;
 	};
 
 	/**
 	 * A joint restricting up to 6 degrees of freedom, with linear and angular limits.
 	 */
-	class CHAOS_API FPBDJointConstraints : public FPBDConstraintContainer
+	class CHAOS_API FPBDJointConstraints : public FPBDIndexedConstraintContainer
 	{
 	public:
-		using Base = FPBDConstraintContainer;
+		using Base = FPBDIndexedConstraintContainer;
 
 		using FConstraintContainerHandle = FPBDJointConstraintHandle;
 		using FConstraintHandleAllocator = TConstraintHandleAllocator<FPBDJointConstraints>;
@@ -82,6 +111,7 @@ namespace Chaos
 		using FVectorPair = TVector<FVec3, 2>;
 		using FTransformPair = TVector<FRigidTransform3, 2>;
 		using FHandles = TArray<FConstraintContainerHandle*>;
+		using FConstraintSolverContainerType = FConstraintSolverContainer;	// @todo(chaos): Add island solver for this constraint type
 
 		FPBDJointConstraints(const FPBDJointSolverSettings& InSettings = FPBDJointSolverSettings());
 
@@ -104,10 +134,12 @@ namespace Chaos
 
 		/**
 		 * Add a constraint with particle-space constraint offsets.
+		 * @todo(chaos): clean up this set of functions (now that ConnectorTransforms is in the settings, calling AddConstraint then SetSettings leads 
+		 * to unexpected behaviour - overwriting the ConnectorTransforms with Identity)
 		 */
 		FConstraintContainerHandle* AddConstraint(const FParticlePair& InConstrainedParticles, const FRigidTransform3& WorldConstraintFrame);
-		FConstraintContainerHandle* AddConstraint(const FParticlePair& InConstrainedParticles, const FTransformPair& ConstraintFrames);
-		FConstraintContainerHandle* AddConstraint(const FParticlePair& InConstrainedParticles, const FTransformPair& ConstraintFrames, const FPBDJointSettings& InConstraintSettings);
+		FConstraintContainerHandle* AddConstraint(const FParticlePair& InConstrainedParticles, const FTransformPair& ConnectorTransforms);
+		FConstraintContainerHandle* AddConstraint(const FParticlePair& InConstrainedParticles, const FPBDJointSettings& InConstraintSettings);
 
 		/**
 		 * Remove the specified constraint.
@@ -116,9 +148,13 @@ namespace Chaos
 		void RemoveConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles) {}
 
 		/*
-		* Disable the constraints attached to the input particles. 
+		* Disconnect the constraints from the attached input particles. 
+		* This will set the constrained Particle elements to nullptr and 
+		* set the Enable flag to false.
+		* 
+		* The constraint is unuseable at this point and pending deletion. 
 		*/
-		void DisableConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles);
+		void DisconnectConstraints(const TSet<TGeometryParticleHandle<FReal, 3>*>& RemovedParticles);
 
 		/*
 		 * Whether the constraint is enabled
@@ -126,9 +162,39 @@ namespace Chaos
 		bool IsConstraintEnabled(int32 ConstraintIndex) const;
 
 		/*
+		 * Whether the constraint is breaking this frame
+		 */
+		bool IsConstraintBreaking(int32 ConstraintIndex) const;
+
+		/*
+		 * Clear the constraint braking state
+		 */
+		void ClearConstraintBreaking(int32 ConstraintIndex);
+
+		/*
+		 * Whether the drive target has changed
+		 */
+		bool IsDriveTargetChanged(int32 ConstraintIndex) const;
+
+		/*
+		 * Clear the drive target state
+		 */
+		void ClearDriveTargetChanged(int32 ConstraintIndex);
+
+		/*
 		 * Enable or disable a constraints
 		 */
 		void SetConstraintEnabled(int32 ConstraintIndex, bool bEnabled);
+
+		/*
+		 * Set Breaking State
+		 */
+		void SetConstraintBreaking(int32 ConstraintIndex, bool bBreaking);
+
+		/*
+		* Set Drive Target Changed State
+		*/
+		void SetDriveTargetChanged(int32 ConstraintIndex, bool bTargetChanged);
 
 		/*
 		 * Force a constraints to break
@@ -139,20 +205,6 @@ namespace Chaos
 		 * Repair a broken constraints (does not adjust particle positions)
 		 */
 		void FixConstraints(int32 ConstraintIndex);
-
-		/*
-		* Enable or disable velocity update in apply constraints
-		*/
-		void SetUpdateVelocityInApplyConstraints(bool bEnabled) { bUpdateVelocityInApplyConstraints = bEnabled; }
-
-		void SetPreApplyCallback(const FJointPostApplyCallback& Callback);
-		void ClearPreApplyCallback();
-
-		void SetPostApplyCallback(const FJointPostApplyCallback& Callback);
-		void ClearPostApplyCallback();
-
-		void SetPostProjectCallback(const FJointPostApplyCallback& Callback);
-		void ClearPostProjectCallback();
 
 		void SetBreakCallback(const FJointBreakCallback& Callback);
 		void ClearBreakCallback();
@@ -180,15 +232,23 @@ namespace Chaos
 		const FPBDJointSettings& GetConstraintSettings(int32 ConstraintIndex) const;
 
 		void SetConstraintSettings(int32 ConstraintIndex, const FPBDJointSettings& InConstraintSettings);
+		void SetLinearDrivePositionTarget(int32 ConstraintIndex, FVec3 InLinearDrivePositionTarget);
+		void SetAngularDrivePositionTarget(int32 ConstraintIndex, FRotation3 InAngularDrivePositionTarget);
 
 		int32 GetConstraintIsland(int32 ConstraintIndex) const;
 		int32 GetConstraintLevel(int32 ConstraintIndex) const;
 		int32 GetConstraintColor(int32 ConstraintIndex) const;
-		int32 GetConstraintBatch(int32 ConstraintIndex) const;
 
 		FVec3 GetConstraintLinearImpulse(int32 ConstraintIndex) const;
 		FVec3 GetConstraintAngularImpulse(int32 ConstraintIndex) const;
 
+		ESyncState GetConstraintSyncState(int32 ConstraintIndex) const;
+		void SetConstraintSyncState(int32 ConstraintIndex, ESyncState SyncState);
+		
+		void SetConstraintEnabledDuringResim(int32 ConstraintIndex, bool bEnabled);
+		
+		EResimType GetConstraintResimType(int32 ConstraintIndex) const;
+		
 		//
 		// General Rule API
 		//
@@ -197,26 +257,39 @@ namespace Chaos
 
 		void UnprepareTick();
 
-		void PrepareIteration(FReal Dt);
-
-		void UnprepareIteration(FReal Dt);
-
 		void UpdatePositionBasedState(const FReal Dt);
 
 		//
 		// Simple Rule API
 		//
 
-		bool Apply(const FReal Dt, const int32 It, const int32 NumIts);
-		bool ApplyPushOut(const FReal Dt, const int32 It, const int32 NumIts);
+		void PreGatherInput(const FReal Dt, FPBDIslandSolverData& SolverData);
+		void GatherInput(const FReal Dt, FPBDIslandSolverData& SolverData);
+		void ScatterOutput(const FReal Dt, FPBDIslandSolverData& SolverData);
+
+		bool ApplyPhase1(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
+		bool ApplyPhase2(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
+		bool ApplyPhase3(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
 
 		//
 		// Island Rule API
 		//
 
-		bool Apply(const FReal Dt, const TArray<FConstraintContainerHandle*>& InConstraintHandles, const int32 It, const int32 NumIts);
-		bool ApplyPushOut(const FReal Dt, const TArray<FConstraintContainerHandle*>& InConstraintHandles, const int32 It, const int32 NumIts);
+		void SetNumIslandConstraints(const int32 NumIslandConstraints, FPBDIslandSolverData& SolverData);
+		void PreGatherInput(const FReal Dt, const int32 ConstraintIndex, FPBDIslandSolverData& SolverData);
+		void GatherInput(const FReal Dt, const int32 ConstraintIndex, const int32 Particle0Level, const int32 Particle1Level, FPBDIslandSolverData& SolverData);
+		bool ApplyPhase1Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
+		bool ApplyPhase2Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
+		bool ApplyPhase3Serial(const FReal Dt, const int32 It, const int32 NumIts, FPBDIslandSolverData& SolverData);
+		void PreparePhase3Serial(const FReal Dt, const int32 It, FPBDIslandSolverData& SolverData);
 
+		/**
+		 * Set the solver method to use
+		 */
+		void SetSolverType(EConstraintSolverType InSolverType)
+		{
+			SolverType = InSolverType;
+		}
 
 	protected:
 		using Base::GetConstraintIndex;
@@ -226,54 +299,43 @@ namespace Chaos
 		friend class FPBDJointConstraintHandle;
 
 		FReal CalculateIterationStiffness(int32 It, int32 NumIts) const;
+		FReal CalculateShockPropagationInvMassScale(const FConstraintSolverBody& Body0, const FConstraintSolverBody& Body1, const FPBDJointSettings& JointSettings, const int32 It, const int32 NumIts) const;
 
 		void GetConstrainedParticleIndices(const int32 ConstraintIndex, int32& Index0, int32& Index1) const;
 		void CalculateConstraintSpace(int32 ConstraintIndex, FVec3& OutX0, FMatrix33& OutR0, FVec3& OutX1, FMatrix33& OutR1) const;
-		void UpdateParticleState(TPBDRigidParticleHandle<FReal, 3>* Rigid, const FReal Dt, const FVec3& PrevP, const FRotation3& PrevQ, const FVec3& P, const FRotation3& Q, const bool bUpdateVelocity = true);
-		void UpdateParticleStateExplicit(TPBDRigidParticleHandle<FReal, 3>* Rigid, const FReal Dt, const FVec3& P, const FRotation3& Q, const FVec3& V, const FVec3& W);
 		
-		void InitSolverJointData();
-		void DeinitSolverJointData();
-		void GatherSolverJointState(int32 ConstraintIndex);
-		void ScatterSolverJointState(const FReal Dt, int32 ConstraintIndex);
-
 		void ColorConstraints();
 		void SortConstraints();
-		void BatchConstraints();
-		void CheckBatches();
 
-		bool ApplyBatch(const FReal Dt, const int32 BatchIndex, const int32 NumPairIts, const int32 It, const int32 NumIts);
-		bool ApplySingle(const FReal Dt, const int32 ConstraintIndex, const int32 NumPairIts, const int32 It, const int32 NumIts);
-		bool ApplyPushOutSingle(const FReal Dt, const int32 ConstraintIndex, const int32 NumPairIts, const int32 It, const int32 NumIts);
+		bool CanEvaluate(const int32 ConstraintIndex) const;
+
+		bool ApplyPhase1Single(const FReal Dt, const int32 ConstraintIndex, const int32 NumPairIts, const int32 It, const int32 NumIts);
+		bool ApplyPhase2Single(const FReal Dt, const int32 ConstraintIndex, const int32 It, const int32 NumIts);
+		bool ApplyPhase3Single(const FReal Dt, const int32 ConstraintIndex, const int32 It, const int32 NumIts);
 		void ApplyBreakThreshold(const FReal Dt, int32 ConstraintIndex, const FVec3& LinearImpulse, const FVec3& AngularImpulse);
-		void ApplyPlasticityLimits(const FReal Dt, int32 ConstraintIndex, const FVec3& LinearDisplacement, const FRotation3& AngularDisplacement);
+		void ApplyPlasticityLimits(const int32 ConstraintIndex);
+
+		void UpdateConstraintProjection(const int32 It, const int32 NumIts, const FPBDIslandSolverData& SolverData);
 
 		FPBDJointSolverSettings Settings;
 
 		TArray<FPBDJointSettings> ConstraintSettings;
-		TArray<FTransformPair> ConstraintFrames;
 		TArray<FParticlePair> ConstraintParticles;
 		TArray<FPBDJointState> ConstraintStates;
 
 		FHandles Handles;
 		FConstraintHandleAllocator HandleAllocator;
 		bool bJointsDirty;
-		bool bIsBatched;
-		bool bUpdateVelocityInApplyConstraints;
 
-		FJointPreApplyCallback PreApplyCallback;
-		FJointPostApplyCallback PostApplyCallback;
-		FJointPostApplyCallback PostProjectCallback;
 		FJointBreakCallback BreakCallback;
 
 		// @todo(ccaulfield): optimize storage for joint solver
-		TArray<FJointSolverGaussSeidel> ConstraintSolvers;
+		TArray<FPBDJointSolver> ConstraintSolvers;
+		TArray<FPBDJointCachedSolver> CachedConstraintSolvers;
 
-		TArray<FJointSolverConstraints> SolverConstraints;
-		TArray<TVector<int32, 2>> JointBatches;
-		TArray< FJointSolverJointState> SolverConstraintStates;
-		TArray<FJointSolverConstraintRowData> SolverConstraintRowDatas;
-		TArray<FJointSolverConstraintRowState> SolverConstraintRowStates;
+		EConstraintSolverType SolverType;
+
+
 	};
 
 }

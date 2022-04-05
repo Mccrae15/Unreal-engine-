@@ -26,7 +26,7 @@ UGameplayAbility::UGameplayAbility(const FObjectInitializer& ObjectInitializer)
 	auto ImplementedInBlueprint = [](const UFunction* Func) -> bool
 	{
 		return Func && ensure(Func->GetOuter())
-			&& (Func->GetOuter()->IsA(UBlueprintGeneratedClass::StaticClass()) || Func->GetOuter()->IsA(UDynamicClass::StaticClass()));
+			&& Func->GetOuter()->IsA(UBlueprintGeneratedClass::StaticClass());
 	};
 
 	{
@@ -170,7 +170,7 @@ bool UGameplayAbility::IsActive() const
 	}
 
 	// NonInstanced and Instanced-Per-Execution abilities are by definition active unless they are pending kill
-	return !IsPendingKill();
+	return IsValid(this);
 }
 
 bool UGameplayAbility::IsSupportedForNetworking() const
@@ -649,7 +649,7 @@ void UGameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle, const
 				Task->TaskOwnerEnded();
 			}
 		}
-		ActiveTasks.Reset();	// Empty the array but dont resize memory, since this object is probably going to be destroyed very soon anyways.
+		ActiveTasks.Reset();	// Empty the array but don't resize memory, since this object is probably going to be destroyed very soon anyways.
 
 		if (UAbilitySystemComponent* const AbilitySystemComponent = ActorInfo->AbilitySystemComponent.Get())
 		{
@@ -660,6 +660,11 @@ void UGameplayAbility::EndAbility(const FGameplayAbilitySpecHandle Handle, const
 
 			// Remove tags we added to owner
 			AbilitySystemComponent->RemoveLooseGameplayTags(ActivationOwnedTags);
+
+			if (UAbilitySystemGlobals::Get().ShouldReplicateActivationOwnedTags())
+			{
+				AbilitySystemComponent->RemoveReplicatedLooseGameplayTags(ActivationOwnedTags);
+			}
 
 			// Remove tracked GameplayCues that we added
 			for (FGameplayTag& GameplayCueTag : TrackedGameplayCues)
@@ -760,7 +765,13 @@ void UGameplayAbility::PreActivate(const FGameplayAbilitySpecHandle Handle, cons
 	SetCurrentInfo(Handle, ActorInfo, ActivationInfo);
 
 	Comp->HandleChangeAbilityCanBeCanceled(AbilityTags, this, true);
+
 	Comp->AddLooseGameplayTags(ActivationOwnedTags);
+
+	if (UAbilitySystemGlobals::Get().ShouldReplicateActivationOwnedTags())
+	{
+		Comp->AddReplicatedLooseGameplayTags(ActivationOwnedTags);
+	}
 
 	if (OnGameplayAbilityEndedDelegate)
 	{
@@ -969,11 +980,7 @@ FGameplayAbilityActorInfo UGameplayAbility::GetActorInfo() const
 
 AActor* UGameplayAbility::GetOwningActorFromActorInfo() const
 {
-	if (!ensureMsgf(IsInstantiated(), TEXT("%s: GetOwningActorFromActorInfo can not be called on a non-instanced ability"), *GetName()))
-	{
-		ABILITY_LOG(Warning, TEXT("%s: GetOwningActorFromActorInfo can not be called on a non-instanced ability"), *GetName());
-		return nullptr;
-	}
+	ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetOwningActorFromActorInfo, nullptr);
 
 	if (!ensure(CurrentActorInfo))
 	{
@@ -1139,6 +1146,15 @@ void UGameplayAbility::K2_EndAbility()
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
 
+void UGameplayAbility::K2_EndAbilityLocally()
+{
+	check(CurrentActorInfo);
+
+	bool bReplicateEndAbility = false;
+	bool bWasCancelled = false;
+	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, bReplicateEndAbility, bWasCancelled);
+}
+
 void UGameplayAbility::MontageJumpToSection(FName SectionName)
 {
 	check(CurrentActorInfo);
@@ -1178,7 +1194,7 @@ void UGameplayAbility::MontageStop(float OverrideBlendOutTime)
 
 void UGameplayAbility::SetCurrentMontage(class UAnimMontage* InCurrentMontage)
 {
-	ensure(IsInstantiated());
+	ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(SetCurrentMontage, );
 	CurrentMontage = InCurrentMontage;
 }
 
@@ -1269,7 +1285,7 @@ void UGameplayAbility::ConfirmTaskByInstanceName(FName InstanceName, bool bEndTa
 	for (int32 i = NamedTasks.Num() - 1; i >= 0; --i)
 	{
 		UGameplayTask* CurrentTask = NamedTasks[i];
-		if (CurrentTask && CurrentTask->IsPendingKill() == false)
+		if (IsValid(CurrentTask))
 		{
 			CurrentTask->ExternalConfirm(bEndTask);
 		}
@@ -1300,7 +1316,7 @@ void UGameplayAbility::EndOrCancelTasksByInstanceName()
 		for (int32 i = NamedTasks.Num() - 1; i >= 0; --i)
 		{
 			UGameplayTask* CurrentTask = NamedTasks[i];
-			if (CurrentTask && CurrentTask->IsPendingKill() == false)
+			if (IsValid(CurrentTask))
 			{
 				CurrentTask->EndTask();
 			}
@@ -1328,7 +1344,7 @@ void UGameplayAbility::EndOrCancelTasksByInstanceName()
 		for (int32 i = NamedTasks.Num() - 1; i >= 0; --i)
 		{
 			UGameplayTask* CurrentTask = NamedTasks[i];
-			if (CurrentTask && CurrentTask->IsPendingKill() == false)
+			if (IsValid(CurrentTask))
 			{
 				CurrentTask->ExternalCancel();
 			}
@@ -1463,10 +1479,13 @@ int32 UGameplayAbility::GetAbilityLevel() const
 	return GetAbilityLevel(CurrentSpecHandle, CurrentActorInfo);
 }
 
-/** Returns current ability level for non instanced abilities. You m ust call this version in these contexts! */
+/** Returns current ability level for non instanced abilities. You must call this version in these contexts! */
 int32 UGameplayAbility::GetAbilityLevel(FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo) const
 {
-	FGameplayAbilitySpec* Spec = ActorInfo->AbilitySystemComponent->FindAbilitySpecFromHandle(Handle);
+	check(ActorInfo);
+	UAbilitySystemComponent* const AbilitySystemComponent = ActorInfo->AbilitySystemComponent.Get();
+
+	FGameplayAbilitySpec* Spec = AbilitySystemComponent ? AbilitySystemComponent->FindAbilitySpecFromHandle(Handle) : nullptr;
 	
 	if (Spec)
 	{
@@ -1485,7 +1504,7 @@ int32 UGameplayAbility::GetAbilityLevel_BP(FGameplayAbilitySpecHandle Handle, co
 
 FGameplayAbilitySpec* UGameplayAbility::GetCurrentAbilitySpec() const
 {
-	check(IsInstantiated()); // You should not call this on non instanced abilities.
+	ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetCurrentAbilitySpec, nullptr);
 	check(CurrentActorInfo);
 
 	UAbilitySystemComponent* const AbilitySystemComponent = GetAbilitySystemComponentFromActorInfo_Checked();
@@ -1494,7 +1513,7 @@ FGameplayAbilitySpec* UGameplayAbility::GetCurrentAbilitySpec() const
 
 FGameplayEffectContextHandle UGameplayAbility::GetGrantedByEffectContext() const
 {
-	check(IsInstantiated()); // You should not call this on non instanced abilities.
+	ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(GetGrantedByEffectContext, FGameplayEffectContextHandle());
 	check(CurrentActorInfo);
 	if (CurrentActorInfo)
 	{
@@ -1511,7 +1530,7 @@ FGameplayEffectContextHandle UGameplayAbility::GetGrantedByEffectContext() const
 
 void UGameplayAbility::RemoveGrantedByEffect()
 {
-	check(IsInstantiated()); // You should not call this on non instanced abilities.
+	ENSURE_ABILITY_IS_INSTANTIATED_OR_RETURN(RemoveGrantedByEffect, );
 	check(CurrentActorInfo);
 	if (CurrentActorInfo)
 	{
@@ -1880,7 +1899,7 @@ float UGameplayAbility::GetCooldownTimeRemaining() const
 void UGameplayAbility::SetRemoteInstanceHasEnded()
 {
 	// This could potentially happen in shutdown corner cases
-	if (IsPendingKill() || CurrentActorInfo == nullptr)
+	if (!IsValid(this) || CurrentActorInfo == nullptr)
 	{
 		return;
 	}
@@ -1894,7 +1913,7 @@ void UGameplayAbility::SetRemoteInstanceHasEnded()
 	RemoteInstanceEnded = true;
 	for (UGameplayTask* Task : ActiveTasks)
 	{
-		if (Task && Task->IsPendingKill() == false && Task->IsWaitingOnRemotePlayerdata())
+		if (IsValid(Task) && Task->IsWaitingOnRemotePlayerdata())
 		{
 			// We have a task that is waiting for player input, but the remote player has ended the ability, so he will not send it.
 			// Kill the ability to avoid getting stuck active.
@@ -1909,7 +1928,7 @@ void UGameplayAbility::SetRemoteInstanceHasEnded()
 void UGameplayAbility::NotifyAvatarDestroyed()
 {
 	// This could potentially happen in shutdown corner cases
-	if (IsPendingKill() || CurrentActorInfo == nullptr)
+	if (!IsValid(this) || CurrentActorInfo == nullptr)
 	{
 		return;
 	}
@@ -1923,7 +1942,7 @@ void UGameplayAbility::NotifyAvatarDestroyed()
 	RemoteInstanceEnded = true;
 	for (UGameplayTask* Task : ActiveTasks)
 	{
-		if (Task && Task->IsPendingKill() == false && Task->IsWaitingOnAvatar())
+		if (IsValid(Task) && Task->IsWaitingOnAvatar())
 		{
 			// We have a task waiting on some Avatar state but the avatar is destroyed, so force end the ability to avoid getting stuck on.
 			

@@ -45,6 +45,10 @@ public:
 	virtual FText GetDeleteTransactionText() const override;
 	virtual void Delete();
 
+	virtual bool SupportsInheritance() const override { return true; }
+	virtual bool GetIsInherited() const override;
+	virtual FText GetInheritanceMessage() const override;
+	
 	virtual bool SupportsRename() const override { return true; }
 
 	bool HasBaseRenderer() const;
@@ -52,7 +56,7 @@ public:
 	virtual bool SupportsChangeEnabled() const override { return true; }
 	virtual bool GetIsEnabled() const override;
 
-	virtual bool SupportsIcon() const override { return true; }
+	virtual EIconMode GetSupportedIconMode() const override { return EIconMode::Brush; }
 	virtual const FSlateBrush* GetIconBrush() const override;
 
 	virtual bool SupportsResetToBase() const override { return true; }
@@ -86,5 +90,5 @@ private:
 	TArray<FNiagaraVariable> MissingAttributes;
 
 	UPROPERTY()
-	UNiagaraStackObject* RendererObject;
+	TObjectPtr<UNiagaraStackObject> RendererObject;
 };

@@ -15,25 +15,19 @@ class FPropertyRestriction;
 class FObjectBaseAddress
 {
 public:
-	FObjectBaseAddress()
-		:	ObjectOrStruct(nullptr)
-		,	BaseAddress(nullptr)
-		,	bIsStruct(false)
-	{}
-	FObjectBaseAddress(uint8* InObjectOrStruct, uint8* InBaseAddress, bool InIsStruct)
-		:	ObjectOrStruct(InObjectOrStruct)
-		,	BaseAddress(InBaseAddress)
-		,	bIsStruct(InIsStruct)
+	FObjectBaseAddress() = default;
+	FObjectBaseAddress(UObject* InObject, uint8* InStructAddress, uint8* InBaseAddress)
+		: Object(InObject)
+		, StructAddress(InStructAddress)
+		, BaseAddress(InBaseAddress)
 	{}
 
-	FORCEINLINE UObject* GetUObject() const
-	{
-		return bIsStruct ? nullptr : (UObject*) ObjectOrStruct;
-	}
-
-	uint8*		ObjectOrStruct;
-	uint8*		BaseAddress;
-	bool		bIsStruct;
+	/** Object associated with the value, or null when editing a struct. */
+	UObject* Object = nullptr;
+	/** Pointer to the object/struct instance that actually owns the value (may be pointing to sidecar data). */
+	uint8* StructAddress = nullptr;
+	/** Pointer to the base address of the value within StructAddress. */
+	uint8* BaseAddress = nullptr;
 };
 
 /**
@@ -447,6 +441,7 @@ public:
 	virtual void AccessRawData( TArray<const void*>& RawData ) const override;
 	virtual uint32 GetNumOuterObjects() const override;
 	virtual void GetOuterObjects(TArray<UObject*>& OuterObjects) const override;
+	virtual const UClass* GetOuterBaseClass() const override;
 	virtual void ReplaceOuterObjects(const TArray<UObject*>& OuterObjects) override;
 	virtual void GetOuterPackages(TArray<UPackage*>& OuterPackages) const override;
 	virtual FPropertyAccess::Result GetNumChildren( uint32& OutNumChildren ) const override;
@@ -479,9 +474,9 @@ public:
 	virtual bool GeneratePossibleValues(TArray< TSharedPtr<FString> >& OutOptionStrings, TArray< FText >& OutToolTips, TArray<bool>& OutRestrictedItems) override;
 	virtual FPropertyAccess::Result SetObjectValueFromSelection() override;
 	virtual void NotifyPreChange() override;
-	virtual void NotifyPostChange( EPropertyChangeType::Type ChangeType = EPropertyChangeType::Unspecified ) override;
+	virtual void NotifyPostChange(EPropertyChangeType::Type ChangeType) override;
 	virtual void NotifyFinishedChangingProperties() override;
-	virtual void AddRestriction( TSharedRef<const FPropertyRestriction> Restriction )override;
+	virtual void AddRestriction(TSharedRef<const FPropertyRestriction> Restriction) override;
 	virtual bool IsHidden(const FString& Value) const override;
 	virtual bool IsHidden(const FString& Value, TArray<FText>& OutReasons) const override;
 	virtual bool IsDisabled(const FString& Value) const override;
@@ -490,7 +485,7 @@ public:
 	virtual bool IsRestricted(const FString& Value, TArray<FText>& OutReasons) const override;
 	virtual bool GenerateRestrictionToolTip(const FString& Value, FText& OutTooltip) const override;
 	virtual void SetIgnoreValidation(bool bInIgnore) override;
-	virtual TArray<TSharedPtr<IPropertyHandle>> AddChildStructure( TSharedRef<FStructOnScope> ChildStructure ) override;
+	virtual TArray<TSharedPtr<IPropertyHandle>> AddChildStructure(TSharedRef<FStructOnScope> ChildStructure) override;
 	virtual bool CanResetToDefault() const override;
 	virtual void ExecuteCustomResetToDefault(const FResetToDefaultOverride& InOnCustomResetToDefault) override;
 	virtual FName GetDefaultCategoryName() const override;
@@ -596,7 +591,20 @@ public:
 	virtual FPropertyAccess::Result GetValue( FAssetData& OutValue ) const override;
 	virtual FPropertyAccess::Result SetValue( const FAssetData& InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags ) override;
 	virtual FPropertyAccess::Result SetValueFromFormattedString(const FString& InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags) override;
+	FPropertyAccess::Result SetValueFromFormattedString(const FString& InValue, EPropertyValueSetFlags::Type Flags, bool bSkipResolve);
 	virtual FPropertyAccess::Result SetObjectValueFromSelection() override;
+};
+
+// LWC_TODO: Replace with FPropertyHandleDouble once all types support it
+class FPropertyHandleMixed : public FPropertyHandleBase
+{
+public:
+	FPropertyHandleMixed(TSharedRef<FPropertyNode> PropertyNode, FNotifyHook* NotifyHook, TSharedPtr<IPropertyUtilities> PropertyUtilities);
+	static bool Supports(TSharedRef<FPropertyNode> PropertyNode);
+	virtual FPropertyAccess::Result GetValue(float& OutValue) const override;
+	virtual FPropertyAccess::Result GetValue(double& OutValue) const override;
+	virtual FPropertyAccess::Result SetValue(const float& InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags) override;
+	virtual FPropertyAccess::Result SetValue(const double& InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags) override;
 };
 
 class FPropertyHandleVector : public FPropertyHandleBase
@@ -616,12 +624,12 @@ public:
 	virtual FPropertyAccess::Result GetValue( FQuat& OutValue ) const override;
 	virtual FPropertyAccess::Result SetValue( const FQuat& InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags ) override;
 
-	virtual FPropertyAccess::Result SetX( float InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags );
-	virtual FPropertyAccess::Result SetY( float InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags );
-	virtual FPropertyAccess::Result SetZ( float InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags );
-	virtual FPropertyAccess::Result SetW( float InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags );
+	virtual FPropertyAccess::Result SetX(double InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags);
+	virtual FPropertyAccess::Result SetY(double InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags);
+	virtual FPropertyAccess::Result SetZ(double InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags);
+	virtual FPropertyAccess::Result SetW(double InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags);
 private:
-	TArray< TSharedPtr<FPropertyHandleFloat> > VectorComponents;
+	TArray< TSharedPtr<FPropertyHandleMixed> > VectorComponents;	
 };
 
 class FPropertyHandleRotator : public FPropertyHandleBase
@@ -632,13 +640,13 @@ public:
 	virtual FPropertyAccess::Result GetValue( FRotator& OutValue ) const override;
 	virtual FPropertyAccess::Result SetValue( const FRotator& InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags ) override;
 
-	virtual FPropertyAccess::Result SetRoll( float InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags );
-	virtual FPropertyAccess::Result SetPitch( float InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags );
-	virtual FPropertyAccess::Result SetYaw( float InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags );
+	virtual FPropertyAccess::Result SetRoll( double InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags );
+	virtual FPropertyAccess::Result SetPitch( double InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags );
+	virtual FPropertyAccess::Result SetYaw( double InValue, EPropertyValueSetFlags::Type Flags = EPropertyValueSetFlags::DefaultFlags );
 private:
-	TSharedPtr<FPropertyHandleFloat> RollValue;
-	TSharedPtr<FPropertyHandleFloat> PitchValue;
-	TSharedPtr<FPropertyHandleFloat> YawValue;
+	TSharedPtr<FPropertyHandleMixed> RollValue;
+	TSharedPtr<FPropertyHandleMixed> PitchValue;
+	TSharedPtr<FPropertyHandleMixed> YawValue;
 };
 
 

@@ -40,6 +40,10 @@ UNiagaraLightRendererProperties::UNiagaraLightRendererProperties()
 void UNiagaraLightRendererProperties::PostLoad()
 {
 	Super::PostLoad();
+	
+#if WITH_EDITORONLY_DATA
+	ChangeToPositionBinding(PositionBinding);
+#endif
 	PostLoadBindings(ENiagaraRendererSourceDataMode::Particles);
 }
 
@@ -98,10 +102,10 @@ void UNiagaraLightRendererProperties::InitCDOPropertiesAfterModuleStartup()
 	}
 }
 
-FNiagaraRenderer* UNiagaraLightRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent)
+FNiagaraRenderer* UNiagaraLightRendererProperties::CreateEmitterRenderer(ERHIFeatureLevel::Type FeatureLevel, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InController)
 {
 	FNiagaraRenderer* NewRenderer = new FNiagaraRendererLights(FeatureLevel, this, Emitter);
-	NewRenderer->Initialize(this, Emitter, InComponent);
+	NewRenderer->Initialize(this, Emitter, InController);
 	return NewRenderer;
 }
 

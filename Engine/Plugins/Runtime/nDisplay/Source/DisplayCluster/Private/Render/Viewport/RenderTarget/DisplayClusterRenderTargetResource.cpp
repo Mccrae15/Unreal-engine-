@@ -1,101 +1,120 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#pragma once
-
 #include "Render/Viewport/RenderTarget/DisplayClusterRenderTargetResource.h"
 
 #include "RHI.h"
 #include "RenderResource.h"
 #include "UnrealClient.h"
 
+//------------------------------------------------------------------------------------------------
+// FDisplayClusterViewportResource
+//------------------------------------------------------------------------------------------------
+FDisplayClusterViewportResource::FDisplayClusterViewportResource(const FDisplayClusterViewportResourceSettings& InResourceSettings)
+	: ViewportResourceSettings(InResourceSettings)
+{
+	bSRGB = ViewportResourceSettings.bShouldUseSRGB;
+	bGreyScaleFormat = false;
+	bIgnoreGammaConversions = true;
+}
 
-///////////////////////////////////////////////////////////////////
-void FDisplayClusterTextureResource::InitDynamicRHI()
+void FDisplayClusterViewportResource::ImplInitDynamicRHI_RenderTargetResource2D(FTexture2DRHIRef& OutRenderTargetTextureRHI, FTexture2DRHIRef& OutTextureRHI)
 {
 	ETextureCreateFlags CreateFlags = TexCreate_Dynamic;
 
+	// -- we will be manually copying this cross GPU, tell render graph not to
+	CreateFlags |= TexCreate_MultiGPUGraphIgnore;
+
 	// reflect srgb from settings
-	if (InitSettings.bShouldUseSRGB)
+	if (bSRGB)
 	{
 		CreateFlags |= TexCreate_SRGB;
 	}
 
-	if (InitSettings.NumMips > 1)
+	uint32 NumMips = 1;
+	if (ViewportResourceSettings.NumMips > 1)
 	{
 		// Create nummips texture!
 		CreateFlags |= TexCreate_GenerateMipCapable | TexCreate_UAV;
-
-		TRefCountPtr<FRHITexture2D> DummyTexture2DRHI;
-
-		FRHIResourceCreateInfo CreateInfo = {
-			FClearValueBinding::None
-		};
-
-		RHICreateTargetableShaderResource2D(
-			InitSettings.Size.X, 
-			InitSettings.Size.Y, 
-			InitSettings.Format, 
-			InitSettings.NumMips,
-			CreateFlags,
-			TexCreate_RenderTargetable,
-			false,
-			CreateInfo,
-			TextureRHI,
-			DummyTexture2DRHI
-		);
-
-		TextureRHI->SetName(TEXT("DisplayClusterTextureMipsResource"));
+		NumMips = ViewportResourceSettings.NumMips;
 	}
-	else
-	{
-		if (InitSettings.bIsRenderTargetable)
-		{
-			CreateFlags |= TexCreate_RenderTargetable | TexCreate_ShaderResource;
-		}
-		else
-		{
-			// Shader resource usage only
-			CreateFlags |= TexCreate_ResolveTargetable | TexCreate_ShaderResource;
-		}
 
-		FRHIResourceCreateInfo CreateInfo = { FClearValueBinding::None };
-		TextureRHI = RHICreateTexture2D(InitSettings.Size.X, InitSettings.Size.Y, InitSettings.Format, InitSettings.NumMips, 1, CreateFlags, ERHIAccess::SRVMask, CreateInfo);
-	}
-}
+	FRHIResourceCreateInfo CreateInfo(TEXT("DisplayClusterViewportRenderTargetResource"), FClearValueBinding::Black);
 
-void FDisplayClusterTextureResource::ReleaseRHI()
-{
-	TextureRHI.SafeRelease();
-}
-
-
-///////////////////////////////////////////////////////////////////
-void FDisplayClusterRenderTargetResource::InitDynamicRHI()
-{
-	FIntPoint Size = GetSizeXY();
-	Size.X = FMath::Max(Size.X, 1);
-	Size.Y = FMath::Max(Size.Y, 1);
-
-	// create output render target if necessary
-	ETextureCreateFlags TexCreateFlags = ResourceSettings.bShouldUseSRGB ? TexCreate_SRGB : TexCreate_None;
-	FRHIResourceCreateInfo CreateInfo = { FClearValueBinding(FLinearColor::Black) };
-
-	// Create RTT
-	FTexture2DRHIRef Texture2DRHI;
 	RHICreateTargetableShaderResource2D(
-		Size.X,
-		Size.Y,
-		ResourceSettings.Format,
-		1,
-		TexCreateFlags,
+		GetSizeX(),
+		GetSizeY(),
+		ViewportResourceSettings.Format,
+		NumMips,
+		CreateFlags,
 		TexCreate_RenderTargetable,
 		false,
 		CreateInfo,
-		RenderTargetTextureRHI,
-		Texture2DRHI
+		OutRenderTargetTextureRHI,
+		OutTextureRHI
 	);
+}
 
-	TextureRHI = (FTextureRHIRef&)Texture2DRHI;
+void FDisplayClusterViewportResource::ImplInitDynamicRHI_TextureResource2D(FTexture2DRHIRef& OutTextureRHI)
+{
+	ETextureCreateFlags CreateFlags = TexCreate_Dynamic | TexCreate_ShaderResource;
+
+	// -- we will be manually copying this cross GPU, tell render graph not to
+	CreateFlags |= TexCreate_MultiGPUGraphIgnore;
+
+	// reflect srgb from settings
+	if (bSRGB)
+	{
+		CreateFlags |= TexCreate_SRGB;
+	}
+
+	uint32 NumMips = 1;
+	uint32 NumSamples = 1;
+
+	CreateFlags |= ViewportResourceSettings.bIsRenderTargetable ? TexCreate_RenderTargetable : TexCreate_ResolveTargetable;
+
+	FRHIResourceCreateInfo CreateInfo(TEXT("DisplayClusterViewportTextureResource"), FClearValueBinding::Black);
+
+	OutTextureRHI = RHICreateTexture2D(
+		GetSizeX(),
+		GetSizeY(),
+		ViewportResourceSettings.Format,
+		NumMips,
+		NumSamples,
+		CreateFlags,
+		ERHIAccess::SRVMask,
+		CreateInfo
+	);
+}
+
+//------------------------------------------------------------------------------------------------
+// FDisplayClusterViewportTextureResource
+//------------------------------------------------------------------------------------------------
+void FDisplayClusterViewportTextureResource::InitDynamicRHI()
+{
+	FTexture2DRHIRef NewTextureRHI;
+
+	if (GetResourceSettingsConstRef().NumMips > 1)
+	{
+		FTexture2DRHIRef DummyTextureRHI;
+		ImplInitDynamicRHI_RenderTargetResource2D(NewTextureRHI, DummyTextureRHI);
+	}
+	else
+	{
+		ImplInitDynamicRHI_TextureResource2D(NewTextureRHI);
+	}
+
+	TextureRHI = (FTextureRHIRef&)NewTextureRHI;
+}
+
+//------------------------------------------------------------------------------------------------
+// FDisplayClusterViewportRenderTargetResource
+//------------------------------------------------------------------------------------------------
+void FDisplayClusterViewportRenderTargetResource::InitDynamicRHI()
+{
+	// Create RTT and shader resources
+	FTexture2DRHIRef NewTextureRHI;
+	ImplInitDynamicRHI_RenderTargetResource2D(RenderTargetTextureRHI, NewTextureRHI);
+	TextureRHI = (FTextureRHIRef&)NewTextureRHI;
 
 	// Create the sampler state RHI resource.
 	FSamplerStateInitializerRHI SamplerStateInitializer

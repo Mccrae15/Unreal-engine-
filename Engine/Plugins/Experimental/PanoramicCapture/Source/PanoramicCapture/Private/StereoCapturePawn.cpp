@@ -44,7 +44,7 @@ void AStereoCapturePawn::UpdateStereoAtlas(UObject* WorldContextObject, struct F
     StereoPanoramaManager->PanoramicScreenshot(0, 0, CopyAtlasToTexDelegate, World);
 
     //TODO: ikrimae: Not cool b/c we're passing memory ownership to the LatentActionManager but at the same time we need a reference to this action to update when it's done
-    //               Got to dig deeper into UE4 to see proper way
+    //               Got to dig deeper into Unreal Engine to see proper way
     StereoCaptureDoneAction = new FStereoCaptureDoneAction(LatentInfo);
 
 
@@ -70,7 +70,7 @@ void AStereoCapturePawn::CopyAtlasDataToTextures(const TArray<FLinearColor>& InL
             const int32 TextureDataSize = InLeftEyeAtlasData.Num() * InLeftEyeAtlasData.GetTypeSize();
             check(TextureDataSize == LeftEyeAtlas->GetSizeX() * LeftEyeAtlas->GetSizeY() * sizeof(FLinearColor) );
 
-            FTexture2DMipMap& Mip = LeftEyeAtlas->PlatformData->Mips[0];
+            FTexture2DMipMap& Mip = LeftEyeAtlas->GetPlatformData()->Mips[0];
             void* Data = Mip.BulkData.Lock(LOCK_READ_WRITE);
             FMemory::Memcpy(Data, InLeftEyeAtlasData.GetData(), TextureDataSize);
             Mip.BulkData.Unlock();
@@ -81,7 +81,7 @@ void AStereoCapturePawn::CopyAtlasDataToTextures(const TArray<FLinearColor>& InL
             const int32 TextureDataSize = InRightEyeAtlasData.Num() * InRightEyeAtlasData.GetTypeSize();
             check(TextureDataSize == RightEyeAtlas->GetSizeX() * RightEyeAtlas->GetSizeY() * sizeof(FLinearColor) );
 
-            FTexture2DMipMap& Mip = RightEyeAtlas->PlatformData->Mips[0];
+            FTexture2DMipMap& Mip = RightEyeAtlas->GetPlatformData()->Mips[0];
             void* Data = Mip.BulkData.Lock(LOCK_READ_WRITE);
             FMemory::Memcpy(Data, InRightEyeAtlasData.GetData(), TextureDataSize);
 

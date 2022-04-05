@@ -6,6 +6,8 @@
 #include "Templates/UniquePtr.h"
 #include "UObject/NameTypes.h"
 
+#include "UsdWrappers/ForwardDeclarations.h"
+
 #if USE_USD_SDK
 
 #include "USDIncludesStart.h"
@@ -22,12 +24,20 @@ namespace UE
 {
 	class FSdfPath;
 	class FUsdAttribute;
-	class FUsdStage;
 
 	namespace Internal
 	{
 		class FUsdPrimImpl;
 	}
+
+	/** Corresponds to pxr::SdfSpecifier, refer to the USD SDK documentation */
+	enum class ESdfSpecifier
+	{
+		Def,	// Defines a concrete prim
+		Over,	// Overrides an existing prim
+		Class,	// Defines an abstract prim
+		Num		// The number of specifiers
+	};
 
 	/**
 	 * Minimal pxr::UsdPrim wrapper for Unreal that can be used from no-rtti modules.
@@ -47,7 +57,7 @@ namespace UE
 		bool operator==( const FUsdPrim& Other ) const;
 		bool operator!=( const FUsdPrim& Other ) const;
 
-		operator bool() const;
+		explicit operator bool() const;
 
 	// Auto conversion from/to pxr::UsdPrim
 	public:
@@ -63,6 +73,8 @@ namespace UE
 
 	// Wrapped pxr::UsdPrim functions, refer to the USD SDK documentation
 	public:
+		bool SetSpecifier( ESdfSpecifier Specifier );
+
 		bool IsActive() const;
 		bool SetActive( bool bActive );
 

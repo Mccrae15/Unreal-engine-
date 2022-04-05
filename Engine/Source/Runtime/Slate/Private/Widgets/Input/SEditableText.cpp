@@ -5,6 +5,8 @@
 #include "Framework/Text/PlainTextLayoutMarshaller.h"
 #include "Widgets/Text/SlateEditableTextLayout.h"
 #include "Types/ReflectionMetadata.h"
+#include "Types/TrackedMetaData.h"
+
 #if WITH_ACCESSIBILITY
 #include "Widgets/Accessibility/SlateAccessibleWidgets.h"
 #endif
@@ -71,10 +73,13 @@ void SEditableText::Construct( const FArguments& InArgs )
 	EditableTextLayout->SetCompositionBrush(InArgs._BackgroundImageComposing.IsSet() ? InArgs._BackgroundImageComposing : &InArgs._Style->BackgroundImageComposing);
 	EditableTextLayout->SetDebugSourceInfo(TAttribute<FString>::Create(TAttribute<FString>::FGetter::CreateLambda([this]{ return FReflectionMetaData::GetWidgetDebugInfo(this); })));
 	EditableTextLayout->SetJustification(InArgs._Justification);
+	EditableTextLayout->SetOverflowPolicy(InArgs._OverflowPolicy);
 
 	// build context menu extender
 	MenuExtender = MakeShareable(new FExtender());
 	MenuExtender->AddMenuExtension("EditText", EExtensionHook::Before, TSharedPtr<FUICommandList>(), InArgs._ContextMenuExtender);
+
+	AddMetadata(MakeShared<FTrackedMetaData>(this, FName(TEXT("EditableText"))));
 }
 
 void SEditableText::SetText( const TAttribute< FText >& InNewText )
@@ -367,6 +372,11 @@ void SEditableText::SetTextShapingMethod(const TOptional<ETextShapingMethod>& In
 void SEditableText::SetTextFlowDirection(const TOptional<ETextFlowDirection>& InTextFlowDirection)
 {
 	EditableTextLayout->SetTextFlowDirection(InTextFlowDirection);
+}
+
+void SEditableText::SetOverflowPolicy(TOptional<ETextOverflowPolicy> InOverflowPolicy)
+{
+	EditableTextLayout->SetOverflowPolicy(InOverflowPolicy);
 }
 
 bool SEditableText::AnyTextSelected() const

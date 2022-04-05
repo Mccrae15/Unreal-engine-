@@ -724,16 +724,31 @@ void FSequencerTrackNode::GetChildKeyAreaNodesRecursively(TArray<TSharedRef<FSeq
 
 FText FSequencerTrackNode::GetDisplayName() const
 {
+	if (UMovieSceneNameableTrack* NameableTrack = Cast<UMovieSceneNameableTrack>(AssociatedTrack.Get()))
+	{
+		if (SubTrackMode == ESubTrackMode::SubTrack)
+		{	
+			int32 TrackRowIndex = GetRowIndex();
+
+			return NameableTrack->GetTrackRowDisplayName(TrackRowIndex);
+		}
+	}
+
 	return AssociatedTrack.IsValid() ? AssociatedTrack->GetDisplayName() : FText::GetEmpty();
 }
 
-FLinearColor FSequencerTrackNode::GetDisplayNameColor() const
+FText FSequencerTrackNode::GetDisplayNameToolTipText() const
+{
+	return AssociatedTrack.IsValid() ? AssociatedTrack->GetDisplayNameToolTipText() : FText::GetEmpty();
+}
+
+FSlateColor FSequencerTrackNode::GetDisplayNameColor() const
 {
 	UMovieSceneTrack* Track = GetTrack();
 
 	if (!Track)
 	{
-		return FLinearColor::White;
+		return FSlateColor::UseForeground();
 	}
 
 	// Display track node is red if the property track is not bound to valid property
@@ -744,7 +759,7 @@ FLinearColor FSequencerTrackNode::GetDisplayNameColor() const
 		// 3D transform tracks don't map to property bindings as below
 		if (Track->IsA<UMovieScene3DTransformTrack>() || Track->IsA<UMovieScenePrimitiveMaterialTrack>())
 		{
-			return bIsDimmed ? FLinearColor(0.6f, 0.6f, 0.6f, 0.6f) : FLinearColor::White;
+			return bIsDimmed ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
 		}
 
 		FGuid ObjectBinding;
@@ -764,12 +779,12 @@ FLinearColor FSequencerTrackNode::GetDisplayNameColor() const
 					FTrackInstancePropertyBindings PropertyBinding(PropertyTrack->GetPropertyName(), PropertyTrack->GetPropertyPath().ToString());
 					if (PropertyBinding.GetProperty(*Object))
 					{
-						return bIsDimmed ? FLinearColor(0.6f, 0.6f, 0.6f, 0.6f) : FLinearColor::White;
+						return bIsDimmed ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
 					}
 				}
 			}
 
-			return bIsDimmed ? FLinearColor(0.6f, 0.0f, 0.0f, 0.6f) : FLinearColor::Red;
+			return bIsDimmed ? FSlateColor(FLinearColor::Red.Desaturate(0.6f)) : FLinearColor::Red;
 		}
 	}
 
@@ -808,13 +823,21 @@ ESequencerNode::Type FSequencerTrackNode::GetType() const
 
 void FSequencerTrackNode::SetDisplayName(const FText& NewDisplayName)
 {
-	auto NameableTrack = Cast<UMovieSceneNameableTrack>(AssociatedTrack.Get());
-
-	if (NameableTrack != nullptr && !NameableTrack->GetDisplayName().EqualTo(NewDisplayName))
+	if (UMovieSceneNameableTrack* NameableTrack = Cast<UMovieSceneNameableTrack>(AssociatedTrack.Get()))
 	{
 		const FScopedTransaction Transaction(NSLOCTEXT("SequencerTrackNode", "RenameTrack", "Rename Track"));
 
-		NameableTrack->SetDisplayName(NewDisplayName);
+		if (SubTrackMode == ESubTrackMode::SubTrack)
+		{
+			int32 TrackRowIndex = GetRowIndex();
+		
+			NameableTrack->SetTrackRowDisplayName(NewDisplayName, TrackRowIndex);
+		}
+		else
+		{
+			NameableTrack->SetDisplayName(NewDisplayName);
+		}
+
 		GetSequencer().NotifyMovieSceneDataChanged(EMovieSceneDataChangeType::TrackValueChanged);
 
 		SetNodeName(FName(*NewDisplayName.ToString()));
@@ -975,29 +998,19 @@ void FSequencerTrackNode::CreateCurveModels(TArray<TUniquePtr<FCurveModel>>& Out
 
 FSlateFontInfo FSequencerTrackNode::GetDisplayNameFont() const
 {
-	bool bAllAnimated = false;
 	TSharedPtr<FSequencerSectionKeyAreaNode> TopLevelKeyArea = GetTopLevelKeyNode();
 	if (TopLevelKeyArea.IsValid())
 	{
 		for (const TSharedRef<IKeyArea>& KeyArea : TopLevelKeyArea->GetAllKeyAreas())
 		{
 			FMovieSceneChannel* Channel = KeyArea->ResolveChannel();
-			if (!Channel || Channel->GetNumKeys() == 0)
+			if (Channel && Channel->GetNumKeys() > 0)
 			{
-				return FSequencerDisplayNode::GetDisplayNameFont();
+				return FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.ItalicFont");
 			}
-			else
-			{
-				bAllAnimated = true;
-			}
-		}
-		if (bAllAnimated == true)
-		{
-			return FEditorStyle::GetFontStyle("Sequencer.AnimationOutliner.ItalicFont");
 		}
 	}
 	return FSequencerDisplayNode::GetDisplayNameFont();
 }
-
 
 #undef LOCTEXT_NAMESPACE

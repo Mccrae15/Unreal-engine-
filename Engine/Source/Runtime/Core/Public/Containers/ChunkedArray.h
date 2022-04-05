@@ -46,8 +46,16 @@ namespace UE4ChunkedArray_Private
 	};
 }
 
+// Forward declarations
+
+template<typename InElementType, uint32 TargetBytesPerChunk, typename AllocatorType>
+class TChunkedArray;
+
+template <typename T, uint32 TargetBytesPerChunk, typename AllocatorType>
+void* operator new(size_t Size, TChunkedArray<T, TargetBytesPerChunk, AllocatorType>& ChunkedArray);
+
 /** An array that uses multiple allocations to avoid allocation failure due to fragmentation. */
-template<typename InElementType, uint32 TargetBytesPerChunk = 16384 >
+template<typename InElementType, uint32 TargetBytesPerChunk = 16384, typename AllocatorType = FDefaultAllocator >
 class TChunkedArray
 {
 	using ElementType = InElementType;
@@ -128,6 +136,18 @@ public:
 		const int32 ChunkElementIndex = ElementIndex % NumElementsPerChunk;
 		return Chunks[ChunkIndex].Elements[ChunkElementIndex];
 	}
+
+	/**
+	 * Returns true if the chunked array is empty and contains no elements. 
+	 *
+	 * @returns True if the chunked array is empty.
+	 * @see Num
+	 */
+	bool IsEmpty() const
+	{
+		return NumElements == 0;
+	}
+
 	int32 Num() const 
 	{ 
 		return NumElements; 
@@ -224,7 +244,7 @@ public:
 			{
 				const int32 NumElementsInCurrentChunk = FMath::Min<int32>(NumElements - ChunkIndex * NumElementsPerChunk, NumElementsPerChunk);
 				check(NumElementsInCurrentChunk > 0);
-				FMemory::Memcpy(CopyDestPtr, &Chunks[ChunkIndex].Elements[0], NumElementsInCurrentChunk * sizeof(ElementType));
+				FMemory::Memcpy(CopyDestPtr, &Chunks[ChunkIndex].Elements[0], NumElementsInCurrentChunk * sizeof(ElementType)); //-V598
 				CopyDestPtr += NumElementsInCurrentChunk;
 			}
 		}
@@ -258,7 +278,7 @@ public:
 
 protected:
 
-	friend struct TContainerTraits<TChunkedArray<ElementType, TargetBytesPerChunk>>;
+	friend struct TContainerTraits<TChunkedArray<ElementType, TargetBytesPerChunk, AllocatorType>>;
 
 	enum { NumElementsPerChunk = TargetBytesPerChunk / sizeof(ElementType) };
 
@@ -270,7 +290,7 @@ protected:
 	};
 
 	/** The chunks of the array's elements. */
-	typedef TIndirectArray<FChunk> ChunksType;
+	typedef TIndirectArray<FChunk, AllocatorType> ChunksType;
 	ChunksType Chunks;
 
 	/** The number of elements in the array. */
@@ -317,14 +337,15 @@ public:
 };
 
 
-template <typename ElementType, uint32 TargetBytesPerChunk>
-struct TContainerTraits<TChunkedArray<ElementType, TargetBytesPerChunk> > : public TContainerTraitsBase<TChunkedArray<ElementType, TargetBytesPerChunk> >
+template <typename ElementType, uint32 TargetBytesPerChunk, typename AllocatorType>
+struct TContainerTraits<TChunkedArray<ElementType, TargetBytesPerChunk, AllocatorType> > : public TContainerTraitsBase<TChunkedArray<ElementType, TargetBytesPerChunk, AllocatorType> >
 {
-	enum { MoveWillEmptyContainer = TContainerTraits<typename TChunkedArray<ElementType, TargetBytesPerChunk>::ChunksType>::MoveWillEmptyContainer };
+	enum { MoveWillEmptyContainer = TContainerTraits<typename TChunkedArray<ElementType, TargetBytesPerChunk, AllocatorType>::ChunksType>::MoveWillEmptyContainer };
 };
 
 
-template <typename T,uint32 TargetBytesPerChunk> void* operator new( size_t Size, TChunkedArray<T,TargetBytesPerChunk>& ChunkedArray )
+template <typename T,uint32 TargetBytesPerChunk, typename AllocatorType> 
+void* operator new( size_t Size, TChunkedArray<T,TargetBytesPerChunk, AllocatorType>& ChunkedArray )
 {
 	check(Size == sizeof(T));
 	const int32 Index = ChunkedArray.Add(1);

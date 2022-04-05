@@ -11,7 +11,7 @@
 
 
 struct FFileStatData;
-struct FImportParameters;
+class FImportParameters;
 
 class FDatasmithCADWorkerImpl
 {
@@ -30,7 +30,7 @@ private:
 	/**
 	 * @param MaxDuration is defined in seconds.
 	 */
-	void CheckDuration(const CADLibrary::FFileDescription& FileToProcess, const int64 MaxDuration);
+	void CheckDuration(const CADLibrary::FFileDescriptor& FileToProcess, const int64 MaxDuration); 
 
 private:
 	DatasmithDispatcher::FNetworkClientNode NetworkInterface;
@@ -43,5 +43,4 @@ private:
 	CADLibrary::FImportParameters ImportParameters;
 	uint64 PingStartCycle;
 	TAtomic<bool> bProcessIsRunning;
-
 };

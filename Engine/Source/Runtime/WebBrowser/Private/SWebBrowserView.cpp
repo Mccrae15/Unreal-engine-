@@ -116,7 +116,11 @@ void SWebBrowserView::Construct(const FArguments& InArgs, const TSharedPtr<IWebB
 			Settings.Context = InArgs._ContextSettings;
 			Settings.AltRetryDomains = InArgs._AltRetryDomains;
 
-			BrowserWindow = IWebBrowserModule::Get().GetSingleton()->CreateBrowserWindow(Settings);
+			// IWebBrowserModule::Get() was already callled in WebBrowserWidgetModule.cpp so we don't need to force the load again here
+			if (IWebBrowserModule::IsAvailable() && IWebBrowserModule::Get().IsWebModuleAvailable())
+			{
+				BrowserWindow = IWebBrowserModule::Get().GetSingleton()->CreateBrowserWindow(Settings);
+			}
 		}
 	}
 
@@ -614,8 +618,11 @@ void SWebBrowserView::HandleShowPopup(const FIntRect& PopupSize)
 				.EnableGammaCorrection(false)
 				.EnableBlending(false)
 				.IgnoreTextureAlpha(true)
+#if WITH_CEF3
+				.RenderTransform(this, &SWebBrowserView::GetPopupRenderTransform)
+#endif
 				.Visibility(EVisibility::Visible);
-	MenuViewport = MakeShareable(new FWebBrowserViewport(BrowserWindow, true));
+		MenuViewport = MakeShareable(new FWebBrowserViewport(BrowserWindow, true));
 	MenuContent->SetViewportInterface(MenuViewport.ToSharedRef());
 	FWidgetPath WidgetPath;
 	FSlateApplication::Get().GeneratePathToWidgetUnchecked(SharedThis(this), WidgetPath);
@@ -632,6 +639,28 @@ void SWebBrowserView::HandleShowPopup(const FIntRect& PopupSize)
 		PopupMenuPtr = NewMenu;
 	}
 
+}
+
+TOptional <FSlateRenderTransform> SWebBrowserView::GetPopupRenderTransform() const
+{
+	if (BrowserWindow.IsValid())
+	{
+#if !defined(DUMMY_WEB_BROWSER) && WITH_CEF3
+		TOptional<FSlateRenderTransform> LocalRenderTransform = FSlateRenderTransform();
+		if (static_cast<FWebBrowserWindow*>(BrowserWindow.Get())->UsingAcceleratedPaint())
+		{
+			// the accelerated renderer for CEF generates inverted textures (compared to the slate co-ord system), so flip it here
+			LocalRenderTransform = FSlateRenderTransform(Concatenate(FScale2D(1, -1), FVector2D(0, PopupMenuPtr.Pin()->GetContent()->GetDesiredSize().Y)));
+		}
+		return LocalRenderTransform;
+#else
+		return FSlateRenderTransform();
+#endif
+	}
+	else
+	{
+		return FSlateRenderTransform();
+	}
 }
 
 void SWebBrowserView::HandleMenuDismissed(TSharedRef<IMenu>)
@@ -692,6 +721,16 @@ bool SWebBrowserView::UnhandledKeyChar(const FCharacterEvent& CharacterEvent)
 		return OnUnhandledKeyChar.Execute(CharacterEvent);
 	}
 	return false;
+}
+
+
+void SWebBrowserView::SetParentWindow(TSharedPtr<SWindow> Window)
+{
+	SetupParentWindowHandlers();
+	if (BrowserWindow.IsValid())
+	{
+		BrowserWindow->SetParentWindow(Window);
+	}
 }
 
 

@@ -17,6 +17,7 @@
 #include "EntitySystem/MovieSceneSpawnablesSystem.h"
 #include "Evaluation/MovieSceneEvaluationTemplateInstance.h"
 #include "Sections/MovieScene3DTransformSection.h"
+#include "UObject/ObjectSaveContext.h"
 
 #define LOCTEXT_NAMESPACE "LevelSequenceEditorSpawnRegister"
 
@@ -31,10 +32,10 @@ FLevelSequenceEditorSpawnRegister::FLevelSequenceEditorSpawnRegister()
 	OnActorSelectionChangedHandle = LevelEditor.OnActorSelectionChanged().AddRaw(this, &FLevelSequenceEditorSpawnRegister::HandleActorSelectionChanged);
 
 #if WITH_EDITOR
-	GEditor->OnObjectsReplaced().AddRaw(this, &FLevelSequenceEditorSpawnRegister::OnObjectsReplaced);
+	FCoreUObjectDelegates::OnObjectsReplaced.AddRaw(this, &FLevelSequenceEditorSpawnRegister::OnObjectsReplaced);
 
 	OnObjectModifiedHandle = FCoreUObjectDelegates::OnObjectModified.AddRaw(this, &FLevelSequenceEditorSpawnRegister::OnObjectModified);
-	OnObjectSavedHandle    = FCoreUObjectDelegates::OnObjectSaved.AddRaw(this, &FLevelSequenceEditorSpawnRegister::OnPreObjectSaved);
+	OnObjectSavedHandle    = FCoreUObjectDelegates::OnObjectPreSave.AddRaw(this, &FLevelSequenceEditorSpawnRegister::OnPreObjectSaved);
 #endif
 }
 
@@ -54,9 +55,9 @@ FLevelSequenceEditorSpawnRegister::~FLevelSequenceEditorSpawnRegister()
 	}
 
 #if WITH_EDITOR
-	GEditor->OnObjectsReplaced().RemoveAll(this);
+	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
 	FCoreUObjectDelegates::OnObjectModified.Remove(OnObjectModifiedHandle);
-	FCoreUObjectDelegates::OnObjectSaved.Remove(OnObjectSavedHandle);
+	FCoreUObjectDelegates::OnObjectPreSave.Remove(OnObjectSavedHandle);
 #endif
 }
 
@@ -275,7 +276,7 @@ void FLevelSequenceEditorSpawnRegister::OnObjectModified(UObject* ModifiedObject
 	}
 }
 
-void FLevelSequenceEditorSpawnRegister::OnPreObjectSaved(UObject* Object)
+void FLevelSequenceEditorSpawnRegister::OnPreObjectSaved(UObject* Object, FObjectPreSaveContext SaveContext)
 {
 	UMovieSceneSequence* SequenceBeingSaved = Cast<UMovieSceneSequence>(Object);
 	if (SequenceBeingSaved && SequencesWithModifiedObjects.Contains(SequenceBeingSaved))
@@ -339,10 +340,13 @@ void FLevelSequenceEditorSpawnRegister::HandleConvertPossessableToSpawnable(UObj
 	AActor* OldActor = Cast<AActor>(OldObject);
 	if (OldActor)
 	{
-		OutTransformData.Emplace();
-		OutTransformData->Translation = OldActor->GetRootComponent()->GetRelativeLocation();
-		OutTransformData->Rotation = OldActor->GetRootComponent()->GetRelativeRotation();
-		OutTransformData->Scale = OldActor->GetRootComponent()->GetRelativeScale3D();
+		if (OldActor->GetRootComponent())
+		{
+			OutTransformData.Emplace();
+			OutTransformData->Translation = OldActor->GetRootComponent()->GetRelativeLocation();
+			OutTransformData->Rotation = OldActor->GetRootComponent()->GetRelativeRotation();
+			OutTransformData->Scale = OldActor->GetRootComponent()->GetRelativeScale3D();
+		}
 
 		GEditor->SelectActor(OldActor, false, true);
 		UWorld* World = Cast<UWorld>(Player.GetPlaybackContext());

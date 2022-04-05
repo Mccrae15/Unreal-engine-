@@ -12,6 +12,7 @@ public class LoginFlow : ModuleRules
 			new string[]
 			{
 				"Core",
+				"CoreOnline",
 				"CoreUObject",
 				"InputCore",
 				"Slate",
@@ -52,10 +53,5 @@ public class LoginFlow : ModuleRules
 				"AnalyticsET",
 			}
 		);
-
-		if (Target.Platform == UnrealTargetPlatform.Lumin)
-		{
-			PrecompileForTargets = PrecompileTargetsType.None;
-		}
 	}
 }

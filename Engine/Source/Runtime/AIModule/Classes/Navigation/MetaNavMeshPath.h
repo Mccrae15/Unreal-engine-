@@ -105,7 +105,7 @@ struct AIMODULE_API FMetaNavMeshPath : public FNavMeshPath
 #if ENABLE_VISUAL_LOG
 	virtual void DescribeSelfToVisLog(FVisualLogEntry* Snapshot) const override;
 #endif
-	virtual void DebugDraw(const ANavigationData* NavData, FColor PathColor, UCanvas* Canvas, bool bPersistent, const uint32 NextPathPointIndex = 0) const override;
+	virtual void DebugDraw(const ANavigationData* NavData, const FColor PathColor, UCanvas* Canvas, const bool bPersistent, const float LifeTime, const uint32 NextPathPointIndex = 0) const override;
 
 protected:
 
@@ -129,8 +129,4 @@ protected:
 
 	/** switch to next waypoint  */
 	bool MoveToNextSection(const FVector& AgentLocation);
-
-public:
-	UE_DEPRECATED(4.16, "Waypoint type of MetaPaths has been changed. Use the new GetWaypointArray")
-	TArray<FVector> GetWaypoints() const;
 };

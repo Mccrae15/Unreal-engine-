@@ -17,8 +17,9 @@
 #include "Editor.h"
 #include "FileHelpers.h"
 #include "Misc/FeedbackContext.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "GameFramework/WorldSettings.h"
+#include "UObject/SavePackage.h"
 
 void UImportAssetsCommandlet::PrintUsage()
 {
@@ -169,7 +170,10 @@ bool UImportAssetsCommandlet::ParseImportSettings(const FString& InImportSetting
 
 static bool SavePackage(UPackage* Package, const FString& PackageFilename)
 {
-	return GEditor->SavePackage(Package, nullptr, RF_Standalone, *PackageFilename, GWarn);
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Standalone;
+	SaveArgs.Error = GWarn;
+	return GEditor->SavePackage(Package, nullptr, *PackageFilename, SaveArgs);
 }
 
 bool UImportAssetsCommandlet::ImportAndSave(const TArray<UAutomatedAssetImportData*>& AssetImportList)

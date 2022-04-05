@@ -90,7 +90,7 @@ protected:
 
 	/** List of available translator the subject can use. */
 	UPROPERTY(EditAnywhere, Instanced, Category = "LiveLink", meta=(DisplayName="Translators"))
-	TArray<ULiveLinkFrameTranslator*> FrameTranslators;
+	TArray<TObjectPtr<ULiveLinkFrameTranslator>> FrameTranslators;
 
 	/** If enabled, rebroadcast this subject */
 	UPROPERTY(EditAnywhere, Category = "LiveLink")

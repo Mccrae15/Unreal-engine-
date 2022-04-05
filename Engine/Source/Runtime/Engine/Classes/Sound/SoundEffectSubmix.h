@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 
 #include "AudioDefines.h"
+#include "DSP/BufferVectorOperations.h"
 #include "IAudioExtensionPlugin.h"
 #include "Sound/SoundEffectPreset.h"
 #include "Sound/SoundEffectBase.h"
@@ -25,7 +26,7 @@ class ENGINE_API USoundEffectSubmixPreset : public USoundEffectPreset
 {
 	GENERATED_UCLASS_BODY()
 
-	virtual FColor GetPresetColor() const override { return FColor(162.0f, 84.0f, 101.0f); }
+	virtual FColor GetPresetColor() const override { return FColor(162, 84, 101); }
 
 };
 
@@ -57,7 +58,7 @@ struct FSoundEffectSubmixInputData
 	const TArray<FTransform>* ListenerTransforms;
 
 	/** The raw input audio buffer. Size is NumFrames * NumChannels */
-	Audio::AlignedFloatBuffer* AudioBuffer;
+	Audio::FAlignedFloatBuffer* AudioBuffer;
 
 	/** Sample accurate audio clock. */
 	double AudioClock;
@@ -75,7 +76,7 @@ struct FSoundEffectSubmixInputData
 struct FSoundEffectSubmixOutputData
 {
 	/** The output audio buffer. */
-	Audio::AlignedFloatBuffer* AudioBuffer;
+	Audio::FAlignedFloatBuffer* AudioBuffer;
 
 	/** The number of channels of the submix. */
 	int32 NumChannels;
@@ -124,7 +125,9 @@ public:
 	virtual float GetDryLevel() const { return 0.0f; }
 
 	// Processes audio in the submix effect.
-	void ProcessAudio(FSoundEffectSubmixInputData& InData, FSoundEffectSubmixOutputData& OutData);
+	//
+	// If the audio cannot be processed, this function will return false and OutData will not be altered. 
+	bool ProcessAudio(FSoundEffectSubmixInputData& InData, FSoundEffectSubmixOutputData& OutData);
 
 	friend class USoundEffectPreset;
 

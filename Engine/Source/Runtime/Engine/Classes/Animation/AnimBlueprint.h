@@ -13,6 +13,8 @@ class SWidget;
 class UAnimationAsset;
 class USkeletalMesh;
 class USkeleton;
+class UPoseWatch;
+class UPoseWatchFolder;
 struct FAnimBlueprintDebugData;
 
 USTRUCT()
@@ -38,7 +40,7 @@ struct FAnimParentNodeAssetOverride
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	UAnimationAsset* NewAsset;
+	TObjectPtr<UAnimationAsset> NewAsset;
 	UPROPERTY()
 	FGuid ParentNodeGuid;
 
@@ -84,12 +86,17 @@ class ENGINE_API UAnimBlueprint : public UBlueprint, public IInterface_PreviewMe
 	 * to cause errors if this is modified without updating or replacing all referenced animations.
 	 */
 	UPROPERTY(AssetRegistrySearchable, EditAnywhere, AdvancedDisplay, Category=ClassOptions)
-	USkeleton* TargetSkeleton;
+	TObjectPtr<USkeleton> TargetSkeleton;
 
 	// List of animation sync groups
 	UPROPERTY()
 	TArray<FAnimGroupInfo> Groups;
 
+	// This is an anim blueprint that acts as a set of template functionality without being tied to a specific skeleton.
+	// Implies a null TargetSkeleton.
+	UPROPERTY(AssetRegistrySearchable)
+	bool bIsTemplate;
+	
 	/**
 	 * Allows this anim Blueprint to update its native update, blend tree, montages and asset players on
 	 * a worker thread. The compiler will attempt to pick up any issues that may occur with threaded update.
@@ -135,7 +142,7 @@ class ENGINE_API UAnimBlueprint : public UBlueprint, public IInterface_PreviewMe
 	}
 
 	virtual bool IsValidForBytecodeOnlyRecompile() const override { return false; }
-	virtual bool CanRecompileWhilePlayingInEditor() const override;
+	virtual bool CanAlwaysRecompileWhilePlayingInEditor() const override;
 	// End of UBlueprint interface
 
 	// Finds the index of the specified group, or creates a new entry for it (unless the name is NAME_None, which will return INDEX_NONE)
@@ -144,6 +151,9 @@ class ENGINE_API UAnimBlueprint : public UBlueprint, public IInterface_PreviewMe
 	/** Returns the most base anim blueprint for a given blueprint (if it is inherited from another anim blueprint, returning null if only native / non-anim BP classes are it's parent) */
 	static UAnimBlueprint* FindRootAnimBlueprint(const UAnimBlueprint* DerivedBlueprint);
 
+	/** Returns the parent anim blueprint for a given blueprint (if it is inherited from another anim blueprint, returning null if only native / non-anim BP classes are it's parent) */
+	static UAnimBlueprint* GetParentAnimBlueprint(const UAnimBlueprint* DerivedBlueprint);
+	
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnOverrideChangedMulticaster, FGuid, UAnimationAsset*);
 
 	typedef FOnOverrideChangedMulticaster::FDelegate FOnOverrideChanged;
@@ -165,7 +175,8 @@ class ENGINE_API UAnimBlueprint : public UBlueprint, public IInterface_PreviewMe
 
 	virtual void PostLoad() override;
 	virtual bool FindDiffs(const UBlueprint* OtherBlueprint, FDiffResults& Results) const override;
-
+	virtual void SetObjectBeingDebugged(UObject* NewObject) override;
+	
 protected:
 	// Broadcast when an override is changed, allowing derived blueprints to be updated
 	FOnOverrideChangedMulticaster OnOverrideChanged;
@@ -196,16 +207,40 @@ public:
 
 #if WITH_EDITORONLY_DATA
 public:
+	// Queue a refresh of the set of anim blueprint extensions that this anim blueprint hosts.
+	// Usually called from anim graph nodes to ensure that extensions that are no longer required are cleaned up.
+	void RequestRefreshExtensions() { bRefreshExtensions = true; }
+
+	// Check if the anim BP is compatible with this one (for linked instancing). Checks target skeleton, template flags
+	// blueprint type.
+	// Note compatibility is directional - e.g. template anim BPs can be instanced within any 'regular' anim BP, but not
+	// vice versa
+	// @param	InAnimBlueprint		The anim blueprint to check for compatibility
+	bool IsCompatible(const UAnimBlueprint* InAnimBlueprint) const;
+	
+	// Check if the asset path of a skeleton, template and interface flags are compatible with this anim blueprint
+	// (for linked instancing)
+	// @param	InSkeletonAsset		The asset path of the skeleton asset used by the anim blueprint
+	// @param	bInIsTemplate		Whether the anim blueprint to check is a template
+	// @param	bInIsInterface		Whether the anim blueprint to check is an interface
+	bool IsCompatibleByAssetString(const FString& InSkeletonAsset, bool bInIsTemplate, bool bInIsInterface) const;
+	
+public:
 	// Array of overrides to asset containing nodes in the parent that have been overridden
 	UPROPERTY()
 	TArray<FAnimParentNodeAssetOverride> ParentAssetOverrides;
 
 	// Array of active pose watches (pose watch allows us to see the bone pose at a 
 	// particular point of the anim graph) 
-	UPROPERTY(transient)
-	TArray<class UPoseWatch*> PoseWatches;
+	UPROPERTY()
+	TArray<TObjectPtr<UPoseWatchFolder>> PoseWatchFolders;
+	
+	UPROPERTY()
+	TArray<TObjectPtr<UPoseWatch>> PoseWatches;
 
 private:
+	friend class FAnimBlueprintCompilerContext;
+	
 	/** The default skeletal mesh to use when previewing this asset - this only applies when you open Persona using this asset*/
 	UPROPERTY(duplicatetransient, AssetRegistrySearchable)
 	TSoftObjectPtr<class USkeletalMesh> PreviewSkeletalMesh;
@@ -224,5 +259,8 @@ private:
 	/** The tag to use when applying a preview animation blueprint via LinkAnimGraphByTag */
 	UPROPERTY()
 	FName PreviewAnimationBlueprintTag;
+
+	/** If set, then extensions need to be refreshed according to spawned nodes */
+	bool bRefreshExtensions;
 #endif // WITH_EDITORONLY_DATA
 };

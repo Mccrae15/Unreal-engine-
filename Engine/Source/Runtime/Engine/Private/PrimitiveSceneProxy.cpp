@@ -15,8 +15,12 @@
 #include "Materials/Material.h"
 #include "SceneManagement.h"
 #include "VT/RuntimeVirtualTexture.h"
+#include "PrimitiveInstanceUpdateCommand.h"
+#include "InstanceUniformShaderParameters.h"
+
 #if WITH_EDITOR
 #include "FoliageHelper.h"
+#include "ObjectCacheEventSink.h"
 #endif
 
 static TAutoConsoleVariable<int32> CVarForceSingleSampleShadowingFromStationary(
@@ -33,6 +37,14 @@ static TAutoConsoleVariable<int32> CVarCacheWPOPrimitives(
 	TEXT("Enablings this gives more correct, but slower whole scene shadows from materials that use WPO."),
 	ECVF_RenderThreadSafe | ECVF_Scalability
 	);
+
+static TAutoConsoleVariable<int32> CVarVelocityEnableVertexDeformation(
+	TEXT("r.Velocity.EnableVertexDeformation"),
+	2,
+	TEXT("Enables materials with World Position Offset and/or World Displacement to output velocities during velocity pass even when the actor has not moved. \n")
+	TEXT("0=Off, 1=On, 2=Auto(Default). \n")
+	TEXT("Auto setting is off if r.VelocityOutputPass=2, or else on. \n")
+	TEXT("When r.VelocityOutputPass=2 this can incur a performance cost due to additional draw calls."));
 
 bool CacheShadowDepthsFromPrimitivesUsingWPO()
 {
@@ -72,6 +84,36 @@ bool SupportsCachingMeshDrawCommands(const FMeshBatch& MeshBatch, ERHIFeatureLev
 	return false;
 }
 
+bool SupportsNaniteRendering(const FVertexFactory* RESTRICT VertexFactory, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy)
+{
+	// Volumetric self shadow mesh commands need to be generated every frame, as they depend on single frame uniform buffers with self shadow data.
+	return VertexFactory->GetType()->SupportsNaniteRendering();
+}
+
+bool SupportsNaniteRendering(const FVertexFactory* RESTRICT VertexFactory, const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy, const FMaterialRenderProxy* MaterialRenderProxy, ERHIFeatureLevel::Type FeatureLevel)
+{
+	if (FeatureLevel >= ERHIFeatureLevel::SM5 && SupportsNaniteRendering(VertexFactory, PrimitiveSceneProxy))
+	{
+		const FMaterial& Material = MaterialRenderProxy->GetIncompleteMaterialWithFallback(FeatureLevel);
+		const FMaterialShaderMap* ShaderMap = Material.GetRenderingThreadShaderMap();
+
+		return (Material.IsUsedWithNanite() || Material.IsSpecialEngineMaterial()) && 
+			Material.GetBlendMode() == BLEND_Opaque &&
+			Material.GetMaterialDomain() == MD_Surface &&
+			!ShaderMap->UsesWorldPositionOffset();
+	}
+
+	return false;
+}
+
+static bool VertexDeformationOutputsVelocity()
+{
+	static const auto CVarVelocityOutputPass = IConsoleManager::Get().FindConsoleVariable(TEXT("r.VelocityOutputPass"));
+	const bool bVertexDeformationOutputsVelocityDefault = CVarVelocityOutputPass && CVarVelocityOutputPass->GetInt() != 2;
+	const int32 VertexDeformationOutputsVelocity = CVarVelocityEnableVertexDeformation.GetValueOnAnyThread();
+	return VertexDeformationOutputsVelocity == 1 || (VertexDeformationOutputsVelocity == 2 && bVertexDeformationOutputsVelocityDefault);
+}
+
 FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponent, FName InResourceName)
 :
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -95,10 +137,11 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	bOwnerNoSee(InComponent->bOwnerNoSee)
 ,	bParentSelected(InComponent->ShouldRenderSelected())
 ,	bIndividuallySelected(InComponent->IsComponentIndividuallySelected())
+,	bLevelInstanceEditingState(InComponent->GetLevelInstanceEditingState())
 ,	bHovered(false)
 ,	bUseViewOwnerDepthPriorityGroup(InComponent->bUseViewOwnerDepthPriorityGroup)
 ,	bHasMotionBlurVelocityMeshes(InComponent->bHasMotionBlurVelocityMeshes)
-,	StaticDepthPriorityGroup(InComponent->GetStaticDepthPriorityGroup())
+,	StaticDepthPriorityGroup((uint8)InComponent->GetStaticDepthPriorityGroup())
 ,	ViewOwnerDepthPriorityGroup(InComponent->ViewOwnerDepthPriorityGroup)
 ,	bStaticLighting(InComponent->HasStaticLighting())
 ,	bVisibleInReflectionCaptures(InComponent->bVisibleInReflectionCaptures)
@@ -106,10 +149,10 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	bVisibleInRayTracing(InComponent->bVisibleInRayTracing)
 ,	bRenderInDepthPass(InComponent->bRenderInDepthPass)
 ,	bRenderInMainPass(InComponent->bRenderInMainPass)
-,	bRequiresVisibleLevelToRender(false)
-,	bIsComponentLevelVisible(false)
+,	bForceHidden(false)
 ,	bCollisionEnabled(InComponent->IsCollisionEnabled())
 ,	bTreatAsBackgroundForOcclusion(InComponent->bTreatAsBackgroundForOcclusion)
+,	bCanSkipRedundantTransformUpdates(true)
 ,	bGoodCandidateForCachedShadowmap(true)
 ,	bUsingWPOMaterial(false)
 ,	bNeedsUnbuiltPreviewLighting(!InComponent->IsPrecomputedLightingValid())
@@ -117,6 +160,7 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	bWillEverBeLit(true)
 	// Disable dynamic shadow casting if the primitive only casts indirect shadows, since dynamic shadows are always shadowing direct lighting
 ,	bCastDynamicShadow(InComponent->bCastDynamicShadow && InComponent->CastShadow && !InComponent->GetShadowIndirectOnly())
+,	bEmissiveLightSource(InComponent->bEmissiveLightSource)
 ,   bAffectDynamicIndirectLighting(InComponent->bAffectDynamicIndirectLighting)
 ,   bAffectDistanceFieldLighting(InComponent->bAffectDistanceFieldLighting)
 ,	bCastStaticShadow(InComponent->CastShadow && InComponent->bCastStaticShadow)
@@ -125,7 +169,7 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	bCastDeepShadow(false)
 ,	bCastCapsuleDirectShadow(false)
 ,	bCastsDynamicIndirectShadow(false)
-,	bCastHiddenShadow(InComponent->bCastHiddenShadow)
+,	bCastHiddenShadow(InComponent->CastShadow && InComponent->bCastHiddenShadow)
 ,	bCastShadowAsTwoSided(InComponent->bCastShadowAsTwoSided)
 ,	bSelfShadowOnly(InComponent->bSelfShadowOnly)
 ,	bCastInsetShadow(InComponent->bSelfShadowOnly ? true : InComponent->bCastInsetShadow)	// Assumed to be enabled if bSelfShadowOnly is enabled.
@@ -135,33 +179,53 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 ,	bSingleSampleShadowFromStationaryLights(InComponent->bSingleSampleShadowFromStationaryLights)
 ,	bStaticElementsAlwaysUseProxyPrimitiveUniformBuffer(false)
 ,	bVFRequiresPrimitiveUniformBuffer(true)
+,	bIsNaniteMesh(false)
+,	bSupportsGPUScene(false)
+,	bHasDeformableMesh(true)
+,	bSupportsInstanceDataBuffer(false)
+,	bShouldUpdateGPUSceneTransforms(true)
 ,	bAlwaysHasVelocity(false)
 ,	bSupportsDistanceFieldRepresentation(false)
+,	bSupportsMeshCardRepresentation(false)
 ,	bSupportsHeightfieldRepresentation(false)
-,	bNeedsLevelAddedToWorldNotification(false)
+,	bSupportsSortedTriangles(false)
+,	bShouldNotifyOnWorldAddRemove(false)
 ,	bWantsSelectionOutline(true)
 ,	bVerifyUsedMaterials(true)
+,	bHasPerInstanceRandom(false)
+,	bHasPerInstanceCustomData(false)
+,	bHasPerInstanceDynamicData(false)
+,	bHasPerInstanceLMSMUVBias(false)
+,	bHasPerInstanceLocalBounds(false)
+,	bHasPerInstanceHierarchyOffset(false)
+#if WITH_EDITOR
+,	bHasPerInstanceEditorData(false)
+#endif
 ,	bUseAsOccluder(InComponent->bUseAsOccluder)
 ,	bAllowApproximateOcclusion(InComponent->Mobility != EComponentMobility::Movable)
 ,	bSelectable(InComponent->bSelectable)
 ,	bHasPerInstanceHitProxies(InComponent->bHasPerInstanceHitProxies)
 ,	bUseEditorCompositing(InComponent->bUseEditorCompositing)
+,	bIsBeingMovedByEditor(InComponent->bIsBeingMovedByEditor)
 ,	bReceiveMobileCSMShadows(InComponent->bReceiveMobileCSMShadows)
 ,	bRenderCustomDepth(InComponent->bRenderCustomDepth)
 ,	bVisibleInSceneCaptureOnly(InComponent->bVisibleInSceneCaptureOnly)
 ,	bHiddenInSceneCapture(InComponent->bHiddenInSceneCapture)
+,	bRayTracingFarField(InComponent->bRayTracingFarField)
 ,	CustomDepthStencilValue(InComponent->CustomDepthStencilValue)
 ,	CustomDepthStencilWriteMask(FRendererStencilMaskEvaluation::ToStencilMask(InComponent->CustomDepthStencilWriteMask))
 ,	LightingChannelMask(GetLightingChannelMaskForStruct(InComponent->LightingChannels))
+,	RayTracingGroupId(InComponent->GetRayTracingGroupId())
+,	RayTracingGroupCullingPriority((uint8)InComponent->RayTracingGroupCullingPriority)
 ,	IndirectLightingCacheQuality(InComponent->IndirectLightingCacheQuality)
 ,	VirtualTextureLodBias(InComponent->VirtualTextureLodBias)
 ,	VirtualTextureCullMips(InComponent->VirtualTextureCullMips)
 ,	VirtualTextureMinCoverage(InComponent->VirtualTextureMinCoverage)
-,	LpvBiasMultiplier(InComponent->LpvBiasMultiplier)
 ,	DynamicIndirectShadowMinVisibility(0)
+,	DistanceFieldSelfShadowBias(0.0f)
 ,	PrimitiveComponentId(InComponent->ComponentId)
 ,	Scene(InComponent->GetScene())
-,	PrimitiveSceneInfo(NULL)
+,	PrimitiveSceneInfo(nullptr)
 ,	OwnerName(InComponent->GetOwner() ? InComponent->GetOwner()->GetFName() : NAME_None)
 ,	ResourceName(InResourceName)
 ,	LevelName(InComponent->GetOwner() ? InComponent->GetOwner()->GetLevel()->GetOutermost()->GetFName() : NAME_None)
@@ -180,6 +244,16 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 #endif
 {
 	check(Scene);
+
+	// Initialize ForceHidden flag based on Level's visibility (only if Level bRequireFullVisibilityToRender is set)
+	if (ULevel* Level = InComponent->GetComponentLevel())
+	{
+		bShouldNotifyOnWorldAddRemove = Level->bRequireFullVisibilityToRender;
+		if (bShouldNotifyOnWorldAddRemove)
+		{
+			SetForceHidden(!Level->bIsVisible);
+		}
+	}
 
 #if STATS
 	{
@@ -222,13 +296,6 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 		bIsFoliage = FFoliageHelper::IsOwnedByFoliage(InComponent->GetOwner());
 #endif
 	}
-	
-	// 
-	// Flag components to render only after level will be fully added to the world
-	//
-	ULevel* ComponentLevel = InComponent->GetComponentLevel();
-	bRequiresVisibleLevelToRender = (ComponentLevel && ComponentLevel->bRequireFullVisibilityToRender);
-	bIsComponentLevelVisible = (!ComponentLevel || ComponentLevel->bIsVisible);
 
 	// Setup the runtime virtual texture information
 	if (UseVirtualTexturing(GetScene().GetFeatureLevel()))
@@ -262,11 +329,11 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 #if WITH_EDITOR
 	const bool bGetDebugMaterials = true;
 	InComponent->GetUsedMaterials(UsedMaterialsForVerification, bGetDebugMaterials);
+
+	FObjectCacheEventSink::NotifyUsedMaterialsChanged_Concurrent(InComponent, UsedMaterialsForVerification);
 #endif
 
-	static const auto CVarVertexDeformationOutputsVelocity = IConsoleManager::Get().FindConsoleVariable(TEXT("r.VertexDeformationOutputsVelocity"));
-
-	if (!bAlwaysHasVelocity && IsMovable() && CVarVertexDeformationOutputsVelocity && CVarVertexDeformationOutputsVelocity->GetInt())
+	if (!bAlwaysHasVelocity && IsMovable() && VertexDeformationOutputsVelocity())
 	{
 		ERHIFeatureLevel::Type FeatureLevel = GetScene().GetFeatureLevel();
 
@@ -277,26 +344,27 @@ FPrimitiveSceneProxy::FPrimitiveSceneProxy(const UPrimitiveComponent* InComponen
 		{
 			if (MaterialInterface)
 			{
-				const UMaterial* Material = MaterialInterface->GetMaterial_Concurrent();
-				if (const FMaterialResource* MaterialResource = Material->GetMaterialResource(FeatureLevel))
+				bAlwaysHasVelocity = MaterialInterface->GetRelevance_Concurrent(FeatureLevel).bUsesWorldPositionOffset;
+				if (bAlwaysHasVelocity)
 				{
-					if (IsInGameThread())
-					{
-						bAlwaysHasVelocity = MaterialResource->MaterialModifiesMeshPosition_GameThread();
-					}
-					else
-					{
-						bAlwaysHasVelocity = MaterialResource->MaterialModifiesMeshPosition_RenderThread();
-					}
-
-					if (bAlwaysHasVelocity)
-					{
-						break;
-					}
+					break;
 				}
 			}
 		}
 	}
+}
+
+bool FPrimitiveSceneProxy::OnLevelAddedToWorld_RenderThread()
+{
+	check(bShouldNotifyOnWorldAddRemove);
+	SetForceHidden(false);
+	return false;
+}
+
+void FPrimitiveSceneProxy::OnLevelRemovedFromWorld_RenderThread()
+{
+	check(bShouldNotifyOnWorldAddRemove);
+	SetForceHidden(true);
 }
 
 #if WITH_EDITOR
@@ -358,41 +426,53 @@ void FPrimitiveSceneProxy::UpdateUniformBuffer()
 		int32 SingleCaptureIndex;
 		bool bOutputVelocity;
 
-		Scene->GetPrimitiveUniformShaderParameters_RenderThread(PrimitiveSceneInfo, bHasPrecomputedVolumetricLightmap, PreviousLocalToWorld, SingleCaptureIndex, bOutputVelocity);
+		Scene->GetPrimitiveUniformShaderParameters_RenderThread(
+			PrimitiveSceneInfo,
+			bHasPrecomputedVolumetricLightmap,
+			PreviousLocalToWorld,
+			SingleCaptureIndex,
+			bOutputVelocity
+		);
 
 		FBoxSphereBounds PreSkinnedLocalBounds;
 		GetPreSkinnedLocalBounds(PreSkinnedLocalBounds);
 
 		// Update the uniform shader parameters.
-		const FPrimitiveUniformShaderParameters PrimitiveUniformShaderParameters = 
-			GetPrimitiveUniformShaderParameters(
-				LocalToWorld, 
-				PreviousLocalToWorld,
-				ActorPosition, 
-				Bounds, 
-				LocalBounds, 
-				PreSkinnedLocalBounds,
-				bReceivesDecals, 
-				HasDistanceFieldRepresentation(), 
-				HasDynamicIndirectShadowCasterRepresentation(), 
-				UseSingleSampleShadowFromStationaryLights(),
-				bHasPrecomputedVolumetricLightmap,
-				DrawsVelocity(), 
-				GetLightingChannelMask(),
-				LpvBiasMultiplier,
-				PrimitiveSceneInfo ? PrimitiveSceneInfo->GetLightmapDataOffset() : 0,
-				SingleCaptureIndex, 
-				bOutputVelocity || AlwaysHasVelocity(),
-				GetCustomPrimitiveData(),
-				CastsContactShadow());
+		FPrimitiveUniformShaderParameters PrimitiveParams = FPrimitiveUniformShaderParametersBuilder{}
+			.Defaults()
+				.LocalToWorld(LocalToWorld)
+				.PreviousLocalToWorld(PreviousLocalToWorld)
+				.ActorWorldPosition(ActorPosition)
+				.WorldBounds(Bounds)
+				.LocalBounds(LocalBounds)
+				.InstanceLocalBounds(GetInstanceLocalBounds(0))
+				.PreSkinnedLocalBounds(PreSkinnedLocalBounds)
+				.ReceivesDecals(bReceivesDecals)
+				.OutputVelocity(bOutputVelocity || AlwaysHasVelocity())
+				.DrawsVelocity(DrawsVelocity())
+				.LightingChannelMask(GetLightingChannelMask())
+				.LightmapDataIndex(PrimitiveSceneInfo ? PrimitiveSceneInfo->GetLightmapDataOffset() : 0)
+				.LightmapUVIndex(GetLightMapCoordinateIndex())
+				.SingleCaptureIndex(SingleCaptureIndex)
+				.CustomPrimitiveData(GetCustomPrimitiveData())
+				.HasCapsuleRepresentation(HasDynamicIndirectShadowCasterRepresentation())
+				.UseSingleSampleShadowFromStationaryLights(UseSingleSampleShadowFromStationaryLights())
+				.UseVolumetricLightmap(bHasPrecomputedVolumetricLightmap)
+				.CastContactShadow(CastsContactShadow())
+				.CastShadow(CastsDynamicShadow())
+				.InstanceSceneDataOffset(PrimitiveSceneInfo ? PrimitiveSceneInfo->GetInstanceSceneDataOffset() : INDEX_NONE)
+				.NumInstanceSceneDataEntries(PrimitiveSceneInfo ? PrimitiveSceneInfo->GetNumInstanceSceneDataEntries() : 0)
+				.InstancePayloadDataOffset(PrimitiveSceneInfo ? PrimitiveSceneInfo->GetInstancePayloadDataOffset() : INDEX_NONE)
+				.InstancePayloadDataStride(PrimitiveSceneInfo ? PrimitiveSceneInfo->GetInstancePayloadDataStride() : 0)
+			.Build();
 
 		if (UniformBuffer.GetReference())
 		{
-			UniformBuffer.UpdateUniformBufferImmediate(PrimitiveUniformShaderParameters);
+			UniformBuffer.UpdateUniformBufferImmediate(PrimitiveParams);
 		}
 		else
 		{
-			UniformBuffer = TUniformBufferRef<FPrimitiveUniformShaderParameters>::CreateUniformBufferImmediate(PrimitiveUniformShaderParameters, UniformBuffer_MultiFrame);
+			UniformBuffer = TUniformBufferRef<FPrimitiveUniformShaderParameters>::CreateUniformBufferImmediate(PrimitiveParams, UniformBuffer_MultiFrame);
 		}
 	}
 
@@ -400,6 +480,46 @@ void FPrimitiveSceneProxy::UpdateUniformBuffer()
 	{
 		PrimitiveSceneInfo->SetNeedsUniformBufferUpdate(false);
 	}
+}
+
+uint32 FPrimitiveSceneProxy::GetPayloadDataStride() const
+{
+	static_assert(sizeof(FRenderTransform) == sizeof(float) * 3 * 4); // Sanity check
+	static_assert(sizeof(FRenderBounds) == sizeof(float) * 3 * 2); // Sanity check
+
+	// This count is per instance.
+	uint32 PayloadDataCount = 0;
+
+	// Random ID is packed into scene data currently
+#if INSTANCE_SCENE_DATA_COMPRESSED_TRANSFORMS
+	PayloadDataCount += HasPerInstanceDynamicData() ? 2 : 0;	// Compressed transform
+#else
+	PayloadDataCount += HasPerInstanceDynamicData() ? 3 : 0;	// FRenderTransform
+#endif
+		
+	// Hierarchy is packed in with local bounds if they are both present (almost always the case)
+	if (HasPerInstanceLocalBounds())
+	{
+		PayloadDataCount += 2; // FRenderBounds and possibly uint32 for hierarchy offset & another uint32 for EditorData
+	}
+	else if (HasPerInstanceHierarchyOffset() || HasPerInstanceEditorData())
+	{
+		PayloadDataCount += 1; // uint32 for hierarchy offset (float4 packed) & instance editor data is packed in the same float4
+	}
+
+	PayloadDataCount += HasPerInstanceLMSMUVBias() ? 1 : 0; // FVector4
+
+	if (HasPerInstanceCustomData())
+	{
+		const uint32 InstanceCount   = InstanceSceneData.Num();
+		const uint32 CustomDataCount = InstanceCustomData.Num();
+		if (InstanceCount > 0)
+		{
+			PayloadDataCount += FMath::DivideAndRoundUp(CustomDataCount / InstanceCount, 4u);
+		}
+	}
+
+	return PayloadDataCount;
 }
 
 void FPrimitiveSceneProxy::SetTransform(const FMatrix& InLocalToWorld, const FBoxSphereBounds& InBounds, const FBoxSphereBounds& InLocalBounds, FVector InActorPosition)
@@ -427,24 +547,210 @@ void FPrimitiveSceneProxy::SetTransform(const FMatrix& InLocalToWorld, const FBo
 	OnTransformChanged();
 }
 
-bool FPrimitiveSceneProxy::WouldSetTransformBeRedundant(const FMatrix& InLocalToWorld, const FBoxSphereBounds& InBounds, const FBoxSphereBounds& InLocalBounds, FVector InActorPosition)
+void FPrimitiveSceneProxy::UpdateInstances_RenderThread(const FInstanceUpdateCmdBuffer& CmdBuffer, const FBoxSphereBounds& InBounds, const FBoxSphereBounds& InLocalBounds, const FBoxSphereBounds& InStaticMeshBounds)
 {
-	if (LocalToWorld != InLocalToWorld)
+	TRACE_CPUPROFILER_EVENT_SCOPE_STR("FPrimitiveSceneProxy::UpdateInstances_RenderThread");
+
+	check(IsInRenderingThread());
+
+	// Update the cached bounds.
+	Bounds = InBounds;
+	LocalBounds = InLocalBounds;
+
+	UpdateUniformBuffer();
+	
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	// JIT initialize only when we go through UpdateInstances.
+	// This will also clear the bits so we can reset the state for this frame.
+	InstanceXFormUpdatedThisFrame.Init(false, InstanceSceneData.Num());
+	InstanceCustomDataUpdatedThisFrame.Init(false, InstanceSceneData.Num());
+#endif
+
+	if (UseGPUScene(GetScene().GetShaderPlatform(), GetScene().GetFeatureLevel()))
 	{
-		return false;
+		const int32 PrevNumCustomDataFloats = InstanceSceneData.Num() ? InstanceCustomData.Num() / InstanceSceneData.Num() : 0;
+		const int32 NumCustomDataFloats = CmdBuffer.NumCustomDataFloats;
+
+		const bool bPreviouslyHadCustomFloatData = PrevNumCustomDataFloats > 0;
+		const bool bHasCustomFloatData = CmdBuffer.NumCustomDataFloats > 0;
+
+		// Apply all updates.
+		for (const auto& Cmd : CmdBuffer.Cmds)
+		{
+			switch (Cmd.Type)
+			{
+				case FInstanceUpdateCmdBuffer::Update:
+				{
+					// update transform data.
+					InstanceSceneData[Cmd.InstanceIndex].LocalToPrimitive = Cmd.XForm;
+					InstanceDynamicData[Cmd.InstanceIndex].PrevLocalToPrimitive = Cmd.PreviousXForm;
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+					InstanceXFormUpdatedThisFrame[Cmd.InstanceIndex] = true;
+#endif
+				}
+				break;
+				case FInstanceUpdateCmdBuffer::CustomData:
+				{
+					check(bHasCustomFloatData);
+
+					// update custom data because it changed.
+					check(PrevNumCustomDataFloats == NumCustomDataFloats);
+					const int32 DstCustomDataOffset = Cmd.InstanceIndex * NumCustomDataFloats;
+					FMemory::Memcpy(&InstanceCustomData[DstCustomDataOffset], &Cmd.CustomDataFloats[0], NumCustomDataFloats * sizeof(float));
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+					InstanceCustomDataUpdatedThisFrame[Cmd.InstanceIndex] = true;
+#endif
+				}
+				break;
+#if WITH_EDITOR
+				case FInstanceUpdateCmdBuffer::EditorData:
+				{
+					check(bHasPerInstanceEditorData);
+					InstanceEditorData[Cmd.InstanceIndex] = FInstanceUpdateCmdBuffer::PackEditorData(Cmd.HitProxyColor, Cmd.bSelected);
+				}
+				break;
+#endif //WITH_EDITOR
+				default:
+				break;
+			};
+		}
+
+		// Build bit array of commands to remove.
+		TBitArray<> RemoveBits;
+		RemoveBits.Init(false, InstanceSceneData.Num());
+		for (const auto& Cmd : CmdBuffer.Cmds)
+		{
+			if (Cmd.Type == FInstanceUpdateCmdBuffer::Hide)
+			{
+				RemoveBits[Cmd.InstanceIndex] = true;
+			}
+		}
+
+		// Do removes.
+		for (int32 i = 0; i < RemoveBits.Num(); ++i)
+		{
+			if (RemoveBits[i])
+			{
+				InstanceSceneData.RemoveAtSwap(i, 1, false);
+				InstanceDynamicData.RemoveAtSwap(i, 1, false);
+
+				if (bHasPerInstanceRandom)
+				{
+					InstanceRandomID.RemoveAtSwap(i, 1, false);
+				}
+				if (bHasPerInstanceLMSMUVBias)
+				{
+					InstanceLightShadowUVBias.RemoveAtSwap(i, 1, false);
+				}
+
+#if WITH_EDITOR
+				if (bHasPerInstanceEditorData)
+				{
+					InstanceEditorData.RemoveAtSwap(i, 1, false);
+				}
+#endif
+
+				// Only remove the custom float data from this instance if it previously had it.
+				if (bPreviouslyHadCustomFloatData)
+				{
+					InstanceCustomData.RemoveAtSwap((i * PrevNumCustomDataFloats), PrevNumCustomDataFloats, false);
+					check(InstanceCustomData.Num() == (PrevNumCustomDataFloats * InstanceSceneData.Num()));
+				}
+
+				RemoveBits.RemoveAtSwap(i);
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+				InstanceXFormUpdatedThisFrame.RemoveAtSwap(i);
+				InstanceCustomDataUpdatedThisFrame.RemoveAtSwap(i);
+#endif
+				i--;
+			}
+		}
+
+		// Apply all adds.
+		for (const auto& Cmd : CmdBuffer.Cmds)
+		{
+			if (Cmd.Type == FInstanceUpdateCmdBuffer::Add)
+			{
+				InstanceSceneData.AddDefaulted_GetRef().LocalToPrimitive = Cmd.XForm;
+				InstanceDynamicData.AddDefaulted_GetRef().PrevLocalToPrimitive = Cmd.PreviousXForm;
+
+				if (bHasPerInstanceRandom)
+				{
+					InstanceRandomID.AddZeroed();
+				}
+
+				if (bHasPerInstanceLMSMUVBias)
+				{
+					InstanceLightShadowUVBias.AddZeroed();
+				}
+
+#if WITH_EDITOR
+				if (bHasPerInstanceEditorData)
+				{
+					InstanceEditorData.AddZeroed();
+				}
+#endif
+				if (bHasCustomFloatData)
+				{
+					const int32 DstCustomDataOffset = InstanceCustomData.AddUninitialized(NumCustomDataFloats);
+					FMemory::Memcpy(&InstanceCustomData[DstCustomDataOffset], &Cmd.CustomDataFloats[0], NumCustomDataFloats * sizeof(float));
+				}
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+				InstanceXFormUpdatedThisFrame.Add(true);
+				InstanceCustomDataUpdatedThisFrame.Add(true);
+#endif
+			}
+		}
+
+		// #todo (jnadro) Do I still need to update this?
+		InstanceLocalBounds.SetNumUninitialized(1);
+		InstanceLocalBounds[0] = InStaticMeshBounds;
+		bHasPerInstanceRandom = InstanceRandomID.Num() > 0;
+		bHasPerInstanceCustomData = InstanceCustomData.Num() > 0;
+		bHasPerInstanceDynamicData = InstanceDynamicData.Num() > 0;
+		bHasPerInstanceLMSMUVBias = InstanceLightShadowUVBias.Num() > 0;
+#if WITH_EDITOR
+		bHasPerInstanceEditorData = InstanceEditorData.Num() > 0;
+#endif
+
+		// Ensure our data is in sync.
+		check(InstanceSceneData.Num() == InstanceDynamicData.Num());
+		check(InstanceCustomData.Num() == (NumCustomDataFloats * InstanceSceneData.Num()));
 	}
-	if (Bounds != InBounds)
-	{
-		return false;
-	}
-	if (LocalBounds != InLocalBounds)
-	{
-		return false;
-	}
+}
+
+bool FPrimitiveSceneProxy::WouldSetTransformBeRedundant_AnyThread(const FMatrix& InLocalToWorld, const FBoxSphereBounds& InBounds, const FBoxSphereBounds& InLocalBounds, const FVector& InActorPosition) const
+{
+	// Order is based on cheapest tests first.
+	// Actor position checks if the actor has moved in the world, and local bounds
+	// then covers if the actor's size has changed. Other tests then follow suit.
+
+	// Can be called by any thread, so be careful about modifying this.
+
 	if (ActorPosition != InActorPosition)
 	{
 		return false;
 	}
+
+	if (LocalBounds != InLocalBounds)
+	{
+		return false;
+	}
+
+	if (Bounds != InBounds)
+	{
+		return false;
+	}
+
+	if (LocalToWorld != InLocalToWorld)
+	{
+		return false;
+	}
+
 	return true;
 }
 
@@ -471,7 +777,7 @@ bool FPrimitiveSceneProxy::UseSingleSampleShadowFromStationaryLights() const
 		|| LightmapType == ELightmapType::ForceVolumetric; 
 }
 
-#if !UE_BUILD_SHIPPING
+#if ENABLE_DRAW_DEBUG
 void FPrimitiveSceneProxy::SetDebugMassData(const TArray<FDebugMassData>& InDebugMassData)
 {
 	DebugMassData = InDebugMassData;
@@ -485,8 +791,18 @@ void FPrimitiveSceneProxy::SetDebugMassData(const TArray<FDebugMassData>& InDebu
 void FPrimitiveSceneProxy::SetSelection_RenderThread(const bool bInParentSelected, const bool bInIndividuallySelected)
 {
 	check(IsInRenderingThread());
+
+	const bool bWasSelected = IsSelected();
 	bParentSelected = bInParentSelected;
 	bIndividuallySelected = bInIndividuallySelected;
+	const bool bIsSelected = IsSelected();
+
+	// The renderer may have cached the selected state, let it know that this primitive is updated
+	if ((bWasSelected && !bIsSelected) || 
+		(bIsSelected && !bWasSelected))
+	{
+		GetScene().UpdatePrimitiveSelectedState_RenderThread(GetPrimitiveSceneInfo(), bIsSelected);
+	}
 }
 
 /**
@@ -496,7 +812,7 @@ void FPrimitiveSceneProxy::SetSelection_RenderThread(const bool bInParentSelecte
  */
 void FPrimitiveSceneProxy::SetSelection_GameThread(const bool bInParentSelected, const bool bInIndividuallySelected)
 {
-	check(IsInGameThread());
+	check(IsInParallelGameThread() || IsInGameThread());
 
 	// Enqueue a message to the rendering thread containing the interaction to add.
 	FPrimitiveSceneProxy* PrimitiveSceneProxy = this;
@@ -504,6 +820,25 @@ void FPrimitiveSceneProxy::SetSelection_GameThread(const bool bInParentSelected,
 		[PrimitiveSceneProxy, bInParentSelected, bInIndividuallySelected](FRHICommandListImmediate& RHICmdList)
 		{
 			PrimitiveSceneProxy->SetSelection_RenderThread(bInParentSelected, bInIndividuallySelected);
+		});
+}
+
+void FPrimitiveSceneProxy::SetLevelInstanceEditingState_RenderThread(const bool bInEditingState)
+{
+	check(IsInRenderingThread());
+	bLevelInstanceEditingState = bInEditingState;
+}
+
+void FPrimitiveSceneProxy::SetLevelInstanceEditingState_GameThread(const bool bInEditingState)
+{
+	check(IsInGameThread());
+
+	// Enqueue a message to the rendering thread containing the interaction to add.
+	FPrimitiveSceneProxy* PrimitiveSceneProxy = this;
+	ENQUEUE_RENDER_COMMAND(SetNewLevelInstanceEditingState)(
+		[PrimitiveSceneProxy, bInEditingState](FRHICommandListImmediate& RHICmdList)
+		{
+			PrimitiveSceneProxy->SetLevelInstanceEditingState_RenderThread(bInEditingState);
 		});
 }
 
@@ -608,7 +943,7 @@ void FPrimitiveSceneProxy::SetLightingChannels_GameThread(FLightingChannels Ligh
 	});
 }
 
-#if !UE_BUILD_SHIPPING
+#if ENABLE_DRAW_DEBUG
 void FPrimitiveSceneProxy::FDebugMassData::DrawDebugMass(class FPrimitiveDrawInterface* PDI, const FTransform& ElemTM) const
 {
 	const FQuat MassOrientationToWorld = ElemTM.GetRotation() * LocalTensorOrientation;
@@ -638,6 +973,14 @@ void FPrimitiveSceneProxy::FDebugMassData::DrawDebugMass(class FPrimitiveDrawInt
 }
 #endif
 
+void FPrimitiveSceneProxy::UpdateDefaultInstanceSceneData()
+{
+	check(InstanceSceneData.Num() <= 1);
+	InstanceSceneData.SetNumUninitialized(1);
+	FPrimitiveInstance& DefaultInstance = InstanceSceneData[0];
+	DefaultInstance.LocalToPrimitive.SetIdentity();
+}
+
 bool FPrimitiveSceneProxy::DrawInVirtualTextureOnly(bool bEditor) const
 {
 	if (bVirtualTextureMainPassDrawAlways)
@@ -654,6 +997,19 @@ bool FPrimitiveSceneProxy::DrawInVirtualTextureOnly(bool bEditor) const
 	const uint8 bHideMask = bEditor ? bHideMaskEditor : bHideMaskGame;
 	const uint8 RuntimeVirtualTextureMask = GetPrimitiveSceneInfo()->GetRuntimeVirtualTextureFlags().RuntimeVirtualTextureMask;
 	return (RuntimeVirtualTextureMask & bHideMask) != 0;
+}
+
+void FPrimitiveSceneProxy::EnableGPUSceneSupportFlags()
+{
+	const ERHIFeatureLevel::Type FeatureLevel = GetScene().GetFeatureLevel();
+	const bool bUseGPUScene = UseGPUScene(GMaxRHIShaderPlatform, FeatureLevel);
+	const bool bMobilePath = (FeatureLevel == ERHIFeatureLevel::ES3_1);
+
+	// Skip primitive uniform buffer if we will be using local vertex factory which gets it's data from GPUScene.
+	// Vertex shaders on mobile may still use PrimitiveUB with GPUScene enabled
+	bVFRequiresPrimitiveUniformBuffer = !bUseGPUScene || bMobilePath;
+	// For mobile we always assume that proxy does not support GPUScene, as it depends on vertex factory setup which happens later
+	bSupportsGPUScene = bMobilePath ? false : bUseGPUScene;
 }
 
 /**
@@ -682,6 +1038,21 @@ void FPrimitiveSceneProxy::SetHiddenEdViews_RenderThread( uint64 InHiddenEditorV
 #endif
 }
 
+#if WITH_EDITOR
+void FPrimitiveSceneProxy::SetIsBeingMovedByEditor_GameThread(bool bIsBeingMoved)
+{
+	check(IsInGameThread());
+
+	FPrimitiveSceneProxy* PrimitiveSceneProxy = this;
+	ENQUEUE_RENDER_COMMAND(SetIsBeingMovedByEditor)(
+		[PrimitiveSceneProxy, bIsBeingMoved](FRHICommandListImmediate& RHICmdList)
+		{
+			PrimitiveSceneProxy->bIsBeingMovedByEditor = bIsBeingMoved;
+			PrimitiveSceneProxy->GetScene().UpdatePrimitiveVelocityState_RenderThread(PrimitiveSceneProxy->GetPrimitiveSceneInfo(), bIsBeingMoved);
+		});
+}
+#endif
+
 void FPrimitiveSceneProxy::SetCollisionEnabled_GameThread(const bool bNewEnabled)
 {
 	check(IsInGameThread());
@@ -704,6 +1075,12 @@ void FPrimitiveSceneProxy::SetCollisionEnabled_RenderThread(const bool bNewEnabl
 /** @return True if the primitive is visible in the given View. */
 bool FPrimitiveSceneProxy::IsShown(const FSceneView* View) const
 {
+	// If primitive is forcibly hidden
+	if (IsForceHidden())
+	{
+		return false;
+	}
+
 #if WITH_EDITOR
 	// Don't draw editor specific actors during game mode
 	if (View->Family->EngineShowFlags.Game)
@@ -735,7 +1112,7 @@ bool FPrimitiveSceneProxy::IsShown(const FSceneView* View) const
 
 		// If we are in a collision view, hide anything which doesn't have collision enabled
 		const bool bCollisionView = (View->Family->EngineShowFlags.CollisionVisibility || View->Family->EngineShowFlags.CollisionPawn);
-		if(bCollisionView && !IsCollisionEnabled())
+		if (bCollisionView && !IsCollisionEnabled())
 		{
 			return false;
 		}
@@ -758,23 +1135,18 @@ bool FPrimitiveSceneProxy::IsShown(const FSceneView* View) const
 			return false;
 		}
 
-		// if primitive requires component level to be visible
-		if (bRequiresVisibleLevelToRender && !bIsComponentLevelVisible)
-		{
-			return false;
-		}
-
 		if (DrawInVirtualTextureOnly(false) && !View->bIsVirtualTexture)
 		{
 			return false;
 		}
 
-		if(bOnlyOwnerSee && !Owners.Contains(View->ViewActor))
+		const bool bOwnersContain = Owners.Contains(View->ViewActor);
+		if (bOnlyOwnerSee && !bOwnersContain)
 		{
 			return false;
 		}
 
-		if(bOwnerNoSee && Owners.Contains(View->ViewActor))
+		if (bOwnerNoSee && bOwnersContain)
 		{
 			return false;
 		}
@@ -804,7 +1176,7 @@ bool FPrimitiveSceneProxy::IsShadowCast(const FSceneView* View) const
 		return false;
 	}
 
-	if(!CastsHiddenShadow())
+	if (!CastsHiddenShadow())
 	{
 		// Primitives that are hidden in the game don't cast a shadow.
 		if (!DrawInGame)
@@ -839,6 +1211,12 @@ bool FPrimitiveSceneProxy::IsShadowCast(const FSceneView* View) const
 		}
 #endif	//#if WITH_EDITOR
 
+		// If primitive is forcibly hidden
+		if (IsForceHidden())
+		{
+			return false;
+		}
+
 		if (DrawInVirtualTextureOnly(View->Family->EngineShowFlags.Editor) && !View->bIsVirtualTexture)
 		{
 			return false;
@@ -846,12 +1224,13 @@ bool FPrimitiveSceneProxy::IsShadowCast(const FSceneView* View) const
 
 		// In the OwnerSee cases, we still want to respect hidden shadows...
 		// This assumes that bCastHiddenShadow trumps the owner see flags.
-		if(bOnlyOwnerSee && !Owners.Contains(View->ViewActor))
+		const bool bOwnersContain = Owners.Contains(View->ViewActor);
+		if (bOnlyOwnerSee && !bOwnersContain)
 		{
 			return false;
 		}
 
-		if(bOwnerNoSee && Owners.Contains(View->ViewActor))
+		if (bOwnerNoSee && bOwnersContain)
 		{
 			return false;
 		}
@@ -884,6 +1263,8 @@ void FPrimitiveSceneProxy::RenderBounds(
 		DrawCircle(PDI, InBounds.Origin, FVector(1, 0, 0), FVector(0, 1, 0), FColor::Yellow, InBounds.SphereRadius, 32, DrawBoundsDPG);
 		DrawCircle(PDI, InBounds.Origin, FVector(1, 0, 0), FVector(0, 0, 1), FColor::Yellow, InBounds.SphereRadius, 32, DrawBoundsDPG);
 		DrawCircle(PDI, InBounds.Origin, FVector(0, 1, 0), FVector(0, 0, 1), FColor::Yellow, InBounds.SphereRadius, 32, DrawBoundsDPG);
+		// render the Local bounds in a red color
+		DrawWireBox(PDI, GetLocalToWorld(), GetLocalBounds().GetBox(), FColor(255, 72, 72), DrawBoundsDPG);
 	}
 }
 
@@ -916,6 +1297,7 @@ void FPrimitiveSceneProxy::DrawArc(FPrimitiveDrawInterface* PDI, const FVector& 
 	}
 
 	const float ARC_PTS_SCALE = 1.0f / (float)Segments;
+	const float DepthBias = 0.0f;
 
 	const float X0 = Start.X;
 	const float Y0 = Start.Y;
@@ -932,7 +1314,7 @@ void FPrimitiveSceneProxy::DrawArc(FPrimitiveDrawInterface* PDI, const FVector& 
 		const float Y = Y0 + Dy * U;
 		const float Z = Z0 + Dz * U + (Length*Height) * (1-(U*2-1)*(U*2-1));
 
-		PDI->DrawLine( FVector(Px, Py, Pz), FVector(X, Y, Z), Color, SDPG_World, Thickness, bScreenSpace);
+		PDI->DrawLine( FVector(Px, Py, Pz), FVector(X, Y, Z), Color, SDPG_World, Thickness, DepthBias, bScreenSpace);
 
 		Px = X; Py = Y; Pz = Z;
 	}
@@ -940,28 +1322,12 @@ void FPrimitiveSceneProxy::DrawArc(FPrimitiveDrawInterface* PDI, const FVector& 
 
 void FPrimitiveSceneProxy::DrawArrowHead(FPrimitiveDrawInterface* PDI, const FVector& Tip, const FVector& Origin, const float Size, const FLinearColor& Color, uint8 DepthPriorityGroup, const float Thickness, const bool bScreenSpace)
 {
-	//float ax[3], ay[3] = {0,1,0}, az[3];
-	FVector Ax, Ay, Az(0,1,0);
-	// dtVsub(az, q, p);
-	Ay = Origin - Tip;
-	// dtVnormalize(az);
-	Ay.Normalize();
-	// dtVcross(ax, ay, az);
-	Ax = FVector::CrossProduct(Az, Ay);
-	// dtVcross(ay, az, ax);
-	//Az = FVector::CrossProduct(Ay, Ax);
-	////dtVnormalize(ay);
-	//Az.Normalize();
-
-	PDI->DrawLine( Tip
-		//, FVector(p[0]+az[0]*s+ax[0]*s/3, p[1]+az[1]*s+ax[1]*s/3, p[2]+az[2]*s+ax[2]*s/3)
-		, FVector(Tip.X + Ay.X*Size + Ax.X*Size/3, Tip.Y + Ay.Y*Size + Ax.Y*Size/3, Tip.Z + Ay.Z*Size + Ax.Z*Size/3)
-		, Color, SDPG_World, Thickness, bScreenSpace);
-
-	PDI->DrawLine( Tip
-		//, FVector(p[0]+az[0]*s-ax[0]*s/3, p[1]+az[1]*s-ax[1]*s/3, p[2]+az[2]*s-ax[2]*s/3)
-		, FVector(Tip.X + Ay.X*Size - Ax.X*Size/3, Tip.Y + Ay.Y*Size - Ax.Y*Size/3, Tip.Z + Ay.Z*Size - Ax.Z*Size/3)
-		, Color, SDPG_World, Thickness, bScreenSpace);
+	const FVector Forward = (Origin - Tip).GetUnsafeNormal();
+	const FVector Right = FVector::CrossProduct(Forward, FVector::UpVector);
+	const float HalfWidth = Size / 3.0f;
+	const float DepthBias = 0.0f;
+	PDI->DrawLine(Tip, Tip + Forward * Size + Right * HalfWidth, Color, DepthPriorityGroup, Thickness, DepthBias, bScreenSpace);
+	PDI->DrawLine(Tip, Tip + Forward * Size - Right * HalfWidth, Color, DepthPriorityGroup, Thickness, DepthBias, bScreenSpace);
 }
 
 
@@ -996,9 +1362,43 @@ bool FPrimitiveSceneProxy::GetMeshUVDensities(int32 LODIndex, int32 SectionIndex
 	return false; 
 }
 
-bool FPrimitiveSceneProxy::GetMaterialTextureScales(int32 LODIndex, int32 SectionIndex, const FMaterialRenderProxy* MaterialRenderProxy, FVector4* OneOverScales, FIntVector4* UVChannelIndices) const 
+bool FPrimitiveSceneProxy::GetMaterialTextureScales(int32 LODIndex, int32 SectionIndex, const FMaterialRenderProxy* MaterialRenderProxy, FVector4f* OneOverScales, FIntVector4* UVChannelIndices) const 
 { 
 	return false; 
 }
 
 #endif // WITH_EDITORONLY_DATA
+
+#if RHI_RAYTRACING
+ERayTracingPrimitiveFlags FPrimitiveSceneProxy::GetCachedRayTracingInstance(FRayTracingInstance& OutRayTracingInstance)
+{
+	if (!IsRayTracingRelevant())
+	{
+		// The entire proxy type will be skipped. Make sure IsRayTracingRelevant() only depends on proxy type (vtable)
+		return ERayTracingPrimitiveFlags::UnsupportedProxyType;
+	}
+
+	const bool bShouldBeVisibleInRayTracing = (IsVisibleInRayTracing() && ShouldRenderInMainPass() && IsDrawnInGame()) || IsRayTracingFarField();
+	if (!bShouldBeVisibleInRayTracing)
+	{
+		// Exclude this proxy
+		return ERayTracingPrimitiveFlags::Excluded;
+	}
+
+	// Visible in ray tracing. Default to fully dynamic (no caching)
+	ERayTracingPrimitiveFlags ResultFlags = ERayTracingPrimitiveFlags::Dynamic;
+
+	if (IsRayTracingStaticRelevant())
+	{
+		// overwrite flag if static
+		ResultFlags = ERayTracingPrimitiveFlags::StaticMesh | ERayTracingPrimitiveFlags::ComputeLOD;
+	}
+
+	if (IsRayTracingFarField())
+	{
+		ResultFlags |= ERayTracingPrimitiveFlags::FarField;
+	}
+
+	return ResultFlags;
+}
+#endif

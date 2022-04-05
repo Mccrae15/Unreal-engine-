@@ -81,18 +81,38 @@ template<typename RegionType>
 static void SetupCopyOrResolveRegion(RegionType& Region, const FVulkanSurface& SrcSurface, const FVulkanSurface& DstSurface, const VkImageSubresourceRange& SrcRange, const VkImageSubresourceRange& DstRange, const FResolveParams& ResolveParams)
 {
 	FMemory::Memzero(Region);
-	ensure(SrcSurface.Width == DstSurface.Width && SrcSurface.Height == DstSurface.Height);
 
-	if(ResolveParams.Rect.X1 >= 0 && ResolveParams.Rect.Y1 >= 0 && ResolveParams.DestRect.X1 >= 0 && ResolveParams.DestRect.Y1 >= 0)
+	bool bCopySrcSubRect = ResolveParams.Rect.IsValid()     && (ResolveParams.Rect.X1 != 0     || ResolveParams.Rect.Y1 != 0     || ResolveParams.Rect.X2 != SrcSurface.Width     || ResolveParams.Rect.Y2 != SrcSurface.Height);
+	bool bCopyDstSubRect = ResolveParams.DestRect.IsValid() && (ResolveParams.DestRect.X1 != 0 || ResolveParams.DestRect.Y1 != 0 || ResolveParams.DestRect.X2 != DstSurface.Width || ResolveParams.DestRect.Y2 != DstSurface.Height);
+	if(bCopySrcSubRect || bCopyDstSubRect)
 	{
-		Region.srcOffset.x = ResolveParams.Rect.X1;
-		Region.srcOffset.y = ResolveParams.Rect.Y1;
-		Region.dstOffset.x = ResolveParams.DestRect.X1;
-		Region.dstOffset.y = ResolveParams.DestRect.Y1;
+		const FResolveRect& SrcSubRect = ResolveParams.Rect.IsValid()     ? ResolveParams.Rect     : FResolveRect(0, 0, SrcSurface.Width, SrcSurface.Height);
+		const FResolveRect& DstSubRect = ResolveParams.DestRect.IsValid() ? ResolveParams.DestRect : FResolveRect(0, 0, DstSurface.Width, DstSurface.Height);
+
+		const uint32 SrcSubRectWidth  = SrcSubRect.X2 - SrcSubRect.X1;
+		const uint32 SrcSubRectHeight = SrcSubRect.Y2 - SrcSubRect.Y1;
+
+		const uint32 DstSubRectWidth  = DstSubRect.X2 - DstSubRect.X1;
+		const uint32 DstSubRectHeight = DstSubRect.Y2 - DstSubRect.Y1;
+
+		ensure(SrcSubRectWidth == DstSubRectWidth && SrcSubRectHeight == DstSubRectHeight);
+
+		Region.srcOffset.x = SrcSubRect.X1;
+		Region.srcOffset.y = SrcSubRect.Y1;
+		Region.dstOffset.x = DstSubRect.X1;
+		Region.dstOffset.y = DstSubRect.Y1;
+
+		Region.extent.width = FMath::Max(1u, SrcSubRectWidth >> ResolveParams.MipIndex);
+		Region.extent.height = FMath::Max(1u, SrcSubRectHeight >> ResolveParams.MipIndex);
+	}
+	else
+	{
+		ensure(SrcSurface.Width == DstSurface.Width && SrcSurface.Height == DstSurface.Height);
+
+		Region.extent.width = FMath::Max(1u, SrcSurface.Width >> ResolveParams.MipIndex);
+		Region.extent.height = FMath::Max(1u, SrcSurface.Height >> ResolveParams.MipIndex);
 	}
 
-	Region.extent.width = FMath::Max(1u, SrcSurface.Width >> ResolveParams.MipIndex);
-	Region.extent.height = FMath::Max(1u, SrcSurface.Height >> ResolveParams.MipIndex);
 	Region.extent.depth = 1;
 	Region.srcSubresource.aspectMask = SrcSurface.GetFullAspectMask();
 	Region.srcSubresource.baseArrayLayer = SrcRange.baseArrayLayer;
@@ -185,10 +205,10 @@ void FVulkanCommandListContext::RHICopyToResolveTarget(FRHITexture* SourceTextur
 
 	ERHIAccess SrcCurrentAccess, DstCurrentAccess;
 
-	check((SrcSurface->UEFlags & TexCreate_CPUReadback) == 0);
+	check(!EnumHasAnyFlags(SrcSurface->UEFlags, TexCreate_CPUReadback));
 	VkImageLayout& SrcLayout = LayoutManager.FindOrAddLayoutRW(*SrcSurface, VK_IMAGE_LAYOUT_UNDEFINED);
 
-	if(DstSurface->UEFlags & TexCreate_CPUReadback)
+	if(EnumHasAnyFlags(DstSurface->UEFlags, TexCreate_CPUReadback))
 	{
 		//Readback textures are represented as a buffer, so we can support miplevels on hardware that does not expose it.
 		FVulkanPipelineBarrier BarrierBefore;
@@ -218,16 +238,9 @@ void FVulkanCommandListContext::RHICopyToResolveTarget(FRHITexture* SourceTextur
 		CopyRegion.imageExtent.depth = 1;
 		VulkanRHI::vkCmdCopyImageToBuffer(CmdBuffer->GetHandle(), SrcSurface->Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, CpuReadbackBuffer->Buffer, 1, &CopyRegion);
 
-
-
 		{
 			FVulkanPipelineBarrier BarrierMemory;
-			BarrierMemory.MemoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-			BarrierMemory.MemoryBarrier.pNext = nullptr;
-			BarrierMemory.MemoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			BarrierMemory.MemoryBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-			BarrierMemory.SrcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-			BarrierMemory.DstStageMask = VK_PIPELINE_STAGE_HOST_BIT;
+			BarrierMemory.AddMemoryBarrier(VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT);
 			BarrierMemory.Execute(CmdBuffer->GetHandle());
 		}
 		SrcCurrentAccess = ERHIAccess::CopySrc;
@@ -316,142 +329,177 @@ void FVulkanCommandListContext::RHICopyToResolveTarget(FRHITexture* SourceTextur
 	}
 }
 
+
+static void ConvertRawDataToFColor(VkFormat VulkanFormat, uint32 DestWidth, uint32 DestHeight, uint8* In, uint32 SrcPitch, FColor* Dest, const FReadSurfaceDataFlags& InFlags)
+{
+	const bool bLinearToGamma = InFlags.GetLinearToGamma();
+	switch (VulkanFormat)
+	{
+	case VK_FORMAT_R32G32B32A32_SFLOAT:
+		ConvertRawR32G32B32A32DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest, bLinearToGamma);
+		break;
+
+	case VK_FORMAT_R16G16B16A16_SFLOAT:
+		ConvertRawR16G16B16A16FDataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest, bLinearToGamma);
+		break;
+
+	case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+		ConvertRawR10G10B10A2DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
+		break;
+
+	case VK_FORMAT_R8G8B8A8_UNORM:
+		ConvertRawR8G8B8A8DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
+		break;
+
+	case VK_FORMAT_R16G16B16A16_UNORM:
+		ConvertRawR16G16B16A16DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
+		break;
+
+	case VK_FORMAT_B8G8R8A8_UNORM:
+		ConvertRawB8G8R8A8DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
+		break;
+
+	case VK_FORMAT_R8_UNORM:
+		ConvertRawR8DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
+		break;
+
+	case VK_FORMAT_R16_UNORM:
+		ConvertRawR16DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
+		break;
+
+	case VK_FORMAT_R16G16_UNORM:
+		ConvertRawR16G16DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
+		break;
+
+	default:
+		checkf(false, TEXT("Unsupported format [%d] for conversion to FColor!"), (uint32)VulkanFormat);
+		break;
+	}
+
+}
+
 void FVulkanDynamicRHI::RHIReadSurfaceData(FRHITexture* TextureRHI, FIntRect Rect, TArray<FColor>& OutData, FReadSurfaceDataFlags InFlags)
 {
-	uint32 NumPixels = (Rect.Max.X - Rect.Min.X) * (Rect.Max.Y - Rect.Min.Y);
-	if(GIgnoreCPUReads)
+	const uint32 DestWidth = Rect.Max.X - Rect.Min.X;
+	const uint32 DestHeight = Rect.Max.Y - Rect.Min.Y;
+	const uint32 NumRequestedPixels = DestWidth * DestHeight;
+	if (GIgnoreCPUReads)
 	{
 		// Debug: Fill with CPU
 		OutData.Empty(0);
-		OutData.AddZeroed(NumPixels);
+		OutData.AddZeroed(NumRequestedPixels);
 		return;
 	}
-	FRHITexture2D* TextureRHI2D = TextureRHI->GetTexture2D();
-	check(TextureRHI2D);
-	FVulkanTexture2D* Texture2D = (FVulkanTexture2D*)TextureRHI2D;
-	FVulkanSurface* Surface = &Texture2D->Surface;
+
+	FVulkanSurface* Surface = nullptr;
+
+	FRHITexture2D* Texture2DRHI = TextureRHI->GetTexture2D();
+	if (Texture2DRHI)
+	{
+		FVulkanTexture2D* Texture2D = (FVulkanTexture2D*)Texture2DRHI;
+		Surface = &Texture2D->Surface;
+	}
+	else
+	{
+		// In VR, the high level code calls this function on the viewport render target, without knowing that it's
+		// actually a texture array created and managed by the VR runtime. In that case we'll just read the first
+		// slice of the array, which corresponds to one of the eyes.
+		FRHITexture2DArray* Texture2DArrayRHI = TextureRHI->GetTexture2DArray();
+		if (Texture2DArrayRHI)
+		{
+			FVulkanTexture2DArray* Texture2DArray = (FVulkanTexture2DArray*)Texture2DArrayRHI;
+			Surface = &Texture2DArray->Surface;
+		}
+	}
+
+	if (!Surface)
+	{
+		// Just return black for texture types we don't support.
+		OutData.Empty(0);
+		OutData.AddZeroed(NumRequestedPixels);
+		return;
+	}
 
 	Device->PrepareForCPURead();
 
+	// Figure out the size of the buffer required to hold the requested pixels
+	const uint32 PixelByteSize = GetNumBitsPerPixel(Surface->StorageFormat) / 8;
+	checkf(GPixelFormats[TextureRHI->GetFormat()].Supported && (PixelByteSize > 0), TEXT("Trying to read from unsupported format."));
+	const uint32 BufferSize = NumRequestedPixels * PixelByteSize;
+
+	// Validate that the Rect is within the texture
+	const uint32 MipLevel = InFlags.GetMip();
+	const uint32 MipSizeX = FMath::Max(Surface->Width >> MipLevel, 1u);
+	const uint32 MipSizeY = FMath::Max(Surface->Height >> MipLevel, 1u);
+	checkf((Rect.Max.X <= (int32)MipSizeX) && (Rect.Max.Y <= (int32)MipSizeY), TEXT("The specified Rect [%dx%d] extends beyond this Mip [%dx%d]."), Rect.Max.X, Rect.Max.Y, MipSizeX, MipSizeY);
+
 	FVulkanCommandListContext& ImmediateContext = Device->GetImmediateContext();
 
-	ensure(Texture2D->Surface.StorageFormat == VK_FORMAT_R8G8B8A8_UNORM || Texture2D->Surface.StorageFormat == VK_FORMAT_B8G8R8A8_UNORM || Texture2D->Surface.StorageFormat == VK_FORMAT_R16G16B16A16_SFLOAT || Texture2D->Surface.StorageFormat == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || Texture2D->Surface.StorageFormat == VK_FORMAT_R16G16B16A16_UNORM);
-	bool bIs8Bpp = true;
-	switch (Texture2D->Surface.StorageFormat)
-	{
-	case VK_FORMAT_R16G16B16A16_SFLOAT:
-	case VK_FORMAT_R16G16B16A16_SNORM:
-	case VK_FORMAT_R16G16B16A16_UINT:
-	case VK_FORMAT_R16G16B16A16_SINT:
-		bIs8Bpp = false;
-		break;
-	default:
-		break;
-	}
-	const uint32 Size = NumPixels * sizeof(FColor) * (bIs8Bpp ? 2 : 1);
-
-	uint8* MappedPointer = nullptr;
 	VulkanRHI::FStagingBuffer* StagingBuffer = nullptr;
 	FVulkanCmdBuffer* CmdBuffer = nullptr;
-	bool bCPUReadback = (Surface->UEFlags & TexCreate_CPUReadback) == TexCreate_CPUReadback;
-	if(!bCPUReadback) //this function supports reading back arbitrary rendertargets, so if its not a cpu readback surface, we do a copy.
+	const bool bCPUReadback = EnumHasAllFlags(Surface->UEFlags, TexCreate_CPUReadback);
+	if (!bCPUReadback) //this function supports reading back arbitrary rendertargets, so if its not a cpu readback surface, we do a copy.
 	{
-		ImmediateContext.GetCommandBufferManager()->GetUploadCmdBuffer();
 		CmdBuffer = ImmediateContext.GetCommandBufferManager()->GetUploadCmdBuffer();
-		StagingBuffer = Device->GetStagingManager().AcquireBuffer(Size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+		StagingBuffer = Device->GetStagingManager().AcquireBuffer(BufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
 		VkBufferImageCopy CopyRegion;
 		FMemory::Memzero(CopyRegion);
-		uint32 MipLevel = InFlags.GetMip();
-		uint32 SizeX = FMath::Max(TextureRHI2D->GetSizeX() >> MipLevel, 1u);
-		uint32 SizeY = FMath::Max(TextureRHI2D->GetSizeY() >> MipLevel, 1u);
-		CopyRegion.bufferRowLength = SizeX;
-		CopyRegion.bufferImageHeight = SizeY;
-		CopyRegion.imageSubresource.aspectMask = Texture2D->Surface.GetFullAspectMask();
+		// Leave bufferRowLength/bufferImageHeight at 0 for tightly packed
+		CopyRegion.imageSubresource.aspectMask = Surface->GetFullAspectMask();
 		CopyRegion.imageSubresource.mipLevel = MipLevel;
 		CopyRegion.imageSubresource.layerCount = 1;
-		CopyRegion.imageExtent.width = SizeX;
-		CopyRegion.imageExtent.height = SizeY;
+		CopyRegion.imageOffset.x = Rect.Min.X;
+		CopyRegion.imageOffset.y = Rect.Min.Y;
+		CopyRegion.imageExtent.width = DestWidth;
+		CopyRegion.imageExtent.height = DestHeight;
 		CopyRegion.imageExtent.depth = 1;
 
-		VkImageLayout& CurrentLayout = Device->GetImmediateContext().GetLayoutManager().FindOrAddLayoutRW(Texture2D->Surface, VK_IMAGE_LAYOUT_UNDEFINED);
-		bool bHadLayout = (CurrentLayout != VK_IMAGE_LAYOUT_UNDEFINED);
+		VkImageLayout& CurrentLayout = Device->GetImmediateContext().GetLayoutManager().FindOrAddLayoutRW(*Surface, VK_IMAGE_LAYOUT_UNDEFINED);
+		const bool bHadLayout = (CurrentLayout != VK_IMAGE_LAYOUT_UNDEFINED);
 		if (CurrentLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
 		{
-			VulkanSetImageLayoutAllMips(CmdBuffer->GetHandle(), Texture2D->Surface.Image, CurrentLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+			VulkanSetImageLayoutAllMips(CmdBuffer->GetHandle(), Surface->Image, CurrentLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 		}
 
-		VulkanRHI::vkCmdCopyImageToBuffer(CmdBuffer->GetHandle(), Texture2D->Surface.Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, StagingBuffer->GetHandle(), 1, &CopyRegion);
+		VulkanRHI::vkCmdCopyImageToBuffer(CmdBuffer->GetHandle(), Surface->Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, StagingBuffer->GetHandle(), 1, &CopyRegion);
 		if (bHadLayout && CurrentLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
 		{
-			VulkanSetImageLayoutAllMips(CmdBuffer->GetHandle(), Texture2D->Surface.Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, CurrentLayout);
+			VulkanSetImageLayoutAllMips(CmdBuffer->GetHandle(), Surface->Image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, CurrentLayout);
 		}
 		else
 		{
 			CurrentLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 		}
-		ensure(StagingBuffer->GetSize() >= Size);
+		ensure(StagingBuffer->GetSize() >= BufferSize);
 
 		VkMemoryBarrier Barrier = { VK_STRUCTURE_TYPE_MEMORY_BARRIER , nullptr, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT };
 		VulkanRHI::vkCmdPipelineBarrier(CmdBuffer->GetHandle(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &Barrier, 0, nullptr, 0, nullptr);
 
 		// Force upload
 		ImmediateContext.GetCommandBufferManager()->SubmitUploadCmdBuffer();
+	}
 
+	Device->WaitUntilIdle();
+
+	uint8* In;
+	uint32 SrcPitch;
+	if (bCPUReadback)
+	{
+		// If the text was bCPUReadback, then we have to deal with our Rect potentially being a subset of the total texture
+		In = (uint8*)Surface->GetMappedPointer() + ((Rect.Min.Y * MipSizeX + Rect.Min.X) * PixelByteSize);
+		SrcPitch = MipSizeX * PixelByteSize;
 	}
 	else
 	{
-		MappedPointer = (uint8*)Surface->GetMappedPointer();
-	}
-
-
-
-	Device->WaitUntilIdle();
-	if(!bCPUReadback)
-	{
+		// If the text was NOT bCPUReadback, the buffer contains only the (tightly packed) Rect we requested
 		StagingBuffer->InvalidateMappedMemory();
-		MappedPointer = (uint8*)StagingBuffer->GetMappedPointer();
+		In = (uint8*)StagingBuffer->GetMappedPointer();
+		SrcPitch = DestWidth * PixelByteSize;
 	}
 
-	OutData.SetNum(NumPixels);
+	OutData.SetNum(NumRequestedPixels);
 	FColor* Dest = OutData.GetData();
-
-	uint32 DestWidth = Rect.Max.X - Rect.Min.X;
-	uint32 DestHeight = Rect.Max.Y - Rect.Min.Y;
-	if (Texture2D->Surface.StorageFormat == VK_FORMAT_R16G16B16A16_SFLOAT)
-	{
-		uint32 PixelByteSize = 8u;
-		uint8* In = MappedPointer + (Rect.Min.Y * TextureRHI2D->GetSizeX() + Rect.Min.X) * PixelByteSize;
-		uint32 SrcPitch = TextureRHI2D->GetSizeX() * PixelByteSize;
-		ConvertRawR16G16B16A16FDataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest, false);
-	}
-	else if (Texture2D->Surface.StorageFormat == VK_FORMAT_A2B10G10R10_UNORM_PACK32)
-	{
-		uint32 PixelByteSize = 4u;
-		uint8* In = MappedPointer + (Rect.Min.Y * TextureRHI2D->GetSizeX() + Rect.Min.X) * PixelByteSize;
-		uint32 SrcPitch = TextureRHI2D->GetSizeX() * PixelByteSize;
-		ConvertRawR10G10B10A2DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
-	}
-	else if (Texture2D->Surface.StorageFormat == VK_FORMAT_R8G8B8A8_UNORM)
-	{
-		uint32 PixelByteSize = 4u;
-		uint8* In = MappedPointer + (Rect.Min.Y * TextureRHI2D->GetSizeX() + Rect.Min.X) * PixelByteSize;
-		uint32 SrcPitch = TextureRHI2D->GetSizeX() * PixelByteSize;
-		ConvertRawR8G8B8A8DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
-	}
-	else if (Texture2D->Surface.StorageFormat == VK_FORMAT_R16G16B16A16_UNORM)
-	{
-		uint32 PixelByteSize = 8u;
-		uint8* In = MappedPointer + (Rect.Min.Y * TextureRHI2D->GetSizeX() + Rect.Min.X) * PixelByteSize;
-		uint32 SrcPitch = TextureRHI2D->GetSizeX() * PixelByteSize;
-		ConvertRawR16G16B16A16DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
-	}
-	else if (Texture2D->Surface.StorageFormat == VK_FORMAT_B8G8R8A8_UNORM)
-	{
-		uint32 PixelByteSize = 4u;
-		uint8* In = MappedPointer + (Rect.Min.Y * TextureRHI2D->GetSizeX() + Rect.Min.X) * PixelByteSize;
-		uint32 SrcPitch = TextureRHI2D->GetSizeX() * PixelByteSize;
-		ConvertRawB8G8R8A8DataToFColor(DestWidth, DestHeight, In, SrcPitch, Dest);
-	}
+	ConvertRawDataToFColor(Surface->StorageFormat, DestWidth, DestHeight, In, SrcPitch, Dest, InFlags);
 
 	if (!bCPUReadback)
 	{
@@ -494,7 +542,7 @@ void FVulkanDynamicRHI::RHIMapStagingSurface(FRHITexture* TextureRHI, FRHIGPUFen
 	}
 
 
-	check((Texture2D->Surface.UEFlags & TexCreate_CPUReadback) == TexCreate_CPUReadback);
+	check(EnumHasAllFlags(Texture2D->Surface.UEFlags, TexCreate_CPUReadback));
 	OutData = Texture2D->Surface.GetMappedPointer();
 	Texture2D->Surface.InvalidateMappedMemory();
 	OutWidth = Texture2D->GetSizeX();
@@ -766,15 +814,17 @@ FVulkanSwapChain* FVulkanCommandListContext::GetSwapChain() const
 
 bool FVulkanCommandListContext::IsSwapchainImage(FRHITexture* InTexture) const
 {
-	TArray<FVulkanViewport*>& viewports = RHI->GetViewports();
-	uint32 numViewports = viewports.Num();
+	TArray<FVulkanViewport*>& Viewports = RHI->GetViewports();
+	uint32 NumViewports = Viewports.Num();
 
-	for (uint32 i = 0; i < numViewports; i++)
+	for (uint32 i = 0; i < NumViewports; i++)
 	{
-		for (int swapchainImageIdx = 0; swapchainImageIdx < FVulkanViewport::NUM_BUFFERS; swapchainImageIdx++)
+		VkImage Image = FVulkanTextureBase::Cast(InTexture)->Surface.Image;
+		uint32 BackBufferImageCount = Viewports[i]->GetBackBufferImageCount();
+
+		for (uint32 SwapchainImageIdx = 0; SwapchainImageIdx < BackBufferImageCount; SwapchainImageIdx++)
 		{
-			VkImage Image = FVulkanTextureBase::Cast(InTexture)->Surface.Image;
-			if (Image == viewports[i]->GetBackBufferImage(swapchainImageIdx))
+			if (Image == Viewports[i]->GetBackBufferImage(SwapchainImageIdx))
 			{
 				return true;
 			}
@@ -906,6 +956,26 @@ struct FRenderPassFullHashableStruct
 #endif
 };
 
+VkImageLayout FVulkanRenderTargetLayout::GetVRSImageLayout() const
+{
+	if (ValidateShadingRateDataType())
+	{
+#if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
+		if (GRHIVariableRateShadingImageDataType == VRSImage_Palette)
+		{
+			return VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR;
+		}
+#endif
+#if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
+		if (GRHIVariableRateShadingImageDataType == VRSImage_Fractional)
+		{
+			return VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+		}
+#endif
+	}
+
+	return VK_IMAGE_LAYOUT_UNDEFINED;
+}
 
 FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, const FRHISetRenderTargetsInfo& RTInfo)
 	: NumAttachmentDescriptions(0)
@@ -964,7 +1034,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 		
 			VkAttachmentDescription& CurrDesc = Desc[NumAttachmentDescriptions];
 			CurrDesc.samples = static_cast<VkSampleCountFlagBits>(NumSamples);
-			CurrDesc.format = UEToVkTextureFormat(RTView.Texture->GetFormat(), (Texture->Surface.UEFlags & TexCreate_SRGB) == TexCreate_SRGB);
+			CurrDesc.format = UEToVkTextureFormat(RTView.Texture->GetFormat(), EnumHasAllFlags(Texture->Surface.UEFlags, TexCreate_SRGB));
 			CurrDesc.loadOp = RenderTargetLoadActionToVulkan(RTView.LoadAction);
 			bFoundClearOp = bFoundClearOp || (CurrDesc.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR);
 			CurrDesc.storeOp = RenderTargetStoreActionToVulkan(RTView.StoreAction);
@@ -972,7 +1042,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 			CurrDesc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 
 			// Removed this temporarily as we need a way to determine if the target is actually memoryless
-			/*if (Texture->Surface.UEFlags & TexCreate_Memoryless)
+			/*if (EnumHasAllFlags(Texture->Surface.UEFlags, TexCreate_Memoryless))
 			{
 				ensure(CurrDesc.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE);
 			}*/
@@ -1034,7 +1104,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 			CurrDesc.stencilStoreOp = RenderTargetStoreActionToVulkan(RTInfo.DepthStencilRenderTarget.GetStencilStoreAction());
 
 			// Removed this temporarily as we need a way to determine if the target is actually memoryless
-			/*if (Texture->Surface.UEFlags & TexCreate_Memoryless)
+			/*if (EnumHasAllFlags(Texture->Surface.UEFlags, TexCreate_Memoryless))
 			{
 				ensure(CurrDesc.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE);
 				ensure(CurrDesc.stencilStoreOp == VK_ATTACHMENT_STORE_OP_DONT_CARE);
@@ -1084,16 +1154,18 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 		}
 	}
 
-	if (InDevice.GetOptionalExtensions().HasEXTFragmentDensityMap && RTInfo.ShadingRateTexture)
+	if (GRHISupportsAttachmentVariableRateShading && GRHIVariableRateShadingEnabled && GRHIAttachmentVariableRateShadingEnabled && RTInfo.ShadingRateTexture)
 	{
 		FVulkanTextureBase* Texture = FVulkanTextureBase::Cast(RTInfo.ShadingRateTexture);
 		check(Texture);
+		check(Texture->GetRHITexture());
+		check(Texture->GetRHITexture()->GetFormat() == GRHIVariableRateShadingImageFormat);
 
 		VkAttachmentDescription& CurrDesc = Desc[NumAttachmentDescriptions];
 		FMemory::Memzero(CurrDesc);
 
-		const VkImageLayout FragmentDensityLayout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
-
+		const VkImageLayout VRSLayout = GetVRSImageLayout();
+		
 		CurrDesc.flags = 0;
 		CurrDesc.format = UEToVkTextureFormat(RTInfo.ShadingRateTexture->GetFormat(), false);
 		CurrDesc.samples = static_cast<VkSampleCountFlagBits>(RTInfo.ShadingRateTexture->GetNumSamples());
@@ -1101,16 +1173,16 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 		CurrDesc.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		CurrDesc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		CurrDesc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		CurrDesc.initialLayout = FragmentDensityLayout;
-		CurrDesc.finalLayout = FragmentDensityLayout;
+		CurrDesc.initialLayout = VRSLayout;
+		CurrDesc.finalLayout = VRSLayout;
 
 		FragmentDensityReference.attachment = NumAttachmentDescriptions;
-		FragmentDensityReference.layout = FragmentDensityLayout;
+		FragmentDensityReference.layout = VRSLayout;
 
 		FullHashInfo.LoadOps[MaxSimultaneousRenderTargets + 2] = CurrDesc.stencilLoadOp;
 		FullHashInfo.StoreOps[MaxSimultaneousRenderTargets + 2] = CurrDesc.stencilStoreOp;
 #if VULKAN_USE_REAL_RENDERPASS_COMPATIBILITY
-		FullHashInfo.InitialLayout[MaxSimultaneousRenderTargets + 1] = FragmentDensityLayout;
+		FullHashInfo.InitialLayout[MaxSimultaneousRenderTargets + 1] = VRSLayout;
 #endif
 		CompatibleHashInfo.Formats[MaxSimultaneousRenderTargets + 1] = CurrDesc.format;
 
@@ -1149,6 +1221,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 	FMemory::Memzero(ResolveReferences);
 	FMemory::Memzero(InputAttachments);
 	FMemory::Memzero(Desc);
+	FMemory::Memzero(Offset);
 	FMemory::Memzero(Extent);
 
 	FRenderPassCompatibleHashableStruct CompatibleHashInfo;
@@ -1193,14 +1266,14 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 
 		VkAttachmentDescription& CurrDesc = Desc[NumAttachmentDescriptions];
 		CurrDesc.samples = static_cast<VkSampleCountFlagBits>(NumSamples);
-		CurrDesc.format = UEToVkTextureFormat(ColorEntry.RenderTarget->GetFormat(), (Texture->Surface.UEFlags & TexCreate_SRGB) == TexCreate_SRGB);
+		CurrDesc.format = UEToVkTextureFormat(ColorEntry.RenderTarget->GetFormat(), EnumHasAllFlags(Texture->Surface.UEFlags, TexCreate_SRGB));
 		CurrDesc.loadOp = RenderTargetLoadActionToVulkan(GetLoadAction(ColorEntry.Action));
 		bFoundClearOp = bFoundClearOp || (CurrDesc.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR);
 		CurrDesc.storeOp = RenderTargetStoreActionToVulkan(GetStoreAction(ColorEntry.Action));
 		CurrDesc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		CurrDesc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 
-		if (Texture->Surface.UEFlags & TexCreate_Memoryless)
+		if (EnumHasAnyFlags(Texture->Surface.UEFlags, TexCreate_Memoryless))
 		{
 			ensure(CurrDesc.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE);
 		}
@@ -1262,7 +1335,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 		CurrDesc.storeOp = RenderTargetStoreActionToVulkan(GetStoreAction(GetDepthActions(RPInfo.DepthStencilRenderTarget.Action)));
 		CurrDesc.stencilStoreOp = RenderTargetStoreActionToVulkan(GetStoreAction(GetStencilActions(RPInfo.DepthStencilRenderTarget.Action)));
 
-		if (Texture->Surface.UEFlags & TexCreate_Memoryless)
+		if (EnumHasAnyFlags(Texture->Surface.UEFlags, TexCreate_Memoryless))
 		{
 			ensure(CurrDesc.storeOp == VK_ATTACHMENT_STORE_OP_DONT_CARE);
 			ensure(CurrDesc.stencilStoreOp == VK_ATTACHMENT_STORE_OP_DONT_CARE);
@@ -1273,6 +1346,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 			RPInfo.DepthStencilRenderTarget.Action == EDepthStencilTargetActions::LoadDepthClearStencil_StoreDepthStencil)
 		{
 			ExclusiveDepthStencil = FExclusiveDepthStencil::DepthWrite_StencilWrite;
+			CurrentDSLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 		}
 
 		// Make sure that the requested depth-stencil access is compatible with the current layout of the DS target.
@@ -1349,16 +1423,30 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 			Extent.Extent3D.depth = Texture->Surface.Depth;
 		}
 	}
+	else if (NumColorRenderTargets == 0)
+	{
+		// No Depth and no color, it's a raster-only pass so make sure the renderArea will be set up properly
+		checkf(RPInfo.ResolveParameters.DestRect.IsValid(), TEXT("For raster-only passes without render targets, ResolveParameters.DestRect has to contain the render area"));
+		bSetExtent = true;
+		Offset.Offset3D.x = RPInfo.ResolveParameters.DestRect.X1;
+		Offset.Offset3D.y = RPInfo.ResolveParameters.DestRect.Y1;
+		Offset.Offset3D.z = 0;
+		Extent.Extent3D.width = RPInfo.ResolveParameters.DestRect.X2 - RPInfo.ResolveParameters.DestRect.X1;
+		Extent.Extent3D.height = RPInfo.ResolveParameters.DestRect.Y2 - RPInfo.ResolveParameters.DestRect.Y1;
+		Extent.Extent3D.depth = 1;
+	}
 
-	if (InDevice.GetOptionalExtensions().HasEXTFragmentDensityMap && RPInfo.ShadingRateTexture)
+	if (GRHISupportsAttachmentVariableRateShading && GRHIVariableRateShadingEnabled && GRHIAttachmentVariableRateShadingEnabled && RPInfo.ShadingRateTexture)
 	{
 		FVulkanTextureBase* Texture = FVulkanTextureBase::Cast(RPInfo.ShadingRateTexture);
 		check(Texture);
+		check(Texture->GetRHITexture());
+		check(Texture->GetRHITexture()->GetFormat() == GRHIVariableRateShadingImageFormat);
 
 		VkAttachmentDescription& CurrDesc = Desc[NumAttachmentDescriptions];
 		FMemory::Memzero(CurrDesc);
 
-		const VkImageLayout FragmentDensityLayout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+		const VkImageLayout VRSLayout = GetVRSImageLayout();
 
 		CurrDesc.flags = 0;
 		CurrDesc.format = UEToVkTextureFormat(RPInfo.ShadingRateTexture->GetFormat(), false);
@@ -1367,16 +1455,16 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(FVulkanDevice& InDevice, co
 		CurrDesc.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		CurrDesc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		CurrDesc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		CurrDesc.initialLayout = FragmentDensityLayout;
-		CurrDesc.finalLayout = FragmentDensityLayout;
+		CurrDesc.initialLayout = VRSLayout;
+		CurrDesc.finalLayout = VRSLayout;
 
 		FragmentDensityReference.attachment = NumAttachmentDescriptions;
-		FragmentDensityReference.layout = FragmentDensityLayout;
+		FragmentDensityReference.layout = VRSLayout;
 
 		FullHashInfo.LoadOps[MaxSimultaneousRenderTargets + 2] = CurrDesc.stencilLoadOp;
 		FullHashInfo.StoreOps[MaxSimultaneousRenderTargets + 2] = CurrDesc.stencilStoreOp;
 #if VULKAN_USE_REAL_RENDERPASS_COMPATIBILITY
-		FullHashInfo.InitialLayout[MaxSimultaneousRenderTargets + 1] = FragmentDensityLayout;
+		FullHashInfo.InitialLayout[MaxSimultaneousRenderTargets + 1] = VRSLayout;
 #endif
 		CompatibleHashInfo.Formats[MaxSimultaneousRenderTargets + 1] = CurrDesc.format;
 
@@ -1424,7 +1512,6 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 	FRenderPassCompatibleHashableStruct CompatibleHashInfo;
 	FRenderPassFullHashableStruct FullHashInfo;
 
-	bool bSetExtent = false;
 	bool bFoundClearOp = false;
 	MultiViewCount = Initializer.MultiViewCount;
 	NumSamples = Initializer.NumSamples;
@@ -1435,7 +1522,7 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 		{
 			VkAttachmentDescription& CurrDesc = Desc[NumAttachmentDescriptions];
 			CurrDesc.samples = static_cast<VkSampleCountFlagBits>(NumSamples);
-			CurrDesc.format = UEToVkTextureFormat(UEFormat, (Initializer.RenderTargetFlags[Index] & TexCreate_SRGB) == TexCreate_SRGB);
+			CurrDesc.format = UEToVkTextureFormat(UEFormat, EnumHasAllFlags(Initializer.RenderTargetFlags[Index], TexCreate_SRGB));
 			CurrDesc.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 			CurrDesc.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 			CurrDesc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -1524,25 +1611,27 @@ FVulkanRenderTargetLayout::FVulkanRenderTargetLayout(const FGraphicsPipelineStat
 		VkAttachmentDescription& CurrDesc = Desc[NumAttachmentDescriptions];
 		FMemory::Memzero(CurrDesc);
 
-		const VkImageLayout FragmentDensityLayout = VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+		const VkImageLayout VRSLayout = GetVRSImageLayout();
+
+		check(GRHIVariableRateShadingImageFormat != PF_Unknown);
 
 		CurrDesc.flags = 0;
-		CurrDesc.format = VK_FORMAT_R8G8_UNORM;
+		CurrDesc.format = UEToVkTextureFormat(GRHIVariableRateShadingImageFormat, false);
 		CurrDesc.samples = VK_SAMPLE_COUNT_1_BIT;
 		CurrDesc.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		CurrDesc.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		CurrDesc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		CurrDesc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		CurrDesc.initialLayout = FragmentDensityLayout;
-		CurrDesc.finalLayout = FragmentDensityLayout;
+		CurrDesc.initialLayout = VRSLayout;
+		CurrDesc.finalLayout = VRSLayout;
 
 		FragmentDensityReference.attachment = NumAttachmentDescriptions;
-		FragmentDensityReference.layout = FragmentDensityLayout;
+		FragmentDensityReference.layout = VRSLayout;
 
 		FullHashInfo.LoadOps[MaxSimultaneousRenderTargets + 2] = CurrDesc.stencilLoadOp;
 		FullHashInfo.StoreOps[MaxSimultaneousRenderTargets + 2] = CurrDesc.stencilStoreOp;
 #if VULKAN_USE_REAL_RENDERPASS_COMPATIBILITY
-		FullHashInfo.InitialLayout[MaxSimultaneousRenderTargets + 1] = FragmentDensityLayout;
+		FullHashInfo.InitialLayout[MaxSimultaneousRenderTargets + 1] = VRSLayout;
 #endif
 		CompatibleHashInfo.Formats[MaxSimultaneousRenderTargets + 1] = CurrDesc.format;
 

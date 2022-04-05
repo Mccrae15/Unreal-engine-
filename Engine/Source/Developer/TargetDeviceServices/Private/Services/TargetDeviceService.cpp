@@ -44,15 +44,11 @@ FTargetDeviceService::FTargetDeviceService(const FString& InDeviceName, const TS
 	MessageEndpoint = FMessageEndpoint::Builder(FName(*FString::Printf(TEXT("FTargetDeviceService (%s)"), *DeviceName)), InMessageBus)
 		.Handling<FTargetDeviceClaimDenied>(this, &FTargetDeviceService::HandleClaimDeniedMessage)
 		.Handling<FTargetDeviceClaimed>(this, &FTargetDeviceService::HandleClaimedMessage)
-		.Handling<FTargetDeviceServiceDeployCommit>(this, &FTargetDeviceService::HandleDeployCommitMessage)
-		.Handling<FTargetDeviceServiceDeployFile>(this, &FTargetDeviceService::HandleDeployFileMessage)
-		.Handling<FTargetDeviceServiceLaunchApp>(this, &FTargetDeviceService::HandleLaunchAppMessage)
 		.Handling<FTargetDeviceServiceTerminateLaunchedProcess>(this, &FTargetDeviceService::HandleTerminateLaunchedProcessMessage)
 		.Handling<FTargetDeviceServicePing>(this, &FTargetDeviceService::HandlePingMessage)
 		.Handling<FTargetDeviceServicePowerOff>(this, &FTargetDeviceService::HandlePowerOffMessage)
 		.Handling<FTargetDeviceServicePowerOn>(this, &FTargetDeviceService::HandlePowerOnMessage)
 		.Handling<FTargetDeviceServiceReboot>(this, &FTargetDeviceService::HandleRebootMessage)
-		.Handling<FTargetDeviceServiceRunExecutable>(this, &FTargetDeviceService::HandleRunExecutableMessage)
 		.Handling<FTargetDeviceUnclaimed>(this, &FTargetDeviceService::HandleUnclaimedMessage);
 
 	if (MessageEndpoint.IsValid())
@@ -87,9 +83,10 @@ void FTargetDeviceService::AddTargetDevice(TSharedPtr<ITargetDevice, ESPMode::Th
 	{
 		// If this seems nasty your right!
 		// This is just one more nastiness in this class due to the fact that we intend to refactor the target platform stuff as a separate task.
-		const PlatformInfo::FPlatformInfo& Info = InDevice->GetTargetPlatform().GetPlatformInfo();
-		DevicePlatformName = Info.PlatformInfoName;
-		const PlatformInfo::FPlatformInfo* VanillaInfo = PlatformInfo::FindVanillaPlatformInfo(Info.VanillaPlatformName);
+		const PlatformInfo::FTargetPlatformInfo& Info = InDevice->GetTargetPlatform().GetTargetPlatformInfo();
+		const PlatformInfo::FTargetPlatformInfo* VanillaInfo = Info.VanillaInfo;
+
+		DevicePlatformName = Info.Name;
 		DevicePlatformDisplayName = VanillaInfo->DisplayName.ToString();
 		
 		// Sigh the hacks... Should be able to remove if platform info gets cleaned up.... Windows doesn't have a reasonable vanilla platform.
@@ -245,9 +242,7 @@ bool FTargetDeviceService::Start()
 		ClaimHost = FPlatformProcess::ComputerName();
 		ClaimUser = FPlatformProcess::UserName(false);
 
-		// message is going to be deleted by FMemory::Free() (see FMessageContext destructor), so allocate it with Malloc
-		void* Memory = FMemory::Malloc(sizeof(FTargetDeviceClaimed), alignof(FTargetDeviceClaimed));
-		MessageEndpoint->Publish(new(Memory) FTargetDeviceClaimed(DeviceName, ClaimHost, ClaimUser));
+		MessageEndpoint->Publish(FMessageEndpoint::MakeMessage<FTargetDeviceClaimed>(DeviceName, ClaimHost, ClaimUser));
 
 		Running = true;
 	}
@@ -261,8 +256,7 @@ void FTargetDeviceService::Stop()
 	if (Running)
 	{
 		// message is going to be deleted by FMemory::Free() (see FMessageContext destructor), so allocate it with Malloc
-		void* Memory = FMemory::Malloc(sizeof(FTargetDeviceUnclaimed), alignof(FTargetDeviceUnclaimed));
-		MessageEndpoint->Publish(new(Memory) FTargetDeviceUnclaimed(DeviceName, FPlatformProcess::ComputerName(), FPlatformProcess::UserName(false)));
+		MessageEndpoint->Publish(FMessageEndpoint::MakeMessage<FTargetDeviceUnclaimed>(DeviceName, FPlatformProcess::ComputerName(), FPlatformProcess::UserName(false)));
 		FPlatformProcess::SleepNoStats(0.01);
 
 		// Only stop the device if we care about device claiming
@@ -359,9 +353,7 @@ void FTargetDeviceService::HandleClaimedMessage(const FTargetDeviceClaimed& Mess
 	{
 		if (Context->GetSender() != MessageEndpoint->GetAddress())
 		{
-			// message is going to be deleted by FMemory::Free() (see FMessageContext destructor), so allocate it with Malloc
-			void* Memory = FMemory::Malloc(sizeof(FTargetDeviceClaimDenied), alignof(FTargetDeviceClaimDenied));
-			MessageEndpoint->Send(new(Memory) FTargetDeviceClaimDenied(DeviceName, FPlatformProcess::ComputerName(), FPlatformProcess::UserName(false)), Context->GetSender());
+			MessageEndpoint->Send(FMessageEndpoint::MakeMessage<FTargetDeviceClaimDenied>(DeviceName, FPlatformProcess::ComputerName(), FPlatformProcess::UserName(false)), Context->GetSender());
 		}
 	}
 	else
@@ -387,55 +379,6 @@ void FTargetDeviceService::HandleUnclaimedMessage(const FTargetDeviceUnclaimed& 
 }
 
 
-void FTargetDeviceService::HandleDeployFileMessage(const FTargetDeviceServiceDeployFile& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
-{
-	if (!Running)
-	{
-		return;
-	}
-
-	TSharedPtr<IMessageAttachment, ESPMode::ThreadSafe> Attachment = Context->GetAttachment();
-
-	if (Attachment.IsValid())
-	{
-		FArchive* FileReader = Attachment->CreateReader();
-
-		if (FileReader != nullptr)
-		{
-			FString DeploymentFolder = FPaths::EngineIntermediateDir() / TEXT("Deploy") / Message.TransactionId.ToString();
-			FString TargetPath = DeploymentFolder / Message.TargetFileName;
-
-			StoreDeployedFile(FileReader, TargetPath);
-
-			delete FileReader;
-		}
-	}
-}
-
-
-void FTargetDeviceService::HandleDeployCommitMessage(const FTargetDeviceServiceDeployCommit& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
-{
-	if (!Running)
-	{
-		return;
-	}
-
-	ITargetDevicePtr TargetDevice = GetDevice(Message.Variant);
-
-	if (TargetDevice.IsValid())
-	{
-		FString SourceFolder = FPaths::EngineIntermediateDir() / TEXT("Deploy") / Message.TransactionId.ToString();
-		FString OutAppId;
-
-		bool Succeeded = TargetDevice->Deploy(SourceFolder, OutAppId);
-
-		IFileManager::Get().DeleteDirectory(*SourceFolder, false, true);
-		// message is going to be deleted by FMemory::Free() (see FMessageContext destructor), so allocate it with Malloc
-		void* Memory = FMemory::Malloc(sizeof(FTargetDeviceServiceDeployFinished), alignof(FTargetDeviceServiceDeployFinished));
-		MessageEndpoint->Send(new(Memory) FTargetDeviceServiceDeployFinished(Message.Variant, OutAppId, Succeeded, Message.TransactionId), Context->GetSender());
-	}
-}
-
 void FTargetDeviceService::HandleTerminateLaunchedProcessMessage(const FTargetDeviceServiceTerminateLaunchedProcess& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
 	if (!Running)
@@ -450,30 +393,6 @@ void FTargetDeviceService::HandleTerminateLaunchedProcessMessage(const FTargetDe
 		TargetDevice->TerminateLaunchedProcess(Message.AppID);
 	}
 }
-
-void FTargetDeviceService::HandleLaunchAppMessage(const FTargetDeviceServiceLaunchApp& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
-{
-	if (!Running)
-	{
-		return;
-	}
-
-	ITargetDevicePtr TargetDevice = GetDevice(Message.Variant);
-
-	if (TargetDevice.IsValid())
-	{
-		uint32 ProcessId;
-		bool Succeeded = TargetDevice->Launch(Message.AppID, (EBuildConfiguration)Message.BuildConfiguration, EBuildTargetType::Game, Message.Params, &ProcessId);
-
-		if (MessageEndpoint.IsValid())
-		{
-			// message is going to be deleted by FMemory::Free() (see FMessageContext destructor), so allocate it with Malloc
-			void* Memory = FMemory::Malloc(sizeof(FTargetDeviceServiceLaunchFinished), alignof(FTargetDeviceServiceLaunchFinished));
-			MessageEndpoint->Send(new(Memory) FTargetDeviceServiceLaunchFinished(Message.AppID, ProcessId, Succeeded), Context->GetSender());
-		}
-	}
-}
-
 
 void FTargetDeviceService::HandlePingMessage(const FTargetDeviceServicePing& InMessage, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
 {
@@ -492,11 +411,9 @@ void FTargetDeviceService::HandlePingMessage(const FTargetDeviceServicePing& InM
 	if (DefaultDevice.IsValid())
 	{
 		const FString& PlatformName = DefaultDevice->GetTargetPlatform().PlatformName();
-		const PlatformInfo::FPlatformInfo* VanillaInfo = PlatformInfo::FindVanillaPlatformInfo(FName(*PlatformName));
+		const PlatformInfo::FTargetPlatformInfo* VanillaInfo = DefaultDevice->GetTargetPlatform().GetTargetPlatformInfo().VanillaInfo;
 
-		// message is going to be deleted by FMemory::Free() (see FMessageContext destructor), so allocate it with Malloc
-		void* Memory = FMemory::Malloc(sizeof(FTargetDeviceServicePong), alignof(FTargetDeviceServicePong));
-		FTargetDeviceServicePong* Message = new(Memory) FTargetDeviceServicePong();
+		FTargetDeviceServicePong* Message = FMessageEndpoint::MakeMessage<FTargetDeviceServicePong>();
 
 		Message->Name = DefaultDevice->GetName();
 		Message->Type = TargetDeviceTypes::ToString(DefaultDevice->GetDeviceType());
@@ -517,7 +434,7 @@ void FTargetDeviceService::HandlePingMessage(const FTargetDeviceServicePing& InM
 
 		// Check if we should also create an aggregate (All_<platform>_devices_on_<host>) proxy
 		Message->Aggregated = DefaultDevice->IsPlatformAggregated();
-		Message->AllDevicesName = DefaultDevice->GetAllDevicesName().IsEmpty() ? VanillaInfo->VanillaPlatformName.ToString() : DefaultDevice->GetAllDevicesName();
+		Message->AllDevicesName = DefaultDevice->GetAllDevicesName().IsEmpty() ? VanillaInfo->Name.ToString() : DefaultDevice->GetAllDevicesName();
 		Message->AllDevicesDefaultVariant = DefaultDevice->GetAllDevicesDefaultVariant().IsNone() ? Message->DefaultVariant : DefaultDevice->GetAllDevicesDefaultVariant();
 
 		// Add the data for all the flavors
@@ -527,15 +444,15 @@ void FTargetDeviceService::HandlePingMessage(const FTargetDeviceServicePing& InM
 		for (auto TargetDeviceIt = TargetDevicePtrs.CreateIterator(); TargetDeviceIt; ++TargetDeviceIt, ++Index)
 		{
 			const ITargetDevicePtr& TargetDevice = TargetDeviceIt.Value().Pin();
-			const PlatformInfo::FPlatformInfo& Info = TargetDevice->GetTargetPlatform().GetPlatformInfo();
+			const PlatformInfo::FTargetPlatformInfo& Info = TargetDevice->GetTargetPlatform().GetTargetPlatformInfo();
 
 			FTargetDeviceVariant& Variant = Message->Variants[Index];
 
 			Variant.DeviceID = TargetDevice->GetId().ToString();
 			Variant.VariantName = TargetDeviceIt.Key();
 			Variant.TargetPlatformName = TargetDevice->GetTargetPlatform().PlatformName();
-			Variant.TargetPlatformId = Info.TargetPlatformName;
-			Variant.VanillaPlatformId = Info.VanillaPlatformName;
+			Variant.TargetPlatformId = Info.Name;
+			Variant.VanillaPlatformId = Info.VanillaInfo->Name;
 			Variant.PlatformDisplayName = Info.DisplayName.ToString();
 		}
 
@@ -588,26 +505,5 @@ void FTargetDeviceService::HandleRebootMessage( const FTargetDeviceServiceReboot
 	if (TargetDevice.IsValid())
 	{
 		TargetDevice->Reboot();
-	}
-}
-
-
-void FTargetDeviceService::HandleRunExecutableMessage(const FTargetDeviceServiceRunExecutable& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
-{
-	if (!Running)
-	{
-		return;
-	}
-
-	ITargetDevicePtr TargetDevice = GetDevice(Message.Variant);
-
-	if (TargetDevice.IsValid())
-	{
-		uint32 OutProcessId;
-		bool Succeeded = TargetDevice->Run(Message.ExecutablePath, Message.Params, &OutProcessId);
-
-		// message is going to be deleted by FMemory::Free() (see FMessageContext destructor), so allocate it with Malloc
-		void* Memory = FMemory::Malloc(sizeof(FTargetDeviceServiceRunFinished), alignof(FTargetDeviceServiceRunFinished));
-		MessageEndpoint->Send(new(Memory) FTargetDeviceServiceRunFinished(Message.Variant, Message.ExecutablePath, OutProcessId, Succeeded), Context->GetSender());
 	}
 }

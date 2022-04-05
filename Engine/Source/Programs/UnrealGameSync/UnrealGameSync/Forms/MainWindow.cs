@@ -12,9 +12,7 @@ using System.Threading;
 using System.Reflection;
 using System.Text;
 using System.Diagnostics;
-using System.Activities.DurableInstancing;
 using UnrealGameSync.Forms;
-using EnvDTE;
 using System.Text.RegularExpressions;
 
 namespace UnrealGameSync
@@ -90,6 +88,8 @@ namespace UnrealGameSync
 
 		bool bRestoreStateOnLoad;
 
+		OIDCTokenManager OIDCTokenManager;
+
 		System.Threading.Timer ScheduleTimer;
 		System.Threading.Timer ScheduleSettledTimer;
 
@@ -110,7 +110,7 @@ namespace UnrealGameSync
 
 		NetCoreWindow NetCoreWindow;
 
-		public MainWindow(UpdateMonitor InUpdateMonitor, string InApiUrl, string InDataFolder, string InCacheFolder, bool bInRestoreStateOnLoad, string InOriginalExecutableFileName, bool bInUnstable, DetectProjectSettingsResult[] StartupProjects, PerforceConnection InDefaultConnection, LineBasedTextWriter InLog, UserSettings InSettings, string InUri)
+		public MainWindow(UpdateMonitor InUpdateMonitor, string InApiUrl, string InDataFolder, string InCacheFolder, bool bInRestoreStateOnLoad, string InOriginalExecutableFileName, bool bInUnstable, DetectProjectSettingsResult[] StartupProjects, PerforceConnection InDefaultConnection, LineBasedTextWriter InLog, UserSettings InSettings, string InUri, OIDCTokenManager InOidcTokenManager)
 		{
 			Log = InLog;
 			Log.WriteLine("Opening Main Window for {0} projects. Last Project {1}", StartupProjects.Length, InSettings.LastProject);
@@ -129,6 +129,7 @@ namespace UnrealGameSync
 			ToolUpdateMonitor = new ToolUpdateMonitor(DefaultConnection, DataFolder, InSettings);
 
 			Settings = InSettings;
+			OIDCTokenManager = InOidcTokenManager;
 
 			// While creating tab controls during startup, we need to prevent layout calls resulting in the window handle being created too early. Disable layout calls here.
 			SuspendLayout();
@@ -177,7 +178,7 @@ namespace UnrealGameSync
 
 			if(bUnstable)
 			{
-				Text += String.Format(" (UNSTABLE BUILD {0})", Assembly.GetExecutingAssembly().GetName().Version);
+				Text += $" {Program.GetVersionString()} (UNSTABLE)";
 			}
 
 			AutomationLog = new TimestampLogWriter(new BoundedLogWriter(Path.Combine(DataFolder, "Automation.log")));
@@ -599,6 +600,19 @@ namespace UnrealGameSync
 			base.Dispose(disposing);
 		}
 
+		public bool ConfirmClose()
+		{
+			for (int Idx = 0; Idx < TabControl.GetTabCount(); Idx++)
+			{
+				IMainWindowTabPanel TabPanel = (IMainWindowTabPanel)TabControl.GetTabData(Idx);
+				if (!TabPanel.CanClose())
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
 		private void MainWindow_FormClosing(object Sender, FormClosingEventArgs EventArgs)
 		{
 			if(!bAllowClose && Settings.bKeepInTray)
@@ -608,13 +622,16 @@ namespace UnrealGameSync
 			}
 			else
 			{
-				for(int Idx = 0; Idx < TabControl.GetTabCount(); Idx++)
+				if (!bAllowClose)
 				{
-					IMainWindowTabPanel TabPanel = (IMainWindowTabPanel)TabControl.GetTabData(Idx);
-					if(!TabPanel.CanClose())
+					for (int Idx = 0; Idx < TabControl.GetTabCount(); Idx++)
 					{
-						EventArgs.Cancel = true;
-						return;
+						IMainWindowTabPanel TabPanel = (IMainWindowTabPanel)TabControl.GetTabData(Idx);
+						if (!TabPanel.CanClose())
+						{
+							EventArgs.Cancel = true;
+							return;
+						}
 					}
 				}
 
@@ -1155,7 +1172,8 @@ namespace UnrealGameSync
 			}
 
 			// Now that we have the project settings, we can construct the tab
-			WorkspaceControl NewWorkspace = new WorkspaceControl(this, ApiUrl, OriginalExecutableFileName, bUnstable, ProjectSettings, Log, Settings);
+			WorkspaceControl NewWorkspace = new WorkspaceControl(this, ApiUrl, OriginalExecutableFileName, bUnstable, ProjectSettings, Log, Settings, OIDCTokenManager);
+			
 			NewWorkspace.Parent = TabPanel;
 			NewWorkspace.Dock = DockStyle.Fill;
 			NewWorkspace.Hide();

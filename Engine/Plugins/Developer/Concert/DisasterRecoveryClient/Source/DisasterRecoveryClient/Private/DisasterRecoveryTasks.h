@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "IConcertModule.h"
 #include "ConcertMessages.h"
+#include "Containers/Ticker.h"
 
 class IConcertSyncClient;
 class IConcertClientSession;
@@ -56,7 +57,7 @@ private:
 
 private:
 	TArray<TPair<TSharedPtr<FDisasterRecoveryTask>, bool /*bStarted*/>> Tasks;
-	FDelegateHandle TickerHandle;
+	FTSTicker::FDelegateHandle TickerHandle;
 };
 
 /**

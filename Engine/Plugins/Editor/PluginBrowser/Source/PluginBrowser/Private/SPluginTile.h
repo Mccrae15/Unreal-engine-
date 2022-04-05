@@ -11,7 +11,6 @@
 #include "Brushes/SlateDynamicImageBrush.h"
 
 class IPlugin;
-class SWindow;
 class UPluginMetadataObject;
 
 /**
@@ -37,6 +36,9 @@ private:
 	/** Updates the contents of this tile */
 	void RecreateWidgets();
 
+	/** Returns whether users are able to modify the enabled/disabled state of plugins from the plugin browser */
+	bool CanModifyPlugins() const;
+
 	/** Returns the checked state for the enabled checkbox */
 	ECheckBoxState IsPluginEnabled() const;
 
@@ -49,11 +51,14 @@ private:
 	/** Called when the 'edit' hyperlink is clicked */
 	void OnEditPlugin();
 
-	/** Called when the 'edit' hyperlink is clicked */
-	FReply OnEditPluginFinished(UPluginMetadataObject* MetadataObject);
+	/** Called when the edit window is committed */
+	void OnEditPluginFinished();
 
 	/** Called when the 'package' hyperlink is clicked */
 	void OnPackagePlugin();
+
+	/** Called when the beta or experimental flags are hovered over, or when a beta or experimental plugin is enabled */
+	FText GetBetaOrExperimentalHelpText() const;
 
 private:
 
@@ -62,9 +67,6 @@ private:
 
 	/** Weak pointer back to its owner */
 	TWeakPtr< class SPluginTileList > OwnerWeak;
-
-	/** Dialog for editing plugin properties */
-	TSharedPtr< SWindow > PropertiesWindow;
 
 	/** Brush resource for the image that is dynamically loaded */
 	TSharedPtr< FSlateDynamicImageBrush > PluginIconDynamicImageBrush;

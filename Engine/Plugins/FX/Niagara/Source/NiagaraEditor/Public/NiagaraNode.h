@@ -31,6 +31,8 @@ protected:
 	bool ReallocatePins(bool bMarkNeedsResynchronizeOnChange = true);
 
 	bool CompileInputPins(class FHlslNiagaraTranslator *Translator, TArray<int32>& OutCompiledInputs);
+
+	virtual void OnPostSynchronizationInReallocatePins() {}
 	
 public:
 
@@ -130,6 +132,8 @@ public:
 	/** Sets whether or not the supplied pin has a rename pending. */
 	void SetIsPinRenamePending(const UEdGraphPin* Pin, bool bInIsRenamePending);
 
+	bool IsParameterMapPin(const UEdGraphPin* Pin) const;
+	
 	/** Adds the current node information to the parameter map history
 	 *
 	 *  @Param	OutHistory				The resulting history
@@ -146,14 +150,14 @@ public:
 	 *  @Param	LocallyOwnedOutputPin	The pin to trace, must be a child of this node
 	 *  @Param	bFilterForCompilation	If true, some nodes like static switches or reroute nodes are jumped over. The ui usually sets this to false to follow all possible paths.  
 	 */
-	virtual UEdGraphPin* GetTracedOutputPin(UEdGraphPin* LocallyOwnedOutputPin, bool bFilterForCompilation) const {return LocallyOwnedOutputPin;}
+	virtual UEdGraphPin* GetTracedOutputPin(UEdGraphPin* LocallyOwnedOutputPin, bool bFilterForCompilation, TArray<const UNiagaraNode*>* OutNodesVisitedDuringTrace = nullptr) const;
 
 	/** Traces a node's output pins to its source output pin.
 	*
 	*  @Param	LocallyOwnedOutputPin	The pin to trace
 	*  @Param	bFilterForCompilation	If true, some nodes like static switches or reroute nodes are jumped over. The ui usually sets this to false to follow all possible paths.  
 	*/
-	static UEdGraphPin* TraceOutputPin(UEdGraphPin* LocallyOwnedOutputPin, bool bFilterForCompilation = true);
+	static UEdGraphPin* TraceOutputPin(UEdGraphPin* LocallyOwnedOutputPin, bool bFilterForCompilation = true, TArray<const UNiagaraNode*>* OutNodesVisitedDuringTrace = nullptr);
 
 	/** Allows a node to replace a pin that is about to be compiled with another pin. This can be used for either optimizations or features such as the static switch. Returns true if the pin was successfully replaced, false otherwise. */
 	virtual bool SubstituteCompiledPin(FHlslNiagaraTranslator* Translator, UEdGraphPin** LocallyOwnedPin);
@@ -206,10 +210,15 @@ protected:
 
 	void NumericResolutionByPins(const UEdGraphSchema_Niagara* Schema, TArrayView<UEdGraphPin* const> InputPins, TArrayView<UEdGraphPin* const> OutputPins,
 		bool bFixInline, TMap<TPair<FGuid, UEdGraphNode*>, FNiagaraTypeDefinition>* PinCache);
+		
+	virtual FNiagaraTypeDefinition ResolveCustomNumericType(const TArray<FNiagaraTypeDefinition>& NonNumericInputs) const;
 
 	/** Route input parameter map to output parameter map if it exists. Note that before calling this function,
 		the input pins should have been visited already.*/
 	virtual void RouteParameterMapAroundMe(FNiagaraParameterMapHistoryBuilder& OutHistory, bool bRecursive) const;
+
+	/** Basically routes the pin through the parameter map builder so that it looks like a regular pin. Handles visiting the node connected as well to the input pin.*/
+	virtual void RegisterPassthroughPin(FNiagaraParameterMapHistoryBuilder& OutHistory, UEdGraphPin* InputPin, UEdGraphPin* OutputPin, bool bFilterForCompilation, bool bVisitInputPin) const;
 
 	/** If the pin is a known name (like Engine.DeltaTime) this tries to return a default tooltip for it. */
 	bool GetTooltipTextForKnownPin(const UEdGraphPin& Pin, FText& OutTooltip) const;

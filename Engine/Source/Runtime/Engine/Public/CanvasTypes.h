@@ -15,6 +15,8 @@
 #include "StaticMeshResources.h"
 #include "CanvasTypes.generated.h"
 
+class FCanvasRenderContext;
+class FCanvasRenderThreadScope;
 class FCanvasItem;
 class FMaterialRenderProxy;
 class IBreakIterator;
@@ -50,7 +52,7 @@ struct FTextSizingParameters
 
 	/** the font to use for sizing/wrapping the string */
 	UPROPERTY()
-	const UFont* DrawFont;
+	TObjectPtr<const UFont> DrawFont;
 
 	/** Horizontal spacing adjustment between characters and vertical spacing adjustment between wrapped lines */
 	UPROPERTY()
@@ -226,6 +228,14 @@ public:
 		CDM_ImmediateDrawing
 	};
 
+	ENGINE_API static FCanvas* Create(FRDGBuilder& GraphBuilder, FRDGTextureRef InRenderTarget, FHitProxyConsumer* InHitProxyConsumer, const FGameTime& Time, ERHIFeatureLevel::Type InFeatureLevel, float InDPIScale = 1.0f);
+
+	UE_DEPRECATED(5.0, "Pass down a FGameTime instead.")
+	FORCEINLINE_DEBUGGABLE static FCanvas* Create(FRDGBuilder& GraphBuilder, FRDGTextureRef InRenderTarget, FHitProxyConsumer* InHitProxyConsumer, float InRealTime, float InWorldTime, float InWorldDeltaTime, ERHIFeatureLevel::Type InFeatureLevel, float InDPIScale = 1.0f)
+	{
+		return Create(GraphBuilder, InRenderTarget, InHitProxyConsumer, FGameTime::CreateDilated(InRealTime, InWorldDeltaTime, InWorldTime, InWorldDeltaTime), InFeatureLevel, InDPIScale);
+	}
+
 	/**
 	* Constructor.
 	*/
@@ -234,7 +244,12 @@ public:
 	/**
 	* Constructor. For situations where a world is not available, but time information is
 	*/
-	ENGINE_API FCanvas(FRenderTarget* InRenderTarget, FHitProxyConsumer* InHitProxyConsumer, float InRealTime, float InWorldTime, float InWorldDeltaTime, ERHIFeatureLevel::Type InFeatureLevel, float InDPIScale = 1.0f);
+	ENGINE_API FCanvas(FRenderTarget* InRenderTarget, FHitProxyConsumer* InHitProxyConsumer, const FGameTime& Time, ERHIFeatureLevel::Type InFeatureLevel, float InDPIScale = 1.0f);
+	
+	UE_DEPRECATED(5.0, "Pass down a FGameTime instead.")
+	FORCEINLINE_DEBUGGABLE FCanvas(FRenderTarget* InRenderTarget, FHitProxyConsumer* InHitProxyConsumer, float InRealTime, float InWorldTime, float InWorldDeltaTime, ERHIFeatureLevel::Type InFeatureLevel, float InDPIScale = 1.0f)
+		: FCanvas(InRenderTarget, InHitProxyConsumer, FGameTime::CreateDilated(InRealTime, InWorldDeltaTime, InWorldTime, InWorldDeltaTime), InFeatureLevel, InDPIScale)
+	{ }
 
 	/**
 	* Destructor.
@@ -273,7 +288,8 @@ public:
 	* @param bInsideRenderPass - Set to true if flushing inside a render pass (e.g. Render Graph pass).
 	*	This will skip creating a render pass internally, and assert if the command list is not in a render pass.
 	*/
-	ENGINE_API void Flush_RenderThread(FRHICommandListImmediate& RHICmdList, bool bForce = false, bool bInsideRenderPass = false);
+	ENGINE_API void Flush_RenderThread(FRHICommandListImmediate& RHICmdList, bool bForce = false);
+	ENGINE_API void Flush_RenderThread(FRDGBuilder& GraphBuilder, bool bForce = false);
 
 	/**
 	* Sends a message to the rendering thread to draw the batched elements.
@@ -591,6 +607,7 @@ public:
 	TSharedPtr<FCanvasWordWrapper> WordWrapper;
 
 private:
+
 	/** Stack of SortKeys. All rendering is done using the top most sort key */
 	TArray<int32> DepthSortKeyStack;	
 	/** Stack of matrices. Bottom most entry is the canvas projection */
@@ -611,12 +628,8 @@ private:
 	uint32 AllowedModes;
 	/** true if the render target has been rendered to since last calling SetRenderTarget() */
 	bool bRenderTargetDirty;	
-	/** Current real time in seconds */
-	float CurrentRealTime;
-	/** Current world time in seconds */
-	float CurrentWorldTime;
-	/** Current world time in seconds */
-	float CurrentDeltaWorldTime;
+	/** Current gameplay time */
+	FGameTime Time;
 	/** true, if Canvas should be scaled to whole render target */
 	bool bScaledToRenderTarget;
 	// True if canvas allows switching vertical axis; false will ignore any flip
@@ -644,20 +657,22 @@ private:
 public:	
 
 	/**
-	 * Access current real time 
+	 * Access gameplay time
 	 */
-	float GetCurrentRealTime() const { return CurrentRealTime; }
+	const FGameTime& GetTime() const
+	{
+		return Time;
+	}
 
-	/**
-	 * Access current world time 
-	 */
-	float GetCurrentWorldTime() const { return CurrentWorldTime; }
+	UE_DEPRECATED(5.0, "Use FCanvas::GetTime()")
+	float GetCurrentRealTime() const { return GetTime().GetRealTimeSeconds(); }
 
-	/**
-	 * Access current delta time 
-	 */
-	float GetCurrentDeltaWorldTime() const { return CurrentDeltaWorldTime; }
+	UE_DEPRECATED(5.0, "Use FCanvas::GetTime()")
+	float GetCurrentWorldTime() const { return GetTime().GetWorldTimeSeconds(); }
 
+	UE_DEPRECATED(5.0, "Use FCanvas::GetTime()")
+	float GetCurrentDeltaWorldTime() const { return GetTime().GetDeltaWorldTimeSeconds(); }
+	
 	/** 
 	 * Draw a CanvasItem
 	 *
@@ -706,7 +721,8 @@ public:
 	* @param Texture - Texture to draw
 	* @param AlphaBlend - true to alphablend
 	*/
-	ENGINE_API void DrawTile( float X, float Y, float SizeX, float SizeY, float U, float V,  float SizeU, float SizeV, const FLinearColor& Color, const FTexture* Texture = NULL, bool AlphaBlend = true );
+	ENGINE_API void DrawTile(float X, float Y, float SizeX, float SizeY, float U, float V,  float SizeU, float SizeV, const FLinearColor& Color, const FTexture* Texture = NULL, bool AlphaBlend = true);
+	ENGINE_API void DrawTile(float X, float Y, float SizeX, float SizeY, float U, float V, float SizeU, float SizeV, const FLinearColor& Color, const FTexture* Texture, ESimpleElementBlendMode BlendMode);
 
 	/** 
 	* Draw an string centered on given location. 
@@ -774,9 +790,8 @@ public:
 	*/
 	ENGINE_API FCanvasSortElement& GetSortElement(int32 DepthSortKey);
 
+	friend class FCanvasRenderContext;
 };
-
-
 
 /**
 * Base interface for canvas items which can be batched for rendering
@@ -790,11 +805,11 @@ public:
 	/**
 	* Renders the canvas item
 	*
+	* @param RenderContext - the canvas render context to submit render passes to.
 	* @param Canvas - canvas currently being rendered
-	* @param RHICmdList - command list to use
 	* @return true if anything rendered
 	*/
-	virtual bool Render_RenderThread(FRHICommandListImmediate& RHICmdList, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) = 0;
+	virtual bool Render_RenderThread(FCanvasRenderContext& RenderContext, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) = 0;
 	
 	/**
 	* Renders the canvas item
@@ -802,7 +817,7 @@ public:
 	* @param Canvas - canvas currently being rendered
 	* @return true if anything rendered
 	*/
-	virtual bool Render_GameThread(const FCanvas* Canvas, FRenderThreadScope& RenderScope) = 0;
+	virtual bool Render_GameThread(const FCanvas* Canvas, FCanvasRenderThreadScope& RenderScope) = 0;
 	
 	/**
 	* FCanvasBatchedElementRenderItem instance accessor
@@ -873,7 +888,7 @@ public:
 	* @param RHICmdList - command list to use
 	* @return true if anything rendered
 	*/
-	virtual bool Render_RenderThread(FRHICommandListImmediate& RHICmdList, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) override;
+	virtual bool Render_RenderThread(FCanvasRenderContext& RenderContext, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) override;
 	
 	/**
 	* Renders the canvas item.
@@ -882,7 +897,7 @@ public:
 	* @param Canvas - canvas currently being rendered
 	* @return true if anything rendered
 	*/
-	virtual bool Render_GameThread(const FCanvas* Canvas, FRenderThreadScope& RenderScope) override;
+	virtual bool Render_GameThread(const FCanvas* Canvas, FCanvasRenderThreadScope& RenderScope) override;
 
 	/**
 	* Determine if this is a matching set by comparing texture,blendmode,elementype,transform. All must match
@@ -996,7 +1011,7 @@ public:
 	* @param RHICmdList - command list to use
 	* @return true if anything rendered
 	*/
-	virtual bool Render_RenderThread(FRHICommandListImmediate& RHICmdList, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) override;
+	virtual bool Render_RenderThread(FCanvasRenderContext& RenderContext, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) override;
 
 	/**
 	* Renders the canvas item.
@@ -1005,7 +1020,7 @@ public:
 	* @param Canvas - canvas currently being rendered
 	* @return true if anything rendered
 	*/
-	virtual bool Render_GameThread(const FCanvas* Canvas, FRenderThreadScope& RenderScope) override;
+	virtual bool Render_GameThread(const FCanvas* Canvas, FCanvasRenderThreadScope& RenderScope) override;
 
 	/**
 	* Determine if this is a matching set by comparing material,transform. All must match
@@ -1049,19 +1064,6 @@ private:
 		const FStaticMeshVertexBuffers* VertexBuffers;
 	};
 
-	class FTileMesh : public FRenderResource
-	{
-	public:
-		FTileMesh(const FRawIndexBuffer* IndexBuffer, const FTileVertexFactory* VertexFactory);
-
-		FMeshBatch MeshElement;
-
-		void InitRHI() override;
-	private:
-		const FRawIndexBuffer* IndexBuffer;
-		const FTileVertexFactory* VertexFactory;
-	};
-
 	class FRenderData
 	{
 	public:
@@ -1071,7 +1073,7 @@ private:
 			const FCanvas::FTransformEntry& InTransform);
 
 		void RenderTiles(
-			FRHICommandListImmediate& RHICmdList,
+			FCanvasRenderContext& RenderContext,
 			FMeshPassProcessorRenderState& DrawRenderState,
 			const FSceneView& View,
 			bool bIsHitTesting,
@@ -1087,14 +1089,17 @@ private:
 			return Tiles.Add(NewTile);
 		};
 
+		uint32 GetNumVertices() const;
+		uint32 GetNumIndices() const;
+
 	private:
+		FMeshBatch* AllocTileMeshBatch(FCanvasRenderContext& InRenderContext, FHitProxyId InHitProxyId);
 		void InitTileMesh(const FSceneView& View, bool bNeedsToSwitchVerticalAxis);
 		void ReleaseTileMesh();
 
-		FRawIndexBuffer IndexBuffer;
+		FRawIndexBuffer16or32 IndexBuffer;
 		FStaticMeshVertexBuffers StaticMeshVertexBuffers;
 		FTileVertexFactory VertexFactory;
-		FTileMesh TileMesh;
 
 		struct FTileInst
 		{
@@ -1153,7 +1158,7 @@ public:
 	* @param RHICmdList - command list to use
 	* @return true if anything rendered
 	*/
-	virtual bool Render_RenderThread(FRHICommandListImmediate& RHICmdList, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) override;
+	virtual bool Render_RenderThread(FCanvasRenderContext& RenderContext, FMeshPassProcessorRenderState& DrawRenderState, const FCanvas* Canvas) override;
 
 	/**
 	* Renders the canvas item.
@@ -1162,7 +1167,7 @@ public:
 	* @param Canvas - canvas currently being rendered
 	* @return true if anything rendered
 	*/
-	virtual bool Render_GameThread(const FCanvas* Canvas, FRenderThreadScope& RenderScope) override;
+	virtual bool Render_GameThread(const FCanvas* Canvas, FCanvasRenderThreadScope& RenderScope) override;
 
 	/**
 	* Determine if this is a matching set by comparing material,transform. All must match
@@ -1218,18 +1223,6 @@ private:
 		const FStaticMeshVertexBuffers* VertexBuffers;
 	};
 
-	class FTriangleMesh : public FRenderResource
-	{
-	public:
-		FTriangleMesh(const FRawIndexBuffer* IndexBuffer, const FTriangleVertexFactory* VertexFactory);
-
-		FMeshBatch MeshBatch;
-		virtual void InitRHI() override;
-	private:
-		const FRawIndexBuffer* IndexBuffer;
-		const FTriangleVertexFactory* VertexFactory;
-	};
-
 	class FRenderData
 	{
 	public:
@@ -1239,7 +1232,6 @@ private:
 			: MaterialRenderProxy(InMaterialRenderProxy)
 			, Transform(InTransform)
 			, VertexFactory(&StaticMeshVertexBuffers, InFeatureLevel)
-			, TriMesh(&IndexBuffer, &VertexFactory)
 		{}
 
 		FORCEINLINE int32 AddTriangle(const FCanvasUVTri& Tri, FHitProxyId HitProxyId)
@@ -1259,7 +1251,7 @@ private:
 		}
 
 		void RenderTriangles(
-			FRHICommandListImmediate& RHICmdList,
+			FCanvasRenderContext& RenderContext,
 			FMeshPassProcessorRenderState& DrawRenderState,
 			const FSceneView& View,
 			bool bIsHitTesting,
@@ -1268,14 +1260,17 @@ private:
 		const FMaterialRenderProxy* const MaterialRenderProxy;
 		const FCanvas::FTransformEntry Transform;
 
+		uint32 GetNumVertices() const;
+		uint32 GetNumIndices() const; 
+
 	private:
+		FMeshBatch* AllocTriangleMeshBatch(FCanvasRenderContext& InRenderContext, FHitProxyId InHitProxyId);
 		void InitTriangleMesh(const FSceneView& View, bool bNeedsToSwitchVerticalAxis);
 		void ReleaseTriangleMesh();
 
-		FRawIndexBuffer IndexBuffer;
+		FRawIndexBuffer16or32 IndexBuffer;
 		FStaticMeshVertexBuffers StaticMeshVertexBuffers;
 		FTriangleVertexFactory VertexFactory;
-		FTriangleMesh TriMesh;
 
 		struct FTriangleInst
 		{

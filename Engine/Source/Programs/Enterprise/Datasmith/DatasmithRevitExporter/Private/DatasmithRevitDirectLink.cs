@@ -10,6 +10,7 @@ using Autodesk.Revit.DB.Events;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Linq;
+using Autodesk.Revit.UI;
 
 namespace DatasmithRevitExporter
 {
@@ -134,7 +135,29 @@ namespace DatasmithRevitExporter
 		private Task													MetadataTask = null;
 
 		private static FDirectLink										ActiveInstance = null;
-		private static List<FDirectLink>								Instances = new List<FDirectLink>();
+		private static List<FDirectLink> Instances = new List<FDirectLink>();
+
+		private static UIApplication UIApp { get; set; } = null;
+
+		private bool bHasChanges = false;
+		private bool bSyncInProgress = false;
+
+		private static bool _bAutoSync = false;
+		public static bool bAutoSync
+		{
+			get
+			{
+				return _bAutoSync;
+			}
+			set
+			{
+				_bAutoSync = value;
+				if (_bAutoSync)
+				{
+					Get()?.RunAutoSync();
+				}
+			}
+		}
 
 		public static FDirectLink Get()
 		{
@@ -143,6 +166,11 @@ namespace DatasmithRevitExporter
 
 		public static void ActivateInstance(Document InDocument)
 		{
+			if (UIApp == null)
+			{
+				UIApp = new UIApplication(InDocument.Application);
+			}
+
 			// Disable existing instance, if there's active one.
 			ActiveInstance?.MakeActive(false);
 			ActiveInstance = null;
@@ -215,6 +243,8 @@ namespace DatasmithRevitExporter
 			foreach (ElementId ElemId in InArgs.GetModifiedElementIds())
 			{
 				Element ModifiedElement = DirectLink.RootCache.SourceDocument.GetElement(ElemId);
+			
+				DirectLink.bHasChanges = true;
 
 				if (ModifiedElement.GetType() == typeof(RevitLinkInstance))
 				{
@@ -236,6 +266,11 @@ namespace DatasmithRevitExporter
 
 				DirectLink.RootCache.ModifiedElements.Add(ElemId);
 			}
+
+			if (DirectLink.bHasChanges && bAutoSync)
+			{
+				DirectLink.RunAutoSync();
+			}
 		}
 
 		private FDirectLink(Document InDocument)
@@ -256,6 +291,39 @@ namespace DatasmithRevitExporter
 
 			DocumentChangedHandler = new EventHandler<DocumentChangedEventArgs>(OnDocumentChanged);
 			InDocument.Application.DocumentChanged += DocumentChangedHandler;
+		}
+
+		private void RunAutoSync()
+		{
+			if (bSyncInProgress)
+			{
+				return;
+			}
+
+			if (bHasChanges || SyncCount == 0)
+			{
+				string CmdGUID = null;
+
+#if REVIT_API_2018
+				CmdGUID = "D38EF9AC-C9B0-4578-8FD2-B4065FEFFABD";
+#elif REVIT_API_2019
+				CmdGUID = "44342F25-7B40-4E5C-A3AA-D94C201D95E8";
+#elif REVIT_API_2020
+				CmdGUID = "0A6A844F-F738-4E7E-A53D-BE8C45CD12A9";
+#elif REVIT_API_2021
+				CmdGUID = "66E62F4C-9F5A-4A3F-94C4-E6DCE838C413";
+#elif REVIT_API_2022
+				CmdGUID = "3478AAF5-75A6-4E6F-BBF8-FFD791CA1801";
+#else
+				#error This version of Revit is not supported yet.
+#endif
+
+				RevitCommandId CmdId = RevitCommandId.LookupCommandId(CmdGUID.ToLower());
+				if (CmdId != null)
+				{
+					UIApp.PostCommand(CmdId);
+				}
+			}
 		}
 
 		private void StopMetadataExport()
@@ -303,6 +371,22 @@ namespace DatasmithRevitExporter
 			ModifiedLinkedDocuments.Clear();
 		}
 
+		public bool IsMaterialDirty(Material InMaterial)
+		{
+			if (InMaterial != null)
+			{
+				return RootCache.ModifiedElements.Contains(InMaterial.Id);
+			}
+			return false;
+		}
+
+		public void SetMaterialClean(Material InMaterial)
+		{
+			if (InMaterial != null)
+			{
+				RootCache.ModifiedElements.Remove(InMaterial.Id);
+			}
+		}
 		public void MarkForExport(Element InElement)
 		{
 			if (InElement.GetType() == typeof(RevitLinkInstance))
@@ -415,6 +499,8 @@ namespace DatasmithRevitExporter
 
 		public void OnBeginExport()
 		{
+			bSyncInProgress = true;
+
 			StopMetadataExport();
 
 			SetSceneCachePath();
@@ -635,14 +721,12 @@ namespace DatasmithRevitExporter
 
 			SyncCount++;
 
-			// Control metadata export via env var REVIT_DIRECTLINK_WITH_METADATA.
-			// We are not interested of its value, just if it was set.
-			if (null != Environment.GetEnvironmentVariable("REVIT_DIRECTLINK_WITH_METADATA"))
-			{
-				Debug.Assert(MetadataTask == null); // We cannot have metadata export running at this point (must be stopped in OnBeginExport)
-				MetadataCancelToken = new CancellationTokenSource();
-				MetadataTask = Task.Run(() => ExportMetadata());
-			}
+			bHasChanges = false;
+			bSyncInProgress = false;
+
+			Debug.Assert(MetadataTask == null); // We cannot have metadata export running at this point (must be stopped in OnBeginExport)
+			MetadataCancelToken = new CancellationTokenSource();
+			MetadataTask = Task.Run(() => ExportMetadata());
 		}
 
 		void ExportMetadata()
@@ -661,7 +745,6 @@ namespace DatasmithRevitExporter
 						CurrentBatchSize = 0;
 
 						// Send metadata to DirectLink.
-						DatasmithScene.CleanUp();
 						DatasmithDirectLink.UpdateScene(DatasmithScene);
 
 						MetadataEvent.WaitOne(DelayExport);
@@ -694,7 +777,9 @@ namespace DatasmithRevitExporter
 					ElementData.ElementMetaData.SetLabel(Actor.GetLabel());
 					ElementData.ElementMetaData.SetAssociatedElement(Actor);
 
-					FDocumentData.AddActorMetadata(RevitElement, ElementData.ElementMetaData);
+					FUtils.AddActorMetadata(RevitElement, ElementData.ElementMetaData);
+
+					DatasmithScene.AddMetaData(ElementData.ElementMetaData);
 
 					++CurrentBatchSize;
 
@@ -736,7 +821,6 @@ namespace DatasmithRevitExporter
 			if (CurrentBatchSize > 0)
 			{
 				// Send remaining chunk of metadata.
-				DatasmithScene.CleanUp();
 				DatasmithDirectLink.UpdateScene(DatasmithScene);
 			}
 

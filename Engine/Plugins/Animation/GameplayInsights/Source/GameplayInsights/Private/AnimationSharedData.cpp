@@ -68,7 +68,7 @@ void FAnimationSharedData::OnEndSession(Insights::ITimingViewSession& InTimingVi
 	TimingViewSession = nullptr;
 }
 
-void FAnimationSharedData::Tick(Insights::ITimingViewSession& InTimingViewSession, const Trace::IAnalysisSession& InAnalysisSession)
+void FAnimationSharedData::Tick(Insights::ITimingViewSession& InTimingViewSession, const TraceServices::IAnalysisSession& InAnalysisSession)
 {
 	AnalysisSession = &InAnalysisSession;
 
@@ -77,7 +77,7 @@ void FAnimationSharedData::Tick(Insights::ITimingViewSession& InTimingViewSessio
 
 	if(AnimationProvider && GameplayProvider)
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(GetAnalysisSession());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(GetAnalysisSession());
 
 		if(AnimationProvider->HasAnyData() && AreAnyAnimationTracksEnabled())
 		{
@@ -508,14 +508,14 @@ void FAnimationSharedData::OnTimeMarkerChanged(Insights::ETimeChangedFlags InFla
 
 	if(bTimeMarkerValid && AnalysisSession != nullptr)
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
 
-		const Trace::IFrameProvider& FramesProvider = Trace::ReadFrameProvider(*AnalysisSession);
+		const TraceServices::IFrameProvider& FramesProvider = TraceServices::ReadFrameProvider(*AnalysisSession);
 		bMarkerFrameValid = FramesProvider.GetFrameFromTime(ETraceFrameType::TraceFrameType_Game, MarkerTime, MarkerFrame);
 	}
 	else
 	{
-		MarkerFrame = Trace::FFrame();
+		MarkerFrame = TraceServices::FFrame();
 		bMarkerFrameValid = false;
 	}
 
@@ -669,14 +669,24 @@ void FAnimationSharedData::OpenAnimGraphTab(uint64 InAnimInstanceId) const
 				});
 			})
 		);
+		
+		TSharedPtr<SAnimGraphSchematicView> AnimGraphView = SNew(SAnimGraphSchematicView, InAnimInstanceId, TimingViewSession->GetTimeMarker(), *AnalysisSession);
+		TimingViewSession->OnTimeMarkerChanged().AddLambda(
+			[AnimGraphViewWeakPtr = TWeakPtr<SAnimGraphSchematicView>(AnimGraphView)](Insights::ETimeChangedFlags InFlags, double TimeMarker)
+			{
+				if (AnimGraphViewWeakPtr.IsValid())
+				{
+					AnimGraphViewWeakPtr.Pin()->SetTimeMarker(TimeMarker);
+				}
+			});
 
-		Tab->SetContent(SNew(SAnimGraphSchematicView, InAnimInstanceId, *TimingViewSession, *AnalysisSession));
+		Tab->SetContent(AnimGraphView.ToSharedRef());
 		WeakAnimGraphDocumentTabs.Add(Tab);
 
 		const FGameplayProvider* GameplayProvider = AnalysisSession->ReadProvider<FGameplayProvider>(FGameplayProvider::ProviderName);
 		if(GameplayProvider)
 		{
-			Trace::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
+			TraceServices::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
 
 			const FObjectInfo& ObjectInfo = GameplayProvider->GetObjectInfo(InAnimInstanceId);
 			Tab->SetLabel(FText::FromString(ObjectInfo.Name));

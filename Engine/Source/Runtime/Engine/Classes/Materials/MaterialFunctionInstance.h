@@ -31,11 +31,11 @@ class UMaterialFunctionInstance : public UMaterialFunctionInterface
 
 	/** Parent function. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=MaterialFunctionInstance, AssetRegistrySearchable)
-	UMaterialFunctionInterface* Parent;
+	TObjectPtr<UMaterialFunctionInterface> Parent;
 
 	/** Base function. */
 	UPROPERTY(AssetRegistrySearchable)
-	UMaterialFunctionInterface* Base;
+	TObjectPtr<UMaterialFunctionInterface> Base;
 
 	/** Scalar parameters. */
 	UPROPERTY(EditAnywhere, Category=MaterialFunctionInstance)
@@ -44,6 +44,10 @@ class UMaterialFunctionInstance : public UMaterialFunctionInterface
 	/** Vector parameters. */
 	UPROPERTY(EditAnywhere, Category=MaterialFunctionInstance)
 	TArray<struct FVectorParameterValue> VectorParameterValues;
+
+	/** DoubleVector parameters. */
+	UPROPERTY(EditAnywhere, Category = MaterialFunctionInstance)
+	TArray<struct FDoubleVectorParameterValue> DoubleVectorParameterValues;
 
 	/** Texture parameters. */
 	UPROPERTY(EditAnywhere, Category=MaterialFunctionInstance)
@@ -85,6 +89,7 @@ class UMaterialFunctionInstance : public UMaterialFunctionInterface
 #endif
 
 #if WITH_EDITORONLY_DATA
+	virtual void Serialize(FArchive& Ar) override;
 	virtual bool IsDependent(UMaterialFunctionInterface* OtherFunction) override;
 	ENGINE_API virtual bool IterateDependentFunctions(TFunctionRef<bool(UMaterialFunctionInterface*)> Predicate) const override;
 	ENGINE_API virtual void GetDependentFunctions(TArray<UMaterialFunctionInterface*>& DependentFunctions) const override;
@@ -139,7 +144,7 @@ class UMaterialFunctionInstance : public UMaterialFunctionInterface
 	}
 
 #if WITH_EDITORONLY_DATA
-	virtual const TArray<UMaterialExpression*>* GetFunctionExpressions() const override
+	virtual const TArray<TObjectPtr<UMaterialExpression>>* GetFunctionExpressions() const override
 	{
 		const UMaterialFunctionInterface* BaseFunction = GetBaseFunction();
 		return BaseFunction ? BaseFunction->GetFunctionExpressions() : nullptr;
@@ -166,21 +171,16 @@ class UMaterialFunctionInstance : public UMaterialFunctionInterface
 			BaseFunction->SetReentrantFlag(bIsReentrant);
 		}
 	}
-#endif // WITH_EDITOR
 
 public:
-	virtual bool OverrideNamedScalarParameter(const FHashedMaterialParameterInfo& ParameterInfo, float& OutValue) override;
-	virtual bool OverrideNamedVectorParameter(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor& OutValue) override;
-	virtual bool OverrideNamedTextureParameter(const FHashedMaterialParameterInfo& ParameterInfo, class UTexture*& OutValue) override;
-	virtual bool OverrideNamedRuntimeVirtualTextureParameter(const FHashedMaterialParameterInfo& ParameterInfo, class URuntimeVirtualTexture*& OutValue) override;
-	virtual bool OverrideNamedFontParameter(const FHashedMaterialParameterInfo& ParameterInfo, class UFont*& OutFontValue, int32& OutFontPage) override;
-	virtual bool OverrideNamedStaticSwitchParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutValue, FGuid& OutExpressionGuid) override;
-	virtual bool OverrideNamedStaticComponentMaskParameter(const FHashedMaterialParameterInfo& ParameterInfo, bool& OutR, bool& OutG, bool& OutB, bool& OutA, FGuid& OutExpressionGuid) override;
+	virtual bool GetParameterOverrideValue(EMaterialParameterType Type, const FName& ParameterName, FMaterialParameterMetadata& OutValue, FMFRecursionGuard RecursionGuard = FMFRecursionGuard()) const override;
+	
+#endif // WITH_EDITOR
 	//~ End UMaterialFunctionInterface interface
 
 protected:
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(transient)
-	class UMaterialInstanceConstant* PreviewMaterial;
+	TObjectPtr<class UMaterialInstanceConstant> PreviewMaterial;
 #endif // WITH_EDITORONLY_DATA
 };

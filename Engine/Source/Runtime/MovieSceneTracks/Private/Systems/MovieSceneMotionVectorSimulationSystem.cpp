@@ -317,9 +317,14 @@ void UMovieSceneMotionVectorSimulationSystem::ApplySimulatedTransforms(USceneCom
 
 	for (USceneComponent* Child : InComponent->GetAttachChildren())
 	{
+		if (!Child)
+		{
+			continue;
+		}
+
 		FName AttachSocketName = Child->GetAttachSocketName();
 
-		FTransform SocketTransform = AttachSocketName == NAME_None ? FTransform::Identity : GetSocketTransform(InComponent, AttachSocketName);
+		FTransform SocketTransform = (AttachSocketName == NAME_None) ? FTransform::Identity : GetSocketTransform(InComponent, AttachSocketName);
 		FTransform ParentToWorld = SocketTransform * InPreviousTransform;
 
 		if (Child->IsUsingAbsoluteLocation())

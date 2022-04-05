@@ -19,12 +19,13 @@ namespace UnrealBuildTool.Rules
 	 
 		private void LoadMixedReality(ReadOnlyTargetRules Target)
         {
-            // Set a macro allowing us to switch between debuggame/development configuration
-            if (Target.Configuration == UnrealTargetConfiguration.Debug)
-            {
-                PrivateDefinitions.Add("WINDOWS_MIXED_REALITY_DEBUG_DLL=1");
-            }
-            else
+            //// Set a macro allowing us to switch between debuggame/development configuration
+            //HACK: use the release version of the interop because the debug build isn't compatible with UE right now.
+            //if (Target.Configuration == UnrealTargetConfiguration.Debug)
+            //{
+            //    PrivateDefinitions.Add("WINDOWS_MIXED_REALITY_DEBUG_DLL=1");
+            //}
+            //else
             {
                 PrivateDefinitions.Add("WINDOWS_MIXED_REALITY_DEBUG_DLL=0");
             }
@@ -34,11 +35,6 @@ namespace UnrealBuildTool.Rules
 				// HoloLens 2 Remoting
                 RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/Windows/x64/Microsoft.Holographic.AppRemoting.dll");
                 RuntimeDependencies.Add("$(EngineDir)/Binaries/ThirdParty/Windows/x64/PerceptionDevice.dll");
-				
-				// HoloLens 1 Remoting
-                RuntimeDependencies.Add("$(EngineDir)/Binaries/Win64/HolographicStreamerDesktop.dll");
-                RuntimeDependencies.Add("$(EngineDir)/Binaries/Win64/Microsoft.Perception.Simulation.dll");
-                RuntimeDependencies.Add("$(EngineDir)/Binaries/Win64/PerceptionSimulationManager.dll");
             }
 
             PublicDefinitions.Add("WITH_WINDOWS_MIXED_REALITY=1");
@@ -48,8 +44,7 @@ namespace UnrealBuildTool.Rules
 		{
 			bEnableExceptions = true;
 
-			if (Target.Platform == UnrealTargetPlatform.Win32 ||
-				Target.Platform == UnrealTargetPlatform.Win64 ||
+			if (Target.Platform == UnrealTargetPlatform.Win64 ||
 				Target.Platform == UnrealTargetPlatform.HoloLens)
 			{
 				PublicDependencyModuleNames.AddRange(
@@ -72,6 +67,7 @@ namespace UnrealBuildTool.Rules
                         "EngineSettings",
                         "InputCore",
 						"RHI",
+						"RHICore",
 						"RenderCore",
 						"Renderer",
 						"HeadMountedDisplay",
@@ -91,6 +87,7 @@ namespace UnrealBuildTool.Rules
 
 				if (Target.bBuildEditor == true)
 				{
+					PrivateDependencyModuleNames.Add("EditorFramework");
 					PrivateDependencyModuleNames.Add("UnrealEd");
                     PrivateDependencyModuleNames.Add("WindowsMixedRealityRuntimeSettings");
                 }
@@ -99,6 +96,7 @@ namespace UnrealBuildTool.Rules
 				{
 					AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
 					AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelMetricsDiscovery");
+					AddEngineThirdPartyPrivateStaticDependencies(Target, "IntelExtensionsFramework");
 				}
 
                 AddEngineThirdPartyPrivateStaticDependencies(Target, "WindowsMixedRealityInterop");
@@ -113,8 +111,7 @@ namespace UnrealBuildTool.Rules
 					"../../../../Source/Runtime/Renderer/Private",
 					});
 
-				if (Target.Platform == UnrealTargetPlatform.Win32 ||
-					Target.Platform == UnrealTargetPlatform.Win64)
+				if (Target.Platform == UnrealTargetPlatform.Win64)
 				{
 					PrivateIncludePaths.Add("../../../../Source/Runtime/Windows/D3D11RHI/Private/Windows");
 				}

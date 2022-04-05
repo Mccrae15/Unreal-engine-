@@ -363,7 +363,7 @@ protected:
 
 	/** child task instance */
 	UPROPERTY()
-	UGameplayTask* ChildTask;
+	TObjectPtr<UGameplayTask> ChildTask;
 
 #if WITH_GAMEPLAYTASK_DEBUG
 	mutable FString DebugDescription;

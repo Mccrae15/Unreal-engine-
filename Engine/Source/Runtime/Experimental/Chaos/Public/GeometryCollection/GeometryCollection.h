@@ -6,18 +6,27 @@
 #include "TransformCollection.h"
 #include "Misc/Crc.h"
 
+#include "GeometryCollection/GeometryCollectionConvexPropertiesInterface.h"
+
 namespace Chaos
 {
 	class FChaosArchive;
 }
+class FGeometryCollectionConvexPropertiesInterface;
+
+namespace GeometryCollectionUV
+{
+	enum
+	{
+		MAX_NUM_UV_CHANNELS = 8,
+	};
+}
 
 /**
 * FGeometryCollection (FTransformCollection)
-*  
-*    see : https://wiki.it.epicgames.net/display/~Brice.Criswell/Geometry+Collections
-*
 */
-class CHAOS_API FGeometryCollection : public FTransformCollection
+class CHAOS_API FGeometryCollection : public FTransformCollection, 
+	public FGeometryCollectionConvexPropertiesInterface
 {
 
 public:
@@ -35,12 +44,12 @@ public:
 		*
 		*   VerticesGroup ("Vertices")
 		*
-		*			FVectorArray      Vertex         = GetAttribute<FVector>("Vertex", VerticesGroup)
+		*			FVectorArray      Vertex         = GetAttribute<FVector3f>("Vertex", VerticesGroup)
 		*			FInt32Array       BoneMap        = GetAttribute<Int32>("BoneMap", VerticesGroup, {"Transform"})
-		*           FVectorArray      Normal         = GetAttribute<FVector>("Normal", MaterialGroup)
-		*           FVector2DArray    UV             = GetAttribute<FVector2D>("UV", MaterialGroup)
-		*           FVectorArray      TangentU       = GetAttribute<FVector>("TangentU", MaterialGroup)
-		*           FVectorArray      TangentV       = GetAttribute<FVector>("TangentV", MaterialGroup)
+		*           FVectorArray      Normal         = GetAttribute<FVector3f>("Normal", MaterialGroup)
+		*			FVector2DArray    UVs            = GetAttribute<TArray<FVector2D>>("UVs", MaterialGroup)
+		*           FVectorArray      TangentU       = GetAttribute<FVector3f>("TangentU", MaterialGroup)
+		*           FVectorArray      TangentV       = GetAttribute<FVector3f>("TangentV", MaterialGroup)
 		*           FLinearColorArray Color          = GetAttribute<FLinearColor>("Color", MaterialGroup)
 		*
 		*		The VerticesGroup will store per-vertex information about the geometry. For
@@ -96,7 +105,9 @@ public:
 	{
 		FST_None = 0,
 		FST_Rigid = 1,
-		FST_Clustered = 2
+		FST_Clustered = 2,
+
+		FST_Max = 3
 	};
 
 	enum ENodeFlags : uint32
@@ -138,6 +149,16 @@ public:
 	* Append a single geometric object to a FGeometryCollection 
 	*/
 	int32 AppendGeometry(const FGeometryCollection & GeometryCollection, int32 MaterialIDOffset = 0, bool ReindexAllMaterials = true, const FTransform& TransformRoot = FTransform::Identity);
+
+	/**
+	* Append single embedded geometry. Returns true if the operation succeeds.
+	*/
+	bool AppendEmbeddedInstance(int32 InExemplarIndex, int32 InParentIndex, const FTransform& InTransform = FTransform::Identity);
+
+	/**
+	 * Reindex exemplar indices to reflect removed exemplars.
+	 */
+	void ReindexExemplarIndices(TArray<int32>& SortedRemovedIndices);
 
 	/**
 	* Remove Geometry and update dependent elements
@@ -196,6 +217,12 @@ public:
 	/** Returns true if the render faces are contiguous*/
 	bool HasContiguousRenderFaces() const;
 
+	/** Returns number of UV layers represented by UV array. A Valid Geometry Collection has the same count for every vertex */
+	int32 NumUVLayers() const;
+
+	/** Update a geometry collection to have the target number of UV layers (must be in the range [1, MAX_UV_LAYERS)) */
+	bool SetNumUVLayers(int32 NumLayers);
+
 	FORCEINLINE bool IsGeometry(int32 Element) const { return TransformToGeometryIndex[Element] != INDEX_NONE; }
 	FORCEINLINE bool IsClustered(int32 Element) const { const TManagedArray<int32>& SimType = SimulationType;  return !!(SimType[Element] == ESimulationTypes::FST_Clustered); }
 	FORCEINLINE bool IsRigid(int32 Element) const { const TManagedArray<int32>& SimType = SimulationType;  return !!(SimType[Element] == ESimulationTypes::FST_Rigid); }
@@ -203,6 +230,9 @@ public:
 	FORCEINLINE void SetFlags(int32 Element, int32 InFlags) { TManagedArray<int32>& Status = StatusFlags; Status[Element] |= InFlags; }
 	FORCEINLINE void ClearFlags(int32 Element, int32 InFlags) { TManagedArray<int32>& Status = StatusFlags; Status[Element] = Status[Element] & ~InFlags; }
 	FORCEINLINE bool HasFlags(int32 Element, int32 InFlags) const { const TManagedArray<int32>& Status = StatusFlags; return (Status[Element] & InFlags) != 0; }
+
+	/** Return true if the Element contains any visible faces. */
+	bool IsVisible(int32 Element) const;
 
 	/** Connection of leaf geometry */
 	TArray<TArray<int32>> ConnectionGraph();
@@ -232,15 +262,17 @@ public:
 	TManagedArray<int32>        SimulationType;
 	TManagedArray<int32>        StatusFlags;
 	TManagedArray<int32>		InitialDynamicState;
+	TManagedArray<int32>		ExemplarIndex;
 
 	// Vertices Group
-	TManagedArray<FVector>		Vertex;
-	TManagedArray<FVector2D>    UV;
-	TManagedArray<FLinearColor> Color;
-	TManagedArray<FVector>      TangentU;
-	TManagedArray<FVector>      TangentV;
-	TManagedArray<FVector>      Normal;
-	TManagedArray<int32>        BoneMap;
+	TManagedArray<FVector3f>		 Vertex;
+	// Outer array is the array of vertices, inner array is the uv channels
+	TManagedArray<TArray<FVector2f>> UVs;
+	TManagedArray<FLinearColor>      Color;
+	TManagedArray<FVector3f>         TangentU;
+	TManagedArray<FVector3f>         TangentV;
+	TManagedArray<FVector3f>         Normal;
+	TManagedArray<int32>             BoneMap;
 
 	// Faces Group
 	TManagedArray<FIntVector>   Indices;

@@ -50,13 +50,11 @@ void SDockingSplitter::ReplaceChild( const TSharedRef<SDockingNode>& InChildToRe
 
 	Replacement->SetSizeCoefficient(InChildToReplace->GetSizeCoefficient());
 
-	Splitter->SlotAt( IndexInParentSplitter )
-	.Value( TAttribute<float>(Replacement, &SDockingNode::GetSizeCoefficient) )
-	.OnSlotResized( SSplitter::FOnSlotResized::CreateSP( Replacement, &SDockingNode::SetSizeCoefficient ) )
-	.SizeRule( TAttribute<SSplitter::ESizeRule>(Replacement, &SDockingNode::GetSizeRule) )
-	[
-		Replacement
-	];
+	SSplitter::FSlot& Slot = Splitter->SlotAt(IndexInParentSplitter);
+	Slot.SetSizeValue(TAttribute<float>(Replacement, &SDockingNode::GetSizeCoefficient));
+	Slot.OnSlotResized().BindSP(Replacement, &SDockingNode::SetSizeCoefficient);
+	Slot.SetSizingRule(TAttribute<SSplitter::ESizeRule>(Replacement, &SDockingNode::GetSizeRule));
+	Slot[Replacement];
 
 	Replacement->SetParentNode( SharedThis(this) );
 }
@@ -181,7 +179,7 @@ SDockingNode::ECleanupRetVal SDockingSplitter::CleanUpNodes()
 		const bool bIsDockArea = !(this->ParentNodePtr.IsValid());
 		if (!bIsDockArea)
 		{
-			this->Visibility = EVisibility::Collapsed;
+			SetVisibility(EVisibility::Collapsed);
 		}		
 	}
 		
@@ -272,9 +270,9 @@ TArray< TSharedRef<SDockingNode> > SDockingSplitter::GetChildNodesRecursively() 
 	return ChildNodes;
 }
 
-TArray< TSharedRef<SDockTab> > SDockingSplitter::GetAllChildTabs() const
+TArray<TSharedRef<SDockTab>> SDockingSplitter::GetAllChildTabs() const
 {
-	TArray< TSharedRef<SDockTab> > ChildTabs;
+	TArray<TSharedRef<SDockTab>> ChildTabs;
 	for (int32 i = 0; i < Children.Num(); ++i)
 	{
 		const TSharedRef<SDockingNode>& Child = Children[i];
@@ -283,6 +281,18 @@ TArray< TSharedRef<SDockTab> > SDockingSplitter::GetAllChildTabs() const
 	return ChildTabs;
 }
 
+
+int32 SDockingSplitter::GetNumTabs() const
+{
+	int32 NumTabs = 0;
+	for (int32 i = 0; i < Children.Num(); ++i)
+	{
+		const TSharedRef<SDockingNode>& Child = Children[i];
+		NumTabs += Child->GetNumTabs();
+	}
+
+	return NumTabs;
+}
 
 EOrientation SDockingSplitter::GetOrientation() const
 {

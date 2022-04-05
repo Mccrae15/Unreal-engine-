@@ -131,7 +131,7 @@ FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* Me
 	FbxVector4* ControlPoints = Mesh->GetControlPoints();
 	for (int32 VertIndex = 0; VertIndex < VertexCount; ++VertIndex)
 	{
-		FVector Position			= Vertices[VertIndex].Position;
+		FVector Position			= (FVector)Vertices[VertIndex].Position;
 		ControlPoints[VertIndex]	= Converter.ConvertToFbxPos(Position);
 	}
 
@@ -153,7 +153,7 @@ FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* Me
 
 	for (int32 VertIndex = 0; VertIndex < VertexCount; ++VertIndex)
 	{
-		FVector Normal			= Vertices[VertIndex].TangentZ;
+		FVector Normal			= (FVector4)Vertices[VertIndex].TangentZ;
 		FbxVector4 FbxNormal	= Converter.ConvertToFbxPos(Normal);
 
 		LayerElementNormal->GetDirectArray().Add(FbxNormal);
@@ -191,7 +191,7 @@ FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* Me
 		// Create the texture coordinate data source.
 		for (int32 TexCoordIndex = 0; TexCoordIndex < VertexCount; ++TexCoordIndex)
 		{
-			const FVector2D& TexCoord = Vertices[TexCoordIndex].UVs[TexCoordSourceIndex];
+			const FVector2D& TexCoord = FVector2D(Vertices[TexCoordIndex].UVs[TexCoordSourceIndex]);
 			UVDiffuseLayer->GetDirectArray().Add(FbxVector2(TexCoord.X, -TexCoord.Y + 1.0));
 		}
 
@@ -279,16 +279,16 @@ FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* Me
 					// Replicate the base mesh in the shape control points to set up the data.
 					for (int32 VertIndex = 0; VertIndex < VertexCount; ++VertIndex)
 					{
-						FVector Position = Vertices[VertIndex].Position;
+						FVector Position = (FVector)Vertices[VertIndex].Position;
 						ShapeControlPoints[VertIndex] = Converter.ConvertToFbxPos(Position);
 					}
 				
 					int32 NumberOfDeltas = 0;
-					FMorphTargetDelta* MorphTargetDeltas = MorphTarget->GetMorphTargetDelta(LODIndex, NumberOfDeltas);
+					const FMorphTargetDelta* MorphTargetDeltas = MorphTarget->GetMorphTargetDelta(LODIndex, NumberOfDeltas);
 					for (int32 MorphTargetDeltaIndex = 0; MorphTargetDeltaIndex < NumberOfDeltas; ++MorphTargetDeltaIndex)
 					{
 						// Apply the morph target deltas to the control points.
-						FMorphTargetDelta& CurrentDelta = MorphTargetDeltas[MorphTargetDeltaIndex];
+						const FMorphTargetDelta& CurrentDelta = MorphTargetDeltas[MorphTargetDeltaIndex];
 						uint32 RemappedSourceIndex = CurrentDelta.SourceIdx;
 
 						if (VertexIndexOffsetPairArray.Num() > 1)
@@ -301,7 +301,7 @@ FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* Me
 
 						if ( RemappedSourceIndex < static_cast<uint32>( VertexCount ) )
 						{
-							ShapeControlPoints[RemappedSourceIndex] = Converter.ConvertToFbxPos(Vertices[RemappedSourceIndex].Position + CurrentDelta.PositionDelta);
+							ShapeControlPoints[RemappedSourceIndex] = Converter.ConvertToFbxPos(FVector(Vertices[RemappedSourceIndex].Position + CurrentDelta.PositionDelta));
 						}
 						else
 						{
@@ -355,7 +355,7 @@ FbxNode* FFbxExporter::CreateMesh(const USkeletalMesh* SkelMesh, const TCHAR* Me
 		}
 		else
 		{
-			MatInterface = SkelMesh->GetMaterials()[MaterialIndex].MaterialInterface;
+			MatInterface = SkelMeshMaterials[MaterialIndex].MaterialInterface;
 		}
 
 		FbxSurfaceMaterial* FbxMaterial = NULL;
@@ -591,7 +591,7 @@ void FFbxExporter::ExportSkeletalMeshComponent(USkeletalMeshComponent* SkelMeshC
 	{
 		UAnimSequence* AnimSeq = (bSaveAnimSeq && SkelMeshComp->GetAnimationMode() == EAnimationMode::AnimationSingleNode) ? 
 			Cast<UAnimSequence>(SkelMeshComp->AnimationData.AnimToPlay) : NULL;
-		FbxNode* SkeletonRootNode = ExportSkeletalMeshToFbx(SkelMeshComp->SkeletalMesh, AnimSeq, MeshName, ActorRootNode, &SkelMeshComp->OverrideMaterials);
+		FbxNode* SkeletonRootNode = ExportSkeletalMeshToFbx(SkelMeshComp->SkeletalMesh, AnimSeq, MeshName, ActorRootNode, &ToRawPtrTArrayUnsafe(SkelMeshComp->OverrideMaterials));
 		if(SkeletonRootNode)
 		{
 			FbxSkeletonRoots.Add(SkelMeshComp, SkeletonRootNode);

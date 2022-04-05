@@ -32,6 +32,13 @@ enum ETerminalSpecification
 	TS_ForcedShared,
 };
 
+struct FImplicitCastParams
+{
+	EKismetCompiledStatementType CastType = KCST_Nop;
+	FBPTerminal* TargetTerminal = nullptr;
+	UEdGraphNode* TargetNode = nullptr;
+};
+
 //////////////////////////////////////////////////////////////////////////
 // FKismetFunctionContext
 
@@ -60,15 +67,16 @@ public:
 	TArray< FBlueprintCompiledStatement* > AllGeneratedStatements;
 
 	// Individual execution lists for every node that generated code to be consumed by the backend
-	TMap< UEdGraphNode*, TArray<FBlueprintCompiledStatement*> > StatementsPerNode;
+	TMap<UEdGraphNode*, TArray<FBlueprintCompiledStatement*>> StatementsPerNode;
 
 	// Goto fixup requests (each statement (key) wants to goto the first statement attached to the exec out-pin (value))
-	TMap< FBlueprintCompiledStatement*, UEdGraphPin* > GotoFixupRequestMap;
+	TMap<FBlueprintCompiledStatement*, UEdGraphPin*> GotoFixupRequestMap;
 
+	// @todo: BP2CPP_remove
 	// Used to split uber graph into subfunctions by C++ backend
+	UE_DEPRECATED(5.0, "This member is no longer in use and will be removed.")
 	TArray<TSet<UEdGraphNode*>> UnsortedSeparateExecutionGroups;
 
-	// Map from a net to an term (either a literal or a storage location)
 	TIndirectArray<FBPTerminal> Parameters;
 	TIndirectArray<FBPTerminal> Results;
 	TIndirectArray<FBPTerminal> VariableReferences;
@@ -78,8 +86,13 @@ public:
 	TIndirectArray<FBPTerminal> EventGraphLocals;
 	TIndirectArray<FBPTerminal>	LevelActorReferences;
 	TIndirectArray<FBPTerminal>	InlineGeneratedValues; // A function generating the parameter will be called inline. The value won't be stored in a local variable.
+
+	// Map from a net to an term (either a literal or a storage location)
 	TMap<UEdGraphPin*, FBPTerminal*> NetMap;
 	TMap<UEdGraphPin*, FBPTerminal*> LiteralHackMap;
+
+	// Contains a map of destination pins that will need an implicit cast to either a float or double
+	TMap<UEdGraphPin*, FImplicitCastParams> ImplicitCastMap;
 
 	bool bIsUbergraph;
 	bool bCannotBeCalledFromOtherKismet;
@@ -98,13 +111,24 @@ public:
 	struct FNetNameMapping* NetNameMap;
 	bool bAllocatedNetNameMap;
 
+	// @todo: BP2CPP_remove
 	//Skip some optimization. C++ code will be generated in this pass. 
+	UE_DEPRECATED(5.0, "This member is no longer in use and will be removed.")
 	bool bGeneratingCpp;
 
 	//Does this function use requires FlowStack ?
 	bool bUseFlowStack;
 public:
-	FKismetFunctionContext(FCompilerResultsLog& InMessageLog, const UEdGraphSchema_K2* InSchema, UBlueprintGeneratedClass* InNewClass, UBlueprint* InBlueprint, bool bInGeneratingCpp);
+	FKismetFunctionContext(FCompilerResultsLog& InMessageLog, const UEdGraphSchema_K2* InSchema, UBlueprintGeneratedClass* InNewClass, UBlueprint* InBlueprint);
+
+	// @todo: BP2CPP_remove
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	UE_DEPRECATED(5.0, "Please use the version that does not include the Cpp generation flag as a parameter.")
+	FKismetFunctionContext(FCompilerResultsLog& InMessageLog, const UEdGraphSchema_K2* InSchema, UBlueprintGeneratedClass* InNewClass, UBlueprint* InBlueprint, bool bInGeneratingCpp)
+		:FKismetFunctionContext(InMessageLog, InSchema, InNewClass, InBlueprint)
+	{
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	~FKismetFunctionContext();
 
@@ -309,7 +333,9 @@ public:
 		return (SourceStatementList != NULL) && (SourceStatementList->Num() > 0);
 	}
 
-	KISMETCOMPILER_API bool MustUseSwitchState(const FBlueprintCompiledStatement* ExcludeThisOne) const;
+	// @todo: BP2CPP_remove
+	UE_DEPRECATED(5.0, "This API is no longer in use and will be removed.")
+	bool MustUseSwitchState(const FBlueprintCompiledStatement* ExcludeThisOne) const { return false; }
 
 private:
 	// Optimize out any useless jumps (jump to the very next statement, where the control flow can just fall through)
@@ -322,7 +348,9 @@ private:
 	void ResolveGotoFixups();
 
 public:
-	static bool DoesStatementRequiresSwitch(const FBlueprintCompiledStatement* Statement);
+	// @todo: BP2CPP_remove
+	UE_DEPRECATED(5.0, "This API is no longer in use and will be removed.")
+	static bool DoesStatementRequiresSwitch(const FBlueprintCompiledStatement* Statement) { return false; }
 	static bool DoesStatementRequiresFlowStack(const FBlueprintCompiledStatement* Statement);
 	// The function links gotos, sorts statments, and merges adjacent ones. 
 	void ResolveStatements();

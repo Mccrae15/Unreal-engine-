@@ -9,6 +9,7 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 #include "ISourceControlModule.h"
+#include "SourceControlAssetDataCache.h"
 #include "SourceControlSettings.h"
 #include "DefaultSourceControlProvider.h"
 
@@ -33,12 +34,24 @@ public:
 	virtual void QueueStatusUpdate(const FString& InFilename) override;
 	virtual bool IsEnabled() const override;
 	virtual ISourceControlProvider& GetProvider() const override;
+	virtual FSourceControlAssetDataCache& GetAssetDataCache() override;
 	virtual void SetProvider( const FName& InName ) override;
 	virtual void ShowLoginDialog(const FSourceControlLoginClosed& InOnSourceControlLoginClosed, ELoginWindowMode::Type InLoginWindowMode, EOnLoginWindowStartup::Type InOnLoginWindowStartup = EOnLoginWindowStartup::ResetProviderToNone) override;
 	virtual bool GetUseGlobalSettings() const override;
 	virtual void SetUseGlobalSettings(bool bIsUseGlobalSettings) override;
 	virtual FDelegateHandle RegisterProviderChanged(const FSourceControlProviderChanged::FDelegate& SourceControlProviderChanged) override;
 	virtual void UnregisterProviderChanged(FDelegateHandle Handle) override;
+	virtual void RegisterPreSubmitDataValidation(const FSourceControlPreSubmitDataValidationDelegate& PreSubmitDataValidationDelegate) override;
+	virtual void UnregisterPreSubmitDataValidation() override;
+	virtual FSourceControlPreSubmitDataValidationDelegate GetRegisteredPreSubmitDataValidation() override;
+	
+	virtual FDelegateHandle RegisterPreSubmitFinalize(const FSourceControlPreSubmitFinalizeDelegate::FDelegate& Delegate) override;
+	virtual void UnregisterPreSubmitFinalize(FDelegateHandle Handle) override;
+	virtual const FSourceControlPreSubmitFinalizeDelegate& GetOnPreSubmitFinalize() const override;
+
+	virtual FDelegateHandle RegisterFilesDeleted(const FSourceControlFilesDeletedDelegate::FDelegate& InDelegate) override;
+	virtual void UnregisterFilesDeleted(FDelegateHandle InHandle) override;
+	virtual const FSourceControlFilesDeletedDelegate& GetOnFilesDeleted() const override;
 
 	/** Save the settings to the ini file */
 	void SaveSettings();
@@ -119,4 +132,16 @@ private:
 
 	/** For notifying when the source provider is changed */
 	FSourceControlProviderChanged OnSourceControlProviderChanged;
+
+	/** To call when doing pre-submit data validation */
+	FSourceControlPreSubmitDataValidationDelegate OnSourceControlPreSubmitDataValidation;
+	
+	/** To be called right before files are submitted, allowing for additional last minute validation. @see FSourceControlPreSubmitFinalizeDelegate */
+	FSourceControlPreSubmitFinalizeDelegate OnPresubmitFinalize;
+
+	/** To be called after a source control operations deleted files */
+	FSourceControlFilesDeletedDelegate OnFilesDeleted;
+
+	/** Used to cache source controlled AssetData information */
+	FSourceControlAssetDataCache AssetDataCache;
 };

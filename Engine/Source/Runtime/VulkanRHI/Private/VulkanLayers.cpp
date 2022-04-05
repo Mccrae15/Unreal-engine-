@@ -121,7 +121,15 @@ static const ANSICHAR* GDeviceExtensions[] =
 	VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME,
 #endif
 
+#if VULKAN_SUPPORTS_IMAGE_64BIT_ATOMICS
+	VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME,
+#endif
+
 	VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME,
+
+#if VULKAN_SUPPORTS_SHADER_VIEWPORT_INDEX_LAYER
+	VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_EXTENSION_NAME,
+#endif 
 
 	nullptr
 };
@@ -454,6 +462,13 @@ void FVulkanDynamicRHI::GetInstanceLayersAndExtensions(TArray<const ANSICHAR*>& 
 		}
 	}
 
+	TArray<const ANSICHAR*> PlatformLayers;
+	FVulkanPlatform::GetInstanceLayers(PlatformLayers);
+	for (const ANSICHAR* PlatformLayer : PlatformLayers)
+	{
+		OutInstanceLayers.Add(PlatformLayer);
+	}
+
 	for (int32 j = 0; GInstanceExtensions[j] != nullptr; j++)
 	{
 		if (FindLayerExtensionInList(GlobalLayerExtensions, GInstanceExtensions[j]))
@@ -691,6 +706,13 @@ void FVulkanDevice::GetDeviceExtensionsAndLayers(VkPhysicalDevice Gpu, EGpuVendo
 		}
 	}
 
+	TArray<const ANSICHAR*> PlatformLayers;
+	FVulkanPlatform::GetDeviceLayers(VendorId, PlatformLayers);
+	for (const ANSICHAR* PlatformLayer : PlatformLayers)
+	{
+		OutDeviceLayers.Add(PlatformLayer);
+	}
+
 	for (uint32 Index = 0; Index < UE_ARRAY_COUNT(GDeviceExtensions) && GDeviceExtensions[Index] != nullptr; ++Index)
 	{
 		if (ListContains(AvailableExtensions, GDeviceExtensions[Index]))
@@ -717,10 +739,7 @@ void FVulkanDevice::GetDeviceExtensionsAndLayers(VkPhysicalDevice Gpu, EGpuVendo
 	if (!bOutDebugMarkers &&
 		(((GRenderDocFound || VulkanValidationOption == 0) && ListContains(AvailableExtensions, VK_EXT_DEBUG_MARKER_EXTENSION_NAME)) || FVulkanPlatform::ForceEnableDebugMarkers()))
 	{
-		// HACK: Lumin Nvidia driver unofficially supports this extension, but will return false if we try to load it explicitly.
-#if !PLATFORM_LUMIN
 		OutDeviceExtensions.Add(VK_EXT_DEBUG_MARKER_EXTENSION_NAME);
-#endif
 		bOutDebugMarkers = true;
 	}
 #endif
@@ -826,6 +845,12 @@ void FOptionalVulkanDeviceExtensions::Setup(const TArray<const ANSICHAR*>& Devic
 	HasMemoryBudget = 0;
 #endif
 
+#if VULKAN_SUPPORTS_TEXTURE_COMPRESSION_ASTC_HDR
+	HasEXTTextureCompressionASTCHDR = HasExtension(DeviceExtensions, VK_EXT_TEXTURE_COMPRESSION_ASTC_HDR_EXTENSION_NAME);
+#else
+	HasEXTTextureCompressionASTCHDR = 0;
+#endif
+
 #if VULKAN_SUPPORTS_ASTC_DECODE_MODE
 	HasEXTASTCDecodeMode = HasExtension(DeviceExtensions, VK_EXT_ASTC_DECODE_MODE_EXTENSION_NAME);
 #else
@@ -834,6 +859,10 @@ void FOptionalVulkanDeviceExtensions::Setup(const TArray<const ANSICHAR*>& Devic
 
 #if VULKAN_SUPPORTS_DRIVER_PROPERTIES
 	HasDriverProperties = HasExtension(DeviceExtensions, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_RENDERPASS2
+	HasKHRRenderPass2 = HasExtension(DeviceExtensions, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
 #endif
 
 #if VULKAN_SUPPORTS_FRAGMENT_DENSITY_MAP
@@ -845,10 +874,7 @@ void FOptionalVulkanDeviceExtensions::Setup(const TArray<const ANSICHAR*>& Devic
 #endif
 
 #if VULKAN_SUPPORTS_FRAGMENT_SHADING_RATE
-	// TODO: the VK_KHR_fragment_shading_rate extension is dependent on vkCreateRenderPass2, VkRenderPassCreateInfo2, VkAttachmentDescription2 and VkSubpassDescription2.
-	// Disabling this path for now; adding this support in a later checkin.
-
-	// HasKHRFragmentShadingRate = HasExtension(DeviceExtensions, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+	HasKHRFragmentShadingRate = HasExtension(DeviceExtensions, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
 #endif
 
 #if VULKAN_SUPPORTS_MULTIVIEW
@@ -866,11 +892,30 @@ void FOptionalVulkanDeviceExtensions::Setup(const TArray<const ANSICHAR*>& Devic
 #endif
 
 #if VULKAN_SUPPORTS_BUFFER_64BIT_ATOMICS
-	HasAtomicInt64 = HasExtension(DeviceExtensions, VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME);
+	HasBufferAtomicInt64 = HasExtension(DeviceExtensions, VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_IMAGE_64BIT_ATOMICS
+	HasImageAtomicInt64 = HasExtension(DeviceExtensions, VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME);
 #endif
 
 #if VULKAN_SUPPORTS_SCALAR_BLOCK_LAYOUT
 	HasScalarBlockLayoutFeatures = HasExtension(DeviceExtensions, VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
+#endif
+
+#if VULKAN_RHI_RAYTRACING
+	HasAccelerationStructure	= HasExtension(DeviceExtensions, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+	HasRayTracingPipeline		= HasExtension(DeviceExtensions, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+	HasRayQuery		            = HasExtension(DeviceExtensions, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+	HasDescriptorIndexing		= HasExtension(DeviceExtensions, VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+	HasBufferDeviceAddress		= HasExtension(DeviceExtensions, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+	HasDeferredHostOperations	= HasExtension(DeviceExtensions, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+	HasSPIRV_14					= HasExtension(DeviceExtensions, VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+	HasShaderFloatControls		= HasExtension(DeviceExtensions, VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+#endif
+
+#if VULKAN_SUPPORTS_SHADER_VIEWPORT_INDEX_LAYER
+	HasEXTShaderViewportIndexLayer = HasExtension(DeviceExtensions, VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_EXTENSION_NAME);
 #endif
 }
 

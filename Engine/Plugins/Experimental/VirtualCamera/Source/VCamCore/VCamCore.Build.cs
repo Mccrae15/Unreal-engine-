@@ -43,7 +43,6 @@ public class VCamCore : ModuleRules
 				"UMG",
 				"CinematicCamera",
 				"GameplayTags",
-				"LiveLink",
 				"LiveLinkInterface",
 				"MediaIOCore",
 				"RemoteSession",
@@ -65,6 +64,7 @@ public class VCamCore : ModuleRules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
+					"EditorFramework",
 					"LevelEditor",
 					"UnrealEd",
 					"Concert",

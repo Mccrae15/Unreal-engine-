@@ -38,6 +38,10 @@ void CapabilityVisitor::addCapabilityForType(const SpirvType *type,
   // Integer-related capabilities
   if (const auto *intType = dyn_cast<IntegerType>(type)) {
     switch (intType->getBitwidth()) {
+    case 8: {
+      addCapability(spv::Capability::Int8);
+      break;
+    }
     case 16: {
       // Usage of a 16-bit integer type.
       addCapability(spv::Capability::Int16);
@@ -167,7 +171,16 @@ void CapabilityVisitor::addCapabilityForType(const SpirvType *type,
     if (imageType->isArrayedImage() && imageType->isMSImage())
       addCapability(spv::Capability::ImageMSArray);
 
-    addCapabilityForType(imageType->getSampledType(), loc, sc);
+    if (const auto *sampledType = imageType->getSampledType()) {
+      addCapabilityForType(sampledType, loc, sc);
+      if (const auto *sampledIntType = dyn_cast<IntegerType>(sampledType)) {
+        if (sampledIntType->getBitwidth() == 64) {
+          addCapability(spv::Capability::Int64ImageEXT);
+          addExtension(Extension::EXT_shader_image_int64,
+                       "64-bit image types in resource", loc);
+        }
+      }
+    }
   }
   // Sampled image type
   else if (const auto *sampledImageType = dyn_cast<SampledImageType>(type)) {
@@ -176,6 +189,11 @@ void CapabilityVisitor::addCapabilityForType(const SpirvType *type,
   // Pointer type
   else if (const auto *ptrType = dyn_cast<SpirvPointerType>(type)) {
     addCapabilityForType(ptrType->getPointeeType(), loc, sc);
+    if (sc == spv::StorageClass::PhysicalStorageBuffer) {
+      addExtension(Extension::KHR_physical_storage_buffer,
+                   "SPV_KHR_physical_storage_buffer", loc);
+      addCapability(spv::Capability::PhysicalStorageBufferAddresses);
+    }
   }
   // Struct type
   else if (const auto *structType = dyn_cast<StructType>(type)) {
@@ -194,6 +212,18 @@ void CapabilityVisitor::addCapabilityForType(const SpirvType *type,
     }
     for (auto field : structType->getFields())
       addCapabilityForType(field.type, loc, sc);
+  }
+  // AccelerationStructureTypeNV and RayQueryTypeKHR type
+  // Note: Because AccelerationStructureType can be provided by both
+  // SPV_KHR_ray_query and SPV_{NV,KHR}_ray_tracing extensions, this logic will
+  // result in SPV_KHR_ray_query being unnecessarily required in some cases. If
+  // this is an issue in future (more devices are identified that support
+  // ray_tracing but not ray_query), then we should consider addressing this
+  // interaction with a spirv-opt pass instead.
+  else if (isa<AccelerationStructureTypeNV>(type) ||
+           isa<RayQueryTypeKHR>(type)) {
+    addCapability(spv::Capability::RayQueryKHR);
+    addExtension(Extension::KHR_ray_query, "SPV_KHR_ray_query", {});
   }
 }
 
@@ -327,10 +357,10 @@ bool CapabilityVisitor::visit(SpirvDecoration *decor) {
                    "SV_Barycentrics", loc);
       break;
     }
-    case spv::BuiltIn::FragSizeEXT: {
-      addExtension(Extension::EXT_fragment_invocation_density, "SV_ShadingRate",
-                   loc);
-      addCapability(spv::Capability::FragmentDensityEXT);
+    case spv::BuiltIn::ShadingRateKHR:
+    case spv::BuiltIn::PrimitiveShadingRateKHR: {
+      addExtension(Extension::KHR_fragment_shading_rate, "SV_ShadingRate", loc);
+      addCapability(spv::Capability::FragmentShadingRateKHR);
       break;
     }
     default:
@@ -416,6 +446,17 @@ bool CapabilityVisitor::visitInstruction(SpirvInstruction *instr) {
     addCapability(getNonUniformCapability(resultType));
   }
 
+  if (instr->getKind() == SpirvInstruction::IK_SpirvIntrinsicInstruction) {
+    SpirvIntrinsicInstruction *pSpvInst =
+        dyn_cast<SpirvIntrinsicInstruction>(instr);
+    for (auto &cap : pSpvInst->getCapabilities()) {
+      addCapability(static_cast<spv::Capability>(cap));
+    }
+    for (const auto &ext : pSpvInst->getExtensions()) {
+      spvBuilder.requireExtension(ext, loc);
+    }
+  }
+
   // Add opcode-specific capabilities
   switch (opcode) {
   case spv::Op::OpDPdxCoarse:
@@ -443,6 +484,10 @@ bool CapabilityVisitor::visitInstruction(SpirvInstruction *instr) {
   case spv::Op::OpGroupNonUniformBroadcast:
   case spv::Op::OpGroupNonUniformBroadcastFirst:
     addCapability(spv::Capability::GroupNonUniformBallot);
+    break;
+  case spv::Op::OpGroupNonUniformShuffle:
+  case spv::Op::OpGroupNonUniformShuffleXor:
+    addCapability(spv::Capability::GroupNonUniformShuffle);
     break;
   case spv::Op::OpGroupNonUniformIAdd:
   case spv::Op::OpGroupNonUniformFAdd:
@@ -475,6 +520,15 @@ bool CapabilityVisitor::visitInstruction(SpirvInstruction *instr) {
     }
     break;
   }
+  case spv::Op::OpRayQueryInitializeKHR: {
+    auto rayQueryInst = dyn_cast<SpirvRayQueryOpKHR>(instr);
+    if (rayQueryInst->hasCullFlags()) {
+      addCapability(spv::Capability::RayTraversalPrimitiveCullingKHR);
+    }
+
+    break;
+  }
+
   default:
     break;
   }
@@ -503,11 +557,15 @@ bool CapabilityVisitor::visit(SpirvEntryPoint *entryPoint) {
   case spv::ExecutionModel::AnyHitNV:
   case spv::ExecutionModel::MissNV:
   case spv::ExecutionModel::CallableNV:
-    if (featureManager.isExtensionEnabled("SPV_NV_ray_tracing")) {
+    if (featureManager.isExtensionEnabled(Extension::NV_ray_tracing)) {
       addCapability(spv::Capability::RayTracingNV);
       addExtension(Extension::NV_ray_tracing, "SPV_NV_ray_tracing", {});
     } else {
-      addCapability(spv::Capability::RayTracingProvisionalKHR);
+      // KHR_ray_tracing extension requires Vulkan 1.1 with VK_KHR_spirv_1_4
+      // extention or Vulkan 1.2.
+      featureManager.requestTargetEnv(SPV_ENV_VULKAN_1_1_SPIRV_1_4,
+                                      "Raytracing", {});
+      addCapability(spv::Capability::RayTracingKHR);
       addExtension(Extension::KHR_ray_tracing, "SPV_KHR_ray_tracing", {});
     }
     break;
@@ -520,6 +578,7 @@ bool CapabilityVisitor::visit(SpirvEntryPoint *entryPoint) {
     llvm_unreachable("found unknown shader model");
     break;
   }
+
   return true;
 }
 
@@ -529,6 +588,18 @@ bool CapabilityVisitor::visit(SpirvExecutionMode *execMode) {
                   execMode->getEntryPoint()->getSourceLocation());
     addExtension(Extension::KHR_post_depth_coverage,
                  "[[vk::post_depth_coverage]]", execMode->getSourceLocation());
+  }
+  return true;
+}
+
+bool CapabilityVisitor::visit(SpirvExtInstImport *instr) {
+  if (instr->getExtendedInstSetName() == "NonSemantic.DebugPrintf") {
+    addExtension(Extension::KHR_non_semantic_info, "DebugPrintf",
+                 /*SourceLocation*/ {});
+  } else if (instr->getExtendedInstSetName() ==
+             "NonSemantic.Shader.DebugInfo.100") {
+    addExtension(Extension::KHR_non_semantic_info, "Shader.DebugInfo.100",
+                 /*SourceLocation*/ {});
   }
   return true;
 }
@@ -551,6 +622,45 @@ bool CapabilityVisitor::visit(SpirvExtInst *instr) {
     }
 
   return visitInstruction(instr);
+}
+
+bool CapabilityVisitor::visit(SpirvAtomic *instr) {
+  if (instr->hasValue() && SpirvType::isOrContainsType<IntegerType, 64>(
+                               instr->getValue()->getResultType())) {
+    addCapability(spv::Capability::Int64Atomics, instr->getSourceLocation());
+  }
+  return true;
+}
+
+bool CapabilityVisitor::visit(SpirvDemoteToHelperInvocationEXT *inst) {
+  addCapability(spv::Capability::DemoteToHelperInvocationEXT,
+                inst->getSourceLocation());
+  addExtension(Extension::EXT_demote_to_helper_invocation, "discard",
+               inst->getSourceLocation());
+  return true;
+}
+
+bool CapabilityVisitor::visit(SpirvReadClock *inst) {
+  auto loc = inst->getSourceLocation();
+  addCapabilityForType(inst->getResultType(), loc, inst->getStorageClass());
+  addCapability(spv::Capability::ShaderClockKHR, loc);
+  addExtension(Extension::KHR_shader_clock, "ReadClock", loc);
+  return true;
+}
+
+bool CapabilityVisitor::visit(SpirvModule *, Visitor::Phase phase) {
+  // If there are no entry-points in the module (hence shaderModel is not set),
+  // add the Linkage capability. This allows library shader models to use
+  // 'export' attribute on functions, and generate an "incomplete/partial"
+  // SPIR-V binary.
+  // ExecutionModel::Max means that no entrypoints exist, therefore we should
+  // add the Linkage Capability.
+  if (phase == Visitor::Phase::Done &&
+      shaderModel == spv::ExecutionModel::Max) {
+    addCapability(spv::Capability::Shader);
+    addCapability(spv::Capability::Linkage);
+  }
+  return true;
 }
 
 } // end namespace spirv

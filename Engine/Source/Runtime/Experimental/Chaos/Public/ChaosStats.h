@@ -15,7 +15,7 @@ DECLARE_STATS_GROUP(TEXT("ChaosJoint"), STATGROUP_ChaosJoint, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("ChaosMinEvolution"), STATGROUP_ChaosMinEvolution, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("ChaosCounters"), STATGROUP_ChaosCounters, STATCAT_Advanced);
 DECLARE_STATS_GROUP(TEXT("ChaosIterations"), STATGROUP_ChaosIterations, STATCAT_Advanced);
-
+DECLARE_STATS_GROUP(TEXT("ChaosCollisionCounters"), STATGROUP_ChaosCollisionCounters, STATCAT_Advanced);
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Physics Tick"), STAT_ChaosTick, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Physics Advance"), STAT_PhysicsAdvance, STATGROUP_Chaos, CHAOS_API);
@@ -39,6 +39,8 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("Geometry Collection Sweep"), STAT_GCSweep, STATG
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Geometry Collection Component UpdateBounds"), STAT_GCCUpdateBounds, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Geometry Collection Component CalculateGlobalMatrices"), STAT_GCCUGlobalMatrices, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Geometry Collection InitDynamicData"), STAT_GCInitDynamicData, STATGROUP_Chaos, CHAOS_API);
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Geometry Collection Total Transforms"), STAT_GCTotalTransforms, STATGROUP_Chaos, CHAOS_API);
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Geometry Collection Changed Transforms"), STAT_GCChangedTransforms, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Physics Lock Waits"), STAT_LockWaits, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Geometry Collection Begin Frame"), STAT_GeomBeginFrame, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Skeletal Mesh Update Anim"), STAT_SkelMeshUpdateAnim, STATGROUP_Chaos, CHAOS_API);
@@ -50,6 +52,9 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("Flip Results"), STAT_FlipResults, STATGROUP_Chao
 DECLARE_CYCLE_STAT_EXTERN(TEXT("ProcessDeferredCreatePhysicsState"), STAT_ProcessDeferredCreatePhysicsState, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("SQ - Update Materials"), STAT_SqUpdateMaterials, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("[BufferPhysicsResults] - Geometry Collection"), STAT_CacheResultGeomCollection, STATGROUP_ChaosWide, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Update GC Views"), STAT_UpdateGeometryCollectionViews, STATGROUP_Chaos, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Particle Loop"), STAT_BufferPhysicsResultsParticleLoop, STATGROUP_Chaos, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Capture Solver Data"), STAT_CaptureSolverData, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("[BufferPhysicsResults] - StaticMesh"), STAT_CacheResultStaticMesh, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Capture Disabled State"), STAT_CaptureDisabledState, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Calc Global Matrices"), STAT_CalcGlobalGCMatrices, STATGROUP_Chaos, CHAOS_API);
@@ -75,6 +80,8 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("Reset Collision Rule"), STAT_ResetCollisionRule,
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Object Parameter Update"), STAT_ParamUpdateObject, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Field Parameter Update"), STAT_ParamUpdateField, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Sync Events - Game Thread"), STAT_SyncEvents_GameThread, STATGROUP_Chaos, CHAOS_API);
+
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Proxies Set Compaction"), STAT_ProxiesSetCompaction, STATGROUP_Chaos, CHAOS_API);
 
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Physics Thread Stat Update"), STAT_PhysicsStatUpdate, STATGROUP_ChaosThread, CHAOS_API);
 DECLARE_FLOAT_COUNTER_STAT_EXTERN(TEXT("Physics Thread Time Actual (ms)"), STAT_PhysicsThreadTime, STATGROUP_ChaosThread, CHAOS_API);
@@ -106,3 +113,33 @@ DECLARE_CYCLE_STAT_EXTERN(TEXT("[Field Update] PositionAnimated"), STAT_ParamUpd
 DECLARE_CYCLE_STAT_EXTERN(TEXT("[Field Update] DynamicConstraint"), STAT_ParamUpdateField_DynamicConstraint, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("[Field Update] LinearForce"), STAT_ForceUpdateField_LinearForce, STATGROUP_Chaos, CHAOS_API);
 DECLARE_CYCLE_STAT_EXTERN(TEXT("[Field Update] AngularTorque"), STAT_ForceUpdateField_AngularTorque, STATGROUP_Chaos, CHAOS_API);
+
+// Collision Detection
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::Detect"), STAT_Collisions_Detect, STATGROUP_ChaosCollision, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::BroadPhase"), STAT_Collisions_ParticlePairBroadPhase, STATGROUP_ChaosCollision, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::BroadPhase"), STAT_Collisions_SpatialBroadPhase, STATGROUP_ChaosCollision, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::AABBTree"), STAT_Collisions_AABBTree, STATGROUP_ChaosCollision, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::Filtering"), STAT_Collisions_Filtering, STATGROUP_ChaosCollision, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::Restore"), STAT_Collisions_Restore, STATGROUP_ChaosCollision, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::GenerateCollisions"), STAT_Collisions_GenerateCollisions, STATGROUP_ChaosCollision, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::Gather"), STAT_Collisions_Gather, STATGROUP_ChaosCollision, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::Scatter"), STAT_Collisions_Scatter, STATGROUP_ChaosCollision, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::Apply"), STAT_Collisions_Apply, STATGROUP_ChaosCollision, CHAOS_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Collisions::ApplyPushOut"), STAT_Collisions_ApplyPushOut, STATGROUP_ChaosCollision, CHAOS_API);
+
+
+#if 0
+#define PHYSICS_CSV_SCOPED_EXPENSIVE(Category, Name) CSV_SCOPED_TIMING_STAT(Category, Name)
+#define PHYSICS_CSV_CUSTOM_EXPENSIVE(Category, Name, Value, Op) CSV_CUSTOM_STAT(Category, Name, Value, Op)
+#else
+#define PHYSICS_CSV_SCOPED_EXPENSIVE(Category, Name) 
+#define PHYSICS_CSV_CUSTOM_EXPENSIVE(Category, Name, Value, Op) 
+#endif
+
+#if 0
+#define PHYSICS_CSV_SCOPED_VERY_EXPENSIVE(Category, Name) CSV_SCOPED_TIMING_STAT(Category, Name)
+#define PHYSICS_CSV_CUSTOM_VERY_EXPENSIVE(Category, Name, Value, Op) CSV_CUSTOM_STAT(Category, Name, Value, Op)
+#else
+#define PHYSICS_CSV_SCOPED_VERY_EXPENSIVE(Category, Name) 
+#define PHYSICS_CSV_CUSTOM_VERY_EXPENSIVE(Category, Name, Value, Op) 
+#endif

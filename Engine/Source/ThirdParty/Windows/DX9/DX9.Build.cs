@@ -7,29 +7,15 @@ public class DX9 : ModuleRules
 	{
 		Type = ModuleType.External;
 
-		string DirectXSDKDir = "";
-		if (Target.Platform == UnrealTargetPlatform.HoloLens)
-		{
-			DirectXSDKDir = Target.WindowsPlatform.bUseWindowsSDK10 ?
-            Target.UEThirdPartySourceDirectory + "Windows/DirectXLegacy" :
-			Target.UEThirdPartySourceDirectory + "Windows/DirectX";   
-		}
-		else
-		{
-			DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
-		}
+		string DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
 
 		string LibDir = null;
 		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			LibDir = DirectXSDKDir + "/Lib/x64/";
 		}
-		else if (Target.Platform == UnrealTargetPlatform.Win32)
-		{
-			LibDir = DirectXSDKDir + "/Lib/x86/";
-		}
 
-		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.HoloLens)
+		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.HoloLens)
 		{
 			PublicSystemIncludePaths.Add(DirectXSDKDir + "/include");
 
@@ -37,8 +23,6 @@ public class DX9 : ModuleRules
 				new string[] {
 					LibDir + "d3d9.lib",
 					LibDir + "dxguid.lib",
-					LibDir + "d3dcompiler.lib",
-					(Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT) ? LibDir + "d3dx9d.lib" : LibDir + "d3dx9.lib",
 					LibDir + "dinput8.lib",
 					LibDir + "X3DAudio.lib",
 					LibDir + "xapobase.lib",

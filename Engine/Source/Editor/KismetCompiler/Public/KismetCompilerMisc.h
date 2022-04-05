@@ -42,10 +42,10 @@ public:
 	static bool IsTypeCompatibleWithProperty(UEdGraphPin* SourcePin, FProperty* Property, FCompilerResultsLog& MessageLog, const UEdGraphSchema_K2* Schema, UClass* SelfClass);
 
 	/** Finds a property by name, starting in the specified scope; Validates property type and returns NULL along with emitting an error if there is a mismatch. */
-	static FProperty* FindPropertyInScope(UStruct* Scope, UEdGraphPin* Pin, FCompilerResultsLog& MessageLog, const UEdGraphSchema_K2* Schema, UClass* SelfClass, bool& bIsSparseProperty, bool bSuppressMissingMemberErrors = false);
+	static FProperty* FindPropertyInScope(UStruct* Scope, UEdGraphPin* Pin, FCompilerResultsLog& MessageLog, const UEdGraphSchema_K2* Schema, UClass* SelfClass, bool& bIsSparseProperty);
 
 	// Finds a property by name, starting in the specified scope, returning NULL if it's not found
-	static FProperty* FindNamedPropertyInScope(UStruct* Scope, FName PropertyName, bool& bIsSparseProperty);
+	static FProperty* FindNamedPropertyInScope(UStruct* Scope, FName PropertyName, bool& bIsSparseProperty, const bool bAllowDeprecated = false);
 
 	/** return function, that overrides BlueprintImplementableEvent with given name in given class (super-classes are not considered) */
 	static const UFunction* FindOverriddenImplementableEvent(const FName& EventName, const UClass* Class);
@@ -86,7 +86,7 @@ public:
 	static UEdGraphPin* GenerateAssignmentNodes( class FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph, UK2Node_CallFunction* CallBeginSpawnNode, UEdGraphNode* SpawnNode, UEdGraphPin* CallBeginResult, const UClass* ForClass );
 
 	/** Create Kismet assignment statement with proper object <-> interface cast */
-	static void CreateObjectAssignmentStatement(FKismetFunctionContext& Context, UEdGraphNode* Node, FBPTerminal* SrcTerm, FBPTerminal* DstTerm);
+	static void CreateObjectAssignmentStatement(FKismetFunctionContext& Context, UEdGraphNode* Node, FBPTerminal* SrcTerm, FBPTerminal* DstTerm, UEdGraphPin* DstPin = nullptr);
 
 	/** Checks if each execution path ends with a Return node */
 	static void ValidateProperEndExecutionPath(FKismetFunctionContext& Context);
@@ -111,6 +111,12 @@ public:
 
 	/** Add this BP to any BPs that it in*/
 	static void UpdateDependentBlueprints(UBlueprint* BP);
+
+	// Check the passed-in function to verify its thread safety. This makes sure that it only uses/calls thread-safe functions/nodes.
+	static bool CheckFunctionThreadSafety(const FKismetFunctionContext& InContext, FCompilerResultsLog& InMessageLog, bool InbEmitErrors = true);
+
+	// Helper function used by CheckFunctionThreadSafety. Split out to allow the ability to examine individual compiled statement lists (e.g. for the ubergraph)
+	static bool CheckFunctionCompiledStatementsThreadSafety(const UEdGraphNode* InNode, const UEdGraph* InSourceGraph, const TArray<FBlueprintCompiledStatement*>& InStatements, FCompilerResultsLog& InMessageLog, bool InbEmitErrors = true, TSet<const FBPTerminal*>* InThreadSafeObjectTerms = nullptr);
 };
 
 //////////////////////////////////////////////////////////////////////////

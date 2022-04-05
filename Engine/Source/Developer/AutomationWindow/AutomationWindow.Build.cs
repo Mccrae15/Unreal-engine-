@@ -23,8 +23,9 @@ namespace UnrealBuildTool.Rules
                     "EditorStyle",
                     "CoreUObject",
                     "Json",
-                    "JsonUtilities"
-                }
+                    "JsonUtilities",
+					"AutomationTest"
+				}
 			);
 
             // Added more direct dependencies to the editor for testing functionality
@@ -32,8 +33,10 @@ namespace UnrealBuildTool.Rules
             {
                 PrivateDependencyModuleNames.AddRange(
                     new string[] {
+						"EditorFramework",
                         "UnrealEd",
-                        "Engine", // Needed for UWorld/GWorld to find current level
+						"Kismet",
+						"Engine", // Needed for UWorld/GWorld to find current level
 				    }
                 );
             }

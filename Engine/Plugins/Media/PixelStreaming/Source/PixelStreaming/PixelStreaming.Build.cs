@@ -3,7 +3,7 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 
 namespace UnrealBuildTool.Rules
@@ -12,44 +12,20 @@ namespace UnrealBuildTool.Rules
 	{
 		const string PixelStreamingProgramsDirectory = "../../Samples/PixelStreaming";
 
-		private void AddSignallingServer()
+		private void AddFolder(string Folder)
 		{
-			string SignallingServerDir = new DirectoryInfo(PixelStreamingProgramsDirectory + "/WebServers/SignallingWebServer").FullName;
+			string DirectoryToAdd = new DirectoryInfo(PixelStreamingProgramsDirectory + "/WebServers/" + Folder).FullName;
 
-			if (!Directory.Exists(SignallingServerDir))
+			if (!Directory.Exists(DirectoryToAdd))
 			{
 				return;
 			}
 
 			List<string> DependenciesToAdd = new List<string>();
-			DependenciesToAdd.AddRange(Directory.GetFiles(SignallingServerDir, "*.*", SearchOption.AllDirectories));
+			DependenciesToAdd.AddRange(Directory.GetFiles(DirectoryToAdd, "*.*", SearchOption.AllDirectories));
 
-			string NodeModulesDirPath = new DirectoryInfo(SignallingServerDir + "/node_modules").FullName;
-			string LogsDirPath = new DirectoryInfo(SignallingServerDir + "/logs").FullName;
-			foreach (string Dependency in DependenciesToAdd)
-			{
-				if (!Dependency.StartsWith(NodeModulesDirPath) &&
-					!Dependency.StartsWith(LogsDirPath))
-				{
-					RuntimeDependencies.Add(Dependency, StagedFileType.NonUFS);
-				}
-			}
-		}
-
-		private void AddMatchmakingServer()
-		{
-			string MatchmakingServerDir = new DirectoryInfo(PixelStreamingProgramsDirectory + "/WebServers/Matchmaker").FullName;
-
-			if (!Directory.Exists(MatchmakingServerDir))
-			{
-				return;
-			}
-
-			List<string> DependenciesToAdd = new List<string>();
-			DependenciesToAdd.AddRange(Directory.GetFiles(MatchmakingServerDir, "*.*", SearchOption.AllDirectories));
-
-			string NodeModulesDirPath = new DirectoryInfo(MatchmakingServerDir + "/node_modules").FullName;
-			string LogsDirPath = new DirectoryInfo(MatchmakingServerDir + "/logs").FullName;
+			string NodeModulesDirPath = new DirectoryInfo(DirectoryToAdd + "/node_modules").FullName;
+			string LogsDirPath = new DirectoryInfo(DirectoryToAdd + "/logs").FullName;
 			foreach (string Dependency in DependenciesToAdd)
 			{
 				if (!Dependency.StartsWith(NodeModulesDirPath) &&
@@ -68,6 +44,12 @@ namespace UnrealBuildTool.Rules
 
 			var EngineDir = Path.GetFullPath(Target.RelativeEnginePath);
 
+			// This is so for game projects using our public headers don't have to include extra modules they might not know about.
+			PublicDependencyModuleNames.AddRange(new string[]
+			{
+				"InputDevice"
+			});
+
 			// NOTE: General rule is not to access the private folder of another module
 			PrivateIncludePaths.AddRange(new string[]
 				{
@@ -85,6 +67,7 @@ namespace UnrealBuildTool.Rules
 				"Json",
 				"RenderCore",
 				"RHI",
+				"RHICore",
 				"Slate",
 				"SlateCore",
 				"AudioMixer",
@@ -94,12 +77,6 @@ namespace UnrealBuildTool.Rules
 				"MediaUtils",
 				"DeveloperSettings",
 				"AVEncoder"
-			});
-
-			// This is so for game projects using our public headers don't have to include extra modules they might not know about.
-			PublicDependencyModuleNames.AddRange(new string[]
-			{
-				"InputDevice"
 			});
 
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "Vulkan");
@@ -115,6 +92,20 @@ namespace UnrealBuildTool.Rules
 
 			if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 			{
+				PublicDependencyModuleNames.Add("D3D11RHI");
+				PublicDependencyModuleNames.Add("D3D12RHI");
+				PrivateIncludePaths.AddRange(
+					new string[]{
+						Path.Combine(EngineDir, "Source/Runtime/D3D12RHI/Private"),
+						Path.Combine(EngineDir, "Source/Runtime/D3D12RHI/Private/Windows")
+					});
+
+				AddEngineThirdPartyPrivateStaticDependencies(Target, "DX12");
+				PublicSystemLibraries.AddRange(new string[] {
+					"DXGI.lib",
+					"d3d11.lib",
+				});
+
 				PrivateIncludePaths.Add(Path.Combine(EngineDir, "Source/Runtime/VulkanRHI/Private/Windows"));
 			}
 			else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
@@ -122,8 +113,9 @@ namespace UnrealBuildTool.Rules
 				PrivateIncludePaths.Add(Path.Combine(EngineDir, "Source/Runtime/VulkanRHI/Private/Linux"));
 			}
 
-			AddSignallingServer();
-			AddMatchmakingServer();
+			AddFolder("SignallingWebServer");
+			AddFolder("Matchmaker");
+			AddFolder("SFU");
 		}
 	}
 }

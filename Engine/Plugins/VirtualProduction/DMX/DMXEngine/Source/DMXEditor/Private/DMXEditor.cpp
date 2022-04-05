@@ -7,10 +7,12 @@
 #include "DMXEditorUtils.h"
 #include "DMXFixtureTypeSharedData.h"
 #include "DMXFixturePatchSharedData.h"
+#include "DMXRuntimeLog.h"
+#include "DMXRuntimeUtils.h"
 #include "Library/DMXLibrary.h"
 #include "Library/DMXEntityFixtureType.h"
 #include "Library/DMXEntityFixturePatch.h"
-#include "LibraryEditorTab/SDMXLibraryEditorTab.h"
+#include "Library/DMXEntityReference.h"
 #include "Modes/DMXEditorApplicationMode.h"
 #include "Toolbars/DMXEditorToolbar.h"
 #include "Commands/DMXEditorCommands.h"
@@ -19,9 +21,9 @@
 #include "Widgets/Docking/SDockTab.h"
 
 #include "Widgets/SDMXEntityEditor.h"
-#include "Widgets/SDMXEntityInspector.h"
 #include "Widgets/FixturePatch/SDMXFixturePatchEditor.h"
 #include "Widgets/FixtureType/SDMXFixtureTypeEditor.h"
+#include "Widgets/LibrarySettings/SDMXLibraryEditorTab.h"
 #include "Widgets/OutputConsole/SDMXOutputConsole.h"
 
 #include "Modules/ModuleManager.h"
@@ -133,41 +135,73 @@ void FDMXEditor::CreateDefaultCommands()
 {
 	FDMXEditorCommands::Register();
 
-	FDMXEditorModule& DMXEditorModule = FModuleManager::LoadModuleChecked<FDMXEditorModule>("DMXEditor");
-
 	ToolkitCommands->MapAction(
 		FDMXEditorCommands::Get().AddNewEntityFixtureType,
-		FExecuteAction::CreateLambda([this]() { OnAddNewEntity(UDMXEntityFixtureType::StaticClass()); }),
-		FCanExecuteAction::CreateLambda([this]()->bool { return CanAddNewEntity(UDMXEntityFixtureType::StaticClass()); })
+		FExecuteAction::CreateLambda([this]() { OnAddNewEntity(UDMXEntityFixtureType::StaticClass()); })
 	);
 	ToolkitCommands->MapAction(
 		FDMXEditorCommands::Get().AddNewEntityFixturePatch,
-		FExecuteAction::CreateLambda([this]() { OnAddNewEntity(UDMXEntityFixturePatch::StaticClass()); }),
-		FCanExecuteAction::CreateLambda([this]()->bool { return CanAddNewEntity(UDMXEntityFixturePatch::StaticClass()); })
+		FExecuteAction::CreateLambda([this]() { OnAddNewEntity(UDMXEntityFixturePatch::StaticClass()); })
 	);
 }
 
 void FDMXEditor::OnAddNewEntity(TSubclassOf<UDMXEntity> InEntityClass)
 {
-	if (!InvokeEditorTabFromEntityType(InEntityClass))
-	{
-		return; 
-	}
+	UDMXLibrary* DMXLibrary = GetDMXLibrary();
+	check(DMXLibrary);
 
-	// Create the new entity with a unique name
-	FString BaseName;
-	OnGetBaseNameForNewEntity.Broadcast(InEntityClass, BaseName);
-	FString EntityName = FDMXEditorUtils::FindUniqueEntityName(GetDMXLibrary(), InEntityClass, BaseName);
+	if (InEntityClass == UDMXEntityFixtureType::StaticClass())
+	{
+		FDMXEntityFixtureTypeConstructionParams FixtureTypeConstructionParams;
+		FixtureTypeConstructionParams.ParentDMXLibrary = DMXLibrary;
 
-	UDMXEntity* NewEntity = nullptr;
-	if (FDMXEditorUtils::AddEntity(GetDMXLibrary(), EntityName, InEntityClass, &NewEntity))
-	{
-		OnSetupNewEntity.Broadcast(NewEntity);
-		RenameNewlyAddedEntity(NewEntity, InEntityClass);
+		UDMXEntityFixtureType* FixtureType = UDMXEntityFixtureType::CreateFixtureTypeInLibrary(FixtureTypeConstructionParams);
+		FixtureTypeSharedData->SelectFixtureTypes(TArray<TWeakObjectPtr<UDMXEntityFixtureType>>({ FixtureType }));
 	}
-	else
+	else if (InEntityClass == UDMXEntityFixturePatch::StaticClass())
 	{
-		UE_LOG_DMXEDITOR(Error, TEXT("Add Entity error!"));
+		if (UDMXEntity* LastAddedEntity = DMXLibrary->GetLastAddedEntity().Get())
+		{
+			UDMXEntityFixtureType* LastAddedFixtureType = [LastAddedEntity]() -> UDMXEntityFixtureType*
+			{
+				if (UDMXEntityFixtureType* EntityAsFixtureType = Cast<UDMXEntityFixtureType>(LastAddedEntity))
+				{
+					return EntityAsFixtureType;
+				}
+				else if (UDMXEntityFixturePatch* EntityAsFixturePatch = Cast<UDMXEntityFixturePatch>(LastAddedEntity))
+				{
+					return EntityAsFixturePatch->GetFixtureType();
+				}
+				return nullptr;
+			}();
+
+			if (LastAddedFixtureType)
+			{
+				FDMXEntityFixturePatchConstructionParams FixturePatchConstructionParams;
+				FixturePatchConstructionParams.FixtureTypeRef = FDMXEntityFixtureTypeRef(LastAddedFixtureType);
+
+				UDMXEntityFixturePatch* NewFixturePatch = UDMXEntityFixturePatch::CreateFixturePatchInLibrary(FixturePatchConstructionParams);
+				FixturePatchSharedData->SelectFixturePatch(NewFixturePatch);
+
+				return;
+			}
+		}
+		else
+		{
+			const TArray<UDMXEntityFixtureType*> FixtureTypesInLibrary = DMXLibrary->GetEntitiesTypeCast<UDMXEntityFixtureType>();
+			if (FixtureTypesInLibrary.Num() > 0)
+			{
+				FDMXEntityFixturePatchConstructionParams FixturePatchConstructionParams;
+				FixturePatchConstructionParams.FixtureTypeRef = FDMXEntityFixtureTypeRef(FixtureTypesInLibrary[0]);
+
+				UDMXEntityFixturePatch* NewFixturePatch = UDMXEntityFixturePatch::CreateFixturePatchInLibrary(FixturePatchConstructionParams);
+				FixturePatchSharedData->SelectFixturePatch(NewFixturePatch);
+			}
+			else
+			{
+				UE_LOG(LogDMXRuntime, Warning, TEXT("Cannot create a fixture patch in Library %s when the Library doesn't define any Fixture Types."), *DMXLibrary->GetName());
+			}
+		}
 	}
 }
 
@@ -200,11 +234,6 @@ bool FDMXEditor::InvokeEditorTabFromEntityType(TSubclassOf<UDMXEntity> InEntityC
 	}
 
 	return false;
-}
-
-bool FDMXEditor::CanAddNewEntity(TSubclassOf<UDMXEntity> InEntityClass) const
-{
-	return true;
 }
 
 bool FDMXEditor::NewEntity_IsVisibleForType(TSubclassOf<UDMXEntity> InEntityClass) const
@@ -307,8 +336,7 @@ TSharedRef<SDMXLibraryEditorTab> FDMXEditor::CreateDMXLibraryEditorTab()
 
 TSharedRef<SDMXFixtureTypeEditor> FDMXEditor::CreateFixtureTypeEditor()
 {
-	return SNew(SDMXFixtureTypeEditor)
-		.DMXEditor(SharedThis(this));
+	return SNew(SDMXFixtureTypeEditor, SharedThis(this));
 }
 
 TSharedRef<SDMXFixturePatchEditor> FDMXEditor::CreateFixturePatchEditor()

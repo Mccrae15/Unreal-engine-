@@ -31,7 +31,9 @@ static float GetBlendDuration(const IAnimClassInterface* PriorAnimBPClass, const
 
 FAnimNode_LinkedAnimGraph::FAnimNode_LinkedAnimGraph()
 	: InstanceClass(nullptr)
-	, Tag(NAME_None)
+#if WITH_EDITORONLY_DATA
+	, Tag_DEPRECATED(NAME_None)
+#endif
 	, LinkedRoot(nullptr)
 	, NodeIndex(INDEX_NONE)
 	, CachedLinkedNodeIndex(INDEX_NONE)
@@ -80,6 +82,7 @@ void FAnimNode_LinkedAnimGraph::CacheBonesSubGraph_AnyThread(const FAnimationCac
 		// Note not calling Proxy.CacheBones_WithRoot here as it is guarded by
 		// bBoneCachesInvalidated, which is handled at a higher level
 		FAnimationCacheBonesContext LinkedContext(&Proxy);
+		LinkedContext.SetNodeId(CachedLinkedNodeIndex);
 		LinkedRoot->CacheBones_AnyThread(LinkedContext);
 	}
 }
@@ -111,9 +114,8 @@ void FAnimNode_LinkedAnimGraph::Update_AnyThread(const FAnimationUpdateContext& 
 		// in USkeletalMeshComponent::TickAnimation. It used to be the case that we could do non-parallel work in 
 		// USkeletalMeshComponent::TickAnimation, which would mean we would have to skip doing that work here.
 		FAnimationUpdateContext NewContext = InContext.WithOtherProxy(&Proxy);
- #if ANIM_NODE_IDS_AVAILABLE
-		NewContext = NewContext.WithNodeId(CachedLinkedNodeIndex);
- #endif
+		NewContext.SetNodeId(INDEX_NONE);
+		NewContext.SetNodeId(CachedLinkedNodeIndex);
 		Proxy.UpdateAnimation_WithRoot(NewContext, LinkedRoot, GetDynamicLinkFunctionName());
 	}
 	else if(InputPoses.Num() > 0)
@@ -126,10 +128,11 @@ void FAnimNode_LinkedAnimGraph::Update_AnyThread(const FAnimationUpdateContext& 
 	// Consume pending inertial blend request
 	if(PendingBlendDuration >= 0.0f)
 	{
-		FAnimNode_Inertialization* InertializationNode = InContext.GetAncestor<FAnimNode_Inertialization>();
-		if(InertializationNode)
+		UE::Anim::IInertializationRequester* InertializationRequester = InContext.GetMessage<UE::Anim::IInertializationRequester>();
+		if(InertializationRequester)
 		{
-			InertializationNode->RequestInertialization(PendingBlendDuration);
+			InertializationRequester->RequestInertialization(PendingBlendDuration);
+			InertializationRequester->AddDebugRecord(*InContext.AnimInstanceProxy, InContext.GetCurrentNodeId());
 		}
 		else if ((PendingBlendDuration != 0.0f) && (InputPoses.Num() > 0))
 		{
@@ -155,7 +158,8 @@ void FAnimNode_LinkedAnimGraph::Evaluate_AnyThread(FPoseContext& Output)
 		// Create an evaluation context
 		FPoseContext EvaluationContext(&Proxy, Output.ExpectsAdditivePose());
 		EvaluationContext.ResetToRefPose();
-			
+		EvaluationContext.SetNodeId(CachedLinkedNodeIndex);
+
 		// Run the anim blueprint
 		Proxy.EvaluateAnimation_WithRoot(EvaluationContext, LinkedRoot);
 
@@ -252,7 +256,7 @@ void FAnimNode_LinkedAnimGraph::ReinitializeLinkedAnimInstance(const UAnimInstan
 			{
 				// Only call UninitializeAnimation if we are not the owning anim instance
 				InstanceToRun->UninitializeAnimation();
-				InstanceToRun->MarkPendingKill();
+				InstanceToRun->MarkAsGarbage();
 			}
 			InstanceToRun = nullptr;
 		}
@@ -305,7 +309,7 @@ void FAnimNode_LinkedAnimGraph::SetAnimClass(TSubclassOf<UAnimInstance> InClass,
 		IAnimClassInterface* OuterAnimBlueprintClass = IAnimClassInterface::GetFromClass(InOwningAnimInstance->GetClass());
 		USkeleton* LinkedSkeleton = LinkedAnimBlueprintClass->GetTargetSkeleton();
 		USkeleton* OuterSkeleton = OuterAnimBlueprintClass->GetTargetSkeleton();
-		if(LinkedSkeleton != OuterSkeleton)
+		if(!LinkedSkeleton->IsCompatible(OuterSkeleton))
 		{
 			UE_LOG(LogAnimation, Warning, TEXT("Setting linked anim instance class: Class has a mismatched target skeleton. Expected %s, found %s."), OuterSkeleton ? *OuterSkeleton->GetName() : TEXT("null"), LinkedSkeleton ? *LinkedSkeleton->GetName() : TEXT("null"));
 			return;

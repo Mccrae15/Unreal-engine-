@@ -8,10 +8,13 @@ MeshDrawCommands.h: Mesh draw commands.
 
 #include "MeshPassProcessor.h"
 #include "TranslucencyPass.h"
+#include "InstanceCulling/InstanceCullingContext.h"
+#include "InstanceCulling/InstanceCullingManager.h"
 
 struct FMeshBatchAndRelevance;
 class FStaticMeshBatch;
 class FParallelCommandListSet;
+class FInstanceCullingManager;
 
 /**
  * Global vertex buffer pool used for GPUScene primitive id arrays.
@@ -21,7 +24,7 @@ struct FPrimitiveIdVertexBufferPoolEntry
 {
 	int32 BufferSize = 0;
 	uint32 LastDiscardId = 0;
-	FVertexBufferRHIRef BufferRHI;
+	FBufferRHIRef BufferRHI;
 };
 
 class FPrimitiveIdVertexBufferPool : public FRenderResource
@@ -52,6 +55,7 @@ class FMeshDrawCommandPassSetupTaskContext
 public:
 	FMeshDrawCommandPassSetupTaskContext()
 		: View(nullptr)
+		, Scene(nullptr)
 		, ShadingPath(EShadingPath::Num)
 		, PassType(EMeshPass::Num)
 		, bUseGPUScene(false)
@@ -76,6 +80,7 @@ public:
 	}
 
 	const FViewInfo* View;
+	const FScene* Scene;
 	EShadingPath ShadingPath;
 	EShaderPlatform ShaderPlatform;
 	EMeshPass::Type PassType;
@@ -121,6 +126,9 @@ public:
 	int32 VisibleMeshDrawCommandsNum;
 	int32 NewPassVisibleMeshDrawCommandsNum;
 	int32 MaxInstances;
+
+	FInstanceCullingContext InstanceCullingContext;
+	FInstanceCullingResult InstanceCullingResult;
 };
 
 /**
@@ -130,8 +138,15 @@ public:
 class FParallelMeshDrawCommandPass
 {
 public:
+	enum class EWaitThread
+	{
+		Render,
+		Task,
+		TaskAlreadyWaited,
+	};
+
 	FParallelMeshDrawCommandPass()
-		: bPrimitiveIdBufferDataOwnedByRHIThread(false)
+		: bHasInstanceCullingDrawParameters(false)
 		, MaxNumDraws(0)
 	{
 	}
@@ -145,6 +160,7 @@ public:
 	void DispatchPassSetup(
 		FScene* Scene,
 		const FViewInfo& View, 
+		FInstanceCullingContext &&InstanceCullingContext,
 		EMeshPass::Type PassType, 
 		FExclusiveDepthStencil::Type BasePassDepthStencilAccess,
 		FMeshPassProcessor* MeshPassProcessor,
@@ -159,11 +175,25 @@ public:
 	);
 
 	/**
+	 * Sync with setup task and run post-instance culling job to create the render commands and instance ID lists and optionally vertex instance data.
+	 * Needs to happen after DispatchPassSetup and before DispatchDraw, but not before global instance culling has been done.
+	 */
+	void BuildRenderingCommands(
+		FRDGBuilder& GraphBuilder,
+		const FGPUScene& GPUScene,
+		FInstanceCullingDrawParams& OutInstanceCullingDrawParams);
+
+	/**
+	 * Sync with setup task.
+	 */
+	void WaitForSetupTask();
+
+	/**
 	 * Dispatch visible mesh draw command draw task.
 	 */
-	void DispatchDraw(FParallelCommandListSet* ParallelCommandListSet, FRHICommandList& RHICmdList) const;
+	void DispatchDraw(FParallelCommandListSet* ParallelCommandListSet, FRHICommandList& RHICmdList, const FInstanceCullingDrawParams* InstanceCullingDrawParams = nullptr) const;
 
-	void WaitForTasksAndEmpty();
+	void WaitForTasksAndEmpty(EWaitThread WaitThread = EWaitThread::Render);
 	void SetDumpInstancingStats(const FString& InPassName);
 	bool HasAnyDraw() const { return MaxNumDraws > 0; }
 
@@ -179,26 +209,29 @@ public:
 
 	static bool IsOnDemandShaderCreationEnabled();
 
+	FInstanceCullingContext* GetInstanceCullingContext() { return &TaskContext.InstanceCullingContext; }
+	const FGraphEventRef& GetTaskEvent() const { return TaskEventRef; }
+
 private:
 	FPrimitiveIdVertexBufferPoolEntry PrimitiveIdVertexBufferPoolEntry;
 	FMeshDrawCommandPassSetupTaskContext TaskContext;
 	FGraphEventRef TaskEventRef;
 	FString PassNameForStats;
 
-	// If TaskContext::PrimitiveIdBufferData will be released by RHI Thread.
-	mutable bool bPrimitiveIdBufferDataOwnedByRHIThread;
+	bool bHasInstanceCullingDrawParameters;
 
 	// Maximum number of draws for this pass. Used to prealocate resources on rendering thread. 
 	// Has a guarantee that if there won't be any draws, then MaxNumDraws = 0;
 	int32 MaxNumDraws;
 
 	void DumpInstancingStats() const;
-	void WaitForMeshPassSetupTask() const;
+	void WaitForMeshPassSetupTask(EWaitThread WaitThread = EWaitThread::Render) const;
 };
 
-extern void SortAndMergeDynamicPassMeshDrawCommands(
-	ERHIFeatureLevel::Type FeatureLevel,
+RENDERER_API extern void SortAndMergeDynamicPassMeshDrawCommands(
+	const FSceneView& SceneView,
 	FMeshCommandOneFrameArray& VisibleMeshDrawCommands,
 	FDynamicMeshDrawCommandStorage& MeshDrawCommandStorage,
-	FRHIVertexBuffer*& OutPrimitiveIdVertexBuffer,
-	uint32 InstanceFactor);
+	FRHIBuffer*& OutPrimitiveIdVertexBuffer,
+	uint32 InstanceFactor,
+	const FGPUScenePrimitiveCollector* DynamicPrimitiveCollector);

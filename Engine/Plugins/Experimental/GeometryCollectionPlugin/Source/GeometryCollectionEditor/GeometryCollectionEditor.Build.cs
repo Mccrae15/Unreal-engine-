@@ -17,7 +17,8 @@ namespace UnrealBuildTool.Rules
 				    "Slate",
 				    "SlateCore",
 				    "Engine",
-				    "UnrealEd",
+					"EditorFramework",
+					"UnrealEd",
 				    "PropertyEditor",
 				    "RenderCore",
 				    "RHI",
@@ -28,7 +29,11 @@ namespace UnrealBuildTool.Rules
 				    "SceneOutliner",
 					"EditorStyle",
 					"ToolMenus",
-					"Chaos"
+					"Chaos",
+					"MeshDescription",
+					"StaticMeshDescription",
+					"LevelEditor",
+					"InputCore",
 				}
 			);
 

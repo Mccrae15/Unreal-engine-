@@ -8,25 +8,19 @@
 #include "USDTreeItemViewModel.h"
 #include "UsdWrappers/UsdStage.h"
 
-namespace UE
-{
-	class FSdfLayer;
-}
-
 class USDSTAGEEDITORVIEWMODELS_API FUsdLayerModel : public TSharedFromThis< FUsdLayerModel >
 {
 public:
-	FText GetDisplayName() const { return DisplayName; }
-
-	FText DisplayName;
+	FString DisplayName;
 	bool bIsEditTarget = false;
 	bool bIsMuted = false;
+	bool bIsDirty = false;
 };
 
 class USDSTAGEEDITORVIEWMODELS_API FUsdLayerViewModel : public IUsdTreeViewItem
 {
 public:
-	explicit FUsdLayerViewModel( FUsdLayerViewModel* InParentItem, const UE::FUsdStage& InUsdStage, const FString& InLayerIdentifier );
+	explicit FUsdLayerViewModel( FUsdLayerViewModel* InParentItem, const UE::FUsdStageWeak& InUsdStage, const FString& InLayerIdentifier );
 
 	bool IsValid() const;
 
@@ -37,7 +31,9 @@ public:
 	void RefreshData();
 
 	UE::FSdfLayer GetLayer() const;
+	FText GetDisplayName() const;
 
+	bool IsLayerMuted() const;
 	bool CanMuteLayer() const;
 	void ToggleMuteLayer();
 
@@ -48,11 +44,13 @@ public:
 	void NewSubLayer( const TCHAR* SubLayerIdentifier );
 	bool RemoveSubLayer( int32 SubLayerIndex );
 
+	bool IsLayerDirty() const;
+
 public:
 	TSharedRef< FUsdLayerModel > LayerModel;
 	FUsdLayerViewModel* ParentItem;
 	TArray< TSharedRef< FUsdLayerViewModel > > Children;
 
-	UE::FUsdStage UsdStage;
+	UE::FUsdStageWeak UsdStage;
 	FString LayerIdentifier;
 };

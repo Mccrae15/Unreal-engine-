@@ -326,7 +326,7 @@ uint32 FMicrosoftSpatialSound::Run()
 	{
 		if (!bWarnedMicrosoftSpatialSoundDynamicObjectCountIsZero && SAC->GetMaxDynamicObjects() == 0)
 		{
-			UE_LOG(LogMicrosoftSpatialSound, Warning, TEXT("Microsoft Spatial Sound has zero MaxDynamicObjects.  No sounds can play!  You need to enable Spatial Sound (Windows Sonic for Headphones) in your PC audio settings then restart UE4."));
+			UE_LOG(LogMicrosoftSpatialSound, Warning, TEXT("Microsoft Spatial Sound has zero MaxDynamicObjects.  No sounds can play!  You need to enable Spatial Sound (Windows Sonic for Headphones) in your PC audio settings then restart Unreal."));
 			bWarnedMicrosoftSpatialSoundDynamicObjectCountIsZero = true;
 		}
 
@@ -403,21 +403,10 @@ void FMicrosoftSpatialSoundModule::StartupModule()
 	FString OSSubVersionLabel;
 	FPlatformMisc::GetOSVersions(OSVersionLabel, OSSubVersionLabel);
 
-	// GetOSVersion returns the Win10 release version in the OSVersion rather than the OSSubVersion, so parse it out ourselves
-	OSSubVersionLabel = OSVersionLabel;
-	OSSubVersionLabel.RemoveFromStart("Windows 10 (Release ");
-	OSSubVersionLabel.RemoveFromEnd(")");
-	int32 CurrentVersionNumber = FCString::Atoi(*OSSubVersionLabel);
-
-	if (CurrentVersionNumber < MIN_WIN_10_VERSION_FOR_WMR_SPATSOUND)
+	if (!OSVersionLabel.Contains(TEXT("Windows 10")) && !OSVersionLabel.Contains(TEXT("Windows 11")))
 	{
-		UE_LOG(LogMicrosoftSpatialSound,
-			Warning,
-			TEXT("Microsoft Spatial Sound for UE4 currently only supports windows version '%d' or higher (Current version: '%d')"),
-			MIN_WIN_10_VERSION_FOR_WMR_SPATSOUND,
-			CurrentVersionNumber);
-
-			return;
+		UE_LOG(LogMicrosoftSpatialSound, Warning, TEXT("Microsoft Spatial Sound for Unreal currently only supports windows 10 and windows 11)"));
+		return;
 	}
 
 	// Load the mixed reality interop library
@@ -437,9 +426,6 @@ void FMicrosoftSpatialSoundModule::StartupModule()
 	FPlatformProcess::GetDllHandle(_TEXT("PerceptionDevice.dll"));
 	FPlatformProcess::GetDllHandle(_TEXT("Microsoft.Holographic.AppRemoting.dll"));
 	FPlatformProcess::PopDllDirectory(*HoloLensLibraryDir);
-
-	FPlatformProcess::GetDllHandle(*(EngineDir / "Binaries" / BinariesSubDir / "HolographicStreamerDesktop.dll"));
-	FPlatformProcess::GetDllHandle(*(EngineDir / "Binaries" / BinariesSubDir / "Microsoft.Perception.Simulation.dll"));
 #endif // PLATFORM_64BITS && WITH_EDITOR	
 	
 	// Then finally try to load the WMR Interop Library

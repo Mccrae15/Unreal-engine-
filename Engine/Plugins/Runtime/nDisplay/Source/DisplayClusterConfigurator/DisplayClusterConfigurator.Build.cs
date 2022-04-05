@@ -24,6 +24,7 @@ public class DisplayClusterConfigurator : ModuleRules
 				"DesktopPlatform",
 				"BlueprintGraph",
 				"GraphEditor",
+				"EditorFramework",
 				"EditorStyle",
 				"EditorSubsystem",
 				"EditorWidgets",
@@ -35,6 +36,7 @@ public class DisplayClusterConfigurator : ModuleRules
 				"MainFrame",
 				"MessageLog",
 				"PinnedCommandList",
+				"PlacementMode",
 				"Projects",
 				"PropertyEditor",
 				"Serialization",
@@ -43,6 +45,11 @@ public class DisplayClusterConfigurator : ModuleRules
 				"SlateCore",
 				"ToolMenus",
 				"UnrealEd",
+				"SubobjectEditor",
+				"SubobjectDataInterface",
+				"ToolWidgets",
+				"VPUtilitiesEditor",
+				"ProceduralMeshComponent",
 			});
 	}
 }

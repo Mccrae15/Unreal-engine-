@@ -11,13 +11,14 @@
 #include "Misc/Paths.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
 #include "UObject/Class.h"
+#include "UObject/MetaData.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/Package.h"
+#include "UObject/PackageResourceManager.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
-#include "UObject/Package.h"
-#include "UObject/MetaData.h"
 #include "Misc/PackageName.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/RedirectCollector.h"
@@ -30,6 +31,7 @@
 #include "Engine/MapBuildDataRegistry.h"
 #include "Commandlets/ListMaterialsUsedWithMeshEmittersCommandlet.h"
 #include "Commandlets/ListStaticMeshesImportedFromSpeedTreesCommandlet.h"
+#include "Commandlets/StaticMeshMinLodCommandlet.h"
 #include "Particles/ParticleSystem.h"
 #include "Commandlets/ResavePackagesCommandlet.h"
 #include "Commandlets/WrangleContentCommandlet.h"
@@ -40,10 +42,19 @@
 #include "AssetData.h"
 #include "Engine/Brush.h"
 #include "Editor.h"
+#include "EditorWorldUtils.h"
 #include "FileHelpers.h"
+#include "PlatformInfo.h"
+#include "CollectionManagerModule.h"
+#include "ICollectionManager.h"
+#include "CommandletSourceControlUtils.h"
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionHelpers.h"
+#include "LevelInstance/LevelInstanceActor.h"
 
 #include "PackageHelperFunctions.h"
 #include "PackageTools.h"
+#include "UObject/PackageTrailer.h"
 
 DEFINE_LOG_CATEGORY(LogContentCommandlet);
 
@@ -79,6 +90,7 @@ DEFINE_LOG_CATEGORY(LogContentCommandlet);
 #include "CollectionManagerModule.h"
 #include "UObject/UObjectThreadContext.h"
 #include "Engine/LODActor.h"
+#include "PerQualityLevelProperties.h"
 
 /**-----------------------------------------------------------------------------
  *	UResavePackages commandlet.
@@ -97,11 +109,13 @@ UResavePackagesCommandlet::UResavePackagesCommandlet(const FObjectInitializer& O
 	: Super(ObjectInitializer)
 	, bForceUATEnvironmentVariableSet(false)
 {
-}
 
+}
 
 int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FString>& Tokens, TArray<FString>& PackageNames )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UResavePackagesCommandlet::InitializeResaveParameters);
+
 	Verbosity = VERY_VERBOSE;
 
 	TArray<FString> Unused;
@@ -118,8 +132,15 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 		if( FParse::Value( *CurrentSwitch, TEXT( "PACKAGE="), Package ) )
 		{
 			FString PackageFile;
-			FPackageName::SearchForPackageOnDisk( Package, NULL, &PackageFile );
-			PackageNames.Add( *PackageFile );
+			if (FPackageName::SearchForPackageOnDisk(Package, NULL, &PackageFile))
+			{
+				PackageNames.Add( *PackageFile );
+			}
+			else
+			{
+				UE_LOG(LogContentCommandlet, Error, TEXT("Failed to find the package given by the cmdline: PACKAGE=%s"), *Package);
+			}
+			
 			bExplicitPackages = true;
 		}
 		else if( FParse::Value( *CurrentSwitch, TEXT( "PACKAGEFOLDER="), PackageFolder ) )
@@ -133,10 +154,6 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 				PackageNames.Add( *PackageFile );
 			}
 			bExplicitPackages = true;
-		}
-		else if (FParse::Value(*CurrentSwitch, TEXT("GCFREQ="), GarbageCollectionFrequency))
-		{
-			UE_LOG(LogContentCommandlet, Display, TEXT("Setting garbage collection to happen every %d packages."), GarbageCollectionFrequency);
 		}
 		else if (FParse::Value(*CurrentSwitch, TEXT("MAP="), Maps))
 		{
@@ -192,7 +209,15 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 				UE_LOG(LogContentCommandlet, Error, TEXT("Failed to load file %s"), *File);
 			}
 		}
+	}
 
+	// Check for numeric settings
+	for (const FString& CurrentSwitch : Switches)
+	{
+		if (FParse::Value(*CurrentSwitch, TEXT("GCFREQ="), GarbageCollectionFrequency))
+		{
+			UE_LOG(LogContentCommandlet, Display, TEXT("Setting garbage collection to happen every %d packages."), GarbageCollectionFrequency);
+		}
 	}
 
 	if ((bShouldBuildLighting || bShouldBuildReflectionCaptures) && !bExplicitPackages)
@@ -245,7 +270,7 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 		{
 			FString Path = FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir(), FilePath.FilePath);
 			FString OutPath;
-			if (FPackageName::DoesPackageExist(Path, nullptr, &OutPath))
+			if (FPackageName::DoesPackageExist(Path, &OutPath))
 			{				
 				PackageNames.AddUnique(*OutPath);
 				bExplicitPackages = true;
@@ -282,9 +307,11 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 			PackageFilter |= NORMALIZE_ExcludeNonDeveloperPackages;
 		}
 
-		bool bAnyFound = NormalizePackageNames(Unused, PackageNames, *FString::Printf(TEXT("*%s"), *FPackageName::GetAssetPackageExtension()), 
-											   PackageFilter);
-		bAnyFound = NormalizePackageNames(Unused, PackageNames, *FString::Printf(TEXT("*%s"), *FPackageName::GetMapPackageExtension()), PackageFilter) || bAnyFound;
+		const FString AssetSearch = TEXT("*") + FPackageName::GetAssetPackageExtension();
+		const FString MapSearch = TEXT("*") + FPackageName::GetMapPackageExtension();
+
+		bool bAnyFound = NormalizePackageNames(Unused, PackageNames, AssetSearch, PackageFilter);
+		bAnyFound |= NormalizePackageNames(Unused, PackageNames, MapSearch, PackageFilter);
 		
 		if (!bAnyFound)
 		{
@@ -313,7 +340,10 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 	// This option will filter the package list and only save packages that are redirectors, or that reference redirectors
 	const bool bFixupRedirects = (Switches.Contains(TEXT("FixupRedirects")) || Switches.Contains(TEXT("FixupRedirectors")));
 
-	if (bResaveDirectRefsAndDeps || bFixupRedirects || bOnlyMaterials)
+	// This option allows the dependency graph and soft object path redirect map to be populated. This is useful if you want soft object references to redirectors to be followed to the destination asset at save time.
+	const bool bSearchAllAssets = Switches.Contains(TEXT("SearchAllAssets"));
+
+	if (bResaveDirectRefsAndDeps || bFixupRedirects || bOnlyMaterials || bSearchAllAssets)
 	{
 		AssetRegistry.SearchAllAssets(true);
 
@@ -394,23 +424,23 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 	}
 
 	// Check for the min and max versions
-	MinResaveUE4Version = IGNORE_PACKAGE_VERSION;
-	MaxResaveUE4Version = IGNORE_PACKAGE_VERSION;
-	MaxResaveLicenseeUE4Version = IGNORE_PACKAGE_VERSION;
+	MinResaveUEVersion = IGNORE_PACKAGE_VERSION;
+	MaxResaveUEVersion = IGNORE_PACKAGE_VERSION;
+	MaxResaveLicenseeUEVersion = IGNORE_PACKAGE_VERSION;
 	if ( Switches.Contains(TEXT("CHECKLICENSEEVER")) )
 	{
 		// Limits resaving to packages with this licensee package version or lower.
-		MaxResaveLicenseeUE4Version = FMath::Max<int32>(GPackageFileLicenseeUE4Version - 1, 0);
+		MaxResaveLicenseeUEVersion = FMath::Max<int32>(GPackageFileLicenseeUEVersion - 1, 0);
 	}
 	if ( Switches.Contains(TEXT("CHECKUE4VER")) )
 	{
-		// Limits resaving to packages with this ue4 package version or lower.
-		MaxResaveUE4Version = FMath::Max<int32>(GPackageFileUE4Version - 1, 0);
+		// Limits resaving to packages with this package version or lower.
+		MaxResaveUEVersion = FMath::Max<int32>(GPackageFileUEVersion.ToValue() - 1, 0);
 	}
 	else if ( Switches.Contains(TEXT("RESAVEDEPRECATED")) )
 	{
 		// Limits resaving to packages with this package version or lower.
-		MaxResaveUE4Version = FMath::Max<int32>(VER_UE4_DEPRECATED_PACKAGE - 1, 0);
+		MaxResaveUEVersion = FMath::Max<int32>(VER_UE4_DEPRECATED_PACKAGE - 1, 0);
 	}
 	else
 	{
@@ -418,19 +448,19 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 		for ( int32 SwitchIdx = 0; SwitchIdx < Switches.Num(); SwitchIdx++ )
 		{
 			const FString& CurrentSwitch = Switches[SwitchIdx];
-			if ( MinResaveUE4Version == IGNORE_PACKAGE_VERSION && FParse::Value(*CurrentSwitch,TEXT("MINVER="),MinResaveUE4Version) )
+			if ( MinResaveUEVersion == IGNORE_PACKAGE_VERSION && FParse::Value(*CurrentSwitch,TEXT("MINVER="),MinResaveUEVersion) )
 			{
-				if ( MinResaveUE4Version == CURRENT_PACKAGE_VERSION )
+				if ( MinResaveUEVersion == CURRENT_PACKAGE_VERSION )
 				{
-					MinResaveUE4Version = GPackageFileUE4Version;
+					MinResaveUEVersion = GPackageFileUEVersion.ToValue();
 				}
 			}
 
-			if ( MaxResaveUE4Version == IGNORE_PACKAGE_VERSION && FParse::Value(*CurrentSwitch,TEXT("MAXVER="),MaxResaveUE4Version) )
+			if ( MaxResaveUEVersion == IGNORE_PACKAGE_VERSION && FParse::Value(*CurrentSwitch,TEXT("MAXVER="),MaxResaveUEVersion) )
 			{
-				if ( MaxResaveUE4Version == CURRENT_PACKAGE_VERSION )
+				if ( MaxResaveUEVersion == CURRENT_PACKAGE_VERSION )
 				{
-					MaxResaveUE4Version = GPackageFileUE4Version;
+					MaxResaveUEVersion = GPackageFileUEVersion.ToValue();
 				}
 			}
 		}
@@ -488,6 +518,55 @@ int32 UResavePackagesCommandlet::InitializeResaveParameters( const TArray<FStrin
 	return 0;
 }
 
+void UResavePackagesCommandlet::ParseSourceControlOptions(const TArray<FString>& Tokens)
+{
+	if (SourceControlQueue == nullptr)
+	{
+		return; // No point parsing the options if we don't have anything enabled
+	}
+
+	int32 QueuedPackageFlushLimit = INDEX_NONE;
+	int64 QueueFileSizeFlushLimit = INDEX_NONE;
+
+	for (const FString& CurrentSwitch : Tokens)
+	{
+		if (FParse::Value(*CurrentSwitch, TEXT("BatchPackageLimit="), QueuedPackageFlushLimit))
+		{
+			if (QueuedPackageFlushLimit >= 0)
+			{
+				UE_LOG(LogContentCommandlet, Display, TEXT("Setting source control batches to be limited to %d package(s) at a time."), QueuedPackageFlushLimit);
+				SourceControlQueue->SetMaxNumQueuedPackages(QueuedPackageFlushLimit);
+			}
+			else
+			{
+				// Negative values mean we will not flush the source control batch based on the number of packages
+				UE_LOG(LogContentCommandlet, Display, TEXT("Setting source control batches to have no package limit!"));
+			}
+		}
+		else  if (FParse::Value(*CurrentSwitch, TEXT("BatchFileSizeLimit="), QueueFileSizeFlushLimit))
+		{
+			const int64 SizeLimit = TNumericLimits<int64>::Max() / (1024 * 1024);
+			if (QueueFileSizeFlushLimit > SizeLimit)
+			{
+				UE_LOG(LogContentCommandlet, Display, TEXT("-BatchFileSizeLimit=%lld is too large! The max value allowed is %lld, clamping..."), QueueFileSizeFlushLimit, SizeLimit);
+				QueueFileSizeFlushLimit = SizeLimit;
+			}
+
+			if (QueueFileSizeFlushLimit >= 0)
+			{
+				UE_LOG(LogContentCommandlet, Display, TEXT("Setting source control batches to be limited to %lld MB."), QueueFileSizeFlushLimit);
+
+				SourceControlQueue->SetMaxTemporaryFileTotalSize(QueueFileSizeFlushLimit);
+			}
+			else
+			{
+				// Negative values mean we will not flush the source control batch based on the disk space taken by temp files
+				UE_LOG(LogContentCommandlet, Display, TEXT("Setting source control batches to have no disk space limit!"));
+			}
+		}
+	}
+}
+
 bool UResavePackagesCommandlet::ShouldSkipPackage(const FString& Filename)
 {
 	return false;
@@ -495,6 +574,8 @@ bool UResavePackagesCommandlet::ShouldSkipPackage(const FString& Filename)
 
 void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UResavePackagesCommandlet::LoadAndSaveOnePackage);
+
 	// Check to see if a derived commandlet wants to skip this package for one reason or another
 	if (ShouldSkipPackage(Filename))
 	{
@@ -508,14 +589,10 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 		return;
 	}
 
+	FPackagePath PackagePath = FPackagePath::FromLocalPath(Filename);
 	if (CollectionFilter.Num())
 	{
-		FString PackageNameToCreate;
-		if (!FPackageName::TryConvertFilenameToLongPackageName(Filename, PackageNameToCreate))
-		{
-			PackageNameToCreate = Filename;
-		}
-
+		FString PackageNameToCreate = PackagePath.GetPackageNameOrFallback();
 		FName PackageName(*PackageNameToCreate);
 		if (!CollectionFilter.Contains(PackageName))
 		{
@@ -525,17 +602,13 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 
 	if (bOnlyMaterials)
 	{
-		FString PackageNameToCreate;
-		if (!FPackageName::TryConvertFilenameToLongPackageName(Filename, PackageNameToCreate))
-		{
-			PackageNameToCreate = Filename;
-		}
+		FString PackageNameToCreate = PackagePath.GetPackageNameOrFallback();
+		FName PackageFNameToCreate(*PackageNameToCreate);
 
 		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 		IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
-		FName PackageName(*PackageNameToCreate);
 		TArray<FAssetData> PackageAssetData;
-		if (!AssetRegistry.GetAssetsByPackageName(PackageName, PackageAssetData, true))
+		if (!AssetRegistry.GetAssetsByPackageName(PackageFNameToCreate, PackageAssetData, true))
 		{
 			return;
 		}
@@ -585,7 +658,7 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 		// Get the package linker.
 		VerboseMessage(TEXT("Pre GetPackageLinker"));
 
-		FLinkerLoad* Linker = LoadPackageLinker(nullptr, *Filename, LOAD_NoVerify);
+		FLinkerLoad* Linker = LoadPackageLinker(nullptr, PackagePath, LOAD_NoVerify);
 	
 		// Bail early if we don't have a valid linker (package was out of date, etc)
 		if( !Linker )
@@ -608,10 +681,17 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 
 			// Only rebuild static meshes on load for the to be saved package.
 			extern ENGINE_API FName GStaticMeshPackageNameToRebuild;
-			GStaticMeshPackageNameToRebuild = FName(*FPackageName::FilenameToLongPackageName(Filename));
+			FName PackageFName = PackagePath.GetPackageFName();
+			check(!PackageFName.IsNone());
+			GStaticMeshPackageNameToRebuild = PackageFName;
 
 			// Assert if package couldn't be opened so we have no chance of messing up saving later packages.
-			UPackage* Package = LoadPackage( NULL, *Filename, 0 );
+			UPackage* Package = nullptr;
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(UResavePackagesCommandlet::LoadAndSaveOnePackage::LoadPackage);
+				Package = LoadPackage(NULL, *Filename, 0);
+			}
+
 			if (Package == NULL)
 			{
 				if (bCanIgnoreFails == true)
@@ -658,13 +738,10 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 			VerboseMessage(TEXT("Post PerformAdditionalOperations"));
 
 			// Check for any special per object operations
-			for(FThreadSafeObjectIterator ObjectIt; ObjectIt; ++ObjectIt )
+			ForEachObjectWithOuter(Package, [this, &bSavePackage](UObject* Object)
 			{
-				if( ObjectIt->IsIn( Package ) )
-				{
-					PerformAdditionalOperations( *ObjectIt, bSavePackage );
-				}
-			}
+				PerformAdditionalOperations(Object, bSavePackage);
+			});
 			
 			VerboseMessage(TEXT("Post PerformAdditionalOperations Loop"));
 
@@ -708,8 +785,8 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 			{
 				if( bIsReadOnly == true && bVerifyContent == true && bAutoCheckOut == false )
 				{
-					UE_LOG(LogContentCommandlet, Warning, TEXT("Package [%s] is read-only but needs to be resaved (UE4 Version: %i, Licensee Version: %i  Current UE4 Version: %i, Current Licensee Version: %i)"),
-						*Filename, Linker->Summary.GetFileVersionUE4(), Linker->Summary.GetFileVersionLicenseeUE4(), GPackageFileUE4Version, VER_LATEST_ENGINE_LICENSEEUE4 );
+					UE_LOG(LogContentCommandlet, Warning, TEXT("Package [%s] is read-only but needs to be resaved (UE Version: %i, Licensee Version: %i  Current UE Version: %i, Current Licensee Version: %i)"),
+						*Filename, Linker->Summary.GetFileVersionUE().ToValue(), Linker->Summary.GetFileVersionLicenseeUE(), GPackageFileUEVersion.ToValue(), VER_LATEST_ENGINE_LICENSEEUE4 );
 					if( SavePackageHelper(Package, FString(TEXT("Temp.temp"))) )
 					{
 						UE_LOG(LogContentCommandlet, Warning, TEXT("Correctly saved:  [Temp.temp].") );
@@ -717,14 +794,16 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 				}
 				else
 				{
-					// check to see if we need to check this package out
-					if ( bAutoCheckOut )
+					// Check to see if we need to check this package out (but do not check out here if SourceControlQueue is enabled)
+					const bool bAttemptCheckoutNow = bAutoCheckOut && SourceControlQueue == nullptr;
+					if (bAttemptCheckoutNow)
 					{
+						TRACE_CPUPROFILER_EVENT_SCOPE(UResavePackagesCommandlet::LoadAndSaveOnePackage::AutoCheckOut);
 						if( bIsReadOnly )
 						{
 							VerboseMessage(TEXT("Pre ForceGetStatus1"));
 							ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
-							FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState( Package, bBulkCheckOut ? EStateCacheUsage::Use : EStateCacheUsage::ForceUpdate );
+							FSourceControlStatePtr SourceControlState = SourceControlProvider.GetState( Package, EStateCacheUsage::ForceUpdate );
 							if(SourceControlState.IsValid())
 							{
 								FString OtherCheckedOutUser;
@@ -751,9 +830,12 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 						}
 					}
 
-					// so now we need to see if we actually were able to check this file out
-					// if the file is still read only then we failed and need to emit an error and go to the next package
-					if (IFileManager::Get().IsReadOnly( *Filename ) == true)
+					// Update the readonly state now that source control has had a chance to run
+					bIsReadOnly = IFileManager::Get().IsReadOnly(*Filename);
+
+					// If we tried to check out the file but it is still read only then we failed and 
+					// need to emit an error and go to the next package			
+					if (bAttemptCheckoutNow && bIsReadOnly)
 					{
 						if (bSkipCheckedOutFiles)
 						{
@@ -769,18 +851,35 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 
 					if (Verbosity != ONLY_ERRORS)
 					{
-						UE_LOG(LogContentCommandlet, Display, TEXT("Resaving package [%s] (UE4 Version: %i, Licensee Version: %i  Saved UE4 Version: %i, Saved Licensee Version: %i)"),
-							*Filename,Linker->Summary.GetFileVersionUE4(), Linker->Summary.GetFileVersionLicenseeUE4(), GPackageFileUE4Version, VER_LATEST_ENGINE_LICENSEEUE4 );
+						UE_LOG(LogContentCommandlet, Display, TEXT("Resaving package [%s] (UE Version: %i, Licensee Version: %i  Saved UE Version: %i, Saved Licensee Version: %i)"),
+							*Filename,Linker->Summary.GetFileVersionUE().ToValue(), Linker->Summary.GetFileVersionLicenseeUE(), GPackageFileUEVersion.ToValue(), VER_LATEST_ENGINE_LICENSEEUE4 );
 					}
 
 					const static bool bKeepPackageGUIDOnSave = FParse::Param(FCommandLine::Get(), TEXT("KeepPackageGUIDOnSave"));
 					ESaveFlags SaveFlags = bKeepPackageGUIDOnSave ? SAVE_KeepGUID : SAVE_None;
-					if( SavePackageHelper(Package, Filename, RF_Standalone, GWarn, nullptr, SaveFlags) )
+					
+					if (bIsReadOnly == false || SourceControlQueue == nullptr)
 					{
-						PackagesResaved++;
-						if (Verbosity == VERY_VERBOSE)
+						TRACE_CPUPROFILER_EVENT_SCOPE(UResavePackagesCommandlet::LoadAndSaveOnePackage::SavePackage);
+
+						if (SavePackageHelper(Package, Filename, RF_Standalone, GWarn, SaveFlags))
 						{
-							UE_LOG(LogContentCommandlet, Display, TEXT("Correctly saved:  [%s]."), *Filename );
+							PackagesResaved++;
+							if (Verbosity == VERY_VERBOSE)
+							{
+								UE_LOG(LogContentCommandlet, Display, TEXT("Correctly saved:  [%s]."), *Filename);
+							}
+						}
+					}
+					else
+					{
+						// The target file is still read only and we have SourceControlQueue enabled so we
+						// need to save to a temporary file first, and then queue the result.
+						const FString TempFilename = CreateTempFilename();
+
+						if (SavePackageHelper(Package, TempFilename, RF_Standalone, GWarn, SaveFlags))
+						{
+							SourceControlQueue->QueueCheckoutAndReplaceOperation(Filename, TempFilename, Package);
 						}
 					}
 				}
@@ -806,6 +905,8 @@ void UResavePackagesCommandlet::LoadAndSaveOnePackage(const FString& Filename)
 
 void UResavePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UResavePackagesCommandlet::DeleteOnePackage);
+
 	bool bIsReadOnly = IFileManager::Get().IsReadOnly(*Filename);
 
 	if (bVerifyContent)
@@ -819,6 +920,14 @@ void UResavePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 		{
 			UE_LOG(LogContentCommandlet, Warning, TEXT("Skipping read-only file %s"), *Filename);
 		}
+		return;
+	}
+
+	if (SourceControlQueue != nullptr)
+	{
+		// All files (read only and non read only) need to query their source control status so
+		// they should all be queued if avaliable.
+		SourceControlQueue->QueueDeleteOperation(Filename);
 		return;
 	}
 
@@ -849,12 +958,16 @@ void UResavePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 		UE_LOG(LogContentCommandlet, Display, TEXT("Deleting '%s' from source control..."), *Filename);
 		SourceControlProvider.Execute(ISourceControlOperation::Create<FDelete>(), PackageFilename);
 
+		PackagesDeleted++;
+
 		FilesToSubmit.AddUnique(Filename);
 	}
 	else if (SourceControlState.IsValid() && SourceControlState->CanCheckout())
 	{
 		UE_LOG(LogContentCommandlet, Display, TEXT("Deleting '%s' from source control..."), *Filename);
 		SourceControlProvider.Execute(ISourceControlOperation::Create<FDelete>(), PackageFilename);
+
+		PackagesDeleted++;
 
 		FilesToSubmit.AddUnique(Filename);
 	}
@@ -865,7 +978,11 @@ void UResavePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 	else if (SourceControlState.IsValid() && !SourceControlState->IsSourceControlled())
 	{
 		UE_LOG(LogContentCommandlet, Warning, TEXT("'%s' is not in source control, attempting to delete from disk..."), *Filename);
-		if (!IFileManager::Get().Delete(*Filename, false, true))
+		if (IFileManager::Get().Delete(*Filename, false, true) == true)
+		{
+			PackagesDeleted++;
+		}
+		else
 		{
 			UE_LOG(LogContentCommandlet, Warning, TEXT("  ... failed to delete from disk."), *Filename);
 		}
@@ -873,7 +990,11 @@ void UResavePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 	else
 	{
 		UE_LOG(LogContentCommandlet, Warning, TEXT("'%s' is in an unknown source control state, attempting to delete from disk..."), *Filename);
-		if (!IFileManager::Get().Delete(*Filename, false, true))
+		if (IFileManager::Get().Delete(*Filename, false, true)== true)
+		{
+			PackagesDeleted++;
+		}
+		else
 		{
 			UE_LOG(LogContentCommandlet, Warning, TEXT("  ... failed to delete from disk."), *Filename);
 		}
@@ -882,6 +1003,8 @@ void UResavePackagesCommandlet::DeleteOnePackage(const FString& Filename)
 
 int32 UResavePackagesCommandlet::Main( const FString& Params )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UResavePackagesCommandlet);
+
 	const TCHAR* Parms = *Params;
 	TArray<FString> Tokens;
 	ParseCommandLine(Parms, Tokens, Switches);
@@ -899,8 +1022,8 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	bOnlySaveDirtyPackages = Switches.Contains(TEXT("OnlySaveDirtyPackages"));
 	/** if we should auto checkout packages that need to be saved**/
 	bAutoCheckOut = Switches.Contains(TEXT("AutoCheckOutPackages")) || Switches.Contains(TEXT("AutoCheckOut"));
-	/** when checking out packages, check them all out before loading any of them to reduce the number of source control operations while resaving **/
-	bBulkCheckOut = bAutoCheckOut && (Switches.Contains(TEXT("BulkCheckOutPackages")) || Switches.Contains(TEXT("BulkCheckOut")));
+	/** if we should batch source control operations*/
+	bBatchSourceControl = Switches.Contains(TEXT("BatchSourceControl"));
 	/** if we should simply skip checked out files rather than error-ing out */
 	bSkipCheckedOutFiles = Switches.Contains(TEXT("SkipCheckedOutPackages"));
 	/** if we should auto checkin packages that were checked out**/
@@ -916,8 +1039,10 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	bIgnoreChangelist = Switches.Contains(TEXT("IgnoreChangelist"));
 	/** whether we should only save packages with changelist zero */
 	bOnlyUnversioned = Switches.Contains(TEXT("OnlyUnversioned"));
-	/** whether we should only save packages saved by licenseed */
+	/** whether we should only save packages saved by licensees */
 	bOnlyLicenseed = Switches.Contains(TEXT("OnlyLicenseed"));
+	/** whether we should only save packages containing virtualized bulkdata payloads */
+	bOnlyVirtualized = Switches.Contains(TEXT("OnlyVirtualized"));
 	/** only process packages containing materials */
 	bOnlyMaterials = Switches.Contains(TEXT("onlymaterials"));
 	/** determine if we are building navigation data for the map packages on the pass. **/
@@ -956,7 +1081,6 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		bGenerateMeshProxies = HLODOptions.Contains("Proxies");
 		bForceClusterGeneration = HLODOptions.Contains("ForceClusters");
 		bForceProxyGeneration = HLODOptions.Contains("ForceProxies");
-		bForceEnableHLODForLevel = HLODOptions.Contains("ForceEnableHLOD");
 		bForceSingleClusterForLevel = HLODOptions.Contains("ForceSingleCluster");
 		bSkipSubLevels = HLODOptions.Contains("SkipSubLevels");
 		bHLODMapCleanup = HLODOptions.Contains("MapCleanup");
@@ -972,7 +1096,6 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] Proxies"), bGenerateMeshProxies ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceClusters"), bForceClusterGeneration ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceProxies"), bForceProxyGeneration ? TEXT("X") : TEXT(" "));
-		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceEnableHLOD"), bForceEnableHLODForLevel ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] SkipSubLevels"), bSkipSubLevels ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] ForceSingleCluster"), bForceSingleClusterForLevel ? TEXT("X") : TEXT(" "));
 		UE_LOG(LogContentCommandlet, Display, TEXT("  [%s] Map Cleanup"), bHLODMapCleanup ? TEXT("X") : TEXT(" "));
@@ -996,9 +1119,6 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		check( Switches.Contains(TEXT("AllowCommandletRendering")) );
 		GarbageCollectionFrequency = 1;
 	}
-
-	// GarbageCollectionFrequency
-	FParse::Value(*Params, TEXT("GarbageCollectionFrequency="), GarbageCollectionFrequency);
 
 	// Default build on production
 	LightingBuildQuality = Quality_Production;
@@ -1045,6 +1165,8 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 	int32 GCIndex = 0;
 	PackagesConsideredForResave = 0;
 	PackagesResaved = 0;
+	PackagesDeleted = 0;
+	TotalPackagesForResave = PackageNames.Num();
 
 	// allow for an option to restart at a given package name (in case it dies during a run, etc)
 	bool bCanProcessPackage = true;
@@ -1068,63 +1190,31 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		GShaderCompilingManager->ProcessAsyncResults(true, false);
 	}
 
-	// Pre-checkout files in bulk
-	if (bBulkCheckOut && bAutoCheckOut)
+	if (bBatchSourceControl)
 	{
-		UE_LOG(LogContentCommandlet, Display, TEXT("Looking for files to bulk checkout from source control..."));
-		TArray<FString> PackagesPassingFilter;
-		for (int32 PackageIndex = 0; PackageIndex < PackageNames.Num(); PackageIndex++)
+		// Convert the commandlets verbosity to that of FQueuedSourceControlOperations
+		FQueuedSourceControlOperations::EVerbosity LogVerbosity = FQueuedSourceControlOperations::EVerbosity::All;
+		switch (Verbosity)
 		{
-			const FString& Filename = PackageNames[PackageIndex];
-			bool bIsReadOnly = IFileManager::Get().IsReadOnly(*Filename);
-
-			if (bIsReadOnly)
-			{
-				FLinkerLoad* Linker = LoadPackageLinker(nullptr, *Filename, LOAD_NoVerify);
-				if (Linker)
-				{
-					bool bSavePackage = true;
-					PerformPreloadOperations(Linker, bSavePackage);
-					if (bSavePackage)
-					{
-						PackagesPassingFilter.Add(Filename);
-					}
-				}
-				else
-				{
-					CollectGarbage(RF_NoFlags);
-				}
-			}
+		case VERY_VERBOSE:
+			LogVerbosity = FQueuedSourceControlOperations::EVerbosity::All;
+			break;
+		case INFORMATIVE:
+			LogVerbosity = FQueuedSourceControlOperations::EVerbosity::Info;
+			break;
+		case ONLY_ERRORS:
+			LogVerbosity = FQueuedSourceControlOperations::EVerbosity::ErrorsOnly;
+			break;
+		default:
+			UE_LOG(LogContentCommandlet, Warning, TEXT("Unknown verbosity to pass to FQueuedSourceControlOperations!"));
 		}
 
-		int32 NumPackages = PackagesPassingFilter.Num();
-		if (NumPackages > 0)
-		{
-			UE_LOG(LogContentCommandlet, Display, TEXT("Considering %d files for bulk checkout from source control..."), NumPackages);
-
-			ISourceControlProvider& SourceControlProvider = ISourceControlModule::Get().GetProvider();
-			TArray<TSharedRef<ISourceControlState, ESPMode::ThreadSafe>> SourceControlStates;
-			SourceControlProvider.GetState(PackagesPassingFilter, SourceControlStates, EStateCacheUsage::ForceUpdate);
-			ensure(NumPackages == SourceControlStates.Num());
-			TArray<FString> PackagesToCheckout;
-			for (int32 PackageIdx = 0; PackageIdx < NumPackages; ++PackageIdx)
-			{
-				TSharedRef<ISourceControlState, ESPMode::ThreadSafe> SourceControlState = SourceControlStates[PackageIdx];
-				FString OtherCheckedOutUser;
-				if (!SourceControlState->IsCheckedOutOther(&OtherCheckedOutUser) && SourceControlState->IsCurrent())
-				{
-					ensure(FPaths::GetCleanFilename(PackagesPassingFilter[PackageIdx]) == FPaths::GetCleanFilename(SourceControlState->GetFilename()));
-					PackagesToCheckout.Add(*PackagesPassingFilter[PackageIdx]);
-				}
-			}
-
-			if (PackagesToCheckout.Num() > 0)
-			{
-				UE_LOG(LogContentCommandlet, Display, TEXT("Bulk checking out %d files from source control..."), PackagesToCheckout.Num());
-				SourceControlProvider.Execute(ISourceControlOperation::Create<FCheckOut>(), PackagesToCheckout);
-			}
-		}
+		SourceControlQueue = MakePimpl<FQueuedSourceControlOperations>(LogVerbosity);	
+		ParseSourceControlOptions(Switches);
 	}
+
+	// Make sure any remaining temp files from previous runs are removed
+	CleanTempFiles();
 
 	// Iterate over all packages.
 	for( int32 PackageIndex = 0; PackageIndex < PackageNames.Num(); PackageIndex++ )
@@ -1152,6 +1242,12 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		// Load and save this package
 		LoadAndSaveOnePackage(Filename);
 
+		// Check if we need to flush any source control operations yet
+		if (SourceControlQueue != nullptr)
+		{
+			SourceControlQueue->FlushPendingOperations(false);
+		}
+
 		// Tick shader compiler if we are rendering
 		if(IsAllowCommandletRendering() && GShaderCompilingManager)
 		{
@@ -1164,6 +1260,22 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 			UE_LOG(LogContentCommandlet, Warning, TEXT( "Attempting to resave more than MaxPackagesToResave; exiting" ) );
 			break;
 		}
+	}
+	
+	if (SourceControlQueue != nullptr)
+	{
+		// Flush any remaining source control operations
+		SourceControlQueue->FlushPendingOperations(true);
+
+		// Fix up the stats
+		PackagesDeleted += SourceControlQueue->GetNumDeletedFiles();
+		PackagesResaved += SourceControlQueue->GetNumReplacedFiles();
+
+		// Add files that the source control queue modified to the list of files that 
+		// will need to be submitted to source control
+		FilesToSubmit.Append(SourceControlQueue->GetModifiedFiles());
+
+		SourceControlQueue.Reset();
 	}
 
 	// Force a directory watcher and asset registry tick
@@ -1209,8 +1321,9 @@ int32 UResavePackagesCommandlet::Main( const FString& Params )
 		FPlatformMisc::SetEnvironmentVar(TEXT("uebp_UATMutexNoWait"), TEXT("0"));		
 	}
 
-	UE_LOG(LogContentCommandlet, Display, TEXT("[REPORT] %d/%d packages were considered for resaving"), PackagesConsideredForResave, PackageNames.Num());
+	UE_LOG(LogContentCommandlet, Display, TEXT("[REPORT] %d/%d packages were considered for resaving"), PackagesConsideredForResave, TotalPackagesForResave);
 	UE_LOG(LogContentCommandlet, Display, TEXT("[REPORT] %d/%d packages were resaved"), PackagesResaved, PackagesConsideredForResave);
+	UE_LOG(LogContentCommandlet, Display, TEXT("[REPORT] %d/%d packages were deleted"), PackagesDeleted, PackagesConsideredForResave);
 
 
 	return 0;
@@ -1261,24 +1374,23 @@ FText UResavePackagesCommandlet::GetChangelistDescription() const
 
 void UResavePackagesCommandlet::PerformPreloadOperations( FLinkerLoad* PackageLinker, bool& bSavePackage )
 {
-	const int32 UE4PackageVersion = PackageLinker->Summary.GetFileVersionUE4();
-	const int32 LicenseeUE4PackageVersion = PackageLinker->Summary.GetFileVersionLicenseeUE4();
-
+	const int32 UEPackageVersion = PackageLinker->Summary.GetFileVersionUE().ToValue();
+	const int32 LicenseeUEPackageVersion = PackageLinker->Summary.GetFileVersionLicenseeUE();
 
 	// validate that this package meets the minimum requirement
-	if ( MinResaveUE4Version != IGNORE_PACKAGE_VERSION && UE4PackageVersion < MinResaveUE4Version )
+	if (MinResaveUEVersion != IGNORE_PACKAGE_VERSION && UEPackageVersion < MinResaveUEVersion)
 	{
 		bSavePackage = false;
 		return;
 	}
 
 	// Check if this package meets the maximum requirements.
-	const bool bNoLimitation = MaxResaveUE4Version == IGNORE_PACKAGE_VERSION && MaxResaveLicenseeUE4Version == IGNORE_PACKAGE_VERSION;
+	const bool bNoLimitation = MaxResaveUEVersion == IGNORE_PACKAGE_VERSION && MaxResaveLicenseeUEVersion == IGNORE_PACKAGE_VERSION;
 	const bool bAllowResave = bNoLimitation ||
-						 (MaxResaveUE4Version != IGNORE_PACKAGE_VERSION && UE4PackageVersion <= MaxResaveUE4Version) ||
-						 (MaxResaveLicenseeUE4Version != IGNORE_PACKAGE_VERSION && LicenseeUE4PackageVersion <= MaxResaveLicenseeUE4Version);
+						 (MaxResaveUEVersion != IGNORE_PACKAGE_VERSION && UEPackageVersion <= MaxResaveUEVersion) ||
+						 (MaxResaveLicenseeUEVersion != IGNORE_PACKAGE_VERSION && LicenseeUEPackageVersion <= MaxResaveLicenseeUEVersion);
 	// If not, don't resave it.
-	if ( !bAllowResave )
+	if (!bAllowResave)
 	{
 		bSavePackage = false;
 		return;
@@ -1304,7 +1416,7 @@ void UResavePackagesCommandlet::PerformPreloadOperations( FLinkerLoad* PackageLi
 	}
 
 	// Check if the package was saved by licensees
-	if ( bOnlyLicenseed)
+	if (bOnlyLicenseed)
 	{
 		if (!PackageLinker->Summary.SavedByEngineVersion.IsLicenseeVersion())
 		{
@@ -1319,8 +1431,19 @@ void UResavePackagesCommandlet::PerformPreloadOperations( FLinkerLoad* PackageLi
 		}
 	}
 
+	// Check if the package contains virtualized bulkdata payloads
+	if (bOnlyVirtualized)
+	{
+		const UE::FPackageTrailer* Trailer = PackageLinker->GetPackageTrailer();
+		if (Trailer == nullptr || Trailer->GetNumPayloads(UE::EPayloadFilter::Virtualized) == 0)
+		{
+			bSavePackage = false;
+			return;
+		}
+	}
+
 	// Check if the package contains any instances of the class that needs to be resaved.
-	if ( ResaveClasses.Num() > 0 )
+	if (ResaveClasses.Num() > 0)
 	{
 		bSavePackage = false;
 		for (int32 ExportIndex = 0; !bSavePackage && ExportIndex < PackageLinker->ExportMap.Num(); ExportIndex++)
@@ -1537,31 +1660,64 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 	// indicates if world and level packages should be checked out only if dirty after building data
 	const bool bShouldCheckoutDirtyPackageOnly = (bShouldBuildHLOD || bShouldBuildNavigationData) && !bBuildingNonHLODData;
 
+	UWorldPartition* WorldPartition = World->GetWorldPartition();
+	const bool bResaveWorldPartitionExternalActors = !!WorldPartition;
+
+	// Load and Save Level's external packages
+ 	if (!bResaveWorldPartitionExternalActors)
+	{
+		World->AddToRoot();
+		for (UPackage* Package : World->PersistentLevel->GetPackage()->GetExternalPackages())
+		{
+			++TotalPackagesForResave;
+			const FString PackageFilename = Package->GetLoadedPath().GetLocalFullPath();
+			check(FLinkerLoad::FindExistingLinkerForPackage(Package));
+			LoadAndSaveOnePackage(PackageFilename);
+		}
+		World->RemoveFromRoot();
+	}
+
+	if (!bBuildingNonHLODData && !bShouldBuildHLOD && !bShouldBuildNavigationData && !bResaveWorldPartitionExternalActors)
+	{
+		return;
+	}
+
+	// Setup the world.
+	UWorld::InitializationValues IVS;
+	IVS.RequiresHitProxies(false);
+	IVS.ShouldSimulatePhysics(false);
+	IVS.EnableTraceCollision(false);
+	IVS.CreateNavigation(bShouldBuildNavigationData);
+	IVS.CreateAISystem(false);
+	IVS.AllowAudioPlayback(false);
+	IVS.CreatePhysicsScene(true);
+	FScopedEditorWorld EditorWorld(World, IVS);
+
+	// Load and Save world partition actor packages
+	if (bResaveWorldPartitionExternalActors)
+	{
+		FWorldPartitionHelpers::ForEachActorDesc(WorldPartition, [this, WorldPartition](const FWorldPartitionActorDesc* ActorDesc)
+		{
+			++TotalPackagesForResave;
+			// Load & Register World Partition Actor
+			FWorldPartitionReference LoadedActor(WorldPartition, ActorDesc->GetGuid());
+			AActor* Actor = LoadedActor->GetActor();
+			UPackage* Package = Actor ? Actor->GetExternalPackage() : nullptr;
+			if (Package == nullptr)
+			{
+				check(bCanIgnoreFails);
+				return true;
+			}
+			const FString PackageFilename = Package->GetLoadedPath().GetLocalFullPath();
+			check(FLinkerLoad::FindExistingLinkerForPackage(Package));
+			LoadAndSaveOnePackage(PackageFilename);
+			return true;
+		});
+	}
+
 	if (bBuildingNonHLODData || bShouldBuildHLOD || bShouldBuildNavigationData)
 	{
 		bool bShouldProceedWithRebuild = true;
-
-		// Setup the world.
-		World->WorldType = EWorldType::Editor;
-		World->AddToRoot();
-		if (!World->bIsWorldInitialized)
-		{
-			UWorld::InitializationValues IVS;
-			IVS.RequiresHitProxies(false);
-			IVS.ShouldSimulatePhysics(false);
-			IVS.EnableTraceCollision(false);
-			IVS.CreateNavigation(bShouldBuildNavigationData);
-			IVS.CreateAISystem(false);
-			IVS.AllowAudioPlayback(false);
-			IVS.CreatePhysicsScene(true);
-
-			World->InitWorld(IVS);
-			World->PersistentLevel->UpdateModelComponents();
-			World->UpdateWorldComponents(true, false);
-		}
-		FWorldContext &WorldContext = GEditor->GetEditorWorldContext(true);
-		WorldContext.SetCurrentWorld(World);
-		GWorld = World;
 
 		TArray<FString> CheckedOutPackagesFilenames;
 		auto CheckOutLevelFile = [this,&bShouldProceedWithRebuild, &CheckedOutPackagesFilenames](ULevel* InLevel)
@@ -1572,7 +1728,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 				if (MapBuildDataPackage != InLevel->GetOutermost())
 				{
 					FString MapBuildDataPackageName;
-					if (FPackageName::DoesPackageExist(MapBuildDataPackage->GetName(), NULL, &MapBuildDataPackageName))
+					if (FPackageName::DoesPackageExist(MapBuildDataPackage->GetName(), &MapBuildDataPackageName))
 					{
 						if (CheckoutFile(MapBuildDataPackageName))
 						{
@@ -1592,7 +1748,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 		};
 
 		FString WorldPackageName;
-		if (FPackageName::DoesPackageExist(World->GetOutermost()->GetName(), NULL, &WorldPackageName))
+		if (FPackageName::DoesPackageExist(World->GetOutermost()->GetName(), &WorldPackageName))
 		{
 			if (!bShouldCheckoutDirtyPackageOnly)
 			{
@@ -1630,7 +1786,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 
 				FString StreamingLevelPackageFilename;
 				const FString StreamingLevelWorldAssetPackageName = StreamingLevel->GetWorldAssetPackageName();
-				if (FPackageName::DoesPackageExist(StreamingLevelWorldAssetPackageName, NULL, &StreamingLevelPackageFilename))
+				if (FPackageName::DoesPackageExist(StreamingLevelWorldAssetPackageName, &StreamingLevelPackageFilename))
 				{
 					if (!bShouldCheckoutDirtyPackageOnly)
 					{
@@ -1702,12 +1858,6 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 					}
 				}
 
-				// Force HLOD support on for this level if we were asked to
-				if( bForceEnableHLODForLevel )
-				{
-					World->GetWorldSettings()->bEnableHierarchicalLODSystem = true;
-				}
-
 				// Use a single cluster for all actors in the level if we were asked to
 				if( bForceSingleClusterForLevel )
 				{
@@ -1750,7 +1900,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 
 				while (Processor->IsProxyGenerationRunning())
 				{
-					FTicker::GetCoreTicker().Tick(FApp::GetDeltaTime());
+					FTSTicker::GetCoreTicker().Tick(FApp::GetDeltaTime());
 					FThreadManager::Get().Tick();
 					FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
 					FPlatformProcess::Sleep(0.1f);
@@ -1859,7 +2009,7 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 				{
 					FString StreamingLevelPackageFilename;
 					const FString StreamingLevelWorldAssetPackageName = NextStreamingLevel->GetWorldAssetPackageName();
-					if (FPackageName::DoesPackageExist(StreamingLevelWorldAssetPackageName, NULL, &StreamingLevelPackageFilename) && CheckedOutPackagesFilenames.Contains(StreamingLevelPackageFilename))
+					if (FPackageName::DoesPackageExist(StreamingLevelWorldAssetPackageName, &StreamingLevelPackageFilename) && CheckedOutPackagesFilenames.Contains(StreamingLevelPackageFilename))
 					{
 						UPackage* SubLevelPackage = NextStreamingLevel->GetLoadedLevel()->GetOutermost();
 						bool bSaveSubLevelPackage = true;
@@ -1927,13 +2077,6 @@ void UResavePackagesCommandlet::PerformAdditionalOperations(class UWorld* World,
 				}
 			}
 		}
-
-		
-		World->RemoveFromRoot();
-
-		WorldContext.SetCurrentWorld(nullptr);
-		GWorld = nullptr;
-
 	}
 }
 
@@ -1996,6 +2139,29 @@ void UResavePackagesCommandlet::VerboseMessage(const FString& Message)
 	{
 		UE_LOG(LogContentCommandlet, Verbose, TEXT("%s"), *Message);
 	}
+}
+
+FString UResavePackagesCommandlet::CreateTempFilename()
+{
+	return FPaths::CreateTempFilename(*GetTempFilesDirectory());
+}
+
+void UResavePackagesCommandlet::CleanTempFiles()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UResavePackagesCommandlet::CleanTempFiles);
+	const FString DirPath = GetTempFilesDirectory();
+
+	UE_LOG(LogContentCommandlet, Display, TEXT("Cleaning temp file directory"), *DirPath);
+
+	if (!IFileManager::Get().DeleteDirectory(*DirPath, false, true))
+	{
+		UE_LOG(LogContentCommandlet, Warning, TEXT("Failed to clean temp file directory:  %s"), *DirPath);
+	}
+}
+
+FString UResavePackagesCommandlet::GetTempFilesDirectory()
+{
+	return FPaths::ProjectSavedDir() / TEXT("Temp/ResavePackages");
 }
 
 /*-----------------------------------------------------------------------------
@@ -2213,6 +2379,7 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 
 	// store all referenced objects
 	TMap<FString, FPackageObjects> AllReferencedPublicObjects;
+	TSet<FString> ExternalPackages;
 
 	if (bShouldRestoreFromPreviousRun)
 	{
@@ -2297,7 +2464,7 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 			}
 		}
 
-		// now add them to the list of all packges to load
+		// now add them to the list of all packages to load
 		for (int32 PackageIndex = 0; PackageIndex < PerMapPackagesToLoad.Num(); PackageIndex++)
 		{
 			PackagesToFullyLoad.Add(TEXT("Package"), *PerMapPackagesToLoad[PackageIndex]);
@@ -2323,106 +2490,164 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 			// start off just loading this package (more may be added in the loop)
 			PackagesToLoad.Add(*PackageIt.Value().GetValue());
 
+			TArray<UObject*> ObjectsAddedToRoot;
+			TSet<UObject*> AlreadyVisited;
 			for (int32 PackageIndex = 0; PackageIndex < PackagesToLoad.Num(); PackageIndex++)
 			{
 				// save a copy of the packagename (not a reference in case the PackgesToLoad array gets realloced)
 				FString PackageName = PackagesToLoad[PackageIndex];
-				FString PackageFilename;
+				const bool bIsExternalPackage = ExternalPackages.Contains(PackageName);
+				const bool bForceSkipSavePackage = bIsExternalPackage;
+				// Avoid GC'ing between each external package
+				const int32 GarbageCollectionFrequency = bIsExternalPackage ? 2048 : 0;
 
-				if( FPackageName::DoesPackageExist( PackageName, NULL, &PackageFilename ) == true )
+				FPackagePath PackagePath;
+				if (!FPackagePath::TryFromMountedName(PackageName, PackagePath) ||
+					!FPackageName::DoesPackageExist(PackagePath, &PackagePath))
 				{
-					SET_WARN_COLOR(COLOR_WHITE);
-					UE_LOG(LogContentCommandlet, Warning, TEXT("Fully loading %s..."), *PackageFilename);
-					CLEAR_WARN_COLOR();
+					continue;
+				}
+
+				FString PackageFilename = PackagePath.GetLocalFullPath();
+				SET_WARN_COLOR(COLOR_WHITE);
+				UE_LOG(LogContentCommandlet, Warning, TEXT("Fully loading %s... [%d/%d]"), *PackageFilename, PackageIndex + 1, PackagesToLoad.Num());
+				CLEAR_WARN_COLOR();
 
 	// @todo josh: track redirects in this package and then save the package instead of copy it if there were redirects
 	// or make sure that the following redirects marks the package dirty (which maybe it shouldn't do in the editor?)
 
-					// load the package fully
-					UPackage* Package = LoadPackage(nullptr, *PackageFilename, LOAD_None);
+				// load the package fully
+				UPackage* Package = LoadPackage(nullptr, PackagePath, LOAD_None);
 
-					FLinkerLoad* Linker = LoadPackageLinker(nullptr, *PackageFilename, LOAD_Quiet | LOAD_NoWarn | LOAD_NoVerify);
+				FLinkerLoad* Linker = LoadPackageLinker(nullptr, PackagePath, LOAD_Quiet | LOAD_NoWarn | LOAD_NoVerify);
 
-					// look for special package types
-					bool bIsMap = Linker->ContainsMap();
-					bool bIsScriptPackage = Linker->ContainsCode();
-
-					// collect all public objects loaded
-					for(FThreadSafeObjectIterator ObjectIt; ObjectIt; ++ObjectIt)
+				UWorld* World = UWorld::FindWorldInPackage(Package);
+				if (World && World->IsPartitionedWorld())
+				{
+					TArray<FString> ExternalActorPackages = World->PersistentLevel->GetOnDiskExternalActorPackages();
+					if (ExternalActorPackages.Num())
 					{
-						UObject* Object = *ObjectIt;
+						PackagesToLoad.Append(ExternalActorPackages);
+						// Exclude external actors packages from save
+						ExternalPackages.Append(ExternalActorPackages);
+					
+						// Keep partition world around to avoid reloading it for every loaded external actor
+						World->AddToRoot();
+						ObjectsAddedToRoot.Add(World);
+					}
+				}
 
-						// record all public referenced objects (skipping over top level packages)
-						if (/*Object->HasAnyFlags(RF_Public) &&*/ Object->GetOuter() != NULL)
+				// look for special package types
+				bool bIsMap = Linker->ContainsMap();
+				bool bIsScriptPackage = Linker->ContainsCode();
+
+				// collect all public objects loaded
+				for(FThreadSafeObjectIterator ObjectIt; ObjectIt; ++ObjectIt)
+				{
+					UObject* Object = *ObjectIt;
+					
+					// Because we don't GC between each load of external packages, we want to skip already visited objects
+					bool bAlreadyVisited = false;
+					AlreadyVisited.Add(Object, &bAlreadyVisited);
+					if (bAlreadyVisited)
+					{
+						continue;
+					}
+
+					// Add any levels referenced by Level Instance actors to the list of levels to load
+					ALevelInstance* LevelInstance = Cast<ALevelInstance>(Object);
+					if (LevelInstance && !LevelInstance->IsTemplate())
+					{
+						FString LevelPackageName = LevelInstance->GetWorldAssetPackage();
+						if (!LevelPackageName.IsEmpty() && PackagesToFullyLoad.FindKey(LevelPackageName) == nullptr)
 						{
-							// is this public object in a fully loaded package?
-							bool bIsObjectInFullyLoadedPackage = Object->IsIn(Package);
-
-							if (bIsMap && bIsObjectInFullyLoadedPackage && Object->HasAnyFlags(RF_Public))
-							{
-								UE_LOG(LogContentCommandlet, Warning, TEXT("Clearing public flag on map object %s"), *Object->GetFullName());
-								Object->ClearFlags(RF_Public);
-								// mark that we need to save the package since we modified it (instead of copying it)
-								Object->MarkPackageDirty();
-							}
-							else
-							{
-								// record that this object was referenced
-								ReferenceObject(Object, AllReferencedPublicObjects, bIsObjectInFullyLoadedPackage);
-							}
+							PackagesToLoad.AddUnique(LevelPackageName);
 						}
 					}
 
-					// add any sublevels of this world to the list of levels to load
-					for (TObjectIterator<UWorld> WorldIt; WorldIt; ++WorldIt)
+					// record all public referenced objects (skipping over top level packages)
+					if (/*Object->HasAnyFlags(RF_Public) &&*/ Object->GetOuter() != NULL)
 					{
-						UWorld*	World = *WorldIt;
-						// iterate over streaming level objects loading the levels.
-						for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
-						{
-							if (StreamingLevel)
-							{
-								FString SubLevelName = StreamingLevel->GetWorldAssetPackageName();
-								// add this sublevel's package to the list of packages to load if it's not already in the master list of packages
-								if (PackagesToFullyLoad.FindKey(SubLevelName) == NULL)
-								{
-									PackagesToLoad.AddUnique(SubLevelName);
-								}
-							}
-						}
-					}
+						// is this public object in a fully loaded package?
+						bool bIsObjectInFullyLoadedPackage = Object->IsIn(Package);
 
-					// save/copy the package if desired, and only if it's not a script package (script code is
-					// not cutdown, so we always use original script code)
-					if (bShouldSavePackages && !bIsScriptPackage)
-					{
-						// make the name of the location to put the package
-						FString CutdownPackageName = MakeCutdownFilename(PackageFilename);
-						
-						// if the package was modified by loading it, then we should save the package
-						if (Package->IsDirty())
+						if (bIsMap && bIsObjectInFullyLoadedPackage && Object->HasAnyFlags(RF_Public))
 						{
-							// save the fully load packages
-							UE_LOG(LogContentCommandlet, Warning, TEXT("Saving fully loaded package %s..."), *CutdownPackageName);
-							if (!SavePackageHelper(Package, CutdownPackageName))
-							{
-								UE_LOG(LogContentCommandlet, Error, TEXT("Failed to save package %s..."), *CutdownPackageName);
-							}
+							UE_LOG(LogContentCommandlet, Warning, TEXT("Clearing public flag on map object %s"), *Object->GetFullName());
+							Object->ClearFlags(RF_Public);
+							// mark that we need to save the package since we modified it (instead of copying it)
+							Object->MarkPackageDirty();
 						}
 						else
 						{
-							UE_LOG(LogContentCommandlet, Warning, TEXT("Copying fully loaded package %s..."), *CutdownPackageName);
-							// copy the unmodified file (faster than saving) (0 is success)
-							if (IFileManager::Get().Copy(*CutdownPackageName, *PackageFilename) != 0)
+							// record that this object was referenced
+							ReferenceObject(Object, AllReferencedPublicObjects, bIsObjectInFullyLoadedPackage);
+						}
+					}
+				}
+
+				// add any sublevels of this world to the list of levels to load
+				for (TObjectIterator<UWorld> WorldIt; WorldIt; ++WorldIt)
+				{
+					// iterate over streaming level objects loading the levels.
+					for (ULevelStreaming* StreamingLevel : (*WorldIt)->GetStreamingLevels())
+					{
+						if (StreamingLevel)
+						{
+							FString SubLevelName = StreamingLevel->GetWorldAssetPackageName();
+							// add this sublevel's package to the list of packages to load if it's not already in the master list of packages
+							if (PackagesToFullyLoad.FindKey(SubLevelName) == NULL)
 							{
-								UE_LOG(LogContentCommandlet, Error, TEXT("Failed to copy package to %s..."), *CutdownPackageName);
+								PackagesToLoad.AddUnique(SubLevelName);
 							}
 						}
 					}
+				}
 
-					// close this package
+				// save/copy the package if desired, and only if it's not a script package (script code is
+				// not cutdown, so we always use original script code)
+				if (bShouldSavePackages && !bIsScriptPackage && !bForceSkipSavePackage)
+				{
+					// make the name of the location to put the package
+					FString CutdownPackageName = MakeCutdownFilename(PackageFilename);
+						
+					// if the package was modified by loading it, then we should save the package
+					if (Package->IsDirty())
+					{
+						// save the fully load packages
+						UE_LOG(LogContentCommandlet, Warning, TEXT("Saving fully loaded package %s..."), *CutdownPackageName);
+						if (!SavePackageHelper(Package, CutdownPackageName))
+						{
+							UE_LOG(LogContentCommandlet, Error, TEXT("Failed to save package %s..."), *CutdownPackageName);
+						}
+					}
+					else
+					{
+						UE_LOG(LogContentCommandlet, Warning, TEXT("Copying fully loaded package %s..."), *CutdownPackageName);
+						// copy the unmodified file (faster than saving) (0 is success)
+						if (IFileManager::Get().Copy(*CutdownPackageName, *PackageFilename) != 0)
+						{
+							UE_LOG(LogContentCommandlet, Error, TEXT("Failed to copy package to %s..."), *CutdownPackageName);
+						}
+					}
+				}
+
+				static int32 Counter = 0;
+				if (!GarbageCollectionFrequency || (Counter++ % GarbageCollectionFrequency) == 0)
+				{
+					AlreadyVisited.Empty();
 					CollectGarbage(RF_NoFlags);
 				}
+			}
+
+			// Get rid of rooted objects if any
+			if (ObjectsAddedToRoot.Num())
+			{
+				for (UObject* Object : ObjectsAddedToRoot)
+				{
+					Object->RemoveFromRoot();
+				}
+				CollectGarbage(RF_NoFlags);
 			}
 		}
 
@@ -2452,8 +2677,13 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 		// Iterate over all files doing stuff.
 		for (int32 PackageIndex = 0; PackageIndex < AllPackages.Num(); PackageIndex++)
 		{
-			FString PackageFilename(AllPackages[PackageIndex]);
-			FString PackageName = FPackageName::FilenameToLongPackageName(PackageFilename);
+			FPackagePath PackagePath;
+			if (!FPackagePath::TryFromMountedName(AllPackages[PackageIndex], PackagePath))
+			{
+				UE_LOG(LogContentCommandlet, Warning, TEXT("Skipping unmounted path %s..."), *AllPackages[PackageIndex]);
+				continue;
+			}
+			FString PackageName = PackagePath.GetPackageName();
 
 			// the list of objects in this package
 			FPackageObjects* PackageObjs = NULL;
@@ -2461,9 +2691,9 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 			// this will be set to true if every object in the package is unnecessary
 			bool bAreAllObjectsUnnecessary = false;
 
-			if (FPaths::GetExtension(PackageFilename, true) == FPackageName::GetMapPackageExtension() )
+			if (PackagePath.GetHeaderExtension() == EPackageExtension::Map)
 			{
-				UE_LOG(LogContentCommandlet, Warning, TEXT("Skipping map %s..."), *PackageFilename);
+				UE_LOG(LogContentCommandlet, Warning, TEXT("Skipping map %s..."), *PackagePath.GetDebugName());
 				continue;
 			}
 			else
@@ -2475,25 +2705,25 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 				// and mark the whole package as unreferenced
 				if (PackageObjs == NULL)
 				{
-					UE_LOG(LogContentCommandlet, Warning, TEXT("No objects in %s were referenced..."), *PackageFilename);
-					new(UnnecessaryPublicObjects) FUnreferencedObject(PackageName, 
-						TEXT("ENTIRE PACKAGE"), IFileManager::Get().FileSize(*PackageFilename));
+					UE_LOG(LogContentCommandlet, Warning, TEXT("No objects in %s were referenced..."), *PackagePath.GetDebugName());
+					new(UnnecessaryPublicObjects) FUnreferencedObject(PackageName,
+						TEXT("ENTIRE PACKAGE"), IPackageResourceManager::Get().FileSize(PackagePath));
 
-					// all objects in this package are unnecasstry
+					// all objects in this package are unnecessary
 					bAreAllObjectsUnnecessary = true;
 				}
 				else if (PackageObjs->bIsFullyLoadedPackage)
 				{
-					UE_LOG(LogContentCommandlet, Warning, TEXT("Skipping fully loaded package %s..."), *PackageFilename);
+					UE_LOG(LogContentCommandlet, Warning, TEXT("Skipping fully loaded package %s..."), *PackagePath.GetDebugName());
 					continue;
 				}
 				else
 				{
-					UE_LOG(LogContentCommandlet, Warning, TEXT("Scanning %s..."), *PackageFilename);
+					UE_LOG(LogContentCommandlet, Warning, TEXT("Scanning %s..."), *PackagePath.GetDebugName());
 				}
 			}
 
-			FLinkerLoad* Linker = LoadPackageLinker(nullptr, *PackageFilename, LOAD_Quiet | LOAD_NoWarn | LOAD_NoVerify);
+			FLinkerLoad* Linker = LoadPackageLinker(nullptr, PackagePath, LOAD_Quiet | LOAD_NoWarn | LOAD_NoVerify);
 
 			// go through the exports in the package, looking for public objects
 			for (int32 ExportIndex = 0; ExportIndex < Linker->ExportMap.Num(); ExportIndex++)
@@ -2504,7 +2734,7 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 				// some packages may have brokenness in them so we want to just continue so we can wrangle
 				if( Export.ObjectName == NAME_None )
 				{
-					UE_LOG(LogContentCommandlet, Warning, TEXT( "    Export.ObjectName == NAME_None  for Package: %s " ), *PackageFilename );
+					UE_LOG(LogContentCommandlet, Warning, TEXT( "    Export.ObjectName == NAME_None  for Package: %s " ), *PackagePath.GetDebugName());
 					continue;
 				}
 
@@ -2527,11 +2757,11 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 					}
 
 					// look for existing entry
-					FPackageObjects* ObjectsInPackage = UnnecessaryObjectsByPackage.Find(*PackageFilename);
+					FPackageObjects* ObjectsInPackage = UnnecessaryObjectsByPackage.Find(PackagePath.GetLocalBaseFilenameWithPath());
 					// if not found, make a new one
 					if (ObjectsInPackage == NULL)
 					{
-						ObjectsInPackage = &UnnecessaryObjectsByPackage.Add(*PackageFilename, FPackageObjects());
+						ObjectsInPackage = &UnnecessaryObjectsByPackage.Add(PackagePath.GetLocalBaseFilenameWithPath(), FPackageObjects());
 					}
 
 					// get object's class
@@ -2547,16 +2777,12 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 					UClass* Class = StaticLoadClass(UObject::StaticClass(), NULL, *ClassName, NULL, LOAD_None, NULL);
 					// When wrangling content, you often are loading packages that have not been saved in ages and have a reference to a class
 					// that no longer exists.  Instead of asserting, we will just continue
-					if( bShouldSkipMissingClasses == true )
+
+					if ( !Class )
 					{
-						if( Class == NULL )
-						{
-							continue;
-						}
-					}
-					else
-					{
-						check(Class);
+						UE_LOG(LogContentCommandlet, Warning, TEXT("Missing class %s"), *ClassName);
+						check(bShouldSkipMissingClasses);
+						continue;
 					}
 
 					// make sure it doesn't get GC'd
@@ -2590,6 +2816,15 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 		int32 PackageIndex = 0;
 		for (TMap<FString, FPackageObjects>::TIterator It(AllReferencedPublicObjects); It; ++It, PackageIndex++ )
 		{
+			const FString& PackageName = It.Key();
+
+			// Skip save of external packages
+			const bool bForceSkipSavePackage = ExternalPackages.Contains(PackageName);
+			if (bForceSkipSavePackage)
+			{
+				continue;
+			}
+
 			// if the package was a fully loaded package, than we already saved it
 			if (It.Value().bIsFullyLoadedPackage)
 			{
@@ -2648,9 +2883,9 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 				//UE_LOG(LogContentCommandlet, Warning, TEXT( "*It.Key(): %s" ), *It.Key() );
 
 				// we need to be able to find the original package
-				if( FPackageName::DoesPackageExist(It.Key(), NULL, &OriginalPackageFilename) == false )
+				if( FPackageName::DoesPackageExist(PackageName, &OriginalPackageFilename) == false )
 				{
-					UE_LOG(LogContentCommandlet, Fatal, TEXT( "Could not find file in file cache: %s"), *It.Key() );
+					UE_LOG(LogContentCommandlet, Fatal, TEXT( "Could not find file in file cache: %s"), *PackageName);
 				}
 
 				// any maps need to be fully referenced
@@ -2663,7 +2898,7 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 
 				// save the package now that all needed objects in it are loaded.
 				// At this point, any object still around should be saved so we pass all flags so all objects are saved
-				SavePackageHelper(Package, *CutdownPackageName, RF_AllFlags, GWarn, NULL, SAVE_CutdownPackage);
+				SavePackageHelper(Package, *CutdownPackageName, RF_AllFlags, GWarn, SAVE_CutdownPackage);
 
 				// close up this package
 				CollectGarbage(RF_NoFlags);
@@ -2713,13 +2948,15 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 		int32 PackageIndex = 0;
 		for (TMap<FString, FPackageObjects>::TIterator PackageIt(UnnecessaryObjectsByPackage); PackageIt; ++PackageIt, PackageIndex++)
 		{
-			//UE_LOG(LogContentCommandlet, Warning, TEXT("Processing %s"), *PackageIt.Key());
+			const FString& PackageWithUnnecessaryObjects = PackageIt.Key();
+			UE_LOG(LogContentCommandlet, Warning, TEXT("Processing %s"), *PackageWithUnnecessaryObjects);
+
 			UPackage* FullyLoadedPackage = NULL;
 			// fully load unnecessary packages with no objects, 
 			if (PackageIt.Value().ReferencedObjects.Num() == 0)
 			{
 				// just load it, and don't need a reference to it
-				FullyLoadedPackage = LoadPackage(NULL, *PackageIt.Key(), LOAD_None);
+				FullyLoadedPackage = LoadPackage(NULL, FPackagePath::FromLocalPath(PackageWithUnnecessaryObjects), LOAD_None);
 			}
 			else
 			{
@@ -2754,39 +2991,53 @@ int32 UWrangleContentCommandlet::Main( const FString& Params )
 				// if was unnecessary...
 				if (UnnecessaryObjects.Find(*It->GetFullName()))
 				{
+					UObject* UnnecessaryObject = *It;
 					// ... then rename it (its outer needs to be a package, everything else will have to be
 					// moved by its outer getting moved)
-					if (!It->IsA(UPackage::StaticClass()) &&
-						It->GetOuter() &&
-						It->GetOuter()->IsA(UPackage::StaticClass()) &&
-						It->GetOutermost()->GetName().Left(4) != TEXT("NFS_"))
+					if (!UnnecessaryObject->IsA(UPackage::StaticClass()) &&
+						UnnecessaryObject->GetOuter() &&
+						UnnecessaryObject->GetOuter()->IsA(UPackage::StaticClass()))
 					{
-						UPackage* NewPackage = CreatePackage( *(FString(TEXT("NFS_")) + It->GetOuter()->GetPathName()));
-						//UE_LOG(LogContentCommandlet, Warning, TEXT("Renaming object from %s to %s.%s"), *It->GetPathName(), *NewPackage->GetPathName(), *It->GetName());
-
-						// move the object if we can. IF the rename fails, then the object was already renamed to this spot, but not GC'd.
-						// that's okay.
-						if (It->Rename(*It->GetName(), NewPackage, REN_Test))
+						FString PackageFullName = UnnecessaryObject->GetOuter()->GetPathName();
+						FString Path = FPackageName::GetLongPackagePath(PackageFullName);
+						FString AssetName = FPackageName::GetLongPackageAssetName(PackageFullName);
+						if (AssetName.Left(4) != TEXT("NFS_"))
 						{
-							It->Rename(*It->GetName(), NewPackage, REN_None);
+							FString NewPackageName = FString::Printf(TEXT("%s/NFS_%s"), *Path, *AssetName);
+							UPackage* NewPackage = CreatePackage(*NewPackageName);
+							//UE_LOG(LogContentCommandlet, Warning, TEXT("Renaming object from %s to %s.%s"), *UnnecessaryObject->GetPathName(), *NewPackage->GetPathName(), *UnnecessaryObject->GetName());
+
+							// move the object if we can. IF the rename fails, then the object was already renamed to this spot, but not GC'd.
+							// that's okay.
+							if (UnnecessaryObject->Rename(*UnnecessaryObject->GetName(), NewPackage, REN_Test))
+							{
+								UnnecessaryObject->Rename(*UnnecessaryObject->GetName(), NewPackage, REN_None);
+							}
 						}
 					}
-
 				}
 			}
 
 			// find the one we moved this packages objects to
-			FString PackagePath = PackageIt.Key();
-			FString PackageName = FPackageName::FilenameToLongPackageName(PackagePath);
-			UPackage* MovedPackage = FindPackage(NULL, *FString::Printf(TEXT("%s/NFS_%s"), *FPackageName::GetLongPackagePath(PackageName), *FPackageName::GetLongPackageAssetName(PackageName)));
-			check(MovedPackage);
-
+			FPackagePath PackagePath = FPackagePath::FromLocalPath(PackageWithUnnecessaryObjects);
+			FString PackageFilePath = PackagePath.GetLocalFullPath();
+			FString PackageName = PackagePath.GetPackageName();
+			FString FindPackageName = FString::Printf(TEXT("%s/NFS_%s"), *FPackageName::GetLongPackagePath(PackageName), *FPackageName::GetLongPackageAssetName(PackageName));
 			// convert the new name to a a NFS directory directory
-			FString MovedFilename = MakeCutdownFilename(FString::Printf(TEXT("%s/NFS_%s"), *FPaths::GetPath(PackagePath), *FPaths::GetCleanFilename(PackagePath)), TEXT("NFSContent"));
-			UE_LOG(LogContentCommandlet, Warning, TEXT("Saving package %s [%d/%d]"), *MovedFilename, PackageIndex, NumPackages);
-			// finally save it out
-			SavePackageHelper(MovedPackage, *MovedFilename);
+			FString MovedFilename = MakeCutdownFilename(FString::Printf(TEXT("%s/NFS_%s"), *FPaths::GetPath(PackageFilePath), *FPaths::GetCleanFilename(PackageFilePath)), TEXT("NFSContent"));
 
+			// finally save it out
+			UPackage* MovedPackage = FindPackage(NULL, *FindPackageName);
+			if (ensure(MovedPackage))
+			{
+				UE_LOG(LogContentCommandlet, Warning, TEXT("Saving package %s [%d/%d]"), *MovedFilename, PackageIndex, NumPackages);
+				SavePackageHelper(MovedPackage, *MovedFilename);
+			}
+			else
+			{
+				UE_LOG(LogContentCommandlet, Warning, TEXT("Moved package %s not found."), *FindPackageName);
+				UE_LOG(LogContentCommandlet, Error, TEXT("Can't save package %s [%d/%d]"), *MovedFilename, PackageIndex, NumPackages);
+			}
 			CollectGarbage(RF_NoFlags);
 		}
 	}
@@ -3037,3 +3288,267 @@ int32 UListStaticMeshesImportedFromSpeedTreesCommandlet::Main(const FString& Par
 	return 0;
 }
 
+/* ==========================================================================================================
+	UStaticMeshMinLodCommandlet
+========================================================================================================== */
+
+UStaticMeshMinLodCommandlet::UStaticMeshMinLodCommandlet(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+}
+
+int32 UStaticMeshMinLodCommandlet::Main(const FString& Params)
+{
+	TArray<FString> FilesInPath;
+	FEditorFileUtils::FindAllPackageFiles(FilesInPath);
+	if (FilesInPath.Num() == 0)
+	{
+		UE_LOG(LogContentCommandlet, Warning, TEXT("No packages found"));
+		return 1;
+	}
+
+	// parse the mapping from PerPlatform to PerQualityLevel
+	// ex:-mapping=Mobile:Low,Switch:Medium,Desktop:High,PS4:High,XboxOne:High,PS5:Epic,XSX:Epic;console:medium;high;epic,Desktop:high
+	TMultiMap<FName, FName> PerPlatformToQualityLevel;
+	FString MappingStr;
+	if (FParse::Value(*Params, TEXT("-mapping="), MappingStr, false))
+	{
+		TArray<FString> Mappings;
+		MappingStr.ParseIntoArray(Mappings, TEXT(","), true);
+		for (FString& PlatformToQualityLevel : Mappings)
+		{
+			TArray<FString> Entries;
+			PlatformToQualityLevel.ParseIntoArray(Entries, TEXT(":"), false);
+
+			if (Entries.Num() != 2)
+			{
+				UE_LOG(LogContentCommandlet, Error, TEXT("Error bad -mapping argument: %s"), *MappingStr);
+				return 1;
+			}
+
+			TArray<FString> Values;
+			Entries[1].ParseIntoArray(Values, TEXT(";"), false);
+
+			for (const FString& Value : Values)
+			{
+				PerPlatformToQualityLevel.AddUnique(FName(*Entries[0]), FName(*Value));
+			}
+		}
+	}
+
+	bool bConvertToQualityLevel = PerPlatformToQualityLevel.Num() > 0;
+	bool bNoSourceControl = FParse::Param(*Params, TEXT("nosourcecontrol"));
+	bool bGenerateCollections = FParse::Param(*Params, TEXT("collections"));
+	ISourceControlProvider* SourceControlProvider = bNoSourceControl ? nullptr : &ISourceControlModule::Get().GetProvider();
+	ICollectionManager& CollectionManager = FCollectionManagerModule::GetModule().Get();
+
+	struct OverrideGroupInfo
+	{
+		int32 Count;
+		TArray<FString> Names;
+		TArray<FString> Paths;
+	};
+
+	TMap<FName, OverrideGroupInfo> MinLodStats;
+	TArray<FString> StaticMeshList;
+	int32 TotalPackagesChecked = 0;
+	int32 TotalStaticMeshesChecked = 0;
+	int32 GCIndex = 0;
+
+	// Load the asset registry module
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+
+	// Update Registry Module
+	UE_LOG(LogContentCommandlet, Display, TEXT("Searching Asset Registry for static mesh "));
+	AssetRegistryModule.Get().SearchAllAssets(true);
+
+	// Retrieve list of all assets, used to find unreferenced ones.
+	TArray<FAssetData> AssetList;
+	AssetRegistryModule.Get().GetAssetsByClass(UStaticMesh::StaticClass()->GetFName(), AssetList, true);
+	TArray<UPackage*> PackagesToSave;
+
+	// Platform (group) names
+	const TArray<FString> Filters = { TEXT("NoEditor"), TEXT("Client"), TEXT("Server"), TEXT("AllDesktop") };
+	TMultiMap<FName, FName> GroupToPlatform;
+
+	// sanitize all vanilla platform names
+	// generate a list of all supported platform (from the datadrivenplatform files)
+	const TArray<FName>& SanitizedPlatformNameArray = PlatformInfo::GetAllVanillaPlatformNames().FilterByPredicate([&Filters, &GroupToPlatform](const FName& PlatformName)
+		{
+			for (const FString& Filter : Filters)
+			{
+				const int32 Position = PlatformName.ToString().Find(Filter);
+				if (Position != INDEX_NONE)
+				{
+					return false;
+				}
+			}
+
+			if (const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(PlatformName))
+			{
+				GroupToPlatform.AddUnique(PlatformInfo->DataDrivenPlatformInfo->PlatformGroupName, PlatformName);
+			}
+			return true;
+		});
+
+	for (int32 AssetIdx = 0; AssetIdx < AssetList.Num(); ++AssetIdx)
+	{
+		bool SavePackage = false;
+		const FString Filename = AssetList[AssetIdx].ObjectPath.ToString();
+		UE_LOG(LogContentCommandlet, Display, TEXT("Processing static mesh (%i/%i):  %s "), AssetIdx, AssetList.Num(), *Filename);
+
+		UPackage* Package = LoadPackage(NULL, *Filename, LOAD_Quiet);
+		if (Package == NULL)
+		{
+			UE_LOG(LogContentCommandlet, Error, TEXT("Error loading %s!"), *Filename);
+			continue;
+		}
+
+		TotalPackagesChecked++;
+
+		for (TObjectIterator<UStaticMesh> It; It; ++It)
+		{
+			UStaticMesh* StaticMesh = *It;
+			if (StaticMesh->IsIn(Package) && !StaticMesh->IsTemplate() && StaticMesh->GetMinLOD().PerPlatform.Num() > 0)
+			{
+				if (bConvertToQualityLevel)
+				{
+					//Convert default value
+					FPerPlatformInt PerPlatformMinLOD = StaticMesh->GetMinLOD();
+					FPerQualityLevelInt QualityLevelMinLOD;
+					QualityLevelMinLOD.PerQuality.Empty();
+					QualityLevelMinLOD.Default = PerPlatformMinLOD.Default;
+					
+					// convert each platform overrides
+					for (const TPair<FName, int32>& Pair : StaticMesh->GetMinLOD().PerPlatform)
+					{
+						// get all quality levels associated with the PerPlatform override (PS4:high, Console:medium;high;Epic) ...
+						TArray<FName> QLNames;
+						PerPlatformToQualityLevel.MultiFind(Pair.Key, QLNames);
+
+						for (const FName& QLName : QLNames)
+						{
+							int32 QLKey = QualityLevelProperty::FNameToQualityLevel(QLName);
+							if (QLKey != INDEX_NONE)
+							{
+								int32* Value = QualityLevelMinLOD.PerQuality.Find(QLKey);
+
+								// if the quality level already as a value, only change it if the value is lower
+								// this can happen if two mapping key as the same quality level but different min lod idx value
+								// ex: Desktop=2, PS4=1
+								// If Desktop and Console also is mapping to high, we take the smallest min lod idx
+								if (Value != nullptr && Pair.Value < *Value)
+								{
+									// only change the override if its a smaller minLod
+									*Value = Pair.Value;
+								}
+								else
+								{
+									QualityLevelMinLOD.PerQuality.Add(QLKey, Pair.Value);
+								}
+							}
+						}
+					}
+					StaticMesh->SetQualityLevelMinLOD(MoveTemp(QualityLevelMinLOD));
+				}
+
+				//generate a unique group name to collect stats
+				TArray<FName> PerPlatformNames;
+				StaticMesh->GetMinLOD().PerPlatform.GenerateKeyArray(PerPlatformNames);
+
+				// sort platform names so that (Switch, PS4) and (PS4, Switch) produce the same key
+				PerPlatformNames.Sort(FNameLexicalLess());
+
+				FString FinalCategoryName;
+				for (const FName& SortedPlatformName : PerPlatformNames)
+				{
+					FinalCategoryName += SortedPlatformName.ToString() + TEXT(" ");
+				}
+
+				// save the override info
+				OverrideGroupInfo& Info = MinLodStats.FindOrAdd(FName(*FinalCategoryName));
+				Info.Count++;
+				Info.Names.Add(StaticMesh->GetPathName());
+				Info.Paths.Add(Filename);
+
+				if (!SavePackage)
+				{
+					PackagesToSave.AddUnique(Package);
+					SavePackage = true;
+				}
+				
+				TotalStaticMeshesChecked++;
+			}
+		}
+	}
+
+	// output stats to the log
+	// generate collection uasset
+	int32 TotalOverrideCount = 0;
+	for (const TPair<FName, OverrideGroupInfo>& Pair : MinLodStats)
+	{
+		const OverrideGroupInfo& Info = Pair.Value;
+
+		if (bGenerateCollections)
+		{
+			if (!CollectionManager.CollectionExists(Pair.Key, ECollectionShareType::CST_Local))
+			{
+				CollectionManager.CreateCollection(Pair.Key, ECollectionShareType::CST_Local, ECollectionStorageMode::Static);
+			}
+		}
+
+		UE_LOG(LogContentCommandlet, Display, TEXT("-------------------------------------------------------------------"));
+		UE_LOG(LogContentCommandlet, Display, TEXT("Mask: %s"), *Pair.Key.ToString());
+		UE_LOG(LogContentCommandlet, Display, TEXT("Nb overrides: %d"), Info.Count);
+
+		for (int i = 0; i < Info.Names.Num(); i++)
+		{
+			UE_LOG(LogContentCommandlet, Display, TEXT("	%s"), *Info.Names[i]);
+
+			if (bGenerateCollections)
+			{
+				CollectionManager.AddToCollection(Pair.Key, ECollectionShareType::CST_Local, FName(*Info.Paths[i]));
+			}
+		}
+
+		if (bGenerateCollections)
+		{
+			CollectionManager.SaveCollection(Pair.Key, ECollectionShareType::CST_Local);
+		}
+
+		UE_LOG(LogContentCommandlet, Display, TEXT("-------------------------------------------------------------------"));
+		TotalOverrideCount += Info.Count;
+	}
+
+	UE_LOG(LogContentCommandlet, Display, TEXT("-------------------------------------------------------------------"));
+	UE_LOG(LogContentCommandlet, Display, TEXT("Total overrides: %d"), TotalOverrideCount);
+	UE_LOG(LogContentCommandlet, Display, TEXT("Total ovestatic meshesrrides: %d"), TotalStaticMeshesChecked);
+	UE_LOG(LogContentCommandlet, Display, TEXT("-------------------------------------------------------------------"));
+
+	// save quality level modifications 
+	if (bConvertToQualityLevel)
+	{
+		if (SourceControlProvider)
+		{
+			FEditorFileUtils::CheckoutPackages(PackagesToSave, nullptr, false);
+		}
+		else
+		{
+			for (UPackage* Package : PackagesToSave)
+			{
+				FString PackageFilename = SourceControlHelpers::PackageFilename(Package);
+				if (IPlatformFile::GetPlatformPhysical().FileExists(*PackageFilename))
+				{
+					if (!IPlatformFile::GetPlatformPhysical().SetReadOnly(*PackageFilename, false))
+					{
+						UE_LOG(LogContentCommandlet, Error, TEXT("Error setting %s writable"), *PackageFilename);
+						return 1;
+					}
+				}
+			}
+		}
+		FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, false, false, nullptr, true, false);
+	}
+	
+	return 0;
+}

@@ -21,6 +21,7 @@
 
 class FMediaPlayerFacade;
 class IMediaPlayer;
+class IMediaModule;
 class UMediaPlaylist;
 class UMediaSource;
 
@@ -251,6 +252,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Media|MediaPlayer")
 	UMediaPlaylist* GetPlaylist() const
 	{
+		EnsurePlaylist();
 		return Playlist;
 	}
 
@@ -975,6 +977,11 @@ public:
 	 */
 	void RegisterWithMediaModule();
 
+	/** 
+	 * When the player goes out of scope, make sure to clean up the clock sink
+	 */
+	void UnregisterWithMediaModule();
+
 	/**
 	 * Get the current play list.
 	 *
@@ -983,7 +990,7 @@ public:
 	 */
 	UMediaPlaylist& GetPlaylistRef() const
 	{
-		check(Playlist != nullptr);
+		EnsurePlaylist();
 		return *Playlist;
 	}
 
@@ -1019,6 +1026,7 @@ public:
 	//~ UObject interface
 
 	virtual void BeginDestroy() override;
+
 	virtual FString GetDesc() override;
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 	virtual void PostInitProperties() override;
@@ -1108,8 +1116,8 @@ protected:
 	 *
 	 * @see OpenPlaylist, OpenPlaylistIndex
 	 */
-	UPROPERTY(BlueprintReadOnly, transient, Category=Playback)
-	UMediaPlaylist* Playlist;
+	UPROPERTY(BlueprintReadOnly, transient, Category=Playback, BlueprintGetter = GetPlayList)
+	mutable TObjectPtr<UMediaPlaylist> Playlist;
 
 	/**
 	 * The current index of the source in the play list being played.
@@ -1179,10 +1187,13 @@ private:
 	void HandlePlayerMediaEvent(EMediaEvent Event);
 
 	/** Sets the playlist and properly handles cases when this MediaPlayer object is in disregard for GC set */
-	void SetPlaylistInternal(UMediaPlaylist* InPlaylist);
+	void SetPlaylistInternal(UMediaPlaylist* InPlaylist) const;
 
 	/** Open media source with the given options. */
 	bool OpenSourceInternal(UMediaSource* MediaSource, const FMediaPlayerOptions* Options);
+
+	/** Ensure internal playlist is created */
+	void EnsurePlaylist() const;
 
 private:
 

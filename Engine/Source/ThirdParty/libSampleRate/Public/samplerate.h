@@ -19,6 +19,8 @@
 	#define SRC_EXPORT __attribute__((visibility("default")))
 	#elif PLATFORM_LINUX
 	#define SRC_EXPORT __attribute__((visibility("default")))
+	#elif PLATFORM_CONSOLE_DYNAMIC_LINK
+	#define SRC_EXPORT __declspec(dllexport)
 	#else
 	#define SRC_EXPORT
 	#endif
@@ -175,11 +177,17 @@ SRC_EXPORT const char* src_strerror (int error) ;
 
 enum
 {
+#ifndef LIBSAMPLERATE_WITHOUT_SINC
 	SRC_SINC_BEST_QUALITY		= 0,
 	SRC_SINC_MEDIUM_QUALITY		= 1,
 	SRC_SINC_FASTEST			= 2,
+#endif
+#ifndef LIBSAMPLERATE_WITHOUT_ZERO_ORDER_HOLD
 	SRC_ZERO_ORDER_HOLD			= 3,
+#endif
+#ifndef LIBSAMPLERATE_WITHOUT_LINEAR
 	SRC_LINEAR					= 4,
+#endif
 } ;
 
 /*

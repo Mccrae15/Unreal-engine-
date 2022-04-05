@@ -40,6 +40,7 @@ class NIAGARA_API UNiagaraDataInterfaceRWBase : public UNiagaraDataInterface
 public:
 	// Global HLSL variable base names, used by HLSL.
 	static const FString NumAttributesName;
+	static const FString NumNamedAttributesName;
 	static const FString NumCellsName;
 	static const FString UnitToUVName;
 	static const FString CellSizeName;
@@ -65,15 +66,6 @@ public:
 
 	static const FName ExecutionIndexToGridIndexFunctionName;
 	static const FName ExecutionIndexToUnitFunctionName;
-
-public:
-	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
-	TSet<int> OutputShaderStages;
-
-	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
-	TSet<int> IterationShaderStages;
-
-public:
 	//~ UObject interface
 
 	virtual void PostLoad() override
@@ -100,8 +92,6 @@ public:
 #endif
 //~ UObject interface END
 
-	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
-
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target) const override
 	{
 		return true;
@@ -117,9 +107,6 @@ public:
 		return Errors;
 	}
 #endif
-
-protected:
-	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;	
 };
 
 
@@ -130,23 +117,23 @@ class NIAGARA_API UNiagaraDataInterfaceGrid3D : public UNiagaraDataInterfaceRWBa
 
 public:
 	// Number of cells
-	UPROPERTY(EditAnywhere, Category = "Grid")
+	UPROPERTY(EditAnywhere, Category = "Grid", meta=(EditCondition = "false", EditConditionHides))
 	FIntVector NumCells;
 
 	// World space size of a cell
-	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "false", EditConditionHides))
 	float CellSize;
 
 	// Number of cells on the longest axis
-	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "false", EditConditionHides))
 	int32 NumCellsMaxAxis;
 
 	// Method for setting the grid resolution
-	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "false", EditConditionHides))
 	ESetResolutionMethod SetResolutionMethod;
 	
 	// World size of the grid
-	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "false", EditConditionHides))
 	FVector WorldBBoxSize;
 
 public:
@@ -180,15 +167,15 @@ class NIAGARA_API UNiagaraDataInterfaceGrid2D : public UNiagaraDataInterfaceRWBa
 
 public:
 	// Number of cells in X
-	UPROPERTY(EditAnywhere, Category = "Grid")
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "false", EditConditionHides))
 	int32 NumCellsX;
 
 	// Number of cells in Y
-	UPROPERTY(EditAnywhere, Category = "Grid")
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "false", EditConditionHides))
 	int32 NumCellsY;
 	
 	// Number of cells on the longest axis
-	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "false", EditConditionHides))
 	int32 NumCellsMaxAxis;
 
 	// Number of Attributes
@@ -196,11 +183,11 @@ public:
 	int32 NumAttributes;
 
 	// Set grid resolution according to longest axis
-	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "false", EditConditionHides))
 	bool SetGridFromMaxAxis;	
 
 	// World size of the grid
-	UPROPERTY(EditAnywhere, Category = "Deprecated", AdvancedDisplay)
+	UPROPERTY(EditAnywhere, Category = "Grid", meta = (EditCondition = "false", EditConditionHides))
 	FVector2D WorldBBoxSize;
 
 

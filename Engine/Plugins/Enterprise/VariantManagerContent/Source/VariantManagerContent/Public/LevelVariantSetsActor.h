@@ -15,7 +15,7 @@ class ULevelVariantSets;
 class ULevelVariantSetsFunctionDirector;
 class UVariantSet;
 
-UCLASS(hideCategories=(Rendering, Physics, LOD, Activation, Input, Actor, Cooking))
+UCLASS(hideCategories=(Rendering, Physics, HLOD, Activation, Input, Actor, Cooking))
 class VARIANTMANAGERCONTENT_API ALevelVariantSetsActor : public AActor
 {
 public:
@@ -48,5 +48,5 @@ private:
 	friend class ULevelVariantSets;
 
 	UPROPERTY(Transient)
-	TMap<UBlueprintGeneratedClass*, ULevelVariantSetsFunctionDirector*> DirectorInstances;
+	TMap<TObjectPtr<UBlueprintGeneratedClass>, TObjectPtr<ULevelVariantSetsFunctionDirector>> DirectorInstances;
 };

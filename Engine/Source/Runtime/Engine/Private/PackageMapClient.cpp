@@ -226,7 +226,7 @@ bool UPackageMapClient::SerializeObject( FArchive& Ar, UClass* Class, UObject*& 
 		// If pending kill, just serialize as NULL.
 		// TWeakObjectPtrs of PendingKill objects will behave strangely with TSets and TMaps
 		//	PendingKill objects will collide with each other and with NULL objects in those data structures.
-		if (Object && Object->IsPendingKill())
+		if (Object && !IsValid(Object))
 		{
 			UObject* NullObj = NULL;
 			return SerializeObject( Ar, Class, NullObj, OutNetGUID);
@@ -296,7 +296,7 @@ bool UPackageMapClient::SerializeObject( FArchive& Ar, UClass* Class, UObject*& 
 			}
 
 			// Check that we got the right class
-			if (Object && !Object->IsA(Class))
+			if (Object && !(Class->HasAnyClassFlags(CLASS_Interface) ? Object->GetClass()->ImplementsInterface(Class) : Object->IsA(Class)))
 			{
 				UE_LOG(LogNetPackageMap, Warning, TEXT("Forged object: got %s, expecting %s"), *Object->GetFullName(), *Class->GetFullName());
 				Object = NULL;
@@ -1053,9 +1053,9 @@ FNetworkGUID UPackageMapClient::InternalLoadObject( FArchive & Ar, UObject *& Ob
 				return NetGUID;
 			}
 
-			if (Object->IsPendingKill())
+			if (!IsValid(Object))
 			{
-				UE_LOG( LogNetPackageMap, Warning, TEXT( "UPackageMapClient::InternalLoadObject: Received reference to pending kill object from client: PathName: %s, ObjOuter: %s "), *PathName, ObjOuter != NULL ? *ObjOuter->GetPathName() : TEXT( "NULL" ) );
+				UE_LOG( LogNetPackageMap, Warning, TEXT( "UPackageMapClient::InternalLoadObject: Received reference to invalid object from client: PathName: %s, ObjOuter: %s "), *PathName, ObjOuter != NULL ? *ObjOuter->GetPathName() : TEXT( "NULL" ) );
 				Object = NULL;
 				return NetGUID;
 			}
@@ -1914,6 +1914,12 @@ void UPackageMapClient::OverridePackageMapExportAckStatus( FPackageMapAckState* 
 	OverrideAckState = NewState ? NewState : &AckState;
 }
 
+void UPackageMapClient::ResetAckState()
+{
+	AckState.Reset();
+	PendingAckGUIDs.Empty();
+}
+
 //--------------------------------------------------------------------
 //
 //	Network - ACKing
@@ -2127,7 +2133,7 @@ void UPackageMapClient::ReportSyncLoadsForProperty(const FProperty* Property, co
 		
 			FNetSyncLoadReport Report;
 			Report.Type = ENetSyncLoadType::PropertyReference;
-			Report.NetDriver = Connection ? Connection->Driver : nullptr;
+			Report.NetDriver = Connection ? Connection->Driver.Get() : nullptr;
 			Report.OwningObject = Object;
 			Report.Property = Property;
 			Report.LoadedObject = LoadedObject;
@@ -2151,7 +2157,7 @@ void UPackageMapClient::ReportSyncLoadsForActorSpawn(const AActor* Actor)
 		
 			FNetSyncLoadReport Report;
 			Report.Type = ENetSyncLoadType::ActorSpawn;
-			Report.NetDriver = Connection ? Connection->Driver : nullptr;
+			Report.NetDriver = Connection ? Connection->Driver.Get() : nullptr;
 			Report.OwningObject = Actor;
 			Report.LoadedObject = LoadedObject;
 			FNetDelegates::OnSyncLoadDetected.Broadcast(Report);
@@ -2206,7 +2212,8 @@ bool UPackageMapClient::ObjectLevelHasFinishedLoading(UObject* Object)
 	if (Object != NULL && Connection!= NULL && Connection->Driver != NULL && Connection->Driver->GetWorld() != NULL)
 	{
 		// get the level for the object
-		ULevel* Level = Object->GetTypedOuter<ULevel>();
+		AActor* Actor = Cast<AActor>(Object);
+		ULevel* Level = Actor ? Actor->GetLevel() : Object->GetTypedOuter<ULevel>();
 		
 		if (Level != NULL && Level != Connection->Driver->GetWorld()->PersistentLevel)
 		{
@@ -2399,7 +2406,7 @@ void UPackageMapClient::SetHasQueuedBunches(const FNetworkGUID& NetGUID, bool bH
 #if CSV_PROFILER
 							if (bAboveOwnerQueuedTime && GuidCache->IsTrackingOwnerOrPawn())
 							{
-								CSV_EVENT(PackageMap, TEXT("Owner Net Stall Queued Actor (QueueTime=%.2f)"), *ObjectClass.ToString(), QueuedTime);
+								CSV_EVENT(PackageMap, TEXT("Owner Net Stall Queued Actor (QueueTime=%.2f)"), QueuedTime);
 							}
 #endif
 						}
@@ -2796,9 +2803,8 @@ void FNetGUIDCache::RegisterNetGUID_Internal( const FNetworkGUID& NetGUID, const
  */
 void FNetGUIDCache::RegisterNetGUID_Server( const FNetworkGUID& NetGUID, UObject* Object )
 {
-	check( Object != NULL );
+	check( IsValid(Object) );
 	check( IsNetGUIDAuthority() );				// Only the server should call this
-	check( !Object->IsPendingKill() );
 	check( !NetGUID.IsDefault() );
 	check( !ObjectLookup.Contains( NetGUID ) );	// Server should never add twice
 
@@ -2821,7 +2827,7 @@ void FNetGUIDCache::RegisterNetGUID_Server( const FNetworkGUID& NetGUID, UObject
 void FNetGUIDCache::RegisterNetGUID_Client( const FNetworkGUID& NetGUID, const UObject* Object )
 {
 	check( !IsNetGUIDAuthority() );			// Only clients should be here
-	check( !Object || !Object->IsPendingKill() );
+	check( !Object || IsValid(Object) );
 	check( !NetGUID.IsDefault() );
 	check( NetGUID.IsDynamic() );	// Clients should only assign dynamic guids through here (static guids go through RegisterNetGUIDFromPath_Client)
 
@@ -3135,7 +3141,8 @@ static bool ObjectLevelHasFinishedLoading( UObject* Object, UNetDriver* Driver )
 	if ( Object != NULL && Driver != NULL && Driver->GetWorld() != NULL )
 	{
 		// get the level for the object
-		ULevel* Level = Object->GetTypedOuter<ULevel>();
+		AActor* Actor = Cast<AActor>(Object);
+		ULevel* Level = Actor ? Actor->GetLevel() : Object->GetTypedOuter<ULevel>();
 
 		if ( Level != NULL && Level != Driver->GetWorld()->PersistentLevel )
 		{
@@ -3459,10 +3466,21 @@ bool FNetGUIDCache::ShouldIgnoreWhenMissing( const FNetworkGUID& NetGUID ) const
 			// Outer is pending, don't warn
 			return true;
 		}
-		// Sometimes, other systems async load packages, which we don't track, but still must be aware of
-		if ( OutermostCacheObject->Object != NULL && !OutermostCacheObject->Object->GetOutermost()->IsFullyLoaded() )
+
+		if ( OutermostCacheObject->Object != NULL )
 		{
-			return true;
+#if WITH_EDITOR
+			// Ignore if the package is a dynamic PIE package with pending external objects still loading
+			if ( !OutermostCacheObject->Object->GetOutermost()->IsDynamicPIEPackagePending() )
+			{
+				return true;
+			}
+#endif
+			// Sometimes, other systems async load packages, which we don't track, but still must be aware of
+			if ( !OutermostCacheObject->Object->GetOutermost()->IsFullyLoaded() )
+			{
+				return true;
+			}
 		}
 	}
 

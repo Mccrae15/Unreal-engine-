@@ -41,13 +41,15 @@ namespace
 
 		virtual void InitRHI() override
 		{
-			FRHIResourceCreateInfo CreateInfo;
-			void* Buffer = nullptr;
-			IndexBufferRHI = RHICreateAndLockIndexBuffer(sizeof(uint16), Indices.Num() * sizeof(uint16), BUF_Static, CreateInfo, Buffer);
+			const uint32 Size = Indices.Num() * sizeof(uint16);
+
+			FRHIResourceCreateInfo CreateInfo(TEXT("FImagePlateIndexBuffer"));
+			IndexBufferRHI = RHICreateBuffer(Size, BUF_Static | BUF_IndexBuffer, sizeof(uint16), ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
 			// Copy the index data into the index buffer.		
-			FMemory::Memcpy(Buffer, Indices.GetData(), Indices.Num() * sizeof(uint16));
-			RHIUnlockIndexBuffer(IndexBufferRHI);
+			void* Buffer = RHILockBuffer(IndexBufferRHI, 0, Size, RLM_WriteOnly);
+			FMemory::Memcpy(Buffer, Indices.GetData(), Size);
+			RHIUnlockBuffer(IndexBufferRHI);
 		}
 	};
 
@@ -112,15 +114,15 @@ namespace
 			Vertices.AddUninitialized(4);
 
 			// Set up the sprite vertex positions and texture coordinates.
-			Vertices[0].Position  = FVector(0, -1.f,  1.f);
-			Vertices[1].Position  = FVector(0, -1.f, -1.f);
-			Vertices[2].Position  = FVector(0,  1.f,  1.f);
-			Vertices[3].Position  = FVector(0,  1.f, -1.f);
+			Vertices[0].Position  = FVector3f(0, -1.f,  1.f);
+			Vertices[1].Position  = FVector3f(0, -1.f, -1.f);
+			Vertices[2].Position  = FVector3f(0,  1.f,  1.f);
+			Vertices[3].Position  = FVector3f(0,  1.f, -1.f);
 
-			Vertices[0].TextureCoordinate[0] = FVector2D(0,0);
-			Vertices[1].TextureCoordinate[0] = FVector2D(0,1);
-			Vertices[2].TextureCoordinate[0] = FVector2D(1,0);
-			Vertices[3].TextureCoordinate[0] = FVector2D(1,1);
+			Vertices[0].TextureCoordinate[0] = FVector2f(0,0);
+			Vertices[1].TextureCoordinate[0] = FVector2f(0,1);
+			Vertices[2].TextureCoordinate[0] = FVector2f(1,0);
+			Vertices[3].TextureCoordinate[0] = FVector2f(1,1);
 
 			VertexBuffers.InitFromDynamicVertex(&VertexFactory, Vertices);
 
@@ -231,7 +233,7 @@ namespace
 			
 			MaterialRelevance.SetPrimitiveViewRelevance(Result);
 
-			Result.bVelocityRelevance = IsMovable() && Result.bOpaque && Result.bRenderInMainPass;
+			Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
 
 			return Result;
 		}

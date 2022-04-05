@@ -41,7 +41,7 @@ void UNiagaraStackErrorItem::SetIsExpandedByDefault(bool bIsExpanded)
 
 UNiagaraStackEntry::EStackRowStyle UNiagaraStackErrorItem::GetStackRowStyle() const
 {
-	return EStackRowStyle::StackIssue;
+	return StackIssue.GetSeverity() == EStackIssueSeverity::CustomNote ? EStackRowStyle::ItemContentNote : EStackRowStyle::StackIssue;
 }
 
 UNiagaraStackErrorItem::FOnIssueNotify& UNiagaraStackErrorItem::OnIssueModified()
@@ -144,7 +144,7 @@ EStackIssueSeverity UNiagaraStackErrorItemLongDescription::GetIssueSeverity() co
 
 UNiagaraStackEntry::EStackRowStyle UNiagaraStackErrorItemLongDescription::GetStackRowStyle() const
 {
-	return EStackRowStyle::StackIssue;
+	return StackIssue.GetSeverity() == EStackIssueSeverity::CustomNote ? EStackRowStyle::ItemContentNote : EStackRowStyle::StackIssue;
 }
 
 //UNiagaraStackErrorItemFix
@@ -178,7 +178,7 @@ EStackIssueSeverity UNiagaraStackErrorItemFix::GetIssueSeverity() const
 
 UNiagaraStackEntry::EStackRowStyle UNiagaraStackErrorItemFix::GetStackRowStyle() const
 {
-	return EStackRowStyle::StackIssue;
+	return StackIssue.GetSeverity() == EStackIssueSeverity::CustomNote ? EStackRowStyle::ItemContentNote : EStackRowStyle::StackIssue;
 }
 
 FText UNiagaraStackErrorItemFix::GetFixButtonText() const
@@ -218,12 +218,12 @@ void UNiagaraStackErrorItemDismiss::DismissIssue()
 
 UNiagaraStackEntry::EStackRowStyle UNiagaraStackErrorItemDismiss::GetStackRowStyle() const
 {
-	return EStackRowStyle::StackIssue;
+	return StackIssue.GetSeverity() == EStackIssueSeverity::CustomNote ? EStackRowStyle::ItemContentNote : EStackRowStyle::StackIssue;
 }
 
 FText UNiagaraStackErrorItemDismiss::GetFixButtonText() const
 {
-	return StackIssue.GetSeverity() == EStackIssueSeverity::Info || StackIssue.GetSeverity() == EStackIssueSeverity::CustomNote ? LOCTEXT("DismissNote", "Dismiss") : LOCTEXT("DismissIssue", "Dismiss issue");
+	return StackIssue.GetSeverity() == EStackIssueSeverity::Info || StackIssue.GetSeverity() == EStackIssueSeverity::CustomNote ? LOCTEXT("DismissNoteButtonText", "Dismiss") : LOCTEXT("DismissIssueButtonText", "Dismiss issue");
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -13,6 +13,10 @@
 #include "Math/RandomStream.h"
 #include "Containers/CircularQueue.h"
 #include "Containers/Queue.h"
+#include "Tests/Benchmark.h"
+#include "HAL/Thread.h"
+#include "Async/Fundamental/Scheduler.h"
+
 #include <atomic>
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -693,9 +697,9 @@ namespace OldTaskGraphTests
 	);
 
 
-	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FOldBenchmark, "System.Core.Async.TaskGraph.OldBenchmark", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::EngineFilter);
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphOldBenchmark, "System.Core.Async.TaskGraph.OldBenchmark", EAutomationTestFlags::EditorContext | EAutomationTestFlags::ClientContext | EAutomationTestFlags::ServerContext | EAutomationTestFlags::EngineFilter);
 
-	bool FOldBenchmark::RunTest(const FString& Parameters)
+	bool FTaskGraphOldBenchmark::RunTest(const FString& Parameters)
 	{
 		TArray<FString> Args;
 		TaskGraphBenchmark(Args);
@@ -711,11 +715,13 @@ namespace OldTaskGraphTests
 	}
 }
 
+extern int32 GNumForegroundWorkers;
+
 namespace TaskGraphTests
 {
-	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FGraphEventTest, "System.Core.Async.TaskGraph.GraphEventTest", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter);
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphGraphEventTest, "System.Core.Async.TaskGraph.GraphEventTest", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::Disabled);
 
-	bool FGraphEventTest::RunTest(const FString& Parameters)
+	bool FTaskGraphGraphEventTest::RunTest(const FString& Parameters)
 	{
 		{	// task completes before it's waited for
 			FGraphEventRef Event = FFunctionGraphTask::CreateAndDispatchWhenReady(
@@ -724,7 +730,8 @@ namespace TaskGraphTests
 					//UE_LOG(LogTemp, Log, TEXT("Main task"));
 				}
 			);
-			while (!Event->IsComplete()) /* NOOP */;
+			while (!Event->IsComplete() && FTaskGraphInterface::Get().GetNumWorkerThreads() != 0) // in single-threaded mode tasks are executed only when waited for
+			{}
 			Event->Wait(ENamedThreads::GameThread);
 		}
 
@@ -747,26 +754,26 @@ namespace TaskGraphTests
 					Event->DispatchSubsequents();
 				}
 			);
-			while (!Event->IsComplete()) /* NOOP */;
+			while (!Event->IsComplete() && FTaskGraphInterface::Get().GetNumWorkerThreads() != 0) // in single-threaded mode tasks are executed only when waited for
+			{}
 			Event->Wait(ENamedThreads::GameThread);
 		}
 
 		{	// event w/o a task, signaled by explicit call to DispatchSubsequents after it's waited for
 			FGraphEventRef Event = FGraphEvent::CreateGraphEvent();
-			FFunctionGraphTask::CreateAndDispatchWhenReady(
-				[&Event]
+			auto Lambda = [&Event]
 				{
 					FPlatformProcess::Sleep(0.1f); // pause for a bit to let waiting start
 					Event->DispatchSubsequents();
-				}
-			);
+			};
+			FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(MoveTemp(Lambda));
 			check(!Event->IsComplete());
-			Event->Wait(ENamedThreads::GameThread);
+			Event->Wait();
+			Task->Wait();
 		}
 
 		{	// wait for prereq by DontCompleteUntil
-			FGraphEventRef Event = FFunctionGraphTask::CreateAndDispatchWhenReady(
-				[](ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+			auto Lambda = [](ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 				{
 					//UE_LOG(LogTemp, Log, TEXT("Main task"));
 
@@ -788,14 +795,15 @@ namespace TaskGraphTests
 
 					// now that Prereq was registered in DontCompleteUntil, unlock it
 					PrereqHolder->DispatchSubsequents();
-				}
-			);
+			};
+
+			FGraphEventRef Event = FFunctionGraphTask::CreateAndDispatchWhenReady(MoveTemp(Lambda));
 			Event->SetDebugName(TEXT("MainEvent"));
 			check(!Event->IsComplete());
 			Event->Wait(ENamedThreads::GameThread);
 		}
 
-		{	// prereq is completed when DontCompleteUntil is called
+		{	// prereq is completed before DontCompleteUntil is called
 			FGraphEventRef Prereq = FFunctionGraphTask::CreateAndDispatchWhenReady(
 				[]
 				{
@@ -813,12 +821,9 @@ namespace TaskGraphTests
 				}
 			);
 			Event->SetDebugName(TEXT("MainEvent"));
-			while (!Event->IsComplete()) /* NOOP */;
+			while (!Event->IsComplete() && FTaskGraphInterface::Get().GetNumWorkerThreads() != 0) // in single-threaded mode tasks are executed only when waited for
+			{}
 			Event->Wait(ENamedThreads::GameThread);
-		}
-
-		{	// "taskless" event with prereq
-			// forget about it, it's illegal as DontCompleteUntil() can be called only in associated task execution context
 		}
 
 		return true;
@@ -854,50 +859,202 @@ namespace TaskGraphTests
 		return true;
 	}
 
-	template<uint32 NumRuns, typename TestT>
-	void Benchmark(const TCHAR* TestName, TestT&& TestBody)
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphBasicTest, "System.Core.Async.TaskGraph.BasicTest", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::Disabled);
+
+	bool FTaskGraphBasicTest::RunTest(const FString& Parameters)
 	{
-		UE_LOG(LogTemp, Display, TEXT("\n-------------------------------\n%s"), TestName);
-		double MinTime = TNumericLimits<double>::Max();
-		double TotalTime = 0;
-		for (uint32 RunNo = 0; RunNo != NumRuns; ++RunNo)
-		{
-			double Time = FPlatformTime::Seconds();
-			TestBody();
-			Time = FPlatformTime::Seconds() - Time;
+		// thread and task priorities
 
-			UE_LOG(LogTemp, Display, TEXT("#%d: %f secs"), RunNo, Time);
-
-			TotalTime += Time;
-			if (MinTime > Time)
-			{
-				MinTime = Time;
-			}
+		{	// AnyNormalThreadNormalTask
+			bool bExecuted = false;
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::AnyNormalThreadNormalTask)->Wait();
+			check(bExecuted);
 		}
-		UE_LOG(LogTemp, Display, TEXT("min: %f secs, avg: %f secs\n-------------------------------\n"), MinTime, TotalTime / NumRuns);
 
-#if NO_LOGGING
-		printf("min: %f\n", MinTime);
+		{	// AnyNormalThreadHiPriTask
+			bool bExecuted = false;
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::AnyNormalThreadHiPriTask)->Wait();
+			check(bExecuted);
+		}
+
+		{	// AnyBackgroundThreadNormalTask
+			bool bExecuted = false;
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::AnyBackgroundThreadNormalTask)->Wait();
+			check(bExecuted);
+		}
+
+		{	// AnyHiPriThreadNormalTask
+			bool bExecuted = false;
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::AnyHiPriThreadNormalTask)->Wait();
+			check(bExecuted);
+		}
+
+		{	// AnyHiPriThreadHiPriTask
+			bool bExecuted = false;
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::AnyHiPriThreadHiPriTask)->Wait();
+			check(bExecuted);
+		}
+
+		// named threads and local queues
+
+#if STATS
+		{	// StatsThread
+			bool bExecuted = false;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::StatsThread)->Wait();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			check(bExecuted);
+		}
 #endif
-	}
 
-#define BENCHMARK(NumRuns, ...) Benchmark<NumRuns>(TEXT(#__VA_ARGS__), __VA_ARGS__)
+		if (IsRHIThreadRunning())
+		{	// RHIThread
+			bool bExecuted = false;
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::RHIThread)->Wait();
+			check(bExecuted);
+		}
+
+		if (IsAudioThreadRunning())
+		{	// AudioThread
+			bool bExecuted = false;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::AudioThread)->Wait();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			check(bExecuted);
+		}
+
+		{	// GameThread
+			bool bExecuted = false;
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::GameThread);
+			// GT must be executed explicitly
+			FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+			check(bExecuted);
+		}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		if (GRenderThreadId != 0)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		{	// ActualRenderingThread
+			bool bExecuted = false;
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::ActualRenderingThread)->Wait();
+			check(bExecuted);
+		}
+
+		{	// GameThread_Local
+			bool bExecuted = false;
+			FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::GameThread_Local)->Wait(ENamedThreads::GameThread_Local);
+			check(bExecuted);
+		}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		if (GRenderThreadId != 0)
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		{	// ActualRenderingThread_Local
+			bool bExecuted = false;
+			FFunctionGraphTask::CreateAndDispatchWhenReady(
+				[&bExecuted] 
+				{ 
+					FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::ActualRenderingThread_Local)->Wait(ENamedThreads::ActualRenderingThread_Local);
+				}, 
+				TStatId{}, nullptr, ENamedThreads::ActualRenderingThread)->Wait();
+			check(bExecuted);
+		}
+
+		// dependencies
+
+		{	// a task is not executed until its prerequisite is completed
+			bool bExecuted = false;
+			FGraphEventRef Prereq = FGraphEvent::CreateGraphEvent();
+			FGraphEventRef MainTask = FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, Prereq);
+			// dummy task that is executed while the main task is waiting for its prereq
+			FFunctionGraphTask::CreateAndDispatchWhenReady([] {})->Wait();
+			check(!bExecuted);
+			Prereq->DispatchSubsequents();
+			MainTask->Wait();
+			check(bExecuted);
+		}
+
+		{	// a task is not executed until all its prerequisites are completed
+			bool bExecuted = false;
+			FGraphEventArray Prereqs{ FGraphEvent::CreateGraphEvent(), FGraphEvent::CreateGraphEvent() };
+			FGraphEventRef MainTask = FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, &Prereqs);
+			// dummy task that is executed while the main task is waiting for its prereqs
+			FFunctionGraphTask::CreateAndDispatchWhenReady([] {})->Wait();
+			check(!bExecuted);
+
+			Prereqs[0]->DispatchSubsequents();
+			FFunctionGraphTask::CreateAndDispatchWhenReady([] {})->Wait();
+			check(!bExecuted);
+			
+			Prereqs[1]->DispatchSubsequents();
+			MainTask->Wait();
+			check(bExecuted);
+		}
+
+		{	// ParallelFor
+			std::atomic<int32> Total{ 0 };
+			int32 Num = 1000;
+			ParallelFor(Num, [&Total](int32 i) { Total += i; });
+			check(Total == (Num - 1) * (Num / 2));
+		}
+
+		{	// holding a task
+			struct FTask
+			{
+				TStatId GetStatId() const
+				{
+					return TStatId{};
+				}
+
+				ENamedThreads::Type GetDesiredThread()
+				{
+					return ENamedThreads::AnyThread;
+				}
+
+				static ESubsequentsMode::Type GetSubsequentsMode()
+				{
+					return ESubsequentsMode::TrackSubsequents;
+				}
+
+				void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+				{}
+			};
+
+			TGraphTask<FTask>* Task = TGraphTask<FTask>::CreateTask().ConstructAndHold();
+			FGraphEventRef Event = Task->GetCompletionEvent();
+			check(!Event->IsComplete());
+			Task->Unlock();
+			Event->Wait();
+			check(Event->IsComplete());
+		}
+
+		//for (int i = 0; i != 100000; ++i)
+		{	// a particular real-life case that doesn't work in the old TaskGraph if run in single-threaded mode.
+			// the culprit is that when a task is waited for, in single-threaded mode the queue it was pushed to is executed. 
+			// Here the (local queue) task  depends on a task that is not in the same queue and so it doesn't get executed
+
+			FGraphEventRef AnyTask = FFunctionGraphTask::CreateAndDispatchWhenReady([] {});
+			FGraphEventRef LocalQueueTask = FFunctionGraphTask::CreateAndDispatchWhenReady([] {}, TStatId{}, AnyTask, ENamedThreads::GameThread_Local);
+			LocalQueueTask->Wait(ENamedThreads::GameThread_Local);
+			check(LocalQueueTask.GetRefCount() == 1);
+		}
+
+		return true;
+	}
 
 	// it's fast because tasks are too lightweight and so are executed almost as fast
 	template<int NumTasks>
 	void TestPerfBasic()
 	{
-		int32 CompletedTasks = 0;
+		FGraphEventArray Tasks;
+		Tasks.Reserve(NumTasks);
 
 		for (int32 TaskIndex = 0; TaskIndex < NumTasks; ++TaskIndex)
 		{
-			FFunctionGraphTask::CreateAndDispatchWhenReady([&CompletedTasks] { FPlatformAtomics::InterlockedIncrement(&CompletedTasks); });
+			Tasks.Emplace(FFunctionGraphTask::CreateAndDispatchWhenReady([] {}));
 		}
 
-		while ((CompletedTasks < NumTasks))
-		{
-			FPlatformProcess::Yield();
-		}
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(Tasks);
 	}
 
 	template<int32 NumTasks, int32 BatchSize>
@@ -905,26 +1062,27 @@ namespace TaskGraphTests
 	{
 		static_assert(NumTasks % BatchSize == 0, "`NumTasks` must be divisible by `BatchSize`");
 		constexpr int32 NumBatches = NumTasks / BatchSize;
-		
-		int32 CompletedTasks = 0;
+
+		FGraphEventArray Batches;
+		Batches.Reserve(NumBatches);
+		FGraphEventArray Tasks;
+		Tasks.AddDefaulted(NumTasks);
 
 		for (int32 BatchIndex = 0; BatchIndex < NumBatches; ++BatchIndex)
 		{
-			FFunctionGraphTask::CreateAndDispatchWhenReady(
-				[&CompletedTasks]
+			Batches.Add(FFunctionGraphTask::CreateAndDispatchWhenReady(
+				[&Tasks, BatchIndex]
 				{
 					for (int32 TaskIndex = 0; TaskIndex < BatchSize; ++TaskIndex)
 					{
-						FFunctionGraphTask::CreateAndDispatchWhenReady([&CompletedTasks] { FPlatformAtomics::InterlockedIncrement(&CompletedTasks); });
+						Tasks[BatchIndex * BatchSize + TaskIndex] = FFunctionGraphTask::CreateAndDispatchWhenReady([] {});
 					}
 				}
-			);
+			));
 		}
 
-		while ((CompletedTasks < NumTasks))
-		{
-			FPlatformProcess::Yield();
-		}
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(Batches);
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(Tasks);
 	}
 
 	template<int32 NumTasks, int32 BatchSize>
@@ -932,14 +1090,14 @@ namespace TaskGraphTests
 	{
 		static_assert(NumTasks % BatchSize == 0, "`NumTasks` must be divisible by `BatchSize`");
 		constexpr int32 NumBatches = NumTasks / BatchSize;
-		
+
 		FGraphEventRef SpawnSignal = FGraphEvent::CreateGraphEvent();
 		FGraphEventArray AllDone;
 
 		for (int32 BatchIndex = 0; BatchIndex < NumBatches; ++BatchIndex)
 		{
 			AllDone.Add(FFunctionGraphTask::CreateAndDispatchWhenReady(
-				[] (ENamedThreads::Type CurrentThread, const FGraphEventRef& CompletionEvent)
+				[](ENamedThreads::Type CurrentThread, const FGraphEventRef& CompletionEvent)
 				{
 					FGraphEventRef RunSignal = FGraphEvent::CreateGraphEvent();
 					for (int32 TaskIndex = 0; TaskIndex < BatchSize; ++TaskIndex)
@@ -1042,120 +1200,11 @@ namespace TaskGraphTests
 		UE_LOG(LogTemp, Display, TEXT("Fibonacci(%d) = %d"), N, *Res);
 	}
 
-	namespace Queues
-	{
-		template<uint32 Num>
-		void TestTCircularQueue()
-		{
-			TCircularQueue<uint32> Queue{ 100 };
-			std::atomic<bool> bStop{ false };
-
-			FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
-				[&bStop, &Queue]
-				{
-					while (!bStop)
-					{
-						Queue.Enqueue(0);
-					}
-				}
-				);
-
-			uint32 It = 0;
-			while (It != Num)
-			{
-				uint32 El;
-				if (Queue.Dequeue(El))
-				{
-					++It;
-				}
-			}
-
-			bStop = true;
-
-			Task->Wait(ENamedThreads::GameThread);
-		}
-
-		template<uint32 Num, EQueueMode Mode>
-		void TestTQueue()
-		{
-			TQueue<uint32, Mode> Queue;
-			std::atomic<bool> bStop{ false };
-
-			FGraphEventRef Task = FFunctionGraphTask::CreateAndDispatchWhenReady(
-				[&bStop, &Queue]
-				{
-					while (!bStop)
-					{
-						Queue.Enqueue(0);
-					}
-				}
-				);
-
-			uint32 It = 0;
-			while (It != Num)
-			{
-				uint32 El;
-				if (Queue.Dequeue(El))
-				{
-					++It;
-				}
-			}
-
-			bStop = true;
-
-			Task->Wait(ENamedThreads::GameThread);
-		}
-
-		template<uint32 Num>
-		void TestMpscTQueue()
-		{
-			TQueue<uint32, EQueueMode::Mpsc> Queue;
-			std::atomic<bool> bStop{ false };
-
-			int32 NumProducers = FPlatformMisc::NumberOfCoresIncludingHyperthreads() - 1;
-			FGraphEventArray Tasks;
-			for (int32 i = 0; i != NumProducers; ++i)
-			{
-				Tasks.Add(FFunctionGraphTask::CreateAndDispatchWhenReady(
-					[&bStop, &Queue]
-					{
-						while (!bStop)
-						{
-							Queue.Enqueue(0);
-						}
-					}
-					));
-			}
-
-			uint32 It = 0;
-			while (It != Num)
-			{
-				uint32 El;
-				if (Queue.Dequeue(El))
-				{
-					++It;
-				}
-			}
-
-			bStop = true;
-
-			FTaskGraphInterface::Get().WaitUntilTasksComplete(MoveTemp(Tasks), ENamedThreads::GameThread);
-		}
-
-		void Test()
-		{
-			BENCHMARK(5, TestTCircularQueue<10'000'000>);
-			BENCHMARK(5, TestTQueue<10'000'000, EQueueMode::Spsc>);
-			BENCHMARK(5, TestTQueue<10'000'000, EQueueMode::Mpsc>);
-			BENCHMARK(5, TestMpscTQueue<1'000'000>);
-		}
-	}
-
-	template<int NumTasks>
+	template<uint32 NumTasks>
 	void TestFGraphEventPerf()
 	{
 		FGraphEventRef Prereq = FGraphEvent::CreateGraphEvent();
-		int32 CompletedTasks = 0;
+		std::atomic<uint32> CompletedTasks{ 0 };
 
 		FGraphEventArray Tasks;
 		for (int i = 0; i != NumTasks; ++i)
@@ -1164,14 +1213,14 @@ namespace TaskGraphTests
 				[&Prereq, &CompletedTasks](ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 				{
 					MyCompletionGraphEvent->DontCompleteUntil(Prereq);
-					FPlatformAtomics::InterlockedIncrement(&CompletedTasks);
+					++CompletedTasks;
 				}
 			));
 		}
 
 		Prereq->DispatchSubsequents(ENamedThreads::GameThread);
 
-		FTaskGraphInterface::Get().WaitUntilTasksComplete(MoveTemp(Tasks), ENamedThreads::GameThread);
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(Tasks, ENamedThreads::GameThread);
 
 		check(CompletedTasks == NumTasks);
 	}
@@ -1182,14 +1231,14 @@ namespace TaskGraphTests
 		{
 			FGraphEventArray Tasks;
 			Tasks.Reserve(NumTasks);
-			double StartTime = FPlatformTime::Seconds();
+			//double StartTime = FPlatformTime::Seconds();
 			for (uint32 TaskNo = 0; TaskNo != NumTasks; ++TaskNo)
 			{
 				Tasks.Add(FFunctionGraphTask::CreateAndDispatchWhenReady([] {}));
 			}
 
-			double Duration = FPlatformTime::Seconds() - StartTime;
-			UE_LOG(LogTemp, Display, TEXT("Spawning %d empty trackable tasks took %f secs"), NumTasks, Duration);
+			//double Duration = FPlatformTime::Seconds() - StartTime;
+			//UE_LOG(LogTemp, Display, TEXT("Spawning %d empty trackable tasks took %f secs"), NumTasks, Duration);
 
 			FTaskGraphInterface::Get().WaitUntilTasksComplete(MoveTemp(Tasks));
 		}
@@ -1200,60 +1249,236 @@ namespace TaskGraphTests
 				FFunctionGraphTask::CreateAndDispatchWhenReady([] {});
 			}
 
-			double Duration = FPlatformTime::Seconds() - StartTime;
-			UE_LOG(LogTemp, Display, TEXT("Spawning %d empty non-trackable tasks took %f secs"), NumTasks, Duration);
+			//double Duration = FPlatformTime::Seconds() - StartTime;
+			//UE_LOG(LogTemp, Display, TEXT("Spawning %d empty non-trackable tasks took %f secs"), NumTasks, Duration);
 		}
 	}
 
 	template<int NumTasks>
 	void TestBatchSpawning()
 	{
-			double StartTime = FPlatformTime::Seconds();
-			FGraphEventRef Trigger = FGraphEvent::CreateGraphEvent();
-			for (uint32 TaskNo = 0; TaskNo != NumTasks; ++TaskNo)
-			{
-				FFunctionGraphTask::CreateAndDispatchWhenReady([] {}, TStatId{}, Trigger);
-			}
+		//double StartTime = FPlatformTime::Seconds();
+		FGraphEventRef Trigger = FGraphEvent::CreateGraphEvent();
+		for (uint32 TaskNo = 0; TaskNo != NumTasks; ++TaskNo)
+		{
+			FFunctionGraphTask::CreateAndDispatchWhenReady([] {}, TStatId{}, Trigger);
+		}
 
-			double SpawnedTime = FPlatformTime::Seconds();
-			Trigger->DispatchSubsequents();
+		//double SpawnedTime = FPlatformTime::Seconds();
+		Trigger->DispatchSubsequents();
 
-			double EndTime = FPlatformTime::Seconds();
-			UE_LOG(LogTemp, Display, TEXT("Spawning %d empty non-trackable tasks took %f secs total, %f secs spawning and %f secs dispatching"), NumTasks, EndTime - StartTime, SpawnedTime - StartTime, EndTime - SpawnedTime);
+		//double EndTime = FPlatformTime::Seconds();
+		//UE_LOG(LogTemp, Display, TEXT("Spawning %d empty non-trackable tasks took %f secs total, %f secs spawning and %f secs dispatching"), NumTasks, EndTime - StartTime, SpawnedTime - StartTime, EndTime - SpawnedTime);
 
-			//FTaskGraphInterface::Get().WaitUntilTasksComplete(MoveTemp(Tasks));
+		//FTaskGraphInterface::Get().WaitUntilTasksComplete(MoveTemp(Tasks));
 	}
 
-	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FPerfTest, "System.Core.Async.TaskGraph.PerfTest", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter);
-
-	bool FPerfTest::RunTest(const FString& Parameters)
+	template<int64 NumBatches, int64 NumTasksPerBatch>
+	void TestWorkStealing()
 	{
-		// profiling
-		//TestBatchSpawning<10000000>();
-		//BENCHMARK(5, TestPerfBasic<1 << 25>);
-		//BENCHMARK(5, TestPerfOptimised<1 << 24>);
-		//BENCHMARK(10, TestFGraphEventPerf<1 << 22>);
-		//BENCHMARK(10, TestSpawning<100000000>); // for profiling
-		//BENCHMARK(10, Fib<36>); // for profiling
+		FGraphEventArray Batches;
+		Batches.Reserve(NumBatches);
 
-		BENCHMARK(5, Fib<18>);
-		//BENCHMARK(5, [] { Fibonacci(15); });
+		FGraphEventArray Tasks[NumBatches];
+		for (int32 BatchIndex = 0; BatchIndex != NumBatches; ++BatchIndex)
+		{
+			Tasks[BatchIndex].Reserve(NumBatches * NumTasksPerBatch);
+			Batches.Add(FFunctionGraphTask::CreateAndDispatchWhenReady(
+				[&Tasks, BatchIndex]()
+				{
+					for (int32 TaskIndex = 0; TaskIndex < NumTasksPerBatch; ++TaskIndex)
+					{
+						Tasks[BatchIndex].Add(FFunctionGraphTask::CreateAndDispatchWhenReady([] {}));
+					}
+				}
+			));
+		}
 
-		BENCHMARK(5, TestFGraphEventPerf<1 << 16>);
-		BENCHMARK(5, TestPerfBasic<1 << 17>);
-		BENCHMARK(5, TestPerfBatch<1 << 17, 1 << 13>);
-		BENCHMARK(5, TestPerfBatchOptimised<1 << 17, 1 << 13>);
-		BENCHMARK(5, TestLatency<10'000>);
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(Batches);
+		for (int32 BatchIndex = 0; BatchIndex != NumBatches; ++BatchIndex)
+		{
+			FTaskGraphInterface::Get().WaitUntilTasksComplete(Tasks[BatchIndex]);
+		}
+	}
 
-		//BENCHMARK(10, TestSpawning<1>);
-		BENCHMARK(5, TestSpawning<100'000>);
-		BENCHMARK(5, TestBatchSpawning<100'000>);
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphPerfTest, "System.Core.Async.TaskGraph.PerfTest", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::Disabled);
 
-		//Queues::Test();
+	bool FTaskGraphPerfTest::RunTest(const FString& Parameters)
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(TaskGraphTests_PerfTest);
+
+		//UE_BENCHMARK(1, TestSpawning<100000>);
+		//return true;
+
+		//UE_BENCHMARK(5, Fib<18>);
+		//UE_BENCHMARK(5, [] { Fibonacci(15); });
+
+		UE_BENCHMARK(5, TestPerfBasic<100000>);
+		UE_BENCHMARK(5, TestPerfBatch<100000, 100>);
+		UE_BENCHMARK(5, TestPerfBatchOptimised<100000, 100>);
+		UE_BENCHMARK(5, TestLatency<10000>);
+		UE_BENCHMARK(5, TestFGraphEventPerf<100000>);
+		UE_BENCHMARK(5, TestWorkStealing<100, 1000>);
+		UE_BENCHMARK(5, TestSpawning<100000>);
+		UE_BENCHMARK(5, TestBatchSpawning<100000>);
 
 		return true;
 	}
 
-#undef BENCHMARK
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphStatsThreadRedirectionTest, "System.Core.Async.TaskGraph.StatsThreadRedirection", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::Disabled);
+
+	bool FTaskGraphStatsThreadRedirectionTest::RunTest(const FString& Parameters)
+	{
+		if (!FPlatformProcess::SupportsMultithreading())
+		{
+			// no StatsThread around
+			return true;
+		}
+
+#if STATS
+
+		bool bExecuted = false;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		FFunctionGraphTask::CreateAndDispatchWhenReady([&bExecuted] { bExecuted = true; }, TStatId{}, nullptr, ENamedThreads::StatsThread)->Wait();
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		check(bExecuted);
+
+#endif
+
+		return true;
+	}
+
+	template<uint32 Num>
+	void OversubscriptionStressTest()
+	{
+		// launch a number of tasks >= num of cores, each of them launches a task and waits for its completion. do this inside a task so 
+		// we can detect deadlock.
+		// outer tasks occupy all worker threads. when they launch inner tasks and wait for them, the inner tasks can't be 
+		// executed because all workers are blocked -> deadlock.
+		// can be solved by busy waiting
+
+		for (int i = 0; i != Num; ++i)
+		{
+			FSharedEventRef Event;
+			FFunctionGraphTask::CreateAndDispatchWhenReady(
+				[Event]
+				{
+					ParallelFor(200,
+						[](int32)
+						{
+							FPlatformProcess::Sleep(0.01f); // simulate some work and let all workers to pick up ParallelFor tasks
+							FFunctionGraphTask::CreateAndDispatchWhenReady([] {})->Wait();
+						}
+					);
+					Event->Trigger();
+				}
+			);
+			verify(Event->Wait(FTimespan::FromSeconds(5.f)));
+		}
+	}
+
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphOversubscriptionTest, "System.Core.Async.TaskGraph.Oversubscription", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::Disabled);
+
+	bool FTaskGraphOversubscriptionTest::RunTest(const FString& Parameters)
+	{
+		UE_BENCHMARK(5, OversubscriptionStressTest<10>);
+
+		return true;
+	}
+
+	template<uint32 Nujm>
+	void SquaredOversubscriptionStressTest()
+	{
+		// same as before but using two ParallelFor nested one into another to simulate oversubscription in square
+
+		FSharedEventRef Event;
+		FFunctionGraphTask::CreateAndDispatchWhenReady(
+			[Event]
+			{
+				ParallelFor(200,
+					[](int32)
+					{
+						ParallelFor(200,
+							[](int32)
+							{
+								FPlatformProcess::Sleep(0.01f); // simulate some work and let all workers to pick up ParallelFor tasks
+								FFunctionGraphTask::CreateAndDispatchWhenReady([] {})->Wait();
+							}
+						);
+					}
+				);
+				Event->Trigger();
+			}
+		);
+		verify(Event->Wait(FTimespan::FromSeconds(30.f)));
+	}
+
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphSquaredOversubscriptionTest, "System.Core.Async.TaskGraph.SquaredOversubscription", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::Disabled);
+
+	bool FTaskGraphSquaredOversubscriptionTest::RunTest(const FString& Parameters)
+	{
+		UE_BENCHMARK(5, SquaredOversubscriptionStressTest<10>);
+
+		return true;
+	}
+
+	IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTaskGraphBlockingWorkersTest, "System.Core.TaskGraph.BlockingWorkers", EAutomationTestFlags::ApplicationContextMask | EAutomationTestFlags::EngineFilter | EAutomationTestFlags::Disabled);
+
+	template<uint32 Num, bool bBackgroundWorkersToo>
+	void BlockingWorkersByFEvent();
+
+	bool FTaskGraphBlockingWorkersTest::RunTest(const FString& Parameters)
+	{
+		FPlatformProcess::Sleep(1.0f);
+		UE_BENCHMARK(10, BlockingWorkersByFEvent<100, false>);
+		UE_BENCHMARK(10, BlockingWorkersByFEvent<100, true>);
+		return true;
+	}
+
+	template<uint32 Num, bool bBackgroundWorkersToo>
+	void BlockingWorkersByFEvent()
+	{
+		for (int N = 0; N != Num; ++N)
+		{
+			int32 NumWorkers = bBackgroundWorkersToo ? LowLevelTasks::FScheduler::Get().GetNumWorkers() : GNumForegroundWorkers;
+
+			TArray<LowLevelTasks::FTask> WorkerBlockers; // tasks that block worker threads
+			WorkerBlockers.AddDefaulted(NumWorkers);
+
+			FEventRef BlockersBlocker{ EEventMode::ManualReset }; // blocks `WorkerBlockers`, manual reset because multiple threads are waiting for it
+
+			std::atomic<int32> NumWorkersNotBlocked{ NumWorkers };
+			FEventRef AllWorkersBlockedSignal;
+
+			for (int i = 0; i != NumWorkers; ++i)
+			{
+				WorkerBlockers[i].Init(TEXT("BlockingWorkers"), LowLevelTasks::ETaskPriority::High,
+					[i, &BlockersBlocker, &AllWorkersBlockedSignal, &NumWorkersNotBlocked]
+					{
+						verify(LowLevelTasks::FSchedulerTls::GetAffinityIndex() == i);
+						if (--NumWorkersNotBlocked == 0)
+						{
+							AllWorkersBlockedSignal->Trigger();
+						}
+						else
+						{
+							BlockersBlocker->Wait();
+						}
+					});
+
+				verify(LowLevelTasks::TryLaunchAffinity(WorkerBlockers[i], i));
+			}
+
+			verify(AllWorkersBlockedSignal->Wait(FTimespan::FromSeconds(3)));
+
+			BlockersBlocker->Trigger();
+			for (int i = 0; i != NumWorkers; ++i)
+			{
+				while(!WorkerBlockers[i].IsCompleted())
+				{}
+			}
+		}
+	}
 }
+
 #endif //WITH_DEV_AUTOMATION_TESTS

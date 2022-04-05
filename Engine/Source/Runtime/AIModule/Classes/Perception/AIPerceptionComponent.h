@@ -186,7 +186,7 @@ struct FActorPerceptionBlueprintInfo
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY(BlueprintReadWrite, Category = "AI|Perception")
-	AActor* Target;
+	TObjectPtr<AActor> Target;
 
 	UPROPERTY(BlueprintReadWrite, Category = "AI|Perception")
 	TArray<FAIStimulus> LastSensedStimuli;
@@ -215,7 +215,7 @@ class AIMODULE_API UAIPerceptionComponent : public UActorComponent
 
 protected:
 	UPROPERTY(EditDefaultsOnly, Instanced, Category = "AI Perception")
-	TArray<UAISenseConfig*> SensesConfig;
+	TArray<TObjectPtr<UAISenseConfig>> SensesConfig;
 
 	/** Indicated sense that takes precedence over other senses when determining sensed actor's location. 
 	 *	Should be set to one of the senses configured in SensesConfig, or None. */
@@ -225,10 +225,10 @@ protected:
 	FAISenseID DominantSenseID;
 
 	UPROPERTY(Transient)
-	AAIController* AIOwner;
+	TObjectPtr<AAIController> AIOwner;
 
-	/** @todo this field is misnamed. It's a whitelist. */
-	FPerceptionChannelWhitelist PerceptionFilter;
+	/** @todo this field is misnamed. It's an allow list. */
+	FPerceptionChannelAllowList PerceptionFilter;
 
 private:
 	FPerceptionListenerID PerceptionListenerId;
@@ -274,7 +274,7 @@ public:
 	const AActor* GetBodyActor() const;
 	AActor* GetMutableBodyActor();
 
-	FORCEINLINE const FPerceptionChannelWhitelist GetPerceptionFilter() const { return PerceptionFilter; }
+	FORCEINLINE const FPerceptionChannelAllowList GetPerceptionFilter() const { return PerceptionFilter; }
 
 	FGenericTeamId GetTeamIdentifier() const;
 	FORCEINLINE FPerceptionListenerID GetListenerId() const { return PerceptionListenerId; }
@@ -311,7 +311,14 @@ public:
 	void RequestStimuliListenerUpdate();
 
 	/** Allows toggling senses on and off */
-	void UpdatePerceptionWhitelist(const FAISenseID Channel, const bool bNewValue);
+	void UpdatePerceptionAllowList(const FAISenseID Channel, const bool bNewValue);
+
+	UE_DEPRECATED(5.0, "Use UpdatePerceptionAllowList instead")
+	void UpdatePerceptionWhitelist(const FAISenseID Channel, const bool bNewValue)
+	{
+		UpdatePerceptionAllowList(Channel, bNewValue);
+	}
+	
 
 	void RegisterStimulus(AActor* Source, const FAIStimulus& Stimulus);
 	void ProcessStimuli();
@@ -401,9 +408,6 @@ public:
 	FActorPerceptionInfoUpdatedDelegate OnTargetPerceptionInfoUpdated;
 
 protected:
-	UE_DEPRECATED(4.11, "Function has been renamed and made public. Please use UpdatePerceptionWhitelist instead")
-	void UpdatePerceptionFilter(FAISenseID Channel, bool bNewValue);
-
 	FActorPerceptionContainer& GetPerceptualData() { return PerceptualData; }
 	const FActorPerceptionContainer& GetPerceptualData() const { return PerceptualData; }
 

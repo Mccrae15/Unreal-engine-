@@ -68,7 +68,6 @@
 #include "GameProjectGenerationModule.h"
 
 #include "SourceCodeNavigation.h"
-#include "Misc/HotReloadInterface.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Misc/TextFilterExpressionEvaluator.h"
 
@@ -158,8 +157,8 @@ private:
 	 */	
 	void CreateNodesForLoadedClasses( TSharedPtr<FClassViewerNode>& OutRootNode, TMap<FName, TSharedPtr< FClassViewerNode >>& InOutClassPathToNode );
 
-	/** Called when hot reload has finished */
-	void OnHotReload( bool bWasTriggeredAutomatically );
+	/** Called when reload has finished */
+	void OnReloadComplete( EReloadCompleteReason Reason );
 
 	/** 
 	 * Loads the tag data for an unloaded blueprint asset.
@@ -1023,9 +1022,8 @@ FClassHierarchy::FClassHierarchy()
 	AssetRegistryModule.Get().OnAssetAdded().AddRaw( this, &FClassHierarchy::AddAsset);
 	AssetRegistryModule.Get().OnAssetRemoved().AddRaw( this, &FClassHierarchy::RemoveAsset );
 
-	// Register to have Populate called when doing a Hot Reload.
-	IHotReloadInterface& HotReloadSupport = FModuleManager::LoadModuleChecked<IHotReloadInterface>("HotReload");
-	HotReloadSupport.OnHotReload().AddRaw( this, &FClassHierarchy::OnHotReload );
+	// Register to have Populate called when doing a Reload.
+	FCoreUObjectDelegates::ReloadCompleteDelegate.AddRaw( this, &FClassHierarchy::OnReloadComplete );
 
 	// Register to have Populate called when a Blueprint is compiled.
 	OnBlueprintCompiledRequestPopulateClassHierarchyDelegateHandle            = GEditor->OnBlueprintCompiled().AddStatic(ClassViewer::Helpers::RequestPopulateClassHierarchy);
@@ -1044,12 +1042,8 @@ FClassHierarchy::~FClassHierarchy()
 		AssetRegistryModule.Get().OnAssetAdded().RemoveAll( this );
 		AssetRegistryModule.Get().OnAssetRemoved().RemoveAll( this );
 
-		// Unregister to have Populate called when doing a Hot Reload.
-		if(FModuleManager::Get().IsModuleLoaded("HotReload"))
-		{
-			IHotReloadInterface& HotReloadSupport = FModuleManager::GetModuleChecked<IHotReloadInterface>("HotReload");
-			HotReloadSupport.OnHotReload().RemoveAll(this);
-		}
+		// Unregister to have Populate called when doing a Reload.
+		FCoreUObjectDelegates::ReloadCompleteDelegate.RemoveAll(this);
 
 		if (GEditor)
 		{
@@ -1062,7 +1056,7 @@ FClassHierarchy::~FClassHierarchy()
 	FModuleManager::Get().OnModulesChanged().RemoveAll(this);
 }
 
-void FClassHierarchy::OnHotReload(bool bWasTriggeredAutomatically)
+void FClassHierarchy::OnReloadComplete(EReloadCompleteReason Reason)
 {
 	ClassViewer::Helpers::RequestPopulateClassHierarchy();
 }
@@ -1073,7 +1067,7 @@ void FClassHierarchy::CreateNodesForLoadedClasses(TSharedPtr<FClassViewerNode>& 
 	{
 		UClass* CurrentClass = *ClassIt;
 		// Ignore deprecated and temporary trash classes.
-		if (CurrentClass->HasAnyClassFlags(CLASS_Deprecated | CLASS_NewerVersionExists) ||
+		if (CurrentClass->HasAnyClassFlags(CLASS_Deprecated | CLASS_NewerVersionExists | CLASS_Hidden) ||
 			FKismetEditorUtilities::IsClassABlueprintSkeleton(CurrentClass))
 		{
 			continue;
@@ -1317,7 +1311,6 @@ void FClassHierarchy::LoadUnloadedTagData(TSharedPtr<FClassViewerNode>& InOutCla
 	SetAssetDataFields(InOutClassViewerNode, InAssetData);
 }
 
-
 void FClassHierarchy::SetAssetDataFields(TSharedPtr<FClassViewerNode>& InOutClassViewerNode, const FAssetData& InAssetData)
 {
 	if (InOutClassViewerNode->UnloadedBlueprintData.IsValid())
@@ -1328,12 +1321,21 @@ void FClassHierarchy::SetAssetDataFields(TSharedPtr<FClassViewerNode>& InOutClas
 
 	// Fields that can also be set from UClass*
 
-	FString ClassObjectPath;
 	if (InOutClassViewerNode->ClassPath.IsNone())
 	{
-		if (InAssetData.GetTagValue(FBlueprintTags::GeneratedClassPath, ClassObjectPath))
+		FString GeneratedClassPath;
+		UClass* AssetClass = InAssetData.GetClass();
+		if (AssetClass && AssetClass->IsChildOf(UBlueprintGeneratedClass::StaticClass()))
 		{
-			InOutClassViewerNode->ClassPath = FName(*FPackageName::ExportTextPathToObjectPath(ClassObjectPath));
+			InOutClassViewerNode->ClassPath = InAssetData.ObjectPath;
+		}
+		else if (InAssetData.GetTagValue(FBlueprintTags::GeneratedClassPath, GeneratedClassPath))
+		{
+			InOutClassViewerNode->ClassPath = FName(*FPackageName::ExportTextPathToObjectPath(GeneratedClassPath));
+		}
+		else
+		{
+			UE_LOG(LogEditorClassViewer, Verbose, TEXT("Failed to set ClassViewerNode ClassPath for %s"), *InAssetData.ObjectPath.ToString());
 		}
 	}
 	if (InOutClassViewerNode->ParentClassPath.IsNone())
@@ -1360,29 +1362,12 @@ void FClassHierarchy::SetAssetDataFields(TSharedPtr<FClassViewerNode>& InOutClas
 	const uint32 ClassFlags = InAssetData.GetTagValueRef<uint32>(FBlueprintTags::ClassFlags);
 	InOutClassViewerNode->UnloadedBlueprintData->SetClassFlags(ClassFlags);
 
-	const FString ImplementedInterfaces = InAssetData.GetTagValueRef<FString>(FBlueprintTags::ImplementedInterfaces);
-	if(!ImplementedInterfaces.IsEmpty())
+	// Get interface class paths.
+	TArray<FString> ImplementedInterfaces;
+	FEditorClassUtils::GetImplementedInterfaceClassPathsFromAsset(InAssetData, ImplementedInterfaces);
+	for (const FString& InterfacePath : ImplementedInterfaces)
 	{
-		FString FullInterface;
-		FString RemainingString;
-		FString InterfacePath;
-		FString CurrentString = *ImplementedInterfaces;
-		while(CurrentString.Split(TEXT(","), &FullInterface, &RemainingString))
-		{
-			if (!CurrentString.StartsWith(TEXT("Graphs=(")))
-			{
-				if (FullInterface.Split(TEXT("\""), &CurrentString, &InterfacePath, ESearchCase::CaseSensitive))
-				{
-					// The interface paths in metadata end with "', so remove those
-					InterfacePath.RemoveFromEnd(TEXT("\"'"));
-
-					FCoreRedirectObjectName ResolvedInterfaceName = FCoreRedirects::GetRedirectedName(ECoreRedirectFlags::Type_Class, FCoreRedirectObjectName(InterfacePath));
-					UnloadedBlueprintData->AddImplementedInterface(ResolvedInterfaceName.ObjectName.ToString());
-				}
-			}
-			
-			CurrentString = RemainingString;
-		}
+		UnloadedBlueprintData->AddImplementedInterface(InterfacePath);
 	}
 }
 
@@ -1504,6 +1489,21 @@ void SClassViewer::Construct(const FArguments& InArgs, const FClassViewerInitial
 		}
 	}
 
+	// Clear out the current set of custom filter options.
+	CustomClassFilterOptions.Empty(InitOptions.ClassFilters.Num());
+
+	// Gather additional filter options from any custom filters.
+	TArray<TSharedRef<FClassViewerFilterOption>> FilterOptions;
+	for (TSharedRef<IClassViewerFilter> CustomFilter : InitOptions.ClassFilters)
+	{
+		// Append this filter's options to the current set.
+		CustomFilter->GetFilterOptions(FilterOptions);
+		CustomClassFilterOptions.Append(FilterOptions);
+
+		// Reset the temp array for the next pass.
+		FilterOptions.Reset();
+	}
+
 	TSharedRef<SWidget> FiltersWidget = SNullWidget::NullWidget;
 	// Build the top menu
 	if(InitOptions.Mode == EClassViewerMode::ClassBrowsing)
@@ -1621,6 +1621,7 @@ void SClassViewer::Construct(const FArguments& InArgs, const FClassViewerInitial
 					.Text(InitOptions.ViewerTitleString)
 				]
 			]
+
 			+SVerticalBox::Slot()
 			.AutoHeight()
 			[
@@ -1632,11 +1633,29 @@ void SClassViewer::Construct(const FArguments& InArgs, const FClassViewerInitial
 					FiltersWidget
 				]
 				+ SHorizontalBox::Slot()
-				.Padding(2.0f, 2.0f)
+				.Padding(2.0f, 2.0f, 6.0f, 2.0f)
 				[
 					SAssignNew(SearchBox, SSearchBox)
 					.OnTextChanged( this, &SClassViewer::OnFilterTextChanged )
 					.OnTextCommitted( this, &SClassViewer::OnFilterTextCommitted )
+				]
+				// View mode combo button
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(2.0f, 2.0f)
+				[
+					SAssignNew(ViewOptionsComboButton, SComboButton)
+					.ContentPadding(0)
+					.ForegroundColor(FSlateColor::UseForeground())
+					.ComboButtonStyle(FAppStyle::Get(), "SimpleComboButton")
+					.HasDownArrow(false)
+					.OnGetMenuContent(this, &SClassViewer::GetViewButtonContent)
+					.ButtonContent()
+					[
+						SNew(SImage)
+						.Image(FAppStyle::Get().GetBrush("Icons.Settings"))
+						.ColorAndOpacity(FSlateColor::UseForeground())
+					]
 				]
 			]
 
@@ -1692,47 +1711,11 @@ void SClassViewer::Construct(const FArguments& InArgs, const FClassViewerInitial
 			// Bottom panel
 			+ SVerticalBox::Slot()
 			.AutoHeight()
+			.VAlign(VAlign_Center)
+			.Padding(4.0f)
 			[
-				SNew(SHorizontalBox)
-
-				// Asset count
-				+ SHorizontalBox::Slot()
-				.FillWidth(1.f)
-				.VAlign(VAlign_Center)
-				.Padding(8, 0)
-				[
-					SNew(STextBlock)
-					.Text(this, &SClassViewer::GetClassCountText)
-				]
-
-				// View mode combo button
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					SAssignNew(ViewOptionsComboButton, SComboButton)
-					.ContentPadding(0)
-					.ForegroundColor(this, &SClassViewer::GetViewButtonForegroundColor)
-					.ButtonStyle(FEditorStyle::Get(), "ToggleButton") // Use the tool bar item style for this button
-					.OnGetMenuContent(this, &SClassViewer::GetViewButtonContent)
-					.ButtonContent()
-					[
-						SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						[
-							SNew(SImage).Image(FEditorStyle::GetBrush("GenericViewButton"))
-						]
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.Padding(2, 0, 0, 0)
-						.VAlign(VAlign_Center)
-						[
-							SNew(STextBlock).Text(LOCTEXT("ViewButton", "View Options"))
-						]
-					]
-				]
+				SNew(STextBlock)
+				.Text(this, &SClassViewer::GetClassCountText)
 			]
 		]
 	];
@@ -1957,14 +1940,6 @@ const int SClassViewer::GetNumItems() const
 	return NumClasses;
 }
 
-FSlateColor SClassViewer::GetViewButtonForegroundColor() const
-{
-	static const FName InvertedForegroundName("InvertedForeground");
-	static const FName DefaultForegroundName("DefaultForeground");
-
-	return ViewOptionsComboButton->IsHovered() ? FEditorStyle::GetSlateColor(InvertedForegroundName) : FEditorStyle::GetSlateColor(DefaultForegroundName);
-}
-
 TSharedRef<SWidget> SClassViewer::GetViewButtonContent()
 {
 	// Get all menu extenders for this context menu from the content browser module
@@ -1988,6 +1963,22 @@ TSharedRef<SWidget> SClassViewer::GetViewButtonContent()
 			NAME_None,
 			EUserInterfaceActionType::ToggleButton
 			);
+
+		for (const TSharedRef<FClassViewerFilterOption>& FilterOption : CustomClassFilterOptions)
+		{
+			MenuBuilder.AddMenuEntry(
+				FilterOption->LabelText,
+				FilterOption->ToolTipText,
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateSP(this, &SClassViewer::ToggleCustomFilterOption, FilterOption),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateSP(this, &SClassViewer::IsCustomFilterOptionEnabled, FilterOption)
+				),
+				NAME_None,
+				EUserInterfaceActionType::ToggleButton
+			);
+		}
 	}
 	MenuBuilder.EndSection();
 
@@ -2034,8 +2025,6 @@ TSharedRef<SWidget> SClassViewer::GetViewButtonContent()
 
 	}
 	MenuBuilder.EndSection();
-
-	return MenuBuilder.MakeWidget();
 
 	return MenuBuilder.MakeWidget();
 }
@@ -2516,7 +2505,7 @@ void SClassViewer::Populate()
 		if (PreviousSelection.Num() > 0)
 		{
 			ClassNode = ClassViewer::Helpers::ClassHierarchy->FindNodeByGeneratedClassPath(RootNode, PreviousSelection[0]);
-			ExpandNode = ClassNode ? ClassNode->ParentNode.Pin() : nullptr;
+			ExpandNode = ClassNode ? ClassNode->GetParentNode() : nullptr;
 		}
 		else if (InitOptions.InitiallySelectedClass)
 		{
@@ -2546,7 +2535,7 @@ void SClassViewer::Populate()
 			ExpandNode = ClassNode;
 		}
 
-		for (; ExpandNode; ExpandNode = ExpandNode->ParentNode.Pin())
+		for (; ExpandNode; ExpandNode = ExpandNode->GetParentNode())
 		{
 			ClassTree->SetItemExpansion(ExpandNode, true);
 		}
@@ -2669,6 +2658,11 @@ void SClassViewer::Tick( const FGeometry& AllottedGeometry, const double InCurre
 			ExpandRootNodes();
 		}
 
+		if (InitOptions.bExpandAllNodes)
+		{
+			SetAllExpansionStates(true);
+		}
+
 		// Scroll the first item into view if applicable
 		const TArray<TSharedPtr<FClassViewerNode>> SelectedItems = GetSelectedItems();
 		if (SelectedItems.Num() > 0)
@@ -2719,6 +2713,23 @@ bool SClassViewer::IsShowingInternalClasses() const
 		return true;
 	}
 	return IsToggleShowInternalClassesAllowed() ? GetDefault<UClassViewerSettings>()->DisplayInternalClasses : false;
+}
+
+void SClassViewer::ToggleCustomFilterOption(TSharedRef<FClassViewerFilterOption> FilterOption)
+{
+	FilterOption->bEnabled = !FilterOption->bEnabled;
+
+	if (FilterOption->OnOptionChanged.IsBound())
+	{
+		FilterOption->OnOptionChanged.Execute(FilterOption->bEnabled);
+	}
+
+	Refresh();
+}
+
+bool SClassViewer::IsCustomFilterOptionEnabled(TSharedRef<FClassViewerFilterOption> FilterOption) const
+{
+	return FilterOption->bEnabled;
 }
 
 #undef LOCTEXT_NAMESPACE

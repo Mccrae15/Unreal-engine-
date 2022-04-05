@@ -38,20 +38,26 @@ class FNullInstallBundleManager : public IInstallBundleManager
 		return MakeValue(FInstallBundleRequestInfo());
 	}
 
-	virtual void GetContentState(TArrayView<const FName> BundleNames, EInstallBundleGetContentStateFlags Flags, bool bAddDependencies, FInstallBundleGetContentStateDelegate Callback, FName RequestTag) override
+	virtual FDelegateHandle GetContentState(TArrayView<const FName> BundleNames, EInstallBundleGetContentStateFlags Flags, bool bAddDependencies, FInstallBundleGetContentStateDelegate Callback, FName RequestTag) override
 	{
 		FInstallBundleCombinedContentState State;
 		Callback.ExecuteIfBound(State);
+		return Callback.GetHandle();
 	}
 
 	virtual void CancelAllGetContentStateRequestsForTag(FName RequestTag) override
 	{
 	}
 
-	virtual void GetInstallState(TArrayView<const FName> BundleNames, bool bAddDependencies, FInstallBundleGetInstallStateDelegate Callback, FName RequestTag = NAME_None) override
+	virtual void CancelAllGetContentStateRequests(FDelegateHandle Handle) override
+	{
+	}
+
+	virtual FDelegateHandle GetInstallState(TArrayView<const FName> BundleNames, bool bAddDependencies, FInstallBundleGetInstallStateDelegate Callback, FName RequestTag = NAME_None) override
 	{
 		FInstallBundleCombinedInstallState State;
 		Callback.ExecuteIfBound(State);
+		return Callback.GetHandle();
 	}
 
 	virtual TValueOrError<FInstallBundleCombinedInstallState, EInstallBundleResult> GetInstallStateSynchronous(TArrayView<const FName> BundleNames, bool bAddDependencies) const override
@@ -63,9 +69,29 @@ class FNullInstallBundleManager : public IInstallBundleManager
 	{
 	}
 
+	virtual void CancelAllGetInstallStateRequests(FDelegateHandle Handle) override
+	{
+	}
+
 	virtual TValueOrError<FInstallBundleRequestInfo, EInstallBundleResult> RequestReleaseContent(TArrayView<const FName> ReleaseNames, EInstallBundleReleaseRequestFlags Flags, TArrayView<const FName> KeepNames = TArrayView<const FName>(), ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging) override
 	{
 		return MakeValue(FInstallBundleRequestInfo());
+	}
+
+	virtual EInstallBundleResult FlushCache(FInstallBundleSourceOrCache SourceOrCache, FInstallBundleManagerFlushCacheCompleteDelegate Callback, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging) override
+	{
+		Callback.ExecuteIfBound();
+		return EInstallBundleResult::OK;
+	}
+
+	virtual TArray<FInstallBundleCacheStats> GetCacheStats(bool bDumpToLog = false, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging) override
+	{
+		return TArray<FInstallBundleCacheStats>();
+	}
+
+	virtual TOptional<FInstallBundleCacheStats> GetCacheStats(FInstallBundleSourceOrCache SourceOrCache, bool bDumpToLog = false, ELogVerbosity::Type LogVerbosityOverride = ELogVerbosity::NoLogging) override
+	{
+		return TOptional<FInstallBundleCacheStats>();
 	}
 
 	virtual void RequestRemoveContentOnNextInit(TArrayView<const FName> RemoveNames, TArrayView<const FName> KeepNames = TArrayView<const FName>()) override

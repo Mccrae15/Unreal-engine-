@@ -129,10 +129,11 @@ void UNiagaraNodeParameterMapSet::OnNewTypedPinAdded(UEdGraphPin*& NewPin)
 		if (bCreatedNamespace && GetNiagaraGraph())
 		{
 			const UEdGraphSchema_Niagara* Schema = GetDefault<UEdGraphSchema_Niagara>();
-			FNiagaraVariable PinVariable = Schema->PinToNiagaraVariable(NewPin, false);
-			const bool bIsStaticSwitch = false;
-			UNiagaraScriptVariable* Var = GetNiagaraGraph()->AddParameter(PinVariable, bIsStaticSwitch);
-			NewPin->PinName = Var->Variable.GetName();
+			constexpr bool bNeedsValue = false;
+			FNiagaraVariable PinVariable = Schema->PinToNiagaraVariable(NewPin, bNeedsValue);
+			constexpr bool bIsStaticSwitch = false;
+			UNiagaraScriptVariable* ScriptVar = GetNiagaraGraph()->AddParameter(PinVariable, bIsStaticSwitch);
+			NewPin->PinName = ScriptVar->Variable.GetName();
 		}
 	}
 
@@ -214,11 +215,7 @@ void UNiagaraNodeParameterMapSet::Compile(class FHlslNiagaraTranslator* Translat
 		Outputs.Add(INDEX_NONE);
 	}
 
-	const UEdGraphSchema_Niagara* Schema = CastChecked<UEdGraphSchema_Niagara>(GetSchema());
-
-	// First compile fully down the hierarchy for our predecessors..
-	TArray<FCompiledPin, TInlineAllocator<16>> CompileInputs;
-	CompileInputs.Reserve(InputPins.Num());
+	// update the translator with the culled function calls before compiling any further
 	for (UEdGraphPin* InputPin : InputPins)
 	{
 		if (IsAddPin(InputPin))
@@ -227,6 +224,19 @@ void UNiagaraNodeParameterMapSet::Compile(class FHlslNiagaraTranslator* Translat
 		}
 
 		if (Translator->IsFunctionVariableCulledFromCompilation(InputPin->PinName))
+		{
+			Translator->CullMapSetInputPin(InputPin);
+		}
+	}
+
+	const UEdGraphSchema_Niagara* Schema = CastChecked<UEdGraphSchema_Niagara>(GetSchema());
+
+	// First compile fully down the hierarchy for our predecessors..
+	TArray<FCompiledPin, TInlineAllocator<16>> CompileInputs;
+	CompileInputs.Reserve(InputPins.Num());
+	for (UEdGraphPin* InputPin : InputPins)
+	{
+		if (IsAddPin(InputPin) || Translator->IsFunctionVariableCulledFromCompilation(InputPin->PinName))
 		{
 			continue;
 		}
@@ -334,7 +344,7 @@ void UNiagaraNodeParameterMapSet::PostLoad()
 			Pin->PersistentGuid = FGuid::NewGuid();
 		}
 
-		if (Pin->Direction == EEdGraphPinDirection::EGPD_Input && Pin->GetFName() != UNiagaraNodeParameterMapBase::SourcePinName && !IsAddPin(Pin))
+		if (Pin->Direction == EEdGraphPinDirection::EGPD_Input && Pin->GetFName() != UNiagaraNodeParameterMapBase::SourcePinName && !IsAddPin(Pin) && !Pin->bOrphanedPin)
 		{
 			Pin->PinType.PinSubCategory = UNiagaraNodeParameterMapBase::ParameterPinSubCategory;
 		}

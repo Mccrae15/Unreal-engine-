@@ -77,6 +77,11 @@ public:
 		return Descriptor.bCanContainContent;
 	}
 
+	virtual bool CanContainVerse() const override
+	{
+		return Descriptor.bCanContainVerse;
+	}
+
 	virtual EPluginType GetType() const override
 	{
 		return Type;
@@ -105,7 +110,7 @@ public:
 
 	/** IPluginManager interface */
 	virtual void RefreshPluginsList() override;
-	virtual bool AddToPluginsList( const FString& PluginFilename ) override;
+	virtual bool AddToPluginsList(const FString& PluginFilename, FText* OutFailReason = nullptr) override;
 	virtual bool LoadModulesForEnabledPlugins( const ELoadingPhase::Type LoadingPhase ) override;
 	virtual FLoadingModulesForPhaseEvent& OnLoadingPhaseComplete() override;
 	virtual ELoadingPhase::Type GetLastCompletedLoadingPhase() const override;
@@ -117,16 +122,27 @@ public:
 #if !IS_MONOLITHIC
 	virtual bool CheckModuleCompatibility(TArray<FString>& OutIncompatibleModules, TArray<FString>& OutIncompatibleEngineModules) override;
 #endif
-	virtual TSharedPtr<IPlugin> FindPlugin(const FString& Name) override;
+	virtual TSharedPtr<IPlugin> FindPlugin(const FStringView Name) override;
+
+	virtual TSharedPtr<IPlugin> FindPlugin(const ANSICHAR* Name) override
+	{
+		FString NameString(Name);
+		return FindPlugin(FStringView(NameString));
+	}
+
+	virtual TSharedPtr<IPlugin> FindPluginFromPath(const FString& PluginPath) override;
+
 	virtual TArray<TSharedRef<IPlugin>> GetEnabledPlugins() override;
 	virtual TArray<TSharedRef<IPlugin>> GetEnabledPluginsWithContent() const override;
+	virtual TArray<TSharedRef<IPlugin>> GetEnabledPluginsWithVerse() const override;
+	virtual TArray<TSharedRef<IPlugin>> GetEnabledPluginsWithContentOrVerse() const override;
 	virtual TArray<TSharedRef<IPlugin>> GetDiscoveredPlugins() override;
-	virtual TArray< FPluginStatus > QueryStatusForAllPlugins() const override;
 	virtual bool AddPluginSearchPath(const FString& ExtraDiscoveryPath, bool bRefresh = true) override;
 	const TSet<FString>& GetAdditionalPluginSearchPaths() const override;
 	virtual TArray<TSharedRef<IPlugin>> GetPluginsWithPakFile() const override;
 	virtual FNewPluginMountedEvent& OnNewPluginCreated() override;
 	virtual FNewPluginMountedEvent& OnNewPluginMounted() override;
+	virtual FNewPluginMountedEvent& OnPluginEdited() override;
 	virtual void MountNewlyCreatedPlugin(const FString& PluginName) override;
 	virtual void MountExplicitlyLoadedPlugin(const FString& PluginName) override;
 	virtual bool UnmountExplicitlyLoadedPlugin(const FString& PluginName, FText* OutReason) override;
@@ -231,6 +247,7 @@ private:
 	/** Callback for notifications that a new plugin was mounted */
 	FNewPluginMountedEvent NewPluginCreatedEvent;
 	FNewPluginMountedEvent NewPluginMountedEvent;
+	FNewPluginMountedEvent PluginEditedEvent;
 
 	/** Callback for notifications that a loading phase was completed */
 	FLoadingModulesForPhaseEvent LoadingPhaseCompleteEvent;

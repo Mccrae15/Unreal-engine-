@@ -4,7 +4,7 @@
 
 #include "Algo/Accumulate.h"
 #include "Cluster/IPDisplayClusterClusterManager.h"
-#include "Cluster/Controller/IDisplayClusterNodeController.h"
+#include "Cluster/Controller/IDisplayClusterClusterNodeController.h"
 #include "Config/IPDisplayClusterConfigManager.h"
 #include "DisplayClusterEnums.h"
 #include "Engine/DynamicBlueprintBinding.h"
@@ -17,7 +17,6 @@
 #include "Misc/CommandLine.h"
 #include "Misc/DisplayClusterAppExit.h"
 #include "Misc/Parse.h"
-#include "Misc/QualifiedFrameTime.h"
 
 #include "Misc/DisplayClusterGlobals.h"
 #include "Misc/DisplayClusterHelpers.h"
@@ -29,8 +28,10 @@
 
 #include "Stats/Stats.h"
 
-#include "Misc/CoreDelegates.h"
+#include "GameDelegates.h"
 #include "Kismet/GameplayStatics.h"
+#include "Misc/CoreDelegates.h"
+
 
 namespace DisplayClusterGameEngineUtils
 {
@@ -49,14 +50,24 @@ static TAutoConsoleVariable<int32> CVarGameStartBarrierAvoidance(
 
 void UDisplayClusterGameEngine::Init(class IEngineLoop* InEngineLoop)
 {
+	UE_LOG(LogDisplayClusterEngine, Log, TEXT("UDisplayClusterGameEngine::Init"));
+
 	// Detect requested operation mode
 	OperationMode = DetectOperationMode();
 
 	// Initialize Display Cluster
 	if (!GDisplayCluster->Init(OperationMode))
 	{
-		FDisplayClusterAppExit::ExitApplication(FDisplayClusterAppExit::EExitType::KillImmediately, FString("Couldn't initialize DisplayCluster module"));
+		FDisplayClusterAppExit::ExitApplication(FString("Couldn't initialize DisplayCluster module"));
 	}
+
+	// This is required to prevent GameThread dead-locking when Alt+F4 is used
+	// to terminate p-node of a 2+ nodes cluster. This gets called before
+	// virtual PreExit which allows to unlock GameThread in advance.
+	FCoreDelegates::ApplicationWillTerminateDelegate.AddLambda([this]()
+	{
+		PreExitImpl();
+	});
 
 	if (OperationMode == EDisplayClusterOperationMode::Cluster)
 	{
@@ -88,7 +99,7 @@ void UDisplayClusterGameEngine::Init(class IEngineLoop* InEngineLoop)
 		FString ConfigPath;
 		if (!ParseCommandArg(FCommandLine::Get(), DisplayClusterStrings::args::Config, ConfigPath))
 		{
-			FDisplayClusterAppExit::ExitApplication(FDisplayClusterAppExit::EExitType::KillImmediately, FString("No config file specified. Cluster operation mode requires config file."));
+			FDisplayClusterAppExit::ExitApplication(FString("No config file specified. Cluster operation mode requires config file."));
 		}
 
 		// Clean the file path before using it
@@ -98,14 +109,14 @@ void UDisplayClusterGameEngine::Init(class IEngineLoop* InEngineLoop)
 		const EDisplayClusterConfigurationVersion ConfigVersion = IDisplayClusterConfiguration::Get().GetConfigVersion(ConfigPath);
 		if (!ValidateConfigFile(ConfigPath))
 		{
-			FDisplayClusterAppExit::ExitApplication(FDisplayClusterAppExit::EExitType::KillImmediately, FString("An invalid or outdated configuration file was specified. Please consider using nDisplay configurator to update the config files."));
+			FDisplayClusterAppExit::ExitApplication(FString("An invalid or outdated configuration file was specified. Please consider using nDisplay configurator to update the config files."));
 		}
 
 		// Load config data
 		UDisplayClusterConfigurationData* ConfigData = IDisplayClusterConfiguration::Get().LoadConfig(ConfigPath);
 		if (!ConfigData)
 		{
-			FDisplayClusterAppExit::ExitApplication(FDisplayClusterAppExit::EExitType::KillImmediately, FString("An error occurred during loading the configuration file"));
+			FDisplayClusterAppExit::ExitApplication(FString("An error occurred during loading the configuration file"));
 		}
 
 		// Extract node ID from command line
@@ -117,7 +128,7 @@ void UDisplayClusterGameEngine::Init(class IEngineLoop* InEngineLoop)
 			// Find node ID based on the host address
 			if (!GetResolvedNodeId(ConfigData, NodeId))
 			{
-				FDisplayClusterAppExit::ExitApplication(FDisplayClusterAppExit::EExitType::KillImmediately, FString("Couldn't resolve node ID. Try to specify host addresses explicitly."));
+				FDisplayClusterAppExit::ExitApplication(FString("Couldn't resolve node ID. Try to specify host addresses explicitly."));
 			}
 
 			UE_LOG(LogDisplayClusterEngine, Log, TEXT("Node ID has been successfully resolved: %s"), *NodeId);
@@ -129,7 +140,7 @@ void UDisplayClusterGameEngine::Init(class IEngineLoop* InEngineLoop)
 		// Start game session
 		if (!GDisplayCluster->StartSession(ConfigData, NodeId))
 		{
-			FDisplayClusterAppExit::ExitApplication(FDisplayClusterAppExit::EExitType::KillImmediately, FString("Couldn't start DisplayCluster session"));
+			FDisplayClusterAppExit::ExitApplication(FString("Couldn't start DisplayCluster session"));
 		}
 
 		// Initialize internals
@@ -163,10 +174,7 @@ bool UDisplayClusterGameEngine::InitializeInternals()
 	Diagnostics = Config->Diagnostics;
 
 	ClusterMgr     = GDisplayCluster->GetPrivateClusterMgr();
-	NodeController = ClusterMgr->GetController();
-
-	check(ClusterMgr);
-	check(NodeController);
+	checkSlow(ClusterMgr);
 
 	FOnClusterEventJsonListener GameSyncTransition = FOnClusterEventJsonListener::CreateUObject(this, &UDisplayClusterGameEngine::GameSyncChange);
 	ClusterMgr->AddClusterEventJsonListener(GameSyncTransition);
@@ -226,19 +234,19 @@ bool UDisplayClusterGameEngine::ValidateConfigFile(const FString& FilePath)
 	const EDisplayClusterConfigurationVersion ConfigVersion = IDisplayClusterConfiguration::Get().GetConfigVersion(FilePath);
 	switch (ConfigVersion)
 	{
-		case EDisplayClusterConfigurationVersion::Version_CFG:
-			// Old .cfg file are not allowed anymore
-			UE_LOG(LogDisplayClusterEngine, Error, TEXT("Old (.cfg) config format is not supported"));
-			break;
-
 		case EDisplayClusterConfigurationVersion::Version_426:
 			// Old 4.26 and 4.27p1 formats are not allowed as well
 			UE_LOG(LogDisplayClusterEngine, Error, TEXT("Detected old (.ndisplay 4.26 or .ndisplay 4.27p1) config format. Please upgrade to the actual version."));
 			return true;
 
 		case EDisplayClusterConfigurationVersion::Version_427:
-			// Ok, it's the actual config format
+			// Ok, it's one of the actual config formats
 			UE_LOG(LogDisplayClusterEngine, Log, TEXT("Detected (.ndisplay 4.27) config format"));
+			return true;
+
+		case EDisplayClusterConfigurationVersion::Version_500:
+			// Ok, it's one of the actual config formats
+			UE_LOG(LogDisplayClusterEngine, Log, TEXT("Detected (.ndisplay 5.00) config format"));
 			return true;
 
 		case EDisplayClusterConfigurationVersion::Unknown:
@@ -253,19 +261,29 @@ bool UDisplayClusterGameEngine::ValidateConfigFile(const FString& FilePath)
 
 void UDisplayClusterGameEngine::PreExit()
 {
-	if (OperationMode == EDisplayClusterOperationMode::Cluster)
-	{
-		// Close current DisplayCluster session
-		GDisplayCluster->EndSession();
-	}
-
+	PreExitImpl();
 
 	// Release the engine
 	UGameEngine::PreExit();
 }
 
+void UDisplayClusterGameEngine::PreExitImpl()
+{
+	UE_LOG(LogDisplayClusterEngine, Log, TEXT("UDisplayClusterGameEngine::PreExitImpl"));
+
+	if (OperationMode == EDisplayClusterOperationMode::Cluster)
+	{
+		// Finalize current world
+		GDisplayCluster->EndScene();
+		// Close current DisplayCluster session
+		GDisplayCluster->EndSession();
+	}
+}
+
 bool UDisplayClusterGameEngine::LoadMap(FWorldContext& WorldContext, FURL URL, class UPendingNetGame* Pending, FString& Error)
 {
+	UE_LOG(LogDisplayClusterEngine, Log, TEXT("UDisplayClusterGameEngine::LoadMap, URL=%s"), *URL.ToString());
+
 	if (OperationMode == EDisplayClusterOperationMode::Cluster)
 	{
 		// Finish previous scene
@@ -288,7 +306,7 @@ bool UDisplayClusterGameEngine::LoadMap(FWorldContext& WorldContext, FURL URL, c
 			FDisplayClusterClusterEventJson WaitForGameEvent;
 			WaitForGameEvent.Category = DisplayClusterGameEngineUtils::WaitForGameCategory;
 			WaitForGameEvent.Type = URL.ToString();
-			WaitForGameEvent.Name = NodeController->GetNodeId();
+			WaitForGameEvent.Name = ClusterMgr->GetClusterNodeController()->GetNodeId();
 			WaitForGameEvent.bIsSystemEvent = true;
 			WaitForGameEvent.bShouldDiscardOnRepeat = false;
 			ClusterMgr->EmitClusterEventJson(WaitForGameEvent, false);
@@ -312,12 +330,14 @@ bool UDisplayClusterGameEngine::LoadMap(FWorldContext& WorldContext, FURL URL, c
 
 void UDisplayClusterGameEngine::Tick(float DeltaSeconds, bool bIdleMode)
 {
+	UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("UDisplayClusterGameEngine::Tick, Delta=%f, Idle=%d"), DeltaSeconds, bIdleMode ? 1 : 0);
+
 	if (CanTick())
 	{
 		//////////////////////////////////////////////////////////////////////////////////////////////
 		// Frame start barrier
 		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("Sync frame start"));
-		NodeController->WaitForFrameStart();
+		ClusterMgr->GetClusterNodeController()->WaitForFrameStart();
 
 		// Perform StartFrame notification
 		GDisplayCluster->StartFrame(GFrameCounter);
@@ -345,7 +365,7 @@ void UDisplayClusterGameEngine::Tick(float DeltaSeconds, bool bIdleMode)
 
 		//////////////////////////////////////////////////////////////////////////////////////////////
 		// Frame end barrier
-		NodeController->WaitForFrameEnd();
+		ClusterMgr->GetClusterNodeController()->WaitForFrameEnd();
 
 		// Perform EndFrame notification
 		GDisplayCluster->EndFrame(GFrameCounter);
@@ -354,6 +374,7 @@ void UDisplayClusterGameEngine::Tick(float DeltaSeconds, bool bIdleMode)
 	}
 	else
 	{
+		UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("UDisplayClusterGameEngine::Tick, Tick() is not allowed"));
 		Super::Tick(DeltaSeconds, bIdleMode);
 	}
 }
@@ -361,41 +382,14 @@ void UDisplayClusterGameEngine::Tick(float DeltaSeconds, bool bIdleMode)
 
 void UDisplayClusterGameEngine::UpdateTimeAndHandleMaxTickRate()
 {
+	UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("UDisplayClusterGameEngine::UpdateTimeAndHandleMaxTickRate"));
+
 	UEngine::UpdateTimeAndHandleMaxTickRate();
 
-	if (CanTick() && NodeController)
+	if (CanTick() && ClusterMgr)
 	{
-		float  DeltaTime = 0.0f;
-		double GameTime = 0.0f;
-		TOptional<FQualifiedFrameTime> FrameTime;
-
-		// At this point, we have all time info computed already. However, we need to replicate timings data
-		// from the master node to all slaves. Let's do it right now. Here we get required master timings.
-		NodeController->GetTimeData(DeltaTime, GameTime, FrameTime);
-
-		// Compute new 'current' and 'last' time on the local platform timeline
-		const double NewCurrentTime = FPlatformTime::Seconds();
-		const double NewLastTime = NewCurrentTime - DeltaTime;
-
-		// Store new data
-		FApp::SetCurrentTime(NewLastTime);
-		FApp::UpdateLastTime();
-		FApp::SetCurrentTime(NewCurrentTime);
-		FApp::SetDeltaTime(DeltaTime);
-		FApp::SetGameTime(GameTime);
-		FApp::SetIdleTime(0);
-		FApp::SetIdleTimeOvershoot(0);
-
-		if (FrameTime.IsSet())
-		{
-			FApp::SetCurrentFrameTime(FrameTime.GetValue());
-			UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("DisplayCluster timecode: %s | %s"), *FTimecode::FromFrameNumber(FrameTime->Time.GetFrame(), FrameTime->Rate).ToString(), *FrameTime->Rate.ToPrettyText().ToString());
-		}
-		else
-		{
-			FApp::InvalidateCurrentFrameTime();
-			UE_LOG(LogDisplayClusterEngine, Verbose, TEXT("DisplayCluster timecode: Invalid"));
-		}
+		// Synchronize time data
+		ClusterMgr->SyncTimeData();
 	}
 }
 
@@ -440,17 +434,16 @@ void UDisplayClusterGameEngine::CheckGameStartBarrier()
 {
 	if (!BarrierAvoidanceOn())
 	{
-		NodeController->WaitForGameStart();
+		ClusterMgr->GetClusterNodeController()->WaitForGameStart();
 	}
 	else
 	{
-		check(NodeController!=nullptr);
 		if (!OutOfSync())
 		{
 			UE_LOG(LogDisplayClusterEngine, Display, TEXT("CheckGameStartBarrier - we are no longer out of sync. Restoring Play."));
 			if (RunningMode == EDisplayClusterRunningMode::Startup)
 			{
-				NodeController->WaitForGameStart();
+				ClusterMgr->GetClusterNodeController()->WaitForGameStart();
 			}
 			UGameplayStatics::SetGamePaused(WorldContextObject,false);
 			RunningMode = EDisplayClusterRunningMode::Synced;

@@ -80,6 +80,8 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 #endif // PLATFORM_WINDOWS
 
 	GRHISupportsMultithreading = true;
+	GRHIMultiPipelineMergeableAccessMask = GRHIMergeableAccessMask;
+	EnumRemoveFlags(GRHIMultiPipelineMergeableAccessMask, ERHIAccess::UAVMask);
 
 	GPoolSizeVRAMPercentage = 0;
 	GTexturePoolSize = 0;
@@ -150,6 +152,9 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 	GPixelFormats[PF_R16G16B16A16_SINT].PlatformFormat = DXGI_FORMAT_R16G16B16A16_SINT;
 
 	GPixelFormats[PF_R5G6B5_UNORM	].PlatformFormat = DXGI_FORMAT_B5G6R5_UNORM;
+	GPixelFormats[PF_R5G6B5_UNORM	].Supported = true;
+	GPixelFormats[PF_B5G5R5A1_UNORM ].PlatformFormat = DXGI_FORMAT_B5G5R5A1_UNORM;
+	GPixelFormats[PF_B5G5R5A1_UNORM ].Supported = true;
 	GPixelFormats[PF_R8G8B8A8		].PlatformFormat = DXGI_FORMAT_R8G8B8A8_TYPELESS;
 	GPixelFormats[PF_R8G8B8A8_UINT	].PlatformFormat = DXGI_FORMAT_R8G8B8A8_UINT;
 	GPixelFormats[PF_R8G8B8A8_SNORM	].PlatformFormat = DXGI_FORMAT_R8G8B8A8_SNORM;
@@ -170,6 +175,13 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 	GPixelFormats[PF_NV12].PlatformFormat = DXGI_FORMAT_NV12;
 	GPixelFormats[PF_NV12].Supported = true;
 
+	GPixelFormats[PF_G16R16_SNORM	].PlatformFormat = DXGI_FORMAT_R16G16_SNORM;
+	GPixelFormats[PF_R8G8_UINT		].PlatformFormat = DXGI_FORMAT_R8G8_UINT;
+	GPixelFormats[PF_R32G32B32_UINT	].PlatformFormat = DXGI_FORMAT_R32G32B32_UINT;
+	GPixelFormats[PF_R32G32B32_SINT	].PlatformFormat = DXGI_FORMAT_R32G32B32_SINT;
+	GPixelFormats[PF_R32G32B32F		].PlatformFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+	GPixelFormats[PF_R8_SINT		].PlatformFormat = DXGI_FORMAT_R8_SINT;
+
 	// MS - Not doing any feature level checks. D3D12 currently supports these limits.
 	// However this may need to be revisited if new feature levels are introduced with different HW requirement
 	GSupportsSeparateRenderTargetBlendState = true;
@@ -186,6 +198,10 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 	GRHISupportsCopyToTextureMultipleMips = true;
 	GRHISupportsArrayIndexFromAnyShader = true;
 
+	GRHIMaxDispatchThreadGroupsPerDimension.X = D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
+	GRHIMaxDispatchThreadGroupsPerDimension.Y = D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
+	GRHIMaxDispatchThreadGroupsPerDimension.Z = D3D12_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
+
 	GRHISupportsRHIThread = true;
 
 	GRHISupportsParallelRHIExecute = D3D12_SUPPORTS_PARALLEL_RHI_EXECUTE;
@@ -195,11 +211,23 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 
 	{
 		// Workaround for 4.14. Limit the number of GPU stats on D3D12 due to an issue with high memory overhead with render queries (Jira UE-38139)
-		//@TODO: Remove this when render query issues are fixed
+		// @TODO: Remove this when render query issues are fixed.
+		// 
+		// I think the high memory issues were fixed in 5.0 or some time before.  In the current implementation, a single 64K padded readback buffer is
+		// used for the query pool, with 8 bytes per entry.  So an increase from 1K to 8K should take no extra graphics memory, and this was confirmed
+		// by zero observed change to the D3D12RHI::Memory statistics.  Technically, this is the number of queries for four frames
+		// (NumGPUProfilerBufferedFrames == 4), and a real world test case with multiple views was hitting 880 queries per frame, so the number needed
+		// to be at least 3600 to not run out...  There will be some memory increase from FD3D12RenderQuery structures on the CPU, but it's fairly
+		// trivial (under 300K).
+		// 
+		// I considered removing the limit entirely, but that causes a different code path to run, which hasn't run in a long time on PC (over 5 years
+		// it has been in place), and I wasn't sure how to fully unit test the change, so I figured it was safer to simply increase the existing limit
+		// a bit.
+		//
 		static IConsoleVariable* GPUStatsEnabledCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GPUStatsMaxQueriesPerFrame"));
 		if (GPUStatsEnabledCVar)
 		{
-			GPUStatsEnabledCVar->Set(1024); // 1024*64KB = 64MB
+			GPUStatsEnabledCVar->Set(8192);
 		}
 	}
 
@@ -210,6 +238,8 @@ FD3D12DynamicRHI::FD3D12DynamicRHI(const TArray<TSharedPtr<FD3D12Adapter>>& Chos
 	GRHISupportsRayTracingAsyncBuildAccelerationStructure = true;
 
 	GRHISupportsPipelineFileCache = PLATFORM_WINDOWS;
+
+	GRHISupportsMapWriteNoOverwrite = true;
 }
 
 FD3D12DynamicRHI::~FD3D12DynamicRHI()
@@ -227,7 +257,7 @@ void FD3D12DynamicRHI::Shutdown()
 	if (AmdAgsContext)
 	{
 		// Clean up the AMD extensions and shut down the AMD AGS utility library
-		agsDeInit(AmdAgsContext);
+		agsDeInitialize(AmdAgsContext);
 		AmdAgsContext = nullptr;
 	}
 #endif
@@ -266,11 +296,19 @@ void FD3D12DynamicRHI::Shutdown()
 	FMemory::Free(ZeroBuffer);
 	ZeroBuffer = NULL;
 	ZeroBufferSize = 0;
+
+#if D3D12RHI_SUPPORTS_WIN_PIX
+	if (WinPixGpuCapturerHandle)
+	{
+		FPlatformProcess::FreeDllHandle(WinPixGpuCapturerHandle);
+		WinPixGpuCapturerHandle = nullptr;
+	}
+#endif
 }
 
-FD3D12CommandContext* FD3D12DynamicRHI::CreateCommandContext(FD3D12Device* InParent, bool InIsDefaultContext, bool InIsAsyncComputeContext)
+FD3D12CommandContext* FD3D12DynamicRHI::CreateCommandContext(FD3D12Device* InParent, ED3D12CommandQueueType InQueueType, bool InIsDefaultContext)
 {
-	FD3D12CommandContext* NewContext = new FD3D12CommandContext(InParent, InIsDefaultContext, InIsAsyncComputeContext);
+	FD3D12CommandContext* NewContext = new FD3D12CommandContext(InParent, InQueueType, InIsDefaultContext);
 	return NewContext;
 }
 
@@ -321,21 +359,30 @@ IRHIComputeContext* FD3D12DynamicRHI::RHIGetDefaultAsyncComputeContext()
 	return DefaultAsyncComputeContext;
 }
 
-void FD3D12DynamicRHI::UpdateBuffer(FD3D12Resource* Dest, uint32 DestOffset, FD3D12Resource* Source, uint32 SourceOffset, uint32 NumBytes)
+void FD3D12DynamicRHI::UpdateBuffer(FD3D12ResourceLocation* Dest, uint32 DestOffset, FD3D12ResourceLocation* Source, uint32 SourceOffset, uint32 NumBytes)
 {
-	FD3D12Device* Device = Dest->GetParentDevice();
+	FD3D12Resource* SourceResource = Source->GetResource();
+	uint32 SourceFullOffset = Source->GetOffsetFromBaseOfResource() + SourceOffset;
+
+	FD3D12Resource* DestResource = Dest->GetResource();
+	uint32 DestFullOffset = Dest->GetOffsetFromBaseOfResource() + DestOffset;
+
+	FD3D12Device* Device = DestResource->GetParentDevice();
 
 	FD3D12CommandContext& DefaultContext = Device->GetDefaultCommandContext();
 	FD3D12CommandListHandle& hCommandList = DefaultContext.CommandListHandle;
+	
+	// Clear the resource if still bound to make sure the SRVs are rebound again on next operation (and get correct resource transitions enqueued)
+	DefaultContext.ConditionalClearShaderResource(Dest);
 
-	FConditionalScopeResourceBarrier ScopeResourceBarrierDest(hCommandList, Dest, D3D12_RESOURCE_STATE_COPY_DEST, 0);
+	FScopedResourceBarrier ScopeResourceBarrierDest(hCommandList, DestResource, D3D12_RESOURCE_STATE_COPY_DEST, 0, FD3D12DynamicRHI::ETransitionMode::Apply);
 	// Don't need to transition upload heaps
 
 	DefaultContext.numCopies++;
 	hCommandList.FlushResourceBarriers();
-	hCommandList->CopyBufferRegion(Dest->GetResource(), DestOffset, Source->GetResource(), SourceOffset, NumBytes);
-	hCommandList.UpdateResidency(Dest);
-	hCommandList.UpdateResidency(Source);
+	hCommandList->CopyBufferRegion(DestResource->GetResource(), DestFullOffset, SourceResource->GetResource(), SourceFullOffset, NumBytes);
+	hCommandList.UpdateResidency(DestResource);
+	hCommandList.UpdateResidency(SourceResource);
 	
 	DefaultContext.ConditionalFlushCommandList();
 
@@ -590,91 +637,98 @@ uint64 FD3D12SubmissionGapRecorder::SubmitSubmissionTimestampsForFrame(uint32 Fr
 #endif
 		}
 
-		// Store the timestamp values
-		for (int i = 0; i < PrevFrameBeginSubmissionTimestamps.Num() - 1; i++)
+		if (PrevFrameBeginSubmissionTimestamps.Num() > 0)
 		{
-			FGapSpan GapSpan;
-
-			uint64 BeginTimestampPtr = PrevFrameEndSubmissionTimestamps[i];
-			uint64 EndTimestampPtr = PrevFrameBeginSubmissionTimestamps[i + 1];
-
-			GapSpan.BeginCycles = BeginTimestampPtr;
-			uint64 EndCycles = EndTimestampPtr;
-
-			// Check begin/end is contiguous
-			if (EndCycles < GapSpan.BeginCycles)
+			// Store the timestamp values
+			for (int i = 0; i < PrevFrameBeginSubmissionTimestamps.Num() - 1; i++)
 			{
-#if D3D12_SUBMISSION_GAP_RECORDER_DEBUG_INFO
-				UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("SubmitSubmissionTimestampsForFrame EndCycles occurs before BeginCycles not valid"));
-#endif
-				bValid = false;
-				break;
-			}
-			GapSpan.DurationCycles = EndCycles - GapSpan.BeginCycles;
+				FGapSpan GapSpan;
 
-			UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("GapSpan Begin %lu End %lu Duration %lu"),GapSpan.BeginCycles,EndCycles,GapSpan.DurationCycles);
+				uint64 BeginTimestampPtr = PrevFrameEndSubmissionTimestamps[i];
+				uint64 EndTimestampPtr = PrevFrameBeginSubmissionTimestamps[i + 1];
 
-			// Check gap spans are contiguous (TODO: we might want to modify this to support async compute submissions which overlap)
-			if (i > 0)
-			{
-				const FGapSpan& PrevGap = Frame.GapSpans[i - 1];
-				uint64 PrevGapEndCycles = PrevGap.BeginCycles + PrevGap.DurationCycles;
-				if (GapSpan.BeginCycles < PrevGapEndCycles)
+				GapSpan.BeginCycles = BeginTimestampPtr;
+				uint64 EndCycles = EndTimestampPtr;
+
+				// Check begin/end is contiguous
+				if (EndCycles < GapSpan.BeginCycles)
 				{
-					UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("SubmitSubmissionTimestampsForFrame Gap Span Begin Cycle is later than Prev Gap Cycle End not valid"));
+#if D3D12_SUBMISSION_GAP_RECORDER_DEBUG_INFO
+					UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("SubmitSubmissionTimestampsForFrame EndCycles occurs before BeginCycles not valid"));
+#endif
 					bValid = false;
 					break;
 				}
+				GapSpan.DurationCycles = EndCycles - GapSpan.BeginCycles;
+
+				UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("GapSpan Begin %lu End %lu Duration %lu"), GapSpan.BeginCycles, EndCycles, GapSpan.DurationCycles);
+
+				// Check gap spans are contiguous (TODO: we might want to modify this to support async compute submissions which overlap)
+				if (i > 0)
+				{
+					const FGapSpan& PrevGap = Frame.GapSpans[i - 1];
+					uint64 PrevGapEndCycles = PrevGap.BeginCycles + PrevGap.DurationCycles;
+					if (GapSpan.BeginCycles < PrevGapEndCycles)
+					{
+						UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("SubmitSubmissionTimestampsForFrame Gap Span Begin Cycle is later than Prev Gap Cycle End not valid"));
+						bValid = false;
+						break;
+					}
+				}
+
+				TotalWaitCycles += GapSpan.DurationCycles;
+
+				Frame.GapSpans.Add(GapSpan);
 			}
 
-			TotalWaitCycles += GapSpan.DurationCycles;
-
-			Frame.GapSpans.Add(GapSpan);
-		}
-
 #if D3D12_SUBMISSION_GAP_RECORDER_DEBUG_INFO
-		float Timing = (float)FGPUTiming::GetTimingFrequency();
+			float Timing = (float)FGPUTiming::GetTimingFrequency();
 
-		uint64 CurrSpan = 0;
-		uint64 TotalDuration = 0;
+			uint64 CurrSpan = 0;
+			uint64 TotalDuration = 0;
 
-		for (int i = 0; i < PrevFrameBeginSubmissionTimestamps.Num(); i++)
-		{
-			CurrSpan = PrevFrameEndSubmissionTimestamps[i] - PrevFrameBeginSubmissionTimestamps[i];
+			for (int i = 0; i < PrevFrameBeginSubmissionTimestamps.Num(); i++)
+			{
+				CurrSpan = PrevFrameEndSubmissionTimestamps[i] - PrevFrameBeginSubmissionTimestamps[i];
 
-			double CurrSpanSeconds = (CurrSpan / Timing);
-			double CurrSpanOutputTime = FMath::TruncToInt(CurrSpanSeconds / FPlatformTime::GetSecondsPerCycle());
+				double CurrSpanSeconds = (CurrSpan / Timing);
+				double CurrSpanOutputTime = FMath::TruncToInt(CurrSpanSeconds / FPlatformTime::GetSecondsPerCycle());
 
-			UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("Total GPU Duration for span Begin %lu End %lu Duration %lu Seconds %f"),
-				PrevFrameBeginSubmissionTimestamps[i],
-				PrevFrameEndSubmissionTimestamps[i],
-				CurrSpan,
-				(CurrSpanSeconds * 1000.0f));
-			TotalDuration += CurrSpan;
-		}
+				UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("Total GPU Duration for span Begin %lu End %lu Duration %lu Seconds %f"),
+					PrevFrameBeginSubmissionTimestamps[i],
+					PrevFrameEndSubmissionTimestamps[i],
+					CurrSpan,
+					(CurrSpanSeconds * 1000.0f));
+				TotalDuration += CurrSpan;
+			}
 
-		int32 len = PrevFrameEndSubmissionTimestamps.Num() - 1;
-		uint64 tbegin = PrevFrameBeginSubmissionTimestamps[0];
-		uint64 tend = PrevFrameEndSubmissionTimestamps[len];
-		uint64 duration = tend - tbegin;
-		double seconds = (duration / Timing);
-		double TotalDurationSeconds = (TotalDuration / Timing);
+			int32 len = PrevFrameEndSubmissionTimestamps.Num() - 1;
+			uint64 tbegin = PrevFrameBeginSubmissionTimestamps[0];
+			uint64 tend = PrevFrameEndSubmissionTimestamps[len];
+			uint64 duration = tend - tbegin;
+			double seconds = (duration / Timing);
+			double TotalDurationSeconds = (TotalDuration / Timing);
 
-		UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("Total GPU Duration for all Timestamps for Frame %u Cycles %lu Timing %f Milliseconds %f"),
-			FrameNumber,
-			TotalDuration,
-			Timing,
-			TotalDurationSeconds);
+			UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("Total GPU Duration for all Timestamps for Frame %u Cycles %lu Timing %f Milliseconds %f"),
+				FrameNumber,
+				TotalDuration,
+				Timing,
+				TotalDurationSeconds);
 
-		UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("Total GPU Duration from StartTimestamp %lu to EndTimestamp %lu Duration %lu MilliSeconds %f Timing %f"),
-			tbegin, 
-			tend, 
-			duration,
-			seconds,
-			Timing);
+			UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("Total GPU Duration from StartTimestamp %lu to EndTimestamp %lu Duration %lu MilliSeconds %f Timing %f"),
+				tbegin,
+				tend,
+				duration,
+				seconds,
+				Timing);
 
-		CSV_CUSTOM_STAT_GLOBAL(GPUTimestamps, float(TotalDurationSeconds * 1000.0f), ECsvCustomStatOp::Set);
+			CSV_CUSTOM_STAT_GLOBAL(GPUTimestamps, float(TotalDurationSeconds * 1000.0f), ECsvCustomStatOp::Set);
 #endif
+		}
+		else
+		{
+			bValid = false;
+		}
 	}
 
 	UE_LOG(LogD3D12GapRecorder, Verbose, TEXT("SubmitSubmissionTimestampsForFrame Frame %u FN %u TotalWaitCycles %lu"), FrameCounter, FrameNumber, TotalWaitCycles);
@@ -813,3 +867,133 @@ void FD3D12SubmissionGapRecorder::OnRenderThreadAdvanceFrame()
 	}
 }
 #endif
+
+const TCHAR* LexToString(DXGI_FORMAT Format)
+{
+	switch (Format)
+	{
+	default:
+	case DXGI_FORMAT_UNKNOWN: return TEXT("DXGI_FORMAT_UNKNOWN");
+	case DXGI_FORMAT_R32G32B32A32_TYPELESS: return TEXT("DXGI_FORMAT_R32G32B32A32_TYPELESS");
+	case DXGI_FORMAT_R32G32B32A32_FLOAT: return TEXT("DXGI_FORMAT_R32G32B32A32_FLOAT");
+	case DXGI_FORMAT_R32G32B32A32_UINT: return TEXT("DXGI_FORMAT_R32G32B32A32_UINT");
+	case DXGI_FORMAT_R32G32B32A32_SINT: return TEXT("DXGI_FORMAT_R32G32B32A32_SINT");
+	case DXGI_FORMAT_R32G32B32_TYPELESS: return TEXT("DXGI_FORMAT_R32G32B32_TYPELESS");
+	case DXGI_FORMAT_R32G32B32_FLOAT: return TEXT("DXGI_FORMAT_R32G32B32_FLOAT");
+	case DXGI_FORMAT_R32G32B32_UINT: return TEXT("DXGI_FORMAT_R32G32B32_UINT");
+	case DXGI_FORMAT_R32G32B32_SINT: return TEXT("DXGI_FORMAT_R32G32B32_SINT");
+	case DXGI_FORMAT_R16G16B16A16_TYPELESS: return TEXT("DXGI_FORMAT_R16G16B16A16_TYPELESS");
+	case DXGI_FORMAT_R16G16B16A16_FLOAT: return TEXT("DXGI_FORMAT_R16G16B16A16_FLOAT");
+	case DXGI_FORMAT_R16G16B16A16_UNORM: return TEXT("DXGI_FORMAT_R16G16B16A16_UNORM");
+	case DXGI_FORMAT_R16G16B16A16_UINT: return TEXT("DXGI_FORMAT_R16G16B16A16_UINT");
+	case DXGI_FORMAT_R16G16B16A16_SNORM: return TEXT("DXGI_FORMAT_R16G16B16A16_SNORM");
+	case DXGI_FORMAT_R16G16B16A16_SINT: return TEXT("DXGI_FORMAT_R16G16B16A16_SINT");
+	case DXGI_FORMAT_R32G32_TYPELESS: return TEXT("DXGI_FORMAT_R32G32_TYPELESS");
+	case DXGI_FORMAT_R32G32_FLOAT: return TEXT("DXGI_FORMAT_R32G32_FLOAT");
+	case DXGI_FORMAT_R32G32_UINT: return TEXT("DXGI_FORMAT_R32G32_UINT");
+	case DXGI_FORMAT_R32G32_SINT: return TEXT("DXGI_FORMAT_R32G32_SINT");
+	case DXGI_FORMAT_R32G8X24_TYPELESS: return TEXT("DXGI_FORMAT_R32G8X24_TYPELESS");
+	case DXGI_FORMAT_D32_FLOAT_S8X24_UINT: return TEXT("DXGI_FORMAT_D32_FLOAT_S8X24_UINT");
+	case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS: return TEXT("DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS");
+	case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT: return TEXT("DXGI_FORMAT_X32_TYPELESS_G8X24_UINT");
+	case DXGI_FORMAT_R10G10B10A2_TYPELESS: return TEXT("DXGI_FORMAT_R10G10B10A2_TYPELESS");
+	case DXGI_FORMAT_R10G10B10A2_UNORM: return TEXT("DXGI_FORMAT_R10G10B10A2_UNORM");
+	case DXGI_FORMAT_R10G10B10A2_UINT: return TEXT("DXGI_FORMAT_R10G10B10A2_UINT");
+	case DXGI_FORMAT_R11G11B10_FLOAT: return TEXT("DXGI_FORMAT_R11G11B10_FLOAT");
+	case DXGI_FORMAT_R8G8B8A8_TYPELESS: return TEXT("DXGI_FORMAT_R8G8B8A8_TYPELESS");
+	case DXGI_FORMAT_R8G8B8A8_UNORM: return TEXT("DXGI_FORMAT_R8G8B8A8_UNORM");
+	case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return TEXT("DXGI_FORMAT_R8G8B8A8_UNORM_SRGB");
+	case DXGI_FORMAT_R8G8B8A8_UINT: return TEXT("DXGI_FORMAT_R8G8B8A8_UINT");
+	case DXGI_FORMAT_R8G8B8A8_SNORM: return TEXT("DXGI_FORMAT_R8G8B8A8_SNORM");
+	case DXGI_FORMAT_R8G8B8A8_SINT: return TEXT("DXGI_FORMAT_R8G8B8A8_SINT");
+	case DXGI_FORMAT_R16G16_TYPELESS: return TEXT("DXGI_FORMAT_R16G16_TYPELESS");
+	case DXGI_FORMAT_R16G16_FLOAT: return TEXT("DXGI_FORMAT_R16G16_FLOAT");
+	case DXGI_FORMAT_R16G16_UNORM: return TEXT("DXGI_FORMAT_R16G16_UNORM");
+	case DXGI_FORMAT_R16G16_UINT: return TEXT("DXGI_FORMAT_R16G16_UINT");
+	case DXGI_FORMAT_R16G16_SNORM: return TEXT("DXGI_FORMAT_R16G16_SNORM");
+	case DXGI_FORMAT_R16G16_SINT: return TEXT("DXGI_FORMAT_R16G16_SINT");
+	case DXGI_FORMAT_R32_TYPELESS: return TEXT("DXGI_FORMAT_R32_TYPELESS");
+	case DXGI_FORMAT_D32_FLOAT: return TEXT("DXGI_FORMAT_D32_FLOAT");
+	case DXGI_FORMAT_R32_FLOAT: return TEXT("DXGI_FORMAT_R32_FLOAT");
+	case DXGI_FORMAT_R32_UINT: return TEXT("DXGI_FORMAT_R32_UINT");
+	case DXGI_FORMAT_R32_SINT: return TEXT("DXGI_FORMAT_R32_SINT");
+	case DXGI_FORMAT_R24G8_TYPELESS: return TEXT("DXGI_FORMAT_R24G8_TYPELESS");
+	case DXGI_FORMAT_D24_UNORM_S8_UINT: return TEXT("DXGI_FORMAT_D24_UNORM_S8_UINT");
+	case DXGI_FORMAT_R24_UNORM_X8_TYPELESS: return TEXT("DXGI_FORMAT_R24_UNORM_X8_TYPELESS");
+	case DXGI_FORMAT_X24_TYPELESS_G8_UINT: return TEXT("DXGI_FORMAT_X24_TYPELESS_G8_UINT");
+	case DXGI_FORMAT_R8G8_TYPELESS: return TEXT("DXGI_FORMAT_R8G8_TYPELESS");
+	case DXGI_FORMAT_R8G8_UNORM: return TEXT("DXGI_FORMAT_R8G8_UNORM");
+	case DXGI_FORMAT_R8G8_UINT: return TEXT("DXGI_FORMAT_R8G8_UINT");
+	case DXGI_FORMAT_R8G8_SNORM: return TEXT("DXGI_FORMAT_R8G8_SNORM");
+	case DXGI_FORMAT_R8G8_SINT: return TEXT("DXGI_FORMAT_R8G8_SINT");
+	case DXGI_FORMAT_R16_TYPELESS: return TEXT("DXGI_FORMAT_R16_TYPELESS");
+	case DXGI_FORMAT_R16_FLOAT: return TEXT("DXGI_FORMAT_R16_FLOAT");
+	case DXGI_FORMAT_D16_UNORM: return TEXT("DXGI_FORMAT_D16_UNORM");
+	case DXGI_FORMAT_R16_UNORM: return TEXT("DXGI_FORMAT_R16_UNORM");
+	case DXGI_FORMAT_R16_UINT: return TEXT("DXGI_FORMAT_R16_UINT");
+	case DXGI_FORMAT_R16_SNORM: return TEXT("DXGI_FORMAT_R16_SNORM");
+	case DXGI_FORMAT_R16_SINT: return TEXT("DXGI_FORMAT_R16_SINT");
+	case DXGI_FORMAT_R8_TYPELESS: return TEXT("DXGI_FORMAT_R8_TYPELESS");
+	case DXGI_FORMAT_R8_UNORM: return TEXT("DXGI_FORMAT_R8_UNORM");
+	case DXGI_FORMAT_R8_UINT: return TEXT("DXGI_FORMAT_R8_UINT");
+	case DXGI_FORMAT_R8_SNORM: return TEXT("DXGI_FORMAT_R8_SNORM");
+	case DXGI_FORMAT_R8_SINT: return TEXT("DXGI_FORMAT_R8_SINT");
+	case DXGI_FORMAT_A8_UNORM: return TEXT("DXGI_FORMAT_A8_UNORM");
+	case DXGI_FORMAT_R1_UNORM: return TEXT("DXGI_FORMAT_R1_UNORM");
+	case DXGI_FORMAT_R9G9B9E5_SHAREDEXP: return TEXT("DXGI_FORMAT_R9G9B9E5_SHAREDEXP");
+	case DXGI_FORMAT_R8G8_B8G8_UNORM: return TEXT("DXGI_FORMAT_R8G8_B8G8_UNORM");
+	case DXGI_FORMAT_G8R8_G8B8_UNORM: return TEXT("DXGI_FORMAT_G8R8_G8B8_UNORM");
+	case DXGI_FORMAT_BC1_TYPELESS: return TEXT("DXGI_FORMAT_BC1_TYPELESS");
+	case DXGI_FORMAT_BC1_UNORM: return TEXT("DXGI_FORMAT_BC1_UNORM");
+	case DXGI_FORMAT_BC1_UNORM_SRGB: return TEXT("DXGI_FORMAT_BC1_UNORM_SRGB");
+	case DXGI_FORMAT_BC2_TYPELESS: return TEXT("DXGI_FORMAT_BC2_TYPELESS");
+	case DXGI_FORMAT_BC2_UNORM: return TEXT("DXGI_FORMAT_BC2_UNORM");
+	case DXGI_FORMAT_BC2_UNORM_SRGB: return TEXT("DXGI_FORMAT_BC2_UNORM_SRGB");
+	case DXGI_FORMAT_BC3_TYPELESS: return TEXT("DXGI_FORMAT_BC3_TYPELESS");
+	case DXGI_FORMAT_BC3_UNORM: return TEXT("DXGI_FORMAT_BC3_UNORM");
+	case DXGI_FORMAT_BC3_UNORM_SRGB: return TEXT("DXGI_FORMAT_BC3_UNORM_SRGB");
+	case DXGI_FORMAT_BC4_TYPELESS: return TEXT("DXGI_FORMAT_BC4_TYPELESS");
+	case DXGI_FORMAT_BC4_UNORM: return TEXT("DXGI_FORMAT_BC4_UNORM");
+	case DXGI_FORMAT_BC4_SNORM: return TEXT("DXGI_FORMAT_BC4_SNORM");
+	case DXGI_FORMAT_BC5_TYPELESS: return TEXT("DXGI_FORMAT_BC5_TYPELESS");
+	case DXGI_FORMAT_BC5_UNORM: return TEXT("DXGI_FORMAT_BC5_UNORM");
+	case DXGI_FORMAT_BC5_SNORM: return TEXT("DXGI_FORMAT_BC5_SNORM");
+	case DXGI_FORMAT_B5G6R5_UNORM: return TEXT("DXGI_FORMAT_B5G6R5_UNORM");
+	case DXGI_FORMAT_B5G5R5A1_UNORM: return TEXT("DXGI_FORMAT_B5G5R5A1_UNORM");
+	case DXGI_FORMAT_B8G8R8A8_UNORM: return TEXT("DXGI_FORMAT_B8G8R8A8_UNORM");
+	case DXGI_FORMAT_B8G8R8X8_UNORM: return TEXT("DXGI_FORMAT_B8G8R8X8_UNORM");
+	case DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM: return TEXT("DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM");
+	case DXGI_FORMAT_B8G8R8A8_TYPELESS: return TEXT("DXGI_FORMAT_B8G8R8A8_TYPELESS");
+	case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return TEXT("DXGI_FORMAT_B8G8R8A8_UNORM_SRGB");
+	case DXGI_FORMAT_B8G8R8X8_TYPELESS: return TEXT("DXGI_FORMAT_B8G8R8X8_TYPELESS");
+	case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB: return TEXT("DXGI_FORMAT_B8G8R8X8_UNORM_SRGB");
+	case DXGI_FORMAT_BC6H_TYPELESS: return TEXT("DXGI_FORMAT_BC6H_TYPELESS");
+	case DXGI_FORMAT_BC6H_UF16: return TEXT("DXGI_FORMAT_BC6H_UF16");
+	case DXGI_FORMAT_BC6H_SF16: return TEXT("DXGI_FORMAT_BC6H_SF16");
+	case DXGI_FORMAT_BC7_TYPELESS: return TEXT("DXGI_FORMAT_BC7_TYPELESS");
+	case DXGI_FORMAT_BC7_UNORM: return TEXT("DXGI_FORMAT_BC7_UNORM");
+	case DXGI_FORMAT_BC7_UNORM_SRGB: return TEXT("DXGI_FORMAT_BC7_UNORM_SRGB");
+	case DXGI_FORMAT_AYUV: return TEXT("DXGI_FORMAT_AYUV");
+	case DXGI_FORMAT_Y410: return TEXT("DXGI_FORMAT_Y410");
+	case DXGI_FORMAT_Y416: return TEXT("DXGI_FORMAT_Y416");
+	case DXGI_FORMAT_NV12: return TEXT("DXGI_FORMAT_NV12");
+	case DXGI_FORMAT_P010: return TEXT("DXGI_FORMAT_P010");
+	case DXGI_FORMAT_P016: return TEXT("DXGI_FORMAT_P016");
+	case DXGI_FORMAT_420_OPAQUE: return TEXT("DXGI_FORMAT_420_OPAQUE");
+	case DXGI_FORMAT_YUY2: return TEXT("DXGI_FORMAT_YUY2");
+	case DXGI_FORMAT_Y210: return TEXT("DXGI_FORMAT_Y210");
+	case DXGI_FORMAT_Y216: return TEXT("DXGI_FORMAT_Y216");
+	case DXGI_FORMAT_NV11: return TEXT("DXGI_FORMAT_NV11");
+	case DXGI_FORMAT_AI44: return TEXT("DXGI_FORMAT_AI44");
+	case DXGI_FORMAT_IA44: return TEXT("DXGI_FORMAT_IA44");
+	case DXGI_FORMAT_P8: return TEXT("DXGI_FORMAT_P8");
+	case DXGI_FORMAT_A8P8: return TEXT("DXGI_FORMAT_A8P8");
+	case DXGI_FORMAT_B4G4R4A4_UNORM: return TEXT("DXGI_FORMAT_B4G4R4A4_UNORM");
+	case DXGI_FORMAT_P208: return TEXT("DXGI_FORMAT_P208");
+	case DXGI_FORMAT_V208: return TEXT("DXGI_FORMAT_V208");
+	case DXGI_FORMAT_V408: return TEXT("DXGI_FORMAT_V408");
+	case 189: return TEXT("DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE");
+	case 190: return TEXT("DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE");
+	}
+}
+

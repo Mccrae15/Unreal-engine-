@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "AbcFile.h"
+#include "GeometryCacheAbcStream.h"
 #include "GeometryCacheTrack.h"
 #include "GeometryCacheMeshData.h"
 
@@ -25,6 +26,8 @@ public:
 	virtual const bool UpdateMeshData(const float Time, const bool bLooping, int32& InOutMeshSampleIndex, FGeometryCacheMeshData*& OutMeshData) override;
 	virtual const bool UpdateBoundsData(const float Time, const bool bLooping, const bool bIsPlayingBackward, int32& InOutBoundsSampleIndex, FBox& OutBounds) override;
 	virtual const FGeometryCacheTrackSampleInfo& GetSampleInfo(float Time, const bool bLooping) override;
+	virtual bool GetMeshDataAtTime(float Time, FGeometryCacheMeshData& OutMeshData) override;
+	virtual void UpdateTime(float Time, bool bLooping) override;
 	//~ End UGeometryCacheTrack Interface.
 
 	bool SetSourceFile(const FString& FilePath, class UAbcImportSettings* AbcSettings, float InitialTime = 0.f, bool bIsLooping = true);
@@ -40,15 +43,25 @@ public:
 
 	FAbcFile& GetAbcFile();
 
+	const FString& GetAbcTrackHash() const { return Hash; }
+
+	bool IsTopologyCompatible(int32 FrameA, int32 FrameB);
+
 private:
+	const FGeometryCacheTrackSampleInfo& GetSampleInfo(int32 FrameIndex);
+
 	void Reset();
 	void ShowNotification(const FText& Text);
 
 private:
 	FGeometryCacheMeshData MeshData;
-	FGeometryCacheTrackSampleInfo SampleInfo;
+	TArray<FGeometryCacheTrackSampleInfo> SampleInfos;
 	TUniquePtr<FAbcFile> AbcFile;
 	FString SourceFile;
+	FString Hash;
 
+	int32 StartFrameIndex;
 	int32 EndFrameIndex;
+
+	TUniquePtr<FGeometryCacheAbcStream> AbcStream;
 };

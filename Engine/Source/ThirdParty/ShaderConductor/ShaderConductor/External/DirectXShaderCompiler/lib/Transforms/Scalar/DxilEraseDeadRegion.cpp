@@ -21,15 +21,57 @@
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Utils/Local.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/ADT/SetVector.h"
+
+#include "dxc/DXIL/DxilOperations.h"
+#include "dxc/DXIL/DxilMetadataHelper.h"
+#include "dxc/HLSL/DxilNoops.h"
 
 #include <unordered_map>
 #include <unordered_set>
 
 using namespace llvm;
+using namespace hlsl;
+
+// TODO: Could probably move this to a common place at some point.
+namespace {
+
+struct MiniDCE {
+  // Use a set vector because the same value could be added more than once, which
+  // could lead to double free.
+  SetVector<Instruction *> Worklist;
+  void EraseAndProcessOperands(Instruction *TopI);
+};
+
+void MiniDCE::EraseAndProcessOperands(Instruction *TopI) {
+  Worklist.clear();
+  for (Value *Op : TopI->operands()) {
+    if (Instruction *OpI = dyn_cast<Instruction>(Op))
+      Worklist.insert(OpI);
+  }
+  TopI->eraseFromParent();
+  TopI = nullptr;
+
+  while (Worklist.size()) {
+    Instruction *I = Worklist.pop_back_val();
+    if (llvm::isInstructionTriviallyDead(I)) {
+      for (Value *Op : I->operands()) {
+        if (Instruction *OpI = dyn_cast<Instruction>(Op))
+          Worklist.insert(OpI);
+      }
+      I->eraseFromParent();
+    }
+  }
+}
+
+}
 
 struct DxilEraseDeadRegion : public FunctionPass {
   static char ID;
@@ -39,6 +81,7 @@ struct DxilEraseDeadRegion : public FunctionPass {
   }
 
   std::unordered_map<BasicBlock *, bool> m_HasSideEffect;
+  MiniDCE m_DCE;
 
   bool HasSideEffects(BasicBlock *BB) {
     auto FindIt = m_HasSideEffect.find(BB);
@@ -47,7 +90,7 @@ struct DxilEraseDeadRegion : public FunctionPass {
     }
 
     for (Instruction &I : *BB)
-      if (I.mayHaveSideEffects()) {
+      if (I.mayHaveSideEffects() && !hlsl::IsNop(&I)) {
         m_HasSideEffect[BB] = true;
         return true;
       }
@@ -55,7 +98,33 @@ struct DxilEraseDeadRegion : public FunctionPass {
     m_HasSideEffect[BB] = false;
     return false;
   }
+  bool IsEmptySelfLoop(BasicBlock *BB) {
+    // Make sure all inst not used outside BB.
+    for (Instruction &I : *BB) {
+      for (User *U : I.users()) {
+        if (Instruction *UI = dyn_cast<Instruction>(U)) {
+          if (UI->getParent() != BB)
+            return false;
+        }
+      }
 
+      if (!I.mayHaveSideEffects())
+        continue;
+
+      if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+        if (hlsl::OP::IsDxilOpFuncCallInst(CI)) {
+          DXIL::OpCode opcode = hlsl::OP::GetDxilOpFuncCallInst(CI);
+          // Wave Ops are marked has side effect to avoid move cross control flow.
+          // But they're safe to remove if unused.
+          if (hlsl::OP::IsDxilOpWave(opcode))
+            continue;
+        }
+      }
+
+      return false;
+    }
+    return true;
+  }
   bool FindDeadRegion(BasicBlock *Begin, BasicBlock *End, std::set<BasicBlock *> &Region) {
     std::vector<BasicBlock *> WorkList;
     auto ProcessSuccessors = [this, &WorkList, Begin, End, &Region](BasicBlock *BB) {
@@ -84,6 +153,29 @@ struct DxilEraseDeadRegion : public FunctionPass {
     return Region.size() != 0;
   }
 
+  static bool IsMetadataKind(LLVMContext &Ctx, unsigned TargetID, StringRef MDKind) {
+    unsigned ID = 0;
+    if (Ctx.findMDKindID(MDKind, &ID))
+      return TargetID == ID;
+    return false;
+  }
+
+  static bool HasUnsafeMetadata(Instruction *I) {
+    SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
+    I->getAllMetadata(MDs);
+
+    LLVMContext &Context = I->getContext();
+    for (auto &p : MDs) {
+      if (p.first == (unsigned)LLVMContext::MD_dbg)
+        continue;
+      if (IsMetadataKind(Context, p.first, DxilMDHelper::kDxilControlFlowHintMDName))
+        continue;
+      return true;
+    }
+
+    return false;
+  }
+
   bool TrySimplify(DominatorTree *DT, PostDominatorTree *PDT, BasicBlock *BB) {
     // Give up if BB has any Phis
     if (BB->begin() != BB->end() && isa<PHINode>(BB->begin()))
@@ -94,8 +186,34 @@ struct DxilEraseDeadRegion : public FunctionPass {
 
     // Give up if BB is a self loop
     for (BasicBlock *PredBB : Predecessors)
-      if (PredBB == BB)
-        return false;
+      if (PredBB == BB) {
+        if (!IsEmptySelfLoop(BB)) {
+          return false;
+        } else if (Predecessors.size() != 2) {
+          return false;
+        } else {
+          BasicBlock *PredBB0 = Predecessors[0];
+          BasicBlock *PredBB1 = Predecessors[1];
+          BasicBlock *LoopBB = PredBB;
+          BasicBlock *LoopPrevBB = PredBB == PredBB0? PredBB1 : PredBB0;
+          // Remove LoopBB, LoopPrevBB branch to succ of LoopBB.
+          BranchInst *BI = cast<BranchInst>(LoopBB->getTerminator());
+
+          if (BI->getNumSuccessors() != 2)
+            return false;
+
+          BasicBlock *Succ0 = BI->getSuccessor(0);
+          BasicBlock *Succ1 = BI->getSuccessor(1);
+          BasicBlock *NextBB = Succ0 == PredBB ? Succ1 : Succ0;
+          // Make sure it is not a dead loop.
+          if (NextBB == LoopPrevBB || NextBB == BB)
+            return false;
+
+          LoopPrevBB->getTerminator()->eraseFromParent();
+          BranchInst::Create(NextBB, LoopPrevBB);
+          return true;
+        }
+      }
 
     // Find the common ancestor of all the predecessors
     BasicBlock *Common = DT->findNearestCommonDominator(Predecessors[0], Predecessors[1]);
@@ -106,7 +224,7 @@ struct DxilEraseDeadRegion : public FunctionPass {
     }
 
    // If there are any metadata on Common block's branch, give up.
-    if (Common->getTerminator()->hasMetadataOtherThanDebugLoc())
+    if (HasUnsafeMetadata(Common->getTerminator()))
       return false;
 
     if (!DT->properlyDominates(Common, BB))
@@ -124,18 +242,19 @@ struct DxilEraseDeadRegion : public FunctionPass {
         return false;
 
     // Replace Common's branch with an unconditional branch to BB
-    Common->getTerminator()->eraseFromParent();
+    m_DCE.EraseAndProcessOperands(Common->getTerminator());
     BranchInst::Create(BB, Common);
 
     // Delete the region
     for (BasicBlock *BB : Region) {
-      for (Instruction &I : *BB)
-        I.dropAllReferences();
-      BB->dropAllReferences();
+      while (BB->begin() != BB->end()) {
+        Instruction *I = &BB->back();
+        if (!I->user_empty())
+          I->replaceAllUsesWith(UndefValue::get(I->getType()));
+        m_DCE.EraseAndProcessOperands(I);
+      }
     }
     for (BasicBlock *BB : Region) {
-      while (BB->begin() != BB->end())
-        BB->begin()->eraseFromParent();
       BB->eraseFromParent();
     }
 
@@ -151,21 +270,14 @@ struct DxilEraseDeadRegion : public FunctionPass {
     auto *DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
     auto *PDT = &getAnalysis<PostDominatorTree>();
 
-    std::unordered_set<BasicBlock *> FailedSet;
     bool Changed = false;
     while (1) {
       bool LocalChanged = false;
       for (Function::iterator It = F.begin(), E = F.end(); It != E; It++) {
         BasicBlock &BB = *It;
-        if (FailedSet.count(&BB))
-          continue;
-
         if (this->TrySimplify(DT, PDT, &BB)) {
           LocalChanged = true;
           break;
-        }
-        else {
-          FailedSet.insert(&BB);
         }
       }
 

@@ -15,7 +15,7 @@
 #include "Widgets/Layout/SScaleBox.h"
 #include "Widgets/SWindow.h"
 #include "Settings/LevelEditorViewportSettings.h"
-#include "SEditorViewport.h"
+#include "SAssetEditorViewport.h"
 #include "EditorModeManager.h"
 #include "IAssetViewport.h"
 #include "LevelEditorViewport.h"
@@ -34,21 +34,14 @@ enum class EMapChangeType : uint8;
 /**
  * Encapsulates an SViewport and an SLevelViewportToolBar
  */
-class LEVELEDITOR_API SLevelViewport : public SEditorViewport, public IAssetViewport
+class LEVELEDITOR_API SLevelViewport : public SAssetEditorViewport, public IAssetViewport
 {
 public:
 	SLATE_BEGIN_ARGS( SLevelViewport )
-		: _ViewportType( LVT_Perspective )
-		, _Realtime( false )
 		{}
 
-		SLATE_ARGUMENT( TWeakPtr<class FEditorModeTools>, EditorModeTools )
-		SLATE_ARGUMENT( TSharedPtr<class FLevelViewportLayout>, ParentLayout )
 		SLATE_ARGUMENT( TWeakPtr<ILevelEditor>, ParentLevelEditor )
 		SLATE_ARGUMENT( TSharedPtr<FLevelEditorViewportClient>, LevelEditorViewportClient )
-		SLATE_ARGUMENT( ELevelViewportType, ViewportType )
-		SLATE_ARGUMENT( bool, Realtime )
-		SLATE_ARGUMENT( FName, ConfigKey )
 	SLATE_END_ARGS()
 
 	SLevelViewport();
@@ -58,7 +51,7 @@ public:
 	/**
 	 * Constructs the viewport widget                   
 	 */
-	void Construct(const FArguments& InArgs);
+	void Construct(const FArguments& InArgs, const FAssetEditorViewportConstructionArgs& InConstructionArgs);
 
 	/**
 	 * Constructs the widgets for the viewport overlay
@@ -66,12 +59,11 @@ public:
 	void ConstructViewportOverlayContent();
 
 	TSharedRef<SWidget> GenerateLevelMenu() const;
-	FReply OnMenuClicked();
 
 	/**
 	 * Constructs the level editor viewport client
 	 */
-	void ConstructLevelEditorViewportClient( const FArguments& InArgs );
+	void ConstructLevelEditorViewportClient(FLevelEditorViewportInstanceSettings& ViewportInstanceSettings);
 
 	/**
 	 * @return true if the viewport is visible. false otherwise                  
@@ -135,7 +127,13 @@ public:
 	virtual void OnFocusViewportToSelection() override;
 	virtual EVisibility GetTransformToolbarVisibility() const override;
 	virtual UWorld* GetWorld() const override;
+	virtual void ToggleInViewportContextMenu() override;
 
+	virtual void HideInViewportContextMenu() override;
+	virtual bool CanToggleInViewportContextMenu() override;
+
+	static void EnableInViewportMenu();
+	FMargin GetContextMenuPadding() const;
 	/**
 	 * Called when the maximize command is executed                   
 	 */
@@ -180,6 +178,14 @@ public:
 	 * @param NewSelection	List of objects that are now selected
 	 */
 	void OnActorSelectionChanged(const TArray<UObject*>& NewSelection, bool bForceRefresh=false);
+
+	/**
+	 * Called on all viewports, when element selection changes.
+	 * 
+	 * @param SelectionSet  New selection
+	 * @param bForceRefresh Force refresh
+	 */
+	void OnElementSelectionChanged(const UTypedElementSelectionSet* SelectionSet, bool bForceRefresh);
 
 	/**
 	 * Called when game view should be toggled
@@ -261,6 +267,18 @@ public:
 	bool IsLockedCameraViewEnabled() const;
 
 	/**
+	 * Sets whether the viewport should allow cinematic control
+	 * 
+	 * @param Whether the viewport should allow cinematic control.
+     */
+	void SetAllowsCinematicControl(bool bAllow);
+
+	/**
+	 * @return Whether the viewport allows cinematic control.
+     */
+	bool GetAllowsCinematicControl() const;
+
+	/**
 	 * @return the fixed width that a column returned by CreateActorLockSceneOutlinerColumn expects to be
 	 */
 	static float GetActorLockSceneOutlinerColumnWidth();
@@ -297,7 +315,7 @@ public:
 	FText GetCurrentLevelText( bool bDrawOnlyLabel ) const;
 
 	/** Called to get the screen percentage preview text */
-	FText GetCurrentScreenPercentageText(bool bDrawOnlyLabel) const;
+	FText GetCurrentScreenPercentageText() const;
 
 	/** @return The visibility of the current level text display */
 	virtual EVisibility GetCurrentLevelTextVisibility() const;
@@ -429,6 +447,7 @@ protected:
 	virtual const FSlateBrush* OnGetViewportBorderBrush() const override;
 	virtual FSlateColor OnGetViewportBorderColorAndOpacity() const override;
 	virtual EVisibility OnGetViewportContentVisibility() const override;
+	virtual EVisibility OnGetFocusedViewportIndicatorVisibility() const override;
 	virtual void BindCommands() override;
 private:
 	/** Flag to know if we need to update the previews which is handled in the tick. */
@@ -449,6 +468,9 @@ private:
 	 * Called when immersive mode is toggled by the user
 	 */
 	void OnToggleImmersive();
+
+	/** Called when moving tabs in and out of a sidebar is activated by the user */
+	void OnToggleSidebarTabs();
 
 	/**
 	* Called to determine whether the maximize mode of current viewport can be toggled
@@ -545,7 +567,7 @@ private:
 	void OnToggleAllowCinematicPreview();
 
 	/**
-	 * @return true if this viewport allows matinee to be previewed in it                   
+	 * @return true if this viewport allows cinematics to be previewed in it                   
 	 */
 	bool AllowsCinematicPreview() const;
 
@@ -761,13 +783,14 @@ private:
 	 */
 	TSharedPtr<SWidget> InactiveViewportWidgetEditorContent;
 
+	/** 
+	 *  When PIE is active, the handle for the change feature level delegate
+	 */
+	FDelegateHandle PIEPreviewFeatureLevelChangedHandle;
+
 	/** Level viewport client */
 	TSharedPtr<FLevelEditorViewportClient> LevelViewportClient;
 
-	/** The brush to use if this viewport is the active viewport */
-	const FSlateBrush* ActiveBorder;
-	/** The brush to use if this viewport is an inactive viewport or not showing a border */
-	const FSlateBrush* NoBorder;
 	/** The brush to use if this viewport is in debug mode */
 	const FSlateBrush* DebuggingBorder;
 	/** The brush to use for a black background */
@@ -778,7 +801,8 @@ private:
 	const FSlateBrush* StartingSimulateBorder;
 	/** The brush to use when returning back to the editor from PIE or SIE mode */
 	const FSlateBrush* ReturningToEditorBorder;
-
+	/** The brush to use when the viewport is not maximized */
+	const FSlateBrush* NonMaximizedBorder;
 	/** Array of objects dropped during the OnDrop event */
 	TArray<UObject*> DroppedObjects;
 
@@ -896,9 +920,11 @@ private:
 
 	/** Whether to show a full toolbar, or a compact one */
 	bool bShowFullToolbar;
-
-	TSharedPtr<class SMenuAnchor> LevelMenuAnchor;
-
+	TSharedPtr<class SWidget> InViewportMenuWrapper;
+	bool bIsInViewportMenuShowing;
+	bool bIsInViewportMenuInitialized;
+	TSharedPtr<class SInViewportDetails> InViewportMenu;
+	static bool bInViewportMenuEnabled;
 protected:
 	void LockActorInternal(AActor* NewActorToLock);
 

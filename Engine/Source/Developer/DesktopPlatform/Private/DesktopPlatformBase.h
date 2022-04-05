@@ -31,6 +31,7 @@ public:
 	virtual bool GetDefaultEngineIdentifier(FString &OutIdentifier) override;
 	virtual bool GetDefaultEngineRootDir(FString &OutRootDir) override;
 	virtual FString GetEngineSavedConfigDirectory(const FString& Identifier) override;
+	
 	virtual bool IsPreferredEngineIdentifier(const FString &Identifier, const FString &OtherIdentifier) override;
 
 	virtual bool TryGetEngineVersion(const FString& RootDir, FEngineVersion& OutVersion) override;
@@ -56,8 +57,6 @@ public:
 	virtual const TArray<FTargetInfo>& GetTargetsForProject(const FString& ProjectFile) const override;
 	virtual const TArray<FTargetInfo>& GetTargetsForCurrentProject() const override;
 
-	virtual bool GetSolutionPath(FString& OutSolutionPath) override;
-
 	virtual bool EnumerateProjectsKnownByEngine(const FString &Identifier, bool bIncludeNativeProjects, TArray<FString> &OutProjectFileNames) override;
 	virtual FString GetDefaultProjectCreationPath() override;
 
@@ -82,6 +81,10 @@ private:
 
 	static bool ReadTargetInfo(const FString& FileName, TArray<FTargetInfo>& Targets);
 
+	FString GetUserDir(const FString& Identifier);
+
+	/** Pre-UE5 location of saved configs */
+	FString GetLegacyEngineSavedConfigDirectory(const FString& Identifier);
 protected:
 
 	FString GetUnrealBuildToolProjectFileName(const FString& RootDir) const;

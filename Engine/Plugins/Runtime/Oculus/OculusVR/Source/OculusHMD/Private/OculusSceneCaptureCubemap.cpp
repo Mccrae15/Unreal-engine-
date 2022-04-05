@@ -69,7 +69,6 @@ void UOculusSceneCaptureCubemap::StartCapture(UWorld* World, uint32 InCaptureBox
 		CaptureComponent->SetVisibility(true);
 		CaptureComponent->SetHiddenInGame(false);
 
-		CaptureComponent->CaptureStereoPass = EStereoscopicPass::eSSP_FULL;//LEFT_EYE; //??
 		CaptureComponent->FOVAngle = 90.f;
 		CaptureComponent->bCaptureEveryFrame = true;
 		CaptureComponent->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
@@ -142,7 +141,7 @@ void UOculusSceneCaptureCubemap::Tick(float DeltaTime)
 	}
 
 	ImageWrapper->SetRaw(WholeCubemapData.GetData(), WholeCubemapData.GetAllocatedSize(), CaptureBoxSideRes * 6, CaptureBoxSideRes, ERGBFormat::BGRA, 8);
-	const TArray64<uint8>& PNGData = ImageWrapper->GetCompressed(100);
+	const TArray64<uint8> PNGData = ImageWrapper->GetCompressed(100);
 
 	const FString Filename = OutputDir + FString::Printf(TEXT("/Cubemap-%d-%s.png"), CaptureBoxSideRes, *FDateTime::Now().ToString(TEXT("%m.%d-%H.%M.%S")));
 
@@ -163,7 +162,7 @@ void UOculusSceneCaptureCubemap::Tick(float DeltaTime)
 void UOculusSceneCaptureCubemap::CaptureCubemapCommandHandler(const TArray<FString>& Args, UWorld* World, FOutputDevice& Ar)
 {
 	bool bCreateOculusMobileCubemap = false;
-	FVector CaptureOffset(FVector::ZeroVector);
+	FVector3f CaptureOffset(FVector3f::ZeroVector);
 	float Yaw = 0.f;
 	for (const FString& Arg : Args)
 	{
@@ -180,7 +179,7 @@ void UOculusSceneCaptureCubemap::CaptureCubemapCommandHandler(const TArray<FStri
 
 	UOculusSceneCaptureCubemap*	CubemapCapturer = NewObject<UOculusSceneCaptureCubemap>();
 	CubemapCapturer->AddToRoot(); // TODO: Don't add the object to the GC root
-	CubemapCapturer->SetOffset(CaptureOffset);
+	CubemapCapturer->SetOffset((FVector)CaptureOffset);
 	if (Yaw != 0.f)
 	{
 		FRotator Rotation(FRotator::ZeroRotator);

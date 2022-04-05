@@ -4,22 +4,24 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/BitArray.h"
 #include "Containers/StringView.h"
-#include "Modules/ModuleInterface.h"
+#include "DerivedDataCacheModule.h"
 
 class FDerivedDataCacheUsageStats;
 class FDerivedDataCacheStatsNode;
+class IDDCCleanup;
+struct FDerivedDataCacheResourceStat;
+struct FDerivedDataCacheSummaryStats;
 
 /** 
  * Interface for the derived data cache
  * This API is fully threadsafe (with the possible exception of the system interface: NotfiyBootComplete, etc).
-**/
+ */
 class FDerivedDataCacheInterface
 {
 public:
-	virtual ~FDerivedDataCacheInterface()
-	{
-	}
+	virtual ~FDerivedDataCacheInterface() = default;
 
 	//--------------------
 	// High Level Interface
@@ -59,10 +61,19 @@ public:
 	 * @return			true if the data was retrieved from the cache or the deriver built the data successfully. false can only occur if the plugin returns false.
 	**/
 	virtual bool GetAsynchronousResults(uint32 Handle, TArray<uint8>& OutData, bool* bDataWasBuilt = nullptr) = 0;
+	virtual bool GetAsynchronousResults(uint32 Handle, TArray64<uint8>& OutData, bool* bDataWasBuilt = nullptr) = 0;
 
 	//--------------------------
 	// Low Level Static Helpers
 	//--------------------------
+	
+	/**
+	 * Returns true if character is valid in a DDC cache key without escaping 
+	**/
+	static bool IsValidCacheChar(const TCHAR C)
+	{
+		return FChar::IsAlnum(C) || FChar::IsUnderscore(C) || C == TEXT('$');
+	}
 
 	/** 
 	 * Static function to make sure a cache key contains only legal characters by using an escape
@@ -78,7 +89,7 @@ public:
 
 		for (int32 i = 0; i < Input.Len(); i++)
 		{
-			if (FChar::IsAlnum(Input[i]) || FChar::IsUnderscore(Input[i]))
+			if ( IsValidCacheChar(Input[i]) )
 			{
 				NumValid++;
 			}
@@ -160,6 +171,7 @@ public:
 	 * @return	true if the data was retrieved from the cache.
 	**/
 	virtual bool GetSynchronous(const TCHAR* CacheKey, TArray<uint8>& OutData, FStringView DebugContext) = 0; 
+	virtual bool GetSynchronous(const TCHAR* CacheKey, TArray64<uint8>& OutData, FStringView DebugContext) = 0; 
 
 	/** 
 	 * Starts the async process of checking the cache and if the item is present, retrieving the cached results.
@@ -181,7 +193,7 @@ public:
 	 * @param	Data		Data to put in the cache under this key
 	 * @param	DataContext	A string used to describe the data being generated. Typically the path to the object that it is generated from is sufficient.
 	**/
-	virtual void Put(const TCHAR* CacheKey, TArrayView<const uint8> Data, FStringView DataContext, bool bPutEvenIfExists = false) = 0;
+	virtual void Put(const TCHAR* CacheKey, TArrayView64<const uint8> Data, FStringView DataContext, bool bPutEvenIfExists = false) = 0;
 
 	/**
 	 * Hint that the data associated with the key is transient and may be optionally purged from the cache.
@@ -196,6 +208,30 @@ public:
 	 */
 	virtual bool CachedDataProbablyExists(const TCHAR* CacheKey) = 0;
 
+	/**
+	 * Returns whether the data associated with each key is likely to exist in the cache.
+	 * Even if this function returns true, a get for one of the keys may still fail!
+	 * @param	CacheKeys	Keys to see if data probably exists.
+	 * @return				A bit array with bits indicating whether the data for the corresponding key will probably be found
+	 */
+	virtual TBitArray<> CachedDataProbablyExistsBatch(TConstArrayView<FString> CacheKeys) = 0;
+
+	/**
+	 * Returns true if the data associated with each key is likely to exist in the cache.
+	 * Even if this function returns true, a get for one of the keys may still fail!
+	 * @param	CacheKeys	Keys to see if data probably exists.
+	 */
+	virtual bool AllCachedDataProbablyExists(TConstArrayView<FString> CacheKeys) = 0;
+
+	/**
+	 * Synchronous attempt to make sure the cached data will be available as optimally as possible.
+	 *
+	 * @param	CacheKeys		Keys to identify the data.
+	 * @param	DebugContext	A string used to describe the data being generated. Typically the path to the object that it is generated from is sufficient.
+	 * @return					true if the data will probably be found in a fast backend on a future request.
+	 */
+	virtual bool TryToPrefetch(TConstArrayView<FString> CacheKeys, FStringView DebugContext) = 0;
+
 	//--------------------
 	// System Interface
 	//--------------------
@@ -206,7 +242,7 @@ public:
 	virtual void NotifyBootComplete() = 0;
 
 	/**
-	 * Adds or subtracts a number from the thread safe counter which tracks outstand async requests. This is used to ensure everything is complete prior to shutdown.
+	 * Adds or subtracts a number from the thread safe counter which tracks outstanding async requests. This is used to ensure everything is complete prior to shutdown.
 	 */
 	virtual void AddToAsyncCompletionCounter(int32 Addend) = 0;
 
@@ -245,6 +281,12 @@ public:
 	 */
 	bool IsDefaultGraph() const { return TStringView<TCHAR>(GetGraphName()).Equals(GetDefaultGraphName()); }
 
+	/**
+	 * Retrieve the interface to the background cache cleanup.
+	 */
+	UE_DEPRECATED(5.0, "This has been replaced by UE::DerivedData::GetCache().GetMaintainer().")
+	virtual IDDCCleanup* GetCleanup() const = 0;
+
 	//--------------------
 	// UsageStats Interface
 	//--------------------
@@ -259,6 +301,10 @@ public:
 	 */
 	UE_DEPRECATED(4.27, "This overload of GatherUsageStats is temporary. Please use other overload.")
 	virtual TSharedRef<FDerivedDataCacheStatsNode> GatherUsageStats() const = 0;
+
+	virtual void GatherResourceStats(TArray<FDerivedDataCacheResourceStat>& DDCResourceStats) const = 0;
+
+	virtual void GatherSummaryStats(FDerivedDataCacheSummaryStats& DDCSummaryStats) const = 0;
 
 	//-----------------------
 	// Notification Interface
@@ -278,24 +324,4 @@ public:
 	*/
 	virtual FOnDDCNotification& GetDDCNotificationEvent() = 0;
 
-};
-
-/**
- * Module for the Derived Data Cache and Derived Data Build.
- */
-class IDerivedDataCacheModule : public IModuleInterface
-{
-public:
-	/** Return the DDC interface **/
-	UE_DEPRECATED(4.27, "GetDDC has been replaced by CreateOrGetCache.")
-	virtual FDerivedDataCacheInterface& GetDDC() = 0;
-
-	/**
-	 * Returns the cache, which is created by the first call to this function.
-	 *
-	 * This always returns a pointer to a valid cache, but that pointer becomes null when the module
-	 * shuts down and destroys the cache. This extra level of indirection allows a caller to observe
-	 * the destruction of the cache without polling this function or monitoring the module lifetime.
-	 */
-	virtual FDerivedDataCacheInterface* const* CreateOrGetCache() = 0;
 };

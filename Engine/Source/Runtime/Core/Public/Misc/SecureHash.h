@@ -205,14 +205,32 @@ public:
 		FMemory::Memset(Hash, 0, sizeof(Hash));
 	}
 
+	static constexpr int32 GetStringLen() { return UE_ARRAY_COUNT(Hash) * 2; }
+
 	inline FString ToString() const
 	{
 		return BytesToHex((const uint8*)Hash, sizeof(Hash));
 	}
 
+	inline void ToString(TCHAR* Dest, bool bNullTerminate) const
+	{
+		constexpr auto Count = UE_ARRAY_COUNT(Hash);
+		for (int i = 0; i < Count; ++i)
+		{
+			uint8 Val = Hash[i];
+			Dest[i * 2] = NibbleToTChar(Val >> 4);
+			Dest[i * 2 + 1] = NibbleToTChar(Val & 15);
+		}
+
+		if (bNullTerminate)
+		{
+			Dest[Count * 2] = TEXT('\0');
+		}
+	}
+
 	inline void FromString(const FStringView& Src)
 	{
-		check(Src.Len() == 40);
+		check(Src.Len() == GetStringLen());
 		UE::String::HexToBytes(Src, Hash);
 	}
 
@@ -279,6 +297,15 @@ public:
 	// Finalize hash and report
 	void Final();
 
+	// Finalize hash and return it
+	FSHAHash Finalize()
+	{
+		Final();
+		FSHAHash Digest;
+		GetHash(reinterpret_cast<uint8*>(&Digest));
+		return Digest;
+	}
+
 	// Report functions: as pre-formatted and raw data
 	void GetHash(uint8 *puDest);
 
@@ -290,6 +317,20 @@ public:
 	 * @param OutHash Resulting hash value (20 byte buffer)
 	 */
 	static void HashBuffer(const void* Data, uint64 DataSize, uint8* OutHash);
+
+	/**
+	 * Calculate the hash on a single block and return it
+	 *
+	 * @param Data Input data to hash
+	 * @param DataSize Size of the Data block
+	 * @return Resulting digest
+	 */
+	static FSHAHash HashBuffer(const void* Data, uint64 DataSize)
+	{
+		FSHAHash Hash;
+		HashBuffer(Data, DataSize, Hash.Hash);
+		return Hash;
+	}
 
 	/**
 	 * Generate the HMAC (Hash-based Message Authentication Code) for a block of data.
@@ -437,7 +478,7 @@ CORE_API void appOnFailSHAVerification(const TCHAR* FailedPathname, bool bFailed
  * Similar to FBufferReader, but will verify the contents of the buffer on close (on close to that 
  * we know we don't need the data anymore)
  */
-class FBufferReaderWithSHA : public FBufferReaderBase
+class FBufferReaderWithSHA final : public FBufferReaderBase
 {
 public:
 	/**
@@ -465,12 +506,12 @@ public:
 	{
 	}
 
-	~FBufferReaderWithSHA()
+	~FBufferReaderWithSHA() override
 	{
 		Close();
 	}
 
-	bool Close()
+	bool Close() override
 	{
 		// don't redo if we were already closed
 		if (ReaderData)

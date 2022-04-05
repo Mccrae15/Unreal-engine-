@@ -56,6 +56,10 @@ public:
 
 	void SetCheckpointSaveMaxMSPerFrame(const float InCheckpointSaveMaxMSPerFrame);
 
+	void RequestCheckpoint();
+
+	bool SetExternalDataForObject(UObject* OwningObject, const uint8* Src, const int32 NumBits);
+
 private:
 	void TrackSendForProfiler(const void* Data, int32 NumBytes);
 

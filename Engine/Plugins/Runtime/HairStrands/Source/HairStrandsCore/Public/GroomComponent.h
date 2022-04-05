@@ -26,42 +26,49 @@ public:
 
 	/** Groom asset . */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, interp, Category = "Groom")
-	UGroomAsset* GroomAsset;
+	TObjectPtr<UGroomAsset> GroomAsset;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, interp, Category = "GroomCache", meta = (EditCondition = "BindingAsset == nullptr"))
-	UGroomCache* GroomCache;
+	TObjectPtr<UGroomCache> GroomCache;
 
 	/** Niagara components that will be attached to the system*/
 	UPROPERTY(Transient)
-	TArray<class UNiagaraComponent*> NiagaraComponents;
+	TArray<TObjectPtr<class UNiagaraComponent>> NiagaraComponents;
 
 	// Kept for debugging mesh transfer
 	UPROPERTY()
-	class USkeletalMesh* SourceSkeletalMesh;
+	TObjectPtr<class USkeletalMesh> SourceSkeletalMesh;
 
 	/** Optional binding asset for binding a groom onto a skeletal mesh. If the binding asset is not provided the projection is done at runtime, which implies a large GPU cost at startup time. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = "Groom", meta = (EditCondition = "GroomCache == nullptr"))
-	class UGroomBindingAsset* BindingAsset;
+	TObjectPtr<class UGroomBindingAsset> BindingAsset;
 
 	/** Physics asset to be used for hair simulation */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Groom")
-	class UPhysicsAsset* PhysicsAsset;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation")
+	TObjectPtr<class UPhysicsAsset> PhysicsAsset;
+
+	/** List of collision components to be used */
+	TArray<TWeakObjectPtr<class USkeletalMeshComponent>> CollisionComponents;
+	
+	/** Groom's simulation settings */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, interp, Category = "Simulation")
+	FHairSimulationSettings SimulationSettings;
 
 	/* Reference of the default/debug materials for each geometric representation */
 	UPROPERTY()
-	UMaterialInterface* Strands_DebugMaterial;
+	TObjectPtr<UMaterialInterface> Strands_DebugMaterial;
 	UPROPERTY()
-	UMaterialInterface* Strands_DefaultMaterial;
+	TObjectPtr<UMaterialInterface> Strands_DefaultMaterial;
 	UPROPERTY()
-	UMaterialInterface* Cards_DefaultMaterial;
+	TObjectPtr<UMaterialInterface> Cards_DefaultMaterial;
 	UPROPERTY()
-	UMaterialInterface* Meshes_DefaultMaterial;
+	TObjectPtr<UMaterialInterface> Meshes_DefaultMaterial;
 
 	UPROPERTY()
-	class UNiagaraSystem* AngularSpringsSystem;
+	TObjectPtr<class UNiagaraSystem> AngularSpringsSystem;
 
 	UPROPERTY()
-	class UNiagaraSystem* CosseratRodsSystem;
+	TObjectPtr<class UNiagaraSystem> CosseratRodsSystem;
 
 	/** Optional socket name, where the groom component should be attached at, when parented with a skeletal mesh */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, interp, Category = "Groom")
@@ -81,16 +88,27 @@ public:
 
 	/** Release Niagara components */
 	void ReleaseHairSimulation();
+	void ReleaseHairSimulation(const int32 GroupIndex);
+
+	/** Create per Group/LOD the Niagara component */
+	void CreateHairSimulation(const int32 GroupIndex, const int32 LODIndex);
+
+	/** Enable/Disable hair simulation while transitioning from one LOD to another one */
+	void SwitchSimulationLOD(const int32 PreviousLOD, const int32 CurrentLOD);
+
+	/** Check if the simulation is enabled or not */
+	bool IsSimulationEnable(int32 GroupIndex, int32 LODIndex) const;
 
 	/** Update Group Description */
 	void UpdateHairGroupsDesc();
-	void UpdateHairGroupsDescAndInvalidateRenderState();
+	void UpdateHairGroupsDescAndInvalidateRenderState(bool bInvalidate=true);
 
 	/** Update simulated groups */
 	void UpdateSimulatedGroups();
 
 	//~ Begin UObject Interface.
 	virtual void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize) override;
+	uint32 GetResourcesSize() const; 
 	//~ End UObject Interface.
 
 	//~ Begin UActorComponent Interface.
@@ -98,10 +116,12 @@ public:
 	virtual void OnUnregister() override;
 	virtual void OnComponentDestroyed(bool bDestroyingHierarchy) override;
 	virtual void BeginDestroy() override;
+	virtual void FinishDestroy() override;
 	virtual void OnAttachmentChanged() override;
 	virtual void DetachFromComponent(const FDetachmentTransformRules& DetachmentRules) override;
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
 	virtual void SendRenderTransform_Concurrent() override;
+	virtual void SendRenderDynamicData_Concurrent() override;
 	//~ End UActorComponent Interface.
 
 	//~ Begin USceneComponent Interface.
@@ -116,9 +136,6 @@ public:
 	virtual void PostLoad() override;
 	//~ End UMeshComponent Interface.
 
-	/** Return the guide hairs datas */
-	FHairStrandsDatas* GetGuideStrandsDatas(uint32 GroupIndex);
-
 	/** Return the guide hairs rest resources*/
 	FHairStrandsRestResource* GetGuideStrandsRestResource(uint32 GroupIndex);
 
@@ -128,7 +145,6 @@ public:
 	/** Return the guide hairs root resources*/
 	FHairStrandsRestRootResource* GetGuideStrandsRestRootResource(uint32 GroupIndex);
 	FHairStrandsDeformedRootResource* GetGuideStrandsDeformedRootResource(uint32 GroupIndex);
-	const FTransform& GetGuideStrandsLocalToWorld(uint32 GroupIndex) const;
 
 
 #if WITH_EDITOR
@@ -139,6 +155,9 @@ public:
 	void ValidateMaterials(bool bMapCheck) const;
 	void Invalidate();
 	void InvalidateAndRecreate();
+
+	void SetDebugMode(EHairStrandsDebugMode InMode);
+	EHairStrandsDebugMode GetDebugMode() const { return DebugMode; }
 #endif
 
 	/* Accessor function for changing Groom asset from blueprint/sequencer */
@@ -149,9 +168,38 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Groom")
 	void SetBindingAsset(UGroomBindingAsset* InBinding);
 
-	void SetStableRasterization(bool bEnable);
-	void SetGroomAsset(UGroomAsset* Asset, UGroomBindingAsset* InBinding);
+	/* Accessor function for changing Groom physics asset from blueprint/sequencer */
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	void SetPhysicsAsset(UPhysicsAsset* InPhysicsAsset);
+
+	/* Add a skeletal mesh to the collision components */
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	void AddCollisionComponent(USkeletalMeshComponent* SkeletalMeshComponent);
+	
+	/* Reset the collision components */
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	void ResetCollisionComponents();
+
+	/* Accessor function for changing the enable simulation flag from blueprint/sequencer */
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	void SetEnableSimulation(bool bInEnableSimulation);
+
+	/* Reset the simulation, if enabled */
+	UFUNCTION(BlueprintCallable, Category = "Simulation")
+	void ResetSimulation();
+
+	/* Accessor function for changing hair length scale from blueprint/sequencer */
+	UFUNCTION(BlueprintCallable, Category = "Groom")
 	void SetHairLengthScale(float Scale);
+
+	UFUNCTION(BlueprintCallable, Category = "Groom")
+	void SetHairLengthScaleEnable(bool bEnable);
+
+	UFUNCTION(BlueprintCallable, Category = "Groom")
+	bool GetIsHairLengthScaleEnabled();
+
+	void SetStableRasterization(bool bEnable);
+	void SetGroomAsset(UGroomAsset* Asset, UGroomBindingAsset* InBinding, const bool bUpdateSimulation = true);
 	void SetHairRootScale(float Scale);
 	void SetHairWidth(float HairWidth);
 	void SetScatterSceneLighting(bool Enable);
@@ -174,10 +222,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Groom")
 	TArray<FHairGroupDesc> GroomGroupsDesc;
 
+	/** Force the groom to use cards/meshes geometry instead of strands. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Groom")
+	bool bUseCards = false;
+
 	/** Hair group instance access */
 	uint32 GetGroupCount() const { return HairGroupInstances.Num();  }
-	FHairGroupInstance* GetGroupInstance(uint32 Index) { return Index < uint32(HairGroupInstances.Num()) ? HairGroupInstances[Index] : nullptr; }
-	const FHairGroupInstance* GetGroupInstance(uint32 Index) const { return Index < uint32(HairGroupInstances.Num()) ? HairGroupInstances[Index] : nullptr; } 
+	FHairGroupInstance* GetGroupInstance(int32 Index) { return Index >= 0 && Index < HairGroupInstances.Num() ? HairGroupInstances[Index] : nullptr; }
+	const FHairGroupInstance* GetGroupInstance(int32 Index) const { return Index >= 0 && Index < HairGroupInstances.Num() ? HairGroupInstances[Index] : nullptr; } 
 
 	//~ Begin UPrimitiveComponent Interface
 	EHairGeometryType GetMaterialGeometryType(int32 ElementIndex) const;
@@ -189,6 +241,11 @@ public:
 	virtual void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials = false) const override;
 	virtual int32 GetNumMaterials() const override;
 	//~ End UPrimitiveComponent Interface
+
+#if WITH_EDITORONLY_DATA
+	// Set the component in preview mode, forcing the loading of certain data
+	void SetPreviewMode(bool bValue) { bPreviewMode = bValue; };
+#endif
 
 	/** GroomCache */
 	UGroomCache* GetGroomCache() const { return GroomCache; }
@@ -203,6 +260,9 @@ public:
 	void ResetAnimationTime();
 	float GetAnimationTime() const;
 	bool IsLooping() const { return bLooping; }
+
+	/** Build the local simulation transform that could be used in strands simulation */
+	void BuildSimulationTransform(FTransform& SimulationTransform) const;
 
 private:
 	void UpdateGroomCache(float Time);
@@ -223,13 +283,14 @@ private:
 
 private:
 	TArray<FHairGroupInstance*> HairGroupInstances;
+	TArray<FHairGroupInstance*> DeferredDeleteHairGroupInstances;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(Transient)
-	UGroomAsset* GroomAssetBeingLoaded;
+	TObjectPtr<UGroomAsset> GroomAssetBeingLoaded;
 
 	UPROPERTY(Transient)
-	UGroomBindingAsset* BindingAssetBeingLoaded;
+	TObjectPtr<UGroomBindingAsset> BindingAssetBeingLoaded;
 #endif
 
 protected:
@@ -238,16 +299,23 @@ protected:
 	virtual void OnChildDetached(USceneComponent* ChildComponent) override;
 
 private:
+	void DeleteDeferredHairGroupInstances();
 	void* InitializedResources;
 	class UMeshComponent* RegisteredMeshComponent;
 	FVector SkeletalPreviousPositionOffset;
 	bool bIsGroomAssetCallbackRegistered;
 	bool bIsGroomBindingAssetCallbackRegistered;
-	int32 PredictedLODIndex = -1;
 	bool bValidationEnable = true;
-	bool bUseCards = false;
+	bool bPreviewMode = false;
 
-	EWorldType::Type GetWorldType() const; 
+	// LOD selection
+	EHairLODSelectionType LODSelectionType = EHairLODSelectionType::Immediate;
+	float LODPredictedIndex = -1.f;
+	float LODForcedIndex = -1.f;
+
+	// Transient property for visualizing the groom in a certain debug mode. This is used by the groom editor
+	EHairStrandsDebugMode DebugMode = EHairStrandsDebugMode::NoneDebug;
+
 	void InitResources(bool bIsBindingReloading=false);
 	void ReleaseResources();
 
@@ -267,4 +335,9 @@ public:
 private:
 	TArray<UGroomComponent*> GroomComponents;
 };
+
+/** Return the debug color of an hair group */
+HAIRSTRANDSCORE_API const FLinearColor GetHairGroupDebugColor(int32 GroupIt);
+
 #endif
+

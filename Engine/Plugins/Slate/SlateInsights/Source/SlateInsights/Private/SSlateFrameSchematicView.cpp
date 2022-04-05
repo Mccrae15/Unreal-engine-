@@ -5,12 +5,18 @@
 #include "SSlateTraceFlags.h"
 
 #include "TraceServices/Model/AnalysisSession.h"
+#include "Insights/Common/TimeUtils.h"
 #include "Insights/ITimingViewSession.h"
 #include "Insights/ViewModels/ITimingEvent.h"
 #include "Widgets/InvalidateWidgetReason.h"
 #include "Widgets/SBoxPanel.h"
-#include "Widgets/SNullWidget.h"
+#include "Widgets/Input/NumericTypeInterface.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Layout/SExpandableArea.h"
+#include "Widgets/Layout/SGridPanel.h"
 #include "Widgets/Layout/SHeader.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/STableRow.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
@@ -37,8 +43,11 @@ namespace Private
 {
 	const FName ColumnWidgetId("WidgetId");
 	const FName ColumnNumber("Number");
+	const FName ColumnAffectedCount("AffectedCount");
+	const FName ColumnDuration("Duration");
 	const FName ColumnFlag("Flag");
 
+	/** */
 	struct FWidgetUniqueInvalidatedInfo
 	{
 		FWidgetUniqueInvalidatedInfo(Message::FWidgetId InWidgetId, EInvalidateWidgetReason InReason)
@@ -54,16 +63,20 @@ namespace Private
 		FString Callstack;
 	};
 
+	/** */
 	struct FWidgetUpdateInfo
 	{
-		FWidgetUpdateInfo(Message::FWidgetId InWidgetId, EWidgetUpdateFlags InUpdateFlags)
-			: WidgetId(InWidgetId), UpdateFlags(InUpdateFlags), Count(1)
+		FWidgetUpdateInfo(Message::FWidgetId InWidgetId, int32 InAffectedCount, double InDuration, EWidgetUpdateFlags InUpdateFlags)
+			: WidgetId(InWidgetId), AffectedCount(InAffectedCount), Count(1), Duration(InDuration), UpdateFlags(InUpdateFlags)
 		{ }
 		Message::FWidgetId WidgetId;
-		EWidgetUpdateFlags UpdateFlags;
+		int32 AffectedCount;
 		uint32 Count;
+		double Duration;
+		EWidgetUpdateFlags UpdateFlags;
 	};
 
+	/** */
 	class FWidgetUniqueInvalidatedInfoRow : public SMultiColumnTableRow<TSharedPtr<FWidgetUniqueInvalidatedInfo>>
 	{
 	public:
@@ -129,6 +142,7 @@ namespace Private
 		}
 	};
 
+	/** */
 	struct FWidgetUpdateInfoRow : public SMultiColumnTableRow<TSharedPtr<FWidgetUpdateInfo>>
 	{
 		SLATE_BEGIN_ARGS(FWidgetUpdateInfoRow) {}
@@ -159,6 +173,16 @@ namespace Private
 				return SNew(STextBlock)
 					.Text(FText::AsNumber(Info->Count));
 			}
+			else if (Column == ColumnAffectedCount)
+			{
+				return SNew(STextBlock)
+					.Text(FText::AsNumber(Info->AffectedCount));
+			}
+			else if (Column == ColumnDuration)
+			{
+				return SNew(STextBlock)
+					.Text(FText::FromString(TimeUtils::FormatTimeAuto(Info->Duration)));
+			}
 			else if (Column == ColumnFlag)
 			{
 				return SNew(SSlateTraceWidgetUpdateFlags)
@@ -169,14 +193,14 @@ namespace Private
 		}
 	};
 
-	FText GetWidgetName(const Trace::IAnalysisSession* AnalysisSession, Message::FWidgetId WidgetId)
+	FText GetWidgetName(const TraceServices::IAnalysisSession* AnalysisSession, Message::FWidgetId WidgetId)
 	{
 		if (AnalysisSession)
 		{
 			const FSlateProvider* SlateProvider = AnalysisSession->ReadProvider<FSlateProvider>(FSlateProvider::ProviderName);
 			if (SlateProvider)
 			{
-				Trace::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
+				TraceServices::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
 
 				if (const Message::FWidgetInfo* WidgetInfo = SlateProvider->FindWidget(WidgetId))
 				{
@@ -186,6 +210,161 @@ namespace Private
 		}
 		return FText::GetEmpty();
 	}
+
+	/** */
+	class SSlateWidgetSearch : public SCompoundWidget
+	{
+	public:
+		SLATE_BEGIN_ARGS(SSlateWidgetSearch) {}
+		SLATE_END_ARGS()
+
+		void Construct(const FArguments& InArgs)
+		{
+			NumericInterface = MakeUnique<TDefaultNumericTypeInterface<uint64>>();
+
+			TSharedRef<SGridPanel> GridPanel = SNew(SGridPanel)
+				.FillColumn(1, 1.0f);
+			{
+				int32 SlotCount = 0;
+				auto BuildLabelAndValue = [GridPanel, &SlotCount](const FText& Label, TSharedPtr<STextBlock>& ValueWidget)
+				{
+					GridPanel->AddSlot(0, SlotCount)
+						[
+							SNew(STextBlock)
+							.Text(Label)
+						];
+
+					GridPanel->AddSlot(1, SlotCount)
+						.Padding(5.0f, 0.0f, 0.0f, 0.0f)
+						[
+							SAssignNew(ValueWidget, STextBlock)
+						];
+
+					++SlotCount;
+				};
+
+				BuildLabelAndValue(LOCTEXT("WidgetID", "Widget ID"), WidgetIdWidget);
+				BuildLabelAndValue(LOCTEXT("Path", "Path"), PathWidget);
+				BuildLabelAndValue(LOCTEXT("DebugInfo", "Debug Info"), DebugInfoWidget);
+				BuildLabelAndValue(LOCTEXT("CreatedTime", "Created Time"), CreatedTimeWidget);
+				BuildLabelAndValue(LOCTEXT("DestroyedTime", "Destroyed Time"), DestroyedTimeWidget);
+			}
+
+			ChildSlot
+			[
+				SNew(SVerticalBox)
+
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.Padding(FMargin(0.f, 4.f))
+				[
+					SAssignNew(SearchBoxWidget, SSearchBox)
+					.HintText(LOCTEXT("WidgetSearchBoxHint", "Search Widget ID"))
+					.OnTextChanged(this, &SSlateWidgetSearch::HandleSearchBox_OnTextChanged)
+					.IsEnabled(this, &SSlateWidgetSearch::HandleSearchBox_IsEnabled)
+					.ToolTipText(LOCTEXT("FilterSearchHint", "Type a Widget ID here to search for the widget"))
+				]
+
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					GridPanel
+				]
+			];
+		}
+
+		void SetSession(const TraceServices::IAnalysisSession* InAnalysisSession)
+		{
+			AnalysisSession = InAnalysisSession;
+			Search();
+		}
+
+		bool HandleSearchBox_IsEnabled() const
+		{
+			return AnalysisSession != nullptr;
+		}
+
+		void HandleSearchBox_OnTextChanged(const FText& InText)
+		{
+			if (InText.IsEmptyOrWhitespace())
+			{
+				WidgetId = 0;
+				Search();
+				SearchBoxWidget->SetError(FText::GetEmpty());
+			}
+			else
+			{
+				TOptional<uint64> Result = NumericInterface->FromString(InText.ToString(), WidgetId);
+				if (Result.IsSet())
+				{
+					WidgetId = Result.GetValue();
+					Search();
+					SearchBoxWidget->SetError(FText::GetEmpty());
+				}
+				else
+				{
+					SearchBoxWidget->SetError(LOCTEXT("NotAValidId", "Not a valid Widget Id. Widget Ids are numbers."));
+				}
+			}
+		}
+
+		void Search(Message::FWidgetId WidgetToSearch)
+		{
+			if (WidgetToSearch.GetValue() != WidgetId)
+			{
+				WidgetId = WidgetToSearch.GetValue();
+				Search();
+				SearchBoxWidget->SetError(FText::GetEmpty());
+			}
+		}
+
+		void Search()
+		{
+			bool bClearText = true;
+			if (AnalysisSession && PathWidget && WidgetId != 0)
+			{
+				const FSlateProvider* SlateProvider = AnalysisSession->ReadProvider<FSlateProvider>(FSlateProvider::ProviderName);
+				if (SlateProvider)
+				{
+					TraceServices::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
+
+					if (const Message::FWidgetInfo* WidgetInfo = SlateProvider->FindWidget(WidgetId))
+					{
+						bClearText = false;
+
+						WidgetIdWidget->SetText(FText::FromString(NumericInterface->ToString(WidgetInfo->WidgetId.GetValue())));
+						PathWidget->SetText(FText::FromString(WidgetInfo->Path));
+						DebugInfoWidget->SetText(FText::FromString(WidgetInfo->DebugInfo));
+
+						const double StartTime = SlateProvider->GetWidgetTimeline().GetEventStartTime(WidgetInfo->EventIndex);
+						CreatedTimeWidget->SetText(FText::FromString(TimeUtils::FormatTime(StartTime, TimeUtils::Milisecond)));
+						const double EndTime = SlateProvider->GetWidgetTimeline().GetEventEndTime(WidgetInfo->EventIndex);
+						DestroyedTimeWidget->SetText(FText::FromString(TimeUtils::FormatTime(EndTime, TimeUtils::Milisecond)));
+					}
+				}
+			}
+			
+			if (bClearText)
+			{
+				WidgetIdWidget->SetText(FText::GetEmpty());
+				PathWidget->SetText(FText::GetEmpty());
+				DebugInfoWidget->SetText(FText::GetEmpty());
+				CreatedTimeWidget->SetText(FText::GetEmpty());
+				DestroyedTimeWidget->SetText(FText::GetEmpty());
+			}
+		}
+
+		const TraceServices::IAnalysisSession* AnalysisSession = nullptr;
+		uint64 WidgetId = 0;
+
+		TSharedPtr<SSearchBox> SearchBoxWidget;
+		TSharedPtr<STextBlock> WidgetIdWidget;
+		TSharedPtr<STextBlock> PathWidget;
+		TSharedPtr<STextBlock> DebugInfoWidget;
+		TSharedPtr<STextBlock> CreatedTimeWidget;
+		TSharedPtr<STextBlock> DestroyedTimeWidget;
+		TUniquePtr<INumericTypeInterface<uint64>> NumericInterface;
+	};
 } //namespace Private
 
 void SSlateFrameSchematicView::Construct(const FArguments& InArgs)
@@ -193,10 +372,30 @@ void SSlateFrameSchematicView::Construct(const FArguments& InArgs)
 	StartTime = -1.0;
 	EndTime = -1.0;
 
+	WidgetUpdateSortColumn = FName();
+	bWidgetUpdateSortAscending = false;
+
 	ChildSlot
 	[
 		SNew(SVerticalBox)
 
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(FMargin(2.0f))
+		[
+			SAssignNew(ExpandableSearchBox, SExpandableArea)
+			.InitiallyCollapsed(true)
+			.HeaderContent()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("SearchWidget", "Search Widget"))
+			]
+			.BodyContent()
+			[
+				SAssignNew(WidgetSearchBox, Private::SSlateWidgetSearch)
+			]
+		]
+		
 		+ SVerticalBox::Slot()
 		.AutoHeight()
 		.Padding(FMargin(2.0f))
@@ -229,6 +428,7 @@ void SSlateFrameSchematicView::Construct(const FArguments& InArgs)
 					.TreeItemsSource(&WidgetInvalidationInfos)
 					.OnGenerateRow(this, &SSlateFrameSchematicView::HandleUniqueInvalidatedMakeTreeRowWidget)
 					.OnGetChildren(this, &SSlateFrameSchematicView::HandleUniqueInvalidatedChildrenForInfo)
+					.OnItemToString_Debug(this, &SSlateFrameSchematicView::HandleWidgetInvalidateListToStringDebug)
 					.OnContextMenuOpening(this, &SSlateFrameSchematicView::HandleWidgetInvalidateListContextMenu)
 					.SelectionMode(ESelectionMode::Single)
 					.HeaderRow
@@ -238,15 +438,16 @@ void SSlateFrameSchematicView::Construct(const FArguments& InArgs)
 						+ SHeaderRow::Column(Private::ColumnWidgetId)
 						.DefaultLabel(LOCTEXT("WidgetColumn", "Widget"))
 						.FillWidth(1.f)
+						.HAlignCell(EHorizontalAlignment::HAlign_Left)
 
 						+ SHeaderRow::Column(Private::ColumnNumber)
 						.DefaultLabel(LOCTEXT("AmountColumn", "Amount"))
-						.FixedWidth(50.f)
+						.FillSized(50.f)
 						.HAlignCell(EHorizontalAlignment::HAlign_Right)
 						
 						+ SHeaderRow::Column(Private::ColumnFlag)
 						.DefaultLabel(LOCTEXT("ReasonColumn", "Reason"))
-						.FixedWidth(75.f)
+						.FixedWidth(95.f)
 						.HAlignCell(EHorizontalAlignment::HAlign_Right)
 					)
 				]
@@ -286,28 +487,48 @@ void SSlateFrameSchematicView::Construct(const FArguments& InArgs)
 					.ListItemsSource(&WidgetUpdateInfos)
 					.SelectionMode(ESelectionMode::SingleToggle)
 					.OnGenerateRow(this, &SSlateFrameSchematicView::HandleWidgetUpdateInfoGenerateWidget)
+					.OnContextMenuOpening(this, &SSlateFrameSchematicView::HandleWidgetUpdateInfoContextMenu)
 					.HeaderRow
 					(
 						SNew(SHeaderRow)
 
 						+ SHeaderRow::Column(Private::ColumnWidgetId)
 						.DefaultLabel(LOCTEXT("WidgetColumn", "Widget"))
+						.HAlignCell(EHorizontalAlignment::HAlign_Left)
 						.FillWidth(1.f)
+						.SortMode(this, &SSlateFrameSchematicView::HandleWidgetUpdateGetSortMode, Private::ColumnWidgetId)
+						.OnSort(this, &SSlateFrameSchematicView::HandleWidgetUpdateInfoSort)
 
+						+ SHeaderRow::Column(Private::ColumnAffectedCount)
+						.DefaultLabel(LOCTEXT("AffectedColumn", "Affected"))
+						.FillSized(50.f)
+						.HAlignCell(EHorizontalAlignment::HAlign_Right)
+						.SortMode(this, &SSlateFrameSchematicView::HandleWidgetUpdateGetSortMode, Private::ColumnAffectedCount)
+						.OnSort(this, &SSlateFrameSchematicView::HandleWidgetUpdateInfoSort)
+						
+						+ SHeaderRow::Column(Private::ColumnDuration)
+						.DefaultLabel(LOCTEXT("Duration", "Duration"))
+						.FillSized(75.f)
+						.HAlignCell(EHorizontalAlignment::HAlign_Right)
+						.SortMode(this, &SSlateFrameSchematicView::HandleWidgetUpdateGetSortMode, Private::ColumnDuration)
+						.OnSort(this, &SSlateFrameSchematicView::HandleWidgetUpdateInfoSort)
+						
 						+ SHeaderRow::Column(Private::ColumnNumber)
 						.DefaultLabel(LOCTEXT("AmountColumn", "Amount"))
-						.FixedWidth(50.f)
+						.FillSized(50.f)
 						.HAlignCell(EHorizontalAlignment::HAlign_Right)
 
 						+ SHeaderRow::Column(Private::ColumnFlag)
 						.DefaultLabel(LOCTEXT("UpdateFlagColumn", "Update"))
-						.FixedWidth(75.f)
+						.FixedWidth(95.f)
 						.HAlignCell(EHorizontalAlignment::HAlign_Right)
 					)
 				]
 			]
 		]
 	];
+
+	WidgetSearchBox->SetSession(AnalysisSession);
 
 	RefreshNodes();
 }
@@ -321,7 +542,7 @@ SSlateFrameSchematicView::~SSlateFrameSchematicView()
 	}
 }
 
-void SSlateFrameSchematicView::SetSession(Insights::ITimingViewSession* InTimingViewSession, const Trace::IAnalysisSession* InAnalysisSession)
+void SSlateFrameSchematicView::SetSession(Insights::ITimingViewSession* InTimingViewSession, const TraceServices::IAnalysisSession* InAnalysisSession)
 {
 	if (TimingViewSession)
 	{
@@ -339,6 +560,11 @@ void SSlateFrameSchematicView::SetSession(Insights::ITimingViewSession* InTiming
 		InTimingViewSession->OnTimeMarkerChanged().AddSP(this, &SSlateFrameSchematicView::HandleTimeMarkerChanged);
 		InTimingViewSession->OnSelectionChanged().AddSP(this, &SSlateFrameSchematicView::HandleSelectionChanged);
 		TimingViewSession->OnSelectedEventChanged().AddSP(this, &SSlateFrameSchematicView::HandleSelectionEventChanged);
+	}
+
+	if (WidgetSearchBox)
+	{
+		WidgetSearchBox->SetSession(InAnalysisSession);
 	}
 
 	RefreshNodes();
@@ -363,6 +589,68 @@ TSharedRef<ITableRow> SSlateFrameSchematicView::HandleWidgetUpdateInfoGenerateWi
 		OwnerTable,
 		Item,
 		Private::GetWidgetName(AnalysisSession, Item->WidgetId));
+}
+
+TSharedPtr<SWidget> SSlateFrameSchematicView::HandleWidgetUpdateInfoContextMenu()
+{
+	const bool bShouldCloseWindowAfterMenuSelection = true;
+	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, nullptr);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("SearchWidget", "Search Widget"),
+		LOCTEXT("SearchWidgetTooltip", "Search for this widget in the 'Search Widget' tool."),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateSP(this, &SSlateFrameSchematicView::HandleWidgetUpdateInfoSearchWidget),
+			FCanExecuteAction::CreateSP(this, &SSlateFrameSchematicView::CanWidgetUpdateInfoSearchWidget)
+		));
+
+	return MenuBuilder.MakeWidget();
+}
+
+bool SSlateFrameSchematicView::CanWidgetUpdateInfoSearchWidget() const
+{
+	return WidgetUpdateInfoListView->GetSelectedItems().Num() == 1;
+}
+
+void SSlateFrameSchematicView::HandleWidgetUpdateInfoSearchWidget()
+{
+	if (WidgetSearchBox != nullptr && ExpandableSearchBox != nullptr)
+	{
+		TArray<TSharedPtr<Private::FWidgetUpdateInfo>> SelectedItems = WidgetUpdateInfoListView->GetSelectedItems();
+		if (SelectedItems.Num() != 1)
+		{
+			return;
+		}
+
+		TSharedPtr<Private::FWidgetUpdateInfo> SelectedItem = SelectedItems.Last();
+		if (SelectedItem)
+		{
+			WidgetSearchBox->Search(SelectedItem->WidgetId);
+			ExpandableSearchBox->SetExpanded(true);
+		}
+	}
+}
+
+void SSlateFrameSchematicView::HandleWidgetUpdateInfoSort(EColumnSortPriority::Type, const FName& ColumnId, EColumnSortMode::Type SortMode)
+{
+	if (WidgetUpdateSortColumn == ColumnId)
+	{
+		bWidgetUpdateSortAscending = !bWidgetUpdateSortAscending;
+	}
+	else
+	{
+		bWidgetUpdateSortAscending = true;
+	}
+	WidgetUpdateSortColumn = ColumnId;
+	SortWidgetUpdateInfos();
+}
+
+EColumnSortMode::Type SSlateFrameSchematicView::HandleWidgetUpdateGetSortMode(FName ColumnId) const
+{
+	return WidgetUpdateSortColumn == ColumnId
+		? (bWidgetUpdateSortAscending? EColumnSortMode::Ascending : EColumnSortMode::Descending)
+		: EColumnSortMode::None;
 }
 
 void SSlateFrameSchematicView::HandleTimeMarkerChanged(Insights::ETimeChangedFlags InFlags, double InTimeMarker)
@@ -409,6 +697,15 @@ TSharedPtr<SWidget> SSlateFrameSchematicView::HandleWidgetInvalidateListContextM
 	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, nullptr);
 
 	MenuBuilder.AddMenuEntry(
+		LOCTEXT("SearchWidget", "Search Widget"),
+		LOCTEXT("SearchWidgetTooltip", "Search for this widget in the 'Search Widget' tool."),
+		FSlateIcon(),
+		FUIAction(
+			FExecuteAction::CreateSP(this, &SSlateFrameSchematicView::HandleWidgetInvalidateListSearchWidget),
+			FCanExecuteAction::CreateSP(this, &SSlateFrameSchematicView::CanWidgetInvalidateListSearchWidget)
+		));
+
+	MenuBuilder.AddMenuEntry(
 		LOCTEXT("GotoRootInvalidationWidget", "Go to root widget(s)"),
 		LOCTEXT("GotoRootInvalidationWidgetTooltip", "Go to child widget that caused invalidation. Stops early if multiple widgets caused invalidation."),
 		FSlateIcon(),
@@ -429,7 +726,37 @@ TSharedPtr<SWidget> SSlateFrameSchematicView::HandleWidgetInvalidateListContextM
 	return MenuBuilder.MakeWidget();
 }
 
-bool SSlateFrameSchematicView::CanWidgetInvalidateListGotoRootWidget()
+FString SSlateFrameSchematicView::HandleWidgetInvalidateListToStringDebug(TSharedPtr<Private::FWidgetUniqueInvalidatedInfo> InInfo)
+{
+	return Private::GetWidgetName(AnalysisSession, InInfo->WidgetId).ToString();
+}
+
+
+bool SSlateFrameSchematicView::CanWidgetInvalidateListSearchWidget() const
+{
+	return WidgetInvalidateInfoListView->GetSelectedItems().Num() == 1;
+}
+
+void SSlateFrameSchematicView::HandleWidgetInvalidateListSearchWidget()
+{
+	if (WidgetSearchBox != nullptr && ExpandableSearchBox != nullptr)
+	{
+		TArray<TSharedPtr<Private::FWidgetUniqueInvalidatedInfo>> SelectedItems = WidgetInvalidateInfoListView->GetSelectedItems();
+		if (SelectedItems.Num() != 1)
+		{
+			return;
+		}
+
+		TSharedPtr<Private::FWidgetUniqueInvalidatedInfo> SelectedItem = SelectedItems.Last();
+		if (SelectedItem)
+		{
+			WidgetSearchBox->Search(SelectedItem->WidgetId);
+			ExpandableSearchBox->SetExpanded(true);
+		}
+	}
+}
+
+bool SSlateFrameSchematicView::CanWidgetInvalidateListGotoRootWidget() const
 {
 	return WidgetInvalidateInfoListView->GetSelectedItems().Num() == 1;
 }
@@ -437,7 +764,6 @@ bool SSlateFrameSchematicView::CanWidgetInvalidateListGotoRootWidget()
 void SSlateFrameSchematicView::HandleWidgetInvalidateListGotoRootWidget()
 {
 	TArray<TSharedPtr<Private::FWidgetUniqueInvalidatedInfo>> SelectedItems = WidgetInvalidateInfoListView->GetSelectedItems();
-	
 	if (SelectedItems.Num() != 1)
 	{
 		return;
@@ -461,7 +787,7 @@ void SSlateFrameSchematicView::HandleWidgetInvalidateListGotoRootWidget()
 	}
 }
 
-bool SSlateFrameSchematicView::CanWidgetInvalidateListViewScriptAndCallStack()
+bool SSlateFrameSchematicView::CanWidgetInvalidateListViewScriptAndCallStack() const
 {
 	if (WidgetInvalidateInfoListView->GetSelectedItems().Num() == 1)
 	{
@@ -576,20 +902,20 @@ void SSlateFrameSchematicView::RefreshNodes()
 			const FSlateProvider* SlateProvider = AnalysisSession->ReadProvider<FSlateProvider>(FSlateProvider::ProviderName);
 			if (SlateProvider)
 			{
-				Trace::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
+				TraceServices::FAnalysisSessionReadScope SessionReadScope(*AnalysisSession);
 
 				if (FMath::IsNearlyEqual(StartTime, EndTime))
 				{
 					// Find the Application and its delta time
-					const FSlateProvider::TApplicationTickedTimeline& ApplicationTimeline = SlateProvider->GetApplicationTickedTimeline();
-					FSlateProvider::FScopedEnumerateOutsideRange<FSlateProvider::TApplicationTickedTimeline> ScopedRange(ApplicationTimeline);
+					const FSlateProvider::FApplicationTickedTimeline& ApplicationTimeline = SlateProvider->GetApplicationTickedTimeline();
+					FSlateProvider::TScopedEnumerateOutsideRange<FSlateProvider::FApplicationTickedTimeline> ScopedRange(ApplicationTimeline);
 
 					ApplicationTimeline.EnumerateEvents(StartTime, EndTime,
 						[this](double EventStartTime, double EventEndTime, uint32 /*Depth*/, const Message::FApplicationTickedMessage& Message)
 						{
 							this->StartTime = FMath::Min(StartTime, EventStartTime);
 							this->EndTime = FMath::Max(EndTime, EventEndTime+Message.DeltaTime);
-							return Trace::EEventEnumerate::Continue;
+							return TraceServices::EEventEnumerate::Continue;
 						});
 				}
 
@@ -626,9 +952,9 @@ void SSlateFrameSchematicView::RefreshNodes_Invalidation(const FSlateProvider* S
 	TMap<Message::FWidgetId, TSharedPtr<Private::FWidgetUniqueInvalidatedInfo>> InvalidationMap;
 
 	// Build a flat list of all the invalidation
-	const FSlateProvider::TWidgetInvalidatedTimeline& InvalidatedTimeline = SlateProvider->GetWidgetInvalidatedTimeline();
+	const FSlateProvider::FWidgetInvalidatedTimeline& InvalidatedTimeline = SlateProvider->GetWidgetInvalidatedTimeline();
 	InvalidatedTimeline.EnumerateEvents(StartTime, EndTime,
-		[&InvalidationMap](double EventStartTime, double EventEndTime, uint32 /*Depth*/, const Message::FWidgetInvalidatedMessage& Message)
+		[&InvalidationMap, &SlateProvider](double EventStartTime, double EventEndTime, uint32 /*Depth*/, const Message::FWidgetInvalidatedMessage& Message)
 		{
 			TSharedPtr<Private::FWidgetUniqueInvalidatedInfo> WidgetInfo;
 			TSharedPtr<Private::FWidgetUniqueInvalidatedInfo> InvestigatorInfo;
@@ -657,7 +983,7 @@ void SSlateFrameSchematicView::RefreshNodes_Invalidation(const FSlateProvider* S
 					InvalidationMap.Add(Message.InvestigatorId, InvestigatorInfo);
 				}
 				InvestigatorInfo->bRoot = false;
-				WidgetInfo->Investigators.Add(InvestigatorInfo);
+				WidgetInfo->Investigators.AddUnique(InvestigatorInfo);
 			}
 
 			if (!Message.ScriptTrace.IsEmpty())
@@ -665,12 +991,13 @@ void SSlateFrameSchematicView::RefreshNodes_Invalidation(const FSlateProvider* S
 				WidgetInfo->ScriptTrace = Message.ScriptTrace;
 			}
 
-			if (!Message.Callstack.IsEmpty())
+			const FString* Callstack = SlateProvider->FindInvalidationCallstack(Message.SourceCycle);
+			if (Callstack)
 			{
-				WidgetInfo->Callstack = Message.Callstack;
+				WidgetInfo->Callstack = *Callstack;
 			}
 
-			return Trace::EEventEnumerate::Continue;
+			return TraceServices::EEventEnumerate::Continue;
 		});
 
 	for (const auto& Itt : InvalidationMap)
@@ -687,26 +1014,91 @@ void SSlateFrameSchematicView::RefreshNodes_Invalidation(const FSlateProvider* S
 void SSlateFrameSchematicView::RefreshNodes_Update(const FSlateProvider* SlateProvider)
 {
 	TMap<Message::FWidgetId, TSharedPtr<Private::FWidgetUpdateInfo>> WidgetUpdateInfosMap;
-	const FSlateProvider::TWidgetUpdatedTimeline& UpdatedTimeline = SlateProvider->GetWidgetUpdatedTimeline();
+	const FSlateProvider::FWidgetUpdatedTimeline& UpdatedTimeline = SlateProvider->GetWidgetUpdatedTimeline();
 	UpdatedTimeline.EnumerateEvents(StartTime, EndTime,
 		[&WidgetUpdateInfosMap](double EventStartTime, double EventEndTime, uint32 /*Depth*/, const Message::FWidgetUpdatedMessage& Message)
 		{
 			if (TSharedPtr<Private::FWidgetUpdateInfo>* Info = WidgetUpdateInfosMap.Find(Message.WidgetId))
 			{
-				++((*Info)->Count);
-				(*Info)->UpdateFlags |= Message.UpdateFlags;
+				Private::FWidgetUpdateInfo& UpdateInfo = *(*Info);
+				// if we have the same flag again, then we have a duplicate
+				if ((UpdateInfo.UpdateFlags & Message.UpdateFlags) != EWidgetUpdateFlags::None)
+				{
+					++UpdateInfo.Count;
+				}
+				UpdateInfo.AffectedCount = FMath::Max(UpdateInfo.AffectedCount, Message.AffectedCount);
+				// If the new update is the paint message, take it's time since it include the tick and active timer
+				if (EnumHasAnyFlags(UpdateInfo.UpdateFlags, EWidgetUpdateFlags::NeedsRepaint|EWidgetUpdateFlags::NeedsVolatilePaint))
+				{
+					UpdateInfo.Duration = Message.Duration;
+				}
+				UpdateInfo.UpdateFlags |= Message.UpdateFlags;
 			}
 			else
 			{
 				WidgetUpdateInfosMap.Add(
 					Message.WidgetId,
-					MakeShared<Private::FWidgetUpdateInfo>(Message.WidgetId, Message.UpdateFlags));
+					MakeShared<Private::FWidgetUpdateInfo>(Message.WidgetId, Message.AffectedCount, Message.Duration, Message.UpdateFlags));
 			}
-			return Trace::EEventEnumerate::Continue;
+			return TraceServices::EEventEnumerate::Continue;
 		});
 	WidgetUpdateInfosMap.GenerateValueArray(WidgetUpdateInfos);
+	SortWidgetUpdateInfos();
 
 	UpdateSummary->SetText(FText::Format(LOCTEXT("UpdateSummary_Formated", "{0} widgets updated."), FText::AsNumber(WidgetUpdateInfos.Num())));
+}
+
+void SSlateFrameSchematicView::SortWidgetUpdateInfos()
+{
+	if (bWidgetUpdateSortAscending)
+	{
+		if (WidgetUpdateSortColumn == Private::ColumnAffectedCount)
+		{
+			WidgetUpdateInfos.Sort([](const TSharedPtr<Private::FWidgetUpdateInfo>& A, const TSharedPtr<Private::FWidgetUpdateInfo>& B)
+				{
+					return A->AffectedCount < B->AffectedCount;
+				});
+		}
+		else if (WidgetUpdateSortColumn == Private::ColumnDuration)
+		{
+			WidgetUpdateInfos.Sort([](const TSharedPtr<Private::FWidgetUpdateInfo>& A, const TSharedPtr<Private::FWidgetUpdateInfo>& B)
+				{
+					return A->Duration < B->Duration;
+				});
+		}
+		else if (WidgetUpdateSortColumn == Private::ColumnWidgetId)
+		{
+			WidgetUpdateInfos.Sort([](const TSharedPtr<Private::FWidgetUpdateInfo>& A, const TSharedPtr<Private::FWidgetUpdateInfo>& B)
+				{
+					return A->WidgetId.GetValue() < B->WidgetId.GetValue();
+				});
+		}
+	}
+	else
+	{
+		if (WidgetUpdateSortColumn == Private::ColumnAffectedCount)
+		{
+			WidgetUpdateInfos.Sort([](const TSharedPtr<Private::FWidgetUpdateInfo>& A, const TSharedPtr<Private::FWidgetUpdateInfo>& B)
+				{
+					return A->AffectedCount > B->AffectedCount;
+				});
+		}
+		else if (WidgetUpdateSortColumn == Private::ColumnDuration)
+		{
+			WidgetUpdateInfos.Sort([](const TSharedPtr<Private::FWidgetUpdateInfo>& A, const TSharedPtr<Private::FWidgetUpdateInfo>& B)
+				{
+					return A->Duration > B->Duration;
+				});
+		}
+		else if (WidgetUpdateSortColumn == Private::ColumnWidgetId)
+		{
+			WidgetUpdateInfos.Sort([](const TSharedPtr<Private::FWidgetUpdateInfo>& A, const TSharedPtr<Private::FWidgetUpdateInfo>& B)
+				{
+					return A->WidgetId.GetValue() > B->WidgetId.GetValue();
+				});
+		}
+	}
+	WidgetUpdateInfoListView->RebuildList();
 }
 
 } //namespace SlateInsights

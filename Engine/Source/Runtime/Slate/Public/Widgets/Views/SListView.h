@@ -9,6 +9,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SWidget.h"
 #include "Styling/SlateTypes.h"
+#include "Styling/AppStyle.h"
 #include "Framework/SlateDelegates.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Framework/Views/ITypedTableView.h"
@@ -78,7 +79,8 @@ public:
 
 public:
 	SLATE_BEGIN_ARGS(SListView<ItemType>)
-		: _OnGenerateRow()
+		: _ListViewStyle(&FAppStyle::Get().GetWidgetStyle<FTableViewStyle>("ListView"))
+		, _OnGenerateRow()
 		, _OnEntryInitialized()
 		, _OnRowReleased()
 		, _ListItemsSource()
@@ -95,11 +97,13 @@ public:
 		, _EnableAnimatedScrolling(false)
 		, _ScrollbarDragFocusCause(EFocusCause::Mouse)
 		, _AllowOverscroll(EAllowOverscroll::Yes)
+		, _ScrollBarStyle(&FAppStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar"))
 		, _ConsumeMouseWheel(EConsumeMouseWheel::WhenScrollingPossible)
 		, _WheelScrollMultiplier(GetGlobalScrollAmount())
 		, _NavigationScrollOffset(0.5f)
 		, _HandleGamepadEvents( true )
 		, _HandleDirectionalNavigation( true )
+		, _HandleSpacebarSelection(false)
 		, _IsFocusable(true)
 		, _ReturnFocusToSelection()
 		, _OnItemToString_Debug()
@@ -107,6 +111,8 @@ public:
 		{
 			this->_Clipping = EWidgetClipping::ClipToBounds;
 		}
+
+		SLATE_STYLE_ARGUMENT( FTableViewStyle, ListViewStyle )
 
 		SLATE_EVENT( FOnGenerateRow, OnGenerateRow )
 		
@@ -151,6 +157,8 @@ public:
 		SLATE_ARGUMENT( EFocusCause, ScrollbarDragFocusCause )
 
 		SLATE_ARGUMENT( EAllowOverscroll, AllowOverscroll );
+		
+		SLATE_STYLE_ARGUMENT( FScrollBarStyle, ScrollBarStyle );
 
 		SLATE_ARGUMENT( EConsumeMouseWheel, ConsumeMouseWheel );
 
@@ -161,6 +169,8 @@ public:
 		SLATE_ARGUMENT( bool, HandleGamepadEvents );
 
 		SLATE_ARGUMENT( bool, HandleDirectionalNavigation );
+
+		SLATE_ARGUMENT(bool, HandleSpacebarSelection);
 
 		SLATE_ATTRIBUTE(bool, IsFocusable)
 
@@ -207,6 +217,7 @@ public:
 
 		this->bHandleGamepadEvents = InArgs._HandleGamepadEvents;
 		this->bHandleDirectionalNavigation = InArgs._HandleDirectionalNavigation;
+		this->bHandleSpacebarSelection = InArgs._HandleSpacebarSelection;
 		this->IsFocusable = InArgs._IsFocusable;
 
 		this->bReturnFocusToSelection = InArgs._ReturnFocusToSelection;
@@ -221,6 +232,8 @@ public:
 		OnEnteredBadState = InArgs._OnEnteredBadState;
 
 		this->OnKeyDownHandler = InArgs._OnKeyDownHandler;
+
+		this->SetStyle(InArgs._ListViewStyle);
 
 		// Check for any parameters that the coder forgot to specify.
 		FString ErrorString;
@@ -250,7 +263,7 @@ public:
 		else
 		{
 			// Make the TableView
-			ConstructChildren( 0, InArgs._ItemHeight, EListItemAlignment::LeftAligned, InArgs._HeaderRow, InArgs._ExternalScrollbar, InArgs._Orientation, InArgs._OnListViewScrolled );
+			ConstructChildren( 0, InArgs._ItemHeight, EListItemAlignment::LeftAligned, InArgs._HeaderRow, InArgs._ExternalScrollbar, InArgs._Orientation, InArgs._OnListViewScrolled, InArgs._ScrollBarStyle );
 			if(ScrollBar.IsValid())
 			{
 				ScrollBar->SetDragFocusCause(InArgs._ScrollbarDragFocusCause);
@@ -260,15 +273,15 @@ public:
 		}
 	}
 
-	SListView( ETableViewMode::Type InListMode = ETableViewMode::List )
-		: STableViewBase( InListMode )
+	SListView(ETableViewMode::Type InListMode = ETableViewMode::List)
+		: STableViewBase(InListMode)
 		, WidgetGenerator(this)
-		, SelectorItem( NullableItemType(nullptr) )
-		, RangeSelectionStart( NullableItemType(nullptr) )
-		, ItemsSource( nullptr )
-		, ItemToScrollIntoView( NullableItemType(nullptr) )
-		, UserRequestingScrollIntoView( 0 )
-		, ItemToNotifyWhenInView( NullableItemType(nullptr) ) 
+		, SelectorItem(TListTypeTraits<ItemType>::MakeNullPtr())
+		, RangeSelectionStart(TListTypeTraits<ItemType>::MakeNullPtr())
+		, ItemsSource(nullptr)
+		, ItemToScrollIntoView(TListTypeTraits<ItemType>::MakeNullPtr())
+		, UserRequestingScrollIntoView(0)
+		, ItemToNotifyWhenInView(TListTypeTraits<ItemType>::MakeNullPtr())
 		, IsFocusable(true)
 	{ 
 #if WITH_ACCESSIBILITY
@@ -303,7 +316,7 @@ public:
 		if ( ItemsSourceRef.Num() > 0 && !InKeyEvent.IsAltDown() )
 		{
 			bool bWasHandled = false;
-			NullableItemType ItemNavigatedTo( nullptr );
+			NullableItemType ItemNavigatedTo = TListTypeTraits<ItemType>::MakeNullPtr();
 
 			// Check for selection manipulation keys (Up, Down, Home, End, PageUp, PageDown)
 			if ( InKeyEvent.GetKey() == EKeys::Home )
@@ -326,7 +339,7 @@ public:
 					SelectionIndex = ItemsSourceRef.Find( TListTypeTraits<ItemType>::NullableItemTypeConvertToItemType( SelectorItem ) );
 				}
 
-				int32 NumItemsInAPage = GetNumLiveWidgets();
+				int32 NumItemsInAPage = FMath::TruncToInt(GetNumLiveWidgets());
 				int32 Remainder = NumItemsInAPage % GetNumItemsPerLine();
 				NumItemsInAPage -= Remainder;
 
@@ -350,7 +363,7 @@ public:
 					SelectionIndex = ItemsSourceRef.Find( TListTypeTraits<ItemType>::NullableItemTypeConvertToItemType( SelectorItem ) );
 				}
 
-				int32 NumItemsInAPage = GetNumLiveWidgets();
+				int32 NumItemsInAPage = FMath::TruncToInt(GetNumLiveWidgets());
 				int32 Remainder = NumItemsInAPage % GetNumItemsPerLine();
 				NumItemsInAPage -= Remainder;
 
@@ -375,29 +388,29 @@ public:
 			else
 			{
 				// Change selected status of item.
-				if( TListTypeTraits<ItemType>::IsPtrValid(SelectorItem) && InKeyEvent.GetKey() == EKeys::SpaceBar )
+				if (bHandleSpacebarSelection && TListTypeTraits<ItemType>::IsPtrValid(SelectorItem) && InKeyEvent.GetKey() == EKeys::SpaceBar)
 				{
-					ItemType SelectorItemDereference( TListTypeTraits<ItemType>::NullableItemTypeConvertToItemType( SelectorItem ) );
+					ItemType SelectorItemDereference(TListTypeTraits<ItemType>::NullableItemTypeConvertToItemType(SelectorItem));
 
 					// Deselect.
-					if( InKeyEvent.IsControlDown() || SelectionMode.Get() == ESelectionMode::SingleToggle )
+					if (InKeyEvent.IsControlDown() || SelectionMode.Get() == ESelectionMode::SingleToggle)
 					{
-						this->Private_SetItemSelection( SelectorItemDereference, !( this->Private_IsItemSelected( SelectorItemDereference ) ), true );
-						this->Private_SignalSelectionChanged( ESelectInfo::OnKeyPress );
+						this->Private_SetItemSelection(SelectorItemDereference, !(this->Private_IsItemSelected(SelectorItemDereference)), true);
+						this->Private_SignalSelectionChanged(ESelectInfo::OnKeyPress);
 						bWasHandled = true;
 					}
 					else
 					{
 						// Already selected, don't handle.
-						if( this->Private_IsItemSelected( SelectorItemDereference ) )
+						if (this->Private_IsItemSelected(SelectorItemDereference))
 						{
 							bWasHandled = false;
 						}
 						// Select.
 						else
 						{
-							this->Private_SetItemSelection( SelectorItemDereference, true, true );
-							this->Private_SignalSelectionChanged( ESelectInfo::OnKeyPress );
+							this->Private_SetItemSelection(SelectorItemDereference, true, true);
+							this->Private_SignalSelectionChanged(ESelectInfo::OnKeyPress);
 							bWasHandled = true;
 						}
 					}
@@ -405,8 +418,8 @@ public:
 					RangeSelectionStart = SelectorItem;
 
 					// If the selector is not in the view, scroll it into view.
-					TSharedPtr<ITableRow> WidgetForItem = this->WidgetGenerator.GetWidgetForItem( SelectorItemDereference );
-					if ( !WidgetForItem.IsValid() )
+					TSharedPtr<ITableRow> WidgetForItem = this->WidgetGenerator.GetWidgetForItem(SelectorItemDereference);
+					if (!WidgetForItem.IsValid())
 					{
 						this->RequestScrollIntoView(SelectorItemDereference, InKeyEvent.GetUserIndex());
 					}
@@ -1091,6 +1104,12 @@ public:
 
 public:	
 
+	void SetStyle(const FTableViewStyle* InStyle)
+	{
+		Style = InStyle;
+		SetBackgroundBrush( Style != nullptr ? &Style->BackgroundBrush : FStyleDefaults::GetNoBrush() );
+	}
+
 	/** Sets the OnEntryInitializer delegate. This delegate is invoked after initializing an entry being generated, before it may be added to the actual widget hierarchy. */
 	void SetOnEntryInitialized(const FOnEntryInitialized& Delegate)
 	{
@@ -1148,6 +1167,11 @@ public:
 	 */
 	virtual FReGenerateResults ReGenerateItems( const FGeometry& MyGeometry ) override
 	{
+		auto DoubleFractional = [](double Value) -> double
+		{
+			return Value - FMath::TruncToDouble(Value);
+		};
+
 		// Clear all the items from our panel. We will re-add them in the correct order momentarily.
 		this->ClearWidgets();
 
@@ -1167,7 +1191,7 @@ public:
 
 			// Index of the item at which we start generating based on how far scrolled down we are
 			// Note that we must generate at LEAST one item.
-			int32 StartIndex = FMath::Clamp( FMath::FloorToInt(CurrentScrollOffset), 0, ItemsSource->Num() - 1 );
+			int32 StartIndex = FMath::Clamp( (int32)(FMath::FloorToDouble(CurrentScrollOffset)), 0, ItemsSource->Num() - 1 );
 
 			// Length of the first item that is generated. This item is at the location where the user requested we scroll
 			float FirstItemLength = 0.0f;
@@ -1203,7 +1227,7 @@ public:
 				{
 					// The first item may not be fully visible (but cannot exceed 1)
 					// FirstItemFractionScrolledIntoView is the fraction of the item that is visible after taking into account anything that may be scrolled off the top/left of the list view
-					const float FirstItemFractionScrolledIntoView = 1.0f - FMath::Max(FMath::Fractional(CurrentScrollOffset), 0.0f);
+					const float FirstItemFractionScrolledIntoView = 1.0f - (float)FMath::Max(DoubleFractional(CurrentScrollOffset), 0.0);
 					
 					// FirstItemLengthScrolledIntoView is the length of the item, ignoring anything that is scrolled off the top/left of the list view
 					const float FirstItemLengthScrolledIntoView = ItemLength * FirstItemFractionScrolledIntoView;
@@ -1301,7 +1325,7 @@ public:
 
 		// We rely on the widgets desired size in order to determine how many will fit on screen.
 		const TSharedRef<SWidget> NewlyGeneratedWidget = WidgetForItem->AsWidget();
-		NewlyGeneratedWidget->InvalidatePrepass();
+		NewlyGeneratedWidget->MarkPrepassAsDirty();
 		NewlyGeneratedWidget->SlatePrepass(LayoutScaleMultiplier);
 
 		// We have a widget for this item; add it to the panel so that it is part of the UI.
@@ -1568,8 +1592,11 @@ public:
 	 */
 	void RequestNavigateToItem(ItemType Item, const uint32 UserIndex = 0)
 	{
-		Item = Private_FindNextSelectableOrNavigable(Item);
-		Private_RequestNavigateToItem(Item, UserIndex);
+		TOptional<ItemType> FirstValidItem = Private_FindNextSelectableOrNavigable(Item);
+		if (FirstValidItem.IsSet())
+		{
+			Private_RequestNavigateToItem(FirstValidItem.GetValue(), UserIndex);
+		}
 	}
 
 private:
@@ -1599,8 +1626,11 @@ public:
 	 */
 	void SetSelection(ItemType SoleSelectedItem, ESelectInfo::Type SelectInfo = ESelectInfo::Direct)
 	{
-		SoleSelectedItem = Private_FindNextSelectableOrNavigable(SoleSelectedItem);
-		Private_SetSelection(SoleSelectedItem, SelectInfo);
+		TOptional<ItemType> FirstValidItem = Private_FindNextSelectableOrNavigable(SoleSelectedItem);
+		if (FirstValidItem.IsSet())
+		{
+			Private_SetSelection(FirstValidItem.GetValue(), SelectInfo);
+		}
 	}
 
 private:
@@ -1667,6 +1697,10 @@ public:
 	{
 		TListTypeTraits<ItemType>::AddReferencedObjects( Collector, WidgetGenerator.ItemsWithGeneratedWidgets, SelectedItems, WidgetGenerator.WidgetMapToItem );
 	}
+	virtual FString GetReferencerName() const
+	{
+		return TEXT("SListView");
+	}
 
 	/**
 	* Will determine the max row size for the specified column id
@@ -1730,7 +1764,7 @@ protected:
 
 				EndInertialScrolling();
 				
-				const int32 NumFullEntriesInView = FMath::FloorToInt(CurrentScrollOffset + NumLiveWidgets) - FMath::CeilToInt(CurrentScrollOffset);
+				const int32 NumFullEntriesInView = (int32)(FMath::FloorToDouble(CurrentScrollOffset + NumLiveWidgets) - FMath::CeilToDouble(CurrentScrollOffset));
 
 				// Only scroll the item into view if it's not already in the visible range
 				// When navigating, we don't want to scroll partially visible existing rows all the way to the center, so we count partially displayed indices in the displayed range
@@ -1742,13 +1776,13 @@ protected:
 					double NewScrollOffset = IndexOfItem;
 
 					// Center the list view on the item in question.
-					NewScrollOffset -= (NumLiveWidgets / 2);
+					NewScrollOffset -= (NumLiveWidgets / 2.0);
 
 					// Limit offset to top and bottom of the list.
 					const double MaxScrollOffset = FMath::Max(0.0, static_cast<double>(ItemsSource->Num()) - NumLiveWidgets);
 					NewScrollOffset = FMath::Clamp<double>(NewScrollOffset, 0.0, MaxScrollOffset);
 
-					SetScrollOffset(NewScrollOffset);
+					SetScrollOffset((float)NewScrollOffset);
 				}
 				else if (bNavigateOnScrollIntoView)
 				{
@@ -1798,7 +1832,7 @@ protected:
 						}
 
 						const double MaxScrollOffset = FMath::Max(0.0, static_cast<double>(ItemsSource->Num()) - NumLiveWidgets);
-						SetScrollOffset(FMath::Min(NewScrollOffset, MaxScrollOffset));
+						SetScrollOffset((float)FMath::Min(NewScrollOffset, MaxScrollOffset));
 					}
 				}
 
@@ -1853,6 +1887,11 @@ protected:
 
 	virtual float ScrollBy( const FGeometry& MyGeometry, float ScrollByAmountInSlateUnits, EAllowOverscroll InAllowOverscroll ) override
 	{
+		auto DoubleFractional = [](double Value) -> double
+		{
+			return Value - FMath::TruncToDouble(Value);
+		};
+
 		if (InAllowOverscroll == EAllowOverscroll::No)
 		{
 			//check if we are on the top of the list and want to scroll up
@@ -1872,8 +1911,8 @@ protected:
 		int32 StartingItemIndex = (int32)CurrentScrollOffset;
 		double NewScrollOffset = DesiredScrollOffset;
 
-		const bool bWholeListVisible = DesiredScrollOffset == 0 && bWasAtEndOfList;
-		if ( InAllowOverscroll == EAllowOverscroll::Yes && Overscroll.ShouldApplyOverscroll(DesiredScrollOffset == 0, bWasAtEndOfList, ScrollByAmountInSlateUnits ) )
+		const bool bWholeListVisible = DesiredScrollOffset == 0.0 && bWasAtEndOfList;
+		if ( InAllowOverscroll == EAllowOverscroll::Yes && Overscroll.ShouldApplyOverscroll(DesiredScrollOffset == 0.0, bWasAtEndOfList, ScrollByAmountInSlateUnits ) )
 		{
 			const float UnclampedScrollDelta = FMath::Sign(ScrollByAmountInSlateUnits) * AbsScrollByAmount;				
 			const float ActuallyScrolledBy = Overscroll.ScrollBy(MyGeometry, UnclampedScrollDelta);
@@ -1925,14 +1964,14 @@ protected:
 					const FTableViewDimensions WidgetDimensions(this->Orientation, RowWidget->AsWidget()->GetDesiredSize());
 					if (ScrollByAmountInSlateUnits > 0)
 					{
-						const float RemainingDistance = WidgetDimensions.ScrollAxis * (1.0 - FMath::Fractional(NewScrollOffset));
+						const float RemainingDistance = WidgetDimensions.ScrollAxis * (float)(1.0 - DoubleFractional(NewScrollOffset));
 
 						if (AbsScrollByAmount > RemainingDistance)
 						{
 							if (ItemIndex != ItemsSource->Num())
 							{
 								AbsScrollByAmount -= RemainingDistance;
-								NewScrollOffset = 1.0f + (int32)NewScrollOffset;
+								NewScrollOffset = 1.0 + (int32)NewScrollOffset;
 								++ItemIndex;
 							}
 							else
@@ -1943,19 +1982,19 @@ protected:
 						} 
 						else if ( AbsScrollByAmount == RemainingDistance)
 						{
-							NewScrollOffset = 1.0f + (int32)NewScrollOffset;
+							NewScrollOffset = 1.0 + (int32)NewScrollOffset;
 							break;
 						}
 						else
 						{
-							NewScrollOffset = (int32)NewScrollOffset + (1.0f - ((RemainingDistance - AbsScrollByAmount) / WidgetDimensions.ScrollAxis));
+							NewScrollOffset = (int32)NewScrollOffset + (1.0 - ((RemainingDistance - AbsScrollByAmount) / WidgetDimensions.ScrollAxis));
 							break;
 						}
 					}
 					else
 					{
-						float Fractional = FMath::Fractional( NewScrollOffset );
-						if ( Fractional == 0 )
+						float Fractional = FMath::Fractional( (float)NewScrollOffset );
+						if ( FMath::IsNearlyEqual(Fractional, 0.f) )
 						{
 							Fractional = 1.0f;
 							--NewScrollOffset;
@@ -1968,18 +2007,18 @@ protected:
 							if ( ItemIndex != 0 )
 							{
 								AbsScrollByAmount -= PrecedingDistance;
-								NewScrollOffset -= FMath::Fractional( NewScrollOffset );
+								NewScrollOffset -= DoubleFractional( NewScrollOffset );
 								--ItemIndex;
 							}
 							else
 							{
-								NewScrollOffset = 0;
+								NewScrollOffset = 0.0;
 								break;
 							}
 						} 
 						else if ( AbsScrollByAmount == PrecedingDistance)
 						{
-							NewScrollOffset -= FMath::Fractional( NewScrollOffset );
+							NewScrollOffset -= DoubleFractional( NewScrollOffset );
 							break;
 						}
 						else
@@ -1992,7 +2031,7 @@ protected:
 			}
 
 
-			return ScrollTo( NewScrollOffset );
+			return ScrollTo( (float)NewScrollOffset );
 		}
 
 		return 0;
@@ -2000,13 +2039,13 @@ protected:
 
 protected:
 
-	ItemType Private_FindNextSelectableOrNavigable(const ItemType& InItemToSelect)
+	TOptional<ItemType> Private_FindNextSelectableOrNavigable(const ItemType& InItemToSelect)
 	{
 		ItemType ItemToSelect = InItemToSelect;
 
 		if (OnIsSelectableOrNavigable.IsBound())
 		{
-			NullableItemType LastSelectedItem = nullptr;
+			NullableItemType LastSelectedItem = TListTypeTraits<ItemType>::MakeNullPtr();
 			if (SelectedItems.Num() == 1)
 			{
 				LastSelectedItem = *SelectedItems.CreateIterator();
@@ -2033,12 +2072,13 @@ protected:
 				}
 				else
 				{
-					break;
+					// Failed to find a valid item to select
+					return TOptional<ItemType>();
 				}
 			}
 		}
 
-		return ItemToSelect;
+		return TOptional<ItemType>(ItemToSelect);
 	}
 
 	/**
@@ -2049,17 +2089,21 @@ protected:
 	 */
 	virtual void NavigationSelect(const ItemType& InItemToSelect, const FInputEvent& InInputEvent)
 	{
-		ItemType ItemToSelect = Private_FindNextSelectableOrNavigable(InItemToSelect);
+		TOptional<ItemType> ItemToSelect = Private_FindNextSelectableOrNavigable(InItemToSelect);
+		if (!ItemToSelect.IsSet())
+		{
+			return;
+		}
 
 		const ESelectionMode::Type CurrentSelectionMode = SelectionMode.Get();
 
 		if (CurrentSelectionMode != ESelectionMode::None)
 		{
 			// Must be set before signaling selection changes because sometimes new items will be selected that need to stomp this value
-			SelectorItem = ItemToSelect;
+			SelectorItem = ItemToSelect.GetValue();
 
 			// Always request scroll into view, otherwise partially visible items will be selected - also do this before signaling selection for similar stomp-allowing reasons
-			Private_RequestNavigateToItem(ItemToSelect, InInputEvent.GetUserIndex());
+			Private_RequestNavigateToItem(ItemToSelect.GetValue(), InInputEvent.GetUserIndex());
 
 			if (CurrentSelectionMode == ESelectionMode::Multi && (InInputEvent.IsShiftDown() || InInputEvent.IsControlDown()))
 			{
@@ -2072,7 +2116,7 @@ protected:
 						this->Private_ClearSelection();
 					}
 
-					this->Private_SelectRangeFromCurrentTo(ItemToSelect);
+					this->Private_SelectRangeFromCurrentTo(ItemToSelect.GetValue());
 				}
 
 				this->Private_SignalSelectionChanged(ESelectInfo::OnNavigation);
@@ -2080,7 +2124,7 @@ protected:
 			else
 			{
 				// Single select.
-				this->Private_SetSelection(ItemToSelect, ESelectInfo::OnNavigation);
+				this->Private_SetSelection(ItemToSelect.GetValue(), ESelectInfo::OnNavigation);
 			}
 		}
 	}
@@ -2158,11 +2202,17 @@ protected:
 	/** Should directional nav be supported */
 	bool bHandleDirectionalNavigation;
 
+	/** Should space bar based selection be supported */
+	bool bHandleSpacebarSelection = false;
+
 	/** If true, the focus will be returned to the last selected object in a list when navigated to. */
 	bool bReturnFocusToSelection;
 
 	/** If true, the item currently slated to be scrolled into view will also be navigated to after being scrolled in */
 	bool bNavigateOnScrollIntoView = false;
+
+	/** Style resource for the list */
+	const FTableViewStyle* Style;
 
 private:
 	struct FGenerationPassGuard

@@ -4,13 +4,14 @@
 #include "AudioMixerPlatformAudioUnitUtils.h"
 #include "Modules/ModuleManager.h"
 #include "AudioMixer.h"
+#include "AudioDevice.h"
 #include "AudioMixerDevice.h"
 #include "CoreGlobals.h"
 #include "CoreMinimal.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
 #include "ADPCMAudioInfo.h"
-
+#include "BinkAudioInfo.h"
 
 /*
  This implementation only depends on the audio units API which allows it to run on MacOS, iOS and tvOS.
@@ -387,23 +388,40 @@ namespace Audio
 		int32 PushResult = CircularOutputBuffer.Push((const int8*)Buffer, BytesToSubmitToAudioMixer);
 		check(PushResult == BytesToSubmitToAudioMixer);
 	}
-	
-	FName FMixerPlatformAudioUnit::GetRuntimeFormat(USoundWave* InSoundWave)
+
+	FName FMixerPlatformAudioUnit::GetRuntimeFormat(const USoundWave* InSoundWave) const
 	{
-		static FName NAME_ADPCM(TEXT("ADPCM"));
-		return NAME_ADPCM;
+		FName RuntimeFormat = Audio::ToName(InSoundWave->GetSoundAssetCompressionType());
+
+		// On IOS the default platform specific codec is ADPCM
+		if (RuntimeFormat == Audio::NAME_PLATFORM_SPECIFIC)
+		{
+			RuntimeFormat = Audio::NAME_ADPCM;
+		}
+
+		return RuntimeFormat;
 	}
-	
-	bool FMixerPlatformAudioUnit::HasCompressedAudioInfoClass(USoundWave* InSoundWave)
+
+	ICompressedAudioInfo* FMixerPlatformAudioUnit::CreateCompressedAudioInfo(const FName& InRuntimeFormat) const
 	{
-		return true;
+		ICompressedAudioInfo* Decoder = nullptr;
+
+		if (InRuntimeFormat == Audio::NAME_PLATFORM_SPECIFIC)
+		{
+			Decoder = new FADPCMAudioInfo();
+		}	
+		else if (InRuntimeFormat == Audio::NAME_BINKA)
+		{
+			Decoder = new FBinkAudioInfo();
+		}
+		else
+		{
+			Decoder = Audio::CreateSoundAssetDecoder(InRuntimeFormat);
+		}
+		ensureMsgf(Decoder != nullptr, TEXT("Failed to create a sound asset decoder for compression type: %s"), *InRuntimeFormat.ToString());
+		return Decoder;
 	}
-	
-	ICompressedAudioInfo* FMixerPlatformAudioUnit::CreateCompressedAudioInfo(USoundWave* InSoundWave)
-	{
-		return new FADPCMAudioInfo();
-	}
-	
+
 	FString FMixerPlatformAudioUnit::GetDefaultDeviceName()
 	{
 		return FString();

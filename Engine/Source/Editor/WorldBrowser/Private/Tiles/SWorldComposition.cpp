@@ -308,7 +308,7 @@ public:
 			if (WorldModel->GetObserverView(ObserverPosition, ObserverRotation))
 			{
 				FVector2D ObserverPositionScreen = GraphCoordToPanelCoord(FVector2D(ObserverPosition.X, ObserverPosition.Y));
-				const FSlateBrush* CameraImage = FEditorStyle::GetBrush(TEXT("WorldBrowser.SimulationViewPositon"));
+				const FSlateBrush* CameraImage = FEditorStyle::GetBrush(TEXT("WorldBrowser.SimulationViewPosition"));
 	
 				//AllottedGeometry.GetAccumulatedRenderTransform();
 				//FSlateLayoutTransform LayoutTransform(Scale, AllottedGeometry.GetAccumulatedLayoutTransform().GetTranslation() - InflateAmount);
@@ -336,7 +336,7 @@ public:
 			if (WorldModel->GetPlayerView(PlayerPosition, PlayerRotation))
 			{
 				FVector2D PlayerPositionScreen = GraphCoordToPanelCoord(FVector2D(PlayerPosition.X, PlayerPosition.Y));
-				const FSlateBrush* CameraImage = FEditorStyle::GetBrush(TEXT("WorldBrowser.SimulationViewPositon"));
+				const FSlateBrush* CameraImage = FEditorStyle::GetBrush(TEXT("WorldBrowser.SimulationViewPosition"));
 	
 				FPaintGeometry PaintGeometry = AllottedGeometry.ToPaintGeometry(
 					PlayerPositionScreen - CameraImage->ImageSize*0.5f, 
@@ -595,7 +595,8 @@ protected:
 		}
 
 		FArrangedChildren ArrangedChildren(EVisibility::Visible);
-		ArrangeChildren(MyGeometry, ArrangedChildren);
+		const bool bUpdateVisibilityAttributes = true;
+		ArrangeChildren(MyGeometry, ArrangedChildren, bUpdateVisibilityAttributes);
 
 		const int32 NodeUnderMouseIndex = SWidget::FindChildUnderMouse( ArrangedChildren, MouseEvent );
 		if (NodeUnderMouseIndex != INDEX_NONE)
@@ -878,7 +879,7 @@ protected:
 	/**  Converts cursor absolute position to the world position */
 	FVector2D CursorToWorldPosition(const FGeometry& InGeometry, FVector2D InAbsoluteCursorPosition)
 	{
-		FVector2D ViewSpacePosition = (InAbsoluteCursorPosition - InGeometry.AbsolutePosition)/InGeometry.Scale;
+		FVector2D ViewSpacePosition = (InAbsoluteCursorPosition - FVector2D(InGeometry.AbsolutePosition))/InGeometry.Scale;
 		return PanelCoordToGraphCoord(ViewSpacePosition);
 	}
 

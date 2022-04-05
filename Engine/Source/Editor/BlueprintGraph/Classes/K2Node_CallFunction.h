@@ -58,9 +58,11 @@ private:
 	UPROPERTY()
 	TSubclassOf<class UObject> CallFunctionClass_DEPRECATED;
 
+protected:
 	/** Constructing FText strings can be costly, so we cache the node's tooltip */
 	FNodeTextCache CachedTooltip;
 
+private:
 	/** Flag used to track validity of pin tooltips, when tooltips are invalid they will be refreshed before being displayed */
 	mutable bool bPinTooltipsValid;
 
@@ -201,6 +203,9 @@ public:
 	/** Used to determine the result of AllowMultipleSelfs() (without having a node instance) */
 	static bool CanFunctionSupportMultipleTargets(UFunction const* InFunction);
 
+	/** Checks if the input function can be called in the input object with respect to editor-only/runtime mismatch*/
+	static bool CanEditorOnlyFunctionBeCalled(const UFunction* InFunction, const UObject* InObject);
+
 	/** */
 	static FSlateIcon GetPaletteIconForFunction(UFunction const* Function, FLinearColor& OutColor);
 
@@ -222,13 +227,14 @@ private:
 	 */
 	bool ReconnectPureExecPins(TArray<UEdGraphPin*>& OldPins);
 
-	/** Invalidates current pin tool tips, so that they will be refreshed before being displayed: */
-	void InvalidatePinTooltips();
-
 	/** Conforms container pins */
 	void ConformContainerPins();
 
 protected:
+
+	/** Invalidates current pin tool tips, so that they will be refreshed before being displayed: */
+	void InvalidatePinTooltips();
+
 	/** Helper function to ensure function is called in our context */
 	virtual void FixupSelfMemberContext();
 

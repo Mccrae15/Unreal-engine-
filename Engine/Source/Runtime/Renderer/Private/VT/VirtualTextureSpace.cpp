@@ -13,6 +13,8 @@
 #include "HAL/IConsoleManager.h"
 #include "SceneUtils.h"
 
+#include "VT/AllocatedVirtualTexture.h"
+
 DEFINE_LOG_CATEGORY_STATIC(LogVirtualTextureSpace, Log, All);
 
 static TAutoConsoleVariable<int32> CVarVTRefreshEntirePageTable(
@@ -45,10 +47,11 @@ static EPixelFormat GetFormatForNumLayers(uint32 NumLayers, EVTPageTableFormat F
 FVirtualTextureSpace::FVirtualTextureSpace(FVirtualTextureSystem* InSystem, uint8 InID, const FVTSpaceDescription& InDesc, uint32 InSizeNeeded)
 	: Description(InDesc)
 	, Allocator(InDesc.Dimensions)
-	, PageTableSize(0u)
-	, NumPageTableLevels(0u)
 	, NumRefs(0u)
 	, ID(InID)
+	, CachedPageTableWidth(0u)
+	, CachedPageTableHeight(0u)
+	, CachedNumPageTableLevels(0u)
 	, bNeedToAllocatePageTable(true)
 	, bForceEntireUpdate(false)
 {
@@ -73,12 +76,7 @@ FVirtualTextureSpace::FVirtualTextureSpace(FVirtualTextureSystem* InSystem, uint
 		++PageTableIndex;
 	}
 
-	PageTableSize = FMath::Max(InSizeNeeded, VIRTUALTEXTURE_MIN_PAGETABLE_SIZE);
-	PageTableSize = FMath::RoundUpToPowerOfTwo(PageTableSize);
-	ensure(PageTableSize <= Description.MaxSpaceSize);
-	ensure(Description.MaxSpaceSize <= VIRTUALTEXTURE_MAX_PAGETABLE_SIZE);
-	NumPageTableLevels = FMath::FloorLog2(PageTableSize) + 1;
-	Allocator.Initialize(PageTableSize);
+	Allocator.Initialize(Description.MaxSpaceSize);
 
 	bNeedToAllocatePageTableIndirection = InDesc.IndirectionTextureSize > 0;
 }
@@ -90,15 +88,11 @@ FVirtualTextureSpace::~FVirtualTextureSpace()
 uint32 FVirtualTextureSpace::AllocateVirtualTexture(FAllocatedVirtualTexture* VirtualTexture)
 {
 	uint32 vAddress = Allocator.Alloc(VirtualTexture);
-	while (vAddress == ~0u && PageTableSize < Description.MaxSpaceSize)
+	if (Allocator.GetAllocatedWidth() > CachedPageTableWidth || Allocator.GetAllocatedHeight() > CachedPageTableHeight)
 	{
-		// Allocation failed, expand the size of page table texture and try again
-		PageTableSize *= 2u;
-		++NumPageTableLevels;
 		bNeedToAllocatePageTable = true;
-		Allocator.Grow();
-		vAddress = Allocator.Alloc(VirtualTexture);
 	}
+
 	return vAddress;
 }
 
@@ -112,9 +106,9 @@ void FVirtualTextureSpace::InitRHI()
 	for (uint32 TextureIndex = 0u; TextureIndex < GetNumPageTableTextures(); ++TextureIndex)
 	{
 		FTextureEntry& TextureEntry = PageTable[TextureIndex];
-		TextureEntry.TextureReferenceRHI = RHICreateTextureReference(nullptr);
+		TextureEntry.TextureReferenceRHI = RHICreateTextureReference();
 	}
-	PageTableIndirection.TextureReferenceRHI = RHICreateTextureReference(nullptr);
+	PageTableIndirection.TextureReferenceRHI = RHICreateTextureReference();
 	RHIUpdateTextureReference(PageTableIndirection.TextureReferenceRHI, GBlackUintTexture->TextureRHI);
 }
 
@@ -139,9 +133,15 @@ uint32 FVirtualTextureSpace::GetSizeInBytes() const
 	uint32 TotalSize = 0u;
 	for (uint32 TextureIndex = 0u; TextureIndex < GetNumPageTableTextures(); ++TextureIndex)
 	{
-		const SIZE_T TextureSize = CalculateImageBytes(PageTableSize, PageTableSize, 0, TexturePixelFormat[TextureIndex]);
+		const uint32 PageTableWidth = Align(Allocator.GetAllocatedWidth(), VIRTUALTEXTURE_MIN_PAGETABLE_SIZE);
+		const uint32 PageTableHeight = Align(Allocator.GetAllocatedHeight(), VIRTUALTEXTURE_MIN_PAGETABLE_SIZE);
+		const uint32 NumPageTableLevels = FMath::FloorLog2(FMath::Max(PageTableWidth, PageTableHeight)) + 1u;
+		const SIZE_T TextureSize = CalcTextureSize(PageTableWidth, PageTableHeight, TexturePixelFormat[TextureIndex], NumPageTableLevels);
 		TotalSize += TextureSize;
 	}
+	
+	TotalSize += CalculateImageBytes(Description.IndirectionTextureSize, Description.IndirectionTextureSize, 0, PF_R32_UINT);
+
 	return TotalSize;
 }
 
@@ -260,63 +260,49 @@ void FVirtualTextureSpace::QueueUpdateEntirePageTable()
 	bForceEntireUpdate = true;
 }
 
-void FVirtualTextureSpace::AllocateTextures(FRHICommandList& RHICmdList)
+void FVirtualTextureSpace::AllocateTextures(FRDGBuilder& GraphBuilder)
 {
 	if (bNeedToAllocatePageTable)
 	{
-		SCOPED_GPU_MASK(RHICmdList, FRHIGPUMask::All());
+		RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::All());
 
-		const TCHAR* TextureNames[] = { TEXT("PageTable_0"), TEXT("PageTable_1") };
+		const TCHAR* TextureNames[] = { TEXT("VirtualPageTable_0"), TEXT("VirtualPageTable_1") };
 		static_assert(UE_ARRAY_COUNT(TextureNames) == TextureCapacity, "");
+
+		CachedPageTableWidth = Align(Allocator.GetAllocatedWidth(), VIRTUALTEXTURE_MIN_PAGETABLE_SIZE);
+		CachedPageTableHeight = Align(Allocator.GetAllocatedHeight(), VIRTUALTEXTURE_MIN_PAGETABLE_SIZE);
+		CachedNumPageTableLevels = FMath::FloorLog2(FMath::Max(CachedPageTableWidth, CachedPageTableHeight)) + 1u;
 
 		for (uint32 TextureIndex = 0u; TextureIndex < GetNumPageTableTextures(); ++TextureIndex)
 		{
 			// Page Table
 			FTextureEntry& TextureEntry = PageTable[TextureIndex];
-			const FPooledRenderTargetDesc Desc = FPooledRenderTargetDesc::Create2DDesc(
-				FIntPoint(PageTableSize, PageTableSize),
+			const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
+				FIntPoint(CachedPageTableWidth, CachedPageTableHeight),
 				TexturePixelFormat[TextureIndex],
 				FClearValueBinding::None,
-				TexCreate_None,
 				TexCreate_RenderTargetable | TexCreate_ShaderResource,
-				false,
-				NumPageTableLevels,
-				false /* InAutowritable */);
+				CachedNumPageTableLevels);
 
-			TRefCountPtr<IPooledRenderTarget> RenderTarget;
-			GRenderTargetPool.FindFreeElement(RHICmdList, Desc, RenderTarget, TextureNames[TextureIndex]);
-			RHIUpdateTextureReference(TextureEntry.TextureReferenceRHI, RenderTarget->GetRenderTargetItem().ShaderResourceTexture);
+			FRDGTextureRef DstTexture = GraphBuilder.CreateTexture(Desc, TextureNames[TextureIndex]);
+
 			if (TextureEntry.RenderTarget)
 			{
+				FRDGTextureRef SrcTexture = GraphBuilder.RegisterExternalTexture(TextureEntry.RenderTarget);
+				const FRDGTextureDesc& SrcDesc = SrcTexture->Desc;
+
 				// Copy previously allocated page table to new texture
-				const FPooledRenderTargetDesc& SrcDesc = TextureEntry.RenderTarget->GetDesc();
 				FRHICopyTextureInfo CopyInfo;
 				CopyInfo.Size.X = FMath::Min(Desc.Extent.X, SrcDesc.Extent.X);
 				CopyInfo.Size.Y = FMath::Min(Desc.Extent.Y, SrcDesc.Extent.Y);
 				CopyInfo.Size.Z = 1;
 				CopyInfo.NumMips = FMath::Min(Desc.NumMips, SrcDesc.NumMips);
 
-				FRHITexture* SrcTexture = TextureEntry.RenderTarget->GetRenderTargetItem().ShaderResourceTexture;
-				FRHITexture* DstTexture = RenderTarget->GetRenderTargetItem().TargetableTexture;
-
-				FRHITransitionInfo TransitionsBefore[] = {
-					FRHITransitionInfo(SrcTexture, ERHIAccess::EReadable, ERHIAccess::CopySrc),
-					FRHITransitionInfo(DstTexture, ERHIAccess::Unknown, ERHIAccess::CopyDest)
-				};
-				RHICmdList.Transition(MakeArrayView(TransitionsBefore, UE_ARRAY_COUNT(TransitionsBefore)));
-
-				RHICmdList.CopyTexture(SrcTexture, DstTexture, CopyInfo);
-
-				FRHITransitionInfo TransitionsAfter[] = {
-					FRHITransitionInfo(SrcTexture, ERHIAccess::CopySrc, ERHIAccess::SRVGraphics | ERHIAccess::SRVCompute),
-					FRHITransitionInfo(DstTexture, ERHIAccess::CopyDest, ERHIAccess::SRVGraphics | ERHIAccess::SRVCompute)
-				};
-				RHICmdList.Transition(MakeArrayView(TransitionsAfter, UE_ARRAY_COUNT(TransitionsAfter)));
-
-				GRenderTargetPool.FreeUnusedResource(TextureEntry.RenderTarget);
+				AddCopyTexturePass(GraphBuilder, SrcTexture, DstTexture, CopyInfo);
 			}
 
-			TextureEntry.RenderTarget = RenderTarget;
+			TextureEntry.RenderTarget = GraphBuilder.ConvertToExternalTexture(DstTexture);
+			RHIUpdateTextureReference(TextureEntry.TextureReferenceRHI, TextureEntry.RenderTarget->GetRHI());
 		}
 
 		bNeedToAllocatePageTable = false;
@@ -324,26 +310,20 @@ void FVirtualTextureSpace::AllocateTextures(FRHICommandList& RHICmdList)
 
 	if (bNeedToAllocatePageTableIndirection)
 	{
-		SCOPED_GPU_MASK(RHICmdList, FRHIGPUMask::All());
+		RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::All());
 
 		if (Description.IndirectionTextureSize > 0)
 		{
-			const FPooledRenderTargetDesc Desc = FPooledRenderTargetDesc::Create2DDesc(
+			const FRDGTextureDesc Desc = FRDGTextureDesc::Create2D(
 				FIntPoint(Description.IndirectionTextureSize, Description.IndirectionTextureSize),
 				PF_R32_UINT,
 				FClearValueBinding::None,
-				TexCreate_None,
-				TexCreate_UAV | TexCreate_ShaderResource,
-				false);
+				TexCreate_UAV | TexCreate_ShaderResource);
 
-			TRefCountPtr<IPooledRenderTarget> RenderTarget;
-			GRenderTargetPool.FindFreeElement(RHICmdList, Desc, RenderTarget, TEXT("PageTableIndirection"));
-			PageTableIndirection.RenderTarget = RenderTarget;
-
-			FRHITexture* TextureRHI = RenderTarget->GetRenderTargetItem().ShaderResourceTexture;
-			RHIUpdateTextureReference(PageTableIndirection.TextureReferenceRHI, TextureRHI);
-
-			RHICmdList.ClearUAVUint(RHICreateUnorderedAccessView(TextureRHI), FUintVector4(ForceInitToZero));
+			FRDGTextureRef PageTableIndirectionTexture = GraphBuilder.CreateTexture(Desc, TEXT("PageTableIndirection"));
+			AddClearUAVPass(GraphBuilder, GraphBuilder.CreateUAV(PageTableIndirectionTexture), FUintVector4(ForceInitToZero));
+			PageTableIndirection.RenderTarget = GraphBuilder.ConvertToExternalTexture(PageTableIndirectionTexture);
+			RHIUpdateTextureReference(PageTableIndirection.TextureReferenceRHI, PageTableIndirection.RenderTarget->GetRHI());
 		}
 
 		bNeedToAllocatePageTableIndirection = false;
@@ -351,12 +331,19 @@ void FVirtualTextureSpace::AllocateTextures(FRHICommandList& RHICmdList)
 }
 
 
-void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRHICommandListImmediate& RHICmdList)
+void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRDGBuilder& GraphBuilder)
 {
 	static TArray<FPageTableUpdate> ExpandedUpdates[VIRTUALTEXTURE_SPACE_MAXLAYERS][16];
 
+	if (bNeedToAllocatePageTable)
+	{
+		// Defer updates until next frame if page table needs to be re-allocated
+		// We can't update page table at this point in frame, as RHIUpdateTextureReference can't be called during RHIBegin/EndScene
+		return;
+	}
+
 	// Multi-GPU support : May be ineffecient for AFR.
-	SCOPED_GPU_MASK(RHICmdList, FRHIGPUMask::All());
+	RDG_GPU_MASK_SCOPE(GraphBuilder, FRHIGPUMask::All());
 
 	for (uint32 LayerIndex = 0u; LayerIndex < Description.NumPageTableLayers; ++LayerIndex)
 	{
@@ -388,7 +375,7 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRHIComma
 	uint32 TotalNumUpdates = 0;
 	for (uint32 LayerIndex = 0u; LayerIndex < Description.NumPageTableLayers; ++LayerIndex)
 	{
-		for (uint32 Mip = 0; Mip < NumPageTableLevels; Mip++)
+		for (uint32 Mip = 0; Mip < CachedNumPageTableLevels; Mip++)
 		{
 			TotalNumUpdates += ExpandedUpdates[LayerIndex][Mip].Num();
 		}
@@ -396,10 +383,6 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRHIComma
 
 	if (TotalNumUpdates == 0u)
 	{
-		for (uint32 i = 0u; i < GetNumPageTableTextures(); ++i)
-		{
-			GVisualizeTexture.SetCheckPoint(RHICmdList, PageTable[i].RenderTarget);
-		}
 		return;
 	}
 
@@ -413,17 +396,17 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRHIComma
 			NewBufferSize = FMath::Max(NewBufferSize, UpdateBuffer->GetSize() * 2u);
 		}
 
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FVirtualTextureSpace_UpdateBuffer"));
 		UpdateBuffer = RHICreateVertexBuffer(NewBufferSize, BUF_ShaderResource | BUF_Volatile, CreateInfo);
 		UpdateBufferSRV = RHICreateShaderResourceView(UpdateBuffer, sizeof(FPageTableUpdate), PF_R16G16B16A16_UINT);
 	}
 
 	// This flushes the RHI thread!
 	{
-		uint8* Buffer = (uint8*)RHILockVertexBuffer(UpdateBuffer, 0, TotalNumUpdates * sizeof(FPageTableUpdate), RLM_WriteOnly);
+		uint8* Buffer = (uint8*)RHILockBuffer(UpdateBuffer, 0, TotalNumUpdates * sizeof(FPageTableUpdate), RLM_WriteOnly);
 		for (uint32 LayerIndex = 0u; LayerIndex < Description.NumPageTableLayers; ++LayerIndex)
 		{
-			for (uint32 Mip = 0; Mip < NumPageTableLevels; Mip++)
+			for (uint32 Mip = 0; Mip < CachedNumPageTableLevels; Mip++)
 			{
 				const uint32 NumUpdates = ExpandedUpdates[LayerIndex][Mip].Num();
 				if (NumUpdates)
@@ -434,19 +417,11 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRHIComma
 				}
 			}
 		}
-		RHIUnlockVertexBuffer(UpdateBuffer);
+		RHIUnlockBuffer(UpdateBuffer);
 	}
-
-	TArray<FRHITransitionInfo, SceneRenderingAllocator> TexturesToTransition;
-	TexturesToTransition.SetNumUninitialized(GetNumPageTableTextures());
-	for (int32 i = 0; i < TexturesToTransition.Num(); ++i)
-	{
-		TexturesToTransition[i] = FRHITransitionInfo(PageTable[i].RenderTarget->GetRenderTargetItem().TargetableTexture, ERHIAccess::Unknown, ERHIAccess::RTV);
-	}
-	RHICmdList.Transition(MakeArrayView(TexturesToTransition.GetData(), TexturesToTransition.Num()));
 
 	// Draw
-	SCOPED_DRAW_EVENT(RHICmdList, PageTableUpdate);
+	RDG_EVENT_SCOPE(GraphBuilder, "PageTableUpdate");
 
 	auto ShaderMap = GetGlobalShaderMap(GetFeatureLevel());
 	TShaderRef<FPageTableUpdateVS> VertexShader;
@@ -460,6 +435,9 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRHIComma
 	}
 	check(VertexShader.IsValid());
 
+	FRDGTextureAccessArray PageTableTextures;
+	PageTableTextures.SetNum(FMath::DivideAndRoundUp<uint32>(Description.NumPageTableLayers, LayersPerPageTableTexture));
+
 	uint32 FirstUpdate = 0;
 	for (uint32 LayerIndex = 0u; LayerIndex < Description.NumPageTableLayers; ++LayerIndex)
 	{
@@ -467,9 +445,8 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRHIComma
 		const uint32 LayerInTexture = LayerIndex % LayersPerPageTableTexture;
 
 		FTextureEntry& PageTableEntry = PageTable[TextureIndex];
-		check(PageTableEntry.RenderTarget != nullptr);
-
-		FSceneRenderTargetItem& PageTableTarget = PageTableEntry.RenderTarget->GetRenderTargetItem();
+		FRDGTextureRef PageTableTexture = GraphBuilder.RegisterExternalTexture(PageTableEntry.RenderTarget);
+		PageTableTextures[TextureIndex] = FRDGTextureAccess(PageTableTexture, ERHIAccess::SRVMask);
 
 		// Use color write mask to update the proper page table entry for this layer
 		FRHIBlendState* BlendStateRHI = nullptr;
@@ -495,61 +472,65 @@ void FVirtualTextureSpace::ApplyUpdates(FVirtualTextureSystem* System, FRHIComma
 		}
 		check(PixelShader.IsValid());
 
-		uint32 MipSize = PageTableSize;
-		for (uint32 Mip = 0; Mip < NumPageTableLevels; Mip++)
+		uint32 MipWidth = CachedPageTableWidth;
+		uint32 MipHeight = CachedPageTableHeight;
+		for (uint32 Mip = 0; Mip < CachedNumPageTableLevels; Mip++)
 		{
 			const uint32 NumUpdates = ExpandedUpdates[LayerIndex][Mip].Num();
 			if (NumUpdates)
 			{
-				FRHIRenderPassInfo RPInfo(PageTableTarget.TargetableTexture, ERenderTargetActions::Load_Store, nullptr, Mip);
-				RHICmdList.BeginRenderPass(RPInfo, TEXT("PageTableUpdate"));
-				
-				RHICmdList.SetViewport(0, 0, 0.0f, MipSize, MipSize, 1.0f);
+				auto* PassParameters = GraphBuilder.AllocParameters<FRenderTargetParameters>();
+				PassParameters->RenderTargets[0] = FRenderTargetBinding(PageTableTexture, ERenderTargetLoadAction::ELoad, Mip);
 
-				FGraphicsPipelineStateInitializer GraphicsPSOInit;
-				RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-
-				GraphicsPSOInit.BlendState = BlendStateRHI;
-				GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-				GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
-
-				GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GEmptyVertexDeclaration.VertexDeclarationRHI;
-				GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-
-				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-
+				GraphBuilder.AddPass(
+					RDG_EVENT_NAME("PageTableUpdate (Mip: %d)", Mip),
+					PassParameters,
+					ERDGPassFlags::Raster,
+					[this, VertexShader, PixelShader, BlendStateRHI, FirstUpdate, NumUpdates, MipWidth, MipHeight](FRHICommandList& RHICmdList)
 				{
-					FRHIVertexShader* ShaderRHI = VertexShader.GetVertexShader();
-					SetShaderValue(RHICmdList, ShaderRHI, VertexShader->PageTableSize, PageTableSize);
-					SetShaderValue(RHICmdList, ShaderRHI, VertexShader->FirstUpdate, FirstUpdate);
-					SetShaderValue(RHICmdList, ShaderRHI, VertexShader->NumUpdates, NumUpdates);
-					SetSRVParameter(RHICmdList, ShaderRHI, VertexShader->UpdateBuffer, UpdateBufferSRV);
-				}
+					RHICmdList.SetViewport(0, 0, 0.0f, MipWidth, MipHeight, 1.0f);
 
-				// needs to be the same on shader side (faster on NVIDIA and AMD)
-				uint32 QuadsPerInstance = 8;
+					FGraphicsPipelineStateInitializer GraphicsPSOInit;
+					RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
-				RHICmdList.SetStreamSource(0, NULL, 0);
-				RHICmdList.DrawIndexedPrimitive(GQuadIndexBuffer.IndexBufferRHI, 0, 0, 32, 0, 2 * QuadsPerInstance, FMath::DivideAndRoundUp(NumUpdates, QuadsPerInstance));
+					GraphicsPSOInit.BlendState = BlendStateRHI;
+					GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
+					GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+					GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-				RHICmdList.EndRenderPass();
+					GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GEmptyVertexDeclaration.VertexDeclarationRHI;
+					GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
+					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
+
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
+
+					{
+						FRHIVertexShader* ShaderRHI = VertexShader.GetVertexShader();
+						SetShaderValue(RHICmdList, ShaderRHI, VertexShader->PageTableSize, FIntPoint(CachedPageTableWidth, CachedPageTableHeight));
+						SetShaderValue(RHICmdList, ShaderRHI, VertexShader->FirstUpdate, FirstUpdate);
+						SetShaderValue(RHICmdList, ShaderRHI, VertexShader->NumUpdates, NumUpdates);
+						SetSRVParameter(RHICmdList, ShaderRHI, VertexShader->UpdateBuffer, UpdateBufferSRV);
+					}
+
+					// needs to be the same on shader side (faster on NVIDIA and AMD)
+					uint32 QuadsPerInstance = 8;
+
+					RHICmdList.SetStreamSource(0, NULL, 0);
+					RHICmdList.DrawIndexedPrimitive(GQuadIndexBuffer.IndexBufferRHI, 0, 0, 32, 0, 2 * QuadsPerInstance, FMath::DivideAndRoundUp(NumUpdates, QuadsPerInstance));
+				});
 
 				ExpandedUpdates[LayerIndex][Mip].Reset();
 			}
 
 			FirstUpdate += NumUpdates;
-			MipSize >>= 1;
+			MipWidth = FMath::Max(MipWidth / 2u, 1u);
+			MipHeight = FMath::Max(MipHeight / 2u, 1u);
 		}
+
+		PageTableEntry.RenderTarget = GraphBuilder.ConvertToExternalTexture(PageTableTexture);
 	}
 
-	for (uint32 i = 0u; i < GetNumPageTableTextures(); ++i)
-	{
-		FSceneRenderTargetItem& PageTableTarget = PageTable[i].RenderTarget->GetRenderTargetItem();
-		RHICmdList.CopyToResolveTarget(PageTableTarget.TargetableTexture, PageTableTarget.ShaderResourceTexture, FResolveParams());
-		GVisualizeTexture.SetCheckPoint(RHICmdList, PageTable[i].RenderTarget);
-	}
+	GraphBuilder.FinalizeTextureAccess(MoveTemp(PageTableTextures));
 }
 
 void FVirtualTextureSpace::DumpToConsole(bool verbose)
@@ -557,3 +538,11 @@ void FVirtualTextureSpace::DumpToConsole(bool verbose)
 	UE_LOG(LogConsoleResponse, Display, TEXT("-= Space ID %i =-"), ID);
 	Allocator.DumpToConsole(verbose);
 }
+
+#if WITH_EDITOR
+void FVirtualTextureSpace::SaveAllocatorDebugImage() const
+{
+	const FString ImageName = FString::Printf(TEXT("Space%dAllocator.png"), ID);
+	Allocator.SaveDebugImage(*ImageName);
+}
+#endif

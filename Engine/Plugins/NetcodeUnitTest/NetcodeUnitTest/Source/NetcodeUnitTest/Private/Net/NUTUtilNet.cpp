@@ -2,7 +2,7 @@
 
 #include "Net/NUTUtilNet.h"
 
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "GameFramework/OnlineReplStructs.h"
 #include "Engine/Engine.h"
 #include "PacketHandlers/StatelessConnectHandlerComponent.h"
@@ -247,13 +247,8 @@ void FWorldTickHook::Init()
 {
 	if (AttachedWorld != nullptr)
 	{
-#if TARGET_UE4_CL >= CL_DEPRECATEDEL
 		TickDispatchDelegateHandle  = AttachedWorld->OnTickDispatch().AddRaw(this, &FWorldTickHook::TickDispatch);
 		PostTickFlushDelegateHandle = AttachedWorld->OnPostTickFlush().AddRaw(this, &FWorldTickHook::PostTickFlush);
-#else
-		AttachedWorld->OnTickDispatch().AddRaw(this, &FWorldTickHook::TickDispatch);
-		AttachedWorld->OnPostTickFlush().AddRaw(this, &FWorldTickHook::PostTickFlush);
-#endif
 	}
 }
 
@@ -261,13 +256,8 @@ void FWorldTickHook::Cleanup()
 {
 	if (AttachedWorld != nullptr)
 	{
-#if TARGET_UE4_CL >= CL_DEPRECATEDEL
 		AttachedWorld->OnPostTickFlush().Remove(PostTickFlushDelegateHandle);
 		AttachedWorld->OnTickDispatch().Remove(TickDispatchDelegateHandle);
-#else
-		AttachedWorld->OnPostTickFlush().RemoveRaw(this, &FWorldTickHook::PostTickFlush);
-		AttachedWorld->OnTickDispatch().RemoveRaw(this, &FWorldTickHook::TickDispatch);
-#endif
 	}
 
 	AttachedWorld = nullptr;
@@ -529,8 +519,8 @@ UWorld* NUTNet::CreateUnitTestWorld(bool bHookTick/*=true*/)
 			if (CurSettings != NULL)
 			{
 				ULocalPlayer* PrimLocPlayer = GEngine->GetFirstGamePlayer(NUTUtil::GetPrimaryWorld());
-				APlayerController* PrimPC = (PrimLocPlayer != NULL ? PrimLocPlayer->PlayerController : NULL);
-				APlayerState* PrimState = (PrimPC != NULL ? PrimPC->PlayerState : NULL);
+				APlayerController* PrimPC = (PrimLocPlayer != NULL ? ToRawPtr(PrimLocPlayer->PlayerController) : NULL);
+				APlayerState* PrimState = (PrimPC != NULL ? ToRawPtr(PrimPC->PlayerState) : NULL);
 
 				if (PrimState != NULL)
 				{

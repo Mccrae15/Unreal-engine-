@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "GameplayEffect.h"
+
 #include "TimerManager.h"
 #include "GameFramework/GameStateBase.h"
 #include "Engine/ChildConnection.h"
@@ -14,6 +15,7 @@
 #include "GameplayModMagnitudeCalculation.h"
 #include "GameplayEffectExecutionCalculation.h"
 #include "GameplayCueManager.h"
+#include "UObject/ObjectSaveContext.h"
 
 #if ENABLE_VISUAL_LOG
 //#include "VisualLogger/VisualLogger.h"
@@ -33,11 +35,11 @@ DECLARE_CYCLE_STAT(TEXT("MakeQuery"), STAT_MakeGameplayEffectQuery, STATGROUP_Ab
 
 #if WITH_EDITOR
 #define GETCURVE_REPORTERROR_WITHPOSTLOAD(Handle) \
-	if (Handle.CurveTable) const_cast<UCurveTable*>(Handle.CurveTable)->ConditionalPostLoad(); \
+	if (Handle.CurveTable) const_cast<UCurveTable*>(ToRawPtr(Handle.CurveTable))->ConditionalPostLoad(); \
 	GETCURVE_REPORTERROR(Handle);
 
 #define GETCURVE_REPORTERROR_WITHPATHNAME_WITHPOSTLOAD(Handle, PathNameString) \
-	if (Handle.CurveTable) const_cast<UCurveTable*>(Handle.CurveTable)->ConditionalPostLoad(); \
+	if (Handle.CurveTable) const_cast<UCurveTable*>(ToRawPtr(Handle.CurveTable))->ConditionalPostLoad(); \
 	GETCURVE_REPORTERROR_WITHPATHNAME(Handle, PathNameString);
 #endif // WITH_EDITOR
 
@@ -167,7 +169,14 @@ void UGameplayEffect::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 
 void UGameplayEffect::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UGameplayEffect::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
 	HasGrantedApplicationImmunityQuery = !GrantedApplicationImmunityQuery.IsEmpty();
 	HasRemoveGameplayEffectsQuery = !RemoveGameplayEffectQuery.IsEmpty();
 }
@@ -686,6 +695,7 @@ FGameplayEffectSpec::FGameplayEffectSpec(const FGameplayEffectSpec& Other, const
 	EffectContext = InEffectContext;
 }
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FGameplayEffectSpec::FGameplayEffectSpec(FGameplayEffectSpec&& Other)
 	: Def(Other.Def)
 	, ModifiedAttributes(MoveTemp(Other.ModifiedAttributes))
@@ -711,7 +721,9 @@ FGameplayEffectSpec::FGameplayEffectSpec(FGameplayEffectSpec&& Other)
 {
 
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FGameplayEffectSpec& FGameplayEffectSpec::operator=(FGameplayEffectSpec&& Other)
 {
 	Def = Other.Def;
@@ -737,7 +749,9 @@ FGameplayEffectSpec& FGameplayEffectSpec::operator=(FGameplayEffectSpec&& Other)
 	Level = Other.Level;
 	return *this;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 FGameplayEffectSpec& FGameplayEffectSpec::operator=(const FGameplayEffectSpec& Other)
 {
 	Def = Other.Def;
@@ -763,6 +777,7 @@ FGameplayEffectSpec& FGameplayEffectSpec::operator=(const FGameplayEffectSpec& O
 	Level = Other.Level;
 	return *this;
 }
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 FGameplayEffectSpecForRPC::FGameplayEffectSpecForRPC()
 	: Def(nullptr)
@@ -1064,6 +1079,29 @@ float FGameplayEffectSpec::CalculateModifiedDuration() const
 	return DurationAgg.EvaluateWithBase(GetDuration(), Params);
 }
 
+void FGameplayEffectSpec::AddDynamicAssetTag(const FGameplayTag& TagToAdd)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	DynamicAssetTags.AddTag(TagToAdd);
+	CapturedSourceTags.GetSpecTags().AddTag(TagToAdd);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+void FGameplayEffectSpec::AppendDynamicAssetTags(const FGameplayTagContainer& TagsToAppend)
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	DynamicAssetTags.AppendTags(TagsToAppend);
+	CapturedSourceTags.GetSpecTags().AppendTags(TagsToAppend);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
+const FGameplayTagContainer& FGameplayEffectSpec::GetDynamicAssetTags() const
+{
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	return DynamicAssetTags;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+}
+
 float FGameplayEffectSpec::GetPeriod() const
 {
 	return Period;
@@ -1197,7 +1235,7 @@ void FGameplayEffectSpec::GetAllGrantedTags(OUT FGameplayTagContainer& Container
 
 void FGameplayEffectSpec::GetAllAssetTags(OUT FGameplayTagContainer& Container) const
 {
-	Container.AppendTags(DynamicAssetTags);
+	Container.AppendTags(GetDynamicAssetTags());
 	if (Def)
 	{
 		Container.AppendTags(Def->InheritableGameplayEffectTags.CombinedTags);
@@ -2038,11 +2076,15 @@ void FActiveGameplayEffectsContainer::ExecuteActiveEffectsFrom(FGameplayEffectSp
 	//	Invoke GameplayCue events
 	// ------------------------------------------------------
 	
-	// If there are no modifiers or we don't require modifier success to trigger, we apply the GameplayCue. 
-	bool InvokeGameplayCueExecute = (SpecToUse.Modifiers.Num() == 0) || !Spec.Def->bRequireModifierSuccessToTriggerCues;
+	// If there are no modifiers or we don't require modifier success to trigger, we apply the GameplayCue.
+	const bool bHasModifiers = SpecToUse.Modifiers.Num() > 0;
+	const bool bHasExecutions = SpecToUse.Def->Executions.Num() > 0;
+	const bool bHasModifiersOrExecutions = bHasModifiers || bHasExecutions;
 
-	// If there are modifiers, we only want to invoke the GameplayCue if one of them went through (could be blocked by immunity or % chance roll)
-	if (SpecToUse.Modifiers.Num() > 0 && ModifierSuccessfullyExecuted)
+	// If there are no modifiers or we don't require modifier success to trigger, we apply the GameplayCue.
+	bool InvokeGameplayCueExecute = (!bHasModifiersOrExecutions) || !Spec.Def->bRequireModifierSuccessToTriggerCues;
+
+	if (bHasModifiersOrExecutions && ModifierSuccessfullyExecuted)
 	{
 		InvokeGameplayCueExecute = true;
 	}
@@ -2503,6 +2545,33 @@ void FActiveGameplayEffectsContainer::SetActiveGameplayEffectLevel(FActiveGamepl
 	}
 }
 
+void FActiveGameplayEffectsContainer::UpdateActiveGameplayEffectSetByCallerMagnitude(FActiveGameplayEffectHandle ActiveHandle, const FGameplayTag& SetByCallerTag, float NewValue)
+{
+	if (FActiveGameplayEffect* Effect = GetActiveGameplayEffect(ActiveHandle))
+	{
+		Effect->Spec.SetSetByCallerMagnitude(SetByCallerTag, NewValue);
+		Effect->Spec.CalculateModifierMagnitudes();
+		MarkItemDirty(*Effect);
+
+		UpdateAllAggregatorModMagnitudes(*Effect);
+	}
+}
+
+void FActiveGameplayEffectsContainer::UpdateActiveGameplayEffectSetByCallerMagnitudes(FActiveGameplayEffectHandle ActiveHandle, const TMap<FGameplayTag, float>& NewSetByCallerValues)
+{
+	if (FActiveGameplayEffect* Effect = GetActiveGameplayEffect(ActiveHandle))
+	{
+		for (const TPair<FGameplayTag, float>& CurPair : NewSetByCallerValues)
+		{
+			Effect->Spec.SetSetByCallerMagnitude(CurPair.Key, CurPair.Value);
+		}
+		Effect->Spec.CalculateModifierMagnitudes();
+		MarkItemDirty(*Effect);
+
+		UpdateAllAggregatorModMagnitudes(*Effect);
+	}
+}
+
 const FGameplayTagContainer* FActiveGameplayEffectsContainer::GetGameplayEffectSourceTagsFromHandle(FActiveGameplayEffectHandle Handle) const
 {
 	// @todo: Need to consider this with tag changes
@@ -2590,6 +2659,9 @@ void FActiveGameplayEffectsContainer::SetAttributeBaseValue(FGameplayAttribute A
 		return;
 	}
 
+	float OldBaseValue = 0.0f;
+	bool bBaseValueSet = false;
+
 	Set->PreAttributeBaseChange(Attribute, NewBaseValue);
 
 	// if we're using the new attributes we should always update their base value
@@ -2601,21 +2673,35 @@ void FActiveGameplayEffectsContainer::SetAttributeBaseValue(FGameplayAttribute A
 		FGameplayAttributeData* DataPtr = StructProperty->ContainerPtrToValuePtr<FGameplayAttributeData>(const_cast<UAttributeSet*>(Set));
 		if (ensure(DataPtr))
 		{
+			OldBaseValue = DataPtr->GetBaseValue();
 			DataPtr->SetBaseValue(NewBaseValue);
+			bBaseValueSet = true;
 		}
 	}
 
 	FAggregatorRef* RefPtr = AttributeAggregatorMap.Find(Attribute);
 	if (RefPtr)
 	{
+		FAggregator* Aggregator = RefPtr->Get();
+		check(Aggregator);
+
 		// There is an aggregator for this attribute, so set the base value. The dirty callback chain
 		// will update the actual AttributeSet property value for us.		
-		RefPtr->Get()->SetBaseValue(NewBaseValue);
+		OldBaseValue = Aggregator->GetBaseValue();
+		Aggregator->SetBaseValue(NewBaseValue);
+		bBaseValueSet = true;
 	}
 	// if there is no aggregator set the current value (base == current in this case)
 	else
 	{
+		OldBaseValue = Owner->GetNumericAttribute(Attribute);
 		InternalUpdateNumericalAttribute(Attribute, NewBaseValue, nullptr);
+		bBaseValueSet = true;
+	}
+
+	if (bBaseValueSet)
+	{
+		Set->PostAttributeBaseChange(Attribute, OldBaseValue, NewBaseValue);
 	}
 }
 
@@ -2831,7 +2917,7 @@ FActiveGameplayEffect* FActiveGameplayEffectsContainer::ApplyGameplayEffectSpec(
 		// @todo: If dynamic asset tags differ (which they shouldn't), we'll actually have to diff them
 		// and cause a removal and add of only the ones that have changed. For now, ensure on this happening and come
 		// back to this later.
-		ensureMsgf(ExistingSpec.DynamicAssetTags == Spec.DynamicAssetTags, TEXT("While adding a stack of the gameplay effect: %s, the old stack and the new application had different dynamic asset tags, which is currently not resolved properly! Existing: %s. New: %s"), *Spec.Def->GetName(), *ExistingSpec.DynamicAssetTags.ToStringSimple(), *Spec.DynamicAssetTags.ToStringSimple() );
+		ensureMsgf(ExistingSpec.GetDynamicAssetTags() == Spec.GetDynamicAssetTags(), TEXT("While adding a stack of the gameplay effect: %s, the old stack and the new application had different dynamic asset tags, which is currently not resolved properly! Existing: %s. New: %s"), *Spec.Def->GetName(), *ExistingSpec.GetDynamicAssetTags().ToStringSimple(), *Spec.GetDynamicAssetTags().ToStringSimple() );
 
 		ExistingStackableGE->Spec = Spec;
 		ExistingStackableGE->Spec.StackCount = NewStackCount;
@@ -3319,9 +3405,18 @@ bool FActiveGameplayEffectsContainer::InternalRemoveActiveGameplayEffect(int32 I
 			return false;
 		}
 
+		// FlushNetDormancy needs to happen as early as possible.
+		// Any changes made to Fast Arrays (like the Gameplay Effect Containers) won't be
+		// tracked if made while the owner is still Dormant.
+		const bool bIsNetAuthority = IsNetAuthority();
+		AActor* OwnerActor = Owner->GetOwnerActor();
+		if (bIsNetAuthority && OwnerActor)
+		{
+			OwnerActor->FlushNetDormancy();
+		}
+		
 		// Invoke Remove GameplayCue event
 		bool ShouldInvokeGameplayCueEvent = true;
-		const bool bIsNetAuthority = IsNetAuthority();
 		if (!bIsNetAuthority && Effect.PredictionKey.IsLocalClientKey() && Effect.PredictionKey.WasReceived() == false)
 		{
 			// This was an effect that we predicted. Don't invoke GameplayCue event if we have another GameplayEffect that shares the same predictionkey and was received from the server
@@ -3344,12 +3439,6 @@ bool FActiveGameplayEffectsContainer::InternalRemoveActiveGameplayEffect(int32 I
 		if (Effect.PeriodHandle.IsValid())
 		{
 			Owner->GetWorld()->GetTimerManager().ClearTimer(Effect.PeriodHandle);
-		}
-
-		AActor* OwnerActor = Owner->GetOwnerActor();
-		if (bIsNetAuthority && OwnerActor)
-		{
-			OwnerActor->FlushNetDormancy();
 		}
 
 		// Remove this handle from the global map
@@ -3425,7 +3514,6 @@ void FActiveGameplayEffectsContainer::InternalOnActiveGameplayEffectRemoved(FAct
 		ABILITY_LOG(Warning, TEXT("InternalOnActiveGameplayEffectRemoved called with no GameplayEffect: %s"), *Effect.Handle.ToString());
 	}
 
-	Effect.EventSet.DEPRECATED_OnEffectRemoved.Broadcast();
 	Effect.EventSet.OnEffectRemoved.Broadcast(GameplayEffectRemovalInfo);
 
 	OnActiveGameplayEffectRemovedDelegate.Broadcast(Effect);
@@ -4247,7 +4335,7 @@ void FActiveGameplayEffectsContainer::AttemptRemoveActiveEffectsOnEffectApplicat
 			}
 		}
 
-		const FGameplayTagContainer* AggregatedSourceTags = InSpec.CapturedSourceTags.GetAggregatedTags();
+		const FGameplayTagContainer* AggregatedTargetTags = InSpec.CapturedTargetTags.GetAggregatedTags();
 		for (int32 idx = GetNumGameplayEffects() - 1; idx >= 0; --idx)
 		{
 			const FActiveGameplayEffect& ActiveEffect = *GetActiveGameplayEffect(idx);
@@ -4260,7 +4348,7 @@ void FActiveGameplayEffectsContainer::AttemptRemoveActiveEffectsOnEffectApplicat
 					InternalRemoveActiveGameplayEffect(idx, -1, true);
 				}
 				// check if the effect has removal tag requirements
-				else if (Effect && AggregatedSourceTags && !Effect->RemovalTagRequirements.IsEmpty() && Effect->RemovalTagRequirements.RequirementsMet(*AggregatedSourceTags))
+				else if (Effect && AggregatedTargetTags && !Effect->RemovalTagRequirements.IsEmpty() && Effect->RemovalTagRequirements.RequirementsMet(*AggregatedTargetTags))
 				{
 					InternalRemoveActiveGameplayEffect(idx, -1, true);
 				}
@@ -4704,9 +4792,10 @@ bool FGameplayEffectQuery::Matches(const FGameplayEffectSpec& Spec) const
 		{
 			GETags.AppendTags(Spec.Def->InheritableGameplayEffectTags.CombinedTags);
 		}
-		if (Spec.DynamicAssetTags.Num() > 0)
+		const FGameplayTagContainer& SpecDynamicAssetTags = Spec.GetDynamicAssetTags();
+		if (SpecDynamicAssetTags.Num() > 0)
 		{
-			GETags.AppendTags(Spec.DynamicAssetTags);
+			GETags.AppendTags(SpecDynamicAssetTags);
 		}
 
 		if (EffectTagQuery.Matches(GETags) == false)

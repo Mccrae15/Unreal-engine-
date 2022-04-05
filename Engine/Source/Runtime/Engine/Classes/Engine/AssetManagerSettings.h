@@ -63,13 +63,18 @@ struct FPrimaryAssetRulesCustomOverride
 };
 
 /** Settings for the Asset Management framework, which can be used to discover, load, and audit game-specific asset types */
-UCLASS(config = Game, defaultconfig, notplaceable, meta = (DisplayName = "Asset Manager"))
+UCLASS(config = Game, defaultconfig, meta = (DisplayName = "Asset Manager"))
 class ENGINE_API UAssetManagerSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
 
 public:
-	UAssetManagerSettings() : bOnlyCookProductionAssets(false), bShouldGuessTypeAndNameInEditor(true), bShouldAcquireMissingChunksOnLoad(false) {}
+	UAssetManagerSettings() 
+	: bOnlyCookProductionAssets(false)
+	, bShouldGuessTypeAndNameInEditor(true)
+	, bShouldAcquireMissingChunksOnLoad(false) 
+	, bShouldWarnAboutInvalidAssets(true)
+	{}
 
 	/** List of asset types to scan at startup */
 	UPROPERTY(config, EditAnywhere, Category = "Asset Manager", meta = (TitleProperty = "PrimaryAssetType"))
@@ -108,6 +113,10 @@ public:
 	/** If true, this will query the platform chunk install interface to request missing chunks for any requested primary asset loads */
 	UPROPERTY(config, EditAnywhere, Category = "Asset Manager")
 	bool bShouldAcquireMissingChunksOnLoad;
+
+	/** If true, the asset manager will warn when it is told to load or do something with assets it does not know about */
+	UPROPERTY(config, EditAnywhere, Category = "Asset Manager")
+	bool bShouldWarnAboutInvalidAssets;
 
 	/** Redirect from Type:Name to Type:NameNew */
 	UPROPERTY(config, EditAnywhere, Category = "Redirects")

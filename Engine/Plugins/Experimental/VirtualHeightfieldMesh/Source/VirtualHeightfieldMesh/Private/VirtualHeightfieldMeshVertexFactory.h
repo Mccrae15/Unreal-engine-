@@ -23,10 +23,10 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FVirtualHeightfieldMeshVertexFactoryParamet
 	SHADER_PARAMETER(FUintVector4, VTPackedUniform)
 	SHADER_PARAMETER(FUintVector4, VTPackedPageTableUniform0)
 	SHADER_PARAMETER(FUintVector4, VTPackedPageTableUniform1)
-	SHADER_PARAMETER(FVector4, PageTableSize)
-	SHADER_PARAMETER(FVector2D, PhysicalTextureSize)
-	SHADER_PARAMETER(FMatrix, VirtualHeightfieldToLocal)
-	SHADER_PARAMETER(FMatrix, VirtualHeightfieldToWorld)
+	SHADER_PARAMETER(FVector4f, PageTableSize)
+	SHADER_PARAMETER(FVector2f, PhysicalTextureSize)
+	SHADER_PARAMETER(FMatrix44f, VirtualHeightfieldToLocal)
+	SHADER_PARAMETER(FMatrix44f, VirtualHeightfieldToWorld)
 	SHADER_PARAMETER(float, MaxLod)
 	SHADER_PARAMETER(float, LodBiasScale)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
@@ -34,13 +34,13 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 typedef TUniformBufferRef<FVirtualHeightfieldMeshVertexFactoryParameters> FVirtualHeightfieldMeshVertexFactoryBufferRef;
 
 /**
- * Index buffer for a single Virtual Heightfield Mesh tile.
+ * Per frame UserData to pass to the vertex shader.
  */
 struct FVirtualHeightfieldMeshUserData : public FOneFrameResource
 {
 	FRHIShaderResourceView* InstanceBufferSRV;
-	FVector LodViewOrigin;
-	FVector4 LodDistances;
+	FVector3f LodViewOrigin;
+	FVector4f LodDistances;
 };
 
 /**
@@ -72,6 +72,7 @@ class FVirtualHeightfieldMeshVertexFactory : public FVertexFactory
 
 public:
 	FVirtualHeightfieldMeshVertexFactory(ERHIFeatureLevel::Type InFeatureLevel, const FVirtualHeightfieldMeshVertexFactoryParameters& InParams);
+
 	~FVirtualHeightfieldMeshVertexFactory();
 
 	virtual void InitRHI() override;

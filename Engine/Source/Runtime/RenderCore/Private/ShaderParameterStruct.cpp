@@ -57,6 +57,12 @@ struct FShaderParameterStructBindingContext
 				continue;
 			}
 
+			// Ignore RDG access types when binding to shaders.
+			if (IsRDGResourceAccessType(BaseType))
+			{
+				continue;
+			}
+
 			// Compute the shader member name to look for according to nesting.
 			FString ShaderBindingName = FString::Printf(TEXT("%s%s"), MemberPrefix, Member.GetName());
 
@@ -72,10 +78,7 @@ struct FShaderParameterStructBindingContext
 				BaseType == UBMT_SAMPLER);
 
 			const bool bIsRDGResource =
-				IsRDGResourceReferenceShaderParameterType(BaseType) &&
-				BaseType != UBMT_RDG_BUFFER &&
-				BaseType != UBMT_RDG_BUFFER_ACCESS &&
-				BaseType != UBMT_RDG_TEXTURE_ACCESS;
+				IsRDGResourceReferenceShaderParameterType(BaseType);
 
 			const bool bIsVariableNativeType = (
 				BaseType == UBMT_INT32 ||
@@ -121,16 +124,6 @@ struct FShaderParameterStructBindingContext
 				checkf(!bIsArray, TEXT("Array of referenced structure is not supported, because the structure is globally uniquely named."));
 				// The member name of a globally referenced struct is the not name on the struct.
 				ShaderBindingName = Member.GetStructMetadata()->GetShaderVariableName();
-			}
-			else if (BaseType == UBMT_RDG_BUFFER)
-			{
-				// RHI does not support setting a buffer as a shader parameter.
-				check(!bIsArray);
-				if( ParametersMap->ContainsParameterAllocation(*ShaderBindingName) )
-				{
-					UE_LOG(LogShaders, Fatal, TEXT("%s can't bind shader parameter %s as buffer. Use buffer SRV for reading in shader."), *CppName, *ShaderBindingName);
-				}
-				continue;
 			}
 			else if (bUseRootShaderParameters && bIsVariableNativeType)
 			{
@@ -241,9 +234,11 @@ void FShaderParameterBindings::BindForLegacyShaderParameters(const FShader* Shad
 	
 	switch (Type->GetFrequency())
 	{
+#if PLATFORM_SUPPORTS_MESH_SHADERS
+	case SF_Mesh:
+	case SF_Amplification:
+#endif
 	case SF_Vertex:
-	case SF_Hull:
-	case SF_Domain:
 	case SF_Pixel:
 	case SF_Geometry:
 	case SF_Compute:
@@ -258,7 +253,33 @@ void FShaderParameterBindings::BindForLegacyShaderParameters(const FShader* Shad
 	BindingContext.PermutationId = PermutationId;
 	BindingContext.Bindings = this;
 	BindingContext.ParametersMap = &ParametersMap;
-	BindingContext.bUseRootShaderParameters = false;
+
+	// When using a stable root constant buffer, can submit all shader parameters in one RHISetShaderParameter()
+	{
+		const TCHAR* ShaderBindingName = FShaderParametersMetadata::kRootUniformBufferBindingName;
+		BindingContext.bUseRootShaderParameters = ParametersMap.ContainsParameterAllocation(ShaderBindingName);
+
+		if (BindingContext.bUseRootShaderParameters)
+		{
+			const FParameterAllocation& Allocation = ParametersMap.ParameterMap.FindChecked(ShaderBindingName);
+
+			check(int32(Allocation.BufferIndex) == FShaderParametersMetadata::kRootCBufferBindingIndex);
+			check(uint32(Allocation.BaseIndex + Allocation.Size) <= StructMetaData.GetSize());
+			check(Allocation.Type == EShaderParameterType::LooseData);
+
+			FShaderParameterBindings::FParameter Parameter;
+			Parameter.BufferIndex = Allocation.BufferIndex;
+			Parameter.BaseIndex = Allocation.BaseIndex;
+			Parameter.ByteOffset = Allocation.BaseIndex;
+			Parameter.ByteSize = Allocation.Size;
+
+			Parameters.Add(Parameter);
+
+			BindingContext.ShaderGlobalScopeBindings.Add(ShaderBindingName, StructMetaData.GetStructTypeName());
+			Allocation.bBound = true;
+		}
+	}
+
 	BindingContext.Bind(
 		StructMetaData,
 		/* MemberPrefix = */ TEXT(""),
@@ -282,7 +303,7 @@ void FShaderParameterBindings::BindForLegacyShaderParameters(const FShader* Shad
 			}
 		}
 
-		UE_LOG(LogShaders, Fatal, TEXT("%s"), *ErrorString);
+		ensureMsgf(false, TEXT("%s"), *ErrorString);
 	}
 }
 
@@ -375,7 +396,7 @@ bool FDepthStencilBinding::Validate() const
 		EPixelFormat PixelFormat = Texture->Desc.Format;
 		const TCHAR* FormatString = GetPixelFormatString(PixelFormat);
 
-		bool bIsDepthFormat = PixelFormat == PF_DepthStencil || PixelFormat == PF_ShadowDepth || PixelFormat == PF_D24;
+		bool bIsDepthFormat = PixelFormat == PF_DepthStencil || PixelFormat == PF_ShadowDepth || PixelFormat == PF_D24 || PixelFormat == PF_R32_FLOAT;
 		checkf(bIsDepthFormat,
 			TEXT("Can't bind texture %s as a depth stencil because its pixel format is %s."),
 			Texture->Name, FormatString);
@@ -442,7 +463,7 @@ void ValidateShaderParameters(const TShaderRef<FShader>& Shader, const FShaderPa
 	checkf(
 		Bindings.StructureLayoutHash == ParametersMetadata->GetLayoutHash(),
 		TEXT("Shader %s's parameter structure has changed without recompilation of the shader"),
-		Shader->GetTypeUnfrozen()->GetName());
+		Shader.GetType()->GetName());
 
 	const uint8* Base = reinterpret_cast<const uint8*>(Parameters);
 
@@ -495,8 +516,9 @@ void ValidateShaderParameters(const TShaderRef<FShader>& Shader, const FShaderPa
 	// Graph Uniform Buffers
 	for (const FShaderParameterBindings::FParameterStructReference& ParameterBinding : Bindings.GraphUniformBuffers)
 	{
-		auto GraphUniformBuffer = *reinterpret_cast<const FRDGUniformBuffer* const*>(Base + ParameterBinding.ByteOffset);
-		if (!GraphUniformBuffer)
+		const FRDGUniformBufferBinding& UniformBufferBinding = *reinterpret_cast<const FRDGUniformBufferBinding*>(Base + ParameterBinding.ByteOffset);
+
+		if (!UniformBufferBinding)
 		{
 			EmitNullShaderParameterFatalError(Shader, ParametersMetadata, ParameterBinding.ByteOffset);
 		}
@@ -505,9 +527,9 @@ void ValidateShaderParameters(const TShaderRef<FShader>& Shader, const FShaderPa
 	// Reference structures
 	for (const FShaderParameterBindings::FParameterStructReference& ParameterBinding : Bindings.ParameterReferences)
 	{
-		const TRefCountPtr<FRHIUniformBuffer>& ShaderParameterRef = *reinterpret_cast<const TRefCountPtr<FRHIUniformBuffer>*>(Base + ParameterBinding.ByteOffset);
+		const FUniformBufferBinding& UniformBufferBinding = *reinterpret_cast<const FUniformBufferBinding*>(Base + ParameterBinding.ByteOffset);
 
-		if (!ShaderParameterRef.IsValid())
+		if (!UniformBufferBinding)
 		{
 			EmitNullShaderParameterFatalError(Shader, ParametersMetadata, ParameterBinding.ByteOffset);
 		}

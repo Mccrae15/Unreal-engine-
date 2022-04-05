@@ -6,7 +6,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -28,11 +29,6 @@ namespace UnrealBuildTool
 	public enum CppStandardVersion
 	{
 		/// <summary>
-		/// Use the default standard version
-		/// </summary>
-		Default,
-
-		/// <summary>
 		/// Supports C++14
 		/// </summary>
 		Cpp14,
@@ -43,9 +39,19 @@ namespace UnrealBuildTool
 		Cpp17,
 
 		/// <summary>
+		/// Supports C++20
+		/// </summary>
+		Cpp20,
+		
+		/// <summary>
 		/// Latest standard supported by the compiler
 		/// </summary>
 		Latest,
+		
+		/// <summary>
+		/// Use the default standard version
+		/// </summary>
+		Default = Cpp17,
 	}
 
 	/// <summary>
@@ -73,9 +79,9 @@ namespace UnrealBuildTool
 	class CPPOutput
 	{
 		public List<FileItem> ObjectFiles = new List<FileItem>();
-		public List<FileItem> DebugDataFiles = new List<FileItem>();
+		public List<FileItem> CompiledModuleInterfaces = new List<FileItem>();
 		public List<FileItem> GeneratedHeaderFiles = new List<FileItem>();
-		public FileItem PrecompiledHeaderFile = null;
+		public FileItem? PrecompiledHeaderFile = null;
 	}
 
 	/// <summary>
@@ -111,7 +117,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The name of the header file which is precompiled.
 		/// </summary>
-		public FileReference PrecompiledHeaderIncludeFilename = null;
+		public FileReference? PrecompiledHeaderIncludeFilename = null;
 
 		/// <summary>
 		/// Whether the compilation should create, use, or do nothing with the precompiled header.
@@ -217,6 +223,11 @@ namespace UnrealBuildTool
 		public bool bUndefinedIdentifierWarningsAsErrors = false;
 
 		/// <summary>
+		/// Whether to treat all warnings as errors
+		/// </summary>
+		public bool bWarningsAsErrors = false;
+
+		/// <summary>
 		/// True if compiler optimizations should be enabled. This setting is distinct from the configuration (see CPPTargetConfiguration).
 		/// </summary>
 		public bool bOptimizeCode = false;
@@ -299,12 +310,12 @@ namespace UnrealBuildTool
         /// <summary>
         /// Platform specific directory where PGO profiling data is stored.
         /// </summary>
-        public string PGODirectory;
+        public string? PGODirectory;
 
         /// <summary>
         /// Platform specific filename where PGO profiling data is saved.
         /// </summary>
-        public string PGOFilenamePrefix;
+        public string? PGOFilenamePrefix;
 
 		/// <summary>
 		/// Whether to log detailed timing info from the compiler
@@ -331,6 +342,11 @@ namespace UnrealBuildTool
 		/// be recompiled, unless BuildConfiguration.bCheckSystemHeadersForModification==true.
 		/// </summary>
 		public HashSet<DirectoryReference> SystemIncludePaths;
+
+		/// <summary>
+		/// List of paths to search for compiled module interface (*.ifc) files
+		/// </summary>
+		public HashSet<DirectoryReference> ModuleInterfacePaths;
 
 		/// <summary>
 		/// Whether headers in system paths should be checked for modification when determining outdated actions.
@@ -365,7 +381,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The file containing the precompiled header data.
 		/// </summary>
-		public FileItem PrecompiledHeaderFile = null;
+		public FileItem? PrecompiledHeaderFile = null;
 
 		/// <summary>
 		/// Whether or not UHT is being built
@@ -383,6 +399,18 @@ namespace UnrealBuildTool
 		public CppStandardVersion CppStandard = CppStandardVersion.Default;
 
 		/// <summary>
+		/// The amount of the stack usage to report static analysis warnings.
+		/// </summary>
+		public int AnalyzeStackSizeWarning = 300000;
+
+		/// <summary>
+		/// Enable C++ coroutine support. 
+		/// For MSVC, adds "/await:strict" to the command line. Program should #include &lt;coroutine&gt;
+		/// For Clang, adds "-fcoroutines-ts" to the command line. Program should #include &lt;experimental/coroutine&gt; (not supported in every clang toolchain)
+		/// </summary>
+		public bool bEnableCoroutines = false;
+
+		/// <summary>
 		/// Default constructor.
 		/// </summary>
         public CppCompileEnvironment(UnrealTargetPlatform Platform, CppConfiguration Configuration, string Architecture, SourceFileMetadataCache MetadataCache)
@@ -394,6 +422,7 @@ namespace UnrealBuildTool
 			this.SharedPCHs = new List<PrecompiledHeaderTemplate>();
 			this.UserIncludePaths = new HashSet<DirectoryReference>();
 			this.SystemIncludePaths = new HashSet<DirectoryReference>();
+			this.ModuleInterfacePaths = new HashSet<DirectoryReference>();
 		}
 
 		/// <summary>
@@ -427,6 +456,7 @@ namespace UnrealBuildTool
 			UnsafeTypeCastWarningLevel = Other.UnsafeTypeCastWarningLevel;
 			bUndefinedIdentifierWarningsAsErrors = Other.bUndefinedIdentifierWarningsAsErrors;
 			bEnableUndefinedIdentifierWarnings = Other.bEnableUndefinedIdentifierWarnings;
+			bWarningsAsErrors = Other.bWarningsAsErrors;
 			bOptimizeCode = Other.bOptimizeCode;
 			bOptimizeForSize = Other.bOptimizeForSize;
 			bCreateDebugInfo = Other.bCreateDebugInfo;
@@ -450,6 +480,7 @@ namespace UnrealBuildTool
 			bAllowRemotelyCompiledPCHs = Other.bAllowRemotelyCompiledPCHs;
 			UserIncludePaths = new HashSet<DirectoryReference>(Other.UserIncludePaths);
 			SystemIncludePaths = new HashSet<DirectoryReference>(Other.SystemIncludePaths);
+			ModuleInterfacePaths = new HashSet<DirectoryReference>(Other.ModuleInterfacePaths);
 			bCheckSystemHeadersForModification = Other.bCheckSystemHeadersForModification;
 			ForceIncludeFiles.AddRange(Other.ForceIncludeFiles);
 			AdditionalPrerequisites.AddRange(Other.AdditionalPrerequisites);
@@ -460,6 +491,7 @@ namespace UnrealBuildTool
 			bHackHeaderGenerator = Other.bHackHeaderGenerator;
 			bHideSymbolsByDefault = Other.bHideSymbolsByDefault;
 			CppStandard = Other.CppStandard;
+			bEnableCoroutines = Other.bEnableCoroutines;
 		}
 	}
 }

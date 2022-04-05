@@ -14,7 +14,13 @@ enum class EChaosWeightMapTarget : uint8
 	BackstopDistance   = (uint8)EWeightMapTargetCommon::BackstopDistance,
 	BackstopRadius     = (uint8)EWeightMapTargetCommon::BackstopRadius,
 	AnimDriveStiffness = (uint8)EWeightMapTargetCommon::AnimDriveStiffness,
-	AnimDriveDamping   = (uint8)EWeightMapTargetCommon::AnimDriveDamping,
 	// Add Chaos specific maps below this line
-	TetherStiffness
+	AnimDriveDamping,
+	TetherStiffness,
+	TetherScale,
+	Drag,
+	Lift,
+	EdgeStiffness,
+	BendingStiffness,
+	AreaStiffness
 };

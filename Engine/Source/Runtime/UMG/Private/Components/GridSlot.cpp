@@ -26,7 +26,8 @@ void UGridSlot::ReleaseSlateResources(bool bReleaseChildren)
 
 void UGridSlot::BuildSlot(TSharedRef<SGridPanel> GridPanel)
 {
-	Slot = &GridPanel->AddSlot(Column, Row, SGridPanel::Layer(Layer))
+	GridPanel->AddSlot(Column, Row, SGridPanel::Layer(Layer))
+		.Expose(Slot)
 		.Padding(Padding)
 		.HAlign(HorizontalAlignment)
 		.VAlign(VerticalAlignment)
@@ -43,7 +44,7 @@ void UGridSlot::SetPadding(FMargin InPadding)
 	Padding = InPadding;
 	if ( Slot )
 	{
-		Slot->Padding(InPadding);
+		Slot->SetPadding(InPadding);
 	}
 }
 
@@ -52,7 +53,7 @@ void UGridSlot::SetRow(int32 InRow)
 	Row = InRow;
 	if ( Slot )
 	{
-		Slot->Row(InRow);
+		Slot->SetRow(InRow);
 	}
 }
 
@@ -61,7 +62,7 @@ void UGridSlot::SetRowSpan(int32 InRowSpan)
 	RowSpan = InRowSpan;
 	if ( Slot )
 	{
-		Slot->RowSpan(InRowSpan);
+		Slot->SetRowSpan(InRowSpan);
 	}
 }
 
@@ -70,7 +71,7 @@ void UGridSlot::SetColumn(int32 InColumn)
 	Column = InColumn;
 	if ( Slot )
 	{
-		Slot->Column(InColumn);
+		Slot->SetColumn(InColumn);
 	}
 }
 
@@ -79,7 +80,7 @@ void UGridSlot::SetColumnSpan(int32 InColumnSpan)
 	ColumnSpan = InColumnSpan;
 	if ( Slot )
 	{
-		Slot->ColumnSpan(InColumnSpan);
+		Slot->SetColumnSpan(InColumnSpan);
 	}
 }
 
@@ -88,7 +89,7 @@ void UGridSlot::SetLayer(int32 InLayer)
 	Layer = InLayer;
 	if (Slot)
 	{
-		Slot->Layer(InLayer);
+		Slot->SetLayer(InLayer);
 	}
 }
 
@@ -97,7 +98,7 @@ void UGridSlot::SetNudge(FVector2D InNudge)
 	Nudge = InNudge;
 	if ( Slot )
 	{
-		Slot->Nudge(InNudge);
+		Slot->SetNudge(InNudge);
 	}
 }
 
@@ -106,7 +107,7 @@ void UGridSlot::SetHorizontalAlignment(EHorizontalAlignment InHorizontalAlignmen
 	HorizontalAlignment = InHorizontalAlignment;
 	if ( Slot )
 	{
-		Slot->HAlignment = InHorizontalAlignment;
+		Slot->SetHorizontalAlignment(InHorizontalAlignment);
 	}
 }
 
@@ -115,7 +116,7 @@ void UGridSlot::SetVerticalAlignment(EVerticalAlignment InVerticalAlignment)
 	VerticalAlignment = InVerticalAlignment;
 	if ( Slot )
 	{
-		Slot->VAlignment = InVerticalAlignment;
+		Slot->SetVerticalAlignment(InVerticalAlignment);
 	}
 }
 
@@ -133,3 +134,33 @@ void UGridSlot::SynchronizeProperties()
 
 	SetLayer(Layer);
 }
+
+#if WITH_EDITOR
+
+bool UGridSlot::NudgeByDesigner(const FVector2D& NudgeDirection, const TOptional<int32>& GridSnapSize)
+{
+	const FVector2D ClampedDirection = NudgeDirection.ClampAxes(-1.0f, 1.0f);
+	const int32 NewColumn = Column + ClampedDirection.X;
+	const int32 NewRow = Row + ClampedDirection.Y;
+
+	if (NewColumn < 0 || NewRow < 0 || (NewColumn == Column && NewRow == Row))
+	{
+		return false;
+	}
+	
+	Modify();
+
+	SetRow(NewRow);
+	SetColumn(NewColumn);
+
+	return true;
+}
+
+void UGridSlot::SynchronizeFromTemplate(const UPanelSlot* const TemplateSlot)
+{
+	const ThisClass* const TemplateGridSlot = CastChecked<ThisClass>(TemplateSlot);
+	SetRow(TemplateGridSlot->Row);
+	SetColumn(TemplateGridSlot->Column);
+}
+
+#endif

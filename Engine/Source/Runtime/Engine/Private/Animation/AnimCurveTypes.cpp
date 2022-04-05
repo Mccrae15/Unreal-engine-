@@ -4,6 +4,8 @@
 #include "UObject/FrameworkObjectVersion.h"
 #include "UObject/AnimObjectVersion.h"
 #include "Math/RandomStream.h"
+#include "Animation/AnimSequenceBase.h"
+#include "Animation/AnimCurveCompressionCodec_UniformIndexable.h"
 
 DECLARE_CYCLE_STAT(TEXT("EvalRawCurveData"), STAT_EvalRawCurveData, STATGROUP_Anim);
 
@@ -20,7 +22,7 @@ void FAnimCurveBase::PostSerialize(FArchive& Ar)
 	{
 		if (Ar.CustomVer(FFrameworkObjectVersion::GUID) < FFrameworkObjectVersion::SmartNameRefactor)
 		{
-			if (Ar.UE4Ver() >= VER_UE4_SKELETON_ADD_SMARTNAMES)
+			if (Ar.UEVer() >= VER_UE4_SKELETON_ADD_SMARTNAMES)
 			{
 				Ar << CurveUid;
 
@@ -90,7 +92,7 @@ FLinearColor FAnimCurveBase::MakeColor()
 //  FFloatCurve
 
 // we don't want to have = operator. This only copies curves, but leaving naming and everything else intact. 
-void FFloatCurve::CopyCurve(FFloatCurve& SourceCurve)
+void FFloatCurve::CopyCurve(const FFloatCurve& SourceCurve)
 {
 	FloatCurve = SourceCurve.FloatCurve;
 }
@@ -105,7 +107,7 @@ void FFloatCurve::UpdateOrAddKey(float NewKey, float CurrentTime)
 	FloatCurve.UpdateOrAddKey(CurrentTime, NewKey);
 }
 
-void FFloatCurve::GetKeys(TArray<float>& OutTimes, TArray<float>& OutValues)
+void FFloatCurve::GetKeys(TArray<float>& OutTimes, TArray<float>& OutValues) const
 {
 	const int32 NumKeys = FloatCurve.GetNumKeys();
 	OutTimes.Empty(NumKeys);
@@ -129,9 +131,11 @@ void FFloatCurve::Resize(float NewLength, bool bInsert/* whether insert or remov
 //  FVectorCurve
 
 // we don't want to have = operator. This only copies curves, but leaving naming and everything else intact. 
-void FVectorCurve::CopyCurve(FVectorCurve& SourceCurve)
+void FVectorCurve::CopyCurve(const FVectorCurve& SourceCurve)
 {
-	FMemory::Memcpy(FloatCurves, SourceCurve.FloatCurves);
+	FloatCurves[0] = SourceCurve.FloatCurves[0];
+	FloatCurves[1] = SourceCurve.FloatCurves[1];
+	FloatCurves[2] = SourceCurve.FloatCurves[2];
 }
 
 FVector FVectorCurve::Evaluate(float CurrentTime, float BlendWeight) const
@@ -152,7 +156,7 @@ void FVectorCurve::UpdateOrAddKey(const FVector& NewKey, float CurrentTime)
 	FloatCurves[(int32)EIndex::Z].UpdateOrAddKey(CurrentTime, NewKey.Z);
 }
 
-void FVectorCurve::GetKeys(TArray<float>& OutTimes, TArray<FVector>& OutValues)
+void FVectorCurve::GetKeys(TArray<float>& OutTimes, TArray<FVector>& OutValues) const
 {
 	// Determine curve with most keys
 	int32 MaxNumKeys = 0;
@@ -190,7 +194,7 @@ void FVectorCurve::Resize(float NewLength, bool bInsert/* whether insert or remo
 	FloatCurves[(int32)EIndex::Z].ReadjustTimeRange(0, NewLength, bInsert, OldStartTime, OldEndTime);
 }
 
-int32 FVectorCurve::GetNumKeys()
+int32 FVectorCurve::GetNumKeys() const
 {
 	int32 MaxNumKeys = 0;
 	for (int32 CurveIndex = 0; CurveIndex < 3; ++CurveIndex)
@@ -206,7 +210,7 @@ int32 FVectorCurve::GetNumKeys()
 //  FTransformCurve
 
 // we don't want to have = operator. This only copies curves, but leaving naming and everything else intact. 
-void FTransformCurve::CopyCurve(FTransformCurve& SourceCurve)
+void FTransformCurve::CopyCurve(const FTransformCurve& SourceCurve)
 {
 	TranslationCurve.CopyCurve(SourceCurve.TranslationCurve);
 	RotationCurve.CopyCurve(SourceCurve.RotationCurve);
@@ -249,9 +253,9 @@ void FTransformCurve::UpdateOrAddKey(const FTransform& NewKey, float CurrentTime
 	ScaleCurve.UpdateOrAddKey(NewKey.GetScale3D(), CurrentTime);
 }
 
-void FTransformCurve::GetKeys(TArray<float>& OutTimes, TArray<FTransform>& OutValues)
+void FTransformCurve::GetKeys(TArray<float>& OutTimes, TArray<FTransform>& OutValues) const
 {
-	FVectorCurve* UsedCurve = nullptr;
+	const FVectorCurve* UsedCurve = nullptr;
 	int32 MaxNumKeys = 0;
 
 	int32 NumKeys = TranslationCurve.GetNumKeys();
@@ -306,6 +310,92 @@ void FTransformCurve::Resize(float NewLength, bool bInsert/* whether insert or r
 	TranslationCurve.Resize(NewLength, bInsert, OldStartTime, OldEndTime);
 	RotationCurve.Resize(NewLength, bInsert, OldStartTime, OldEndTime);
 	ScaleCurve.Resize(NewLength, bInsert, OldStartTime, OldEndTime);
+}
+
+const FVectorCurve* FTransformCurve::GetVectorCurveByIndex(int32 Index) const
+{
+	const FVectorCurve* Curve = nullptr;
+
+	if (Index == 0)
+	{
+		Curve = &TranslationCurve;
+	}
+	else if (Index == 1)
+	{
+		Curve = &RotationCurve;
+	}
+	else if (Index == 2)
+	{
+		Curve = &ScaleCurve;
+	}
+
+	return Curve;
+}
+
+FVectorCurve* FTransformCurve::GetVectorCurveByIndex(int32 Index)
+{
+	FVectorCurve* Curve = nullptr;
+
+	if (Index == 0)
+	{
+		Curve = &TranslationCurve;
+	}
+	else if (Index == 1)
+	{
+		Curve = &RotationCurve;
+	}
+	else if (Index == 2)
+	{
+		Curve = &ScaleCurve;
+	}
+
+	return Curve;
+}
+
+////////////////////////////////////////////////////
+//  FCachedFloatCurve
+
+bool FCachedFloatCurve::IsValid(const UAnimSequenceBase* InAnimSequence) const
+{
+	return ((CurveName != NAME_None) && InAnimSequence->HasCurveData(GetAnimCurveUID(InAnimSequence)));
+}
+
+float FCachedFloatCurve::GetValueAtPosition(const UAnimSequenceBase* InAnimSequence, const float& InPosition) const
+{
+	return InAnimSequence->EvaluateCurveData(GetAnimCurveUID(InAnimSequence), InPosition);
+}
+
+USkeleton::AnimCurveUID FCachedFloatCurve::GetAnimCurveUID(const UAnimSequenceBase* InAnimSequence) const
+{
+	if (CurveName != CachedCurveName && InAnimSequence)
+	{
+		if (const USkeleton* Skeleton = InAnimSequence->GetSkeleton())
+		{
+			const FSmartNameMapping* CurveNameMapping = Skeleton->GetSmartNameContainer(USkeleton::AnimCurveMappingName);
+			if (CurveNameMapping)
+			{
+				CachedUID = CurveNameMapping->FindUID(CurveName);
+				CachedCurveName = CurveName;
+			}
+		}
+	}
+
+	return CachedUID;
+}
+
+const FFloatCurve* FCachedFloatCurve::GetFloatCurve(const UAnimSequenceBase* InAnimSequence) const
+{
+	if (InAnimSequence)
+	{
+		USkeleton::AnimCurveUID DistanceCurveUID = GetAnimCurveUID(InAnimSequence);
+		if (DistanceCurveUID != SmartName::MaxUID)
+		{
+			const FAnimationCurveIdentifier CurveId(DistanceCurveUID, ERawCurveTrackTypes::RCT_Float);
+			return (const FFloatCurve*)(InAnimSequence->GetCurveData().GetCurveData(DistanceCurveUID));
+		}
+	}
+
+	return nullptr;
 }
 
 /////////////////////////////////////////////////////
@@ -498,7 +588,7 @@ void FRawCurveTracks::PostSerialize(FArchive& Ar)
 #if WITH_EDITORONLY_DATA
 	if( !Ar.IsCooking() )
 	{
-		if( Ar.UE4Ver() >= VER_UE4_ANIMATION_ADD_TRACKCURVES )
+		if( Ar.UEVer() >= VER_UE4_ANIMATION_ADD_TRACKCURVES )
 		{
 			for( FTransformCurve& Curve : TransformCurves )
 			{

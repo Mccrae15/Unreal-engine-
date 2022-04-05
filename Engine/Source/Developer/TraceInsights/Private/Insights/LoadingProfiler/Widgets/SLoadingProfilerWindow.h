@@ -14,6 +14,7 @@
 
 // Insights
 #include "Insights/InsightsManager.h"
+#include "Insights/ITimingViewSession.h"
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -32,7 +33,6 @@ namespace Insights
 struct FLoadingProfilerTabs
 {
 	// Tab identifiers
-	static const FName ToolbarID;
 	static const FName TimingViewID;
 	static const FName EventAggregationTreeViewID;
 	static const FName ObjectTypeAggregationTreeViewID;
@@ -81,9 +81,6 @@ public:
 	TSharedPtr<Insights::SUntypedTableTreeView> GetRequestsTreeView() const { return RequestsTreeView; }
 
 private:
-	TSharedRef<SDockTab> SpawnTab_Toolbar(const FSpawnTabArgs& Args);
-	void OnToolbarTabClosed(TSharedRef<SDockTab> TabBeingClosed);
-
 	TSharedRef<SDockTab> SpawnTab_TimingView(const FSpawnTabArgs& Args);
 	void OnTimingViewTabClosed(TSharedRef<SDockTab> TabBeingClosed);
 
@@ -173,6 +170,8 @@ private:
 	 */
 	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)  override;
 
+	void OnTimeSelectionChanged(Insights::ETimeChangedFlags InFlags, double InStartTime, double InEndTime);
+
 private:
 	/** The Timing view (multi-track) widget */
 	TSharedPtr<STimingView> TimingView;
@@ -200,4 +199,7 @@ private:
 
 	/** The number of seconds the profiler has been active */
 	float DurationActive;
+
+	double SelectionStartTime;
+	double SelectionEndTime;
 };

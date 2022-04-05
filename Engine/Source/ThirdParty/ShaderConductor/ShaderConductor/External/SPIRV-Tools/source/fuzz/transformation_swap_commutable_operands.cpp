@@ -21,9 +21,8 @@ namespace spvtools {
 namespace fuzz {
 
 TransformationSwapCommutableOperands::TransformationSwapCommutableOperands(
-    const spvtools::fuzz::protobufs::TransformationSwapCommutableOperands&
-        message)
-    : message_(message) {}
+    protobufs::TransformationSwapCommutableOperands message)
+    : message_(std::move(message)) {}
 
 TransformationSwapCommutableOperands::TransformationSwapCommutableOperands(
     const protobufs::InstructionDescriptor& instruction_descriptor) {
@@ -31,10 +30,9 @@ TransformationSwapCommutableOperands::TransformationSwapCommutableOperands(
 }
 
 bool TransformationSwapCommutableOperands::IsApplicable(
-    opt::IRContext* context, const spvtools::fuzz::FactManager& /*unused*/
-    ) const {
+    opt::IRContext* ir_context, const TransformationContext& /*unused*/) const {
   auto instruction =
-      FindInstruction(message_.instruction_descriptor(), context);
+      FindInstruction(message_.instruction_descriptor(), ir_context);
   if (instruction == nullptr) return false;
 
   SpvOp opcode = static_cast<SpvOp>(
@@ -46,10 +44,9 @@ bool TransformationSwapCommutableOperands::IsApplicable(
 }
 
 void TransformationSwapCommutableOperands::Apply(
-    opt::IRContext* context, spvtools::fuzz::FactManager* /*unused*/
-    ) const {
+    opt::IRContext* ir_context, TransformationContext* /*unused*/) const {
   auto instruction =
-      FindInstruction(message_.instruction_descriptor(), context);
+      FindInstruction(message_.instruction_descriptor(), ir_context);
   // By design, the instructions defined to be commutative have exactly two
   // input parameters.
   std::swap(instruction->GetInOperand(0), instruction->GetInOperand(1));
@@ -60,6 +57,11 @@ protobufs::Transformation TransformationSwapCommutableOperands::ToMessage()
   protobufs::Transformation result;
   *result.mutable_swap_commutable_operands() = message_;
   return result;
+}
+
+std::unordered_set<uint32_t> TransformationSwapCommutableOperands::GetFreshIds()
+    const {
+  return std::unordered_set<uint32_t>();
 }
 
 }  // namespace fuzz

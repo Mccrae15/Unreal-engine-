@@ -22,7 +22,6 @@
 #include "Containers/DynamicRHIResourceArray.h"
 #include "PostProcess/SceneFilterRendering.h"
 #include "PostProcess/PostProcessMaterial.h"
-#include "PostProcessParameters.h"
 #include "CommonRenderResources.h"
 #include "ARUtilitiesFunctionLibrary.h"
 
@@ -284,12 +283,12 @@ void FAppleARKitVideoOverlay::RenderVideoOverlayWithMaterial(FRHICommandListImme
 	if (!OverlayVertexBufferRHI)
 	{
 		// Setup vertex buffer
-		const FVector4 Positions[] =
+		const FVector4f Positions[] =
 		{
-			FVector4(0.0f, 1.0f, 0.0f, 1.0f),
-			FVector4(0.0f, 0.0f, 0.0f, 1.0f),
-			FVector4(1.0f, 1.0f, 0.0f, 1.0f),
-			FVector4(1.0f, 0.0f, 0.0f, 1.0f)
+			FVector4f(0.0f, 1.0f, 0.0f, 1.0f),
+			FVector4f(0.0f, 0.0f, 0.0f, 1.0f),
+			FVector4f(1.0f, 1.0f, 0.0f, 1.0f),
+			FVector4f(1.0f, 0.0f, 0.0f, 1.0f)
 		};
 		
 		TResourceArray<FFilterVertex, VERTEXBUFFER_ALIGNMENT> Vertices;
@@ -299,10 +298,10 @@ void FAppleARKitVideoOverlay::RenderVideoOverlayWithMaterial(FRHICommandListImme
 		{
 			const auto& Position = Positions[Index];
 			Vertices[Index].Position = Position;
-			Vertices[Index].UV = { Position.X, Position.Y };
+			Vertices[Index].UV = FVector2f(Position.X, Position.Y);
 		}
 		
-		FRHIResourceCreateInfo CreateInfoVB(&Vertices);
+		FRHIResourceCreateInfo CreateInfoVB(TEXT("VideoOverlayVertexBuffer"), &Vertices);
 		OverlayVertexBufferRHI = RHICreateVertexBuffer(Vertices.GetResourceDataSize(), BUF_Static, CreateInfoVB);
 		
 		// Cache UVOffsets
@@ -337,16 +336,12 @@ void FAppleARKitVideoOverlay::RenderVideoOverlayWithMaterial(FRHICommandListImme
 		IndexBuffer.AddUninitialized(NumIndices);
 		FMemory::Memcpy(IndexBuffer.GetData(), Indices, NumIndices * sizeof(uint16));
 
-		FRHIResourceCreateInfo CreateInfoIB(&IndexBuffer);
+		FRHIResourceCreateInfo CreateInfoIB(TEXT("VideoOverlayIndexBuffer"), &IndexBuffer);
 		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), IndexBuffer.GetResourceDataSize(), BUF_Static, CreateInfoIB);
 	}
 
 	const auto FeatureLevel = InView.GetFeatureLevel();
 	IRendererModule& RendererModule = GetRendererModule();
-
-	FUniformBufferRHIRef PassUniformBuffer = CreateSceneTextureUniformBufferDependentOnShadingPath(RHICmdList, FeatureLevel, ESceneTextureSetupMode::None);
-	FUniformBufferStaticBindings GlobalUniformBuffers(PassUniformBuffer);
-	SCOPED_UNIFORM_BUFFER_GLOBAL_BINDINGS(RHICmdList, GlobalUniformBuffers);
 
 	const FMaterialRenderProxy* MaterialProxy = RenderingOverlayMaterial->GetRenderProxy();
 	const FMaterial& CameraMaterial = MaterialProxy->GetMaterialWithFallback(FeatureLevel, MaterialProxy);
@@ -392,13 +387,13 @@ void FAppleARKitVideoOverlay::RenderVideoOverlayWithMaterial(FRHICommandListImme
 		GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 	}
 
-	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 	const FIntPoint ViewSize = InView.UnconstrainedViewRect.Size();
 	FDrawRectangleParameters Parameters;
-	Parameters.PosScaleBias = FVector4(ViewSize.X, ViewSize.Y, 0, 0);
-	Parameters.UVScaleBias = FVector4(1.0f, 1.0f, 0.0f, 0.0f);
-	Parameters.InvTargetSizeAndTextureSize = FVector4(
+	Parameters.PosScaleBias = FVector4f(ViewSize.X, ViewSize.Y, 0, 0);
+	Parameters.UVScaleBias = FVector4f(1.0f, 1.0f, 0.0f, 0.0f);
+	Parameters.InvTargetSizeAndTextureSize = FVector4f(
 													  1.0f / ViewSize.X, 1.0f / ViewSize.Y,
 													  1.0f, 1.0f);
 

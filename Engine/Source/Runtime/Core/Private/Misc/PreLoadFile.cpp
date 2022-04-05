@@ -3,7 +3,7 @@
 #include "Misc/PreLoadFile.h"
 #include "HAL/Event.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Async/AsyncFileHandle.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
@@ -87,10 +87,13 @@ void FPreLoadFile::KickOffRead()
 			CompletionEvent->Trigger();
 			delete AsyncReadHandle;
 		}
+
+		delete SizeRequestHandle;
+		SizeRequestHandle = nullptr;
 	};
 
 	AsyncReadHandle = FPlatformFileManager::Get().GetPlatformFile().OpenAsyncRead(*Path);
-	AsyncReadHandle->SizeRequest(&SizeCallbackFunction);
+	SizeRequestHandle = AsyncReadHandle->SizeRequest(&SizeCallbackFunction);
 
 #else
 

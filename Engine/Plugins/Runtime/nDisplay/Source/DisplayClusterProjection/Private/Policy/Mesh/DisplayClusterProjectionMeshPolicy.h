@@ -3,11 +3,15 @@
 #pragma once
 
 #include "Policy/MPCDI/DisplayClusterProjectionMPCDIPolicy.h"
-#include "Engine/Classes/Components/StaticMeshComponent.h"
 
+class IDisplayClusterViewport;
+class UStaticMeshComponent;
+class UProceduralMeshComponent;
+class USceneComponent;
 
-/**
- * Adapter for the Mesh warp
+/*
+ * Mesh projection policy
+ * Supported geometry sources - StaticMeshComponent, ProceduralMeshComponent
  */
 class FDisplayClusterProjectionMeshPolicy
 	: public FDisplayClusterProjectionMPCDIPolicy
@@ -22,16 +26,33 @@ public:
 	//////////////////////////////////////////////////////////////////////////////////////////////
 	// IDisplayClusterProjectionPolicy
 	//////////////////////////////////////////////////////////////////////////////////////////////
-	virtual bool HandleStartScene(class IDisplayClusterViewport* InViewport) override;
+	virtual bool HandleStartScene(IDisplayClusterViewport* InViewport) override;
 	
 	virtual EWarpType GetWarpType() const override
 	{ return EWarpType::mesh; }
 
 	/** Parse the config data for a mesh id and try to retrieve it from the root actor. */
-	bool CreateWarpMeshInterface(class IDisplayClusterViewport* InViewport);
+	bool CreateWarpMeshInterface(IDisplayClusterViewport* InViewport);
 
 private:
-	bool GetWarpMeshAndOrigin(class IDisplayClusterViewport* InViewport, class UStaticMeshComponent* &OutMeshComponent, class USceneComponent* & OutOriginComponent);
+	struct FWarpMeshConfiguration
+	{
+		// StaticMesh component with source geometry
+		UStaticMeshComponent*     StaticMeshComponent = nullptr;
+		// StaticMesh geometry LOD
+		int32 StaticMeshComponentLODIndex = 0;
+
+		// ProceduralMesh component with source geometry
+		UProceduralMeshComponent* ProceduralMeshComponent = nullptr;
+		// ProceduralMesh section index
+		int32 ProceduralMeshComponentSectionIndex = 0;
+
+		// Customize source geometry UV channels
+		int32 BaseUVIndex = INDEX_NONE;
+		int32 ChromakeyUVIndex = INDEX_NONE;
+	};
+
+	bool GetWarpMeshConfiguration(IDisplayClusterViewport* InViewport, FWarpMeshConfiguration& OutWarpCfg);
 
 #if WITH_EDITOR
 protected:
@@ -43,6 +64,6 @@ protected:
 		return true;
 	}
 
-	virtual class UMeshComponent* GetOrCreatePreviewMeshComponent(class IDisplayClusterViewport* InViewport, bool& bOutIsRootActorComponent) override;
+	virtual class UMeshComponent* GetOrCreatePreviewMeshComponent(IDisplayClusterViewport* InViewport, bool& bOutIsRootActorComponent) override;
 #endif
 };

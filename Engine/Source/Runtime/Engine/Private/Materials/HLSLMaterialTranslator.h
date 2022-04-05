@@ -20,6 +20,8 @@
 #include "Materials/MaterialExpressionSingleLayerWaterMaterialOutput.h"
 #include "Materials/MaterialExpressionVolumetricAdvancedMaterialOutput.h"
 #include "Materials/MaterialExpressionThinTranslucentMaterialOutput.h"
+#include "Materials/MaterialExpressionAbsorptionMediumMaterialOutput.h"
+#include "Materials/MaterialExpressionVolumetricAdvancedMaterialOutput.h"
 #include "MaterialCompiler.h"
 #include "RenderUtils.h"
 #include "EngineGlobals.h"
@@ -28,6 +30,8 @@
 #include "Hash/CityHash.h"
 #include "VT/RuntimeVirtualTexture.h"
 #include "Field/FieldSystemTypes.h"
+#include "Containers/Map.h"
+#include "Shader/ShaderTypes.h"
 
 #if WITH_EDITORONLY_DATA
 #include "Materials/MaterialExpressionSceneTexture.h"
@@ -44,6 +48,8 @@
 #include "Containers/LazyPrintf.h"
 #include "Containers/HashTable.h"
 #include "Engine/Texture2D.h"
+#include "StrataMaterial.h"
+#include "HLSLMaterialDerivativeAutogen.h"
 #endif
 
 class Error;
@@ -63,6 +69,8 @@ public:
 	virtual EMaterialExpressionVisitResult Visit(UMaterialExpression* InExpression) = 0;
 };
 
+uint32 GetNumComponents(EMaterialValueType Type);
+
 struct FShaderCodeChunk
 {
 	/**
@@ -70,12 +78,21 @@ struct FShaderCodeChunk
 	 * By default this is simply the hash of the code string
 	 */
 	uint64 Hash;
+
+
+	uint64 MaterialAttributeMask;
+
 	/** 
 	 * Definition string of the code chunk. 
 	 * If !bInline && !UniformExpression || UniformExpression->IsConstant(), this is the definition of a local variable named by SymbolName.
 	 * Otherwise if bInline || (UniformExpression && UniformExpression->IsConstant()), this is a code expression that needs to be inlined.
+	 * This string uses hardware finite differences.
 	 */
-	FString Definition;
+	FString DefinitionFinite;
+	/** 
+	* Definition string of the code chunk, but with analytic partial derivatives.
+	*/
+	FString DefinitionAnalytic;
 	/** 
 	 * Name of the local variable used to reference this code chunk. 
 	 * If bInline || UniformExpression, there will be no symbol name and Definition should be used directly instead.
@@ -83,27 +100,64 @@ struct FShaderCodeChunk
 	FString SymbolName;
 	/** Reference to a uniform expression, if this code chunk has one. */
 	TRefCountPtr<FMaterialUniformExpression> UniformExpression;
+
+	/** All the chunks that are scoped under this chunk.  This is populated once translation is complete, rather than on-the-fly, as a chunk's parent scope may change during translation */
+	TArray<int32> ScopedChunks;
+
+	TArray<int32> ReferencedCodeChunks;
+
 	EMaterialValueType Type;
+
+	int32 DeclaredScopeIndex;
+	int32 UsedScopeIndex;
+	int32 ScopeLevel;
+
 	/** Whether the code chunk should be inlined or not.  If true, SymbolName is empty and Definition contains the code to inline. */
 	bool bInline;
+	/** The status of partial derivatives at this expression. **/
+	EDerivativeStatus DerivativeStatus;
+
+	FString& AtDefinition(ECompiledPartialDerivativeVariation Variation)
+	{
+		checkf(Variation == CompiledPDV_FiniteDifferences || Variation == CompiledPDV_Analytic, TEXT("Invalid partial derivative variation: %d"), Variation);
+		return Variation == CompiledPDV_FiniteDifferences ? DefinitionFinite : DefinitionAnalytic;
+	}
+
+	const FString& AtDefinition(ECompiledPartialDerivativeVariation Variation) const
+	{
+		checkf(Variation == CompiledPDV_FiniteDifferences || Variation == CompiledPDV_Analytic, TEXT("Invalid partial derivative variation: %d"), Variation);
+		return Variation == CompiledPDV_FiniteDifferences ? DefinitionFinite : DefinitionAnalytic;
+	}
 
 	/** Ctor for creating a new code chunk with no associated uniform expression. */
-	FShaderCodeChunk(uint64 InHash, const TCHAR* InDefinition,const FString& InSymbolName,EMaterialValueType InType,bool bInInline):
+	FShaderCodeChunk(uint64 InHash, const TCHAR* InDefinitionFinite, const TCHAR* InDefinitionAnalytic, const FString& InSymbolName, EMaterialValueType InType, EDerivativeStatus InDerivativeStatus, bool bInInline):
 		Hash(InHash),
-		Definition(InDefinition),
+		MaterialAttributeMask(0u),
+		DefinitionFinite(InDefinitionFinite),
+		DefinitionAnalytic(InDefinitionAnalytic),
 		SymbolName(InSymbolName),
 		UniformExpression(NULL),
 		Type(InType),
-		bInline(bInInline)
+		DeclaredScopeIndex(INDEX_NONE),
+		UsedScopeIndex(INDEX_NONE),
+		ScopeLevel(0),
+		bInline(bInInline),
+		DerivativeStatus(InDerivativeStatus)
 	{}
 
 	/** Ctor for creating a new code chunk with a uniform expression. */
-	FShaderCodeChunk(uint64 InHash, FMaterialUniformExpression* InUniformExpression,const TCHAR* InDefinition,EMaterialValueType InType):
+	FShaderCodeChunk(uint64 InHash, FMaterialUniformExpression* InUniformExpression, const TCHAR* InDefinitionFinite, const TCHAR* InDefinitionAnalytic, EMaterialValueType InType, EDerivativeStatus InDerivativeStatus):
 		Hash(InHash),
-		Definition(InDefinition),
+		MaterialAttributeMask(0u),
+		DefinitionFinite(InDefinitionFinite),
+		DefinitionAnalytic(InDefinitionAnalytic),
 		UniformExpression(InUniformExpression),
 		Type(InType),
-		bInline(false)
+		DeclaredScopeIndex(INDEX_NONE),
+		UsedScopeIndex(INDEX_NONE),
+		ScopeLevel(0),
+		bInline(false),
+		DerivativeStatus(InDerivativeStatus)
 	{}
 };
 
@@ -136,9 +190,42 @@ struct FMaterialCustomExpressionEntry
 	TArray<int32> OutputCodeIndex;
 };
 
+
+struct FMaterialDerivativeVariation
+{
+	/** Code chunk definitions corresponding to each of the material inputs, only initialized after Translate has been called. */
+	FString TranslatedCodeChunkDefinitions[CompiledMP_MAX];
+
+	/** Code chunks corresponding to each of the material inputs, only initialized after Translate has been called. */
+	FString TranslatedCodeChunks[CompiledMP_MAX];
+
+	/** Any custom output function implementations */
+	TArray<FString> CustomOutputImplementations;
+};
+
+struct FMaterialLocalVariableEntry
+{
+	FString Name;
+	int32 DeclarationCodeIndex = INDEX_NONE;
+};
+
+enum class EMaterialCastFlags : uint32
+{
+	None = 0u,
+	ReplicateScalar = (1u << 0),
+	AllowTruncate = (1u << 1),
+	AllowAppendZeroes = (1u << 2),
+
+	ValidCast = ReplicateScalar | AllowTruncate,
+};
+ENUM_CLASS_FLAGS(EMaterialCastFlags);
+
 class FHLSLMaterialTranslator : public FMaterialCompiler
 {
+	friend class FMaterialDerivativeAutogen;
 protected:
+	/** Data that is different for the finite and anlytical partial derivative options. **/
+	FMaterialDerivativeVariation DerivativeVariations[CompiledPDV_MAX];
 
 	/** The shader frequency of the current material property being compiled. */
 	EShaderFrequency ShaderFrequency;
@@ -156,6 +243,9 @@ protected:
 	// List of Shared pixel properties. Used to share generated code
 	bool SharedPixelProperties[CompiledMP_MAX];
 
+	/** Stores the resource declarations */
+	FString ResourcesString;
+
 	/* Stack that tracks compiler state specific to the function currently being compiled. */
 	TArray<FMaterialFunctionCompileState*> FunctionStacks[SF_NumFrequencies];
 
@@ -171,31 +261,34 @@ protected:
 	/** Feature level being compiled for. */
 	ERHIFeatureLevel::Type FeatureLevel;
 
-	/** Code chunk definitions corresponding to each of the material inputs, only initialized after Translate has been called. */
-	FString TranslatedCodeChunkDefinitions[CompiledMP_MAX];
+	FString TranslatedAttributesCodeChunks[SF_NumFrequencies];
 
-	/** Code chunks corresponding to each of the material inputs, only initialized after Translate has been called. */
-	FString TranslatedCodeChunks[CompiledMP_MAX];
+	uint64 MaterialAttributesReturned[SF_NumFrequencies];
 
 	/** Line number of the #line in MaterialTemplate.usf */
 	int32 MaterialTemplateLineNumber;
 
-	/** Stores the resource declarations */
-	FString ResourcesString;
-
 	/** Contents of the MaterialTemplate.usf file */
 	FString MaterialTemplate;
+
+	TArray<int32> ScopeStack;
+
+	TArray<int32> ReferencedCodeChunks;
 
 	// Array of code chunks per material property
 	TArray<FShaderCodeChunk> SharedPropertyCodeChunks[SF_NumFrequencies];
 
+	TMap<const UMaterialExpression*, int32> ForLoopMap[SF_NumFrequencies];
+	int32 NumForLoops[SF_NumFrequencies];
+
+	TMap<FName, FMaterialLocalVariableEntry> LocalVariables[SF_NumFrequencies];
+
 	// Uniform expressions used across all material properties
 	TArray<FShaderCodeChunk> UniformExpressions;
-
-	TArray<TRefCountPtr<FMaterialUniformExpression> > UniformVectorExpressions;
-	TArray<TRefCountPtr<FMaterialUniformExpression> > UniformScalarExpressions;
 	TArray<TRefCountPtr<FMaterialUniformExpressionTexture> > UniformTextureExpressions[NumMaterialTextureParameterTypes];
 	TArray<TRefCountPtr<FMaterialUniformExpressionExternalTexture>> UniformExternalTextureExpressions;
+	TMap<UE::Shader::FValue, uint32> DefaultUniformValues;
+	uint32 UniformPreshaderOffset = 0u;
 
 	/** Parameter collections referenced by this material.  The position in this array is used as an index on the shader parameter. */
 	TArray<UMaterialParameterCollection*> ParameterCollections;
@@ -207,9 +300,6 @@ protected:
 	//TArray<FString> CustomExpressionImplementations;
 	//TMap<UMaterialExpressionCustom*, int32> CachedCustomExpressions;
 	TArray<FMaterialCustomExpressionEntry> CustomExpressions;
-
-	/** Any custom output function implementations */
-	TArray<FString> CustomOutputImplementations;
 
 	/** Custom vertex interpolators */
 	TArray<UMaterialExpressionVertexInterpolator*> CustomVertexInterpolators;
@@ -225,6 +315,9 @@ protected:
 	/** Used by interpolator pre-translation to hold potential errors until actually confirmed. */
 	TArray<FString>* CompileErrorsSink;
 	TArray<UMaterialExpression*>* CompileErrorExpressionsSink;
+
+	/** Keeps track of which variations of analytic derivative functions are used, and generates the code during translation. **/
+	FMaterialDerivativeAutogen DerivativeAutogen;
 
 	/** Whether the translation succeeded. */
 	uint32 bSuccess : 1;
@@ -271,6 +364,11 @@ protected:
 	/** true if the material reads mesh particle world to local in the pixel shader. */
 	uint32 bUsesParticleWorldToLocal : 1;
 
+	/** true if the material reads per instance local to world in the pixel shader. */
+	uint32 bUsesInstanceLocalToWorldPS : 1;
+	/** true if the material reads per instance world to local in the pixel shader. */
+	uint32 bUsesInstanceWorldToLocalPS : 1;
+
 	/** true if the material uses any type of vertex position */
 	uint32 bUsesVertexPosition : 1;
 
@@ -287,12 +385,18 @@ protected:
 	uint32 bIsFullyRough : 1;
 	/** true if allowed to generate code chunks. Translator operates in two phases; generate all code chunks & query meta data based on generated code chunks. */
 	uint32 bAllowCodeChunkGeneration : 1;
-	
-	/** True if this material reads any per-instance custom data */
-	uint32 bUsesPerInstanceCustomData : 1;
 
 	/** True if this material write anisotropy material property */
 	uint32 bUsesAnisotropy : 1;
+
+	/** True if the material is detected as a strata material at compile time.
+	 * This is decoupled from runtime FMaterialResource::IsStrataMaterial but practically fine since this is only temporary until Strata is the main shading system. Only really used at runtime for translucency dual source blending.
+	 */
+	uint32 bMaterialIsStrata : 1; // 
+	
+	uint32 bEnableExecutionFlow : 1;
+
+	uint32 bUsesCurvature : 1;
 
 	/** Tracks the texture coordinates used by this material. */
 	TBitArray<> AllocatedUserTexCoords;
@@ -303,6 +407,27 @@ protected:
 
 	/** Will contain all the shading models picked up from the material expression graph */
 	FMaterialShadingModelField ShadingModelsFromCompilation;
+
+	/** Maps a code chunk to a Strata material topology, if the code chunk represent a StrataData. */
+	TMap<int32, FStrataMaterialCompilationInfo> CodeChunkToStrataCompilationInfoMap;
+	/** Only valid after Translate() is called. This is the code chunk representing the front material. It can be used to recover the material topology. */
+	int32 StrataValidFrontMaterialCodeChunkPostTranslate;
+	/** The code initializing the array of shared local bases. */
+	FString StrataPixelNormalInitializerValues;
+	/** The next free index that can be used to represent a unique macros pointing to the position in the array of shared local bases written to memory once the shader is executed. */
+	uint8 NextFreeStrataShaderNormalIndex;
+	/** The effective final shared local bases count used by the final shader. */
+	uint8 FinalUsedSharedLocalBasesCount;
+	/** Represent a shared local basis description with its associated code. */
+	struct FStrataSharedLocalBasesInfo
+	{
+		FStrataRegisteredSharedLocalBasis SharedData;
+		FString NormalCode;
+		FString TangentCode;
+	};
+	/** Tracks shared local bases used by strata materials, mapping a normal code chunk hash to a SharedMaterialInfo.
+	 * A normal code chunk hash can point to multiple shared info in case it is paired with different tangents. */
+	TMultiMap<uint64, FStrataSharedLocalBasesInfo> CodeChunkToStrataSharedLocalBasis;
 
 	/** Tracks the total number of vt samples in the shader. */
 	uint32 NumVtSamples;
@@ -345,36 +470,59 @@ public:
 	// Assign custom interpolators to slots, packing them as much as possible in unused slots.
 	TBitArray<> GetVertexInterpolatorsOffsets(FString& VertexInterpolatorsOffsetsDefinitionCode) const;
 
-	void GetSharedInputsMaterialCode(FString& PixelMembersDeclaration, FString& NormalAssignment, FString& PixelMembersInitializationEpilog);
+	void GetSharedInputsMaterialCode(FString& PixelMembersDeclaration, FString& NormalAssignment, FString& PixelMembersInitializationEpilog, ECompiledPartialDerivativeVariation DerivativeVariation);
 
 	FString GetMaterialShaderCode();
 
+	const FShaderCodeChunk& AtParameterCodeChunk(int32 Index) const;
+	EDerivativeStatus GetDerivativeStatus(int32 Index) const;
+	FDerivInfo GetDerivInfo(int32 Index, bool bAllowNonFloat = false) const;
+
 protected:
+	bool GetParameterOverrideValueForCurrentFunction(EMaterialParameterType ParameterType, FName ParameterName, FMaterialParameterMetadata& OutResult) const;
 
 	bool IsMaterialPropertyUsed(EMaterialProperty Property, int32 PropertyChunkIndex, const FLinearColor& ReferenceValue, int32 NumComponents) const;
 
 	// only used by GetMaterialShaderCode()
 	// @param Index ECompiledMaterialProperty or EMaterialProperty
-	FString GenerateFunctionCode(uint32 Index) const;
+	FString GenerateFunctionCode(uint32 Index, ECompiledPartialDerivativeVariation Variation) const;
 
-	// GetParameterCode
+	// GetParameterCode, with DERIV_BASE_VALUE if necessary
 	virtual FString GetParameterCode(int32 Index, const TCHAR* Default = 0);
+
+	// GetParameterCode, no DERIV_BASE_VALUE
+	virtual FString GetParameterCodeRaw(int32 Index, const TCHAR* Default = 0);
+
+public:
+	// Must always be valid
+	virtual FString GetParameterCodeDeriv(int32 Index, ECompiledPartialDerivativeVariation Variation);
+protected:
 
 	uint64 GetParameterHash(int32 Index);
 
+	uint64 GetParameterMaterialAttributeMask(int32 Index);
+	void SetParameterMaterialAttributes(int32 Index, uint64 Mask);
+
 	/** Creates a string of all definitions needed for the given material input. */
-	FString GetDefinitions(TArray<FShaderCodeChunk>& CodeChunks, int32 StartChunk, int32 EndChunk) const;
+	FString GetDefinitions(const TArray<FShaderCodeChunk>& CodeChunks, int32 StartChunk, int32 EndChunk, ECompiledPartialDerivativeVariation Variation, const TCHAR* ReturnValueSymbolName = nullptr) const;
 
 	// GetFixedParameterCode
-	void GetFixedParameterCode(int32 StartChunk, int32 EndChunk, int32 ResultIndex, TArray<FShaderCodeChunk>& CodeChunks, FString& OutDefinitions, FString& OutValue);
+	void GetFixedParameterCode(int32 StartChunk, int32 EndChunk, int32 ResultIndex, TArray<FShaderCodeChunk>& CodeChunks, FString& OutDefinitions, FString& OutValue, ECompiledPartialDerivativeVariation Variation, bool bReduceAfterReturnValue = false);
 
-	void GetFixedParameterCode(int32 ResultIndex, TArray<FShaderCodeChunk>& CodeChunks, FString& OutDefinitions, FString& OutValue);
+	void LinkParentScopes(TArray<FShaderCodeChunk>& CodeChunks);
+
+	void GetScopeCode(int32 IndentLevel, int32 ScopeChunkIndex, const TArray<FShaderCodeChunk>& CodeChunks, TSet<int32>& EmittedChunks, FString& OutValue);
+
+	void GetFixedParameterCode(int32 ResultIndex, TArray<FShaderCodeChunk>& CodeChunks, FString& OutDefinitions, FString& OutValue, ECompiledPartialDerivativeVariation Variation);
 
 	/** Used to get a user friendly type from EMaterialValueType */
 	const TCHAR* DescribeType(EMaterialValueType Type) const;
 
 	/** Used to get an HLSL type from EMaterialValueType */
 	const TCHAR* HLSLTypeString(EMaterialValueType Type) const;
+
+	/** Used to get an HLSL type from EMaterialValueType */
+	const TCHAR* HLSLTypeStringDeriv(EMaterialValueType Type, EDerivativeStatus DerivativeStatus) const;
 
 	int32 NonPixelShaderExpressionError();
 
@@ -388,8 +536,28 @@ protected:
 	/** Creates a unique symbol name and adds it to the symbol list. */
 	FString CreateSymbolName(const TCHAR* SymbolNameHint);
 
+	void AddCodeChunkToCurrentScope(int32 ChunkIndex);
+	void AddCodeChunkToScope(int32 ChunkIndex, int32 ScopeIndex);
+
 	/** Adds an already formatted inline or referenced code chunk */
-	int32 AddCodeChunkInner(uint64 Hash, const TCHAR* FormattedCode, EMaterialValueType Type, bool bInlined);
+	int32 AddCodeChunkInner(uint64 Hash, const TCHAR* FormattedCode, EMaterialValueType Type, EDerivativeStatus DerivativeStatus, bool bInlined);
+
+public:
+	/** Adds an already formatted inline or referenced code chunk, and notes the derivative status. */
+	int32 AddCodeChunkInnerDeriv(const TCHAR* FormattedCodeFinite, const TCHAR* FormattedCodeAnalytic, EMaterialValueType Type, bool bInlined, EDerivativeStatus DerivativeStatus);
+	int32 AddCodeChunkInnerDeriv(const TCHAR* FormattedCode, EMaterialValueType Type, bool bInlined, EDerivativeStatus DerivativeStatus);
+
+	FString CastValue(const FString& Code, EMaterialValueType SourceType, EMaterialValueType DestType, EMaterialCastFlags Flags);
+
+	// CoerceParameter
+	FString CoerceParameter(int32 Index, EMaterialValueType DestType);
+	FString CoerceValue(const FString& Code, EMaterialValueType SourceType, EMaterialValueType DestType);
+
+	int32 CastToNonLWCIfDisabled(int32 Code);
+
+	EMaterialValueType GetArithmeticResultType(int32 A, int32 B);
+
+protected:
 
 	/** 
 	 * Constructs the formatted code chunk and creates a new local variable definition from it. 
@@ -397,29 +565,66 @@ protected:
 	 * Creating local variables instead of inlining simplifies the generated code and reduces redundant expression chains,
 	 * Making compiles faster and enabling the shader optimizer to do a better job.
 	 */
-	int32 AddCodeChunk(EMaterialValueType Type, const TCHAR* Format, ...);
+	
+	int32 AddCodeChunkInner(EMaterialValueType Type, EDerivativeStatus DerivativeStatus, bool bInlined, const TCHAR* Format, ...);
 	int32 AddCodeChunkWithHash(uint64 BaseHash, EMaterialValueType Type, const TCHAR* Format, ...);
+
+	template <typename... Types>
+	int32 AddCodeChunk(EMaterialValueType Type, const TCHAR* Format, Types... Args)
+	{
+		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to AddCodeChunk");
+		return AddCodeChunkInner(Type, EDerivativeStatus::NotAware, false, Format, Args...);
+	}
+
+	template <typename... Types>
+	int32 AddCodeChunkZeroDeriv(EMaterialValueType Type, const TCHAR* Format, Types... Args)
+	{
+		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to AddCodeChunkZeroDeriv");
+		return AddCodeChunkInner(Type, EDerivativeStatus::Zero, false, Format, Args...);
+	}
+
+	template <typename... Types>
+	int32 AddCodeChunkFiniteDeriv(EMaterialValueType Type, const TCHAR* Format, Types... Args)
+	{
+		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to AddCodeChunkFiniteDeriv");
+		return AddCodeChunkInner(Type, EDerivativeStatus::NotValid, false, Format, Args...);
+	}
+	
 
 	/** 
 	 * Constructs the formatted code chunk and creates an inlined code chunk from it. 
 	 * This should be used instead of AddCodeChunk when the code chunk does not add any actual shader instructions, for example a component mask.
 	 */
-	int32 AddInlinedCodeChunk(EMaterialValueType Type, const TCHAR* Format, ...);
-	int32 AddInlinedCodeChunkWithHash(uint64 BaseHash, EMaterialValueType Type, const TCHAR* Format, ...);
+	template <typename... Types>
+	int32 AddInlinedCodeChunk(EMaterialValueType Type, const TCHAR* Format, Types... Args)
+	{
+		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to AddInlinedCodeChunk");
+		return AddCodeChunkInner(Type, EDerivativeStatus::NotAware, true, Format, Args...);
+	}
+
+	template <typename... Types>
+	int32 AddInlinedCodeChunkZeroDeriv(EMaterialValueType Type, const TCHAR* Format, Types... Args)
+	{
+		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to AddInlinedCodeChunkZeroDeriv");
+		return AddCodeChunkInner(Type, EDerivativeStatus::Zero, true, Format, Args...);
+	}
+
+	template <typename... Types>
+	int32 AddInlinedCodeChunkFiniteDeriv(EMaterialValueType Type, const TCHAR* Format, Types... Args)
+	{
+		static_assert(TAnd<TIsValidVariadicFunctionArg<Types>...>::Value, "Invalid argument(s) passed to AddInlinedCodeChunkFiniteDeriv");
+		return AddCodeChunkInner(Type, EDerivativeStatus::NotValid, true, Format, Args...);
+	}
 
 	int32 AddUniformExpressionInner(uint64 Hash, FMaterialUniformExpression* UniformExpression, EMaterialValueType Type, const TCHAR* FormattedCode);
 
 	// AddUniformExpression - Adds an input to the Code array and returns its index.
 	int32 AddUniformExpression(FMaterialUniformExpression* UniformExpression, EMaterialValueType Type, const TCHAR* Format, ...);
-	int32 AddUniformExpressionWithHash(uint64 BaseHash, FMaterialUniformExpression* UniformExpression, EMaterialValueType Type, const TCHAR* Format, ...);
 
 	// AccessUniformExpression - Adds code to access the value of a uniform expression to the Code array and returns its index.
 	int32 AccessUniformExpression(int32 Index);
 
 	int32 AccessMaterialAttribute(int32 CodeIndex, const FGuid& AttributeID);
-
-	// CoerceParameter
-	FString CoerceParameter(int32 Index, EMaterialValueType DestType);
 
 	// GetParameterType
 	virtual EMaterialValueType GetParameterType(int32 Index) const override;
@@ -432,7 +637,7 @@ protected:
 	// GetArithmeticResultType
 	EMaterialValueType GetArithmeticResultType(EMaterialValueType TypeA, EMaterialValueType TypeB);
 
-	EMaterialValueType GetArithmeticResultType(int32 A, int32 B);
+	int32 GenericSwitch(const TCHAR* Function, int32 IfTrue, int32 IfFalse);
 
 	// FMaterialCompiler interface.
 
@@ -459,12 +664,15 @@ protected:
 	virtual EShaderFrequency GetCurrentShaderFrequency() const override;
 
 	virtual FMaterialShadingModelField GetMaterialShadingModels() const override;
+	virtual FMaterialShadingModelField GetCompiledShadingModels() const override;
 
 	virtual int32 Error(const TCHAR* Text) override;
 
 	virtual void AppendExpressionError(UMaterialExpression* Expression, const TCHAR* Text) override;
 
 	virtual int32 CallExpression(FMaterialExpressionKey ExpressionKey, FMaterialCompiler* Compiler) override;
+
+	virtual int32 CallExpressionExec(UMaterialExpression* Expression) override;
 
 	virtual EMaterialValueType GetType(int32 Code) override;
 	virtual EMaterialQualityLevel::Type GetQualityLevel() override;
@@ -478,7 +686,6 @@ protected:
 	 * This will truncate a type (float4 -> float3) but not add components (float2 -> float3), however a float1 can be cast to any float type by replication. 
 	 */
 	virtual int32 ValidCast(int32 Code, EMaterialValueType DestType) override;
-
 	virtual int32 ForceCast(int32 Code, EMaterialValueType DestType, uint32 ForceCastFlags = 0) override;
 
 	/** Pushes a function onto the compiler's function stack, which indicates that compilation is entering a function. */
@@ -491,14 +698,12 @@ protected:
 
 	virtual int32 AccessCollectionParameter(UMaterialParameterCollection* ParameterCollection, int32 ParameterIndex, int32 ComponentIndex) override;
 
-	virtual int32 ScalarParameter(FName ParameterName, float DefaultValue) override;
-
-	virtual int32 VectorParameter(FName ParameterName, const FLinearColor& DefaultValue) override;
-
+	virtual int32 NumericParameter(EMaterialParameterType ParameterType, FName ParameterName, const UE::Shader::FValue& DefaultValue) override;
 	virtual int32 Constant(float X) override;
 	virtual int32 Constant2(float X, float Y) override;
 	virtual int32 Constant3(float X, float Y, float Z) override;
 	virtual int32 Constant4(float X, float Y, float Z, float W) override;
+	virtual int32 GenericConstant(const UE::Shader::FValue& Value) override;
 	
 	virtual int32 ViewProperty(EMaterialExposedViewProperty Property, bool InvProperty) override;
 
@@ -547,7 +752,7 @@ protected:
 	virtual int32 GetPixelPosition() override;
 
 	virtual int32 ParticleMacroUV() override;
-	virtual int32 ParticleSubUV(int32 TextureIndex, EMaterialSamplerType SamplerType, bool bBlend) override;
+	virtual int32 ParticleSubUV(int32 TextureIndex, EMaterialSamplerType SamplerType, int32 MipValue0Index, int32 MipValue1Index, ETextureMipValueMode MipValueMode, bool bBlend) override;
 	virtual int32 ParticleSubUVProperty(int32 PropertyIndex) override;
 	virtual int32 ParticleColor() override;
 	virtual int32 ParticlePosition() override;
@@ -584,8 +789,6 @@ protected:
 
 	virtual int32 TextureCoordinate(uint32 CoordinateIndex, bool UnMirrorU, bool UnMirrorV) override;
 
-	//static const TCHAR* GetVTAddressMode(TextureAddress Address);
-
 	uint32 AcquireVTStackIndex(
 		ETextureMipValueMode MipValueMode, 
 		TextureAddress AddressU, TextureAddress AddressV, 
@@ -593,6 +796,9 @@ protected:
 		int32 CoordinateIndex, 
 		int32 MipValue0Index, int32 MipValue1Index, 
 		int32 PreallocatedStackTextureIndex, 
+		const FString& UV_Value,
+		const FString& UV_Ddx,
+		const FString& UV_Ddy,
 		bool bAdaptive, bool bGenerateFeedback);
 
 	virtual int32 TextureSample(
@@ -626,6 +832,8 @@ protected:
 
 	virtual int32 GetSceneTextureViewSize(int32 SceneTextureId, bool InvProperty) override;
 
+	virtual int32 DBufferTextureLookup(int32 ViewportUV, uint32 DBufferTextureIndex) override;
+
 	// @param bTextureLookup true: texture, false:no texture lookup, usually to get the size
 	void UseSceneTextureId(ESceneTextureId SceneTextureId, bool bTextureLookup);
 
@@ -636,8 +844,8 @@ protected:
 
 	virtual int32 VirtualTexture(URuntimeVirtualTexture* InTexture, int32 TextureLayerIndex, int32 PageTableLayerIndex, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType) override;
 	virtual int32 VirtualTextureParameter(FName ParameterName, URuntimeVirtualTexture* DefaultValue, int32 TextureLayerIndex, int32 PageTableLayerIndex, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType) override;
-	virtual int32 VirtualTextureUniform(int32 TextureIndex, int32 VectorIndex) override;
-	virtual int32 VirtualTextureUniform(FName ParameterName, int32 TextureIndex, int32 VectorIndex) override;
+	virtual int32 VirtualTextureUniform(int32 TextureIndex, int32 VectorIndex, UE::Shader::EValueType Type) override;
+	virtual int32 VirtualTextureUniform(FName ParameterName, int32 TextureIndex, int32 VectorIndex, UE::Shader::EValueType Type) override;
 	virtual int32 VirtualTextureWorldToUV(int32 WorldPositionIndex, int32 P0, int32 P1, int32 P2) override;
 	virtual int32 VirtualTextureUnpack(int32 CodeIndex0, int32 CodeIndex1, int32 CodeIndex2, int32 P0, EVirtualTextureUnpackType UnpackType) override;
 
@@ -654,16 +862,13 @@ protected:
 	virtual int32 StaticBool(bool bValue) override;
 	virtual int32 StaticBoolParameter(FName ParameterName, bool bDefaultValue) override;
 	virtual int32 StaticComponentMask(int32 Vector, FName ParameterName, bool bDefaultR, bool bDefaultG, bool bDefaultB, bool bDefaultA) override;
-	virtual const FMaterialLayersFunctions* StaticMaterialLayersParameter(FName ParameterName) override;
+	virtual const FMaterialLayersFunctions* GetMaterialLayers() override;
 
 	virtual bool GetStaticBoolValue(int32 BoolIndex, bool& bSucceeded) override;
 
 	virtual int32 StaticTerrainLayerWeight(FName ParameterName, int32 Default) override;
 
 	virtual int32 VertexColor() override;
-
-	virtual int32 PreSkinVertexOffset() override;
-	virtual int32 PostSkinVertexOffset() override;
 
 	virtual int32 PreSkinnedPosition() override;
 	virtual int32 PreSkinnedNormal() override;
@@ -681,10 +886,11 @@ protected:
 	virtual int32 Logarithm10(int32 X) override;
 	virtual int32 SquareRoot(int32 X) override;
 	virtual int32 Length(int32 X) override;
+	virtual int32 Normalize(int32 X) override;
 	virtual int32 Step(int32 Y, int32 X) override;
 	virtual int32 SmoothStep(int32 X, int32 Y, int32 A) override;
 	virtual int32 InvLerp(int32 X, int32 Y, int32 A) override;
-	virtual int32 Lerp(int32 X, int32 Y, int32 A) override;
+	virtual int32 Lerp(int32 A, int32 B, int32 S) override;
 	virtual int32 Min(int32 A, int32 B) override;
 	virtual int32 Max(int32 A, int32 B) override;
 	virtual int32 Clamp(int32 X, int32 A, int32 B) override;
@@ -696,6 +902,7 @@ protected:
 	
 	virtual int32 TransformVector(EMaterialCommonBasis SourceCoordBasis, EMaterialCommonBasis DestCoordBasis, int32 A) override;
 	virtual int32 TransformPosition(EMaterialCommonBasis SourceCoordBasis, EMaterialCommonBasis DestCoordBasis, int32 A) override;
+	virtual int32 TransformNormalFromRequestedBasisToWorld(int32 NormalCodeChunk) override;
 	virtual int32 DynamicParameter(FLinearColor& DefaultValue, uint32 ParameterIndex = 0) override;
 	virtual int32 LightmapUVs() override;
 	virtual int32 PrecomputedAOMask() override;
@@ -703,7 +910,8 @@ protected:
 	virtual int32 ShadowReplace(int32 Default, int32 Shadow) override;
 	virtual int32 ReflectionCapturePassSwitch(int32 Default, int32 Reflection) override;
 
-	virtual int32 RayTracingQualitySwitchReplace(int32 Normal, int32 RayTraced);
+	virtual int32 RayTracingQualitySwitchReplace(int32 Normal, int32 RayTraced) override;
+	virtual int32 PathTracingQualitySwitchReplace(int32 Normal, int32 PathTraced) override;
 
 	virtual int32 VirtualTextureOutputReplace(int32 Default, int32 VirtualTexture) override;
 
@@ -715,8 +923,10 @@ protected:
 	virtual int32 VertexNormal() override;
 	virtual int32 VertexTangent() override;
 	virtual int32 PixelNormalWS() override;
-	virtual int32 DDX(int32 X) override;
-	virtual int32 DDY(int32 X) override;
+	virtual int32 DDX(int32 A) override;
+	virtual int32 DDY(int32 A) override;
+
+	int32 Derivative(int32 A, const TCHAR* Component);
 
 	virtual int32 AntialiasedTextureMask(int32 Tex, int32 UV, float Threshold, uint8 Channel) override;
 	virtual int32 DepthOfFieldFunction(int32 Depth, int32 FunctionValueIndex) override;
@@ -738,6 +948,7 @@ protected:
 	virtual int32 GetHairCoverage() override;
 	virtual int32 GetHairAuxilaryData() override;
 	virtual int32 GetHairAtlasUVs() override;
+	virtual int32 GetHairGroupIndex() override;
 	virtual int32 GetHairColorFromMelanin(int32 Melanin, int32 Redness, int32 DyeColor) override;
 	virtual int32 DistanceToNearestSurface(int32 PositionArg) override;
 	virtual int32 DistanceFieldGradient(int32 PositionArg) override;
@@ -752,6 +963,8 @@ protected:
 	virtual int32 SkyAtmosphereViewLuminance() override;
 	virtual int32 SkyAtmosphereAerialPerspective(int32 WorldPosition) override;
 	virtual int32 SkyAtmosphereDistantLightScatteredLuminance() override;
+
+	virtual int32 SkyLightEnvMapSample(int32 DirectionCodeChunk, int32 RoughnessCodeChunk) override;
 
 	// Water
 	virtual int32 SceneDepthWithoutWater(int32 Offset, int32 ViewportUV, bool bUseOffset, float FallbackDepth) override;
@@ -772,6 +985,76 @@ protected:
 	virtual int32 CustomOutput(class UMaterialExpressionCustomOutput* Custom, int32 OutputIndex, int32 OutputCode) override;
 
 	virtual int32 VirtualTextureOutput(uint8 MaterialAttributeMask) override;
+
+	// Material attributes
+	virtual int32 DefaultMaterialAttributes() override;
+	virtual int32 SetMaterialAttribute(int32 MaterialAttributes, int32 Value, const FGuid& AttributeID) override;
+
+	// Exec
+	virtual int32 BeginScope() override;
+	virtual int32 BeginScope_If(int32 Condition) override;
+	virtual int32 BeginScope_Else() override;
+	virtual int32 BeginScope_For(const UMaterialExpression* Expression, int32 StartIndex, int32 EndIndex, int32 IndexStep) override;
+	virtual int32 EndScope() override;
+	virtual int32 ForLoopIndex(const UMaterialExpression* Expression) override;
+	virtual int32 ReturnMaterialAttributes(int32 MaterialAttributes) override;
+	virtual int32 SetLocal(const FName& LocalName, int32 Value) override;
+	virtual int32 GetLocal(const FName& LocalName) override;
+
+	// Strata
+	virtual int32 StrataCreateAndRegisterNullMaterial() override;
+	virtual int32 StrataSlabBSDF(
+		int32 UseMetalness,
+		int32 BaseColor, int32 EdgeColor, int32 Specular, int32 Metallic,
+		int32 DiffuseAlbedo, int32 F0, int32 F90,
+		int32 Roughness, int32 Anisotropy,
+		int32 SSSProfileId, int32 SSSDMFP, int32 SSSDMFPScale,
+		int32 EmissiveColor, 
+		int32 Haziness, 
+		int32 ThinFilmThickness, 
+		int32 FuzzAmount, int32 FuzzColor, 
+		int32 Thickness,
+		int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro) override;
+	virtual int32 StrataConversionFromLegacy(
+		bool bHasDynamicShadingModel,
+		int32 BaseColor, int32 Specular, int32 Metallic,
+		int32 Roughness, int32 Anisotropy,
+		int32 SubSurfaceColor, int32 SubSurfaceProfileId,
+		int32 ClearCoat, int32 ClearCoatRoughness,
+		int32 EmissiveColor,
+		int32 Opacity,
+		int32 TransmittanceColor,
+		int32 WaterScatteringCoefficients, int32 WaterAbsorptionCoefficients, int32 WaterPhaseG, int32 ColorScaleBehindWater,
+		int32 ShadingModel,
+		int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro,
+		int32 ClearCoat_Normal, int32 ClearCoat_Tangent, const FString& ClearCoat_SharedLocalBasisIndexMacro) override;
+	virtual int32 StrataVolumetricFogCloudBSDF(int32 Albedo, int32 Extinction, int32 EmissiveColor, int32 AmbientOcclusion) override;
+	virtual int32 StrataUnlitBSDF(int32 EmissiveColor, int32 TransmittanceColor) override;
+	virtual int32 StrataHairBSDF(int32 BaseColor, int32 Scatter, int32 Specular, int32 Roughness, int32 Backlit, int32 EmissiveColor, int32 Tangent, const FString& SharedLocalBasisIndexMacro) override;
+	virtual int32 StrataSingleLayerWaterBSDF(
+		int32 BaseColor, int32 Metallic, int32 Specular, int32 Roughness, 
+		int32 EmissiveColor, int32 TopMaterialOpacity, int32 WaterAlbedo, int32 WaterExtinction, int32 WaterPhaseG, 
+		int32 ColorScaleBehindWater, int32 Normal, const FString& SharedLocalBasisIndexMacro) override;
+	virtual int32 StrataHorizontalMixing(int32 Background, int32 Foreground, int32 Mix) override;
+	virtual int32 StrataHorizontalMixingParameterBlending(int32 Background, int32 Foreground, int32 HorizontalMixCodeChunk, int32 NormalMixCodeChunk, const FString& SharedLocalBasisIndexMacro) override;
+	virtual int32 StrataVerticalLayering(int32 Top, int32 Base) override;
+	virtual int32 StrataVerticalLayeringParameterBlending(int32 Top, int32 Base, const FString& SharedLocalBasisIndexMacro, int32 TopBSDFNormalCodeChunk) override;
+	virtual int32 StrataAdd(int32 A, int32 B) override;
+	virtual int32 StrataAddParameterBlending(int32 A, int32 B, int32 AMixWeight, const FString& SharedLocalBasisIndexMacro) override;
+	virtual int32 StrataWeight(int32 A, int32 Weight) override;
+	virtual int32 StrataTransmittanceToMFP(int32 TransmittanceColor, int32 DesiredThickness, int32 OutputIndex) override;
+
+	virtual void StrataCompilationInfoRegisterCodeChunk(int32 CodeChunk, FStrataMaterialCompilationInfo& StrataMaterialCompilationInfo) override;
+	virtual bool StrataCompilationInfoContainsCodeChunk(int32 CodeChunk) override;
+	virtual const FStrataMaterialCompilationInfo& GetStrataCompilationInfo(int32 CodeChunk) override;
+	virtual FStrataRegisteredSharedLocalBasis StrataCompilationInfoRegisterSharedLocalBasis(int32 NormalCodeChunk) override;
+	virtual FStrataRegisteredSharedLocalBasis StrataCompilationInfoRegisterSharedLocalBasis(int32 NormalCodeChunk, int32 TangentCodeChunk) override;
+	virtual uint8 StrataCompilationInfoGetSharedLocalBasesCount() override;
+	virtual int32 StrataAddParameterBlendingBSDFCoverageToNormalMixCodeChunk(int32 ACodeChunk, int32 BCodeChunk) override;
+	virtual int32 StrataVerticalLayeringParameterBlendingBSDFCoverageToNormalMixCodeChunk(int32 TopCodeChunk) override;
+	virtual int32 StrataHorizontalMixingParameterBlendingBSDFCoverageToNormalMixCodeChunk(int32 BackgroundCodeChunk, int32 ForegroundCodeChunk, int32 HorizontalMixCodeChunk) override;
+
+	FStrataSharedLocalBasesInfo StrataCompilationInfoGetMatchingSharedLocalBasisInfo(const FStrataRegisteredSharedLocalBasis& SearchedSharedLocalBasis);
 
 #if HANDLE_CUSTOM_OUTPUTS_AS_MATERIAL_ATTRIBUTES
 	/** Used to translate code for custom output attributes such as ClearCoatBottomNormal */
@@ -801,6 +1084,14 @@ protected:
 	virtual int32 PerInstanceCustomData(int32 DataIndex, int32 DefaultValueIndex) override;
 
 	/**
+	 * Returns a custom data on a per-instance basis when instancing
+	 * @DataIndex - index in array that represents custom data
+	 *
+	 * @return	Code index
+	 */
+	virtual int32 PerInstanceCustomData3Vector(int32 DataIndex, int32 DefaultValueIndex) override;
+
+	/**
 	 * Returns a float2 texture coordinate after 2x2 transform and offset applied
 	 *
 	 * @return	Code index
@@ -823,6 +1114,9 @@ protected:
 
 	/**Experimental access to the EyeAdaptation RT for Post Process materials. Can be one frame behind depending on the value of BlendableLocation. */
 	virtual int32 EyeAdaptation() override;
+
+	/**Experimental access to the EyeAdaptation RT for applying an inverse. */
+	virtual int32 EyeAdaptationInverse(int32 LightValueArg, int32 AlphaArg) override;
 
 	// to only have one piece of code dealing with error handling if the Primitive constant buffer is not used.
 	// @param Name e.g. TEXT("ObjectWorldPositionAndRadius.w")

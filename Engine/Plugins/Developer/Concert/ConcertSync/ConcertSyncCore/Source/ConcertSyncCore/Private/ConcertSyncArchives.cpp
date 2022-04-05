@@ -71,7 +71,7 @@ FConcertSyncObjectWriter::FConcertSyncObjectWriter(FConcertLocalIdentifierTable*
 	ArNoDelta = true;
 	//SetWantBinaryPropertySerialization(true);
 
-	SetIsTransacting(true);
+	SetIsTransacting(InIncludeEditorOnlyData);
 	SetFilterEditorOnly(!InIncludeEditorOnlyData);
 
 #if USE_STABLE_LOCALIZATION_KEYS
@@ -131,6 +131,12 @@ FArchive& FConcertSyncObjectWriter::operator<<(FLazyObjectPtr& LazyObjectPtr)
 	return *this;
 }
 
+FArchive& FConcertSyncObjectWriter::operator<<(FObjectPtr& Obj)
+{
+	UObject* RawObjPtr = Obj.Get();
+	return *this << RawObjPtr;
+}
+
 FArchive& FConcertSyncObjectWriter::operator<<(FSoftObjectPtr& AssetPtr)
 {
 	FSoftObjectPath Obj = AssetPtr.ToSoftObjectPath();
@@ -174,8 +180,10 @@ FConcertSyncObjectReader::FConcertSyncObjectReader(const FConcertLocalIdentifier
 
 	if (InVersionInfo)
 	{
-		SetUE4Ver(InVersionInfo->FileVersion.FileVersionUE4);
-		SetLicenseeUE4Ver(InVersionInfo->FileVersion.FileVersionLicenseeUE4);
+		FPackageFileVersion UEVersion(InVersionInfo->FileVersion.FileVersion, (EUnrealEngineObjectUE5Version)InVersionInfo->FileVersion.FileVersionUE5);
+
+		SetUEVer(UEVersion);
+		SetLicenseeUEVer(InVersionInfo->FileVersion.FileVersionLicensee);
 		SetEngineVer(FEngineVersionBase(InVersionInfo->EngineVersion.Major, InVersionInfo->EngineVersion.Minor, InVersionInfo->EngineVersion.Patch, InVersionInfo->EngineVersion.Changelist));
 
 		FCustomVersionContainer EngineCustomVersions;
@@ -186,7 +194,9 @@ FConcertSyncObjectReader::FConcertSyncObjectReader(const FConcertLocalIdentifier
 		SetCustomVersions(EngineCustomVersions);
 	}
 
-	SetIsTransacting(true);
+	// This is conditional on WITH_EDITORONLY_DATA because the transaction flag is ignored in builds without it and IsTransacting always returns false. So
+	// the writer should only be sending non-editor only properties if the reader does not use editor oly data.
+	SetIsTransacting(WITH_EDITORONLY_DATA);
 	SetFilterEditorOnly(!WITH_EDITORONLY_DATA);
 
 #if USE_STABLE_LOCALIZATION_KEYS
@@ -261,6 +271,14 @@ FArchive& FConcertSyncObjectReader::operator<<(FLazyObjectPtr& LazyObjectPtr)
 	// technically the saved object guid should be the same as the resolved object guid if any.
 	ensure(!ObjectGuid.IsValid() || ObjectGuid == SavedObjectGuid);
 
+	return *this;
+}
+
+FArchive& FConcertSyncObjectReader::operator<<(FObjectPtr& Obj)
+{
+	UObject* RawObj = nullptr;
+	*this << RawObj;
+	Obj = RawObj;
 	return *this;
 }
 

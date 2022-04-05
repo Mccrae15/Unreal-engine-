@@ -11,7 +11,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml;
 using System.Xml.Serialization;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -55,17 +56,17 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Masks for paths excluded for analysis
 		/// </summary>
-		public string[] PathMasks;
+		public string[]? PathMasks;
 
 		/// <summary>
 		/// Registered username
 		/// </summary>
-		public string UserName;
+		public string? UserName;
 
 		/// <summary>
 		/// Registered serial number
 		/// </summary>
-		public string SerialNumber;
+		public string? SerialNumber;
 
 		/// <summary>
 		/// Disable the 64-bit Analysis
@@ -126,7 +127,7 @@ namespace UnrealBuildTool
 		/// Attempts to read the application settings from the default location
 		/// </summary>
 		/// <returns>Application settings instance, or null if no file was present</returns>
-		internal static PVSApplicationSettings Read()
+		internal static PVSApplicationSettings? Read()
 		{
 			FileReference SettingsPath = FileReference.Combine(new DirectoryReference(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)), "PVS-Studio", "Settings.xml");
 			if (FileReference.Exists(SettingsPath))
@@ -156,7 +157,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Returns the application settings
 		/// </summary>
-		internal Lazy<PVSApplicationSettings> ApplicationSettings { get; } = new Lazy<PVSApplicationSettings>(() => PVSApplicationSettings.Read());
+		internal Lazy<PVSApplicationSettings?> ApplicationSettings { get; } = new Lazy<PVSApplicationSettings?>(() => PVSApplicationSettings.Read());
 
 		/// <summary>
 		/// Whether to use application settings to determine the analysis mode
@@ -217,7 +218,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Accessor for the Application settings
 		/// </summary>
-		internal PVSApplicationSettings ApplicationSettings
+		internal PVSApplicationSettings? ApplicationSettings
 		{
 			get { return Inner.ApplicationSettings.Value; }
 		}
@@ -249,13 +250,13 @@ namespace UnrealBuildTool
 		/// Path to the input file list
 		/// </summary>
 		[CommandLine("-Input", Required = true)]
-		FileReference InputFileList = null;
+		FileReference? InputFileList = null;
 
 		/// <summary>
 		/// Output file to generate
 		/// </summary>
 		[CommandLine("-Output", Required = true)]
-		FileReference OutputFile = null;
+		FileReference? OutputFile = null;
 
 		/// <summary>
 		/// Execute the command
@@ -267,14 +268,16 @@ namespace UnrealBuildTool
 			Arguments.ApplyTo(this);
 			Arguments.CheckAllArgumentsUsed();
 
-			Log.TraceInformation("{0}", OutputFile.GetFileName());
+			Log.TraceInformation("{0}", OutputFile!.GetFileName());
 
 			// Read the input files
-			string[] InputFileLines = FileReference.ReadAllLines(InputFileList);
+			string[] InputFileLines = FileReference.ReadAllLines(InputFileList!);
 			FileReference[] InputFiles = InputFileLines.Select(x => x.Trim()).Where(x => x.Length > 0).Select(x => new FileReference(x)).ToArray();
 
 			// Create the combined output file, and print the diagnostics to the log
 			HashSet<string> UniqueItems = new HashSet<string>();
+			List<string> OutputLines = new List<string>();
+
 			using (StreamWriter RawWriter = new StreamWriter(OutputFile.FullName))
 			{
 				foreach (FileReference InputFile in InputFiles)
@@ -337,10 +340,10 @@ namespace UnrealBuildTool
 	{
 		ReadOnlyTargetRules Target;
 		ReadOnlyPVSTargetSettings Settings;
-		PVSApplicationSettings ApplicationSettings;
+		PVSApplicationSettings? ApplicationSettings;
 		VCToolChain InnerToolChain;
 		FileReference AnalyzerFile;
-		FileReference LicenseFile;
+		FileReference? LicenseFile;
 		UnrealTargetPlatform Platform;
 		Version AnalyzerVersion;
 
@@ -350,17 +353,17 @@ namespace UnrealBuildTool
 			Platform = Target.Platform;
 			InnerToolChain = new VCToolChain(Target);
 
-			AnalyzerFile = FileReference.Combine(new DirectoryReference(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)), "PVS-Studio", "x64", "PVS-Studio.exe");
-			if(!FileReference.Exists(AnalyzerFile))
+			AnalyzerFile = FileReference.Combine(Unreal.RootDirectory, "Engine", "Restricted", "NoRedist", "Extras", "ThirdPartyNotUE", "PVS-Studio", "PVS-Studio.exe");
+			if (!FileReference.Exists(AnalyzerFile))
 			{
-				FileReference EngineAnalyzerFile = FileReference.Combine(UnrealBuildTool.RootDirectory, "Engine", "Restricted", "NoRedist", "Extras", "ThirdPartyNotUE", "PVS-Studio", "PVS-Studio.exe");
-				if (FileReference.Exists(EngineAnalyzerFile))
+				FileReference InstalledAnalyzerFile = FileReference.Combine(new DirectoryReference(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)), "PVS-Studio", "x64", "PVS-Studio.exe");
+				if (FileReference.Exists(AnalyzerFile))
 				{
-					AnalyzerFile = EngineAnalyzerFile;
+					AnalyzerFile = InstalledAnalyzerFile;
 				}
 				else
 				{
-					throw new BuildException("Unable to find PVS-Studio at {0} or {1}", AnalyzerFile, EngineAnalyzerFile);
+					throw new BuildException("Unable to find PVS-Studio at {0} or {1}", AnalyzerFile, InstalledAnalyzerFile);
 				}
 			}
 
@@ -377,8 +380,8 @@ namespace UnrealBuildTool
 
 				if (!String.IsNullOrEmpty(ApplicationSettings.UserName) && !String.IsNullOrEmpty(ApplicationSettings.SerialNumber))
 				{
-					LicenseFile = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "PVS", "PVS-Studio.lic");
-					Utils.WriteFileIfChanged(LicenseFile, String.Format("{0}\n{1}\n", ApplicationSettings.UserName, ApplicationSettings.SerialNumber), StringComparison.Ordinal);
+					LicenseFile = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "PVS", "PVS-Studio.lic");
+					Utils.WriteFileIfChanged(LicenseFile, String.Format("{0}\n{1}\n", ApplicationSettings.UserName, ApplicationSettings.SerialNumber));
 				}
 			}
 			else
@@ -402,7 +405,7 @@ namespace UnrealBuildTool
 		static Version GetAnalyzerVersion(FileReference AnalyzerPath)
 		{
 			String Output = String.Empty;
-			Version AnalyzerVersion = new Version(0, 0);
+			Version? AnalyzerVersion = new Version(0, 0);
 
 			try
 			{
@@ -444,19 +447,19 @@ namespace UnrealBuildTool
 
 		class ActionGraphCapture : ForwardingActionGraphBuilder
 		{
-			List<Action> Actions;
+			List<IExternalAction> Actions;
 
-			public ActionGraphCapture(IActionGraphBuilder Inner, List<Action> Actions)
+			public ActionGraphCapture(IActionGraphBuilder Inner, List<IExternalAction> Actions)
 				: base(Inner)
 			{
 				this.Actions = Actions;
 			}
 
-			public override Action CreateAction(ActionType Type)
+			public override void AddAction(IExternalAction Action)
 			{
-				Action Action = base.CreateAction(Type);
+				base.AddAction(Action);
+
 				Actions.Add(Action);
-				return Action;
 			}
 		}
 
@@ -484,6 +487,12 @@ namespace UnrealBuildTool
 
 		public override CPPOutput CompileCPPFiles(CppCompileEnvironment CompileEnvironment, List<FileItem> InputFiles, DirectoryReference OutputDir, string ModuleName, IActionGraphBuilder Graph)
 		{
+			// Ignore generated files
+			if (InputFiles.All(x => x.Location.GetFileName().EndsWith(".gen.cpp")))
+			{
+				return new CPPOutput();
+			}
+
 			// Use a subdirectory for PVS output, to avoid clobbering regular build artifacts
 			OutputDir = DirectoryReference.Combine(OutputDir, "PVS");
 
@@ -491,40 +500,38 @@ namespace UnrealBuildTool
 			CppCompileEnvironment PreprocessCompileEnvironment = new CppCompileEnvironment(CompileEnvironment);
 			PreprocessCompileEnvironment.bPreprocessOnly = true;
 			PreprocessCompileEnvironment.bEnableUndefinedIdentifierWarnings = false; // Not sure why THIRD_PARTY_INCLUDES_START doesn't pick this up; the _Pragma appears in the preprocessed output. Perhaps in preprocess-only mode the compiler doesn't respect these?
+			PreprocessCompileEnvironment.AdditionalArguments += " /wd4005 /wd4828";
 			PreprocessCompileEnvironment.Definitions.Add("PVS_STUDIO");
 
-			List<Action> PreprocessActions = new List<Action>();
+			List<IExternalAction> PreprocessActions = new List<IExternalAction>();
 			CPPOutput Result = InnerToolChain.CompileCPPFiles(PreprocessCompileEnvironment, InputFiles, OutputDir, ModuleName, new ActionGraphCapture(Graph, PreprocessActions));
 
 			// Run the source files through PVS-Studio
-			foreach(Action PreprocessAction in PreprocessActions)
+			for(int Idx = 0; Idx < PreprocessActions.Count; Idx++)
 			{
-				if (PreprocessAction.ActionType != ActionType.Compile)
+				VCCompileAction? PreprocessAction = PreprocessActions[Idx] as VCCompileAction;
+				if (PreprocessAction == null)
 				{
 					continue;
 				}
 
-				FileItem SourceFileItem = PreprocessAction.PrerequisiteItems.FirstOrDefault(x => x.HasExtension(".c") || x.HasExtension(".cc") || x.HasExtension(".cpp"));
+				FileItem? SourceFileItem = PreprocessAction.SourceFile;
 				if (SourceFileItem == null)
 				{
-					Log.TraceWarning("Unable to find source file from command: {0} {1}", PreprocessAction.CommandArguments);
+					Log.TraceWarning("Unable to find source file from command producing: {0}", String.Join(", ", PreprocessActions[Idx].ProducedItems.Select(x => x.Location.GetFileName())));
 					continue;
 				}
 
-				FileItem PreprocessedFileItem = PreprocessAction.ProducedItems.FirstOrDefault(x => x.HasExtension(".i"));
+				FileItem? PreprocessedFileItem = PreprocessAction.PreprocessedFile;
 				if (PreprocessedFileItem == null)
 				{
-					Log.TraceWarning("Unable to find preprocessed output file from command: {0} {1}", PreprocessAction.CommandArguments);
+					Log.TraceWarning("Unable to find preprocessed output file from {0}", SourceFileItem.Location.GetFileName());
 					continue;
 				}
-
-				// Disable a few warnings that seem to come from the preprocessor not respecting _Pragma
-				PreprocessAction.CommandArguments += " /wd4005"; // macro redefinition
-				PreprocessAction.CommandArguments += " /wd4828"; // file contains a character starting at offset xxxx that is illegal in the current source character set
 
 				// Write the PVS studio config file
 				StringBuilder ConfigFileContents = new StringBuilder();
-				foreach(DirectoryReference IncludePath in Target.WindowsPlatform.Environment.IncludePaths)
+				foreach(DirectoryReference IncludePath in Target.WindowsPlatform.Environment!.IncludePaths)
 				{
 					ConfigFileContents.AppendFormat("exclude-path={0}\n", IncludePath.FullName);
 				}
@@ -549,10 +556,6 @@ namespace UnrealBuildTool
 				{
 					ConfigFileContents.Append("platform=x64\n");
 				}
-				else if(Platform == UnrealTargetPlatform.Win32)
-				{
-					ConfigFileContents.Append("platform=Win32\n");
-				}
 				else
 				{
 					throw new BuildException("PVS-Studio does not support this platform");
@@ -560,7 +563,6 @@ namespace UnrealBuildTool
 				ConfigFileContents.Append("preprocessor=visualcpp\n");
 				ConfigFileContents.Append("language=C++\n");
 				ConfigFileContents.Append("skip-cl-exe=yes\n");
-				ConfigFileContents.AppendFormat("i-file={0}\n", PreprocessedFileItem.Location.FullName);
 
 				if(AnalyzerVersion.CompareTo(new Version("7.07")) >= 0)
 				{
@@ -570,7 +572,7 @@ namespace UnrealBuildTool
 					ConfigFileContents.AppendFormat("std={0}\n", languageStandardForCfg);
 				}
 
-				string BaseFileName = PreprocessedFileItem.Location.GetFileNameWithoutExtension();
+				string BaseFileName = PreprocessedFileItem.Location.GetFileName();
 
 				FileReference ConfigFileLocation = FileReference.Combine(OutputDir, BaseFileName + ".cfg");
 				FileItem ConfigFileItem = Graph.CreateIntermediateTextFile(ConfigFileLocation, ConfigFileContents.ToString());
@@ -583,18 +585,24 @@ namespace UnrealBuildTool
 				AnalyzeAction.CommandDescription = "Analyzing";
 				AnalyzeAction.StatusDescription = BaseFileName;
 				AnalyzeAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
-				AnalyzeAction.CommandPath = AnalyzerFile;
-				AnalyzeAction.CommandArguments = String.Format("--cl-params \"{0}\" --source-file \"{1}\" --output-file \"{2}\" --cfg \"{3}\" --analysis-mode {4}", PreprocessAction.CommandArguments, SourceFileItem.AbsolutePath, OutputFileLocation, ConfigFileItem.AbsolutePath, (uint)Settings.ModeFlags);
+				AnalyzeAction.CommandPath = BuildHostPlatform.Current.Shell;
+
+				StringBuilder Arguments = new StringBuilder();
+				Arguments.Append($"/C \"\"{AnalyzerFile}\" --source-file \"{SourceFileItem.AbsolutePath}\" --output-file \"{OutputFileLocation}\" --cfg \"{ConfigFileItem.AbsolutePath}\" --i-file=\"{PreprocessedFileItem.AbsolutePath}\" --analysis-mode {(uint)Settings.ModeFlags}");
 				if (LicenseFile != null)
 				{
-					AnalyzeAction.CommandArguments += String.Format(" --lic-file \"{0}\"", LicenseFile);
+					Arguments.Append($" --lic-file \"{LicenseFile}\"");
 					AnalyzeAction.PrerequisiteItems.Add(FileItem.GetItemByFileReference(LicenseFile));
 				}
+				Arguments.Append($" && echo. >>\"{OutputFileLocation}\"\"");
+				AnalyzeAction.CommandArguments = Arguments.ToString();
+
 				AnalyzeAction.PrerequisiteItems.Add(ConfigFileItem);
 				AnalyzeAction.PrerequisiteItems.Add(PreprocessedFileItem);
 				AnalyzeAction.PrerequisiteItems.AddRange(InputFiles); // Add the InputFiles as PrerequisiteItems so that in SingleFileCompile mode the PVSAnalyze step is not filtered out
 				AnalyzeAction.ProducedItems.Add(OutputFileItem);
 				AnalyzeAction.DeleteItems.Add(OutputFileItem); // PVS Studio will append by default, so need to delete produced items
+				AnalyzeAction.bCanExecuteRemotely = false;
 
 				Result.ObjectFiles.AddRange(AnalyzeAction.ProducedItems);
 			}
@@ -611,7 +619,7 @@ namespace UnrealBuildTool
 			FileReference OutputFile;
 			if (Target.ProjectFile == null)
 			{
-				OutputFile = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Saved", "PVS-Studio", String.Format("{0}.pvslog", Target.Name));
+				OutputFile = FileReference.Combine(Unreal.EngineDirectory, "Saved", "PVS-Studio", String.Format("{0}.pvslog", Target.Name));
 			}
 			else
 			{
@@ -620,19 +628,20 @@ namespace UnrealBuildTool
 
 			List<FileReference> InputFiles = Makefile.OutputItems.Select(x => x.Location).Where(x => x.HasExtension(".pvslog")).ToList();
 
-			// Collect the prerequisite items off of the Compile action added in CompileCPPFiles so that in SingleFileCompile mode the PVSGather step is also not filtered out
-			List<FileItem> AnalyzeActionPrerequisiteItems = Makefile.Actions.Where(x => x.ActionType == ActionType.Compile).SelectMany(x => x.PrerequisiteItems).ToList();
+			// Collect the sourcefile items off of the Compile action added in CompileCPPFiles so that in SingleFileCompile mode the PVSGather step is also not filtered out
+			List<FileItem> CompileSourceFiles = Makefile.Actions.OfType<VCCompileAction>().Select(x => x.SourceFile!).ToList();
 
 			FileItem InputFileListItem = Makefile.CreateIntermediateTextFile(OutputFile.ChangeExtension(".input"), InputFiles.Select(x => x.FullName));
 
 			Action AnalyzeAction = Makefile.CreateAction(ActionType.Compile);
 			AnalyzeAction.CommandPath = UnrealBuildTool.GetUBTPath();
-			AnalyzeAction.CommandArguments = String.Format("-Mode=PVSGather -Input=\"{0}\" -Output=\"{1}\"", InputFileListItem.Location, OutputFile);
+			AnalyzeAction.CommandArguments = String.Format("-Mode=PVSGather -Input=\"{0}\" -Output=\"{1}\" ", InputFileListItem.Location, OutputFile);
 			AnalyzeAction.WorkingDirectory = UnrealBuildTool.EngineSourceDirectory;
 			AnalyzeAction.PrerequisiteItems.Add(InputFileListItem);
 			AnalyzeAction.PrerequisiteItems.AddRange(Makefile.OutputItems);
-			AnalyzeAction.PrerequisiteItems.AddRange(AnalyzeActionPrerequisiteItems);
+			AnalyzeAction.PrerequisiteItems.AddRange(CompileSourceFiles);
 			AnalyzeAction.ProducedItems.Add(FileItem.GetItemByFileReference(OutputFile));
+			AnalyzeAction.ProducedItems.Add(FileItem.GetItemByPath(OutputFile.FullName + "_does_not_exist")); // Force the gather step to always execute
 			AnalyzeAction.DeleteItems.AddRange(AnalyzeAction.ProducedItems);
 
 			Makefile.OutputItems.AddRange(AnalyzeAction.ProducedItems);

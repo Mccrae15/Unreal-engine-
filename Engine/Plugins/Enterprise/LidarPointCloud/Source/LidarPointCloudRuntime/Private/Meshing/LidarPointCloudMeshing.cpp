@@ -16,12 +16,12 @@ void LidarPointCloudMeshing::CalculateNormals(FLidarPointCloudOctree* Octree, FT
 	/** Groups sampling information together for readability */
 	struct FSamplingUnit
 	{
-		FVector Center;
-		FVector Extent;
+		FVector3f Center;
+		FVector3f Extent;
 		TArray64<FLidarPointCloudPoint*> Points;
 		FLidarPointCloudOctreeNode* Node;
 
-		FSamplingUnit(const FVector& Center, const FVector& Extent, FLidarPointCloudOctreeNode* Node)
+		FSamplingUnit(const FVector3f& Center, const FVector3f& Extent, FLidarPointCloudOctreeNode* Node)
 			: Center(Center)
 			, Extent(Extent)
 			, Node(Node)
@@ -30,19 +30,19 @@ void LidarPointCloudMeshing::CalculateNormals(FLidarPointCloudOctree* Octree, FT
 
 		FSamplingUnit* ConstructChildAtLocation(int32 i)
 		{
-			return new FSamplingUnit(Center + Extent * (FVector(-0.5f) + FVector((i & 4) == 4, (i & 2) == 2, (i & 1) == 1)), Extent / 2, Node ? Node->GetChildNodeAtLocation(i) : nullptr);
+			return new FSamplingUnit(Center + Extent * (FVector3f(-0.5f) + FVector3f((i & 4) == 4, (i & 2) == 2, (i & 1) == 1)), Extent / 2, Node ? Node->GetChildNodeAtLocation(i) : nullptr);
 		}
 	};
 
 	int32 DesiredNumIterations = Quality;
 
-	const FLidarPointCloudNormal UpNormal = FVector::UpVector;
+	const FLidarPointCloudNormal UpNormal = FVector3f::UpVector;
 
 	TArray64<int32> Indices;
 
 	TQueue<FSamplingUnit*> Q;
 	{
-		FSamplingUnit* Root = new FSamplingUnit(FVector::ZeroVector, Octree->SharedData[0].Extent, &Octree->Root);
+		FSamplingUnit* Root = new FSamplingUnit(FVector3f::ZeroVector, Octree->SharedData[0].Extent, Octree->Root);
 		if (InPointSelection.Num() == 0)
 		{
 			Octree->GetPoints(Root->Points);
@@ -151,13 +151,13 @@ void LidarPointCloudMeshing::CalculateNormals(FLidarPointCloudOctree* Octree, FT
 						}
 					} while (PlaneModels.Find(CurrentModel));
 
-					const FPlane Plane(SelectedPoints[CurrentModel.X]->Location, SelectedPoints[CurrentModel.Y]->Location, SelectedPoints[CurrentModel.Z]->Location);
+					const FPlane Plane((FVector)SelectedPoints[CurrentModel.X]->Location, (FVector)SelectedPoints[CurrentModel.Y]->Location, (FVector)SelectedPoints[CurrentModel.Z]->Location);
 
 					// Count Inner Points
 					uint32 NumInnerPoints = 0;
 					for (FLidarPointCloudPoint** Point = SelectedPoints.GetData(), **DataEnd = Point + NumPoints; Point != DataEnd; ++Point)
 					{
-						if (FMath::Abs(Plane.PlaneDot((*Point)->Location)) <= Tolerance)
+						if (FMath::Abs(Plane.PlaneDot((FVector)(*Point)->Location)) <= Tolerance)
 						{
 							++NumInnerPoints;
 						}
@@ -189,7 +189,7 @@ void LidarPointCloudMeshing::CalculateNormals(FLidarPointCloudOctree* Octree, FT
 						}
 					}
 
-					BestPlane = CurrentModel != FIntVector::NoneValue ? FPlane(SelectedPoints[CurrentModel.X]->Location, SelectedPoints[CurrentModel.Y]->Location, SelectedPoints[CurrentModel.Z]->Location) : FPlane(EForceInit::ForceInit);
+					BestPlane = CurrentModel != FIntVector::NoneValue ? FPlane((FVector)SelectedPoints[CurrentModel.X]->Location, (FVector)SelectedPoints[CurrentModel.Y]->Location, (FVector)SelectedPoints[CurrentModel.Z]->Location) : FPlane(EForceInit::ForceInit);
 				}
 
 				// If the points array was created temporarily, destroy it
@@ -211,7 +211,7 @@ void LidarPointCloudMeshing::CalculateNormals(FLidarPointCloudOctree* Octree, FT
 				// Apply Normals
 				for (FLidarPointCloudPoint** DataStart = SamplingUnit->Points.GetData(), **Point = DataStart, **DataEnd = Point + SamplingUnit->Points.Num(); Point != DataEnd; ++Point)
 				{
-					if (FMath::Abs(BestPlane.PlaneDot((*Point)->Location)) <= Tolerance)
+					if (FMath::Abs(BestPlane.PlaneDot((FVector)(*Point)->Location)) <= Tolerance)
 					{
 						(*Point)->Normal = Normal;
 						--DataEnd;

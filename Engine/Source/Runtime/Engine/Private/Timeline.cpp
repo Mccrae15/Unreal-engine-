@@ -9,6 +9,7 @@
 #include "UObject/Class.h"
 #include "UObject/CoreNet.h"
 #include "UObject/UnrealType.h"
+#include "Curves/CurveFloat.h"
 #include "Curves/CurveLinearColor.h"
 #include "Curves/CurveVector.h"
 #include "Curves/CurveFloat.h"
@@ -557,6 +558,20 @@ float FTimeline::GetTimelineLength() const
 	}
 }
 
+float FTimeline::GetScaledTimelineLength() const
+{
+	const float CurrentPlayRate = GetPlayRate();
+	if(CurrentPlayRate != 0.0f)
+	{
+		return GetTimelineLength() / CurrentPlayRate;	
+	}
+	else
+	{
+		UE_LOG(LogTimeline, Error, TEXT("Invalid timeline PlayRate!"));
+		return 0.0f;
+	}
+}
+
 /** Sets the timeline length mode */
 void FTimeline::SetTimelineLengthMode(ETimelineLengthMode NewMode)
 {
@@ -801,7 +816,7 @@ float UTimelineComponent::GetPlayRate() const
 	return TheTimeline.GetPlayRate();
 }
 
-void UTimelineComponent::SetNewTime (float NewTime)
+void UTimelineComponent::SetNewTime(float NewTime)
 {
 	TheTimeline.SetNewTime(NewTime);
 }
@@ -809,6 +824,11 @@ void UTimelineComponent::SetNewTime (float NewTime)
 float UTimelineComponent::GetTimelineLength() const
 {
 	return TheTimeline.GetTimelineLength();
+}
+
+float UTimelineComponent::GetScaledTimelineLength() const
+{
+	return TheTimeline.GetScaledTimelineLength();
 }
 
 void UTimelineComponent::SetTimelineLength(float NewLength)

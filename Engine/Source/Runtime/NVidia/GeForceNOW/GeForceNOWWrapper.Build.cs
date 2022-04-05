@@ -18,20 +18,22 @@ public class GeForceNOWWrapper : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(
 			new string[] {
-				"GeForceNOW"
+				"GeForceNOW",
+				"Slate"
 			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
+				"SlateCore"
 			}
 		);
 
 		if (Target.Type != TargetRules.TargetType.Server
 		&& Target.Configuration != UnrealTargetConfiguration.Unknown
 		&& Target.Configuration != UnrealTargetConfiguration.Debug
-		&& (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32))
+		&& Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			PublicDefinitions.Add("NV_GEFORCENOW=1");
 		}

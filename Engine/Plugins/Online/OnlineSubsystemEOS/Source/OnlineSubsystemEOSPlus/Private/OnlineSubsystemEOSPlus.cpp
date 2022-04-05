@@ -77,11 +77,17 @@ bool FOnlineSubsystemEOSPlus::Init()
 	LeaderboardsInterfacePtr = MakeShareable(new FOnlineLeaderboardsEOSPlus(this));
 	StoreInterfacePtr = MakeShareable(new FOnlineStoreEOSPlus(this));
 	ExternalUIInterfacePtr = MakeShareable(new FOnlineExternalUIEOSPlus(this));
+	VoiceInterfacePtr = MakeShareable(new FOnlineVoiceEOSPlus(this));
+	TitleFileInterfacePtr = MakeShareable(new FOnlineTitleFileEOSPlus(this));
+	UserCloudInterfacePtr = MakeShareable(new FOnlineUserCloudEOSPlus(this));
 
 	UserInterfacePtr->Initialize();
 	LeaderboardsInterfacePtr->Initialize();
 	StoreInterfacePtr->Initialize();
 	ExternalUIInterfacePtr->Initialize();
+	VoiceInterfacePtr->Initialize();
+	TitleFileInterfacePtr->Initialize();
+	UserCloudInterfacePtr->Initialize();
 
 	return true;
 }
@@ -104,6 +110,9 @@ void FOnlineSubsystemEOSPlus::PreUnload()
 	DESTRUCT_INTERFACE(LeaderboardsInterfacePtr);
 	DESTRUCT_INTERFACE(StoreInterfacePtr);
 	DESTRUCT_INTERFACE(ExternalUIInterfacePtr);
+	DESTRUCT_INTERFACE(VoiceInterfacePtr);
+	DESTRUCT_INTERFACE(TitleFileInterfacePtr);
+	DESTRUCT_INTERFACE(UserCloudInterfacePtr);
 
 #undef DESTRUCT_INTERFACE
 }
@@ -143,7 +152,7 @@ IOnlineSharedCloudPtr FOnlineSubsystemEOSPlus::GetSharedCloudInterface() const
 
 IOnlineUserCloudPtr FOnlineSubsystemEOSPlus::GetUserCloudInterface() const
 {
-	return nullptr;
+	return UserCloudInterfacePtr;
 }
 
 IOnlineEntitlementsPtr FOnlineSubsystemEOSPlus::GetEntitlementsInterface() const
@@ -158,7 +167,7 @@ IOnlineLeaderboardsPtr FOnlineSubsystemEOSPlus::GetLeaderboardsInterface() const
 
 IOnlineVoicePtr FOnlineSubsystemEOSPlus::GetVoiceInterface() const
 {
-	return nullptr;
+	return VoiceInterfacePtr;
 }
 
 IOnlineExternalUIPtr FOnlineSubsystemEOSPlus::GetExternalUIInterface() const
@@ -178,7 +187,7 @@ IOnlineIdentityPtr FOnlineSubsystemEOSPlus::GetIdentityInterface() const
 
 IOnlineTitleFilePtr FOnlineSubsystemEOSPlus::GetTitleFileInterface() const
 {
-	return nullptr;
+	return TitleFileInterfacePtr;
 }
 
 IOnlineStoreV2Ptr FOnlineSubsystemEOSPlus::GetStoreV2Interface() const

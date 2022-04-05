@@ -26,6 +26,7 @@
 
 DECLARE_CYCLE_STAT(TEXT("FPlaylistReaderHLS_WorkerThread"), STAT_ElectraPlayer_HLS_PlaylistWorker, STATGROUP_ElectraPlayer);
 
+#define HLS_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD		0
 
 namespace Electra
 {
@@ -46,7 +47,10 @@ const FString IPlaylistReaderHLS::OptionKeyUpdatePlaylistLoadNoDataTimeout  (TEX
 /**
  * This class is responsible for downloading HLS playlists and parsing them.
  */
-class FPlaylistReaderHLS : public IPlaylistReaderHLS, public FMediaThread
+class FPlaylistReaderHLS : public IPlaylistReaderHLS
+#if HLS_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
+						 , public FMediaThread
+#endif
 {
 public:
 	FPlaylistReaderHLS();
@@ -54,6 +58,7 @@ public:
 
 	virtual ~FPlaylistReaderHLS();
 	virtual void Close() override;
+	virtual void HandleOnce() override;
 
 	/**
 	 * Returns the type of playlist format.
@@ -225,6 +230,11 @@ private:
 	void StartWorkerThread();
 	void StopWorkerThread();
 	void WorkerThread();
+
+	void InternalSetup();
+	void InternalCleanup();
+	void InternalHandleOnce();
+
 	void HandleEnqueuedPlaylistDownloads(const FTimeValue& TimeNow);
 	void HandleCompletedPlaylistDownloads(const FTimeValue& TimeNow);
 	void HandleStaticRequestCompletions(const FTimeValue& TimeNow);
@@ -244,13 +254,14 @@ private:
 	FErrorDetail ParsePlaylist(FPlaylistRequestPtr FromRequest);
 
 
-	IPlayerSessionServices*									PlayerSessionServices;
+	IPlayerSessionServices*									PlayerSessionServices = nullptr;
 	FString													MasterPlaylistURL;
 	TSharedPtr<FMediaSemaphore, ESPMode::ThreadSafe>		WorkerThreadSignal;
-	bool													bIsWorkerThreadStarted;
-	volatile bool											bTerminateWorkerThread;
+	bool													bIsWorkerThreadStarted = false;
+	volatile bool											bTerminateWorkerThread = false;
 
 	FMediaCriticalSection									PendingPlaylistRequestsLock;
+	FMediaCriticalSection									EnqueuedPlaylistRequestsLock;
 	TArray<FPlaylistRequestPtr>								PendingPlaylistRequests;
 	TArray<FPlaylistRequestPtr>								StaticResourcePlaylistRequests;
 	TArray<FPlaylistRequestPtr>								EnqueuedPlaylistRequests;
@@ -258,7 +269,7 @@ private:
 	TDoubleLinkedList<FPlaylistLoadRequestHLS>				InitiallyRequiredPlaylistLoadRequests;				//!< Playlists that need to be fetched and parsed before we can report metadata ready to the player.
 	TSharedPtrTS<IElectraHttpManager::FProgressListener>	ProgressListener;
 
-	IManifestBuilderHLS* 									Builder;
+	IManifestBuilderHLS* 									Builder = nullptr;
 	TSharedPtrTS<FManifestHLSInternal>						Manifest;
 	FErrorDetail											LastErrorDetail;
 
@@ -286,11 +297,9 @@ TSharedPtrTS<IPlaylistReader> IPlaylistReaderHLS::Create(IPlayerSessionServices*
 
 
 FPlaylistReaderHLS::FPlaylistReaderHLS()
+#if HLS_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
 	: FMediaThread("ElectraPlayer::HLS Playlist")
-	, PlayerSessionServices(nullptr)
-	, bIsWorkerThreadStarted(false)
-	, bTerminateWorkerThread(false)
-	, Builder(nullptr)
+#endif
 {
 	WorkerThreadSignal = MakeShared<FMediaSemaphore, ESPMode::ThreadSafe>();
 }
@@ -322,15 +331,23 @@ void FPlaylistReaderHLS::Close()
 	StopWorkerThread();
 }
 
+void FPlaylistReaderHLS::HandleOnce()
+{
+#if !HLS_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
+	InternalHandleOnce();
+#endif
+}
+
+
 void FPlaylistReaderHLS::StartWorkerThread()
 {
 	check(!bIsWorkerThreadStarted);
-
+#if HLS_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
 	bTerminateWorkerThread = false;
-	//ThreadSetPriority( ... );
-	//ThreadSetCoreAffinity( ... );
-	//ThreadSetStackSize( ... );
 	ThreadStart(Electra::MakeDelegate(this, &FPlaylistReaderHLS::WorkerThread));
+#else
+	InternalSetup();
+#endif
 	bIsWorkerThreadStarted = true;
 }
 
@@ -338,10 +355,14 @@ void FPlaylistReaderHLS::StopWorkerThread()
 {
 	if (bIsWorkerThreadStarted)
 	{
+#if HLS_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
 		bTerminateWorkerThread = true;
 		WorkerThreadSignal->Release();
 		ThreadWaitDone();
 		ThreadReset();
+#else
+		InternalCleanup();
+#endif
 		bIsWorkerThreadStarted = false;
 	}
 }
@@ -399,7 +420,9 @@ void FPlaylistReaderHLS::EnqueueLoadPlaylist(const FPlaylistLoadRequestHLS& InPl
 {
 	FPlaylistRequestPtr Request = MakeShared<FPlaylistRequest, ESPMode::ThreadSafe>(InPlaylistLoadRequest);
 	Request->SetIsMasterPlaylist(bIsMasterPlaylist);
+	EnqueuedPlaylistRequestsLock.Lock();
 	EnqueuedPlaylistRequests.Push(Request);
+	EnqueuedPlaylistRequestsLock.Unlock();
 	WorkerThreadSignal->Release();
 }
 
@@ -407,7 +430,9 @@ void FPlaylistReaderHLS::EnqueueRetryLoadPlaylist(FPlaylistRequestPtr RequestToR
 {
 	RequestToRetry->SetExecuteAtUTC(AtUTCTime);
 	RequestToRetry->SetRetryInfo(RetryInfo);
+	EnqueuedPlaylistRequestsLock.Lock();
 	EnqueuedPlaylistRequests.Push(RequestToRetry);
+	EnqueuedPlaylistRequestsLock.Unlock();
 	WorkerThreadSignal->Release();
 }
 
@@ -455,10 +480,9 @@ void FPlaylistReaderHLS::CheckForPlaylistUpdate(const FTimeValue& TimeNow)
 	}
 }
 
-void FPlaylistReaderHLS::WorkerThread()
-{
-	LLM_SCOPE(ELLMTag::ElectraPlayer);
 
+void FPlaylistReaderHLS::InternalSetup()
+{
 	Builder = IManifestBuilderHLS::Create(PlayerSessionServices);
 
 	// Setup the playlist load request for the master playlist.
@@ -467,38 +491,10 @@ void FPlaylistReaderHLS::WorkerThread()
 	PlaylistLoadRequest.RequestedAtTime  = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
 	PlaylistLoadRequest.InternalUniqueID = 0;
 	EnqueueLoadPlaylist(PlaylistLoadRequest, true);
+}
 
-	while(!bTerminateWorkerThread)
-	{
-		WorkerThreadSignal->Obtain(1000 * 100);
-		if (bTerminateWorkerThread)
-		{
-			break;
-		}
-
-		{
-			SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_HLS_PlaylistWorker);
-			CSV_SCOPED_TIMING_STAT(ElectraPlayer, HLS_PlaylistWorker);
-
-			FTimeValue Now = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
-
-			// Check for completed static resource requests.
-			// NOTE: This needs to be done first in order to move the completed ones being moved onto the completed list to be
-			//       handled immediately in the following HandleCompletedPlaylistDownloads() call!!
-			HandleStaticRequestCompletions(Now);
-
-			// Check completed playlist downloads
-			HandleCompletedPlaylistDownloads(Now);
-
-			// Execute enqueued playlist download requests.
-			HandleEnqueuedPlaylistDownloads(Now);
-
-			// Check which playlists need to be reloaded.
-			CheckForPlaylistUpdate(Now);
-		}
-	}
-
-
+void FPlaylistReaderHLS::InternalCleanup()
+{
 	// No playlists are required any more.
 	InitiallyRequiredPlaylistLoadRequests.Empty();
 
@@ -529,10 +525,9 @@ void FPlaylistReaderHLS::WorkerThread()
 	ActivePendingRequests.Empty();
 
 	// Delete any unprocessed enqueued requests
-	while(EnqueuedPlaylistRequests.Num())
-	{
-		EnqueuedPlaylistRequests.Pop();
-	}
+	EnqueuedPlaylistRequestsLock.Lock();
+	EnqueuedPlaylistRequests.Empty();
+	EnqueuedPlaylistRequestsLock.Unlock();
 
 	// Delete any unprocessed completed downloads
 	while(!CompletedPlaylistRequests.IsEmpty())
@@ -542,6 +537,48 @@ void FPlaylistReaderHLS::WorkerThread()
 
 	delete Builder;
 	Builder = nullptr;
+}
+
+void FPlaylistReaderHLS::InternalHandleOnce()
+{
+	SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_HLS_PlaylistWorker);
+	CSV_SCOPED_TIMING_STAT(ElectraPlayer, HLS_PlaylistWorker);
+
+	FTimeValue Now = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
+
+	// Check for completed static resource requests.
+	// NOTE: This needs to be done first in order to move the completed ones being moved onto the completed list to be
+	//       handled immediately in the following HandleCompletedPlaylistDownloads() call!!
+	HandleStaticRequestCompletions(Now);
+
+	// Check completed playlist downloads
+	HandleCompletedPlaylistDownloads(Now);
+
+	// Execute enqueued playlist download requests.
+	HandleEnqueuedPlaylistDownloads(Now);
+
+	// Check which playlists need to be reloaded.
+	CheckForPlaylistUpdate(Now);
+}
+
+void FPlaylistReaderHLS::WorkerThread()
+{
+	LLM_SCOPE(ELLMTag::ElectraPlayer);
+
+	InternalSetup();
+
+	while(!bTerminateWorkerThread)
+	{
+		WorkerThreadSignal->Obtain(1000 * 100);
+		if (bTerminateWorkerThread)
+		{
+			break;
+		}
+
+		InternalHandleOnce();
+	}
+
+	InternalCleanup();
 }
 
 
@@ -699,6 +736,7 @@ void FPlaylistReaderHLS::HandleStaticRequestCompletions(const FTimeValue& TimeNo
 
 void FPlaylistReaderHLS::HandleEnqueuedPlaylistDownloads(const FTimeValue& TimeNow)
 {
+	EnqueuedPlaylistRequestsLock.Lock();
 	for(int32 i=0; i<EnqueuedPlaylistRequests.Num(); ++i)
 	{
 		FPlaylistRequestPtr Request = EnqueuedPlaylistRequests[i];
@@ -716,13 +754,16 @@ void FPlaylistReaderHLS::HandleEnqueuedPlaylistDownloads(const FTimeValue& TimeN
 			}
 			else
 			{
+				EnqueuedPlaylistRequestsLock.Unlock();
 				PendingPlaylistRequestsLock.Lock();
 				PendingPlaylistRequests.Push(Request);
 				Request->Execute(ProgressListener, PlayerSessionServices);
 				PendingPlaylistRequestsLock.Unlock();
+				EnqueuedPlaylistRequestsLock.Lock();
 			}
 		}
 	}
+	EnqueuedPlaylistRequestsLock.Unlock();
 }
 
 void FPlaylistReaderHLS::HandleCompletedPlaylistDownloads(const FTimeValue& TimeNow)
@@ -997,7 +1038,9 @@ FErrorDetail FPlaylistReaderHLS::ParsePlaylist(FPlaylistRequestPtr FromRequest)
 	{
 		int32 RequestBytes = FromRequest->GetReceiveBuffer()->Buffer.Num();
 		// The FromRequest buffer is not zero terminated. We need to pick the correct FString constructor for converting the chars into TCHARs while adding the terminating zero!
-		ParseError = Parser.Parse(FString(RequestBytes, (TCHAR*)FUTF8ToTCHAR((const ANSICHAR*)FromRequest->GetReceiveBuffer()->Buffer.GetLinearReadData(), RequestBytes).Get()), Playlist);
+		FUTF8ToTCHAR TextConv((const ANSICHAR*)FromRequest->GetReceiveBuffer()->Buffer.GetLinearReadData(), RequestBytes);
+		FString UTF8String(TextConv.Length(), TextConv.Get());
+		ParseError = Parser.Parse(UTF8String, Playlist);
 	}
 
 	if (ParseError == HLSPlaylistParser::EPlaylistError::None)
@@ -1018,8 +1061,8 @@ FErrorDetail FPlaylistReaderHLS::ParsePlaylist(FPlaylistRequestPtr FromRequest)
 						FTimeValue ResponseAge = MEDIAutcTime::Current() - ConnInfo->RequestStartTime - FTimeValue().SetFromSeconds(ConnInfo->TimeUntilFirstByte);
 						// Parse the header
 						FTimeValue DateFromHeader;
-						UEMediaError DateParseError = RFC7231::ParseDateTime(DateFromHeader, ConnInfo->ResponseHeaders[i].Value);
-						if (DateParseError == UEMEDIA_ERROR_OK && DateFromHeader.IsValid())
+						bool bDateParsedOk = RFC7231::ParseDateTime(DateFromHeader, ConnInfo->ResponseHeaders[i].Value);
+						if (bDateParsedOk && DateFromHeader.IsValid())
 						{
 							PlayerSessionServices->GetSynchronizedUTCTime()->SetTime(DateFromHeader + ResponseAge);
 						}

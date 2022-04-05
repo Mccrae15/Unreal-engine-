@@ -36,6 +36,7 @@ namespace
 {
 	// If we want to load into memory the modules symbol file, it will be allocated to this pointer
 	uint8_t* GModuleSymbolFileMemory = nullptr;
+	size_t   GModuleSymbolFileMemorySize = 0U;
 }
 
 void CORE_API UnixPlatformStackWalk_PreloadModuleSymbolFile()
@@ -56,17 +57,17 @@ void CORE_API UnixPlatformStackWalk_PreloadModuleSymbolFile()
 		else
 		{
 			lseek(SymbolFileFD, 0, SEEK_END);
-			size_t FileSize = lseek(SymbolFileFD, 0, SEEK_CUR);
+			GModuleSymbolFileMemorySize = lseek(SymbolFileFD, 0, SEEK_CUR);
 			lseek(SymbolFileFD, 0, SEEK_SET);
 
-			GModuleSymbolFileMemory = (uint8_t*)FMemory::Malloc(FileSize);
+			GModuleSymbolFileMemory = (uint8_t*)FMemory::Malloc(GModuleSymbolFileMemorySize);
 
-			ssize_t BytesRead = read(SymbolFileFD, GModuleSymbolFileMemory, FileSize);
+			ssize_t BytesRead = read(SymbolFileFD, GModuleSymbolFileMemory, GModuleSymbolFileMemorySize);
 
 			close(SymbolFileFD);
 
 			// Did not read expected amount of bytes
-			if (BytesRead != FileSize)
+			if (BytesRead != GModuleSymbolFileMemorySize)
 			{
 				FMemory::Free(GModuleSymbolFileMemory);
 
@@ -123,9 +124,10 @@ namespace
 	class MemoryReader : public RecordReader
 	{
 	public:
-		void Init(const uint8_t* InRecordMemory)
+		void Init(const uint8_t* InRecordMemory, size_t InMemorySize)
 		{
 			RecordMemory = InRecordMemory;
+			MemorySize   = InMemorySize;
 		}
 
 		bool IsValid() const override
@@ -135,11 +137,19 @@ namespace
 
 		void Read(void* Buffer, uint32_t Size, uint32_t Offset) const override
 		{
-			memcpy(Buffer, RecordMemory + Offset, Size);
+			if (Offset >= MemorySize)
+			{
+				return;
+			}
+
+			uint32_t MaxSize = MemorySize - Offset;
+
+			memcpy(Buffer, RecordMemory + Offset, FMath::Min(Size, MaxSize));
 		}
 
 	private:
 		const uint8_t* RecordMemory = nullptr;
+		size_t MemorySize = 0U;
 	};
 
 	class FDReader : public RecordReader
@@ -335,7 +345,7 @@ namespace
 			// module we can use this preloaded reader
 			if (GModuleSymbolFileMemory && !FCStringAnsi::Strcmp(SOName, TCHAR_TO_UTF8(FPlatformProcess::ExecutableName())))
 			{
-				ModuleMemoryReader.Init(GModuleSymbolFileMemory);
+				ModuleMemoryReader.Init(GModuleSymbolFileMemory, GModuleSymbolFileMemorySize);
 				RecordReader = &ModuleMemoryReader;
 			}
 			else
@@ -609,6 +619,33 @@ void FUnixPlatformStackWalk::StackWalkAndDump( ANSICHAR* HumanReadableString, SI
 	}
 }
 
+void FUnixPlatformStackWalk::StackWalkAndDump(ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, void* ProgramCounter, void* Context)
+{
+	FGenericPlatformStackWalk::StackWalkAndDump(HumanReadableString, HumanReadableStringSize, ProgramCounter, Context);
+}
+
+namespace
+{
+	/** Helper sets the ensure value in the context and guarantees it gets reset
+	 * afterwards (even if an exception is thrown) */
+	struct FLocalGuardHelper
+	{
+		FLocalGuardHelper(FUnixCrashContext* InContext, ECrashContextType NewType)
+			: Context(InContext), OldType(Context->GetType())
+		{
+			Context->SetType(NewType);
+		}
+		~FLocalGuardHelper()
+		{
+			Context->SetType(OldType);
+		}
+
+	private:
+		FUnixCrashContext* Context;
+		ECrashContextType OldType;
+	};
+} // namespace
+
 void FUnixPlatformStackWalk::StackWalkAndDumpEx(ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, int32 IgnoreCount, uint32 Flags, void* Context)
 {
 	const bool bHandlingEnsure = (Flags & EStackWalkFlags::FlagsUsedWhenHandlingEnsure) == EStackWalkFlags::FlagsUsedWhenHandlingEnsure;
@@ -624,26 +661,30 @@ void FUnixPlatformStackWalk::StackWalkAndDumpEx(ANSICHAR* HumanReadableString, S
 	}
 	else
 	{
-		/** Helper sets the ensure value in the context and guarantees it gets reset afterwards (even if an exception is thrown) */
-		struct FLocalGuardHelper
-		{
-			FLocalGuardHelper(FUnixCrashContext* InContext, ECrashContextType NewType)
-				: Context(InContext), OldType(Context->GetType())
-			{
-				Context->SetType(NewType);
-			}
-			~FLocalGuardHelper()
-			{
-				Context->SetType(OldType);
-			}
-
-		private:
-			FUnixCrashContext* Context;
-			ECrashContextType OldType;
-		};
-
 		FLocalGuardHelper Guard(reinterpret_cast<FUnixCrashContext*>(Context), HandlingType);
 		FPlatformStackWalk::StackWalkAndDump(HumanReadableString, HumanReadableStringSize, IgnoreCount, Context);
+	}
+
+	GHandlingEnsure = false;
+}
+
+void FUnixPlatformStackWalk::StackWalkAndDumpEx(ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, void* ProgramCounter, uint32 Flags, void* Context)
+{
+	const bool bHandlingEnsure = (Flags & EStackWalkFlags::FlagsUsedWhenHandlingEnsure) == EStackWalkFlags::FlagsUsedWhenHandlingEnsure;
+	GHandlingEnsure = bHandlingEnsure;
+	ECrashContextType HandlingType = bHandlingEnsure? ECrashContextType::Ensure : ECrashContextType::Crash;
+
+	if (Context == nullptr)
+	{
+		FUnixCrashContext CrashContext(HandlingType, TEXT(""));
+		CrashContext.InitFromSignal(0, nullptr, nullptr);
+		CrashContext.FirstCrashHandlerFrame = nullptr; // ProgramCounter will trim the callstack instead.
+		FPlatformStackWalk::StackWalkAndDump(HumanReadableString, HumanReadableStringSize, ProgramCounter, &CrashContext);
+	}
+	else
+	{
+		FLocalGuardHelper Guard(reinterpret_cast<FUnixCrashContext*>(Context), HandlingType);
+		FPlatformStackWalk::StackWalkAndDump(HumanReadableString, HumanReadableStringSize, ProgramCounter, Context);
 	}
 
 	GHandlingEnsure = false;
@@ -751,7 +792,7 @@ void FUnixPlatformStackWalk::ThreadStackWalkAndDump(ANSICHAR* HumanReadableStrin
 	GatherCallstackFromThread(ThreadCallStack, ThreadId);
 }
 
-uint32 FUnixPlatformStackWalk::CaptureThreadStackBackTrace(uint64 ThreadId, uint64* BackTrace, uint32 MaxDepth)
+uint32 FUnixPlatformStackWalk::CaptureThreadStackBackTrace(uint64 ThreadId, uint64* BackTrace, uint32 MaxDepth, void* Context)
 {
 	ThreadStackUserData ThreadBackTrace;
 	ThreadBackTrace.bCaptureCallStack = false;
@@ -860,19 +901,27 @@ int32 FUnixPlatformStackWalk::GetProcessModuleSignatures(FStackWalkModuleInfo *M
 }
 
 thread_local const TCHAR* GCrashErrorMessage = nullptr;
+thread_local void* GCrashErrorProgramCounter = nullptr;
 thread_local ECrashContextType GCrashErrorType = ECrashContextType::Crash;
 
-void ReportAssert(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+void ReportAssert(const TCHAR* ErrorMessage, void* ProgramCounter)
 {
 	GCrashErrorMessage = ErrorMessage;
+	GCrashErrorProgramCounter = ProgramCounter;
 	GCrashErrorType = ECrashContextType::Assert;
 
 	FPlatformMisc::RaiseException(1);
 }
 
-void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+void ReportGPUCrash(const TCHAR* ErrorMessage, void* ProgramCounter)
 {
+	if (ProgramCounter == nullptr)
+	{
+		ProgramCounter = PLATFORM_RETURN_ADDRESS();
+	}
+
 	GCrashErrorMessage = ErrorMessage;
+	GCrashErrorProgramCounter = ProgramCounter;
 	GCrashErrorType = ECrashContextType::GPUCrash;
 
 	FPlatformMisc::RaiseException(1);
@@ -881,7 +930,7 @@ void ReportGPUCrash(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
 static FCriticalSection EnsureLock;
 static bool bReentranceGuard = false;
 
-void ReportEnsure(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
+void ReportEnsure(const TCHAR* ErrorMessage, void* ProgramCounter)
 {
 	// Simple re-entrance guard.
 	EnsureLock.Lock();
@@ -895,9 +944,9 @@ void ReportEnsure(const TCHAR* ErrorMessage, int NumStackFramesToIgnore)
 	bReentranceGuard = true;
 
 	FUnixCrashContext EnsureContext(ECrashContextType::Ensure, ErrorMessage);
-	EnsureContext.InitFromEnsureHandler(ErrorMessage, __builtin_return_address(0));
+	EnsureContext.InitFromEnsureHandler(ErrorMessage, ProgramCounter);
 
-	EnsureContext.CaptureStackTrace();
+	EnsureContext.CaptureStackTrace(ProgramCounter);
 	EnsureContext.GenerateCrashInfoAndLaunchReporter(true);
 
 	bReentranceGuard = false;

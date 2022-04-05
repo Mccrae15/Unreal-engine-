@@ -14,7 +14,12 @@ namespace UnrealBuildTool.Rules
 				}
 			);
 
-			PrivateDefinitions.Add("SQLITE_OMIT_AUTOINIT"); // We call sqlite3_initialize ourselves during module init
+			// Allow direct access to the SQLite API from outside this module
+			// Note: There are additional macros defined inside SQLiteEmbedded.c to allow this API export to work
+			PublicDefinitions.Add("SQLITE_API=SQLITECORE_API");
+
+			// We call sqlite3_initialize ourselves during module init
+			PrivateDefinitions.Add("SQLITE_OMIT_AUTOINIT");
 
 			// Use the math.h version of isnan rather than the SQLite version to avoid a -ffast-math error
 			PrivateDefinitions.Add("SQLITE_HAVE_ISNAN=1");
@@ -25,6 +30,10 @@ namespace UnrealBuildTool.Rules
 			// Enable FTS
 			PrivateDefinitions.Add("SQLITE_ENABLE_FTS4");
 			PrivateDefinitions.Add("SQLITE_ENABLE_FTS5");
+
+			// Enable Deserialization and RTree Subsystem
+			PrivateDefinitions.Add("SQLITE_ENABLE_DESERIALIZE");
+			PrivateDefinitions.Add("SQLITE_ENABLE_RTREE");
 
 			// Enable Json extension
 			PrivateDefinitions.Add("SQLITE_ENABLE_JSON1");

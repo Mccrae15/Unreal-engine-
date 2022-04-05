@@ -14,6 +14,29 @@ namespace UnrealGameSync
 {
 	class PerforceChangeDetails
 	{
+		/// <summary>
+		/// Set of extensions to treat as code
+		/// </summary>
+		static readonly HashSet<string> CodeExtensions = new HashSet<string>
+		{
+			".c",
+			".cc",
+			".cpp",
+			".m",
+			".mm",
+			".rc",
+			".cs",
+			".csproj",
+			".h",
+			".hpp",
+			".inl",
+			".usf",
+			".ush",
+			".uproject",
+			".uplugin",
+			".sln"
+		};
+
 		public string Description;
 		public bool bContainsCode;
 		public bool bContainsContent;
@@ -23,7 +46,6 @@ namespace UnrealGameSync
 			Description = DescribeRecord.Description;
 
 			// Check whether the files are code or content
-			string[] CodeExtensions = { ".cs", ".h", ".cpp", ".inl", ".usf", ".ush", ".uproject", ".uplugin" };
 			foreach(PerforceDescribeFileRecord File in DescribeRecord.Files)
 			{
 				if(CodeExtensions.Any(Extension => File.DepotFile.EndsWith(Extension, StringComparison.InvariantCultureIgnoreCase)))
@@ -43,39 +65,52 @@ namespace UnrealGameSync
 		}
 	}
 
+	interface IArchiveInfoSource
+	{
+		IReadOnlyList<IArchiveInfo> AvailableArchives { get; }
+	}
+
 	interface IArchiveInfo
 	{
 		string Name { get; }
 		string Type { get; }
-		string DepotPath { get; }
+		string BasePath { get; }
 		string Target { get;  }
-
 		bool Exists();
-		bool TryGetArchivePathForChangeNumber(int ChangeNumber, out string ArchivePath);
+		bool TryGetArchiveKeyForChangeNumber(int ChangeNumber, out string ArchiveKey);
+		bool DownloadArchive(string ArchiveKey, string LocalRootPath, string ManifestFileName, TextWriter Log, ProgressValue Progress);
 	}
 
-	class PerforceMonitor : IDisposable
+	class PerforceMonitor : IDisposable, IArchiveInfoSource
 	{
-		class ArchiveInfo : IArchiveInfo
+		internal class PerforceArchiveInfo : IArchiveInfo
 		{
 			public string Name { get; }
 			public string Type { get; }
 			public string DepotPath { get; }
 			public string Target { get; }
+			public PerforceConnection Perforce { get; }
+
+			public string BasePath
+			{
+				get { return DepotPath; }
+			}
+
 			// TODO: executable/configuration?
 			public SortedList<int, string> ChangeNumberToFileRevision = new SortedList<int, string>();
 
-			public ArchiveInfo(string Name, string Type, string DepotPath, string Target)
+			public PerforceArchiveInfo(string Name, string Type, string DepotPath, string Target, PerforceConnection Perforce)
 			{
 				this.Name = Name;
 				this.Type = Type;
 				this.DepotPath = DepotPath;
 				this.Target = Target;
+				this.Perforce = Perforce;
 			}
 
 			public override bool Equals(object Other)
 			{
-				ArchiveInfo OtherArchive = Other as ArchiveInfo;
+				PerforceArchiveInfo OtherArchive = Other as PerforceArchiveInfo;
 				return OtherArchive != null && Name == OtherArchive.Name && Type == OtherArchive.Type && DepotPath == OtherArchive.DepotPath && Target == OtherArchive.Target && Enumerable.SequenceEqual(ChangeNumberToFileRevision, OtherArchive.ChangeNumberToFileRevision);
 			}
 
@@ -89,7 +124,7 @@ namespace UnrealGameSync
 				return ChangeNumberToFileRevision.Count > 0;
 			}
 
-			public static bool TryParseConfigEntry(string Text, out ArchiveInfo Info)
+			public static bool TryParseConfigEntry(string Text, PerforceConnection PerforceConnection, out PerforceArchiveInfo Info)
 			{
 				ConfigObject Object = new ConfigObject(Text);
 
@@ -111,13 +146,35 @@ namespace UnrealGameSync
 
 				string Type = Object.GetValue("Type", null) ?? Name;
 
-				Info = new ArchiveInfo(Name, Type, DepotPath, Target);
+				Info = new PerforceArchiveInfo(Name, Type, DepotPath, Target, PerforceConnection);
 				return true;
 			}
 
-			public bool TryGetArchivePathForChangeNumber(int ChangeNumber, out string ArchivePath)
+			public bool TryGetArchiveKeyForChangeNumber(int ChangeNumber, out string ArchiveKey)
 			{
-				return ChangeNumberToFileRevision.TryGetValue(ChangeNumber, out ArchivePath);
+				return ChangeNumberToFileRevision.TryGetValue(ChangeNumber, out ArchiveKey);
+			}
+
+			public bool DownloadArchive(string ArchiveKey, string LocalRootPath, string ManifestFileName, TextWriter Log, ProgressValue Progress)
+			{
+				string TempZipFileName = Path.GetTempFileName();
+				try
+				{
+					if (!Perforce.PrintToFile(ArchiveKey, TempZipFileName, Log) || new FileInfo(TempZipFileName).Length == 0)
+					{
+						return false;
+					}
+
+					ArchiveUtils.ExtractFiles(TempZipFileName, LocalRootPath, ManifestFileName, Progress, Log);
+
+				}
+				finally
+				{
+					File.SetAttributes(TempZipFileName, FileAttributes.Normal);
+					File.Delete(TempZipFileName);
+				}
+
+				return true;
 			}
 
 			public override string ToString()
@@ -145,7 +202,7 @@ namespace UnrealGameSync
 		SortedSet<PerforceChangeSummary> Changes = new SortedSet<PerforceChangeSummary>(new PerforceChangeSorter());
 		SortedDictionary<int, PerforceChangeDetails> ChangeDetails = new SortedDictionary<int,PerforceChangeDetails>();
 		SortedSet<int> PromotedChangeNumbers = new SortedSet<int>();
-		List<ArchiveInfo> Archives = new List<ArchiveInfo>();
+		List<PerforceArchiveInfo> Archives = new List<PerforceArchiveInfo>();
 		AutoResetEvent RefreshEvent = new AutoResetEvent(false);
 		BoundedLogWriter LogWriter;
 		bool bIsEnterpriseProject;
@@ -196,7 +253,7 @@ namespace UnrealGameSync
 				RefreshEvent.Set();
 				if(!WorkerThread.Join(100))
 				{
-					WorkerThread.Abort();
+					WorkerThread.Interrupt();
 				}
 				WorkerThread = null;
 			}
@@ -239,13 +296,16 @@ namespace UnrealGameSync
 				{
 					PollForUpdatesInner();
 				}
-				catch (ThreadAbortException)
+				catch (ThreadInterruptedException)
 				{
 					break;
 				}
 				catch (Exception Ex)
 				{
-					LogWriter.WriteException(Ex, "Unhandled exception in PollForUpdatesInner()");
+					if(!bDisposing)
+					{
+						LogWriter.WriteException(Ex, "Unhandled exception in PollForUpdatesInner()");
+					}
 				}
 			}
 		}
@@ -392,7 +452,7 @@ namespace UnrealGameSync
 			// If we are using zipped binaries, make sure we have every change since the last zip containing them. This is necessary for ensuring that content changes show as
 			// syncable in the workspace view if there have been a large number of content changes since the last code change.
 			int MinZippedChangeNumber = -1;
-			foreach (ArchiveInfo Archive in Archives)
+			foreach (PerforceArchiveInfo Archive in Archives)
 			{
 				foreach (int ChangeNumber in Archive.ChangeNumberToFileRevision.Keys)
 				{
@@ -563,7 +623,7 @@ namespace UnrealGameSync
 
 		bool UpdateArchives()
 		{
-			List<ArchiveInfo> NewArchives = new List<ArchiveInfo>();
+			List<PerforceArchiveInfo> NewArchives = new List<PerforceArchiveInfo>();
 
 			// Find all the zipped binaries under this stream
 			ConfigSection ProjectConfigSection = LatestProjectConfigFile.FindSection(SelectedProjectIdentifier);
@@ -573,21 +633,21 @@ namespace UnrealGameSync
 				string LegacyEditorArchivePath = ProjectConfigSection.GetValue("ZippedBinariesPath", null);
 				if (LegacyEditorArchivePath != null)
 				{
-					NewArchives.Add(new ArchiveInfo("Editor", "Editor", LegacyEditorArchivePath, null));
+					NewArchives.Add(new PerforceArchiveInfo("Editor", "Editor", LegacyEditorArchivePath, null, Perforce));
 				}
 
 				// New style
 				foreach (string ArchiveValue in ProjectConfigSection.GetValues("Archives", new string[0]))
 				{
-					ArchiveInfo Archive;
-					if (ArchiveInfo.TryParseConfigEntry(ArchiveValue, out Archive))
+					PerforceArchiveInfo Archive;
+					if (PerforceArchiveInfo.TryParseConfigEntry(ArchiveValue, Perforce, out Archive))
 					{
 						NewArchives.Add(Archive);
 					}
 				}
 
 				// Make sure the zipped binaries path exists
-				foreach (ArchiveInfo NewArchive in NewArchives)
+				foreach (PerforceArchiveInfo NewArchive in NewArchives)
 				{
 					bool bExists;
 					if (!Perforce.FileExists(NewArchive.DepotPath, out bExists, LogWriter))

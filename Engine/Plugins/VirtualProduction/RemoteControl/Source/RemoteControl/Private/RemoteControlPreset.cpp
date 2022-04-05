@@ -11,14 +11,17 @@
 #include "HAL/IConsoleManager.h"
 #include "IRemoteControlModule.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/ITransaction.h"
 #include "Misc/Optional.h"
 #include "RemoteControlExposeRegistry.h"
 #include "RemoteControlFieldPath.h"
 #include "RemoteControlActor.h"
 #include "RemoteControlBinding.h"
 #include "RemoteControlLogger.h"
+#include "RemoteControlEntityFactory.h"
 #include "RemoteControlObjectVersion.h"
 #include "RemoteControlPresetRebindingManager.h"
+
 #include "UObject/Object.h"
 #include "UObject/ObjectMacros.h"
 #if WITH_EDITOR
@@ -690,6 +693,10 @@ void URemoteControlPreset::PostLoad()
 	RegisterEntityDelegates();
 
 	CreatePropertyWatchers();
+
+	PostLoadProperties();
+
+	RemoveUnusedBindings();
 }
 
 void URemoteControlPreset::PostDuplicate(bool bDuplicateForPIE)
@@ -743,6 +750,12 @@ TWeakPtr<FRemoteControlActor> URemoteControlPreset::ExposeActor(AActor* Actor, F
 	return StaticCastSharedPtr<FRemoteControlActor>(Expose(MoveTemp(RCActor), FRemoteControlActor::StaticStruct(), Args.GroupId));
 }
 
+
+FName URemoteControlPreset::GenerateUniqueLabel(const FName InDesiredName) const
+{
+	return Registry->GenerateUniqueLabel(InDesiredName);
+}
+
 TWeakPtr<FRemoteControlProperty> URemoteControlPreset::ExposeProperty(UObject* Object, FRCFieldPathInfo FieldPath, FRemoteControlPresetExposeArgs Args)
 {
 	if (!Object)
@@ -750,48 +763,36 @@ TWeakPtr<FRemoteControlProperty> URemoteControlPreset::ExposeProperty(UObject* O
 		return nullptr;
 	}
 
-	if (!FieldPath.Resolve(Object))
+	TSharedPtr<FRemoteControlProperty> RCPropertyPtr;
+	const TMap<FName, TSharedPtr<IRemoteControlPropertyFactory>>& PropertyFactories = IRemoteControlModule::Get().GetEntityFactories();
+	for (const TPair<FName, TSharedPtr<IRemoteControlPropertyFactory>>& EntityFactoryPair : PropertyFactories)
+	{
+		if (EntityFactoryPair.Value->SupportExposedClass(Object->GetClass()))
+		{
+			RCPropertyPtr = EntityFactoryPair.Value->CreateRemoteControlProperty(this, Object, FieldPath, Args);
+			break;
+		}
+	}
+
+	// Create default one
+	if (!RCPropertyPtr)
+	{
+		if (!FieldPath.Resolve(Object))
+		{
+			return nullptr;
+		}
+
+		const FName FieldName = GetEntityName(*Args.Label, Object, FieldPath);
+
+		FRemoteControlProperty RCProperty{ this, Registry->GenerateUniqueLabel(FieldName), MoveTemp(FieldPath), { FindOrAddBinding(Object) } };
+
+		RCPropertyPtr = StaticCastSharedPtr<FRemoteControlProperty>(Expose(MoveTemp(RCProperty), FRemoteControlProperty::StaticStruct(), Args.GroupId));
+	}
+
+	if (!RCPropertyPtr)
 	{
 		return nullptr;
 	}
-
-	FProperty* Property = FieldPath.GetResolvedData().Field;
-	check(Property);
-
-	FString FieldName;
-
-#if WITH_EDITOR
-	FieldName = Property->GetDisplayNameText().ToString();
-#else
-	FieldName = FieldPath.GetFieldName().ToString();
-#endif
-
-	FName DesiredName = *Args.Label;
-
-	if (DesiredName == NAME_None)
-	{
-		FString ObjectName;
-#if WITH_EDITOR
-		if (AActor* Actor = Cast<AActor>(Object))
-		{
-			ObjectName = Actor->GetActorLabel();
-		}
-		else if(UActorComponent* Component = Cast<UActorComponent>(Object))
-		{
-			ObjectName = Component->GetOwner()->GetActorLabel();
-		}
-		else
-#endif
-		{
-			ObjectName = Object->GetName();
-		}
-
-		DesiredName = *FString::Printf(TEXT("%s (%s)"), *FieldName, *ObjectName);
-	}
-
-	FRemoteControlProperty RCProperty{ this, Registry->GenerateUniqueLabel(DesiredName), MoveTemp(FieldPath), { FindOrAddBinding(Object) } };
-
-	TSharedPtr<FRemoteControlProperty> RCPropertyPtr = StaticCastSharedPtr<FRemoteControlProperty>(Expose(MoveTemp(RCProperty), FRemoteControlProperty::StaticStruct(), Args.GroupId));
 
 	RCPropertyPtr->EnableEditCondition();
 
@@ -931,6 +932,61 @@ URemoteControlBinding* URemoteControlPreset::FindOrAddBinding(const TSoftObjectP
 	return NewBinding;
 }
 
+URemoteControlBinding* URemoteControlPreset::FindMatchingBinding(const URemoteControlBinding* InBinding, UObject* InObject)
+{
+	for (URemoteControlBinding* Binding : Bindings)
+	{
+		URemoteControlLevelDependantBinding* LevelDependantBindingIt = Cast<URemoteControlLevelDependantBinding>(Binding);
+		const URemoteControlLevelDependantBinding* InLevelDependingBinding = Cast<URemoteControlLevelDependantBinding>(InBinding);
+
+		if (InBinding == Binding
+			|| Binding->Resolve() != InObject)
+		{
+			continue;
+		}
+
+		if (LevelDependantBindingIt && InLevelDependingBinding)
+		{
+			if (LevelDependantBindingIt->BindingContext != InLevelDependingBinding->BindingContext)
+			{
+				continue;
+			}
+
+			TSoftObjectPtr<ULevel> CurrentWorldLevel = LevelDependantBindingIt->SubLevelSelectionMap.FindRef(InObject->GetWorld());
+
+			bool bSameBoundObjectMap = true;
+			// Check if the binding it has the same bound object map except for the current level.
+			for (const TPair<TSoftObjectPtr<ULevel>, TSoftObjectPtr<UObject>>& Pair : InLevelDependingBinding->BoundObjectMap)
+			{
+				if (Pair.Key != CurrentWorldLevel)
+				{
+					TSoftObjectPtr<UObject>* BoundObject = LevelDependantBindingIt->BoundObjectMap.Find(Pair.Key);
+					if (BoundObject)
+					{
+						if (*BoundObject != Pair.Value)
+						{
+							bSameBoundObjectMap = false;
+							break;
+						}
+					}
+					else
+					{
+						bSameBoundObjectMap = false;
+						break;
+					}
+				}
+			}
+
+			if (bSameBoundObjectMap)
+			{
+				return Binding;
+			}
+		}
+	}
+
+	return nullptr;
+}
+
 void URemoteControlPreset::OnEntityModified(const FGuid& EntityId)
 {
 	PerFrameUpdatedEntities.Add(EntityId);
@@ -1053,6 +1109,73 @@ void URemoteControlPreset::CreatePropertyWatchers()
 			CreatePropertyWatcher(ExposedProperty);
 		}
 	}
+}
+
+void URemoteControlPreset::RemoveUnusedBindings()
+{
+	TSet<TWeakObjectPtr<URemoteControlBinding>> ReferencedBindings;
+	for (TSharedPtr<FRemoteControlEntity> Entity : Registry->GetExposedEntities())
+	{
+		for (TWeakObjectPtr<URemoteControlBinding> Binding : Entity->GetBindings())
+		{
+			ReferencedBindings.Add(Binding);
+		}
+	}
+
+	for (auto It = Bindings.CreateIterator(); It; It++)
+	{
+		if (!ReferencedBindings.Contains(*It))
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
+void URemoteControlPreset::PostLoadProperties()
+{
+	for (const TSharedPtr<FRemoteControlProperty>& ExposedProperty : Registry->GetExposedEntities<FRemoteControlProperty>())
+	{
+		ExposedProperty->PostLoad();
+	}
+}
+
+FName URemoteControlPreset::GetEntityName(const FName InDesiredName, UObject* InObject, const FRCFieldPathInfo& InFieldPath) const
+{
+	FName DesiredName = InDesiredName;
+	
+	if (DesiredName == NAME_None)
+	{
+		FString ObjectName;
+#if WITH_EDITOR
+		if (AActor* Actor = Cast<AActor>(InObject))
+		{
+			ObjectName = Actor->GetActorLabel();
+		}
+		else if(UActorComponent* Component = Cast<UActorComponent>(InObject))
+		{
+			ObjectName = Component->GetOwner()->GetActorLabel();
+		}
+		else
+#endif
+		{
+			ObjectName = InObject->GetName();
+		}
+
+		FProperty* Property = InFieldPath.GetResolvedData().Field;
+		check(Property);
+
+		FString FieldPath;
+
+#if WITH_EDITOR
+		FieldPath = Property->GetDisplayNameText().ToString();
+#else
+		FieldPath = InFieldPath.GetFieldName().ToString();
+#endif
+			
+		DesiredName = *FString::Printf(TEXT("%s (%s)"), *FieldPath, *ObjectName);
+	}
+
+	return DesiredName;
 }
 
 TOptional<FRemoteControlFunction> URemoteControlPreset::GetFunction(FName FunctionLabel) const
@@ -1218,8 +1341,17 @@ TArray<UObject*> URemoteControlPreset::ResolvedBoundObjects(FName FieldLabel)
 
 void URemoteControlPreset::RebindUnboundEntities()
 {
+	Modify();
 	RebindingManager->Rebind(this);
 	Algo::Transform(Registry->GetExposedEntities(), PerFrameUpdatedEntities, [](const TSharedPtr<FRemoteControlEntity>& Entity) { return Entity->GetId(); });
+}
+
+void URemoteControlPreset::RebindAllEntitiesUnderSameActor(const FGuid& EntityId, AActor* NewActor, bool bUseRebindingContext)
+{
+	if (TSharedPtr<FRemoteControlEntity> Entity = Registry->GetExposedEntity(EntityId))
+	{
+		RebindingManager->RebindAllEntitiesUnderSameActor(this, Entity, NewActor, bUseRebindingContext);
+	}
 }
 
 void URemoteControlPreset::NotifyExposedPropertyChanged(FName PropertyLabel)
@@ -1455,6 +1587,11 @@ const UScriptStruct* URemoteControlPreset::GetExposedEntityType(const FGuid& Exp
 	return Registry->GetExposedEntityType(ExposedEntityId);
 }
 
+const TSet<UScriptStruct*>& URemoteControlPreset::GetExposedEntityTypes() const
+{
+	return Registry->GetExposedEntityTypes();
+}
+
 FName URemoteControlPreset::RenameExposedEntity(const FGuid& ExposedEntityId, FName NewLabel)
 {
 	FName AssignedLabel = Registry->RenameExposedEntity(ExposedEntityId, NewLabel);
@@ -1637,6 +1774,7 @@ void URemoteControlPreset::OnObjectPropertyChanged(UObject* Object, struct FProp
 				{
 					UE_LOG(LogRemoteControl, VeryVerbose, TEXT("(%s) Change detected on %s::%s"), *GetName(), *Object->GetName(), *Event.Property->GetName());
 					PerFrameModifiedProperties.Add(Property->GetId());
+					Property->OnObjectPropertyChanged(Object, Event);
 					Iter.RemoveCurrent();
 				}
 			}
@@ -1749,12 +1887,115 @@ void URemoteControlPreset::OnPreObjectPropertyChanged(UObject* Object, const cla
 	}
 }
 
+void URemoteControlPreset::OnObjectTransacted(UObject* InObject, const FTransactionObjectEvent& InTransactionEvent)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(URemoteControlPreset::OnObjectTransacted);
+
+	if (InTransactionEvent.GetEventType() != ETransactionObjectEventType::Finalized || InObject == nullptr)
+	{
+		return;
+	}
+
+	//When modifying a blueprint component, the root component gets trashed entirely and transaction event 
+	//doesn't have information about actual properties being changed under it. We just have RootComponent
+	//marked as being changed on a given actor. When that happens, we consider all properties binded to a component 
+	//that belongs to that actor to be changed.
+	const bool bHasRootComponentChanged = InTransactionEvent.GetChangedProperties().Contains("RootComponent");
+
+	//Verify if have bindings to the specified object or a binding to a component owned by the modified object
+	bool bIsObjectBound = false;
+	for (const URemoteControlBinding* Binding : Bindings)
+	{
+		if (Binding->IsBound(InObject))
+		{
+			bIsObjectBound = true;
+			break;
+		}
+		else if (bHasRootComponentChanged)
+		{
+			if (UActorComponent* Component = Cast<UActorComponent>(Binding->Resolve()))
+			{
+				if (Component->GetOwner() == InObject)
+				{
+					bIsObjectBound = true;
+					break;
+				}
+			}
+		}
+	}
+
+	if (bIsObjectBound == false)
+	{
+		return;
+	}
+
+	//Go through all properties and verify if it was modified
+	for (const TSharedPtr<FRemoteControlProperty>& Property : Registry->GetExposedEntities<FRemoteControlProperty>())
+	{
+		if (PerFrameModifiedProperties.Contains(Property->GetId()))
+		{
+			continue;
+		}
+
+		TArray<UObject*> BoundObjects = Property->GetBoundObjects();
+		if (BoundObjects.Num() == 0 || Property->FieldPathInfo.Segments.Num() < 1)
+		{
+			continue;
+		}
+		
+		for (UObject* BoundObject : BoundObjects)
+		{
+			bool bPropertyModified = false;
+			if (BoundObject == InObject || BoundObject->GetOuter() == InObject)
+			{
+				//Before going into all transacted properties, verify if root component
+				//has changed and verify if its owner matches the input object
+				if (bHasRootComponentChanged)
+				{
+					if (UActorComponent* Component = Cast<UActorComponent>(BoundObject))
+					{
+						if (Component->GetOwner() == InObject)
+						{
+							PerFrameModifiedProperties.Add(Property->GetId());
+							bPropertyModified = true;
+						}
+					}
+				}
+
+				//If root component checkup didn't match, go through all transacted properties and look if it's the root of the exposed property
+				if (bPropertyModified == false)
+				{
+					for (const FName ChangedProperty : InTransactionEvent.GetChangedProperties())
+					{
+						//Changed properties will be a path (dot separated) to the modified property
+						//All tests only returned the root structure (for nested props) so for now, only verify the first segment if it matches
+						if (Property->FieldPathInfo.Segments[0].Name == ChangedProperty)
+						{
+							PerFrameModifiedProperties.Add(Property->GetId());
+							bPropertyModified = true;
+							break;		
+						}
+					}
+				}
+			}
+
+			//If property was modified, no need to continue looking at other bindings
+			if (bPropertyModified)
+			{
+				UE_LOG(LogRemoteControl, VeryVerbose, TEXT("(%s) Exposed property '%s'::'%s' change detected during transaction of %s"), *GetName(), *BoundObject->GetName(), *Property->FieldName.ToString(), *InObject->GetName());
+				break;
+			}
+		}
+	}
+}
+
 void URemoteControlPreset::RegisterDelegates()
 {
 	UnregisterDelegates();
 
 #if WITH_EDITOR
 	FCoreUObjectDelegates::OnObjectPropertyChanged.AddUObject(this, &URemoteControlPreset::OnObjectPropertyChanged);
+	FCoreUObjectDelegates::OnObjectTransacted.AddUObject(this, &URemoteControlPreset::OnObjectTransacted);
 
 		
 	FCoreUObjectDelegates::OnPreObjectPropertyChanged.AddUObject(this, &URemoteControlPreset::OnPreObjectPropertyChanged);
@@ -1767,10 +2008,7 @@ void URemoteControlPreset::RegisterDelegates()
 	FEditorDelegates::PostPIEStarted.AddUObject(this, &URemoteControlPreset::OnPieEvent);
 	FEditorDelegates::EndPIE.AddUObject(this, &URemoteControlPreset::OnPieEvent);
 	
-	if (GEditor)
-	{
-		GEditor->OnObjectsReplaced().AddUObject(this, &URemoteControlPreset::OnReplaceObjects);
-	}
+	FCoreUObjectDelegates::OnObjectsReplaced.AddUObject(this, &URemoteControlPreset::OnReplaceObjects);
 
 	FEditorDelegates::MapChange.AddUObject(this, &URemoteControlPreset::OnMapChange);
 
@@ -1799,10 +2037,8 @@ void URemoteControlPreset::UnregisterDelegates()
 	
 	FEditorDelegates::MapChange.RemoveAll(this);
 
-	if (GEditor)
-	{
-		GEditor->OnObjectsReplaced().RemoveAll(this);
-	}
+
+	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
 	
 	FEditorDelegates::EndPIE.RemoveAll(this);
 	FEditorDelegates::PostPIEStarted.RemoveAll(this);
@@ -1812,6 +2048,7 @@ void URemoteControlPreset::UnregisterDelegates()
 		GEngine->OnLevelActorDeleted().RemoveAll(this);
 	}
 
+	FCoreUObjectDelegates::OnObjectTransacted.RemoveAll(this);
 	FCoreUObjectDelegates::OnPreObjectPropertyChanged.RemoveAll(this);
 	FCoreUObjectDelegates::OnObjectPropertyChanged.RemoveAll(this);
 #endif
@@ -1831,31 +2068,8 @@ void URemoteControlPreset::OnActorDeleted(AActor* Actor)
 			UObject* ResolvedObject = (*It)->Resolve();
 			if (ResolvedObject && (Actor == ResolvedObject || Actor == ResolvedObject->GetTypedOuter<AActor>()))
 			{
-				Modify();
-				(*It)->Modify();
-				(*It)->UnbindObject(ResolvedObject);
-				ModifiedBindings.Add(*It);
-
-				if (!(*It)->IsValid())
-				{
-					It.RemoveCurrent();
-				}
-			}
-		}
-	}
-
-	for (TSharedPtr<FRemoteControlEntity> Entity : Registry->GetExposedEntities<FRemoteControlEntity>())
-	{
-		if (Entity)
-		{
-			for (auto It = Entity->Bindings.CreateIterator(); It; ++It)
-			{
-				if (ModifiedBindings.Contains(It->Get()))
-				{
-					PerFrameUpdatedEntities.Add(Entity->GetId());
-					It.RemoveCurrent();
-					break;
-				}
+				// Defer binding clean up to next frame in case the actor deletion is actually an actor being moved to a different sub level.
+				PerFrameBindingsToClean.Add(*It);
 			}
 		}
 	}
@@ -1974,6 +2188,41 @@ void URemoteControlPreset::OnPackageReloaded(EPackageReloadPhase Phase, FPackage
 		}
 	}
 }
+
+void URemoteControlPreset::CleanUpBindings()
+{
+	TSet<URemoteControlBinding*> BindingsToDelete;
+
+
+	for (URemoteControlBinding* Binding : PerFrameBindingsToClean)
+	{
+		if (Binding)
+		{
+			if (Binding->PruneDeletedObjects())
+			{
+				BindingsToDelete.Add(Binding);
+			}
+		}
+	}
+
+	for (TSharedPtr<FRemoteControlEntity> Entity : Registry->GetExposedEntities<FRemoteControlEntity>())
+	{
+		if (Entity)
+		{
+			for (auto It = Entity->Bindings.CreateIterator(); It; ++It)
+			{
+				// Update bindings that were "touched" regardless of if they were pruned, so that the UI can re-resolve the binding
+				// if one of the object was moved to a sublevel.
+				if (PerFrameBindingsToClean.Contains(It->Get()))
+				{
+					PerFrameUpdatedEntities.Add(Entity->GetId());
+				}
+			}
+		}
+	}
+
+	PerFrameBindingsToClean.Reset();
+}
 #endif
 
 void URemoteControlPreset::OnBeginFrame()
@@ -1989,6 +2238,10 @@ void URemoteControlPreset::OnBeginFrame()
 			Entry.Value.CheckForChange();
 		}
 	}
+
+#if WITH_EDITOR
+	CleanUpBindings();
+#endif
 }
 
 void URemoteControlPreset::OnEndFrame()

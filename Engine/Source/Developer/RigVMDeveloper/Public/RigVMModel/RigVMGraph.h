@@ -7,8 +7,12 @@
 #include "RigVMNotifications.h"
 #include "Nodes/RigVMVariableNode.h"
 #include "Nodes/RigVMParameterNode.h"
+#include "Nodes/RigVMFunctionEntryNode.h"
+#include "Nodes/RigVMFunctionReturnNode.h"
 #include "RigVMCompiler/RigVMAST.h"
 #include "RigVMGraph.generated.h"
+
+class URigVMFunctionLibrary;
 
 /**
  * The Graph represents a Function definition
@@ -36,6 +40,30 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
 	const TArray<URigVMLink*>& GetLinks() const;
 
+	// Returns all of the contained graphs
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+	TArray<URigVMGraph*> GetContainedGraphs(bool bRecursive = false) const;
+
+	// Returns the parent graph of this graph
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+    URigVMGraph* GetParentGraph() const;
+
+	// Returns the root / top level parent graph of this graph (or this if it is the root graph)
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+    URigVMGraph* GetRootGraph() const;
+
+	// Returns true if this graph is a root / top level graph
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+    bool IsRootGraph() const;
+
+	// Returns the entry node of this graph
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+	URigVMFunctionEntryNode* GetEntryNode() const;
+	
+	// Returns the return node of this graph
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+	URigVMFunctionReturnNode* GetReturnNode() const;
+
 	// Returns a list of unique Variable descriptions within this Graph.
 	// Multiple Variable Nodes can share the same description.
 	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
@@ -45,6 +73,14 @@ public:
 	// Multiple Parameter Nodes can share the same description.
 	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
 	TArray<FRigVMGraphParameterDescription> GetParameterDescriptions() const;
+
+	// Returns the path of this graph as defined by its invoking nodes
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+	virtual FString GetNodePath() const;
+
+	// Returns the name of this graph (as defined by the node path)
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+	FString GetGraphName() const;
 
 	// Returns a Node given its name (or nullptr).
 	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
@@ -72,32 +108,58 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
 	const TArray<FName>& GetSelectNodes() const;
 
+	// Returns true if this graph is the top level graph
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+	bool IsTopLevelGraph() const;
+
+	// Returns the locally available function library
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+	virtual URigVMFunctionLibrary* GetDefaultFunctionLibrary() const;
+
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+	void SetDefaultFunctionLibrary(URigVMFunctionLibrary* InFunctionLibrary);
+
+	TArray<FRigVMExternalVariable> GetExternalVariables() const;
+
+	// Returns the local variables of this function
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+	TArray<FRigVMGraphVariableDescription> GetLocalVariables(bool bIncludeInputArguments = false) const;
+
+	// Returns the input arguments of this graph
+	UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+	TArray<FRigVMGraphVariableDescription> GetInputArguments() const;
+	
+	// Returns the output arguments of this graph
+    UFUNCTION(BlueprintCallable, Category = RigVMGraph)
+    TArray<FRigVMGraphVariableDescription> GetOutputArguments() const;
+
 	// Returns the modified event, which can be used to 
 	// subscribe to changes happening within the Graph.
 	FRigVMGraphModifiedEvent& OnModified();
 
 	void PrepareCycleChecking(URigVMPin* InPin, bool bAsInput);
-	virtual bool CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason = nullptr);
+	virtual bool CanLink(URigVMPin* InSourcePin, URigVMPin* InTargetPin, FString* OutFailureReason, const FRigVMByteCode* InByteCode);
 	
-	TSharedPtr<FRigVMParserAST> GetDiagnosticsAST(bool bForceRefresh = false);
+	TSharedPtr<FRigVMParserAST> GetDiagnosticsAST(bool bForceRefresh = false, TArray<URigVMLink*> InLinksToSkip = TArray<URigVMLink*>());
 	TSharedPtr<FRigVMParserAST> GetRuntimeAST(const FRigVMParserASTSettings& InSettings = FRigVMParserASTSettings::Optimized(), bool bForceRefresh = false);
 	void ClearAST(bool bClearDiagnostics = true, bool bClearRuntime = true);
 
 private:
 
-	void RepopulatePinLinks();
-
 	FRigVMGraphModifiedEvent ModifiedEvent;
 	void Notify(ERigVMGraphNotifType InNotifType, UObject* InSubject);
 
 	UPROPERTY()
-	TArray<URigVMNode*> Nodes;
+	TArray<TObjectPtr<URigVMNode>> Nodes;
 
 	UPROPERTY()
-	TArray<URigVMLink*> Links;
+	TArray<TObjectPtr<URigVMLink>> Links;
 
 	UPROPERTY()
 	TArray<FName> SelectedNodes;
+
+	UPROPERTY()
+	TWeakObjectPtr<URigVMGraph> DefaultFunctionLibraryPtr;
 
 	TSharedPtr<FRigVMParserAST> DiagnosticsAST;
 	TSharedPtr<FRigVMParserAST> RuntimeAST;
@@ -107,9 +169,13 @@ private:
 	TArray<TSharedPtr<FString>> ParameterNames;
 #endif
 
+	UPROPERTY()
+	TArray<FRigVMGraphVariableDescription> LocalVariables;
+
 	bool IsNameAvailable(const FString& InName);
 
 	friend class URigVMController;
+	friend class FRigVMControllerCompileBracketScope;
 	friend class URigVMCompiler;
 	friend struct FRigVMControllerObjectFactory;
 };

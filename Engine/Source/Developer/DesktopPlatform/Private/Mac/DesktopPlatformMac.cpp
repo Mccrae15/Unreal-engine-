@@ -550,7 +550,7 @@ void FDesktopPlatformMac::EnumerateEngineInstallations(TMap<FString, FString> &O
 			NSURL* AppURL = (NSURL*)CFArrayGetValueAtIndex(AllApps, Index);
 			NSBundle* AppBundle = [NSBundle bundleWithURL:AppURL];
 			FString EngineDir = FString([[AppBundle bundlePath] stringByDeletingLastPathComponent]);
-			if (([[AppBundle bundleIdentifier] isEqualToString:@"com.epicgames.UE4Editor"] || [[AppBundle bundleIdentifier] isEqualToString:@"com.epicgames.UE4EditorServices"])
+			if (([[AppBundle bundleIdentifier] isEqualToString:@"com.epicgames.UnrealEditor"] || [[AppBundle bundleIdentifier] isEqualToString:@"com.epicgames.UnrealEditorServices"])
 				&& EngineDir.RemoveFromEnd(TEXT("/Engine/Binaries/Mac")) && !EngineDir.Contains("Unreal Engine.app/Contents/") && !EngineDir.Contains("Epic Games Launcher.app/Contents/") && !EngineDir.Contains("/Users/Shared/UnrealEngine/Launcher"))
 			{
 				FString EngineId;
@@ -595,7 +595,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		NSBundle* GlobalDefaultAppBundle = [NSBundle bundleWithURL:(__bridge NSURL*)GlobalDefaultAppURL];
 		CFRelease(GlobalDefaultAppURL);
 
-		if ([[GlobalDefaultAppBundle bundleIdentifier] isEqualToString:@"com.epicgames.UE4EditorServices"])
+		if ([[GlobalDefaultAppBundle bundleIdentifier] isEqualToString:@"com.epicgames.UnrealEditorServices"])
 		{
 			return true;
 		}
@@ -605,7 +605,7 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 bool FDesktopPlatformMac::UpdateFileAssociations()
 {
-	OSStatus Status = LSSetDefaultRoleHandlerForContentType(CFSTR("com.epicgames.uproject"), kLSRolesAll, CFSTR("com.epicgames.UE4EditorServices"));
+	OSStatus Status = LSSetDefaultRoleHandlerForContentType(CFSTR("com.epicgames.uproject"), kLSRolesAll, CFSTR("com.epicgames.UnrealEditorServices"));
 	return Status == noErr;
 }
 
@@ -614,26 +614,20 @@ bool FDesktopPlatformMac::RunUnrealBuildTool(const FText& Description, const FSt
 	OutExitCode = 1;
 
 	// Get the path to UBT
-	FString UnrealBuildToolPath = RootDir / TEXT("Engine/Binaries/DotNET/UnrealBuildTool.exe");
+	FString UnrealBuildToolPath = GetUnrealBuildToolExecutableFilename(RootDir);
 	if(IFileManager::Get().FileSize(*UnrealBuildToolPath) < 0)
 	{
 		Warn->Logf(ELogVerbosity::Error, TEXT("Couldn't find UnrealBuildTool at '%s'"), *UnrealBuildToolPath);
 		return false;
 	}
 
-	// On Mac we launch UBT with Mono
-	FString ScriptPath = FPaths::ConvertRelativePathToFull(RootDir / TEXT("Engine/Build/BatchFiles/Mac/RunMono.sh"));
-	FString CmdLineParams = FString::Printf(TEXT("\"%s\" \"%s\" %s"), *ScriptPath, *UnrealBuildToolPath, *Arguments);
-
 	// Spawn it
-	return FFeedbackContextMarkup::PipeProcessOutput(Description, TEXT("/bin/sh"), CmdLineParams, Warn, &OutExitCode) && OutExitCode == 0;
+	return FFeedbackContextMarkup::PipeProcessOutput(Description, UnrealBuildToolPath, Arguments, Warn, &OutExitCode) && OutExitCode == 0;
 }
 
 bool FDesktopPlatformMac::IsUnrealBuildToolRunning()
 {
-	// For now assume that if mono application is running, we're running UBT
-	// @todo: we need to get the commandline for the mono process and check if UBT.exe is in there.
-	return FPlatformProcess::IsApplicationRunning(TEXT("mono"));
+	return FPlatformProcess::IsApplicationRunning(TEXT("UnrealBuildTool"));
 }
 
 FFeedbackContext* FDesktopPlatformMac::GetNativeFeedbackContext()

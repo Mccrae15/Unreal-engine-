@@ -3,10 +3,7 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Diagnostics;
-using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Linq;
 
 namespace UnrealBuildTool
@@ -36,6 +33,13 @@ namespace UnrealBuildTool
 		[CommandLine("-EnableUBSan")]
 		[XmlConfigFile(Category = "BuildConfiguration", Name = "bEnableUndefinedBehaviorSanitizer")]
 		public bool bEnableUndefinedBehaviorSanitizer = false;
+
+		/// <summary>
+		/// Enables the generation of .dsym files. This can be disabled to enable faster iteration times during development.
+		/// </summary>
+		[CommandLine("-NoDSYM", Value = "false")]
+		[XmlConfigFile(Category = "BuildConfiguration", Name = "bUseDSYMFiles")]
+		public bool bUseDSYMFiles = true;
 	}
 
 	/// <summary>
@@ -61,9 +65,7 @@ namespace UnrealBuildTool
 		/// Accessors for fields on the inner TargetRules instance
 		/// </summary>
 		#region Read-only accessor properties 
-		#if !__MonoCS__
 		#pragma warning disable CS1591
-		#endif
 
 		public bool bEnableAddressSanitizer
 		{
@@ -80,34 +82,19 @@ namespace UnrealBuildTool
 			get { return Inner.bEnableUndefinedBehaviorSanitizer; }
 		}		
 
-		#if !__MonoCS__
 		#pragma warning restore CS1591
-		#endif
 		#endregion
 	}
 
 	class MacPlatform : UEBuildPlatform
 	{
-		MacPlatformSDK SDK;
-
-		public MacPlatform(MacPlatformSDK InSDK) : base(UnrealTargetPlatform.Mac)
+		public MacPlatform(UEBuildPlatformSDK InSDK) : base(UnrealTargetPlatform.Mac, InSDK)
 		{
-			SDK = InSDK;
-		}
-
-		public override SDKStatus HasRequiredSDKsInstalled()
-		{
-			return SDK.HasRequiredSDKsInstalled();
 		}
 
 		public override bool CanUseXGE()
 		{
 			return false;
-		}
-
-		public override bool CanUseDistcc()
-		{
-			return true;
 		}
 
 		public override bool CanUseFASTBuild()
@@ -132,6 +119,7 @@ namespace UnrealBuildTool
 			{
 				Target.GlobalDefinitions.Add("HAS_METAL=1");
 				Target.ExtraModuleNames.Add("MetalRHI");
+				Target.ExtraModuleNames.Add("AGXRHI");
 			}
 			else
 			{
@@ -139,7 +127,7 @@ namespace UnrealBuildTool
 			}
 
 			// Force using the ANSI allocator if ASan is enabled
-			string AddressSanitizer = Environment.GetEnvironmentVariable("ENABLE_ADDRESS_SANITIZER");
+			string? AddressSanitizer = Environment.GetEnvironmentVariable("ENABLE_ADDRESS_SANITIZER");
 			if(Target.MacPlatform.bEnableAddressSanitizer || (AddressSanitizer != null && AddressSanitizer == "YES"))
 			{
 				Target.GlobalDefinitions.Add("FORCE_ANSI_ALLOCATOR=1");
@@ -148,6 +136,7 @@ namespace UnrealBuildTool
 			Target.GlobalDefinitions.Add("GL_SILENCE_DEPRECATION=1");
 
 			Target.bUsePDBFiles = !Target.bDisableDebugInfo && ShouldCreateDebugInfo(new ReadOnlyTargetRules(Target));
+			Target.bUsePDBFiles &= Target.MacPlatform.bUseDSYMFiles;
 
 			// we always deploy - the build machines need to be able to copy the files back, which needs the full bundle
 			Target.bDeployAfterCompile = true;
@@ -158,6 +147,7 @@ namespace UnrealBuildTool
 			bool bCompilingForArm = Target.Architecture.IndexOf("arm", StringComparison.OrdinalIgnoreCase) >= 0;
 			bool bCompilingMultipleArchitectures = Target.Architecture.Contains("+");
 			Target.bCompileISPC = !bCompilingForArm;
+
 			Target.bUsePCHFiles = !bCompilingMultipleArchitectures;
 		}
 
@@ -183,7 +173,7 @@ namespace UnrealBuildTool
 		/// Get the default architecture for a project. This may be overriden on the command line to UBT.
 		/// </summary>
 		/// <param name="ProjectFile">Optional project to read settings from </param>
-		public override string GetDefaultArchitecture(FileReference ProjectFile)
+		public override string GetDefaultArchitecture(FileReference? ProjectFile)
 		{
 			// by default use Intel.
 			return MacExports.DefaultArchitecture;
@@ -193,7 +183,7 @@ namespace UnrealBuildTool
 		/// Determines if the given name is a build product for a target.
 		/// </summary>
 		/// <param name="FileName">The name to check</param>
-		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UE4Editor", "ShooterGameEditor")</param>
+		/// <param name="NamePrefixes">Target or application names that may appear at the start of the build product name (eg. "UnrealEditor", "ShooterGameEditor")</param>
 		/// <param name="NameSuffixes">Suffixes which may appear at the end of the build product name</param>
 		/// <returns>True if the string matches the name of a build product, false otherwise</returns>
 		public override bool IsBuildProduct(string FileName, string[] NamePrefixes, string[] NameSuffixes)
@@ -252,9 +242,14 @@ namespace UnrealBuildTool
 		/// <param name="Target">The target being build</param>
 		public override void ModifyModuleRulesForOtherPlatform(string ModuleName, ModuleRules Rules, ReadOnlyTargetRules Target)
 		{
+			// don't do any target platform stuff if SDK is not available
+			if (!UEBuildPlatform.IsPlatformAvailableForTarget(Platform, Target))
+			{
+				return;
+			}
 		}
 
-		public override DirectoryReference GetBundleDirectory(ReadOnlyTargetRules Rules, List<FileReference> OutputFiles)
+		public override DirectoryReference? GetBundleDirectory(ReadOnlyTargetRules Rules, List<FileReference> OutputFiles)
 		{
 			if (Rules.bIsBuildingConsoleApplication)
 			{
@@ -262,7 +257,7 @@ namespace UnrealBuildTool
 			}
 			else
 			{
-				return OutputFiles[0].Directory.ParentDirectory.ParentDirectory;
+				return OutputFiles[0].Directory.ParentDirectory!.ParentDirectory;
 			}
 		}
 
@@ -270,7 +265,7 @@ namespace UnrealBuildTool
 		/// For platforms that need to output multiple files per binary (ie Android "fat" binaries)
 		/// this will emit multiple paths. By default, it simply makes an array from the input
 		/// </summary>
-		public override List<FileReference> FinalizeBinaryPaths(FileReference BinaryName, FileReference ProjectFile, ReadOnlyTargetRules Target)
+		public override List<FileReference> FinalizeBinaryPaths(FileReference BinaryName, FileReference? ProjectFile, ReadOnlyTargetRules Target)
 		{
 			List<FileReference> BinaryPaths = new List<FileReference>();
 			if (Target.bIsBuildingConsoleApplication || !String.IsNullOrEmpty(BinaryName.GetExtension()))
@@ -309,10 +304,6 @@ namespace UnrealBuildTool
 				if (Target.bForceBuildTargetPlatforms)
 				{
 					Rules.DynamicallyLoadedModuleNames.Add("MacTargetPlatform");
-					Rules.DynamicallyLoadedModuleNames.Add("MacNoEditorTargetPlatform");
-					Rules.DynamicallyLoadedModuleNames.Add("MacClientTargetPlatform");
-					Rules.DynamicallyLoadedModuleNames.Add("MacServerTargetPlatform");
-					Rules.DynamicallyLoadedModuleNames.Add("AllDesktopTargetPlatform");
 				}
 
 				if (bBuildShaderFormats)
@@ -375,9 +366,9 @@ namespace UnrealBuildTool
 		{
 			MacToolChainOptions Options = MacToolChainOptions.None;
 
-			string AddressSanitizer = Environment.GetEnvironmentVariable("ENABLE_ADDRESS_SANITIZER");
-			string ThreadSanitizer = Environment.GetEnvironmentVariable("ENABLE_THREAD_SANITIZER");
-			string UndefSanitizerMode = Environment.GetEnvironmentVariable("ENABLE_UNDEFINED_BEHAVIOR_SANITIZER");
+			string? AddressSanitizer = Environment.GetEnvironmentVariable("ENABLE_ADDRESS_SANITIZER");
+			string? ThreadSanitizer = Environment.GetEnvironmentVariable("ENABLE_THREAD_SANITIZER");
+			string? UndefSanitizerMode = Environment.GetEnvironmentVariable("ENABLE_UNDEFINED_BEHAVIOR_SANITIZER");
 
 			if(Target.MacPlatform.bEnableAddressSanitizer || (AddressSanitizer != null && AddressSanitizer == "YES"))
 			{
@@ -409,14 +400,6 @@ namespace UnrealBuildTool
 		}
 	}
 
-	class MacPlatformSDK : UEBuildPlatformSDK
-	{
-		protected override SDKStatus HasRequiredManualSDKInternal()
-		{
-			return SDKStatus.Valid;
-		}
-	}
-
 	class MacPlatformFactory : UEBuildPlatformFactory
 	{
 		public override UnrealTargetPlatform TargetPlatform
@@ -429,8 +412,7 @@ namespace UnrealBuildTool
 		/// </summary>
 		public override void RegisterBuildPlatforms()
 		{
-			MacPlatformSDK SDK = new MacPlatformSDK();
-			SDK.ManageAndValidateSDK();
+			ApplePlatformSDK SDK = new ApplePlatformSDK();
 
 			// Register this build platform for Mac
 			UEBuildPlatform.RegisterBuildPlatform(new MacPlatform(SDK));

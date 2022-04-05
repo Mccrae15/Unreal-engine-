@@ -8,6 +8,7 @@
 #include "Engine/TextureLODSettings.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "RendererInterface.h"
+#include "Shader/ShaderTypes.h"
 #include "VT/RuntimeVirtualTextureNotify.h"
 #include "VT/UploadingVirtualTexture.h"
 #include "VT/VirtualTexture.h"
@@ -289,6 +290,7 @@ int32 URuntimeVirtualTexture::GetPageTableSize() const
 void URuntimeVirtualTexture::GetProducerDescription(FVTProducerDescription& OutDesc, FInitSettings const& InitSettings, FTransform const& VolumeToWorld) const
 {
 	OutDesc.Name = GetFName();
+	OutDesc.FullNameHash = GetTypeHash(GetName());
 	OutDesc.Dimensions = 2;
 	OutDesc.DepthInTiles = 1;
 	OutDesc.WidthInBlocks = 1;
@@ -306,8 +308,8 @@ void URuntimeVirtualTexture::GetProducerDescription(FVTProducerDescription& OutD
 
 	// Set width and height to best match the runtime virtual texture volume's aspect ratio.
 	const FVector VolumeSize = VolumeToWorld.GetScale3D();
-	const float VolumeSizeX = FMath::Max(FMath::Abs(VolumeSize.X), 0.0001f);
-	const float VolumeSizeY = FMath::Max(FMath::Abs(VolumeSize.Y), 0.0001f);
+	const FVector::FReal VolumeSizeX = FMath::Max<FVector::FReal>(FMath::Abs(VolumeSize.X), 0.0001f);
+	const FVector::FReal VolumeSizeY = FMath::Max<FVector::FReal>(FMath::Abs(VolumeSize.Y), 0.0001f);
 	const float AspectRatioLog2 = FMath::Log2(VolumeSizeX / VolumeSizeY);
 
 	uint32 WidthInTiles, HeightInTiles;
@@ -346,6 +348,7 @@ int32 URuntimeVirtualTexture::GetLayerCount(ERuntimeVirtualTextureMaterialType I
 	case ERuntimeVirtualTextureMaterialType::WorldHeight:
 		return 1;
 	case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular:
+	case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Roughness:
 		return 2;
 	case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular_YCoCg:
 	case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular_Mask_YCoCg:
@@ -391,6 +394,14 @@ static EPixelFormat PlatformCompressedRVTFormat(EPixelFormat Format)
 	return Format;
 }
 
+static EPixelFormat PlatformLQCompressedFormat(bool bRequireAlpha)
+{
+	const EPixelFormat LQFormat = bRequireAlpha ? PF_B5G5R5A1_UNORM : PF_R5G6B5_UNORM;
+	const EPixelFormat HQFormat = bRequireAlpha ? PF_DXT5 : PF_DXT1;
+	bool bLQFormatSupported = GPixelFormats[PF_B5G5R5A1_UNORM].Supported && GPixelFormats[PF_R5G6B5_UNORM].Supported;
+	return bLQFormatSupported? LQFormat : HQFormat;
+}
+
 EPixelFormat URuntimeVirtualTexture::GetLayerFormat(int32 LayerIndex) const
 {
 	if (LayerIndex == 0)
@@ -399,6 +410,8 @@ EPixelFormat URuntimeVirtualTexture::GetLayerFormat(int32 LayerIndex) const
 		{
 		case ERuntimeVirtualTextureMaterialType::BaseColor:
 			return bCompressTextures ? PlatformCompressedRVTFormat(PF_DXT1) : PF_B8G8R8A8;
+		case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Roughness:
+			return bCompressTextures ? (bUseLowQualityCompression? PlatformLQCompressedFormat(false) : PlatformCompressedRVTFormat(PF_DXT1)) : PF_B8G8R8A8;
 		case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular:
 		case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular_YCoCg:
 		case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular_Mask_YCoCg:
@@ -413,6 +426,8 @@ EPixelFormat URuntimeVirtualTexture::GetLayerFormat(int32 LayerIndex) const
 	{
 		switch (MaterialType)
 		{
+		case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Roughness:
+			return bCompressTextures ? (bUseLowQualityCompression ? PlatformLQCompressedFormat(false) : PlatformCompressedRVTFormat(PF_DXT5)) : PF_B8G8R8A8;
 		case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular:
 			return bCompressTextures ? PlatformCompressedRVTFormat(PF_DXT5) : PF_B8G8R8A8;
 		case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular_YCoCg:
@@ -451,6 +466,7 @@ bool URuntimeVirtualTexture::IsLayerSRGB(int32 LayerIndex) const
 	case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular_YCoCg:
 	case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Specular_Mask_YCoCg:
 	case ERuntimeVirtualTextureMaterialType::WorldHeight:
+	case ERuntimeVirtualTextureMaterialType::BaseColor_Normal_Roughness:
 		return false;
 	default:
 		break;
@@ -500,14 +516,29 @@ FVector4 URuntimeVirtualTexture::GetUniformParameter(int32 Index) const
 	return FVector4(ForceInitToZero);
 }
 
+UE::Shader::EValueType URuntimeVirtualTexture::GetUniformParameterType(int32 Index)
+{
+	switch (Index)
+	{
+	case ERuntimeVirtualTextureShaderUniform_WorldToUVTransform0: return UE::Shader::EValueType::Double3;
+	case ERuntimeVirtualTextureShaderUniform_WorldToUVTransform1: return UE::Shader::EValueType::Float3;
+	case ERuntimeVirtualTextureShaderUniform_WorldToUVTransform2: return UE::Shader::EValueType::Float3;
+	case ERuntimeVirtualTextureShaderUniform_WorldHeightUnpack: return UE::Shader::EValueType::Float2;
+	default:
+		break;
+	}
+
+	check(0);
+	return UE::Shader::EValueType::Float4;
+}
+
 void URuntimeVirtualTexture::Initialize(IVirtualTexture* InProducer, FVTProducerDescription const& InProducerDesc, FTransform const& InVolumeToWorld, FBox const& InWorldBounds)
 {
-	//todo[vt]: possible issues with precision in large worlds here it might be better to calculate/upload camera space relative transform per frame?
 	WorldToUVTransformParameters[0] = InVolumeToWorld.GetTranslation();
 	WorldToUVTransformParameters[1] = InVolumeToWorld.GetUnitAxis(EAxis::X) * 1.f / InVolumeToWorld.GetScale3D().X;
 	WorldToUVTransformParameters[2] = InVolumeToWorld.GetUnitAxis(EAxis::Y) * 1.f / InVolumeToWorld.GetScale3D().Y;
 
-	const float HeightRange = FMath::Max(InWorldBounds.Max.Z - InWorldBounds.Min.Z, 1.f);
+	const FVector::FReal HeightRange = FMath::Max<FVector::FReal>(InWorldBounds.Max.Z - InWorldBounds.Min.Z, 1.f);
 	WorldHeightUnpackParameter = FVector4(HeightRange, InWorldBounds.Min.Z, 0.f, 0.f);
 
 	InitResource(InProducer, InProducerDesc);
@@ -591,42 +622,51 @@ void URuntimeVirtualTexture::PostEditChangeProperty(FPropertyChangedEvent& Prope
 namespace RuntimeVirtualTexture
 {
 	IVirtualTexture* CreateStreamingTextureProducer(
-		IVirtualTexture* InProducer,
-		FVTProducerDescription const& InProducerDesc,
 		UVirtualTexture2D* InStreamingTexture,
-		int32 InMaxLevel,
-		int32& OutTransitionLevel)
+		FVTProducerDescription const& InOwnerProducerDesc,
+		FVTProducerDescription& OutStreamingProducerDesc)
 	{
-		if (InProducer != nullptr && InStreamingTexture != nullptr)
+		OutStreamingProducerDesc = InOwnerProducerDesc;
+
+		if(InStreamingTexture != nullptr)
 		{
-			FTexturePlatformData** StreamingTextureData = InStreamingTexture->GetRunningPlatformData();
-			if (StreamingTextureData != nullptr && *StreamingTextureData != nullptr)
+			OutStreamingProducerDesc.Name = InStreamingTexture->GetFName();
+
+			FTexturePlatformData* StreamingTextureData = InStreamingTexture->GetPlatformData();
+			if(ensure(StreamingTextureData != nullptr))
 			{
-				FVirtualTextureBuiltData* VTData = (*StreamingTextureData)->VTData;
-
-				ensure(InProducerDesc.TileSize == VTData->TileSize);
-				ensure(InProducerDesc.TileBorderSize == VTData->TileBorderSize);
-				if (InProducerDesc.TileSize == VTData->TileSize && InProducerDesc.TileBorderSize == VTData->TileBorderSize)
+				FVirtualTextureBuiltData* VTData = StreamingTextureData->VTData;
+				if(ensure(VTData != nullptr))
 				{
+					ensure(InOwnerProducerDesc.TileSize == VTData->TileSize);
+					ensure(InOwnerProducerDesc.TileBorderSize == VTData->TileBorderSize);
+					ensure(VTData->GetNumMips() > 0);
+
 					// Note that streaming data may have mips added/removed during cook.
-					const uint32 Size = FMath::Max(VTData->Width, VTData->Height);
-					const uint32 NumTiles = FMath::DivideAndRoundUp(Size, VTData->TileSize);
-					const uint32 NumMips = FMath::CeilLogTwo(NumTiles) + 1;
+					const uint32 BlockWidthInTiles = VTData->GetWidthInTiles();
+					const uint32 BlockHeightInTiles = VTData->GetHeightInTiles();
+					const uint32 MaxLevel = FMath::CeilLogTwo(FMath::Max(BlockWidthInTiles, BlockHeightInTiles));
 
-					// If the streaming texture is bigger then the runtime virtual texture then offset the first mip.
-					const int32 TransitionLevel = InMaxLevel - (int32)NumMips + 1;
-					const int32 FirstStreamingMip = TransitionLevel < 0 ? -TransitionLevel : 0;
-					const int32 AdjustedTransitionLevel = TransitionLevel + FirstStreamingMip;
-					OutTransitionLevel = TransitionLevel;
+					// Clamp the streaming texture size to the runtime virtual texture.
+					const uint32 FirstMipToUse = MaxLevel > InOwnerProducerDesc.MaxLevel ? MaxLevel - InOwnerProducerDesc.MaxLevel : 0;
 
-					IVirtualTexture* StreamingProducer = new FUploadingVirtualTexture(VTData, FirstStreamingMip);
-					return new FVirtualTextureLevelRedirector(InProducer, StreamingProducer, AdjustedTransitionLevel);
+					OutStreamingProducerDesc.BlockWidthInTiles = BlockWidthInTiles >> FirstMipToUse;
+					OutStreamingProducerDesc.BlockHeightInTiles = BlockHeightInTiles >> FirstMipToUse;
+					OutStreamingProducerDesc.MaxLevel = MaxLevel - FirstMipToUse;
+
+					return new FUploadingVirtualTexture(InStreamingTexture->GetFName(), VTData, FirstMipToUse);
 				}
 			}
 		}
 
-		// Can't create a streaming producer so return original producer.
-		OutTransitionLevel = InMaxLevel;
-		return InProducer;
+		return nullptr;
+	}
+
+	IVirtualTexture* BindStreamingTextureProducer(
+		IVirtualTexture* InProducer,
+		IVirtualTexture* InStreamingProducer,
+		int32 InTransitionLevel)
+	{
+		return (InStreamingProducer == nullptr) ? InProducer : new FVirtualTextureLevelRedirector(InProducer, InStreamingProducer, InTransitionLevel);
 	}
 }

@@ -2,7 +2,6 @@
 
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameNetworkManager.h"
-#include "Matinee/MatineeActor.h"
 #include "Engine/LevelScriptActor.h"
 #include "Engine/World.h"
 #include "Misc/CommandLine.h"
@@ -346,7 +345,7 @@ void AGameModeBase::ResetLevel()
 	for (FActorIterator It(GetWorld()); It; ++It)
 	{
 		AActor* A = *It;
-		if (A && !A->IsPendingKill() && A != this && !A->IsA<AController>() && ShouldReset(A))
+		if (IsValid(A) && A != this && !A->IsA<AController>() && ShouldReset(A))
 		{
 			A->Reset();
 		}
@@ -371,7 +370,7 @@ void AGameModeBase::ReturnToMainMenuHost()
 	}
 }
 
-APlayerController* AGameModeBase::ProcessClientTravel(FString& FURL, FGuid NextMapGuid, bool bSeamless, bool bAbsolute)
+APlayerController* AGameModeBase::ProcessClientTravel(FString& FURL, bool bSeamless, bool bAbsolute)
 {
 	// We call PreClientTravel directly on any local PlayerPawns (ie listen server)
 	APlayerController* LocalPlayerController = nullptr;
@@ -382,9 +381,7 @@ APlayerController* AGameModeBase::ProcessClientTravel(FString& FURL, FGuid NextM
 			if (Cast<UNetConnection>(PlayerController->Player) != nullptr)
 			{
 				// Remote player
-				PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				PlayerController->ClientTravel(FURL, TRAVEL_Relative, bSeamless, NextMapGuid);
-				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+				PlayerController->ClientTravel(FURL, TRAVEL_Relative, bSeamless);
 			}
 			else
 			{
@@ -512,7 +509,7 @@ void AGameModeBase::GetSeamlessTravelActorList(bool bToTransition, TArray<AActor
 
 void AGameModeBase::SwapPlayerControllers(APlayerController* OldPC, APlayerController* NewPC)
 {
-	if (OldPC != nullptr && !OldPC->IsPendingKill() && NewPC != nullptr && !NewPC->IsPendingKill() && OldPC->Player != nullptr)
+	if (IsValid(OldPC) && IsValid(NewPC) && OldPC->Player != nullptr)
 	{
 		// move the Player to the new PC
 		UPlayer* Player = OldPC->Player;
@@ -636,7 +633,7 @@ void AGameModeBase::GameWelcomePlayer(UNetConnection* Connection, FString& Redir
 void AGameModeBase::PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage)
 {
 	// Login unique id must match server expected unique id type OR No unique id could mean game doesn't use them
-	const bool bUniqueIdCheckOk = (!UniqueId.IsValid() || UOnlineEngineInterface::Get()->IsCompatibleUniqueNetId(*UniqueId));
+	const bool bUniqueIdCheckOk = (!UniqueId.IsValid() || UOnlineEngineInterface::Get()->IsCompatibleUniqueNetId(UniqueId));
 	if (bUniqueIdCheckOk)
 	{
 		ErrorMessage = GameSession->ApproveLogin(Options);
@@ -739,24 +736,14 @@ FString AGameModeBase::InitNewPlayer(APlayerController* NewPlayerController, con
 		return FString(TEXT("PlayerState is null"));
 	}
 
-	FString ErrorMessage;
-
 	// Register the player with the session
-	GameSession->RegisterPlayer(NewPlayerController, UniqueId.GetUniqueNetId(), UGameplayStatics::HasOption(Options, TEXT("bIsFromInvite")));
+	GameSession->RegisterPlayer(NewPlayerController, UniqueId, UGameplayStatics::HasOption(Options, TEXT("bIsFromInvite")));
 
 	// Find a starting spot
-	AActor* const StartSpot = FindPlayerStart(NewPlayerController, Portal);
-	if (StartSpot != nullptr)
+	FString ErrorMessage;
+	if (!UpdatePlayerStartSpot(NewPlayerController, Portal, ErrorMessage))
 	{
-		// Set the player controller / camera in this new location
-		FRotator InitialControllerRot = StartSpot->GetActorRotation();
-		InitialControllerRot.Roll = 0.f;
-		NewPlayerController->SetInitialLocationAndRotation(StartSpot->GetActorLocation(), InitialControllerRot);
-		NewPlayerController->StartSpot = StartSpot;
-	}
-	else
-	{
-		ErrorMessage = FString::Printf(TEXT("Failed to find PlayerStart"));
+		UE_LOG(LogGameMode, Warning, TEXT("InitNewPlayer: %s"), *ErrorMessage);
 	}
 
 	// Set up spectating
@@ -781,20 +768,12 @@ FString AGameModeBase::InitNewPlayer(APlayerController* NewPlayerController, con
 void AGameModeBase::InitSeamlessTravelPlayer(AController* NewController)
 {
 	APlayerController* NewPC = Cast<APlayerController>(NewController);
-	// Find a start spot
-	AActor* StartSpot = FindPlayerStart(NewController);
 
-	if (StartSpot == nullptr)
+	FString ErrorMessage;
+	if (!UpdatePlayerStartSpot(NewController, TEXT(""), ErrorMessage))
 	{
-		UE_LOG(LogGameMode, Warning, TEXT("InitSeamlessTravelPlayer: Could not find a starting spot"));
+		UE_LOG(LogGameMode, Warning, TEXT("InitSeamlessTravelPlayer: %s"), *ErrorMessage);
 	}
-	else
-	{
-		FRotator StartRotation(0, StartSpot->GetActorRotation().Yaw, 0);
-		NewController->SetInitialLocationAndRotation(StartSpot->GetActorLocation(), StartRotation);
-	}
-
-	NewController->StartSpot = StartSpot;
 
 	if (NewPC != nullptr)
 	{
@@ -811,6 +790,25 @@ void AGameModeBase::InitSeamlessTravelPlayer(AController* NewController)
 			NewPC->ClientGotoState(NAME_Spectating);
 		}
 	}
+}
+
+bool AGameModeBase::UpdatePlayerStartSpot(AController* Player, const FString& Portal, FString& OutErrorMessage)
+{
+	OutErrorMessage.Reset();
+
+	AActor* const StartSpot = FindPlayerStart(Player, Portal);
+	if (StartSpot != nullptr)
+	{
+		FRotator StartRotation(0, StartSpot->GetActorRotation().Yaw, 0);
+		Player->SetInitialLocationAndRotation(StartSpot->GetActorLocation(), StartRotation);
+
+		Player->StartSpot = StartSpot;
+
+		return true;
+	}
+
+	OutErrorMessage = FString::Printf(TEXT("Could not find a starting spot"));
+	return false;
 }
 
 bool AGameModeBase::ShouldStartInCinematicMode(APlayerController* Player, bool& OutHidePlayer, bool& OutHideHUD, bool& OutDisableMovement, bool& OutDisableTurning)
@@ -948,18 +946,10 @@ void AGameModeBase::GenericPlayerInitialization(AController* C)
 
 		bool HidePlayer = false, HideHUD = false, DisableMovement = false, DisableTurning = false;
 
-		// Check to see if we should start in cinematic mode (matinee movie capture)
+		// Check to see if we should start in cinematic mode
 		if (ShouldStartInCinematicMode(PC, HidePlayer, HideHUD, DisableMovement, DisableTurning))
 		{
 			PC->SetCinematicMode(true, HidePlayer, HideHUD, DisableMovement, DisableTurning);
-		}
-
-		// Add the player to any matinees running so that it gets in on any cinematics already running, etc
-		TArray<AMatineeActor*> AllMatineeActors;
-		GetWorld()->GetMatineeActors(AllMatineeActors);
-		for (int32 i = 0; i < AllMatineeActors.Num(); i++)
-		{
-			AllMatineeActors[i]->AddPlayerToDirectorTracks(PC);
 		}
 	}
 }
@@ -984,7 +974,7 @@ void AGameModeBase::PostLogin(APlayerController* NewPlayer)
 	{
 		// If NewPlayer is not only a spectator and has a valid ID, add him as a user to the replay.
 		const FUniqueNetIdRepl& NewPlayerStateUniqueId = NewPlayer->PlayerState->GetUniqueId();
-		if (NewPlayerStateUniqueId.IsValid())
+		if (NewPlayerStateUniqueId.IsValid() && NewPlayerStateUniqueId.IsV1())
 		{
 			GetGameInstance()->AddUserToReplay(NewPlayerStateUniqueId.ToString());
 		}
@@ -995,12 +985,21 @@ void AGameModeBase::PostLogin(APlayerController* NewPlayer)
 		GameSession->PostLogin(NewPlayer);
 	}
 
-	// Notify Blueprints that a new player has logged in.  Calling it here, because this is the first time that the PlayerController can take RPCs
-	K2_PostLogin(NewPlayer);
-	FGameModeEvents::GameModePostLoginEvent.Broadcast(this, NewPlayer);
+	DispatchPostLogin(NewPlayer);
 
 	// Now that initialization is done, try to spawn the player's pawn and start match
 	HandleStartingNewPlayer(NewPlayer);
+}
+
+void AGameModeBase::DispatchPostLogin(AController* NewPlayer)
+{
+	if (APlayerController* NewPC = Cast<APlayerController>(NewPlayer))
+	{
+		K2_PostLogin(NewPC);
+		FGameModeEvents::GameModePostLoginEvent.Broadcast(this, NewPC);
+	}
+
+	OnPostLogin(NewPlayer);
 }
 
 void AGameModeBase::Logout(AController* Exiting)
@@ -1247,12 +1246,16 @@ void AGameModeBase::RestartPlayerAtPlayerStart(AController* NewPlayer, AActor* S
 	else if (GetDefaultPawnClassForController(NewPlayer) != nullptr)
 	{
 		// Try to create a pawn to use of the default class for this player
-		NewPlayer->SetPawn(SpawnDefaultPawnFor(NewPlayer, StartSpot));
+		APawn* NewPawn = SpawnDefaultPawnFor(NewPlayer, StartSpot);
+		if (IsValid(NewPawn))
+		{
+			NewPlayer->SetPawn(NewPawn);
+		}
 	}
-
-	if (NewPlayer->GetPawn() == nullptr)
+	
+	if (!IsValid(NewPlayer->GetPawn()))
 	{
-		NewPlayer->FailedToSpawnPawn();
+		FailedToRestartPlayer(NewPlayer);
 	}
 	else
 	{
@@ -1288,12 +1291,16 @@ void AGameModeBase::RestartPlayerAtTransform(AController* NewPlayer, const FTran
 	else if (GetDefaultPawnClassForController(NewPlayer) != nullptr)
 	{
 		// Try to create a pawn to use of the default class for this player
-		NewPlayer->SetPawn(SpawnDefaultPawnAtTransform(NewPlayer, SpawnTransform));
+		APawn* NewPawn = SpawnDefaultPawnAtTransform(NewPlayer, SpawnTransform);
+		if (IsValid(NewPawn))
+		{
+			NewPlayer->SetPawn(NewPawn);
+		}
 	}
 
-	if (NewPlayer->GetPawn() == nullptr)
+	if (IsValid(NewPlayer->GetPawn()))
 	{
-		NewPlayer->FailedToSpawnPawn();
+		FailedToRestartPlayer(NewPlayer);
 	}
 	else
 	{
@@ -1301,14 +1308,19 @@ void AGameModeBase::RestartPlayerAtTransform(AController* NewPlayer, const FTran
 	}
 }
 
+void AGameModeBase::FailedToRestartPlayer(AController* NewPlayer)
+{
+	NewPlayer->FailedToSpawnPawn();
+}
+
 void AGameModeBase::FinishRestartPlayer(AController* NewPlayer, const FRotator& StartRotation)
 {
 	NewPlayer->Possess(NewPlayer->GetPawn());
 
 	// If the Pawn is destroyed as part of possession we have to abort
-	if (NewPlayer->GetPawn() == nullptr)
+	if (!IsValid(NewPlayer->GetPawn()))
 	{
-		NewPlayer->FailedToSpawnPawn();
+		FailedToRestartPlayer(NewPlayer);
 	}
 	else
 	{

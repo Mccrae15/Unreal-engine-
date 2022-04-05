@@ -3,19 +3,24 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "UObject/Class.h"
-#include "UObject/SoftObjectPath.h"
-#include "UObject/Package.h"
-#include "UObject/ObjectRedirector.h"
-#include "Misc/PackageName.h"
-#include "Misc/StringBuilder.h"
-#include "Containers/StringView.h"
-#include "UObject/LinkerLoad.h"
+
 #include "AssetRegistry/AssetBundleData.h"
 #include "AssetRegistry/AssetDataTagMap.h"
+#include "Containers/ArrayView.h"
+#include "Containers/StringView.h"
+#include "Misc/PackageName.h"
+#include "Misc/StringBuilder.h"
+#include "Templates/UniquePtr.h"
+#include "UObject/Class.h"
+#include "UObject/LinkerLoad.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
+#include "UObject/ObjectRedirector.h"
+#include "UObject/Package.h"
 #include "UObject/PrimaryAssetId.h"
+
+struct FCustomVersion;
 
 COREUOBJECT_API DECLARE_LOG_CATEGORY_EXTERN(LogAssetData, Log, All);
 
@@ -24,26 +29,30 @@ struct COREUOBJECT_API FAssetRegistryVersion
 {
 	enum Type
 	{
-		PreVersioning = 0,		// From before file versioning was implemented
-		HardSoftDependencies,	// The first version of the runtime asset registry to include file versioning.
-		AddAssetRegistryState,	// Added FAssetRegistryState and support for piecemeal serialization
-		ChangedAssetData,		// AssetData serialization format changed, versions before this are not readable
-		RemovedMD5Hash,			// Removed MD5 hash from package data
-		AddedHardManage,		// Added hard/soft manage references
-		AddedCookedMD5Hash,		// Added MD5 hash of cooked package to package data
-		AddedDependencyFlags,   // Added UE::AssetRegistry::EDependencyProperty to each dependency
-		FixedTags,				// Major tag format change that replaces USE_COMPACT_ASSET_REGISTRY:
-								// * Target tag INI settings cooked into tag data
-								// * Instead of FString values are stored directly as one of:
-								//		- Narrow / wide string
-								//		- [Numberless] FName
-								//		- [Numberless] export path
-								//		- Localized string
-								// * All value types are deduplicated
-								// * All key-value maps are cooked into a single contiguous range 
-								// * Switched from FName table to seek-free and more optimized FName batch loading
-								// * Removed global tag storage, a tag map reference-counts one store per asset registry
-								// * All configs can mix fixed and loose tag maps 
+		PreVersioning = 0,					// From before file versioning was implemented
+		HardSoftDependencies,				// The first version of the runtime asset registry to include file versioning.
+		AddAssetRegistryState,				// Added FAssetRegistryState and support for piecemeal serialization
+		ChangedAssetData,					// AssetData serialization format changed, versions before this are not readable
+		RemovedMD5Hash,						// Removed MD5 hash from package data
+		AddedHardManage,					// Added hard/soft manage references
+		AddedCookedMD5Hash,					// Added MD5 hash of cooked package to package data
+		AddedDependencyFlags,				// Added UE::AssetRegistry::EDependencyProperty to each dependency
+		FixedTags,							// Major tag format change that replaces USE_COMPACT_ASSET_REGISTRY:
+											// * Target tag INI settings cooked into tag data
+											// * Instead of FString values are stored directly as one of:
+											//		- Narrow / wide string
+											//		- [Numberless] FName
+											//		- [Numberless] export path
+											//		- Localized string
+											// * All value types are deduplicated
+											// * All key-value maps are cooked into a single contiguous range 
+											// * Switched from FName table to seek-free and more optimized FName batch loading
+											// * Removed global tag storage, a tag map reference-counts one store per asset registry
+											// * All configs can mix fixed and loose tag maps 
+		WorkspaceDomain,					// Added Version information to AssetPackageData
+		PackageImportedClasses,				// Added ImportedClasses to AssetPackageData
+		PackageFileSummaryVersionChange,	// A new version number of UE5 was added to FPackageFileSummary
+		ObjectResourceOptionalVersionChange,// Change to linker export/import resource serializationn
 
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
@@ -73,8 +82,16 @@ public:
 		return TEXT("CL_");
 	}
 
+	enum class ECreationFlags
+	{
+		None = 0,
+		SkipAssetRegistryTagsGathering = 1 << 0, // Do not perform expensive step of gathering asset registry tags at construction.
+		AllowBlueprintClass            = 1 << 1, // Unless specified, the default when trying to create one for a blueprint class 
+												 // will create one for the UBlueprint instead, but this can be overridden
+	};
+
 public:
-	/** The object path for the asset in the form PackageName.AssetName. Only top level objects in a package can have AssetData */
+	/** The object path for the asset in the form PackageName.ObjectName, or PackageName.ObjectName:SubObjectName. */
 	FName ObjectPath;
 	/** The name of the package in which the asset is found, this is the full long package name such as /Game/Path/Package */
 	FName PackageName;
@@ -109,7 +126,13 @@ public:
 	COREUOBJECT_API FAssetData(const FString& InLongPackageName, const FString& InObjectPath, FName InAssetClass, FAssetDataTagMap InTags = FAssetDataTagMap(), TArrayView<const int32> InChunkIDs = TArrayView<const int32>(), uint32 InPackageFlags = 0);
 
 	/** Constructor taking a UObject. By default trying to create one for a blueprint class will create one for the UBlueprint instead, but this can be overridden */
-	COREUOBJECT_API FAssetData(const UObject* InAsset, bool bAllowBlueprintClass = false);
+	COREUOBJECT_API FAssetData(const UObject* InAsset, FAssetData::ECreationFlags InCreationFlags = ECreationFlags::None);
+
+	/** Constructor taking a UObject. By default trying to create one for a blueprint class will create one for the UBlueprint instead, but this can be overridden */
+	inline FAssetData(const UObject* InAsset, bool bAllowBlueprintClass)
+		: FAssetData(InAsset, bAllowBlueprintClass ? ECreationFlags::AllowBlueprintClass : ECreationFlags::None)
+	{
+	}
 
 	/** FAssetDatas are equal if their object paths match */
 	bool operator==(const FAssetData& Other) const
@@ -138,7 +161,10 @@ public:
 		return !ObjectPath.IsNone();
 	}
 
-	/** Returns true if this is the primary asset in a package, true for maps and assets but false for secondary objects like class redirectors */
+	/**
+	 * Returns true if this is the main asset in a package, true for maps and assets but false for secondary objects like class redirectors
+	 * Every UAsset is also a TopLevelAsset.
+	 */
 	bool IsUAsset() const
 	{
 		if (!IsValid())
@@ -154,8 +180,25 @@ public:
 		return DetectIsUAssetByNames(PackageNameStrBuilder, AssetNameStrBuilder);
 	}
 
-	/** Returns true if the given UObject is the primary asset in a package, true for maps and assets but false for secondary objects like class redirectors */
+	/**
+	 * Returns true if the given UObject is the main asset in a package, true for maps and assets but false for secondary objects like class redirectors
+	 * Every UAsset is also a TopLevelAsset.
+	 */
 	COREUOBJECT_API static bool IsUAsset(UObject* Object);
+
+	/**
+	 * Returns true iff the Asset is a TopLevelAsset (not a subobject, its outer is a UPackage).
+	 * Only TopLevelAssets can be PrimaryAssets in the AssetManager.
+	 * A TopLevelAsset is not necessarily the main asset in a package; see IsUAsset.
+	 */
+	COREUOBJECT_API bool IsTopLevelAsset() const;
+	
+	/**
+	 * Returns true iff the given Object, assumed to be an Asset, is a TopLevelAsset (not a subobject, its outer is a UPackage).
+	 * Only TopLevelAssets can be PrimaryAssets in the AssetManager.
+	 * A TopLevelAsset is not necessarily the main asset in a package; see IsUAsset.
+	 */
+	COREUOBJECT_API static bool IsTopLevelAsset(UObject* Object);
 
 	void Shrink()
 	{
@@ -180,6 +223,15 @@ public:
 		ObjectPath.AppendString(OutFullName);
 	}
 
+	/** Populates OutFullNameBuilder with the full name for the asset in the form: Class ObjectPath */
+	void GetFullName(FStringBuilderBase& OutFullNameBuilder) const
+	{
+		OutFullNameBuilder.Reset();
+		AssetClass.AppendString(OutFullNameBuilder);
+		OutFullNameBuilder.AppendChar(' ');
+		ObjectPath.AppendString(OutFullNameBuilder);
+	}
+
 	/** Returns the name for the asset in the form: Class'ObjectPath' */
 	FString GetExportTextName() const
 	{
@@ -198,11 +250,25 @@ public:
 		OutExportTextName.AppendChar('\'');
 	}
 
+	/** Populates OutExportTextNameBuilder with the name for the asset in the form: Class'ObjectPath' */
+	void GetExportTextName(FStringBuilderBase& OutExportTextNameBuilder) const
+	{
+		OutExportTextNameBuilder.Reset();
+		AssetClass.AppendString(OutExportTextNameBuilder);
+		OutExportTextNameBuilder.AppendChar('\'');
+		ObjectPath.AppendString(OutExportTextNameBuilder);
+		OutExportTextNameBuilder.AppendChar('\'');
+	}
+
 	/** Returns true if the this asset is a redirector. */
 	bool IsRedirector() const
 	{
-		static const FName ObjectRedirectorClassName = UObjectRedirector::StaticClass()->GetFName();
-		return AssetClass == ObjectRedirectorClassName;
+		return IsRedirectorClassName(AssetClass);
+	}
+
+	static bool IsRedirector(UObject* Object)
+	{
+		return Object && IsRedirectorClassName(Object->GetClass()->GetFName());
 	}
 
 	/** Returns the class UClass if it is loaded. It is not possible to load the class if it is unloaded since we only have the short name. */
@@ -227,6 +293,13 @@ public:
 			}
 		}
 		return FoundClass;
+	}
+	
+	/** Returns whether the Asset's class is equal to or a child class of the given class. Returns false if the Asset's class can not be loaded. */
+	bool IsInstanceOf(const UClass* BaseClass) const
+	{
+		UClass* ClassPointer = GetClass();
+		return ClassPointer && ClassPointer->IsChildOf(BaseClass);
 	}
 
 	/** Convert to a SoftObjectPath for loading */
@@ -335,6 +408,12 @@ public:
 		return Package;
 	}
 
+	/** Try to find the given tag  */
+	bool FindTag(const FName InTagName) const
+	{
+		return TagsAndValues.FindTag(InTagName).IsSet();
+	}
+
 	/** Try and get the value associated with the given tag as a type converted value */
 	template <typename ValueType>
 	bool GetTagValue(FName Tag, ValueType& OutValue) const;
@@ -360,7 +439,7 @@ public:
 		UE_LOG(LogAssetData, Log, TEXT("        AssetClass: %s"), *AssetClass.ToString());
 		UE_LOG(LogAssetData, Log, TEXT("        TagsAndValues: %d"), TagsAndValues.Num());
 
-		for (const auto& TagValue: TagsAndValues)
+		for (const auto TagValue: TagsAndValues)
 		{
 			UE_LOG(LogAssetData, Log, TEXT("            %s : %s"), *TagValue.Key.ToString(), *TagValue.Value.AsString());
 		}
@@ -381,8 +460,7 @@ public:
 		for(int32 AssetIdx=0; AssetIdx<Assets.Num(); AssetIdx++)
 		{
 			const FAssetData& Data = Assets[AssetIdx];
-			UClass* AssetClass = Data.GetClass();
-			if( AssetClass != NULL && AssetClass->IsChildOf(DesiredClass) )
+			if (Data.IsInstanceOf(DesiredClass))
 			{
 				return Data;
 			}
@@ -395,7 +473,7 @@ public:
 	static T* GetFirstAsset(const TArray<FAssetData>& Assets)
 	{
 		UClass* DesiredClass = T::StaticClass();
-		UObject* Asset = FAssetData::GetFirstAssetDataOfClass(Assets, DesiredClass).GetAsset();
+		UObject* Asset = FAssetData::GetFirstAssetDataOfClass(Assets, DesiredClass).GetAsset(); //-V758
 		check(Asset == NULL || Asset->IsA(DesiredClass));
 		return (T*)Asset;
 	}
@@ -435,7 +513,15 @@ private:
 
 		return PackageBaseName.Equals(ObjectPathName, ESearchCase::IgnoreCase);
 	}
+
+	static bool IsRedirectorClassName(FName ClassName)
+	{
+		static const FName ObjectRedirectorClassName = UObjectRedirector::StaticClass()->GetFName();
+		return ClassName == ObjectRedirectorClassName;
+	}
 };
+
+ENUM_CLASS_FLAGS(FAssetData::ECreationFlags);
 
 FORCEINLINE uint32 GetTypeHash(const FAssetData& AssetData)
 {
@@ -545,13 +631,63 @@ inline FAssetRegistryExportPath FAssetData::GetTagValueRef<FAssetRegistryExportP
 	return FoundValue.IsSet() ? FoundValue.AsExportPath() : FAssetRegistryExportPath();
 }
 
+namespace UE
+{
+namespace AssetRegistry
+{
+
+/** Low-memory version of FCustomVersion; holds only Guid and integer version. */
+struct FPackageCustomVersion
+{
+	FGuid Key;
+	int32 Version = 0;
+
+	FPackageCustomVersion() = default;
+	FPackageCustomVersion(const FGuid& InKey, const int32 InVersion)
+		: Key(InKey)
+		, Version(InVersion)
+	{
+	}
+	bool operator<(const FPackageCustomVersion& RHS) const
+	{
+		if (Key < RHS.Key) return true;
+		if (RHS.Key < Key) return false;
+		return Version < RHS.Version;
+	}
+	bool operator==(const FPackageCustomVersion& RHS) const
+	{
+		return Key == RHS.Key && Version == RHS.Version;
+	}
+	friend FArchive& operator<<(FArchive& Ar, FPackageCustomVersion& CustomVersion)
+	{
+		return Ar << CustomVersion.Key << CustomVersion.Version;
+	}
+};
+
+/** A handle to a deduplicated, sorted array of FPackageCustomVersion. */
+class FPackageCustomVersionsHandle
+{
+public:
+	TConstArrayView<FPackageCustomVersion> Get() const { return Ptr; }
+
+	COREUOBJECT_API static FPackageCustomVersionsHandle FindOrAdd(TConstArrayView<FCustomVersion> InCustomVersions);
+	COREUOBJECT_API static FPackageCustomVersionsHandle FindOrAdd(TConstArrayView<FPackageCustomVersion> InCustomVersions);
+	COREUOBJECT_API static FPackageCustomVersionsHandle FindOrAdd(TArray<FPackageCustomVersion>&& InCustomVersions);
+	COREUOBJECT_API friend FArchive& operator<<(FArchive& Ar, FPackageCustomVersionsHandle& Handle);
+
+private:
+	TConstArrayView<FPackageCustomVersion> Ptr;
+	friend class FPackageCustomVersionRegistry;
+};
+
+}
+}
+
 /** A class to hold data about a package on disk, this data is updated on save/load and is not updated when an asset changes in memory */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS // Silence deprecation warnings for deprecated PackageGuid member in implicit constructors
 class FAssetPackageData
 {
 public:
-	/** Total size of this asset on disk */
-	int64 DiskSize;
-
 	/** Guid of the source package, uniquely identifies an asset package */
 	UE_DEPRECATED(4.27, "UPackage::Guid has not been used by the engine for a long time and FAssetPackageData::PackageGuid will be removed.")
 	FGuid PackageGuid;
@@ -559,18 +695,56 @@ public:
 	/** MD5 of the cooked package on disk, for tracking nondeterministic changes */
 	FMD5Hash CookedHash;
 
+	/** List of classes used by exports in the package. Does not include classes in the same package. */
+	TArray<FName> ImportedClasses;
+
+	/** Total size of this asset on disk */
+	int64 DiskSize;
+
+	/** UE file version that the package was saved with */
+	FPackageFileVersion FileVersionUE;
+
+	/** Licensee file version that the package was saved with */
+	int32 FileVersionLicenseeUE;
+
+private:
+	UE::AssetRegistry::FPackageCustomVersionsHandle CustomVersions;
+	/** Bit storage for flags */
+	uint32 Flags;
+
+public:
+
 	FAssetPackageData()
 		: DiskSize(0)
+		, FileVersionLicenseeUE(-1)
+		, Flags(0)
 	{
 	}
 
-	// Workaround for clang deprecation warnings for deprecated PackageGuid member in implicit constructors
-	PRAGMA_DISABLE_DEPRECATION_WARNINGS
-	FAssetPackageData(FAssetPackageData&&) = default;
-	FAssetPackageData(const FAssetPackageData&) = default;
-	FAssetPackageData& operator=(FAssetPackageData&&) = default;
-	FAssetPackageData& operator=(const FAssetPackageData&) = default;
-	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	/**
+	 * Custom versions used by the package, used to check whether we need to update the package for the current binary.
+	 * The array is sorted by FPackageCustomVersion::operator<.
+	 */
+	TConstArrayView<UE::AssetRegistry::FPackageCustomVersion> GetCustomVersions() const
+	{
+		return CustomVersions.Get();
+	}
+	void SetCustomVersions(TConstArrayView<FCustomVersion> InCustomVersions)
+	{
+		CustomVersions = UE::AssetRegistry::FPackageCustomVersionsHandle::FindOrAdd(InCustomVersions);
+	}
+	void SetCustomVersions(TConstArrayView<UE::AssetRegistry::FPackageCustomVersion> InCustomVersions)
+	{
+		CustomVersions = UE::AssetRegistry::FPackageCustomVersionsHandle::FindOrAdd(InCustomVersions);
+	}
+	void SetCustomVersions(TArray<UE::AssetRegistry::FPackageCustomVersion>&& InCustomVersions)
+	{
+		CustomVersions = UE::AssetRegistry::FPackageCustomVersionsHandle::FindOrAdd(MoveTemp(InCustomVersions));
+	}
+
+	/** Whether the package was saved from a licensee executable, used to tell whether non-matching FileVersionLicenseeUE requires a resave */
+	bool IsLicenseeVersion() const { return (Flags & FLAG_LICENSEE_VERSION) != 0; }
+	void SetIsLicenseeVersion(bool bValue) { Flags = (Flags & ~FLAG_LICENSEE_VERSION) | (bValue ? FLAG_LICENSEE_VERSION : 0); }
 
 	/**
 	 * Serialize as part of the registry cache. This is not meant to be serialized as part of a package so  it does not handle versions normally
@@ -578,13 +752,57 @@ public:
 	 */
 	void SerializeForCache(FArchive& Ar)
 	{
-		Ar << DiskSize;
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		Ar << PackageGuid;
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		// Calling with hard-coded version and using force-inline on SerializeForCacheInternal eliminates the cost of its if-statements
+		SerializeForCacheInternal(Ar, FAssetRegistryVersion::LatestVersion);
+	}
+	void SerializeForCacheOldVersion(FArchive& Ar, FAssetRegistryVersion::Type Version)
+	{
+		SerializeForCacheInternal(Ar, Version);
+	}
+
+private:
+	enum
+	{
+		FLAG_LICENSEE_VERSION = 0x1,
+	};
+
+	void SerializeForCacheInternal(FArchive& Ar, FAssetRegistryVersion::Type Version);
+};
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+FORCEINLINE void FAssetPackageData::SerializeForCacheInternal(FArchive& Ar, FAssetRegistryVersion::Type Version)
+{
+	Ar << DiskSize;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	Ar << PackageGuid;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	if (Version >= FAssetRegistryVersion::AddedCookedMD5Hash)
+	{
 		Ar << CookedHash;
 	}
-};
+	if (Version >= FAssetRegistryVersion::WorkspaceDomain)
+	{
+		if (Version >= FAssetRegistryVersion::PackageFileSummaryVersionChange)
+		{
+			Ar << FileVersionUE;
+		}
+		else
+		{
+			int32 UE4Version;
+			Ar << UE4Version;
+
+			FileVersionUE = FPackageFileVersion::CreateUE4Version(UE4Version);
+		}
+
+		Ar << FileVersionLicenseeUE;
+		Ar << Flags;
+		Ar << CustomVersions;
+	}
+	if (Version >= FAssetRegistryVersion::PackageImportedClasses)
+	{
+		Ar << ImportedClasses;
+	}
+}
+
 
 /**
  * Helper struct for FAssetIdentifier (e.g., for the FOnViewAssetIdentifiersInReferenceViewer delegate and Reference Viewer functions).
@@ -837,5 +1055,4 @@ struct FAssetIdentifier
 		return Ar;
 	}
 };
-
 

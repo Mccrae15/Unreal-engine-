@@ -28,7 +28,7 @@ namespace Chaos
 	enum class ESyncState: uint8
 	{
 		InSync,	    //in sync with recorded data
-		SoftDesync, //recorded data still matches, but may interact with hard desynced particles
+		//SoftDesync, //recorded data still matches, but may interact with hard desynced particles
 		HardDesync, //recorded data mismatches, must run collision detection again
 	};
 
@@ -62,6 +62,9 @@ namespace Chaos
 
 		static constexpr uint16 MaxBucketEntries = 1 << 13;
 		static constexpr uint16 MaxBuckets = 1 << 3;
+
+		FSpatialAccelerationIdx() : Bucket(0), InnerIdx(0) {};
+		FSpatialAccelerationIdx(uint16 inBucket, uint16 inInnerIdx) : Bucket(inBucket), InnerIdx(inInnerIdx) {};
 
 		bool operator==(const FSpatialAccelerationIdx& Rhs) const
 		{

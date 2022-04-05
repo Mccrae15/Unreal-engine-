@@ -88,7 +88,7 @@ public:
 		return Lightcard.IsValid() && LightcardMode == EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
 	}
 
-	bool IsCameraUsed(int CameraIndex) const
+	bool IsCameraUsed(int32 CameraIndex) const
 	{
 		return (Cameras.Num() > CameraIndex) && CameraIndex >= 0 && Cameras[CameraIndex].IsUsed();
 	}
@@ -195,7 +195,11 @@ public:
 
 	public:
 		FDisplayClusterShaderParametersICVFX_ViewportResource Resource;
-		FVector SoftEdge;
+		FVector4 SoftEdge;
+
+		FLinearColor InnerCameraBorderColor = FLinearColor::Black;
+		float InnerCameraBorderThickness = 0.1f;
+		float InnerCameraFrameAspectRatio = 1.0f;
 
 		// Camera Origin
 		FTransform Local2WorldTransform;
@@ -217,7 +221,7 @@ public:
 		FVector2D ChromakeyMarkersOffset;
 		FTextureRHIRef ChromakeMarkerTextureRHI;
 
-		int RenderOrder = -1;
+		int32 RenderOrder = -1;
 	};
 
 	TArray<FCameraSettings> Cameras;
@@ -226,5 +230,4 @@ public:
 	FDisplayClusterShaderParametersICVFX_ViewportResource    Lightcard;
 	FDisplayClusterShaderParametersICVFX_ViewportResource    Lightcard_OCIO;
 	EDisplayClusterShaderParametersICVFX_LightcardRenderMode LightcardMode = EDisplayClusterShaderParametersICVFX_LightcardRenderMode::Under;
-
 };

@@ -12,16 +12,19 @@ class FAudioDevice;
 UENUM(BlueprintType)
 enum class EAudioBusChannels : uint8
 {
-	Mono,
-	Stereo,
+	Mono = 0,
+	Stereo = 1,
+	Quad = 3,
+	FivePointOne = 5,
+	SevenPointOne = 7
 };
 
 // Function to retrieve an audio bus buffer given a handle
 // static float* GetAudioBusBuffer(const FAudioBusHandle& AudioBusHandle);
 
-// An audio bus is an object which represents an audio patch chord. Audio can be sent to it. It can be sonified using USoundSourceBuses.
+// An audio bus is an object which represents an audio patch cord. Audio can be sent to it. It can be sonified using USoundSourceBuses.
 // Instances of the audio bus are created in the audio engine. 
-UCLASS(hidecategories= (Compression, SoundWave, Streaming, Subtitles, Sound, Info, ImportSettings), ClassGroup = Sound, meta = (BlueprintSpawnableComponent))
+UCLASS(ClassGroup = Sound, meta = (BlueprintSpawnableComponent))
 class ENGINE_API UAudioBus : public UObject
 {
 	GENERATED_UCLASS_BODY()
@@ -35,6 +38,9 @@ public:
 	//~ Begin UObject
 	virtual void BeginDestroy() override;
 	//~ End UObject
+
+	// Returns the number of channels of the audio bus in integer format
+	int32 GetNumChannels() const { return (int32)AudioBusChannels + 1; }
 
 	//~ Begin UObject Interface.
 #if WITH_EDITOR

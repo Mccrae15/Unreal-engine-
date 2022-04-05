@@ -7,10 +7,11 @@ using AutomationTool;
 using UnrealBuildTool;
 using System.Linq;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 [Help("Lists TPS files associated with any source used to build a specified target(s). Grabs TPS files associated with source modules, content, and engine shaders.")]
-[Help("Target", "One or more UBT command lines to enumerate associated TPS files for (eg. UE4Game Win64 Development).")]
+[Help("Target", "One or more UBT command lines to enumerate associated TPS files for (eg. UnrealGame Win64 Development).")]
 class ListThirdPartySoftware : BuildCommand
 {
 	public override void ExecuteBuild()
@@ -28,11 +29,11 @@ class ListThirdPartySoftware : BuildCommand
 		foreach(string Target in ParseParamValues(Params, "Target"))
 		{
 			// Get the path to store the exported JSON target data
-			FileReference OutputFile = FileReference.Combine(CommandUtils.EngineDirectory, "Intermediate", "Build", "ThirdParty.json");
+			FileReference OutputFile = FileReference.Combine(Unreal.EngineDirectory, "Intermediate", "Build", "ThirdParty.json");
 
 			IProcessResult Result;
 
-			Result = Run(UE4Build.GetUBTExecutable(), String.Format("{0} {1} -Mode=JsonExport -OutputFile=\"{2}\"", Target.Replace('|', ' '),  ProjectPath, OutputFile.FullName), Options: ERunOptions.Default);
+			Result = Run(UnrealBuild.GetUBTExecutable(), String.Format("{0} {1} -Mode=JsonExport -OutputFile=\"{2}\"", Target.Replace('|', ' '),  ProjectPath, OutputFile.FullName), Options: ERunOptions.Default);
 
 			if (Result.ExitCode != 0)
 			{
@@ -52,8 +53,8 @@ class ListThirdPartySoftware : BuildCommand
 
 			// Get the default paths to search
 			HashSet<DirectoryReference> DirectoriesToScan = new HashSet<DirectoryReference>();
-			DirectoriesToScan.Add(DirectoryReference.Combine(CommandUtils.EngineDirectory, "Shaders"));
-			DirectoriesToScan.Add(DirectoryReference.Combine(CommandUtils.EngineDirectory, "Content"));
+			DirectoriesToScan.Add(DirectoryReference.Combine(Unreal.EngineDirectory, "Shaders"));
+			DirectoriesToScan.Add(DirectoryReference.Combine(Unreal.EngineDirectory, "Content"));
 			if(ProjectFile != null)
 			{
 				DirectoriesToScan.Add(DirectoryReference.Combine(ProjectFile.Directory, "Content"));
@@ -74,7 +75,7 @@ class ListThirdPartySoftware : BuildCommand
 						string RuntimeDependencyPath;
 						if (RuntimeDependency.TryGetStringField("SourcePath", out RuntimeDependencyPath) || RuntimeDependency.TryGetStringField("Path", out RuntimeDependencyPath))
 						{
-							List<FileReference> Files = FileFilter.ResolveWildcard(DirectoryReference.Combine(CommandUtils.EngineDirectory, "Source"), RuntimeDependencyPath);
+							List<FileReference> Files = FileFilter.ResolveWildcard(DirectoryReference.Combine(Unreal.EngineDirectory, "Source"), RuntimeDependencyPath);
 							DirectoriesToScan.UnionWith(Files.Select(x => x.Directory));
 						}
 					}

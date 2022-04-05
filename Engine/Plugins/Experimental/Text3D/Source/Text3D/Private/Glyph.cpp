@@ -29,7 +29,13 @@ void FText3DGlyph::Build(UStaticMesh* StaticMesh, UMaterial* DefaultMaterial)
 
 	TArray<const FMeshDescription*> MeshDescriptions;
 	MeshDescriptions.Add(&MeshDescription);
-	StaticMesh->BuildFromMeshDescriptions(MeshDescriptions);
+
+	UStaticMesh::FBuildMeshDescriptionsParams Params;
+	Params.bCommitMeshDescription = true;
+#if !WITH_EDITOR
+	Params.bFastBuild = true;
+#endif
+	StaticMesh->BuildFromMeshDescriptions(MeshDescriptions, Params);
 }
 
 FMeshDescription& FText3DGlyph::GetMeshDescription()

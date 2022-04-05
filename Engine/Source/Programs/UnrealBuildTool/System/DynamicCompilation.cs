@@ -8,16 +8,17 @@ using System.CodeDom.Compiler;
 using Microsoft.CSharp;
 using System.Reflection;
 using System.Diagnostics;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
-#if NET_CORE
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Emit;
 using System.Reflection.Metadata;
 using Microsoft.CodeAnalysis.Text;
-#endif
+using System.Runtime.InteropServices;
+using OpenTracing.Util;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -35,13 +36,12 @@ namespace UnrealBuildTool
 		/// <returns>True if the assembly needs to be built</returns>
 		private static bool RequiresCompilation(HashSet<FileReference> SourceFiles, FileReference AssemblyManifestFilePath, FileReference OutputAssemblyPath)
 		{
-			// HACK: We cannot do this without breaking marketplace plugins. Need to distribute separate rules assemblies for those.
-//			// Do not compile the file if it's installed
-//			if (UnrealBuildTool.IsFileInstalled(OutputAssemblyPath))
-//			{
-//				Log.TraceLog("Skipping {0}: File is installed", OutputAssemblyPath);
-//				return false;
-//			}
+			// Do not compile the file if it's installed
+			if (UnrealBuildTool.IsFileInstalled(OutputAssemblyPath))
+			{
+				Log.TraceLog("Skipping {0}: File is installed", OutputAssemblyPath);
+				return false;
+			}
 
 			// Check to see if we already have a compiled assembly file on disk
 			FileItem OutputAssemblyInfo = FileItem.GetItemByFileReference(OutputAssemblyPath);
@@ -51,7 +51,7 @@ namespace UnrealBuildTool
 				return true;
 			}
 
-			// Check the time stamp of the UnrealBuildTool.exe file.  If Unreal Build Tool was compiled more
+			// Check the time stamp of the UnrealBuildTool assembly.  If Unreal Build Tool was compiled more
 			// recently than the dynamically-compiled assembly, then we'll always recompile it.  This is
 			// because Unreal Build Tool's code may have changed in such a way that invalidate these
 			// previously-compiled assembly files.
@@ -130,37 +130,37 @@ namespace UnrealBuildTool
 			return false;
 		}
 
-#if NET_CORE
 		private static void LogDiagnostics(IEnumerable<Diagnostic> Diagnostics)
 		{
 			foreach (Diagnostic Diag in Diagnostics)
 			{
 				switch (Diag.Severity)
 				{
-					case DiagnosticSeverity.Error: 
-					{
-						Log.TraceError(Diag.ToString()); 
-						break;
-					}
-					case DiagnosticSeverity.Hidden: 
-					{
-						break;
-					}
-					case DiagnosticSeverity.Warning: 
-					{
-						Log.TraceWarning(Diag.ToString()); 
-						break;
-					}
-					case DiagnosticSeverity.Info: 
-					{
-						Log.TraceInformation(Diag.ToString()); 
-						break;
-					}
+					// Diagnostics are pre-formatted suitable for Visual Studio consumption - print them without an additional severity prefix
+					case DiagnosticSeverity.Error:
+						{
+							Log.WriteLine(LogEventType.Error, LogFormatOptions.NoSeverityPrefix, Diag.ToString());
+							break;
+						}
+					case DiagnosticSeverity.Hidden:
+						{
+							break;
+						}
+					case DiagnosticSeverity.Warning:
+						{
+							Log.WriteLine(LogEventType.Warning, LogFormatOptions.NoSeverityPrefix, Diag.ToString());
+							break;
+						}
+					case DiagnosticSeverity.Info:
+						{
+							Log.WriteLine(LogEventType.Console, LogFormatOptions.NoSeverityPrefix, Diag.ToString());
+							break;
+						}
 				}
 			}
 		}
 
-		private static Assembly CompileAssembly(FileReference OutputAssemblyPath, List<FileReference> SourceFileNames, List<string> ReferencedAssembies, List<string> PreprocessorDefines = null, bool TreatWarningsAsErrors = false)
+		private static Assembly? CompileAssembly(FileReference OutputAssemblyPath, HashSet<FileReference> SourceFileNames, List<string>? ReferencedAssembies, List<string>? PreprocessorDefines = null, bool TreatWarningsAsErrors = false)
 		{
 			CSharpParseOptions ParseOptions = new CSharpParseOptions(
 				languageVersion:LanguageVersion.Latest, 
@@ -172,11 +172,11 @@ namespace UnrealBuildTool
 
 			foreach (FileReference SourceFileName in SourceFileNames)
 			{
-				SourceText Source = SourceText.From(File.ReadAllText(SourceFileName.FullName));
+				SourceText Source = SourceText.From(File.ReadAllText(SourceFileName.FullName), System.Text.Encoding.UTF8);
 				SyntaxTree Tree = CSharpSyntaxTree.ParseText(Source, ParseOptions, SourceFileName.FullName);
 
 				IEnumerable<Diagnostic> Diagnostics = Tree.GetDiagnostics();
-				if (Diagnostics.Count() > 0)
+				if (Diagnostics.Any())
 				{
 					Log.TraceWarning($"Errors generated while parsing '{SourceFileName.FullName}'");
 					LogDiagnostics(Tree.GetDiagnostics());
@@ -214,19 +214,40 @@ namespace UnrealBuildTool
 			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.Collections").Location));
 			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.IO").Location));
 			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.IO.FileSystem").Location));
+			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.Linq").Location));
+			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.Private.Xml").Location));
+			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.Private.Xml.Linq").Location));
 			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.Console").Location));
 			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.Runtime.Extensions").Location));
+			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("netstandard").Location));
+			
+			// process start dependencies
+			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.ComponentModel.Primitives").Location));
+			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.Diagnostics.Process").Location));
+			
+			// registry access
 			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("Microsoft.Win32.Registry").Location));
+
+			// RNGCryptoServiceProvider, used to generate random hex bytes
+			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.Security.Cryptography.Algorithms").Location));
+			MetadataReferences.Add(MetadataReference.CreateFromFile(Assembly.Load("System.Security.Cryptography.Csp").Location));
+
 			MetadataReferences.Add(MetadataReference.CreateFromFile(typeof(UnrealBuildTool).Assembly.Location));
 			MetadataReferences.Add(MetadataReference.CreateFromFile(typeof(FileReference).Assembly.Location));
+			MetadataReferences.Add(MetadataReference.CreateFromFile(typeof(UEBuildPlatformSDK).Assembly.Location));
 
 			CSharpCompilationOptions CompilationOptions = new CSharpCompilationOptions(
 				outputKind:OutputKind.DynamicallyLinkedLibrary,
-				optimizationLevel:OptimizationLevel.Release,
+#if DEBUG
+				optimizationLevel: OptimizationLevel.Debug,
+#else
+				// Optimize the managed code in Development
+				optimizationLevel: OptimizationLevel.Release,
+#endif
 				warningLevel:4,
 				assemblyIdentityComparer:DesktopAssemblyIdentityComparer.Default,
 				reportSuppressedDiagnostics:true
-				);
+			);
 
 			CSharpCompilation Compilation = CSharpCompilation.Create(
 				assemblyName:OutputAssemblyPath.GetFileNameWithoutAnyExtensions(),
@@ -237,177 +258,27 @@ namespace UnrealBuildTool
 
 			using (FileStream AssemblyStream = FileReference.Open(OutputAssemblyPath, FileMode.Create))
 			{
-				EmitOptions EmitOptions = new EmitOptions(
-					includePrivateMembers:true
-				);
-
-				EmitResult Result = Compilation.Emit(
-					peStream:AssemblyStream,
-					options:EmitOptions);
-
-				if (!Result.Success)
+				using (FileStream? PdbStream = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)? FileReference.Open(OutputAssemblyPath.ChangeExtension(".pdb"), FileMode.Create) : null)
 				{
+					EmitOptions EmitOptions = new EmitOptions(
+						includePrivateMembers: true
+					);
+
+					EmitResult Result = Compilation.Emit(
+						peStream: AssemblyStream,
+						pdbStream: PdbStream,
+						options: EmitOptions);
 					LogDiagnostics(Result.Diagnostics);
-					return null;
+
+					if (!Result.Success)
+					{
+						return null;
+					}
 				}
 			}
 
 			return Assembly.LoadFile(OutputAssemblyPath.FullName);
 		}
-
-#else
-
-		private static Assembly CompileAssembly(FileReference OutputAssemblyPath, HashSet<FileReference> SourceFileNames, List<string> ReferencedAssembies, List<string> PreprocessorDefines = null, bool TreatWarningsAsErrors = false)
-		{
-			TempFileCollection TemporaryFiles = new TempFileCollection();
-
-			// Setup compile parameters
-			CompilerParameters CompileParams = new CompilerParameters();
-			{
-				// Always compile the assembly to a file on disk, so that we can load a cached version later if we have one
-				CompileParams.GenerateInMemory = false;
-
-				// This is the full path to the assembly file we're generating
-				CompileParams.OutputAssembly = OutputAssemblyPath.FullName;
-
-				// We always want to generate a class library, not an executable
-				CompileParams.GenerateExecutable = false;
-
-				// Never fail compiles for warnings
-				CompileParams.TreatWarningsAsErrors = false;
-
-				// Set the warning level so that we will actually receive warnings -
-				// doesn't abort compilation as stated in documentation!
-				CompileParams.WarningLevel = 4;
-
-				// Always generate debug information as it takes minimal time
-				CompileParams.IncludeDebugInformation = true;
-#if !DEBUG
-				// Optimise the managed code in Development
-				CompileParams.CompilerOptions += " /optimize";
-#endif
-				Log.TraceVerbose("Compiling " + OutputAssemblyPath);
-
-				// Keep track of temporary files emitted by the compiler so we can clean them up later
-				CompileParams.TempFiles = TemporaryFiles;
-
-				// Warnings as errors if desired
-				CompileParams.TreatWarningsAsErrors = TreatWarningsAsErrors;
-
-				// Add assembly references
-				{
-					if (ReferencedAssembies == null)
-					{
-						// Always depend on the CLR System assembly
-						CompileParams.ReferencedAssemblies.Add("System.dll");
-						CompileParams.ReferencedAssemblies.Add("System.Core.dll");
-					}
-					else
-					{
-						// Add in the set of passed in referenced assemblies
-						CompileParams.ReferencedAssemblies.AddRange(ReferencedAssembies.ToArray());
-					}
-
-					// The assembly will depend on this application
-					Assembly UnrealBuildToolAssembly = Assembly.GetExecutingAssembly();
-					CompileParams.ReferencedAssemblies.Add(UnrealBuildToolAssembly.Location);
-
-					// The assembly will depend on the utilities assembly. Find that assembly
-					// by looking for the one that contains a common utility class
-					Assembly UtilitiesAssembly = Assembly.GetAssembly(typeof(FileReference));
-					CompileParams.ReferencedAssemblies.Add(UtilitiesAssembly.Location);
-				}
-
-				// Add preprocessor definitions
-				if (PreprocessorDefines != null && PreprocessorDefines.Count > 0)
-				{
-					CompileParams.CompilerOptions += " /define:";
-					for (int DefinitionIndex = 0; DefinitionIndex < PreprocessorDefines.Count; ++DefinitionIndex)
-					{
-						if (DefinitionIndex > 0)
-						{
-							CompileParams.CompilerOptions += ";";
-						}
-						CompileParams.CompilerOptions += PreprocessorDefines[DefinitionIndex];
-					}
-				}
-
-				// @todo: Consider embedding resources in generated assembly file (version/copyright/signing)
-			}
-
-			// Create the output directory if it doesn't exist already
-			DirectoryInfo DirInfo = new DirectoryInfo(OutputAssemblyPath.Directory.FullName);
-			if (!DirInfo.Exists)
-			{
-				try
-				{
-					DirInfo.Create();
-				}
-				catch (Exception Ex)
-				{
-					throw new BuildException(Ex, "Unable to create directory '{0}' for intermediate assemblies (Exception: {1})", OutputAssemblyPath, Ex.Message);
-				}
-			}
-
-			List<string> SourceFileNamesList;
-			// Using Mono on Mac, Compiler.CompileAssemblyFromFile() may fail by creating a command line that is longer than 256k chars.
-			// In an attempt to avoid that, construct relative paths for each input file and use that relative path if it is shorter than the path provided.
-			if (Utils.IsRunningOnMono && BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
-			{
-				SourceFileNamesList = new List<string>();
-				DirectoryReference CurrentDir = DirectoryReference.GetCurrentDirectory();
-				foreach (FileReference SourceFileName in SourceFileNames)
-				{
-					string RelativePath = SourceFileName.MakeRelativeTo(CurrentDir);
-					string InputPath = SourceFileName.FullName;
-					SourceFileNamesList.Add(RelativePath.Length < InputPath.Length ? RelativePath : InputPath);
-				}
-			}
-			else
-			{
-				SourceFileNamesList = SourceFileNames.Select(x => x.FullName).ToList();
-			}
-
-			// Compile the code
-			CompilerResults CompileResults;
-			try
-			{
-				Dictionary<string, string> ProviderOptions = new Dictionary<string, string>() { { "CompilerVersion", "v4.0" } };
-				CSharpCodeProvider Compiler = new CSharpCodeProvider(ProviderOptions);
-				CompileResults = Compiler.CompileAssemblyFromFile(CompileParams, SourceFileNamesList.ToArray());
-			}
-			catch (Exception Ex)
-			{
-				throw new BuildException(Ex, "Failed to launch compiler to compile assembly from source files:\n  {0}\n(Exception: {1})", String.Join("\n  ", SourceFileNames), Ex.ToString());
-			}
-
-			// Display compilation warnings and errors
-			if (CompileResults.Errors.Count > 0)
-			{
-				Log.TraceInformation("While compiling {0}:", OutputAssemblyPath);
-				foreach (CompilerError CurError in CompileResults.Errors)
-				{
-					Log.WriteLine(0, CurError.IsWarning? LogEventType.Warning : LogEventType.Error, LogFormatOptions.NoSeverityPrefix, "{0}", CurError.ToString());
-				}
-				if (CompileResults.Errors.HasErrors || TreatWarningsAsErrors)
-				{
-					throw new BuildException("Unable to compile source files.");
-				}
-			}
-
-			// Grab the generated assembly
-			Assembly CompiledAssembly = CompileResults.CompiledAssembly;
-			if (CompiledAssembly == null)
-			{
-				throw new BuildException("UnrealBuildTool was unable to compile an assembly for '{0}'", SourceFileNames.ToString());
-			}
-
-			// Clean up temporary files that the compiler saved
-			TemporaryFiles.Delete();
-
-			return CompiledAssembly;
-		}
-#endif
 
 		/// <summary>
 		/// Dynamically compiles an assembly for the specified source file and loads that assembly into the application's
@@ -419,21 +290,22 @@ namespace UnrealBuildTool
 		/// <param name="ReferencedAssembies"></param>
 		/// <param name="PreprocessorDefines"></param>
 		/// <param name="DoNotCompile"></param>
+		/// <param name="ForceCompile"></param>
 		/// <param name="TreatWarningsAsErrors"></param>
 		/// <returns>The assembly that was loaded</returns>
-		public static Assembly CompileAndLoadAssembly(FileReference OutputAssemblyPath, HashSet<FileReference> SourceFileNames, List<string> ReferencedAssembies = null, List<string> PreprocessorDefines = null, bool DoNotCompile = false, bool TreatWarningsAsErrors = false)
+		public static Assembly? CompileAndLoadAssembly(FileReference OutputAssemblyPath, HashSet<FileReference> SourceFileNames, List<string>? ReferencedAssembies = null, List<string>? PreprocessorDefines = null, bool DoNotCompile = false, bool ForceCompile = false, bool TreatWarningsAsErrors = false)
 		{
 			// Check to see if the resulting assembly is compiled and up to date
 			FileReference AssemblyManifestFilePath = FileReference.Combine(OutputAssemblyPath.Directory, Path.GetFileNameWithoutExtension(OutputAssemblyPath.FullName) + "Manifest.json");
 
-			bool bNeedsCompilation = false;
+			bool bNeedsCompilation = ForceCompile;
 			if (!DoNotCompile)
 			{
 				bNeedsCompilation = RequiresCompilation(SourceFileNames, AssemblyManifestFilePath, OutputAssemblyPath);
 			}
 
 			// Load the assembly to ensure it is correct
-			Assembly CompiledAssembly = null;
+			Assembly? CompiledAssembly = null;
 			if (!bNeedsCompilation)
 			{
 				try
@@ -464,7 +336,7 @@ namespace UnrealBuildTool
 			// Compile the assembly if me
 			if (bNeedsCompilation)
 			{
-				using(Timeline.ScopeEvent(String.Format("Compiling rules assembly ({0})", OutputAssemblyPath.GetFileName())))
+				using (GlobalTracer.Instance.BuildSpan(String.Format("Compiling rules assembly ({0})", OutputAssemblyPath.GetFileName())).StartActive())
 				{
 					CompiledAssembly = CompileAssembly(OutputAssemblyPath, SourceFileNames, ReferencedAssembies, PreprocessorDefines, TreatWarningsAsErrors);
 				}
@@ -481,18 +353,6 @@ namespace UnrealBuildTool
 					Writer.WriteObjectEnd();
 				}
 			}
-
-#if !NET_CORE
-			// Load the assembly into our app domain
-			try
-			{
-				AppDomain.CurrentDomain.Load(CompiledAssembly.GetName());
-			}
-			catch (Exception Ex)
-			{
-				throw new BuildException(Ex, "Unable to load the compiled build assembly '{0}' into our application's domain.  (Exception: {1})", OutputAssemblyPath, Ex.Message);
-			}
-#endif
 
 			return CompiledAssembly;
 		}

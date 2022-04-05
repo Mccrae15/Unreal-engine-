@@ -5,8 +5,7 @@
 #include "IHeadMountedDisplayModule.h"
 #include "HeadMountedDisplayTypes.h"
 
-// Oculus support is not available on Windows XP
-#define OCULUS_HMD_SUPPORTED_PLATFORMS (PLATFORM_WINDOWS && WINVER > 0x0502)  || (PLATFORM_ANDROID_ARM || PLATFORM_ANDROID_ARM64)
+#define OCULUS_HMD_SUPPORTED_PLATFORMS (PLATFORM_WINDOWS || PLATFORM_ANDROID_ARM64)
 
 //-------------------------------------------------------------------------------------------------
 // IOculusHMDModule
@@ -123,6 +122,8 @@ public:
 	* Returns IStereoLayers interface to work with overlays.
 	*/
 	virtual class IStereoLayers* GetStereoLayers() = 0;
+
+	virtual FString GetDeviceSystemName() = 0;
 
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	virtual bool PoseToOrientationAndPosition(const FQuat& InOrientation, const FVector& InPosition, FQuat& OutOrientation, FVector& OutPosition) const = 0;

@@ -12,24 +12,23 @@ class FAllocatedVirtualTexture;
 class RENDERER_API FVirtualTextureAllocator
 {
 public:
-	FVirtualTextureAllocator(uint32 Dimensions);
+	explicit FVirtualTextureAllocator(uint32 Dimensions);
 	~FVirtualTextureAllocator() {}
 
 	/**
-	 * Initialise the allocator with the given initial size.
+	 * Initialise the allocator
 	 */
-	void Initialize(uint32 InSize);
+	void Initialize(uint32 MaxSize);
 
-	/**
-	 * Increase size of region managed by allocator by factor of 2 in each dimension.
-	 */
-	void Grow();
+	uint32 GetAllocatedWidth() const { return AllocatedWidth; }
+	uint32 GetAllocatedHeight() const { return AllocatedHeight; }
 
 	/**
 	 * Translate a virtual page address in the address space to a local page address within a virtual texture.
 	 * @return nullptr If there is no virtual texture allocated at this address.
 	 */
-	FAllocatedVirtualTexture* Find(uint32 vAddress, uint32& Local_vAddress) const;
+	FAllocatedVirtualTexture* Find(uint32 vAddress, uint32& OutLocal_vAddress) const;
+	inline FAllocatedVirtualTexture* Find(uint32 vAddress) const { uint32 UnusedLocal_vAddress = 0u; return Find(vAddress, UnusedLocal_vAddress); }
 
 	/**
 	 * Allocate address space for the virtual texture.
@@ -57,10 +56,50 @@ public:
 	/** Output debugging information to the console. */
 	void DumpToConsole(bool verbose);
 
+#if WITH_EDITOR
+	void SaveDebugImage(const TCHAR* ImageName) const;
+#endif
+
 private:
+	enum class EBlockState : uint8
+	{
+		None,
+		GlobalFreeList,
+		FreeList,
+		PartiallyFreeList,
+		AllocatedTexture,
+	};
+
+	struct FTestRegion
+	{
+		uint32 BaseIndex;
+		uint32 vTileX0;
+		uint32 vTileY0;
+		uint32 vTileX1;
+		uint32 vTileY1;
+	};
+
+	void LinkFreeList(uint16& InOutListHead, EBlockState State, uint16 Index);
+	void UnlinkFreeList(uint16& InOutListHead, EBlockState State, uint16 Index);
+
 	int32 AcquireBlock();
-	void FreeAddressBlock(uint32 Index);
-	uint32 Find(uint32 vAddress) const;
+	void FreeAddressBlock(uint32 Index, bool bTopLevelBlock);
+	uint32 FindAddressBlock(uint32 vAddress) const;
+
+	void SubdivideBlock(uint32 ParentIndex);
+
+	void MarkBlockAllocated(uint32 Index, uint32 vAllocatedTileX, uint32 vAllocatedTileY, FAllocatedVirtualTexture* VT);
+
+	bool TestAllocation(uint32 Index, uint32 vTileX0, uint32 vTileY0, uint32 vTileX1, uint32 vTileY1) const;
+
+	void RecurseComputeFreeMip(uint16 BlockIndex, uint32 Depth, uint64& IoBlockMap) const;
+	uint32 ComputeFreeMip(uint16 BlockIndex) const;
+
+	void FreeMipUpdateParents(uint16 ParentIndex);
+
+#if WITH_EDITOR
+	void FillDebugImage(uint32 Index, uint32* ImageData, TMap<FAllocatedVirtualTexture*, uint32>& ColorMap) const;
+#endif
 
 	struct FAddressBlock
 	{
@@ -74,6 +113,8 @@ private:
 		uint16						NextSibling;
 		uint16						NextFree;
 		uint16						PrevFree;
+		EBlockState                 State;
+		uint8						FreeMip;
 
 		FAddressBlock()
 		{}
@@ -89,6 +130,8 @@ private:
 			, NextSibling(0xffff)
 			, NextFree(0xffff)
 			, PrevFree(0xffff)
+			, State(EBlockState::None)
+			, FreeMip(0)
 		{}
 
 		FAddressBlock(const FAddressBlock& Block, uint32 Offset, uint32 Dimensions)
@@ -102,20 +145,36 @@ private:
 			, NextSibling(0xffff)
 			, NextFree(0xffff)
 			, PrevFree(0xffff)
+			, State(EBlockState::None)
+			, FreeMip(0)
 		{}
 	};
 
-	const uint32			vDimensions;
-	uint32					LogSize;
+	// We separate items in the partially free list by the alignment of sub-allocation that can
+	// potentially fit, based on what's already allocated.  A level of zero means a block could
+	// be allocated at 1x1 tile alignment, one means 2x2, etc.  It caps at level 3 (8x8) to
+	// keep the cost of updating this information manageable.  Capping it means we don't need
+	// to recurse too far into children or update too many parents when a block's state changes.
+	static const uint32 PartiallyFreeMipDepth = 4;
 
-	TArray< FAddressBlock >	AddressBlocks;
-	TArray< uint16 >		FreeList;
-	uint16					GlobalFreeList;
-	TArray< uint32 >		SortedAddresses;
-	TArray< uint16 >		SortedIndices;
-	FHashTable				HashTable;
-	uint16                  RootIndex;
+	struct FPartiallyFreeMip
+	{
+		uint16	Mips[PartiallyFreeMipDepth];
+	};
 
-	uint32					NumAllocations;
-	uint32					NumAllocatedPages;
+	const uint32				vDimensions;
+	uint32						AllocatedWidth;
+	uint32						AllocatedHeight;
+
+	TArray< FAddressBlock >		AddressBlocks;
+	TArray< uint16 >			FreeList;
+	TArray< FPartiallyFreeMip >	PartiallyFreeList;
+	uint16						GlobalFreeList;
+	TArray< uint32 >			SortedAddresses;
+	TArray< uint16 >			SortedIndices;
+	FHashTable					HashTable;
+	uint16						RootIndex;
+
+	uint32						NumAllocations;
+	uint32						NumAllocatedPages;
 };

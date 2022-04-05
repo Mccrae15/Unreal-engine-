@@ -2,7 +2,6 @@
 
 #include "Presentation/MessageLogListingViewModel.h"
 #include "Modules/ModuleManager.h"
-#include "EditorStyleSet.h"
 #include "MessageLogModule.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -34,11 +33,11 @@ void FMessageLogListingViewModel::Initialize()
 	MessageLogListingModel->OnChanged().AddSP(this, &FMessageLogListingViewModel::OnChanged);
 
 	// Create our filters
-	MessageFilters.Add(MakeShareable(new FMessageFilter(LOCTEXT("CriticalErrors", "Critical Errors"), FSlateIcon("EditorStyle", "MessageLog.Error"))));
-	MessageFilters.Add(MakeShareable(new FMessageFilter(LOCTEXT("Errors", "Errors"), FSlateIcon("EditorStyle", "MessageLog.Error"))));
-	MessageFilters.Add(MakeShareable(new FMessageFilter(LOCTEXT("PerformanceWarnings", "Performance Warnings"), FSlateIcon("EditorStyle", "MessageLog.Warning"))));
-	MessageFilters.Add(MakeShareable(new FMessageFilter(LOCTEXT("Warnings", "Warnings"), FSlateIcon("EditorStyle", "MessageLog.Warning"))));
-	MessageFilters.Add(MakeShareable(new FMessageFilter(LOCTEXT("Info", "Info"), FSlateIcon("EditorStyle", "MessageLog.Note"))));
+	MessageFilters.Add(MakeShareable(new FMessageFilter(LOCTEXT("CriticalErrors", "Critical Errors"), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.ErrorWithColor"))));
+	MessageFilters.Add(MakeShareable(new FMessageFilter(LOCTEXT("Errors", "Errors"), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.ErrorWithColor"))));
+	MessageFilters.Add(MakeShareable(new FMessageFilter(LOCTEXT("PerformanceWarnings", "Performance Warnings"), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.WarningWithColor"))));
+	MessageFilters.Add(MakeShareable(new FMessageFilter(LOCTEXT("Warnings", "Warnings"), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.WarningWithColor"))));
+	MessageFilters.Add(MakeShareable(new FMessageFilter(LOCTEXT("Info", "Info"), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.BulletPoint"))));
 
 	for( auto It = MessageFilters.CreateConstIterator(); It; ++It)
 	{
@@ -159,6 +158,7 @@ void FMessageLogListingViewModel::AddMessages( const TArray< TSharedRef< class F
 
 void FMessageLogListingViewModel::ClearMessages()
 {
+	SetCurrentPage(CurrentPageIndex);
 	MessageLogListingModel->ClearMessages();
 }
 
@@ -221,27 +221,22 @@ void FMessageLogListingViewModel::InvertSelectedMessages()
 	SelectionChangedEvent.Broadcast();
 }
 
-FText FMessageLogListingViewModel::GetSelectedMessagesAsText() const
+FString FMessageLogListingViewModel::GetSelectedMessagesAsString() const
 {
-	FText CompiledText;
-
 	// Go through each selected message and add it to the compiled one.
 	TArray< TSharedRef< FTokenizedMessage > > Selection = GetSelectedMessages();
+	TArray<FString> SelectedLines;
 	for( int32 MessageID = 0; MessageID < Selection.Num(); MessageID++ )
 	{
-		const TSharedPtr< FTokenizedMessage > Message = Selection[MessageID];
-		FFormatNamedArguments Args;
-		Args.Add( TEXT("PreviousMessage"), CompiledText );
-		Args.Add( TEXT("NewMessage"), Message.Get()->ToText() );
-		CompiledText = FText::Format( LOCTEXT("AggregateMessagesFormatter", "{PreviousMessage}{NewMessage}\n"), Args );
+		SelectedLines.Add(Selection[MessageID]->ToText().ToString());
 	}
 
-	return CompiledText;
+	return FString::Join(SelectedLines, TEXT("\n"));
 }
 
-FText FMessageLogListingViewModel::GetAllMessagesAsText() const
+FString FMessageLogListingViewModel::GetAllMessagesAsString() const
 {
-	return MessageLogListingModel->GetAllMessagesAsText(CurrentPageIndex);
+	return MessageLogListingModel->GetAllMessagesAsString(CurrentPageIndex);
 }
 
 const FName& FMessageLogListingViewModel::GetName() const
@@ -277,6 +272,30 @@ void FMessageLogListingViewModel::NewPage( const FText& Title )
 	RefreshFilteredMessages();
 }
 
+void FMessageLogListingViewModel::SetCurrentPage(const FText& Title)
+{
+	// we should take this as a suggestion we want to show pages!
+	bShowPages = true;
+
+	// switch page & refresh
+	MessageLogListingModel->SetCurrentPage( Title, MaxPageCount );
+	
+	// reset so we always display the current page when we switch
+	SetCurrentPageIndex(0);
+}
+
+void FMessageLogListingViewModel::SetCurrentPage(const uint32 InOldPageIndex)
+{
+	// we should take this as a suggestion we want to show pages!
+	bShowPages = true;
+
+	// switch page & refresh
+	MessageLogListingModel->SetCurrentPage( InOldPageIndex );
+	
+	// reset so we always display the current page when we switch
+	SetCurrentPageIndex(0);
+}
+
 void FMessageLogListingViewModel::NotifyIfAnyMessages( const FText& Message, EMessageSeverity::Type SeverityFilter, bool bForce )
 {
 	// Note we use page 0 in this function, as that is the page that will
@@ -310,23 +329,22 @@ void FMessageLogListingViewModel::NotifyIfAnyMessages( const FText& Message, EMe
 		}
 
 		FNotificationInfo ErrorNotification(NotificationMessage);
-		ErrorNotification.Image = FEditorStyle::GetBrush(FTokenizedMessage::GetSeverityIconName(HighestSeverityPresent(0)));
 
 		if (NumMessagesPresent(0, EMessageSeverity::Error) > 0)
 		{
 			int32 NotificationId = NextNotificationId++;
 
-			ErrorNotification.bFireAndForget = false;
+			ErrorNotification.bFireAndForget = true;
 			ErrorNotification.bUseThrobber = false;
 			ErrorNotification.FadeOutDuration = 0.f;
-			ErrorNotification.ExpireDuration = 0.f;
-			ErrorNotification.ButtonDetails.Add(FNotificationButtonInfo(LOCTEXT("DismissMessageButton", "Dismiss"), FText(), FSimpleDelegate::CreateSP(this, &FMessageLogListingViewModel::DismissNotification, NotificationId)));
-			ErrorNotification.ButtonDetails.Add(FNotificationButtonInfo(LOCTEXT("ShowMessageLogButton", "Show Message Log"), FText(), FSimpleDelegate::CreateSP(this, &FMessageLogListingViewModel::OpenMessageLogFromNotification, NotificationId)));
+			ErrorNotification.ExpireDuration = 15.f;
+			ErrorNotification.ButtonDetails.Add(FNotificationButtonInfo(LOCTEXT("DismissMessageButton", "Dismiss"), FText(), FSimpleDelegate::CreateSP(this, &FMessageLogListingViewModel::DismissNotification, NotificationId), SNotificationItem::CS_Fail));
+			ErrorNotification.ButtonDetails.Add(FNotificationButtonInfo(LOCTEXT("ShowMessageLogButton", "Show Message Log"), FText(), FSimpleDelegate::CreateSP(this, &FMessageLogListingViewModel::OpenMessageLogFromNotification, NotificationId), SNotificationItem::CS_Fail));
 
 			TSharedPtr<SNotificationItem> NewNotificationItem = FSlateNotificationManager::Get().AddNotification(ErrorNotification);
 			if (NewNotificationItem.IsValid())
 			{
-				NewNotificationItem->SetCompletionState(SNotificationItem::CS_Pending);
+				NewNotificationItem->SetCompletionState(SNotificationItem::CS_Fail);
 				OpenNotifications.Emplace(NotificationId, NewNotificationItem);
 			}
 		}
@@ -395,6 +413,16 @@ void FMessageLogListingViewModel::SetShowPages(bool bInShowPages)
 bool FMessageLogListingViewModel::GetShowPages() const
 {
 	return bShowPages;
+}
+
+void FMessageLogListingViewModel::SetScrollToBottom(bool bInScrollToBottom)
+{
+	bScrollToBottom = bInScrollToBottom;
+}
+
+bool FMessageLogListingViewModel::GetScrollToBottom() const
+{
+	return bScrollToBottom;
 }
 
 void FMessageLogListingViewModel::SetAllowClear(bool bInAllowClear)

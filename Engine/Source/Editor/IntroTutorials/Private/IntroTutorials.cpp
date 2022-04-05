@@ -48,7 +48,7 @@ FIntroTutorials::FIntroTutorials()
 	: CurrentObjectClass(nullptr)
 	, ContentIntroCurve(nullptr)
 {
-	bDisableTutorials = false;
+	bDisableTutorials = true;
 
 	bDesireResettingTutorialSeenFlagOnLoad = FParse::Param(FCommandLine::Get(), TEXT("ResetTutorials"));
 }
@@ -501,9 +501,16 @@ void FIntroTutorials::GoToNextStage(TWeakPtr<SWindow> InNavigationWindow)
 
 TSharedRef<SWidget> FIntroTutorials::CreateTutorialsWidget(FName InContext, TWeakPtr<SWindow> InContextWindow) const
 {
-	return SNew(STutorialButton)
-		.Context(InContext)
-		.ContextWindow(InContextWindow);
+	if (FGlobalTabmanager::Get()->GetTabPermissionList()->PassesFilter(TEXT("TutorialsBrowser")))
+	{
+		return SNew(STutorialButton)
+				.Context(InContext)
+				.ContextWindow(InContextWindow);
+	}
+	else
+	{
+		return SNullWidget::NullWidget;
+	}
 }
 
 TSharedPtr<SWidget> FIntroTutorials::CreateTutorialsLoadingWidget(TWeakPtr<SWindow> InContextWindow) const

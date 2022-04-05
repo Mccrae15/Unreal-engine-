@@ -28,6 +28,7 @@
 #include "Interfaces/IPv4/IPv4Address.h"
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "Misc/EmbeddedCommunication.h"
+#include "Misc/CoreDelegates.h"
 
 FEngineLoop GEngineLoop;
 FGameLaunchDaemonMessageHandler GCommandSystem;
@@ -336,13 +337,13 @@ static void MainThreadInit()
 
 	CGRect FullResolutionRect = MainFrame;
 
-	// embedded apps are embedded inside a UE4 view, so it's already made
+	// embedded apps are embedded inside a UE view, so it's already made
 #if BUILD_EMBEDDED_APP
 	// tell the embedded app that the .ini files are ready to be used, ie the View can be made if it was waiting to create the view
 	FEmbeddedCallParamsHelper Helper;
 	Helper.Command = TEXT("inisareready");
 	FEmbeddedDelegates::GetEmbeddedToNativeParamsDelegateForSubsystem(TEXT("native")).Broadcast(Helper);
-	// checkf(AppDelegate.IOSView != nil, TEXT("For embedded apps, the UE4EmbeddedView must have been created and set into the AppDelegate as IOSView"));
+	// checkf(AppDelegate.IOSView != nil, TEXT("For embedded apps, the UEEmbeddedView must have been created and set into the AppDelegate as IOSView"));
 #else
 	AppDelegate.IOSView = [[FIOSView alloc] initWithFrame:FullResolutionRect];
 	AppDelegate.IOSView.clearsContextBeforeDrawing = NO;
@@ -379,7 +380,7 @@ void FAppEntry::PlatformInit()
 #if BUILD_EMBEDDED_APP
 		// while embedded, the native app may be waiting on some processing to happen before showing the view, so we have to let
 		// processing occur here
-		FTicker::GetCoreTicker().Tick(0.005f);
+		FTSTicker::GetCoreTicker().Tick(0.005f);
 		FThreadManager::Get().Tick();
 #endif
 		FPlatformProcess::Sleep(0.005f);
@@ -444,12 +445,30 @@ void FAppEntry::Init()
 	// start up the engine
 	GEngineLoop.Init();
 #if !UE_BUILD_SHIPPING
-	UE_LOG(LogInit, Display, TEXT("Initializing TCPConsoleListener."));
+	FIPv4Endpoint ConsoleTCP(FIPv4Address::InternalLoopback, 8888); //TODO: read this from an .ini
 	if (ConsoleListener == nullptr)
 	{
-		FIPv4Endpoint ConsoleTCP(FIPv4Address::InternalLoopback, 8888); //TODO: @csulea read this from some .ini
 		ConsoleListener = new TcpConsoleListener(ConsoleTCP);
 	}
+	// tear down the console listener when backgrounded
+	FCoreDelegates::ApplicationWillEnterBackgroundDelegate.AddLambda([]()
+	{
+		if (ConsoleListener)
+		{
+			delete ConsoleListener;
+			ConsoleListener = nullptr;
+		}
+	});
+	FCoreDelegates::ApplicationHasEnteredForegroundDelegate.AddLambda([ConsoleTCP]()
+	{
+		if (ConsoleListener == nullptr)
+		{
+			ConsoleListener = new TcpConsoleListener(ConsoleTCP);
+		}
+	});
+
+
+
 #endif // UE_BUILD_SHIPPING
 }
 

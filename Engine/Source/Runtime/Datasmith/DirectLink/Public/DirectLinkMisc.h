@@ -16,5 +16,4 @@ class FSceneSnapshot;
 DIRECTLINK_API const FString& GetDumpPath();
 
 DIRECTLINK_API void DumpSceneSnapshot(FSceneSnapshot& SceneSnapshot, const FString& BaseFileName);
-
 } // namespace DirectLink

@@ -19,8 +19,7 @@ public class PhysXVehicleLib : ModuleRules
         // Libraries and DLLs for windows platform
         string LibDir = Path.Combine(PhysXLibDir, Target.Platform.ToString());
 
-		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.HoloLens ||
-            Target.Platform == UnrealTargetPlatform.Win32)
+		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.HoloLens)
         {
             PublicAdditionalLibraries.Add(Path.Combine(LibDir, "VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName(), String.Format("PhysX3Vehicle{0}_{1}.lib", LibrarySuffix, Target.WindowsPlatform.GetArchitectureSubpath())));
         }
@@ -31,13 +30,11 @@ public class PhysXVehicleLib : ModuleRules
         else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))
 		{
             PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Android", "ARM64", String.Format("libPhysX3Vehicle{0}.a", LibrarySuffix)));
-            PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Android", "ARMv7", String.Format("libPhysX3Vehicle{0}.a", LibrarySuffix)));
             PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Android", "x64", String.Format("libPhysX3Vehicle{0}.a", LibrarySuffix)));
-            PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Android", "x86", String.Format("libPhysX3Vehicle{0}.a", LibrarySuffix)));
         }
         else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
         {
-			PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Linux", Target.Architecture, String.Format("libPhysX3Vehicle{0}.a", LibrarySuffix)));
+			PublicAdditionalLibraries.Add(Path.Combine(PhysXLibDir, "Unix", Target.Architecture, String.Format("libPhysX3Vehicle{0}.a", LibrarySuffix)));
         }
         else if (Target.Platform == UnrealTargetPlatform.IOS)
         {

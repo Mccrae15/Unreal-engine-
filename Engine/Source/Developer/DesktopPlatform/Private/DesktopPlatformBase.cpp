@@ -565,10 +565,10 @@ bool FDesktopPlatformBase::CompileGameProject(const FString& RootDir, const FStr
 	// Build the argument list
 	FString Arguments = FString::Printf(TEXT("%s %s"), ModuleManager.GetUBTConfiguration(), FPlatformMisc::GetUBTPlatform());
 
-	// Append the project name if it's a foreign project. Otherwise compile UE4Editor.
+	// Append the project name if it's a foreign project. Otherwise compile UnrealEditor.
 	if ( ProjectFileName.IsEmpty() )
 	{
-		Arguments = TEXT("UE4Editor ") + Arguments;
+		Arguments = TEXT("UnrealEditor ") + Arguments;
 	}
 	else
 	{
@@ -660,6 +660,7 @@ bool FDesktopPlatformBase::IsUnrealBuildToolAvailable()
 
 bool FDesktopPlatformBase::InvokeUnrealBuildToolSync(const FString& InCmdLineParams, FOutputDevice &Ar, bool bSkipBuildUBT, int32& OutReturnCode, FString& OutProcOutput)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FDesktopPlatformBase::InvokeUnrealBuildToolSync);
 	void* PipeRead = nullptr;
 	void* PipeWrite = nullptr;
 
@@ -717,6 +718,7 @@ FProcHandle FDesktopPlatformBase::InvokeUnrealBuildToolAsync(const FString& InCm
 			{
 				// Failed to build UBT
 				Ar.Log(TEXT("Failed to build UnrealBuildTool."));
+				UE_LOG(LogDesktopPlatform, Warning, TEXT("Failed to compile UnrealBuildTool (project file is '%s', exe path is '%s')"), *GetUnrealBuildToolProjectFileName(FPaths::RootDir()), *ExecutableFileName);
 				return FProcHandle();
 			}
 		}
@@ -728,26 +730,15 @@ FProcHandle FDesktopPlatformBase::InvokeUnrealBuildToolAsync(const FString& InCm
 
 	Ar.Logf(TEXT("Launching UnrealBuildTool... [%s %s]"), *ExecutableFileName, *CmdLineParams);
 
-#if PLATFORM_MAC
-	// On Mac we launch UBT with Mono
-	FString ScriptPath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir() / TEXT("Build/BatchFiles/Mac/RunMono.sh"));
-	CmdLineParams = FString::Printf(TEXT("\"%s\" \"%s\" %s"), *ScriptPath, *ExecutableFileName, *CmdLineParams);
-	ExecutableFileName = TEXT("/bin/sh");
-#elif PLATFORM_LINUX
-	// Real men run Linux (with Mono??)
-	FString ScriptPath = FPaths::ConvertRelativePathToFull(FPaths::EngineDir() / TEXT("Build/BatchFiles/Linux/RunMono.sh"));
-	CmdLineParams = FString::Printf(TEXT("\"%s\" \"%s\" %s"), *ScriptPath, *ExecutableFileName, *CmdLineParams);
-	ExecutableFileName = TEXT("/bin/bash");
-#endif
-
 	// Run UnrealBuildTool
 	const bool bLaunchDetached = false;
 	const bool bLaunchHidden = true;
 	const bool bLaunchReallyHidden = bLaunchHidden;
 
-	FProcHandle ProcHandle = FPlatformProcess::CreateProc(*ExecutableFileName, *CmdLineParams, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, NULL, 0, NULL, OutWritePipe);
+	FProcHandle ProcHandle = FPlatformProcess::CreateProc(*ExecutableFileName, *CmdLineParams, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, NULL, 0, NULL, OutWritePipe, OutReadPipe);
 	if (!ProcHandle.IsValid())
 	{
+		UE_LOG(LogDesktopPlatform, Warning, TEXT("Failed to launch UnrealBuildTool (exe path is '%s')"), *ExecutableFileName);
 		Ar.Logf(TEXT("Failed to launch Unreal Build Tool. (%s)"), *ExecutableFileName);
 	}
 
@@ -896,7 +887,7 @@ const TArray<FTargetInfo>& FDesktopPlatformBase::GetTargetsForProject(const FStr
 	// Run UBT to update the list of targets. Try to run it without building first.
 	FString Output;
 	int32 ReturnCode = 0;
-	if (!FPaths::FileExists(*GetUnrealBuildToolExecutableFilename(FPaths::RootDir())) || !const_cast<FDesktopPlatformBase*>(this)->InvokeUnrealBuildToolSync(Arguments, *GLog, true, ReturnCode, Output) || ReturnCode != 0)
+	if (!FPaths::FileExists(GetUnrealBuildToolExecutableFilename(FPaths::RootDir())) || !const_cast<FDesktopPlatformBase*>(this)->InvokeUnrealBuildToolSync(Arguments, *GLog, true, ReturnCode, Output) || ReturnCode != 0)
 	{
 		// If that failed, try to build and run again. Build machines should always have an up-to-date copy, and shouldn't build anything without being told to do so.
 		if (!GIsBuildMachine)
@@ -919,39 +910,6 @@ const TArray<FTargetInfo>& FDesktopPlatformBase::GetTargetsForProject(const FStr
 const TArray<FTargetInfo>& FDesktopPlatformBase::GetTargetsForCurrentProject() const
 {
 	return GetTargetsForProject(FPaths::GetProjectFilePath());
-}
-
-bool FDesktopPlatformBase::GetSolutionPath(FString& OutSolutionPath)
-{
-	// Get the platform-specific suffix for solution files
-#if PLATFORM_MAC
-	const TCHAR* Suffix = TEXT(".xcworkspace/contents.xcworkspacedata");
-#elif PLATFORM_LINUX
-	const TCHAR* Suffix = TEXT(".workspace");	// FIXME: Should depend on PreferredAccessor setting
-#else
-	const TCHAR* Suffix = TEXT(".sln");
-#endif
-
-	// When using game specific uproject files, the solution is named after the game and in the uproject folder
-	if(FPaths::IsProjectFilePathSet())
-	{
-		FString SolutionPath = FPaths::ProjectDir() / FPaths::GetBaseFilename(FPaths::GetProjectFilePath()) + Suffix;
-		if(FPaths::FileExists(SolutionPath))
-		{
-			OutSolutionPath = SolutionPath;
-			return true;
-		}
-	}
-
-	// Otherwise, it is simply titled UE4.sln
-	FString DefaultSolutionPath = FPaths::RootDir() / FString(TEXT("UE4")) + Suffix;
-	if(FPaths::FileExists(DefaultSolutionPath))
-	{
-		OutSolutionPath = DefaultSolutionPath;
-		return true;
-	}
-
-	return false;
 }
 
 FString FDesktopPlatformBase::GetDefaultProjectCreationPath()
@@ -1131,26 +1089,14 @@ void FDesktopPlatformBase::GetProjectBuildProducts(const FString& ProjectDir, TA
 
 FString FDesktopPlatformBase::GetEngineSavedConfigDirectory(const FString& Identifier)
 {
-	// Get the engine root directory
-	FString RootDir;
-	if (!GetEngineRootDirFromIdentifier(Identifier, RootDir))
-	{
-		return FString();
-	}
-
-	// Get the path to the game agnostic settings
-	FString UserDir;
-	if (IsStockEngineRelease(Identifier))
-	{
-		UserDir = FPaths::Combine(FPlatformProcess::UserSettingsDir(), *FApp::GetEpicProductIdentifier(), *Identifier);
-	}
-	else
-	{
-		UserDir = FPaths::Combine(*RootDir, TEXT("Engine"));
-	}
-
 	// Get the game agnostic config dir
-	return UserDir / TEXT("Saved/Config") / ANSI_TO_TCHAR(FPlatformProperties::PlatformName());
+	const FString UserDir = GetUserDir(Identifier);
+	if (!UserDir.IsEmpty())
+	{
+		return UserDir / TEXT("Saved/Config") / ANSI_TO_TCHAR(FPlatformProperties::PlatformName());
+	}
+
+	return FString();
 }
 
 bool FDesktopPlatformBase::EnumerateProjectsKnownByEngine(const FString &Identifier, bool bIncludeNativeProjects, TArray<FString> &OutProjectFileNames)
@@ -1163,7 +1109,6 @@ bool FDesktopPlatformBase::EnumerateProjectsKnownByEngine(const FString &Identif
 	}
 
 	FString GameAgnosticConfigDir = GetEngineSavedConfigDirectory(Identifier);
-
 	if (GameAgnosticConfigDir.Len() == 0)
 	{
 		return false;
@@ -1173,9 +1118,22 @@ bool FDesktopPlatformBase::EnumerateProjectsKnownByEngine(const FString &Identif
 	TArray<FString> SearchDirectories;
 	SearchDirectories.AddUnique(GetDefaultProjectCreationPath());
 
+	UE_LOG(LogDesktopPlatform, Log, TEXT("Enumerating Projects From Engine Ver: %s"), *Identifier);
+
+	UE_LOG(LogDesktopPlatform, Log, TEXT("Looking for directories to scan from : %s"), *GameAgnosticConfigDir);
 	// Load the config file
 	FConfigFile GameAgnosticConfig;
-	FConfigCacheIni::LoadExternalIniFile(GameAgnosticConfig, TEXT("EditorSettings"), NULL, *GameAgnosticConfigDir, false);
+	if (!FConfigCacheIni::LoadExternalIniFile(GameAgnosticConfig, TEXT("EditorSettings"), NULL, *GameAgnosticConfigDir, false))
+	{
+		FString PreviousConfigDir = MoveTemp(GameAgnosticConfigDir);
+
+		// Load from the legacy path. Most likely a pre-UE5 engine install
+		GameAgnosticConfigDir = GetLegacyEngineSavedConfigDirectory(Identifier);
+
+		UE_LOG(LogDesktopPlatform, Log, TEXT("%s not found, looking for directories in %s"), *PreviousConfigDir , *GameAgnosticConfigDir);
+
+		FConfigCacheIni::LoadExternalIniFile(GameAgnosticConfig, TEXT("EditorSettings"), NULL, *GameAgnosticConfigDir, false);
+	}
 
 	// Find the editor game-agnostic settings
 	FConfigSection* Section = GameAgnosticConfig.Find(TEXT("/Script/UnrealEd.EditorSettings"));
@@ -1186,14 +1144,23 @@ bool FDesktopPlatformBase::EnumerateProjectsKnownByEngine(const FString &Identif
 		Section = GameAgnosticConfig.Find(TEXT("/Script/UnrealEd.EditorGameAgnosticSettings"));
 	}
 
+	if (GameAgnosticConfig.IsEmpty())
+	{
+		UE_LOG(LogDesktopPlatform, Log, TEXT("Config not found"));
+	}
+
 	if(Section != NULL)
 	{
+		UE_LOG(LogDesktopPlatform, Log, TEXT("Searching for previously created project directories..."));
+
 		// Add in every path that the user has ever created a project file. This is to catch new projects showing up in the user's project folders
 		TArray<FString> AdditionalDirectories;
 		Section->MultiFind(TEXT("CreatedProjectPaths"), AdditionalDirectories);
 		for(int Idx = 0; Idx < AdditionalDirectories.Num(); Idx++)
 		{
 			FPaths::NormalizeDirectoryName(AdditionalDirectories[Idx]);
+
+			UE_LOG(LogDesktopPlatform, Log, TEXT("Found directory: \"%s\""), *AdditionalDirectories[Idx]);
 			SearchDirectories.AddUnique(AdditionalDirectories[Idx]);
 		}
 
@@ -1203,6 +1170,9 @@ bool FDesktopPlatformBase::EnumerateProjectsKnownByEngine(const FString &Identif
 		for(int Idx = 0; Idx < RecentlyOpenedFiles.Num(); Idx++)
 		{
 			FPaths::NormalizeFilename(RecentlyOpenedFiles[Idx]);
+
+			UE_LOG(LogDesktopPlatform, Log, TEXT("Found project \"%s\" in recently opened files"), *RecentlyOpenedFiles[Idx]);
+
 			OutProjectFileNames.AddUnique(RecentlyOpenedFiles[Idx]);
 		}		
 	}
@@ -1220,10 +1190,16 @@ bool FDesktopPlatformBase::EnumerateProjectsKnownByEngine(const FString &Identif
 
 			for(int32 FileIdx = 0; FileIdx < ProjectFiles.Num(); FileIdx++)
 			{
-				OutProjectFileNames.AddUnique(SearchDirectories[Idx] / ProjectFolders[FolderIdx] / ProjectFiles[FileIdx]);
+				FString ProjName = SearchDirectories[Idx] / ProjectFolders[FolderIdx] / ProjectFiles[FileIdx];
+
+				UE_LOG(LogDesktopPlatform, Log, TEXT("Found project \"%s\" in previously created project directory"), *ProjName);
+
+				OutProjectFileNames.AddUnique(MoveTemp(ProjName));
 			}
 		}
 	}
+
+	UE_LOG(LogDesktopPlatform, Log, TEXT("Searcing for projects in .uprojectdirs"));
 
 	// Find all the native projects, and either add or remove them from the list depending on whether we want native projects
 	const FUProjectDictionary &Dictionary = GetCachedProjectDictionary(RootDir);
@@ -1234,6 +1210,8 @@ bool FDesktopPlatformBase::EnumerateProjectsKnownByEngine(const FString &Identif
 		{
 			if(!NativeProjectPaths[Idx].Contains(TEXT("/Templates/")))
 			{
+				UE_LOG(LogDesktopPlatform, Log, TEXT("Found project \"%s\" in .uprojectdirs"), *NativeProjectPaths[Idx]);
+
 				OutProjectFileNames.AddUnique(NativeProjectPaths[Idx]);
 			}
 		}
@@ -1385,7 +1363,13 @@ bool FDesktopPlatformBase::BuildUnrealBuildTool(const FString& RootDir, FOutputD
 	const bool bLaunchDetached = false;
 	const bool bLaunchHidden = true;
 	const bool bLaunchReallyHidden = bLaunchHidden;
-	FProcHandle ProcHandle = FPlatformProcess::CreateProc(*CompilerExecutableFilename, *CmdLineParams, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, NULL, 0, NULL, NULL);
+
+	void* PipeRead = nullptr;
+	void* PipeWrite = nullptr;
+
+	verify(FPlatformProcess::CreatePipe(PipeRead, PipeWrite));
+
+	FProcHandle ProcHandle = FPlatformProcess::CreateProc(*CompilerExecutableFilename, *CmdLineParams, bLaunchDetached, bLaunchHidden, bLaunchReallyHidden, NULL, 0, NULL, PipeWrite, PipeRead);
 	if (!ProcHandle.IsValid())
 	{
 		Ar.Log(TEXT("Failed to start process."));
@@ -1393,6 +1377,7 @@ bool FDesktopPlatformBase::BuildUnrealBuildTool(const FString& RootDir, FOutputD
 	}
 	FPlatformProcess::WaitForProc(ProcHandle);
 	FPlatformProcess::CloseProc(ProcHandle);
+	FPlatformProcess::ClosePipe(PipeRead, PipeWrite);
 
 	// If the executable appeared where we expect it, then we were successful
 	FString UnrealBuildToolExePath = GetUnrealBuildToolExecutableFilename(RootDir);
@@ -1461,6 +1446,40 @@ bool FDesktopPlatformBase::ReadTargetInfo(const FString& FileName, TArray<FTarge
 	return true;
 }
 
+FString FDesktopPlatformBase::GetUserDir(const FString& Identifier)
+{
+	// Get the engine root directory
+	FString RootDir;
+	if (!GetEngineRootDirFromIdentifier(Identifier, RootDir))
+	{
+		return FString();
+	}
+
+	// Get the path to the game agnostic settings
+	FString UserDir;
+	if (IsStockEngineRelease(Identifier))
+	{
+		UserDir = FPaths::Combine(FPlatformProcess::UserSettingsDir(), *FApp::GetEpicProductIdentifier(), *Identifier);
+	}
+	else
+	{
+		UserDir = FPaths::Combine(*RootDir, TEXT("Engine"));
+	}
+
+	return UserDir;
+}
+
+FString FDesktopPlatformBase::GetLegacyEngineSavedConfigDirectory(const FString& Identifier)
+{
+	const FString UserDir = GetUserDir(Identifier);
+	if (!UserDir.IsEmpty())
+	{
+		return UserDir / TEXT("Saved/Config") / ANSI_TO_TCHAR(FPlatformProperties::IniPlatformName());
+	}
+
+	return FString();
+}
+
 FString FDesktopPlatformBase::GetUnrealBuildToolProjectFileName(const FString& RootDir) const
 {
 	return FPaths::ConvertRelativePathToFull(RootDir / TEXT("Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj"));
@@ -1468,7 +1487,19 @@ FString FDesktopPlatformBase::GetUnrealBuildToolProjectFileName(const FString& R
 
 FString FDesktopPlatformBase::GetUnrealBuildToolExecutableFilename(const FString& RootDir) const
 {
-	return FPaths::ConvertRelativePathToFull(RootDir / TEXT("Engine/Binaries/DotNET/UnrealBuildTool.exe"));
+	FConfigFile Config;
+	if (FConfigCacheIni::LoadExternalIniFile(Config, TEXT("Engine"), *FPaths::Combine(RootDir, TEXT("Engine/Config/")), *FPaths::Combine(RootDir, TEXT("Engine/Config/")), true, NULL, false, /*bWriteDestIni*/ false))
+	{
+		FString Entry;
+		if( Config.GetString( TEXT("PlatformPaths"), TEXT("UnrealBuildTool"), Entry ))
+		{
+			FString NewPath = FPaths::ConvertRelativePathToFull(RootDir / Entry);
+			return NewPath;
+		}
+	}
+	
+
+	return FPaths::ConvertRelativePathToFull(RootDir / TEXT("Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe"));
 }
 
 #undef LOCTEXT_NAMESPACE

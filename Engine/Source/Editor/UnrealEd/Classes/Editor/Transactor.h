@@ -12,8 +12,10 @@
 #include "UObject/Object.h"
 #include "UObject/Package.h"
 #include "Serialization/ArchiveUObject.h"
-#include "Misc/ITransaction.h"
 #include "Serialization/ArchiveSerializedPropertyChain.h"
+#include "Misc/ITransaction.h"
+#include "Algo/Find.h"
+#include <type_traits>
 #include "Transactor.generated.h"
 
 /*-----------------------------------------------------------------------------
@@ -34,65 +36,89 @@ class UNREALED_API FTransaction : public ITransaction
 	friend class FTransactionObjectEvent;
 
 protected:
+	/**
+		This type is necessary because the blueprint system is destroying and creating
+		CDOs at edit time (usually on compile, but also on load), but also stores user
+		entered data in the CDO. We "need"  changes to a CDO to persist across instances
+		because as we undo and redo we  need to apply changes to different instances of
+		the CDO - alternatively we could destroy and create the CDO as part of a transaction
+		(this alternative is the reason for the bunny ears around need).
+
+		DanO: My long term preference is for the editor to use a dynamic, mutable type
+		(rather than the CDO) to store editor data. The CDO can then be re-instanced (or not)
+		as runtime code requires.
+	*/
+	struct FPersistentObjectRef
+	{
+	public:
+		friend FArchive& operator<<(FArchive& Ar, FPersistentObjectRef& ReferencedObject)
+		{
+			Ar << (std::underlying_type_t<EReferenceType>&)ReferencedObject.ReferenceType;
+			Ar << ReferencedObject.RootObject;
+			Ar << ReferencedObject.SubObjectHierarchyIDs;
+			return Ar;
+		}
+
+		friend bool operator==(const FPersistentObjectRef& LHS, const FPersistentObjectRef& RHS)
+		{
+			return LHS.ReferenceType == RHS.ReferenceType
+				&& LHS.RootObject == RHS.RootObject
+				&& (LHS.ReferenceType != EReferenceType::SubObject || LHS.SubObjectHierarchyIDs == RHS.SubObjectHierarchyIDs);
+		}
+
+		friend bool operator!=(const FPersistentObjectRef& LHS, const FPersistentObjectRef& RHS)
+		{
+			return !(LHS == RHS);
+		}
+
+		friend uint32 GetTypeHash(const FPersistentObjectRef& InObjRef)
+		{
+			return HashCombine(GetTypeHash(InObjRef.ReferenceType), GetTypeHash(InObjRef.RootObject));
+		}
+
+		FPersistentObjectRef() = default;
+		explicit FPersistentObjectRef(UObject* InObject);
+
+		bool IsRootObjectReference() const
+		{
+			return ReferenceType == EReferenceType::RootObject;
+		}
+
+		bool IsSubObjectReference() const
+		{
+			return ReferenceType == EReferenceType::SubObject;
+		}
+
+		UObject* Get() const;
+
+		void AddReferencedObjects(FReferenceCollector& Collector);
+
+	private:
+		/** This enum represents all of the different special cases we are handling with this type */
+		enum class EReferenceType : uint8
+		{
+			Unknown,
+			RootObject,
+			SubObject,
+		};
+
+		/** The reference type we're handling */
+		EReferenceType ReferenceType = EReferenceType::Unknown;
+		/** Stores the object pointer when ReferenceType==RootObject, and the outermost pointer of the sub-object chain when when ReferenceType==SubObject */
+		TObjectPtr<UObject> RootObject = nullptr;
+		/** Stores the sub-object name chain when ReferenceType==SubObject */
+		TArray<FName, TInlineAllocator<4>> SubObjectHierarchyIDs;
+
+		/** Cached pointers corresponding to RootObject when ReferenceType==SubObject (@note cache needs testing on access as it may have become stale) */
+		mutable TWeakObjectPtr<UObject> CachedRootObject;
+		/** Cache of pointers corresponding to the items within SubObjectHierarchyIDs when ReferenceType==SubObject (@note cache needs testing on access as it may have become stale) */
+		mutable TArray<TWeakObjectPtr<UObject>, TInlineAllocator<4>> CachedSubObjectHierarchy;
+	};
+
 	// Record of an object.
 	class UNREALED_API FObjectRecord
 	{
 	public:
-
-		/** 
-			This type is necessary because the blueprint system is destroying and creating 
-			CDOs at edit time (usually on compile, but also on load), but also stores user 
-			entered data in the CDO. We "need"  changes to a CDO to persist across instances 
-			because as we undo and redo we  need to apply changes to different instances of 
-			the CDO - alternatively we could destroy and create the CDO as part of a transaction 
-			(this alternative is the reason for the bunny ears around need).
-
-			DanO: My long term preference is for the editor to use a dynamic, mutable type
-			(rather than the CDO) to store editor data. The CDO can then be re-instanced (or not)
-			as runtime code requires.
-		*/
-		struct FPersistentObjectRef
-		{
-			// This enum represents all of the different special cases
-			// we are handling with this type:
-			enum class EReferenceType : uint8
-			{
-				SubObject,
-				RootObject,
-
-				Unknown
-			};
-
-			EReferenceType ReferenceType;
-			UObject* Object;
-			TArray<FName> SubObjectHierarchyID;
-			FName ComponentName;
-
-			friend FArchive& operator<<(FArchive& Ar, FPersistentObjectRef& ReferencedObject)
-			{
-				Ar << (uint8&)ReferencedObject.ReferenceType;
-				Ar << ReferencedObject.Object;
-				Ar << ReferencedObject.SubObjectHierarchyID;
-				return Ar;
-			}
-
-			FPersistentObjectRef()
-				: ReferenceType(EReferenceType::Unknown)
-				, Object(nullptr)
-			{}
-
-			explicit FPersistentObjectRef(UObject* InObject);
-
-			UObject* Get() const;
-
-			UObject* operator->() const
-			{
-				UObject* Obj = Get();
-				check(Obj);
-				return Obj;
-			}
-		};
-
 		struct FSerializedProperty
 		{
 			FSerializedProperty()
@@ -108,7 +134,7 @@ protected:
 				return InPropertyChain.GetPropertyFromRoot(0)->GetFName();
 			}
 
-			void AppendSerializedData(const int32 InOffset, const int32 InSize)
+			void AppendSerializedData(const int64 InOffset, const int64 InSize)
 			{
 				if (DataOffset == INDEX_NONE)
 				{
@@ -123,9 +149,9 @@ protected:
 			}
 
 			/** Offset to the start of this property within the serialized object */
-			int32 DataOffset;
+			int64 DataOffset;
 			/** Size (in bytes) of this property within the serialized object */
-			int32 DataSize;
+			int64 DataSize;
 		};
 
 		struct FSerializedObject
@@ -143,7 +169,7 @@ protected:
 				ObjectOuterPathName = InObject->GetOuter() ? FName(*InObject->GetOuter()->GetPathName()) : FName();
 				ObjectExternalPackageName = InObject->GetExternalPackage() ? InObject->GetExternalPackage()->GetFName() : FName();
 				ObjectClassPathName = FName(*InObject->GetClass()->GetPathName());
-				bIsPendingKill = InObject->IsPendingKill();
+				bIsPendingKill = IsValid(InObject);
 				ObjectAnnotation = InObject->FindOrCreateTransactionAnnotation();
 			}
 
@@ -198,7 +224,7 @@ protected:
 			/** The pending kill state of the object when it was serialized */
 			bool bIsPendingKill;
 			/** The data stream used to serialize/deserialize record */
-			TArray<uint8> Data;
+			TArray64<uint8> Data;
 			/** External objects referenced in the transaction */
 			TArray<FPersistentObjectRef> ReferencedObjects;
 			/** FNames referenced in the object record */
@@ -219,16 +245,18 @@ protected:
 		/** Custom change to apply to this object to undo this record.  Executing the undo will return an object that can be used to redo the change. */
 		TUniquePtr<FChange> CustomChange;
 		/** Array: If an array object, reference to script array */
-		FScriptArray*		Array;
+		FScriptArray*		Array = nullptr;
 		/** Array: Offset into the array */
-		int32				Index;
+		int32				Index = 0;
 		/** Array: How many items to record */
-		int32				Count;
+		int32				Count = 0;
 		/** @todo document this
 		 Array: Operation performed on array: 1 (add/insert), 0 (modify), -1 (remove)? */
-		int32				Oper;
+		int32				Oper = 0;
 		/** Array: Size of each item in the array */
-		int32				ElementSize;
+		int32				ElementSize = 0;
+		/** Array: Alignment of each item in the array */
+		uint32				ElementAlignment = 0;
 		/** Array: DefaultConstructor for each item in the array */
 		STRUCT_DC			DefaultConstructor;
 		/** Array: Serializer to use for each item in the array */
@@ -236,13 +264,13 @@ protected:
 		/** Array: Destructor for each item in the array */
 		STRUCT_DTOR			Destructor;
 		/** True if object  has already been restored from data. False otherwise. */
-		bool				bRestored;
+		bool				bRestored = false;
 		/** True if object has been finalized and generated diff data */
-		bool				bFinalized;
+		bool				bFinalized = false;
 		/** True if object has been snapshot before */
-		bool				bSnapshot;
+		bool				bSnapshot = false;
 		/** True if record should serialize data as binary blob (more compact). False to use tagged serialization (more robust) */
-		bool				bWantsBinarySerialization;
+		bool				bWantsBinarySerialization = true;
 		/** The serialized object data */
 		FSerializedObject	SerializedObject;
 		/** The serialized object data that will be used when the transaction is flipped */
@@ -253,9 +281,8 @@ protected:
 		FTransactionObjectDeltaChange DeltaChange;
 
 		// Constructors.
-		FObjectRecord()
-		{}
-		FObjectRecord( FTransaction* Owner, UObject* InObject, TUniquePtr<FChange> InCustomChange, FScriptArray* InArray, int32 InIndex, int32 InCount, int32 InOper, int32 InElementSize, STRUCT_DC InDefaultConstructor, STRUCT_AR InSerializer, STRUCT_DTOR InDestructor );
+		FObjectRecord() = default;
+		FObjectRecord( FTransaction* Owner, UObject* InObject, TUniquePtr<FChange> InCustomChange, FScriptArray* InArray, int32 InIndex, int32 InCount, int32 InOper, int32 InElementSize, uint32 InElementAlignment, STRUCT_DC InDefaultConstructor, STRUCT_AR InSerializer, STRUCT_DTOR InDestructor );
 
 	private:
 		// Non-copyable
@@ -305,6 +332,7 @@ protected:
 
 			virtual int64 Tell() override {return Offset;}
 			virtual void Seek( int64 InPos ) override { Offset = InPos; }
+			virtual int64 TotalSize() override { return SerializedObject.Data.Num(); }
 
 		private:
 			void Serialize( void* SerData, int64 Num ) override
@@ -339,15 +367,16 @@ protected:
 			}
 			void Preload( UObject* InObject ) override
 			{
-				if( Owner )
+				if (Owner)
 				{
-					if ( Owner->ObjectMap.Contains( InObject ) )
+					if (const FObjectRecords* ObjectRecords = Owner->ObjectRecordsMap.Find(FPersistentObjectRef(InObject)))
 					{
-						for (int32 i = 0; i < Owner->Records.Num(); i++)
+						for (FObjectRecord* Record : ObjectRecords->Records)
 						{
-							if (Owner->Records[i].Object.Get() == InObject)
+							checkSlow(Record->Object.Get() == InObject);
+							if (!Record->CustomChange)
 							{
-								Owner->Records[i].Restore(Owner);
+								Record->Restore(Owner);
 							}
 						}
 					}
@@ -395,6 +424,8 @@ protected:
 				Offset = InPos; 
 			}
 
+			virtual int64 TotalSize() override { return SerializedObject.Data.Num(); }
+
 			virtual bool ShouldSkipProperty(const FProperty* InProperty) const override
 			{
 				return (PropertiesToSerialize.Num() > 0 && !PropertiesToSerialize.Contains(InProperty))
@@ -439,7 +470,7 @@ protected:
 			{
 				if( Num )
 				{
-					int32 DataIndex = ( Offset == SerializedObject.Data.Num() )
+					int64 DataIndex = ( Offset == SerializedObject.Data.Num() )
 						?  SerializedObject.Data.AddUninitialized(Num)
 						:  Offset;
 					
@@ -511,10 +542,32 @@ protected:
 		};
 	};
 
+	struct FObjectRecords
+	{
+		friend FArchive& operator<<(FArchive& Ar, FObjectRecords& ObjectRecords)
+		{
+			Ar << ObjectRecords.SaveCount;
+
+			if (Ar.IsLoading())
+			{
+				// Clear the map on load, as it will need to be rebuilt from the source array
+				ObjectRecords.Records.Empty();
+			}
+
+			return Ar;
+		}
+
+		TArray<FObjectRecord*, TInlineAllocator<1>> Records;
+		int32 SaveCount = 0;
+	};
+
 	// Transaction variables.
 	/** List of object records in this transaction */
-	TIndirectArray<FObjectRecord>	Records;
-	
+	TIndirectArray<FObjectRecord> Records;
+
+	/** Map of object records (non-array), for optimized look-up and to prevent an object being serialized to a transaction more than once. */
+	TMap<FPersistentObjectRef, FObjectRecords> ObjectRecordsMap;
+
 	/** Unique identifier for this transaction, used to track it during its lifetime */
 	FGuid		Id;
 
@@ -532,15 +585,13 @@ protected:
 	FString		Context;
 
 	/** The key object being edited in this transaction. For example the blueprint object. Can be NULL */
-	UObject*	PrimaryObject;
-
-	/** Used to prevent objects from being serialized to a transaction more than once. */
-	TMap<UObject*, int32>	ObjectMap;
+	UObject* PrimaryObject = nullptr;
 
 	/** If true, on apply flip the direction of iteration over object records. The only client for which this is false is FMatineeTransaction */
-	bool					bFlip;
+	bool		bFlip = true;
+
 	/** Used to track direction to iterate over transaction's object records. Typically -1 for Undo, 1 for Redo */
-	int32					Inc;
+	int32		Inc = -1;
 
 	struct FChangedObjectValue
 	{
@@ -569,10 +620,9 @@ public:
 		:	Id( FGuid::NewGuid() )
 		,	Title( InTitle )
 		,	Context( InContext )
-		,	PrimaryObject(nullptr)
 		,	bFlip(bInFlip)
-		,	Inc(-1)
-	{}
+	{
+	}
 
 	virtual ~FTransaction()
 	{
@@ -587,7 +637,7 @@ public:
 	
 	// FTransactionBase interface.
 	virtual void SaveObject( UObject* Object ) override;
-	virtual void SaveArray( UObject* Object, FScriptArray* Array, int32 Index, int32 Count, int32 Oper, int32 ElementSize, STRUCT_DC DefaultConstructor, STRUCT_AR Serializer, STRUCT_DTOR Destructor ) override;
+	virtual void SaveArray( UObject* Object, FScriptArray* Array, int32 Index, int32 Count, int32 Oper, int32 ElementSize, uint32 ElementAlignment, STRUCT_DC DefaultConstructor, STRUCT_AR Serializer, STRUCT_DTOR Destructor ) override;
 	virtual void StoreUndo( UObject* Object, TUniquePtr<FChange> UndoChange ) override;
 	virtual void SetPrimaryObject(UObject* InObject) override;
 	virtual void SnapshotObject( UObject* InObject, TArrayView<const FProperty*> Properties ) override;
@@ -653,10 +703,48 @@ public:
 		return Title;
 	}
 
+	/** Returns the description of each contained Object Record */
+	FText GetDescription() const
+	{			
+		FString ConcatenatedRecords;
+		for (const FObjectRecord& Record : Records)
+		{
+			if (Record.CustomChange.IsValid())
+			{
+				if (ConcatenatedRecords.Len())
+				{
+					ConcatenatedRecords += TEXT("\n");
+				}
+				ConcatenatedRecords += Record.CustomChange->ToString();
+			}
+		}
+
+		return ConcatenatedRecords.IsEmpty() 
+			? GetTitle() 
+			: FText::FromString(ConcatenatedRecords);
+	}
+
 	/** Serializes a reference to a transaction in a given archive. */
 	friend FArchive& operator<<( FArchive& Ar, FTransaction& T )
 	{
-		return Ar << T.Records << T.Id << T.Title << T.ObjectMap << T.Context << T.PrimaryObject;
+		Ar << T.Records << T.ObjectRecordsMap << T.Id << T.Title << T.Context << T.PrimaryObject;
+
+		if (Ar.IsLoading())
+		{
+			// Rebuild the LUT from the records array
+			for (FObjectRecord& Record : T.Records)
+			{
+				if (!Record.Array)
+				{
+					// We should have already added a map entry for this object when loading T.ObjectRecordsMap, so check that we have (otherwise something is out-of-sync)
+					FObjectRecords& ObjectRecords = T.ObjectRecordsMap.FindChecked(Record.Object);
+					// Note: This is only safe to do because T.Records is a TIndirectArray
+					ObjectRecords.Records.Add(&Record);
+				}
+			}
+		}
+
+		return Ar;
 	}
 
 	/** Serializes a reference to a transaction in a given archive. */

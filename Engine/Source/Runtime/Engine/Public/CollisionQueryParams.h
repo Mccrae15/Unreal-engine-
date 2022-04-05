@@ -136,32 +136,6 @@ public:
 
 	// Constructors
 #if !FIND_UNKNOWN_SCENE_QUERIES
-	/** 
-	 *  DEPRECATED!  
-	 *  Please instead provide a FName parameter when constructing a FCollisionQueryParams object which will use the other constructor.
-	 *  Providing a single string literal argument, such as TEXT("foo"), instead of an explicit FNAME
-	 *  can cause this constructor to be invoked instead the the other which was likely the programmers intention. 
-	 *  This constructor will eventually be deprecated to avoid this potentially ambiguous case.
-	 */ 
-	UE_DEPRECATED(4.11, "FCollisionQueryParams, to avoid ambiguity, please use other constructor and explicitly provide an FName parameter (not just a string literal) as the first parameter")
-	FCollisionQueryParams(bool bInTraceComplex)
-	{
-		bTraceComplex = bInTraceComplex;
-		MobilityType = EQueryMobilityType::Any;
-		TraceTag = NAME_None;
-		bFindInitialOverlaps = true;
-		bReturnFaceIndex = false;
-		bReturnPhysicalMaterial = false;
-		bComponentListUnique = true;
-		IgnoreMask = 0;
-		bIgnoreBlocks = false;
-		bIgnoreTouches = false;
-		bSkipNarrowPhase = false;
-		StatId = GetUnknownStatId();
-#if !(UE_BUILD_TEST || UE_BUILD_SHIPPING)
-		bDebugQuery = false;
-#endif
-	}
 
 	FCollisionQueryParams()
 	{
@@ -239,16 +213,19 @@ struct ENGINE_API FComponentQueryParams : public FCollisionQueryParams
 	{
 	}
 
-	FComponentQueryParams(FName InTraceTag, const AActor* InIgnoreActor=NULL)
-	: FComponentQueryParams(InTraceTag, GetUnknownStatId(), InIgnoreActor)
+	FComponentQueryParams(FName InTraceTag, const AActor* InIgnoreActor=NULL, const FCollisionEnabledMask InShapeCollisionMask = 0)
+	: FComponentQueryParams(InTraceTag, GetUnknownStatId(), InIgnoreActor, InShapeCollisionMask)
 	{
 	}
 #endif
 
-	FComponentQueryParams(FName InTraceTag, const TStatId& InStatId, const AActor* InIgnoreActor = NULL)
-		: FCollisionQueryParams(InTraceTag, InStatId, false, InIgnoreActor)
+	FComponentQueryParams(FName InTraceTag, const TStatId& InStatId, const AActor* InIgnoreActor = NULL, const FCollisionEnabledMask InShapeCollisionMask = 0)
+		: FCollisionQueryParams(InTraceTag, InStatId, false, InIgnoreActor), ShapeCollisionMask(InShapeCollisionMask)
 	{
 	}
+
+	/** Only use query shapes which remain unmasked by this collision mask (if mask is nonzero) **/
+	FCollisionEnabledMask ShapeCollisionMask;
 
 	/** static variable for default data to be used without reconstructing everytime **/
 	static FComponentQueryParams DefaultComponentQueryParams;
@@ -292,11 +269,7 @@ private:
 	}
 
 public:
-	static struct FCollisionQueryFlag & Get()
-	{
-		static FCollisionQueryFlag CollisionQueryFlag;
-		return CollisionQueryFlag;
-	}
+	static FCollisionQueryFlag& Get();
 
 	int32 GetAllObjectsQueryFlag()
 	{

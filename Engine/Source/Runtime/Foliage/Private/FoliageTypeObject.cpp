@@ -65,9 +65,10 @@ void FFoliageTypeObject::SetClean()
 	}
 }
 
+#if WITH_EDITORONLY_DATA
 void FFoliageTypeObject::PostSerialize(const FArchive& Ar)
 {
-	if (Ar.UE4Ver() < VER_UE4_FOLIAGE_WITH_ASSET_OR_CLASS)
+	if (Ar.UEVer() < VER_UE4_FOLIAGE_WITH_ASSET_OR_CLASS)
 	{
 		// Set the type object to be the previously set FoliageType BP class
 		if (Type_DEPRECATED)
@@ -76,3 +77,4 @@ void FFoliageTypeObject::PostSerialize(const FArchive& Ar)
 		}
 	}
 }
+#endif

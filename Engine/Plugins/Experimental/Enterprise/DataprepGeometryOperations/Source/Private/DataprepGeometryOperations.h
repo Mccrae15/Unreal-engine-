@@ -9,7 +9,7 @@
 #include "Properties/RemeshProperties.h"
 #include "CleaningOps/RemeshMeshOp.h"
 #include "CleaningOps/SimplifyMeshOp.h"
-#include "DynamicMesh3.h"
+#include "DynamicMesh/DynamicMesh3.h"
 #include "ModelingOperators.h"
 #include "BakeTransformTool.h"
 
@@ -259,8 +259,8 @@ private:
 		TArray<UStaticMeshComponent*>& OutCutawayMeshes);
 
 	// Borrowed from UPlaneCutOperatorFactory::MakeNewOperator
-	TUniquePtr<FDynamicMeshOperator> MakeNewOperator(
+	TUniquePtr<UE::Geometry::FDynamicMeshOperator> MakeNewOperator(
 		const FTransform& InMeshLocalToWorld, 
-		TSharedPtr<FDynamicMesh3> InOriginalMesh,
+		TSharedPtr<UE::Geometry::FDynamicMesh3, ESPMode::ThreadSafe> InOriginalMesh,
 		float InMeshUVScaleFactor);
 };

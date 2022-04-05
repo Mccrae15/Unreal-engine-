@@ -9,7 +9,7 @@ using System.IO;
 using System.IO.Compression;
 using Gauntlet;
 
-namespace UE4Game
+namespace UnrealGame
 {
 
 	/// <summary>
@@ -22,10 +22,10 @@ namespace UE4Game
 		{
 		}
 
-		public override UE4TestConfig GetConfiguration()
+		public override UnrealTestConfig GetConfiguration()
 		{
 			// just need a single client
-			UE4TestConfig Config = base.GetConfiguration();
+			UnrealTestConfig Config = base.GetConfiguration();
 
 			UnrealTestRole ClientRole = Config.RequireRole(UnrealTargetRole.Client);
 			ClientRole.Controllers.Add("FortGPUtestbedPerfTest");

@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "PluginUtils.h"
+#if WITH_EDITOR
 
+#include "PluginUtils.h"
+#include "SourceControlHelpers.h"
 #include "IContentBrowserSingleton.h"
 #include "ContentBrowserModule.h"
 #include "GameProjectUtils.h"
@@ -14,12 +16,15 @@
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
 #include "DesktopPlatformModule.h"
+#include "PackageTools.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/FeedbackContext.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogPluginUtils, Log, All);
 
 #define LOCTEXT_NAMESPACE "PluginUtils"
 
@@ -28,7 +33,19 @@ namespace PluginUtils
 	// The text macro to replace with the actual plugin name when copying files
 	const FString PLUGIN_NAME = TEXT("PLUGIN_NAME");
 
-	bool CopyPluginTemplateFolder(const TCHAR* DestinationDirectory, const TCHAR* Source, const FString& PluginName, FText& FailReason)
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	FPluginUtils::FLoadPluginParams ConvertToLoadPluginParams(const FPluginUtils::FMountPluginParams& MountParams, FText* FailReason)
+	{
+		FPluginUtils::FLoadPluginParams LoadParams;
+		LoadParams.bSelectInContentBrowser = MountParams.bSelectInContentBrowser;
+		LoadParams.bEnablePluginInProject = MountParams.bEnablePluginInProject;
+		LoadParams.bUpdateProjectPluginSearchPath = MountParams.bUpdateProjectPluginSearchPath;
+		LoadParams.OutFailReason = FailReason;
+		return LoadParams;
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	bool CopyPluginTemplateFolder(const TCHAR* DestinationDirectory, const TCHAR* Source, const FString& PluginName, TArray<FString>& InOutFilePathsWritten, FText* OutFailReason = nullptr)
 	{
 		check(DestinationDirectory);
 		check(Source);
@@ -44,14 +61,20 @@ namespace PluginUtils
 		// Does Source dir exist?
 		if (!PlatformFile.DirectoryExists(*SourceDir))
 		{
-			FailReason = FText::Format(LOCTEXT("InvalidPluginTemplateFolder", "Plugin template folder doesn't exist\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(SourceDir)));
+			if (OutFailReason)
+			{
+				*OutFailReason = FText::Format(LOCTEXT("InvalidPluginTemplateFolder", "Plugin template folder doesn't exist\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(SourceDir)));
+			}
 			return false;
 		}
 
 		// Destination directory exists already or can be created ?
 		if (!PlatformFile.DirectoryExists(*DestDir) && !PlatformFile.CreateDirectoryTree(*DestDir))
 		{
-			FailReason = FText::Format(LOCTEXT("FailedToCreateDestinationFolder", "Failed to create destination folder\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(DestDir)));
+			if (OutFailReason)
+			{
+				*OutFailReason = FText::Format(LOCTEXT("FailedToCreateDestinationFolder", "Failed to create destination folder\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(DestDir)));
+			}
 			return false;
 		}
 
@@ -65,13 +88,15 @@ namespace PluginUtils
 			TArray<FString> NameReplacementFileTypes;
 			TArray<FString> IgnoredFileTypes;
 			TArray<FString> CopyUnmodifiedFileTypes;
-			FText& FailReason;
+			TArray<FString>& FilePathsWritten;
+			FText* FailReason;
 
-			FCopyPluginFilesAndDirs(IPlatformFile& InPlatformFile, const TCHAR* InSourceRoot, const TCHAR* InDestRoot, const FString& InPluginName, FText& InFailReason)
+			FCopyPluginFilesAndDirs(IPlatformFile& InPlatformFile, const TCHAR* InSourceRoot, const TCHAR* InDestRoot, const FString& InPluginName, TArray<FString>& InFilePathsWritten, FText* InFailReason)
 				: PlatformFile(InPlatformFile)
 				, SourceRoot(InSourceRoot)
 				, DestRoot(InDestRoot)
 				, PluginName(InPluginName)
+				, FilePathsWritten(InFilePathsWritten)
 				, FailReason(InFailReason)
 			{
 				// Which file types we want to replace instances of PLUGIN_NAME with the new Plugin Name
@@ -104,7 +129,10 @@ namespace PluginUtils
 					// create new directory structure
 					if (!PlatformFile.CreateDirectoryTree(*NewName) && !PlatformFile.DirectoryExists(*NewName))
 					{
-						FailReason = FText::Format(LOCTEXT("FailedToCreatePluginSubFolder", "Failed to create plugin subfolder\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(NewName)));
+						if (FailReason)
+						{
+							*FailReason = FText::Format(LOCTEXT("FailedToCreatePluginSubFolder", "Failed to create plugin subfolder\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(NewName)));
+						}
 						return false;
 					}
 				}
@@ -135,7 +163,10 @@ namespace PluginUtils
 							FString OutFileContents;
 							if (!FFileHelper::LoadFileToString(OutFileContents, FilenameOrDirectory))
 							{
-								FailReason = FText::Format(LOCTEXT("FailedToReadPluginTemplateFile", "Failed to read plugin template file\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(FilenameOrDirectory)));
+								if (FailReason)
+								{
+									*FailReason = FText::Format(LOCTEXT("FailedToReadPluginTemplateFile", "Failed to read plugin template file\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(FilenameOrDirectory)));
+								}
 								return false;
 							}
 
@@ -150,7 +181,10 @@ namespace PluginUtils
 
 							if (!FFileHelper::SaveStringToFile(OutFileContents, *NewName))
 							{
-								FailReason = FText::Format(LOCTEXT("FailedToWritePluginFile", "Failed to write plugin file\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(NewName)));
+								if (FailReason)
+								{
+									*FailReason = FText::Format(LOCTEXT("FailedToWritePluginFile", "Failed to write plugin file\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(NewName)));
+								}
 								return false;
 							}
 						}
@@ -160,10 +194,14 @@ namespace PluginUtils
 							if (!PlatformFile.CopyFile(*NewName, FilenameOrDirectory))
 							{
 								// Not all files could be copied
-								FailReason = FText::Format(LOCTEXT("FailedToCopyPluginTemplateFile", "Failed to copy plugin template file\nFrom: {0}\nTo: {1}"), FText::FromString(FPaths::ConvertRelativePathToFull(FilenameOrDirectory)), FText::FromString(FPaths::ConvertRelativePathToFull(NewName)));
+								if (FailReason)
+								{
+									*FailReason = FText::Format(LOCTEXT("FailedToCopyPluginTemplateFile", "Failed to copy plugin template file\nFrom: {0}\nTo: {1}"), FText::FromString(FPaths::ConvertRelativePathToFull(FilenameOrDirectory)), FText::FromString(FPaths::ConvertRelativePathToFull(NewName)));
+								}
 								return false;
 							}
 						}
+						FilePathsWritten.Add(NewName);
 					}
 				}
 				return true; // continue searching
@@ -171,7 +209,7 @@ namespace PluginUtils
 		};
 
 		// copy plugin files and directories visitor
-		FCopyPluginFilesAndDirs CopyFilesAndDirs(PlatformFile, *SourceDir, *DestDir, PluginName, FailReason);
+		FCopyPluginFilesAndDirs CopyFilesAndDirs(PlatformFile, *SourceDir, *DestDir, PluginName, InOutFilePathsWritten, OutFailReason);
 
 		// create all files subdirectories and files in subdirectories!
 		return PlatformFile.IterateDirectoryRecursively(*SourceDir, CopyFilesAndDirs);
@@ -224,7 +262,7 @@ namespace PluginUtils
 
 				if (FilesToScan.Num() > 0)
 				{
-					IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+					IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
 					AssetRegistry.ScanFilesSynchronous(FilesToScan);
 
 					for (const FString& File : FilesToScan)
@@ -266,55 +304,104 @@ namespace PluginUtils
 		}
 	}
 
-	TSharedPtr<IPlugin> MountPluginInternal(const FString& PluginName, const FString& PluginLocation, const FPluginUtils::FMountPluginParams& MountParams, FText& FailReason, const bool bIsNewPlugin)
+	TSharedPtr<IPlugin> LoadPluginInternal(const FString& PluginName, const FString& PluginLocation, const FString& PluginFilePath, FPluginUtils::FLoadPluginParams& LoadParams, const bool bIsNewPlugin)
 	{
-		ensure(!PluginLocation.IsEmpty());
+		LoadParams.bOutAlreadyLoaded = false;
 
-		FPluginUtils::AddToPluginSearchPathIfNeeded(PluginLocation, /*bRefreshPlugins*/ false, MountParams.bUpdateProjectPluginSearchPath);
-
-		IPluginManager::Get().RefreshPluginsList();
+		if (LoadParams.bUpdateProjectPluginSearchPath)
+		{
+			FPluginUtils::AddToPluginSearchPathIfNeeded(PluginLocation, /*bRefreshPlugins=*/false, /*bUpdateProjectFile=*/true);
+			IPluginManager::Get().RefreshPluginsList();
+		}
+		else
+		{
+			if (!IPluginManager::Get().AddToPluginsList(PluginFilePath, LoadParams.OutFailReason))
+			{
+				return nullptr;
+			}
+		}
 
 		// Find the plugin in the manager.
 		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(PluginName);
 		if (!Plugin)
 		{
-			FailReason = FText::Format(LOCTEXT("FailedToRegisterPlugin", "Failed to register plugin\n{0}"), FText::FromString(FPluginUtils::GetPluginFilePath(PluginLocation, PluginName, /*bFullPath*/ true)));
+			if (LoadParams.OutFailReason)
+			{
+				*LoadParams.OutFailReason = FText::Format(LOCTEXT("FailedToRegisterPlugin", "Failed to register plugin\n{0}"), FText::FromString(PluginFilePath));
+			}
 			return nullptr;
 		}
 
 		// Double check the path matches
-		const FString PluginFilePath = FPluginUtils::GetPluginFilePath(PluginLocation, PluginName, /*bFullPath*/ true);
 		if (!FPaths::IsSamePath(Plugin->GetDescriptorFileName(), PluginFilePath))
 		{
-			const FString PluginFilePathFull = FPaths::ConvertRelativePathToFull(Plugin->GetDescriptorFileName());
-			FailReason = FText::Format(LOCTEXT("PluginNameAlreadyUsed", "There's already a plugin named {0} at this location:\n{1}"), FText::FromString(PluginName), FText::FromString(PluginFilePathFull));
+			if (LoadParams.OutFailReason)
+			{
+				const FString PluginFilePathFull = FPaths::ConvertRelativePathToFull(Plugin->GetDescriptorFileName());
+				*LoadParams.OutFailReason = FText::Format(LOCTEXT("PluginNameAlreadyUsed", "There's already a plugin named {0} at this location:\n{1}"), FText::FromString(PluginName), FText::FromString(PluginFilePathFull));
+			}
 			return nullptr;
 		}
+
+		const FString PluginRootFolder = Plugin->CanContainContent() ? Plugin->GetMountedAssetPath() : FString();
+
+		LoadParams.bOutAlreadyLoaded = !bIsNewPlugin && Plugin->IsEnabled() && (PluginRootFolder.IsEmpty() || FPackageName::MountPointExists(PluginRootFolder));
 
 		// Enable this plugin in the project
-		if (MountParams.bEnablePluginInProject && !IProjectManager::Get().SetPluginEnabled(PluginName, true, FailReason))
+		if (LoadParams.bEnablePluginInProject)
 		{
-			FailReason = FText::Format(LOCTEXT("FailedToEnablePlugin", "Failed to enable plugin\n{0}"), FailReason);
-			return nullptr;
+			FText FailReason;
+			if (!IProjectManager::Get().SetPluginEnabled(PluginName, true, FailReason))
+			{
+				if (LoadParams.OutFailReason)
+				{
+					*LoadParams.OutFailReason = FText::Format(LOCTEXT("FailedToEnablePluginInProject", "Failed to enable plugin in current project\n{0}"), FailReason);
+				}
+				return nullptr;
+			}
 		}
 
-		// Mount the new plugin (mount content folder if any and load modules if any)
-		if (bIsNewPlugin)
+		if (!LoadParams.bOutAlreadyLoaded)
 		{
-			IPluginManager::Get().MountNewlyCreatedPlugin(PluginName);
-		}
-		else
-		{
-			IPluginManager::Get().MountExplicitlyLoadedPlugin(PluginName);
+			// Mount the new plugin (mount content folder if any and load modules if any)
+			if (bIsNewPlugin)
+			{
+				IPluginManager::Get().MountNewlyCreatedPlugin(PluginName);
+			}
+			else
+			{
+				IPluginManager::Get().MountExplicitlyLoadedPlugin(PluginName);
+			}
+
+			if (!Plugin->IsEnabled())
+			{
+				if (LoadParams.OutFailReason)
+				{
+					*LoadParams.OutFailReason = FText::Format(LOCTEXT("FailedToEnablePlugin", "Failed to enable plugin because it is not configured as bExplicitlyLoaded=true\n{0}"), FText::FromString(PluginFilePath));
+				}
+				return nullptr;
+			}
 		}
 
-		// Select plugin Content folder in content browser
-		if (MountParams.bSelectInContentBrowser && Plugin->CanContainContent() && !IsRunningCommandlet())
+		const bool bSelectInContentBrowser = LoadParams.bSelectInContentBrowser && !IsRunningCommandlet();
+
+		if ((bSelectInContentBrowser || LoadParams.bSynchronousAssetsScan) && !PluginRootFolder.IsEmpty() && (LoadParams.bOutAlreadyLoaded || FPackageName::MountPointExists(PluginRootFolder)))
 		{
-			IContentBrowserSingleton& ContentBrowser = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
-			const bool bIsEnginePlugin = FPaths::IsUnderDirectory(PluginLocation, FPaths::EnginePluginsDir());
-			ContentBrowser.ForceShowPluginContent(bIsEnginePlugin);
-			ContentBrowser.SetSelectedPaths({ Plugin->GetMountedAssetPath() }, /*bNeedsRefresh*/ true);
+			if (LoadParams.bSynchronousAssetsScan)
+			{
+				// Scan plugin assets
+				IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
+				AssetRegistry.ScanPathsSynchronous({ PluginRootFolder }, /*bForceRescan=*/ true);
+			}
+
+			if (bSelectInContentBrowser)
+			{
+				// Select plugin root folder in content browser
+				IContentBrowserSingleton& ContentBrowser = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get();
+				const bool bIsEnginePlugin = FPaths::IsUnderDirectory(PluginLocation, FPaths::EnginePluginsDir());
+				ContentBrowser.ForceShowPluginContent(bIsEnginePlugin);
+				ContentBrowser.SetSelectedPaths({ PluginRootFolder }, /*bNeedsRefresh*/ true);
+			}
 		}
 
 		return Plugin;
@@ -334,7 +421,7 @@ FString FPluginUtils::GetPluginFolder(const FString& PluginLocation, const FStri
 
 FString FPluginUtils::GetPluginFilePath(const FString& PluginLocation, const FString& PluginName, bool bFullPath)
 {
-	FString PluginFilePath = FPaths::Combine(PluginLocation, PluginName, (PluginName + TEXT(".uplugin")));
+	FString PluginFilePath = FPaths::Combine(PluginLocation, PluginName, (PluginName + FPluginDescriptor::GetFileExtension()));
 	if (bFullPath)
 	{
 		PluginFilePath = FPaths::ConvertRelativePathToFull(PluginFilePath);
@@ -365,28 +452,63 @@ FString FPluginUtils::GetPluginResourcesFolder(const FString& PluginLocation, co
 	return PluginResourcesFolder;
 }
 
-TSharedPtr<IPlugin> FPluginUtils::CreateAndMountNewPlugin(const FString& PluginName, const FString& PluginLocation, const FNewPluginParams& CreationParams, const FMountPluginParams& MountParams, FText& FailReason)
+TSharedPtr<IPlugin> FPluginUtils::CreateAndLoadNewPlugin(const FString& PluginName, const FString& PluginLocation, const FNewPluginParams& CreationParams, FLoadPluginParams& LoadParams)
+{
+	FNewPluginParamsWithDescriptor ExCreationParams;
+	ExCreationParams.PluginIconPath = CreationParams.PluginIconPath;
+	ExCreationParams.TemplateFolders = CreationParams.TemplateFolders;
+
+	ExCreationParams.Descriptor.FriendlyName = CreationParams.FriendlyName.Len() > 0 ? CreationParams.FriendlyName : PluginName;
+	ExCreationParams.Descriptor.Version = 1;
+	ExCreationParams.Descriptor.VersionName = TEXT("1.0");
+	ExCreationParams.Descriptor.Category = TEXT("Other");
+	ExCreationParams.Descriptor.CreatedBy = CreationParams.CreatedBy;
+	ExCreationParams.Descriptor.CreatedByURL = CreationParams.CreatedByURL;
+	ExCreationParams.Descriptor.Description = CreationParams.Description;
+	ExCreationParams.Descriptor.bIsBetaVersion = CreationParams.bIsBetaVersion;
+	ExCreationParams.Descriptor.bCanContainContent = CreationParams.bCanContainContent;
+	ExCreationParams.Descriptor.EnabledByDefault = CreationParams.EnabledByDefault;
+	ExCreationParams.Descriptor.bExplicitlyLoaded = CreationParams.bExplicitelyLoaded;
+
+	if (CreationParams.bHasModules)
+	{
+		ExCreationParams.Descriptor.Modules.Add(FModuleDescriptor(*PluginName, CreationParams.ModuleDescriptorType, CreationParams.LoadingPhase));
+	}
+
+	return CreateAndLoadNewPlugin(PluginName, PluginLocation, ExCreationParams, LoadParams);
+}
+
+TSharedPtr<IPlugin> FPluginUtils::CreateAndLoadNewPlugin(const FString& PluginName, const FString& PluginLocation, const FNewPluginParamsWithDescriptor& CreationParams, FLoadPluginParams& LoadParams)
 {
 	// Early validations on new plugin params
 	if (PluginName.IsEmpty())
 	{
-		FailReason = LOCTEXT("CreateNewPluginParam_NoPluginName", "Missing plugin name");
+		if (LoadParams.OutFailReason)
+		{
+			*LoadParams.OutFailReason = LOCTEXT("CreateNewPluginParam_NoPluginName", "Missing plugin name");
+		}
 		return nullptr;
 	}
 
 	if (PluginLocation.IsEmpty())
 	{
-		FailReason = LOCTEXT("CreateNewPluginParam_NoPluginLocation", "Missing plugin location");
+		if (LoadParams.OutFailReason)
+		{
+			*LoadParams.OutFailReason = LOCTEXT("CreateNewPluginParam_NoPluginLocation", "Missing plugin location");
+		}
 		return nullptr;
 	}
 
-	if (CreationParams.bHasModules && CreationParams.TemplateFolders.Num() == 0)
+	if ((CreationParams.Descriptor.Modules.Num() > 0) && (CreationParams.TemplateFolders.Num() == 0))
 	{
-		FailReason = LOCTEXT("CreateNewPluginParam_NoTemplateFolder", "A template folder must be specified to create a plugin with code");
+		if (LoadParams.OutFailReason)
+		{
+			*LoadParams.OutFailReason = LOCTEXT("CreateNewPluginParam_NoTemplateFolder", "A template folder must be specified to create a plugin with code");
+		}
 		return nullptr;
 	}
 
-	if (!FPluginUtils::ValidateNewPluginNameAndLocation(PluginName, PluginLocation, &FailReason))
+	if (!FPluginUtils::ValidateNewPluginNameAndLocation(PluginName, PluginLocation, LoadParams.OutFailReason))
 	{
 		return nullptr;
 	}
@@ -398,49 +520,40 @@ TSharedPtr<IPlugin> FPluginUtils::CreateAndMountNewPlugin(const FString& PluginN
 	do
 	{
 		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		TArray<FString> NewFilePaths;
 
 		if (!PlatformFile.DirectoryExists(*PluginFolder) && !PlatformFile.CreateDirectoryTree(*PluginFolder))
 		{
-			FailReason = FText::Format(LOCTEXT("FailedToCreatePluginFolder", "Failed to create plugin folder\n{0}"), FText::FromString(PluginFolder));
+			if (LoadParams.OutFailReason)
+			{
+				*LoadParams.OutFailReason = FText::Format(LOCTEXT("FailedToCreatePluginFolder", "Failed to create plugin folder\n{0}"), FText::FromString(PluginFolder));
+			}
 			bSucceeded = false;
 			break;
 		}
 
-		if (CreationParams.bCanContainContent)
+		if (CreationParams.Descriptor.bCanContainContent)
 		{
 			const FString PluginContentFolder = FPluginUtils::GetPluginContentFolder(PluginLocation, PluginName, /*bFullPath*/ true);
 			if (!PlatformFile.DirectoryExists(*PluginContentFolder) && !PlatformFile.CreateDirectory(*PluginContentFolder))
 			{
-				FailReason = FText::Format(LOCTEXT("FailedToCreatePluginContentFolder", "Failed to create plugin Content folder\n{0}"), FText::FromString(PluginContentFolder));
+				if (LoadParams.OutFailReason)
+				{
+					*LoadParams.OutFailReason = FText::Format(LOCTEXT("FailedToCreatePluginContentFolder", "Failed to create plugin Content folder\n{0}"), FText::FromString(PluginContentFolder));
+				}
 				bSucceeded = false;
 				break;
 			}
 		}
 
-		FPluginDescriptor Descriptor;
-		Descriptor.FriendlyName = PluginName;
-		Descriptor.Version = 1;
-		Descriptor.VersionName = TEXT("1.0");
-		Descriptor.Category = TEXT("Other");
-		Descriptor.CreatedBy = CreationParams.CreatedBy;
-		Descriptor.CreatedByURL = CreationParams.CreatedByURL;
-		Descriptor.Description = CreationParams.Description;
-		Descriptor.bIsBetaVersion = CreationParams.bIsBetaVersion;
-		Descriptor.bCanContainContent = CreationParams.bCanContainContent;
-		Descriptor.EnabledByDefault = CreationParams.EnabledByDefault;
-		Descriptor.bExplicitlyLoaded = CreationParams.bExplicitelyLoaded;
-		if (CreationParams.bHasModules)
-		{
-			Descriptor.Modules.Add(FModuleDescriptor(*PluginName, CreationParams.ModuleDescriptorType, CreationParams.LoadingPhase));
-		}
-
 		// Write the uplugin file
 		const FString PluginFilePath = FPluginUtils::GetPluginFilePath(PluginLocation, PluginName, /*bFullPath*/ true);
-		if (!Descriptor.Save(PluginFilePath, FailReason))
+		if (!CreationParams.Descriptor.Save(PluginFilePath, LoadParams.OutFailReason))
 		{
 			bSucceeded = false;
 			break;
 		}
+		NewFilePaths.Add(PluginFilePath);
 
 		// Copy plugin icon
 		if (!CreationParams.PluginIconPath.IsEmpty())
@@ -449,37 +562,51 @@ TSharedPtr<IPlugin> FPluginUtils::CreateAndMountNewPlugin(const FString& PluginN
 			const FString DestinationPluginIconPath = FPaths::Combine(ResourcesFolder, TEXT("Icon128.png"));
 			if (IFileManager::Get().Copy(*DestinationPluginIconPath, *CreationParams.PluginIconPath, /*bReplaceExisting=*/ false) != COPY_OK)
 			{
-				FailReason = FText::Format(LOCTEXT("FailedToCopyPluginIcon", "Failed to copy plugin icon\nFrom: {0}\nTo: {1}"), FText::FromString(FPaths::ConvertRelativePathToFull(CreationParams.PluginIconPath)), FText::FromString(DestinationPluginIconPath));
+				if (LoadParams.OutFailReason)
+				{
+					*LoadParams.OutFailReason = FText::Format(LOCTEXT("FailedToCopyPluginIcon", "Failed to copy plugin icon\nFrom: {0}\nTo: {1}"), FText::FromString(FPaths::ConvertRelativePathToFull(CreationParams.PluginIconPath)), FText::FromString(DestinationPluginIconPath));
+				}
 				bSucceeded = false;
 				break;
 			}
+			NewFilePaths.Add(DestinationPluginIconPath);
 		}
 
 		// Copy template files
-		GWarn->BeginSlowTask(LOCTEXT("CopyingPluginTemplate", "Copying plugin template files..."), /*ShowProgressDialog*/ true, /*bShowCancelButton*/ false);
-		for (const FString& TemplateFolder : CreationParams.TemplateFolders)
+		if (CreationParams.TemplateFolders.Num() > 0)
 		{
-			if (!PluginUtils::CopyPluginTemplateFolder(*PluginFolder, *TemplateFolder, PluginName, FailReason))
+			GWarn->BeginSlowTask(LOCTEXT("CopyingPluginTemplate", "Copying plugin template files..."), /*ShowProgressDialog*/ true, /*bShowCancelButton*/ false);
+			for (const FString& TemplateFolder : CreationParams.TemplateFolders)
 			{
-				FailReason = FText::Format(LOCTEXT("FailedToCopyPluginTemplate", "Failed to copy plugin template files\nFrom: {0}\nTo: {1}\n{2}"), FText::FromString(FPaths::ConvertRelativePathToFull(TemplateFolder)), FText::FromString(PluginFolder), FailReason);
-				bSucceeded = false;
-				break;
+				if (!PluginUtils::CopyPluginTemplateFolder(*PluginFolder, *TemplateFolder, PluginName, NewFilePaths, LoadParams.OutFailReason))
+				{
+					if (LoadParams.OutFailReason)
+					{
+						*LoadParams.OutFailReason = FText::Format(LOCTEXT("FailedToCopyPluginTemplate", "Failed to copy plugin template files\nFrom: {0}\nTo: {1}\n{2}"), FText::FromString(FPaths::ConvertRelativePathToFull(TemplateFolder)), FText::FromString(PluginFolder), *LoadParams.OutFailReason);
+					}
+					bSucceeded = false;
+					break;
+				}
 			}
+			GWarn->EndSlowTask();
 		}
-		GWarn->EndSlowTask();
+
 		if (!bSucceeded)
 		{
 			break;
 		}
 
 		// Compile plugin code
-		if (CreationParams.bHasModules)
+		if (CreationParams.Descriptor.Modules.Num() > 0)
 		{
 			const FString ProjectFileName = IFileManager::Get().ConvertToAbsolutePathForExternalAppForWrite(*FPaths::GetProjectFilePath());
 			const FString Arguments = FString::Printf(TEXT("%s %s %s -Plugin=\"%s\" -Project=\"%s\" -Progress -NoHotReloadFromIDE"), FPlatformMisc::GetUBTTargetName(), FModuleManager::Get().GetUBTConfiguration(), FPlatformMisc::GetUBTPlatform(), *PluginFilePath, *ProjectFileName);
 			if (!FDesktopPlatformModule::Get()->RunUnrealBuildTool(FText::Format(LOCTEXT("CompilingPlugin", "Compiling {0} plugin..."), FText::FromString(PluginName)), FPaths::RootDir(), Arguments, GWarn))
 			{
-				FailReason = LOCTEXT("FailedToCompilePlugin", "Failed to compile plugin source code");
+				if (LoadParams.OutFailReason)
+				{
+					*LoadParams.OutFailReason = LOCTEXT("FailedToCompilePlugin", "Failed to compile plugin source code. See output log for more information.");
+				}
 				bSucceeded = false;
 				break;
 			}
@@ -490,14 +617,17 @@ TSharedPtr<IPlugin> FPluginUtils::CreateAndMountNewPlugin(const FString& PluginN
 			// Generate project files if we happen to be using a project file.
 			if (!FDesktopPlatformModule::Get()->GenerateProjectFiles(FPaths::RootDir(), FPaths::GetProjectFilePath(), GWarn))
 			{
-				FailReason = LOCTEXT("FailedToGenerateProjectFiles", "Failed to generate project files");
+				if (LoadParams.OutFailReason)
+				{
+					*LoadParams.OutFailReason = LOCTEXT("FailedToGenerateProjectFiles", "Failed to generate project files");
+				}
 				bSucceeded = false;
 				break;
 			}
 		}
 
-		// Mount the new plugin
-		NewPlugin = PluginUtils::MountPluginInternal(PluginName, PluginLocation, MountParams, FailReason, /*bIsNewPlugin*/ true);
+		// Load the new plugin
+		NewPlugin = PluginUtils::LoadPluginInternal(PluginName, PluginLocation, PluginFilePath, LoadParams, /*bIsNewPlugin*/ true);
 		if (!NewPlugin)
 		{
 			bSucceeded = false;
@@ -505,10 +635,18 @@ TSharedPtr<IPlugin> FPluginUtils::CreateAndMountNewPlugin(const FString& PluginN
 		}
 
 		// Fix any content that was added to the plugin
-		if (CreationParams.bCanContainContent)
+		if (CreationParams.Descriptor.bCanContainContent)
 		{	
 			GWarn->BeginSlowTask(LOCTEXT("LoadingContent", "Loading Content..."), /*ShowProgressDialog*/ true, /*bShowCancelButton*/ false);
 			PluginUtils::FixupPluginTemplateAssets(PluginName);
+			GWarn->EndSlowTask();
+		}
+
+		// Add the plugin files to source control if the project is configured for it
+		if (USourceControlHelpers::IsAvailable())
+		{
+			GWarn->BeginSlowTask(LOCTEXT("AddingFilesToSourceControl", "Adding to Source Control..."), /*ShowProgressDialog*/ true, /*bShowCancelButton*/ false);
+			USourceControlHelpers::MarkFilesForAdd(NewFilePaths);
 			GWarn->EndSlowTask();
 		}
 	} while (false);
@@ -529,22 +667,206 @@ TSharedPtr<IPlugin> FPluginUtils::CreateAndMountNewPlugin(const FString& PluginN
 	return NewPlugin;
 }
 
-TSharedPtr<IPlugin> FPluginUtils::MountPlugin(const FString& PluginName, const FString& PluginLocation, const FMountPluginParams& MountParams, FText& FailReason)
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+TSharedPtr<IPlugin> FPluginUtils::CreateAndMountNewPlugin(const FString& PluginName, const FString& PluginLocation, const FNewPluginParams& CreationParams, const FMountPluginParams& MountParams, FText& FailReason)
+{
+	FLoadPluginParams LoadParams = PluginUtils::ConvertToLoadPluginParams(MountParams, &FailReason);
+	return CreateAndLoadNewPlugin(PluginName, PluginLocation, CreationParams, LoadParams);
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+TSharedPtr<IPlugin> FPluginUtils::CreateAndMountNewPlugin(const FString& PluginName, const FString& PluginLocation, const FNewPluginParamsWithDescriptor& CreationParams, const FMountPluginParams& MountParams, FText& FailReason)
+{
+	FLoadPluginParams LoadParams = PluginUtils::ConvertToLoadPluginParams(MountParams, &FailReason);
+	return CreateAndLoadNewPlugin(PluginName, PluginLocation, CreationParams, LoadParams);
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+TSharedPtr<IPlugin> FPluginUtils::LoadPlugin(const FString& PluginName, const FString& PluginLocation, FLoadPluginParams& LoadParams)
 {
 	// Valide that the uplugin file exists.
 	const FString PluginFilePath = FPluginUtils::GetPluginFilePath(PluginLocation, PluginName, /*bFullPath*/ true);
+
 	if (!FPaths::FileExists(PluginFilePath))
 	{
-		FailReason = FText::Format(LOCTEXT("PluginFileDoesNotExist", "Plugin file does not exist\n{0}"), FText::FromString(PluginFilePath));
+		if (LoadParams.OutFailReason)
+		{
+			*LoadParams.OutFailReason = FText::Format(LOCTEXT("PluginFileDoesNotExist", "Plugin file does not exist\n{0}"), FText::FromString(PluginFilePath));
+		}
 		return nullptr;
 	}
 
-	if (!IsValidPluginName(PluginName, &FailReason))
+	if (!IsValidPluginName(PluginName, LoadParams.OutFailReason))
 	{
 		return nullptr;
 	}
 
-	return PluginUtils::MountPluginInternal(PluginName, PluginLocation, MountParams, FailReason, /*bIsNewPlugin*/ false);
+	return PluginUtils::LoadPluginInternal(PluginName, PluginLocation, PluginFilePath, LoadParams, /*bIsNewPlugin*/ false);
+}
+
+TSharedPtr<IPlugin> FPluginUtils::LoadPlugin(const FString& PluginFileName, FLoadPluginParams& LoadParams)
+{
+	const FString PluginLocation = FPaths::GetPath(FPaths::GetPath(PluginFileName));
+	const FString PluginName = FPaths::GetBaseFilename(PluginFileName);
+
+	return LoadPlugin(PluginName, PluginLocation, LoadParams);
+}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+TSharedPtr<IPlugin> FPluginUtils::MountPlugin(const FString& PluginName, const FString& PluginLocation, const FMountPluginParams& MountParams, FText& FailReason)
+{
+	FLoadPluginParams LoadParams = PluginUtils::ConvertToLoadPluginParams(MountParams, &FailReason);
+	return LoadPlugin(PluginName, PluginLocation, LoadParams);
+}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+TSharedPtr<IPlugin> FPluginUtils::FindLoadedPlugin(const FString& PluginDescriptorFileName)
+{
+	TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(FPaths::GetBaseFilename(PluginDescriptorFileName));
+	if (Plugin &&
+		Plugin->IsEnabled() &&
+		FPaths::IsSamePath(Plugin->GetDescriptorFileName(), PluginDescriptorFileName) &&
+		(!Plugin->CanContainContent() || FPackageName::MountPointExists(Plugin->GetMountedAssetPath())))
+	{
+		return Plugin;
+	}
+	return TSharedPtr<IPlugin>();
+}
+
+bool FPluginUtils::UnloadPlugin(const TSharedRef<IPlugin>& Plugin, FText* OutFailReason /*= nullptr*/)
+{
+	return UnloadPlugins({ Plugin }, OutFailReason);
+}
+
+bool FPluginUtils::UnloadPlugin(const FString& PluginName, FText* OutFailReason /*= nullptr*/)
+{
+	if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(PluginName))
+	{
+		return UnloadPlugin(Plugin.ToSharedRef(), OutFailReason);
+	}
+	return true;
+}
+
+bool FPluginUtils::UnloadPlugins(const TConstArrayView<TSharedRef<IPlugin>> Plugins, FText* OutFailReason /*= nullptr*/)
+{
+	if (Plugins.Num() == 0)
+	{
+		return true;
+	}
+
+	TArray<FString> PluginContentMountPoints;
+	PluginContentMountPoints.Reserve(Plugins.Num());
+
+	for (const TSharedRef<IPlugin>& Plugin : Plugins)
+	{
+		if (Plugin->IsEnabled())
+		{
+			FString PluginContentMountPoint = Plugin->GetMountedAssetPath();
+			if (FPackageName::MountPointExists(PluginContentMountPoint))
+			{
+				PluginContentMountPoints.Add(MoveTemp(PluginContentMountPoint));
+			}
+		}
+	}
+
+	// Synchronous scan plugins to make sure we find all their assets.
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(AssetRegistryConstants::ModuleName).Get();
+
+	if (!PluginContentMountPoints.IsEmpty())
+	{
+		AssetRegistry.ScanPathsSynchronous(PluginContentMountPoints, /*bForceRescan=*/ true);
+	}
+
+	// Unload plugin packages
+	{
+		FARFilter ARFilter;
+		ARFilter.PackagePaths.Reserve(PluginContentMountPoints.Num());
+		for (const FString& PluginContentMountPoint : PluginContentMountPoints)
+		{
+			FString PluginRoot = PluginContentMountPoint;
+			PluginRoot.RemoveFromEnd(TEXT("/"));
+			ARFilter.PackagePaths.Add(*PluginRoot);
+		}
+		ARFilter.bRecursivePaths = true;
+
+		TArray<FAssetData> PluginAssets;
+		if (AssetRegistry.GetAssets(ARFilter, PluginAssets))
+		{
+			TSet<UPackage*> PackagesToUnload;
+			PackagesToUnload.Reserve(PluginAssets.Num());
+			for (const FAssetData& AssetData : PluginAssets)
+			{
+				if (UPackage* Package = FindPackage(NULL, *AssetData.PackageName.ToString()))
+				{
+					PackagesToUnload.Add(Package);
+				}
+			}
+
+			if (PackagesToUnload.Num() > 0)
+			{
+				FText ErrorMsg;
+				UPackageTools::UnloadPackages(PackagesToUnload.Array(), ErrorMsg, /*bUnloadDirtyPackages=*/true);
+
+				// Log an error if some packages fail to unload, but unmount the plugins anyway.
+				// @note UnloadPackages returned bool indicates whether some packages were unloaded
+				// To tell whether all packages were successfully unloaded we must check the ErrorMsg output param
+				if (!ErrorMsg.IsEmpty())
+				{
+					UE_LOG(LogPluginUtils, Error, TEXT("%s"), *ErrorMsg.ToString());
+				}
+			}
+		}
+	}
+
+	// Unmount the plugins
+	//
+	bool bSuccess = true;
+	{
+		FTextBuilder ErrorBuilder;
+		bool bPluginUnmounted = false;
+
+		for (const TSharedRef<IPlugin>& Plugin : Plugins)
+		{
+			if (Plugin->IsEnabled())
+			{
+				bPluginUnmounted = true;
+
+				FText FailReason;
+				if (!IPluginManager::Get().UnmountExplicitlyLoadedPlugin(Plugin->GetName(), &FailReason))
+				{
+					UE_LOG(LogPluginUtils, Error, TEXT("Plugin %s cannot be unloaded: %s"), *Plugin->GetName(), *FailReason.ToString());
+					ErrorBuilder.AppendLine(FailReason);
+					bSuccess = false;
+				}
+			}
+		}
+
+		if (bPluginUnmounted)
+		{
+			IPluginManager::Get().RefreshPluginsList();
+		}
+
+		if (!bSuccess && OutFailReason)
+		{
+			*OutFailReason = ErrorBuilder.ToText();
+		}
+	}
+	return bSuccess;
+}
+
+bool FPluginUtils::UnloadPlugins(const TConstArrayView<FString> PluginNames, FText* OutFailReason /*= nullptr*/)
+{
+	TArray<TSharedRef<IPlugin>> Plugins;
+	Plugins.Reserve(PluginNames.Num());
+	for (const FString& PluginName : PluginNames)
+	{
+		if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(PluginName))
+		{
+			Plugins.Add(Plugin.ToSharedRef());
+		}
+	}
+	return UnloadPlugins(Plugins, OutFailReason);
 }
 
 bool FPluginUtils::AddToPluginSearchPathIfNeeded(const FString& Dir, bool bRefreshPlugins, bool bUpdateProjectFile)
@@ -553,47 +875,52 @@ bool FPluginUtils::AddToPluginSearchPathIfNeeded(const FString& Dir, bool bRefre
 
 	const bool bIsEnginePlugin = FPaths::IsUnderDirectory(Dir, FPaths::EnginePluginsDir());
 	const bool bIsProjectPlugin = FPaths::IsUnderDirectory(Dir, FPaths::ProjectPluginsDir());
-	if (!bIsEnginePlugin && !bIsProjectPlugin)
+	const bool bIsModPlugin = FPaths::IsUnderDirectory(Dir, FPaths::ProjectModsDir());
+	const bool bIsEnterprisePlugin = FPaths::IsUnderDirectory(Dir, FPaths::EnterprisePluginsDir());
+	
+	if (bIsEnginePlugin || bIsProjectPlugin || bIsModPlugin || bIsEnterprisePlugin)
 	{
-		if (bUpdateProjectFile)
+		return false;
+	}
+	
+	if (bUpdateProjectFile)
+	{
+		bool bNeedToUpdate = true;
+		for (const FString& AdditionalDir : IProjectManager::Get().GetAdditionalPluginDirectories())
 		{
-			bool bNeedToUpdate = true;
-			for (const FString& AdditionalDir : IProjectManager::Get().GetAdditionalPluginDirectories())
+			if (FPaths::IsUnderDirectory(Dir, AdditionalDir))
 			{
-				if (FPaths::IsUnderDirectory(Dir, AdditionalDir))
-				{
-					bNeedToUpdate = false;
-					break;
-				}
-			}
-
-			if (bNeedToUpdate)
-			{
-				bSearchPathChanged = GameProjectUtils::UpdateAdditionalPluginDirectory(Dir, /*bAdd*/ true);
-			}
-		}
-		else
-		{
-			bool bNeedToUpdate = true;
-			for (const FString& AdditionalDir : IPluginManager::Get().GetAdditionalPluginSearchPaths())
-			{
-				if (FPaths::IsUnderDirectory(Dir, AdditionalDir))
-				{
-					bNeedToUpdate = false;
-					break;
-				}
-			}			
-
-			if (bNeedToUpdate)
-			{
-				bSearchPathChanged = IPluginManager::Get().AddPluginSearchPath(Dir, /*bShouldRefresh*/ false);
+				bNeedToUpdate = false;
+				break;
 			}
 		}
 
-		if (bSearchPathChanged && bRefreshPlugins)
+		if (bNeedToUpdate)
 		{
-			IPluginManager::Get().RefreshPluginsList();
+			bSearchPathChanged = GameProjectUtils::UpdateAdditionalPluginDirectory(Dir, /*bAdd*/ true);
 		}
+	}
+	else
+	{
+		bool bNeedToUpdate = true;
+		for (const FString& AdditionalDir : IPluginManager::Get().GetAdditionalPluginSearchPaths())
+		{
+			if (FPaths::IsUnderDirectory(Dir, AdditionalDir))
+			{
+				bNeedToUpdate = false;
+				break;
+			}
+		}			
+
+		if (bNeedToUpdate)
+		{
+			bSearchPathChanged = IPluginManager::Get().AddPluginSearchPath(Dir, /*bShouldRefresh*/ false);
+		}
+	}
+
+	if (bSearchPathChanged && bRefreshPlugins)
+	{
+		IPluginManager::Get().RefreshPluginsList();
 	}
 
 	return bSearchPathChanged;
@@ -613,7 +940,7 @@ bool FPluginUtils::ValidateNewPluginNameAndLocation(const FString& PluginName, c
 		{
 			const FString PluginFilePath = FPluginUtils::GetPluginFilePath(PluginLocation, PluginName);
 
-			if (!PluginFilePath.IsEmpty() && FPaths::FileExists(*PluginFilePath))
+			if (!PluginFilePath.IsEmpty() && FPaths::FileExists(PluginFilePath))
 			{
 				if (FailReason)
 				{
@@ -649,7 +976,7 @@ bool FPluginUtils::ValidateNewPluginNameAndLocation(const FString& PluginName, c
 			{
 				if (FailReason)
 				{
-					*FailReason = FText::Format(LOCTEXT("PluginLocationIsFile", "Plugin location is invalid because a file exists at this path\n{0}"), FText::FromString(ExistingFilePath));
+					*FailReason = FText::Format(LOCTEXT("PluginLocationIsFile", "Plugin location is invalid because the following file is in the way\n{0}"), FText::FromString(ExistingFilePath));
 				}
 				return false;
 			}
@@ -661,7 +988,7 @@ bool FPluginUtils::ValidateNewPluginNameAndLocation(const FString& PluginName, c
 	{
 		if (FailReason)
 		{
-			*FailReason = FText::Format(LOCTEXT("PluginNameAlreadyInUse", "Plugin name is already in use\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(ExistingPlugin->GetDescriptorFileName())));
+			*FailReason = FText::Format(LOCTEXT("PluginNameAlreadyInUse", "Plugin name is already in use by\n{0}"), FText::FromString(FPaths::ConvertRelativePathToFull(ExistingPlugin->GetDescriptorFileName())));
 		}
 		return false;
 	}
@@ -669,8 +996,11 @@ bool FPluginUtils::ValidateNewPluginNameAndLocation(const FString& PluginName, c
 	return true;
 }
 
-bool FPluginUtils::IsValidPluginName(const FString& PluginName, FText* FailReason/* = nullptr*/)
+bool FPluginUtils::IsValidPluginName(const FString& PluginName, FText* FailReason /*=nullptr*/, const FText* PluginTermReplacement /*=nullptr*/)
 {
+	static const FText PluginTerm = LOCTEXT("PluginTerm", "Plugin");
+	const FText& PluginTermToUse = PluginTermReplacement ? *PluginTermReplacement : PluginTerm;
+
 	bool bIsNameValid = true;
 
 	// Cannot be empty
@@ -679,7 +1009,7 @@ bool FPluginUtils::IsValidPluginName(const FString& PluginName, FText* FailReaso
 		bIsNameValid = false;
 		if (FailReason)
 		{
-			*FailReason = LOCTEXT("PluginNameIsEmpty", "Plugin name cannot be empty");
+			*FailReason = FText::Format(LOCTEXT("PluginNameIsEmpty", "{0} name cannot be empty"), PluginTermToUse);
 		}
 	}
 
@@ -689,7 +1019,7 @@ bool FPluginUtils::IsValidPluginName(const FString& PluginName, FText* FailReaso
 		bIsNameValid = false;
 		if (FailReason)
 		{
-			*FailReason = LOCTEXT("PluginNameMustBeginWithAlphabetic", "Plugin name must begin with an alphabetic character");
+			*FailReason = FText::Format(LOCTEXT("PluginNameMustBeginWithAlphabetic", "{0} name must begin with an alphabetic character"), PluginTermToUse);
 		}
 	}
 
@@ -714,9 +1044,7 @@ bool FPluginUtils::IsValidPluginName(const FString& PluginName, FText* FailReaso
 			bIsNameValid = false;
 			if (FailReason)
 			{
-				FFormatNamedArguments Args;
-				Args.Add(TEXT("IllegalCharacters"), FText::FromString(IllegalCharacters));
-				*FailReason = FText::Format(LOCTEXT("PluginNameContainsIllegalCharacters", "Plugin name cannot contain characters such as \"{IllegalCharacters}\""), Args);
+				*FailReason = FText::Format(LOCTEXT("PluginNameContainsIllegalCharacters", "{0} name cannot contain characters such as \"{1}\""), PluginTermToUse, FText::FromString(IllegalCharacters));
 			}
 		}
 	}
@@ -725,3 +1053,5 @@ bool FPluginUtils::IsValidPluginName(const FString& PluginName, FText* FailReaso
 }
 
 #undef LOCTEXT_NAMESPACE
+
+#endif //if WITH_EDITOR

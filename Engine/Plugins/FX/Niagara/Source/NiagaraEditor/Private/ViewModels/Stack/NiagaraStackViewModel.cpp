@@ -89,10 +89,14 @@ void UNiagaraStackViewModel::InitializeWithViewModels(TSharedPtr<FNiagaraSystemV
 	{
 		if (EmitterViewModel.IsValid())
 		{
-			EmitterViewModel->OnScriptCompiled().AddUObject(this, &UNiagaraStackViewModel::OnEmitterCompiled);
 			EmitterViewModel->OnParentRemoved().AddUObject(this, &UNiagaraStackViewModel::EmitterParentRemoved);
+
+			if (UNiagaraEmitter* Emitter = EmitterViewModel->GetEmitter())
+			{
+				EmitterViewModel->GetOrCreateEditorData().OnSummaryViewStateChanged().AddUObject(this, &UNiagaraStackViewModel::EntryRequestFullRefreshDeferred);
+			}
+
 		}
-		SystemViewModelPinned->OnSystemCompiled().AddUObject(this, &UNiagaraStackViewModel::OnSystemCompiled);
 		
 		UNiagaraStackRoot* StackRoot = NewObject<UNiagaraStackRoot>(this);
 		UNiagaraStackEntry::FRequiredEntryData RequiredEntryData(SystemViewModelPinned.ToSharedRef(), EmitterViewModel,
@@ -102,6 +106,7 @@ void UNiagaraStackViewModel::InitializeWithViewModels(TSharedPtr<FNiagaraSystemV
 		StackRoot->RefreshChildren();
 		StackRoot->OnStructureChanged().AddUObject(this, &UNiagaraStackViewModel::EntryStructureChanged);
 		StackRoot->OnExpansionChanged().AddUObject(this, &UNiagaraStackViewModel::EntryExpansionChanged);
+		StackRoot->OnExpansionInOverviewChanged().AddUObject(this, &UNiagaraStackViewModel::EntryExpansionInOverviewChanged);
 		StackRoot->OnDataObjectModified().AddUObject(this, &UNiagaraStackViewModel::EntryDataObjectModified);
 		StackRoot->OnRequestFullRefresh().AddUObject(this, &UNiagaraStackViewModel::EntryRequestFullRefresh);
 		StackRoot->OnRequestFullRefreshDeferred().AddUObject(this, &UNiagaraStackViewModel::EntryRequestFullRefreshDeferred);
@@ -122,6 +127,7 @@ void UNiagaraStackViewModel::InitializeWithRootEntry(UNiagaraStackEntry* InRootE
 	RootEntry = InRootEntry;
 	RootEntry->OnStructureChanged().AddUObject(this, &UNiagaraStackViewModel::EntryStructureChanged);
 	RootEntry->OnExpansionChanged().AddUObject(this, &UNiagaraStackViewModel::EntryExpansionChanged);
+	RootEntry->OnExpansionInOverviewChanged().AddUObject(this, &UNiagaraStackViewModel::EntryExpansionInOverviewChanged);
 	RootEntry->OnRequestFullRefresh().AddUObject(this, &UNiagaraStackViewModel::EntryRequestFullRefresh);
 	RootEntry->OnRequestFullRefreshDeferred().AddUObject(this, &UNiagaraStackViewModel::EntryRequestFullRefreshDeferred);
 	RootEntries.Add(RootEntry);
@@ -129,6 +135,13 @@ void UNiagaraStackViewModel::InitializeWithRootEntry(UNiagaraStackEntry* InRootE
 	bExternalRootEntry = true;
 
 	StructureChangedDelegate.Broadcast(ENiagaraStructureChangedFlags::StructureChanged);
+
+	TSharedPtr<FNiagaraEmitterHandleViewModel> EmitterHandleViewModelPinned = EmitterHandleViewModel.Pin();
+	if (EmitterHandleViewModelPinned.IsValid())
+	{
+		TSharedPtr<FNiagaraEmitterViewModel> EmitterViewModel = EmitterHandleViewModelPinned->GetEmitterViewModel();
+		EmitterViewModel->GetOrCreateEditorData().OnSummaryViewStateChanged().RemoveAll(this);
+	}
 }
 
 void UNiagaraStackViewModel::Reset()
@@ -136,6 +149,7 @@ void UNiagaraStackViewModel::Reset()
 	if (RootEntry != nullptr)
 	{
 		RootEntry->OnExpansionChanged().RemoveAll(this);
+		RootEntry->OnExpansionInOverviewChanged().RemoveAll(this);
 		RootEntry->OnStructureChanged().RemoveAll(this);
 		RootEntry->OnDataObjectModified().RemoveAll(this);
 		RootEntry->OnRequestFullRefresh().RemoveAll(this);
@@ -150,13 +164,11 @@ void UNiagaraStackViewModel::Reset()
 
 	if (EmitterHandleViewModel.IsValid())
 	{
-		EmitterHandleViewModel.Pin()->GetEmitterViewModel()->OnScriptCompiled().RemoveAll(this);
 		EmitterHandleViewModel.Reset();
 	}
 
 	if (SystemViewModel.IsValid())
 	{
-		SystemViewModel.Pin()->OnSystemCompiled().RemoveAll(this);
 		SystemViewModel.Reset();
 	}
 
@@ -197,6 +209,22 @@ void UNiagaraStackViewModel::Tick()
 		}
 
 		SearchTick();
+	}
+}
+
+void UNiagaraStackViewModel::ResetSearchText()
+{
+	CurrentSearchText = FText::GetEmpty();
+	// restarting the search with empty text will reset search results
+	bRestartSearch = true;	
+}
+
+void UNiagaraStackViewModel::SetSearchTextExternal(const FText& NewSearchText)
+{
+	if(!CurrentSearchText.EqualTo(NewSearchText))
+	{
+		// this will forward a change in search text in a search box in a widget that registered itself, which in turn will call OnSearchTextChanged
+		OnChangeSearchTextExternalDelegate.ExecuteIfBound(NewSearchText);
 	}
 }
 
@@ -344,18 +372,6 @@ void UNiagaraStackViewModel::GetPathForEntry(UNiagaraStackEntry* Entry, TArray<U
 	GeneratePathForEntry(RootEntry, Entry, TArray<UNiagaraStackEntry*>(), EntryPath);
 }
 
-void UNiagaraStackViewModel::OnSystemCompiled()
-{
-	// Queue a refresh for the next tick because forcing a refresh now can cause entries to be finalized while they're still being used.
-	bRefreshPending = true;
-}
-
-void UNiagaraStackViewModel::OnEmitterCompiled(UNiagaraScript*, const FGuid&)
-{
-	// Queue a refresh for the next tick because forcing a refresh now can cause entries to be finalized while they're still being used.
-	bRefreshPending = true;
-}
-
 void UNiagaraStackViewModel::EmitterParentRemoved()
 {
 	RootEntry->RefreshChildren();
@@ -484,9 +500,19 @@ TArray<UNiagaraStackEntry*>& UNiagaraStackViewModel::GetRootEntryAsArray()
 	return RootEntries;
 }
 
+UNiagaraStackViewModel::FOnChangeSearchTextExternal& UNiagaraStackViewModel::OnChangeSearchTextExternal()
+{
+	return OnChangeSearchTextExternalDelegate;
+}
+
 UNiagaraStackViewModel::FOnExpansionChanged& UNiagaraStackViewModel::OnExpansionChanged()
 {
 	return ExpansionChangedDelegate;
+}
+
+UNiagaraStackViewModel::FOnExpansionChanged& UNiagaraStackViewModel::OnExpansionInOverviewChanged()
+{
+	return ExpansionInOverviewChangedDelegate;
 }
 
 UNiagaraStackViewModel::FOnStructureChanged& UNiagaraStackViewModel::OnStructureChanged()
@@ -632,6 +658,11 @@ void UNiagaraStackViewModel::SetLastScrollPosition(double InLastScrollPosition)
 void UNiagaraStackViewModel::EntryExpansionChanged()
 {
 	ExpansionChangedDelegate.Broadcast();
+}
+
+void UNiagaraStackViewModel::EntryExpansionInOverviewChanged()
+{
+	ExpansionInOverviewChangedDelegate.Broadcast();
 }
 
 void UNiagaraStackViewModel::EntryStructureChanged(ENiagaraStructureChangedFlags Flags)

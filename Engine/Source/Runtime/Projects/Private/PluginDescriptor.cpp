@@ -11,33 +11,42 @@
 
 namespace PluginDescriptor
 {
-	bool ReadFile(const FString& FileName, FString& Text, FText& OutFailReason)
+	bool ReadFile(const FString& FileName, FString& Text, FText* OutFailReason = nullptr)
 	{
 		if (!FFileHelper::LoadFileToString(Text, *FileName))
 		{
-			OutFailReason = FText::Format(LOCTEXT("FailedToLoadDescriptorFile", "Failed to open descriptor file '{0}'"), FText::FromString(FileName));
+			if (OutFailReason)
+			{
+				*OutFailReason = FText::Format(LOCTEXT("FailedToLoadDescriptorFile", "Failed to open descriptor file '{0}'"), FText::FromString(FileName));
+			}
 			return false;
 		}
 		return true;
 	}
 
-	bool WriteFile(const FString& FileName, const FString& Text, FText& OutFailReason)
+	bool WriteFile(const FString& FileName, const FString& Text, FText* OutFailReason = nullptr)
 	{
 		if (!FFileHelper::SaveStringToFile(Text, *FileName))
 		{
-			OutFailReason = FText::Format(LOCTEXT("FailedToWriteDescriptorFile", "Failed to write plugin descriptor file '{0}'. Perhaps the file is Read-Only?"), FText::FromString(FileName));
+			if (OutFailReason)
+			{
+				*OutFailReason = FText::Format(LOCTEXT("FailedToWriteDescriptorFile", "Failed to write plugin descriptor file '{0}'. Perhaps the file is Read-Only?"), FText::FromString(FileName));
+			}
 			return false;
 		}
 		return true;
 	}
 
-	TSharedPtr<FJsonObject> DeserializeJson(const FString& Text, FText& OutFailReason)
+	TSharedPtr<FJsonObject> DeserializeJson(const FString& Text, FText* OutFailReason = nullptr)
 	{
 		TSharedPtr<FJsonObject> JsonObject;
 		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
 		if (!FJsonSerializer::Deserialize(Reader, JsonObject) || !JsonObject.IsValid())
 		{
-			OutFailReason = FText::Format(LOCTEXT("FailedToReadDescriptorFile", "Failed to read file. {0}"), FText::FromString(Reader->GetErrorMessage()));
+			if (OutFailReason)
+			{
+				*OutFailReason = FText::Format(LOCTEXT("FailedToReadDescriptorFile", "Failed to read file. {0}"), FText::FromString(Reader->GetErrorMessage()));
+			}
 			return TSharedPtr<FJsonObject>();
 		}
 		return JsonObject;
@@ -60,26 +69,34 @@ enum class EPluginDescriptorVersion : uint8
 	Latest = LatestPlusOne - 1
 };
 
+const FString& FPluginDescriptor::GetFileExtension()
+{
+	static const FString Extension(TEXT(".uplugin"));
+	return Extension;
+}
 
 FPluginDescriptor::FPluginDescriptor()
 	: Version(0)
 	, EnabledByDefault(EPluginEnabledByDefault::Unspecified)
 	, bCanContainContent(false)
+	, bCanContainVerse(false)
 	, bIsBetaVersion(false)
 	, bIsExperimentalVersion(false)
 	, bInstalled(false)
 	, bRequiresBuildPlatform(false)
 	, bIsHidden(false)
 	, bExplicitlyLoaded(false)
+	, bHasExplicitPlatforms(false)
 	, bIsPluginExtension(false)
 {
 }
 
 
-bool FPluginDescriptor::Load(const FString& FileName, FText& OutFailReason)
+bool FPluginDescriptor::Load(const FString& FileName, FText* OutFailReason /*= nullptr*/)
 {
 #if WITH_EDITOR
 	CachedJson.Reset();
+	AdditionalFieldsToWrite.Reset();
 #endif // WITH_EDITOR
 
 	FString Text;
@@ -90,11 +107,16 @@ bool FPluginDescriptor::Load(const FString& FileName, FText& OutFailReason)
 	return false;
 }
 
+bool FPluginDescriptor::Load(const FString& FileName, FText& OutFailReason)
+{
+	return Load(FileName, &OutFailReason);
+}
 
-bool FPluginDescriptor::Read(const FString& Text, FText& OutFailReason)
+bool FPluginDescriptor::Read(const FString& Text, FText* OutFailReason /*= nullptr*/)
 {
 #if WITH_EDITOR
 	CachedJson.Reset();
+	AdditionalFieldsToWrite.Reset();
 #endif // WITH_EDITOR
 
 	// Deserialize a JSON object from the string
@@ -106,6 +128,7 @@ bool FPluginDescriptor::Read(const FString& Text, FText& OutFailReason)
 		{
 #if WITH_EDITOR
 			CachedJson = JsonObject;
+			AdditionalFieldsToWrite.Reset();
 #endif // WITH_EDITOR
 			return true;
 		}
@@ -113,8 +136,12 @@ bool FPluginDescriptor::Read(const FString& Text, FText& OutFailReason)
 	return false;
 }
 
+bool FPluginDescriptor::Read(const FString& Text, FText& OutFailReason)
+{
+	return Read(Text, &OutFailReason);
+}
 
-bool FPluginDescriptor::Read(const FJsonObject& Object, FText& OutFailReason)
+bool FPluginDescriptor::Read(const FJsonObject& Object, FText* OutFailReason /*= nullptr*/)
 {
 	// Read the file version
 	int32 FileVersionInt32;
@@ -122,7 +149,10 @@ bool FPluginDescriptor::Read(const FJsonObject& Object, FText& OutFailReason)
 	{
 		if(!Object.TryGetNumberField(TEXT("PluginFileVersion"), FileVersionInt32))
 		{
-			OutFailReason = LOCTEXT("InvalidProjectFileVersion", "File does not have a valid 'FileVersion' number.");
+			if (OutFailReason)
+			{
+				*OutFailReason = LOCTEXT("InvalidProjectFileVersion", "File does not have a valid 'FileVersion' number.");
+			}
 			return false;
 		}
 	}
@@ -131,9 +161,12 @@ bool FPluginDescriptor::Read(const FJsonObject& Object, FText& OutFailReason)
 	EPluginDescriptorVersion PluginFileVersion = (EPluginDescriptorVersion)FileVersionInt32;
 	if ((PluginFileVersion <= EPluginDescriptorVersion::Invalid) || (PluginFileVersion > EPluginDescriptorVersion::Latest))
 	{
-		FText ReadVersionText = FText::FromString(FString::Printf(TEXT("%d"), (int32)PluginFileVersion));
-		FText LatestVersionText = FText::FromString(FString::Printf(TEXT("%d"), (int32)EPluginDescriptorVersion::Latest));
-		OutFailReason = FText::Format( LOCTEXT("ProjectFileVersionTooLarge", "File appears to be in a newer version ({0}) of the file format that we can load (max version: {1})."), ReadVersionText, LatestVersionText);
+		if (OutFailReason)
+		{
+			const FText ReadVersionText = FText::FromString(FString::Printf(TEXT("%d"), (int32)PluginFileVersion));
+			const FText LatestVersionText = FText::FromString(FString::Printf(TEXT("%d"), (int32)EPluginDescriptorVersion::Latest));
+			*OutFailReason = FText::Format(LOCTEXT("ProjectFileVersionTooLarge", "File appears to be in a newer version ({0}) of the file format that we can load (max version: {1})."), ReadVersionText, LatestVersionText);
+		}
 		return false;
 	}
 
@@ -184,12 +217,14 @@ bool FPluginDescriptor::Read(const FJsonObject& Object, FText& OutFailReason)
 	}
 
 	Object.TryGetBoolField(TEXT("CanContainContent"), bCanContainContent);
+	Object.TryGetBoolField(TEXT("CanContainVerse"), bCanContainVerse);
 	Object.TryGetBoolField(TEXT("IsBetaVersion"), bIsBetaVersion);
 	Object.TryGetBoolField(TEXT("IsExperimentalVersion"), bIsExperimentalVersion);
 	Object.TryGetBoolField(TEXT("Installed"), bInstalled);
 	Object.TryGetBoolField(TEXT("RequiresBuildPlatform"), bRequiresBuildPlatform);
 	Object.TryGetBoolField(TEXT("Hidden"), bIsHidden);
 	Object.TryGetBoolField(TEXT("ExplicitlyLoaded"), bExplicitlyLoaded);
+	Object.TryGetBoolField(TEXT("HasExplicitPlatforms"), bHasExplicitPlatforms);
 
 	bool bCanBeUsedWithUnrealHeaderTool;
 	if(Object.TryGetBoolField("CanBeUsedWithUnrealHeaderTool", bCanBeUsedWithUnrealHeaderTool) && bCanBeUsedWithUnrealHeaderTool)
@@ -208,7 +243,12 @@ bool FPluginDescriptor::Read(const FJsonObject& Object, FText& OutFailReason)
 	return true;
 }
 
-bool FPluginDescriptor::Save(const FString& FileName, FText& OutFailReason) const
+bool FPluginDescriptor::Read(const FJsonObject& Object, FText& OutFailReason)
+{
+	return Read(Object, &OutFailReason);
+}
+
+bool FPluginDescriptor::Save(const FString& FileName, FText* OutFailReason /*= nullptr*/) const
 {
 	// Write the descriptor to text
 	FString Text;
@@ -216,6 +256,11 @@ bool FPluginDescriptor::Save(const FString& FileName, FText& OutFailReason) cons
 
 	// Save it to a file
 	return PluginDescriptor::WriteFile(FileName, Text, OutFailReason);
+}
+
+bool FPluginDescriptor::Save(const FString& FileName, FText& OutFailReason) const
+{
+	return Save(FileName, &OutFailReason);
 }
 
 void FPluginDescriptor::Write(FString& Text) const
@@ -229,10 +274,18 @@ void FPluginDescriptor::Write(FString& Text) const
 
 void FPluginDescriptor::Write(TJsonWriter<>& Writer) const
 {
-	TSharedRef<FJsonObject> PluginJsonObject = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> PluginJsonObject = MakeShared<FJsonObject>();
+
+#if WITH_EDITOR
+	if (CachedJson.IsValid())
+	{
+		FJsonObject::Duplicate(/*Source=*/ CachedJson, /*Dest=*/ PluginJsonObject);
+	}
+#endif
+
 	UpdateJson(*PluginJsonObject);
 
-	FJsonSerializer::Serialize(PluginJsonObject, Writer);
+	FJsonSerializer::Serialize(PluginJsonObject.ToSharedRef(), Writer);
 }
 
 void FPluginDescriptor::UpdateJson(FJsonObject& JsonObject) const
@@ -277,6 +330,10 @@ void FPluginDescriptor::UpdateJson(FJsonObject& JsonObject) const
 	}
 
 	JsonObject.SetBoolField(TEXT("CanContainContent"), bCanContainContent);
+	if (bCanContainVerse)
+	{
+		JsonObject.SetBoolField(TEXT("CanContainVerse"), bCanContainVerse);
+	}
 	JsonObject.SetBoolField(TEXT("IsBetaVersion"), bIsBetaVersion);
 	JsonObject.SetBoolField(TEXT("IsExperimentalVersion"), bIsExperimentalVersion);
 	JsonObject.SetBoolField(TEXT("Installed"), bInstalled);
@@ -349,13 +406,29 @@ void FPluginDescriptor::UpdateJson(FJsonObject& JsonObject) const
 		JsonObject.RemoveField(TEXT("ExplicitlyLoaded"));
 	}
 
+	if (bHasExplicitPlatforms)
+	{
+		JsonObject.SetBoolField(TEXT("HasExplicitPlatforms"), bHasExplicitPlatforms);
+	}
+	else
+	{
+		JsonObject.RemoveField("HasExplicitPlatforms");
+	}
+
 	PreBuildSteps.UpdateJson(JsonObject, TEXT("PreBuildSteps"));
 	PostBuildSteps.UpdateJson(JsonObject, TEXT("PostBuildSteps"));
 
 	FPluginReferenceDescriptor::UpdateArray(JsonObject, TEXT("Plugins"), Plugins);
+
+#if WITH_EDITOR
+	for (const auto& KVP : AdditionalFieldsToWrite)
+	{
+		JsonObject.SetField(KVP.Key, FJsonValue::Duplicate(KVP.Value));
+	}
+#endif
 }
 
-bool FPluginDescriptor::UpdatePluginFile(const FString& FileName, FText& OutFailReason) const
+bool FPluginDescriptor::UpdatePluginFile(const FString& FileName, FText* OutFailReason /*= nullptr*/) const
 {
 	if (IFileManager::Get().FileExists(*FileName))
 	{
@@ -379,11 +452,17 @@ bool FPluginDescriptor::UpdatePluginFile(const FString& FileName, FText& OutFail
 			TSharedRef<TJsonWriter<>> JsonWriter = TJsonWriterFactory<>::Create(&JsonText);
 			if (!ensure(FJsonSerializer::Serialize(JsonObject.ToSharedRef(), JsonWriter)))
 			{
-				OutFailReason = LOCTEXT("FailedToWriteDescriptor", "Failed to write plugin descriptor content");
+				if (OutFailReason)
+				{
+					*OutFailReason = LOCTEXT("FailedToWriteDescriptor", "Failed to write plugin descriptor content");
+				}
 				return false;
 			}
 		}
 
+#if WITH_EDITOR
+		CachedJson = JsonObject;
+#endif
 		return PluginDescriptor::WriteFile(FileName, JsonText, OutFailReason);
 	}
 	else
@@ -393,9 +472,21 @@ bool FPluginDescriptor::UpdatePluginFile(const FString& FileName, FText& OutFail
 	}
 }
 
+bool FPluginDescriptor::UpdatePluginFile(const FString& FileName, FText& OutFailReason) const
+{
+	return UpdatePluginFile(FileName, &OutFailReason);
+}
+
 bool FPluginDescriptor::SupportsTargetPlatform(const FString& Platform) const
 {
-	return SupportedTargetPlatforms.Num() == 0 || SupportedTargetPlatforms.Contains(Platform);
+	if (bHasExplicitPlatforms)
+	{
+		return SupportedTargetPlatforms.Contains(Platform);
+	}
+	else
+	{
+		return SupportedTargetPlatforms.Num() == 0 || SupportedTargetPlatforms.Contains(Platform);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

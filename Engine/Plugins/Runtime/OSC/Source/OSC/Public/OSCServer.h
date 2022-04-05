@@ -46,11 +46,11 @@ public:
 	virtual void SetTickableInEditor(bool bInTickInEditor) = 0;
 #endif // WITH_EDITOR
 	virtual void Stop() = 0;
-	virtual void AddWhitelistedClient(const FString& InIPAddress) = 0;
-	virtual void RemoveWhitelistedClient(const FString& IPAddress) = 0;
-	virtual void ClearWhitelistedClients() = 0;
-	virtual TSet<FString> GetWhitelistedClients() const = 0;
-	virtual void SetWhitelistClientsEnabled(bool bEnabled) = 0;
+	virtual void AddClientToAllowList(const FString& InIPAddress) = 0;
+	virtual void RemoveClientFromAllowList(const FString& IPAddress) = 0;
+	virtual void ClearClientAllowList() = 0;
+	virtual TSet<FString> GetClientAllowList() const = 0;
+	virtual void SetFilterClientsByAllowList(bool bEnabled) = 0;
 };
 
 UCLASS(BlueprintType)
@@ -98,22 +98,22 @@ public:
 	FOSCReceivedBundleNativeEvent OnOscBundleReceivedNative;
 
 	/** When set to true, server will only process received 
-	  * messages from whitelisted clients.
+	  * messages from allowlisted clients.
 	  */
 	UFUNCTION(BlueprintCallable, Category = "Audio|OSC")
-	void SetWhitelistClientsEnabled(bool bEnabled);
+	void SetAllowlistClientsEnabled(bool bEnabled);
 
-	/** Adds client to whitelist of clients to listen for. */
+	/** Adds client to allowlist of clients to listen for. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|OSC")
-	void AddWhitelistedClient(const FString& IPAddress);
+	void AddAllowlistedClient(const FString& IPAddress);
 
-	/** Removes whitelisted client to listen for. */
+	/** Removes allowlisted client to listen for. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|OSC")
-	void RemoveWhitelistedClient(const FString& IPAddress);
+	void RemoveAllowlistedClient(const FString& IPAddress);
 
-	/** Clears client whitelist to listen for. */
+	/** Clears client allowlist to listen for. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|OSC")
-	void ClearWhitelistedClients();
+	void ClearAllowlistedClients();
 
 	/** Returns the IP for the server if connected as a string. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|OSC")
@@ -123,9 +123,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Audio|OSC")
 	int32 GetPort() const;
 
-	/** Returns set of whitelisted clients. */
+	/** Returns set of allowlisted clients. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|OSC")
-	TSet<FString> GetWhitelistedClients() const;
+	TSet<FString> GetAllowlistedClients() const;
 
 	/** Adds event to dispatch when OSCAddressPattern is matched. */
 	UFUNCTION(BlueprintCallable, Category = "Audio|OSC")
@@ -162,7 +162,7 @@ public:
 	void EnqueuePacket(TSharedPtr<IOSCPacket> InPacket);
 
 	/** Callback for when packet is received by server */
-	void PumpPacketQueue(const TSet<uint32>* InWhitelistedClients);
+	void PumpPacketQueue(const TSet<uint32>* InAllowlistedClients);
 
 protected:
 	void BeginDestroy() override;

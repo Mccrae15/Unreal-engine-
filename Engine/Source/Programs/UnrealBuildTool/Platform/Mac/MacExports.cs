@@ -1,11 +1,11 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -37,7 +37,7 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Default to building for Intel for the time being. Targets can be whitelisted below, and
+		/// Default to building for Intel for the time being. Targets can be allow listed below, and
 		/// projects can be set to universal to override this.
 		/// </summary>
 		public static string DefaultArchitecture
@@ -53,7 +53,7 @@ namespace UnrealBuildTool
 		/// use the Project setting.
 		/// </summary>
 		/// <returns></returns>
-		static public IEnumerable<string> TargetsWhitelistedForAppleSilicon
+		static public IEnumerable<string> TargetsAllowedForAppleSilicon
 		{
 			get
 			{
@@ -61,9 +61,9 @@ namespace UnrealBuildTool
 					"BenchmarkTool",
 					"BlankProgram",
 					"BuildPatchTool",
-					"UE4Client",
-					"UE4Game", 
-					"UE4Server",
+					"UnrealClient",
+					"UnrealGame", 
+					"UnrealServer",
 					"UnrealHeaderTool", 
 					"UnrealPak"
 				};
@@ -75,7 +75,7 @@ namespace UnrealBuildTool
 		/// of what their project says
 		/// </summary>
 		/// <returns></returns>
-		static public IEnumerable<TargetType> TargetTypesBlacklistedForAppleSilicon
+		static public IEnumerable<TargetType> TargetTypesDeniedForAppleSilicon
 		{
 			get
 			{
@@ -112,7 +112,7 @@ namespace UnrealBuildTool
 		}
 
 		/// <summary>
-		/// Returns true if we're running on Apple architecture (either natively which mono will do, or under Rosetta)
+		/// Returns true if we're running on Apple architecture (either natively which mono/dotnet will do, or under Rosetta)
 		/// </summary>
 		/// <returns></returns>
 		public static bool IsRunningOnAppleArchitecture

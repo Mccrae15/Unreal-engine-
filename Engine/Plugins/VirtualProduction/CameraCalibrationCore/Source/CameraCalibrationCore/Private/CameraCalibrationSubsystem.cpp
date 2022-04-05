@@ -3,6 +3,7 @@
 #include "CameraCalibrationSubsystem.h"
 
 #include "CameraCalibrationCoreLog.h"
+#include "CameraCalibrationSettings.h"
 #include "CineCameraComponent.h"
 #include "Engine/TimecodeProvider.h"
 #include "Misc/CoreDelegates.h"
@@ -160,6 +161,16 @@ void UCameraCalibrationSubsystem::UnregisterDistortionModel(TSubclassOf<ULensMod
 	LensModelMap.Remove(LensModel->GetDefaultObject<ULensModel>()->GetModelName());
 }
 
+void UCameraCalibrationSubsystem::RegisterOverlayMaterial(const FName& MaterialName, const FName& MaterialPath)
+{
+	RegisteredOverlayMaterials.Add(MaterialName, TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(MaterialPath)));
+}
+
+void UCameraCalibrationSubsystem::UnregisterOverlayMaterial(const FName& MaterialName)
+{
+	RegisteredOverlayMaterials.Remove(MaterialName);
+}
+
 void UCameraCalibrationSubsystem::UpdateOriginalFocalLength(UCineCameraComponent* Component, float InFocalLength)
 {
 	FCachedFocalLength* CachedFocalLength = CachedFocalLengthMap.Find(Component);
@@ -218,6 +229,53 @@ TArray<FName> UCameraCalibrationSubsystem::GetCameraNodalOffsetAlgos() const
 	return OutKeys;
 }
 
+TSubclassOf<UCameraImageCenterAlgo> UCameraCalibrationSubsystem::GetCameraImageCenterAlgo(FName Name) const
+{
+	if (CameraImageCenterAlgosMap.Contains(Name))
+	{
+		return CameraImageCenterAlgosMap[Name];
+	}
+	return nullptr;
+}
+
+TArray<FName> UCameraCalibrationSubsystem::GetCameraImageCenterAlgos() const
+{
+	TArray<FName> OutKeys;
+	CameraImageCenterAlgosMap.GetKeys(OutKeys);
+	return OutKeys;
+}
+
+UMaterialInterface* UCameraCalibrationSubsystem::GetOverlayMaterial(const FName& OverlayName) const
+{
+#if WITH_EDITOR
+	if (UMaterialInterface* DefaultMaterial = GetDefault<UCameraCalibrationSettings>()->GetCalibrationOverlayMaterialOverride(OverlayName))
+	{
+		return DefaultMaterial;
+	}
+#endif
+
+	const TSoftObjectPtr<UMaterialInterface> OverlayMaterial = RegisteredOverlayMaterials.FindRef(OverlayName);
+
+	return OverlayMaterial.LoadSynchronous();
+}
+
+TArray<FName> UCameraCalibrationSubsystem::GetOverlayMaterialNames() const
+{
+	// Use a set to avoid duplicates when combining the registered overlays with the set of overrides
+	TSet<FName> OverlayNames;
+
+	TArray<FName> OutKeys;
+	RegisteredOverlayMaterials.GetKeys(OutKeys);
+
+	OverlayNames.Append(OutKeys);
+
+#if WITH_EDITOR
+	OverlayNames.Append(GetDefault<UCameraCalibrationSettings>()->GetCalibrationOverlayMaterialOverrideNames());
+#endif
+
+	return OverlayNames.Array();
+}
+
 TSubclassOf<UCameraCalibrationStep> UCameraCalibrationSubsystem::GetCameraCalibrationStep(FName Name) const
 {
 	if (CameraCalibrationStepsMap.Contains(Name))
@@ -240,6 +298,20 @@ void UCameraCalibrationSubsystem::Initialize(FSubsystemCollectionBase& Collectio
 
 	PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddLambda([&]()
 	{
+		// Find Image Center Algos
+		{
+			TArray<TSubclassOf<UCameraImageCenterAlgo>> Algos;
+
+			for (TObjectIterator<UClass> AlgoIt; AlgoIt; ++AlgoIt)
+			{
+				if (AlgoIt->IsChildOf(UCameraImageCenterAlgo::StaticClass()) && !AlgoIt->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated))
+				{
+					const UCameraImageCenterAlgo* Algo = CastChecked<UCameraImageCenterAlgo>(AlgoIt->GetDefaultObject());
+					CameraImageCenterAlgosMap.Add(Algo->FriendlyName(), TSubclassOf<UCameraImageCenterAlgo>(*AlgoIt));
+				}
+			}
+		}
+
 		// Find Nodal Offset Algos
 		{
 			TArray<TSubclassOf<UCameraNodalOffsetAlgo>> Algos;
@@ -272,6 +344,7 @@ void UCameraCalibrationSubsystem::Initialize(FSubsystemCollectionBase& Collectio
 void UCameraCalibrationSubsystem::Deinitialize()
 {
 	LensModelMap.Empty(0);
+	CameraImageCenterAlgosMap.Empty(0);
 	CameraNodalOffsetAlgosMap.Empty(0);
 	CameraCalibrationStepsMap.Empty(0);
 

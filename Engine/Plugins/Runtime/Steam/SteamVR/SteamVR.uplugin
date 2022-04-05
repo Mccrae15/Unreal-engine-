@@ -10,12 +10,11 @@
 	"DocsURL": "",
 	"MarketplaceURL": "",
 	"SupportURL": "",
-	"EnabledByDefault": true,
+	"EnabledByDefault": false,
 	"CanContainContent": true,
 	"IsBetaVersion": false,
 	"Installed": false,
 	"SupportedTargetPlatforms": [
-		"Win32",
 		"Win64",
 		"Linux"
 	],
@@ -24,9 +23,8 @@
 			"Name": "SteamVR",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
+			"PlatformAllowList": [
 				"Win64",
-				"Win32",
 				"Linux"
 			]
 		},
@@ -34,27 +32,24 @@
 			"Name": "SteamVRInput",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
-				"Win64",
-				"Win32"
+			"PlatformAllowList": [
+				"Win64"
 			]
 		},
 		{
 			"Name": "SteamVRInputDevice",
 			"Type": "Runtime",
 			"LoadingPhase": "PostConfigInit",
-			"WhitelistPlatforms": [
-				"Win64",
-				"Win32"		
+			"PlatformAllowList": [
+				"Win64"
 			]
 		},
 		{
 			"Name": "SteamVREditor",
 			"Type": "UncookedOnly",
 			"LoadingPhase": "PostEngineInit",
-			"WhitelistPlatforms": [
-				"Win64",
-				"Win32"
+			"PlatformAllowList": [
+				"Win64"
 			]
 		}
 	],

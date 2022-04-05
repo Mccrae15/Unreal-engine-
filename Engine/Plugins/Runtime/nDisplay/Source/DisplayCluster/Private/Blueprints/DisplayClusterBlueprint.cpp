@@ -13,6 +13,7 @@
 #include "Containers/Set.h"
 
 #include "Misc/DisplayClusterLog.h"
+#include "UObject/ObjectSaveContext.h"
 
 
 UDisplayClusterBlueprint::UDisplayClusterBlueprint()
@@ -113,9 +114,9 @@ namespace DisplayClusterBlueprint
 	}
 }
 
-void UDisplayClusterBlueprint::PreSave(const class ITargetPlatform* TargetPlatform)
+void UDisplayClusterBlueprint::PreSave(FObjectPreSaveContext SaveContext)
 {
-	Super::PreSave(TargetPlatform);
+	Super::PreSave(SaveContext);
 
 	UpdateConfigExportProperty();
 	DisplayClusterBlueprint::SendAnalytics(TEXT("Usage.nDisplay.ConfigSaved"), ConfigData);

@@ -10,7 +10,7 @@
 
 class UEdGraphPin;
 
-/** A node which allows the user to build a set of arbitrary output types from an arbitrary set of input types by connecting their inner components. */
+/** Base node for parameter maps. */
 UCLASS()
 class UNiagaraNodeParameterMapBase : public UNiagaraNodeWithDynamicPins
 {
@@ -21,9 +21,7 @@ public:
 	/** Traverse the graph looking for the history of the parameter map specified by the input pin. This will return the list of variables discovered, any per-variable warnings (type mismatches, etc)
 		encountered per variable, and an array of pins encountered in order of traversal outward from the input pin.
 	*/
-	static TArray<FNiagaraParameterMapHistory> GetParameterMaps(const UNiagaraNodeOutput* InGraphEnd, bool bLimitToOutputScriptType = false, FString EmitterNameOverride = TEXT(""), const TArray<FNiagaraVariable>& EncounterableVariables = TArray<FNiagaraVariable>());
-	static TArray<FNiagaraParameterMapHistory> GetParameterMaps(const UNiagaraGraph* InGraph, FString EmitterNameOverride = TEXT(""), const TArray<FNiagaraVariable>& EncounterableVariables = TArray<FNiagaraVariable>());
-	static TArray<FNiagaraParameterMapHistory> GetParameterMaps(class UNiagaraScriptSourceBase* InSource, FString EmitterNameOverride = TEXT(""), const TArray<FNiagaraVariable>& EncounterableVariables = TArray<FNiagaraVariable>());
+	static TArray<FNiagaraParameterMapHistory> GetParameterMaps(const UNiagaraGraph* InGraph);
 
 	virtual bool AllowNiagaraTypeForAddPin(const FNiagaraTypeDefinition& InType) const override;
 	
@@ -34,7 +32,6 @@ public:
 	void PinDescriptionTextCommitted(const FText& Text, ETextCommit::Type CommitType, UEdGraphPin* Pin);
 
 	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
-	virtual void CollectAddPinActions(FGraphActionListBuilderBase& OutActions, bool& bOutCreateRemainingActions, UEdGraphPin* Pin) override;
 	virtual void GetPinHoverText(const UEdGraphPin& Pin, FString& HoverTextOut) const override;
 
 	virtual bool IncludeParentNodeContextMenu() const { return true; }
@@ -55,12 +52,13 @@ public:
 
 	bool HandleDropOperation(TSharedPtr<FDragDropOperation> DropOperation);
 
+	bool DoesParameterExistOnNode(FNiagaraVariable Parameter);
 protected:
 	void GetChangeNamespaceSubMenuForPin(UToolMenu* Menu, UEdGraphPin* InPin);
 	void ChangeNamespaceForPin(UEdGraphPin* InPin, FNiagaraNamespaceMetadata NewNamespaceMetadata);
 
 	virtual void SelectParameterFromPin(const UEdGraphPin* InPin);
-
+	
 	void GetChangeNamespaceModifierSubMenuForPin(UToolMenu* Menu, UEdGraphPin* InPin);
 
 	FText GetSetNamespaceModifierForPinToolTip(const UEdGraphPin* InPin, FName InNamespaceModifier) const;

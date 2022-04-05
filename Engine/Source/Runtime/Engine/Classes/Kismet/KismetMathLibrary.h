@@ -12,6 +12,7 @@
 #include "UObject/ScriptMacros.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Misc/QualifiedFrameTime.h"
+#include "Engine/NetSerialization.h"
 
 #include "KismetMathLibrary.generated.h"
 
@@ -111,19 +112,21 @@ struct ENGINE_API FFloatSpringState
 {
 	GENERATED_BODY()
 
-	float PrevError;
+	float PrevTarget;
 	float Velocity;
+	bool  bPrevTargetValid;
 
 	FFloatSpringState()
-	: PrevError(0.f)
+	: PrevTarget(0.f)
 	, Velocity(0.f)
+	, bPrevTargetValid(false)
 	{
-
 	}
 
 	void Reset()
 	{
-		PrevError = Velocity = 0.f;
+		PrevTarget = Velocity = 0.f;
+		bPrevTargetValid = false;
 	}
 };
 
@@ -132,19 +135,45 @@ struct ENGINE_API FVectorSpringState
 {
 	GENERATED_BODY()
 
-	FVector PrevError;
+	FVector PrevTarget;
 	FVector Velocity;
+	bool    bPrevTargetValid;
 
 	FVectorSpringState()
-	: PrevError(FVector::ZeroVector)
+	: PrevTarget(FVector::ZeroVector)
 	, Velocity(FVector::ZeroVector)
+	, bPrevTargetValid(false)
 	{
-
 	}
 
 	void Reset()
 	{
-		PrevError = Velocity = FVector::ZeroVector;
+		PrevTarget = Velocity = FVector::ZeroVector;
+		bPrevTargetValid = false;
+	}
+};
+
+USTRUCT(BlueprintType)
+struct ENGINE_API FQuaternionSpringState
+{
+	GENERATED_BODY()
+
+	FQuat   PrevTarget;
+	FVector AngularVelocity;
+	bool    bPrevTargetValid;
+
+	FQuaternionSpringState()
+	: PrevTarget(FQuat::Identity)
+	, AngularVelocity(FVector::ZeroVector)
+	, bPrevTargetValid(false)
+	{
+	}
+
+	void Reset()
+	{
+		PrevTarget = FQuat::Identity;
+		AngularVelocity = FVector::ZeroVector;
+		bPrevTargetValid = false;
 	}
 };
 
@@ -180,11 +209,11 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool Not_PreBool(bool A);
 
 	/** Returns true if the values are equal (A == B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Equal Boolean", CompactNodeTitle = "==", Keywords = "== equal"), Category="Math|Boolean")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Equal (Boolean)", CompactNodeTitle = "==", Keywords = "== equal"), Category="Math|Boolean")
 	static bool EqualEqual_BoolBool(bool A, bool B);
 
 	/** Returns true if the values are not equal (A != B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "NotEqual Boolean", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Math|Boolean")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Not Equal (Boolean)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Math|Boolean")
 	static bool NotEqual_BoolBool(bool A, bool B);
 
 	/** Returns the logical AND of two values (A AND B) */
@@ -260,7 +289,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool EqualEqual_ByteByte(uint8 A, uint8 B);
 
 	/** Returns true if A is not equal to B (A != B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "NotEqual (Byte)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Math|Byte")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Not Equal (Byte)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Math|Byte")
 	static bool NotEqual_ByteByte(uint8 A, uint8 B);
 
 	//
@@ -276,7 +305,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static int32 Divide_IntInt(int32 A, int32 B = 1);
 
 	/** Modulo (A % B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "% (integer)", CompactNodeTitle = "%", Keywords = "% modulus"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "% (Integer)", CompactNodeTitle = "%", Keywords = "% modulus"), Category="Math|Integer")
 	static int32 Percent_IntInt(int32 A, int32 B = 1);
 
 	/** Addition (A + B) */
@@ -304,18 +333,18 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool GreaterEqual_IntInt(int32 A, int32 B);
 
 	/** Returns true if A is equal to B (A == B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Equal (integer)", CompactNodeTitle = "==", Keywords = "== equal"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Equal (Integer)", CompactNodeTitle = "==", Keywords = "== equal"), Category="Math|Integer")
 	static bool EqualEqual_IntInt(int32 A, int32 B);
 
 	/** Returns true if A is not equal to B (A != B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "NotEqual (integer)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Not Equal (Integer)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Math|Integer")
 	static bool NotEqual_IntInt(int32 A, int32 B);
 
 	/** Returns true if value is between Min and Max (V >= Min && V <= Max)
 	 * If InclusiveMin is true, value needs to be equal or larger than Min, else it needs to be larger
 	 * If InclusiveMax is true, value needs to be smaller or equal than Max, else it needs to be smaller
 	 */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "InRange (integer)", Min = "0", Max = "10"), Category = "Math|Integer")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "In Range (Integer)", Min = "0", Max = "10"), Category = "Math|Integer")
 	static bool InRange_IntInt(int32 Value, int32 Min, int32 Max, bool InclusiveMin = true, bool InclusiveMax = true);
 
 	/** Bitwise AND (A & B) */
@@ -335,7 +364,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static int32 Not_Int(int32 A);
 
 	/** Sign (integer, returns -1 if A < 0, 0 if A is zero, and +1 if A > 0) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Sign (integer)"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Sign (Integer)"), Category="Math|Integer")
 	static int32 SignOfInteger(int32 A);
 
 	/** Returns a uniformly distributed random number between 0 and Max - 1 */
@@ -347,23 +376,23 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static int32 RandomIntegerInRange(int32 Min, int32 Max);
 
 	/** Returns the minimum value of A and B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Min (integer)", CompactNodeTitle = "MIN", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Min (Integer)", CompactNodeTitle = "MIN", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer")
 	static int32 Min(int32 A, int32 B);
 
 	/** Returns the maximum value of A and B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Max (integer)", CompactNodeTitle = "MAX", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Max (Integer)", CompactNodeTitle = "MAX", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer")
 	static int32 Max(int32 A, int32 B);
 
 	/** Returns Value clamped to be between A and B (inclusive) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Clamp (integer)"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Clamp (Integer)"), Category="Math|Integer")
 	static int32 Clamp(int32 Value, int32 Min, int32 Max);
 
 	/** Returns Value between A and B (inclusive) that wraps around */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Wrap (integer)", Min = "0", Max = "100"), Category = "Math|Integer")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Wrap (Integer)", Min = "0", Max = "100"), Category = "Math|Integer")
 	static int32 Wrap(int32 Value, int32 Min, int32 Max);
 
 	/** Returns the absolute (positive) value of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Absolute (integer)", CompactNodeTitle = "ABS"), Category="Math|Integer")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Absolute (Integer)", CompactNodeTitle = "ABS"), Category="Math|Integer")
 	static int32 Abs_Int(int32 A);
 
 	//
@@ -403,18 +432,18 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool GreaterEqual_Int64Int64(int64 A, int64 B);
 
 	/** Returns true if A is equal to B (A == B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Equal (integer64)", CompactNodeTitle = "==", Keywords = "== equal"), Category="Math|Integer64")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Equal (Integer64)", CompactNodeTitle = "==", Keywords = "== equal"), Category="Math|Integer64")
 	static bool EqualEqual_Int64Int64(int64 A, int64 B);
 
 	/** Returns true if A is not equal to B (A != B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "NotEqual (integer64)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Math|Integer64")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Not Equal (Integer64)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Math|Integer64")
 	static bool NotEqual_Int64Int64(int64 A, int64 B);
 	
 	/** Returns true if value is between Min and Max (V >= Min && V <= Max)
 	 * If InclusiveMin is true, value needs to be equal or larger than Min, else it needs to be larger
 	 * If InclusiveMax is true, value needs to be smaller or equal than Max, else it needs to be smaller
 	 */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "InRange (integer64)", Min = "0", Max = "10"), Category = "Math|Integer64")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "In Range (Integer64)", Min = "0", Max = "10"), Category = "Math|Integer64")
 	static bool InRange_Int64Int64(int64 Value, int64 Min, int64 Max, bool InclusiveMin = true, bool InclusiveMax = true);
 
 	/** Bitwise AND (A & B) */
@@ -434,7 +463,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static int64 Not_Int64(int64 A);
 
 	/** Sign (integer64, returns -1 if A < 0, 0 if A is zero, and +1 if A > 0) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Sign (integer64)"), Category="Math|Integer64")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Sign (Integer64)"), Category="Math|Integer64")
 	static int64 SignOfInteger64(int64 A);
 
 	/** Returns a uniformly distributed random number between 0 and Max - 1 */
@@ -446,19 +475,19 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static int64 RandomInteger64InRange(int64 Min, int64 Max);
 
 	/** Returns the minimum value of A and B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Min (integer64)", CompactNodeTitle = "MIN", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer64")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Min (Integer64)", CompactNodeTitle = "MIN", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer64")
 	static int64 MinInt64(int64 A, int64 B);
 
 	/** Returns the maximum value of A and B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Max (integer64)", CompactNodeTitle = "MAX", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer64")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Max (Integer64)", CompactNodeTitle = "MAX", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Integer64")
 	static int64 MaxInt64(int64 A, int64 B);
 
 	/** Returns Value clamped to be between A and B (inclusive) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Clamp (integer64)"), Category="Math|Integer64")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Clamp (Integer64)"), Category="Math|Integer64")
 	static int64 ClampInt64(int64 Value, int64 Min, int64 Max);
 
 	/** Returns the absolute (positive) value of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Absolute (integer64)", CompactNodeTitle = "ABS"), Category="Math|Integer64")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Absolute (Integer64)", CompactNodeTitle = "ABS"), Category="Math|Integer64")
 	static int64 Abs_Int64(int64 A);
 
 	//
@@ -466,227 +495,236 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** Power (Base to the Exp-th power) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Power" ), Category="Math|Float")
-	static float MultiplyMultiply_FloatFloat(float Base, float Exp);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Power"), Category = "Math|Float")
+	static double MultiplyMultiply_FloatFloat(double Base, double Exp);
 
-	/** Multiplication (A * B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "float * float", CompactNodeTitle = "*", Keywords = "* multiply", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Float")
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
 	static float Multiply_FloatFloat(float A, float B);
 
 	/** Multiplication (A * B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "int * float", CompactNodeTitle = "*", Keywords = "* multiply"), Category="Math|Float")
-	static float Multiply_IntFloat(int32 A, float B);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "int * float", CompactNodeTitle = "*", Keywords = "* multiply"), Category = "Math|Float")
+	static double Multiply_IntFloat(int32 A, double B);
 
-	/** Division (A / B) */
-	UFUNCTION(BlueprintPure, CustomThunk, meta=(DisplayName = "float / float", CompactNodeTitle = "/", Keywords = "/ divide division"), Category="Math|Float")
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
 	static float Divide_FloatFloat(float A, float B = 1.f);
-	
-	static float GenericDivide_FloatFloat(float A, float B);
 
-	/** Custom thunk to allow script stack trace in case of divide by zero */
-	DECLARE_FUNCTION(execDivide_FloatFloat)
-	{
-		P_GET_PROPERTY(FFloatProperty, A);
-		P_GET_PROPERTY(FFloatProperty, B);
+	UFUNCTION(BlueprintPure, CustomThunk, meta = (DisplayName = "% (Float)", CompactNodeTitle = "%", Keywords = "% modulus"), Category = "Math|Float")
+	static double Percent_FloatFloat(double A, double B = 1.f);
 
-		P_FINISH;
-
-		if (B == 0.f)
-		{
-			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Divide by zero detected: %f / 0\n%s"), A, *Stack.GetStackTrace()), ELogVerbosity::Warning);
-			*(float*)RESULT_PARAM = 0;
-			return;
-		}
-
-		*(float*)RESULT_PARAM = GenericDivide_FloatFloat(A, B);
-	}
-
-	/** Modulo (A % B) */
-	UFUNCTION(BlueprintPure, CustomThunk, meta = (DisplayName = "% (float)", CompactNodeTitle = "%", Keywords = "% modulus"), Category = "Math|Float")
-	static float Percent_FloatFloat(float A, float B = 1.f);
-
-	static float GenericPercent_FloatFloat(float A, float B);
+	static double GenericPercent_FloatFloat(double A, double B);
 
 	/** Custom thunk to allow script stack trace in case of modulo by zero */
 	DECLARE_FUNCTION(execPercent_FloatFloat)
 	{
-		P_GET_PROPERTY(FFloatProperty, A);
-		P_GET_PROPERTY(FFloatProperty, B);
+		P_GET_PROPERTY(FDoubleProperty, A);
+		P_GET_PROPERTY(FDoubleProperty, B);
 
 		P_FINISH;
 
 		if (B == 0.f)
 		{
 			FFrame::KismetExecutionMessage(*FString::Printf(TEXT("Modulo by zero detected: %f %% 0\n%s"), A, *Stack.GetStackTrace()), ELogVerbosity::Warning);
-			*(float*)RESULT_PARAM = 0;
+			*(double*)RESULT_PARAM = 0;
 			return;
 		}
 
-		*(float*)RESULT_PARAM = GenericPercent_FloatFloat(A, B);
+		*(double*)RESULT_PARAM = GenericPercent_FloatFloat(A, B);
 	}
 
-	/** Returns the fractional part of a float. */
+	/** Returns the fractional part of a double. */
 	UFUNCTION(BlueprintPure, Category="Math|Float")
-	static float Fraction(float A);
+	static double Fraction(double A);
 
 	/** Addition (A + B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "float + float", CompactNodeTitle = "+", Keywords = "+ add plus", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Float")
-	static float Add_FloatFloat(float A, float B = 1.f);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "float + float", CompactNodeTitle = "+", Keywords = "+ add plus", CommutativeAssociativeBinaryOperator = "true"), Category = "Math|Float")
+	static double Add_DoubleDouble(double A, double B = 1.0);
 
 	/** Subtraction (A - B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "float - float", CompactNodeTitle = "-", Keywords = "- subtract minus"), Category="Math|Float")
-	static float Subtract_FloatFloat(float A, float B = 1.f);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "float - float", CompactNodeTitle = "-", Keywords = "- subtract minus"), Category = "Math|Float")
+	static double Subtract_DoubleDouble(double A, double B = 1.0);
+
+	/** Multiplication (A * B) */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "float * float", CompactNodeTitle = "*", Keywords = "* multiply", CommutativeAssociativeBinaryOperator = "true"), Category = "Math|Float")
+	static double Multiply_DoubleDouble(double A, double B);
+
+	/** Division (A / B) */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "float / float", CompactNodeTitle = "/", Keywords = "/ divide division"), Category = "Math|Float")
+	static double Divide_DoubleDouble(double A, double B = 1.0);
 
 	/** Returns true if A is Less than B (A < B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "float < float", CompactNodeTitle = "<", Keywords = "< less"), Category="Math|Float")
-	static bool Less_FloatFloat(float A, float B);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "float < float", CompactNodeTitle = "<", Keywords = "< less"), Category = "Math|Float")
+	static bool Less_DoubleDouble(double A, double B);
 
 	/** Returns true if A is greater than B (A > B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "float > float", CompactNodeTitle = ">", Keywords = "> greater"), Category="Math|Float")
-	static bool Greater_FloatFloat(float A, float B);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "float > float", CompactNodeTitle = ">", Keywords = "> greater"), Category = "Math|Float")
+	static bool Greater_DoubleDouble(double A, double B);
 
 	/** Returns true if A is Less than or equal to B (A <= B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "float <= float", CompactNodeTitle = "<=", Keywords = "<= less"), Category="Math|Float")
-	static bool LessEqual_FloatFloat(float A, float B);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "float <= float", CompactNodeTitle = "<=", Keywords = "<= less"), Category = "Math|Float")
+	static bool LessEqual_DoubleDouble(double A, double B);
 
 	/** Returns true if A is greater than or equal to B (A >= B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "float >= float", CompactNodeTitle = ">=", Keywords = ">= greater"), Category="Math|Float")
-	static bool GreaterEqual_FloatFloat(float A, float B);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "float >= float", CompactNodeTitle = ">=", Keywords = ">= greater"), Category = "Math|Float")
+	static bool GreaterEqual_DoubleDouble(double A, double B);
 
 	/** Returns true if A is exactly equal to B (A == B)*/
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Equal (float)", CompactNodeTitle = "==", Keywords = "== equal"), Category="Math|Float")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Equal (Float)", CompactNodeTitle = "==", Keywords = "== equal"), Category = "Math|Float")
+	static bool EqualEqual_DoubleDouble(double A, double B);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
+	static float Add_FloatFloat(float A, float B = 1.f);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
+	static float Subtract_FloatFloat(float A, float B = 1.f);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
+	static bool Less_FloatFloat(float A, float B);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
+	static bool Greater_FloatFloat(float A, float B);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
+	static bool LessEqual_FloatFloat(float A, float B);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
+	static bool GreaterEqual_FloatFloat(float A, float B);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
 	static bool EqualEqual_FloatFloat(float A, float B);
 
 	/** Returns true if A is nearly equal to B (|A - B| < ErrorTolerance) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Nearly Equal (float)", Keywords = "== equal"), Category="Math|Float")
-	static bool NearlyEqual_FloatFloat(float A, float B, float ErrorTolerance = 1.e-6f);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Nearly Equal (Float)", Keywords = "== equal"), Category = "Math|Float")
+	static bool NearlyEqual_FloatFloat(double A, double B, double ErrorTolerance = 1.e-6);
 
 	/** Returns true if A does not equal B (A != B)*/
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "NotEqual (float)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Math|Float")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Not Equal (Float)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category = "Math|Float")
+	static bool NotEqual_DoubleDouble(double A, double B);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
 	static bool NotEqual_FloatFloat(float A, float B);
 
 	/** Returns true if value is between Min and Max (V >= Min && V <= Max)
 	 * If InclusiveMin is true, value needs to be equal or larger than Min, else it needs to be larger
 	 * If InclusiveMax is true, value needs to be smaller or equal than Max, else it needs to be smaller
 	 */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "InRange (float)", Min="0.0", Max="1.0"), Category="Math|Float")
-	static bool InRange_FloatFloat(float Value, float Min, float Max, bool InclusiveMin = true, bool InclusiveMax = true);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "In Range (Float)", Min = "0.0", Max = "1.0"), Category = "Math|Float")
+	static bool InRange_FloatFloat(double Value, double Min, double Max, bool InclusiveMin = true, bool InclusiveMax = true);
 
 	/** Returns the hypotenuse of a right-angled triangle given the width and height. */
 	UFUNCTION(BlueprintPure, meta=(Keywords = "pythagorean theorem"), Category = "Math|Float")
-	static float Hypotenuse(float Width, float Height);
+	static double Hypotenuse(double Width, double Height);
 	
 	/** Snaps a value to the nearest grid multiple. E.g.,
 	 *		Location = 5.1, GridSize = 10.0 : return value = 10.0
 	 * If GridSize is 0 Location is returned
 	 * if GridSize is very small precision issues may occur.
 	 */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Snap to grid (float)"), Category = "Math|Float")
-	static float GridSnap_Float(float Location, float GridSize);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Snap To Grid (Float)"), Category = "Math|Float")
+	static double GridSnap_Float(double Location, double GridSize);
 
 	/** Returns the absolute (positive) value of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Absolute (float)", CompactNodeTitle = "ABS"), Category="Math|Float")
-	static float Abs(float A);
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Absolute (Float)", CompactNodeTitle = "ABS"), Category="Math|Float")
+	static double Abs(double A);
 
 	/** Returns the sine of A (expects Radians)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Sin (Radians)", CompactNodeTitle = "SIN", Keywords = "sine"), Category="Math|Trig")
-	static float Sin(float A);
+	static double Sin(double A);
 
 	/** Returns the inverse sine (arcsin) of A (result is in Radians) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Asin (Radians)", CompactNodeTitle = "ASIN", Keywords = "sine"), Category="Math|Trig")
-	static float Asin(float A);
+	static double Asin(double A);
 
 	/** Returns the cosine of A (expects Radians)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Cos (Radians)", CompactNodeTitle = "COS"), Category="Math|Trig")
-	static float Cos(float A);
+	static double Cos(double A);
 
 	/** Returns the inverse cosine (arccos) of A (result is in Radians) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Acos (Radians)", CompactNodeTitle = "ACOS"), Category="Math|Trig")
-	static float Acos(float A);
+	static double Acos(double A);
 
 	/** Returns the tan of A (expects Radians)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Tan (Radians)", CompactNodeTitle = "TAN"), Category="Math|Trig")
-	static float Tan(float A);
+	static double Tan(double A);
 
 	/** Returns the inverse tan (atan) (result is in Radians)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Atan (Radians)"), Category="Math|Trig")
-	static float Atan(float A);
+	static double Atan(double A);
 
 	/** Returns the inverse tan (atan2) of A/B (result is in Radians)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Atan2 (Radians)"), Category="Math|Trig")
-	static float Atan2(float Y, float X);
+	static double Atan2(double Y, double X);
 
 	/** Returns exponential(e) to the power A (e^A)*/
 	UFUNCTION(BlueprintPure, Category="Math|Float", meta=(CompactNodeTitle = "e"))
-	static float Exp(float A);
+	static double Exp(double A);
 
 	/** Returns log of A base B (if B^R == A, returns R)*/
 	UFUNCTION(BlueprintPure, Category = "Math|Float")
-	static float Log(float A, float Base = 1.f);
+	static double Log(double A, double Base = 1.0);
 
 	/** Returns natural log of A (if e^R == A, returns R)*/
 	UFUNCTION(BlueprintPure, Category="Math|Float")
-	static float Loge(float A);
+	static double Loge(double A);
 
 	/** Returns square root of A*/
 	UFUNCTION(BlueprintPure, Category="Math|Float", meta=(Keywords = "square root", CompactNodeTitle = "SQRT"))
-	static float Sqrt(float A);
+	static double Sqrt(double A);
 
 	/** Returns square of A (A*A)*/
 	UFUNCTION(BlueprintPure, Category="Math|Float", meta=(CompactNodeTitle = "^2"))
-	static float Square(float A);
+	static double Square(double A);
 
 	/** Returns a random float between 0 and 1 */
 	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(NotBlueprintThreadSafe))
-	static float RandomFloat();
+	static double RandomFloat();
 
 	/** Generate a random number between Min and Max */
 	UFUNCTION(BlueprintPure, Category="Math|Random", meta=(NotBlueprintThreadSafe))
-	static float RandomFloatInRange(float Min, float Max);
+	static double RandomFloatInRange(double Min, double Max);
 
 	/** Returns the value of PI */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Get PI", CompactNodeTitle = "PI"), Category="Math|Trig")
-	static float GetPI();
+	static double GetPI();
 
 	/** Returns the value of TAU (= 2 * PI) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Get TAU", CompactNodeTitle = "TAU"), Category="Math|Trig")
-	static float GetTAU();
+	static double GetTAU();
 
 	/** Returns radians value based on the input degrees */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Degrees To Radians", CompactNodeTitle = "D2R"), Category="Math|Trig")
-	static float DegreesToRadians(float A);
+	static double DegreesToRadians(double A);
 
 	/** Returns degrees value based on the input radians */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Radians To Degrees", CompactNodeTitle = "R2D"), Category="Math|Trig")
-	static float RadiansToDegrees(float A);
+	static double RadiansToDegrees(double A);
 
 	/** Returns the sin of A (expects Degrees)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Sin (Degrees)", CompactNodeTitle = "SINd", Keywords = "sine"), Category="Math|Trig")
-	static float DegSin(float A);
+	static double DegSin(double A);
 
 	/** Returns the inverse sin (arcsin) of A (result is in Degrees) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Asin (Degrees)", CompactNodeTitle = "ASINd", Keywords = "sine"), Category="Math|Trig")
-	static float DegAsin(float A);
+	static double DegAsin(double A);
 
 	/** Returns the cos of A (expects Degrees)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Cos (Degrees)", CompactNodeTitle = "COSd"), Category="Math|Trig")
-	static float DegCos(float A);
+	static double DegCos(double A);
 
 	/** Returns the inverse cos (arccos) of A (result is in Degrees) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Acos (Degrees)", CompactNodeTitle = "ACOSd"), Category="Math|Trig")
-	static float DegAcos(float A);
+	static double DegAcos(double A);
 
 	/** Returns the tan of A (expects Degrees)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Tan (Degrees)", CompactNodeTitle = "TANd"), Category="Math|Trig")
-	static float DegTan(float A);
+	static double DegTan(double A);
 
 	/** Returns the inverse tan (atan) (result is in Degrees)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Atan (Degrees)"), Category="Math|Trig")
-	static float DegAtan(float A);
+	static double DegAtan(double A);
 
 	/** Returns the inverse tan (atan2) of A/B (result is in Degrees)*/
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Atan2 (Degrees)"), Category="Math|Trig")
-	static float DegAtan2(float Y, float X);
+	static double DegAtan2(double Y, double X);
 
 	/** 
 	 * Clamps an arbitrary angle to be between the given angles.  Will clamp to nearest boundary.
@@ -696,27 +734,27 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return Returns clamped angle in the range -180..180.
 	 */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Clamp Angle"), Category="Math|Float")
-	static float ClampAngle(float AngleDegrees, float MinAngleDegrees, float MaxAngleDegrees);
+	static double ClampAngle(double AngleDegrees, double MinAngleDegrees, double MaxAngleDegrees);
 
 	/** Returns the minimum value of A and B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Min (float)", CompactNodeTitle = "MIN", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Float")
-	static float FMin(float A, float B);
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Min (Float)", CompactNodeTitle = "MIN", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Float")
+	static double FMin(double A, double B);
 
 	/** Returns the maximum value of A and B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Max (float)", CompactNodeTitle = "MAX", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Float")
-	static float FMax(float A, float B);
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Max (Float)", CompactNodeTitle = "MAX", CommutativeAssociativeBinaryOperator = "true"), Category="Math|Float")
+	static double FMax(double A, double B);
 
 	/** Returns Value clamped between A and B (inclusive) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Clamp (float)", Min="0.0", Max="1.0"), Category="Math|Float")
-	static float FClamp(float Value, float Min, float Max);
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Clamp (Float)", Min="0.0", Max="1.0"), Category="Math|Float")
+	static double FClamp(double Value, double Min, double Max);
 
 	/** Returns Value wrapped from A and B (inclusive) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Wrap (float)", Min = "0.0", Max = "1.0"), Category = "Math|Float")
-	static float FWrap(float Value, float Min, float Max);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Wrap (Float)", Min = "0.0", Max = "1.0"), Category = "Math|Float")
+	static double FWrap(double Value, double Min, double Max);
 
 	/** This functions returns 0 if B (the denominator) is zero */
 	UFUNCTION(BlueprintPure, Category = "Math|Float", meta = (Keywords = "percent"))
-	static float SafeDivide(float A, float B);
+	static double SafeDivide(double A, double B);
 
 	/** Returns max of all array entries and the index at which it was found. Returns value of 0 and index of -1 if the supplied array is empty. */
 	UFUNCTION(BlueprintPure, Category="Math|Integer")
@@ -744,74 +782,81 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Linearly interpolates between A and B based on Alpha (100% of A when Alpha=0 and 100% of B when Alpha=1) */
 	UFUNCTION(BlueprintPure, Category="Math|Float")
-	static float Lerp(float A, float B, float Alpha);
+	static double Lerp(double A, double B, double Alpha);
 	
 	UE_DEPRECATED(4.19, "Use NormalizeToRange instead")
 	static float InverseLerp(float A, float B, float Value);
 
 	/** Easeing  between A and B using a specified easing function */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Ease", BlueprintInternalUseOnly = "true"), Category = "Math|Interpolation")
-	static float Ease(float A, float B, float Alpha, TEnumAsByte<EEasingFunc::Type> EasingFunc, float BlendExp = 2, int32 Steps = 2);
+	static double Ease(double A, double B, double Alpha, TEnumAsByte<EEasingFunc::Type> EasingFunc, double BlendExp = 2, int32 Steps = 2);
 
 	/** Rounds A to the nearest integer (e.g., -1.6 becomes -2 and 1.6 becomes 2) */
 	UFUNCTION(BlueprintPure, Category="Math|Float")
-	static int32 Round(float A);
+	static int32 Round(double A);
 
 	/** Rounds A down towards negative infinity / down to the previous integer (e.g., -1.6 becomes -2 and 1.6 becomes 1) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Floor"), Category="Math|Float")
-	static int32 FFloor(float A);
+	static int32 FFloor(double A);
 	
 	/** Rounds A towards zero, truncating the fractional part (e.g., -1.6 becomes -1 and 1.6 becomes 1) */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Truncate", BlueprintAutocast), Category="Math|Float")
-	static int32 FTrunc(float A);
+	static int32 FTrunc(double A); // TODO: ok to change with BP Autocast?
 
 	/** Rounds A up towards positive infinity / up to the next integer (e.g., -1.6 becomes -1 and 1.6 becomes 2) */
 	UFUNCTION(BlueprintPure, Category = "Math|Float", meta=(DisplayName="Ceil"))
-	static int32 FCeil(float A);
+	static int32 FCeil(double A);
 
 	/** Rounds A to the nearest integer (e.g., -1.6 becomes -2 and 1.6 becomes 2) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Round to Int64"), Category = "Math|Float")
-	static int64 Round64(float A);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Round to Integer64"), Category = "Math|Float")
+	static int64 Round64(double A);
 
 	/** Rounds A down towards negative infinity / down to the previous integer (e.g., -1.6 becomes -2 and 1.6 becomes 1) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Floor to Int64"), Category = "Math|Float")
-	static int64 FFloor64(float A);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Floor to Integer64"), Category = "Math|Float")
+	static int64 FFloor64(double A);
 
 	/** Rounds A towards zero, truncating the fractional part (e.g., -1.6 becomes -1 and 1.6 becomes 1) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Truncate to Int64", BlueprintAutocast), Category = "Math|Float")
-	static int64 FTrunc64(float A);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Truncate to Integer64", BlueprintAutocast), Category = "Math|Float")
+	static int64 FTrunc64(double A);
 
 	/** Rounds A up towards positive infinity / up to the next integer (e.g., -1.6 becomes -1 and 1.6 becomes 2) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Ceil to Int64"), Category = "Math|Float")
-	static int64 FCeil64(float A);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Ceil to Integer64"), Category = "Math|Float")
+	static int64 FCeil64(double A);
 
 	/** Returns the number of times Divisor will go into Dividend (i.e., Dividend divided by Divisor), as well as the remainder */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Division (whole and remainder)"), Category="Math|Float")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Division (Whole and Remainder)"), Category="Math|Float")
+	static int32 FMod(double Dividend, double Divisor, double& Remainder);
+
+	/** Returns the number of times Divisor will go into Dividend (i.e., Dividend divided by Divisor), as well as the remainder */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Division (Whole and Remainder) to Integer64"), Category = "Math|Float")
+	static int64 FMod64(double Dividend, double Divisor, double& Remainder);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
 	static int32 FMod(float Dividend, float Divisor, float& Remainder);
 
 	/** Sign (float, returns -1 if A < 0, 0 if A is zero, and +1 if A > 0) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Sign (float)"), Category="Math|Float")
-	static float SignOfFloat(float A);
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Sign (Float)"), Category="Math|Float")
+	static double SignOfFloat(double A);
 
 	/** Returns Value normalized to the given range.  (e.g. 20 normalized to the range 10->50 would result in 0.25) */
 	UFUNCTION(BlueprintPure, Category="Math|Float")
-	static float NormalizeToRange(float Value, float RangeMin, float RangeMax);
+	static double NormalizeToRange(double Value, double RangeMin, double RangeMax);
 
 	/** Returns Value mapped from one range into another.  (e.g. 20 normalized from the range 10->50 to 20->40 would result in 25) */
 	UFUNCTION(BlueprintPure, Category="Math|Float", meta=(Keywords = "get mapped value"))
-	static float MapRangeUnclamped(float Value, float InRangeA, float InRangeB, float OutRangeA, float OutRangeB);
+	static double MapRangeUnclamped(double Value, double InRangeA, double InRangeB, double OutRangeA, double OutRangeB);
 
 	/** Returns Value mapped from one range into another where the Value is clamped to the Input Range.  (e.g. 0.5 normalized from the range 0->1 to 0->50 would result in 25) */
 	UFUNCTION(BlueprintPure, Category="Math|Float", meta=(Keywords = "get mapped value"))
-	static float MapRangeClamped(float Value, float InRangeA, float InRangeB, float OutRangeA, float OutRangeB);
+	static double MapRangeClamped(double Value, double InRangeA, double InRangeB, double OutRangeA, double OutRangeB);
 	
 	/** Multiplies the input value by pi. */
 	UFUNCTION(BlueprintPure, meta=(Keywords = "* multiply"), Category="Math|Float")
-	static float MultiplyByPi(float Value);
+	static double MultiplyByPi(double Value);
 
 	/** Interpolate between A and B, applying an ease in/out function.  Exp controls the degree of the curve. */
 	UFUNCTION(BlueprintPure, Category = "Math|Float")
-	static float FInterpEaseInOut(float A, float B, float Alpha, float Exponent);
+	static double FInterpEaseInOut(double A, double B, double Alpha, double Exponent);
 
 	/**
 	* Simple function to create a pulsating scalar value
@@ -938,11 +983,14 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Makes a 2d vector {X, Y} */
 	UFUNCTION(BlueprintPure, Category = "Math|Vector2D", meta = (Keywords = "construct build", NativeMakeFunc))
-	static FVector2D MakeVector2D(float X, float Y);
+	static FVector2D MakeVector2D(double X, double Y);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
+	static void BreakVector2D(FVector2D InVec, float& X, float& Y);
 
 	/** Breaks a 2D vector apart into X, Y. */
 	UFUNCTION(BlueprintPure, Category = "Math|Vector2D", meta = (NativeBreakFunc))
-	static void BreakVector2D(FVector2D InVec, float& X, float& Y);
+	static void BreakVector2D(FVector2D InVec, double& X, double& Y);
 
 	/** Convert a Vector2D to a Vector */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (Vector2D)", CompactNodeTitle = "->", ScriptMethod = "Vector", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
@@ -958,7 +1006,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Returns Vector A added by B */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "vector2d + float", CompactNodeTitle = "+", ScriptMethod = "AddFloat", ScriptOperator = "+;+=", Keywords = "+ add plus"), Category = "Math|Vector2D")
-	static FVector2D Add_Vector2DFloat(FVector2D A, float B);
+	static FVector2D Add_Vector2DFloat(FVector2D A, double B);
 
 	/** Returns subtraction of Vector B from Vector A (A - B) */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "vector2d - vector2d", CompactNodeTitle = "-", ScriptMethod = "Subtract", ScriptOperator = "-;-=", Keywords = "- subtract minus"), Category = "Math|Vector2D")
@@ -966,7 +1014,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Returns Vector A subtracted by B */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "vector2d - float", CompactNodeTitle = "-", ScriptMethod = "SubtractFloat", ScriptOperator = "-;-=", Keywords = "- subtract minus"), Category = "Math|Vector2D")
-	static FVector2D Subtract_Vector2DFloat(FVector2D A, float B);
+	static FVector2D Subtract_Vector2DFloat(FVector2D A, double B);
 
 	/** Element-wise Vector multiplication (Result = {A.x*B.x, A.y*B.y}) */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "vector2d * vector2d", CompactNodeTitle = "*", ScriptMethod = "Multiply", ScriptOperator = "*;*=", Keywords = "* multiply", CommutativeAssociativeBinaryOperator = "true"), Category = "Math|Vector2D")
@@ -974,7 +1022,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Returns Vector A scaled by B */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "vector2d * float", CompactNodeTitle = "*", ScriptMethod = "MultiplyFloat", ScriptOperator = "*;*=", Keywords = "* multiply"), Category = "Math|Vector2D")
-	static FVector2D Multiply_Vector2DFloat(FVector2D A, float B);
+	static FVector2D Multiply_Vector2DFloat(FVector2D A, double B);
 
 	/** Element-wise Vector divide (Result = {A.x/B.x, A.y/B.y}) */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "vector2d / vector2d", CompactNodeTitle = "/", ScriptMethod = "Divide", ScriptOperator = "/;/=", Keywords = "/ divide division"), Category = "Math|Vector2D")
@@ -982,10 +1030,10 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Returns Vector A divided by B */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "vector2d / float", CompactNodeTitle = "/", ScriptMethod = "DivideFloat", ScriptOperator = "/;/=", Keywords = "/ divide division"), Category = "Math|Vector2D")
-	static FVector2D Divide_Vector2DFloat(FVector2D A, float B = 1.f);
+	static FVector2D Divide_Vector2DFloat(FVector2D A, double B = 1.f);
 
 	/** Returns true if vector A is equal to vector B (A == B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Equal Exactly (Vector2D)", CompactNodeTitle = "===", ScriptMethod = "Equals", ScriptOperator = "==", Keywords = "== equal"), Category="Math|Vector")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Equal Exactly (Vector2D)", CompactNodeTitle = "===", ScriptMethod = "Equals", ScriptOperator = "==", Keywords = "== equal"), Category="Math|Vector2D")
 	static bool EqualExactly_Vector2DVector2D(FVector2D A, FVector2D B);
 
 	/** Returns true if vector2D A is equal to vector2D B (A == B) within a specified error tolerance */
@@ -1011,18 +1059,18 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param InY New Y coordinate.
 	 */
 	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "Set"), Category = "Math|Vector2D")
-	static void Set2D(UPARAM(ref) FVector2D& A, float X, float Y);
+	static void Set2D(UPARAM(ref) FVector2D& A, double X, double Y);
 
 	/**
 	 * Creates a copy of this vector with both axes clamped to the given range.
 	 * @return New vector with clamped axes.
 	 */
 	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "ClampedAxes"), Category = "Math|Vector2D")
-	static FVector2D ClampAxes2D(FVector2D A, float MinAxisVal, float MaxAxisVal);
+	static FVector2D ClampAxes2D(FVector2D A, double MinAxisVal, double MaxAxisVal);
 
 	/** Returns the cross product of two 2d vectors - see  http://mathworld.wolfram.com/CrossProduct.html */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Cross Product (2D)", CompactNodeTitle = "cross", ScriptMethod = "Cross", ScriptOperator = "^"), Category = "Math|Vector2D")
-	static float CrossProduct2D(FVector2D A, FVector2D B);
+	static double CrossProduct2D(FVector2D A, FVector2D B);
 
 	/**
 	 * Distance between two 2D points.
@@ -1032,7 +1080,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return The distance between two 2D points.
 	 */
 	UFUNCTION(BlueprintPure, meta = (Keywords = "magnitude", ScriptMethod = "Distance"), Category = "Math|Vector2D")
-	static float Distance2D(FVector2D V1, FVector2D V2);
+	static double Distance2D(FVector2D V1, FVector2D V2);
 
 	/**
 	 * Squared distance between two 2D points.
@@ -1042,11 +1090,11 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return The squared distance between two 2D points.
 	 */
 	UFUNCTION(BlueprintPure, meta = (Keywords = "magnitude", ScriptMethod = "DistanceSquared"), Category = "Math|Vector2D")
-	static float DistanceSquared2D(FVector2D V1, FVector2D V2);
+	static double DistanceSquared2D(FVector2D V1, FVector2D V2);
 
 	/** Returns the dot product of two 2d vectors - see http://mathworld.wolfram.com/DotProduct.html */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Dot Product (2D)", CompactNodeTitle = "dot", ScriptMethod = "Dot", ScriptOperator = "|"), Category = "Math|Vector2D")
-	static float DotProduct2D(FVector2D A, FVector2D B);
+	static double DotProduct2D(FVector2D A, FVector2D B);
 
 	/**
 	* Get a copy of this vector with absolute value of each component.
@@ -1062,7 +1110,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return The maximum absolute value of the vector's components.
 	 */
 	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "GetAbsMax"), Category = "Math|Vector2D")
-	static float GetAbsMax2D(FVector2D A);
+	static double GetAbsMax2D(FVector2D A);
 
 	/**
 	 * Get the maximum value of the vector's components.
@@ -1070,7 +1118,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return The maximum value of the vector's components.
 	 */
 	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "GetMax"), Category = "Math|Vector2D")
-	static float GetMax2D(FVector2D A);
+	static double GetMax2D(FVector2D A);
 
 	/**
 	 * Get the minimum value of the vector's components.
@@ -1078,7 +1126,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return The minimum value of the vector's components.
 	 */
 	UFUNCTION(BlueprintPure, meta = (ScriptMethod = "GetMin"), Category = "Math|Vector2D")
-	static float GetMin2D(FVector2D A);
+	static double GetMin2D(FVector2D A);
 
 	/**
 	 * Rotates around axis (0,0,1)
@@ -1141,7 +1189,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FVector2D NormalSafe2D(FVector2D A, float Tolerance = 1.e-8f);
 
 	/** Returns a unit normal version of the 2D vector */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Normalize2D", Keywords = "Unit Vector", ScriptMethod = "NormalUnsafe"), Category = "Math|Vector2D")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Normalize 2D", Keywords = "Unit Vector", ScriptMethod = "NormalUnsafe"), Category = "Math|Vector2D")
 	static FVector2D Normal2D(FVector2D A);
 
 	/**
@@ -1164,7 +1212,10 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param OutLength Reference passed in to store length of the vector.
 	 */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Direction And Length", ScriptMethod = "ToDirectionAndLength"), Category = "Math|Vector2D")
-	static void ToDirectionAndLength2D(FVector2D A, FVector2D &OutDir, float &OutLength);
+	static void ToDirectionAndLength2D(FVector2D A, FVector2D &OutDir, double &OutLength);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
+	static void ToDirectionAndLength2D(FVector2D A, FVector2D& OutDir, float& OutLength);
 
 	/**
 	 * Get this vector as a vector where each component has been rounded to the nearest int.
@@ -1180,16 +1231,16 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	*
 	* @return A copy of the vector with each component set to +1 or -1
 	*/
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "To sign (+1/-1) 2D", ScriptMethod = "ToSign"), Category = "Math|Vector2D")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Sign (+1/-1) 2D", ScriptMethod = "ToSign"), Category = "Math|Vector2D")
 	static FVector2D ToSign2D(FVector2D A);
 
 	/** Returns the length of a 2D Vector. */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Vector2dLength", Keywords = "magnitude", ScriptMethod = "Length"), Category = "Math|Vector2D")
-	static float VSize2D(FVector2D A);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Vector2D Length", Keywords = "magnitude", ScriptMethod = "Length"), Category = "Math|Vector2D")
+	static double VSize2D(FVector2D A);
 
 	/** Returns the squared length of a 2D Vector. */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Vector2dLengthSquared", Keywords = "magnitude", ScriptMethod = "LengthSquared"), Category = "Math|Vector2D")
-	static float VSize2DSquared(FVector2D A);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Vector2D Length Squared", Keywords = "magnitude", ScriptMethod = "LengthSquared"), Category = "Math|Vector2D")
+	static double VSize2DSquared(FVector2D A);
 
 
 	//
@@ -1233,8 +1284,8 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** Makes a vector {X, Y, Z} */
-	UFUNCTION(BlueprintPure, Category="Math|Vector", meta=(Keywords="construct build", NativeMakeFunc))
-	static FVector MakeVector(float X, float Y, float Z);
+	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (Keywords = "construct build", NativeMakeFunc))
+	static FVector MakeVector(double X, double Y, double Z);
 
 	/** Creates a directional vector from rotation values {Pitch, Yaw} supplied in degrees with specified Length*/	
 	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (Keywords = "rotation rotate"))
@@ -1256,22 +1307,28 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param InZ New Z coordinate.
 	 */
 	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "Set"), Category = "Math|Vector")
-	static void Vector_Set(UPARAM(ref) FVector& A, float X, float Y, float Z);
+	static void Vector_Set(UPARAM(ref) FVector& A, double X, double Y, double Z);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
+	static void BreakVector(FVector InVec, float& X, float& Y, float& Z);
 
 	/** Breaks a vector apart into X, Y, Z */
 	UFUNCTION(BlueprintPure, Category="Math|Vector", meta=(NativeBreakFunc))
-	static void BreakVector(FVector InVec, float& X, float& Y, float& Z);
+	static void BreakVector(FVector InVec, double& X, double& Y, double& Z);
+
+	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (NativeBreakFunc))
+	static void BreakVector3f(FVector3f InVec, float& X, float& Y, float& Z);
 
 	/** Converts a vector to LinearColor */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToLinearColor (Vector)", CompactNodeTitle = "->", ScriptMethod = "LinearColor", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To LinearColor (Vector)", CompactNodeTitle = "->", ScriptMethod = "LinearColor", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FLinearColor Conv_VectorToLinearColor(FVector InVec);
 
 	/** Convert a vector to a transform. Uses vector as location */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToTransform (Vector)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Transform (Vector)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FTransform Conv_VectorToTransform(FVector InLocation);
 	
 	/** Convert a Vector to a Vector2D using the Vector's (X, Y) coordinates */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToVector2D (Vector)", CompactNodeTitle = "->", ScriptMethod = "Vector2D", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Vector2D (Vector)", CompactNodeTitle = "->", ScriptMethod = "Vector2D", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FVector2D Conv_VectorToVector2D(FVector InVector);
 
 	/**
@@ -1280,7 +1337,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 *
 	 * @return FRotator from the Vector's direction, without any roll.
 	 */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "RotationFromXVector", ScriptMethod = "Rotator", Keywords="rotation rotate cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Rotation From X Vector", ScriptMethod = "Rotator", Keywords="rotation rotate cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FRotator Conv_VectorToRotator(FVector InVec);
 
 	/** Create a rotation from an this axis and supplied angle (in degrees) */
@@ -1308,7 +1365,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Adds a float to each component of a vector */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "vector + float", CompactNodeTitle = "+", ScriptMethod = "AddFloat", Keywords = "+ add plus"), Category="Math|Vector")
-	static FVector Add_VectorFloat(FVector A, float B);
+	static FVector Add_VectorFloat(FVector A, double B);
 	
 	/** Adds an integer to each component of a vector */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "vector + integer", CompactNodeTitle = "+", ScriptMethod = "AddInt", Keywords = "+ add plus"), Category="Math|Vector")
@@ -1320,7 +1377,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Subtracts a float from each component of a vector */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "vector - float", CompactNodeTitle = "-", ScriptMethod = "SubtractFloat", Keywords = "- subtract minus"), Category="Math|Vector")
-	static FVector Subtract_VectorFloat(FVector A, float B);
+	static FVector Subtract_VectorFloat(FVector A, double B);
 
 	/** Subtracts an integer from each component of a vector */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "vector - integer", CompactNodeTitle = "-", ScriptMethod = "SubtractInt", Keywords = "- subtract minus"), Category="Math|Vector")
@@ -1332,7 +1389,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Scales Vector A by B */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "vector * float", CompactNodeTitle = "*", ScriptMethod = "MultiplyFloat", ScriptOperator = "*;*=", Keywords = "* multiply"), Category="Math|Vector")
-	static FVector Multiply_VectorFloat(FVector A, float B);
+	static FVector Multiply_VectorFloat(FVector A, double B);
 	
 	/** Scales Vector A by B */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "vector * integer", CompactNodeTitle = "*", ScriptMethod = "MultiplyInt", Keywords = "* multiply"), Category="Math|Vector")
@@ -1344,7 +1401,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Vector divide by a float */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "vector / float", CompactNodeTitle = "/", ScriptMethod = "DivideFloat", ScriptOperator = "/;/=", Keywords = "/ divide division"), Category="Math|Vector")
-	static FVector Divide_VectorFloat(FVector A, float B = 1.f);
+	static FVector Divide_VectorFloat(FVector A, double B = 1.f);
 
 	/** Vector divide by an integer */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "vector / integer", CompactNodeTitle = "/", ScriptMethod = "DivideInt", Keywords = "/ divide division"), Category="Math|Vector")
@@ -1363,7 +1420,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool EqualEqual_VectorVector(FVector A, FVector B, float ErrorTolerance = 1.e-4f);
 
 	/** Returns true if vector A is not equal to vector B (A != B) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Not Equal Exactly (Vector)", CompactNodeTitle = "!==", ScriptMethod = "NotEqual", ScriptOperator = "!=", Keywords = "!= not equal"), Category = "Math|Vector2D")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Not Equal Exactly (Vector)", CompactNodeTitle = "!==", ScriptMethod = "NotEqual", ScriptOperator = "!=", Keywords = "!= not equal"), Category = "Math|Vector")
 	static bool NotEqualExactly_VectorVector(FVector A, FVector B);
 
 	/** Returns true if vector A is not equal to vector B (A != B) within a specified error tolerance */
@@ -1372,22 +1429,22 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Returns the dot product of two 3d vectors - see http://mathworld.wolfram.com/DotProduct.html */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Dot Product", CompactNodeTitle = "dot", ScriptMethod = "Dot", ScriptOperator = "|"), Category="Math|Vector" )
-	static float Dot_VectorVector(FVector A, FVector B);
+	static double Dot_VectorVector(FVector A, FVector B);
 
 	/** Returns the cross product of two 3d vectors - see http://mathworld.wolfram.com/CrossProduct.html */
 	UFUNCTION(BlueprintPure, meta=(DisplayName = "Cross Product", CompactNodeTitle = "cross", ScriptMethod = "Cross", ScriptOperator = "^"), Category="Math|Vector" )
 	static FVector Cross_VectorVector(FVector A, FVector B);
 
 	/** Returns result of vector A rotated by Rotator B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "RotateVector", ScriptMethod = "Rotate"), Category="Math|Vector")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Rotate Vector", ScriptMethod = "Rotate"), Category="Math|Vector")
 	static FVector GreaterGreater_VectorRotator(FVector A, FRotator B);
 
 	/** Returns result of vector A rotated by AngleDeg around Axis */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "RotateVectorAroundAxis", ScriptMethod = "RotateAngleAxis"), Category="Math|Vector")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Rotate Vector Around Axis", ScriptMethod = "RotateAngleAxis"), Category="Math|Vector")
 	static FVector RotateAngleAxis(FVector InVect, float AngleDeg, FVector Axis);
 
 	/** Returns result of vector A rotated by the inverse of Rotator B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "UnrotateVector", ScriptMethod = "Unrotate"), Category="Math|Vector")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Unrotate Vector", ScriptMethod = "Unrotate"), Category="Math|Vector")
 	static FVector LessLess_VectorRotator(FVector A, FRotator B);
 
 	/** When this vector contains Euler angles (degrees), ensure that angles are between +/-180 */
@@ -1396,35 +1453,35 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Create a copy of this vector, with its magnitude/size/length clamped between Min and Max. */
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "ClampedSize"), Category="Math|Vector")
-	static FVector ClampVectorSize(FVector A, float Min, float Max);
+	static FVector ClampVectorSize(FVector A, double Min, double Max);
 
 	/** Create a copy of this vector, with the 2D magnitude/size/length clamped between Min and Max. Z is unchanged. */
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "ClampedSize2D"), Category="Math|Vector")
-	static FVector Vector_ClampSize2D(FVector A, float Min, float Max);
+	static FVector Vector_ClampSize2D(FVector A, double Min, double Max);
 
 	/** Create a copy of this vector, with its maximum magnitude/size/length clamped to MaxSize. */
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "ClampedSizeMax"), Category="Math|Vector")
-	static FVector Vector_ClampSizeMax(FVector A, float Max);
+	static FVector Vector_ClampSizeMax(FVector A, double Max);
 
 	/** Create a copy of this vector, with the maximum 2D magnitude/size/length clamped to MaxSize. Z is unchanged. */
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "ClampedSizeMax2D"), Category="Math|Vector")
-	static FVector Vector_ClampSizeMax2D(FVector A, float Max);
+	static FVector Vector_ClampSizeMax2D(FVector A, double Max);
 
 	/** Find the minimum element (X, Y or Z) of a vector */
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "GetMinElement"), Category="Math|Vector")
-	static float GetMinElement(FVector A);
+	static double GetMinElement(FVector A);
 
 	/** Find the maximum element (X, Y or Z) of a vector */
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "GetMaxElement"), Category="Math|Vector")
-	static float GetMaxElement(FVector A);
+	static double GetMaxElement(FVector A);
 
 	/** Find the maximum absolute element (abs(X), abs(Y) or abs(Z)) of a vector */
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "GetAbsMax"), Category="Math|Vector")
-	static float Vector_GetAbsMax(FVector A);
+	static double Vector_GetAbsMax(FVector A);
 
 	/** Find the minimum absolute element (abs(X), abs(Y) or abs(Z)) of a vector */
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "GetAbsMin"), Category="Math|Vector")
-	static float Vector_GetAbsMin(FVector A);
+	static double Vector_GetAbsMin(FVector A);
 
 	/**
 	 * Get a copy of this vector with absolute value of each component.
@@ -1465,7 +1522,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return 'Heading' angle between +/-PI radians. 0 is pointing down +X.
 	 */
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "HeadingAngle"), Category="Math|Vector")
-	static float Vector_HeadingAngle(FVector A);
+	static double Vector_HeadingAngle(FVector A);
 
 	/**
 	 * Returns the cosine of the angle between this vector and another projected onto the XY plane (no Z).
@@ -1474,7 +1531,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return The cosine.
 	 */
 	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "CosineAngle2D"), Category="Math|Vector")
-	static float Vector_CosineAngle2D(FVector A, FVector B);
+	static double Vector_CosineAngle2D(FVector A, FVector B);
 
 	/**
 	 * Converts a vector containing degree values to a vector containing radian values.
@@ -1528,7 +1585,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return The distance between two points.
 	 */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Distance (Vector)", ScriptMethod = "Distance", Keywords = "magnitude"), Category = "Math|Vector")
-	static float Vector_Distance(FVector V1, FVector V2);
+	static double Vector_Distance(FVector V1, FVector V2);
 
 	/**
 	 * Squared distance between two points.
@@ -1538,7 +1595,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return The squared distance between two points.
 	 */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Distance Squared (Vector)", ScriptMethod = "DistanceSquared", Keywords = "magnitude"), Category = "Math|Vector")
-	static float Vector_DistanceSquared(FVector V1, FVector V2);
+	static double Vector_DistanceSquared(FVector V1, FVector V2);
 
 	/**
 	* Euclidean distance between two points in the XY plane (ignoring Z).
@@ -1548,7 +1605,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	* @return The distance between two points in the XY plane.
 	*/
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Distance2D (Vector)", ScriptMethod = "Distance2D", Keywords = "magnitude"), Category = "Math|Vector")
-	static float Vector_Distance2D(FVector V1, FVector V2);
+	static double Vector_Distance2D(FVector V1, FVector V2);
 
 	/**
 	* Squared euclidean distance between two points in the XY plane (ignoring Z).
@@ -1558,23 +1615,23 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	* @return The distance between two points in the XY plane.
 	*/
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Distance2D Squared (Vector)", ScriptMethod = "Distance2DSquared", Keywords = "magnitude"), Category = "Math|Vector")
-	static float Vector_Distance2DSquared(FVector V1, FVector V2);
+	static double Vector_Distance2DSquared(FVector V1, FVector V2);
 
 	/** Returns the length of the vector */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "VectorLength", ScriptMethod = "Length", Keywords="magnitude"), Category="Math|Vector")
-	static float VSize(FVector A);
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Vector Length", ScriptMethod = "Length", Keywords="magnitude"), Category="Math|Vector")
+	static double VSize(FVector A);
 
 	/** Returns the squared length of the vector */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "VectorLengthSquared", ScriptMethod = "LengthSquared", Keywords="magnitude"), Category="Math|Vector")
-	static float VSizeSquared(FVector A);
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Vector Length Squared", ScriptMethod = "LengthSquared", Keywords="magnitude"), Category="Math|Vector")
+	static double VSizeSquared(FVector A);
 
 	/** Returns the length of the vector's XY components. */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "VectorLengthXY", ScriptMethod = "Length2D", Keywords="magnitude"), Category="Math|Vector")
-	static float VSizeXY(FVector A);
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Vector Length XY", ScriptMethod = "Length2D", Keywords="magnitude"), Category="Math|Vector")
+	static double VSizeXY(FVector A);
 
 	/** Returns the squared length of the vector's XY components. */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "VectorLengthXYSquared", ScriptMethod = "Length2DSquared", Keywords="magnitude"), Category="Math|Vector")
-	static float VSizeXYSquared(FVector A);
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Vector Length XY Squared", ScriptMethod = "Length2DSquared", Keywords="magnitude"), Category="Math|Vector")
+	static double VSizeXYSquared(FVector A);
 
 	/**
 	 * Checks whether vector is near to zero within a specified tolerance.
@@ -1651,7 +1708,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 *
 	 * @return Normalized version of vector.
 	 */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Normal unsafe (Vector)", ScriptMethod = "NormalUnsafe", Keywords="Unit Vector"), Category="Math|Vector")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Normal Unsafe (Vector)", ScriptMethod = "NormalUnsafe", Keywords="Unit Vector"), Category="Math|Vector")
 	static FVector Vector_NormalUnsafe(const FVector& A);
 
 	/**
@@ -1695,17 +1752,46 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FVector VInterpTo_Constant(FVector Current, FVector Target, float DeltaTime, float InterpSpeed);
 
 	/**
-	* Uses a simple spring model to interpolate a vector from Current to Target.
+	 * Uses a simple spring model to interpolate a vector from Current to Target.
+	 *
+	 * @param Current               Current value
+	 * @param Target                Target value
+	 * @param SpringState           Data related to spring model (velocity, error, etc..) - Create a unique variable per spring
+	 * @param Stiffness             How stiff the spring model is (more stiffness means more oscillation around the target value)
+	 * @param CriticalDampingFactor How much damping to apply to the spring (0 means no damping, 1 means critically damped which means no oscillation)
+	 * @param DeltaTime             Time difference since the last update
+	 * @param Mass                  Multiplier that acts like mass on a spring
+	 * @param TargetVelocityAmount  If 1 then the target velocity will be calculated and used, which results following the target more closely/without lag. Values down to zero (recommended when using this to smooth data) will progressively disable this effect.
+	 * @param bClamp                Whether to use the Min/Max values to clamp the motion
+	 * @param MinValue              Clamps the minimum output value and cancels the velocity if it reaches this limit
+	 * @param MaxValue              Clamps the maximum output value and cancels the velocity if it reaches this limit
+	 * @param bInitializeFromTarget If set then the current value will be set from the target on the first update
+	 */
+	UFUNCTION(BlueprintCallable,  meta = (ScriptMethod = "InterpSpringTo", Keywords = "position", AdvancedDisplay = "8"), Category = "Math|Interpolation")
+	static FVector VectorSpringInterp(FVector Current, FVector Target, UPARAM(ref) FVectorSpringState& SpringState,
+	                                  float Stiffness, float CriticalDampingFactor, float DeltaTime,
+	                                  float Mass = 1.f, float TargetVelocityAmount = 1.f, 
+	                                  bool bClamp = false, FVector MinValue = FVector(-1.f), FVector MaxValue = FVector(1.f),
+	                                  bool bInitializeFromTarget = false);
+
+	/**
+	* Uses a simple spring model to interpolate a quaternion from Current to Target.
 	*
-	* @param Current				Current value
-	* @param Target					Target value
-	* @param SpringState			Data related to spring model (velocity, error, etc..) - Create a unique variable per spring
-	* @param Stiffness				How stiff the spring model is (more stiffness means more oscillation around the target value)
-	* @param CriticalDampingFactor	How much damping to apply to the spring (0 means no damping, 1 means critically damped which means no oscillation)
-	* @param Mass					Multiplier that acts like mass on a spring
+	* @param Current               Current value
+	* @param Target                Target value
+	* @param SpringState           Data related to spring model (velocity, error, etc..) - Create a unique variable per spring
+	* @param Stiffness             How stiff the spring model is (more stiffness means more oscillation around the target value)
+	* @param CriticalDampingFactor How much damping to apply to the spring (0 means no damping, 1 means critically damped which means no oscillation)
+	* @param DeltaTime             Time difference since the last update
+	* @param Mass                  Multiplier that acts like mass on a spring
+	* @param TargetVelocityAmount  If 1 then the target velocity will be calculated and used, which results following the target more closely/without lag. Values down to zero (recommended when using this to smooth data) will progressively disable this effect.
+	* @param bInitializeFromTarget If set then the current value will be set from the target on the first update
 	*/
-	UFUNCTION(BlueprintCallable,  meta = (ScriptMethod = "InterpSpringTo", Keywords = "position"), Category = "Math|Interpolation")
-	static FVector VectorSpringInterp(FVector Current, FVector Target, UPARAM(ref) FVectorSpringState& SpringState, float Stiffness, float CriticalDampingFactor, float DeltaTime, float Mass = 1.f);
+	UFUNCTION(BlueprintCallable,  meta = (ScriptMethod = "InterpSpringTo", Keywords = "quaternion", AdvancedDisplay = "8"), Category = "Math|Interpolation")
+	static FQuat QuaternionSpringInterp(FQuat Current, FQuat Target, UPARAM(ref) FQuaternionSpringState& SpringState,
+	                                    float Stiffness, float CriticalDampingFactor, float DeltaTime,
+	                                    float Mass = 1.f, float TargetVelocityAmount = 1.f, 
+                                        bool bInitializeFromTarget = false);
 
 	/**
 	 * Gets the reciprocal of this vector, avoiding division by zero.
@@ -1884,7 +1970,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Returns a random point within the specified bounding box using the first vector as an origin and the second as the box extents. */
 	UFUNCTION(BlueprintPure, Category = "Math|Random", meta=(ScriptMethod = "RandomPointInBoxExtents", NotBlueprintThreadSafe))
-	static FVector RandomPointInBoundingBox(FVector Origin, FVector BoxExtent);
+	static FVector RandomPointInBoundingBox(const FVector Center, const FVector HalfSize);
 
 	/** 
 	 * Returns a random vector with length of 1, within the specified cone, with uniform random distribution.
@@ -1943,11 +2029,14 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Makes a 4D vector {X, Y, Z, W} */
 	UFUNCTION(BlueprintPure, meta = (Keywords = "construct build", NativeMakeFunc), Category = "Math|Vector4")
-	static FVector4 MakeVector4(float X, float Y, float Z, float W);
+	static FVector4 MakeVector4(double X, double Y, double Z, double W);
+
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
+	static void BreakVector4(const FVector4& InVec, float& X, float& Y, float& Z, float& W);
 
 	/** Breaks a 4D vector apart into X, Y, Z, W. */
 	UFUNCTION(BlueprintPure, meta = (NativeBreakFunc), Category = "Math|Vector4")
-	static void BreakVector4(const FVector4& InVec, float& X, float& Y, float& Z, float& W);
+	static void BreakVector4(const FVector4& InVec, double& X, double& Y, double& Z, double& W);
 
 	/** Convert a Vector4 to a Vector (dropping the W element) */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (Vector4)", CompactNodeTitle = "->", ScriptMethod = "Vector", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
@@ -2030,7 +2119,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @param InW New W coordinate.
 	 */
 	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "Set"), Category = "Math|Vector4")
-	static void Vector4_Set(UPARAM(ref) FVector4& A, float X, float Y, float Z, float W);
+	static void Vector4_Set(UPARAM(ref) FVector4& A, double X, double Y, double Z, double W);
 
 	/** Returns the cross product of two vectors - see  http://mathworld.wolfram.com/CrossProduct.html */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Cross Product XYZ (Vector4)", CompactNodeTitle = "cross3", ScriptMethod = "Cross3"), Category = "Math|Vector4")
@@ -2038,11 +2127,11 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Returns the dot product of two vectors - see http://mathworld.wolfram.com/DotProduct.html */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Dot Product (Vector4)", CompactNodeTitle = "dot", ScriptMethod = "Dot", ScriptOperator = "|"), Category = "Math|Vector4")
-	static float Vector4_DotProduct(const FVector4& A, const FVector4& B);
+	static double Vector4_DotProduct(const FVector4& A, const FVector4& B);
 
 	/** Returns the dot product of two vectors - see http://mathworld.wolfram.com/DotProduct.html The W element is ignored.*/
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Dot Product XYZ (Vector4)", CompactNodeTitle = "dot3", ScriptMethod = "Dot3"), Category = "Math|Vector4")
-	static float Vector4_DotProduct3(const FVector4& A, const FVector4& B);
+	static double Vector4_DotProduct3(const FVector4& A, const FVector4& B);
 
 	/**
 	 * Determines if any component is not a number (NAN)
@@ -2071,19 +2160,19 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** Returns the length of the vector. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Length (Vector4)", ScriptMethod = "Length", Keywords = "magnitude"), Category = "Math|Vector4")
-	static float Vector4_Size(const FVector4& A);
+	static double Vector4_Size(const FVector4& A);
 
 	/** Returns the squared length of the vector. */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Length Squared (Vector4)", ScriptMethod = "LengthSquared", Keywords = "magnitude"), Category = "Math|Vector4")
-	static float Vector4_SizeSquared(const FVector4& A);
+	static double Vector4_SizeSquared(const FVector4& A);
 
 	/** Returns the length of the vector. The W element is ignored. */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "LengthXYZ (Vector4)", ScriptMethod = "Length3", Keywords = "magnitude"), Category = "Math|Vector4")
-	static float Vector4_Size3(const FVector4& A);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Length XYZ (Vector4)", ScriptMethod = "Length3", Keywords = "magnitude"), Category = "Math|Vector4")
+	static double Vector4_Size3(const FVector4& A);
 
 	/** Returns the squared length of the vector. The W element is ignored. */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "LengthXYZ Squared (Vector4)", ScriptMethod = "LengthSquared3", Keywords = "magnitude"), Category = "Math|Vector4")
-	static float Vector4_SizeSquared3(const FVector4& A);
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Length XYZ Squared (Vector4)", ScriptMethod = "LengthSquared3", Keywords = "magnitude"), Category = "Math|Vector4")
+	static double Vector4_SizeSquared3(const FVector4& A);
 
 	/**
 	 * Determines if vector is normalized / unit (length 1) within specified squared tolerance. The W element is ignored.
@@ -2116,7 +2205,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 *
 	 * @return Normalized version of vector.
 	 */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Normal unsafe XYZ (Vector4)", ScriptMethod = "NormalUnsafe3", Keywords = "Unit Vector"), Category = "Math|Vector4")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Normal Unsafe XYZ (Vector4)", ScriptMethod = "NormalUnsafe3", Keywords = "Unit Vector"), Category = "Math|Vector4")
 	static FVector4 Vector4_NormalUnsafe3(const FVector4& A);
 
 	/**
@@ -2203,6 +2292,13 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Math|Rotator", meta=(Keywords="rotation rotate"))
 	static FRotator FindLookAtRotation(const FVector& Start, const FVector& Target);
 
+	/** 
+	 * Find a local rotation (range of [-180, 180]) for an object with StartTransform to point at TargetLocation. 
+	 * Useful for getting LookAt Azimuth or Pawn Aim Offset.
+	*/
+	UFUNCTION(BlueprintPure, Category = "Math|Rotator", meta = (Keywords = "rotation rotate local azimuth"))
+	static FRotator FindRelativeLookAtRotation(const FTransform& StartTransform, const FVector& TargetLocation);
+
 	/** Breaks apart a rotator into {Roll, Pitch, Yaw} angles in degrees */
 	UFUNCTION(BlueprintPure, Category = "Math|Rotator", meta = (Keywords = "rotation rotate rotator breakrotator", NativeBreakFunc))
 	static void BreakRotator(
@@ -2224,19 +2320,19 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool NotEqual_RotatorRotator(FRotator A, FRotator B, float ErrorTolerance = 1.e-4f);
 
 	/** Returns rotator representing rotator A scaled by B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ScaleRotator", CompactNodeTitle = "*", ScriptMethod = "Scale", Keywords = "* multiply rotate rotation"), Category="Math|Rotator")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Scale Rotator (Float)", CompactNodeTitle = "*", ScriptMethod = "Scale", Keywords = "* multiply rotate rotation"), Category="Math|Rotator")
 	static FRotator Multiply_RotatorFloat(FRotator A, float B);
 	
 	/** Returns rotator representing rotator A scaled by B */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ScaleRotator (integer)", CompactNodeTitle = "*", ScriptMethod = "ScaleInteger", Keywords = "* multiply rotate rotation"), Category="Math|Rotator")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Scale Rotator (Integer)", CompactNodeTitle = "*", ScriptMethod = "ScaleInteger", Keywords = "* multiply rotate rotation"), Category="Math|Rotator")
 	static FRotator Multiply_RotatorInt(FRotator A, int32 B);
 
 	/** Combine 2 rotations to give you the resulting rotation of first applying A, then B. */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "CombineRotators", ScriptMethod = "Combine", Keywords="rotate rotation add"), Category="Math|Rotator")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Combine Rotators", ScriptMethod = "Combine", Keywords="rotate rotation add"), Category="Math|Rotator")
 	static FRotator ComposeRotators(FRotator A, FRotator B);
 
 	/** Negate a rotator*/
-	UFUNCTION(BlueprintPure, meta=(DisplayName="InvertRotator", ScriptMethod = "Inversed", ScriptOperator = "neg", Keywords="rotate rotation"), Category="Math|Rotator")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Invert Rotator", ScriptMethod = "Inversed", ScriptOperator = "neg", Keywords="rotate rotation"), Category="Math|Rotator")
 	static FRotator NegateRotator(FRotator A);
 
 	/** Rotate the world forward vector by the given rotation */
@@ -2252,11 +2348,11 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FVector GetUpVector(FRotator InRot);
 
 	/** Get the X direction vector after this rotation */
-	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "ToVector", DisplayName = "GetRotationXVector", Keywords="rotation rotate cast convert", BlueprintAutocast), Category="Math|Rotator")
+	UFUNCTION(BlueprintPure, meta=(ScriptMethod = "ToVector", DisplayName = "Get Rotation X Vector", Keywords="rotation rotate cast convert", BlueprintAutocast), Category="Math|Rotator")
 	static FVector Conv_RotatorToVector(FRotator InRot);
 
 	/** Convert Rotator to Transform */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToTransform (Rotator)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Transform (Rotator)", CompactNodeTitle = "->", ScriptMethod = "Transform", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FTransform Conv_RotatorToTransform(const FRotator& InRotator);
 
 	/** Get the reference frame direction vectors (axes) described by this rotation */
@@ -2350,7 +2446,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	  * If your Matrix represents a Transform that you wish to scale you should use Apply Scale instead
 	  */
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Matrix * Float", CompactNodeTitle = "*", ScriptMethod = "MultiplyFloat", ScriptOperator = "*;*=", Keywords = "* multiply"), Category = "Math|Matrix")
-	static FMatrix Multiply_MatrixFloat (const FMatrix& A, float B);
+	static FMatrix Multiply_MatrixFloat (const FMatrix& A, double B);
 
 	/**
 	 * Checks whether another Matrix is equal to this, within specified tolerance.
@@ -2646,6 +2742,14 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "Quat - Quat", CompactNodeTitle = "-", ScriptMethod = "Subtract", ScriptOperator = "-;-=", Keywords = "- subtract minus"), Category = "Math|Quat")
 	static FQuat Subtract_QuatQuat(const FQuat& A, const FQuat& B);
 
+	/** Makes a quat {X, Y, Z, W} */
+	UFUNCTION(BlueprintPure, Category = "Math|Quat", meta = (Keywords = "construct build", NativeMakeFunc))
+	static FQuat MakeQuat(float X, float Y, float Z, float W);
+
+	/** Breaks a quat apart into X, Y, Z, W */
+	UFUNCTION(BlueprintPure, Category = "Math|Quat", meta = (NativeBreakFunc))
+	static void BreakQuat(const FQuat& InQuat, float& X, float& Y, float& Z, float& W);
+
 	/**
 	 * Gets the result of multiplying two quaternions (A * B).
 	 *
@@ -2690,7 +2794,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static float Quat_AngularDistance(const FQuat& A, const FQuat& B);
 
 	/** Modify the quaternion to ensure that the delta between it and B represents the shortest possible rotation angle. */
-	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Ensure shortest arc to (Quat)", ScriptMethod = "EnsureShortestArcTo"), Category = "Math|Quat")
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Ensure Shortest Arc To (Quat)", ScriptMethod = "EnsureShortestArcTo"), Category = "Math|Quat")
 	static void Quat_EnforceShortestArcWith(UPARAM(ref) FQuat& A, const FQuat& B);
 
 	/**	Convert a Quaternion into floating-point Euler angles (in degrees). */
@@ -2793,6 +2897,10 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToRotator (Quat)", CompactNodeTitle = "->", ScriptMethod = "Rotator", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FRotator Quat_Rotator(const FQuat& Q);
 
+	/** Convert to Quaternion representation of this Rotator. */
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToQuaternion (Rotator)", CompactNodeTitle = "->", ScriptMethod = "Quaternion", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	static FQuat Conv_RotatorToQuaternion(FRotator InRot);
+
 	/**
 	 * Get the length of the quaternion.
 	 *
@@ -2861,7 +2969,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FLinearColor LinearColor_Yellow();
 
 	/** Transparent linear color - black with 0 opacity/alpha */
-	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Tansparent", ScriptConstantHost = "LinearColor"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (ScriptConstant = "Transparent", ScriptConstantHost = "LinearColor"), Category = "Math|Color")
 	static FLinearColor LinearColor_Transparent();
 
 
@@ -2911,9 +3019,13 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintCallable, meta = (ScriptMethod = "SetRandomHue"), Category = "Math|Color")
 	static void LinearColor_SetRandomHue(UPARAM(ref) FLinearColor& InOutColor);
 
-	/** Convert a float into a LinearColor, where each element is that float */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToLinearColor (float)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	/** Convert a float into a LinearColor, where each element is a float */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To LinearColor (Float)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FLinearColor Conv_FloatToLinearColor(float InFloat);
+
+	/** Convert a float into a LinearColor, where each element is a double */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To LinearColor (Double)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static FLinearColor Conv_DoubleToLinearColor(double InDouble);
 
 	/** Make a color from individual color components (HSV space; Hue is [0..360) while Saturation and Value are 0..1) */
 	UFUNCTION(BlueprintPure, Category = "Math|Color", meta = (DisplayName = "HSV to RGB"))
@@ -2936,27 +3048,27 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static void RGBToHSV_Vector(FLinearColor RGB, FLinearColor& HSV);
 
 	/** Converts a RGB linear color to HSV (where H is in R, S is in G, and V is in B) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "RGB to HSV linear color", ScriptMethod = "RGBToHSV", Keywords = "cast convert"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "RGB to HSV (LinearColor)", ScriptMethod = "RGBToHSV", Keywords = "cast convert"), Category = "Math|Color")
 	static FLinearColor RGBLinearToHSV(FLinearColor RGB);
 
 	/** Converts a LinearColor to a vector */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToVector (LinearColor)", ScriptMethod = "ToRGBVector", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (LinearColor)", ScriptMethod = "ToRGBVector", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FVector Conv_LinearColorToVector(FLinearColor InLinearColor);
 
 	/** Convert from linear to 8-bit RGBE as outlined in Gregory Ward's Real Pixels article, Graphics Gems II, page 80. */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToRGBE (LinearColor)", ScriptMethod = "ToRGBE", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To RGBE (LinearColor)", ScriptMethod = "ToRGBE", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Color")
 	static FColor LinearColor_ToRGBE(FLinearColor InLinearColor);
 
 	/** Quantizes the linear color and returns the result as a FColor with optional sRGB conversion and quality as goal. */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToColor (LinearColor)", ScriptMethod = "ToColor", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Color (LinearColor)", ScriptMethod = "ToColor", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FColor Conv_LinearColorToColor(FLinearColor InLinearColor, bool InUseSRGB = true);
 
 	/** Quantizes the linear color and returns the result as an 8-bit color.  This bypasses the SRGB conversion. */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Quantize to 8-bit (LinearColor)", ScriptMethod = "Quantize", Keywords = "cast convert"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (DeprecatedFunction, DeprecationMessage = "Use LinearColor_QuantizeRound instead for correct color conversion.", DisplayName = "Quantize to 8-bit (LinearColor)", ScriptMethod = "Quantize", Keywords = "cast convert"), Category = "Math|Color")
 	static FColor LinearColor_Quantize(FLinearColor InColor);
 
 	/** Quantizes the linear color with rounding and returns the result as an 8-bit color.  This bypasses the SRGB conversion. */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Quantize with rounding to 8-bit (LinearColor)", ScriptMethod = "QuantizeRound", Keywords = "cast convert"), Category = "Math|Color")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Quantize With Rounding To 8-bit (LinearColor)", ScriptMethod = "QuantizeRound", Keywords = "cast convert"), Category = "Math|Color")
 	static FColor LinearColor_QuantizeRound(FLinearColor InColor);
 
 	/**
@@ -3125,75 +3237,75 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool LessEqual_DateTimeDateTime( FDateTime A, FDateTime B );
 
 	/** Returns the date component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetDate"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Date"), Category="Math|DateTime")
 	static FDateTime GetDate( FDateTime A );
 
 	/** Returns the day component of A (1 to 31) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetDay"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Day"), Category="Math|DateTime")
 	static int32 GetDay( FDateTime A );
 
 	/** Returns the day of year of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetDayOfYear"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Day Of Year"), Category="Math|DateTime")
 	static int32 GetDayOfYear( FDateTime A );
 
 	/** Returns the hour component of A (24h format) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetHour"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Hour"), Category="Math|DateTime")
 	static int32 GetHour( FDateTime A );
 
 	/** Returns the hour component of A (12h format) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetHour12"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Hour 12"), Category="Math|DateTime")
 	static int32 GetHour12( FDateTime A );
 
 	/** Returns the millisecond component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetMillisecond"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Millisecond"), Category="Math|DateTime")
 	static int32 GetMillisecond( FDateTime A );
 
 	/** Returns the minute component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetMinute"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Minute"), Category="Math|DateTime")
 	static int32 GetMinute( FDateTime A );
 
 	/** Returns the month component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetMonth"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Month"), Category="Math|DateTime")
 	static int32 GetMonth( FDateTime A );
 
 	/** Returns the second component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetSecond"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Second"), Category="Math|DateTime")
 	static int32 GetSecond( FDateTime A );
 
 	/** Returns the time elapsed since midnight of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetTimeOfDay"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Time Of Day"), Category="Math|DateTime")
 	static FTimespan GetTimeOfDay( FDateTime A );
 
 	/** Returns the year component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetYear"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Year"), Category="Math|DateTime")
 	static int32 GetYear( FDateTime A );
 
 	/** Returns whether A's time is in the afternoon */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="IsAfternoon"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Is Afternoon"), Category="Math|DateTime")
 	static bool IsAfternoon( FDateTime A );
 
 	/** Returns whether A's time is in the morning */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="IsMorning"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Is Morning"), Category="Math|DateTime")
 	static bool IsMorning( FDateTime A );
 
 	/** Returns the number of days in the given year and month */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="DaysInMonth"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Days In Month"), Category="Math|DateTime")
 	static int32 DaysInMonth( int32 Year, int32 Month );
 
 	/** Returns the number of days in the given year */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="DaysInYear"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Days In Year"), Category="Math|DateTime")
 	static int32 DaysInYear( int32 Year );
 
 	/** Returns whether given year is a leap year */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="IsLeapYear"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Is Leap Year"), Category="Math|DateTime")
 	static bool IsLeapYear( int32 Year );
 
 	/** Returns the maximum date and time value */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="MaxValue"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Max Value (DateTime)"), Category="Math|DateTime")
 	static FDateTime DateTimeMaxValue( );
 
 	/** Returns the minimum date and time value */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="MinValue"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="MinValue (DateTime)"), Category="Math|DateTime")
 	static FDateTime DateTimeMinValue( );
 
 	/** Returns the local date and time on this computer */
@@ -3205,7 +3317,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static FDateTime Today( );
 
 	/** Returns the UTC date and time on this computer */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="UtcNow"), Category="Math|DateTime")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="UTC Now"), Category="Math|DateTime")
 	static FDateTime UtcNow( );
 
 	/** Converts a date string in ISO-8601 format to a DateTime object */
@@ -3222,15 +3334,15 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** Returns the maximum time span value */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="MaxValue", ScriptConstant = "MaxValue", ScriptConstantHost = "Timespan"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Max Value (Timespan)", ScriptConstant = "MaxValue", ScriptConstantHost = "Timespan"), Category="Math|Timespan")
 	static FTimespan TimespanMaxValue( );
 
 	/** Returns the minimum time span value */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="MinValue", ScriptConstant = "MinValue", ScriptConstantHost = "Timespan"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Min Value (Timespan)", ScriptConstant = "MinValue", ScriptConstantHost = "Timespan"), Category="Math|Timespan")
 	static FTimespan TimespanMinValue( );
 
 	/** Returns a zero time span value */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="ZeroValue", ScriptConstant = "Zero", ScriptConstantHost = "Timespan"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Zero Value (Timespan)", ScriptConstant = "Zero", ScriptConstantHost = "Timespan"), Category="Math|Timespan")
 	static FTimespan TimespanZeroValue( );
 
 	//
@@ -3294,71 +3406,71 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool LessEqual_TimespanTimespan( FTimespan A, FTimespan B );
 
 	/** Returns the days component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetDays"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Days"), Category="Math|Timespan")
 	static int32 GetDays( FTimespan A );
 
 	/** Returns the absolute value of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetDuration"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Duration"), Category="Math|Timespan")
 	static FTimespan GetDuration( FTimespan A );
 
 	/** Returns the hours component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetHours"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Hours"), Category="Math|Timespan")
 	static int32 GetHours( FTimespan A );
 
 	/** Returns the milliseconds component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetMilliseconds"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Milliseconds"), Category="Math|Timespan")
 	static int32 GetMilliseconds( FTimespan A );
 
 	/** Returns the minutes component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetMinutes"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Minutes"), Category="Math|Timespan")
 	static int32 GetMinutes( FTimespan A );
 
 	/** Returns the seconds component of A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetSeconds"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Seconds"), Category="Math|Timespan")
 	static int32 GetSeconds( FTimespan A );
 
 	/** Returns the total number of days in A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetTotalDays"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Total Days"), Category="Math|Timespan")
 	static float GetTotalDays( FTimespan A );
 
 	/** Returns the total number of hours in A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetTotalHours"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Total Hours"), Category="Math|Timespan")
 	static float GetTotalHours( FTimespan A );
 
 	/** Returns the total number of milliseconds in A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetTotalMilliseconds"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Total Milliseconds"), Category="Math|Timespan")
 	static float GetTotalMilliseconds( FTimespan A );
 
 	/** Returns the total number of minutes in A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetTotalMinutes"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Total Minutes"), Category="Math|Timespan")
 	static float GetTotalMinutes( FTimespan A );
 
 	/** Returns the total number of seconds in A */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="GetTotalSeconds"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Get Total Seconds"), Category="Math|Timespan")
 	static float GetTotalSeconds( FTimespan A );
 
 	/** Returns a time span that represents the specified number of days */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="FromDays"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="From Days"), Category="Math|Timespan")
 	static FTimespan FromDays( float Days );
 
 	/** Returns a time span that represents the specified number of hours */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="FromHours"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="From Hours"), Category="Math|Timespan")
 	static FTimespan FromHours( float Hours );
 
 	/** Returns a time span that represents the specified number of milliseconds */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="FromMilliseconds"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="From Milliseconds"), Category="Math|Timespan")
 	static FTimespan FromMilliseconds( float Milliseconds );
 
 	/** Returns a time span that represents the specified number of minutes */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="FromMinutes"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="From Minutes"), Category="Math|Timespan")
 	static FTimespan FromMinutes( float Minutes );
 
 	/** Returns a time span that represents the specified number of seconds */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="FromSeconds"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="From Seconds"), Category="Math|Timespan")
 	static FTimespan FromSeconds( float Seconds );
 
 	/** Returns the ratio between two time spans (A / B), handles zero values */
-	UFUNCTION(BlueprintPure, meta=(DisplayName="TimespanRatio"), Category="Math|Timespan")
+	UFUNCTION(BlueprintPure, meta=(DisplayName="Timespan Ratio"), Category="Math|Timespan")
 	static float TimespanRatio( FTimespan A, FTimespan B );
 
 	/** Converts a time span string to a Timespan object */
@@ -3370,83 +3482,118 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 
 	/** Creates a FQualifiedFrameTime out of a frame number, frame rate, and optional 0-1 clamped subframe. */
-	UFUNCTION(BlueprintPure, Category = "Time Management", meta = (NativeMakeFunc))
+	UFUNCTION(BlueprintPure, Category = "Utilities|Time Management", meta = (NativeMakeFunc))
 	static FQualifiedFrameTime MakeQualifiedFrameTime(FFrameNumber Frame, FFrameRate FrameRate, float SubFrame = 0.f);
 
 	/** Breaks a FQualifiedFrameTime into its component parts again. */
-	UFUNCTION(BlueprintPure, Category = "Time Management", meta = (NativeBreakFunc))
+	UFUNCTION(BlueprintPure, Category = "Utilities|Time Management", meta = (NativeBreakFunc))
 	static void BreakQualifiedFrameTime(const FQualifiedFrameTime& InFrameTime, FFrameNumber& Frame, FFrameRate& FrameRate, float& SubFrame);
 
 	/** Creates a FFrameRate from a Numerator and a Denominator. Enforces that the Denominator is at least one. */
-	UFUNCTION(BlueprintPure, Category = "Time Management", meta = (NativeMakeFunc))
+	UFUNCTION(BlueprintPure, Category = "Utilities|Time Management", meta = (NativeMakeFunc))
 	static FFrameRate MakeFrameRate(int32 Numerator, int32 Denominator = 1);
 
 	/** Breaks a FFrameRate into a numerator and denominator. */
-	UFUNCTION(BlueprintPure, Category = "Time Management", meta = (NativeBreakFunc))
+	UFUNCTION(BlueprintPure, Category = "Utilities|Time Management", meta = (NativeBreakFunc))
 	static void BreakFrameRate(const FFrameRate& InFrameRate, int32& Numerator, int32& Denominator);
 	
 	// -- Begin K2 utilities
 
 	/** Converts a byte to a float */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToFloat (byte)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Float (Byte)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static float Conv_ByteToFloat(uint8 InByte);
 
+	/** Converts a byte to a double */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Double (Byte)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static double Conv_ByteToDouble(uint8 InByte);
+
 	/** Converts an integer to a float */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToFloat (integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Float (Integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static float Conv_IntToFloat(int32 InInt);
 
+	/** Converts an integer to a double */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Double (Integer)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static double Conv_IntToDouble(int32 InInt);
+
 	/** Converts an integer to a 64 bit integer */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToInt64 (integer)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Integer64 (Integer)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static int64 Conv_IntToInt64(int32 InInt);
 
 	/** Converts an integer to a byte (if the integer is too large, returns the low 8 bits) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToByte (integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Byte (Integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static uint8 Conv_IntToByte(int32 InInt);
 
 	/** Converts a 64 bit integer to a 32 bit integer (if the integer is too large, returns the low 32 bits) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToInt (Int64)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Integer (Integer64)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static int32 Conv_Int64ToInt(int64 InInt);
 
+	/** Converts a 64 bit floating point to a 32 bit floating point (if the float is too large, returns the low 32 bits) */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Float (Double)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static float Conv_DoubleToFloat(double InDouble);
+
+	/** Converts a 32 bit floating point to a 64 bit floating point */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Double (Float)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static double Conv_FloatToDouble(float InFloat);
+
 	/** Converts a 64 bit integer to a byte (if the integer is too large, returns the low 8 bits) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToByte (Int64)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Byte (Integer64)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static uint8 Conv_Int64ToByte(int64 InInt);
 
+	/** Converts a 64 bit floating point to a 64 bit integer */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Integer64 (Double)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static int64 Conv_DoubleToInt64(double InDouble);
+
+	/** Converts a 64 bit integer to a 64 bit floating point */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Double (Integer64)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static double Conv_Int64ToDouble(int64 InInt);
+
 	/** Converts an integer to an IntVector*/
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToIntVector (integer)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To IntVector (Integer)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FIntVector Conv_IntToIntVector(int32 InInt);
 
+	/** Converts an integer to a FVector */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (Integer)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static FVector Conv_IntToVector(int32 InInt);
+
 	/** Converts a int to a bool*/
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToBool (integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Boolean (Integer)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static bool Conv_IntToBool(int32 InInt);
 
 	/** Converts a bool to an int */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToInt (bool)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Integer (Boolean)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static int32 Conv_BoolToInt(bool InBool);
 
 	/** Converts a bool to a float (0.0f or 1.0f) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToFloat (bool)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Float (Boolean)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static float Conv_BoolToFloat(bool InBool);
 
 	/** Converts a bool to a byte */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToByte (bool)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Byte (Boolean)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static uint8 Conv_BoolToByte(bool InBool);
 	
 	/** Converts a byte to an integer */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToInt (byte)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Integer (Byte)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static int32 Conv_ByteToInt(uint8 InByte);
 
+	/** Converts a byte to an integer */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Integer64 (Byte)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static int64 Conv_ByteToInt64(uint8 InByte);
+
 	/** Converts a color to LinearColor */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToLinearColor (Color)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To LinearColor (Color)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FLinearColor Conv_ColorToLinearColor(FColor InColor);
 
 	/** Convert an IntVector to a vector */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToVector (IntVector)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (IntVector)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
 	static FVector Conv_IntVectorToVector(const FIntVector& InIntVector);
 
 	/** Convert a float into a vector, where each element is that float */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToVector (float)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Vector (Float)", CompactNodeTitle = "->", Keywords="cast convert", BlueprintAutocast), Category="Math|Conversions")
 	static FVector Conv_FloatToVector(float InFloat);
 
+	/** Convert a double into a vector, where each element is that double */
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Vector (Double)", CompactNodeTitle = "->", Keywords = "cast convert", BlueprintAutocast), Category = "Math|Conversions")
+	static FVector Conv_DoubleToVector(double InDouble);
 
 	//
 	// Box functions
@@ -3464,6 +3611,19 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	/** Makes an FBox2D from Min and Max and sets IsValid to true */
 	UFUNCTION(BlueprintPure, Category = "Math|Box2D", meta = (Keywords = "construct build", NativeMakeFunc))
 	static FBox2D MakeBox2D(FVector2D Min, FVector2D Max);
+
+	
+	//
+	// BoxSphereBounds functions
+	//
+	
+	/** Makes an FBoxSphereBounds given an origin, extent, and radius */
+	UFUNCTION(BlueprintPure, meta = (Keywords = "construct build", NativeMakeFunc), Category = "Math|BoxSphereBounds")
+	static FBoxSphereBounds MakeBoxSphereBounds(FVector Origin, FVector BoxExtent, float SphereRadius);
+
+	/** Breaks an FBoxSphereBounds into origin, extent, and radius */
+	UFUNCTION(BlueprintPure, meta = (NativeBreakFunc), Category = "Math|BoxSphereBounds")
+	static void BreakBoxSphereBounds(const FBoxSphereBounds& InBoxSphereBounds, FVector& Origin, FVector& BoxExtent, float& SphereRadius);
 
 
 	//
@@ -3488,7 +3648,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 
 	/** If bPickA is true, A is returned, otherwise B is */
 	UFUNCTION(BlueprintPure, Category="Math|Float")
-	static float SelectFloat(float A, float B, bool bPickA);
+	static double SelectFloat(double A, double B, bool bPickA);
 
 	/** If bPickA is true, A is returned, otherwise B is */
 	UFUNCTION(BlueprintPure, Category="Math|Vector")
@@ -3524,7 +3684,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool EqualEqual_ObjectObject(class UObject* A, class UObject* B);
 
 	/** Returns true if A and B are not equal (A != B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "NotEqual (Object)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Utilities")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Not Equal (Object)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Utilities")
 	static bool NotEqual_ObjectObject(class UObject* A, class UObject* B);
 
 	//
@@ -3536,7 +3696,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool EqualEqual_ClassClass(class UClass* A, class UClass* B);
 
 	/** Returns true if A and B are not equal (A != B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "NotEqual (Class)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Utilities")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Not Equal (Class)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Utilities")
 	static bool NotEqual_ClassClass(class UClass* A, class UClass* B);
 
 	/**
@@ -3558,7 +3718,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	static bool EqualEqual_NameName(FName A, FName B);
 
 	/** Returns true if A and B are not equal (A != B) */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "NotEqual (Name)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Utilities|Name")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Not Equal (Name)", CompactNodeTitle = "!=", Keywords = "!= not equal"), Category="Utilities|Name")
 	static bool NotEqual_NameName(FName A, FName B);
 
 
@@ -3567,15 +3727,15 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	//
 	
 	/** Make a transform from location, rotation and scale */
-	UFUNCTION(BlueprintPure, meta = (Scale = "1,1,1", Keywords = "construct build", NativeMakeFunc), Category = "Math|Transform")
-	static FTransform MakeTransform(FVector Location, FRotator Rotation, FVector Scale);
+	UFUNCTION(BlueprintPure, meta = (Keywords = "construct build", NativeMakeFunc), Category = "Math|Transform")
+	static FTransform MakeTransform(FVector Location, FRotator Rotation, FVector Scale = FVector(1,1,1));
 
 	/** Breaks apart a transform into location, rotation and scale */
 	UFUNCTION(BlueprintPure, Category = "Math|Transform", meta = (NativeBreakFunc))
 	static void BreakTransform(const FTransform& InTransform, FVector& Location, FRotator& Rotation, FVector& Scale);
 
 	/** Returns true if transform A is equal to transform B */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "Equal Transform", CompactNodeTitle = "==", ScriptMethod = "Equals", ScriptOperator = "==", Keywords = "== equal"), Category="Math|Transform")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Equal (Transform)", CompactNodeTitle = "==", ScriptMethod = "Equals", ScriptOperator = "==", Keywords = "== equal"), Category="Math|Transform")
 	static bool EqualEqual_TransformTransform(const FTransform& A, const FTransform& B);
 
 	/** 
@@ -3714,7 +3874,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return		New interpolated position
 	 */
 	UFUNCTION(BlueprintPure, Category="Math|Interpolation")
-	static float FInterpTo(float Current, float Target, float DeltaTime, float InterpSpeed);
+	static double FInterpTo(double Current, double Target, double DeltaTime, double InterpSpeed);
 
 	/**
 	 * Tries to reach Target at a constant rate.
@@ -3726,7 +3886,7 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @return		New interpolated position
 	 */
 	UFUNCTION(BlueprintPure, Category="Math|Interpolation")
-	static float FInterpTo_Constant(float Current, float Target, float DeltaTime, float InterpSpeed);
+	static double FInterpTo_Constant(double Current, double Target, double DeltaTime, double InterpSpeed);
 
 	/**
 	 * Tries to reach Target rotation based on Current rotation, giving a nice smooth feeling when rotating to Target rotation.
@@ -3755,24 +3915,49 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	/**
 	 * Uses a simple spring model to interpolate a float from Current to Target.
 	 *
-	 * @param Current				Current value
-	 * @param Target				Target value
-	 * @param SpringState			Data related to spring model (velocity, error, etc..) - Create a unique variable per spring
-	 * @param Stiffness				How stiff the spring model is (more stiffness means more oscillation around the target value)
-	 * @param CriticalDampingFactor	How much damping to apply to the spring (0 means no damping, 1 means critically damped which means no oscillation)
-	 * @param Mass					Multiplier that acts like mass on a spring
+	 * @param Current               Current value
+	 * @param Target                Target value
+	 * @param SpringState           Data related to spring model (velocity, error, etc..) - Create a unique variable per spring
+	 * @param Stiffness             How stiff the spring model is (more stiffness means more oscillation around the target value)
+	 * @param CriticalDampingFactor How much damping to apply to the spring (0 means no damping, 1 means critically damped which means no oscillation)
+	 * @param DeltaTime             Time difference since the last update
+	 * @param Mass                  Multiplier that acts like mass on a spring
+	 * @param TargetVelocityAmount  If 1 then the target velocity will be calculated and used, which results following the target more closely/without lag. Values down to zero (recommended when using this to smooth data) will progressively disable this effect.
+	 * @param bClamp                Whether to use the Min/Max values to clamp the motion
+	 * @param MinValue              Clamps the minimum output value and cancels the velocity if it reaches this limit
+	 * @param MaxValue              Clamps the maximum output value and cancels the velocity if it reaches this limit
+	 * @param bInitializeFromTarget If set then the current value will be set from the target on the first update
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Math|Interpolation")
-	static float FloatSpringInterp(float Current, float Target, UPARAM(ref) FFloatSpringState& SpringState, float Stiffness, float CriticalDampingFactor, float DeltaTime, float Mass = 1.f);
+	UFUNCTION(BlueprintCallable, Category = "Math|Interpolation", meta=(AdvancedDisplay = "8"))
+	static float FloatSpringInterp(float Current, float Target, UPARAM(ref) FFloatSpringState& SpringState,
+	                               float Stiffness, float CriticalDampingFactor, float DeltaTime,
+	                               float Mass = 1.f, float TargetVelocityAmount = 1.f, 
+	                               bool bClamp = false, float MinValue = -1.f, float MaxValue = 1.f,
+	                               bool bInitializeFromTarget = false);
 
-	/** Resets the state of a given spring */
+	/** Resets the state of a float spring */
 	UFUNCTION(BlueprintCallable, Category = "Math|Interpolation")
 	static void ResetFloatSpringState(UPARAM(ref) FFloatSpringState& SpringState);
 
-	/** Resets the state of a given spring */
+	/** Resets the state of a vector spring */
 	UFUNCTION(BlueprintCallable, Category = "Math|Interpolation")
 	static void ResetVectorSpringState(UPARAM(ref) FVectorSpringState& SpringState);
 
+	/** Resets the state of a quaternion spring */
+	UFUNCTION(BlueprintCallable, Category = "Math|Interpolation")
+	static void ResetQuaternionSpringState(UPARAM(ref) FQuaternionSpringState& SpringState);
+
+	/** Sets the state velocity of a float spring */
+	UFUNCTION(BlueprintCallable, Category = "Math|Interpolation")
+	static void SetFloatSpringStateVelocity(UPARAM(ref) FFloatSpringState& SpringState, float Velocity);
+
+	/** Sets the state velocity of a vector spring */
+	UFUNCTION(BlueprintCallable, Category = "Math|Interpolation")
+	static void SetVectorSpringStateVelocity(UPARAM(ref) FVectorSpringState& SpringState, FVector Velocity);
+
+	/** Sets the state angular velocity of a quaternion spring */
+	UFUNCTION(BlueprintCallable, Category = "Math|Interpolation")
+	static void SetQuaternionSpringStateAngularVelocity(UPARAM(ref) FQuaternionSpringState& SpringState, FVector AngularVelocity);
 
 	//
 	// Random stream functions
@@ -3801,6 +3986,10 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	/** Returns a random vector with length of 1.0 */
 	UFUNCTION(BlueprintPure, Category="Math|Random")
 	static FVector RandomUnitVectorFromStream(const FRandomStream& Stream);
+
+	/** Returns a random point within the specified bounding box using the first vector as an origin and the second as the half size of the AABB. */
+	UFUNCTION(BlueprintPure, Category="Math|Random")
+	static FVector RandomPointInBoundingBoxFromStream(const FVector Center, const FVector HalfSize, const FRandomStream& Stream);
 
 	/** Create a random rotation */
 	UFUNCTION(BlueprintPure, Category="Math|Random")
@@ -3887,8 +4076,27 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 * @outparam	OutRectSideA - Vector oriented and sized to represent one edge of the enclosing rectangle, orthogonal to OutRectSideB
 	 * @outparam	OutRectSideB - Vector oriented and sized to represent one edge of the enclosing rectangle, orthogonal to OutRectSideA
 	*/
-	UFUNCTION(BlueprintCallable, Category="Math|Geometry", meta=(WorldContext="WorldContextObject", CallableWithoutWorldContext))
+	UE_DEPRECATED(5.0, "Use MinAreaRectangle instead. This deprecated version incorrectly returns the average of all input points as the rectangle center.")
+	UFUNCTION(BlueprintCallable, Category="Math|Geometry", meta=(WorldContext="WorldContextObject", CallableWithoutWorldContext,
+		DeprecatedFunction, DeprecationMessage = "Use 'Min Area Rectangle' instead; this deprecated version incorrectly returns the average of all input points as the rectangle center."))
 	static void MinimumAreaRectangle(UObject* WorldContextObject, const TArray<FVector>& InVerts, const FVector& SampleSurfaceNormal, FVector& OutRectCenter, FRotator& OutRectRotation, float& OutSideLengthX, float& OutSideLengthY, bool bDebugDraw = false);
+
+	/**
+	 * Finds the minimum area rectangle that encloses a set of coplanar points.
+	 * Uses the exhaustive search algorithm in http://www.geometrictools.com/Documentation/MinimumAreaRectangle.pdf
+	 *
+	 * @param	WorldContextObject - Pointer to world context; only used when debug draw is enabled
+	 * @param	InPoints - Points to enclose in the rectangle; need to be within the same plane for correct results
+	 * @param	SampleSurfaceNormal - Normal indicating the surface direction for the points
+	 * @param	OutRectCenter - Translation for the output rectangle from the origin
+	 * @param	OutRectRotation - Rotation for the output rectangle from the XY plane
+	 * @param	OutRectLengthX - Length of the output rectangle along the X axis before rotation
+	 * @param	OutRectLengthY - Length of the output rectangle along the Y axis before rotation
+	 * @param	bDebugDraw - Draws the output rectangle for debugging purposes provided the world context is set as well
+	*/
+	UFUNCTION(BlueprintCallable, Category="Math|Geometry", meta=(WorldContext="WorldContextObject", CallableWithoutWorldContext))
+	static void MinAreaRectangle(UObject* WorldContextObject, const TArray<FVector>& InPoints, const FVector& SampleSurfaceNormal, FVector& OutRectCenter,
+	                             FRotator& OutRectRotation, float& OutRectLengthX, float& OutRectLengthY, bool bDebugDraw = false);
 
 	/**
 	 * Determines whether a given set of points are coplanar, with a tolerance. Any three points or less are always coplanar.
@@ -4040,12 +4248,32 @@ class ENGINE_API UKismetMathLibrary : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintPure, Category="Math|Smoothing", meta=(DisplayName="Dynamic Weighted Moving Average Rotator"))
 	static FRotator DynamicWeightedMovingAverage_FRotator(FRotator CurrentSample, FRotator PreviousSample, float MaxDistance, float MinWeight, float MaxWeight);
+	
+	// NetQuantized vector make/breaks
+	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (NativeMakeFunc))
+	static FVector_NetQuantize MakeVector_NetQuantize(double X, double Y, double Z) { return FVector_NetQuantize(X, Y, Z); }
+	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (NativeMakeFunc))
+	static FVector_NetQuantize10 MakeVector_NetQuantize10(double X, double Y, double Z) { return FVector_NetQuantize10(X, Y, Z); }
+	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (NativeMakeFunc))
+	static FVector_NetQuantize100 MakeVector_NetQuantize100(double X, double Y, double Z) { return FVector_NetQuantize100(X, Y, Z); }
+	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (NativeMakeFunc))
+	static FVector_NetQuantizeNormal MakeVector_NetQuantizeNormal(double X, double Y, double Z) { return FVector_NetQuantizeNormal(X, Y, Z); }
+	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (NativeBreakFunc))
+	static void BreakVector_NetQuantize(FVector_NetQuantize InVec, double& X, double& Y, double& Z) { BreakVector((FVector)InVec, X, Y, Z); }
+	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (NativeBreakFunc))
+	static void BreakVector_NetQuantize10(FVector_NetQuantize10 InVec, double& X, double& Y, double& Z) { BreakVector((FVector)InVec, X, Y, Z); }
+	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (NativeBreakFunc))
+	static void BreakVector_NetQuantize100(FVector_NetQuantize100 InVec, double& X, double& Y, double& Z) { BreakVector((FVector)InVec, X, Y, Z); }
+	UFUNCTION(BlueprintPure, Category = "Math|Vector", meta = (NativeBreakFunc))
+	static void BreakVector_NetQuantizeNormal(FVector_NetQuantizeNormal InVec, double& X, double& Y, double& Z) { BreakVector((FVector)InVec, X, Y, Z); }
 
 private:
 
 	static void ReportError_Divide_ByteByte();
 	static void ReportError_Percent_ByteByte();
 	static void ReportError_Divide_IntInt();
+	static void ReportError_Divide_FloatFloat();
+	static void ReportError_Divide_DoubleDouble();
 	static void ReportError_Divide_Int64Int64();
 	static void ReportError_Percent_IntInt();
 	static void ReportError_Sqrt();

@@ -5,9 +5,11 @@
 #include "NiagaraNodeParameterMapGet.h"
 #include "NiagaraNodeParameterMapSet.h"
 #include "EdGraphSchema_Niagara.h"
+#include "NiagaraEditorUtilities.h"
 #include "NiagaraNodeStaticSwitch.h"
 #include "NiagaraScriptVariable.h"
 #include "Widgets/SWidget.h"
+#include "Widgets/Layout/SBox.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Application/MenuStack.h"
 #include "Framework/Application/SlateApplication.h"
@@ -16,6 +18,8 @@
 #include "Classes/EditorStyleSettings.h"
 #include "ViewModels/NiagaraParameterPanelViewModel.h"
 #include "Misc/MessageDialog.h"
+#include "Widgets/SNiagaraParameterName.h"
+#include "Widgets/SToolTip.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraActions"
 
@@ -387,13 +391,19 @@ FReply FNiagaraParameterGraphDragOperation::DroppedOnNode(FVector2D ScreenPositi
 		{
 			if (UNiagaraNodeParameterMapGet* GetMapNode = Cast<UNiagaraNodeParameterMapGet>(GetHoveredNode()))
 			{
-				FScopedTransaction AddNewPinTransaction(LOCTEXT("Drop Onto Get Pin", "Drop parameter onto Get node"));
-				FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(GetMapNode, false, ScriptVar);
+				if(!GetMapNode->DoesParameterExistOnNode(ScriptVar->Variable))
+				{
+					FScopedTransaction AddNewPinTransaction(LOCTEXT("Drop Onto Get Pin", "Drop parameter onto Get node"));
+					FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(GetMapNode, false, ScriptVar);
+				}
 			}
 			else if (UNiagaraNodeParameterMapSet* SetMapNode = Cast<UNiagaraNodeParameterMapSet>(GetHoveredNode()))
 			{
-				FScopedTransaction AddNewPinTransaction(LOCTEXT("Drop Onto Set Pin", "Drop parameter onto Set node"));
-				FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(SetMapNode, true, ScriptVar);
+				if(!SetMapNode->DoesParameterExistOnNode(ScriptVar->Variable))
+				{
+					FScopedTransaction AddNewPinTransaction(LOCTEXT("Drop Onto Set Pin", "Drop parameter onto Set node"));
+					FNiagaraStackGraphUtilities::AddNewVariableToParameterMapNode(SetMapNode, true, ScriptVar);
+				}
 			}
 		}
 
@@ -584,11 +594,11 @@ void FNiagaraParameterGraphDragOperation::MakeStaticSwitch(FNiagaraParameterNode
 	SwitchNode->InputParameterName = InParams.Parameter.GetName();
 	const FNiagaraTypeDefinition& Type = InParams.Parameter.GetType();
 	
-	if (Type == FNiagaraTypeDefinition::GetBoolDef())
+	if (Type.IsSameBaseDefinition(FNiagaraTypeDefinition::GetBoolDef()))
 	{
 		SwitchNode->SwitchTypeData.SwitchType = ENiagaraStaticSwitchType::Bool;
 	}
-	else if (Type == FNiagaraTypeDefinition::GetIntDef())
+	else if (Type.IsSameBaseDefinition(FNiagaraTypeDefinition::GetIntDef()))
 	{
 		SwitchNode->SwitchTypeData.SwitchType = ENiagaraStaticSwitchType::Integer;
 	}
@@ -609,6 +619,41 @@ EVisibility FNiagaraParameterGraphDragOperation::GetIconVisible() const
 EVisibility FNiagaraParameterGraphDragOperation::GetErrorIconVisible() const
 {
 	return EVisibility::Collapsed;
+}
+
+TSharedPtr<SWidget> FNiagaraParameterDragOperation::GetDefaultDecorator() const
+{
+	TSharedPtr<SWidget> Decorator = SNew(SToolTip)
+	.Content()
+	[
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			FNiagaraParameterUtilities::GetParameterWidget(StaticCastSharedPtr<FNiagaraParameterAction>(SourceAction)->GetParameter(), false)
+		]
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		[
+			SNew(SBox)
+			.MaxDesiredWidth(250.f)
+			.Padding(5.f)
+			[
+				SNew(STextBlock)
+				.ColorAndOpacity(FLinearColor::White)
+				.Text(this, &FNiagaraParameterDragOperation::GetHoverText)
+				.Visibility(this, &FNiagaraParameterDragOperation::IsTextVisible)
+				.AutoWrapText(true)
+			]
+		]
+	];
+	
+	return Decorator;
+}
+
+EVisibility FNiagaraParameterDragOperation::IsTextVisible() const
+{
+	return CurrentHoverText.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -4,10 +4,12 @@
 
 #include "CoreMinimal.h"
 #include "ISequencerModule.h"
+#include "Misc/EnumClassFlags.h"
 
 class FAssetDragDropOp;
 class FClassDragDropOp;
-class FActorDragDropGraphEdOp;
+class FActorDragDropOp;
+class FFolderDragDropOp;
 class UMovieSceneSequence;
 
 /** A delegate that gets executed when a drag/drop event happens on the sequencer. The return value determines if the event was handled by the bound delegate. */
@@ -27,7 +29,25 @@ DECLARE_DELEGATE_RetVal_TwoParams(ESequencerDropResult, FOnAssetsDrop, const TAr
 DECLARE_DELEGATE_RetVal_TwoParams(ESequencerDropResult, FOnClassesDrop, const TArray<TWeakObjectPtr<UClass>>&, const FClassDragDropOp&);
 
 /** A delegate that gets executed when an actor is dropped on the sequencer. The return value determines if the operation was handled by the bound delegate. */
-DECLARE_DELEGATE_RetVal_TwoParams(ESequencerDropResult, FOnActorsDrop, const TArray<TWeakObjectPtr<AActor>>&, const FActorDragDropGraphEdOp&);
+DECLARE_DELEGATE_RetVal_TwoParams(ESequencerDropResult, FOnActorsDrop, const TArray<TWeakObjectPtr<AActor>>&, const FActorDragDropOp&);
+
+/** A delegate that gets executed when a folder is dropped on the sequencer. The return value determines if the operation was handled by the bound delegate. */
+DECLARE_DELEGATE_RetVal_TwoParams(ESequencerDropResult, FOnFoldersDrop, const TArray<FName>&, const FFolderDragDropOp&);
+
+
+enum class ESequencerPasteSupport : uint8
+{
+	None = 0,
+	Folders = 1 << 0,
+	ObjectBindings = 1 << 1,
+	Tracks = 1 << 2,
+	Sections = 1 << 3,
+	All = 0xff
+};
+ENUM_CLASS_FLAGS(ESequencerPasteSupport);
+
+/** A delegate that customizes how the sequencer behaves when data is pasted into it */
+DECLARE_DELEGATE_RetVal(ESequencerPasteSupport, FOnSequencerPaste);
 
 /** Class for specifying customizations to apply to a sequence editor. */
 struct FSequencerCustomizationInfo
@@ -52,6 +72,12 @@ struct FSequencerCustomizationInfo
 
 	/** Called when an actor is dropped on the sequencer. Only if OnReceivedDrop hasn't handled the event. */
 	FOnActorsDrop OnActorsDrop;
+
+	/** Called when a folder is dropped on the sequencer. Only if OnReceivedDrop hasn't handled the event. */
+	FOnFoldersDrop OnFoldersDrop;
+
+	/** Called when data is pasted into the sequence */
+	FOnSequencerPaste OnPaste;
 };
 
 /** Class to pass to ISequencerCustomization for building a customization. */

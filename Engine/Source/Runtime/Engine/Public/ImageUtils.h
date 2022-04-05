@@ -16,7 +16,7 @@ class UTextureRenderTarget2D;
 class UTextureRenderTargetCube;
 
 /**
- *	Parameters used for creating a Texture2D frmo a simple color buffer.
+ *	Parameters used for creating a Texture2D from a simple color buffer.
  */
 struct FCreateTexture2DParameters
 {
@@ -32,6 +32,9 @@ struct FCreateTexture2DParameters
 	/** If texture should be set as SRGB */
 	bool						bSRGB;
 
+	/** If texture should be a virtual texture */
+	bool						bVirtualTexture;
+
 	/** Mip-map generation settings */
 	TextureMipGenSettings		MipGenSettings;
 
@@ -46,6 +49,7 @@ struct FCreateTexture2DParameters
 			CompressionSettings(TC_Default),
 			bDeferCompression(false),
 			bSRGB(true),
+			bVirtualTexture(false),
 			MipGenSettings(TMGS_FromTextureGroup),
 			TextureGroup(TEXTUREGROUP_MAX)
 	{
@@ -141,7 +145,7 @@ public:
 	ENGINE_API static void CropAndScaleImage( int32 SrcWidth, int32 SrcHeight, int32 DesiredWidth, int32 DesiredHeight, const TArray<FColor> &SrcData, TArray<FColor> &DstData  );
 
 	/**
-	 * Compress image to .png uint8 array.
+	 * Compress image to thumbnail enabled format (png or jpg) uint8 array.
 	 *
 	 * @param ImageHeight		Source image width.
 	 * @param ImageWidth		Source image height.
@@ -152,6 +156,17 @@ public:
 	ENGINE_API static void CompressImageArray( int32 ImageWidth, int32 ImageHeight, const TArray<FColor> &SrcData, TArray<uint8> &DstData );
 
 	/**
+	 * Compress image to PNG format uint8 array.
+	 *
+	 * @param ImageHeight		Source image width.
+	 * @param ImageWidth		Source image height.
+	 * @param SrcData			Raw image array.
+	 * @param DstData			compressed image array.
+	 *
+	 */
+	ENGINE_API static void PNGCompressImageArray(int32 ImageWidth, int32 ImageHeight, const TArrayView64<const FColor>& SrcData, TArray64<uint8>& DstData);
+
+	/**
 	 * Creates a new UTexture2D with a checkerboard pattern.
 	 *
 	 * @param ColorOne		The color of half of the squares.
@@ -160,6 +175,16 @@ public:
 	 *
 	 */
 	ENGINE_API static UTexture2D* CreateCheckerboardTexture(FColor ColorOne = FColor(64, 64, 64), FColor ColorTwo = FColor(128, 128, 128), int32 CheckerSize = 32);
+
+	/**
+	 * Creates a new UTextureCube with a checkerboard pattern.
+	 *
+	 * @param ColorOne		The color of half of the squares.
+	 * @param ColorTwo		The color of the other half of the squares.
+	 * @param CheckerSize	The size in pixels of each checker square.
+	 *
+	 */
+	ENGINE_API static UTextureCube* CreateCheckerboardCubeTexture(FColor ColorOne = FColor(64, 64, 64), FColor ColorTwo = FColor(128, 128, 128), int32 CheckerSize = 32);
 
 	/**
 	 * Exports a UTextureRenderTarget2D as an HDR image on the disk.
@@ -201,6 +226,8 @@ public:
 	/**
 	 * Imports a texture a buffer and creates Texture2D from it
 	 */
+	ENGINE_API static UTexture2D* ImportBufferAsTexture2D(TArrayView64<const uint8> Buffer);
+
 	ENGINE_API static UTexture2D* ImportBufferAsTexture2D(const TArray<uint8>& Buffer);
 	
 	/**
@@ -222,5 +249,7 @@ public:
 	*
 	*/
 	ENGINE_API static bool ExportTextureCubeAsHDR(UTextureCube* TexRT, FArchive& Ar);
+
+	ENGINE_API static bool GetRawData(UTextureRenderTarget2D* TexRT, TArray64<uint8>& RawData);
 
 };

@@ -9,6 +9,7 @@
 #include "CanvasItem.h"
 #include "Engine/Canvas.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 
 DEFINE_LOG_CATEGORY(LogGameplayDebug);
 
@@ -53,6 +54,19 @@ FGameplayDebuggerShape FGameplayDebuggerShape::MakeSegment(const FVector& StartL
 	return MakeSegment(StartLocation, EndLocation, 1.0f, Color, Description);
 }
 
+FGameplayDebuggerShape FGameplayDebuggerShape::MakeArrow(const FVector& StartLocation, const FVector& EndLocation, const float HeadSize, const float Thickness, const FColor& Color, const FString& Description)
+{
+	FGameplayDebuggerShape NewElement;
+	NewElement.ShapeData.Add(StartLocation);
+	NewElement.ShapeData.Add(EndLocation);
+	NewElement.ShapeData.Add(FVector(Thickness, HeadSize, 0));
+	NewElement.Color = Color;
+	NewElement.Description = Description;
+	NewElement.Type = EGameplayDebuggerShape::Arrow;
+
+	return NewElement;
+}
+
 FGameplayDebuggerShape FGameplayDebuggerShape::MakeBox(const FVector& Center, const FVector& Extent, const FColor& Color, const FString& Description)
 {
 	FGameplayDebuggerShape NewElement;
@@ -90,6 +104,24 @@ FGameplayDebuggerShape FGameplayDebuggerShape::MakeCylinder(const FVector& Cente
 	return NewElement;
 }
 
+FGameplayDebuggerShape FGameplayDebuggerShape::MakeCircle(const FVector& Center, const FVector& Up, const float Radius, const FColor& Color, const FString& Description)
+{
+	return MakeCircle(Center, Up, Radius, 1.f, Color, Description);
+}
+
+FGameplayDebuggerShape FGameplayDebuggerShape::MakeCircle(const FVector& Center, const FVector& Up, const float Radius, const float Thickness, const FColor& Color, const FString& Description)
+{
+	FGameplayDebuggerShape NewElement;
+	NewElement.ShapeData.Add(Center);
+	NewElement.ShapeData.Add(Up);
+	NewElement.ShapeData.Add(FVector(Radius, Thickness, 0));
+	NewElement.Color = Color;
+	NewElement.Description = Description;
+	NewElement.Type = EGameplayDebuggerShape::Circle;
+
+	return NewElement;
+}
+
 FGameplayDebuggerShape FGameplayDebuggerShape::MakeCapsule(const FVector& Center, const float Radius, const float HalfHeight, const FColor& Color, const FString& Description)
 {
 	FGameplayDebuggerShape NewElement;
@@ -114,13 +146,17 @@ FGameplayDebuggerShape FGameplayDebuggerShape::MakePolygon(const TArray<FVector>
 
 void FGameplayDebuggerShape::Draw(UWorld* World, FGameplayDebuggerCanvasContext& Context)
 {
+	constexpr bool bPersistent = false;
+	constexpr float LifeTime = -1.0f;
+	constexpr uint8 DepthPriority = SDPG_World;
+	
 	FVector DescLocation;
 	switch (Type)
 	{
 	case EGameplayDebuggerShape::Point:
 		if (ShapeData.Num() == 2 && ShapeData[1].X > 0)
 		{
-			DrawDebugSphere(World, ShapeData[0], ShapeData[1].X, 16, Color);
+			DrawDebugSphere(World, ShapeData[0], ShapeData[1].X, 16, Color, bPersistent, LifeTime, DepthPriority);
 			DescLocation = ShapeData[0];
 		}
 		break;
@@ -128,7 +164,15 @@ void FGameplayDebuggerShape::Draw(UWorld* World, FGameplayDebuggerCanvasContext&
 	case EGameplayDebuggerShape::Segment:
 		if (ShapeData.Num() == 3 && ShapeData[2].X > 0)
 		{
-			DrawDebugLine(World, ShapeData[0], ShapeData[1], Color, false, -1.0f, 0, ShapeData[2].X);
+			DrawDebugLine(World, ShapeData[0], ShapeData[1], Color, bPersistent, LifeTime, DepthPriority, ShapeData[2].X);
+			DescLocation = (ShapeData[0] + ShapeData[1]) * 0.5f;
+		}
+		break;
+
+	case EGameplayDebuggerShape::Arrow:
+		if (ShapeData.Num() == 3 && ShapeData[2].X > 0)
+		{
+			DrawDebugDirectionalArrow(World, ShapeData[0], ShapeData[1], ShapeData[2].Y, Color, bPersistent, LifeTime, DepthPriority, ShapeData[2].X);
 			DescLocation = (ShapeData[0] + ShapeData[1]) * 0.5f;
 		}
 		break;
@@ -145,7 +189,7 @@ void FGameplayDebuggerShape::Draw(UWorld* World, FGameplayDebuggerCanvasContext&
 		if (ShapeData.Num() == 3 && ShapeData[2].X > 0)
 		{
 			const float DefaultConeAngle = 0.25f; // ~ 15 degrees
-			DrawDebugCone(World, ShapeData[0], ShapeData[1], ShapeData[2].X, DefaultConeAngle, DefaultConeAngle, 16, Color);
+			DrawDebugCone(World, ShapeData[0], ShapeData[1], ShapeData[2].X, DefaultConeAngle, DefaultConeAngle, 16, Color, bPersistent, LifeTime, DepthPriority);
 			DescLocation = ShapeData[0];
 		}
 		break;
@@ -153,7 +197,16 @@ void FGameplayDebuggerShape::Draw(UWorld* World, FGameplayDebuggerCanvasContext&
 	case EGameplayDebuggerShape::Cylinder:
 		if (ShapeData.Num() == 2)
 		{
-			DrawDebugCylinder(World, ShapeData[0] - FVector(0, 0, ShapeData[1].Z), ShapeData[0] + FVector(0, 0, ShapeData[1].Z), ShapeData[1].X, 16, Color);
+			DrawDebugCylinder(World, ShapeData[0] - FVector(0, 0, ShapeData[1].Z), ShapeData[0] + FVector(0, 0, ShapeData[1].Z), ShapeData[1].X, 16, Color, bPersistent, LifeTime, DepthPriority);
+			DescLocation = ShapeData[0];
+		}
+		break;
+
+	case EGameplayDebuggerShape::Circle:
+		if (ShapeData.Num() == 3)
+		{
+			const FMatrix Axes = FRotationMatrix::MakeFromX(ShapeData[1]);
+			DrawDebugCircle(World, ShapeData[0], ShapeData[2].X, 32, Color, bPersistent, LifeTime, DepthPriority, ShapeData[2].Y, Axes.GetUnitAxis(EAxis::Y), Axes.GetUnitAxis(EAxis::Z), false);
 			DescLocation = ShapeData[0];
 		}
 		break;
@@ -161,7 +214,7 @@ void FGameplayDebuggerShape::Draw(UWorld* World, FGameplayDebuggerCanvasContext&
 	case EGameplayDebuggerShape::Capsule:
 		if (ShapeData.Num() == 2)
 		{
-			DrawDebugCapsule(World, ShapeData[0], ShapeData[1].Z, ShapeData[1].X, FQuat::Identity, Color);
+			DrawDebugCapsule(World, ShapeData[0], ShapeData[1].Z, ShapeData[1].X, FQuat::Identity, Color, bPersistent, LifeTime, DepthPriority);
 			DescLocation = ShapeData[0];
 		}
 		break;
@@ -177,7 +230,7 @@ void FGameplayDebuggerShape::Draw(UWorld* World, FGameplayDebuggerCanvasContext&
 				MidPoint += ShapeData[Idx];
 			}
 
-			DrawDebugMesh(World, ShapeData, Indices, Color);
+			DrawDebugMesh(World, ShapeData, Indices, Color, bPersistent, LifeTime, DepthPriority);
 			DescLocation = MidPoint / ShapeData.Num();
 		}
 		break;
@@ -371,10 +424,15 @@ FGameplayDebuggerCanvasContext::FGameplayDebuggerCanvasContext(UCanvas* InCanvas
 
 void FGameplayDebuggerCanvasContext::Print(const FString& String)
 {
-	Print(FColor::White, String);
+	Print(FColor::White, 1.0f, String);
 }
 
 void FGameplayDebuggerCanvasContext::Print(const FColor& Color, const FString& String)
+{
+	Print(Color,  1.0f, String);
+}
+
+void FGameplayDebuggerCanvasContext::Print(const FColor& Color, const float Alpha, const FString& String)
 {
 	FTaggedStringParser Parser(Color);
 	Parser.ParseString(String);
@@ -400,7 +458,10 @@ void FGameplayDebuggerCanvasContext::Print(const FColor& Color, const FString& S
 			float SizeX = 0.0f, SizeY = 0.0f;
 			MeasureString(NodeData.String, SizeX, SizeY);
 
-			FCanvasTextItem TextItem(FVector2D::ZeroVector, FText::FromString(NodeData.String), Font.Get(), FLinearColor(NodeData.Color));
+			FLinearColor TextColor(NodeData.Color);
+			TextColor.A = Alpha;
+			
+			FCanvasTextItem TextItem(FVector2D::ZeroVector, FText::FromString(NodeData.String), Font.Get(), TextColor);
 			if (FontRenderInfo.bEnableShadow)
 			{
 				TextItem.EnableShadow(FColor::Black, FVector2D(1, 1));
@@ -416,17 +477,22 @@ void FGameplayDebuggerCanvasContext::Print(const FColor& Color, const FString& S
 
 void FGameplayDebuggerCanvasContext::PrintAt(float PosX, float PosY, const FString& String)
 {
-	PrintAt(PosX, PosY, FColor::White, String);
+	PrintAt(PosX, PosY, FColor::White, 1.0f, String);
 }
 
 void FGameplayDebuggerCanvasContext::PrintAt(float PosX, float PosY, const FColor& Color, const FString& String)
+{
+	PrintAt(PosX, PosY, Color, 1.0f, String);
+}
+
+void FGameplayDebuggerCanvasContext::PrintAt(float PosX, float PosY, const FColor& Color, const float Alpha, const FString& String)
 {
 	TGuardValue<float> ScopedCursorX(CursorX, PosX);
 	TGuardValue<float> ScopedCursorY(CursorY, PosY);
 	TGuardValue<float> ScopedDefaultX(DefaultX, PosX);
 	TGuardValue<float> ScopedDefaultY(DefaultY, PosY);
 
-	Print(Color, String);
+	Print(Color, Alpha, String);
 }
 
 // copied from Core/Private/Misc/VarargsHeler.h 
@@ -457,24 +523,14 @@ void FGameplayDebuggerCanvasContext::PrintAt(float PosX, float PosY, const FColo
 	PrintFunc; \
 	FMemory::SystemFree(AllocatedBuffer);
 
-void FGameplayDebuggerCanvasContext::PrintfImpl(const TCHAR* Fmt, ...)
+void FGameplayDebuggerCanvasContext::PrintfImpl(const FColor& Color, const float Alpha, const TCHAR* Fmt, ...)
 {
-	GROWABLE_PRINTF(Print(Buffer));
+	GROWABLE_PRINTF(Print(Color, Alpha, Buffer));
 }
 
-void FGameplayDebuggerCanvasContext::PrintfImpl(const FColor& Color, const TCHAR* Fmt, ...)
+void FGameplayDebuggerCanvasContext::PrintfAtImpl(float PosX, float PosY, const FColor& Color, const float Alpha, const TCHAR* Fmt, ...)
 {
-	GROWABLE_PRINTF(Print(Color, Buffer));
-}
-
-void FGameplayDebuggerCanvasContext::PrintfAtImpl(float PosX, float PosY, const TCHAR* Fmt, ...)
-{
-	GROWABLE_PRINTF(PrintAt(PosX, PosY, Buffer));
-}
-
-void FGameplayDebuggerCanvasContext::PrintfAtImpl(float PosX, float PosY, const FColor& Color, const TCHAR* Fmt, ...)
-{
-	GROWABLE_PRINTF(PrintAt(PosX, PosY, Color, Buffer));
+	GROWABLE_PRINTF(PrintAt(PosX, PosY, Color, Alpha, Buffer));
 }
 
 void FGameplayDebuggerCanvasContext::MoveToNewLine()
@@ -554,6 +610,13 @@ void FGameplayDebuggerCanvasContext::DrawIcon(const FColor& Color, const FCanvas
 		CanvasOb->SetDrawColor(Color);
 		CanvasOb->DrawIcon(Icon, PosX, PosY, Scale);
 	}
+}
+
+UWorld* FGameplayDebuggerCanvasContext::GetWorld() const 
+{
+	return World.IsValid() 
+		? World.Get()
+		: (PlayerController.IsValid() ? PlayerController->GetWorld() : nullptr);
 }
 
 //////////////////////////////////////////////////////////////////////////

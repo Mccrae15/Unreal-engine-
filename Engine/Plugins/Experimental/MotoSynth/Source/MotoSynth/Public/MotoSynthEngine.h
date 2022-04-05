@@ -16,6 +16,7 @@
 #include "DSP/Filter.h"
 #include "DSP/DelayStereo.h"
 #include "DSP/Granulator.h"
+#include "DSP/Envelope.h"
 #include "MotoSynthPreset.h"
 #include "MotoSynthSourceAsset.h"
 #include "MotoSynthDataManager.h"
@@ -146,8 +147,8 @@ private:
 	MotoSynthDataPtr AccelerationSourceData;
 	MotoSynthDataPtr DecelerationSourceData;
 
-	FVector2D RPMRange;
-	FVector2D RPMRange_RendererCallback;
+	FVector2f RPMRange;
+	FVector2f RPMRange_RendererCallback;
 
 	// Number of samples to use to do a grain crossfade. Smooths out discontinuities on grain boundaries.
 	int32 GrainCrossfadeSamples = 10;
@@ -163,9 +164,17 @@ private:
 	TArray<int32> FreeGrains; // Grain indicies which are free to be used. max size should be equal to grain pool size.
 
 	TArray<float> SynthBuffer;
-	FVector2D SynthFilterFreqRange = { 100.0f, 5000.0f };
+	FVector2f SynthFilterFreqRange = { 100.0f, 5000.0f };
 	Audio::FLadderFilter SynthFilter;
 	Audio::FOsc SynthOsc;
+	Audio::FADEnvelope SynthEnv;
+	Audio::AlignedFloatBuffer SynthEnvBuffer;
+
+	Audio::FBiquadFilter NoiseFilter;
+	Audio::FWhiteNoise NoiseGen;
+	Audio::FADEnvelope NoiseEnv;
+	Audio::AlignedFloatBuffer NoiseEnvBuffer;
+
 	int32 SynthPitchUpdateSampleIndex = 0;
 	int32 SynthPitchUpdateDeltaSamples = 1023;
 
@@ -178,14 +187,31 @@ private:
 	// Mono scratch buffer for engine generation
 	TArray<float> GrainEngineBuffer;
 
-	float SynthToneVolume = 0.0f;
+	FVector2f SynthToneVolumeRange = { 0.0f, 0.0f };
+	FVector2f SynthToneFilterFrequencyRange = { 500.0f, 500.0f };
+	FVector2f SynthToneAttackTimeMsecRange = { 10.0f, 10.0f };
+	FVector2f SynthToneDecayTimeMsecRange = { 100.0f, 100.0f };
+	FVector2f SynthToneAttackCurveRange = { 1.0f, 1.0f };
+	FVector2f SynthToneDecayCurveRange = { 1.0f, 1.0f };
+
+	FVector2f NoiseVolumeRange = { 0.0f, 0.0f };
+	FVector2f NoiseLPFRange = { 0.0f, 0.0f };
+	FVector2f NoiseAttackTimeMsecRange = { 10.0f, 10.0f };
+	FVector2f NoiseAttackCurveRange = { 1.0f, 1.0f };
+	FVector2f NoiseDecayTimeMsecRange = { 10.0f, 10.0f };
+	FVector2f NoiseDecayCurveRange = { 1.0f, 1.0f };
+
 	int32 SynthOctaveShift = 0;
-	float SynthFilterFrequency = 500.0f;
 	float GranularEngineVolume = 1.0f;
 	float TargetGranularEngineVolume = 1.0f;
 
 	bool bWasAccelerating = false;
 	bool bSynthToneEnabled = false;
+	bool bSynthToneEnvelopeEnabled = false;
+	bool bNoiseEnabled = false;
+	bool bNoiseEnvelopeEnabled = false;
 	bool bGranularEngineEnabled = true;
 	bool bStereoWidenerEnabled = true;
+	bool bRPMWasSet = false;
+	bool bUpdateRPMCalculations = false;
 };

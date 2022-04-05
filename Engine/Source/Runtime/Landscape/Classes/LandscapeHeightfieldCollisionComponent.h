@@ -47,7 +47,7 @@ class ULandscapeHeightfieldCollisionComponent : public UPrimitiveComponent
 
 	/** List of layers painted on this component. Matches the WeightmapLayerAllocations array in the LandscapeComponent. */
 	UPROPERTY()
-	TArray<ULandscapeLayerInfoObject*> ComponentLayerInfos;
+	TArray<TObjectPtr<ULandscapeLayerInfoObject>> ComponentLayerInfos;
 
 	/** Offset of component in landscape quads */
 	UPROPERTY()
@@ -132,7 +132,7 @@ class ULandscapeHeightfieldCollisionComponent : public UPrimitiveComponent
 
 	/** Physical materials objects referenced by the indices in PhysicalMaterialRenderData. Stripped from cooked content */
 	UPROPERTY()
-	TArray<UPhysicalMaterial*>					PhysicalMaterialRenderObjects;
+	TArray<TObjectPtr<UPhysicalMaterial>>					PhysicalMaterialRenderObjects;
 
 	/*  Cooked editor specific heightfield data, never serialized  */
 	TArray<uint8>								CookedCollisionDataEd;
@@ -160,7 +160,7 @@ class ULandscapeHeightfieldCollisionComponent : public UPrimitiveComponent
 	
 	/** This is a list of physical materials that is actually used by a cooked HeightField */
 	UPROPERTY()
-	TArray<UPhysicalMaterial*>					CookedPhysicalMaterials;
+	TArray<TObjectPtr<UPhysicalMaterial>>					CookedPhysicalMaterials;
 	
 	/** Physics engine version of heightfield data. */
 	TRefCountPtr<FHeightfieldGeometryRef>	HeightfieldRef;
@@ -222,7 +222,11 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void BeginDestroy() override;
 	virtual void PostLoad() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 #if WITH_EDITOR
 	virtual void ExportCustomProperties(FOutputDevice& Out, uint32 Indent) override;
 	virtual void ImportCustomProperties(const TCHAR* SourceText, FFeedbackContext* Warn) override;

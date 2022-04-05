@@ -5,6 +5,7 @@
 #include "Algo/Count.h"
 #include "Algo/Transform.h"
 #include "ConcertMessages.h"
+#include "ConcertSequencerMessages.h"
 #include "ConcertTransportMessages.h"
 #include "Delegates/IDelegateInstance.h"
 #include "HAL/IConsoleManager.h"
@@ -40,6 +41,7 @@
 #include "Templates/SharedPointer.h"
 #include "Templates/UnrealTemplate.h"
 #include "UObject/UObjectGlobals.h"
+#include "PackageTools.h"
 
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
@@ -359,6 +361,7 @@ void FConcertTakeRecorderManager::OnTakeRecorderInitialized(UTakeRecorder* TakeR
 {
 	TakeRecorder->OnRecordingFinished().AddRaw(this, &FConcertTakeRecorderManager::OnRecordingFinished);
 	TakeRecorder->OnRecordingCancelled().AddRaw(this, &FConcertTakeRecorderManager::OnRecordingCancelled);
+	TakeRecorder->OnStartPlayFrameModified().AddRaw(this, &FConcertTakeRecorderManager::OnFrameAdjustment);
 
 	if (IsTakeSyncEnabled() && !bIsRecording && TakeRecorderState.LastStartedTake != TakeRecorder->GetName())
 	{
@@ -437,7 +440,22 @@ void FConcertTakeRecorderManager::OnRecordingCancelled(UTakeRecorder* TakeRecord
 
 	TakeRecorder->OnRecordingFinished().RemoveAll(this);
 	TakeRecorder->OnRecordingCancelled().RemoveAll(this);
+	TakeRecorder->OnStartPlayFrameModified().RemoveAll(this);
 	bIsRecording = false;
+}
+
+void FConcertTakeRecorderManager::OnFrameAdjustment(UTakeRecorder* TakeRecorder, const FFrameNumber& InPlaybackStartFrame)
+{
+	if (TSharedPtr<IConcertClientSession> Session = WeakSession.Pin())
+	{
+		ULevelSequence* LevelSequence = TakeRecorder->GetSequence();
+		check(LevelSequence);
+
+		FConcertSequencerTimeAdjustmentEvent TimeEvent;
+		TimeEvent.SequenceObjectPath = LevelSequence->GetPathName();
+		TimeEvent.PlaybackStartFrame = InPlaybackStartFrame;
+		Session->SendCustomEvent(TimeEvent, Session->GetSessionClientEndpointIds(), EConcertMessageFlags::ReliableOrdered);
+	}
 }
 
 void FConcertTakeRecorderManager::OnTakeInitializedEvent(const FConcertSessionContext&, const FConcertTakeInitializedEvent& InEvent)
@@ -561,9 +579,6 @@ void FConcertTakeRecorderManager::OnTakeSyncPropertyChange(bool Value)
 
 		Session->SendCustomEvent(OutEvent, Session->GetSessionClientEndpointIds(), EConcertMessageFlags::ReliableOrdered);
 
-		UConcertTakeSynchronization *Sync = GetMutableDefault<UConcertTakeSynchronization>();
-		Sync->SaveConfig();
-
 		if (Customization.IsValid())
 		{
 			UConcertSessionRecordSettings const* RecordSettings = GetDefault<UConcertSessionRecordSettings>();
@@ -574,6 +589,8 @@ void FConcertTakeRecorderManager::OnTakeSyncPropertyChange(bool Value)
 			Customization->UpdateClientSettings(EConcertClientStatus::Updated, Item);
 		}
 	}
+	UConcertTakeSynchronization* Sync = GetMutableDefault<UConcertTakeSynchronization>();
+	Sync->SaveConfig();
 }
 
 void FConcertTakeRecorderManager::OnMultiUserSyncChangeEvent(const FConcertSessionContext&, const FConcertMultiUserSyncChangeEvent& InEvent)
@@ -697,7 +714,7 @@ bool FConcertTakeRecorderManager::CanAnyRecord() const
 bool FConcertTakeRecorderManager::CanRecord() const
 {
 	UConcertSessionRecordSettings const* RecordSettings = GetDefault<UConcertSessionRecordSettings>();
-	UConcertTakeSynchronization const *TakeSync = GetDefault<UConcertTakeSynchronization>();
+	UConcertTakeSynchronization const* TakeSync = GetDefault<UConcertTakeSynchronization>();
 	return TakeSync->bSyncTakeRecordingTransactions && RecordSettings->LocalSettings.bRecordOnClient;
 }
 
@@ -732,13 +749,13 @@ EVisibility FConcertTakeRecorderManager::HandleTakeSyncButtonVisibility() const
 
 void FConcertTakeRecorderManager::SendInitialState(IConcertClientSession& Session)
 {
-	UConcertSessionRecordSettings const * Record = GetDefault<UConcertSessionRecordSettings>();
+	UConcertSessionRecordSettings const* Record = GetDefault<UConcertSessionRecordSettings>();
 	FConcertRecordSettingsChangeEvent OutEvent;
 	OutEvent.Settings   = Record->LocalSettings;
 	OutEvent.EndpointId = Session.GetSessionClientEndpointId();
 	Session.SendCustomEvent(OutEvent, Session.GetSessionClientEndpointIds(), EConcertMessageFlags::ReliableOrdered);
 
-	UConcertTakeSynchronization const * TakeSync = GetDefault<UConcertTakeSynchronization>();
+	UConcertTakeSynchronization const* TakeSync = GetDefault<UConcertTakeSynchronization>();
 	FConcertMultiUserSyncChangeEvent TakeSyncEvent;
 	TakeSyncEvent.EndpointId = OutEvent.EndpointId;
 	TakeSyncEvent.bSyncTakeRecordingTransactions = TakeSync->bSyncTakeRecordingTransactions;
@@ -828,18 +845,28 @@ void FConcertTakeRecorderManager::UpdateSessionClientList()
 ETransactionFilterResult FConcertTakeRecorderManager::ShouldObjectBeTransacted(UObject* InObject, UPackage* InPackage)
 {
 	UConcertSessionRecordSettings const* RecordSettings = GetDefault<UConcertSessionRecordSettings>();
+
 	ITakeRecorderModule& TakeRecorderModule = FModuleManager::LoadModuleChecked<ITakeRecorderModule>("TakeRecorder");
 	UTakePreset* TakePreset = Preset.Get();
-	if (!WeakSession.IsValid()
-		|| InPackage == nullptr
-		|| TakePreset == nullptr
-		|| !RecordSettings->LocalSettings.bTransactSources
-		|| TakePreset->GetOutermost()->GetFName() != InPackage->GetFName())
+	if (WeakSession.IsValid()
+		&& InPackage
+		&& TakePreset
+		&& RecordSettings->LocalSettings.bTransactSources
+		&& TakePreset->GetOutermost()->GetFName() == InPackage->GetFName())
 	{
-		return ETransactionFilterResult::UseDefault;
+		return ETransactionFilterResult::IncludeObject;
 	}
 
-	return ETransactionFilterResult::IncludeObject;
+	UConcertTakeSynchronization const* TakeSync	= GetDefault<UConcertTakeSynchronization>();
+	if (WeakSession.IsValid()
+		&& TakeSync->bTransactTakeMetadata
+		&& InObject
+		&& InObject->IsA<UTakeMetaData>())
+	{
+		return ETransactionFilterResult::IncludeObject;
+	}
+
+	return ETransactionFilterResult::UseDefault;
 }
 
 SIZE_T FConcertTakeRecorderManager::RemoteRecorders() const
@@ -855,12 +882,12 @@ SIZE_T FConcertTakeRecorderManager::RemoteRecorders() const
 
 FTakeRecorderParameters FConcertTakeRecorderManager::SetupTakeParametersForMultiuser(const FTakeRecorderParameters& Input)
 {
-	if (WeakSession.IsValid())
+	if (IsTakeSyncEnabled() && WeakSession.IsValid())
 	{
 		if (CanRecord() && RemoteRecorders() > 0)
 		{
 			TSharedPtr<IConcertClientSession> Session = WeakSession.Pin();
-			FString Name = Session->GetLocalClientInfo().DisplayName;
+			FString Name = UPackageTools::SanitizePackageName(Session->GetLocalClientInfo().DisplayName);
 			Name.RemoveSpacesInline();
 			FTakeRecorderParameters Output = Input;
 			Output.Project.TakeSaveDir = Input.Project.TakeSaveDir + "_" + Name;

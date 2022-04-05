@@ -8,6 +8,7 @@
 #include "ITimedDataInput.h"
 #include "TimedDataMonitorTypes.h"
 #include "UObject/ObjectMacros.h"
+#include "Containers/Ticker.h"
 
 #include "TimedDataMonitorCalibration.generated.h"
 
@@ -44,7 +45,7 @@ struct FTimedDataMonitorCalibrationResult
 	GENERATED_BODY();
 
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "Result")
-	ETimedDataMonitorCalibrationReturnCode ReturnCode;
+	ETimedDataMonitorCalibrationReturnCode ReturnCode = ETimedDataMonitorCalibrationReturnCode::Succeeded;
 
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "Result")
 	TArray<FTimedDataMonitorInputIdentifier> FailureInputIdentifiers;
@@ -117,7 +118,7 @@ struct FTimedDataMonitorTimeCorrectionResult
 	GENERATED_BODY();
 
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "Result")
-	ETimedDataMonitorTimeCorrectionReturnCode ReturnCode;
+	ETimedDataMonitorTimeCorrectionReturnCode ReturnCode = ETimedDataMonitorTimeCorrectionReturnCode::Succeeded;
 
 	UPROPERTY(BlueprintReadOnly, VisibleAnywhere, Category = "Result")
 	TArray<FTimedDataMonitorChannelIdentifier> FailureChannelIdentifiers;
@@ -174,6 +175,6 @@ private:
 
 	int32 NumberOfRetry = 0;
 	FTimedDataMonitorCalibrationParameters CalibrationParameters;
-	FDelegateHandle TickerHandle;
+	FTSTicker::FDelegateHandle TickerHandle;
 	FOnCalibrationCompletedSignature OnCalibrationCompleted;
 };

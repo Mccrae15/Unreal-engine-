@@ -55,7 +55,7 @@ public:
 	const TSharedPtr<FTokenizedMessage> GetMessageAtIndex( const uint32 PageIndex, const int32 MessageIndex ) const;
 
 	/** Gets all messages as a string */
-	FText GetAllMessagesAsText(const uint32 PageIndex) const;
+	FString GetAllMessagesAsString(const uint32 PageIndex) const;
 
 	/** Obtains a const iterator to the message data structure */
 	MessageContainer::TConstIterator GetMessageIterator(uint32 PageIndex) const;
@@ -80,6 +80,25 @@ public:
 	 *						we discard the oldest page.
 	 */
 	void NewPage( const FText& InTitle, uint32 InMaxPages );
+
+	/**
+	* Sets the current page to the one specified by the title. If the page does not exist, creates a new page.
+	* @param	InTitle		The title of the page to search for, or create
+	* @param	InMaxPages	The maximum number of pages we keep around. If the count is exceeded, 
+	*						we discard the oldest page.
+	* @returns true if the page has changed (either switched or created a new one).
+	*/
+	bool SetCurrentPage( const FText& InTitle, uint32 InMaxPages  );
+
+	/**
+	* Sets the current page to the one specified by the index. If the page does not exist, creates a new page.
+	* The page will move to index 0.
+	* @param	InTitle		The title of the page to search for, or create
+	* @param	InMaxPages	The maximum number of pages we keep around. If the count is exceeded, 
+	*						we discard the oldest page.
+	* @returns true if the page has changed (either switched or created a new one).
+	*/
+	bool SetCurrentPage( const uint32 InOldPageIndex  );
 
 	/** Get the number of pages contained in this log */
 	uint32 NumPages() const;

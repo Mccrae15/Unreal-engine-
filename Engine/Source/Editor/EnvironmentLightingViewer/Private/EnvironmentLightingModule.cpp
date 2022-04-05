@@ -31,7 +31,6 @@ TSharedRef<SDockTab> CreateEnvLightTab(const FSpawnTabArgs& Args)
 {
 	return SNew(SDockTab)
 		.TabRole(ETabRole::NomadTab)
-		.Icon(FEditorStyle::GetBrush("LevelEditor.Tabs.EnvironmentLightingViewer"))
 		[
 			SNew(SEnvironmentLightingViewer)
 		];
@@ -44,7 +43,7 @@ void FEnvironmentLightingViewerModule::StartupModule()
 	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(EnvironmentLightingViewerModule::EnvironmentLightingViewerApp, FOnSpawnTab::CreateStatic(&CreateEnvLightTab))//TODO picker tab
 		.SetDisplayName(NSLOCTEXT("EnvironmentLightingViewerApp", "TabTitle", "EnvironmentLighting Viewer"))
 		.SetTooltipText(NSLOCTEXT("EnvironmentLightingViewerApp", "TooltipText", "Environment lighting window."))
-		.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsMiscCategory())
+		.SetGroup(WorkspaceMenu::GetMenuStructure().GetDeveloperToolsDebugCategory())
 		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassViewer.TabIcon"));
 
 	// TODO setting module ISettingsModule* SettingsModule = FModuleManager::GetModulePtr<ISettingsModule>("Settings");

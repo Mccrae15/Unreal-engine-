@@ -127,8 +127,7 @@ void FDMXProtocolSACN::UnregisterInputPort(const TSharedRef<FDMXInputPort, ESPMo
 	check(CachedInputPorts.Contains(InputPort));
 	CachedInputPorts.Remove(InputPort);
 
-	TSharedPtr<FDMXProtocolSACNReceiver> UnusedReceiver;
-	for (const TSharedPtr<FDMXProtocolSACNReceiver>& Receiver : Receivers)
+	for (const TSharedPtr<FDMXProtocolSACNReceiver>& Receiver : TSet<TSharedPtr<FDMXProtocolSACNReceiver>>(Receivers))
 	{
 		if (Receiver->ContainsInputPort(InputPort))
 		{
@@ -136,19 +135,13 @@ void FDMXProtocolSACN::UnregisterInputPort(const TSharedRef<FDMXInputPort, ESPMo
 
 			if (Receiver->GetNumAssignedInputPorts() == 0)
 			{
-				UnusedReceiver = Receiver;
+				Receivers.Remove(Receiver);
 			}
-			break;
 		}
-	}
-
-	if (UnusedReceiver.IsValid())
-	{
-		Receivers.Remove(UnusedReceiver);
 	}
 }
 
-TSharedPtr<IDMXSender> FDMXProtocolSACN::RegisterOutputPort(const TSharedRef<FDMXOutputPort, ESPMode::ThreadSafe>& OutputPort)
+TArray<TSharedPtr<IDMXSender>> FDMXProtocolSACN::RegisterOutputPort(const TSharedRef<FDMXOutputPort, ESPMode::ThreadSafe>& OutputPort)
 {
 	check(!OutputPort->IsRegistered());
 	check(!CachedOutputPorts.Contains(OutputPort));
@@ -157,48 +150,61 @@ TSharedPtr<IDMXSender> FDMXProtocolSACN::RegisterOutputPort(const TSharedRef<FDM
 	EDMXCommunicationType CommunicationType = OutputPort->GetCommunicationType();
 
 	// Try to use an existing receiver or create a new one
-	TSharedPtr<FDMXProtocolSACNSender> Sender = nullptr;
-	
+	TArray<TSharedPtr<IDMXSender>> NewSenders;
 	if (CommunicationType == EDMXCommunicationType::Multicast)
 	{
-		Sender = FindExistingMulticastSender(NetworkInterfaceAddress);
-			
-		if (!Sender.IsValid())
+		TSharedPtr<FDMXProtocolSACNSender> NewSender = FindExistingMulticastSender(NetworkInterfaceAddress);
+		if (!NewSender.IsValid())
 		{
-			Sender = FDMXProtocolSACNSender::TryCreateMulticastSender(SharedThis(this), NetworkInterfaceAddress);
+			NewSender = FDMXProtocolSACNSender::TryCreateMulticastSender(SharedThis(this), NetworkInterfaceAddress);
+		}
+
+		if (NewSender.IsValid())
+		{
+			Senders.Add(NewSender);
+			NewSender->AssignOutputPort(OutputPort);
+			NewSenders.Add(NewSender);
 		}
 	}
 	else if (CommunicationType == EDMXCommunicationType::Unicast)
 	{
-		const FString& UnicastAddress = OutputPort->GetDestinationAddress();
-
-		Sender = FindExistingUnicastSender(NetworkInterfaceAddress, UnicastAddress);
-
-		if (!Sender.IsValid())
+		if (OutputPort->GetDestinationAddresses().Num() == 0)
 		{
-			Sender = FDMXProtocolSACNSender::TryCreateUnicastSender(SharedThis(this), NetworkInterfaceAddress, UnicastAddress);
+			UE_LOG(LogDMXProtocol, Warning, TEXT("Cannot create DMX Protocol sACN Sender for Output Port '%s'. Port is set to Unicast, but does not specify any Destination Addresses."), *OutputPort->GetPortName());
+		}
+
+		for (const FString& UnicastAddress : OutputPort->GetDestinationAddresses())
+		{
+			TSharedPtr<FDMXProtocolSACNSender> NewSender = FindExistingUnicastSender(NetworkInterfaceAddress, UnicastAddress);
+			if (!NewSender.IsValid())
+			{
+				NewSender = FDMXProtocolSACNSender::TryCreateUnicastSender(SharedThis(this), NetworkInterfaceAddress, UnicastAddress);
+			}
+
+			if (NewSender.IsValid())
+			{
+				Senders.Add(NewSender);
+				NewSender->AssignOutputPort(OutputPort);
+				NewSenders.Add(NewSender);
+			}
 		}
 	}
 	else
 	{
 		// Invalid Communication Type
-		UE_LOG(LogDMXProtocol, Error, TEXT("Cannot create DMX Protocol sACN Sender. The communication type specified is not supported."));
+		UE_LOG(LogDMXProtocol, Warning, TEXT("Cannot create DMX Protocol sACN Sender. The communication type specified is not supported."));
 	}
-	
 
-	if (!Sender.IsValid())
+	if (NewSenders.Num() > 0)
 	{
-		UE_LOG(LogDMXProtocol, Warning, TEXT("Could not create sACN sender for output port %s"), *OutputPort->GetPortName());
-
-		return nullptr;
+		CachedOutputPorts.Add(OutputPort);
+	}
+	else
+	{
+		UE_LOG(LogDMXProtocol, Warning, TEXT("Could not create sACN sender for Output Port '%s'"), *OutputPort->GetPortName());
 	}
 
-	Senders.Add(Sender);
-
-	Sender->AssignOutputPort(OutputPort);
-	CachedOutputPorts.Add(OutputPort);
-
-	return Sender;
+	return NewSenders;
 }
 
 void FDMXProtocolSACN::UnregisterOutputPort(const TSharedRef<FDMXOutputPort, ESPMode::ThreadSafe>& OutputPort)
@@ -206,8 +212,7 @@ void FDMXProtocolSACN::UnregisterOutputPort(const TSharedRef<FDMXOutputPort, ESP
 	check(CachedOutputPorts.Contains(OutputPort));
 	CachedOutputPorts.Remove(OutputPort);
 
-	TSharedPtr<FDMXProtocolSACNSender> UnusedSender;
-	for (const TSharedPtr<FDMXProtocolSACNSender>& Sender : Senders)
+	for (const TSharedPtr<FDMXProtocolSACNSender>& Sender : TSet<TSharedPtr<FDMXProtocolSACNSender>>(Senders))
 	{
 		if (Sender->ContainsOutputPort(OutputPort))
 		{
@@ -215,15 +220,9 @@ void FDMXProtocolSACN::UnregisterOutputPort(const TSharedRef<FDMXOutputPort, ESP
 
 			if (Sender->GetNumAssignedOutputPorts() == 0)
 			{
-				UnusedSender = Sender;
+				Senders.Remove(Sender);
 			}
-			break;
 		}
-	}
-
-	if (UnusedSender.IsValid())
-	{
-		Senders.Remove(UnusedSender);
 	}
 }
 

@@ -10,6 +10,8 @@ using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -18,6 +20,22 @@ namespace UnrealGameSync
 {
 	static class Program
 	{
+		public static string GetVersionString()
+		{
+			AssemblyInformationalVersionAttribute Version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>();
+			return Version?.InformationalVersion ?? "Unknown";
+		}
+
+		static JsonSerializerOptions GetDefaultJsonSerializerOptions()
+		{
+			JsonSerializerOptions Options = new JsonSerializerOptions();
+			Options.PropertyNameCaseInsensitive = true;
+			Options.Converters.Add(new JsonStringEnumConverter());
+			return Options;
+		}
+
+		public static JsonSerializerOptions DefaultJsonSerializerOptions { get; } = GetDefaultJsonSerializerOptions();
+
 		public static string SyncVersion = null;
 
 		[STAThread]
@@ -81,6 +99,12 @@ namespace UnrealGameSync
 
 			string UpdateConfigFile = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "AutoUpdate.ini");
 			MergeUpdateSettings(UpdateConfigFile, ref UpdatePath, ref UpdateSpawn);
+
+			// Set the current working directory to the update directory to prevent child-process file handles from disrupting auto-updates
+			if (UpdateSpawn != null)
+			{
+				Directory.SetCurrentDirectory(Path.GetDirectoryName(UpdateSpawn));
+			}
 
 			string SyncVersionFile = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "SyncVersion.txt");
 			if(File.Exists(SyncVersionFile))
@@ -189,13 +213,7 @@ namespace UnrealGameSync
 			Exception Ex = Args.ExceptionObject as Exception;
 			if(Ex != null)
 			{
-				StringBuilder ExceptionTrace = new StringBuilder(Ex.ToString());
-				for(Exception InnerEx = Ex.InnerException; InnerEx != null; InnerEx = InnerEx.InnerException)
-				{
-					ExceptionTrace.Append("\nInner Exception:\n");
-					ExceptionTrace.Append(InnerEx.ToString());
-				}
-				Telemetry.SendEvent("Crash", new { Exception = Ex });
+				Telemetry.SendEvent("Crash", new {Exception = Ex.ToString()});
 			}
 		}
 

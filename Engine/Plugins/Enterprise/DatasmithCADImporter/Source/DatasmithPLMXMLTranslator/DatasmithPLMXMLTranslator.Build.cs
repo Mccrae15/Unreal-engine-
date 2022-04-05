@@ -6,38 +6,37 @@ using System.IO;
 
 namespace UnrealBuildTool.Rules
 {
-    public class DatasmithPLMXMLTranslator : ModuleRules
-    {
-        public DatasmithPLMXMLTranslator(ReadOnlyTargetRules Target) : base(Target)
-        {
-	        PublicDependencyModuleNames.AddRange(
-		        new string[]
-		        {
-			        "Core",
-			        "CoreUObject",
-		        }
-	        );
+	public class DatasmithPLMXMLTranslator : ModuleRules
+	{
+		public DatasmithPLMXMLTranslator(ReadOnlyTargetRules Target) : base(Target)
+		{
+			PublicDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"Core",
+					"CoreUObject",
+				}
+			);
 
-            PrivateDependencyModuleNames.AddRange(
-                new string[]
-                {
-                    "Engine",
-                    "MeshDescription",
-					"XmlParser",
-
-					"DatasmithCore",
-
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
 					"CADInterfaces",
+					"CADKernelSurface",
 					"CADLibrary",
 					"CADTools",
-					"DatasmithCoreTechParametricSurfaceData",
+					"CoreTechSurface",
 					"DatasmithCADTranslator", // for DatasmithMeshBuilder
-                    "DatasmithTranslator",
-                    "DatasmithDispatcher",
-
-                    "DatasmithContent",
-                }
-            );
+					"DatasmithContent",
+					"DatasmithCore",
+					"DatasmithDispatcher",
+					"DatasmithTranslator",
+					"Engine",
+					"MeshDescription",
+					"ParametricSurface",
+					"XmlParser",
+				}
+			);
 
 
 			if (Target.bBuildEditor == true)
@@ -52,9 +51,9 @@ namespace UnrealBuildTool.Rules
 			}
 
 			if (System.Type.GetType("CoreTech") != null)
-            {
-	            PrivateDependencyModuleNames.Add("CoreTech");
-            }
-        }
-    }
+			{
+				PrivateDependencyModuleNames.Add("CoreTech");
+			}
+		}
+	}
 }

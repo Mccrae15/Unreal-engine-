@@ -25,10 +25,11 @@ public:
 	class FSlot : public TSlotBase<FSlot>
 	{
 	public:
-		FSlot()
-			: TSlotBase<FSlot>()
-		{
-		}
+		using TSlotBase<FSlot>::TSlotBase;
+
+		SLATE_SLOT_BEGIN_ARGS(FSlot, TSlotBase<FSlot>)
+		SLATE_SLOT_END_ARGS()
+		using TSlotBase<FSlot>::Construct;
 	};
 
 
@@ -39,12 +40,12 @@ public:
 		, _bDistributeItemsEvenly(true)
 		, _AngleBetweenItems(0.f)
 		, _SectorCentralAngle(360.f)
-	{
+		{
 			_Visibility = EVisibility::SelfHitTestInvisible;
 		}
 
 		/** The slot supported by this panel */
-		SLATE_SUPPORTS_SLOT( FSlot )
+		SLATE_SLOT_ARGUMENT( FSlot, Slots )
 
 		/** The preferred width, if not set will fill the space */
 		SLATE_ATTRIBUTE( float, PreferredWidth )
@@ -68,9 +69,10 @@ public:
 
 	SRadialBox();
 
-	static FSlot& Slot();
+	static FSlot::FSlotArguments Slot();
 
-	FSlot& AddSlot();
+	using FScopedWidgetSlotArguments = TPanelChildren<FSlot>::FScopedWidgetSlotArguments;
+	FScopedWidgetSlotArguments AddSlot();
 
 	/** Removes a slot from this radial box which contains the specified SWidget
 	 *
@@ -99,30 +101,33 @@ public:
 	void SetUseAllottedWidth(bool bInUseAllottedWidth);
 
 	/** Mods the angle so it's between 0-360 */
+	UE_DEPRECATED(5.0, "NormalizeAngle is deprecated. You should use the FRotator::NormalizeAxis.")
 	int32 NormalizeAngle(int32 Angle) const;
 
 private:
 
-	/** How wide this panel should appear to be. */
-	TAttribute<float> PreferredWidth;
+	/** Mods the angle so it's between 0-360 */
+	float InternalNormalizeAngle(float Angle) const;
 
 	/** The slots that contain this panel's children. */
 	TPanelChildren<FSlot> Slots;
 
-	/** If true the box will have a preferred width equal to its alloted width  */
-	bool bUseAllottedWidth;
-
+	/** How wide this panel should appear to be. */
+	TSlateAttribute<float, EInvalidateWidgetReason::Layout> PreferredWidth;
 	/** Offset of the first element in the circle in degrees */
 	float StartingAngle;
 
 	/** If we need a section of a radial (for example half-a-radial) we can define a central angle < 360 (180 in case of half-a-radial). Used when bDistributeItemsEvenly is enabled. */
 	float SectorCentralAngle;
 
+	/** How many degrees apart should the elements be? */
+	float AngleBetweenItems;
+
 	/** Ignore AngleBetweenItems and distribute items evenly inside the whole circle */
 	bool bDistributeItemsEvenly;
 
-	/** How many degrees apart should the elements be? */
-	float AngleBetweenItems;
+	/** If true the box will have a preferred width equal to its alloted width  */
+	bool bUseAllottedWidth;
 
 	class FChildArranger;
 	friend class SRadialBox::FChildArranger;

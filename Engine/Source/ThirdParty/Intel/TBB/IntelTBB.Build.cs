@@ -1,59 +1,72 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 using UnrealBuildTool;
+using System.IO;
 
 public class IntelTBB : ModuleRules
 {
 	public IntelTBB(ReadOnlyTargetRules Target) : base(Target)
 	{
 		Type = ModuleType.External;
+		
+		string IntelTBBPath = Path.Combine(Target.UEThirdPartySourceDirectory, "Intel/TBB/IntelTBB-2019u8");
+		string IntelTBBIncludePath = Path.Combine(IntelTBBPath, "include");
+		string IntelTBBLibPath = Path.Combine(IntelTBBPath, "lib");
+
+		PublicSystemIncludePaths.Add(IntelTBBIncludePath);		
 
 		if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows) ||
 			(Target.Platform == UnrealTargetPlatform.HoloLens))
 		{
-			string IntelTBBPath = Target.UEThirdPartySourceDirectory + "Intel/TBB/IntelTBB-2019u8/";
-			string PlatformSubpath = (Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM32 || Target.WindowsPlatform.Architecture == WindowsArchitecture.x86) ? "Win32" : "Win64";
-
-			string LibDir;
-			if (Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM32 || Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM64)
+			string PlatformSubPath = "Win64";
+			string IntelTBBBinaries = Path.Combine(Target.UEThirdPartyBinariesDirectory, "Intel", "TBB", "Win64");
+			
+			string LibDirTBB = Path.Combine(IntelTBBLibPath, PlatformSubPath, "vc14");
+			string LibDirTBBMalloc = LibDirTBB;
+			
+			if (Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM64)
 			{
-				LibDir = System.String.Format("{0}lib/{1}/vc14/{2}/", IntelTBBPath, PlatformSubpath, Target.WindowsPlatform.GetArchitectureSubpath());
+				LibDirTBBMalloc = Path.Combine(LibDirTBBMalloc, Target.WindowsPlatform.GetArchitectureSubpath());
+			}
+
+			PublicSystemLibraryPaths.Add(LibDirTBB);
+			PublicSystemLibraryPaths.Add(LibDirTBBMalloc);
+
+			// Disable the #pragma comment(lib, ...) used by default in TBB & MallocTBB...
+			// We want to explicitly include the libraries.
+			PublicDefinitions.Add("__TBBMALLOC_NO_IMPLICIT_LINKAGE=1");
+			PublicDefinitions.Add("__TBB_NO_IMPLICIT_LINKAGE=1");
+
+			if (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT)
+			{
+				PublicDefinitions.Add("TBB_USE_DEBUG=1");
+				PublicAdditionalLibraries.Add(Path.Combine(LibDirTBB, "tbb_debug.lib"));
+				PublicAdditionalLibraries.Add(Path.Combine(LibDirTBBMalloc, "tbbmalloc_debug.lib"));
+				if (Target.Platform != UnrealTargetPlatform.HoloLens)
+				{
+					RuntimeDependencies.Add(Path.Combine("$(TargetOutputDir)", "tbb_debug.dll"), Path.Combine(LibDirTBB, "tbb_debug.dll"));
+				}
 			}
 			else
 			{
-				LibDir = System.String.Format("{0}lib/{1}/vc14/", IntelTBBPath, PlatformSubpath);
+				PublicAdditionalLibraries.Add(Path.Combine(LibDirTBB, "tbb.lib"));
+				PublicAdditionalLibraries.Add(Path.Combine(LibDirTBBMalloc, "tbbmalloc.lib"));
+				if (Target.Platform != UnrealTargetPlatform.HoloLens)
+				{
+					RuntimeDependencies.Add(Path.Combine("$(TargetOutputDir)", "tbb.dll"), Path.Combine(IntelTBBBinaries, "tbb.dll"));
+				}
 			}
-
-			PublicSystemLibraryPaths.Add(LibDir);
-
-			PublicSystemIncludePaths.Add(IntelTBBPath + "Include");
-
-			// Disable the #pragma comment(lib, ...) used by default in MallocTBB...
-			// We want to explicitly include the library.
-			PublicDefinitions.Add("__TBBMALLOC_BUILD=1");
-
-			string LibName = "tbbmalloc";
-			if (Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT)
-			{
-				LibName += "_debug";
-			}
-			LibName += ".lib";
-			PublicAdditionalLibraries.Add(LibDir + LibName);
 		}
 		else if (Target.Platform == UnrealTargetPlatform.Mac)
 		{
-			PublicSystemIncludePaths.AddRange(
-				new string[] {
-					Target.UEThirdPartySourceDirectory + "Intel/TBB/IntelTBB-2019u8/include",
-				}
-			);
+			string LibDir = Path.Combine(IntelTBBLibPath, "Mac");
+			string IntelTBBBinaries = Path.Combine(Target.UEThirdPartyBinariesDirectory, "Intel", "TBB", "Mac");
+			
+			PublicAdditionalLibraries.Add(Path.Combine(IntelTBBBinaries, "libtbb.dylib"));
+			PublicAdditionalLibraries.Add(Path.Combine(IntelTBBBinaries, "libtbbmalloc.dylib"));
 
-			PublicAdditionalLibraries.AddRange(
-				new string[] {
-					Target.UEThirdPartySourceDirectory + "Intel/TBB/IntelTBB-2019u8/lib/Mac/libtbb.a",
-					Target.UEThirdPartySourceDirectory + "Intel/TBB/IntelTBB-2019u8/lib/Mac/libtbbmalloc.a",
-				}
-			);
+			RuntimeDependencies.Add(Path.Combine(IntelTBBBinaries, "libtbb.dylib"));
+			RuntimeDependencies.Add(Path.Combine(IntelTBBBinaries, "libtbbmalloc.dylib"));
 		}
 	}
 }

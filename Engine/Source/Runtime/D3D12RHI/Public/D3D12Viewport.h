@@ -15,21 +15,6 @@
 #define D3D12_VIEWPORT_EXPOSES_SWAP_CHAIN 1
 #endif // D3D12_VIEWPORT_EXPOSES_SWAP_CHAIN
 
-static DXGI_FORMAT GetRenderTargetFormat(EPixelFormat PixelFormat)
-{
-	DXGI_FORMAT	DXFormat = (DXGI_FORMAT)GPixelFormats[PixelFormat].PlatformFormat;
-	switch (DXFormat)
-	{
-	case DXGI_FORMAT_B8G8R8A8_TYPELESS:		return DXGI_FORMAT_B8G8R8A8_UNORM;
-	case DXGI_FORMAT_BC1_TYPELESS:			return DXGI_FORMAT_BC1_UNORM;
-	case DXGI_FORMAT_BC2_TYPELESS:			return DXGI_FORMAT_BC2_UNORM;
-	case DXGI_FORMAT_BC3_TYPELESS:			return DXGI_FORMAT_BC3_UNORM;
-	case DXGI_FORMAT_R16_TYPELESS:			return DXGI_FORMAT_R16_UNORM;
-	case DXGI_FORMAT_R8G8B8A8_TYPELESS:		return DXGI_FORMAT_R8G8B8A8_UNORM;
-	default: 								return DXFormat;
-	}
-}
-
 #if WITH_MGPU
 class FD3D12FramePacing : public FRunnable, public FD3D12AdapterChild
 {
@@ -78,6 +63,11 @@ private:
 class FD3D12Viewport : public FRHIViewport, public FD3D12AdapterChild
 {
 public:
+
+	// Lock viewport windows association and back buffer destruction because of possible crash inside DXGI factory during a call to MakeWindowAssociation
+	// Backbuffer release will wait on the call to MakeWindowAssociation while this will fail internally with 'The requested operation is not implemented.' in KernelBase.dll
+	// Reported & known problem in DXGI and will be fixed with future release but DXGI is not part of the Agility SDK so a code side fix is needed for now.
+	static FCriticalSection DXGIBackBufferLock;
 
 	FD3D12Viewport(class FD3D12Adapter* InParent, HWND InWindowHandle, uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen, EPixelFormat InPixelFormat);
 
@@ -148,6 +138,21 @@ public:
 
 	void OnResumeRendering();
 	void OnSuspendRendering();
+
+	static DXGI_FORMAT GetRenderTargetFormat(EPixelFormat PixelFormat)
+	{
+		DXGI_FORMAT	DXFormat = (DXGI_FORMAT)GPixelFormats[PixelFormat].PlatformFormat;
+		switch (DXFormat)
+		{
+		case DXGI_FORMAT_B8G8R8A8_TYPELESS:		return DXGI_FORMAT_B8G8R8A8_UNORM;
+		case DXGI_FORMAT_BC1_TYPELESS:			return DXGI_FORMAT_BC1_UNORM;
+		case DXGI_FORMAT_BC2_TYPELESS:			return DXGI_FORMAT_BC2_UNORM;
+		case DXGI_FORMAT_BC3_TYPELESS:			return DXGI_FORMAT_BC3_UNORM;
+		case DXGI_FORMAT_R16_TYPELESS:			return DXGI_FORMAT_R16_UNORM;
+		case DXGI_FORMAT_R8G8B8A8_TYPELESS:		return DXGI_FORMAT_R8G8B8A8_UNORM;
+		default: 								return DXFormat;
+		}
+	}
 
 private:
 

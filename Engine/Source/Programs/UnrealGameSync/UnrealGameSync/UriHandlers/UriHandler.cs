@@ -11,6 +11,7 @@ using System.Linq;
 using System.Diagnostics;
 using System.Windows.Forms;
 using System.Configuration;
+using System.IO;
 
 namespace UnrealGameSync
 {
@@ -294,9 +295,14 @@ namespace UnrealGameSync
 			}
 		}
 
+		public static string CurrentProcessFilePath
+		{
+			get { return Path.GetFullPath(Process.GetCurrentProcess().MainModule.FileName); }
+		}
+
 		static List<RegistrySetting> GetRegistrySettings()
 		{
-			string ApplicationPath = Assembly.GetExecutingAssembly().Location;
+			string ApplicationPath = CurrentProcessFilePath;
 
 			List<RegistrySetting> Keys = new List<RegistrySetting>();
 			Keys.Add(new RegistrySetting(Registry.ClassesRoot, "UGS", null, "URL:UGS Protocol"));
@@ -392,7 +398,7 @@ namespace UnrealGameSync
 		{
 			using (Process Process = new Process())
 			{
-				Process.StartInfo.FileName = Assembly.GetExecutingAssembly().Location;
+				Process.StartInfo.FileName = Path.ChangeExtension(Assembly.GetExecutingAssembly().Location, ".exe");
 				Process.StartInfo.Arguments = Arguments;
 				Process.StartInfo.Verb = "runas";
 				Process.StartInfo.UseShellExecute = true;

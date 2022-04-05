@@ -27,7 +27,7 @@ void ProxyLOD::BuildkDOPTree(const FMeshDescriptionArrayAdapter& SrcGeometry, Pr
 		for (uint32 r = Range.begin(), R = Range.end(); r < R; ++r)
 		{
 			const auto& Poly = SrcGeometry.GetRawPoly(r);
-			BuildTriangles[r] = FkDOPBuildTriangle(r, Poly.VertexPositions[0], Poly.VertexPositions[1], Poly.VertexPositions[2]);
+			BuildTriangles[r] = FkDOPBuildTriangle(r, FVector(Poly.VertexPositions[0]), FVector(Poly.VertexPositions[1]), FVector(Poly.VertexPositions[2]));
 		}
 
 	});
@@ -40,7 +40,7 @@ void ProxyLOD::BuildkDOPTree(const FMeshDescription& MeshDescription, FkDOPTree&
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(ProxyLOD::BuildkDOPTree)
 
-	TVertexAttributesConstRef<FVector> VertexPositions = MeshDescription.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
+	TArrayView<const FVector3f> VertexPositions = MeshDescription.GetVertexPositions().GetRawArray();
 
 	uint32 NumSrcPoly = MeshDescription.Triangles().Num();
 
@@ -57,9 +57,9 @@ void ProxyLOD::BuildkDOPTree(const FMeshDescription& MeshDescription, FkDOPTree&
 		for (uint32 r = Range.begin(), R = Range.end(); r < R; ++r)
 		{
 
-			FVector Pos[3] = {	VertexPositions[MeshDescription.GetVertexInstanceVertex(FVertexInstanceID(3 * r))],
-								VertexPositions[MeshDescription.GetVertexInstanceVertex(FVertexInstanceID(3 * r + 1))],
-								VertexPositions[MeshDescription.GetVertexInstanceVertex(FVertexInstanceID(3 * r + 2))] };
+			FVector Pos[3] = { (FVector)VertexPositions[MeshDescription.GetVertexInstanceVertex(FVertexInstanceID(3 * r))],
+								(FVector)VertexPositions[MeshDescription.GetVertexInstanceVertex(FVertexInstanceID(3 * r + 1))],
+								(FVector)VertexPositions[MeshDescription.GetVertexInstanceVertex(FVertexInstanceID(3 * r + 2))] };
 			BuildTriangles[r] = FkDOPBuildTriangle(r, Pos[0], Pos[1], Pos[2]);
 		}
 
@@ -85,11 +85,11 @@ void ProxyLOD::BuildkDOPTree(const FVertexDataMesh& SrcVertexDataMesh, ProxyLOD:
 	{
 		FkDOPBuildTriangle* BuildTriangles = BuildTriangleArray.GetData();
 		const uint32* Idxs = SrcVertexDataMesh.Indices.GetData();
-		const FVector* Positions = SrcVertexDataMesh.Points.GetData();
+		const FVector3f* Positions = SrcVertexDataMesh.Points.GetData();
 
 		for (uint32 r = Range.begin(), R = Range.end(); r < R; ++r)
 		{
-			FVector Pos[3] = { Positions[Idxs[3 * r]],  Positions[Idxs[3 * r + 1]],  Positions[Idxs[3 * r + 2]] };
+			FVector Pos[3] = { (FVector)Positions[Idxs[3 * r]],  (FVector)Positions[Idxs[3 * r + 1]],  (FVector)Positions[Idxs[3 * r + 2]] };
 			BuildTriangles[r] = FkDOPBuildTriangle(r, Pos[0], Pos[1], Pos[2]);
 		}
 

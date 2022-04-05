@@ -2,13 +2,9 @@
 //   Licenced under the Unreal Engine EULA 
 #pragma once
 
-#if defined WINAPI_FAMILY && !defined PLATFORM_WINGDK && !defined _GAMING_XBOX_XBOXONE
-#include "MinWindows.h"
-#endif
-
 #include "binkplugin.h"
 
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Modules/ModuleManager.h"
 #include "Rendering/RenderingCommon.h"
 #include "TickableObjectRenderThread.h"
@@ -55,9 +51,3 @@ static int GetNumSpeakers()
 }
 
 DECLARE_LOG_CATEGORY_EXTERN(LogBink, Log, All);
-
-#ifndef LOCTEXT_NAMESPACE
-#define LOCTEXT_NAMESPACE "BinkMediaPlayerModule"
-#endif
-
-

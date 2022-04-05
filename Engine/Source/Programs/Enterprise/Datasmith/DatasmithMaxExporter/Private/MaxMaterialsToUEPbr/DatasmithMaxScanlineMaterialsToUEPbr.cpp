@@ -30,7 +30,6 @@ namespace DatasmithMaxScanlineMaterialsToUEPbrImpl
 		Bump,
 		Reflection,
 		Refraction,
-		Displacement
 	};
 
 	struct FMaxScanlineMaterial
@@ -59,9 +58,6 @@ namespace DatasmithMaxScanlineMaterialsToUEPbrImpl
 
 		// Bump
 		DatasmithMaxTexmapParser::FMapParameter BumpMap;
-
-		// Displacement
-		DatasmithMaxTexmapParser::FMapParameter DisplacementMap;
 
 		// Self-illumination
 		bool bUseSelfIllumColor = false;
@@ -102,7 +98,6 @@ namespace DatasmithMaxScanlineMaterialsToUEPbrImpl
 					ScanlineMaterialProperties.GlossinessMap.Map = ParamBlock2->GetTexmap( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Glossiness );
 					ScanlineMaterialProperties.OpacityMap.Map = ParamBlock2->GetTexmap( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Opacity );
 					ScanlineMaterialProperties.BumpMap.Map = ParamBlock2->GetTexmap( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Bump );
-					ScanlineMaterialProperties.DisplacementMap.Map = ParamBlock2->GetTexmap( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Displacement );
 					ScanlineMaterialProperties.SelfIllumMap.Map = ParamBlock2->GetTexmap( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::SelfIllumination );
 				}
 				else if ( FCString::Stricmp( ParamDefinition.int_name, TEXT("mapEnables") ) == 0 )
@@ -113,7 +108,6 @@ namespace DatasmithMaxScanlineMaterialsToUEPbrImpl
 					ScanlineMaterialProperties.GlossinessMap.bEnabled = ( ParamBlock2->GetInt( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Glossiness ) != 0 );
 					ScanlineMaterialProperties.OpacityMap.bEnabled = ( ParamBlock2->GetInt( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Opacity ) != 0 );
 					ScanlineMaterialProperties.BumpMap.bEnabled = ( ParamBlock2->GetInt( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Bump ) != 0 );
-					ScanlineMaterialProperties.DisplacementMap.bEnabled = ( ParamBlock2->GetInt( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Displacement ) != 0 );
 					ScanlineMaterialProperties.SelfIllumMap.bEnabled = ( ParamBlock2->GetInt( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::SelfIllumination ) != 0 );
 				}
 				else if ( FCString::Stricmp( ParamDefinition.int_name, TEXT("mapAmounts") ) == 0 )
@@ -124,7 +118,6 @@ namespace DatasmithMaxScanlineMaterialsToUEPbrImpl
 					ScanlineMaterialProperties.GlossinessMap.Weight = ParamBlock2->GetFloat( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Glossiness );
 					ScanlineMaterialProperties.OpacityMap.Weight = ParamBlock2->GetFloat( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Opacity );
 					ScanlineMaterialProperties.BumpMap.Weight = ParamBlock2->GetFloat( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Bump );
-					ScanlineMaterialProperties.DisplacementMap.Weight = ParamBlock2->GetFloat( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::Displacement );
 					ScanlineMaterialProperties.SelfIllumMap.Weight = ParamBlock2->GetFloat( ParamDefinition.ID, GetCOREInterface()->GetTime(), (int)EScanlineMaterialMaps::SelfIllumination );
 				}
 				else if ( FCString::Stricmp( ParamDefinition.int_name, TEXT("Opacity") ) == 0 )
@@ -255,18 +248,6 @@ void FDatasmithMaxScanlineMaterialsToUEPbr::Convert( TSharedRef< IDatasmithScene
 		ConvertState.bCanBake = true;
 	}
 	
-	// Displacement
-	{
-		ConvertState.DefaultTextureMode = EDatasmithTextureMode::Displace;
-
-		IDatasmithMaterialExpression* DisplacementExpression = FDatasmithMaxTexmapToUEPbrUtils::MapOrValue( this, ScanlineMaterialProperties.DisplacementMap, TEXT("Displacement Map"), TOptional< FLinearColor >(), TOptional< float >() );
-
-		if ( DisplacementExpression )
-		{
-			DisplacementExpression->ConnectExpression( PbrMaterialElement->GetWorldDisplacement() );
-		}
-	}
-
 	// ConvertFromDiffSpec
 	{
 		IDatasmithMaterialExpressionFunctionCall* ConvertFromDiffSpecExpression = PbrMaterialElement->AddMaterialExpression< IDatasmithMaterialExpressionFunctionCall >();

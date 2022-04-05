@@ -141,9 +141,17 @@ bool FEngineShowFlags::GetSingleFlag(uint32 Index) const
 	#define SHOWFLAG_ALWAYS_ACCESSIBLE(a,...) case SF_##a: return a != 0;
 	#include "ShowFlagsValues.inl"
 	default:
-		if (Index >= SF_FirstCustom && (Index - SF_FirstCustom) < (uint32)CustomShowFlags.Num())
+		if (Index >= SF_FirstCustom)
 		{
-			return CustomShowFlags[Index - SF_FirstCustom];
+			ECustomShowFlag CustomShowFlag = ECustomShowFlag(Index - SF_FirstCustom);
+			if (CustomShowFlags.IsValidIndex((uint32)CustomShowFlag))
+			{
+				return CustomShowFlags[(uint32)CustomShowFlag];
+			}
+			else if (IsRegisteredCustomShowFlag(CustomShowFlag))
+			{
+				return false;
+			}
 		}
 		{
 			checkNoEntry();
@@ -185,17 +193,17 @@ void FEngineShowFlags::SetSingleFlag(uint32 Index, bool bSet)
 	}
 }
 
-int32 FEngineShowFlags::FindIndexByName(const TCHAR* Name, const TCHAR *CommaSeparatedNames)
+int32 FEngineShowFlags::FindIndexByName(const TCHAR* Name, const TCHAR* CommaSeparatedNames)
 {
-	if(!Name)
+	if (!Name)
 	{
 		// invalid input
 		return INDEX_NONE;
 	}
 
-	if( CommaSeparatedNames == nullptr)
+	if (CommaSeparatedNames == nullptr)
 	{
-		// search through all defined showflags.
+		// search through all defined show flags.
 		FString Search = Name;
 
 		#define SHOWFLAG_ALWAYS_ACCESSIBLE(a,...) if(Search == PREPROCESSOR_TO_STRING(a)) { return (int32)SF_##a; }
@@ -238,6 +246,10 @@ int32 FEngineShowFlags::FindIndexByName(const TCHAR* Name, const TCHAR *CommaSep
 	}
 }
 
+// Codegen optimization degenerates for very long functions like FindNameByIndex.
+// We don't need this code to be particularly fast anyway.
+BEGIN_FUNCTION_BUILD_OPTIMIZATION
+
 FString FEngineShowFlags::FindNameByIndex(uint32 InIndex)
 {
 	FString Name;
@@ -254,6 +266,8 @@ FString FEngineShowFlags::FindNameByIndex(uint32 InIndex)
 
 	return Name;
 }
+
+END_FUNCTION_BUILD_OPTIMIZATION
 
 void FEngineShowFlags::AddNameByIndex(uint32 InIndex, FString& Out)
 {
@@ -290,7 +304,7 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 		case VMI_Lit: 
 			bPostProcessing = true;
 			break;
-		case VMI_Lit_DetailLighting:	
+		case VMI_Lit_DetailLighting:
 			bPostProcessing = true;
 			break;
 		case VMI_LightingOnly:
@@ -306,6 +320,7 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 		case VMI_MeshUVDensityAccuracy:
 		case VMI_MaterialTextureScaleAccuracy:
 		case VMI_RequiredTextureResolution:
+		case VMI_VirtualTexturePendingMips:
 		case VMI_LODColoration:
 		case VMI_HLODColoration:
 			bPostProcessing = false;
@@ -320,6 +335,15 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 			bPostProcessing = false;
 			break;
 		case VMI_VisualizeBuffer:
+			bPostProcessing = true;
+			break;
+		case VMI_VisualizeNanite:
+			bPostProcessing = true;
+			break;
+		case VMI_VisualizeLumen:
+			bPostProcessing = true;
+			break;
+		case VMI_VisualizeVirtualShadowMap:
 			bPostProcessing = true;
 			break;
 		case VMI_ReflectionOverride:
@@ -337,7 +361,7 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 			break;
 	}
 
-	if(!bPerspective)
+	if (!bPerspective)
 	{
 		bPostProcessing = false;
 	}
@@ -345,12 +369,15 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 	// set the EngineShowFlags:
 
 	// Assigning the new state like this ensures we always set the same variables (they depend on the view mode)
-	// This is affecting the state of showflags - if the state can be changed by the user as well it should better be done in EngineShowFlagOverride
+	// This is affecting the state of show flags - if the state can be changed by the user as well it should better be done in EngineShowFlagOverride
 
 	EngineShowFlags.SetOverrideDiffuseAndSpecular(ViewModeIndex == VMI_Lit_DetailLighting);
 	EngineShowFlags.SetLightingOnlyOverride(ViewModeIndex == VMI_LightingOnly);
 	EngineShowFlags.SetReflectionOverride(ViewModeIndex == VMI_ReflectionOverride);
 	EngineShowFlags.SetVisualizeBuffer(ViewModeIndex == VMI_VisualizeBuffer);
+	EngineShowFlags.SetVisualizeNanite(ViewModeIndex == VMI_VisualizeNanite);
+	EngineShowFlags.SetVisualizeLumen(ViewModeIndex == VMI_VisualizeLumen);
+	EngineShowFlags.SetVisualizeVirtualShadowMap(ViewModeIndex == VMI_VisualizeVirtualShadowMap);
 	EngineShowFlags.SetVisualizeLightCulling(ViewModeIndex == VMI_LightComplexity);
 	EngineShowFlags.SetShaderComplexity(ViewModeIndex == VMI_ShaderComplexity || ViewModeIndex == VMI_QuadOverdraw || ViewModeIndex == VMI_ShaderComplexityWithQuadOverdraw);
 	EngineShowFlags.SetQuadOverdraw(ViewModeIndex == VMI_QuadOverdraw);
@@ -359,6 +386,7 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 	EngineShowFlags.SetMeshUVDensityAccuracy(ViewModeIndex == VMI_MeshUVDensityAccuracy);
 	EngineShowFlags.SetMaterialTextureScaleAccuracy(ViewModeIndex == VMI_MaterialTextureScaleAccuracy);
 	EngineShowFlags.SetRequiredTextureResolution(ViewModeIndex == VMI_RequiredTextureResolution);
+	EngineShowFlags.SetVirtualTexturePendingMips(ViewModeIndex == VMI_VirtualTexturePendingMips);
 	EngineShowFlags.SetStationaryLightOverlap(ViewModeIndex == VMI_StationaryLightOverlap);
 	EngineShowFlags.SetLightMapDensity(ViewModeIndex == VMI_LightmapDensity || ViewModeIndex == VMI_LitLightmapDensity);
 	EngineShowFlags.SetPostProcessing(bPostProcessing);
@@ -375,23 +403,24 @@ void ApplyViewMode(EViewModeIndex ViewModeIndex, bool bPerspective, FEngineShowF
 
 void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex ViewModeIndex, FEngineShowFlags& EngineShowFlags, bool bCanDisableTonemapper)
 {
-	if(ShowFlagInitMode == ESFIM_Game)
+	if (ShowFlagInitMode == ESFIM_Game)
 	{
-		// editor only features
+		// Editor only features
 		EngineShowFlags.SetAudioRadius(false);
 	}
 
 	{
-		// when taking a high resolution screenshot
+		// When taking a high resolution screenshot
 		if (GIsHighResScreenshot)
 		{
 			static const auto ICVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.HighResScreenshotDelay"));
 			if(ICVar->GetValueOnGameThread() < 4)
 			{
-				// disabled as it requires multiple frames, AA can be done by downsampling, more control and better masking
-				EngineShowFlags.TemporalAA = 0;
+				// Disabled as it requires multiple frames, AA can be done by downsampling, more control and better masking
+				EngineShowFlags.SetTemporalAA(false);
 			}
-			// no editor gizmos / selection
+
+			// No editor gizmos / selection
 			EngineShowFlags.SetModeWidgets(false);
 			EngineShowFlags.SetSelection(false);
 			EngineShowFlags.SetSelectionOutline(false);
@@ -402,7 +431,7 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		static const auto ICVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.LightFunctionQuality"));
 		if(ICVar->GetValueOnGameThread() <= 0)
 		{
-			EngineShowFlags.LightFunctions = 0;
+			EngineShowFlags.SetLightFunctions(false);
 		}
 	}
 
@@ -410,7 +439,7 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		static const auto ICVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.EyeAdaptationQuality"));
 		if(ICVar->GetValueOnGameThread() <= 0)
 		{
-			EngineShowFlags.EyeAdaptation = 0;
+			EngineShowFlags.SetEyeAdaptation(false);
 		}
 	}
 
@@ -418,7 +447,7 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		static const auto ICVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.ShadowQuality"));
 		if(ICVar->GetValueOnGameThread() <= 0)
 		{
-			EngineShowFlags.DynamicShadows = 0;
+			EngineShowFlags.SetDynamicShadows(false);
 		}
 	}
 
@@ -426,19 +455,29 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		static const auto ICVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SkyLightingQuality"));
 		if (ICVar->GetValueOnGameThread() <= 0)
 		{
-			EngineShowFlags.SkyLighting = 0;
+			EngineShowFlags.SetSkyLighting(false);
 		}
 	}
 
-	// some view modes want some features off or on (no state)
+	// Some view modes want some features off or on (no state)
 	{
+		if (ViewModeIndex == VMI_BrushWireframe ||
+			ViewModeIndex == VMI_Wireframe)
+		{
+			EngineShowFlags.SetWireframe(true);
+		}
+		else
+		{
+			EngineShowFlags.SetWireframe(false);
+		}
+
 		if( ViewModeIndex == VMI_BrushWireframe ||
 			ViewModeIndex == VMI_Wireframe ||
 			ViewModeIndex == VMI_Unlit ||
 			ViewModeIndex == VMI_LightmapDensity ||
 			ViewModeIndex == VMI_LitLightmapDensity)
 		{
-			EngineShowFlags.LightFunctions = 0;
+			EngineShowFlags.SetLightFunctions(false);
 		}
 
 		if( ViewModeIndex == VMI_BrushWireframe ||
@@ -451,10 +490,11 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 			ViewModeIndex == VMI_MeshUVDensityAccuracy ||
 			ViewModeIndex == VMI_MaterialTextureScaleAccuracy ||
 			ViewModeIndex == VMI_RequiredTextureResolution ||
+			ViewModeIndex == VMI_VirtualTexturePendingMips ||
 			ViewModeIndex == VMI_LightmapDensity ||
 			ViewModeIndex == VMI_LitLightmapDensity)
 		{
-			EngineShowFlags.DynamicShadows = 0;
+			EngineShowFlags.SetDynamicShadows(false);
 		}
 
 		if( ViewModeIndex == VMI_BrushWireframe)
@@ -475,13 +515,14 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 			ViewModeIndex == VMI_MeshUVDensityAccuracy ||
 			ViewModeIndex == VMI_MaterialTextureScaleAccuracy ||
 			ViewModeIndex == VMI_RequiredTextureResolution ||
+			ViewModeIndex == VMI_VirtualTexturePendingMips ||
 			ViewModeIndex == VMI_LODColoration ||
 			ViewModeIndex == VMI_HLODColoration ||
 			ViewModeIndex == VMI_LightmapDensity)
 		{
 			EngineShowFlags.SetLighting(false);
-			EngineShowFlags.Atmosphere = 0;
-			EngineShowFlags.Fog = 0;
+			EngineShowFlags.SetAtmosphere(false);
+			EngineShowFlags.SetFog(false);
 		}
 
 		if( ViewModeIndex == VMI_Lit ||
@@ -501,23 +542,24 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		if( ViewModeIndex == VMI_LightComplexity )
 		{
 			EngineShowFlags.Translucency = 0;
-			EngineShowFlags.Fog = 0;
-			EngineShowFlags.Atmosphere = 0;
+			EngineShowFlags.SetFog(false);
+			EngineShowFlags.SetAtmosphere(false);
 		}
 
 		if (ViewModeIndex == VMI_PrimitiveDistanceAccuracy ||
 			ViewModeIndex == VMI_MeshUVDensityAccuracy ||
 			ViewModeIndex == VMI_MaterialTextureScaleAccuracy || 
-			ViewModeIndex == VMI_RequiredTextureResolution)
+			ViewModeIndex == VMI_RequiredTextureResolution ||
+			ViewModeIndex == VMI_VirtualTexturePendingMips)
 		{
-			EngineShowFlags.Decals = 0; // Decals require the use of FDebugPSInLean.
-			EngineShowFlags.Particles = 0; // FX are fully streamed.
-			EngineShowFlags.Fog = 0;
+			EngineShowFlags.SetDecals(false); // Decals require the use of FDebugPSInLean.
+			EngineShowFlags.SetParticles(false); // FX are fully streamed.
+			EngineShowFlags.SetFog(false);
 		}
 
 		if (ViewModeIndex == VMI_LODColoration || ViewModeIndex == VMI_HLODColoration)
 		{
-			EngineShowFlags.Decals = 0; // Decals require the use of FDebugPSInLean.
+			EngineShowFlags.SetDecals(false); // Decals require the use of FDebugPSInLean.
 		}
 
 		if (ViewModeIndex == VMI_PathTracing)
@@ -529,6 +571,7 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 		{
 			EngineShowFlags.SetRayTracingDebug(true);
 			EngineShowFlags.SetVisualizeHDR(false);
+			EngineShowFlags.SetVisualizeLocalExposure(false);
 			EngineShowFlags.SetVisualizeMotionBlur(false);
 			EngineShowFlags.SetDepthOfField(false);
 			EngineShowFlags.SetPostProcessMaterial(false);
@@ -538,9 +581,24 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 				EngineShowFlags.SetTonemapper(false);
 			}
 		}
+
+		if (ViewModeIndex == VMI_VisualizeNanite)
+		{
+			// TODO: NANITE_VIEW_MODES: Only disable these in fullscreen mode
+			/*EngineShowFlags.SetVisualizeHDR(false);
+			EngineShowFlags.SetVisualizeMotionBlur(false);
+			EngineShowFlags.SetDepthOfField(false);
+			EngineShowFlags.SetPostProcessMaterial(false);
+			EngineShowFlags.SetTemporalAA(false);
+
+			if (bCanDisableTonemapper)
+			{
+				EngineShowFlags.SetTonemapper(false);
+			}*/
+		}
 	}
 
-	// disable AA in full screen GBuffer visualization or calibration material visualization
+	// Disable AA in full screen GBuffer visualization or calibration material visualization
 	if (bCanDisableTonemapper && EngineShowFlags.VisualizeBuffer)
 	{
 		EngineShowFlags.SetTonemapper(false);
@@ -548,18 +606,18 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 
 	if (EngineShowFlags.Bones)
 	{
-		// Disabling some post processing effects when debug rendering bones as they dont work properly together
-		EngineShowFlags.TemporalAA = 0;
-		EngineShowFlags.MotionBlur = 0;
-		EngineShowFlags.Bloom = 0;
+		// Disabling some post processing effects when debug rendering bones as they do not work properly together
+		EngineShowFlags.SetTemporalAA(false);
+		EngineShowFlags.SetMotionBlur(false);
+		EngineShowFlags.SetBloom(false);
 	}
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	{
 		static const auto ICVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.LimitRenderingFeatures"));
-		if(ICVar)
+		if (ICVar)
 		{
-			 int Value = ICVar->GetValueOnGameThread();
+			 int32 Value = ICVar->GetValueOnGameThread();
 
 #define DISABLE_ENGINE_SHOWFLAG(Name) if(Value-- >  0) EngineShowFlags.Set##Name(false);
 			 DISABLE_ENGINE_SHOWFLAG(AntiAliasing)
@@ -584,6 +642,7 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 			 DISABLE_ENGINE_SHOWFLAG(Particles)
 			 DISABLE_ENGINE_SHOWFLAG(SkeletalMeshes)
 			 DISABLE_ENGINE_SHOWFLAG(StaticMeshes)
+			 DISABLE_ENGINE_SHOWFLAG(NaniteMeshes)
 			 DISABLE_ENGINE_SHOWFLAG(BSP)
 			 DISABLE_ENGINE_SHOWFLAG(Paper2DSprites)
 #undef DISABLE_ENGINE_SHOWFLAG
@@ -591,13 +650,13 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 	}
 #endif
 
-	// force some show flags to be 0 or 1
+	// Force some show flags to be 0 or 1
 	{
 		const uint8* Force0Ptr = (const uint8*)&GSystemSettings.GetForce0Mask();
 		const uint8* Force1Ptr = (const uint8*)&GSystemSettings.GetForce1Mask();
 		uint8* Ptr = (uint8*)&EngineShowFlags;
 
-		for(uint32 i = 0; i < sizeof(FEngineShowFlags); ++i)
+		for (uint32 Iter = 0; Iter < sizeof(FEngineShowFlags); ++Iter)
 		{
 			uint8 Value = *Ptr;
 
@@ -615,59 +674,75 @@ void EngineShowFlagOverride(EShowFlagInitMode ShowFlagInitMode, EViewModeIndex V
 void EngineShowFlagOrthographicOverride(bool bIsPerspective, FEngineShowFlags& EngineShowFlags)
 {
 	// Disable post processing that doesn't work in ortho viewports.
-	if( !bIsPerspective )
+	if (!bIsPerspective)
 	{
-		EngineShowFlags.TemporalAA = 0;
-		EngineShowFlags.MotionBlur = 0;
+		EngineShowFlags.SetTemporalAA(false);
+		EngineShowFlags.SetMotionBlur(false);
 	}
 }
 
 EViewModeIndex FindViewMode(const FEngineShowFlags& EngineShowFlags)
 {
-	if(EngineShowFlags.VisualizeBuffer)
+	if (EngineShowFlags.VisualizeBuffer)
 	{
 		return VMI_VisualizeBuffer;
 	}
-	else if(EngineShowFlags.StationaryLightOverlap)
+	else if (EngineShowFlags.VisualizeNanite)
+	{
+		return VMI_VisualizeNanite;
+	}
+	else if (EngineShowFlags.VisualizeLumen)
+	{
+		return VMI_VisualizeLumen;
+	}
+	else if (EngineShowFlags.VisualizeVirtualShadowMap)
+	{
+		return VMI_VisualizeVirtualShadowMap;
+	}
+	else if (EngineShowFlags.StationaryLightOverlap)
 	{
 		return VMI_StationaryLightOverlap;
 	}
 	// Test QuadComplexity before ShaderComplexity because QuadComplexity also use ShaderComplexity
-	else if(EngineShowFlags.QuadOverdraw)
+	else if (EngineShowFlags.QuadOverdraw)
 	{
 		return VMI_QuadOverdraw;
 	}
-	else if(EngineShowFlags.ShaderComplexityWithQuadOverdraw)
+	else if (EngineShowFlags.ShaderComplexityWithQuadOverdraw)
 	{
 		return VMI_ShaderComplexityWithQuadOverdraw;
 	}
-	else if(EngineShowFlags.PrimitiveDistanceAccuracy)
+	else if (EngineShowFlags.PrimitiveDistanceAccuracy)
 	{
 		return VMI_PrimitiveDistanceAccuracy;
 	}
-	else if(EngineShowFlags.MeshUVDensityAccuracy)
+	else if (EngineShowFlags.MeshUVDensityAccuracy)
 	{
 		return VMI_MeshUVDensityAccuracy;
 	}
-	else if(EngineShowFlags.MaterialTextureScaleAccuracy)
+	else if (EngineShowFlags.MaterialTextureScaleAccuracy)
 	{
 		return VMI_MaterialTextureScaleAccuracy;
 	}
-	else if(EngineShowFlags.RequiredTextureResolution)
+	else if (EngineShowFlags.RequiredTextureResolution)
 	{
 		return VMI_RequiredTextureResolution;
 	}
-	else if(EngineShowFlags.ShaderComplexity)
+	else if (EngineShowFlags.VirtualTexturePendingMips)
+	{
+		return VMI_RequiredTextureResolution;
+	}
+	else if (EngineShowFlags.ShaderComplexity)
 	{
 		return VMI_ShaderComplexity;
 	}
-	else if(EngineShowFlags.VisualizeLightCulling)
+	else if (EngineShowFlags.VisualizeLightCulling)
 	{
 		return VMI_LightComplexity;
 	}
-	else if(EngineShowFlags.LightMapDensity)
+	else if (EngineShowFlags.LightMapDensity)
 	{
-		if(EngineShowFlags.Lighting)
+		if (EngineShowFlags.Lighting)
 		{
 			return VMI_LitLightmapDensity;
 		}
@@ -676,7 +751,7 @@ EViewModeIndex FindViewMode(const FEngineShowFlags& EngineShowFlags)
 			return VMI_LightmapDensity;
 		}
 	}
-	else if(EngineShowFlags.OverrideDiffuseAndSpecular)
+	else if (EngineShowFlags.OverrideDiffuseAndSpecular)
 	{
 		return VMI_Lit_DetailLighting;
 	}
@@ -688,7 +763,7 @@ EViewModeIndex FindViewMode(const FEngineShowFlags& EngineShowFlags)
 	{
 		return VMI_ReflectionOverride;
 	}
-	else if(EngineShowFlags.Wireframe)
+	else if (EngineShowFlags.Wireframe)
 	{
 		if (EngineShowFlags.Brushes)
 		{
@@ -699,7 +774,7 @@ EViewModeIndex FindViewMode(const FEngineShowFlags& EngineShowFlags)
 			return VMI_Wireframe;
 		}
 	}
-	else if(!EngineShowFlags.Materials && EngineShowFlags.Lighting)
+	else if (!EngineShowFlags.Materials && EngineShowFlags.Lighting)
 	{
 		return VMI_LightingOnly;
 	}
@@ -733,7 +808,7 @@ EViewModeIndex FindViewMode(const FEngineShowFlags& EngineShowFlags)
 
 const TCHAR* GetViewModeName(EViewModeIndex ViewModeIndex)
 {
-	switch(ViewModeIndex)
+	switch (ViewModeIndex)
 	{
 		case VMI_Unknown:					return TEXT("Unknown");
 		case VMI_BrushWireframe:			return TEXT("BrushWireframe");
@@ -750,11 +825,15 @@ const TCHAR* GetViewModeName(EViewModeIndex ViewModeIndex)
 		case VMI_MeshUVDensityAccuracy:		return TEXT("MeshUVDensityAccuracy");
 		case VMI_MaterialTextureScaleAccuracy: return TEXT("MaterialTextureScaleAccuracy");
 		case VMI_RequiredTextureResolution: return TEXT("RequiredTextureResolution");
+		case VMI_VirtualTexturePendingMips:	return TEXT("VirtualTexturePendingMips");
 		case VMI_StationaryLightOverlap:	return TEXT("StationaryLightOverlap");
 		case VMI_LightmapDensity:			return TEXT("LightmapDensity");
 		case VMI_LitLightmapDensity:		return TEXT("LitLightmapDensity");
 		case VMI_ReflectionOverride:		return TEXT("ReflectionOverride");
 		case VMI_VisualizeBuffer:			return TEXT("VisualizeBuffer");
+		case VMI_VisualizeNanite:			return TEXT("VisualizeNanite");
+		case VMI_VisualizeLumen:			return TEXT("VisualizeLumen");
+		case VMI_VisualizeVirtualShadowMap:	return TEXT("VisualizeVirtualShadowMap");
 		case VMI_RayTracingDebug:			return TEXT("RayTracingDebug");
 		case VMI_PathTracing:				return TEXT("PathTracing");
 		case VMI_CollisionPawn:				return TEXT("CollisionPawn");
@@ -888,6 +967,12 @@ FEngineShowFlags::ECustomShowFlag FEngineShowFlags::FindCustomShowFlagByName(con
 		return *Existing;
 	}
 	return ECustomShowFlag::None;
+}
+
+bool FEngineShowFlags::IsRegisteredCustomShowFlag(ECustomShowFlag Index)
+{
+	FRWScopeLock Lock(CustomShowFlagsInternal::GetLock(), SLT_ReadOnly);
+	return CustomShowFlagsInternal::GetRegisteredCustomShowFlags().IsValidIndex((uint32)Index);
 }
 
 FString FEngineShowFlags::GetCustomShowFlagName(ECustomShowFlag Index)

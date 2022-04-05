@@ -29,10 +29,11 @@
 #include "UObject/Package.h"
 #include "UObject/Linker.h"
 #include "UObject/LinkerLoad.h"
+#include "UObject/SavePackage.h"
 #include "UObject/StructOnScope.h"
 #include "Misc/PackageName.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/IConsoleManager.h"
 #include "Misc/App.h"
 #include "Misc/Paths.h"
@@ -118,13 +119,25 @@ private:
 	TArray<TUniquePtr<FScopedSlowTask>> ExtendedTaskLife;
 };
 
-void SetReflectEditorLevelVisibilityWithGame(bool InValue)
+void SetReflectEditorLevelVisibilityWithGame(bool bInValue, bool bReset = false)
 {
 #if WITH_EDITOR
+	static bool bHasBeenSet = false;
+
+	if (bReset)
+	{
+		bHasBeenSet = false;
+	}
+
 	// Detail mode was modified, so store in the CVar
 	static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("Editor.ReflectEditorLevelVisibilityWithGame"));
-	int32 ValAsInt = !!InValue;
-	CVar->Set(ValAsInt);
+	int32 ValAsInt = !!bInValue;
+	bool bCanSet = !bHasBeenSet && CVar->GetInt() != ValAsInt;
+	if (GEditor && bCanSet)
+	{
+		CVar->Set(ValAsInt);
+		bHasBeenSet = bReset ? false : true;
+	}
 #endif
 }
 
@@ -192,11 +205,17 @@ struct FConcertWorkspaceConsoleCommands
 	FAutoConsoleCommand DisableRemoteVerboseLogging;
 };
 
-FConcertClientWorkspace::FConcertClientWorkspace(TSharedRef<FConcertSyncClientLiveSession> InLiveSession, IConcertClientPackageBridge* InPackageBridge, IConcertClientTransactionBridge* InTransactionBridge, TSharedPtr<IConcertFileSharingService> InFileSharingService)
-	: FileSharingService(MoveTemp(InFileSharingService))
+FConcertClientWorkspace::FConcertClientWorkspace(TSharedRef<FConcertSyncClientLiveSession> InLiveSession,
+												 IConcertClientPackageBridge* InPackageBridge,
+												 IConcertClientTransactionBridge* InTransactionBridge,
+												 TSharedPtr<IConcertFileSharingService> InFileSharingService,
+												 IConcertSyncClient* InOwnerSyncClient)
+	: OwnerSyncClient(InOwnerSyncClient),
+	  FileSharingService(MoveTemp(InFileSharingService))
 {
 	static FConcertWorkspaceConsoleCommands ConsoleCommands;
 
+	check(OwnerSyncClient);
 	BindSession(InLiveSession, InPackageBridge, InTransactionBridge);
 }
 
@@ -273,6 +292,17 @@ TArray<FName> FConcertClientWorkspace::GatherSessionChanges(bool IgnorePersisted
 	}, IgnorePersisted);
 
 	return SessionChangedPackageNames.Array();
+}
+
+TOptional<FString> FConcertClientWorkspace::GetValidPackageSessionPath(FName PackageName) const
+{
+#if WITH_EDITOR
+	if (PackageManager)
+	{
+		return PackageManager->GetValidPackageSessionPath(MoveTemp(PackageName));
+	}
+#endif
+	return {};
 }
 
 bool FConcertClientWorkspace::PersistSessionChanges(TArrayView<const FName> InPackagesToPersist, ISourceControlProvider* SourceControlProvider, TArray<FText>* OutFailureReasons)
@@ -581,7 +611,8 @@ void FConcertClientWorkspace::HandleConnectionChanged(IConcertClientSession& InS
 		bHasSyncedWorkspace = false;
 		bFinalizeWorkspaceSyncRequested = false;
 		InitialSyncSlowTask = MakeUnique<FScopedSlowTask>(1.0f, LOCTEXT("SynchronizingSession", "Synchronizing Session..."));
-		InitialSyncSlowTask->MakeDialog();
+		InitialSyncSlowTask->MakeDialogDelayed(1.0f);
+
 		FConcertSlowTaskStackWorkaround::Get().PushTask(InitialSyncSlowTask);
 
 		// Request our initial workspace sync for any new activity since we last joined
@@ -617,7 +648,7 @@ void FConcertClientWorkspace::HandleConnectionChanged(IConcertClientSession& InS
 		bHasSyncedWorkspace = false;
 		bFinalizeWorkspaceSyncRequested = false;
 		FConcertSlowTaskStackWorkaround::Get().PopTask(MoveTemp(InitialSyncSlowTask));
-		SetReflectEditorLevelVisibilityWithGame(false);
+		SetReflectEditorLevelVisibilityWithGame(false, true);
 	}
 }
 
@@ -656,12 +687,15 @@ void FConcertClientWorkspace::SaveLiveTransactionsToPackage(const FName PackageN
 
 				UWorld* World = UWorld::FindWorldInPackage(Package);
 				FString PackageFilename;
-				if (!FPackageName::DoesPackageExist(PackageNameStr, nullptr, &PackageFilename))
+				if (!FPackageName::DoesPackageExist(PackageNameStr, &PackageFilename))
 				{
 					PackageFilename = FPackageName::LongPackageNameToFilename(PackageNameStr, World ? FPackageName::GetMapPackageExtension() : FPackageName::GetAssetPackageExtension());
 				}
 
-				if (GEditor->SavePackage(Package, World, RF_Standalone, *PackageFilename, GWarn))
+				FSavePackageArgs SaveArgs;
+				SaveArgs.TopLevelFlags = RF_Standalone;
+				SaveArgs.Error = GWarn;
+				if (GEditor->SavePackage(Package, World, *PackageFilename, SaveArgs))
 				{
 					// Add a dummy package entry to trim the live transaction for the saved package but ONLY if we're tracking package saves (ie, we have a package manager)
 					// This is added ONLY on this client, and will be CLOBBERED by any future saves of this package from the server!
@@ -809,7 +843,7 @@ void FConcertClientWorkspace::OnEndFrame()
 		FConcertSlowTaskStackWorkaround::Get().PopTask(MoveTemp(InitialSyncSlowTask));
 	}
 
-	if (bHasSyncedWorkspace && CanProcessPendingPackages())
+	if (bHasSyncedWorkspace && CanProcessPendingPackages() && !ConcertSyncClientUtil::UserIsEditing())
 	{
 		if (PackageManager)
 		{
@@ -829,8 +863,8 @@ void FConcertClientWorkspace::OnEndFrame()
 		}
 	}
 	LiveSession->GetSessionDatabase().UpdateAsynchronousTasks();
-	const UConcertClientConfig *Config = GetDefault<UConcertClientConfig>();
-	SetReflectEditorLevelVisibilityWithGame(Config->ClientSettings.bReflectLevelEditorInGame);
+	IConcertClientRef ConcertClient = OwnerSyncClient->GetConcertClient();
+	SetReflectEditorLevelVisibilityWithGame(ConcertClient->GetConfiguration()->ClientSettings.bReflectLevelEditorInGame);
 }
 
 void FConcertClientWorkspace::HandleWorkspaceSyncEndpointEvent(const FConcertSessionContext& Context, const FConcertWorkspaceSyncEndpointEvent& Event)
@@ -1082,6 +1116,15 @@ void FConcertClientWorkspace::AddWorkspaceCanProcessPackagesDelegate(FName InDel
 void FConcertClientWorkspace::RemoveWorkspaceCanProcessPackagesDelegate(FName InDelegateName)
 {
 	CanProcessPendingDelegates.Remove(InDelegateName);
+}
+
+bool FConcertClientWorkspace::IsReloadingPackage(FName PackageName) const
+{
+	if (PackageManager)
+	{
+		return PackageManager->IsReloadingPackage(MoveTemp(PackageName));
+	}
+	return false;
 }
 
 bool FConcertClientWorkspace::CanProcessPendingPackages() const

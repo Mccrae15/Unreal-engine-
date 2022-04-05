@@ -22,7 +22,6 @@ public class UnrealEd : ModuleRules
 				"Editor/UnrealEd/Private",
 				"Editor/UnrealEd/Private/Settings",
 				"Editor/PackagesDialog/Public",
-				"Developer/DerivedDataCache/Public",
 				"Developer/TargetPlatform/Public",
 			}
 		);
@@ -30,6 +29,7 @@ public class UnrealEd : ModuleRules
 		PrivateIncludePathModuleNames.AddRange(
 			new string[]
 			{
+				"BSPUtils",
 				"BehaviorTreeEditor",
 				"ClassViewer",
 				"StructViewer",
@@ -38,14 +38,14 @@ public class UnrealEd : ModuleRules
 				"DesktopPlatform",
 				"LauncherPlatform",
 				"GameProjectGeneration",
-				"ProjectTargetPlatformEditor",
-				"ImageWrapper",
 				"MainFrame",
+				"TurnkeySupport",
 				"MaterialEditor",
 				"MergeActors",
 				"MeshUtilities",
 				"MessagingCommon",
 				"MovieSceneCapture",
+				"NaniteTools",
 				"PlacementMode",
 				"Settings",
 				"SettingsEditor",
@@ -60,7 +60,6 @@ public class UnrealEd : ModuleRules
 				"MessagingRpc",
 				"PortalRpc",
 				"PortalServices",
-				"BlueprintNativeCodeGen",
 				"ViewportInteraction",
 				"VREditor",
 				"Persona",
@@ -69,6 +68,9 @@ public class UnrealEd : ModuleRules
 				"NavigationSystem",
 				"Media",
 				"VirtualTexturingEditor",
+				"TextureBuild",
+				"ToolWidgets",
+				"CSVtoSVG"
 			}
 		);
 
@@ -86,13 +88,14 @@ public class UnrealEd : ModuleRules
 				"SandboxFile",
 				"Slate",
 				"SlateCore",
+				"EditorFramework",
 				"EditorStyle",
 				"SourceControl",
+				"UncontrolledChangelists",
 				"UnrealEdMessages",
 				"GameplayDebugger",
 				"BlueprintGraph",
-				"Http",
-				"UnrealAudio",
+				"HTTP",
 				"FunctionalTesting",
 				"AutomationController",
 				"Localization",
@@ -101,13 +104,23 @@ public class UnrealEd : ModuleRules
 				"UMG",
 				"NavigationSystem",
 				"MeshDescription",
-                "StaticMeshDescription",
-                "MeshBuilder",
-                "MaterialShaderQualitySettings",
-                "EditorSubsystem",
-                "InteractiveToolsFramework",
+				"StaticMeshDescription",
+				"MeshBuilder",
+				"MaterialShaderQualitySettings",
+				"EditorSubsystem",
+				"InteractiveToolsFramework",
+				"TypedElementFramework",
+				"TypedElementRuntime",
 				"ToolMenusEditor",
-            }
+				"StatusBar",
+				"InterchangeCore",
+				"InterchangeEngine",
+				"DeveloperToolSettings",
+				"SubobjectDataInterface",
+				"SubobjectEditor",
+				"PhysicsUtilities",
+				"ToolWidgets",
+			}
 		);
 
 		PrivateDependencyModuleNames.AddRange(
@@ -115,17 +128,21 @@ public class UnrealEd : ModuleRules
 			{
 				"AssetRegistry",
 				"AssetTagsEditor",
+				"BSPUtils",
 				"LevelSequence",
 				"AnimGraph",
 				"AppFramework",
 				"BlueprintGraph",
 				"CinematicCamera",
 				"CurveEditor",
+				"ContentBrowserData",
+				"DerivedDataCache",
 				"DesktopPlatform",
 				"LauncherPlatform",
 				"EditorStyle",
 				"EngineSettings",
 				"IESFile",
+				"ImageWrapper",
 				"ImageWriteQueue",
 				"InputCore",
 				"InputBindingEditor",
@@ -137,8 +154,9 @@ public class UnrealEd : ModuleRules
 				"Projects",
 				"RawMesh",
 				"MeshUtilitiesCommon",
-                "SkeletalMeshUtilitiesCommon",
-                "RenderCore",
+				"SkeletalMeshUtilitiesCommon",
+				"TextureUtilitiesCommon",
+				"RenderCore",
 				"RHI",
 				"Sockets",
 				"SourceControlWindows",
@@ -153,12 +171,13 @@ public class UnrealEd : ModuleRules
 				"JsonUtilities",
 				"Landscape",
 				"MeshPaint",
-				"MeshPaintMode",
 				"Foliage",
+				"FoliageEdit",
 				"VectorVM",
 				"MaterialUtilities",
 				"Localization",
 				"LocalizationService",
+				"LevelEditor",
 				"AddContentDialog",
 				"GameProjectGeneration",
 				"HierarchicalLODUtilities",
@@ -179,14 +198,21 @@ public class UnrealEd : ModuleRules
 				"PakFileUtilities",
 				"TimeManagement",
                 "LandscapeEditorUtilities",
-                "DerivedDataCache",
 				"ScriptDisassembler",
 				"ToolMenus",
 				"FreeImage",
+				"UATHelper",
 				"IoStoreUtilities",
 				"EditorInteractiveToolsFramework",
 				"TraceLog",
-				"DeveloperSettings"
+				"TraceAnalysis",
+				"TraceServices",
+				"DeveloperSettings",
+				"AnimationModifiers",
+				"AnimationBlueprintLibrary",
+				"MaterialBaking",
+				"CookOnTheFly",
+				"Zen",
 			}
 		);
 
@@ -198,7 +224,6 @@ public class UnrealEd : ModuleRules
 				"TextureEditor",
 				"Cascade",
 				"UMGEditor",
-				"Matinee",
 				"AssetTools",
 				"ClassViewer",
 				"StructViewer",
@@ -212,26 +237,20 @@ public class UnrealEd : ModuleRules
 				"DetailCustomizations",
 				"ComponentVisualizers",
 				"MainFrame",
-				"LevelEditor",
+				"TurnkeySupport",
 				"PackagesDialog",
 				"Persona",
 				"PhysicsAssetEditor",
-				"ProjectLauncher",
-				"DeviceManager",
 				"SettingsEditor",
-				"SessionFrontend",
 				"StringTableEditor",
-				"FoliageEdit",
-				"ImageWrapper",
 				"Blutility",
 				"IntroTutorials",
 				"WorkspaceMenuStructure",
 				"PlacementMode",
 				"MeshUtilities",
 				"MergeActors",
+				"NaniteTools",
 				"ProjectSettingsViewer",
-				"ProjectTargetPlatformEditor",
-				"PListEditor",
 				"BehaviorTreeEditor",
 				"ViewportSnapping",
 				"GameplayTasksEditor",
@@ -240,30 +259,33 @@ public class UnrealEd : ModuleRules
 				"HotReload",
 				"PortalProxies",
 				"PortalServices",
-				"BlueprintNativeCodeGen",
 				"OverlayEditor",
-				"AnimationModifiers",
 				"ClothPainter",
 				"Media",
-				"TimeManagementEditor",
 				"VirtualTexturingEditor",
-				"TraceInsights",
+				"WorldPartitionEditor",
+				"CSVtoSVG",
 			}
 		);
 
-		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Mac)
+		if (Target.bBuildTargetDeveloperTools)
 		{
-			DynamicallyLoadedModuleNames.Add("IOSPlatformEditor");
-		}
+			PrivateIncludePathModuleNames.AddRange(
+				new string[] {
+					"ProjectTargetPlatformEditor",
+				}
+			);
 
-		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Mac || Target.Platform == UnrealTargetPlatform.Linux)
-		{
-			DynamicallyLoadedModuleNames.Add("AndroidPlatformEditor");
-		}
-
-		if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Mac)
-		{
-			DynamicallyLoadedModuleNames.Add("LuminPlatformEditor");
+			DynamicallyLoadedModuleNames.AddRange(
+				new string[] {
+					"SessionFrontend",
+					"ProjectLauncher",
+					"DeviceManager",
+					"ProjectTargetPlatformEditor",
+					"PListEditor",
+					"TraceInsights",
+				}
+			);
 		}
 
 		CircularlyReferencedDependentModules.AddRange(
@@ -275,7 +297,6 @@ public class UnrealEd : ModuleRules
 				"ViewportInteraction",
 				"VREditor",
 				"MeshPaint",
-				"MeshPaintMode",
 				"PropertyEditor",
 				"ToolMenusEditor",
 				"InputBindingEditor",
@@ -289,8 +310,6 @@ public class UnrealEd : ModuleRules
 
 		// Add include directory for Lightmass
 		PublicIncludePaths.Add("Programs/UnrealLightmass/Public");
-
-		PublicIncludePaths.Add("Developer/Android/AndroidDeviceDetection/Public/Interfaces");
 
 		PublicIncludePathModuleNames.AddRange(
 			new string[] {
@@ -307,14 +326,13 @@ public class UnrealEd : ModuleRules
 				"AIModule",
 				"Engine",
 				"SourceControl",
+				"UncontrolledChangelists",
 			}
 		);
 
 
-		if ((Target.Platform == UnrealTargetPlatform.Win64) ||
-			(Target.Platform == UnrealTargetPlatform.Win32))
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
-			PublicDependencyModuleNames.Add("XAudio2");
 			PublicDependencyModuleNames.Add("AudioMixerXAudio2");
 
 			PrivateDependencyModuleNames.Add("WindowsPlatformFeatures");
@@ -329,7 +347,6 @@ public class UnrealEd : ModuleRules
 		}
 
 		AddEngineThirdPartyPrivateStaticDependencies(Target,
-			"VHACD",
 			"FBX",
 			"FreeType2"
 		);

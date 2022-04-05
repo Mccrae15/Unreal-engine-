@@ -7,6 +7,7 @@
 
 class AMatineeActor;
 class SWindow;
+class SWidget;
 
 #if WITH_AUTOMATION_TESTS
 
@@ -16,17 +17,17 @@ class SWindow;
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogEditorAutomationTests, Log, All);
 ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogEngineAutomationTests, Log, All);
 
-DECLARE_MULTICAST_DELEGATE_TwoParams(FOnEditorAutomationMapLoad, const FString&, FString*);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnEditorAutomationMapLoad, const FString&, bool, FString*);
 
 #endif
 
 /** Common automation functions */
 namespace AutomationCommon
 {
+#if WITH_AUTOMATION_TESTS
+
 	/** Get a string contains the render mode we are currently in */
 	ENGINE_API FString GetRenderDetailsString();
-
-#if WITH_AUTOMATION_TESTS
 
 
 	/** Gets a name to be used for this screenshot.  This will return something like 
@@ -52,6 +53,13 @@ namespace AutomationCommon
 
 	ENGINE_API TArray<uint8> CaptureFrameTrace(const FString& MapOrContext, const FString& TestName);
 
+	/**
+	 * Given the FName of a FTagMetaData will find all the corresponding widgets.
+	 * @param Tag the meta data tag searched for
+	 * @return the found widget or nullptr
+	 */
+	ENGINE_API SWidget* FindWidgetByTag(const FName Tag);
+
 #endif
 }
 
@@ -69,7 +77,7 @@ struct WindowScreenshotParameters
 /**
  * If Editor, Opens map and PIES.  If Game, transitions to map and waits for load
  */
-ENGINE_API bool AutomationOpenMap(const FString& MapName);
+ENGINE_API bool AutomationOpenMap(const FString& MapName, bool bForceReload = false);
 
 /**
  * Wait for the given amount of time
@@ -116,6 +124,7 @@ DEFINE_ENGINE_LATENT_AUTOMATION_COMMAND(FWaitForMapToLoadCommand);
 * Latent command to wait for map to complete loading
 */
 DEFINE_ENGINE_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(FWaitForSpecifiedMapToLoadCommand, FString, MapName);
+
 
 /**
 * Force a matinee to not loop and request that it play
@@ -166,5 +175,48 @@ DEFINE_ENGINE_LATENT_AUTOMATION_COMMAND_ONE_PARAMETER(FExecWorldStringLatentComm
 * Waits for shaders to finish compiling before moving on to the next thing.
 */
 DEFINE_ENGINE_LATENT_AUTOMATION_COMMAND(FWaitForShadersToFinishCompilingInGame);
+
+
+/**
+ * Waits until the average framerate meets to exceeds the specified value. Mostly intended as a way to ensure that a level load etc has completed
+ * and an interactive framerate is present.
+ *
+ * InDelay is how long to wait before checking, InMaxWaitTIme is how long to wait before throwing an error
+ */
+class ENGINE_API FWaitForAverageFrameRate : public IAutomationLatentCommand
+{
+public:
+
+	FWaitForAverageFrameRate(float InDesiredFrameRate, float InDelay = 1, float InMaxWaitTime = 60)
+		: StartTime(0)
+		, DesiredFrameRate(InDesiredFrameRate)
+		, Delay(InDelay)
+		, MaxWaitTime(InMaxWaitTime)
+	{}
+
+	bool Update() override;
+
+private:
+
+	// Time we began executing
+	double StartTime;
+
+	// Framerate we want to see
+	float DesiredFrameRate;
+
+	// How long before we start loiking at FPS
+	float Delay;
+
+	// Max time so spend waiting
+	float MaxWaitTime;
+};
+
+/**
+* Request an Image Comparison and queue the result to the test report
+* @param InImageName	Name used to identify the comparison
+* @param InContext		Optional context used to identify the comparison, by default the full name of the test is used
+**/
+ENGINE_API void RequestImageComparison(const FString& InImageName, int32 InWidth, int32 InHeight, const TArray<FColor>& InImageData, EAutomationComparisonToleranceLevel InTolerance = EAutomationComparisonToleranceLevel::Low, const FString& InContext = TEXT(""), const FString& InNotes = TEXT(""));
+
 
 #endif

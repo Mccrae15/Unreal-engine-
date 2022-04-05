@@ -57,7 +57,6 @@ namespace WidgetHelpers
 				SNew(SColorBlock)
 				.Color_Lambda(GetValue)
 				.ShowBackgroundForAlpha(true)
-				.IgnoreAlpha(false)
 				.Size(FVector2D(10.0f, 10.0f))
 			];
 	}
@@ -592,7 +591,7 @@ TSharedRef<SWidget> SFilmOverlayOptions::ConstructMasterOverlaysMenu()
 	TArray<FName> OverlayNames;
 	MasterFilmOverlays.GenerateKeyArray(OverlayNames);
 
-	const int32 NumColumns = FMath::Log2(OverlayNames.Num() - 1);
+	const int32 NumColumns = FMath::Log2(static_cast<float>(OverlayNames.Num() - 1));
 
 	int32 ColumnIndex = 0, RowIndex = 0;
 	for (int32 OverlayIndex = 0; OverlayIndex < OverlayNames.Num(); ++OverlayIndex)

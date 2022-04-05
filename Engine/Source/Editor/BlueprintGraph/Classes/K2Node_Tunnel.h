@@ -13,16 +13,16 @@ class BLUEPRINTGRAPH_API UK2Node_Tunnel : public UK2Node_EditablePinBase
 {
 	GENERATED_UCLASS_BODY()
 
-	// A tunnel node either has output pins that came from another tunnel's input pins, or vis versa
+	// A tunnel node either has output pins that came from another tunnel's input pins, or vice versa
 	// Note: OutputSourceNode might be equal to InputSinkNode
 	
 	// The output pins of this tunnel node came from the input pins of OutputSourceNode
 	UPROPERTY()
-	UK2Node_Tunnel* OutputSourceNode;
+	TObjectPtr<UK2Node_Tunnel> OutputSourceNode;
 
 	// The input pins of this tunnel go to the output pins of InputSinkNode
 	UPROPERTY()
-	UK2Node_Tunnel* InputSinkNode;
+	TObjectPtr<UK2Node_Tunnel> InputSinkNode;
 
 	// Whether this node is allowed to have inputs
 	UPROPERTY()

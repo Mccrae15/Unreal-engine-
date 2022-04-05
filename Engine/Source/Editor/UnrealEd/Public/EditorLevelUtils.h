@@ -85,10 +85,55 @@ public:
 	 */
 	static UNREALED_API void MakeLevelCurrent(ULevel* InLevel, bool bEvenIfLocked = false);
 
-	
-	static UNREALED_API int32 MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, bool bWarnAboutReferences = true, bool bWarnAboutRenaming = true);
+	/**
+	 * Move provided actors to destination level.
+	 *
+	 * @param	ActorsToMove						Actors to move.
+	 * @param	DestLevel							Destination level to move the actors to.
+	 * @param	bWarnAboutReferences				Whether or not to show a modal warning about referenced actors that may no longer function after being moved.
+	 * @param	bWarnAboutRenaming					Whether or not to show a model warning for asset rename.
+	 * @param	bMoveAllOrFail						Whether operation should fail if any of the actors fails to be moved.
+	 * @param	OutActors							Optional, if not null the array will be filled with the newly moved actors.
+	 *
+	 * @return	Returns the number of actors moved.
+	 */
+	static UNREALED_API int32 MoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, bool bWarnAboutReferences = true, bool bWarnAboutRenaming = true, bool bMoveAllOrFail = false, TArray<AActor*>* OutActors = nullptr);
 
+	/**
+	 * Copy provided actors to destination level.
+	 *
+	 * @param	ActorsToMove						Actors to copy.
+	 * @param	DestLevel							Destination level to copy the actors to.
+	 * @param	bWarnAboutReferences				Whether or not to show a modal warning about referenced actors that may no longer function after being copied.
+	 * @param	bWarnAboutRenaming					Whether or not to show a model warning for asset rename.
+	 * @param	bMoveAllOrFail						Whether operation should fail if any of the actors fails to be copied.
+	 * @param	OutActors							Optional, if not null the array will be filled with the newly copied actors.
+	 *
+	 * @return	Returns the number of actors copied.
+	 */
+	static UNREALED_API int32 CopyActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, bool bWarnAboutReferences = true, bool bWarnAboutRenaming = true, bool bMoveAllOrFail = false, TArray<AActor*>* OutActors = nullptr);
+
+	/**
+	 * Move selected actors to destination level.
+	 *
+	 * @param	DestLevel							Destination level to move the actors to.
+	 * @param	bWarnAboutReferences				Whether or not to show a modal warning about referenced actors that may no longer function after being copied.
+	 *
+	 * @return	Returns the number of actors copied.
+	 */
 	static UNREALED_API int32 MoveSelectedActorsToLevel(ULevel* DestLevel, bool bWarnAboutReferences = true);
+
+	/** 
+	* Delegate used by MoveActorsToLevel() to check whether an actor can be moved 
+	*/
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FCanMoveActorToLevelDelegate, const AActor* /* ActorToMove */, const ULevel* /* DestLevel */, bool& /* bOutCanMove */);
+	static UNREALED_API FCanMoveActorToLevelDelegate CanMoveActorToLevelDelegate;
+		
+	/** 
+	* Delegate used by MoveActorsToLevel() to notify about actors being moved 
+	*/
+	DECLARE_EVENT_TwoParams(UEditorLevelUtils, FOnMoveActorsToLevelEvent, const TArray<AActor*>& /* ActorsToMove */, const ULevel* /* DestLevel */);
+	static UNREALED_API FOnMoveActorsToLevelEvent OnMoveActorsToLevelEvent;
 
 	/**
 	 * Creates a new streaming level and adds it to a world
@@ -98,11 +143,26 @@ public:
 	 * @param	DefaultFilename						Optional file name for level.  If empty, the user will be prompted during the save process.
 	 * @param	bMoveSelectedActorsIntoNewLevel		If true, move any selected actors into the new level.
 	 * @param	InTemplateWorld						If valid, the new level will be a copy of the template world.
+	 * @param	bInUseSaveAs						If true, show SaveAs dialog instead of Save with DefaultFilename
+	 * 
+	 * @return	Returns the newly created level, or NULL on failure
+	 */
+	static UNREALED_API ULevelStreaming* CreateNewStreamingLevelForWorld(UWorld& World, TSubclassOf<ULevelStreaming> LevelStreamingClass, const FString& DefaultFilename = TEXT(""), bool bMoveSelectedActorsIntoNewLevel = false, UWorld* InTemplateWorld = nullptr, bool bInUseSaveAs = true);
+
+	/**
+	 * Creates a new streaming level and adds it to a world
+	 *
+	 * @param	InWorld								The world to add the streaming level to
+	 * @param	LevelStreamingClass					The streaming class type instead to use for the level.
+	 * @param	bUseExternalActors					If level should use external actors.
+	 * @param	DefaultFilename						file name for level.  If empty, the user will be prompted during the save process.
+	 * @param	ActorsToMove						Optional, move provided actors into the new level.
+	 * @param	InTemplateWorld						If valid, the new level will be a copy of the template world.
+	 * @param	bInUseSaveAs						If true, show SaveAs dialog instead of Save with DefaultFilename
 	 *
 	 * @return	Returns the newly created level, or NULL on failure
 	 */
-	static UNREALED_API ULevelStreaming* CreateNewStreamingLevelForWorld(UWorld& World, TSubclassOf<ULevelStreaming> LevelStreamingClass, const FString& DefaultFilename = TEXT(""), bool bMoveSelectedActorsIntoNewLevel = false, UWorld* InTemplateWorld = nullptr);
-
+	static UNREALED_API ULevelStreaming* CreateNewStreamingLevelForWorld(UWorld& World, TSubclassOf<ULevelStreaming> LevelStreamingClass, bool bUseExternalActors, const FString& DefaultFilename, const TArray<AActor*>* ActorsToMove = nullptr, UWorld* InTemplateWorld = nullptr, bool bInUseSaveAs = true);
 
 	/**
 	 * Adds the named level packages to the world.  Does nothing if all the levels already exist in the world.
@@ -161,6 +221,8 @@ private:
 
 	static UNREALED_API ULevelStreaming* AddLevelToWorld_Internal(UWorld* InWorld, const TCHAR* LevelPackageName, TSubclassOf<ULevelStreaming> LevelStreamingClass, const FTransform& LevelTransform = FTransform::Identity);
 
+	static UNREALED_API int32 CopyOrMoveActorsToLevel(const TArray<AActor*>& ActorsToMove, ULevel* DestLevel, bool bMoveActors, bool bWarnAboutReferences = true, bool bWarnAboutRenaming = true, bool bMoveAllOrFail = false, TArray<AActor*>* OutActors = nullptr);
+
 public:
 	/** Sets the LevelStreamingClass for the specified Level 
 	  * @param	InLevel				The level for which to change the streaming class
@@ -172,10 +234,21 @@ public:
 
 	/**
 	 * Removes the specified level from the world.  Refreshes.
+	 * @param InLevel			The level to remove.
+	 * @param bClearSlection	If editor selection should be cleared. 
 	 *
 	 * @return	true	If a level was removed.
 	 */
-	static UNREALED_API bool RemoveLevelFromWorld(ULevel* InLevel);
+	static UNREALED_API bool RemoveLevelFromWorld(ULevel* InLevel, bool bClearSelection = true, bool bResetTransBuffer = true);
+
+	/**
+	 * Removes the specified levels from the world.  Refreshes.
+	 * @param InLevels			The levels to remove.
+	 * @param bClearSlection	If editor selection should be cleared.
+	 *
+	 * @return	true	If all levels were removed.
+	 */
+	static UNREALED_API bool RemoveLevelsFromWorld(TArray<ULevel*> InLevels, bool bClearSelection = true, bool bResetTransBuffer = true);
 
 	/**
 	 * Removes the specified LevelStreaming from the world, and Refreshes.
@@ -251,40 +324,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Editor Scripting | Level Utility")
 	static const TArray<ULevel*> GetLevels(UWorld* World);
 
-	UE_DEPRECATED(4.17, "The CreateNewLevel method to create streaming levels has been deprecated. Use CreateNewStreamingLevelForWorld instead")
-	static UNREALED_API ULevel* CreateNewLevel(UWorld* InWorld, bool bMoveSelectedActorsIntoNewLevel, TSubclassOf<ULevelStreaming> LevelStreamingClass, const FString& DefaultFilename = TEXT(""));
-
-
-	/**
-	 * Moves the specified list of actors to the specified level
-	 *
-	 * @param	ActorsToMove		List of actors to move
-	 * @param	DestLevelStreaming	The level streaming object associated with the destination level
-	 * @param	OutNumMovedActors	The number of actors that were successfully moved to the new level
-	 */
-	UE_DEPRECATED(4.17, "The MovesActorsToLevel method has been deprecated. Use MoveActorsToLevel instead")
-	static void MovesActorsToLevel(TArray< AActor* >& ActorsToMove, ULevelStreaming* DestLevelStreaming, int32& OutNumMovedActors);
-
 private:
 	/**
-	 * Removes a level from the world.  Returns true if the level was removed successfully.
-	 *
-	 * @param	Level		The level to remove from the world.
-	 * @return				true if the level was removed successfully, false otherwise.
-	 */
-	static bool PrivateRemoveLevelFromWorld(ULevel* Level);
+	* Utility methods used by RemoveLevelsFromWorld
+	*/
+	static void PrivateRemoveLevelFromWorld(ULevel* Level);
+	static void PrivateDestroyLevel(ULevel* Level);
 
 	static bool PrivateRemoveInvalidLevelFromWorld(ULevelStreaming* InLevelStreaming);
-
-	/**
-	 * Completely removes the level from the world, unloads its package and forces garbage collection.
-	 *
-	 * @note: This function doesn't remove the associated streaming level.
-	 *
-	 * @param	InLevel			A non-NULL, non-Persistent Level that will be destroyed.
-	 * @return					true if the level was removed.
-	 */
-	static bool EditorDestroyLevel(ULevel* InLevel);
 private:
 
 };

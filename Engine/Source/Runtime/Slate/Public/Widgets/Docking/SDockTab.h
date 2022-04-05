@@ -40,6 +40,8 @@ enum ETabActivationCause : uint8
 	SetDirectly
 };
 
+class FMenuBuilder;
+
 /**
  * A tab widget that also holds on to some content that should be shown when this tab is selected.
  * Intended to be used in conjunction with SDockingTabStack.
@@ -47,6 +49,7 @@ enum ETabActivationCause : uint8
 class SLATE_API SDockTab : public SBorder
 {
 	friend class FTabManager;
+	friend class STabSidebar;
 public:
 
 	/** Invoked when a tab is closing */
@@ -55,46 +58,67 @@ public:
 	/** Invoked when a tab is activated */
 	DECLARE_DELEGATE_TwoParams(FOnTabActivatedCallback, TSharedRef<SDockTab>, ETabActivationCause);
 
-	/** Invoked when this tab should save some information about its content. */
+	/** Invoked when a tab is renamed */
+	DECLARE_DELEGATE_OneParam(FOnTabRenamed, TSharedRef<SDockTab>);
+
+	/** Invoked w`en this tab should save some information about its content. */
 	DECLARE_DELEGATE(FOnPersistVisualState);
 
 	/** Delegate called before a tab is closed.  Returning false will prevent the tab from closing */
 	DECLARE_DELEGATE_RetVal( bool, FCanCloseTab );
 
+	/** Invoked to add entries to the tab context menu */
+	DECLARE_DELEGATE_OneParam(FExtendContextMenu, FMenuBuilder&);
+
 	SLATE_BEGIN_ARGS(SDockTab)
 		: _Content()
 		, _TabWellContentLeft()
 		, _TabWellContentRight()
-		, _TabWellContentBackground()
-		, _ContentPadding( FMargin( 2 ) )
+		, _ContentPadding(0.f)
 		, _TabRole(ETabRole::PanelTab)
 		, _Label()
 		, _LabelSuffix()
-		, _Icon( FStyleDefaults::GetNoBrush() )
 		, _OnTabClosed()
 		, _OnTabActivated()
+		, _OnTabRelocated()
+		, _OnTabDraggedOverDockArea()
 		, _ShouldAutosize(false)
 		, _OnCanCloseTab()
 		, _OnPersistVisualState()
 		, _TabColorScale(FLinearColor::Transparent)
+		, _ForegroundColor(FSlateColor::UseStyle())
+		, _IconColor()
 		{}
 
 		SLATE_DEFAULT_SLOT( FArguments, Content )
 		SLATE_NAMED_SLOT( FArguments, TabWellContentLeft )
 		SLATE_NAMED_SLOT( FArguments, TabWellContentRight )
-		SLATE_NAMED_SLOT(FArguments, TabWellContentBackground)
 		SLATE_ATTRIBUTE( FMargin, ContentPadding )
 		SLATE_ARGUMENT( ETabRole, TabRole )
 		SLATE_ATTRIBUTE( FText, Label )
 		SLATE_ATTRIBUTE(FText, LabelSuffix)
-		SLATE_ATTRIBUTE( const FSlateBrush*, Icon )
+		UE_DEPRECATED(5.0, "Tab icons are now being managed by tab spawners and toolkits. In the rare case you need to set an icon manually, use SetTabIcon() instead")
+		FArguments& Icon(const FSlateBrush* InIcon)
+		{
+			return Me();
+		}
+
 		SLATE_EVENT( FOnTabClosedCallback, OnTabClosed )
 		SLATE_EVENT( FOnTabActivatedCallback, OnTabActivated )
+		SLATE_EVENT( FSimpleDelegate, OnTabRelocated )
+		SLATE_EVENT( FSimpleDelegate, OnTabDraggedOverDockArea )
 		SLATE_ARGUMENT( bool, ShouldAutosize )
 		SLATE_EVENT( FCanCloseTab, OnCanCloseTab )
 		SLATE_EVENT( FOnPersistVisualState, OnPersistVisualState )
+		SLATE_EVENT( FExtendContextMenu, OnExtendContextMenu )
+		/** Invoked when a tab is closed from a drawer. This does not mean the tab or its contents is destroyed, just hidden. Use OnTabClosed for that */
+		SLATE_EVENT( FSimpleDelegate, OnTabDrawerClosed)
 		SLATE_ATTRIBUTE( FLinearColor, TabColorScale )
+		SLATE_ATTRIBUTE( FSlateColor, ForegroundColor )
+		SLATE_ATTRIBUTE( FLinearColor, IconColor)
 	SLATE_END_ARGS()
+
+
 
 	/** Construct the widget from the declaration. */
 	void Construct( const FArguments& InArgs );
@@ -116,17 +140,23 @@ public:
 	// End of SBorder interface
 
 	/** Content that appears in the TabWell to the left of the tabs */
-	void SetLeftContent( TSharedRef<SWidget> InContent );
+	void SetLeftContent(TSharedRef<SWidget> InContent);
 	/** Content that appears in the TabWell to the right of the tabs */
-	void SetRightContent( TSharedRef<SWidget> InContent );
-	/** Content that appears in the TabWell behind the tabs */
-	void SetBackgroundContent( TSharedRef<SWidget> InContent );
+	void SetRightContent(TSharedRef<SWidget> InContent);
+	/** Content that appears on the right side of the title bar in the window this stack is in */
+	void SetTitleBarRightContent(TSharedRef<SWidget> InContent);
 
 	/** @return True if this tab is currently focused */
 	bool IsActive() const;
 
 	/** @return True if this tab appears active; False otherwise */
 	bool IsForeground() const;
+
+	/** @return the Foreground color that this widget sets; unset options if the widget does not set a foreground color */
+	virtual FSlateColor GetForegroundColor() const;
+
+	/** Add any entries specific to this tab to the tab context menu */
+	void ExtendContextMenu(FMenuBuilder& MenuBuilder);
 
 	/** Is this an MajorTab? A tool panel tab? */
 	ETabRole GetTabRole() const;
@@ -147,19 +177,22 @@ public:
 	TSharedRef<SWidget> GetContent();
 	TSharedRef<SWidget> GetLeftContent();
 	TSharedRef<SWidget> GetRightContent();
-	TSharedRef<SWidget> GetBackgrounfContent();
+	TSharedRef<SWidget> GetTitleBarRightContent();
 
 	/** Padding around the content when it is presented by the SDockingTabStack */
 	FMargin GetContentPadding() const;
 
 	/** Gets this tab's layout identifier */
-	const FTabId& GetLayoutIdentifier() const;
+	const FTabId GetLayoutIdentifier() const;
 
 	/** Sets the tab's tab well parent, or resets it if nothing is passed in */
 	void SetParent(TSharedPtr<SDockingTabWell> Parent = TSharedPtr<SDockingTabWell>());
 
 	/** Gets the tab's tab well parent, or nothing, if it has none */
 	TSharedPtr<SDockingTabWell> GetParent() const;
+
+	/** Gets the dock tab stack this dockable tab resides within, if any */
+	TSharedPtr<SDockingTabStack> GetParentDockTabStack() const;
 
 	/** Gets the dock area that this resides in */
 	TSharedPtr<class SDockingArea> GetDockArea() const;
@@ -194,6 +227,9 @@ public:
 	/** Should this tab be sized based on its content. */
 	bool ShouldAutosize() const;
 
+	/** Set whether this tab should be sized based on its content. */
+	void SetShouldAutosize(const bool bNewShouldAutosize);
+
 	/** @return true if the tab can be closed */
 	bool CanCloseTab() const;
 
@@ -223,7 +259,7 @@ public:
 
 	/**
 	 * Set the custom code to execute for saving visual state in this tab.
-	 * e.g. ContentBrowser saves the visible filters.
+	 * e.g. ContentBrowser saves the visible filters.OnExtendContextMenu
 	 */
 	void SetOnPersistVisualState( const FOnPersistVisualState& Handler );
 
@@ -236,17 +272,36 @@ public:
 	/** Set the handler that will be invoked when the tab is activated */
 	void SetOnTabActivated( const FOnTabActivatedCallback& InDelegate );
 
+	/** Set the handler that will be invoked when the tab is relocated to a new tab well */
+	void SetOnTabRelocated(const FSimpleDelegate InDelegate);
+
+	/** Set the handler that will be invoked when the tab is dragged over dock area */
+	void SetOnTabDraggedOverDockArea(const FSimpleDelegate InDelegate);
+
+	/** Set the handler that will be invoked when the tab is renamed */
+	void SetOnTabRenamed(const FOnTabRenamed& InDelegate);
+
+	/** Set the handler that will be invoked when the tab is opened from a drawer */
+	void SetOnTabDrawerOpened(const FSimpleDelegate InDelegate);
+
+	/** Set the handler that will be invoked when the tab is closed from a drawer */
+	void SetOnTabDrawerClosed(const FSimpleDelegate InDelegate);
+
+	/** Set the handler for extending the tab context menu */
+	void SetOnExtendContextMenu( const FExtendContextMenu& Handler );
+
 	/** Get the tab manager currently managing this tab. Note that a user move the tab between Tab Managers, so this return value may change. */
+	UE_DEPRECATED(5.0, "The tab manager is not guaranteed to exist, which will cause GetTabManager() to crash. Use GetTabManagerPtr() instead.")
 	TSharedRef<FTabManager> GetTabManager() const;
+
+	/** Get the tab manager currently managing this tab. Note that a user move the tab between Tab Managers, so this return value may change. */
+	TSharedPtr<FTabManager> GetTabManagerPtr() const;
 
 	/** Draws attention to the tab. */
 	void DrawAttention();
 
 	/** Provide a default tab label in case the spawner did not set one. */
 	void ProvideDefaultLabel( const FText& InDefaultLabel );
-
-	/** Provide a default tab icon in case the spawner did not set one. */
-	void ProvideDefaultIcon( const FSlateBrush* InDefaultIcon );
 
 	/** Play an animation showing this tab as opening */
 	void PlaySpawnAnim();
@@ -275,10 +330,10 @@ public:
 	{
 		return LastActivationTime;
 	}
+
 protected:
-	
-	/** Gets the dock tab stack this dockable tab resides within, if any */
-	TSharedPtr<SDockingTabStack> GetParentDockTabStack() const;
+	/** Provide a default tab icon. */
+	void ProvideDefaultIcon(const FSlateBrush* InDefaultIcon);
 
 	/** @return the style currently applied to the dock tab */
 	const FDockTabStyle& GetCurrentStyle() const;
@@ -292,11 +347,14 @@ protected:
 	/** @return the image brush for the tab's color overlay */
 	const FSlateBrush* GetColorOverlayImageBrush() const;
 
-	/** @return the image brush for the tab's active state overlay */
-	const FSlateBrush* GetActiveTabOverlayImageBrush() const;
+	/** @return The visibility of the active tab indicator */
+	EVisibility GetActiveTabIndicatorVisibility() const;
 
 	/** @return Returns a color to scale the background of this tab by */
 	FSlateColor GetTabColor() const;
+
+	/** @return Returns the color of this tab's icon */
+	FSlateColor GetIconColor() const;
 
 	/** @return the image brush for the tab's flasher overlay */
 	const FSlateBrush* GetFlashOverlayImageBrush() const;
@@ -316,13 +374,30 @@ protected:
 	/** @return if the close button should be visible. */
 	EVisibility HandleIsCloseButtonVisible() const;
 
+	/** @return the size the tab icon should be */
+	TOptional<FVector2D> GetTabIconSize() const;
+
+	/** @return the padding for the tab icon border */
+	FMargin GetTabIconBorderPadding() const;
+
 private:
 	/** Activates the tab in its tab well */
 	EActiveTimerReturnType TriggerActivateTab( double InCurrentTime, float InDeltaTime );
 
-	/** The handle to the active tab activation tick */
-	TWeakPtr<FActiveTimerHandle> ActiveTimerHandle;
+	EActiveTimerReturnType OnHandleUpdateStyle(double InCurrentTime, float InDeltaTime);
 
+	void OnParentSet();
+
+	void UpdateTabStyle();
+
+	void OnTabDrawerOpened();
+	void OnTabDrawerClosed();
+
+	void NotifyTabRelocated();
+
+	/** The handle to the active tab activation tick */
+	TWeakPtr<FActiveTimerHandle> DragDropTimerHandle;
+	TWeakPtr<FActiveTimerHandle> UpdateStyleTimerHandle;
 protected:
 
 	/** The tab manager that created this tab. */
@@ -332,8 +407,7 @@ protected:
 	TSharedRef<SWidget> Content;
 	TSharedRef<SWidget> TabWellContentLeft;
 	TSharedRef<SWidget> TabWellContentRight;
-	TSharedRef<SWidget> TabWellContentBackground;
-
+	TSharedRef<SWidget> TitleBarContentRight;
 	
 	/** The tab's layout identifier */
 	FTabId LayoutIdentifier;
@@ -362,11 +436,24 @@ protected:
 	/** Delegate to execute to determine if we can close this tab */
 	FCanCloseTab OnCanCloseTab;
 
+	FSimpleDelegate OnTabDrawerClosedEvent;
+
+	FSimpleDelegate OnTabDrawerOpenedEvent;
+
+	FSimpleDelegate OnTabRelocated;
+
+	FSimpleDelegate OnTabDraggedOverDockArea;
+
+	FExtendContextMenu OnExtendContextMenu;
+
 	/**
 	 * Invoked during the Save Visual State pass; gives this tab a chance to save misc info about visual state.
 	 * e.g. Content Browser might save the current filters, current folder, whether some panel is collapsed, etc.
 	 */
 	FOnPersistVisualState OnPersistVisualState;
+
+	/** Invoked when the tab is renamed */
+	FOnTabRenamed OnTabRenamed;
 
 	/** The styles used to draw the tab in its various states */
 	const FDockTabStyle* MajorTabStyle;
@@ -379,6 +466,9 @@ protected:
 
 	/** Color of this tab */
 	TAttribute<FLinearColor> TabColorScale;
+
+	/** Color of this tab's icon */
+	TAttribute<FLinearColor> IconColor;
 
 	/** @return the scaling of the tab based on the opening/closing animation */
 	FVector2D GetAnimatedScale() const;
@@ -397,7 +487,8 @@ protected:
 
 	/** Widget used to show the label on the tab */
 	TSharedPtr<STextBlock> LabelWidget;
-	
+	TSharedPtr<STextBlock> LabelSuffix;
+
 	/** Widget used to show the icon on the tab */
 	TSharedPtr<SImage> IconWidget;
 	

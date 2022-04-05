@@ -60,7 +60,7 @@ struct ENGINE_API FAccumulatedParticlePerfStats_RT
 	TArray<uint64, TInlineAllocator<ACCUMULATED_PARTICLE_PERF_STAT_MAX_SAMPLES>>	MaxPerInstanceCycles;
 
 	FAccumulatedParticlePerfStats_RT();
-	FORCEINLINE void Reset();
+	void Reset();
 	void Tick(FParticlePerfStats& Stats);
 
 	/** Returns the total cycles used by all RenderThread stats. */
@@ -87,6 +87,28 @@ struct ENGINE_API FAccumulatedParticlePerfStats_RT
 	FORCEINLINE double GetPerInstanceMax(int32 Index = 0)const { return FPlatformTime::ToMilliseconds64(GetPerInstanceMaxCycles(Index)) * 1000.0; }
 };
 
+struct ENGINE_API FAccumulatedParticlePerfStats_GPU
+{
+	uint32 NumFrames;
+	FParticlePerfStats_GPU AccumulatedStats;
+
+	TArray<uint64, TInlineAllocator<ACCUMULATED_PARTICLE_PERF_STAT_MAX_SAMPLES>>	MaxPerFrameTotalMicroseconds;
+	TArray<uint64, TInlineAllocator<ACCUMULATED_PARTICLE_PERF_STAT_MAX_SAMPLES>>	MaxPerInstanceMicroseconds;
+
+	FAccumulatedParticlePerfStats_GPU();
+	void Reset();
+	void Tick(FParticlePerfStats& Stats);
+
+	/** Returns the total microseconds used by GPU. */
+	FORCEINLINE uint64 GetTotalMicroseconds() const { return AccumulatedStats.GetTotalMicroseconds(); }
+
+	FORCEINLINE uint64 GetPerFrameAvgMicroseconds() const { return NumFrames > 0 ? AccumulatedStats.GetTotalMicroseconds() / NumFrames : 0; }
+	FORCEINLINE uint64 GetPerFrameMaxMicroseconds(int32 Index = 0) const { return MaxPerFrameTotalMicroseconds[Index]; }
+
+	FORCEINLINE uint64 GetPerInstanceAvgMicroseconds()const { return AccumulatedStats.GetPerInstanceAvgMicroseconds(); }
+	FORCEINLINE uint64 GetPerInstanceMaxMicroseconds(int32 Index = 0) const { return MaxPerInstanceMicroseconds[Index]; }
+};
+
 /** Utility class for accumulating many frames worth of stats data. */
 struct ENGINE_API FAccumulatedParticlePerfStats
 {
@@ -100,6 +122,7 @@ struct ENGINE_API FAccumulatedParticlePerfStats
 
 	FAccumulatedParticlePerfStats_GT GameThreadStats;
 	FAccumulatedParticlePerfStats_RT RenderThreadStats;
+	FAccumulatedParticlePerfStats_GPU GPUStats;
 
 	static void AddMax(TArray<uint64, TInlineAllocator<ACCUMULATED_PARTICLE_PERF_STAT_MAX_SAMPLES>>& MaxArray, int64 NewValue);
 	static void ResetMaxArray(TArray<uint64, TInlineAllocator<ACCUMULATED_PARTICLE_PERF_STAT_MAX_SAMPLES>>& MaxArray);
@@ -110,25 +133,40 @@ struct ENGINE_API FAccumulatedParticlePerfStats
 		return GameThreadStats;
 	}
 
-	/** Returns the RT stats. Must be called on the Render Thread. */
-	FORCEINLINE FAccumulatedParticlePerfStats_RT& GetRenderThreadStats()
+	/** Returns the RenderThread stats with an optional flush when on the GameThread. */
+	FORCEINLINE FAccumulatedParticlePerfStats_RT& GetRenderThreadStats(bool bFlushForGameThread = false)
 	{
-		return RenderThreadStats;
-	}
-
-	/** Returns the RenderThread stats for use on the GameThread. Optional sync with the RenderThread. */
-	FORCEINLINE const FAccumulatedParticlePerfStats_RT& GetRenderThreadStats_GameThread(bool bSyncRT=false)const
-	{
-		if (bSyncRT)
+		if ( IsInGameThread() )
 		{
-			FlushRenderingCommands();
+			if ( bFlushForGameThread )
+			{
+				FlushRenderingCommands();
+			}
+		}
+		else
+		{
+			ensure(IsInRenderingThread());
 		}
 		return RenderThreadStats;
 	}
-};
 
-// ENGINE_API FString ToStringGT(FAccumulatedParticlePerfStats& Stats);
-// ENGINE_API FString ToStringRT(FAccumulatedParticlePerfStats& Stats);
+	/** Returns the GPU stats with an optional flush when on the GameThread. */
+	FORCEINLINE FAccumulatedParticlePerfStats_GPU& GetGPUStats(bool bFlushForGameThread = false)
+	{
+		if (IsInGameThread())
+		{
+			if (bFlushForGameThread)
+			{
+				FlushRenderingCommands();
+			}
+		}
+		else
+		{
+			ensure(IsInRenderingThread());
+		}
+		return GPUStats;
+	}
+};
 
 class ENGINE_API FParticlePerfStatsListener : public TSharedFromThis<FParticlePerfStatsListener, ESPMode::ThreadSafe>
 {
@@ -145,17 +183,17 @@ public:
 	virtual void TickRT() {}
 
 	/** Called when a new world is seen for the first time. */
-	virtual void OnAddWorld(const TWeakObjectPtr<UWorld>& NewWorld) {}
+	virtual void OnAddWorld(const TWeakObjectPtr<const UWorld>& NewWorld) {}
 	/** Called when a world has been freed and is no longer tracked by the stats. */
-	virtual void OnRemoveWorld(const TWeakObjectPtr<UWorld>& World) {}
+	virtual void OnRemoveWorld(const TWeakObjectPtr<const UWorld>& World) {}
 	/** Called when a new system is seen for the first time. */
-	virtual void OnAddSystem(const TWeakObjectPtr<UFXSystemAsset>& NewSystem){}
+	virtual void OnAddSystem(const TWeakObjectPtr<const UFXSystemAsset>& NewSystem){}
 	/** Called when a system has been freed and is no longer tracked by the stats. */
-	virtual void OnRemoveSystem(const TWeakObjectPtr<UFXSystemAsset>& System) {}
+	virtual void OnRemoveSystem(const TWeakObjectPtr<const UFXSystemAsset>& System) {}
 	/** Called when a new component is seen for the first time. */
-	virtual void OnAddComponent(const TWeakObjectPtr<UFXSystemComponent>& NewComponent) {}
+	virtual void OnAddComponent(const TWeakObjectPtr<const UFXSystemComponent>& NewComponent) {}
 	/** Called when a component has been freed and is no longer tracked by the stats. */
-	virtual void OnRemoveComponent(const TWeakObjectPtr<UFXSystemComponent>& Component) {}
+	virtual void OnRemoveComponent(const TWeakObjectPtr<const UFXSystemComponent>& Component) {}
 
 
 	virtual bool NeedsWorldStats()const = 0;
@@ -175,28 +213,28 @@ public:
 
 	static int32 StatsEnabled;
 	static FCriticalSection WorldToPerfStatsGuard;
-	static TMap<TWeakObjectPtr<UWorld>, TUniquePtr<FParticlePerfStats>> WorldToPerfStats;
+	static TMap<TWeakObjectPtr<const UWorld>, TUniquePtr<FParticlePerfStats>> WorldToPerfStats;
 	static TArray<TUniquePtr<FParticlePerfStats>> FreeWorldStatsPool;
-	static const TMap<TWeakObjectPtr<UWorld>, TUniquePtr<FParticlePerfStats>>& GetCurrentWorldStats() { return WorldToPerfStats; }
+	static const TMap<TWeakObjectPtr<const UWorld>, TUniquePtr<FParticlePerfStats>>& GetCurrentWorldStats() { return WorldToPerfStats; }
 
 #if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
 	static FCriticalSection SystemToPerfStatsGuard;
-	static TMap<TWeakObjectPtr<UFXSystemAsset>, TUniquePtr<FParticlePerfStats>> SystemToPerfStats;
+	static TMap<TWeakObjectPtr<const UFXSystemAsset>, TUniquePtr<FParticlePerfStats>> SystemToPerfStats;
 	static TArray<TUniquePtr<FParticlePerfStats>> FreeSystemStatsPool;
-	static const TMap<TWeakObjectPtr<UFXSystemAsset>, TUniquePtr<FParticlePerfStats>>& GetCurrentSystemStats() { return SystemToPerfStats; }
+	static const TMap<TWeakObjectPtr<const UFXSystemAsset>, TUniquePtr<FParticlePerfStats>>& GetCurrentSystemStats() { return SystemToPerfStats; }
 #endif
 
 #if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
 	static FCriticalSection ComponentToPerfStatsGuard;
-	static TMap<TWeakObjectPtr<UFXSystemComponent>, TUniquePtr<FParticlePerfStats>> ComponentToPerfStats;
+	static TMap<TWeakObjectPtr<const UFXSystemComponent>, TUniquePtr<FParticlePerfStats>> ComponentToPerfStats;
 	static TArray<TUniquePtr<FParticlePerfStats>> FreeComponentStatsPool;
-	static const TMap<TWeakObjectPtr<UFXSystemComponent>, TUniquePtr<FParticlePerfStats>>& GetCurrentComponentStats() { return ComponentToPerfStats; }
+	static const TMap<TWeakObjectPtr<const UFXSystemComponent>, TUniquePtr<FParticlePerfStats>>& GetCurrentComponentStats() { return ComponentToPerfStats; }
 #endif
 
 	static TArray<FParticlePerfStatsListenerPtr, TInlineAllocator<8>> Listeners;
-	static FParticlePerfStats* GetWorldPerfStats(UWorld* World);
-	static FParticlePerfStats* GetSystemPerfStats(UFXSystemAsset* FXAsset);
-	static FParticlePerfStats* GetComponentPerfStats(UFXSystemComponent* FXComponent);
+	static FParticlePerfStats* GetWorldPerfStats(const UWorld* World);
+	static FParticlePerfStats* GetSystemPerfStats(const UFXSystemAsset* FXAsset);
+	static FParticlePerfStats* GetComponentPerfStats(const UFXSystemComponent* FXComponent);
 
 	static void OnStartup();
 	static void OnShutdown();
@@ -221,7 +259,7 @@ public:
 	static void ForAllWorldStats(TAction Func)
 	{
 		FScopeLock Lock(&WorldToPerfStatsGuard);
-		for (TPair<TWeakObjectPtr<UWorld>, TUniquePtr<FParticlePerfStats>>& Pair : WorldToPerfStats)
+		for (TPair<TWeakObjectPtr<const UWorld>, TUniquePtr<FParticlePerfStats>>& Pair : WorldToPerfStats)
 		{
 			Func(Pair.Key, Pair.Value);
 		}
@@ -233,7 +271,7 @@ public:
 	{
 	#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
 		FScopeLock Lock(&SystemToPerfStatsGuard);
-		for (TPair<TWeakObjectPtr<UFXSystemAsset>, TUniquePtr<FParticlePerfStats>>& Pair : SystemToPerfStats)
+		for (TPair<TWeakObjectPtr<const UFXSystemAsset>, TUniquePtr<FParticlePerfStats>>& Pair : SystemToPerfStats)
 		{
 			Func(Pair.Key, Pair.Value);
 		}
@@ -246,7 +284,7 @@ public:
 	{
 #if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
 		FScopeLock Lock(&ComponentToPerfStatsGuard);
-		for (TPair<TWeakObjectPtr<UFXSystemComponent>, TUniquePtr<FParticlePerfStats>>& Pair : ComponentToPerfStats)
+		for (TPair<TWeakObjectPtr<const UFXSystemComponent>, TUniquePtr<FParticlePerfStats>>& Pair : ComponentToPerfStats)
 		{
 			Func(Pair.Key, Pair.Value);
 		}
@@ -266,45 +304,45 @@ public:
 
 	virtual ~FParticlePerfStatsListener_GatherAll() {}
 
-	virtual void Begin();
-	virtual void End();
-	virtual bool Tick();
-	virtual void TickRT();
+	virtual void Begin() override;
+	virtual void End() override;
+	virtual bool Tick() override;
+	virtual void TickRT() override;
 
-	virtual void OnAddWorld(const TWeakObjectPtr<UWorld>& NewWorld);
-	virtual void OnRemoveWorld(const TWeakObjectPtr<UWorld>& World);
+	virtual void OnAddWorld(const TWeakObjectPtr<const UWorld>& NewWorld)override;
+	virtual void OnRemoveWorld(const TWeakObjectPtr<const UWorld>& World)override;
 
 	#if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
-	virtual void OnAddSystem(const TWeakObjectPtr<UFXSystemAsset>& NewSystem);
-	virtual void OnRemoveSystem(const TWeakObjectPtr<UFXSystemAsset>& System);
+	virtual void OnAddSystem(const TWeakObjectPtr<const UFXSystemAsset>& NewSystem)override;
+	virtual void OnRemoveSystem(const TWeakObjectPtr<const UFXSystemAsset>& System)override;
 	#endif
 
 	#if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
-	virtual void OnAddComponent(const TWeakObjectPtr<UFXSystemComponent>& NewComponent);
-	virtual void OnRemoveComponent(const TWeakObjectPtr<UFXSystemComponent>& Component);
+	virtual void OnAddComponent(const TWeakObjectPtr<const UFXSystemComponent>& NewComponent)override;
+	virtual void OnRemoveComponent(const TWeakObjectPtr<const UFXSystemComponent>& Component)override;
 	#endif
 
-	virtual bool NeedsWorldStats()const { return bGatherWorldStats; }
-	virtual bool NeedsSystemStats()const { return bGatherSystemStats; }
-	virtual bool NeedsComponentStats()const { return bGatherComponentStats; }
+	virtual bool NeedsWorldStats()const override { return bGatherWorldStats; }
+	virtual bool NeedsSystemStats()const override { return bGatherSystemStats; }
+	virtual bool NeedsComponentStats()const override { return bGatherComponentStats; }
 
 	void DumpStatsToDevice(FOutputDevice& Ar);
 	void DumpStatsToFile();
 
 #if WITH_PARTICLE_PERF_STATS
-	FAccumulatedParticlePerfStats* GetStats(UWorld* World);
+	FAccumulatedParticlePerfStats* GetStats(const UWorld* World);
 #else
-	FAccumulatedParticlePerfStats* GetStats(UWorld* World) { return nullptr; }
+	FAccumulatedParticlePerfStats* GetStats(const UWorld* World) { return nullptr; }
 #endif
 #if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
-	FAccumulatedParticlePerfStats* GetStats(UFXSystemAsset* System);
+	FAccumulatedParticlePerfStats* GetStats(const UFXSystemAsset* System);
 #else
-	FAccumulatedParticlePerfStats* GetStats(UFXSystemAsset* System){ return nullptr; }
+	FAccumulatedParticlePerfStats* GetStats(const UFXSystemAsset* System){ return nullptr; }
 #endif
 #if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
-	FAccumulatedParticlePerfStats* GetStats(UFXSystemComponent* Component);
+	FAccumulatedParticlePerfStats* GetStats(const UFXSystemComponent* Component);
 #else
-	FAccumulatedParticlePerfStats* GetStats(UFXSystemComponent* Component){ return nullptr; }
+	FAccumulatedParticlePerfStats* GetStats(const UFXSystemComponent* Component){ return nullptr; }
 #endif
 
 protected:
@@ -314,14 +352,14 @@ protected:
 	const uint8 bGatherSystemStats : 1;
 	const uint8 bGatherComponentStats : 1;
 
-	TMap<TWeakObjectPtr<UWorld>, TUniquePtr<FAccumulatedParticlePerfStats>> AccumulatedWorldStats;
+	TMap<TWeakObjectPtr<const UWorld>, TUniquePtr<FAccumulatedParticlePerfStats>> AccumulatedWorldStats;
 
 #if WITH_PER_SYSTEM_PARTICLE_PERF_STATS
-	TMap<TWeakObjectPtr<UFXSystemAsset>, TUniquePtr<FAccumulatedParticlePerfStats>> AccumulatedSystemStats;
+	TMap<TWeakObjectPtr<const UFXSystemAsset>, TUniquePtr<FAccumulatedParticlePerfStats>> AccumulatedSystemStats;
 #endif
 
 #if WITH_PER_COMPONENT_PARTICLE_PERF_STATS
-	TMap<TWeakObjectPtr<UFXSystemComponent>, TUniquePtr<FAccumulatedParticlePerfStats>> AccumulatedComponentStats;
+	TMap<TWeakObjectPtr<const UFXSystemComponent>, TUniquePtr<FAccumulatedParticlePerfStats>> AccumulatedComponentStats;
 #endif
 
 	template<typename T, typename TFunc>
@@ -334,8 +372,8 @@ class ENGINE_API FParticlePerfStatsListener_TimedTest : public FParticlePerfStat
 public:
 	FParticlePerfStatsListener_TimedTest(int32 NumFrames, bool bInGatherWorldStats, bool bInGatherSystemStats, bool bInGatherComponentStats);
 
-	virtual void End();
-	virtual bool Tick();
+	virtual void End()override;
+	virtual bool Tick()override;
 private:
 	int32 FramesRemaining;
 };
@@ -346,9 +384,11 @@ class ENGINE_API FParticlePerfStatsListener_CSVProfiler : public FParticlePerfSt
 public:
 	FParticlePerfStatsListener_CSVProfiler() : FParticlePerfStatsListener_GatherAll(false, true, false) {}
 
-	virtual void End();
+#if WITH_PARTICLE_PERF_CSV_STATS
+	virtual bool Tick()override;
+	virtual void TickRT()override;
+	virtual void End()override;
 
-#if CSV_PROFILER
 	static void OnCSVStart();
 	static void OnCSVEnd();
 #endif

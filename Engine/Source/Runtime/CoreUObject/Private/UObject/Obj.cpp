@@ -22,7 +22,7 @@
 #include "UObject/UObjectHash.h"
 #include "UObject/Object.h"
 #include "Serialization/ArchiveUObject.h"
-#include "UObject/GarbageCollection.h"
+#include "UObject/GarbageCollectionHistory.h"
 #include "UObject/Class.h"
 #include "UObject/EnumProperty.h"
 #include "UObject/UObjectIterator.h"
@@ -34,6 +34,7 @@
 #include "UObject/PropertyPortFlags.h"
 #include "UObject/UnrealType.h"
 #include "UObject/ObjectRedirector.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/UObjectAnnotation.h"
 #include "UObject/ReferenceChainSearch.h"
 #include "Serialization/ArchiveCountMem.h"
@@ -45,7 +46,7 @@
 #include "Misc/RedirectCollector.h"
 #include "UObject/GCScopeLock.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
-
+#include "UObject/GCObject.h"
 #include "Serialization/ArchiveUObjectFromStructuredArchive.h"
 #include "Serialization/ArchiveDescribeReference.h"
 #include "UObject/FindStronglyConnected.h"
@@ -53,8 +54,11 @@
 #include "Misc/ExclusiveLoadPackageTimeTracker.h"
 #include "Serialization/DeferredMessageLog.h"
 #include "UObject/CoreRedirects.h"
+#include "HAL/FileManager.h"
 #include "HAL/LowLevelMemTracker.h"
 #include "HAL/LowLevelMemStats.h"
+#include "Misc/PackageAccessTracking.h"
+#include "Misc/PackageAccessTrackingOps.h"
 
 DEFINE_LOG_CATEGORY(LogObj);
 
@@ -92,7 +96,7 @@ static UPackage*			GObjTransientPkg								= NULL;
 #endif // WITH_EDITOR
 
 UObject::UObject( EStaticConstructor, EObjectFlags InFlags )
-: UObjectBaseUtility(InFlags | (!(InFlags & RF_Dynamic) ? (RF_MarkAsNative | RF_MarkAsRootSet) : RF_NoFlags))
+: UObjectBaseUtility(InFlags | (RF_MarkAsNative | RF_MarkAsRootSet))
 {
 	EnsureNotRetrievingVTablePtr();
 }
@@ -170,8 +174,14 @@ bool UObject::Rename( const TCHAR* InName, UObject* NewOuter, ERenameFlags Flags
 #endif //WITH_EDITOR
 
 	// Check that we are not renaming a within object into an Outer of the wrong type, unless we're renaming the CDO of a Blueprint.
-	if( NewOuter && !NewOuter->IsA(GetClass()->ClassWithin) && !HasAnyFlags(RF_ClassDefaultObject))	
+	// Moving objects to the transient package is commonly used halfway through destroying them so that is also fine
+	if( NewOuter && !NewOuter->IsA(GetClass()->ClassWithin) && !HasAnyFlags(RF_ClassDefaultObject|RF_ArchetypeObject) && NewOuter != GetTransientPackage())	
 	{
+		if (Flags & REN_Test)
+		{
+			return false;
+		}
+
 		UE_LOG(LogObj, Fatal, TEXT("Cannot rename %s into Outer %s as it is not of type %s"), 
 			*GetFullName(), 
 			*NewOuter->GetFullName(), 
@@ -339,7 +349,7 @@ void UObject::PostLoad()
 #if WITH_EDITOR
 void UObject::PreEditChange(FProperty* PropertyAboutToChange)
 {
-	Modify();
+	Modify(!GIsTransacting);
 }
 
 
@@ -549,7 +559,7 @@ void UObject::PreEditUndo()
 
 void UObject::PostEditUndo()
 {
-	if( !IsPendingKill() )
+	if( IsValidChecked(this) )
 	{
 		PostEditChange();
 	}
@@ -586,7 +596,7 @@ TSharedPtr<ITransactionObjectAnnotation> UObject::CreateAndRestoreTransactionAnn
 
 bool UObject::IsSelectedInEditor() const
 {
-	return !IsPendingKill() && GSelectedObjectAnnotation.Get(this);
+	return IsValidChecked(this) && GIsObjectSelectedInEditor && GIsObjectSelectedInEditor(this);
 }
 
 #endif // WITH_EDITOR
@@ -738,7 +748,7 @@ void UObject::GetArchetypeInstances( TArray<UObject*>& Instances )
 				{
 					Instances.Add(Obj);
 				}
-			}, bIncludeNestedObjects, RF_NoFlags, EInternalObjectFlags::PendingKill); // we need to evaluate CDOs as well, but nothing pending kill
+			}, bIncludeNestedObjects, RF_NoFlags, EInternalObjectFlags::Garbage); // we need to evaluate CDOs as well, but nothing pending kill
 		}
 		else
 		{
@@ -749,7 +759,7 @@ void UObject::GetArchetypeInstances( TArray<UObject*>& Instances )
 				{
 					Instances.Add(Obj);
 				}
-			}, bIncludeNestedObjects, RF_NoFlags, EInternalObjectFlags::PendingKill); // we need to evaluate CDOs as well, but nothing pending kill
+			}, bIncludeNestedObjects, RF_NoFlags, EInternalObjectFlags::Garbage); // we need to evaluate CDOs as well, but nothing pending kill
 
 		}
 	}
@@ -1057,6 +1067,7 @@ void UObject::ConditionalPostLoad()
 	{
 
 		check(IsInGameThread() || HasAnyFlags(RF_ClassDefaultObject|RF_ArchetypeObject) || IsPostLoadThreadSafe() || IsA(UClass::StaticClass()))
+		UE_TRACK_REFERENCING_PACKAGE_SCOPED(GetOutermost(), PackageAccessTrackingOps::NAME_PostLoad);
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		FUObjectThreadContext& ThreadContext = FUObjectThreadContext::Get();
@@ -1084,10 +1095,10 @@ void UObject::ConditionalPostLoad()
 			else
 			{
 #if WITH_EDITOR
-				SCOPED_LOADTIMER_TEXT(*((GetClass()->IsChildOf(UDynamicClass::StaticClass()) ? UDynamicClass::StaticClass() : GetClass())->GetName() + TEXT("_PostLoad")));
+				SCOPED_LOADTIMER_TEXT(*(GetClass()->GetName() + TEXT("_PostLoad")));
 #endif
 				LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(GetOutermost(), ELLMTagSet::Assets);
-				LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(GetClass()->IsChildOf(UDynamicClass::StaticClass()) ? UDynamicClass::StaticClass() : GetClass(), ELLMTagSet::AssetClasses);
+				LLM_SCOPED_TAG_WITH_OBJECT_IN_SET(GetClass(), ELLMTagSet::AssetClasses);
 
 				PostLoad();
 
@@ -1192,10 +1203,35 @@ void UObject::ConditionalPostLoadSubobjects( FObjectInstancingGraph* OuterInstan
 	CheckDefaultSubobjects();
 }
 
+bool UObject::PreSaveRoot(const TCHAR* Filename)
+{
+	return false;
+}
+
+void UObject::PreSaveRoot(FObjectPreSaveRootContext ObjectSaveContext)
+{
+}
+
+void UObject::PostSaveRoot(bool bCleanupIsRequired)
+{
+}
+
+void UObject::PostSaveRoot(FObjectPostSaveRootContext ObjectSaveContext)
+{
+}
+
 void UObject::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+}
+
+void UObject::PreSave(FObjectPreSaveContext SaveContext)
+{
+	SaveContext.Data.bBaseClassCalled = true;
 #if WITH_EDITOR
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	FCoreUObjectDelegates::OnObjectSaved.Broadcast(this);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	FCoreUObjectDelegates::OnObjectPreSave.Broadcast(this, SaveContext);
 #endif
 }
 
@@ -1214,7 +1250,8 @@ bool UObject::Modify( bool bAlwaysMarkDirty/*=true*/ )
 		// Do not consider script packages, as they should never end up in the
 		// transaction buffer and we don't want to mark them dirty here either.
 		// We do want to consider PIE objects however
-		if (GetOutermost()->HasAnyPackageFlags(PKG_ContainsScript | PKG_CompiledIn) == false || GetClass()->HasAnyClassFlags(CLASS_DefaultConfig | CLASS_Config))
+		if ((GetOutermost()->HasAnyPackageFlags(PKG_ContainsScript | PKG_CompiledIn) == false || GetClass()->HasAnyClassFlags(CLASS_DefaultConfig | CLASS_Config)) &&
+			!HasAnyInternalFlags(EInternalObjectFlags::Async | EInternalObjectFlags::AsyncLoading))
 		{
 			// Attempt to mark the package dirty and save a copy of the object to the transaction
 			// buffer. The save will fail if there isn't a valid transactor, the object isn't
@@ -1259,6 +1296,17 @@ void UObject::GetPreloadDependencies(TArray<UObject*>& OutDeps)
 		{
 			OutDeps.Add(ObjClass->GetDefaultObject());
 		}
+
+		// The iterator will recursively loop through all structs in structs/containers too.
+		for (TPropertyValueIterator<FStructProperty> It(ObjClass, this); It; ++It)
+		{
+			const UScriptStruct* StructType = It.Key()->Struct;
+			if (UScriptStruct::ICppStructOps* CppStructOps = StructType->GetCppStructOps())
+			{
+				void* StructDataPtr = const_cast<void*>(It.Value());
+				CppStructOps->GetPreloadDependencies(StructDataPtr, OutDeps);
+			}
+		}
 	}
 }
 
@@ -1295,7 +1343,6 @@ void UObject::Serialize(FStructuredArchive::FRecord Record)
 		UClass *ObjClass = GetClass();
 		UObject* LoadOuter = GetOuter();
 		FName LoadName = GetFName();
-		UPackage* LoadPackage = GetExternalPackage();
 
 		// Make sure this object's class's data is loaded.
 		if(ObjClass->HasAnyFlags(RF_NeedLoad) )
@@ -1331,6 +1378,8 @@ void UObject::Serialize(FStructuredArchive::FRecord Record)
 		{
 			if (!UnderlyingArchive.IsIgnoringOuterRef())
 			{
+				UPackage* LoadPackage = GetExternalPackage();
+
 				if (UnderlyingArchive.IsLoading())
 				{
 					Record << SA_VALUE(TEXT("LoadName"), LoadName) << SA_VALUE(TEXT("LoadOuter"), LoadOuter) << SA_VALUE(TEXT("LoadPackage"), LoadPackage);
@@ -1386,17 +1435,17 @@ void UObject::Serialize(FStructuredArchive::FRecord Record)
 		// Keep track of pending kill
 		if (UnderlyingArchive.IsTransacting())
 		{
-			bool WasKill = IsPendingKill();
+			bool WasKill = !IsValidChecked(this);
 			if (UnderlyingArchive.IsLoading())
 			{
 				Record << SA_VALUE(TEXT("WasKill"), WasKill);
 				if (WasKill)
 				{
-					MarkPendingKill();
+					MarkAsGarbage();
 				}
 				else
 				{
-					ClearPendingKill();
+					ClearGarbage();
 				}
 			}
 			else if (UnderlyingArchive.IsSaving())
@@ -1414,6 +1463,22 @@ void UObject::Serialize(FStructuredArchive::FRecord Record)
 			FSoftObjectPath::InvalidateTag();
 		}
 
+		// Keep track of sparse class data for undo/redo
+		if (UnderlyingArchive.IsTransacting() && HasAnyFlags(RF_ClassDefaultObject))
+		{
+			UScriptStruct* SerializedSparseClassDataStruct = ObjClass->GetSparseClassDataStruct();
+			if (UnderlyingArchive.IsSaving() && !ObjClass->GetSparseClassData(EGetSparseClassDataMethod::ReturnIfNull))
+			{
+				SerializedSparseClassDataStruct = nullptr;
+			}
+			Record << SA_VALUE(TEXT("SparseClassDataStruct"), SerializedSparseClassDataStruct);
+
+			if (SerializedSparseClassDataStruct)
+			{
+				ObjClass->SerializeSparseClassData(Record.EnterField(SA_FIELD_NAME(TEXT("SparseClassData"))));
+			}
+		}
+
 		// Memory counting (with proper alignment to match C++)
 		SIZE_T Size = GetClass()->GetStructureSize();
 		UnderlyingArchive.CountBytes(Size, Size);
@@ -1425,6 +1490,80 @@ void UObject::Serialize(FStructuredArchive::FRecord Record)
 		UE_ASSET_LOG(LogCore, Warning, this, TEXT("Soft object paths were redirected during cook of '%s' - package should be resaved."), *GetName());
 	}
 #endif
+}
+
+void UObject::DeclareCustomVersions(FArchive& Ar)
+{
+	// DeclareCustomVersions is called on the default object for each class
+	// We first Serialize the object, which catches all the UsingCustomVersion statements
+	// class authors have added unconditionally in their Serialize function
+	Serialize(Ar);
+
+	// To further catch CustomVersions used by non-native structs that are in an array or don't
+	// otherwise exist on the default object, Construct an instance of the struct and serialize
+	// it for every struct property in the Class.
+	// Since structs can contain other structs, we do a tree search of the fields.
+	struct FStackData
+	{
+		UStruct* Struct;
+		FProperty* NextProperty;
+	};
+	TArray<FStackData> StructStack;
+	UClass* Class = GetClass();
+	StructStack.Add(FStackData{ Class, Class->PropertyLink });
+	TArray<uint8> AllocationBuffer;
+	while (!StructStack.IsEmpty())
+	{
+		FStackData& StackData = StructStack.Last();
+		FProperty*& Property = StackData.NextProperty;
+		bool bPushedStack = false;
+		while (Property)
+		{
+			FProperty* InnerProperty = Property;
+			Property = Property->PropertyLinkNext;
+			FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Property);
+			if (ArrayProperty)
+			{
+				InnerProperty = ArrayProperty->Inner;
+			}
+			FStructProperty* StructProperty = CastField<FStructProperty>(InnerProperty);
+			if (StructProperty)
+			{
+				UStruct* Struct = StructProperty->Struct;
+				if (StructStack.ContainsByPredicate(
+					[Struct](const FStackData& InStackData) { return InStackData.Struct == Struct; }))
+				{
+					// A cycle in the declarations (struct FA { FB B; }; struct FB { FA A; };)
+					// This is invalid, but avoid an infinite loop by skipping the nested struct.
+					continue;
+				}
+				// We handle structs that are direct members (not a pointer)
+				// UObjects and structs cannot have a UObject as a direct member.
+				// We rely on not having to handle it; we can construct Structs in our earliest calls,
+				// but constructing a UObject during startup would cause problems.
+				check(!Struct->IsA<UClass>());
+				UScriptStruct* ScriptStruct = Cast<UScriptStruct>(Struct);
+				if (ScriptStruct)
+				{
+					// Construct an instance and collect CustomProperties from it via Serialize
+					int32 Size = ScriptStruct->GetPropertiesSize();
+					int32 Alignment = ScriptStruct->GetMinAlignment();
+					AllocationBuffer.SetNumUninitialized(Align(Size, Alignment) + Alignment);
+					uint8* StructBytes = Align(AllocationBuffer.GetData(), Alignment);
+					ScriptStruct->InitializeStruct(StructBytes);
+					ScriptStruct->SerializeItem(Ar, StructBytes, nullptr);
+					ScriptStruct->DestroyStruct(StructBytes);
+				}
+				StructStack.Add(FStackData{ Struct, Struct->PropertyLink });
+				bPushedStack = true;
+				break;
+			}
+		}
+		if (!bPushedStack)
+		{
+			StructStack.Pop(false /* bAllowShrinking */);
+		}
+	}
 }
 
 void UObject::SerializeScriptProperties(FArchive& Ar) const
@@ -1504,6 +1643,7 @@ void UObject::BuildSubobjectMapping(UObject* OtherObject, TMap<UObject*, UObject
 		FString NewSubObjectName = InSubObject->GetName();
 
 		UClass* OtherSubObjectClass = InSubObject->GetClass();
+#if WITH_EDITORONLY_DATA
 		if (OtherSubObjectClass->ClassGeneratedBy && OtherSubObjectClass->ClassGeneratedBy->GetOutermost() == ThisPackage)
 		{
 			// This is a generated class type, so we actually need to use the new generated class type from the new package otherwise our type check will fail
@@ -1512,8 +1652,8 @@ void UObject::BuildSubobjectMapping(UObject* OtherObject, TMap<UObject*, UObject
 
 			OtherSubObjectClass = LoadObject<UClass>(OtherPackage, *NewClassName);
 		}
+#endif
 
-		//UObject* OtherSubObject = StaticLoadObject(OtherSubObjectClass, OtherObject, *NewSubObjectName, nullptr, LOAD_Quiet | LOAD_NoRedirects, nullptr, true);
 		UObject* OtherSubObject = StaticFindObjectFast(OtherSubObjectClass, OtherObject, *NewSubObjectName);
 		ObjectMapping.Emplace(InSubObject, OtherSubObject);
 
@@ -1521,7 +1661,7 @@ void UObject::BuildSubobjectMapping(UObject* OtherObject, TMap<UObject*, UObject
 		{
 			InSubObject->BuildSubobjectMapping(OtherSubObject, ObjectMapping);
 		}
-	}, false, RF_NoFlags, EInternalObjectFlags::PendingKill);
+	}, false, RF_NoFlags, EInternalObjectFlags::Garbage);
 }
 
 
@@ -1625,7 +1765,7 @@ bool UObject::CanCheckDefaultSubObjects(bool bForceCheck, bool& bResult) const
 		bResult = false; // these aren't in a suitable spot in their lifetime for testing
 		bCanCheck = false;
 	}
-	if (bCanCheck && (HasAnyFlags(RF_NeedLoad | RF_NeedPostLoad | RF_NeedPostLoadSubobjects) || IsPendingKillOrUnreachable() || GIsDuplicatingClassForReinstancing))
+	if (bCanCheck && (HasAnyFlags(RF_NeedLoad | RF_NeedPostLoad | RF_NeedPostLoadSubobjects) || !IsValidChecked(this) || IsUnreachable() || GIsDuplicatingClassForReinstancing))
 	{
 		bResult = true; // these aren't in a suitable spot in their lifetime for testing
 		bCanCheck = false;
@@ -1804,7 +1944,7 @@ static void GetAssetRegistryTagsFromSearchableProperties(const UObject* Object, 
 	UScriptStruct* SparseClassDataStruct = Object->GetClass()->GetSparseClassDataStruct();
 	if (SparseClassDataStruct)
 	{
-		void* SparseClassData = Object->GetClass()->GetOrCreateSparseClassData();
+		const void* SparseClassData = Object->GetClass()->GetSparseClassData(EGetSparseClassDataMethod::ArchetypeIfNull);
 		for (TFieldIterator<FProperty> FieldIt(SparseClassDataStruct); FieldIt; ++FieldIt)
 		{
 			GetAssetRegistryTagFromProperty(SparseClassData, Object, CastField<FProperty>(*FieldIt), OutTags);
@@ -1953,7 +2093,7 @@ void UObject::GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize)
 bool UObject::IsAsset() const
 {
 	// Assets are not transient or CDOs. They must be public.
-	const bool bHasValidObjectFlags = !HasAnyFlags(RF_Transient | RF_ClassDefaultObject) && HasAnyFlags(RF_Public) && !IsPendingKill();
+	const bool bHasValidObjectFlags = !HasAnyFlags(RF_Transient | RF_ClassDefaultObject) && HasAnyFlags(RF_Public) && IsValidChecked(this);
 
 	if ( bHasValidObjectFlags )
 	{
@@ -1996,7 +2136,7 @@ bool UObject::IsSafeForRootSet() const
 	}
 
 	// Exclude linkers from root set if we're using seekfree loading		
-	if (!IsPendingKill())
+	if (IsValidChecked(this))
 	{
 		return true;
 	}
@@ -2025,14 +2165,14 @@ void UObject::ReloadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilenam
 {
 	if (!GIsEditor)
 	{
-		LoadConfig(ConfigClass, InFilename, PropagationFlags | UE4::LCPF_ReloadingConfigData | UE4::LCPF_ReadParentSections, PropertyToLoad);
+		LoadConfig(ConfigClass, InFilename, PropagationFlags | UE::LCPF_ReloadingConfigData | UE::LCPF_ReadParentSections, PropertyToLoad);
 	}
 #if WITH_EDITOR
 	else
 	{
 		// When in the editor, raise change events so that the UI will update correctly when object configs are reloaded.
 		PreEditChange(NULL);
-		LoadConfig(ConfigClass, InFilename, PropagationFlags | UE4::LCPF_ReloadingConfigData | UE4::LCPF_ReadParentSections, PropertyToLoad);
+		LoadConfig(ConfigClass, InFilename, PropagationFlags | UE::LCPF_ReloadingConfigData | UE::LCPF_ReadParentSections, PropertyToLoad);
 		PostEditChange();
 	}
 #endif // WITH_EDITOR
@@ -2121,18 +2261,18 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 	{
 		if ( ParentClass->HasAnyClassFlags(CLASS_Config) )
 		{
-			if ( (PropagationFlags&UE4::LCPF_ReadParentSections) != 0 )
+			if ( (PropagationFlags&UE::LCPF_ReadParentSections) != 0 )
 			{
 				// call LoadConfig on the parent class
 				LoadConfig( ParentClass, NULL, PropagationFlags, PropertyToLoad );
 
 				// if we are also notifying child classes or instances, stop here as this object's properties will be imported as a result of notifying the others
-				if ( (PropagationFlags & (UE4::LCPF_PropagateToChildDefaultObjects|UE4::LCPF_PropagateToInstances)) != 0 )
+				if ( (PropagationFlags & (UE::LCPF_PropagateToChildDefaultObjects|UE::LCPF_PropagateToInstances)) != 0 )
 				{
 					return;
 				}
 			}
-			else if ( (PropagationFlags&UE4::LCPF_PropagateToChildDefaultObjects) != 0 )
+			else if ( (PropagationFlags&UE::LCPF_PropagateToChildDefaultObjects) != 0 )
 			{
 				// not propagating the call upwards, but we are propagating the call to all child classes
 				for (TObjectIterator<UClass> It; It; ++It)
@@ -2140,14 +2280,14 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 					if (It->IsChildOf(ConfigClass))
 					{
 						// mask out the PropgateToParent and PropagateToChildren values
-						It->GetDefaultObject()->LoadConfig(*It, NULL, (PropagationFlags&(UE4::LCPF_PersistentFlags|UE4::LCPF_PropagateToInstances)), PropertyToLoad);
+						It->GetDefaultObject()->LoadConfig(*It, NULL, (PropagationFlags&(UE::LCPF_PersistentFlags|UE::LCPF_PropagateToInstances)), PropertyToLoad);
 					}
 				}
 
 				// LoadConfig() was called on this object during iteration, so stop here 
 				return;
 			}
-			else if ( (PropagationFlags&UE4::LCPF_PropagateToInstances) != 0 )
+			else if ( (PropagationFlags&UE::LCPF_PropagateToInstances) != 0 )
 			{
 				// call LoadConfig() on all instances of this class (except the CDO)
 				// Do not propagate this call to parents, and do not propagate to children or instances (would be redundant) 
@@ -2158,7 +2298,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 						if ( !GIsEditor )
 						{
 							// make sure to pass in the class so that OriginalClass isn't reset
-							It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE4::LCPF_PersistentFlags), PropertyToLoad);
+							It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE::LCPF_PersistentFlags), PropertyToLoad);
 						}
 #if WITH_EDITOR
 						else
@@ -2166,7 +2306,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 							It->PreEditChange(NULL);
 
 							// make sure to pass in the class so that OriginalClass isn't reset
-							It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE4::LCPF_PersistentFlags), PropertyToLoad);
+							It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE::LCPF_PersistentFlags), PropertyToLoad);
 
 							It->PostEditChange();
 						}
@@ -2175,7 +2315,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 				}
 			}
 		}
-		else if ( (PropagationFlags&UE4::LCPF_PropagateToChildDefaultObjects) != 0 )
+		else if ( (PropagationFlags&UE::LCPF_PropagateToChildDefaultObjects) != 0 )
 		{
 			// we're at the base-most config class
 			for ( TObjectIterator<UClass> It; It; ++It )
@@ -2185,7 +2325,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 					if ( !GIsEditor )
 					{
 						// make sure to pass in the class so that OriginalClass isn't reset
-						It->GetDefaultObject()->LoadConfig( *It, NULL, (PropagationFlags&(UE4::LCPF_PersistentFlags|UE4::LCPF_PropagateToInstances)), PropertyToLoad );
+						It->GetDefaultObject()->LoadConfig( *It, NULL, (PropagationFlags&(UE::LCPF_PersistentFlags|UE::LCPF_PropagateToInstances)), PropertyToLoad );
 					}
 #if WITH_EDITOR
 					else
@@ -2193,7 +2333,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 						It->PreEditChange(NULL);
 
 						// make sure to pass in the class so that OriginalClass isn't reset
-						It->GetDefaultObject()->LoadConfig( *It, NULL, (PropagationFlags&(UE4::LCPF_PersistentFlags|UE4::LCPF_PropagateToInstances)), PropertyToLoad );
+						It->GetDefaultObject()->LoadConfig( *It, NULL, (PropagationFlags&(UE::LCPF_PersistentFlags|UE::LCPF_PropagateToInstances)), PropertyToLoad );
 
 						It->PostEditChange();
 					}
@@ -2203,7 +2343,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 
 			return;
 		}
-		else if ( (PropagationFlags&UE4::LCPF_PropagateToInstances) != 0 )
+		else if ( (PropagationFlags&UE::LCPF_PropagateToInstances) != 0 )
 		{
 			for ( TObjectIterator<UObject> It; It; ++It )
 			{
@@ -2212,7 +2352,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 					if ( !GIsEditor )
 					{
 						// make sure to pass in the class so that OriginalClass isn't reset
-						It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE4::LCPF_PersistentFlags), PropertyToLoad);
+						It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE::LCPF_PersistentFlags), PropertyToLoad);
 					}
 #if WITH_EDITOR
 					else
@@ -2220,7 +2360,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 						It->PreEditChange(NULL);
 
 						// make sure to pass in the class so that OriginalClass isn't reset
-						It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE4::LCPF_PersistentFlags), PropertyToLoad);
+						It->LoadConfig(It->GetClass(), NULL, (PropagationFlags&UE::LCPF_PersistentFlags), PropertyToLoad);
 						It->PostEditChange();
 					}
 #endif // WITH_EDITOR
@@ -2318,6 +2458,9 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 		{
 			ClassSection = BaseClass->GetPathName();
 			LongCommitName = BaseClass->GetOutermost()->GetFName();
+
+			// allow the class to override the expected section name
+			OverrideConfigSection(ClassSection);
 		}
 
 		// globalconfig properties should always use the owning class's config file
@@ -2452,7 +2595,7 @@ void UObject::LoadConfig( UClass* ConfigClass/*=NULL*/, const TCHAR* InFilename/
 	}
 
 	// if we are reloading config data after the initial class load, fire the callback now
-	if ( (PropagationFlags&UE4::LCPF_ReloadingConfigData) != 0 )
+	if ( (PropagationFlags&UE::LCPF_ReloadingConfigData) != 0 )
 	{
 		PostReloadConfig(PropertyToLoad);
 	}
@@ -2465,7 +2608,7 @@ void UObject::SaveConfig( uint64 Flags, const TCHAR* InFilename, FConfigCacheIni
 		return;
 	}
 
-	uint32 PropagationFlags = UE4::LCPF_None;
+	uint32 PropagationFlags = UE::LCPF_None;
 
 	const FString Filename
 	// if a filename was specified, always load from that file
@@ -2517,12 +2660,12 @@ void UObject::SaveConfig( uint64 Flags, const TCHAR* InFilename, FConfigCacheIni
 			if (Property->PropertyFlags & CPF_GlobalConfig)
 			{
 				// call LoadConfig() on child classes if any of the properties were global config
-				PropagationFlags |= UE4::LCPF_PropagateToChildDefaultObjects;
+				PropagationFlags |= UE::LCPF_PropagateToChildDefaultObjects;
 				BaseClass = Property->GetOwnerClass();
 				if ( BaseClass != GetClass() )
 				{
 					// call LoadConfig() on parent classes only if the global config property was declared in a parent class
-					PropagationFlags |= UE4::LCPF_ReadParentSections;
+					PropagationFlags |= UE::LCPF_ReadParentSections;
 				}
 			}
 
@@ -2542,6 +2685,8 @@ void UObject::SaveConfig( uint64 Flags, const TCHAR* InFilename, FConfigCacheIni
 			if ( !bPerObject )
 			{
 				Section = BaseClass->GetPathName();
+				// allow the class to override the expected section name
+				OverrideConfigSection(Section);
 			}
 
 			// globalconfig properties should always use the owning class's config file
@@ -2558,7 +2703,7 @@ void UObject::SaveConfig( uint64 Flags, const TCHAR* InFilename, FConfigCacheIni
 			FArrayProperty* Array   = CastField<FArrayProperty>( Property );
 			if( Array )
 			{
-				FConfigSection* Sec = Config->GetSectionPrivate(*Section, 1, 0, *PropFileName);
+				FConfigSection* Sec = Config->GetSectionPrivate(*Section, 1, 0, PropFileName);
 				// Default ini's require the array syntax to be applied to the property name
 				FString CompleteKey = FString::Printf(TEXT("%s%s"), bIsADefaultIniWrite ? TEXT("+") : TEXT(""), *Key);
 				if (Sec)
@@ -2594,16 +2739,12 @@ void UObject::SaveConfig( uint64 Flags, const TCHAR* InFilename, FConfigCacheIni
 					{
 						FString	Value;
 						Property->ExportText_InContainer( Index, Value, this, this, this, PortFlags );
-						Config->SetString( *Section, *Key, *Value, *PropFileName );
+						Config->SetString( *Section, *Key, *Value, PropFileName );
 					}
 					else
 					{
 						// If we are not writing it to config above, we should make sure that this property isn't stagnant in the cache.
-						FConfigSection* Sec = Config->GetSectionPrivate( *Section, 1, 0, *PropFileName );
-						if( Sec )
-						{
-							Sec->Remove( *Key );
-						}
+						Config->RemoveKey( *Section, *Key, PropFileName );
 					}
 				}
 			}
@@ -2688,8 +2829,6 @@ void UObject::UpdateSingleSectionOfConfigFile(const FString& ConfigIniName)
 	// save the object properties to this file
 	SaveConfig(CPF_Config, *ConfigIniName, &Config);
 
-	ensureMsgf(Config.Num() == 1, TEXT("UObject::UpdateDefaultConfig() caused more files than expected in the Sandbox config cache!"));
-
 	// do we need to use a special platform hierarchy?
 	FString OverridePlatform = GetFinalOverridePlatform(this);
 
@@ -2708,6 +2847,25 @@ void UObject::UpdateSingleSectionOfConfigFile(const FString& ConfigIniName)
 void UObject::UpdateDefaultConfigFile(const FString& SpecificFileLocation)
 {
 	UpdateSingleSectionOfConfigFile(SpecificFileLocation.IsEmpty() ? GetDefaultConfigFilename() : SpecificFileLocation);
+}
+
+bool UObject::TryUpdateDefaultConfigFile(const FString& SpecificFileLocation, bool bWarnIfFail)
+{
+	FString ConfigFile = SpecificFileLocation.IsEmpty() ? GetDefaultConfigFilename() : SpecificFileLocation;
+
+	if (!FPaths::FileExists(ConfigFile) || !IFileManager::Get().IsReadOnly(*ConfigFile))
+	{
+		UpdateSingleSectionOfConfigFile(ConfigFile);
+
+		return true;
+	}
+
+	if (bWarnIfFail)
+	{
+		UE_LOG(LogObj, Warning, TEXT("Ini File '%s' is read-only and cannot be written to"), *ConfigFile);
+	}
+
+	return false;
 }
 
 void UObject::UpdateGlobalUserConfigFile()
@@ -2735,8 +2893,6 @@ void UObject::UpdateSinglePropertyInConfigFile(const FProperty* InProperty, cons
 		SaveConfig(CPF_Config, *InConfigIniName, &Config);
 
 		// Take the saved section for this object and have the config system process and write out the one property we care about.
-		ensureMsgf(Config.Num() == 1, TEXT("UObject::UpdateDefaultConfig() caused more files than expected in the Sandbox config cache!"));
-
 		TArray<FString> Keys;
 		NewFile.GetKeys(Keys);
 
@@ -2866,7 +3022,7 @@ static void ShowIntrinsicClasses( FOutputDevice& Ar )
 			{
 				MarkedClasses.AddClass(*It);
 			}
-			else if ( !It->HasAnyClassFlags(CLASS_Parsed) )
+			else
 			{
 				UnmarkedClasses.AddClass(*It);
 			}
@@ -2940,6 +3096,7 @@ void UObject::OutputReferencers( FOutputDevice& Ar, FReferencerInformationList* 
 					ObjectReachability += TEXT(" (standalone)");
 				}
 
+				UGCObjectReferencer* GCObjectReferencer = Cast<UGCObjectReferencer>(RefInfo.Referencer);
 				Ar.Logf( TEXT("   %s (%i)\r\n"), *ObjectReachability, RefInfo.TotalReferences );
 				for ( int32 i = 0; i < RefInfo.TotalReferences; i++ )
 				{
@@ -2950,7 +3107,15 @@ void UObject::OutputReferencers( FOutputDevice& Ar, FReferencerInformationList* 
 					}
 					else
 					{
-						Ar.Logf(TEXT("      %i) [[native reference]]\r\n"), i);
+						FString ReferencerName;
+						if (GCObjectReferencer && GCObjectReferencer->GetReferencerName(this, ReferencerName))
+						{
+							Ar.Logf(TEXT("      %i) [[FGCObject %s]]\r\n"), i, *ReferencerName);
+						}
+						else
+						{
+							Ar.Logf(TEXT("      %i) [[native reference]]\r\n"), i);
+						}
 					}
 				}
 			}
@@ -3576,7 +3741,7 @@ bool StaticExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 								continue;
 							}
 
-							if ( (bShowPendingKills || !CurrentObject->IsPendingKill()) && CurrentObject->IsA(Class) )
+							if ( (bShowPendingKills || IsValidChecked(CurrentObject)) && CurrentObject->IsA(Class) )
 							{
 								if (!Property)
 								{
@@ -3832,7 +3997,7 @@ bool StaticExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 				// Skip objects that are trashed
 				if ((Target->GetOutermost() == GetTransientPackage())
 					|| Target->GetClass()->HasAnyClassFlags(CLASS_NewerVersionExists)
-					|| Target->IsPendingKill())
+					|| !IsValidChecked(Target))
 				{
 					continue;
 				}
@@ -3848,7 +4013,7 @@ bool StaticExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 					const UClass* SubObjClass = SubObj->GetClass();
 					const FString SubObjName = SubObj->GetName();
 
-					if (SubObj->IsPendingKill())
+					if (!IsValid(SubObj))
 					{
 						continue;
 					}
@@ -3993,6 +4158,7 @@ bool StaticExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 			{
 				
 				EReferenceChainSearchMode SearchModeFlags = EReferenceChainSearchMode::PrintResults;
+				int32 HistoryLevel = 0;
 
 				FString Tok;
 				while(FParse::Token(Str, Tok, false))
@@ -4029,9 +4195,46 @@ bool StaticExec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar )
 					{
 						SearchModeFlags |= EReferenceChainSearchMode::FullChain;
 					}
+#if ENABLE_GC_HISTORY
+					else if (FParse::Value(Str, TEXT("history="), HistoryLevel))
+					{
+						if (FGCHistory::Get().IsActive())
+						{
+							int32 MaxHistoryLevel = FGCHistory::Get().GetHistorySize() - 1;
+							if (FMath::Abs(HistoryLevel) >= MaxHistoryLevel)
+							{
+								UE_LOG(LogObj, Log, TEXT("GC History level %d will be clamped to the current max %d"), HistoryLevel, MaxHistoryLevel);
+								HistoryLevel = MaxHistoryLevel;
+							}
+						}
+						else if (HistoryLevel != 0)
+						{
+							UE_LOG(LogObj, Log, TEXT("GC History is not currently enabled. Use 'gc.HistorySize 1' console command to enable it."));
+							HistoryLevel = 0;
+						}
+					}
+#endif // ENABLE_GC_HISTORY
 				}
 				
-				FReferenceChainSearch RefChainSearch(Object, SearchModeFlags);
+				if (HistoryLevel == 0)
+				{
+					FReferenceChainSearch RefChainSearch(Object, SearchModeFlags);
+				}
+#if ENABLE_GC_HISTORY
+				else
+				{
+					FReferenceChainSearch HistorySearch(SearchModeFlags);
+					FGCSnapshot* GCSnapshot = FGCHistory::Get().GetSnapshot(HistoryLevel);
+					if (GCSnapshot)
+					{
+						HistorySearch.PerformSearchFromGCSnapshot(Object, *GCSnapshot);
+					}
+					else
+					{
+						UE_LOG(LogObj, Log, TEXT("There's not been that many (%d) GC runs to be able to search for object refs in GC history."), (HistoryLevel + 1));
+					}
+				}
+#endif // ENABLE_GC_HISTORY
 			}
 			else
 			{
@@ -4417,15 +4620,18 @@ void InitUObject()
 
 	// Initialize redirects map
 	FCoreRedirects::Initialize();
-	for (const TPair<FString,FConfigFile>& It : *GConfig)
+	for (const FString& Filename : GConfig->GetFilenames())
 	{
-		FCoreRedirects::ReadRedirectsFromIni(It.Key);
-		FLinkerLoad::CreateActiveRedirectsMap(It.Key);
+		FCoreRedirects::ReadRedirectsFromIni(Filename);
+		FLinkerLoad::CreateActiveRedirectsMap(Filename);
 	}
 
 	FCoreDelegates::OnShutdownAfterError.AddStatic(StaticShutdownAfterError);
 	FCoreDelegates::OnExit.AddStatic(StaticExit);
-#if !USE_PER_MODULE_UOBJECT_BOOTSTRAP // otherwise this is already done
+#if !USE_PER_MODULE_UOBJECT_BOOTSTRAP && !IS_MONOLITHIC
+	// Not necessary when USE_PER_MODULE_UOBJECT_BOOTSTRAP==0 since the callback gets installed elsewhere
+	// Also not necessary for monolithic builds as all pending registrants are available at once on app start
+	// so ProcessNewlyLoadedUObjects needs to only ever be invoked once, not for each module
 	FModuleManager::Get().OnProcessLoadedObjectsCallback().AddStatic(ProcessNewlyLoadedUObjects);
 #endif
 
@@ -4593,12 +4799,23 @@ void StaticExit()
 	Misc.
 -----------------------------------------------------------------------------*/
 
-//
-// Return the static transient package.
-//
 UPackage* GetTransientPackage()
 {
 	return GObjTransientPkg;
+}
+
+UObject* GetTransientOuterForRename(UClass* ForClass)
+{
+	// if someone has tautologically placed themself within their own hierarchy then we'll
+	// just assume they're ok with eventually being outered to a upackage, similar UPackage
+	// is a UObject, so if someone demands that they be outered to 'a uobject' we'll 
+	// just leave them directly parented to the transient package:
+	if (ForClass->ClassWithin && ForClass->ClassWithin != ForClass && ForClass->ClassWithin != UObject::StaticClass())
+	{
+		FScopedAllowAbstractClassAllocation AllowAbstract;
+		return NewObject<UObject>(GetTransientOuterForRename(ForClass->ClassWithin), ForClass->ClassWithin, NAME_None, RF_Transient);
+	}
+	return GetTransientPackage();
 }
 
 //keep this global to ensure that an actual write is prepared
@@ -4682,3 +4899,7 @@ bool UObject::IsSupportedForNetworking() const
 {
 	return IsFullNameStableForNetworking();
 }
+
+#if WITH_EDITOR
+TFunction<bool(const UObject*)> GIsObjectSelectedInEditor;
+#endif

@@ -6,6 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "InputCoreTypes.h"
+#include "Engine/DeveloperSettings.h"
 #include "GameplayDebuggerConfig.generated.h"
 
 struct FGameplayDebuggerInputModifier;
@@ -210,4 +211,41 @@ private:
 	TArray<FName> KnownExtensionNames;
 	TMultiMap<FName, FName> KnownCategoryInputNames;
 	TMultiMap<FName, FName> KnownExtensionInputNames;
+};
+
+
+UCLASS(config = EditorPerProjectUserSettings, meta = (DisplayName = "Gameplay Debugger"))
+class GAMEPLAYDEBUGGER_API UGameplayDebuggerUserSettings : public UDeveloperSettings
+{
+	GENERATED_BODY()
+protected:
+	virtual FName GetCategoryName() const override { return TEXT("Advanced"); }
+
+public:
+	static int32 GetFontSize() { return GetDefault<UGameplayDebuggerUserSettings>()->FontSize; }
+	static void SetFontSize(const int32 InFontSize);
+
+	/** Controls whether GameplayDebugger will be available in pure editor mode.
+	 *  @Note that you need to reload the map for the changes to this property to take effect */
+	UPROPERTY(config, EditAnywhere, Category = GameplayDebugger)
+	uint32 bEnableGameplayDebuggerInEditor : 1;
+
+	/**
+	 * Distance from view location under which actors can be selected
+	 * This distance can also be used by some categories to apply culling.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = GameplayDebugger)
+	float MaxViewDistance = 25000.0f;
+
+	/**
+	 * Angle from view direction under which actors can be selected
+	 * This angle can also be used by some categories to apply culling.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = GameplayDebugger, meta = (UIMin = 0, ClampMin = 0, UIMax = 180, ClampMax = 180, Units = deg))
+	float MaxViewAngle = 45.f;
+
+protected:
+	/** Font Size used by Gameplay Debugger */ 
+	UPROPERTY(config, EditAnywhere, Category = GameplayDebugger)
+	int32 FontSize = 10;
 };

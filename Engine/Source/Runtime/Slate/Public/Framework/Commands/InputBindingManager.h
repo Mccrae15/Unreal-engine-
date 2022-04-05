@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "UICommandList.h"
 #include "Framework/Commands/InputChord.h"
 #include "Framework/Commands/UICommandInfo.h"
 
@@ -14,6 +15,9 @@ typedef TMap<FInputChord, FName> FChordMap;
 
 /** Delegate for alerting subscribers the input manager records a user-defined chord */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnUserDefinedChordChanged, const FUICommandInfo& );
+
+/** Delegate for exposing new command lists to subscribers */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnRegisterCommandList, const FName, TSharedRef<FUICommandList>);
 
 /**
  * Manager responsible for creating and processing input bindings.                  
@@ -146,8 +150,9 @@ public:
 	enum class ECommandFilterType
 	{
 		None,
-		Blacklist,
-		Whitelist
+
+		DenyList,
+		AllowList
 	};
 
 	/**
@@ -164,12 +169,42 @@ public:
 	void UnregisterCommandFilterOwner(const FName InOwnerName);
 
 	/**
-	* Command passes blacklist and whitelist filters
+	* Command passes allow/deny list filters
 	*
 	* @param InBindingContext	The context in which the command is active
 	* @param InCommandName		The name of the command
 	*/
 	bool CommandPassesFilter(const FName InBindingContext, const FName InCommandName) const;
+
+	/**
+	 * Exposes the given command list and its context to all OnRegisterCommandList subscribers
+	 *
+	 * @param InBindingContext	The context in which the command list is active
+	 * @param CommandList		The command list to expose to subscribers
+	 */
+	bool RegisterCommandList(const ::FName InBindingContext, TSharedRef<FUICommandList> CommandList) const;
+
+	/**
+	 * Exposes a new given command list from the given context to all OnRegisterCommandList subscribers
+	 * 
+	 * @param InBindingContext	The context in which the command list is active
+	 * @return	The new command list exposed to subscribers
+	 */
+	TSharedPtr<FUICommandList> RegisterNewCommandList(const FName InBindingContext) const;
+
+	/**
+	 * Exposes the given command list and its context to all OnUnregisterCommandList subscribers
+	 * 
+	 * @param InBindingContext	The context in which the command list is active
+	 * @param CommandList		The command list to expose to subscribers
+	 */
+	bool UnregisterCommandList(const ::FName InBindingContext, TSharedRef<FUICommandList> CommandList) const;
+
+	/** A delegate for systems to subscribe to any other system exposing their command lists */
+	FOnRegisterCommandList OnRegisterCommandList;
+
+	/** A delegate for systems to subscribe to any other system unregistering their command lists */
+	FOnRegisterCommandList OnUnregisterCommandList;
 
 private:
 
@@ -221,8 +256,8 @@ private:
 
 	struct FCommandFilterForContext
 	{
-		TMap<FName, FCommandFilterOwners> BlacklistedCommands;
-		TMap<FName, FCommandFilterOwners> WhitelistedCommands;
+		TMap<FName, FCommandFilterOwners> CommandDenyList;
+		TMap<FName, FCommandFilterOwners> CommandAllowList;
 	};
 
 	/** Mapping of command filters by context */

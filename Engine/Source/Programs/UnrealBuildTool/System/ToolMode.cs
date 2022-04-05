@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -54,6 +54,11 @@ namespace UnrealBuildTool
 		/// Print out the total time taken to execute
 		/// </summary>
 		ShowExecutionTime = 64,
+
+		/// <summary>
+		/// Capture logs as early as possible in a StartupTraceListener object
+		/// </summary>
+		UseStartupTraceListener = 128,
 	}
 
 	/// <summary>

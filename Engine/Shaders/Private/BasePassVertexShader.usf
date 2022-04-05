@@ -8,31 +8,24 @@
 #include "SHCommon.ush"
 #include "VolumetricLightmapShared.ush"
 
-// Metal needs to combine the vertex & hull shaders for tesellation support.
-#if COMPILER_METAL && USING_TESSELLATION
-#include "BasePassTessellationShaders.usf"
-#endif
-
 #if TRANSLUCENCY_PERVERTEX_FORWARD_SHADING
 #include "ReflectionEnvironmentShared.ush"
 #include "ForwardLightingCommon.ush"
 #endif
 
-#if NEEDS_BASEPASS_VERTEX_FOGGING
-#if PROJECT_SUPPORT_SKY_ATMOSPHERE
+#if NEEDS_BASEPASS_VERTEX_FOGGING && PROJECT_SUPPORT_SKY_ATMOSPHERE
 #include "SkyAtmosphereCommon.ush"
 #endif
-#if MATERIAL_ENABLE_TRANSLUCENCY_CLOUD_FOGGING
+
+#if (NEEDS_BASEPASS_VERTEX_FOGGING && MATERIAL_ENABLE_TRANSLUCENCY_CLOUD_FOGGING) || SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT
 #include "VolumetricCloudCommon.ush"
-#endif
 #endif
 
 /** Entry point for the base pass vertex shader. */
 void Main(
 	FVertexFactoryInput Input,
-	OPTIONAL_VertexID
 	out FBasePassVSOutput Output
-#if USE_GLOBAL_CLIP_PLANE && !USING_TESSELLATION
+#if USE_GLOBAL_CLIP_PLANE
 	, out float OutGlobalClipPlaneDistance : SV_ClipDistance
 #endif
 #if INSTANCED_STEREO
@@ -73,14 +66,6 @@ void Main(
 		WorldPosition.xyz += GetMaterialWorldPositionOffset(VertexParameters);
 	}
 
-#if USING_TESSELLATION
-	// We let the Domain Shader convert to post projection when tessellating
-	Output.Position = WorldPosition;	
-
-	#if USE_WORLD_POSITION_EXCLUDING_SHADER_OFFSETS
-		Output.BasePassInterpolants.WorldPositionExcludingWPO = WorldPositionExcludingWPO.xyz;
-	#endif
-#else
 	{
 		float4 RasterizedWorldPosition = VertexFactoryGetRasterizedWorldPosition(Input, VFIntermediates, WorldPosition);
 	#if ODS_CAPTURE
@@ -108,34 +93,25 @@ void Main(
 	#endif
 	
 #if USE_GLOBAL_CLIP_PLANE
-	OutGlobalClipPlaneDistance = dot(ResolvedView.GlobalClippingPlane, float4(WorldPosition.xyz - ResolvedView.PreViewTranslation.xyz, 1));
+	OutGlobalClipPlaneDistance = dot(ResolvedView.GlobalClippingPlane, float4(WorldPosition.xyz, 1));
 #endif
 	#if USE_WORLD_POSITION_EXCLUDING_SHADER_OFFSETS
 		Output.BasePassInterpolants.PixelPositionExcludingWPO = WorldPositionExcludingWPO.xyz;
 	#endif
-#endif	// USING_TESSELLATION
 
 	Output.FactoryInterpolants = VertexFactoryGetInterpolants(Input, VFIntermediates, VertexParameters);
 
 #if INSTANCED_STEREO
-	#if USING_TESSELLATION	
-		Output.FactoryInterpolants.InterpolantsVSToPS.EyeIndex = EyeIndex;
-	#else
-		Output.FactoryInterpolants.EyeIndex = EyeIndex;
-	#endif
+	Output.FactoryInterpolants.EyeIndex = EyeIndex;
 #endif
 
 // Calculate the fog needed for translucency
 #if NEEDS_BASEPASS_VERTEX_FOGGING
-	#if BASEPASS_ATMOSPHERIC_FOG
-	Output.BasePassInterpolants.VertexFog = CalculateVertexAtmosphericFog(WorldPosition.xyz, ResolvedView.TranslatedWorldCameraOrigin);
-	#else
 	Output.BasePassInterpolants.VertexFog = CalculateHeightFog(WorldPosition.xyz - ResolvedView.TranslatedWorldCameraOrigin);
-	#endif
 
-	const float OneOverPreExposure = USE_PREEXPOSURE ? ResolvedView.OneOverPreExposure : 1.0f;
+	const float OneOverPreExposure = ResolvedView.OneOverPreExposure;
 
-#if PROJECT_SUPPORT_SKY_ATMOSPHERE && MATERIAL_IS_SKY==0 // Do not apply aerial perpsective on sky materials
+#if PROJECT_SUPPORT_SKY_ATMOSPHERE && BASEPASS_SKYATMOSPHERE_AERIALPERSPECTIVE && MATERIAL_IS_SKY==0 // Do not apply aerial perpsective on sky materials
 	if (ResolvedView.SkyAtmosphereApplyCameraAerialPerspectiveVolume > 0.0f)
 	{
 		// Sample the aerial perspective (AP). It is also blended under the VertexFog parameter.
@@ -153,7 +129,6 @@ void Main(
 #endif
 
 #if MATERIAL_ENABLE_TRANSLUCENCY_CLOUD_FOGGING
-
 	if (TranslucentBasePass.ApplyVolumetricCloudOnTransparent > 0.0f)
 	{
 		Output.BasePassInterpolants.VertexFog = GetCloudLuminanceTransmittanceOverFog(
@@ -162,14 +137,13 @@ void Main(
 			TranslucentBasePass.VolumetricCloudDepth, TranslucentBasePass.VolumetricCloudDepthSampler,
 			OneOverPreExposure, Output.BasePassInterpolants.VertexFog);
 	}
-
 #endif
 
-#endif
+#endif // NEEDS_BASEPASS_VERTEX_FOGGING
 
-#if TRANSLUCENCY_ANY_PERVERTEX_LIGHTING
+#if TRANSLUCENCY_ANY_PERVERTEX_LIGHTING || SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT
 	float3 WorldPositionForVertexLightingTranslated = VertexFactoryGetPositionForVertexLighting(Input, VFIntermediates, WorldPosition.xyz);
-	float3 WorldPositionForVertexLighting = WorldPositionForVertexLightingTranslated - ResolvedView.PreViewTranslation.xyz;
+	float3 WorldPositionForVertexLighting = WorldPositionForVertexLightingTranslated - LWCHackToFloat(ResolvedView.PreViewTranslation);
 #endif
 
 #if TRANSLUCENCY_PERVERTEX_LIGHTING_VOLUME
@@ -182,7 +156,7 @@ void Main(
 
 	//@todo - get from VF
 	float3 LightingPositionOffset = 0;
-	ComputeVolumeUVs(WorldPositionForVertexLighting, LightingPositionOffset, InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
+	ComputeVolumeUVs(WorldPositionForVertexLightingTranslated, LightingPositionOffset, InnerVolumeUVs, OuterVolumeUVs, FinalLerpFactor);
 
 	#if TRANSLUCENCY_LIGHTING_VOLUMETRIC_PERVERTEX_DIRECTIONAL
 	
@@ -199,7 +173,44 @@ void Main(
 	float4 VertexLightingClipSpacePosition = mul(float4(WorldPositionForVertexLightingTranslated, 1), ResolvedView.TranslatedWorldToClip);
 	float2 SvPosition = (VertexLightingClipSpacePosition.xy / VertexLightingClipSpacePosition.w * float2(.5f, -.5f) + .5f) * ResolvedView.ViewSizeAndInvSize.xy;
 	uint GridIndex = ComputeLightGridCellIndex((uint2)(SvPosition* View.LightProbeSizeRatioAndInvSizeRatio.zw - ResolvedView.ViewRectMin.xy), VertexLightingClipSpacePosition.w, EyeIndex);
-	Output.BasePassInterpolants.VertexDiffuseLighting = GetForwardDirectLightingForVertexLighting(GridIndex, WorldPositionForVertexLighting, Output.Position.w, VertexParameters.TangentToWorld[2], EyeIndex);
+
+	float DirectionalLightCloudShadow = 1.0f;
+	#if SUPPORT_CLOUD_SHADOW_ON_FORWARD_LIT_TRANSLUCENT
+		float OutOpticalDepth = 0.0f;
+		if (TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapStrength > 0.0f)
+		{
+			DirectionalLightCloudShadow = lerp(
+				1.0f,
+				GetCloudVolumetricShadow(
+					WorldPositionForVertexLightingTranslated,
+					TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapTranslatedWorldToLightClipMatrix,
+					TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapFarDepthKm,
+					TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapTexture,
+					TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapSampler,
+					OutOpticalDepth),
+				TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapStrength);
+		}
+	#endif
+
+	Output.BasePassInterpolants.VertexDiffuseLighting = GetForwardDirectLightingForVertexLighting(GridIndex, WorldPositionForVertexLightingTranslated, Output.Position.w, VertexParameters.TangentToWorld[2], EyeIndex, DirectionalLightCloudShadow);
+
+#elif NEEDS_BASEPASS_CLOUD_SHADOW_INTERPOLATOR
+
+	Output.BasePassInterpolants.VertexCloudShadow = 1.0f;
+	if (TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapStrength > 0.0f)
+	{
+		float OutOpticalDepth = 0.0f;
+		Output.BasePassInterpolants.VertexCloudShadow = lerp(
+			1.0f,
+			GetCloudVolumetricShadow(
+				WorldPositionForVertexLightingTranslated,
+				TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapTranslatedWorldToLightClipMatrix,
+				TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapFarDepthKm,
+				TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapTexture,
+				TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapSampler,
+				OutOpticalDepth),
+			TranslucentBasePass.ForwardDirLightCloudShadow.CloudShadowmapStrength);
+	}
 
 #endif
 
@@ -221,33 +232,19 @@ void Main(
 #if WRITES_VELOCITY_TO_GBUFFER
 	{
 		float4 PrevTranslatedWorldPosition = float4(0, 0, 0, 1);
-		BRANCH
-		if (GetPrimitiveData(VFIntermediates.PrimitiveId).OutputVelocity > 0 || View.ForceDrawAllVelocities != 0)
+		// Use 'FLATTEN' instead of 'BRANCH' because of nVidia driver compiler bug: see UE-108339 - nVidia is working on a driver side fix right now
+		FLATTEN
+		if ((GetPrimitiveData(VertexParameters).Flags & PRIMITIVE_SCENE_DATA_FLAG_OUTPUT_VELOCITY) != 0 || View.ForceDrawAllVelocities != 0)
 		{
 			PrevTranslatedWorldPosition = VertexFactoryGetPreviousWorldPosition( Input, VFIntermediates );	
 			VertexParameters = GetMaterialVertexParameters(Input, VFIntermediates, PrevTranslatedWorldPosition.xyz, TangentToLocal);
 			PrevTranslatedWorldPosition.xyz += GetMaterialPreviousWorldPositionOffset(VertexParameters);
 	
-			#if !USING_TESSELLATION
-				PrevTranslatedWorldPosition = mul(float4(PrevTranslatedWorldPosition.xyz, 1), ResolvedView.PrevTranslatedWorldToClip);
-			#endif
+			PrevTranslatedWorldPosition = mul(float4(PrevTranslatedWorldPosition.xyz, 1), ResolvedView.PrevTranslatedWorldToClip);
 		}
 
-		#if USING_TESSELLATION
-			// We let the Domain Shader convert to post projection when tessellating
-			Output.BasePassInterpolants.VelocityPrevScreenPosition = PrevTranslatedWorldPosition;
-			#if WRITES_VELOCITY_TO_GBUFFER_USE_POS_INTERPOLATOR
-			Output.BasePassInterpolants.VelocityScreenPosition = WorldPosition;
-			#endif
-		#else
-			// compute the old screen pos with the old world position and the old camera matrix
-			Output.BasePassInterpolants.VelocityPrevScreenPosition = PrevTranslatedWorldPosition; 
-			#if WRITES_VELOCITY_TO_GBUFFER_USE_POS_INTERPOLATOR
-			Output.BasePassInterpolants.VelocityScreenPosition = ClipSpacePosition;
-			#endif
-		#endif	// USING_TESSELLATION
+		// compute the old screen pos with the old world position and the old camera matrix
+		Output.BasePassInterpolants.VelocityPrevScreenPosition = PrevTranslatedWorldPosition; 
 	}
 #endif	// WRITES_VELOCITY_TO_GBUFFER
-
-	OutputVertexID( Output );
 }

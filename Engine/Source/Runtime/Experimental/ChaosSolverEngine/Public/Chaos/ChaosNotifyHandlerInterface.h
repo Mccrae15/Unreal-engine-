@@ -16,10 +16,10 @@ public:
 	FChaosPhysicsCollisionInfo();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Chaos")
-	UPrimitiveComponent* Component = nullptr;
+	TObjectPtr<UPrimitiveComponent> Component = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chaos")
-	UPrimitiveComponent* OtherComponent = nullptr;
+	TObjectPtr<UPrimitiveComponent> OtherComponent = nullptr;
 
 	/** Location of the impact */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chaos")

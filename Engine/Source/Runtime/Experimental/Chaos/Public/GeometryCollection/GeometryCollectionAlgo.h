@@ -149,6 +149,9 @@ namespace GeometryCollectionAlgo
 	*  Global Matrices of the collection, transforms will be resized to fit
 	*/
 	template<typename MatrixType>
+	void CHAOS_API GlobalMatrices(const TManagedArray<FTransform>& RelativeTransforms, const TManagedArray<int32>& Parents, const TManagedArray<FTransform>& UniformScale, TArray<MatrixType>& Transforms);
+
+	template<typename MatrixType>
 	void CHAOS_API GlobalMatrices(const TManagedArray<FTransform>& RelativeTransforms, const TManagedArray<int32>& Parents, TArray<MatrixType>& Transforms);
 
 	/*
@@ -176,7 +179,7 @@ namespace GeometryCollectionAlgo
 
 	void
 	CHAOS_API
-	TriangulateBoundaries(FGeometryCollection* GeometryCollection, const TArray<TArray<TArray<int32>>> &BoundaryVertexIndices, bool bWoundClockwise = true, float MinTriangleAreaSq = 1e-4);
+	TriangulateBoundaries(FGeometryCollection* GeometryCollection, const TArray<TArray<TArray<int32>>> &BoundaryVertexIndices, bool bWoundClockwise = true, float MinTriangleAreaSq = 1e-4f);
 
 	void
 	CHAOS_API
@@ -188,7 +191,7 @@ namespace GeometryCollectionAlgo
 	 */
 	void
 	CHAOS_API
-	ResizeGeometries(FGeometryCollection* GeometryCollection, const TArray<int32>& FaceCounts, const TArray<int32>& VertexCounts);
+	ResizeGeometries(FGeometryCollection* GeometryCollection, const TArray<int32>& FaceCounts, const TArray<int32>& VertexCounts, bool bDoValidation = true);
 
 	void
 	CHAOS_API
@@ -196,7 +199,7 @@ namespace GeometryCollectionAlgo
 
 	void
 	CHAOS_API
-	DeleteCoincidentVertices(FGeometryCollection* GeometryCollection, float Tolerance = 1e-2);
+	DeleteCoincidentVertices(FGeometryCollection* GeometryCollection, float Tolerance = 1e-2f);
 
 	void
 	CHAOS_API
@@ -204,7 +207,7 @@ namespace GeometryCollectionAlgo
 
 	void
 	CHAOS_API
-	DeleteZeroAreaFaces(FGeometryCollection* GeometryCollection, float Tolerance = 1e-4);
+	DeleteZeroAreaFaces(FGeometryCollection* GeometryCollection, float Tolerance = 1e-4f);
 
 	void
 	CHAOS_API
@@ -271,6 +274,7 @@ namespace GeometryCollectionAlgo
 	bool
 	CHAOS_API
 	HasValidGeometryReferences(const FGeometryCollection* GeometryCollection);
+
 
 	/*
 	* Computes the order of transform indices so that children in a tree always appear before their parents. Handles forests

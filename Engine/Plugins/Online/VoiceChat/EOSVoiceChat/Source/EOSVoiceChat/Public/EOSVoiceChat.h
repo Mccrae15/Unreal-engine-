@@ -123,6 +123,8 @@ public:
 	virtual FOnVoiceChatPlayerTalkingUpdatedDelegate& OnVoiceChatPlayerTalkingUpdated() override;
 	virtual void SetPlayerMuted(const FString& PlayerName, bool bMuted) override;
 	virtual bool IsPlayerMuted(const FString& PlayerName) const override;
+	virtual void SetChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName, bool bMuted) override;
+	virtual bool IsChannelPlayerMuted(const FString& ChannelName, const FString& PlayerName) const override;
 	virtual FOnVoiceChatPlayerMuteUpdatedDelegate& OnVoiceChatPlayerMuteUpdated() override;
 	virtual void SetPlayerVolume(const FString& PlayerName, float Volume) override;
 	virtual float GetPlayerVolume(const FString& PlayerName) const override;
@@ -222,6 +224,7 @@ protected:
 	// ~Begin FSelfRegisteringExec Interface
 	bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar);
 	// ~End FSelfRegisteringExec Interface
+	TArray<IVoiceChatUser*> UsersCreatedByConsoleCommand;
 
 	IEOSSDKManager& SDKManager;
 	IEOSPlatformHandlePtr ExternalPlatformHandle;
@@ -231,7 +234,7 @@ protected:
 
 	FEOSVoiceChatWeakPtr CreateWeakThis();
 
-	friend const TCHAR* LexToString(EConnectionState State);
+	friend const TCHAR* LexToString(FEOSVoiceChat::EConnectionState State);
 };
 
 #endif // WITH_EOS_RTC

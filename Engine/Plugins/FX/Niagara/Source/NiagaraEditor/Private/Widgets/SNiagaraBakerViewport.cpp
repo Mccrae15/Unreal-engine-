@@ -20,7 +20,7 @@
 
 //////////////////////////////////////////////////////////////////////////
 
-class FNiagaraBakerViewportClient : public FEditorViewportClient
+class FNiagaraBakerViewportClient final : public FEditorViewportClient
 {
 public:
 	FNiagaraBakerViewportClient(const TSharedRef<SNiagaraBakerViewport>& InOwnerViewport)
@@ -247,6 +247,7 @@ public:
 		const UNiagaraBakerSettings* BakerSettings = ViewModel->GetBakerSettings();
 		const UNiagaraBakerSettings* BakerGeneratedSettings = ViewModel->GetBakerGeneratedSettings();
 		const int32 PreviewTextureIndex = ViewModel->GetPreviewTextureIndex();
+		const float TimelineDurationSeconds = BakerSettings->DurationSeconds;
 
 		// Determine view rects
 		PreviewViewRect = FIntRect();
@@ -286,49 +287,58 @@ public:
 		{
 			ClearViewArea(Canvas, PreviewViewRect);
 
-			const float WorldTime = CurrentTime;
+			const float WorldTime = RelativeTime + BakerSettings->StartSeconds;
 			FVector2D TextPosition(PreviewViewRect.Min.X + TextStartOffset.X, PreviewViewRect.Min.Y + TextStartOffset.Y);
 			if (BakerSettings->OutputTextures.IsValidIndex(PreviewTextureIndex))
 			{
-				// Ensure render target is the correct size
 				const FNiagaraBakerTextureSettings& OutputTexture = BakerSettings->OutputTextures[PreviewTextureIndex];
-				if ( !RealtimeRenderTarget || RealtimeRenderTarget->SizeX != OutputTexture.FrameSize.X || RealtimeRenderTarget->SizeY != OutputTexture.FrameSize.Y )
+				if ( OutputTexture.IsValidForBake() )
 				{
-					if (RealtimeRenderTarget == nullptr)
+					// Ensure render target is the correct size
+					if ( !RealtimeRenderTarget || RealtimeRenderTarget->SizeX != OutputTexture.FrameSize.X || RealtimeRenderTarget->SizeY != OutputTexture.FrameSize.Y )
 					{
-						RealtimeRenderTarget = NewObject<UTextureRenderTarget2D>();
+						if (RealtimeRenderTarget == nullptr)
+						{
+							RealtimeRenderTarget = NewObject<UTextureRenderTarget2D>();
+						}
+						RealtimeRenderTarget->ClearColor = FLinearColor::Transparent;
+						RealtimeRenderTarget->TargetGamma = 1.0f;
+						RealtimeRenderTarget->InitCustomFormat(OutputTexture.FrameSize.X, OutputTexture.FrameSize.Y, PF_FloatRGBA, false);
 					}
-					RealtimeRenderTarget->ClearColor = FLinearColor::Transparent;
-					RealtimeRenderTarget->TargetGamma = 1.0f;
-					RealtimeRenderTarget->InitCustomFormat(OutputTexture.FrameSize.X, OutputTexture.FrameSize.Y, PF_FloatRGBA, false);
+
+					// Seek to correct time and render
+					UNiagaraComponent* PreviewComponent = ViewModel->GetPreviewComponent();
+					PreviewComponent->SetSeekDelta(BakerSettings->GetSeekDelta());
+					PreviewComponent->SeekToDesiredAge(WorldTime);
+					PreviewComponent->TickComponent(BakerSettings->GetSeekDelta(), ELevelTick::LEVELTICK_All, nullptr);
+
+					BakerRenderer.RenderView(PreviewComponent, BakerSettings, WorldTime, RealtimeRenderTarget, PreviewTextureIndex);
+
+					const FVector2D HalfPixel(0.5f / float(OutputTexture.FrameSize.X), 0.5f / float(OutputTexture.FrameSize.Y));
+					Canvas->DrawTile(
+						PreviewViewRect.Min.X, PreviewViewRect.Min.Y, PreviewViewRect.Width(), PreviewViewRect.Height(),
+						HalfPixel.X, HalfPixel.Y, 1.0f - HalfPixel.X, 1.0f - HalfPixel.Y,
+						FLinearColor::White,
+						RealtimeRenderTarget->GetResource(),
+						bAlphaBlend ? SE_BLEND_AlphaComposite : SE_BLEND_Opaque
+					);
+
+					// Display info text
+					if (bShowInfoText)
+					{
+						Canvas->DrawShadowedString(TextPosition.X, TextPosition.Y, TEXT("Live Preview"), DisplayFont, FLinearColor::White);
+						TextPosition.Y += FontHeight;
+
+						Canvas->DrawShadowedString(TextPosition.X + 5.0f, TextPosition.Y, *FString::Printf(TEXT("Texture(%d) FrameSize(%d x %d)"), PreviewTextureIndex, OutputTexture.FrameSize.X, OutputTexture.FrameSize.Y), DisplayFont, FLinearColor::White);
+						TextPosition.Y += FontHeight;
+					}
 				}
-
-				// Seek to correct time and render
-				UNiagaraComponent* PreviewComponent = ViewModel->GetPreviewComponent();
-				PreviewComponent->SetSeekDelta(BakerSettings->GetSeekDelta());
-				PreviewComponent->SeekToDesiredAge(WorldTime);
-				PreviewComponent->TickComponent(BakerSettings->GetSeekDelta(), ELevelTick::LEVELTICK_All, nullptr);
-
-				FNiagaraBakerRenderer BakerRenderer(PreviewComponent, WorldTime);
-				BakerRenderer.RenderView(RealtimeRenderTarget, PreviewTextureIndex);
-
-				const FVector2D HalfPixel(0.5f / float(OutputTexture.FrameSize.X), 0.5f / float(OutputTexture.FrameSize.Y));
-				Canvas->DrawTile(
-					PreviewViewRect.Min.X, PreviewViewRect.Min.Y, PreviewViewRect.Width(), PreviewViewRect.Height(),
-					HalfPixel.X, HalfPixel.Y, 1.0f - HalfPixel.X, 1.0f - HalfPixel.Y,
-					FLinearColor::White,
-					RealtimeRenderTarget->Resource,
-					false	//-TODO: Preview with alpha?
-				);
-
-				// Display info text
-				if (bShowInfoText)
+				else
 				{
 					Canvas->DrawShadowedString(TextPosition.X, TextPosition.Y, TEXT("Live Preview"), DisplayFont, FLinearColor::White);
 					TextPosition.Y += FontHeight;
 
-					Canvas->DrawShadowedString(TextPosition.X + 5.0f, TextPosition.Y, *FString::Printf(TEXT("Texture(%d) FrameSize(%d x %d)"), PreviewTextureIndex, OutputTexture.FrameSize.X, OutputTexture.FrameSize.Y), DisplayFont, FLinearColor::White);
-					TextPosition.Y += FontHeight;
+					Canvas->DrawShadowedString(TextPosition.X + 5.0f, TextPosition.Y, *FString::Printf(TEXT("Texture(%d) Is Invalid For Baking FrameSize(%d x %d)"), PreviewTextureIndex, OutputTexture.FrameSize.X, OutputTexture.FrameSize.Y), DisplayFont, FLinearColor::White);
 				}
 			}
 			else
@@ -345,15 +355,16 @@ public:
 		{
 			ClearViewArea(Canvas, BakerViewRect);
 
+			const bool bTimelineValid = BakerGeneratedSettings ? FMath::IsNearlyEqual(BakerGeneratedSettings->DurationSeconds, TimelineDurationSeconds) : false;
 			const bool bBakerValid =
 				(BakerGeneratedSettings != nullptr) &&
 				BakerGeneratedSettings->OutputTextures.IsValidIndex(PreviewTextureIndex) &&
 				(BakerGeneratedSettings->OutputTextures[PreviewTextureIndex].GeneratedTexture != nullptr);
 			FVector2D TextPosition(BakerViewRect.Min.X + TextStartOffset.X, BakerViewRect.Min.Y + TextStartOffset.Y);
 
-			if (bBakerValid)
+			if (bBakerValid && bTimelineValid)
 			{
-				const auto DisplayData = BakerGeneratedSettings->GetDisplayInfo(CurrentTime - BakerGeneratedSettings->StartSeconds, BakerGeneratedSettings->bPreviewLooping);
+				const auto DisplayData = BakerGeneratedSettings->GetDisplayInfo(RelativeTime, BakerGeneratedSettings->bPreviewLooping);
 				const FNiagaraBakerTextureSettings& OutputTexture = BakerGeneratedSettings->OutputTextures[PreviewTextureIndex];
 
 				const FIntPoint TextureSize = FIntPoint(FMath::Max(OutputTexture.GeneratedTexture->GetSizeX(), 1), FMath::Max(OutputTexture.GeneratedTexture->GetSizeY(), 1));
@@ -367,8 +378,8 @@ public:
 					BakerViewRect.Min.X, BakerViewRect.Min.Y, BakerViewRect.Width(), BakerViewRect.Height(),
 					(float(FramePixelA.X) + 0.5f) / float(TextureSize.X), (float(FramePixelA.Y) + 0.5f) / float(TextureSize.Y), (float(FramePixelA.X + OutputTexture.FrameSize.X) - 0.5f) / float(TextureSize.X), (float(FramePixelA.Y + OutputTexture.FrameSize.Y) - 0.5f) / float(TextureSize.Y),
 					FLinearColor::White,
-					OutputTexture.GeneratedTexture->Resource,
-					false	//-TODO: Preview with alpha?
+					OutputTexture.GeneratedTexture->GetResource(),
+					bAlphaBlend ? SE_BLEND_AlphaComposite : SE_BLEND_Opaque
 				);
 
 				// Display info text
@@ -387,11 +398,16 @@ public:
 					}
 				}
 			}
+			else if ( bBakerValid )
+			{
+				Canvas->DrawShadowedString(TextPosition.X, TextPosition.Y, TEXT("Baked duration does not match settings, can not map timeline."), DisplayFont, FLinearColor::White);
+				TextPosition.Y += FontHeight;
+			}
 			else
 			{
 				Canvas->DrawShadowedString(TextPosition.X, TextPosition.Y, TEXT("Baker Not Generated"), DisplayFont, FLinearColor::White);
 				TextPosition.Y += FontHeight;
-				}
+			}
 		}
 	}
 
@@ -413,14 +429,14 @@ public:
 		FLinearColor Color = ClearColor;
 		FVector2D EndUV(1.0f, 1.0f);
 
-		if (bShowCheckerBoard)
+		if (bShowCheckerboard)
 		{
 			Texture = GetCheckerboardTexture();
 			Color = FLinearColor::White;
 			EndUV.X = float(InRect.Width()) / float(FMath::Max(Texture->GetSizeX(), 1));
 			EndUV.Y = float(InRect.Height()) / float(FMath::Max(Texture->GetSizeY(), 1));
 		}
-		Canvas->DrawTile(InRect.Min.X, InRect.Min.Y, InRect.Width(), InRect.Height(), 0.0f, 0.0f, EndUV.X, EndUV.Y, Color, Texture ? Texture->Resource : nullptr, false);
+		Canvas->DrawTile(InRect.Min.X, InRect.Min.Y, InRect.Width(), InRect.Height(), 0.0f, 0.0f, EndUV.X, EndUV.Y, Color, Texture ? Texture->GetResource() : nullptr, false);
 	}
 
 	UTexture2D* GetCheckerboardTexture()
@@ -436,11 +452,11 @@ public:
 	{
 		if (CheckerboardTexture)
 		{
-			if (CheckerboardTexture->Resource)
+			if (CheckerboardTexture->GetResource())
 			{
 				CheckerboardTexture->ReleaseResource();
 			}
-			CheckerboardTexture->MarkPendingKill();
+			CheckerboardTexture->MarkAsGarbage();
 			CheckerboardTexture = nullptr;
 		}
 	}
@@ -516,7 +532,9 @@ public:
 	FIntRect									PreviewViewRect;
 	FIntRect									BakerViewRect;
 
-	bool										bShowCheckerBoard = true;
+	bool										bAlphaBlend = false;
+
+	bool										bShowCheckerboard = true;
 	UTexture2D*									CheckerboardTexture = nullptr;
 	FColor										CheckerboardColorOne = FColor(128, 128, 128);
 	FColor										CheckerboardColorTwo = FColor(64, 64, 64);
@@ -529,8 +547,10 @@ public:
 	bool										bShowBaker = true;
 
 	TWeakPtr<FNiagaraBakerViewModel>			WeakViewModel;
-	float										CurrentTime = 0.0f;
+	float										RelativeTime = 0.0f;
 	float										DeltaTime = 0.0f;
+
+	FNiagaraBakerRenderer						BakerRenderer;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -590,6 +610,26 @@ void SNiagaraBakerViewport::OnFloatingButtonClicked()
 {
 }
 
+bool SNiagaraBakerViewport::IsAlphaBlendEnabled() const
+{
+	return ViewportClient->bAlphaBlend;
+}
+
+void SNiagaraBakerViewport::SetAlphaBlendEnabled(bool bEnabled)
+{
+	ViewportClient->bAlphaBlend = bEnabled;
+}
+
+bool SNiagaraBakerViewport::IsCheckerboardEnabled() const
+{
+	return ViewportClient->bShowCheckerboard;
+}
+
+void SNiagaraBakerViewport::SetCheckerboardEnabled(bool bEnabled)
+{
+	ViewportClient->bShowCheckerboard = bEnabled;
+}
+
 bool SNiagaraBakerViewport::IsInfoTextEnabled() const
 {
 	return ViewportClient->bShowInfoText;
@@ -620,9 +660,9 @@ void SNiagaraBakerViewport::SetBakerViewEnabled(bool bEnabled)
 	ViewportClient->bShowBaker = bEnabled;
 }
 
-void SNiagaraBakerViewport::RefreshView(const float CurrentTime, const float DeltaTime)
+void SNiagaraBakerViewport::RefreshView(const float RelativeTime, const float DeltaTime)
 {
-	ViewportClient->CurrentTime = CurrentTime;
+	ViewportClient->RelativeTime = RelativeTime;
 	ViewportClient->DeltaTime = DeltaTime;
 }
 

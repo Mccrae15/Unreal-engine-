@@ -33,14 +33,14 @@ public class MixedRealityCaptureFramework : ModuleRules
 				"InputCore",
                 "MediaUtils",
 				"RenderCore",
-                "OpenCVHelper",
-                "OpenCV",
 				"OpenCVLensDistortion",
+				"OpenCVHelper",
 			}
 		);
 
 		if (Target.bBuildEditor == true)
 		{
+			PrivateDependencyModuleNames.Add("EditorFramework");
 			PrivateDependencyModuleNames.Add("UnrealEd");
 		}
 	}

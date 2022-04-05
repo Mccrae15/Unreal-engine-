@@ -78,8 +78,17 @@ namespace EKismetCompileType
 		Full,
 		StubAfterFailure, 
 		BytecodeOnly,
-		Cpp,
+		// @todo: BP2CPP_remove
+		Cpp UE_DEPRECATED(5.0, "Cpp is no longer a supported compile type and will be removed."),
 	};
+};
+
+/** Breakpoints have been moved to Engine/Source/Editor/UnrealEd/Public/Kismet2/Breakpoint.h,
+*   renamed to FBlueprintBreakpoint, and are now UStructs */
+UCLASS(deprecated)
+class UDEPRECATED_Breakpoint : public UObject
+{
+	GENERATED_BODY()
 };
 
 /** Compile modes. */
@@ -91,8 +100,9 @@ enum class EBlueprintCompileMode : uint8
 	FinalRelease UMETA(ToolTip="Always compile in final release mode.")
 };
 
+// @todo: BP2CPP_remove
 USTRUCT()
-struct FCompilerNativizationOptions
+struct UE_DEPRECATED(5.0, "This type is no longer in use and will be removed.") FCompilerNativizationOptions
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -141,6 +151,8 @@ struct FBlueprintMacroCosmeticInfo
 	}
 };
 
+// @todo: BP2CPP_remove - remove disable/enable deprecation warning once NativizationOptions is removed
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 struct FKismetCompilerOptions
 {
 public:
@@ -168,20 +180,27 @@ public:
 	/** Whether or not to use Delta Serialization when copying unrelated objects */
 	bool bUseDeltaSerializationDuringReinstancing;
 
+	/** Whether or not to skip new variable defaults detection */
+	bool bSkipNewVariableDefaultsDetection;
+
 	TSharedPtr<FString> OutHeaderSourceCode;
 	TSharedPtr<FString> OutCppSourceCode;
+
+	// @todo: BP2CPP_remove
+	UE_DEPRECATED(5.0, "This member is no longer in use and will be removed.")
 	FCompilerNativizationOptions NativizationOptions;
 
+	// @todo: BP2CPP_remove
+	UE_DEPRECATED(5.0, "This API is no longer in use and will be removed.")
 	bool DoesRequireCppCodeGeneration() const
 	{
-		return (CompileType == EKismetCompileType::Cpp);
+		return false;
 	}
 
 	bool DoesRequireBytecodeGeneration() const
 	{
 		return (CompileType == EKismetCompileType::Full) 
-			|| (CompileType == EKismetCompileType::BytecodeOnly) 
-			|| (CompileType == EKismetCompileType::Cpp);
+			|| (CompileType == EKismetCompileType::BytecodeOnly);
 	}
 
 	FKismetCompilerOptions()
@@ -195,7 +214,7 @@ public:
 	{
 	};
 };
-
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /** One metadata entry for a variable */
 USTRUCT()
@@ -295,7 +314,7 @@ struct FBPInterfaceDescription
 
 	/** References to the graphs associated with the required functions for this interface */
 	UPROPERTY()
-	TArray<UEdGraph*> Graphs;
+	TArray<TObjectPtr<UEdGraph>> Graphs;
 
 
 	FBPInterfaceDescription()
@@ -359,7 +378,7 @@ struct FEditedDocumentInfo
 private:
 	// Legacy hard reference is now serialized as a soft reference (see above).
 	UPROPERTY()
-	UObject* EditedObject_DEPRECATED;
+	TObjectPtr<UObject> EditedObject_DEPRECATED;
 };
 
 template<>
@@ -396,7 +415,7 @@ struct FBPEditorBookmarkNode
 };
 
 UENUM()
-enum class EBlueprintNativizationFlag : uint8
+enum class UE_DEPRECATED(5.0, "Blueprint Nativization has been removed as a supported feature. This type will eventually be removed.") EBlueprintNativizationFlag : uint8
 {
 	Disabled,
 	Dependency, // conditionally enabled (set from sub-class as a dependency)
@@ -509,15 +528,13 @@ class ENGINE_API UBlueprint : public UBlueprintCore
 	UPROPERTY()
 	mutable uint8 bDuplicatingReadOnly:1;
 
-private:
-	/** Deprecated properties. */
-	UPROPERTY()
-	uint8 bNativize_DEPRECATED:1;
-
 public:
 	/** When exclusive nativization is enabled, then this asset will be nativized. All super classes must be also nativized. */
+	UE_DEPRECATED(5.0, "Blueprint Nativization has been removed as a supported feature. This property will eventually be removed.")
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	UPROPERTY(transient)
 	EBlueprintNativizationFlag NativizationFlag;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	/** The mode that will be used when compiling this class. */
 	UPROPERTY(EditAnywhere, Category=ClassOptions, AdvancedDisplay)
@@ -555,45 +572,45 @@ public:
 
 	/** 'Simple' construction script - graph of components to instance */
 	UPROPERTY()
-	class USimpleConstructionScript* SimpleConstructionScript;
+	TObjectPtr<class USimpleConstructionScript> SimpleConstructionScript;
 
 #if WITH_EDITORONLY_DATA
 	/** Set of pages that combine into a single uber-graph */
 	UPROPERTY()
-	TArray<UEdGraph*> UbergraphPages;
+	TArray<TObjectPtr<UEdGraph>> UbergraphPages;
 
 	/** Set of functions implemented for this class graphically */
 	UPROPERTY()
-	TArray<UEdGraph*> FunctionGraphs;
+	TArray<TObjectPtr<UEdGraph>> FunctionGraphs;
 
 	/** Graphs of signatures for delegates */
 	UPROPERTY()
-	TArray<UEdGraph*> DelegateSignatureGraphs;
+	TArray<TObjectPtr<UEdGraph>> DelegateSignatureGraphs;
 
 	/** Set of macros implemented for this class */
 	UPROPERTY()
-	TArray<UEdGraph*> MacroGraphs;
+	TArray<TObjectPtr<UEdGraph>> MacroGraphs;
 
 	/** Set of functions actually compiled for this class */
 	UPROPERTY(transient, duplicatetransient)
-	TArray<UEdGraph*> IntermediateGeneratedGraphs;
+	TArray<TObjectPtr<UEdGraph>> IntermediateGeneratedGraphs;
 
 	/** Set of functions actually compiled for this class */
 	UPROPERTY(transient, duplicatetransient)
-	TArray<UEdGraph*> EventGraphs;
+	TArray<TObjectPtr<UEdGraph>> EventGraphs;
 
 	/** Cached cosmetic information about macro graphs, use GetCosmeticInfoForMacro() to access */
 	UPROPERTY(Transient)
-	TMap<UEdGraph*, FBlueprintMacroCosmeticInfo> PRIVATE_CachedMacroInfo;
+	TMap<TObjectPtr<UEdGraph>, FBlueprintMacroCosmeticInfo> PRIVATE_CachedMacroInfo;
 #endif // WITH_EDITORONLY_DATA
 
 	/** Array of component template objects, used by AddComponent function */
 	UPROPERTY()
-	TArray<class UActorComponent*> ComponentTemplates;
+	TArray<TObjectPtr<class UActorComponent>> ComponentTemplates;
 
 	/** Array of templates for timelines that should be created */
 	UPROPERTY()
-	TArray<class UTimelineTemplate*> Timelines;
+	TArray<TObjectPtr<class UTimelineTemplate>> Timelines;
 
 	/** Array of blueprint overrides of component classes in parent classes */
 	UPROPERTY()
@@ -601,7 +618,7 @@ public:
 
 	/** Stores data to override (in children classes) components (created by SCS) from parent classes */
 	UPROPERTY()
-	class UInheritableComponentHandler* InheritableComponentHandler;
+	TObjectPtr<class UInheritableComponentHandler> InheritableComponentHandler;
 
 #if WITH_EDITORONLY_DATA
 	/** Array of new variables to be added to generated class */
@@ -611,6 +628,10 @@ public:
 	/** Array of user sorted categories */
 	UPROPERTY()
 	TArray<FName> CategorySorting;
+
+	/** Namespaces imported by this blueprint */
+	UPROPERTY(AssetRegistrySearchable)
+	TSet<FString> ImportedNamespaces;
 
 	/** Array of info about the interfaces we implement in this blueprint */
 	UPROPERTY(AssetRegistrySearchable)
@@ -628,15 +649,16 @@ public:
 	UPROPERTY()
 	TArray<FBPEditorBookmarkNode> BookmarkNodes;
 
-	/** Persistent debugging options */
+	// moved to FPerBlueprintSettings
 	UPROPERTY()
-	TArray<class UBreakpoint*> Breakpoints;
+	TArray<TObjectPtr<class UDEPRECATED_Breakpoint>> Breakpoints_DEPRECATED;
+
+	// moved to FPerBlueprintSettings
+	UPROPERTY()
+	TArray<FEdGraphPinReference> WatchedPins_DEPRECATED;
 
 	UPROPERTY()
-	TArray<FEdGraphPinReference> WatchedPins;
-
-	UPROPERTY()
-	TArray<class UEdGraphPin_Deprecated*> DeprecatedPinWatches;
+	TArray<TObjectPtr<class UEdGraphPin_Deprecated>> DeprecatedPinWatches;
 
 	/** Index map for component template names */
 	UPROPERTY()
@@ -648,7 +670,7 @@ public:
 
 	/** Array of extensions for this blueprint */
 	UPROPERTY()
-	TArray<UBlueprintExtension*> Extensions;
+	TArray<TObjectPtr<UBlueprintExtension>> Extensions;
 
 #endif // WITH_EDITORONLY_DATA
 
@@ -693,7 +715,7 @@ public:
 
 	/** Information for thumbnail rendering */
 	UPROPERTY(VisibleAnywhere, Instanced, Category=Thumbnail)
-	class UThumbnailInfo* ThumbnailInfo;
+	TObjectPtr<class UThumbnailInfo> ThumbnailInfo;
 
 	/** CRC for CDO calculated right after the latest compilation used by Reinstancer to check if default values were changed */
 	UPROPERTY(transient, duplicatetransient)
@@ -702,21 +724,49 @@ public:
 	UPROPERTY(transient, duplicatetransient)
 	uint32 CrcLastCompiledSignature;
 
+	/**
+	 * Transient flag that indicates whether or not the internal dependency
+	 * cache needs to be updated. This is not carried forward by duplication so
+	 * that the post-duplicate compile path is forced to reinitialize the cache.
+	 */
+	UPROPERTY(transient, duplicatetransient)
 	bool bCachedDependenciesUpToDate;
+
 	/**
 	 * Set of blueprints that we reference - i.e. blueprints that we have
-	 * some kind of reference to (variable of that blueprints type or function 
+	 * some kind of reference to (variable of that blueprints type or function
 	 * call
+	 *
+	 * We need this to be serializable so that its references can be collected.
+	 *
+	 * This is intentionally marked 'duplicatetransient' so that it won't carry
+	 * over to a duplicated Blueprint object. The post-duplicate compile path
+	 * will instead regenerate this set to be relative to the duplicated object.
 	 */
+	UPROPERTY(transient, duplicatetransient)
 	TSet<TWeakObjectPtr<UBlueprint>> CachedDependencies;
 
-	/** 
+	/**
 	 * Transient cache of dependent blueprints - i.e. blueprints that call
-	 * functions declared in this blueprint. Used to speed up compilation checks 
+	 * functions declared in this blueprint. Used to speed up compilation checks
+	 *
+	 * This is intentionally marked 'duplicatetransient' so that it won't carry
+	 * over to a duplicated Blueprint object. However, the post-duplicate compile
+	 * path will not regenerate this set, since it is populated by each dependent
+	 * Blueprint's compile. In this case, a duplicated Blueprint equates to a
+	 * new Blueprint, so it won't initially have any dependents to include here.
 	 */
+	UPROPERTY(transient, duplicatetransient)
 	TSet<TWeakObjectPtr<UBlueprint>> CachedDependents;
 
-	// User Defined Structures, the blueprint depends on
+	/**
+	 * User Defined Structures the blueprint depends on
+	 *
+	 * This is intentionally marked 'duplicatetransient' so that it won't carry
+	 * over to a duplicated Blueprint object. The post-duplicate compile path
+	 * will instead regenerate this set to be relative to the duplicated object.
+	 */
+	UPROPERTY(transient, duplicatetransient)
 	TSet<TWeakObjectPtr<UStruct>> CachedUDSDependencies;
 
 	enum class EIsBPNonReducible : uint8
@@ -731,7 +781,7 @@ public:
 
 	// If this BP is just a duplicate created for a specific compilation, the reference to original GeneratedClass is needed
 	UPROPERTY(transient, duplicatetransient)
-	UClass* OriginalClass;
+	TObjectPtr<UClass> OriginalClass;
 
 	bool IsUpToDate() const
 	{
@@ -808,13 +858,25 @@ public:
 	*/
 	virtual bool AlwaysCompileOnLoad() const { return false; }
 
-	/** Some Blueprints (and classes) can recompile while we are debugging a live session. This function controls whether this can occur. */
-	virtual bool CanRecompileWhilePlayingInEditor() const;
+	/**
+	 * Some Blueprints (and classes) can recompile while we are debugging a live session (play in editor).
+	 * This function controls whether this can always occur.
+	 * There are also editor preferences and project settings that can be used to opt-in other classes even
+	 * when this returns false
+	 */
+	virtual bool CanAlwaysRecompileWhilePlayingInEditor() const;
+
+	UE_DEPRECATED(5.0, "CanRecompileWhilePlayingInEditor was renamed to CanAlwaysRecompileWhilePlayingInEditor to better explain usage.")
+	bool CanRecompileWhilePlayingInEditor() const
+	{
+		return CanAlwaysRecompileWhilePlayingInEditor();
+	}
 
 	/**
 	 * Check whether this blueprint can be nativized or not
 	 */
-	virtual bool SupportsNativization(FText* OutReason = nullptr) const;
+	UE_DEPRECATED(5.0, "Blueprint Nativization has been removed as a supported feature. This API will eventually be removed.")
+	virtual bool SupportsNativization(FText* OutReason = nullptr) const { return false; }
 
 private:
 
@@ -906,10 +968,14 @@ public:
 
 	//~ Begin UObject Interface
 #if WITH_EDITORONLY_DATA
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
+	virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
 #endif // WITH_EDITORONLY_DATA
 	virtual void Serialize(FArchive& Ar) override;
-	virtual void GetPreloadDependencies(TArray<UObject*>& OutDeps) override;
 	virtual FString GetDesc(void) override;
 	virtual void TagSubobjects(EObjectFlags NewFlags) override;
 	virtual bool NeedsLoadForClient() const override;
@@ -917,6 +983,7 @@ public:
 	virtual bool NeedsLoadForEditorGame() const override;
 	//~ End UObject Interface
 
+#if WITH_EDITORONLY_DATA
 	/** Get the Blueprint object that generated the supplied class */
 	static UBlueprint* GetBlueprintFromClass(const UClass* InClass);
 
@@ -928,6 +995,7 @@ public:
 	 * @return						true if there were no status errors in any of the parent blueprints, otherwise false
 	 */
 	static bool GetBlueprintHierarchyFromClass(const UClass* InClass, TArray<UBlueprint*>& OutBlueprintParents);
+#endif
 
 	/**
 	 * Gets an array of all BPGCs used to generate this class and its parents.  0th elements is the BPGC used to generate InClass
@@ -1116,6 +1184,23 @@ public:
 	 * Returns true if this blueprint supports animation layers
 	 */
 	virtual bool SupportsAnimLayers() const { return true; }
+
+	/**
+	 * Copies a given graph into a text buffer. Returns true if successful.
+	 */
+	virtual bool ExportGraphToText(UEdGraph* InEdGraph, FString& OutText) { return false; }
+
+	/**
+	 * Returns true if the blueprint can import a given InClipboardText.
+	 * If this return false the default BP functionality will be used.
+	 */
+	virtual bool CanImportGraphFromText(const FString& InClipboardText) { return false; }
+
+	/**
+	 * Returns a new ed graph if the blueprint's specialization imported a graph based on 
+	 * a clipboard text content an nullptr if that's not successful.
+	 */
+	virtual bool TryImportGraphFromText(const FString& InClipboardText, UEdGraph** OutGraphPtr = nullptr) { return false; }
 
 #endif
 };

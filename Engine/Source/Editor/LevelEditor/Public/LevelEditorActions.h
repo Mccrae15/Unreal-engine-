@@ -5,7 +5,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "SceneTypes.h"
 #include "Framework/Commands/Commands.h"
 #include "AssetData.h"
@@ -14,11 +14,13 @@
 #include "EditorStyleSet.h"
 #include "TexAligner/TexAligner.h"
 #include "LightmapResRatioAdjust.h"
+#include "Elements/Framework/TypedElementHandle.h"
+#include "Elements/Interfaces/TypedElementWorldInterface.h"
 
-class AMatineeActor;
 class FLightingBuildOptions;
 class SLevelEditor;
 class UActorFactory;
+class UTypedElementSelectionSet;
 
 /**
  * Unreal level editor actions
@@ -38,8 +40,6 @@ public:
 public:
 	
 	TSharedPtr< FUICommandInfo > BrowseDocumentation;
-	TSharedPtr< FUICommandInfo > BrowseAPIReference;
-	TSharedPtr< FUICommandInfo > BrowseCVars;
 	TSharedPtr< FUICommandInfo > BrowseViewportControls;
 
 	/** Level file commands */
@@ -77,10 +77,11 @@ public:
 	TSharedPtr< FUICommandInfo > BuildGeometryOnly;
 	TSharedPtr< FUICommandInfo > BuildGeometryOnly_OnlyCurrentLevel;
 	TSharedPtr< FUICommandInfo > BuildPathsOnly;
-	TSharedPtr< FUICommandInfo > BuildLODsOnly;
+	TSharedPtr< FUICommandInfo > BuildHLODs;
+	TSharedPtr< FUICommandInfo > BuildMinimap;
 	TSharedPtr< FUICommandInfo > BuildTextureStreamingOnly;
 	TSharedPtr< FUICommandInfo > BuildVirtualTextureOnly;
-	TSharedPtr< FUICommandInfo > BuildGrassMapsOnly;
+	TSharedPtr< FUICommandInfo > BuildAllLandscape;
 	TSharedPtr< FUICommandInfo > LightingQuality_Production;
 	TSharedPtr< FUICommandInfo > LightingQuality_High;
 	TSharedPtr< FUICommandInfo > LightingQuality_Medium;
@@ -127,6 +128,15 @@ public:
 
 	/** Snaps the selected actor to the camera. */
 	TSharedPtr< FUICommandInfo > SnapObjectToCamera;
+
+	/** Copy the file path where the actor is saved. */
+	TSharedPtr< FUICommandInfo > CopyActorFilePathtoClipboard;
+
+	/** Opens the source control panel. */
+	TSharedPtr< FUICommandInfo > OpenSourceControl;
+
+	/** Shows the history of the file containing the actor. */
+	TSharedPtr< FUICommandInfo > ShowActorHistory;
 
 	/** Goes to the source code for the selected actor's class. */
 	TSharedPtr< FUICommandInfo > GoToCodeForActor;
@@ -388,6 +398,7 @@ public:
 	TSharedPtr< FUICommandInfo > SelectAllWithSameMaterial;
 
 	/** Selects all actors used by currently selected matinee actor */
+	UE_DEPRECATED(5.0, "Matinee is no longer part of the editor.")
 	TSharedPtr< FUICommandInfo > SelectAllActorsControlledByMatinee;
 
 	/** Selects all emitters using the same particle system as the current selection */
@@ -538,9 +549,11 @@ public:
 	 */
 
 	TSharedPtr< FUICommandInfo > WorldProperties;
+	TSharedPtr< FUICommandInfo > OpenPlaceActors;
 	TSharedPtr< FUICommandInfo > OpenContentBrowser;
 	TSharedPtr< FUICommandInfo > OpenMarketplace;
 	TSharedPtr< FUICommandInfo > ToggleVR;
+	TSharedPtr< FUICommandInfo > ImportContent;
 
 	/**
 	 * Blueprints commands
@@ -584,8 +597,6 @@ public:
 
 	TSharedPtr< FUICommandInfo > ToggleFeatureLevelPreview;
 
-	TSharedPtr< FUICommandInfo > PreviewPlatformOverride_SM5;
-
 	TArray<TSharedPtr<FUICommandInfo>> PreviewPlatformOverrides;
 	
 	///**
@@ -597,39 +608,19 @@ public:
 	//TSharedPtr< FUICommandInfo > FoliageMode;
 
 	/**
-	 * Source Control Commands
-	 */
-	TSharedPtr< FUICommandInfo > ConnectToSourceControl;
-	TSharedPtr< FUICommandInfo > ChangeSourceControlSettings;
-	TSharedPtr< FUICommandInfo > CheckOutModifiedFiles;
-	TSharedPtr< FUICommandInfo > SubmitToSourceControl;
-
-	/**
 	 * Misc Commands
 	 */
 	TSharedPtr< FUICommandInfo > ShowSelectedDetails;
 	TSharedPtr< FUICommandInfo > RecompileShaders;
 	TSharedPtr< FUICommandInfo > ProfileGPU;
+	TSharedPtr< FUICommandInfo > DumpGPU;
 
 	TSharedPtr< FUICommandInfo > ResetAllParticleSystems;
 	TSharedPtr< FUICommandInfo > ResetSelectedParticleSystem;
 	TSharedPtr< FUICommandInfo > SelectActorsInLayers;
 
-	TSharedPtr< FUICommandInfo > FocusAllViewportsToSelection;
-	TSharedPtr< FUICommandInfo > FocusViewportToSelection;
-
         // Open merge actor command
 	TSharedPtr< FUICommandInfo > OpenMergeActor;
-
-	/** Selects all Geometry Collection geometry */
-	TSharedPtr< FUICommandInfo > GeometryCollectionSelectAllGeometry;
-
-	/** Deselects all Geometry Collection geometry */
-	TSharedPtr< FUICommandInfo > GeometryCollectionSelectNone;
-
-	/** Selects inverse of currently seleted Geometry Collection geometry */
-	TSharedPtr< FUICommandInfo > GeometryCollectionSelectInverseGeometry;
-
 
 };
 
@@ -649,17 +640,12 @@ public:
 	/** Opens the global documentation homepage */
 	static void BrowseDocumentation();
 
-	/** Opens the API documentation CHM */
-	static void BrowseAPIReference();
-
-	/** Creates an HTML file to browse the console variables and commands */
-	static void BrowseCVars();
-
 	/** Opens the viewport controls page*/
 	static void BrowseViewportControls();
 
 	/** Creates a new level */
 	static void NewLevel();
+	static FSimpleDelegate NewLevelOverride;
 	static bool NewLevel_CanExecute();
 
 	/** Opens an existing level */
@@ -703,8 +689,10 @@ public:
 
 	/** Determine whether the level can be saved at this moment */
 	static bool CanSaveWorld();
+	static bool CanSaveUnpartitionedWorld();
 
 	/** Save the current level as... */
+	static bool CanSaveCurrentAs();
 	static void SaveCurrentAs();
 
 	/** Saves the current map */
@@ -761,10 +749,11 @@ public:
 	static void BuildGeometryOnly_Execute();
 	static void BuildGeometryOnly_OnlyCurrentLevel_Execute();
 	static void BuildPathsOnly_Execute();
-	static void BuildLODsOnly_Execute();
+	static void BuildHLODs_Execute();
+	static void BuildMinimap_Execute();
 	static void BuildTextureStreamingOnly_Execute();
 	static void BuildVirtualTextureOnly_Execute();
-	static void BuildGrassMapsOnly_Execute();
+	static void BuildAllLandscape_Execute();
 	static void SetLightingQuality( ELightingBuildQuality NewQuality );
 	static bool IsLightingQualityChecked( ELightingBuildQuality TestQuality );
 	static float GetLightingDensityIdeal();
@@ -806,6 +795,7 @@ public:
 	static bool IsFeatureLevelPreviewActive();
 	static bool IsPreviewModeButtonVisible();
 	static void SetPreviewPlatform(FPreviewPlatformInfo NewPreviewPlatform);
+	static bool CanExecutePreviewPlatform(FPreviewPlatformInfo NewPreviewPlatform);
 	static bool IsPreviewPlatformChecked(FPreviewPlatformInfo NewPreviewPlatform);
 	static void GeometryCollection_SelectAllGeometry();
 	static void GeometryCollection_SelectNone();
@@ -894,12 +884,15 @@ public:
 	 * Called when the FindInContentBrowser command is executed
 	 */
 	static void FindInContentBrowser_Clicked();
+	static bool FindInContentBrowser_CanExecute();
 
 	/** Called to when "Edit Asset" is clicked */
 	static void EditAsset_Clicked( const EToolkitMode::Type ToolkitMode, TWeakPtr< class SLevelEditor > LevelEditor, bool bAskMultiple );
+	static bool EditAsset_CanExecute();
 
 	/** Called when 'detach' is clicked */
 	static void DetachActor_Clicked();
+	static bool DetachActor_CanExecute();
 
 	/** Called when attach selected actors is pressed */
 	static void AttachSelectedActors();
@@ -919,8 +912,13 @@ public:
 	 */
 	static void GoHere_Clicked( const FVector* Point );
 
+	/** Called when selected actor can be used to start a play session */
+	static void PlayFromHere_Clicked(bool bFloatingWindow);
+	static bool PlayFromHere_IsVisible();
+
 	/** Called when 'Go to Code for Actor' is clicked */
 	static void GoToCodeForActor_Clicked();
+	static bool GoToCodeForActor_CanExecute();
 
 	/** Called when 'Go to Documentation for Actor' is clicked */
 	static void GoToDocsForActor_Clicked();
@@ -997,6 +995,9 @@ public:
 	 */
 	static void OnSelectAllActorsOfClass( bool bArchetype );
 
+	/** Called to see if all selected actors are the same class */
+	static bool CanSelectAllActorsOfClass();
+
 	/** Called when selecting the actor that owns the currently selected component(s) */
 	static void OnSelectComponentOwnerActor();
 
@@ -1011,21 +1012,6 @@ public:
 	/** Selects stationary lights that are exceeding the overlap limit. */
 	static void OnSelectStationaryLightsExceedingOverlap();
 
-	/**
-	 * Selects the MatineeActor - used by Matinee Selection
-	 */
-	static void OnSelectMatineeActor( AMatineeActor * ActorToSelect );
-
-	/**
-	 * Selects the Matinee InterpGroup
-	 */
-	static void OnSelectMatineeGroup( AActor* Actor );
-
-	/**
-	 * Called when selecting all actors that's controlled by currently selected matinee actor
-	 */
-	static void OnSelectAllActorsControlledByMatinee();
-	
 	/**
 	* Called when selecting an Actor's (if available) owning HLOD cluster
 	*/
@@ -1152,11 +1138,17 @@ public:
 	/** Select the world info actor and show the properties */
 	static void OnShowWorldProperties( TWeakPtr< SLevelEditor > LevelEditor );
 
+	/** Open the Place Actors Panel */
+	static void OpenPlaceActors();
+
 	/** Open the Content Browser */
 	static void OpenContentBrowser();
 
 	/** Open the Marketplace */
 	static void OpenMarketplace();
+
+	/** Import content into a chosen location*/
+	static void ImportContent();
 
 	/** Checks out the Project Settings config */
 	static void CheckOutProjectSettingsConfig();
@@ -1234,9 +1226,9 @@ public:
 
 	static void SelectActorsInLayers();
 
-	static void SetWidgetMode( FWidget::EWidgetMode WidgetMode );
-	static bool IsWidgetModeActive( FWidget::EWidgetMode WidgetMode );
-	static bool CanSetWidgetMode( FWidget::EWidgetMode WidgetMode );
+	static void SetWidgetMode( UE::Widget::EWidgetMode WidgetMode );
+	static bool IsWidgetModeActive( UE::Widget::EWidgetMode WidgetMode );
+	static bool CanSetWidgetMode( UE::Widget::EWidgetMode WidgetMode );
 	static bool IsTranslateRotateModeVisible();
 	static void SetCoordinateSystem( ECoordSystem CoordSystem );
 	static bool IsCoordinateSystemActive( ECoordSystem CoordSystem );
@@ -1247,19 +1239,35 @@ public:
 	static class UWorld* GetWorld();
 public:
 	/** 
-	 * Moves an actor to the grid.
+	 * Moves the selected elements to the grid.
 	 */
-	static void MoveActorToGrid_Clicked( bool InAlign, bool bInPerActor );
+	static void MoveElementsToGrid_Clicked( bool InAlign, bool InPerElement );
 
 	/**
 	* Snaps a selected actor to the camera view.
 	*/
 	static void SnapObjectToView_Clicked();
 
-	/** 
-	 * Moves an actor to another actor.
+	/**
+	* Copy the file path where the actor is saved.
+	*/
+	static void CopyActorFilePathtoClipboard_Clicked();
+
+	/**
+	* Shows the history of the file containing the actor.
+	*/
+	static void ShowActorHistory_Clicked();
+
+	/**
+	 * Checks whether ShowActorHistory can be executed on the selected actors.
+	 * @return 	True if ShowActorHistory can be executer on the selected actors.
 	 */
-	static void MoveActorToActor_Clicked( bool InAlign );
+	static bool ShowActorHistory_CanExecute();
+
+	/** 
+	 * Moves the selected elements to the last selected element.
+	 */
+	static void MoveElementsToElement_Clicked( bool InAlign );
 
 	/** 
 	 * Snaps an actor to the currently selected 2D snap layer
@@ -1289,7 +1297,7 @@ public:
 	static void Select2DLayerDeltaAway_Clicked(int32 Delta);
 
 	/** 
-	 * Snaps an actor to the floor.  Optionally will align with the trace normal.
+	 * Snaps the selected elements to the floor.  Optionally will align with the trace normal.
 	 * @param InAlign			Whether or not to rotate the actor to align with the trace normal.
 	 * @param InUseLineTrace	Whether or not to only trace with a line through the world.
 	 * @param InUseBounds		Whether or not to base the line trace off of the bounds.
@@ -1298,18 +1306,41 @@ public:
 	static void SnapToFloor_Clicked( bool InAlign, bool InUseLineTrace, bool InUseBounds, bool InUsePivot );
 
 	/**
-	 * Snaps an actor to another actor.  Optionally will align with the trace normal.
+	 * Snaps the selected elements to another element.  Optionally will align with the trace normal.
 	 * @param InAlign			Whether or not to rotate the actor to align with the trace normal.
 	 * @param InUseLineTrace	Whether or not to only trace with a line through the world.
 	 * @param InUseBounds		Whether or not to base the line trace off of the bounds.
 	 * @param InUsePivot		Whether or not to use the pivot position.
 	 */
-	static void SnapActorToActor_Clicked( bool InAlign, bool InUseLineTrace, bool InUseBounds, bool InUsePivot );
+	static void SnapElementsToElement_Clicked( bool InAlign, bool InUseLineTrace, bool InUseBounds, bool InUsePivot );
 
 	/**
 	 * Aligns brush verticies to the nearest grid point.
 	 */
 	static void AlignBrushVerticesToGrid_Execute();
+
+	/**
+	 * Checks to see if at least one actor is selected
+	 *	@return true if it can execute.
+	 */
+	static bool ActorSelected_CanExecute();
+
+	enum EActorTypeFlags : uint8
+	{
+		IncludePawns			= 1 << 0,
+		IncludeStaticMeshes		= 1 << 1,
+		IncludeSkeletalMeshes	= 1 << 2,
+		IncludeEmitters			= 1 << 3,
+	};
+
+	/**
+	 * Checks to see if at least one actor (of the given types) is selected
+	 *
+	 * @param TypeFlags		actor types to look for - one or more of EActorTypeFlags or'ed together
+	 * @param bSingleOnly	if true, then requires selection to be exactly one actor
+	 * @return				true if it can execute.
+	 */
+	static bool ActorTypesSelected_CanExecute(EActorTypeFlags TypeFlags, bool bSingleOnly);
 
 	/**
 	 * Checks to see if multiple actors are selected
@@ -1318,31 +1349,36 @@ public:
 	static bool ActorsSelected_CanExecute();
 
 	/**
-	 * Checks to see if at least a single actor is selected
+	 * Checks to see if at least one element is selected
 	 *	@return true if it can execute.
 	 */
-	static bool ActorSelected_CanExecute();
+	static bool ElementSelected_CanExecute();
 
+	/**
+	 * Checks to see if multiple elements are selected
+	 *	@return true if it can execute.
+	 */
+	static bool ElementsSelected_CanExecute();
 
 	/** Called when 'Open Merge Actor' is clicked */
 	static void OpenMergeActor_Clicked();
 
 private:
 	/** 
-	 * Moves an actor...
-	 * @param InDestination		The destination actor we want to move this actor to, NULL assumes we just want to use the grid
+	 * Moves the selected elements.
+	 * @param InDestination		The destination element we want to move this element to, or invalid to move to the grid
 	 */
-	static void MoveActorTo_Clicked( const bool InAlign, const AActor* InDestination = NULL, bool bInPerActor = false );
+	static void MoveTo_Clicked( const UTypedElementSelectionSet* InSelectionSet, const bool InAlign, bool InPerElement, const TTypedElement<ITypedElementWorldInterface>& InDestination = TTypedElement<ITypedElementWorldInterface>() );
 
 	/** 
-	 * Snaps an actor or component...  Optionally will align with the trace normal.
+	 * Snaps the selected elements. Optionally will align with the trace normal.
 	 * @param InAlign			Whether or not to rotate the actor to align with the trace normal.
 	 * @param InUseLineTrace	Whether or not to only trace with a line through the world.
 	 * @param InUseBounds		Whether or not to base the line trace off of the bounds.
 	 * @param InUsePivot		Whether or not to use the pivot position.
-	 * @param InDestination		The destination actor we want to move this actor to, NULL assumes we just want to go towards the floor
+	 * @param InDestination		The destination element we want to move this actor to, or invalid to go towards the floor
 	 */
-	static void SnapTo_Clicked( const bool InAlign, const bool InUseLineTrace, const bool InUseBounds, const bool InUsePivot, AActor* InDestination = NULL );
+	static void SnapTo_Clicked(const UTypedElementSelectionSet* InSelectionSet, const bool InAlign, const bool InUseLineTrace, const bool InUseBounds, const bool InUsePivot, const TTypedElement<ITypedElementWorldInterface>& InDestination = TTypedElement<ITypedElementWorldInterface>() );
 
 	/** 
 	 * Create and apply animation to the SkeletalMeshComponent if Simulating

@@ -2,6 +2,7 @@
 
 #include "ConcertWorkspaceUI.h"
 
+#include "IConcertSyncClientModule.h"
 #include "IConcertClientWorkspace.h"
 #include "IConcertSyncClient.h"
 #include "IConcertSession.h"
@@ -12,7 +13,6 @@
 #include "Algo/Transform.h"
 #include "Modules/ModuleManager.h"
 #include "ContentBrowserModule.h"
-#include "LevelEditor.h"
 #include "UObject/Package.h"
 #include "ISourceControlState.h"
 #include "ISourceControlProvider.h"
@@ -30,6 +30,9 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/MultiBox/MultiBoxExtender.h"
 #include "Framework/Notifications/NotificationManager.h"
+
+#include "ToolMenuContext.h"
+#include "ToolMenus.h"
 
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SConcertSandboxPersistWidget.h"
@@ -105,7 +108,7 @@ public:
 	}
 
 private:
-	EVisibility GetVisibility()
+	EVisibility GetVisibility() const
 	{
 		// If the asset is locked, make the icon visible, collapsed/hidden otherwise.
 		return WorkspaceFrontend->GetResourceLockId(AssetPath).IsValid() ? EVisibility::Visible : EVisibility::Collapsed;
@@ -265,7 +268,7 @@ public:
 	}
 
 private:
-	EVisibility GetVisibility()
+	EVisibility GetVisibility() const
 	{
 		return WorkspaceFrontend->IsAssetModifiedByOtherClients(AssetPath) ? EVisibility::Visible : EVisibility::Collapsed;
 	}
@@ -362,7 +365,7 @@ public:
 	 */
 	void Construct(const FArguments& InArgs, TSharedPtr<FConcertWorkspaceUI> InWorkspaceFrontend)
 	{
-		WorkspaceFrontend = MoveTemp(InWorkspaceFrontend);	
+		WorkspaceFrontend = MoveTemp(InWorkspaceFrontend);
 		SetVisibility(MakeAttributeSP(this, &SConcertWorkspaceSequencerToolbarExtension::GetVisibility));
 
 		FToolBarBuilder ToolbarBuilder(TSharedPtr<const FUICommandList>(), FMultiBoxCustomization::None, TSharedPtr<FExtender>(), true);
@@ -372,9 +375,9 @@ public:
 			// Toggle playback sync
 			ToolbarBuilder.AddToolBarButton(
 				FUIAction(
-					FExecuteAction::CreateLambda([SyncClient = WorkspaceFrontend->SyncClient]()
+					FExecuteAction::CreateLambda([]()
 					{
-						TSharedPtr<IConcertSyncClient> SyncClientPin = SyncClient.Pin();
+						TSharedPtr<IConcertSyncClient> SyncClientPin = IConcertSyncClientModule::Get().GetClient(TEXT("MultiUser"));
 						if (SyncClientPin && SyncClientPin->GetSequencerManager())
 						{
 							IConcertClientSequencerManager* SequencerManager = SyncClientPin->GetSequencerManager();
@@ -382,9 +385,9 @@ public:
 						}
 					}),
 					FCanExecuteAction(),
-					FIsActionChecked::CreateLambda([SyncClient = WorkspaceFrontend->SyncClient]()
+					FIsActionChecked::CreateLambda([]()
 					{
-						TSharedPtr<IConcertSyncClient> SyncClientPin = SyncClient.Pin();
+						TSharedPtr<IConcertSyncClient> SyncClientPin = IConcertSyncClientModule::Get().GetClient(TEXT("MultiUser"));
 						return SyncClientPin.IsValid() && SyncClientPin->GetSequencerManager() && SyncClientPin->GetSequencerManager()->IsSequencerPlaybackSyncEnabled();
 					})
 				),
@@ -398,9 +401,9 @@ public:
 			// Toggle unrelated timeline sync
 			ToolbarBuilder.AddToolBarButton(
 				FUIAction(
-					FExecuteAction::CreateLambda([SyncClient = WorkspaceFrontend->SyncClient]()
+					FExecuteAction::CreateLambda([]()
 					{
-						TSharedPtr<IConcertSyncClient> SyncClientPin = SyncClient.Pin();
+						TSharedPtr<IConcertSyncClient> SyncClientPin = IConcertSyncClientModule::Get().GetClient(TEXT("MultiUser"));
 						if (SyncClientPin && SyncClientPin->GetSequencerManager())
 						{
 							IConcertClientSequencerManager* SequencerManager = SyncClientPin->GetSequencerManager();
@@ -408,9 +411,9 @@ public:
 						}
 					}),
 					FCanExecuteAction(),
-					FIsActionChecked::CreateLambda([SyncClient = WorkspaceFrontend->SyncClient]()
+					FIsActionChecked::CreateLambda([]()
 					{
-						TSharedPtr<IConcertSyncClient> SyncClientPin = SyncClient.Pin();
+						TSharedPtr<IConcertSyncClient> SyncClientPin = IConcertSyncClientModule::Get().GetClient(TEXT("MultiUser"));
 						return SyncClientPin.IsValid() && SyncClientPin->GetSequencerManager() && SyncClientPin->GetSequencerManager()->IsUnrelatedSequencerTimelineSyncEnabled();
 					})
 				),
@@ -424,9 +427,9 @@ public:
 			// Toggle remote open
 			ToolbarBuilder.AddToolBarButton(
 				FUIAction(
-					FExecuteAction::CreateLambda([SyncClient = WorkspaceFrontend->SyncClient]() 
+					FExecuteAction::CreateLambda([]()
 					{
-						TSharedPtr<IConcertSyncClient> SyncClientPin = SyncClient.Pin();
+						TSharedPtr<IConcertSyncClient> SyncClientPin = IConcertSyncClientModule::Get().GetClient(TEXT("MultiUser"));
 						if (SyncClientPin && SyncClientPin->GetSequencerManager())
 						{
 							IConcertClientSequencerManager* SequencerManager = SyncClientPin->GetSequencerManager();
@@ -434,14 +437,14 @@ public:
 						}
 					}),
 					FCanExecuteAction(),
-					FIsActionChecked::CreateLambda([SyncClient = WorkspaceFrontend->SyncClient]()
+					FIsActionChecked::CreateLambda([]()
 					{
-						TSharedPtr<IConcertSyncClient> SyncClientPin = SyncClient.Pin();
+						TSharedPtr<IConcertSyncClient> SyncClientPin = IConcertSyncClientModule::Get().GetClient(TEXT("MultiUser"));
 						return SyncClientPin.IsValid() && SyncClientPin->GetSequencerManager() && SyncClientPin->GetSequencerManager()->IsSequencerRemoteOpenEnabled();
 					})
 				),
 				NAME_None,
-				LOCTEXT("ToggleRemoteOpenLabel", "Remote Open"), 
+				LOCTEXT("ToggleRemoteOpenLabel", "Remote Open"),
 				LOCTEXT("ToggleRemoteOpenTooltip", "Toggle Multi-User Remote Open. If the option is enabled, opening a sequence will open the same sequence on all users in the Multi-User session that also have this option enabled."),
 				FSlateIcon(FConcertFrontendStyle::GetStyleSetName(), "Concert.Sequencer.SyncSequence", "Concert.Sequencer.SyncSequence.Small"),
 				EUserInterfaceActionType::ToggleButton
@@ -547,12 +550,26 @@ void FConcertWorkspaceUI::InstallWorkspaceExtensions(TWeakPtr<IConcertClientWork
 			.Add_GetRef(FContentBrowserMenuExtender_SelectedAssets::CreateSP(this, &FConcertWorkspaceUI::OnExtendContentBrowserAssetSelectionMenu)).GetHandle();
 	}
 
+	FToolMenuOwnerScoped SourceControlMenuOwner("ConcertSourceControlMenu");
+
 	// Setup Concert Source Control Extension
-	if (FLevelEditorModule* LevelEditorModule = FModuleManager::Get().GetModulePtr<FLevelEditorModule>(TEXT("LevelEditor")))
-	{
-		SourceControlExtensionDelegateHandle = LevelEditorModule->GetAllLevelEditorToolbarSourceControlMenuExtenders()
-			.Add_GetRef(FLevelEditorModule::FLevelEditorMenuExtender::CreateSP(this, &FConcertWorkspaceUI::OnExtendLevelEditorSourceControlMenu)).GetHandle();
-	}
+	UToolMenu* SourceControlMenu = UToolMenus::Get()->ExtendMenu("StatusBar.ToolBar.SourceControl");
+	FToolMenuSection& Section = SourceControlMenu->FindOrAddSection("SourceControlMenu");
+
+	TWeakPtr<FConcertWorkspaceUI> Weak = AsShared();
+	Section.AddMenuEntry(
+		"ConcertPersistSessionChanges",
+		LOCTEXT("ConcertWVPersist", "Persist Session Changes..."),
+		LOCTEXT("ConcertWVPersistTooltip", "Persist the session changes and prepare the files for source control submission."),
+		FSlateIcon(FConcertFrontendStyle::GetStyleSetName(), "Concert.Persist"),
+		FUIAction(FExecuteAction::CreateLambda([Weak]()
+			{
+				if (TSharedPtr<FConcertWorkspaceUI> PinThis = Weak.Pin())
+				{
+					PinThis->PromptPersistSessionChanges(); // Required to adapt the function signature.
+				}
+			}))
+		);
 
 	// Register for the "MarkPackageDirty" callback to catch packages that have been modified so we can acquire lock or warn
 	UPackage::PackageMarkedDirtyEvent.AddRaw(this, &FConcertWorkspaceUI::OnMarkPackageDirty);
@@ -568,12 +585,7 @@ void FConcertWorkspaceUI::UninstallWorspaceExtensions()
 		ContentBrowserAssetExtenderDelegateHandle.Reset();
 	}
 
-	FLevelEditorModule* LevelEditorModule = FModuleManager::Get().GetModulePtr<FLevelEditorModule>(TEXT("LevelEditor"));
-	if (SourceControlExtensionDelegateHandle.IsValid() && LevelEditorModule)
-	{
-		LevelEditorModule->GetAllLevelEditorToolbarSourceControlMenuExtenders().RemoveAll([DelegateHandle = SourceControlExtensionDelegateHandle](const FLevelEditorModule::FLevelEditorMenuExtender& Extender) { return Extender.GetHandle() == DelegateHandle; });
-		SourceControlExtensionDelegateHandle.Reset();
-	}
+	UToolMenus::Get()->UnregisterOwnerByName("ConcertSourceControlMenu");
 
 	// Remove package dirty hook
 	UPackage::PackageMarkedDirtyEvent.RemoveAll(this);
@@ -594,23 +606,19 @@ bool FConcertWorkspaceUI::PromptPersistSessionChanges()
 	if (ClientWorkspacePin.IsValid())
 	{
 		// Get source control status of packages 
-		TArray<FName> PackageNames;
 		TArray<FString> PackageFilenames;
+		TArray<FName> PackageNames;
 		TArray<FSourceControlStateRef> States;
-		PackageNames = ClientWorkspacePin->GatherSessionChanges();
-		FString Filename;
-		for (auto It = PackageNames.CreateIterator(); It; ++It)
+		TArray<FName> CandidatePackages = ClientWorkspacePin->GatherSessionChanges();
+		for (FName PackageName : CandidatePackages)
 		{
-			if (FPackageName::DoesPackageExist(It->ToString(), nullptr, &Filename))
+			if (TOptional<FString> PackagePath = ClientWorkspacePin->GetValidPackageSessionPath(PackageName))
 			{
-				PackageFilenames.Add(FPaths::ConvertRelativePathToFull(MoveTemp(Filename)));
-			}
-			// if the package file does not exist locally, remove it from the persist list, the db contains transaction data on file not propagated through Multi-User.
-			else
-			{
-				It.RemoveCurrent();
+				PackageFilenames.Add(PackagePath.GetValue());
+				PackageNames.Add(PackageName);
 			}
 		}
+
 		ECommandResult::Type Result = ISourceControlModule::Get().GetProvider().GetState(PackageFilenames, States, EStateCacheUsage::ForceUpdate);
 		// The dummy Multi-User source control provider always succeed and always return proxy states.
 		ensure(Result == ECommandResult::Succeeded);
@@ -621,7 +629,7 @@ bool FConcertWorkspaceUI::PromptPersistSessionChanges()
 			PersistItems.Add(MakeShared<FConcertPersistItem>(PackageNames[Index], States[Index]));
 		}
 	}
-	
+
 	TSharedRef<SWindow> NewWindow = SNew(SWindow)
 		.Title(LOCTEXT("PersistSubmitWindowTitle", "Persist & Submit Files"))
 		.SizingRule(ESizingRule::UserSized)
@@ -958,33 +966,6 @@ void FConcertWorkspaceUI::GenerateConcertAssetContextMenu(FMenuBuilder& MenuBuil
 	}
 
 	MenuBuilder.EndSection();
-}
-
-TSharedRef<FExtender> FConcertWorkspaceUI::OnExtendLevelEditorSourceControlMenu(const TSharedRef<FUICommandList>)
-{
-	TWeakPtr<FConcertWorkspaceUI> Weak = AsShared();
-	TSharedRef<FExtender> Extender = MakeShared<FExtender>();
-	Extender->AddMenuExtension(
-		"SourceControlConnectionSeparator",
-		EExtensionHook::After,
-		nullptr,
-		FMenuExtensionDelegate::CreateLambda([Weak](FMenuBuilder& MenuBuilder)
-		{
-			MenuBuilder.AddMenuEntry(
-				LOCTEXT("ConcertWVPersist", "Persist Session Changes..."),
-				LOCTEXT("ConcertWVPersistTooltip", "Persist the session changes and prepare the files for source control submission."),
-				FSlateIcon(FConcertFrontendStyle::GetStyleSetName(), "Concert.Persist"),
-				FUIAction(FExecuteAction::CreateLambda([Weak]()
-				{
-					if (TSharedPtr<FConcertWorkspaceUI> PinThis = Weak.Pin())
-					{
-						PinThis->PromptPersistSessionChanges(); // Required to adapt the function signature.
-					}
-				}))
-			);
-		})
-	);
-	return Extender;
 }
 
 TSharedRef<SWidget> FConcertWorkspaceUI::OnGenerateAssetViewLockStateIcons(const FAssetData& AssetData)

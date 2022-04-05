@@ -20,10 +20,10 @@
 			"Name" : "LinuxDeviceProfileSelector",
 			"Type" : "RuntimeNoCommandlet",
 			"LoadingPhase" : "PostConfigInit",
-			"WhitelistPlatforms" :
+			"PlatformAllowList" :
 			[
 				"Linux",
-				"LinuxAArch64"
+				"LinuxArm64"
 			]
 		}
 	]

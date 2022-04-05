@@ -74,49 +74,6 @@ void FAssetTypeActions_SoundBase::GetActions(const TArray<UObject*>& InObjects, 
 	);
 }
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-void FAssetTypeActions_SoundBase::AssetsActivated( const TArray<UObject*>& InObjects, EAssetTypeActivationMethod::Type ActivationType )
-{
-	if (ActivationType == EAssetTypeActivationMethod::Previewed)
-	{
-		USoundBase* TargetSound = NULL;
-
-		for (auto ObjIt = InObjects.CreateConstIterator(); ObjIt; ++ObjIt)
-		{
-			TargetSound = Cast<USoundBase>(*ObjIt);
-			if ( TargetSound )
-			{
-				// Only target the first valid sound cue
-				break;
-			}
-		}
-
-		UAudioComponent* PreviewComp = GEditor->GetPreviewAudioComponent();
-		if ( PreviewComp && PreviewComp->IsPlaying() )
-		{
-			// Already previewing a sound, if it is the target cue then stop it, otherwise play the new one
-			if ( !TargetSound || PreviewComp->Sound == TargetSound )
-			{
-				StopSound();
-			}
-			else
-			{
-				PlaySound(TargetSound);
-			}
-		}
-		else
-		{
-			// Not already playing, play the target sound cue if it exists
-			PlaySound(TargetSound);
-		}
-	}
-	else
-	{
-		FAssetTypeActions_Base::AssetsActivated(InObjects, ActivationType);
-	}
-}
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
 bool FAssetTypeActions_SoundBase::AssetsActivatedOverride(const TArray<UObject*>& InObjects, EAssetTypeActivationMethod::Type ActivationType)
 {
 	if (ActivationType == EAssetTypeActivationMethod::Previewed)
@@ -294,6 +251,7 @@ bool FAssetTypeActions_SoundBase::CanExecutePlayCommand(TArray<TWeakObjectPtr<US
 
 void FAssetTypeActions_SoundBase::ExecuteMuteSound(TArray<TWeakObjectPtr<USoundBase>> Objects) const
 {	
+#if ENABLE_AUDIO_DEBUG
 	if (FAudioDeviceManager* ADM = GEditor->GetAudioDeviceManager())
 	{
 		Audio::FAudioDebugger& Debugger = ADM->GetDebugger();
@@ -314,10 +272,12 @@ void FAssetTypeActions_SoundBase::ExecuteMuteSound(TArray<TWeakObjectPtr<USoundB
 			}
 		}
 	}
+#endif
 }
 
 void FAssetTypeActions_SoundBase::ExecuteSoloSound(TArray<TWeakObjectPtr<USoundBase>> Objects) const
 {
+#if ENABLE_AUDIO_DEBUG
 	if (FAudioDeviceManager* ADM = GEditor->GetAudioDeviceManager())
 	{
 		Audio::FAudioDebugger& Debugger = ADM->GetDebugger();
@@ -338,10 +298,12 @@ void FAssetTypeActions_SoundBase::ExecuteSoloSound(TArray<TWeakObjectPtr<USoundB
 			}
 		}
 	}
+	#endif
 }
 
 bool FAssetTypeActions_SoundBase::IsActionCheckedMute(TArray<TWeakObjectPtr<USoundBase>> Objects) const
 {
+#if ENABLE_AUDIO_DEBUG
 	if (FAudioDeviceManager* ADM = GEditor->GetAudioDeviceManager())
 	{
 		// If *any* of the selection are muted, show the tick box as ticked.
@@ -364,11 +326,13 @@ bool FAssetTypeActions_SoundBase::IsActionCheckedMute(TArray<TWeakObjectPtr<USou
 			}
 		}
 	}
+#endif
 	return false;
 }
 
 bool FAssetTypeActions_SoundBase::IsActionCheckedSolo(TArray<TWeakObjectPtr<USoundBase>> Objects) const
 {
+#if ENABLE_AUDIO_DEBUG
 	// If *any* of the selection are solod, show the tick box as ticked.
 	if (FAudioDeviceManager* ADM = GEditor->GetAudioDeviceManager())
 	{
@@ -391,11 +355,13 @@ bool FAssetTypeActions_SoundBase::IsActionCheckedSolo(TArray<TWeakObjectPtr<USou
 			}
 		}
 	}
+#endif
 	return false;
 }
 
 bool FAssetTypeActions_SoundBase::CanExecuteMuteCommand(TArray<TWeakObjectPtr<USoundBase>> Objects) const
 {
+#if ENABLE_AUDIO_DEBUG
 	if (FAudioDeviceManager* ADM = GEditor->GetAudioDeviceManager())
 	{
 		// Allow muting if we're not Soloing.
@@ -421,11 +387,13 @@ bool FAssetTypeActions_SoundBase::CanExecuteMuteCommand(TArray<TWeakObjectPtr<US
 		// Ok.
 		return true;
 	}
+#endif
 	return false;
 }
 
 bool FAssetTypeActions_SoundBase::CanExecuteSoloCommand(TArray<TWeakObjectPtr<USoundBase>> Objects) const
 {	
+#if ENABLE_AUDIO_DEBUG
 	if (FAudioDeviceManager* ADM = GEditor->GetAudioDeviceManager())
 	{
 		// Allow Soloing if we're not Muting.
@@ -451,6 +419,7 @@ bool FAssetTypeActions_SoundBase::CanExecuteSoloCommand(TArray<TWeakObjectPtr<US
 		// Ok.
 		return true;
 	}
+#endif
 	return false;
 }
 

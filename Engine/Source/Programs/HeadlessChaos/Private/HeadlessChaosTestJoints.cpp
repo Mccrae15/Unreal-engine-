@@ -207,16 +207,16 @@ namespace ChaosTest {
 			Test.Evolution.EndFrame(Dt);
 
 			// Kinematic particle should have moved to animated position
-			EXPECT_LT((Test.GetParticle(Box1Id)->X() - RootPosition).Size(), (FReal)0.01 * BoxSize) << "Post-move instability on frame " << i;
+			EXPECT_LT((Test.GetParticle(Box1Id)->X() - RootPosition).Size(), (FReal)0.1 * BoxSize) << "Post-move instability on frame " << i;
 
 			// Particles should remain fixed distance apart (joint point is at Box1 location)
 			const FVec3 Delta = Test.GetParticle(Box2Id)->CastToRigidParticle()->P() - Test.GetParticle(Box1Id)->X();
 			const FReal Distance = Delta.Size();
-			EXPECT_NEAR(Distance, ExpectedDistance, (FReal)0.01 * BoxSize) << "Post-move instability on frame " << i;
+			EXPECT_NEAR(Distance, ExpectedDistance, (FReal)0.1 * BoxSize) << "Post-move instability on frame " << i;
 
 			// Joint position calculted from pose and local-space joint pos
 			const FVec3 Box2WorldSpaceJointPosition = Test.GetParticle(Box2Id)->R().RotateVector(Box2LocalSpaceJointPosition) + Test.GetParticle(Box2Id)->X();
-			EXPECT_LT((Box2WorldSpaceJointPosition - RootPosition).Size(), (FReal)0.01 * BoxSize) << "Post-move instability on frame " << i;
+			EXPECT_LT((Box2WorldSpaceJointPosition - RootPosition).Size(), (FReal)0.1 * BoxSize) << "Post-move instability on frame " << i;
 		}
 	}
 
@@ -233,7 +233,7 @@ namespace ChaosTest {
 		const FReal BoxMass = 1000;
 		const FReal Dt = (FReal)1 / 20;
 		const FReal AnimPeriod = (FReal)2;
-		const FVec3 AnimDelta = FVec3(10 * BoxSize, 0, 0);
+		const FVec3 AnimDelta = FVec3(BoxSize, 0, 0);
 
 		FJointConstraintsTest<TEvolution> Test(NumIterations, Gravity);
 
@@ -355,7 +355,7 @@ namespace ChaosTest {
 
 			Test.GetParticle(0)->X() = RootPosition;
 
-			Test.Evolution.GetCollisionDetector().GetBroadPhase().SetBoundsVelocityInflation(1);
+			Test.Evolution.GetCollisionDetector().GetNarrowPhase().SetBoundsVelocityInflation(1);
 			Test.Evolution.AdvanceOneTimeStep(Dt);
 			Test.Evolution.EndFrame(Dt);
 
@@ -429,7 +429,7 @@ namespace ChaosTest {
 		}
 
 		Test.Create();
-		Test.Evolution.GetCollisionDetector().GetBroadPhase().SetBoundsVelocityInflation(1);
+		Test.Evolution.GetCollisionDetector().GetNarrowPhase().SetBoundsVelocityInflation(1);
 
 		const FVec3 Box2LocalSpaceJointPosition = Test.JointPositions[0] - Test.ParticlePositions[1];
 
@@ -480,7 +480,8 @@ namespace ChaosTest {
 		PhysicalMaterial->DisabledLinearThreshold = 0;
 		PhysicalMaterial->DisabledAngularThreshold = 0;
 
-		FPBDRigidsSOAs Particles;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs Particles(UniqueIndices);
 
 		auto StaticBox = AppendStaticParticleBox(Particles, FVec3((FReal)100, (FReal)100, (FReal)100));
 		auto Box2 = AppendDynamicParticleBox(Particles, FVec3((FReal)100, (FReal)100, (FReal)100));
@@ -496,9 +497,9 @@ namespace ChaosTest {
 		Evolution.SetPhysicsMaterial(StaticBox, MakeSerializable(PhysicalMaterial));
 		Evolution.SetPhysicsMaterial(Box2, MakeSerializable(PhysicalMaterial));
 
-		auto JointConstraints = FPBDRigidSpringConstraints();
+		FPBDRigidSpringConstraints JointConstraints;
 		JointConstraints.AddConstraint(ConstrainedParticles, Points, 1.0f, 0.0f, (Points[0] - Points[1]).Size());
-		auto JointRule = Chaos::TPBDConstraintIslandRule<Chaos::FPBDRigidSpringConstraints>(JointConstraints);
+		Chaos::TPBDConstraintIslandRule<Chaos::FPBDRigidSpringConstraints> JointRule(JointConstraints);
 		Evolution.AddConstraintRule(&JointRule);
 
 		const FReal Dt = 0.01f;
@@ -522,7 +523,8 @@ namespace ChaosTest {
 		PhysicalMaterial->DisabledAngularThreshold = 0;
 
 		{
-			FPBDRigidsSOAs Particles;
+			FParticleUniqueIndicesMultithreaded UniqueIndices;
+			FPBDRigidsSOAs Particles(UniqueIndices);
 
 			auto& StaticBox = *AppendStaticParticleBox(Particles, FVec3((FReal)100, (FReal)100, (FReal)100));
 			auto& Box2 = *AppendDynamicParticleBox(Particles, FVec3((FReal)100, (FReal)100, (FReal)100));
@@ -539,7 +541,7 @@ namespace ChaosTest {
 			Evolution.SetPhysicsMaterial(&Box2, MakeSerializable(PhysicalMaterial));
 
 			Chaos::FPBDRigidDynamicSpringConstraints SpringConstraints(MoveTemp(Constraints));
-			auto SpringRule = Chaos::TPBDConstraintIslandRule<Chaos::FPBDRigidDynamicSpringConstraints>(SpringConstraints);
+			Chaos::TPBDConstraintIslandRule<Chaos::FPBDRigidDynamicSpringConstraints> SpringRule(SpringConstraints);
 			Evolution.AddConstraintRule(&SpringRule);
 
 			const FReal Dt = 0.01f;
@@ -552,7 +554,8 @@ namespace ChaosTest {
 		}
 
 		{
-			FPBDRigidsSOAs Particles;
+			FParticleUniqueIndicesMultithreaded UniqueIndices;
+			FPBDRigidsSOAs Particles(UniqueIndices);
 
 			auto& StaticBox = *AppendStaticParticleBox(Particles, FVec3((FReal)100, (FReal)100, (FReal)100));
 			auto& Box2 = *AppendDynamicParticleBox(Particles, FVec3((FReal)100, (FReal)100, (FReal)100));
@@ -569,7 +572,7 @@ namespace ChaosTest {
 			Evolution.SetPhysicsMaterial(&Box2, MakeSerializable(PhysicalMaterial));
 
 			Chaos::FPBDRigidDynamicSpringConstraints SpringConstraints(MoveTemp(Constraints), 400);
-			auto SpringRule = Chaos::TPBDConstraintIslandRule<Chaos::FPBDRigidDynamicSpringConstraints>(SpringConstraints);
+			Chaos::TPBDConstraintIslandRule<Chaos::FPBDRigidDynamicSpringConstraints> SpringRule(SpringConstraints);
 			Evolution.AddConstraintRule(&SpringRule);
 
 			const FReal Dt = 0.01f;
@@ -582,6 +585,67 @@ namespace ChaosTest {
 		}
 	}
 
+	// check that joints don't simulate if a constrained particle is disabled
+	template <typename TEvolution>
+	void JointConstraint_DisableOneConstrainedParticle()
+	{
+
+		const int32 NumIterations = 1;
+		const FReal Gravity = 980;
+
+		FJointConstraintsTest<TEvolution> Test(NumIterations, Gravity);
+
+		Test.ParticlePositions = {
+			{ (FReal)0, (FReal)0, (FReal)1000 },
+			{ (FReal)500, (FReal)0, (FReal)1000 },
+		};
+		Test.ParticleSizes =
+		{
+			{ (FReal)100, (FReal)100, (FReal)100 },
+			{ (FReal)100, (FReal)100, (FReal)100 },
+		};
+		Test.ParticleMasses =
+		{
+			(FReal)1,
+			(FReal)1,
+		};
+
+		Test.JointPositions =
+		{
+			{ (FReal)250, (FReal)0, (FReal)1000 },
+		};
+		Test.JointParticleIndices =
+		{
+			{ 0, 1 },
+		};
+
+		Test.Create();
+
+		const int32 Box1Id = 0;
+		const int32 Box2Id = 1;
+		const FReal ExpectedDistance = (Test.ParticlePositions[1] - Test.ParticlePositions[0]).Size();
+		const FVec3 Box2LocalSpaceJointPosition = Test.JointPositions[0] - Test.ParticlePositions[1];
+
+		// box 1 disabled
+		Test.Evolution.DisableParticle(Test.GetParticle(Box1Id));
+
+		const FReal Dt = 0.01f;
+		for (int32 i = 0; i < 100; ++i)
+		{
+			Test.Evolution.AdvanceOneTimeStep(Dt);
+			Test.Evolution.EndFrame(Dt);
+
+			// box 1 not simulating so would expect to not have moved
+			EXPECT_LT(FMath::Abs(Test.ParticlePositions[0].X - Test.GetParticle(Box1Id)->X().X), (FReal)0.1);
+			EXPECT_LT(FMath::Abs(Test.ParticlePositions[0].Y - Test.GetParticle(Box1Id)->X().Y), (FReal)0.1);
+			EXPECT_LT(FMath::Abs(Test.ParticlePositions[0].Z - Test.GetParticle(Box1Id)->X().Z), (FReal)0.09);
+
+			// box 2 should fall under gravity & not have moved in X or Y, constraint should not 'Apply' if other particle is disabled
+			EXPECT_LT(FMath::Abs(Test.ParticlePositions[1].X - Test.GetParticle(Box2Id)->X().X), (FReal)0.1);
+			EXPECT_LT(FMath::Abs(Test.ParticlePositions[1].Y - Test.GetParticle(Box2Id)->X().Y), (FReal)0.1);
+			EXPECT_GT(FMath::Abs(Test.ParticlePositions[1].Z - Test.GetParticle(Box2Id)->X().Z), (FReal)0.09);
+		}
+	}
 
 
 	GTEST_TEST(AllEvolutions, JointTests_TestSingleConstraint) {
@@ -611,5 +675,77 @@ namespace ChaosTest {
 	GTEST_TEST(AllEvolutions, JointTests_TestSingleDynamicSpringConstraint) {
 		DynamicSpringConstraint<FPBDRigidsEvolutionGBF>();
 	}
+
+	GTEST_TEST(AllEvolutions, JointConstraint_TestDisableOneConstrainedParticle) {
+		JointConstraint_DisableOneConstrainedParticle<FPBDRigidsEvolutionGBF>();
+	}
+
+	// Check that constraints end up in the same island when graph is fully connected
+	GTEST_TEST(JointTests, TestJointConstraintGraph_Connected)
+	{
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs ParticleContainer(UniqueIndices);
+		FPBDJointConstraints JointContainer;
+
+		// Create 3 particles
+		TArray<FPBDRigidParticleHandle*> Rigids = ParticleContainer.CreateDynamicParticles(3);
+
+		// Connect particles with 2 joints
+		TArray<FPBDJointConstraintHandle*> Joints =
+		{
+			JointContainer.AddConstraint({ Rigids[0], Rigids[1] }, { FRigidTransform3(), FRigidTransform3() }),
+			JointContainer.AddConstraint({ Rigids[0], Rigids[2] }, { FRigidTransform3(), FRigidTransform3() })
+		};
+
+		// This sets up the joint container, including generating islands etc
+		JointContainer.PrepareTick();
+
+		// Both joints should be in an island
+		EXPECT_GE(Joints[0]->GetConstraintIsland(), 0);
+		EXPECT_GE(Joints[0]->GetConstraintIsland(), 0);
+
+		// Both joints should be in same island
+		EXPECT_EQ(Joints[0]->GetConstraintIsland(), Joints[1]->GetConstraintIsland());
+
+		// Joints should have different colors
+		EXPECT_NE(Joints[0]->GetConstraintColor(), Joints[1]->GetConstraintColor());
+	}
+
+	// Check that constraints islands are not merged through shared kinematic particles
+	GTEST_TEST(JointTests, TestJointConstraintGraph_NotConnected)
+	{
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FPBDRigidsSOAs ParticleContainer(UniqueIndices);
+		FPBDJointConstraints JointContainer;
+
+		// Create 3 particles
+		TArray<FPBDRigidParticleHandle*> Rigids = ParticleContainer.CreateDynamicParticles(3);
+
+		// Connect particles with 2 joints
+		TArray<FPBDJointConstraintHandle*> Joints =
+		{
+			JointContainer.AddConstraint({ Rigids[0], Rigids[1] }, { FRigidTransform3(), FRigidTransform3() }),
+			JointContainer.AddConstraint({ Rigids[0], Rigids[2] }, { FRigidTransform3(), FRigidTransform3() })
+		};
+
+		// Set the particle in the middle of the two joints to kinematic
+		Rigids[0]->SetObjectStateLowLevel(EObjectStateType::Kinematic);
+
+		// This sets up the joint container, including generating islands etc
+		JointContainer.PrepareTick();
+
+		// Both joints should be in an island
+		EXPECT_GE(Joints[0]->GetConstraintIsland(), 0);
+		EXPECT_GE(Joints[1]->GetConstraintIsland(), 0);
+
+		// Joints should be in different islands
+		EXPECT_NE(Joints[0]->GetConstraintIsland(), Joints[1]->GetConstraintIsland());
+
+		// Both joints should be at level 0
+		EXPECT_EQ(Joints[0]->GetConstraintLevel(), 0);
+		EXPECT_EQ(Joints[1]->GetConstraintLevel(), 0);
+	}
+
+
 }
 

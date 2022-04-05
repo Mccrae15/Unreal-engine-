@@ -4,9 +4,13 @@
 
 #include "DMXProtocolBlueprintLibrary.h"
 #include "DMXProtocolConstants.h"
+#include "DMXProtocolObjectVersion.h"
 #include "IO/DMXPortManager.h"
 #include "Interfaces/IDMXProtocol.h"
 #include "IO/DMXPortManager.h"
+
+#include "IPAddress.h"
+#include "SocketSubsystem.h"
 
 
 UDMXProtocolSettings::UDMXProtocolSettings()
@@ -57,7 +61,16 @@ UDMXProtocolSettings::UDMXProtocolSettings()
 		{ TEXT("Effects"),			TEXT("Effect, Macro, Effects") },
 		{ TEXT("Frost"),			TEXT("") },
 		{ TEXT("Reset"),			TEXT("FixtureReset, FixtureGlobalReset, GlobalReset") },
-
+		{ TEXT("CTC"),				TEXT("") },
+		{ TEXT("Tint"),				TEXT("") },
+		{ TEXT("Color XF"),			TEXT("") },
+		{ TEXT("HSB_Hue"),			TEXT("") },
+		{ TEXT("HSB_Saturation"),	TEXT("") },
+		{ TEXT("HSB_Brightness"),	TEXT("") },
+		{ TEXT("FanMode"),			TEXT("") },
+		{ TEXT("CIE_X"),			TEXT("") },
+		{ TEXT("CIE_Y"),			TEXT("") },
+		{ TEXT("Prism"),			TEXT("") },
 
 		/* Firework, Fountain related */
 
@@ -94,6 +107,36 @@ void UDMXProtocolSettings::PostInitProperties()
 		UE_LOG(LogDMXProtocol, Log, TEXT("Overridden Default Receive DMX Enabled from command line, set to %s."), bDefaultReceiveDMXEnabled ? TEXT("True") : TEXT("False"));
 	}
 	OverrideReceiveDMXEnabled(bDefaultReceiveDMXEnabled);	
+}
+
+void UDMXProtocolSettings::PostLoad()
+{
+	Super::PostLoad();
+
+	// Upgrade from single to many destination addresses for ports
+	const int32 CustomVersion = GetLinkerCustomVersion(FDMXProtocolObjectVersion::GUID);
+	if (CustomVersion < FDMXProtocolObjectVersion::OutputPortSupportsManyUnicastAddresses)
+	{
+		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+		TSharedPtr<FInternetAddr> InternetAddr = SocketSubsystem->CreateInternetAddr();
+
+		for (FDMXOutputPortConfig& OutputPortConfig : OutputPortConfigs)
+		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			FString DestinationAddress = OutputPortConfig.GetDestinationAddress();
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+			bool bIsValidIP = false;
+			InternetAddr->SetIp(*DestinationAddress, bIsValidIP);
+			if (bIsValidIP)
+			{
+				FDMXOutputPortConfigParams NewPortParams = FDMXOutputPortConfigParams(OutputPortConfig);
+				NewPortParams.DestinationAddresses = { DestinationAddress };
+
+				OutputPortConfig = FDMXOutputPortConfig(OutputPortConfig.GetPortGuid(), NewPortParams);
+			}
+		}
+	}
 }
 
 #if WITH_EDITOR
@@ -151,47 +194,56 @@ void UDMXProtocolSettings::PostEditChangeChainProperty(FPropertyChangedChainEven
 
 		FDMXAttributeName::OnValuesChanged.Broadcast();
 	}
-	else if	(
-		PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, InputPortConfigs) ||
-		PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, OutputPortConfigs) ||
-		(InputPortConfigStruct && InputPortConfigStruct == PropertyOwnerStruct) ||
-		(OutputPortConfigStruct && OutputPortConfigStruct == PropertyOwnerStruct))
+	else if (
+		PropertyName == FDMXOutputPortConfig::GetDestinationAddressesPropertyNameChecked() ||
+		PropertyName == GET_MEMBER_NAME_CHECKED(FDMXOutputPortDestinationAddress, DestinationAddressString))
 	{
-		if (PropertyChangedChainEvent.ChangeType == EPropertyChangeType::Duplicate)
+		FDMXPortManager::Get().UpdateFromProtocolSettings();
+	}
+	else if (PropertyChangedChainEvent.ChangeType != EPropertyChangeType::Interactive)
+	{
+		if (PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, InputPortConfigs) ||
+			PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, OutputPortConfigs) ||
+			(InputPortConfigStruct && InputPortConfigStruct == PropertyOwnerStruct) ||
+			(OutputPortConfigStruct && OutputPortConfigStruct == PropertyOwnerStruct))
 		{
-			// When duplicating configs, the guid will be duplicated, so we have to create unique ones instead
-
-			int32 ChangedIndex = PropertyChangedChainEvent.GetArrayIndex(PropertyName.ToString());
-			if (ensureAlways(ChangedIndex != INDEX_NONE))
+			if (PropertyChangedChainEvent.ChangeType == EPropertyChangeType::Duplicate)
 			{
-				if (PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, InputPortConfigs))
-				{
-					const int32 IndexOfDuplicate = InputPortConfigs.FindLastByPredicate([this, ChangedIndex](const FDMXInputPortConfig& InputPortConfig) {
-						return InputPortConfigs[ChangedIndex].GetPortGuid() == InputPortConfig.GetPortGuid();
-						});
+				// When duplicating configs, the guid will be duplicated, so we have to create unique ones instead
 
-					if (ensureAlways(IndexOfDuplicate != ChangedIndex))
+				int32 ChangedIndex = PropertyChangedChainEvent.GetArrayIndex(PropertyName.ToString());
+				if (ensureAlways(ChangedIndex != INDEX_NONE))
+				{
+					if (PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, InputPortConfigs))
 					{
-						InputPortConfigs[IndexOfDuplicate] = FDMXInputPortConfig(FGuid::NewGuid(), InputPortConfigs[ChangedIndex]);
+						const int32 IndexOfDuplicate = InputPortConfigs.FindLastByPredicate([this, ChangedIndex](const FDMXInputPortConfig& InputPortConfig) {
+							return InputPortConfigs[ChangedIndex].GetPortGuid() == InputPortConfig.GetPortGuid();
+							});
+
+						if (ensureAlways(IndexOfDuplicate != ChangedIndex))
+						{
+							InputPortConfigs[IndexOfDuplicate] = FDMXInputPortConfig(FGuid::NewGuid(), InputPortConfigs[ChangedIndex]);
+						}
 					}
-				}
-				else if (PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, OutputPortConfigs))
-				{
-					const int32 IndexOfDuplicate = OutputPortConfigs.FindLastByPredicate([this, ChangedIndex](const FDMXOutputPortConfig& OutputPortConfig) {
-						return OutputPortConfigs[ChangedIndex].GetPortGuid() == OutputPortConfig.GetPortGuid();
-						});
-
-					if (ensureAlways(IndexOfDuplicate != ChangedIndex))
+					else if (PropertyName == GET_MEMBER_NAME_CHECKED(UDMXProtocolSettings, OutputPortConfigs))
 					{
-						OutputPortConfigs[IndexOfDuplicate] = FDMXOutputPortConfig(FGuid::NewGuid(), OutputPortConfigs[ChangedIndex]);
+						const int32 IndexOfDuplicate = OutputPortConfigs.FindLastByPredicate([this, ChangedIndex](const FDMXOutputPortConfig& OutputPortConfig) {
+							return OutputPortConfigs[ChangedIndex].GetPortGuid() == OutputPortConfig.GetPortGuid();
+							});
+
+						if (ensureAlways(IndexOfDuplicate != ChangedIndex))
+						{
+							OutputPortConfigs[IndexOfDuplicate] = FDMXOutputPortConfig(FGuid::NewGuid(), OutputPortConfigs[ChangedIndex]);
+						}
 					}
 				}
 			}
-		}
 
-		FDMXPortManager::Get().UpdateFromProtocolSettings();
+			constexpr bool bForceUpdateRegistrationWithProtocol = true;
+			FDMXPortManager::Get().UpdateFromProtocolSettings(bForceUpdateRegistrationWithProtocol);
+		}
 	}
-	
+
 	Super::PostEditChangeChainProperty(PropertyChangedChainEvent);
 }
 #endif // WITH_EDITOR
@@ -208,4 +260,52 @@ void UDMXProtocolSettings::OverrideReceiveDMXEnabled(bool bEnabled)
 	bOverrideReceiveDMXEnabled = bEnabled; 
 
 	OnSetReceiveDMXEnabled.Broadcast(bEnabled);
+}
+
+FString UDMXProtocolSettings::GetUniqueInputPortName() const
+{
+	const FString AutoNamePrefix = "InputPort";
+	int32 HighestPortNumber = 0;
+
+	for (const FDMXInputPortConfig& InputPortConfig : InputPortConfigs)
+	{
+		const FString& PortName = InputPortConfig.GetPortName();
+		if (PortName.StartsWith(AutoNamePrefix))
+		{
+			int32 PortNameNumericSuffix = 0;
+			if (LexTryParseString<int32>(PortNameNumericSuffix, *PortName.RightChop(AutoNamePrefix.Len())))
+			{
+				if (PortNameNumericSuffix > HighestPortNumber)
+				{
+					HighestPortNumber = PortNameNumericSuffix;
+				}
+			}
+		}
+	}
+
+	return AutoNamePrefix + FString::FromInt(HighestPortNumber + 1);
+}
+
+FString UDMXProtocolSettings::GetUniqueOutputPortName() const
+{
+	const FString AutoNamePrefix = "OutputPort";
+	int32 HighestPortNumber = 0;
+
+	for (const FDMXOutputPortConfig& OutputPortConfig : OutputPortConfigs)
+	{
+		const FString& PortName = OutputPortConfig.GetPortName();
+		if (PortName.StartsWith(AutoNamePrefix))
+		{
+			int32 PortNameNumericSuffix = 0;
+			if (LexTryParseString<int32>(PortNameNumericSuffix, *PortName.RightChop(AutoNamePrefix.Len())))
+			{
+				if (PortNameNumericSuffix > HighestPortNumber)
+				{
+					HighestPortNumber = PortNameNumericSuffix;
+				}
+			}
+		}
+	}
+
+	return AutoNamePrefix + FString::FromInt(HighestPortNumber + 1);
 }

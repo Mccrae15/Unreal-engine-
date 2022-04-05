@@ -47,7 +47,7 @@ public:
 	template<typename TShaderRHIParamRef>
 	void SetMeshToPFMMatrix(FRHICommandListImmediate& RHICmdList, const TShaderRHIParamRef ShaderRHI, const FMatrix& MeshToPFMMatrix)
 	{
-		SetShaderValue(RHICmdList, ShaderRHI, MeshToPFMMatrixParameter, MeshToPFMMatrix);
+		SetShaderValue(RHICmdList, ShaderRHI, MeshToPFMMatrixParameter, (FMatrix44f)MeshToPFMMatrix);
 	}
 
 private:
@@ -81,7 +81,7 @@ public:
 	}	
 };
 
-// Implement shaders inside UE4
+// Implement shaders inside UE
 IMPLEMENT_SHADER_TYPE(, FPFMExporterVS, PFMExporterShaderFileName, TEXT("PFMExporterUV_VS"), SF_Vertex);
 IMPLEMENT_SHADER_TYPE(, FPFMExporterPS, PFMExporterShaderFileName, TEXT("PFMExporterPassthrough_PS"), SF_Pixel);
 
@@ -107,10 +107,10 @@ bool FPFMExporterShader::ApplyPFMExporter_RenderThread(
 	// Initialize data for PFm (RT textures, etc)
 	DstPfmMesh.BeginExport_RenderThread(RHICmdList);
 
-	FRHIResourceCreateInfo CreateInfo;
-	FVertexBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FFilterVertex) * NumVertices, BUF_Dynamic, CreateInfo);
+	FRHIResourceCreateInfo CreateInfo(TEXT("FPFMExporterShader"));
+	FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FFilterVertex) * NumVertices, BUF_Dynamic, CreateInfo);
 	{//Fill buffer with vertex+selected UV channel:
-		void* VoidPtr = RHILockVertexBuffer(VertexBufferRHI, 0, sizeof(FFilterVertex) * NumVertices, RLM_WriteOnly);
+		void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FFilterVertex) * NumVertices, RLM_WriteOnly);
 		FFilterVertex* pVertices = reinterpret_cast<FFilterVertex*>(VoidPtr);
 		for (uint32 i = 0; i < NumVertices; i++)
 		{
@@ -118,9 +118,9 @@ bool FPFMExporterShader::ApplyPFMExporter_RenderThread(
 			Vertex.Position = VertexPosition.VertexPosition(i);
 				Vertex.UV = VertexBuffer.GetVertexUV(i, UVIndex); // Get UV from selected channel
 		}
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		RHIUnlockBuffer(VertexBufferRHI);
 	}
-	FRHIIndexBuffer* IndexBufferRHI = IndexBuffer.IndexBufferRHI;
+	FRHIBuffer* IndexBufferRHI = IndexBuffer.IndexBufferRHI;
 
 	// Build transform matrix for mesh:
 	static float Scale = 1.0f; // Default export scale is unreal, cm
@@ -157,7 +157,7 @@ bool FPFMExporterShader::ApplyPFMExporter_RenderThread(
 				GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 				GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 
-				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+				SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 			}
 			VertexShader->SetMeshToPFMMatrix(RHICmdList, VertexShader.GetVertexShader(), MeshToPFMMatrix);
 

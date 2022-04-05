@@ -139,11 +139,6 @@ void UOculusFunctionLibrary::SetCPUAndGPULevels(int CPULevel, int GPULevel)
 #endif // OCULUS_HMD_SUPPORTED_PLATFORMS
 }
 
-void UOculusFunctionLibrary::SetReorientHMDOnControllerRecenter(bool recenterMode)
-{
-	// funtion deprecated
-}
-
 bool UOculusFunctionLibrary::GetUserProfile(FHmdUserProfile& Profile)
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
@@ -685,7 +680,7 @@ bool UOculusFunctionLibrary::GetSystemHmd3DofModeEnabled()
 	return false;
 }
 
-EColorSpace UOculusFunctionLibrary::GetHmdColorDesc()
+EOculusColorSpace UOculusFunctionLibrary::GetHmdColorDesc()
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();
@@ -694,14 +689,14 @@ EColorSpace UOculusFunctionLibrary::GetHmdColorDesc()
 		ovrpColorSpace HmdColorSpace;
 		if (OVRP_SUCCESS(FOculusHMDModule::GetPluginWrapper().GetHmdColorDesc(&HmdColorSpace)))
 		{
-			return (EColorSpace)HmdColorSpace;
+			return (EOculusColorSpace)HmdColorSpace;
 		}
 	}
 #endif
-	return EColorSpace::Unknown;
+	return EOculusColorSpace::Unknown;
 }
 
-void UOculusFunctionLibrary::SetClientColorDesc(EColorSpace ColorSpace)
+void UOculusFunctionLibrary::SetClientColorDesc(EOculusColorSpace ColorSpace)
 {
 #if OCULUS_HMD_SUPPORTED_PLATFORMS
 	OculusHMD::FOculusHMD* OculusHMD = GetOculusHMD();

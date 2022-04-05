@@ -9,12 +9,17 @@
 #include "Internationalization/TextPackageNamespaceUtil.h"
 #include "UObject/PropertyPortFlags.h"
 #include "Blueprint/WidgetTree.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Modules/ModuleManager.h"
 #include "MovieScene.h"
 #include "WidgetBlueprint.h"
 #include "HAL/PlatformApplicationMisc.h"
 
 #include "Dialogs/Dialogs.h"
+#include "DragAndDrop/DecoratedDragDropOp.h"
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "DragAndDrop/ClassDragDropOp.h"
+#include "DragDrop/WidgetTemplateDragDropOp.h"
 #include "Exporters/Exporter.h"
 #include "ObjectEditorUtils.h"
 #include "Components/CanvasPanelSlot.h"
@@ -24,6 +29,7 @@
 #include "Kismet2/Kismet2NameValidators.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Templates/WidgetTemplateClass.h"
+#include "Templates/WidgetTemplateImageClass.h"
 #include "Templates/WidgetTemplateBlueprintClass.h"
 #include "Factories.h"
 #include "UnrealExporter.h"
@@ -40,10 +46,14 @@
 #include "Components/NamedSlotInterface.h"
 #include "K2Node_Variable.h"
 
+#include "Engine/TextureRenderTarget2D.h"
+#include "Engine/UserInterfaceSettings.h"
 #include "Input/HittestGrid.h"
 #include "Interfaces/ISlateRHIRendererModule.h"
 #include "Interfaces/ISlate3DRenderer.h"
 #include "Rendering/SlateDrawBuffer.h"
+#include "Slate/WidgetRenderer.h"
+#include "Widgets/SVirtualWindow.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -91,6 +101,23 @@ public:
 	TMap<FName, UWidgetSlotPair*> MissingSlotData;
 };
 
+FName SanitizeWidgetName(const FString& NewName, const FName CurrentName)
+{
+	FString GeneratedName = SlugStringForValidName(NewName);
+
+	// If the new name is empty (for example, because it was composed entirely of invalid characters).
+	// then we'll use the current name
+	if (GeneratedName.IsEmpty())
+	{
+		return CurrentName;
+	}
+
+	const FName GeneratedFName(*GeneratedName);
+	check(GeneratedFName.IsValidXName(INVALID_OBJECTNAME_CHARACTERS));
+
+	return GeneratedFName;
+}
+
 bool FWidgetBlueprintEditorUtils::VerifyWidgetRename(TSharedRef<class FWidgetBlueprintEditor> BlueprintEditor, FWidgetReference Widget, const FText& NewName, FText& OutErrorMessage)
 {
 	if (NewName.IsEmptyOrWhitespace())
@@ -116,7 +143,7 @@ bool FWidgetBlueprintEditorUtils::VerifyWidgetRename(TSharedRef<class FWidgetBlu
 	}
 
 	// Slug the new name down to a valid object name
-	const FName NewNameSlug = MakeObjectNameFromDisplayLabel(NewNameString, RenamedTemplateWidget->GetFName());
+	const FName NewNameSlug = SanitizeWidgetName(NewNameString, RenamedTemplateWidget->GetFName());
 
 	UWidgetBlueprint* Blueprint = BlueprintEditor->GetWidgetBlueprintObj();
 	UWidget* ExistingTemplate = Blueprint->WidgetTree->FindWidget(NewNameSlug);
@@ -203,8 +230,7 @@ bool FWidgetBlueprintEditorUtils::RenameWidget(TSharedRef<FWidgetBlueprintEditor
 
 	TSharedPtr<INameValidatorInterface> NameValidator = MakeShareable(new FKismetNameValidator(Blueprint));
 
-	// Get the new FName slug from the given display name
-	const FName NewFName = MakeObjectNameFromDisplayLabel(NewDisplayName, Widget->GetFName());
+	const FName NewFName = SanitizeWidgetName(NewDisplayName, Widget->GetFName());
 
 	FObjectPropertyBase* ExistingProperty = CastField<FObjectPropertyBase>(ParentClass->FindPropertyByName(NewFName));
 	const bool bBindWidget = ExistingProperty && FWidgetBlueprintEditorUtils::IsBindWidgetProperty(ExistingProperty) && Widget->IsA(ExistingProperty->PropertyClass);
@@ -225,19 +251,20 @@ bool FWidgetBlueprintEditorUtils::RenameWidget(TSharedRef<FWidgetBlueprintEditor
 
 		// Rename Preview before renaming the template widget so the preview widget can be found
 		UWidget* WidgetPreview = BlueprintEditor->GetReferenceFromTemplate(Widget).GetPreview();
-		if(WidgetPreview)
+		if (WidgetPreview)
 		{
-			WidgetPreview->SetDisplayLabel(NewDisplayName);
+			WidgetPreview->SetDisplayLabel(NewNameStr);
 			WidgetPreview->Rename(*NewNameStr);
 		}
 
 		if (!WidgetPreview || WidgetPreview != Widget)
 		{
 			// Find and update all variable references in the graph
-			Widget->SetDisplayLabel(NewDisplayName);
+			Widget->SetDisplayLabel(NewNameStr);
 			Widget->Rename(*NewNameStr);
 		}
 
+#if UE_HAS_WIDGET_GENERATED_BY_CLASS
 		// When a widget gets renamed we need to check any existing blueprint getters that may be placed
 		// in the graphs to fix up their state
 		if(Widget->bIsVariable)
@@ -280,6 +307,7 @@ bool FWidgetBlueprintEditorUtils::RenameWidget(TSharedRef<FWidgetBlueprintEditor
 				}
 			}
 		}
+#endif
 
 		// Update Variable References and
 		// Update Event References to member variables
@@ -421,53 +449,23 @@ bool FWidgetBlueprintEditorUtils::CanOpenSelectedWidgetsForEdit( TSet<FWidgetRef
 	return bCanOpenAllForEdit;
 }
 
-void FWidgetBlueprintEditorUtils::DeleteWidgets(UWidgetBlueprint* Blueprint, TSet<FWidgetReference> Widgets)
+void FWidgetBlueprintEditorUtils::DeleteWidgets(UWidgetBlueprint* Blueprint, TSet<FWidgetReference> Widgets, bool bSilentDelete /*=false*/)
 {
 	if ( Widgets.Num() > 0 )
 	{
 		// Check if the widgets are used in the graph
+		FScopedTransaction Transaction(LOCTEXT("RemoveWidget", "Remove Widget"));
 		TArray<UWidget*> UsedVariables;
-		{
-			TSet<UWidget*> AllWidgets;
-			AllWidgets.Reserve(Widgets.Num());
-			for (const FWidgetReference& Item : Widgets)
-			{
-				AllWidgets.Add(Item.GetTemplate());
-
-				TArray<UWidget*> ChildWidgets;
-				UWidgetTree::GetChildWidgets(Item.GetTemplate(), ChildWidgets);
-				AllWidgets.Append(ChildWidgets);
-			}
-
 		TArray<FText> WidgetNames;
-			for (UWidget* Widget : AllWidgets)
-			{
-				if (FBlueprintEditorUtils::IsVariableUsed(Blueprint, Widget->GetFName()))
-				{
-					WidgetNames.Add(FText::FromName(Widget->GetFName()));
-					UsedVariables.Add(Widget);
-				}
-			}
+		const bool bIncludeChildrenVariables = true;
+		FindUsedVariablesForWidgets(Widgets, Blueprint, UsedVariables, WidgetNames, bIncludeChildrenVariables);
 
-			if (UsedVariables.Num())
-			{
-				FText ConfirmDelete = FText::Format(LOCTEXT("ConfirmDeleteVariableInUse", "One or more widgets are in use in the graph! Do you really want to delete them? \n {0}"),
-					FText::Join(LOCTEXT("ConfirmDeleteVariableInUsedDelimiter", " \n"), WidgetNames));
-
-				// Warn the user that this may result in data loss
-				FSuppressableWarningDialog::FSetupInfo Info(ConfirmDelete, LOCTEXT("DeleteVar", "Delete widgets"), "DeleteWidgetsInUse_Warning");
-				Info.ConfirmText = LOCTEXT("DeleteVariable_Yes", "Yes");
-				Info.CancelText = LOCTEXT("DeleteVariable_No", "No");
-
-				FSuppressableWarningDialog DeleteVariableInUse(Info);
-				if (DeleteVariableInUse.ShowModal() == FSuppressableWarningDialog::Cancel)
+		if (!bSilentDelete && UsedVariables.Num()!= 0 && !ShouldContinueDeleteOperation(Blueprint, WidgetNames))
 		{
+			Transaction.Cancel();
 			return;
-		}		
-			}
 		}
 
-		const FScopedTransaction Transaction(LOCTEXT("RemoveWidget", "Remove Widget"));
 		Blueprint->WidgetTree->SetFlags(RF_Transactional);
 		Blueprint->WidgetTree->Modify();
 		Blueprint->Modify();
@@ -521,6 +519,7 @@ void FWidgetBlueprintEditorUtils::DeleteWidgets(UWidgetBlueprint* Blueprint, TSe
 			for ( UWidget* Widget : ChildWidgets )
 			{
 				Widget->SetFlags(RF_Transactional);
+				Widget->Modify();
 				if (UsedVariables.Contains(Widget))
 				{
 					FBlueprintEditorUtils::RemoveVariableNodes(Blueprint, Widget->GetFName());
@@ -536,6 +535,78 @@ void FWidgetBlueprintEditorUtils::DeleteWidgets(UWidgetBlueprint* Blueprint, TSe
 			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 		}
 	}
+}
+
+void FWidgetBlueprintEditorUtils::FindUsedVariablesForWidgets(const TSet<FWidgetReference>& Widgets, const UWidgetBlueprint* BP, TArray<UWidget*>& UsedVariables, TArray<FText>& WidgetNames, bool bIncludeVariablesOnChildren)
+{
+	TSet<UWidget*> AllWidgets;
+	AllWidgets.Reserve(Widgets.Num());
+	for (const FWidgetReference& Item : Widgets)
+	{
+		AllWidgets.Add(Item.GetTemplate());
+		if (bIncludeVariablesOnChildren)
+		{
+			TArray<UWidget*> ChildWidgets;
+			UWidgetTree::GetChildWidgets(Item.GetTemplate(), ChildWidgets);
+			AllWidgets.Append(ChildWidgets);
+		}
+	}
+
+	for (UWidget* Widget : AllWidgets)
+	{
+		if (FBlueprintEditorUtils::IsVariableUsed(BP, Widget->GetFName()))
+		{
+			WidgetNames.Add(FText::FromName(Widget->GetFName()));
+			UsedVariables.Add(Widget);
+		}
+	}
+}
+
+bool FWidgetBlueprintEditorUtils::ShouldContinueDeleteOperation(UWidgetBlueprint* BP, const TArray<FText>& WidgetNames)
+{
+	// If the Widget is used in the graph ask the user before we continue.
+	if (WidgetNames.Num())
+	{
+		FText ConfirmDelete = FText::Format(LOCTEXT("ConfirmDeleteVariableInUse", "One or more widgets are in use in the graph! Do you really want to delete them? \n\n {0}"),
+			FText::Join(LOCTEXT("ConfirmDeleteVariableInUsedDelimiter", " \n "), WidgetNames));
+
+		// Warn the user that this may result in data loss
+		FSuppressableWarningDialog::FSetupInfo Info(ConfirmDelete, LOCTEXT("DeleteVar", "Delete widgets"), "DeleteWidgetsInUse_Warning");
+		Info.ConfirmText = LOCTEXT("DeleteVariable_Yes", "Yes");
+		Info.CancelText = LOCTEXT("DeleteVariable_No", "No");
+
+		FSuppressableWarningDialog DeleteVariableInUse(Info);
+		if (DeleteVariableInUse.ShowModal() == FSuppressableWarningDialog::Cancel)
+		{
+			return false;
+		}
+	}
+			
+	return true;
+}
+
+
+bool FWidgetBlueprintEditorUtils::ShouldContinueReplaceOperation(UWidgetBlueprint* BP, const TArray<FText>& WidgetNames)
+{
+	// If the Widget is used in the graph ask the user before we continue.
+	if (WidgetNames.Num())
+	{
+		FText ConfirmDelete = FText::Format(LOCTEXT("ConfirmReplaceWidgetWithVariableInUse", "One or more widgets you want to replace are in use in the graph! Do you really want to replace them? \n\n {0}"),
+			FText::Join(LOCTEXT("ConfirmDeleteVariableInUsedDelimiter", " \n "), WidgetNames));
+
+		// Warn the user that this may result in data loss
+		FSuppressableWarningDialog::FSetupInfo Info(ConfirmDelete, LOCTEXT("ReplaceWidgetVar", "Replace widgets"), "ReaplaceWidgetsInUse_Warning");
+		Info.ConfirmText = LOCTEXT("ReplaceWidget_Yes", "Yes");
+		Info.CancelText = LOCTEXT("ReplaceWidget_No", "No");
+
+		FSuppressableWarningDialog DeleteVariableInUse(Info);
+		if (DeleteVariableInUse.ShowModal() == FSuppressableWarningDialog::Cancel)
+		{
+			return false;
+		}
+	}
+
+	return true;
 }
 
 TScriptInterface<INamedSlotInterface> FWidgetBlueprintEditorUtils::FindNamedSlotHostForContent(UWidget* WidgetTemplate, UWidgetTree* WidgetTree)
@@ -580,7 +651,7 @@ void FWidgetBlueprintEditorUtils::FindAllAncestorNamedSlotHostWidgetsForContent(
 	OutSlotHostWidgets.Empty();
 	UUserWidget* Preview = BlueprintEditor->GetPreview();
 	UWidgetBlueprint* WidgetBP = BlueprintEditor->GetWidgetBlueprintObj();
-	UWidgetTree* WidgetTree = (WidgetBP != nullptr) ? WidgetBP->WidgetTree : nullptr;
+	UWidgetTree* WidgetTree = (WidgetBP != nullptr) ? ToRawPtr(WidgetBP->WidgetTree) : nullptr;
 
 	if (Preview != nullptr && WidgetTree != nullptr)
 	{
@@ -639,11 +710,22 @@ bool FWidgetBlueprintEditorUtils::ReplaceNamedSlotHostContent(UWidget* WidgetTem
 		{
 			if (SlotContent == WidgetTemplate)
 			{
+				NamedSlotHost.GetObject()->Modify();
+				if (UPanelWidget* NamedSlot = WidgetTemplate->GetParent())
+				{
+					// Make sure we also mark the named slot as modified to properly track changes in it.
+					NamedSlot->Modify();
+				}
+
 				if (NewContentWidget)
 				{
 					NewContentWidget->Modify();
+					if (UPanelWidget* Parent = NewContentWidget->GetParent())
+					{
+						Parent->Modify();
+						NewContentWidget->RemoveFromParent();
+					}
 				}
-				NamedSlotHost.GetObject()->Modify();
 				NamedSlotHost->SetContentForSlot(SlotName, NewContentWidget);
 				return true;
 			}
@@ -673,7 +755,7 @@ void FWidgetBlueprintEditorUtils::BuildWrapWithMenu(FMenuBuilder& Menu, TSharedR
 		UClass* WidgetClass = *ClassIt;
 		if ( FWidgetBlueprintEditorUtils::IsUsableWidgetClass(WidgetClass) )
 		{
-			if ( WidgetClass->IsChildOf(UPanelWidget::StaticClass()) )
+			if ( WidgetClass->IsChildOf(UPanelWidget::StaticClass()) && !WidgetClass->HasAnyClassFlags(CLASS_HideDropDown) )
 			{
 				WrapperClasses.Add(WidgetClass);
 			}
@@ -704,6 +786,28 @@ void FWidgetBlueprintEditorUtils::WrapWidgets(TSharedRef<FWidgetBlueprintEditor>
 	const FScopedTransaction Transaction(LOCTEXT("WrapWidgets", "Wrap Widgets"));
 
 	TSharedPtr<FWidgetTemplateClass> Template = MakeShareable(new FWidgetTemplateClass(WidgetClass));
+	
+	// When selecting multiple widgets, we only want to create a new wrapping widget around the root-most set of widgets
+	// So find any that children of other selected widgets, and skip them (because their parents will be wrapped)
+	TSet<FWidgetReference> WidgetsToRemove;
+	for (FWidgetReference& Item : Widgets)
+	{
+		int32 OutIndex;
+		UPanelWidget* CurrentParent = BP->WidgetTree->FindWidgetParent(Item.GetTemplate(), OutIndex);
+		for (FWidgetReference& OtherItem : Widgets)
+		{
+			if (OtherItem.GetTemplate() == CurrentParent)
+			{
+				WidgetsToRemove.Add(Item);
+				break;
+			}
+		}
+	}
+	for (FWidgetReference& Item : WidgetsToRemove)
+	{
+		Widgets.Remove(Item);
+	}
+	WidgetsToRemove.Empty();
 
 	// Old Parent -> New Parent Map
 	TMap<UPanelWidget*, UPanelWidget*> OldParentToNewParent;
@@ -753,7 +857,11 @@ void FWidgetBlueprintEditorUtils::WrapWidgets(TSharedRef<FWidgetBlueprintEditor>
 				CurrentParent->SetFlags(RF_Transactional);
 				CurrentParent->Modify();
 				CurrentParent->ReplaceChildAt(OutIndex, NewWrapperWidget);
+			}
 
+			if (NewWrapperWidget != nullptr && NewWrapperWidget->CanAddMoreChildren())
+			{
+				NewWrapperWidget->Modify();
 				NewWrapperWidget->AddChild(Widget);
 			}
 		}
@@ -836,7 +944,7 @@ void FWidgetBlueprintEditorUtils::BuildReplaceWithMenu(FMenuBuilder& Menu, TShar
 			UClass* WidgetClass = *ClassIt;
 			if ( FWidgetBlueprintEditorUtils::IsUsableWidgetClass(WidgetClass) )
 			{
-				if ( WidgetClass->IsChildOf(UPanelWidget::StaticClass()) )
+				if ( WidgetClass->IsChildOf(UPanelWidget::StaticClass()) && !WidgetClass->HasAnyClassFlags(CLASS_HideDropDown) )
 				{
 					// Only allow replacement with panels that accept multiple children
 					if ( WidgetClass->GetDefaultObject<UPanelWidget>()->CanHaveMultipleChildren() )
@@ -907,10 +1015,16 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgetWithSelectedTemplate(TSharedRef<F
 	}
 	ThisWidget->SetFlags(RF_Transactional);
 	ThisWidget->Modify();
+
 	BP->WidgetTree->SetFlags(RF_Transactional);
 	BP->WidgetTree->Modify();
 
-	if (UPanelWidget* CurrentParent = ThisWidget->GetParent())
+	// Look if the Widget to replace is a NamedSlot.
+	if (TScriptInterface<INamedSlotInterface> NamedSlotHost = FindNamedSlotHostForContent(ThisWidget, BP->WidgetTree))
+	{
+		ReplaceNamedSlotHostContent(ThisWidget, NamedSlotHost, NewReplacementWidget);
+	}
+	else if (UPanelWidget* CurrentParent = ThisWidget->GetParent())
 	{
 		CurrentParent->SetFlags(RF_Transactional);
 		CurrentParent->Modify();
@@ -1003,32 +1117,51 @@ bool FWidgetBlueprintEditorUtils::CanBeReplacedWithTemplate(TSharedRef<FWidgetBl
 
 void FWidgetBlueprintEditorUtils::ReplaceWidgetWithChildren(TSharedRef<FWidgetBlueprintEditor> BlueprintEditor, UWidgetBlueprint* BP, FWidgetReference Widget)
 {
-	if (UPanelWidget* ExistingPanelTemplate = Cast<UPanelWidget>(Widget.GetTemplate()))
+	FScopedTransaction Transaction(LOCTEXT("ReplaceWidgets", "Replace Widgets"));
+	
+	TSet<FWidgetReference> WidgetsToDelete;
+	WidgetsToDelete.Add(Widget);
+
+	TArray<UWidget*> UsedVariables;
+	TArray<FText> WidgetNames;
+
+	const bool bIncludeChildrenVariables = false;
+	FindUsedVariablesForWidgets(WidgetsToDelete, BP, UsedVariables, WidgetNames, bIncludeChildrenVariables);
+
+	if (UsedVariables.Num() != 0 && !ShouldContinueReplaceOperation(BP, WidgetNames))
+	{
+		Transaction.Cancel();
+		return;
+	}
+
+	if ( UPanelWidget* ExistingPanelTemplate = Cast<UPanelWidget>(Widget.GetTemplate()) )
 	{
 		UWidget* FirstChildTemplate = ExistingPanelTemplate->GetChildAt(0);
 
-		FScopedTransaction Transaction(LOCTEXT("ReplaceWidgets", "Replace Widgets"));
-
+		ExistingPanelTemplate->SetFlags(RF_Transactional);
 		ExistingPanelTemplate->Modify();
+
+		FirstChildTemplate->SetFlags(RF_Transactional);
 		FirstChildTemplate->Modify();
 
-		if (UPanelWidget* PanelParentTemplate = ExistingPanelTemplate->GetParent())
+		// Look if the Widget to replace is a NamedSlot.
+		if (TScriptInterface<INamedSlotInterface> NamedSlotHost = FindNamedSlotHostForContent(ExistingPanelTemplate, BP->WidgetTree))
+		{
+			ReplaceNamedSlotHostContent(ExistingPanelTemplate, NamedSlotHost, FirstChildTemplate);
+		}
+		else if (UPanelWidget* PanelParentTemplate = ExistingPanelTemplate->GetParent())
 		{
 			PanelParentTemplate->Modify();
 
 			FirstChildTemplate->RemoveFromParent();
 			PanelParentTemplate->ReplaceChild(ExistingPanelTemplate, FirstChildTemplate);
 		}
-		else if (ExistingPanelTemplate == BP->WidgetTree->RootWidget)
+		else if ( ExistingPanelTemplate == BP->WidgetTree->RootWidget )
 		{
 			FirstChildTemplate->RemoveFromParent();
 
 			BP->WidgetTree->Modify();
 			BP->WidgetTree->RootWidget = FirstChildTemplate;
-		}
-		else if (TScriptInterface<INamedSlotInterface> NamedSlotHost = FindNamedSlotHostForContent(ExistingPanelTemplate, BP->WidgetTree))
-		{
-			ReplaceNamedSlotHostContent(ExistingPanelTemplate, NamedSlotHost, FirstChildTemplate);
 		}
 		else
 		{
@@ -1037,7 +1170,8 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgetWithChildren(TSharedRef<FWidgetBl
 		}
 
 		// Delete the widget that has been replaced
-		DeleteWidgets(BP, {Widget});
+		const bool bForceDelete = true;
+		DeleteWidgets(BP, WidgetsToDelete, bForceDelete);
 
 		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 	}
@@ -1052,26 +1186,38 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgetWithNamedSlot(TSharedRef<FWidgetB
 
 		FScopedTransaction Transaction(LOCTEXT("ReplaceWidgets", "Replace Widgets"));
 
+		WidgetTemplate->SetFlags(RF_Transactional);
 		WidgetTemplate->Modify();
+
+		NamedSlotContentTemplate->SetFlags(RF_Transactional);
 		NamedSlotContentTemplate->Modify();
 
-		if (UPanelWidget* PanelParentTemplate = WidgetTemplate->GetParent())
+		// Look if the Widget to replace is a NamedSlot.
+		if (TScriptInterface<INamedSlotInterface> NamedSlotHost = FindNamedSlotHostForContent(WidgetTemplate, BP->WidgetTree))
+		{
+			ReplaceNamedSlotHostContent(WidgetTemplate, NamedSlotHost, NamedSlotContentTemplate);
+		}
+		else if (UPanelWidget* PanelParentTemplate = WidgetTemplate->GetParent())
 		{
 			PanelParentTemplate->Modify();
 
-			NamedSlotContentTemplate->RemoveFromParent();
+			if (TScriptInterface<INamedSlotInterface> ContentNamedSlotHost = FindNamedSlotHostForContent(NamedSlotContentTemplate, BP->WidgetTree))
+			{
+				FWidgetBlueprintEditorUtils::RemoveNamedSlotHostContent(NamedSlotContentTemplate, ContentNamedSlotHost);
+			}
+
 			PanelParentTemplate->ReplaceChild(WidgetTemplate, NamedSlotContentTemplate);
 		}
 		else if (WidgetTemplate == BP->WidgetTree->RootWidget)
 		{
-			NamedSlotContentTemplate->RemoveFromParent();
+			if (UPanelWidget* Parent = NamedSlotContentTemplate->GetParent())
+			{
+				Parent->Modify();
+				NamedSlotContentTemplate->RemoveFromParent();
+			}
 
 			BP->WidgetTree->Modify();
 			BP->WidgetTree->RootWidget = NamedSlotContentTemplate;
-		}
-		else if (TScriptInterface<INamedSlotInterface> NamedSlotHost = FindNamedSlotHostForContent(WidgetTemplate, BP->WidgetTree))
-		{
-			ReplaceNamedSlotHostContent(WidgetTemplate, NamedSlotHost, NamedSlotContentTemplate);
 		}
 		else
 		{
@@ -1088,7 +1234,18 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgetWithNamedSlot(TSharedRef<FWidgetB
 
 void FWidgetBlueprintEditorUtils::ReplaceWidgets(TSharedRef<FWidgetBlueprintEditor> BlueprintEditor, UWidgetBlueprint* BP, TSet<FWidgetReference> Widgets, UClass* WidgetClass)
 {
-	const FScopedTransaction Transaction(LOCTEXT("ReplaceWidgets", "Replace Widgets"));
+	FScopedTransaction Transaction(LOCTEXT("ReplaceWidgets", "Replace Widgets"));
+
+	TArray<UWidget*> UsedVariables;
+	TArray<FText> WidgetNames;
+	const bool bIncludeChildrenVariables = false;
+	FindUsedVariablesForWidgets(Widgets, BP, UsedVariables, WidgetNames, bIncludeChildrenVariables);
+
+	if (UsedVariables.Num() != 0 && !ShouldContinueReplaceOperation(BP, WidgetNames))
+	{
+		Transaction.Cancel();
+		return;
+	}
 
 	TSharedPtr<FWidgetTemplateClass> Template = MakeShareable(new FWidgetTemplateClass(WidgetClass));
 
@@ -1103,7 +1260,12 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgets(TSharedRef<FWidgetBlueprintEdit
 		ThisWidget->SetFlags(RF_Transactional);
 		ThisWidget->Modify();
 
-		if (UPanelWidget* CurrentParent = ThisWidget->GetParent())
+		// Look if the Widget to replace is a NamedSlot.
+		if (TScriptInterface<INamedSlotInterface> NamedSlotHost = FindNamedSlotHostForContent(ThisWidget, BP->WidgetTree))
+		{
+			ReplaceNamedSlotHostContent(ThisWidget, NamedSlotHost, NewReplacementWidget);
+		}
+		else if (UPanelWidget* CurrentParent = ThisWidget->GetParent())
 		{
 			CurrentParent->SetFlags(RF_Transactional);
 			CurrentParent->Modify();
@@ -1134,12 +1296,11 @@ void FWidgetBlueprintEditorUtils::ReplaceWidgets(TSharedRef<FWidgetBlueprintEdit
 		}
 
 		FString ReplaceName = ThisWidget->GetName();
-		bool bIsGeneratedName = ThisWidget->IsGeneratedName();
+		const bool bIsGeneratedName = ThisWidget->IsGeneratedName();
 
 		// Delete the widget that has been replaced
-		TSet<FWidgetReference> WidgetsToDelete;
-		WidgetsToDelete.Add(Item);
-		DeleteWidgets(BP, WidgetsToDelete);
+		const bool bForceDelete = true;
+		DeleteWidgets(BP, {Item}, bForceDelete);
 
 		// Rename the new Widget to maintain the current name if it's not a generic name
 		if (!bIsGeneratedName)
@@ -1238,6 +1399,61 @@ TArray<UWidget*> FWidgetBlueprintEditorUtils::DuplicateWidgets(TSharedRef<FWidge
 
 	return DuplicatedWidgets;
 }
+UWidget* FWidgetBlueprintEditorUtils::GetWidgetTemplateFromDragDrop(UWidgetBlueprint* Blueprint, UWidgetTree* RootWidgetTree, TSharedPtr<FDragDropOperation>& DragDropOp)
+{
+	UWidget* Widget = nullptr;
+
+	if (!DragDropOp.IsValid())
+	{
+		return nullptr;
+	}
+
+	if (DragDropOp->IsOfType<FWidgetTemplateDragDropOp>())
+	{
+		TSharedPtr<FWidgetTemplateDragDropOp> TemplateDragDropOp = StaticCastSharedPtr<FWidgetTemplateDragDropOp>(DragDropOp);
+		Widget = TemplateDragDropOp->Template->Create(RootWidgetTree);
+	}
+	else if (DragDropOp->IsOfType<FAssetDragDropOp>())
+	{
+		TSharedPtr<FAssetDragDropOp> AssetDragDropOp = StaticCastSharedPtr<FAssetDragDropOp>(DragDropOp);
+		if (AssetDragDropOp->GetAssets().Num() > 0)
+		{
+			// Only handle first valid dragged widget, multi widget drag drop is not practically useful
+			const FAssetData& AssetData = AssetDragDropOp->GetAssets()[0];
+
+			bool CodeClass = AssetData.AssetClass == "Class";
+			FName ClassName = CodeClass ? AssetData.ObjectPath : AssetData.AssetClass;
+			UClass* AssetClass = FindObjectChecked<UClass>(ANY_PACKAGE, *ClassName.ToString());
+
+			if (FWidgetTemplateBlueprintClass::Supports(AssetClass))
+			{
+				// Allows a UMG Widget Blueprint to be dragged from the Content Browser to another Widget Blueprint...as long as we're not trying to place a
+				// blueprint inside itself.
+				FString BlueprintPath = Blueprint->GetPathName();
+				if (BlueprintPath != AssetData.ObjectPath.ToString())
+				{
+					Widget = FWidgetTemplateBlueprintClass(AssetData).Create(RootWidgetTree);
+				}
+			}
+			else if (CodeClass && AssetClass && AssetClass->IsChildOf(UWidget::StaticClass()))
+			{
+				Widget = FWidgetTemplateClass(AssetClass).Create(RootWidgetTree);
+			}
+			else if (FWidgetTemplateImageClass::Supports(AssetClass))
+			{
+				Widget = FWidgetTemplateImageClass(AssetData).Create(RootWidgetTree);
+			}
+		}
+	}
+
+	// Check to make sure that this widget can be added to the current blueprint
+	if (Cast<UUserWidget>(Widget) && !Blueprint->IsWidgetFreeFromCircularReferences(Cast<UUserWidget>(Widget)))
+	{
+		Widget = nullptr;
+	}
+
+	return Widget;
+}
 
 void FWidgetBlueprintEditorUtils::ExportWidgetsToText(TArray<UWidget*> WidgetsToExport, /*out*/ FString& ExportedText)
 {
@@ -1334,7 +1550,6 @@ TArray<UWidget*> FWidgetBlueprintEditorUtils::PasteWidgetsInternal(TSharedRef<FW
 
 	// If we're pasting into a content widget of the same type, treat it as a sibling duplication
 	UWidget* FirstPastedWidget = *PastedWidgets.CreateIterator();
-
 	if (FirstPastedWidget->IsA(UContentWidget::StaticClass()) &&
 		ParentWidgetRef.IsValid() &&
 		FirstPastedWidget->GetClass() == ParentWidgetRef.GetTemplate()->GetClass())
@@ -1521,9 +1736,9 @@ TArray<UWidget*> FWidgetBlueprintEditorUtils::PasteWidgetsInternal(TSharedRef<FW
 		else
 		{
 			check(RootPasteWidgets.Num() == 1)
-				// If we've arrived here, we must be creating the root widget from paste data, and there can only be
-				// one item in the paste data by now.
-				BP->WidgetTree->Modify();
+			// If we've arrived here, we must be creating the root widget from paste data, and there can only be
+			// one item in the paste data by now.
+			BP->WidgetTree->Modify();
 
 			for ( UWidget* NewWidget : RootPasteWidgets )
 			{
@@ -1604,7 +1819,11 @@ void FWidgetBlueprintEditorUtils::ImportWidgetsFromText(UWidgetBlueprint* BP, co
 			TArray<UPanelSlot*> PanelSlots = PanelWidget->GetSlots();
 			for (int32 i = 0; i < PanelWidget->GetChildrenCount(); i++)
 			{
-				PanelWidget->GetChildAt(i)->Slot = PanelSlots[i];
+				UWidget* PanelChild = PanelWidget->GetChildAt(i);
+				if (ensure(PanelChild))
+				{
+					PanelChild->Slot = PanelSlots[i];
+				}
 			}
 		}
 
@@ -1826,6 +2045,282 @@ int32 FWidgetBlueprintEditorUtils::UpdateHittestGrid(FHittestGrid& HitTestGrid, 
 	FSlateApplication::Get().InvalidateAllWidgets(false);
 
 	return MaxLayerId;
+}
+
+TTuple<FVector2D, FVector2D> FWidgetBlueprintEditorUtils::GetWidgetPreviewAreaAndSize(UUserWidget* UserWidget, FVector2D DesiredSize, FVector2D PreviewSize, EDesignPreviewSizeMode SizeMode, TOptional<FVector2D> ThumbnailCustomSize)
+{
+	FVector2D Size(PreviewSize.X, PreviewSize.Y);
+	FVector2D Area(PreviewSize.X, PreviewSize.Y);
+
+	if (UserWidget)
+	{
+
+		switch (SizeMode)
+		{
+		case EDesignPreviewSizeMode::Custom:
+			Area = ThumbnailCustomSize.IsSet()? ThumbnailCustomSize.GetValue() : UserWidget->DesignTimeSize;
+			// If the custom size is 0 in some dimension, use the desired size instead.
+			if (Area.X == 0)
+			{
+				Area.X = DesiredSize.X;
+			}
+			if (Area.Y == 0)
+			{
+				Area.Y = DesiredSize.Y;
+			}
+			Size = Area;
+			break;
+		case EDesignPreviewSizeMode::CustomOnScreen:
+			Size = ThumbnailCustomSize.IsSet() ? ThumbnailCustomSize.GetValue() : UserWidget->DesignTimeSize;
+
+			// If the custom size is 0 in some dimension, use the desired size instead.
+			if (Size.X == 0)
+			{
+				Size.X = DesiredSize.X;
+			}
+			if (Size.Y == 0)
+			{
+				Size.Y = DesiredSize.Y;
+			}
+			return TTuple<FVector2D, FVector2D>(Area, Size);
+		case EDesignPreviewSizeMode::Desired:
+			Area = DesiredSize;
+			// Fall through to DesiredOnScreen
+		case EDesignPreviewSizeMode::DesiredOnScreen:
+			Size = DesiredSize;
+			return TTuple<FVector2D, FVector2D>(Area, Size);
+		case EDesignPreviewSizeMode::FillScreen:
+			break;
+		}
+	}
+	return TTuple<FVector2D, FVector2D>(Area, Size);
+}
+
+float FWidgetBlueprintEditorUtils::GetWidgetPreviewDPIScale(UUserWidget* UserWidget, FVector2D PreviewSize)
+{
+	// If the user is using a custom size then we disable the DPI scaling logic.
+	if (UserWidget)
+	{
+		if (UserWidget->DesignSizeMode == EDesignPreviewSizeMode::Custom ||
+			UserWidget->DesignSizeMode == EDesignPreviewSizeMode::Desired)
+		{
+			return 1.0f;
+		}
+	}
+
+	return GetDefault<UUserInterfaceSettings>(UUserInterfaceSettings::StaticClass())->GetDPIScaleBasedOnSize(FIntPoint(PreviewSize.X, PreviewSize.Y));
+}
+
+
+FVector2D FWidgetBlueprintEditorUtils::GetWidgetPreviewUnScaledCustomSize(FVector2D DesiredSize, UUserWidget* UserWidget, TOptional<FVector2D> ThumbnailCustomSize, EThumbnailPreviewSizeMode ThumbnailSizeMode)
+{
+
+	checkf(DesiredSize.X > 0.f && DesiredSize.Y > 0.f, TEXT("The size should have been previously checked to be > 0."));
+
+	FVector2D FinalSize(0.f,0.f);
+	int32 PreviewWidth;
+	const TCHAR* ConfigSectionName = TEXT("UMGEditor.Designer");
+	GConfig->GetInt(ConfigSectionName, TEXT("PreviewWidth"), PreviewWidth, GEditorPerProjectIni);
+	int32 PreviewHeight;
+	GConfig->GetInt(ConfigSectionName, TEXT("PreviewHeight"), PreviewHeight, GEditorPerProjectIni);
+
+	FVector2D PreviewSize(PreviewWidth, PreviewHeight);
+
+	TTuple<FVector2D, FVector2D> AreaAndSize = GetWidgetPreviewAreaAndSize(UserWidget, DesiredSize, PreviewSize, ConvertThumbnailSizeModeToDesignerSizeMode(ThumbnailSizeMode, UserWidget), ThumbnailCustomSize.IsSet() ? ThumbnailCustomSize.GetValue() : TOptional<FVector2D>());
+
+	float DPIScale;
+	if (ThumbnailCustomSize.IsSet())
+	{
+		DPIScale = 1.0f;
+	}
+	else 
+	{
+		DPIScale = GetWidgetPreviewDPIScale(UserWidget, PreviewSize);
+
+	}
+
+	if (ensure(DPIScale > 0.f))
+	{
+		FinalSize = AreaAndSize.Get<1>() / DPIScale;
+	}
+
+	return FinalSize;
+
+}
+
+EDesignPreviewSizeMode FWidgetBlueprintEditorUtils::ConvertThumbnailSizeModeToDesignerSizeMode(EThumbnailPreviewSizeMode ThumbnailSizeMode, UUserWidget* WidgetInstance)
+{
+	switch (ThumbnailSizeMode)
+	{
+	case EThumbnailPreviewSizeMode::MatchDesignerMode:
+		return WidgetInstance->DesignSizeMode;
+	case EThumbnailPreviewSizeMode::FillScreen:
+		return EDesignPreviewSizeMode::FillScreen;
+	case EThumbnailPreviewSizeMode::Custom:
+		return EDesignPreviewSizeMode::Custom;
+	case EThumbnailPreviewSizeMode::Desired:
+		return EDesignPreviewSizeMode::Desired;
+	default:
+		return EDesignPreviewSizeMode::Desired;
+	}
+}
+
+TOptional<FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties> FWidgetBlueprintEditorUtils::DrawSWidgetInRenderTarget(UUserWidget* WidgetInstance, UTextureRenderTarget2D* RenderTarget2D)
+{
+	return DrawSWidgetInRenderTargetInternal(WidgetInstance, nullptr, RenderTarget2D, FVector2D(256.f,256.f), false, TOptional<FVector2D>(), EThumbnailPreviewSizeMode::MatchDesignerMode);
+}
+
+TOptional<FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties> FWidgetBlueprintEditorUtils::DrawSWidgetInRenderTargetForThumbnail(UUserWidget* WidgetInstance, FRenderTarget* RenderTarget2D, FVector2D ThumbnailSize, TOptional<FVector2D> ThumbnailCustomSize, EThumbnailPreviewSizeMode ThumbnailSizeMode)
+{
+	return DrawSWidgetInRenderTargetInternal(WidgetInstance, RenderTarget2D, nullptr,ThumbnailSize, true, ThumbnailCustomSize, ThumbnailSizeMode);
+}
+
+TOptional<FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties> FWidgetBlueprintEditorUtils::DrawSWidgetInRenderTargetForThumbnail(UUserWidget* WidgetInstance, UTextureRenderTarget2D* RenderTarget2D, FVector2D ThumbnailSize, TOptional<FVector2D> ThumbnailCustomSize, EThumbnailPreviewSizeMode ThumbnailSizeMode)
+{
+	return DrawSWidgetInRenderTargetInternal(WidgetInstance, nullptr, RenderTarget2D,ThumbnailSize, true, ThumbnailCustomSize, ThumbnailSizeMode);
+}
+
+TOptional<FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties>  FWidgetBlueprintEditorUtils::DrawSWidgetInRenderTargetInternal(UUserWidget* WidgetInstance, FRenderTarget* RenderTarget2D, UTextureRenderTarget2D* TextureRenderTarget,FVector2D ThumbnailSize, bool bIsForThumbnail, TOptional<FVector2D> ThumbnailCustomSize, EThumbnailPreviewSizeMode ThumbnailSizeMode)
+{
+	if (TextureRenderTarget == nullptr && RenderTarget2D == nullptr)
+	{
+		return TOptional<FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties>(); 
+	}
+	//Create Window
+	FVector2D Offset(0.f, 0.f);
+	FVector2D ScaledSize(0.f, 0.f);
+	TSharedPtr<SWidget> WindowContent = WidgetInstance->TakeWidget();
+
+	if (!WindowContent)
+	{
+		return TOptional<FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties>();
+	}
+
+	TSharedRef<SVirtualWindow> Window = SNew(SVirtualWindow);
+	TUniquePtr<FHittestGrid> HitTestGrid = MakeUnique<FHittestGrid>();
+	Window->SetContent(WindowContent.ToSharedRef());
+	Window->Resize(ThumbnailSize);
+
+	// Store the desired size to maintain the aspect ratio later
+	FGeometry WindowGeometry = FGeometry::MakeRoot(ThumbnailSize, FSlateLayoutTransform(1.0f));
+	Window->SlatePrepass(1.0f);
+	FVector2D DesiredSizeWindow = Window->GetDesiredSize();
+	
+	if (DesiredSizeWindow.X < SMALL_NUMBER || DesiredSizeWindow.Y < SMALL_NUMBER)
+	{
+		return TOptional<FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties>();
+	}
+
+	FVector2D UnscaledSize = FWidgetBlueprintEditorUtils::GetWidgetPreviewUnScaledCustomSize(DesiredSizeWindow, WidgetInstance, ThumbnailCustomSize, ThumbnailSizeMode);
+	if (UnscaledSize.X < SMALL_NUMBER || UnscaledSize.Y < SMALL_NUMBER)
+	{
+		return TOptional<FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties>();
+	}
+
+	float Scale = 1.f;
+	// Change some configuration if it is for thumbnail creation
+	if (bIsForThumbnail)
+	{
+		TTuple<float, FVector2D> ScaleAndOffset = FWidgetBlueprintEditorUtils::GetThumbnailImageScaleAndOffset(UnscaledSize, ThumbnailSize);
+		Scale = ScaleAndOffset.Get<0>();
+		Offset = ScaleAndOffset.Get<1>();
+	}
+
+	ScaledSize = UnscaledSize * Scale;
+	if (ScaledSize.X < 1.f || ScaledSize.Y < 1.f)
+	{
+		return TOptional<FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties>();
+	}
+
+	// Create Renderer Target and WidgetRenderer
+	bool bApplyGammaCorrection = RenderTarget2D? true : false;
+	FWidgetRenderer* WidgetRenderer = new FWidgetRenderer(bApplyGammaCorrection);
+
+	if (!bIsForThumbnail)
+	{
+		WidgetRenderer->SetIsPrepassNeeded(false);
+	}
+
+	if (TextureRenderTarget)
+	{
+		TextureRenderTarget->Filter = TF_Bilinear;
+		TextureRenderTarget->ClearColor = FLinearColor::Transparent;
+		TextureRenderTarget->SRGB = true;
+		TextureRenderTarget->RenderTargetFormat = RTF_RGBA8;
+
+		uint32 ScaledSizeX = static_cast<uint32>(ScaledSize.X);
+		uint32 ScaledSizeY = static_cast<uint32>(ScaledSize.Y);
+
+		const bool bForceLinearGamma = false;
+		const EPixelFormat RequestedFormat = FSlateApplication::Get().GetRenderer()->GetSlateRecommendedColorFormat();
+		TextureRenderTarget->InitCustomFormat(ScaledSizeX, ScaledSizeY, RequestedFormat, bForceLinearGamma);
+		WidgetRenderer->DrawWindow(TextureRenderTarget, *HitTestGrid, Window, Scale, ScaledSize, 0.1f);
+	}
+	else
+	{
+		ensure(RenderTarget2D != nullptr);
+		WidgetRenderer->SetShouldClearTarget(false);
+		WidgetRenderer->ViewOffset = Offset;
+		WidgetRenderer->DrawWindow(RenderTarget2D, *HitTestGrid, Window, Scale, ScaledSize, 0.1f);
+	}
+
+	if (WidgetRenderer)
+	{
+		BeginCleanup(WidgetRenderer);
+		WidgetRenderer = nullptr;
+	}
+
+	return TOptional<FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties>(FWidgetBlueprintEditorUtils::FWidgetThumbnailProperties{ ScaledSize,Offset });
+}
+
+TTuple<float, FVector2D> FWidgetBlueprintEditorUtils::GetThumbnailImageScaleAndOffset(FVector2D WidgetSize, FVector2D ThumbnailSize)
+{
+	// Scale the widget blueprint image to fit in the thumbnail
+
+	checkf(WidgetSize.X > 0.f && WidgetSize.Y > 0.f, TEXT("The size should have been previously checked to be > 0."));
+
+	float Scale;
+	float XOffset = 0;
+	float YOffset = 0;
+	if (WidgetSize.X > WidgetSize.Y)
+	{
+		Scale = ThumbnailSize.X / WidgetSize.X;
+		WidgetSize *= Scale;
+		YOffset = (ThumbnailSize.Y - WidgetSize.Y) / 2.f;
+	}
+	else
+	{
+		Scale = ThumbnailSize.Y / WidgetSize.Y;
+		WidgetSize *= Scale;
+		XOffset = (ThumbnailSize.X - WidgetSize.X) / 2.f;
+	}
+
+	return TTuple<float, FVector2D>(Scale, FVector2D(XOffset, YOffset));
+}
+
+void FWidgetBlueprintEditorUtils::SetTextureAsAssetThumbnail(UWidgetBlueprint* WidgetBlueprint, UTexture2D* ThumbnailTexture)
+{
+	const TCHAR* ThumbnailName = TEXT("Thumbnail");
+	UTexture2D* ExistingThumbnail = FindObject<UTexture2D>(WidgetBlueprint, ThumbnailName, false);
+	if (ExistingThumbnail)
+	{
+		ExistingThumbnail->Rename(nullptr, GetTransientPackage());
+	}
+	if (!ThumbnailTexture)
+	{
+		WidgetBlueprint->ThumbnailImage = nullptr;
+		return;
+	}
+	FVector2D TextureSize(ThumbnailTexture->GetSizeX(), ThumbnailTexture->GetSizeY());
+	if (TextureSize.X < SMALL_NUMBER || TextureSize.Y < SMALL_NUMBER)
+	{
+		WidgetBlueprint->ThumbnailImage = nullptr;
+	}
+	else
+	{
+		ThumbnailTexture->Rename(ThumbnailName, WidgetBlueprint, REN_NonTransactional | REN_DontCreateRedirectors);
+		WidgetBlueprint->ThumbnailImage = ThumbnailTexture;
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

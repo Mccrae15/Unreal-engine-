@@ -14,6 +14,12 @@
 #include "Chaos/Core.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxyFwd.h"
 #include "Framework/Threading.h"
+#include "Math/NumericLimits.h"
+#include "RewindData.h"
+
+
+
+extern CHAOS_API int32 SyncKinematicOnGameThread;
 
 namespace Chaos
 {
@@ -116,7 +122,7 @@ public:
 
 	// Threading API
 
-	void PushToPhysicsState(const Chaos::FDirtyPropertiesManager& Manager,int32 DataIdx,const Chaos::FDirtyProxy& Dirty,Chaos::FShapeDirtyData* ShapesData, Chaos::FPBDRigidsEvolutionGBF& Evolution);
+	void PushToPhysicsState(const Chaos::FDirtyPropertiesManager& Manager,int32 DataIdx,const Chaos::FDirtyProxy& Dirty,Chaos::FShapeDirtyData* ShapesData, Chaos::FPBDRigidsEvolutionGBF& Evolution, Chaos::FReal ExternalDt);
 
 	/**/
 	void ClearAccumulatedData();
@@ -128,14 +134,11 @@ public:
 	void BufferPhysicsResults_External(Chaos::FDirtyRigidParticleData&);
 
 	/**/
-	bool PullFromPhysicsState(const Chaos::FDirtyRigidParticleData& PullData, int32 SolverSyncTimestamp, const Chaos::FDirtyRigidParticleData* NextPullData = nullptr, const Chaos::FRealSingle* Alpha = nullptr);
+	bool PullFromPhysicsState(const Chaos::FDirtyRigidParticleData& PullData, int32 SolverSyncTimestamp, const Chaos::FDirtyRigidParticleData* NextPullData = nullptr, const Chaos::FRealSingle* Alpha = nullptr, const Chaos::FRealSingle* LeashAlpha = nullptr);
 
 	/**/
 	bool IsDirty();
 
-	bool IsInitialized() const { return InitializedOnStep != INDEX_NONE; }
-	void SetInitialized(const int32 InitializeStep) { InitializedOnStep = InitializeStep; }
-	int32 GetInitializedStep() const { return InitializedOnStep; }
 
 	/**/
 	Chaos::EWakeEventEntry GetWakeEvent() const;
@@ -165,19 +168,11 @@ public:
 		return static_cast<const Chaos::FPBDRigidParticle*>(GetParticle_LowLevel());
 	}
 
-	/** Gets the owning external object for this solver object, never used internally */
-	virtual UObject* GetOwner() const override { return Owner; }
-	
-private:
-	int32 InitializedOnStep = INDEX_NONE;
-
 protected:
 	TUniquePtr<PARTICLE_TYPE> Particle;
 	FParticleHandle* Handle;
 
 private:
-
-	UObject* Owner;
 
 	//Used by interpolation code
 	int32 PullDataInterpIdx_External;
@@ -210,35 +205,47 @@ public:
 
 	//API for static particle
 	const FVec3& X() const { return ReadRef([](auto* Particle) -> const auto& { return Particle->X(); }); }
-	void SetX(const FVec3& InX, bool bInvalidate = true) { Write([&InX, bInvalidate, this](auto* Particle)
+
+protected:
+	void SetXBase(const FVec3& InX, bool bInvalidate = true) { Write([&InX, bInvalidate, this](auto* Particle)
 	{
-		Particle->SetX(InX, bInvalidate);
-		if(bExternal)
+		if (bInvalidate)
 		{
-			SyncTimestamp->XTimestamp = GetSolverSyncTimestamp_External();
-			SyncTimestamp->OverWriteX = InX;
+			auto Dyn = Particle->CastToRigidParticle();
+			if (Dyn && Dyn->ObjectState() == EObjectStateType::Sleeping)
+			{
+				SetObjectStateHelper(*GetProxy(), *Dyn, EObjectStateType::Dynamic, true);
+			}
 		}
+		Particle->SetX(InX, bInvalidate);
 	});}
+public:
 
 	FUniqueIdx UniqueIdx() const { return Read([](auto* Particle) { return Particle->UniqueIdx(); }); }
 	void SetUniqueIdx(const FUniqueIdx UniqueIdx, bool bInvalidate = true) { Write([UniqueIdx, bInvalidate](auto* Particle) { Particle->SetUniqueIdx(UniqueIdx, bInvalidate); }); }
 
 	const FRotation3& R() const { return ReadRef([](auto* Particle) -> const auto& { return Particle->R(); }); }
-	void SetR(const FRotation3& InR, bool bInvalidate = true){ Write([&InR, bInvalidate, this](auto* Particle)
+
+protected:
+	void SetRBase(const FRotation3& InR, bool bInvalidate = true){ Write([&InR, bInvalidate, this](auto* Particle)
 	{
-			Particle->SetR(InR, bInvalidate);
-			if(bExternal)
+			if (bInvalidate)
 			{
-				SyncTimestamp->RTimestamp = GetSolverSyncTimestamp_External();
-				SyncTimestamp->OverWriteR = InR;
+				auto Dyn = Particle->CastToRigidParticle();
+				if (Dyn && Dyn->ObjectState() == EObjectStateType::Sleeping)
+				{
+					SetObjectStateHelper(*GetProxy(), *Dyn, EObjectStateType::Dynamic, true);
+				}
 			}
+			Particle->SetR(InR, bInvalidate);
 	});}
+public:
 
 	const TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return ReadRef([](auto* Ptr) -> const auto& { return Ptr->SharedGeometryLowLevel(); });}
 
-#if CHAOS_CHECKED
-	const FName DebugName() const { return Read([](auto* Ptr) { return Ptr->DebugName(); }); }
-	void SetDebugName(const FName& InDebugName) { Write([&InDebugName](auto* Ptr) { Ptr->SetDebugName(InDebugName); }); }
+#if CHAOS_DEBUG_NAME
+	const TSharedPtr<FString, ESPMode::ThreadSafe>& DebugName() const { return Read([](auto* Ptr) { return Ptr->DebugName(); }); }
+	void SetDebugName(const TSharedPtr<FString, ESPMode::ThreadSafe>& InDebugName) { Write([&InDebugName](auto* Ptr) { Ptr->SetDebugName(InDebugName); }); }
 #endif
 
 	TSerializablePtr<FImplicitObject> Geometry() const { return Read([](auto* Ptr) { return Ptr->Geometry(); }); }
@@ -266,29 +273,27 @@ public:
 		});
 	}
 
-	void SetV(const FVec3& InV, bool bInvalidate = true)
+protected:
+	void SetVBase(const FVec3& InV, bool bInvalidate = true)
 	{
 		Write([&InV, bInvalidate, this](auto* Particle)
 		{
 			if (auto Kinematic = Particle->CastToKinematicParticle())
 			{
-				if (bExternal)
+				if (bInvalidate)
 				{
-					if (InV == FVec3(0))	//should we use an explicit API instead?
+					auto Dyn = Particle->CastToRigidParticle();
+					if (Dyn && Dyn->ObjectState() == EObjectStateType::Sleeping && !InV.IsNearlyZero())
 					{
-						//external thread is setting velocity to 0 so we want to freeze object until sim catches up
-						//but we also want position to snap to where it currently is on external thread
-						SetX(X(), bInvalidate);
+						SetObjectStateHelper(*GetProxy(), *Dyn, EObjectStateType::Dynamic, true);
 					}
-
-					SyncTimestamp->VTimestamp = GetSolverSyncTimestamp_External();
-					SyncTimestamp->OverWriteV = InV;
 				}
 
 				Kinematic->SetV(InV, bInvalidate);
 			}
 		});
 	}
+public:
 
 	const FVec3 W() const
 	{
@@ -303,28 +308,27 @@ public:
 		});
 	}
 
-	void SetW(const FVec3& InW, bool bInvalidate = true)
+protected:
+	void SetWBase(const FVec3& InW, bool bInvalidate = true)
 	{
 		Write([&InW, bInvalidate, this](auto* Particle)
 		{
 			if (auto Kinematic = Particle->CastToKinematicParticle())
 			{
-				if (bExternal)
+				if (bInvalidate)
 				{
-					if (InW == FVec3(0))	//should we use an explicit API instead?
+					auto Dyn = Particle->CastToRigidParticle();
+					if (Dyn && Dyn->ObjectState() == EObjectStateType::Sleeping && !InW.IsNearlyZero())
 					{
-						//external thread is setting velocity to 0 so we want to freeze object until sim catches up
-						//but we also want position to snap to where it currently is on external thread
-						SetR(R(), bInvalidate);
+						SetObjectStateHelper(*GetProxy(), *Dyn, EObjectStateType::Dynamic, true);
 					}
-
-					SyncTimestamp->WTimestamp = GetSolverSyncTimestamp_External();
-					SyncTimestamp->OverWriteW = InW;
 				}
+				
 				Kinematic->SetW(InW, bInvalidate);
 			}
 		});
 	}
+public:
 
 	void SetKinematicTarget(const TKinematicTarget<FReal, 3>& InKinematicTarget, bool bInvalidate = true)
 	{
@@ -432,37 +436,83 @@ public:
 		return EResimType::FullResim;
 	}
 
-	const FVec3 F() const
+	const FVec3 Acceleration() const
 	{
 		return Read([](auto* Particle)
 		{
 			if (auto Rigid = Particle->CastToRigidParticle())
 			{
-				return Rigid->F();
+				return Rigid->Acceleration();
 			}
 
 			return FVec3(0);
 		});
 	}
+	
+	void SetAcceleration(const FVec3& Acceleration, bool bInvalidate = true)
+	{
+		Write([&Acceleration, bInvalidate, this](auto* Particle)
+			{
+				if (auto Rigid = Particle->CastToRigidParticle())
+				{
+					if (Rigid->ObjectState() == EObjectStateType::Sleeping || Rigid->ObjectState() == EObjectStateType::Dynamic)
+					{
+						if (bInvalidate)
+						{
+							SetObjectStateHelper(*GetProxy(), *Rigid, EObjectStateType::Dynamic, true);
+						}
+
+						Rigid->SetAcceleration(Acceleration);
+					}
+				}
+			});
+	}
 
 	void AddForce(const FVec3& InForce, bool bInvalidate = true)
 	{
-		Write([&InForce, bInvalidate](auto* Particle)
+		Write([&InForce, bInvalidate, this](auto* Particle)
 		{
 			if (auto* Rigid = Particle->CastToRigidParticle())
 			{
-				Rigid->AddForce(InForce, bInvalidate);
+				if (Rigid->ObjectState() == EObjectStateType::Sleeping || Rigid->ObjectState() == EObjectStateType::Dynamic)
+				{
+					if (bInvalidate)
+					{
+						SetObjectStateHelper(*GetProxy(), *Rigid, EObjectStateType::Dynamic, true);
+					}
+
+					Rigid->AddForce(InForce, bInvalidate);
+				}
 			}
 		});
 	}
 
-	const FVec3 Torque() const
+	void SetAngularAcceleration(const FVec3& AngularAcceleration, bool bInvalidate = true)
+	{
+		Write([&AngularAcceleration, bInvalidate, this](auto* Particle)
+			{
+				if (auto Rigid = Particle->CastToRigidParticle())
+				{
+					if (Rigid->ObjectState() == EObjectStateType::Sleeping || Rigid->ObjectState() == EObjectStateType::Dynamic)
+					{
+						if (bInvalidate)
+						{
+							SetObjectStateHelper(*GetProxy(), *Rigid, EObjectStateType::Dynamic, true);
+						}
+
+						Rigid->SetAngularAcceleration(AngularAcceleration);
+					}
+				}
+			});
+	}
+
+	const FVec3 AngularAcceleration() const
 	{
 		return Read([](auto* Particle)
 		{
 			if (auto Rigid = Particle->CastToRigidParticle())
 			{
-				return Rigid->Torque();
+				return Rigid->AngularAcceleration();
 			}
 
 			return FVec3(0);
@@ -471,12 +521,33 @@ public:
 
 	void AddTorque(const FVec3& InTorque, bool bInvalidate = true)
 	{
-		Write([&InTorque, bInvalidate](auto* Particle)
+		Write([&InTorque, bInvalidate, this](auto* Particle)
 		{
 			if (auto* Rigid = Particle->CastToRigidParticle())
 			{
-				Rigid->AddTorque(InTorque, bInvalidate);
+				if (Rigid->ObjectState() == EObjectStateType::Sleeping || Rigid->ObjectState() == EObjectStateType::Dynamic)
+				{
+					if (bInvalidate)
+					{
+						SetObjectStateHelper(*GetProxy(), *Rigid, EObjectStateType::Dynamic, true);
+					}
+
+					Rigid->AddTorque(InTorque, bInvalidate);
+				}
 			}
+		});
+	}
+
+	const FVec3 LinearImpulseVelocity() const
+	{
+		return Read([](auto* Particle)
+		{
+			if (auto Rigid = Particle->CastToRigidParticle())
+			{
+				return Rigid->LinearImpulseVelocity();
+			}
+
+			return FVec3(0);
 		});
 	}
 
@@ -486,21 +557,49 @@ public:
 		{
 			if (auto Rigid = Particle->CastToRigidParticle())
 			{
-				return Rigid->LinearImpulse();
+				return Rigid->LinearImpulseVelocity() * Rigid->M();
 			}
 
 			return FVec3(0);
 		});
 	}
 
-	void SetLinearImpulse(const FVec3& InLinearImpulse, bool bInvalidate = true)
+	void SetLinearImpulse(const FVec3& InLinearImpulse, bool bIsVelocity, bool bInvalidate = true)
 	{
-		Write([&InLinearImpulse, bInvalidate](auto* Particle)
+		Write([&InLinearImpulse, bIsVelocity, bInvalidate, this](auto* Particle)
 		{
 			if (auto Rigid = Particle->CastToRigidParticle())
 			{
-				Rigid->SetLinearImpulse(InLinearImpulse, bInvalidate);
+				if (Rigid->ObjectState() == EObjectStateType::Sleeping || Rigid->ObjectState() == EObjectStateType::Dynamic)
+				{
+					if (bInvalidate)
+					{
+						SetObjectStateHelper(*GetProxy(), *Rigid, EObjectStateType::Dynamic, true);
+					}
+
+					if (bIsVelocity)
+					{
+						Rigid->SetLinearImpulseVelocity(InLinearImpulse, bInvalidate);
+					}
+					else
+					{
+						Rigid->SetLinearImpulseVelocity(InLinearImpulse * Rigid->InvM(), bInvalidate);
+					}
+				}
 			}
+		});
+	}
+
+	const FVec3 AngularImpulseVelocity() const
+	{
+		return Read([](auto* Particle)
+		{
+			if (auto Rigid = Particle->CastToRigidParticle())
+			{
+				return Rigid->AngularImpulseVelocity();
+			}
+
+			return FVec3(0);
 		});
 	}
 
@@ -510,25 +609,42 @@ public:
 		{
 			if (auto Rigid = Particle->CastToRigidParticle())
 			{
-				return Rigid->AngularImpulse();
+				const FMatrix33 WorldI = Utilities::ComputeWorldSpaceInertia(Rigid->R() * Rigid->RotationOfMass(), Rigid->I());
+				return WorldI * Rigid->AngularImpulseVelocity();
 			}
 
 			return FVec3(0);
 		});
 	}
 
-	void SetAngularImpulse(const FVec3& InAngularImpulse, bool bInvalidate = true)
+	void SetAngularImpulse(const FVec3& InAngularImpulse, bool bIsVelocity, bool bInvalidate = true)
 	{
-		Write([&InAngularImpulse, bInvalidate](auto* Particle)
+		Write([&InAngularImpulse, bIsVelocity, bInvalidate, this](auto* Particle)
 		{
 			if (auto Rigid = Particle->CastToRigidParticle())
 			{
-				Rigid->SetAngularImpulse(InAngularImpulse, bInvalidate);
+				if (Rigid->ObjectState() == EObjectStateType::Sleeping || Rigid->ObjectState() == EObjectStateType::Dynamic)
+				{
+					if (bInvalidate)
+					{
+						SetObjectStateHelper(*GetProxy(), *Rigid, EObjectStateType::Dynamic, true);
+					}
+
+					if (bIsVelocity)
+					{
+						Rigid->SetAngularImpulseVelocity(InAngularImpulse, bInvalidate);
+					}
+					else
+					{
+						const FMatrix33 WorldInvI = Utilities::ComputeWorldSpaceInertia(Rigid->R() * Rigid->RotationOfMass(), Rigid->InvI());
+						Rigid->SetAngularImpulseVelocity(WorldInvI * InAngularImpulse, bInvalidate);
+					}
+				}
 			}
 		});
 	}
 
-	const FMatrix33 I() const
+	const Chaos::TVec3<FRealSingle> I() const
 	{
 		return Read([](auto* Particle)
 		{
@@ -537,11 +653,11 @@ public:
 				return Rigid->I();
 			}
 
-			return FMatrix33(0, 0, 0);
+			return Chaos::TVec3<FRealSingle>(0, 0, 0);
 		});
 	}
 
-	void SetI(const FMatrix33& InI)
+	void SetI(const Chaos::TVec3<FRealSingle>& InI)
 	{
 		Write([&InI](auto* Particle)
 		{
@@ -552,7 +668,7 @@ public:
 		});
 	}
 
-	const FMatrix33 InvI() const
+	const Chaos::TVec3<FRealSingle> InvI() const
 	{
 		return Read([](auto* Particle)
 		{
@@ -561,11 +677,11 @@ public:
 				return Rigid->InvI();
 			}
 
-			return FMatrix33(0, 0, 0);
+			return Chaos::TVec3<FRealSingle>(0, 0, 0);
 		});
 	}
 
-	void SetInvI(const FMatrix33& InInvI)
+	void SetInvI(const Chaos::TVec3<FRealSingle>& InInvI)
 	{
 		Write([&InInvI](auto* Particle)
 		{
@@ -720,27 +836,38 @@ public:
 		});
 	}
 
-	void SetObjectState(const EObjectStateType InState, bool bAllowEvents = false, bool bInvalidate = true)
+protected:
+	void SetObjectStateBase(const EObjectStateType InState, bool bAllowEvents = false, bool bInvalidate = true)
 	{
 		Write([InState, bAllowEvents, bInvalidate, this](auto* Ptr)
 		{
 			if (auto Rigid = Ptr->CastToRigidParticle())
 			{
-				if (bExternal)
-				{
-					SyncTimestamp->ObjectStateTimestamp = GetSolverSyncTimestamp_External();
-					if (InState != EObjectStateType::Dynamic && Rigid->ObjectState() == EObjectStateType::Dynamic)
-					{
-						//we want to snap the particle to its current state on the external thread. This is because the user wants the object to fully stop right now
-						//the internal thread will continue if async is on, but eventually it will see this snap
-						SetV(FVec3(0), bInvalidate);
-						SetW(FVec3(0), bInvalidate);
-					}
-				}
-
 				SetObjectStateHelper(*this, *Rigid, InState, bAllowEvents, bInvalidate);
 			}
 		});
+	}
+public:
+
+	void SetSleepType(ESleepType InSleepType)
+	{
+		Write([InSleepType](auto* Particle)
+		{
+			if (auto Rigid = Particle->CastToRigidParticle())
+			{
+				return Rigid->SetSleepType(InSleepType);
+			}
+		});
+	}
+
+	ESleepType SleepType() const
+	{
+		if (auto Rigid = Particle->CastToRigidParticle())
+		{
+			return Rigid->SleepType();
+		}
+
+		return ESleepType::MaterialSleep;
 	}
 
 protected:
@@ -755,12 +882,12 @@ protected:
 			//if proxy is registered with solver, we need a lock
 			if(GetSolverBase() != nullptr)
 			{
-				ensure(IsInGameThreadContext());
+				EnsureIsInGameThreadContext();
 			}
 		}
 		else
 		{
-			ensure(IsInPhysicsThreadContext());
+			EnsureIsInPhysicsThreadContext();
 		}
 #endif
 	}
@@ -786,22 +913,15 @@ private:
 		}
 		else
 		{
-			Lambda(GetHandle_LowLevel());
-			//todo: write to extra buffer
-		}
-	}
-
-	int32 GetSolverSyncTimestamp_External() const
-	{
-		if (bExternal)
-		{
-			if (FPhysicsSolverBase* SolverBase = GetSolverBase())
+			//Mark entire particle as dirty from PT. TODO: use property system
+			FPhysicsSolverBase* SolverBase = GetSolverBase();	//internal so must have solver already
+			if(FRewindData* RewindData = SolverBase->GetRewindData())
 			{
-				return SolverBase->GetMarshallingManager().GetExternalTimestamp_External();
+				RewindData->MarkDirtyFromPT(*GetHandle_LowLevel());
 			}
-		}
 
-		return INDEX_NONE;
+			Lambda(GetHandle_LowLevel());
+		}
 	}
 };
 
@@ -828,11 +948,82 @@ public:
 	void SetShapeQueryCollisionEnabled(int32 InShapeIndex, bool bInEnabled) { VerifyContext(); GetParticle_LowLevel()->SetShapeQueryCollisionEnabled(InShapeIndex, bInEnabled); }
 	void SetShapeSimData(int32 InShapeIndex, const FCollisionFilterData& SimData) { VerifyContext(); GetParticle_LowLevel()->SetShapeSimData(InShapeIndex, SimData); }
 
+	void SetX(const FVec3& InX, bool bInvalidate = true)
+	{
+		VerifyContext();
+		SetXBase(InX, bInvalidate);
+		SyncTimestamp->XTimestamp = GetSolverSyncTimestamp_External();
+		SyncTimestamp->OverWriteX = InX;
+	}
+
+	void SetR(const FRotation3& InR, bool bInvalidate = true)
+	{
+		VerifyContext();
+		SetRBase(InR, bInvalidate);
+		SyncTimestamp->RTimestamp = GetSolverSyncTimestamp_External();
+		SyncTimestamp->OverWriteR = InR;
+	}
+
+	void SetV(const FVec3& InV, bool bInvalidate = true)
+	{
+		VerifyContext();
+		SetVBase(InV, bInvalidate);
+		if (InV == FVec3(0))	//should we use an explicit API instead?
+		{
+			//external thread is setting velocity to 0 so we want to freeze object until sim catches up
+			//but we also want position to snap to where it currently is on external thread
+			SetX(X(), bInvalidate);
+		}
+
+		SyncTimestamp->VTimestamp = GetSolverSyncTimestamp_External();
+		SyncTimestamp->OverWriteV = InV;
+	}
+
+	void SetW(const FVec3& InW, bool bInvalidate = true)
+	{
+		VerifyContext();
+		SetWBase(InW, bInvalidate);
+		
+		if (InW == FVec3(0))	//should we use an explicit API instead?
+		{
+			//external thread is setting velocity to 0 so we want to freeze object until sim catches up
+			//but we also want position to snap to where it currently is on external thread
+			SetR(R(), bInvalidate);
+		}
+
+		SyncTimestamp->WTimestamp = GetSolverSyncTimestamp_External();
+		SyncTimestamp->OverWriteW = InW;
+	}
+
+	void SetObjectState(const EObjectStateType InState, bool bAllowEvents = false, bool bInvalidate = true)
+	{
+		VerifyContext();
+		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		{
+			SyncTimestamp->ObjectStateTimestamp = GetSolverSyncTimestamp_External();
+			if (InState != EObjectStateType::Dynamic && Rigid->ObjectState() == EObjectStateType::Dynamic)
+			{
+				//we want to snap the particle to its current state on the external thread. This is because the user wants the object to fully stop right now
+				//the internal thread will continue if async is on, but eventually it will see this snap
+				SetV(FVec3(0), bInvalidate);
+				SetW(FVec3(0), bInvalidate);
+			}
+
+			if (InState == EObjectStateType::Kinematic && Rigid->ObjectState() != EObjectStateType::Kinematic)
+			{
+				// NOTE: using ClearKinematicTarget() here would just clean the dirty flag, but we actually
+				// want to make sure the kinematic target mode is set to "None", which is how it's default constructed.
+				SetKinematicTarget(Chaos::TKinematicTarget<Chaos::FReal, 3>(), bInvalidate);
+			}
+		}
+
+		SetObjectStateBase(InState, bAllowEvents, bInvalidate);
+	}
 
 	int32 Island() const
 	{
 		VerifyContext();
-		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		if (const TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
 		{
 			return Rigid->Island();
 		}
@@ -843,7 +1034,7 @@ public:
 	void SetIsland(const int32 InIsland)
 	{
 		VerifyContext();
-		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		if (TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
 		{
 			Rigid->SetIsland(InIsland);
 		}
@@ -852,7 +1043,7 @@ public:
 	bool ToBeRemovedOnFracture() const
 	{
 		VerifyContext();
-		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		if (const TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
 		{
 			return Rigid->ToBeRemovedOnFracture();
 		}
@@ -863,7 +1054,7 @@ public:
 	void SetToBeRemovedOnFracture(const bool InToBeRemovedOnFracture)
 	{
 		VerifyContext();
-		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		if (TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
 		{
 			Rigid->SetToBeRemovedOnFracture(InToBeRemovedOnFracture);
 		}
@@ -872,7 +1063,7 @@ public:
 	void ClearEvents()
 	{
 		VerifyContext();
-		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		if (TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
 		{
 			Rigid->ClearEvents();
 		}
@@ -881,7 +1072,7 @@ public:
 	EWakeEventEntry GetWakeEvent()
 	{
 		VerifyContext();
-		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		if (TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
 		{
 			return Rigid->GetWakeEvent();
 		}
@@ -892,8 +1083,9 @@ public:
 	void ClearForces(bool bInvalidate = true)
 	{
 		VerifyContext();
-		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		if (TPBDRigidParticle<FReal, 3>*Rigid = GetParticle_LowLevel()->CastToRigidParticle())
 		{
+
 			Rigid->ClearForces(bInvalidate);
 		}
 	}
@@ -901,7 +1093,7 @@ public:
 	void ClearTorques(bool bInvalidate = true)
 	{
 		VerifyContext();
-		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		if (TPBDRigidParticle<FReal, 3>*Rigid = GetParticle_LowLevel()->CastToRigidParticle())
 		{
 			Rigid->ClearTorques(bInvalidate);
 		}
@@ -919,10 +1111,10 @@ public:
 		SetGeometry(TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>(RawGeometry));
 	}
 
-	void SetGeometry(TSharedPtr<FImplicitObject, ESPMode::ThreadSafe> SharedGeometry)
+	void SetGeometry(TSharedPtr<const FImplicitObject, ESPMode::ThreadSafe> SharedGeometry)
 	{
 		VerifyContext();
-		GetParticle_LowLevel()->SetGeometry(SharedGeometry);
+		GetParticle_LowLevel()->SetGeometry(ConstCastSharedPtr<FImplicitObject, const FImplicitObject, ESPMode::ThreadSafe>(SharedGeometry));
 	}
 
 	//Note: this must be called after setting geometry. This API seems bad. Should probably be part of setting geometry
@@ -934,10 +1126,45 @@ public:
 
 	void MergeGeometry(TArray<TUniquePtr<FImplicitObject>>&& Objects) { VerifyContext(); GetParticle_LowLevel()->MergeGeometry(MoveTemp(Objects)); }
 
+	bool IsKinematicTargetDirty() const
+	{
+		VerifyContext();
+		if (auto Kinematic = GetParticle_LowLevel()->CastToKinematicParticle())
+		{
+			return Kinematic->IsKinematicTargetDirty();
+		}
+		return false;
+	}
+
+	void ClearKinematicTarget()
+	{
+		VerifyContext();
+		if (auto Kinematic = GetParticle_LowLevel()->CastToKinematicParticle())
+		{
+			return Kinematic->ClearKinematicTarget();
+		}
+	}
+
+	void SetSmoothEdgeCollisionsEnabled(bool bEnabled)
+	{
+		VerifyContext();
+		if (TPBDRigidParticle<FReal, 3>*Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		{
+			if (bEnabled)
+			{
+				Rigid->AddCollisionConstraintFlag(ECollisionConstraintFlags::CCF_SmoothEdgeCollisions);
+			}
+			else
+			{
+				Rigid->RemoveCollisionConstraintFlag(ECollisionConstraintFlags::CCF_SmoothEdgeCollisions);
+			}
+		}
+	}
+
 	void SetCCDEnabled(bool bEnabled)
 	{
 		VerifyContext();
-		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		if (TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
 		{
 			Rigid->SetCCDEnabled(bEnabled);
 		}
@@ -946,12 +1173,84 @@ public:
 	bool CCDEnabled() const
 	{
 		VerifyContext();
-		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		if (const TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
 		{
 			return Rigid->CCDEnabled();
 		}
 
 		return false;
+	}
+
+	void SetMaxLinearSpeedSq(FReal InNewSpeed)
+	{
+		VerifyContext();
+		if(TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		{
+			Rigid->SetMaxLinearSpeedSq(InNewSpeed);
+		}
+	}
+
+	FReal GetMaxLinearSpeedSq()
+	{
+		VerifyContext();
+		if(const TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		{
+			return Rigid->MaxLinearSpeedSq();
+		}
+
+		return TNumericLimits<FReal>::Max();
+	}
+
+	void SetMaxAngularSpeedSq(FReal InNewSpeed)
+	{
+		VerifyContext();
+		if(TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		{
+			Rigid->SetMaxAngularSpeedSq(InNewSpeed);
+		}
+	}
+
+	FReal GetMaxAngularSpeedSq()
+	{
+		VerifyContext();
+		if(const TPBDRigidParticle<FReal, 3>* Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		{
+			return Rigid->MaxAngularSpeedSq();
+		}
+
+		return TNumericLimits<FReal>::Max();
+	}
+
+	void SetDisabled(bool bDisable)
+	{
+		VerifyContext();
+		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		{
+			Rigid->SetDisabled(bDisable);
+		}
+	}
+
+	bool Disabled() const
+	{
+		VerifyContext();
+		if (auto Rigid = GetParticle_LowLevel()->CastToRigidParticle())
+		{
+			return Rigid->Disabled();
+		}
+
+		return false;
+	}
+
+private:
+
+	int32 GetSolverSyncTimestamp_External() const
+	{
+		if (FPhysicsSolverBase* SolverBase = GetSolverBase())
+		{
+			return SolverBase->GetMarshallingManager().GetExternalTimestamp_External();
+		}
+
+		return INDEX_NONE;
 	}
 
 };
@@ -984,6 +1283,44 @@ public:
 			return Rigid->PreW();
 		}
 		return FVec3(0);
+	}
+
+	void SetX(const FVec3& InX, bool bInvalidate = true)
+	{
+		VerifyContext();
+		SetXBase(InX, bInvalidate);
+		if (auto Rigid = GetHandle_LowLevel()->CastToRigidParticle())
+		{
+			Rigid->SetP(InX);
+		}
+	}
+
+	void SetR(const FRotation3& InR, bool bInvalidate = true)
+	{
+		VerifyContext();
+		SetRBase(InR, bInvalidate);
+		if (auto Rigid = GetHandle_LowLevel()->CastToRigidParticle())
+		{
+			Rigid->SetQ(InR);
+		}
+	}
+
+	void SetV(const FVec3& InV, bool bInvalidate = true)
+	{
+		VerifyContext();
+		SetVBase(InV, bInvalidate);
+	}
+
+	void SetW(const FVec3& InW, bool bInvalidate = true)
+	{
+		VerifyContext();
+		SetWBase(InW, bInvalidate);
+	}
+
+	void SetObjectState(const EObjectStateType InState, bool bAllowEvents = false, bool bInvalidate = true)
+	{
+		VerifyContext();
+		SetObjectStateBase(InState, bAllowEvents, bInvalidate);
 	}
 };
 

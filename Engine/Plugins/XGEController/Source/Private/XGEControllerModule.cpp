@@ -3,7 +3,7 @@
 #include "Features/IModularFeatures.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformNamedPipe.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformFile.h"
 #include "Misc/CommandLine.h"
 #include "Misc/ScopeLock.h"
@@ -11,6 +11,8 @@
 #include "Misc/Guid.h"
 #include "Modules/ModuleManager.h"
 #include "Serialization/MemoryWriter.h"
+#include "Modules/ModuleManager.h"
+#include "ShaderCompiler.h"
 
 // Comma separated list of executable file names which should be intercepted by XGE.
 // Update this list if adding new tasks.
@@ -58,8 +60,38 @@ namespace XGEControllerVariables
 		Timeout,
 		TEXT("The time, in seconds, to wait after all tasks have been completed before shutting down the controller. (default: 2 seconds)."),
 		ECVF_Default);
+
+	int32 AvoidUsingLocalMachine = 1;
+	FAutoConsoleVariableRef CVarXGEControllerAvoidUsingLocalMachine(
+		TEXT("r.XGEController.AvoidUsingLocalMachine"),
+		AvoidUsingLocalMachine,
+		TEXT("Whether XGE tasks should avoid running on the local machine (to reduce the oversubscription with local async and out-of-process work).\n")
+		TEXT("0: Do not avoid. Distributed tasks will be spawned on all available XGE agents. Can cause oversubscription on the initiator machine. \n")
+		TEXT("1: Avoid spawning tasks on the local (initiator) machine except when running a commandlet or -buildmachine is passed (default).\n")
+		TEXT("2: Avoid spawning tasks on the local (initiator) machine."),
+		ECVF_Default); // This can be flipped any time XGEControlWorker is restarted
+
 }
 
+namespace XGEController
+{
+	/** Whether XGE tasks should avoid using the local machine to reduce oversubscription */
+	bool AvoidUsingLocalMachine()
+	{
+		switch (XGEControllerVariables::AvoidUsingLocalMachine)
+		{
+			case 0:
+				return false;
+			case 2:
+				return true;
+			default:
+				break;
+		}
+
+		static bool bForceUsingLocalMachine = !FPlatformMisc::GetEnvironmentVariable(TEXT("UE-XGEControllerForceUsingLocalMachine")).IsEmpty();
+		return !bForceUsingLocalMachine && !GIsBuildMachine && !IsRunningCommandlet();
+	}
+}
 
 FXGEControllerModule::FXGEControllerModule()
 	: bSupported(false)
@@ -72,18 +104,11 @@ FXGEControllerModule::FXGEControllerModule()
 	, TasksCS(new FCriticalSection)
 	, bShutdown(false)
 	, bRestartWorker(false)
-	, WriteOutThreadEvent(FPlatformProcess::CreateSynchEvent(false))
 	, LastEventTime(0)
 {}
 
 FXGEControllerModule::~FXGEControllerModule()
 {
-	if (WriteOutThreadEvent)
-	{
-		delete WriteOutThreadEvent;
-		WriteOutThreadEvent = nullptr;
-	}
-
 	if (TasksCS)
 	{
 		delete TasksCS;
@@ -215,6 +240,14 @@ bool FXGEControllerModule::IsSupported()
 				XGEControllerVariables::Enabled = 0;
 			}
 
+			// check if build service is running - without this, the build will make no progress
+			const TCHAR* XGEBuildServiceExecutableName = TEXT("BuildService.exe");
+			if (!FPlatformProcess::IsApplicationRunning(XGEBuildServiceExecutableName))
+			{
+				UE_LOG(LogXGEController, Warning, TEXT("XGE's background service (%s) is not running - service is likely disabled on this machine."), XGEBuildServiceExecutableName);
+				XGEControllerVariables::Enabled = 0;
+			}
+
 			if (!PlatformFile.FileExists(*GetControlWorkerExePath()))
 			{
 				UE_LOG(LogXGEController, Warning, TEXT("XGEControlWorker.exe does not exist, XGE may be disabled in your Build Configuration, cannot use XGE."));
@@ -235,6 +268,10 @@ bool FXGEControllerModule::IsSupported()
 
 void FXGEControllerModule::CleanWorkingDirectory()
 {
+#if UE_BUILD_SHIPPING && WITH_EDITOR
+	// this is not expected to run in a shipped editor, but if it is, we should deal with it
+	unimplemented();
+#else
 	// Only clean the directory if we are the only instance running,
 	// and we're not running in multi-process mode.
 	if ((GIsFirstInstance) && !FParse::Param(FCommandLine::Get(), TEXT("Multiprocess")))
@@ -242,6 +279,7 @@ void FXGEControllerModule::CleanWorkingDirectory()
 		UE_LOG(LogXGEController, Log, TEXT("Cleaning working directory: %s"), *RootWorkingDirectory);
 		IFileManager::Get().DeleteDirectory(*RootWorkingDirectory, false, true);
 	}
+#endif
 }
 
 void FXGEControllerModule::StartupModule()
@@ -317,6 +355,11 @@ void FXGEControllerModule::InitializeController()
 		{
 			WriteOutThreadFuture = Async(EAsyncExecution::Thread, [this]() { WriteOutThreadProc(); });
 			bControllerInitialized = true;
+
+			UE_LOG(LogXGEController, Display, TEXT("Initialized XGE controller. XGE tasks will %sbe spawned on this machine."),
+				XGEController::AvoidUsingLocalMachine() ? TEXT("not ") : TEXT("")
+				);
+
 		}
 	}
 }
@@ -328,15 +371,22 @@ void FXGEControllerModule::WriteOutThreadProc()
 		bRestartWorker = false;
 
 		while (!AreTasksPending() && !bShutdown)
+		{
+			UE_LOG(LogXGEController, Verbose, TEXT("Waiting for new tasks."));
 			WriteOutThreadEvent->Wait();
+		}
 
 		if (bShutdown)
+		{
+			UE_LOG(LogXGEController, Verbose, TEXT("Shutting down communication with the XGE controller."));
 			return;
+		}
 
 		// To handle spaces in the engine path, we just pass the XGEController.exe filename to xgConsole,
 		// and set the working directory of xgConsole.exe to the engine binaries folder below.
-		FString XGConsoleArgs = FString::Printf(TEXT("/VIRTUALIZEDIRECTX /allowremote=\"%s\" /allowintercept=\"%s\" /title=\"Unreal Engine XGE Tasks\" /monitordirs=\"%s\" /command=\"%s -xgecontroller %s\""),
+		FString XGConsoleArgs = FString::Printf(TEXT("/VIRTUALIZEDIRECTX /allowremote=\"%s\" %s /allowintercept=\"%s\" /title=\"Unreal Engine XGE Tasks\" /monitordirs=\"%s\" /command=\"%s -xgecontroller %s\""),
 			XGE_INTERCEPT_EXE_NAMES,
+			(XGEController::AvoidUsingLocalMachine() && !GShaderCompilingManager->IgnoreAllThrottling()) ? TEXT("/avoidlocal=ON") : TEXT(""),
 			XGE_CONTROL_WORKER_NAME,
 			*WorkingDirectory,
 			XGE_CONTROL_WORKER_FILENAME,
@@ -348,9 +398,11 @@ void FXGEControllerModule::WriteOutThreadProc()
 			UE_LOG(LogXGEController, Fatal, TEXT("Failed to create the output XGE named pipe."));
 		}
 
+		const int32 PriorityModifier = 0;	// normal by default. Interactive use case shouldn't be affected as the jobs will avoid local machine
 		// Start the controller process
 		uint32 XGConsoleProcID = 0;
-		BuildProcessHandle = FPlatformProcess::CreateProc(*XGConsolePath, *XGConsoleArgs, false, false, true, &XGConsoleProcID, 0, *ControlWorkerDirectory, nullptr);
+		UE_LOG(LogXGEController, Verbose, TEXT("Launching xgConsole"));
+		BuildProcessHandle = FPlatformProcess::CreateProc(*XGConsolePath, *XGConsoleArgs, false, false, true, &XGConsoleProcID, PriorityModifier, *ControlWorkerDirectory, nullptr);
 		if (!BuildProcessHandle.IsValid())
 		{
 			UE_LOG(LogXGEController, Fatal, TEXT("Failed to launch the XGE control worker process."));
@@ -359,8 +411,9 @@ void FXGEControllerModule::WriteOutThreadProc()
 		// If the engine crashes, we don't get a chance to kill the build process.
 		// Start up the build monitor process to monitor for engine crashes.
 		uint32 BuildMonitorProcessID;
+		UE_LOG(LogXGEController, Verbose, TEXT("Launching XGEController to fan out tasks"));
 		FString XGMonitorArgs = FString::Printf(TEXT("-xgemonitor %d %d"), FPlatformProcess::GetCurrentProcessId(), XGConsoleProcID);
-		FProcHandle BuildMonitorHandle = FPlatformProcess::CreateProc(*GetControlWorkerExePath(), *XGMonitorArgs, true, false, false, &BuildMonitorProcessID, 0, nullptr, nullptr);
+		FProcHandle BuildMonitorHandle = FPlatformProcess::CreateProc(*GetControlWorkerExePath(), *XGMonitorArgs, true, false, false, &BuildMonitorProcessID, PriorityModifier, nullptr, nullptr);
 		FPlatformProcess::CloseProc(BuildMonitorHandle);
 
 		// Wait for the controller to connect to the output pipe
@@ -426,7 +479,17 @@ void FXGEControllerModule::WriteOutThreadProc()
 
 				Writer << Task->ID;
 				Writer << Task->CommandData.Command;
-				Writer << Task->CommandData.CommandArgs;
+
+				const FString InputFileName = FPaths::GetCleanFilename(Task->CommandData.InputFileName);
+				const FString OutputFileName = FPaths::GetCleanFilename(Task->CommandData.OutputFileName);
+				FString WorkerParameters = FString::Printf(TEXT("\"%s/\" %d 0 \"%s\" \"%s\" -xge_int %s"),
+					*Task->CommandData.WorkingDirectory,
+					Task->CommandData.DispatcherPID,
+					*InputFileName,
+					*OutputFileName,
+					*Task->CommandData.ExtraCommandArgs);
+
+				Writer << WorkerParameters;
 				*reinterpret_cast<uint32*>(WriteBuffer.GetData()) = WriteBuffer.Num() - sizeof(uint32);
 
 				// Move the tasks to the dispatched tasks map before launching it
@@ -516,7 +579,7 @@ void FXGEControllerModule::ReadBackThreadProc()
 FString FXGEControllerModule::CreateUniqueFilePath()
 {
 	check(bSupported);
-	return FString::Printf(TEXT("%s/%d.xge"), *WorkingDirectory, NextFileID.Increment());
+	return FString::Printf(TEXT("%s/%d-xge"), *WorkingDirectory, NextFileID.Increment());
 }
 
 TFuture<FDistributedBuildTaskResult> FXGEControllerModule::EnqueueTask(const FTaskCommandData& CommandData)

@@ -15,16 +15,20 @@
 #include "Animation/AnimInstance.h"
 #include "LevelSequenceModule.h"
 #include "MovieSceneSpawnableAnnotation.h"
+#include "Tracks/MovieScene3DAttachTrack.h"
+#include "Tracks/MovieScene3DPathTrack.h"
 #include "Tracks/MovieSceneAudioTrack.h"
 #include "Tracks/MovieSceneCameraCutTrack.h"
 #include "Tracks/MovieSceneCinematicShotTrack.h"
 #include "Tracks/MovieSceneEventTrack.h"
 #include "Tracks/MovieSceneFadeTrack.h"
 #include "Tracks/MovieSceneLevelVisibilityTrack.h"
+#include "Tracks/MovieSceneDataLayerTrack.h"
 #include "Tracks/MovieSceneMaterialParameterCollectionTrack.h"
 #include "Tracks/MovieSceneSlomoTrack.h"
 #include "Tracks/MovieSceneSpawnTrack.h"
 #include "Tracks/MovieSceneSubTrack.h"
+#include "Tracks/MovieSceneCVarTrack.h"
 #include "Modules/ModuleManager.h"
 #include "LevelSequencePlayer.h"
 #include "Compilation/MovieSceneCompiledDataManager.h"
@@ -102,16 +106,20 @@ bool ULevelSequence::CanAnimateObject(UObject& InObject) const
 
 ETrackSupport ULevelSequence::IsTrackSupported(TSubclassOf<class UMovieSceneTrack> InTrackClass) const
 {
-	if (InTrackClass == UMovieSceneAudioTrack::StaticClass() ||
+	if (InTrackClass == UMovieScene3DAttachTrack::StaticClass() ||
+		InTrackClass == UMovieScene3DPathTrack::StaticClass() ||
+		InTrackClass == UMovieSceneAudioTrack::StaticClass() ||
 		InTrackClass == UMovieSceneCameraCutTrack::StaticClass() ||
 		InTrackClass == UMovieSceneCinematicShotTrack::StaticClass() ||
 		InTrackClass == UMovieSceneEventTrack::StaticClass() ||
 		InTrackClass == UMovieSceneFadeTrack::StaticClass() ||
 		InTrackClass == UMovieSceneLevelVisibilityTrack::StaticClass() ||
+		InTrackClass == UMovieSceneDataLayerTrack::StaticClass() ||
 		InTrackClass == UMovieSceneMaterialParameterCollectionTrack::StaticClass() ||
 		InTrackClass == UMovieSceneSlomoTrack::StaticClass() ||
 		InTrackClass == UMovieSceneSpawnTrack::StaticClass() ||
-		InTrackClass == UMovieSceneSubTrack::StaticClass())
+		InTrackClass == UMovieSceneSubTrack::StaticClass() ||
+		InTrackClass == UMovieSceneCVarTrack::StaticClass())
 	{
 		return ETrackSupport::Supported;
 	}
@@ -251,6 +259,11 @@ void ULevelSequence::PostLoad()
 		// Remove the binding for the director blueprint recompilation and re-add it to be sure there is only one entry in the list
 		DirectorBlueprint->OnCompiled().RemoveAll(this);
 		DirectorBlueprint->OnCompiled().AddUObject(this, &ULevelSequence::OnDirectorRecompiled);
+
+		if (DirectorBlueprint->Rename(*GetDirectorBlueprintName(), nullptr, (REN_NonTransactional|REN_ForceNoResetLoaders|REN_DoNotDirty|REN_Test)))
+		{
+			DirectorBlueprint->Rename(*GetDirectorBlueprintName(), nullptr, (REN_NonTransactional|REN_ForceNoResetLoaders|REN_DoNotDirty));
+		}
 	}
 
 	TSet<FGuid> InvalidSpawnables;
@@ -291,7 +304,17 @@ void ULevelSequence::PostLoad()
 				PurgeLegacyBlueprints(ObjectInPackage, Package);
 			}
 		}
+	}
+#endif
+}
 
+void ULevelSequence::PostInitProperties()
+{
+	Super::PostInitProperties();
+
+#if WITH_EDITOR
+	if (MovieScene)
+	{
 		// Remove any invalid object bindings
 		TSet<FGuid> ValidObjectBindings;
 		for (int32 Index = 0; Index < MovieScene->GetSpawnableCount(); ++Index)
@@ -305,7 +328,6 @@ void ULevelSequence::PostLoad()
 
 		BindingReferences.RemoveInvalidBindings(ValidObjectBindings);
 	}
-
 #endif
 }
 
@@ -316,7 +338,7 @@ bool ULevelSequence::Rename(const TCHAR* NewName, UObject* NewOuter, ERenameFlag
 #if WITH_EDITOR
 	if (DirectorBlueprint)
 	{
-		DirectorBlueprint->Rename(*DirectorBlueprint->GetName(), this, Flags);
+		DirectorBlueprint->Rename(*GetDirectorBlueprintName(), this, Flags);
 	}
 #endif
 
@@ -372,6 +394,11 @@ void ULevelSequence::LocateBoundObjects(const FGuid& ObjectId, UObject* Context,
 	}
 
 	BindingReferences.ResolveBinding(ObjectId, Context, StreamedLevelAssetPath, OutObjects);
+}
+
+FGuid ULevelSequence::FindBindingFromObject(UObject* InObject, UObject* Context) const
+{
+	return BindingReferences.FindBindingFromObject(InObject, Context);
 }
 
 void ULevelSequence::GatherExpiredObjects(const FMovieSceneObjectCache& InObjectCache, TArray<FGuid>& OutInvalidIDs) const
@@ -445,6 +472,11 @@ void ULevelSequence::UnbindInvalidObjects(const FGuid& ObjectId, UObject* InCont
 UBlueprint* ULevelSequence::GetDirectorBlueprint() const
 {
 	return DirectorBlueprint;
+}
+
+FString ULevelSequence::GetDirectorBlueprintName() const
+{
+	return GetDisplayName().ToString() + " (Director BP)";
 }
 
 void ULevelSequence::SetDirectorBlueprint(UBlueprint* NewDirectorBlueprint)
@@ -678,5 +710,5 @@ void ULevelSequence::RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDat
 
 const TArray<UAssetUserData*>* ULevelSequence::GetAssetUserDataArray() const
 {
-	return &AssetUserData;
+	return &ToRawPtrTArrayUnsafe(AssetUserData);
 }

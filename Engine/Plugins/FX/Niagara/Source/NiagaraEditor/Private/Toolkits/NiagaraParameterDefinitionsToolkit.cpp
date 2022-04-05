@@ -81,8 +81,7 @@ void FNiagaraParameterDefinitionsToolkit::Initialize(const EToolkitMode::Type Mo
 	check(InParameterDefinitions != nullptr);
 	ParameterDefinitionsSource = InParameterDefinitions;
 
-	ResetLoaders(GetTransientPackage()); // Make sure that we're not going to get invalid version number linkers into the package we are going into. 
-	GetTransientPackage()->LinkerCustomVersion.Empty();
+	// No need to reset loader or versioning on the transient package, there should never be any set
 	ParameterDefinitionsInstance = Cast<UNiagaraParameterDefinitions>(StaticDuplicateObject(ParameterDefinitionsSource, GetTransientPackage(), NAME_None, ~RF_Standalone, UNiagaraParameterDefinitions::StaticClass()));
 	ParameterDefinitionsInstance->ClearFlags(RF_Standalone | RF_Public);
 	LastSyncedDefinitionsChangeIdHash = ParameterDefinitionsInstance->GetChangeIdHash();
@@ -101,45 +100,34 @@ void FNiagaraParameterDefinitionsToolkit::Initialize(const EToolkitMode::Type Mo
 
 	ParameterPanelViewModel->Init(UIContext);
 
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_ParameterDefinitionsLayout_v1")
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_ParameterDefinitionsLayout_v2")
 		->AddArea
 		(
-			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
+			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Horizontal)
 			->Split
 			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-				->SetHideTabWell(true)
-			)
-			->Split
-			(
-				FTabManager::NewSplitter()->SetOrientation(Orient_Horizontal)->SetSizeCoefficient(0.9f)
+				FTabManager::NewSplitter()->SetOrientation(Orient_Vertical)
+				->SetSizeCoefficient(0.15f)
 				->Split
 				(
-					FTabManager::NewSplitter()->SetOrientation(Orient_Vertical)
-					->SetSizeCoefficient(0.15f)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(.15f)
-						->AddTab(ParameterDefinitionsDetailsTabId, ETabState::OpenedTab)
-					)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(.85f)
-						->AddTab(ParameterPanelTabId, ETabState::OpenedTab)
-						->SetForegroundTab(ParameterPanelTabId)
-					)
-
+					FTabManager::NewStack()
+					->SetSizeCoefficient(.15f)
+					->AddTab(ParameterDefinitionsDetailsTabId, ETabState::OpenedTab)
 				)
 				->Split
 				(
 					FTabManager::NewStack()
-					->SetSizeCoefficient(0.5f)
-					->AddTab(SelectedDetailsTabId, ETabState::OpenedTab)
+					->SetSizeCoefficient(.85f)
+					->AddTab(ParameterPanelTabId, ETabState::OpenedTab)
+					->SetForegroundTab(ParameterPanelTabId)
 				)
+
+			)
+			->Split
+			(
+				FTabManager::NewStack()
+				->SetSizeCoefficient(0.5f)
+				->AddTab(SelectedDetailsTabId, ETabState::OpenedTab)
 			)
 		);
 
@@ -229,7 +217,12 @@ TSharedRef<SDockTab> FNiagaraParameterDefinitionsToolkit::SpawnTab_ParameterDefi
 	checkf(Args.GetTabId().TabType == ParameterDefinitionsDetailsTabId, TEXT("Wrong tab ID in NiagaraParameterDefinitionsToolkit!"));
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	FDetailsViewArgs DetailsViewArgs(false, false, true, FDetailsViewArgs::HideNameArea, true);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.bUpdatesFromSelection = false;
+	DetailsViewArgs.bLockable = false;
+	DetailsViewArgs.bAllowSearch = true;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
 	ParameterDefinitionsDetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 
 	ParameterDefinitionsDetailsView->SetObject(ParameterDefinitionsInstance);
@@ -281,7 +274,7 @@ void FNiagaraParameterDefinitionsToolkit::ExtendToolbar()
 				{
 					ToolbarBuilder.AddToolBarButton(FNiagaraEditorCommands::Get().Apply,
 						NAME_None, TAttribute<FText>(), TAttribute<FText>(),
-						FSlateIcon(FNiagaraEditorStyle::GetStyleSetName(), "NiagaraEditor.Apply"),
+						FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "NiagaraEditor.Apply"),
 						FName(TEXT("ApplyNiagaraEmitter")));
 				}
 				ToolbarBuilder.EndSection();
@@ -325,7 +318,6 @@ void FNiagaraParameterDefinitionsToolkit::OnApply()
 	}
 
 	ResetLoaders(ParameterDefinitionsSource->GetOutermost()); // Make sure that we're not going to get invalid version number linkers into the package we are going into. 
-	ParameterDefinitionsSource->GetOutermost()->LinkerCustomVersion.Empty();
 
 	ParameterDefinitionsSource->PreEditChange(nullptr);
 	// overwrite the original parameter definitions in place by constructing a new one with the same name

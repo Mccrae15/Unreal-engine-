@@ -125,6 +125,7 @@ public class FDatasmithFacadeMasterMaterial : FDatasmithFacadeBaseMaterial {
     ClearCoat,
     Custom,
     CutOut,
+    Emissive,
     Count
   }
 

@@ -12,6 +12,7 @@ namespace UnrealBuildTool.Rules
                     "Slate",
                     "SlateCore",
                     "EditorStyle",
+					"EditorSubsystem"
                 }
             );
 
@@ -21,7 +22,9 @@ namespace UnrealBuildTool.Rules
 				    "CoreUObject",
 				    "Engine",
                     "InputCore",
-				    "UnrealEd",
+					"EditorFramework",
+                    "EditorWidgets",
+					"UnrealEd",
 					"InteractiveToolsFramework",
 					"EditorInteractiveToolsFramework",
 					"MeshPaintingToolset",
@@ -30,6 +33,7 @@ namespace UnrealBuildTool.Rules
 					"DesktopPlatform",
                     "RenderCore",
                     "RHI",
+					"ToolWidgets",
                 }
             );
 

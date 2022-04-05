@@ -4,6 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "AssetData.h"
+#include "Styling/SlateColor.h"
+
+struct FSlateBrush;
 
 /** Represents a group of related assets, e.g. a skeleton, its animations and skeletal meshes */
 class IAssetFamily
@@ -37,6 +40,12 @@ public:
 
 	/** Gets the name of an asset that will be displayed to a user */
 	virtual FText GetAssetTypeDisplayName(UClass* InAssetClass) const = 0;
+
+	/** Gets the slate brush that represents this asset family */
+	virtual const FSlateBrush* GetAssetTypeDisplayIcon(UClass* InAssetClass) const = 0;
+
+	/** Gets the color to tint the asset display icon */
+	virtual FSlateColor GetAssetTypeDisplayTint(UClass* InAssetClass) const = 0;
 
 	/** Check whether an asset is compatible with this family */
 	virtual bool IsAssetCompatible(const FAssetData& InAssetData) const = 0;

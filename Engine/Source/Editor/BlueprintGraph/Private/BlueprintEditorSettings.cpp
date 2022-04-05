@@ -8,6 +8,10 @@
 #include "FindInBlueprintManager.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
+#include "BlueprintTypePromotion.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "BlueprintNamespaceHelper.h"
+#include "BlueprintNamespaceUtilities.h"
 
 UBlueprintEditorSettings::UBlueprintEditorSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -23,20 +27,22 @@ UBlueprintEditorSettings::UBlueprintEditorSettings(const FObjectInitializer& Obj
 	, bExposeDeprecatedFunctions(false)
 	, bCompactCallOnMemberNodes(false)
 	, bFlattenFavoritesMenus(true)
-	, bFavorPureCastNodes(false)
 	, bAutoCastObjectConnections(false)
 	, bShowViewportOnSimulate(false)
-	, bShowInheritedVariables(false)
-	, bAlwaysShowInterfacesInOverrides(true)
-	, bShowParentClassInOverrides(true)
-	, bShowEmptySections(true)
-	, bShowAccessSpecifier(false)
 	, bSpawnDefaultBlueprintNodes(true)
 	, bHideConstructionScriptComponentsInDetailsView(true)
 	, bHostFindInBlueprintsInGlobalTab(true)
 	, bNavigateToNativeFunctionsFromCallNodes(true)
-	, bIncludeCommentNodesInBookmarksTab(true)
-	, bShowBookmarksForCurrentDocumentOnlyInTab(false)
+	, bDoubleClickNavigatesToParent(true)
+	, bEnableTypePromotion(true)
+	, TypePromotionPinDenyList { UEdGraphSchema_K2::PC_String, UEdGraphSchema_K2::PC_Text }
+	, BreakpointReloadMethod(EBlueprintBreakpointReloadMethod::RestoreAll)
+	, bEnablePinValueInspectionTooltips(true)
+	// Experimental
+	, bEnableNamespaceEditorFeatures(false)
+	, bEnableNamespaceFilteringFeatures(false)
+	, bEnableNamespaceImportingFeatures(false)
+	, bFavorPureCastNodes(false)
 	// Compiler Settings
 	, SaveOnCompile(SoC_Never)
 	, bJumpToNodeErrors(false)
@@ -47,6 +53,14 @@ UBlueprintEditorSettings::UBlueprintEditorSettings(const FObjectInitializer& Obj
 	, bShowDetailedCompileResults(false)
 	, CompileEventDisplayThresholdMs(5)
 	, NodeTemplateCacheCapMB(20.f)
+	// No category
+	, bShowInheritedVariables(false)
+	, bAlwaysShowInterfacesInOverrides(true)
+	, bShowParentClassInOverrides(true)
+	, bShowEmptySections(true)
+	, bShowAccessSpecifier(false)
+	, bIncludeCommentNodesInBookmarksTab(true)
+	, bShowBookmarksForCurrentDocumentOnlyInTab(false)
 {
 	// settings that were moved out of experimental...
 	UEditorExperimentalSettings const* ExperimentalSettings = GetDefault<UEditorExperimentalSettings>();
@@ -64,28 +78,47 @@ UBlueprintEditorSettings::UBlueprintEditorSettings(const FObjectInitializer& Obj
 	{
 		SaveOnCompile = SoC_SuccessOnly;
 	}
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	AssetRegistryModule.Get().OnAssetRenamed().AddUObject(this, &UBlueprintEditorSettings::OnAssetRenamed);
+	AssetRegistryModule.Get().OnInMemoryAssetDeleted().AddUObject(this, &UBlueprintEditorSettings::OnAssetRemoved);
+}
+
+void UBlueprintEditorSettings::OnAssetRenamed(FAssetData const& AssetInfo, const FString& InOldName)
+{
+	FPerBlueprintSettings Temp;
+	if(PerBlueprintSettings.RemoveAndCopyValue(InOldName, Temp))
+	{
+		PerBlueprintSettings.Add(AssetInfo.ObjectPath.ToString(), Temp);
+		SaveConfig();
+	}
+}
+
+void UBlueprintEditorSettings::OnAssetRemoved(UObject* Object)
+{
+	if(UBlueprint* Blueprint = Cast<UBlueprint>(Object))
+	{
+		FKismetDebugUtilities::ClearBreakpoints(Blueprint);
+		FKismetDebugUtilities::ClearPinWatches(Blueprint);
+	}
+}
+
+void UBlueprintEditorSettings::PostInitProperties()
+{
+	Super::PostInitProperties();
+
+	// Initialize transient flags and console variables for namespace editor features from the config.
+	// @todo_namespaces - May be removed once dependent code is changed to utilize the config setting.
+	bEnableNamespaceFilteringFeatures = bEnableNamespaceEditorFeatures;
+	bEnableNamespaceImportingFeatures = bEnableNamespaceEditorFeatures;
+
+	// Update console flags to match the current configuration.
+	FBlueprintNamespaceHelper::RefreshEditorFeatureConsoleFlags();
 }
 
 void UBlueprintEditorSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	const FName PropertyName = (PropertyChangedEvent.Property != nullptr) ? PropertyChangedEvent.Property->GetFName() : NAME_None;
-
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(UBlueprintEditorSettings, bHostFindInBlueprintsInGlobalTab))
-	{
-		// Close all open Blueprint editors to reset associated FiB states.
-		UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
-		TArray<UObject*> EditedAssets = AssetEditorSubsystem->GetAllEditedAssets();
-		for (UObject* EditedAsset : EditedAssets)
-		{
-			if (EditedAsset->IsA<UBlueprint>())
-			{
-				AssetEditorSubsystem->CloseAllEditorsForAsset(EditedAsset);
-			}
-		}
-
-		// Enable or disable the feature through the FiB manager.
-		FFindInBlueprintSearchManager::Get().EnableGlobalFindResults(bHostFindInBlueprintsInGlobalTab);
-	}
 
 	bool bShouldRebuildRegistry = false;
 	
@@ -93,10 +126,33 @@ void UBlueprintEditorSettings::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	{
 		bShouldRebuildRegistry = true;
 	}
+	
+	// Refresh type promotion when the preference gets changed so that we can correctly rebuild the action database
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UBlueprintEditorSettings, bEnableTypePromotion) || 
+		PropertyName == GET_MEMBER_NAME_CHECKED(UBlueprintEditorSettings, TypePromotionPinDenyList))
+	{
+		FTypePromotion::RefreshPromotionTables();
+		
+		bShouldRebuildRegistry = true;
+	}
 
 	if (bShouldRebuildRegistry)
 	{
 		FBlueprintActionDatabase::Get().RefreshAll();
+	}
+
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UBlueprintEditorSettings, bEnableNamespaceEditorFeatures))
+	{
+		// Update transient settings and console variable flags to reflect the new config setting value.
+		// @todo_namespaces - May be removed once dependent code is changed to utilize the config setting.
+		bEnableNamespaceFilteringFeatures = bEnableNamespaceEditorFeatures;
+		bEnableNamespaceImportingFeatures = bEnableNamespaceEditorFeatures;
+
+		// Update console flags to match the current configuration.
+		FBlueprintNamespaceHelper::RefreshEditorFeatureConsoleFlags();
+
+		// Refresh the Blueprint editor UI environment to match current settings.
+		FBlueprintNamespaceUtilities::RefreshBlueprintEditorFeatures();
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);

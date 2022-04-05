@@ -12,6 +12,7 @@
 
 class FDetailWidgetRow;
 class SColorPicker;
+class SBorder;
 
 /**
  * Base class for color struct customization (FColor,FLinearColor).
@@ -22,7 +23,8 @@ class DETAILCUSTOMIZATIONS_API FColorStructCustomization
 public:
 
 	static TSharedRef<IPropertyTypeCustomization> MakeInstance();
-	
+	~FColorStructCustomization();
+
 protected:
 
 	FColorStructCustomization()
@@ -30,6 +32,7 @@ protected:
 		, bIsInlineColorPickerVisible(false)
 		, bIsInteractive(false)
 		, bDontUpdateWhileEditing(false)
+
 	{}
 
 protected:
@@ -102,6 +105,15 @@ protected:
 	FLinearColor OnGetColorForColorBlock() const;
 	
 	/**
+	 * @return The color that should be displayed in the color block in slate color format                                                           
+	 */
+	FSlateColor  OnGetSlateColorForBlock() const;
+
+	/**
+	 * @return The border color encompassing the entire color block                                                         
+	 */
+	FSlateColor GetColorWidgetBorderColor() const;
+	/**
 	 * Called when the user clicks in the color block (opens inline color picker)
 	 */
 	FReply OnMouseButtonDownColorBlock(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent);
@@ -142,6 +154,14 @@ protected:
 	/** Color struct handle */
 	TSharedPtr<IPropertyHandle> StructPropertyHandle;
 
+	/** Cached widget for the color picker to use as a parent */
+	TSharedPtr<SWidget> ColorPickerParentWidget;
+
+	TSharedPtr<SWidget > ColorWidgetBackgroundBorder;
+
+	/** Overrides the default state of the sRGB check box */
+	TOptional<bool> sRGBOverride;
+
 	/** True if the property is a linear color property */
 	bool bIsLinearColor;
 
@@ -157,12 +177,10 @@ protected:
 	/** Last color set from color picker as string*/
 	FString LastPickerColorString;
 
-	/** Cached widget for the color picker to use as a parent */
-	TSharedPtr<SWidget> ColorPickerParentWidget;
 
 	/** The value won;t be updated while editing */
 	bool bDontUpdateWhileEditing;
 
-	/** Overrides the default state of the sRGB check box */
-	TOptional<bool> sRGBOverride;
+
+	
 };

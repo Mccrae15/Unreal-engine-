@@ -14,7 +14,8 @@ FD3D12CrossGPUHeapSecurityAttributes::FD3D12CrossGPUHeapSecurityAttributes()
 	PSID* ppSID = (PSID*)((PBYTE)m_winPSecurityDescriptor + SECURITY_DESCRIPTOR_MIN_LENGTH);
 	PACL* ppACL = (PACL*)((PBYTE)ppSID + sizeof(PSID*));
 
-	InitializeSecurityDescriptor(m_winPSecurityDescriptor, SECURITY_DESCRIPTOR_REVISION);
+	BOOL retval = InitializeSecurityDescriptor(m_winPSecurityDescriptor, SECURITY_DESCRIPTOR_REVISION);
+	(retval);
 
 	SID_IDENTIFIER_AUTHORITY sidIdentifierAuthority = SECURITY_WORLD_SID_AUTHORITY;
 	AllocateAndInitializeSid(&sidIdentifierAuthority, 1, SECURITY_WORLD_RID, 0, 0, 0, 0, 0, 0, 0, ppSID);
@@ -30,7 +31,8 @@ FD3D12CrossGPUHeapSecurityAttributes::FD3D12CrossGPUHeapSecurityAttributes()
 
 	SetEntriesInAcl(1, &explicitAccess, NULL, ppACL);
 
-	SetSecurityDescriptorDacl(m_winPSecurityDescriptor, true, *ppACL, false);
+	retval = SetSecurityDescriptorDacl(m_winPSecurityDescriptor, true, *ppACL, false);
+	(retval);
 
 	m_winSecurityAttributes.nLength = sizeof(m_winSecurityAttributes);
 	m_winSecurityAttributes.lpSecurityDescriptor = m_winPSecurityDescriptor;
@@ -91,7 +93,8 @@ bool FTextureShareD3D12SharedResourceSecurityAttributes::Initialize()
 	ea[0].grfAccessMode = SET_ACCESS;
 	ea[0].grfInheritance = NO_INHERITANCE;
 	ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-	ea[0].Trustee.TrusteeType = TRUSTEE_IS_COMPUTER;// TRUSTEE_IS_GROUP;
+	//ea[0].Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+	ea[0].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
 	ea[0].Trustee.ptstrName = (LPTSTR)pEveryoneSID;
 
 	// Create a SID for the BUILTIN\Administrators group.
@@ -113,7 +116,7 @@ bool FTextureShareD3D12SharedResourceSecurityAttributes::Initialize()
 	ea[1].grfAccessMode = SET_ACCESS;
 	ea[1].grfInheritance = NO_INHERITANCE;
 	ea[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-	ea[1].Trustee.TrusteeType = TRUSTEE_IS_COMPUTER;// TRUSTEE_IS_GROUP;
+	ea[1].Trustee.TrusteeType = TRUSTEE_IS_GROUP;
 	ea[1].Trustee.ptstrName = (LPTSTR)pAdminSID;
 
 	// Create a new ACL that contains the new ACEs.

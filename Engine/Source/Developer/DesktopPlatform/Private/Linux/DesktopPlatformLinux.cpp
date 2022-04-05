@@ -16,6 +16,7 @@
 
 //#include "LinuxNativeFeedbackContext.h"
 #include "ISlateFileDialogModule.h"
+#include "ISlateFontDialogModule.h" 
 
 #define LOCTEXT_NAMESPACE "DesktopPlatform"
 #define MAX_FILETYPES_STR 4096
@@ -100,7 +101,22 @@ bool FDesktopPlatformLinux::OpenDirectoryDialog(const void* ParentWindowHandle, 
 
 bool FDesktopPlatformLinux::OpenFontDialog(const void* ParentWindowHandle, FString& OutFontName, float& OutHeight, EFontImportFlags& OutFlags)
 {
-	STUBBED("FDesktopPlatformLinux::OpenFontDialog");
+	if (!FModuleManager::Get().IsModuleLoaded("SlateFontDialog"))
+	{
+		FModuleManager::Get().LoadModule("SlateFontDialog");
+	}
+
+	ISlateFontDialogModule* FontDialog = FModuleManager::GetModulePtr<ISlateFontDialogModule>("SlateFontDialog");
+	
+	if (FontDialog)
+	{
+		return FontDialog->OpenFontDialog(OutFontName, OutHeight, OutFlags);
+	}
+	else
+	{
+		UE_LOG(LogLinux, Warning, TEXT("Error reading results of font dialog"));
+	}
+	
 	return false;
 }
 
@@ -315,7 +331,7 @@ static bool CompareAndCheckDesktopFile(const TCHAR* DesktopFileName, const TCHAR
 		DesktopFileExecPath = Matcher.GetCaptureGroup(1);
 	}
 
-	if (DesktopFileExecPath.Compare("bash") != 0 && !FPaths::FileExists(*DesktopFileExecPath))
+	if (DesktopFileExecPath.Compare("bash") != 0 && !FPaths::FileExists(DesktopFileExecPath))
 	{
 		return false;
 	}
@@ -354,7 +370,7 @@ bool FDesktopPlatformLinux::UpdateFileAssociations()
 		return false;
 	}
 
-	if (!RunXDGUtil(FString::Printf(TEXT("xdg-icon-resource install --novendor --mode user --context apps --size 256 %sRuntime/Launch/Resources/Linux/UE4.png ubinary"), *FPaths::EngineSourceDir())))
+	if (!RunXDGUtil(FString::Printf(TEXT("xdg-icon-resource install --novendor --mode user --context apps --size 256 %sRuntime/Launch/Resources/Linux/UnrealEngine.png ubinary"), *FPaths::EngineSourceDir())))
 	{
 		return false;
 	}
@@ -419,7 +435,7 @@ bool FDesktopPlatformLinux::RunUnrealBuildTool(const FText& Description, const F
 	OutExitCode = 1;
 
 	// Get the path to UBT
-	FString UnrealBuildToolPath = RootDir / TEXT("Engine/Binaries/DotNET/UnrealBuildTool.exe");
+	FString UnrealBuildToolPath = GetUnrealBuildToolExecutableFilename(RootDir);
 	if(IFileManager::Get().FileSize(*UnrealBuildToolPath) < 0)
 	{
 		Warn->Logf(ELogVerbosity::Error, TEXT("Couldn't find UnrealBuildTool at '%s'"), *UnrealBuildToolPath);
@@ -429,19 +445,12 @@ bool FDesktopPlatformLinux::RunUnrealBuildTool(const FText& Description, const F
 	// Write the output
 	Warn->Logf(TEXT("Running %s %s"), *UnrealBuildToolPath, *Arguments);
 
-	// launch UBT with Mono
-	FString ScriptPath = FPaths::ConvertRelativePathToFull(RootDir / TEXT("Engine/Build/BatchFiles/Linux/RunMono.sh"));
-	FString CmdLineParams = FString::Printf(TEXT("\"%s\" \"%s\" %s"), *ScriptPath, *UnrealBuildToolPath, *Arguments);
-
-	// Spawn it with bash (and not sh) because of pushd
-	return FFeedbackContextMarkup::PipeProcessOutput(Description, TEXT("/bin/bash"), CmdLineParams, Warn, &OutExitCode) && OutExitCode == 0;
+	return FFeedbackContextMarkup::PipeProcessOutput(Description, UnrealBuildToolPath, Arguments, Warn, &OutExitCode) && OutExitCode == 0;
 }
 
 bool FDesktopPlatformLinux::IsUnrealBuildToolRunning()
 {
-	// For now assume that if mono application is running, we're running UBT
-	// @todo: we need to get the commandline for the mono process and check if UBT.exe is in there.
-	return FPlatformProcess::IsApplicationRunning(TEXT("mono"));
+	return FPlatformProcess::IsApplicationRunning(TEXT("UnrealBuildTool"));
 }
 
 FFeedbackContext* FDesktopPlatformLinux::GetNativeFeedbackContext()

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "../HairStrands/HairStrandsVoxelPageCommonStruct.ush"
+// Bump to force a rebuild of this shader (when changing related C++ code). Generate unique value on merge conflict.
+#define RAY_TRACING_OCCLUSION_RGS_VERSION 0x8219847B
 
 #include "../Common.ush"
 #include "../MonteCarlo.ush"
@@ -44,6 +45,7 @@ uint bTransmissionSamplingDistanceCulling;
 uint TransmissionSamplingTechnique;
 uint RejectionSamplingTrials;
 uint bAcceptFirstHit;
+uint bTwoSidedGeometry;
 
 #define TransmissionSampling_ConstantTrackingInfiniteDomain 0
 #define TransmissionSampling_ConstantTrackingFiniteDomain 1
@@ -52,7 +54,6 @@ uint bAcceptFirstHit;
 #include "../HairStrands/HairStrandsRaytracing.ush"
 uint				bUseHairVoxel;
 float				HairOcclusionThreshold;
-Texture2D<uint4>	HairCategorizationTexture;
 Texture2D<uint>		HairLightChannelMaskTexture;
 
 void NeedTraceHair(
@@ -60,13 +61,13 @@ void NeedTraceHair(
 	inout bool bTraceHairRay,
 	inout float HairDeviceZ)
 {
-	const FCategorizationData Categorization = DecodeCategorizationData(HairCategorizationTexture.Load(uint3(PixelCoord, 0)));
+	const float HairSampleDepth = HairStrands.HairOnlyDepthTexture.Load(uint3(PixelCoord, 0));
 	bTraceHairRay = false;
 	HairDeviceZ = 0;
-	if (Categorization.PixelCoverage > 0)
+	if (HairSampleDepth > 0)
 	{
 		const uint HairLightChannel = HairLightChannelMaskTexture.Load(uint3(PixelCoord, 0));
-		HairDeviceZ = Categorization.ClosestDepth;
+		HairDeviceZ = HairSampleDepth;
 		bTraceHairRay = (HairLightChannel & LightingChannelMask) != 0;
 	}
 }
@@ -421,9 +422,11 @@ FOcclusionResult ComputeOcclusion(
 
 		uint RayFlags = 0;
 
-	#if !ENABLE_TWO_SIDED_GEOMETRY
-		RayFlags |= RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
-	#endif
+		// Enable back face culling if not used two-sided shadow casting mode.
+		if (bTwoSidedGeometry != 1)
+		{
+			RayFlags |= RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+		}
 
 	#if USE_HAIR_LIGHTING
 		if (ShadingModelID == SHADINGMODELID_HAIR)
@@ -517,7 +520,7 @@ FOcclusionResult ComputeOcclusion(
 
 		// Fix light sampling to occur at the light center for all transmission computations..
 		float2 LightSample = 0.5;
-		const float3 V = normalize(WorldPosition - View.WorldViewOrigin);
+		const float3 V = normalize(WorldPosition - LWCHackToFloat(PrimaryView.WorldViewOrigin));
 
 		const float MeanFreePath = TransmissionProfileParams.ExtinctionScale;
 		const float Eta = TransmissionProfileParams.OneOverIOR;
@@ -535,7 +538,7 @@ FOcclusionResult ComputeOcclusion(
 	}
 	else if (ShadingModelID == SHADINGMODELID_SUBSURFACE || ShadingModelID == SHADINGMODELID_HAIR)
 	{
-		float Depth = length(WorldPosition - View.WorldCameraOrigin);
+		float Depth = length(WorldPosition - LWCHackToFloat(PrimaryView.WorldCameraOrigin));
 		float Range = LODTransitionEnd - LODTransitionStart;
 		if (Depth > LODTransitionStart && Range > 0.0)
 		{
@@ -567,7 +570,7 @@ RAY_TRACING_ENTRY_RAYGEN(OcclusionRGS)
 		uint LinearIndex = CalcLinearIndex(PixelCoord);
 		RandomSequence_Initialize(RandSequence, LinearIndex, View.StateFrameIndex);
 
-		FLightShaderParameters LightParameters = GetRootLightShaderParameters();
+		FLightShaderParameters LightParameters = GetRootLightShaderParameters(PrimaryView.PreViewTranslation);
 
 		// Get G-Buffer surface data
 		float2 InvBufferSize = View.BufferSizeAndInvSize.zw;

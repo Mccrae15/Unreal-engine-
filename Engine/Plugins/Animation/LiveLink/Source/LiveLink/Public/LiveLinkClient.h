@@ -54,8 +54,11 @@ public:
 	virtual const TArray<FLiveLinkFrame>* GetSubjectRawFrames(FName SubjectName) override;
 	virtual void ClearSubjectsFrames(FName SubjectName) override;
 	virtual void ClearAllSubjectsFrames() override;
-	virtual void AddSourceToSubjectWhiteList(FName SubjectName, FGuid SourceGuid) override;
-	virtual void RemoveSourceFromSubjectWhiteList(FName SubjectName, FGuid SourceGuid) override;
+	virtual TSubclassOf<ULiveLinkRole> GetSubjectRole(const FLiveLinkSubjectKey& SubjectKey) const override;
+	virtual TSubclassOf<ULiveLinkRole> GetSubjectRole(FLiveLinkSubjectName SubjectName) const override;
+	virtual bool DoesSubjectSupportsRole(const FLiveLinkSubjectKey& SubjectKey, TSubclassOf<ULiveLinkRole> SupportedRole) const override;
+	virtual bool DoesSubjectSupportsRole(FLiveLinkSubjectName SubjectName, TSubclassOf<ULiveLinkRole> SupportedRole) const override;
+
 	//~ End ILiveLinkClient implementation
 
 protected:
@@ -95,6 +98,10 @@ public:
 	virtual void ClearSubjectsFrames_AnyThread(FLiveLinkSubjectName SubjectName) override;
 	virtual void ClearSubjectsFrames_AnyThread(const FLiveLinkSubjectKey& InSubjectKey) override;
 	virtual void ClearAllSubjectsFrames_AnyThread() override;
+	virtual TSubclassOf<ULiveLinkRole> GetSubjectRole_AnyThread(const FLiveLinkSubjectKey& SubjectKey) const override;
+	virtual TSubclassOf<ULiveLinkRole> GetSubjectRole_AnyThread(FLiveLinkSubjectName SubjectName) const override;
+	virtual bool DoesSubjectSupportsRole_AnyThread(const FLiveLinkSubjectKey& SubjectKey, TSubclassOf<ULiveLinkRole> SupportedRole) const override;
+	virtual bool DoesSubjectSupportsRole_AnyThread(FLiveLinkSubjectName SubjectName, TSubclassOf<ULiveLinkRole> SupportedRole) const override;
 
 	virtual FLiveLinkSubjectPreset GetSubjectPreset(const FLiveLinkSubjectKey& SubjectKey, UObject* DuplicatedObjectOuter) const override;
 	virtual TArray<FLiveLinkSubjectKey> GetSubjects(bool bIncludeDisabledSubject, bool bIncludeVirtualSubject) const override;
@@ -108,11 +115,7 @@ public:
 	virtual bool IsSubjectTimeSynchronized(FLiveLinkSubjectName SubjectName) const override;
 	virtual bool IsVirtualSubject(const FLiveLinkSubjectKey& SubjectKey) const override;
 
-	virtual TSubclassOf<ULiveLinkRole> GetSubjectRole(const FLiveLinkSubjectKey& SubjectKey) const override;
-	virtual TSubclassOf<ULiveLinkRole> GetSubjectRole(FLiveLinkSubjectName SubjectName) const override;
 	virtual TArray<FLiveLinkSubjectKey> GetSubjectsSupportingRole(TSubclassOf<ULiveLinkRole> SupportedRole, bool bIncludeDisabledSubject, bool bIncludeVirtualSubject) const override;
-	virtual bool DoesSubjectSupportsRole(const FLiveLinkSubjectKey& SubjectKey, TSubclassOf<ULiveLinkRole> SupportedRole) const override;
-	virtual bool DoesSubjectSupportsRole(FLiveLinkSubjectName SubjectName, TSubclassOf<ULiveLinkRole> SupportedRole) const override;
 	virtual TArray<FLiveLinkTime> GetSubjectFrameTimes(const FLiveLinkSubjectKey& SubjectKey) const override;
 	virtual TArray<FLiveLinkTime> GetSubjectFrameTimes(FLiveLinkSubjectName SubjectName) const override;
 	virtual ULiveLinkSourceSettings* GetSourceSettings(const FGuid& SourceGuid) const override;
@@ -156,7 +159,12 @@ public:
 	/** Callback when property changed for one of the source settings */
 	void OnPropertyChanged(FGuid EntryGuid, const FPropertyChangedEvent& PropertyChangedEvent);
 
-	TArray<FGuid> GetDisplayableSources() const;
+	/**
+	 * Get all sources that can be displayed in the UI's source list.
+	 * @param bIncludeVirtualSources Whether or not to include virtual sources in the returned list, since virtual sources are not displayed in the source list.
+	 * @return the list of displayable sources.
+	 */
+	TArray<FGuid> GetDisplayableSources(bool bIncludeVirtualSources = false) const;
 
 	FLiveLinkSubjectTimeSyncData GetTimeSyncData(FLiveLinkSubjectName SubjectName);
 
@@ -234,6 +242,12 @@ private:
 	/** Process virtual subject for rebroadcast purpose */
 	void HandleSubjectRebroadcast(ILiveLinkSubject* InSubject, const FLiveLinkFrameDataStruct& InFrameData);
 
+	/** Called when a subject is removed. Used to remove rebroadcasted subjects */
+	void OnSubjectRemovedCallback(FLiveLinkSubjectKey InSubjectKey);
+
+	/** Removes a subject from the rebroadcast provider and resets it if there are no more subjects */
+	void RemoveRebroadcastedSubject(FLiveLinkSubjectKey InSubjectKey);
+
 private:
 	/** The current collection used. */
 	TUniquePtr<FLiveLinkSourceCollection> Collection;
@@ -277,6 +291,7 @@ private:
 	/** LiveLink Provider for rebroadcasting */
 	TSharedPtr<ILiveLinkProvider> RebroadcastLiveLinkProvider;
 	FString RebroadcastLiveLinkProviderName;
+	TSet<FLiveLinkSubjectKey> RebroadcastedSubjects;
 
 #if WITH_EDITOR
 	/** Delegate when a subject is evaluated. */

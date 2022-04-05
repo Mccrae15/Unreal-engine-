@@ -4,7 +4,7 @@
 	"VersionName": "1.0",
 	"FriendlyName": "Web Browser to Native Proxying",
 	"Description": "Maintains the browser to native proxy and provides hooks for registering UObjects bindings",
-	"Category" : "Web",
+	"Category": "UI",
 	"CreatedBy": "Epic Games, Inc.",
 	"CreatedByURL": "http://epicgames.com",
 	"DocsURL": "",
@@ -13,19 +13,19 @@
 	"EnabledByDefault": false,
 	"IsBetaVersion": false,
 	"Installed": false,
-	"Modules" :
-	[
+	"Modules": [
 		{
 			"Name": "WebBrowserNativeProxy",
 			"Type": "Runtime",
 			"LoadingPhase": "PreDefault",
-			"WhitelistPlatforms" :
-			[
+			"PlatformAllowList": [
 				"Win64",
 				"Mac",
 				"IOS",
 				"Android"
 			]
 		}
-	]
+	],
+	"CanContainContent": false,
+	"IsExperimentalVersion": false
 }

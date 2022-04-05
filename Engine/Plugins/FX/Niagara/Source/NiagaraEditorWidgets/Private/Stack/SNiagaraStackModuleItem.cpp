@@ -75,7 +75,7 @@ FReply SNiagaraStackModuleItem::OnMouseButtonDoubleClick(const FGeometry& InMyGe
 		if (ModuleFunctionCall.FunctionScript->IsAsset() || GbShowNiagaraDeveloperWindows > 0)
 		{
 			ModuleFunctionCall.FunctionScript->VersionToOpenInEditor = ModuleFunctionCall.SelectedScriptVersion;
-			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ModuleFunctionCall.FunctionScript);
+			GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(ToRawPtr(ModuleFunctionCall.FunctionScript));
 			return FReply::Handled();
 		}
 		else if (ModuleItem->IsScratchModule())
@@ -117,7 +117,7 @@ void SNiagaraStackModuleItem::AddCustomRowWidgets(TSharedRef<SHorizontalBox> Hor
 			.Content()
 			[
 				SNew(SImage)
-				.Image(FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Scratch"))
+				.Image(FNiagaraEditorStyle::Get().GetBrush("Tab.ScratchPad"))
 			]
 		];
 	}
@@ -154,8 +154,7 @@ void SNiagaraStackModuleItem::AddCustomRowWidgets(TSharedRef<SHorizontalBox> Hor
 	[
 		SAssignNew(AddButton, SComboButton)
 		.HasDownArrow(false)
-		.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-		.ForegroundColor(FSlateColor::UseForeground())
+		.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 		.OnGetMenuContent(this, &SNiagaraStackModuleItem::RaiseActionMenuClicked)
 		.ContentPadding(FMargin(2))
 		.HAlign(HAlign_Center)
@@ -165,7 +164,8 @@ void SNiagaraStackModuleItem::AddCustomRowWidgets(TSharedRef<SHorizontalBox> Hor
 		.ButtonContent()
 		[
 			SNew(SImage)
-			.Image(FEditorStyle::Get().GetBrush("PropertyWindow.Button_AddToArray"))
+			.Image(FAppStyle::Get().GetBrush("Icons.PlusCircle"))
+			.ColorAndOpacity(FSlateColor::UseForeground())
 		]
 	];
 
@@ -175,9 +175,8 @@ void SNiagaraStackModuleItem::AddCustomRowWidgets(TSharedRef<SHorizontalBox> Hor
 	.AutoWidth()
 	[
 		SNew(SButton)
-		.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
+		.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 		.IsFocusable(false)
-		.ForegroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.FlatButtonColor"))
 		.ToolTipText(LOCTEXT("RefreshTooltip", "Refresh this module"))
 		.Visibility(this, &SNiagaraStackModuleItem::GetRefreshVisibility)
 		.IsEnabled(this, &SNiagaraStackModuleItem::GetButtonsEnabled)
@@ -187,6 +186,7 @@ void SNiagaraStackModuleItem::AddCustomRowWidgets(TSharedRef<SHorizontalBox> Hor
 			SNew(STextBlock)
 			.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
 			.Text(FEditorFontGlyphs::Refresh)
+			.ColorAndOpacity(FSlateColor::UseForeground())
 		]
 	];
 }
@@ -323,7 +323,7 @@ TSharedRef<SWidget> SNiagaraStackModuleItem::AddContainerForRowWidgets(TSharedRe
 		[
 			SNew(SButton)
 			.Text(LOCTEXT("CreateNote_Yes", "Add Note"))
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+			.ButtonStyle(FAppStyle::Get(), "FlatButton.Success")
 			.IsEnabled_Lambda([&]()
 			{
 				return !DescriptionTextBox->GetText().IsEmpty();
@@ -337,7 +337,7 @@ TSharedRef<SWidget> SNiagaraStackModuleItem::AddContainerForRowWidgets(TSharedRe
 		.Padding(5.f)
 		[
 			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "FlatButton.Light")
+			.ButtonStyle(FAppStyle::Get(), "FlatButton.Dark")
 			.Text(LOCTEXT("CreateNote_No", "Cancel"))
 			.OnClicked_Lambda(CancelPressed)
 		]
@@ -345,11 +345,9 @@ TSharedRef<SWidget> SNiagaraStackModuleItem::AddContainerForRowWidgets(TSharedRe
 
 	return SNew(SDropTarget)
 	.OnAllowDrop(this, &SNiagaraStackModuleItem::OnModuleItemAllowDrop)
-	.OnDrop(this, &SNiagaraStackModuleItem::OnModuleItemDrop)
+	.OnDropped(this, &SNiagaraStackModuleItem::OnModuleItemDrop)
 	.HorizontalImage(FNiagaraEditorWidgetsStyle::Get().GetBrush("NiagaraEditor.Stack.DropTarget.BorderHorizontal"))
 	.VerticalImage(FNiagaraEditorWidgetsStyle::Get().GetBrush("NiagaraEditor.Stack.DropTarget.BorderVertical"))
-	.BackgroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.DropTarget.BackgroundColor"))
-	.BackgroundColorHover(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.DropTarget.BackgroundColorHover"))
 	.Content()
 	[
 		SNew(SVerticalBox)
@@ -509,11 +507,17 @@ FReply SNiagaraStackModuleItem::RefreshClicked()
 	return FReply::Handled();
 }
 
-FReply SNiagaraStackModuleItem::OnModuleItemDrop(TSharedPtr<FDragDropOperation> DragDropOperation)
+FReply SNiagaraStackModuleItem::OnModuleItemDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent)
 {
-	UNiagaraStackEntry::FDropRequest DropRequest(DragDropOperation.ToSharedRef(), EItemDropZone::OntoItem, UNiagaraStackEntry::EDragOptions::None, UNiagaraStackEntry::EDropOptions::None);
-	TOptional<UNiagaraStackEntry::FDropRequestResponse> DropResponse = ModuleItem->Drop(DropRequest);
-	return DropResponse.IsSet() && DropResponse->DropZone == EItemDropZone::OntoItem ? FReply::Handled() : FReply::Unhandled();
+	TSharedPtr<FDragDropOperation> DragDropOperation = InDragDropEvent.GetOperation();
+	if (DragDropOperation)
+	{
+		UNiagaraStackEntry::FDropRequest DropRequest(DragDropOperation.ToSharedRef(), EItemDropZone::OntoItem, UNiagaraStackEntry::EDragOptions::None, UNiagaraStackEntry::EDropOptions::None);
+		TOptional<UNiagaraStackEntry::FDropRequestResponse> DropResponse = ModuleItem->Drop(DropRequest);
+		return (DropResponse.IsSet() && (DropResponse->DropZone == EItemDropZone::OntoItem)) ? FReply::Handled() : FReply::Unhandled();
+	}
+
+	return FReply::Unhandled();
 }
 
 bool SNiagaraStackModuleItem::OnModuleItemAllowDrop(TSharedPtr<FDragDropOperation> DragDropOperation)

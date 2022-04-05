@@ -25,7 +25,7 @@ class FMenuBuilder;
 class FTimingGraphTrack;
 class FUICommandList;
 
-namespace Trace
+namespace TraceServices
 {
 	class IAnalysisSession;
 }
@@ -37,7 +37,7 @@ namespace Insights
 	class ITableCellValueSorter;
 
 	class FTimerAggregator;
-	class SAggregatorStatus;
+	class SAsyncOperationStatus;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -89,15 +89,18 @@ public:
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 
 private:
-
 	void InitCommandList();
+
 	void UpdateTree();
 
 	void FinishAggregation();
-	void ApplyAggregation(Trace::ITable<Trace::FTimingProfilerAggregatedStats>* AggregatedStatsTable);
+	void ApplyAggregation(TraceServices::ITable<TraceServices::FTimingProfilerAggregatedStats>* AggregatedStatsTable);
 
-	/** Called when the analysis session has changed. */
+	/** Called when the session has changed. */
 	void InsightsManager_OnSessionChanged();
+
+	/** Called when the analysis was completed. */
+	void InsightsManager_OnSessionAnalysisCompleted();
 
 	/**
 	 * Populates OutSearchStrings with the strings that should be used in searching.
@@ -114,9 +117,32 @@ private:
 	TSharedPtr<SWidget> TreeView_GetMenuContent();
 	void TreeView_BuildSortByMenu(FMenuBuilder& MenuBuilder);
 	void TreeView_BuildViewColumnMenu(FMenuBuilder& MenuBuilder);
+	void TreeView_BuildExportMenu(FMenuBuilder& MenuBuilder);
 
-	bool ContextMenu_CopySelectedToClipboard_CanExecute() const;
-	void ContextMenu_CopySelectedToClipboard_Execute();
+	bool ContextMenu_CopyToClipboard_CanExecute() const;
+	void ContextMenu_CopyToClipboard_Execute();
+
+	bool ContextMenu_Export_CanExecute() const;
+	void ContextMenu_Export_Execute();
+
+	void AddTimerNodeRecursive(FTimerNodePtr InNode, TSet<uint32>& InOutIncludedTimers) const;
+
+	bool ContextMenu_ExportTimingEventsSelection_CanExecute() const;
+	void ContextMenu_ExportTimingEventsSelection_Execute() const;
+
+	bool ContextMenu_ExportTimingEvents_CanExecute() const;
+	void ContextMenu_ExportTimingEvents_Execute() const;
+
+	bool ContextMenu_ExportThreads_CanExecute() const;
+	void ContextMenu_ExportThreads_Execute() const;
+
+	bool ContextMenu_ExportTimers_CanExecute() const;
+	void ContextMenu_ExportTimers_Execute() const;
+
+	class IFileHandle* OpenSaveTextFileDialog(const FString& InDialogTitle, const FString& InDefaultFile, FString& OutFilename) const;
+
+	bool ContextMenu_OpenSource_CanExecute() const;
+	void ContextMenu_OpenSource_Execute() const;
 
 	////////////////////////////////////////////////////////////////////////////////////////////////////
 	// Tree View - Columns' Header
@@ -271,12 +297,14 @@ private:
 	 */
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
+	void OpenSourceFileInIDE(FTimerNodePtr InNode) const;
+
 private:
 	/** Table view model. */
 	TSharedPtr<Insights::FTable> Table;
 
-	/** A weak pointer to the profiler session used to populate this widget. */
-	TSharedPtr<const Trace::IAnalysisSession>/*Weak*/ Session;
+	/** The analysis session used to populate this widget. */
+	TSharedPtr<const TraceServices::IAnalysisSession> Session;
 
 	TSharedPtr<FUICommandList> CommandList;
 
@@ -374,7 +402,7 @@ private:
 	//////////////////////////////////////////////////
 
 	TSharedRef<Insights::FTimerAggregator> Aggregator;
-	TSharedPtr<Insights::SAggregatorStatus> AggregatorStatus;
+	TSharedPtr<Insights::SAsyncOperationStatus> AsyncOperationStatus;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

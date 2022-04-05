@@ -134,7 +134,7 @@ public:
 
 	static float GetHue(const FColor& Color);
 
-	static bool IsAntialiased(const FColor& SourcePixel, FComparableImage* Image, int32 X, int32 Y, const FImageTolerance& Tolerance);
+	static bool IsAntialiased(const FColor& SourcePixel, const FComparableImage* Image, int32 X, int32 Y, const FImageTolerance& Tolerance);
 };
 
 /**
@@ -143,30 +143,20 @@ public:
 class FComparableImage
 {
 public:
-	int32 Width;
-	int32 Height;
+	int32 Width = 0;
+	int32 Height = 0;
 	TArray64<uint8> Bytes;
 
 	FComparableImage()
-		: RedTotal(0)
-		, GreenTotal(0)
-		, BlueTotal(0)
-		, AlphaTotal(0)
-		, LuminanceTotal(0)
-		, RedAverage(0)
-		, GreenAverage(0)
-		, BlueAverage(0)
-		, AlphaAverage(0)
-		, LuminanceAverage(0)
 	{
 	}
 
-	FORCEINLINE bool CanGetPixel(int32 X, int32 Y)
+	FORCEINLINE bool CanGetPixel(int32 X, int32 Y) const
 	{
 		return X >= 0 && Y >= 0 && X < Width && Y < Height;
 	}
 
-	FORCEINLINE FColor GetPixel(int32 X, int32 Y)
+	FORCEINLINE FColor GetPixel(int32 X, int32 Y) const
 	{
 		int64 Offset = ( (int64)Y * Width + X ) * 4;
 		check(Offset < ( (int64)Width * Height * 4 ));
@@ -177,22 +167,6 @@ public:
 			Bytes[Offset + 2],
 			Bytes[Offset + 3]);
 	}
-
-	void Process();
-
-public:
-	// Processed Data
-	double RedTotal;
-	double GreenTotal;
-	double BlueTotal;
-	double AlphaTotal;
-	double LuminanceTotal;
-
-	double RedAverage;
-	double GreenAverage;
-	double BlueAverage;
-	double AlphaAverage;
-	double LuminanceAverage;
 };
 
 /**
@@ -298,7 +272,7 @@ public:
 	FText ErrorMessage;
 
 	/*
-		Error message that can be set during a comparison
+		Version of the image comparision result 
 	*/
 	UPROPERTY()
 	int32 Version;
@@ -306,7 +280,7 @@ public:
 	static constexpr int32 CurrentVersion = 2;
 
 	FImageComparisonResult()
-		: CreationTime(FDateTime::Now())
+		: CreationTime(0)
 		, MaxLocalDifference(0.0f)
 		, GlobalDifference(0.0f)
 		, ErrorMessage()
@@ -315,7 +289,7 @@ public:
 	}
 
 	FImageComparisonResult(const FText& Error)
-		: CreationTime(FDateTime::Now())
+		: CreationTime(0)
 		, MaxLocalDifference(0.0f)
 		, GlobalDifference(0.0f)
 		, ErrorMessage(Error)
@@ -363,6 +337,11 @@ public:
 	bool AreSimilar() const
 	{
 		if ( IsNew() )
+		{
+			return false;
+		}
+
+		if (!ErrorMessage.IsEmpty())
 		{
 			return false;
 		}
@@ -428,6 +407,7 @@ class SCREENSHOTCOMPARISONTOOLS_API FImageComparer
 public:
 	
 	FImageComparisonResult Compare(const FString& ImagePathA, const FString& ImagePathB, FImageTolerance Tolerance, const FString& OutDeltaPath);
+	FImageComparisonResult Compare(const FComparableImage* ImageA, const FComparableImage* ImageB, FImageTolerance Tolerance, const FString& OutDeltaPath);
 
 	enum class EStructuralSimilarityComponent : uint8
 	{
@@ -439,6 +419,7 @@ public:
 	 * https://en.wikipedia.org/wiki/Structural_similarity
 	 */
 	double CompareStructuralSimilarity(const FString& ImagePathA, const FString& ImagePathB, EStructuralSimilarityComponent InCompareComponent, const FString& OutDeltaPath);
+	double CompareStructuralSimilarity(const FComparableImage* ImageA, const FComparableImage* ImageB, EStructuralSimilarityComponent InCompareComponent, const FString& OutDeltaPath);
 
 private:
 	TSharedPtr<FComparableImage> Open(const FString& ImagePath, FText& OutError);

@@ -13,6 +13,7 @@
 class Error;
 
 DECLARE_DELEGATE_RetVal(FText, FGetExtendedViewportText);
+DECLARE_DELEGATE(FOnDebugForceLODChanged);
 
 USTRUCT()
 struct FSelectedSocketInfo
@@ -63,6 +64,20 @@ namespace EPersonaTurnTableMode
 	};
 };
 
+/** Different modes for when processing root motion */
+UENUM()
+enum class EProcessRootMotionMode : uint8
+{
+	/** Preview mesh will not consume root motion */
+	Ignore,
+
+	/** Preview mesh will consume root motion continually */
+	Loop,
+
+	/** Preview mesh will consume root motion resetting the position back to the origin every time the animation loops */
+	LoopAndReset
+};
+
 //////////////////////////////////////////////////////////////////////////
 // FDebugSkelMeshSceneProxy
 
@@ -82,7 +97,6 @@ public:
 	bool bDrawClothPaintPreview;
 
 	bool bFlipNormal;
-	bool bCullBackface;
 
 	int32 ClothingSimDataIndexWhenPainting;
 	TArray<uint32> ClothingSimIndices;
@@ -91,10 +105,8 @@ public:
 	float PropertyViewMin;
 	float PropertyViewMax;
 
-	float ClothMeshOpacity;
-
-	TArray<FVector> SkinnedPositions;
-	TArray<FVector> SkinnedNormals;
+	TArray<FVector3f> SkinnedPositions;
+	TArray<FVector3f> SkinnedNormals;
 };
 
 /**
@@ -109,7 +121,7 @@ public:
 	* Constructor.
 	* @param	Component - skeletal mesh primitive being added
 	*/
-	FDebugSkelMeshSceneProxy(const UDebugSkelMeshComponent* InComponent, FSkeletalMeshRenderData* InSkelMeshRenderData, const FColor& InWireframeOverlayColor = FColor::White);
+	FDebugSkelMeshSceneProxy(const UDebugSkelMeshComponent* InComponent, FSkeletalMeshRenderData* InSkelMeshRenderData, FLinearColor InWireframeOverlayColor = FLinearColor::White);
 
 	virtual ~FDebugSkelMeshSceneProxy()
 	{}
@@ -127,6 +139,10 @@ public:
 	{
 		return sizeof(*this) + GetAllocatedSize();
 	}
+
+private:
+
+	bool bSelectable;
 };
 
 UCLASS(transient)
@@ -173,6 +189,10 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 	UPROPERTY(transient)
 	uint32 bDrawSockets:1;
 
+	/** Attribute visualization */
+	UPROPERTY(transient)
+	uint32 bDrawAttributes : 1;
+
 	/** Skeleton sockets visible? */
 	UPROPERTY(transient)
 	uint32 bSkeletonSocketsVisible:1;
@@ -209,7 +229,19 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 	bool bDisplayVertexColors;
 
 	UPROPERTY(transient)
-	uint32 bPreviewRootMotion:1;
+	FLinearColor WireframeMeshOverlayColor;
+
+	UE_DEPRECATED(5.0, "This variable is no longer used. Use ProcessRootMotionMode instead.")
+	UPROPERTY()
+	uint32 bPreviewRootMotion_DEPRECATED : 1;
+
+	/** Process root motion mode */
+	UPROPERTY(transient)
+	EProcessRootMotionMode ProcessRootMotionMode;
+
+	/** Playback time last time ConsumeRootmotion was called */
+	UPROPERTY(transient)
+	float ConsumeRootMotionPreviousPlaybackTime;
 
 	UPROPERTY(transient)
 	uint32 bShowClothData : 1;
@@ -231,6 +263,10 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 
 	UPROPERTY(transient)
 	uint32 bRequiredBonesUpToDateDuringTick : 1;
+
+	/** Multiplier for the bone radius rendering */
+	UPROPERTY(transient)
+	float BoneRadiusMultiplier;
 
 	/* Bounds computed from cloth. */
 	FBoxSphereBounds CachedClothBounds;
@@ -256,17 +292,17 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 
 	/** Array of morphtargets to render verts for */
 	UPROPERTY(transient)
-	TArray<class UMorphTarget*> MorphTargetOfInterests;
+	TArray<TObjectPtr<class UMorphTarget>> MorphTargetOfInterests;
 
 	/** Array of materials to restore when not rendering blend weights */
 	UPROPERTY(transient)
-	TArray<class UMaterialInterface*> SkelMaterials;
+	TArray<TObjectPtr<class UMaterialInterface>> SkelMaterials;
 	
 	UPROPERTY(transient, NonTransactional)
-	class UAnimPreviewInstance* PreviewInstance;
+	TObjectPtr<class UAnimPreviewInstance> PreviewInstance;
 
 	UPROPERTY(transient)
-	class UAnimInstance* SavedAnimScriptInstance;
+	TObjectPtr<class UAnimInstance> SavedAnimScriptInstance;
 
 	/** Does this component use in game bounds or does it use bounds calculated from bones */
 	UPROPERTY(transient)
@@ -284,6 +320,13 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 
 	UPROPERTY(transient)
 	bool bPauseClothingSimulationWithAnim;
+
+	/** Should the LOD of the debug mesh component track the LOD of the instance being debugged */
+	UPROPERTY(transient)
+	bool bTrackAttachedInstanceLOD;
+
+	// Helper method that sets the forced lod
+	void SetDebugForcedLOD(int32 InNewForcedLOD);
 
 	//~ Begin USceneComponent Interface.
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
@@ -373,10 +416,37 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 	void SetShowClothProperty(bool bState);
 
 	/** Get whether we should be previewing root motion */
-	bool GetPreviewRootMotion() const;
+	UE_DEPRECATED(5.0, "Please use IsProcessingRootMotion or GetProcessRootMotionMode")
+	bool GetPreviewRootMotion() const { return IsProcessingRootMotion(); }
 
 	/** Set whether we should be previewing root motion. Note: disabling root motion preview resets transform. */
-	void SetPreviewRootMotion(bool bInPreviewRootMotion);
+	UE_DEPRECATED(5.0, "Please use SetProcessRootMotionMode")
+	void SetPreviewRootMotion(bool bInPreviewRootMotion) { SetProcessRootMotionMode(bInPreviewRootMotion ? EProcessRootMotionMode::Loop : EProcessRootMotionMode::Ignore); }
+
+	/** Whether we are processing root motion or not */
+	bool IsProcessingRootMotion() const;
+
+	/** Gets process root motion mode */
+	EProcessRootMotionMode GetProcessRootMotionMode() const;
+
+	/** Sets process root motion mode. Note: disabling root motion preview resets transform. */
+	void SetProcessRootMotionMode(EProcessRootMotionMode Mode);
+
+	/** Whether the supplied root motion mode can be used for the current asset */
+	bool CanUseProcessRootMotionMode(EProcessRootMotionMode Mode) const;
+
+	/** Whether the current asset is using root motion */
+	bool DoesCurrentAssetHaveRootMotion() const;
+
+	/** Whether the current LOD of the debug mesh is being synced with the attached (preview) mesh instance. */
+	bool IsTrackingAttachedLOD() const;
+
+	/** Set the wireframe mesh overlay color, which basically controls the color of the wireframe. */
+	void SetWireframeMeshOverlayColor(FLinearColor Color) { WireframeMeshOverlayColor = Color; }
+
+	/** Get the wireframe mesh overlay color, which basically controls the color of the wireframe. */
+	FLinearColor GetWireframeMeshOverlayColor() const { return WireframeMeshOverlayColor; }
+
 
 #if WITH_EDITOR
 	//TODO - This is a really poor way to post errors to the user. Work out a better way.
@@ -400,8 +470,12 @@ class UNREALED_API UDebugSkelMeshComponent : public USkeletalMeshComponent
 	void UnregisterExtendedViewportTextDelegate(const FDelegateHandle& InDelegateHandle);
 	const TArray<FGetExtendedViewportText>& GetExtendedViewportTextDelegates() const { return ExtendedViewportTextDelegates; }
 
+	FDelegateHandle RegisterOnDebugForceLODChangedDelegate(const FOnDebugForceLODChanged& InDelegate);
+	void UnregisterOnDebugForceLODChangedDelegate();
+
 private:
 	TArray<FGetExtendedViewportText> ExtendedViewportTextDelegates;
+	FOnDebugForceLODChanged OnDebugForceLODChangedDelegate;
 public:
 
 #endif
@@ -458,14 +532,18 @@ public:
 	// Rebuilds the fixed parameter on the mesh to mesh data, to be used if the editor has
 	// changed a vert to be fixed or unfixed otherwise the simulation will not work
 	// bInvalidateDerivedDataCache can only be false during previewing as otherwise the changes won't be correctly saved
+	UE_DEPRECATED(5.0, "This function is redundant, since it is always called after ApplyParameterMasks and therefore will be removed.")
 	void RebuildClothingSectionsFixedVerts(bool bInvalidateDerivedDataCache = true);
 
-	TArray<FVector> SkinnedSelectedClothingPositions;
-	TArray<FVector> SkinnedSelectedClothingNormals;
+	TArray<FVector3f> SkinnedSelectedClothingPositions;
+	TArray<FVector3f> SkinnedSelectedClothingNormals;
 
 private:
+	// Rebuilds the fixed vertex attribute on any cloth deformer mappings,
+	// including LOD bias mappings, that reference the specified LOD section.
+	UE_DEPRECATED(5.0, "This function is redundant, since it is always called after ApplyParameterMasks and therefore will be removed.")
+	void RebuildClothingSectionFixedVerts(int32 LODIndex, int32 SectionIndex);
 
-private:
 	// Helper function to generate space bases for current frame
 	void GenSpaceBases(TArray<FTransform>& OutSpaceBases);
 
@@ -486,7 +564,7 @@ public:
 	EPersonaTurnTableMode::Type TurnTableMode;
 	/** Current turn table speed scaling */
 	float TurnTableSpeedScaling;
-	
+
 	virtual void TickComponent(float DeltaTime, enum ELevelTick TickType, FActorComponentTickFunction *ThisTickFunction) override;
 
 	void RefreshSelectedClothingSkinnedPositions();

@@ -63,7 +63,7 @@ namespace TextureShareItem
 		static EPixelFormat FindSharedTextureFormat(const FTextureShareSurfaceDesc& TextureDesc);
 
 	private:
-		TMap<int32, FSharedRHITexture*> SharedRHITextures;
+		TMap<int, FSharedRHITexture*> SharedRHITextures;
 	};
 };
 #endif

@@ -33,13 +33,17 @@ namespace SkeletalSimplifier
 			Empty();
 		}
 
-
 		/**
 		* Constructor allocates index and vertex buffer.
 		*/
-		TSkinnedSkeletalMesh(int32 NumTriangles, int32 NumVertices)
+		TSkinnedSkeletalMesh(int32 NumTriangles, int32 NumVertices) :
+			IndexBuffer(NULL),
+			VertexBuffer(NULL),
+			NumTris(0),
+			NumVerts(0),
+			TexCoordNum(0)
 		{
-			Resize(NumTris, NumVerts);
+			Resize(NumTriangles, NumVertices);
 		}
 
 		/**
@@ -94,8 +98,9 @@ namespace SkeletalSimplifier
 		/**
 		* Remove vertices that aren't referenced by the index buffer.
 		* Also rebuilds the index buffer to account for the removals.
+		* Optionally, VertexRemap will map the compact vert index to the original vert index
 		*/
-		void Compact()
+		void Compact(TArray<int32>* VertexRemap = nullptr)
 		{
 			if (IndexBuffer == NULL)
 			{
@@ -122,9 +127,23 @@ namespace SkeletalSimplifier
 				RequiredVertCount += Mask[i];
 			}
 
+
+			if (VertexRemap)
+			{
+				VertexRemap->Empty();
+				VertexRemap->SetNumUninitialized(RequiredVertCount);
+			}
+
 			// If all the verts are being used, there is nothing to do
 			if (RequiredVertCount == NumVerts)
 			{
+				if (VertexRemap)
+				{
+					for (int32 i = 0; i < RequiredVertCount; ++i)
+					{
+						(*VertexRemap)[i] = i;
+					}
+				}
 				delete[] Mask;
 				return;
 			}
@@ -154,6 +173,10 @@ namespace SkeletalSimplifier
 					checkSlow(j < RequiredVertCount);
 
 					VertexBuffer[j] = OldVertexBuffer[i];
+					if (VertexRemap)
+					{
+						(*VertexRemap)[j] = i;
+					}
 					j++;
 				}
 

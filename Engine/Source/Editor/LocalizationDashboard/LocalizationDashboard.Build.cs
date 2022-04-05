@@ -23,6 +23,7 @@ public class LocalizationDashboard : ModuleRules
 				"Slate",
 				"SlateCore",
 				"InputCore",
+				"EditorFramework",
                 "UnrealEd",
                 "EditorStyle",
 				"DesktopPlatform",
@@ -35,6 +36,7 @@ public class LocalizationDashboard : ModuleRules
 				"LocalizationService",
 				"InternationalizationSettings",
 				"ToolMenus",
+				"WorkspaceMenuStructure",
 			}
 		);
 

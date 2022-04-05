@@ -67,9 +67,9 @@ public:
 		FSlateLayoutTransform AccumulatedLayoutTransform = Concatenate(LocalLayoutTransform, ParentAccumulatedLayoutTransform);
 		AccumulatedRenderTransform = TransformCast<FSlateRenderTransform>(AccumulatedLayoutTransform);
 		// HACK to allow us to make FGeometry public members immutable to catch misuse.
-		const_cast<FVector2D&>( AbsolutePosition ) = AccumulatedLayoutTransform.GetTranslation();
+		const_cast<FVector2f&>( AbsolutePosition ) = FVector2f(AccumulatedLayoutTransform.GetTranslation());
 		const_cast<float&>( Scale ) = AccumulatedLayoutTransform.GetScale();
-		const_cast<FVector2D&>( Position ) = LocalLayoutTransform.GetTranslation();
+		const_cast<FVector2f&>( Position ) = FVector2f(LocalLayoutTransform.GetTranslation());
 	}
 
 private:
@@ -110,9 +110,9 @@ private:
 	{
 		FSlateLayoutTransform AccumulatedLayoutTransform = Concatenate(InLocalLayoutTransform, ParentAccumulatedLayoutTransform);
 		// HACK to allow us to make FGeometry public members immutable to catch misuse.
-		const_cast<FVector2D&>( AbsolutePosition ) = AccumulatedLayoutTransform.GetTranslation();
+		const_cast<FVector2f&>( AbsolutePosition ) = FVector2f(AccumulatedLayoutTransform.GetTranslation());
 		const_cast<float&>( Scale ) = AccumulatedLayoutTransform.GetScale();
-		const_cast<FVector2D&>( Position ) = InLocalLayoutTransform.GetTranslation();
+		const_cast<FVector2f&>( Position ) = FVector2f(InLocalLayoutTransform.GetTranslation());
 	}
 
 	/**
@@ -137,9 +137,9 @@ private:
 	{
 		FSlateLayoutTransform AccumulatedLayoutTransform = Concatenate(InLocalLayoutTransform, ParentAccumulatedLayoutTransform);
 		// HACK to allow us to make FGeometry public members immutable to catch misuse.
-		const_cast<FVector2D&>( AbsolutePosition ) = AccumulatedLayoutTransform.GetTranslation();
+		const_cast<FVector2f&>( AbsolutePosition ) = FVector2f(AccumulatedLayoutTransform.GetTranslation());
 		const_cast<float&>( Scale ) = AccumulatedLayoutTransform.GetScale();
-		const_cast<FVector2D&>( Position ) = InLocalLayoutTransform.GetTranslation();
+		const_cast<FVector2f&>( Position ) = FVector2f(InLocalLayoutTransform.GetTranslation());
 	}
 
 public:
@@ -427,34 +427,17 @@ public:
 	/**
 	 * Translates the local coordinates into local coordinates that after being transformed into absolute space will be rounded
 	 * to a whole number or approximately a whole number.  This is important for cases where you want to show a popup or a tooltip
-	 * and not have the window start on a half pixel, which can cause the contents to jitter in relation to eachother as the tooltip 
+	 * and not have the window start on a half pixel, which can cause the contents to jitter in relation to each other as the tooltip 
 	 * or popup moves around.
 	 */
 	FORCEINLINE_DEBUGGABLE FVector2D LocalToRoundedLocal(FVector2D LocalCoordinate) const
 	{
 		const FVector2D AbsoluteCoordinate = LocalToAbsolute(LocalCoordinate);
-		const FVector2D AbsoluteCoordinateRounded = FVector2D(FMath::RoundToInt(AbsoluteCoordinate.X), FMath::RoundToInt(AbsoluteCoordinate.Y));
+		const FVector2D AbsoluteCoordinateRounded = FVector2D(FMath::RoundToFloat(AbsoluteCoordinate.X), FMath::RoundToFloat(AbsoluteCoordinate.Y));
 
 		return AbsoluteToLocal(AbsoluteCoordinateRounded);
 	}
 	
-	/**
-	 * !!! DEPRECATED !!! This legacy function does not account for render transforms.
-	 * 
-	 * Returns a clipping rectangle corresponding to the allocated geometry's absolute position and size.
-	 * Note that the clipping rectangle starts 1 pixel above and left of the geometry because clipping is not
-	 * inclusive on the lower bound.
-	 * 
-	 * Absolute coordinates could be either desktop or window space depending on what space the root of the widget hierarchy is in.
-	 *
-	 * @return  Allotted geometry rectangle in absolute coordinates.
-	 */
-	UE_DEPRECATED(4.17, "This no longer represents any sort of clipping rect.  Please use GetLayoutBoundingRect() to get the layout rect of this geometry.")
-	FORCEINLINE_DEBUGGABLE FSlateRect GetClippingRect() const
-	{
-		return TransformRect(GetAccumulatedLayoutTransform(), FSlateRect(FVector2D(0.0f, 0.0f), Size));
-	}
-
 	FORCEINLINE_DEBUGGABLE FSlateRect GetLayoutBoundingRect() const
 	{
 		return GetLayoutBoundingRect(FSlateRect(FVector2D(0.0f, 0.0f), Size));
@@ -508,7 +491,7 @@ public:
 	/** @return the accumulated layout transform. Shouldn't be needed in general. */
 	FORCEINLINE FSlateLayoutTransform GetAccumulatedLayoutTransform() const
 	{
-		return FSlateLayoutTransform(Scale, AbsolutePosition);
+		return FSlateLayoutTransform(Scale, FVector2D(AbsolutePosition));
 	}
 
 	/**
@@ -523,7 +506,7 @@ public:
 	{
 		FSlateLayoutTransform AccumulatedLayoutTransform = ::Concatenate(GetAccumulatedLayoutTransform(), LayoutTransform);
 		AccumulatedRenderTransform = ::Concatenate(AccumulatedRenderTransform, LayoutTransform);
-		const_cast<FVector2D&>( AbsolutePosition ) = AccumulatedLayoutTransform.GetTranslation();
+		const_cast<FVector2f&>( AbsolutePosition ) = FVector2f(AccumulatedLayoutTransform.GetTranslation());
 		const_cast<float&>( Scale ) = AccumulatedLayoutTransform.GetScale();
 	}
 
@@ -564,7 +547,7 @@ public:
 	 */
 	FORCEINLINE FVector2D GetLocalPositionAtCoordinates(const FVector2D& NormalCoordinates) const
 	{
-		return Position + (NormalCoordinates * GetLocalSize());
+		return FVector2D(Position) + (NormalCoordinates * GetLocalSize());
 	}
 
 	bool HasRenderTransform() const { return bHasRenderTransform; }
@@ -608,7 +591,7 @@ public:
 	 * 
 	 * Absolute coordinates could be either desktop or window space depending on what space the root of the widget hierarchy is in.
 	 */
-	const FVector2D AbsolutePosition;	
+	const FVector2f AbsolutePosition;	
 
 	/** 
 	 * !!! DEPRECATED !!! 
@@ -617,7 +600,7 @@ public:
 	 * If you know your children have no additional scale applied to them, you can use this as the Local->Parent layout transform. If your children
 	 * DO have additional scale applied, there is no way to determine the actual Local->Parent layout transform, since the scale is accumulated.
 	 */
-	const FVector2D /*Local*/Position;
+	const FVector2f /*Local*/Position;
 
 private:
 

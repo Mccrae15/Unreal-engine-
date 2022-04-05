@@ -9,7 +9,6 @@
 #include "Toolkits/IToolkitHost.h"
 #include "IAnimationEditor.h"
 #include "TickableEditorObject.h"
-#include "EditorUndoClient.h"
 #include "Containers/ArrayView.h"
 
 struct FAssetData;
@@ -26,6 +25,7 @@ class UAnimSequenceBase;
 class ISkeletonTreeItem;
 class IAnimSequenceCurveEditor;
 struct FRichCurve;
+struct FToolMenuContext;
 
 namespace AnimationEditorModes
 {
@@ -49,11 +49,9 @@ namespace AnimationEditorTabs
 	extern const FName AnimMontageSectionsTab;
 }
 
-class FAnimationEditor : public IAnimationEditor, public FGCObject, public FEditorUndoClient, public FTickableEditorObject
+class FAnimationEditor : public IAnimationEditor, public FGCObject, public FTickableEditorObject
 {
 public:
-	FAnimationEditor();
-
 	virtual ~FAnimationEditor();
 
 	/** Edits the specified Skeleton object */
@@ -75,24 +73,25 @@ public:
 	virtual FText GetBaseToolkitName() const override;
 	virtual FString GetWorldCentricTabPrefix() const override;
 	virtual FLinearColor GetWorldCentricTabColorScale() const override;
+	virtual void InitToolMenuContext(FToolMenuContext& MenuContext) override;
 
 	/** FTickableEditorObject Interface */
 	virtual void Tick(float DeltaTime) override;
 	virtual TStatId GetStatId() const override;
 	virtual ETickableTickType GetTickableTickType() const override { return ETickableTickType::Always; }
-	
-	/** FEditorUndoClient interface */
-	virtual void PostUndo(bool bSuccess) override;
-	virtual void PostRedo(bool bSuccess) override;
 
 	/** @return the documentation location for this editor */
 	virtual FString GetDocumentationLink() const override
 	{
-		return FString(TEXT("Engine/Animation/AnimationEditor"));
+		return FString(TEXT("AnimatingObjects/SkeletalMeshAnimation/Persona/Modes/Animation"));
 	}
 
 	/** FGCObject interface */
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FAnimationEditor");
+	}
 
 	/** Get the skeleton tree widget */
 	TSharedRef<class ISkeletonTree> GetSkeletonTree() const { return SkeletonTree.ToSharedRef(); }
@@ -129,10 +128,6 @@ private:
 
 	void OnSetKey();
 
-	bool CanApplyRawAnimChanges() const;
-
-	void OnApplyRawAnimChanges();
-
 	void OnReimportAnimation();
 
 	void OnApplyCompression();
@@ -145,8 +140,6 @@ private:
 	void OnRemoveBoneTrack();
 
 	TSharedRef< SWidget > GenerateExportAssetMenu() const;
-
-	void FillCopyToSoundWaveMenu(FMenuBuilder& MenuBuilder) const;
 
 	void FillExportAssetMenu(FMenuBuilder& MenuBuilder) const;
 
@@ -169,9 +162,6 @@ private:
 
 	bool RecordMeshToAnimation(USkeletalMeshComponent* PreviewComponent, UAnimSequence* NewAsset) const;
 public:
-	/** Multicast delegate fired on global undo/redo */
-	FSimpleMulticastDelegate OnPostUndo;
-
 	/** Multicast delegate fired on global undo/redo */
 	FSimpleMulticastDelegate OnLODChanged;
 

@@ -22,7 +22,7 @@ public:
 	~FNiagaraRendererRibbons();
 
 	// FNiagaraRenderer Interface 
-	virtual void CreateRenderThreadResources(NiagaraEmitterInstanceBatcher* Batcher) override;
+	virtual void CreateRenderThreadResources() override;
 	virtual void ReleaseRenderThreadResources() override;
 
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector, const FNiagaraSceneProxy *SceneProxy) const override;
@@ -34,7 +34,7 @@ public:
 #endif
 	//FNiagaraInterface END
 
-	FORCEINLINE void AddDynamicParam(TArray<FNiagaraRibbonVertexDynamicParameter>& ParamData, const FVector4& DynamicParam);
+	FORCEINLINE void AddDynamicParam(TArray<FNiagaraRibbonVertexDynamicParameter>& ParamData, const FVector4f& DynamicParam);
 protected:
 	struct FRibbonRenderingIndexOffsets
 	{
@@ -118,6 +118,7 @@ private:
 	bool bCustomUseConstantFactor;
 	float CustomTessellationMinAngle;
 	bool bCustomUseScreenSpace;
+	bool bNeedsPreciseMotionVectors;
 
 
 	uint32 MaterialParamValidMask;

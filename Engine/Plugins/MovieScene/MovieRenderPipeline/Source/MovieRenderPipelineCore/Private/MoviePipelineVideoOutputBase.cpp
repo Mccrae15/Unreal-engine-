@@ -8,7 +8,7 @@
 #include "MoviePipelineUtils.h"
 #include "ImageWriteTask.h"
 #include "Misc/Paths.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformFile.h"
 #include "HAL/PlatformTime.h"
 #include "MoviePipelineUtils.h"

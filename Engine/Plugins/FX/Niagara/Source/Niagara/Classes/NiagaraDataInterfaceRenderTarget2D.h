@@ -5,6 +5,7 @@
 #include "NiagaraDataInterfaceRW.h"
 #include "ClearQuad.h"
 #include "NiagaraComponent.h"
+#include "NiagaraGenerateMips.h"
 #include "NiagaraDataInterfaceRenderTarget2D.generated.h"
 
 class FNiagaraSystemInstance;
@@ -23,6 +24,7 @@ struct FRenderTarget2DRWInstanceData_GameThread
 	FIntPoint Size = FIntPoint(EForceInit::ForceInitToZero);
 	ETextureRenderTargetFormat Format = RTF_RGBA16f;
 	ENiagaraMipMapGeneration MipMapGeneration = ENiagaraMipMapGeneration::Disabled;
+	ENiagaraMipMapGenerationType MipMapGenerationType = ENiagaraMipMapGenerationType::Linear;
 	
 	UTextureRenderTarget2D* TargetTexture = nullptr;
 #if WITH_EDITORONLY_DATA
@@ -42,7 +44,10 @@ struct FRenderTarget2DRWInstanceData_RenderThread
 
 	FIntPoint Size = FIntPoint(EForceInit::ForceInitToZero);
 	ENiagaraMipMapGeneration MipMapGeneration = ENiagaraMipMapGeneration::Disabled;
-	bool bWasWrittenTo = false;
+	ENiagaraMipMapGenerationType MipMapGenerationType = ENiagaraMipMapGenerationType::Linear;
+	bool bRebuildMips = false;
+	bool bReadThisFrame = false;
+	bool bWroteThisFrame = false;
 
 	FSamplerStateRHIRef SamplerStateRHI;
 	FTexture2DRHIRef TextureRHI;
@@ -118,8 +123,8 @@ public:
 	virtual bool RenderVariableToCanvas(FNiagaraSystemInstanceID SystemInstanceID, FName VariableName, class FCanvas* Canvas, const FIntRect& DrawRect) const override;
 	//~ UNiagaraDataInterface interface END
 
-	void GetSize(FVectorVMContext& Context); 
-	void SetSize(FVectorVMContext& Context);
+	void GetSize(FVectorVMExternalFunctionContext& Context); 
+	void SetSize(FVectorVMExternalFunctionContext& Context);
 
 	static const FName SetValueFunctionName;
 	static const FName GetValueFunctionName;
@@ -139,6 +144,9 @@ public:
 	/** Controls if and when we generate mips for the render target. */
 	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (EditCondition = "!bInheritUserParameterSettings"))
 	ENiagaraMipMapGeneration MipMapGeneration = ENiagaraMipMapGeneration::Disabled;
+
+	UPROPERTY(EditAnywhere, Category = "Render Target")
+	ENiagaraMipMapGenerationType MipMapGenerationType = ENiagaraMipMapGenerationType::Linear;
 
 	/** When enabled overrides the format of the render target, otherwise uses the project default setting. */
 	UPROPERTY(EditAnywhere, Category = "Render Target", meta = (EditCondition = "!bInheritUserParameterSettings && bOverrideFormat"))
@@ -169,5 +177,5 @@ protected:
 	TMap<FNiagaraSystemInstanceID, FRenderTarget2DRWInstanceData_GameThread*> SystemInstancesToProxyData_GT;
 	
 	UPROPERTY(Transient, DuplicateTransient)
-	TMap<uint64, UTextureRenderTarget2D*> ManagedRenderTargets;
+	TMap<uint64, TObjectPtr<UTextureRenderTarget2D>> ManagedRenderTargets;
 };

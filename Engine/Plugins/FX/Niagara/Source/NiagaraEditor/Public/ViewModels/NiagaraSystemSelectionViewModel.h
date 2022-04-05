@@ -60,6 +60,8 @@ public:
 
 	void AddEntryToSelectionByDisplayedObjectKeyDeferred(const FObjectKey& InObjectKey);
 
+	void AddEntryToSelectionBySelectionIdDeferred(const FGuid& InSelectionId);
+
 	bool Refresh();
 
 	void RefreshDeferred();
@@ -89,10 +91,10 @@ private:
 	TArray<FGuid> SelectedEmitterHandleIds;
 
 	UPROPERTY()
-	UNiagaraStackSelection* StackSelection;
+	TObjectPtr<UNiagaraStackSelection> StackSelection;
 
 	UPROPERTY()
-	UNiagaraStackViewModel* SelectionStackViewModel;
+	TObjectPtr<UNiagaraStackViewModel> SelectionStackViewModel;
 
 	FOnSelectionChanged OnEntrySelectionChangedDelegate;
 
@@ -101,6 +103,8 @@ private:
 	FOnSelectionChanged OnSystemIsSelectedChangedDelegate;
 
 	TArray<FObjectKey> DeferredDisplayedObjectKeysToAddToSelection;
+
+	TArray<FGuid> DeferredSelectionIdsToAddToSelection;
 
 	bool bRefreshIsPending;
 };

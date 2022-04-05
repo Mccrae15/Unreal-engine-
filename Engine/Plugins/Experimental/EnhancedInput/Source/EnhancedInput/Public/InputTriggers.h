@@ -28,12 +28,15 @@ enum class ETriggerState : uint8
 /**
 * Trigger events are the Action's interpretation of all Trigger State transitions that occurred for the action in the last tick
 */
-UENUM()
+UENUM(BlueprintType)
 enum class ETriggerEvent : uint8
 {
 	// No significant trigger state changes occurred and there are no active device inputs
 	None = 0				UMETA(Hidden),
 
+	// Triggering occurred after one or more processing ticks
+	Triggered,				// ETriggerState (None -> Triggered, Ongoing -> Triggered, Triggered -> Triggered)
+	
 	// An event has occurred that has begun Trigger evaluation. Note: Triggered may also occur this frame.
 	Started,				// ETriggerState (None -> Ongoing, None -> Triggered)
 
@@ -42,9 +45,6 @@ enum class ETriggerEvent : uint8
 
 	// Triggering has been canceled
 	Canceled,				// ETriggerState (Ongoing -> None)
-
-	// Triggering occurred after one or more processing ticks
-	Triggered,				// ETriggerState (None -> Triggered, Ongoing -> Triggered, Triggered -> Triggered)
 
 	// The trigger state has transitioned from Triggered to None this frame, i.e. Triggering has finished.
 	// NOTE: Using this event restricts you to one set of triggers for Started/Completed events. You may prefer two actions, each with its own trigger rules.
@@ -69,6 +69,33 @@ enum class ETriggerType : uint8
 };
 
 /**
+ * Represents what ETriggerEvent types can be triggered off of a give UInputTrigger.
+ * Used to determine if a warning should be placed on a exec pin that would never get called
+ * on a K2Node_EnhancedInputAction node
+ */
+UENUM()
+enum class ETriggerEventsSupported : uint8
+{
+	// This trigger supports no trigger events. 
+	None				= (0x0),
+	
+	// This trigger supports just the Triggered event type. This include ETriggerEvent::Triggered
+	Instant				= (1 << 0),
+
+	// This trigger cannot be canceled, once it is started it cannot be stopped from being triggered
+	// This includes the ETriggerEvents of Started, Ongoing, and Triggered 
+	Uninterruptible		= (1 << 1),
+
+	// This represents a trigger than can be held down and have a duration, and be canceled. This includes
+	// the ETriggerEvents of Started, Ongoing, Canceled, and Triggered. 
+	Ongoing				= (1 << 2),
+
+	// This trigger supports all trigger events
+	All					= (Instant | Uninterruptible | Ongoing), 
+};
+ENUM_CLASS_FLAGS(ETriggerEventsSupported)
+
+/**
 Base class for building triggers.
 Transitions to Triggered state once the input meets or exceeds the actuation threshold.
 */
@@ -88,8 +115,9 @@ protected:
 	virtual ETriggerState UpdateState_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime);
 
 public:
+	// Point at which this trigger fires
 	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings")
-	float ActuationThreshold = 0.5f;	// Point at which this trigger fires
+	float ActuationThreshold = 0.5f;
 
 	/*
 	* Is the value passed in sufficiently large to be of interest to the trigger.
@@ -119,6 +147,14 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Trigger")
 	ETriggerState UpdateState(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime);
 
+	/** Determines what kind of trigger events can happen from the behavior of this trigger. */
+	virtual ETriggerEventsSupported GetSupportedTriggerEvents() const { return ETriggerEventsSupported::Instant; }
+
+	/**
+	 * Returns true if the the ETriggerEvent is can be triggered based off of the ETriggerEventsSupported.
+	 */
+	static bool IsSupportedTriggerEvent(const ETriggerEventsSupported SupportedEvents, const ETriggerEvent Event);
+		
 	// Provide debug output for use with ShowDebug EnhancedInput. Return an empty string to disable display.
 	virtual FString GetDebugState() const { return FString(); }
 };
@@ -136,8 +172,9 @@ class UInputTriggerTimedBase : public UInputTrigger
 
 protected:
 
+	// How long have we been actuating this trigger?
 	UPROPERTY(BlueprintReadWrite, Category = "Trigger Settings")
-	float HeldDuration = 0.0f;			// How long have we been actuating this trigger? // TODO: Annoying given the action mapping is already tracking this.
+	float HeldDuration = 0.0f;			 // TODO: Annoying given the action mapping is already tracking this.
 
 	// Transitions to Ongoing on actuation. Never triggers.
 	virtual ETriggerState UpdateState_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime) override;
@@ -147,8 +184,19 @@ protected:
 
 public:
 
-	// Should global time dilation be applied to the held duration?
-	UPROPERTY(BlueprintReadWrite, Category = "Trigger Settings")
+	virtual ETriggerEventsSupported GetSupportedTriggerEvents() const override { return ETriggerEventsSupported::Ongoing; }
+	
+	/**
+	 * Should global time dilation be applied to the held duration?
+	 * Default is set to false.
+	 * 
+	 * If this is set to true, then the owning Player Controller's actor time dialtion
+	 * will be used when calculating the HeldDuration.
+	 * 
+	 * @see UInputTriggerTimedBase::CalculateHeldDuration
+	 * @see AWorldSettings::GetEffectiveTimeDilation
+	 */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings")
 	bool bAffectedByTimeDilation = false;
 
 	virtual FString GetDebugState() const override { return HeldDuration ? FString::Printf(TEXT("Held:%.2f"), HeldDuration) : FString(); }
@@ -170,6 +218,9 @@ class UInputTriggerDown final : public UInputTrigger
 {
 	GENERATED_BODY()
 
+public:
+	virtual ETriggerEventsSupported GetSupportedTriggerEvents() const override { return ETriggerEventsSupported::Instant; }
+
 protected:
 
 	virtual ETriggerState UpdateState_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime) override;
@@ -183,6 +234,9 @@ UCLASS(NotBlueprintable, MinimalAPI, meta=(DisplayName="Pressed"))
 class UInputTriggerPressed final : public UInputTrigger
 {
 	GENERATED_BODY()
+
+public:
+	virtual ETriggerEventsSupported GetSupportedTriggerEvents() const override { return ETriggerEventsSupported::Instant; }
 
 protected:
 
@@ -199,6 +253,9 @@ UCLASS(NotBlueprintable, MinimalAPI, meta = (DisplayName = "Released"))
 class UInputTriggerReleased final : public UInputTrigger
 {
 	GENERATED_BODY()
+
+public:
+	virtual ETriggerEventsSupported GetSupportedTriggerEvents() const override { return ETriggerEventsSupported::Instant; }
 
 protected:
 
@@ -224,6 +281,8 @@ protected:
 	virtual ETriggerState UpdateState_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime) override;
 
 public:
+	virtual ETriggerEventsSupported GetSupportedTriggerEvents() const override { return ETriggerEventsSupported::Ongoing; }
+	
 	// How long does the input have to be held to cause trigger?
 	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings", meta = (ClampMin = "0"))
 	float HoldTimeThreshold = 1.0f;
@@ -266,7 +325,8 @@ protected:
 	virtual ETriggerState UpdateState_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime) override;
 
 public:
-
+	virtual ETriggerEventsSupported GetSupportedTriggerEvents() const override { return ETriggerEventsSupported::Instant; }
+	
 	// Release within this time-frame to trigger a tap
 	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category = "Trigger Settings", meta = (ClampMin = "0"))
 	float TapReleaseTimeThreshold = 0.2f;
@@ -309,8 +369,9 @@ public:
 
 // Chorded actions
 
-/** UInputTriggerChordAction
-	Applies a chord action that must be triggering for this trigger's action to trigger
+/**
+ * UInputTriggerChordAction
+ * Applies a chord action that must be triggering for this trigger's action to trigger
 */
 UCLASS(NotBlueprintable, MinimalAPI, meta = (DisplayName = "Chorded Action", NotInputConfigurable = "true"))
 class UInputTriggerChordAction : public UInputTrigger
@@ -324,6 +385,7 @@ protected:
 	virtual ETriggerState UpdateState_Implementation(const UEnhancedPlayerInput* PlayerInput, FInputActionValue ModifiedValue, float DeltaTime) override;
 public:
 
+	// The action that must be triggering for this trigger's action to trigger
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Trigger Settings", meta = (DisplayThumbnail = "false"))
 	const class UInputAction* ChordAction = nullptr;
 };
@@ -336,7 +398,6 @@ UCLASS(NotBlueprintable, MinimalAPI, HideDropdown)
 class UInputTriggerChordBlocker final : public UInputTriggerChordAction
 {
 	GENERATED_BODY()
-
 protected:
 	virtual ETriggerType GetTriggerType_Implementation() const override { return ETriggerType::Blocker; }
 };

@@ -12,13 +12,13 @@ public class GeForceNOW : ModuleRules
         if (Target.Type != TargetRules.TargetType.Server
 			&& Target.Configuration != UnrealTargetConfiguration.Unknown
 			&& Target.Configuration != UnrealTargetConfiguration.Debug
-            && (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32))
+            && Target.Platform == UnrealTargetPlatform.Win64)
 		{
             String GFNPath = Target.UEThirdPartySourceDirectory + "NVIDIA/GeForceNOW/";
             PublicSystemIncludePaths.Add(GFNPath + "include");
 
-			String GFNLibPath = GFNPath + (Target.Platform == UnrealTargetPlatform.Win64 ? "lib/x64/" : "lib/x86/");
-			PublicAdditionalLibraries.Add(GFNLibPath + "GfnRuntimeMD.lib");
+			String GFNLibPath = GFNPath + "lib/x64/";
+			PublicAdditionalLibraries.Add(GFNLibPath + "GfnSdk.lib");
 
             String GFNDllName = "GfnRuntimeSdk.dll";
 			String PlatformFolder = (Target.Platform == UnrealTargetPlatform.Win64 ? "Win64/" : "Win32/");

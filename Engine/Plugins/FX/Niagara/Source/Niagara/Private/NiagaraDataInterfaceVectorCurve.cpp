@@ -199,8 +199,8 @@ void UNiagaraDataInterfaceVectorCurve::GetVMExternalFunction(const FVMExternalFu
 	}
 	else
 	{
-		UE_LOG(LogNiagara, Error, TEXT("Could not find data interface external function.\n\tExpected Name: SampleVectorCurve  Actual Name: %s\n\tExpected Inputs: 1  Actual Inputs: %i\n\tExpected Outputs: 3  Actual Outputs: %i"),
-			*BindingInfo.Name.ToString(), BindingInfo.GetNumInputs(), BindingInfo.GetNumOutputs());
+		UE_LOG(LogNiagara, Display, TEXT("Could not find data interface external function in %s.\n\tExpected Name: SampleVectorCurve  Actual Name: %s\n\tExpected Inputs: 1  Actual Inputs: %i\n\tExpected Outputs: 3  Actual Outputs: %i"),
+			*GetPathNameSafe(this), *BindingInfo.Name.ToString(), BindingInfo.GetNumInputs(), BindingInfo.GetNumOutputs());
 	}
 }
 
@@ -226,7 +226,7 @@ FORCEINLINE_DEBUGGABLE FVector UNiagaraDataInterfaceVectorCurve::SampleCurveInte
 }
 
 template<typename UseLUT>
-void UNiagaraDataInterfaceVectorCurve::SampleCurve(FVectorVMContext& Context)
+void UNiagaraDataInterfaceVectorCurve::SampleCurve(FVectorVMExternalFunctionContext& Context)
 {
 	//TODO: Create some SIMDable optimized representation of the curve to do this faster.
 	VectorVM::FExternalFuncInputHandler<float> XParam(Context);
@@ -234,7 +234,7 @@ void UNiagaraDataInterfaceVectorCurve::SampleCurve(FVectorVMContext& Context)
 	VectorVM::FExternalFuncRegisterHandler<float> OutSampleY(Context);
 	VectorVM::FExternalFuncRegisterHandler<float> OutSampleZ(Context);
 
-	for (int32 i = 0; i < Context.NumInstances; ++i)
+	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
 	{
 		float X = XParam.GetAndAdvance();
 		FVector V = SampleCurveInternal<UseLUT>(X);

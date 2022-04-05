@@ -11,6 +11,7 @@
 #include "AnimSingleNodeInstanceProxy.generated.h"
 
 struct FAnimSingleNodeInstanceProxy;
+class UMirrorDataTable;
 
 /** 
  * Local anim node for extensible processing. 
@@ -58,8 +59,10 @@ public:
 	FAnimSingleNodeInstanceProxy(UAnimInstance* InAnimInstance)
 		: FAnimInstanceProxy(InAnimInstance)
 		, CurrentAsset(nullptr)
-		, BlendSpaceInput(0.0f, 0.0f, 0.0f)
+		, MirrorDataTable(nullptr)
+		, BlendSpacePosition(0.0f, 0.0f, 0.0f)
 		, CurrentTime(0.0f)
+		, DeltaTimeRecord()
 #if WITH_EDITORONLY_DATA
 		, PreviewPoseCurrentTime(0.0f)
 #endif
@@ -121,6 +124,12 @@ public:
 
 	void SetCurrentTime(float InCurrentTime)
 	{
+		if (InCurrentTime != CurrentTime)
+		{
+			// If the current time is changed externally then our record of where we are in relation to markers will be
+			// out of sync, so reset it and it will be updated when necessary.
+			MarkerTickRecord.Reset();
+		}
 		CurrentTime = InCurrentTime;
 	}
 
@@ -146,7 +155,19 @@ public:
 
 	void SetReverse(bool bInReverse);
 
-	void SetBlendSpaceInput(const FVector& InBlendInput);
+	/** Sets the target blend space position */
+	void SetBlendSpacePosition(const FVector& InPosition);
+
+	/**
+	 * Returns the current target/requested blend space position, and the filtered (smoothed) position.
+	 */
+	void GetBlendSpaceState(FVector& OutPosition, FVector& OutFilteredPosition) const;
+
+	/** 
+	* Returns the length (seconds), not including any rate multipliers, calculated by 
+	* weighting the currently active samples 
+	*/
+	float GetBlendSpaceLength() const;
 
 #if WITH_EDITOR
 	bool CanProcessAdditiveAnimations() const
@@ -154,6 +175,10 @@ public:
 		return bCanProcessAdditiveAnimations;
 	}
 #endif
+
+	void SetMirrorDataTable(const UMirrorDataTable* InMirrorDataTable);
+
+	const UMirrorDataTable* GetMirrorDataTable();
 
 #if WITH_EDITORONLY_DATA
 	void PropagatePreviewCurve(FPoseContext& Output);
@@ -168,7 +193,7 @@ public:
 	void SetMontagePreviewSlot(FName PreviewSlot);
 
 private:
-	void InternalBlendSpaceEvaluatePose(class UBlendSpaceBase* BlendSpace, TArray<FBlendSampleData>& BlendSampleDataCache, FPoseContext& OutContext);
+	void InternalBlendSpaceEvaluatePose(class UBlendSpace* BlendSpace, TArray<FBlendSampleData>& BlendSampleDataCache, FPoseContext& OutContext);
 
 protected:
 #if WITH_EDITOR
@@ -183,12 +208,15 @@ protected:
 	/** Current Asset being played. Note that this will be nullptr outside of pre/post update **/
 	UAnimationAsset* CurrentAsset;
 
+	/** If set the result will be mirrored using the table */ 
+	const UMirrorDataTable* MirrorDataTable;
+	
 	/** The internal anim node that does our processing */
 	FAnimNode_SingleNode SingleNode;
 
 private:
 	/** Random cached values to play each asset **/
-	FVector BlendSpaceInput;
+	FVector BlendSpacePosition;
 
 	/** Random cached values to play each asset **/
 	TArray<FBlendSampleData> BlendSampleData;
@@ -201,6 +229,8 @@ private:
 
 	/** Shared parameters for previewing blendspace or animsequence **/
 	float CurrentTime;
+
+	FDeltaTimeRecord DeltaTimeRecord;
 
 #if WITH_EDITORONLY_DATA
 	float PreviewPoseCurrentTime;

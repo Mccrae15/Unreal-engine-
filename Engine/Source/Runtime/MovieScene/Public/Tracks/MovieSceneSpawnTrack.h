@@ -57,6 +57,10 @@ public:
 	//~ UObject interface
 	virtual void PostLoad() override;
 
+#if WITH_EDITOR
+	virtual ECookOptimizationFlags GetCookOptimizationFlags() const override;
+#endif
+
 #if WITH_EDITORONLY_DATA
 	virtual FText GetDisplayName() const override;
 #endif
@@ -65,7 +69,7 @@ protected:
 
 	/** All the sections in this track */
 	UPROPERTY()
-	TArray<UMovieSceneSection*> Sections;
+	TArray<TObjectPtr<UMovieSceneSection>> Sections;
 
 	/** The guid relating to the object we are to spawn and destroy */
 	UPROPERTY()

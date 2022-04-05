@@ -141,7 +141,7 @@ void FMultiSizeIndexContainer::CopyIndexBuffer(const TArray<uint32>& NewArray)
 void FMultiSizeIndexContainer::Serialize(FArchive& Ar, bool bNeedsCPUAccess)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("FMultiSizeIndexContainer::Serialize"), STAT_MultiSizeIndexContainer_Serialize, STATGROUP_LoadTime);
-	if (Ar.UE4Ver() < VER_UE4_KEEP_SKEL_MESH_INDEX_DATA)
+	if (Ar.UEVer() < VER_UE4_KEEP_SKEL_MESH_INDEX_DATA)
 	{
 		bool bOldNeedsCPUAccess = true;
 		Ar << bOldNeedsCPUAccess;
@@ -182,7 +182,7 @@ void FMultiSizeIndexContainer::SerializeMetaData(FArchive& Ar, bool bNeedsCPUAcc
 	IndexBuffer->SerializeMetaData(Ar);
 }
 
-FIndexBufferRHIRef FMultiSizeIndexContainer::CreateRHIBuffer_RenderThread()
+FBufferRHIRef FMultiSizeIndexContainer::CreateRHIBuffer_RenderThread()
 {
 	if (IndexBuffer)
 	{
@@ -198,7 +198,7 @@ FIndexBufferRHIRef FMultiSizeIndexContainer::CreateRHIBuffer_RenderThread()
 	return nullptr;
 }
 
-FIndexBufferRHIRef FMultiSizeIndexContainer::CreateRHIBuffer_Async()
+FBufferRHIRef FMultiSizeIndexContainer::CreateRHIBuffer_Async()
 {
 	if (IndexBuffer)
 	{

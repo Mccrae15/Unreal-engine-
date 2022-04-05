@@ -31,7 +31,11 @@ bool FDisplayClusterViewport::CalculateView(const uint32 InContextNum, FVector& 
 	{
 		// Store the view location/rotation
 		Contexts[InContextNum].ViewLocation = InOutViewLocation;
+		Contexts[InContextNum].bIsValidViewLocation = true;
+
 		Contexts[InContextNum].ViewRotation = InOutViewRotation;
+		Contexts[InContextNum].bIsValidViewRotation = true;
+
 		Contexts[InContextNum].WorldToMeters = WorldToMeters;
 
 		return true;
@@ -45,6 +49,7 @@ bool FDisplayClusterViewport::GetProjectionMatrix(const uint32 InContextNum, FMa
 	if (ProjectionPolicy.IsValid() && ProjectionPolicy->GetProjectionMatrix(this, InContextNum, OutPrjMatrix))
 	{
 		Contexts[InContextNum].ProjectionMatrix = OutPrjMatrix;
+		Contexts[InContextNum].bIsValidProjectionMatrix = true;
 
 		if (OverscanRendering.IsEnabled())
 		{
@@ -106,16 +111,37 @@ void FDisplayClusterViewport::CalculateProjectionMatrix(const uint32 InContextNu
 		r = FMath::Clamp(r, -MaxValue, MaxValue);
 		t = FMath::Clamp(t, -MaxValue, MaxValue);
 		b = FMath::Clamp(b, -MaxValue, MaxValue);
-
-		GetNonZeroFrustumRange(l, r, n);
-		GetNonZeroFrustumRange(b, t, n);
 	}
+
+	// Support custom frustum rendering
+	const float OrigValues[] = {l, r, t, b};
+	if (CustomFrustumRendering.UpdateProjectionAngles(l, r, t, b))
+	{
+		const bool bIsValidLimits =  FMath::IsWithin(l, -MaxValue, MaxValue)
+							&& FMath::IsWithin(r, -MaxValue, MaxValue)
+							&& FMath::IsWithin(t, -MaxValue, MaxValue)
+							&& FMath::IsWithin(b, -MaxValue, MaxValue);
+
+		if (!bIsValidLimits)
+		{
+			// overscan out of frustum : disable
+			CustomFrustumRendering.Disable();
+
+			// restore orig values
+			l = OrigValues[0];
+			r = OrigValues[1];
+			t = OrigValues[2];
+			b = OrigValues[3];
+		}
+	}
+
+	GetNonZeroFrustumRange(l, r, n);
+	GetNonZeroFrustumRange(b, t, n);
 
 	Contexts[InContextNum].ProjectionMatrix = ImplCreateProjectionMatrix(l, r, t, b, n, f);
 
 	if (OverscanRendering.UpdateProjectionAngles(l, r, t, b))
 	{
-		//@todo : disable overscan if frustum out of limits.
 		if (FMath::IsWithin(l, -MaxValue, MaxValue) &&
 			FMath::IsWithin(r, -MaxValue, MaxValue) &&
 			FMath::IsWithin(t, -MaxValue, MaxValue) &&

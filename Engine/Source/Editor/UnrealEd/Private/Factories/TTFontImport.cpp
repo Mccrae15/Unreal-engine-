@@ -467,7 +467,7 @@ public:
 	{
 		int32 DX = X1 - X2;
 		int32 DY = Y1 - Y2;
-		return FMath::Sqrt(DX*DX + DY*DY);
+		return FMath::Sqrt(static_cast<float>(DX*DX + DY*DY));
 	}
 	
 };
@@ -725,7 +725,7 @@ float FTextureAlphaToDistanceField::FBuildDistanceFieldTask::CalcSignedDistanceT
 		// on the edge.
 		if ( bFoundClosest && RequiredRadius >= InScanRadius )
 		{
-			RequiredRadius = FMath::CeilToInt( FMath::Sqrt(RingSize*RingSize*2) );
+			RequiredRadius = FMath::CeilToInt( FMath::Sqrt(static_cast<float>(RingSize*RingSize*2)) );
 			RequiredRadius = FMath::Min(RequiredRadius, InScanRadius);
 		}
 	}
@@ -1660,11 +1660,19 @@ void* UTrueTypeFontFactory::LoadFontFace( void* FTLibrary, int32 Height, FFeedba
 }
 
 #elif PLATFORM_LINUX
-void* UTrueTypeFontFactory::LoadFontFace( void* FTLibrary, int32 Height, FFeedbackContext* Warn, void** OutFontData )
+
+void* UTrueTypeFontFactory::LoadFontFace(void* FTLibrary, int32 Height, FFeedbackContext* Warn, void** OutFontData)
 {
-	STUBBED("UTrueTypeFontFactory::LoadFontFace");
-	return nullptr;
+	FT_Face Face = nullptr;
+	int32 Error = FT_New_Face((FT_Library)FTLibrary, TCHAR_TO_ANSI(*ImportOptions->Data.FontName), 0, &Face);
+	if (Error != 0)
+	{
+		Face = nullptr;
+	}
+
+	return Face;
 }
+
 #else 
 #error "Unknown platform"
 #endif

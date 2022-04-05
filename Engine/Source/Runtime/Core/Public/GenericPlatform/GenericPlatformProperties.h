@@ -179,16 +179,6 @@ struct FGenericPlatformProperties
 	}
 
 	/**
-	 * Gets whether this platform supports tessellation.
-	 *
-	 * @return true if tessellation is supported, false otherwise.
-	 */
-	static FORCEINLINE bool SupportsTessellation()
-	{
-		return false;
-	}
-
-	/**
 	 * Gets whether this platform supports windowed mode rendering.
 	 *
 	 * @return true if windowed mode is supported.
@@ -264,6 +254,16 @@ struct FGenericPlatformProperties
 	static FORCEINLINE bool SupportsVirtualTextureStreaming()
 	{
 		return false; // Currently VT is opt-in
+	}
+
+	static FORCEINLINE bool SupportsLumenGI()
+	{
+		return true;
+	}
+
+	static FORCEINLINE bool SupportsHardwareLZDecompression()
+	{
+		return false;
 	}
 
 	/**

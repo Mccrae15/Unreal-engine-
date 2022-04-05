@@ -70,6 +70,9 @@ struct GAMEPLAYCAMERAS_API FFOscillator
 	/** Advances the oscillation time and returns the current value. */
 	static float UpdateOffset(FFOscillator const& Osc, float& CurrentOffset, float DeltaTime);
 
+	/** Advances the oscillation time and returns the current value. */
+	static float UpdateOffset(FFOscillator const& Osc, double& CurrentOffset, float DeltaTime);
+
 	/** Returns the initial value of the oscillator. */
 	static float GetInitialOffset(FFOscillator const& Osc);
 
@@ -176,11 +179,11 @@ public:
 
 	/** Source camera animation to play. Can be null. */
 	UPROPERTY(EditAnywhere, Category = AnimShake)
-	class UCameraAnim* Anim;
+	TObjectPtr<class UCameraAnim> Anim;
 
 	/** Source camera animation sequence to play. Can be null, but can't have both Anim and AnimSequence. */
 	UPROPERTY(EditAnywhere, Category = AnimShake)
-	class UCameraAnimationSequence* AnimSequence;
+	TObjectPtr<class UCameraAnimationSequence> AnimSequence;
 
 	/**
 	* If true, play a random snippet of the animation of length Duration.  Implies bLoop and bRandomStartTime = true for the CameraAnim.
@@ -197,7 +200,7 @@ public:
 
 	/** The playing instance of the CameraAnim-based shake, if any. */
 	UPROPERTY(transient, BlueprintReadOnly, Category = CameraShake)
-	class UCameraAnimInst* AnimInst;
+	TObjectPtr<class UCameraAnimInst> AnimInst;
 
 public:
 
@@ -283,7 +286,7 @@ protected:
 
 	/** Sequence shake pattern for when using a sequence instead of a camera anim */
 	UPROPERTY(Instanced)
-	class USequenceCameraShakePattern* SequenceShakePattern;
+	TObjectPtr<class USequenceCameraShakePattern> SequenceShakePattern;
 
 	/** State tracking for the sequence shake pattern */
 	FCameraShakeState SequenceShakeState;

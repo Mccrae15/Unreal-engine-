@@ -79,21 +79,25 @@ namespace RCWebInterface
 			{
 				if (Struct->IsChildOf(TBaseStructure<FVector>::Get()))
 				{
-					Widgets = { TEXT("Vector"), TEXT("Joystick"), TEXT("Sliders") };
+					Widgets = { TEXT("Vector"), TEXT("Joystick"), TEXT("Sliders"), TEXT("Dials") };
 				}
 				else if (Struct->IsChildOf(TBaseStructure<FVector2D>::Get()))
 				{
-					Widgets = { TEXT("Vector"), TEXT("Joystick"), TEXT("Sliders") };
+					Widgets = { TEXT("Vector"), TEXT("Joystick"), TEXT("Sliders"), TEXT("Dials") };
 				}
 				else if (Struct->IsChildOf(TBaseStructure<FRotator>::Get()))
 				{
-					Widgets = { TEXT("Vector"), TEXT("Sliders") };
+					Widgets = { TEXT("Vector"), TEXT("Sliders"), TEXT("Dials") };
 				}
 				else if (Struct->IsChildOf(TBaseStructure<FVector4>::Get()) || Struct->IsChildOf(TBaseStructure<FColor>::Get()) || Struct->IsChildOf(TBaseStructure<FLinearColor>::Get()))
 				{
 					Widgets = { TEXT("Color Picker"), TEXT("Mini Color Picker") };
 				}
 			}
+		}
+		else if (Property->IsA<FObjectPropertyBase>())
+		{
+			Widgets = { TEXT("Asset") };
 		}
 
 		return Widgets;
@@ -201,6 +205,32 @@ void FRCWebInterfaceCustomizations::GeneratePanelExtensions(TArray<TSharedRef<SW
 
 	TSharedPtr<SWidget> Throbber;
 
+	OutExtensions.Add(
+		SNew(SButton)
+		.ButtonStyle(FEditorStyle::Get(), "FlatButton")
+		.ToolTipText(LOCTEXT("AppPassphraseDisabled", "Warning: Passphrase is disabled!"))
+		.Visibility_Lambda([]()
+		{
+			const URemoteControlSettings* RCSettings = GetDefault<URemoteControlSettings>();
+			bool bShouldWarn = RCSettings->bShowPassphraseDisabledWarning && !RCSettings->bUseRemoteControlPassphrase;
+			return bShouldWarn ? EVisibility::Visible : EVisibility::Collapsed;
+		})
+		.OnClicked_Lambda([]()
+		{
+			URemoteControlSettings* RCSettings = GetMutableDefault<URemoteControlSettings>();
+			RCSettings->bShowPassphraseDisabledWarning = false;
+			RCSettings->SaveConfig();
+			
+			return FReply::Handled();
+		})
+		[
+			SNew(STextBlock)
+			.TextStyle(FEditorStyle::Get(), "NormalText.Important")
+			.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
+			.Text(FEditorFontGlyphs::Exclamation_Triangle)
+		]
+	);
+	
 	OutExtensions.Add(
 		SNew(SWidgetSwitcher)
 		.WidgetIndex_Lambda(GetDetailWidgetIndex)

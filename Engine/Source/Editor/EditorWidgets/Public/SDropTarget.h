@@ -6,9 +6,11 @@
 #include "Styling/SlateColor.h"
 #include "Input/Reply.h"
 #include "Layout/Visibility.h"
+#include "Framework/SlateDelegates.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SCompoundWidget.h"
 #include "EditorStyleSet.h"
+#include "Styling/StyleColors.h"
 
 class FPaintArgs;
 class FSlateWindowElementList;
@@ -19,42 +21,60 @@ class FSlateWindowElementList;
 class EDITORWIDGETS_API SDropTarget : public SCompoundWidget
 {
 public:
-	/** Called when a valid asset is dropped */
-	DECLARE_DELEGATE_RetVal_OneParam(FReply, FOnDrop, TSharedPtr<FDragDropOperation>);
-
 	DECLARE_DELEGATE_RetVal_OneParam(bool, FVerifyDrag, TSharedPtr<FDragDropOperation>);
+	DECLARE_DELEGATE_RetVal_OneParam(FReply, FOnDropDeprecated, TSharedPtr<FDragDropOperation>);
 
 	SLATE_BEGIN_ARGS(SDropTarget)
-		: _ValidColor(FLinearColor(0, 1, 0, 1))
-		, _InvalidColor(FLinearColor(1, 0, 0, 1))
-		, _BackgroundColor(FLinearColor(1, 1, 1, 0.50f))
-		, _BackgroundColorHover(FLinearColor(1, 1, 1, 0.25f))
+		: _ValidColor(FStyleColors::AccentBlue)
+		, _InvalidColor(FStyleColors::Error)
 		, _VerticalImage(FEditorStyle::GetBrush("WideDash.Vertical"))
 		, _HorizontalImage(FEditorStyle::GetBrush("WideDash.Horizontal"))
-		, _BackgroundImage(FEditorStyle::GetBrush("WhiteBrush"))
+		, _BackgroundImage(FEditorStyle::GetBrush("DropTarget.Background"))
 	{ }
+	
+		UE_DEPRECATED(5.0, "BackgroundColor has been removed. You may alter the background brush to get the same effect.")
+		FArguments& BackgroundColor(const FLinearColor& InBackgroundColor)
+		{
+			return Me();
+		}
+
+		UE_DEPRECATED(5.0, "BackgroundColorHover has been removed. You may alter the background brush when hovered to get the same effect.")
+		FArguments& BackgroundColorHover(const FLinearColor& InBackgroundColor)
+		{
+			return Me();
+		}
 		/* Content to display for the in the drop target */
 		SLATE_DEFAULT_SLOT( FArguments, Content )
 		/** The color of the vertical/horizontal images when the drop data is valid */
-		SLATE_ARGUMENT(FLinearColor, ValidColor)
+		SLATE_ARGUMENT(FSlateColor, ValidColor)
 		/** The color of the vertical/horizontal images when the drop data is not valid */
-		SLATE_ARGUMENT(FLinearColor, InvalidColor)
-		/** The color multiplier that is applied to the background image. */
-		SLATE_ARGUMENT(FLinearColor, BackgroundColor)
-		/** The color multiplier that is applied to the background image on hover. */
-		SLATE_ARGUMENT(FLinearColor, BackgroundColorHover)
+		SLATE_ARGUMENT(FSlateColor, InvalidColor)
 		/** Vertical border image that is used. */
 		SLATE_ARGUMENT(const FSlateBrush*, VerticalImage)
 		/** Horizontal border image that is used. */
 		SLATE_ARGUMENT(const FSlateBrush*, HorizontalImage)
 		/** The background image that is applied after the surface. */
-		SLATE_ARGUMENT(const FSlateBrush*, BackgroundImage)
+		SLATE_ATTRIBUTE(const FSlateBrush*, BackgroundImage)
 		/** Called when a valid asset is dropped */
-		SLATE_EVENT(FOnDrop, OnDrop)
+		SLATE_EVENT(FOnDrop, OnDropped)
 		/** Called to check if an asset is acceptable for dropping */
 		SLATE_EVENT(FVerifyDrag, OnAllowDrop)
 		/** Called to check if an asset is acceptable for dropping */
 		SLATE_EVENT(FVerifyDrag, OnIsRecognized)
+
+		FOnDrop ConvertOnDropFn(const FOnDropDeprecated& LegacyDelegate)
+		{
+			return FOnDrop::CreateLambda([LegacyDelegate](const FGeometry&, const FDragDropEvent& DragDropEvent)
+			{
+				if (LegacyDelegate.IsBound())
+				{
+					return LegacyDelegate.Execute(DragDropEvent.GetOperation());
+				}
+
+				return FReply::Unhandled();
+			});
+		}
+		SLATE_EVENT_DEPRECATED(5.0, "Use OnDropped instead.", FOnDropDeprecated, OnDrop, OnDropped, ConvertOnDropFn)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs );
@@ -93,15 +113,9 @@ private:
 	FVerifyDrag IsRecognizedEvent;
 
 	/** The color of the vertical/horizontal images when the drop data is valid */
-	FLinearColor ValidColor;
+	FSlateColor ValidColor;
 	/** The color of the vertical/horizontal images when the drop data is not valid */
-	FLinearColor InvalidColor;
-	/** The color multiplier that is applied to the background image. */
-	FLinearColor BackgroundColor;
-	/** The color multiplier that is applied to the background image on hover. */
-	FLinearColor BackgroundColorHover;
-	/** The background image that is applied after the surface. */
-	const FSlateBrush* BackgroundImage;
+	FSlateColor InvalidColor;
 	/** Vertical border image that is used. */
 	const FSlateBrush* VerticalImage;
 	/** Horizontal border image that is used. */

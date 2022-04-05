@@ -7,7 +7,7 @@ CUR_DIR="`dirname "$0"`"
 cd $CUR_DIR
 
 if [ ! -d ninja ]; then
-	git clone git://github.com/ninja-build/ninja.git && cd ninja
+	git clone https://github.com/ninja-build/ninja.git && cd ninja
 	git checkout release
 
 	./configure.py --bootstrap
@@ -17,6 +17,7 @@ fi
 
 PATH="$CUR_DIR/ninja":"$PATH"
 export PATH="$CUR_DIR/ninja":"$PATH"
+export MACOSX_DEPLOYMENT_TARGET=10.14
 
 cd ShaderConductor
 
@@ -29,16 +30,17 @@ DST_DIR="../../../../Binaries/ThirdParty/ShaderConductor/Mac"
 if [ "$#" -eq 1 ] && [ "$1" == "-debug" ]; then
 	# Debug
 	python3 BuildAll.py ninja clang x64 Debug
-	SRC_DIR="$SRC_DIR/ninja-osx-clang-x64-Debug/Lib"
+	SRC_DIR="$SRC_DIR/ninja-osx-clang-x64-Debug"
 else
 	# Release
 	python3 BuildAll.py ninja clang x64 RelWithDebInfo
-	SRC_DIR="$SRC_DIR/ninja-osx-clang-x64-RelWithDebInfo/Lib"
+	SRC_DIR="$SRC_DIR/ninja-osx-clang-x64-RelWithDebInfo"
 fi
 
 # Copy binary files from source to destination
-cp -f "$SRC_DIR/libdxcompiler.dylib" "$DST_DIR/libdxcompiler.dylib"
-cp -f "$SRC_DIR/libShaderConductor.dylib" "$DST_DIR/libShaderConductor.dylib"
+cp -f "$SRC_DIR/Lib/libdxcompiler.dylib" "$DST_DIR/libdxcompiler.dylib"
+cp -f "$SRC_DIR/Lib/libShaderConductor.dylib" "$DST_DIR/libShaderConductor.dylib"
+cp -f "$SRC_DIR/Bin/ShaderConductorCmd" "$DST_DIR/ShaderConductorCmd"
 
 # Replace dummy RPATH value, so ShaderConductor can manually load libdxcompiler.dylib via the 'dlopen' API
 install_name_tool -rpath RPATH_DUMMY ../ThirdParty/ShaderConductor/Mac "$DST_DIR/libShaderConductor.dylib"
@@ -47,4 +49,3 @@ install_name_tool -rpath RPATH_DUMMY ../ThirdParty/ShaderConductor/Mac "$DST_DIR
 # Link DWARF debug symbols
 dsymutil "$DST_DIR/libdxcompiler.dylib"
 dsymutil "$DST_DIR/libShaderConductor.dylib"
-

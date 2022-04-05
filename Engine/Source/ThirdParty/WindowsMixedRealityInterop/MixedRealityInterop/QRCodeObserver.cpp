@@ -224,7 +224,7 @@ bool QRCodeUpdateObserver::StartQRCodeObserver(void(*AddedFunctionPointer)(QRCod
 	{
 		if (QRCodeWatcher::IsSupported())
 		{
-			QRCodeWatcher::RequestAccessAsync().Completed([=](auto&& asyncInfo, auto&&  asyncStatus) 
+			QRCodeWatcher::RequestAccessAsync().Completed([=](auto&& asyncInfo, auto&& asyncStatus)
 			{
 				if (asyncInfo.GetResults() == QRCodeWatcherAccessStatus::Allowed)
 				{

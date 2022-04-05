@@ -31,6 +31,7 @@ public class MainFrame : ModuleRules
 				"SourceControlWindows",
 				"TargetPlatform",
 				"DesktopPlatform",
+				"EditorFramework",
 				"UnrealEd",
 				"WorkspaceMenuStructure",
 				"MessageLog",
@@ -42,21 +43,24 @@ public class MainFrame : ModuleRules
 				"Analytics",
 				"ToolMenus",
 				"LauncherServices",
-				"DerivedDataCache",
+				"InterchangeCore",
+				"InterchangeEngine",
+				"ToolWidgets",
 			}
 		);
 
 		PrivateIncludePathModuleNames.AddRange(
 			new string[] {
 				"AssetTools",
+				"DerivedDataCache",
 				"DesktopPlatform",
+				"LauncherPlatform",
 				"GameProjectGeneration",
 				"ProjectTargetPlatformEditor",
 				"LevelEditor",
 				"Settings",
 				"SourceCodeAccess",
-				"Toolbox",
-				"LocalizationDashboard",
+				"LocalizationDashboard", // not required but causes circular depends issues on Linux/Mac
 			}
 		);
 
@@ -76,7 +80,7 @@ public class MainFrame : ModuleRules
 				"LevelEditor",
 				"SourceCodeAccess",
 				"HotReload",
-				"LocalizationDashboard",
+				"LocalizationDashboard", // not required but causes circular depends issues on Linux/Mac
 			}
 		);
 	}

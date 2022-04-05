@@ -15,7 +15,7 @@
 #include "MovieSceneTranslator.h"
 #include "MovieSceneSpawnable.h"
 #include "MovieSceneCaptureSettings.h"
-#include "SEnumCombobox.h"
+#include "SEnumCombo.h"
 #include "Animation/AnimSequence.h"
 #include "INodeAndChannelMappings.h"
 
@@ -30,6 +30,7 @@ class UMovieSceneTrack;
 struct FMovieSceneEvaluationTrack;
 class UMovieSceneUserImportFBXSettings;
 class UMovieSceneUserImportFBXControlRigSettings;
+struct FMovieSceneDoubleValue;
 struct FMovieSceneFloatValue;
 class INodeNameAdapter;
 struct FMovieSceneSequenceTransform;
@@ -37,6 +38,7 @@ class UAnimSeqExportOption;
 template<typename ChannelType> struct TMovieSceneChannelData;
 enum class EVisibilityBasedAnimTickOption : uint8;
 class ACameraActor;
+struct FActorForWorldTransforms;
 
 namespace fbxsdk
 {
@@ -64,7 +66,6 @@ DECLARE_DELEGATE(FStartAnimationCB);
 DECLARE_DELEGATE_OneParam(FTickAnimationCB, float);
 DECLARE_DELEGATE(FEndAnimationCB);
 
-
 //Skel Mesh Recorder to set up and restore various parameters on the skelmesh
 struct MOVIESCENETOOLS_API FSkelMeshRecorderState
 {
@@ -88,7 +89,6 @@ public:
 	/** Used to store/restore URO when recording */
 	bool bCachedEnableUpdateRateOptimizations;
 };
-
 
 class MOVIESCENETOOLS_API MovieSceneToolHelpers
 {
@@ -292,13 +292,14 @@ public:
 	* @param InMovieScene The movie scene to export frome
 	* @param MoviePlayer to use
 	* @param Bindings The sequencer binding map
+	* @param MasterTracks Master tracks to export
 	* @param NodeNameAdaptor Adaptor to look up actor names.
 	* @param InFBXFileName the fbx file name.
 	* @param Template Movie scene sequence id.
 	* @param RootToLocalTransform The root to local transform time.
 	* @return Whether the export was successful
 	*/
-	static bool ExportFBX(UWorld* World, UMovieScene* MovieScene, IMovieScenePlayer* Player, TArray<FGuid>& Bindings, INodeNameAdapter& NodeNameAdapter, FMovieSceneSequenceIDRef& Template,  const FString& InFBXFileName, FMovieSceneSequenceTransform& RootToLocalTransform);
+	static bool ExportFBX(UWorld* World, UMovieScene* MovieScene, IMovieScenePlayer* Player, const TArray<FGuid>& Bindings, const TArray<UMovieSceneTrack*>& MasterTracks, INodeNameAdapter& NodeNameAdapter, FMovieSceneSequenceIDRef& Template,  const FString& InFBXFileName, FMovieSceneSequenceTransform& RootToLocalTransform);
 
 	/**
 	* Import FBX with dialog
@@ -385,7 +386,7 @@ public:
 	* Import FBX Camera to existing camera's
 	*
 	* @param CameraNode The Fbx camera
-	* @param InCameraActor Ue4 actor
+	* @param InCameraActor UE actor
 	*/
 	static void CopyCameraProperties(fbxsdk::FbxCamera* CameraNode, AActor* InCameraActor);
 
@@ -405,7 +406,7 @@ public:
 	 * @param MoveAxis The move axis to copy to
 	 * @param FrameRate The frame rate of the source channel
 	 */
-	static void CopyKeyDataToMoveAxis(const TMovieSceneChannelData<FMovieSceneFloatValue>& KeyData, UInterpTrackMoveAxis* MoveAxis, FFrameRate FrameRate);
+	static void CopyKeyDataToMoveAxis(const TMovieSceneChannelData<FMovieSceneDoubleValue>& KeyData, UInterpTrackMoveAxis* MoveAxis, FFrameRate FrameRate);
 
 	/*
 	 * Export the object binding to a camera anim
@@ -523,6 +524,48 @@ public:
 	*/	
 	static bool ImportFBXIntoControlRigChannels(UMovieScene* MovieScene, const FString& ImportFilename,  UMovieSceneUserImportFBXControlRigSettings *ControlRigSettings,
 		TArray<FFBXNodeAndChannels>* NodeAndChannels, const TArray<FName>& SelectedControlNames, FFrameRate FrameRate);
+
+	/*
+	* Acquire first SkeletalMeshComponent from the Object
+	* @param BoundObject Object to get SkeletalMeshComponent from.If actor checks it's components, if component checks itself then child components.
+	* @return Returns the USkeletalMeshComponent if one is found
+	*/
+	static USkeletalMeshComponent* AcquireSkeletalMeshFromObject(UObject* BoundObject);
+	
+	/*
+	*  Get an actors word transforms at the specified times
+	* @param Sequencer Sequencer to evaluate
+    * @param ActorForWorldTransforms The actor and possible component and socket that we want to get the world transforms for.
+	* @param Frames The times we want to get the world transforms
+	* @param OutWorldTransforms The calculated world transforms, one for each specified frame.
+	*/
+	static void GetActorWorldTransforms(ISequencer* Sequencer, const FActorForWorldTransforms& Actors, const TArray<FFrameNumber>& Frames, TArray<FTransform>& OutWorldTransforms);
+
+	/* Set or add a key onto a float channel.
+	* @param ChannelData Channel to set or add
+	* @param Time Frame to add or set the value
+	* @param Value  Value to Set
+	*/
+	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneFloatValue>& ChannelData, FFrameNumber Time, float Value);
+
+	/* Set or add a key onto a double channel.
+	* @param ChannelData Channel to set or add
+	* @param Time Frame to add or set the value
+	* @param Value  Value to Set
+	*/
+	static void SetOrAddKey(TMovieSceneChannelData<FMovieSceneDoubleValue>& ChannelData, FFrameNumber Time, double Value);
+	
+	/*
+	*  Get an actors world transforms at the specified times using a player
+	* @param Player Player to evaluate
+	* @param InSequence  Sequence to evaluate
+	* @param Template  Sequence ID of the template to play
+    * @param ActorForWorldTransforms The actor and possible component and socket that we want to get the world transforms for.
+	* @param Frames The times we want to get the world transforms
+	* @param OutWorldTransforms The calculated world transforms, one for each specified frame.
+	*/
+	static void GetActorWorldTransforms(IMovieScenePlayer* Player, UMovieSceneSequence* InSequence, FMovieSceneSequenceIDRef Template,const FActorForWorldTransforms& Actors, const TArray<FFrameNumber>& Frames, TArray<FTransform>& OutWorldTransforms);
+
 };
 
 // Helper to make spawnables persist throughout the export process and then restore properly afterwards

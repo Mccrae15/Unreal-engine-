@@ -34,7 +34,7 @@ class FCableIndexBuffer : public FIndexBuffer
 public:
 	virtual void InitRHI() override
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FCableIndexBuffer"));
 		IndexBufferRHI = RHICreateIndexBuffer(sizeof(int32), NumIndices * sizeof(int32), BUF_Dynamic, CreateInfo);
 	}
 
@@ -64,7 +64,6 @@ public:
 		: FPrimitiveSceneProxy(Component)
 		, Material(NULL)
 		, VertexFactory(GetScene().GetFeatureLevel(), "FCableSceneProxy")
-		, DynamicData(NULL)
 		, MaterialRelevance(Component->GetMaterialRelevance(GetScene().GetFeatureLevel()))
 		, NumSegments(Component->NumSegments)
 		, CableWidth(Component->CableWidth)
@@ -93,11 +92,6 @@ public:
 		VertexBuffers.ColorVertexBuffer.ReleaseResource();
 		IndexBuffer.ReleaseResource();
 		VertexFactory.ReleaseResource();
-
-		if(DynamicData != NULL)
-		{
-			delete DynamicData;
-		}
 	}
 
 	int32 GetRequiredVertexCount() const
@@ -153,10 +147,10 @@ public:
 				const FVector OutDir = (FMath::Cos(RadAngle) * UpDir) + (FMath::Sin(RadAngle) * RightDir);
 
 				FDynamicMeshVertex Vert;
-				Vert.Position = InPoints[PointIdx] + (OutDir * 0.5f * CableWidth);
-				Vert.TextureCoordinate[0] = FVector2D(AlongFrac * TileMaterial, AroundFrac);
+				Vert.Position = FVector3f(InPoints[PointIdx] + (OutDir * 0.5f * CableWidth));
+				Vert.TextureCoordinate[0] = FVector2f(AlongFrac * TileMaterial, AroundFrac);
 				Vert.Color = VertexColor;
-				Vert.SetTangents(ForwardDir, OutDir ^ ForwardDir, OutDir);
+				Vert.SetTangents((FVector3f)ForwardDir, FVector3f(OutDir ^ ForwardDir), (FVector3f)OutDir);
 				OutVertices.Add(Vert);
 			}
 		}
@@ -187,63 +181,61 @@ public:
 	{
 		check(IsInRenderingThread());
 
-		// Free existing data if present
-		if(DynamicData)
+		if (NewDynamicData != nullptr)
 		{
-			delete DynamicData;
-			DynamicData = NULL;
+			// Build mesh from cable points
+			TArray<FDynamicMeshVertex> Vertices;
+			TArray<int32> Indices;
+			BuildCableMesh(NewDynamicData->CablePoints, Vertices, Indices);
+
+			check(Vertices.Num() == GetRequiredVertexCount());
+			check(Indices.Num() == GetRequiredIndexCount());
+
+			for (int i = 0; i < Vertices.Num(); i++)
+			{
+				const FDynamicMeshVertex& Vertex = Vertices[i];
+
+				VertexBuffers.PositionVertexBuffer.VertexPosition(i) = Vertex.Position;
+				VertexBuffers.StaticMeshVertexBuffer.SetVertexTangents(i, Vertex.TangentX.ToFVector3f(), Vertex.GetTangentY(), Vertex.TangentZ.ToFVector3f());
+				VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 0, Vertex.TextureCoordinate[0]);
+				VertexBuffers.ColorVertexBuffer.VertexColor(i) = Vertex.Color;
+			}
+
+			{
+				auto& VertexBuffer = VertexBuffers.PositionVertexBuffer;
+				void* VertexBufferData = RHILockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
+				FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(), VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
+				RHIUnlockBuffer(VertexBuffer.VertexBufferRHI);
+			}
+
+			{
+				auto& VertexBuffer = VertexBuffers.ColorVertexBuffer;
+				void* VertexBufferData = RHILockBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
+				FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(), VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
+				RHIUnlockBuffer(VertexBuffer.VertexBufferRHI);
+			}
+
+			{
+				auto& VertexBuffer = VertexBuffers.StaticMeshVertexBuffer;
+				void* VertexBufferData = RHILockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTangentSize(), RLM_WriteOnly);
+				FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTangentData(), VertexBuffer.GetTangentSize());
+				RHIUnlockBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI);
+			}
+
+			{
+				auto& VertexBuffer = VertexBuffers.StaticMeshVertexBuffer;
+				void* VertexBufferData = RHILockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTexCoordSize(), RLM_WriteOnly);
+				FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTexCoordData(), VertexBuffer.GetTexCoordSize());
+				RHIUnlockBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI);
+			}
+
+			void* IndexBufferData = RHILockBuffer(IndexBuffer.IndexBufferRHI, 0, Indices.Num() * sizeof(int32), RLM_WriteOnly);
+			FMemory::Memcpy(IndexBufferData, &Indices[0], Indices.Num() * sizeof(int32));
+			RHIUnlockBuffer(IndexBuffer.IndexBufferRHI);
+
+			delete NewDynamicData;
+			NewDynamicData = NULL;
 		}
-		DynamicData = NewDynamicData;
-
-		// Build mesh from cable points
-		TArray<FDynamicMeshVertex> Vertices;
-		TArray<int32> Indices;
-		BuildCableMesh(NewDynamicData->CablePoints, Vertices, Indices);
-
-		check(Vertices.Num() == GetRequiredVertexCount());
-		check(Indices.Num() == GetRequiredIndexCount());
-
-		for (int i = 0; i < Vertices.Num(); i++)
-		{
-			const FDynamicMeshVertex& Vertex = Vertices[i];
-
-			VertexBuffers.PositionVertexBuffer.VertexPosition(i) = Vertex.Position;
-			VertexBuffers.StaticMeshVertexBuffer.SetVertexTangents(i, Vertex.TangentX.ToFVector(), Vertex.GetTangentY(), Vertex.TangentZ.ToFVector());
-			VertexBuffers.StaticMeshVertexBuffer.SetVertexUV(i, 0, Vertex.TextureCoordinate[0]);
-			VertexBuffers.ColorVertexBuffer.VertexColor(i) = Vertex.Color;
-		}
-
-		{
-			auto& VertexBuffer = VertexBuffers.PositionVertexBuffer;
-			void* VertexBufferData = RHILockVertexBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
-			FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(), VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
-			RHIUnlockVertexBuffer(VertexBuffer.VertexBufferRHI);
-		}
-
-		{
-			auto& VertexBuffer = VertexBuffers.ColorVertexBuffer;
-			void* VertexBufferData = RHILockVertexBuffer(VertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetNumVertices() * VertexBuffer.GetStride(), RLM_WriteOnly);
-			FMemory::Memcpy(VertexBufferData, VertexBuffer.GetVertexData(), VertexBuffer.GetNumVertices() * VertexBuffer.GetStride());
-			RHIUnlockVertexBuffer(VertexBuffer.VertexBufferRHI);
-		}
-
-		{
-			auto& VertexBuffer = VertexBuffers.StaticMeshVertexBuffer;
-			void* VertexBufferData = RHILockVertexBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTangentSize(), RLM_WriteOnly);
-			FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTangentData(), VertexBuffer.GetTangentSize());
-			RHIUnlockVertexBuffer(VertexBuffer.TangentsVertexBuffer.VertexBufferRHI);
-		}
-
-		{
-			auto& VertexBuffer = VertexBuffers.StaticMeshVertexBuffer;
-			void* VertexBufferData = RHILockVertexBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI, 0, VertexBuffer.GetTexCoordSize(), RLM_WriteOnly);
-			FMemory::Memcpy(VertexBufferData, VertexBuffer.GetTexCoordData(), VertexBuffer.GetTexCoordSize());
-			RHIUnlockVertexBuffer(VertexBuffer.TexCoordVertexBuffer.VertexBufferRHI);
-		}
-
-		void* IndexBufferData = RHILockIndexBuffer(IndexBuffer.IndexBufferRHI, 0, Indices.Num() * sizeof(int32), RLM_WriteOnly);
-		FMemory::Memcpy(IndexBufferData, &Indices[0], Indices.Num() * sizeof(int32));
-		RHIUnlockIndexBuffer(IndexBuffer.IndexBufferRHI);
 	}
 
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override
@@ -330,8 +322,6 @@ private:
 	FStaticMeshVertexBuffers VertexBuffers;
 	FCableIndexBuffer IndexBuffer;
 	FLocalVertexFactory VertexFactory;
-
-	FCableDynamicData* DynamicData;
 
 	FMaterialRelevance MaterialRelevance;
 
@@ -757,14 +747,17 @@ FBoxSphereBounds UCableComponent::CalcBounds(const FTransform& LocalToWorld) con
 {
 	// Calculate bounding box of cable points
 	FBox CableBox(ForceInit);
+
+	const FTransform& ComponentTransform = GetComponentTransform();
+
 	for(int32 ParticleIdx=0; ParticleIdx<Particles.Num(); ParticleIdx++)
 	{
 		const FCableParticle& Particle = Particles[ParticleIdx];
-		CableBox += Particle.Position;
+		CableBox += ComponentTransform.InverseTransformPosition(Particle.Position);
 	}
 
 	// Expand by cable radius (half cable width)
-	return FBoxSphereBounds(CableBox.ExpandBy(0.5f * CableWidth));
+	return FBoxSphereBounds(CableBox.ExpandBy(0.5f * CableWidth)).TransformBy(LocalToWorld);
 }
 
 void UCableComponent::QuerySupportedSockets(TArray<FComponentSocketDescription>& OutSockets) const 

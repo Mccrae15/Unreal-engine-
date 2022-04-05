@@ -6,12 +6,17 @@
 #include "AudioMixerDevice.h"
 #include "CoreGlobals.h"
 #include "Misc/ConfigCacheIni.h"
+#include "AudioDevice.h"
 
 #if WITH_ENGINE
 #include "AudioPluginUtilities.h"
 #include "OpusAudioInfo.h"
 #include "VorbisAudioInfo.h"
 #include "ADPCMAudioInfo.h"
+#if WITH_BINK_AUDIO
+#include "BinkAudioInfo.h"
+#endif // WITH_BINK_AUDIO
+
 #endif // WITH_ENGINE
 
 DECLARE_LOG_CATEGORY_EXTERN(LogAudioMixerSDL, Log, All);
@@ -326,60 +331,57 @@ namespace Audio
 		ReadNextBuffer();
 	}
 
-	FName FMixerPlatformSDL::GetRuntimeFormat(USoundWave* InSoundWave)
+	FName FMixerPlatformSDL::GetRuntimeFormat(const USoundWave* InSoundWave) const
 	{
-#if WITH_ENGINE
-		static FName NAME_OGG(TEXT("OGG"));
-		static FName NAME_OPUS(TEXT("OPUS"));
-		static FName NAME_ADPCM(TEXT("ADPCM"));
+		FName RuntimeFormat = Audio::ToName(InSoundWave->GetSoundAssetCompressionType());
 
-		if (InSoundWave->IsStreaming(nullptr))
+		if (RuntimeFormat == Audio::NAME_PLATFORM_SPECIFIC)
 		{
-			if (InSoundWave->IsSeekableStreaming())
+			if (InSoundWave->IsStreaming(nullptr))
 			{
-				return NAME_ADPCM;
+				return Audio::NAME_OPUS;
 			}
-
-			return NAME_OPUS;
+			else
+			{
+				return Audio::NAME_OGG;
+			}
 		}
-		return NAME_OGG;
-#else
-		checkNoEntry();
-		return FName();
-#endif // WITH_ENGINE
+
+#if !WITH_BINK_AUDIO
+		// Some SDL platforms don't yet support bink, so fall back to ADPCM
+		if (RuntimeFormat == Audio::NAME_BINKA)
+		{
+			return Audio::NAME_ADPCM;
+		}
+#endif
+
+		return RuntimeFormat;
 	}
 
-	bool FMixerPlatformSDL::HasCompressedAudioInfoClass(USoundWave* InSoundWave)
+	ICompressedAudioInfo* FMixerPlatformSDL::CreateCompressedAudioInfo(const FName& InRuntimeFormat) const
 	{
-		return true;
-	}
+		ICompressedAudioInfo* Decoder = nullptr;
 
-	ICompressedAudioInfo* FMixerPlatformSDL::CreateCompressedAudioInfo(USoundWave* InSoundWave)
-	{
-#if WITH_ENGINE
-		check(InSoundWave);
-
-		if (InSoundWave->IsStreaming())
+		if (InRuntimeFormat == Audio::NAME_OGG)
 		{
-			if (InSoundWave->IsSeekableStreaming())
-			{
-				return new FADPCMAudioInfo();
-			}
-
-			return new FOpusAudioInfo();
+			Decoder = new FVorbisAudioInfo();
 		}
-
-		static FName NAME_OGG(TEXT("OGG"));
-		if (InSoundWave->HasCompressedData(NAME_OGG))
+		else if (InRuntimeFormat == Audio::NAME_OPUS)
 		{
-			return new FVorbisAudioInfo();
+			Decoder = new FOpusAudioInfo();
 		}
-
-		return new FADPCMAudioInfo();
-#else
-		checkNoEntry();
-		return nullptr;
-#endif // WITH_ENGINE
+#if WITH_BINK_AUDIO
+		else if (InRuntimeFormat == Audio::NAME_BINKA)
+		{
+			Decoder = new FBinkAudioInfo();
+		}
+#endif // WITH_BINK_AUDIO	
+		else
+		{
+			Decoder = Audio::CreateSoundAssetDecoder(InRuntimeFormat);
+		}
+		ensureMsgf(Decoder != nullptr, TEXT("Failed to create a sound asset decoder for compression type: %s"), *InRuntimeFormat.ToString());
+		return Decoder;
 	}
 
 	FString FMixerPlatformSDL::GetDefaultDeviceName()

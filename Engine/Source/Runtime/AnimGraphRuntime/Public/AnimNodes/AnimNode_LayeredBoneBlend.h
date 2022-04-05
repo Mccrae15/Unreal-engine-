@@ -9,6 +9,13 @@
 #include "Animation/AnimData/BoneMaskFilter.h"
 #include "AnimNode_LayeredBoneBlend.generated.h"
 
+UENUM()
+enum class ELayeredBoneBlendMode : uint8
+{
+	BranchFilter,
+	BlendMask,
+};
+
 // Layered blend (per bone); has dynamic number of blendposes that can blend per different bone sets
 USTRUCT(BlueprintInternalUseOnly)
 struct ANIMGRAPHRUNTIME_API FAnimNode_LayeredBoneBlend : public FAnimNode_Base
@@ -24,9 +31,21 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, editfixedsize, Category=Links)
 	TArray<FPoseLink> BlendPoses;
 
+	/** Whether to use branch filters or a blend mask to specify an input pose per-bone influence */
+	UPROPERTY(EditAnywhere, Category = Config)
+	ELayeredBoneBlendMode BlendMode;
+
+	/** 
+	 * The blend masks to use for our layer inputs. Allows the use of per-bone alphas.
+	 * Blend masks are used when BlendMode is BlendMask.
+	 */
+	UPROPERTY(EditAnywhere, editfixedsize, Category=Config, meta=(UseAsBlendMask=true))
+	TArray<TObjectPtr<UBlendProfile>> BlendMasks;
+
 	/** 
 	 * Configuration for the parts of the skeleton to blend for each layer. Allows
 	 * certain parts of the tree to be blended out or omitted from the pose.
+	 * LayerSetup is used when BlendMode is BranchFilter.
 	 */
 	UPROPERTY(EditAnywhere, editfixedsize, Category=Config)
 	TArray<FInputBlendPose> LayerSetup;
@@ -63,19 +82,18 @@ public:
 	int32 LODThreshold;
 
 protected:
-
-	// This is buffer to serialize blend weight data for each joints
-	// This has to save with the corresponding SkeletopnGuid
-	// If not, it will rebuild in run-time
+	// Per-bone weights for the skeleton. Serialized as these are only relative to the skeleton, but can potentially
+	// be regenerated at runtime if the GUIDs dont match
 	UPROPERTY()
 	TArray<FPerBoneBlendWeight>	PerBoneBlendWeights;
 
+	// Guids for skeleton used to determine whether the PerBoneBlendWeights need rebuilding
 	UPROPERTY()
-	FGuid						SkeletonGuid;
+	FGuid SkeletonGuid;
 
+	// Guid for virtual bones used to determine whether the PerBoneBlendWeights need rebuilding
 	UPROPERTY()
-	FGuid						VirtualBoneGuid;
-
+	FGuid VirtualBoneGuid;
 
 	// transient data to handle weight and target weight
 	// this array changes based on required bones
@@ -83,14 +101,19 @@ protected:
 	TArray<FPerBoneBlendWeight> CurrentBoneBlendWeights;
 	TArray<uint8> CurvePoseSourceIndices;
 
+	// Serial number of the required bones container
+	uint16 RequiredBonesSerialNumber;
+	
 public:	
 	FAnimNode_LayeredBoneBlend()
-		: bMeshSpaceRotationBlend(false)
+		: BlendMode(ELayeredBoneBlendMode::BranchFilter)
+		, bMeshSpaceRotationBlend(false)
 		, bMeshSpaceScaleBlend(false)
 		, CurveBlendOption(ECurveBlendOption::Override)
 		, bBlendRootMotionBasedOnRootBone(true)
 		, bHasRelevantPoses(false)
 		, LODThreshold(INDEX_NONE)
+		, RequiredBonesSerialNumber(0)
 	{
 	}
 
@@ -106,6 +129,7 @@ public:
 	void AddPose()
 	{
 		BlendWeights.Add(1.f);
+		BlendMasks.Add(nullptr);
 		new (BlendPoses) FPoseLink();
 		new (LayerSetup) FInputBlendPose();
 	}
@@ -113,27 +137,26 @@ public:
 	void RemovePose(int32 PoseIndex)
 	{
 		BlendWeights.RemoveAt(PoseIndex);
+		BlendMasks.RemoveAt(PoseIndex);
 		BlendPoses.RemoveAt(PoseIndex);
 		LayerSetup.RemoveAt(PoseIndex);
 	}
 
-#if WITH_EDITOR
-	// ideally you don't like to get to situation where it becomes inconsistent, but this happened, 
-	// and we don't know what caused this. Possibly copy/paste, but I tried copy/paste and that didn't work
-	// so here we add code to fix this up manually in editor, so that they can continue working on it. 
-	void ValidateData();
-	// FAnimNode_Base interface
-	virtual void PostCompile(const class USkeleton* InSkeleton) override;
-	// end FAnimNode_Base interface
-#endif
-
-	/** Reinitialize bone weights */
-	void ReinitializeBoneBlendWeights(const FBoneContainer& RequiredBones, const USkeleton* Skeleton);
-
+	// Invalidate the cached per-bone blend weights from the skeleton
+	void InvalidatePerBoneBlendWeights() { RequiredBonesSerialNumber = 0; SkeletonGuid = FGuid(); VirtualBoneGuid = FGuid(); }
+	
+	// Invalidates the cached bone data so it is recalculated the next time this node is updated
+	void InvalidateCachedBoneData() { RequiredBonesSerialNumber = 0; }
+	
 private:
-	// Rebuild cache data from the skeleton
-	void RebuildCacheData(const USkeleton* InSkeleton);
-	bool IsCacheInvalid(const USkeleton* InSkeleton) const;
+	// Rebuild cache per bone blend weights from the skeleton
+	void RebuildPerBoneBlendWeights(const USkeleton* InSkeleton);
+
+	// Check whether per-bone blend weights are valid according to the skeleton (GUID check)
+	bool ArePerBoneBlendWeightsValid(const USkeleton* InSkeleton) const;
+
+	// Update cached data if required
+	void UpdateCachedBoneData(const FBoneContainer& RequiredBones, const USkeleton* Skeleton);
 
 	friend class UAnimGraphNode_LayeredBoneBlend;
 };

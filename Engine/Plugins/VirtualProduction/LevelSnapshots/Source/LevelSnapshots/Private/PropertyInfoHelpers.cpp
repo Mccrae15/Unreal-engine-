@@ -4,23 +4,26 @@
 
 #include "UObject/UnrealType.h"
 
-FProperty* FPropertyInfoHelpers::GetParentProperty(const FProperty* Property)
+float UE::LevelSnapshots::GFloatComparisonPrecision = 1e-03f;
+double UE::LevelSnapshots::GDoubleComparisonPrecision = 1e-03;
+
+FProperty* UE::LevelSnapshots::GetParentProperty(const FProperty* Property)
 {
 	return Property->GetOwner<FProperty>();
 }
 
-bool FPropertyInfoHelpers::IsPropertyContainer(const FProperty* Property)
+bool UE::LevelSnapshots::IsPropertyContainer(const FProperty* Property)
 {
 	return ensure(Property) && (Property->IsA(FStructProperty::StaticClass()) || Property->IsA(FArrayProperty::StaticClass()) ||
 			Property->IsA(FMapProperty::StaticClass()) || Property->IsA(FSetProperty::StaticClass()));
 }
 
-bool FPropertyInfoHelpers::IsPropertyCollection(const FProperty* Property)
+bool UE::LevelSnapshots::IsPropertyCollection(const FProperty* Property)
 {
 	return ensure(Property) && (Property->IsA(FArrayProperty::StaticClass()) || Property->IsA(FMapProperty::StaticClass()) || Property->IsA(FSetProperty::StaticClass()));
 }
 
-bool FPropertyInfoHelpers::IsPropertyInContainer(const FProperty* Property)
+bool UE::LevelSnapshots::IsPropertyInContainer(const FProperty* Property)
 {
 	if (ensure(Property))
 	{
@@ -29,7 +32,7 @@ bool FPropertyInfoHelpers::IsPropertyInContainer(const FProperty* Property)
 	return false;
 }
 
-bool FPropertyInfoHelpers::IsPropertyInCollection(const FProperty* Property)
+bool UE::LevelSnapshots::IsPropertyInCollection(const FProperty* Property)
 {
 	if (ensure(Property))
 	{
@@ -39,7 +42,7 @@ bool FPropertyInfoHelpers::IsPropertyInCollection(const FProperty* Property)
 	return false;
 }
 
-bool FPropertyInfoHelpers::IsPropertyInStruct(const FProperty* Property)
+bool UE::LevelSnapshots::IsPropertyInStruct(const FProperty* Property)
 {
 	if (!ensure(Property))
 	{
@@ -56,7 +59,7 @@ bool FPropertyInfoHelpers::IsPropertyInStruct(const FProperty* Property)
 	return IsValid(Property->GetOwner<UScriptStruct>());
 }
 
-bool FPropertyInfoHelpers::IsPropertyInMap(const FProperty* Property)
+bool UE::LevelSnapshots::IsPropertyInMap(const FProperty* Property)
 {
 	if (!ensure(Property))
 	{
@@ -68,19 +71,19 @@ bool FPropertyInfoHelpers::IsPropertyInMap(const FProperty* Property)
 	return ParentProperty && ParentProperty->IsA(FMapProperty::StaticClass());
 }
 
-bool FPropertyInfoHelpers::IsPropertyComponentFast(const FProperty* Property)
+bool UE::LevelSnapshots::IsPropertyComponentOrSubobject(const FProperty* Property)
 {
 	const bool bIsComponentProp = !!(Property->PropertyFlags & (CPF_InstancedReference | CPF_ContainsInstancedReference));
 	return bIsComponentProp;
 }
 
-bool FPropertyInfoHelpers::IsPropertySubObject(const FProperty* Property)
+void UE::LevelSnapshots::UpdateDecimalComparisionPrecision(float FloatPrecision, double DoublePrecision)
 {
-	const bool bIsComponentSubObject = !!(Property->PropertyFlags & (CPF_UObjectWrapper));
-	return bIsComponentSubObject;
+	GFloatComparisonPrecision = FloatPrecision;
+	GDoubleComparisonPrecision = DoublePrecision;
 }
 
-bool FPropertyInfoHelpers::AreNumericPropertiesNearlyEqual(const FNumericProperty* NumericProperty, const void* ValuePtrA, const void* ValuePtrB)
+bool UE::LevelSnapshots::AreNumericPropertiesNearlyEqual(const FNumericProperty* NumericProperty, const void* ValuePtrA, const void* ValuePtrB)
 {
 	check(NumericProperty);
 	
@@ -88,14 +91,14 @@ bool FPropertyInfoHelpers::AreNumericPropertiesNearlyEqual(const FNumericPropert
 	{
 		const float ValueA = FloatProperty->GetFloatingPointPropertyValue(ValuePtrA); 
 		const float ValueB = FloatProperty->GetFloatingPointPropertyValue(ValuePtrB);
-		return FMath::IsNearlyEqual(ValueA, ValueB, KINDA_SMALL_NUMBER);
+		return FMath::IsNearlyEqual(ValueA, ValueB, GFloatComparisonPrecision);
 	}
 	
 	if (const FDoubleProperty* DoubleProperty = CastField<FDoubleProperty>(NumericProperty))
 	{
 		const double ValueA = DoubleProperty->GetFloatingPointPropertyValue(ValuePtrA);
 		const double ValueB = DoubleProperty->GetFloatingPointPropertyValue(ValuePtrB);
-		return FMath::IsNearlyEqual(ValueA, ValueB, static_cast<double>(KINDA_SMALL_NUMBER));
+		return FMath::IsNearlyEqual(ValueA, ValueB, GDoubleComparisonPrecision);
 	}
 	
 	// Not a float or double? Then some kind of integer (byte, int8, int16, int32, int64, uint8, uint16 ...). Enums are bytes.

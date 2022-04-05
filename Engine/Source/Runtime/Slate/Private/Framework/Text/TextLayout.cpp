@@ -1160,6 +1160,7 @@ FTextLayout::FTextLayout()
 	, GraphemeBreakIterator(FBreakIterator::CreateCharacterBoundaryIterator())
 	, WordBreakIterator(FBreakIterator::CreateWordBreakIterator())
 	, TextBiDiDetection(TextBiDi::CreateTextBiDi())
+	, TextOverflowPolicyOverride()
 {
 }
 
@@ -1967,7 +1968,7 @@ bool FTextLayout::RemoveAt( const FTextLocation& Location, int32 Count )
 	FLineModel& LineModel = LineModels[LineIndex];
 
 	//Make sure we aren't trying to remove more characters then we have
-	Count = RemoveLocation + Count > LineModel.Text->Len() ? Count - ((RemoveLocation + Count) - LineModel.Text->Len()) : Count;
+	Count = FMath::Min(Count, LineModel.Text->Len() - RemoveLocation);
 
 	if (Count == 0)
 	{
@@ -2094,11 +2095,6 @@ bool FTextLayout::RemoveLine(int32 LineIndex)
 	}
 
 	return true;
-}
-
-void FTextLayout::AddLine( const TSharedRef< FString >& Text, const TArray< TSharedRef< IRun > >& Runs )
-{
-	AddLine(FNewLineData(Text, Runs));
 }
 
 void FTextLayout::AddLine( const FNewLineData& NewLine )
@@ -2558,6 +2554,17 @@ void FTextLayout::SetTextFlowDirection( const ETextFlowDirection InTextFlowDirec
 	// Clear out the entire cache so it gets regenerated on the text call to FlowLayout
 	// Also clear our the base direction for each line, as the flow direction can affect that
 	DirtyAllLineModels(ELineModelDirtyState::WrappingInformation | ELineModelDirtyState::TextBaseDirection | ELineModelDirtyState::ShapingCache);
+}
+
+void FTextLayout::SetTextOverflowPolicy(const TOptional<ETextOverflowPolicy> InTextOverflowPolicy)
+{
+	if (TextOverflowPolicyOverride == InTextOverflowPolicy)
+	{
+		return;
+	}
+
+	TextOverflowPolicyOverride = InTextOverflowPolicy;
+	DirtyFlags |= ETextLayoutDirtyState::Layout;
 }
 
 void FTextLayout::SetJustification( ETextJustify::Type Value )

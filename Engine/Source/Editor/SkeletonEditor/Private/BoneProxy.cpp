@@ -12,6 +12,7 @@
 UBoneProxy::UBoneProxy()
 	: bLocalLocation(true)
 	, bLocalRotation(true)
+	, bLocalScale(true)
 	, PreviousLocation(FVector::ZeroVector)
 	, PreviousRotation(FRotator::ZeroRotator)
 	, PreviousScale(FVector::ZeroVector)
@@ -52,13 +53,29 @@ void UBoneProxy::Tick(float DeltaTime)
 					Rotation = BoneTransform.GetRotation().Rotator();
 				}
 
-				Scale = LocalTransform.GetScale3D();
+				if(bLocalScale)
+				{
+					Scale = LocalTransform.GetScale3D();
+				}
+				else
+				{
+					Scale = BoneTransform.GetScale3D();
+				}
 
 				FTransform ReferenceTransform = Component->SkeletalMesh->GetRefSkeleton().GetRefBonePose()[BoneIndex];
 				ReferenceLocation = ReferenceTransform.GetLocation();
 				ReferenceRotation = ReferenceTransform.GetRotation().Rotator();
 				ReferenceScale = ReferenceTransform.GetScale3D();
 			}
+
+			// Show mesh relative transform on the details panel so we have a way to visualize the root transform when processing root motion
+			// Note that this doesn't always represent the actual transform of the root in the animation at current time but where root motion has taken us so far
+			// It will not match the root transform at the current time in the animation after lopping multiple times if we are using ProcessRootMotion::Loop
+			// or if we are visualizing a complex section from a montage, for example
+			const FTransform MeshRelativeTransform = Component->GetRelativeTransform();
+			MeshLocation = MeshRelativeTransform.GetLocation();
+			MeshRotation = MeshRelativeTransform.GetRotation().Rotator();
+			MeshScale = MeshRelativeTransform.GetScale3D();
 		}
 	}
 }
@@ -71,6 +88,267 @@ bool UBoneProxy::IsTickable() const
 TStatId UBoneProxy::GetStatId() const
 {
 	RETURN_QUICK_DECLARE_CYCLE_STAT(UBoneProxy, STATGROUP_Tickables);
+}
+
+TOptional<FVector::FReal> UBoneProxy::GetNumericValue(
+	ESlateTransformComponent::Type Component,
+	ESlateRotationRepresentation::Type Representation,
+	ESlateTransformSubComponent::Type SubComponent,
+	ETransformType TransformType) const
+{
+	const FVector* LocationPtr = &Location;
+	const FRotator* RotationPtr = &Rotation;
+	const FVector* ScalePtr = &Scale;
+
+	switch(TransformType)
+	{
+		case TransformType_Reference:
+		{
+			LocationPtr = &ReferenceLocation;
+			RotationPtr = &ReferenceRotation;
+			ScalePtr = &ReferenceScale;
+			break;
+		}
+		case TransformType_Mesh:
+		{
+			LocationPtr = &MeshLocation;
+			RotationPtr = &MeshRotation;
+			ScalePtr = &MeshScale;
+			break;
+		}
+	}
+
+	const FEulerTransform Transform(*RotationPtr, *LocationPtr, *ScalePtr);
+	return SAdvancedTransformInputBox<FEulerTransform>::GetNumericValueFromTransform(
+		Transform,
+		Component,
+		Representation,
+		SubComponent
+		);
+}
+
+TOptional<FVector::FReal> UBoneProxy::GetMultiNumericValue(
+	ESlateTransformComponent::Type Component,
+	ESlateRotationRepresentation::Type Representation,
+	ESlateTransformSubComponent::Type SubComponent,
+	ETransformType TransformType,
+	TArrayView<UBoneProxy*> BoneProxies)
+{
+	TOptional<FVector::FReal> FirstValue = BoneProxies[0]->GetNumericValue(Component, Representation, SubComponent, TransformType);
+	if(!FirstValue.IsSet())
+	{
+		return FirstValue;
+	}
+
+	for(int32 Index=1;Index<BoneProxies.Num();Index++)
+	{
+		TOptional<FVector::FReal> Value = BoneProxies[Index]->GetNumericValue(Component, Representation, SubComponent, TransformType);
+		if(!Value.IsSet())
+		{
+			return Value;
+		}
+		if(!FMath::IsNearlyEqual(FirstValue.GetValue(), Value.GetValue()))
+		{
+			return TOptional<FVector::FReal>();
+		}
+	}
+
+	return FirstValue;
+}
+
+void UBoneProxy::OnNumericValueCommitted(
+	ESlateTransformComponent::Type Component,
+	ESlateRotationRepresentation::Type Representation,
+	ESlateTransformSubComponent::Type SubComponent,
+	FVector::FReal Value, ETextCommit::Type CommitType,
+	ETransformType TransformType,
+	bool bIsCommit)
+{
+	if(TransformType != TransformType_Bone)
+	{
+		return;
+	}
+
+	switch(Component)
+	{
+		case ESlateTransformComponent::Location:
+		{
+			OnPreEditChange(GET_MEMBER_NAME_CHECKED(UBoneProxy, Location), bIsCommit);
+				
+			switch(SubComponent)
+			{
+				case ESlateTransformSubComponent::X:
+				{
+					Location.X = Value;
+					break;
+				}
+				case ESlateTransformSubComponent::Y:
+				{
+					Location.Y = Value;
+					break;
+				}
+				case ESlateTransformSubComponent::Z:
+				{
+					Location.Z = Value;
+					break;
+				}
+			}
+
+			OnPostEditChangeProperty(GET_MEMBER_NAME_CHECKED(UBoneProxy, Location), bIsCommit);
+			break;
+		}
+		case ESlateTransformComponent::Rotation:
+		{
+			OnPreEditChange(GET_MEMBER_NAME_CHECKED(UBoneProxy, Rotation), bIsCommit);
+				
+			switch(SubComponent)
+			{
+				case ESlateTransformSubComponent::Roll:
+				{
+					Rotation.Roll = Value;
+					break;
+				}
+				case ESlateTransformSubComponent::Pitch:
+				{
+					Rotation.Pitch = Value;
+					break;
+				}
+				case ESlateTransformSubComponent::Yaw:
+				{
+					Rotation.Yaw = Value;
+					break;
+				}
+			}
+
+			OnPostEditChangeProperty(GET_MEMBER_NAME_CHECKED(UBoneProxy, Rotation), bIsCommit);
+			break;
+		}
+		case ESlateTransformComponent::Scale:
+		{
+			OnPreEditChange(GET_MEMBER_NAME_CHECKED(UBoneProxy, Scale), bIsCommit);
+
+			switch(SubComponent)
+			{
+				case ESlateTransformSubComponent::X:
+				{
+					Scale.X = Value;
+					break;
+				}
+				case ESlateTransformSubComponent::Y:
+				{
+					Scale.Y = Value;
+					break;
+				}
+				case ESlateTransformSubComponent::Z:
+				{
+					Scale.Z = Value;
+					break;
+				}
+			}
+
+			OnPostEditChangeProperty(GET_MEMBER_NAME_CHECKED(UBoneProxy, Scale), bIsCommit);
+			break;
+		}
+	}
+}
+
+void UBoneProxy::OnMultiNumericValueCommitted(
+	ESlateTransformComponent::Type Component,
+	ESlateRotationRepresentation::Type Representation,
+	ESlateTransformSubComponent::Type SubComponent,
+	FVector::FReal Value,
+	ETextCommit::Type CommitType,
+	ETransformType TransformType,
+	TArrayView<UBoneProxy*> BoneProxies,
+	bool bIsCommit)
+{
+	for(UBoneProxy* BoneProxy : BoneProxies)
+	{
+		BoneProxy->OnNumericValueCommitted(Component, Representation, SubComponent, Value, CommitType, TransformType, bIsCommit);
+	}
+}
+
+bool UBoneProxy::DiffersFromDefault(ESlateTransformComponent::Type Component, ETransformType TransformType) const
+{
+	if(TransformType == TransformType_Bone)
+	{
+		switch(Component)
+		{
+			case ESlateTransformComponent::Location:
+			{
+				return !Location.Equals(ReferenceLocation);
+			}
+			case ESlateTransformComponent::Rotation:
+			{
+				return !Rotation.Equals(ReferenceRotation);
+			}
+			case ESlateTransformComponent::Scale:
+			{
+				return !Scale.Equals(ReferenceScale);
+			}
+			default:
+			{
+				return DiffersFromDefault(ESlateTransformComponent::Location, TransformType) ||
+					DiffersFromDefault(ESlateTransformComponent::Rotation, TransformType) ||
+						DiffersFromDefault(ESlateTransformComponent::Scale, TransformType);
+			}
+		}
+	}
+	return false;
+}
+
+void UBoneProxy::ResetToDefault(ESlateTransformComponent::Type InComponent, ETransformType TransformType)
+{
+	if(TransformType == TransformType_Bone)
+	{
+		if (UDebugSkelMeshComponent* Component = SkelMeshComponent.Get())
+		{
+			if (Component->PreviewInstance && Component->AnimScriptInstance == Component->PreviewInstance)
+			{
+				int32 BoneIndex = Component->GetBoneIndex(BoneName);
+				if (BoneIndex != INDEX_NONE && BoneIndex < Component->GetNumComponentSpaceTransforms())
+				{
+					Component->PreviewInstance->SetFlags(RF_Transactional);
+					Component->PreviewInstance->Modify();
+
+					FAnimNode_ModifyBone& ModifyBone = Component->PreviewInstance->ModifyBone(BoneName);
+
+					switch(InComponent)
+					{
+						case ESlateTransformComponent::Location:
+						{
+							ModifyBone.Translation = ReferenceLocation;
+							break;
+						}
+						case ESlateTransformComponent::Rotation:
+						{
+							ModifyBone.Rotation = ReferenceRotation;
+							break;
+						}
+						case ESlateTransformComponent::Scale:
+						{
+							ModifyBone.Scale = ReferenceScale;
+							break;
+						}
+						default:
+						{
+							ModifyBone.Translation = ReferenceLocation;
+							ModifyBone.Rotation = ReferenceRotation;
+							ModifyBone.Scale = ReferenceScale;
+							break;
+						}
+					}
+
+					if(ModifyBone.Translation.Equals(ReferenceLocation) &&
+						ModifyBone.Rotation.Equals(ReferenceRotation) &&
+						ModifyBone.Scale.Equals(ReferenceScale))
+					{
+						Component->PreviewInstance->RemoveBoneModification(BoneName);
+					}
+				}
+			}
+		}
+	}
 }
 
 void UBoneProxy::PreEditChange(FEditPropertyChain& PropertyAboutToChange)
@@ -171,6 +449,22 @@ void UBoneProxy::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEv
 			}
 		}
 	}
+}
+
+void UBoneProxy::OnPreEditChange(FName PropertyName, bool bIsCommit)
+{
+	FEditPropertyChain PropertyChain;
+	FProperty* Property = FindFProperty<FProperty>(GetClass(), PropertyName);
+	PropertyChain.AddHead(Property);
+	PropertyChain.SetActiveMemberPropertyNode(Property);
+	PreEditChange(PropertyChain);
+}
+
+void UBoneProxy::OnPostEditChangeProperty(FName PropertyName, bool bIsCommit)
+{
+	FProperty* Property = FindFProperty<FProperty>(GetClass(), PropertyName);
+	FPropertyChangedEvent ChangedEvent(Property, bIsCommit ? EPropertyChangeType::Unspecified : EPropertyChangeType::Interactive);
+	PostEditChangeProperty(ChangedEvent);
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -10,7 +10,7 @@
 #include "hlslcc.h"
 #include "MetalShaderResources.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Serialization/Archive.h"
 #include "Misc/ConfigCacheIni.h"
 #include "MetalBackend.h"
@@ -36,7 +36,7 @@ class FMetalShaderFormat : public IShaderFormat
 public:
 	enum
 	{
-		HEADER_VERSION = 71,
+		HEADER_VERSION = 72,
 	};
 	
 	struct FVersion
@@ -63,14 +63,13 @@ public:
 		OutFormats.Add(NAME_SF_METAL_MRT);
 		OutFormats.Add(NAME_SF_METAL_TVOS);
 		OutFormats.Add(NAME_SF_METAL_MRT_TVOS);
-		OutFormats.Add(NAME_SF_METAL_SM5_NOTESS);
 		OutFormats.Add(NAME_SF_METAL_SM5);
 		OutFormats.Add(NAME_SF_METAL_MACES3_1);
 		OutFormats.Add(NAME_SF_METAL_MRT_MAC);
 	}
 	virtual void CompileShader(FName Format, const struct FShaderCompilerInput& Input, struct FShaderCompilerOutput& Output,const FString& WorkingDirectory) const override final
 	{
-		check(Format == NAME_SF_METAL || Format == NAME_SF_METAL_MRT || Format == NAME_SF_METAL_TVOS || Format == NAME_SF_METAL_MRT_TVOS || Format == NAME_SF_METAL_SM5_NOTESS || Format == NAME_SF_METAL_SM5 || Format == NAME_SF_METAL_MACES3_1 || Format == NAME_SF_METAL_MRT_MAC);
+		check(Format == NAME_SF_METAL || Format == NAME_SF_METAL_MRT || Format == NAME_SF_METAL_TVOS || Format == NAME_SF_METAL_MRT_TVOS || Format == NAME_SF_METAL_SM5 || Format == NAME_SF_METAL_MACES3_1 || Format == NAME_SF_METAL_MRT_MAC);
 		CompileShader_Metal(Input, Output, WorkingDirectory);
 	}
 	virtual bool CanStripShaderCode(bool const bNativeFormat) const override final
@@ -96,7 +95,7 @@ public:
     {
 		const int32 NumShadersPerLibrary = 10000;
 		check(LibraryName.Len() > 0);
-		check(Format == NAME_SF_METAL || Format == NAME_SF_METAL_MRT || Format == NAME_SF_METAL_TVOS || Format == NAME_SF_METAL_MRT_TVOS || Format == NAME_SF_METAL_SM5_NOTESS || Format == NAME_SF_METAL_SM5 || Format == NAME_SF_METAL_MACES3_1 || Format == NAME_SF_METAL_MRT_MAC);
+		check(Format == NAME_SF_METAL || Format == NAME_SF_METAL_MRT || Format == NAME_SF_METAL_TVOS || Format == NAME_SF_METAL_MRT_TVOS || Format == NAME_SF_METAL_SM5 || Format == NAME_SF_METAL_MACES3_1 || Format == NAME_SF_METAL_MRT_MAC);
 
 		const FString ArchivePath = (WorkingDirectory / Format.GetPlainNameString());
 		IFileManager::Get().DeleteDirectory(*ArchivePath, false, true);
@@ -138,6 +137,7 @@ public:
 
 		bool bOK = false;
 		FString LibraryPlatformName = FString::Printf(TEXT("%s_%s"), *LibraryName, *Format.GetPlainNameString());
+		LibraryPlatformName.ToLowerInline();
 		volatile int32 CompiledLibraries = 0;
 		TArray<FGraphEventRef> Tasks;
 
@@ -220,6 +220,7 @@ public:
 		if (CompiledLibraries == SubLibraries.Num())
 		{
 			FString BinaryShaderFile = (OutputDir / LibraryPlatformName) + FMetalCompilerToolchain::MetalMapExtension;
+			BinaryShaderFile.ToLowerInline();
 			FArchive* BinaryShaderAr = IFileManager::Get().CreateFileWriter(*BinaryShaderFile);
 			if (BinaryShaderAr != NULL)
 			{
@@ -497,7 +498,6 @@ EShaderPlatform FMetalCompilerToolchain::MetalShaderFormatToLegacyShaderPlatform
 	if (ShaderFormat == NAME_SF_METAL_MRT_TVOS)		return SP_METAL_MRT_TVOS;
 	if (ShaderFormat == NAME_SF_METAL_MRT_MAC)		return SP_METAL_MRT_MAC;
 	if (ShaderFormat == NAME_SF_METAL_SM5)			return SP_METAL_SM5;
-	if (ShaderFormat == NAME_SF_METAL_SM5_NOTESS)	return SP_METAL_SM5_NOTESS;
 	if (ShaderFormat == NAME_SF_METAL_MACES3_1)		return SP_METAL_MACES3_1;
 
 	return SP_NumPlatforms;
@@ -700,7 +700,7 @@ FMetalCompilerToolchain::EMetalToolchainStatus FMetalCompilerToolchain::DoMacNat
 			MetalFrontendBinaryCommand[AppleSDKMac] = ToolchainBase / TEXT("macos") / TEXT("bin") / MetalFrontendBinary;
 			MetalFrontendBinaryCommand[AppleSDKMobile] = ToolchainBase / TEXT("ios") / TEXT("bin") / MetalFrontendBinary;
 
-			const bool bIsFrontendPresent = FPaths::FileExists(*MetalFrontendBinaryCommand[AppleSDKMac]) && FPaths::FileExists(*MetalFrontendBinaryCommand[AppleSDKMobile]);
+			const bool bIsFrontendPresent = FPaths::FileExists(MetalFrontendBinaryCommand[AppleSDKMac]) && FPaths::FileExists(MetalFrontendBinaryCommand[AppleSDKMobile]);
 			if (!bIsFrontendPresent)
 			{
 				UE_LOG(LogMetalCompilerSetup, Warning, TEXT("Missing Metal frontend in %s."), *ToolchainBase);
@@ -713,10 +713,10 @@ FMetalCompilerToolchain::EMetalToolchainStatus FMetalCompilerToolchain::DoMacNat
 			MetalLibBinaryCommand[AppleSDKMac] = ToolchainBase / TEXT("macos") / TEXT("bin") / MetalLibraryBinary;
 			MetalLibBinaryCommand[AppleSDKMobile] = ToolchainBase / TEXT("ios") / TEXT("bin") / MetalLibraryBinary;
 
-			if (!FPaths::FileExists(*MetalArBinaryCommand[AppleSDKMac]) ||
-				!FPaths::FileExists(*MetalArBinaryCommand[AppleSDKMobile]) ||
-				!FPaths::FileExists(*MetalLibBinaryCommand[AppleSDKMac]) ||
-				!FPaths::FileExists(*MetalLibBinaryCommand[AppleSDKMobile]))
+			if (!FPaths::FileExists(MetalArBinaryCommand[AppleSDKMac]) ||
+				!FPaths::FileExists(MetalArBinaryCommand[AppleSDKMobile]) ||
+				!FPaths::FileExists(MetalLibBinaryCommand[AppleSDKMac]) ||
+				!FPaths::FileExists(MetalLibBinaryCommand[AppleSDKMobile]))
 			{
 				UE_LOG(LogMetalCompilerSetup, Warning, TEXT("Missing toolchain binaries in %s."), *ToolchainBase);
 				return EMetalToolchainStatus::ToolchainNotFound;
@@ -762,7 +762,7 @@ FMetalCompilerToolchain::EMetalToolchainStatus FMetalCompilerToolchain::DoWindow
 	MetalFrontendBinaryCommand[AppleSDKMac] = ToolchainBase / TEXT("macos") / TEXT("bin") / MetalFrontendBinary;
 	MetalFrontendBinaryCommand[AppleSDKMobile] = ToolchainBase / TEXT("ios") / TEXT("bin") / MetalFrontendBinary;
 
-	bool bUseLocalMetalToolchain = FPaths::FileExists(*MetalFrontendBinaryCommand[AppleSDKMac]) && FPaths::FileExists(*MetalFrontendBinaryCommand[AppleSDKMobile]);
+	bool bUseLocalMetalToolchain = FPaths::FileExists(MetalFrontendBinaryCommand[AppleSDKMac]) && FPaths::FileExists(MetalFrontendBinaryCommand[AppleSDKMobile]);
 	if (!bUseLocalMetalToolchain)
 	{
 #if CHECK_METAL_COMPILER_TOOLCHAIN_SETUP
@@ -778,10 +778,10 @@ FMetalCompilerToolchain::EMetalToolchainStatus FMetalCompilerToolchain::DoWindow
 	MetalLibBinaryCommand[AppleSDKMac] = ToolchainBase / TEXT("macos") / TEXT("bin") / MetalLibraryBinary;
 	MetalLibBinaryCommand[AppleSDKMobile] = ToolchainBase / TEXT("ios") / TEXT("bin") / MetalLibraryBinary;
 
-	if (!FPaths::FileExists(*MetalArBinaryCommand[AppleSDKMac]) ||
-		!FPaths::FileExists(*MetalArBinaryCommand[AppleSDKMobile]) ||
-		!FPaths::FileExists(*MetalLibBinaryCommand[AppleSDKMac]) ||
-		!FPaths::FileExists(*MetalLibBinaryCommand[AppleSDKMobile]))
+	if (!FPaths::FileExists(MetalArBinaryCommand[AppleSDKMac]) ||
+		!FPaths::FileExists(MetalArBinaryCommand[AppleSDKMobile]) ||
+		!FPaths::FileExists(MetalLibBinaryCommand[AppleSDKMac]) ||
+		!FPaths::FileExists(MetalLibBinaryCommand[AppleSDKMobile]))
 	{
 #if CHECK_METAL_COMPILER_TOOLCHAIN_SETUP
 		UE_LOG(LogMetalCompilerSetup, Warning, TEXT("Missing toolchain binaries."))

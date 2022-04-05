@@ -2,8 +2,11 @@
 
 #pragma once
 
+#include "ConcertWorkspaceData.h"
 #include "IConcertClientPackageBridge.h"
 
+class FObjectPostSaveContext;
+class FObjectPreSaveContext;
 class UPackage;
 class FPackageReloadedEvent;
 
@@ -25,11 +28,14 @@ public:
 	virtual bool& GetIgnoreLocalDiscardRef() override;
 
 private:
+	/** Handle any deferred tasks that should be run on the game thread. */
+	void OnEndFrame();
+
 	/** Called prior to a package being saved to disk */
-	void HandlePackagePreSave(UPackage* Package);
+	void HandlePackagePreSave(UPackage* Package, FObjectPreSaveContext ObjectSavecontext);
 
 	/** Called after a package has been saved to disk */
-	void HandlePackageSaved(const FString& PackageFilename, UObject* Outer);
+	void HandlePackageSaved(const FString& PackageFilename, UPackage* Package, FObjectPostSaveContext ObjectSaveContext);
 
 	/** Called when a new asset is added */
 	void HandleAssetAdded(UObject *Object);
@@ -60,4 +66,7 @@ private:
 
 	/** Map of packages that are in the process of being renamed */
 	TMap<FName, FName> PackagesBeingRenamed;
+
+	using FConcertPackageInfoTuple = TTuple<FConcertPackageInfo, FString>;
+	TArray<FConcertPackageInfoTuple> PendingPackageInfos;
 };

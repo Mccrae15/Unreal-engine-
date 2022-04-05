@@ -9,6 +9,7 @@
 
 DECLARE_LOG_CATEGORY_EXTERN(LogVehicleUtility, Log, All);
 
+
 struct FSuspensionUtility
 {
 	//

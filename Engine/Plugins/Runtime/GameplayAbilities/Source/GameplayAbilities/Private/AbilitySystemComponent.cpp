@@ -128,7 +128,7 @@ bool UAbilitySystemComponent::HasAttributeSetForAttribute(FGameplayAttribute Att
 	return (Attribute.IsValid() && (Attribute.IsSystemAttribute() || GetAttributeSubobject(Attribute.GetAttributeSetClass()) != nullptr));
 }
 
-void UAbilitySystemComponent::GetAllAttributes(OUT TArray<FGameplayAttribute>& Attributes)
+void UAbilitySystemComponent::GetAllAttributes(TArray<FGameplayAttribute>& OutAttributes)
 {
 	for (const UAttributeSet* Set : GetSpawnedAttributes())
 	{
@@ -141,14 +141,44 @@ void UAbilitySystemComponent::GetAllAttributes(OUT TArray<FGameplayAttribute>& A
 		{
 			if (FFloatProperty* FloatProperty = CastField<FFloatProperty>(*It))
 			{
-				Attributes.Push(FGameplayAttribute(FloatProperty));
+				OutAttributes.Push(FGameplayAttribute(FloatProperty));
 			}
 			else if (FGameplayAttribute::IsGameplayAttributeDataProperty(*It))
 			{
-				Attributes.Push(FGameplayAttribute(*It));
+				OutAttributes.Push(FGameplayAttribute(*It));
 			}
 		}
 	}
+}
+
+const UAttributeSet* UAbilitySystemComponent::GetAttributeSet(TSubclassOf<UAttributeSet> AttributeSetClass) const
+{
+	// get the attribute set
+	const UAttributeSet* AttributeSet = GetAttributeSubobject(AttributeSetClass);
+
+	// return the pointer
+	return AttributeSet;
+}
+
+float UAbilitySystemComponent::GetGameplayAttributeValue(FGameplayAttribute Attribute, OUT bool& bFound) const
+{
+	// validate the attribute
+	if (Attribute.IsValid())
+	{
+		// get the associated AttributeSet
+		const UAttributeSet* InternalAttributeSet = GetAttributeSubobject(Attribute.GetAttributeSetClass());
+
+		if (InternalAttributeSet)
+		{
+			// NOTE: this is currently not taking predicted gameplay effect modifiers into consideration, so the value may not be accurate on client
+			bFound = true;
+			return Attribute.GetNumericValue(InternalAttributeSet);
+		}
+	}
+
+	// the attribute was not found
+	bFound = false;
+	return 0.0f;
 }
 
 void UAbilitySystemComponent::OnRegister()
@@ -180,6 +210,7 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	// so we don't need to mark it dirty.
 	MinimalReplicationTags.Owner = this;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	ReplicatedLooseTags.Owner = this;
 
 	/** Allocate an AbilityActorInfo. Note: this goes through a global function and is a SharedPtr so projects can make their own AbilityActorInfo */
 	if(!AbilityActorInfo.IsValid())
@@ -212,6 +243,21 @@ void UAbilitySystemComponent::CacheIsNetSimulated()
 const FActiveGameplayEffect* UAbilitySystemComponent::GetActiveGameplayEffect(const FActiveGameplayEffectHandle Handle) const
 {
 	return ActiveGameplayEffects.GetActiveGameplayEffect(Handle);
+}
+
+const UGameplayEffect* UAbilitySystemComponent::GetGameplayEffectCDO(const FActiveGameplayEffectHandle Handle) const
+{
+	// get the active gameplay effect struct
+	const FActiveGameplayEffect* ActiveGE = GetActiveGameplayEffect(Handle);
+
+	if (ActiveGE)
+	{
+		// return the spec's CDO
+		return ActiveGE->Spec.Def;
+	}
+
+	// active effect not found
+	return nullptr;
 }
 
 const FGameplayTagContainer* UAbilitySystemComponent::GetGameplayEffectSourceTagsFromHandle(FActiveGameplayEffectHandle Handle) const
@@ -371,7 +417,7 @@ int32 UAbilitySystemComponent::GetGameplayEffectCount(TSubclassOf<UGameplayEffec
 	return Count;
 }
 
-int32 UAbilitySystemComponent::GetAggregatedStackCount(const FGameplayEffectQuery& Query)
+int32 UAbilitySystemComponent::GetAggregatedStackCount(const FGameplayEffectQuery& Query) const
 {
 	return ActiveGameplayEffects.GetActiveEffectCount(Query);
 }
@@ -445,12 +491,6 @@ FActiveGameplayEffectHandle UAbilitySystemComponent::ApplyGameplayEffectToSelf(c
 	}
 
 	return FActiveGameplayEffectHandle();
-}
-
-FOnActiveGameplayEffectRemoved* UAbilitySystemComponent::OnGameplayEffectRemovedDelegate(FActiveGameplayEffectHandle Handle)
-{
-	FActiveGameplayEffect* ActiveEffect = ActiveGameplayEffects.GetActiveGameplayEffect(Handle);
-	return ActiveEffect ? &ActiveEffect->EventSet.DEPRECATED_OnEffectRemoved : nullptr;
 }
 
 FActiveGameplayEffectEvents* UAbilitySystemComponent::GetActiveEffectEventSet(FActiveGameplayEffectHandle Handle)
@@ -529,6 +569,13 @@ void UAbilitySystemComponent::UpdateTagMap_Internal(const FGameplayTagContainer&
 			OnTagUpdated(Tag, false);
 		}
 	}
+}
+
+int32 UAbilitySystemComponent::GetGameplayTagCount(FGameplayTag GameplayTag) const
+{
+	// NOTE -- no authority check to allow read-only access on all clients.
+	// This may lead to incorrect values due to network lag. 
+	return GetTagCount(GameplayTag);
 }
 
 FOnGameplayEffectTagCountChanged& UAbilitySystemComponent::RegisterGameplayTagEvent(FGameplayTag Tag, EGameplayTagEventType::Type EventType)
@@ -1004,6 +1051,16 @@ void UAbilitySystemComponent::GetGameplayEffectStartTimeAndDuration(FActiveGamep
 	return ActiveGameplayEffects.GetGameplayEffectStartTimeAndDuration(Handle, StartEffectTime, Duration);
 }
 
+void UAbilitySystemComponent::UpdateActiveGameplayEffectSetByCallerMagnitude(FActiveGameplayEffectHandle ActiveHandle, FGameplayTag SetByCallerTag, float NewValue)
+{
+	ActiveGameplayEffects.UpdateActiveGameplayEffectSetByCallerMagnitude(ActiveHandle, SetByCallerTag, NewValue);
+}
+
+void UAbilitySystemComponent::UpdateActiveGameplayEffectSetByCallerMagnitudes(FActiveGameplayEffectHandle ActiveHandle, const TMap<FGameplayTag, float>& NewSetByCallerValues)
+{
+	ActiveGameplayEffects.UpdateActiveGameplayEffectSetByCallerMagnitudes(ActiveHandle, NewSetByCallerValues);
+}
+
 float UAbilitySystemComponent::GetGameplayEffectMagnitude(FActiveGameplayEffectHandle Handle, FGameplayAttribute Attribute) const
 {
 	return ActiveGameplayEffects.GetGameplayEffectMagnitude(Handle, Attribute);
@@ -1274,6 +1331,9 @@ void UAbilitySystemComponent::RemoveGameplayCue_Internal(const FGameplayTag Game
 	{
 		bool bWasInList = HasMatchingGameplayTag(GameplayCueTag);
 
+		// Force replication so GameplayCue removals are properly replicated to all clients during Mixed and Minimal replication modes
+		bIsNetDirty = true;
+		ForceReplication();
 		GameplayCueContainer.RemoveCue(GameplayCueTag);
 
 		if (bWasInList)
@@ -1521,6 +1581,7 @@ void UAbilitySystemComponent::GetLifetimeReplicatedProps(TArray< FLifetimeProper
 	Params.Condition = COND_SkipOwner;
 	DOREPLIFETIME_WITH_PARAMS_FAST(UAbilitySystemComponent, MinimalReplicationGameplayCues, Params);
 	DOREPLIFETIME_WITH_PARAMS_FAST(UAbilitySystemComponent, MinimalReplicationTags, Params);
+	DOREPLIFETIME_WITH_PARAMS_FAST(UAbilitySystemComponent, ReplicatedLooseTags, Params);
 
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 }
@@ -1549,7 +1610,7 @@ bool UAbilitySystemComponent::ReplicateSubobjects(class UActorChannel *Channel, 
 
 	for (const UAttributeSet* Set : GetSpawnedAttributes())
 	{
-		if (Set && !Set->IsPendingKill())
+		if (IsValid(Set))
 		{
 			WroteSomething |= Channel->ReplicateSubobject(const_cast<UAttributeSet*>(Set), *Bunch, *RepFlags);
 		}
@@ -1557,7 +1618,7 @@ bool UAbilitySystemComponent::ReplicateSubobjects(class UActorChannel *Channel, 
 
 	for (UGameplayAbility* Ability : AllReplicatedInstancedAbilities)
 	{
-		if (Ability && !Ability->IsPendingKill())
+		if (IsValid(Ability))
 		{
 			WroteSomething |= Channel->ReplicateSubobject(Ability, *Bunch, *RepFlags);
 		}
@@ -1974,6 +2035,30 @@ static void CycleDebugCategory(UWorld* InWorld)
 	TargetInfo->DebugCategoryIndex = (TargetInfo->DebugCategoryIndex+1) % TargetInfo->DebugCategories.Num();
 }
 
+static void SetDebugCategory(const TArray<FString>& Args, UWorld* InWorld)
+{
+	if (Args.Num() < 1)
+	{
+		ABILITY_LOG(Error, TEXT("Missing category name parameter. Usage: AbilitySystem.Debug.SetCategory <CategoryName>"))
+		return;
+	}
+
+	FASCDebugTargetInfo* TargetInfo = GetDebugTargetInfo(InWorld);
+	check(TargetInfo);
+
+	for (int32 CategoryIndex = 0; CategoryIndex < TargetInfo->DebugCategories.Num(); ++CategoryIndex)
+	{
+		const FString CategoryString = TargetInfo->DebugCategories[CategoryIndex].ToString();
+		if (CategoryString.Equals(Args[0], ESearchCase::IgnoreCase))
+		{
+			TargetInfo->DebugCategoryIndex = CategoryIndex;
+			return;
+		}
+	}
+
+	ABILITY_LOG(Error, TEXT("Unable to match category name parameter [%s]. Usage: AbilitySystem.Debug.SetCategory <CategoryName>"), *Args[0]);
+}
+
 UAbilitySystemComponent* GetDebugTarget(FASCDebugTargetInfo* Info)
 {
 	// Return target if we already have one
@@ -1991,7 +2076,7 @@ UAbilitySystemComponent* GetDebugTarget(FASCDebugTargetInfo* Info)
 			if (ASC->GetWorld() == Info->TargetWorld.Get() && MakeWeakObjectPtr(ASC).Get())
 			{
 				Info->LastDebugTarget = ASC;
-				if (ASC->AbilityActorInfo->IsLocallyControlledPlayer())
+				if (ASC->AbilityActorInfo != nullptr && ASC->AbilityActorInfo->IsLocallyControlledPlayer())
 				{
 					// Default to local player first
 					break;
@@ -2060,9 +2145,15 @@ FAutoConsoleCommandWithWorld AbilitySystemPrevDebugTargetCmd(
 
 FAutoConsoleCommandWithWorld AbilitySystemDebugNextCategoryCmd(
 	TEXT("AbilitySystem.Debug.NextCategory"),
-	TEXT("Targets previous AbilitySystemComponent in ShowDebug AbilitySystem"),
+	TEXT("Switches to the next ShowDebug AbilitySystem category"),
 	FConsoleCommandWithWorldDelegate::CreateStatic(CycleDebugCategory)
 	);
+
+FAutoConsoleCommandWithWorldAndArgs AbilitySystemDebugSetCategoryCmd(
+	TEXT("AbilitySystem.Debug.SetCategory"),
+	TEXT("Sets the ShowDebug AbilitySystem category. Usage: AbilitySystem.Debug.SetCategory <CategoryName>"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(SetDebugCategory)
+);
 
 void UAbilitySystemComponent::OnShowDebugInfo(AHUD* HUD, UCanvas* Canvas, const FDebugDisplayInfo& DisplayInfo, float& YL, float& YPos)
 {
@@ -2071,7 +2162,18 @@ void UAbilitySystemComponent::OnShowDebugInfo(AHUD* HUD, UCanvas* Canvas, const 
 		UWorld* World = HUD->GetWorld();
 		FASCDebugTargetInfo* TargetInfo = GetDebugTargetInfo(World);
 	
-		if (UAbilitySystemComponent* ASC = GetDebugTarget(TargetInfo))
+		UAbilitySystemComponent* ASC = nullptr;
+
+		if (UAbilitySystemGlobals::Get().bUseDebugTargetFromHud)
+		{
+			ASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(HUD->GetCurrentDebugTargetActor());
+		}
+		else
+		{
+			ASC = GetDebugTarget(TargetInfo);
+		}
+
+		if (ASC)
 		{
 			TArray<FName> LocalDisplayNames;
 			LocalDisplayNames.Add( TargetInfo->DebugCategories[ TargetInfo->DebugCategoryIndex ] );
@@ -2642,7 +2744,15 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 void UAbilitySystemComponent::SetOwnerActor(AActor* NewOwnerActor)
 {
 	MARK_PROPERTY_DIRTY_FROM_NAME(UAbilitySystemComponent, OwnerActor, this);
+	if (OwnerActor)
+	{
+		OwnerActor->OnDestroyed.RemoveDynamic(this, &UAbilitySystemComponent::OnOwnerActorDestroyed);
+	}
 	OwnerActor = NewOwnerActor;
+	if (OwnerActor)
+	{
+		OwnerActor->OnDestroyed.AddUniqueDynamic(this, &UAbilitySystemComponent::OnOwnerActorDestroyed);
+	}
 }
 
 AActor* UAbilitySystemComponent::GetOwnerActor() const
@@ -2653,7 +2763,15 @@ AActor* UAbilitySystemComponent::GetOwnerActor() const
 void UAbilitySystemComponent::SetAvatarActor_Direct(AActor* NewAvatarActor)
 {
 	MARK_PROPERTY_DIRTY_FROM_NAME(UAbilitySystemComponent, AvatarActor, this);
+	if (AvatarActor)
+	{
+		AvatarActor->OnDestroyed.RemoveDynamic(this, &UAbilitySystemComponent::OnAvatarActorDestroyed);
+	}
 	AvatarActor = NewAvatarActor;
+	if (AvatarActor)
+	{
+		AvatarActor->OnDestroyed.AddUniqueDynamic(this, &UAbilitySystemComponent::OnAvatarActorDestroyed);
+	}
 }
 
 AActor* UAbilitySystemComponent::GetAvatarActor_Direct() const
@@ -2661,9 +2779,44 @@ AActor* UAbilitySystemComponent::GetAvatarActor_Direct() const
 	return AvatarActor;
 }
 
+void UAbilitySystemComponent::OnAvatarActorDestroyed(AActor* InActor)
+{
+	if (InActor == AvatarActor)
+	{
+		AvatarActor = nullptr;
+	}
+}
+
+void UAbilitySystemComponent::OnOwnerActorDestroyed(AActor* InActor)
+{
+	if (InActor == OwnerActor)
+	{
+		OwnerActor = nullptr;
+	}
+}
+
 void UAbilitySystemComponent::SetSpawnedAttributes(const TArray<UAttributeSet*>& NewSpawnedAttributes)
 {
+	TArray<UAttributeSet*>& LocalSpawnedAttributes = GetSpawnedAttributes_Mutable();
+	for (int32 Index = LocalSpawnedAttributes.Num() - 1; Index >= 0; --Index)
+	{
+		UAttributeSet* AttributeSet = LocalSpawnedAttributes[Index];
+		AActor* ActorOwner = AttributeSet->GetTypedOuter<AActor>();
+		if (ActorOwner)
+		{
+			ActorOwner->OnEndPlay.RemoveDynamic(this, &UAbilitySystemComponent::OnSpawnedAttributesEndPlayed);
+		}
+	}
 	GetSpawnedAttributes_Mutable() = NewSpawnedAttributes;
+	for (int32 Index = NewSpawnedAttributes.Num() - 1; Index >= 0; --Index)
+	{
+		UAttributeSet* AttributeSet = NewSpawnedAttributes[Index];
+		AActor* ActorOwner = AttributeSet->GetTypedOuter<AActor>();
+		if (ActorOwner)
+		{
+			ActorOwner->OnEndPlay.AddUniqueDynamic(this, &UAbilitySystemComponent::OnSpawnedAttributesEndPlayed);
+		}
+	}
 }
 
 TArray<UAttributeSet*>& UAbilitySystemComponent::GetSpawnedAttributes_Mutable()
@@ -2675,6 +2828,19 @@ TArray<UAttributeSet*>& UAbilitySystemComponent::GetSpawnedAttributes_Mutable()
 const TArray<UAttributeSet*>& UAbilitySystemComponent::GetSpawnedAttributes() const
 {
 	return SpawnedAttributes;
+}
+
+void UAbilitySystemComponent::OnSpawnedAttributesEndPlayed(AActor* InActor, EEndPlayReason::Type EndPlayReason)
+{
+	TArray<UAttributeSet*>& LocalSpawnedAttributes = GetSpawnedAttributes_Mutable();
+	for (int32 Index = LocalSpawnedAttributes.Num() - 1; Index >= 0; --Index)
+	{
+		UAttributeSet* AttributeSet = LocalSpawnedAttributes[Index];
+		if (AttributeSet->GetTypedOuter<AActor>() == InActor)
+		{
+			LocalSpawnedAttributes[Index] = nullptr;
+		}
+	}
 }
 
 void UAbilitySystemComponent::SetClientDebugStrings(TArray<FString>&& NewClientDebugStrings)
@@ -2756,6 +2922,17 @@ FMinimalReplicationTagCountMap& UAbilitySystemComponent::GetMinimalReplicationTa
 const FMinimalReplicationTagCountMap& UAbilitySystemComponent::GetMinimalReplicationTags() const
 {
 	return MinimalReplicationTags;
+}
+
+FMinimalReplicationTagCountMap& UAbilitySystemComponent::GetReplicatedLooseTags_Mutable()
+{
+	MARK_PROPERTY_DIRTY_FROM_NAME(UAbilitySystemComponent, ReplicatedLooseTags, this);
+	return ReplicatedLooseTags;
+}
+
+const FMinimalReplicationTagCountMap& UAbilitySystemComponent::GetReplicatedLooseTags() const
+{
+	return ReplicatedLooseTags;
 }
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

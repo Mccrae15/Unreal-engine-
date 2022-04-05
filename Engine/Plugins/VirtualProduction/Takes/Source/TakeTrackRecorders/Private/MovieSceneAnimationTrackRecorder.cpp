@@ -9,12 +9,18 @@
 #include "MovieScene.h"
 #include "AssetRegistryModule.h"
 #include "SequenceRecorderSettings.h"
+#include "SequenceRecorderUtils.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Animation/AnimSequence.h"
 #include "Engine/TimecodeProvider.h"
 #include "Engine/Engine.h"
 #include "LevelSequence.h"
+#include "UObject/SavePackage.h"
 #include "UObject/UObjectBaseUtility.h"
+#include "ObjectTools.h"
+#include "Editor.h"
+
+#define LOCTEXT_NAMESPACE "MovieSceneAnimationTrackRecorder"
 
 DEFINE_LOG_CATEGORY(AnimationSerialization);
 
@@ -131,7 +137,8 @@ void UMovieSceneAnimationTrackRecorder::CreateTrackImpl()
 			FString Name = SkeletalMeshComponent->GetName();
 			FName SerializedType("Animation");
 			FString FileName = FString::Printf(TEXT("%s_%s"), *(SerializedType.ToString()), *Name);
-			float IntervalTime = SampleRate.AsDecimal() > 0.0f ? 1.0f / SampleRate.AsDecimal() : 1.0f / FAnimationRecordingSettings::DefaultSampleRate;
+
+			float IntervalTime = SampleRate.AsDecimal() > 0.0f ? 1.0f / SampleRate.AsDecimal() : FAnimationRecordingSettings::DefaultSampleFrameRate.AsInterval();
 			FAnimationFileHeader Header(SerializedType, ObjectGuid, IntervalTime);
 
 			USkeleton* AnimSkeleton = AnimSequence->GetSkeleton();
@@ -216,6 +223,17 @@ void UMovieSceneAnimationTrackRecorder::FinalizeTrackImpl()
 	}
 }
 
+void UMovieSceneAnimationTrackRecorder::CancelTrackImpl()
+{
+	TArray<UObject*> AssetsToCleanUp;
+	AssetsToCleanUp.Add(GetAnimSequence());
+	
+	if (GEditor && AssetsToCleanUp.Num() > 0)
+	{
+		ObjectTools::ForceDeleteObjects(AssetsToCleanUp, false);
+	}
+}
+
 void UMovieSceneAnimationTrackRecorder::RecordSampleImpl(const FQualifiedFrameTime& CurrentTime)
 {
 	// The animation recorder does most of the work here
@@ -228,7 +246,7 @@ void UMovieSceneAnimationTrackRecorder::RecordSampleImpl(const FQualifiedFrameTi
 		//Reset the start times based upon when the animation really starts.
 		if (MovieSceneSection.IsValid())
 		{
-			MovieSceneSection->TimecodeSource = FMovieSceneTimecodeSource(FApp::GetTimecode());
+			MovieSceneSection->TimecodeSource = SequenceRecorderUtils::GetTimecodeSource();
 			FFrameRate   TickResolution = MovieSceneSection->GetTypedOuter<UMovieScene>()->GetTickResolution();
 			FFrameNumber CurrentFrame = CurrentTime.ConvertTo(TickResolution).FloorToFrame();
 
@@ -245,14 +263,14 @@ void UMovieSceneAnimationTrackRecorder::RecordSampleImpl(const FQualifiedFrameTi
 		USceneComponent* RootComponent = Actor->GetRootComponent();
 		USceneComponent* AttachParent = RootComponent ? RootComponent->GetAttachParent() : nullptr;
 
-		//In Sequence Recorder this would be done via checking if the component was dynamically created, due to changes in how the take recorder handles this, it no longer 
-		//possible so it seems if it's native do root, otherwise, don't.  
-		bool bRemoveRootAnimation = SkeletalMeshComponent->CreationMethod != EComponentCreationMethod::Native ? false : true;
-		// Need to pass this up to the settings since it's used later to force root lock and transfer root from animation to transform
 		UMovieSceneAnimationTrackRecorderSettings* AnimSettings = CastChecked<UMovieSceneAnimationTrackRecorderSettings>(Settings.Get());
-		AnimSettings->bRemoveRootAnimation = bRemoveRootAnimation;
+		//In Sequence Recorder this would be done via checking if the component was dynamically created, due to changes in how the take recorder handles this, it no longer 
+		//possible so it seems if it's native do root, otherwise use the setting
+		//we what we did on the track recorder since later we need to actually remove the root and transfer to the transform track if needed.
+		bRootWasRemoved = SkeletalMeshComponent->CreationMethod != EComponentCreationMethod::Native ? false : AnimSettings->bRemoveRootAnimation;
+
 		//If not removing root we also don't record in world space ( not totally sure if it matters but matching up with Sequence Recorder)
-		bool bRecordInWorldSpace = bRemoveRootAnimation == false ? false : true;
+		bool bRecordInWorldSpace = bRootWasRemoved == false ? false : true;
 
 		if (bRecordInWorldSpace && AttachParent && OwningTakeRecorderSource)
 		{
@@ -264,12 +282,12 @@ void UMovieSceneAnimationTrackRecorder::RecordSampleImpl(const FQualifiedFrameTi
 
 		//Set this up here so we know that it's parent sources have also been added so we record in the correct space
 		FAnimationRecordingSettings RecordingSettings;
-		RecordingSettings.SampleRate = SampleRate.AsDecimal();
+		RecordingSettings.SampleFrameRate = SampleRate;
 		RecordingSettings.InterpMode = AnimSettings->InterpMode;
 		RecordingSettings.TangentMode = AnimSettings->TangentMode;
 		RecordingSettings.Length = 0;
 		RecordingSettings.bRecordInWorldSpace = bRecordInWorldSpace;
-		RecordingSettings.bRemoveRootAnimation = bRemoveRootAnimation;
+		RecordingSettings.bRemoveRootAnimation = bRootWasRemoved;
 		RecordingSettings.bCheckDeltaTimeAtBeginning = false;
 		AnimationRecorder.Init(SkeletalMeshComponent.Get(), AnimSequence.Get(), &AnimationSerializer, RecordingSettings);
 		AnimationRecorder.BeginRecording();
@@ -295,8 +313,7 @@ void UMovieSceneAnimationTrackRecorder::RemoveRootMotion()
 {
 	 if(AnimSequence.IsValid())
 	 {
-		 UMovieSceneAnimationTrackRecorderSettings* AnimSettings = CastChecked<UMovieSceneAnimationTrackRecorderSettings>(Settings.Get());
-		 if (AnimSettings->bRemoveRootAnimation) 
+		 if (bRootWasRemoved)
 		 {
 			 // Remove Root Motion by forcing the root lock on for now (which prevents the motion at evaluation time)
 			 // In addition to set it to root lock we need to make sure it's to be zero'd since 
@@ -358,32 +375,47 @@ bool UMovieSceneAnimationTrackRecorder::LoadRecordedFile(const FString& FileName
 
 								CreateAnimationAssetAndSequence(Actor,AnimationDirectory);
 
-								AnimSequence->RecycleAnimSequence();
-								AnimSequence->SequenceLength = 0.f;
-								AnimSequence->SetRawNumberOfFrame(0);
-								for (int32 TrackIndex = 0; TrackIndex < Header.AnimationTrackNames.Num(); ++TrackIndex)
-								{
-									AnimSequence->AddNewRawTrack(Header.AnimationTrackNames[TrackIndex]);
+								AnimSequence->DeleteNotifyTrackData();
 
-								}
-								AnimSequence->InitializeNotifyTrack();
-
-								for (const FAnimationSerializedFrame& SerializedFrame : InFrames)
+								IAnimationDataController& Controller = AnimSequence->GetController();
 								{
-									const FSerializedAnimation &Frame = SerializedFrame.Frame;
-									for (int32 TrackIndex = 0; TrackIndex < Frame.AnimationData.Num(); ++TrackIndex)
+									IAnimationDataController::FScopedBracket ScopedBracket(Controller, LOCTEXT("LoadRecordedFile_Bracket", "Loading recorded animation file"));
+
+									Controller.ResetModel();
+
+									const float FloatDenominator = 1000.0f;
+									const float Numerator = FloatDenominator / Header.IntervalTime;
+									Controller.SetFrameRate(FFrameRate(Numerator, FloatDenominator));
+
+									int32 MaxNumberOfKeys = 0;
+									for (int32 TrackIndex = 0; TrackIndex < Header.AnimationTrackNames.Num(); ++TrackIndex)
 									{
-										FRawAnimSequenceTrack& RawTrack = AnimSequence->GetRawAnimationTrack(TrackIndex);
-										RawTrack.PosKeys.Add(Frame.AnimationData[TrackIndex].PosKey);
-										RawTrack.RotKeys.Add(Frame.AnimationData[TrackIndex].RotKey);
-										RawTrack.ScaleKeys.Add(Frame.AnimationData[TrackIndex].ScaleKey);
-									}
-								}
-								AnimSequence->SetRawNumberOfFrame( InFrames.Num() );
-								AnimSequence->SequenceLength = (AnimSequence->GetRawNumberOfFrames() > 1) ? (AnimSequence->GetRawNumberOfFrames() - 1) * Header.IntervalTime : MINIMUM_ANIMATION_LENGTH;
+										Controller.AddBoneTrack(Header.AnimationTrackNames[TrackIndex]);
 
-								//fix up notifies todo notifies mz
-								AnimSequence->PostProcessSequence();
+										TArray<FVector3f> PosKeys;
+										TArray<FQuat4f> RotKeys;
+										TArray<FVector3f> ScaleKeys;
+
+										// Generate key arrays
+										for (const FAnimationSerializedFrame& SerializedFrame : InFrames)
+										{
+											const FSerializedAnimation& Frame = SerializedFrame.Frame;
+											PosKeys.Add(FVector3f(Frame.AnimationData[TrackIndex].PosKey));
+											RotKeys.Add(FQuat4f(Frame.AnimationData[TrackIndex].RotKey));
+											ScaleKeys.Add(FVector3f(Frame.AnimationData[TrackIndex].ScaleKey));
+										}
+
+										MaxNumberOfKeys = FMath::Max(MaxNumberOfKeys, PosKeys.Num());
+										MaxNumberOfKeys = FMath::Max(MaxNumberOfKeys, RotKeys.Num());
+										MaxNumberOfKeys = FMath::Max(MaxNumberOfKeys, ScaleKeys.Num());
+
+										Controller.SetBoneTrackKeys(Header.AnimationTrackNames[TrackIndex], PosKeys, RotKeys, ScaleKeys);
+									}
+
+									Controller.SetPlayLength((MaxNumberOfKeys > 1) ? (MaxNumberOfKeys - 1) * Header.IntervalTime : MINIMUM_ANIMATION_LENGTH);
+									Controller.NotifyPopulated();
+								}
+
 								AnimSequence->MarkPackageDirty();
 								FFrameRate TickResolution = InMovieScene->GetTickResolution();;
 
@@ -391,7 +423,10 @@ bool UMovieSceneAnimationTrackRecorder::LoadRecordedFile(const FString& FileName
 								UPackage* const Package = AnimSequence->GetOutermost();
 								FString const PackageName = Package->GetName();
 								FString const PackageFileName = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
-								UPackage::SavePackage(Package, NULL, RF_Standalone, *PackageFileName, GError, nullptr, false, true, SAVE_NoError);
+								FSavePackageArgs SaveArgs;
+								SaveArgs.TopLevelFlags = RF_Standalone;
+								SaveArgs.SaveFlags = SAVE_NoError;
+								UPackage::SavePackage(Package, NULL, *PackageFileName, SaveArgs);
 
 
 								FFrameNumber SequenceLength = (AnimSequence->GetPlayLength() * TickResolution).FloorToFrame();
@@ -421,3 +456,4 @@ bool UMovieSceneAnimationTrackRecorder::LoadRecordedFile(const FString& FileName
 	
 	return false;
 }
+#undef LOCTEXT_NAMESPACE // "MovieSceneAnimationTrackRecorder"

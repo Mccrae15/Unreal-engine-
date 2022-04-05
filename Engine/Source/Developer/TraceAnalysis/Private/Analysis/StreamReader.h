@@ -4,8 +4,8 @@
 
 #include "CoreTypes.h"
 
-namespace Trace
-{
+namespace UE {
+namespace Trace {
 
 ////////////////////////////////////////////////////////////////////////////////
 class FStreamReader
@@ -14,9 +14,14 @@ public:
 								~FStreamReader();
 	template <typename Type>
 	Type const*					GetPointer();
+	template <typename Type>
+	Type const*					GetPointerUnchecked();
 	const uint8*				GetPointer(uint32 Size);
+	const uint8*				GetPointerUnchecked();
 	void						Advance(uint32 Size);
 	bool						IsEmpty() const;
+	int32						GetRemaining() const;
+	bool						Backtrack(const uint8* To);
 	struct FMark*				SaveMark() const;
 	void						RestoreMark(struct FMark* Mark);
 
@@ -32,6 +37,19 @@ template <typename Type>
 Type const* FStreamReader::GetPointer()
 {
 	return (Type const*)GetPointer(sizeof(Type));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+template <typename Type>
+Type const* FStreamReader::GetPointerUnchecked()
+{
+	return (Type const*)GetPointerUnchecked();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+inline const uint8* FStreamReader::GetPointerUnchecked()
+{
+	return Buffer + Cursor;
 }
 
 
@@ -68,3 +86,4 @@ inline int32 FStreamBuffer::Fill(Lambda&& Source)
 }
 
 } // namespace Trace
+} // namespace UE

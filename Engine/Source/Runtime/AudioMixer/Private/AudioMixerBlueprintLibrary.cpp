@@ -11,37 +11,68 @@
 #include "AudioCompressionSettingsUtils.h"
 #include "Async/Async.h"
 #include "Sound/SoundEffectPreset.h"
+#include "Algo/Transform.h"
+#include "AudioDeviceManager.h"
 
 // This is our global recording task:
 static TUniquePtr<Audio::FAudioRecordingData> RecordingData;
 
-
-static FAudioDevice* GetAudioDeviceFromWorldContext(const UObject* WorldContextObject)
+FAudioOutputDeviceInfo::FAudioOutputDeviceInfo(const Audio::FAudioPlatformDeviceInfo& InDeviceInfo)
+	: Name(InDeviceInfo.Name)
+	, DeviceId(InDeviceInfo.DeviceId)
+	, NumChannels(InDeviceInfo.NumChannels)
+	, SampleRate(InDeviceInfo.SampleRate)
+	, Format(EAudioMixerStreamDataFormatType(InDeviceInfo.Format))
+	, bIsSystemDefault(InDeviceInfo.bIsSystemDefault)
+	, bIsCurrentDevice(false)
 {
-	UWorld* ThisWorld = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
-	if (!ThisWorld || !ThisWorld->bAllowAudioPlayback || ThisWorld->GetNetMode() == NM_DedicatedServer)
+	for (EAudioMixerChannel::Type i : InDeviceInfo.OutputChannelArray)
 	{
-		return nullptr;
+		OutputChannelArray.Emplace(EAudioMixerChannelType(i));
 	}
 
-	return ThisWorld->GetAudioDevice().GetAudioDevice();
 }
 
-static Audio::FMixerDevice* GetAudioMixerDeviceFromWorldContext(const UObject* WorldContextObject)
+FString UAudioMixerBlueprintLibrary::Conv_AudioOutputDeviceInfoToString(const FAudioOutputDeviceInfo& InDeviceInfo)
 {
-	if (FAudioDevice* AudioDevice = GetAudioDeviceFromWorldContext(WorldContextObject))
+	FString output = FString::Printf(TEXT("Device Name: %s, \nDevice Id: %s, \nNum Channels: %u, \nSample Rate: %u, \nFormat: %s,  \nIs System Default: %u, \n"),
+		*InDeviceInfo.Name, *InDeviceInfo.DeviceId, InDeviceInfo.NumChannels, InDeviceInfo.SampleRate,
+		*DataFormatAsString(EAudioMixerStreamDataFormatType(InDeviceInfo.Format)), InDeviceInfo.bIsSystemDefault);
+
+	output.Append("Output Channel Array: \n");
+
+	for (int32 i = 0; i < InDeviceInfo.NumChannels; ++i)
 	{
-		if (!AudioDevice->IsAudioMixerEnabled())
+		if (i < InDeviceInfo.OutputChannelArray.Num())
 		{
-			return nullptr;
-		}
-		else
-		{
-			return static_cast<Audio::FMixerDevice*>(AudioDevice);
+			output += FString::Printf(TEXT("	%d: %s \n"), i, ToString(InDeviceInfo.OutputChannelArray[i]));
 		}
 	}
-	return nullptr;
+
+	return output;
 }
+
+FString DataFormatAsString(EAudioMixerStreamDataFormatType type)
+{
+	switch (type)
+	{
+	case EAudioMixerStreamDataFormatType::Unknown:
+		return FString("Unknown");
+		break;
+	case EAudioMixerStreamDataFormatType::Float:
+		return FString("Float");
+		break;
+	case EAudioMixerStreamDataFormatType::Int16:
+		return FString("Int16");
+		break;
+	case EAudioMixerStreamDataFormatType::Unsupported:
+		return FString("Unsupported");
+		break;
+	default:
+		return FString("Invalid Format Type");
+	}
+}
+
 
 void UAudioMixerBlueprintLibrary::AddMasterSubmixEffect(const UObject* WorldContextObject, USoundEffectSubmixPreset* SubmixEffectPreset)
 {
@@ -51,7 +82,7 @@ void UAudioMixerBlueprintLibrary::AddMasterSubmixEffect(const UObject* WorldCont
 		return;
 	}
 
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		FSoundEffectSubmixInitData InitData;
 		InitData.SampleRate = MixerDevice->GetSampleRate();
@@ -75,7 +106,7 @@ void UAudioMixerBlueprintLibrary::RemoveMasterSubmixEffect(const UObject* WorldC
 		return;
 	}
 
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		// Get the unique id for the preset object on the game thread. Used to refer to the object on audio render thread.
 		uint32 SubmixPresetUniqueId = SubmixEffectPreset->GetUniqueID();
@@ -86,7 +117,7 @@ void UAudioMixerBlueprintLibrary::RemoveMasterSubmixEffect(const UObject* WorldC
 
 void UAudioMixerBlueprintLibrary::ClearMasterSubmixEffects(const UObject* WorldContextObject)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		MixerDevice->ClearMasterSubmixEffects();
 	}
@@ -99,7 +130,7 @@ int32 UAudioMixerBlueprintLibrary::AddSubmixEffect(const UObject* WorldContextOb
 		return 0;
 	}
 
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		FSoundEffectSubmixInitData InitData;
 		InitData.SampleRate = MixerDevice->GetSampleRate();
@@ -121,7 +152,7 @@ void UAudioMixerBlueprintLibrary::RemoveSubmixEffectPreset(const UObject* WorldC
 
 void UAudioMixerBlueprintLibrary::RemoveSubmixEffect(const UObject* WorldContextObject, USoundSubmix* InSoundSubmix, USoundEffectSubmixPreset* InSubmixEffectPreset)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		uint32 SubmixPresetUniqueId = InSubmixEffectPreset->GetUniqueID();
 		MixerDevice->RemoveSubmixEffect(InSoundSubmix, SubmixPresetUniqueId);
@@ -135,7 +166,7 @@ void UAudioMixerBlueprintLibrary::RemoveSubmixEffectPresetAtIndex(const UObject*
 
 void UAudioMixerBlueprintLibrary::RemoveSubmixEffectAtIndex(const UObject* WorldContextObject, USoundSubmix* InSoundSubmix, int32 SubmixChainIndex)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		MixerDevice->RemoveSubmixEffectAtIndex(InSoundSubmix, SubmixChainIndex);
 	}
@@ -153,7 +184,7 @@ void UAudioMixerBlueprintLibrary::ReplaceSubmixEffect(const UObject* WorldContex
 		return;
 	}
 
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		FSoundEffectSubmixInitData InitData;
 		InitData.SampleRate = MixerDevice->GetSampleRate();
@@ -167,7 +198,7 @@ void UAudioMixerBlueprintLibrary::ReplaceSubmixEffect(const UObject* WorldContex
 
 void UAudioMixerBlueprintLibrary::ClearSubmixEffects(const UObject* WorldContextObject, USoundSubmix* InSoundSubmix)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		MixerDevice->ClearSubmixEffects(InSoundSubmix);
 	}
@@ -175,7 +206,7 @@ void UAudioMixerBlueprintLibrary::ClearSubmixEffects(const UObject* WorldContext
 
 void UAudioMixerBlueprintLibrary::SetSubmixEffectChainOverride(const UObject* WorldContextObject, USoundSubmix* InSoundSubmix, TArray<USoundEffectSubmixPreset*> InSubmixEffectPresetChain, float InFadeTimeSec)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		TArray<FSoundEffectSubmixPtr> NewSubmixEffectPresetChain;
 
@@ -203,7 +234,7 @@ void UAudioMixerBlueprintLibrary::SetSubmixEffectChainOverride(const UObject* Wo
 
 void UAudioMixerBlueprintLibrary::ClearSubmixEffectChainOverride(const UObject* WorldContextObject, USoundSubmix* InSoundSubmix, float InFadeTimeSec)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		MixerDevice->ClearSubmixEffectChainOverride(InSoundSubmix, InFadeTimeSec);
 	}
@@ -211,7 +242,7 @@ void UAudioMixerBlueprintLibrary::ClearSubmixEffectChainOverride(const UObject* 
 
 void UAudioMixerBlueprintLibrary::StartRecordingOutput(const UObject* WorldContextObject, float ExpectedDuration, USoundSubmix* SubmixToRecord)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		MixerDevice->StartRecording(SubmixToRecord, ExpectedDuration);
 	}
@@ -228,13 +259,13 @@ USoundWave* UAudioMixerBlueprintLibrary::StopRecordingOutput(const UObject* Worl
 		UE_LOG(LogAudioMixer, Warning, TEXT("Abandoning existing write operation. If you'd like to export multiple submix recordings at the same time, use Start/Finish Recording Submix Output instead."));
 	}
 
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		float SampleRate;
 		float ChannelCount;
 
 		// call the thing here.
-		Audio::AlignedFloatBuffer& RecordedBuffer = MixerDevice->StopRecording(SubmixToRecord, ChannelCount, SampleRate);
+		Audio::FAlignedFloatBuffer& RecordedBuffer = MixerDevice->StopRecording(SubmixToRecord, ChannelCount, SampleRate);
 
 		if (RecordedBuffer.Num() == 0)
 		{
@@ -283,7 +314,7 @@ USoundWave* UAudioMixerBlueprintLibrary::StopRecordingOutput(const UObject* Worl
 
 void UAudioMixerBlueprintLibrary::PauseRecordingOutput(const UObject* WorldContextObject, USoundSubmix* SubmixToPause)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		MixerDevice->PauseRecording(SubmixToPause);
 	}
@@ -295,7 +326,7 @@ void UAudioMixerBlueprintLibrary::PauseRecordingOutput(const UObject* WorldConte
 
 void UAudioMixerBlueprintLibrary::ResumeRecordingOutput(const UObject* WorldContextObject, USoundSubmix* SubmixToResume)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		MixerDevice->ResumeRecording(SubmixToResume);
 	}
@@ -307,7 +338,7 @@ void UAudioMixerBlueprintLibrary::ResumeRecordingOutput(const UObject* WorldCont
 
 void UAudioMixerBlueprintLibrary::StartAnalyzingOutput(const UObject* WorldContextObject, USoundSubmix* SubmixToAnalyze, EFFTSize FFTSize, EFFTPeakInterpolationMethod InterpolationMethod, EFFTWindowType WindowType, float HopSize, EAudioSpectrumType AudioSpectrumType)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		FSoundSpectrumAnalyzerSettings Settings = USoundSubmix::GetSpectrumAnalyzerSettings(FFTSize, InterpolationMethod, WindowType, HopSize, AudioSpectrumType);
 		MixerDevice->StartSpectrumAnalysis(SubmixToAnalyze, Settings);
@@ -320,7 +351,7 @@ void UAudioMixerBlueprintLibrary::StartAnalyzingOutput(const UObject* WorldConte
 
 void UAudioMixerBlueprintLibrary::StopAnalyzingOutput(const UObject* WorldContextObject, USoundSubmix* SubmixToStopAnalyzing)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		MixerDevice->StopSpectrumAnalysis(SubmixToStopAnalyzing);
 	}
@@ -438,7 +469,7 @@ TArray<FSoundSubmixSpectralAnalysisBandSettings> UAudioMixerBlueprintLibrary::Ma
 
 void UAudioMixerBlueprintLibrary::GetMagnitudeForFrequencies(const UObject* WorldContextObject, const TArray<float>& Frequencies, TArray<float>& Magnitudes, USoundSubmix* SubmixToAnalyze /*= nullptr*/)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		MixerDevice->GetMagnitudesForFrequencies(SubmixToAnalyze, Frequencies, Magnitudes);
 	}
@@ -450,7 +481,7 @@ void UAudioMixerBlueprintLibrary::GetMagnitudeForFrequencies(const UObject* Worl
 
 void UAudioMixerBlueprintLibrary::GetPhaseForFrequencies(const UObject* WorldContextObject, const TArray<float>& Frequencies, TArray<float>& Phases, USoundSubmix* SubmixToAnalyze /*= nullptr*/)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		MixerDevice->GetPhasesForFrequencies(SubmixToAnalyze, Frequencies, Phases);
 	}
@@ -468,7 +499,7 @@ void UAudioMixerBlueprintLibrary::AddSourceEffectToPresetChain(const UObject* Wo
 		return;
 	}
 
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		TArray<FSourceEffectChainEntry> Chain;
 
@@ -492,7 +523,7 @@ void UAudioMixerBlueprintLibrary::RemoveSourceEffectFromPresetChain(const UObjec
 		return;
 	}
 
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		TArray<FSourceEffectChainEntry> Chain;
 
@@ -521,7 +552,7 @@ void UAudioMixerBlueprintLibrary::SetBypassSourceEffectChainEntry(const UObject*
 		return;
 	}
 
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		TArray<FSourceEffectChainEntry> Chain;
 
@@ -549,7 +580,7 @@ int32 UAudioMixerBlueprintLibrary::GetNumberOfEntriesInSourceEffectChain(const U
 		return 0;
 	}
 
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		TArray<FSourceEffectChainEntry> Chain;
 
@@ -580,7 +611,7 @@ void UAudioMixerBlueprintLibrary::PrimeSoundForPlayback(USoundWave* SoundWave, c
 	}
 	else
 	{
-		IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(SoundWave, 1, [OnLoadCompletion, SoundWave](EAudioChunkLoadResult InResult) 
+		IStreamingManager::Get().GetAudioStreamingManager().RequestChunk(SoundWave->CreateSoundWaveProxy(), 1, [OnLoadCompletion, SoundWave](EAudioChunkLoadResult InResult)
 		{
 			AsyncTask(ENamedThreads::GameThread, [OnLoadCompletion, SoundWave, InResult]() {
 				if (InResult == EAudioChunkLoadResult::Completed || InResult == EAudioChunkLoadResult::AlreadyLoaded)
@@ -613,7 +644,7 @@ float UAudioMixerBlueprintLibrary::TrimAudioCache(float InMegabytesToFree)
 
 void UAudioMixerBlueprintLibrary::StartAudioBus(const UObject* WorldContextObject, UAudioBus* AudioBus)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		uint32 AudioBusId = AudioBus->GetUniqueID();
 		int32 NumChannels = (int32)AudioBus->AudioBusChannels + 1;
@@ -627,7 +658,7 @@ void UAudioMixerBlueprintLibrary::StartAudioBus(const UObject* WorldContextObjec
 
 void UAudioMixerBlueprintLibrary::StopAudioBus(const UObject* WorldContextObject, UAudioBus* AudioBus)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		uint32 AudioBusId = AudioBus->GetUniqueID();
 		MixerDevice->StopAudioBus(AudioBusId);
@@ -640,7 +671,7 @@ void UAudioMixerBlueprintLibrary::StopAudioBus(const UObject* WorldContextObject
 
 bool UAudioMixerBlueprintLibrary::IsAudioBusActive(const UObject* WorldContextObject, UAudioBus* AudioBus)
 {
-	if (Audio::FMixerDevice* MixerDevice = GetAudioMixerDeviceFromWorldContext(WorldContextObject))
+	if (Audio::FMixerDevice* MixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject))
 	{
 		uint32 AudioBusId = AudioBus->GetUniqueID();
 		return MixerDevice->IsAudioBusActive(AudioBusId);
@@ -652,3 +683,142 @@ bool UAudioMixerBlueprintLibrary::IsAudioBusActive(const UObject* WorldContextOb
 	}
 }
 
+void UAudioMixerBlueprintLibrary::GetAvailableAudioOutputDevices(const UObject* WorldContextObject, const FOnAudioOutputDevicesObtained& OnObtainDevicesEvent)
+{
+	if (!OnObtainDevicesEvent.IsBound())
+	{
+		return;
+	}
+
+	if (!IsInAudioThread())
+	{
+		//Send this over to the audio thread, with the same settings
+		FAudioThread::RunCommandOnAudioThread([WorldContextObject, OnObtainDevicesEvent]()
+		{
+			GetAvailableAudioOutputDevices(WorldContextObject, OnObtainDevicesEvent);
+		}); 
+
+		return;
+	}
+
+	TArray<FAudioOutputDeviceInfo> OutputDeviceInfos; //The array of audio device info to return
+
+	//Verifies its safe to access the audio mixer device interface
+	Audio::FMixerDevice* AudioMixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject);
+	if (AudioMixerDevice)
+	{
+		if (Audio::IAudioMixerPlatformInterface* MixerPlatform = AudioMixerDevice->GetAudioMixerPlatform())
+		{
+			if (Audio::IAudioPlatformDeviceInfoCache* DeviceInfoCache = MixerPlatform->GetDeviceInfoCache())
+			{
+				TArray<Audio::FAudioPlatformDeviceInfo> AllDevices = DeviceInfoCache->GetAllActiveOutputDevices();
+				Algo::Transform(AllDevices, OutputDeviceInfos, [](auto& i) -> FAudioOutputDeviceInfo { return { i }; });
+			}
+			else 
+			{
+				uint32 NumOutputDevices = 0;
+				MixerPlatform->GetNumOutputDevices(NumOutputDevices);
+				OutputDeviceInfos.Reserve(NumOutputDevices);
+				FAudioOutputDeviceInfo CurrentOutputDevice = MixerPlatform->GetPlatformDeviceInfo();
+
+				for (uint32 i = 0; i < NumOutputDevices; ++i)
+				{
+					Audio::FAudioPlatformDeviceInfo DeviceInfo;
+					MixerPlatform->GetOutputDeviceInfo(i, DeviceInfo);
+
+					FAudioOutputDeviceInfo NewInfo(DeviceInfo);
+					NewInfo.bIsCurrentDevice = (NewInfo.DeviceId == CurrentOutputDevice.DeviceId);
+
+					OutputDeviceInfos.Emplace(MoveTemp(NewInfo));
+				}
+			}
+		}
+	}
+
+	//Send data through delegate on game thread
+	FAudioThread::RunCommandOnGameThread([OnObtainDevicesEvent, OutputDeviceInfos]()
+	{
+		OnObtainDevicesEvent.ExecuteIfBound(OutputDeviceInfos);
+	});
+}
+
+void UAudioMixerBlueprintLibrary::GetCurrentAudioOutputDeviceName(const UObject* WorldContextObject, const FOnMainAudioOutputDeviceObtained& OnObtainCurrentDeviceEvent)
+{
+	if (!OnObtainCurrentDeviceEvent.IsBound())
+	{
+		return;
+	}
+
+	if (!IsInAudioThread())
+	{
+		//Send this over to the audio thread, with the same settings
+		FAudioThread::RunCommandOnAudioThread([WorldContextObject, OnObtainCurrentDeviceEvent]()
+		{
+			GetCurrentAudioOutputDeviceName(WorldContextObject, OnObtainCurrentDeviceEvent);
+		});
+
+		return;
+	}
+
+	TArray<FAudioOutputDeviceInfo> toReturn; //The array of audio device info to return
+
+	//Verifies its safe to access the audio mixer device interface
+	Audio::FMixerDevice* AudioMixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject);
+	if (AudioMixerDevice)
+	{
+		Audio::IAudioMixerPlatformInterface* MixerPlatform = AudioMixerDevice->GetAudioMixerPlatform();
+		if (MixerPlatform)
+		{
+			//Send data through delegate on game thread
+			FString CurrentDeviceName = MixerPlatform->GetCurrentDeviceName();
+			FAudioThread::RunCommandOnGameThread([OnObtainCurrentDeviceEvent, CurrentDeviceName]()
+			{
+				OnObtainCurrentDeviceEvent.ExecuteIfBound(CurrentDeviceName);
+			});
+		}
+	}
+
+}
+
+void UAudioMixerBlueprintLibrary::SwapAudioOutputDevice(const UObject* WorldContextObject, const FString& NewDeviceId, const FOnCompletedDeviceSwap& OnCompletedDeviceSwap)
+{
+	if (!OnCompletedDeviceSwap.IsBound())
+	{
+		return;
+	}
+
+	if (!IsInAudioThread())
+	{
+		//Send this over to the audio thread, with the same settings
+		FAudioThread::RunCommandOnAudioThread([WorldContextObject, NewDeviceId, OnCompletedDeviceSwap]()
+		{
+			SwapAudioOutputDevice(WorldContextObject, NewDeviceId, OnCompletedDeviceSwap);
+		});
+
+		return;
+	}
+
+	//Verifies its safe to access the audio mixer device interface
+	Audio::FMixerDevice* AudioMixerDevice = FAudioDeviceManager::GetAudioMixerDeviceFromWorldContext(WorldContextObject);
+	if (AudioMixerDevice)
+	{
+		Audio::IAudioMixerPlatformInterface* MixerPlatform = AudioMixerDevice->GetAudioMixerPlatform();
+
+		//Send message to swap device
+		if (MixerPlatform)
+		{
+			bool result = MixerPlatform->RequestDeviceSwap(NewDeviceId, /*force*/ false, TEXT("UAudioMixerBlueprintLibrary::SwapAudioOutputDevice"));
+			FAudioOutputDeviceInfo CurrentOutputDevice = MixerPlatform->GetPlatformDeviceInfo();
+
+			//Send data through delegate on game thread
+			FSwapAudioOutputResult SwapResult;
+			SwapResult.CurrentDeviceId = CurrentOutputDevice.DeviceId;
+			SwapResult.RequestedDeviceId = NewDeviceId;
+			SwapResult.Result = result ? ESwapAudioOutputDeviceResultState::Success : ESwapAudioOutputDeviceResultState::Failure;
+			FAudioThread::RunCommandOnGameThread([OnCompletedDeviceSwap, SwapResult]()
+			{
+				OnCompletedDeviceSwap.ExecuteIfBound(SwapResult);
+			});
+		}
+	}
+}

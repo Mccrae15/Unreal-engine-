@@ -2,13 +2,12 @@
 #include "TraceServices/Model/Memory.h"
 #include "Model/MemoryPrivate.h"
 
-namespace Trace
+namespace TraceServices
 {
-
-FName FMemoryProvider::ProviderName(TEXT("MemoryProvider"));
 
 FMemoryProvider::FMemoryProvider(IAnalysisSession& InSession)
 	: Session(InSession)
+	, TagDescsPool(Session.GetLinearAllocator(), 1024)
 	, TagsSerial(0)
 {
 	TagDescs.Reserve(256);
@@ -16,10 +15,15 @@ FMemoryProvider::FMemoryProvider(IAnalysisSession& InSession)
 
 void FMemoryProvider::AddEventSpec(FMemoryTagId TagId, const TCHAR* Name, FMemoryTagId ParentTagId)
 {
-	if (TagId == FMemoryTag::InvalidTagId)
+	if (TagId == FMemoryTagInfo::InvalidTagId || TagId == -1)
 	{
 		// invalid tag id
 		return;
+	}
+
+	if (ParentTagId == -1) // backward compatibility with UE 4.27
+	{
+		ParentTagId = FMemoryTagInfo::InvalidTagId;
 	}
 
 	if (TagDescs.Contains(TagId))
@@ -28,13 +32,17 @@ void FMemoryProvider::AddEventSpec(FMemoryTagId TagId, const TCHAR* Name, FMemor
 		return;
 	}
 
-	TagDescs.Add(TagId, FMemoryTag{ TagId, FString(Name), ParentTagId, 0 });
+	// Do not remove or insert from TagDescsPool, cached references to this memory are stored and inserts / removes will
+	// result in dangerous memory moves
+	FMemoryTagInfo& NewMemoryInfo = TagDescsPool.EmplaceBack(FMemoryTagInfo{ TagId, FString(Name), ParentTagId, 0 });
+
+	TagDescs.Add(TagId, &NewMemoryInfo);
 	++TagsSerial;
 }
 
 void FMemoryProvider::AddTrackerSpec(FMemoryTrackerId TrackerId, const TCHAR* Name)
 {
-	if (TrackerId < 0 || TrackerId > FMemoryTracker::MaxValidTrackerId)
+	if (TrackerId < 0 || TrackerId > FMemoryTrackerInfo::MaxValidTrackerId)
 	{
 		// invalid tracker id
 		return;
@@ -46,7 +54,7 @@ void FMemoryProvider::AddTrackerSpec(FMemoryTrackerId TrackerId, const TCHAR* Na
 		return;
 	}
 
-	TrackerDescs.Add(TrackerId, FMemoryTracker{ TrackerId, FString(Name) });
+	TrackerDescs.Add(TrackerId, FMemoryTrackerInfo{ TrackerId, FString(Name) });
 }
 
 void FMemoryProvider::AddTagSnapshot(FMemoryTrackerId TrackerId, double Time, const int64* Tags, const FMemoryTagSample* Values, uint32 TagCount)
@@ -63,7 +71,7 @@ void FMemoryProvider::AddTagSnapshot(FMemoryTrackerId TrackerId, double Time, co
 	}
 
 	FTrackerData& TrackerData = Trackers[TrackerId];
-	FMemoryTracker& Tracker = TrackerDescs[TrackerId];
+	FMemoryTrackerInfo& Tracker = TrackerDescs[TrackerId];
 
 	TrackerData.SampleTimes.Push(Time);
 	const int32 SampleCount = TrackerData.SampleTimes.Num();
@@ -97,8 +105,11 @@ void FMemoryProvider::AddTagSnapshot(FMemoryTrackerId TrackerId, double Time, co
 
 		if (!TagSamples->TagPtr)
 		{
-			// Cache pointer to FMemoryTag to avoid further lookups for this tag.
-			TagSamples->TagPtr = TagDescs.Find(TagId);
+			// Cache pointer to FMemoryTagInfo to avoid further lookups for this tag.
+			if (FMemoryTagInfo** TagInfo = TagDescs.Find(TagId))
+			{
+				TagSamples->TagPtr = *TagInfo;
+			}
 		}
 
 		if (TagSamples->TagPtr)
@@ -123,17 +134,21 @@ uint32 FMemoryProvider::GetTagCount() const
 	return TagDescs.Num();
 }
 
-void FMemoryProvider::EnumerateTags(TFunctionRef<void(const FMemoryTag&)> Callback) const
+void FMemoryProvider::EnumerateTags(TFunctionRef<void(const FMemoryTagInfo&)> Callback) const
 {
 	for (auto& Tag : TagDescs)
 	{
-		Callback(Tag.Value);
+		Callback(*Tag.Value);
 	}
 }
 
-const FMemoryTag* FMemoryProvider::GetTag(FMemoryTagId TagId) const
+const FMemoryTagInfo* FMemoryProvider::GetTag(FMemoryTagId TagId) const
 {
-	return TagDescs.Find(TagId);
+	if (FMemoryTagInfo* const * TagInfo = TagDescs.Find(TagId))
+	{
+		return *TagInfo;
+	}
+	return nullptr;
 }
 
 uint32 FMemoryProvider::GetTrackerCount() const
@@ -141,7 +156,7 @@ uint32 FMemoryProvider::GetTrackerCount() const
 	return TrackerDescs.Num();
 }
 
-void FMemoryProvider::EnumerateTrackers(TFunctionRef<void(const FMemoryTracker&)> Callback) const
+void FMemoryProvider::EnumerateTrackers(TFunctionRef<void(const FMemoryTrackerInfo&)> Callback) const
 {
 	for (auto& Desc : TrackerDescs)
 	{
@@ -215,9 +230,15 @@ void FMemoryProvider::EnumerateTagSamples(FMemoryTrackerId TrackerId, FMemoryTag
 	}
 }
 
-const IMemoryProvider& ReadMemoryProvider(const IAnalysisSession& Session)
+FName GetMemoryProviderName()
 {
-	return *Session.ReadProvider<IMemoryProvider>(FMemoryProvider::ProviderName);
+	static FName Name(TEXT("MemoryProvider"));
+	return Name;
 }
 
-} // namespace Trace
+const IMemoryProvider* ReadMemoryProvider(const IAnalysisSession& Session)
+{
+	return Session.ReadProvider<IMemoryProvider>(GetMemoryProviderName());
+}
+
+} // namespace TraceServices

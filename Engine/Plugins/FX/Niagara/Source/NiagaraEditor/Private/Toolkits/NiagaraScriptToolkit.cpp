@@ -178,8 +178,7 @@ void FNiagaraScriptToolkit::Initialize( const EToolkitMode::Type Mode, const TSh
 	FGuid ScriptVersion = InputScript->IsVersioningEnabled() && InputScript->VersionToOpenInEditor.IsValid() ? InputScript->VersionToOpenInEditor : InputScript->GetExposedVersion().VersionGuid;
 	OriginalNiagaraScript.Script = InputScript;
 	OriginalNiagaraScript.Version = ScriptVersion;
-	ResetLoaders(GetTransientPackage()); // Make sure that we're not going to get invalid version number linkers into the package we are going into. 
-	GetTransientPackage()->LinkerCustomVersion.Empty();
+	// No need to reset loader or versioning on the transient package, there should never be any set
 	EditedNiagaraScript.Script = (UNiagaraScript*)StaticDuplicateObject(InputScript, GetTransientPackage(), NAME_None, ~RF_Standalone, UNiagaraScript::StaticClass());
 	EditedNiagaraScript.Script->OnVMScriptCompiled().AddSP(this, &FNiagaraScriptToolkit::OnVMScriptCompiled);
 	EditedNiagaraScript.Version = ScriptVersion;
@@ -231,17 +230,10 @@ void FNiagaraScriptToolkit::Initialize( const EToolkitMode::Type Mode, const TSh
 	        }
 		});
 
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_Layout_v11")
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_Niagara_Layout_v12")
 	->AddArea
 	(
 		FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
-		->Split
-		(
-			FTabManager::NewStack()
-			->SetSizeCoefficient(0.1f)
-			->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			->SetHideTabWell(true)
-		)
 		->Split
 		(
 			FTabManager::NewSplitter()->SetOrientation(Orient_Horizontal)->SetSizeCoefficient(0.9f)
@@ -459,7 +451,9 @@ TSharedRef<SDockTab> FNiagaraScriptToolkit::SpawnTabScriptDetails(const FSpawnTa
 	TWeakPtr<FNiagaraScriptViewModel> ScriptViewModelWeakPtr = ScriptViewModel;
 
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	FDetailsViewArgs DetailsViewArgs(false, false, true, FDetailsViewArgs::HideNameArea, true);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
 	DetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 
 	DetailsView->OnFinishedChangingProperties().AddRaw(this, &FNiagaraScriptToolkit::OnEditedScriptPropertyFinishedChanging);
@@ -632,7 +626,7 @@ void FNiagaraScriptToolkit::ExtendToolbar()
 			ToolbarBuilder.BeginSection("Apply");
 			ToolbarBuilder.AddToolBarButton(FNiagaraEditorCommands::Get().Apply,
 				NAME_None, TAttribute<FText>(), TAttribute<FText>(), 
-				FSlateIcon(FNiagaraEditorStyle::GetStyleSetName(), "NiagaraEditor.Apply"),
+				FSlateIcon(FAppStyle::Get().GetStyleSetName(), "AssetEditor.Apply"),
 				FName(TEXT("ApplyNiagaraScript")));
 			ToolbarBuilder.EndSection();
 
@@ -656,7 +650,7 @@ void FNiagaraScriptToolkit::ExtendToolbar()
 				ToolbarBuilder.AddToolBarButton(FNiagaraEditorCommands::Get().ModuleVersioning, NAME_None,
                     TAttribute<FText>(ScriptToolkit, &FNiagaraScriptToolkit::GetVersionButtonLabel),
                     LOCTEXT("NiagaraShowModuleVersionsTooltip", "Manage different versions of this module script."),
-                    FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.SourceControl"));
+                    FSlateIcon(FAppStyle::GetAppStyleSetName(), "Versions"));
 
 				FUIAction DropdownAction;
 				DropdownAction.IsActionVisibleDelegate = FIsActionButtonVisible::CreateLambda([ScriptToolkit]() { return ScriptToolkit->EditedNiagaraScript.Script->GetAllAvailableVersions().Num() > 1; });
@@ -689,19 +683,23 @@ void FNiagaraScriptToolkit::ExtendToolbar()
 FSlateIcon FNiagaraScriptToolkit::GetCompileStatusImage() const
 {
 	ENiagaraScriptCompileStatus Status = ScriptViewModel->GetLatestCompileStatus(EditedNiagaraScript.Version);
-
+	static const FName CompileStatusBackground("AssetEditor.CompileStatus.Background");
+	static const FName CompileStatusUnknown("AssetEditor.CompileStatus.Overlay.Unknown");
+	static const FName CompileStatusError("AssetEditor.CompileStatus.Overlay.Error");
+	static const FName CompileStatusGood("AssetEditor.CompileStatus.Overlay.Good");
+	static const FName CompileStatusWarning("AssetEditor.CompileStatus.Overlay.Warning");
 	switch (Status)
 	{
 	default:
 	case ENiagaraScriptCompileStatus::NCS_Unknown:
 	case ENiagaraScriptCompileStatus::NCS_Dirty:
-		return FSlateIcon(FNiagaraEditorStyle::GetStyleSetName(), "Niagara.CompileStatus.Unknown");
+		return FSlateIcon(FAppStyle::Get().GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusUnknown);
 	case ENiagaraScriptCompileStatus::NCS_Error:
-		return FSlateIcon(FNiagaraEditorStyle::GetStyleSetName(), "Niagara.CompileStatus.Error");
+		return FSlateIcon(FAppStyle::Get().GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusError);
 	case ENiagaraScriptCompileStatus::NCS_UpToDate:
-		return FSlateIcon(FNiagaraEditorStyle::GetStyleSetName(), "Niagara.CompileStatus.Good");
+		return FSlateIcon(FAppStyle::Get().GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusGood);
 	case ENiagaraScriptCompileStatus::NCS_UpToDateWithWarnings:
-		return FSlateIcon(FNiagaraEditorStyle::GetStyleSetName(), "Niagara.CompileStatus.Warning");
+		return FSlateIcon(FAppStyle::Get().GetStyleSetName(), CompileStatusBackground, NAME_None, CompileStatusWarning);
 	}
 }
 void FNiagaraScriptToolkit::Tick(float DeltaTime)
@@ -732,7 +730,7 @@ FText FNiagaraScriptToolkit::GetCompileStatusTooltip() const
 
 FSlateIcon FNiagaraScriptToolkit::GetRefreshStatusImage() const
 {
-	return FSlateIcon(FNiagaraEditorStyle::GetStyleSetName(), "Niagara.Asset.ReimportAsset.Default");
+	return FSlateIcon(FNiagaraEditorStyle::Get().GetStyleSetName(), "NiagaraEditor.Refresh");
 }
 
 FText FNiagaraScriptToolkit::GetRefreshStatusTooltip() const
@@ -888,7 +886,6 @@ void FNiagaraScriptToolkit::UpdateOriginalNiagaraScript()
 	}
 
 	ResetLoaders(OriginalNiagaraScript.Script->GetOutermost()); // Make sure that we're not going to get invalid version number linkers into the package we are going into. 
-	OriginalNiagaraScript.Script->GetOutermost()->LinkerCustomVersion.Empty();
 
 	// Compile and then overwrite the original script in place by constructing a new one with the same name
 	ScriptViewModel->CompileStandaloneScript();

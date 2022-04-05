@@ -113,7 +113,7 @@ FRayTracingPipelineState* FDeferredShadingSceneRenderer::BindRayTracingDeferredM
 
 	const bool bCopyDataToInlineStorage = false; // Storage is already allocated from RHICmdList, no extra copy necessary
 	RHICmdList.SetRayTracingHitGroups(
-		View.RayTracingScene.RayTracingSceneRHI,
+		View.GetRayTracingSceneChecked(),
 		PipelineState,
 		NumTotalBindings, Bindings,
 		bCopyDataToInlineStorage);
@@ -133,7 +133,7 @@ class FMaterialSortCS : public FGlobalShader
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(int, NumTotalEntries)
-		SHADER_PARAMETER_RDG_BUFFER_UAV(StructuredBuffer<FDeferredMaterialPayload>, MaterialBuffer)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<FDeferredMaterialPayload>, MaterialBuffer)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

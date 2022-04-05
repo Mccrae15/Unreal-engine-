@@ -10,6 +10,7 @@ namespace UnrealBuildTool.Rules
 				new string[]
 				{
 					"OpenCVLensDistortion",
+					"OpenCVHelper",
 					"TimeManagement",
 				}
 			);
@@ -31,6 +32,7 @@ namespace UnrealBuildTool.Rules
                 PrivateDependencyModuleNames.AddRange(
 					new string[]
 					{
+						"EditorFramework",
                         "MediaPlayerEditor",
                         "Slate",
 						"SlateCore",

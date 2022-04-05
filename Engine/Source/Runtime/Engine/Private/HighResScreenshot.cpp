@@ -17,6 +17,21 @@ static TAutoConsoleVariable<int32> CVarSaveEXRCompressionQuality(
 	TEXT(" 1: default compression which can be slow (default)"),
 	ECVF_RenderThreadSafe);
 
+static TAutoConsoleVariable<FString> CVarHighResScreenshotCmd(
+	TEXT("r.HighResScreenshot.AdditionalCmds"), TEXT(""),
+	TEXT("Additional command to execute when a high res screenshot is requested."),
+	ECVF_Default);
+
+static void RunHighResScreenshotAdditionalCommands()
+{
+	FString Cmds = CVarHighResScreenshotCmd.GetValueOnGameThread();
+
+	if (!Cmds.IsEmpty())
+	{
+		GEngine->Exec(GWorld, *Cmds);
+	}
+}
+
 DEFINE_LOG_CATEGORY(LogHighResScreenshot);
 
 FHighResScreenshotConfig& GetHighResScreenshotConfig()
@@ -121,27 +136,49 @@ bool FHighResScreenshotConfig::ParseConsoleCommand(const FString& InCmd, FOutput
 		}
 
 		GIsHighResScreenshot = true;
-
+		RunHighResScreenshotAdditionalCommands();
 		return true;
 	}
 
 	return false;
 }
 
-bool FHighResScreenshotConfig::MergeMaskIntoAlpha(TArray<FColor>& InBitmap)
+bool FHighResScreenshotConfig::MergeMaskIntoAlpha(TArray<FColor>& InBitmap, const FIntRect& ViewRect)
 {
 	bool bWritten = false;
 
 	TArray<FColor>* MaskArray = FScreenshotRequest::GetHighresScreenshotMaskColorArray();
-	bool bMaskMatches = !bMaskEnabled || (MaskArray->Num() == InBitmap.Num());
+	const FIntPoint& MaskExtents = FScreenshotRequest::GetHighresScreenshotMaskExtents();
+
+	bool bMaskMatches = !bMaskEnabled || (InBitmap.Num() == MaskArray->Num()) || (InBitmap.Num() == ViewRect.Area() && ViewRect.Max.X <= MaskExtents.X && ViewRect.Max.Y <= MaskExtents.Y);
 	ensureMsgf(bMaskMatches, TEXT("Highres screenshot MaskArray doesn't match screenshot size.  Skipping Masking. MaskSize: %i, ScreenshotSize: %i"), MaskArray->Num(), InBitmap.Num());
 	if (bMaskEnabled && bMaskMatches)
 	{
 		// If this is a high resolution screenshot and we are using the masking feature,
 		// Get the results of the mask rendering pass and insert into the alpha channel of the screenshot.
-		for (int32 i = 0; i < InBitmap.Num(); ++i)
+		if (InBitmap.Num() == MaskArray->Num())
 		{
-			InBitmap[i].A = (*MaskArray)[i].R;
+			// Exact match, copy verbatim
+			for (int32 i = 0; i < InBitmap.Num(); ++i)
+			{
+				InBitmap[i].A = (*MaskArray)[i].R;
+			}
+		}
+		else
+		{
+			// Need to pull a rectangle out of the mask array
+			int32 RectOffsetX = ViewRect.Min.X;
+			int32 RectOffsetY = ViewRect.Min.Y;
+			int32 OutputOffset = 0;
+			int32 MaskStride = MaskExtents.X;
+
+			for (int32 j = ViewRect.Min.Y; j < ViewRect.Max.Y; j++)
+			{
+				for (int32 i = ViewRect.Min.X; i < ViewRect.Max.X; i++, OutputOffset++)
+				{
+					InBitmap[OutputOffset].A = (*MaskArray)[j * MaskStride + i].R;
+				}
+			}
 		}
 		bWritten = true;
 	}
@@ -183,6 +220,7 @@ bool FHighResScreenshotConfig::SetResolution(uint32 ResolutionX, uint32 Resoluti
 	GScreenshotResolutionX = (ResolutionX * ResolutionScale);
 	GScreenshotResolutionY = (ResolutionY * ResolutionScale);
 	GIsHighResScreenshot = true;
+	RunHighResScreenshotAdditionalCommands();
 
 	return true;
 }

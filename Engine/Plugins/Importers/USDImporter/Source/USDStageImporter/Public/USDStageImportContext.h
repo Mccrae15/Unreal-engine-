@@ -24,6 +24,13 @@ struct USDSTAGEIMPORTER_API FUsdStageImportContext
 
 	UWorld* World;
 
+	/**
+	 * Whenever we spawn the scene actor, it should have this local transform and be attached to this parent.
+	 * We use this so that Actions->Import can spawn the scene actor exactly where the original stage actor was
+	 */
+	FTransform TargetSceneActorTargetTransform;
+	USceneComponent* TargetSceneActorAttachParent;
+
 	/** Spawned actor that contains the imported scene as a child hierarchy */
 	UPROPERTY()
 	AActor* SceneActor;
@@ -58,6 +65,7 @@ struct USDSTAGEIMPORTER_API FUsdStageImportContext
 	 */
 	TMap< FString, TMap< FString, int32 > > MaterialToPrimvarToUVIndex;
 
+	/** USD Stage to import */
 	UE::FUsdStage Stage;
 
 	/** Object flags to apply to newly imported objects */
@@ -73,7 +81,7 @@ struct USDSTAGEIMPORTER_API FUsdStageImportContext
 	bool bReadFromStageCache;
 
 	/** If we're reading from the stage cache and the stage was originally open, it will be left open when the import is completed */
-	bool bStageWasOriginallyOpen;
+	bool bStageWasOriginallyOpenInCache;
 
 	/** We modify the stage with our meters per unit import option on import. If the stage was already open, we use this to undo the changes after import */
 	float OriginalMetersPerUnit;

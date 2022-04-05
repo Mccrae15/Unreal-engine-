@@ -1005,12 +1005,13 @@ PyTypeObject InitializePyWrapperObjectType()
 	PyType.tp_dealloc = (destructor)&FFuncs::Dealloc;
 	PyType.tp_init = (initproc)&FFuncs::Init;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Str;
 	PyType.tp_hash = (hashfunc)&FFuncs::Hash;
 
 	PyType.tp_methods = PyMethods;
 
 	PyType.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE;
-	PyType.tp_doc = "Type for all UE4 exposed object instances";
+	PyType.tp_doc = "Type for all Unreal exposed object instances";
 
 	return PyType;
 }
@@ -1299,6 +1300,11 @@ public:
 		{
 			// Notify Blueprints that there is a new class to add to the action list
 			ActionDB->RefreshClassActions(NewClass);
+
+			if (OldClass)
+			{
+				ActionDB->RefreshClassActions(OldClass);
+			}
 		}
 
 		// Null the NewClass pointer so the destructor doesn't kill it
@@ -1510,7 +1516,7 @@ public:
 			if (InPyFuncDef->FuncRetType && InPyFuncDef->FuncRetType != Py_None)
 			{
 				// If we have a tuple, then we actually want to return a bool but add every type within the tuple as output parameters
-				const bool bOptionalReturn = PyTuple_Check(InPyFuncDef->FuncRetType);
+				const bool bOptionalReturn = static_cast<bool>(PyTuple_Check(InPyFuncDef->FuncRetType));
 
 				PyObject* RetType = bOptionalReturn ? (PyObject*)&PyBool_Type : InPyFuncDef->FuncRetType;
 				FProperty* RetProp = PyUtil::CreateProperty(RetType, 1, Func, TEXT("ReturnValue"));

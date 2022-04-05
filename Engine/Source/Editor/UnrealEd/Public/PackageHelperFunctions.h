@@ -67,13 +67,14 @@ bool UNREALED_API NormalizePackageNames( TArray<FString> PackageNames, TArray<FS
  * @param	Filename	The location to save the package to
  * @param	KeepObjectFlags	Objects with any these flags will be kept when saving even if unreferenced.
  * @param	ErrorDevice	the output device to use for warning and error messages
- * @param	LinkerToConformAgainst
- * @param				optional linker to use as a base when saving Package; if specified, all common names, imports and exports
- *						in Package will be sorted in the same order as the corresponding entries in the LinkerToConformAgainst
  *
  * @return true if successful
  */
-bool UNREALED_API SavePackageHelper(UPackage* Package, FString Filename,  EObjectFlags KeepObjectFlags = RF_Standalone, FOutputDevice* ErrorDevice=GWarn, FLinkerNull* LinkerToConformAgainst=NULL, ESaveFlags SaveFlags = SAVE_None);
+bool UNREALED_API SavePackageHelper(UPackage* Package, FString Filename,  EObjectFlags KeepObjectFlags = RF_Standalone,
+	FOutputDevice* ErrorDevice=GWarn, ESaveFlags SaveFlags = SAVE_None);
+UE_DEPRECATED(5.0, "LinkerToConformAgainst is no longer implemented; call function overload that does not take LinkerToConformAgainst.")
+bool UNREALED_API SavePackageHelper(UPackage* Package, FString Filename, EObjectFlags KeepObjectFlags,
+	FOutputDevice* ErrorDevice, FLinkerNull* LinkerToConformAgainst, ESaveFlags SaveFlags = SAVE_None);
 
 
 /**
@@ -181,18 +182,6 @@ protected:
 
 	bool bInitialized;
 };
-
-template< typename OBJECTYPE >
-void DoIt( UCommandlet* Commandlet, UPackage* Package, TArray<FString>& Tokens, TArray<FString>& Switches ){}
-
-/** 
- *	This will set the passed in tag name on the objects if they are not in the whitelist
- *
- *	@param	ObjectNames				The list of object names to tag
- *	@param	CollectionName			The tag to apply to the objects
- *	@param	CollectionNameWhitelist	The tag of objects that should *not* be tagged (whitelist)
- */
-void UpdateSetCollectionsForObjects(TMap<FString,bool>& ObjectNames, const FString& CollectionName, const FString& CollectionNameWhitelist);
 
 /**
  * This is our Functional "Do an Action to all Packages" Template.  Basically it handles all

@@ -61,48 +61,65 @@ namespace GLTF
 		struct FMetallicRoughness
 		{
 			FTextureMap Map;
-			float       MetallicFactor;
-			float       RoughnessFactor;
-
-			FMetallicRoughness()
-			    : MetallicFactor(1.f)
-			    , RoughnessFactor(1.f)
-			{
-			}
+			float       MetallicFactor = 1.0f;
+			float       RoughnessFactor = 1.0f;
 		};
-		struct FSpecularGlossiness
+		// "pbrSpecularGlossiness" extension
+		// Implements a specular glossiness shading model and is mutually exclusive with "specular" extension, which uses metallic roughness model
+		struct FSpecularGlossiness 
 		{
 			FTextureMap Map;
-			FVector     SpecularFactor;
-			float       GlossinessFactor;
+			FVector     SpecularFactor = FVector(1.0f);
+			float       GlossinessFactor = 1.0f;
+		};
+		struct FClearCoat
+		{
+			float ClearCoatFactor = 1.0f;
+			FTextureMap ClearCoatMap;
 
-			FSpecularGlossiness()
-			    : SpecularFactor(1.f)
-			    , GlossinessFactor(1.f)
-			{
-			}
+			float Roughness = 0.0f;
+			FTextureMap RoughnessMap;
+
+			float NormalMapUVScale = 1.0f;
+			FTextureMap NormalMap;
+		};
+		struct FTransmission
+		{
+			float TransmissionFactor = 0.0f;
+			FTextureMap TransmissionMap;
+		};
+		struct FSheen
+		{
+			FVector SheenColorFactor = FVector::Zero();
+		};
+		struct FSpecular // "specular" extension
+		{
+			float SpecularFactor = 1.0f;
+			FTextureMap SpecularMap;
+			FVector SpecularColorFactor = FVector(1.0f, 1.0f, 1.0f);
+			FTextureMap SpecularColorMap;
 		};
 
 		struct FPacking
 		{
-			int         Flags;  // see EPackingFlags
+			int         Flags = (int)EPackingFlags::None;  // see EPackingFlags
 			FTextureMap Map;
 			FTextureMap NormalMap;
-
-			FPacking()
-			    : Flags((int)EPackingFlags::None)
-			{
-			}
 		};
 
 		FString Name;
 
 		// PBR properties
 		FTextureMap         BaseColor;		 // Used for DiffuseColor on Specular-Glossiness mode
-		FVector4            BaseColorFactor; // Used for DiffuseFactor on Specular-Glossiness mode
+		FVector4f           BaseColorFactor; // Used for DiffuseFactor on Specular-Glossiness mode
 		EShadingModel       ShadingModel;
 		FMetallicRoughness  MetallicRoughness;
 		FSpecularGlossiness SpecularGlossiness;
+		FClearCoat          ClearCoat;
+		FTransmission       Transmission;
+		FSheen              Sheen;
+		FSpecular           Specular;
+		float               IOR;
 
 		// base properties
 		FTextureMap Normal;
@@ -110,7 +127,7 @@ namespace GLTF
 		FTextureMap Emissive;
 		float       NormalScale;
 		float       OcclusionStrength;
-		FVector     EmissiveFactor;
+		FVector3f   EmissiveFactor;
 
 		// material properties
 		bool       bIsDoubleSided;
@@ -120,11 +137,17 @@ namespace GLTF
 		// extension properties
 		FPacking Packing;
 		bool     bIsUnlitShadingModel;
+		bool     bHasClearCoat;
+		bool     bHasSheen;
+		bool     bHasTransmission;
+		bool     bHasIOR;
+		bool     bHasSpecular;
 
 		FMaterial(const FString& Name)
 		    : Name(Name)
 		    , BaseColorFactor {1.0f, 1.0f, 1.0f, 1.0f}
 		    , ShadingModel(EShadingModel::MetallicRoughness)
+			, IOR(1.0f)
 		    , NormalScale(1.f)
 		    , OcclusionStrength(1.f)
 		    , EmissiveFactor(FVector::ZeroVector)
@@ -132,6 +155,11 @@ namespace GLTF
 		    , AlphaMode(EAlphaMode::Opaque)
 		    , AlphaCutoff(0.5f)
 		    , bIsUnlitShadingModel(false)
+			, bHasClearCoat(false)
+			, bHasSheen(false)
+			, bHasTransmission(false)
+			, bHasIOR(false)
+			, bHasSpecular(false)
 		{
 		}
 

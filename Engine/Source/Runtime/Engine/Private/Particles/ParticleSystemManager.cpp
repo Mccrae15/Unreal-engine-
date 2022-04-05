@@ -110,6 +110,7 @@ public:
 
 	void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
 	{
+		FTaskTagScope Scope(ETaskTag::EParallelRenderingThread);
 		SCOPE_CYCLE_COUNTER(STAT_PSCMan_AsyncBatch);
 
 // 		FString Ticked;
@@ -372,8 +373,17 @@ void FParticleSystemWorldManager::UnregisterComponent(UParticleSystemComponent* 
 			UE_LOG(LogParticles, Verbose, TEXT("| UnRegister Pending PSC: %p | Man: %p | %d | %s"), PSC, this, Handle, *PSC->Template->GetName());
 
 			//Clear existing handle
-			check(PendingRegisterPSCs[Handle]);
-			PendingRegisterPSCs[Handle]->SetManagerHandle(INDEX_NONE);
+			if (PendingRegisterPSCs[Handle])
+			{
+				PendingRegisterPSCs[Handle]->SetManagerHandle(INDEX_NONE);
+			}
+			else
+			{
+				// Handle scenario where registration and destruction of a component happens 
+				// without FParticleSystemWorldManager tick in between and component being nulled
+				// after being marked as PendingKill
+				PSC->SetManagerHandle(INDEX_NONE);
+			}
 
 			PendingRegisterPSCs.RemoveAtSwap(Handle, 1, false);
 
@@ -587,7 +597,7 @@ void FParticleSystemWorldManager::ProcessTickList(float DeltaTime, ELevelTick Ti
 				// FORT-319316 - Tracking down why we sometimes have a PSC with no world in the manager?
 				if (!PSC->GetWorld())
 				{
-					UE_LOG(LogParticles, Warning, TEXT("PSC(%s) has no world but is inside PSC Manager. Template(%s) PendingKill(%d) IsTickManaged(%d) ManagerHandle(%d) PendingAdd(%d) PendingRemove(%d)"), *GetFullNameSafe(PSC), *GetFullNameSafe(PSC->Template), PSC->IsPendingKill(), PSC->IsTickManaged(), PSC->GetManagerHandle(), PSC->IsPendingManagerAdd(), PSC->IsPendingManagerRemove());
+					UE_LOG(LogParticles, Warning, TEXT("PSC(%s) has no world but is inside PSC Manager. Template(%s) IsValid(%d) IsTickManaged(%d) ManagerHandle(%d) PendingAdd(%d) PendingRemove(%d)"), *GetFullNameSafe(PSC), *GetFullNameSafe(PSC->Template), IsValid(PSC), PSC->IsTickManaged(), PSC->GetManagerHandle(), PSC->IsPendingManagerAdd(), PSC->IsPendingManagerRemove());
 					PSC->SetPendingManagerAdd(false);
 					PSC->SetPendingManagerRemove(true);
 					TickData.bPendingUnregister = true;

@@ -183,6 +183,7 @@ void SLiveLinkSubjectRepresentationPicker::Construct(const FArguments& InArgs)
 			.SelectAllTextOnCommit(true)
 			.ClearKeyboardFocusOnCommit(false)
 			.Font(InArgs._Font)
+			.Style(FLiveLinkEditorPrivate::GetStyleSet(), "EditableTextBox")
 		];
 	}
 
@@ -191,9 +192,9 @@ void SLiveLinkSubjectRepresentationPicker::Construct(const FArguments& InArgs)
 		SAssignNew(PickerComboButton, SComboButton)
 		.ComboButtonStyle(InArgs._ComboButtonStyle)
 		.ButtonStyle(InArgs._ButtonStyle)
-		.ForegroundColor(InArgs._ForegroundColor)
+		.ForegroundColor(FSlateColor::UseForeground())
 		.ContentPadding(InArgs._ContentPadding)
-		.VAlign(VAlign_Fill)
+		.VAlign(VAlign_Center)
 		.OnGetMenuContent(this, &SLiveLinkSubjectRepresentationPicker::BuildMenu)
 		.ButtonContent()
 		[
@@ -535,7 +536,7 @@ void SLiveLinkSubjectRepresentationPicker::BuildSubjectRepDataList()
 					SLiveLinkSubjectRepresentationPicker::FLiveLinkSourceSubjectRole SrcSubRole;
 					SrcSubRole.Source = SubjectKey.Source;
 					SrcSubRole.Subject = SubjectKey.SubjectName;
-					SrcSubRole.Role = LiveLinkClient.GetSubjectRole(SubjectKey);
+					SrcSubRole.Role = LiveLinkClient.GetSubjectRole_AnyThread(SubjectKey);
 					SubjectRepData.Add(MakeShared<FLiveLinkSubjectRepresentationPickerEntry>(SrcSubRole, UniqueSources[SubjectKey.Source], bEnabled));
 				}
 			}
@@ -574,7 +575,7 @@ void SLiveLinkSubjectRepresentationPicker::BuildSubjectRepDataList()
 
 				SLiveLinkSubjectRepresentationPicker::FLiveLinkSourceSubjectRole SrcSubRole;
 				SrcSubRole.Subject = Item.Key;
-				SrcSubRole.Role = LiveLinkClient.GetSubjectRole(Item.Key);
+				SrcSubRole.Role = LiveLinkClient.GetSubjectRole_AnyThread(Item.Key);
 
 				if (SrcSubRole.Role == nullptr && Item.Value != 1)
 				{
@@ -583,7 +584,7 @@ void SLiveLinkSubjectRepresentationPicker::BuildSubjectRepDataList()
 					{
 						if (Key.SubjectName == Item.Key)
 						{
-							 TSubclassOf<ULiveLinkRole> NewRole = LiveLinkClient.GetSubjectRole(Key);
+							 TSubclassOf<ULiveLinkRole> NewRole = LiveLinkClient.GetSubjectRole_AnyThread(Key);
 							 if (!bIsFirstEntry && SrcSubRole.Role != NewRole)
 							 {
 								 SrcSubRole.Role = nullptr;

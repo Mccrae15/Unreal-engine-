@@ -20,10 +20,11 @@ struct FNiagaraDataInterfaceProxyCurveBase : public FNiagaraDataInterfaceProxy
 		CurveLUT.Release();
 	}
 
-	float LUTMinTime;
-	float LUTMaxTime;
-	float LUTInvTimeRange;
-	float CurveLUTNumMinusOne;
+	float LUTMinTime = 0.0f;
+	float LUTMaxTime = 0.0f;
+	float LUTInvTimeRange = 0.0f;
+	float CurveLUTNumMinusOne = 0.0f;
+	uint32 LUTOffset = INDEX_NONE;
 	FReadBuffer CurveLUT;
 
 	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override
@@ -59,6 +60,8 @@ protected:
 
 	UPROPERTY()
 	float LUTNumSamplesMinusOne;
+
+	uint32 LUTOffset = INDEX_NONE;
 
 	/** Remap a sample time for this curve to 0 to 1 between first and last keys for LUT access.*/
 	FORCEINLINE float NormalizeTime(float T) const
@@ -104,7 +107,7 @@ public:
 
 	/** The texture generated and exposed to materials, will be nullptr if we do not expose to the renderers. */
 	UPROPERTY()
-	class UTexture2D* ExposedTexture;
+	TObjectPtr<class UTexture2D> ExposedTexture;
 
 #if WITH_EDITOR	
 	/** Refreshes and returns the errors detected with the corresponding data, if any.*/
@@ -179,6 +182,7 @@ public:
 	/** Gets information for all of the curves owned by this curve data interface. */
 	virtual void GetCurveData(TArray<FCurveData>& OutCurveData) { }
 
+	virtual void CacheStaticBuffers(struct FNiagaraSystemStaticBuffers& StaticBuffers, const struct FNiagaraScriptDataInterfaceInfo& DataInterfaceInfo, bool bUsedByCPU, bool bUsedByGPU) override;
 #if WITH_EDITORONLY_DATA
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 #endif
@@ -244,5 +248,6 @@ struct FNiagaraDataInterfaceParametersCS_Curve : public FNiagaraDataInterfacePar
 	LAYOUT_FIELD(FShaderParameter, MaxTime);
 	LAYOUT_FIELD(FShaderParameter, InvTimeRange);
 	LAYOUT_FIELD(FShaderParameter, CurveLUTNumMinusOne);
+	LAYOUT_FIELD(FShaderParameter, LUTOffset);
 	LAYOUT_FIELD(FShaderResourceParameter, CurveLUT);
 };

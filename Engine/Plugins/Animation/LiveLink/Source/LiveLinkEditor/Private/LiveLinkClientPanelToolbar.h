@@ -32,10 +32,13 @@ class SLiveLinkClientPanelToolbar : public SCompoundWidget, public FGCObject
 
 	//~ FEditorUndoClient interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("SLiveLinkClientPanelToolbar");
+	}
 
 private:
 	TSharedRef<SWidget> OnGenerateSourceMenu();
-	void OnGeneratedSourceMenuOpenChanged(bool bOpen);
 	void RetrieveFactorySourcePanel(FMenuBuilder& MenuBuilder, int32 FactoryIndex);
 	void ExecuteCreateSource(int32 FactoryIndex);
 	void OnSourceCreated(TSharedPtr<ILiveLinkSource> NewSource, FString ConnectionString, TSubclassOf<ULiveLinkSourceFactory> Factory);
@@ -61,7 +64,6 @@ private:
 	TWeakPtr<IMenu> VirtualSubjectMenu;
 	TWeakPtr<STextEntryPopup> VirtualSubjectPopup;
 	TWeakPtr<SEditableTextBox> VirtualSubjectSourceName;
-	TSharedPtr<SComboButton> AddSourceButton;
 
 	TWeakObjectPtr<ULiveLinkPreset> LiveLinkPreset;
 	TArray<ULiveLinkSourceFactory*> Factories;

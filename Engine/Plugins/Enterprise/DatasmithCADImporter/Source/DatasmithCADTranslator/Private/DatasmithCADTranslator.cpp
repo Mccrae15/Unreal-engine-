@@ -2,24 +2,21 @@
 
 #include "DatasmithCADTranslator.h"
 
+#include "CADFileReader.h"
 #include "CADInterfacesModule.h"
-#include "CoreTechFileParser.h"
-#include "CoreTechParametricSurfaceExtension.h"
+#include "CADKernelSurfaceExtension.h"
+
 #include "DatasmithCADTranslatorModule.h"
 #include "DatasmithDispatcher.h"
 #include "DatasmithMeshBuilder.h"
 #include "DatasmithSceneGraphBuilder.h"
+#include "DatasmithTranslator.h"
 #include "DatasmithUtils.h"
 #include "IDatasmithSceneElements.h"
 
-#include "HAL/IConsoleManager.h"
-#include "Misc/FileHelper.h"
 
-static TAutoConsoleVariable<int32> CVarStaticCADTranslatorEnableThreadedImport(
-	TEXT("r.CADTranslator.EnableThreadedImport"),
-	1,
-	TEXT("Activate to parallelise CAD file processing.\n"),
-	ECVF_Default);
+DEFINE_LOG_CATEGORY(LogCADTranslator);
+
 
 void FDatasmithCADTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCapabilities)
 {
@@ -40,13 +37,13 @@ void FDatasmithCADTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCa
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("model"), TEXT("CATIA V4 files") });
 
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("asm.*"), TEXT("Creo Assembly files") });
-	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("asm"), TEXT("Creo, NX Assembly files") });
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("creo.*"), TEXT("Creo Assembly files") });
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("creo"), TEXT("Creo Assembly files") });
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("neu.*"), TEXT("Creo Assembly files") });
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("neu"), TEXT("Creo Assembly files") });
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("prt.*"), TEXT("Creo Part files") });
-	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("prt"), TEXT("Creo, NX Part files") });
+	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("xas"), TEXT("Creo Assembly files") });
+	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("xpr"), TEXT("Creo Part files") });
 
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("iam"), TEXT("Inventor Assembly files") });
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("ipt"), TEXT("Inventor Part files") });
@@ -77,109 +74,124 @@ void FDatasmithCADTranslator::Initialize(FDatasmithTranslatorCapabilities& OutCa
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("dwg"), TEXT("AutoCAD, Model files") });
 	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("dgn"), TEXT("MicroStation files") });
 
-	OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("ct"), TEXT("Kernel_IO files") });
+	if (CADLibrary::FImportParameters::GCADLibrary.Equals(TEXT("TechSoft")))
+	{
+		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("hsf"), TEXT("HOOPS stream files") });
+		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("prc"), TEXT("HOOPS stream files") });
+	}
+	else
+	{
+		OutCapabilities.SupportedFileFormats.Add(FFileFormatInfo{ TEXT("ct"), TEXT("Kernel_IO files") });
+	}
+}
+
+bool FDatasmithCADTranslator::IsSourceSupported(const FDatasmithSceneSource& Source)
+{
+	if (Source.GetSourceFileExtension() != TEXT("xml"))
+	{
+		return true;
+	}
+
+	return Datasmith::CheckXMLFileSchema(Source.GetSourceFile(), TEXT("XPDMXML"), TEXT("ns3:Uos"));
 }
 
 bool FDatasmithCADTranslator::LoadScene(TSharedRef<IDatasmithScene> DatasmithScene)
 {
-	ImportParameters.MetricUnit = 0.001;
-	ImportParameters.ScaleFactor = 0.1;
 	const FDatasmithTessellationOptions& TesselationOptions = GetCommonTessellationOptions();
-	ImportParameters.ChordTolerance = TesselationOptions.ChordTolerance;
-	ImportParameters.MaxEdgeLength = TesselationOptions.MaxEdgeLength;
-	ImportParameters.MaxNormalAngle = TesselationOptions.NormalTolerance;
-	ImportParameters.StitchingTechnique = (CADLibrary::EStitchingTechnique) TesselationOptions.StitchingTechnique;
+	CADLibrary::FFileDescriptor FileDescriptor(*FPaths::ConvertRelativePathToFull(GetSource().GetSourceFile()));
 
-	CADLibrary::FFileDescription FileDescription(*FPaths::ConvertRelativePathToFull(GetSource().GetSourceFile()),
-		TEXT(""),
-		*FPaths::GetPath(FPaths::ConvertRelativePathToFull(GetSource().GetSourceFile())) );
+	UE_LOG(LogCADTranslator, Display, TEXT("CAD translation [%s]."), *FileDescriptor.GetSourcePath());
+	UE_LOG(LogCADTranslator, Display, TEXT(" - Parsing Library:     %s"), *CADLibrary::FImportParameters::GCADLibrary);
+	UE_LOG(LogCADTranslator, Display, TEXT(" - Tesselation Library: %s")
+		, CADLibrary::FImportParameters::bGDisableCADKernelTessellation ? *CADLibrary::FImportParameters::GCADLibrary : TEXT("CADKernel"));
+	UE_LOG(LogCADTranslator, Display, TEXT(" - Cache mode:          %s")
+		, CADLibrary::FImportParameters::bGEnableCADCache ? (CADLibrary::FImportParameters::bGOverwriteCache ? TEXT("Override") : TEXT("Enabled")) : TEXT("Disabled"));
+	UE_LOG(LogCADTranslator, Display, TEXT(" - Processing:          %s")
+		, CADLibrary::FImportParameters::bGEnableCADCache ? (CADLibrary::GMaxImportThreads == 1 ? TEXT("Sequencial") : TEXT("Parallel")) : TEXT("Sequencial"));
 
-	// Do not change the model unit when translator is called by the Datasmith runtime plugin.
-#if WITH_EDITOR
-	if (FileDescription.Extension == TEXT("jt") && IsInGameThread())
-	{
-		ImportParameters.MetricUnit = 1.;
-		ImportParameters.ScaleFactor = 100.;
-	}
-#endif
+	ImportParameters.SetTesselationParameters(TesselationOptions.ChordTolerance, TesselationOptions.MaxEdgeLength, TesselationOptions.NormalTolerance, (CADLibrary::EStitchingTechnique)TesselationOptions.StitchingTechnique);
+	ImportParameters.SetModelCoordinateSystem(FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded);
 
-	ImportParameters.ModelCoordSys = FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded;
-	if (FileDescription.Extension == TEXT("prt")) // NX
+	switch (FileDescriptor.GetFileFormat())
 	{
-		ImportParameters.ModelCoordSys = FDatasmithUtils::EModelCoordSystem::ZUp_RightHanded;
-		ImportParameters.DisplayPreference = CADLibrary::EDisplayPreference::ColorOnly;
-		ImportParameters.Propagation = CADLibrary::EDisplayDataPropagationMode::BodyOnly;
-	}
-	else if (FileDescription.Extension == TEXT("sldprt") || FileDescription.Extension == TEXT("sldasm") || // Solidworks
-		FileDescription.Extension == TEXT("iam") || FileDescription.Extension == TEXT("ipt") || // Inventor
-		FileDescription.Extension.StartsWith(TEXT("asm")) || FileDescription.Extension.StartsWith(TEXT("creo")) || FileDescription.Extension.StartsWith(TEXT("prt")) || FileDescription.Extension.StartsWith(TEXT("neu")) // Creo
-		)
+	case CADLibrary::ECADFormat::NX:
 	{
-		ImportParameters.ModelCoordSys = FDatasmithUtils::EModelCoordSystem::YUp_RightHanded;
-		ImportParameters.DisplayPreference = CADLibrary::EDisplayPreference::ColorOnly;
-		ImportParameters.Propagation = CADLibrary::EDisplayDataPropagationMode::BodyOnly;
-	}
-	else if (FileDescription.Extension == TEXT("dwg")) // Autocad
-	{
-		ImportParameters.DisplayPreference = CADLibrary::EDisplayPreference::ColorOnly;
-		ImportParameters.Propagation = CADLibrary::EDisplayDataPropagationMode::BodyOnly;
+		ImportParameters.SetDisplayPreference(CADLibrary::EDisplayPreference::ColorOnly);
+		ImportParameters.SetPropagationMode(CADLibrary::EDisplayDataPropagationMode::BodyOnly);
+		break;
 	}
 
-	ImportParameters.bEnableCacheUsage = false;
+	case CADLibrary::ECADFormat::SOLIDWORKS:
+	case CADLibrary::ECADFormat::INVENTOR:
+	case CADLibrary::ECADFormat::CREO:
+	{
+		ImportParameters.SetModelCoordinateSystem(FDatasmithUtils::EModelCoordSystem::YUp_RightHanded);
+		ImportParameters.SetDisplayPreference(CADLibrary::EDisplayPreference::ColorOnly);
+		ImportParameters.SetPropagationMode(CADLibrary::EDisplayDataPropagationMode::BodyOnly);
+		break;
+	}
+
+	case CADLibrary::ECADFormat::DWG:
+	{
+		ImportParameters.SetDisplayPreference(CADLibrary::EDisplayPreference::ColorOnly);
+		ImportParameters.SetPropagationMode(CADLibrary::EDisplayDataPropagationMode::BodyOnly);
+		break;
+	}
+
+	default:
+		break;
+	}
+
 	FString CachePath = FDatasmithCADTranslatorModule::Get().GetCacheDir();
 	if (!CachePath.IsEmpty())
 	{
 		CachePath = FPaths::ConvertRelativePathToFull(CachePath);
-		ImportParameters.bEnableCacheUsage = true;
 	}
 
-	bool bWithProcessor = (CVarStaticCADTranslatorEnableThreadedImport.GetValueOnAnyThread() != 0);
-
-#ifdef CAD_TRANSLATOR_DEBUG
-	bWithProcessor = false;
-#endif //CAD_TRANSLATOR_DEBUG
-
-	// Only use multi-processed translation if it is required and cache's usage is enabled
-	if (bWithProcessor && ImportParameters.bEnableCacheUsage)
+	// Use sequential translation (multi-processed or not)
+	if (CADLibrary::FImportParameters::bGEnableCADCache)
 	{
-		TMap<uint32, FString> CADFileToUE4FileMap;
-		int32 NumCores = FPlatformMisc::NumberOfCores();
+		TMap<uint32, FString> CADFileToUEFileMap;
 		{
-			DatasmithDispatcher::FDatasmithDispatcher Dispatcher(ImportParameters, CachePath, NumCores, CADFileToUE4FileMap, CADFileToUE4GeomMap);
-			Dispatcher.AddTask(FileDescription);
+			int32 NumCores = FPlatformMisc::NumberOfCores();
+			if (CADLibrary::GMaxImportThreads > 1)
+			{
+				NumCores = FMath::Min(CADLibrary::GMaxImportThreads, NumCores);
+			}
+			DatasmithDispatcher::FDatasmithDispatcher Dispatcher(ImportParameters, CachePath, NumCores, CADFileToUEFileMap, CADFileToUEGeomMap);
+			Dispatcher.AddTask(FileDescriptor);
 
-			Dispatcher.Process(bWithProcessor);
+			Dispatcher.Process(CADLibrary::GMaxImportThreads != 1);
 		}
 
-		FDatasmithSceneGraphBuilder SceneGraphBuilder(CADFileToUE4FileMap, CachePath, DatasmithScene, GetSource(), ImportParameters);
+		FDatasmithSceneGraphBuilder SceneGraphBuilder(CADFileToUEFileMap, CachePath, DatasmithScene, GetSource(), ImportParameters);
 		SceneGraphBuilder.Build();
 
-		MeshBuilderPtr = MakeUnique<FDatasmithMeshBuilder>(CADFileToUE4GeomMap, CachePath, ImportParameters);
+		MeshBuilderPtr = MakeUnique<FDatasmithMeshBuilder>(CADFileToUEGeomMap, CachePath, ImportParameters);
 
 		return true;
 	}
 
-	ImportParameters.bEnableCacheUsage = false;
-
-	CADLibrary::FCoreTechFileParser FileParser(ImportParameters, *FPaths::EnginePluginsDir());
-	if (FileParser.ProcessFile(FileDescription) != CADLibrary::ECoreTechParsingResult::ProcessOk)
+	CADLibrary::FCADFileReader FileReader(ImportParameters, FileDescriptor, *FPaths::EnginePluginsDir(), CachePath);
+	if (FileReader.ProcessFile() != CADLibrary::ECADParsingResult::ProcessOk)
 	{
 		return false;
 	}
 
-	FDatasmithSceneBaseGraphBuilder SceneGraphBuilder(&FileParser.GetSceneGraphArchive(), DatasmithScene, GetSource(), ImportParameters);
+	CADLibrary::FCADFileData& CADFileData = FileReader.GetCADFileData();
+	FDatasmithSceneBaseGraphBuilder SceneGraphBuilder(&CADFileData.GetSceneGraphArchive(), CachePath, DatasmithScene, GetSource(), ImportParameters);
 	SceneGraphBuilder.Build();
 
-	MeshBuilderPtr = MakeUnique<FDatasmithMeshBuilder>(FileParser.GetBodyMeshes(), ImportParameters);
+	MeshBuilderPtr = MakeUnique<FDatasmithMeshBuilder>(CADFileData.GetBodyMeshes(), ImportParameters);
 
 	return true;
 }
 
 void FDatasmithCADTranslator::UnloadScene()
 {
-	MeshBuilderPtr = nullptr;
+	MeshBuilderPtr.Reset();
 
-	CADFileToUE4GeomMap.Empty();
+	CADFileToUEGeomMap.Empty();
 }
 
 bool FDatasmithCADTranslator::LoadStaticMesh(const TSharedRef<IDatasmithMeshElement> MeshElement, FDatasmithMeshElementPayload& OutMeshPayload)
@@ -195,16 +207,16 @@ bool FDatasmithCADTranslator::LoadStaticMesh(const TSharedRef<IDatasmithMeshElem
 	{
 		OutMeshPayload.LodMeshes.Add(MoveTemp(Mesh.GetValue()));
 
-		DatasmithCoreTechParametricSurfaceData::AddCoreTechSurfaceDataForMesh(MeshElement, ImportParameters, MeshParameters, GetCommonTessellationOptions(), OutMeshPayload);
+		if (CADLibrary::FImportParameters::bGDisableCADKernelTessellation)
+		{
+			ParametricSurfaceUtils::AddSurfaceData(MeshElement->GetFile(), ImportParameters, MeshParameters, GetCommonTessellationOptions(), OutMeshPayload);
+		}
+		else
+		{
+			CADKernelSurface::AddSurfaceDataForMesh(MeshElement->GetFile(), ImportParameters, MeshParameters, GetCommonTessellationOptions(), OutMeshPayload);
+		}
 	}
+
 	return OutMeshPayload.LodMeshes.Num() > 0;
 }
-
-void FDatasmithCADTranslator::SetSceneImportOptions(TArray<TStrongObjectPtr<UDatasmithOptionsBase>>& Options)
-{
-	FDatasmithCoreTechTranslator::SetSceneImportOptions(Options);
-}
-
-
-
 

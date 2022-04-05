@@ -202,19 +202,6 @@ namespace Gauntlet
 		}
 	}
 
-	public class Wind32DeviceFactory : IDeviceFactory
-	{
-		public bool CanSupportPlatform(UnrealTargetPlatform? Platform)
-		{
-			return Platform == UnrealTargetPlatform.Win32;
-		}
-
-		public ITargetDevice CreateDevice(string InRef, string InCachePath, string InParam = null)
-		{
-			return new TargetDeviceWindows(InRef, InCachePath, false);
-		}
-	}
-
 	/// <summary>
 	/// Win32/64 implementation of a device to run applications
 	/// </summary>
@@ -224,14 +211,12 @@ namespace Gauntlet
 
 		protected string UserDir { get; set; }
 
-		protected bool IsWin64 { get; set; }
-
 		/// <summary>
 		/// Our mappings of Intended directories to where they actually represent on this platform.
 		/// </summary>
 		protected Dictionary<EIntendedBaseCopyDirectory, string> LocalDirectoryMappings { get; set; }
 
-		public TargetDeviceWindows(string InName, string InCacheDir, bool InIsWin64=true)
+		public TargetDeviceWindows(string InName, string InCacheDir)
 		{
 			Name = InName;
 			LocalCachePath = InCacheDir;
@@ -239,8 +224,6 @@ namespace Gauntlet
 
 			UserDir = Path.Combine(LocalCachePath, "UserDir");
             LocalDirectoryMappings = new Dictionary<EIntendedBaseCopyDirectory, string>();
-
-			IsWin64 = InIsWin64;
 		}
 
 		#region IDisposable Support
@@ -282,9 +265,10 @@ namespace Gauntlet
 			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Config, Path.Combine(BasePath, "Saved", "Config"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Content, Path.Combine(BasePath, "Content"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Demos, Path.Combine(UserDir, "Saved", "Demos"));
-            LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Profiling, Path.Combine(BasePath, "Saved", "Profiling"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.PersistentDownloadDir, Path.Combine(BasePath, "Saved", "PersistentDownloadDir"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Profiling, Path.Combine(BasePath, "Saved", "Profiling"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Saved, Path.Combine(BasePath, "Saved"));
-        }
+		}
 
         public IAppInstance Run(IAppInstall App)
 		{
@@ -366,6 +350,38 @@ namespace Gauntlet
 			return new WindowsAppInstance(WinApp, Result, ProcessLogFile);
 		}
 
+		private void CopyAdditionalFiles(UnrealAppConfig AppConfig)
+		{
+			if (AppConfig.FilesToCopy != null)
+			{
+				foreach (UnrealFileToCopy FileToCopy in AppConfig.FilesToCopy)
+				{
+					string PathToCopyTo = Path.Combine(LocalDirectoryMappings[FileToCopy.TargetBaseDirectory], FileToCopy.TargetRelativeLocation);
+					if (File.Exists(FileToCopy.SourceFileLocation))
+					{
+						FileInfo SrcInfo = new FileInfo(FileToCopy.SourceFileLocation);
+						SrcInfo.IsReadOnly = false;
+						string DirectoryToCopyTo = Path.GetDirectoryName(PathToCopyTo);
+						if (!Directory.Exists(DirectoryToCopyTo))
+						{
+							Directory.CreateDirectory(DirectoryToCopyTo);
+						}
+						if (File.Exists(PathToCopyTo))
+						{
+							FileInfo ExistingFile = new FileInfo(PathToCopyTo);
+							ExistingFile.IsReadOnly = false;
+						}
+						SrcInfo.CopyTo(PathToCopyTo, true);
+						Log.Info("Copying {0} to {1}", FileToCopy.SourceFileLocation, PathToCopyTo);
+					}
+					else
+					{
+						Log.Warning("File to copy {0} not found", FileToCopy);
+					}
+				}
+			}
+		}
+
 		protected IAppInstall InstallStagedBuild(UnrealAppConfig AppConfig, StagedBuild InBuild)
 		{
 			bool SkipDeploy = Globals.Params.ParseParam("SkipDeploy");
@@ -419,34 +435,7 @@ namespace Gauntlet
                 PopulateDirectoryMappings(Path.Combine(BuildPath, AppConfig.ProjectName), UserDir);
             }
 
-            if (AppConfig.FilesToCopy != null)
-            {
-                foreach (UnrealFileToCopy FileToCopy in AppConfig.FilesToCopy)
-                {
-                    string PathToCopyTo = Path.Combine(LocalDirectoryMappings[FileToCopy.TargetBaseDirectory], FileToCopy.TargetRelativeLocation);
-                    if (File.Exists(FileToCopy.SourceFileLocation))
-                    {
-                        FileInfo SrcInfo = new FileInfo(FileToCopy.SourceFileLocation);
-                        SrcInfo.IsReadOnly = false;
-                        string DirectoryToCopyTo = Path.GetDirectoryName(PathToCopyTo);
-                        if (!Directory.Exists(DirectoryToCopyTo))
-                        {
-                            Directory.CreateDirectory(DirectoryToCopyTo);
-                        }
-                        if (File.Exists(PathToCopyTo))
-                        {
-                            FileInfo ExistingFile = new FileInfo(PathToCopyTo);
-                            ExistingFile.IsReadOnly = false;
-                        }
-                        SrcInfo.CopyTo(PathToCopyTo, true);
-                        Log.Info("Copying {0} to {1}", FileToCopy.SourceFileLocation, PathToCopyTo);
-                    }
-                    else
-                    {
-                        Log.Warning("File to copy {0} not found", FileToCopy);
-                    }
-                }
-            }
+			CopyAdditionalFiles(AppConfig);
 
             if (Path.IsPathRooted(InBuild.ExecutablePath))
 			{
@@ -508,6 +497,13 @@ namespace Gauntlet
 			WinApp.ArtifactPath = Path.Combine(UserDir, @"Saved");
 			WinApp.ExecutablePath = EditorBuild.ExecutablePath;
 
+			if (LocalDirectoryMappings.Count == 0)
+			{
+				PopulateDirectoryMappings(AppConfig.ProjectFile.Directory.FullName, AppConfig.ProjectFile.Directory.FullName);
+			}
+
+			CopyAdditionalFiles(AppConfig);
+
 			return WinApp;
 		}
 		
@@ -516,7 +512,7 @@ namespace Gauntlet
 			return !Utils.SystemHelpers.IsNetworkPath(InPath);
 		}
 
-		public UnrealTargetPlatform? Platform { get { return IsWin64 ? UnrealTargetPlatform.Win64 : UnrealTargetPlatform.Win32; } }
+		public UnrealTargetPlatform? Platform { get { return UnrealTargetPlatform.Win64; } }
 
 		public string LocalCachePath { get; private set; }
 		public bool IsAvailable { get { return true; } }
@@ -540,18 +536,6 @@ namespace Gauntlet
 				Log.Warning("Platform directory mappings have not been populated for this platform! This should be done within InstallApplication()");
 			}
 			return LocalDirectoryMappings;
-		}
-
-		public bool IsOSOutOfDate()
-		{
-			//TODO: not yet implemented
-			return false;
-		}
-
-		public bool UpdateOS()
-		{
-			//TODO: not yet implemented
-			return true;
 		}
 	}
 }

@@ -52,12 +52,6 @@ private:
 
 	bool CanSetSectionToKey() const;
 
-	void TogglePrimeForRecording() const;
-
-	bool IsPrimedForRecording() const;
-
-	bool CanPrimeForRecording() const;
-
 	void AutoSizeSection();
 
 	void ReduceKeys();
@@ -69,8 +63,6 @@ private:
 	bool CanReduceKeys() const;
 
 	bool CanSetInterpTangentMode() const;
-
-	bool IsInterpTangentModeSelected(ERichCurveInterpMode InterpMode, ERichCurveTangentMode TangentMode) const;
 
 	void ToggleSectionActive();
 

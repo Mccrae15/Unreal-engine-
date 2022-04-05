@@ -12,38 +12,15 @@ class FIOSTargetPlatformModule : public ITargetPlatformModule
 {
 public:
 
-	/** Destructor. */
-	~FIOSTargetPlatformModule()
+	virtual void GetTargetPlatforms(TArray<ITargetPlatform*>& TargetPlatforms) override
 	{
-		for (ITargetPlatform* TP : TargetPlatforms)
+		if (FIOSTargetPlatform::IsUsable())
 		{
-			delete TP;
-		}
-		TargetPlatforms.Empty();
-	}
-
-	//~ ITargetPlatformModule interface
-
-	virtual TArray<ITargetPlatform*> GetTargetPlatforms() override
-	{
-		if (TargetPlatforms.Num() == 0 && FIOSTargetPlatform::IsUsable())
-		{
-			TargetPlatforms.Add(new FIOSTargetPlatform(false, true));
 			TargetPlatforms.Add(new FIOSTargetPlatform(false, false));
+			TargetPlatforms.Add(new FIOSTargetPlatform(false, true));
 		}
-
-		return TargetPlatforms;
 	}
 
-	//~ IModuleInterface interface
-
-	virtual void StartupModule() override { }
-	virtual void ShutdownModule() override { }
-
-protected:
-	/** Holds the target platforms. */
-	TArray<ITargetPlatform*> TargetPlatforms;
-	
 };
 
 

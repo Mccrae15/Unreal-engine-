@@ -38,8 +38,7 @@ namespace ImmediatePhysics_Chaos
 		const FReal Radius = 1.0f * Scale.GetMax();
 
 		auto ImplicitSphere = MakeUnique<Chaos::TSphere<FReal, 3>>(FVec3(0), Radius);
-		auto NewShape = Chaos::FPerShapeData::CreatePerShapeData(OutShapes.Num());
-		NewShape->SetGeometry(MakeSerializable(ImplicitSphere));
+		auto NewShape = Chaos::FPerShapeData::CreatePerShapeData(OutShapes.Num(), MakeSerializable(ImplicitSphere));
 		NewShape->UpdateShapeBounds(FTransform::Identity);
 		NewShape->SetUserData(nullptr);
 		NewShape->SetQueryEnabled(false);
@@ -129,8 +128,14 @@ namespace ImmediatePhysics_Chaos
 
 		UBodySetup* BodySetup = BodyInstance->GetBodySetup();
 
+		// Set the filter to collide with everything (we use a broad phase that only contains particle pairs that are explicitly set to collide)
 		FBodyCollisionData BodyCollisionData;
-		BodyInstance->BuildBodyFilterData(BodyCollisionData.CollisionFilterData);
+		// @todo(chaos): we need an API for setting up filters
+		BodyCollisionData.CollisionFilterData.SimFilter.Word1 = 0xFFFF;
+		BodyCollisionData.CollisionFilterData.SimFilter.Word3 = 0xFFFF;
+		BodyCollisionData.CollisionFlags.bEnableSimCollisionSimple = true;
+
+		//BodyInstance->BuildBodyFilterData(BodyCollisionData.CollisionFilterData);
 		BodyInstance->BuildBodyCollisionFlags(BodyCollisionData.CollisionFlags, BodyInstance->GetCollisionEnabled(), BodyInstance->BodySetup->GetCollisionTraceFlag() == CTF_UseComplexAsSimple);
 
 		FGeometryAddParams AddParams;
@@ -182,6 +187,7 @@ namespace ImmediatePhysics_Chaos
 			// as well as the dimension change even though we don't actually change the mass.
 			const bool bInertaScaleIncludeMass = true;
 			FMassProperties MassProperties = BodyUtils::ComputeMassProperties(BodyInstance, Shapes, bContributesToMass, FTransform::Identity, bInertaScaleIncludeMass);
+			MassProperties.RotationOfMass = Chaos::TransformToLocalSpace(MassProperties.InertiaTensor);
 			OutMass = MassProperties.Mass;
 			OutInertia = MassProperties.InertiaTensor.GetDiagonal();
 			OutCoMTransform = FTransform(MassProperties.RotationOfMass, MassProperties.CenterOfMass);
@@ -255,30 +261,42 @@ namespace ImmediatePhysics_Chaos
 
 				ParticleHandle->SetGeometry(MakeSerializable(Geometry));
 
+				// Set the collision filter data for the shapes to collide with everything.
+				// Even though we already tried to do this when we created the original shapes array, 
+				// that gets thrown away and we need to do it here. This is not a good API
+				FCollisionData CollisionData;
+				CollisionData.SimData.Word1 = 0xFFFFF;
+				CollisionData.SimData.Word3 = 0xFFFFF;
+				CollisionData.bSimCollision = 1;
+				for (const auto& Shape : ParticleHandle->ShapesArray())
+				{
+					Shape->SetCollisionData(CollisionData);
+				}
+
 				if (Geometry && Geometry->HasBoundingBox())
 				{
 					ParticleHandle->SetHasBounds(true);
 					ParticleHandle->SetLocalBounds(Geometry->BoundingBox());
-					ParticleHandle->SetWorldSpaceInflatedBounds(Geometry->BoundingBox().TransformedAABB(FRigidTransform3(ParticleHandle->X(), ParticleHandle->R())));
+					ParticleHandle->UpdateWorldSpaceState(FRigidTransform3(ParticleHandle->X(), ParticleHandle->R()), FVec3(0));
 				}
 
 				if (auto* Kinematic = ParticleHandle->CastToKinematicParticle())
 				{
-					Kinematic->SetV(FVector::ZeroVector);
-					Kinematic->SetW(FVector::ZeroVector);
+					Kinematic->SetV(FVector3f::ZeroVector);
+					Kinematic->SetW(FVector3f::ZeroVector);
 				}
 
 				auto* Dynamic = ParticleHandle->CastToRigidParticle();
 				if (Dynamic && Dynamic->ObjectState() == EObjectStateType::Dynamic)
 				{
 					FReal MassInv = (Mass > 0.0f) ? 1.0f / Mass : 0.0f;
-					FVector InertiaInv = (Mass > 0.0f) ? Inertia.Reciprocal() : FVector::ZeroVector;
+					FVec3 InertiaInv = (Mass > 0.0f) ? Inertia.Reciprocal() : FVec3::ZeroVector;
 					Dynamic->SetM(Mass);
 					Dynamic->SetInvM(MassInv);
 					Dynamic->SetCenterOfMass(CoMTransform.GetTranslation());
 					Dynamic->SetRotationOfMass(CoMTransform.GetRotation());
-					Dynamic->SetI({ Inertia.X, Inertia.Y, Inertia.Z });
-					Dynamic->SetInvI({ InertiaInv.X, InertiaInv.Y, InertiaInv.Z });
+					Dynamic->SetI(TVec3<FRealSingle>( Inertia.X, Inertia.Y, Inertia.Z ));
+					Dynamic->SetInvI(TVec3<FRealSingle>(InertiaInv.X, InertiaInv.Y, InertiaInv.Z ));
 					if (BodyInstance != nullptr)
 					{
 						Dynamic->SetLinearEtherDrag(BodyInstance->LinearDamping);
@@ -387,10 +405,9 @@ namespace ImmediatePhysics_Chaos
 		if (ensure(GetIsKinematic()))
 		{
 			FGenericParticleHandle GenericHandle(ParticleHandle);
-			FTransform PreviousTransform(GenericHandle->R(), GenericHandle->X());
 			FTransform ParticleTransform = FParticleUtilities::ActorWorldToParticleWorld(GenericHandle, WorldTM);
 
-			GetKinematicTarget().SetTargetMode(ParticleTransform, PreviousTransform);
+			GetKinematicTarget().SetTargetMode(ParticleTransform);
 		}
 
 	}
@@ -452,7 +469,7 @@ namespace ImmediatePhysics_Chaos
 
 		if (FPBDRigidParticleHandle* Rigid = Handle()->CastToRigidParticle())
 		{
-			Rigid->F() += Force;
+			Rigid->AddForce(Force);
 		}
 	}
 
@@ -462,7 +479,7 @@ namespace ImmediatePhysics_Chaos
 
 		if (FPBDRigidParticleHandle * Rigid = Handle()->CastToRigidParticle())
 		{
-			Rigid->Torque() += Torque;
+			Rigid->AddTorque(Torque);
 		}
 	}
 
@@ -497,7 +514,7 @@ namespace ImmediatePhysics_Chaos
 			}
 			else
 			{
-				Rigid->F() += ApplyDelta;
+				Rigid->Acceleration() += ApplyDelta * Rigid->InvM();
 			}
 		}
 	}
@@ -509,8 +526,9 @@ namespace ImmediatePhysics_Chaos
 		if (FPBDRigidParticleHandle* Rigid = Handle()->CastToRigidParticle())
 		{
 			FVector CoM = FParticleUtilities::GetCoMWorldPosition(Rigid);
-			Rigid->LinearImpulse() += Impulse;
-			Rigid->AngularImpulse() += FVector::CrossProduct(Location - CoM, Impulse);
+			Chaos::FMatrix33 InvInertia = FParticleUtilities::GetWorldInvInertia(Rigid);
+			Rigid->LinearImpulseVelocity() += Impulse * Rigid->InvM();
+			Rigid->AngularImpulseVelocity() += InvInertia * FVector::CrossProduct(Location - CoM, Impulse);
 		}
 	}
 
@@ -612,30 +630,24 @@ namespace ImmediatePhysics_Chaos
 		FPBDRigidParticleHandle* Dynamic = ParticleHandle->CastToRigidParticle();
 		if(Dynamic && Dynamic->ObjectState() == EObjectStateType::Dynamic)
 		{
-			Chaos::FVec3 NewInertia = FVector::ZeroVector;
+			Chaos::FVec3 NewInertia = FVector3f::ZeroVector;
 			if ((NewInverseInertia.X > SMALL_NUMBER) && (NewInverseInertia.Y > SMALL_NUMBER) && (NewInverseInertia.Z > SMALL_NUMBER))
 			{
-				NewInertia = { 1.0f / NewInverseInertia.X , 1.0f / NewInverseInertia.Y, 1.0f / NewInverseInertia.Z };
+				NewInertia = FVector3f( 1.0f / NewInverseInertia.X , 1.0f / NewInverseInertia.Y, 1.0f / NewInverseInertia.Z );
 			}
-			Dynamic->SetI({ NewInertia.X, NewInertia.Y, NewInertia.Z });
-			Dynamic->SetInvI({ NewInverseInertia.X, NewInverseInertia.Y, NewInverseInertia.Z });
+			Dynamic->SetI(TVec3<FRealSingle>(NewInertia.X, NewInertia.Y, NewInertia.Z ));
+			Dynamic->SetInvI(TVec3<FRealSingle>(NewInverseInertia.X, NewInverseInertia.Y, NewInverseInertia.Z ));
 		}
 	}
 
 	FVector FActorHandle::GetInverseInertia() const
 	{
-		using namespace Chaos;
-
-		const FMatrix33& InvI = Handle()->InvI();
-		return { InvI.M[0][0], InvI.M[1][1], InvI.M[2][2] };
+		return FVector(Handle()->InvI());
 	}
 
 	FVector FActorHandle::GetInertia() const
 	{
-		using namespace Chaos;
-
-		const FMatrix33& I = Handle()->I();
-		return { I.M[0][0], I.M[1][1], I.M[2][2] };
+		return FVector(Handle()->I());
 	}
 
 	void FActorHandle::SetMaxDepenetrationVelocity(FReal NewMaxDepenetrationVelocity)

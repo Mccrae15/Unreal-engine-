@@ -13,12 +13,14 @@
 #include "Containers/Array.h"
 #include "Containers/UnrealString.h"
 #include "Misc/DateTime.h"
+#include "Misc/StringBuilder.h"
 #include "HAL/PlatformTime.h"
 #include "Containers/StringConv.h"
 #include "Logging/LogMacros.h"
 #include "Misc/Parse.h"
 #include "Misc/CommandLine.h"
 #include "Misc/App.h"
+#include "Misc/FileHelper.h"
 #include "Unix/UnixPlatformCrashContext.h"
 #include "Misc/ConfigCacheIni.h"
 #include "GenericPlatform/GenericPlatformChunkInstall.h"
@@ -27,6 +29,7 @@
 	#include <cpuid.h>
 #endif // PLATFORM_HAS_CPUID
 #include <sys/sysinfo.h>
+#include <sys/utsname.h>
 #include <sched.h>
 #include <sys/vfs.h>
 #include <sys/ioctl.h>
@@ -86,6 +89,15 @@ void FUnixPlatformMisc::NormalizePath(FString& InPath)
 	}
 }
 
+void FUnixPlatformMisc::NormalizePath(FStringBuilderBase& InPath)
+{
+	// only expand if path starts with ~, e.g. ~/ should be expanded, /~ should not
+	if (FStringView(InPath).StartsWith('~'))
+	{
+		InPath.ReplaceAt(0, 1, FPlatformProcess::UserHomeDir());
+	}
+}
+
 size_t CORE_API GCacheLineSize = PLATFORM_CACHE_LINE_SIZE;
 
 void UnixPlatform_UpdateCacheLineSize()
@@ -109,6 +121,7 @@ void UnixPlatform_UpdateCacheLineSize()
 // Defined in UnixPlatformMemory
 extern bool GUseKSM;
 extern bool GKSMMergeAllPages;
+extern uint64 GCrashHandlerStackSize;
 
 static void UnixPlatForm_CheckIfKSMUsable()
 {
@@ -168,6 +181,57 @@ extern bool CORE_API GUseNewCrashSymbolicator;
 // Helps greatly by reducing I/O during ensures/crashes. Only suggested when running a monolithic build
 extern void CORE_API UnixPlatformStackWalk_PreloadModuleSymbolFile();
 
+void FUnixPlatformMisc::PlatformPreInit()
+{
+	FGenericPlatformMisc::PlatformPreInit();
+
+	UnixCrashReporterTracker::PreInit();
+}
+
+static FString ReadGPUFile(const char *Filename)
+{
+	FString Value;
+	FILE* FsFile = fopen(Filename, "r");
+
+	if (FsFile)
+	{
+		ANSICHAR LineBuffer[512] = { 0 };
+		ANSICHAR *Line = fgets(LineBuffer, sizeof(LineBuffer), FsFile);
+
+		if (Line)
+		{
+			Value = UTF8_TO_TCHAR(LineBuffer);
+			Value.TrimStartAndEndInline();
+		}
+
+		fclose(FsFile);
+	}
+
+	return Value;
+}
+
+static FString GetGPUInfo()
+{
+	FString GPUInfo;
+	FString Device0 = ReadGPUFile("/sys/class/drm/card0/device/device");
+	FString Device1 = ReadGPUFile("/sys/class/drm/card1/device/device");
+	FString NVIDIAVersion = ReadGPUFile("/proc/driver/nvidia/version");
+
+	if (!Device0.IsEmpty())
+	{
+		FString Vendor0 = ReadGPUFile("/sys/class/drm/card0/device/vendor");
+		GPUInfo += FString::Printf(TEXT("Card0 PCI-id: %s-%s "), *Vendor0, *Device0);
+	}
+	if (!Device1.IsEmpty())
+	{
+		FString Vendor1 = ReadGPUFile("/sys/class/drm/card1/device/vendor");
+		GPUInfo += FString::Printf(TEXT("Card1 PCI-id: %s-%s "), *Vendor1, *Device1);
+	}
+	GPUInfo += NVIDIAVersion;
+
+	return GPUInfo.TrimStartAndEnd();
+}
+
 void FUnixPlatformMisc::PlatformInit()
 {
 	// install a platform-specific signal handler
@@ -180,6 +244,8 @@ void FUnixPlatformMisc::PlatformInit()
 	bool bPreloadedModuleSymbolFile = FParse::Param(FCommandLine::Get(), TEXT("preloadmodulesymbols"));
 
 	UnixPlatForm_CheckIfKSMUsable();
+
+	FString GPUInfo = GetGPUInfo();
 
 	UE_LOG(LogInit, Log, TEXT("Unix hardware info:"));
 	UE_LOG(LogInit, Log, TEXT(" - we are %sthe first instance of this executable"), bFirstInstance ? TEXT("") : TEXT("not "));
@@ -194,6 +260,10 @@ void FUnixPlatformMisc::PlatformInit()
 	UE_LOG(LogInit, Log, TEXT(" - Number of logical cores available for the process: %d"), FPlatformMisc::NumberOfCoresIncludingHyperthreads());
 	UnixPlatform_UpdateCacheLineSize();
 	UE_LOG(LogInit, Log, TEXT(" - Cache line size: %zu"), GCacheLineSize);
+	if (!GPUInfo.IsEmpty())
+	{
+		UE_LOG(LogInit, Log, TEXT(" - GPU Info. %s"), *GPUInfo);
+	}
 	UE_LOG(LogInit, Log, TEXT(" - Memory allocator used: %s"), GMalloc->GetDescriptiveName());
 	UE_LOG(LogInit, Log, TEXT(" - This binary is optimized with LTO: %s, PGO: %s, instrumented for PGO data collection: %s"),
 		PLATFORM_COMPILER_OPTIMIZATION_LTCG ? TEXT("yes") : TEXT("no"),
@@ -213,6 +283,8 @@ void FUnixPlatformMisc::PlatformInit()
 	UE_LOG(LogInit, Log, TEXT(" -ksmmergeall - marks all mmap'd memory pages suitable for KSM (%s)"), GKSMMergeAllPages ? TEXT("ON") : TEXT("OFF"));
 	UE_LOG(LogInit, Log, TEXT(" -preloadmodulesymbols - Loads the main module symbols file into memory (%s)"), bPreloadedModuleSymbolFile ? TEXT("ON") : TEXT("OFF"));
 	UE_LOG(LogInit, Log, TEXT(" -sigdfl=SIGNAL - Allows a specific signal to be set to its default handler rather then ignoring the signal"));
+	UE_LOG(LogInit, Log, TEXT(" -crashhandlerstacksize - Allows setting crash handler stack sizes (%lu)"), GCrashHandlerStackSize);
+	UE_LOG(LogInit, Log, TEXT(" -noexclusivelockonwrite - disables marking files created by the engine as exclusive locked while the engine has them opened"));
 
 	// [RCL] FIXME: this should be printed in specific modules, if at all
 	UE_LOG(LogInit, Log, TEXT(" -httpproxy=ADDRESS:PORT - redirects HTTP requests to a proxy (only supported if compiled with libcurl)"));
@@ -409,11 +481,138 @@ bool FUnixPlatformMisc::HasOverriddenReturnCode(uint8 * OverriddenReturnCodeToUs
 	return GHasOverriddenReturnCode;
 }
 
+namespace
+{
+	/**
+	 * Gets a Linux kernel version string
+	 */
+	FString GetKernelVersion()
+	{
+		struct utsname SysInfo;
+
+		if (uname(&SysInfo) == 0)
+		{
+			return FString(SysInfo.release);
+		}
+
+		return FString();
+	}
+
+	/**
+	 * Reads a Linux style configuration file ignoring # as comments
+	 */
+	TMap<FString, FString> ReadConfigurationFile(const TCHAR* Filename)
+	{
+		TMap<FString, FString> Contents;
+		TArray<FString> ConfigLines;
+		if (FFileHelper::LoadANSITextFileToStrings(Filename, &IFileManager::Get(), ConfigLines))
+		{
+			for (const FString& Line : ConfigLines)
+			{
+				FString CleanLine = Line.TrimStartAndEnd();
+				FString KeyString;
+				FString ValueString;
+				// Skip Comments
+				if (!CleanLine.StartsWith("#"))
+				{
+					if (CleanLine.Split(TEXT("="), &KeyString, &ValueString, ESearchCase::CaseSensitive))
+					{
+						KeyString.TrimStartAndEndInline();
+						ValueString.TrimStartAndEndInline();
+						if (ValueString.Left(1) == TEXT("\""))
+						{
+							ValueString.RightChopInline(1, false);
+						}
+						if (ValueString.Right(1) == TEXT("\""))
+						{
+							ValueString.LeftChopInline(1, false);
+						}
+						Contents.Add(KeyString, ValueString);
+					}
+				}
+			}
+		}
+		return Contents;
+	}
+}
+
+void FUnixPlatformMisc::GetOSVersions(FString& out_OSVersionLabel, FString& out_OSSubVersionLabel)
+{
+	// Set up Fallback Details
+	out_OSVersionLabel = FString(TEXT("GenericLinuxVersion"));
+	// Get Kernel Version
+	out_OSSubVersionLabel = GetKernelVersion();
+	// Get PRETTY_NAME/NAME or redhat-release line
+	TMap<FString, FString> OsInfo = ReadConfigurationFile(TEXT("/etc/os-release"));
+	if (OsInfo.Num() > 0)
+	{
+		FString* VersionAddress = OsInfo.Find(TEXT("PRETTY_NAME"));
+		if (VersionAddress)
+		{
+			FString* VersionNameAddress = nullptr;
+			if (VersionAddress->Equals(TEXT("Linux")))
+			{
+				VersionNameAddress = OsInfo.Find(TEXT("NAME"));
+				if (VersionNameAddress != nullptr)
+				{
+					VersionAddress = VersionNameAddress;
+				}
+			}
+
+			out_OSVersionLabel = FString(*VersionAddress);
+		}
+	}
+	else
+	{
+		TArray <FString> RedHatRelease;
+		if (FFileHelper::LoadANSITextFileToStrings(TEXT("/etc/redhat-release"), &IFileManager::Get(), RedHatRelease))
+		{
+			if (RedHatRelease.IsValidIndex(0))
+			{
+				out_OSVersionLabel = RedHatRelease[0];
+			}
+		}
+	}
+}
+
 FString FUnixPlatformMisc::GetOSVersion()
 {
-	// TODO [RCL] 2015-07-15: check if /etc/os-release or /etc/redhat-release exist and parse it
-	// See void FUnixPlatformSurvey::GetOSName(FHardwareSurveyResults& OutResults)
-	return FString();
+	TMap<FString, FString> OsInfo = ReadConfigurationFile(TEXT("/etc/os-release"));
+	if (OsInfo.Num() > 0)
+	{
+		FString Version;
+		FString* IDAddress = OsInfo.Find(TEXT("ID"));
+		if (IDAddress != nullptr)
+		{
+			Version = FString(*IDAddress);
+		}
+
+		IDAddress = OsInfo.Find(TEXT("VERSION_ID"));
+		if (IDAddress != nullptr)
+		{
+			Version += FString(*IDAddress);
+		}
+		else
+		{
+			Version += GetKernelVersion();
+		}
+
+		if (!Version.IsEmpty())
+		{
+			return Version;
+		}
+	}
+
+	TArray<FString> RedHatRelease;
+	if (FFileHelper::LoadANSITextFileToStrings(TEXT("/etc/redhat-release"), &IFileManager::Get(), RedHatRelease))
+	{
+		if (RedHatRelease.IsValidIndex(0))
+		{
+			return RedHatRelease[0];
+		}
+	}
+
+	return GetKernelVersion();
 }
 
 const TCHAR* FUnixPlatformMisc::GetSystemErrorMessage(TCHAR* OutBuffer, int32 BufferCount, int32 Error)
@@ -579,6 +778,341 @@ const TCHAR* FUnixPlatformMisc::GetNullRHIShaderFormat()
 	return TEXT("SF_VULKAN_SM5");
 }
 
+#define CPUINFO_TOKENS                            \
+	_XTAG( Hardware, "Hardware" ),                \
+	_XTAG( Revision, "Revision" ),                \
+	_XTAG( Model, "Model" ),                      \
+	_XTAG( VendorID, "vendor_id" ),               \
+	_XTAG( ModelName, "model name" ),             \
+	_XTAG( Processor, "Processor" ),              \
+	_XTAG( CPUimplementer, "CPU implementer" ),   \
+	_XTAG( CPUarchitecture, "CPU architecture" ), \
+	_XTAG( CPUvariant, "CPU variant" ),           \
+	_XTAG( CPUpart, "CPU part" ),                 \
+	_XTAG( CPUrevision, "CPU revision" ),
+
+class FPlatformProcCPUInfo
+{
+public:
+
+	// True if we were able to parse /proc/cpuinfo and find (at least) CPU Vendor
+	static bool IsValid()          { return (GIsValid == 1); }
+
+	static FString GetCPUBrand()   { ParseCPUInfoFile(); return GCPUBrand; }
+	static FString GetCPUVendor()  { ParseCPUInfoFile(); return GCPUVendor; }
+	static FString GetCPUChipset() { ParseCPUInfoFile(); return GCPUChipset; }
+
+private:
+
+	static bool ParseCPUInfoFile();
+	static bool ParseCPUInfoEntries(const ANSICHAR *Filename, TArray<FString>& CPUInfoValues);
+	static FString GetTokenValue(const ANSICHAR *LineBuffer, const ANSICHAR *Token);
+
+#if PLATFORM_CPU_ARM_FAMILY
+	static FString GetArmCPUImplementerStr(uint32 CPUImplementer);
+	static FString GetArmCPUPartStr(uint32 CPUImplementer, uint32 CPUPart);
+#endif
+
+private:
+
+	enum
+	{
+#define _XTAG( _x, _y ) Token ## _x
+		CPUINFO_TOKENS
+#undef _XTAG
+		TokensMax
+	};
+
+	static int GIsValid;
+
+	static FString GCPUVendor;
+	static FString GCPUBrand;
+	static FString GCPUChipset;
+};
+
+// Make of the device we are running on eg "Marvell"
+FString FPlatformProcCPUInfo::GCPUVendor;
+// Model of the device we are running on eg "Marvell Armada-375 Board - ARMv7 Processor rev 1"
+FString FPlatformProcCPUInfo::GCPUBrand;
+// Chipset eg Cortex-A72 rev3
+FString FPlatformProcCPUInfo::GCPUChipset;
+
+int FPlatformProcCPUInfo::GIsValid = -1;
+
+#if PLATFORM_CPU_ARM_FAMILY
+
+FString FPlatformProcCPUInfo::GetArmCPUImplementerStr(uint32 CPUImplementer)
+{
+	switch (CPUImplementer)
+	{
+		case 0x41: return TEXT( "ARM" );
+		case 0x42: return TEXT( "Broadcom" );
+		case 0x43: return TEXT( "Cavium" );
+		case 0x44: return TEXT( "DEC" );
+		case 0x46: return TEXT( "Fujitsu" );
+		case 0x48: return TEXT( "HiSilicon" );
+		case 0x49: return TEXT( "Infineon" );
+		case 0x4d: return TEXT( "Motorola" );
+		case 0x4e: return TEXT( "NVIDIA" );
+		case 0x50: return TEXT( "AppliedMicro" ); // Applied Micro Circuits Corporation (APM)
+		case 0x51: return TEXT( "Qualcomm" );
+		case 0x53: return TEXT( "Samsung" );
+		case 0x54: return TEXT( "Texas Instruments" );
+		case 0x56: return TEXT( "Marvell" );
+		case 0x61: return TEXT( "Apple" );
+		case 0x66: return TEXT( "Faraday" );
+		case 0x68: return TEXT( "HXT" );
+		case 0x69: return TEXT( "Intel" );
+		case 0xc0: return TEXT( "Ampere Computing" );
+	}
+
+	return FString::Printf(TEXT("CPUImplementer_0x%x"), CPUImplementer);
+}
+
+FString FPlatformProcCPUInfo::GetArmCPUPartStr( uint32 CPUImplementer, uint32 CPUPart )
+{
+#define ARM64_CPU_MODEL(_implementer, _part) (((_part) << 8) | (_implementer))
+
+	switch (ARM64_CPU_MODEL(CPUImplementer, CPUPart))
+	{
+		// ARM
+		case ARM64_CPU_MODEL(0x41, 0xd02): return TEXT( "Cortex-A34" );     // ARMv8.0-A
+		case ARM64_CPU_MODEL(0x41, 0xd03): return TEXT( "Cortex-A53" );     // ARMv8.0-A
+		case ARM64_CPU_MODEL(0x41, 0xd04): return TEXT( "Cortex-A35" );     // ARMv8.0-A
+		case ARM64_CPU_MODEL(0x41, 0xd05): return TEXT( "Cortex-A55" );     // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd06): return TEXT( "Cortex-A65" );     // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd07): return TEXT( "Cortex-A57" );     // ARMv8.0-A
+		case ARM64_CPU_MODEL(0x41, 0xd08): return TEXT( "Cortex-A72" );     // ARMv8.0-A
+		case ARM64_CPU_MODEL(0x41, 0xd09): return TEXT( "Cortex-A73" );     // ARMv8.0-A
+		case ARM64_CPU_MODEL(0x41, 0xd0a): return TEXT( "Cortex-A75" );     // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd0b): return TEXT( "Cortex-A76" );     // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd0c): return TEXT( "Neoverse N1" );    // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd0d): return TEXT( "Cortex-A77" );     // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd0e): return TEXT( "Cortex-A76AE" );   // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd40): return TEXT( "Neoverse V1" );    // ARMv8.4+SVE(1)
+		case ARM64_CPU_MODEL(0x41, 0xd41): return TEXT( "Cortex-A78" );     // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd42): return TEXT( "Cortex-A78AE" );   // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd43): return TEXT( "Cortex-A65AE" );   // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd44): return TEXT( "Cortex-X1" );      // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd46): return TEXT( "Cortex-A510" );    // ARMv9.0-A
+		case ARM64_CPU_MODEL(0x41, 0xd47): return TEXT( "Cortex-A710" );    // ARMv9.0-A
+		case ARM64_CPU_MODEL(0x41, 0xd48): return TEXT( "Cortex-X2" );      // ARMv9.0-A
+		case ARM64_CPU_MODEL(0x41, 0xd49): return TEXT( "Neoverse N2" );    // ARMv9.0-A
+		case ARM64_CPU_MODEL(0x41, 0xd4a): return TEXT( "Neoverse E1" );    // ARMv8.2-A
+		case ARM64_CPU_MODEL(0x41, 0xd4b): return TEXT( "Cortex-A78C" );    // ARMv8.2-A
+		// Marvell / Cavium
+		case ARM64_CPU_MODEL(0x43, 0x0a0): return TEXT( "ThunderX" );       // ARMv8.0-A
+		case ARM64_CPU_MODEL(0x43, 0x0a1): return TEXT( "ThunderX T88" );
+		case ARM64_CPU_MODEL(0x43, 0x0a2): return TEXT( "ThunderX T81" );   // Octeon TX 81
+		case ARM64_CPU_MODEL(0x43, 0x0a3): return TEXT( "ThunderX T83" );   // Octeon TX 83
+		case ARM64_CPU_MODEL(0x43, 0x0af): return TEXT( "ThunderX2 T99" );  // ARMv8.1-A
+		case ARM64_CPU_MODEL(0x43, 0x0b0): return TEXT( "Octeon TX2" );     // ARMv8.2
+		case ARM64_CPU_MODEL(0x43, 0x0b1): return TEXT( "Octeon TX2 T98" );
+		case ARM64_CPU_MODEL(0x43, 0x0b2): return TEXT( "Octeon TX2 T96" );
+		case ARM64_CPU_MODEL(0x43, 0x0b3): return TEXT( "Octeon TX2 F95" );
+		case ARM64_CPU_MODEL(0x43, 0x0b4): return TEXT( "Octeon TX2 F95N" );
+		case ARM64_CPU_MODEL(0x43, 0x0b5): return TEXT( "Octeon TX2 F95MM" );
+		case ARM64_CPU_MODEL(0x43, 0x0b8): return TEXT( "ThunderX3 T110" ); // ARMv8.3+
+		// NVIDIA
+		case ARM64_CPU_MODEL(0x4e, 0x000): return TEXT( "Denver" );         // ARMv8.0-A
+		case ARM64_CPU_MODEL(0x4e, 0x003): return TEXT( "Denver 2" );       // ARMv8.0-A
+		case ARM64_CPU_MODEL(0x4e, 0x004): return TEXT( "Carmel" );         // ARMv8.2-A
+		// Applied Micro X-Gene
+		case ARM64_CPU_MODEL(0x50, 0x000): return TEXT( "X-Gene" );
+	}
+
+	return FString::Printf(TEXT("CPUPart_0x%x"), CPUPart);
+}
+
+#endif // PLATFORM_CPU_ARM_FAMILY
+
+FString FPlatformProcCPUInfo::GetTokenValue(const ANSICHAR *LineBuffer, const ANSICHAR *Token)
+{
+	uint32 TokenLen = FCStringAnsi::Strlen(Token);
+
+	// Check if line starts with Token
+	if (!FCStringAnsi::Strncmp(LineBuffer, Token, TokenLen))
+	{
+		const ANSICHAR *Separator = FCStringAnsi::Strchr(LineBuffer + TokenLen, ':');
+
+		if (Separator)
+		{
+			FString Value = UTF8_TO_TCHAR(Separator + 1);
+
+			return Value.TrimStartAndEnd();
+		}
+	}
+
+	return TEXT("");
+}
+
+bool FPlatformProcCPUInfo::ParseCPUInfoEntries(const ANSICHAR *Filename, TArray<FString>& CPUInfoValues)
+{
+	static const ANSICHAR *TokenStrings[] =
+	{
+#define _XTAG( _x, _y ) _y
+		CPUINFO_TOKENS
+#undef _XTAG
+	};
+
+	CPUInfoValues.Empty();
+	CPUInfoValues.SetNumZeroed(TokensMax);
+
+	uint32 Count = 0;
+	FILE* FsFile = fopen(Filename, "r");
+	if (!FsFile)
+	{
+		int ErrNo = errno;
+		UE_LOG(LogCore, Warning, TEXT("Unable to fopen('%s'): errno=%d (%s)"),
+			UTF8_TO_TCHAR(Filename), ErrNo, UTF8_TO_TCHAR(strerror(ErrNo)));
+	}
+	else
+	{
+		for (;;)
+		{
+			// Grab line from cpuinfo file
+			ANSICHAR LineBuffer[256] = { 0 };
+			ANSICHAR *Line = fgets(LineBuffer, sizeof(LineBuffer), FsFile);
+
+			if (Line == nullptr)
+			{
+				break;
+			}
+
+			// Go through all empty tokens checking for match with this line
+			for (int i = 0; i < TokensMax; i++)
+			{
+				if (CPUInfoValues[i].IsEmpty())
+				{
+					FString Token = GetTokenValue(LineBuffer, TokenStrings[i]);
+
+					if (!Token.IsEmpty())
+					{
+						CPUInfoValues[i] = Token;
+						Count++;
+						break;
+					}
+				}
+			}
+		}
+
+		fclose(FsFile);
+	}
+
+	return (Count > 0);
+}
+
+bool FPlatformProcCPUInfo::ParseCPUInfoFile()
+{
+	if (GIsValid != -1)
+	{
+		return IsValid();
+	}
+
+	TArray<FString> CPUInfoValues;
+
+	if (ParseCPUInfoEntries("/proc/cpuinfo", CPUInfoValues))
+	{
+		const FString& strModel          = CPUInfoValues[TokenModel];
+		const FString& strHardware       = CPUInfoValues[TokenHardware];
+		const FString& strModelName      = CPUInfoValues[TokenModelName];
+		const FString& strProcessor      = CPUInfoValues[TokenProcessor];
+		const FString& strVendorID       = CPUInfoValues[TokenVendorID];
+
+#if PLATFORM_CPU_ARM_FAMILY
+		const FString& strCPUimplementer = CPUInfoValues[TokenCPUimplementer];
+		const FString& strCPUpart        = CPUInfoValues[TokenCPUpart];
+		const FString& strCPUrevision    = CPUInfoValues[TokenCPUrevision];
+
+		if (!strCPUimplementer.IsEmpty())
+		{
+			// Parse ARM "CPU Implementer" value. Should be 0x41, 0x43, etc.
+			uint32 CPUImplementer = FCString::Strtoui64(*strCPUimplementer, nullptr, 16);
+			FString CPUImplementerStr = GetArmCPUImplementerStr(CPUImplementer);
+
+			GCPUVendor = CPUImplementerStr;
+
+			if (!strCPUpart.IsEmpty())
+			{
+				// "CPU part". Should be 0xd08, etc.
+				uint32 CPUPart = FCString::Strtoui64(*strCPUpart, nullptr, 16);
+
+				GCPUChipset = GetArmCPUPartStr(CPUImplementer, CPUPart);
+
+				// Add on "CPU revision" if not empty.
+				if (!strCPUrevision.IsEmpty())
+				{
+					GCPUChipset += TEXT(" rev") + strCPUrevision;
+				}
+			}
+		}
+		else
+#endif // PLATFORM_CPU_ARM_FAMILY
+		{
+			// Try using "vendor_id". Should only be on x64, but worth a try.
+			GCPUVendor = strVendorID;
+		}
+
+		if (!strModel.IsEmpty())
+		{
+			// Use "Model" if found. Should be something like:
+			//   Raspberry Pi 4 Model B Rev 1.2
+			GCPUBrand = strModel;
+		}
+		else
+		{
+			// Use "Hardware" first if set. Ie: "Amlogic"
+			if (!strHardware.IsEmpty())
+			{
+				GCPUBrand = strHardware;
+			}
+
+			if (!strModelName.IsEmpty())
+			{
+				// "model name" is "ARMv8 Processor rev 3 (v8l)", etc
+				FString Sep = !GCPUBrand.IsEmpty() ? TEXT(" - ") : TEXT("");
+				GCPUBrand += Sep + strModelName;
+			}
+			else if (!strProcessor.IsEmpty())
+			{
+				// "Processor" is something like "ARMv7 Processor rev 1 (v7l)" if set.
+				FString Sep = !GCPUBrand.IsEmpty() ? TEXT(" - ") : TEXT("");
+				GCPUBrand += Sep + strProcessor;
+			}
+		}
+
+		if (GCPUBrand.IsEmpty())
+		{
+			// Fall back to generic "Cortex-A57 rev3" if above entries not found.
+			GCPUBrand = GCPUChipset;
+		}
+
+		// Mark success if we found a vendor at least.
+		GIsValid = GCPUVendor.IsEmpty() ? 0 : 1;
+	}
+	else
+	{
+		// ParseCPUInfoEntries failed
+		GIsValid = 0;
+	}
+
+	// Set to default unknown values for anything we couldn't find.
+	if (GCPUBrand.IsEmpty())
+	{
+		GCPUBrand = TEXT("UnknownCPUBrand");
+	}
+	if (GCPUVendor.IsEmpty())
+	{
+		GCPUVendor = TEXT("UnknownCPUVendor");
+	}
+	if (GCPUChipset.IsEmpty())
+	{
+		GCPUChipset = TEXT("Unknown");
+	}
+
+	return IsValid();
+}
+
 bool FUnixPlatformMisc::HasCPUIDInstruction()
 {
 #if PLATFORM_HAS_CPUID
@@ -590,12 +1124,12 @@ bool FUnixPlatformMisc::HasCPUIDInstruction()
 
 FString FUnixPlatformMisc::GetCPUVendor()
 {
+#if PLATFORM_HAS_CPUID
 	static TCHAR Result[13] = TEXT("NonX86Vendor");
 	static bool bHaveResult = false;
 
 	if (!bHaveResult)
 	{
-#if PLATFORM_HAS_CPUID
 		union
 		{
 			char Buffer[12 + 1];
@@ -613,14 +1147,14 @@ FString FUnixPlatformMisc::GetCPUVendor()
 		VendorResult.Buffer[12] = 0;
 
 		FCString::Strncpy(Result, UTF8_TO_TCHAR(VendorResult.Buffer), UE_ARRAY_COUNT(Result));
-#else
-		// use /proc?
-#endif // PLATFORM_HAS_CPUID
 
 		bHaveResult = true;
 	}
 
 	return FString(Result);
+#else
+	return FPlatformProcCPUInfo::GetCPUVendor();
+#endif // PLATFORM_HAS_CPUID
 }
 
 uint32 FUnixPlatformMisc::GetCPUInfo()
@@ -643,12 +1177,12 @@ uint32 FUnixPlatformMisc::GetCPUInfo()
 
 FString FUnixPlatformMisc::GetCPUBrand()
 {
+#if PLATFORM_HAS_CPUID
 	static TCHAR Result[64] = TEXT("NonX86CPUBrand");
 	static bool bHaveResult = false;
 
 	if (!bHaveResult)
 	{
-#if PLATFORM_HAS_CPUID
 		// @see for more information http://msdn.microsoft.com/en-us/library/vstudio/hskdteyh(v=vs.100).aspx
 		ANSICHAR BrandString[0x40] = { 0 };
 		int32 CPUInfo[4] = { -1 };
@@ -669,14 +1203,13 @@ FString FUnixPlatformMisc::GetCPUBrand()
 		}
 
 		FCString::Strncpy(Result, UTF8_TO_TCHAR(BrandString), UE_ARRAY_COUNT(Result));
-#else
-		// use /proc?
-#endif // PLATFORM_HAS_CPUID
-
 		bHaveResult = true;
 	}
 
 	return FString(Result);
+#else
+	return FPlatformProcCPUInfo::GetCPUBrand();
+#endif // PLATFORM_HAS_CPUID
 }
 
 // __builtin_popcountll() will not be compiled to use popcnt instruction unless -mpopcnt or a sufficiently recent target CPU arch is passed (which UBT doesn't by default)
@@ -1113,4 +1646,29 @@ bool FUnixPlatformMisc::SetStoredValues(const FString& InStoreId, const FString&
 
 	ConfigFile.Dirty = true;
 	return ConfigFile.Write(ConfigPath);
+}
+
+int32 FUnixPlatformMisc::NumberOfWorkerThreadsToSpawn()
+{
+	static int32 MaxServerWorkerThreads = 4;
+
+	extern CORE_API int32 GUseNewTaskBackend;
+	int32 MaxWorkerThreads = GUseNewTaskBackend ? INT32_MAX : 26;
+
+	int32 NumberOfCores = FPlatformMisc::NumberOfCores();
+	int32 NumberOfCoresIncludingHyperthreads = FPlatformMisc::NumberOfCoresIncludingHyperthreads();
+	int32 NumberOfThreads = 0;
+
+	if (NumberOfCoresIncludingHyperthreads > NumberOfCores)
+	{
+		NumberOfThreads = NumberOfCoresIncludingHyperthreads - 2;
+	}
+	else
+	{
+		NumberOfThreads = NumberOfCores - 1;
+	}
+
+	int32 MaxWorkerThreadsWanted = IsRunningDedicatedServer() ? MaxServerWorkerThreads : MaxWorkerThreads;
+	// need to spawn at least one worker thread (see FTaskGraphImplementation)
+	return FMath::Max(FMath::Min(NumberOfThreads, MaxWorkerThreadsWanted), 2);
 }

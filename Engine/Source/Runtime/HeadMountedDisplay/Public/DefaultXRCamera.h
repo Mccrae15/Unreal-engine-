@@ -11,7 +11,7 @@
  * Default base implementation of IXRCamera.
  * Can either be used directly by implementations or extended with platform-specific features.
  */
-class HEADMOUNTEDDISPLAY_API  FDefaultXRCamera : public IXRCamera, public FSceneViewExtensionBase
+class HEADMOUNTEDDISPLAY_API  FDefaultXRCamera : public IXRCamera, public FHMDSceneViewExtension
 {
 public:
 	FDefaultXRCamera(const FAutoRegister&, IXRTrackingSystem* InTrackingSystem, int32 InDeviceId);
@@ -69,7 +69,7 @@ public:
 	/** Setup state for applying the render thread late update */
 	virtual void SetupLateUpdate(const FTransform& ParentToWorld, USceneComponent* Component, bool bSkipLateUpdate) override;
 
-	virtual void CalculateStereoCameraOffset(const enum EStereoscopicPass StereoPassType, FRotator& ViewRotation, FVector& ViewLocation) override;
+	virtual void CalculateStereoCameraOffset(const int32 ViewIndex, FRotator& ViewRotation, FVector& ViewLocation) override;
 
 	// ISceneViewExtension interface:
 public:
@@ -78,11 +78,11 @@ public:
 	virtual void BeginRenderViewFamily(FSceneViewFamily& InViewFamily) override;
 	virtual void PreRenderView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView) override;
 	virtual void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
+
+	// FWorldSceneViewExtension interface:
 	virtual bool IsActiveThisFrame_Internal(const FSceneViewExtensionContext& Context) const override;
 	
 
-	virtual void LateLatchingView_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily, FSceneView& View) override;
-	virtual void LateLatchingViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily) override;
 protected:
 	IXRTrackingSystem* TrackingSystem;
 	const int32 DeviceId;

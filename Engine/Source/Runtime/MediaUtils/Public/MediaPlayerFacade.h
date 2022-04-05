@@ -686,6 +686,13 @@ public:
 	 */
 	FTimespan GetLastAudioRenderedSampleTime() const;
 
+	/**
+	 * Sets whether the player can broadcast events when running on a thread other than the game thread.
+	 *
+	 * @param bInAreEventsSafeForAnyThread If true then allow broadcast when not on the game thread.
+	 */
+	void SetAreEventsSafeForAnyThread(bool bInAreEventsSafeForAnyThread);
+
 public:
 
 	/** Get an event delegate that is invoked when a media event occurred. */
@@ -756,8 +763,9 @@ protected:
 	 * Process the given media event.
 	 *
 	 * @param Event The event to process.
+	 * @param bIsBroadcastAllowed If true then we can broadcast events, if false then they will sent when possible.
 	 **/
-	void ProcessEvent(EMediaEvent Event);
+	void ProcessEvent(EMediaEvent Event, bool bIsBroadcastAllowed);
 
 	/** Select the default media tracks. */
 	void SelectDefaultTracks();
@@ -809,7 +817,7 @@ private:
 
 	void DestroyPlayer();
 
-	bool ContinueOpen(IMediaPlayerLifecycleManagerDelegate::IControlRef NewLifecycleManagerDelegateControl, const FString& Url, const IMediaOptions* Options, const FMediaPlayerOptions* PlayerOptions, IMediaPlayerFactory* PlayerFactory, bool bCreateNewPlayer, uint64 NewPlayerInstanceID);
+	bool ContinueOpen(IMediaPlayerLifecycleManagerDelegate::IControlRef NewLifecycleManagerDelegateControl, const FString& Url, const IMediaOptions* Options, const FMediaPlayerOptions* PlayerOptions, IMediaPlayerFactory* PlayerFactory, TSharedPtr<IMediaPlayer, ESPMode::ThreadSafe> ReusedPlayer, bool bCreateNewPlayer, uint64 NewPlayerInstanceID);
 
 	/** Audio sample sinks. */
 	TWeakPtr<FMediaAudioSampleSink, ESPMode::ThreadSafe> PrimaryAudioSink;
@@ -919,6 +927,9 @@ private:
 	/** Media player event queue. */
 	TQueue<EMediaEvent, EQueueMode::Mpsc> QueuedEvents;
 
+	/** Queue to hold events that we could not broadcast yet. */
+	TQueue<EMediaEvent, EQueueMode::Spsc> QueuedEventBroadcasts;
+
 	/** CS to make last time values below thread safe */
 	mutable FCriticalSection LastTimeValuesCS;
 
@@ -945,6 +956,9 @@ private:
 
 	/** Latch for error state of the most recently used player to be queried after it may have been closed. **/
 	bool bDidRecentPlayerHaveError;
+
+	/** If true, then we can send out events even if we are not on the game thread. */
+	bool bAreEventsSafeForAnyThread;
 
 	/** Mediamodule we are working in */
 	IMediaModule* MediaModule;

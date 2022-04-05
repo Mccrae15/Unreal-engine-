@@ -10,6 +10,8 @@
 #include "RHIDefinitions.h"
 #include "SceneTypes.h"
 
+#define WITH_DEBUG_VIEW_MODES !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+
 class UMaterialInterface;
 struct FSlowTask;
 struct FMeshMaterialShaderPermutationParameters;
@@ -27,19 +29,22 @@ enum EDebugViewShaderMode
 	DVSM_PrimitiveDistanceAccuracy,	// Visualize the accuracy of the primitive distance computed for texture streaming.
 	DVSM_MeshUVDensityAccuracy,		// Visualize the accuracy of the mesh UV densities computed for texture streaming.
 	DVSM_MaterialTextureScaleAccuracy, // Visualize the accuracy of the material texture scales used for texture streaming.
-	DVSM_OutputMaterialTextureScales, // Outputs the material texture scales.
-	DVSM_RequiredTextureResolution, // Visualize the accuracy of the material texture scales used for texture streaming.
+	DVSM_OutputMaterialTextureScales,  // Outputs the material texture scales.
+	DVSM_RequiredTextureResolution, // Visualize the accuracy of the streamed texture resolution.
+	DVSM_VirtualTexturePendingMips,	// Visualize the pending virtual texture mips.
 	DVSM_RayTracingDebug,			// Visualize ray tracing debug modes.
 	DVSM_LODColoration,				// Visualize primitive LOD .
 	DVSM_MAX
 };
 
-#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+ENGINE_API const TCHAR* DebugViewShaderModeToString(EDebugViewShaderMode InShaderMode);
+
+#if WITH_DEBUG_VIEW_MODES
 /** Returns true if the vertex shader (and potential hull and domain) should be compiled on the given platform. */
 ENGINE_API bool AllowDebugViewVSDSHS(EShaderPlatform Platform);
 /** Returns true if the shader mode can be enabled. This is only for UI elements as no shader platform is actually passed. */
 ENGINE_API bool AllowDebugViewShaderMode(EDebugViewShaderMode ShaderMode, EShaderPlatform Platform, ERHIFeatureLevel::Type FeatureLevel);
-ENGINE_API bool ShouldCompileDebugViewModeShader(EDebugViewShaderMode ShaderMode, const FMeshMaterialShaderPermutationParameters& Parameters);
+ENGINE_API bool ShouldCompileDebugViewModeShader(const FMeshMaterialShaderPermutationParameters& Parameters);
 #else
 FORCEINLINE bool AllowDebugViewVSDSHS(EShaderPlatform Platform)  { return false; }
 FORCEINLINE bool AllowDebugViewShaderMode(EDebugViewShaderMode ShaderMode, EShaderPlatform Platform, ERHIFeatureLevel::Type FeatureLevel) { return false; }

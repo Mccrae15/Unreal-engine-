@@ -36,6 +36,7 @@ ULevelSnapshotsEditorData::ULevelSnapshotsEditorData(const FObjectInitializer& O
 		ULevelSnapshotsFilterPreset* OldFilter = UserDefinedFilters;
 		UserDefinedFilters = NewFilterToEdit;
 		UserDefinedFilters->MarkTransactional();
+		UserDefinedFilters->OnFilterModified.AddUObject(this, &ULevelSnapshotsEditorData::HandleFilterChange);
 
 		FilterResults->Modify();
 		FilterResults->SetUserFilters(UserDefinedFilters);
@@ -189,11 +190,32 @@ void ULevelSnapshotsEditorData::SetIsFilterDirty(const bool bNewDirtyState)
 	bIsFilterDirty = bNewDirtyState;
 }
 
+namespace
+{
+	bool IsInAnyLevelOf(UWorld* OwningWorld, UObject* ObjectToTest)
+	{
+		if (ObjectToTest->IsIn(OwningWorld))
+		{
+			return true;
+		}
+
+		for (ULevel* Level : OwningWorld->GetLevels())
+		{
+			if (ObjectToTest->IsIn(Level))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+}
+
 void ULevelSnapshotsEditorData::HandleWorldActorsEdited(UObject* Object)
 {
 	if (UWorld* World = GetEditorWorld())
 	{
-		if (Object && Object->IsIn(World))
+		if (Object && IsInAnyLevelOf(World, Object))
 		{
 			SetIsFilterDirty(true);
 		}

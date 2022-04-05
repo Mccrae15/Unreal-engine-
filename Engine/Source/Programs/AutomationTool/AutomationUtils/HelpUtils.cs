@@ -12,7 +12,7 @@ using System.Text;
 using System.Threading;
 using System.ComponentModel;
 using System.Reflection;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Linq;
 
 namespace AutomationTool
@@ -146,7 +146,7 @@ namespace AutomationTool
 			}
 
 			Log.TraceInformation("");
-			HelpUtils.PrintHelp(String.Format("{0} Help:", Command.Name), Description, ParamDict.ToList());
+			HelpUtils.PrintHelp(String.Format("{0} Help:", Command.Name), Description, ParamDict.ToList(), HelpUtils.WindowWidth, Log.Logger);
 		}
 
 		/// <summary>

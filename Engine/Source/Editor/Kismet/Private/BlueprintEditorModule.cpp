@@ -30,6 +30,7 @@
 #include "WatchPointViewer.h"
 #include "KismetCompiler.h"
 #include "KismetWidgets.h"
+#include "BlueprintNamespaceRegistry.h"
 
 #define LOCTEXT_NAMESPACE "BlueprintEditor"
 
@@ -106,7 +107,7 @@ void FixSubObjectReferencesPostUndoRedo(UObject* InObject)
 		}
 	}
 
-	FArchiveReplaceObjectRef<UObject> Replacer(InObject, OldToNewInstanceMap, false, false, false, false);
+	FArchiveReplaceObjectRef<UObject> Replacer(InObject, OldToNewInstanceMap);
 }
 
 void FixSubObjectReferencesPostUndoRedo(const FTransaction* Transaction)
@@ -180,6 +181,8 @@ void FBlueprintEditorModule::StartupModule()
 	SharedBlueprintEditorCommands = MakeShareable(new FUICommandList);
 
 	BlueprintDebugger = MakeUnique<FBlueprintDebugger>();
+
+	FBlueprintNamespaceRegistry::Get().Initialize();
 
 	// Have to check GIsEditor because right now editor modules can be loaded by the game
 	// Once LoadModule is guaranteed to return NULL for editor modules in game, this can be removed
@@ -256,6 +259,8 @@ void FBlueprintEditorModule::ShutdownModule()
 	UnregisterSCSEditorCustomization("InstancedStaticMeshComponent");
 
 	UEdGraphPin::ShutdownVerification();
+
+	FBlueprintNamespaceRegistry::Get().Shutdown();
 }
 
 TSharedRef<IBlueprintEditor> FBlueprintEditorModule::CreateBlueprintEditor(const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, UBlueprint* Blueprint, bool bShouldOpenInDefaultsMode)
@@ -271,16 +276,11 @@ TSharedRef<IBlueprintEditor> FBlueprintEditorModule::CreateBlueprintEditor(const
 	NewBlueprintEditor->InitBlueprintEditor(Mode, InitToolkitHost, BlueprintsToEdit, bShouldOpenInDefaultsMode);
 
 	NewBlueprintEditor->SetDetailsCustomization(DetailsObjectFilter, DetailsRootCustomization);
-	NewBlueprintEditor->SetSCSEditorUICustomization(SCSEditorUICustomization);
+	NewBlueprintEditor->SetSubobjectEditorUICustomization(SCSEditorUICustomization);
 
 	for(auto It(SCSEditorCustomizations.CreateConstIterator()); It; ++It)
 	{
 		NewBlueprintEditor->RegisterSCSEditorCustomization(It->Key, It->Value.Execute(NewBlueprintEditor));
-	}
-
-	for (UBlueprint* Blueprint : BlueprintsToEdit)
-	{
-		WatchViewer::UpdateWatchListFromBlueprint(Blueprint);
 	}
 
 	EBlueprintType const BPType = ( (BlueprintsToEdit.Num() > 0) && (BlueprintsToEdit[0] != NULL) ) 
@@ -345,13 +345,13 @@ void FBlueprintEditorModule::SetDetailsCustomization(TSharedPtr<FDetailsViewObje
 	}
 }
 
-void FBlueprintEditorModule::SetSCSEditorUICustomization(TSharedPtr<ISCSEditorUICustomization> InSCSEditorUICustomization)
+void FBlueprintEditorModule::SetSubobjectEditorUICustomization(TSharedPtr<ISCSEditorUICustomization> InSCSEditorUICustomization)
 {
 	SCSEditorUICustomization = InSCSEditorUICustomization;
 
 	for (const TSharedRef<IBlueprintEditor>& BlueprintEditor : GetBlueprintEditors())
 	{
-		StaticCastSharedRef<FBlueprintEditor>(BlueprintEditor)->SetSCSEditorUICustomization(SCSEditorUICustomization);
+		StaticCastSharedRef<FBlueprintEditor>(BlueprintEditor)->SetSubobjectEditorUICustomization(SCSEditorUICustomization);
 	}
 }
 
@@ -373,6 +373,16 @@ void FBlueprintEditorModule::RegisterVariableCustomization(FFieldClass* InFieldC
 void FBlueprintEditorModule::UnregisterVariableCustomization(FFieldClass* InFieldClass)
 {
 	VariableCustomizations.Remove(InFieldClass);
+}
+
+void FBlueprintEditorModule::RegisterLocalVariableCustomization(FFieldClass* InFieldClass, FOnGetLocalVariableCustomizationInstance InOnGetLocalVariableCustomization)
+{
+	LocalVariableCustomizations.Add(InFieldClass, InOnGetLocalVariableCustomization);
+}
+
+void FBlueprintEditorModule::UnregisterLocalVariableCustomization(FFieldClass* InFieldClass)
+{
+	LocalVariableCustomizations.Remove(InFieldClass);
 }
 
 void FBlueprintEditorModule::RegisterGraphCustomization(const UEdGraphSchema* InGraphSchema, FOnGetGraphCustomizationInstance InOnGetGraphCustomization)

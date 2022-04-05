@@ -16,6 +16,7 @@
 class UMaterialInterface;
 class UMaterialParameterCollection;
 class UStaticMesh;
+class UWaterBodyComponent;
 class UWaterWavesBase;
 class AWaterLandscapeBrush;
 
@@ -34,7 +35,23 @@ struct WATEREDITOR_API FWaterBrushActorDefaults
 
 	UPROPERTY(EditAnywhere, config, Category = Terrain)
 	TMap<FName, FWaterBodyWeightmapSettings> LayerWeightmapSettings;
-}; 
+};
+
+USTRUCT()
+struct WATEREDITOR_API FWaterZoneActorDefaults
+{
+	GENERATED_BODY()
+
+	FWaterZoneActorDefaults();
+
+	UMaterialInterface* GetFarDistanceMaterial() const;
+
+	UPROPERTY(EditAnywhere, config, Category = Mesh)
+	float FarDistanceMeshExtent = 4000000.0f;
+protected:
+	UPROPERTY(EditAnywhere, Config, Category = Mesh)
+	TSoftObjectPtr<UMaterialInterface> FarDistanceMaterial;
+};
 
 
 USTRUCT()
@@ -202,7 +219,7 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Rendering)
 	TEnumAsByte<TextureGroup> TextureGroupForGeneratedTextures;
 
-	/** Maximum size of the water velocity/height texture for a WaterMeshActor */
+	/** Maximum size of the water velocity/height texture for a WaterZoneActor */
 	UPROPERTY(EditAnywhere, config, Category = Rendering, meta=(ClampMin=1, ClampMax=2048))
 	int32 MaxWaterVelocityAndHeightTextureSize;
 
@@ -214,6 +231,9 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Brush)
 	TSoftObjectPtr<UMaterialParameterCollection> LandscapeMaterialParameterCollection;
 
+	/** Default values for base WaterMesh actor*/
+	UPROPERTY(EditAnywhere, config, Category = ActorDefaults)
+	FWaterZoneActorDefaults WaterZoneActorDefaults;
 	/** Default values for base WaterBodyRiver actor */
 	UPROPERTY(EditAnywhere, config, Category = ActorDefaults)
 	FWaterBodyRiverDefaults WaterBodyRiverDefaults;

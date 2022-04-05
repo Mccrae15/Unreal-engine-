@@ -34,22 +34,27 @@ void FDMXPixelMappingComponentWidget::AddToCanvas(const TSharedRef<SConstraintCa
 
 	OuterCanvas = Canvas;
 		
-	ComponentSlot =
-		&OuterCanvas->AddSlot()
-		.AutoSize(true)
-		.Alignment(FVector2D::ZeroVector)
-		.ZOrder(ZOrder)
-		[
-			ComponentBox.ToSharedRef()
-		];
+	OuterCanvas->AddSlot()
+	.AutoSize(true)
+	.Alignment(FVector2D::ZeroVector)
+	.ZOrder(ZOrder)
+	.Expose(ComponentSlot)
+	[
+		ComponentBox.ToSharedRef()
+	];
 
-	LabelSlot =
-		&OuterCanvas->AddSlot()
-		.AutoSize(true)
-		.Alignment(FVector2D::ZeroVector)
-		[
-			ComponentLabel.ToSharedRef()
-		];
+	OuterCanvas->AddSlot()
+	.AutoSize(true)
+	.Expose(LabelSlot)
+	.Alignment(FVector2D::ZeroVector)
+	[
+		ComponentLabel.ToSharedRef()
+	];
+}
+
+FDMXPixelMappingComponentWidget::~FDMXPixelMappingComponentWidget()
+{
+	RemoveFromCanvas();
 }
 
 void FDMXPixelMappingComponentWidget::RemoveFromCanvas()
@@ -58,17 +63,18 @@ void FDMXPixelMappingComponentWidget::RemoveFromCanvas()
 	{
 		OuterCanvas->RemoveSlot(ComponentSlot->GetWidget());
 		OuterCanvas->RemoveSlot(LabelSlot->GetWidget());
-
-		ComponentSlot = nullptr;
-		LabelSlot = nullptr;
 	}
+
+	ComponentSlot = nullptr;
+	LabelSlot = nullptr;
+	OuterCanvas.Reset();
 }
 
 void FDMXPixelMappingComponentWidget::SetZOrder(float ZOrder)
 {
 	if (OuterCanvas.IsValid())
 	{
-		ComponentSlot->ZOrder(ZOrder);
+		ComponentSlot->SetZOrder(ZOrder);
 	}
 }
 
@@ -76,8 +82,11 @@ void FDMXPixelMappingComponentWidget::SetPosition(const FVector2D& LocalPosition
 {
 	if (OuterCanvas.IsValid() && ComponentSlot && LabelSlot)
 	{
-		ComponentSlot->Offset(FMargin(LocalPosition.X, LocalPosition.Y, 0.f, 0.f));
-		LabelSlot->Offset(FMargin(LocalPosition.X, LocalPosition.Y, 0.f, 0.f));
+		// In the middle of the top left pixel
+		const FVector2D UIPosition = FVector2D(LocalPosition.X + 0.5f, LocalPosition.Y + 0.5f);
+
+		ComponentSlot->SetOffset(FMargin(UIPosition.X, UIPosition.Y, 0.f, 0.f));
+		LabelSlot->SetOffset(FMargin(UIPosition.X, UIPosition.Y, 0.f, 0.f));
 	}
 }
 

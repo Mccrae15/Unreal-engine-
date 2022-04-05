@@ -84,13 +84,62 @@ HMODULE gfnSecureLoadClientLibraryA(LPCSTR filePath, DWORD dwFlags)
 
 HMODULE gfnSecureLoadCloudLibraryW(LPCWSTR filePath, DWORD dwFlags)
 {
-    return gfnInternalSecureLoadLibraryW(filePath, dwFlags, SignatureTypeGfn);
+    return gfnInternalSecureLoadLibraryW(filePath, dwFlags, SignatureTypeNvidia);
 }
 
 HMODULE gfnSecureLoadCloudLibraryA(LPCSTR filePath, DWORD dwFlags)
 {
-    return gfnInternalSecureLoadLibraryA(filePath, dwFlags, SignatureTypeGfn);
+    return gfnInternalSecureLoadLibraryA(filePath, dwFlags, SignatureTypeNvidia);
 }
+
+BOOL gfnCheckLibraryGfnSignatureW(LPCWSTR filePath)
+{
+    return gfnInternalVerifyFileSignature(filePath, SignatureTypeGfn);
+}
+
+BOOL gfnCheckLibraryGfnSignatureA(LPCSTR filePath)
+{
+    BOOL isSigned = FALSE;
+    LPWSTR unicodeFilePath = NULL;
+    if (!filePath)
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    unicodeFilePath = gfnInternalCreateUnicodeStringFromAscii(filePath);
+    if (!!unicodeFilePath)
+    {
+        isSigned = gfnInternalVerifyFileSignature(unicodeFilePath, SignatureTypeGfn);
+    }
+    SafeLocalFree(unicodeFilePath);
+
+    return isSigned;
+}
+
+BOOL gfnCheckLibraryNvSignatureW(LPCWSTR filePath)
+{
+    return gfnInternalVerifyFileSignature(filePath, SignatureTypeNvidia);
+}
+
+BOOL gfnCheckLibraryNvSignatureA(LPCSTR filePath)
+{
+    BOOL isSigned = FALSE;
+    LPWSTR unicodeFilePath = NULL;
+    if (!filePath)
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    unicodeFilePath = gfnInternalCreateUnicodeStringFromAscii(filePath);
+    if (!!unicodeFilePath)
+    {
+        isSigned = gfnInternalVerifyFileSignature(unicodeFilePath, SignatureTypeNvidia);
+    }
+    SafeLocalFree(unicodeFilePath);
+
+    return isSigned;
+}
+
 
 // ===================================================================
 // Internal functions defined below. Do not use directly.
@@ -320,10 +369,16 @@ typedef BOOL(WINAPI* PfnCertGetCertificateChain)(
     OUT PCCERT_CHAIN_CONTEXT* ppChainContext
 );
 PfnCertGetCertificateChain pfnCertGetCertificateChain = NULL;
+
 typedef VOID(WINAPI* PfnCertFreeCertificateChain)(
     IN PCCERT_CHAIN_CONTEXT pChainContext
 );
 static PfnCertFreeCertificateChain pfnCertFreeCertificateChain = NULL;
+
+typedef LONG(WINAPI* PfnCertVerifyTimeValidity)(
+    IN LPFILETIME pTimeToVerify,
+    IN PCERT_INFO pCertInfo);
+static PfnCertVerifyTimeValidity pfnCertVerifyTimeValidity = NULL;
 
 static BOOL gfnInternalFileExists(LPCWSTR szFileName)
 {
@@ -637,6 +692,12 @@ static BOOL gfnInternalIsPeNvidiaSigned(PCCERT_CONTEXT pCertContext)
             "Microsoft Digital Media Authority 2005",
             NULL
         },
+        {
+            "Nvidia Corporation",
+            "DigiCert SHA2 Assured ID Code Signing CA",
+            "DigiCert Assured ID Root CA",
+            NULL
+        },
         {NULL}
     };
 
@@ -793,15 +854,21 @@ static BOOL gfnInternalIsPeGfnSigned(PCCERT_CONTEXT pCertContext)
             for (size_t j = 0; j < _countof(c_validChains[i].certs); j++)
             {
                 const CertInfo* pCertInfo = &c_validChains[i].certs[j];
+                const PCCERT_CONTEXT pCurrentCertContext = pChainContext->rgpChain[0]->rgpElement[j]->pCertContext;
 
                 bMatch = gfnInternalCheckCert(
-                    pChainContext->rgpChain[0]->rgpElement[j]->pCertContext,
+                    pCurrentCertContext,
                     FALSE,
                     pCertInfo->subject,
                     pCertInfo->publicKeySize,
                     pCertInfo->publicKey);
                 if (!bMatch)
                 {
+                    break;
+                }
+                if (pfnCertVerifyTimeValidity(NULL, pCurrentCertContext->pCertInfo) != 0)
+                {
+                    bMatch = FALSE;
                     break;
                 }
             }
@@ -931,9 +998,17 @@ static BOOL gfnInternalVerifyTimeStampSignerInfo(PCMSG_SIGNER_INFO pSignerInfo, 
             goto VerifyTimeStampSignerInfoDone;
         }
 
+        // We check the timestamp here. We allow a grace period of 2 seconds between signing and countersigning timestamp.
+        // FILETIME is a 64-bit value representing the number of 100-nanosecond intervals since January 1, 1601 (UTC).
+        // So, we add the value (2 * 10^9) / 100  which is 2 * 10^7. This equals adding 2 sec to the time.
         if (gfnInternalGetSignerInfoTimeStamp(pCounterSignerInfo, &ft))
         {
-            bReturn = CompareFileTime(pFiletime, &ft) <= 0;
+            ULARGE_INTEGER t1, t2;
+            t1.LowPart = pFiletime->dwLowDateTime;
+            t1.HighPart = pFiletime->dwHighDateTime;
+            t2.LowPart = ft.dwLowDateTime;
+            t2.HighPart = ft.dwHighDateTime;
+            bReturn = t1.QuadPart <= (t2.QuadPart + 2 * 10000000ull);
         }
         pfnCertFreeCertificateContext(pCertContext);
 
@@ -1086,7 +1161,8 @@ static BOOL gfnInternalVerifyTimeStampRFC3161(PCMSG_SIGNER_INFO pSignerInfo, FIL
                 tSign = st.wSecond * 1ull + st.wMinute * 100ull +
                     st.wHour * 10000ull + st.wDay * 1000000ull +
                     st.wMonth * 100000000ull + st.wYear * 10000000000ull;
-                bReturn = tSign <= tCounterSign;
+                // We allow a grace period of 2 seconds between signing and countersigning timestamp.
+                bReturn = tSign <= (tCounterSign + 2);
             }
         }
         break;
@@ -1286,6 +1362,7 @@ BOOL gfnInternalVerifyFileSignature(LPCWSTR fileName, SignatureType signatureTyp
         !gfnInternalGetProc(hModCrypt32, "CertOpenStore", pfnCertOpenStore) ||
         !gfnInternalGetProc(hModCrypt32, "CertGetCertificateChain", pfnCertGetCertificateChain) ||
         !gfnInternalGetProc(hModCrypt32, "CertFreeCertificateChain", pfnCertFreeCertificateChain) ||
+        !gfnInternalGetProc(hModCrypt32, "CertVerifyTimeValidity", pfnCertVerifyTimeValidity) ||
         !gfnInteralPreloadCryptDlls())
     {
         dwError = ERROR_MOD_NOT_FOUND;

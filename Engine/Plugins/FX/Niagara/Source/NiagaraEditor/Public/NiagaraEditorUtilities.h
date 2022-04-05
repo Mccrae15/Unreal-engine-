@@ -162,6 +162,8 @@ namespace FNiagaraEditorUtilities
 
 	FText GetTypeDefinitionCategory(const FNiagaraTypeDefinition& TypeDefinition);
 
+	NIAGARAEDITOR_API bool AreTypesAssignable(const FNiagaraTypeDefinition& TypeA, const FNiagaraTypeDefinition& TypeB);
+
 	void MarkDependentCompilableAssetsDirty(TArray<UObject*> InObjects);
 
 	void ResolveNumerics(UNiagaraGraph* SourceGraph, bool bForceParametersToResolveNumerics, TArray<FNiagaraVariable>& ChangedNumericParams);
@@ -227,8 +229,7 @@ namespace FNiagaraEditorUtilities
 	NIAGARAEDITOR_API ENiagaraScriptLibraryVisibility GetScriptAssetVisibility(const FAssetData& ScriptAssetData);
 
 	/** Used instead of reading the template tag directly for backwards compatibility reasons when changing from a bool template specifier to an enum */
-	NIAGARAEDITOR_API bool GetTemplateSpecificationFromTag(const FAssetData& Data, ENiagaraScriptTemplateSpecification&
-	                                                       OutTemplateSpecification);
+	NIAGARAEDITOR_API bool GetTemplateSpecificationFromTag(const FAssetData& Data, ENiagaraScriptTemplateSpecification& OutTemplateSpecification);
 
 	NIAGARAEDITOR_API bool IsScriptAssetInLibrary(const FAssetData& ScriptAssetData);
 
@@ -319,6 +320,8 @@ namespace FNiagaraEditorUtilities
 
 	const FGuid& GetNamespaceIdForUsage(ENiagaraScriptUsage Usage);
 
+	// Convenience wrapper to get all discovered parameter definitions assets from asset registry.
+	// NOTE: You are not guaranteed to get all parameter definitions in mounted directories if the asset registry has not finished discovering assets.
 	TArray<UNiagaraParameterDefinitions*> GetAllParameterDefinitions();
 
 	bool GetAvailableParameterDefinitions(const TArray<FString>& ExternalPackagePaths, TArray<FAssetData>& OutParameterDefinitionsAssetData);
@@ -331,6 +334,9 @@ namespace FNiagaraEditorUtilities
 	void RunPythonUpgradeScripts(UNiagaraNodeFunctionCall* SourceNode, const TArray<FVersionedNiagaraScriptData*>& UpgradeVersionData, const FNiagaraScriptVersionUpgradeContext& UpgradeContext, FString& OutWarnings);
 
 	void RefreshAllScriptsFromExternalChanges(FRefreshAllScriptsFromExternalChangesArgs Args);
+
+	DECLARE_DELEGATE_OneParam(FNodeVisitor, UEdGraphNode* /*VisitedNode*/);
+	void VisitAllNodesConnectedToInputs(UEdGraphNode* StartNode, FNodeVisitor Visitor);
 };
 
 namespace FNiagaraParameterUtilities
@@ -354,7 +360,8 @@ namespace FNiagaraParameterUtilities
 	enum class EParameterContext : uint8
 	{
 		Script,
-		System
+		System,
+		Definitions,
 	};
 
 	struct FChangeNamespaceMenuData
@@ -390,4 +397,18 @@ namespace FNiagaraParameterUtilities
 	NIAGARAEDITOR_API FName SetCustomNamespaceModifier(FName InParameterName, TSet<FName>& CurrentParameterNames);
 
 	NIAGARAEDITOR_API bool TestCanRenameWithMessage(FName ParameterName, FText& OutMessage);
+
+	NIAGARAEDITOR_API TSharedRef<SWidget> GetParameterWidget(FNiagaraVariable Variable, bool bShowValue);
+	
+	/** Creates a tooltip based on a parameter. Also shows the value, if allocated and enabled. */
+	NIAGARAEDITOR_API TSharedRef<SToolTip> GetTooltipWidget(FNiagaraVariable Variable, bool bShowValue = true, TSharedPtr<SWidget> AdditionalVerticalWidget = nullptr,  TSharedPtr<SWidget> AdditionalHorizontalWidget = nullptr);
+
+	NIAGARAEDITOR_API void FilterToRelevantStaticVariables(const TArray<FNiagaraVariable>& InVars, TArray<FNiagaraVariable>& OutVars, FName InOldEmitterAlias, FName InNewEmitterAlias, bool bFilterByEmitterAliasAndConvertToUnaliased);
+};
+
+namespace FNiagaraParameterDefinitionsUtilities
+{
+	TArray<const UNiagaraScriptVariable*>  FindReservedParametersByName(const FName ParameterName);
+	int32 GetNumParametersReservedForName(const FName ParameterName);
+	EParameterDefinitionMatchState GetDefinitionMatchStateForParameter(const FNiagaraVariableBase& Parameter);
 };

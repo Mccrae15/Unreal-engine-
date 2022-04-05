@@ -1,19 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "../HairStrands/HairStrandsVoxelPageCommonStruct.ush"
 #include "../Common.ush"
 
 #define SUPPORT_CONTACT_SHADOWS		0
 #define USE_SOURCE_TEXTURE			1
 #define USE_SOURCE_TEXTURE_ARRAY	1
 
-#define LTCMatTexture				RaytracingLightsDataPacked.LTCMatTexture
-#define LTCMatSampler				RaytracingLightsDataPacked.LTCMatSampler
-#define LTCAmpTexture				RaytracingLightsDataPacked.LTCAmpTexture
-#define LTCAmpSampler				RaytracingLightsDataPacked.LTCAmpSampler
 #define PreIntegratedGF				ReflectionStruct.PreIntegratedGF			
 #define PreIntegratedGFSampler		ReflectionStruct.PreIntegratedGFSampler	
-#define SSProfilesTexture			RaytracingLightsDataPacked.SSProfilesTexture
 
 #include "../SceneTextureParameters.ush"
 #include "RayTracingCommon.ush"
@@ -51,9 +45,10 @@ RAY_TRACING_ENTRY_MISS(RayTracingLightingMS, FPackedMaterialClosestHitPayload, P
 
 	if (LightProfileIndex >= 0)
 	{
-		LightProfileMultiplier = ComputeRayTracingLightProfileMultiplier(WorldPosition, LightData.Position, LightData.Direction, LightProfileIndex);
+		LightProfileMultiplier = ComputeRayTracingLightProfileMultiplier(WorldPosition, LightData.TranslatedWorldPosition, LightData.Direction, LightProfileIndex);
 	}
 
+	// LWC_TODO - lighting wants translated world space
 	float SurfaceShadow = 1.0f;
 	float3 LightContribution = GetDynamicLighting(WorldPosition, -CameraVector, GBufferData, 1.0f, GBufferData.ShadingModelID, LightData, LightAttenuation, 0.5, uint2(0, 0), RectTexture, SurfaceShadow).xyz;
 

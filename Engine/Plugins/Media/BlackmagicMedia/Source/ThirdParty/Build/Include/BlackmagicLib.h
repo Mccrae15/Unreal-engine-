@@ -3,23 +3,30 @@
 #pragma once
 
 #ifdef _WINDOWS
-	#ifdef UE4BLACKMAGICDESIGN_EXPORTS
-		#define UE4BLACKMAGICDESIGN_API __declspec(dllexport)
+	#ifdef UEBLACKMAGICDESIGN_EXPORTS
+		#define UEBLACKMAGICDESIGN_API __declspec(dllexport)
 	#else
-		#define UE4BLACKMAGICDESIGN_API __declspec(dllimport)
+		#define UEBLACKMAGICDESIGN_API
 	#endif
 #else // _WINDOWS
-	#ifdef UE4BLACKMAGICDESIGN_EXPORTS
-		#define UE4BLACKMAGICDESIGN_API __attribute__ ((visibility ("default")))
+	#ifdef UEBLACKMAGICDESIGN_EXPORTS
+		#define UEBLACKMAGICDESIGN_API __attribute__ ((visibility ("default")))
 	#else
-		#define UE4BLACKMAGICDESIGN_API
+		#define UEBLACKMAGICDESIGN_API
 	#endif
 #endif // _WINDOWS
 
 #include "BlackmagicReferencePtr.h"
 
+namespace GPUTextureTransfer
+{
+	class ITextureTransfer;
+}
+
 namespace BlackmagicDesign
 {
+	extern GPUTextureTransfer::ITextureTransfer* TextureTransfer;
+
 	using LoggingCallbackPtr = void(*)(const TCHAR* Format, ...);
 	using FBlackmagicVideoFormat = int32_t; //BMDDisplayMode
 
@@ -42,6 +49,33 @@ namespace BlackmagicDesign
 		ProgressiveSegmentedFrame,
 	};
 
+	enum class EAudioBitDepth
+	{
+		Signed_16Bits,
+		Signed_32Bits
+	};
+
+	enum class EAudioChannelConfiguration : uint8_t
+	{
+		Channels_2 = 2,
+		Channels_8 = 8,
+		Channels_16 = 16
+	};
+
+	enum class EAudioSampleRate : uint32_t
+	{
+		SR_48kHz = 48000
+	};
+
+	enum class ERHI : uint8_t
+	{
+		Invalid,
+		D3D11,
+		D3D12,
+		Cuda,
+		Vulkan
+	};
+
 	namespace Private
 	{
 		class DeviceScanner;
@@ -50,7 +84,7 @@ namespace BlackmagicDesign
 
 	/* FUniqueIdentifier definition
 	*****************************************************************************/
-	struct UE4BLACKMAGICDESIGN_API FUniqueIdentifier
+	struct UEBLACKMAGICDESIGN_API FUniqueIdentifier
 	{
 		FUniqueIdentifier();
 		explicit FUniqueIdentifier(int32_t InIdentifier);
@@ -64,7 +98,7 @@ namespace BlackmagicDesign
 	/* FTimecode definition
 	 * limited to 30fps
 	*****************************************************************************/
-	struct UE4BLACKMAGICDESIGN_API FTimecode
+	struct UEBLACKMAGICDESIGN_API FTimecode
 	{
 		FTimecode();
 		bool operator== (const FTimecode& Other) const;
@@ -94,7 +128,7 @@ namespace BlackmagicDesign
 	/* FFormatInfo definition
 	 * Information about a given frame desc
 	*****************************************************************************/
-	struct UE4BLACKMAGICDESIGN_API FFormatInfo
+	struct UEBLACKMAGICDESIGN_API FFormatInfo
 	{
 		/** Framerate */
 		uint32_t FrameRateNumerator;
@@ -110,10 +144,19 @@ namespace BlackmagicDesign
 		bool operator==(FFormatInfo& Other) const;
 
 	};
+	
+	/* FAudioFormat definition
+	*****************************************************************************/
+	struct UEBLACKMAGICDESIGN_API FAudioFormat
+	{
+		EAudioBitDepth BitDepth;
+		EAudioChannelConfiguration ChannelConfigration;
+		bool operator==(FAudioFormat& Other) const;
+	};
 
 	/* FChannelInfo definition
 	*****************************************************************************/
-	struct UE4BLACKMAGICDESIGN_API FChannelInfo
+	struct UEBLACKMAGICDESIGN_API FChannelInfo
 	{
 		int32_t DeviceIndex;
 
@@ -122,7 +165,7 @@ namespace BlackmagicDesign
 
 	/* FInputChannelOptions definition
 	*****************************************************************************/
-	struct UE4BLACKMAGICDESIGN_API FInputChannelOptions
+	struct UEBLACKMAGICDESIGN_API FInputChannelOptions
 	{
 		FInputChannelOptions();
 
@@ -142,13 +185,17 @@ namespace BlackmagicDesign
 
 	/* FOutputChannelOptions definition
 	*****************************************************************************/
-	struct UE4BLACKMAGICDESIGN_API FOutputChannelOptions
+	struct UEBLACKMAGICDESIGN_API FOutputChannelOptions
 	{
 		FOutputChannelOptions();
 
 		FFormatInfo FormatInfo;
 		int32_t CallbackPriority;
 		EPixelFormat PixelFormat;
+
+		EAudioSampleRate AudioSampleRate;
+		EAudioBitDepth AudioBitDepth;
+		EAudioChannelConfiguration NumAudioChannels;
 
 		uint32_t NumberOfBuffers;
 
@@ -157,15 +204,18 @@ namespace BlackmagicDesign
 
 		bool bOutputKey;
 		bool bOutputVideo;
+		bool bOutputAudio;
 		bool bOutputInterlacedFieldsTimecodeNeedToMatch;
 		bool bLogDropFrames;
+		bool bUseGPUDMA;
+		bool bScheduleInDifferentThread;
 	};
 
 	/* IInputEventCallback definition
 	*****************************************************************************/
-	struct UE4BLACKMAGICDESIGN_API IInputEventCallback
+	struct UEBLACKMAGICDESIGN_API IInputEventCallback
 	{
-		struct UE4BLACKMAGICDESIGN_API FFrameReceivedInfo
+		struct UEBLACKMAGICDESIGN_API FFrameReceivedInfo
 		{
 			FFrameReceivedInfo();
 
@@ -207,9 +257,9 @@ namespace BlackmagicDesign
 
 	/* IOutputEventCallback definition
 	*****************************************************************************/
-	struct UE4BLACKMAGICDESIGN_API IOutputEventCallback
+	struct UEBLACKMAGICDESIGN_API IOutputEventCallback
 	{
-		struct UE4BLACKMAGICDESIGN_API FFrameSentInfo
+		struct UEBLACKMAGICDESIGN_API FFrameSentInfo
 		{
 			FFrameSentInfo();
 
@@ -230,25 +280,70 @@ namespace BlackmagicDesign
 		virtual void OnInterlacedOddFieldEvent() = 0;
 	};
 
-	struct UE4BLACKMAGICDESIGN_API FFrameDescriptor
+	struct UEBLACKMAGICDESIGN_API FFrameDescriptor
 	{
-		uint8_t* VideoBuffer;
-		int32_t VideoWidth;
-		int32_t VideoHeight;
+		uint8_t* VideoBuffer = nullptr;
+		int32_t VideoWidth = 0;
+		int32_t VideoHeight = 0;
 
 		FTimecode Timecode;
-		uint32_t FrameIdentifier;
+		uint32_t FrameIdentifier = 0;
 	};
+
+	struct UEBLACKMAGICDESIGN_API FFrameDescriptor_GPUDMA
+	{
+		void* RHITexture = nullptr;
+
+		FTimecode Timecode;
+		uint32_t FrameIdentifier = 0;
+	};
+
+	struct UEBLACKMAGICDESIGN_API FAudioSamplesDescriptor
+	{
+		uint8_t* AudioBuffer = nullptr;
+		int32_t AudioBufferLength = 0;
+		int32_t NumAudioSamples = 0;
+
+		FTimecode Timecode;
+		uint32_t FrameIdentifier = 0;
+	};
+
+	struct UEBLACKMAGICDESIGN_API FInitializeDMAArgs
+	{
+		ERHI RHI = ERHI::Invalid;
+		void* RHIDevice = nullptr;
+		void* RHICommandQueue = nullptr;
+
+		// Begin Vulkan Only
+		void* VulkanInstance = nullptr;
+		uint8_t RHIDeviceUUID[16] = { 0 };
+		// End Vulkan Only
+	};
+
+	struct UEBLACKMAGICDESIGN_API FRegisterDMABufferArgs
+	{
+		void* Buffer = nullptr;
+		uint32_t Stride = 0;
+		uint32_t Height = 0;
+		uint32_t Width = 0;
+	};
+
+	struct UEBLACKMAGICDESIGN_API FRegisterDMATextureArgs
+	{
+		void* RHITexture = nullptr;
+		void* RHIResourceMemory = nullptr; // Vulkan only
+	};
+	
 
 	/* BlackmagicDeviceScanner definition
 	*****************************************************************************/
-	class UE4BLACKMAGICDESIGN_API BlackmagicDeviceScanner
+	class UEBLACKMAGICDESIGN_API BlackmagicDeviceScanner
 	{
 	public:
 		const static int32_t FormatedTextSize = 64;
 		using FormatedTextType = TCHAR[FormatedTextSize];
 
-		struct UE4BLACKMAGICDESIGN_API DeviceInfo
+		struct UEBLACKMAGICDESIGN_API DeviceInfo
 		{
 			bool bIsSupported;
 			bool bCanDoCapture;
@@ -286,9 +381,9 @@ namespace BlackmagicDesign
 
 	/* BlackmagicVideoFormats definition
 	*****************************************************************************/
-	struct UE4BLACKMAGICDESIGN_API BlackmagicVideoFormats
+	struct UEBLACKMAGICDESIGN_API BlackmagicVideoFormats
 	{
-		struct UE4BLACKMAGICDESIGN_API VideoFormatDescriptor
+		struct UEBLACKMAGICDESIGN_API VideoFormatDescriptor
 		{
 			VideoFormatDescriptor();
 
@@ -324,19 +419,30 @@ namespace BlackmagicDesign
 
 	 /* Configure Logging
 	 *****************************************************************************/
-	UE4BLACKMAGICDESIGN_API void SetLoggingCallbacks(LoggingCallbackPtr LogInfoFunc, LoggingCallbackPtr LogWarningFunc, LoggingCallbackPtr LogErrorFunc);
+	UEBLACKMAGICDESIGN_API void SetLoggingCallbacks(LoggingCallbackPtr LogInfoFunc, LoggingCallbackPtr LogWarningFunc, LoggingCallbackPtr LogErrorFunc, LoggingCallbackPtr LogVerboseFunc);
 
 	 /* Initialization
 	 *****************************************************************************/
-	UE4BLACKMAGICDESIGN_API bool ApiInitialization();
-	UE4BLACKMAGICDESIGN_API void ApiUninitialization();
+	UEBLACKMAGICDESIGN_API bool ApiInitialization();
+	UEBLACKMAGICDESIGN_API void ApiUninitialization();
 
 	 /* Register/Unregister
 	 *****************************************************************************/
-	UE4BLACKMAGICDESIGN_API FUniqueIdentifier RegisterCallbackForChannel(const FChannelInfo& InChannelInfo, const FInputChannelOptions& InChannelOptions, ReferencePtr<IInputEventCallback> InCallback);
-	UE4BLACKMAGICDESIGN_API void UnregisterCallbackForChannel(const FChannelInfo& InChannelInfo, FUniqueIdentifier InIdentifier);
+	UEBLACKMAGICDESIGN_API FUniqueIdentifier RegisterCallbackForChannel(const FChannelInfo& InChannelInfo, const FInputChannelOptions& InChannelOptions, ReferencePtr<IInputEventCallback> InCallback);
+	UEBLACKMAGICDESIGN_API void UnregisterCallbackForChannel(const FChannelInfo& InChannelInfo, FUniqueIdentifier InIdentifier);
 	
-	UE4BLACKMAGICDESIGN_API FUniqueIdentifier RegisterOutputChannel(const FChannelInfo& InChannelInfo, const FOutputChannelOptions& InChannelOptions, ReferencePtr<IOutputEventCallback> InCallback);
-	UE4BLACKMAGICDESIGN_API void UnregisterOutputChannel(const FChannelInfo& InChannelInfo, FUniqueIdentifier InIdentifier, bool bCallCompleted);
-	UE4BLACKMAGICDESIGN_API bool SendVideoFrameData(const FChannelInfo& InChannelInfo, const FFrameDescriptor& InFrame);
+	UEBLACKMAGICDESIGN_API FUniqueIdentifier RegisterOutputChannel(const FChannelInfo& InChannelInfo, const FOutputChannelOptions& InChannelOptions, ReferencePtr<IOutputEventCallback> InCallback);
+	UEBLACKMAGICDESIGN_API void UnregisterOutputChannel(const FChannelInfo& InChannelInfo, FUniqueIdentifier InIdentifier, bool bCallCompleted);
+	UEBLACKMAGICDESIGN_API bool SendVideoFrameData(const FChannelInfo& InChannelInfo, const FFrameDescriptor& InFrame);
+	UEBLACKMAGICDESIGN_API bool SendVideoFrameData(const FChannelInfo& InChannelInfo, FFrameDescriptor_GPUDMA& InFrame);
+	UEBLACKMAGICDESIGN_API bool SendAudioSamples(const FChannelInfo& InChannelInfo, const FAudioSamplesDescriptor& InSamples);
+
+	UEBLACKMAGICDESIGN_API bool InitializeDMA(const FInitializeDMAArgs& Args);
+	UEBLACKMAGICDESIGN_API void UninitializeDMA();
+	UEBLACKMAGICDESIGN_API bool RegisterDMATexture(const FRegisterDMATextureArgs& Args);
+	UEBLACKMAGICDESIGN_API bool UnregisterDMATexture(void* InRHITexture);
+	UEBLACKMAGICDESIGN_API bool RegisterDMABuffer(const FRegisterDMABufferArgs& InArgs);
+	UEBLACKMAGICDESIGN_API bool UnregisterDMABuffer(void* InBuffer);
+	UEBLACKMAGICDESIGN_API bool LockDMATexture(void* InRHITexture);
+	UEBLACKMAGICDESIGN_API bool UnlockDMATexture(void* InRHITexture);
 };

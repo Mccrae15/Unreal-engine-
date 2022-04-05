@@ -10,8 +10,9 @@
 #include "DatasmithVariantElements.h"
 #include "IDatasmithSceneElements.h"
 
+#include "Algo/Sort.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Math/UnrealMath.h"
 #include "Misc/EngineVersion.h"
 #include "Misc/Paths.h"
@@ -166,7 +167,7 @@ int32 FDatasmithUtils::GetEnterpriseVersionAsInt()
 	int32 MinorNumberOfDigits = 1;
 	for (int32 Version = MinorVersion; Version /= 10; MinorNumberOfDigits++);
 
-	const int32 MajorVersion = FEngineVersion::Current().GetMajor() * FMath::Pow(10, MinorNumberOfDigits);
+	const int32 MajorVersion = FEngineVersion::Current().GetMajor() * FMath::Pow(10.f, MinorNumberOfDigits);
 
 	return MajorVersion + MinorVersion + PatchVersion;
 }
@@ -227,7 +228,7 @@ bool FDatasmithMeshUtils::ToRawMesh(const FDatasmithMesh& Mesh, FRawMesh& RawMes
 
 	for ( int32 i = 0; i < Mesh.GetVerticesCount(); ++i )
 	{
-		RawMesh.VertexPositions.Add( Mesh.GetVertex( i ) );
+		RawMesh.VertexPositions.Add( (FVector3f)Mesh.GetVertex( i ) );
 	}
 
 	RawMesh.FaceMaterialIndices.Reserve( Mesh.GetFacesCount() );
@@ -253,7 +254,7 @@ bool FDatasmithMeshUtils::ToRawMesh(const FDatasmithMesh& Mesh, FRawMesh& RawMes
 
 		for ( int32 j = 0; j < 3; ++j )
 		{
-			RawMesh.WedgeTangentZ.Add( Mesh.GetNormal( FaceIndex * 3 + j ) );
+			RawMesh.WedgeTangentZ.Add( (FVector3f)Mesh.GetNormal( FaceIndex * 3 + j ) );
 		}
 	}
 
@@ -269,9 +270,9 @@ bool FDatasmithMeshUtils::ToRawMesh(const FDatasmithMesh& Mesh, FRawMesh& RawMes
 
 			Mesh.GetFaceUV( FaceIndex, UVChannel, UVIndex1, UVIndex2, UVIndex3 );
 
-			RawMesh.WedgeTexCoords[ UVChannel ].Add( Mesh.GetUV( UVChannel, UVIndex1 ) );
-			RawMesh.WedgeTexCoords[ UVChannel ].Add( Mesh.GetUV( UVChannel, UVIndex2 ) );
-			RawMesh.WedgeTexCoords[ UVChannel ].Add( Mesh.GetUV( UVChannel, UVIndex3 ) );
+			RawMesh.WedgeTexCoords[ UVChannel ].Add( FVector2f(Mesh.GetUV( UVChannel, UVIndex1 )) );
+			RawMesh.WedgeTexCoords[ UVChannel ].Add( FVector2f(Mesh.GetUV( UVChannel, UVIndex2 )) );
+			RawMesh.WedgeTexCoords[ UVChannel ].Add( FVector2f(Mesh.GetUV( UVChannel, UVIndex3 )) );
 		}
 	}
 
@@ -296,10 +297,11 @@ bool FDatasmithMeshUtils::ToMeshDescription(FDatasmithMesh& DsMesh, FMeshDescrip
 {
 	MeshDescription.Empty();
 
-	TVertexAttributesRef<FVector> VertexPositions = MeshDescription.VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-	TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-	TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
-	TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = MeshDescription.PolygonGroupAttributes().GetAttributesRef<FName>(MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
+	FStaticMeshAttributes Attributes(MeshDescription);
+	TVertexAttributesRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
+	TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+	TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
+	TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
 
 	// Prepared for static mesh usage ?
 	if (!ensure(VertexPositions.IsValid())
@@ -324,20 +326,20 @@ bool FDatasmithMeshUtils::ToMeshDescription(FDatasmithMesh& DsMesh, FMeshDescrip
 	// At least one UV set must exist.
 	int32 DsUVCount = DsMesh.GetUVChannelsCount();
 	int32 MeshDescUVCount = FMath::Max(1, DsUVCount);
-	VertexInstanceUVs.SetNumIndices(MeshDescUVCount);
+	VertexInstanceUVs.SetNumChannels(MeshDescUVCount);
 
 	//Fill the vertex array
 	for (int32 VertexIndex = 0; VertexIndex < VertexCount; ++VertexIndex)
 	{
 		FVertexID AddedVertexId = MeshDescription.CreateVertex();
-		VertexPositions[AddedVertexId] = DsMesh.GetVertex(VertexIndex);
+		VertexPositions[AddedVertexId] = (FVector3f)DsMesh.GetVertex(VertexIndex);
 	}
 
 	TMap<int32, FPolygonGroupID> PolygonGroupMapping;
 	auto GetOrCreatePolygonGroupId = [&](int32 MaterialIndex)
 	{
 		FPolygonGroupID& PolyGroupId = PolygonGroupMapping.FindOrAdd(MaterialIndex);
-		if (PolyGroupId == FPolygonGroupID::Invalid)
+		if (PolyGroupId == INDEX_NONE)
 		{
 			PolyGroupId = MeshDescription.CreatePolygonGroup();
 			FName ImportedSlotName = *FString::FromInt(MaterialIndex); // No access to DatasmithMeshHelper::DefaultSlotName
@@ -362,7 +364,7 @@ bool FDatasmithMeshUtils::ToMeshDescription(FDatasmithMesh& DsMesh, FMeshDescrip
 		for (int32 CornerIndex = 0; CornerIndex < CornerCount; CornerIndex++)
 		{
 			CornerVertexIDs[CornerIndex] = FVertexID(VertexIndex[CornerIndex]);
-			CornerPositions[CornerIndex] = VertexPositions[CornerVertexIDs[CornerIndex]];
+			CornerPositions[CornerIndex] = (FVector)VertexPositions[CornerVertexIDs[CornerIndex]];
 		}
 
 		// Create Vertex instances
@@ -382,14 +384,14 @@ bool FDatasmithMeshUtils::ToMeshDescription(FDatasmithMesh& DsMesh, FMeshDescrip
 				FVector2D UVVector = DsMesh.GetUV(UVChannelIndex, UV[CornerIndex]);
 				if (!UVVector.ContainsNaN())
 				{
-					VertexInstanceUVs.Set(CornerVertexInstanceIDs[CornerIndex], UVChannelIndex, UVVector);
+					VertexInstanceUVs.Set(CornerVertexInstanceIDs[CornerIndex], UVChannelIndex, FVector2f(UVVector));
 				}
 			}
 		}
 
 		for (int32 CornerIndex = 0; CornerIndex < CornerCount; CornerIndex++)
 		{
-			VertexInstanceNormals[CornerVertexInstanceIDs[CornerIndex]] = DsMesh.GetNormal(3 * PolygonIndex + CornerIndex);
+			VertexInstanceNormals[CornerVertexInstanceIDs[CornerIndex]] = (FVector3f)DsMesh.GetNormal(3 * PolygonIndex + CornerIndex);
 		}
 
 		// smoothing information
@@ -432,20 +434,26 @@ bool FDatasmithMeshUtils::IsUVChannelValid(const FDatasmithMesh& DsMesh, const i
 
 bool FDatasmithTextureUtils::CalculateTextureHash(const TSharedPtr<class IDatasmithTextureElement>& TextureElement)
 {
-	TUniquePtr<FArchive> Archive(IFileManager::Get().CreateFileReader(TextureElement->GetFile()));
-	if (Archive)
+	if (TextureElement)
 	{
-		TextureElement->SetFileHash(FMD5Hash::HashFileFromArchive(Archive.Get()));
-		return true;
+		TUniquePtr<FArchive> Archive(IFileManager::Get().CreateFileReader(TextureElement->GetFile()));
+		if (Archive)
+		{
+			TextureElement->SetFileHash(FMD5Hash::HashFileFromArchive(Archive.Get()));
+			return true;
+		}
 	}
 	return false;
 }
 
 void FDatasmithTextureUtils::CalculateTextureHashes(const TSharedPtr<IDatasmithScene>& Scene)
 {
-	for (int i = 0; i < Scene->GetTexturesCount(); ++i)
+	if (Scene)
 	{
-		CalculateTextureHash(Scene->GetTexture(i));
+		for (int i = 0; i < Scene->GetTexturesCount(); ++i)
+		{
+			CalculateTextureHash(Scene->GetTexture(i));
+		}
 	}
 }
 
@@ -534,32 +542,47 @@ namespace DatasmithSceneUtilsImpl
 TArray<TSharedPtr<IDatasmithCameraActorElement>> FDatasmithSceneUtils::GetAllCameraActorsFromScene(const TSharedPtr<IDatasmithScene>& Scene)
 {
 	TArray<TSharedPtr<IDatasmithCameraActorElement>> Result;
-	Result.Reserve(Scene->GetActorsCount());
-	DatasmithSceneUtilsImpl::GetAllActorsChildRecursive(Scene, EDatasmithElementType::Camera, Result);
+	if (Scene)
+	{
+		Result.Reserve(Scene->GetActorsCount());
+		DatasmithSceneUtilsImpl::GetAllActorsChildRecursive(Scene, EDatasmithElementType::Camera, Result);
+	}
+
 	return Result;
 }
 
 TArray<TSharedPtr<IDatasmithLightActorElement>> FDatasmithSceneUtils::GetAllLightActorsFromScene(const TSharedPtr<IDatasmithScene>& Scene)
 {
 	TArray<TSharedPtr<IDatasmithLightActorElement>> Result;
-	Result.Reserve(Scene->GetActorsCount());
-	DatasmithSceneUtilsImpl::GetAllActorsChildRecursive(Scene, EDatasmithElementType::Light, Result);
+	if (Scene)
+	{
+		Result.Reserve(Scene->GetActorsCount());
+		DatasmithSceneUtilsImpl::GetAllActorsChildRecursive(Scene, EDatasmithElementType::Light, Result);
+	}
+
 	return Result;
 }
 
 TArray<TSharedPtr<IDatasmithMeshActorElement>> FDatasmithSceneUtils::GetAllMeshActorsFromScene(const TSharedPtr<IDatasmithScene>& Scene)
 {
 	TArray<TSharedPtr<IDatasmithMeshActorElement>> Result;
-	Result.Reserve(Scene->GetActorsCount());
-	DatasmithSceneUtilsImpl::GetAllActorsChildRecursive(Scene, EDatasmithElementType::StaticMeshActor, Result);
+	if (Scene)
+	{
+		Result.Reserve(Scene->GetActorsCount());
+		DatasmithSceneUtilsImpl::GetAllActorsChildRecursive(Scene, EDatasmithElementType::StaticMeshActor, Result);
+	}
+
 	return Result;
 }
 
 TArray< TSharedPtr< IDatasmithCustomActorElement> > FDatasmithSceneUtils::GetAllCustomActorsFromScene(const TSharedPtr<IDatasmithScene>& Scene)
 {
 	TArray<TSharedPtr<IDatasmithCustomActorElement>> Result;
-	Result.Reserve(Scene->GetActorsCount());
-	DatasmithSceneUtilsImpl::GetAllActorsChildRecursive(Scene, EDatasmithElementType::CustomActor, Result);
+	if (Scene)
+	{
+		Result.Reserve(Scene->GetActorsCount());
+		DatasmithSceneUtilsImpl::GetAllActorsChildRecursive(Scene, EDatasmithElementType::CustomActor, Result);
+	}
 	return Result;
 }
 
@@ -592,7 +615,7 @@ bool FDatasmithSceneUtils::FindActorHierarchy(const IDatasmithScene* Scene, cons
 {
 	bool bResult = false;
 	OutHierarchy.Reset();
-	if (ToFind.IsValid())
+	if (Scene != nullptr && ToFind.IsValid())
 	{
 		const int32 ActorsCount = Scene->GetActorsCount();
 		for (int32 ActorIndex = 0; ActorIndex  < ActorsCount; ++ActorIndex)
@@ -616,6 +639,11 @@ bool FDatasmithSceneUtils::FindActorHierarchy(const IDatasmithScene* Scene, cons
 
 bool FDatasmithSceneUtils::IsMaterialIDUsedInScene(const TSharedPtr<IDatasmithScene>& Scene, const TSharedPtr<IDatasmithMaterialIDElement>& MaterialElement)
 {
+	if (!Scene)
+	{
+		return false;
+	}
+
 	TArray<TSharedPtr<IDatasmithMeshActorElement>> AllMeshActors = FDatasmithSceneUtils::GetAllMeshActorsFromScene(Scene);
 	for (const TSharedPtr<IDatasmithMeshActorElement>& MeshActor : AllMeshActors)
 	{
@@ -642,6 +670,11 @@ bool FDatasmithSceneUtils::IsMaterialIDUsedInScene(const TSharedPtr<IDatasmithSc
 
 bool FDatasmithSceneUtils::IsPostProcessUsedInScene(const TSharedPtr<IDatasmithScene>& Scene, const TSharedPtr<IDatasmithPostProcessElement>& PostProcessElement)
 {
+	if (!Scene)
+	{
+		return false;
+	}
+
 	if (Scene->GetPostProcess() == PostProcessElement)
 	{
 		return true;
@@ -784,6 +817,11 @@ namespace DatasmithSceneUtilsImpl
 
 	void CleanUpEnvironments( TSharedPtr<IDatasmithScene> Scene )
 	{
+		if (!Scene)
+		{
+			return;
+		}
+
 		// Remove unsupported environments
 		for (int32 Index = Scene->GetActorsCount() - 1; Index >= 0; --Index)
 		{
@@ -1035,7 +1073,6 @@ namespace DatasmithSceneUtilsImpl
 			ParseExpressionElement(MaterialElement->GetRefraction().GetExpression());
 			ParseExpressionElement(MaterialElement->GetAmbientOcclusion().GetExpression());
 			ParseExpressionElement(MaterialElement->GetOpacity().GetExpression());
-			ParseExpressionElement(MaterialElement->GetWorldDisplacement().GetExpression());
 
 			if ( MaterialElement->GetUseMaterialAttributes() )
 			{
@@ -1090,7 +1127,6 @@ namespace DatasmithSceneUtilsImpl
 					ScanCompositeTexture( Shader->GetBumpComp().Get() );
 					ScanCompositeTexture( Shader->GetTransComp().Get() );
 					ScanCompositeTexture( Shader->GetMaskComp().Get() );
-					ScanCompositeTexture( Shader->GetDisplaceComp().Get() );
 					ScanCompositeTexture( Shader->GetMetalComp().Get() );
 					ScanCompositeTexture( Shader->GetEmitComp().Get() );
 					ScanCompositeTexture( Shader->GetWeightComp().Get() );
@@ -1473,8 +1509,58 @@ void FDatasmithSceneUtils::CleanUpScene(TSharedRef<IDatasmithScene> Scene, bool 
 	}
 }
 
+FDatasmithUniqueNameProviderBase::FDatasmithUniqueNameProviderBase(const FDatasmithUniqueNameProviderBase& Other)
+{
+	FScopeLock LockOther(&Other.CriticalSection);
+
+	FrequentlyUsedNames = Other.FrequentlyUsedNames;
+}
+
+FDatasmithUniqueNameProviderBase::FDatasmithUniqueNameProviderBase(FDatasmithUniqueNameProviderBase&& Other)
+{
+	FScopeLock LockOther(&Other.CriticalSection);
+
+	FrequentlyUsedNames = MoveTemp(Other.FrequentlyUsedNames);
+}
+
+FDatasmithUniqueNameProviderBase* FDatasmithUniqueNameProviderBase::operator=(const FDatasmithUniqueNameProviderBase& Other)
+{
+	// Guarantee lock order
+	TArray< FCriticalSection*, TInlineAllocator<2> > OrderedCriticalSections;
+	OrderedCriticalSections.Add( &CriticalSection );
+	OrderedCriticalSections.Add( &Other.CriticalSection );
+
+	Algo::Sort( OrderedCriticalSections );
+
+	FScopeLock LockFirst( OrderedCriticalSections[0] );
+	FScopeLock LockSecond( OrderedCriticalSections[1] );
+
+	FrequentlyUsedNames = Other.FrequentlyUsedNames;
+
+	return this;
+}
+
+FDatasmithUniqueNameProviderBase* FDatasmithUniqueNameProviderBase::operator=(FDatasmithUniqueNameProviderBase&& Other)
+{
+	// Guarantee lock order
+	TArray< FCriticalSection*, TInlineAllocator<2> > OrderedCriticalSections;
+	OrderedCriticalSections.Add( &CriticalSection );
+	OrderedCriticalSections.Add( &Other.CriticalSection );
+
+	Algo::Sort( OrderedCriticalSections );
+
+	FScopeLock LockFirst( OrderedCriticalSections[0] );
+	FScopeLock LockSecond( OrderedCriticalSections[1] );
+
+	FrequentlyUsedNames = MoveTemp(Other.FrequentlyUsedNames);
+
+	return this;
+}
+
 FString FDatasmithUniqueNameProviderBase::GenerateUniqueName(const FString& InBaseName, int32 CharBudget)
 {
+	FScopeLock Lock( &CriticalSection );
+
 	const int32 FrequentlyUsedThreshold = 5; // don't saturate the table with uncommon names
 
 	for (int32 CurrentBaseNameCharBudget = CharBudget; CurrentBaseNameCharBudget >= 1; --CurrentBaseNameCharBudget)
@@ -1526,6 +1612,11 @@ FString FDatasmithUniqueNameProviderBase::GenerateUniqueName(const FString& InBa
 	return {};
 }
 
+void FDatasmithUniqueNameProviderBase::Clear()
+{
+	FScopeLock Lock( &CriticalSection );
+	FrequentlyUsedNames.Empty();
+}
 
 FTransform FDatasmithUtils::ConvertTransform(EModelCoordSystem SourceCoordSystem, const FTransform& LocalTransform)
 {

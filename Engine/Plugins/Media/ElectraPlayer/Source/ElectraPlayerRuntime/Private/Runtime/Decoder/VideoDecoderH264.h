@@ -4,7 +4,7 @@
 
 #include "PlayerCore.h"
 #include "StreamAccessUnitBuffer.h"
-#include "Decoder/DecoderBase.h"
+#include "Decoder/VideoDecoderBase.h"
 #include "VideoDecoderResourceDelegate.h"
 
 class IOptionPointerValueContainer;
@@ -17,7 +17,7 @@ namespace Electra
 	/**
 	 * H264 video decoder.
 	**/
-	class IVideoDecoderH264 : public IDecoderBase, public IAccessUnitBufferInterface, public IDecoderAUBufferDiags, public IDecoderReadyBufferDiags
+	class IVideoDecoderH264 : public IVideoDecoderBase
 	{
 	public:
 		struct FSystemConfiguration
@@ -25,8 +25,7 @@ namespace Electra
 			FSystemConfiguration();
 			struct FThreadConfig
 			{
-				FMediaRunnable::Param		Decoder;							//!< Decoder thread settings.
-				FMediaRunnable::Param		PassOn;							//!< Settings for thread passing decoded images to the renderer.
+				FMediaRunnable::Param		Decoder;					//!< Decoder thread settings.
 			};
 			FThreadConfig					ThreadConfig;
 		};
@@ -34,12 +33,12 @@ namespace Electra
 		struct FInstanceConfiguration
 		{
 			FInstanceConfiguration();
-			int32								MaxFrameWidth;				//!< Maximum width of any image to be decoded
+			int32								MaxFrameWidth;			//!< Maximum width of any image to be decoded
 			int32								MaxFrameHeight;			//!< Maximum height of any image to be decoded
 			int32								ProfileIdc;				//!< IDC profile (baseline (66), main (77) or high (100))
-			int32								LevelIdc;					//!< IDC profile level (eg, 30, 31, 51)
-			uint32								MaxDecodedFrames;			//!<
-			FSystemConfiguration::FThreadConfig	ThreadConfig;					//!< Thread configuration (defaults to values set in SystemConfiguration)
+			int32								LevelIdc;				//!< IDC profile level (eg, 30, 31, 51)
+			uint32								MaxDecodedFrames;		//!<
+			FSystemConfiguration::FThreadConfig	ThreadConfig;			//!< Thread configuration (defaults to values set in SystemConfiguration)
 
 			FParamDict							AdditionalOptions;
 		};
@@ -79,6 +78,7 @@ namespace Electra
 
 		virtual void Open(const FInstanceConfiguration& InConfig) = 0;
 		virtual void Close() = 0;
+		virtual void DrainForCodecChange() = 0;
 
 
 		virtual void SetMaximumDecodeCapability(int32 MaxWidth, int32 MaxHeight, int32 MaxProfile, int32 MaxProfileLevel, const FParamDict& AdditionalOptions) = 0;
@@ -94,10 +94,12 @@ namespace Electra
 		//-------------------------------------------------------------------------
 		// Methods from IAccessUnitBufferInterface
 		//
-		//! Attempts to push an access unit to the decoder. Ownership of the access unit is transferred if the push is successful.
-		virtual EAUpushResult AUdataPushAU(FAccessUnit* AccessUnit) = 0;
+		//! Pushes an access unit to the decoder. Ownership of the access unit is transferred to the decoder.
+		virtual void AUdataPushAU(FAccessUnit* AccessUnit) = 0;
 		//! Notifies the decoder that there will be no further access units.
 		virtual void AUdataPushEOD() = 0;
+		//! Notifies the decoder that there may be further access units.
+		virtual void AUdataClearEOD() = 0;
 		//! Instructs the decoder to flush all pending input and all already decoded output.
 		virtual void AUdataFlushEverything() = 0;
 
@@ -118,7 +120,22 @@ namespace Electra
 		// Platform specifics
 		//
 #if PLATFORM_ANDROID
-		virtual void Android_UpdateSurface(const TSharedPtr<IOptionPointerValueContainer>& Surface) = 0;
+		virtual void Android_UpdateSurface(const TSharedPtr<IOptionPointerValueContainer, ESPMode::ThreadSafe>& Surface) = 0;
+
+		virtual void Android_SuspendOrResumeDecoder(bool bSuspend) = 0;
+
+		/**
+		 * Workarounds may be needed for certain devices that are known to have some issues with decoders.
+		 * Which device is affected is outside the scope of this module and must be provided by your application.
+		 * Some features are always worked around if they are known to have issues on many devices and can be
+		 * enabled if you know it to work on the device you are running on.
+		 * 
+		 * setOutputSurface()
+		 *    exists only with API level 23+ and must be enabled if you know it to be working. Is not used by
+		 *    default and instead creates a new decoder instead.
+		 *    To enable add "setOutputSurface" with a value of "true".
+		 */
+		static FParamDict& Android_Workarounds();
 #endif
 	};
 

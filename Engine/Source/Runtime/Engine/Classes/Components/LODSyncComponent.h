@@ -70,8 +70,12 @@ class ENGINE_API ULODSyncComponent : public UActorComponent
 	int32 NumLODs = -1;
 
 	// if -1, it's automatically switching
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = LOD)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, interp, Category = LOD)
 	int32 ForcedLOD = -1;
+
+	// Minimum LOD to use when syncing components
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = LOD)
+	int32 MinLOD = 0;
 
 	/** 
 	 *	Array of components whose LOD may drive or be driven by this component.
@@ -100,11 +104,11 @@ private:
 
 	// component that drives the LOD
 	UPROPERTY(transient)
-	TArray<UPrimitiveComponent*> DriveComponents;
+	TArray<TObjectPtr<UPrimitiveComponent>> DriveComponents;
 
 	// all the components that ticks
 	UPROPERTY(transient)
-	TArray<UPrimitiveComponent*> SubComponents;
+	TArray<TObjectPtr<UPrimitiveComponent>> SubComponents;
 
 	// BEGIN AActorComponent interface
 	virtual void OnRegister() override;

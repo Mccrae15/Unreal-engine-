@@ -429,6 +429,8 @@ private:
 
 /**
  * Double linked list.
+ * 
+ * @see TIntrusiveDoubleLinkedList
  */
 template <class ElementType>
 class TDoubleLinkedList
@@ -738,6 +740,17 @@ public:
 	bool Contains( const ElementType& InElement )
 	{
 		return (FindNode(InElement) != nullptr);
+	}
+
+	/**
+	 * Returns true if the list is empty and contains no elements. 
+	 *
+	 * @returns True if the list is empty.
+	 * @see Num
+	 */
+	bool IsEmpty() const
+	{
+		return ListSize == 0;
 	}
 
 	/**

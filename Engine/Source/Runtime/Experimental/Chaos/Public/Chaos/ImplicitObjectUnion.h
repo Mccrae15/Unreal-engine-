@@ -155,6 +155,34 @@ class CHAOS_API FImplicitObjectUnion : public FImplicitObject
 		return Result;
 	}
 
+	virtual FImplicitObject* Duplicate() const override
+	{
+		TArray<TUniquePtr<FImplicitObject>> NewObjects;
+		NewObjects.Reserve(MObjects.Num());
+
+		for (const TUniquePtr<FImplicitObject>& Obj : MObjects)
+		{
+			if (ensure(Obj->GetType() != ImplicitObjectType::Union))	//can't duplicate unions of unions
+			{
+				NewObjects.Add(TUniquePtr<FImplicitObject>(Obj->Duplicate()));
+			}
+		}
+
+		return new FImplicitObjectUnion(MoveTemp(NewObjects));
+	}
+
+#if INTEL_ISPC && !UE_BUILD_SHIPPING
+	// See PerParticlePBDCollisionConstraint.cpp
+	// ISPC code has matching structs for interpreting FImplicitObjects.
+	// This is used to verify that the structs stay the same.
+	struct FISPCDataVerifier
+	{
+		static constexpr int32 OffsetOfMObjects() { return offsetof(FImplicitObjectUnion, MObjects); }
+		static constexpr int32 SizeOfMObjects() { return sizeof(FImplicitObjectUnion::MObjects); }
+	};
+	friend FISPCDataVerifier;
+#endif // #if INTEL_ISPC && !UE_BUILD_SHIPPING
+
 protected:
 	virtual Pair<FVec3, bool> FindClosestIntersectionImp(const FVec3& StartPoint, const FVec3& EndPoint, const FReal Thickness) const override
 	{
@@ -186,6 +214,20 @@ protected:
 	TUniquePtr<FLargeImplicitObjectUnionData> LargeUnionData;	//only needed when there are many objects
 };
 
+struct FLargeUnionClusteredImplicitInfo
+{
+	FLargeUnionClusteredImplicitInfo(const FImplicitObject* InImplicit, const FRigidTransform3& InTransform, const FBVHParticles* InBVHParticles)
+		: Implicit(InImplicit)
+		, Transform(InTransform)
+		, BVHParticles(InBVHParticles)
+	{
+	}
+
+	const FImplicitObject* Implicit;
+	FRigidTransform3 Transform;
+	const FBVHParticles* BVHParticles;
+};
+
 class CHAOS_API FImplicitObjectUnionClustered: public FImplicitObjectUnion
 {
 public:
@@ -200,7 +242,7 @@ public:
 		return ImplicitObjectType::UnionClustered;
 	}
 
-	void FindAllIntersectingClusteredObjects(TArray<Pair<Pair<const FImplicitObject*, const FBVHParticles*>, FRigidTransform3>>& Out, const FAABB3& LocalBounds) const;
+	void FindAllIntersectingClusteredObjects(TArray<FLargeUnionClusteredImplicitInfo>& Out, const FAABB3& LocalBounds) const;
 	TArray<FPBDRigidParticleHandle*> FindAllIntersectingChildren(const FAABB3& LocalBounds) const;
 
 #if CHAOS_PARTICLEHANDLE_TODO

@@ -5,6 +5,7 @@
 #include "Components/RuntimeVirtualTextureComponent.h"
 #include "MaterialShared.h"
 #include "RenderingThread.h"
+#include "RenderGraphBuilder.h"
 #include "SceneInterface.h"
 #include "VT/RuntimeVirtualTexture.h"
 #include "VT/RuntimeVirtualTextureRender.h"
@@ -40,13 +41,9 @@ bool URuntimeVirtualTextureThumbnailRenderer::CanVisualizeAsset(UObject* Object)
 
 	// We need a matching URuntimeVirtualTextureComponent in a Scene to be able to render a thumbnail
 	URuntimeVirtualTextureComponent* RuntimeVirtualTextureComponent = FindComponent(RuntimeVirtualTexture);
-	if (RuntimeVirtualTextureComponent != nullptr)
+	if (RuntimeVirtualTextureComponent != nullptr && RuntimeVirtualTextureComponent->GetScene() != nullptr)
 	{
-		FSceneInterface* Scene = RuntimeVirtualTextureComponent->GetScene();
-		if (Scene != nullptr && RuntimeVirtualTexture::IsSceneReadyToRender(Scene->GetRenderScene()))
-		{
-			return true;
-		}
+		return true;
 	}
 
 	return false;
@@ -80,6 +77,9 @@ void URuntimeVirtualTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int
 	{
 		FMaterialRenderProxy::UpdateDeferredCachedUniformExpressions();
 
+		FMemMark MemMark(FMemStack::Get());
+		FRDGBuilder GraphBuilder(RHICmdList);
+
 		RuntimeVirtualTexture::FRenderPageBatchDesc Desc;
 		Desc.Scene = Scene->GetRenderScene();
 		Desc.RuntimeVirtualTextureMask = 1 << VirtualTextureSceneIndex;
@@ -96,6 +96,8 @@ void URuntimeVirtualTextureThumbnailRenderer::Draw(UObject* Object, int32 X, int
 		Desc.PageDescs[0].UVRange = FBox2D(FVector2D(0, 0), FVector2D(1, 1));
 		Desc.PageDescs[0].vLevel = MaxLevel;
 
-		RuntimeVirtualTexture::RenderPages(RHICmdList, Desc);
+		RuntimeVirtualTexture::RenderPagesStandAlone(GraphBuilder, Desc);
+
+		GraphBuilder.Execute();
 	});
 }

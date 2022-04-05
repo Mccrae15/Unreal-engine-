@@ -141,10 +141,10 @@ public:
 		ListEntries.Remove(InListEntry);
 	}
 
-	void Empty()
+	void Empty(int32 Slack = 0)
 	{
-		ListEntries.Empty();
-		NetIdStringToListEntryMap.Empty();
+		ListEntries.Empty(Slack);
+		NetIdStringToListEntryMap.Empty(Slack);
 	}
 
 	void UpdateNetIdStr(const FString& PrevNetId, const FString& NewNetId)
@@ -273,6 +273,7 @@ public:
 	virtual FString GetAuthType() const override;
 	virtual void RevokeAuthToken(const FUniqueNetId& LocalUserId, const FOnRevokeAuthTokenCompleteDelegate& Delegate) override;
 	virtual FPlatformUserId GetPlatformUserIdFromUniqueNetId(const FUniqueNetId& UniqueNetId) const override;
+	virtual void GetLinkedAccountAuthToken(int32 LocalUserNum, const FOnGetLinkedAccountAuthTokenCompleteDelegate& Delegate) const override;
 // ~IOnlineIdentity Interface
 	ELoginStatus::Type GetLoginStatus(const FUniqueNetIdEOS& UserId) const;
 
@@ -396,8 +397,9 @@ private:
 	void UpdatePresence(EOS_EpicAccountId AccountId);
 	void UpdateFriendPresence(const FString& FriendId, FOnlineUserPresenceRef Presence);
 
-	IOnlineSubsystem* GetPlatformOSS();
-	void GetPlatformAuthToken(int32 LocalUserNum, const FOnGetLinkedAccountAuthTokenCompleteDelegate& Delegate);
+	IOnlineSubsystem* GetPlatformOSS() const;
+	void GetPlatformAuthToken(int32 LocalUserNum, const FOnGetLinkedAccountAuthTokenCompleteDelegate& Delegate) const;
+	FString GetPlatformDisplayName(int32 LocalUserNum) const;
 
 	/** Cached pointer to owning subsystem */
 	FOnlineSubsystemEOS* EOSSubsystem;
@@ -449,6 +451,8 @@ private:
 
 	/** Id map to keep track of which friends have been processed during async user info queries */
 	TMap<int32, TArray<EOS_EpicAccountId>> IsFriendQueryUserInfoOngoingForLocalUserMap;
+	/** Id map to keep track of which players still need their external id synced */
+	TMap<int32, TArray<FString>> IsPlayerQueryExternalMappingsOngoingForLocalUserMap;
 
 	/** Cache for the info passed on to ReadFriendsList, kept while user info queries complete */
 	struct ReadUserListInfo
@@ -462,7 +466,8 @@ private:
 		{
 		}
 
-		void ExecuteDelegateIfBound(bool bWasSuccessful, const FString& ErrorStr) const {
+		void ExecuteDelegateIfBound(bool bWasSuccessful, const FString& ErrorStr) const
+		{
 			Delegate.ExecuteIfBound(LocalUserNum, bWasSuccessful, ListName, ErrorStr);
 		};
 	};
@@ -470,8 +475,8 @@ private:
 	TMap<int32, TArray<ReadUserListInfo>> CachedReadUserListInfoForLocalUserMap;
 
 	/** Identifier for the external UI notification callback */
-	EOS_NotificationId DisplaySettingsUpdatedId;
-	FCallbackBase* DisplaySettingsUpdatedCallback;
+	EOS_NotificationId DisplaySettingsUpdatedId = EOS_INVALID_NOTIFICATIONID;
+	FCallbackBase* DisplaySettingsUpdatedCallback = nullptr;
 
 	/** Last Login Credentials used for a login attempt */
 	TMap<int32, TSharedRef<FOnlineAccountCredentials>> LocalUserNumToLastLoginCredentials;

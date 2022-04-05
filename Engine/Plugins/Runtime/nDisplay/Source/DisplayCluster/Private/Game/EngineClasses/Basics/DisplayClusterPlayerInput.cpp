@@ -22,22 +22,20 @@ void UDisplayClusterPlayerInput::ProcessInputStack(const TArray<UInputComponent*
 {
 	UE_LOG(LogDisplayClusterGame, Verbose, TEXT("Processing input stack..."));
 
-	static IPDisplayClusterClusterManager* const ClusterMgr = GDisplayCluster->GetPrivateClusterMgr();
-
-	if (ClusterMgr)
+	if (IPDisplayClusterClusterManager* const ClusterMgr = GDisplayCluster->GetPrivateClusterMgr())
 	{
 		TMap<FString, FString> KeyStates;
 
-		if (ClusterMgr->IsMaster())
+		if (ClusterMgr->IsPrimary())
 		{
-			// Export key states data
+			// Export key states data for the stack
 			SerializeKeyStateMap(KeyStates);
-			ClusterMgr->ProvideNativeInputData(KeyStates);
+			ClusterMgr->ImportNativeInputData(MoveTemp(KeyStates));
 		}
 		else
 		{
-			// Import key states data
-			ClusterMgr->SyncNativeInput(KeyStates);
+			// Import key states data to the stack
+			ClusterMgr->ExportNativeInputData(KeyStates);
 			DeserializeKeyStateMap(KeyStates);
 		}
 	}
@@ -47,16 +45,13 @@ void UDisplayClusterPlayerInput::ProcessInputStack(const TArray<UInputComponent*
 
 bool UDisplayClusterPlayerInput::SerializeKeyStateMap(TMap<FString, FString>& OutKeyStateMap)
 {
-	TMap<FKey, FKeyState>& StateMap = GetKeyStateMap();
+	const TMap<FKey, FKeyState>& StateMap = GetKeyStateMap();
 	for (auto it = StateMap.CreateConstIterator(); it; ++it)
 	{
 		const FString KeyName = it->Key.ToString();
 
 		FString StrKeyState;
 		StrKeyState.Reserve(2048);
-
-		float SendValue = GetWorld()->GetRealTimeSeconds() - it->Value.LastUpDownTransitionTime;
-		check(SendValue > 0.f);
 
 		StrKeyState = FString::Printf(TEXT("%s;%s;%s;%s;%s;%s;%s;%s;%s;"),
 			*DisplayClusterTypesConverter::template ToHexString(it->Value.RawValue),
@@ -88,7 +83,7 @@ bool UDisplayClusterPlayerInput::SerializeKeyStateMap(TMap<FString, FString>& Ou
 bool UDisplayClusterPlayerInput::DeserializeKeyStateMap(const TMap<FString, FString>& InKeyStateMap)
 {
 	TMap<FKey, FKeyState>& StateMap = GetKeyStateMap();
-	
+
 	// Reset local key state map
 	StateMap.Reset();
 

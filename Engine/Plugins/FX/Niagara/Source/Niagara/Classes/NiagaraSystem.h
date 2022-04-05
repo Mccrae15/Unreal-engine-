@@ -3,20 +3,22 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "UObject/ObjectMacros.h"
-#include "UObject/Object.h"
-#include "Particles/ParticleSystem.h"
-#include "Particles/ParticlePerfStats.h"
+
+#include "NiagaraBakerSettings.h"
 #include "NiagaraCommon.h"
 #include "NiagaraDataSet.h"
 #include "NiagaraDataSetAccessor.h"
-#include "NiagaraEmitterInstance.h"
-#include "NiagaraEmitterHandle.h"
-#include "NiagaraBakerSettings.h"
-#include "NiagaraParameterCollection.h"
-#include "NiagaraUserRedirectionParameterStore.h"
 #include "NiagaraEffectType.h"
+#include "NiagaraEmitterHandle.h"
+#include "NiagaraEmitterInstance.h"
+#include "NiagaraParameterCollection.h"
 #include "NiagaraParameterDefinitionsSubscriber.h"
+#include "NiagaraSystemStaticBuffers.h"
+#include "NiagaraUserRedirectionParameterStore.h"
+#include "Particles/ParticlePerfStats.h"
+#include "Particles/ParticleSystem.h"
+#include "UObject/Object.h"
+#include "UObject/ObjectMacros.h"
 
 #include "NiagaraSystem.generated.h"
 
@@ -150,13 +152,98 @@ struct FEmitterCompiledScriptPair
 {
 	GENERATED_USTRUCT_BODY()
 	
-	bool bResultsReady;
-	UNiagaraEmitter* Emitter;
-	UNiagaraScript* CompiledScript;
+	bool bResultsReady = false;
+	UNiagaraEmitter* Emitter = nullptr;
+	UNiagaraScript* CompiledScript = nullptr;
 	uint32 PendingJobID = INDEX_NONE; // this is the ID for any active shader compiler worker job
 	FNiagaraVMExecutableDataId CompileId;
 	TSharedPtr<FNiagaraVMExecutableData> CompileResults;
-	int32 ParentIndex = INDEX_NONE;
+};
+
+UENUM()
+enum class ENiagaraCompilationState : uint8
+{
+	CheckDDC,
+	Precompile,
+	StartCompileJob,
+	AwaitResult,
+	ProcessResult,
+	PutToDDC,
+	Finished,
+	Aborted
+};
+
+struct FNiagaraLazyPrecompileReference
+{
+	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> GetPrecompileData(UNiagaraScript* ForScript);
+	TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe> GetPrecompileDuplicateData(UNiagaraEmitter* OwningEmitter, UNiagaraScript* TargetScript);
+	
+	UNiagaraSystem* System = nullptr;
+	TArray<UNiagaraScript*> Scripts;
+	TMap<UNiagaraScript*, int32> EmitterScriptIndex;
+	TArray<TObjectPtr<UObject>> CompilationRootObjects;
+
+private:
+	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> SystemPrecompiledData;
+	TMap<UNiagaraScript*, TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe>> EmitterMapping;
+	TArray<TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe>> PrecompileDuplicateDatas;
+};
+
+struct FNiagaraAsyncTaskSharedData
+{
+	FNiagaraAsyncTaskSharedData();
+	~FNiagaraAsyncTaskSharedData();
+	
+	
+};
+
+class FNiagaraAsyncCompileTask
+{
+#if WITH_EDITORONLY_DATA
+public:
+	FString DDCKey;
+	FString AssetPath;
+	FString UniqueEmitterName;
+	uint32 TaskHandle = 0;
+
+	double StartTaskTime = 0;
+	double DDCFetchTime = 0;
+	double StartCompileTime = 0;
+	bool bWaitForCompileJob = false;
+	bool bUsedShaderCompilerWorker = false;
+	bool bFetchedGCObjects = false;
+	UNiagaraSystem* OwningSystem;
+	FEmitterCompiledScriptPair ScriptPair;
+	TArray<FNiagaraVariable> EncounteredExposedVars;
+
+	ENiagaraCompilationState CurrentState;
+
+	TSharedPtr<FNiagaraVMExecutableData> ExeData;
+	TArray<uint8> DDCOutData;
+
+	// this data is shared between the ddc thread and the game thread that starts the compilation
+	TSharedPtr<FNiagaraLazyPrecompileReference, ESPMode::ThreadSafe> PrecompileReference;
+	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> ComputedPrecompileData;
+	TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe> ComputedPrecompileDuplicateData;
+
+	FNiagaraAsyncCompileTask(UNiagaraSystem* InOwningSystem, FString InAssetPath, const FEmitterCompiledScriptPair& InScriptPair);
+
+	const FEmitterCompiledScriptPair& GetScriptPair() const { return ScriptPair; };
+	void WaitAndResolveResult();
+	void AbortTask();
+
+	void CheckDDCResult();
+	void PutToDDC();
+	void ProcessCurrentState();
+	void MoveToState(ENiagaraCompilationState NewState);
+	bool IsDone() const;
+
+	void PrecompileData();
+	void StartCompileJob();
+	bool AwaitResult();
+	void ProcessResult();
+
+#endif
 };
 
 USTRUCT()
@@ -167,15 +254,15 @@ struct FNiagaraSystemCompileRequest
 	double StartTime = 0.0;
 
 	UPROPERTY()
-	TArray<UObject*> RootObjects;
+	TArray<TObjectPtr<UObject>> RootObjects;
 
-	TArray<FEmitterCompiledScriptPair> EmitterCompiledScriptPairs;
+	TArray<TSharedPtr<FNiagaraAsyncCompileTask, ESPMode::ThreadSafe>> DDCTasks;
 	
-	TMap<UNiagaraScript*, TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> > MappedData;
-
 	bool bIsValid = true;
-
 	bool bForced = false;
+	bool bAllScriptsSynchronized = false;
+
+	float CombinedCompileTime = 0.0f;
 };
 
 struct FNiagaraEmitterExecutionIndex
@@ -215,10 +302,14 @@ public:
 
 	//~ UObject interface
 	void PostInitProperties();
-	void Serialize(FArchive& Ar)override;
+	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override; 
 	virtual void BeginDestroy() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 #if WITH_EDITOR
 	virtual void PreEditChange(FProperty* PropertyThatWillChange)override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override; 
@@ -258,6 +349,10 @@ public:
 
 private:
 	bool IsValidInternal() const;
+
+#if WITH_EDITORONLY_DATA
+	void FixupPositionUserParameters();
+#endif
 	
 public:
 	/** Returns true if this system is valid and can be instanced. False otherwise. */
@@ -320,6 +415,8 @@ public:
 	template<typename TAction>
 	void ForEachScript(TAction Func) const;
 
+	bool AllowScalabilityForLocalPlayerFX()const;
+
 private:
 	bool IsReadyToRunInternal() const;
 
@@ -330,7 +427,12 @@ public:
 	FORCEINLINE float GetWarmupTime()const { return WarmupTime; }
 	FORCEINLINE int32 GetWarmupTickCount()const { return WarmupTickCount; }
 	FORCEINLINE float GetWarmupTickDelta()const { return WarmupTickDelta; }
+	FORCEINLINE bool HasFixedTickDelta() const { return bFixedTickDelta; }
+	FORCEINLINE float GetFixedTickDeltaTime()const { return FixedTickDeltaTime; }
 	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags)  const override;
+
+	FORCEINLINE bool NeedsDeterminism() const { return bDeterminism; }
+	FORCEINLINE int32 GetRandomSeed() const { return RandomSeed; }
 
 #if STATS
 	FNiagaraStatDatabase& GetStatData() { return StatDatabase; }
@@ -358,6 +460,9 @@ public:
 	/** Blocks until all active compile jobs have finished */
 	void WaitForCompilationComplete(bool bIncludingGPUShaders = false, bool bShowProgress = true);
 
+	/** Tries to abort all running shader compilations */
+	void KillAllActiveCompilations();
+
 	/** Invalidates any active compilation requests which will ignore their results. */
 	void InvalidateActiveCompiles();
 
@@ -378,27 +483,37 @@ public:
 
 	/** Internal: The thumbnail image.*/
 	UPROPERTY()
-	class UTexture2D* ThumbnailImage;
+	TObjectPtr<class UTexture2D> ThumbnailImage;
 
 	/** Internal: Indicates the thumbnail image is out of date.*/
 	UPROPERTY()
 	uint32 ThumbnailImageOutOfDate : 1;
 
-	/* If this system is exposed to the library. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
-	bool bExposeToLibrary;
+	/** Deprecated library exposure bool. Use the LibraryVisibility enum instead. FNiagaraEditorUtilities has accessor functions that takes deprecation into account */
+	UPROPERTY()
+	bool bExposeToLibrary_DEPRECATED;
 
+	/** If this system is exposed to the library, or should be explicitly hidden. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
+	ENiagaraScriptLibraryVisibility LibraryVisibility = ENiagaraScriptLibraryVisibility::Unexposed;
+	
+	/** Deprecated template asset bool. Use the TemplateSpecification enum instead. */
 	UPROPERTY()
 	bool bIsTemplateAsset_DEPRECATED;
 
+	/** If this system is a regular system, a template or a behavior example. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
-	ENiagaraScriptTemplateSpecification TemplateSpecification;;
+	ENiagaraScriptTemplateSpecification TemplateSpecification = ENiagaraScriptTemplateSpecification::None;
 
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
 	FText TemplateAssetDescription;
 
+	/** Category of this system. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable, meta = (SkipSystemResetOnChange = "true"))
+	FText Category;
+
 	UPROPERTY()
-	TArray<UNiagaraScript*> ScratchPadScripts;
+	TArray<TObjectPtr<UNiagaraScript>> ScratchPadScripts;
 
 	UPROPERTY(transient)
 	FNiagaraParameterStore EditorOnlyAddedParameters;
@@ -421,6 +536,8 @@ public:
 	const FNiagaraSystemCompiledData& GetSystemCompiledData() const { return SystemCompiledData; };
 
 	bool UsesCollection(const UNiagaraParameterCollection* Collection)const;
+
+	bool SupportsLargeWorldCoordinates() const { return bSupportLargeWorldCoordinates && bLwcEnabledSettingCached; }
 #if WITH_EDITORONLY_DATA
 	bool UsesEmitter(const UNiagaraEmitter* Emitter) const;
 	bool UsesScript(const UNiagaraScript* Script)const; 
@@ -430,12 +547,26 @@ public:
 	static void RecomputeExecutionOrderForEmitter(UNiagaraEmitter* InEmitter);
 	static void RecomputeExecutionOrderForDataInterface(class UNiagaraDataInterface* DataInterface);
 
-	/** Experimental feature that allows us to bake out rapid iteration parameters during the normal compile process. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance")
+	FORCEINLINE bool ShouldUseRapidIterationParameters() const { return bCompileForEdit ? !bBakeOutRapidIteration : !bBakeOutRapidIterationOnCook; }
+	FORCEINLINE bool ShouldTrimAttributes() const { return bCompileForEdit ? bTrimAttributes : bTrimAttributesOnCook; }
+	FORCEINLINE bool ShouldIgnoreParticleReadsForAttributeTrim() const { return bIgnoreParticleReadsForAttributeTrim; }
+	FORCEINLINE bool ShouldDisableDebugSwitches() const { return bCompileForEdit ? bDisableDebugSwitches : bDisableDebugSwitchesOnCook; }
+	FORCEINLINE bool ShouldCompressAttributes() const { return bCompressAttributes; }
+
+	FORCEINLINE void SetBakeOutRapidIterationOnCook(bool bBakeOut) { bBakeOutRapidIteration = bBakeOut; bBakeOutRapidIterationOnCook = bBakeOut; }
+	FORCEINLINE void SetTrimAttributesOnCook(bool bTrim) { bTrimAttributes = bTrim; bTrimAttributesOnCook = bTrim; }
+
+	/** When enabled we compile for the edit path, which can result in slower system performance but faster editor responsiveness. */
+	UPROPERTY(transient)
+	uint32 bCompileForEdit : 1;
+
+protected:
+	/** When enable constant values are baked into the scripts while editing the system, this will increase iteration times but improve performance. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta=(DisplayName="Bake Rapid Iteration Parameters During Edit"))
 	uint32 bBakeOutRapidIteration : 1;
 
-	/** If true bBakeOutRapidIteration will be made to be true during cooks  */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta = (SkipSystemResetOnChange = "true"))
+	/** When enabled constant values are baked into scripts to improve performance. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta=(DisplayName="Bake Rapid Iteration Parameters"))
 	uint32 bBakeOutRapidIterationOnCook : 1;
 
 	/** Toggles whether or not emitters within this system will try and compress their particle attributes.
@@ -443,22 +574,86 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance")
 	uint32 bCompressAttributes : 1;
 
-	/** If true Particle attributes will be removed from the DataSet if they are unnecessary (are never read by ParameterMap) */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance")
+	/** When enabled we trim particle attributes while editing the system. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta=(DisplayName="Trim Attributes During Edit"))
 	uint32 bTrimAttributes : 1;
-
-	/** If true bTrimAttributes will be made to be true during cooks */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta = (SkipSystemResetOnChange = "true"))
+	/** If true Particle attributes will be removed from the DataSet if they are unnecessary (are never read by ParameterMap) */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta = (DisplayName="Trim Attributes"))
 	uint32 bTrimAttributesOnCook : 1;
 
-	/** If true, forcefully disables all debug switches */
-	UPROPERTY(meta = (SkipSystemResetOnChange = "true"))
-	uint32 bDisableAllDebugSwitches : 1;
+	/** If true ParticleReads will not absolutely prevent attribute trimming - User must ensure that the appropriate attributes are preserved on the source emitter! */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance")
+	uint32 bIgnoreParticleReadsForAttributeTrim : 1;
+
+	/** When enable debug switches are disabled while editing the system. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta = (DisplayName="Disable Debug Switches During Edit"))
+	uint32 bDisableDebugSwitches : 1;
+	/** When enabled debug switches are disabled when compiling the system. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Performance", meta = (DisplayName="Disable Debug Switches"))
+	uint32 bDisableDebugSwitchesOnCook : 1;
+
+public:
 	/** Subscriptions to definitions of parameters. */
 	UPROPERTY()
 	TArray<FParameterDefinitionsSubscription> ParameterDefinitionsSubscriptions;
-
 #endif
+
+	/** If true then position type values will be rebased on system activation to fit into a float precision vector. This needs to be turned off when using a custom data interface or renderer that does not support the rebasing. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Rendering")
+	uint8 bSupportLargeWorldCoordinates : 1;
+
+	//////////////////////////////////////////////////////////////////////////
+	// Various optional overrides for component properties when spawning a system
+	UPROPERTY(EditAnywhere, Category="Rendering", meta=(InlineEditConditionToggle="bCastShadow"))
+	uint8 bOverrideCastShadow : 1;
+
+	UPROPERTY(EditAnywhere, Category="Rendering", meta=(InlineEditConditionToggle="bReceivesDecals"))
+	uint8 bOverrideReceivesDecals : 1;
+
+	UPROPERTY(EditAnywhere, Category="Rendering", meta=(InlineEditConditionToggle="bRenderCustomDepth"))
+	uint8 bOverrideRenderCustomDepth : 1;
+
+	UPROPERTY(EditAnywhere, Category="Rendering", meta=(InlineEditConditionToggle="CustomDepthStencilValue"))
+	uint8 bOverrideCustomDepthStencilValue : 1;
+
+	UPROPERTY(EditAnywhere, Category="Rendering", meta=(InlineEditConditionToggle="CustomDepthStencilWriteMask"))
+	uint8 bOverrideCustomDepthStencilWriteMask : 1;
+
+	/**
+	When enabled this is the default value set on the component.
+	Controls whether the primitive component should cast a shadow or not.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rendering", meta=(DisplayName="Default Cast Shadows", EditCondition="bOverrideCastShadow"))
+	uint8 bCastShadow : 1;
+
+	/**
+	When enabled this is the default value set on the component.
+	Whether the primitive receives decals.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rendering", meta=(DisplayName="Default Receives Decals", EditCondition="bOverrideReceivesDecals"))
+	uint8 bReceivesDecals : 1;
+
+	/**
+	When enabled this is the default value set on the component.
+	This primitive has bRenderCustomDepth enabled.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Rendering", meta=(DisplayName="Default Render CustomDepth Pass", EditCondition="bOverrideRenderCustomDepth"))
+	uint8 bRenderCustomDepth : 1;
+
+	/**
+	When enabled this is the default value set on the component.
+	Mask used for stencil buffer writes.
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category="Rendering", meta=(DisplayName="Default CustomDepthStencil Write Mask", editcondition="bOverrideCustomDepthStencilValue"))
+	ERendererStencilMask CustomDepthStencilWriteMask = ERendererStencilMask::ERSM_Default;
+
+	/**
+	When enabled this is the default value set on the component.
+	Optionally write this 0-255 value to the stencil buffer in CustomDepth pass (Requires project setting or r.CustomDepth == 3)
+	*/
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category="Rendering", meta=(DisplayName="Default CustomDepthStencil Value", editcondition="bOverrideCustomDepthStencilWriteMask", UIMin = "0", UIMax = "255"))
+	int32 CustomDepthStencilValue = 0;
+	//////////////////////////////////////////////////////////////////////////
 
 	/** Computes emitter priorities based on the dependency information. */
 	bool ComputeEmitterPriority(int32 EmitterIdx, TArray<int32, TInlineAllocator<32>>& EmitterPriorities, const TBitArray<TInlineAllocator<32>>& EmitterDependencyGraph);
@@ -489,7 +684,7 @@ public:
 
 	FORCEINLINE UNiagaraParameterCollectionInstance* GetParameterCollectionOverride(UNiagaraParameterCollection* Collection)
 	{
-		UNiagaraParameterCollectionInstance** Found = ParameterCollectionOverrides.FindByPredicate(
+		auto* Found = ParameterCollectionOverrides.FindByPredicate(
 			[&](const UNiagaraParameterCollectionInstance* CheckInst)
 		{
 			return CheckInst && Collection == CheckInst->Collection;
@@ -498,11 +693,11 @@ public:
 		return Found ? *Found : nullptr;
 	}
 	
-	UPROPERTY(EditAnywhere, Category = "Debug")
-	bool bDumpDebugSystemInfo;
+	UPROPERTY(EditAnywhere, Category = "Debug", Transient)
+	bool bDumpDebugSystemInfo = false;
 
-	UPROPERTY(EditAnywhere, Category = "Debug")
-	bool bDumpDebugEmitterInfo;
+	UPROPERTY(EditAnywhere, Category = "Debug", Transient)
+	bool bDumpDebugEmitterInfo = false;
 
 	bool bFullyLoaded = false;
 
@@ -512,7 +707,8 @@ public:
 	bool bRequireCurrentFrameData = true;
 
 	bool HasSystemScriptDIsWithPerInstanceData() const;
-	FORCEINLINE bool HasDIsWithPostSimulateTick()const{ return bHasDIsWithPostSimulateTick; }
+	FORCEINLINE bool HasDIsWithPostSimulateTick() const { return bHasDIsWithPostSimulateTick; }
+	FORCEINLINE bool AllDIsPostSimulateCanOverlapFrames() const { return bAllDIsPostSimulateCanOverlapFrames; }
 	FORCEINLINE bool HasAnyGPUEmitters()const{ return bHasAnyGPUEmitters; }
 	FORCEINLINE bool NeedsGPUContextInitForDataInterfaces() const { return bNeedsGPUContextInitForDataInterfaces; }
 
@@ -526,12 +722,17 @@ public:
 
 	FORCEINLINE bool GetOverrideScalabilitySettings()const { return bOverrideScalabilitySettings; }
 	FORCEINLINE void SetOverrideScalabilitySettings(bool bOverride) { bOverrideScalabilitySettings = bOverride; }
+
+
+	void GatherStaticVariables(TArray<FNiagaraVariable>& OutVars, TArray<FNiagaraVariable>& OutEmitterVars) const;
 #endif
 	UNiagaraEffectType* GetEffectType()const;
-	FORCEINLINE const FNiagaraSystemScalabilitySettings& GetScalabilitySettings() { return CurrentScalabilitySettings; }
+	FORCEINLINE const FNiagaraSystemScalabilitySettings& GetScalabilitySettings()const { return CurrentScalabilitySettings; }
 	FORCEINLINE bool NeedsSortedSignificanceCull()const{ return bNeedsSortedSignificanceCull; }
 	
 	void OnScalabilityCVarChanged();
+
+	FORCEINLINE ENiagaraCullProxyMode GetCullProxyMode()const { return GetScalabilitySettings().CullProxyMode; }
 
 	/** Whether or not fixed bounds are enabled. */
 	UPROPERTY(EditAnywhere, Category = "System", meta = (SkipSystemResetOnChange = "true", InlineEditConditionToggle))
@@ -541,12 +742,12 @@ public:
 	void AddToInstanceCountStat(int32 NumInstances, bool bSolo)const;
 
 	const FString& GetCrashReporterTag()const;
-	bool CanObtainEmitterAttribute(const FNiagaraVariableBase& InVarWithUniqueNameNamespace) const;
-	bool CanObtainSystemAttribute(const FNiagaraVariableBase& InVar) const;
+	bool CanObtainEmitterAttribute(const FNiagaraVariableBase& InVarWithUniqueNameNamespace, FNiagaraTypeDefinition& OutBoundType) const;
+	bool CanObtainSystemAttribute(const FNiagaraVariableBase& InVar, FNiagaraTypeDefinition& OutBoundType) const;
 	bool CanObtainUserVariable(const FNiagaraVariableBase& InVar) const;
 
 #if WITH_EDITORONLY_DATA
-	const TMap<FGuid, UNiagaraMessageDataBase*>& GetMessages() const { return MessageKeyToMessageMap; };
+	const TMap<FGuid, TObjectPtr<UNiagaraMessageDataBase>>& GetMessages() const { return MessageKeyToMessageMap; };
 	void AddMessage(const FGuid& MessageKey, UNiagaraMessageDataBase* NewMessage) { MessageKeyToMessageMap.Add(MessageKey, NewMessage); };
 	void RemoveMessage(const FGuid& MessageKey) { MessageKeyToMessageMap.Remove(MessageKey); };
 	void RemoveMessageDelegateable(const FGuid MessageKey) { MessageKeyToMessageMap.Remove(MessageKey); };
@@ -561,21 +762,28 @@ public:
 	UNiagaraBakerSettings* GetBakerSettings();
 	const UNiagaraBakerSettings* GetBakerGeneratedSettings() const { return BakerGeneratedSettings; }
 	void SetBakerGeneratedSettings(UNiagaraBakerSettings* Settings) { BakerGeneratedSettings = Settings; }
+
+
+	/** Get the cached parameter map traversal for this emitter.  */
+	const TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe>& GetCachedTraversalData() const;
+	void InvalidateCachedData();
+	void GraphSourceChanged();
 #endif
 
 private:
 #if WITH_EDITORONLY_DATA
-	/** Checks the ddc for vm execution data for the given script. Return true if the data was loaded from the ddc, false otherwise. */
-	bool GetFromDDC(FEmitterCompiledScriptPair& ScriptPair);
+
 
 	/** Since the shader compilation is done in another process, this is used to check if the result for any ongoing compilations is done.
-	*   If bWait is true then this *blocks* the game thread (and ui) until all running compilations are finished.
+	*   If bWait is true then this *blocks* the game thread (and ui) until all shader compilations are finished.
 	*/
 	bool QueryCompileComplete(bool bWait, bool bDoPost, bool bDoNotApply = false);
 
-	bool ProcessCompilationResult(FEmitterCompiledScriptPair& ScriptPair, bool bWait, bool bDoNotApply);
+	void PreProcessWaitingDDCTasks(bool bProcessForWait);
 
 	bool CompilationResultsValid(FNiagaraSystemCompileRequest& CompileRequest) const;
+
+	void EvaluateCompileResultDependencies() const;
 
 	void InitEmitterCompiledData();
 
@@ -589,6 +797,10 @@ private:
 
 	/** Helper for filling in attribute datasets per emitter. */
 	void InitEmitterDataSetCompiledData(FNiagaraDataSetCompiledData& DataSetToInit, const UNiagaraEmitter* InAssociatedEmitter, const FNiagaraEmitterHandle& InAssociatedEmitterHandle);
+	void PrepareRapidIterationParametersForCompilation();
+
+	/** Resets internal data leaving it in a state which would have minimal cost to exist in headless builds (servers) */
+	void ResetToEmptySystem();
 #endif
 
 	void ResolveScalabilitySettings();
@@ -598,10 +810,18 @@ private:
 
 protected:
 	UPROPERTY(EditAnywhere, Category = "System")
-	UNiagaraEffectType* EffectType;
+	TObjectPtr<UNiagaraEffectType> EffectType;
 
 	UPROPERTY(EditAnywhere, Category = "Scalability")
 	bool bOverrideScalabilitySettings;
+
+	/** Controls whether we should override the Effect Type value for bAllowCullingForLocalPlayers. */
+	UPROPERTY(EditAnywhere, Category = "Override", meta = (InlineEditConditionToggle, EditCondition = bOverrideScalabilitySettings))
+	uint32 bOverrideAllowCullingForLocalPlayers : 1;
+	
+	/** The override value for bAllowCullingForLocalPlayers from the Effect Type. */
+	UPROPERTY(EditAnywhere, Category = "Override", meta = (EditCondition = bOverrideAllowCullingForLocalPlayers))
+	uint32 bAllowCullingForLocalPlayersOverride : 1;
 
 	UPROPERTY()
 	TArray<FNiagaraSystemScalabilityOverride> ScalabilityOverrides_DEPRECATED;
@@ -614,26 +834,26 @@ protected:
 	TArray<FNiagaraEmitterHandle> EmitterHandles;
 
 	UPROPERTY(EditAnywhere, Category="System")
-	TArray<UNiagaraParameterCollectionInstance*> ParameterCollectionOverrides;
+	TArray<TObjectPtr<UNiagaraParameterCollectionInstance>> ParameterCollectionOverrides;
 
 #if WITH_EDITORONLY_DATA
+	bool bCompilationReentrantGuard = false;
+
 	UPROPERTY(Transient)
 	TArray<FNiagaraSystemCompileRequest> ActiveCompilations;
-#endif
 
-// 	/** Category of this system. */
-// 	UPROPERTY(EditAnywhere, Category = System)
-// 	UNiagaraSystemCategory* Category;
+	mutable TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> CachedTraversalData;
+#endif
 
 	/** The script which defines the System parameters, and which generates the bindings from System
 		parameter to emitter parameter. */
 	UPROPERTY()
-	UNiagaraScript* SystemSpawnScript;
+	TObjectPtr<UNiagaraScript> SystemSpawnScript;
 
 	/** The script which defines the System parameters, and which generates the bindings from System
 	parameter to emitter parameter. */
 	UPROPERTY()
-	UNiagaraScript* SystemUpdateScript;
+	TObjectPtr<UNiagaraScript> SystemUpdateScript;
 
 	//** Post compile generated data used for initializing Emitter Instances during runtime. */
 	TArray<TSharedRef<const FNiagaraEmitterCompiledData>> EmitterCompiledData;
@@ -649,11 +869,11 @@ protected:
 #if WITH_EDITORONLY_DATA
 	/** Data used by the editor to maintain UI state etc.. */
 	UPROPERTY()
-	UNiagaraEditorDataBase* EditorData;
+	TObjectPtr<UNiagaraEditorDataBase> EditorData;
 
 	/** Wrapper for editor only parameters. */
 	UPROPERTY()
-	UNiagaraEditorParametersAdapterBase* EditorParameters;
+	TObjectPtr<UNiagaraEditorParametersAdapterBase> EditorParameters;
 
 	bool bIsolateEnabled;
 
@@ -671,8 +891,19 @@ protected:
 	UPROPERTY(EditAnywhere, Category = Performance, meta = (ToolTip = "Auto-deactivate system if all emitters are determined to not spawn particles again, regardless of lifetime."))
 	bool bAutoDeactivate;
 
+	/**
+	When disabled we will generate a RandomSeed per instance on reset which is not deterministic.
+	When enabled we will always use the RandomSeed from the system plus the components RandomSeedOffset, this allows for determinism but variance between components.
+	*/
+	UPROPERTY(EditAnywhere, Category = "Random")
+	bool bDeterminism = false;
+
+	/** Seed used for system script random number generator. */
+	UPROPERTY(EditAnywhere, Category = "Random", meta = (EditCondition = "bDeterminism"))
+	int32 RandomSeed = 0;
+
 	/** Warm up time in seconds. Used to calculate WarmupTickCount. Rounds down to the nearest multiple of WarmupTickDelta. */
-	UPROPERTY(EditAnywhere, Category = Warmup)
+	UPROPERTY(EditAnywhere, Category = Warmup, meta = (ForceUnits=s))
 	float WarmupTime;
 
 	/** Number of ticks to process for warmup. You can set by this or by time via WarmupTime. */
@@ -680,17 +911,30 @@ protected:
 	int32 WarmupTickCount;
 
 	/** Delta time to use for warmup ticks. */
-	UPROPERTY(EditAnywhere, Category = Warmup)
+	UPROPERTY(EditAnywhere, Category = Warmup, meta = (ForceUnits=s))
 	float WarmupTickDelta;
+
+	UPROPERTY(EditAnywhere, Category = "System", meta = (InlineEditConditionToggle))
+	bool bFixedTickDelta = false;
+
+	/**
+	If activated, the system ticks with a fixed delta time instead of the varying game thread delta time. This leads to much more stable simulations.
+	When the fixed tick delta is smaller than the game thread tick time the simulation is substepping by executing multiple ticks per frame.
+	Note that activating this feature forces the system to tick on the game thread instead of an async task in parallel.
+
+	The max number of substeps per frame can be set via fx.Niagara.SystemSimulation.MaxTickSubsteps
+	*/
+	UPROPERTY(EditAnywhere, Category = "System", meta = (EditCondition = "bFixedTickDelta", ForceUnits=s))
+	float FixedTickDeltaTime = 0.01667;
 
 #if WITH_EDITORONLY_DATA
 	/** Settings used inside the baker */
 	UPROPERTY(Export)
-	UNiagaraBakerSettings* BakerSettings;
+	TObjectPtr<UNiagaraBakerSettings> BakerSettings;
 
 	/** Generated data baker settings, will be null until we have generated at least once. */
 	UPROPERTY(Export)
-	UNiagaraBakerSettings* BakerGeneratedSettings;
+	TObjectPtr<UNiagaraBakerSettings> BakerGeneratedSettings;
 #endif
 
 	UPROPERTY()
@@ -718,12 +962,37 @@ protected:
 
 	uint32 bIsValidCached : 1;
 	uint32 bIsReadyToRunCached : 1;
+	uint32 bNeedsAsyncOptimize : 1;
+	uint32 bLwcEnabledSettingCached : 1;
 
 	TOptional<float> MaxDeltaTime;
 	FNiagaraDataSetAccessor<ENiagaraExecutionState> SystemExecutionStateAccessor;
 	TArray<FNiagaraDataSetAccessor<ENiagaraExecutionState>> EmitterExecutionStateAccessors;
 	TArray<TArray<FNiagaraDataSetAccessor<FNiagaraSpawnInfo>>> EmitterSpawnInfoAccessors;
 
+	FGraphEventRef ScriptOptimizationCompletionEvent;
+
+public:
+	void AsyncOptimizeAllScripts();
+
+	FGraphEventRef GetScriptOptimizationCompletionEvent()
+	{
+		if (ScriptOptimizationCompletionEvent.IsValid())
+		{
+			if ( !ScriptOptimizationCompletionEvent->IsComplete() )
+			{
+				return ScriptOptimizationCompletionEvent;
+			}
+			ScriptOptimizationCompletionEvent = nullptr;
+		}
+		return nullptr;
+	}
+
+	bool AllowCullingForLocalPlayers() const { return bAllowCullingForLocalPlayers; }
+
+	const FNiagaraSystemStaticBuffers* GetStaticBuffers() const { return StaticBuffers.Get(); }
+
+protected:
 	void GenerateStatID()const;
 #if STATS
 	mutable TStatId StatID_GT;
@@ -736,24 +1005,29 @@ protected:
 	FNiagaraStatDatabase StatDatabase;
 #endif
 
+	//Scalability settings
 	FNiagaraSystemScalabilitySettings CurrentScalabilitySettings;
+	bool bAllowCullingForLocalPlayers = false;
 
 	mutable FString CrashReporterTag;
 
 	uint32 bHasDIsWithPostSimulateTick : 1;
+	uint32 bAllDIsPostSimulateCanOverlapFrames : 1;
 	uint32 bHasAnyGPUEmitters : 1;
 	uint32 bNeedsSortedSignificanceCull : 1;
 
 #if WITH_EDITORONLY_DATA
 	/** Messages associated with the System asset. */
 	UPROPERTY()
-	TMap<FGuid, UNiagaraMessageDataBase*> MessageKeyToMessageMap;
+	TMap<FGuid, TObjectPtr<UNiagaraMessageDataBase>> MessageKeyToMessageMap;
 
 	FGuid AssetGuid;
 #endif
 
 	/** Total active instances of this system. */
 	int32 ActiveInstances;
+
+	TUniquePtr<FNiagaraSystemStaticBuffers, FNiagaraSystemStaticBuffers::FDeletor> StaticBuffers;
 };
 
 FORCEINLINE void UNiagaraSystem::RegisterActiveInstance()

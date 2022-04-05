@@ -7,6 +7,8 @@
 #include "SimpleElementShaders.h"
 #include "ShaderParameterUtils.h"
 #include "SceneView.h"
+#include "Misc/LargeWorldRenderPosition.h"
+#include "SceneRelativeViewMatrices.h"
 
 /*------------------------------------------------------------------------------
 	Simple element vertex shader.
@@ -15,27 +17,36 @@
 FSimpleElementVS::FSimpleElementVS(const ShaderMetaType::CompiledShaderInitializerType& Initializer):
 	FGlobalShader(Initializer)
 {
-	Transform.Bind(Initializer.ParameterMap,TEXT("Transform"), SPF_Mandatory);
+	RelativeTransform.Bind(Initializer.ParameterMap,TEXT("Transform"), SPF_Mandatory);
+	TransformTilePosition.Bind(Initializer.ParameterMap, TEXT("TransformTilePosition"), SPF_Optional); // TransformTilePosition may be optimized out if LWC is disabled
 	SwitchVerticalAxis.Bind(Initializer.ParameterMap,TEXT("SwitchVerticalAxis"), SPF_Optional);
+	DepthMinValue.Bind(Initializer.ParameterMap, TEXT("DepthMinValue"), SPF_Optional);
 }
 
-void FSimpleElementVS::SetParameters(FRHICommandList& RHICmdList, const FMatrix& TransformValue, bool bSwitchVerticalAxis)
+void FSimpleElementVS::SetParameters(FRHICommandList& RHICmdList, const FMatrix& WorldToClipMatrix, bool bSwitchVerticalAxis)
 {
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), Transform,TransformValue);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), RelativeTransform, FMatrix44f(WorldToClipMatrix));
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), TransformTilePosition, FVector3f::ZeroVector);
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), SwitchVerticalAxis, bSwitchVerticalAxis ? -1.0f : 1.0f);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), DepthMinValue, -1.0f);
 }
 
-/*bool FSimpleElementVS::Serialize(FArchive& Ar)
+void FSimpleElementVS::SetParameters(FRHICommandList& RHICmdList, const FRelativeViewMatrices& Matrices, bool bPerspectiveProjection, bool bSwitchVerticalAxis)
 {
-	bool bShaderHasOutdatedParameters = FGlobalShader::Serialize(Ar);
-	Ar << Transform << SwitchVerticalAxis;
-	return bShaderHasOutdatedParameters;
-}*/
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), RelativeTransform, Matrices.RelativeWorldToClip);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), TransformTilePosition, Matrices.TilePosition);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), SwitchVerticalAxis, bSwitchVerticalAxis ? -1.0f : 1.0f);
+
+	// Clamp Z-values to far plane for ortho-projection, we don't want any far-plane clipping
+	static_assert(bool(ERHIZBuffer::IsInverted), "FSimpleElementVS far plane clipping assumes inverted depth buffer");
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), DepthMinValue, bPerspectiveProjection ? -1.0f : 0.0f);
+}
 
 void FSimpleElementVS::ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 {
 	FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 	OutEnvironment.SetDefine(TEXT("ALLOW_SWITCH_VERTICALAXIS"), !IsMetalMobilePlatform(Parameters.Platform));
+	OutEnvironment.SetDefine(TEXT("ENABLE_LWC"), 1); // Currently SimpleElementVertexShader.usf is shared with FCubemapTexturePropertiesVS, so need separate paths for LWC vs non-LWC
 }
 
 /*------------------------------------------------------------------------------
@@ -179,7 +190,7 @@ void FSimpleElementDistanceFieldGammaPS::SetParameters(
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),EnableShadow,bEnableShadowValueUInt);
 	if (bEnableShadowValue)
 	{
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),ShadowDirection,ShadowDirectionValue);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),ShadowDirection,FVector2f(ShadowDirectionValue));
 		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),ShadowColor,ShadowColorValue);
 		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),ShadowSmoothWidth,ShadowSmoothWidthValue);
 	}
@@ -187,8 +198,8 @@ void FSimpleElementDistanceFieldGammaPS::SetParameters(
 	if (GlowInfo.bEnableGlow)
 	{
 		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),GlowColor,GlowInfo.GlowColor);
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),GlowOuterRadius,GlowInfo.GlowOuterRadius);
-		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),GlowInnerRadius,GlowInfo.GlowInnerRadius);
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),GlowOuterRadius,FVector2f(GlowInfo.GlowOuterRadius));
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),GlowInnerRadius,FVector2f(GlowInfo.GlowInnerRadius));
 	}
 
 	// This shader does not use editor compositing
@@ -256,7 +267,7 @@ FSimpleElementColorChannelMaskPS::FSimpleElementColorChannelMaskPS(const ShaderM
 void FSimpleElementColorChannelMaskPS::SetParameters(FRHICommandList& RHICmdList, const FTexture* TextureValue, const FMatrix& ColorWeightsValue, float GammaValue)
 {
 	SetTextureParameter(RHICmdList, RHICmdList.GetBoundPixelShader(),InTexture,InTextureSampler,TextureValue);
-	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),ColorWeights,ColorWeightsValue);
+	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),ColorWeights, (FMatrix44f)ColorWeightsValue);
 	SetShaderValue(RHICmdList, RHICmdList.GetBoundPixelShader(),Gamma,GammaValue);
 }
 

@@ -12,12 +12,6 @@
 #include "WindowsTargetSettings.generated.h"
 
 UENUM()
-enum class EMinimumSupportedOS : uint8
-{
-	MSOS_Vista = 0 UMETA(DisplayName = "Windows Vista"),
-};
-
-UENUM()
 enum class ECompilerVersion : uint8
 {
 	Default = 0,
@@ -62,17 +56,10 @@ public:
 	TArray<FString> TargetedRHIs;
 
 	/** 
-	 * Default Graphics RHI. Select which RHIto use. Make sure its also selected as a Targeted RHI
-	 * Requires Editor restart
+	 * Select which RHI to use. Make sure its also selected as a Targeted RHI. Requires Editor restart.
 	 */
-	UPROPERTY(EditAnywhere, config, Category="Targeted RHIs", Meta = (DisplayName = "Default RHI"))
+	UPROPERTY(EditAnywhere, config, Category="Targeted RHIs", Meta = (DisplayName = "Default RHI", ConfigRestartRequired = true))
 	EDefaultGraphicsRHI DefaultGraphicsRHI;
-
-	/**
-	 * Determine the minimum supported 
-	 */
-	UPROPERTY(EditAnywhere, config, Category="OS Info", Meta=(DisplayName = "Minimum OS Version"))
-	EMinimumSupportedOS MinimumOSVersion;
 
 	/** Sample rate to run the audio mixer with. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio", Meta = (DisplayName = "Audio Mixer Sample Rate"))
@@ -94,15 +81,19 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Audio", meta = (ClampMin = "0", UIMin = "0", DisplayName = "Number of Source Workers"))
 	int32 AudioNumSourceWorkers;
 
-	/** Which of the currently enabled spatialization plugins to use on Windows. */
+	/** Which of the currently enabled spatialization plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString SpatializationPlugin;
 
-	/** Which of the currently enabled reverb plugins to use on Windows. */
+	/** Which of the currently enabled source data override plugins to use. */
+	UPROPERTY(config, EditAnywhere, Category = "Audio")
+	FString SourceDataOverridePlugin;
+
+	/** Which of the currently enabled reverb plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString ReverbPlugin;
 
-	/** Which of the currently enabled occlusion plugins to use on Windows. */
+	/** Which of the currently enabled occlusion plugins to use. */
 	UPROPERTY(config, EditAnywhere, Category = "Audio")
 	FString OcclusionPlugin;
 
@@ -111,10 +102,6 @@ public:
 	/** Various overrides for how this platform should handle compression and decompression */
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio")
 	FPlatformRuntimeAudioCompressionOverrides CompressionOverrides;
-
-	/** When this is enabled, Actual compressed data will be separated from the USoundWave, and loaded into a cache. */
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio|CookOverrides", meta = (DisplayName = "Use Stream Caching (Experimental)"))
-	bool bUseAudioStreamCaching;
 
 	/** This determines the max amount of memory that should be used for the cache at any given time. If set low (<= 8 MB), it lowers the size of individual chunks of audio during cook. */
 	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio|CookOverrides|Stream Caching", meta = (DisplayName = "Max Cache Size (KB)"))
@@ -149,7 +136,7 @@ public:
 	float CompressionQualityModifier;
 
 	/** When set to anything beyond 0, this will ensure any SoundWaves longer than this value, in seconds, to stream directly off of the disk. */
-	UPROPERTY(GlobalConfig, EditAnywhere, Category = "Audio|CookOverrides", meta = (DisplayName = "Stream All Soundwaves Longer Than: "))
+	UPROPERTY(GlobalConfig)
 	float AutoStreamingThreshold;
 
 	/** Quality Level to COOK SoundCues at (if set, all other levels will be stripped by the cooker). */

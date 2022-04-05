@@ -1,4 +1,4 @@
-package com.epicgames.ue4.notifications;
+package com.epicgames.unreal.notifications;
 
 import androidx.annotation.DrawableRes;
 import androidx.annotation.NonNull;

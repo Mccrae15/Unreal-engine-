@@ -4,6 +4,7 @@
 #include "Net/NetworkProfiler.h"
 #include "Net/NetworkGranularMemoryLogging.h"
 #include "Engine/LevelStreaming.h"
+#include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Engine/ActorChannel.h"
 #include "Engine/NetworkObjectList.h"
@@ -132,7 +133,7 @@ void UReplayNetConnection::LowLevelSend(void* Data, int32 CountBits, FOutPacketT
 			{
 				//@todo: unique this in tick?
 				// RepChangedPropertyTrackerMap.Find is expensive
-				ReplayHelper.UpdateExternalDataForActor(this, Actor);
+				ReplayHelper.UpdateExternalDataForObject(this, Actor);
 			}
 
 			if (!bCheckpoint && ReplayHelper.bHasDeltaCheckpoints && Driver)
@@ -271,11 +272,11 @@ void UReplayNetConnection::NotifyActorDestroyed(AActor* Actor, bool IsSeamlessTr
 			UE_CLOG(bActorRewindable, LogDemo, Warning, TEXT("Replay Rewindable Actor destroyed during recording. Replay may show artifacts (%s)"), *FullName);
 
 			UE_LOG(LogDemo, VeryVerbose, TEXT("NotifyActorDestroyed: adding actor to deleted startup list: %s"), *FullName);
-			ReplayHelper.DeletedNetStartupActors.Add(FullName);
+			ReplayHelper.RecordingDeletedNetStartupActors.Add(FullName);
 
 			if (bDeltaCheckpoint)
 			{
-				ReplayHelper.RecordingDeltaCheckpointData.DestroyedNetStartupActors.Add(FullName);
+				ReplayHelper.RecordingDeltaCheckpointData.RecordingDeletedNetStartupActors.Add(FullName);
 			}
 		}
 	}
@@ -311,4 +312,14 @@ void UReplayNetConnection::NotifyActorChannelCleanedUp(UActorChannel* Channel, E
 			ReplayHelper.RecordingDeltaCheckpointData.ChannelsToClose.Add(Channel->ActorNetGUID, CloseReason);
 		}
 	}
+}
+
+void UReplayNetConnection::RequestCheckpoint()
+{
+	ReplayHelper.RequestCheckpoint();
+}
+
+bool UReplayNetConnection::SetExternalDataForObject(UObject* OwningObject, const uint8* Src, const int32 NumBits)
+{
+	return ReplayHelper.SetExternalDataForObject(this, OwningObject, Src, NumBits);
 }

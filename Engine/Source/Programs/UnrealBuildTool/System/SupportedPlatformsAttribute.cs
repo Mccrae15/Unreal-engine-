@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -31,7 +32,7 @@ namespace UnrealBuildTool
 			}
 			catch (BuildException Ex)
 			{
-				Tools.DotNETCommon.ExceptionUtils.AddContext(Ex, "while parsing a SupportedPlatforms attribute");
+				EpicGames.Core.ExceptionUtils.AddContext(Ex, "while parsing a SupportedPlatforms attribute");
 				throw;
 			}
 

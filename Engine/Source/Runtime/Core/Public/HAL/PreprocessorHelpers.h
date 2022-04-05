@@ -19,11 +19,13 @@
 #define PREPROCESSOR_IF_INNER_1(x, y) x
 #define PREPROCESSOR_IF_INNER_0(x, y) y
 
-// Expands to the parameter list of the macro - used for when you need to pass a comma-separated identifier to another macro as a single parameter
-#define PREPROCESSOR_COMMA_SEPARATED(first, second, ...) first, second, ##__VA_ARGS__
+// Expands to the parameter list of the macro - used to pass a *potentially* comma-separated identifier to another macro as a single parameter
+#define PREPROCESSOR_COMMA_SEPARATED(first, ...) first, ##__VA_ARGS__
 
 // Expands to nothing - used as a placeholder
 #define PREPROCESSOR_NOTHING
+
+#define UE_SOURCE_LOCATION TEXT(__FILE__ "(" PREPROCESSOR_TO_STRING(__LINE__) ")")
 
 // Removes a single layer of parentheses from a macro argument if they are present - used to allow
 // brackets to be optionally added when the argument contains commas, e.g.:

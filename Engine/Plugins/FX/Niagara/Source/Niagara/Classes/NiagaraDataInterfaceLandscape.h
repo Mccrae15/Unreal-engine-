@@ -43,13 +43,13 @@ public:
 	DECLARE_NIAGARA_DI_PARAMETER();
 
 	UPROPERTY(EditAnywhere, Category = "Landscape")
-	AActor* SourceLandscape;
+	TObjectPtr<AActor> SourceLandscape;
 
 	UPROPERTY(EditAnywhere, Category = "Landscape")
 	ENDILandscape_SourceMode SourceMode = ENDILandscape_SourceMode::Default;
 
 	UPROPERTY(EditAnywhere, Category = "Landscape")
-	TArray<UPhysicalMaterial*> PhysicalMaterials;
+	TArray<TObjectPtr<UPhysicalMaterial>> PhysicalMaterials;
 
 	//UObject Interface
 	virtual void PostInitProperties() override;	
@@ -85,6 +85,7 @@ protected:
 	void ApplyLandscape(const FNiagaraSystemInstance& SystemInstance, FNDILandscapeData_GameThread& InstanceData) const;
 	ALandscape* GetLandscape(const FNiagaraSystemInstance& SystemInstance, ALandscape* Hint) const;
 
+	static const FName GetBaseColorName;
 	static const FName GetHeightName;
 	static const FName GetWorldNormalName;
 	static const FName GetPhysicalMaterialIndexName;

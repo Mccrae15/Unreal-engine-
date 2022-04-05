@@ -43,7 +43,7 @@ FORCEINLINE FQuat ToFQuat(XrQuaternionf Quat)
 
 FORCEINLINE XrQuaternionf ToXrQuat(FQuat Quat)
 {
-	return XrQuaternionf{ Quat.Y, Quat.Z, -Quat.X, -Quat.W };
+	return XrQuaternionf{ (float)Quat.Y, (float)Quat.Z, -(float)Quat.X, -(float)Quat.W };
 }
 
 FORCEINLINE FVector ToFVector(XrVector3f Vector, float Scale = 1.0f)
@@ -56,7 +56,7 @@ FORCEINLINE XrVector3f ToXrVector(FVector Vector, float Scale = 1.0f)
 	if (Vector.IsZero())
 		return XrVector3f{ 0.0f, 0.0f, 0.0f };
 
-	return XrVector3f{ Vector.Y / Scale, Vector.Z / Scale, -Vector.X / Scale };
+	return XrVector3f{ (float)Vector.Y / Scale, (float)Vector.Z / Scale, (float)-Vector.X / Scale };
 }
 
 FORCEINLINE FTransform ToFTransform(XrPosef Transform, float Scale = 1.0f)
@@ -101,7 +101,7 @@ FORCEINLINE XrExtent2Df ToXrExtent2D(FVector2D Vector, float Scale = 1.0f)
 	if (Vector.IsZero())
 		return XrExtent2Df{ 0.0f, 0.0f };
 
-	return XrExtent2Df{ Vector.X / Scale, Vector.Y / Scale };
+	return XrExtent2Df{ (float)Vector.X / Scale, (float)Vector.Y / Scale };
 }
 
 /** List all OpenXR global entry points used by Unreal. */

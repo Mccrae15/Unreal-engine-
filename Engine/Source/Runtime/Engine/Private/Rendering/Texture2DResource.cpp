@@ -23,13 +23,22 @@ static TAutoConsoleVariable<int32> CVarForceHighestMipOnUITexturesEnabled(
  * @param InState			
  */
 FTexture2DResource::FTexture2DResource(UTexture2D* InOwner, const FStreamableRenderResourceState& InState)
-	: FStreamableTextureResource(InOwner, InOwner->PlatformData, InState, true)
-	, ResourceMem( InOwner->ResourceMem )
+	: FStreamableTextureResource(InOwner, InOwner->GetPlatformData(), InState, true)
+	, ResourceMem(InOwner->ResourceMem)
 {
 	// Retrieve initial mip data.
 	MipData.AddZeroed(State.MaxNumLODs);
 	InOwner->GetMipData(State.LODCountToAssetFirstLODIdx(State.NumRequestedLODs), MipData.GetData() + State.LODCountToFirstLODIdx(State.NumRequestedLODs));
 
+	CacheSamplerStateInitializer(InOwner);
+}
+
+FTexture2DResource::FTexture2DResource(UTexture2D* InOwner, const FTexture2DResource* InProxiedResource)
+	: FStreamableTextureResource(InOwner, InProxiedResource->PlatformData, FStreamableRenderResourceState(), true)
+	, ResourceMem(InOwner->ResourceMem)
+	, ProxiedResource(InProxiedResource)
+{
+	TextureReferenceRHI = InOwner->TextureReference.TextureReferenceRHI;
 	CacheSamplerStateInitializer(InOwner);
 }
 
@@ -74,6 +83,20 @@ void FTexture2DResource::CacheSamplerStateInitializer(const UTexture2D* InOwner)
 	MipBias = UTexture2D::GetGlobalMipMapLODBias() + DefaultMipBias;
 }
 
+void FTexture2DResource::InitRHI()
+{
+	if (ProxiedResource)
+	{
+		TextureRHI = ProxiedResource->TextureRHI;
+		RHIUpdateTextureReference(TextureReferenceRHI, TextureRHI);
+		SamplerStateRHI = ProxiedResource->SamplerStateRHI;
+		DeferredPassSamplerStateRHI = ProxiedResource->DeferredPassSamplerStateRHI;
+	}
+	else
+	{
+		FStreamableTextureResource::InitRHI();
+	}
+}
 
 void FTexture2DResource::CreateTexture()
 {
@@ -82,7 +105,7 @@ void FTexture2DResource::CreateTexture()
 	const FTexture2DMipMap* RequestedMip = GetPlatformMip(RequestedMipIdx);
 
 	// create texture with ResourceMem data when available
-	FRHIResourceCreateInfo CreateInfo(ResourceMem);
+	FRHIResourceCreateInfo CreateInfo(TEXT("FTexture2DResource"), ResourceMem);
 	CreateInfo.ExtData = PlatformData->GetExtData();
 	Texture2DRHI = RHICreateTexture2D( RequestedMip->SizeX, RequestedMip->SizeY, PixelFormat, State.NumRequestedLODs, 1, CreationFlags, CreateInfo);
 
@@ -121,7 +144,7 @@ void FTexture2DResource::CreatePartiallyResidentTexture()
 	const int32 CurrentFirstMip = State.RequestedFirstLODIdx();
 
 	check(bUsePartiallyResidentMips);
-	FRHIResourceCreateInfo CreateInfo(ResourceMem);
+	FRHIResourceCreateInfo CreateInfo(TEXT("FTexture2DResource-PRT"), ResourceMem);
 	CreateInfo.ExtData = PlatformData->GetExtData();
 	Texture2DRHI = RHICreateTexture2D( SizeX, SizeY, PixelFormat, State.MaxNumLODs, 1, CreationFlags | TexCreate_Virtual, CreateInfo);
 	RHIVirtualTextureSetFirstMipInMemory(Texture2DRHI, CurrentFirstMip);
@@ -144,32 +167,31 @@ void FTexture2DResource::CreatePartiallyResidentTexture()
 	TextureRHI = Texture2DRHI;
 }
 
-#if STATS
-void FTexture2DResource::CalcRequestedMipsSize()
+uint64 FTexture2DResource::GetPlatformMipsSize(uint32 NumMips) const
 {
-	if (PlatformData && State.NumRequestedLODs > 0)
+	if (PlatformData && NumMips > 0)
 	{
 		static TConsoleVariableData<int32>* CVarReducedMode = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTextureReducedMemory"));
 		check(CVarReducedMode);
 
 		uint32 TextureAlign = 0;
 		// Must be consistent with the logic in FTexture2DResource::InitRHI
-		if (bUsePartiallyResidentMips && (!CVarReducedMode->GetValueOnRenderThread() || State.NumRequestedLODs > State.NumNonStreamingLODs))
+		if (bUsePartiallyResidentMips && (!CVarReducedMode->GetValueOnRenderThread() || NumMips > State.NumNonStreamingLODs))
 		{
-			TextureSize = RHICalcVMTexture2DPlatformSize(SizeX, SizeY, PixelFormat, State.NumRequestedLODs, State.RequestedFirstLODIdx(), 1, CreationFlags | TexCreate_Virtual, TextureAlign);
+			return RHICalcVMTexture2DPlatformSize(SizeX, SizeY, PixelFormat, NumMips, State.LODCountToFirstLODIdx(NumMips), 1, CreationFlags | TexCreate_Virtual, TextureAlign);
 		}
 		else
 		{
 			const FIntPoint MipExtents = CalcMipMapExtent(SizeX, SizeY, PixelFormat, State.RequestedFirstLODIdx());
-			TextureSize = RHICalcTexture2DPlatformSize(MipExtents.X, MipExtents.Y, PixelFormat, State.NumRequestedLODs, 1, CreationFlags, FRHIResourceCreateInfo(PlatformData->GetExtData()), TextureAlign);
+			return RHICalcTexture2DPlatformSize(MipExtents.X, MipExtents.Y, PixelFormat, NumMips, 1, CreationFlags, FRHIResourceCreateInfo(PlatformData->GetExtData()), TextureAlign);
 		}
 	}
 	else
 	{
-		TextureSize = 0;
+		return 0;
 	}
 }
-#endif
+
 
 /**
  * Writes the data for a single mip-level into a destination buffer.

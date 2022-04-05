@@ -2,15 +2,34 @@
 
 #pragma once
 
-#include "CoreMinimal.h"
 #include "Library/DMXEntityFixtureType.h"
 
+#include "CoreMinimal.h"
+#include "JsonObjectConverter.h"
+
+class UDMXEntity;
 class UDMXEntityFixturePatch;
+class UDMXLibrary;
 
 
 class DMXRUNTIME_API FDMXRuntimeUtils
 {
 public:
+	/**
+	 * Generates a unique name given a base one and a list of existing ones, by appending an index to
+	 * existing names. If InBaseName is an empty String, it returns "Default name".
+	 */
+	static FString GenerateUniqueNameFromExisting(const TSet<FString>& InExistingNames, const FString& InBaseName);
+
+	/**
+	 * Creates an unique name for an Entity from a specific type, using the type name as base.
+	 * @param InLibrary		The DMXLibrary object the entity will belong to.
+	 * @param InEntityClass	The class of the Entity, to check the name against others from same type.
+	 * @param InBaseName	Optional base name to use instead of the type name.
+	 * @return Unique name for an Entity amongst others from the same type.
+	 */
+	static FString FindUniqueEntityName(const UDMXLibrary* InLibrary, TSubclassOf<UDMXEntity> InEntityClass, const FString& InBaseName = TEXT(""));
+
 	/**
 	 * Utility to separate a name from an index at the end.
 	 * @param InString	The string to be separated.
@@ -314,6 +333,29 @@ public:
 				}
 			}
 		}
+	}
+
+	/** Serializes a struct to a Sting */
+	template <typename StructType>
+	static TOptional<FString> SerializeStructToString(const StructType& Struct)
+	{
+		TSharedRef<FJsonObject> RootJsonObject = MakeShareable(new FJsonObject());
+
+		FJsonObjectConverter::UStructToJsonObject(StructType::StaticStruct(), &Struct, RootJsonObject, 0, 0);
+
+		typedef TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>> FStringWriter;
+		typedef TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>> FStringWriterFactory;
+
+		FString CopyStr;
+		TSharedRef<FStringWriter> Writer = FStringWriterFactory::Create(&CopyStr);
+		FJsonSerializer::Serialize(RootJsonObject, Writer);
+
+		if (!CopyStr.IsEmpty())
+		{
+			return CopyStr;
+		}
+
+		return TOptional<FString>();
 	}
 
 	// can't instantiate this class

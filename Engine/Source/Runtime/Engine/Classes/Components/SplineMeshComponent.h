@@ -119,13 +119,13 @@ class ENGINE_API USplineMeshComponent : public UStaticMeshComponent, public IInt
 
 	// Physics data.
 	UPROPERTY()
-	UBodySetup* BodySetup;
+	TObjectPtr<UBodySetup> BodySetup;
 
 	/** Maximum coordinate along the spline forward axis which corresponds to end of spline. If set to 0.0, will use bounding box to determine bounds */
 	UPROPERTY(EditAnywhere, Category = SplineMesh, AdvancedDisplay)
 	float SplineBoundaryMax;
 
-	/** If true, spline keys may be edited per instance in the level viewport. Otherwise, the spline should be initialized in the construction script. */
+	/** If true, spline mesh properties - StartPos, EndPos, StartTangent and EndTangent- may be edited per instance in the level viewport. Otherwise, the spline mesh should be initialized in the construction script. */
 	UPROPERTY(EditDefaultsOnly, Category = Spline)
 	uint8 bAllowSplineEditingPerInstance:1;
 
@@ -204,9 +204,6 @@ public:
 
 	/** Called to notify render thread and possibly collision of a change in spline params or mesh */
 	void UpdateRenderStateAndCollision();
-
-	UE_DEPRECATED(4.11, "This method has been renamed to UpdateRenderStateAndCollision, but use of UpdateMesh is preferred")
-	void MarkSplineParamsDirty() { UpdateRenderStateAndCollision(); }
 
 	/** Update the collision and render state on the spline mesh following changes to its geometry */
 	UFUNCTION(BlueprintCallable, Category = SplineMesh)
@@ -347,8 +344,11 @@ public:
 	 */
 	FTransform CalcSliceTransformAtSplineOffset(const float Alpha) const;
 
-	inline static const float& GetAxisValue(const FVector& InVector, ESplineMeshAxis::Type InAxis);
-	inline static float& GetAxisValue(FVector& InVector, ESplineMeshAxis::Type InAxis);
+	inline static const double& GetAxisValue(const FVector3d& InVector, ESplineMeshAxis::Type InAxis);
+	inline static double& GetAxisValue(FVector3d& InVector, ESplineMeshAxis::Type InAxis);
+
+	inline static const float& GetAxisValue(const FVector3f& InVector, ESplineMeshAxis::Type InAxis);
+	inline static float& GetAxisValue(FVector3f& InVector, ESplineMeshAxis::Type InAxis);
 
 	/** Returns a vector which, when componentwise-multiplied by another vector, will zero all the components not corresponding to the supplied ESplineMeshAxis */
 	inline static FVector GetAxisMask(ESplineMeshAxis::Type InAxis);
@@ -361,14 +361,13 @@ private:
 
 /** Used to store spline mesh data during RerunConstructionScripts */
 USTRUCT()
-struct FSplineMeshInstanceData : public FSceneComponentInstanceData
+struct FSplineMeshInstanceData : public FStaticMeshComponentInstanceData
 {
 	GENERATED_BODY()
 public:
 	FSplineMeshInstanceData() = default;
-	explicit FSplineMeshInstanceData(const USplineMeshComponent* SourceComponent)
-		: FSceneComponentInstanceData(SourceComponent)
-	{}
+	explicit FSplineMeshInstanceData(const USplineMeshComponent* SourceComponent);
+
 	virtual ~FSplineMeshInstanceData() = default;
 
 	virtual bool ContainsData() const override
@@ -395,7 +394,7 @@ public:
 	FVector EndTangent = FVector::ZeroVector;
 };
 
-const float& USplineMeshComponent::GetAxisValue(const FVector& InVector, ESplineMeshAxis::Type InAxis)
+const double& USplineMeshComponent::GetAxisValue(const FVector3d& InVector, ESplineMeshAxis::Type InAxis)
 {
 	switch (InAxis)
 	{
@@ -411,7 +410,40 @@ const float& USplineMeshComponent::GetAxisValue(const FVector& InVector, ESpline
 	}
 }
 
-float& USplineMeshComponent::GetAxisValue(FVector& InVector, ESplineMeshAxis::Type InAxis)
+double& USplineMeshComponent::GetAxisValue(FVector3d& InVector, ESplineMeshAxis::Type InAxis)
+{
+	switch (InAxis)
+	{
+	case ESplineMeshAxis::X:
+		return InVector.X;
+	case ESplineMeshAxis::Y:
+		return InVector.Y;
+	case ESplineMeshAxis::Z:
+		return InVector.Z;
+	default:
+		check(0);
+		return InVector.Z;
+	}
+}
+
+
+const float& USplineMeshComponent::GetAxisValue(const FVector3f& InVector, ESplineMeshAxis::Type InAxis)
+{
+	switch (InAxis)
+	{
+	case ESplineMeshAxis::X:
+		return InVector.X;
+	case ESplineMeshAxis::Y:
+		return InVector.Y;
+	case ESplineMeshAxis::Z:
+		return InVector.Z;
+	default:
+		check(0);
+		return InVector.Z;
+	}
+}
+
+float& USplineMeshComponent::GetAxisValue(FVector3f& InVector, ESplineMeshAxis::Type InAxis)
 {
 	switch (InAxis)
 	{

@@ -113,11 +113,15 @@ namespace EAudioMixerChannel
 }
 
 class USoundWave;
+class FSoundWaveProxy;
+class FSoundWaveData;
 class ICompressedAudioInfo;
+using FSoundWaveProxyPtr = TSharedPtr<FSoundWaveProxy, ESPMode::ThreadSafe>;
+using FSoundWavePtr = TSharedPtr<FSoundWaveData, ESPMode::ThreadSafe>;
+
 
 namespace Audio
 {
-
    	/** Structure to hold platform device information **/
 	struct FAudioPlatformDeviceInfo
 	{
@@ -165,7 +169,7 @@ namespace Audio
 	{
 	public:
 		/** Callback to generate a new audio stream buffer. */
-		virtual bool OnProcessAudioStream(AlignedFloatBuffer& OutputBuffer) = 0;
+		virtual bool OnProcessAudioStream(FAlignedFloatBuffer& OutputBuffer) = 0;
 
 		/** Called when audio render thread stream is shutting down. Last function called. Allows cleanup on render thread. */
 		virtual void OnAudioStreamShutdown() = 0;
@@ -177,6 +181,16 @@ namespace Audio
 
 		/** Called by FWindowsMMNotificationClient to toggle logging for audio device changes: */
 		AUDIOMIXERCORE_API static bool ShouldLogDeviceSwaps();
+		
+		/** Called by AudioMixer to see if we should do a multithreaded device swap */
+		AUDIOMIXERCORE_API static bool ShouldUseThreadedDeviceSwap();
+
+		/** Called by AudioMixer to see if it should reycle the threads: */
+		AUDIOMIXERCORE_API static bool ShouldRecycleThreads();
+
+		/** Called by AudioMixer if it should use Cache for DeviceInfo Enumeration */
+		AUDIOMIXERCORE_API static bool ShouldUseDeviceInfoCache();
+
 
 	protected:
 
@@ -187,6 +201,17 @@ namespace Audio
 		bool bIsMainAudioMixer;
 	};
 
+	// Interface for Caching Device Info.
+	class AUDIOMIXERCORE_API IAudioPlatformDeviceInfoCache
+	{
+	public:
+		// Pure Interface. 
+		virtual ~IAudioPlatformDeviceInfoCache() = default;
+			
+		virtual TOptional<FAudioPlatformDeviceInfo> FindActiveOutputDevice(FName InDeviceID) const = 0;
+		virtual TArray<FAudioPlatformDeviceInfo> GetAllActiveOutputDevices() const = 0;
+		virtual TOptional<FAudioPlatformDeviceInfo> FindDefaultOutputDevice() const = 0;
+	};
 
 	/** Defines parameters needed for opening a new audio stream to device. */
 	struct FAudioMixerOpenStreamParams
@@ -268,6 +293,8 @@ namespace Audio
 		Console,
 		Multimedia,
 		Communications,
+
+		COUNT,
 	};
 
 	enum class EAudioDeviceState
@@ -276,6 +303,8 @@ namespace Audio
 		Disabled,
 		NotPresent,
 		Unplugged,
+
+		COUNT,
 	};
 
 	/** Struct used to store render time analysis data. */
@@ -329,13 +358,13 @@ namespace Audio
 		mutable Audio::TCircularAudioBuffer<uint8> CircularBuffer;
 		
 		// Buffer that we render audio to from the IAudioMixer instance associated with this output buffer.
-		Audio::AlignedFloatBuffer RenderBuffer;
+		Audio::FAlignedFloatBuffer RenderBuffer;
 
 		// Buffer read by the platform interface thread.
-		mutable Audio::AlignedByteBuffer PopBuffer;
+		mutable Audio::FAlignedByteBuffer PopBuffer;
 
 		// For non-float situations, this buffer is used to convert RenderBuffer before pushing it to CircularBuffer.
-		AlignedByteBuffer FormattedBuffer;
+		FAlignedByteBuffer FormattedBuffer;
  		EAudioMixerStreamDataFormat::Type DataFormat;
 
 		static size_t GetSizeForDataFormat(EAudioMixerStreamDataFormat::Type InDataFormat);
@@ -343,16 +372,36 @@ namespace Audio
 	};
 
 	/** Abstract interface for receiving audio device changed notifications */
-	class AUDIOMIXERCORE_API IAudioMixerDeviceChangedLister
+	class AUDIOMIXERCORE_API IAudioMixerDeviceChangedListener
 	{
 	public:
+		struct FFormatChangedData
+		{
+			int32 NumChannels = 0;
+			int32 SampleRate = 0;
+			uint32 ChannelBitmask = 0;
+		};
+
+		enum class EDisconnectReason
+		{
+			DeviceRemoval,
+			ServerShutdown,
+			FormatChanged,
+			SessionLogoff,
+			SessionDisconnected,
+			ExclusiveModeOverride
+		};
+
 		virtual void RegisterDeviceChangedListener() {}
 		virtual void UnregisterDeviceChangedListener() {}
 		virtual void OnDefaultCaptureDeviceChanged(const EAudioDeviceRole InAudioDeviceRole, const FString& DeviceId) {}
 		virtual void OnDefaultRenderDeviceChanged(const EAudioDeviceRole InAudioDeviceRole, const FString& DeviceId) {}
-		virtual void OnDeviceAdded(const FString& DeviceId) {}
-		virtual void OnDeviceRemoved(const FString& DeviceId) {}
-		virtual void OnDeviceStateChanged(const FString& DeviceId, const EAudioDeviceState InState) {}
+		virtual void OnDeviceAdded(const FString& DeviceId, bool bIsRenderDevice) {}
+		virtual void OnDeviceRemoved(const FString& DeviceId, bool bIsRenderDevice) {}
+		virtual void OnDeviceStateChanged(const FString& DeviceId, const EAudioDeviceState InState, bool bIsRenderDevice) {}
+		virtual void OnFormatChanged(const FString& InDeviceId, const FFormatChangedData& InFormat) {}
+		virtual void OnSessionDisconnect(EDisconnectReason InReason) {}
+		
 		virtual FString GetDeviceId() const { return FString(); }
 	};
 
@@ -360,7 +409,7 @@ namespace Audio
 	/** Abstract interface for mixer platform. */
 	class AUDIOMIXERCORE_API IAudioMixerPlatformInterface : public FRunnable,
 														public FSingleThreadRunnable,
-														public IAudioMixerDeviceChangedLister
+														public IAudioMixerDeviceChangedListener
 	{
 
 	public: // Virtual functions
@@ -368,8 +417,8 @@ namespace Audio
 		/** Virtual destructor. */
 		virtual ~IAudioMixerPlatformInterface();
 
-		/** Returns the platform API enumeration. */
-		virtual EAudioMixerPlatformApi::Type GetPlatformApi() const = 0;
+		/** Returns the platform API name. */
+		virtual FString GetPlatformApi() const = 0;
 
 		/** Initialize the hardware. */
 		virtual bool InitializeHardware() = 0;
@@ -395,7 +444,7 @@ namespace Audio
 		/**
 		 * Returns the name of the currently used audio device.
 		 */
-		virtual FString GetCurrentDeviceName() { return CurrentDeviceName; }
+		virtual FString GetCurrentDeviceName() const { return CurrentDeviceName; }
 
 		/**
 		 * Can be used to look up the current index for a given device name.
@@ -425,23 +474,17 @@ namespace Audio
 		/** Resets the audio stream to use a new audio device with the given device ID (empty string means default). */
 		virtual bool MoveAudioStreamToNewAudioDevice(const FString& InNewDeviceId) { return true;  }
 
+		/** Sends a command to swap which output device is being used */
+		virtual bool RequestDeviceSwap(const FString& DeviceID, bool bInForce, const TCHAR* InReason = nullptr) { return false; }
+
 		/** Returns the platform device info of the currently open audio stream. */
 		virtual FAudioPlatformDeviceInfo GetPlatformDeviceInfo() const = 0;
 
 		/** Submit the given buffer to the platform's output audio device. */
 		virtual void SubmitBuffer(const uint8* Buffer) {};
 
-		/** Returns the name of the format of the input sound wave. */
-		virtual FName GetRuntimeFormat(USoundWave* InSoundWave) = 0;
-
 		/** Allows platforms to filter the requested number of frames to render. Some platforms only support specific frame counts. */
 		virtual int32 GetNumFrames(const int32 InNumReqestedFrames) { return InNumReqestedFrames; }
-
-		/** Checks if the platform has a compressed audio format for sound waves. */
-		virtual bool HasCompressedAudioInfoClass(USoundWave* InSoundWave) = 0;
-
-		/** Whether or not the platform supports realtime decompression. */
-		virtual bool SupportsRealtimeDecompression() const { return false; }
 
 		/** Whether or not the platform disables caching of decompressed PCM data (i.e. to save memory on fixed memory platforms) */
 		virtual bool DisablePCMAudioCaching() const { return false; }
@@ -452,8 +495,11 @@ namespace Audio
 		/** Whether this is an interface for a non-realtime renderer. If true, synch events will behave differently to avoid deadlocks. */
 		virtual bool IsNonRealtime() const { return false; }
 
-		/** Creates a Compressed audio info class suitable for decompressing this SoundWave. */
-		virtual ICompressedAudioInfo* CreateCompressedAudioInfo(USoundWave* SoundWave) = 0;
+		/** Returns the FName version of a given sound wave's format. Override to provide a runtime format (codec) that is platform specific. */
+		virtual FName GetRuntimeFormat(const USoundWave* InSoundWave) const { return FName(); }
+
+		/** Creates a Compressed audio info class suitable for decompressing this SoundWave. OVerride to create platform-specific decoders. */
+		virtual ICompressedAudioInfo* CreateCompressedAudioInfo(const FName& InRuntimeFormat) const { return nullptr; };
 
 		/** Return any optional device name defined in platform configuratio. */
 		virtual FString GetDefaultDeviceName() = 0;
@@ -469,6 +515,9 @@ namespace Audio
         
 		// Function called at the beginning of every call of UpdateHardware on the audio thread.
 		virtual void OnHardwareUpdate() {}
+
+		// Get the DeviceInfo Cache if one exists.
+		virtual IAudioPlatformDeviceInfoCache* GetDeviceInfoCache() const { return nullptr;  }
 
 	public: // Public Functions
 		//~ Begin FRunnable
@@ -593,6 +642,9 @@ namespace Audio
 
 		/** When called, terminates the null device. */
 		void StopRunningNullDevice();
+		
+		/** Called by platform specific logic to pre-create or create the null renderer thread  */
+		void CreateNullDeviceThread(const TFunction<void()> InCallback, float InBufferDuration, bool bShouldPauseOnStart);
 
 	protected:
 
@@ -607,7 +659,8 @@ namespace Audio
 		bool bWarnedBufferUnderrun;
 
 		/** The audio render thread. */
-		FRunnableThread* AudioRenderThread;
+		//FRunnableThread* AudioRenderThread;
+		TUniquePtr<FRunnableThread> AudioRenderThread;
 
 		/** The render thread sync event. */
 		FEvent* AudioRenderEvent;
@@ -646,6 +699,12 @@ namespace Audio
 		FThreadSafeBool bMoveAudioStreamToNewAudioDevice;
 		FThreadSafeBool bIsUsingNullDevice;
 		FThreadSafeBool bIsGeneratingAudio;
+
+		/** A Counter to provide the next unique id. */
+		static FThreadSafeCounter NextInstanceID;
+
+		/** A Unique ID Identifying this instance. Mostly used for logging. */ 
+		const int32 InstanceID{ -1 };
 
 	private:
 		TUniquePtr<FMixerNullCallback> NullDeviceCallback;

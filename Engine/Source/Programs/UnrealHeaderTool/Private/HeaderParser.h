@@ -5,8 +5,11 @@
 #include "CoreMinimal.h"
 #include "ParserHelper.h"
 #include "BaseParser.h"
-#include "Misc/CompilationResult.h"
 #include "Scope.h"
+#include "UnrealTypeDefinitionInfo.h"
+#include "GeneratedCodeVersion.h"
+#include "ClassMaps.h"
+#include "RigVMDefines.h"
 
 class UClass;
 enum class EGeneratedCodeVersion : uint8;
@@ -15,20 +18,10 @@ class UPackage;
 struct FManifestModule;
 class IScriptGeneratorPluginInterface;
 class FStringOutputDevice;
-class FProperty;
 class FUnrealSourceFile;
-class UFunction;
-class UEnum;
-class UScriptStruct;
-class UDelegateFunction;
-class UStruct;
-class FClass;
-class FClasses;
 class FScope;
 class FHeaderProvider;
-
-extern double GPluginOverheadTime;
-extern double GHeaderCodeGenTime;
+struct FDeclaration;
 
 /*-----------------------------------------------------------------------------
 	Constants & types.
@@ -60,24 +53,22 @@ enum class ENestAllowFlags
 
 ENUM_CLASS_FLAGS(ENestAllowFlags)
 
+/** Options for GetVarType method */
+enum class EGetVarTypeOptions
+{
+	None = 0,
+	OuterTypeDeprecated = 1,	// Containing type has been deprecated
+	NoAutoConst = 2,			// Don't automatically mark properties as CPF_Const
+};
+
+ENUM_CLASS_FLAGS(EGetVarTypeOptions)
+
 namespace EDelegateSpecifierAction
 {
 	enum Type
 	{
 		DontParse,
 		Parse
-	};
-}
-
-/** The category of variable declaration being parsed */
-namespace EVariableCategory
-{
-	enum Type
-	{
-		RegularParameter,
-		ReplicatedParameter,
-		Return,
-		Member
 	};
 }
 
@@ -129,283 +120,6 @@ struct FIndexRange
 	int32 Count;
 };
 
-/**
- * The FRigVMParameter represents a single parameter of a method
- * marked up with RIGVM_METHOD.
- * Each parameter can be marked with Constant, Input or Output
- * metadata - this struct simplifies access to that information.
- */
-struct FRigVMParameter
-{
-	FRigVMParameter()
-		: Name()
-		, Type()
-		, bConstant(false)
-		, bInput(false)
-		, bOutput(false)
-		, bSingleton(false)
-		, ArraySize()
-		, Getter()
-		, CastName()
-		, CastType()
-		, bEditorOnly(false)
-		, bIsEnum(false)
-	{
-	}
-
-	FString Name;
-	FString Type;
-	bool bConstant;
-	bool bInput;
-	bool bOutput;
-	bool bSingleton;
-	FString ArraySize;
-	FString Getter;
-	FString CastName;
-	FString CastType;
-	bool bEditorOnly;
-	bool bIsEnum;
-
-	const FString& NameOriginal(bool bCastName = false) const
-	{
-		return (bCastName && !CastName.IsEmpty()) ? CastName : Name;
-	}
-
-	const FString& TypeOriginal(bool bCastType = false) const
-	{
-		return (bCastType && !CastType.IsEmpty()) ? CastType : Type;
-	}
-
-	FString Declaration(bool bCastType = false, bool bCastName = false) const
-	{
-		return FString::Printf(TEXT("%s %s"), *TypeOriginal(bCastType), *NameOriginal(bCastName));
-	}
-
-	FString BaseType(bool bCastType = false) const
-	{
-		const FString& String = TypeOriginal(bCastType);
-		int32 LesserPos = 0;
-		if (String.FindChar('<', LesserPos))
-		{
-			return String.Mid(0, LesserPos);
-		}
-		return String;
-	}
-
-	FString ExtendedType(bool bCastType = false) const
-	{
-		const FString& String = TypeOriginal(bCastType);
-		int32 LesserPos = 0;
-		if(String.FindChar('<', LesserPos))
-		{
-			return String.Mid(LesserPos);
-		}
-		return String;
-	}
-
-	FString TypeConstRef(bool bCastType = false) const
-	{
-		const FString& String = TypeNoRef(bCastType);
-		if (String.StartsWith(TEXT("T"), ESearchCase::CaseSensitive) || String.StartsWith(TEXT("F"), ESearchCase::CaseSensitive))
-		{
-			return FString::Printf(TEXT("const %s&"), *String);
-		}
-		return FString::Printf(TEXT("const %s"), *String);
-	}
-
-	FString TypeRef(bool bCastType = false) const
-	{
-		const FString& String = TypeNoRef(bCastType);
-		return FString::Printf(TEXT("%s&"), *String);
-	}
-
-	FString TypeNoRef(bool bCastType = false) const
-	{
-		const FString& String = TypeOriginal(bCastType);
-		if (String.EndsWith(TEXT("&")))
-		{
-			return String.LeftChop(1);
-		}
-		return String;
-	}
-
-	FString TypeVariableRef(bool bCastType = false) const
-	{
-		return IsConst() ? TypeConstRef(bCastType) : TypeRef(bCastType);
-	}
-
-	FString Variable(bool bCastType = false, bool bCastName = false) const
-	{
-		return FString::Printf(TEXT("%s %s"), *TypeVariableRef(bCastType), *NameOriginal(bCastName));
-	}
-
-	bool IsConst() const
-	{
-		return bConstant || (bInput && !bOutput);
-	}
-
-	bool IsArray() const
-	{
-		return BaseType().Equals(TEXT("TArray"));
-	}
-
-	bool IsDynamic() const
-	{
-		return ArraySize.IsEmpty() && !bInput && !bOutput && !bSingleton;
-	}
-
-	bool IsDynamicArray() const
-	{
-		return IsArray() && IsDynamic();
-	}
-
-	bool RequiresCast() const
-	{
-		return !CastType.IsEmpty() && !CastName.IsEmpty();
-	}
-};
-
-/**
- * The FRigVMParameterArray represents the parameters in a notation
- * of a function marked with RIGVM_METHOD. The parameter array can 
- * produce a comma separated list of names or parameter declarations.
- */
-struct FRigVMParameterArray
-{
-public:
-	int32 Num() const { return Parameters.Num(); }
-	const FRigVMParameter& operator[](int32 InIndex) const { return Parameters[InIndex]; }
-	FRigVMParameter& operator[](int32 InIndex) { return Parameters[InIndex]; }
-	TArray<FRigVMParameter>::RangedForConstIteratorType begin() const { return Parameters.begin(); }
-	TArray<FRigVMParameter>::RangedForConstIteratorType end() const { return Parameters.end(); }
-	TArray<FRigVMParameter>::RangedForIteratorType begin() { return Parameters.begin(); }
-	TArray<FRigVMParameter>::RangedForIteratorType end() { return Parameters.end(); }
-
-	int32 Add(const FRigVMParameter& InParameter)
-	{
-		return Parameters.Add(InParameter);
-	}
-
-	FString Names(bool bLeadingSeparator = false, const TCHAR* Separator = TEXT(", "), bool bCastType = false, bool bIncludeEditorOnly = true) const
-	{
-		if (Parameters.Num() == 0)
-		{
-			return FString();
-		}
-		TArray<FString> NameArray;
-		for (const FRigVMParameter& Parameter : Parameters)
-		{
-			if (!bIncludeEditorOnly && Parameter.bEditorOnly)
-			{
-				continue;
-			}
-			NameArray.Add(Parameter.NameOriginal(bCastType));
-		}
-
-		if (NameArray.Num() == 0)
-		{
-			return FString();
-		}
-
-		FString Joined = FString::Join(NameArray, Separator);
-		if (bLeadingSeparator)
-		{
-			return FString::Printf(TEXT("%s%s"), Separator, *Joined);
-		}
-		return Joined;
-	}
-
-	FString Declarations(bool bLeadingSeparator = false, const TCHAR* Separator = TEXT(", "), bool bCastType = false, bool bCastName = false, bool bIncludeEditorOnly = true) const
-	{
-		if (Parameters.Num() == 0)
-		{
-			return FString();
-		}
-		TArray<FString> DeclarationArray;
-		for (const FRigVMParameter& Parameter : Parameters)
-		{
-			if (!bIncludeEditorOnly && Parameter.bEditorOnly)
-			{
-				continue;
-			}
-			DeclarationArray.Add(Parameter.Variable(bCastType, bCastName));
-		}
-
-		if (DeclarationArray.Num() == 0)
-		{
-			return FString();
-		}
-
-		FString Joined = FString::Join(DeclarationArray, Separator);
-		if (bLeadingSeparator)
-		{
-			return FString::Printf(TEXT("%s%s"), Separator, *Joined);
-		}
-		return Joined;
-	}
-
-private:
-	TArray<FRigVMParameter> Parameters;
-};
-
-/**
- * A single info dataset for a function marked with RIGVM_METHOD.
- * This struct provides access to its name, the return type and all parameters.
- */
-struct FRigVMMethodInfo
-{
-	FString ReturnType;
-	FString Name;
-	FRigVMParameterArray Parameters;
-
-	FString ReturnPrefix() const
-	{
-		return (ReturnType.IsEmpty() || (ReturnType == TEXT("void"))) ? TEXT("") : TEXT("return ");
-	}
-};
-
-/**
- * An info dataset providing access to all functions marked with RIGVM_METHOD
- * for each struct.
- */
-struct FRigVMStructInfo
-{
-	FString Name;
-	FRigVMParameterArray Members;
-	TArray<FRigVMMethodInfo> Methods;
-};
-
-typedef TMap<UStruct*, FRigVMStructInfo> FRigVMStructMap;
-
-struct ClassDefinitionRange
-{
-	ClassDefinitionRange(const TCHAR* InStart, const TCHAR* InEnd)
-		: Start(InStart)
-		, End(InEnd)
-		, bHasGeneratedBody(false)
-	{ }
-
-	ClassDefinitionRange()
-		: Start(nullptr)
-		, End(nullptr)
-		, bHasGeneratedBody(false)
-	{ }
-
-	void Validate()
-	{
-		if (End <= Start)
-		{
-			FError::Throwf(TEXT("The class definition range is invalid. Most probably caused by previous parsing error."));
-		}
-	}
-
-	const TCHAR* Start;
-	const TCHAR* End;
-	bool bHasGeneratedBody;
-};
-
-extern TMap<UClass*, ClassDefinitionRange> ClassDefinitionRanges;
-
 #ifndef UHT_DOCUMENTATION_POLICY_DEFAULT
 #define UHT_DOCUMENTATION_POLICY_DEFAULT false
 #endif
@@ -426,24 +140,11 @@ struct FDocumentationPolicy
 // Header parser class.  Extracts metadata from annotated C++ headers and gathers enough
 // information to autogenerate additional headers and other boilerplate code.
 //
-class FHeaderParser : public FBaseParser, public FContextSupplier
+class FHeaderParser : public FBaseParser
 {
+	friend class FRecordTokens;
+
 public:
-	// Default version of generated code. Defaults to oldest possible, unless specified otherwise in config.
-	static EGeneratedCodeVersion DefaultGeneratedCodeVersion;
-
-	// Compute the function parameter size and save the return offset
-	static void ComputeFunctionParametersSize(UClass* InClass);
-
-	// Parse all headers for classes that are inside LimitOuter.
-	static ECompilationResult::Type ParseAllHeadersInside(
-		FClasses& ModuleClasses,
-		FFeedbackContext* Warn,
-		UPackage* LimitOuter,
-		const FManifestModule& Module,
-		TArray<class IScriptGeneratorPluginInterface*>& ScriptPlugins
-	);
-
 	// Performs a preliminary parse of the text in the specified buffer, pulling out:
 	//   Class name and parent class name
 	//   Is it an interface
@@ -451,7 +152,7 @@ public:
 	//   
 	//  It also splits the buffer up into:
 	//   ScriptText (text outside of #if CPP and #if DEFAULTS blocks)
-	static void SimplifiedClassParse(const TCHAR* Filename, const TCHAR* Buffer, TArray<FSimplifiedParsingClassInfo>& OutParsedClassArray, TArray<FHeaderProvider>& DependentOn, FStringOutputDevice& ScriptText);
+	static void SimplifiedClassParse(FUnrealSourceFile& SourceFile, const TCHAR* Buffer, FStringOutputDevice& ScriptText);
 
 	/**
 	 * Returns True if the given class name includes a valid Unreal prefix and matches up with the given original class Name.
@@ -462,54 +163,28 @@ public:
 	static bool ClassNameHasValidPrefix(const FString& InNameToCheck, const FString& OriginalClassName);
 
 	/**
-	 * Tries to convert the header file name to a class name (with 'U' prefix)
-	 *
-	 * @param HeaderFilename Filename.
-	 * @param OutClass The resulting class name (if successfull)
-	 * @return true if the filename was a header filename (.h), false otherwise (in which case OutClassName is unmodified).
+	 * Parse the given header.
+	 * 
+	 * @param PackDef The owning package of the source
+	 * @param SourceFile The source file being parsed
 	 */
-	static bool DependentClassNameFromHeader(const TCHAR* HeaderFilename, FString& OutClassName);
-
-	/**
-	 * Transforms CPP-formated string containing default value, to inner formated string
-	 * If it cannot be transformed empty string is returned.
-	 *
-	 * @param Property The property that owns the default value.
-	 * @param CppForm A CPP-formated string.
-	 * @param out InnerForm Inner formated string
-	 * @return true on success, false otherwise.
-	 */
-	static bool DefaultValueStringCppFormatToInnerFormat(const FProperty* Property, const FString& CppForm, FString &InnerForm);
-
-	/**
-	 * Parse Class's annotated headers and optionally its child classes.  Marks the class as CLASS_Parsed.
-	 *
-	 * @param	AllClasses			the class tree containing all classes in the current package
-	 * @param	HeaderParser		the header parser
-	 * @param	SourceFile			Source file info.
-	 *
-	 * @return	Result enumeration.
-	 */
-	static ECompilationResult::Type ParseHeaders(FClasses& AllClasses, FHeaderParser& HeaderParser, FUnrealSourceFile* SourceFile);
+	static void Parse(FUnrealPackageDefinitionInfo& PackageDef, FUnrealSourceFile& SourceFile);
 
 protected:
 	friend struct FScriptLocation;
 	friend struct FNativeClassHeaderGenerator;
 
-	// For compiling messages and errors.
-	FFeedbackContext* Warn;
-
 	// Filename currently being parsed
-	FString Filename;
+	const FString Filename;
 
 	// Was the first include in the file a validly formed auto-generated header include?
-	bool bSpottedAutogeneratedHeaderInclude;
+	bool bSpottedAutogeneratedHeaderInclude = false;
 
 	// Current nest level, starts at 0.
-	int32 NestLevel;
+	int32 NestLevel = 0;
 
 	// Top nesting level.
-	FNestInfo* TopNest;
+	FNestInfo* TopNest = nullptr;
 
 	/**
 	 * Gets current nesting scope.
@@ -517,48 +192,6 @@ protected:
 	FScope* GetCurrentScope() const
 	{
 		return TopNest->GetScope();
-	}
-
-	/**
-	 * Gets current file scope.
-	 */
-	FFileScope* GetCurrentFileScope() const
-	{
-		int32 Index = 0;
-		if (!TopNest)
-		{
-			check(!NestLevel);
-			return nullptr;
-		}
-		while (TopNest[Index].NestType != ENestType::GlobalScope)
-		{
-			--Index;
-		}
-
-		return (FFileScope*)TopNest[Index].GetScope();
-	}
-
-	/**
-	 * Gets current source file.
-	 */
-	FUnrealSourceFile* GetCurrentSourceFile() const
-	{
-		return CurrentSourceFile;
-	}
-
-	void SetCurrentSourceFile(FUnrealSourceFile* UnrealSourceFile)
-	{
-		CurrentSourceFile = UnrealSourceFile;
-	}
-
-	/**
-	 * Gets current class scope.
-	 */
-	FStructScope* GetCurrentClassScope() const
-	{
-		check(TopNest->NestType == ENestType::Class || TopNest->NestType == ENestType::Interface || TopNest->NestType == ENestType::NativeInterface);
-
-		return (FStructScope*)TopNest->GetScope();
 	}
 
 	/**
@@ -581,19 +214,13 @@ protected:
 	}
 
 	/**
-	 * Gets current class.
+	 * Gets current class definition.
 	 */
-	UClass* GetCurrentClass() const
+	FUnrealClassDefinitionInfo& GetCurrentClassDef() const
 	{
-		return (UClass*)GetCurrentClassScope()->GetStruct();
-	}
+		check(TopNest->NestType == ENestType::Class || TopNest->NestType == ENestType::Interface || TopNest->NestType == ENestType::NativeInterface);
 
-	/**
-	 * Gets current class's metadata.
-	 */
-	FClassMetaData* GetCurrentClassData()
-	{
-		return GScriptHelper.FindClassData(GetCurrentClass());
+		return UHTCastChecked<FUnrealClassDefinitionInfo>(static_cast<FStructScope*>(TopNest->GetScope())->GetStructDef());
 	}
 
 	// Information about all nesting levels.
@@ -629,10 +256,26 @@ protected:
 	 */
 	TArray<uint32> CompilerDirectiveStack;
 
-	// Pushes the Directive specified to the CompilerDirectiveStack according to the rules described above
-	void FORCEINLINE PushCompilerDirective(ECompilerDirective::Type Directive)
+	// Return the top level compiler directive state
+	uint32 GetCurrentCompilerDirective() const
 	{
-		CompilerDirectiveStack.Push(CompilerDirectiveStack.Num()>0 ? (CompilerDirectiveStack[CompilerDirectiveStack.Num()-1] | Directive) : Directive);
+		return CompilerDirectiveStack.IsEmpty() ? 0 : CompilerDirectiveStack.Last();
+	}
+
+	// Pushes the Directive specified to the CompilerDirectiveStack according to the rules described above
+	void PushCompilerDirective(ECompilerDirective::Type Directive)
+	{
+		CompilerDirectiveStack.Push(Directive | GetCurrentCompilerDirective());
+	}
+
+	// Removes the top most compiler directive stack entry
+	void PopCompilerDirective()
+	{
+		if (CompilerDirectiveStack.Num() < 1)
+		{
+			Throwf(TEXT("Unmatched '#endif' in class or global scope"));
+		}
+		CompilerDirectiveStack.Pop();
 	}
 
 	/**
@@ -661,37 +304,13 @@ protected:
 
 	////////////////////////////////////////////////////
 
-	// Special parsed struct names that do not require a prefix
-	static TArray<FString> StructsWithNoPrefix;
-	
-	// Special parsed struct names that have a 'T' prefix
-	static TArray<FString> StructsWithTPrefix;
-
-	// Mapping from 'human-readable' macro substring to # of parameters for delegate declarations
-	// Index 0 is 1 parameter, Index 1 is 2, etc...
-	static TArray<FString> DelegateParameterCountStrings;
-
-	// Types that have been renamed, treat the old deprecated name as the new name for code generation
-	static TMap<FString, FString> TypeRedirectMap;
-
 	// List of all used identifiers for net service function declarations (every function must be unique)
 	TMap<int32, FString> UsedRPCIds;
 	// List of all net service functions with undeclared response functions 
 	TMap<int32, FString> RPCsNeedingHookup;
 
-	// List of all multiplex methods defined on structs
-	static FRigVMStructMap StructRigVMMap;
-
 	// Constructor.
-	explicit FHeaderParser(FFeedbackContext* InWarn, const FManifestModule& InModule);
-
-	virtual ~FHeaderParser()
-	{
-		if ( FScriptLocation::Compiler == this )
-		{
-			FScriptLocation::Compiler = NULL;
-		}
-	}
+	explicit FHeaderParser(FUnrealPackageDefinitionInfo& InPackageDef, FUnrealSourceFile& InSourceFile);
 
 	// Returns true if the token is a dynamic delegate declaration
 	bool IsValidDelegateDeclaration(const FToken& Token) const;
@@ -700,15 +319,12 @@ protected:
 	bool IsBitfieldProperty(ELayoutMacroType LayoutMacroType);
 
 	// Parse the parameter list of a function or delegate declaration
-	void ParseParameterList(FClasses& AllClasses, UFunction* Function, bool bExpectCommaBeforeName = false, TMap<FName, FString>* MetaData = NULL);
-
-	// Modify token to fix redirected types if needed
-	void RedirectTypeIdentifier(FToken& Token) const;
+	void ParseParameterList(FUnrealFunctionDefinitionInfo& FunctionDef, bool bExpectCommaBeforeName = false, TMap<FName, FString>* MetaData = NULL, EGetVarTypeOptions Options = EGetVarTypeOptions::None);
 
 public:
 	// Throws if a specifier value wasn't provided
-	static void RequireSpecifierValue(const FPropertySpecifier& Specifier, bool bRequireExactlyOne = false);
-	static FString RequireExactlyOneSpecifierValue(const FPropertySpecifier& Specifier);
+	static void RequireSpecifierValue(const FUHTMessageProvider& Context, const FPropertySpecifier& Specifier, bool bRequireExactlyOne = false);
+	static FString RequireExactlyOneSpecifierValue(const FUHTMessageProvider& Context, const FPropertySpecifier& Specifier);
 
 	/**
 	* Find a field in the specified context.  Starts with the specified scope, then iterates
@@ -722,24 +338,16 @@ public:
 	*
 	* @return	a pointer to a UField with a name matching InIdentifier, or NULL if it wasn't found
 	*/
-	static UField* FindField( UStruct* InScope, const TCHAR* InIdentifier, bool bIncludeParents=true, UClass* FieldClass=UField::StaticClass(), const TCHAR* Thing=nullptr );
-	static FField* FindProperty(UStruct* InScope, const TCHAR* InIdentifier, bool bIncludeParents = true, FFieldClass* FieldClass = FField::StaticClass(), const TCHAR* Thing = nullptr);
+	static FUnrealFunctionDefinitionInfo* FindFunction(const FUnrealStructDefinitionInfo& InScope, const TCHAR* InIdentifier, bool bIncludeParents = true, const TCHAR* Thing = nullptr);
+	static FUnrealPropertyDefinitionInfo* FindProperty(const FUnrealStructDefinitionInfo& InScope, const TCHAR* InIdentifier, bool bIncludeParents = true, const TCHAR* Thing = nullptr);
 
 	// Checks ToValidate to make sure that its associated sparse class data struct, if one exists, is a valid structure to use for storing sparse class data.
-	static void CheckSparseClassData(const UStruct* ToValidate);
+	static void CheckSparseClassData(const FUnrealStructDefinitionInfo& StructDef);
+
+	// Validates that ClassFlags are set appropriately 
+	static void ValidateClassFlags(const FUnrealClassDefinitionInfo& ToValidate);
 
 protected:
-
-	/**
-	 * Parse rest of the module's source files.
-	 *
-	 * @param	AllClasses The class tree containing all classes in the current package.
-	 * @param	ModulePackage Current package.
-	 * @param	HeaderParser The header parser.
-	 *
-	 * @return	Result enumeration.
-	 */
-	static ECompilationResult::Type ParseRestOfModulesSourceFiles(FClasses& AllClasses, UPackage* ModulePackage, FHeaderParser& HeaderParser);
 
 	//@TODO: Remove this method
 	static void ParseClassName(const TCHAR* Temp, FString& ClassName);
@@ -757,46 +365,23 @@ protected:
 	*/
 	static TMap<FName, FString> GetParameterToolTipsFromFunctionComment(const FString& Input);
 	
-	/**
-	 * Begins the process of exporting C++ class declarations for native classes in the specified package
-	 * 
-	 * @param CurrentPackage The package being compiled.
-	 * @param AllClasses The class tree for CurrentPackage.
-	 * @param Module Currently exported module.
-	 */
-	static void ExportNativeHeaders(
-		UPackage* CurrentPackage,
-		FClasses& AllClasses,
-		bool bAllowSaveExportedHeaders,
-		const FManifestModule& Module
-	);
-
-	// FContextSupplier interface.
-	virtual FString GetContext() override;
-	// End of FContextSupplier interface.
-
 	// High-level compiling functions.
 	/**
 	 * Parses given source file.
 	 *
-	 * @param AllClasses The class tree for current package.
-	 * @param SourceFile Source file to parse.
-	 *
 	 * @returns Compilation result enum.
 	 */
-	ECompilationResult::Type ParseHeader(FClasses& AllClasses, FUnrealSourceFile* SourceFile);
-	void CompileDirective(FClasses& AllClasses);
-	void FinalizeScriptExposedFunctions(UClass* Class);
-	UEnum* CompileEnum();
-	UScriptStruct* CompileStructDeclaration(FClasses& AllClasses);
-	bool CompileDeclaration(FClasses& AllClasses, TArray<UDelegateFunction*>& DelegatesToFixup, FToken& Token);
+	void ParseHeader();
+	void CompileDirective();
+	FUnrealEnumDefinitionInfo& CompileEnum();
+	FUnrealScriptStructDefinitionInfo& CompileStructDeclaration();
+	bool CompileDeclaration(TArray<FUnrealFunctionDefinitionInfo*>& DelegatesToFixup, FToken& Token);
 
 	/** Skip C++ (noexport) declaration. */
 	bool SkipDeclaration(FToken& Token);
 	/** Similar to MatchSymbol() but will return to the exact location as on entry if the symbol was not found. */
 	bool SafeMatchSymbol(const TCHAR Match);
-	void HandleOneInheritedClass(FClasses& AllClasses, UClass* Class, FString&& InterfaceName);
-	FClass* ParseClassNameDeclaration(FClasses& AllClasses, FString& DeclaredClassName, FString& RequiredAPIMacroIfPresent);
+	FUnrealClassDefinitionInfo& ParseClassNameDeclaration(FString& DeclaredClassName, FString& RequiredAPIMacroIfPresent);
 
 	/** The property style of a variable declaration being parsed */
 	struct EPropertyDeclarationStyle
@@ -816,26 +401,20 @@ protected:
 	/**
 	 * Create new function object based on given info structure.
 	 */
-	UFunction* CreateFunction(const FFuncInfo &FuncInfo) const;
+	FUnrealFunctionDefinitionInfo& CreateFunction(const TCHAR* FuncName, FFuncInfo&& FuncInfo, EFunctionType InFunctionType) const;
 
-	/**
-	 * Create new delegate function object based on given info structure.
-	 */
-	template<typename T>
-	UDelegateFunction* CreateDelegateFunction(const FFuncInfo &FuncInfo) const;	
+	FUnrealClassDefinitionInfo& CompileClassDeclaration();
+	FUnrealFunctionDefinitionInfo& CompileDelegateDeclaration(const FStringView& DelegateIdentifier, EDelegateSpecifierAction::Type SpecifierAction = EDelegateSpecifierAction::DontParse);
+	FUnrealFunctionDefinitionInfo& CompileFunctionDeclaration();
+	void CompileVariableDeclaration (FUnrealStructDefinitionInfo& StructDef);
+	void CompileInterfaceDeclaration();
+	void CompileRigVMMethodDeclaration(FUnrealStructDefinitionInfo& StructDef);
+	void ParseRigVMMethodParameters(FUnrealStructDefinitionInfo& StructDef);
 
-	UClass* CompileClassDeclaration(FClasses& AllClasses);
-	UDelegateFunction* CompileDelegateDeclaration(FClasses& AllClasses, const TCHAR* DelegateIdentifier, EDelegateSpecifierAction::Type SpecifierAction = EDelegateSpecifierAction::DontParse);
-	void CompileFunctionDeclaration(FClasses& AllClasses);
-	void CompileVariableDeclaration (FClasses& AllClasses, UStruct* Struct);
-	void CompileInterfaceDeclaration(FClasses& AllClasses);
-	void CompileRigVMMethodDeclaration(FClasses& AllClasses, UStruct* Struct);
-	void ParseRigVMMethodParameters(UStruct* Struct);
+	FUnrealClassDefinitionInfo* ParseInterfaceNameDeclaration(FString& DeclaredInterfaceName, FString& RequiredAPIMacroIfPresent);
+	bool TryParseIInterfaceClass();
 
-	FClass* ParseInterfaceNameDeclaration(FClasses& AllClasses, FString& DeclaredInterfaceName, FString& RequiredAPIMacroIfPresent);
-	bool TryParseIInterfaceClass(FClasses& AllClasses);
-
-	bool CompileStatement(FClasses& AllClasses, TArray<UDelegateFunction*>& DelegatesToFixup);
+	bool CompileStatement(TArray<FUnrealFunctionDefinitionInfo*>& DelegatesToFixup);
 
 	// Checks to see if a particular kind of command is allowed on this nesting level.
 	bool IsAllowedInThisNesting(ENestAllowFlags AllowFlags);
@@ -845,63 +424,48 @@ protected:
 	// nesting level.
 	void CheckAllow(const TCHAR* Thing, ENestAllowFlags AllowFlags);
 
-	UStruct* GetSuperScope( UStruct* CurrentScope, const FName& SearchName );	
-
 	void SkipStatements( int32 SubCount, const TCHAR* ErrorTag );
 
 	/**
 	 * Parses a variable or return value declaration and determines the variable type and property flags.
 	 *
-	 * @param   AllClasses                the class tree for CurrentPackage
 	 * @param   Scope                     struct to create the property in
+	 * @param   Options					  options to control how the variable type is parsed
 	 * @param   VarProperty               will be filled in with type and property flag data for the property declaration that was parsed
 	 * @param   Disallow                  contains a mask of variable modifiers that are disallowed in this context
-	 * @param   OuterPropertyType         only specified when compiling the inner properties for arrays or maps.  corresponds to the FToken for the outer property declaration.
+	 * @param   OuterPropertyType         only specified when compiling the inner properties for arrays or maps.
+	 * @param	OuterPropertyFlags		  flags associated with the outer property being compiled.
 	 * @param   PropertyDeclarationStyle  if the variable is defined with a UPROPERTY
 	 * @param   VariableCategory          what kind of variable is being parsed
 	 * @param   ParsedVarIndexRange       The source text [Start, End) index range for the parsed type.
 	 */
 	void GetVarType(
-		FClasses&                       AllClasses,
 		FScope*							Scope,
+		EGetVarTypeOptions				Options,
 		FPropertyBase&                  VarProperty,
 		EPropertyFlags                  Disallow,
-		const FToken*                   OuterPropertyType,
+		EUHTPropertyType				OuterPropertyType,
+		EPropertyFlags					OuterPropertyFlags,
 		EPropertyDeclarationStyle::Type PropertyDeclarationStyle,
-		EVariableCategory::Type         VariableCategory,
+		EVariableCategory               VariableCategory,
 		FIndexRange*                    ParsedVarIndexRange = nullptr,
 		ELayoutMacroType*               OutLayoutMacroType = nullptr);
 
 	/**
 	 * Parses a variable name declaration and creates a new FProperty object.
 	 *
-	 * @param	Scope				struct to create the property in
+	 * @param	ParentStruct		struct to create the property in
 	 * @param	VarProperty			type and propertyflag info for the new property (inout)
 	 * @param   VariableCategory	what kind of variable is being created
 	 *
-	 * @return	a pointer to the new FProperty if successful, or NULL if there was no property to parse
+	 * @return	a reference to the new property if successful, or NULL if there was no property to parse
 	 */
-	FProperty* GetVarNameAndDim(
-		UStruct* Struct,
-		FToken& VarProperty,
-		EVariableCategory::Type VariableCategory,
+	FUnrealPropertyDefinitionInfo& GetVarNameAndDim(
+		FUnrealStructDefinitionInfo& ParentStruct,
+		FPropertyBase& VarProperty,
+		EVariableCategory VariableCategory,
 		ELayoutMacroType LayoutMacroType = ELayoutMacroType::None);
 	
-	/**
-	 * Returns whether the specified class can be referenced from the class currently being compiled.
-	 *
-	 * @param	Scope		The scope we are currently parsing.
-	 * @param	CheckClass	The class we want to reference.
-	 *
-	 * @return	true if the specified class is an intrinsic type or if the class has successfully been parsed
-	 */
-	bool AllowReferenceToClass(UStruct* Scope, UClass* CheckClass) const;
-
-	/**
-	 * @return	true if Scope has FProperty objects in its list of fields
-	 */
-	static bool HasMemberProperties( const UStruct* Scope );
-
 	/**
 	 * Parses optional metadata text.
 	 *
@@ -928,7 +492,7 @@ protected:
 
 	const TCHAR* NestTypeName( ENestType NestType );
 
-	FClass* GetQualifiedClass(const FClasses& AllClasses, const TCHAR* Thing);
+	FUnrealClassDefinitionInfo* GetQualifiedClass(const TCHAR* Thing);
 
 	/**
 	 * Increase the nesting level, setting the new top nesting level to
@@ -938,34 +502,32 @@ protected:
 	 * @param	NestType	the new nesting type
 	 * @param	InNode		@todo
 	 */
-	void PushNest(ENestType NestType, UStruct* InNode, FUnrealSourceFile* SourceFile = nullptr);
+	void PushNest(ENestType NestType, FUnrealStructDefinitionInfo* InNodeDef, FUnrealSourceFile* SourceFile = nullptr);
 	void PopNest(ENestType NestType, const TCHAR* Descr);
 
 	/**
 	 * Tasks that need to be done after popping function declaration
 	 * from parsing stack.
 	 *
-	 * @param AllClasses The class tree for current package.
 	 * @param PoppedFunction Function that have just been popped.
 	 */
-	void PostPopFunctionDeclaration(FClasses& AllClasses, UFunction* PoppedFunction);
+	void PostPopFunctionDeclaration(FUnrealFunctionDefinitionInfo& PoppedFunctionDef);
 
 	/**
 	 * Tasks that need to be done after popping interface definition
 	 * from parsing stack.
 	 *
-	 * @param AllClasses The class tree for current package.
-	 * @param CurrentInterface Interface that have just been popped.
+	 * @param CurrentInterfaceDef Interface that have just been popped.
 	 */
-	void PostPopNestInterface(FClasses& AllClasses, UClass* CurrentInterface);
+	void PostPopNestInterface(FUnrealClassDefinitionInfo& CurrentInterfaceDef);
 
 	/**
 	 * Tasks that need to be done after popping class definition
 	 * from parsing stack.
 	 *
-	 * @param CurrentClass Class that have just been popped.
+	 * @param CurrentClassDef Class that have just been popped.
 	 */
-	void PostPopNestClass(UClass* CurrentClass);
+	void PostPopNestClass(FUnrealClassDefinitionInfo& CurrentClassDef);
 
 	/**
 	 * Binds all delegate properties declared in ValidationScope the delegate functions specified in the variable declaration, verifying that the function is a valid delegate
@@ -973,31 +535,21 @@ protected:
 	 *
 	 * @todo: this function will no longer be required once the post-parse fixup phase is added (TTPRO #13256)
 	 *
-	 * @param	AllClasses			the class tree for CurrentPackage
 	 * @param	Struct				the struct to validate delegate properties for
 	 * @param	Scope				the current scope
 	 * @param	DelegateCache		cached map of delegates that have already been found; used for faster lookup.
 	 */
-	void FixupDelegateProperties(FClasses& AllClasses, UStruct* ValidationScope, FScope& Scope, TMap<FName, UFunction*>& DelegateCache);
+	void FixupDelegateProperties(FUnrealStructDefinitionInfo& StructDef, FScope& Scope, TMap<FName, FUnrealFunctionDefinitionInfo*>& DelegateCache);
 
 	// Retry functions.
 	void InitScriptLocation( FScriptLocation& Retry );
 	void ReturnToLocation( const FScriptLocation& Retry, bool Binary=1, bool Text=1 );
 
-	/**
-	 * If the property has already been seen during compilation, then return add. If not,
-	 * then return replace so that INI files don't mess with header exporting
-	 *
-	 * @param PropertyName the string token for the property
-	 *
-	 * @return FNAME_Replace_Not_Safe_For_Threading or FNAME_Add
-	 */
-	EFindName GetFindFlagForPropertyName(const TCHAR* PropertyName);
-
-	static void ValidatePropertyIsDeprecatedIfNecessary(const FPropertyBase& VarProperty, const FToken* OuterPropertyType);
+	void ValidateTypeIsDeprecated(EVariableCategory VariableCategory, FUnrealTypeDefinitionInfo* TypeDef);
+	void ValidatePropertyIsDeprecatedIfNecessary(bool bOuterTypeDeprecated, EVariableCategory VariableCategory, const FPropertyBase& VarProperty, EUHTPropertyType OuterPropertyType, EPropertyFlags OuterPropertyFlags);
 
 	// Cache of ScriptStructs that have been validated for Net Replication and RPC
-	TSet<UScriptStruct*> ScriptStructsValidForNet;
+	TSet<FUnrealScriptStructDefinitionInfo*> ScriptStructsValidForNet;
 
 	/**
 	 * Validate that a ScriptStruct is ok to be Replicated or Sent in an RPC.
@@ -1005,14 +557,11 @@ protected:
 	 * @param OriginStructName  The Name of the ScriptStruct to check
 	 * @param InStruct          The ScriptStruct to check 
 	 */
-	bool ValidateScriptStructOkForNet(const FString& OriginStructName, UScriptStruct* InStruct);
+	bool ValidateScriptStructOkForNet(const FString& OriginStructName, FUnrealScriptStructDefinitionInfo& InStructDef);
 
 private:
-	// Source file currently parsed by UHT.
-	FUnrealSourceFile* CurrentSourceFile;
-
-	// Module currently parsed by UHT.
-	const FManifestModule* CurrentlyParsedModule;
+	// Definition of package being parsed
+	FUnrealPackageDefinitionInfo& PackageDef;
 
 	// True if the module currently being parsed is part of the engine, as opposed to being part of a game
 	bool bIsCurrentModulePartOfEngine;
@@ -1030,25 +579,25 @@ private:
 	bool TryToMatchConstructorParameterList(FToken Token);
 
 	// Parses possible version declaration in generated code, e.g. GENERATED_BODY(<some_version>).
-	void CompileVersionDeclaration(UStruct* Struct);
+	void CompileVersionDeclaration(FUnrealStructDefinitionInfo& StructDef);
 
 	// Verifies that all specified class's UProperties with function associations have valid targets
-	void VerifyPropertyMarkups( UClass* TargetClass );
+	void VerifyPropertyMarkups(FUnrealClassDefinitionInfo& TargetClassDef);
 
 	// Verifies the target function meets the criteria for a blueprint property getter
-	void VerifyBlueprintPropertyGetter(FProperty* Property, UFunction* TargetFunction);
+	void VerifyBlueprintPropertyGetter(FUnrealPropertyDefinitionInfo& PropertyDef, FUnrealFunctionDefinitionInfo* TargetFuncDef);
 
 	// Verifies the target function meets the criteria for a blueprint property setter
-	void VerifyBlueprintPropertySetter(FProperty* Property, UFunction* TargetFunction);
+	void VerifyBlueprintPropertySetter(FUnrealPropertyDefinitionInfo& PropertyDef, FUnrealFunctionDefinitionInfo* TargetFuncDef);
 
 	// Verifies the target function meets the criteria for a replication notify callback
-	void VerifyRepNotifyCallback(FProperty* Property, UFunction* TargetFunction);
+	void VerifyRepNotifyCallback(FUnrealPropertyDefinitionInfo& PropertyDef, FUnrealFunctionDefinitionInfo* TargetFuncDef);
 
 	// Constructs the policy from a string
-	static FDocumentationPolicy GetDocumentationPolicyFromName(const FString& PolicyName);
+	static FDocumentationPolicy GetDocumentationPolicyFromName(const FUHTMessageProvider& Context, const FString& PolicyName);
 
 	// Constructs the policy for documentation checks for a given struct
-	static FDocumentationPolicy GetDocumentationPolicyForStruct(UStruct* Struct);
+	static FDocumentationPolicy GetDocumentationPolicyForStruct(FUnrealStructDefinitionInfo& StructDef);
 
 	// Property types to provide UI Min and Max ranges
 	static TArray<FString> PropertyCPPTypesRequiringUIRanges;
@@ -1057,16 +606,25 @@ private:
 	static bool DoesCPPTypeRequireDocumentation(const FString& CPPType);
 
 	// Validates the documentation for a given enum
-	void CheckDocumentationPolicyForEnum(UEnum* Enum, const TMap<FName, FString>& MetaData, const TArray<TMap<FName, FString>>& Entries);
+	void CheckDocumentationPolicyForEnum(FUnrealEnumDefinitionInfo& EnumDef, const TMap<FName, FString>& MetaData, const TArray<TMap<FName, FString>>& Entries);
 
 	// Validates the documentation for a given struct
-	void CheckDocumentationPolicyForStruct(UStruct* Struct);
+	void CheckDocumentationPolicyForStruct(FUnrealStructDefinitionInfo& StructDef);
 
 	// Validates the documentation for a given method
-	void CheckDocumentationPolicyForFunc(UClass* Class, UFunction* Func);
+	void CheckDocumentationPolicyForFunc(FUnrealClassDefinitionInfo& ClassDef, FUnrealFunctionDefinitionInfo& FunctionDef);
 
 	// Checks if a valid range has been found on the provided metadata
 	bool CheckUIMinMaxRangeFromMetaData(const FString& UIMin, const FString& UIMax);
+
+	// Emits either a log message, warning, or error about a member pointer according to the behavior specified by the PointerMemberBehavior argument
+	void ConditionalLogPointerUsage(EPointerMemberBehavior PointerMemberBehavior, const TCHAR* PointerTypeDesc, FString&& PointerTypeDecl, const TCHAR* AlternativeTypeDesc);
+
+	// Check to see if the declaration is a constructor
+	static bool CheckForConstructor(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration);
+
+	// Check to see if the declaration is a serialize
+	static bool CheckForSerialize(FUnrealStructDefinitionInfo& StructDef, const FDeclaration& Declaration);
 
 	// Names that cannot be used enums, UStructs, or UClasses
 	static TArray<FString> ReservedTypeNames;
@@ -1080,27 +638,28 @@ public:
 	*/
 	static bool IsReservedTypeName(const FString& TypeName);
 
-	/**
-	* Checks if the given token uses one of the reserved type names.
-	*
-	* @param  Token		The token to check
-	* @return True if the Token is using a reserved name
-	*/
-	static bool IsReservedTypeName(const FToken& Token);
-	
 	static const FName NAME_InputText;
 	static const FName NAME_OutputText;
 	static const FName NAME_ConstantText;
 	static const FName NAME_VisibleText;
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 	static const FName NAME_ArraySizeText;
+#endif
 	static const FName NAME_SingletonText;
 	static const TCHAR* TArrayText;
 	static const TCHAR* TEnumAsByteText;
+	static const TCHAR* GetRefText;
+#if UE_RIGVM_UCLASS_BASED_STORAGE_DISABLED
 	static const TCHAR* FFixedArrayText;
 	static const TCHAR* FDynamicArrayText;
-	static const TCHAR* GetRefText;
 	static const TCHAR* GetFixedArrayText;
 	static const TCHAR* GetDynamicArrayText;
+#else
+	static const TCHAR* FTArrayText;
+	static const TCHAR* FTArrayViewText;
+	static const TCHAR* GetArrayText;
+	static const TCHAR* GetArrayViewText;
+#endif	
 };
 
 /////////////////////////////////////////////////////
@@ -1109,20 +668,38 @@ public:
 class FHeaderPreParser : public FBaseParser
 {
 public:
-	FHeaderPreParser()
+	FHeaderPreParser(FUnrealSourceFile& InSourceFile)
+		: FBaseParser(InSourceFile)
 	{
 	}
 
-	void ParseClassDeclaration(
-		const TCHAR* Filename,
+	TSharedRef<FUnrealTypeDefinitionInfo> ParseClassDeclaration(
 		const TCHAR* InputText,
 		int32 InLineNumber,
-		const TCHAR*
-		StartingMatchID,
-		FName& out_StrippedClassName,
-		FString& out_ClassName,
-		FString& out_BaseClassName,
-		TArray<FHeaderProvider>& out_ClassNames,
-		const TArray<FSimplifiedParsingClassInfo>& ParsedClassArray
+		bool bClassIsAnInterface,
+		const TCHAR* StartingMatchID
 	);
+
+	TSharedRef<FUnrealTypeDefinitionInfo> ParseEnumDeclaration(
+		const TCHAR* InputText,
+		int32 InLineNumber
+	);
+
+	TSharedRef<FUnrealTypeDefinitionInfo> ParseStructDeclaration(
+		const TCHAR* InputText,
+		int32 InLineNumber
+	);
+};
+
+class FRecordTokens
+{
+public:
+	explicit FRecordTokens(FHeaderParser& InParser, FUnrealStructDefinitionInfo* InStructDef, FToken* InToken);
+	~FRecordTokens();
+	bool Stop();
+
+private:
+	FHeaderParser& Parser;
+	FUnrealStructDefinitionInfo* StructDef;
+	uint32 CurrentCompilerDirective = 0;
 };

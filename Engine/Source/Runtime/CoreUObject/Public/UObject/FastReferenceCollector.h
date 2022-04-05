@@ -12,19 +12,111 @@
 #include "Misc/ScopeLock.h"
 #include "HAL/PlatformProcess.h"
 #include "UObject/FieldPath.h"
+#include "Async/ParallelFor.h"
 #include "UObject/UObjectArray.h"
 #include "UObject/FastReferenceCollectorOptions.h"
 
 struct FStackEntry;
 
+/** Token stream stack overflow checks are not enabled in test and shipping configs */
+#define UE_ENABLE_TOKENSTREAM_STACKOVERFLOW_CHECKS (!(UE_BUILD_TEST || UE_BUILD_SHIPPING) || 0)
+
 /*=============================================================================
 	FastReferenceCollector.h: Unreal realtime garbage collection helpers
 =============================================================================*/
 
+/** Base class for TFastReferenceCollector array pools. */
+template <typename ArrayStructType>
+class TFastReferenceCollectorArrayPool
+{
+	static_assert(std::is_base_of_v<FGCArrayStruct, ArrayStructType>, "ArrayStructType must derive from FGCArrayStruct.");
+public:
+	/**
+	 * Gets an event from the pool or creates one if necessary.
+	 *
+	 * @return The array.
+	 * @see ReturnToPool
+	 */
+	FORCEINLINE ArrayStructType* GetArrayStructFromPool()
+	{
+		ArrayStructType* Result = Pool.Pop();
+		if (!Result)
+		{
+			Result = new ArrayStructType();
+		}
+		check(Result);
+#if UE_BUILD_DEBUG
+		NumberOfUsedArrays++;
+#endif // UE_BUILD_DEBUG
+		return Result;
+	}
+
+	/**
+	 * Returns an array to the pool.
+	 *
+	 * @param Array The array to return.
+	 * @see GetArrayFromPool
+	 */
+	FORCEINLINE void ReturnToPool(ArrayStructType* ArrayStruct)
+	{
+#if UE_BUILD_DEBUG
+		const int32 CheckUsedArrays = --NumberOfUsedArrays;
+		checkSlow(CheckUsedArrays >= 0);
+#endif // UE_BUILD_DEBUG
+		check(ArrayStruct);
+		ArrayStruct->ObjectsToSerialize.Reset();
+		Pool.Push(ArrayStruct);
+	}
+
+	/**
+	 * Performs manual memory cleanup.
+	 * Generally the pools will be cleaned up when ClearWeakReferences is called on a full GC purge
+	 */
+	void Cleanup()
+	{
+#if UE_BUILD_DEBUG
+		const int32 CheckUsedArrays = NumberOfUsedArrays;
+		checkSlow(CheckUsedArrays == 0);
+#endif // UE_BUILD_DEBUG
+
+		SIZE_T FreedMemory = 0;
+		TArray<ArrayStructType*> AllArrays;
+		Pool.PopAll(AllArrays);
+		for (ArrayStructType* ArrayStruct : AllArrays)
+		{
+			// If we are cleaning up with active weak references the weak references will get corrupted
+			checkSlow(ArrayStruct->WeakReferences.Num() == 0);
+			FreedMemory += ArrayStruct->GetAllocatedSize();
+			delete ArrayStruct;
+		}
+		UE_LOG(LogGarbage, Log, TEXT("Freed %" SIZE_T_FMT "b from %d GC array pools."), FreedMemory, AllArrays.Num());
+	}
+
+#if UE_BUILD_DEBUG
+	void CheckLeaks()
+	{
+		// This function is called after GC has finished so at this point there should be no
+		// arrays used by GC and all should be returned to the pool
+		const int32 LeakedGCPoolArrays = NumberOfUsedArrays;
+		checkSlow(LeakedGCPoolArrays == 0);
+	}
+#endif
+
+protected:
+
+	/** Holds the collection of recycled arrays. */
+	TLockFreePointerListLIFO< ArrayStructType > Pool;
+
+#if UE_BUILD_DEBUG
+	/** Number of arrays currently acquired from the pool by GC */
+	std::atomic<int32> NumberOfUsedArrays;
+#endif // UE_BUILD_DEBUG
+};
+
 /**
  * Pool for reducing GC allocations
  */
-class FGCArrayPool
+class FGCArrayPool : public TFastReferenceCollectorArrayPool<FGCArrayStruct>
 {
 private:
 	// allows sharing a singleton between all compilation units while still having an inlined getter
@@ -44,68 +136,6 @@ public:
 			Singleton = GetGlobalSingleton();
 		}
 		return *Singleton;
-	}
-
-	/**
-	 * Gets an event from the pool or creates one if necessary.
-	 *
-	 * @return The array.
-	 * @see ReturnToPool
-	 */
-	FORCEINLINE FGCArrayStruct* GetArrayStructFromPool()
-	{
-		FGCArrayStruct* Result = Pool.Pop();
-		if (!Result)
-		{
-			Result = new FGCArrayStruct();
-		}
-		check(Result);
-#if UE_BUILD_DEBUG
-		NumberOfUsedArrays.Increment();
-#endif // UE_BUILD_DEBUG
-		return Result;
-	}
-
-	/**
-	 * Returns an array to the pool.
-	 *
-	 * @param Array The array to return.
-	 * @see GetArrayFromPool
-	 */
-	FORCEINLINE void ReturnToPool(FGCArrayStruct* ArrayStruct)
-	{
-#if UE_BUILD_DEBUG
-		const int32 CheckUsedArrays = NumberOfUsedArrays.Decrement();
-		checkSlow(CheckUsedArrays >= 0);
-#endif // UE_BUILD_DEBUG
-		check(ArrayStruct);
-		ArrayStruct->ObjectsToSerialize.Reset();
-		Pool.Push(ArrayStruct);
-	}
-
-	/** 
-	 * Performs manual memory cleanup. 
-	 * Generally the pools will be cleaned up when ClearWeakReferences is called on a full GC purge
-	 */
-	void Cleanup()
-	{
-#if UE_BUILD_DEBUG
-		const int32 CheckUsedArrays = NumberOfUsedArrays.GetValue();
-		checkSlow(CheckUsedArrays == 0);
-#endif // UE_BUILD_DEBUG
-
-		uint32 FreedMemory = 0;
-		TArray<FGCArrayStruct*> AllArrays;
-		Pool.PopAll(AllArrays);
-		for (FGCArrayStruct* ArrayStruct : AllArrays)
-		{
-			// If we are cleaning up with active weak references the weak references will get corrupted
-			checkSlow(ArrayStruct->WeakReferences.Num() == 0);
-			FreedMemory += ArrayStruct->ObjectsToSerialize.GetAllocatedSize();
-			FreedMemory += ArrayStruct->WeakReferences.GetAllocatedSize();
-			delete ArrayStruct;
-		}
-		UE_LOG(LogGarbage, Log, TEXT("Freed %ub from %d GC array pools."), FreedMemory, AllArrays.Num());
 	}
 
 	/**
@@ -183,13 +213,11 @@ public:
 
 	/** 
 	 * Clears weak references for everything in the pool. 
-	 * If bClearPools is true it will clear all of the pools as well, which is used during a full purge 
+	 * @param AllArrays Arrays to process 
 	 */
-	void ClearWeakReferences(bool bClearPools)
+	void ClearWeakReferences(TArray<FGCArrayStruct*>& AllArrays)
 	{
-		TArray<FGCArrayStruct*> AllArrays;
-		Pool.PopAll(AllArrays);
-		int32 Index = 0;
+		TRACE_CPUPROFILER_EVENT_SCOPE(ClearWeakReferences);
 		for (FGCArrayStruct* ArrayStruct : AllArrays)
 		{
 			for (UObject** WeakReference : ArrayStruct->WeakReferences)
@@ -201,38 +229,43 @@ public:
 				}
 			}
 			ArrayStruct->WeakReferences.Reset();
-			if (bClearPools 
-				|| Index % 7 == 3) // delete 1/7th of them just to keep things from growing too much between full purges
-			{
-				delete ArrayStruct;
-			}
-			else
-			{
-				Pool.Push(ArrayStruct);
-			}
-			Index++;
 		}
 	}
 
-#if UE_BUILD_DEBUG
-	void CheckLeaks()
+	/**
+	 * Dumps garbage references to the log.
+	 * @param AllArrays Arrays to process
+	 */
+	void DumpGarbageReferencers(TArray<FGCArrayStruct*>& AllArrays);
+
+	/**
+	 * Updates GC history after the last GC run.
+	 * @param AllArrays Arrays to process
+	 */
+	void UpdateGCHistory(TArray<FGCArrayStruct*>& AllArrays);
+
+	/**
+	 * Grabs all arrays from the pool 
+	 */
+	void GetAllArrayStructsFromPool(TArray<FGCArrayStruct*>& AllArrays)
 	{
-		// This function is called after GC has finished so at this point there should be no
-		// arrays used by GC and all should be returned to the pool
-		const int32 LeakedGCPoolArrays = NumberOfUsedArrays.GetValue();
-		checkSlow(LeakedGCPoolArrays == 0);
-	}
-#endif
-
-private:
-
-	/** Holds the collection of recycled arrays. */
-	TLockFreePointerListLIFO< FGCArrayStruct > Pool;
-
+		Pool.PopAll(AllArrays);
 #if UE_BUILD_DEBUG
-	/** Number of arrays currently acquired from the pool by GC */
-	FThreadSafeCounter NumberOfUsedArrays;
+		NumberOfUsedArrays += AllArrays.Num();
 #endif // UE_BUILD_DEBUG
+	}
+
+	/**
+	 * Frees an allocated array
+	 */
+	void FreeArrayStruct(FGCArrayStruct* InArray)
+	{
+		delete InArray;
+#if UE_BUILD_DEBUG
+		const int32 CheckUsedArrays = --NumberOfUsedArrays;
+		checkSlow(CheckUsedArrays >= 0);
+#endif // UE_BUILD_DEBUG
+	}
 };
 
 /**
@@ -249,7 +282,7 @@ private:
    {
    public:
      int32 GetMinDesiredObjectsPerSubTask() const;
-		 void HandleTokenStreamObjectReference(TArray<UObject*>& ObjectsToSerialize, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, bool bAllowReferenceElimination);
+		 void HandleTokenStreamObjectReference(FGCArrayStruct& ObjectsToSerializeStruct, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, const EGCTokenType TokenType, bool bAllowReferenceElimination);
 		 void UpdateDetailedStats(UObject* CurrentObject, uint32 DeltaCycles);
 		 void LogDetailedStatsSummary();
 	 };
@@ -342,6 +375,7 @@ private:
 
 		FORCENOINLINE void DoTask()
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(FCollectorTaskQueue::DoTask);
 			{
 				FScopeLock Lock(&WaitingThreadsLock);
 				if (bDone)
@@ -393,6 +427,7 @@ private:
 					}
 					else
 					{
+						TRACE_CPUPROFILER_EVENT_SCOPE(FCollectorTaskQueue::WaitEvent);
 						check(WaitEvent);
 						WaitEvent->Wait();
 						FPlatformProcess::ReturnSynchEventToPool(WaitEvent);
@@ -527,18 +562,11 @@ public:
 			}
 			else
 			{
-				FGraphEventArray ChunkTasks;
-
-				int32 NumThreads = FTaskGraphInterface::Get().GetNumWorkerThreads();
-				int32 NumBackgroundThreads = ENamedThreads::bHasBackgroundThreads ? NumThreads : 0;
-				ENamedThreads::Type NormalThreadName = ENamedThreads::AnyNormalThreadNormalTask;
-				ENamedThreads::Type BackgroundThreadName = ENamedThreads::AnyBackgroundThreadNormalTask;
-
-				FPlatformProcess::ModifyThreadAssignmentForUObjectReferenceCollector(NumThreads, NumBackgroundThreads, NormalThreadName, BackgroundThreadName);
-				int32 NumTasks = NumThreads + NumBackgroundThreads;
+				int32 NumThreads = FTaskGraphInterface::Get().GetNumWorkerThreads() + 1; // +1 for GT
+				// Avoid going over 26 threads as it may cause race conditions in TLockFreePointerListUnordered
+				int32 NumTasks = FMath::Min(NumThreads, 26);
 
 				check(NumTasks > 0);
-				ChunkTasks.Empty(NumTasks);
 				int32 NumPerChunk = ObjectsToCollectReferencesFor.Num() / NumTasks;
 				int32 StartIndex = 0;
 				for (int32 Chunk = 0; Chunk < NumTasks; Chunk++)
@@ -550,19 +578,24 @@ public:
 					TaskQueue.AddTask(&ObjectsToCollectReferencesFor, StartIndex, NumPerChunk);
 					StartIndex += NumPerChunk;
 				}
-				for (int32 Chunk = 0; Chunk < NumTasks; Chunk++)
-				{
-					ChunkTasks.Add(TGraphTask< FCollectorTaskProcessorTask >::CreateTask().ConstructAndDispatchWhenReady(TaskQueue, Chunk >= NumThreads ? BackgroundThreadName : NormalThreadName));
-				}
 
-				QUICK_SCOPE_CYCLE_COUNTER(STAT_GC_Subtask_Wait);
-				FTaskGraphInterface::Get().WaitUntilTasksComplete(ChunkTasks, ENamedThreads::GameThread_Local);
+				// Use ParallelFor to ensure we're making progress in this thread instead of just waiting for tasks to complete.
+				// This is especially important for good game-thread latency when the taskgraph is already filled and to avoid
+				// potential deadlock with workers making use of FGCScopeGuard.
+				ParallelForTemplate(NumTasks, [this](int32) { TaskQueue.DoTask(); }, EParallelForFlags::Unbalanced);
 				TaskQueue.CheckDone();
 			}
 		}
 	}
 
 private:
+	FORCEINLINE void ConditionalHandleTokenStreamObjectReference(FGCArrayStruct& ObjectsToSerializeStruct, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, const EGCTokenType TokenType, bool bAllowReferenceElimination)
+	{
+		if (IsObjectHandleResolved(*reinterpret_cast<FObjectHandle*>(&Object)))
+		{
+			ReferenceProcessor.HandleTokenStreamObjectReference(ObjectsToSerializeStruct, ReferencingObject, Object, TokenIndex, TokenType, bAllowReferenceElimination);
+		}
+	}
 
 	FORCEINLINE bool MoveToNextContainerElementAndCheckIfValid(FStackEntry* StackEntry) const
 	{
@@ -592,11 +625,72 @@ private:
 	 * @param CurrentObject current object being processed (owner of the weak object pointer)
 	 * @param ReferenceTokenStreamIndex GC token stream index (for debugging)
 	 */
-	FORCEINLINE void HandleWeakObjectPtr(FWeakObjectPtr& WeakPtr, TArray<UObject*>& NewObjectsToSerialize, UObject* CurrentObject, int32 ReferenceTokenStreamIndex)
+	FORCEINLINE void HandleWeakObjectPtr(FWeakObjectPtr& WeakPtr, FGCArrayStruct& NewObjectsToSerializeStruct, UObject* CurrentObject, int32 ReferenceTokenStreamIndex, const EGCTokenType TokenType)
 	{
 		UObject* WeakObject = WeakPtr.Get(true);
-		ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, WeakObject, ReferenceTokenStreamIndex, true);
+		ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, WeakObject, ReferenceTokenStreamIndex, TokenType, true);
 	}
+
+	/**
+	 * Helper class to manage GC token stram stack 
+	 */
+	class FTokenStreamStack
+	{
+		/** Allocated stack memory */
+		TArray<FStackEntry> Stack;
+		/** Current stack frame */
+		FStackEntry* CurrentFrame = nullptr;
+#if UE_ENABLE_TOKENSTREAM_STACKOVERFLOW_CHECKS
+		/** Number of used stack frames (for debugging) */
+		int32 NumberOfUsedStackFrames = 0;
+#endif // UE_ENABLE_TOKENSTREAM_STACKOVERFLOW_CHECKS
+
+	public:
+
+		FTokenStreamStack()
+		{
+			Stack.AddUninitialized(FGCReferenceTokenStream::GetMaxStackSize());
+		}
+
+		/** Initializes the stack and returns its first frame */
+		FORCEINLINE FStackEntry* Initialize()
+		{
+#if UE_ENABLE_TOKENSTREAM_STACKOVERFLOW_CHECKS
+			NumberOfUsedStackFrames = 1;
+#endif // UE_ENABLE_TOKENSTREAM_STACKOVERFLOW_CHECKS
+			// Grab te first frame. From now on we'll be using it instead of TArray to move to the next one and back
+			// in order to skip any extra internal TArray checks and overhead
+			CurrentFrame = GetBottomFrame();
+			return CurrentFrame;
+		}
+
+		/** Returns the frame at the bottom of the stack (the first one) */
+		FORCEINLINE FStackEntry* GetBottomFrame()
+		{
+			return Stack.GetData();
+		}
+
+		/** Advances to the next frame on the stack */
+		FORCEINLINE FStackEntry* Push()
+		{
+			checkSlow(NumberOfUsedStackFrames > 0); // sanity check to make sure Push() gets called after Initialize()
+#if UE_ENABLE_TOKENSTREAM_STACKOVERFLOW_CHECKS
+			NumberOfUsedStackFrames++;
+			UE_CLOG(NumberOfUsedStackFrames > Stack.Num(), LogGarbage, Fatal, TEXT("Ran out of stack space for GC Token Stream. FGCReferenceTokenStream::GetMaxStackSize() = %d must be miscalculated. Verify EmitReferenceInfo code."), FGCReferenceTokenStream::GetMaxStackSize());
+#endif // UE_ENABLE_TOKENSTREAM_STACKOVERFLOW_CHECKS
+			return ++CurrentFrame;
+		}
+
+		/** Pops back to the previous frame on the stack */
+		FORCEINLINE FStackEntry* Pop()
+		{
+#if UE_ENABLE_TOKENSTREAM_STACKOVERFLOW_CHECKS
+			NumberOfUsedStackFrames--;
+			UE_CLOG(NumberOfUsedStackFrames < 1, LogGarbage, Fatal, TEXT("GC token stream stack Pop() was called too many times. Probably a Push() call is missing for one of the tokens."));
+#endif // UE_ENABLE_TOKENSTREAM_STACKOVERFLOW_CHECKS
+			return --CurrentFrame;
+		}
+	};
 
 	/**
 	 * Traverses UObject token stream to find existing references
@@ -620,8 +714,7 @@ private:
 		TArray<UObject*>& NewObjectsToSerialize = NewObjectsToSerializeStruct.ObjectsToSerialize;
 
 		// Presized "recursion" stack for handling arrays and structs.
-		TArray<FStackEntry> Stack;
-		Stack.AddUninitialized(128); //@todo rtgc: need to add code handling more than 128 layers of recursion or at least assert
+		FTokenStreamStack Stack;
 
 		// it is necessary to have at least one extra item in the array memory block for the iffy prefetch code, below
 		ObjectsToSerialize.Reserve(ObjectsToSerialize.Num() + 1);
@@ -666,10 +759,9 @@ private:
 					UE_LOG(LogGarbage, Fatal, TEXT("%s does not yet have a token stream assembled."), *GetFullNameSafe(CurrentObject->GetClass()));
 				}
 #endif
-				if (!IsParallel())
-				{
-					ReferenceProcessor.SetCurrentObject(CurrentObject);
-				}
+				// Store the referencing object within the FGCArrayStruct so that we can always fall back to it
+				// when AddReferencedObjects functions don't provide one
+				NewObjectsToSerializeStruct.ReferencingObject = CurrentObject;
 
 				// Get pointer to token stream and jump to the start.
 				FGCReferenceTokenStream* RESTRICT TokenStream = &CurrentObject->GetClass()->ReferenceTokenStream;
@@ -678,7 +770,7 @@ private:
 				uint32 ReferenceTokenStreamIndex = 0;
 
 				// Create stack entry and initialize sane values.
-				FStackEntry* RESTRICT StackEntry = Stack.GetData();
+				FStackEntry* RESTRICT StackEntry = Stack.Initialize();
 				uint8* StackEntryData = (uint8*)CurrentObject;
 				StackEntry->Data = StackEntryData;
 				StackEntry->ContainerType = GCRT_None;
@@ -731,13 +823,14 @@ private:
 						else
 						{
 							StackEntry->ContainerType = GCRT_None;
-							StackEntry--;
+							StackEntry = Stack.Pop();
 							StackEntryData = StackEntry->Data;
 						}
 					}
 
 					TokenStreamIndex++;
-					FGCReferenceInfo ReferenceInfo = TokenStream->AccessReferenceInfo(ReferenceTokenStreamIndex);
+					const FGCReferenceInfo ReferenceInfo = TokenStream->AccessReferenceInfo(ReferenceTokenStreamIndex);
+					const EGCTokenType TokenType = TokenStream->GetTokenType();
 
 					switch(ReferenceInfo.Type)
 					{
@@ -748,7 +841,7 @@ private:
 						UObject**	ObjectPtr = (UObject**)(StackEntryData + ReferenceInfo.Offset);
 						UObject*&	Object = *ObjectPtr;
 						TokenReturnCount = ReferenceInfo.ReturnCount;
-						ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, Object, ReferenceTokenStreamIndex, true);
+						ConditionalHandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, Object, ReferenceTokenStreamIndex, TokenType, true);
 					}
 					break;
 					case GCRT_ArrayObject:
@@ -758,7 +851,7 @@ private:
 						TokenReturnCount = ReferenceInfo.ReturnCount;
 						for (int32 ObjectIndex = 0, ObjectNum = ObjectArray.Num(); ObjectIndex < ObjectNum; ++ObjectIndex)
 						{
-							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, ObjectArray[ObjectIndex], ReferenceTokenStreamIndex, true);
+							ConditionalHandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, ObjectArray[ObjectIndex], ReferenceTokenStreamIndex, TokenType, true);
 						}
 					}
 					break;
@@ -769,7 +862,7 @@ private:
 						TokenReturnCount = ReferenceInfo.ReturnCount;
 						for (int32 ObjectIndex = 0, ObjectNum = ObjectArray.Num(); ObjectIndex < ObjectNum; ++ObjectIndex)
 						{
-							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, ObjectArray[ObjectIndex], ReferenceTokenStreamIndex, true);
+							ConditionalHandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, ObjectArray[ObjectIndex], ReferenceTokenStreamIndex, TokenType, true);
 						}
 					}
 					break;
@@ -777,7 +870,7 @@ private:
 					{
 						// We're dealing with a dynamic array of structs.
 						const FScriptArray& Array = *((FScriptArray*)(StackEntryData + ReferenceInfo.Offset));
-						StackEntry++;
+						StackEntry = Stack.Push();
 						StackEntryData = (uint8*)Array.GetData();
 						StackEntry->Data = StackEntryData;
 						StackEntry->Stride = TokenStream->ReadStride(TokenStreamIndex);
@@ -805,7 +898,7 @@ private:
 					{
 						// We're dealing with a dynamic array of structs.
 						const FFreezableScriptArray& Array = *((FFreezableScriptArray*)(StackEntryData + ReferenceInfo.Offset));
-						StackEntry++;
+						StackEntry = Stack.Push();
 						StackEntryData = (uint8*)Array.GetData();
 						StackEntry->Data = StackEntryData;
 						StackEntry->Stride = TokenStream->ReadStride(TokenStreamIndex);
@@ -835,7 +928,7 @@ private:
 						UObject**	ObjectPtr = (UObject**)(StackEntryData + ReferenceInfo.Offset);
 						UObject*&	Object = *ObjectPtr;
 						TokenReturnCount = ReferenceInfo.ReturnCount;
-						ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, Object, ReferenceTokenStreamIndex, false);
+						ConditionalHandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, Object, ReferenceTokenStreamIndex, TokenType, false);
 					}
 					break;
 					case GCRT_ExternalPackage:
@@ -845,14 +938,14 @@ private:
 						// Test if the object isn't itself, since currently package are their own external and tracking that reference is pointless
 						UObject* Object = CurrentObject->GetExternalPackageInternal();
 						Object = Object != CurrentObject ? Object : nullptr;
-						ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, Object, ReferenceTokenStreamIndex, false);
+						ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, Object, ReferenceTokenStreamIndex, TokenType, false);
 					}
 					break;
 					case GCRT_FixedArray:
 					{
 						// We're dealing with a fixed size array
 						uint8* PreviousData = StackEntryData;
-						StackEntry++;
+						StackEntry = Stack.Push();
 						StackEntryData = PreviousData;
 						StackEntry->Data = PreviousData;
 						StackEntry->Stride = TokenStream->ReadStride(TokenStreamIndex);
@@ -885,7 +978,7 @@ private:
 						FMapProperty* MapProperty = (FMapProperty*)TokenStream->ReadPointer(TokenStreamIndex);
 						TokenStreamIndex++; // GCRT_EndOfPointer
 
-						StackEntry++;
+						StackEntry = Stack.Push();
 						StackEntry->ContainerType = GCRT_AddTMapReferencedObjects;
 						StackEntry->ContainerIndex = 0;
 						StackEntry->ContainerProperty = MapProperty;
@@ -930,7 +1023,7 @@ private:
 						FSetProperty* SetProperty = (FSetProperty*)TokenStream->ReadPointer(TokenStreamIndex);
 						TokenStreamIndex++; // GCRT_EndOfPointer
 
-						StackEntry++;
+						StackEntry = Stack.Push();
 						StackEntry->ContainerProperty = SetProperty;
 						StackEntry->ContainerPtr = SetPtr;
 						StackEntry->ContainerType = GCRT_AddTSetReferencedObjects;
@@ -978,7 +1071,7 @@ private:
 						{
 							UObject* OwnerObject = static_cast<UObject*>(FieldOwnerItem->Object);
 							UObject* PreviousOwner = OwnerObject;
-							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, OwnerObject, ReferenceTokenStreamIndex, true);
+							ConditionalHandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, OwnerObject, ReferenceTokenStreamIndex, TokenType, true);
 							// Handle reference elimination (PendingKill owner)
 							if (PreviousOwner && !OwnerObject)
 							{
@@ -999,7 +1092,7 @@ private:
 							{
 								UObject* OwnerObject = static_cast<UObject*>(FieldOwnerItem->Object);
 								UObject* PreviousOwner = OwnerObject;
-								ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, OwnerObject, ReferenceTokenStreamIndex, true);
+								ConditionalHandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, OwnerObject, ReferenceTokenStreamIndex, TokenType, true);
 								// Handle reference elimination (PendingKill owner)
 								if (PreviousOwner && !OwnerObject)
 								{
@@ -1018,7 +1111,7 @@ private:
 						{
 							// It's set - push a stack entry for processing the value
 							// This is somewhat suboptimal since there is only ever just one value, but this approach avoids any changes to the surrounding code
-							StackEntry++;
+							StackEntry = Stack.Push();
 							StackEntryData += ReferenceInfo.Offset;
 							StackEntry->Data = StackEntryData;
 							StackEntry->Stride = ValueSize;
@@ -1046,7 +1139,7 @@ private:
 							// We're dealing with an object reference (this code should be identical to GCRT_PersistentObject)
 							UObject**	ObjectPtr = (UObject**)(StackEntryData + ReferenceInfo.Offset);
 							UObject*&	Object = *ObjectPtr;
-							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, Object, ReferenceTokenStreamIndex, false);
+							ConditionalHandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, Object, ReferenceTokenStreamIndex, TokenType, false);
 						}
 					}
 					break;
@@ -1058,7 +1151,7 @@ private:
 							// We're dealing with an object reference (this code should be identical to GCRT_Object and GCRT_Class)
 							UObject**	ObjectPtr = (UObject**)(StackEntryData + ReferenceInfo.Offset);
 							UObject*&	Object = *ObjectPtr;
-							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, Object, ReferenceTokenStreamIndex, true);
+							ConditionalHandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, Object, ReferenceTokenStreamIndex, TokenType, true);
 						}
 					}
 					break;
@@ -1068,7 +1161,7 @@ private:
 						if (ShouldProcessWeakReferences())
 						{							
 							FWeakObjectPtr& WeakPtr = *(FWeakObjectPtr*)(StackEntryData + ReferenceInfo.Offset);
-							HandleWeakObjectPtr(WeakPtr, NewObjectsToSerialize, CurrentObject, ReferenceTokenStreamIndex);
+							HandleWeakObjectPtr(WeakPtr, NewObjectsToSerializeStruct, CurrentObject, ReferenceTokenStreamIndex, TokenType);
 						}
 					}
 					break;
@@ -1080,7 +1173,7 @@ private:
 							TArray<FWeakObjectPtr>& WeakPtrArray = *((TArray<FWeakObjectPtr>*)(StackEntryData + ReferenceInfo.Offset));
 							for (FWeakObjectPtr& WeakPtr : WeakPtrArray)
 							{
-								HandleWeakObjectPtr(WeakPtr, NewObjectsToSerialize, CurrentObject, ReferenceTokenStreamIndex);
+								HandleWeakObjectPtr(WeakPtr, NewObjectsToSerializeStruct, CurrentObject, ReferenceTokenStreamIndex, TokenType);
 							}
 						}
 					}
@@ -1092,7 +1185,7 @@ private:
 						{							
 							FLazyObjectPtr& LazyPtr = *(FLazyObjectPtr*)(StackEntryData + ReferenceInfo.Offset);
 							FWeakObjectPtr& WeakPtr = LazyPtr.WeakPtr;
-							HandleWeakObjectPtr(WeakPtr, NewObjectsToSerialize, CurrentObject, ReferenceTokenStreamIndex);
+							HandleWeakObjectPtr(WeakPtr, NewObjectsToSerializeStruct, CurrentObject, ReferenceTokenStreamIndex, TokenType);
 						}
 					}
 					break;
@@ -1106,7 +1199,7 @@ private:
 							for (FLazyObjectPtr& LazyPtr : LazyPtrArray)
 							{
 								FWeakObjectPtr& WeakPtr = LazyPtr.WeakPtr;
-								HandleWeakObjectPtr(WeakPtr, NewObjectsToSerialize, CurrentObject, ReferenceTokenStreamIndex);
+								HandleWeakObjectPtr(WeakPtr, NewObjectsToSerializeStruct, CurrentObject, ReferenceTokenStreamIndex, TokenType);
 							}
 						}
 					}
@@ -1118,7 +1211,7 @@ private:
 						{							
 							FSoftObjectPtr& SoftPtr = *(FSoftObjectPtr*)(StackEntryData + ReferenceInfo.Offset);
 							FWeakObjectPtr& WeakPtr = SoftPtr.WeakPtr;
-							HandleWeakObjectPtr(WeakPtr, NewObjectsToSerialize, CurrentObject, ReferenceTokenStreamIndex);
+							HandleWeakObjectPtr(WeakPtr, NewObjectsToSerializeStruct, CurrentObject, ReferenceTokenStreamIndex, TokenType);
 						}
 					}
 					break;
@@ -1131,7 +1224,7 @@ private:
 							for (FSoftObjectPtr& SoftPtr : SoftPtrArray)
 							{
 								FWeakObjectPtr& WeakPtr = SoftPtr.WeakPtr;
-								HandleWeakObjectPtr(WeakPtr, NewObjectsToSerialize, CurrentObject, ReferenceTokenStreamIndex);
+								HandleWeakObjectPtr(WeakPtr, NewObjectsToSerializeStruct, CurrentObject, ReferenceTokenStreamIndex, TokenType);
 							}
 						}
 					}
@@ -1143,7 +1236,7 @@ private:
 						{							
 							FScriptDelegate& Delegate = *(FScriptDelegate*)(StackEntryData + ReferenceInfo.Offset);
 							UObject* DelegateObject = Delegate.GetUObject();
-							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, DelegateObject, ReferenceTokenStreamIndex, false);
+							ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, DelegateObject, ReferenceTokenStreamIndex, TokenType, false);
 						}
 					}
 					break;
@@ -1156,7 +1249,7 @@ private:
 							for (FScriptDelegate& Delegate : DelegateArray)
 							{
 								UObject* DelegateObject = Delegate.GetUObject();
-								ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, DelegateObject, ReferenceTokenStreamIndex, false);
+								ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, DelegateObject, ReferenceTokenStreamIndex, TokenType, false);
 							}
 						}
 					}
@@ -1170,7 +1263,7 @@ private:
 							TArray<UObject*> DelegateObjects(Delegate.GetAllObjects());
 							for (UObject* DelegateObject : DelegateObjects)
 							{
-								ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, DelegateObject, ReferenceTokenStreamIndex, false);
+								ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, DelegateObject, ReferenceTokenStreamIndex, TokenType, false);
 							}
 						}
 					}
@@ -1186,7 +1279,7 @@ private:
 								TArray<UObject*> DelegateObjects(Delegate.GetAllObjects());
 								for (UObject* DelegateObject : DelegateObjects)
 								{
-									ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerialize, CurrentObject, DelegateObject, ReferenceTokenStreamIndex, false);
+									ReferenceProcessor.HandleTokenStreamObjectReference(NewObjectsToSerializeStruct, CurrentObject, DelegateObject, ReferenceTokenStreamIndex, TokenType, false);
 								}
 							}
 						}
@@ -1206,7 +1299,8 @@ private:
 				}
 				}
 EndLoop:
-				check(StackEntry == Stack.GetData());
+				check(StackEntry == Stack.GetBottomFrame());
+				check(NewObjectsToSerializeStruct.ReferencingObject == CurrentObject);
 
 				if (IsParallel() && NewObjectsToSerialize.Num() >= MinDesiredObjectsPerSubTask)
 				{
@@ -1293,14 +1387,14 @@ public:
 	}
 	virtual void HandleObjectReference(UObject*& Object, const UObject* ReferencingObject, const FProperty* ReferencingProperty) override
 	{
-		Processor.HandleTokenStreamObjectReference(ObjectArrayStruct.ObjectsToSerialize, const_cast<UObject*>(ReferencingObject), Object, INDEX_NONE, false);
+		Processor.HandleTokenStreamObjectReference(ObjectArrayStruct, const_cast<UObject*>(ReferencingObject), Object, INDEX_NONE, EGCTokenType::Native, false);
 	}
 	virtual void HandleObjectReferences(UObject** InObjects, const int32 ObjectNum, const UObject* ReferencingObject, const FProperty* InReferencingProperty) override
 	{
 		for (int32 ObjectIndex = 0; ObjectIndex < ObjectNum; ++ObjectIndex)
 		{
 			UObject*& Object = InObjects[ObjectIndex];
-			Processor.HandleTokenStreamObjectReference(ObjectArrayStruct.ObjectsToSerialize, const_cast<UObject*>(ReferencingObject), Object, INDEX_NONE, false);
+			Processor.HandleTokenStreamObjectReference(ObjectArrayStruct, const_cast<UObject*>(ReferencingObject), Object, INDEX_NONE, EGCTokenType::Native, false);
 		}
 	}
 	virtual bool IsIgnoringArchetypeRef() const override
@@ -1340,10 +1434,6 @@ public:
 	{
 		// Do nothing
 	}
-	void SetCurrentObject(UObject* Obj)
-	{
-		// Do nothing
-	}
 	// Implement this in your derived class, don't make this virtual as it will affect performance!
-	//FORCEINLINE void HandleTokenStreamObjectReference(TArray<UObject*>& ObjectsToSerialize, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, bool bAllowReferenceElimination);
+	//FORCEINLINE void HandleTokenStreamObjectReference(FGCArrayStruct& ObjectsToSerializeStruct, UObject* ReferencingObject, UObject*& Object, const int32 TokenIndex, const EGCTokenType TokenType, bool bAllowReferenceElimination);
 };

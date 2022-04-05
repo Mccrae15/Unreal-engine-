@@ -57,12 +57,17 @@ enum class EClassViewerNameTypeToDisplay : uint8
  * Settings for the Class Viewer set by the programmer before spawning an instance of the widget.  This
  * is used to modify the class viewer's behavior in various ways, such as filtering in or out specific classes.
  */
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 class FClassViewerInitializationOptions
 {
 
 public:
-	/** The filter to use on classes in this instance. */
+	/** [Deprecated] The filter to use on classes in this instance. */
+	UE_DEPRECATED(5.0, "Please add to the ClassFilters array member instead.")
 	TSharedPtr<class IClassViewerFilter> ClassFilter;
+
+	/** The filter(s) to use on classes in this instance. */
+	TArray<TSharedRef<class IClassViewerFilter>> ClassFilters;
 
 	/** Mode to operate in */
 	EClassViewerMode::Type Mode;
@@ -90,6 +95,9 @@ public:
 
 	/** If true, root nodes will be expanded by default. */
 	bool bExpandRootNodes;
+
+	/** If true, all nodes will be expanded by default. */
+	bool bExpandAllNodes;
 
 	/** true allows class dynamic loading on selection */
 	bool bEnableClassDynamicLoading;
@@ -121,6 +129,9 @@ public:
 	/** Will set the initially selected row, if possible, to this class when the viewer is created */
 	UClass* InitiallySelectedClass;
 
+	/** (true) Will show the default classes if they exist. */
+	bool bShowDefaultClasses;
+
 public:
 
 	/** Constructor */
@@ -134,14 +145,17 @@ public:
 		, bShowNoneOption(false)
 		, bShowObjectRootClass(false)
 		, bExpandRootNodes(true)
+		, bExpandAllNodes(false)
 		, bEnableClassDynamicLoading(true)
 		, NameTypeToDisplay(EClassViewerNameTypeToDisplay::ClassName)
 		, bAllowViewOptions(true)
 		, bEditorClassesOnly(false)
 		, InitiallySelectedClass(nullptr)
+		, bShowDefaultClasses(true)
 	{
 	}
 };
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /**
  * Class Viewer module
@@ -178,4 +192,14 @@ public:
 	virtual TSharedRef<IClassViewerFilter> CreateClassFilter(const FClassViewerInitializationOptions& InitOptions);
 
 	virtual TSharedRef<FClassViewerFilterFuncs> CreateFilterFuncs();
+
+	/** Registers a global filter that affects all class viewer instances (gets combined any local filter)*/
+	virtual void RegisterGlobalClassViewerFilter(const TSharedRef<IClassViewerFilter>& Filter);
+
+	/** Returns the global filter that affects all class viewer instances */
+	virtual const TSharedPtr<IClassViewerFilter>& GetGlobalClassViewerFilter();
+
+private:
+
+	TSharedPtr<IClassViewerFilter> GlobalClassViewerFilter;
 };

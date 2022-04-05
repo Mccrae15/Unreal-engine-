@@ -11,6 +11,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SHyperlink.h"
+#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE "SNiagaraStackErrorItem"
 
@@ -18,24 +19,23 @@ void SNiagaraStackErrorItem::Construct(const FArguments& InArgs, UNiagaraStackEr
 {
 	ErrorItem = InErrorItem;
 	StackViewModel = InStackViewModel;
-
 	const FSlateBrush* IconBrush;
 	switch (ErrorItem->GetStackIssue().GetSeverity())
 	{
 	case EStackIssueSeverity::Error:
-		IconBrush = FEditorStyle::GetBrush("Icons.Error");
+		IconBrush = FAppStyle::Get().GetBrush("Icons.ErrorWithColor");
 		break;
 	case EStackIssueSeverity::Warning:
-		IconBrush = FEditorStyle::GetBrush("Icons.Warning");
+		IconBrush = FAppStyle::Get().GetBrush("Icons.WarningWithColor");
 		break;
 	case EStackIssueSeverity::Info:
-		IconBrush = FEditorStyle::GetBrush("Icons.Info");
+		IconBrush = FAppStyle::Get().GetBrush("Icons.InfoWithColor");
 		break;
 	case EStackIssueSeverity::CustomNote:
 		IconBrush = FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Message.CustomNote");
 		break;
 	default:
-		IconBrush = FEditorStyle::GetBrush("NoBrush");
+		IconBrush = FAppStyle::Get().GetBrush("NoBrush");
 		break;
 	}
 
@@ -75,7 +75,6 @@ void SNiagaraStackErrorItemFix::Construct(const FArguments& InArgs, UNiagaraStac
 	{
 		FixWidget = SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot()
-		.Padding(0, 4, 0, 0)
 		.VAlign(VAlign_Center)
 		[
 			SNew(STextBlock)

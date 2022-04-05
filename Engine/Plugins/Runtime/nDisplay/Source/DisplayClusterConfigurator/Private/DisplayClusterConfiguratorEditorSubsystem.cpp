@@ -25,7 +25,7 @@ UDisplayClusterBlueprint* UDisplayClusterConfiguratorEditorSubsystem::ImportAsse
 	{
 		return nullptr;
 	}
-	RootActor->PreviewNodeId = DisplayClusterConfigurationStrings::gui::preview::PreviewNodeAll;
+	RootActor->PreviewNodeId = DisplayClusterConfigurationStrings::gui::preview::PreviewNodeNone;
 
 	UDisplayClusterBlueprint* NewBlueprint = FDisplayClusterConfiguratorUtils::CreateBlueprintFromRootActor(RootActor, InName, InParent);
 	if (NewBlueprint == nullptr)
@@ -102,23 +102,8 @@ bool UDisplayClusterConfiguratorEditorSubsystem::SaveConfig(UDisplayClusterConfi
 {
 	if (InConfiguratorEditorData)
 	{
-		FString ConfigFileExtension = FPaths::GetExtension(InConfigPath, true);
-		FString FilePathToSave = InConfigPath;
-
-		FString JsonExtension = FString(".") + FString(DisplayClusterConfigurationStrings::file::FileExtJson);
-		FString CfgExtension = FString(".") + FString(DisplayClusterConfigurationStrings::file::FileExtCfg);
-
-		// Update file extension to .ndisplay if original file is .cfg
-		if (ConfigFileExtension.Equals(CfgExtension))
-		{
-			FilePathToSave = FPaths::ChangeExtension(InConfigPath, JsonExtension);
-		}
-
-		if (InConfiguratorEditorData != nullptr)
-		{
-			InConfiguratorEditorData->PathToConfig = FilePathToSave;
-			return IDisplayClusterConfiguration::Get().SaveConfig(InConfiguratorEditorData, FilePathToSave);
-		}
+		InConfiguratorEditorData->PathToConfig = InConfigPath;
+		return IDisplayClusterConfiguration::Get().SaveConfig(InConfiguratorEditorData, InConfigPath);
 	}
 
 	return false;

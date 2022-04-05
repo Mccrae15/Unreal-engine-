@@ -10,6 +10,7 @@
 #include "Misc/Paths.h"
 #include "Misc/TextFilterExpressionEvaluator.h"
 #include "Editor.h"
+#include "ClassViewerModule.h"
 #include "AssetRegistryModule.h"
 #include "PropertyHandle.h"
 
@@ -369,6 +370,13 @@ static bool PassesTextFilter(const FString& InTestString, const TSharedRef<FText
 	return InTextFilter->TestTextFilter(FBasicStringFilterExpressionContext(InTestString));
 }
 
+/** Returns true if the given class is a REINST class (starts with the 'REINST_' prefix) */
+static bool IsReinstClass(const UClass* Class)
+{
+	static const FString ReinstPrefix = TEXT("REINST");
+	return Class && Class->GetFName().ToString().StartsWith(ReinstPrefix);
+}
+
 FClassViewerFilter::FClassViewerFilter(const FClassViewerInitializationOptions& InInitOptions) :
 	TextFilter(MakeShared<FTextFilterExpressionEvaluator>(ETextFilterExpressionEvaluatorMode::BasicString)),
 	FilterFunctions(MakeShared<FClassViewerFilterFuncs>()),
@@ -488,9 +496,27 @@ bool FClassViewerFilter::IsClassAllowed(const FClassViewerInitializationOptions&
 	}
 
 	bool bPassesCustomFilter = true;
-	if (InInitOptions.ClassFilter.IsValid())
+	for (const TSharedRef<IClassViewerFilter>& CustomFilter : InInitOptions.ClassFilters)
+	{
+		if (!CustomFilter->IsClassAllowed(InInitOptions, InClass, FilterFunctions))
+		{
+			bPassesCustomFilter = false;
+			break;
+		}
+	}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	// Retained for backcompat; can remove when fully deprecated.
+	if (bPassesCustomFilter && InInitOptions.ClassFilter.IsValid())
 	{
 		bPassesCustomFilter = InInitOptions.ClassFilter->IsClassAllowed(InInitOptions, InClass, FilterFunctions);
+	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	bool bPassesGlobalClassFilter = true;
+	if (const TSharedPtr<IClassViewerFilter>& GlobalClassFilter = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer").GetGlobalClassViewerFilter())
+	{
+		bPassesGlobalClassFilter = GlobalClassFilter->IsClassAllowed(InInitOptions, InClass, FilterFunctions);
 	}
 
 	bool bPassesTextFilter = true;
@@ -513,9 +539,13 @@ bool FClassViewerFilter::IsClassAllowed(const FClassViewerInitializationOptions&
 		bPassesAssetReferenceFilter = AssetReferenceFilter->PassesFilter(FAssetData(InClass));
 	}
 
+	// REINST classes cannot be used in any class viewer. 
+	const bool bPassesReinstFilter = !IsReinstClass(InClass);
+
 	bool bPassesFilter = bPassesAllowedClasses && bPassesPlaceableFilter && bPassesBlueprintBaseFilter
 		&& bPassesDeveloperFilter && bPassesInternalFilter && bPassesEditorClassFilter 
-		&& bPassesCustomFilter && bPassesTextFilter && bPassesAssetReferenceFilter;
+		&& bPassesCustomFilter && bPassesGlobalClassFilter && bPassesTextFilter && bPassesAssetReferenceFilter
+		&& bPassesReinstFilter;
 
 	return bPassesFilter;
 }
@@ -590,9 +620,28 @@ bool FClassViewerFilter::IsUnloadedClassAllowed(const FClassViewerInitialization
 	}
 
 	bool bPassesCustomFilter = true;
-	if (InInitOptions.ClassFilter.IsValid())
+	for (const TSharedRef<IClassViewerFilter>& CustomFilter : InInitOptions.ClassFilters)
+	{
+		if (!CustomFilter->IsUnloadedClassAllowed(InInitOptions, InUnloadedClassData, FilterFunctions))
+		{
+			bPassesCustomFilter = false;
+			break;
+		}
+	}
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	// Retained for backcompat; can remove when fully deprecated.
+	if (bPassesCustomFilter && InInitOptions.ClassFilter.IsValid())
 	{
 		bPassesCustomFilter = InInitOptions.ClassFilter->IsUnloadedClassAllowed(InInitOptions, InUnloadedClassData, FilterFunctions);
+	}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+
+	bool bPassesGlobalClassFilter = true;
+	if (const TSharedPtr<IClassViewerFilter>& GlobalClassFilter = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer").GetGlobalClassViewerFilter())
+	{
+		bPassesGlobalClassFilter = GlobalClassFilter->IsUnloadedClassAllowed(InInitOptions, InUnloadedClassData, FilterFunctions);
 	}
 
 	const bool bPassesTextFilter = PassesTextFilter(*InUnloadedClassData->GetClassName().Get(), TextFilter);
@@ -604,8 +653,8 @@ bool FClassViewerFilter::IsUnloadedClassAllowed(const FClassViewerInitialization
 		bPassesAssetReferenceFilter = AssetReferenceFilter->PassesFilter(AssetRegistry.GetAssetByObjectPath(BlueprintPath));
 	}
 
-	bool bPassesFilter = bPassesPlaceableFilter && bPassesBlueprintBaseFilter
-		&& bPassesDeveloperFilter && bPassesInternalFilter && bPassesCustomFilter 
+	bool bPassesFilter = bPassesPlaceableFilter && bPassesBlueprintBaseFilter && bPassesDeveloperFilter 
+		&& bPassesInternalFilter && bPassesCustomFilter && bPassesGlobalClassFilter
 		&& (!bCheckTextFilter || bPassesTextFilter) && bPassesAssetReferenceFilter;
 
 	return bPassesFilter;

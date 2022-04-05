@@ -51,7 +51,7 @@ struct SLATECORE_API FFontOutlineSettings
 
 	/** Optional material to apply to the outline */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(AllowedClasses="MaterialInterface"))
-	UObject* OutlineMaterial;
+	TObjectPtr<UObject> OutlineMaterial;
 
 	/** The color of the outline for any character in this font */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=OutlineSettings)
@@ -135,11 +135,11 @@ struct SLATECORE_API FSlateFontInfo
 
 	/** The font object (valid when used from UMG or a Slate widget style asset) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(AllowedClasses="Font", DisplayName="Font Family"))
-	const UObject* FontObject;
+	TObjectPtr<const UObject> FontObject;
 
 	/** The material to use when rendering this font */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules, meta=(AllowedClasses="MaterialInterface"))
-	UObject* FontMaterial;
+	TObjectPtr<UObject> FontMaterial;
 
 	/** Settings for applying an outline to a font */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=SlateStyleRules)
@@ -153,7 +153,7 @@ struct SLATECORE_API FSlateFontInfo
 	FName TypefaceFontName;
 
 	/**
-	 * The font size is a measure in point values.  The conversion of points to Slate Units is done at 96 dpi.  So if 
+	 * The font size is a measure in point values. The conversion of points to Slate Units is done at 96 dpi.  So if 
 	 * you're using a tool like Photoshop to prototype layouts and UI mock ups, be sure to change the default dpi 
 	 * measurements from 72 dpi to 96 dpi.
 	 */
@@ -275,6 +275,9 @@ public:
 	 * @note This function will return the fallback font if this font info itself does not contain a valid font. If you want to test whether this font info is empty, use HasValidFont
 	 */
 	const FCompositeFont* GetCompositeFont() const;
+
+	/** Get the font size clamp for the font renderer (on 16bits) */
+	uint16 GetClampSize() const;
 
 	/**
 	 * Calculates a type hash value for a font info.

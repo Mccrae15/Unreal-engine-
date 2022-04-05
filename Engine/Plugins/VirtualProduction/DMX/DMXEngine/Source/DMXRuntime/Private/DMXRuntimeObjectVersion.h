@@ -18,6 +18,9 @@ struct FDMXRuntimeObjectVersion
 		// Update to DMX Library Section using normalized values by default
 		ReplaceWeakWithStrongFixturePatchReferncesInLibrarySection,
 
+		// Update DMX Entity Fixture Type to allow the Matrix to be enabled/disabled per Mode
+		DMXFixtureTypeAllowMatrixInEachFixtureMode,
+
 		// -----<new versions can be added above this line>-------------------------------------------------
 		VersionPlusOne,
 		LatestVersion = VersionPlusOne - 1

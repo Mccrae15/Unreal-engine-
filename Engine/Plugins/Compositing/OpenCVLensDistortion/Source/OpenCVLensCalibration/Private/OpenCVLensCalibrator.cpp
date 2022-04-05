@@ -9,11 +9,14 @@
 //#include "UnrealClient.h"
 
 #if WITH_OPENCV
-OPENCV_INCLUDES_START
-#undef check // the check macro causes problems with opencv headers
+
+#include "PreOpenCVHeaders.h"
+
 #include "opencv2/calib3d.hpp"
 #include "opencv2/imgproc.hpp"
-OPENCV_INCLUDES_END
+
+#include "PostOpenCVHeaders.h"
+
 #endif
 
 
@@ -162,11 +165,11 @@ bool UOpenCVLensCalibrator::Feed(const cv::Mat& InImage)
 
 	//Using flag CV_CALIB_CB_FAST_CHECK is faster but didn`t catch corners on some images. 
 	cv::Mat Gray;
-	cv::cvtColor(InImage, Gray, CV_BGR2GRAY);
-	const bool bFound = cv::findChessboardCorners(Gray, BoardSize, Corners, CV_CALIB_CB_ADAPTIVE_THRESH | CV_CALIB_CB_NORMALIZE_IMAGE);
+	cv::cvtColor(InImage, Gray, cv::COLOR_BGR2GRAY);
+	const bool bFound = cv::findChessboardCorners(Gray, BoardSize, Corners, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE);
 	if (bFound)
 	{
-		cv::cornerSubPix(Gray, Corners, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(CV_TERMCRIT_EPS + CV_TERMCRIT_ITER, 30, 0.001));
+		cv::cornerSubPix(Gray, Corners, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::Type::EPS + cv::TermCriteria::Type::COUNT, 30, 0.001));
 		ImagePoints.push_back(Corners);
 
 		//Update min/max coordinates to help user cover the whole lens.
@@ -211,7 +214,7 @@ bool UOpenCVLensCalibrator::CalculateLensParameters(FOpenCVLensDistortionParamet
 			//fisheye calibration doesn't like it with 1 image
 			if (ImagePoints.size() > 1)
 			{
-				OutMarginOfError = (float)cv::fisheye::calibrate(ObjectPoints, ImagePoints, ImageSize, CameraMatrix, DistortionCoefficients, Rvecs, Tvecs, cv::fisheye::CALIB_RECOMPUTE_EXTRINSIC + cv::fisheye::CALIB_FIX_SKEW, cv::TermCriteria(CV_TERMCRIT_EPS + CV_TERMCRIT_ITER, 30, 1e-6));
+				OutMarginOfError = (float)cv::fisheye::calibrate(ObjectPoints, ImagePoints, ImageSize, CameraMatrix, DistortionCoefficients, Rvecs, Tvecs, cv::fisheye::CALIB_RECOMPUTE_EXTRINSIC + cv::fisheye::CALIB_FIX_SKEW, cv::TermCriteria(cv::TermCriteria::Type::EPS + cv::TermCriteria::Type::COUNT, 30, 1e-6));
 			}
 			else
 			{
@@ -230,7 +233,7 @@ bool UOpenCVLensCalibrator::CalculateLensParameters(FOpenCVLensDistortionParamet
 		return false;
 	}
 
-	// Convert the params to a UE4 struct
+	// Convert the params to a Unreal Editor struct
 	{
 		//Fisheye camera model vs pinhole camera model differs slightly in parameter assignment
 		//Pinhole can have up to 6 radial distortion parameters and 2 tangential parameters

@@ -5,10 +5,8 @@
 #include "Containers/ArrayView.h"
 #include "Common/StringStore.h"
 
-namespace Trace
+namespace TraceServices
 {
-
-const FName FNetProfilerProvider::ProviderName("NetProfilerProvider");
 
 const TCHAR* LexToString(const ENetProfilerChannelCloseReason Value)
 {
@@ -27,6 +25,28 @@ const TCHAR* LexToString(const ENetProfilerChannelCloseReason Value)
 	}
 
 	return TEXT("Unknown");
+}
+
+const TCHAR* LexToString(const ENetProfilerConnectionState Value)
+{
+	switch (Value)
+	{
+	case ENetProfilerConnectionState::USOCK_Closed:
+		return TEXT("Closed");
+		break;
+	case ENetProfilerConnectionState::USOCK_Open:
+		return TEXT("Open");
+		break;
+	case ENetProfilerConnectionState::USOCK_Pending:
+		return TEXT("Pending");
+		break;
+	case ENetProfilerConnectionState::USOCK_Invalid:
+	default:
+		return TEXT("Invalid");
+		break;
+	}
+
+	return TEXT("Invalid");
 }
 
 FNetProfilerProvider::FNetProfilerProvider(IAnalysisSession& InSession)
@@ -98,7 +118,7 @@ const FNetProfilerEventType* FNetProfilerProvider::GetNetProfilerEventType(uint3
 	return EventTypeIndex < (uint32)EventTypes.Num() ? &EventTypes[EventTypeIndex] : nullptr;
 }
 
-Trace::FNetProfilerGameInstanceInternal& FNetProfilerProvider::CreateGameInstance()
+FNetProfilerGameInstanceInternal& FNetProfilerProvider::CreateGameInstance()
 {
 	Session.WriteAccessCheck();
 
@@ -115,7 +135,7 @@ Trace::FNetProfilerGameInstanceInternal& FNetProfilerProvider::CreateGameInstanc
 	return GameInstance;
 }
 
-Trace::FNetProfilerGameInstanceInternal* FNetProfilerProvider::EditGameInstance(uint32 GameInstanceIndex)
+FNetProfilerGameInstanceInternal* FNetProfilerProvider::EditGameInstance(uint32 GameInstanceIndex)
 {
 	Session.WriteAccessCheck();
 
@@ -129,7 +149,7 @@ Trace::FNetProfilerGameInstanceInternal* FNetProfilerProvider::EditGameInstance(
 	}
 }
 
-Trace::FNetProfilerConnectionInternal& FNetProfilerProvider::CreateConnection(uint32 GameInstanceIndex)
+FNetProfilerConnectionInternal& FNetProfilerProvider::CreateConnection(uint32 GameInstanceIndex)
 {
 	Session.WriteAccessCheck();
 
@@ -159,21 +179,21 @@ Trace::FNetProfilerConnectionInternal& FNetProfilerProvider::CreateConnection(ui
 	return Connection;
 }
 
-Trace::FNetProfilerObjectInstance& FNetProfilerProvider::CreateObject(uint32 GameInstanceIndex)
+FNetProfilerObjectInstance& FNetProfilerProvider::CreateObject(uint32 GameInstanceIndex)
 {
 	Session.WriteAccessCheck();
 
 	FNetProfilerGameInstanceInternal* GameInstance = EditGameInstance(GameInstanceIndex);
 	check(GameInstance);
 
-	Trace::FNetProfilerObjectInstance& Object = GameInstance->Objects->PushBack();
+	FNetProfilerObjectInstance& Object = GameInstance->Objects->PushBack();
 	Object.ObjectIndex = GameInstance->Objects->Num() - 1;
 	++GameInstance->ObjectsChangeCount;
 
 	return Object;
 }
 
-Trace::FNetProfilerObjectInstance* FNetProfilerProvider::EditObject(uint32 GameInstanceIndex, uint32 ObjectIndex)
+FNetProfilerObjectInstance* FNetProfilerProvider::EditObject(uint32 GameInstanceIndex, uint32 ObjectIndex)
 {
 	Session.WriteAccessCheck();
 
@@ -191,7 +211,7 @@ Trace::FNetProfilerObjectInstance* FNetProfilerProvider::EditObject(uint32 GameI
 	}
 }
 
-Trace::FNetProfilerConnectionInternal* FNetProfilerProvider::EditConnection(uint32 ConnectionIndex)
+FNetProfilerConnectionInternal* FNetProfilerProvider::EditConnection(uint32 ConnectionIndex)
 {
 	Session.WriteAccessCheck();
 
@@ -211,7 +231,7 @@ void FNetProfilerProvider::EditPacketDeliveryStatus(uint32 ConnectionIndex, ENet
 	check(ConnectionIndex < (uint32)Connections.Num());
 
 	FNetProfilerConnectionInternal& Connection = Connections[ConnectionIndex];
-	Trace::FNetProfilerConnectionData& Data = *Connections[ConnectionIndex].Data[Mode];
+	FNetProfilerConnectionData& Data = *Connections[ConnectionIndex].Data[Mode];
 
 	// try to locate packet
 	uint32 PacketCount = Data.Packets.Num();
@@ -227,7 +247,7 @@ void FNetProfilerProvider::EditPacketDeliveryStatus(uint32 ConnectionIndex, ENet
 	}
 }
 
-Trace::FNetProfilerConnectionData& FNetProfilerProvider::EditConnectionData(uint32 ConnectionIndex, ENetProfilerConnectionMode Mode)
+FNetProfilerConnectionData& FNetProfilerProvider::EditConnectionData(uint32 ConnectionIndex, ENetProfilerConnectionMode Mode)
 {
 	check(ConnectionIndex < (uint32)Connections.Num());
 
@@ -369,13 +389,6 @@ uint32 FNetProfilerProvider::GetObjectsChangeCount(uint32 GameInstanceIndex) con
 	const FNetProfilerGameInstanceInternal& GameInstance = GameInstances[GameInstanceIndex];
 
 	return GameInstance.ObjectsChangeCount;
-}
-
-const INetProfilerProvider& ReadNetProfilerProvider(const IAnalysisSession& Session)
-{
-	Session.ReadAccessCheck();
-
-	return *Session.ReadProvider<INetProfilerProvider>(FNetProfilerProvider::ProviderName);
 }
 
 int32 FNetProfilerProvider::FindPacketIndexFromPacketSequence(uint32 ConnectionIndex, ENetProfilerConnectionMode Mode, uint32 SequenceNumber) const
@@ -678,4 +691,15 @@ ITable<FNetProfilerAggregatedStats>* FNetProfilerProvider::CreateAggregation(uin
 	return Table;
 }
 
+FName GetNetProfilerProviderName()
+{
+	static FName Name(TEXT("NetProfilerProvider"));
+	return Name;
 }
+
+const INetProfilerProvider* ReadNetProfilerProvider(const IAnalysisSession& Session)
+{
+	return Session.ReadProvider<INetProfilerProvider>(GetNetProfilerProviderName());
+}
+
+} // namespace TraceServices

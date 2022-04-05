@@ -31,7 +31,7 @@ protected:
 
 	/** The virtual texture object to use. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, NonPIEDuplicateTransient, Category = VirtualTexture)
-	URuntimeVirtualTexture* VirtualTexture = nullptr;
+	TObjectPtr<URuntimeVirtualTexture> VirtualTexture = nullptr;
 
 	/** Set to true to enable scalability settings for the virtual texture. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = VirtualTexture, meta = (InlineEditConditionToggle))
@@ -45,25 +45,25 @@ protected:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = VirtualTexture)
 	bool bHidePrimitives = false;
 
-	/** Texture object containing streamed low mips. */
+	/** Texture object containing streamed low mips. This can reduce rendering update cost. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, NonPIEDuplicateTransient, Category = VirtualTextureBuild)
-	UVirtualTextureBuilder* StreamingTexture = nullptr;
+	TObjectPtr<UVirtualTextureBuilder> StreamingTexture = nullptr;
 
-	/** Number of low mips to serialize and stream for the virtual texture. This can reduce rendering update cost. */
-	UPROPERTY(EditAnywhere, Category = VirtualTextureBuild, meta = (UIMin = "0", UIMax = "12", DisplayName = "Streaming Levels"))
+	/** Number of streaming low mips to build for the virtual texture. */
+	UPROPERTY(EditAnywhere, Category = VirtualTextureBuild, meta = (UIMin = "0", UIMax = "12", DisplayName = "Build Levels"))
 	int32 StreamLowMips = 0;
 
 	/** Placeholder for details customization button. */
 	UPROPERTY(VisibleAnywhere, Transient, Category = VirtualTextureBuild)
 	bool bBuildStreamingMipsButton;
 
+	/** Use streaming low mips when rendering in editor. Set true to view and debug the baked streaming low mips. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = VirtualTextureBuild, meta = (DisplayName = "View in Editor"))
+	bool bUseStreamingLowMipsInEditor = false;
+
 	/** Enable Crunch texture compression for the streaming low mips. Generic ZLib compression is used when Crunch is disabled. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = VirtualTextureBuild, meta = (DisplayName = "Enable Crunch"))
 	bool bEnableCompressCrunch = false;
-
-	/** Use any streaming low mips when rendering in editor. Set true to view and debug the baked streaming low mips. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = VirtualTextureBuild, meta = (DisplayName = "View Streaming Mips in Editor"))
-	bool bUseStreamingLowMipsInEditor = false;
 
 	/** Build the streaming low mips using debug coloring. This can help show where streaming mips are being used. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Transient, AdvancedDisplay, Category = VirtualTextureBuild, meta = (DisplayName = "Build Debug"))
@@ -85,6 +85,9 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "VirtualTexture")
 	void Invalidate(FBoxSphereBounds const& WorldBounds);
+
+	/** Set the runtime virtual texture object on this component. */
+	void SetVirtualTexture(URuntimeVirtualTexture* InVirtualTexture);
 
 	/** Get the runtime virtual texture object on this component. */
 	URuntimeVirtualTexture* GetVirtualTexture() const { return VirtualTexture; }
@@ -116,8 +119,8 @@ public:
 	/** Public getter for debug streaming mips flag. */
 	bool IsBuildDebugStreamingMips() { return bBuildDebugStreamingMips; }
 
-	/** Returns true if the StreamingTexure contents are valid for use. */
-	bool IsStreamingTextureValid() const;
+	/** Returns true if there are StreamingTexure contents but they are not valid for use. */
+	bool IsStreamingTextureInvalid() const;
 
 #if WITH_EDITOR
 	/** Set a new asset to hold the low mip streaming texture. This should only be called directly before setting data to the new asset. */
@@ -127,6 +130,8 @@ public:
 #endif
 
 #if WITH_EDITOR
+	/** Get the BoundsAlignActor on this component. */
+	void SetBoundsAlignActor(AActor* InActor);
 	/** Get the BoundsAlignActor on this component. */
 	TSoftObjectPtr<AActor>& GetBoundsAlignActor() { return BoundsAlignActor; }
 	/** Get if SnapBoundsToLandscape is set on this component. */

@@ -20,14 +20,18 @@ namespace UnrealBuildTool.Rules
 			PrivateDependencyModuleNames.AddRange(
 				new string[]
 				{
-                    "CADInterfaces",
-                    "CADLibrary",
-					"Engine",
+					"CADInterfaces",
+					"CADKernel",
+					"CADKernelSurface",
+					"CADLibrary",
+					"CADTools",
+					"CoreTechSurface",
 					"DatasmithCore",
-                    "DatasmithCoreTechParametricSurfaceData",
 					"DatasmithContent",
 					"DatasmithTranslator",
+					"Engine",
 					"MeshDescription",
+					"ParametricSurface",
 					"StaticMeshDescription",
 				}
 			);

@@ -107,11 +107,13 @@ TSharedPtr<SWidget> FCinematicShotTrackEditor::BuildOutlinerEditWidget(const FGu
 	.Padding(4, 0, 0, 0)
 	[
 		SNew(SCheckBox)
+        .Style( &FAppStyle::Get().GetWidgetStyle<FCheckBoxStyle>("ToggleButtonCheckBoxAlt"))
+		.Type(ESlateCheckBoxType::CheckBox)
+		.Padding(FMargin(0.f))
 		.IsFocusable(false)
 		.IsChecked(this, &FCinematicShotTrackEditor::AreShotsLocked)
 		.OnCheckStateChanged(this, &FCinematicShotTrackEditor::OnLockShotsClicked)
 		.ToolTipText(this, &FCinematicShotTrackEditor::GetLockShotsToolTip)
-		.ForegroundColor(FLinearColor::White)
 		.CheckedImage(FEditorStyle::GetBrush("Sequencer.LockCamera"))
 		.CheckedHoveredImage(FEditorStyle::GetBrush("Sequencer.LockCamera"))
 		.CheckedPressedImage(FEditorStyle::GetBrush("Sequencer.LockCamera"))
@@ -259,7 +261,7 @@ const FSlateBrush* FCinematicShotTrackEditor::GetIconBrush() const
 
 bool FCinematicShotTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent, FSequencerDragDropParams& DragDropParams)
 {
-	if (!DragDropParams.Track->IsA(UMovieSceneCinematicShotTrack::StaticClass()))
+	if (!DragDropParams.Track.IsValid() || !DragDropParams.Track.Get()->IsA(UMovieSceneCinematicShotTrack::StaticClass()))
 	{
 		return false;
 	}
@@ -295,7 +297,7 @@ bool FCinematicShotTrackEditor::OnAllowDrop(const FDragDropEvent& DragDropEvent,
 
 FReply FCinematicShotTrackEditor::OnDrop(const FDragDropEvent& DragDropEvent, const FSequencerDragDropParams& DragDropParams)
 {
-	if (!DragDropParams.Track->IsA(UMovieSceneCinematicShotTrack::StaticClass()))
+	if (!DragDropParams.Track.IsValid() || !DragDropParams.Track.Get()->IsA(UMovieSceneCinematicShotTrack::StaticClass()))
 	{
 		return FReply::Unhandled();
 	}
@@ -639,6 +641,7 @@ TSharedRef<SWidget> FCinematicShotTrackEditor::HandleAddCinematicShotComboButton
 		AssetPickerConfig.bAllowNullSelection = false;
 		AssetPickerConfig.InitialAssetViewType = EAssetViewType::Tile;
 		AssetPickerConfig.Filter.ClassNames.Add(TEXT("LevelSequence"));
+		AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
 	}
 
 	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));

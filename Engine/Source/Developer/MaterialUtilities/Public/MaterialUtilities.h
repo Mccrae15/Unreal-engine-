@@ -13,6 +13,7 @@
 
 #include "LightMap.h"
 #include "ShadowMap.h"
+#include "ImageUtils.h"
 
 class ALandscapeProxy;
 class Error;
@@ -87,18 +88,18 @@ struct FFlattenMaterial
 		}
 	}
 
-	const bool DoesPropertyContainData(const EFlattenMaterialProperties Property) const { return PropertySamples[(int32)Property].Num() > 0; }
+	const bool DoesPropertyContainData(const EFlattenMaterialProperties Property) const { return GetSamplesEntry(Property).Num() > 0; }
 
-	const bool IsPropertyConstant(const EFlattenMaterialProperties Property) const { return PropertySamples[(int32)Property].Num() == 1; }
+	const bool IsPropertyConstant(const EFlattenMaterialProperties Property) const { return GetSamplesEntry(Property).Num() == 1; }
 
-	const bool ShouldGenerateDataForProperty(const EFlattenMaterialProperties Property) const { return PropertySizes[(int32)Property].GetMin() > 0; }
+	const bool ShouldGenerateDataForProperty(const EFlattenMaterialProperties Property) const { return GetSizesEntry(Property).GetMin() > 0; }
 
-	const FIntPoint GetPropertySize(const EFlattenMaterialProperties Property) const{ return PropertySizes[(int32)Property]; }
-	void SetPropertySize(const EFlattenMaterialProperties Property, const FIntPoint& InSize) { PropertySizes[(int32)Property] = InSize; }
+	const FIntPoint GetPropertySize(const EFlattenMaterialProperties Property) const{ return GetSizesEntry(Property); }
+	void SetPropertySize(const EFlattenMaterialProperties Property, const FIntPoint& InSize) { GetSizesEntry(Property) = InSize; }
 
-	TArray<FColor>& GetPropertySamples(const EFlattenMaterialProperties Property) { return PropertySamples[(int32)Property]; }
-	const TArray<FColor>& GetPropertySamples(const EFlattenMaterialProperties Property) const { return PropertySamples[(int32)Property]; }
-	
+	TArray<FColor>& GetPropertySamples(const EFlattenMaterialProperties Property) { return GetSamplesEntry(Property); }
+	const TArray<FColor>& GetPropertySamples(const EFlattenMaterialProperties Property) const { return GetSamplesEntry(Property); }
+
 	/** Material Guid */
 	FGuid			MaterialId;	
 	FIntPoint		RenderSize;
@@ -115,6 +116,42 @@ struct FFlattenMaterial
 	int32			UVChannel;
 
 private:
+	FIntPoint& GetSizesEntry(const EFlattenMaterialProperties Property)
+	{
+		const uint32 Index = (uint32)Property;
+		check(Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties);
+
+		static FIntPoint TempSize;
+		return Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties ? PropertySizes[Index] : TempSize;
+	}
+
+	TArray<FColor>& GetSamplesEntry(const EFlattenMaterialProperties Property)
+	{
+		const uint32 Index = (uint32)Property;
+		check(Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties);
+
+		static TArray<FColor> TempArray;
+		return Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties ? PropertySamples[Index] : TempArray;
+	}
+
+	const FIntPoint& GetSizesEntry(const EFlattenMaterialProperties Property) const
+	{
+		const uint32 Index = (uint32)Property;
+		check(Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties);
+
+		static const FIntPoint TempSize;
+		return Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties ? PropertySizes[Index] : TempSize;
+	}
+
+	const TArray<FColor>& GetSamplesEntry(const EFlattenMaterialProperties Property) const
+	{
+		const uint32 Index = (uint32)Property;
+		check(Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties);
+
+		static const TArray<FColor> TempArray;
+		return Index < (uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties ? PropertySamples[Index] : TempArray;
+	}
+
 	/** Texture sizes for each individual property*/
 	FIntPoint PropertySizes[(uint32)EFlattenMaterialProperties::NumFlattenMaterialProperties];
 	/** Baked down texture samples for each individual property*/
@@ -216,82 +253,28 @@ public:
 	/** End IModuleInterface implementation */
 
 	/**
+	* Iterate through all textures used by the material and return the maximum texture resolution used
+	*
+	* @param MaterialInterface	The material to scan for texture size
+	* @param MinimumSize		The minimum size returned
+	*
+	* @return Size (width and height)
+	*/
+	static FIntPoint FindMaxTextureSize(UMaterialInterface* InMaterialInterface, FIntPoint MinimumSize = FIntPoint(1, 1));
+
+	/**
 	 * Whether material utilities support exporting specified material blend mode and property 
 	 */
 	static bool SupportsExport(EBlendMode InBlendMode, EMaterialProperty InMaterialProperty);
 
 	/**
-	 * Renders specified material property into texture
+	 * Flattens specified landscape material
 	 *
-	 * @param InWorld				World object to use for material property rendering
-	 * @param InMaterial			Target material
-	 * @param InMaterialProperty	Material property to render
-	 * @param InRenderTarget		Render target to render to
-	 * @param OutBMP				Output array of rendered samples 
-	 * @return						Whether operation was successful
-	 */	
-	UE_DEPRECATED(4.11, "Please use ExportMaterialProperty function with new signature")
-	static bool ExportMaterialProperty(UWorld* InWorld, UMaterialInterface* InMaterial, EMaterialProperty InMaterialProperty, UTextureRenderTarget2D* InRenderTarget, TArray<FColor>& OutBMP);
-
-	/**
-	* Renders specified material property into texture
-	*
-	* @param InMaterial			Target material
-	* @param InMaterialProperty	Material property to render	
-	* @param OutBMP				Output array of rendered samples
-	* @param OutSize			Output size of the rendered samples
-	* @return					Whether operation was successful
-	*/
-	UE_DEPRECATED(4.19, "Please use new functionality in MaterialBaking module")
-	static bool ExportMaterialProperty(UMaterialInterface* InMaterial, EMaterialProperty InMaterialProperty, TArray<FColor>& OutBMP, FIntPoint& OutSize );
-
-	/**
-	* Renders specified material property into texture
-	*
-	* @param InMaterial			Target material
-	* @param InMaterialProperty	Material property to render
-	* @param InSize				Input size for the rendered samples
-	* @param OutBMP				Output array of rendered samples	
-	* @return					Whether operation was successful
-	*/
-	UE_DEPRECATED(4.19, "Please use new functionality in MaterialBaking module")
-	static bool ExportMaterialProperty(UMaterialInterface* InMaterial, EMaterialProperty InMaterialProperty, FIntPoint InSize, TArray<FColor>& OutBMP );
-
-	/**
-	 * Renders specified material property into texture
-	 *
-	 * @param InWorld				World object to use for material property rendering
-	 * @param InMaterial			Target material
-	 * @param InMaterialProperty	Material property to render
-	 * @param OutBMP				Output array of rendered samples 
-	 * @return						Whether operation was successful
-	 */
-	UE_DEPRECATED(4.11, "Please use ExportMaterialProperty function with new signature")
-	static bool ExportMaterialProperty(UWorld* InWorld, UMaterialInterface* InMaterial, EMaterialProperty InMaterialProperty, FIntPoint& OutSize, TArray<FColor>& OutBMP);
-
-	/**
-	 * Flattens specified material
-	 *
-	 * @param InWorld				World object to use for material rendering
-	 * @param InMaterial			Target material
+	 * @param InLandscape			Target landscape
 	 * @param OutFlattenMaterial	Output flattened material
 	 * @return						Whether operation was successful
 	 */
-	UE_DEPRECATED(4.11, "Please use ExportMaterial function with new signature")
-	static bool ExportMaterial(UWorld* InWorld, UMaterialInterface* InMaterial, FFlattenMaterial& OutFlattenMaterial);
-	
-	/**
-	* Flattens specified material
-	*
-	* @param InMaterial				Target material
-	* @param OutFlattenMaterial		Output flattened material
-	* @return						Whether operation was successful
-	*/
-	UE_DEPRECATED(4.19, "Please use new functionality in MaterialBaking module")
-	static bool ExportMaterial(UMaterialInterface* InMaterial, FFlattenMaterial& OutFlattenMaterial, struct FExportMaterialProxyCache* ProxyCache = nullptr);
-
-	UE_DEPRECATED(4.17, "Please use new functionality in MaterialBaking module")
-	static bool ExportMaterials(TArray<FMaterialMergeData*>& MergeData, TArray<FFlattenMaterial*>& OutFlattenMaterials);
+	static bool ExportLandscapeMaterial(const ALandscapeProxy* InLandscape, FFlattenMaterial& OutFlattenMaterial);
 
 	/**
 	 * Flattens specified landscape material
@@ -301,7 +284,7 @@ public:
 	 * @param OutFlattenMaterial	Output flattened material
 	 * @return						Whether operation was successful
 	 */
-	static bool ExportLandscapeMaterial(ALandscapeProxy* InLandscape, const TSet<FPrimitiveComponentId>& HiddenPrimitives, FFlattenMaterial& OutFlattenMaterial);
+	static bool ExportLandscapeMaterial(const ALandscapeProxy* InLandscape, const TSet<FPrimitiveComponentId>& HiddenPrimitives, FFlattenMaterial& OutFlattenMaterial);
 	
 	/**
  	 * Generates a texture from an array of samples 
@@ -318,6 +301,19 @@ public:
 	 * @return						The new texture.
 	 */
 	static UTexture2D* CreateTexture(UPackage* Outer, const FString& AssetLongName, FIntPoint Size, const TArray<FColor>& Samples, TextureCompressionSettings CompressionSettings, TextureGroup LODGroup, EObjectFlags Flags, bool bSRGB, const FGuid& SourceGuidHash = FGuid());
+
+	/**
+	 * Generates a texture from an array of samples
+	 *
+	 * @param Outer					Outer for the material and texture objects, if NULL new packages will be created for each asset
+	 * @param AssetLongName			Long asset path for the new texture
+	 * @param Size					Resolution of the texture to generate (must match the number of samples)
+	 * @param Samples				Color data for the texture
+	 * @param CreateParams			Params about how to set up the texture
+	 * @param Flags					ObjectFlags for the new texture
+	 * @return						The new texture.
+	 */
+	static UTexture2D* CreateTexture(UPackage* Outer, const FString& AssetLongName, FIntPoint Size, const TArray<FColor>& Samples, const FCreateTexture2DParameters& CreateParams, EObjectFlags Flags);
 
 	/**
 	 * Creates UMaterial object from a flatten material
@@ -475,6 +471,29 @@ public:
 
 	/** Creates a proxy material and the required texture assets */
 	static UMaterialInterface* CreateProxyMaterialAndTextures(const FString& PackageName, const FString& AssetName, const FBakeOutput& BakeOutput, const FMeshData& MeshData, const FMaterialData& MaterialData, UMaterialOptions* Options);
+
+	/** Creates a flatten material instance and the required texture assets */
+	static UMaterialInstanceConstant* CreateFlattenMaterialInstance(UPackage* InOuter, const FMaterialProxySettings& InMaterialProxySettings, UMaterialInterface* InBaseMaterial, const FFlattenMaterial& FlattenMaterial, const FString& AssetBasePath, const FString& AssetBaseName, TArray<UObject*>& OutAssetsToSync, FMaterialUpdateContext* MaterialUpdateContext = nullptr);
+
+	/** Compute the required texel density needed to properly represent an object/objects covering the provided world space radius
+	* 
+	* @param InScreenSize		Screen size at which the objects are expected to be be shown
+	* @param InWorldSpaceRadius	World space radius of the objects
+	* @return					The required texel density per METER
+	*/
+	static float ComputeRequiredTexelDensityFromScreenSize(const float InScreenSize, float InWorldSpaceRadius);
+
+	/** Compute the required texel density needed to properly represent an object/objects covering the provided world space radius
+	*
+	* @param InDrawDistance		Draw distance at which the objects are expected to be shown
+	* @param InWorldSpaceRadius	World space radius of the objects
+	* @return					The required texel density per METER
+	*/
+	static float ComputeRequiredTexelDensityFromDrawDistance(const float InDrawDistance, float InWorldSpaceRadius);
+
+	/** Validate that the provided material has all the required parameters needed to be considered a flattening material */
+	static bool IsValidFlattenMaterial(const UMaterialInterface* InBaseMaterial);
+
 private:
 	
 	/**

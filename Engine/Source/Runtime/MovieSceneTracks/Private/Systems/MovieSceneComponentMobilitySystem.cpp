@@ -83,7 +83,7 @@ static void GetFlattenedHierarchy(USceneComponent* SceneComponent, TArray<UScene
 
 FPreAnimatedStateEntry FPreAnimatedComponentMobilityStorage::MakeEntry(USceneComponent* InSceneComponent)
 {
-	FPreAnimatedStorageGroupHandle GroupHandle  = ObjectGroupManager->MakeGroupForObject(InSceneComponent);
+	FPreAnimatedStorageGroupHandle GroupHandle  = ObjectGroupManager->MakeGroupForKey(InSceneComponent);
 	FPreAnimatedStorageIndex       StorageIndex = GetOrCreateStorageIndex(InSceneComponent);
 
 	return FPreAnimatedStateEntry{ GroupHandle, FPreAnimatedStateCachedValueHandle{ StorageID, StorageIndex } };
@@ -144,6 +144,11 @@ void UMovieSceneComponentMobilitySystem::OnLink()
 void UMovieSceneComponentMobilitySystem::OnUnlink()
 {
 	using namespace UE::MovieScene;
+
+	if (!ensure(PendingMobilitiesToRestore.Num() == 0))
+	{
+		PendingMobilitiesToRestore.Reset();
+	}
 
 	// Destroy everything
 	MobilityTracker.Destroy(FMobilityCacheHandler(this));
@@ -231,25 +236,5 @@ void UMovieSceneComponentMobilitySystem::SavePreAnimatedState(const FPreAnimatio
 
 void UMovieSceneComponentMobilitySystem::RestorePreAnimatedState(const FPreAnimationParameters& InParameters)
 {
-	using namespace UE::MovieScene;
 
-	FPreAnimatedEntityCaptureSource* EntityMetaData = InParameters.CacheExtension->GetOrCreateEntityMetaData();
-	if (!EntityMetaData)
-	{
-		return;
-	}
-
-	auto CleanupExpiredObjects = [EntityMetaData](FMovieSceneEntityID EntityID)
-	{
-		EntityMetaData->StopTrackingEntity(EntityID, FPreAnimatedComponentMobilityStorage::StorageID);
-	};
-
-	FBuiltInComponentTypes*          BuiltInComponents = FBuiltInComponentTypes::Get();
-	FMovieSceneTracksComponentTypes* TrackComponents   = FMovieSceneTracksComponentTypes::Get();
-
-	FEntityTaskBuilder()
-	.ReadEntityIDs()
-	.FilterAll({ BuiltInComponents->BoundObject, BuiltInComponents->Tags.NeedsUnlink })
-	.FilterAny({ TrackComponents->ComponentTransform.PropertyTag, TrackComponents->AttachParent })
-	.Iterate_PerEntity(&Linker->EntityManager, CleanupExpiredObjects);
 }

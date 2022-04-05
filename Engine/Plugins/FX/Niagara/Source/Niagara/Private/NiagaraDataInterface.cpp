@@ -3,29 +3,29 @@
 #include "NiagaraDataInterface.h"
 #include "Curves/CurveVector.h"
 #include "Curves/CurveLinearColor.h"
-#include "Curves/CurveFloat.h"
 #include "NiagaraTypes.h"
 #include "ShaderParameterUtils.h"
 #include "NiagaraShader.h"
 #include "NiagaraComponent.h"
+#include "ShaderCompilerCore.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterface"
 
 UNiagaraDataInterface::UNiagaraDataInterface(FObjectInitializer const& ObjectInitializer)
 {
 	bRenderDataDirty = false;
+	bUsedByCPUEmitter = false;
 	bUsedByGPUEmitter = false;
 }
 
 UNiagaraDataInterface::~UNiagaraDataInterface()
 {
-	// @todo-threadsafety Can there be a UNiagaraDataInterface class itself created? Perhaps by the system?
-	if ( Proxy.IsValid() )
+	if ( FNiagaraDataInterfaceProxy* ReleasedProxy = Proxy.Release() )
 	{
 		ENQUEUE_RENDER_COMMAND(FDeleteProxyRT) (
-			[RT_Proxy=MoveTemp(Proxy)](FRHICommandListImmediate& CmdList)
+			[RT_Proxy= ReleasedProxy](FRHICommandListImmediate& CmdList) mutable
 			{
-				// This will release RT_Proxy on the RT
+				delete RT_Proxy;
 			}
 		);
 		check(Proxy.IsValid() == false);
@@ -35,7 +35,27 @@ UNiagaraDataInterface::~UNiagaraDataInterface()
 #if WITH_EDITORONLY_DATA
 bool UNiagaraDataInterface::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
 {
+	//-TODO: Currently applied to all, but we only need to hash this in for the iteration source
+	const UNiagaraDataInterface* BaseDataInterface = GetDefault<UNiagaraDataInterface>();
+	if (BaseDataInterface->GetGpuDispatchType() != GetGpuDispatchType())
+	{
+		const FString DataInterfaceName = GetClass()->GetName();
+		InVisitor->UpdatePOD(*FString::Printf(TEXT("%s_GpuDispatchType"), *DataInterfaceName), (int32)GetGpuDispatchType());
+		InVisitor->UpdateString(*FString::Printf(TEXT("%s_GpuDispatchNumThreads"), *DataInterfaceName), *FString::Printf(TEXT("%dx%dx%d"), GetGpuDispatchNumThreads().X, GetGpuDispatchNumThreads().Y, GetGpuDispatchNumThreads().Z));
+	}
+
 	return true;
+}
+#endif
+
+#if WITH_EDITOR
+void UNiagaraDataInterface::ModifyCompilationEnvironment(EShaderPlatform ShaderPlatform, struct FShaderCompilerEnvironment& OutEnvironment) const
+{
+	if (FDataDrivenShaderPlatformInfo::GetSupportsDxc(ShaderPlatform))
+	{
+		// Always enable DXC to avoid compile errors caused by RWBuffer/Buffer in structs. Example NiagaraDataInterfaceHairStrands.ush struct FDIHairStrandsContext
+		OutEnvironment.CompilerFlags.Add(CFLAG_ForceDXC);
+	}
 }
 #endif
 
@@ -98,7 +118,12 @@ bool UNiagaraDataInterface::Equals(const UNiagaraDataInterface* Other) const
 	return true;
 }
 
-bool UNiagaraDataInterface::IsUsedWithGPUEmitter(FNiagaraSystemInstance* SystemInstance) const
+bool UNiagaraDataInterface::IsUsedWithCPUEmitter() const
+{
+	return bUsedByCPUEmitter;
+}
+
+bool UNiagaraDataInterface::IsUsedWithGPUEmitter() const
 {
 	return bUsedByGPUEmitter;
 }
@@ -171,14 +196,14 @@ void UNiagaraDataInterface::ValidateFunction(const FNiagaraFunctionSignature& Fu
 	{
 		//We couldn't find this signature in the list of available functions.
 		//Lets try to find one with the same name whose parameters may have changed.
-		int32 ExistingSigIdx = DIFuncs.IndexOfByPredicate([&](const FNiagaraFunctionSignature& Sig) { return Sig.GetName() == Function.GetName(); });;
+		int32 ExistingSigIdx = DIFuncs.IndexOfByPredicate([&](const FNiagaraFunctionSignature& Sig) { return Sig.Name == Function.Name; });;
 		if (ExistingSigIdx != INDEX_NONE)
 		{
-			OutValidationErrors.Add(FText::Format(LOCTEXT("DI Function Parameter Mismatch!", "Data Interface function called but it's parameters do not match any available function!\nThe API for this data interface function has likely changed and you need to update your graphs.\nInterface: {0}\nFunction: {1}\n"), FText::FromString(GetClass()->GetName()), FText::FromString(Function.GetName())));
+			OutValidationErrors.Add(FText::Format(LOCTEXT("DI Function Parameter Mismatch!", "Data Interface function called but it's parameters do not match any available function!\nThe API for this data interface function has likely changed and you need to update your graphs.\nInterface: {0}\nFunction: {1}\n"), FText::FromString(GetClass()->GetName()), FText::FromName(Function.Name)));
 		}
 		else
 		{
-			OutValidationErrors.Add(FText::Format(LOCTEXT("Unknown DI Function", "Unknown Data Interface function called!\nThe API for this data interface has likely changed and you need to update your graphs.\nInterface: {0}\nFunction: {1}\n"), FText::FromString(GetClass()->GetName()), FText::FromString(Function.GetName())));
+			OutValidationErrors.Add(FText::Format(LOCTEXT("Unknown DI Function", "Unknown Data Interface function called!\nThe API for this data interface has likely changed and you need to update your graphs.\nInterface: {0}\nFunction: {1}\n"), FText::FromString(GetClass()->GetName()), FText::FromName(Function.Name)));
 		}
 	}
 }

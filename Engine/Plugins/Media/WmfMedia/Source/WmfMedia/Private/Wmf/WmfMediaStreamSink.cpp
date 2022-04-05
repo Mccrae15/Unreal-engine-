@@ -9,6 +9,7 @@
 #include "Misc/ScopeLock.h"
 #include "RenderingThread.h"
 #include "timeapi.h"
+#include "WmfMediaCodec/WmfMediaDecoder.h"
 #include "WmfMediaHardwareVideoDecodingTextureSample.h"
 #include "WmfMediaSink.h"
 #include "WmfMediaUtils.h"
@@ -39,6 +40,7 @@ bool FWmfMediaStreamSink::Create(const GUID& MajorType, TComPtr<FWmfMediaStreamS
 
 FWmfMediaStreamSink::FWmfMediaStreamSink(const GUID& InMajorType, DWORD InStreamId)
 	: Owner(nullptr)
+	, Decoder(nullptr)
 	, Prerolling(false)
 	, RefCount(0)
 	, StreamId(InStreamId)
@@ -111,6 +113,11 @@ bool FWmfMediaStreamSink::Initialize(FWmfMediaSink& InOwner)
 	Owner = &InOwner;
 
 	return true;
+}
+
+void FWmfMediaStreamSink::SetDecoder(WmfMediaDecoder* InDecoder)
+{
+	Decoder = InDecoder;
 }
 
 
@@ -823,6 +830,12 @@ bool FWmfMediaStreamSink::IsVideoSampleQueueFull() const
 
 void FWmfMediaStreamSink::CopyTextureAndEnqueueSample(IMFSample* pSample)
 {
+	// CopyTextureAndEnqueueSample might get called after we have shutdown, so check first...
+	if (!CurrentMediaType.IsValid())
+	{
+		return;
+	}
+
 	UE_LOG(LogWmfMedia, VeryVerbose, TEXT("StreamSink::CopyTextureAndEnqueueSample Queue Size: %d"), VideoSampleQueue->Num());
 
 	if (IsVideoSampleQueueFull())
@@ -883,10 +896,10 @@ void FWmfMediaStreamSink::CopyTextureAndEnqueueSample(IMFSample* pSample)
 	{
 		const TSharedRef<FWmfMediaHardwareVideoDecodingTextureSample, ESPMode::ThreadSafe> TextureSample = VideoSamplePool->AcquireShared();
 
-		check(TextureSample->GetMediaTextureSampleConverter()!=nullptr);
-
 		EPixelFormat PixelFormat = PF_Unknown;
+		EPixelFormat AlphaPixelFormat = PF_Unknown;
 		EMediaTextureSampleFormat MediaTextureSampleFormat = EMediaTextureSampleFormat::Undefined;
+		bool bIsDestinationTextureSRGB = false;
 
 		if (Guid == MFVideoFormat_NV12)
 		{
@@ -898,46 +911,119 @@ void FWmfMediaStreamSink::CopyTextureAndEnqueueSample(IMFSample* pSample)
 			PixelFormat = PF_B8G8R8A8;
 			MediaTextureSampleFormat = EMediaTextureSampleFormat::CharBGRA;
 		}
+		else if (Guid == MFVideoFormat_L8)
+		{
+			// We misuse this for DXT1 as there is no GUID for it.
+			MediaTextureSampleFormat = EMediaTextureSampleFormat::DXT1;
+			PixelFormat = PF_DXT1;
+			bIsDestinationTextureSRGB = true;
+		}
+		else if (Guid == MFVideoFormat_L16)
+		{
+			// We misuse this for DXT5 as there is no GUID for it.
+			MediaTextureSampleFormat = EMediaTextureSampleFormat::DXT5;
+			PixelFormat = PF_DXT5;
+			bIsDestinationTextureSRGB = true;
+		}
+		else if (Guid == MFVideoFormat_RGB8)
+		{
+			// We misuse this for YCoCg_DXT5 as there is no GUID for it.
+			MediaTextureSampleFormat = EMediaTextureSampleFormat::YCoCg_DXT5;
+			PixelFormat = PF_DXT5;
+		}
+		else if (Guid == MFVideoFormat_D16)
+		{
+			// We misuse this for YCoCg_DXT5_Alpha_BC4 as there is no GUID for it.
+			MediaTextureSampleFormat = EMediaTextureSampleFormat::YCoCg_DXT5_Alpha_BC4;
+			PixelFormat = PF_DXT5;
+			AlphaPixelFormat = PF_BC4;
+		}
 		else // if (Guid == MFVideoFormat_Y416)
 		{
 			PixelFormat = PF_A16B16G16R16;
 			MediaTextureSampleFormat = EMediaTextureSampleFormat::Y416;
 		}
 
-		ID3D11Texture2D* SharedTexture = TextureSample->InitializeSourceTexture(
-			Owner->GetDevice(),
-			FTimespan::FromMicroseconds(SampleTime / 10),
-			FTimespan::FromMicroseconds(SampleDuration / 10),
-			FIntPoint(DimX, DimY),
-			PixelFormat,
-			MediaTextureSampleFormat);
-
-
-		D3D11_BOX SrcBox;
-		SrcBox.left = 0;
-		SrcBox.top = 0;
-		SrcBox.front = 0;
-		SrcBox.right = DimX;
-		SrcBox.bottom = DimY;
-		SrcBox.back = 1;
-
-		UE_LOG(LogWmfMedia, VeryVerbose, TEXT("CopySubresourceRegion() ViewIndex:%d Time:%f"), dwViewIndex, FTimespan::FromMicroseconds(SampleTime / 10).GetTotalSeconds());
-
-		TComPtr<IDXGIKeyedMutex> KeyedMutex;
-		SharedTexture->QueryInterface(_uuidof(IDXGIKeyedMutex), (void**)&KeyedMutex);
-
-		if (KeyedMutex)
+		// Are we using external buffers?
+		if ((Decoder != nullptr) && (Decoder->IsExternalBufferEnabled()))
 		{
-			// No wait on acquire since sample is new and key is 0.
-			if (KeyedMutex->AcquireSync(0, 0) == S_OK)
+			// Get buffer from the decoder.
+			TArray<uint8> ExternalBuffer;
+			if (Decoder->GetExternalBuffer(ExternalBuffer, SampleTime) == false)
 			{
-				Owner->GetImmediateContext()->CopySubresourceRegion(SharedTexture, 0, 0, 0, 0, pTexture2D, dwViewIndex, &SrcBox);
+				UE_LOG(LogWmfMedia, Error, TEXT("External buffer not found for time %f"),
+					FTimespan::FromMicroseconds(SampleTime / 10).GetTotalSeconds());
+				return;
+			}
 
-				// Mark texture as updated with key of 1
-				// Sample will be read in FWmfMediaHardwareVideoDecodingParameters::ConvertTextureFormat_RenderThread
-				KeyedMutex->ReleaseSync(1);
-				VideoSampleQueue->Enqueue(TextureSample);
-				UE_LOG(LogWmfMedia, VeryVerbose, TEXT("Enqueued onto VideoSampleQueue."));
+			// Set pitch.
+			LONG Pitch = 0;
+			if (MediaTextureSampleFormat == EMediaTextureSampleFormat::DXT1)
+			{
+				Pitch = DimX * 2;
+			}
+			else if ((MediaTextureSampleFormat == EMediaTextureSampleFormat::DXT5) ||
+				(MediaTextureSampleFormat == EMediaTextureSampleFormat::YCoCg_DXT5) ||
+				(MediaTextureSampleFormat == EMediaTextureSampleFormat::YCoCg_DXT5_Alpha_BC4))
+			{
+				Pitch = DimX * 4;
+			}
+			else
+			{
+				Pitch = ExternalBuffer.Num() / DimY;
+			}
+
+			// Set up sample.
+			TextureSample->InitializeExternal(&ExternalBuffer,
+				FIntPoint(DimX, DimY), FIntPoint(DimX, DimY), MediaTextureSampleFormat,
+				Pitch,
+				FTimespan::FromMicroseconds(SampleTime / 10),
+				FTimespan::FromMicroseconds(SampleDuration / 10));
+
+			TextureSample->SetPixelFormat(PixelFormat);
+			TextureSample->SetIsDestinationTextureSRGB(bIsDestinationTextureSRGB);
+			TextureSample->SetAlphaTexture(AlphaPixelFormat);
+			VideoSampleQueue->Enqueue(TextureSample);
+			UE_LOG(LogWmfMedia, VeryVerbose, TEXT("Enqueued external buffer onto VideoSampleQueue."));
+		}
+		else
+		{
+			check(TextureSample->GetMediaTextureSampleConverter() != nullptr);
+			ID3D11Texture2D* SharedTexture = TextureSample->InitializeSourceTexture(
+				Owner->GetDevice(),
+				FTimespan::FromMicroseconds(SampleTime / 10),
+				FTimespan::FromMicroseconds(SampleDuration / 10),
+				FIntPoint(DimX, DimY),
+				PixelFormat,
+				MediaTextureSampleFormat);
+
+
+			D3D11_BOX SrcBox;
+			SrcBox.left = 0;
+			SrcBox.top = 0;
+			SrcBox.front = 0;
+			SrcBox.right = DimX;
+			SrcBox.bottom = DimY;
+			SrcBox.back = 1;
+
+			UE_LOG(LogWmfMedia, VeryVerbose, TEXT("CopySubresourceRegion() ViewIndex:%d Time:%f"), dwViewIndex, FTimespan::FromMicroseconds(SampleTime / 10).GetTotalSeconds());
+
+			TComPtr<IDXGIKeyedMutex> KeyedMutex;
+			SharedTexture->QueryInterface(_uuidof(IDXGIKeyedMutex), (void**)&KeyedMutex);
+
+			if (KeyedMutex)
+			{
+				// No wait on acquire since sample is new and key is 0.
+				if (KeyedMutex->AcquireSync(0, 0) == S_OK)
+				{
+					Owner->GetImmediateContext()->CopySubresourceRegion(SharedTexture, 0, 0, 0, 0, pTexture2D, dwViewIndex, &SrcBox);
+
+					// Mark texture as updated with key of 1
+					// Sample will be read in FWmfMediaHardwareVideoDecodingParameters::ConvertTextureFormat_RenderThread
+					KeyedMutex->ReleaseSync(1);
+					VideoSampleQueue->Enqueue(TextureSample);
+					UE_LOG(LogWmfMedia, VeryVerbose, TEXT("Enqueued onto VideoSampleQueue."));
+				}
 			}
 		}
 	}

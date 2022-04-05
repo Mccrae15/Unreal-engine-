@@ -10,7 +10,7 @@
 #include "Model/MonotonicTimeline.h"
 #include "Model/Tables.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 class FAnalysisSessionLock;
@@ -21,7 +21,9 @@ class FLoadTimeProfilerProvider
 public:
 	typedef TMonotonicTimeline<FLoadTimeProfilerCpuEvent> CpuTimelineInternal;
 
-	FLoadTimeProfilerProvider(IAnalysisSession& Session, ICounterProvider& CounterProvider);
+	explicit FLoadTimeProfilerProvider(IAnalysisSession& Session, ICounterProvider& CounterProvider);
+	virtual ~FLoadTimeProfilerProvider() {}
+
 	virtual uint64 GetTimelineCount() const override { return CpuTimelines.Num(); }
 	virtual bool GetCpuThreadTimelineIndex(uint32 ThreadId, uint32& OutTimelineIndex) const override;
 	virtual bool ReadTimeline(uint32 Index, TFunctionRef<void(const CpuTimeline&)> Callback) const override;
@@ -32,7 +34,7 @@ public:
 	virtual const ITable<FLoadRequest>& GetRequestsTable() const override { return RequestsTable; }
 	const FClassInfo& AddClassInfo(const TCHAR* ClassName);
 	FLoadRequest& CreateRequest();
-	FPackageInfo& EditPackageInfo(const TCHAR* PackageName);
+	FPackageInfo& CreatePackage();
 	uint64 BeginLoadPackage(const FPackageInfo& PackageInfo, double Time);
 	void EndLoadPackage(uint64 LoadHandle, double Time);
 	FPackageExportInfo& CreateExport();
@@ -82,6 +84,8 @@ private:
 		};
 
 		FLoaderFrameCounter(ELoaderFrameCounterType Type, const TPagedArray<FLoaderFrame>& Frames);
+		virtual ~FLoaderFrameCounter() {}
+
 		virtual const TCHAR* GetName() const override;
 		virtual const TCHAR* GetDescription() const override;
 		virtual bool IsFloatingPoint() const override;
@@ -116,4 +120,4 @@ private:
 	IEditableCounter* TotalLoaderBytesLoadedCounter = nullptr;
 };
 
-}
+} // namespace TraceServices

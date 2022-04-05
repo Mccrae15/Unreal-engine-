@@ -27,6 +27,7 @@ void SPathPicker::Construct( const FArguments& InArgs )
 	OnPathSelected = InArgs._PathPickerConfig.OnPathSelected;
 	OnGetFolderContextMenu = InArgs._PathPickerConfig.OnGetFolderContextMenu;
 	OnGetPathContextMenuExtender = InArgs._PathPickerConfig.OnGetPathContextMenuExtender;
+	bOnPathSelectedPassesVirtualPaths = InArgs._PathPickerConfig.bOnPathSelectedPassesVirtualPaths;
 
 	ChildSlot
 	[
@@ -39,23 +40,24 @@ void SPathPicker::Construct( const FArguments& InArgs )
 		.AllowClassesFolder(InArgs._PathPickerConfig.bAllowClassesFolder)
 		.AllowReadOnlyFolders(InArgs._PathPickerConfig.bAllowReadOnlyFolders)
 		.SelectionMode(ESelectionMode::Single)
+		.CustomFolderPermissionList(InArgs._PathPickerConfig.CustomFolderPermissionList)
 	];
 
 	const FString& DefaultPath = InArgs._PathPickerConfig.DefaultPath;
 	if ( !DefaultPath.IsEmpty() )
 	{
+		const FName VirtualPath = IContentBrowserDataModule::Get().GetSubsystem()->ConvertInternalPathToVirtual(*DefaultPath);
 		if (InArgs._PathPickerConfig.bAddDefaultPath)
 		{
-			const FName DefaultPathFName = *DefaultPath;
-			if (!PathViewPtr->FindItemRecursive(DefaultPathFName))
+			if (!PathViewPtr->FindTreeItem(VirtualPath))
 			{
-				const FString DefaultPathLeafName = FPaths::GetPathLeaf(DefaultPath);
-				PathViewPtr->AddFolderItem(FContentBrowserItemData(nullptr, EContentBrowserItemFlags::Type_Folder, DefaultPathFName, *DefaultPathLeafName, FText(), nullptr), /*bUserNamed*/false);
+				const FString DefaultPathLeafName = FPaths::GetPathLeaf(VirtualPath.ToString());
+				PathViewPtr->AddFolderItem(FContentBrowserItemData(nullptr, EContentBrowserItemFlags::Type_Folder, VirtualPath, *DefaultPathLeafName, FText(), nullptr), /*bUserNamed*/false);
 			}
 		}
 
 		TArray<FString> SelectedPaths;
-		SelectedPaths.Add(DefaultPath);
+		SelectedPaths.Add(VirtualPath.ToString());
 		PathViewPtr->SetSelectedPaths(SelectedPaths);
 	}
 }
@@ -63,9 +65,16 @@ void SPathPicker::Construct( const FArguments& InArgs )
 void SPathPicker::OnItemSelectionChanged(const FContentBrowserItem& SelectedItem, ESelectInfo::Type SelectInfo)
 {
 	FName SelectedPackagePath;
-	if (SelectedItem.IsFolder() && SelectedItem.Legacy_TryGetPackagePath(SelectedPackagePath))
+	if (SelectedItem.IsFolder())
 	{
-		OnPathSelected.ExecuteIfBound(SelectedPackagePath.ToString());
+		if (bOnPathSelectedPassesVirtualPaths)
+		{
+			OnPathSelected.ExecuteIfBound(SelectedItem.GetVirtualPath().ToString());
+		}
+		else if (SelectedItem.Legacy_TryGetPackagePath(SelectedPackagePath))
+		{
+			OnPathSelected.ExecuteIfBound(SelectedPackagePath.ToString());
+		}
 	}
 }
 
@@ -74,11 +83,7 @@ TSharedPtr<SWidget> SPathPicker::GetItemContextMenu(TArrayView<const FContentBro
 	TArray<FString> SelectedPackagePaths;
 	for (const FContentBrowserItem& SelectedItem : SelectedItems)
 	{
-		FName PackagePath;
-		if (SelectedItem.Legacy_TryGetPackagePath(PackagePath))
-		{
-			SelectedPackagePaths.Add(PackagePath.ToString());
-		}
+		SelectedPackagePaths.Add(SelectedItem.GetVirtualPath().ToString());
 	}
 
 	if (SelectedPackagePaths.Num() == 0)
@@ -98,10 +103,13 @@ TSharedPtr<SWidget> SPathPicker::GetItemContextMenu(TArrayView<const FContentBro
 
 TSharedPtr<SWidget> SPathPicker::GetFolderContextMenu(const TArray<FString> & SelectedPaths, FContentBrowserMenuExtender_SelectedPaths InMenuExtender, FOnCreateNewFolder InOnCreateNewFolder)
 {
+	UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
+
 	TSharedPtr<FExtender> Extender;
 	if (InMenuExtender.IsBound())
 	{
-		Extender = InMenuExtender.Execute(SelectedPaths);
+		// Code using extenders here currently expects internal paths
+		Extender = InMenuExtender.Execute(ContentBrowserData->TryConvertVirtualPathsToInternal(SelectedPaths));
 	}
 
 	const bool bInShouldCloseWindowAfterSelection = true;
@@ -109,7 +117,6 @@ TSharedPtr<SWidget> SPathPicker::GetFolderContextMenu(const TArray<FString> & Se
 	FMenuBuilder MenuBuilder(bInShouldCloseWindowAfterSelection, nullptr, Extender, bCloseSelfOnly);
 
 	// We can only create folders when we have a single path selected
-	UContentBrowserDataSubsystem* ContentBrowserData = IContentBrowserDataModule::Get().GetSubsystem();
 	const bool bCanCreateNewFolder = SelectedPaths.Num() == 1 && ContentBrowserData->CanCreateFolder(*SelectedPaths[0], nullptr);
 
 	FText NewFolderToolTip;
@@ -144,6 +151,31 @@ TSharedPtr<SWidget> SPathPicker::GetFolderContextMenu(const TArray<FString> & Se
 	return MenuBuilder.MakeWidget();
 }
 
+void SPathPicker::ExecuteRenameFolder()
+{
+	if (PathViewPtr.IsValid())
+	{
+		const TArray<FContentBrowserItem> SelectedItems = PathViewPtr->GetSelectedFolderItems();
+		if (SelectedItems.Num() == 1)
+		{
+			PathViewPtr->RenameFolderItem(SelectedItems[0]);
+		}
+	}
+}
+
+void SPathPicker::ExecuteAddFolder()
+{
+	if (PathViewPtr.IsValid())
+	{
+		const TArray<FString> SelectedItems = PathViewPtr->GetSelectedPaths();
+		if (SelectedItems.Num() == 1)
+		{
+			FOnCreateNewFolder OnCreateNewFolder = FOnCreateNewFolder::CreateSP(PathViewPtr.Get(), &SPathView::NewFolderItemRequested);
+			CreateNewFolder(SelectedItems[0], OnCreateNewFolder);
+		}
+	}
+}
+
 void SPathPicker::CreateNewFolder(FString FolderPath, FOnCreateNewFolder InOnCreateNewFolder)
 {
 	const FText DefaultFolderBaseName = LOCTEXT("DefaultFolderName", "NewFolder");
@@ -176,6 +208,11 @@ void SPathPicker::CreateNewFolder(FString FolderPath, FOnCreateNewFolder InOnCre
 	{
 		InOnCreateNewFolder.ExecuteIfBound(NewFolderItem);
 	}
+}
+
+void SPathPicker::RefreshPathView()
+{
+	PathViewPtr->Populate(true);
 }
 
 void SPathPicker::SetPaths(const TArray<FString>& NewPaths)

@@ -11,7 +11,7 @@ namespace Chaos
 
 class FGraphColoring
 {
-	typedef TSet<int32> FColorSet;
+	typedef TArray<int32, TInlineAllocator<8>> FColorSet;
 	
 	struct FGraphNode
 	{
@@ -20,7 +20,7 @@ class FGraphColoring
 		{
 		}
 
-		TArray<int32> Edges;
+		TArray<int32, TInlineAllocator<8>> Edges;
 		int32 NextColor;
 		FColorSet UsedColors;
 	};
@@ -50,8 +50,10 @@ class FGraphColoring
 	};
 
   public:
-	CHAOS_API static TArray<TArray<int32>> ComputeGraphColoring(const TArray<TVector<int32, 2>>& Graph, const FDynamicParticles& InParticles);
-	CHAOS_API static TArray<TArray<int32>> ComputeGraphColoring(const TArray<TVector<int32, 3>>& Graph, const FDynamicParticles& InParticles);
+	template<typename T>
+	CHAOS_API static TArray<TArray<int32>> ComputeGraphColoring(const TArray<TVector<int32, 2>>& Graph, const TDynamicParticles<T, 3>& InParticles);
+	template<typename T>
+	CHAOS_API static TArray<TArray<int32>> ComputeGraphColoring(const TArray<TVector<int32, 3>>& Graph, const TDynamicParticles<T, 3>& InParticles);
 };
 
 }

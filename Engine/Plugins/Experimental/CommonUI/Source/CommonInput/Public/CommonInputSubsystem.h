@@ -11,8 +11,11 @@
 class UWidget;
 class ULocalPlayer;
 class APlayerController;
+class FCommonInputPreprocessor;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FInputMethodChangedDelegate, ECommonInputType, bNewInputType);
+DECLARE_MULTICAST_DELEGATE_ThreeParams(FPlatformInputSupportOverrideDelegate, ULocalPlayer*, ECommonInputType, bool&);
+DECLARE_EVENT_OneParam(FCommonInputPreprocessor, FGamepadChangeDetectedEvent, FName);
 
 UCLASS(DisplayName = "CommonInput")
 class COMMONINPUT_API UCommonInputSubsystem : public ULocalPlayerSubsystem
@@ -29,6 +32,8 @@ public:
 
 	DECLARE_EVENT_OneParam(UCommonInputSubsystem, FInputMethodChangedEvent, ECommonInputType);
 	FInputMethodChangedEvent OnInputMethodChangedNative;
+
+	FGamepadChangeDetectedEvent& GetOnGamepadChangeDetected();
 
 	void SetInputTypeFilter(ECommonInputType InputType, FName Reason, bool Filter);
 	bool GetInputTypeFilter(ECommonInputType InputType) const;
@@ -54,7 +59,7 @@ public:
 	const FName GetCurrentGamepadName() const;
 
 	UFUNCTION(BlueprintCallable, Category = CommonInputSubsystem)
-	void SetGamepadInputType(const FName& InGamepadInputType);
+	void SetGamepadInputType(const FName InGamepadInputType);
 
 	UFUNCTION(BlueprintCallable, Category = CommonInputSubsystem)
 	bool IsUsingPointerInput() const;
@@ -79,6 +84,16 @@ public:
 	/** Setter */
 	void SetIsGamepadSimulatedClick(bool bNewIsGamepadSimulatedClick);
 
+	/** 
+	* Gets the delegate that allows external systems to override which input methods are supported on this current platform.
+	* @param LocalPlayer								The Local Player.
+	* @param InputType									The current input type that is being tested.
+	* @param InOutCurrentPlatformInputSupportState		The state of if we support the input type as set by PlatformSupportsInputType() or the previous callee of this delegate.
+	* 
+	* Note : Calling order is not guaranteed. Also, keep in mind that you might need to honor the previous callee's request to not support the input type being tested.
+	*/
+	static FPlatformInputSupportOverrideDelegate& GetOnPlatformInputSupportOverride() { return OnPlatformInputSupportOverride; }
+
 protected:
 	ECommonInputType LockInput(ECommonInputType InputToLock) const;
 
@@ -96,7 +111,7 @@ private:
 
 	bool CheckForInputMethodThrashing(ECommonInputType NewInputType);
 
-	FDelegateHandle TickHandle;
+	FTSTicker::FDelegateHandle TickHandle;
 
 	UPROPERTY(BlueprintAssignable, Category = CommonInputSubsystem, meta = (AllowPrivateAccess))
 	FInputMethodChangedDelegate OnInputMethodChanged;
@@ -128,9 +143,19 @@ private:
 
 	TOptional<ECommonInputType> CurrentInputLock;
 
-	TSharedPtr<class FCommonInputPreprocessor> CommonInputPreprocessor;
+	TSharedPtr<FCommonInputPreprocessor> CommonInputPreprocessor;
 
 	/** Is the current click simulated by the gamepad's face button down/right (platform dependent) */
 	UPROPERTY(Transient)
 	bool bIsGamepadSimulatedClick;
+
+	/**
+	* The delegate that allows external systems to override which input methods are supported on this current platform.
+	* @param LocalPlayer								The Local Player.
+	* @param InputType									The current input type that is being tested.
+	* @param InOutCurrentPlatformInputSupportState		The state of if we support the input type as set by PlatformSupportsInputType() or the previous callee of this delegate.
+	*
+	* Note : Calling order is not guaranteed. Also, keep in mind that you might need to honor the previous callee's request to not support the input type being tested.
+	*/
+	static FPlatformInputSupportOverrideDelegate OnPlatformInputSupportOverride;
 };

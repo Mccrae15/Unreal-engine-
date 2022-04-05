@@ -186,10 +186,10 @@ void UAnimationSharingManager::Initialise(const UAnimationSharingSetup* InSetup)
 #if WITH_EDITOR
 		// Update local copy defaults with current platform value
 		const FName PlatformName = UAnimationSharingManager::GetPlatformName();
-		ScalabilitySettings.UseBlendTransitions = ScalabilitySettings.UseBlendTransitions.GetValueForPlatformIdentifiers(PlatformName, PlatformName);
-		ScalabilitySettings.BlendSignificanceValue = ScalabilitySettings.BlendSignificanceValue.GetValueForPlatformIdentifiers(PlatformName, PlatformName);
-		ScalabilitySettings.MaximumNumberConcurrentBlends = ScalabilitySettings.MaximumNumberConcurrentBlends.GetValueForPlatformIdentifiers(PlatformName, PlatformName);
-		ScalabilitySettings.TickSignificanceValue = ScalabilitySettings.TickSignificanceValue.GetValueForPlatformIdentifiers(PlatformName, PlatformName);
+		ScalabilitySettings.UseBlendTransitions = ScalabilitySettings.UseBlendTransitions.GetValueForPlatform(PlatformName);
+		ScalabilitySettings.BlendSignificanceValue = ScalabilitySettings.BlendSignificanceValue.GetValueForPlatform(PlatformName);
+		ScalabilitySettings.MaximumNumberConcurrentBlends = ScalabilitySettings.MaximumNumberConcurrentBlends.GetValueForPlatform(PlatformName);
+		ScalabilitySettings.TickSignificanceValue = ScalabilitySettings.TickSignificanceValue.GetValueForPlatform(PlatformName);
 #endif
 
 		// Debug materials
@@ -686,8 +686,7 @@ FName UAnimationSharingManager::GetPlatformName()
 	const FString PlatformString = CVarAnimSharing_PreviewScalabilityPlatform.GetValueOnAnyThread();
 	if (PlatformString.IsEmpty())
 	{
-		ITargetPlatform* CurrentPlatform = GetTargetPlatformManagerRef().GetRunningTargetPlatform();
-		return CurrentPlatform->GetPlatformInfo().PlatformGroupName;
+		return FName(FPlatformProperties::IniPlatformName());
 	}
 
 	FName PlatformNameFromString(*PlatformString);
@@ -831,7 +830,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 	/** Setup overall data and flags */
 	StateData.bIsOnDemand = StateEntry.bOnDemand;
 	StateData.bIsAdditive = StateEntry.bAdditive;
-	StateData.AdditiveAnimationSequence = (StateEntry.bAdditive && StateEntry.AnimationSetups.IsValidIndex(0)) ? StateEntry.AnimationSetups[0].AnimSequence : nullptr;
+	StateData.AdditiveAnimationSequence = (StateEntry.bAdditive && StateEntry.AnimationSetups.IsValidIndex(0)) ? ToRawPtr(StateEntry.AnimationSetups[0].AnimSequence) : nullptr;
 
 	/** Keep hard reference to animation sequence */
 	if (StateData.AdditiveAnimationSequence)
@@ -847,7 +846,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 	int32 MaximumNumberOfConcurrentInstances = StateEntry.MaximumNumberOfConcurrentInstances.Default;
 #if WITH_EDITOR
 	const FName PlatformName = UAnimationSharingManager::GetPlatformName();
-	MaximumNumberOfConcurrentInstances = StateEntry.MaximumNumberOfConcurrentInstances.GetValueForPlatformIdentifiers(PlatformName, PlatformName);
+	MaximumNumberOfConcurrentInstances = StateEntry.MaximumNumberOfConcurrentInstances.GetValueForPlatform(PlatformName);
 #endif
 
 	/** Ensure that we spread our number over the number of enabled setups */
@@ -859,7 +858,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 			bool bEnabled = AnimationSetup.Enabled.Default;
 #if WITH_EDITOR
 			const FName PlatformName = UAnimationSharingManager::GetPlatformName();
-			bEnabled = AnimationSetup.Enabled.GetValueForPlatformIdentifiers(PlatformName, PlatformName);
+			bEnabled = AnimationSetup.Enabled.GetValueForPlatform(PlatformName);
 #endif
 			TotalEnabled += bEnabled ? 1 : 0;
 		}
@@ -885,7 +884,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 
 		bool bEnabled = AnimationSetup.Enabled.Default;
 #if WITH_EDITOR			
-		bEnabled = AnimationSetup.Enabled.GetValueForPlatformIdentifiers(PlatformName, PlatformName);
+		bEnabled = AnimationSetup.Enabled.GetValueForPlatform(PlatformName);
 #endif
 
 		/** Only create component if the setup is enabled for this platform and we have a valid animation asset */
@@ -893,7 +892,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 		{
 			int32 NumRandomizedInstances = AnimationSetup.NumRandomizedInstances.Default;
 #if WITH_EDITOR			
-			NumRandomizedInstances = AnimationSetup.NumRandomizedInstances.GetValueForPlatformIdentifiers(PlatformName, PlatformName);
+			NumRandomizedInstances = AnimationSetup.NumRandomizedInstances.GetValueForPlatform(PlatformName);
 #endif
 			const uint32 NumInstances = StateEntry.bOnDemand ? NumInstancesPerSetup	: FGenericPlatformMath::Max(NumRandomizedInstances, 1);
 			for (uint32 InstanceIndex = 0; InstanceIndex < NumInstances; ++InstanceIndex)
@@ -920,7 +919,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 							AnimInstance->AnimationToPlay = AnimSequence;
 							if (InstanceIndex > 0)
 							{
-								const float Steps = (AnimSequence->SequenceLength * 0.9f) / (NumInstances);
+								const float Steps = (AnimSequence->GetPlayLength() * 0.9f) / (NumInstances);
 								const float StartTimeOffset = Steps * InstanceIndex;
 								AnimInstance->PermutationTimeOffset = StartTimeOffset;
 							}
@@ -932,7 +931,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 							AnimInstance->ComponentIndex = Components.Num();
 
 							/** Set the current animation length length */
-							StateData.AnimationLengths.Add(AnimSequence->SequenceLength);
+							StateData.AnimationLengths.Add(AnimSequence->GetPlayLength());
 						}
 					}
 					else if (AnimSequence != nullptr)
@@ -948,14 +947,14 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 						{
 							if (InstanceIndex > 0)
 							{
-								const float Steps = (AnimSequence->SequenceLength * 0.9f) / (NumInstances);
+								const float Steps = (AnimSequence->GetPlayLength() * 0.9f) / (NumInstances);
 								const float StartTimeOffset = Steps * InstanceIndex;
 								Component->SetPosition(StartTimeOffset, false);
 							}
 						}
 
 						/** Set the current animation length length */
-						StateData.AnimationLengths.Add(AnimSequence->SequenceLength);
+						StateData.AnimationLengths.Add(AnimSequence->GetPlayLength());
 					}
 
 					/** Set material to red to indicate that it's not in use*/
@@ -981,7 +980,7 @@ void UAnimSharingInstance::SetupState(FPerStateData& StateData, const FAnimation
 					StateData.AdditiveInstanceStack.AddInstance(AdditiveInstance);
 					
 					/** Set the current animation length length */
-					StateData.AnimationLengths.Add(AnimSequence->SequenceLength);
+					StateData.AnimationLengths.Add(AnimSequence->GetPlayLength());
 					Components.Add(AdditiveComponent);
 				}
 				
@@ -2021,7 +2020,7 @@ uint32 UAnimSharingInstance::SetupAdditiveInstance(uint8 StateIndex, uint8 FromS
 		Instance.AdditiveAnimationInstance = AnimationInstance;
 		Instance.BaseComponent = PerStateData[FromState].Components[StateComponentIndex];
 		const float WorldTimeSeconds = GetWorld()->GetTimeSeconds();
-		Instance.EndTime = WorldTimeSeconds + StateData.AdditiveAnimationSequence->SequenceLength;
+		Instance.EndTime = WorldTimeSeconds + StateData.AdditiveAnimationSequence->GetPlayLength();
 		Instance.State = StateIndex;
 		Instance.UsedPerStateComponentIndex = PerStateData[StateIndex].Components.IndexOfByKey(AnimationInstance->GetComponent());
 

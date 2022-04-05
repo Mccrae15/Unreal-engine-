@@ -8,7 +8,7 @@
 namespace Insights
 {
 
-struct FDiagnosticsSessionAnalyzer : public Trace::IAnalyzer
+struct FDiagnosticsSessionAnalyzer : public UE::Trace::IAnalyzer
 {
 	virtual void OnAnalysisBegin(const FOnAnalysisContext& Context) override;
 	virtual bool OnEvent(uint16 RouteId, EStyle, const FOnEventContext& Context) override;
@@ -22,8 +22,11 @@ struct FDiagnosticsSessionAnalyzer : public Trace::IAnalyzer
 	FString Platform;
 	FString AppName;
 	FString CommandLine;
-	EBuildConfiguration ConfigurationType;
-	EBuildTargetType TargetType;
+	FString Branch;
+	FString BuildVersion;
+	uint32 Changelist = 0;
+	EBuildConfiguration ConfigurationType = EBuildConfiguration::Unknown;
+	EBuildTargetType TargetType = EBuildTargetType::Unknown;
 };
 
 } // namespace Insights

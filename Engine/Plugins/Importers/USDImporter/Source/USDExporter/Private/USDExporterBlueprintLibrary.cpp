@@ -2,10 +2,13 @@
 
 #include "USDExporterBlueprintLibrary.h"
 
+#include "AnalyticsBlueprintLibrary.h"
+#include "AnalyticsEventAttribute.h"
 #include "CoreMinimal.h"
 #include "Editor.h"
 #include "InstancedFoliageActor.h"
 #include "UObject/ObjectMacros.h"
+#include "USDClassesModule.h"
 
 AInstancedFoliageActor* UUsdExporterBlueprintLibrary::GetInstancedFoliageActorForLevel( bool bCreateIfNone /*= false */, ULevel* Level /*= nullptr */ )
 {
@@ -36,7 +39,7 @@ TArray<UFoliageType*> UUsdExporterBlueprintLibrary::GetUsedFoliageTypes( AInstan
 		return Result;
 	}
 
-	for ( const TPair<UFoliageType*, TUniqueObj<FFoliageInfo>>& FoliagePair : Actor->FoliageInfos )
+	for ( const TPair<UFoliageType*, TUniqueObj<FFoliageInfo>>& FoliagePair : Actor->GetFoliageInfos())
 	{
 		Result.Add( FoliagePair.Key );
 	}
@@ -62,14 +65,9 @@ TArray<FTransform> UUsdExporterBlueprintLibrary::GetInstanceTransforms( AInstanc
 		return Result;
 	}
 
-	if ( InstancesLevel == nullptr )
-	{
-		InstancesLevel = Actor->GetLevel();
-	}
-
 	// Modified from AInstancedFoliageActor::GetInstancesForComponent to limit traversal only to our FoliageType
 
-	if ( TUniqueObj<FFoliageInfo>* FoundInfo = Actor->FoliageInfos.Find( FoliageType ) )
+	if ( const TUniqueObj<FFoliageInfo>* FoundInfo = Actor->GetFoliageInfos().Find( FoliageType ) )
 	{
 		const FFoliageInfo& Info = (*FoundInfo).Get();
 
@@ -78,7 +76,7 @@ TArray<FTransform> UUsdExporterBlueprintLibrary::GetInstanceTransforms( AInstanc
 		for ( const TPair<FFoliageInstanceBaseId, FFoliageInstanceBaseInfo>& FoliageInstancePair : Actor->InstanceBaseCache.InstanceBaseMap )
 		{
 			UActorComponent* Comp = FoliageInstancePair.Value.BasePtr.Get();
-			if ( !Comp || Comp->GetComponentLevel() != InstancesLevel )
+			if ( !Comp || ( InstancesLevel && ( Comp->GetComponentLevel() != InstancesLevel ) ) )
 			{
 				continue;
 			}
@@ -89,12 +87,24 @@ TArray<FTransform> UUsdExporterBlueprintLibrary::GetInstanceTransforms( AInstanc
 				for ( int32 InstanceIndex : *InstanceSet )
 				{
 					const FFoliageInstancePlacementInfo* Instance = &Info.Instances[ InstanceIndex ];
-					Result.Emplace( Instance->Rotation, Instance->Location, Instance->DrawScale3D );
+					Result.Emplace( FQuat(Instance->Rotation), Instance->Location, (FVector)Instance->DrawScale3D );
 				}
 			}
 		}
 	}
 
 	return Result;
+}
+
+void UUsdExporterBlueprintLibrary::SendAnalytics( const TArray<FAnalyticsEventAttr>& Attrs, const FString& EventName, bool bAutomated, double ElapsedSeconds, double NumberOfFrames, const FString& Extension )
+{
+	TArray<FAnalyticsEventAttribute> Converted;
+	Converted.Reserve( Attrs.Num() );
+	for ( const FAnalyticsEventAttr& Attr : Attrs )
+	{
+		Converted.Emplace( Attr.Name, Attr.Value );
+	}
+
+	IUsdClassesModule::SendAnalytics( MoveTemp( Converted ), EventName, bAutomated, ElapsedSeconds, NumberOfFrames, Extension );
 }
 

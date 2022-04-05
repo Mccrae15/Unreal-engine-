@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "NetworkFileServerConnection.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
 #include "Serialization/BufferArchive.h"
@@ -45,15 +45,31 @@ static FString MakeAbsoluteNormalizedDir(const FString& InPath)
 	return Out;
 }
 
+struct FSandboxOnlyScope
+{
+	FSandboxOnlyScope(FSandboxPlatformFile& InSandbox, bool bInSandboxOnly)
+		: Sandbox(InSandbox)
+	{
+		Sandbox.SetSandboxOnly(bInSandboxOnly);
+	}
+
+	~FSandboxOnlyScope()
+	{
+		Sandbox.SetSandboxOnly(false);
+	}
+
+	FSandboxPlatformFile& Sandbox;
+};
 
 /* FNetworkFileServerClientConnection structors
  *****************************************************************************/
 
-FNetworkFileServerClientConnection::FNetworkFileServerClientConnection( const FNetworkFileDelegateContainer* InNetworkFileDelegates, const TArray<ITargetPlatform*>& InActiveTargetPlatforms )
+FNetworkFileServerClientConnection::FNetworkFileServerClientConnection(const FNetworkFileServerOptions& Options)
 	: LastHandleId(0)
 	, Sandbox(NULL)
-	, NetworkFileDelegates(InNetworkFileDelegates)
-	, ActiveTargetPlatforms(InActiveTargetPlatforms)
+	, NetworkFileDelegates(&Options.Delegates)
+	, ActiveTargetPlatforms(Options.TargetPlatforms)
+	, bRestrictPackageAssetsToSandbox(Options.bRestrictPackageAssetsToSandbox)
 {	
 	//stats
 	FileRequestDelegateTime = 0.0;
@@ -456,6 +472,10 @@ void FNetworkFileServerClientConnection::ProcessOpenFile( FArchive& In, FArchive
 
 	TArray<FString> NewUnsolictedFiles;
 	NetworkFileDelegates->FileRequestDelegate.ExecuteIfBound(Filename, ConnectedPlatformName, NewUnsolictedFiles);
+
+	// Disable access to outside the sandbox to prevent sending uncooked packages to the client
+	const bool bSandboxOnly = bRestrictPackageAssetsToSandbox && !bIsWriting && FPackageName::IsPackageExtension(*FPaths::GetExtension(Filename, true));
+	FSandboxOnlyScope _(*Sandbox, bSandboxOnly);
 
 	FDateTime ServerTimeStamp = Sandbox->GetTimeStamp(*Filename);
 	int64 ServerFileSize = 0;
@@ -867,7 +887,6 @@ bool FNetworkFileServerClientConnection::ProcessGetFileList( FArchive& In, FArch
 	}
 
 	const bool bIsStreamingRequest = (ConnectionFlags & EConnectionFlags::Streaming) == EConnectionFlags::Streaming;
-	const bool bIsPrecookedIterativeRequest = (ConnectionFlags & EConnectionFlags::PreCookedIterative) == EConnectionFlags::PreCookedIterative;
 
 	ConnectedPlatformName = TEXT("");
 	ConnectedTargetPlatform = nullptr;
@@ -977,7 +996,7 @@ bool FNetworkFileServerClientConnection::ProcessGetFileList( FArchive& In, FArch
 		}
 		else
 		{
-			//@todo: This assumes the game is located in the UE4 Root directory
+			//@todo: This assumes the game is located in the Unreal Root directory
 			SandboxDirectory = FPaths::Combine(*FPaths::GetRelativePathToRoot(), *GameName, TEXT("Saved"), TEXT("Cooked"), *ConnectedPlatformName);
 		}
 	}
@@ -995,12 +1014,8 @@ bool FNetworkFileServerClientConnection::ProcessGetFileList( FArchive& In, FArch
 	// make sure the global shaders are up to date before letting the client read any shaders
 	// @todo: This will probably add about 1/2 second to the boot-up time of the client while the server does this
 	// @note: We assume the delegate will write to the proper sandbox directory, should we pass in SandboxDirectory, or Sandbox?
-	FShaderRecompileData RecompileData;
-	RecompileData.PlatformName = ConnectedPlatformName;
-	// All target platforms
-	RecompileData.ShaderPlatform = -1;
-	RecompileData.ModifiedFiles = NULL;
-	RecompileData.MeshMaterialMaps = NULL;
+	TArray<uint8> GlobalShaderMap;
+	FShaderRecompileData RecompileData(ConnectedPlatformName, SP_NumPlatforms, ODSCRecompileCommand::Global, nullptr, nullptr, &GlobalShaderMap);
 	NetworkFileDelegates->RecompileShadersDelegate.ExecuteIfBound(RecompileData);
 
 	UE_LOG(LogFileServer, Display, TEXT("Getting files for %d directories, game = %s, platform = %s"), RootDirectories.Num(), *GameName, *ConnectedPlatformName);
@@ -1076,10 +1091,10 @@ bool FNetworkFileServerClientConnection::ProcessGetFileList( FArchive& In, FArch
 
 	// report the package version information
 	// The downside of this is that ALL cooked data will get tossed on package version changes
-	int32 PackageFileUE4Version = GPackageFileUE4Version;
-	Out << PackageFileUE4Version;
-	int32 PackageFileLicenseeUE4Version = GPackageFileLicenseeUE4Version;
-	Out << PackageFileLicenseeUE4Version;
+	FPackageFileVersion PackageFileUnrealVersion = GPackageFileUEVersion;
+	Out << PackageFileUnrealVersion;
+	int32 PackageFileLicenseeUnrealVersion = GPackageFileLicenseeUEVersion;
+	Out << PackageFileLicenseeUnrealVersion;
 
 	// Send *our* engine and game dirs
 	Out << LocalEngineDir;
@@ -1148,17 +1163,6 @@ bool FNetworkFileServerClientConnection::ProcessGetFileList( FArchive& In, FArch
 		Out << FixedTimes;
 	}
 
-
-
-	if ( bIsPrecookedIterativeRequest )
-	{
-		TMap<FString, FDateTime> PrecookedList;
-		NetworkFileDelegates->InitialPrecookedListDelegate.ExecuteIfBound(ConnectedPlatformName, PrecookedList);
-
-		FixedTimes = FixupSandboxPathsForClient(PrecookedList);
-		Out << FixedTimes;
-	}
-
 	return true;
 }
 
@@ -1206,6 +1210,10 @@ bool FNetworkFileServerClientConnection::PackageFile( FString& Filename, FString
 {
 	// get file timestamp and send it to client
 	FDateTime ServerTimeStamp = Sandbox->GetTimeStamp(*Filename);
+
+	// Disable access to outside the sandbox to prevent sending uncooked packages to the client
+	const bool bSandboxOnly = bRestrictPackageAssetsToSandbox && FPackageName::IsPackageExtension(*FPaths::GetExtension(Filename, true));
+	FSandboxOnlyScope _(*Sandbox, bSandboxOnly);
 
 	FString AbsHostFile = Sandbox->ConvertToAbsolutePathForExternalAppForRead(*Filename);
 	if (ConnectedTargetPlatform != nullptr && ConnectedTargetPlatform->CopyFileToTarget(ConnectedIPAddress, AbsHostFile, TargetFilename, ConnectedTargetCustomData))
@@ -1267,15 +1275,15 @@ void FNetworkFileServerClientConnection::ProcessRecompileShaders( FArchive& In, 
 {
 	TArray<FString> RecompileModifiedFiles;
 	TArray<uint8> MeshMaterialMaps;
-	FShaderRecompileData RecompileData;
-	RecompileData.PlatformName = ConnectedPlatformName;
-	RecompileData.ModifiedFiles = &RecompileModifiedFiles;
-	RecompileData.MeshMaterialMaps = &MeshMaterialMaps;
+	TArray<uint8> GlobalShaderMap;
+	FShaderRecompileData RecompileData(ConnectedPlatformName, SP_NumPlatforms, ODSCRecompileCommand::Changed, &RecompileModifiedFiles, &MeshMaterialMaps, &GlobalShaderMap);
 
 	// tell other side all the materials to load, by pathname
 	In << RecompileData.MaterialsToLoad;
-	In << RecompileData.ShaderPlatform;
-	In << RecompileData.bCompileChangedShaders;
+
+	int32 iShaderPlatform = static_cast<int32>(RecompileData.ShaderPlatform);
+	In << iShaderPlatform;
+	In << RecompileData.CommandType;
 	In << RecompileData.ShadersToRecompile;
 
 	NetworkFileDelegates->RecompileShadersDelegate.ExecuteIfBound(RecompileData);
@@ -1283,6 +1291,7 @@ void FNetworkFileServerClientConnection::ProcessRecompileShaders( FArchive& In, 
 	// tell other side what to do!
 	Out << RecompileModifiedFiles;
 	Out << MeshMaterialMaps;
+	Out << GlobalShaderMap;
 }
 
 

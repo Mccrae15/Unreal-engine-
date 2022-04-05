@@ -25,8 +25,10 @@ public class AudioEditor : ModuleRules
 				"GameProjectGeneration",
 				"ToolMenus",
 				"UMG",
+				"DeveloperSettings",
 				"UMGEditor",
-				"AudioExtensions"
+				"AudioExtensions",
+				"AudioLinkEngine"
 			}
 		);
 
@@ -38,8 +40,10 @@ public class AudioEditor : ModuleRules
 				"CoreUObject",
 				"ApplicationCore",
 				"AudioMixer",
+				"SignalProcessing",
 				"InputCore",
 				"Engine",
+				"EditorFramework",
 				"UnrealEd",
 				"Slate",
 				"SlateCore",
@@ -74,7 +78,7 @@ public class AudioEditor : ModuleRules
 
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Windows))
 		{
-			string PlatformName = Target.Platform == UnrealTargetPlatform.Win32 ? "Win32" : "Win64";
+			string PlatformName = "Win64";
 
 			string LibSndFilePath = Target.UEThirdPartyBinariesDirectory + "libsndfile/";
 			LibSndFilePath += PlatformName;

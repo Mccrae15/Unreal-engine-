@@ -104,13 +104,13 @@ protected:
 				TSharedPtr<FTabManager> LevelEditorTabManager = LevelEditorModule.GetLevelEditorTabManager();
 
 				const IWorkspaceMenuStructure& MenuStructure = WorkspaceMenu::GetMenuStructure();
-				const FSlateIcon Icon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.EditMatinee", "LevelEditor.EditMatinee.Small"));
+				const FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "LevelViewport.ToggleActorPilotCameraView");
 
 				LevelEditorTabManager->RegisterTabSpawner("MatineeToLevelSequence", FOnSpawnTab::CreateRaw(this, &FMatineeToLevelSequenceModule::CreateCameraShakeConverterTab))
 				.SetDisplayName(LOCTEXT("MatineeCameraShakeConverter", "Matinee Camera Shake Converter"))
 				.SetTooltipText(LOCTEXT("MatineeCameraShakeConverterTooltipText", "Open the legacy camera shake converter tool."))
 				.SetIcon(Icon)
-				.SetGroup(MenuStructure.GetDeveloperToolsMiscCategory());
+				.SetGroup(MenuStructure.GetLevelEditorCinematicsCategory());
 			});
 	}
 
@@ -159,7 +159,7 @@ protected:
 		{
 			// Add the convert to level sequence asset sub-menu extender
 			Extender->AddMenuExtension(
-				"ActorSelectVisibilityLevels",
+				"ActorTypeTools",
 				EExtensionHook::After,
 				nullptr,
 				FMenuExtensionDelegate::CreateRaw(this, &FMatineeToLevelSequenceModule::CreateLevelViewportContextMenuEntries, ActorsToConvert));
@@ -194,7 +194,7 @@ protected:
 
 		// Pop open a dialog asking whether the user to convert and launcher sequencer or no
 		FSuppressableWarningDialog::FSetupInfo Info( 
-			LOCTEXT("MatineeToLevelSequencePrompt", "As of 4.23, Matinee is no longer supported by UE4 and will be removed from the engine in the near future. Once removed, you will no longer be able to run a Matinee or open Matinee.\n\nWould you like to continue opening Matinee or convert your Matinee to a Level Sequence Asset?"), 
+			LOCTEXT("MatineeToLevelSequencePrompt", "As of 4.23, Matinee is no longer supported by Unreal Engine and will be removed from the engine in the near future. Once removed, you will no longer be able to run a Matinee or open Matinee.\n\nWould you like to continue opening Matinee or convert your Matinee to a Level Sequence Asset?"), 
 			LOCTEXT("MatineeToLevelSequenceTitle", "Convert Matinee to Level Sequence Asset"), 
 			TEXT("MatineeToLevelSequence") );
 		Info.ConfirmText = LOCTEXT("MatineeToLevelSequence_ConfirmText", "Open Matinee");

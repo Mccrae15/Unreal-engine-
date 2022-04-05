@@ -14,6 +14,9 @@ class FTabManager;
 class FViewport;
 class SContentBrowser;
 class UFactory;
+class UToolMenu;
+class FWorkspaceItem;
+struct FTabSpawnerEntry;
 
 #define MAX_CONTENT_BROWSERS 4
 
@@ -49,12 +52,14 @@ public:
 	virtual TSharedRef<class SWidget> CreateAssetPicker(const FAssetPickerConfig& AssetPickerConfig) override;
 	virtual TSharedRef<class SWidget> CreatePathPicker(const FPathPickerConfig& PathPickerConfig) override;
 	virtual TSharedRef<class SWidget> CreateCollectionPicker(const FCollectionPickerConfig& CollectionPickerConfig) override;
+	virtual TSharedRef<class SWidget> CreateContentBrowserDrawer(const FContentBrowserConfig& ContentBrowserConfig, TFunction<TSharedPtr<SDockTab>()> InOnGetTabForDrawer) override;
 	virtual void CreateOpenAssetDialog(const FOpenAssetDialogConfig& OpenAssetConfig, const FOnAssetsChosenForOpen& OnAssetsChosenForOpen, const FOnAssetDialogCancelled& OnAssetDialogCancelled) override;
 	virtual TArray<FAssetData> CreateModalOpenAssetDialog(const FOpenAssetDialogConfig& InConfig) override;
 	virtual void CreateSaveAssetDialog(const FSaveAssetDialogConfig& SaveAssetConfig, const FOnObjectPathChosenForSave& OnAssetNameChosenForSave, const FOnAssetDialogCancelled& OnAssetDialogCancelled) override;
 	virtual FString CreateModalSaveAssetDialog(const FSaveAssetDialogConfig& SaveAssetConfig) override;
 	virtual bool HasPrimaryContentBrowser() const override;
 	virtual void FocusPrimaryContentBrowser(bool bFocusSearch) override;
+	virtual void FocusContentBrowserSearchField(TSharedPtr<SWidget> ContentBrowserWidget) override;
 	virtual void CreateNewAsset(const FString& DefaultAssetName, const FString& PackagePath, UClass* AssetClass, UFactory* Factory) override;
 	virtual void SyncBrowserToAssets(const TArray<struct FAssetData>& AssetDataList, bool bAllowLockedBrowsers = false, bool bFocusContentBrowser = true, const FName& InstanceName = FName(), bool bNewSpawnBrowser = false) override;
 	virtual void SyncBrowserToAssets(const TArray<UObject*>& AssetList, bool bAllowLockedBrowsers = false, bool bFocusContentBrowser = true, const FName& InstanceName = FName(), bool bNewSpawnBrowser = false) override;
@@ -64,11 +69,18 @@ public:
 	virtual void GetSelectedAssets(TArray<FAssetData>& SelectedAssets) override;
 	virtual void GetSelectedFolders(TArray<FString>& SelectedFolders) override;
 	virtual void GetSelectedPathViewFolders(TArray<FString>& SelectedFolders) override;
-	virtual FString GetCurrentPath() override;
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	virtual FString GetCurrentPath(const EContentBrowserPathType PathType) override;
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual FContentBrowserItemPath GetCurrentPath() override;
 	virtual void CaptureThumbnailFromViewport(FViewport* InViewport, TArray<FAssetData>& SelectedAssets) override;
-	virtual void SetSelectedPaths(const TArray<FString>& FolderPaths, bool bNeedsRefresh = false) override;
+	virtual void SetSelectedPaths(const TArray<FString>& FolderPaths, bool bNeedsRefresh = false, bool bPathsAreVirtual = false) override;
 	virtual void ForceShowPluginContent(bool bEnginePlugin) override;
-
+	virtual FContentBrowserItemPath GetInitialPathToSaveAsset(const FContentBrowserItemPath& InPath) override;
+	virtual void SaveContentBrowserSettings(TSharedPtr<SWidget> ContentBrowserWidget) override;
+	virtual void ExecuteRename(TSharedPtr<SWidget> PickerWidget) override;
+	virtual void ExecuteAddFolder(TSharedPtr<SWidget> PathPickerWidget) override;
+	virtual void RefreshPathView(TSharedPtr<SWidget> PathPickerWidget) override;
 
 	/** Gets the content browser singleton as a FContentBrowserSingleton */
 	static FContentBrowserSingleton& Get();
@@ -84,6 +96,9 @@ public:
 
 	/** Single storage location for content browser favorites */
 	TArray<FString> FavoriteFolderPaths;
+
+	/** Docks the current content browser drawer as a tabbed content browser in a layout */
+	void DockContentBrowserDrawer();
 
 private:
 
@@ -105,7 +120,7 @@ private:
 	void FocusContentBrowser(const TSharedPtr<SContentBrowser>& BrowserToFocus);
 
 	/** Summons a new content browser */
-	FName SummonNewBrowser(bool bAllowLockedBrowsers = false);
+	FName SummonNewBrowser(bool bAllowLockedBrowsers = false, TSharedPtr<FTabManager> SpecificTabManager = nullptr);
 
 	/** Handler for a request to spawn a new content browser tab */
 	TSharedRef<SDockTab> SpawnContentBrowserTab( const FSpawnTabArgs& SpawnTabArgs, int32 BrowserIdx );
@@ -122,12 +137,19 @@ private:
 	/** Populates properties that come from ini files */
 	void PopulateConfigValues();
 
+	/** Creates the Content Browser submenu in the Level Editor Toolbar Add menu */
+	void GetContentBrowserSubMenu(UToolMenu* Menu, TSharedRef<FWorkspaceItem> ContentBrowserGroup);
+
 public:
 	/** The tab identifier/instance name for content browser tabs */
 	FName ContentBrowserTabIDs[MAX_CONTENT_BROWSERS];
 
 private:
 	TArray<TWeakPtr<SContentBrowser>> AllContentBrowsers;
+
+	TWeakPtr<SContentBrowser> ContentBrowserDrawer;
+
+	TFunction<TSharedPtr<SDockTab>()> OnGetTabForDrawer;
 
 	TMap<FName, TWeakPtr<FTabManager>> BrowserToLastKnownTabManagerMap;
 
@@ -136,6 +158,8 @@ private:
 	TSharedRef<FCollectionAssetRegistryBridge> CollectionAssetRegistryBridge;
 
 	TArray<FContentBrowserPluginSettings> PluginSettings;
+
+	TArray<TSharedPtr<FTabSpawnerEntry>> ContentBrowserTabs;
 
 	/** An incrementing int32 which is used when making unique settings strings */
 	int32 SettingsStringID;

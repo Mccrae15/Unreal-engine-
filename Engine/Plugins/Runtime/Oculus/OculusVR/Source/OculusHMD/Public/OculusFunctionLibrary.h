@@ -98,7 +98,7 @@ enum class EBoundaryType : uint8
 };
 
 UENUM(BlueprintType)
-enum class EColorSpace : uint8
+enum class EOculusColorSpace : uint8
 {
 	/// The default value from GetHmdColorSpace until SetClientColorDesc is called. Only valid on PC, and will be remapped to Quest on Mobile
 	Unknown = 0,
@@ -129,6 +129,14 @@ enum class EHandTrackingSupport : uint8
 };
 
 UENUM(BlueprintType)
+enum class EHandTrackingFrequency : uint8
+{
+	LOW,
+	HIGH,
+	MAX,
+};
+
+UENUM(BlueprintType)
 enum class EOculusDeviceType : uint8
 {
 	//mobile HMDs 
@@ -146,6 +154,16 @@ enum class EOculusDeviceType : uint8
 
 	//default
 	OculusUnknown = 200,
+};
+
+UENUM(BlueprintType)
+enum class EOculusXrApi : uint8
+{
+	LegacyOVRPlugin = 0 UMETA(DisplayName = "Legacy Oculus SDK (no longer developed by Epic)", ToolTip = "Legacy Oculus SDK. Epic is no longer developing for this SDK, and it should only be used if there are features required for a project that are not yet supported through OpenXR, but it's hard to guarantee potential bugs will be fixed as it's not in active development at Epic. Epic recommends Native OpenXR instead, as that will be the main development focus going forward."),
+	
+	OVRPluginOpenXR = 1 UMETA(DisplayName = "Legacy Oculus SDK + OpenXR (temporary experimental solution)", ToolTip = "Legacy Oculus SDK using an OpenXR backend. Experimental. Epic recommends Native OpenXR instead, as that will be the main development focus going forward."),
+	
+	NativeOpenXR = 2 UMETA(DisplayName = "Native OpenXR with Oculus vendor extensions (Epic's development focus)", ToolTip = "Disable Legacy Oculus in favor of the native OpenXR implementation, with Oculus vendor extensions. Must enable the OpenXR plugin. This will be where Epic focuses XR development going forward. Oculus OpenXR extensions may be moved into a separate plugin (or plugins) in the future to improve modularity. The features supported by OpenXR are listed in the OpenXR specification on khronos.org, and the features supported by a given runtime can be verified with the \"OpenXR Explorer\" application on GitHub."),
 };
 
 /*
@@ -220,15 +238,6 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	*/
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
 	static void SetCPUAndGPULevels(int CPULevel, int GPULevel);
-
-	/**
-	* Sets the HMD recenter behavior to a mode that specifies HMD recentering behavior when a
-	* controller recenter is performed. If the recenterMode specified is 1, the HMD will recenter
-	* on controller recenter; if it's 0, only the controller will recenter. Returns false if not
-	* supported.
-	*/
-	UFUNCTION(BlueprintCallable, Category = "OculusLibrary", meta = (DeprecatedFunction, DeprecationMessage = "This function is no longer supported."))
-	static void SetReorientHMDOnControllerRecenter(bool recenterMode);
 
 	/**
 	* Returns current user profile.
@@ -409,13 +418,13 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	* Returns the color space of the target HMD
 	*/
 	UFUNCTION(BlueprintPure, Category = "OculusLibrary")
-	static EColorSpace GetHmdColorDesc();
+	static EOculusColorSpace GetHmdColorDesc();
 
 	/**
 	* Sets the target HMD to do color space correction to a specific color space
 	*/
 	UFUNCTION(BlueprintCallable, Category = "OculusLibrary")
-	static void SetClientColorDesc(EColorSpace ColorSpace);
+	static void SetClientColorDesc(EOculusColorSpace ColorSpace);
 
 	/**
 	 * Returns IStereoLayers interface to work with overlays.
@@ -458,7 +467,7 @@ class OCULUSHMD_API UOculusFunctionLibrary : public UBlueprintFunctionLibrary
 	static FTransform GetPlayAreaTransform();
 
 	/**
-	* Get the intersection result between a UE4 coordinate and a guardian boundary
+	* Get the intersection result between a UE coordinate and a guardian boundary
 	* @param Point					(in) Point in UE space to test against guardian boundaries
 	* @param BoundaryType			(in) An enum representing the boundary type requested, either Outer Boundary (exact guardian bounds) or PlayArea (rectangle inside the Outer Boundary)
 	*/

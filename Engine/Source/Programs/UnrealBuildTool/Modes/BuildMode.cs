@@ -8,7 +8,10 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using OpenTracing;
+using OpenTracing.Util;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -42,14 +45,14 @@ namespace UnrealBuildTool
 	/// <summary>
 	/// Builds a target
 	/// </summary>
-	[ToolMode("Build", ToolModeOptions.XmlConfig | ToolModeOptions.BuildPlatforms | ToolModeOptions.SingleInstance | ToolModeOptions.StartPrefetchingEngine | ToolModeOptions.ShowExecutionTime)]
+	[ToolMode("Build", ToolModeOptions.XmlConfig | ToolModeOptions.BuildPlatforms | ToolModeOptions.SingleInstance | ToolModeOptions.StartPrefetchingEngine | ToolModeOptions.ShowExecutionTime | ToolModeOptions.UseStartupTraceListener)]
 	class BuildMode : ToolMode
 	{
 		/// <summary>
 		/// Specifies the file to use for logging.
 		/// </summary>
 		[XmlConfigFile(Category = "BuildConfiguration")]
-		public string BaseLogFileName;
+		public string? BaseLogFileName;
 
 		/// <summary>
 		/// Whether to skip checking for files identified by the junk manifest.
@@ -86,7 +89,7 @@ namespace UnrealBuildTool
 		/// Whether we should just export the outdated actions list
 		/// </summary>
 		[CommandLine("-WriteOutdatedActions=")]
-		public FileReference WriteOutdatedActionsFile = null;
+		public FileReference? WriteOutdatedActionsFile = null;
 
 		/// <summary>
 		/// Main entry point
@@ -96,10 +99,6 @@ namespace UnrealBuildTool
 		public override int Execute(CommandLineArguments Arguments)
 		{
 			Arguments.ApplyTo(this);
-
-			// Initialize the log system, buffering the output until we can create the log file
-			StartupTraceListener StartupListener = new StartupTraceListener();
-			Trace.Listeners.Add(StartupListener);
 
 			// Write the command line
 			Log.TraceLog("Command line: {0}", Environment.CommandLine);
@@ -123,16 +122,16 @@ namespace UnrealBuildTool
 			// Create the log file, and flush the startup listener to it
 			if (!Arguments.HasOption("-NoLog") && !Log.HasFileWriter())
 			{
-				FileReference LogFile = new FileReference(BaseLogFileName);
-				foreach(string LogSuffix in Arguments.GetValues("-LogSuffix="))
-				{
-					LogFile = LogFile.ChangeExtension(null) + "_" + LogSuffix + LogFile.GetExtension();
-				}
-
-				TextWriterTraceListener LogTraceListener = Log.AddFileWriter("DefaultLogTraceListener", LogFile);
-				StartupListener.CopyTo(LogTraceListener);
+				Log.AddFileWriter("DefaultLogTraceListener", FileReference.FromString(BaseLogFileName));
 			}
-			Trace.Listeners.Remove(StartupListener);
+			else
+			{
+				IEnumerable<StartupTraceListener> StartupListeners = Trace.Listeners.OfType<StartupTraceListener>();
+				if (StartupListeners.Any())
+				{
+					Trace.Listeners.Remove(StartupListeners.First());
+				}
+			}
 
 			// Create the build configuration object, and read the settings
 			BuildConfiguration BuildConfiguration = new BuildConfiguration();
@@ -140,15 +139,15 @@ namespace UnrealBuildTool
 			Arguments.ApplyTo(BuildConfiguration);
 
 			// Check the root path length isn't too long
-			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 && UnrealBuildTool.RootDirectory.FullName.Length > BuildConfiguration.MaxRootPathLength)
+			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Win64 && Unreal.RootDirectory.FullName.Length > BuildConfiguration.MaxRootPathLength)
 			{
-				Log.TraceWarning("Running from a path with a long directory name (\"{0}\" = {1} characters). Root paths shorter than {2} characters are recommended to avoid exceeding maximum path lengths on Windows.", UnrealBuildTool.RootDirectory, UnrealBuildTool.RootDirectory.FullName.Length, BuildConfiguration.MaxRootPathLength);
+				Log.TraceWarning("Running from a path with a long directory name (\"{0}\" = {1} characters). Root paths shorter than {2} characters are recommended to avoid exceeding maximum path lengths on Windows.", Unreal.RootDirectory, Unreal.RootDirectory.FullName.Length, BuildConfiguration.MaxRootPathLength);
 			}
 
 			// now that we know the available platforms, we can delete other platforms' junk. if we're only building specific modules from the editor, don't touch anything else (it may be in use).
-			if (!bIgnoreJunk && !UnrealBuildTool.IsEngineInstalled())
+			if (!bIgnoreJunk && !Unreal.IsEngineInstalled())
 			{
-				using(Timeline.ScopeEvent("DeleteJunk()"))
+				using (GlobalTracer.Instance.BuildSpan("DeleteJunk()").StartActive())
 				{
 					JunkDeleter.DeleteJunk();
 				}
@@ -160,16 +159,25 @@ namespace UnrealBuildTool
 				List<TargetDescriptor> TargetDescriptors;
 
 				// Parse all the target descriptors
-				using(Timeline.ScopeEvent("TargetDescriptor.ParseCommandLine()"))
+				using (GlobalTracer.Instance.BuildSpan("TargetDescriptor.ParseCommandLine()").StartActive())
 				{
-					TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, BuildConfiguration.bSkipRulesCompile);
+					TargetDescriptors = TargetDescriptor.ParseCommandLine(Arguments, BuildConfiguration.bUsePrecompiled, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile);
 				}
 
 				// Hack for specific files compile; don't build the ShaderCompileWorker target that's added to the command line for generated project files
 				if(TargetDescriptors.Count >= 2)
 				{
-					TargetDescriptors.RemoveAll(x => (x.Name == "ShaderCompileWorker" || x.Name == "LiveCodingConsole") && x.SpecificFilesToCompile.Count > 0);
+					TargetDescriptors.RemoveAll(x => (x.Name == "ShaderCompileWorker" || x.Name == "LiveCodingConsole" || x.Name == "InterchangeWorker") && x.SpecificFilesToCompile.Count > 0);
 				}
+
+				// Clean any target that wanted to be cleaned before being rebuilt
+				if (TargetDescriptors.Any(D => D.bRebuild))
+				{
+					CleanMode CleanMode = new CleanMode();
+					CleanMode.bSkipPreBuildTargets = bSkipPreBuildTargets;
+					CleanMode.Clean(TargetDescriptors.Where(D => D.bRebuild).ToList(), BuildConfiguration);
+				}
+
 
 				// Handle remote builds
 				for (int Idx = 0; Idx < TargetDescriptors.Count; ++Idx)
@@ -203,6 +211,9 @@ namespace UnrealBuildTool
 							FileMetadataPrefetch.QueueProjectDirectory(ProjectDirectory);
 							ProjectDirs.Add(ProjectDirectory);
 						}
+
+						// print out SDK info for only the platforms that are being compiled
+						UEBuildPlatformSDK.GetSDKForPlatform(TargetDesc.Platform.ToString())?.PrintSDKInfoAndReturnValidity();
 					}
 
 					// Get all the build options
@@ -221,7 +232,7 @@ namespace UnrealBuildTool
 					}
 
 					// Create the working set provider per group.
-					using (ISourceFileWorkingSet WorkingSet = SourceFileWorkingSet.Create(UnrealBuildTool.RootDirectory, ProjectDirs))
+					using (ISourceFileWorkingSet WorkingSet = SourceFileWorkingSet.Create(Unreal.RootDirectory, ProjectDirs))
 					{
 						Build(TargetDescriptors, BuildConfiguration, WorkingSet, Options, WriteOutdatedActionsFile, bSkipPreBuildTargets);
 					}
@@ -246,7 +257,7 @@ namespace UnrealBuildTool
 		/// <param name="WriteOutdatedActionsFile">Files to write the list of outdated actions to (rather than building them)</param>
 		/// <param name="bSkipPreBuildTargets">If true then only the current target descriptors will be built.</param>
 		/// <returns>Result from the compilation</returns>
-		public static void Build(List<TargetDescriptor> TargetDescriptors, BuildConfiguration BuildConfiguration, ISourceFileWorkingSet WorkingSet, BuildOptions Options, FileReference WriteOutdatedActionsFile, bool bSkipPreBuildTargets = false)
+		public static void Build(List<TargetDescriptor> TargetDescriptors, BuildConfiguration BuildConfiguration, ISourceFileWorkingSet WorkingSet, BuildOptions Options, FileReference? WriteOutdatedActionsFile, bool bSkipPreBuildTargets = false)
 		{
 
 			List<TargetMakefile> TargetMakefiles = new List<TargetMakefile>();
@@ -268,7 +279,7 @@ namespace UnrealBuildTool
 				}
 			}
 
-			Build(TargetMakefiles.ToArray(), TargetDescriptors, BuildConfiguration, WorkingSet, Options, WriteOutdatedActionsFile);
+			Build(TargetMakefiles.ToArray(), TargetDescriptors, BuildConfiguration, Options, WriteOutdatedActionsFile);
 		}
 
 		/// <summary>
@@ -277,23 +288,11 @@ namespace UnrealBuildTool
 		/// <param name="Makefiles">Makefiles created with CreateMakefiles</param>
 		/// <param name="TargetDescriptors">Target descriptors</param>
 		/// <param name="BuildConfiguration">Current build configuration</param>
-		/// <param name="WorkingSet">The source file working set</param>
 		/// <param name="Options">Additional options for the build</param>
 		/// <param name="WriteOutdatedActionsFile">Files to write the list of outdated actions to (rather than building them)</param>
 		/// <returns>Result from the compilation</returns>
-		static void Build(TargetMakefile[] Makefiles, List<TargetDescriptor> TargetDescriptors, BuildConfiguration BuildConfiguration, ISourceFileWorkingSet WorkingSet, BuildOptions Options, FileReference WriteOutdatedActionsFile)
+		static void Build(TargetMakefile[] Makefiles, List<TargetDescriptor> TargetDescriptors, BuildConfiguration BuildConfiguration, BuildOptions Options, FileReference? WriteOutdatedActionsFile)
 		{
-			// Export the actions for each target
-			for (int TargetIdx = 0; TargetIdx < TargetDescriptors.Count; TargetIdx++)
-			{
-				TargetDescriptor TargetDescriptor = TargetDescriptors[TargetIdx];
-				foreach(FileReference WriteActionFile in TargetDescriptor.WriteActionFiles)
-				{
-					Log.TraceInformation("Writing actions to {0}", WriteActionFile);
-					ActionGraph.ExportJson(Makefiles[TargetIdx].Actions, WriteActionFile);
-				}
-			}
-
 			// Execute the build
 			if ((Options & BuildOptions.SkipBuild) == 0)
 			{
@@ -301,27 +300,34 @@ namespace UnrealBuildTool
 				ActionGraph.CheckForConflicts(Makefiles.SelectMany(x => x.Actions));
 
 				// Check we don't exceed the nominal max path length
-				using (Timeline.ScopeEvent("ActionGraph.CheckPathLengths"))
+				using (GlobalTracer.Instance.BuildSpan("ActionGraph.CheckPathLengths").StartActive())
 				{
 					ActionGraph.CheckPathLengths(BuildConfiguration, Makefiles.SelectMany(x => x.Actions));
 				}
 
+				// Create a QueuedAction instance for each action in the makefiles
+				List<LinkedAction>[] QueuedActions = new List<LinkedAction>[Makefiles.Length];
+				for(int Idx = 0; Idx < Makefiles.Length; Idx++)
+				{
+					QueuedActions[Idx] = Makefiles[Idx].Actions.ConvertAll(x => new LinkedAction(x, TargetDescriptors[Idx]));
+				}
+
 				// Clean up any previous hot reload runs, and reapply the current state if it's already active
-				Dictionary<FileReference, FileReference> InitialPatchedOldLocationToNewLocation = null;
+				Dictionary<FileReference, FileReference>? InitialPatchedOldLocationToNewLocation = null;
 				for (int TargetIdx = 0; TargetIdx < TargetDescriptors.Count; TargetIdx++)
 				{
-					InitialPatchedOldLocationToNewLocation = HotReload.Setup(TargetDescriptors[TargetIdx], Makefiles[TargetIdx], BuildConfiguration);
+					InitialPatchedOldLocationToNewLocation = HotReload.Setup(TargetDescriptors[TargetIdx], Makefiles[TargetIdx], QueuedActions[TargetIdx], BuildConfiguration);
 				}
 
 				// Merge the action graphs together
-				List<Action> MergedActions;
+				List<LinkedAction> MergedActions;
 				if (TargetDescriptors.Count == 1)
 				{
-					MergedActions = new List<Action>(Makefiles[0].Actions);
+					MergedActions = QueuedActions[0];
 				}
 				else
 				{
-					MergedActions = MergeActionGraphs(TargetDescriptors, Makefiles);
+					MergedActions = MergeActionGraphs(TargetDescriptors, QueuedActions);
 				}
 
 				// Gather all the prerequisite actions that are part of the targets
@@ -335,13 +341,13 @@ namespace UnrealBuildTool
 				ActionGraph.Link(MergedActions);
 
 				// Get all the actions that are prerequisites for these targets. This forms the list of actions that we want executed.
-				List<Action> PrerequisiteActions = ActionGraph.GatherPrerequisiteActions(MergedActions, MergedOutputItems);
+				List<LinkedAction> PrerequisiteActions = ActionGraph.GatherPrerequisiteActions(MergedActions, MergedOutputItems);
 
 				// Create the action history
 				ActionHistory History = new ActionHistory();
 				for (int TargetIdx = 0; TargetIdx < TargetDescriptors.Count; TargetIdx++)
 				{
-					using (Timeline.ScopeEvent("Reading action history"))
+					using (GlobalTracer.Instance.BuildSpan("Reading action history").StartActive())
 					{
 						TargetDescriptor TargetDescriptor = TargetDescriptors[TargetIdx];
 						if(TargetDescriptor.ProjectFile != null)
@@ -351,17 +357,121 @@ namespace UnrealBuildTool
 					}
 				}
 
+				// Create the C++ dependency cache
+				CppDependencyCache CppDependencies = new CppDependencyCache();
+				for (int TargetIdx = 0; TargetIdx < TargetDescriptors.Count; TargetIdx++)
+				{
+					using (GlobalTracer.Instance.BuildSpan("Reading dependency cache").StartActive())
+					{
+						TargetDescriptor TargetDescriptor = TargetDescriptors[TargetIdx];
+						CppDependencies.Mount(TargetDescriptor.ProjectFile, TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Configuration, Makefiles[TargetIdx].TargetType, TargetDescriptor.Architecture);
+					}
+				}
+
+				// Pre-process module interfaces to generate dependency files
+				List<LinkedAction> ModuleDependencyActions = PrerequisiteActions.Where(x => x.ActionType == ActionType.GatherModuleDependencies).ToList();
+				if (ModuleDependencyActions.Count > 0)
+				{
+					Dictionary<LinkedAction, bool> PreprocessActionToOutdatedFlag = new Dictionary<LinkedAction, bool>();
+					ActionGraph.GatherAllOutdatedActions(ModuleDependencyActions, History, PreprocessActionToOutdatedFlag, CppDependencies, BuildConfiguration.bIgnoreOutdatedImportLibraries);
+
+					List<LinkedAction> PreprocessActions = PreprocessActionToOutdatedFlag.Where(x => x.Value).Select(x => x.Key).ToList();
+					if (PreprocessActions.Count > 0)
+					{
+						Log.TraceInformation("Updating module dependencies...");
+						ActionGraph.ExecuteActions(BuildConfiguration, PreprocessActions);
+
+						foreach (FileItem ProducedItem in PreprocessActions.SelectMany(x => x.ProducedItems))
+						{
+							ProducedItem.ResetCachedInfo();
+						}
+					}
+				}
+
 				// Figure out which actions need to be built
-				Dictionary<Action, bool> ActionToOutdatedFlag = new Dictionary<Action, bool>();
+				Dictionary<LinkedAction, bool> ActionToOutdatedFlag = new Dictionary<LinkedAction, bool>();
 				for (int TargetIdx = 0; TargetIdx < TargetDescriptors.Count; TargetIdx++)
 				{
 					TargetDescriptor TargetDescriptor = TargetDescriptors[TargetIdx];
 
-					// Create the dependencies cache
-					CppDependencyCache CppDependencies;
-					using (Timeline.ScopeEvent("Reading dependency cache"))
+					// Update the module dependencies
+					Dictionary<string, FileItem> ModuleOutputs = new Dictionary<string, FileItem>(StringComparer.Ordinal);
+					if (ModuleDependencyActions.Count > 0)
 					{
-						CppDependencies = CppDependencyCache.CreateHierarchy(TargetDescriptor.ProjectFile, TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Configuration, Makefiles[TargetIdx].TargetType, TargetDescriptor.Architecture);
+						Dictionary<FileItem, List<string>> ModuleImports = new Dictionary<FileItem, List<string>>();
+
+						List<FileItem> CompiledModuleInterfaces = new List<FileItem>();
+						foreach(LinkedAction ModuleDependencyAction in ModuleDependencyActions)
+						{
+							ICppCompileAction? CppModulesAction = ModuleDependencyAction.Inner as ICppCompileAction;
+							if (CppModulesAction != null && CppModulesAction.CompiledModuleInterfaceFile != null)
+							{
+								string? ProducedModule;
+								if (CppDependencies.TryGetProducedModule(ModuleDependencyAction.DependencyListFile!, out ProducedModule))
+								{
+									ModuleOutputs[ProducedModule] = CppModulesAction.CompiledModuleInterfaceFile;
+								}
+
+								List<(string Name, string BMI)>? ImportedModules;
+								if (CppDependencies.TryGetImportedModules(ModuleDependencyAction.DependencyListFile!, out ImportedModules))
+								{
+									ModuleImports[CppModulesAction.CompiledModuleInterfaceFile] = ImportedModules.Select(x => x.Name).ToList();
+								}
+
+								CompiledModuleInterfaces.Add(CppModulesAction.CompiledModuleInterfaceFile);
+							}
+						}
+
+						Dictionary<FileItem, string> ModuleInputs = ModuleOutputs.ToDictionary(x => x.Value, x => x.Key);
+						foreach (LinkedAction PrerequisiteAction in PrerequisiteActions)
+						{
+							if (PrerequisiteAction.ActionType == ActionType.CompileModuleInterface)
+							{
+								ICppCompileAction CppModulesAction = (ICppCompileAction)PrerequisiteAction.Inner;
+
+								List<string>? ImportedModules;
+								if(ModuleImports.TryGetValue(CppModulesAction.CompiledModuleInterfaceFile!, out ImportedModules))
+								{
+									foreach (string ImportedModule in ImportedModules)
+									{
+										FileItem? ModuleOutput;
+										if (ModuleOutputs.TryGetValue(ImportedModule, out ModuleOutput))
+										{
+											Action NewAction = new Action(PrerequisiteAction.Inner);
+											NewAction.PrerequisiteItems.Add(ModuleOutput);
+											NewAction.CommandArguments += String.Format(" /reference \"{0}={1}\"", ImportedModule, ModuleOutput.FullName);
+											PrerequisiteAction.Inner = NewAction;
+										}
+										else
+										{
+											throw new BuildException("Unable to find interface for module '{0}'", ImportedModule);
+										}
+									}
+								}
+							}
+							else if(PrerequisiteAction.ActionType == ActionType.Compile)
+							{
+								foreach(FileItem PrerequisiteItem in PrerequisiteAction.PrerequisiteItems)
+								{
+									string? ModuleName;
+									if(ModuleInputs.TryGetValue(PrerequisiteItem, out ModuleName))
+									{
+										Action NewAction = new Action(PrerequisiteAction.Inner);
+										NewAction.CommandArguments += String.Format(" /reference \"{0}={1}\"", ModuleName, PrerequisiteItem.AbsolutePath);
+										PrerequisiteAction.Inner = NewAction;
+									}
+								}
+							}
+							else
+							{
+								if (PrerequisiteAction.ActionType != ActionType.GatherModuleDependencies)
+								{
+									Action NewAction = new Action(PrerequisiteAction.Inner);
+									NewAction.PrerequisiteItems.AddRange(CompiledModuleInterfaces);
+									PrerequisiteAction.Inner = NewAction;
+								}
+							}
+						}
 					}
 
 					// Plan the actions to execute for the build. For single file compiles, always rebuild the source file regardless of whether it's out of date.
@@ -373,7 +483,7 @@ namespace UnrealBuildTool
 					{
 						foreach (FileReference SpecificFile in TargetDescriptor.SpecificFilesToCompile)
 						{
-							foreach (Action PrerequisiteAction in PrerequisiteActions.Where(x => x.PrerequisiteItems.Any(y => y.Location == SpecificFile)))
+							foreach (LinkedAction PrerequisiteAction in PrerequisiteActions.Where(x => x.PrerequisiteItems.Any(y => y.Location == SpecificFile)))
 							{
 								ActionToOutdatedFlag[PrerequisiteAction] = true;
 							}
@@ -382,7 +492,7 @@ namespace UnrealBuildTool
 				}
 
 				// Link the action graph again to sort it
-				List<Action> MergedActionsToExecute = ActionToOutdatedFlag.Where(x => x.Value).Select(x => x.Key).ToList();
+				List<LinkedAction> MergedActionsToExecute = ActionToOutdatedFlag.Where(x => x.Value).Select(x => x.Key).ToList();
 				ActionGraph.Link(MergedActionsToExecute);
 
 				// Allow hot reload to override the actions
@@ -401,12 +511,27 @@ namespace UnrealBuildTool
 						}
 						HotReloadTargetIdx = Idx;
 					}
+					else if (MergedActionsToExecute.Count > 0)
+					{
+						HotReload.CheckForLiveCodingSessionActive(TargetDescriptors[Idx], Makefiles[Idx], BuildConfiguration);
+					}
+				}	
+
+				if (HotReloadTargetIdx != -1)
+				{
+					Log.TraceLog("Re-evaluating action graph");
+					// Re-check the graph to remove any LiveCoding actions added by PatchActionsForTarget() that are already up to date.
+					Dictionary<LinkedAction, bool> LiveActionToOutdatedFlag = new Dictionary<LinkedAction, bool>(MergedActionsToExecute.Count);
+					ActionGraph.GatherAllOutdatedActions(MergedActionsToExecute, History, LiveActionToOutdatedFlag, CppDependencies, BuildConfiguration.bIgnoreOutdatedImportLibraries);
+					List<LinkedAction> LiveCodingActionsToExecute = LiveActionToOutdatedFlag.Where(x => x.Value).Select(x => x.Key).ToList();
+					ActionGraph.Link(LiveCodingActionsToExecute);
+					MergedActionsToExecute = LiveCodingActionsToExecute;
 				}
 
 				// Make sure we're not modifying any engine files
 				if ((Options & BuildOptions.NoEngineChanges) != 0)
 				{
-					List<FileItem> EngineChanges = MergedActionsToExecute.SelectMany(x => x.ProducedItems).Where(x => x.Location.IsUnderDirectory(UnrealBuildTool.EngineDirectory)).Distinct().OrderBy(x => x.FullName).ToList();
+					List<FileItem> EngineChanges = MergedActionsToExecute.SelectMany(x => x.ProducedItems).Where(x => x.Location.IsUnderDirectory(Unreal.EngineDirectory)).Distinct().OrderBy(x => x.FullName).ToList();
 					if (EngineChanges.Count > 0)
 					{
 						StringBuilder Result = new StringBuilder("Building would modify the following engine files:\n");
@@ -425,7 +550,6 @@ namespace UnrealBuildTool
 				{
 					UEBuildPlatform BuildPlatform = UEBuildPlatform.GetBuildPlatform(TargetDescriptor.Platform);
 					BuildConfiguration.bAllowXGE &= BuildPlatform.CanUseXGE();
-					BuildConfiguration.bAllowDistcc &= BuildPlatform.CanUseDistcc();
 					BuildConfiguration.bAllowFASTBuild &= BuildPlatform.CanUseFASTBuild();
 					BuildConfiguration.bAllowSNDBS &= BuildPlatform.CanUseSNDBS();
 				}
@@ -446,7 +570,7 @@ namespace UnrealBuildTool
 					OutputToolchainInfo(TargetDescriptors, Makefiles);
 
 					// Just export to an XML file
-					using (Timeline.ScopeEvent("XGE.ExportActions()"))
+					using (GlobalTracer.Instance.BuildSpan("XGE.ExportActions()").StartActive())
 					{
 						XGE.ExportActions(MergedActionsToExecute);
 					}
@@ -456,7 +580,7 @@ namespace UnrealBuildTool
 					OutputToolchainInfo(TargetDescriptors, Makefiles);
 
 					// Write actions to an output file
-					using (Timeline.ScopeEvent("ActionGraph.WriteActions"))
+					using (GlobalTracer.Instance.BuildSpan("ActionGraph.WriteActions").StartActive())
 					{
 						ActionGraph.ExportJson(MergedActionsToExecute, WriteOutdatedActionsFile);
 					}
@@ -480,7 +604,9 @@ namespace UnrealBuildTool
 
 						OutputToolchainInfo(TargetDescriptors, Makefiles);
 
-						using(Timeline.ScopeEvent("ActionGraph.ExecuteActions()"))
+						ActionExecutor.SetMemoryPerActionOverride(Makefiles.Select(x => x.MemoryPerActionGB).Max());
+
+						using (GlobalTracer.Instance.BuildSpan("ActionGraph.ExecuteActions()").StartActive())
 						{
 							ActionGraph.ExecuteActions(BuildConfiguration, MergedActionsToExecute);
 						}
@@ -546,19 +672,19 @@ namespace UnrealBuildTool
 		static TargetMakefile CreateMakefile(BuildConfiguration BuildConfiguration, TargetDescriptor TargetDescriptor, ISourceFileWorkingSet WorkingSet)
 		{
 			// Get the path to the makefile for this target
-			FileReference MakefileLocation = null;
+			FileReference? MakefileLocation = null;
 			if(BuildConfiguration.bUseUBTMakefiles && TargetDescriptor.SpecificFilesToCompile.Count == 0)
 			{
 				MakefileLocation = TargetMakefile.GetLocation(TargetDescriptor.ProjectFile, TargetDescriptor.Name, TargetDescriptor.Platform, TargetDescriptor.Architecture, TargetDescriptor.Configuration);
 			}
 
 			// Try to load an existing makefile
-			TargetMakefile Makefile = null;
+			TargetMakefile? Makefile = null;
 			if(MakefileLocation != null)
 			{
-				using(Timeline.ScopeEvent("TargetMakefile.Load()"))
+				using (GlobalTracer.Instance.BuildSpan("TargetMakefile.Load()").StartActive())
 				{
-					string ReasonNotLoaded;
+					string? ReasonNotLoaded;
 					Makefile = TargetMakefile.Load(MakefileLocation, TargetDescriptor.ProjectFile, TargetDescriptor.Platform, TargetDescriptor.AdditionalArguments.GetRawArray(), out ReasonNotLoaded);
 					if (Makefile == null)
 					{
@@ -582,7 +708,7 @@ namespace UnrealBuildTool
 				bHasRunPreBuildScripts = true;
 
 				// Check that the makefile is still valid
-				string Reason;
+				string? Reason;
 				if(!TargetMakefile.IsValidForSourceFiles(Makefile, TargetDescriptor.ProjectFile, TargetDescriptor.Platform, WorkingSet, out Reason))
 				{
 					Log.TraceInformation("Invalidating makefile for {0} ({1})", TargetDescriptor.Name, Reason);
@@ -595,9 +721,9 @@ namespace UnrealBuildTool
 			{
 				// Create the target
 				UEBuildTarget Target;
-				using(Timeline.ScopeEvent("UEBuildTarget.Create()"))
+				using (GlobalTracer.Instance.BuildSpan("UEBuildTarget.Create()").StartActive())
 				{
-					Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bUsePrecompiled);
+					Target = UEBuildTarget.Create(TargetDescriptor, BuildConfiguration.bSkipRulesCompile, BuildConfiguration.bForceRulesCompile, BuildConfiguration.bUsePrecompiled);
 				}
 
 				// Create the pre-build scripts
@@ -611,11 +737,12 @@ namespace UnrealBuildTool
 				}
 
 				// Build the target
-				using(Timeline.ScopeEvent("UEBuildTarget.Build()"))
+				using (GlobalTracer.Instance.BuildSpan("UEBuildTarget.Build()").StartActive())
 				{
-					const bool bIsAssemblingBuild = true;
-					Makefile = Target.Build(BuildConfiguration, WorkingSet, bIsAssemblingBuild, TargetDescriptor.SpecificFilesToCompile);
+					Makefile = Target.Build(BuildConfiguration, WorkingSet, TargetDescriptor);
 				}
+
+				Makefile.MemoryPerActionGB = Target.Rules.MemoryPerActionGB;
 
 				// Save the pre-build scripts onto the makefile
 				Makefile.PreBuildScripts = PreBuildScripts;
@@ -624,15 +751,18 @@ namespace UnrealBuildTool
 				Makefile.AdditionalArguments = TargetDescriptor.AdditionalArguments.GetRawArray();
 
 				// Save the environment variables
-				foreach (System.Collections.DictionaryEntry EnvironmentVariable in Environment.GetEnvironmentVariables())
+				foreach (System.Collections.DictionaryEntry? EnvironmentVariable in Environment.GetEnvironmentVariables())
 				{
-					Makefile.EnvironmentVariables.Add(Tuple.Create((string)EnvironmentVariable.Key, (string)EnvironmentVariable.Value));
+					if (EnvironmentVariable != null)
+					{
+						Makefile.EnvironmentVariables.Add(Tuple.Create((string)EnvironmentVariable.Value.Key, (string)EnvironmentVariable.Value.Value!));
+					}
 				}
 
 				// Save the makefile for next time
 				if(MakefileLocation != null)
 				{
-					using(Timeline.ScopeEvent("TargetMakefile.Save()"))
+					using (GlobalTracer.Instance.BuildSpan("TargetMakefile.Save()").StartActive())
 					{
 						Makefile.Save(MakefileLocation);
 					}
@@ -649,12 +779,17 @@ namespace UnrealBuildTool
 				// If the target needs UHT to be run, we'll go ahead and do that now
 				if (Makefile.UObjectModules.Count > 0)
 				{
-					const bool bIsGatheringBuild = false;
-					const bool bIsAssemblingBuild = true;
-
-					FileReference ModuleInfoFileName = FileReference.Combine(Makefile.ProjectIntermediateDirectory, TargetDescriptor.Name + ".uhtmanifest");
-					ExternalExecution.ExecuteHeaderToolIfNecessary(BuildConfiguration, TargetDescriptor.ProjectFile, TargetDescriptor.Name, Makefile.TargetType, Makefile.bHasProjectScriptPlugin, UObjectModules: Makefile.UObjectModules, ModuleInfoFileName: ModuleInfoFileName, bIsGatheringBuild: bIsGatheringBuild, bIsAssemblingBuild: bIsAssemblingBuild, WorkingSet: WorkingSet);
+					ExternalExecution.ExecuteHeaderToolIfNecessary(BuildConfiguration, TargetDescriptor.ProjectFile, Makefile, TargetDescriptor.Name, WorkingSet);
 				}
+
+#if __VPROJECT_AVAILABLE__
+				// Same for VNI
+				if (Makefile.VNIModules.Count > 0)
+				{
+
+					VNIExecution.ExecuteVNITool(Makefile, TargetDescriptor);
+				}
+#endif
 			}
 			return Makefile;
 		}
@@ -681,7 +816,7 @@ namespace UnrealBuildTool
 				// Find the output items for this module
 				foreach(string OnlyModuleName in TargetDescriptor.OnlyModuleNames)
 				{
-					FileItem[] OutputItemsForModule;
+					FileItem[]? OutputItemsForModule;
 					if(!Makefile.ModuleNameToOutputItems.TryGetValue(OnlyModuleName, out OutputItemsForModule))
 					{
 						throw new BuildException("Unable to find output items for module '{0}'", OnlyModuleName);
@@ -700,27 +835,29 @@ namespace UnrealBuildTool
 		/// Merge action graphs for multiple targets into a single set of actions. Sets group names on merged actions to indicate which target they belong to.
 		/// </summary>
 		/// <param name="TargetDescriptors">List of target descriptors</param>
-		/// <param name="Makefiles">The makefiles being built</param>
+		/// <param name="TargetActions">Array of actions for each target</param>
 		/// <returns>List of merged actions</returns>
-		static List<Action> MergeActionGraphs(List<TargetDescriptor> TargetDescriptors, TargetMakefile[] Makefiles)
+		static List<LinkedAction> MergeActionGraphs(List<TargetDescriptor> TargetDescriptors, List<LinkedAction>[] TargetActions)
 		{
 			// Set of all output items. Knowing that there are no conflicts in produced items, we use this to eliminate duplicate actions.
-			Dictionary<FileItem, Action> OutputItemToProducingAction = new Dictionary<FileItem, Action>();
+			Dictionary<FileItem, LinkedAction> OutputItemToProducingAction = new Dictionary<FileItem, LinkedAction>();
 			for(int TargetIdx = 0; TargetIdx < TargetDescriptors.Count; TargetIdx++)
 			{
 				string GroupPrefix = String.Format("{0}-{1}-{2}", TargetDescriptors[TargetIdx].Name, TargetDescriptors[TargetIdx].Platform, TargetDescriptors[TargetIdx].Configuration);
-				foreach(Action Action in Makefiles[TargetIdx].Actions)
+				foreach(LinkedAction TargetAction in TargetActions[TargetIdx])
 				{
-					Action ExistingAction;
-					if(!OutputItemToProducingAction.TryGetValue(Action.ProducedItems[0], out ExistingAction))
+					FileItem ProducedItem = TargetAction.ProducedItems.First();
+
+					LinkedAction? ExistingAction;
+					if(!OutputItemToProducingAction.TryGetValue(ProducedItem, out ExistingAction))
 					{
-						OutputItemToProducingAction[Action.ProducedItems[0]] = Action;
-						ExistingAction = Action;
+						ExistingAction = new LinkedAction(TargetAction, TargetDescriptors[TargetIdx]);
+						OutputItemToProducingAction[ProducedItem] = ExistingAction;
 					}
 					ExistingAction.GroupNames.Add(GroupPrefix);
 				}
 			}
-			return new List<Action>(OutputItemToProducingAction.Values);
+			return new List<LinkedAction>(OutputItemToProducingAction.Values);
 		}
 	}
 }

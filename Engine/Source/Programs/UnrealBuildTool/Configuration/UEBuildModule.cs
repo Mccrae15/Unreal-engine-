@@ -8,8 +8,8 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Xml;
-using Tools.DotNETCommon;
-
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -60,7 +60,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The binary the module will be linked into for the current target.  Only set after UEBuildBinary.BindModules is called.
 		/// </summary>
-		public UEBuildBinary Binary = null;
+		public UEBuildBinary Binary = null!;
 
 		/// <summary>
 		/// The name of the _API define for this module
@@ -76,6 +76,11 @@ namespace UnrealBuildTool
 		/// Set of all public include paths
 		/// </summary>
 		public readonly HashSet<DirectoryReference> PublicIncludePaths;
+
+		/// <summary>
+		/// Set of all internal include paths
+		/// </summary>
+		public readonly HashSet<DirectoryReference> InternalIncludePaths;
 
 		/// <summary>
 		/// Nested public include paths which used to be added automatically, but are now only added for modules with bNestedPublicIncludePaths set.
@@ -130,12 +135,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Names of modules with header files that this module's public interface needs access to.
 		/// </summary>
-		public List<UEBuildModule> PublicIncludePathModules;
+		public List<UEBuildModule>? PublicIncludePathModules;
 
 		/// <summary>
 		/// Names of modules that this module's public interface depends on.
 		/// </summary>
-		public List<UEBuildModule> PublicDependencyModules;
+		public List<UEBuildModule>? PublicDependencyModules;
 
 		/// <summary>
 		/// Names of DLLs that this module should delay load
@@ -145,27 +150,48 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Names of modules with header files that this module's private implementation needs access to.
 		/// </summary>
-		public List<UEBuildModule> PrivateIncludePathModules;
+		public List<UEBuildModule>? PrivateIncludePathModules;
 
 		/// <summary>
 		/// Names of modules that this module's private implementation depends on.
 		/// </summary>
-		public List<UEBuildModule> PrivateDependencyModules;
+		public List<UEBuildModule>? PrivateDependencyModules;
 
 		/// <summary>
 		/// Extra modules this module may require at run time
 		/// </summary>
-		public List<UEBuildModule> DynamicallyLoadedModules;
+		public List<UEBuildModule>? DynamicallyLoadedModules;
 
 		/// <summary>
-		/// Set of all whitelisted restricted folder references
+		/// Set of all allowed restricted folder references
 		/// </summary>
-		private readonly HashSet<DirectoryReference> WhitelistRestrictedFolders;
+		private readonly HashSet<DirectoryReference> RestrictedFoldersAllowList;
 
 		/// <summary>
 		/// Set of aliased restricted folder references
 		/// </summary>
 		public readonly Dictionary<string, string> AliasRestrictedFolders;
+
+		/// <summary>
+		/// The Verse source code directory associated with this module if any
+		/// </summary>
+		public virtual DirectoryReference? VerseDirectory
+		{
+			get { return null; }
+		}
+
+		/// <summary>
+		/// If this module has Verse code associated with it (convenience function)
+		/// </summary>
+		public bool bHasVerse
+		{
+			get { return VerseDirectory != null; }
+		}
+
+		/// <summary>
+		/// If this module or any of its dependencies has Verse code associated with it
+		/// </summary>
+		public bool bDependsOnVerse = false;
 
 		/// <summary>
 		/// Constructor
@@ -182,6 +208,7 @@ namespace UnrealBuildTool
 			HashSet<string> PublicPreBuildLibraries = HashSetFromOptionalEnumerableStringParameter(Rules.PublicPreBuildLibraries);
 			PublicDefinitions = HashSetFromOptionalEnumerableStringParameter(Rules.PublicDefinitions);
 			PublicIncludePaths = CreateDirectoryHashSet(Rules.PublicIncludePaths);
+			InternalIncludePaths = CreateDirectoryHashSet(Rules.InternalncludePaths);
 			PublicSystemIncludePaths = CreateDirectoryHashSet(Rules.PublicSystemIncludePaths);
 			PublicSystemLibraryPaths = CreateDirectoryHashSet(Rules.PublicSystemLibraryPaths);
 			HashSet<string> PublicAdditionalLibraries = HashSetFromOptionalEnumerableStringParameter(Rules.PublicAdditionalLibraries.Union(PublicPreBuildLibraries));
@@ -201,7 +228,7 @@ namespace UnrealBuildTool
 				else if (PublicPreBuildLibraries.Contains(LibraryName))
 				{
 					Log.TraceLog("Library '{0}' was not resolvable to a file when used in Module '{1}'.  Be sure to add either a TargetRules.PreBuildSteps entry or a TargetRules.PreBuildTargets entry to assure it is built for your target.", LibraryName, Name);
-					PublicSystemLibraries.Add(LibraryName);
+					PublicLibraries.Add(Library.Location);
 				}
 				else
 				{
@@ -220,7 +247,7 @@ namespace UnrealBuildTool
 					if (FrameworkRules.IsZipFile())
 					{
 						// If FrameworkPath ends in .zip, it needs to be extracted
-						Framework = new UEBuildFramework(FrameworkRules.Name, FileReference.Combine(ModuleDirectory, FrameworkRules.Path), DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Intermediate", "UnzippedFrameworks", FrameworkRules.Name, Path.GetFileNameWithoutExtension(FrameworkRules.Path)), FrameworkRules.CopyBundledAssets, FrameworkRules.bCopyFramework);
+						Framework = new UEBuildFramework(FrameworkRules.Name, FileReference.Combine(ModuleDirectory, FrameworkRules.Path), DirectoryReference.Combine(Unreal.EngineDirectory, "Intermediate", "UnzippedFrameworks", FrameworkRules.Name, Path.GetFileNameWithoutExtension(FrameworkRules.Path)), FrameworkRules.CopyBundledAssets, FrameworkRules.bCopyFramework);
 					}
 					else
 					{
@@ -242,7 +269,27 @@ namespace UnrealBuildTool
 				PrivateIncludePaths = CreateDirectoryHashSet(Rules.PrivateIncludePaths);
 			}
 
-			WhitelistRestrictedFolders = new HashSet<DirectoryReference>(Rules.WhitelistRestrictedFolders.Select(x => DirectoryReference.Combine(ModuleDirectory, x)));
+			RestrictedFoldersAllowList = new HashSet<DirectoryReference>(Rules.AllowedRestrictedFolders.Count());
+
+#pragma warning disable 618
+			{
+				// consume values from deprecated WhitelistRestrictedFolders, but only if AllowedRestrictedFolders has not been set.
+				// Remove this block when WhitelistRestrictedFolders has been removed.
+				if (Rules.WhitelistRestrictedFolders.Count() > 0)
+				{
+					if (Rules.AllowedRestrictedFolders.Count() > 0)
+					{
+						Log.TraceWarning($"Value(s) have been set for both ModuleRules.WhitelistRestrictedFolders and ModuleRules.AllowedRestrictedFolders for module \"{Rules.Name}\". ModuleRules.WhitelistRestrictedFolders has been deprecated and will be ignored.");
+					}
+					else
+					{
+						RestrictedFoldersAllowList.UnionWith(Rules.WhitelistRestrictedFolders.Select(x => DirectoryReference.Combine(ModuleDirectory, x)));
+					}
+				}
+			}
+#pragma warning restore 618
+
+			RestrictedFoldersAllowList.UnionWith(Rules.AllowedRestrictedFolders.Select(x => DirectoryReference.Combine(ModuleDirectory, x)));
 			AliasRestrictedFolders = new Dictionary<string, string>(Rules.AliasRestrictedFolders);
 
 			// get the module directories from the module
@@ -284,16 +331,16 @@ namespace UnrealBuildTool
 		public HashSet<UEBuildModule> GetDependencies(bool bWithIncludePathModules, bool bWithDynamicallyLoadedModules)
 		{
 			HashSet<UEBuildModule> Modules = new HashSet<UEBuildModule>();
-			Modules.UnionWith(PublicDependencyModules);
-			Modules.UnionWith(PrivateDependencyModules);
+			Modules.UnionWith(PublicDependencyModules!);
+			Modules.UnionWith(PrivateDependencyModules!);
 			if(bWithIncludePathModules)
 			{
-				Modules.UnionWith(PublicIncludePathModules);
-				Modules.UnionWith(PrivateIncludePathModules);
+				Modules.UnionWith(PublicIncludePathModules!);
+				Modules.UnionWith(PrivateIncludePathModules!);
 			}
 			if(bWithDynamicallyLoadedModules)
 			{
-				Modules.UnionWith(DynamicallyLoadedModules);
+				Modules.UnionWith(DynamicallyLoadedModules!);
 			}
 			return Modules;
         }
@@ -333,7 +380,7 @@ namespace UnrealBuildTool
 					}
 					else
 					{
-						Log.WriteLineOnce(LogEventType.Warning, LogFormatOptions.NoSeverityPrefix, "{0}: warning: Referenced directory '{1}' does not exist.", RulesFile, Dir);
+						Log.TraceWarningTask(RulesFile, $"Referenced directory '{Dir}' does not exist.");
 					}
 				}
 			}
@@ -383,10 +430,10 @@ namespace UnrealBuildTool
 				HashSet<DirectoryReference> ReferencedDirs = new HashSet<DirectoryReference>();
 				GetReferencedDirectories(ReferencedDirs);
 
-				// Remove all the whitelisted folders
-				ReferencedDirs.ExceptWith(WhitelistRestrictedFolders);
-				ReferencedDirs.ExceptWith(PublicDependencyModules.SelectMany(x => x.WhitelistRestrictedFolders));
-				ReferencedDirs.ExceptWith(PrivateDependencyModules.SelectMany(x => x.WhitelistRestrictedFolders));
+				// Remove all the allow listed folders
+				ReferencedDirs.ExceptWith(RestrictedFoldersAllowList);
+				ReferencedDirs.ExceptWith(PublicDependencyModules.SelectMany(x => x.RestrictedFoldersAllowList));
+				ReferencedDirs.ExceptWith(PrivateDependencyModules.SelectMany(x => x.RestrictedFoldersAllowList));
 
 				// Add flags for each of them
 				foreach(DirectoryReference ReferencedDir in ReferencedDirs)
@@ -425,7 +472,11 @@ namespace UnrealBuildTool
 			{
 				Directories.Add(PublicIncludePath);
 			}
-			foreach(DirectoryReference PrivateIncludePath in PrivateIncludePaths)
+			foreach (DirectoryReference InternalIncludePath in InternalIncludePaths)
+			{
+				Directories.Add(InternalIncludePath);
+			}
+			foreach (DirectoryReference PrivateIncludePath in PrivateIncludePaths)
 			{
 				Directories.Add(PrivateIncludePath);
 			}
@@ -446,11 +497,11 @@ namespace UnrealBuildTool
 		protected void FindModulesInPrivateCompileEnvironment(Dictionary<UEBuildModule, bool> ModuleToIncludePathsOnlyFlag)
 		{
 			// Add in all the modules that are only in the private compile environment
-			foreach (UEBuildModule PrivateDependencyModule in PrivateDependencyModules)
+			foreach (UEBuildModule PrivateDependencyModule in PrivateDependencyModules!)
 			{
 				PrivateDependencyModule.FindModulesInPublicCompileEnvironment(ModuleToIncludePathsOnlyFlag);
 			}
-			foreach (UEBuildModule PrivateIncludePathModule in PrivateIncludePathModules)
+			foreach (UEBuildModule PrivateIncludePathModule in PrivateIncludePathModules!)
 			{
 				PrivateIncludePathModule.FindIncludePathModulesInPublicCompileEnvironment(ModuleToIncludePathsOnlyFlag);
 			}
@@ -474,13 +525,13 @@ namespace UnrealBuildTool
 
 			ModuleToIncludePathsOnlyFlag[this] = false;
 
-			foreach (UEBuildModule DependencyModule in PublicDependencyModules)
+			foreach (UEBuildModule DependencyModule in PublicDependencyModules!)
 			{
 				DependencyModule.FindModulesInPublicCompileEnvironment(ModuleToIncludePathsOnlyFlag);
 			}
 
 			// Now add an include paths from modules with header files that we need access to, but won't necessarily be importing
-			foreach (UEBuildModule IncludePathModule in PublicIncludePathModules)
+			foreach (UEBuildModule IncludePathModule in PublicIncludePathModules!)
 			{
 				IncludePathModule.FindIncludePathModulesInPublicCompileEnvironment(ModuleToIncludePathsOnlyFlag);
 			}
@@ -498,7 +549,7 @@ namespace UnrealBuildTool
 				ModuleToIncludePathsOnlyFlag.Add(this, true);
 
 				// Include any of its public include path modules in the compile environment too
-				foreach (UEBuildModule IncludePathModule in PublicIncludePathModules)
+				foreach (UEBuildModule IncludePathModule in PublicIncludePathModules!)
 				{
 					IncludePathModule.FindIncludePathModulesInPublicCompileEnvironment(ModuleToIncludePathsOnlyFlag);
 				}
@@ -518,9 +569,11 @@ namespace UnrealBuildTool
 		/// Sets up the environment for compiling any module that includes the public interface of this module.
 		/// </summary>
 		public virtual void AddModuleToCompileEnvironment(
-			UEBuildBinary SourceBinary,
+			UEBuildModule? SourceModule,
+			UEBuildBinary? SourceBinary,
 			HashSet<DirectoryReference> IncludePaths,
 			HashSet<DirectoryReference> SystemIncludePaths,
+			HashSet<DirectoryReference> ModuleInterfacePaths,
 			List<string> Definitions,
 			List<UEBuildFramework> AdditionalFrameworks,
 			List<FileItem> AdditionalPrerequisites,
@@ -528,19 +581,25 @@ namespace UnrealBuildTool
 			)
 		{
 			// Add the module's parent directory to the include path, so we can root #includes from generated source files to it
-			IncludePaths.Add(ModuleDirectory.ParentDirectory);
+			IncludePaths.Add(ModuleDirectory.ParentDirectory!);
 
 			// Add this module's public include paths and definitions.
 			AddIncludePaths(IncludePaths, PublicIncludePaths);
-			if(bLegacyPublicIncludePaths)
+			if (bLegacyPublicIncludePaths)
 			{
 				AddIncludePaths(IncludePaths, LegacyPublicIncludePaths);
 			}
 			SystemIncludePaths.UnionWith(PublicSystemIncludePaths);
 			Definitions.AddRange(PublicDefinitions);
 
+			// Add this module's internal include paths, only if the scope contains the same as the SourceModule's scope
+			if (SourceModule != null && Rules.Context.Scope.Contains(SourceModule.Rules.Context.Scope))
+			{
+				AddIncludePaths(IncludePaths, InternalIncludePaths);
+			}
+
 			// Add the import or export declaration for the module
-			if(Rules.Type == ModuleRules.ModuleType.CPlusPlus)
+			if (Rules.Type == ModuleRules.ModuleType.CPlusPlus)
 			{
 				if(Rules.Target.LinkType == TargetLinkType.Monolithic)
 				{
@@ -587,6 +646,7 @@ namespace UnrealBuildTool
 		protected virtual void SetupPrivateCompileEnvironment(
 			HashSet<DirectoryReference> IncludePaths,
 			HashSet<DirectoryReference> SystemIncludePaths,
+			HashSet<DirectoryReference> ModuleInterfacePaths,
 			List<string> Definitions,
 			List<UEBuildFramework> AdditionalFrameworks,
 			List<FileItem> AdditionalPrerequisites,
@@ -609,7 +669,7 @@ namespace UnrealBuildTool
 			// Now set up the compile environment for the modules in the original order that we encountered them
 			foreach (UEBuildModule Module in ModuleToIncludePathsOnlyFlag.Keys)
 			{
-				Module.AddModuleToCompileEnvironment(Binary, IncludePaths, SystemIncludePaths, Definitions, AdditionalFrameworks, AdditionalPrerequisites, bWithLegacyPublicIncludePaths);
+				Module.AddModuleToCompileEnvironment(this, Binary, IncludePaths, SystemIncludePaths, ModuleInterfacePaths, Definitions, AdditionalFrameworks, AdditionalPrerequisites, bWithLegacyPublicIncludePaths);
 			}
 		}
 
@@ -620,7 +680,7 @@ namespace UnrealBuildTool
 		/// <param name="BinaryOutputDir">Directory containing the binary that links this module. May be mull.</param>
 		/// <param name="TargetOutputDir">Directory containing the output executable. May be null.</param>
 		/// <returns>The path with variables expanded</returns>
-		public string ExpandPathVariables(string Path, DirectoryReference BinaryOutputDir, DirectoryReference TargetOutputDir)
+		public string ExpandPathVariables(string Path, DirectoryReference? BinaryOutputDir, DirectoryReference? TargetOutputDir)
 		{
 			if(Path.StartsWith("$(", StringComparison.Ordinal))
 			{
@@ -631,13 +691,13 @@ namespace UnrealBuildTool
 					{
 						if(MatchVariableName(Path, StartIdx, EndIdx, "EngineDir"))
 						{
-							Path = UnrealBuildTool.EngineDirectory + Path.Substring(EndIdx + 1);
+							Path = Unreal.EngineDirectory + Path.Substring(EndIdx + 1);
 						}
 						else if(MatchVariableName(Path, StartIdx, EndIdx, "ProjectDir"))
 						{
 							if(Rules.Target.ProjectFile == null)
 							{
-								Path = UnrealBuildTool.EngineDirectory + Path.Substring(EndIdx + 1);
+								Path = Unreal.EngineDirectory + Path.Substring(EndIdx + 1);
 							}
 							else
 							{
@@ -663,7 +723,7 @@ namespace UnrealBuildTool
 						else
 						{
 							string Name = Path.Substring(StartIdx, EndIdx - StartIdx);
-							string Value = Environment.GetEnvironmentVariable(Name);
+							string? Value = Environment.GetEnvironmentVariable(Name);
 							if(String.IsNullOrEmpty(Value))
 							{
 								throw new BuildException("Environment variable '{0}' is not defined (referenced by {1})", Name, Rules.File);
@@ -697,7 +757,7 @@ namespace UnrealBuildTool
 		/// <param name="BinaryDir">Directory containing the binary that links this module. May be mull.</param>
 		/// <param name="ExeDir">Directory containing the output executable. May be null.</param>
 		/// <returns>The path with variables expanded</returns>
-		private IEnumerable<string> ExpandPathVariables(IEnumerable<string> Paths, DirectoryReference BinaryDir, DirectoryReference ExeDir)
+		private IEnumerable<string> ExpandPathVariables(IEnumerable<string> Paths, DirectoryReference? BinaryDir, DirectoryReference? ExeDir)
 		{
 			foreach(string Path in Paths)
 			{
@@ -709,7 +769,7 @@ namespace UnrealBuildTool
 		/// Sets up the environment for linking any module that includes the public interface of this module.
 		/// </summary>
 		protected virtual void SetupPublicLinkEnvironment(
-			UEBuildBinary SourceBinary,
+			UEBuildBinary? SourceBinary,
 			List<FileReference> Libraries,
 			List<DirectoryReference> SystemLibraryPaths,
 			List<string> SystemLibraries,
@@ -744,8 +804,8 @@ namespace UnrealBuildTool
 				{
 					// Gather all dependencies and recursively call SetupPublicLinkEnvironmnet
 					List<UEBuildModule> AllDependencyModules = new List<UEBuildModule>();
-					AllDependencyModules.AddRange(PrivateDependencyModules);
-					AllDependencyModules.AddRange(PublicDependencyModules);
+					AllDependencyModules.AddRange(PrivateDependencyModules!);
+					AllDependencyModules.AddRange(PublicDependencyModules!);
 
 					foreach (UEBuildModule DependencyModule in AllDependencyModules)
 					{
@@ -763,7 +823,7 @@ namespace UnrealBuildTool
 				Libraries.AddRange(PublicLibraries);
 				SystemLibraryPaths.AddRange(PublicSystemLibraryPaths);
 				SystemLibraries.AddRange(PublicSystemLibraries);
-				RuntimeLibraryPaths.AddRange(ExpandPathVariables(Rules.PublicRuntimeLibraryPaths, SourceBinary.OutputDir, ExeDir));
+				RuntimeLibraryPaths.AddRange(ExpandPathVariables(Rules.PublicRuntimeLibraryPaths, SourceBinary?.OutputDir, ExeDir));
 				Frameworks.AddRange(PublicFrameworks);
 				WeakFrameworks.AddRange(PublicWeakFrameworks);
 				AdditionalBundleResources.AddRange(PublicAdditionalBundleResources);
@@ -792,8 +852,8 @@ namespace UnrealBuildTool
 
 			// Also allow the module's public and private dependencies to modify the link environment.
 			List<UEBuildModule> AllDependencyModules = new List<UEBuildModule>();
-			AllDependencyModules.AddRange(PrivateDependencyModules);
-			AllDependencyModules.AddRange(PublicDependencyModules);
+			AllDependencyModules.AddRange(PrivateDependencyModules!);
+			AllDependencyModules.AddRange(PublicDependencyModules!);
 
 			foreach (UEBuildModule DependencyModule in AllDependencyModules)
 			{
@@ -851,12 +911,12 @@ namespace UnrealBuildTool
 		/// <param name="bOnlyDirectDependencies">True to return only this module's direct dependencies</param>
 		public virtual void GetAllDependencyModules(List<UEBuildModule> ReferencedModules, HashSet<UEBuildModule> IgnoreReferencedModules, bool bIncludeDynamicallyLoaded, bool bForceCircular, bool bOnlyDirectDependencies)
 		{
-			List<UEBuildModule> AllDependencyModules = new List<UEBuildModule>();
-			AllDependencyModules.AddRange(PrivateDependencyModules);
-			AllDependencyModules.AddRange(PublicDependencyModules);
+			List<UEBuildModule> AllDependencyModules = new List<UEBuildModule>(PrivateDependencyModules!.Count + PublicDependencyModules!.Count + (bIncludeDynamicallyLoaded ? DynamicallyLoadedModules!.Count : 0));
+			AllDependencyModules.AddRange(PrivateDependencyModules!);
+			AllDependencyModules.AddRange(PublicDependencyModules!);
 			if (bIncludeDynamicallyLoaded)
 			{
-				AllDependencyModules.AddRange(DynamicallyLoadedModules);
+				AllDependencyModules.AddRange(DynamicallyLoadedModules!);
 			}
 
 			foreach (UEBuildModule DependencyModule in AllDependencyModules)
@@ -864,8 +924,7 @@ namespace UnrealBuildTool
 				if (!IgnoreReferencedModules.Contains(DependencyModule))
 				{
 					// Don't follow circular back-references!
-					bool bIsCircular = HasCircularDependencyOn(DependencyModule.Name);
-					if (bForceCircular || !bIsCircular)
+					if (bForceCircular || !HasCircularDependencyOn(DependencyModule.Name))
 					{
 						IgnoreReferencedModules.Add(DependencyModule);
 
@@ -924,8 +983,8 @@ namespace UnrealBuildTool
 				// (Note: it's *bad* that it is doing this, but it's even worse not to flag these
 				// cycles when they're introduced and have a way of tracking them!)
 
-				string GuiltyModule = null;
-				string VictimModule = null;
+				string? GuiltyModule = null;
+				string? VictimModule = null;
 
 				for (int i = 0; i < ReferenceStack.Count() - 1; i++)
 				{
@@ -959,27 +1018,47 @@ namespace UnrealBuildTool
 
 			// Recursively create all the public include path modules. These modules may not be added to the target (and we don't process their referenced 
 			// dependencies), but they need to be created to set up their include paths.
-			RecursivelyCreateIncludePathModulesByName(Rules.PublicIncludePathModuleNames, ref PublicIncludePathModules, CreateModule, NextReferenceChain);
+			RecursivelyCreateIncludePathModulesByName(Rules.PublicIncludePathModuleNames, ref PublicIncludePathModules, ref bDependsOnVerse, CreateModule, NextReferenceChain);
 
 			// Create all the referenced modules. This path can be recursive, so we check against PrivateIncludePathModules to ensure we don't recurse through the 
 			// same module twice (it produces better errors if something fails).
 			if(PrivateIncludePathModules == null)
 			{
+				// Log dependencies if required
+				if ( Log.OutputLevel >= LogEventType.VeryVerbose)
+				{
+					Log.TraceVeryVerbose("Module {0} dependencies:", this.Name);
+					LogDependencyNameList("Public:", Rules.PublicDependencyModuleNames);
+					LogDependencyNameList("Private:", Rules.PrivateDependencyModuleNames);
+					LogDependencyNameList("Dynamic:", Rules.DynamicallyLoadedModuleNames);
+					LogDependencyNameList("Public Include Paths:", Rules.PublicIncludePathModuleNames);
+					LogDependencyNameList("Private Include Paths:", Rules.PrivateIncludePathModuleNames);
+				}
+
 				// Create the private include path modules
-				RecursivelyCreateIncludePathModulesByName(Rules.PrivateIncludePathModuleNames, ref PrivateIncludePathModules, CreateModule, NextReferenceChain);
+				RecursivelyCreateIncludePathModulesByName(Rules.PrivateIncludePathModuleNames, ref PrivateIncludePathModules, ref bDependsOnVerse, CreateModule, NextReferenceChain);
 
 				// Create all the dependency modules - pass through the reference stack so we can check for cycles
-				RecursivelyCreateModulesByName(Rules.PublicDependencyModuleNames, ref PublicDependencyModules, CreateModule, NextReferenceChain, ReferenceStack);
-				RecursivelyCreateModulesByName(Rules.PrivateDependencyModuleNames, ref PrivateDependencyModules, CreateModule, NextReferenceChain, ReferenceStack);
+				RecursivelyCreateModulesByName(Rules.PublicDependencyModuleNames, ref PublicDependencyModules, ref bDependsOnVerse, CreateModule, NextReferenceChain, ReferenceStack);
+				RecursivelyCreateModulesByName(Rules.PrivateDependencyModuleNames, ref PrivateDependencyModules, ref bDependsOnVerse, CreateModule, NextReferenceChain, ReferenceStack);
 				// Dynamic loads aren't considered a reference chain so start with an empty stack
-				RecursivelyCreateModulesByName(Rules.DynamicallyLoadedModuleNames, ref DynamicallyLoadedModules, CreateModule, NextReferenceChain, new List<UEBuildModule>());
+				RecursivelyCreateModulesByName(Rules.DynamicallyLoadedModuleNames, ref DynamicallyLoadedModules, ref bDependsOnVerse, CreateModule, NextReferenceChain, new List<UEBuildModule>());
 			}
 
 			// pop us off the current stack
 			ReferenceStack.RemoveAt(ReferenceStack.Count - 1);
 		}
 
-		private static void RecursivelyCreateModulesByName(List<string> ModuleNames, ref List<UEBuildModule> Modules, CreateModuleDelegate CreateModule, string ReferenceChain, List<UEBuildModule> ReferenceStack)
+		private static void LogDependencyNameList(string Title, List<string> DependencyNameList)
+		{
+			Log.TraceVeryVerbose("  " + Title);
+			foreach (string name in DependencyNameList)
+			{
+				Log.TraceVeryVerbose("    " + name);
+			}
+		}
+
+		private static void RecursivelyCreateModulesByName(List<string> ModuleNames, ref List<UEBuildModule>? Modules, ref bool bDependsOnVerse, CreateModuleDelegate CreateModule, string ReferenceChain, List<UEBuildModule> ReferenceStack)
 		{
 			// Check whether the module list is already set. We set this immediately (via the ref) to avoid infinite recursion.
 			if (Modules == null)
@@ -992,12 +1071,13 @@ namespace UnrealBuildTool
 					{
 						Module.RecursivelyCreateModules(CreateModule, ReferenceChain, ReferenceStack);
 						Modules.Add(Module);
+						bDependsOnVerse |= Module.bDependsOnVerse;
 					}
 				}
 			}
 		}
 
-		private static void RecursivelyCreateIncludePathModulesByName(List<string> ModuleNames, ref List<UEBuildModule> Modules, CreateModuleDelegate CreateModule, string ReferenceChain)
+		private static void RecursivelyCreateIncludePathModulesByName(List<string> ModuleNames, ref List<UEBuildModule>? Modules, ref bool bDependsOnVerse, CreateModuleDelegate CreateModule, string ReferenceChain)
 		{
 			// Check whether the module list is already set. We set this immediately (via the ref) to avoid infinite recursion.
 			if (Modules == null)
@@ -1006,8 +1086,9 @@ namespace UnrealBuildTool
 				foreach (string ModuleName in ModuleNames)
 				{
 					UEBuildModule Module = CreateModule(ModuleName, ReferenceChain);
-					RecursivelyCreateIncludePathModulesByName(Module.Rules.PublicIncludePathModuleNames, ref Module.PublicIncludePathModules, CreateModule, ReferenceChain);
+					RecursivelyCreateIncludePathModulesByName(Module.Rules.PublicIncludePathModuleNames, ref Module.PublicIncludePathModules, ref Module.bDependsOnVerse, CreateModule, ReferenceChain);
 					Modules.Add(Module);
+					bDependsOnVerse |= Module.bDependsOnVerse;
 				}
 			}
 		}
@@ -1031,7 +1112,7 @@ namespace UnrealBuildTool
 		/// <param name="BinaryOutputDir">The output directory for the binary containing this module</param>
 		/// <param name="TargetOutputDir">The output directory for the target executable</param>
 		/// <param name="Writer">Writer for this binary's data</param>
-		public virtual void ExportJson(DirectoryReference BinaryOutputDir, DirectoryReference TargetOutputDir, JsonWriter Writer)
+		public virtual void ExportJson(DirectoryReference? BinaryOutputDir, DirectoryReference? TargetOutputDir, JsonWriter Writer)
 		{
 			Writer.WriteValue("Name", Name);
 			Writer.WriteValue("Directory", ModuleDirectory.FullName);
@@ -1056,6 +1137,7 @@ namespace UnrealBuildTool
 
 			ExportJsonStringArray(Writer, "PublicSystemIncludePaths", PublicSystemIncludePaths.Select(x => x.FullName));
 			ExportJsonStringArray(Writer, "PublicIncludePaths", PublicIncludePaths.Select(x => x.FullName));
+			ExportJsonStringArray(Writer, "InternalIncludePaths", PublicIncludePaths.Select(x => x.FullName));
 			ExportJsonStringArray(Writer, "PrivateIncludePaths", PrivateIncludePaths.Select(x => x.FullName));
 			ExportJsonStringArray(Writer, "PublicLibraries", PublicLibraries.Select(x => x.FullName));
 			ExportJsonStringArray(Writer, "PublicSystemLibraries", PublicSystemLibraries);
@@ -1097,7 +1179,7 @@ namespace UnrealBuildTool
 		/// <param name="Writer">Writer for the array data</param>
 		/// <param name="ArrayName">Name of the array property</param>
 		/// <param name="Modules">Sequence of modules to write. May be null.</param>
-		void ExportJsonModuleArray(JsonWriter Writer, string ArrayName, IEnumerable<UEBuildModule> Modules)
+		void ExportJsonModuleArray(JsonWriter Writer, string ArrayName, IEnumerable<UEBuildModule>? Modules)
 		{
 			Writer.WriteArrayStart(ArrayName);
 			if (Modules != null)
@@ -1116,7 +1198,7 @@ namespace UnrealBuildTool
 		/// <param name="Writer">Writer for the array data</param>
 		/// <param name="ArrayName">Name of the array property</param>
 		/// <param name="Strings">Sequence of strings to write. May be null.</param>
-		void ExportJsonStringArray(JsonWriter Writer, string ArrayName, IEnumerable<string> Strings)
+		void ExportJsonStringArray(JsonWriter Writer, string ArrayName, IEnumerable<string>? Strings)
 		{
 			Writer.WriteArrayStart(ArrayName);
 			if (Strings != null)

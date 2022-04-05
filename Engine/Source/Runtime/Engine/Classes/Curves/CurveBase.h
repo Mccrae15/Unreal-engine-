@@ -1,4 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -22,11 +23,12 @@ class ENGINE_API UCurveBase
 	/** Get the time range across all curves */
 	UFUNCTION(BlueprintCallable, Category="Math|Curves")
 	void GetTimeRange(float& MinTime, float& MaxTime) const;
+	void GetTimeRange(double& MinTime, double& MaxTime) const;		// LWC_TODO: Native workaround for FVector2D components
 
 	/** Get the value range across all curves */
 	UFUNCTION(BlueprintCallable, Category="Math|Curves")
 	void GetValueRange(float& MinValue, float& MaxValue) const;
-
+	void GetValueRange(double& MinValue, double& MaxValue) const;		// LWC_TODO: Native workaround for FVector2D components
 	/** 
 	 *	Create curve from CSV style comma-separated string.
 	 *
@@ -35,6 +37,21 @@ class ENGINE_API UCurveBase
 	 */
 	TArray<FString> CreateCurveFromCSVString(const FString& InString);
 
+	/** 
+	 * Imports the curve data from a JSON string.
+	 *
+	 * @param InString The input string to parse.
+	 * @param OutProblems Set of problems encountered while processing input
+	 */
+	virtual void ImportFromJSONString(const FString& InString, TArray<FString>& OutProblems);
+	
+	/**
+	 * Exports the curve as a JSON string
+	 *
+	 * @return The curve data as a JSON string
+	 */
+	FString ExportAsJSONString() const;
+	
 	/** Reset all curve data */
 	void ResetCurve();
 
@@ -82,7 +99,7 @@ public:
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 
 	UPROPERTY(VisibleAnywhere, Instanced, Category=ImportSettings)
-	class UAssetImportData* AssetImportData;
+	TObjectPtr<class UAssetImportData> AssetImportData;
 
 public:
 

@@ -7,8 +7,10 @@
 #include "AssetSearchDatabase.h"
 #include "FileInfoDatabase.h"
 #include "Containers/Queue.h"
+#include "Containers/Ticker.h"
 #include "HAL/Runnable.h"
 
+class FObjectPostSaveContext;
 class FRunnableThread;
 class UClass;
 class ISearchProvider;
@@ -46,7 +48,7 @@ private:
 	void OnAssetRemoved(const FAssetData& InAssetData);
 	void OnAssetScanFinished();
 
-	void HandlePackageSaved(const FString& PackageFilename, UObject* Outer);
+	void HandlePackageSaved(const FString& PackageFilename, UPackage* Package, FObjectPostSaveContext ObjectSaveContext);
 	void OnAssetLoaded(UObject* InObject);
 
 	void AddOrUpdateAsset(const FAssetData& InAsset, const FString& IndexedJson, const FString& DerivedDataKey);
@@ -54,7 +56,7 @@ private:
 	bool RequestIndexAsset(UObject* InAsset);
 	bool IsAssetIndexable(UObject* InAsset);
 	bool TryLoadIndexForAsset(const FAssetData& InAsset);
-	void AsyncRequestDownlaod(const FAssetData& InAssetData, const FString& InDDCKey);
+	void AsyncRequestDownload(const FAssetData& InAssetData, const FString& InDDCKey);
 	bool AsyncGetDerivedDataKey(const FAssetData& UnindexedAsset, TFunction<void(bool, FString)> DDCKeyCallback);
 	bool HasIndexerForClass(const UClass* InAssetClass) const;
 	FString GetIndexerVersion(const UClass* InAssetClass) const;
@@ -106,7 +108,7 @@ private:
 
 	TArray<FAssetDDCRequest> FailedDDCRequests;
 
-	FDelegateHandle TickerHandle;
+	FTSTicker::FDelegateHandle TickerHandle;
 
 	TQueue<TFunction<void()>, EQueueMode::Mpsc> GT_Tasks;
 

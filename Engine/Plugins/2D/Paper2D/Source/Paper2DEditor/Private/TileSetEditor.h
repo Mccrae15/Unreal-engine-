@@ -42,6 +42,10 @@ public:
 
 	// FSerializableObject interface
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FTileSetEditor");
+	}
 	// End of FSerializableObject interface
 
 public:
@@ -59,6 +63,7 @@ protected:
 	void BindCommands();
 	void ExtendMenu();
 	void ExtendToolbar();
+	virtual void CreateEditorModeManager() override;
 
 	void OnPropertyChanged(UObject* ObjectBeingModified, FPropertyChangedEvent& PropertyChangedEvent);
 

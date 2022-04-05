@@ -16,7 +16,7 @@ class UMaterialGraphNode_Comment : public UEdGraphNode_Comment
 
 	/** Material Comment that this node represents */
 	UPROPERTY()
-	class UMaterialExpressionComment* MaterialExpressionComment;
+	TObjectPtr<class UMaterialExpressionComment> MaterialExpressionComment;
 
 	/** Marks the Material Editor as dirty so that user prompted to apply change */
 	FSetMaterialDirty MaterialDirtyDelegate;
@@ -37,6 +37,7 @@ class UMaterialGraphNode_Comment : public UEdGraphNode_Comment
 	virtual void PostPlacedNewNode() override;
 	virtual void OnRenameNode(const FString& NewName) override;
 	virtual void ResizeNode(const FVector2D& NewSize) override;
+	virtual int32 GetFontSize() const override;
 	//~ End UEdGraphNode Interface.
 
 private:

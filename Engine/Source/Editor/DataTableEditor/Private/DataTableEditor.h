@@ -97,8 +97,6 @@ protected:
 
 	FReply OnFindRowInContentBrowserClicked();
 
-	void OnNavigateToDataTableRowCode();
-
 	FText GetCellText(FDataTableEditorRowListViewDataPtr InRowDataPointer, int32 ColumnIndex) const;
 	FText GetCellToolTipText(FDataTableEditorRowListViewDataPtr InRowDataPointer, int32 ColumnIndex) const;
 
@@ -166,6 +164,7 @@ protected:
 	void OnCopyClicked();
 	void OnPasteClicked();
 	void OnDuplicateClicked();
+	bool CanEditTable() const;
 
 	void SetDefaultSort();
 	EColumnSortMode::Type GetColumnSortMode(const FName ColumnId) const;

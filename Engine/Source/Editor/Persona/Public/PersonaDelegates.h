@@ -36,3 +36,36 @@ DECLARE_DELEGATE_ThreeParams(FOnEditCurves, UAnimSequenceBase* /*InAnimSequence*
 
 // Called to stop editing curves in the curve editor
 DECLARE_DELEGATE_OneParam(FOnStopEditingCurves, const TArray<IAnimationEditor::FCurveEditInfo>& /*InCurveInfo*/);
+
+// Called when the user navigates with pageup
+DECLARE_DELEGATE(FOnBlendSpaceNavigateUp);
+
+// Called when the user navigates with pagedown
+DECLARE_DELEGATE(FOnBlendSpaceNavigateDown);
+
+// Called when the blendspace canvas is double clicked
+DECLARE_DELEGATE(FOnBlendSpaceCanvasDoubleClicked);
+
+// Called when a blendspace sample point is double clicked
+DECLARE_DELEGATE_OneParam(FOnBlendSpaceSampleDoubleClicked, int32 /*SampleIndex*/);
+
+// Called when a blendspace sample point is removed
+DECLARE_DELEGATE_OneParam(FOnBlendSpaceSampleRemoved, const int32 /*SampleIndex*/);
+
+// Called when a blendspace sample point is added. Returns the new SampleIndex
+DECLARE_DELEGATE_RetVal_ThreeParams(int32, FOnBlendSpaceSampleAdded, UAnimSequence* /*InSequence*/, const FVector& /*InSamplePoint*/, bool /*bRunAnalysis*/);
+
+// Called when a blendspace sample point is added
+DECLARE_DELEGATE_ThreeParams(FOnBlendSpaceSampleDuplicated, int32 /*SampleIndex*/, const FVector& /*InSamplePoint*/, bool /*bRunAnalysis*/);
+
+// Called when a blendspace sample point is replaced
+DECLARE_DELEGATE_TwoParams(FOnBlendSpaceSampleReplaced, const int32 /*SampleIndex*/, UAnimSequence* /*InSequence*/);
+
+// Called to get the overridden name of a blend sample
+DECLARE_DELEGATE_RetVal_OneParam(FName, FOnGetBlendSpaceSampleName, int32 /*SampleIndex*/);
+
+// Called to extend a sample's tooltip
+DECLARE_DELEGATE_RetVal_OneParam(TSharedRef<SWidget>, FOnExtendBlendSpaceSampleTooltip, int32 /*SampleIndex*/);
+
+// Called to let the blendspace editor UI set the preview position of an external blendspace node
+DECLARE_DELEGATE_OneParam(FOnSetBlendSpacePreviewPosition, FVector /*InBlendSample*/);

@@ -145,7 +145,7 @@ struct FUObjectItem
 		while (1)
 		{
 			int32 StartValue = int32(Flags);
-			if (StartValue & int32(FlagToSet))
+			if ((StartValue & int32(FlagToSet)) == int32(FlagToSet))
 			{
 				break;
 			}
@@ -183,15 +183,21 @@ struct FUObjectItem
 
 	FORCEINLINE void SetPendingKill()
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		ThisThreadAtomicallySetFlag(EInternalObjectFlags::PendingKill);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	FORCEINLINE void ClearPendingKill()
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		ThisThreadAtomicallyClearedFlag(EInternalObjectFlags::PendingKill);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 	FORCEINLINE bool IsPendingKill() const
 	{
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		return !!(Flags & int32(EInternalObjectFlags::PendingKill));
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FORCEINLINE void SetRootSet()
@@ -727,7 +733,9 @@ public:
 		FUObjectItem* ObjectItem = IndexToObject(Index);
 		if (ObjectItem && ObjectItem->Object)
 		{
-			if (!bEvenIfPendingKill && ObjectItem->IsPendingKill())
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			if (!bEvenIfPendingKill && ObjectItem->HasAnyFlags(EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage))
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			{
 				ObjectItem = nullptr;;
 			}
@@ -735,7 +743,7 @@ public:
 		return ObjectItem;
 	}
 
-	FORCEINLINE FUObjectItem* ObjectToObjectItem(UObjectBase* Object)
+	FORCEINLINE FUObjectItem* ObjectToObjectItem(const UObjectBase* Object)
 	{
 		FUObjectItem* ObjectItem = IndexToObject(Object->InternalIndex);
 		return ObjectItem;
@@ -745,7 +753,9 @@ public:
 	{
 		if (ObjectItem)
 		{
-			return bEvenIfPendingKill ? !ObjectItem->IsUnreachable() : !(ObjectItem->IsUnreachable() || ObjectItem->IsPendingKill());
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			return bEvenIfPendingKill ? !ObjectItem->IsUnreachable() : !(ObjectItem->HasAnyFlags(EInternalObjectFlags::Unreachable | EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage));
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 		return false;
 	}
@@ -766,7 +776,9 @@ public:
 	FORCEINLINE bool IsStale(FUObjectItem* ObjectItem, bool bEvenIfPendingKill)
 	{
 		// This method assumes ObjectItem is valid.
-		return bEvenIfPendingKill ? (ObjectItem->IsPendingKill() || ObjectItem->IsUnreachable()) : (ObjectItem->IsUnreachable());
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		return bEvenIfPendingKill ? (ObjectItem->HasAnyFlags(EInternalObjectFlags::Unreachable | EInternalObjectFlags::PendingKill | EInternalObjectFlags::Garbage)) : (ObjectItem->IsUnreachable());
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
 	FORCEINLINE bool IsStale(int32 Index, bool bEvenIfPendingKill)
@@ -1023,7 +1035,7 @@ public:
 		 */
 		FORCEINLINE bool Advance()
 		{
-			//@todo UE4 check this for LHS on Index on consoles
+			//@todo UE check this for LHS on Index on consoles
 			FUObjectItem* NextObject = nullptr;
 			CurrentObject = nullptr;
 			while(++Index < Array.GetObjectArrayNum())

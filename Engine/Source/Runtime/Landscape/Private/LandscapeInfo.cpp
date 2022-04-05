@@ -12,5 +12,4 @@ LANDSCAPE_API FLandscapeInfoLayerSettings::FLandscapeInfoLayerSettings(ULandscap
 	, DebugColorChannel(0)
 	, bValid(false)
 #endif
-{
-}
+{}

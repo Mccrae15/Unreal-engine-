@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "Math/Box.h"
 #include "Math/UnrealMathUtility.h"
 #include "Math/Vector.h"
 #include "Math/Matrix.h"
@@ -142,7 +143,7 @@ public:
 	FVector GetUnitVector() const
 	{
 		FVector Result;
-		float L;
+		FVector::FReal L;
 
 		do
 		{
@@ -205,7 +206,7 @@ public:
 	 *
 	 * @return A random number >= Min and <= Max
 	 */
-	FORCEINLINE float FRandRange( float InMin, float InMax ) const
+	FORCEINLINE FVector::FReal FRandRange( FVector::FReal InMin, FVector::FReal InMax ) const
 	{
 		return InMin + (InMax - InMin) * FRand();
 	}
@@ -218,6 +219,13 @@ public:
 	FORCEINLINE FVector VRand() const
 	{
 		return GetUnitVector();
+	}
+
+	FORCEINLINE FVector RandPointInBox(const FBox& Box) const
+	{
+		return FVector(	FRandRange(Box.Min.X, Box.Max.X),
+						FRandRange(Box.Min.Y, Box.Max.Y),
+						FRandRange(Box.Min.Z, Box.Max.Z) );
 	}
 
 	/**

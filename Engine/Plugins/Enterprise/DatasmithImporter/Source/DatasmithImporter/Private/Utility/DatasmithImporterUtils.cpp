@@ -433,7 +433,7 @@ void FDatasmithImporterUtils::DeleteActor( AActor& Actor )
 
 void FDatasmithImporterUtils::AddUniqueLayersToWorld(UWorld* World, const TSet< FName >& LayerNames)
 {
-	if (!World || World->IsPendingKillOrUnreachable() || LayerNames.Num() == 0)
+	if (!World || !IsValidChecked(World) || World->IsUnreachable() || LayerNames.Num() == 0)
 	{
 		return;
 	}
@@ -441,7 +441,7 @@ void FDatasmithImporterUtils::AddUniqueLayersToWorld(UWorld* World, const TSet< 
 	TSet< FName > ExistingLayers;
 	for (ULayer* Layer : World->Layers)
 	{
-		ExistingLayers.Add(Layer->LayerName);
+		ExistingLayers.Add(Layer->GetLayerName());
 	}
 
 	ULayersSubsystem* LayersSubsystem = GEditor ? GEditor->GetEditorSubsystem<ULayersSubsystem>() : nullptr;
@@ -462,8 +462,8 @@ void FDatasmithImporterUtils::AddUniqueLayersToWorld(UWorld* World, const TSet< 
 				World->Modify();
 				World->Layers.Add(NewLayer);
 
-				NewLayer->LayerName = LayerName;
-				NewLayer->bIsVisible = true;
+				NewLayer->SetLayerName(LayerName);
+				NewLayer->SetVisible(true);
 			}
 		}
 	}
@@ -1307,11 +1307,10 @@ UObject* FDatasmithImporterUtils::StaticDuplicateObject(UObject* SourceObject, U
 
 UStaticMesh* FDatasmithImporterUtils::DuplicateStaticMesh(UStaticMesh* SourceStaticMesh, UObject* Outer, const FName Name, bool bIgnoreBulkData)
 {
-	TArray<FStaticMeshSourceModel> SourceModels;
-
 	// Since static mesh can be quite heavy, remove source models for cloning to reduce useless work.
 	// Will be reinserted on the new duplicated asset or restored on the SourceStaticMesh if bIgnoreBulkData is true.
-	SourceModels = MoveTemp(SourceStaticMesh->GetSourceModels());
+	TArray<FStaticMeshSourceModel> SourceModels = SourceStaticMesh->MoveSourceModels();
+	FStaticMeshSourceModel HiResSourceModel = SourceStaticMesh->MoveHiResSourceModel();
 
 	// Temporary flag to skip Postload during DuplicateObject
 	SourceStaticMesh->SetFlags(RF_ArchetypeObject);
@@ -1326,6 +1325,7 @@ UStaticMesh* FDatasmithImporterUtils::DuplicateStaticMesh(UStaticMesh* SourceSta
 	// Get rid of our temporary flag
 	SourceStaticMesh->ClearFlags(RF_ArchetypeObject);
 	DuplicateMesh->ClearFlags(RF_ArchetypeObject);
+	DuplicateMesh->GetHiResSourceModel().CreateSubObjects(DuplicateMesh);
 
 	if (bIgnoreBulkData)
 	{
@@ -1334,7 +1334,6 @@ UStaticMesh* FDatasmithImporterUtils::DuplicateStaticMesh(UStaticMesh* SourceSta
 		for (FStaticMeshSourceModel& SourceModel : SourceModels)
 		{
 			FStaticMeshSourceModel& DuplicateSourceModel = DuplicateMesh->AddSourceModel();
-			DuplicateSourceModel.StaticMeshOwner = DuplicateMesh;
 
 			// Apply the SourceMesh settings to the duplicated SourceModels
 			DuplicateSourceModel.BuildSettings = SourceModel.BuildSettings;
@@ -1345,22 +1344,18 @@ UStaticMesh* FDatasmithImporterUtils::DuplicateStaticMesh(UStaticMesh* SourceSta
 		}
 
 		// Move back the source models to the original mesh
-		SourceStaticMesh->GetSourceModels() = MoveTemp(SourceModels);
+		SourceStaticMesh->SetSourceModels(MoveTemp(SourceModels));
+		SourceStaticMesh->SetHiResSourceModel(MoveTemp(HiResSourceModel));
 	}
 	else
 	{
 		// The source mesh is stripped from it's source model, it is not buildable anymore.
 		// -> MarkPendingKill to avoid use-after-move crash in the StaticMesh::Build()
-		SourceStaticMesh->MarkPendingKill();
-
-		for (FStaticMeshSourceModel& SourceModel : SourceModels)
-		{
-			// Fixup the new SourceModels owner
-			SourceModel.StaticMeshOwner = DuplicateMesh;
-		}
+		SourceStaticMesh->MarkAsGarbage();
 
 		// Apply source models to the duplicated mesh
-		DuplicateMesh->GetSourceModels() = MoveTemp(SourceModels);
+		DuplicateMesh->SetSourceModels(MoveTemp(SourceModels));
+		DuplicateMesh->SetHiResSourceModel(MoveTemp(HiResSourceModel));
 	}
 
 	return DuplicateMesh;

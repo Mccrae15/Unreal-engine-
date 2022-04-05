@@ -104,29 +104,6 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 
 	TSharedRef<SHorizontalBox> HorizontalBox = SNew(SHorizontalBox);
 
-	if (InArgs._AssetPickerConfig.bAddFilterUI)
-	{
-		// Filter
-		HorizontalBox->AddSlot()
-		.AutoWidth()
-		[
-			SAssignNew(FilterComboButtonPtr, SComboButton)
-			.ComboButtonStyle( FEditorStyle::Get(), "GenericFilters.ComboButtonStyle" )
-			.ForegroundColor(FLinearColor::White)
-			.ToolTipText( LOCTEXT( "AddFilterToolTip", "Add an asset filter." ) )
-			.OnGetMenuContent( this, &SAssetPicker::MakeAddFilterMenu )
-			.HasDownArrow( true )
-			.ContentPadding( FMargin( 1, 0 ) )
-			.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ContentBrowserFiltersCombo")))
-			.ButtonContent()
-			[
-				SNew( STextBlock )
-				.TextStyle( FEditorStyle::Get(), "GenericFilters.TextStyle" )
-				.Text( LOCTEXT( "Filters", "Filters" ) )
-			]
-		];
-	}
-	
 	if (!InArgs._AssetPickerConfig.bAutohideSearchBar)
 	{
 		// Search box
@@ -145,14 +122,17 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 		// The 'Other Developers' filter is always on by design.
 		HorizontalBox->AddSlot()
 		.AutoWidth()
+		.Padding(4.f, 0.0f, 0.0f, 0.0f)
 		[
 			SNew(SCheckBox)
-			.Style(FEditorStyle::Get(), "ToggleButtonCheckbox")
+			.Style(FEditorStyle::Get(), "ToggleButtonCheckBox")
 			.ToolTipText(this, &SAssetPicker::GetShowOtherDevelopersToolTip)
 			.OnCheckStateChanged(this, &SAssetPicker::HandleShowOtherDevelopersCheckStateChanged)
 			.IsChecked(this, &SAssetPicker::GetShowOtherDevelopersCheckState)
+			.Padding(4.f)
 			[
 				SNew(SImage)
+				.ColorAndOpacity(FSlateColor::UseForeground())
 				.Image(FEditorStyle::GetBrush("ContentBrowser.ColumnViewDeveloperFolderIcon"))
 			]
 		];
@@ -165,10 +145,32 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 			SNew(SSpacer)
 		];
 	}
+
+
+	if (InArgs._AssetPickerConfig.bAddFilterUI)
+	{
+		// Filter
+		HorizontalBox->AddSlot()
+		.AutoWidth()
+		[
+			SAssignNew(FilterComboButtonPtr, SComboButton)
+			.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("SimpleComboButton"))
+			.ToolTipText( LOCTEXT( "AddFilterToolTip", "Add an asset filter." ) )
+			.OnGetMenuContent( this, &SAssetPicker::MakeAddFilterMenu )
+			.HasDownArrow( false )
+			.AddMetaData<FTagMetaData>(FTagMetaData(TEXT("ContentBrowserFiltersCombo")))
+			.ButtonContent()
+			[
+				SNew( SImage)
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.Image(FAppStyle::Get().GetBrush("Icons.Filter"))
+			]
+		];
+	}
 		
 	VerticalBox->AddSlot()
 	.AutoHeight()
-	.Padding(0, 0, 0, 1)
+	.Padding(8.f, 0.f, 8.f, 8.f)
 	[
 		HorizontalBox
 	];
@@ -297,21 +299,21 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 		.OnGetCustomAssetToolTip(InArgs._AssetPickerConfig.OnGetCustomAssetToolTip)
 		.OnVisualizeAssetToolTip(InArgs._AssetPickerConfig.OnVisualizeAssetToolTip)
 		.OnAssetToolTipClosing(InArgs._AssetPickerConfig.OnAssetToolTipClosing)
-		.AreRealTimeThumbnailsAllowed(this, &SAssetPicker::IsHovered)
 		.FrontendFilters(FrontendFilters)
 		.InitialSourcesData(CurrentSourcesData)
 		.InitialBackendFilter(CurrentBackendFilter)
 		.InitialViewType(InArgs._AssetPickerConfig.InitialAssetViewType)
 		.InitialAssetSelection(InArgs._AssetPickerConfig.InitialAssetSelection)
-		.ThumbnailScale(InArgs._AssetPickerConfig.ThumbnailScale)
 		.ShowBottomToolbar(InArgs._AssetPickerConfig.bShowBottomToolbar)
 		.OnAssetTagWantsToBeDisplayed(InArgs._AssetPickerConfig.OnAssetTagWantsToBeDisplayed)
 		.OnGetCustomSourceAssets(InArgs._AssetPickerConfig.OnGetCustomSourceAssets)
 		.AllowDragging( InArgs._AssetPickerConfig.bAllowDragging )
 		.CanShowClasses( InArgs._AssetPickerConfig.bCanShowClasses )
 		.CanShowFolders( InArgs._AssetPickerConfig.bCanShowFolders )
+		.CanShowReadOnlyFolders( InArgs._AssetPickerConfig.bCanShowReadOnlyFolders )
 		.ShowPathInColumnView( InArgs._AssetPickerConfig.bShowPathInColumnView)
 		.ShowTypeInColumnView( InArgs._AssetPickerConfig.bShowTypeInColumnView)
+		.ShowViewOptions(false)  // We control this in the asset picker
 		.SortByPathInColumnView( InArgs._AssetPickerConfig.bSortByPathInColumnView)
 		.FilterRecursivelyWithBackendFilter( false )
 		.CanShowRealTimeThumbnails( InArgs._AssetPickerConfig.bCanShowRealTimeThumbnails )
@@ -327,6 +329,24 @@ void SAssetPicker::Construct( const FArguments& InArgs )
 		.CustomColumns(InArgs._AssetPickerConfig.CustomColumns)
 		.OnSearchOptionsChanged(this, &SAssetPicker::HandleSearchSettingsChanged)
 	];
+
+
+	HorizontalBox->AddSlot()
+	.AutoWidth()
+	[
+		SNew(SComboButton)
+		.ContentPadding(0)
+		.ComboButtonStyle(&FAppStyle::Get().GetWidgetStyle<FComboButtonStyle>("SimpleComboButton"))
+		.OnGetMenuContent(AssetViewPtr.ToSharedRef(), &SAssetView::GetViewButtonContent)
+		.HasDownArrow(false)
+		.ButtonContent()
+		[
+			SNew(SImage)
+			.ColorAndOpacity(FSlateColor::UseForeground())
+			.Image(FAppStyle::Get().GetBrush("Icons.Settings"))
+		]	
+	];
+
 
 	LoadSettings();
 
@@ -523,10 +543,9 @@ void SAssetPicker::HandleItemSelectionChanged(const FContentBrowserItem& InSelec
 	if (InSelectInfo != ESelectInfo::Direct)
 	{
 		FAssetData ItemAssetData;
-		if (InSelectedItem.Legacy_TryGetAssetData(ItemAssetData))
-		{
-			OnAssetSelected.ExecuteIfBound(ItemAssetData);
-		}
+		InSelectedItem.Legacy_TryGetAssetData(ItemAssetData);
+		OnAssetSelected.ExecuteIfBound(ItemAssetData);
+		
 	}
 }
 
@@ -655,6 +674,14 @@ bool SAssetPicker::CanExecuteRenameRequested()
 	return ContentBrowserUtils::CanRenameFromAssetView(AssetViewPtr);
 }
 
+void SAssetPicker::ExecuteRenameCommand()
+{
+	if (Commands.IsValid())
+	{
+		Commands->TryExecuteAction(FGenericCommands::Get().Rename.ToSharedRef());
+	}
+}
+
 void SAssetPicker::BindCommands()
 {
 	Commands = MakeShareable(new FUICommandList);
@@ -724,8 +751,8 @@ TSharedPtr<SWidget> SAssetPicker::GetItemContextMenu(TArrayView<const FContentBr
 		TArray<FString> SelectedPackagePaths;
 		for (const FContentBrowserItem& SelectedFolder : SelectedFolders)
 		{
-			FName PackagePath;
-			if (SelectedFolder.Legacy_TryGetPackagePath(PackagePath))
+			FName PackagePath = SelectedFolder.GetInvariantPath();
+			if (!PackagePath.IsNone())
 			{
 				SelectedPackagePaths.Add(PackagePath.ToString());
 			}

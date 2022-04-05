@@ -6,13 +6,13 @@
 #include "UObject/ObjectMacros.h"
 #include "Misc/Guid.h"
 #include "Animation/AnimTypes.h"
-#include "Engine/PoseWatch.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Animation/AnimStateMachineTypes.h"
 #include "Animation/AnimClassInterface.h"
 #include "Animation/AnimNodeBase.h"
-#include "Animation/BlendSpaceBase.h"
-#include "PropertyAccess.h"
+#include "Animation/BlendSpace.h"
+#include "Animation/ExposedValueHandler.h"
+#include "Engine/PoseWatch.h"
 
 #include "AnimBlueprintGeneratedClass.generated.h"
 
@@ -20,9 +20,15 @@ class UAnimGraphNode_Base;
 class UAnimGraphNode_StateMachineBase;
 class UAnimInstance;
 class UAnimStateNode;
+class UAnimStateNodeBase;
+class UAnimStateAliasNode;
 class UAnimStateTransitionNode;
 class UEdGraph;
 class USkeleton;
+class UPoseWatch;
+struct FAnimSubsystem;
+struct FAnimSubsystemInstance;
+struct FPropertyAccessLibrary;
 
 // Represents the debugging information for a single state within a state machine
 USTRUCT()
@@ -70,9 +76,21 @@ public:
 		: MachineIndex(INDEX_NONE)
 	{}
 
+	struct FStateAliasTransitionStateIndexPair
+	{
+		int32 TransitionIndex;
+		int32 AssociatedStateIndex;
+	};
+
 	// Map from state nodes to their state entry in a state machine
 	TMap<TWeakObjectPtr<UEdGraphNode>, int32> NodeToStateIndex;
-	TMap<TWeakObjectPtr<UEdGraphNode>, int32> NodeToTransitionIndex;
+	TMap<int32, TWeakObjectPtr<UAnimStateNodeBase>> StateIndexToNode;
+
+	// Transition nodes may be associated w/ multiple transition indicies when the source state is an alias
+	TMultiMap<TWeakObjectPtr<UEdGraphNode>, int32> NodeToTransitionIndex;
+
+	// Mapping between an alias and any transition indices it might be associated to (Both as source and target).
+	TMultiMap<TWeakObjectPtr<UAnimStateAliasNode>, FStateAliasTransitionStateIndexPair> StateAliasNodeToTransitionStatePairs;
 
 	// The animation node that leads into this state machine (A3 only)
 	TWeakObjectPtr<UAnimGraphNode_StateMachineBase> MachineInstanceNode;
@@ -149,11 +167,17 @@ public:
 	// Map from animation node GUID to property index
 	TMap<FGuid, int32> NodeGuidToIndexMap;
 
+	// Map from animation node to attributes
+	TMap<TWeakObjectPtr<const UAnimGraphNode_Base>, TArray<FName>> NodeAttributes;
+
 	// The debug data for each state machine state
 	TArray<FStateMachineStateDebugData> StateData;	
 	
 	// History of snapshots of animation data
 	TSimpleRingBuffer<FAnimationFrameSnapshot>* SnapshotBuffer;
+
+	// Mapping from animation node properties to folded versions
+	TMap<TFieldPath<const FProperty>, TFieldPath<const FProperty>> NodeToFoldedPropertyMap;
 
 	// Node visit structure
 	struct FNodeVisit
@@ -172,6 +196,25 @@ public:
 
 	// History of activated nodes
 	TArray<FNodeVisit> UpdatedNodesThisFrame;
+
+	// Record of attribute transfer between nodes
+	struct FAttributeRecord
+	{
+		FName Attribute;
+		int32 OtherNode;
+
+		FAttributeRecord(int32 InOtherNode, FName InAttribute)
+			: Attribute(InAttribute)
+			, OtherNode(InOtherNode)
+		{}
+	};
+
+	// History of node attributes that are output from and input to nodes
+	TMap<int32, TArray<FAttributeRecord>> NodeInputAttributesThisFrame;
+	TMap<int32, TArray<FAttributeRecord>> NodeOutputAttributesThisFrame;
+
+	// History of node syncs - maps from player node index to graph-determined group name
+	TMap<int32, FName> NodeSyncsThisFrame;
 
 	// Values output by nodes
 	struct FNodeValue
@@ -210,19 +253,17 @@ public:
 	// Record of a blend space player's state
 	struct FBlendSpacePlayerRecord
 	{
-		FBlendSpacePlayerRecord(int32 InNodeID, UBlendSpaceBase* InBlendSpace, float InPositionX, float InPositionY, float InPositionZ)
+		FBlendSpacePlayerRecord(int32 InNodeID, const UBlendSpace* InBlendSpace, const FVector& InPosition, const FVector& InFilteredPosition)
 			: NodeID(InNodeID)
 			, BlendSpace(InBlendSpace)
-			, PositionX(InPositionX)
-			, PositionY(InPositionY) 
-			, PositionZ(InPositionY)
+			, Position(InPosition)
+			, FilteredPosition(InFilteredPosition)
 		{}
 
 		int32 NodeID;
-		TWeakObjectPtr<const UBlendSpaceBase> BlendSpace;
-		float PositionX;
-		float PositionY;
-		float PositionZ;
+		TWeakObjectPtr<const UBlendSpace> BlendSpace;
+		FVector Position;
+		FVector FilteredPosition;
 	};
 
 	// All blend space player records this frame
@@ -257,15 +298,36 @@ public:
 	void ResetNodeVisitSites();
 	void RecordNodeVisit(int32 TargetNodeIndex, int32 SourceNodeIndex, float BlendWeight);
 	void RecordNodeVisitArray(const TArray<FNodeVisit>& Nodes);
+	void RecordNodeAttribute(int32 TargetNodeIndex, int32 SourceNodeIndex, FName InAttribute);
+	void RecordNodeAttributeMaps(const TMap<int32, TArray<FAttributeRecord>>& InInputAttributes, const TMap<int32, TArray<FAttributeRecord>>& InOutputAttributes);
+	void RecordNodeSync(int32 InSourceNodeIndex, FName InSyncGroup);
+	void RecordNodeSyncsArray(const TMap<int32, FName>& InNodeSyncs);
 	void RecordStateData(int32 StateMachineIndex, int32 StateIndex, float Weight, float ElapsedTime);
 	void RecordNodeValue(int32 InNodeID, const FString& InText);
 	void RecordSequencePlayer(int32 InNodeID, float InPosition, float InLength, int32 InFrameCount);
-	void RecordBlendSpacePlayer(int32 InNodeID, UBlendSpaceBase* InBlendSpace, float InPositionX, float InPositionY, float InPositionZ);
+	void RecordBlendSpacePlayer(int32 InNodeID, const UBlendSpace* InBlendSpace, const FVector& InPosition, const FVector& InFilteredPosition);
 
-	void AddPoseWatch(int32 NodeID, FColor Color);
+	void AddPoseWatch(int32 NodeID, UPoseWatch*);
 	void RemovePoseWatch(int32 NodeID);
-	void UpdatePoseWatchColour(int32 NodeID, FColor Color);
+
+	TArrayView<const FName> GetNodeAttributes(TWeakObjectPtr<UAnimGraphNode_Base> InAnimGraphNode) const;
 #endif
+};
+
+// 'Marker' structure for mutable data. This is used as a base struct for mutable data to be inserted into by the anim
+// BP compiler.
+USTRUCT()
+struct ENGINE_API FAnimBlueprintMutableData
+{
+	GENERATED_BODY()
+};
+
+// 'Marker' structure for constant data. This is used as a base struct for constant data to be inserted into by the anim
+// BP compiler if there is no existing archetype sparse class data.
+USTRUCT()
+struct ENGINE_API FAnimBlueprintConstantData
+{
+	GENERATED_BODY()
 };
 
 #if WITH_EDITORONLY_DATA
@@ -279,6 +341,17 @@ namespace EPropertySearchMode
 }
 #endif
 
+// Struct type generated by the anim BP compiler. Used for sparse class data and mutable data area.
+// Only really needed to hide the struct from the content browser (via IsAsset override)
+UCLASS()
+class ENGINE_API UAnimBlueprintGeneratedStruct : public UScriptStruct
+{
+	GENERATED_BODY()
+
+	// UObject interface
+	virtual bool IsAsset() const override { return false; }
+};
+
 UCLASS()
 class ENGINE_API UAnimBlueprintGeneratedClass : public UBlueprintGeneratedClass, public IAnimClassInterface
 {
@@ -286,14 +359,15 @@ class ENGINE_API UAnimBlueprintGeneratedClass : public UBlueprintGeneratedClass,
 
 	friend class FAnimBlueprintCompilerContext;
 	friend class FAnimBlueprintGeneratedClassCompiledData;
+	friend class FKismetDebugUtilities;
 
 	// List of state machines present in this blueprint class
 	UPROPERTY()
 	TArray<FBakedAnimationStateMachine> BakedStateMachines;
 
 	/** Target skeleton for this blueprint class */
-	UPROPERTY()
-	USkeleton* TargetSkeleton;
+	UPROPERTY(AssetRegistrySearchable)
+	TObjectPtr<USkeleton> TargetSkeleton;
 
 	/** A list of anim notifies that state machines (or anything else) may reference */
 	UPROPERTY()
@@ -319,9 +393,11 @@ class ENGINE_API UAnimBlueprintGeneratedClass : public UBlueprintGeneratedClass,
 	UPROPERTY()
 	TArray<FName> SyncGroupNames;
 
-	// The default handler for graph-exposed inputs
+#if WITH_EDITORONLY_DATA
+	// Deprecated - moved to FAnimSubsystem_Base
 	UPROPERTY()
-	TArray<FExposedValueHandler> EvaluateGraphExposedInputs;
+	TArray<FExposedValueHandler> EvaluateGraphExposedInputs_DEPRECATED;
+#endif
 
 	// Indices for any Asset Player found within a specific (named) Anim Layer Graph, or implemented Anim Interface Graph
 	UPROPERTY()
@@ -332,10 +408,33 @@ class ENGINE_API UAnimBlueprintGeneratedClass : public UBlueprintGeneratedClass,
 	TMap<FName, FAnimGraphBlendOptions> GraphBlendOptions;
 
 private:
-	// The library holding the property access data
+	// Constant/folded anim node data
 	UPROPERTY()
-	FPropertyAccessLibrary PropertyAccessLibrary;
+	TArray<FAnimNodeData> AnimNodeData;
 
+	// Map from anim node struct to info about that struct (used to accelerate property name lookups)
+	UPROPERTY()
+	TMap<TObjectPtr<const UScriptStruct>, FAnimNodeStructData> NodeTypeMap;
+
+	// Cached properties used to access 'folded' anim node properties
+	TArray<FProperty*> MutableProperties;
+	TArray<FProperty*> ConstantProperties;
+
+	// Cached properties used to access subsystem properties
+	TArray<FStructProperty*> ConstantSubsystemProperties;
+	TArray<FStructProperty*> MutableSubsystemProperties;
+
+	// Property for the object's mutable data area
+	FStructProperty* MutableNodeDataProperty = nullptr;
+
+	// Pointers to each subsystem, for easier debugging
+	TArray<const FAnimSubsystem*> Subsystems;
+
+#if WITH_EDITORONLY_DATA
+	// Flag indicating the persistent result of calling VerifyNodeDataLayout() on load/compile
+	bool bDataLayoutValid = true;
+#endif
+	
 public:
 	// IAnimClassInterface interface
 	virtual const TArray<FBakedAnimationStateMachine>& GetBakedStateMachines() const override { return GetRootClass()->GetBakedStateMachines_Direct(); }
@@ -351,11 +450,10 @@ public:
 	virtual const TArray<FName>& GetSyncGroupNames() const override { return GetRootClass()->GetSyncGroupNames_Direct(); }
 	virtual const TMap<FName, FCachedPoseIndices>& GetOrderedSavedPoseNodeIndicesMap() const override { return GetRootClass()->GetOrderedSavedPoseNodeIndicesMap_Direct(); }
 	virtual int32 GetSyncGroupIndex(FName SyncGroupName) const override { return GetSyncGroupNames().IndexOfByKey(SyncGroupName); }
-	virtual const TArray<FExposedValueHandler>& GetExposedValueHandlers() const { return EvaluateGraphExposedInputs; }
+
 	virtual const TArray<FAnimBlueprintFunction>& GetAnimBlueprintFunctions() const override { return AnimBlueprintFunctions; }
 	virtual const TMap<FName, FGraphAssetPlayerInformation>& GetGraphAssetPlayerInformation() const override { return GetRootClass()->GetGraphAssetPlayerInformation_Direct(); }
 	virtual const TMap<FName, FAnimGraphBlendOptions>& GetGraphBlendOptions() const override { return GetRootClass()->GetGraphBlendOptions_Direct(); }
-	virtual const FPropertyAccessLibrary& GetPropertyAccessLibrary() const override { return GetRootClass()->GetPropertyAccessLibrary_Direct(); }
 
 private:
 	virtual const TArray<FBakedAnimationStateMachine>& GetBakedStateMachines_Direct() const override { return BakedStateMachines; }
@@ -364,7 +462,38 @@ private:
 	virtual const TMap<FName, FCachedPoseIndices>& GetOrderedSavedPoseNodeIndicesMap_Direct() const override { return OrderedSavedPoseIndicesMap; }
 	virtual const TMap<FName, FGraphAssetPlayerInformation>& GetGraphAssetPlayerInformation_Direct() const override { return GraphAssetPlayerInformation; }
 	virtual const TMap<FName, FAnimGraphBlendOptions>& GetGraphBlendOptions_Direct() const override { return GraphBlendOptions; }
-	virtual const FPropertyAccessLibrary& GetPropertyAccessLibrary_Direct() const override { return PropertyAccessLibrary; }
+	
+private:
+	virtual const void* GetConstantNodeValueRaw(int32 InIndex) const override;
+	virtual const void* GetMutableNodeValueRaw(int32 InIndex, const UObject* InObject) const override;
+	virtual const FAnimBlueprintMutableData* GetMutableNodeData(const UObject* InObject) const override;
+	virtual FAnimBlueprintMutableData* GetMutableNodeData(UObject* InObject) const override;
+	virtual const void* GetConstantNodeData() const override;
+	virtual TArrayView<const FAnimNodeData> GetNodeData() const override { return AnimNodeData; }
+
+	virtual int32 GetAnimNodePropertyIndex(const UScriptStruct* InNodeType, FName InPropertyName) const override;
+	virtual int32 GetAnimNodePropertyCount(const UScriptStruct* InNodeType) const override;
+	
+	virtual void ForEachSubsystem(TFunctionRef<EAnimSubsystemEnumeration(const FAnimSubsystemContext&)> InFunction) const override;
+	virtual void ForEachSubsystem(UObject* InObject, TFunctionRef<EAnimSubsystemEnumeration(const FAnimSubsystemInstanceContext&)> InFunction) const override;
+	virtual const FAnimSubsystem* FindSubsystem(UScriptStruct* InSubsystemType) const override;
+
+#if WITH_EDITORONLY_DATA
+	virtual bool IsDataLayoutValid() const override { return bDataLayoutValid; };
+#endif
+	
+	// Called internally post-load defaults and by the compiler after compilation is completed 
+	void OnPostLoadDefaults(UObject* Object);
+
+	// Called by the compiler to make sure that data tables are initialized. This is needed to patch the sparse class
+	// data for child anim BP overrides 
+	void InitializeAnimNodeData(UObject* DefaultObject, bool bForce);
+
+#if WITH_EDITORONLY_DATA
+	// Verify that the serialized NodeTypeMap can be used with the current set of native node data layouts
+	// Sets internal bDataLayoutValid flag
+	bool VerifyNodeDataLayout();
+#endif
 
 public:
 #if WITH_EDITORONLY_DATA
@@ -376,7 +505,7 @@ public:
 	}
 
 	template<typename StructType>
-	const int32* GetNodePropertyIndexFromHierarchy(UAnimGraphNode_Base* Node)
+	const int32* GetNodePropertyIndexFromHierarchy(const UAnimGraphNode_Base* Node)
 	{
 		TArray<const UBlueprintGeneratedClass*> BlueprintHierarchy;
 		GetGeneratedClassesHierarchy(this, BlueprintHierarchy);
@@ -397,13 +526,13 @@ public:
 	}
 
 	template<typename StructType>
-	const int32* GetNodePropertyIndex(UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
+	const int32* GetNodePropertyIndex(const UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
 	{
 		return (SearchMode == EPropertySearchMode::OnlyThis) ? AnimBlueprintDebugData.NodePropertyToIndexMap.Find(Node) : GetNodePropertyIndexFromHierarchy<StructType>(Node);
 	}
 
 	template<typename StructType>
-	int32 GetLinkIDForNode(UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
+	int32 GetLinkIDForNode(const UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
 	{
 		const int32* pIndex = GetNodePropertyIndex<StructType>(Node, SearchMode);
 		if (pIndex)
@@ -414,7 +543,7 @@ public:
 	}
 
 	template<typename StructType>
-	FStructProperty* GetPropertyForNode(UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
+	FStructProperty* GetPropertyForNode(const UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
 	{
 		const int32* pIndex = GetNodePropertyIndex<StructType>(Node, SearchMode);
 		if (pIndex)
@@ -432,7 +561,7 @@ public:
 	}
 
 	template<typename StructType>
-	StructType* GetPropertyInstance(UObject* Object, UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
+	StructType* GetPropertyInstance(UObject* Object, const UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
 	{
 		FStructProperty* AnimationProperty = GetPropertyForNode<StructType>(Node);
 		if (AnimationProperty)
@@ -462,18 +591,22 @@ public:
 	}
 
 	template<typename StructType>
-	StructType& GetPropertyInstanceChecked(UObject* Object, UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
+	StructType& GetPropertyInstanceChecked(UObject* Object, const UAnimGraphNode_Base* Node, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis)
 	{
 		const int32 Index = AnimBlueprintDebugData.NodePropertyToIndexMap.FindChecked(Node);
 		FStructProperty* AnimationProperty = AnimNodeProperties[AnimNodeProperties.Num() - 1 - Index];
 		check(AnimationProperty);
 		check(AnimationProperty->Struct->IsChildOf(StructType::StaticStruct()));
-		return AnimationProperty->ContainerPtrToValuePtr<StructType>((void*)Object);
+		return *AnimationProperty->ContainerPtrToValuePtr<StructType>((void*)Object);
 	}
 
+	// Gets the property index from the original UAnimGraphNode's GUID. Does not remap to property order.
 	const int32* GetNodePropertyIndexFromGuid(FGuid Guid, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis);
 
-	const UEdGraphNode* GetVisualNodeFromNodePropertyIndex(int32 PropertyIndex) const;
+	// Gets the remapped property index from the original UAnimGraphNode's GUID. Can be used to index the AnimNodeProperties array.
+	int32 GetNodeIndexFromGuid(FGuid Guid, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis);
+
+	const UEdGraphNode* GetVisualNodeFromNodePropertyIndex(int32 PropertyIndex, EPropertySearchMode::Type SearchMode = EPropertySearchMode::OnlyThis) const;
 #endif
 
 	// Called after Link to patch up references to the nodes in the CDO
@@ -482,6 +615,13 @@ public:
 	// Populates AnimBlueprintFunctions according to the UFunction(s) on this class
 	void GenerateAnimationBlueprintFunctions();
 
+	// Build the properties that we cache for our constant data
+	void BuildConstantProperties();
+
+	// Get the fixed names of our generated structs
+	static FName GetConstantsStructName();
+	static FName GetMutablesStructName();
+	
 	// UObject interface
 	virtual void Serialize(FArchive& Ar) override;
 	// End of UObject interface

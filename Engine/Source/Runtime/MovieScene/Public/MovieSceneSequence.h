@@ -17,6 +17,7 @@ class UMovieSceneEntitySystemLinker;
 
 struct FMovieScenePossessable;
 struct FMovieSceneObjectCache;
+struct FMovieSceneTimecodeSource;
 
 enum class ETrackSupport
 {
@@ -94,6 +95,15 @@ public:
 	 * @return The object's guid, or zero guid if the object is not a valid possessable in the current context
 	 */
 	MOVIESCENE_API FGuid FindPossessableObjectId(UObject& Object, UObject* Context) const;
+
+	/**
+	 * Optional method for efficient lookup of an object binding from an actual object in the world
+	 *
+	 * @param ObjectId				The unique identifier of the object.
+	 * @param Context				Optional context to use to find the required object (for instance, a parent spawnable object or its world)
+	 * @return The object's guid, or zero guid if the object is not a valid possessable in the current context
+	 */
+	virtual FGuid FindBindingFromObject(UObject* InObject, UObject* Context) const { return FGuid(); }
 
 	/**
 	 * Called to validate the specified object cache by removing anything that should be deemed out of date
@@ -207,10 +217,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence")
 	MOVIESCENE_API const TArray<FMovieSceneObjectBindingID>& FindBindingsByTag(FName InBindingName) const;
 
+	/**
+	 * Get the earliest timecode source out of all of the movie scene sections contained within this sequence's movie scene.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Sequencer|Sequence")
+	MOVIESCENE_API FMovieSceneTimecodeSource GetEarliestTimecodeSource() const;
+
 public:
 
 	MOVIESCENE_API virtual void PostLoad() override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	MOVIESCENE_API virtual void PreSave(const ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	MOVIESCENE_API virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	MOVIESCENE_API virtual void BeginDestroy() override;
 	MOVIESCENE_API virtual void PostDuplicate(bool bDuplicateForPIE) override;
 
@@ -265,9 +285,13 @@ public:
 
 private:
 
+#if WITH_EDITOR
+	bool OptimizeForCook();
+#endif
+
 	/** Serialized compiled data - should only be used through UMovieSceneCompiledDataManager */
 	UPROPERTY(Instanced)
-	UMovieSceneCompiledData* CompiledData;
+	TObjectPtr<UMovieSceneCompiledData> CompiledData;
 
 public:
 

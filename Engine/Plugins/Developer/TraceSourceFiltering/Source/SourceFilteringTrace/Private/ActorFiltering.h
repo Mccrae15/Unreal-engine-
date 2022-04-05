@@ -45,7 +45,7 @@ public:
 		while (++CurrentIndex < EndIndex)
 		{
 			CurrentActor = Actors[CurrentIndex];
-			if (CurrentActor && !CurrentActor->IsPendingKill())
+			if (IsValid(CurrentActor))
 			{
 				break;
 			}
@@ -168,7 +168,7 @@ public:
 
 		/** Ignore CDOs and objects marked as pending kill */
 		EObjectFlags ExcludeFlags = RF_ClassDefaultObject;
-		EInternalObjectFlags InternalExcludeFlags = EInternalObjectFlags::PendingKill;
+		EInternalObjectFlags InternalExcludeFlags = EInternalObjectFlags::Garbage;
 
 		ForEachObjectOfClasses(AllFilteredClasses, [this](UObject* Object)
 		{
@@ -204,6 +204,10 @@ public:
 	{
 		Collector.AddReferencedObjects(ActorArray);
 		Collector.AddReferencedObjects(AllFilteredClasses);
+	}
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FFilteredActorCollector");
 	}
 
 protected:

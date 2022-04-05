@@ -94,6 +94,9 @@ typedef GLfloat GLdouble;
 #ifndef GL_TEXTURE_RECTANGLE
 #define GL_TEXTURE_RECTANGLE	0x84F5
 #endif
+#ifndef GL_MAX_TEXTURE_BUFFER_SIZE
+#define GL_MAX_TEXTURE_BUFFER_SIZE 0x8C2B
+#endif
 
 /** For the shader stage bits that don't exist just use 0 */
 #define GL_GEOMETRY_SHADER_BIT				0x00000000
@@ -188,7 +191,6 @@ struct FOpenGLES : public FOpenGLBase
 	static FORCEINLINE bool SupportsDepthStencilRead() { return false; }
 	static FORCEINLINE bool SupportsFloatReadSurface() { return SupportsColorBufferHalfFloat(); }
 	static FORCEINLINE bool SupportsWideMRT() { return true; }
-	static FORCEINLINE bool SupportsMultisampledTextures() { return false; }
 	static FORCEINLINE bool SupportsPolygonMode() { return false; }
 	static FORCEINLINE bool SupportsTexture3D() { return true; }
 	static FORCEINLINE bool SupportsMobileMultiView() { return bSupportsMobileMultiView; }
@@ -196,13 +198,14 @@ struct FOpenGLES : public FOpenGLBase
 	static FORCEINLINE bool SupportsTextureLODBias() { return false; }
 	static FORCEINLINE bool SupportsTextureCompare() { return false; }
 	static FORCEINLINE bool SupportsDrawIndexOffset() { return false; }
-	static FORCEINLINE bool SupportsResourceView() { return glTexBufferEXT != nullptr; }
 	static FORCEINLINE bool SupportsDiscardFrameBuffer() { return true; }
 	static FORCEINLINE bool SupportsIndexedExtensions() { return false; }
 	static FORCEINLINE bool SupportsColorBufferFloat() { return bSupportsColorBufferFloat; }
 	static FORCEINLINE bool SupportsColorBufferHalfFloat() { return bSupportsColorBufferHalfFloat; }
 	static FORCEINLINE bool SupportsShaderFramebufferFetch() { return bSupportsShaderFramebufferFetch; }
+	static FORCEINLINE bool SupportsShaderMRTFramebufferFetch() { return bSupportsShaderMRTFramebufferFetch; }
 	static FORCEINLINE bool SupportsShaderDepthStencilFetch() { return bSupportsShaderDepthStencilFetch; }
+	static FORCEINLINE bool SupportsPixelLocalStorage() { return bSupportsPixelLocalStorage; }
 	static FORCEINLINE bool SupportsMultisampledRenderToTexture() { return bSupportsMultisampledRenderToTexture; }
 	static FORCEINLINE bool SupportsVertexArrayBGRA() { return false; }
 	static FORCEINLINE bool SupportsBGRA8888() { return bSupportsBGRA8888; }
@@ -212,7 +215,6 @@ struct FOpenGLES : public FOpenGLBase
 	static FORCEINLINE GLenum GetShadowDepthFormat() { return GL_DEPTH_COMPONENT16; }
 	static FORCEINLINE bool SupportsFramebufferSRGBEnable() { return false; }
 	static FORCEINLINE bool SupportsRGB10A2() { return bSupportsRGB10A2; }
-	static FORCEINLINE bool SupportsComputeShaders() { return true; }
 	static FORCEINLINE bool SupportsDrawIndirect() { return true; }
 	static FORCEINLINE bool SupportsBufferStorage() { return bSupportsBufferStorage; }
 	
@@ -369,6 +371,12 @@ struct FOpenGLES : public FOpenGLBase
 	{
 		check(bSupportsCopyImage);
 		glCopyImageSubDataEXT(SrcName, SrcTarget, SrcLevel, SrcX, SrcY, SrcZ, DstName, DstTarget, DstLevel, DstX, DstY, DstZ, Width, Height, Depth);
+	}
+
+	static FORCEINLINE bool TexStorage2DMultisample(GLenum Target, GLsizei Samples, GLint InternalFormat, GLsizei Width, GLsizei Height, GLboolean FixedSampleLocations)
+	{
+		glTexStorage2DMultisample(Target, Samples, InternalFormat, Width, Height, FixedSampleLocations);
+		return true;
 	}
 
 	static FORCEINLINE void ClearBufferfv(GLenum Buffer, GLint DrawBufferIndex, const GLfloat* Value)
@@ -650,7 +658,7 @@ struct FOpenGLES : public FOpenGLBase
 		glBlitFramebuffer(SrcX0, SrcY0, SrcX1, SrcY1, DstX0, DstY0, DstX1, DstY1, Mask, Filter);
 	}
 
-	static FORCEINLINE bool TexStorage2D(GLenum Target, GLint Levels, GLint InternalFormat, GLsizei Width, GLsizei Height, GLenum Format, GLenum Type, uint32 Flags)
+	static FORCEINLINE bool TexStorage2D(GLenum Target, GLint Levels, GLint InternalFormat, GLsizei Width, GLsizei Height, GLenum Format, GLenum Type, ETextureCreateFlags Flags)
 	{
 		glTexStorage2D(Target, Levels, InternalFormat, Width, Height);
 		VERIFY_GL(glTexStorage2D);
@@ -774,11 +782,18 @@ protected:
 	/** GL_EXT_shader_framebuffer_fetch */
 	static bool bSupportsShaderFramebufferFetch;
 
+	/** GL_EXT_shader_framebuffer_fetch (MRT's) */
+	static bool bSupportsShaderMRTFramebufferFetch;
+
+
 	/** GL_ARM_shader_framebuffer_fetch_depth_stencil */
 	static bool bSupportsShaderDepthStencilFetch;
 
 	/** GL_EXT_MULTISAMPLED_RENDER_TO_TEXTURE */
 	static bool bSupportsMultisampledRenderToTexture;
+
+	/** workaround for GL_EXT_shader_pixel_local_storage */
+	static bool bSupportsPixelLocalStorage;
 
 	/** GL_FRAGMENT_SHADER, GL_LOW_FLOAT */
 	static int ShaderLowPrecision;

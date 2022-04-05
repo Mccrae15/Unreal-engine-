@@ -203,24 +203,19 @@ void FADPCMAudioInfo::SeekToTimeInternal(const float InSeekTime)
 		{
 			const int32 ChannelBlockSize = sizeof(int16) * NumChannels;
 
-			// 1. Find total offset
-			CurrentChunkBufferOffset = HeaderOffset + (TotalSamplesStreamed * ChannelBlockSize);
-			
-			// 2. Calculate index and remove from offset
-			while (CurrentChunkBufferOffset >= StreamingSoundWave->GetSizeOfChunk(CurrentChunkIndex))
+			uint32 TotalByteSizeToSeek = TotalSamplesStreamed * ChannelBlockSize;		
+			uint32 SizeOfCurrentChunk = StreamingSoundWave->GetSizeOfChunk(CurrentChunkIndex);
+			uint32 CurrentBytes = 0;
+			while (CurrentBytes + SizeOfCurrentChunk < TotalByteSizeToSeek)
 			{
-				CurrentChunkBufferOffset -= StreamingSoundWave->GetSizeOfChunk(CurrentChunkIndex);
 				CurrentChunkIndex++;
-				
-				if (CurrentChunkIndex >= TotalStreamingChunks)
-				{
-					CurrentChunkIndex = FirstChunkSampleDataIndex;
-					CurrentChunkBufferOffset = FirstChunkSampleDataOffset;
-					break;
-				}
+				CurrentBytes += SizeOfCurrentChunk;
+				CurrentChunkBufferOffset -= SizeOfCurrentChunk;
+				SizeOfCurrentChunk = StreamingSoundWave->GetSizeOfChunk(CurrentChunkIndex);
 			}
 
-			// 3. Trim remainder of block size, effectively aligning the block to a channel pair boundary
+			check(CurrentBytes <= TotalByteSizeToSeek);
+			CurrentChunkBufferOffset = TotalByteSizeToSeek - CurrentBytes;
 			CurrentChunkBufferOffset -= CurrentChunkBufferOffset % ChannelBlockSize;
 		}
 		else
@@ -472,42 +467,47 @@ void FADPCMAudioInfo::ProcessSeekRequest()
 	}
 }
 
-bool FADPCMAudioInfo::StreamCompressedInfoInternal(USoundWave* Wave, struct FSoundQualityInfo* QualityInfo)
+bool FADPCMAudioInfo::StreamCompressedInfoInternal(const FSoundWaveProxyPtr& InWaveProxy, struct FSoundQualityInfo* QualityInfo)
 {
 	FScopeLock ScopeLock(&CurCompressedChunkHandleCriticalSection);
 
 	check(QualityInfo);
-
-	check(StreamingSoundWave == Wave);
+	check(StreamingSoundWave == InWaveProxy);
+	if (!ensure(InWaveProxy.IsValid()))
+	{
+		return false;
+	}
 
 	CurrentChunkIndex = 0;
 
 	// Get the first chunk of audio data (should already be loaded)
-	uint8 const* ChunkData = GetLoadedChunk(Wave, CurrentChunkIndex, CurrentChunkDataSize);
+	uint8 const* ChunkData = GetLoadedChunk(InWaveProxy, CurrentChunkIndex, CurrentChunkDataSize);
 
 	if (ChunkData == nullptr)
 	{
+		UE_LOG(LogAudio, Warning, TEXT("FADPCMAudioInfo::StreamCompressedInfoInternal: Failed to get loaded chunk at index '%u'"), CurrentChunkIndex);
 		return false;
 	}
 
 	SrcBufferData = nullptr;
 	SrcBufferDataSize = 0;
 
-	void* FormatHeader;
-
-	if (!WaveInfo.ReadWaveInfo((uint8*)ChunkData, CurrentChunkDataSize, nullptr, true, &FormatHeader))
+	void* FormatHeader = nullptr;
+	FString ErrorMsg;
+	constexpr bool bHeaderDataOnly = true;
+	if (!WaveInfo.ReadWaveInfo(static_cast<const uint8*>(ChunkData), CurrentChunkDataSize, &ErrorMsg, bHeaderDataOnly, &FormatHeader))
 	{
-		UE_LOG(LogAudio, Warning, TEXT("WaveInfo.ReadWaveInfo Failed"));
+		UE_LOG(LogAudio, Warning, TEXT("FADPCMAudioInfo::StreamCompressedInfoInternal: Failed to read WaveInfo: %s"), *ErrorMsg);
 		return false;
 	}
 	
 	// if we only included the header in the zeroth chunk, skip to the next chunk.
-	int32 SampleDataOffset = WaveInfo.SampleDataStart - ChunkData;
+	const int32 SampleDataOffset = WaveInfo.SampleDataStart - ChunkData;
 	check(SampleDataOffset > 0);
 	if (((uint32)SampleDataOffset) >= CurrentChunkDataSize)
 	{
 		++CurrentChunkIndex;
-		ChunkData = GetLoadedChunk(Wave, CurrentChunkIndex, CurrentChunkDataSize);
+		ChunkData = GetLoadedChunk(InWaveProxy, CurrentChunkIndex, CurrentChunkDataSize);
 		FirstChunkSampleDataIndex = CurrentChunkIndex;
 		FirstChunkSampleDataOffset = 0;
 	}
@@ -531,6 +531,7 @@ bool FADPCMAudioInfo::StreamCompressedInfoInternal(USoundWave* Wave, struct FSou
 
 	if (Format == WAVE_FORMAT_ADPCM)
 	{
+		check(FormatHeader);
 		ADPCM::ADPCMFormatHeader* ADPCMHeader = (ADPCM::ADPCMFormatHeader*)FormatHeader;
 		TotalSamplesPerChannel = ADPCMHeader->SamplesPerChannel;
 		SamplesPerBlock = ADPCMHeader->wSamplesPerBlock;
@@ -563,7 +564,7 @@ bool FADPCMAudioInfo::StreamCompressedInfoInternal(USoundWave* Wave, struct FSou
 	}
 	else
 	{
-		UE_LOG(LogAudio, Error, TEXT("Unsupported wave format"));
+		UE_LOG(LogAudio, Error, TEXT("FADPCMAudioInfo::StreamCompressedInfoInternal: Unsupported wave format (Neither ADPCM nor LPCM)"));
 		return false;
 	}
 
@@ -578,15 +579,20 @@ bool FADPCMAudioInfo::StreamCompressedInfoInternal(USoundWave* Wave, struct FSou
 	return true;
 }
 
-bool FADPCMAudioInfo::StreamCompressedData(uint8* Destination, bool bLooping, uint32 BufferSize)
+bool FADPCMAudioInfo::StreamCompressedData(uint8* Destination, bool bLooping, uint32 BufferSize, int32& OutNumBytesStreamed)
 {
 	FScopeLock ScopeLock(&CurCompressedChunkHandleCriticalSection);
+	int32 OriginalBufferSize = (int32)BufferSize;
+	OutNumBytesStreamed = 0;
 
 	// Initial sanity checks:
 	if (bDecompressorReleased)
 	{
 		UE_LOG(LogAudio, Error, TEXT("Stream Compressed Data called after release!"));
-		FMemory::Memzero(Destination, BufferSize);
+		if (Destination != nullptr)
+		{
+			FMemory::Memzero(Destination, BufferSize);
+		}
 		return true;
 	}
 
@@ -766,6 +772,7 @@ bool FADPCMAudioInfo::StreamCompressedData(uint8* Destination, bool bLooping, ui
 
 						// zero out remaining data and bail
 						FMemory::Memset(OutData, 0, BufferSize);
+						OutNumBytesStreamed = OriginalBufferSize;
 						return false;
 					}
 
@@ -812,6 +819,7 @@ bool FADPCMAudioInfo::StreamCompressedData(uint8* Destination, bool bLooping, ui
 				{
 					uint16 Value = *(int16*)(UncompressedBlockData + ChannelItr * UncompressedBlockSize + (CurrentUncompressedBlockSampleIndex + SampleItr) * sizeof(int16));
 					*OutData++ = Value;
+					OutNumBytesStreamed += sizeof(int16);
 				}
 			}
 
@@ -889,6 +897,7 @@ bool FADPCMAudioInfo::StreamCompressedData(uint8* Destination, bool bLooping, ui
 					NumConsecutiveReadFailiures++;
 					const bool bReadAttemptTimedOut = NumConsecutiveReadFailiures > ADPCMReadFailiureTimeoutCVar;
 					UE_CLOG(bReadAttemptTimedOut, LogAudio, Warning, TEXT("ADPCM Audio Decode timed out."), bReadAttemptTimedOut);
+					OutNumBytesStreamed = OriginalBufferSize;
 					return NumConsecutiveReadFailiures > ADPCMReadFailiureTimeoutCVar;
 				}
 
@@ -921,8 +930,9 @@ bool FADPCMAudioInfo::StreamCompressedData(uint8* Destination, bool bLooping, ui
 
 			const uint32 SampleSize = DecompressedSamplesToCopy * ChannelSampleSize;
 			FMemory::Memcpy(OutData, CurCompressedChunkData + CurrentChunkBufferOffset, SampleSize);
-
 			OutData += DecompressedSamplesToCopy * NumChannels;
+			OutNumBytesStreamed += DecompressedSamplesToCopy * NumChannels * sizeof(int16);
+
 			CurrentChunkBufferOffset += SampleSize;
 			BufferSize -= SampleSize;
 			TotalSamplesStreamed += DecompressedSamplesToCopy;
@@ -982,7 +992,7 @@ bool FADPCMAudioInfo::ReleaseStreamChunk(bool bBlockUntilReleased)
 	}
 }
 
-const uint8* FADPCMAudioInfo::GetLoadedChunk(USoundWave* InSoundWave, uint32 ChunkIndex, uint32& OutChunkSize)
+const uint8* FADPCMAudioInfo::GetLoadedChunk(const FSoundWaveProxyPtr& InSoundWave, uint32 ChunkIndex, uint32& OutChunkSize)
 {
 	if (ChunkIndex != 0 && FMath::RandRange(0.0f, 1.0f) < ChanceForIntentionalChunkMissCVar)
 	{
@@ -991,19 +1001,14 @@ const uint8* FADPCMAudioInfo::GetLoadedChunk(USoundWave* InSoundWave, uint32 Chu
 		return nullptr;
 	}
 
-	if (!InSoundWave || ChunkIndex >= InSoundWave->GetNumChunks())
+	if (!ensure(InSoundWave.IsValid()) || ChunkIndex >= InSoundWave->GetNumChunks())
 	{
-		if(InSoundWave)
-		{
-			UE_LOG(LogAudio, Verbose, TEXT("Error calling GetLoadedChunk on wave with %d chunks. ChunkIndex: %d. Name: %s"), InSoundWave->GetNumChunks(), ChunkIndex, *InSoundWave->GetFullName());
-		}
-		
 		OutChunkSize = 0;
 		return nullptr;
 	}
 	else if (ChunkIndex == 0)
 	{
-		TArrayView<const uint8> ZerothChunk = InSoundWave->GetZerothChunk(true);
+		TArrayView<const uint8> ZerothChunk = FSoundWaveProxy::GetZerothChunk(InSoundWave, true);
 		OutChunkSize = ZerothChunk.Num();
 		PreviouslyRequestedChunkIndex = ChunkIndex;
 		return ZerothChunk.GetData();

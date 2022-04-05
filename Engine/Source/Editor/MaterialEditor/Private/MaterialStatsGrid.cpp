@@ -107,7 +107,7 @@ void FStatsGridRow_Quality::AddPlatform(TSharedPtr<FMaterialStats> StatsManager,
 	TSharedPtr<FGridCell_StaticString> Cell = MakeShareable(new FGridCell_StaticString(CellContent, CellContent));
 
 	Cell->SetContentBold(true);
-	auto CellColor = FMaterialStatsUtils::QualitySettingColor(QualityLevel);
+	FSlateColor CellColor = FMaterialStatsUtils::QualitySettingColor(QualityLevel);
 	Cell->SetColor(CellColor);
 
 	const FName ColumnName = FMaterialStatsGrid::MakePlatformColumnName(Platform, QualityLevel);
@@ -124,7 +124,7 @@ void FStatsGridRow_Errors::CreateRow(TSharedPtr<FMaterialStats> StatsManager)
 {
 	// add an "Error" string in the descriptor column
 	TSharedPtr<FGridCell> HeaderCell = MakeShareable(new FGridCell_StaticString(TEXT("Errors"), TEXT("Errors")));
-	HeaderCell->SetColor(FMaterialStatsUtils::OrangeColor);
+	HeaderCell->SetColor(FStyleColors::AccentOrange);
 	HeaderCell->SetContentBold(true);
 	AddCell(FMaterialStatsGrid::DescriptorColumnName, HeaderCell);
 
@@ -138,7 +138,7 @@ void FStatsGridRow_Errors::AddPlatform(TSharedPtr<FMaterialStats> StatsManager, 
 	// add a cell that will query any available errors for this platform
 	const FString CellContent = FMaterialStatsUtils::MaterialQualityToShortString(QualityLevel);
 	TSharedPtr<FGridCell_ShaderValue> Cell = MakeShareable(new FGridCell_ShaderValue(StatsManager, EShaderInfoType::Errors, ERepresentativeShader::Num, QualityLevel, Platform->GetPlatformShaderType()));
-	Cell->SetColor(FMaterialStatsUtils::OrangeColor);
+	Cell->SetColor(FStyleColors::AccentOrange);
 	Cell->SetHorizontalAlignment(HAlign_Fill);
 
 	const FName ColumnName = FMaterialStatsGrid::MakePlatformColumnName(Platform, QualityLevel);
@@ -163,7 +163,6 @@ FStatsGridRow_Shaders::EShaderClass FStatsGridRow_Shaders::GetShaderClass(const 
 	{
 		case ERepresentativeShader::StationarySurface:
 		case ERepresentativeShader::StationarySurfaceCSM:
-		case ERepresentativeShader::StationarySurface1PointLight:
 		case ERepresentativeShader::StationarySurfaceNPointLights:
 		case ERepresentativeShader::DynamicallyLitObject:
 		case ERepresentativeShader::UIDefaultFragmentShader:
@@ -193,7 +192,7 @@ void FStatsGridRow_Shaders::CreateRow(TSharedPtr<FMaterialStats> StatsManager)
 
 		HeaderCell = MakeShareable(new FGridCell_StaticString(HeaderContent, HeaderContent));
 		HeaderCell->SetContentBold(true);
-		HeaderCell->SetColor(FLinearColor::Gray);
+		HeaderCell->SetColor(FStyleColors::Foreground);
 	}
 	else
 	{
@@ -207,7 +206,7 @@ void FStatsGridRow_Shaders::CreateRow(TSharedPtr<FMaterialStats> StatsManager)
 	TSharedPtr<FGridCell> ShaderNameCell = MakeShareable(new FGridCell_StaticString(ShaderColumnContent, ShaderColumnContent));
 	ShaderNameCell->SetHorizontalAlignment(HAlign_Fill);
 	ShaderNameCell->SetContentBold(true);
-	ShaderNameCell->SetColor(FLinearColor::Gray);
+	ShaderNameCell->SetColor(FStyleColors::Foreground);
 	AddCell(FMaterialStatsGrid::ShaderColumnName, ShaderNameCell);
 
 	FillPlatformCellsHelper(StatsManager);
@@ -262,7 +261,7 @@ void FStatsGridRow_Interpolators::CreateRow(TSharedPtr<FMaterialStats> StatsMana
 {
 	// static string in the descriptor column
 	TSharedPtr<FGridCell> HeaderCell = MakeShareable(new FGridCell_StaticString(TEXT("Interpolators"), TEXT("Interpolators")));
-	HeaderCell->SetColor(FLinearColor::Gray);
+	HeaderCell->SetColor(FStyleColors::Foreground);
 	HeaderCell->SetContentBold(true);
 	AddCell(FMaterialStatsGrid::DescriptorColumnName, HeaderCell);
 
@@ -291,7 +290,7 @@ void FStatsGridRow_NumTextureSamples::CreateRow(TSharedPtr<FMaterialStats> Stats
 {
 	// static string in the descriptor column
 	TSharedPtr<FGridCell> HeaderCell = MakeShareable(new FGridCell_StaticString(TEXT("Texture Lookups (Est.)"), TEXT("Texture Lookups (Est.)")));
-	HeaderCell->SetColor(FLinearColor::Gray);
+	HeaderCell->SetColor(FStyleColors::Foreground);
 	HeaderCell->SetContentBold(true);
 	AddCell(FMaterialStatsGrid::DescriptorColumnName, HeaderCell);
 
@@ -320,7 +319,7 @@ void FStatsGridRow_NumVirtualTextureLookups::CreateRow(TSharedPtr<FMaterialStats
 {
 	// static string in the descriptor column
 	TSharedPtr<FGridCell> HeaderCell = MakeShareable(new FGridCell_StaticString(TEXT("VT Lookups (Est.)"), TEXT("Virtual Texture Lookups (Est.)")));
-	HeaderCell->SetColor(FLinearColor::Gray);
+	HeaderCell->SetColor(FStyleColors::Foreground);
 	HeaderCell->SetContentBold(true);
 	AddCell(FMaterialStatsGrid::DescriptorColumnName, HeaderCell);
 
@@ -340,6 +339,35 @@ void FStatsGridRow_NumVirtualTextureLookups::AddPlatform(TSharedPtr<FMaterialSta
 }
 
 /*end FStatsGridRow_NumVirtualTextureLookups functions*/
+/*==============================================================================================================*/
+
+/*==============================================================================================================*/
+/* FStatsGridRow_NumVirtualTextureLookups functions*/
+
+void FStatsGridRow_NumShaders::CreateRow(TSharedPtr<FMaterialStats> StatsManager)
+{
+	// static string in the descriptor column
+	TSharedPtr<FGridCell> HeaderCell = MakeShareable(new FGridCell_StaticString(TEXT("Shader Count"), TEXT("Number of shaders compiled for this platform and quality level.")));
+	HeaderCell->SetColor(FStyleColors::Foreground);
+	HeaderCell->SetContentBold(true);
+	AddCell(FMaterialStatsGrid::DescriptorColumnName, HeaderCell);
+
+	AddCell(FMaterialStatsGrid::ShaderColumnName, MakeShareable(new FGridCell_Empty()));
+
+	FillPlatformCellsHelper(StatsManager);
+}
+
+void FStatsGridRow_NumShaders::AddPlatform(TSharedPtr<FMaterialStats> StatsManager, const TSharedPtr<FShaderPlatformSettings> Platform, const EMaterialQualityLevel::Type QualityLevel)
+{
+	// cell that will enumerate the number of shaders
+	const FString CellContent = FMaterialStatsUtils::MaterialQualityToShortString(QualityLevel);
+	TSharedPtr<FGridCell_ShaderValue> Cell = MakeShareable(new FGridCell_ShaderValue(StatsManager, EShaderInfoType::ShaderCount, ERepresentativeShader::Num, QualityLevel, Platform->GetPlatformShaderType()));
+
+	const FName ColumnName = FMaterialStatsGrid::MakePlatformColumnName(Platform, QualityLevel);
+	AddCell(ColumnName, Cell);
+}
+
+/*end FStatsGridRow_NumTotalShaders functions*/
 /*==============================================================================================================*/
 
 /***********************************************************************************************************************/
@@ -444,7 +472,7 @@ FString FMaterialStatsGrid::GetColumnContentLong(const FName ColumnName) const
 	return Ptr != nullptr ? Ptr->ContentLong : TEXT("");
 }
 
-FLinearColor FMaterialStatsGrid::GetColumnColor(const FName ColumnName) const
+FSlateColor FMaterialStatsGrid::GetColumnColor(const FName ColumnName) const
 {
 	auto* Ptr = GridColumnContent.Find(ColumnName);
 
@@ -533,7 +561,8 @@ void FMaterialStatsGrid::BuildRowIds()
 		BuildKeyAndInsert(ERowType::Samplers);
 		BuildKeyAndInsert(ERowType::TextureSamples);
 		BuildKeyAndInsert(ERowType::VirtualTextureLookups);
-		BuildKeyAndInsert(ERowType::Interpolators);	
+		BuildKeyAndInsert(ERowType::Interpolators);
+		BuildKeyAndInsert(ERowType::Shaders);
 	}
 }
 
@@ -589,6 +618,11 @@ void FMaterialStatsGrid::BuildStaticRows()
 		TSharedPtr<FStatsGridRow> Row = MakeShareable(new FStatsGridRow_Interpolators());
 		Row->CreateRow(StatsManager);
 		StaticRows.Add(ERowType::Interpolators, Row);
+	}
+	{
+		TSharedPtr<FStatsGridRow> Row = MakeShareable(new FStatsGridRow_NumShaders());
+		Row->CreateRow(StatsManager);
+		StaticRows.Add(ERowType::Shaders, Row);
 	}
 }
 
@@ -811,7 +845,7 @@ FName FMaterialStatsGrid::MakePlatformColumnName(const TSharedPtr<FShaderPlatfor
 
 FGridCell::FGridCell()
 {
-	CellColor = FMaterialStatsUtils::DefaultGridTextColor;
+	CellColor = FStyleColors::Foreground;
 }
 
 FString FGridCell_Empty::GetCellContent()
@@ -897,6 +931,10 @@ FString FGridCell_ShaderValue::InternalGetContent(bool bLongContent)
 
 		case EShaderInfoType::VirtualTextureLookupCount:
 			return bLongContent ? PlatformData.ShaderStatsInfo.VirtualTextureLookupCount.StrDescriptionLong : PlatformData.ShaderStatsInfo.VirtualTextureLookupCount.StrDescription;
+		break;
+
+		case EShaderInfoType::ShaderCount:
+			return bLongContent ? PlatformData.ShaderStatsInfo.ShaderCount.StrDescriptionLong : PlatformData.ShaderStatsInfo.ShaderCount.StrDescription;
 		break;
 	}
 

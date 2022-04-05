@@ -10,11 +10,7 @@
 #include "HAL/ThreadHeartBeat.h"
 
 #ifndef D3D11_WITH_DWMAPI
-#if WINVER > 0x502		// Windows XP doesn't support DWM
-	#define D3D11_WITH_DWMAPI	1
-#else
-	#define D3D11_WITH_DWMAPI	0
-#endif
+#define D3D11_WITH_DWMAPI	1
 #endif
 
 #if D3D11_WITH_DWMAPI
@@ -208,14 +204,12 @@ FD3D11Texture2D* FD3D11Viewport::GetSwapChainSurface(FD3D11DynamicRHI* D3DRHI, E
 
 	D3D11TextureAllocated2D(*NewTexture);
 
-	NewTexture->DoNoDeferDelete();
-
 	return NewTexture;
 }
 
 FD3D11Viewport::~FD3D11Viewport()
 {
-	check(IsInRenderingThread());
+	check(IsInRHIThread() || IsInRenderingThread());
 
 	// Turn off HDR display mode
 	D3DRHI->ShutdownHDR();
@@ -228,8 +222,6 @@ FD3D11Viewport::~FD3D11Viewport()
 		VERIFYD3D11RESULT_EX(SwapChain->SetFullscreenState(false, NULL), D3DRHI->GetDevice());
 	}
 #endif
-
-	FrameSyncEvent.ReleaseResource();
 
 	D3DRHI->Viewports.Remove(this);
 }
@@ -271,6 +263,10 @@ void FD3D11Viewport::Resize(uint32 InSizeX, uint32 InSizeY, bool bInIsFullscreen
 		checkComRefCount(BackBuffer->GetShaderResourceView(),1);
 	}
 	BackBuffer.SafeRelease();
+
+	// Flush the outstanding GPU work and wait for it to complete.
+	FlushRenderingCommands();
+	FRHICommandListExecutor::CheckNoOutstandingCmdLists();
 
 	// Make sure we use a format the current device supports.
 	PreferredPixelFormat = D3DRHI->GetDisplayFormat(PreferredPixelFormat);
@@ -719,7 +715,6 @@ void FD3D11DynamicRHI::RHIBeginDrawingViewport(FRHIViewport* ViewportRHI, FRHITe
 	if( RenderTarget == NULL )
 	{
 		RenderTarget = Viewport->GetBackBuffer();
-		// @todo - fix this RHITransitionResources(EResourceTransitionAccess::EWritable, &RenderTarget, 1);
 	}
 	FRHIRenderTargetView View(RenderTarget, ERenderTargetLoadAction::ELoad);
 	SetRenderTargets(1,&View,nullptr);
@@ -774,8 +769,6 @@ void FD3D11DynamicRHI::RHIEndDrawingViewport(FRHIViewport* ViewportRHI,bool bPre
 	MaxBoundVertexBufferIndex = INDEX_NONE;
 	
 	StateCache.SetPixelShader(nullptr);
-	StateCache.SetHullShader(nullptr);
-	StateCache.SetDomainShader(nullptr);
 	StateCache.SetGeometryShader(nullptr);
 	// Compute Shader is set to NULL after each Dispatch call, so no need to clear it here
 

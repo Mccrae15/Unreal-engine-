@@ -175,7 +175,7 @@ void FVulkanCmdBuffer::EndRenderPass()
 
 void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, FVulkanRenderPass* RenderPass, FVulkanFramebuffer* Framebuffer, const VkClearValue* AttachmentClearValues)
 {
-	if(bIsUniformBufferBarrierAdded)
+	if (bIsUniformBufferBarrierAdded)
 	{
 		EndUniformUpdateBarrier();
 	}
@@ -185,10 +185,7 @@ void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, 
 	ZeroVulkanStruct(Info, VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
 	Info.renderPass = RenderPass->GetHandle();
 	Info.framebuffer = Framebuffer->GetHandle();
-	Info.renderArea.offset.x = 0;
-	Info.renderArea.offset.y = 0;
-	Info.renderArea.extent.width = Framebuffer->GetWidth();
-	Info.renderArea.extent.height = Framebuffer->GetHeight();
+	Info.renderArea = Framebuffer->GetRenderArea();
 	Info.clearValueCount = Layout.GetNumUsedClearValues();
 	Info.pClearValues = AttachmentClearValues;
 
@@ -204,12 +201,25 @@ void FVulkanCmdBuffer::BeginRenderPass(const FVulkanRenderTargetLayout& Layout, 
 		Info.pNext = &RPTransformBeginInfoQCOM;
 	}
 #endif
-	VulkanRHI::vkCmdBeginRenderPass(CommandBufferHandle, &Info, VK_SUBPASS_CONTENTS_INLINE);
+
+#if VULKAN_SUPPORTS_RENDERPASS2
+	if (Device->GetOptionalExtensions().HasKHRRenderPass2)
+	{
+		VkSubpassBeginInfo SubpassInfo;
+		ZeroVulkanStruct(SubpassInfo, VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO);
+		SubpassInfo.contents = VK_SUBPASS_CONTENTS_INLINE;
+		VulkanRHI::vkCmdBeginRenderPass2KHR(CommandBufferHandle, &Info, &SubpassInfo);
+	}
+	else
+#endif
+	{
+		VulkanRHI::vkCmdBeginRenderPass(CommandBufferHandle, &Info, VK_SUBPASS_CONTENTS_INLINE);
+	}
 
 	State = EState::IsInsideRenderPass;
 
 	// Acquire a descriptor pool set on a first render pass
-	if (!UseVulkanDescriptorCache() && CurrentDescriptorPoolSetContainer == nullptr)
+	if (CurrentDescriptorPoolSetContainer == nullptr)
 	{
 		AcquirePoolSetContainer();
 	}
@@ -319,7 +329,6 @@ void FVulkanCmdBuffer::Begin()
 
 void FVulkanCmdBuffer::AcquirePoolSetContainer()
 {
-	check(!UseVulkanDescriptorCache())
 	check(!CurrentDescriptorPoolSetContainer);
 	CurrentDescriptorPoolSetContainer = &Device->GetDescriptorPoolsManager().AcquirePoolSetContainer();
 	ensure(TypedDescriptorPoolSets.Num() == 0);
@@ -327,7 +336,6 @@ void FVulkanCmdBuffer::AcquirePoolSetContainer()
 
 bool FVulkanCmdBuffer::AcquirePoolSetAndDescriptorsIfNeeded(const class FVulkanDescriptorSetsLayout& Layout, bool bNeedDescriptors, VkDescriptorSet* OutDescriptors)
 {
-	check(!UseVulkanDescriptorCache())
 	//#todo-rco: This only happens when we call draws outside a render pass...
 	if (!CurrentDescriptorPoolSetContainer)
 	{
@@ -381,7 +389,7 @@ void FVulkanCmdBuffer::RefreshFenceStatus()
 #endif
 			++FenceSignaledCounter;
 
-			if (!UseVulkanDescriptorCache() && CurrentDescriptorPoolSetContainer)
+			if (CurrentDescriptorPoolSetContainer)
 			{
 				//#todo-rco: Reset here?
 				TypedDescriptorPoolSets.Reset();
@@ -458,6 +466,10 @@ FVulkanCommandBufferManager::FVulkanCommandBufferManager(FVulkanDevice* InDevice
 	}
 
 	ActiveCmdBuffer = Pool.Create(false);
+}
+
+void FVulkanCommandBufferManager::Init(FVulkanCommandListContext* InContext)
+{
 	ActiveCmdBuffer->InitializeTimings(InContext);
 	ActiveCmdBuffer->Begin();
 }

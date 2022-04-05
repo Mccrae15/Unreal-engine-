@@ -7,6 +7,7 @@
 #include "Containers/ArrayView.h"
 #include "Types/SlateEnums.h"
 #include "Animation/AnimBlueprint.h"
+#include "PersonaSelectionProxies.h"
 
 class UAnimationAsset;
 class UDebugSkelMeshComponent;
@@ -16,6 +17,7 @@ struct HActor;
 struct FViewportClick;
 class FEditorCameraController;
 class ISkeletonTreeItem;
+class IEditableSkeleton;
 
 // called when animation asset has been changed
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnAnimChangedMulticaster, UAnimationAsset*);
@@ -299,9 +301,9 @@ public:
 	/** Handle syncing selection with the skeleton tree */
 	virtual void HandleSkeletonTreeSelectionChanged(const TArrayView<TSharedPtr<ISkeletonTreeItem>>& InSelectedItems, ESelectInfo::Type InSelectInfo) = 0;
 
-	/** Get whether bones can be selected by their physics bodies */
-	virtual bool UsePhysicsBodiesForBoneSelection() const = 0;
-
-	/** Set whether bones can be selected by their physics bodies */
-	virtual void SetUsePhysicsBodiesForBoneSelection(bool bUsePhysicsBodies) = 0;
+	/** Replaces the current editable skeleton. This is not a safe operation unless you're working
+	 * detached from other Persona components (eg. skeleton list).
+	 */
+	virtual void SetEditableSkeleton(TSharedPtr<IEditableSkeleton> InEditableSkeleton) = 0;
 };
+

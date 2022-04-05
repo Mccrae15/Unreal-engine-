@@ -332,15 +332,10 @@ void FCascade::InitCascade(const EToolkitMode::Type Mode, const TSharedPtr< clas
 
 	CreateInternalWidgets();
 
-	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout( "Standalone_Cascade_Layout_v2" )
+	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout( "Standalone_Cascade_Layout_v3" )
 	->AddArea(
 		FTabManager::NewPrimaryArea()
 		->SetOrientation(Orient_Vertical)
-		->Split(
-			FTabManager::NewStack()
-			->SetSizeCoefficient(0.1f)
-			->AddTab( GetToolbarTabId(), ETabState::OpenedTab )
-		)
 		->Split
 		(
 			FTabManager::NewSplitter()
@@ -1485,7 +1480,6 @@ TSharedRef<SDockTab> FCascade::SpawnTab(const FSpawnTabArgs& SpawnTabArgs, FName
 	else if(TabIdentifier == FName(TEXT("Cascade_Properties")))
 	{
 		TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
-			.Icon(FEditorStyle::GetBrush("Cascade.Tabs.Properties"))
 			.Label(NSLOCTEXT("Cascade", "CascadePropertiesTitle", "Details"))
 			[
 				Details.ToSharedRef()
@@ -1614,12 +1608,12 @@ void FCascade::Tick(float DeltaTime)
 			ParticleSystemComponent->CascadeTickComponent(CurrDeltaTime, LEVELTICK_All);
 		}
 		ParticleSystemComponent->DoDeferredRenderUpdates_Concurrent();
-		GetFXSystem()->Tick(CurrDeltaTime);
+		UWorld* World = PreviewViewport->GetViewportClient()->GetPreviewScene().GetWorld();
+		GetFXSystem()->Tick(World, CurrDeltaTime);
 		TotalTime += CurrDeltaTime;
 		ParticleSystem->UpdateTime_Delta = fSaveUpdateDelta;
 
 		// Tick the physics scene
-		UWorld* World = PreviewViewport->GetViewportClient()->GetPreviewScene().GetWorld();
 		FPhysScene* PhysScene = World->GetPhysicsScene();
 		AWorldSettings * WorldSettings = World->GetWorldSettings();
 		check(WorldSettings);

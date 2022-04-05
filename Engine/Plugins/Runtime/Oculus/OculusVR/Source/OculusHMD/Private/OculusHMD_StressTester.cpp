@@ -22,7 +22,7 @@ DECLARE_CYCLE_STAT(TEXT("GPUStressRendering"), STAT_GPUStressRendering, STATGROU
 
 //This buffer should contain variables that never, or rarely change
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FOculusPixelShaderConstantParameters, )
-//SHADER_PARAMETER(FVector4, Name)
+//SHADER_PARAMETER(FVector4f, Name)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FOculusPixelShaderConstantParameters, "PSConstants");
@@ -49,26 +49,26 @@ namespace OculusHMD
 
 struct FTextureVertex
 {
-	FVector4	Position;
-	FVector2D	UV;
+	FVector4f	Position;
+	FVector2f	UV;
 };
 
-inline FVertexBufferRHIRef CreateTempOcculusVertexBuffer()
+inline FBufferRHIRef CreateTempOcculusVertexBuffer()
 {
-	FRHIResourceCreateInfo CreateInfo;
-	FVertexBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FTextureVertex) * 4, BUF_Volatile, CreateInfo);
-	void* VoidPtr = RHILockVertexBuffer(VertexBufferRHI, 0, sizeof(FTextureVertex) * 4, RLM_WriteOnly);
+	FRHIResourceCreateInfo CreateInfo(TEXT("TempOcculusVertexBuffer"));
+	FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FTextureVertex) * 4, BUF_Volatile, CreateInfo);
+	void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FTextureVertex) * 4, RLM_WriteOnly);
 
 	FTextureVertex* Vertices = (FTextureVertex*)VoidPtr;
-	Vertices[0].Position = FVector4(-1.0f, 1.0f, 0, 1.0f);
-	Vertices[1].Position = FVector4(1.0f, 1.0f, 0, 1.0f);
-	Vertices[2].Position = FVector4(-1.0f, -1.0f, 0, 1.0f);
-	Vertices[3].Position = FVector4(1.0f, -1.0f, 0, 1.0f);
-	Vertices[0].UV = FVector2D(0, 0);
-	Vertices[1].UV = FVector2D(1, 0);
-	Vertices[2].UV = FVector2D(0, 1);
-	Vertices[3].UV = FVector2D(1, 1);
-	RHIUnlockVertexBuffer(VertexBufferRHI);
+	Vertices[0].Position = FVector4f(-1.0f, 1.0f, 0, 1.0f);
+	Vertices[1].Position = FVector4f(1.0f, 1.0f, 0, 1.0f);
+	Vertices[2].Position = FVector4f(-1.0f, -1.0f, 0, 1.0f);
+	Vertices[3].Position = FVector4f(1.0f, -1.0f, 0, 1.0f);
+	Vertices[0].UV = FVector2f(0, 0);
+	Vertices[1].UV = FVector2f(1, 0);
+	Vertices[2].UV = FVector2f(0, 1);
+	Vertices[3].UV = FVector2f(1, 1);
+	RHIUnlockBuffer(VertexBufferRHI);
 
 	return VertexBufferRHI;
 }
@@ -95,95 +95,6 @@ public:
 
 static TGlobalResource<FTextureVertexDeclaration> GOculusTextureVertexDeclaration;
 
-
-//-------------------------------------------------------------------------------------------------
-// FOculusStressShadersPS
-//-------------------------------------------------------------------------------------------------
-
-// DO NOT MERGE -- Removing Packaging Issue
-#if 0
-
-class FOculusStressShadersPS : public FGlobalShader
-{
-
-	DECLARE_SHADER_TYPE(FOculusStressShadersPS, Global);
-public:
-
-	FOculusStressShadersPS() {}
-
-	explicit FOculusStressShadersPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer) :
-		FGlobalShader(Initializer)
-	{
-		// Bind shader's params
-		TextureParameter.Bind(Initializer.ParameterMap, TEXT("TextureParameter"));
-	}
-
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
-	{
-		if (Parameters.Platform == EShaderPlatform::SP_METAL || Parameters.Platform == EShaderPlatform::SP_METAL_MRT)
-		{
-			return false;
-		}
-		else
-		{
-			return true;
-		}
-	}
-
-	virtual bool Serialize(FArchive& Ar) override
-	{
-		bool bShaderHasOutdatedParams = FGlobalShader::Serialize(Ar);
-
-		Ar << TextureParameter;
-
-		return bShaderHasOutdatedParams;
-	}
-
-	//This function is required to let us bind our runtime surface to the shader using an SRV.
-	void SetSurfaces(FRHICommandList& RHICmdList, FShaderResourceViewRHIRef TextureParameterSRV)
-	{
-		FRHIPixelShader* PixelShaderRHI = RHICmdList.GetBoundPixelShader();
-
-		if (TextureParameter.IsBound())
-		{
-			RHICmdList.SetShaderResourceViewParameter(PixelShaderRHI, TextureParameter.GetBaseIndex(), TextureParameterSRV);
-		}
-	}
-
-	//This function is required to bind our constant / uniform buffers to the shader.
-	void SetUniformBuffers(FRHICommandList& RHICmdList, FOculusPixelShaderConstantParameters& ConstantParameters, FOculusPixelShaderVariableParameters& VariableParameters)
-	{
-		FOculusPixelShaderConstantParametersRef ConstantParametersBuffer;
-		FOculusPixelShaderVariableParametersRef VariableParametersBuffer;
-
-		ConstantParametersBuffer = FOculusPixelShaderConstantParametersRef::CreateUniformBufferImmediate(ConstantParameters, UniformBuffer_SingleDraw);
-		VariableParametersBuffer = FOculusPixelShaderVariableParametersRef::CreateUniformBufferImmediate(VariableParameters, UniformBuffer_SingleDraw);
-
-		SetUniformBufferParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), GetUniformBufferParameter<FOculusPixelShaderConstantParameters>(), ConstantParametersBuffer);
-		SetUniformBufferParameter(RHICmdList, RHICmdList.GetBoundPixelShader(), GetUniformBufferParameter<FOculusPixelShaderVariableParameters>(), VariableParametersBuffer);
-	}
-
-	//This is used to clean up the buffer binds after each invocation to let them be changed and used elsewhere if needed.
-	void UnbindBuffers(FRHICommandList& RHICmdList)
-	{
-		FRHIPixelShader* PixelShaderRHI = RHICmdList.GetBoundPixelShader();
-
-		if (TextureParameter.IsBound())
-		{
-			RHICmdList.SetShaderResourceViewParameter(PixelShaderRHI, TextureParameter.GetBaseIndex(), nullptr);
-		}
-	}
-
-private:
-	//This is how you declare resources that are going to be made available in the HLSL
-	LAYOUT_FIELD(FShaderResourceParameter, TextureParameter)
-};
-
-
-IMPLEMENT_SHADER_TYPE(, FOculusStressShadersPS, TEXT("/Plugin/OculusVR/Private/OculusStressShaders.usf"), TEXT("MainPixelShader"), SF_Pixel);
-
-#endif //0
-// END DO NOT MERGE -- Removing Packaging Issue
 
 //-------------------------------------------------------------------------------------------------
 // FStressTester
@@ -331,67 +242,6 @@ void FStressTester::DoTickCPU_GameThread(FOculusHMD* pPlugin)
 			}
 		}
 	}
-}
-
-void FStressTester::DoTickGPU_RenderThread(FRHICommandListImmediate& RHICmdList, class FRHITexture2D* BackBuffer, class FRHITexture2D* SrcTexture)
-{
-// DO NOT MERGE -- Removing Packaging Issue
-#if 0
-	CheckInRenderThread();
-
-	if (Mode & STM_GPU)
-	{
-		SCOPED_DRAW_EVENT(RHICmdList, StressGPURendering);
-		SCOPE_CYCLE_COUNTER(STAT_GPUStressRendering);
-
-		// Draw a quad with our shader
-		FOculusPixelShaderConstantParameters ConstantParameters;
-		FOculusPixelShaderVariableParameters VariableParameters;
-		if (GPUIterationsMultiplier <= 0)
-		{
-			VariableParameters.IterationsMultiplier = int(uint64(FPlatformTime::Seconds()*1000) % 20 + 1);
-		}
-		else
-		{
-			VariableParameters.IterationsMultiplier = GPUIterationsMultiplier;
-		}
-
-		//This is where the magic happens
-		FRHIRenderPassInfo RPInfo(BackBuffer, ERenderTargetActions::Load_Store);
-		RHICmdList.BeginRenderPass(RPInfo, TEXT("FSPass"));
-		{
-			FGraphicsPipelineStateInitializer GraphicsPSOInit;
-			RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
-			GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-			GraphicsPSOInit.RasterizerState = TStaticRasterizerState<>::GetRHI();
-			GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
-
-			const auto FeatureLevel = GMaxRHIFeatureLevel;
-			TShaderMapRef<FOculusVertexShader> VertexShader(GetGlobalShaderMap(FeatureLevel));
-			TShaderMapRef<FOculusStressShadersPS> PixelShader(GetGlobalShaderMap(FeatureLevel));
-
-			GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GOculusTextureVertexDeclaration.VertexDeclarationRHI;
-			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
-			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
-			GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
-
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
-
-			FShaderResourceViewRHIRef TextureParameterSRV = RHICreateShaderResourceView(SrcTexture, 0);
-			PixelShader->SetSurfaces(RHICmdList, TextureParameterSRV);
-			PixelShader->SetUniformBuffers(RHICmdList, ConstantParameters, VariableParameters);
-
-			// Draw a fullscreen quad that we can run our pixel shader on
-			RHICmdList.SetStreamSource(0, CreateTempOcculusVertexBuffer(), 0);
-			RHICmdList.DrawPrimitive(PT_TriangleStrip, 0, 2, 1);
-		}
-		RHICmdList.EndRenderPass();
-
-		PixelShader->UnbindBuffers(RHICmdList);
-	}
-
-#endif // 0
-// END DO NOT MERGE -- Removing Packaging Issue
 }
 
 

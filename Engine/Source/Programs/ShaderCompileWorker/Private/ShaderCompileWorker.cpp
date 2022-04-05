@@ -13,6 +13,7 @@
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "RHIShaderFormatDefinitions.inl"
 #include "ShaderCompilerCommon.h"
+#include "Serialization/MemoryReader.h"
 
 #define DEBUG_USING_CONSOLE	0
 
@@ -128,6 +129,14 @@ static void ProcessCompilationJob(const FShaderCompilerInput& Input,FShaderCompi
 	// Compile the shader directly through the platform dll (directly from the shader dir as the working directory)
 	double TimeStart = FPlatformTime::Seconds();
 	Compiler->CompileShader(Input.ShaderFormat, Input, Output, WorkingDirectory);
+	if (Output.bSucceeded)
+	{
+		Output.GenerateOutputHash();
+		if (Input.CompressionFormat != NAME_None)
+		{
+			Output.CompressOutput(Input.CompressionFormat, Input.OodleCompressor, Input.OodleLevel);
+		}
+	}
 	Output.CompileTime = FPlatformTime::Seconds() - TimeStart;
 
 	if (Compiler->UsesHLSLcc(Input))
@@ -338,13 +347,44 @@ private:
 
 	void ProcessInputFromArchive(FArchive* InputFilePtr, TArray<FJobResult>& OutSingleJobResults, TArray<FPipelineJobResult>& OutPipelineJobResults)
 	{
-		FArchive& InputFile = *InputFilePtr;
 		int32 InputVersion;
-		InputFile << InputVersion;
+		*InputFilePtr << InputVersion;
 		if (ShaderCompileWorkerInputVersion != InputVersion)
 		{
 			ExitWithoutCrash(ESCWErrorCode::BadInputVersion, FString::Printf(TEXT("Exiting due to ShaderCompilerWorker expecting input version %d, got %d instead! Did you forget to build ShaderCompilerWorker?"), ShaderCompileWorkerInputVersion, InputVersion));
 		}
+
+		FString CompressionFormatString;
+		*InputFilePtr << CompressionFormatString;
+		FName CompressionFormat(*CompressionFormatString);
+
+		bool bWasCompressed = (CompressionFormat != NAME_None);
+
+		TArray<uint8> UncompressedData;
+		if (bWasCompressed)
+		{
+			int32 UncompressedDataSize = 0;
+			*InputFilePtr << UncompressedDataSize;
+
+			if (UncompressedDataSize == 0)
+			{
+				ExitWithoutCrash(ESCWErrorCode::BadInputFile, TEXT("Exiting due to bad input file to ShaderCompilerWorker (uncompressed size is 0)! Did you forget to build ShaderCompilerWorker?"));
+				// unreachable
+				return;
+			}
+
+			UncompressedData.SetNumUninitialized(UncompressedDataSize);
+			TArray<uint8> CompressedData;
+			*InputFilePtr << CompressedData;
+			if (!FCompression::UncompressMemory(CompressionFormat, UncompressedData.GetData(), UncompressedDataSize, CompressedData.GetData(), CompressedData.Num()))
+			{
+				ExitWithoutCrash(ESCWErrorCode::BadInputFile, FString::Printf(TEXT("Exiting due to bad input file to ShaderCompilerWorker (cannot uncompress with the format %s)! Did you forget to build ShaderCompilerWorker?"), *CompressionFormatString));
+				// unreachable
+				return;
+			}
+		}
+		FMemoryReader InputMemory(UncompressedData);
+		FArchive& InputFile = bWasCompressed ? InputMemory : *InputFilePtr;
 
 		TMap<FString, uint32> ReceivedFormatVersionMap;
 		InputFile << ReceivedFormatVersionMap;
@@ -367,10 +407,55 @@ private:
 		// Initialize shader hash cache before reading any includes.
 		InitializeShaderHashCache();
 
-		TMap<FString, FThreadSafeSharedStringPtr> ExternalIncludes;
-		TArray<FShaderCompilerEnvironment> SharedEnvironments;
+		// Array of string used as const TCHAR* during compilation process.
+		TArray<TUniquePtr<FString>> AllocatedStrings;
+		auto DeserializeConstTCHAR = [&AllocatedStrings](FArchive& Archive)
+		{
+			FString Name;
+			Archive << Name;
+
+			const TCHAR* CharName = nullptr;
+			if (Name.Len() != 0)
+			{
+				if (AllocatedStrings.GetSlack() == 0)
+				{
+					AllocatedStrings.Reserve(AllocatedStrings.Num() + 1024);
+				}
+
+				AllocatedStrings.Add(MakeUnique<FString>(Name));
+				CharName = **AllocatedStrings.Last();
+			}
+			return CharName;
+		};
+
+		// Array of string used as const ANSICHAR* during compilation process.
+		TArray<TUniquePtr<TArray<ANSICHAR>>> AllocatedAnsiStrings;
+		auto DeserializeConstANSICHAR = [&AllocatedAnsiStrings](FArchive& Archive)
+		{
+			FString Name;
+			Archive << Name;
+
+			const ANSICHAR* CharName = nullptr;
+			if (Name.Len() != 0)
+			{
+				if (AllocatedAnsiStrings.GetSlack() == 0)
+				{
+					AllocatedAnsiStrings.Reserve(AllocatedAnsiStrings.Num() + 1024);
+				}
+
+				TArray<ANSICHAR> AnsiString;
+				AnsiString.SetNumZeroed(Name.Len() + 1);
+				ANSICHAR* Dest = &AnsiString[0];
+				FCStringAnsi::Strcpy(Dest, Name.Len() + 1, TCHAR_TO_ANSI(*Name));
+
+				AllocatedAnsiStrings.Add(MakeUnique<TArray<ANSICHAR>>(AnsiString));
+				CharName = &(*AllocatedAnsiStrings.Last())[0];
+			}
+			return CharName;
+		};
 
 		// Shared inputs
+		TMap<FString, FThreadSafeSharedStringPtr> ExternalIncludes;
 		{
 			int32 NumExternalIncludes = 0;
 			InputFile << NumExternalIncludes;
@@ -384,7 +469,11 @@ private:
 				InputFile << (*NewIncludeContents);
 				ExternalIncludes.Add(NewIncludeName, MakeShareable(NewIncludeContents));
 			}
+		}
 
+		// Shared environments
+		TArray<FShaderCompilerEnvironment> SharedEnvironments;
+		{
 			int32 NumSharedEnvironments = 0;
 			InputFile << NumSharedEnvironments;
 			SharedEnvironments.Empty(NumSharedEnvironments);
@@ -393,6 +482,104 @@ private:
 			for (int32 EnvironmentIndex = 0; EnvironmentIndex < NumSharedEnvironments; EnvironmentIndex++)
 			{
 				InputFile << SharedEnvironments[EnvironmentIndex];
+			}
+		}
+
+		// All the shader parameter structures
+		// Note: this is a bit more complicated, purposefully to avoid switch const TCHAR* to FString in runtime FShaderParametersMetadata.
+		TArray<TUniquePtr<FShaderParametersMetadata>> ParameterStructures;
+		{
+			int32 NumParameterStructures = 0;
+			InputFile << NumParameterStructures;
+			ParameterStructures.Reserve(NumParameterStructures);
+
+			for (int32 StructIndex = 0; StructIndex < NumParameterStructures; StructIndex++)
+			{
+				const TCHAR* LayoutName;
+				const TCHAR* StructTypeName;
+				const TCHAR* ShaderVariableName;
+				FShaderParametersMetadata::EUseCase UseCase;
+				const ANSICHAR* StructFileName;
+				int32 StructFileLine;
+				uint32 Size;
+				int32 MemberCount;
+
+				LayoutName = DeserializeConstTCHAR(InputFile);
+				StructTypeName = DeserializeConstTCHAR(InputFile);
+				ShaderVariableName = DeserializeConstTCHAR(InputFile);
+				InputFile << UseCase;
+				StructFileName = DeserializeConstANSICHAR(InputFile);
+				InputFile << StructFileLine;
+				InputFile << Size;
+				InputFile << MemberCount;
+
+				TArray<FShaderParametersMetadata::FMember> Members;
+				Members.Reserve(MemberCount);
+
+				for (int32 MemberIndex = 0; MemberIndex < MemberCount; MemberIndex++)
+				{
+					const TCHAR* Name;
+					const TCHAR* ShaderType;
+					int32 FileLine;
+					uint32 Offset;
+					uint8 BaseType;
+					uint8 PrecisionModifier;
+					uint32 NumRows;
+					uint32 NumColumns;
+					uint32 NumElements;
+					int32 StructMetadataIndex;
+
+					static_assert(sizeof(BaseType) == sizeof(EUniformBufferBaseType), "Cast failure.");
+					static_assert(sizeof(PrecisionModifier) == sizeof(EShaderPrecisionModifier::Type), "Cast failure.");
+
+					Name = DeserializeConstTCHAR(InputFile);
+					ShaderType = DeserializeConstTCHAR(InputFile);
+					InputFile << FileLine;
+					InputFile << Offset;
+					InputFile << BaseType;
+					InputFile << PrecisionModifier;
+					InputFile << NumRows;
+					InputFile << NumColumns;
+					InputFile << NumElements;
+					InputFile << StructMetadataIndex;
+
+					if (ShaderType == nullptr)
+					{
+						ShaderType = TEXT("");
+					}
+
+					const FShaderParametersMetadata* StructMetadata = nullptr;
+					if (StructMetadataIndex != INDEX_NONE)
+					{
+						StructMetadata = ParameterStructures[StructMetadataIndex].Get();
+					}
+
+					FShaderParametersMetadata::FMember Member(
+						Name,
+						ShaderType,
+						FileLine,
+						Offset,
+						EUniformBufferBaseType(BaseType),
+						EShaderPrecisionModifier::Type(PrecisionModifier),
+						NumRows,
+						NumColumns,
+						NumElements,
+						StructMetadata);
+					Members.Add(Member);
+				}
+
+				ParameterStructures.Add(MakeUnique<FShaderParametersMetadata>(
+					UseCase,
+					EUniformBufferBindingFlags::Shader,
+					/* InLayoutName = */ LayoutName,
+					/* InStructTypeName = */ StructTypeName,
+					/* InShaderVariableName = */ ShaderVariableName,
+					/* InStaticSlotName = */ nullptr,
+					StructFileName,
+					StructFileLine,
+					Size,
+					Members,
+					/* bCompleteInitialization = */ true));
 			}
 		}
 
@@ -419,7 +606,7 @@ private:
 				// Deserialize the job's inputs.
 				FShaderCompilerInput CompilerInput;
 				InputFile << CompilerInput;
-				CompilerInput.DeserializeSharedInputs(InputFile, ExternalIncludes, SharedEnvironments);
+				CompilerInput.DeserializeSharedInputs(InputFile, ExternalIncludes, SharedEnvironments, ParameterStructures);
 
 				if (IsValidRef(CompilerInput.SharedEnvironment))
 				{
@@ -465,7 +652,7 @@ private:
 				{
 					// Deserialize the job's inputs.
 					InputFile << CompilerInputs[StageIndex];
-					CompilerInputs[StageIndex].DeserializeSharedInputs(InputFile, ExternalIncludes, SharedEnvironments);
+					CompilerInputs[StageIndex].DeserializeSharedInputs(InputFile, ExternalIncludes, SharedEnvironments, ParameterStructures);
 
 					if (IsValidRef(CompilerInputs[StageIndex].SharedEnvironment))
 					{
@@ -746,6 +933,12 @@ static void DirectCompile(const TArray<const class IShaderFormat*>& ShaderFormat
 			else if (Token.StartsWith(TEXT("entry=")))
 			{
 				Entry = Token.RightChop(6);
+
+				// Remove quotations marks at beginning and end; happens when multiple entry points are specified, e.g. -entry="closesthit=A anyhit=B"
+				if (Entry.Len() >= 2 && Entry[0] == TEXT('\"') && Entry[Entry.Len() - 1] == TEXT('\"'))
+				{
+					Entry = Entry.Mid(1, Entry.Len() - 2);
+				}
 			}
 			else if (Token.StartsWith(TEXT("cflags=")))
 			{
@@ -759,13 +952,13 @@ static void DirectCompile(const TArray<const class IShaderFormat*>& ShaderFormat
 			{
 				Frequency = SF_Vertex;
 			}
-			else if (!FCString::Strcmp(*Token, TEXT("hs")))
+			else if (!FCString::Strcmp(*Token, TEXT("ms")))
 			{
-				Frequency = SF_Hull;
+				Frequency = SF_Mesh;
 			}
-			else if (!FCString::Strcmp(*Token, TEXT("ds")))
+			else if (!FCString::Strcmp(*Token, TEXT("as")))
 			{
-				Frequency = SF_Domain;
+				Frequency = SF_Amplification;
 			}
 			else if (!FCString::Strcmp(*Token, TEXT("gs")))
 			{
@@ -844,16 +1037,7 @@ static void DirectCompile(const TArray<const class IShaderFormat*>& ShaderFormat
 		++ResourceIndex;
 	};
 
-	uint32 CFlag = 0;
-	while (CFlags != 0)
-	{
-		if ((CFlags & 1) != 0)
-		{
-			Input.Environment.CompilerFlags.Add(CFlag);
-		}
-		CFlags = (CFlags >> (uint64)1);
-		++CFlag;
-	}
+	Input.Environment.CompilerFlags = FShaderCompilerFlags(CFlags);
 
 	Input.bCompilingForShaderPipeline = bPipeline;
 	Input.bIncludeUsedOutputs = bIncludeUsedOutputs;
@@ -874,7 +1058,7 @@ static void DirectCompile(const TArray<const class IShaderFormat*>& ShaderFormat
  */
 static int32 GuardedMain(int32 argc, TCHAR* argv[], bool bDirectMode)
 {
-	FString ExtraCmdLine = TEXT("-NOPACKAGECACHE -ReduceThreadUsage -cpuprofilertrace -nocrashreports");
+	FString ExtraCmdLine = TEXT("-NOPACKAGECACHE -ReduceThreadUsage -cpuprofilertrace -nocrashreports -nothreading");
 
 	// When executing tasks remotely through XGE, enumerating files requires tcp/ip round-trips with
 	// the initiator, which can slow down engine initialization quite drastically.
@@ -1001,6 +1185,7 @@ static int32 GuardedMain(int32 argc, TCHAR* argv[], bool bDirectMode)
 
 static int32 GuardedMainWrapper(int32 ArgC, TCHAR* ArgV[], const TCHAR* CrashOutputFile, bool bDirectMode)
 {
+	FTaskTagScope Scope(ETaskTag::EGameThread);
 	// We need to know whether we are using XGE now, in case an exception
 	// is thrown before we parse the command line inside GuardedMain.
 	if ((ArgC > 6) && FCString::Strcmp(ArgV[6], TEXT("-xge_int")) == 0)
@@ -1117,7 +1302,7 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 	{
 		if (ArgC < 6)
 		{
-			printf("ShaderCompileWorker is called by UE4, it requires specific command like arguments.\n");
+			printf("ShaderCompileWorker is called by UnrealEditor, it requires specific command like arguments.\n");
 			return -1;
 		}
 

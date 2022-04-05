@@ -12,7 +12,7 @@ NiagaraGPUInstanceCountManager.h: GPU particle count handling
 #include "RHIGPUReadback.h"
 
 class FRHIGPUMemoryReadback;
-class NiagaraEmitterInstanceBatcher;
+class FNiagaraGpuComputeDispatchInterface;
 
 // The number of GPU renderers registered in the instance count manager.
 // Shared between the manager and the renderers.
@@ -27,6 +27,16 @@ FORCEINLINE uint32 GetTypeHash(const FNiagaraDrawIndirectArgGenTaskInfo& Info)
 	return HashCombine(Info.InstanceCountBufferOffset, HashCombine(Info.NumIndicesPerInstance, HashCombine(Info.StartIndexLocation, Info.Flags)));
 }
 
+namespace ENiagaraGPUCountUpdatePhase
+{
+	enum Type
+	{
+		PreOpaque,
+		PostOpaque,
+		Max
+	};
+}
+
 /**
  * A manager that handles the buffer containing the GPU particle count.
  * Also provides related functionalities like the generation of the draw indirect buffer.
@@ -36,16 +46,16 @@ class FNiagaraGPUInstanceCountManager
 public:
 	struct FIndirectArgSlot
 	{
-		FVertexBufferRHIRef Buffer;
+		FBufferRHIRef Buffer;
 		FShaderResourceViewRHIRef SRV;
 		uint32 Offset = INDEX_NONE;
 
 		FIndirectArgSlot() {}
-		FIndirectArgSlot(FVertexBufferRHIRef InBuffer, FShaderResourceViewRHIRef InSRV, uint32 InOffset) : Buffer(InBuffer), SRV(InSRV), Offset(InOffset) {}
+		FIndirectArgSlot(FBufferRHIRef InBuffer, FShaderResourceViewRHIRef InSRV, uint32 InOffset) : Buffer(InBuffer), SRV(InSRV), Offset(InOffset) {}
 		FORCEINLINE bool IsValid() const { return Offset != INDEX_NONE; }
 	};
 
-	FNiagaraGPUInstanceCountManager();
+	FNiagaraGPUInstanceCountManager(ERHIFeatureLevel::Type FeatureLevel);
 	~FNiagaraGPUInstanceCountManager();
 
 	// Init resource for the first time.
@@ -53,19 +63,26 @@ public:
 	// Free resources.
 	void ReleaseRHI();
 
-	FRWBuffer& GetInstanceCountBuffer()
+	const FRWBuffer& GetInstanceCountBuffer() const
 	{
 		check(UsedInstanceCounts <= AllocatedInstanceCounts); // Can't resize after after the buffer gets bound.
 		return CountBuffer;
 	}
 
+	/** Acquire an entry from the free list, assumes this comes from being presized. */
+	uint32 AcquireEntry();
+	/** Acquire an entry, this will either come from the free list or reallocate the buffer. */
+	uint32 AcquireOrAllocateEntry(FRHICommandListImmediate& RHICmdList);
+
 	/** Free the entry and reset it to INDEX_NONE if valid. */
 	void FreeEntry(uint32& BufferOffset);
-
 	/** Free and array of entries, you are expected to reset or change to INDEX_NONE. */
 	void FreeEntryArray(TConstArrayView<uint32> EntryArray);
 
-	uint32 AcquireEntry();
+	bool CanAcquireCulledEntry() const
+	{
+		return !bAcquiredCulledCounts;
+	}
 
 	uint32 AcquireCulledEntry()
 	{
@@ -73,7 +90,7 @@ public:
 		return RequiredCulledCounts++;
 	}
 
-	FRWBuffer* AcquireCulledCountsBuffer(FRHICommandListImmediate& RHICmdList, ERHIFeatureLevel::Type FeatureLevel);
+	FRWBuffer* AcquireCulledCountsBuffer(FRHICommandListImmediate& RHICmdList);
 
 	const uint32* GetGPUReadback();
 	void ReleaseGPUReadback();
@@ -81,16 +98,15 @@ public:
 	bool HasPendingGPUReadback() const;
 
 	/** Add a draw indirect task to generate the draw indirect args. Returns the draw indirect arg buffer offset. */
-	FIndirectArgSlot AddDrawIndirect(uint32 InstanceCountBufferOffset, uint32 NumIndicesPerInstance, uint32 StartIndexLocation,
-		bool bIsInstancedStereoEnabled, bool bCulled);
+	FIndirectArgSlot AddDrawIndirect(uint32 InstanceCountBufferOffset, uint32 NumIndicesPerInstance, uint32 StartIndexLocation, bool bIsInstancedStereoEnabled, bool bCulled, ENiagaraGpuComputeTickStage::Type ReadyTickStage);
 
 	// Resize instance count and draw indirect buffers to ensure it is big enough to hold all draw indirect args.
-	void ResizeBuffers(FRHICommandListImmediate& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, int32 ReservedInstanceCounts);
+	void ResizeBuffers(FRHICommandListImmediate& RHICmdList, int32 ReservedInstanceCounts);
 
 	void FlushIndirectArgsPool();
 
 	// Generate the draw indirect buffers, and reset all release counts.
-	void UpdateDrawIndirectBuffers(NiagaraEmitterInstanceBatcher& Batcher, FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel);
+	void UpdateDrawIndirectBuffers(FNiagaraGpuComputeDispatchInterface* ComputeDispatchInterface, FRHICommandList& RHICmdList, ENiagaraGPUCountUpdatePhase::Type CountPhase);
 
 	static const ERHIAccess kCountBufferDefaultState;
 
@@ -99,14 +115,18 @@ public:
 protected:
 	struct FIndirectArgsPoolEntry
 	{
-		FRWBuffer Buffer;
-		uint32 NumAllocated = 0;
-		uint32 NumUsed = 0;
+		FRWBuffer	Buffer;
+
+		uint32		AllocatedEntries = 0;
+		uint32		UsedEntriesTotal = 0;
+		uint32		UsedEntries[ENiagaraGPUCountUpdatePhase::Max] = {};
 	};
 
 	using FIndirectArgsPoolEntryPtr = TUniquePtr<FIndirectArgsPoolEntry>;
 
 	void ReleaseCounts();
+
+	ERHIFeatureLevel::Type FeatureLevel;
 
 	/** The current used instance counts allocated from FNiagaraDataBuffer::AllocateGPU() */
 	int32 UsedInstanceCounts = 0;
@@ -128,14 +148,19 @@ protected:
 	int32 CountReadbackSize = 0;
 
 	/** The list of all draw indirected tasks that are to be run in UpdateDrawIndirectBuffers() */
-	using FArgGenTaskInfo = FNiagaraDrawIndirectArgGenTaskInfo;
-	using FArgGenSlotInfo = TTuple<uint32, uint32>;
+	TArray<FNiagaraDrawIndirectArgGenTaskInfo> DrawIndirectArgGenTasks[ENiagaraGPUCountUpdatePhase::Max];
 
-	TArray<FArgGenTaskInfo> DrawIndirectArgGenTasks;
-	/** The map between each task FArgGenTaskInfo and entry offset from DrawIndirectArgGenTasks. Used to reuse entries. */
-	TMap<FArgGenTaskInfo, FArgGenSlotInfo> DrawIndirectArgMap;
+	/** Set to allow de-duplication of FNiagaraDrawIndirectArgGenTaskInfo. */
+	struct FNiagaraDrawIndirectArgGenSlotInfo
+	{
+		uint32 PoolIndex = INDEX_NONE;
+		uint32 BufferOffset = INDEX_NONE;
+	};
+	TMap<FNiagaraDrawIndirectArgGenTaskInfo, FNiagaraDrawIndirectArgGenSlotInfo> DrawIndirectArgMap;
+
 	/** The list of all instance count clear tasks that are to be run in UpdateDrawIndirectBuffers() */
 	TArray<uint32> InstanceCountClearTasks;
+
 	/** Buffers holding drawindirect data to render GPU emitter renderers. */
 	TArray<FIndirectArgsPoolEntryPtr> DrawIndirectPool;
 	uint32 DrawIndirectLowWaterFrames = 0;

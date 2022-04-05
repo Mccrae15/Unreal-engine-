@@ -16,6 +16,7 @@
 #include "Player/DASH/PlayerEventDASH_Internal.h"
 #include "Player/DRM/DRMManager.h"
 #include "Utilities/Utilities.h"
+#include "Async/Async.h"
 
 #define INTERNAL_ERROR_INIT_SEGMENT_DOWNLOAD_ERROR					1
 #define INTERNAL_ERROR_INIT_SEGMENT_PARSE_ERROR						2
@@ -49,19 +50,37 @@ void FStreamSegmentRequestFMP4DASH::SetExecutionDelay(const FTimeValue& Executio
 	DownloadDelayTime = ExecutionDelay;
 }
 
+FTimeValue FStreamSegmentRequestFMP4DASH::GetExecuteAtUTCTime() const
+{
+	FTimeValue When = ASAST;
+	if (DownloadDelayTime.IsValid())
+	{
+		When += DownloadDelayTime;
+	}
+	return When;
+}
+
 
 EStreamType FStreamSegmentRequestFMP4DASH::GetType() const
 {
 	return StreamType;
 }
 
-void FStreamSegmentRequestFMP4DASH::GetDependentStreams(TArray<FDependentStreams>& OutDependentStreams) const
+void FStreamSegmentRequestFMP4DASH::GetDependentStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutDependentStreams) const
 {
 	OutDependentStreams.Empty();
-	for(int32 i=0; i<DependentStreams.Num(); ++i)
+	for(auto& Stream : DependentStreams)
 	{
-		FDependentStreams& depStr = OutDependentStreams.AddDefaulted_GetRef();
-		depStr.StreamType = DependentStreams[i]->GetType();
+		OutDependentStreams.Emplace(Stream);
+	}
+}
+
+void FStreamSegmentRequestFMP4DASH::GetRequestedStreams(TArray<TSharedPtrTS<IStreamSegment>>& OutRequestedStreams)
+{
+	OutRequestedStreams.Empty();
+	for(auto& Stream : DependentStreams)
+	{
+		OutRequestedStreams.Emplace(Stream);
 	}
 }
 
@@ -83,7 +102,7 @@ void FStreamSegmentRequestFMP4DASH::GetEndedStreams(TArray<TSharedPtrTS<IStreamS
 
 FTimeValue FStreamSegmentRequestFMP4DASH::GetFirstPTS() const
 {
-	return AST + AdditionalAdjustmentTime + PeriodStart + FTimeValue(Segment.Time - Segment.PTO, Segment.Timescale);
+	return AST + AdditionalAdjustmentTime + PeriodStart + FTimeValue((Segment.bFrameAccuracyRequired ? Segment.MediaLocalFirstAUTime : Segment.Time) - Segment.PTO, Segment.Timescale);
 }
 
 int32 FStreamSegmentRequestFMP4DASH::GetQualityIndex() const
@@ -133,13 +152,21 @@ UEMediaError FStreamReaderFMP4DASH::Create(IPlayerSessionServices* InPlayerSessi
 		StreamHandlers[i].PlayerSessionService = PlayerSessionService;
 		StreamHandlers[i].Parameters		   = InCreateParam;
 		StreamHandlers[i].bTerminate		   = false;
+		StreamHandlers[i].bWasStarted		   = false;
 		StreamHandlers[i].bRequestCanceled     = false;
 		StreamHandlers[i].bSilentCancellation  = false;
 		StreamHandlers[i].bHasErrored   	   = false;
 		StreamHandlers[i].IsIdleSignal.Signal();
 
-		StreamHandlers[i].ThreadSetName(i==0?"ElectraPlayer::fmp4 Video":"ElectraPlayer::fmp4 Audio");
-		StreamHandlers[i].ThreadStart(Electra::MakeDelegate(&StreamHandlers[i], &FStreamHandler::WorkerThread));
+		// Subtitles get fetched running on the thread pool.
+		if (i == 2)
+		{
+			StreamHandlers[i].bRunOnThreadPool = true;
+		}
+
+		StreamHandlers[i].ThreadSetName(i==0 ? "ElectraPlayer::fmp4 Video" : 
+										i==1 ? "ElectraPlayer::fmp4 Audio" :
+											   "ElectraPlayer::fmp4 Subtitle");
 	}
 	return UEMEDIA_ERROR_OK;
 }
@@ -159,8 +186,15 @@ void FStreamReaderFMP4DASH::Close()
 		// Wait until they finished.
 		for(int32 i=0; i<FMEDIA_STATIC_ARRAY_COUNT(StreamHandlers); ++i)
 		{
-			StreamHandlers[i].ThreadWaitDone();
-			StreamHandlers[i].ThreadReset();
+			if (StreamHandlers[i].bRunOnThreadPool)
+			{
+				StreamHandlers[i].IsIdleSignal.Wait();
+			}
+			else if (StreamHandlers[i].bWasStarted)
+			{
+				StreamHandlers[i].ThreadWaitDone();
+				StreamHandlers[i].ThreadReset();
+			}
 		}
 	}
 }
@@ -171,27 +205,12 @@ IStreamReader::EAddResult FStreamReaderFMP4DASH::AddRequest(uint32 CurrentPlayba
 
 	if (Request->bIsInitialStartRequest)
 	{
-		for(int32 i=0; i<Request->DependentStreams.Num(); ++i)
-		{
-			EAddResult Result = AddRequest(CurrentPlaybackSequenceID, Request->DependentStreams[i]);
-			if (Result != IStreamReader::EAddResult::Added)
-			{
-				return Result;
-			}
-		}
+		PostError(PlayerSessionService, TEXT("Initial start request segments cannot be enqueued!"), 0);
+		return IStreamReader::EAddResult::Error;
 	}
 	else
 	{
-		// Video and audio only for now.
-		if (Request->GetType() != EStreamType::Video && Request->GetType() != EStreamType::Audio)
-		{
-			ErrorDetail.SetMessage(FString::Printf(TEXT("Request is not for video or audio")));
-			return IStreamReader::EAddResult::Error;
-		}
-	
 		// Get the handler for the main request.
-		// TODO: We could have a pool of handlers or create a handler on demand if necessary.
-		//       Alternatively think about adding a local queue but be wary about request cancellation.
 		FStreamHandler* Handler = nullptr;
 		switch(Request->GetType())
 		{
@@ -200,6 +219,9 @@ IStreamReader::EAddResult FStreamReaderFMP4DASH::AddRequest(uint32 CurrentPlayba
 				break;
 			case EStreamType::Audio:
 				Handler = &StreamHandlers[1];
+				break;
+			case EStreamType::Subtitle:
+				Handler = &StreamHandlers[2];
 				break;
 			default:
 				break;
@@ -218,6 +240,23 @@ IStreamReader::EAddResult FStreamReaderFMP4DASH::AddRequest(uint32 CurrentPlayba
 		}
 
 		Request->SetPlaybackSequenceID(CurrentPlaybackSequenceID);
+		if (Handler->bRunOnThreadPool)
+		{
+			Handler->IsIdleSignal.Reset();
+			Async(EAsyncExecution::ThreadPool, [Handler]()
+			{
+				Handler->RunInThreadPool();
+			});
+		}
+		else
+		{
+			if (!Handler->bWasStarted)
+			{
+				Handler->ThreadStart(Electra::MakeDelegate(Handler, &FStreamHandler::WorkerThread));
+				Handler->bWasStarted = true;
+			}
+		}
+
 		Handler->bRequestCanceled = false;
 		Handler->bSilentCancellation = false;
 		Handler->CurrentRequest = Request;
@@ -235,6 +274,10 @@ void FStreamReaderFMP4DASH::CancelRequest(EStreamType StreamType, bool bSilent)
 	else if (StreamType == EStreamType::Audio)
 	{
 		StreamHandlers[1].Cancel(bSilent);
+	}
+	else if (StreamType == EStreamType::Subtitle)
+	{
+		StreamHandlers[2].Cancel(bSilent);
 	}
 }
 
@@ -258,6 +301,7 @@ FStreamReaderFMP4DASH::FStreamHandler::FStreamHandler()
 FStreamReaderFMP4DASH::FStreamHandler::~FStreamHandler()
 {
 	// NOTE: The thread will have been terminated by the enclosing FStreamReaderFMP4DASH's Close() method!
+	//       Also, this may have run on the thread pool instead of a dedicated worker thread.
 }
 
 void FStreamReaderFMP4DASH::FStreamHandler::Cancel(bool bSilent)
@@ -301,6 +345,34 @@ void FStreamReaderFMP4DASH::FStreamHandler::WorkerThread()
 	}
 	StreamSelector.Reset();
 }
+
+void FStreamReaderFMP4DASH::FStreamHandler::RunInThreadPool()
+{
+	LLM_SCOPE(ELLMTag::ElectraPlayer);
+
+	StreamSelector = PlayerSessionService->GetStreamSelector();
+	check(StreamSelector.IsValid());
+	WorkSignal.Obtain();
+	if (!bTerminate)
+	{
+		if (CurrentRequest.IsValid())
+		{
+			if (!bRequestCanceled)
+			{
+				HandleRequest();
+			}
+			else
+			{
+				CurrentRequest.Reset();
+			}
+		}
+		bRequestCanceled = false;
+		bSilentCancellation = false;
+	}
+	StreamSelector.Reset();
+	IsIdleSignal.Signal();
+}
+
 
 
 void FStreamReaderFMP4DASH::FStreamHandler::LogMessage(IInfoLog::ELevel Level, const FString& Message)
@@ -455,7 +527,7 @@ FErrorDetail FStreamReaderFMP4DASH::FStreamHandler::GetInitSegment(TSharedPtrTS<
 	if (parseError == UEMEDIA_ERROR_OK || parseError == UEMEDIA_ERROR_END_OF_STREAM)
 	{
 		// Parse the tracks of the init segment. We do this mainly to get to the CSD we might need should we have to insert filler data later.
-		parseError = Init->PrepareTracks(TSharedPtrTS<const IParserISO14496_12>());
+		parseError = Init->PrepareTracks(PlayerSessionService, TSharedPtrTS<const IParserISO14496_12>());
 		if (parseError == UEMEDIA_ERROR_OK)
 		{
 			// Add this to the entity cache in case it needs to be retrieved again.
@@ -483,6 +555,112 @@ FErrorDetail FStreamReaderFMP4DASH::FStreamHandler::GetInitSegment(TSharedPtrTS<
 		StreamSelector->ReportDownloadEnd(ds);
 		return CreateError(FString::Printf(TEXT("Parse error of init segment \"%s\""), *LoadReq->URL), INTERNAL_ERROR_INIT_SEGMENT_PARSE_ERROR);
 	}
+}
+
+
+FErrorDetail FStreamReaderFMP4DASH::FStreamHandler::RetrieveSideloadedFile(TSharedPtrTS<const TArray<uint8>>& OutData, const TSharedPtrTS<FStreamSegmentRequestFMP4DASH>& Request)
+{
+	if (Request->Segment.MediaURL.URL.IsEmpty())
+	{
+		return FErrorDetail();
+	}
+
+	// Check if we already have this cached.
+	IPlayerEntityCache::FCacheItem CachedItem;
+	if (PlayerSessionService->GetEntityCache()->GetCachedEntity(CachedItem, Request->Segment.MediaURL.URL, Request->Segment.MediaURL.Range))
+	{
+		// Already cached. Use it.
+		OutData = CachedItem.RawPayloadData;
+		return FErrorDetail();
+	}
+
+	// Get the manifest reader. We need it to handle the download.
+	TSharedPtrTS<IPlaylistReader> ManifestReader = PlayerSessionService->GetManifestReader();
+	if (!ManifestReader.IsValid())
+	{
+		return PostError(PlayerSessionService, TEXT("Entity loader disappeared"), 0);
+	}
+
+	// Create a download finished structure we can wait upon for completion.
+	struct FLoadResult
+	{
+		FMediaEvent Event;
+		bool bSuccess = false;
+	};
+	TSharedPtrTS<FLoadResult> LoadResult = MakeSharedTS<FLoadResult>();
+
+	// Create the download request.
+	TSharedPtrTS<FMPDLoadRequestDASH> LoadReq = MakeSharedTS<FMPDLoadRequestDASH>();
+	LoadReq->LoadType = FMPDLoadRequestDASH::ELoadType::Sideload;
+	LoadReq->URL = Request->Segment.MediaURL.URL;
+	LoadReq->Range = Request->Segment.MediaURL.Range;
+	if (Request->Segment.MediaURL.CustomHeader.Len())
+	{
+		LoadReq->Headers.Emplace(HTTP::FHTTPHeader({DASH::HTTPHeaderOptionName, Request->Segment.MediaURL.CustomHeader}));
+	}
+	LoadReq->PlayerSessionServices = PlayerSessionService;
+	LoadReq->CompleteCallback.BindLambda([LoadResult](TSharedPtrTS<FMPDLoadRequestDASH> LoadRequest, bool bSuccess)
+	{
+		LoadResult->bSuccess = bSuccess;
+		LoadResult->Event.Signal();
+	});
+	// Issue the download request.
+	check(ManifestReader->GetPlaylistType().Equals(TEXT("dash")));
+	IPlaylistReaderDASH* Reader = static_cast<IPlaylistReaderDASH*>(ManifestReader.Get());
+	Reader->AddElementLoadRequests(TArray<TWeakPtrTS<FMPDLoadRequestDASH>>({LoadReq}));
+
+	// Wait for completion or abort
+	while(!HasReadBeenAborted())
+	{
+		if (LoadResult->Event.WaitTimeout(1000 * 100))
+		{
+			break;
+		}
+	}
+	if (HasReadBeenAborted())
+	{
+		return FErrorDetail();
+	}
+	
+	// Set up download stats to be sent to the stream selector.
+	const HTTP::FConnectionInfo* ci = LoadReq->GetConnectionInfo();
+	Metrics::FSegmentDownloadStats ds;
+	ds.StatsID = FMediaInterlockedIncrement(UniqueDownloadID);
+	ds.StreamType = Request->GetType();
+	ds.SegmentType = Metrics::ESegmentType::Media;
+	ds.URL = Request->Segment.MediaURL.URL;
+	ds.Range = Request->Segment.MediaURL.Range;
+	ds.CDN = Request->Segment.MediaURL.CDN;
+	ds.bWasSuccessful = LoadResult->bSuccess;
+	ds.HTTPStatusCode = ci->StatusInfo.HTTPStatus;
+	ds.TimeToFirstByte = ci->TimeUntilFirstByte;
+	ds.TimeToDownload = (ci->RequestEndTime - ci->RequestStartTime).GetAsSeconds();
+	ds.ByteSize = ci->ContentLength;
+	ds.NumBytesDownloaded = ci->BytesReadSoFar;
+	ds.ThroughputBps = ci->Throughput.GetThroughput() ? ci->Throughput.GetThroughput() : (ds.TimeToDownload > 0.0 ? 8 * ds.NumBytesDownloaded / ds.TimeToDownload : 0);
+	ds.MediaAssetID = Request->Period.IsValid() ? Request->Period->GetUniqueIdentifier() : "";
+	ds.AdaptationSetID = Request->AdaptationSet.IsValid() ? Request->AdaptationSet->GetUniqueIdentifier() : "";
+	ds.RepresentationID = Request->Representation.IsValid() ? Request->Representation->GetUniqueIdentifier() : "";
+	ds.Bitrate = Request->GetBitrate();
+
+	if (!LoadResult->bSuccess)
+	{
+		Request->ConnectionInfo = *ci;
+		StreamSelector->ReportDownloadEnd(ds);
+		return CreateError(FString::Printf(TEXT("Sideloaded media download error: %s"), *ci->StatusInfo.ErrorDetail.GetMessage()), INTERNAL_ERROR_INIT_SEGMENT_DOWNLOAD_ERROR);
+	}
+
+	OutData = MakeSharedTS<const TArray<uint8>>(TArrayView<uint8>(LoadReq->Request->GetResponseBuffer()->Buffer.GetLinearReadData(), LoadReq->Request->GetResponseBuffer()->Buffer.GetLinearReadSize()));
+
+	// Add this to the entity cache in case it needs to be retrieved again.
+	IPlayerEntityCache::FCacheItem CacheItem;
+	CacheItem.URL = LoadReq->URL;
+	CacheItem.Range = LoadReq->Range;
+	CacheItem.RawPayloadData = OutData;
+	PlayerSessionService->GetEntityCache()->CacheEntity(CacheItem);
+
+	StreamSelector->ReportDownloadEnd(ds);
+	return FErrorDetail();
 }
 
 void FStreamReaderFMP4DASH::FStreamHandler::CheckForInbandDASHEvents()
@@ -517,7 +695,7 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleEventMessages()
 	// Are there 'emsg' boxes we need to handle?
 	if (MP4Parser->GetNumberOfEventMessages())
 	{
-		FTimeValue AbsPeriodStart = CurrentRequest->PeriodStart + CurrentRequest->AST + CurrentRequest->AdditionalAdjustmentTime + CurrentRequest->PlayerLoopState.LoopBasetime;
+		FTimeValue AbsPeriodStart = CurrentRequest->PeriodStart + CurrentRequest->AST + CurrentRequest->AdditionalAdjustmentTime;
 		// We may need the EPT from the 'sidx' if there is one.
 		const IParserISO14496_12::ISegmentIndex* Sidx = MP4Parser->GetSegmentIndexByIndex(0);
 		for(int32 nEmsg=0, nEmsgs=MP4Parser->GetNumberOfEventMessages(); nEmsg<nEmsgs; ++nEmsg)
@@ -600,7 +778,6 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 {
 	// Get the request into a local shared pointer to hold on to it.
 	TSharedPtrTS<FStreamSegmentRequestFMP4DASH> Request = CurrentRequest;
-	TSharedPtr<const FPlayerLoopState, ESPMode::ThreadSafe> PlayerLoopState = MakeShared<const FPlayerLoopState, ESPMode::ThreadSafe>(Request->PlayerLoopState);
 	TSharedPtrTS<FAccessUnit::CodecData> CSD(new FAccessUnit::CodecData);
 	FTimeValue SegmentDuration = FTimeValue().SetFromND(Request->Segment.Duration, Request->Segment.Timescale);
 	FString RequestURL = Request->Segment.MediaURL.URL;
@@ -659,35 +836,6 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 		return;
 	}
 
-	// Does this request have an availability window?
-	if (Request->ASAST.IsValid())
-	{
-		FTimeValue Now = PlayerSessionService->GetSynchronizedUTCTime()->GetTime();
-		FTimeValue When = Request->ASAST;
-		if (Request->DownloadDelayTime.IsValid())
-		{
-			When += Request->DownloadDelayTime;
-		}
-		// Availability start time not reached yet?
-		while(Now < When)
-		{
-			if (HasReadBeenAborted())
-			{
-				CurrentRequest.Reset();
-				return;
-			}
-			const int64 SleepIntervalMS = 100;
-			FMediaRunnable::SleepMilliseconds((uint32) Utils::Max(Utils::Min((When - Now).GetAsMilliseconds(), SleepIntervalMS), (int64)0));
-			Now = PlayerSessionService->GetSynchronizedUTCTime()->GetTime();
-		}
-
-		// Already expired?
-		if (Now > Request->SAET)
-		{
-			// TODO:
-		}
-	}
-
 	// Clear internal work variables.
 	bHasErrored 		   = false;
 	bAbortedByABR   	   = false;
@@ -699,7 +847,7 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 
 	FTimeValue NextExpectedDTS;
 	FTimeValue LastKnownAUDuration;
-	FTimeValue TimeOffset = Request->PeriodStart + Request->AST + Request->AdditionalAdjustmentTime + Request->PlayerLoopState.LoopBasetime;
+	FTimeValue TimeOffset = Request->PeriodStart + Request->AST + Request->AdditionalAdjustmentTime;
 
 
 	// Get the init segment if there is one. Either gets it from the entity cache or requests it now and adds it to the cache.
@@ -715,6 +863,8 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 				CSD->CodecSpecificData = Track->GetCodecSpecificData();
 				CSD->RawCSD = Track->GetCodecSpecificDataRAW();
 				CSD->ParsedInfo = Track->GetCodecInformation();
+				// Set information from the MPD codec information that is not available on the init segment.
+				CSD->ParsedInfo.SetBitrate(Request->CodecInfo.GetBitrate());
 			}
 		}
 	}
@@ -723,7 +873,57 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 
 	if (InitSegmentError.IsOK() && !HasReadBeenAborted())
 	{
-		if (!bIsEmptyFillerSegment)
+		if (Request->Segment.bIsSideload)
+		{
+			FErrorDetail SideloadError;
+			TSharedPtrTS<const TArray<uint8>> SideloadedData;
+			SideloadError = RetrieveSideloadedFile(SideloadedData, Request);
+			if (SideloadError.IsOK())
+			{
+				// CSD is only partially available for sideloaded files.
+				CSD->ParsedInfo = Request->CodecInfo;
+
+				uint32 TrackTimescale = Request->Segment.Timescale;
+
+				// Create an access unit
+				FAccessUnit *AccessUnit = FAccessUnit::Create(Parameters.MemoryProvider);
+				AccessUnit->ESType = Request->GetType();
+				AccessUnit->AUSize = (uint32) SideloadedData->Num();
+				AccessUnit->AUData = AccessUnit->AllocatePayloadBuffer(AccessUnit->AUSize);
+				FMemory::Memcpy(AccessUnit->AUData, SideloadedData->GetData(), SideloadedData->Num());
+				AccessUnit->AUCodecData = CSD;
+				AccessUnit->bIsFirstInSequence = true;
+				AccessUnit->bIsSyncSample = true;
+				AccessUnit->bIsDummyData = false;
+				AccessUnit->bIsSideloaded = true;
+				AccessUnit->BufferSourceInfo = Request->SourceBufferInfo;
+				AccessUnit->SequenceIndex = Request->TimestampSequenceIndex;
+				AccessUnit->DropState = FAccessUnit::EDropState::None;
+
+				// Sideloaded files coincide with the period start
+				AccessUnit->DTS = TimeOffset;
+				AccessUnit->PTS = TimeOffset;
+				AccessUnit->PTO.SetFromND(Request->Segment.PTO, TrackTimescale);
+				AccessUnit->DTS.SetSequenceIndex(Request->TimestampSequenceIndex);
+				AccessUnit->PTS.SetSequenceIndex(Request->TimestampSequenceIndex);
+
+				FTimeValue Duration(Request->Segment.Duration, TrackTimescale);
+				AccessUnit->Duration = Duration;
+
+				DurationSuccessfullyRead += Duration;
+				NextExpectedDTS = AccessUnit->DTS + Duration;
+				LastKnownAUDuration = Duration;
+				AccessUnitFIFO.Push(AccessUnit);
+				// Clear the pointer since we must not touch this AU again after we handed it off.
+				AccessUnit = nullptr;
+			}
+			else
+			{
+				CurrentRequest->ConnectionInfo.StatusInfo.ErrorDetail = SideloadError;
+				bHasErrored = true;
+			}
+		}
+		else if (!bIsEmptyFillerSegment)
 		{
 			ReadBuffer.Reset();
 			ReadBuffer.ReceiveBuffer = MakeSharedTS<IElectraHttpManager::FReceiveBuffer>();
@@ -736,6 +936,7 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 			HTTP->Parameters.URL   = RequestURL;
 			HTTP->ReceiveBuffer    = ReadBuffer.ReceiveBuffer;
 			HTTP->ProgressListener = ProgressListener;
+			HTTP->ResponseCache = PlayerSessionService->GetHTTPResponseCache();
 			HTTP->Parameters.Range.Set(Request->Segment.MediaURL.Range);
 			HTTP->Parameters.AcceptEncoding.Set(TEXT("identity"));
 			if (Request->Segment.MediaURL.CustomHeader.Len())
@@ -755,6 +956,7 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 			bool bDone = false;
 			bool bIsFirstAU = true;
 			bool bReadPastLastPTS = false;
+			FTimeValue TimelineOffset;
 
 			// Encrypted?
 			TSharedPtr<ElectraCDM::IMediaCDMDecrypter, ESPMode::ThreadSafe> Decrypter;
@@ -778,7 +980,7 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 						SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_DASH_StreamReader);
 						CSV_SCOPED_TIMING_STAT(ElectraPlayer, DASH_StreamReader);
 						Request->Segment.bSawLMSG = MP4Parser->HasBrand(IParserISO14496_12::BrandType_lmsg);
-						parseError = MP4Parser->PrepareTracks(MP4InitSegment);
+						parseError = MP4Parser->PrepareTracks(PlayerSessionService, MP4InitSegment);
 					}
 					if (parseError == UEMEDIA_ERROR_OK)
 					{
@@ -794,18 +996,22 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 								CSD->CodecSpecificData = Track->GetCodecSpecificData();
 								CSD->RawCSD = Track->GetCodecSpecificDataRAW();
 								CSD->ParsedInfo = Track->GetCodecInformation();
+								// Set information from the MPD codec information that is not available on the init segment.
+								CSD->ParsedInfo.SetBitrate(Request->CodecInfo.GetBitrate());
 
 								IParserISO14496_12::ITrackIterator* TrackIterator = Track->CreateIterator();
 								TrackTimescale = TrackIterator->GetTimescale();
 
 								int64 MediaLocalFirstAUTime = Request->Segment.MediaLocalFirstAUTime;
 								int64 MediaLocalLastAUTime = Request->Segment.MediaLocalLastAUTime;
+								int64 PTO = Request->Segment.PTO;
 
 								if (TrackTimescale != Request->Segment.Timescale)
 								{
 									// Need to rescale the AU times from the MPD timescale to the media timescale.
 									MediaLocalFirstAUTime = FTimeFraction(Request->Segment.MediaLocalFirstAUTime, Request->Segment.Timescale).GetAsTimebase(TrackTimescale);
 									MediaLocalLastAUTime = FTimeFraction(Request->Segment.MediaLocalLastAUTime, Request->Segment.Timescale).GetAsTimebase(TrackTimescale);
+									PTO = FTimeFraction(Request->Segment.PTO, Request->Segment.Timescale).GetAsTimebase(TrackTimescale);
 
 									if (!Request->bWarnedAboutTimescale)
 									{
@@ -824,6 +1030,14 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 
 								for(Error = TrackIterator->StartAtFirst(false); Error == UEMEDIA_ERROR_OK; Error = TrackIterator->Next())
 								{
+									if (bIsFirstAU)
+									{
+										FTimeValue BaseMediaDecodeTime;
+										BaseMediaDecodeTime.SetFromND(TrackIterator->GetBaseMediaDecodeTime(), TrackIterator->GetTimescale());
+										TimelineOffset = BaseMediaDecodeTime - Request->Segment.PeriodLocalSegmentStartTime;
+										//LogMessage(IInfoLog::ELevel::Info, FString::Printf(TEXT("Segment to timeline delta = %.3fs"), TimelineOffset.GetAsSeconds()));
+									}
+
 									// Get the DTS and PTS. Those are 0-based in a fragment and offset by the base media decode time of the fragment.
 									int64 AUDTS = TrackIterator->GetDTS();
 									int64 AUPTS = TrackIterator->GetPTS();
@@ -839,46 +1053,56 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 									AccessUnit->bIsDummyData = false;
 									AccessUnit->AUCodecData = CSD;
 									AccessUnit->BufferSourceInfo = Request->SourceBufferInfo;
-									AccessUnit->PlayerLoopState = PlayerLoopState;
 
 									AccessUnit->DropState = FAccessUnit::EDropState::None;
 									// Is this AU entirely before the time we want?
 									int64 Overlap = AUPTS + AUDuration - MediaLocalFirstAUTime;
 									if (Overlap <= 0)
 									{
-										AccessUnit->DropState |= FAccessUnit::EDropState::PtsTooEarly;
-										AccessUnit->DropState |= FAccessUnit::EDropState::DtsTooEarly;
-									}
-									// Partial overlap?
-									else if (AUPTS < MediaLocalFirstAUTime)
-									{
-										// Use it, but remember the amount of overlap.
-										AccessUnit->OverlapAdjust.SetFromND(Overlap, TrackTimescale);
+										AccessUnit->DropState |= FAccessUnit::EDropState::TooEarly;
 									}
 									// Entirely past the time allowed?
-									if (bIsLastSegment)
+									if (bIsLastSegment || Request->Segment.bFrameAccuracyRequired)
 									{
 										if (AUPTS >= MediaLocalLastAUTime)
 										{
-											AccessUnit->DropState |= FAccessUnit::EDropState::PtsTooLate;
-											AccessUnit->DropState |= FAccessUnit::EDropState::DtsTooLate;
+											AccessUnit->DropState |= FAccessUnit::EDropState::TooLate;
 										}
-										else if (AUPTS + AUDuration >= MediaLocalLastAUTime)
+										/*
+										if (AUPTS + AUDuration >= MediaLocalLastAUTime)
 										{
 											// Note that we cannot stop reading here. For one we need to continue in case there are additional tracks here
-											// that have not yet finished and we also need to make it all the way to the end in case there are additional
-											// boxes that we have to read (like 'emsg' or 'lmsg').
-											AccessUnit->OverlapAdjust.SetFromND(AUPTS + AUDuration - MediaLocalLastAUTime, TrackTimescale);
+											// that have not yet finished (although multiple tracks are not presently supported) and we also need to make
+											// it all the way to the end in case there are additional boxes that we have to read (like 'emsg').
 										}
+										*/
 									}
 									FTimeValue Duration(TrackIterator->GetDuration(), TrackTimescale);
 									AccessUnit->Duration = Duration;
 
 									// Offset the AU's DTS and PTS to the time mapping of the segment.
-									AccessUnit->DTS.SetFromND(AUDTS, TrackTimescale);
+									AccessUnit->DTS.SetFromND(AUDTS - PTO, TrackTimescale);
 									AccessUnit->DTS += TimeOffset;
-									AccessUnit->PTS.SetFromND(AUPTS, TrackTimescale);
+									AccessUnit->PTS.SetFromND(AUPTS - PTO, TrackTimescale);
 									AccessUnit->PTS += TimeOffset;
+									AccessUnit->PTO.SetFromND(PTO, TrackTimescale);
+
+									// Set the sequence index member and update all timestamps with it as well.
+									AccessUnit->SequenceIndex = Request->TimestampSequenceIndex;
+									AccessUnit->DTS.SetSequenceIndex(Request->TimestampSequenceIndex);
+									AccessUnit->PTS.SetSequenceIndex(Request->TimestampSequenceIndex);
+
+									if (Request->Segment.bFrameAccuracyRequired)
+									{
+										AccessUnit->EarliestPTS.SetFromND(MediaLocalFirstAUTime - PTO, TrackTimescale);
+										AccessUnit->EarliestPTS += TimeOffset;
+										AccessUnit->EarliestPTS.SetSequenceIndex(Request->TimestampSequenceIndex);
+									}
+									AccessUnit->LatestPTS.SetFromND(MediaLocalLastAUTime - PTO, TrackTimescale);
+									AccessUnit->LatestPTS += TimeOffset;
+									AccessUnit->LatestPTS.SetSequenceIndex(Request->TimestampSequenceIndex);
+
+									AccessUnit->OffsetFromSegmentStart = TimelineOffset;
 
 									ElectraCDM::FMediaCDMSampleInfo SampleEncryptionInfo;
 									bool bIsSampleEncrypted = TrackIterator->GetEncryptionInfo(SampleEncryptionInfo);
@@ -957,6 +1181,7 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 									// Check if the AU is outside the time range we are allowed to read.
 									// The last one (the one that is already outside the range, actually) is tagged as such and sent into the buffer.
 									// The respective decoder has to handle this flag if necessary and/or drop the AU.
+									// We need to send at least one AU down so the FMultiTrackAccessUnitBuffer does not stay empty for this period!
 									if (AccessUnit)
 									{
 										// Already sent the last one?
@@ -966,7 +1191,7 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 											FAccessUnit::Release(AccessUnit);
 											AccessUnit = nullptr;
 										}
-										else if ((AccessUnit->DropState & (FAccessUnit::EDropState::PtsTooLate | FAccessUnit::EDropState::DtsTooLate)) == (FAccessUnit::EDropState::PtsTooLate | FAccessUnit::EDropState::DtsTooLate))
+										else if ((AccessUnit->DropState & FAccessUnit::EDropState::TooLate) == FAccessUnit::EDropState::TooLate)
 										{
 											// Tag the last one and send it off, but stop doing so for the remainder of the segment.
 											// Note: we continue reading this segment all the way to the end on purpose in case there are further 'emsg' boxes.
@@ -1079,10 +1304,17 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 	// Do we need to fill remaining duration with dummy data?
 	if (bIsEmptyFillerSegment || bFillRemainingDuration)
 	{
+		// Inserting dummy data means this request was successful.
+		CurrentRequest->ConnectionInfo.StatusInfo.Empty();
+		CurrentRequest->ConnectionInfo.StatusInfo.HTTPStatus = Request->Segment.MediaURL.Range.Len() ? 206 : 200;
+		ds.HTTPStatusCode = CurrentRequest->ConnectionInfo.StatusInfo.HTTPStatus;
+
 		// Get the supposed segment duration.
 		FTimeValue SegmentDurationToGo = SegmentDuration;
-		FTimeValue DiscardBefore = TimeOffset + FTimeValue(Request->Segment.MediaLocalFirstAUTime, Request->Segment.Timescale);
-		FTimeValue DiscardAfter = TimeOffset + FTimeValue(Request->Segment.MediaLocalLastAUTime, Request->Segment.Timescale);
+		FTimeValue PTO;
+		PTO.SetFromND(Request->Segment.PTO, Request->Segment.Timescale);
+		FTimeValue DiscardBefore = TimeOffset + FTimeValue(Request->Segment.MediaLocalFirstAUTime - Request->Segment.PTO, Request->Segment.Timescale);
+		FTimeValue DiscardAfter = TimeOffset + FTimeValue(Request->Segment.MediaLocalLastAUTime - Request->Segment.PTO, Request->Segment.Timescale);
 
 		// Did we get anything so far?
 		FTimeValue DefaultDuration;
@@ -1092,11 +1324,15 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 			check(LastKnownAUDuration.IsValid());
 			SegmentDurationToGo -= DurationSuccessfullyRead;
 			DefaultDuration = LastKnownAUDuration;
+			NextExpectedDTS.SetSequenceIndex(Request->TimestampSequenceIndex);
 		}
 		else
 		{
-			// No. We need to start with the segment time.
-			NextExpectedDTS = Request->GetFirstPTS();
+			// No. We need to start with the segment time. Not the adjusted media local time since we would be generating
+			// too many dummy AUs as we go over the entire segment duration!
+			NextExpectedDTS.SetFromND(Request->Segment.Time - Request->Segment.PTO, Request->Segment.Timescale);
+			NextExpectedDTS += TimeOffset;
+			NextExpectedDTS.SetSequenceIndex(Request->TimestampSequenceIndex);
 			switch(Request->GetType())
 			{
 				case EStreamType::Video:
@@ -1146,7 +1382,6 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 
 			AccessUnit->ESType = Request->GetType();
 			AccessUnit->BufferSourceInfo = Request->SourceBufferInfo;
-			AccessUnit->PlayerLoopState = PlayerLoopState;
 			AccessUnit->Duration = DefaultDuration;
 			AccessUnit->AUSize = 0;
 			AccessUnit->AUData = nullptr;
@@ -1156,24 +1391,41 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 				AccessUnit->AUCodecData = CSD;
 			}
 
-			// Calculate the drop on the fragment local NextExpectedDTS/PTS.
-			AccessUnit->DropState = FAccessUnit::EDropState::None;
-			if (NextExpectedDTS < DiscardBefore)
-			{
-				AccessUnit->DropState |= FAccessUnit::EDropState::DtsTooEarly;
-				AccessUnit->DropState |= FAccessUnit::EDropState::PtsTooEarly;
-			}
-			else if (NextExpectedDTS + DefaultDuration > DiscardAfter)
-			{
-				AccessUnit->DropState |= FAccessUnit::EDropState::DtsTooEarly;
-				AccessUnit->DropState |= FAccessUnit::EDropState::PtsTooEarly;
-			}
+			// Set the sequence index member and update all timestamps with it as well.
+			AccessUnit->SequenceIndex = Request->TimestampSequenceIndex;
 			AccessUnit->DTS = NextExpectedDTS;
 			AccessUnit->PTS = NextExpectedDTS;
+			AccessUnit->DTS.SetSequenceIndex(Request->TimestampSequenceIndex);
+			AccessUnit->PTS.SetSequenceIndex(Request->TimestampSequenceIndex);
+			AccessUnit->PTO = PTO;
+
+			if (Request->Segment.bFrameAccuracyRequired)
+			{
+				AccessUnit->EarliestPTS = DiscardBefore;
+				AccessUnit->EarliestPTS.SetSequenceIndex(Request->TimestampSequenceIndex);
+			}
+			AccessUnit->LatestPTS = DiscardAfter;
+			AccessUnit->LatestPTS.SetSequenceIndex(Request->TimestampSequenceIndex);
+
+			// Calculate the drop on the fragment local NextExpectedDTS/PTS.
+			AccessUnit->DropState = FAccessUnit::EDropState::None;
+			if (NextExpectedDTS + AccessUnit->Duration < DiscardBefore)
+			{
+				AccessUnit->DropState |= FAccessUnit::EDropState::TooEarly;
+			}
+			if (NextExpectedDTS > DiscardAfter)
+			{
+				AccessUnit->DropState |= FAccessUnit::EDropState::TooLate;
+				AccessUnit->bIsLastInPeriod = true;
+			}
 
 			NextExpectedDTS += DefaultDuration;
 			SegmentDurationToGo -= DefaultDuration;
 			AccessUnitFIFO.Push(AccessUnit);
+			if (AccessUnit->bIsLastInPeriod)
+			{
+				break;
+			}
 		}
 	}
 
@@ -1228,6 +1480,8 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 	{
 		ds.ThroughputBps = ds.TimeToDownload > 0.0 ? 8 * ds.NumBytesDownloaded / ds.TimeToDownload : 0;
 	}
+	ds.bIsCachedResponse = CurrentRequest->ConnectionInfo.bIsCachedResponse;
+
 
 	// Was this request for a segment that might potentially be missing and it did?
 	if (Request->Segment.bMayBeMissing && (ds.HTTPStatusCode == 404 || ds.HTTPStatusCode == 416))
@@ -1281,14 +1535,6 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 		}
 	}
 
-	if (!bSilentCancellation)
-	{
-		StreamSelector->ReportDownloadEnd(ds);
-	}
-
-	// Remember the next expected timestamp.
-	CurrentRequest->NextLargestExpectedTimestamp = NextExpectedDTS;
-
 	// Clean out everything before reporting OnFragmentClose().
 	TSharedPtrTS<FStreamSegmentRequestFMP4DASH> FinishedRequest = CurrentRequest;
 	CurrentRequest.Reset();
@@ -1298,6 +1544,7 @@ void FStreamReaderFMP4DASH::FStreamHandler::HandleRequest()
 
 	if (!bSilentCancellation)
 	{
+		StreamSelector->ReportDownloadEnd(ds);
 		Parameters.EventListener->OnFragmentClose(FinishedRequest);
 	}
 }

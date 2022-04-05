@@ -14,6 +14,7 @@
 #include "ScopedTransaction.h"
 #include "Engine/Selection.h"
 #include "AssetRegistryModule.h"
+#include "EdGraphSchema_K2.h"
 
 #define LOCTEXT_NAMESPACE "SGraphPinObject"
 
@@ -52,18 +53,15 @@ TSharedRef<SWidget>	SGraphPinObject::GetDefaultValueWidget()
 		return SNullWidget::NullWidget;
 	}
 
-	if( AllowSelfPinWidget() )
+	if(ShouldDisplayAsSelfPin())
 	{
-		if(Schema->IsSelfPin(*GraphPinObj))
-		{
-			return SNew(SEditableTextBox)
-				.Style( FEditorStyle::Get(), "Graph.EditableTextBox" )
-				.Text( this, &SGraphPinObject::GetValue )
-				.SelectAllTextWhenFocused(false)
-				.Visibility( this, &SGraphPinObject::GetDefaultValueVisibility )
-				.IsReadOnly(true)
-				.ForegroundColor( FSlateColor::UseForeground() );
-		}
+		return SNew(SEditableTextBox)
+			.Style( FEditorStyle::Get(), "Graph.EditableTextBox" )
+			.Text( this, &SGraphPinObject::GetValue )
+			.SelectAllTextWhenFocused(false)
+			.Visibility( this, &SGraphPinObject::GetDefaultValueVisibility )
+			.IsReadOnly( true )
+			.ForegroundColor( FSlateColor::UseForeground() );
 	}
 	// Don't show literal buttons for component type objects
 	if (Schema->ShouldShowAssetPickerForPin(GraphPinObj))
@@ -110,7 +108,7 @@ TSharedRef<SWidget>	SGraphPinObject::GetDefaultValueWidget()
 				[
 					SNew(SImage)
 					.ColorAndOpacity( this, &SGraphPinObject::OnGetWidgetForeground )
-					.Image( FEditorStyle::GetBrush(TEXT("PropertyWindow.Button_Use")) )
+					.Image( FEditorStyle::GetBrush(TEXT("Icons.CircleArrowLeft")) )
 				]
 			]
 			// Browse button
@@ -128,7 +126,7 @@ TSharedRef<SWidget>	SGraphPinObject::GetDefaultValueWidget()
 				[
 					SNew(SImage)
 					.ColorAndOpacity( this, &SGraphPinObject::OnGetWidgetForeground )
-					.Image( FEditorStyle::GetBrush(TEXT("PropertyWindow.Button_Browse")) )
+					.Image( FEditorStyle::GetBrush(TEXT("Icons.Search")) )
 				]
 			];
 	}
@@ -279,6 +277,27 @@ void SGraphPinObject::OnAssetEnterPressedInPicker(const TArray<FAssetData>& InSe
 	}
 }
 
+bool SGraphPinObject::ShouldDisplayAsSelfPin() const
+{
+	if (AllowSelfPinWidget() && GraphPinObj)
+	{
+		if (GraphPinObj->GetSchema()->IsSelfPin(*GraphPinObj))
+		{
+			return true;
+		}
+
+		// Also check function/node metadata
+		const FString DefaultToSelfString = GraphPinObj->GetOwningNode()->GetPinMetaData(GraphPinObj->PinName, FBlueprintMetadata::MD_DefaultToSelf);
+		if (DefaultToSelfString == GraphPinObj->PinName.ToString())
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
 FText SGraphPinObject::GetValue() const
 {
 	const FAssetData& CurrentAssetData = GetAssetData(true);
@@ -292,6 +311,10 @@ FText SGraphPinObject::GetValue() const
 		if (GraphPinObj->GetSchema()->IsSelfPin(*GraphPinObj))
 		{
 			Value =  FText::FromName(GraphPinObj->PinName);
+		}
+		else if (ShouldDisplayAsSelfPin())
+		{
+			Value = FText::FromName(UEdGraphSchema_K2::PN_Self);
 		}
 		else
 		{

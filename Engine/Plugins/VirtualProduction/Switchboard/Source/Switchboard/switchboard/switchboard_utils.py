@@ -1,12 +1,13 @@
 # Copyright Epic Games, Inc. All Rights Reserved.
-from .switchboard_logging import LOGGER
-
-from enum import Enum
 import datetime
-import subprocess
+from enum import Enum
 import os
-import threading
+import pathlib
+import subprocess
 import sys
+import threading
+
+from .switchboard_logging import LOGGER
 
 
 class PriorityModifier(Enum):
@@ -20,9 +21,10 @@ class PriorityModifier(Enum):
 
 def get_hidden_sp_startupinfo():
     ''' Returns subprocess.startupinfo and avoids extra cmd line window in Windows. '''
-    startupinfo = subprocess.STARTUPINFO()
+    startupinfo = None
 
-    if sys.platform.startswith("win"):
+    if hasattr(subprocess, 'STARTUPINFO') and hasattr(subprocess, 'STARTF_USESHOWWINDOW'):
+        startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
     return startupinfo
@@ -124,7 +126,7 @@ class PollProcess(object):
 
     def kill(self):
         try:
-            subprocess.check_output(f"taskkill.exe /F /IM {self.task_name}")
+            subprocess.check_output(f"taskkill.exe /F /IM {self.task_name}", startupinfo=get_hidden_sp_startupinfo())
         except:
             pass
 
@@ -152,3 +154,21 @@ def remove_prefix(str, prefix):
     if str.startswith(prefix):
         return str[len(prefix):]
     return str
+
+
+def expand_endpoint(
+        endpoint: str, default_addr: str = '0.0.0.0',
+        default_port: int = 0) -> str:
+    '''
+    Given an endpoint where either address or port was omitted, use
+    the provided defaults.
+    '''
+    addr_str, _, port_str = endpoint.partition(':')
+
+    if not addr_str:
+        addr_str = default_addr
+
+    if not port_str:
+        port_str = str(default_port)
+
+    return f'{addr_str}:{port_str}'

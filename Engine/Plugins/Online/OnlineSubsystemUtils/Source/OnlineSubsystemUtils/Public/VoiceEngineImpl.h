@@ -18,7 +18,7 @@
 #include "DSP/MultithreadedPatching.h"
 
 #include "VoicePacketImpl.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 
 class IOnlineSubsystem;
 class IVoiceDecoder;
@@ -119,7 +119,7 @@ public:
 
 private:
 	int32 NumChannelsComingIn;
-	Audio::AlignedFloatBuffer DownmixBuffer;
+	Audio::FAlignedFloatBuffer DownmixBuffer;
 
 	TUniquePtr<Audio::IAudioMixerPlatformInterface> PlatformEndpoint;
 
@@ -163,6 +163,10 @@ class ONLINESUBSYSTEMUTILS_API FVoiceEngineImpl : public IVoiceEngine, public FS
 					Collector.AddReferencedObject(RemoteData.VoipSynthComponent);
 				}
 			}
+		}
+		virtual FString GetReferencerName() const override
+		{
+			return TEXT("FVoiceEngineImpl::FVoiceSerializeHelper");
 		}
 	};
 
@@ -214,13 +218,6 @@ class ONLINESUBSYSTEMUTILS_API FVoiceEngineImpl : public IVoiceEngine, public FS
 	 * Otherwise, this will cause a crash in FOutputBuffer::MixNextBuffer(), due to AudioMixer->OnProcessAudioStream(); being called on a stale pointer. 
 	 */
 	TArray<TUniquePtr<FVoiceEndpoint>> ExternalEndpoints;
-
-// Get Audio Device Changes on Windows
-#if PLATFORM_WINDOWS
-	FThreadSafeBool bAudioDeviceChanged;
-	double TimeDeviceChaned;
-	const double DeviceChangeDelay = 2.0f;
-#endif
 
 protected:
 	/**
@@ -389,19 +386,7 @@ protected:
 	virtual int32							 GetMaxVoiceRemainderSize();
 	virtual void							 CreateSerializeHelper();
 
-	// Get Audio Device Changes on Windows
-#if PLATFORM_WINDOWS
-	virtual void RegisterDeviceChangedListener();
-	virtual void UnregisterDeviceChangedListener();
-	virtual void HandleDeviceChange();
-
-	//~ Begin IDeviceChangedListener
-	virtual void OnDefaultDeviceChanged() override;
-
-	bool bDeviceChangeListenerRegistered;
-#else
 	virtual void OnDefaultDeviceChanged() override {}
-#endif
 	virtual void OnDeviceRemoved(FString DeviceID) override {}
 	//~ End IDeviceChangedListener
 };

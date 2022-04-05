@@ -21,6 +21,7 @@ public class MovieSceneTracks : ModuleRules
 				"MovieScene",
 				"TimeManagement",
 				"AnimationCore",
+				"AudioExtensions",
 			});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
@@ -38,6 +39,9 @@ public class MovieSceneTracks : ModuleRules
 				});
 			PrivateDependencyModuleNames.AddRange(new string[]
 				{
+					"AnimationBlueprintLibrary",
+					"DataLayerEditor",
+					"EditorFramework",
 					"UnrealEd"
 				});
 		}

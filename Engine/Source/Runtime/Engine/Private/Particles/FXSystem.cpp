@@ -24,8 +24,10 @@ TMap<FName, FCreateCustomFXSystemDelegate> FFXSystemInterface::CreateCustomFXDel
 	External FX system interface.
 -----------------------------------------------------------------------------*/
 
-FFXSystemInterface* FFXSystemInterface::Create(ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InShaderPlatform)
+FFXSystemInterface* FFXSystemInterface::Create(ERHIFeatureLevel::Type InFeatureLevel, FSceneInterface* Scene)
 {
+	check(Scene);
+	EShaderPlatform InShaderPlatform = Scene->GetShaderPlatform();
 	// The FGPUSortManager is currently only being used by FFXSystemInterface implementations.
 	// Because of this, the lifetime management of the GPUSortManager only consists of a ref counter incremented initially 
 	// in the gamethread (in this function) and decremented on the renderthread (when the system interfaces are deleted).
@@ -34,6 +36,9 @@ FFXSystemInterface* FFXSystemInterface::Create(ERHIFeatureLevel::Type InFeatureL
 	if (CreateCustomFXDelegates.Num())
 	{
 		FFXSystemSet* Set = new FFXSystemSet(GPUSortManager);
+		Scene->SetFXSystem(Set);
+		Set->SetScene((FScene*)Scene);
+
 		Set->FXSystems.Add(new FFXSystem(InFeatureLevel, InShaderPlatform, GPUSortManager));
 
 		for (TMap<FName, FCreateCustomFXSystemDelegate>::TConstIterator Ite(CreateCustomFXDelegates); Ite; ++Ite)
@@ -41,6 +46,7 @@ FFXSystemInterface* FFXSystemInterface::Create(ERHIFeatureLevel::Type InFeatureL
 			FFXSystemInterface* CustomFX = Ite.Value().Execute(InFeatureLevel, InShaderPlatform, GPUSortManager);
 			if (CustomFX)
 			{
+				CustomFX->SetScene((FScene*)Scene);
 				Set->FXSystems.Add(CustomFX);
 			}
 		}
@@ -48,8 +54,12 @@ FFXSystemInterface* FFXSystemInterface::Create(ERHIFeatureLevel::Type InFeatureL
 	}
 	else
 	{
-		return new FFXSystem(InFeatureLevel, InShaderPlatform, GPUSortManager);
+		FFXSystemInterface* Ret = new FFXSystem(InFeatureLevel, InShaderPlatform, GPUSortManager);
+		Scene->SetFXSystem(Ret);
+		Ret->SetScene((FScene*)Scene);
+		return Ret;
 	}
+
 }
 void FFXSystemInterface::QueueDestroyGPUSimulation(FFXSystemInterface* FXSystem)
 {
@@ -81,6 +91,25 @@ void FFXSystemInterface::RegisterCustomFXSystem(const FName& InterfaceName, cons
 void FFXSystemInterface::UnregisterCustomFXSystem(const FName& InterfaceName)
 {
 	CreateCustomFXDelegates.Remove(InterfaceName);
+}
+
+FRHIUniformBuffer* FFXSystemInterface::GetReferenceViewUniformBuffer(TConstArrayView<FViewInfo> Views)
+{
+	check(Views.Num() > 0);
+	return Views[0].ViewUniformBuffer;
+}
+
+bool FFXSystemInterface::GetReferenceAllowGPUUpdate(TConstArrayView<FViewInfo> Views)
+{
+	check(Views.Num() > 0);
+	return Views[0].AllowGPUParticleUpdate();
+}
+
+const FGlobalDistanceFieldParameterData* FFXSystemInterface::GetReferenceGlobalDistanceFieldData(TConstArrayView<FViewInfo> Views)
+{
+	check(Views.Num() > 0);
+	const FViewInfo& ReferenceView = Views[0];
+	return &ReferenceView.GlobalDistanceFieldInfo.ParameterData;
 }
 
 /*------------------------------------------------------------------------------
@@ -117,7 +146,7 @@ namespace FXConsoleVariables
 		TEXT("FX.AllowGPUSorting"),
 		bAllowGPUSorting,
 		TEXT("Allow particles to be sorted on the GPU."),
-		ECVF_ReadOnly
+		ECVF_ReadOnly | ECVF_Preview
 		);
 	FAutoConsoleVariableRef CVarFreezeGPUSimulation(
 		TEXT("FX.FreezeGPUSimulation"),
@@ -236,7 +265,7 @@ FFXSystemInterface* FFXSystem::GetInterface(const FName& InName)
 	return InName == Name ? this : nullptr;
 }
 
-void FFXSystem::Tick(float DeltaSeconds)
+void FFXSystem::Tick(UWorld* World, float DeltaSeconds)
 {
 	if (RHISupportsGPUParticles())
 	{
@@ -386,7 +415,7 @@ void FFXSystem::DrawDebug( FCanvas* Canvas )
 	}
 }
 
-void FFXSystem::PreInitViews(FRHICommandListImmediate& RHICmdList, bool bAllowGPUParticleUpdate)
+void FFXSystem::PreInitViews(FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate)
 {
 	if (RHISupportsGPUParticles())
 	{
@@ -394,7 +423,7 @@ void FFXSystem::PreInitViews(FRHICommandListImmediate& RHICmdList, bool bAllowGP
 	}
 }
 
-void FFXSystem::PostInitViews(FRHICommandListImmediate& RHICmdList, FRHIUniformBuffer* ViewUniformBuffer, bool bAllowGPUParticleUpdate)
+void FFXSystem::PostInitViews(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate)
 {
 	// nothing to do here
 }
@@ -429,6 +458,16 @@ bool FFXSystem::RequiresEarlyViewUniformBuffer() const
 	return false;
 }
 
+bool FFXSystem::RequiresRayTracingScene() const
+{
+	if (RHISupportsGPUParticles())
+	{
+		return RequiresRayTracingSceneInternal();
+	}
+
+	return false;
+}
+
 DECLARE_CYCLE_STAT(TEXT("FXPreRender_Prepare"), STAT_CLM_FXPreRender_Prepare, STATGROUP_CommandListMarkers);
 DECLARE_CYCLE_STAT(TEXT("FXPreRender_Simulate"), STAT_CLM_FXPreRender_Simulate, STATGROUP_CommandListMarkers);
 DECLARE_CYCLE_STAT(TEXT("FXPreRender_Finalize"), STAT_CLM_FXPreRender_Finalize, STATGROUP_CommandListMarkers);
@@ -437,52 +476,67 @@ DECLARE_CYCLE_STAT(TEXT("FXPreRender_SimulateCDF"), STAT_CLM_FXPreRender_Simulat
 DECLARE_CYCLE_STAT(TEXT("FXPreRender_FinalizeCDF"), STAT_CLM_FXPreRender_FinalizeCDF, STATGROUP_CommandListMarkers);
 
 
-void FFXSystem::PreRender(FRHICommandListImmediate& RHICmdList, const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData, bool bAllowGPUParticleSceneUpdate)
+void FFXSystem::PreRender(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleSceneUpdate)
 {
+	bAllowGPUParticleSceneUpdate = bAllowGPUParticleSceneUpdate && GetReferenceAllowGPUUpdate(Views);
+
 	if (RHISupportsGPUParticles() && bAllowGPUParticleSceneUpdate)
 	{
-		SCOPED_DRAW_EVENT(RHICmdList, GPUParticles_PreRender);
-		UpdateMultiGPUResources(RHICmdList);
+		FRHIUniformBuffer* ViewUniformBuffer = GetReferenceViewUniformBuffer(Views);
+		const FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData = GetReferenceGlobalDistanceFieldData(Views);
 
-		RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_Prepare));
-		PrepareGPUSimulation(RHICmdList);
+		AddPass(
+			GraphBuilder,
+			RDG_EVENT_NAME("FFXSystem::PreRender"),
+			[this, ViewUniformBuffer, GlobalDistanceFieldParameterData](FRHICommandListImmediate& RHICmdList)
+			{
+				//SCOPE_CYCLE_COUNTER(STAT_FDeferredShadingSceneRenderer_FXSystem_PostRenderOpaque);
 
-		RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_Simulate));
-		SimulateGPUParticles(RHICmdList, EParticleSimulatePhase::Main, nullptr, nullptr, nullptr, nullptr);
+				SCOPED_DRAW_EVENT(RHICmdList, GPUParticles_PreRender);
+				UpdateMultiGPUResources(RHICmdList);
 
-		RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_Finalize));
-		FinalizeGPUSimulation(RHICmdList);
+				RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_Prepare));
+				PrepareGPUSimulation(RHICmdList);
 
-		if (IsParticleCollisionModeSupported(GetShaderPlatform(), PCM_DistanceField))
-		{
-			RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_PrepareCDF));
-			PrepareGPUSimulation(RHICmdList);
+				RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_Simulate));
+				SimulateGPUParticles(RHICmdList, EParticleSimulatePhase::Main, nullptr, nullptr);
 
-			RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_SimulateCDF));
-			SimulateGPUParticles(RHICmdList, EParticleSimulatePhase::CollisionDistanceField, nullptr, GlobalDistanceFieldParameterData, nullptr, nullptr);
-			//particles rendered during basepass may need to read pos/velocity buffers; must finalize unless we know for sure that nothing in base pass will read it.
-			RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_FinalizeCDF));
-			FinalizeGPUSimulation(RHICmdList);
-		}
+				RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_Finalize));
+				FinalizeGPUSimulation(RHICmdList);
+
+				if (IsParticleCollisionModeSupported(GetShaderPlatform(), PCM_DistanceField))
+				{
+					RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_PrepareCDF));
+					PrepareGPUSimulation(RHICmdList);
+
+					RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_SimulateCDF));
+					SimulateGPUParticles(RHICmdList, EParticleSimulatePhase::CollisionDistanceField, ViewUniformBuffer, GlobalDistanceFieldParameterData);
+					//particles rendered during basepass may need to read pos/velocity buffers; must finalize unless we know for sure that nothing in base pass will read it.
+					RHICmdList.SetCurrentStat(GET_STATID(STAT_CLM_FXPreRender_FinalizeCDF));
+					FinalizeGPUSimulation(RHICmdList);
+				}
+			}
+		);
     }
 }
 
-void FFXSystem::PostRenderOpaque(
-	FRHICommandListImmediate& RHICmdList, 
-	FRHIUniformBuffer* ViewUniformBuffer,
-	const FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-	FRHIUniformBuffer* SceneTexturesUniformBuffer,
-	bool bAllowGPUParticleUpdate)
+void FFXSystem::PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate)
 {
-	if (RHISupportsGPUParticles() && IsParticleCollisionModeSupported(GetShaderPlatform(), PCM_DepthBuffer))
+	bAllowGPUParticleUpdate = bAllowGPUParticleUpdate && GetReferenceAllowGPUUpdate(Views);
+
+	if (RHISupportsGPUParticles() && IsParticleCollisionModeSupported(GetShaderPlatform(), PCM_DepthBuffer) && bAllowGPUParticleUpdate)
 	{
-		if (bAllowGPUParticleUpdate)
-		{
-			SCOPED_DRAW_EVENT(RHICmdList, GPUParticles_PostRenderOpaque);
-			PrepareGPUSimulation(RHICmdList);
-			SimulateGPUParticles(RHICmdList, EParticleSimulatePhase::CollisionDepthBuffer, ViewUniformBuffer, NULL, SceneTexturesUniformBufferStruct, SceneTexturesUniformBuffer);
-			FinalizeGPUSimulation(RHICmdList);
-		}
+		FRHIUniformBuffer* ViewUniformBuffer = GetReferenceViewUniformBuffer(Views);
+
+		AddPass(GraphBuilder, RDG_EVENT_NAME("FFXSystem::PostRenderOpaque"), 
+			[this, ViewUniformBuffer](FRHICommandListImmediate& RHICmdList)
+			{
+				SCOPED_DRAW_EVENT(RHICmdList, GPUParticles_PostRenderOpaque);
+				PrepareGPUSimulation(RHICmdList);
+				SimulateGPUParticles(RHICmdList, EParticleSimulatePhase::CollisionDepthBuffer, ViewUniformBuffer, nullptr);
+				FinalizeGPUSimulation(RHICmdList);
+			}
+		);
 	}
 }
 

@@ -4,13 +4,21 @@
 
 #include "RenderResource.h"
 
+struct FSkelMeshRenderSection;
+class UMorphTarget;
 
 class FMorphTargetVertexInfoBuffers : public FRenderResource
 {
 public:
-	FMorphTargetVertexInfoBuffers() : NumTotalWorkItems(0)
+	FMorphTargetVertexInfoBuffers() : NumTotalBatches(0)
 	{
 	}
+
+	void InitMorphResources(EShaderPlatform ShaderPlatform, const TArray<FSkelMeshRenderSection>& RenderSections, const TArray<UMorphTarget*>& MorphTargets, int NumVertices, int32 LODIndex, float TargetPositionErrorTolerance);
+
+	inline bool IsMorphResourcesInitialized() const { return bResourcesInitialized; }
+	inline bool IsRHIIntialized() const { return bRHIIntialized; }
+	inline bool IsMorphCPUDataValid() const{ return bIsMorphCPUDataValid; }
 
 	ENGINE_API virtual void InitRHI() override;
 	ENGINE_API virtual void ReleaseRHI() override;
@@ -22,94 +30,91 @@ public:
 		return uint32(FMath::Min<uint64>(MaximumThreadGroupSize, UINT32_MAX));
 	}
 
-	uint32 GetNumWorkItems(uint32 index = UINT_MAX) const
+	uint32 GetNumBatches(uint32 index = UINT_MAX) const
 	{
-		check(index == UINT_MAX || index < (uint32)WorkItemsPerMorph.Num());
-		return index != UINT_MAX ? WorkItemsPerMorph[index] : NumTotalWorkItems;
+		check(index == UINT_MAX || index < (uint32)BatchesPerMorph.Num());
+		return index != UINT_MAX ? BatchesPerMorph[index] : NumTotalBatches;
 	}
 
 	uint32 GetNumMorphs() const
 	{
-		return WorkItemsPerMorph.Num();
+		return BatchesPerMorph.Num();
 	}
 
-	uint32 GetStartOffset(uint32 Index) const
+	uint32 GetBatchStartOffset(uint32 Index) const
 	{
-		check(Index < (uint32)StartOffsetPerMorph.Num());
-		return StartOffsetPerMorph[Index];
+		check(Index < (uint32)BatchStartOffsetPerMorph.Num());
+		return BatchStartOffsetPerMorph[Index];
 	}
 
-	const FVector4& GetMaximumMorphScale(uint32 Index) const
+	const FVector4f& GetMaximumMorphScale(uint32 Index) const
 	{
 		check(Index < (uint32)MaximumValuePerMorph.Num());
 		return MaximumValuePerMorph[Index];
 	}
 
-	const FVector4& GetMinimumMorphScale(uint32 Index) const
+	const FVector4f& GetMinimumMorphScale(uint32 Index) const
 	{
 		check(Index < (uint32)MinimumValuePerMorph.Num());
 		return MinimumValuePerMorph[Index];
 	}
 
-	uint32 GetNumSplitsPerMorph(uint32 Index) const
+	const float GetPositionPrecision() const
 	{
-		check(Index < (uint32)NumSplitsPerMorph.Num());
-		return NumSplitsPerMorph[Index];
+		return PositionPrecision;
 	}
 
-	FVertexBufferRHIRef VertexIndicesVB;
-	FShaderResourceViewRHIRef VertexIndicesSRV;
+	static const float CalculatePositionPrecision(float TargetPositionErrorTolerance);
 
-	FVertexBufferRHIRef MorphDeltasVB;
-	FShaderResourceViewRHIRef MorphDeltasSRV;
-
-	// Changes to this struct must be reflected in MorphTargets.usf
-	struct FMorphDelta
+	const float GetTangentZPrecision() const
 	{
-		FMorphDelta(FVector InPosDelta, FVector InTangentDelta)
-		{
-			PosDelta[0] = FFloat16(InPosDelta.X);
-			PosDelta[1] = FFloat16(InPosDelta.Y);
-			PosDelta[2] = FFloat16(InPosDelta.Z);
+		return TangentZPrecision;
+	}
 
-			TangentDelta[0] = FFloat16(InTangentDelta.X);
-			TangentDelta[1] = FFloat16(InTangentDelta.Y);
-			TangentDelta[2] = FFloat16(InTangentDelta.Z);
-		}
+	static bool IsPlatformShaderSupported(EShaderPlatform ShaderPlatform);
 
-		FFloat16 PosDelta[3];
-		FFloat16 TangentDelta[3];
-	};
+	FBufferRHIRef MorphDataBuffer;
+	FShaderResourceViewRHIRef MorphDataSRV;
 
 	void Reset()
 	{
-		VertexIndices.Empty();
-		MorphDeltas.Empty();
+		MorphData.Empty();
 		MaximumValuePerMorph.Empty();
 		MinimumValuePerMorph.Empty();
-		StartOffsetPerMorph.Empty();
-		WorkItemsPerMorph.Empty();
-		NumSplitsPerMorph.Empty();
-		TempStoreSize = 0;
-		NumTotalWorkItems = 0;
+		BatchStartOffsetPerMorph.Empty();
+		BatchesPerMorph.Empty();
+		NumTotalBatches = 0;
+		PositionPrecision = 0.0f;
+		TangentZPrecision = 0.0f;
+		bResourcesInitialized = false;
+		bRHIIntialized = false;
+		bIsMorphCPUDataValid = false;
 	}
 
 protected:
 
-	// Transient data used while creating the vertex buffers, gets deleted as soon as VB gets initialized.
-	TArray<uint32> VertexIndices;
-	// Transient data used while creating the vertex buffers, gets deleted as soon as VB gets initialized.
-	TArray<FMorphDelta> MorphDeltas;
+	void ValidateVertexBuffers(bool bMorphTargetsShouldBeValid);
+	void Serialize(FArchive& Ar);
+
+	// Transient data. Gets deleted as soon as the GPU resource has been initialized.
+	TArray<uint32> MorphData;
 
 	//x,y,y separate for position and shared w for tangent
-	TArray<FVector4> MaximumValuePerMorph;
-	TArray<FVector4> MinimumValuePerMorph;
-	TArray<uint32> StartOffsetPerMorph;
-	TArray<uint32> WorkItemsPerMorph;
-	TArray<uint32> NumSplitsPerMorph; //splits due to too large dispatch size
-	uint32 TempStoreSize;
+	TArray<FVector4f> MaximumValuePerMorph;
+	TArray<FVector4f> MinimumValuePerMorph;
+	TArray<uint32> BatchStartOffsetPerMorph;
+	TArray<uint32> BatchesPerMorph;
+	
+	uint32 NumTotalBatches;
+	float PositionPrecision;
+	float TangentZPrecision;
 
-	uint32 NumTotalWorkItems;
+	bool bIsMorphCPUDataValid = false;
+	bool bResourcesInitialized = false;
+	bool bRHIIntialized = false;
 
 	friend class FSkeletalMeshLODRenderData;
+	friend FArchive& operator<<(FArchive& Ar, FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers);
 };
+
+FArchive& operator<<(FArchive& Ar, FMorphTargetVertexInfoBuffers& MorphTargetVertexInfoBuffers);

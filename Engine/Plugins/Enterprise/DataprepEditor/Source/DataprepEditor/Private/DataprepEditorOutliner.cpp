@@ -3,9 +3,14 @@
 #include "DataprepEditor.h"
 #include "DataprepEditorMenu.h"
 
-#include "ICustomSceneOutliner.h"
+#include "ISceneOutliner.h"
 #include "ISceneOutlinerColumn.h"
 #include "SceneOutlinerModule.h"
+#include "DataprepEditorOutlinerMode.h"
+#include "ActorTreeItem.h"
+#include "ComponentTreeItem.h"
+#include "WorldTreeItem.h"
+#include "FolderTreeItem.h"
 
 #include "Modules/ModuleManager.h"
 #include "SceneOutlinerModule.h"
@@ -21,211 +26,67 @@
 namespace DataprepEditorSceneOutlinerUtils
 {
 	/** Specifics for the scene outliner */
-	using namespace SceneOutliner;
-
-	/**
-	 * This struct is used to force the scene outliner to refuse any rename request
-	 */
-	struct FCanRenameItem : public TTreeItemGetter<bool>
-	{
-		virtual bool Get(const SceneOutliner::FActorTreeItem& ActorItem) const override { return false; };
-		virtual bool Get(const SceneOutliner::FWorldTreeItem& WorldItem) const override { return false; }
-		virtual bool Get(const SceneOutliner::FFolderTreeItem& FolderItem) const override { return false; }
-		virtual bool Get(const SceneOutliner::FComponentTreeItem& ComponentItem) const override { return false; }
-		virtual bool Get(const SceneOutliner::FSubComponentTreeItem& SubComponentItem) const override { return false; }
-	};
-
-	/**
-	 * Use this struct to match the scene outliers selection to a dataprep editor selection
-	 */
-	struct FSynchroniseSelectionToSceneOutliner : public TTreeItemGetter<bool>
-	{
-		FSynchroniseSelectionToSceneOutliner(TSharedRef<FDataprepEditor> InDataprepEditor)
-			: DataprepEditorPtr(InDataprepEditor)
-		{
-		};
-
-		virtual bool Get(const FActorTreeItem& ActorItem) const override
-		{
-			if (const FDataprepEditor* DataprepEditor = DataprepEditorPtr.Pin().Get())
-			{
-				return DataprepEditor->GetWorldItemsSelection().Contains(ActorItem.Actor);
-			}
-			return false;
-		}
-
-		virtual bool Get(const FWorldTreeItem& WorldItem) const override
-		{
-			return false;
-		}
-		virtual bool Get(const FFolderTreeItem& FolderItem) const override
-		{
-			return false;
-		}
-		virtual bool Get(const FComponentTreeItem& ComponentItem) const override
-		{
-			if (const FDataprepEditor* DataprepEditor = DataprepEditorPtr.Pin().Get())
-			{
-				return DataprepEditor->GetWorldItemsSelection().Contains(ComponentItem.Component);
-			}
-			return false;
-		}
-		virtual bool Get(const FSubComponentTreeItem& SubComponentItem) const override
-		{
-			// return this for now as it seams that subcomponent Item is broken or doesn't do what want
-			return false;
-		}
-
-	private:
-		TWeakPtr<FDataprepEditor> DataprepEditorPtr;
-	};
-
 
 	/**
 	 * Use this struct to get the selection from the scene outliner
 	 */
-	struct FGetSelectionFromSceneOutliner : public ITreeItemVisitor
+	struct FGetSelectionFromSceneOutliner
 	{
 		mutable TSet<TWeakObjectPtr<UObject>> Selection;
 
-		virtual void Visit(const FActorTreeItem& ActorItem) const override
+		void TryAdd(const ISceneOutlinerTreeItem& Item) const
 		{
-			Selection.Add(ActorItem.Actor);
-		}
-
-		virtual void Visit(const FWorldTreeItem& WorldItem) const override {}
-		virtual void Visit(const FFolderTreeItem& FolderItem) const override {}
-		virtual void Visit(const FComponentTreeItem& ComponentItem) const override
-		{
-			this->Selection.Add(ComponentItem.Component);
-		}
-
-		virtual void Visit(const FSubComponentTreeItem& SubComponentItem) const override {}
-	};
-
-	struct FGetVisibilityVisitor : TTreeItemGetter<bool>
-	{
-		/** Map of tree item to visibility */
-		mutable TMap<const ITreeItem*, bool> VisibilityInfo;
-
-		bool RecurseChildren(const ITreeItem& Item) const
-		{
-			if (const bool* Info = VisibilityInfo.Find(&Item))
+			if (const FActorTreeItem* ActorItem = Item.CastTo<FActorTreeItem>())
 			{
-				return *Info;
+				Selection.Add(ActorItem->Actor);
 			}
-			else
+			else if (const FComponentTreeItem* ComponentItem = Item.CastTo<FComponentTreeItem>())
 			{
-				bool bIsVisible = false;
-				for (const auto& ChildPtr : Item.GetChildren())
-				{
-					auto Child = ChildPtr.Pin();
-					if (Child.IsValid() && Child->Get(*this))
-					{
-						bIsVisible = true;
-						break;
-					}
-				}
-				VisibilityInfo.Add(&Item, bIsVisible);
-
-				return bIsVisible;
+				Selection.Add(ComponentItem->Component);
 			}
-		}
-
-		bool Get(const FActorTreeItem& ActorItem) const
-		{
-			if (const bool* Info = VisibilityInfo.Find(&ActorItem))
-			{
-				return *Info;
-			}
-			else
-			{
-				const AActor* Actor = ActorItem.Actor.Get();
-
-				const bool bIsVisible = Actor && !Actor->IsTemporarilyHiddenInEditor(true);
-				VisibilityInfo.Add(&ActorItem, bIsVisible);
-
-				return bIsVisible;
-			}
-		}
-
-		bool Get(const FWorldTreeItem& WorldItem) const
-		{
-			return RecurseChildren(WorldItem);
-		}
-
-		bool Get(const FFolderTreeItem& FolderItem) const
-		{
-			return RecurseChildren(FolderItem);
 		}
 	};
 
-	struct FSetVisibilityVisitor : IMutableTreeItemVisitor
+	void SetVisibility(ISceneOutlinerTreeItem& Item, bool bIsVisible, TWeakPtr<SDataprepEditorViewport> Viewport)
 	{
-		/** Whether this item should be visible or not */
-		const bool bSetVisibility;
-		TWeakPtr<SDataprepEditorViewport> Viewport;
-
-		FSetVisibilityVisitor(bool bInSetVisibility, TWeakPtr<SDataprepEditorViewport> InViewport)
-			: bSetVisibility(bInSetVisibility)
-			, Viewport(InViewport)
+		if (FActorTreeItem* ActorItem = Item.CastTo<FActorTreeItem>())
 		{
-		}
-
-		virtual void Visit(FActorTreeItem& ActorItem) const override
-		{
-			AActor* Actor = ActorItem.Actor.Get();
+			AActor* Actor = ActorItem->Actor.Get();
 			if (Actor)
 			{
 				// Save the actor to the transaction buffer to support undo/redo, but do
 				// not call Modify, as we do not want to dirty the actor's package and
 				// we're only editing temporary, transient values
 				SaveToTransactionBuffer(Actor, false);
-				Actor->SetIsTemporarilyHiddenInEditor(!bSetVisibility);
+				Actor->SetIsTemporarilyHiddenInEditor(!bIsVisible);
 
-				Viewport.Pin()->SetActorVisibility(Actor, bSetVisibility);
+				Viewport.Pin()->SetActorVisibility(Actor, bIsVisible);
 
 				// Apply the same visibility to the actors children
-				for (auto& ChildPtr : ActorItem.GetChildren())
+				for (auto& ChildPtr : ActorItem->GetChildren())
 				{
 					auto Child = ChildPtr.Pin();
 					if (Child.IsValid())
 					{
-						FSetVisibilityVisitor Visibility(bSetVisibility, Viewport);
-						Child->Visit(Visibility);
+						SetVisibility(*Child, bIsVisible, Viewport);
 					}
 				}
 			}
 		}
-
-		virtual void Visit(FWorldTreeItem& WorldItem) const override
+		else if (Item.IsA<FWorldTreeItem>() || Item.IsA<FFolderTreeItem>())
 		{
-			for (auto& ChildPtr : WorldItem.GetChildren())
+			for (auto& ChildPtr : Item.GetChildren())
 			{
 				auto Child = ChildPtr.Pin();
 				if (Child.IsValid())
 				{
-					FSetVisibilityVisitor Visibility(bSetVisibility, Viewport);
-					Child->Visit(Visibility);
+					SetVisibility(*Child, bIsVisible, Viewport);
 				}
 			}
 		}
+	}
 
-		virtual void Visit(FFolderTreeItem& FolderItem) const override
-		{
-			for (auto& ChildPtr : FolderItem.GetChildren())
-			{
-				auto Child = ChildPtr.Pin();
-				if (Child.IsValid())
-				{
-					FSetVisibilityVisitor Visibility(bSetVisibility, Viewport);
-					Child->Visit(Visibility);
-				}
-			}
-		}
-	};
-
-	class FVisibilityDragDropOp : public FDragDropOperation, public TSharedFromThis<FVisibilityDragDropOp>
+	class FVisibilityDragDropOp : public FDragDropOperation
 	{
 	public:
 
@@ -285,12 +146,12 @@ namespace DataprepEditorSceneOutlinerUtils
 				];
 		}
 
-		virtual const TSharedRef<SWidget> ConstructRowWidget(FTreeItemRef TreeItem, const STableRow<FTreeItemPtr>& Row) override;
+		virtual const TSharedRef<SWidget> ConstructRowWidget(FSceneOutlinerTreeItemRef TreeItem, const STableRow<FSceneOutlinerTreeItemPtr>& Row) override;
 
-		virtual void SortItems(TArray<FTreeItemPtr>& RootItems, const EColumnSortMode::Type SortMode) const override {}
+		virtual void SortItems(TArray<FSceneOutlinerTreeItemPtr>& RootItems, const EColumnSortMode::Type SortMode) const override {}
 
 		/** Check whether the specified item is visible */
-		bool IsItemVisible(const ITreeItem& Item) { return Item.Get(VisibilityCache); }
+		bool IsItemVisible(const ISceneOutlinerTreeItem& Item) { return VisibilityCache.GetVisibility(Item); }
 
 		TWeakPtr<SDataprepEditorViewport> GetViewport() const
 		{
@@ -303,8 +164,8 @@ namespace DataprepEditorSceneOutlinerUtils
 
 		TWeakPtr<SDataprepEditorViewport> WeakSceneViewport;
 
-		/** Visitor used to get (and cache) visibilty for items. Cahced per-frame to avoid expensive recursion. */
-		FGetVisibilityVisitor VisibilityCache;
+		/** Get and cache visibility for items. Cached per-frame to avoid expensive recursion. */
+		FSceneOutlinerVisibilityCache VisibilityCache;
 	};
 
 	/** Widget responsible for managing the visibility for a single actor */
@@ -315,7 +176,7 @@ namespace DataprepEditorSceneOutlinerUtils
 		SLATE_END_ARGS()
 
 		/** Construct this widget */
-		void Construct(const FArguments& InArgs, TWeakPtr<FPreviewSceneOutlinerGutter> InWeakColumn, TWeakPtr<ISceneOutliner> InWeakOutliner, TWeakPtr<ITreeItem> InWeakTreeItem)
+		void Construct(const FArguments& InArgs, TWeakPtr<FPreviewSceneOutlinerGutter> InWeakColumn, TWeakPtr<ISceneOutliner> InWeakOutliner, TWeakPtr<ISceneOutlinerTreeItem> InWeakTreeItem)
 		{
 			WeakTreeItem = InWeakTreeItem;
 			WeakOutliner = InWeakOutliner;
@@ -373,13 +234,13 @@ namespace DataprepEditorSceneOutlinerUtils
 			// We operate on all the selected items if the specified item is selected
 			if (Tree.IsItemSelected(TreeItem.ToSharedRef()))
 			{
-				const FSetVisibilityVisitor Visitor(bVisible, WeakColumn.Pin()->GetViewport());
+				auto Viewport = WeakColumn.Pin()->GetViewport();
 
 				for (auto& SelectedItem : Tree.GetSelectedItems())
 				{
 					if (IsVisible(SelectedItem, Column) != bVisible)
 					{
-						SelectedItem->Visit(Visitor);
+						DataprepEditorSceneOutlinerUtils::SetVisibility(*SelectedItem, bVisible, Viewport);
 					}
 				}
 
@@ -447,7 +308,7 @@ namespace DataprepEditorSceneOutlinerUtils
 		}
 
 		/** Check if the specified item is visible */
-		static bool IsVisible(const FTreeItemPtr& Item, const TSharedPtr<FPreviewSceneOutlinerGutter>& Column)
+		static bool IsVisible(const FSceneOutlinerTreeItemPtr& Item, const TSharedPtr<FPreviewSceneOutlinerGutter>& Column)
 		{
 			return Column.IsValid() && Item.IsValid() ? Column->IsItemVisible(*Item) : false;
 		}
@@ -461,13 +322,12 @@ namespace DataprepEditorSceneOutlinerUtils
 		/** Set the actor this widget is responsible for to be hidden or shown */
 		void SetIsVisible(const bool bVisible)
 		{
-			TSharedPtr<ITreeItem> TreeItem = WeakTreeItem.Pin();
+			TSharedPtr<ISceneOutlinerTreeItem> TreeItem = WeakTreeItem.Pin();
 			TSharedPtr<ISceneOutliner> Outliner = WeakOutliner.Pin();
 
 			if (TreeItem.IsValid() && Outliner.IsValid() && IsVisible() != bVisible)
 			{
-				FSetVisibilityVisitor Visitor(bVisible, WeakColumn.Pin()->GetViewport());
-				TreeItem->Visit(Visitor);
+				DataprepEditorSceneOutlinerUtils::SetVisibility(*TreeItem, bVisible, WeakColumn.Pin()->GetViewport());
 
 				Outliner->Refresh();
 
@@ -476,7 +336,7 @@ namespace DataprepEditorSceneOutlinerUtils
 		}
 
 		/** The tree item we relate to */
-		TWeakPtr<ITreeItem> WeakTreeItem;
+		TWeakPtr<ISceneOutlinerTreeItem> WeakTreeItem;
 
 		/** Reference back to the outliner so we can set visibility of a whole selection */
 		TWeakPtr<ISceneOutliner> WeakOutliner;
@@ -488,7 +348,7 @@ namespace DataprepEditorSceneOutlinerUtils
 		TUniquePtr<FScopedTransaction> UndoTransaction;
 	};
 
-	const TSharedRef<SWidget> FPreviewSceneOutlinerGutter::ConstructRowWidget(FTreeItemRef TreeItem, const STableRow<FTreeItemPtr>& Row)
+	const TSharedRef<SWidget> FPreviewSceneOutlinerGutter::ConstructRowWidget(FSceneOutlinerTreeItemRef TreeItem, const STableRow<FSceneOutlinerTreeItemPtr>& Row)
 	{
 		return SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot()
@@ -505,12 +365,16 @@ namespace DataprepEditorSceneOutlinerUtils
 void FDataprepEditor::CreateScenePreviewTab()
 {
 	FSceneOutlinerModule& SceneOutlinerModule = FModuleManager::Get().LoadModuleChecked<FSceneOutlinerModule>("SceneOutliner");
+	
+	FCreateSceneOutlinerMode ModeFactory = FCreateSceneOutlinerMode::CreateLambda([SpecifiedWorld = TWeakObjectPtr<UWorld>(PreviewWorld), DataprepEditor = StaticCastSharedRef<FDataprepEditor>(AsShared())](SSceneOutliner* Outliner)
+		{
+			return new FDataprepEditorOutlinerMode(Outliner, DataprepEditor, SpecifiedWorld);
+		});
 
-	SceneOutliner::FInitializationOptions SceneOutlinerOptions;
-	SceneOutlinerOptions.SpecifiedWorldToDisplay = PreviewWorld;
-	SceneOutlinerOptions.ContextMenuOverride.BindRaw(this, &FDataprepEditor::OnSceneOutlinerContextMenuOpening);
+	FSceneOutlinerInitializationOptions SceneOutlinerOptions;
+	SceneOutlinerOptions.ModeFactory = ModeFactory;
 
-	SceneOutliner = SceneOutlinerModule.CreateCustomSceneOutliner(SceneOutlinerOptions);
+	SceneOutliner = SceneOutlinerModule.CreateSceneOutliner(SceneOutlinerOptions);
 
 	// Add our custom visibility gutter
 
@@ -519,8 +383,8 @@ void FDataprepEditor::CreateScenePreviewTab()
 		return TSharedRef< ISceneOutlinerColumn >(MakeShareable(new DataprepEditorSceneOutlinerUtils::FPreviewSceneOutlinerGutter(Outliner, SceneViewportView.ToSharedRef())));
 	};
 
-	SceneOutliner::FColumnInfo ColumnInfo;
-	ColumnInfo.Visibility = SceneOutliner::EColumnVisibility::Visible;
+	FSceneOutlinerColumnInfo ColumnInfo;
+	ColumnInfo.Visibility = ESceneOutlinerColumnVisibility::Visible;
 	ColumnInfo.PriorityIndex = 0;
 	ColumnInfo.Factory.BindLambda([&](ISceneOutliner& Outliner)
 	{
@@ -529,27 +393,14 @@ void FDataprepEditor::CreateScenePreviewTab()
 
 	SceneOutliner->AddColumn(DataprepEditorSceneOutlinerUtils::FPreviewSceneOutlinerGutter::GetID(), ColumnInfo);
 
-	// Add the default outliner columns
-	const SceneOutliner::FSharedOutlinerData& SharedData = SceneOutliner->GetSharedData();
+	// Add the default columns
+	const FSharedSceneOutlinerData& SharedData = SceneOutliner->GetSharedData();
 	for (auto& DefaultColumn : SceneOutlinerModule.DefaultColumnMap)
 	{
-		if (!DefaultColumn.Value.ValidMode.IsSet() || SharedData.Mode == DefaultColumn.Value.ValidMode.GetValue())
-		{
-			SceneOutliner->AddColumn(DefaultColumn.Key, DefaultColumn.Value.ColumnInfo);
-		}
+		SceneOutliner->AddColumn(DefaultColumn.Key, DefaultColumn.Value);
 	}
 
-	SceneOutliner->SetSelectionMode(ESelectionMode::Multi)
-		.SetCanRenameItem(MakeUnique<DataprepEditorSceneOutlinerUtils::FCanRenameItem>())
-		.SetShouldSelectItemWhenAdded(MakeUnique<DataprepEditorSceneOutlinerUtils::FSynchroniseSelectionToSceneOutliner>(StaticCastSharedRef<FDataprepEditor>(AsShared())))
-		.SetShowActorComponents(false)
-		.SetShownOnlySelected(false)
-		.SetShowOnlyCurrentLevel(false)
-		.SetHideTemporaryActors(false);
-
-	SceneOutliner->GetOnItemSelectionChanged().AddSP(this, &FDataprepEditor::OnSceneOutlinerSelectionChanged);
-
-	SAssignNew(ScenePreviewView, SBorder)
+	SAssignNew(ScenePreviewView, SDataprepScenePreviewView)
 		.Padding(2.f)
 		.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
 		[
@@ -563,18 +414,18 @@ void FDataprepEditor::CreateScenePreviewTab()
 		];
 }
 
-TSharedPtr<SWidget> FDataprepEditor::OnSceneOutlinerContextMenuOpening()
+TSharedPtr<SWidget> FDataprepEditorOutlinerMode::CreateContextMenu()
 {
-	DataprepEditorSceneOutlinerUtils::FGetSelectionFromSceneOutliner Visitor;
+	DataprepEditorSceneOutlinerUtils::FGetSelectionFromSceneOutliner Selector;
 
-	for (SceneOutliner::FTreeItemPtr Item : SceneOutliner->GetTree().GetSelectedItems())
+	for (FSceneOutlinerTreeItemPtr Item : SceneOutliner->GetTree().GetSelectedItems())
 	{
-		Item->Visit(Visitor);
+		Selector.TryAdd(*Item);
 	}
 
 	TSet<UObject*> SelectedActors;
 
-	for (TWeakObjectPtr<UObject> ObjectPtr : Visitor.Selection)
+	for (TWeakObjectPtr<UObject> ObjectPtr : Selector.Selection)
 	{
 		if (AActor* Actor = Cast<AActor>(ObjectPtr.Get()))
 		{
@@ -582,7 +433,9 @@ TSharedPtr<SWidget> FDataprepEditor::OnSceneOutlinerContextMenuOpening()
 		}
 	}
 
-	if (SelectedActors.Num() == 0)
+	TSharedPtr<FDataprepEditor> DataprepEditor = DataprepEditorPtr.Pin();
+
+	if (!DataprepEditor.IsValid() || SelectedActors.Num() == 0)
 	{
 		return TSharedPtr<SWidget>();
 	}
@@ -591,25 +444,23 @@ TSharedPtr<SWidget> FDataprepEditor::OnSceneOutlinerContextMenuOpening()
 
 	UDataprepEditorContextMenuContext* ContextObject = NewObject<UDataprepEditorContextMenuContext>();
 	ContextObject->SelectedObjects = SelectedActors.Array();
-	ContextObject->DataprepAsset = GetDataprepAsset();
+	ContextObject->DataprepAsset = DataprepEditor->GetDataprepAsset();
 
 	UToolMenus* ToolMenus = UToolMenus::Get();
 	FToolMenuContext MenuContext( nullptr, nullptr, ContextObject );
 	return ToolMenus->GenerateWidget( "DataprepEditor.SceneOutlinerContextMenu", MenuContext );
 }
 
-void FDataprepEditor::OnSceneOutlinerSelectionChanged(SceneOutliner::FTreeItemPtr ItemPtr, ESelectInfo::Type SelectionMode)
+void FDataprepEditor::OnSceneOutlinerSelectionChanged(FSceneOutlinerTreeItemPtr ItemPtr, ESelectInfo::Type SelectionMode)
 {
-	using namespace SceneOutliner;
+	DataprepEditorSceneOutlinerUtils::FGetSelectionFromSceneOutliner Selector;
 
-	DataprepEditorSceneOutlinerUtils::FGetSelectionFromSceneOutliner Visitor;
-
-	for (FTreeItemPtr Item : SceneOutliner->GetTree().GetSelectedItems())
+	for (FSceneOutlinerTreeItemPtr Item : SceneOutliner->GetTree().GetSelectedItems())
 	{
-		Item->Visit(Visitor);
+		Selector.TryAdd(*Item);
 	}
 
-	SetWorldObjectsSelection(MoveTemp(Visitor.Selection), EWorldSelectionFrom::SceneOutliner);
+	SetWorldObjectsSelection(MoveTemp(Selector.Selection), EWorldSelectionFrom::SceneOutliner);
 }
 
 void FDataprepEditor::SetWorldObjectsSelection(TSet<TWeakObjectPtr<UObject>>&& NewSelection, EWorldSelectionFrom SelectionFrom /* = EWorldSelectionFrom::Unknow */,  bool bSetAsDetailsObject /* = true */)

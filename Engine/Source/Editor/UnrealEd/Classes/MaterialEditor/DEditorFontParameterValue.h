@@ -14,10 +14,10 @@ struct UNREALED_API FDFontParameters
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY(EditAnywhere, Category = DFontParameter)
-	class UFont* FontValue = nullptr;
+	TObjectPtr<class UFont> FontValue = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = DFontParameter)
-	int32 FontPage=0;
+	int32 FontPage = 0;
 };
 
 UCLASS(hidecategories = Object, collapsecategories)
@@ -27,5 +27,25 @@ class UNREALED_API UDEditorFontParameterValue : public UDEditorParameterValue
 
 	UPROPERTY(EditAnywhere, Category = DEditorFontParameterValue)
 	struct FDFontParameters ParameterValue;
+
+	virtual FName GetDefaultGroupName() const override { return TEXT("Font Parameter Values"); }
+
+	virtual bool GetValue(FMaterialParameterMetadata& OutResult) const override
+	{
+		UDEditorParameterValue::GetValue(OutResult);
+		OutResult.Value = FMaterialParameterValue(ParameterValue.FontValue, ParameterValue.FontPage);
+		return true;
+	}
+
+	virtual bool SetValue(const FMaterialParameterValue& Value) override
+	{
+		if (Value.Type == EMaterialParameterType::Font)
+		{
+			ParameterValue.FontValue = Value.Font.Value;
+			ParameterValue.FontPage = Value.Font.Page;
+			return true;
+		}
+		return false;
+	}
 };
 

@@ -17,7 +17,7 @@
 #include "Algo/Find.h"
 #include "Containers/Set.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "Math/UnrealMathUtility.h"
 #include "Misc/Paths.h"
 #include "Misc/SecureHash.h"

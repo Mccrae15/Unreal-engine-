@@ -6,6 +6,7 @@
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SEditableText.h"
 #include "Slate/SlateBrushAsset.h"
+#include "Styling/UMGCoreStyle.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -14,19 +15,40 @@
 
 static FEditableTextStyle* DefaultEditableTextStyle = nullptr;
 
+#if WITH_EDITOR
+static FEditableTextStyle* EditorEditableTextStyle = nullptr;
+#endif 
+
 UEditableText::UEditableText(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 	if (DefaultEditableTextStyle == nullptr)
 	{
-		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
-		DefaultEditableTextStyle = new FEditableTextStyle(FCoreStyle::Get().GetWidgetStyle<FEditableTextStyle>("NormalEditableText"));
+		DefaultEditableTextStyle = new FEditableTextStyle(FUMGCoreStyle::Get().GetWidgetStyle<FEditableTextStyle>("NormalEditableText"));
 
-		// Unlink UMG default colors from the editor settings colors.
+		// Unlink UMG default colors.
 		DefaultEditableTextStyle->UnlinkColors();
 	}
 
 	WidgetStyle = *DefaultEditableTextStyle;
+
+#if WITH_EDITOR 
+	if (EditorEditableTextStyle == nullptr)
+	{
+		EditorEditableTextStyle = new FEditableTextStyle(FCoreStyle::Get().GetWidgetStyle<FEditableTextStyle>("NormalEditableText"));
+
+		// Unlink UMG Editor colors from the editor settings colors.
+		EditorEditableTextStyle->UnlinkColors();
+	}
+
+	if (IsEditorWidget())
+	{
+		WidgetStyle = *EditorEditableTextStyle;
+
+		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
+		PostEditChange();
+	}
+#endif // WITH_EDITOR
 
 	ColorAndOpacity_DEPRECATED = FLinearColor::Black;
 
@@ -48,6 +70,7 @@ UEditableText::UEditableText(const FObjectInitializer& ObjectInitializer)
 	VirtualKeyboardTrigger = EVirtualKeyboardTrigger::OnFocusByPointer;
 	VirtualKeyboardDismissAction = EVirtualKeyboardDismissAction::TextChangeOnDismiss;
 	Clipping = EWidgetClipping::ClipToBounds;
+	OverflowPolicy = ETextOverflowPolicy::Clip;
 
 #if WITH_EDITORONLY_DATA
 	AccessibleBehavior = ESlateAccessibleBehavior::Auto;
@@ -78,7 +101,8 @@ TSharedRef<SWidget> UEditableText::RebuildWidget()
 		.VirtualKeyboardOptions(VirtualKeyboardOptions)
 		.VirtualKeyboardTrigger(VirtualKeyboardTrigger)
 		.VirtualKeyboardDismissAction(VirtualKeyboardDismissAction)
-		.Justification( Justification );
+		.Justification(Justification)
+		.OverflowPolicy(OverflowPolicy);
 	
 	return MyEditableText.ToSharedRef();
 }
@@ -97,6 +121,8 @@ void UEditableText::SynchronizeProperties()
 	MyEditableText->SetAllowContextMenu(AllowContextMenu);
 	MyEditableText->SetVirtualKeyboardDismissAction(VirtualKeyboardDismissAction);
 	MyEditableText->SetJustification(Justification);
+	MyEditableText->SetOverflowPolicy(OverflowPolicy);
+
 	// TODO UMG Complete making all properties settable on SEditableText
 
 	ShapedTextOptions.SynchronizeShapedTextProperties(*MyEditableText);
@@ -157,10 +183,24 @@ void UEditableText::SetJustification(ETextJustify::Type InJustification)
 	}
 }
 
+void UEditableText::SetTextOverflowPolicy(ETextOverflowPolicy InOverflowPolicy)
+{
+	OverflowPolicy = InOverflowPolicy;
+	if (MyEditableText.IsValid())
+	{
+		MyEditableText->SetOverflowPolicy(InOverflowPolicy);
+	}
+}
+
 void UEditableText::SetClearKeyboardFocusOnCommit(bool bInClearKeyboardFocusOnCommit)
 {
 	ClearKeyboardFocusOnCommit = bInClearKeyboardFocusOnCommit;
 	MyEditableText->SetClearKeyboardFocusOnCommit(ClearKeyboardFocusOnCommit);
+}
+
+void UEditableText::SetKeyboardType(EVirtualKeyboardType::Type Type)
+{
+	KeyboardType = Type;
 }
 
 void UEditableText::HandleOnTextChanged(const FText& InText)
@@ -177,7 +217,7 @@ void UEditableText::PostLoad()
 {
 	Super::PostLoad();
 
-	if ( GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
+	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
 	{
 		if ( Style_DEPRECATED != nullptr )
 		{
@@ -209,7 +249,7 @@ void UEditableText::PostLoad()
 		}
 	}
 
-	if (GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_OVERRIDES)
+	if (GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_OVERRIDES)
 	{
 		if (Font_DEPRECATED.HasValidFont())
 		{

@@ -1,22 +1,23 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "HairStrandsVoxelPageCommonStruct.ush"
 #include "../Common.ush"
 #include "../Matrices.ush"
 #include "HairStrandsVoxelPageCommon.ush"
 #include "HairStrandsAABBCommon.ush"
+#include "HairStrandsVisibilityCommon.ush"
 
-#if SHADER_ALLOCATEPAGEINDEX
+#if SHADER_ALLOCATEPAGEINDEX 
 
 float				PageWorldSize;
 uint				TotalPageIndexCount; 	// This is the max page index count;
 uint				PageResolution; 		// Resolution of a page
 uint				MacroGroupCount;
 uint				IndirectDispatchGroupSize;
+uint				bDoesMacroGroupSupportVoxelization;
 
 // For testing parity with CPU version
-float3				CPU_MinAABB;
-float3				CPU_MaxAABB;
+float3				CPU_TranslatedWorldMinAABB;
+float3				CPU_TranslatedWorldMaxAABB;
 int3				CPU_PageIndexResolution;
 uint				CPU_bUseCPUData;
 
@@ -25,24 +26,31 @@ RWBuffer<uint4>								OutPageIndexResolutionAndOffsetBuffer;
 RWBuffer<uint>								OutPageIndexAllocationIndirectBufferArgs;
 RWStructuredBuffer<FVoxelizationViewInfo>	OutVoxelizationViewInfoBuffer;
 
-#define MAX_INSTANCE_GROUP_COUNT 32
-groupshared uint PageIndexOffsets[MAX_INSTANCE_GROUP_COUNT];
+#ifndef MAX_HAIR_MACROGROUP_COUNT
+#error MAX_HAIR_MACROGROUP_COUNT needs to be defined
+#endif
+
+#define INVALID_OFFSET 0xFFFFFFFF
+
+groupshared uint PageIndexOffsets[MAX_HAIR_MACROGROUP_COUNT];
 
 // This code assume we have less than 32 macro group (which fit into a single CU/SM)
-[numthreads(MAX_INSTANCE_GROUP_COUNT, 1, 1)]
+[numthreads(MAX_HAIR_MACROGROUP_COUNT, 1, 1)]
 void AllocatePageIndex(uint2 DispatchThreadId : SV_DispatchThreadID)
 {
 	const uint MacroGroupId = DispatchThreadId.x;
 
 	FHairAABB Bound = InitHairAABB();
-	const bool bIsValid = MacroGroupId < MacroGroupCount;
+	bool bIsValid = MacroGroupId < MacroGroupCount;
 	if (bIsValid)
 	{
+		const bool bSupportVoxelization = (bDoesMacroGroupSupportVoxelization >> MacroGroupId) & 0x1;
 		Bound = ReadHairAABB(MacroGroupId, MacroGroupAABBBuffer);
-		if (any(Bound.Min > Bound.Max))
+		if (any(Bound.Min > Bound.Max) || !bSupportVoxelization)
 		{
 			Bound.Min = 0;
 			Bound.Max = 0;
+			bIsValid = false;
 		}
 	}
 
@@ -67,21 +75,41 @@ void AllocatePageIndex(uint2 DispatchThreadId : SV_DispatchThreadID)
 		// Postfix sum to instance group are always ordered by index
 		if (DispatchThreadId.x == 0)
 		{
+			bool bValidAllocation = true;
 			uint PageIndexOffset = 0;
 			for (uint LocalMacroGroupId = 0; LocalMacroGroupId < MacroGroupCount; ++LocalMacroGroupId)
 			{
 				const uint PageCount = PageIndexOffsets[LocalMacroGroupId];
-				PageIndexOffsets[LocalMacroGroupId] = PageIndexOffset;
+				bValidAllocation = bValidAllocation && (PageIndexOffset + PageCount <= TotalPageIndexCount);
+				PageIndexOffsets[LocalMacroGroupId] = bValidAllocation ? PageIndexOffset : INVALID_OFFSET;
 				PageIndexOffset += PageCount;
 			}
 		}
 		GroupMemoryBarrierWithGroupSync();
 
+		const uint PageIndexOffset = PageIndexOffsets[MacroGroupId];
+		bIsValid = bIsValid && (PageIndexOffset != INVALID_OFFSET);
 		if (bIsValid)
 		{
-			const uint PageIndexOffset = PageIndexOffsets[MacroGroupId];
 			OutPageIndexResolutionAndOffsetBuffer[MacroGroupId] = uint4(PageIndexResolution, PageIndexOffset);
 			WriteHairAABB(MacroGroupId, Bound, MacroGroupAABBBuffer);
+		}
+		else
+		{
+			// Clear all output if the allocation is not valid
+			const uint ArgsOffset = MacroGroupId * 3;
+			OutPageIndexResolutionAndOffsetBuffer[MacroGroupId]    = uint4(0, 0, 0, 0);
+			OutPageIndexAllocationIndirectBufferArgs[ArgsOffset]   = 0;
+			OutPageIndexAllocationIndirectBufferArgs[ArgsOffset+1] = 1;
+			OutPageIndexAllocationIndirectBufferArgs[ArgsOffset+2] = 1;
+
+			FVoxelizationViewInfo ViewInfo;
+			ViewInfo.TranslatedWorldToClip = 0;
+			ViewInfo.ViewForward = 0;
+			ViewInfo.RasterResolution = 0;
+			ViewInfo.Pad0 = 0;
+			ViewInfo.Pad1 = 0;
+			OutVoxelizationViewInfoBuffer[MacroGroupId] = ViewInfo;
 		}
 	}
 
@@ -94,8 +122,8 @@ void AllocatePageIndex(uint2 DispatchThreadId : SV_DispatchThreadID)
 	// This code path is only for debug purpose and work only when there is a single instance group
 	if (CPU_bUseCPUData > 0)
 	{
-		Bound.Min = CPU_MinAABB;
-		Bound.Max = CPU_MaxAABB;
+		Bound.Min = CPU_TranslatedWorldMinAABB;
+		Bound.Max = CPU_TranslatedWorldMaxAABB;
 		PageIndexResolution = CPU_PageIndexResolution;
 		WriteHairAABB(MacroGroupId, Bound, MacroGroupAABBBuffer);
 	}
@@ -160,11 +188,11 @@ void AllocatePageIndex(uint2 DispatchThreadId : SV_DispatchThreadID)
 		const float3 RasterAABBSize = Bound.Max - Bound.Min;
 		const float3 RasterAABBCenter = (Bound.Max + Bound.Min) * 0.5f;
 
-		const float4x4 ProjMatrix  = ReversedZOrthoMatrix(0.5f * RasterProjectionSize.x, 0.5f * RasterProjectionSize.y, 1.0f / RasterProjectionSize.z, 0);
-		const float4x4 ViewMatrix  = LookAtMatrix(RasterAABBCenter - RasterDirection * RasterProjectionSize.z * 0.5f, RasterAABBCenter, RasterUp);
+		const float4x4 ProjMatrix = ReversedZOrthoMatrix(0.5f * RasterProjectionSize.x, 0.5f * RasterProjectionSize.y, 1.0f / RasterProjectionSize.z, 0);
+		const float4x4 TranslatedViewMatrix = LookAtMatrix(RasterAABBCenter - RasterDirection * RasterProjectionSize.z * 0.5f, RasterAABBCenter, RasterUp);
 
 		FVoxelizationViewInfo ViewInfo;
-		ViewInfo.WorldToClip = mul(ViewMatrix, ProjMatrix);
+		ViewInfo.TranslatedWorldToClip = mul(TranslatedViewMatrix, ProjMatrix);
 		ViewInfo.ViewForward = RasterDirection;
 		ViewInfo.RasterResolution = RasterResolution;
 		ViewInfo.Pad0 = 0;
@@ -228,7 +256,7 @@ void UpdatePackScatterCoord(inout uint2 Out, uint PartIndex)
 #define SCATTER_GROUP_SIZE 32
 #define SCATTER_GROUP_LINE 4
 
-#endif
+#endif // SHADER_MARKVALID_PREPARE || SHADER_MARKVALID_INDIRECTARG || SHADER_MARKVALID_SCATTER
 
 #if SHADER_MARKVALID_PREPARE
 uint			MaxClusterCount;
@@ -236,6 +264,7 @@ uint			MacroGroupId;
 uint			MaxScatterAllocationCount;
 uint			bForceDirectPageAllocation;
 
+Buffer<int>		GroupAABBsBuffer;
 Buffer<int>		ClusterAABBsBuffer;
 Buffer<int>		MacroGroupAABBBuffer;
 Buffer<uint4>	PageIndexResolutionAndOffsetBuffer;
@@ -248,6 +277,7 @@ RWBuffer<uint2> OutDeferredScatterBuffer;
 // PageIndexBuffer      is sampled with linear coordinate computed from the 3d page coordinate. VALID NODE ARE NOT COMPACTED. It contains the LINEAR PAGE INDEX (to map to the 3d volume).
 // PageIndexCoordBuffer is sampled with linear coordinate for allocated nodes. VALID NODE ARE COMPACTED. It contains the 3d page coordinate and ClustedId. Only used for opaque voxel injection.
 
+#if PERMUTATION_USE_CLUSTER
 [numthreads(SCATTER_GROUP_SIZE, 1, 1)]
 void MarkValid_PrepareCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -339,7 +369,45 @@ void MarkValid_PrepareCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 		}
 	}
 }
-#endif
+#else // PERMUTATION_USE_CLUSTER
+[numthreads(8, 8, 8)]
+void MarkValid_PrepareCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint4 PageIndexResolutionAndOffset = PageIndexResolutionAndOffsetBuffer.Load(MacroGroupId);
+	const FHairAABB MacroGroupBound = ReadHairAABB(MacroGroupId, MacroGroupAABBBuffer);
+	const int3 PageIndexResolution = PageIndexResolutionAndOffset.xyz;
+	const uint PageIndexOffset = PageIndexResolutionAndOffset.w;
+
+	const uint3 Coord = DispatchThreadId;
+	if (any(Coord >= PageIndexResolution))
+		return;
+
+	const FHairAABB GroupBound = ReadHairAABB(0, GroupAABBsBuffer);
+	const uint3 MinCoord = PositionToCoord(GroupBound.Min, MacroGroupBound.Min, MacroGroupBound.Max, PageIndexResolution);
+	const uint3 MaxCoord = PositionToCoord(GroupBound.Max, MacroGroupBound.Min, MacroGroupBound.Max, PageIndexResolution);
+
+	if (any(!IsFinite(float3(MinCoord))))
+		return;
+
+	if (any(!IsFinite(float3(MaxCoord))))
+		return;
+
+	if (all(Coord >= MinCoord) && all(Coord <=MaxCoord))
+	{
+		const uint3 PageIndexCoord = uint3(Coord.x, Coord.y, Coord.z);
+		const uint LinearPageIndexCoord = CoordToIndex(PageIndexCoord, PageIndexResolution, PageIndexOffset);
+		InterlockedOr(OutValidPageIndexBuffer[LinearPageIndexCoord], 1u);
+	}
+
+	// Fake writting to insure RDG allocate buffers even there is only Group-based allocated elements (vs. cluster-based allocated elements)
+	if (Coord.x > 65000)
+	{
+		OutDeferredScatterCounter[0] = 0;
+		OutDeferredScatterBuffer[0] = uint2(0,0);
+	}
+}
+#endif // PERMUTATION_USE_CLUSTER
+#endif // SHADER_MARKVALID_PREPARE
 
 #if SHADER_MARKVALID_INDIRECTARG
 Buffer<uint> DeferredScatterCounter;
@@ -397,9 +465,9 @@ void MarkValid_ScatterCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 #if SHADER_MARKVALID
 uint			MaxClusterCount;
 int3			CPU_PageIndexResolution;
-float3			CPU_MinAABB;
+float3			CPU_TranslatedWorldMinAABB;
 uint			CPU_PageIndexOffset;
-float3			CPU_MaxAABB;
+float3			CPU_TranslatedWorldMaxAABB;
 uint			MacroGroupId;
 
 Buffer<int>		ClusterAABBsBuffer;
@@ -437,12 +505,12 @@ void MarkValidCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 #if PERMUTATION_GPU_DRIVEN == 1
 	const uint4 PageIndexResolutionAndOffset = PageIndexResolutionAndOffsetBuffer.Load(MacroGroupId);
 
-	MacroGroupBound = ReadHairAABB(MacroGroupId, MacroGroupAABBBuffer);
+	MacroGroupBound			= ReadHairAABB(MacroGroupId, MacroGroupAABBBuffer);
 	PageIndexResolution		= PageIndexResolutionAndOffset.xyz;
 	PageIndexOffset			= PageIndexResolutionAndOffset.w;
 #else
-	MacroGroupBound.Min		= CPU_MinAABB;
-	MacroGroupBound.Max		= CPU_MaxAABB;
+	MacroGroupBound.Min		= CPU_TranslatedWorldMinAABB;
+	MacroGroupBound.Max		= CPU_TranslatedWorldMaxAABB;
 	PageIndexResolution		= CPU_PageIndexResolution;
 	PageIndexOffset			= CPU_PageIndexOffset;
 #endif
@@ -557,9 +625,9 @@ void AllocateCS(uint GroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_Dis
 
 #if SHADER_ADDDESC
 
-float3 CPU_MinAABB;
+float3 CPU_TranslatedWorldMinAABB;
 uint MacroGroupId;
-float3 CPU_MaxAABB;
+float3 CPU_TranslatedWorldMaxAABB;
 uint CPU_PageIndexOffset;
 int3 CPU_PageIndexResolution;
 
@@ -574,15 +642,15 @@ void AddDescCS(uint GroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_Disp
 
 #if PERMUTATION_GPU_DRIVEN == 1
 	const uint4 PageIndexResolutionAndOffset = PageIndexResolutionAndOffsetBuffer.Load(MacroGroupId);
-	const FHairAABB Bound = ReadHairAABB(MacroGroupId, MacroGroupAABBBuffer);
+	const FHairAABB TranslatedWorldBound = ReadHairAABB(MacroGroupId, MacroGroupAABBBuffer);
 
-	Node.MinAABB = Bound.Min;
-	Node.MaxAABB = Bound.Max;
+	Node.TranslatedWorldMinAABB = TranslatedWorldBound.Min;
+	Node.TranslatedWorldMaxAABB = TranslatedWorldBound.Max;
 	Node.PageIndexResolution = PageIndexResolutionAndOffset.xyz;
 	Node.PageIndexOffset = PageIndexResolutionAndOffset.w;
 #else
-	Node.MinAABB = CPU_MinAABB;
-	Node.MaxAABB = CPU_MaxAABB;
+	Node.TranslatedWorldMinAABB = CPU_TranslatedWorldMinAABB;
+	Node.TranslatedWorldMaxAABB = CPU_TranslatedWorldMaxAABB;
 	Node.PageIndexResolution = CPU_PageIndexResolution;
 	Node.PageIndexOffset = CPU_PageIndexOffset;
 #endif
@@ -601,7 +669,7 @@ uint IndirectGroupSize;
 
 RWBuffer<uint> OutPageIndexGlobalCounter;
 RWBuffer<uint> OutIndirectArgsBuffer;
-RWBuffer<uint> OutTotalRequestedPageAllocationBuffer;
+RWBuffer<uint> OutTotalRequestedPageAllocationBuffer; 
 
 [numthreads(1, 1, 1)]
 void AddIndirectBufferCS(uint GroupIndex : SV_GroupIndex, uint3 DispatchThreadId : SV_DispatchThreadID)

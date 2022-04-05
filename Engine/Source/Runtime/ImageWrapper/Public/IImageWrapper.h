@@ -2,8 +2,9 @@
 
 #pragma once
 
-#include "CoreTypes.h"
 #include "Containers/Array.h"
+#include "Containers/ArrayView.h"
+#include "CoreTypes.h"
 #include "Templates/SharedPointer.h"
 
 
@@ -34,7 +35,16 @@ enum class EImageFormat : int8
 	EXR,
 
 	/** Mac icon. */
-	ICNS
+	ICNS,
+	
+	/** Truevision TGA / TARGA */
+	TGA,
+
+	/** Hdr file from radiance using RGBE */
+	HDR,
+
+	/** Tag Image File Format files */
+	TIFF,
 };
 
 
@@ -44,19 +54,36 @@ enum class EImageFormat : int8
 enum class ERGBFormat : int8
 {
 	Invalid = -1,
+
+	// Red, Green, Blue and Alpha
 	RGBA =  0,
+
+	// Blue, Green, Red and Alpha
 	BGRA =  1,
+
+	// Gray scale
 	Gray =  2,
+
+	// Red, Green, Blue and Alpha using IEEE Floating-Point Arithmetic (see IEEE754). The format is always binary.
+	RGBAF = 3,
+
+	// Blue, Green, Red and Exponent (Similar to the RGBE format from radiance but with the blue and red channel inversed)
+	BGRE =  4,
+
+	// Gray scale using IEEE Floating-Point Arithmetic (see IEEE754). The format is always binary.
+	GrayF = 5,
 };
 
 
 /**
  * Enumerates available image compression qualities.
+ * 
+ * JPEG interprets Quality as 1-100
  */
 enum class EImageCompressionQuality : uint8
 {
 	Default = 0,
-	Uncompressed =  1,
+	Uncompressed = 1,
 };
 
 
@@ -85,9 +112,10 @@ public:
 	 * @param InHeight the height of the image data.
 	 * @param InFormat the format the raw data is in, normally RGBA.
 	 * @param InBitDepth the bit-depth per channel, normally 8.
+	 * @param InBytesPerRow the number of bytes between rows, 0 = tightly packed rows with no padding.
 	 * @return true if data was the expected format.
 	 */
-	virtual bool SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth) = 0;
+	virtual bool SetRaw(const void* InRawData, int64 InRawSize, const int32 InWidth, const int32 InHeight, const ERGBFormat InFormat, const int32 InBitDepth, const int32 InBytesPerRow = 0) = 0;
 
 	/**
 	 * Set information for animated formats
@@ -99,13 +127,40 @@ public:
 
 	/**
 	 * Gets the compressed data.
-	 *
+	 * (Note: It may consume the data set in the SetCompressed function if it was set before)
+	 * 
 	 * @return Array of the compressed data.
 	 */
-	virtual const TArray64<uint8>& GetCompressed(int32 Quality = 0) = 0;
+	virtual TArray64<uint8> GetCompressed(int32 Quality = 0) = 0;
+
+	/**
+	 * Get the raw version of the image and write to the array view
+	 * (Note: It may consume the data set in the SetRaw function if it was set before)
+	 *
+	 * @param InFormat How we want to manipulate the RGB data.
+	 * @param InBitDepth The output bit-depth per channel, normally 8.
+	 * @param OutRawData Will contain the uncompressed raw data.
+	 * @return true on success, false otherwise.
+	 */
+	virtual bool GetRaw(const ERGBFormat InFormat, int32 InBitDepth, TArrayView64<uint8> OutRawData)
+	{
+		// Todo We should make this function virtual pure and implement this properly in each ImageWrapper
+		TArray64<uint8> TmpRawData;
+		if (GetRaw(InFormat, InBitDepth, TmpRawData))
+		{
+			if (ensureMsgf(TmpRawData.Num() == OutRawData.Num(), TEXT("The view doesn't have the proper size to receive the texture.")))
+			{
+				FPlatformMemory::Memcpy(OutRawData.GetData(), TmpRawData.GetData(), OutRawData.Num());
+				return true;
+			}
+		}
+
+		return false;
+	}
 
 	/**  
 	 * Gets the raw data.
+	 * (Note: It may consume the data set in the SetRaw function if it was set before)
 	 *
 	 * @param InFormat How we want to manipulate the RGB data.
 	 * @param InBitDepth The output bit-depth per channel, normally 8.
@@ -117,6 +172,7 @@ public:
 	/**
 	 * Gets the raw data in a TArray. Only use this if you're certain that the image is less than 2 GB in size.
 	 * Prefer using the overload which takes a TArray64 in general.
+	 * (Note: It may consume the data set in the SetRaw function if it was set before)
 	 *
 	 * @param InFormat How we want to manipulate the RGB data.
 	 * @param InBitDepth The output bit-depth per channel, normally 8.
@@ -183,8 +239,3 @@ public:
 	/** Virtual destructor. */
 	virtual ~IImageWrapper() { }
 };
-
-
-/** Type definition for shared pointers to instances of IImageWrapper. */
-UE_DEPRECATED(4.16, "IImageWrapperPtr is deprecated. Please use 'TSharedPtr<IImageWrapper>' instead!")
-typedef TSharedPtr<IImageWrapper> IImageWrapperPtr;

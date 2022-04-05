@@ -30,7 +30,7 @@ struct FPreviewMeshCollectionEntry
 	}
 
 	/** The skeletal mesh to display */
-	UPROPERTY(EditAnywhere, Category = "Skeletal Mesh", meta=(DisplayThumbnail=true))
+	UPROPERTY(EditAnywhere, Category = "Skeletal Mesh", meta=(DisplayThumbnail=true, DisallowedClasses = "DestructibleMesh"))
 	TSoftObjectPtr<USkeletalMesh> SkeletalMesh;
 };
 
@@ -42,7 +42,7 @@ public:
 	GENERATED_BODY()
 
 	UPROPERTY(VisibleAnywhere, Category = "Skeleton", AssetRegistrySearchable)
-	USkeleton* Skeleton;
+	TObjectPtr<USkeleton> Skeleton;
 
 	/** The skeletal meshes that this collection contains */
 	UPROPERTY(EditAnywhere, Category = "Skeletal Meshes")

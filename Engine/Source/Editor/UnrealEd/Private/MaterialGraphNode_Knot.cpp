@@ -26,9 +26,11 @@ void UMaterialGraphNode_Knot::AllocateDefaultPins()
 	const FName OutputPinName(TEXT("OutputPin"));
 
 	UEdGraphPin* MyInputPin = CreatePin(EGPD_Input, PC_Wildcard, InputPinName);
+	MyInputPin->SourceIndex = 0;
 	MyInputPin->bDefaultValueIsIgnored = true;
 
 	UEdGraphPin* MyOutputPin = CreatePin(EGPD_Output, PC_Wildcard, OutputPinName);
+	MyOutputPin->SourceIndex = 0;
 }
 
 FText UMaterialGraphNode_Knot::GetTooltipText() const

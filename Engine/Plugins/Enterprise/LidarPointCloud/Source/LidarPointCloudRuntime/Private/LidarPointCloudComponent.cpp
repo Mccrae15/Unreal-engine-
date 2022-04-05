@@ -248,14 +248,14 @@ void FLidarPointCloudComponentRenderParams::UpdateFromComponent(ULidarPointCloud
 	MaxDepth = Component->MaxDepth;
 
 	BoundsScale = Component->BoundsScale;
-	BoundsSize = Component->GetPointCloud()->GetBounds().GetSize();
+	BoundsSize = (FVector3f)Component->GetPointCloud()->GetBounds().GetSize();
 
 	// Make sure to apply minimum bounds size
 	BoundsSize.X = FMath::Max(BoundsSize.X, 0.001f);
 	BoundsSize.Y = FMath::Max(BoundsSize.Y, 0.001f);
 	BoundsSize.Z = FMath::Max(BoundsSize.Z, 0.001f);
 
-	LocationOffset = Component->GetPointCloud()->GetLocationOffset().ToVector();
+	LocationOffset = (FVector3f)Component->GetPointCloud()->LocationOffset;
 	ComponentScale = Component->GetComponentScale().GetAbsMax();
 
 	PointSize = Component->PointSize;
@@ -272,11 +272,11 @@ void FLidarPointCloudComponentRenderParams::UpdateFromComponent(ULidarPointCloud
 	ColorSource = Component->ColorSource;
 	PointShape = Component->GetPointShape();
 
-	Offset = Component->Offset;
-	Contrast = Component->Contrast;
-	Saturation = Component->Saturation;
-	Gamma = Component->Gamma;
-	ColorTint = FVector(Component->ColorTint);
+	Offset = (FVector4f)Component->Offset;
+	Contrast = (FVector4f)Component->Contrast;
+	Saturation = (FVector4f)Component->Saturation;
+	Gamma = (FVector4f)Component->Gamma;
+	ColorTint = FVector3f(Component->ColorTint);
 	IntensityInfluence = Component->IntensityInfluence;
 
 	ClassificationColors = Component->ClassificationColors;

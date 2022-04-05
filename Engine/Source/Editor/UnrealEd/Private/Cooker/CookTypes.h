@@ -4,9 +4,18 @@
 
 #include "Containers/Map.h"
 #include "Containers/Set.h"
+#include "Containers/UnrealString.h"
 #include "CookOnTheSide/CookOnTheFlyServer.h" // ECookTickFlags
+#include "DerivedDataRequestOwner.h"
 #include "HAL/Platform.h"
+#include "Logging/TokenizedMessage.h"
+#include "Serialization/PackageWriter.h"
 #include "Templates/Function.h"
+#include "UObject/NameTypes.h"
+#include "UObject/SavePackage.h"
+
+class ITargetPlatform;
+namespace UE::DerivedData { class FBuildDefinition; }
 
 #define COOK_CHECKSLOW_PACKAGEDATA 1
 #define DEBUG_COOKONTHEFLY 0
@@ -50,12 +59,16 @@ template<typename KeyType, typename SetAllocator = FDefaultSetAllocator>
 class TFastPointerSet : public TSet<KeyType, TFastPointerSetKeyFuncs<KeyType>, SetAllocator>
 {};
 
-namespace UE
+namespace UE::Cook
 {
-namespace Cook
-{
+	struct FPackageData;
 	/** A function that is called when a requested package finishes cooking (when successful, failed, or skipped) */
-	typedef TUniqueFunction<void()> FCompletionCallback;
+	typedef TUniqueFunction<void(FPackageData*)> FCompletionCallback;
+
+	class FPackageDataSet : public TFastPointerSet<FPackageData*>
+	{
+		using TFastPointerSet<FPackageData*>::TFastPointerSet;
+	};
 
 	/** External Requests to the cooker can either by cook requests for a specific file, or arbitrary callbacks that need to execute within the Scheduler's lock. */
 	enum class EExternalRequestType
@@ -156,9 +169,96 @@ namespace Cook
 		}
 	};
 
+	/** Context data passed into SavePackage for a given TargetPlatform. */
+	struct FCookSavePackageContext
+	{
+		FCookSavePackageContext(const ITargetPlatform* InTargetPlatform,
+			ICookedPackageWriter* InPackageWriter, FStringView InWriterDebugName);
+		~FCookSavePackageContext();
+
+		FSavePackageContext SaveContext;
+		FString WriterDebugName;
+		ICookedPackageWriter* PackageWriter;
+		ICookedPackageWriter::FCookCapabilities PackageWriterCapabilities;
+	};
+
 	/* Thread Local Storage access to identify which thread is the SchedulerThread for cooking. */
 	void InitializeTls();
 	bool IsSchedulerThread();
 	void SetIsSchedulerThread(bool bValue);
+
+
+	/** Placeholder to handle executing BuildDefintions for requested but not-yet-loaded packages. */
+	class FBuildDefinitions
+	{
+	public:
+		FBuildDefinitions();
+		~FBuildDefinitions();
+
+		void AddBuildDefinitionList(FName PackageName, const ITargetPlatform* TargetPlatform,
+			TConstArrayView<UE::DerivedData::FBuildDefinition> BuildDefinitionList);
+		bool TryRemovePendingBuilds(FName PackageName);
+		void Wait();
+		void Cancel();
+
+	private:
+		bool bTestPendingBuilds = false;
+		struct FPendingBuildData
+		{
+			bool bTryRemoved = false;
+		};
+		TMap<FName, FPendingBuildData> PendingBuilds;
+	};
 }
-}
+
+//////////////////////////////////////////////////////////////////////////
+// Cook by the book options
+
+struct UCookOnTheFlyServer::FCookByTheBookOptions
+{
+public:
+	/** Should we generate streaming install manifests (only valid option in cook by the book) */
+	bool							bGenerateStreamingInstallManifests = false;
+
+	/** Should we generate a seperate manifest for map dependencies */
+	bool							bGenerateDependenciesForMaps = false;
+
+	/** Is cook by the book currently running */
+	bool							bRunning = false;
+
+	/** Cancel has been queued will be processed next tick */
+	bool							bCancel = false;
+
+	/** DlcName setup if we are cooking dlc will be used as the directory to save cooked files to */
+	FString							DlcName;
+
+	/** Create a release from this manifest and store it in the releases directory for this cgame */
+	FString							CreateReleaseVersion;
+
+	/** Dependency graph of maps as root objects. */
+	TFastPointerMap<const ITargetPlatform*, TMap<FName, TSet<FName>>> MapDependencyGraphs;
+
+	/** If we are based on a release version of the game this is the set of packages which were cooked in that release. Map from platform name to list of uncooked package filenames */
+	TMap<FName, TArray<FName>>			BasedOnReleaseCookedPackages;
+
+	/** Timing information about cook by the book */
+	double							CookTime = 0.0;
+	double							CookStartTime = 0.0;
+
+	/** error when detecting engine content being used in this cook */
+	bool							bErrorOnEngineContentUse = false;
+	bool							bSkipHardReferences = false;
+	bool							bSkipSoftReferences = false;
+	bool							bFullLoadAndSave = false;
+	bool							bZenStore = false;
+	bool							bCookAgainstFixedBase = false;
+	bool							bDlcLoadMainAssetRegistry = false;
+	TArray<FName>					StartupPackages;
+
+	/** Mapping from source packages to their localized variants (based on the culture list in FCookByTheBookStartupOptions) */
+	TMap<FName, TArray<FName>>		SourceToLocalizedPackageVariants;
+};
+
+void LogCookerMessage(const FString& MessageText, EMessageSeverity::Type Severity);
+constexpr uint32 ExpectedMaxNumPlatforms = 32;
+#define REMAPPED_PLUGINS TEXT("RemappedPlugins")

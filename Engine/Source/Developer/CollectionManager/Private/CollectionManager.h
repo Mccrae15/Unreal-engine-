@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "Misc/Guid.h"
 #include "CollectionManagerTypes.h"
 #include "ICollectionManager.h"
@@ -231,7 +232,7 @@ private:
 	TSharedPtr<DirectoryWatcher::FFileCache> CollectionFileCaches[ECollectionShareType::CST_All];
 
 	/** Delegate handle for the TickFileCache function */
-	FDelegateHandle TickFileCacheDelegateHandle;
+	FTSTicker::FDelegateHandle TickFileCacheDelegateHandle;
 
 	/** A map of collection names to FCollection objects */
 	TMap<FCollectionNameType, TSharedRef<FCollection>> AvailableCollections;
@@ -265,4 +266,7 @@ private:
 
 	/** When a collection checkin happens, use this event to add additional text to the changelist description */
 	FAddToCollectionCheckinDescriptionEvent AddToCollectionCheckinDescriptionEvent;
+
+	/** When true, redirectors will not be automatically followed in collections during startup */
+	bool bNoFixupRedirectors;
 };

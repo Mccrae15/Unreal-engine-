@@ -32,6 +32,8 @@
 DECLARE_CYCLE_STAT(TEXT("FPlaylistReaderDASH_WorkerThread"), STAT_ElectraPlayer_DASH_PlaylistWorker, STATGROUP_ElectraPlayer);
 
 
+#define DASH_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD		0
+
 //#define DO_NOT_PERFORM_CONDITIONAL_GET
 
 namespace Electra
@@ -40,7 +42,10 @@ namespace Electra
 /**
  * This class is responsible for downloading a DASH MPD and parsing it.
  */
-class FPlaylistReaderDASH : public TSharedFromThis<FPlaylistReaderDASH, ESPMode::ThreadSafe>, public IPlaylistReaderDASH, public IAdaptiveStreamingPlayerAEMSReceiver, public FMediaThread
+class FPlaylistReaderDASH : public TSharedFromThis<FPlaylistReaderDASH, ESPMode::ThreadSafe>, public IPlaylistReaderDASH, public IAdaptiveStreamingPlayerAEMSReceiver
+#if DASH_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
+						  , public FMediaThread
+#endif
 {
 public:
 	FPlaylistReaderDASH();
@@ -48,6 +53,7 @@ public:
 
 	virtual ~FPlaylistReaderDASH();
 	virtual void Close() override;
+	virtual void HandleOnce() override;
 	virtual const FString& GetPlaylistType() const override
 	{
 		static FString Type("dash");
@@ -78,6 +84,11 @@ private:
 	void StartWorkerThread();
 	void StopWorkerThread();
 	void WorkerThread();
+
+	void InternalSetup();
+	void InternalCleanup();
+	void InternalHandleOnce();
+
 	void ExecutePendingRequests(const FTimeValue& TimeNow);
 	void HandleCompletedRequests(const FTimeValue& TimeNow);
 	void HandleStaticRequestCompletions(const FTimeValue& TimeNow);
@@ -175,7 +186,9 @@ TSharedPtrTS<IPlaylistReader> IPlaylistReaderDASH::Create(IPlayerSessionServices
 
 
 FPlaylistReaderDASH::FPlaylistReaderDASH()
+#if DASH_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
 	: FMediaThread("ElectraPlayer::DASH MPD")
+#endif
 {
 }
 
@@ -204,11 +217,45 @@ void FPlaylistReaderDASH::Close()
 	StopWorkerThread();
 }
 
+void FPlaylistReaderDASH::HandleOnce()
+{
+#if !DASH_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
+	InternalHandleOnce();
+#endif
+}
+
+void FPlaylistReaderDASH::InternalHandleOnce()
+{
+	if (bIsWorkerThreadStarted)
+	{
+		SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_DASH_PlaylistWorker);
+		CSV_SCOPED_TIMING_STAT(ElectraPlayer, DASH_PlaylistWorker);
+		FTimeValue Now = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
+
+		HandleCompletedRequests(Now);
+
+		ExecutePendingRequests(Now);
+
+		// Check if the MPD must be updated.
+		CheckForMPDUpdate();
+
+		// Time sync
+		if (NextTimeSyncTime.IsValid() && Now >= NextTimeSyncTime)
+		{
+			TriggerTimeSynchronization();
+		}
+	}
+}
+
 void FPlaylistReaderDASH::StartWorkerThread()
 {
 	check(!bIsWorkerThreadStarted);
+#if DASH_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
 	bTerminateWorkerThread = false;
 	ThreadStart(Electra::MakeDelegate(this, &FPlaylistReaderDASH::WorkerThread));
+#else
+	InternalSetup();
+#endif
 	bIsWorkerThreadStarted = true;
 }
 
@@ -216,10 +263,14 @@ void FPlaylistReaderDASH::StopWorkerThread()
 {
 	if (bIsWorkerThreadStarted)
 	{
+#if DASH_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
 		bTerminateWorkerThread = true;
 		WorkerThreadSignal.Release();
 		ThreadWaitDone();
 		ThreadReset();
+#else
+		InternalCleanup();
+#endif
 		bIsWorkerThreadStarted = false;
 	}
 }
@@ -613,7 +664,7 @@ void FPlaylistReaderDASH::TriggerTimeSynchronization()
 				if (UTCTimings[i]->GetSchemeIdUri().Equals(DASH::Schemes::TimingSources::Scheme_urn_mpeg_dash_utc_direct2014))
 				{
 					FTimeValue DirectTime;
-					if (ISO8601::ParseDateTime(DirectTime, UTCTimings[i]->GetValue()) == UEMEDIA_ERROR_OK)
+					if (ISO8601::ParseDateTime(DirectTime, UTCTimings[i]->GetValue()))
 					{
 						PlayerSessionServices->GetSynchronizedUTCTime()->SetTime(DirectTime);
 						// Remove this timing element. It can not be used indefinitely and we best get rid of it now.
@@ -720,11 +771,8 @@ void FPlaylistReaderDASH::TriggerTimeSynchronization()
 }
 
 
-
-void FPlaylistReaderDASH::WorkerThread()
+void FPlaylistReaderDASH::InternalSetup()
 {
-	LLM_SCOPE(ELLMTag::ElectraPlayer);
-
 	bInbandEventByStreamType[0] = false;
 	bInbandEventByStreamType[1] = false;
 	bInbandEventByStreamType[2] = false;
@@ -748,34 +796,10 @@ void FPlaylistReaderDASH::WorkerThread()
 	Fragment = UrlParser.GetFragment();
 	PlaylistLoadRequest->CompleteCallback.BindThreadSafeSP(AsShared(), &FPlaylistReaderDASH::ManifestDownloadCompleted);
 	EnqueueResourceRequest(MoveTemp(PlaylistLoadRequest));
+}
 
-	while(!bTerminateWorkerThread)
-	{
-		WorkerThreadSignal.Obtain(1000 * 100);
-		if (bTerminateWorkerThread)
-		{
-			break;
-		}
-		{
-			SCOPE_CYCLE_COUNTER(STAT_ElectraPlayer_DASH_PlaylistWorker);
-			CSV_SCOPED_TIMING_STAT(ElectraPlayer, DASH_PlaylistWorker);
-			FTimeValue Now = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
-
-			HandleCompletedRequests(Now);
-
-			ExecutePendingRequests(Now);
-
-			// Check if the MPD must be updated.
-			CheckForMPDUpdate();
-
-			// Time sync
-			if (NextTimeSyncTime.IsValid() && Now >= NextTimeSyncTime)
-			{
-				TriggerTimeSynchronization();
-			}
-		}
-	}
-
+void FPlaylistReaderDASH::InternalCleanup()
+{
 	// Unregister event callbacks
 	PlayerSessionServices->GetAEMSEventHandler()->RemoveAEMSReceiver(AsShared(), DASH::Schemes::ManifestEvents::Scheme_urn_mpeg_dash_event_ttfn_2016, TEXT(""), IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode::OnStart);
 	PlayerSessionServices->GetAEMSEventHandler()->RemoveAEMSReceiver(AsShared(), DASH::Schemes::ManifestEvents::Scheme_urn_mpeg_dash_event_callback_2015, TEXT("1"), IAdaptiveStreamingPlayerAEMSReceiver::EDispatchMode::OnStart);
@@ -795,6 +819,27 @@ void FPlaylistReaderDASH::WorkerThread()
 	CompletedRequests.Empty();
 	RequestsLock.Unlock();
 	Builder.Reset();
+}
+
+void FPlaylistReaderDASH::WorkerThread()
+{
+#if DASH_PLAYLISTREADER_USE_DEDICATED_WORKER_THREAD
+	LLM_SCOPE(ELLMTag::ElectraPlayer);
+
+	InternalSetup();
+
+	while(!bTerminateWorkerThread)
+	{
+		WorkerThreadSignal.Obtain(1000 * 100);
+		if (bTerminateWorkerThread)
+		{
+			break;
+		}
+		InternalHandleOnce();
+	}
+
+	InternalCleanup();
+#endif
 }
 
 
@@ -1044,7 +1089,8 @@ FErrorDetail FPlaylistReaderDASH::GetXMLResponseString(FString& OutXMLString, FR
 			// UTF-32 LE BOM
 			return CreateErrorAndLog(FString::Printf(TEXT("Document has unsupported UTF-32 LE BOM!")), ERRCODE_DASH_MPD_UNSUPPORTED_DOCUMENT_ENCODING);
 		}
-		FString XML(NumResponseBytes, (TCHAR*)FUTF8ToTCHAR((const ANSICHAR*)ResponseBytes, NumResponseBytes).Get());
+		FUTF8ToTCHAR TextConv((const ANSICHAR*)ResponseBytes, NumResponseBytes);
+		FString XML(TextConv.Length(), TextConv.Get());
 		OutXMLString = MoveTemp(XML);
 	}
 	return FErrorDetail();
@@ -1058,7 +1104,8 @@ FErrorDetail FPlaylistReaderDASH::GetResponseString(FString& OutString, FResourc
 		TSharedPtrTS<IElectraHttpManager::FReceiveBuffer> ResponseBuffer = FromRequest->Request->GetResponseBuffer();
 		int32 NumResponseBytes = ResponseBuffer->Buffer.Num();
 		const uint8* ResponseBytes = (const uint8*)ResponseBuffer->Buffer.GetLinearReadData();
-		FString UTF8Text(NumResponseBytes, (TCHAR*)FUTF8ToTCHAR((const ANSICHAR*)ResponseBytes, NumResponseBytes).Get());
+		FUTF8ToTCHAR TextConv((const ANSICHAR*)ResponseBytes, NumResponseBytes);
+		FString UTF8Text(TextConv.Length(), TextConv.Get());
 		OutString = MoveTemp(UTF8Text);
 	}
 	return FErrorDetail();
@@ -1087,12 +1134,12 @@ void FPlaylistReaderDASH::ManifestDownloadCompleted(FResourceLoadRequestPtr Requ
 		FString EffectiveURL = ConnInfo->EffectiveURL;
 		for(int32 i=0; i<ConnInfo->ResponseHeaders.Num(); ++i)
 		{
-			if (ConnInfo->ResponseHeaders[i].Header.Equals(TEXT("Date")))
+			if (ConnInfo->ResponseHeaders[i].Header.Equals(TEXT("Date"), ESearchCase::IgnoreCase))
 			{
 				// Parse the header
 				FTimeValue DateFromHeader;
-				UEMediaError DateParseError = RFC7231::ParseDateTime(DateFromHeader, ConnInfo->ResponseHeaders[i].Value);
-				if (DateParseError == UEMEDIA_ERROR_OK && DateFromHeader.IsValid())
+				bool bDateParsedOk = RFC7231::ParseDateTime(DateFromHeader, ConnInfo->ResponseHeaders[i].Value);
+				if (bDateParsedOk && DateFromHeader.IsValid())
 				{
 					PlayerSessionServices->GetSynchronizedUTCTime()->SetTime(ConnInfo->RequestStartTime, DateFromHeader);
 				}
@@ -1100,7 +1147,7 @@ void FPlaylistReaderDASH::ManifestDownloadCompleted(FResourceLoadRequestPtr Requ
 				FetchTime = PlayerSessionServices->GetSynchronizedUTCTime()->MapToSyncTime(ConnInfo->RequestStartTime);
 				bInitialTimeSyncedToMPDDateTimeHeader = true;
 			}
-			else if (ConnInfo->ResponseHeaders[i].Header.Equals(TEXT("ETag")))
+			else if (ConnInfo->ResponseHeaders[i].Header.Equals(TEXT("ETag"), ESearchCase::IgnoreCase))
 			{
 				ETag = ConnInfo->ResponseHeaders[i].Value;
 			}
@@ -1139,8 +1186,13 @@ void FPlaylistReaderDASH::ManifestDownloadCompleted(FResourceLoadRequestPtr Requ
 					MostRecentMPDUpdateTime = FetchTime;
 
 					// If the URL has a special fragment part to turn this presentation into an event, do so.
+					// Do this before preparing the default start times!
 					// Note: This MAY require the client clock to be synced to the server IF the special keyword 'now' is used.
 					Manifest->TransformIntoEpicEvent();
+
+					// Do a one-time preparation of the default start time from the #t= URL fragment.
+					// This is not to be repeated for manifest updates.
+					Manifest->PrepareDefaultStartTime();
 				}
 
 				PlayerManifest = FManifestDASH::Create(PlayerSessionServices, Manifest);
@@ -1220,7 +1272,7 @@ void FPlaylistReaderDASH::ManifestUpdateDownloadCompleted(FResourceLoadRequestPt
 		FetchTime = PlayerSessionServices->GetSynchronizedUTCTime()->GetTime();
 		for(int32 i=0; i<ConnInfo->ResponseHeaders.Num(); ++i)
 		{
-			if (ConnInfo->ResponseHeaders[i].Header.Equals(TEXT("ETag")))
+			if (ConnInfo->ResponseHeaders[i].Header.Equals(TEXT("ETag"), ESearchCase::IgnoreCase))
 			{
 				ETag = ConnInfo->ResponseHeaders[i].Value;
 				break;
@@ -1356,12 +1408,12 @@ void FPlaylistReaderDASH::Timesync_httphead_Completed(FResourceLoadRequestPtr Re
 		{
 			for(int32 i=0; i<ConnInfo->ResponseHeaders.Num(); ++i)
 			{
-				if (ConnInfo->ResponseHeaders[i].Header.Equals(TEXT("Date")))
+				if (ConnInfo->ResponseHeaders[i].Header.Equals(TEXT("Date"), ESearchCase::IgnoreCase))
 				{
 					// Parse the header
 					FTimeValue DateFromHeader;
-					UEMediaError DateParseError = RFC7231::ParseDateTime(DateFromHeader, ConnInfo->ResponseHeaders[i].Value);
-					if (DateParseError == UEMEDIA_ERROR_OK && DateFromHeader.IsValid())
+					bool bDateParsedOk = RFC7231::ParseDateTime(DateFromHeader, ConnInfo->ResponseHeaders[i].Value);
+					if (bDateParsedOk && DateFromHeader.IsValid())
 					{
 						PlayerSessionServices->GetSynchronizedUTCTime()->SetTime(DateFromHeader);
 					}
@@ -1386,7 +1438,7 @@ void FPlaylistReaderDASH::Timesync_httpxsdate_Completed(FResourceLoadRequestPtr 
 			// Note: Yes, this is a bit weird, but the xs:dateTime format is actually exactly the same as ISO-8601
 			//       so it is not clear why there is a distinction made in the UTCTiming scheme.
 			//       We keep the different callback handlers here though for completeness sake.
-			if (ISO8601::ParseDateTime(NewTime, Response) == UEMEDIA_ERROR_OK)
+			if (ISO8601::ParseDateTime(NewTime, Response))
 			{
 				PlayerSessionServices->GetSynchronizedUTCTime()->SetTime(NewTime);
 			}
@@ -1411,7 +1463,7 @@ void FPlaylistReaderDASH::Timesync_httpiso_Completed(FResourceLoadRequestPtr Req
 		if (GetResponseString(Response, Request).IsOK())
 		{
 			FTimeValue NewTime;
-			if (ISO8601::ParseDateTime(NewTime, Response) == UEMEDIA_ERROR_OK)
+			if (ISO8601::ParseDateTime(NewTime, Response))
 			{
 				PlayerSessionServices->GetSynchronizedUTCTime()->SetTime(NewTime);
 			}

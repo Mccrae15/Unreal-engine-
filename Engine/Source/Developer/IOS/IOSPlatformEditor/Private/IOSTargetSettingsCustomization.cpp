@@ -36,6 +36,8 @@
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformModule.h"
 #include "IOSPlatformEditorModule.h"
+#include "HAL/PlatformFileManager.h"
+#include "UEFreeImage.h"
 
 #define LOCTEXT_NAMESPACE "IOSTargetSettings"
 DEFINE_LOG_CATEGORY_STATIC(LogIOSTargetSettings, Log, All);
@@ -59,34 +61,53 @@ TSharedRef<IDetailCustomization> FIOSTargetSettingsCustomization::MakeInstance()
 }
 
 FIOSTargetSettingsCustomization::FIOSTargetSettingsCustomization()
-	: EngineInfoPath(FString::Printf(TEXT("%sBuild/IOS/UE4Game-Info.plist"), *FPaths::EngineDir()))
+	: EngineInfoPath(FString::Printf(TEXT("%sBuild/IOS/UnrealGame-Info.plist"), *FPaths::EngineDir()))
 	, GameInfoPath(FString::Printf(TEXT("%sBuild/IOS/Info.plist"), *FPaths::ProjectDir()))
 	, EngineGraphicsPath(FString::Printf(TEXT("%sBuild/IOS/Resources/Graphics"), *FPaths::EngineDir()))
 	, GameGraphicsPath(FString::Printf(TEXT("%sBuild/IOS/Resources/Graphics"), *FPaths::ProjectDir()))
-{
-	new (IconNames) FPlatformIconInfo(TEXT("Icon20.png"), LOCTEXT("NotificationIcon_iPhone", "iPhone Notification Icon"), FText::GetEmpty(), 20, 20, FPlatformIconInfo::Optional);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon20@2x.png"), LOCTEXT("NotificationIcon_iPhoneRetina", "iPhone Retina Notification Icon"), FText::GetEmpty(), 40, 40, FPlatformIconInfo::Optional);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon20@3x.png"), LOCTEXT("NotificationIcon_iPhoneRetina_HD", "iPhone Retina HD Notification Icon"), FText::GetEmpty(), 60, 60, FPlatformIconInfo::Optional);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon29.png"), LOCTEXT("SettingsIcon_iPhone", "iPhone Settings Icon"), FText::GetEmpty(), 29, 29, FPlatformIconInfo::Optional);// also iOS6 spotlight search
-	new (IconNames) FPlatformIconInfo(TEXT("Icon29@2x.png"), LOCTEXT("SettingsIcon_iPhoneRetina", "iPhone Retina Settings Icon"), FText::GetEmpty(), 58, 58, FPlatformIconInfo::Optional); // also iOS6 spotlight search
-	new (IconNames) FPlatformIconInfo(TEXT("Icon29@3x.png"), LOCTEXT("SettingsIcon_iPhoneRetina_HD", "iPhone Retina HD Settings Icon"), FText::GetEmpty(), 87, 87, FPlatformIconInfo::Optional); // also iOS6 spotlight search
-	new (IconNames) FPlatformIconInfo(TEXT("Icon40.png"), LOCTEXT("SpotlightIcon_iOS7", "iOS7 Spotlight Icon"), FText::GetEmpty(), 40, 40, FPlatformIconInfo::Optional);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon40@2x.png"), LOCTEXT("SpotlightIcon_Retina_iOS7", "Retina iOS7 Spotlight Icon"), FText::GetEmpty(), 80, 80, FPlatformIconInfo::Optional);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon40@3x.png"), LOCTEXT("SpotlightIcon_Retina_HD_iOS7", "Retina HD iOS7 Spotlight Icon"), FText::GetEmpty(), 120, 120, FPlatformIconInfo::Optional);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon50.png"), LOCTEXT("SpotlightIcon_iPad_iOS6", "iPad iOS6 Spotlight Icon"), FText::GetEmpty(), 50, 50, FPlatformIconInfo::Optional);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon50@2x.png"), LOCTEXT("SpotlightIcon_iPadRetina_iOS6", "iPad Retina iOS6 Spotlight Icon"), FText::GetEmpty(), 100, 100, FPlatformIconInfo::Optional);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon57.png"), LOCTEXT("AppIcon_iPhone_iOS6", "iPhone iOS6 App Icon"), FText::GetEmpty(), 57, 57, FPlatformIconInfo::Required);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon57@2x.png"), LOCTEXT("AppIcon_iPhoneRetina_iOS6", "iPhone Retina iOS6 App Icon"), FText::GetEmpty(), 114, 114, FPlatformIconInfo::Required);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon60@2x.png"), LOCTEXT("AppIcon_iPhoneRetina_iOS7", "iPhone Retina iOS7 App Icon"), FText::GetEmpty(), 120, 120, FPlatformIconInfo::Required);
-	new (IconNames)FPlatformIconInfo(TEXT("Icon60@3x.png"), LOCTEXT("AppIcon_iPhoneRetina_iOS8", "iPhone Plus Retina iOS8 App Icon"), FText::GetEmpty(), 180, 180, FPlatformIconInfo::Required);
-	new (IconNames)FPlatformIconInfo(TEXT("Icon72.png"), LOCTEXT("AppIcon_iPad_iOS6", "iPad iOS6 App Icon"), FText::GetEmpty(), 72, 72, FPlatformIconInfo::Required);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon72@2x.png"), LOCTEXT("AppIcon_iPadRetina_iOS6", "iPad Retina iOS6 App Icon"), FText::GetEmpty(), 144, 144, FPlatformIconInfo::Required);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon76.png"), LOCTEXT("AppIcon_iPad_iOS7", "iPad iOS7 App Icon"), FText::GetEmpty(), 76, 76, FPlatformIconInfo::Required);
-	new (IconNames) FPlatformIconInfo(TEXT("Icon76@2x.png"), LOCTEXT("AppIcon_iPadRetina_iOS7", "iPad Retina iOS7 App Icon"), FText::GetEmpty(), 152, 152, FPlatformIconInfo::Required);
-	new (IconNames)FPlatformIconInfo(TEXT("Icon83.5@2x.png"), LOCTEXT("AppIcon_iPadProRetina_iOS9", "iPad Pro Retina iOS9 App Icon"), FText::GetEmpty(), 167, 167, FPlatformIconInfo::Required);
-	new (IconNames)FPlatformIconInfo(TEXT("Icon1024.png"), LOCTEXT("AppIcon_Marketing", "Marketing Icon"), FText::GetEmpty(), 1024, 1024, FPlatformIconInfo::Required);
+	, TVOSEngineGraphicsPath(FString::Printf(TEXT("%sBuild/TVOS/Resources/Graphics"), *FPaths::EngineDir()))
+	, TVOSGameGraphicsPath(FString::Printf(TEXT("%sBuild/TVOS/Resources/Graphics"), *FPaths::ProjectDir()))
 
+{
+
+    // Default AppIcons copied at the payload's root. See https://developer.apple.com/design/human-interface-guidelines/ios/icons-and-images/app-icon/
+   
+	new (IconNames)FPlatformIconInfo(TEXT("Icon1024.png"), LOCTEXT("AppIcon_Marketing", "Marketing Icon (1024x1024)\n\nOther icons sizes can be generated from the Marketing Icon."), FText::GetEmpty(), 1024, 1024, FPlatformIconInfo::Required); // App Store
+
+	new (IconNames) FPlatformIconInfo(TEXT("Icon60@2x.png"), LOCTEXT("Default_iPhone_AppIcon", "Default iPhone Icon (120x120)"), FText::GetEmpty(), 120, 120, FPlatformIconInfo::Required); // iPhone
+    new (IconNames) FPlatformIconInfo(TEXT("Icon76@2x.png"), LOCTEXT("Default_iPad_AppIcon", "Default iPad App Icon (152x152)"), FText::GetEmpty(), 152, 152, FPlatformIconInfo::Required); // iPad, iPad Mini
+ 
+    //From here, all the icons are part of the asset catalog (Assets.car)
+
+    // Required in the asset catalog
+    new (IconNames)FPlatformIconInfo(TEXT("Icon83.5@2x.png"), LOCTEXT("iPad_Pro_Retina_App_Icon", "iPad Pro Retina App Icon (167x167)"), FText::GetEmpty(), 167, 167, FPlatformIconInfo::Required); // iPad Pro
+
+    // From here icons are optional
+    new (IconNames)FPlatformIconInfo(TEXT("Icon60@3x.png"), LOCTEXT("3x_iPhone_App_Icon", "3x iPhone App Icon (180x180)"), FText::GetEmpty(), 180, 180, FPlatformIconInfo::Optional); // iPhone
+
+    new (IconNames) FPlatformIconInfo(TEXT("Icon40@3x.png"), LOCTEXT("3x_iPhone_Spotlight_Icon", "3x iPhone Spotlight Icon (120x120)"), FText::GetEmpty(), 120, 120, FPlatformIconInfo::Optional); // iPhone
+    new (IconNames) FPlatformIconInfo(TEXT("Icon40@2x.png"), LOCTEXT("Default_Spotlight_Icon", "Default Spotlight Icon (80x80)"), FText::GetEmpty(), 80, 80, FPlatformIconInfo::Optional); // iPhone, iPad Pro, iPad, iPad Mini
+
+    new (IconNames) FPlatformIconInfo(TEXT("Icon29@3x.png"), LOCTEXT("3x_iPhone_Settings_Icon", "3x iPhone Settings Icon (87x87)"), FText::GetEmpty(), 87, 87, FPlatformIconInfo::Optional); // iPhone
+    new (IconNames) FPlatformIconInfo(TEXT("Icon29@2x.png"), LOCTEXT("Default_Settings_Icon", "Default Settings Icon (58x58)"), FText::GetEmpty(), 58, 58, FPlatformIconInfo::Optional); // iPhone, iPad Pro, iPad, iPad Mini
+
+    new (IconNames) FPlatformIconInfo(TEXT("Icon20@3x.png"), LOCTEXT("3x_iPhone_Notification_Icon", "3x iPhone Notification Icon (60x60)"), FText::GetEmpty(), 60, 60, FPlatformIconInfo::Optional); // iPhone
+    new (IconNames) FPlatformIconInfo(TEXT("Icon20@2x.png"), LOCTEXT("Default_Notification_Icon", "Default Notification Icon (40x40)"), FText::GetEmpty(), 40, 40, FPlatformIconInfo::Optional); // iPhone, iPad Pro, iPad, iPad Mini
+
+	// LaunchScreen iOS and tvOS
 	new (LaunchImageNames)FPlatformIconInfo(TEXT("LaunchScreenIOS.png"), LOCTEXT("LaunchImageIOS", "Launch Screen Image"), LOCTEXT("LaunchImageIOSDesc", "This image is used for the Launch Screen when custom launch screen storyboards are not in use. The image is used in both portait and landscape modes and will be uniformly scaled to occupy the full width or height as necessary for of all devices, so if your app supports both a square image is recommended. The png file supplied must not have an alpha channel."), -1, -1, FPlatformIconInfo::Required);
+
+	// Icons and Shelf Images for tvOS
+	new (TvOSImageNames)FPlatformIconInfo(TEXT("Icon_Large_Back.png"), LOCTEXT("TVOS_Icon_Large_Back", "Icon Large Back (1280x768)"), FText::GetEmpty(), 1280, 768, FPlatformIconInfo::Required);
+	new (TvOSImageNames)FPlatformIconInfo(TEXT("Icon_Large_Front.png"), LOCTEXT("TVOS_Icon_Large_Front", "Icon Large Front (1280x768)"), FText::GetEmpty(), 1280, 768, FPlatformIconInfo::Required);
+	new (TvOSImageNames)FPlatformIconInfo(TEXT("Icon_Large_Middle.png"), LOCTEXT("TVOS_Icon_Large_Middle", "Icon Large Middle (1280x768)"), FText::GetEmpty(), 1280, 768, FPlatformIconInfo::Required);
+	new (TvOSImageNames)FPlatformIconInfo(TEXT("Icon_Small_Back.png"), LOCTEXT("TVOS_Icon_Small_Back", "Icon Small Back (400x240)"), FText::GetEmpty(), 400, 240, FPlatformIconInfo::Required);
+	new (TvOSImageNames)FPlatformIconInfo(TEXT("Icon_Small_Front.png"), LOCTEXT("TVOS_Icon_Small_Front", "Icon Small Front (400x240)"), FText::GetEmpty(), 400, 240, FPlatformIconInfo::Required);
+	new (TvOSImageNames)FPlatformIconInfo(TEXT("Icon_Small_Middle.png"), LOCTEXT("TVOS_Icon_Small_Middle", "Icon Small Middle (400x240)"), FText::GetEmpty(), 400, 240, FPlatformIconInfo::Required);
+	new (TvOSImageNames)FPlatformIconInfo(TEXT("TopShelf.png"), LOCTEXT("TVOS_Top_Shelf", "Top Shelf (1920x720)"), FText::GetEmpty(), 1920, 720, FPlatformIconInfo::Required);
+	new (TvOSImageNames)FPlatformIconInfo(TEXT("TopShelf@2x.png"), LOCTEXT("2x_TVOS_Top_Shelf", "Top Shelf (6840x1440"), FText::GetEmpty(), 3840, 1440, FPlatformIconInfo::Required);
+	new (TvOSImageNames)FPlatformIconInfo(TEXT("TopShelfWide-1920x720.png"), LOCTEXT("TVOS_Top_Shelf_Wide", "Top Shelf Wide (2320x720)"), FText::GetEmpty(), 2320, 720, FPlatformIconInfo::Required);
+	new (TvOSImageNames)FPlatformIconInfo(TEXT("TopShelfWide-1920x720@2x.png"), LOCTEXT("2x_TVOS_Top_Shelf_Wide", "2x Top Shelf Wide (4640x1440)"), FText::GetEmpty(), 4640, 1440, FPlatformIconInfo::Required);
 
 	bShowAllProvisions = false;
 	bShowAllCertificates = false;
@@ -102,7 +123,7 @@ FIOSTargetSettingsCustomization::~FIOSTargetSettingsCustomization()
 	if (IPPProcess.IsValid())
 	{
 		IPPProcess = NULL;
-		FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 	}
 
 	FIOSPlatformEditorModule::OnSelect.RemoveAll(this);
@@ -797,7 +818,7 @@ void FIOSTargetSettingsCustomization::BuildPListSection(IDetailLayoutBuilder& De
 
     // Handle max. shader version a little specially.
     {
-        ShaderVersionPropertyHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, MaxShaderLanguageVersion));
+        ShaderVersionPropertyHandle = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(UIOSRuntimeSettings, MetalLanguageVersion));
 		ShaderVersionPropertyHandle->SetOnPropertyValueChanged(OnUpdateShaderStandardWarning);
 		
 		// Drop-downs for setting type of lower and upper bound normalization
@@ -1055,6 +1076,15 @@ void FIOSTargetSettingsCustomization::BuildIconSection(IDetailLayoutBuilder& Det
 	{
 		BuildImageRow(DetailLayout, LaunchImageCategory, Info, LaunchImageMaxSize);
 	}
+
+	// Add the tvOS content
+	IDetailCategoryBuilder& tvOSCategory = DetailLayout.EditCategory(FName("tvOS"));
+	const FVector2D TvOSImageMaxSize(150.0f, 150.0f);
+	for (const FPlatformIconInfo& Info : TvOSImageNames)
+	{
+		BuildImageRow(DetailLayout, tvOSCategory, Info, TvOSImageMaxSize, true);
+	}
+
 }
 
 
@@ -1099,41 +1129,88 @@ void FIOSTargetSettingsCustomization::CopySetupFilesIntoProject()
 	SavedLayoutBuilder->ForceRefreshDetails();
 }
 
-void FIOSTargetSettingsCustomization::BuildImageRow(IDetailLayoutBuilder& DetailLayout, IDetailCategoryBuilder& Category, const FPlatformIconInfo& Info, const FVector2D& MaxDisplaySize)
+void FIOSTargetSettingsCustomization::BuildImageRow(IDetailLayoutBuilder& DetailLayout, IDetailCategoryBuilder& Category, const FPlatformIconInfo& Info, const FVector2D& MaxDisplaySize, bool bIsTVOS)
 {
-	const FString AutomaticImagePath = EngineGraphicsPath / Info.IconPath;
-	const FString TargetImagePath = GameGraphicsPath / Info.IconPath;
+	FString AutomaticImagePath = EngineGraphicsPath / Info.IconPath;
+	FString TargetImagePath = GameGraphicsPath / Info.IconPath;
 
-	Category.AddCustomRow(Info.IconName)
-		.NameContent()
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.Padding(FMargin(0, 1, 0, 1))
-			.FillWidth(1.0f)
-			[
-				SNew(STextBlock)
-				.Text(Info.IconName)
-				.Font(DetailLayout.GetDetailFont())
-				// IconDescription is not used, repurpose for tooltip
-				.ToolTipText(Info.IconDescription)
-			]
-		]
-		.ValueContent()
-		.MaxDesiredWidth(400.0f)
-		.MinDesiredWidth(100.0f)
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
-			.FillWidth(1.0f)
-			.VAlign(VAlign_Center)
-			[
-				SNew(SExternalImageReference, AutomaticImagePath, TargetImagePath)
-				.RequiredSize(Info.IconRequiredSize)
-				.MaxDisplaySize(MaxDisplaySize)
-				.DeleteTargetWhenDefaultChosen(true)
-			]
-		];
+	if (bIsTVOS)
+	{
+		AutomaticImagePath = TVOSEngineGraphicsPath / Info.IconPath;
+		TargetImagePath = TVOSGameGraphicsPath / Info.IconPath;
+	}
+
+    if (Info.RequiredState == FPlatformIconInfo::Required)
+    {
+        Category.AddCustomRow(Info.IconName)
+            .NameContent()
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot()
+                .Padding(FMargin(0, 1, 0, 1))
+                .FillWidth(1.0f)
+                [
+                    SNew(STextBlock)
+                    .Text(Info.IconName)
+                    .Font(DetailLayout.GetDetailFont())
+                    // IconDescription is not used, repurpose for tooltip
+                    .ToolTipText(Info.IconDescription)
+                ]
+            ]
+            .ValueContent()
+            .MaxDesiredWidth(400.0f)
+            .MinDesiredWidth(100.0f)
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot()
+                .FillWidth(1.0f)
+                .VAlign(VAlign_Center)
+                [
+                    SNew(SExternalImageReference, AutomaticImagePath, TargetImagePath)
+                    .RequiredSize(Info.IconRequiredSize)
+                    .MaxDisplaySize(MaxDisplaySize)
+					.GenerateImageVisibility(this, &FIOSTargetSettingsCustomization::ShouldShowGenerateButtonForIcon, bIsTVOS || Info.IconName.ToString().Contains("Launch Screen Image") || Info.IconName.ToString().Contains("Marketing Icon"))
+					.GenerateImageToolTipText(LOCTEXT("GenerateFromMarketingIcon", "Generate from Marketing Icon"))
+					.OnGenerateImageClicked(this, &FIOSTargetSettingsCustomization::OnGenerateImageClicked, TargetImagePath, Info.IconRequiredSize)
+                    .DeleteTargetWhenDefaultChosen(true)
+                ]
+            ];
+    }
+    else
+    {
+        Category.AddCustomRow(Info.IconName)
+            .NameContent()
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot()
+                .Padding(FMargin(0, 1, 0, 1))
+                .FillWidth(1.0f)
+                [
+                    SNew(STextBlock)
+                    .Text(Info.IconName)
+                    .Font(DetailLayout.GetDetailFont())
+                    // IconDescription is not used, repurpose for tooltip
+                    .ToolTipText(Info.IconDescription)
+                ]
+            ]
+            .ValueContent()
+            .MaxDesiredWidth(400.0f)
+            .MinDesiredWidth(100.0f)
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot()
+                .FillWidth(1.0f)
+                .VAlign(VAlign_Center)
+                [
+                    SNew(SExternalImageReference, "", TargetImagePath)
+                    .RequiredSize(Info.IconRequiredSize)
+                    .MaxDisplaySize(MaxDisplaySize)
+					.GenerateImageVisibility(this, &FIOSTargetSettingsCustomization::ShouldShowGenerateButtonForIcon, bIsTVOS || Info.IconName.ToString().Contains("Launch Screen Image") || Info.IconName.ToString().Contains("Marketing Icon"))
+					.GenerateImageToolTipText(LOCTEXT("GenerateFromMarketingIcon", "Generate from Marketing Icon"))
+					.OnGenerateImageClicked(this, &FIOSTargetSettingsCustomization::OnGenerateImageClicked, TargetImagePath, Info.IconRequiredSize)
+				]
+            ];
+    }
 }
 
 void FIOSTargetSettingsCustomization::FindRequiredFiles()
@@ -1154,7 +1231,7 @@ void FIOSTargetSettingsCustomization::FindRequiredFiles()
 	OutputMessage = TEXT("");
 	IPPProcess->OnOutput().BindStatic(&OnOutput);
 	IPPProcess->Launch();
-	TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FIOSTargetSettingsCustomization::UpdateStatusDelegate), 1.0f);
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FIOSTargetSettingsCustomization::UpdateStatusDelegate), 1.0f);
 	if (ProvisionInfoSwitcher.IsValid())
 	{
 		ProvisionInfoSwitcher->SetActiveWidgetIndex(0);
@@ -1234,7 +1311,7 @@ FReply FIOSTargetSettingsCustomization::OnInstallProvisionClicked()
 		OutputMessage = TEXT("");
 		IPPProcess->OnOutput().BindStatic(&OnOutput);
 		IPPProcess->Launch();
-		TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FIOSTargetSettingsCustomization::UpdateStatusDelegate), 10.0f);
+		TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FIOSTargetSettingsCustomization::UpdateStatusDelegate), 10.0f);
 		if (ProvisionInfoSwitcher.IsValid())
 		{
 			ProvisionInfoSwitcher->SetActiveWidgetIndex(1);
@@ -1243,6 +1320,66 @@ FReply FIOSTargetSettingsCustomization::OnInstallProvisionClicked()
 	}
 
 	return FReply::Handled();
+}
+
+FReply FIOSTargetSettingsCustomization::OnGenerateImageClicked(const FString TargetImagePath, FIntPoint IconRequiredSize)
+{
+	FString GenerateImageSourcePath = FPaths::GetPath(FPaths::GetProjectFilePath()) + TEXT("/Build/IOS/Resources/Graphics/Icon1024.png");
+
+	if (FPaths::FileExists(*TargetImagePath))
+	{
+		const EAppReturnType::Type Answer = FMessageDialog::Open(EAppMsgType::YesNo, FText::FromString(TEXT("File already exists. Do you want to overwrite it ?")));
+		if (Answer == EAppReturnType::No)
+		{
+			return FReply::Handled();
+		}
+	}
+
+	if (ensure(FPaths::FileExists(*GenerateImageSourcePath)))
+	{
+		FUEFreeImageWrapper::FreeImage_Initialise();
+		if (!FUEFreeImageWrapper::IsValid())
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("Generate_FreeImageFailure", "The FreeImage library could not be correctly initialized."));
+			return FReply::Unhandled();
+		}
+
+		FREE_IMAGE_FORMAT FileType = FIF_UNKNOWN;
+		FileType = FreeImage_GetFileType(TCHAR_TO_FICHAR(*GenerateImageSourcePath), 0);
+		if (FileType == FIF_UNKNOWN)
+		{
+			FileType = FreeImage_GetFIFFromFilename(TCHAR_TO_FICHAR(*GenerateImageSourcePath));
+			if (FileType == FIF_UNKNOWN)
+			{
+				FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("Generate_UnknownFileType", "An unknown filetype error occurred while trying to resize the Marketing icon."));
+				return FReply::Unhandled();
+			}
+		}
+
+		FIBITMAP* Bitmap = FreeImage_Load(FileType, TCHAR_TO_FICHAR(*GenerateImageSourcePath), 0);
+		if (Bitmap == nullptr)
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("Generate_LoadFailed", "The Marketing icon file could not be loaded while trying to resize it."));
+			return FReply::Unhandled();
+		}
+
+		FIBITMAP* RescaledImage;
+		FREE_IMAGE_FORMAT FifW;
+		if ((RescaledImage = FreeImage_Rescale(Bitmap, IconRequiredSize.X, IconRequiredSize.Y, FREE_IMAGE_FILTER::FILTER_LANCZOS3)) == nullptr ||
+			(FifW = FreeImage_GetFIFFromFilename(TCHAR_TO_FICHAR(*TargetImagePath))) == FIF_UNKNOWN ||
+			!FreeImage_Save(FifW, RescaledImage, TCHAR_TO_FICHAR(*TargetImagePath), 0))
+		{
+			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("Generate_ResizeSaveFailed", "An error occurred while resizing or saving the icon file."));
+			return FReply::Unhandled();
+		}
+
+		return FReply::Handled();
+	}
+	else
+	{
+		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("Generate_OpenFailed", "The Marketing icon file could not be found."));
+		return FReply::Unhandled();
+	}
 }
 
 FReply FIOSTargetSettingsCustomization::OnInstallCertificateClicked()
@@ -1291,7 +1428,7 @@ FReply FIOSTargetSettingsCustomization::OnInstallCertificateClicked()
 		OutputMessage = TEXT("");
 		IPPProcess->OnOutput().BindStatic(&OnOutput);
 		IPPProcess->Launch();
-		TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FIOSTargetSettingsCustomization::UpdateStatusDelegate), 10.0f);
+		TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FIOSTargetSettingsCustomization::UpdateStatusDelegate), 10.0f);
 		if (CertificateInfoSwitcher.IsValid())
 		{
 			CertificateInfoSwitcher->SetActiveWidgetIndex(1);
@@ -1367,7 +1504,7 @@ FReply FIOSTargetSettingsCustomization::OnGenerateSSHKey()
 	OutputMessage = TEXT("");
 	IPPProcess = MakeShareable(new FMonitoredProcess(CmdExe, CommandLine, false, false));
 	IPPProcess->Launch();
-	TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FIOSTargetSettingsCustomization::UpdateStatusDelegate), 10.0f);
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FIOSTargetSettingsCustomization::UpdateStatusDelegate), 10.0f);
 	RunningIPPProcess = true;
 
 	return FReply::Handled();
@@ -1740,38 +1877,29 @@ FText FIOSTargetSettingsCustomization::GetMinVersionDesc() const
 
 void FIOSTargetSettingsCustomization::SetShaderStandard(int32 Value)
 {
-	FPropertyAccess::Result Res = ShaderVersionPropertyHandle->SetValue((uint8)Value);
-	check(Res == FPropertyAccess::Success);
-	
-	if (MinOSPropertyHandle.IsValid())
-	{
-		FText Message;
-		
-		uint8 EnumValue = (uint8)EIOSVersion::IOS_12;
-		if (MinOSPropertyHandle.IsValid())
-		{
-			MinOSPropertyHandle->GetValue(EnumValue);
-		}
-		
-		bool bMRTEnabled = false;
-		if (MRTPropertyHandle.IsValid())
-		{
-			MRTPropertyHandle->GetValue(bMRTEnabled);
-		}
-		
-		// make sure we never set the min version to less than current supported
-		if (((EIOSVersion)EnumValue < EIOSVersion::IOS_12))
-		{
-			SetMinVersion((int32)EIOSVersion::IOS_12);
-		}
+    FPropertyAccess::Result Res = ShaderVersionPropertyHandle->SetValue((uint8)Value);
+    check(Res == FPropertyAccess::Success);
 
-		
-		ShaderVersionWarningTextBox->SetError(Message);
-	}
-	else
-	{
-		ShaderVersionWarningTextBox->SetError(TEXT(""));
-	}
+    if (MinOSPropertyHandle.IsValid())
+    {
+        uint8 IOSVersion = (uint8)EIOSVersion::IOS_14;
+        if (MinOSPropertyHandle.IsValid())
+        {
+            MinOSPropertyHandle->GetValue(IOSVersion);
+        }
+
+        ShaderVersionWarningTextBox->SetError(TEXT(""));
+
+        switch (IOSVersion)
+        {
+            case (uint8)EIOSVersion::IOS_14:
+                if (Value != 0 && Value < (int32)EIOSMetalShaderStandard::IOSMetalSLStandard_2_3){Value = (int32)EIOSMetalShaderStandard::IOSMetalSLStandard_2_3; ShaderVersionWarningTextBox->SetError(TEXT("Metal 2.3 is the minimum for iOS14")); return;}
+                break;
+            case (uint8)EIOSVersion::IOS_15:
+                if (Value != 0 && Value < (int32)EIOSMetalShaderStandard::IOSMetalSLStandard_2_4){Value = (int32)EIOSMetalShaderStandard::IOSMetalSLStandard_2_4; ShaderVersionWarningTextBox->SetError(TEXT("Metal 2.4 is the minimum for iOS15")); return;}
+                break;
+        }
+    }
 }
 
 void FIOSTargetSettingsCustomization::UpdateShaderStandardWarning()
@@ -1793,13 +1921,9 @@ void FIOSTargetSettingsCustomization::UpdateOSVersionWarning()
 		{
 			uint8 EnumValue;
 			MinOSPropertyHandle->GetValue(EnumValue);
-			if (EnumValue < (uint8)EIOSVersion::IOS_12)
+			if (EnumValue < (uint8)EIOSVersion::IOS_14)
 			{
-				SetMinVersion((int32)EIOSVersion::IOS_12);
-				
-				FText Message;
-				Message = LOCTEXT("MetalMRTStandardv1.2","Enabling the Desktop Forward Renderer Metal requires Shader Standard v2.0 which increases the minimum operating system requirement for Metal from iOS 10.0 or later to iOS 11.0 or later.");
-				IOSVersionWarningTextBox->SetError(Message);
+				SetMinVersion((int32)EIOSVersion::IOS_14);
 			}
 		}
 		else
@@ -1821,23 +1945,15 @@ void FIOSTargetSettingsCustomization::UpdateMetalMRTWarning()
 		{
 			uint8 EnumValue;
 			MinOSPropertyHandle->GetValue(EnumValue);
-			if (EnumValue < (uint8)EIOSVersion::IOS_12)
+			if (EnumValue < (uint8)EIOSVersion::IOS_14)
 			{
-				SetMinVersion((int32)EIOSVersion::IOS_12);
-				
-				FText Message;
-				Message = LOCTEXT("MetalMRTStandardv1.2","Enabling the Desktop Forward Renderer Metal requires Shader Standard v2.0 which increases the minimum operating system requirement for Metal from iOS 10.0 or later to iOS 11.0 or later.");
-				IOSVersionWarningTextBox->SetError(Message);
+				SetMinVersion((int32)EIOSVersion::IOS_14);
 			}
 			
 			ShaderVersionPropertyHandle->GetValue(EnumValue);
-			if (EnumValue < (uint8)EIOSMetalShaderStandard::IOSMetalSLStandard_2_0)
+			if (EnumValue < (int32)EIOSMetalShaderStandard::IOSMetalSLStandard_2_3)
 			{
-				SetShaderStandard((int32)EIOSMetalShaderStandard::IOSMetalSLStandard_2_0);
-				
-				FText Message;
-				Message = LOCTEXT("MetalMRTStandardv1.2","Enabling the Desktop Forward Renderer Metal requires Shader Standard v2.0 which increases the minimum operating system requirement for Metal from iOS 10.0 or later to iOS 11.0 or later.");
-				ShaderVersionWarningTextBox->SetError(Message);
+				SetShaderStandard((int32)EIOSMetalShaderStandard::IOSMetalSLStandard_Minimum);
 			}
 		}
 		else
@@ -1857,6 +1973,18 @@ void FIOSTargetSettingsCustomization::SetMinVersion(int32 Value)
 {
 	FPropertyAccess::Result Res = MinOSPropertyHandle->SetValue((uint8)Value);
 	check(Res == FPropertyAccess::Success);
+}
+
+EVisibility FIOSTargetSettingsCustomization::ShouldShowGenerateButtonForIcon(bool bCannotBeGenerated) const
+{
+	if (!bCannotBeGenerated && FPlatformFileManager::Get().GetPlatformFile().FileExists(*(FPaths::GetPath(FPaths::GetProjectFilePath()) + "/Build/IOS/Resources/Graphics/Icon1024.png")))
+	{
+		return EVisibility::Visible;
+	}
+	else
+	{
+		return EVisibility::Collapsed;
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////

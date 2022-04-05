@@ -9,6 +9,14 @@
 #include "Serialization/MemoryWriter.h"
 #if INTEL_ISPC
 #include "AnimEncoding_ConstantKeyLerp.ispc.generated.h"
+
+static_assert(sizeof(ispc::FTransform) == sizeof(FTransform), "sizeof(ispc::FTransform) != sizeof(FTransform)");
+static_assert(sizeof(ispc::BoneTrackPair) == sizeof(BoneTrackPair), "sizeof(ispc::BoneTrackPair) != sizeof(BoneTrackPair)");
+#endif
+
+#if INTEL_ISPC && !UE_BUILD_SHIPPING
+bool bAnim_ConstantKeyLerp_ISPC_Enabled = true;
+FAutoConsoleVariableRef CVarAnimConstantKeyLerpISPCEnabled(TEXT("a.ConstantKeyLerp.ISPC"), bAnim_ConstantKeyLerp_ISPC_Enabled, TEXT("Whether to use ISPC optimizations in constant key anim encoding"));
 #endif
 
 /**
@@ -260,7 +268,7 @@ inline void AEFConstantKeyLerp<FORMAT>::GetPoseRotations(
 		return;
 	}
 
-	if (INTEL_ISPC)
+	if (bAnim_ConstantKeyLerp_ISPC_Enabled)
 	{
 #if INTEL_ISPC
 		const FUECompressedAnimData& AnimData = static_cast<const FUECompressedAnimData&>(DecompContext.CompressedAnimData);
@@ -312,7 +320,7 @@ inline void AEFConstantKeyLerp<FORMAT>::GetPoseTranslations(
 		return;
 	}
 
-	if (INTEL_ISPC)
+	if (bAnim_ConstantKeyLerp_ISPC_Enabled)
 	{
 #if INTEL_ISPC
 		const FUECompressedAnimData& AnimData = static_cast<const FUECompressedAnimData&>(DecompContext.CompressedAnimData);
@@ -380,7 +388,7 @@ inline void AEFConstantKeyLerp<FORMAT>::GetPoseScales(
 		return;
 	}
 
-	if (INTEL_ISPC)
+	if (bAnim_ConstantKeyLerp_ISPC_Enabled)
 	{
 #if INTEL_ISPC
 		const FUECompressedAnimData& AnimData = static_cast<const FUECompressedAnimData&>(DecompContext.CompressedAnimData);

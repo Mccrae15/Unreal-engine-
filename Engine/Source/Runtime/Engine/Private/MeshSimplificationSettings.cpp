@@ -3,6 +3,11 @@
 #include "Engine/MeshSimplificationSettings.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UnrealType.h"
+#include "Modules/ModuleManager.h"
+
+#if WITH_EDITOR
+#include "Developer/MeshReductionInterface/Public/IMeshReductionManagerModule.h"
+#endif
 
 UMeshSimplificationSettings::UMeshSimplificationSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -27,6 +32,7 @@ void UMeshSimplificationSettings::PostInitProperties()
 	Super::PostInitProperties(); 
 
 #if WITH_EDITOR
+	IMeshReductionManagerModule& MeshReductionModule = FModuleManager::Get().LoadModuleChecked<IMeshReductionManagerModule>("MeshReductionInterface");
 	if(IsTemplate())
 	{
 		FModuleManager::Get().LoadModule("MeshReductionInterface");

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "AudioMixer.h"
+#include "AudioDefines.h"
 #include "CoreMinimal.h"
 #include "SampleBuffer.h"
 #include "IAudioEndpoint.h"
@@ -16,6 +17,7 @@
 #include "AudioDynamicParameter.h"
 #include "Stats/Stats.h"
 #include "UObject/WeakObjectPtrTemplates.h"
+#include "IAudioLinkFactory.h"
 
 // The time it takes to process the submix graph. Process submix effects, mix into the submix buffer, etc.
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Submix Graph"), STAT_AudioMixerSubmixes, STATGROUP_AudioMixer, AUDIOMIXER_API);
@@ -130,20 +132,20 @@ namespace Audio
 		// Removes the given submix from this submix's children
 		void RemoveChildSubmix(TWeakPtr<FMixerSubmix, ESPMode::ThreadSafe> SubmixWeakPtr);
 
-		// Sets the output level of the submix
+		// Sets the output level of the submix in linear gain
 		void SetOutputVolume(float InOutputLevel);
 
-		// Sets the static output volume of the submix
+		// Sets the static output volume of the submix in linear gain
 		void SetDryLevel(float InDryLevel);
 
-		// Sets the wet level of the submix
+		// Sets the wet level of the submix in linear gain
 		void SetWetLevel(float InWetLevel);
 
 		// Update modulation settings of the submix
 		void UpdateModulationSettings(USoundModulatorBase* InOutputModulator, USoundModulatorBase* InWetLevelModulator, USoundModulatorBase* InDryLevelModulator);
 
-		// Update modulation settings of the submix
-		void SetModulationBaseLevels(float InVolumeModBase, float InWetModeBase, float InDryModBase);
+		// Update modulation settings of the submix with Decibel values
+		void SetModulationBaseLevels(float InVolumeModBaseDb, float InWetModeBaseDb, float InDryModBaseDb);
 
 		// Gets the submix channels channels
 		int32 GetSubmixChannels() const;
@@ -198,8 +200,10 @@ namespace Audio
 		bool IsValid() const;
 
 		// Function which processes audio.
-		void ProcessAudio(AlignedFloatBuffer& OutAudio);
+		void ProcessAudio(FAlignedFloatBuffer& OutAudio);
 		void ProcessAudio(ISoundfieldAudioPacket& OutputAudio);
+
+		void SendAudioToSubmixBufferListeners(FAlignedFloatBuffer& OutAudioBuffer);
 
 		// This should be called if this submix doesn't send it's audio to a parent submix,
 		// but rather an external endpoint.
@@ -234,7 +238,7 @@ namespace Audio
 		void OnStartRecordingOutput(float ExpectedDuration);
 
 		// This is called by the corresponding USoundSubmix when StopRecordingOutput is called.
-		AlignedFloatBuffer& OnStopRecordingOutput(float& OutNumChannels, float& OutSampleRate);
+		FAlignedFloatBuffer& OnStopRecordingOutput(float& OutNumChannels, float& OutSampleRate);
 
 		// This is called by the corresponding USoundSubmix when PauseRecording is called.
 		void PauseRecordingOutput();
@@ -295,6 +299,15 @@ namespace Audio
 		//Returns true if this is an endpoint type that should no-op for this platform
 		bool IsDummyEndpointSubmix() const;
 
+		// Returns true if the submix is currently rendering audio. The current rendering time is passed in.
+		bool IsRenderingAudio() const;
+
+		// Set whether or not this submix is told to auto disable. 
+		void SetAutoDisable(bool bInAutoDisable);
+
+		// Sets the auto-disable time
+		void SetAutoDisableTime(float InAutoDisableTime);
+
 		// Get a unique key for this submix's format and settings.
 		// If another submix has an identical format and settings it will have an equivalent key.
 		FSoundfieldEncodingKey GetKeyForSubmixEncoding();
@@ -312,9 +325,9 @@ namespace Audio
 		void InitInternal();
 
 		// Down mix the given buffer to the desired down mix channel count
-		static void DownmixBuffer(const int32 InChannels, const AlignedFloatBuffer& InBuffer, const int32 OutChannels, AlignedFloatBuffer& OutNewBuffer);
+		static void DownmixBuffer(const int32 InChannels, const FAlignedFloatBuffer& InBuffer, const int32 OutChannels, FAlignedFloatBuffer& OutNewBuffer);
 
-		void MixBufferDownToMono(const AlignedFloatBuffer& InBuffer, int32 NumInputChannels, AlignedFloatBuffer& OutBuffer);
+		void MixBufferDownToMono(const FAlignedFloatBuffer& InBuffer, int32 NumInputChannels, FAlignedFloatBuffer& OutBuffer);
 
 		void SetupSoundfieldEncodersForChildren();
 		void SetupSoundfieldEncodingForChild(FChildSubmixInfo& InChild);
@@ -346,7 +359,7 @@ namespace Audio
 		void SubmixCommand(TFunction<void()> Command);
 
 		// Generates audio from the given effect chain into the given buffer
-		bool GenerateEffectChainAudio(FSoundEffectSubmixInputData& InputData, AlignedFloatBuffer& InAudioBuffer, TArray<FSoundEffectSubmixPtr>& InEffectChain, AlignedFloatBuffer& OutBuffer);
+		bool GenerateEffectChainAudio(FSoundEffectSubmixInputData& InputData, const FAlignedFloatBuffer& InAudioBuffer, TArray<FSoundEffectSubmixPtr>& InEffectChain, FAlignedFloatBuffer& OutBuffer);
 
 		// This mixer submix's Id
 		uint32 Id;
@@ -373,7 +386,7 @@ namespace Audio
 
 		// The array of submix effect overrides. There may be more than one if multiple are fading out. There should be only one fading in (the current override).
 		TArray<FSubmixEffectFadeInfo> EffectChains;
-		AlignedFloatBuffer EffectChainOutputBuffer;
+		FAlignedFloatBuffer EffectChainOutputBuffer;
 
 		// Owning mixer device. 
 		FMixerDevice* MixerDevice;
@@ -381,11 +394,11 @@ namespace Audio
 		// Map of mixer source voices with a given send level for this submix
 		TMap<FMixerSourceVoice*, FSubmixVoiceData> MixerSourceVoices;
 
-		AlignedFloatBuffer ScratchBuffer;
-		AlignedFloatBuffer SubmixChainMixBuffer;
-		AlignedFloatBuffer InputBuffer;
-		AlignedFloatBuffer DownmixedBuffer;
-		AlignedFloatBuffer SourceInputBuffer;
+		FAlignedFloatBuffer ScratchBuffer;
+		FAlignedFloatBuffer SubmixChainMixBuffer;
+		FAlignedFloatBuffer InputBuffer;
+		FAlignedFloatBuffer DownmixedBuffer;
+		FAlignedFloatBuffer SourceInputBuffer;
 
 		int32 NumChannels;
 		int32 NumSamples;
@@ -473,10 +486,10 @@ namespace Audio
 			TUniquePtr<ISoundfieldEndpoint> SoundfieldEndpoint;
 
 			// for non-soundfield endpoints, we use these buffers for processing.
-			AlignedFloatBuffer AudioBuffer;
-			AlignedFloatBuffer ResampledAudioBuffer;
-			AlignedFloatBuffer DownmixedResampledAudioBuffer;
-			AlignedFloatBuffer DownmixChannelMap;
+			FAlignedFloatBuffer AudioBuffer;
+			FAlignedFloatBuffer ResampledAudioBuffer;
+			FAlignedFloatBuffer DownmixedResampledAudioBuffer;
+			FAlignedFloatBuffer DownmixChannelMap;
 
 			// Number of channels and sample rate for the external endpoint.
 			int32 NumChannels;
@@ -519,13 +532,18 @@ namespace Audio
 		FModulationDestination DryLevelMod;
 		FModulationDestination WetLevelMod;
 
-		float VolumeModBase;
-		float DryModBase;
-		float WetModBase;
+		float VolumeModBaseDb = 0.f;
+		float DryModBaseDb = MIN_VOLUME_DECIBELS;
+		float WetModBaseDb = 0.f;
+
+		// modifiers set from BP code
+		float VolumeModifier = 1.f;
+		float DryLevelModifier = 1.f;
+		float WetLevelModifier = 1.f;
 
 		// Envelope following data
 		float EnvelopeValues[AUDIO_MIXER_MAX_OUTPUT_CHANNELS];
-		TArray<Audio::FEnvelopeFollower> EnvelopeFollowers;
+		Audio::FEnvelopeFollower EnvelopeFollower;
 		int32 EnvelopeNumChannels;
 		FCriticalSection EnvelopeCriticalSection;
 
@@ -535,10 +553,10 @@ namespace Audio
 		TSharedPtr<FAsyncSpectrumAnalyzer, ESPMode::ThreadSafe> SpectrumAnalyzer;
 		
 		// This buffer is used to downmix the submix output to mono before submitting it to the SpectrumAnalyzer.
-		AlignedFloatBuffer MonoMixBuffer;
+		FAlignedFloatBuffer MonoMixBuffer;
 
 		// The dry channel buffer
-		AlignedFloatBuffer DryChannelBuffer;
+		FAlignedFloatBuffer DryChannelBuffer;
 
 		// Submix command queue to shuffle commands from audio thread to audio render thread.
 		TQueue<TFunction<void()>> CommandQueue;
@@ -550,7 +568,7 @@ namespace Audio
 		FCriticalSection BufferListenerCriticalSection;
 
 		// This buffer is used for recorded output of the submix.
-		AlignedFloatBuffer RecordingData;
+		FAlignedFloatBuffer RecordingData;
 
 		// Returns the number of submix effects
 		int32 NumSubmixEffects;
@@ -561,6 +579,24 @@ namespace Audio
 		// Whether or not this submix is muted.
 		uint8 bIsBackgroundMuted : 1;
 
+		// Whether or not auto-disablement is enabled. If true, the submix will disable itself.
+		uint8 bAutoDisable : 1;
+
+		// Whether or not the submix is currently rendering audio. I.e. audio was sent to it and mixing it, or any of its child submixes are rendering audio.
+		uint8 bIsSilent : 1;
+
+		// Whether or not we're currently disabled (i.e. the submix has been silent)
+		uint8 bIsCurrentlyDisabled : 1;
+
+		// The time to wait to disable the submix if the auto-disablement is active.
+		double AutoDisableTime;
+
+		// The time that the first full silent buffer was detected in the submix. Submix will auto-disable if the timeout is reached and the submix has bAutoDisable set to true.
+		double SilenceTimeStartSeconds;
+
+		// The name of this submix (the owning USoundSubmix)
+		FString SubmixName;
+
 		// Bool set to true when envelope following is enabled
 		FThreadSafeBool bIsEnvelopeFollowing;
 
@@ -569,7 +605,7 @@ namespace Audio
 
 		struct FSpectralAnalysisBandInfo
 		{
-			FEnvelopeFollower EnvelopeFollower;
+			FInlineEnvelopeFollower EnvelopeFollower;
 		};
 
 		struct FSpectrumAnalysisDelegateInfo
@@ -616,6 +652,8 @@ namespace Audio
 		TWeakObjectPtr<const USoundSubmixBase> OwningSubmixObject;
 
 		Audio::FPatchSplitter PatchSplitter;
+
+		TUniquePtr<IAudioLink> AudioLinkInstance;
 
 		friend class FMixerDevice;
 	};

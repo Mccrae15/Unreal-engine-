@@ -222,6 +222,13 @@ TArray<ESocialSubsystem> USocialUser::GetRelationshipSubsystems(ESocialRelations
 			RelationshipSubsystems.Add(ESocialSubsystem::Primary);
 		}
 	}
+	else if (Relationship == ESocialRelationship::JoinRequest)
+	{
+		if (HasRequestedToJoinUs())
+		{
+			RelationshipSubsystems.Add(ESocialSubsystem::Primary);
+		}
+	}
 	else
 	{
 		for (const TPair<ESocialSubsystem, FSubsystemUserInfo>& SubsystemInfoPair : SubsystemInfoByType)
@@ -631,7 +638,7 @@ FUserPlatform USocialUser::GetCurrentPlatform() const
 			{
 				if (UPartyMember* PartyMember = Party->GetPartyMember(GetUserId(ESocialSubsystem::Primary)))
 				{
-					const FUserPlatform& PartyMemberPlatform = PartyMember->GetRepData().GetPlatform();
+					const FUserPlatform& PartyMemberPlatform = PartyMember->GetRepData().GetPlatformDataPlatform();
 					UE_LOG(LogOnline, VeryVerbose, TEXT("%s - Party Member Found for user! RepDataPlatform: %s"), ANSI_TO_TCHAR(__FUNCTION__), *PartyMemberPlatform.ToString());
 					if (PartyMemberPlatform.IsValid())
 					{
@@ -923,11 +930,11 @@ bool USocialUser::CanInviteToParty(const FOnlinePartyTypeId& PartyTypeId) const
 	return false;
 }
 
-bool USocialUser::InviteToParty(const FOnlinePartyTypeId& PartyTypeId) const
+bool USocialUser::InviteToParty(const FOnlinePartyTypeId& PartyTypeId, const ESocialPartyInviteMethod InviteMethod) const
 {
 	if (USocialParty* Party = GetOwningToolkit().GetSocialManager().GetParty(PartyTypeId))
 	{
-		return Party->TryInviteUser(*this);
+		return Party->TryInviteUser(*this, InviteMethod);
 	}
 	return false;
 }
@@ -987,6 +994,14 @@ FString USocialUser::ToDebugString() const
 #endif
 }
 
+void USocialUser::WithContext(const TMap<FString, FString>& InAnalyticsContext, void(*Func)(USocialUser&))
+{
+	TMap<FString, FString> PreviousContext = MoveTemp(AnalyticsContext);
+	AnalyticsContext = InAnalyticsContext;
+	Func(*this);
+	AnalyticsContext = MoveTemp(PreviousContext);
+}
+
 bool USocialUser::SendFriendInvite(ESocialSubsystem SubsystemType)
 {
 	return GetOwningToolkit().TrySendFriendInvite(*this, SubsystemType);
@@ -1044,13 +1059,47 @@ bool USocialUser::ShowPlatformProfile()
 void USocialUser::HandlePartyInviteReceived(const IOnlinePartyJoinInfo& Invite)
 {
 	ReceivedPartyInvites.Emplace(Invite.AsShared());
-	GetOwningToolkit().OnPartyInviteReceived().Broadcast(*this);
+	GetOwningToolkit().NotifyPartyInviteReceived(*this, Invite);
 }
 
 void USocialUser::HandlePartyInviteRemoved(const IOnlinePartyJoinInfo& Invite, EPartyInvitationRemovedReason Reason)
 {
 	ReceivedPartyInvites.Remove(Invite.AsShared());
-	// TODO? GetOwningToolkit().OnPartyInviteRemoved().Broadcast(*this);
+	GetOwningToolkit().NotifyPartyInviteRemoved(*this, Invite);
+}
+
+void USocialUser::HandleRequestToJoinSent(const FDateTime& ExpiresAt)
+{
+	NotifyRequestToJoinSent(ExpiresAt);
+}
+
+void USocialUser::HandleRequestToJoinReceived(const IOnlinePartyRequestToJoinInfo& Request)
+{
+	NotifyRequestToJoinReceived(Request);
+}
+
+void USocialUser::HandleRequestToJoinRemoved(const IOnlinePartyRequestToJoinInfo& Request, EPartyRequestToJoinRemovedReason Reason)
+{
+	NotifyRequestToJoinRemoved(Request, Reason);
+}
+
+void USocialUser::AcceptRequestToJoinParty() const
+{
+	if (USocialParty* Party = GetOwningToolkit().GetSocialManager().GetParty(IOnlinePartySystem::GetPrimaryPartyTypeId()))
+	{
+		Party->TryInviteUser(*this);
+		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
+		PartyInterface->ClearRequestToJoinParty(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), Party->GetPartyId(), *GetUserId(ESocialSubsystem::Primary), EPartyRequestToJoinRemovedReason::Accepted);
+	}
+}
+
+void USocialUser::DismissRequestToJoinParty() const
+{
+	if (USocialParty* Party = GetOwningToolkit().GetSocialManager().GetParty(IOnlinePartySystem::GetPrimaryPartyTypeId()))
+	{
+		IOnlinePartyPtr PartyInterface = Online::GetPartyInterfaceChecked(GetWorld());
+		PartyInterface->ClearRequestToJoinParty(*GetOwningToolkit().GetLocalUserNetId(ESocialSubsystem::Primary), Party->GetPartyId(), *GetUserId(ESocialSubsystem::Primary), EPartyRequestToJoinRemovedReason::Dismissed);
+	}
 }
 
 TSharedPtr<const IOnlinePartyJoinInfo> USocialUser::GetPartyJoinInfo(const FOnlinePartyTypeId& PartyTypeId) const
@@ -1320,7 +1369,14 @@ void USocialUser::SetUserInfo(ESocialSubsystem SubsystemType, const TSharedRef<F
 								}
 
 								FUniqueNetIdRepl SubsystemId = MissingOSS->GetIdentityInterface()->CreateUniquePlayerId(SubsystemIdStr);
-								SetSubsystemId(Subsystem, SubsystemId);
+								if (SubsystemId.IsValid())
+								{
+									SetSubsystemId(Subsystem, SubsystemId);
+								}
+								else 
+								{
+									UE_LOG(LogParty, Error, TEXT("SocialUser [%s] Failed to create SubsystemId for SubsystemType: [%s] SubsystemIdKey [%s] IdPrefix: [%s] SubsystemIdStr: [%s] for OnlineUser [%s]"), *ToDebugString(), ToString(SubsystemType), *SubsystemIdKey, *IdPrefix, *SubsystemIdStr, *UserInfo->GetUserId()->ToDebugString());
+								}
 							}
 						}
 					}

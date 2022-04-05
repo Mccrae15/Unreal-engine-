@@ -90,6 +90,11 @@ FKeyRenderer::FKeyDrawBatch::FKeyDrawBatch(const FSectionLayoutElement& LayoutEl
 	}
 }
 
+void FKeyRenderer::FCachedKeyDrawInformation::DrawExtra(FSequencerSectionPainter& Painter, const FGeometry& KeyGeometry) const
+{
+	CachedKeyPositions.GetKeyArea()->DrawExtra(Painter, KeyGeometry);
+}
+
 FKeyRenderer::ECacheFlags FKeyRenderer::FCachedKeyDrawInformation::UpdateViewIndependentData(FFrameRate TickResolution)
 {
 	const bool bDataChanged = CachedKeyPositions.Update(TickResolution);
@@ -445,9 +450,202 @@ void FKeyRenderer::FKeyDrawBatch::UpdateViewDependentData(FSequencer* Sequencer,
 
 		PrecomputedKeys.Add(NewKey);
 	}
+
+	PrecomputedCurve.Reset();
+
+	const FName FloatChannelTypeName = FMovieSceneFloatChannel::StaticStruct()->GetFName();
+	const FName DoubleChannelTypeName = FMovieSceneDoubleChannel::StaticStruct()->GetFName();
+
+	for (FCachedKeyDrawInformation& Info : KeyDrawInfo)
+	{
+		const TSharedPtr<IKeyArea>& ThisKeyArea = Info.CachedKeyPositions.GetKeyArea();
+		const FMovieSceneChannelHandle& Channel = ThisKeyArea.Get()->GetChannel();
+
+		const FName ChannelTypeName = Channel.GetChannelTypeName();
+
+		const FFrameNumber DeltaFrame = TimeToPixelConverter.PixelDeltaToFrame(1.f).FrameNumber;		
+		const FFrameNumber LowerBoundFrame = (InCachedState.PaddedViewRange.GetLowerBoundValue() * TickResolution).CeilToFrame();
+		const FFrameNumber UpperBoundFrame = (InCachedState.PaddedViewRange.GetUpperBoundValue() * TickResolution).FloorToFrame();
+		TOptional<float> PreviousValue;
+		float MaxValue=-FLT_MAX, MinValue=FLT_MAX;
+
+		if (ChannelTypeName == FloatChannelTypeName)
+		{
+			FMovieSceneFloatChannel* FloatChannel = ThisKeyArea.Get()->GetChannel().Cast<FMovieSceneFloatChannel>().Get();
+			if (!FloatChannel || !FloatChannel->GetShowCurve())
+			{
+				continue;
+			}
+
+			for (FFrameNumber FrameNumber = LowerBoundFrame; FrameNumber <= UpperBoundFrame; )
+			{
+				double EvalTime = TickResolution.AsSeconds(FrameNumber);
+				float Value = 0.f;
+				if (FloatChannel->Evaluate(FrameNumber, Value))
+				{
+					if ((PreviousValue.IsSet() && !FMath::IsNearlyEqual(Value, PreviousValue.GetValue())) || FrameNumber == LowerBoundFrame || FrameNumber == UpperBoundFrame)
+					{
+						MaxValue = FMath::Max(MaxValue, Value);
+						MinValue = FMath::Min(MinValue, Value);
+
+						FCurveKey NewKey;
+						NewKey.Value = Value;
+						NewKey.FinalKeyPositionSeconds = EvalTime;
+
+						PrecomputedCurve.Add(NewKey);
+					}
+
+					if (!PreviousValue.IsSet())
+					{
+						PreviousValue = Value;
+					}
+				}
+
+				if (FrameNumber >= UpperBoundFrame)
+				{
+					break;
+				}
+				FrameNumber += DeltaFrame;
+				FrameNumber = FMath::Min(FrameNumber, UpperBoundFrame);
+			}
+		}
+		else if (ChannelTypeName == DoubleChannelTypeName)
+		{
+			FMovieSceneDoubleChannel* DoubleChannel = ThisKeyArea.Get()->GetChannel().Cast<FMovieSceneDoubleChannel>().Get();
+			if (!DoubleChannel || !DoubleChannel->GetShowCurve())
+			{
+				continue;
+			}
+
+			for (FFrameNumber FrameNumber = LowerBoundFrame; FrameNumber <= UpperBoundFrame; )
+			{
+				double EvalTime = TickResolution.AsSeconds(FrameNumber);
+				// Displaying values in float in the Sequencer track view.
+				float Value = 0.f;
+				if (DoubleChannel->Evaluate(FrameNumber, Value))
+				{
+					if ((PreviousValue.IsSet() && !FMath::IsNearlyEqual(Value, PreviousValue.GetValue())) || FrameNumber == LowerBoundFrame || FrameNumber == UpperBoundFrame)
+					{
+						MaxValue = FMath::Max(MaxValue, Value);
+						MinValue = FMath::Min(MinValue, Value);
+
+						FCurveKey NewKey;
+						NewKey.Value = Value;
+						NewKey.FinalKeyPositionSeconds = EvalTime;
+
+						PrecomputedCurve.Add(NewKey);
+					}
+
+					if (!PreviousValue.IsSet())
+					{
+						PreviousValue = Value;
+					}
+				}
+
+				if (FrameNumber >= UpperBoundFrame)
+				{
+					break;
+				}
+				FrameNumber += DeltaFrame;
+				FrameNumber = FMath::Min(FrameNumber, UpperBoundFrame);
+			}
+		}
+		else
+		{
+			continue;
+		}
+
+		TOptional<float> SpecifiedMinValue;
+		TOptional<float> SpecifiedMaxValue;
+		
+		FString KeyAreaName = ThisKeyArea.Get()->GetName().ToString();
+		if (Sequencer->GetSequencerSettings()->HasKeyAreaCurveExtents(KeyAreaName))
+		{
+			float CurveMin = 0.f;
+			float CurveMax = 0.f;
+			Sequencer->GetSequencerSettings()->GetKeyAreaCurveExtents(KeyAreaName, CurveMin, CurveMax);
+			SpecifiedMinValue = CurveMin;
+			SpecifiedMaxValue = CurveMax;
+		}
+
+		if (SpecifiedMinValue.IsSet())
+		{
+			MinValue = SpecifiedMinValue.GetValue();
+		}
+
+		if (SpecifiedMaxValue.IsSet())
+		{
+			MaxValue = SpecifiedMaxValue.GetValue();
+		}
+
+		// Normalize or clamp
+		if (PrecomputedCurve.Num() > 0)
+		{
+			float DiffValue = MaxValue - MinValue;
+			for (FCurveKey& CurveKey : PrecomputedCurve)
+			{
+				if (SpecifiedMaxValue.IsSet())
+				{
+					CurveKey.Value = FMath::Min(CurveKey.Value, SpecifiedMaxValue.GetValue());
+				}
+
+				if (SpecifiedMinValue.IsSet())
+				{
+					CurveKey.Value = FMath::Max(CurveKey.Value, SpecifiedMinValue.GetValue());
+				}
+
+				CurveKey.Value = (CurveKey.Value - MinValue)/DiffValue;
+			}
+		}
+	}
 }
 
-void FKeyRenderer::FKeyDrawBatch::Draw(FSequencer* Sequencer, FSequencerSectionPainter& Painter, const FGeometry& KeyGeometry, const FPaintStyle& Style, const FKeyRendererPaintArgs& Args) const
+void FKeyRenderer::FKeyDrawBatch::DrawCurve(FSequencer* Sequencer, FSequencerSectionPainter& Painter, const FGeometry& KeyGeometry, const FPaintStyle& Style, const FKeyRendererPaintArgs& Args) const
+{
+	const FTimeToPixel& TimeToPixelConverter = Painter.GetTimeConverter();
+
+	TOptional<FSlateClippingState> PreviousClipState = Painter.DrawElements.GetClippingState();
+	Painter.DrawElements.PopClip();
+
+	const int32 KeyLayer = Painter.LayerId;
+
+	const ESlateDrawEffect BaseDrawEffects = Painter.bParentEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
+
+	TArray<FVector2D> CurvePoints;
+	for (const FCurveKey& CurveKey : PrecomputedCurve)
+	{		
+		CurvePoints.Add(
+		FVector2D(TimeToPixelConverter.SecondsToPixel(CurveKey.FinalKeyPositionSeconds),
+				(1.0f - CurveKey.Value) * KeyGeometry.GetLocalSize().Y ) );
+	}
+
+	const float CurveThickness = 1.f;
+	const bool  bAntiAliasCurves = true;
+	const FLinearColor CurveColor(0.8f, 0.8f, 0.f, 0.7);
+
+	FSlateDrawElement::MakeLines(
+		Painter.DrawElements,
+		KeyLayer,
+		KeyGeometry.ToPaintGeometry(),
+		CurvePoints,
+		BaseDrawEffects,
+		CurveColor,
+		bAntiAliasCurves,
+		CurveThickness
+	);
+
+	Painter.LayerId = KeyLayer + 2;
+
+	for (const FCachedKeyDrawInformation& CachedKeyDrawInfo : KeyDrawInfo)
+	{
+		CachedKeyDrawInfo.DrawExtra(Painter,KeyGeometry);
+	}
+
+	Painter.DrawElements.GetClippingManager().PushClippingState(PreviousClipState.GetValue());
+}
+
+void
+FKeyRenderer::FKeyDrawBatch::Draw(FSequencer* Sequencer, FSequencerSectionPainter& Painter, const FGeometry& KeyGeometry, const FPaintStyle& Style, const FKeyRendererPaintArgs& Args) const
 {
 	const FTimeToPixel& TimeToPixelConverter = Painter.GetTimeConverter();
 
@@ -735,11 +933,16 @@ void FKeyRenderer::Paint(const FSectionLayout& InSectionLayout, const FWidgetSty
 		if (const FKeyDrawBatch* KeyDrawBatch = CachedKeyLayouts.Find(LayoutElement))
 		{
 			FGeometry KeyGeometry = LayoutElement.ComputeGeometry(InPainter.SectionGeometry);
+			
+			if (LayoutElement.GetType() == FSectionLayoutElement::Single)
+			{
+				KeyDrawBatch->DrawCurve(Sequencer, InPainter, KeyGeometry, Style, Args);
+			}
+			
 			KeyDrawBatch->Draw(Sequencer, InPainter, KeyGeometry, Style, Args);
 		}
 	}
 }
-
 
 } // namespace Sequencer
 } // namespace UE

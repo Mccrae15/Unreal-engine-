@@ -26,15 +26,15 @@ public:
 	
 	struct FDataType
 	{
-		TArray<FHairGroupInstance*> Instances;
+		FHairGroupInstance* Instance = nullptr;
 	};
 
-	FHairStrandsVertexFactory(const TArray<FHairGroupInstance*>& InitialData, ERHIFeatureLevel::Type InFeatureLevel, const char* InDebugName)
+	FHairStrandsVertexFactory(FHairGroupInstance* Instance, ERHIFeatureLevel::Type InFeatureLevel, const char* InDebugName)
 		: FVertexFactory(InFeatureLevel)
 		, DebugName(InDebugName)
 	{
 		bSupportsManualVertexFetch = true;
-		Data.Instances = InitialData;
+		Data.Instance = Instance;
 	}
 
 	/**
@@ -58,11 +58,13 @@ public:
 	// FRenderResource interface.
 	virtual void InitRHI() override;
 	virtual void ReleaseRHI() override;
-	static bool SupportsTessellationShaders() { return false; }
+	void InitResources();
 
 	const FDataType& GetData() const { return Data; }
 	FDataType Data;
 protected:
+	bool bIsInitialized = false;
+
 	struct FDebugName
 	{
 		FDebugName(const char* InDebugName)

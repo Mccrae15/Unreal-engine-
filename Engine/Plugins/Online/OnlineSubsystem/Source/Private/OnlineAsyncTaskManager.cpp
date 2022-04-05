@@ -25,7 +25,7 @@ namespace OSSConsoleVariables
 #endif
 
 /** The default value for the polling interval when not set by config */
-#define POLLING_INTERVAL_MS 50
+#define POLLING_INTERVAL_MS 20
 
 FOnlineAsyncTaskManager::FOnlineAsyncTaskManager() :
 	ActiveTask(nullptr),
@@ -36,6 +36,13 @@ FOnlineAsyncTaskManager::FOnlineAsyncTaskManager() :
 	bRequestingExit(false),
 	OnlineThreadId(0)
 {
+	int32 PollingConfig = POLLING_INTERVAL_MS;
+	if (GConfig->GetInt(TEXT("OnlineSubsystem"), TEXT("PollingIntervalInMs"), PollingConfig, GEngineIni))
+	{
+		PollingInterval = (uint32)PollingConfig;
+	}
+
+	GConfig->GetInt(TEXT("OnlineSubsystem"), TEXT("MaxParallelTasks"), MaxParallelTasks, GEngineIni);
 }
 
 FOnlineAsyncTaskManager::~FOnlineAsyncTaskManager()
@@ -45,15 +52,6 @@ FOnlineAsyncTaskManager::~FOnlineAsyncTaskManager()
 
 bool FOnlineAsyncTaskManager::Init(void)
 {
-	int32 PollingConfig = POLLING_INTERVAL_MS;
-	// Read the polling interval to use from the INI file
-	if (GConfig->GetInt(TEXT("OnlineSubsystem"), TEXT("PollingIntervalInMs"), PollingConfig, GEngineIni))
-	{
-		PollingInterval = (uint32)PollingConfig;
-	}
-
-	GConfig->GetInt(TEXT("OnlineSubsystem"), TEXT("MaxParallelTasks"), MaxParallelTasks, GEngineIni);
-
 	return WorkEvent != nullptr;
 }
 

@@ -50,14 +50,6 @@ protected:
 	 */
 	static TSharedRef< SWidget > GenerateSourceControlMenu(TSharedRef<FUICommandList> InCommandList, TWeakPtr<SLevelEditor> InLevelEditor);
 
-	
-	/**
-	 * Generates menu content for the modes combo button drop down menu
-	 *
-	 * @return	Menu content widget
-	 */
-	static TSharedRef< SWidget > GenerateEditorModesMenu(TSharedRef<FUICommandList> InCommandList, TWeakPtr<SLevelEditor> InLevelEditor);
-
 	/**
 	 * Generates menu content for the compile combo button drop down menu
 	 *
@@ -71,6 +63,8 @@ protected:
 	 * @return	Menu content widget
 	 */
 	static TSharedRef< SWidget > GenerateCinematicsMenuContent(TSharedRef<FUICommandList> InCommandList, TWeakPtr<SLevelEditor> InLevelEditor);
+
+	static TSharedRef< SWidget > GenerateAddMenuWidget(TSharedRef<FUICommandList> InCommandList, TWeakPtr<SLevelEditor> InLevelEditor);
 
 	/**
 	 * Delegate for actor selection within the Cinematics popup menu's SceneOutliner.
@@ -86,19 +80,14 @@ protected:
 	static void OnOpenSubLevelBlueprint( ULevel* InLevel );
 
 private:
-
 	static void RegisterSourceControlMenu();
 	static void RegisterCinematicsMenu();
-	static void RegisterEditorModesMenu();
-	static void RegisterBuildMenu();
-
-#if WITH_LIVE_CODING
-	/**
-	 * Generates menu content for the compile combo button drop down menu
-	 */
-	static void RegisterCompileMenu();
-#endif
 
 	static void RegisterQuickSettingsMenu();
 	static void RegisterOpenBlueprintMenu();
+	static void RegisterAddMenu();
+
+	static FText GetActiveModeName(TWeakPtr<SLevelEditor> LevelEditorPtr);
+	static const FSlateBrush* GetActiveModeIcon(TWeakPtr<SLevelEditor> LevelEditorPtr);
+
 };

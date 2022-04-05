@@ -296,11 +296,27 @@ namespace Audio
 			break;
 		}
 
-		a0 /= b0;
-		a1 /= b0;
-		a2 /= b0;
-		b1 /= b0;
-		b2 /= b0;
+		// Protect against indefinite filter coefficients. Once a NaN or inf gets
+		// into the filter, it cannot return to normal operation unless the history
+		// samples are reset. 
+		if (FMath::IsFinite(b0))
+		{
+			a0 /= b0;
+			a1 /= b0;
+			a2 /= b0;
+			b1 /= b0;
+			b2 /= b0;
+		}
+		else
+		{
+			// Coefficients for silence.
+			a0 = 0.f;
+			a1 = 0.f;
+			a2 = 0.f;
+			b0 = 1.f;
+			b1 = 0.f;
+			b2 = 0.f;
+		}
 
 		for (int32 Channel = 0; Channel < NumChannels; ++Channel)
 		{
@@ -610,6 +626,32 @@ namespace Audio
 					OutSamples[SampleIndex + Channel] = BSF;
 					break;
 				}
+			}
+		}
+	}
+
+
+	void FStateVariableFilter::ProcessAudio(const float* InSamples, const int32 InNumSamples
+		, float* LpfOutput, float* HpfOutput, float* BpfOutput, float* BsfOutput)
+	{
+		for (int32 SampleIndex = 0; SampleIndex < InNumSamples; SampleIndex += NumChannels)
+		{
+			for (int32 Channel = 0; Channel < NumChannels; ++Channel)
+			{
+				const float HPF = InputScale * (InSamples[SampleIndex + Channel] - Feedback * FilterState[Channel].Z1_1 - FilterState[Channel].Z1_2);
+				float BPF = Audio::FastTanh(A0 * HPF + FilterState[Channel].Z1_1);
+
+				const float LPF = A0 * BPF + FilterState[Channel].Z1_2;
+				const float Dampening = 0.5f / Q;
+				const float BSF = BandStopParam * HPF + (1.0f - BandStopParam) * LPF;
+
+				FilterState[Channel].Z1_1 = A0 * HPF + BPF;
+				FilterState[Channel].Z1_2 = A0 * BPF + LPF;
+
+				LpfOutput[SampleIndex + Channel] = LPF;
+				HpfOutput[SampleIndex + Channel] = HPF;
+				BpfOutput[SampleIndex + Channel] = BPF;
+				BsfOutput[SampleIndex + Channel] = BSF;
 			}
 		}
 	}

@@ -18,9 +18,6 @@ enum
 	NumAllocationsPerPool = 8,
 };
 
-
-extern TAutoConsoleVariable<int32> GDynamicGlobalUBs;
-
 #if UE_BUILD_DEBUG || UE_BUILD_DEVELOPMENT
 static TAutoConsoleVariable<int32> GAlwaysWriteDS(
 	TEXT("r.Vulkan.AlwaysWriteDS"),
@@ -80,6 +77,11 @@ void FVulkanCommonPipelineDescriptorState::CreateDescriptorWriteInfos()
 		DSWriteContainer.DescriptorImageInfo.AddZeroed(SetInfo.NumImageInfos);
 		DSWriteContainer.DescriptorBufferInfo.AddZeroed(SetInfo.NumBufferInfos);
 
+#if VULKAN_RHI_RAYTRACING
+		DSWriteContainer.AccelerationStructureWrites.AddZeroed(SetInfo.NumAccelerationStructures);
+		DSWriteContainer.AccelerationStructures.AddZeroed(SetInfo.NumAccelerationStructures);
+#endif // VULKAN_RHI_RAYTRACING
+
 		checkf(SetInfo.Types.Num() < 255, TEXT("Need more bits for BindingToDynamicOffsetMap (currently 8)! Requires %d descriptor bindings in a set!"), SetInfo.Types.Num());
 		DSWriteContainer.BindingToDynamicOffsetMap.AddUninitialized(SetInfo.Types.Num());
 	}
@@ -100,6 +102,12 @@ void FVulkanCommonPipelineDescriptorState::CreateDescriptorWriteInfos()
 	VkWriteDescriptorSet* CurrentDescriptorWrite = DSWriteContainer.DescriptorWrites.GetData();
 	VkDescriptorImageInfo* CurrentImageInfo = DSWriteContainer.DescriptorImageInfo.GetData();
 	VkDescriptorBufferInfo* CurrentBufferInfo = DSWriteContainer.DescriptorBufferInfo.GetData();
+
+#if VULKAN_RHI_RAYTRACING
+	VkWriteDescriptorSetAccelerationStructureKHR* CurrentAccelerationStructuresWriteDescriptors = DSWriteContainer.AccelerationStructureWrites.GetData();
+	VkAccelerationStructureKHR* CurrentAccelerationStructures = DSWriteContainer.AccelerationStructures.GetData();
+#endif // VULKAN_RHI_RAYTRACING
+
 	uint8* CurrentBindingToDynamicOffsetMap = DSWriteContainer.BindingToDynamicOffsetMap.GetData();
 	TArray<uint32> DynamicOffsetsStart;
 	DynamicOffsetsStart.AddZeroed(NumSets);
@@ -114,6 +122,10 @@ void FVulkanCommonPipelineDescriptorState::CreateDescriptorWriteInfos()
 		uint32 NumDynamicOffsets = DSWriter[Set].SetupDescriptorWrites(
 			SetInfo.Types, CurrentHashableDescriptorInfo,
 			CurrentDescriptorWrite, CurrentImageInfo, CurrentBufferInfo, CurrentBindingToDynamicOffsetMap,
+#if VULKAN_RHI_RAYTRACING
+			CurrentAccelerationStructuresWriteDescriptors,
+			CurrentAccelerationStructures,
+#endif // VULKAN_RHI_RAYTRACING
 			DefaultSampler, DefaultImageView);
 
 		TotalNumDynamicOffsets += NumDynamicOffsets;
@@ -130,6 +142,12 @@ void FVulkanCommonPipelineDescriptorState::CreateDescriptorWriteInfos()
 		CurrentDescriptorWrite += SetInfo.Types.Num();
 		CurrentImageInfo += SetInfo.NumImageInfos;
 		CurrentBufferInfo += SetInfo.NumBufferInfos;
+
+#if VULKAN_RHI_RAYTRACING
+		CurrentAccelerationStructuresWriteDescriptors += SetInfo.NumAccelerationStructures;
+		CurrentAccelerationStructures += SetInfo.NumAccelerationStructures;
+#endif // VULKAN_RHI_RAYTRACING
+
 		CurrentBindingToDynamicOffsetMap += SetInfo.Types.Num();
 	}
 
@@ -168,34 +186,30 @@ bool FVulkanComputePipelineDescriptorState::InternalUpdateDescriptorSets(FVulkan
 		PackedUniformBuffersDirty = 0;
 	}
 
-	if (UseVulkanDescriptorCache())
-	{
-		Device->GetDescriptorSetCache().GetDescriptorSets(GetDSetsKey(), *DescriptorSetsLayout, DSWriter, DescriptorSetHandles.GetData());
-	}
-	else
-	{
-		if (!CmdBuffer->AcquirePoolSetAndDescriptorsIfNeeded(*DescriptorSetsLayout, true, DescriptorSetHandles.GetData()))
-		{
-			return false;
-		}
+	// We are not using UseVulkanDescriptorCache() for compute pipelines
+	// Compute tend to use volatile resources that polute descriptor cache
 
-		const VkDescriptorSet DescriptorSet = DescriptorSetHandles[0];
-		DSWriter[0].SetDescriptorSet(DescriptorSet);
+	if (!CmdBuffer->AcquirePoolSetAndDescriptorsIfNeeded(*DescriptorSetsLayout, true, DescriptorSetHandles.GetData()))
+	{
+		return false;
+	}
+
+	const VkDescriptorSet DescriptorSet = DescriptorSetHandles[0];
+	DSWriter[0].SetDescriptorSet(DescriptorSet);
 #if VULKAN_VALIDATE_DESCRIPTORS_WRITTEN
-		for(FVulkanDescriptorSetWriter& Writer : DSWriter)
-		{
-			Writer.CheckAllWritten();
-		}
+	for(FVulkanDescriptorSetWriter& Writer : DSWriter)
+	{
+		Writer.CheckAllWritten();
+	}
 #endif
 
-		{
-	#if VULKAN_ENABLE_AGGRESSIVE_STATS
-			INC_DWORD_STAT_BY(STAT_VulkanNumUpdateDescriptors, DSWriteContainer.DescriptorWrites.Num());
-			INC_DWORD_STAT(STAT_VulkanNumDescSets);
-			SCOPE_CYCLE_COUNTER(STAT_VulkanVkUpdateDS);
-	#endif
-			VulkanRHI::vkUpdateDescriptorSets(Device->GetInstanceHandle(), DSWriteContainer.DescriptorWrites.Num(), DSWriteContainer.DescriptorWrites.GetData(), 0, nullptr);
-		}
+	{
+#if VULKAN_ENABLE_AGGRESSIVE_STATS
+		INC_DWORD_STAT_BY(STAT_VulkanNumUpdateDescriptors, DSWriteContainer.DescriptorWrites.Num());
+		INC_DWORD_STAT(STAT_VulkanNumDescSets);
+		SCOPE_CYCLE_COUNTER(STAT_VulkanVkUpdateDS);
+#endif
+		VulkanRHI::vkUpdateDescriptorSets(Device->GetInstanceHandle(), DSWriteContainer.DescriptorWrites.Num(), DSWriteContainer.DescriptorWrites.GetData(), 0, nullptr);
 	}
 
 	return true;
@@ -245,20 +259,6 @@ FVulkanGraphicsPipelineDescriptorState::FVulkanGraphicsPipelineDescriptorState(F
 		}
 #endif
 
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		uint64 HullShaderKey = InGfxPipeline->GetShaderKey(SF_Hull);
-		if (HullShaderKey)
-		{
-			const FVulkanHullShader* HullShader = ShaderFactory.LookupShader<FVulkanHullShader>(HullShaderKey);
-			PackedUniformBuffers[ShaderStage::Hull].Init(HullShader->GetCodeHeader(), PackedUniformBuffersMask[ShaderStage::Hull]);
-		}
-		uint64 DomainShaderKey = InGfxPipeline->GetShaderKey(SF_Domain);
-		if (DomainShaderKey)
-		{
-			const FVulkanDomainShader* DomainShader = ShaderFactory.LookupShader<FVulkanDomainShader>(DomainShaderKey);
-			PackedUniformBuffers[ShaderStage::Domain].Init(DomainShader->GetCodeHeader(), PackedUniformBuffersMask[ShaderStage::Domain]);
-		}
-#endif
 		CreateDescriptorWriteInfos();
 
 		//UE_LOG(LogVulkanRHI, Warning, TEXT("GfxPSOState %p For PSO %p Writes:%d"), this, InGfxPipeline, DSWriteContainer.DescriptorWrites.Num());
@@ -302,7 +302,7 @@ bool FVulkanGraphicsPipelineDescriptorState::InternalUpdateDescriptorSets(FVulka
 		}
 	}
 
-	if (UseVulkanDescriptorCache())
+	if (UseVulkanDescriptorCache() && !HasVolatileResources())
 	{
 		if (bIsResourcesDirty)
 		{
@@ -348,7 +348,7 @@ bool FVulkanGraphicsPipelineDescriptorState::InternalUpdateDescriptorSets(FVulka
 }
 
 
-void FVulkanCommandListContext::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, bool bApplyAdditionalState)
+void FVulkanCommandListContext::RHISetGraphicsPipelineState(FRHIGraphicsPipelineState* GraphicsState, uint32 StencilRef, bool bApplyAdditionalState)
 {
 	FVulkanRHIGraphicsPipelineState* Pipeline = ResourceCast(GraphicsState);
 	
@@ -366,20 +366,17 @@ void FVulkanCommandListContext::RHISetGraphicsPipelineState(FRHIGraphicsPipeline
 		PendingGfxState->Bind(CmdBuffer->GetHandle());
 		CmdBuffer->bHasPipeline = true;
 		PendingGfxState->MarkNeedsDynamicStates();
-		PendingGfxState->StencilRef = 0;
 	}
+
+	PendingGfxState->SetStencilRef(StencilRef);
 
 	if (bApplyAdditionalState)
 	{
-		ApplyGlobalUniformBuffers(static_cast<FVulkanVertexShader*>(Pipeline->VulkanShaders[ShaderStage::Vertex]));
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		ApplyGlobalUniformBuffers(static_cast<FVulkanHullShader*>(Pipeline->VulkanShaders[ShaderStage::Hull]));
-		ApplyGlobalUniformBuffers(static_cast<FVulkanDomainShader*>(Pipeline->VulkanShaders[ShaderStage::Domain]));
-#endif
+		ApplyStaticUniformBuffers(static_cast<FVulkanVertexShader*>(Pipeline->VulkanShaders[ShaderStage::Vertex]));
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
-		ApplyGlobalUniformBuffers(static_cast<FVulkanGeometryShader*>(Pipeline->VulkanShaders[ShaderStage::Geometry]));
+		ApplyStaticUniformBuffers(static_cast<FVulkanGeometryShader*>(Pipeline->VulkanShaders[ShaderStage::Geometry]));
 #endif
-		ApplyGlobalUniformBuffers(static_cast<FVulkanPixelShader*>(Pipeline->VulkanShaders[ShaderStage::Pixel]));
+		ApplyStaticUniformBuffers(static_cast<FVulkanPixelShader*>(Pipeline->VulkanShaders[ShaderStage::Pixel]));
 	}
 }
 
@@ -390,35 +387,34 @@ template bool FVulkanComputePipelineDescriptorState::InternalUpdateDescriptorSet
 template bool FVulkanComputePipelineDescriptorState::InternalUpdateDescriptorSets<false>(FVulkanCommandListContext* CmdListContext, FVulkanCmdBuffer* CmdBuffer);
 
 
-#if VULKAN_VALIDATE_DESCRIPTORS_WRITTEN
-
-
 void FVulkanDescriptorSetWriter::CheckAllWritten()
 {
-auto GetVkDescriptorTypeString = [](VkDescriptorType Type)
-{
-	switch (Type)
+#if VULKAN_VALIDATE_DESCRIPTORS_WRITTEN
+	auto GetVkDescriptorTypeString = [](VkDescriptorType Type)
 	{
-		// + 19 to skip "VK_DESCRIPTOR_TYPE_"
-#define VKSWITCHCASE(x)	case x: return FString(&TEXT(#x)[19]);
-		VKSWITCHCASE(VK_DESCRIPTOR_TYPE_SAMPLER)
-			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
-			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER)
-			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER)
-			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
-			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
-			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
-			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
-			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
-#undef VKSWITCHCASE
-	default:
-		break;
-	}
+		switch (Type)
+		{
+			// + 19 to skip "VK_DESCRIPTOR_TYPE_"
+	#define VKSWITCHCASE(x)	case x: return FString(&TEXT(#x)[19]);
+			VKSWITCHCASE(VK_DESCRIPTOR_TYPE_SAMPLER)
+				VKSWITCHCASE(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+				VKSWITCHCASE(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
+				VKSWITCHCASE(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+				VKSWITCHCASE(VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER)
+				VKSWITCHCASE(VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER)
+				VKSWITCHCASE(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+				VKSWITCHCASE(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+				VKSWITCHCASE(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
+				VKSWITCHCASE(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+				VKSWITCHCASE(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT)
+	#undef VKSWITCHCASE
+		default:
+			break;
+		}
 
-	return FString::Printf(TEXT("Unknown VkDescriptorType %d"), (int32)Type);
-};
+		return FString::Printf(TEXT("Unknown VkDescriptorType %d"), (int32)Type);
+	};
+
 	const uint32 Writes = NumWrites;
 	if (Writes == 0)
 		return;
@@ -459,32 +455,41 @@ auto GetVkDescriptorTypeString = [](VkDescriptorType Type)
 		UE_LOG(LogVulkanRHI, Warning, TEXT("Not All descriptors where filled out. this can/will cause a driver crash\n%s\n"), *Descriptors);
 		ensureMsgf(false, TEXT("Not All descriptors where filled out. this can/will cause a driver crash\n%s\n"), *Descriptors);
 	}
+#endif
 }
 
 void FVulkanDescriptorSetWriter::Reset()
 {
+	bHasVolatileResources = false;
+
+#if VULKAN_VALIDATE_DESCRIPTORS_WRITTEN
 	WrittenMask = BaseWrittenMask;
+#endif
 }
 void FVulkanDescriptorSetWriter::SetWritten(uint32 DescriptorIndex)
 {
+#if VULKAN_VALIDATE_DESCRIPTORS_WRITTEN
 	uint32 Index = DescriptorIndex / 32;
 	uint32 Mask = DescriptorIndex % 32;
 	WrittenMask[Index] |= (1<<Mask);
+#endif
 }
 void FVulkanDescriptorSetWriter::SetWrittenBase(uint32 DescriptorIndex)
 {
+#if VULKAN_VALIDATE_DESCRIPTORS_WRITTEN	
 	uint32 Index = DescriptorIndex / 32;
 	uint32 Mask = DescriptorIndex % 32;
 	BaseWrittenMask[Index] |= (1<<Mask);
+#endif
 }
 
 void FVulkanDescriptorSetWriter::InitWrittenMasks(uint32 NumDescriptorWrites)
 {
+#if VULKAN_VALIDATE_DESCRIPTORS_WRITTEN	
 	uint32 Size = (NumDescriptorWrites + 31) / 32;
 	WrittenMask.Empty(Size);
 	WrittenMask.SetNumZeroed(Size);
 	BaseWrittenMask.Empty(Size);
 	BaseWrittenMask.SetNumZeroed(Size);
-}
 #endif
-
+}

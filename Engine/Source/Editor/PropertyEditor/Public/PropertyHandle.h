@@ -63,6 +63,11 @@ public:
 	virtual FProperty* GetProperty() const = 0;
 
 	/**
+	 * Gets the property node being edited.
+	 */
+	virtual TSharedPtr<FPropertyNode> GetPropertyNode() const = 0;
+
+	/**
 	 * Gets the property we should use to read meta-data
 	 */
 	virtual FProperty* GetMetaDataProperty() const = 0;
@@ -320,7 +325,7 @@ public:
 	 * Called to manually notify root objects that this property has changed
 	 * This does not need to be called when SetValue functions are used since it will be called automatically
 	 */
-	virtual void NotifyPostChange( EPropertyChangeType::Type ChangeType = EPropertyChangeType::Unspecified ) = 0;
+	virtual void NotifyPostChange(EPropertyChangeType::Type ChangeType) = 0;
 
 	/**
 	 * Called to manually notify root objects that this property has finished changing
@@ -391,7 +396,8 @@ public:
 	virtual TSharedPtr<IPropertyHandle> GetChildHandle( uint32 Index ) const = 0;
 	
 	/**
-	 * @return a handle to the parent array if this handle is an array element
+	 * @return a handle to the parent property 
+	 * This parent handle may not contain a valid FProperty if the parent is the uobject.
 	 */
 	virtual TSharedPtr<IPropertyHandle> GetParentHandle() const = 0;
 
@@ -416,6 +422,13 @@ public:
 	 * @param OuterObjects	An array that will be populated with the outer objects 
 	 */
 	virtual void GetOuterObjects( TArray<UObject*>& OuterObjects ) const = 0;
+
+	/**
+	 * Get the shared base class of the objects that contain this property.
+	 *
+	 * @return The shared base class of the outer objects, or null if none are selected.
+	 */
+	virtual const UClass* GetOuterBaseClass() const = 0;
 
 	/**
 	 * Set the outer objects for this property

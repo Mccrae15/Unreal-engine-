@@ -19,6 +19,7 @@
 -----------------------------------------------------------------------------*/
 
 #include "ProfilingDebugging/MallocProfiler.h"
+#include "ProfilingDebugging/MemoryTrace.h"
 #include "HAL/MallocThreadSafeProxy.h"
 #include "HAL/MallocVerify.h"
 #include "HAL/MallocLeakDetectionProxy.h"
@@ -26,6 +27,7 @@
 #include "HAL/MallocPoisonProxy.h"
 #include "HAL/MallocDoubleFreeFinder.h"
 #include "HAL/MallocFrameProfiler.h"
+#include "HAL/MallocStomp2.h"
 
 #if MALLOC_GT_HOOKS
 
@@ -338,15 +340,31 @@ static int FMemory_GCreateMalloc_ThreadUnsafe()
 		UE_LOG(LogMemory, Fatal, TEXT("PLATFORM_USES_FIXED_GMalloc_CLASS only makes sense for allocators that are internally threadsafe."));
 	}
 #else
-// so now check to see if we are using a Mem Profiler which wraps the GMalloc
+
+#if UE_MEMORY_TRACE_ENABLED
+	FMalloc* TraceMalloc = MemoryTrace_Create(GMalloc);
+	if (TraceMalloc != GMalloc)
+	{
+		GMalloc = TraceMalloc;
+		MemoryTrace_Initialize();
+	}
+	else
+#endif // UE_MEMORY_TRACE_ENABLED
+	{
+	// so now check to see if we are using a Mem Profiler which wraps the GMalloc
 #if USE_MALLOC_PROFILER
-	#if WITH_ENGINE && IS_MONOLITHIC
-		GMallocProfiler = new FMallocProfilerEx( GMalloc );
-	#else
-		GMallocProfiler = new FMallocProfiler( GMalloc );
-	#endif
-	GMallocProfiler->BeginProfiling();
-	GMalloc = GMallocProfiler;
+		#if WITH_ENGINE && IS_MONOLITHIC
+			GMallocProfiler = new FMallocProfilerEx( GMalloc );
+		#else
+			GMallocProfiler = new FMallocProfiler( GMalloc );
+		#endif
+		GMallocProfiler->BeginProfiling();
+		GMalloc = GMallocProfiler;
+#endif
+	}
+
+#if WITH_MALLOC_STOMP2
+	GMalloc = FMallocStomp2::OverrideIfEnabled(GMalloc);
 #endif
 
 	// if the allocator is already thread safe, there is no need for the thread safe proxy
@@ -520,6 +538,7 @@ void FMemory::Trim(bool bTrimThreadCaches)
 		GCreateMalloc();
 		CA_ASSUME(GMalloc != NULL);	// Don't want to assert, but suppress static analysis warnings about potentially NULL GMalloc
 	}
+	TRACE_CPUPROFILER_EVENT_SCOPE(FMemory::Trim);
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FMemory_Trim);
 	{
 		QUICK_SCOPE_CYCLE_COUNTER(STAT_FMemory_Trim_Broadcast);

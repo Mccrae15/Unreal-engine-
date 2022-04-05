@@ -194,13 +194,13 @@ void URadialForceComponent::RemoveObjectTypeToAffect(TEnumAsByte<enum EObjectTyp
 
 void URadialForceComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
-	Super::PostEditChangeProperty(PropertyChangedEvent);
-
 	// If we have edited the object types to effect, update our bitfield.
 	if(PropertyChangedEvent.Property && PropertyChangedEvent.Property->GetFName() == TEXT("ObjectTypesToAffect"))
 	{
 		UpdateCollisionObjectQueryParams();
 	}
+
+	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 
 #endif

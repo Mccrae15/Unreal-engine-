@@ -43,7 +43,7 @@ FFeedbackDelayNetwork::FFeedbackDelayNetwork(int32 InMaxNumInternalBufferSamples
 
 	NumInternalBufferSamples = FMath::Min(NumInternalBufferSamples, InMaxNumInternalBufferSamples);
 
-	NumInternalBufferSamples -= (NumInternalBufferSamples % AUDIO_SIMD_FLOAT_ALIGNMENT);
+	NumInternalBufferSamples -= (NumInternalBufferSamples % AUDIO_NUM_FLOATS_PER_VECTOR_REGISTER);
 
 	if (NumInternalBufferSamples <= 0)
 	{
@@ -88,7 +88,7 @@ void FFeedbackDelayNetwork::SetCoefficients(const FFDNCoefficients& InCoefficien
 	Coefficients = InCoefficients;
 }
 
-void FFeedbackDelayNetwork::ProcessAudio(const AlignedFloatBuffer& InSamples, AlignedFloatBuffer& OutSamples)
+void FFeedbackDelayNetwork::ProcessAudio(const FAlignedFloatBuffer& InSamples, FAlignedFloatBuffer& OutSamples)
 {
 	const int32 InNum = InSamples.Num();
 	const float* InSampleData = InSamples.GetData();

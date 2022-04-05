@@ -15,6 +15,7 @@
 #include "Engine/Engine.h"
 #include "Engine/LevelStreaming.h"
 #include "LevelUtils.h"
+#include "TextureCompiler.h"
 
 namespace BillboardConstants
 {
@@ -59,24 +60,22 @@ public:
 		bWillEverBeLit = false;
 
 		// Calculate the scale factor for the sprite.
-		float Scale = InComponent->GetComponentTransform().GetMaximumAxisScale();
+		Scale = InComponent->GetComponentTransform().GetMaximumAxisScale() * SpriteScale * 0.25f;
+
+		OpacityMaskRefVal = InComponent->OpacityMaskRefVal;
 
 		if(InComponent->Sprite)
 		{
 			Texture = InComponent->Sprite;
 
-			const float TextureWidth = FMath::Max<int32>((int32)Texture->GetSurfaceWidth() >> Texture->GetCachedLODBias(), 1);
-			const float TextureHeight = FMath::Max<int32>((int32)Texture->GetSurfaceHeight() >> Texture->GetCachedLODBias(), 1);
 			// Set UL and VL to the size of the texture if they are set to 0.0, otherwise use the given value
-			UL = InComponent->UL == 0.0f ? TextureWidth : InComponent->UL;
-			VL = InComponent->VL == 0.0f ? TextureHeight : InComponent->VL;
-			SizeX = Scale * UL * SpriteScale * 0.25f;
-			SizeY = Scale * VL * SpriteScale * 0.25f;
+			ComponentUL = InComponent->UL;
+			ComponentVL = InComponent->VL;
 		}
 		else
 		{
 			Texture = NULL;
-			SizeX = SizeY = UL = VL = 0;
+			ComponentUL = ComponentVL = 0;
 		}
 
 		if (AActor* Owner = InComponent->GetOwner())
@@ -100,7 +99,7 @@ public:
 
 			//save off override states
 #if WITH_EDITORONLY_DATA
-			bIsActorLocked = Owner->bLockLocation;
+			bIsActorLocked = Owner->IsLockLocation();
 #else // WITH_EDITORONLY_DATA
 			bIsActorLocked = false;
 #endif // WITH_EDITORONLY_DATA
@@ -127,9 +126,12 @@ public:
 	{
 		QUICK_SCOPE_CYCLE_COUNTER( STAT_SpriteSceneProxy_GetDynamicMeshElements );
 
-		FTexture* TextureResource = Texture ? Texture->Resource : nullptr;
+		const FTexture* TextureResource = Texture ? Texture->GetResource() : nullptr;
 		if (TextureResource)
 		{
+			const float UL = ComponentUL == 0.0f ? TextureResource->GetSizeX() : ComponentUL;
+			const float VL = ComponentVL == 0.0f ? TextureResource->GetSizeY() : ComponentVL;
+
 			for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 			{
 				if (VisibilityMap & (1 << ViewIndex))
@@ -137,8 +139,8 @@ public:
 					const FSceneView* View = Views[ViewIndex];
 
 					// Calculate the view-dependent scaling factor.
-					float ViewedSizeX = SizeX;
-					float ViewedSizeY = SizeY;
+					float ViewedSizeX = Scale * UL;
+					float ViewedSizeY = Scale * VL;
 
 					if (bIsScreenSizeScaled && (View->ViewMatrices.GetProjectionMatrix().M[3][3] != 1.0f))
 					{
@@ -191,8 +193,11 @@ public:
 					FLinearColor LevelColorToUse = IsSelected() ? ColorToUse : (FLinearColor)GetLevelColor();
 					FLinearColor PropertyColorToUse = GetPropertyColor();
 
+					ColorToUse.A = 1.0f;
+
 					const FLinearColor& SpriteColor = View->Family->EngineShowFlags.LevelColoration ? LevelColorToUse :
 						( (View->Family->EngineShowFlags.PropertyColoration) ? PropertyColorToUse : ColorToUse );
+
 
 					Collector.GetPDI(ViewIndex)->DrawSprite(
 						Origin,
@@ -201,7 +206,9 @@ public:
 						TextureResource,
 						SpriteColor,
 						GetDepthPriorityGroup(View),
-						U,UL,V,VL
+						U,UL,V,VL,
+						SE_BLEND_Masked,
+						OpacityMaskRefVal
 						);
 				}
 			}
@@ -246,14 +253,14 @@ public:
 
 private:
 	FVector Origin;
-	float SizeX;
-	float SizeY;
 	const float ScreenSize;
 	const UTexture2D* Texture;
+	float Scale;
 	const float U;
-	float UL;
+	float ComponentUL;
 	const float V;
-	float VL;
+	float ComponentVL;
+	float OpacityMaskRefVal;
 	FLinearColor Color;
 	const uint32 bIsScreenSizeScaled : 1;
 	uint32 bIsActorLocked : 1;
@@ -295,6 +302,7 @@ UBillboardComponent::UBillboardComponent(const FObjectInitializer& ObjectInitial
 	V = 0;
 	UL = 0;
 	VL = 0;
+	OpacityMaskRefVal = .5f;
 	bHiddenInGame = true;
 	SetGenerateOverlapEvents(false);
 	bUseEditorCompositing = true;
@@ -395,6 +403,12 @@ void UBillboardComponent::SetSpriteAndUV(UTexture2D* NewSprite, int32 NewU, int3
 	V = NewV;
 	VL = NewVL;
 	SetSprite(NewSprite);
+}
+
+void UBillboardComponent::SetOpacityMaskRefVal(float RefVal)
+{
+	OpacityMaskRefVal = RefVal;
+	MarkRenderStateDirty();
 }
 
 #if WITH_EDITORONLY_DATA

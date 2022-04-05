@@ -20,11 +20,11 @@ struct DISPLAYCLUSTERCONFIGURATION_API FTextureCropOrigin
 public:
 	// Replace texture origin X location, in pixels
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (DisplayName = "X"))
-	int32 X;
+	int32 X = 0;
 
 	// Replace texture origin Y position, in pixels
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (DisplayName = "Y"))
-	int32 Y;
+	int32 Y = 0;
 };
 
 /**
@@ -38,11 +38,11 @@ struct DISPLAYCLUSTERCONFIGURATION_API FTextureCropSize
 public:
 	// Replace texture crop width, in pixels
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (DisplayName = "W"))
-	int32 W;
+	int32 W = 0;
 
 	// Replace texture crop height, in pixels
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = NDisplay, meta = (DisplayName = "H"))
-	int32 H;
+	int32 H = 0;
 };
 
 /**
@@ -121,6 +121,14 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 	// ~UObject
 
+#if WITH_EDITOR
+protected:
+	friend class FDisplayClusterConfiguratorKismetCompilerContext;
+	
+	/** Called by nDisplay compiler prior to compilation. */
+	virtual void OnPreCompile(class FCompilerResultsLog& MessageLog) {}
+#endif
+	
 protected:
 	/** Called before saving to collect objects which should be exported as a sub object block. */
 	virtual void GetObjectsToExport(TArray<UObject*>& OutObjects) {}
@@ -159,7 +167,7 @@ public:
 #endif
 };
 
-USTRUCT()
+USTRUCT(Blueprintable)
 struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationProjection
 	: public FDisplayClusterConfigurationPolymorphicEntity
 {
@@ -169,7 +177,7 @@ public:
 	FDisplayClusterConfigurationProjection();
 };
 
-USTRUCT()
+USTRUCT(Blueprintable)
 struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationPostprocess
 	: public FDisplayClusterConfigurationPolymorphicEntity
 {
@@ -183,3 +191,12 @@ public:
 	int32 Order = -1;
 };
 
+USTRUCT(BlueprintType)
+struct DISPLAYCLUSTERCONFIGURATION_API FDisplayClusterConfigurationClusterItemReferenceList
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = NDisplay)
+	TArray<FString> ItemNames;
+};

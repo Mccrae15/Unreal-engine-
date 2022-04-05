@@ -69,6 +69,22 @@ public:
 	virtual ITargetPlatform* FindTargetPlatform( FStringView Name ) = 0;
 
 	/**
+	 * Finds a target platform by name.
+	 *
+	 * @param Name The target platform's short or long name.
+	 * @return The target platform, or nullptr if not found.
+	 */
+	virtual ITargetPlatform* FindTargetPlatform(FName Name) = 0;
+
+	/**
+	 * Finds a target platform by name.
+	 *
+	 * @param Name The target platform's short or long name.
+	 * @return The target platform, or nullptr if not found.
+	 */
+	virtual ITargetPlatform* FindTargetPlatform(const TCHAR* Name) = 0;
+
+	/**
 	 * Finds a target platform by looking for one that supports a given value for a generic type of support
 	 *
 	 * @param Name SupportClass The type of support needed (like "ShaderFormat")
@@ -173,6 +189,10 @@ public:
 
 	/** A callback that holders of ITargetPlatform* must subscribe to to be notified of when the ITargetPlatform* has been invalidated and should be requeried from e.g. FindTargetPlatform */
 	virtual FOnTargetPlatformsInvalidated& GetOnTargetPlatformsInvalidatedDelegate() = 0;
+	/**
+	 * After installing an SDK with Turnkey, this will refresh the TargetPlatform, find devices, etc
+	 */
+	virtual bool UpdateAfterSDKInstall(FName TargetPlatformName) = 0;
 
 public:
 

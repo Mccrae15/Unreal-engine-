@@ -21,6 +21,7 @@ enum EShowFlagGroup
 	SFG_LightTypes,
 	SFG_LightingComponents,
 	SFG_LightingFeatures,
+	SFG_Lumen,
 	SFG_Hidden,
 	SFG_Transient, // Hidden, and don't serialize it
 	SFG_Custom,
@@ -36,7 +37,7 @@ enum EShowFlagInitMode
 	ESFIM_All0
 };
 
-#if (UE_BUILD_SHIPPING)
+#if (UE_BUILD_SHIPPING && !WITH_EDITOR)
 	#define UE_BUILD_OPTIMIZED_SHOWFLAGS 1
 #else
 	#define UE_BUILD_OPTIMIZED_SHOWFLAGS 0
@@ -219,6 +220,11 @@ struct FEngineShowFlags
 		SetDistanceFieldAO(false);
 		SetVolumetricFog(false);
 		SetVolumetricLightmap(false);
+		SetLumenGlobalIllumination(false);
+		SetLumenReflections(false);
+
+		// TODO: Remove when Physical page pool size scales automatically with demand
+		SetVirtualShadowMapCaching(false);
 	}
 
 	void EnableAdvancedFeatures()
@@ -243,6 +249,11 @@ struct FEngineShowFlags
 		SetLightShafts(true);
 		SetPostProcessMaterial(true);
 		SetDistanceFieldAO(true);
+		SetLumenGlobalIllumination(false);
+		SetLumenReflections(false);
+
+		// TODO: Remove when Physical page pool size scales automatically with demand
+		SetVirtualShadowMapCaching(false);
 	}
 
 	bool IsVisualizeCalibrationEnabled() const
@@ -355,19 +366,26 @@ private:
 
 		// The following code sets what should be off by default.
 		SetVisualizeHDR(false);
+		SetVisualizeLocalExposure(false);
 		SetVisualizeShadingModels(false);
 		SetOverrideDiffuseAndSpecular(false);
 		SetLightingOnlyOverride(false);
 		SetReflectionOverride(false);
 		SetVisualizeBuffer(false);
+		SetVisualizeNanite(false);
+		SetVisualizeLumen(false);
+		SetVisualizeVirtualShadowMap(false);
 		SetVectorFields(false);
 		SetGBufferHints(false);
 		SetCompositeEditorPrimitives(InitMode == ESFIM_Editor || InitMode == ESFIM_VREditing);
+		SetOpaqueCompositeEditorPrimitives(false);
 		SetTestImage(false);
 		SetVisualizeDOF(false);
 		SetVertexColors(false);
 		SetPhysicalMaterialMasks(false);
 		SetVisualizeMotionBlur(false);
+		SetVisualizeMotionVectors(false);
+		SetEditingLevelInstance(false);
 		SetSelectionOutline(false);
 		SetDebugAI(false);
 		SetNavigation(false);
@@ -379,10 +397,10 @@ private:
 		SetLightMapDensity(false);
 		SetLODColoration(false);
 		SetHLODColoration(false);
-		SetVisualizeLPV(false);
 		SetStreamingBounds(false);
 		SetHISMCOcclusionBounds(false);
 		SetHISMCClusterTree(false);
+		SetVisualizeInstanceUpdates(false);
 		SetConstraints(false);
 		SetMassProperties(false);
 		SetCameraFrustums(false);
@@ -426,7 +444,9 @@ private:
 		SetSnap(false);
 		SetVisualizeMeshDistanceFields(false);
 		SetVisualizeGlobalDistanceField(false);
+		SetVisualizeLightingOnProbes(false);
 		SetVisualizeDistanceFieldAO(false);
+		SetPhysicsField(false);
 		SetVisualizeSSR(false);
 		SetVisualizeSSS(false);
 		SetPrimitiveDistanceAccuracy(false);
@@ -434,21 +454,33 @@ private:
 		SetMaterialTextureScaleAccuracy(false);
 		SetOutputMaterialTextureScales(false);
 		SetRequiredTextureResolution(false);
+		SetVirtualTexturePendingMips(false);
 		SetMotionBlur(InitMode != ESFIM_Editor && InitMode != ESFIM_VREditing);
 		SetBones(false);
 		SetServerDrawDebug(false);
 		SetScreenPercentage(InitMode != ESFIM_Editor && InitMode != ESFIM_VREditing);
 		SetVREditing(InitMode == ESFIM_VREditing);
 		SetOcclusionMeshes(false);
+		SetDisableOcclusionQueries(false);
 		SetPathTracing(false);
 		SetRayTracingDebug(false);
 		SetVisualizeSkyAtmosphere(false);
 		SetVisualizeCalibrationColor(false);
 		SetVisualizeCalibrationGrayscale(false);
 		SetVisualizeCalibrationCustom(false);
+		SetVisualizePostProcessStack(false);
 		SetVirtualTexturePrimitives(false);
 		SetVisualizeVolumetricCloudConservativeDensity(false);
+		SetVisualizeStrataMaterial(false);
+		SetDrawOnlyVSMInvalidatingGeo(false);
 		SetSingleLayerWaterRefractionFullPrecision(false);
+
+		SetLumenScreenTraces(true);
+		SetLumenDetailTraces(true);
+		SetLumenGlobalTraces(true);
+		SetLumenFarFieldTraces(true);
+		SetLumenSecondaryBounces(true);
+		SetLumenScreenSpaceDirectionalOcclusion(true);
 	}
 
 
@@ -507,6 +539,7 @@ private:
 	
 	// Lookup functions for custom show flags matching engine ones
 	static ENGINE_API bool FindCustomShowFlagDisplayName(const FString& InName, FText& OutText);
+	static bool IsRegisteredCustomShowFlag(ECustomShowFlag Index);
 	static FString GetCustomShowFlagName(ECustomShowFlag Index);
 	static FText GetCustomShowFlagDisplayName(ECustomShowFlag Index);
 	static ENGINE_API EShowFlagGroup GetCustomShowFlagGroup(ECustomShowFlag Index);

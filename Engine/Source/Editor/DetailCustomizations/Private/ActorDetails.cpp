@@ -54,7 +54,13 @@
 #include "ObjectEditorUtils.h"
 #include "Misc/MessageDialog.h"
 #include "ScopedTransaction.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
 #include "Settings/EditorExperimentalSettings.h"
+#include "Algo/AnyOf.h"
+
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "K2Node_AddDelegate.h"
+#include "EdGraphSchema_K2_Actions.h"
 
 #define LOCTEXT_NAMESPACE "ActorDetails"
 
@@ -139,22 +145,45 @@ void FActorDetails::CustomizeDetails( IDetailLayoutBuilder& DetailLayout )
 			AddActorCategory(DetailLayout, ActorsPerLevelCount);
 		}
 
+		// Hide World Partition specific properties in non WP levels
+		const bool bShouldDisplayWorldPartitionProperties = Algo::AnyOf(SelectedActors, [](const TWeakObjectPtr<AActor> Actor)
+		{
+			UWorld* World = Actor.IsValid() ? Actor->GetTypedOuter<UWorld>() : nullptr;
+			return World != nullptr && UWorld::HasSubsystem<UWorldPartitionSubsystem>(World);
+		});
+
+		if (!bShouldDisplayWorldPartitionProperties)
+		{
+			DetailLayout.HideProperty(DetailLayout.GetProperty(AActor::GetRuntimeGridPropertyName(), AActor::StaticClass()));
+			DetailLayout.HideProperty(DetailLayout.GetProperty(AActor::GetIsSpatiallyLoadedPropertyName(), AActor::StaticClass()));
+			DetailLayout.HideProperty(DetailLayout.GetProperty(AActor::GetDataLayersPropertyName(), AActor::StaticClass()));
+			DetailLayout.HideProperty(DetailLayout.GetProperty(AActor::GetHLODLayerPropertyName(), AActor::StaticClass()));
+		}
+
 		OnExtendActorDetails.Broadcast(DetailLayout, FGetSelectedActors::CreateSP(this, &FActorDetails::GetSelectedActors));
 	}
 
 	TSharedPtr<IPropertyHandle> PrimaryTickProperty = DetailLayout.GetProperty(GET_MEMBER_NAME_CHECKED(AActor, PrimaryActorTick));
 
 	// Defaults only show tick properties
-	if (DetailLayout.HasClassDefaultObject() && !HideCategories.Contains(TEXT("Tick")))
+	if (DetailLayout.HasClassDefaultObject())
 	{
-		// Note: the category is renamed to differentiate between 
-		IDetailCategoryBuilder& TickCategory = DetailLayout.EditCategory("Tick", LOCTEXT("TickCategoryName", "Actor Tick") );
+		if (!HideCategories.Contains(TEXT("Tick")))
+		{
+			// Note: the category is renamed to differentiate between 
+			IDetailCategoryBuilder& TickCategory = DetailLayout.EditCategory("Tick", LOCTEXT("TickCategoryName", "Actor Tick") );
 
-		TickCategory.AddProperty(PrimaryTickProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FTickFunction, bStartWithTickEnabled)));
-		TickCategory.AddProperty(PrimaryTickProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FTickFunction, TickInterval)));
-		TickCategory.AddProperty(PrimaryTickProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FTickFunction, bTickEvenWhenPaused)), EPropertyLocation::Advanced);
-		TickCategory.AddProperty(PrimaryTickProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FTickFunction, bAllowTickOnDedicatedServer)), EPropertyLocation::Advanced);
-		TickCategory.AddProperty(PrimaryTickProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FTickFunction, TickGroup)), EPropertyLocation::Advanced);
+			TickCategory.AddProperty(PrimaryTickProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FTickFunction, bStartWithTickEnabled)));
+			TickCategory.AddProperty(PrimaryTickProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FTickFunction, TickInterval)));
+			TickCategory.AddProperty(PrimaryTickProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FTickFunction, bTickEvenWhenPaused)), EPropertyLocation::Advanced);
+			TickCategory.AddProperty(PrimaryTickProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FTickFunction, bAllowTickOnDedicatedServer)), EPropertyLocation::Advanced);
+			TickCategory.AddProperty(PrimaryTickProperty->GetChildHandle(GET_MEMBER_NAME_CHECKED(FTickFunction, TickGroup)), EPropertyLocation::Advanced);
+		}
+		
+		if (!HideCategories.Contains(TEXT("Events")))
+		{
+			AddEventsCategory(DetailLayout);
+		}	
 	}
 
 	PrimaryTickProperty->MarkHiddenByCustomization();
@@ -273,9 +302,9 @@ void FActorDetails::CreateClassPickerConvertActorFilter(const TWeakObjectPtr<AAc
 {
 	// Shouldn't ever be overwriting an already established filter
 	check( ConvertActor.IsValid() )
-	check( ClassPickerOptions != NULL && !ClassPickerOptions->ClassFilter.IsValid() )
-	TSharedPtr<FConvertToClassFilter> Filter = MakeShareable(new FConvertToClassFilter);
-	ClassPickerOptions->ClassFilter = Filter;
+	check( ClassPickerOptions != nullptr && ClassPickerOptions->ClassFilters.IsEmpty() );
+	TSharedRef<FConvertToClassFilter> Filter = MakeShared<FConvertToClassFilter>();
+	ClassPickerOptions->ClassFilters.Add(Filter);
 
 	UClass* ConvertClass = ConvertActor->GetClass();
 	UClass* RootConversionClass = GetConversionRoot(ConvertClass);
@@ -457,6 +486,100 @@ void FActorDetails::AddTransformCategory( IDetailLayoutBuilder& DetailBuilder )
 	TransformCategory.AddCustomBuilder( TransformDetails );
 }
 
+void FActorDetails::AddEventsCategory(IDetailLayoutBuilder& DetailBuilder)
+{
+	// Get the currently selected actor, which would be the "Default__Actor" 
+	const TArray<TWeakObjectPtr<UObject>>& Selected = DetailBuilder.GetSelectedObjects();
+	if(Selected.IsEmpty())
+	{
+		return;
+	}
+
+	AActor* Actor = Cast<AActor>(Selected[0].Get());
+	UBlueprint* Blueprint = Actor ? Cast<UBlueprint>(Actor->GetClass()->ClassGeneratedBy) : nullptr;
+
+	if(!Actor || !Blueprint || !FBlueprintEditorUtils::DoesSupportEventGraphs(Blueprint))
+	{
+		return;
+	}
+
+	IDetailCategoryBuilder& EventsCategory = DetailBuilder.EditCategory("Events", FText::GetEmpty(), ECategoryPriority::Uncommon);
+	static const FName HideInDetailPanelName("HideInDetailPanel");
+
+	// Find all the Multicast delegate properties and give a binding button for them
+	for (TFieldIterator<FMulticastDelegateProperty> PropertyIt(Actor->GetClass(), EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
+	{
+		FMulticastDelegateProperty* Property = *PropertyIt;
+		
+		// Only show BP assiangable, non-hidden delegates		
+		if (!Property->HasAnyPropertyFlags(CPF_Parm) && Property->HasAllPropertyFlags(CPF_BlueprintAssignable) && !Property->HasMetaData(HideInDetailPanelName))
+		{
+			const FName EventName = Property->GetFName();
+			FText EventText = Property->GetDisplayNameText();
+
+			EventsCategory.AddCustomRow(EventText)
+			.NameContent()
+			[
+				SNew(SHorizontalBox)
+				.ToolTipText(Property->GetToolTipText())
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0.0f, 0.0f, 5.0f, 0.0f)
+				[
+					SNew(SImage)
+					.Image(FEditorStyle::GetBrush("GraphEditor.Event_16x"))
+				]
+
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text(EventText)
+				]
+			]
+			// A green "Plus" button to add a binding. For dynamic delegates on the CDO, you can always
+			// make a new binding, so always display the "Plus"
+			.ValueContent()
+			.MinDesiredWidth(150.0f)
+			.MaxDesiredWidth(200.0f)
+			[
+				SNew(SButton)
+				.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
+				.HAlign(HAlign_Center)
+				.OnClicked(this, &FActorDetails::HandleAddOrViewEventForVariable, Blueprint, Property)
+				.ForegroundColor(FSlateColor::UseForeground())
+				[			
+					SNew(SImage)
+					.Image(FEditorStyle::GetBrush("Plus"))			
+				]
+			];
+		}
+	}
+}
+
+FReply FActorDetails::HandleAddOrViewEventForVariable(UBlueprint* BP, FMulticastDelegateProperty* Property)
+{
+	const UFunction* SignatureFunction = Property ? Property->SignatureFunction : nullptr;
+	UEdGraph* EventGraph = BP ? FBlueprintEditorUtils::FindEventGraph(BP) : nullptr;
+
+	if (EventGraph && SignatureFunction)
+	{
+		const FVector2D SpawnPos = EventGraph->GetGoodPlaceForNewNode();
+
+		// Adding a bound dynatic delegate from the Actor that is based off this BP will always be in a self context
+		UK2Node_AddDelegate* TemplateNode = NewObject<UK2Node_AddDelegate>();
+		TemplateNode->SetFromProperty(Property, /* bSelfContext */ true, Property->GetOwnerClass());
+
+		UEdGraphNode* SpawnedDelegate = FEdGraphSchemaAction_K2AssignDelegate::AssignDelegate(TemplateNode, EventGraph, nullptr, SpawnPos, true);
+		FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(SpawnedDelegate, false);
+	}
+
+	return FReply::Handled();
+}
+
 namespace ActorDetailsUtil
 {
 	constexpr int32 MultipleValuesIndicator = 2;
@@ -491,6 +614,28 @@ void FActorDetails::AddActorCategory( IDetailLayoutBuilder& DetailBuilder, const
 
 	IDetailCategoryBuilder& ActorCategory = DetailBuilder.EditCategory("Actor", FText::GetEmpty(), ECategoryPriority::Uncommon );
 
+	if (GetSelectedActors().Num() == 1)
+	{
+		if (AActor* Actor = GEditor->GetSelectedActors()->GetTop<AActor>())
+		{
+			const FText ActorGuidText = FText::FromString(Actor->GetActorGuid().ToString());
+			ActorCategory.AddCustomRow( LOCTEXT("ActorGuid", "ActorGuid") )
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ActorGuid2", "Actor Guid"))
+					.ToolTipText(LOCTEXT("ActorGuid_ToolTip", "Actor Guid"))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+				]
+				.ValueContent()
+				[
+					SNew(STextBlock)
+						.Text(ActorGuidText)
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+						.IsEnabled(false)
+				];
+		}
+	};
 
 #if 1
 	// Create the info buttons per level
@@ -519,16 +664,17 @@ void FActorDetails::AddActorCategory( IDetailLayoutBuilder& DetailBuilder, const
 		[
 			SNew(SHyperlink)
 				.Style(FEditorStyle::Get(), "HoverOnlyHyperlink")
-				.OnNavigate( this, &FActorDetails::OnNarrowSelectionSetToSpecificLevel, WeakLevelPtr )
+				.OnNavigate(this, &FActorDetails::OnNarrowSelectionSetToSpecificLevel, WeakLevelPtr)
 				.Text(ActorCountDescription)
 				.TextStyle(FEditorStyle::Get(), "DetailsView.HyperlinkStyle")
 				.ToolTipText(Tooltip)
 		]
 		.ValueContent()
+		.MaxDesiredWidth(0)
 		[
 			SNew(STextBlock)
 				.Text(LevelDescription)
-				.Font( IDetailLayoutBuilder::GetDetailFont() )
+				.Font(IDetailLayoutBuilder::GetDetailFont())
 		];
 
 	}
@@ -552,40 +698,44 @@ void FActorDetails::AddActorCategory( IDetailLayoutBuilder& DetailBuilder, const
 		];
 	}
 
-	// Actor Packaging Mode
-	const bool bOFPASupportEnabled = GetDefault<UEditorExperimentalSettings>()->bEnableOneFilePerActorSupport;
-	const bool bActorClassSupportsOFPA = SelectedActorInfo.SelectionClass ? CastChecked<AActor>(SelectedActorInfo.SelectionClass->GetDefaultObject())->SupportsExternalPackaging() : false;
-	const bool bShowActorPackagingModeProperty = bOFPASupportEnabled && bActorClassSupportsOFPA;
-	if (bShowActorPackagingModeProperty)
+	if (GetDefault<UEditorExperimentalSettings>()->bEnableOneFilePerActorSupport)
 	{
-		auto OnGetMenuContent = [=]() -> TSharedRef<SWidget> {
-			FMenuBuilder MenuBuilder(true, nullptr);
-			MenuBuilder.AddMenuEntry(ActorDetailsUtil::GetActorPackagingModeText(0), FText(), FSlateIcon(), FExecuteAction::CreateSP(this, &FActorDetails::OnActorPackagingModeChanged, false));
-			MenuBuilder.AddMenuEntry(ActorDetailsUtil::GetActorPackagingModeText(1), FText(), FSlateIcon(), FExecuteAction::CreateSP(this, &FActorDetails::OnActorPackagingModeChanged, true));
-			return MenuBuilder.MakeWidget();
-		};
+		// WorldSettings should not be packaged externally
+		if (SelectedActorInfo.SelectionClass != AWorldSettings::StaticClass())
+		{
+			// Actor Packaging Mode
+			const bool bIsPartitionedWorld = UWorld::HasSubsystem<UWorldPartitionSubsystem>(SelectedActorInfo.SharedWorld);
 
-		ActorCategory.AddCustomRow( LOCTEXT("ActorPackagingModeRow", "ActorPackagingMode"), true)
-			.NameContent()
-			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("ActorPackagingMode", "Packaging Mode"))
-				.ToolTipText(LOCTEXT("ActorPackagingMode_ToolTip", "Change the actor packaging mode. This will indicate if the actor is packaged alongside its level or in an external package."))
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-			]
-			.ValueContent()
-			[
-				SNew(SComboButton)
-				.ContentPadding(2)
-				.OnGetMenuContent_Lambda(OnGetMenuContent)
-				.IsEnabled(this, &FActorDetails::IsActorPackagingModeEditable)
-				.ButtonContent()
+			auto OnGetMenuContent = [=]() -> TSharedRef<SWidget> {
+				FMenuBuilder MenuBuilder(true, nullptr);
+				MenuBuilder.AddMenuEntry(ActorDetailsUtil::GetActorPackagingModeText(0), FText(), FSlateIcon(), FExecuteAction::CreateSP(this, &FActorDetails::OnActorPackagingModeChanged, false));
+				MenuBuilder.AddMenuEntry(ActorDetailsUtil::GetActorPackagingModeText(1), FText(), FSlateIcon(), FExecuteAction::CreateSP(this, &FActorDetails::OnActorPackagingModeChanged, true));
+				return MenuBuilder.MakeWidget();
+			};
+
+			ActorCategory.AddCustomRow( LOCTEXT("ActorPackagingModeRow", "ActorPackagingMode"), true)
+				.NameContent()
 				[
 					SNew(STextBlock)
-					.Text(this, &FActorDetails::GetCurrentActorPackagingMode)
+					.Text(LOCTEXT("ActorPackagingMode", "Packaging Mode"))
+					.ToolTipText(LOCTEXT("ActorPackagingMode_ToolTip", "Change the actor packaging mode. This will indicate if the actor is packaged alongside its level or in an external package."))
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 				]
-			];
+				.ValueContent()
+				[
+					SNew(SComboButton)
+					.ContentPadding(2)
+					.OnGetMenuContent_Lambda(OnGetMenuContent)
+					.IsEnabled(this, &FActorDetails::IsActorPackagingModeEditable)
+					.ButtonContent()
+					[
+						SNew(STextBlock)
+						.Text(this, &FActorDetails::GetCurrentActorPackagingMode)
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+					]
+					.IsEnabled(!bIsPartitionedWorld)
+				];
+		}
 	}
 }
 
@@ -595,7 +745,7 @@ bool FActorDetails::IsActorPackagingModeEditable() const
 	{
 		if (Actor.IsValid() && Actor->GetLevel())
 		{
-			if (!ULevel::CanConvertActorToExternalPackaging(Actor.Get()))
+			if (!Actor->SupportsExternalPackaging())
 			{
 				return false;
 			}
@@ -637,7 +787,7 @@ void FActorDetails::OnActorPackagingModeChanged(bool bExternal)
 				FMessageDialog::Open(EAppMsgType::Ok, Message);
 				return;
 			}
-			else if (Level->CanConvertActorToExternalPackaging(Actor.Get()))
+			else if (Actor->SupportsExternalPackaging())
 			{
 				ActorsToConvert.Add(Actor.Get());
 			}

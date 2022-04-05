@@ -195,7 +195,7 @@ void FColorVertexBuffer::AppendVertices( const FStaticMeshBuildVertex* Vertices,
 void FColorVertexBuffer::Serialize( FArchive& Ar, bool bNeedsCPUAccess )
 {
 	NeedsCPUAccess = bNeedsCPUAccess;
-	FStripDataFlags StripFlags(Ar, 0, VER_UE4_STATIC_SKELETAL_MESH_SERIALIZATION_FIX);
+	FStripDataFlags StripFlags(Ar, 0, FPackageFileVersion::CreateUE4Version(VER_UE4_STATIC_SKELETAL_MESH_SERIALIZATION_FIX));
 
 	if (Ar.IsSaving() && NumVertices > 0 && VertexData == NULL)
 	{
@@ -374,6 +374,11 @@ void FColorVertexBuffer::InitFromColorArray( const FColor *InColors, const uint3
 	Data = VertexData->GetDataPointer();
 }
 
+bool FColorVertexBuffer::GetAllowCPUAccess() const
+{
+	return VertexData ? VertexData->GetAllowCPUAccess() : false;
+}
+
 uint32 FColorVertexBuffer::GetAllocatedSize() const
 {
 	if(VertexData)
@@ -387,13 +392,13 @@ uint32 FColorVertexBuffer::GetAllocatedSize() const
 }
 
 template <bool bRenderThread>
-FVertexBufferRHIRef FColorVertexBuffer::CreateRHIBuffer_Internal()
+FBufferRHIRef FColorVertexBuffer::CreateRHIBuffer_Internal()
 {
 	if (NumVertices)
 	{
 		FResourceArrayInterface* RESTRICT ResourceArray = VertexData ? VertexData->GetResourceArray() : nullptr;
 		const uint32 SizeInBytes = ResourceArray ? ResourceArray->GetResourceDataSize() : 0;
-		FRHIResourceCreateInfo CreateInfo(ResourceArray);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FColorVertexBuffer"), ResourceArray);
 		CreateInfo.bWithoutNativeResource = !VertexData;
 		if (bRenderThread)
 		{
@@ -407,12 +412,12 @@ FVertexBufferRHIRef FColorVertexBuffer::CreateRHIBuffer_Internal()
 	return nullptr;
 }
 
-FVertexBufferRHIRef FColorVertexBuffer::CreateRHIBuffer_RenderThread()
+FBufferRHIRef FColorVertexBuffer::CreateRHIBuffer_RenderThread()
 {
 	return CreateRHIBuffer_Internal<true>();
 }
 
-FVertexBufferRHIRef FColorVertexBuffer::CreateRHIBuffer_Async()
+FBufferRHIRef FColorVertexBuffer::CreateRHIBuffer_Async()
 {
 	return CreateRHIBuffer_Internal<false>();
 }
@@ -441,6 +446,7 @@ void FColorVertexBuffer::CopyRHIForStreaming(const FColorVertexBuffer& Other, bo
 
 void FColorVertexBuffer::InitRHI()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FColorVertexBuffer::InitRHI);
 	SCOPED_LOADTIMER(FColorVertexBuffer_InitRHI);
 
 	VertexBufferRHI = CreateRHIBuffer_RenderThread();

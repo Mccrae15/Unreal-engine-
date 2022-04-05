@@ -190,8 +190,8 @@ namespace Chaos
 		{
 			// https://www.wolframalpha.com/input/?i=cylinder
 			const FReal RR = Radius * Radius;
-			const FReal Diag12 = Mass / 12. * (3.*RR + Height*Height);
-			const FReal Diag3 = Mass / 2. * RR;
+			const FReal Diag12 = static_cast<FReal>(Mass / 12. * (3.*RR + Height*Height));
+			const FReal Diag3 = static_cast<FReal>(Mass / 2. * RR);
 			return FMatrix33(Diag12, Diag12, Diag3);
 		}
 
@@ -228,14 +228,14 @@ namespace Chaos
 			{
 				auto UnprojectedIntersection = TPlane<FReal, 3>(InfiniteCylinderIntersection.First, (StartPoint - InfiniteCylinderIntersection.First).GetSafeNormal()).FindClosestIntersection(StartPoint, EndPoint, 0);
 				check(UnprojectedIntersection.Second);
-				Intersections.Add(MakePair((UnprojectedIntersection.First - StartPoint).Size(), UnprojectedIntersection.First));
+				Intersections.Add(MakePair((FReal)(UnprojectedIntersection.First - StartPoint).Size(), UnprojectedIntersection.First));
 			}
 			auto Plane1Intersection = MPlane1.FindClosestIntersection(StartPoint, EndPoint, Thickness);
 			if (Plane1Intersection.Second)
-				Intersections.Add(MakePair((Plane1Intersection.First - StartPoint).Size(), Plane1Intersection.First));
+				Intersections.Add(MakePair((FReal)(Plane1Intersection.First - StartPoint).Size(), Plane1Intersection.First));
 			auto Plane2Intersection = MPlane2.FindClosestIntersection(StartPoint, EndPoint, Thickness);
 			if (Plane2Intersection.Second)
-				Intersections.Add(MakePair((Plane2Intersection.First - StartPoint).Size(), Plane2Intersection.First));
+				Intersections.Add(MakePair((FReal)(Plane2Intersection.First - StartPoint).Size(), Plane2Intersection.First));
 			Intersections.Sort([](const Pair<FReal, FVec3>& Elem1, const Pair<FReal, FVec3>& Elem2) { return Elem1.First < Elem2.First; });
 			for (const auto& Elem : Intersections)
 			{
@@ -379,11 +379,11 @@ namespace Chaos
 			if (IncludeEndCaps)
 			{
 				const FReal CapArea = PI * Radius * Radius;
-				const FReal CylArea = 2.0 * PI * Radius * Height;
+				const FReal CylArea = static_cast<FReal>(2.0 * PI * Radius * Height);
 				const FReal AllArea = CylArea + CapArea * 2;
 				if (AllArea > KINDA_SMALL_NUMBER)
 				{
-					NumPointsCylinder = static_cast<int32>(round(CylArea / AllArea * NumPoints));
+					NumPointsCylinder = static_cast<int32>(round(CylArea / AllArea * (FReal)NumPoints));
 					NumPointsCylinder += (NumPoints - NumPointsCylinder) % 2;
 					NumPointsEndCap = (NumPoints - NumPointsCylinder) / 2;
 				}
@@ -421,7 +421,7 @@ namespace Chaos
 			}
 
 			Offset = Points.AddUninitialized(NumPointsCylinder);
-			static const FReal Increment = PI * (1.0 + sqrt(5));
+			static const FReal Increment = static_cast<FReal>(PI * (1.0 + sqrt(5)));
 			for (int32 i = 0; i < NumPointsCylinder; i++)
 			{
 				// In the 2D sphere (disc) case, we vary R so it increases monotonically,
@@ -429,10 +429,10 @@ namespace Chaos
 				//     const T R = FMath::Sqrt((0.5 + Index) / NumPoints) * Radius;
 				// But we're mapping to a cylinder, which means we want to keep R constant.
 				const FReal R = Radius;
-				const FReal Theta = Increment * (0.5 + i + SpiralSeed);
+				const FReal Theta = Increment * (0.5f + (FReal)i + (FReal)SpiralSeed);
 
 				// Map polar coordinates to Cartesian, and vary Z by [-HalfHeight, HalfHeight].
-				const FReal Z = FMath::LerpStable(-HalfHeight, HalfHeight, static_cast<FReal>(i) / (NumPointsCylinder - 1));
+				const FReal Z = FMath::LerpStable(-HalfHeight, HalfHeight, static_cast<FReal>(i) / (static_cast<FReal>(NumPointsCylinder) - 1));
 				Points[i + Offset] =
 				    FVec3(
 				        R * FMath::Cos(Theta),

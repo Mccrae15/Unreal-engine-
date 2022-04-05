@@ -24,7 +24,7 @@ namespace AudioModulation
 	class FModulatorBusMixStageSettings : public TModulatorBase<FBusId>
 	{
 	public:
-		FModulatorBusMixStageSettings(const FSoundControlBusMixStage& InStage, Audio::FDeviceId InDeviceId);
+		FModulatorBusMixStageSettings(const FSoundControlBusMixStage& InStage);
 
 		FString Address;
 		uint32 ParamClassId = INDEX_NONE;
@@ -36,7 +36,8 @@ namespace AudioModulation
 	class FModulatorBusMixSettings : public TModulatorBase<FBusMixId>
 	{
 	public:
-		FModulatorBusMixSettings(const USoundControlBusMix& InBusMix, Audio::FDeviceId InDeviceId);
+		FModulatorBusMixSettings(const USoundControlBusMix& InBusMix);
+		FModulatorBusMixSettings(FModulatorBusMixSettings&& InSettings);
 
 		TArray<FModulatorBusMixStageSettings> Stages;
 	};
@@ -45,7 +46,7 @@ namespace AudioModulation
 	{
 	public:
 
-		FModulatorBusMixStageProxy(const FModulatorBusMixStageSettings& InSettings, FAudioModulationSystem& OutModSystem);
+		FModulatorBusMixStageProxy(FModulatorBusMixStageSettings&& InSettings, FAudioModulationSystem& OutModSystem);
 
 		FString Address;
 		uint32 ParamClassId = INDEX_NONE;
@@ -64,16 +65,16 @@ namespace AudioModulation
 			Stopped
 		};
 
-		FModulatorBusMixProxy(const FModulatorBusMixSettings& InMix, FAudioModulationSystem& InModSystem);
+		FModulatorBusMixProxy(FModulatorBusMixSettings&& InMix, FAudioModulationSystem& InModSystem);
 
-		FModulatorBusMixProxy& operator =(const FModulatorBusMixSettings& InSettings);
+		FModulatorBusMixProxy& operator=(FModulatorBusMixSettings&& InSettings);
 
 		EStatus GetStatus() const;
 
 		// Resets stage map
 		void Reset();
 
-		void SetEnabled(const FModulatorBusMixSettings& InSettings);
+		void SetEnabled(FModulatorBusMixSettings&& InSettings);
 		void SetMix(const TArray<FModulatorBusMixStageSettings>& InStages, float InFadeTime);
 		void SetMixByFilter(const FString& InAddressFilter, uint32 InParamClassId, uint32 InParamId, float InValue, float InFadeTime);
 		void SetStopping();

@@ -72,7 +72,7 @@ bool SVirtualJoystick::ShouldDisplayTouchInterface()
 	return FPlatformMisc::GetUseVirtualJoysticks() || bAlwaysShowTouchInterface || (FSlateApplication::Get().IsFakingTouchEvents() && FPlatformMisc::ShouldDisplayTouchInterfaceOnFakingTouchEvents());
 }
 
-static int32 ResolveRelativePosition(float Position, float RelativeTo, float ScaleFactor)
+static float ResolveRelativePosition(float Position, float RelativeTo, float ScaleFactor)
 {
 	// absolute from edge
 	if (Position < -1.0f)

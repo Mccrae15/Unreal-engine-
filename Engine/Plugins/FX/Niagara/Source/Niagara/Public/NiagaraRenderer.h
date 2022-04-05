@@ -15,13 +15,13 @@ NiagaraRenderer.h: Base class for Niagara render modules
 #include "NiagaraRendererProperties.h"
 #include "RenderingThread.h"
 #include "SceneView.h"
-#include "NiagaraComponent.h"
 #include "NiagaraCutoutVertexBuffer.h"
 #include "NiagaraBoundsCalculator.h"
 
 class FNiagaraDataSet;
 class FNiagaraSceneProxy;
 class FNiagaraGPURendererCount;
+class FNiagaraSystemInstanceController;
 
 /** Struct used to pass dynamic data from game thread to render thread */
 struct FNiagaraDynamicDataBase
@@ -33,15 +33,22 @@ struct FNiagaraDynamicDataBase
 	FNiagaraDynamicDataBase(FNiagaraDynamicDataBase& Other) = delete;
 	FNiagaraDynamicDataBase& operator=(const FNiagaraDynamicDataBase& Other) = delete;
 
+	bool IsGpuLowLatencyTranslucencyEnabled() const;
 	FNiagaraDataBuffer* GetParticleDataToRender(bool bIsLowLatencyTranslucent = false) const;
 	FORCEINLINE ENiagaraSimTarget GetSimTarget() const { return SimTarget; }
 	FORCEINLINE FMaterialRelevance GetMaterialRelevance() const { return MaterialRelevance; }
 
 	FORCEINLINE void SetMaterialRelevance(FMaterialRelevance NewRelevance) { MaterialRelevance = NewRelevance; }
-protected:
 
+	FORCEINLINE FNiagaraSystemInstanceID GetSystemInstanceID() const { return SystemInstanceID; }
+
+	void SetVertexFactoryData(class FNiagaraVertexFactoryBase& VertexFactory);
+	virtual void ApplyMaterialOverride(int32 MaterialIndex, UMaterialInterface* MaterialOverride) {};
+
+protected:
 	FMaterialRelevance MaterialRelevance;
 	ENiagaraSimTarget SimTarget;
+	FNiagaraSystemInstanceID SystemInstanceID;
 
 	union
 	{
@@ -65,7 +72,7 @@ struct FParticleRenderData
 /**
 * Base class for Niagara System renderers.
 */
-class FNiagaraRenderer
+class NIAGARA_API FNiagaraRenderer
 {
 public:
 
@@ -75,8 +82,8 @@ public:
 	FNiagaraRenderer(const FNiagaraRenderer& Other) = delete;
 	FNiagaraRenderer& operator=(const FNiagaraRenderer& Other) = delete;
 
-	virtual void Initialize(const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter, const UNiagaraComponent* InComponent);
-	virtual void CreateRenderThreadResources(NiagaraEmitterInstanceBatcher* Batcher) {}
+	virtual void Initialize(const UNiagaraRendererProperties *InProps, const FNiagaraEmitterInstance* Emitter, const FNiagaraSystemInstanceController& InComponent);
+	virtual void CreateRenderThreadResources() {}
 	virtual void ReleaseRenderThreadResources() {}
 	virtual void DestroyRenderState_Concurrent() {}
 
@@ -91,6 +98,8 @@ public:
 	static void SortIndices(const struct FNiagaraGPUSortInfo& SortInfo, const FNiagaraRendererVariableInfo& SortVariable, const FNiagaraDataBuffer& Buffer, FGlobalDynamicReadBuffer::FAllocation& OutIndices);
 	static int32 SortAndCullIndices(const FNiagaraGPUSortInfo& SortInfo, const FNiagaraDataBuffer& Buffer, FGlobalDynamicReadBuffer::FAllocation& OutIndices);
 
+	static FVector4f CalcMacroUVParameters(const FSceneView& View, FVector MacroUVPosition, float MacroUVRadius);
+
 	void SetDynamicData_RenderThread(FNiagaraDynamicDataBase* NewDynamicData);
 	FORCEINLINE FNiagaraDynamicDataBase *GetDynamicData() const { return DynamicDataRender; }
 	FORCEINLINE bool HasDynamicData() const { return DynamicDataRender != nullptr; }
@@ -101,27 +110,34 @@ public:
 	virtual void GetDynamicRayTracingInstances(FRayTracingMaterialGatheringContext& Context, TArray<FRayTracingInstance>& OutRayTracingInstances, const FNiagaraSceneProxy* Proxy) {}
 #endif
 
-	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultFloat(FRWBuffer& RWBuffer) { return RWBuffer.SRV.IsValid() ? (FRHIShaderResourceView*)RWBuffer.SRV : GetDummyFloatBuffer(); }
-	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultHalf(FRWBuffer& RWBuffer) { return RWBuffer.SRV.IsValid() ? (FRHIShaderResourceView*)RWBuffer.SRV : GetDummyHalfBuffer(); }
-	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultUInt(FRWBuffer& RWBuffer) { return RWBuffer.SRV.IsValid() ? (FRHIShaderResourceView*)RWBuffer.SRV : GetDummyUIntBuffer(); }
-	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultInt(FRWBuffer& RWBuffer) { return RWBuffer.SRV.IsValid() ? (FRHIShaderResourceView*)RWBuffer.SRV : GetDummyIntBuffer(); }
+	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultFloat(const FRWBuffer& RWBuffer) { return RWBuffer.SRV.IsValid() ? (FRHIShaderResourceView*)RWBuffer.SRV : GetDummyFloatBuffer(); }
+	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultHalf(const FRWBuffer& RWBuffer) { return RWBuffer.SRV.IsValid() ? (FRHIShaderResourceView*)RWBuffer.SRV : GetDummyHalfBuffer(); }
+	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultUInt(const FRWBuffer& RWBuffer) { return RWBuffer.SRV.IsValid() ? (FRHIShaderResourceView*)RWBuffer.SRV : GetDummyUIntBuffer(); }
+	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultInt(const FRWBuffer& RWBuffer) { return RWBuffer.SRV.IsValid() ? (FRHIShaderResourceView*)RWBuffer.SRV : GetDummyIntBuffer(); }
 
 	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultFloat(FGlobalDynamicReadBuffer::FAllocation& Allocation) { return Allocation.IsValid() ? (FRHIShaderResourceView*)Allocation.SRV : GetDummyFloatBuffer(); }
 	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultHalf(FGlobalDynamicReadBuffer::FAllocation& Allocation) { return Allocation.IsValid() ? (FRHIShaderResourceView*)Allocation.SRV : GetDummyHalfBuffer(); }
 	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultUInt(FGlobalDynamicReadBuffer::FAllocation& Allocation) { return Allocation.IsValid() ? (FRHIShaderResourceView*)Allocation.SRV : GetDummyUIntBuffer(); }
 	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultInt(FGlobalDynamicReadBuffer::FAllocation& Allocation) { return Allocation.IsValid() ? (FRHIShaderResourceView*)Allocation.SRV : GetDummyIntBuffer(); }
 
-	NIAGARA_API static FRHIShaderResourceView* GetDummyFloatBuffer();
-	NIAGARA_API static FRHIShaderResourceView* GetDummyFloat2Buffer();
-	NIAGARA_API static FRHIShaderResourceView* GetDummyFloat4Buffer();
-	NIAGARA_API static FRHIShaderResourceView* GetDummyWhiteColorBuffer();
-	NIAGARA_API static FRHIShaderResourceView* GetDummyIntBuffer();
-	NIAGARA_API static FRHIShaderResourceView* GetDummyUIntBuffer();
-	NIAGARA_API static FRHIShaderResourceView* GetDummyUInt4Buffer();
-	NIAGARA_API static FRHIShaderResourceView* GetDummyTextureReadBuffer2D();
-	NIAGARA_API static FRHIShaderResourceView* GetDummyTextureReadBuffer2DArray();
-	NIAGARA_API static FRHIShaderResourceView* GetDummyTextureReadBuffer3D();
-	NIAGARA_API static FRHIShaderResourceView* GetDummyHalfBuffer();
+	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultFloat(FRHIShaderResourceView* InSRV) { return InSRV ? InSRV : GetDummyFloatBuffer(); }
+	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultFloat2(FRHIShaderResourceView* InSRV) { return InSRV ? InSRV : GetDummyFloat2Buffer(); }
+	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultFloat4(FRHIShaderResourceView* InSRV) { return InSRV ? InSRV : GetDummyFloat4Buffer(); }
+	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultUInt(FRHIShaderResourceView* InSRV) { return InSRV ? InSRV : GetDummyUIntBuffer(); }
+	FORCEINLINE static FRHIShaderResourceView* GetSrvOrDefaultInt(FRHIShaderResourceView* InSRV) { return InSRV ? InSRV : GetDummyIntBuffer(); }
+
+	static FRHIShaderResourceView* GetDummyFloatBuffer();
+	static FRHIShaderResourceView* GetDummyFloat2Buffer();
+	static FRHIShaderResourceView* GetDummyFloat4Buffer();
+	static FRHIShaderResourceView* GetDummyWhiteColorBuffer();
+	static FRHIShaderResourceView* GetDummyIntBuffer();
+	static FRHIShaderResourceView* GetDummyUIntBuffer();
+	static FRHIShaderResourceView* GetDummyUInt2Buffer();
+	static FRHIShaderResourceView* GetDummyUInt4Buffer();
+	static FRHIShaderResourceView* GetDummyTextureReadBuffer2D();
+	static FRHIShaderResourceView* GetDummyTextureReadBuffer2DArray();
+	static FRHIShaderResourceView* GetDummyTextureReadBuffer3D();
+	static FRHIShaderResourceView* GetDummyHalfBuffer();
 
 	FORCEINLINE ENiagaraSimTarget GetSimTarget() const { return SimTarget; }
 
@@ -134,6 +150,8 @@ protected:
 
 	virtual void ProcessMaterialParameterBindings(TConstArrayView< FNiagaraMaterialAttributeBinding > InMaterialParameterBindings, const FNiagaraEmitterInstance* InEmitter, TConstArrayView<UMaterialInterface*> InMaterials) const;
 
+	bool IsRendererEnabled(const UNiagaraRendererProperties* InProperties, const FNiagaraEmitterInstance* Emitter) const;
+	bool UseLocalSpace(const FNiagaraSceneProxy* Proxy) const;
 
 	struct FNiagaraDynamicDataBase *DynamicDataRender;
 
@@ -152,6 +170,7 @@ protected:
 #if STATS
 	TStatId EmitterStatID;
 #endif
+
 
 	static FParticleRenderData TransferDataToGPU(FGlobalDynamicReadBuffer& DynamicReadBuffer, const FNiagaraRendererLayout* RendererLayout, TConstArrayView<uint32> IntComponents, const FNiagaraDataBuffer* SrcData);
 

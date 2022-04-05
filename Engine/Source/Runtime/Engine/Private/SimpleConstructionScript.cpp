@@ -45,7 +45,7 @@ void USimpleConstructionScript::Serialize(FArchive& Ar)
 #if WITH_EDITORONLY_DATA
 	if(Ar.IsLoading())
 	{
-		if(Ar.UE4Ver() < VER_UE4_REMOVE_NATIVE_COMPONENTS_FROM_BLUEPRINT_SCS)
+		if(Ar.UEVer() < VER_UE4_REMOVE_NATIVE_COMPONENTS_FROM_BLUEPRINT_SCS)
 		{
 			// If we previously had a root node, we need to move it into the new RootNodes array. This is done in Serialize() in order to support SCS preloading (which relies on a valid RootNodes array).
 			if(RootNode_DEPRECATED != NULL)
@@ -241,7 +241,7 @@ void USimpleConstructionScript::PostLoad()
 	// Reset non-native "root" scene component scale values, prior to the change in which
 	// we began applying custom scale values to root components at construction time. This
 	// way older, existing Blueprint actor instances won't start unexpectedly getting scaled.
-	if(GetLinkerUE4Version() < VER_UE4_BLUEPRINT_USE_SCS_ROOTCOMPONENT_SCALE)
+	if(GetLinkerUEVersion() < VER_UE4_BLUEPRINT_USE_SCS_ROOTCOMPONENT_SCALE)
 	{
 		if(BPGeneratedClass != nullptr)
 		{
@@ -279,7 +279,7 @@ void USimpleConstructionScript::PostLoad()
 		}
 	}
 
-	if (GetLinkerUE4Version() < VER_UE4_SCS_STORES_ALLNODES_ARRAY)
+	if (GetLinkerUEVersion() < VER_UE4_SCS_STORES_ALLNODES_ARRAY)
 	{
 		// Fill out AllNodes if this is an older object
 		if (RootNodes.Num() > 0)
@@ -336,7 +336,6 @@ void USimpleConstructionScript::FixupSceneNodeHierarchy()
 		FSceneHierarchyMapper(TArray<USCS_Node*>& RootNodesIn)
 			: RootNodeList(RootNodesIn)
 			, PendingParent(nullptr)
-			, bBreak(false)
 		{}
 
 		/** Identifies orphan (root) nodes, and fixes up broken/cyclic tree linkages */
@@ -440,7 +439,7 @@ void USimpleConstructionScript::FixupSceneNodeHierarchy()
 					}
 				};
 
-				if (UClass* ComponentClass = (Node->ComponentClass ? Node->ComponentClass : (Node->ComponentTemplate ? Node->ComponentTemplate->GetClass() : nullptr)))
+				if (UClass* ComponentClass = (Node->ComponentClass ? ToRawPtr(Node->ComponentClass) : (Node->ComponentTemplate ? Node->ComponentTemplate->GetClass() : nullptr)))
 				{
 					if (ComponentClass->IsChildOf<USceneComponent>())
 					{
@@ -508,7 +507,6 @@ void USimpleConstructionScript::FixupSceneNodeHierarchy()
 		TSet<USCS_Node*> VisitedNodes;
 		TSet<USCS_Node*> OrphanedNodes;
 		USCS_Node* PendingParent;
-		bool bBreak;
 	};
 
 	FSceneHierarchyMapper HierarchyMapper(RootNodes);
@@ -629,7 +627,7 @@ void USimpleConstructionScript::RegisterInstancedComponent(UActorComponent* Inst
 		}
 	}
 
-	if (InstancedComponent != nullptr && !InstancedComponent->IsRegistered() && InstancedComponent->bAutoRegister && !InstancedComponent->IsPendingKill())
+	if (IsValid(InstancedComponent) && !InstancedComponent->IsRegistered() && InstancedComponent->bAutoRegister)
 	{
 		InstancedComponent->RegisterComponent();
 	}
@@ -1499,7 +1497,7 @@ void USimpleConstructionScript::ValidateNodeTemplates(FCompilerResultsLog& Messa
 
 	for (USCS_Node* Node : Nodes)
 	{
-		if (GetLinkerUE4Version() < VER_UE4_REMOVE_INPUT_COMPONENTS_FROM_BLUEPRINTS)
+		if (GetLinkerUEVersion() < VER_UE4_REMOVE_INPUT_COMPONENTS_FROM_BLUEPRINTS)
 		{
 			if (!Node->bIsNative_DEPRECATED && Node->ComponentTemplate && Node->ComponentTemplate->IsA<UInputComponent>())
 			{

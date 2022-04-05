@@ -42,7 +42,7 @@ struct SLATE_API FInputChord
 	  * The ways two chords can be related to each other. A chord is considered masking 
 	  * when it has all the same modifier keys as another chord plus more.
 	  */
-	enum ERelationshipType
+	enum class ERelationshipType
 	{
 		None,
 		Same,
@@ -165,14 +165,21 @@ struct SLATE_API FInputChord
 	 *
 	 * @return A localized string.
 	 */
-	FText GetInputText( ) const;
+	FText GetInputText(const bool bLongDisplayName = true) const;
 	
 	/**
 	 * Gets the key represented as a localized string.
 	 *
 	 * @return A localized string.
 	 */
-	FText GetKeyText( ) const;
+	FText GetKeyText(const bool bLongDisplayName = true) const;
+
+	/**
+	 * Gets the localized string for the modifier portion of the coord. 
+	 * 
+	 * @param ModifierAppender. Text to append between each modifier and the key. If this is not specified a '+' character will be used
+	 */
+	FText GetModifierText(TOptional<FText> ModifierAppender = TOptional<FText>()) const;
 
 	/**
 	 * Checks whether this chord requires an modifier keys to be pressed.

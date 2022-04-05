@@ -38,7 +38,7 @@ public:
 	virtual void InitRHI() override
 	{
 		FVertexDeclarationElementList Elements;
-		Elements.Add(FVertexElement(0, 0, VET_Float4, 0, sizeof(FVector4)));
+		Elements.Add(FVertexElement(0, 0, VET_Float4, 0, sizeof(FVector4f)));
 		VertexDeclarationRHI = PipelineStateCache::GetOrCreateVertexDeclaration(Elements);
 	}
 
@@ -63,9 +63,9 @@ public:
 	{
 		// Setup index buffer
 		int NumIndices = 6;
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FDummyIndexBuffer"));
 		IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint16), sizeof(uint16) * NumIndices, BUF_Static, CreateInfo);
-		void* VoidPtr = RHILockIndexBuffer(IndexBufferRHI, 0, sizeof(uint16) * NumIndices, RLM_WriteOnly);
+		void* VoidPtr = RHILockBuffer(IndexBufferRHI, 0, sizeof(uint16) * NumIndices, RLM_WriteOnly);
 		uint16* pIndices = reinterpret_cast<uint16*>(VoidPtr);
 
 		pIndices[0] = 0;
@@ -75,7 +75,7 @@ public:
 		pIndices[4] = 2;
 		pIndices[5] = 3;
 
-		RHIUnlockIndexBuffer(IndexBufferRHI);
+		RHIUnlockBuffer(IndexBufferRHI);
 	}
 };
 TGlobalResource<FDummyIndexBuffer> GHoloLensCameraImageConversionIndexBuffer;
@@ -87,15 +87,14 @@ public:
 
 	virtual void InitRHI() override
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		void* BufferData = nullptr;
-		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(FVector4) * 4, BUF_Static, CreateInfo, BufferData);
-		FVector4* DummyContents = (FVector4*)BufferData;
-		DummyContents[0] = FVector4(0.f, 0.f, 0.f, 0.f);
-		DummyContents[1] = FVector4(1.f, 0.f, 0.f, 0.f);
-		DummyContents[2] = FVector4(0.f, 1.f, 0.f, 0.f);
-		DummyContents[3] = FVector4(1.f, 1.f, 0.f, 0.f);
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FDummyVertexBuffer"));
+		VertexBufferRHI = RHICreateBuffer(sizeof(FVector4f) * 4, BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		FVector4f* DummyContents = (FVector4f*)RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector4f) * 4, RLM_WriteOnly);
+		DummyContents[0] = FVector4f(0.f, 0.f, 0.f, 0.f);
+		DummyContents[1] = FVector4f(1.f, 0.f, 0.f, 0.f);
+		DummyContents[2] = FVector4f(0.f, 1.f, 0.f, 0.f);
+		DummyContents[3] = FVector4f(1.f, 1.f, 0.f, 0.f);
+		RHIUnlockBuffer(VertexBufferRHI);
 	}
 };
 TGlobalResource<FDummyVertexBuffer> GHoloLensCameraImageConversionVertexBuffer;
@@ -218,12 +217,12 @@ public:
 
 			// Create the copy target
 			{
-				FRHIResourceCreateInfo CreateInfo;
+				FRHIResourceCreateInfo CreateInfo(TEXT("FHoloLensCameraImageResource_CopyTextureRef"));
 				CopyTextureRef = RHICreateTexture2D(Size.X, Size.Y, PF_NV12, 1, 1, TexCreate_Dynamic | TexCreate_ShaderResource, CreateInfo);
 			}
 			// Create the render target
 			{
-				FRHIResourceCreateInfo CreateInfo;
+				FRHIResourceCreateInfo CreateInfo(TEXT("FHoloLensCameraImageResource_DummyTexture2D"));
 				TRefCountPtr<FRHITexture2D> DummyTexture2DRHI;
 				// Create our render target that we'll convert to
 				RHICreateTargetableShaderResource2D(Size.X, Size.Y, PF_B8G8R8A8, 1, TexCreate_Dynamic, TexCreate_RenderTargetable, false, CreateInfo, DecodedTextureRef, DummyTexture2DRHI);
@@ -243,7 +242,7 @@ public:
 		// Default to an empty 1x1 texture if we don't have a camera image or failed to convert
 		if (!bDidConvert)
 		{
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("DecodedTextureRef"));
 			Size.X = Size.Y = 1;
 			DecodedTextureRef = RHICreateTexture2D(Size.X, Size.Y, PF_B8G8R8A8, 1, 1, TexCreate_ShaderResource, CreateInfo);
 		}
@@ -343,7 +342,7 @@ private:
 			GraphicsPSOInit.BoundShaderState.VertexShaderRHI = VertexShader.GetVertexShader();
 			GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 
-			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+			SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 			FShaderResourceViewRHIRef Y_SRV = RHICreateShaderResourceView(CopyTextureRef, 0, 1, PF_G8);
 			FShaderResourceViewRHIRef UV_SRV = RHICreateShaderResourceView(CopyTextureRef, 0, 1, PF_R8G8);
@@ -407,9 +406,9 @@ void UHoloLensCameraImageTexture::Init(void* handle)
 	if (LastUpdateFrame != GFrameCounter)
 	{
 		LastUpdateFrame = GFrameCounter;
-		if (Resource != nullptr)
+		if (GetResource() != nullptr)
 		{
-			FHoloLensCameraImageResource* LambdaResource = static_cast<FHoloLensCameraImageResource*>(Resource);
+			FHoloLensCameraImageResource* LambdaResource = static_cast<FHoloLensCameraImageResource*>(GetResource());
 			ENQUEUE_RENDER_COMMAND(Init_RenderThread)(
 				[LambdaResource, handle](FRHICommandListImmediate&)
 			{

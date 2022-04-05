@@ -335,21 +335,6 @@ void FSectionContextMenu::PopulateMenu(FMenuBuilder& MenuBuilder)
 
 	MenuBuilder.BeginSection("SequencerSections", LOCTEXT("SectionsMenu", "Sections"));
 	{
-		if (CanPrimeForRecording())
-		{
-			MenuBuilder.AddMenuEntry(
-				LOCTEXT("PrimeForRecording", "Primed For Recording"),
-				LOCTEXT("PrimeForRecordingTooltip", "Prime this track for recording a new sequence."),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateLambda([=] { return Shared->TogglePrimeForRecording(); }),
-					FCanExecuteAction(),
-					FGetActionCheckState::CreateLambda([=] { return Shared->IsPrimedForRecording() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })),
-				NAME_None,
-				EUserInterfaceActionType::ToggleButton
-			);
-		}
-
 		if (CanSelectAllKeys())
 		{
 			MenuBuilder.AddMenuEntry(
@@ -495,15 +480,6 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 			FCanExecuteAction::CreateLambda([=]{ return Shared->CanAutoSize(); }))
 	);
 
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("SyncSectionsUsingSourceTimecode", "Synchronize using Source Timecode"),
-		LOCTEXT("SyncSectionsUsingSourceTimecodeTooltip", "Sync selected sections using the source timecode.  The first selected section will be unchanged and subsequent sections will be adjusted according to their source timecode as relative to the first section's."),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda([=] { return Shared->Sequencer->SyncSectionsUsingSourceTimecode(); }),
-			FCanExecuteAction::CreateLambda([=]{ return (Shared->Sequencer->GetSelection().GetSelectedSections().Num() > 1); }))
-	);
-
 	MenuBuilder.BeginSection("SequencerInterpolation", LOCTEXT("KeyInterpolationMenu", "Key Interpolation"));
 	
 	MenuBuilder.AddMenuEntry(
@@ -512,10 +488,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyAuto"),
 		FUIAction(
 			FExecuteAction::CreateLambda([=]{ Shared->SetInterpTangentMode(RCIM_Cubic, RCTM_Auto); }),
-			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }),
-			FIsActionChecked::CreateLambda([=]{ return Shared->IsInterpTangentModeSelected(RCIM_Cubic, RCTM_Auto); }) ),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
+			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }) )
 	);
 
 	MenuBuilder.AddMenuEntry(
@@ -524,10 +497,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyUser"),
 		FUIAction(
 			FExecuteAction::CreateLambda([=]{ Shared->SetInterpTangentMode(RCIM_Cubic, RCTM_User); }),
-			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }),
-			FIsActionChecked::CreateLambda([=]{ return Shared->IsInterpTangentModeSelected(RCIM_Cubic, RCTM_User); }) ),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
+			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }) )
 	);
 
 	MenuBuilder.AddMenuEntry(
@@ -536,10 +506,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyBreak"),
 		FUIAction(
 			FExecuteAction::CreateLambda([=]{ Shared->SetInterpTangentMode(RCIM_Cubic, RCTM_Break); }),
-			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }),
-			FIsActionChecked::CreateLambda([=]{ return Shared->IsInterpTangentModeSelected(RCIM_Cubic, RCTM_Break); }) ),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
+			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }) )
 	);
 
 	MenuBuilder.AddMenuEntry(
@@ -548,10 +515,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyLinear"),
 		FUIAction(
 			FExecuteAction::CreateLambda([=]{ Shared->SetInterpTangentMode(RCIM_Linear, RCTM_Auto); }),
-			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }),
-			FIsActionChecked::CreateLambda([=]{ return Shared->IsInterpTangentModeSelected(RCIM_Linear, RCTM_Auto); }) ),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
+			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }) )
 	);
 
 	MenuBuilder.AddMenuEntry(
@@ -560,10 +524,7 @@ void FSectionContextMenu::AddEditMenu(FMenuBuilder& MenuBuilder)
 		FSlateIcon(FEditorStyle::GetStyleSetName(), "Sequencer.IconKeyConstant"),
 		FUIAction(
 			FExecuteAction::CreateLambda([=]{ Shared->SetInterpTangentMode(RCIM_Constant, RCTM_Auto); }),
-			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }),
-			FIsActionChecked::CreateLambda([=]{ return Shared->IsInterpTangentModeSelected(RCIM_Constant, RCTM_Auto); }) ),
-		NAME_None,
-		EUserInterfaceActionType::ToggleButton
+			FCanExecuteAction::CreateLambda([=]{ return Shared->CanSetInterpTangentMode(); }) )
 	);
 
 	MenuBuilder.EndSection(); // SequencerInterpolation
@@ -691,49 +652,6 @@ void FSectionContextMenu::CopyAllKeys()
 	SelectAllKeys();
 	Sequencer->CopySelectedKeys();
 }
-
-void FSectionContextMenu::TogglePrimeForRecording() const
-{
-	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sequencer->GetSelection().GetSelectedSections())
-	{
-		UMovieSceneSubSection* SubSection = Cast<UMovieSceneSubSection>(WeakSection.Get());
-		if (SubSection)
-		{
-			SubSection->SetAsRecording(SubSection != UMovieSceneSubSection::GetRecordingSection());
-			break;
-		}
-	}
-}
-
-
-bool FSectionContextMenu::IsPrimedForRecording() const
-{
-	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sequencer->GetSelection().GetSelectedSections())
-	{
-		UMovieSceneSubSection* SubSection = Cast<UMovieSceneSubSection>(WeakSection.Get());
-		if (SubSection)
-		{
-			return SubSection == UMovieSceneSubSection::GetRecordingSection();
-		}
-	}
-
-	return false;
-}
-
-bool FSectionContextMenu::CanPrimeForRecording() const
-{
-	for (TWeakObjectPtr<UMovieSceneSection> WeakSection : Sequencer->GetSelection().GetSelectedSections())
-	{
-		UMovieSceneSubSection* SubSection = ExactCast<UMovieSceneSubSection>(WeakSection.Get());
-		if (SubSection)
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
 
 void FSectionContextMenu::SetSectionToKey()
 {
@@ -941,6 +859,21 @@ void FSectionContextMenu::SetInterpTangentMode(ERichCurveInterpMode InterpMode, 
 
 					FloatChannel->AutoSetTangents();
 				}
+
+				for (FMovieSceneDoubleChannel* DoubleChannel : Section->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>())
+				{
+					TMovieSceneChannelData<FMovieSceneDoubleValue> ChannelData = DoubleChannel->GetData();
+					TArrayView<FMovieSceneDoubleValue> Values = ChannelData.GetValues();
+
+					for (int32 KeyIndex = 0; KeyIndex < DoubleChannel->GetNumKeys(); ++KeyIndex)
+					{
+						Values[KeyIndex].InterpMode = InterpMode;
+						Values[KeyIndex].TangentMode = TangentMode;
+						bAnythingChanged = true;
+					}
+
+					DoubleChannel->AutoSetTangents();
+				}
 			}
 		}
 	}
@@ -975,60 +908,14 @@ bool FSectionContextMenu::CanSetInterpTangentMode() const
 			UMovieSceneSection* Section = KeyArea->GetOwningSection();
 			if (Section)
 			{
-				return Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>().Num() != 0;
+				return (Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>().Num() != 0 ||
+					    Section->GetChannelProxy().GetChannels<FMovieSceneDoubleChannel>().Num() != 0);
 			}
 		}
 	}
 
 	return false;
-}
-				
-
-bool FSectionContextMenu::IsInterpTangentModeSelected(ERichCurveInterpMode InterpMode, ERichCurveTangentMode TangentMode) const
-{
-	TSet<TSharedPtr<IKeyArea> > KeyAreas;
-	for (const TSharedRef<FSequencerDisplayNode>& DisplayNode : Sequencer->GetSelection().GetSelectedOutlinerNodes())
-	{
-		SequencerHelpers::GetAllKeyAreas(DisplayNode, KeyAreas);
-	}
-
-	if (KeyAreas.Num() == 0)
-	{
-		const TSet<TSharedRef<FSequencerDisplayNode>>& SelectedNodes = Sequencer->GetSelection().GetNodesWithSelectedKeysOrSections();
-		for (const TSharedRef<FSequencerDisplayNode>& DisplayNode : SelectedNodes)
-		{
-			SequencerHelpers::GetAllKeyAreas(DisplayNode, KeyAreas);
-		}
-	}
-
-	int32 NumKeys = 0;
-	for (TSharedPtr<IKeyArea> KeyArea : KeyAreas)
-	{
-		if (KeyArea.IsValid())
-		{
-			UMovieSceneSection* Section = KeyArea->GetOwningSection();
-			if (Section)
-			{
-				for (FMovieSceneFloatChannel* FloatChannel : Section->GetChannelProxy().GetChannels<FMovieSceneFloatChannel>())
-				{
-					TMovieSceneChannelData<FMovieSceneFloatValue> ChannelData = FloatChannel->GetData();
-					TArrayView<FMovieSceneFloatValue> Values = ChannelData.GetValues();
-
-					NumKeys += FloatChannel->GetNumKeys();
-					for (int32 KeyIndex = 0; KeyIndex < FloatChannel->GetNumKeys(); ++KeyIndex)
-					{
-						if (Values[KeyIndex].InterpMode != InterpMode || Values[KeyIndex].TangentMode != TangentMode)
-						{
-							return false;
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return NumKeys != 0;
-}
+}			
 
 
 void FSectionContextMenu::ToggleSectionActive()
@@ -2149,7 +2036,7 @@ void FEasingContextMenu::EasingTypeMenu(FMenuBuilder& MenuBuilder)
 
 	FClassViewerInitializationOptions InitOptions;
 	InitOptions.NameTypeToDisplay = EClassViewerNameTypeToDisplay::DisplayName;
-	InitOptions.ClassFilter = MakeShared<FFilter>();
+	InitOptions.ClassFilters.Add(MakeShared<FFilter>());
 
 	// Copy a reference to the context menu by value into each lambda handler to ensure the type stays alive until the menu is closed
 	TSharedRef<FEasingContextMenu> Shared = AsShared();
@@ -2188,15 +2075,10 @@ void FEasingContextMenu::EasingOptionsMenu(FMenuBuilder& MenuBuilder)
 {
 	FPropertyEditorModule& EditModule = FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	FDetailsViewArgs DetailsViewArgs(
-		/*bUpdateFromSelection=*/ false,
-		/*bLockable=*/ false,
-		/*bAllowSearch=*/ false,
-		FDetailsViewArgs::HideNameArea,
-		/*bHideSelectionTip=*/ true,
-		/*InNotifyHook=*/ nullptr,
-		/*InSearchInitialKeyFocus=*/ false,
-		/*InViewIdentifier=*/ NAME_None);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.bAllowSearch = false;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
 	DetailsViewArgs.bShowOptions = false;
 	DetailsViewArgs.bShowScrollBar = false;
 

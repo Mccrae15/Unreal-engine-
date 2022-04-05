@@ -14,10 +14,14 @@
 
 namespace Chaos
 {
+	/**
+	 * @brief Flags for user-control over per-particle collision behaviour
+	*/
 	enum class ECollisionConstraintFlags : uint32
 	{
 		CCF_None                       = 0x0,
 		CCF_BroadPhaseIgnoreCollisions = 0x1,
+		CCF_SmoothEdgeCollisions       = 0x2,
 		CCF_DummyFlag
 	};
 
@@ -25,13 +29,13 @@ namespace Chaos
 	{
 	public:
 		using FHandleID = FUniqueIdx;
-		using FDeactivationArray = TArray<FUniqueIdx>;
+		using FDeactivationSet = TSet<FUniqueIdx>;
 		using FActiveMap = TMap<FHandleID, TArray<FHandleID> >;
 		using FPendingMap = TMap<FHandleID, TArray<FHandleID> >;
 		struct FStorageData
 		{
 			FPendingMap PendingActivations;
-			FDeactivationArray PendingDeactivations;
+			FDeactivationSet PendingDeactivations;
 			int32 ExternalTimestamp = INDEX_NONE;
 
 			void Reset()
@@ -72,7 +76,7 @@ namespace Chaos
 			return StorageDataProducer->PendingActivations;
 		}
 
-		FDeactivationArray& GetPendingDeactivationsForGameThread(int32 ExternalTimestamp)
+		FDeactivationSet& GetPendingDeactivationsForGameThread(int32 ExternalTimestamp)
 		{
 			if (StorageDataProducer->ExternalTimestamp == INDEX_NONE)
 			{
@@ -129,7 +133,7 @@ namespace Chaos
 		FActiveMap IgnoreCollisionsList;
 
 		FPendingMap PendingActivations;
-		FDeactivationArray PendingDeactivations;
+		FDeactivationSet PendingDeactivations;
 
 		// Producer storage data, pending changes written here until pushed into queue.
 		FStorageData* StorageDataProducer;

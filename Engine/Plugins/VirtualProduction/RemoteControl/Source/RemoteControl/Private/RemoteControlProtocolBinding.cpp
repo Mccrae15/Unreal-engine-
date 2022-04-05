@@ -45,7 +45,6 @@ namespace EntityInterpolation
 				if(Outer->GetClass() == FArrayProperty::StaticClass())
 				{
 					FScriptArrayHelper Helper(CastField<FArrayProperty>(Outer), RangePair.Mapping.GetData());
-					auto N = Helper.Num();
 					TypedPair.Mapping = *reinterpret_cast<ValueType*>(Helper.GetRawPtr(InArrayIndex));
 				}
 				else
@@ -208,8 +207,8 @@ namespace EntityInterpolation
 		if (FBoolProperty* BoolProperty = CastField<FBoolProperty>(InProperty))
 		{
 			bool bBoolValue = false;
-			bSuccess = InterpolateValue(BoolProperty, OuterProperty, InRangeMappingBuffers, InProtocolValue, bBoolValue, InArrayIndex);
-			bBoolValue = static_cast<uint8>(bBoolValue) > 0;
+			bSuccess = InterpolateValue(BoolProperty, OuterProperty, InRangeMappingBuffers, InProtocolValue, bBoolValue, InArrayIndex);			
+			bBoolValue = StaticCast<uint8>(bBoolValue) > 0; // Ensure 0 or 1, can be different if property was packed.
 			WritePropertyValue(InCborWriter, InProperty, bBoolValue, !bIsInArray);
 		}
 		else if (FNumericProperty* NumericProperty = CastField<FNumericProperty>(InProperty))
@@ -654,6 +653,12 @@ bool FRemoteControlProtocolEntity::ApplyProtocolValueToProperty(double InProtoco
 	if (!RemoteControlProperty.IsValid())
 	{
 		return false;
+	}
+
+	if(!RemoteControlProperty->IsBound())
+	{
+		UE_LOG(LogRemoteControl, Warning, TEXT("Entity isn't bound to any objects."));
+		return true;
 	}
 
 	FProperty* Property = RemoteControlProperty->GetProperty();

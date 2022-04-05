@@ -10,10 +10,10 @@
 #include "Animation/AnimStateMachineTypes.h"
 #include "Animation/AnimNodeBase.h"
 #include "Animation/AnimInstance.h"
+#include "Animation/BlendProfile.h"
 #include "AnimNode_StateMachine.generated.h"
 
 class IAnimClassInterface;
-class UBlendProfile;
 struct FAnimNode_AssetPlayerBase;
 struct FAnimNode_StateMachine;
 struct FAnimNode_TransitionPoseEvaluator;
@@ -65,7 +65,7 @@ protected:
 public:
 	// Blend profile to use for this transition. Specifying this will make the transition evaluate per-bone
 	UPROPERTY()
-	UBlendProfile* BlendProfile;
+	TObjectPtr<UBlendProfile> BlendProfile;
 
 	// Type of blend to use
 	EAlphaBlendOption BlendOption;
@@ -77,7 +77,7 @@ public:
 
 public:
 	FAnimationActiveTransitionEntry();
-	FAnimationActiveTransitionEntry(int32 NextStateID, float ExistingWeightOfNextState, FAnimationActiveTransitionEntry* ExistingTransitionForNextState, int32 PreviousStateID, const FAnimationTransitionBetweenStates& ReferenceTransitionInfo);
+	FAnimationActiveTransitionEntry(int32 NextStateID, float ExistingWeightOfNextState, FAnimationActiveTransitionEntry* ExistingTransitionForNextState, int32 PreviousStateID, const FAnimationTransitionBetweenStates& ReferenceTransitionInfo, const FAnimationPotentialTransition& PotentialTransition);
 
 	void InitializeCustomGraphLinks(const FAnimationUpdateContext& Context, const FBakedStateExitTransition& TransitionRule);
 
@@ -99,6 +99,7 @@ struct FAnimationPotentialTransition
 	GENERATED_USTRUCT_BODY()
 
 	int32 TargetState;
+	float CrossfadeTimeAdjustment;
 
 	const FBakedStateExitTransition* TransitionRule;
 
@@ -140,6 +141,15 @@ public:
 	UPROPERTY(EditAnywhere, Category = Settings)
 	bool bReinitializeOnBecomingRelevant;
 
+	// Tag Notifies with meta data such as the active state and mirroring state.  Producing this
+	// data has a  slight performance cost.
+	UPROPERTY(EditAnywhere, Category = Settings)
+	bool bCreateNotifyMetaData;
+
+	// Allows a conduit to be used as this state machine's entry state
+	// If a valid entry state cannot be found at runtime then this will generate a reference pose!
+	UPROPERTY(EditAnywhere, Category = Settings)
+	bool bAllowConduitEntryStates;
 private:
 	// true if it is the first update.
 	bool bFirstUpdate;
@@ -201,6 +211,8 @@ public:
 		, MaxTransitionsPerFrame(3)
 		, bSkipFirstUpdateTransition(true)
 		, bReinitializeOnBecomingRelevant(true)
+		, bCreateNotifyMetaData(true)
+		, bAllowConduitEntryStates(false)
 		, bFirstUpdate(true)
 		, CurrentState(INDEX_NONE)
 		, ElapsedTime(0.0f)
@@ -261,7 +273,11 @@ protected:
 	void EvaluateTransitionStandardBlendInternal(FPoseContext& Output, FAnimationActiveTransitionEntry& Transition, const FPoseContext& PreviousStateResult, const FPoseContext& NextStateResult);
 	void EvaluateTransitionCustomBlend(FPoseContext& Output, FAnimationActiveTransitionEntry& Transition, bool bIntermediatePoseIsValid);
 
-	FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(const FAnimationUpdateContext& Context, const FBakedAnimationState& StateInfo);
+	const FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(const FAnimInstanceProxy* InAnimInstanceProxy, const FBakedAnimationState& StateInfo) const;
+	const FAnimNode_AssetPlayerBase* GetRelevantAssetPlayerFromState(const FAnimationUpdateContext& Context, const FBakedAnimationState& StateInfo) const
+	{
+		return GetRelevantAssetPlayerFromState(Context.AnimInstanceProxy, StateInfo);
+	}
 
 	void LogInertializationRequestError(const FAnimationUpdateContext& Context, int32 PreviousState, int32 NextState);
 

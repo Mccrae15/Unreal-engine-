@@ -32,6 +32,11 @@ TSharedRef<IPropertyTypeCustomization> FCurveColorCustomization::MakeInstance()
 
 FCurveColorCustomization::~FCurveColorCustomization()
 {
+	if (CurveWidget.IsValid() && CurveWidget->GetCurveOwner() == this)
+	{
+		CurveWidget->SetCurveOwner(nullptr, false);
+	}
+
 	DestroyPopOutWindow();
 }
 
@@ -56,6 +61,21 @@ void FCurveColorCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> InStr
 
 	if (StructPtrs.Num() == 1)
 	{
+		static const FName AlwaysDisplayColorCurves(TEXT("AlwaysDisplayColorCurves"));
+		static const FName AlwaysHideGradientEditor(TEXT("AlwaysHideGradientEditor"));
+
+		TOptional<bool> bAlwaysDisplayColorCurves;
+		if (InStructPropertyHandle->HasMetaData(AlwaysDisplayColorCurves))
+		{
+			bAlwaysDisplayColorCurves = InStructPropertyHandle->GetBoolMetaData(AlwaysDisplayColorCurves);
+		}
+
+		TOptional<bool> bAlwaysHideGradientEditor;
+		if (InStructPropertyHandle->HasMetaData(AlwaysHideGradientEditor))
+		{
+			bAlwaysHideGradientEditor = InStructPropertyHandle->GetBoolMetaData(AlwaysHideGradientEditor);
+		}
+
 		RuntimeCurve = reinterpret_cast<FRuntimeCurveLinearColor*>(StructPtrs[0]);
 
 		if (OuterObjects.Num() == 1)
@@ -83,6 +103,8 @@ void FCurveColorCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> InStr
 					.OnSetInputViewRange(this, &FCurveColorCustomization::SetInputViewRange)
 					.HideUI(false)
 					.DesiredSize(FVector2D(300, 150))
+					.AlwaysDisplayColorCurves(bAlwaysDisplayColorCurves.Get(false))
+					.AlwaysHideGradientEditor(bAlwaysHideGradientEditor.Get(false))
 				]
 			];
 
@@ -237,7 +259,7 @@ void FCurveColorCustomization::MakeTransactional()
 
 void FCurveColorCustomization::OnCurveChanged(const TArray<FRichCurveEditInfo>& ChangedCurveEditInfos)
 {
-	StructPropertyHandle->NotifyPostChange();
+	StructPropertyHandle->NotifyPostChange(EPropertyChangeType::Unspecified);
 }
 
 FLinearColor FCurveColorCustomization::GetLinearColorValue(float InTime) const
@@ -291,7 +313,7 @@ void FCurveColorCustomization::OnExternalCurveChanged(TSharedRef<IPropertyHandle
 			CurveWidget->SetCurveOwner(this);
 		}
 
-		CurvePropertyHandle->NotifyPostChange();
+		CurvePropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 	}
 }
 

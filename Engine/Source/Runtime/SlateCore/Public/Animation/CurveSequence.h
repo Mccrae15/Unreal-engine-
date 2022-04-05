@@ -201,7 +201,7 @@ private:
 	TWeakPtr<FActiveTimerHandle> ActiveTimerHandle;
 
 	/** Handle to the ticker based player. */
-	FDelegateHandle TickerHandle;
+	FTSTicker::FDelegateHandle TickerHandle;
 
 	/** All the curves in this sequence. */
 	TArray<FSlateCurve> Curves;
@@ -213,7 +213,7 @@ private:
 	double PauseTime;
 
 	/** How long the entire sequence lasts. */
-	float TotalDuration;
+	double TotalDuration;
 
 	/** Are we playing the animation in reverse */
 	uint8 bInReverse : 1;

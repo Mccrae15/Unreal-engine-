@@ -30,6 +30,7 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.AddRange(
 					new string[]
 					{
+						"EditorFramework",
 						"UnrealEd",
 						"PropertyEditor",
 						"EditorStyle",

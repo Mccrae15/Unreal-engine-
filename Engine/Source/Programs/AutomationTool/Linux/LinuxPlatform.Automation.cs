@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -8,12 +8,13 @@ using System.IO;
 using System.Diagnostics;
 using AutomationTool;
 using UnrealBuildTool;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 public abstract class BaseLinuxPlatform : Platform
 {
-	static string PScpPath = CombinePaths(CommandUtils.RootDirectory.FullName, "\\Engine\\Extras\\ThirdPartyNotUE\\putty\\PSCP.EXE");
-	static string PlinkPath = CombinePaths(CommandUtils.RootDirectory.FullName, "\\Engine\\Extras\\ThirdPartyNotUE\\putty\\PLINK.EXE");
+	static string PScpPath = CombinePaths(Unreal.RootDirectory.FullName, "\\Engine\\Extras\\ThirdPartyNotUE\\putty\\PSCP.EXE");
+	static string PlinkPath = CombinePaths(Unreal.RootDirectory.FullName, "\\Engine\\Extras\\ThirdPartyNotUE\\putty\\PLINK.EXE");
 	static string LaunchOnHelperShellScriptName = "LaunchOnHelper.sh";
 
 	public BaseLinuxPlatform(UnrealTargetPlatform P)
@@ -25,7 +26,7 @@ public abstract class BaseLinuxPlatform : Platform
 	{
 		if (SC.bStageCrashReporter)
 		{
-			FileReference ReceiptFileName = TargetReceipt.GetDefaultPath(CommandUtils.EngineDirectory, "CrashReportClient", SC.StageTargetPlatform.PlatformType, UnrealTargetConfiguration.Shipping, null);
+			FileReference ReceiptFileName = TargetReceipt.GetDefaultPath(Unreal.EngineDirectory, "CrashReportClient", SC.StageTargetPlatform.PlatformType, UnrealTargetConfiguration.Shipping, null);
 			if (FileReference.Exists(ReceiptFileName))
 			{
 				TargetReceipt Receipt = TargetReceipt.Read(ReceiptFileName);
@@ -89,9 +90,9 @@ public abstract class BaseLinuxPlatform : Platform
 						}
 
 						string Extension = ".sh";
-						if (Target.Receipt.Platform == UnrealTargetPlatform.LinuxAArch64)
+						if (Target.Receipt.Platform == UnrealTargetPlatform.LinuxArm64)
 						{
-								Extension = "-AArch64.sh";
+								Extension = "-Arm64.sh";
 						}
 
 						List<StagedFileReference> StagePaths = SC.FilesToStage.NonUFSFiles.Where(x => x.Value == Executable.Path).Select(x => x.Key).ToList();
@@ -125,17 +126,17 @@ public abstract class BaseLinuxPlatform : Platform
 		string EOL = "\n";
 		Script.Append("#!/bin/sh" + EOL);
 		// allow running from symlinks
-		Script.AppendFormat("UE4_TRUE_SCRIPT_NAME=$(echo \\\"$0\\\" | xargs readlink -f)" + EOL);
-		Script.AppendFormat("UE4_PROJECT_ROOT=$(dirname \"$UE4_TRUE_SCRIPT_NAME\")" + EOL);
-		Script.AppendFormat("chmod +x \"$UE4_PROJECT_ROOT/{0}\"" + EOL, StagedRelativeTargetPath);
-		Script.AppendFormat("\"$UE4_PROJECT_ROOT/{0}\" {1} \"$@\" " + EOL, StagedRelativeTargetPath, StagedArguments);
+		Script.AppendFormat("UE_TRUE_SCRIPT_NAME=$(echo \\\"$0\\\" | xargs readlink -f)" + EOL);
+		Script.AppendFormat("UE_PROJECT_ROOT=$(dirname \"$UE_TRUE_SCRIPT_NAME\")" + EOL);
+		Script.AppendFormat("chmod +x \"$UE_PROJECT_ROOT/{0}\"" + EOL, StagedRelativeTargetPath);
+		Script.AppendFormat("\"$UE_PROJECT_ROOT/{0}\" {1} \"$@\" " + EOL, StagedRelativeTargetPath, StagedArguments);
 
 		// write out the 
 		FileReference.WriteAllText(IntermediateFile, Script.ToString());
 
-		if (Utils.IsRunningOnMono)
+		if (!RuntimePlatform.IsWindows)
 		{
-			var Result = CommandUtils.Run("sh", string.Format("-c 'chmod +x \"{0}\"'", IntermediateFile.ToString().Replace("'", "'\"'\"'")));
+			var Result = CommandUtils.Run("env", string.Format("-- \"chmod\" \"+x\" \"{0}\"", IntermediateFile.ToString().Replace("'", "'\"'\"'")));
 			if (Result.ExitCode != 0)
 			{
 				throw new AutomationException(string.Format("Failed to chmod \"{0}\"", IntermediateFile));
@@ -147,10 +148,10 @@ public abstract class BaseLinuxPlatform : Platform
 
 	public override string GetCookPlatform(bool bDedicatedServer, bool bIsClientOnly)
 	{
-		const string NoEditorCookPlatform = "NoEditor";
+		const string NoEditorCookPlatform = "";
 		const string ServerCookPlatform = "Server";
 		const string ClientCookPlatform = "Client";
-		string PlatformStr = (TargetPlatformType == UnrealTargetPlatform.LinuxAArch64) ? "LinuxAArch64" : "Linux";
+		string PlatformStr = (TargetPlatformType == UnrealTargetPlatform.LinuxArm64) ? "LinuxArm64" : "Linux";
 
 		if (bDedicatedServer)
 		{
@@ -166,19 +167,19 @@ public abstract class BaseLinuxPlatform : Platform
 
 	public override string GetEditorCookPlatform()
 	{
-		if (TargetPlatformType == UnrealTargetPlatform.LinuxAArch64)
+		if (TargetPlatformType == UnrealTargetPlatform.LinuxArm64)
 		{
-			return "LinuxAArch64";
+			return "LinuxArm64Editor";
 		}
 
-		return "Linux";
+		return "LinuxEditor";
 	}
 
 	/// <summary>
 	/// return true if we need to change the case of filenames outside of pak files
 	/// </summary>
 	/// <returns></returns>
-	public override bool DeployLowerCaseFilenames()
+	public override bool DeployLowerCaseFilenames(StagedFileType FileType)
 	{
 		return false;
 	}
@@ -271,7 +272,7 @@ chmod +x {0}
 
 	public override bool CanHostPlatform(UnrealTargetPlatform Platform)
 	{
-		if (Platform == UnrealTargetPlatform.Mac || Platform == UnrealTargetPlatform.Win32 || Platform == UnrealTargetPlatform.Win64)
+		if (Platform == UnrealTargetPlatform.Mac || Platform == UnrealTargetPlatform.Win64)
 		{
 			return false;
 		}
@@ -375,10 +376,10 @@ public class GenericLinuxPlatform : BaseLinuxPlatform
 	}
 }
 
-public class GenericLinuxPlatformAArch64 : BaseLinuxPlatform
+public class GenericLinuxPlatformArm64 : BaseLinuxPlatform
 {
-	public GenericLinuxPlatformAArch64()
-		: base(UnrealTargetPlatform.LinuxAArch64)
+	public GenericLinuxPlatformArm64()
+		: base(UnrealTargetPlatform.LinuxArm64)
 	{
 	}
 }

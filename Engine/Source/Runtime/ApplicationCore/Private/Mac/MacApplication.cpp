@@ -34,7 +34,7 @@
 FMacApplication* MacApplication = nullptr;
 
 static FCriticalSection GAllScreensMutex;
-TArray<TSharedRef<FMacScreen>> FMacApplication::AllScreens;
+static TArray<FMacScreenRef> GAllScreens;
 
 const uint32 RESET_EVENT_SUBTYPE = 0x0f00;
 
@@ -412,7 +412,7 @@ FPlatformRect FMacApplication::GetWorkArea(const FPlatformRect& CurrentWindow) c
 {
 	SCOPED_AUTORELEASE_POOL;
 
-	TSharedRef<FMacScreen> Screen = FindScreenBySlatePosition(CurrentWindow.Left, CurrentWindow.Top);
+	FMacScreenRef Screen = FindScreenBySlatePosition(CurrentWindow.Left, CurrentWindow.Top);
 
 	const NSRect VisibleFrame = Screen->VisibleFramePixels;
 
@@ -488,7 +488,7 @@ void FMacApplication::DeferEvent(NSObject* Object)
 
 		if (DeferredEvent.Type == NSEventTypeKeyDown)
 		{
-			// In UE4 the main window rather than key window is the current active window in Slate, so the main window may be the one we want to send immKeyDown to,
+			// In Unreal the main window rather than key window is the current active window in Slate, so the main window may be the one we want to send immKeyDown to,
 			// for example in case of search text edit fields in context menus.
 			NSWindow* MainWindow = [NSApp mainWindow];
 			FCocoaWindow* IMMWindow = [MainWindow isKindOfClass:[FCocoaWindow class]] ? (FCocoaWindow*)MainWindow : DeferredEvent.Window;
@@ -587,7 +587,7 @@ void FMacApplication::DeferEvent(NSObject* Object)
 						{
 							OnWindowDidResize(Window.ToSharedRef());
 						}
-					}, @[ NSDefaultRunLoopMode, UE4ResizeEventMode, UE4ShowEventMode, UE4FullscreenEventMode ], true);
+					}, @[ NSDefaultRunLoopMode, UnrealResizeEventMode, UnrealShowEventMode, UnrealFullscreenEventMode ], true);
 				}
 				return;
 			}
@@ -905,7 +905,7 @@ void FMacApplication::ProcessMouseMovedEvent(const FDeferredMacEvent& Event, TSh
 		FVector2D HighPrecisionMousePos = MacCursor->GetPosition();
 
 		// Find the visible frame of the screen the cursor is currently on.
-		TSharedRef<FMacScreen> Screen = FindScreenBySlatePosition(HighPrecisionMousePos.X, HighPrecisionMousePos.Y);
+		FMacScreenRef Screen = FindScreenBySlatePosition(HighPrecisionMousePos.X, HighPrecisionMousePos.Y);
 		NSRect VisibleFrame = Screen->VisibleFramePixels;
 
 		// Under OS X we disassociate the cursor and mouse position during hi-precision mouse input.
@@ -1249,6 +1249,9 @@ bool FMacApplication::OnWindowDestroyed(TSharedRef<FMacWindow> DestroyedWindow)
 	FCocoaWindow* WindowHandle = DestroyedWindow->GetWindowHandle();
 	const bool bDestroyingMainWindow = DestroyedWindow == ActiveWindow;
 
+	const bool bAllowMainWindow = WindowHandle.AllowMainWindow;
+	const EWindowType WindowType =WindowHandle.Type;
+    
 	if (bDestroyingMainWindow)
 	{
 		OnWindowActivationChanged(DestroyedWindow, EWindowActivation::Deactivate);
@@ -1274,7 +1277,7 @@ bool FMacApplication::OnWindowDestroyed(TSharedRef<FMacWindow> DestroyedWindow)
 
 	TSharedPtr<FMacWindow> WindowToActivate;
 
-	if (bDestroyingMainWindow)
+	if (bDestroyingMainWindow || DestroyedWindow->GetWindowHandle().Type == EWindowType::Menu)
 	{
 		FScopeLock Lock(&WindowsMutex);
 		// Figure out which window will now become active and let Slate know without waiting for Cocoa events.
@@ -1293,8 +1296,42 @@ bool FMacApplication::OnWindowDestroyed(TSharedRef<FMacWindow> DestroyedWindow)
 
 	if (WindowToActivate.IsValid())
 	{
-		WindowToActivate->SetWindowFocus();
+		if (bAllowMainWindow)
+		{
+			WindowToActivate->SetWindowFocus();
+		}
+		
+		FCocoaWindow* ActivateWindowHandle = WindowToActivate->GetWindowHandle();
+		bool bActivateAllowMainWindow = ActivateWindowHandle.AllowMainWindow;
+				
+		if (WindowType == EWindowType::Menu && bActivateAllowMainWindow)
+		{
+			// For some reason when submenus are getting closed a main window is getting activated rather then the previous menu.  I think a
+			// better solution would be to investigate the ordering of Windows[], or possibly just enumerating the NSWindows via z-order.
+			// I'm worried about the consequences of that kind of change so I'm opting for this since it seems less risky.  We count all
+			// the open menus and only activate a normal window if the menu closing is the last one.
+
+			int32 NumMenus=0;
+			for (int32 Index = 0; Index < Windows.Num(); ++Index)
+			{
+				TSharedPtr<FMacWindow> IsMenuWindowRef = Windows[Index];
+				if (IsMenuWindowRef.IsValid())
+				{
+					if (IsMenuWindowRef->GetWindowHandle().Type == EWindowType::Menu)
+					{
+						++NumMenus;
+					}
+				}
 			}
+			
+			if (NumMenus<=0)
+			{
+				GameThreadCall(^{
+					OnWindowActivationChanged(WindowToActivate.ToSharedRef(), EWindowActivation::Activate);
+				}, @[ NSDefaultRunLoopMode, UnrealResizeEventMode, UnrealShowEventMode, UnrealFullscreenEventMode, UnrealCloseEventMode ], true);
+			}
+		}
+	}
 
 	MessageHandler->OnCursorSet();
 
@@ -1612,7 +1649,7 @@ void FMacApplication::ConditionallyUpdateModifierKeys(const FDeferredMacEvent& E
 	}
 }
 
-void FMacApplication::HandleModifierChange(NSUInteger NewModifierFlags, NSUInteger FlagsShift, NSUInteger UE4Shift, EMacModifierKeys TranslatedCode)
+void FMacApplication::HandleModifierChange(NSUInteger NewModifierFlags, NSUInteger FlagsShift, NSUInteger UEShift, EMacModifierKeys TranslatedCode)
 {
 	const bool CurrentPressed = (CurrentModifierFlags & FlagsShift) != 0;
 	const bool NewPressed = (NewModifierFlags & FlagsShift) != 0;
@@ -1620,12 +1657,12 @@ void FMacApplication::HandleModifierChange(NSUInteger NewModifierFlags, NSUInteg
 	{
 		if (NewPressed)
 		{
-			ModifierKeysFlags |= 1 << UE4Shift;
+			ModifierKeysFlags |= 1 << UEShift;
 			MessageHandler->OnKeyDown(TranslatedCode, 0, false);
 		}
 		else
 		{
-			ModifierKeysFlags &= ~(1 << UE4Shift);
+			ModifierKeysFlags &= ~(1 << UEShift);
 			MessageHandler->OnKeyUp(TranslatedCode, 0, false);
 		}
 	}
@@ -1692,7 +1729,7 @@ void FMacApplication::SetForceFeedbackChannelValues(int32 ControllerId, const FF
 	{
 		if (InputDevice.IsValid())
 		{
-			// Mirrored from the Window's impl: "Ideally, we would want to use 
+			// Mirrored from the Window's impl: "Ideally, we would want to use
 			// GetHapticDevice instead but they're not implemented for SteamController"
 			if (InputDevice->IsGamepadAttached())
 			{
@@ -1727,26 +1764,26 @@ void FMacApplication::UpdateScreensArray()
 	MainThreadCall(^{
 		SCOPED_AUTORELEASE_POOL;
 		FScopeLock Lock(&GAllScreensMutex);
-		AllScreens.Empty();
+		GAllScreens.Empty();
 		NSArray* Screens = [NSScreen screens];
 		for (NSScreen* Screen in Screens)
 		{
-			AllScreens.Add(MakeShareable(new FMacScreen(Screen)));
+			GAllScreens.Add(MakeShareable(new FMacScreen(Screen)));
 		}
 	}, NSDefaultRunLoopMode, true);
 
 	FScopeLock Lock(&GAllScreensMutex);
 
 	NSRect WholeWorkspace = {{0, 0}, {0, 0}};
-	for (TSharedRef<FMacScreen> CurScreen : AllScreens)
+	for (FMacScreenRef& CurScreen : GAllScreens)
 	{
 		WholeWorkspace = NSUnionRect(WholeWorkspace, CurScreen->Frame);
 	}
 
 	const bool bUseHighDPIMode = FPlatformApplicationMisc::IsHighDPIModeEnabled();
 
-	TArray<TSharedRef<FMacScreen>> SortedScreens;
-	for (TSharedRef<FMacScreen> CurScreen : AllScreens)
+	TArray<FMacScreenRef> SortedScreens;
+	for (FMacScreenRef& CurScreen : GAllScreens)
 	{
 		CurScreen->Frame.origin.y = CurScreen->FramePixels.origin.y = WholeWorkspace.origin.y + WholeWorkspace.size.height - CurScreen->Frame.size.height - CurScreen->Frame.origin.y;
 		CurScreen->VisibleFrame.origin.y = CurScreen->VisibleFramePixels.origin.y = WholeWorkspace.origin.y + WholeWorkspace.size.height - CurScreen->VisibleFrame.size.height - CurScreen->VisibleFrame.origin.y;
@@ -1754,11 +1791,11 @@ void FMacApplication::UpdateScreensArray()
 		SortedScreens.Add(CurScreen);
 	}
 
-	SortedScreens.Sort([](const TSharedRef<FMacScreen>& A, const TSharedRef<FMacScreen>& B) -> bool { return A->Frame.origin.x < B->Frame.origin.x; });
+	SortedScreens.Sort([](const FMacScreenRef& A, const FMacScreenRef& B) -> bool { return A->Frame.origin.x < B->Frame.origin.x; });
 
 	for (int32 Index = 0; Index < SortedScreens.Num(); ++Index)
 	{
-		TSharedRef<FMacScreen> CurScreen = SortedScreens[Index];
+		FMacScreenRef& CurScreen = SortedScreens[Index];
 		const float DPIScaleFactor = bUseHighDPIMode ? CurScreen->Screen.backingScaleFactor : 1.0f;
 		if (DPIScaleFactor != 1.0f)
 		{
@@ -1769,7 +1806,7 @@ void FMacApplication::UpdateScreensArray()
 
 			for (int32 OtherIndex = Index + 1; OtherIndex < SortedScreens.Num(); ++OtherIndex)
 			{
-				TSharedRef<FMacScreen> OtherScreen = SortedScreens[OtherIndex];
+				FMacScreenRef& OtherScreen = SortedScreens[OtherIndex];
 				const float DiffFrame = (OtherScreen->Frame.origin.x - CurScreen->Frame.origin.x) * DPIScaleFactor;
 				const float DiffVisibleFrame = (OtherScreen->VisibleFrame.origin.x - CurScreen->VisibleFrame.origin.x) * DPIScaleFactor;
 				OtherScreen->FramePixels.origin.x = CurScreen->FramePixels.origin.x + DiffFrame;
@@ -1778,17 +1815,17 @@ void FMacApplication::UpdateScreensArray()
 		}
 	}
 
-	SortedScreens.Sort([](const TSharedRef<FMacScreen>& A, const TSharedRef<FMacScreen>& B) -> bool { return A->Frame.origin.y < B->Frame.origin.y; });
+	SortedScreens.Sort([](const FMacScreenRef& A, const FMacScreenRef& B) -> bool { return A->Frame.origin.y < B->Frame.origin.y; });
 
 	for (int32 Index = 0; Index < SortedScreens.Num(); ++Index)
 	{
-		TSharedRef<FMacScreen> CurScreen = SortedScreens[Index];
+		FMacScreenRef& CurScreen = SortedScreens[Index];
 		const float DPIScaleFactor = bUseHighDPIMode ? CurScreen->Screen.backingScaleFactor : 1.0f;
 		if (DPIScaleFactor != 1.0f)
 		{
 			for (int32 OtherIndex = Index + 1; OtherIndex < SortedScreens.Num(); ++OtherIndex)
 			{
-				TSharedRef<FMacScreen> OtherScreen = SortedScreens[OtherIndex];
+				FMacScreenRef& OtherScreen = SortedScreens[OtherIndex];
 				const float DiffFrame = (OtherScreen->Frame.origin.y - CurScreen->Frame.origin.y) * DPIScaleFactor;
 				const float DiffVisibleFrame = (OtherScreen->VisibleFrame.origin.y - CurScreen->VisibleFrame.origin.y) * DPIScaleFactor;
 				OtherScreen->FramePixels.origin.y = CurScreen->FramePixels.origin.y + DiffFrame;
@@ -1798,10 +1835,10 @@ void FMacApplication::UpdateScreensArray()
 	}
 
 	// The primary screen needs to be at (0,0), so we need to offset all screen origins by its position
-	TSharedRef<FMacScreen> PrimaryScreen = AllScreens[0];
+	FMacScreenRef& PrimaryScreen = GAllScreens[0];
 	const FVector2D FrameOffset(PrimaryScreen->Frame.origin.x, PrimaryScreen->Frame.origin.y);
 	const FVector2D FramePixelsOffset(PrimaryScreen->FramePixels.origin.x, PrimaryScreen->FramePixels.origin.y);
-	for (TSharedRef<FMacScreen> CurScreen : AllScreens)
+	for (FMacScreenRef& CurScreen : GAllScreens)
 	{
 		CurScreen->Frame.origin.x -= FrameOffset.X;
 		CurScreen->Frame.origin.y -= FrameOffset.Y;
@@ -1818,8 +1855,8 @@ FVector2D FMacApplication::CalculateScreenOrigin(NSScreen* Screen)
 {
 	NSRect WholeWorkspace = {{0, 0}, {0, 0}};
 	NSRect ScreenFrame = {{0, 0}, {0, 0}};
-	GAllScreensMutex.Lock();
-	for (TSharedRef<FMacScreen> CurScreen : AllScreens)
+	FScopeLock Lock(&GAllScreensMutex);
+	for (FMacScreenRef& CurScreen : GAllScreens)
 	{
 		WholeWorkspace = NSUnionRect(WholeWorkspace, CurScreen->FramePixels);
 		if (Screen == CurScreen->Screen)
@@ -1827,7 +1864,6 @@ FVector2D FMacApplication::CalculateScreenOrigin(NSScreen* Screen)
 			ScreenFrame = CurScreen->FramePixels;
 		}
 	}
-	GAllScreensMutex.Unlock();
 	return FVector2D(ScreenFrame.origin.x, WholeWorkspace.size.height - ScreenFrame.size.height - ScreenFrame.origin.y);
 }
 
@@ -1835,17 +1871,17 @@ float FMacApplication::GetPrimaryScreenBackingScaleFactor()
 {
 	FScopeLock Lock(&GAllScreensMutex);
 	const bool bUseHighDPIMode = FPlatformApplicationMisc::IsHighDPIModeEnabled();
-	return bUseHighDPIMode ? AllScreens[0]->Screen.backingScaleFactor : 1.0f;
+	return bUseHighDPIMode ? GAllScreens[0]->Screen.backingScaleFactor : 1.0f;
 }
 
-TSharedRef<FMacScreen> FMacApplication::FindScreenBySlatePosition(float X, float Y)
+FMacScreenRef FMacApplication::FindScreenBySlatePosition(float X, float Y)
 {
 	NSPoint Point = NSMakePoint(X, Y);
 
 	FScopeLock Lock(&GAllScreensMutex);
 
-	TSharedRef<FMacScreen> TargetScreen = AllScreens[0];
-	for (TSharedRef<FMacScreen> Screen : AllScreens)
+	FMacScreenRef TargetScreen = GAllScreens[0];
+	for (FMacScreenRef& Screen : GAllScreens)
 	{
 		if (NSPointInRect(Point, Screen->FramePixels))
 		{
@@ -1857,14 +1893,14 @@ TSharedRef<FMacScreen> FMacApplication::FindScreenBySlatePosition(float X, float
 	return TargetScreen;
 }
 
-TSharedRef<FMacScreen> FMacApplication::FindScreenByCocoaPosition(float X, float Y)
+FMacScreenRef FMacApplication::FindScreenByCocoaPosition(float X, float Y)
 {
 	NSPoint Point = NSMakePoint(X, Y);
 
 	FScopeLock Lock(&GAllScreensMutex);
 
-	TSharedRef<FMacScreen> TargetScreen = AllScreens[0];
-	for (TSharedRef<FMacScreen> Screen : AllScreens)
+	FMacScreenRef TargetScreen = GAllScreens[0];
+	for (FMacScreenRef& Screen : GAllScreens)
 	{
 		if (NSPointInRect(Point, Screen->Screen.frame))
 		{
@@ -1878,7 +1914,7 @@ TSharedRef<FMacScreen> FMacApplication::FindScreenByCocoaPosition(float X, float
 
 FVector2D FMacApplication::ConvertSlatePositionToCocoa(float X, float Y)
 {
-	TSharedRef<FMacScreen> Screen = FindScreenBySlatePosition(X, Y);
+	FMacScreenRef Screen = FindScreenBySlatePosition(X, Y);
 	const bool bUseHighDPIMode = FPlatformApplicationMisc::IsHighDPIModeEnabled();
 	const float DPIScaleFactor = bUseHighDPIMode ? Screen->Screen.backingScaleFactor : 1.0f;
 	const FVector2D OffsetOnScreen = FVector2D(X - Screen->FramePixels.origin.x, Screen->FramePixels.origin.y + Screen->FramePixels.size.height - Y) / DPIScaleFactor;
@@ -1887,7 +1923,7 @@ FVector2D FMacApplication::ConvertSlatePositionToCocoa(float X, float Y)
 
 FVector2D FMacApplication::ConvertCocoaPositionToSlate(float X, float Y)
 {
-	TSharedRef<FMacScreen> Screen = FindScreenByCocoaPosition(X, Y);
+	FMacScreenRef Screen = FindScreenByCocoaPosition(X, Y);
 	const bool bUseHighDPIMode = FPlatformApplicationMisc::IsHighDPIModeEnabled();
 	const float DPIScaleFactor = bUseHighDPIMode ? Screen->Screen.backingScaleFactor : 1.0f;
 	const FVector2D OffsetOnScreen = FVector2D(X - Screen->Screen.frame.origin.x, Screen->Screen.frame.origin.y + Screen->Screen.frame.size.height - Y) * DPIScaleFactor;
@@ -1896,7 +1932,7 @@ FVector2D FMacApplication::ConvertCocoaPositionToSlate(float X, float Y)
 
 CGPoint FMacApplication::ConvertSlatePositionToCGPoint(float X, float Y)
 {
-	TSharedRef<FMacScreen> Screen = FindScreenBySlatePosition(X, Y);
+	FMacScreenRef Screen = FindScreenBySlatePosition(X, Y);
 	const bool bUseHighDPIMode = FPlatformApplicationMisc::IsHighDPIModeEnabled();
 	const float DPIScaleFactor = bUseHighDPIMode ? Screen->Screen.backingScaleFactor : 1.0f;
 	const FVector2D OffsetOnScreen = FVector2D(X - Screen->FramePixels.origin.x, Y - Screen->FramePixels.origin.y) / DPIScaleFactor;
@@ -2019,7 +2055,7 @@ unichar FMacApplication::TranslateKeyCodeToUniCode(uint32 KeyCode, uint32 Modifi
 	// Some just don't work as expected
 	switch(KeyCode)
 	{
-		case kVK_PageUp:	return NSPageUpFunctionKey; 
+		case kVK_PageUp:	return NSPageUpFunctionKey;
 		case kVK_PageDown:	return NSPageDownFunctionKey;
 		case kVK_End:		return NSEndFunctionKey;
 		case kVK_Home:		return NSHomeFunctionKey;
@@ -2128,7 +2164,7 @@ void FMacApplication::CloseQueuedWindows()
 				[Window close];
 				[Window release];
 			}
-		}, UE4CloseEventMode, true);
+		}, UnrealCloseEventMode, true);
 
 		CocoaWindowsToClose.Empty();
 	}
@@ -2150,7 +2186,7 @@ void FMacApplication::InvalidateTextLayouts()
 				}
 			}
 
-		}, UE4IMEEventMode, true);
+		}, UnrealIMEEventMode, true);
 
 		WindowsRequiringTextInvalidation.Empty();
 	}
@@ -2174,8 +2210,7 @@ void FDisplayMetrics::RebuildDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
 
 	FScopeLock Lock(&GAllScreensMutex);
 
-	const TArray<TSharedRef<FMacScreen>>& AllScreens = FMacApplication::GetAllScreens();
-	TSharedRef<FMacScreen> PrimaryScreen = AllScreens[0];
+	FMacScreenRef& PrimaryScreen = GAllScreens[0];
 
 	const NSRect ScreenFrame = PrimaryScreen->FramePixels;
 	const NSRect VisibleFrame = PrimaryScreen->VisibleFramePixels;
@@ -2187,7 +2222,7 @@ void FDisplayMetrics::RebuildDisplayMetrics(FDisplayMetrics& OutDisplayMetrics)
 	OutDisplayMetrics.MonitorInfo.Empty();
 
 	NSRect WholeWorkspace = {{0,0},{0,0}};
-	for (TSharedRef<FMacScreen> Screen : AllScreens)
+	for (FMacScreenRef& Screen : GAllScreens)
 	{
 		WholeWorkspace = NSUnionRect(WholeWorkspace, Screen->FramePixels);
 
@@ -2359,7 +2394,7 @@ void FMacApplication::OnAccessibleEventRaised(TSharedRef<IAccessibleWidget> Widg
 					// will never be received by OSX for whatever reason
 					NSAccessibilityPostNotificationWithUserInfo(NSApp.mainWindow, NSAccessibilityAnnouncementRequestedNotification, AnnouncementInfo);
 					AccessibilityAnnouncementDelayTimer = Nil;
-				}];	
+				}];
 			}, NSDefaultRunLoopMode, false);
 			break;
 		}

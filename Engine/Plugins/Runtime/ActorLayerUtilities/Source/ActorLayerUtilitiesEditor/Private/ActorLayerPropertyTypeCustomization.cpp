@@ -36,7 +36,7 @@ void FActorLayerPropertyTypeCustomization::CustomizeHeader(TSharedRef<IPropertyH
 	.MaxDesiredWidth(TOptional<float>())
 	[
 		SNew(SDropTarget)
-		.OnDrop(this, &FActorLayerPropertyTypeCustomization::OnDrop)
+		.OnDropped(this, &FActorLayerPropertyTypeCustomization::OnDrop)
 		.OnAllowDrop(this, &FActorLayerPropertyTypeCustomization::OnVerifyDrag)
 		.OnIsRecognized(this, &FActorLayerPropertyTypeCustomization::OnVerifyDrag)
 		[
@@ -94,8 +94,8 @@ FText GetLayerDescription(ULayer* InLayer)
 {
 	check(InLayer);
 
-	int32 TotalNumActors = Algo::Accumulate(InLayer->ActorStats, 0, [](int32 Total, const FLayerActorStats& InStats){ return Total + InStats.Total; });
-	return FText::Format(LOCTEXT("LayerNameFormat", "{0} ({1} {1}|plural(one=Actor, other=Actors))"), FText::FromName(InLayer->LayerName), TotalNumActors);
+	int32 TotalNumActors = Algo::Accumulate(InLayer->GetActorStats(), 0, [](int32 Total, const FLayerActorStats& InStats){ return Total + InStats.Total; });
+	return FText::Format(LOCTEXT("LayerNameFormat", "{0} ({1} {1}|plural(one=Actor, other=Actors))"), FText::FromName(InLayer->GetLayerName()), TotalNumActors);
 }
 
 FText FActorLayerPropertyTypeCustomization::GetLayerText() const
@@ -164,7 +164,7 @@ TSharedRef<SWidget> FActorLayerPropertyTypeCustomization::OnGetLayerMenu()
 					FText(),
 					FSlateIcon(FEditorStyle::GetStyleSetName(), "Layer.Icon16x"),
 					FUIAction(
-						FExecuteAction::CreateSP(this, &FActorLayerPropertyTypeCustomization::AssignLayer, Layer->LayerName)
+						FExecuteAction::CreateSP(this, &FActorLayerPropertyTypeCustomization::AssignLayer, Layer->GetLayerName())
 					)
 				);
 			}
@@ -205,11 +205,12 @@ void FActorLayerPropertyTypeCustomization::OpenLayerBrowser()
 	LevelEditorModule.GetLevelEditorTabManager()->TryInvokeTab(FTabId("LevelEditorLayerBrowser"));
 }
 
-FReply FActorLayerPropertyTypeCustomization::OnDrop(TSharedPtr<FDragDropOperation> InDragDrop)
+FReply FActorLayerPropertyTypeCustomization::OnDrop(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent)
 {
-	if (InDragDrop.IsValid() && InDragDrop->IsOfType<FLayersDragDropOp>())
+	TSharedPtr<FLayersDragDropOp> LayersDragDropOp = InDragDropEvent.GetOperationAs<FLayersDragDropOp>();
+	if (LayersDragDropOp)
 	{
-		const TArray<FName>& LayerNames = StaticCastSharedPtr<FLayersDragDropOp>(InDragDrop)->Layers;
+		const TArray<FName>& LayerNames = LayersDragDropOp->Layers;
 		if (ensure(LayerNames.Num() == 1))
 		{
 			AssignLayer(LayerNames[0]);

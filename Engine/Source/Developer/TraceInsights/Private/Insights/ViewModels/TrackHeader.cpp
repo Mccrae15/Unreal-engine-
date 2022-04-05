@@ -4,7 +4,7 @@
 
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
-#include "Styling/CoreStyle.h"
+#include "Styling/AppStyle.h"
 
 // Insights
 #include "Insights/Common/PaintUtils.h"
@@ -23,7 +23,8 @@
 FTrackHeader::FTrackHeader(FBaseTimingTrack& InParentTrack)
 	: ParentTrack(InParentTrack)
 	, WhiteBrush(FInsightsStyle::Get().GetBrush("WhiteBrush"))
-	, Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+	, Font(FAppStyle::Get().GetFontStyle("SmallFont"))
+	, FontScale(1.0f)
 {
 	Reset();
 }
@@ -45,19 +46,14 @@ void FTrackHeader::Reset()
 
 void FTrackHeader::UpdateSize()
 {
-	//ParentTrack.GetName()
 	const TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
-	const float TextWidth = FontMeasureService->Measure(ParentTrack.GetName(), Font).X;
+	const float TextWidth = FontMeasureService->Measure(ParentTrack.GetName(), Font, FontScale).X / FontScale;
 
 	Width = TextWidth + 4.0f;
 	if (bCanBeCollapsed)
 	{
 		Width += 9.0f;
 	}
-	//if (ParentTrack.IsSelected())
-	//{
-	//	Width += 9.0f;
-	//}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -122,7 +118,7 @@ void FTrackHeader::Draw(const ITimingTrackDrawContext& Context) const
 	{
 		FDrawContext& DrawContext = Context.GetDrawContext();
 
-		// Draw a horizontal line between timelines (top line of a track).
+		// Draw a horizontal line between tracks (top line of a track).
 		DrawContext.DrawBox(0.0f, ParentTrack.GetPosY(), Context.GetViewport().GetWidth(), 1.0f, WhiteBrush, FLinearColor(0.05f, 0.05f, 0.05f, 1.0f));
 
 		DrawInternal(Context, false);

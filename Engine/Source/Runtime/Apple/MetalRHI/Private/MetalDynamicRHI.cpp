@@ -51,20 +51,15 @@ FGraphicsPipelineStateRHIRef FMetalDynamicRHI::RHICreateGraphicsPipelineState(co
 		if(!State->Compile())
 		{
 			// Compilation failures are propagated up to the caller.
-			State->DoNoDeferDelete();
-			delete State;
+			State->Delete();
 			return nullptr;
 		}
 
 		State->VertexDeclaration = ResourceCast(Initializer.BoundShaderState.VertexDeclarationRHI);
 		State->VertexShader = ResourceCast(Initializer.BoundShaderState.VertexShaderRHI);
 		State->PixelShader = ResourceCast(Initializer.BoundShaderState.PixelShaderRHI);
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		State->HullShader = ResourceCast(Initializer.BoundShaderState.HullShaderRHI);
-		State->DomainShader = ResourceCast(Initializer.BoundShaderState.DomainShaderRHI);
-#endif // PLATFORM_SUPPORTS_TESSELLATION_SHADERS
 #if PLATFORM_SUPPORTS_GEOMETRY_SHADERS
-		State->GeometryShader = ResourceCast(Initializer.BoundShaderState.GeometryShaderRHI);
+		State->GeometryShader = ResourceCast(Initializer.BoundShaderState.GetGeometryShader());
 #endif // PLATFORM_SUPPORTS_GEOMETRY_SHADERS
 
 		State->DepthStencilState = ResourceCast(Initializer.DepthStencilState);
@@ -110,12 +105,10 @@ void FMetalDynamicRHI::RHIUnlockStagingBuffer(FRHIStagingBuffer* StagingBuffer)
 #pragma mark - Metal Dynamic RHI Resource Transition Methods -
 
 
-void FMetalDynamicRHI::RHICreateTransition(FRHITransition* Transition, ERHIPipeline SrcPipelines, ERHIPipeline DstPipelines, ERHICreateTransitionFlags CreateFlags, TArrayView<const FRHITransitionInfo> Infos)
+void FMetalDynamicRHI::RHICreateTransition(FRHITransition* Transition, const FRHITransitionCreateInfo& CreateInfo)
 {
-	checkf(FMath::IsPowerOfTwo(uint32(SrcPipelines)) && FMath::IsPowerOfTwo(uint32(DstPipelines)), TEXT("Support for multi-pipe resources is not yet implemented."));
-
 	// Construct the data in-place on the transition instance
-	new (Transition->GetPrivateData<FMetalTransitionData>()) FMetalTransitionData(SrcPipelines, DstPipelines, CreateFlags, Infos);
+	new (Transition->GetPrivateData<FMetalTransitionData>()) FMetalTransitionData(CreateInfo.SrcPipelines, CreateInfo.DstPipelines, CreateInfo.Flags, CreateInfo.TransitionInfos);
 }
 
 void FMetalDynamicRHI::RHIReleaseTransition(FRHITransition* Transition)

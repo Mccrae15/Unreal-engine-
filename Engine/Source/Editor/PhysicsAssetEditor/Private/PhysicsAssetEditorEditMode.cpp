@@ -31,7 +31,6 @@ FPhysicsAssetEditorEditMode::FPhysicsAssetEditorEditMode()
 	, PhysicsAssetEditor_TranslateSpeed(0.25f)
 	, PhysicsAssetEditor_RotateSpeed(1.0f * (PI / 180.0f))
 	, PhysicsAssetEditor_LightRotSpeed(0.22f)
-	, SimGrabCheckDistance(500.0f)
 	, SimHoldDistanceChangeDelta(20.0f)
 	, SimMinHoldDistance(10.0f)
 	, SimGrabMoveSpeed(1.0f)
@@ -346,16 +345,16 @@ bool FPhysicsAssetEditorEditMode::InputDelta(FEditorViewportClient* InViewportCl
 
 				SelectedObject.WidgetTM = SharedData->EditorSkelComp->GetPrimitiveTransform(BoneTM, SelectedObject.Index, SelectedObject.PrimitiveType, SelectedObject.PrimitiveIndex, BoneScale);
 
-				if(InViewportClient->GetWidgetMode() == FWidget::WM_Translate || InViewportClient->GetWidgetMode() == FWidget::WM_Rotate)
+				if(InViewportClient->GetWidgetMode() == UE::Widget::WM_Translate || InViewportClient->GetWidgetMode() == UE::Widget::WM_Rotate)
 				{
-					if (InViewportClient->GetWidgetMode() == FWidget::WM_Translate)
+					if (InViewportClient->GetWidgetMode() == UE::Widget::WM_Translate)
 					{
 						FVector DragToUse = GetLocalTranslation(InViewportClient, InDrag, SelectedObject.WidgetTM);
 						FVector Dir = SelectedObject.WidgetTM.InverseTransformVector(DragToUse.GetSafeNormal());
 						FVector DragVec = Dir * DragToUse.Size() / BoneScale;
 						SelectedObject.ManipulateTM.AddToTranslation(DragVec);
 					}
-					else if (InViewportClient->GetWidgetMode() == FWidget::WM_Rotate)
+					else if (InViewportClient->GetWidgetMode() == UE::Widget::WM_Rotate)
 					{
 						FRotator RotatorToUse = GetLocalRotation(InViewportClient, InRot, SelectedObject.WidgetTM);
 
@@ -397,7 +396,7 @@ bool FPhysicsAssetEditorEditMode::InputDelta(FEditorViewportClient* InViewportCl
 						SelectedObject.ManipulateTM.SetIdentity();
 					}
 				}
-				else if (InViewportClient->GetWidgetMode() == FWidget::WM_Scale)
+				else if (InViewportClient->GetWidgetMode() == UE::Widget::WM_Scale)
 				{
 					ModifyPrimitiveSize(SelectedObject.Index, SelectedObject.PrimitiveType, SelectedObject.PrimitiveIndex, InScale);
 				}
@@ -419,14 +418,14 @@ bool FPhysicsAssetEditorEditMode::InputDelta(FEditorViewportClient* InViewportCl
 				float BoneScale = 1.f;
 				SelectedObject.WidgetTM = SharedData->GetConstraintMatrix(SelectedObject.Index, EConstraintFrame::Frame2, 1.f);
 
-				if (InViewportClient->GetWidgetMode() == FWidget::WM_Translate)
+				if (InViewportClient->GetWidgetMode() == UE::Widget::WM_Translate)
 				{
 					FVector DragToUse = GetLocalTranslation(InViewportClient, InDrag, SelectedObject.WidgetTM);
 					FVector Dir = SelectedObject.WidgetTM.InverseTransformVector(DragToUse.GetSafeNormal());
 					FVector DragVec = Dir * DragToUse.Size() / BoneScale;
 					SelectedObject.ManipulateTM.AddToTranslation(DragVec);
 				}
-				else if (InViewportClient->GetWidgetMode() == FWidget::WM_Rotate)
+				else if (InViewportClient->GetWidgetMode() == UE::Widget::WM_Rotate)
 				{
 					FRotator RotatorToUse = GetLocalRotation(InViewportClient, InRot, SelectedObject.WidgetTM);
 
@@ -548,11 +547,11 @@ void FPhysicsAssetEditorEditMode::DrawHUD(FEditorViewportClient* ViewportClient,
 	}
 	else if(SharedData->GetSelectedConstraint() != nullptr)
 	{
-		if (ViewportClient->GetWidgetMode() == FWidget::WM_Translate)
+		if (ViewportClient->GetWidgetMode() == UE::Widget::WM_Translate)
 		{
 			TextItem.Text = LOCTEXT("SingleMove", "Hold ALT to move a single reference frame");
 		}
-		else if (ViewportClient->GetWidgetMode() == FWidget::WM_Rotate)
+		else if (ViewportClient->GetWidgetMode() == UE::Widget::WM_Rotate)
 		{
 			TextItem.Text = LOCTEXT("SingleRotate", "Hold ALT to rotate single reference frame");
 		}
@@ -615,14 +614,14 @@ bool FPhysicsAssetEditorEditMode::UsesTransformWidget() const
 	return ShouldDrawWidget();
 }
 
-bool FPhysicsAssetEditorEditMode::UsesTransformWidget(FWidget::EWidgetMode CheckMode) const
+bool FPhysicsAssetEditorEditMode::UsesTransformWidget(UE::Widget::EWidgetMode CheckMode) const
 {
-	if (SharedData->GetSelectedConstraint() && CheckMode == FWidget::WM_Scale)
+	if (SharedData->GetSelectedConstraint() && CheckMode == UE::Widget::WM_Scale)
 	{
 		return false;
 	}
 
-	return ShouldDrawWidget() && (CheckMode == FWidget::WM_Scale || CheckMode == FWidget::WM_Translate || CheckMode == FWidget::WM_Rotate);
+	return ShouldDrawWidget() && (CheckMode == UE::Widget::WM_Scale || CheckMode == UE::Widget::WM_Translate || CheckMode == UE::Widget::WM_Rotate || CheckMode == UE::Widget::WM_None);
 }
 
 bool FPhysicsAssetEditorEditMode::GetCustomDrawingCoordinateSystem(FMatrix& InMatrix, void* InData)
@@ -829,7 +828,7 @@ bool FPhysicsAssetEditorEditMode::SimMousePress(FEditorViewportClient* InViewpor
 
 	const FViewportClick Click(View, InViewportClient, EKeys::Invalid, IE_Released, Viewport->GetMouseX(), Viewport->GetMouseY());
 	FHitResult Result(1.f);
-	bool bHit = SharedData->EditorSkelComp->LineTraceComponent(Result, Click.GetOrigin(), Click.GetOrigin() + Click.GetDirection() * SimGrabCheckDistance, FCollisionQueryParams(NAME_None, true));
+	bool bHit = SharedData->EditorSkelComp->LineTraceComponent(Result, Click.GetOrigin(), Click.GetOrigin() + Click.GetDirection() * SharedData->EditorOptions->InteractionDistance, FCollisionQueryParams(NAME_None, true));
 
 	SharedData->LastClickPos = Click.GetClickPos();
 	SharedData->LastClickOrigin = Click.GetOrigin();
@@ -870,7 +869,7 @@ bool FPhysicsAssetEditorEditMode::SimMousePress(FEditorViewportClient* InViewpor
 
 				FMatrix	InvViewMatrix = View->ViewMatrices.GetInvViewMatrix();
 
-				SimGrabMinPush = SimMinHoldDistance - (Result.Time * SimGrabCheckDistance);
+				SimGrabMinPush = SimMinHoldDistance - (Result.Time * SharedData->EditorOptions->InteractionDistance);
 
 				SimGrabLocation = Result.Location;
 				SimGrabX = InvViewMatrix.GetUnitAxis(EAxis::X);

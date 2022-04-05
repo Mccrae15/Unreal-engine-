@@ -17,13 +17,13 @@
 #include "DisplayNodes/SequencerTrackNode.h"
 #include "DisplayNodes/SequencerObjectBindingNode.h"
 #include "CommonMovieSceneTools.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Styling/StyleColors.h"
 
 FTrackAreaSlot::FTrackAreaSlot(const TSharedPtr<SSequencerTrackLane>& InSlotContent)
+	: TAlignmentWidgetSlotMixin<FTrackAreaSlot>(HAlign_Fill, VAlign_Top)
 {
 	TrackLane = InSlotContent;
-	
-	HAlignment = HAlign_Fill;
-	VAlignment = VAlign_Top;
 
 	this->AttachWidget(
 		SNew(SWeakWidget)
@@ -72,7 +72,7 @@ void SSequencerTrackArea::Empty()
 void SSequencerTrackArea::AddTrackSlot(const TSharedRef<FSequencerDisplayNode>& InNode, const TSharedPtr<SSequencerTrackLane>& InSlot)
 {
 	TrackSlots.Add(InNode, InSlot);
-	Children.Add(new FTrackAreaSlot(InSlot));
+	Children.AddSlot(FTrackAreaSlot::FSlotArguments(MakeUnique<FTrackAreaSlot>(InSlot)));
 }
 
 
@@ -198,13 +198,13 @@ int32 SSequencerTrackArea::OnPaint(const FPaintArgs& Args, const FGeometry& Allo
 
 
 		// Draw drop target
-		if (DroppedNode.IsValid() && TrackSlots.Contains(DroppedNode.Pin()))
+		if (DroppedNode.IsValid() && DroppedNode.Pin()->GetType() != ESequencerNode::Spacer && TrackSlots.Contains(DroppedNode.Pin()))
 		{
 			TSharedPtr<SSequencerTrackLane> TrackLane = TrackSlots.FindRef(DroppedNode.Pin()).Pin();
 			
 			FGeometry NodeGeometry = TrackLane.Get()->GetCachedGeometry();
 
-			FLinearColor DashColor = bAllowDrop ? FLinearColor::Green: FLinearColor::Red;
+			FSlateColor DashColor = bAllowDrop ? FStyleColors::AccentBlue : FStyleColors::Error;
 
 			const FSlateBrush* HorizontalBrush = FEditorStyle::GetBrush("WideDash.Horizontal");
 			const FSlateBrush* VerticalBrush = FEditorStyle::GetBrush("WideDash.Vertical");
@@ -228,7 +228,7 @@ int32 SSequencerTrackArea::OnPaint(const FPaintArgs& Args, const FGeometry& Allo
 				AllottedGeometry.ToPaintGeometry(FVector2D(DropMinX, TrackLane.Get()->GetPhysicalPosition()), FVector2D(DropMaxX-DropMinX, HorizontalBrush->ImageSize.Y)),
 				HorizontalBrush,
 				ESlateDrawEffect::None,
-				DashColor);
+				DashColor.GetSpecifiedColor());
 
 			// Bottom
 			FSlateDrawElement::MakeBox(
@@ -237,7 +237,7 @@ int32 SSequencerTrackArea::OnPaint(const FPaintArgs& Args, const FGeometry& Allo
 				AllottedGeometry.ToPaintGeometry(FVector2D(DropMinX, TrackLane.Get()->GetPhysicalPosition() + (TrackLane.Get()->GetCachedGeometry().GetLocalSize().Y - HorizontalBrush->ImageSize.Y)), FVector2D(DropMaxX-DropMinX, HorizontalBrush->ImageSize.Y)),
 				HorizontalBrush,
 				ESlateDrawEffect::None,
-				DashColor);
+				DashColor.GetSpecifiedColor());
 
 			// Left
 			FSlateDrawElement::MakeBox(
@@ -246,7 +246,7 @@ int32 SSequencerTrackArea::OnPaint(const FPaintArgs& Args, const FGeometry& Allo
 				AllottedGeometry.ToPaintGeometry(FVector2D(DropMinX, TrackLane.Get()->GetPhysicalPosition()), FVector2D(VerticalBrush->ImageSize.X, TrackLane.Get()->GetCachedGeometry().GetLocalSize().Y)),
 				VerticalBrush,
 				ESlateDrawEffect::None,
-				DashColor);
+				DashColor.GetSpecifiedColor());
 
 			// Right
 			FSlateDrawElement::MakeBox(
@@ -255,7 +255,7 @@ int32 SSequencerTrackArea::OnPaint(const FPaintArgs& Args, const FGeometry& Allo
 				AllottedGeometry.ToPaintGeometry(FVector2D(DropMaxX - VerticalBrush->ImageSize.X, TrackLane.Get()->GetPhysicalPosition()), FVector2D(VerticalBrush->ImageSize.X, TrackLane.Get()->GetCachedGeometry().GetLocalSize().Y)),
 				VerticalBrush,
 				ESlateDrawEffect::None,
-				DashColor);
+				DashColor.GetSpecifiedColor());
 		}
 	}
 
@@ -516,16 +516,27 @@ FReply SSequencerTrackArea::OnDragOver(const FGeometry& MyGeometry, const FDragD
 	bAllowDrop = false;
 	DropFrameRange.Reset();
 
-	if (DroppedNode.IsValid() && DroppedNode.Pin()->GetType() == ESequencerNode::Track && Sequencer.IsValid())
+	if (DroppedNode.IsValid() && Sequencer.IsValid())
 	{
-		TSharedPtr<FSequencerTrackNode> TrackNode = StaticCastSharedPtr<FSequencerTrackNode>(DroppedNode.Pin());
-		UMovieSceneTrack* Track = TrackNode->GetTrack();
-		int32 RowIndex = TrackNode->GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::SubTrack ? TrackNode->GetRowIndex() : 0;
-
+		UMovieSceneTrack* Track = nullptr;
+		int32 RowIndex = 0;
 		FGuid ObjectBinding;
-		TSharedPtr<FSequencerObjectBindingNode> ObjectBindingNode = TrackNode->FindParentObjectBindingNode();
-		if (ObjectBindingNode.IsValid())
+
+		if (DroppedNode.Pin()->GetType() == ESequencerNode::Track)
 		{
+			TSharedPtr<FSequencerTrackNode> TrackNode = StaticCastSharedPtr<FSequencerTrackNode>(DroppedNode.Pin());
+			Track = TrackNode->GetTrack();
+			RowIndex = TrackNode->GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::SubTrack ? TrackNode->GetRowIndex() : 0;
+
+			TSharedPtr<FSequencerObjectBindingNode> ObjectBindingNode = TrackNode->FindParentObjectBindingNode();
+			if (ObjectBindingNode.IsValid())
+			{
+				ObjectBinding = ObjectBindingNode->GetObjectBinding();
+			}
+		}
+		else if (DroppedNode.Pin()->GetType() == ESequencerNode::Object) 
+		{
+			TSharedPtr<FSequencerObjectBindingNode> ObjectBindingNode = StaticCastSharedPtr<FSequencerObjectBindingNode>(DroppedNode.Pin());
 			ObjectBinding = ObjectBindingNode->GetObjectBinding();
 		}
 
@@ -569,16 +580,27 @@ FReply SSequencerTrackArea::OnDrop(const FGeometry& MyGeometry, const FDragDropE
 
 	DroppedNode = PinnedTreeView->HitTestNode(MyGeometry.AbsoluteToLocal(DragDropEvent.GetScreenSpacePosition()).Y);
 
-	if (DroppedNode.IsValid() && DroppedNode.Pin()->GetType() == ESequencerNode::Track && Sequencer.IsValid())
+	if (DroppedNode.IsValid() && Sequencer.IsValid())
 	{
-		TSharedPtr<FSequencerTrackNode> TrackNode = StaticCastSharedPtr<FSequencerTrackNode>(DroppedNode.Pin());
-		UMovieSceneTrack* Track = TrackNode->GetTrack();
-		int32 RowIndex = TrackNode->GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::SubTrack ? TrackNode->GetRowIndex() : 0;
-
+		UMovieSceneTrack* Track = nullptr;
+		int32 RowIndex = 0;
 		FGuid ObjectBinding;
-		TSharedPtr<FSequencerObjectBindingNode> ObjectBindingNode = TrackNode->FindParentObjectBindingNode();
-		if (ObjectBindingNode.IsValid())
+
+		if (DroppedNode.Pin()->GetType() == ESequencerNode::Track)
 		{
+			TSharedPtr<FSequencerTrackNode> TrackNode = StaticCastSharedPtr<FSequencerTrackNode>(DroppedNode.Pin());
+			Track = TrackNode->GetTrack();
+			RowIndex = TrackNode->GetSubTrackMode() == FSequencerTrackNode::ESubTrackMode::SubTrack ? TrackNode->GetRowIndex() : 0;
+
+			TSharedPtr<FSequencerObjectBindingNode> ObjectBindingNode = TrackNode->FindParentObjectBindingNode();
+			if (ObjectBindingNode.IsValid())
+			{
+				ObjectBinding = ObjectBindingNode->GetObjectBinding();
+			}
+		}
+		else if (DroppedNode.Pin()->GetType() == ESequencerNode::Object) 
+		{
+			TSharedPtr<FSequencerObjectBindingNode> ObjectBindingNode = StaticCastSharedPtr<FSequencerObjectBindingNode>(DroppedNode.Pin());
 			ObjectBinding = ObjectBindingNode->GetObjectBinding();
 		}
 

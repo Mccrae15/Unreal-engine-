@@ -1,13 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "NiagaraDataInterfaceIntRenderTarget2D.h"
 #include "NiagaraShader.h"
-#include "NiagaraEmitterInstanceBatcher.h"
 #include "NiagaraSettings.h"
 #include "NiagaraSystemInstance.h"
 #include "NiagaraRenderer.h"
-#if WITH_EDITOR
+#if NIAGARA_COMPUTEDEBUG_ENABLED
 #include "NiagaraGpuComputeDebug.h"
 #endif
+#include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraStats.h"
 
 #include "ShaderParameterUtils.h"
@@ -31,7 +31,7 @@ namespace NDIIntRenderTarget2DLocal
 	static const FName SetValueFunctionName("SetValue");
 	static const FName AtomicAddFunctionName("AtomicAdd");
 	//static const FName AtomicAndFunctionName("AtomicAnd");
-	//static const FName AtomicCASFunctionName("AtomicCompareAndExchange");
+	static const FName AtomicCASFunctionName("AtomicCompareAndExchange");
 	//static const FName AtomicCSFunctionName("AtomicCompareStore");
 	//static const FName AtomicExchangeFunctionName("AtomicExchange");
 	static const FName AtomicMaxFunctionName("AtomicMax");
@@ -74,6 +74,8 @@ struct FNDIIntRenderTarget2DInstanceData_RenderThread
 	bool bPreviewRenderTarget = false;
 	FVector2D PreviewDisplayRange = FVector2D(0.0f, 255.0f);
 #endif
+	bool bWroteThisFrame = false;
+	bool bReadThisFrame = false;
 
 	FSamplerStateRHIRef SamplerStateRHI;
 	FTextureRHIRef TextureRHI;
@@ -105,21 +107,35 @@ struct FNDIIntRenderTarget2DProxy : public FNiagaraDataInterfaceProxyRW
 
 	virtual void PostSimulate(FRHICommandList& RHICmdList, const FNiagaraDataInterfaceArgs& Context) override
 	{
-		if (FNDIIntRenderTarget2DInstanceData_RenderThread* InstanceData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID))
+		FNDIIntRenderTarget2DInstanceData_RenderThread* InstanceData = SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
+		if ( InstanceData == nullptr )
 		{
+			return;
+		}
+
+		// We only need to transfer this frame if it was written to.
+		// If also read then we need to notify that the texture is important for the simulation
+		// We also assume the texture is important for rendering, without discovering renderer bindings we don't really know
+		if (InstanceData->bWroteThisFrame)
+		{
+			Context.ComputeDispatchInterface->MultiGPUResourceModified(RHICmdList, InstanceData->TextureRHI, InstanceData->bReadThisFrame, true);
+		}
+
+		InstanceData->bWroteThisFrame = true;
+		InstanceData->bReadThisFrame = true;
+
 #if NIAGARA_COMPUTEDEBUG_ENABLED && WITH_EDITORONLY_DATA
-			if (InstanceData->bPreviewRenderTarget)
+		if (InstanceData->bPreviewRenderTarget)
+		{
+			if (FNiagaraGpuComputeDebug* GpuComputeDebug = Context.ComputeDispatchInterface->GetGpuComputeDebug())
 			{
-				if (FNiagaraGpuComputeDebug* GpuComputeDebug = Context.Batcher->GetGpuComputeDebug())
+				if (FRHITexture* RHITexture = InstanceData->TextureRHI)
 				{
-					if (FRHITexture* RHITexture = InstanceData->TextureRHI)
-					{
-						GpuComputeDebug->AddTexture(RHICmdList, Context.SystemInstanceID, SourceDIName, RHITexture, InstanceData->PreviewDisplayRange);
-					}
+					GpuComputeDebug->AddTexture(RHICmdList, Context.SystemInstanceID, SourceDIName, RHITexture, InstanceData->PreviewDisplayRange);
 				}
 			}
-#endif
 		}
+#endif
 	}
 
 	virtual FIntVector GetElementCount(FNiagaraSystemInstanceID SystemInstanceID) const override
@@ -156,11 +172,14 @@ public:
 		FNDIIntRenderTarget2DInstanceData_RenderThread* InstanceData = DataInterfaceProxy->SystemInstancesToProxyData_RT.Find(Context.SystemInstanceID);
 		check(InstanceData);
 
-		const FVector4 TextureSizeAndInvSize(InstanceData->Size.X, InstanceData->Size.Y, 1.0f / float(InstanceData->Size.X), 1.0f / float(InstanceData->Size.Y));
+		const FVector4f TextureSizeAndInvSize(InstanceData->Size.X, InstanceData->Size.Y, 1.0f / float(InstanceData->Size.X), 1.0f / float(InstanceData->Size.Y));
 		SetShaderValue(RHICmdList, ComputeShaderRHI, TextureSizeAndInvSizeParam, TextureSizeAndInvSize);
 	
 		if (TextureUAVParam.IsUAVBound())
 		{
+			InstanceData->bWroteThisFrame = true;
+			InstanceData->bReadThisFrame = true;
+
 			FRHIUnorderedAccessView* OutputUAV = InstanceData->UnorderedAccessViewRHI;
 			if (OutputUAV != nullptr)
 			{
@@ -168,7 +187,7 @@ public:
 			}
 			else
 			{
-				OutputUAV = Context.Batcher->GetEmptyUAVFromPool(RHICmdList, EPixelFormat::PF_A16B16G16R16, ENiagaraEmptyUAVType::Texture2D);
+				OutputUAV = Context.ComputeDispatchInterface->GetEmptyUAVFromPool(RHICmdList, EPixelFormat::PF_A16B16G16R16, ENiagaraEmptyUAVType::Texture2D);
 			}
 
 			RHICmdList.SetUAVParameter(ComputeShaderRHI, TextureUAVParam.GetUAVIndex(), OutputUAV);
@@ -292,7 +311,28 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 #endif
 	}
 	////static const FName AtomicAndFunctionName("AtomicAnd");
-	////static const FName AtomicCASFunctionName("AtomicCompareAndExchange");
+	{
+		FNiagaraFunctionSignature& Sig = OutFunctions.AddDefaulted_GetRef();
+		Sig.Name = NDIIntRenderTarget2DLocal::AtomicCASFunctionName;
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("RenderTarget")));
+		Sig.Inputs.Add_GetRef(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Execute"))).SetValue(true);
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("PixelX")));
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("PixelY")));
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Comparison Value")));
+		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Value")));
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Original Value")));
+		Sig.bHidden = true;
+		Sig.bExperimental = true;
+		Sig.bMemberFunction = true;
+		Sig.bRequiresExecPin = true;
+		Sig.bRequiresContext = false;
+		Sig.bWriteFunction = true;
+		Sig.bSupportsCPU = false;
+		Sig.bSupportsGPU = true;
+#if WITH_EDITORONLY_DATA
+		Sig.Description = LOCTEXT("AtomicCASFunctionDesc", "Compares the pixel value against the comparison value, if they are equal the value is replaced.  Original Value is the pixel value before the operation completes.  This opertion is thread safe.");
+#endif
+	}
 	////static const FName AtomicCSFunctionName("AtomicCompareStore");
 	////static const FName AtomicExchangeFunctionName("AtomicExchange");
 	{
@@ -361,6 +401,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetFunctions(TArray<FNiagaraFunctio
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("RenderTarget")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Width")));
 		Sig.Inputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("Height")));
+		Sig.Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetBoolDef(), TEXT("Success")));
 		Sig.ModuleUsageBitmask = EmitterSystemOnlyBitmask;
 		Sig.bExperimental = true;
 		Sig.bMemberFunction = true;
@@ -411,11 +452,11 @@ void UNiagaraDataInterfaceIntRenderTarget2D::GetVMExternalFunction(const FVMExte
 	Super::GetVMExternalFunction(BindingInfo, InstanceData, OutFunc);
 	if (BindingInfo.Name == NDIIntRenderTarget2DLocal::GetSizeFunctionName)
 	{
-		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMContext& Context) { VMGetSize(Context); });
+		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { VMGetSize(Context); });
 	}
 	else if (BindingInfo.Name == NDIIntRenderTarget2DLocal::SetSizeFunctionName)
 	{
-		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMContext& Context) { VMSetSize(Context); });
+		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { VMSetSize(Context); });
 	}
 }
 
@@ -462,15 +503,10 @@ bool UNiagaraDataInterfaceIntRenderTarget2D::CopyToInternal(UNiagaraDataInterfac
 #if WITH_EDITORONLY_DATA
 bool UNiagaraDataInterfaceIntRenderTarget2D::AppendCompileHash(FNiagaraCompileHashVisitor* InVisitor) const
 {
-	if (!Super::AppendCompileHash(InVisitor))
-		return false;
-
 	bool bSuccess = Super::AppendCompileHash(InVisitor);
 	FSHAHash Hash = GetShaderFileHash(NDIIntRenderTarget2DLocal::TemplateShaderFile, EShaderPlatform::SP_PCD3D_SM5);
 	InVisitor->UpdateString(TEXT("NiagaraDataInterfaceExportTemplateHLSLSource"), Hash.ToString());
 	return bSuccess;
-
-	return true;
 }
 
 void UNiagaraDataInterfaceIntRenderTarget2D::GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL)
@@ -492,7 +528,7 @@ bool UNiagaraDataInterfaceIntRenderTarget2D::GetFunctionHLSL(const FNiagaraDataI
 		(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::SetValueFunctionName) ||
 		(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::AtomicAddFunctionName) ||
 		//(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::AtomicAndFunctionName) ||
-		//(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::AtomicCASFunctionName) ||
+		(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::AtomicCASFunctionName) ||
 		//(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::AtomicCSFunctionName) ||
 		//(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::AtomicExchangeFunctionName) ||
 		(FunctionInfo.DefinitionName == NDIIntRenderTarget2DLocal::AtomicMaxFunctionName) ||
@@ -561,7 +597,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::DestroyPerInstanceData(void* PerIns
 
 	FNDIIntRenderTarget2DProxy* RT_Proxy = GetProxyAs<FNDIIntRenderTarget2DProxy>();
 	ENQUEUE_RENDER_COMMAND(FNiagaraDIDestroyInstanceData) (
-		[RT_Proxy, InstanceID=SystemInstance->GetId(), Batcher=SystemInstance->GetBatcher()](FRHICommandListImmediate& CmdList)
+		[RT_Proxy, InstanceID=SystemInstance->GetId()](FRHICommandListImmediate& CmdList)
 		{
 			RT_Proxy->SystemInstancesToProxyData_RT.Remove(InstanceID);
 		}
@@ -569,7 +605,7 @@ void UNiagaraDataInterfaceIntRenderTarget2D::DestroyPerInstanceData(void* PerIns
 
 	// Make sure to clear out the reference to the render target if we created one.
 	extern int32 GNiagaraReleaseResourceOnRemove;
-	UTextureRenderTarget2D* ExistingRenderTarget = nullptr;
+	decltype(ManagedRenderTargets)::ValueType ExistingRenderTarget = nullptr;
 	if ( ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && GNiagaraReleaseResourceOnRemove)
 	{
 		ExistingRenderTarget->ReleaseResource();
@@ -657,7 +693,7 @@ bool UNiagaraDataInterfaceIntRenderTarget2D::UpdateInstanceTexture(FNiagaraSyste
 				InstanceData->TargetTexture = UserTargetTexture;
 
 				extern int32 GNiagaraReleaseResourceOnRemove;
-				UTextureRenderTarget2D* ExistingRenderTarget = nullptr;
+				decltype(ManagedRenderTargets)::ValueType ExistingRenderTarget = nullptr;
 				if (ManagedRenderTargets.RemoveAndCopyValue(SystemInstance->GetId(), ExistingRenderTarget) && GNiagaraReleaseResourceOnRemove)
 				{
 					ExistingRenderTarget->ReleaseResource();
@@ -709,20 +745,20 @@ bool UNiagaraDataInterfaceIntRenderTarget2D::UpdateInstanceTexture(FNiagaraSyste
 	return bHasChanged;
 }
 
-void UNiagaraDataInterfaceIntRenderTarget2D::VMGetSize(FVectorVMContext& Context)
+void UNiagaraDataInterfaceIntRenderTarget2D::VMGetSize(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIIntRenderTarget2DInstanceData_GameThread> InstData(Context);
 	FNDIOutputParam<int32> OutSizeX(Context);
 	FNDIOutputParam<int32> OutSizeY(Context);
 	
-	for (int32 i=0; i < Context.NumInstances; ++i)
+	for (int32 i=0; i < Context.GetNumInstances(); ++i)
 	{
 		OutSizeX.SetAndAdvance(InstData->Size.X);
 		OutSizeY.SetAndAdvance(InstData->Size.Y);
 	}
 }
 
-void UNiagaraDataInterfaceIntRenderTarget2D::VMSetSize(FVectorVMContext& Context)
+void UNiagaraDataInterfaceIntRenderTarget2D::VMSetSize(FVectorVMExternalFunctionContext& Context)
 {
 	VectorVM::FUserPtrHandler<FNDIIntRenderTarget2DInstanceData_GameThread> InstData(Context);
 	FNDIInputParam<int32> InSizeX(Context);
@@ -730,11 +766,11 @@ void UNiagaraDataInterfaceIntRenderTarget2D::VMSetSize(FVectorVMContext& Context
 	FNDIOutputParam<FNiagaraBool> OutSuccess(Context);
 
 	extern float GNiagaraRenderTargetResolutionMultiplier;
-	for (int32 i=0; i < Context.NumInstances; ++i)
+	for (int32 i=0; i < Context.GetNumInstances(); ++i)
 	{
 		const int SizeX = InSizeX.GetAndAdvance();
 		const int SizeY = InSizeY.GetAndAdvance();
-		const bool bSuccess = (InstData.Get() != nullptr && Context.NumInstances == 1 && SizeX >= 0 && SizeY >= 0);
+		const bool bSuccess = (InstData.Get() != nullptr && Context.GetNumInstances() == 1 && SizeX >= 0 && SizeY >= 0);
 		OutSuccess.SetAndAdvance(bSuccess);
 		if (bSuccess)
 		{

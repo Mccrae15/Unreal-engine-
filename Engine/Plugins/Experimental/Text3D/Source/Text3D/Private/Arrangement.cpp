@@ -2,6 +2,8 @@
 
 #include "Arrangement.h"
 
+using namespace UE::Geometry;
+
 FArrangement::FArrangement(const FAxisAlignedBox2f& BoundsHint)
     : PointHash(static_cast<double>(BoundsHint.MaxDim()) / 64, -1)
 {
@@ -78,7 +80,7 @@ bool FArrangement::insert_segment(FVector2d A, FVector2d B, double Tol)
     }
 
     // handle tiny-segment case
-    double SegLenSq = A.DistanceSquared(B);
+    double SegLenSq = DistanceSquared(A, B);
     if (SegLenSq <= VertexSnapTol*VertexSnapTol)
     {
         // seg is too short and was already on an existing vertex; just consider that vertex to be the inserted segment
@@ -244,7 +246,7 @@ int FArrangement::find_existing_vertex(FVector2d Pt)
 
 int FArrangement::find_nearest_vertex(FVector2d Pt, double SearchRadius, int IgnoreVID)
 {
-    auto FuncDistSq = [&](int B) { return Pt.DistanceSquared(Graph.GetVertex(B)); };
+    auto FuncDistSq = [&](int B) { return DistanceSquared(Pt, Graph.GetVertex(B)); };
     auto FuncIgnore = [&](int VID) { return VID == IgnoreVID; };
     TPair<int, double> found = (IgnoreVID == -1) ? PointHash.FindNearestInRadius(Pt, SearchRadius, FuncDistSq)
                                                  : PointHash.FindNearestInRadius(Pt, SearchRadius, FuncDistSq, FuncIgnore);
@@ -259,8 +261,8 @@ bool FArrangement::find_intersecting_edges(FVector2d A, FVector2d B, TArray<FInt
 {
     int num_hits = 0;
     FVector2d x = FVector2d::Zero(), y = FVector2d::Zero();
-    FVector2d EPerp = (B - A).Perp();
-    EPerp.Normalize();
+    FVector2d EPerp = UE::Geometry::PerpCW(B - A);
+    UE::Geometry::Normalize(EPerp);
     for (int EID : Graph.EdgeIndices())
     {
         Graph.GetEdgeV(EID, x, y);

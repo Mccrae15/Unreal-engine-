@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreTypes.h"
+#include "ProfilingDebugging/TagTrace.h"
 
 #ifndef ALLOW_LOW_LEVEL_MEM_TRACKER_IN_TEST
 	#define ALLOW_LOW_LEVEL_MEM_TRACKER_IN_TEST 0
@@ -10,11 +11,11 @@
 
 // LLM is currently incompatible with PLATFORM_USES_FIXED_GMalloc_CLASS, because LLM is activated way too early
 // Inability to use LLM with PLATFORM_USES_FIXED_GMalloc_CLASS is not a problem, because fixed GMalloc is only used in Test/Shipping builds
-#define LLM_ENABLED_ON_PLATFORM PLATFORM_SUPPORTS_LLM && !PLATFORM_USES_FIXED_GMalloc_CLASS
+#define LLM_ENABLED_ON_PLATFORM (PLATFORM_SUPPORTS_LLM && !PLATFORM_USES_FIXED_GMalloc_CLASS)
 
 // *** enable/disable LLM here ***
 #if !defined(ENABLE_LOW_LEVEL_MEM_TRACKER) || !LLM_ENABLED_ON_PLATFORM 
-	#define ENABLE_LOW_LEVEL_MEM_TRACKER LLM_ENABLED_ON_PLATFORM && !UE_BUILD_SHIPPING && (!UE_BUILD_TEST || ALLOW_LOW_LEVEL_MEM_TRACKER_IN_TEST) && WITH_ENGINE && 1
+	#define ENABLE_LOW_LEVEL_MEM_TRACKER (LLM_ENABLED_ON_PLATFORM && !UE_BUILD_SHIPPING && (!UE_BUILD_TEST || ALLOW_LOW_LEVEL_MEM_TRACKER_IN_TEST) && WITH_ENGINE && 1)
 #endif
 
 #if ENABLE_LOW_LEVEL_MEM_TRACKER
@@ -38,6 +39,8 @@
 // Enable stat tags if: (1) Stats are allowed or (2) Asset tags are allowed (asset tags use the stat macros to record asset scopes)
 #define LLM_ENABLED_STAT_TAGS LLM_ALLOW_STATS || LLM_ALLOW_ASSETS_TAGS
 
+#include "Containers/Array.h"
+#include "Containers/ArrayView.h"
 #include "HAL/CriticalSection.h"
 #include "Templates/AlignmentTemplates.h"
 #include "Templates/UnrealTemplate.h"
@@ -141,11 +144,15 @@ enum class ELLMTagSet : uint8
 	macro(BackupOOMMemoryPool,					"OOMBackupPool",				GET_STATFNAME(STAT_OOMBackupPoolLLM),						GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(GenericPlatformMallocCrash,			"GenericPlatformMallocCrash",	GET_STATFNAME(STAT_GenericPlatformMallocCrashLLM),			GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(GenericPlatformMallocCrashPlatform,	"GenericPlatformMallocCrash",	GET_STATFNAME(STAT_GenericPlatformMallocCrashPlatformLLM),	GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
+	/* Any low-level memory that is not tracked in any other category. */ \
 	macro(EngineMisc,							"EngineMisc",					GET_STATFNAME(STAT_EngineMiscLLM),							GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
+	/* Any task kicked off from the task graph that doesn't have its own category. Should be fairly low. */ \
 	macro(TaskGraphTasksMisc,					"TaskGraphMiscTasks",			GET_STATFNAME(STAT_TaskGraphTasksMiscLLM),					GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
+	macro(LinearAllocator,						"LinearAllocator",				GET_STATFNAME(STAT_LinearAllocatorLLM),						NAME_None,										-1)\
 	macro(Audio,								"Audio",						GET_STATFNAME(STAT_AudioLLM),								GET_STATFNAME(STAT_AudioSummaryLLM),			-1)\
 	macro(AudioMisc,							"AudioMisc",					GET_STATFNAME(STAT_AudioMiscLLM),							GET_STATFNAME(STAT_AudioSummaryLLM),			ELLMTag::Audio)\
 	macro(AudioSoundWaves,						"AudioSoundWaves",				GET_STATFNAME(STAT_AudioSoundWavesLLM),						GET_STATFNAME(STAT_AudioSummaryLLM),			ELLMTag::Audio)\
+	macro(AudioSoundWaveProxies,				"AudioSoundWaveProxies",		GET_STATFNAME(STAT_AudioSoundWaveProxiesLLM),				GET_STATFNAME(STAT_AudioSummaryLLM),			ELLMTag::Audio)\
 	macro(AudioMixer,							"AudioMixer",					GET_STATFNAME(STAT_AudioMixerLLM),							GET_STATFNAME(STAT_AudioSummaryLLM),			ELLMTag::Audio)\
 	macro(AudioMixerPlugins,					"AudioMixerPlugins",			GET_STATFNAME(STAT_AudioMixerPluginsLLM),					GET_STATFNAME(STAT_AudioSummaryLLM),			ELLMTag::Audio)\
 	macro(AudioPrecache,						"AudioPrecache",				GET_STATFNAME(STAT_AudioPrecacheLLM),						GET_STATFNAME(STAT_AudioSummaryLLM),			ELLMTag::Audio)\
@@ -169,8 +176,13 @@ enum class ELLMTagSet : uint8
 	macro(SceneRender,							"SceneRender",					GET_STATFNAME(STAT_SceneRenderLLM),							GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(RHIMisc,								"RHIMisc",						GET_STATFNAME(STAT_RHIMiscLLM),								GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(AsyncLoading,							"AsyncLoading",					GET_STATFNAME(STAT_AsyncLoadingLLM),						GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
+    /* UObject is a catch-all for all Engine and game memory that is not tracked in any other category. */ \
+	/* it includes any class inherited from UObject and anything that is serialized by that class including properties. */ \
+	/* Note that this stat doesn't include Mesh or Animation data which are tracked separately. */ \
+	/* It is correlated to the number of Objects placed in the Level. */ \
 	macro(UObject,								"UObject",						GET_STATFNAME(STAT_UObjectLLM),								GET_STATFNAME(STAT_UObjectSummaryLLM),			-1)\
 	macro(Animation,							"Animation",					GET_STATFNAME(STAT_AnimationLLM),							GET_STATFNAME(STAT_AnimationSummaryLLM),		-1)\
+	/* This is the UStaticMesh class and related properties, and does not include the actual mesh data. */ \
 	macro(StaticMesh,							"StaticMesh",					GET_STATFNAME(STAT_StaticMeshLLM),							GET_STATFNAME(STAT_StaticMeshSummaryLLM),		ELLMTag::Meshes)\
 	macro(Materials,							"Materials",					GET_STATFNAME(STAT_MaterialsLLM),							GET_STATFNAME(STAT_MaterialsSummaryLLM),		-1)\
 	macro(Particles,							"Particles",					GET_STATFNAME(STAT_ParticlesLLM),							GET_STATFNAME(STAT_ParticlesSummaryLLM),		-1)\
@@ -193,6 +205,12 @@ enum class ELLMTagSet : uint8
 	macro(ChaosLandscape,						"ChaosLandscape",				GET_STATFNAME(STAT_ChaosLandscapeLLM),						GET_STATFNAME(STAT_ChaosSummaryLLM),			ELLMTag::Physics)\
 	macro(ChaosTrimesh,							"ChaosTrimesh",					GET_STATFNAME(STAT_ChaosTrimeshLLM),						GET_STATFNAME(STAT_ChaosSummaryLLM),			ELLMTag::Physics)\
 	macro(ChaosConvex,							"ChaosConvex",					GET_STATFNAME(STAT_ChaosConvexLLM),							GET_STATFNAME(STAT_ChaosSummaryLLM),			ELLMTag::Physics)\
+	macro(ChaosScene,							"ChaosScene",					GET_STATFNAME(STAT_ChaosSceneLLM),							GET_STATFNAME(STAT_ChaosSummaryLLM),			ELLMTag::Physics)\
+	macro(ChaosUpdate,							"ChaosUpdate",					GET_STATFNAME(STAT_ChaosUpdateLLM),							GET_STATFNAME(STAT_ChaosSummaryLLM),			ELLMTag::Physics)\
+	macro(ChaosActor,							"ChaosActor",					GET_STATFNAME(STAT_ChaosActorLLM),							GET_STATFNAME(STAT_ChaosSummaryLLM),			ELLMTag::Physics)\
+	macro(ChaosBody,							"ChaosBody",					GET_STATFNAME(STAT_ChaosBodyLLM),							GET_STATFNAME(STAT_ChaosSummaryLLM),			ELLMTag::Physics)\
+	macro(ChaosConstraint,						"ChaosConstraint",				GET_STATFNAME(STAT_ChaosConstraintLLM),						GET_STATFNAME(STAT_ChaosSummaryLLM),			ELLMTag::Physics)\
+	macro(ChaosMaterial,						"ChaosMaterial",				GET_STATFNAME(STAT_ChaosMaterialLLM),						GET_STATFNAME(STAT_ChaosSummaryLLM),			ELLMTag::Physics)\
 	macro(EnginePreInitMemory,					"EnginePreInit",				GET_STATFNAME(STAT_EnginePreInitLLM),						GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(EngineInitMemory,						"EngineInit",					GET_STATFNAME(STAT_EngineInitLLM),							GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
 	macro(RenderingThreadMemory,				"RenderingThread",				GET_STATFNAME(STAT_RenderingThreadLLM),						GET_STATFNAME(STAT_EngineSummaryLLM),			-1)\
@@ -216,7 +234,7 @@ enum class ELLMTagSet : uint8
 	macro(WMFPlayer,							"WMFPlayer",					GET_STATFNAME(STAT_WMFPlayerLLM),							GET_STATFNAME(STAT_MediaStreamingSummaryLLM),	ELLMTag::MediaStreaming)\
 	macro(PlatformMMIO,							"MMIO",							GET_STATFNAME(STAT_PlatformMMIOLLM),						NAME_None,										-1)\
 	macro(PlatformVM,							"Virtual Memory",				GET_STATFNAME(STAT_PlatformVMLLM),							NAME_None,										-1)\
-	macro(CustomName,							"CustomName",		GET_STATFNAME(STAT_CustomName),								NAME_None,										-1)\
+	macro(CustomName,							"CustomName",					GET_STATFNAME(STAT_CustomName),								NAME_None,										-1)\
 
 /*
  * Enum values to be passed in to LLM_SCOPE() macro
@@ -231,7 +249,7 @@ enum class ELLMTag : LLM_TAG_TYPE
 
 	//------------------------------
 	// Platform tags
-	PlatformTagStart = 100,
+	PlatformTagStart = 108,
 	PlatformTagEnd = 149,
 
 	//------------------------------
@@ -243,10 +261,10 @@ enum class ELLMTag : LLM_TAG_TYPE
 };
 static_assert( ELLMTag::GenericTagCount <= ELLMTag::PlatformTagStart, "too many LLM tags defined"); 
 
-static const uint32 LLM_TAG_COUNT = 256;
-static const uint32 LLM_CUSTOM_TAG_START = (int32)ELLMTag::PlatformTagStart;
-static const uint32 LLM_CUSTOM_TAG_END = (int32)ELLMTag::ProjectTagEnd;
-static const uint32 LLM_CUSTOM_TAG_COUNT = LLM_CUSTOM_TAG_END + 1 - LLM_CUSTOM_TAG_START;
+static constexpr uint32 LLM_TAG_COUNT = 256;
+static constexpr uint32 LLM_CUSTOM_TAG_START = (int32)ELLMTag::PlatformTagStart;
+static constexpr uint32 LLM_CUSTOM_TAG_END = (int32)ELLMTag::ProjectTagEnd;
+static constexpr uint32 LLM_CUSTOM_TAG_COUNT = LLM_CUSTOM_TAG_END + 1 - LLM_CUSTOM_TAG_START;
 
 
 /**
@@ -283,27 +301,30 @@ extern FName LLMGetTagStat(ELLMTag Tag);
 /**
  * LLM scope macros
  */
-#define LLM_SCOPE(Tag)												FLLMScope SCOPE_NAME(Tag, false /* bIsStatTag */, ELLMTagSet::None, ELLMTracker::Default);
-#define LLM_SCOPE_BYNAME(Tag) static FName PREPROCESSOR_JOIN(LLMScope_Name,__LINE__)(Tag);	\
-																	FLLMScope SCOPE_NAME(PREPROCESSOR_JOIN(LLMScope_Name,__LINE__), false /* bIsStatTag */, ELLMTagSet::None, ELLMTracker::Default);
-#define LLM_SCOPE_BYTAG(TagDeclName)								FLLMScope SCOPE_NAME(PREPROCESSOR_JOIN(LLMTagDeclaration_, TagDeclName).GetUniqueName(), false /* bIsStatTag */, ELLMTagSet::None, ELLMTracker::Default);
+#define LLM_SCOPE(Tag)												FLLMScope SCOPE_NAME(Tag, false /* bIsStatTag */, ELLMTagSet::None, ELLMTracker::Default);\
+																	UE_MEMSCOPE(Tag) 
+#define LLM_SCOPE_BYNAME(Tag) 										static FName PREPROCESSOR_JOIN(LLMScope_Name,__LINE__)(Tag);\
+																	FLLMScope SCOPE_NAME(PREPROCESSOR_JOIN(LLMScope_Name,__LINE__), false /* bIsStatTag */, ELLMTagSet::None, ELLMTracker::Default);\
+																	UE_MEMSCOPE(PREPROCESSOR_JOIN(LLMScope_Name,__LINE__));
+#define LLM_SCOPE_BYTAG(TagDeclName)								FLLMScope SCOPE_NAME(PREPROCESSOR_JOIN(LLMTagDeclaration_, TagDeclName).GetUniqueName(), false /* bIsStatTag */, ELLMTagSet::None, ELLMTracker::Default);\
+																	UE_MEMSCOPE(PREPROCESSOR_JOIN(LLMTagDeclaration_,TagDeclName).GetUniqueName());
 #define LLM_PLATFORM_SCOPE(Tag)										FLLMScope SCOPE_NAME(Tag, false /* bIsStatTag */, ELLMTagSet::None, ELLMTracker::Platform);
-#define LLM_PLATFORM_SCOPE_BYNAME(Tag) static FName PREPROCESSOR_JOIN(LLMScope_Name,__LINE__)(Tag); \
+#define LLM_PLATFORM_SCOPE_BYNAME(Tag) 								static FName PREPROCESSOR_JOIN(LLMScope_Name,__LINE__)(Tag);\
 																	FLLMScope SCOPE_NAME(PREPROCESSOR_JOIN(LLMLLMScope_NameScope,__LINE__), false /* bIsStatTag */, ELLMTagSet::None, ELLMTracker::Platform);
 #define LLM_PLATFORM_SCOPE_BYTAG(TagDeclName)						FLLMScope SCOPE_NAME(PREPROCESSOR_JOIN(LLMTagDeclaration_, TagDeclName).GetUniqueName(), false /* bIsStatTag */, ELLMTagSet::None, ELLMTracker::Platform);
 
  /**
  * LLM Pause scope macros
  */
-#define LLM_SCOPED_PAUSE_TRACKING(AllocType) FLLMPauseScope SCOPE_NAME(ELLMTag::Untagged, false /* bIsStatTag */, 0, ELLMTracker::Max, AllocType);
-#define LLM_SCOPED_PAUSE_TRACKING_FOR_TRACKER(Tracker, AllocType) FLLMPauseScope SCOPE_NAME(ELLMTag::Untagged, false /* bIsStatTag */, 0, Tracker, AllocType);
+#define LLM_SCOPED_PAUSE_TRACKING(AllocType) 						FLLMPauseScope SCOPE_NAME(ELLMTag::Untagged, false /* bIsStatTag */, 0, ELLMTracker::Max, AllocType);
+#define LLM_SCOPED_PAUSE_TRACKING_FOR_TRACKER(Tracker, AllocType) 	FLLMPauseScope SCOPE_NAME(ELLMTag::Untagged, false /* bIsStatTag */, 0, Tracker, AllocType);
 #define LLM_SCOPED_PAUSE_TRACKING_WITH_ENUM_AND_AMOUNT(Tag, Amount, Tracker, AllocType) FLLMPauseScope SCOPE_NAME(Tag, false /* bIsStatTag */, Amount, Tracker, AllocType);
 
 /**
  * LLM realloc scope macros. Used when reallocating a pointer and you wish to retain the tagging from the source pointer
  */
-#define LLM_REALLOC_SCOPE(Ptr) FLLMScopeFromPtr SCOPE_NAME(Ptr, ELLMTracker::Default);
-#define LLM_REALLOC_PLATFORM_SCOPE(Ptr) FLLMScopeFromPtr SCOPE_NAME(Ptr, ELLMTracker::Platform);
+#define LLM_REALLOC_SCOPE(Ptr)										FLLMScopeFromPtr SCOPE_NAME(Ptr, ELLMTracker::Default);
+#define LLM_REALLOC_PLATFORM_SCOPE(Ptr)								FLLMScopeFromPtr SCOPE_NAME(Ptr, ELLMTracker::Platform);
 
 /**
  * LLM tag dumping, to help with identifying mis-tagged items. Probably don't want to check in with these in use!
@@ -330,6 +351,22 @@ extern FName LLMGetTagStat(ELLMTag Tag);
 #define LLM_DECLARE_TAG(UniqueNameWithUnderscores) extern FLLMTagDeclaration PREPROCESSOR_JOIN(LLMTagDeclaration_, UniqueNameWithUnderscores)
 #define LLM_DECLARE_TAG_API(UniqueNameWithUnderscores, ModuleAPI) extern ModuleAPI FLLMTagDeclaration PREPROCESSOR_JOIN(LLMTagDeclaration_, UniqueNameWithUnderscores)
 
+/**
+ * The BootStrap versions of LLM_DEFINE_TAG, LLM_SCOPE_BYTAG, and LLM_DECLARE_TAG support use in scopes during global
+ * c++ constructors, before Main. These tags are slightly more expensive (even when LLM is disabled) in all
+ * configurations other than shipping, because they use a function static rather than a global variable.
+ */
+#define LLM_DEFINE_BOOTSTRAP_TAG(UniqueNameWithUnderscores, ...) \
+	FLLMTagDeclaration& PREPROCESSOR_JOIN(GetLLMTagDeclaration_, UniqueNameWithUnderscores)() \
+	{ \
+		static FLLMTagDeclaration PREPROCESSOR_JOIN(LLMTagDeclaration_, UniqueNameWithUnderscores)(TEXT(#UniqueNameWithUnderscores), ##__VA_ARGS__); \
+		return PREPROCESSOR_JOIN(LLMTagDeclaration_, UniqueNameWithUnderscores); \
+	}
+#define LLM_SCOPE_BY_BOOTSTRAP_TAG(TagDeclName) FLLMScope SCOPE_NAME(PREPROCESSOR_JOIN(GetLLMTagDeclaration_, TagDeclName)().GetUniqueName(), false /* bIsStatTag */, ELLMTagSet::None, ELLMTracker::Default);\
+												UE_MEMSCOPE(PREPROCESSOR_JOIN(GetLLMTagDeclaration_,TagDeclName)().GetUniqueName());
+#define LLM_DECLARE_BOOTSTRAP_TAG(UniqueNameWithUnderscores) extern FLLMTagDeclaration& PREPROCESSOR_JOIN(GetLLMTagDeclaration_, UniqueNameWithUnderscores)();
+#define LLM_DECLARE_BOOTSTRAP_TAG_API(UniqueNameWithUnderscores, ModuleAPI) extern ModuleAPI FLLMTagDeclaration& PREPROCESSOR_JOIN(GetLLMTagDeclaration_, UniqueNameWithUnderscores)();
+
 typedef void*(*LLMAllocFunction)(size_t);
 typedef void(*LLMFreeFunction)(void*, size_t);
 
@@ -346,6 +383,7 @@ namespace LLMPrivate
 	class FLLMCsvWriter;
 	class FLLMThreadState;
 	class FLLMTraceWriter;
+	class FLLMCsvProfilerWriter;
 	class FLLMTracker;
 
 	namespace AllocatorPrivate
@@ -389,6 +427,15 @@ namespace LLMPrivate
 				Ptr->~T();
 				Free(Ptr, sizeof(T));
 			}
+		}
+
+		LLMAllocFunction GetPlatformAlloc()
+		{
+			return PlatformAlloc;
+		}
+		LLMFreeFunction GetPlatformFree()
+		{
+			return PlatformFree;
 		}
 
 	private:
@@ -459,7 +506,7 @@ public:
 	// we always start up running, but if the commandline disables us, we will do it later after main
 	// (can't get the commandline early enough in a cross-platform way)
 	void ProcessCommandLine(const TCHAR* CmdLine);
-	
+
 	// Return the total amount of memory being tracked
 	uint64 GetTotalTrackedMemory(ELLMTracker Tracker);
 
@@ -516,6 +563,9 @@ public:
 	// Dump the display name of the current TagData for the given tracker to the output
 	uint64 DumpTag( ELLMTracker Tracker, const char* FileName, int LineNumber );
 
+	// Publishes the active LLM stats in the active frame, useful for single targeted LLM snapshots
+	void PublishDataSingleFrame();
+
 private:
 	FLowLevelMemTracker();
 
@@ -546,6 +596,8 @@ private:
 	void BootstrapTagDatas();
 	/** Called when we have detected enabled in processcommandline, or as late as possible if callers access features that require full initialisation before then */
 	void FinishInitialise();
+	void InitialiseTagDatas_SetLLMTagNames();
+	void InitialiseTagDatas_FinishRegister();
 	void InitialiseTagDatas();
 	void ClearTagDatas();
 	void RegisterTagDeclaration(FLLMTagDeclaration& TagDeclaration);
@@ -566,6 +618,7 @@ private:
 	friend class UE::LLMPrivate::FLLMTracker;
 	friend class UE::LLMPrivate::FLLMThreadState;
 	friend class UE::LLMPrivate::FLLMTraceWriter;
+	friend class UE::LLMPrivate::FLLMCsvProfilerWriter;
 	friend void GlobalRegisterTagDeclaration(FLLMTagDeclaration& TagDeclaration);
 
 	UE::LLMPrivate::FLLMAllocator Allocator;
@@ -596,6 +649,8 @@ private:
 	bool bFullyInitialised;
 	bool bConfigurationComplete;
 	bool bTagAdded;
+	bool bAutoPublish;
+	bool bPublishSingleFrame;
 
 	static FLowLevelMemTracker* TrackerInstance;
 public: // really internal but needs to be visible for LLM_IF_ENABLED macro
@@ -610,41 +665,34 @@ class CORE_API FLLMScope
 public:
 	FLLMScope(FName TagName, bool bIsStatTag, ELLMTagSet InTagSet, ELLMTracker InTracker)
 	{
-		if (FLowLevelMemTracker::bIsDisabled)
+		if (!FLowLevelMemTracker::bIsDisabled)
 		{
-			bEnabled = false;
-			return;
+			Init(TagName, bIsStatTag, InTagSet, InTracker);
 		}
-		Init(TagName, bIsStatTag, InTagSet, InTracker);
 	}
 	FLLMScope(ELLMTag TagEnum, bool bIsStatTag, ELLMTagSet InTagSet, ELLMTracker InTracker)
 	{
-		if (FLowLevelMemTracker::bIsDisabled)
+		if (!FLowLevelMemTracker::bIsDisabled)
 		{
-			bEnabled = false;
-			return;
+			Init(TagEnum, bIsStatTag, InTagSet, InTracker);
 		}
 
-		Init(TagEnum, bIsStatTag, InTagSet, InTracker);
 	}
 
 	FLLMScope(const UE::LLMPrivate::FTagData* TagData, bool bIsStatTag, ELLMTagSet Set, ELLMTracker Tracker)
 	{
-		if (FLowLevelMemTracker::bIsDisabled)
+		if (!FLowLevelMemTracker::bIsDisabled)
 		{
-			bEnabled = false;
-			return;
+			Init(TagData, bIsStatTag, Set, Tracker);
 		}
-		Init(TagData, bIsStatTag, Set, Tracker);
 	}
 
 	~FLLMScope()
 	{
-		if (!bEnabled)
+		if (bEnabled)
 		{
-			return;
+			Destruct();
 		}
-		Destruct();
 	}
 
 protected:
@@ -653,10 +701,10 @@ protected:
 	void Init(const UE::LLMPrivate::FTagData* TagData, bool bIsStatTag, ELLMTagSet InTagSet, ELLMTracker InTracker);
 	void Destruct();
 
-	ELLMTracker Tracker;
-	bool bEnabled;
+	ELLMTracker Tracker{};
+	bool bEnabled = false;
 #if LLM_ALLOW_ASSETS_TAGS
-	bool bIsAssetTag;
+	bool bIsAssetTag = false;
 #endif
 };
 
@@ -698,12 +746,13 @@ public:
 	FLLMTagDeclaration(const TCHAR* InCPPName, const FName InDisplayName=NAME_None, FName InParentTagName = NAME_None, FName InStatName = NAME_None, FName InSummaryStatName = NAME_None);
 	FName GetUniqueName() const { return UniqueName; }
 
-protected:
 	typedef void (*FCreationCallback)(FLLMTagDeclaration&);
+protected:
 
-	static void SetCreationCallback(FCreationCallback InCallback);
-	static FCreationCallback& GetCreationCallback();
-	static FLLMTagDeclaration*& GetList();
+	static void AddCreationCallback(FCreationCallback InCallback);
+	static void ClearCreationCallbacks();
+	static TArrayView<FCreationCallback> GetCreationCallbacks();
+	static FLLMTagDeclaration* GetList();
 
 	void Register();
 
@@ -719,6 +768,7 @@ protected:
 	FLLMTagDeclaration* Next = nullptr;
 
 	friend class FLowLevelMemTracker;
+	friend class FTagTrace;
 };
 
 
@@ -742,5 +792,9 @@ protected:
 	#define LLM_DEFINE_TAG(...)
 	#define LLM_DECLARE_TAG(...)
 	#define LLM_DECLARE_TAG_API(...)
+	#define LLM_DEFINE_BOOTSTRAP_TAG(...)
+	#define LLM_SCOPE_BY_BOOTSTRAP_TAG(...)
+	#define LLM_DECLARE_BOOTSTRAP_TAG(...) 
+	#define LLM_DECLARE_BOOTSTRAP_TAG_API(...)
 
 #endif		// #if ENABLE_LOW_LEVEL_MEM_TRACKER

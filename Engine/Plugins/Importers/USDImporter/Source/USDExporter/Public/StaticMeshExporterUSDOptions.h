@@ -2,8 +2,7 @@
 
 #pragma once
 
-#include "LevelExporterUSDOptions.h"
-#include "UnrealUSDWrapper.h"
+#include "USDAssetOptions.h"
 #include "USDStageOptions.h"
 
 #include "Engine/EngineTypes.h"
@@ -19,14 +18,9 @@ class USDEXPORTER_API UStaticMeshExporterUSDOptions : public UObject
 	GENERATED_BODY()
 
 public:
-	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = USDSettings, meta = ( ShowOnlyInnerProperties ) )
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Stage options", meta = ( ShowOnlyInnerProperties ) )
 	FUsdStageOptions StageOptions;
 
-	/** If true, the mesh data is exported to yet another "payload" file, and referenced via a payload composition arc */
-	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = USDSettings )
-	bool bUsePayload;
-
-	/** USD format to use for exported payload files */
-	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = USDSettings, meta = ( EditCondition = "bUsePayload", GetOptions = "USDExporter.LevelExporterUSDOptions.GetUsdExtensions" ) )
-	FString PayloadFormat;
+	UPROPERTY( EditAnywhere, config, BlueprintReadWrite, Category = "Mesh options", meta = ( ShowOnlyInnerProperties ) )
+	FUsdMeshAssetOptions MeshAssetOptions;
 };

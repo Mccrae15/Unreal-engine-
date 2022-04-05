@@ -99,30 +99,6 @@ protected:
 	TArray<FTransform, InAllocator> Bones;
 };
 
-struct FCompactPoseBoneIndexIterator
-{
-	int32 Index;
-
-	FCompactPoseBoneIndexIterator(int32 InIndex) : Index(InIndex) {}
-
-	FCompactPoseBoneIndexIterator& operator++() { ++Index; return (*this); }
-	bool operator==(FCompactPoseBoneIndexIterator& Rhs) { return Index == Rhs.Index; }
-	bool operator!=(FCompactPoseBoneIndexIterator& Rhs) { return Index != Rhs.Index; }
-	FCompactPoseBoneIndex operator*() const { return FCompactPoseBoneIndex(Index); }
-};
-
-struct FCompactPoseBoneIndexReverseIterator
-{
-	int32 Index;
-
-	FCompactPoseBoneIndexReverseIterator(int32 InIndex) : Index(InIndex) {}
-
-	FCompactPoseBoneIndexReverseIterator& operator++() { --Index; return (*this); }
-	bool operator==(FCompactPoseBoneIndexReverseIterator& Rhs) { return Index == Rhs.Index; }
-	bool operator!=(FCompactPoseBoneIndexReverseIterator& Rhs) { return Index != Rhs.Index; }
-	FCompactPoseBoneIndex operator*() const { return FCompactPoseBoneIndex(Index); }
-};
-
 template <typename InAllocator>
 struct FBaseCompactPose : FBasePose<FCompactPoseBoneIndex, InAllocator>
 {
@@ -162,6 +138,12 @@ public:
 	{
 		checkSlow(BoneContainer && BoneContainer->IsValid());
 		return *BoneContainer;
+	}
+
+	FBoneContainer& GetBoneContainer()
+	{
+		checkSlow(BoneContainer && BoneContainer->IsValid());
+		return *const_cast<FBoneContainer*>(BoneContainer);
 	}
 
 	void SetBoneContainer(const FBoneContainer* InBoneContainer)
@@ -265,9 +247,8 @@ public:
 	// Sets this pose to the supplied BoneContainers ref pose
 	void ResetToRefPose(const FBoneContainer& RequiredBones)
 	{
-		const TArray<FTransform>& RefPoseCompactArray = RequiredBones.GetRefPoseCompactArray();
-		this->Bones.Reset(RefPoseCompactArray.Num());
-		this->Bones.Append(RefPoseCompactArray);
+		RequiredBones.FillWithCompactRefPose(this->Bones);
+
 		this->BoneContainer = &RequiredBones;
 
 		// If retargeting is disabled, copy ref pose from Skeleton, rather than mesh.
@@ -297,8 +278,7 @@ public:
 	{
 		for (FTransform& Bone : this->Bones)
 		{
-			Bone.SetIdentity();
-			Bone.SetScale3D(FVector::ZeroVector);
+			Bone.SetIdentityZeroScale();
 		}
 	}
 
@@ -952,5 +932,38 @@ void FCSPose<PoseType>::ConvertComponentPosesToLocalPosesSafe(FCSPose<PoseType>&
 }
 
 // Populate InOutPose based on raw animation data. 
-extern ENGINE_API void BuildPoseFromRawData(const TArray<FRawAnimSequenceTrack>& InAnimationData, const TArray<struct FTrackToSkeletonMap>& TrackToSkeletonMapTable, FCompactPose& InOutPose, float InTime, EAnimInterpolationType Interpolation, int32 NumFrames, float SequenceLength, FName RetargetSource);
-extern ENGINE_API void BuildPoseFromRawData(const TArray<FRawAnimSequenceTrack>& InAnimationData, const TArray<struct FTrackToSkeletonMap>& TrackToSkeletonMapTable, FCompactPose& InOutPose, float InTime, EAnimInterpolationType Interpolation, int32 NumFrames, float SequenceLength, FName SourceName, const TArray<FTransform>& RetargetTransforms);
+UE_DEPRECATED(5.0, "BuildPoseFromRawData has been deprecated, use BuildPoseFromRawData signature with RetargetTransforms parameter")
+extern ENGINE_API void BuildPoseFromRawData(
+	const TArray<FRawAnimSequenceTrack>& InAnimationData,
+	const TArray<struct FTrackToSkeletonMap>& TrackToSkeletonMapTable,
+	FCompactPose& InOutPose,
+	float InTime,
+	EAnimInterpolationType Interpolation,
+	int32 NumFrames,
+	float SequenceLength,
+	FName RetargetSource,
+	const TMap<int32, const struct FTransformCurve*>* AdditiveBoneTransformCurves = nullptr
+);
+
+UE_DEPRECATED(5.0, "BuildPoseFromRawData has been deprecated, use UE::Anim::BuildPoseFromModel")
+extern ENGINE_API void BuildPoseFromRawData(
+	const TArray<FRawAnimSequenceTrack>& InAnimationData, 
+	const TArray<struct FTrackToSkeletonMap>& TrackToSkeletonMapTable, 
+	FCompactPose& InOutPose, 
+	float InTime, 
+	EAnimInterpolationType Interpolation, 
+	int32 NumFrames, 
+	float SequenceLength, 
+	FName SourceName, 
+	const TArray<FTransform>& RetargetTransforms,
+	const TMap<int32, const FTransformCurve*>* AdditiveBoneTransformCurves = nullptr
+	);
+
+// Support ISPC enable/disable in non-shipping builds
+#if !INTEL_ISPC
+const bool bAnim_BonePose_ISPC_Enabled = false;
+#elif UE_BUILD_SHIPPING
+const bool bAnim_BonePose_ISPC_Enabled = true;
+#else
+extern bool bAnim_BonePose_ISPC_Enabled;
+#endif

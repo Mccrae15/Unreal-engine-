@@ -3,25 +3,26 @@
 #include "NavMesh/RecastInternalDebugData.h"
 #include "DebugUtils/DebugDraw.h"
 
-void FRecastInternalDebugData::vertex(const float x, const float y, const float z, unsigned int color, const float u, const float v)
+void FRecastInternalDebugData::vertex(const FVector::FReal x, const FVector::FReal y, const FVector::FReal z, unsigned int color, const FVector::FReal u, const FVector::FReal v)
 {
-	float RecastPos[3] = { x,y,z };
+	FVector::FReal RecastPos[3] = { x,y,z };
 	const FVector Pos = Recast2UnrealPoint(RecastPos);
+	const FColor Color = Recast2UnrealColor(color);
 	switch(CurrentPrim)
 	{
 	case DU_DRAW_POINTS:
 		PointVertices.Push(Pos);
-		PointColors.Push(color);
+		PointColors.Push(Color);
 		break;
 	case DU_DRAW_LINES:
 		LineVertices.Push(Pos);
-		LineColors.Push(color);
+		LineColors.Push(Color);
 		break;
 	case DU_DRAW_TRIS:
 		// Fallthrough
 	case DU_DRAW_QUADS:
 		TriangleVertices.Push(Pos);
-		TriangleColors.Push(color);
+		TriangleColors.Push(Color);
 		break;
 	}
 }

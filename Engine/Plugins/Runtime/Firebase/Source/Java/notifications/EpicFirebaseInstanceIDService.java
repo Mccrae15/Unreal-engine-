@@ -1,4 +1,4 @@
-package com.epicgames.ue4.notifications;
+package com.epicgames.unreal.notifications;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -6,13 +6,13 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import android.text.TextUtils;
 
-import com.epicgames.ue4.Logger;
+import com.epicgames.unreal.Logger;
 import com.google.firebase.FirebaseApp;
 import com.google.firebase.iid.FirebaseInstanceId;
 import com.google.firebase.iid.FirebaseInstanceIdService;
 
 public class EpicFirebaseInstanceIDService extends FirebaseInstanceIdService {
-	private static final Logger Log = new Logger("UE4-" + EpicFirebaseInstanceIDService.class.getSimpleName());
+	private static final Logger Log = new Logger("UE-" + EpicFirebaseInstanceIDService.class.getSimpleName());
 	private static final String PREFS_FILE_FIREBASE = "com.epicgames.firebase";
 	private static final String KEY_FIREBASE_TOKEN = "firebasetoken";
 	private static final String KEY_IS_UPDATED_TOKEN = "isUpdatedToken";

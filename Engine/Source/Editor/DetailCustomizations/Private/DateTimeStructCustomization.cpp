@@ -41,6 +41,7 @@ void FDateTimeStructCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> S
 				.OnTextChanged(this, &FDateTimeStructCustomization::HandleTextBoxTextChanged)
 				.OnTextCommitted(this, &FDateTimeStructCustomization::HandleTextBoxTextCommited)
 				.SelectAllTextOnCommit(true)
+				.Font(IPropertyTypeCustomizationUtils::GetRegularFont())
 				.Text(this, &FDateTimeStructCustomization::HandleTextBoxText)
 		];
 }
@@ -59,11 +60,13 @@ FSlateColor FDateTimeStructCustomization::HandleTextBoxForegroundColor() const
 {
 	if (InputValid)
 	{
-		static const FName InvertedForegroundName("InvertedForeground");
-		return FEditorStyle::GetSlateColor(InvertedForegroundName);
+		static const FName DefaultForeground("Colors.Foreground");
+		return FAppStyle::Get().GetSlateColor(DefaultForeground);
 	}
 
-	return FLinearColor::Red;
+	static const FName Red("Colors.AccentRed");
+
+	return FAppStyle::Get().GetSlateColor(Red);
 }
 
 
@@ -109,7 +112,7 @@ void FDateTimeStructCustomization::HandleTextBoxTextCommited(const FText& NewTex
 		{
 			*(FDateTime*)RawDataInstance = ParsedDateTime;
 		}
-		PropertyHandle->NotifyPostChange();
+		PropertyHandle->NotifyPostChange(EPropertyChangeType::ValueSet);
 		PropertyHandle->NotifyFinishedChangingProperties();
 	}
 }

@@ -141,7 +141,7 @@ public:
 
 	/** Pointer to the movie scene that controls this animation. */
 	UPROPERTY()
-	UMovieScene* MovieScene;
+	TObjectPtr<UMovieScene> MovieScene;
 
 	/**  */
 	UPROPERTY()

@@ -29,6 +29,8 @@ class UNiagaraStackErrorItem;
 class FCompileConstantResolver;
 class INiagaraMessage;
 class FNiagaraParameterMapHistoryBuilder;
+struct FNiagaraStackModuleData;
+struct FNiagaraModuleDependency;
 
 namespace FNiagaraStackGraphUtilities
 {
@@ -97,10 +99,13 @@ namespace FNiagaraStackGraphUtilities
 	/* Returns the input pins for the given function call node. */
 	void GetStackFunctionInputPins(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<const UEdGraphPin*>& OutInputPins, TSet<const UEdGraphPin*>& OutHiddenPins, FCompileConstantResolver ConstantResolver, ENiagaraGetStackFunctionInputPinsOptions Options = ENiagaraGetStackFunctionInputPinsOptions::AllInputs, bool bIgnoreDisabled = false);
 
+	/* Returns the input pins for the given function call node.  Bypasses the module level caching of this data and generates it each call. */
+	void GetStackFunctionInputPinsWithoutCache(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<const UEdGraphPin*>& OutInputPins, TSet<const UEdGraphPin*>& OutHiddenPins, FCompileConstantResolver ConstantResolver, ENiagaraGetStackFunctionInputPinsOptions Options, bool bIgnoreDisabled);
+
 	/* Module script calls do not have direct inputs, but rely on the parameter map being initialized correctly. This utility function resolves which of the module's parameters are reachable during compilation and returns a list of pins on the parameter map node that do not have to be compiled. */
 	TArray<UEdGraphPin*> GetUnusedFunctionInputPins(UNiagaraNodeFunctionCall& FunctionCallNode, FCompileConstantResolver ConstantResolver);
 
-	void GetStackFunctionStaticSwitchPins(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<UEdGraphPin*>& OutInputPins, TSet<UEdGraphPin*>& OutHiddenPins);
+	void GetStackFunctionStaticSwitchPins(UNiagaraNodeFunctionCall& FunctionCallNode, TArray<UEdGraphPin*>& OutInputPins, TSet<UEdGraphPin*>& OutHiddenPins, FCompileConstantResolver& ConstantResolver);
 
 	void GetStackFunctionOutputVariables(UNiagaraNodeFunctionCall& FunctionCallNode, FCompileConstantResolver ConstantResolver, TArray<FNiagaraVariable>& OutOutputVariables, TArray<FNiagaraVariable>& OutOutputVariablesWithOriginalAliasesIntact);
 
@@ -141,6 +146,47 @@ namespace FNiagaraStackGraphUtilities
 
 	bool RemoveModuleFromStack(UNiagaraScript& OwningScript, UNiagaraNodeFunctionCall& ModuleNode, TArray<TWeakObjectPtr<UNiagaraNodeInput>>& OutRemovedInputNodes);
 
+	struct FAddScriptModuleToStackArgs
+	{
+	public:
+		FAddScriptModuleToStackArgs(FAssetData InModuleScriptAsset, UNiagaraNodeOutput& InTargetOutputNode)
+			: ModuleScriptAsset(InModuleScriptAsset)
+			, TargetOutputNode(&InTargetOutputNode)
+		{};
+
+		FAddScriptModuleToStackArgs(UNiagaraScript* InModuleScript, UNiagaraNodeOutput& InTargetOutputNode)
+			: ModuleScript(InModuleScript)
+			, TargetOutputNode(&InTargetOutputNode)
+		{};
+
+	public:
+		//~ Begin required args
+		// ModuleScriptAsset OR ModuleScript is required. The script to add to the stack.
+		const FAssetData ModuleScriptAsset = FAssetData();
+		UNiagaraScript* const ModuleScript = nullptr;
+
+		// The output node in the stack graph to add to.
+		UNiagaraNodeOutput* const TargetOutputNode = nullptr;
+		//~End required args
+
+		// The index in the stack list in which to instert the script.
+		int32 TargetIndex = INDEX_NONE;
+
+		// The suggested name for the new script.
+		FString SuggestedName = FString();
+
+		// Whether or not to modify the final TargetIndex to be the closest value to TargetIndex which satisfies all script dependencies.
+		bool bFixupTargetIndex = false;
+
+		// The version to use for the script to add.
+		FGuid VersionGuid = FGuid();
+
+	private:
+		FAddScriptModuleToStackArgs() = default;
+	};
+
+	UNiagaraNodeFunctionCall* AddScriptModuleToStack(const FAddScriptModuleToStackArgs& Args);
+
 	UNiagaraNodeFunctionCall* AddScriptModuleToStack(FAssetData ModuleScriptAsset, UNiagaraNodeOutput& TargetOutputNode, int32 TargetIndex = INDEX_NONE, FString SuggestedName = FString());
 
 	UNiagaraNodeFunctionCall* AddScriptModuleToStack(UNiagaraScript* ModuleScript, UNiagaraNodeOutput& TargetOutputNode, int32 TargetIndex = INDEX_NONE, FString SuggestedName = FString(), const FGuid& VersionGuid = FGuid());
@@ -166,8 +212,6 @@ namespace FNiagaraStackGraphUtilities
 	void CleanUpStaleRapidIterationParameters(UNiagaraEmitter& Emitter);
 
 	void GetNewParameterAvailableTypes(TArray<FNiagaraTypeDefinition>& OutAvailableTypes, FName Namespace);
-
-	void GetModuleScriptAssetsByDependencyProvided(FName DependencyName, TOptional<ENiagaraScriptUsage> RequiredUsage, TArray<FAssetData>& OutAssets);
 
 	TOptional<FName> GetNamespaceForScriptUsage(ENiagaraScriptUsage ScriptUsage);
 	TOptional<FName> GetNamespaceForOutputNode(const UNiagaraNodeOutput* OutputNode);
@@ -240,4 +284,13 @@ namespace FNiagaraStackGraphUtilities
 	void AddNewVariableToParameterMapNode(UNiagaraNodeParameterMapBase* MapBaseNode, bool bCreateInputPin, const UNiagaraScriptVariable* NewScriptVar);
 
 	void SynchronizeVariableToLibraryAndApplyToGraph(UNiagaraScriptVariable* ScriptVarToSync);
+
+	namespace DependencyUtilities
+	{
+		bool DoesStackModuleProvideDependency(const FNiagaraStackModuleData& StackModuleData, const FNiagaraModuleDependency& SourceModuleRequiredDependency, const UNiagaraNodeOutput& SourceOutputNode);
+
+		void GetModuleScriptAssetsByDependencyProvided(FName DependencyName, TOptional<ENiagaraScriptUsage> RequiredUsage, TArray<FAssetData>& OutAssets);
+
+		int32 FindBestIndexForModuleInStack(UNiagaraNodeFunctionCall& ModuleNode, UEdGraph& EmitterScriptGraph);
+	}
 }

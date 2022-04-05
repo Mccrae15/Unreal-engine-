@@ -5,7 +5,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -35,7 +36,7 @@ namespace UnrealBuildTool
 		/// The HTML file to write to
 		/// </summary>
 		[CommandLine(Required = true)]
-		FileReference OutputFile = null;
+		FileReference OutputFile = null!;
 
 		/// <summary>
 		/// Entry point for this command

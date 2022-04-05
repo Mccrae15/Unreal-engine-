@@ -173,11 +173,11 @@ void FAvfMediaVideoSampler::SetOutput(AVPlayerItemVideoOutput* InOutput, float I
 	
 	if(bFullRange)
 	{
-		ColorTransform = &MediaShaders::YuvToRgbRec709Full;
+		ColorTransform = &MediaShaders::YuvToRgbRec709Scaled;
 	}
 	else
 	{
-		ColorTransform = &MediaShaders::YuvToRgbRec709;
+		ColorTransform = &MediaShaders::YuvToRgbRec709Unscaled;
 	}
 }
 
@@ -272,18 +272,18 @@ void FAvfMediaVideoSampler::ProcessFrame(CVPixelBufferRef Frame, FTimespan Sampl
 			check(UVTextureRef);
 			
 			// Metal can upload directly from an IOSurface to a 2D texture, so we can just wrap it.
-			FRHIResourceCreateInfo YCreateInfo;
+			FRHIResourceCreateInfo YCreateInfo(TEXT("YTex"));
 			YCreateInfo.BulkData = new FAvfTexture2DResourceWrapper(YTextureRef);
 			YCreateInfo.ResourceArray = nullptr;
 			
-			FRHIResourceCreateInfo UVCreateInfo;
+			FRHIResourceCreateInfo UVCreateInfo(TEXT("UVTex"));
 			UVCreateInfo.BulkData = new FAvfTexture2DResourceWrapper(UVTextureRef);
 			UVCreateInfo.ResourceArray = nullptr;
 			
 			TRefCountPtr<FRHITexture2D> YTex = RHICreateTexture2D(YWidth, YHeight, PF_G8, 1, 1, TexCreateFlags | TexCreate_ShaderResource, YCreateInfo);
 			TRefCountPtr<FRHITexture2D> UVTex = RHICreateTexture2D(UVWidth, UVHeight, PF_R8G8, 1, 1, TexCreateFlags | TexCreate_ShaderResource, UVCreateInfo);
 			
-			FRHIResourceCreateInfo Info;
+			FRHIResourceCreateInfo Info(TEXT("Info"));
 			ShaderResource = RHICreateTexture2D(YWidth, YHeight, PF_B8G8R8A8, 1, 1, TexCreateFlags | TexCreate_ShaderResource | TexCreate_RenderTargetable | TexCreate_SRGB, Info);
 			
 			// render video frame into sink texture
@@ -309,11 +309,11 @@ void FAvfMediaVideoSampler::ProcessFrame(CVPixelBufferRef Frame, FTimespan Sampl
 					GraphicsPSOInit.BoundShaderState.PixelShaderRHI = PixelShader.GetPixelShader();
 					GraphicsPSOInit.PrimitiveType = PT_TriangleStrip;
 
-					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit);
+					SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
 					PixelShader->SetParameters(RHICmdList, YTex, UVTex, *ColorTransform, MediaShaders::YUVOffset8bits, true);
 
-					FVertexBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer();
+					FBufferRHIRef VertexBuffer = CreateTempMediaVertexBuffer();
 					RHICmdList.SetStreamSource(0, VertexBuffer, 0);
 					RHICmdList.SetViewport(0, 0, 0.0f, YWidth, YHeight, 1.0f);
 
@@ -336,7 +336,7 @@ void FAvfMediaVideoSampler::ProcessFrame(CVPixelBufferRef Frame, FTimespan Sampl
 			check(Result == kCVReturnSuccess);
 			check(TextureRef);
 			
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FAvfMediaVideoSampler"));
 			CreateInfo.BulkData = new FAvfTexture2DResourceWrapper(TextureRef);
 			CreateInfo.ResourceArray = nullptr;
 			

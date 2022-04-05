@@ -69,8 +69,11 @@ void FFbxAutomationBuilderModule::UnregisterTabSpawner()
 	bHasRegisteredTabSpawners = false;
 
 	//Unregister the custom detail layout
-	//FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	//PropertyModule.UnregisterCustomClassLayout(UFbxAutomationBuilderView::StaticClass()->GetFName());
+	//if (UObjectInitialized())
+	//{
+	//	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	//	PropertyModule.UnregisterCustomClassLayout(UFbxAutomationBuilderView::StaticClass()->GetFName());
+	//}
 
 	FGlobalTabmanager::Get()->UnregisterNomadTabSpawner("LevelEditorFbxAutomationBuilder");
 }
@@ -78,7 +81,6 @@ void FFbxAutomationBuilderModule::UnregisterTabSpawner()
 TSharedRef<SDockTab> FFbxAutomationBuilderModule::MakeFbxAutomationBuilderTab(const FSpawnTabArgs&)
 {
 	TSharedRef<SDockTab> FbxAutomationBuilderTab = SNew(SDockTab)
-	.Icon(FFbxAutomationBuilderStyle::Get()->GetBrush("FbxAutomationBuilder.TabIcon"))
 	.TabRole(ETabRole::NomadTab);
 	FbxAutomationBuilderTab->SetContent(CreateFbxAutomationBuilderWidget());
 	return FbxAutomationBuilderTab;

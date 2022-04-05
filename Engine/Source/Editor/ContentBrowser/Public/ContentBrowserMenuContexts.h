@@ -6,6 +6,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "ContentBrowserDelegates.h"
+#include "AssetTypeCategories.h"
 
 #include "ContentBrowserMenuContexts.generated.h"
 
@@ -13,6 +14,7 @@ class FAssetContextMenu;
 class IAssetTypeActions;
 class SAssetView;
 class SContentBrowser;
+class SFilterList;
 
 UCLASS()
 class CONTENTBROWSER_API UContentBrowserAssetContextMenuContext : public UObject
@@ -29,7 +31,7 @@ public:
 	TArray<TWeakObjectPtr<UObject>> SelectedObjects;
 
 	UPROPERTY()
-	UClass* CommonClass;
+	TObjectPtr<UClass> CommonClass;
 
 	UPROPERTY()
 	bool bCanBeModified;
@@ -53,7 +55,7 @@ class CONTENTBROWSER_API UContentBrowserAssetViewContextMenuContext : public UOb
 	GENERATED_BODY()
 
 public:
-
+	TWeakPtr<SContentBrowser> OwningContentBrowser;
 	TWeakPtr<SAssetView> AssetView;
 };
 
@@ -87,4 +89,38 @@ public:
 	int32 NumClassPaths;
 
 	FOnCreateNewFolder OnCreateNewFolder;
+};
+
+UCLASS()
+class CONTENTBROWSER_API UContentBrowserFilterListContext : public UObject
+{
+	GENERATED_BODY()
+
+public:
+
+	TWeakPtr<SFilterList> FilterList;
+
+	EAssetTypeCategories::Type MenuExpansion;
+};
+
+UCLASS()
+class CONTENTBROWSER_API UContentBrowserAddNewContextMenuContext : public UObject
+{
+	GENERATED_BODY()
+
+public:
+
+	TWeakPtr<SContentBrowser> ContentBrowser;
+};
+
+UCLASS()
+class CONTENTBROWSER_API UContentBrowserToolbarMenuContext : public UObject
+{
+	GENERATED_BODY()
+
+public:
+	FName GetCurrentPath() const;
+public:
+
+	TWeakPtr<SContentBrowser> ContentBrowser;
 };

@@ -8,6 +8,14 @@ public class DesktopPlatform : ModuleRules
 	{
 		PrivateIncludePaths.Add("Developer/DesktopPlatform/Private");
 
+		PrivateIncludePathModuleNames.AddRange(
+			new string[] {
+				"DerivedDataCache",
+				"SlateFontDialog",
+				"LauncherPlatform",
+			}
+		);
+
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
 				"Core",
@@ -18,17 +26,14 @@ public class DesktopPlatform : ModuleRules
 
 		if (Target.IsInPlatformGroup(UnrealPlatformGroup.Linux))
 		{
-			PrivateIncludePathModuleNames.AddRange(
-				new string[] {
-					"SlateFileDialogs",
-				}
-			);
+			if(Target.Type == TargetType.Editor)
+			{
+				PrivateIncludePathModuleNames.Add("SlateFontDialog");
+				DynamicallyLoadedModuleNames.Add("SlateFontDialog");
+			}
 
-			DynamicallyLoadedModuleNames.AddRange(
-				new string[] {
-					"SlateFileDialogs",
-				}
-			);
+			PrivateIncludePathModuleNames.Add("SlateFileDialogs");
+			DynamicallyLoadedModuleNames.Add("SlateFileDialogs");
 
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "SDL2");
 		}

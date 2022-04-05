@@ -20,6 +20,7 @@ class SGraphPin;
 class SHorizontalBox;
 class SImage;
 class SWrapBox;
+class FPinValueInspectorTooltip;
 
 #define NAME_DefaultPinLabelStyle TEXT("Graph.Node.PinName")
 
@@ -92,6 +93,7 @@ public:
 
 public:
 	SGraphPin();
+	virtual ~SGraphPin();
 
 	/** Set attribute for determining if pin is editable */
 	void SetIsEditable(TAttribute<bool> InIsEditable);
@@ -118,6 +120,7 @@ public:
 	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
 	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
 	virtual void Tick( const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime ) override;
+	virtual TSharedPtr<IToolTip> GetToolTip() override;
 	// End of SWidget interface
 
 public:
@@ -206,6 +209,12 @@ public:
 	/** Override the visual look of the pin by providing two custom brushes */
 	void SetCustomPinIcon(const FSlateBrush* InConnectedBrush, const FSlateBrush* InDisconnectedBrush);
 
+	/** @returns true if we have a valid PinValueInspector tooltip */
+	bool HasInteractiveTooltip() const;
+
+	/** Enables or disables drag and drop on the pin */
+	void EnableDragAndDrop(bool bEnable) { bDragAndDropEnabled = bEnable; }
+
 protected:
 
 	/** If true the graph pin subclass is responsible for setting the IsEnabled delegates for the aspects it cares about. If false, the default value widget enabling is done by the base class */
@@ -251,6 +260,9 @@ protected:
 	/** @return The tooltip to display for this pin */
 	FText GetTooltipText() const;
 
+	/** Gets the window location (in screen coords) for an interactive tooltip (e.g. pin value inspector) */
+	void GetInteractiveTooltipLocation(FVector2D& InOutDesiredLocation) const;
+
 	TOptional<EMouseCursor::Type> GetPinCursor() const;
 
 	/** Spawns a FDragConnection or similar class for the pin drag event */
@@ -261,6 +273,14 @@ protected:
 
 	/** Determines the pin's visibility based on the LOD factor, when it is low LOD, no hit test will occur */
 	EVisibility GetPinVisiblity() const;
+
+public:
+
+	/** Returns the current pin image widget that is being used */
+	TSharedPtr<SWidget> GetPinImageWidget() const;
+
+	/** Sets the pin widget for this pin */
+	void SetPinImageWidget(TSharedRef<SWidget> NewWidget);
 
 protected:
 	/** The GraphNode that owns this pin */
@@ -277,6 +297,9 @@ protected:
 
 	/** Value widget for the pin, created with GetDefaultValueWidget() */
 	TSharedPtr<SWidget> ValueWidget;
+
+	/** Value inspector tooltip while debugging */
+	TWeakPtr<FPinValueInspectorTooltip> ValueInspectorTooltip;
 
 	/** The GraphPin that this widget represents. */
 	class UEdGraphPin* GraphPinObj;
@@ -328,4 +351,7 @@ protected:
 
 	/** TRUE if the pin should use the Pin's color for the text */
 	bool bUsePinColorForText;
+
+	/** TRUE if the pin should allow any drag and drop */
+	bool bDragAndDropEnabled;
 };

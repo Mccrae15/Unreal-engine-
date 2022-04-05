@@ -35,10 +35,10 @@ FArchive& FConcertIdentifierWriter::operator<<(FName& Name)
 
 	const EName* Ename = Name.ToEName();
 	int32 IdentifierTableIndex = INDEX_NONE;
-	if (Ename && ShouldReplicateAsInteger(*Ename))
+	if (Ename && ShouldReplicateAsInteger(*Ename, Name))
 	{
 		SerializeConcertIdentifierSource(EConcertIdentifierSource::HardcodedIndex);
-		SerializeIndexValue(*Ename);
+		SerializeIndexValue((int32)*Ename);
 	}
 	else if (LocalIdentifierTable)
 	{

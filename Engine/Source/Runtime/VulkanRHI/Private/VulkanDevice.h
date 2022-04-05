@@ -12,10 +12,15 @@ class FVulkanDescriptorSetCache;
 class FVulkanDescriptorPool;
 class FVulkanDescriptorPoolsManager;
 class FVulkanCommandListContextImmediate;
+class FVulkanTransientHeapCache;
 #if VULKAN_USE_NEW_QUERIES
 class FVulkanOcclusionQueryPool;
 #else
 class FOLDVulkanQueryPool;
+#endif
+
+#if VULKAN_RHI_RAYTRACING
+class FVulkanBasicRaytracingPipeline;
 #endif
 
 #define VULKAN_USE_DEBUG_NAMES 1
@@ -32,31 +37,41 @@ struct FOptionalVulkanDeviceExtensions
 	{
 		struct
 		{
-			uint32 HasKHRMaintenance1 : 1;
-			uint32 HasKHRMaintenance2 : 1;
-			//uint32 HasMirrorClampToEdge : 1;
-			uint32 HasKHRDedicatedAllocation : 1;
-			uint32 HasEXTValidationCache : 1;
-			uint32 HasAMDBufferMarker : 1;
-			uint32 HasNVDiagnosticCheckpoints : 1;
-			uint32 HasNVDeviceDiagnosticConfig : 1;
-			uint32 HasYcbcrSampler : 1;
-			uint32 HasMemoryPriority : 1;
-			uint32 HasMemoryBudget : 1;
-			uint32 HasDriverProperties : 1;
-			uint32 HasEXTFragmentDensityMap : 1;
-			uint32 HasEXTFragmentDensityMap2 : 1;
-			uint32 HasKHRFragmentShadingRate : 1;
-			uint32 HasEXTFullscreenExclusive : 1;
-			uint32 HasKHRImageFormatList : 1;
-			uint32 HasEXTASTCDecodeMode : 1;
-			uint32 HasQcomRenderPassTransform : 1;
-			uint32 HasAtomicInt64 : 1;
-			uint32 HasBufferAtomicInt64 : 1;
-			uint32 HasScalarBlockLayoutFeatures : 1;
-			uint32 HasKHRMultiview : 1;
+			uint64 HasKHRMaintenance1 : 1;
+			uint64 HasKHRMaintenance2 : 1;
+			uint64 HasKHRDedicatedAllocation : 1;
+			uint64 HasEXTValidationCache : 1;
+			uint64 HasAMDBufferMarker : 1;
+			uint64 HasNVDiagnosticCheckpoints : 1;
+			uint64 HasNVDeviceDiagnosticConfig : 1;
+			uint64 HasYcbcrSampler : 1;
+			uint64 HasMemoryPriority : 1;
+			uint64 HasMemoryBudget : 1;
+			uint64 HasDriverProperties : 1;
+			uint64 HasEXTFragmentDensityMap : 1;
+			uint64 HasEXTFragmentDensityMap2 : 1;
+			uint64 HasKHRFragmentShadingRate : 1;
+			uint64 HasKHRRenderPass2 : 1;
+			uint64 HasEXTFullscreenExclusive : 1;
+			uint64 HasKHRImageFormatList : 1;
+			uint64 HasEXTTextureCompressionASTCHDR : 1;
+			uint64 HasEXTASTCDecodeMode : 1;
+			uint64 HasQcomRenderPassTransform : 1;
+			uint64 HasImageAtomicInt64 : 1;
+			uint64 HasBufferAtomicInt64 : 1;
+			uint64 HasScalarBlockLayoutFeatures : 1;
+			uint64 HasKHRMultiview : 1;
+			uint64 HasAccelerationStructure : 1;
+			uint64 HasRayTracingPipeline : 1;
+			uint64 HasRayQuery : 1;
+			uint64 HasDescriptorIndexing : 1;
+			uint64 HasBufferDeviceAddress : 1;
+			uint64 HasDeferredHostOperations : 1;
+			uint64 HasSPIRV_14 : 1;
+			uint64 HasShaderFloatControls : 1;
+			uint64 HasEXTShaderViewportIndexLayer : 1;
 		};
-		uint32 Packed;
+		uint64 Packed;
 	};
 
 	FOptionalVulkanDeviceExtensions()
@@ -71,7 +86,47 @@ struct FOptionalVulkanDeviceExtensions
 	{
 		return HasAMDBufferMarker || HasNVDiagnosticCheckpoints;
 	}
+
+#if VULKAN_RHI_RAYTRACING
+	inline bool HasRaytracingExtensions() const
+	{
+		return 
+			HasAccelerationStructure && 
+			(HasRayTracingPipeline || HasRayQuery) &&
+			HasDescriptorIndexing && 
+			HasBufferDeviceAddress && 
+			HasDeferredHostOperations && 
+			HasSPIRV_14 && 
+			HasShaderFloatControls;
+	}
+#endif
 };
+
+struct FOptionalVulkanDeviceFeatures
+{
+#if VULKAN_SUPPORTS_SEPARATE_DEPTH_STENCIL_LAYOUTS
+	VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR SeparateDepthStencilLayoutsFeatures;
+#endif
+#if VULKAN_SUPPORTS_SCALAR_BLOCK_LAYOUT
+	VkPhysicalDeviceScalarBlockLayoutFeaturesEXT ScalarBlockLayoutFeatures;
+#endif
+#if VULKAN_RHI_RAYTRACING
+	VkPhysicalDeviceBufferDeviceAddressFeaturesKHR BufferDeviceAddressFeatures;
+	VkPhysicalDeviceAccelerationStructureFeaturesKHR AccelerationStructureFeatures;
+	VkPhysicalDeviceRayTracingPipelineFeaturesKHR RayTracingPipelineFeatures;
+	VkPhysicalDeviceDescriptorIndexingFeaturesEXT DescriptorIndexingFeatures;
+	VkPhysicalDeviceRayQueryFeaturesKHR RayQueryFeatures;
+#endif
+};
+
+#if VULKAN_RHI_RAYTRACING
+struct FRayTracingProperties
+{
+	VkPhysicalDeviceAccelerationStructurePropertiesKHR AccelerationStructure;
+	VkPhysicalDeviceRayTracingPipelinePropertiesKHR RayTracingPipeline;
+};
+#endif // VULKAN_RHI_RAYTRACING
+
 namespace VulkanRHI
 {
 	class FDeferredDeletionQueue2 : public FDeviceChild
@@ -99,6 +154,7 @@ namespace VulkanRHI
 			ResourceAllocation,
 			DeviceMemoryAllocation,
 			BufferSuballocation,
+			AccelerationStructure,
 		};
 
 		template <typename T>
@@ -239,8 +295,10 @@ public:
 	{
 		return FragmentShadingRateProperties;
 	}
-#endif
 
+	VkExtent2D GetBestMatchedShadingRateExtents(EVRSShadingRate Rate) const;
+#endif
+	
 #if VULKAN_SUPPORTS_MULTIVIEW
 	inline const VkPhysicalDeviceMultiviewFeatures& GetMultiviewFeatures() const
 	{
@@ -259,7 +317,18 @@ public:
 		check(RHI->GetOptionalExtensions().HasKHRGetPhysicalDeviceProperties2);
 		return GpuIdProps;
 	}
-#endif
+
+#if VULKAN_RHI_RAYTRACING
+	inline const FRayTracingProperties& GetRayTracingProperties() const
+	{
+		check(OptionalDeviceExtensions.HasRaytracingExtensions());
+		return RayTracingProperties;
+	}
+
+	void InitializeRayTracing();
+	void CleanUpRayTracing();
+#endif // VULKAN_RHI_RAYTRACING
+#endif // VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 
 #if VULKAN_SUPPORTS_VALIDATION_CACHE
 	inline VkValidationCacheEXT GetValidationCache() const
@@ -287,9 +356,6 @@ public:
 	{
 		return TimestampValidBitsMask;
 	}
-
-	bool IsTextureFormatSupported(VkFormat Format, uint32 RequiredFeatures) const;
-	bool IsBufferFormatSupported(VkFormat Format) const;
 
 	const VkComponentMapping& GetFormatComponentMapping(EPixelFormat UEFormat) const;
 
@@ -326,11 +392,6 @@ public:
 	inline VulkanRHI::FMemoryManager& GetMemoryManager()
 	{
 		return MemoryManager;
-	}
-
-	inline bool SupportsMemoryless()
-	{
-		return bSupportsMemoryless;
 	}
 
 	inline VulkanRHI::FDeferredDeletionQueue2& GetDeferredDeletionQueue()
@@ -435,6 +496,11 @@ public:
 		return OptionalDeviceExtensions;
 	}
 
+	inline FOptionalVulkanDeviceFeatures& GetOptionalFeatures()
+	{
+		return OptionalFeatures;
+	}
+
 #if VULKAN_SUPPORTS_GPU_CRASH_DUMPS
 	VkBuffer GetCrashMarkerBuffer() const
 	{
@@ -453,23 +519,22 @@ public:
 	VkSamplerYcbcrConversion CreateSamplerColorConversion(const VkSamplerYcbcrConversionCreateInfo& CreateInfo);
 #endif
 
-	void*	Hotfix = nullptr;
+	inline const TArray<VkQueueFamilyProperties>& GetQueueFamilyProps()
+	{
+		return QueueFamilyProps;
+	}
+
+	FVulkanTransientHeapCache& GetOrCreateTransientHeapCache();
+
 
 private:
-	void MapFormatSupport(EPixelFormat UEFormat, VkFormat VulkanFormat);
-	void MapFormatSupportWithFallback(EPixelFormat UEFormat, uint32 TextureRequiredFeatures, VkFormat VulkanFormat, TArrayView<const VkFormat> FallbackTextureFormats);
-	void MapFormatSupport(EPixelFormat UEFormat, VkFormat VulkanFormat, int32 BlockBytes);
-	void SetComponentMapping(EPixelFormat UEFormat, VkComponentSwizzle r, VkComponentSwizzle g, VkComponentSwizzle b, VkComponentSwizzle a);
-
-	FORCEINLINE void MapFormatSupportWithFallback(EPixelFormat UEFormat, VkFormat VulkanFormat, std::initializer_list<VkFormat> FallbackTextureFormats)
-	{
-		MapFormatSupportWithFallback(UEFormat, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, VulkanFormat, MakeArrayView(FallbackTextureFormats));
-	}
-	
-	FORCEINLINE void MapFormatSupportWithFallback(EPixelFormat UEFormat, uint32 TextureRequiredFeatures, VkFormat VulkanFormat, std::initializer_list<VkFormat> FallbackTextureFormats)
-	{
-		MapFormatSupportWithFallback(UEFormat, TextureRequiredFeatures, VulkanFormat, MakeArrayView(FallbackTextureFormats));
-	}
+	const VkFormatProperties& GetFormatProperties(VkFormat InFormat);
+	void MapBufferFormatSupport(FPixelFormatInfo& PixelFormatInfo, EPixelFormat UEFormat, VkFormat VulkanFormat);
+	void MapImageFormatSupport(FPixelFormatInfo& PixelFormatInfo, const TArrayView<const VkFormat>& PrioritizedFormats, EPixelFormatCapabilities RequiredCapabilities);
+	void MapFormatSupport(EPixelFormat UEFormat, std::initializer_list<VkFormat> PrioritizedFormats, const VkComponentMapping& ComponentMapping, EPixelFormatCapabilities RequiredCapabilities, int32 BlockBytes);
+	void MapFormatSupport(EPixelFormat UEFormat, std::initializer_list<VkFormat> PrioritizedFormats, const VkComponentMapping& ComponentMapping);
+	void MapFormatSupport(EPixelFormat UEFormat, std::initializer_list<VkFormat> PrioritizedFormats, const VkComponentMapping& ComponentMapping, int32 BlockBytes);
+	void MapFormatSupport(EPixelFormat UEFormat, std::initializer_list<VkFormat> PrioritizedFormats, const VkComponentMapping& ComponentMapping, EPixelFormatCapabilities RequiredCapabilities);
 
 	void SubmitCommands(FVulkanCommandListContext* Context);
 
@@ -485,6 +550,8 @@ private:
 	VulkanRHI::FStagingManager StagingManager;
 
 	VulkanRHI::FFenceManager FenceManager;
+
+	FVulkanTransientHeapCache* TransientHeapCache = nullptr;
 
 	// Active on ES3.1
 	FVulkanDescriptorSetCache* DescriptorSetCache = nullptr;
@@ -519,12 +586,17 @@ private:
 
 #if VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 	VkPhysicalDeviceIDPropertiesKHR GpuIdProps;
-#endif
+
+#if VULKAN_RHI_RAYTRACING
+	FRayTracingProperties RayTracingProperties;
+	FVulkanBasicRaytracingPipeline* BasicRayTracingPipeline = nullptr;
+#endif // VULKAN_RHI_RAYTRACING
+#endif // VULKAN_SUPPORTS_PHYSICAL_DEVICE_PROPERTIES2
 
 	VkPhysicalDeviceFeatures PhysicalFeatures;
-	bool bHasSeparateDepthStencilLayouts = false;
+	FOptionalVulkanDeviceFeatures OptionalFeatures;
 
-	bool bSupportsMemoryless = true;
+	bool bHasSeparateDepthStencilLayouts = false;
 
 	TArray<VkQueueFamilyProperties> QueueFamilyProps;
 	VkFormatProperties FormatProperties[VK_FORMAT_RANGE_SIZE];

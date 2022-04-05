@@ -123,7 +123,7 @@ private:
 	virtual void GenerateChildContent(IDetailChildrenBuilder& ChildrenBuilder) override;
 	virtual void Tick(float DeltaTime) override {}
 	virtual bool RequiresTick() const override { return false; }
-	virtual FName GetName() const override { static FName MeshBuildSettings("MeshBuildSettings"); return MeshBuildSettings; }
+	virtual FName GetName() const override { static FName MeshReductionSettings("MeshReductionSettings"); return MeshReductionSettings; }
 	virtual bool InitiallyCollapsed() const override { return true; }
 
 	bool IsReductionEnabled() const;
@@ -192,6 +192,9 @@ private:
 
 	ECheckBoxState GetEnforceBoneBoundaries() const;
 	void SetEnforceBoneBoundaries(ECheckBoxState NewState);
+
+	ECheckBoxState GetMergeCoincidentVertBones() const;
+	void SetMergeCoincidentVertBones(ECheckBoxState NewState);
 
 	float GetVolumeImportance() const;
 	void SetVolumeImportance(float Value);
@@ -290,7 +293,7 @@ private:
 	ECheckBoxState ShouldRemoveDegenerates() const;
 	ECheckBoxState ShouldUseHighPrecisionTangentBasis() const;
 	ECheckBoxState ShouldUseFullPrecisionUVs() const;
-	ECheckBoxState ShouldBuildAdjacencyBuffer() const;
+	ECheckBoxState ShouldUseBackwardsCompatibleF16TruncUVs() const;
 
 	void OnRecomputeNormalsChanged(ECheckBoxState NewState);
 	void OnRecomputeTangentsChanged(ECheckBoxState NewState);
@@ -299,7 +302,7 @@ private:
 	void OnRemoveDegeneratesChanged(ECheckBoxState NewState);
 	void OnUseHighPrecisionTangentBasisChanged(ECheckBoxState NewState);
 	void OnUseFullPrecisionUVsChanged(ECheckBoxState NewState);
-	void OnBuildAdjacencyBufferChanged(ECheckBoxState NewState);
+	void OnUseBackwardsCompatibleF16TruncUVsChanged(ECheckBoxState NewState);
 
 private:
 	FSkeletalMeshBuildSettings& BuildSettings;
@@ -514,7 +517,7 @@ private:
 	* Handler for check box display based on whether the material has shadow casting enabled
 	*
 	* @param LODIndex	The LODIndex we want to change
-	* @param SectionIndex	The SectionIndex we change the RecomputeTangent
+	* @param SectionIndex	The SectionIndex we change the ShadowCasting flag
 	*/
 	ECheckBoxState IsSectionShadowCastingEnabled(int32 LODIndex, int32 SectionIndex) const;
 
@@ -522,25 +525,25 @@ private:
 	* Handler for changing shadow casting status on a section
 	*
 	* @param LODIndex	The LODIndex we want to change
-	* @param SectionIndex	The SectionIndex we change the RecomputeTangent
+	* @param SectionIndex	The SectionIndex we change the ShadowCasting flag
 	*/
 	void OnSectionShadowCastingChanged(ECheckBoxState NewState, int32 LODIndex, int32 SectionIndex);
 
 	/**
-	* Handler for check box display based on whether this section does recalculate normal or not
+	* Handler for check box display based on whether the material has VisibleInRayTracing enabled
 	*
 	* @param LODIndex	The LODIndex we want to change
-	* @param SectionIndex	The SectionIndex we change the RecomputeTangent
+	* @param SectionIndex	The SectionIndex we change the VisibleInRayTracing flag
 	*/
-	ECheckBoxState IsSectionRecomputeTangentEnabled(int32 LODIndex, int32 SectionIndex) const;
+	ECheckBoxState IsSectionVisibleInRayTracingEnabled(int32 LODIndex, int32 SectionIndex) const;
 
 	/**
-	* Handler for changing recalulate normal status on a section
+	* Handler for changing VisibleInRayTracing status on a section
 	*
 	* @param LODIndex	The LODIndex we want to change
-	* @param SectionIndex	The SectionIndex we change the RecomputeTangent
+	* @param SectionIndex	The SectionIndex we change the VisibleInRayTracing flag
 	*/
-	void OnSectionRecomputeTangentChanged(ECheckBoxState NewState, int32 LODIndex, int32 SectionIndex);
+	void OnSectionVisibleInRayTracingChanged(ECheckBoxState NewState, int32 LODIndex, int32 SectionIndex);
 
 	/**
 	* Handler for selecting which vertex color to mask the blending of recomputing tangents
@@ -548,10 +551,9 @@ private:
 	* @param LODIndex	The LODIndex we want to change
 	* @param SectionIndex	The SectionIndex we change the RecomputeTangent
 	*/
-	TSharedRef<class SWidget> OnGenerateRecomputeTangentsVertexChannelMaskPicker(int32 LODIndex, int32 SectionIndex);
-	bool IsGenerateRecomputeTangentsVertexChannelMaskPicker(int32 LODIndex, int32 SectionIndex) const;
-	FText GetCurrentRecomputeTangentsVertexChannelMaskName(int32 LODIndex, int32 SectionIndex) const;
-	void SetCurrentRecomputeTangentsVertexChannel(int32 LODIndex, int32 SectionIndex, int32 Index);
+	TSharedRef<class SWidget> OnGenerateRecomputeTangentsSetting(int32 LODIndex, int32 SectionIndex);
+	FText GetCurrentRecomputeTangentsSetting(int32 LODIndex, int32 SectionIndex) const;
+	void SetCurrentRecomputeTangentsSetting(int32 LODIndex, int32 SectionIndex, int32 Index);
 
 	/**
 	 * Handler for enabling delete button on materials
@@ -583,6 +585,15 @@ private:
 	FText GetMaterialSlotNameText(int32 MaterialIndex) const;
 
 	void RefreshMeshDetailLayout();
+
+	void OnNoRefStreamingLODBiasChanged(int32 NewValue, FName QualityLevel);
+	void OnNoRefStreamingLODBiasCommitted(int32 InValue, ETextCommit::Type CommitInfo, FName QualityLevel);
+	int32 GetNoRefStreamingLODBias(FName QualityLevel) const;
+	TSharedRef<SWidget> GetNoRefStreamingLODBiasWidget(FName QualityLevelName) const;
+	bool AddNoRefStreamingLODBiasOverride(FName QualityLevelName);
+	bool RemoveNoRefStreamingLODBiasOverride(FName QualityLevelName);
+	TArray<FName> GetNoRefStreamingLODBiasOverrideNames() const;
+	FText GetNoRefStreamingLODBiasTooltip() const;
 
 	/** apply LOD changes if the user modified LOD reduction settings */
 	FReply OnApplyChanges();
@@ -650,6 +661,7 @@ private:
 	void OnPreviewMeshChanged(USkeletalMesh* OldSkeletalMesh, USkeletalMesh* NewMesh);
 	
 	bool FilterOutBakePose(const struct FAssetData& AssetData, USkeleton* Skeleton) const;
+	bool FilterOutBakePose(const struct FAssetData& AssetData, TObjectPtr<USkeleton> Skeleton) const { return FilterOutBakePose(AssetData, Skeleton.Get()); }
 
 	FText GetLODCustomModeNameContent(int32 LODIndex) const;
 	ECheckBoxState IsLODCustomModeCheck(int32 LODIndex) const;

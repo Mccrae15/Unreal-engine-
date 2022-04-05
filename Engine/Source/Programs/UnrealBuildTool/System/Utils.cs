@@ -11,7 +11,9 @@ using System.Xml.Serialization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
+using System.Collections.Concurrent;
 
 namespace UnrealBuildTool
 {
@@ -20,15 +22,6 @@ namespace UnrealBuildTool
 	/// </summary>
 	public static class Utils
 	{
-		/// <summary>
-		/// Whether we are currently running on Mono platform.  We cache this statically because it is a bit slow to check.
-		/// </summary>
-#if NET_CORE
-		public static readonly bool IsRunningOnMono = true;
-#else
-		public static readonly bool IsRunningOnMono = Type.GetType("Mono.Runtime") != null;
-#endif
-
 		/// <summary>
 		/// Searches for a flag in a set of command-line arguments.
 		/// </summary>
@@ -94,8 +87,9 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="InputString">String to search for variable names</param>
 		/// <param name="AdditionalVariables">Lookup of variable names to values</param>
+		/// <param name="bUseAdditionalVariablesOnly">If true, then Environment.GetEnvironmentVariable will not be used if the var is not found in AdditionalVariables</param>
 		/// <returns>String with all variables replaced</returns>
-		public static string ExpandVariables(string InputString, Dictionary<string, string> AdditionalVariables = null)
+		public static string ExpandVariables(string InputString, Dictionary<string, string>? AdditionalVariables = null, bool bUseAdditionalVariablesOnly = false)
 		{
 			string Result = InputString;
 			for (int Idx = Result.IndexOf("$("); Idx != -1; Idx = Result.IndexOf("$(", Idx))
@@ -111,10 +105,13 @@ namespace UnrealBuildTool
 				string Name = Result.Substring(Idx + 2, EndIdx - (Idx + 2));
 
 				// Find the value for it, either from the dictionary or the environment block
-				string Value;
+				string? Value = null;
 				if (AdditionalVariables == null || !AdditionalVariables.TryGetValue(Name, out Value))
 				{
-					Value = Environment.GetEnvironmentVariable(Name);
+					if (bUseAdditionalVariablesOnly == false)
+					{
+						Value = Environment.GetEnvironmentVariable(Name);
+					}
 					if (Value == null)
 					{
 						Idx = EndIdx + 1;
@@ -185,7 +182,7 @@ namespace UnrealBuildTool
 		/// <returns>the value of the environment variable if found and the default value if missing</returns>
 		public static bool GetEnvironmentVariable(string VarName, bool bDefault)
 		{
-			string Value = Environment.GetEnvironmentVariable(VarName);
+			string? Value = Environment.GetEnvironmentVariable(VarName);
 			if (Value != null)
 			{
 				// Convert the string to its boolean value
@@ -202,7 +199,7 @@ namespace UnrealBuildTool
 		/// <returns>the value of the environment variable if found and the default value if missing</returns>
 		public static string GetStringEnvironmentVariable(string VarName, string Default)
 		{
-			string Value = Environment.GetEnvironmentVariable(VarName);
+			string? Value = Environment.GetEnvironmentVariable(VarName);
 			if (Value != null)
 			{
 				return Value;
@@ -218,7 +215,7 @@ namespace UnrealBuildTool
 		/// <returns>the value of the environment variable if found and the default value if missing</returns>
 		public static double GetEnvironmentVariable(string VarName, double Default)
 		{
-			string Value = Environment.GetEnvironmentVariable(VarName);
+			string? Value = Environment.GetEnvironmentVariable(VarName);
 			if (Value != null)
 			{
 				return Convert.ToDouble(Value);
@@ -234,7 +231,7 @@ namespace UnrealBuildTool
 		/// <returns>the value of the environment variable if found and the default value if missing</returns>
 		public static string GetEnvironmentVariable(string VarName, string Default)
 		{
-			string Value = Environment.GetEnvironmentVariable(VarName);
+			string? Value = Environment.GetEnvironmentVariable(VarName);
 			if (Value != null)
 			{
 				return Value;
@@ -311,7 +308,7 @@ namespace UnrealBuildTool
 		{
 			string AppName = Path.GetFileNameWithoutExtension(StartInfo.FileName);
 			string LogFilenameBase = string.Format("{0}_{1}", AppName, DateTime.Now.ToString("yyyy.MM.dd-HH.mm.ss"));
-			string LogDir = Path.Combine(UnrealBuildTool.EngineDirectory.FullName, "Programs", "AutomationTool", "Saved", "Logs");
+			string LogDir = Path.Combine(Unreal.EngineDirectory.FullName, "Programs", "AutomationTool", "Saved", "Logs");
 			string LogFilename = "";
 			for (int Attempt = 1; Attempt < 100; ++Attempt)
 			{
@@ -319,7 +316,7 @@ namespace UnrealBuildTool
 				{
 					if (!Directory.Exists(LogDir))
 					{
-						string IniPath = UnrealBuildTool.GetRemoteIniPath();
+						string? IniPath = UnrealBuildTool.GetRemoteIniPath();
 						if(string.IsNullOrEmpty(IniPath))
 						{
 							break;
@@ -417,14 +414,22 @@ namespace UnrealBuildTool
 		/// <param name="Args">Arguments to Command</param>
 		/// <param name="ExitCode">The return code from the process after it exits</param>
 		/// <param name="LogOutput">Whether to also log standard output and standard error</param>
-		public static string RunLocalProcessAndReturnStdOut(string Command, string Args, out int ExitCode, bool LogOutput = false)
+		public static string RunLocalProcessAndReturnStdOut(string Command, string? Args, out int ExitCode, bool LogOutput = false)
 		{
-			//LUMIN_MERGE
+			// Process Arguments follow windows conventions in .NET Core
+			// Which means single quotes ' are not considered quotes.
+			// see https://github.com/dotnet/runtime/issues/29857
+			// also see UE-102580
+			// for rules see https://docs.microsoft.com/en-us/cpp/cpp/main-function-command-line-args
+			Args = Args?.Replace('\'', '\"');
+
 			ProcessStartInfo StartInfo = new ProcessStartInfo(Command, Args);
 			StartInfo.UseShellExecute = false;
+			StartInfo.RedirectStandardInput = true;
 			StartInfo.RedirectStandardOutput = true;
 			StartInfo.RedirectStandardError = true;
 			StartInfo.CreateNoWindow = true;
+			StartInfo.StandardOutputEncoding = Encoding.UTF8;
 
 			string FullOutput = "";
 			string ErrorOutput = "";
@@ -482,7 +487,7 @@ namespace UnrealBuildTool
 				case UnrealPlatformClass.Editor:
 					return new UnrealTargetPlatform[] { UnrealTargetPlatform.Win64, UnrealTargetPlatform.Linux, UnrealTargetPlatform.Mac };
 				case UnrealPlatformClass.Server:
-					return new UnrealTargetPlatform[] { UnrealTargetPlatform.Win32, UnrealTargetPlatform.Win64, UnrealTargetPlatform.Linux, UnrealTargetPlatform.LinuxAArch64, UnrealTargetPlatform.Mac };
+					return new UnrealTargetPlatform[] { UnrealTargetPlatform.Win64, UnrealTargetPlatform.Linux, UnrealTargetPlatform.LinuxArm64, UnrealTargetPlatform.Mac };
 			}
 			throw new ArgumentException(String.Format("'{0}' is not a valid value for UnrealPlatformClass", (int)Class));
 		}
@@ -572,10 +577,10 @@ namespace UnrealBuildTool
 		/// <returns>File path with consistent separators</returns>
 		public static string CleanDirectorySeparators(string FilePath, char UseDirectorySeparatorChar = '\0')
 		{
-			StringBuilder CleanPath = null;
+			StringBuilder? CleanPath = null;
 			if (UseDirectorySeparatorChar == '\0')
 			{
-				UseDirectorySeparatorChar = Environment.OSVersion.Platform == PlatformID.Unix ? '/' : '\\';
+				UseDirectorySeparatorChar = Path.DirectorySeparatorChar;
 			}
 			char PrevC = '\0';
 			// Don't check for double separators until we run across a valid dir name. Paths that start with '//' or '\\' can still be valid.			
@@ -754,23 +759,6 @@ namespace UnrealBuildTool
 				RelativePath = RelativePath.Substring(0, RelativePath.Length - 1);
 			}
 
-			// Uri.MakeRelativeUri is broken in Mono 2.x and sometimes returns broken path
-			if (IsRunningOnMono)
-			{
-				// Check if result is correct
-				string TestPath = Path.GetFullPath(Path.Combine(AbsoluteRelativeDirectory, RelativePath));
-				string AbsoluteTestPath = CollapseRelativeDirectories(AbsolutePath);
-				if (TestPath != AbsoluteTestPath)
-				{
-					TestPath += "/";
-					if (TestPath != AbsoluteTestPath)
-					{
-						// Fix the path. @todo Mac: replace this hack with something better
-						RelativePath = "../" + RelativePath;
-					}
-				}
-			}
-
 			return RelativePath;
 		}
 
@@ -817,7 +805,7 @@ namespace UnrealBuildTool
 		static public T ReadClass<T>(string FileName) where T : new()
 		{
 			T Instance = new T();
-			StreamReader XmlStream = null;
+			StreamReader? XmlStream = null;
 			try
 			{
 				// Get the XML data stream to read from
@@ -859,7 +847,7 @@ namespace UnrealBuildTool
 		static public bool WriteClass<T>(T Data, string FileName, string DefaultNameSpace)
 		{
 			bool bSuccess = true;
-			StreamWriter XmlStream = null;
+			StreamWriter? XmlStream = null;
 			try
 			{
 				FileInfo Info = new FileInfo(FileName);
@@ -913,10 +901,6 @@ namespace UnrealBuildTool
 			// due to multithreading on Windows, lock the object
 			lock (p)
 			{
-				// Mono has a specific requirement if testing for an alive process
-				if (IsRunningOnMono)
-					return p.Handle != IntPtr.Zero; // native handle to the process
-				// on Windows, simply test the process ID to be non-zero. 
 				// note that this can fail and have a race condition in threads, but the framework throws an exception when this occurs.
 				try
 				{
@@ -956,7 +940,7 @@ namespace UnrealBuildTool
 		{
 			if (!String.IsNullOrEmpty(Path.GetExtension(Filename)))
 			{
-				return Path.Combine(Path.GetDirectoryName(Filename), Path.GetFileNameWithoutExtension(Filename));
+				return Path.Combine(Path.GetDirectoryName(Filename)!, Path.GetFileNameWithoutExtension(Filename));
 			}
 			else
 			{
@@ -999,11 +983,11 @@ namespace UnrealBuildTool
 		/// </summary>
 		public static DirectoryReference GetUserSettingDirectory()
 		{
-			if (BuildHostPlatform.Current.Platform == UnrealTargetPlatform.Mac)
+			if (RuntimePlatform.IsMac)
 			{
 				return new DirectoryReference(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Personal), "Library", "Application Support", "Epic"));
 			}
-			else if (Environment.OSVersion.Platform == PlatformID.Unix)
+			else if (RuntimePlatform.IsLinux)
 			{
 				return new DirectoryReference(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Epic"));
 			}
@@ -1013,7 +997,7 @@ namespace UnrealBuildTool
 				string DirectoryName = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 				if(String.IsNullOrEmpty(DirectoryName))
 				{
-					return DirectoryReference.Combine(UnrealBuildTool.EngineDirectory, "Saved");
+					return DirectoryReference.Combine(Unreal.EngineDirectory, "Saved");
 				}
 				else
 				{
@@ -1041,8 +1025,8 @@ namespace UnrealBuildTool
 		/// <returns>The number of logical cores.</returns>
 		public static int GetLogicalProcessorCount()
 		{
-			// This function uses Windows P/Invoke calls; if we're on Mono, just return the default.
-			if(!Utils.IsRunningOnMono)
+			// This function uses Windows P/Invoke calls; if we're not running on Windows, just return the default.
+			if(RuntimePlatform.IsWindows)
 			{
 				const int ERROR_INSUFFICIENT_BUFFER = 122;
 
@@ -1088,52 +1072,228 @@ namespace UnrealBuildTool
 			return Environment.ProcessorCount;
 		}
 
+		
+		// int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen); // from man page
+		[DllImport("libc")]
+		extern static int sysctlbyname(string name, out int oldp, ref UInt64 oldlenp, IntPtr newp, UInt64 newlen);
+		
 		/// <summary>
 		/// Gets the number of physical cores, excluding hyper threading.
 		/// </summary>
 		/// <returns>The number of physical cores, or -1 if it could not be obtained</returns>
 		public static int GetPhysicalProcessorCount()
 		{
-			// This function uses Windows P/Invoke calls; if we're on Mono, just fail.
-			if (Utils.IsRunningOnMono)
+			if (RuntimePlatform.IsWindows)
 			{
-				return -1;
-			}
+				const int ERROR_INSUFFICIENT_BUFFER = 122;
 
-			const int ERROR_INSUFFICIENT_BUFFER = 122;
-
-			// Determine the required buffer size to store the processor information
-			uint ReturnLength = 0;
-			if(!GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorCore, IntPtr.Zero, ref ReturnLength) && Marshal.GetLastWin32Error() == ERROR_INSUFFICIENT_BUFFER)
-			{
-				// Allocate a buffer for it
-				IntPtr Ptr = Marshal.AllocHGlobal((int)ReturnLength);
-				try
+				// Determine the required buffer size to store the processor information
+				uint ReturnLength = 0;
+				if (!GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorCore, IntPtr.Zero,
+					ref ReturnLength) && Marshal.GetLastWin32Error() == ERROR_INSUFFICIENT_BUFFER)
 				{
-					if (GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorCore, Ptr, ref ReturnLength))
+					// Allocate a buffer for it
+					IntPtr Ptr = Marshal.AllocHGlobal((int) ReturnLength);
+					try
 					{
-						// As per-MSDN, this will return one structure per physical processor. Each SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX structure is of a variable size, so just skip 
-						// through the list and count the number of entries.
-						int Count = 0;
-						for(int Pos = 0; Pos < ReturnLength; )
+						if (GetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorCore, Ptr,
+							ref ReturnLength))
 						{
-							LOGICAL_PROCESSOR_RELATIONSHIP Type = (LOGICAL_PROCESSOR_RELATIONSHIP)Marshal.ReadInt16(Ptr, Pos);
-							if(Type == LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorCore)
+							// As per-MSDN, this will return one structure per physical processor. Each SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX structure is of a variable size, so just skip 
+							// through the list and count the number of entries.
+							int Count = 0;
+							for (int Pos = 0; Pos < ReturnLength;)
 							{
-								Count++;
+								LOGICAL_PROCESSOR_RELATIONSHIP Type =
+									(LOGICAL_PROCESSOR_RELATIONSHIP) Marshal.ReadInt16(Ptr, Pos);
+								if (Type == LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorCore)
+								{
+									Count++;
+								}
+
+								Pos += Marshal.ReadInt32(Ptr, Pos + 4);
 							}
-							Pos += Marshal.ReadInt32(Ptr, Pos + 4);
+
+							return Count;
 						}
-						return Count;
+					}
+					finally
+					{
+						Marshal.FreeHGlobal(Ptr);
 					}
 				}
-				finally
+			}
+			else if(RuntimePlatform.IsMac)
+			{
+				UInt64 Size = 4;
+				if (0 == sysctlbyname("hw.physicalcpu", out int Value, ref Size, IntPtr.Zero, 0))
 				{
-					Marshal.FreeHGlobal(Ptr);		
+					return Value;
 				}
 			}
 
 			return -1;
+		}
+
+		/// <summary>
+		/// Gets the total memory bytes available, based on what is known to the garbage collector.
+		/// </summary>
+		/// <remarks>This will return a max of 2GB for a 32bit application.</remarks>
+		/// <returns>The total memory available, in bytes.</returns>
+		public static long GetAvailableMemoryBytes()
+		{
+			GCMemoryInfo MemoryInfo = GC.GetGCMemoryInfo();
+			// TotalAvailableMemoryBytes will be 0 if garbage collection has not run yet
+			return MemoryInfo.TotalAvailableMemoryBytes != 0 ? MemoryInfo.TotalAvailableMemoryBytes : -1;
+		}
+
+		
+		// vm_statistics64, based on the definition in <mach/vm_statistics.h>
+		[StructLayout(LayoutKind.Sequential)]
+        struct vm_statistics64 {
+          	/*natural_t*/ public int	free_count;				/* # of pages free */
+          	/*natural_t*/ public int	active_count;			/* # of pages active */
+          	/*natural_t*/ public int	inactive_count;			/* # of pages inactive */
+          	/*natural_t*/ public int	wire_count;				/* # of pages wired down */
+          	/*uint64_t */ public UInt64	zero_fill_count;		/* # of zero fill pages */
+          	/*uint64_t */ public UInt64	reactivations;			/* # of pages reactivated */
+		  	/*uint64_t */ public UInt64	pageins;				/* # of pageins */
+          	/*uint64_t */ public UInt64	pageouts;				/* # of pageouts */
+          	/*uint64_t */ public UInt64	faults;					/* # of faults */
+          	/*uint64_t */ public UInt64	cow_faults;				/* # of copy-on-writes */
+          	/*uint64_t */ public UInt64	lookups;				/* object cache lookups */
+          	/*uint64_t */ public UInt64	hits;					/* object cache hits */
+          	/*uint64_t */ public UInt64	purges;					/* # of pages purged */
+          	/*natural_t*/ public int	purgeable_count;		/* # of pages purgeable */
+          	/*
+          	 * NB: speculative pages are already accounted for in "free_count",
+          	 * so "speculative_count" is the number of "free" pages that are
+          	 * used to hold data that was read speculatively from disk but
+          	 * haven't actually been used by anyone so far.
+          	 */
+          	/*natural_t*/ public int	speculative_count;		/* # of pages speculative */
+          
+          	/* added for rev1 */
+          	/*uint64_t */ public UInt64	decompressions;			/* # of pages decompressed */
+          	/*uint64_t */ public UInt64	compressions;			/* # of pages compressed */
+          	/*uint64_t */ public UInt64	swapins;				/* # of pages swapped in (via compression segments) */
+          	/*uint64_t */ public UInt64	swapouts;				/* # of pages swapped out (via compression segments) */
+          	/*natural_t*/ public int	compressor_page_count;	/* # of pages used by the compressed pager to hold all the compressed data */
+          	/*natural_t*/ public int	throttled_count;		/* # of pages throttled */
+          	/*natural_t*/ public int	external_page_count;	/* # of pages that are file-backed (non-swap) */
+          	/*natural_t*/ public int	internal_page_count;	/* # of pages that are anonymous */
+          	/*uint64_t */ public UInt64	total_uncompressed_pages_in_compressor; /* # of pages (uncompressed) held within the compressor. */
+        } // __attribute__((aligned(8))); 
+		
+		// kern_return_t host_statistics64(host_t host_priv, host_flavor_t flavor, host_info64_t host_info64_out, mach_msg_type_number_t *host_info64_outCnt); // from <mach/mach_host.h>
+		[DllImport("libc")]
+		extern static int host_statistics64(IntPtr host_priv, int flavor, out vm_statistics64 host_info64_out, ref uint host_info_count);
+
+		// mach_port_t mach_host_self() // from <mach/mach_init.h>
+		[DllImport("libc")]
+		extern static IntPtr mach_host_self();
+		
+		/// <summary>
+		/// Gets the total memory bytes free, based on what is known to the garbage collector.
+		/// </summary>
+		/// <remarks>This will return a max of 2GB for a 32bit application.</remarks>
+		/// <returns>The total memory free, in bytes.</returns>
+		public static long GetFreeMemoryBytes()
+		{
+			long FreeMemoryBytes = -1;
+			
+			GCMemoryInfo MemoryInfo = GC.GetGCMemoryInfo();
+			// TotalAvailableMemoryBytes will be 0 if garbage collection has not run yet
+			if (MemoryInfo.TotalAvailableMemoryBytes != 0)
+			{
+				FreeMemoryBytes = MemoryInfo.TotalAvailableMemoryBytes - MemoryInfo.MemoryLoadBytes;
+			}
+
+			// On Mac, MemoryInfo.MemoryLoadBytes includes memory used to cache disk-backed files ("Cached Files" in
+			// Activity Monitor), which can result in a significant over-estimate of memory pressure.
+			// We treat memory used for caching of disk-backed files as free for use in compilation tasks.
+			if (RuntimePlatform.IsMac)	
+			{
+				// host_statistics64() flavor, from <mach/host_info.h>
+				int HOST_VM_INFO64 = 4;
+				// host_statistics64() count of 32bit values in output struct, from <mach/host_info.h>
+				int HOST_VM_INFO64_COUNT = Marshal.SizeOf(typeof(vm_statistics64)) / 4;
+		
+				vm_statistics64 VMStats;
+				uint StructSize = (uint)HOST_VM_INFO64_COUNT;
+				IntPtr Host = mach_host_self();
+				host_statistics64(Host, HOST_VM_INFO64, out VMStats, ref StructSize);
+
+				int PageSize = 0;
+				UInt64 OutSize = 4;
+				if (0 != sysctlbyname("hw.pagesize", out PageSize, ref OutSize, IntPtr.Zero, 0))
+				{
+					PageSize = 4096; // likely result
+				}
+				
+				FreeMemoryBytes += (long)PageSize * (long)VMStats.external_page_count;
+			}
+			return FreeMemoryBytes;
+		}
+
+		/// <summary>
+		/// Determines the maximum number of actions to execute in parallel, taking into account the resources available on this machine.
+		/// </summary>
+		/// <param name="MaxProcessorCount">How many actions to execute in parallel. When 0 a default will be chosen based on system resources</param>
+		/// <param name="ProcessorCountMultiplier">Processor count multiplier for local execution. Can be below 1 to reserve CPU for other tasks.</param>
+		/// <param name="MemoryPerActionBytes"></param>
+		/// <returns>Max number of actions to execute in parallel</returns>
+		public static int GetMaxActionsToExecuteInParallel(int MaxProcessorCount, double ProcessorCountMultiplier, long MemoryPerActionBytes)
+		{
+			// Get the number of logical processors
+			int NumLogicalCores = Utils.GetLogicalProcessorCount();
+
+			// Use WMI to figure out physical cores, excluding hyper threading.
+			int NumPhysicalCores = Utils.GetPhysicalProcessorCount();
+			if (NumPhysicalCores == -1)
+			{
+				NumPhysicalCores = NumLogicalCores;
+			}
+
+			Log.TraceInformation($"Determining max actions to execute in parallel ({NumPhysicalCores} physical cores, {NumLogicalCores} logical cores)");
+
+			// The number of actions to execute in parallel is trying to keep the CPU busy enough in presence of I/O stalls.
+			int MaxActionsToExecuteInParallel;
+			if (ProcessorCountMultiplier != 1.0)
+			{
+				// The CPU has more logical cores than physical ones, aka uses hyper-threading. 
+				// Use multiplier if provided
+				MaxActionsToExecuteInParallel = (int)(NumPhysicalCores * ProcessorCountMultiplier);
+				Log.TraceInformation($"  Requested {ProcessorCountMultiplier} process count multiplier: limiting max parallel actions to {MaxActionsToExecuteInParallel}");
+			}
+			// kick off a task per physical core - evidence suggests that, in general, using more cores does not yield significantly better throughput
+			else
+			{
+				Log.TraceInformation($"  Executing up to {NumPhysicalCores} processes, one per physical core");
+				MaxActionsToExecuteInParallel = NumPhysicalCores;
+			}
+
+			// Limit number of actions to execute if the system is memory starved.
+			if (MemoryPerActionBytes > 0)
+			{
+				long FreeMemoryBytes = GetFreeMemoryBytes();
+				if (FreeMemoryBytes != -1)
+				{
+					int TotalMemoryActions = Convert.ToInt32(FreeMemoryBytes / MemoryPerActionBytes);
+					if (TotalMemoryActions < MaxActionsToExecuteInParallel)
+					{
+						MaxActionsToExecuteInParallel = Math.Max(1, Math.Min(MaxActionsToExecuteInParallel, TotalMemoryActions));
+						Log.TraceInformation($"  Requested {StringUtils.FormatBytesString(MemoryPerActionBytes)} free memory per action, {StringUtils.FormatBytesString(FreeMemoryBytes)} available: limiting max parallel actions to {MaxActionsToExecuteInParallel}");
+					}
+				}
+			}
+
+			if (MaxProcessorCount < MaxActionsToExecuteInParallel)
+			{
+				MaxActionsToExecuteInParallel = Math.Max(1, Math.Min(MaxActionsToExecuteInParallel, MaxProcessorCount));
+				Log.TraceInformation($"  Requested max {MaxProcessorCount} action(s): limiting max parallel actions to {MaxActionsToExecuteInParallel}");
+			}
+			return MaxActionsToExecuteInParallel;
 		}
 
 		/// <summary>
@@ -1253,38 +1413,249 @@ namespace UnrealBuildTool
 		/// <param name="Location">Location of the file</param>
 		/// <param name="Contents">New contents of the file</param>
 		/// <param name="Comparison">The type of string comparison to use</param>
-		public static void WriteFileIfChanged(FileReference Location, string Contents, StringComparison Comparison)
+		internal static void WriteFileIfChanged(FileReference Location, string Contents, StringComparison Comparison = StringComparison.Ordinal)
+		{
+			FileItem FileItem = FileItem.GetItemByFileReference(Location);
+			WriteFileIfChanged(FileItem, Contents, Comparison);
+		}
+
+		/// <summary>
+		/// Writes a file if the contents have changed
+		/// </summary>
+		/// <param name="Location">Location of the file</param>
+		/// <param name="ContentLines">New contents of the file</param>
+		/// <param name="Comparison">The type of string comparison to use</param>
+		internal static void WriteFileIfChanged(FileReference Location, IEnumerable<string> ContentLines, StringComparison Comparison = StringComparison.Ordinal)
+		{
+			FileItem FileItem = FileItem.GetItemByFileReference(Location);
+			WriteFileIfChanged(FileItem, ContentLines, Comparison);
+		}
+
+		/// <summary>
+		/// Record each file that has been requested written, with the number of times the file has been written
+		/// </summary>
+		static readonly Dictionary<FileReference, (int WriteRequestCount, int ActualWriteCount)> WriteFileIfChangedRecord = new Dictionary<FileReference, (int, int)>();
+
+		static internal FileReference? WriteFileIfChangedTrace = null;
+		static internal string WriteFileIfChangedContext = "";
+
+		static void RecordWriteFileIfChanged(FileReference File, bool bNew, bool bChanged)
+		{
+			int NewWriteRequestCount = 1;
+			int NewActualWriteCount = bChanged ? 1 : 0;
+
+			bool bOverrideLogEventType = FileReference.Equals(WriteFileIfChangedTrace, File);
+			LogEventType OverrideType = LogEventType.Console;
+
+			string Prefix = "";
+			if (bOverrideLogEventType)
+			{
+				Prefix = "[TraceWrites] ";
+			}
+
+			string Context = "";
+			if (!String.IsNullOrEmpty(WriteFileIfChangedContext))
+			{
+				Context = $" ({WriteFileIfChangedContext})";
+			}
+
+			lock (WriteFileIfChangedRecord)
+			{
+				if (WriteFileIfChangedRecord.TryGetValue(File, out (int WriteRequestCount, int ActualWriteCount) WriteRecord))
+				{
+					// Unexepected that a file is getting written more than once during a single execution
+
+					NewWriteRequestCount += WriteRecord.WriteRequestCount;
+					NewActualWriteCount += WriteRecord.ActualWriteCount;
+
+					if (WriteRecord.ActualWriteCount == 0)
+					{
+						if (bNew)
+						{
+							Log.WriteLine(bOverrideLogEventType ? OverrideType : LogEventType.Warning,
+								$"{Prefix}Writing a file that previously existed was not overwritten and then removed: \"{File}\"{Context}");
+						}
+						else
+						{
+							if (bChanged)
+							{
+								Log.WriteLine(bOverrideLogEventType ? OverrideType : LogEventType.Warning,
+									$"{Prefix}Writing a file that previously was not written \"{File}\"{Context}");
+							}
+							else
+							{
+								if (bOverrideLogEventType)
+								{
+									Log.WriteLine(OverrideType,
+										$"{Prefix}Not writing a file that was previously not written: \"{File}\"{Context}");
+								}
+
+							}
+						}
+					}
+					else
+					{
+						if (bNew)
+						{
+							Log.WriteLine(bOverrideLogEventType ? OverrideType : LogEventType.Warning,
+								$"{Prefix}Re-writing a file that was previously written and then removed: \"{File}\"{Context}");
+						}
+						else
+						{
+							if (bChanged)
+							{
+								Log.WriteLine(bOverrideLogEventType ? OverrideType : LogEventType.Warning,
+									$"{Prefix}Re-writing a file that was previously written: \"{File}\"{Context}");
+							}
+							else
+							{
+								if (bOverrideLogEventType)
+								{
+									Log.WriteLine(OverrideType,
+										$"{Prefix}Not writing a file that was previously written: \"{File}\"{Context}");
+								}
+							}
+						}
+					}
+				}
+				else
+				{
+					if (FileReference.Equals(WriteFileIfChangedTrace, File))
+					{
+						if (bNew)
+						{
+							Log.TraceInformation($"{Prefix}Writing new file: \"{File}\"{Context}");
+						}
+						else
+						{
+							if (bChanged)
+							{
+								Log.TraceInformation($"{Prefix}Writing changed file: \"{File}\"{Context}");
+							}
+							else
+							{
+								Log.TraceInformation($"{Prefix}Not writing unchanged file: \"{File}\"{Context}");
+							}
+						}
+					}
+				}
+
+				WriteFileIfChangedRecord[File] = (NewWriteRequestCount, NewActualWriteCount);
+			}
+		}
+
+		internal static void LogWriteFileIfChangedActivity()
+		{
+			int TotalRequests = 0;
+			int TotalWrites = 0;
+			foreach ((int Requested, int Actual) in WriteFileIfChangedRecord.Values)
+			{
+				TotalRequests += Requested;
+				TotalWrites += Actual;
+			}
+
+			Log.TraceLog($"WriteFileIfChanged() wrote {TotalWrites} changed files of {TotalRequests} requested writes.");
+		}
+
+		/// <summary>
+		/// Writes a file if the contents have changed
+		/// </summary>
+		/// <param name="FileItem">Location of the file</param>
+		/// <param name="Contents">New contents of the file</param>
+		/// <param name="Comparison">The type of string comparison to use</param>
+		internal static void WriteFileIfChanged(FileItem FileItem, string Contents, StringComparison Comparison = StringComparison.Ordinal)
 		{
 			// Only write the file if its contents have changed.
-			if (!FileReference.Exists(Location))
+			FileReference Location = FileItem.Location;
+			if (!FileItem.Exists)
 			{
 				DirectoryReference.CreateDirectory(Location.Directory);
 				FileReference.WriteAllText(Location, Contents, GetEncodingForString(Contents));
+				FileItem.ResetCachedInfo();
+
+				RecordWriteFileIfChanged(FileItem.Location, bNew: true, bChanged: true);
 			}
 			else
 			{
-				string CurrentContents = Utils.ReadAllText(Location.FullName);
+				string CurrentContents = Utils.ReadAllText(FileItem.FullName);
 				if (!String.Equals(CurrentContents, Contents, Comparison))
 				{
-					FileReference BackupFile = new FileReference(Location.FullName + ".old");
+					FileReference BackupFile = new FileReference(FileItem.FullName + ".old");
 					try
 					{
-						Log.TraceLog("Updating {0}: contents have changed. Saving previous version to {1}.", Location, BackupFile);
+						Log.TraceLog("Updating {0}: contents have changed. Saving previous version to {1}.", FileItem, BackupFile);
 						FileReference.Delete(BackupFile);
 						FileReference.Move(Location, BackupFile);
 					}
 					catch (Exception Ex)
 					{
-						Log.TraceWarning("Unable to rename {0} to {1}", Location, BackupFile);
+						Log.TraceWarning("Unable to rename {0} to {1}", FileItem, BackupFile);
 						Log.TraceLog("{0}", ExceptionUtils.FormatExceptionDetails(Ex));
 					}
 					FileReference.WriteAllText(Location, Contents, GetEncodingForString(Contents));
+					FileItem.ResetCachedInfo();
+
+					RecordWriteFileIfChanged(FileItem.Location, bNew: false, bChanged: true);
+				}
+				else
+				{ 
+					RecordWriteFileIfChanged(FileItem.Location, bNew: false, bChanged: false);
+				}
+			}
+		}
+
+		/// <summary>
+		/// Writes a file if the contents have changed
+		/// </summary>
+		/// <param name="FileItem">Location of the file</param>
+		/// <param name="ContentLines">New contents of the file</param>
+		/// <param name="Comparison">The type of string comparison to use</param>
+		internal static void WriteFileIfChanged(FileItem FileItem, IEnumerable<string> ContentLines, StringComparison Comparison = StringComparison.Ordinal)
+		{
+			// Only write the file if its contents have changed.
+			FileReference Location = FileItem.Location;
+			
+			if (!FileItem.Exists)
+			{
+				DirectoryReference.CreateDirectory(Location.Directory);
+				FileReference.WriteAllLines(Location, ContentLines, GetEncodingForStrings(ContentLines));
+				FileItem.ResetCachedInfo();
+
+				RecordWriteFileIfChanged(FileItem.Location, bNew: true, bChanged: true);
+			}
+			else
+			{
+				string[] CurrentContents = File.ReadAllLines(FileItem.FullName);
+				if (!CurrentContents.SequenceEqual(ContentLines, StringComparer.FromComparison(Comparison)))
+				{
+					FileReference BackupFile = new FileReference($"{FileItem.FullName}.old");
+					try
+					{
+						Log.TraceLog($"Updating {FileItem}: contents have changed. Saving previous version to {BackupFile}.");
+						FileReference.Delete(BackupFile);
+						FileReference.Move(Location, BackupFile);
+					}
+					catch (Exception Ex)
+					{
+						Log.TraceWarning($"Unable to rename {FileItem} to {BackupFile}");
+						Log.TraceLog(ExceptionUtils.FormatExceptionDetails(Ex));
+					}
+					FileReference.WriteAllLines(Location, ContentLines, GetEncodingForStrings(ContentLines));
+					FileItem.ResetCachedInfo();
+
+					RecordWriteFileIfChanged(FileItem.Location, bNew: false, bChanged: true);
+				}
+				else
+				{ 
+					RecordWriteFileIfChanged(FileItem.Location, bNew: false, bChanged: false);
 				}
 			}
 		}
 
 		/// <summary>
 		/// Determines the appropriate encoding for a string: either ASCII or UTF-8.
+		/// If the string length is equivalent to the encoded length, then no non-ASCII characters were present in the string.
+		/// Don't write BOM as it messes with clang when loading response files.
 		/// </summary>
 		/// <param name="Str">The string to test.</param>
 		/// <returns>Either System.Text.Encoding.ASCII or System.Text.Encoding.UTF8, depending on whether or not the string contains non-ASCII characters.</returns>
@@ -1292,7 +1663,19 @@ namespace UnrealBuildTool
 		{
 			// If the string length is equivalent to the encoded length, then no non-ASCII characters were present in the string.
 			// Don't write BOM as it messes with clang when loading response files.
-			return (Encoding.UTF8.GetByteCount(Str) == Str.Length) ? Encoding.ASCII : new UTF8Encoding(false);
+			return (Encoding.UTF8.GetByteCount(Str) != Str.Length) ?  new UTF8Encoding(false) : Encoding.ASCII;
+		}
+		
+		/// <summary>
+		/// Determines the appropriate encoding for a list of strings: either ASCII or UTF-8.
+		/// If the string length is equivalent to the encoded length, then no non-ASCII characters were present in the string.
+		/// Don't write BOM as it messes with clang when loading response files.
+		/// </summary>
+		/// <param name="Strings">The string to test.</param>
+		/// <returns>Either System.Text.Encoding.ASCII or System.Text.Encoding.UTF8, depending on whether or not the strings contains non-ASCII characters.</returns>
+		private static Encoding GetEncodingForStrings(IEnumerable<string> Strings)
+		{
+			return Strings.Any(S => Encoding.UTF8.GetByteCount(S) != S.Length) ? new UTF8Encoding(false) : Encoding.ASCII;
 		}
 	}
 }

@@ -16,9 +16,11 @@
 #include "TakeRecorderSources.h"
 #include "TakeRecorderSourcesCommands.h"
 #include "TakeRecorderSettings.h"
+#include "TakeRecorderSourcesUtils.h"
 #include "Features/IModularFeatures.h"
 #include "DragAndDrop/ActorDragDropOp.h"
-#include "SceneOutlinerDragDrop.h"
+#include "DragAndDrop/FolderDragDropOp.h"
+#include "DragAndDrop/CompositeDragDropOp.h"
 #include "EngineUtils.h"
 #include "Algo/Sort.h"
 #include "ScopedTransaction.h"
@@ -37,9 +39,11 @@
 #include "LevelEditor.h"
 #include "SceneOutlinerModule.h"
 #include "SceneOutlinerPublicTypes.h"
-#include "Toolkits/AssetEditorManager.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "ActorTreeItem.h"
+#include "EditorActorFolders.h"
 
 #include "TakeRecorderMicrophoneAudioSource.h"
 #include "TakeRecorderWorldSource.h"
@@ -50,6 +54,14 @@
 #include "ILevelSequenceEditorToolkit.h"
 
 #define LOCTEXT_NAMESPACE "TakeRecorderSources"
+
+namespace TakeRecorderSources
+{
+#if WITH_EDITOR
+	static bool AllowMenuExtensions = true;
+	FAutoConsoleVariableRef CVarAllowMenuExtensions(TEXT("TakeRecorder.AllowMenuExtensions"), AllowMenuExtensions, TEXT(""), ECVF_Cheat);
+#endif // WITH_EDITOR
+}
 
 static void AddActorSources(UTakeRecorderSources* Sources, TArrayView<AActor* const> InActors)
 {
@@ -166,7 +178,7 @@ namespace
 			{
 				for (AActor* Actor : Level->Actors)
 				{
-					if (Actor && Actor->IsA(Class) && !Actor->IsA(ALevelScriptActor::StaticClass()) && !Actor->IsA(ALevelSequenceActor::StaticClass()))
+					if (Actor && Actor->IsA(Class) && !Actor->IsA(ALevelScriptActor::StaticClass()) && !Actor->IsA(ALevelSequenceActor::StaticClass()) && !Actor->GetClass()->HasAnyClassFlags(CLASS_NotPlaceable))
 					{
 						OutActors.AddUnique(Actor);
 					}
@@ -186,49 +198,91 @@ struct FActorTakeRecorderDropHandler : ITakeRecorderDropHandler
 
 	virtual bool CanHandleOperation(TSharedPtr<FDragDropOperation> InOperation, UTakeRecorderSources* Sources) override
 	{
-		using namespace SceneOutliner;
-
+		bool bCanHandle = false;
 		if (InOperation)
-		{
+		{		
+			TSharedPtr<FActorDragDropOp>  ActorDrag = nullptr;
+			TSharedPtr<FFolderDragDropOp> FolderDrag = nullptr;
+
+			if (!InOperation.IsValid())
+			{
+				return false;
+			}
 			if (InOperation->IsOfType<FActorDragDropOp>())
 			{
-				return StaticCastSharedPtr<FActorDragDropOp>(InOperation)->Actors.Num() > 0;
+				ActorDrag = StaticCastSharedPtr<FActorDragDropOp>(InOperation);
 			}
-			else if (InOperation->IsOfType<FSceneOutlinerDragDropOp>())
+			else if (InOperation->IsOfType<FFolderDragDropOp>())
 			{
-				return true;
+				FolderDrag = StaticCastSharedPtr<FFolderDragDropOp>(InOperation);
+			}
+			else if (InOperation->IsOfType<FCompositeDragDropOp>())
+			{
+				if (const TSharedPtr<FCompositeDragDropOp> CompositeDrag = StaticCastSharedPtr<FCompositeDragDropOp>(InOperation))
+				{
+					ActorDrag = CompositeDrag->GetSubOp<FActorDragDropOp>();
+					FolderDrag = CompositeDrag->GetSubOp<FFolderDragDropOp>();
+				}
+			}
+
+			if (ActorDrag)
+			{
+				for (TWeakObjectPtr<AActor> WeakActor : ActorDrag->Actors)
+				{
+					if (AActor* Actor = WeakActor.Get())
+					{
+						if (TakeRecorderSourcesUtils::IsActorRecordable(Actor))
+						{
+							bCanHandle = true;
+							break;
+						}
+					}
+				}
+			}
+
+			if (FolderDrag && !bCanHandle)
+			{
+				TArray<AActor*> FolderActors;
+				FActorFolders::GetActorsFromFolders(*GWorld, FolderDrag->Folders, FolderActors);
+
+				for (AActor* ActorInFolder : FolderActors)
+				{
+					if (TakeRecorderSourcesUtils::IsActorRecordable(ActorInFolder))
+					{
+						bCanHandle = true;
+						break;
+					}
+				}
 			}
 		}
 
-		return false;
+		return bCanHandle;
 	}
 
 	TArray<AActor*> GetValidDropActors(TSharedPtr<FDragDropOperation> InOperation, UTakeRecorderSources* Sources)
 	{
-		using namespace SceneOutliner;
+		TSharedPtr<FActorDragDropOp>  ActorDrag = nullptr;
+		TSharedPtr<FFolderDragDropOp> FolderDrag = nullptr;
 
-		FActorDragDropOp*  ActorDrag = nullptr;
-		FFolderDragDropOp* FolderDrag = nullptr;
-
-		FDragDropOperation* OperationPtr = InOperation.Get();
-		if (!OperationPtr)
+		if (!InOperation.IsValid())
 		{
 			return TArray<AActor*>();
 		}
-		else if (OperationPtr->IsOfType<FSceneOutlinerDragDropOp>())
+		if (InOperation->IsOfType<FActorDragDropOp>())
 		{
-			FSceneOutlinerDragDropOp* OutlinerOp = static_cast<FSceneOutlinerDragDropOp*>(OperationPtr);
-			FolderDrag = OutlinerOp->FolderOp.Get();
-			ActorDrag  = OutlinerOp->ActorOp.Get();
-
+			ActorDrag = StaticCastSharedPtr<FActorDragDropOp>(InOperation);
 		}
-		else if (OperationPtr->IsOfType<FActorDragDropOp>())
+		else if (InOperation->IsOfType<FFolderDragDropOp>())
 		{
-			ActorDrag = static_cast<FActorDragDropOp*>(OperationPtr);
+			FolderDrag = StaticCastSharedPtr<FFolderDragDropOp>(InOperation);
 		}
-		else if (OperationPtr->IsOfType<FFolderDragDropOp>())
+		else if (InOperation->IsOfType<FCompositeDragDropOp>())
 		{
-			FolderDrag = static_cast<FFolderDragDropOp*>(OperationPtr);
+			if (const TSharedPtr<FCompositeDragDropOp> CompositeOp = StaticCastSharedPtr<FCompositeDragDropOp>(InOperation))
+			{
+				ActorDrag = CompositeOp->GetSubOp<FActorDragDropOp>();
+				FolderDrag = CompositeOp->GetSubOp<FFolderDragDropOp>();
+			}
 		}
 
 		TArray<AActor*> DraggedActors;
@@ -240,27 +294,25 @@ struct FActorTakeRecorderDropHandler : ITakeRecorderDropHandler
 			{
 				if (AActor* Actor = WeakActor.Get())
 				{
-					DraggedActors.Add(Actor);
+					if (TakeRecorderSourcesUtils::IsActorRecordable(Actor))
+					{
+						DraggedActors.Add(Actor);
+					}
 				}
 			}
 		}
 
 		if (FolderDrag)
 		{
-			// Copy the array onto the stack if it's within a reasonable size
-			TArray<FName, TInlineAllocator<16>> DraggedFolders(FolderDrag->Folders);
+			TArray<AActor*> FolderActors;
+			FActorFolders::GetActorsFromFolders(*GWorld, FolderDrag->Folders, FolderActors);
 
-			// Find any actors in the global editor world that have any of the dragged paths.
-			// WARNING: Actor iteration can be very slow, so this needs to be optimized
-			for (FActorIterator ActorIt(GWorld); ActorIt; ++ActorIt)
+			for (AActor* ActorInFolder : FolderActors)
 			{
-				FName ActorPath = ActorIt->GetFolderPath();
-				if (ActorPath.IsNone() || !DraggedFolders.Contains(ActorPath))
+				if (TakeRecorderSourcesUtils::IsActorRecordable(ActorInFolder))
 				{
-					continue;
+					DraggedActors.Add(ActorInFolder);
 				}
-
-				DraggedActors.Add(*ActorIt);
 			}
 		}
 
@@ -358,7 +410,7 @@ public:
 	void RegisterMenuExtensions()
 	{
 #if WITH_EDITOR
-		if (GEditor)
+		if (GEditor && TakeRecorderSources::AllowMenuExtensions)
 		{
 			// Register level editor menu extender
 			LevelEditorMenuExtenderDelegate = FLevelEditorModule::FLevelViewportMenuExtender_SelectedActors::CreateRaw(this, &FTakeRecorderSourcesModule::ExtendLevelViewportContextMenu);
@@ -397,22 +449,20 @@ public:
 
 		if (SelectedActors.Num() > 0)
 		{
-			Extender->AddMenuExtension("ActorControl", EExtensionHook::After, CommandList, FMenuExtensionDelegate::CreateLambda(
+			Extender->AddMenuExtension("ActorUETools", EExtensionHook::After, CommandList, FMenuExtensionDelegate::CreateLambda(
 				[this, SelectedActors](FMenuBuilder& MenuBuilder) 
 			{
 				FText RecordText;
 				if (SelectedActors.Num() == 1)
 				{
-					RecordText = FText::Format(LOCTEXT("RecordSelectedActorsText", "Record {0} with Take Recorder"), FText::FromString(SelectedActors[0]->GetActorLabel()));
+					RecordText = FText::Format(LOCTEXT("RecordSingleSelectedActorText", "Record {0} with Take Recorder"), FText::FromString(SelectedActors[0]->GetActorLabel()));
 				}
 				else
 				{
 					RecordText = FText::Format(LOCTEXT("RecordSelectedActorsText", "Record {0} actors with Take Recorder"), SelectedActors.Num());
 				}
 
-				MenuBuilder.BeginSection("TakeRecorder", LOCTEXT("TakeRecorderSection", "Take Recorder"));
-				MenuBuilder.AddMenuEntry(FTakeRecorderSourcesCommands::Get().RecordSelectedActors, NAME_None, RecordText);
-				MenuBuilder.EndSection();
+				MenuBuilder.AddMenuEntry(FTakeRecorderSourcesCommands::Get().RecordSelectedActors, NAME_None, RecordText, TAttribute<FText>(), FSlateIcon(FAppStyle::GetAppStyleSetName(), "Actors.TakeRecorder"));
 			}
 			
 			));
@@ -457,7 +507,7 @@ public:
 
 		auto OutlinerFilterPredicate = [InExistingActors = MoveTemp(ExistingActors)](const AActor* InActor)
 		{
-			return !InExistingActors.Contains(InActor);
+			return !InExistingActors.Contains(InActor) && TakeRecorderSourcesUtils::IsActorRecordable(InActor);
 		};
 
 		// Set up a menu entry to add the selected actor(s) to the sequencer
@@ -491,13 +541,9 @@ public:
 
 		MenuBuilder.BeginSection("ChooseActorSection", LOCTEXT("ChooseActor", "Choose Actor:"));
 		{
-			using namespace SceneOutliner;
-
 			// Set up a menu entry to add any arbitrary actor to the sequencer
-			FInitializationOptions InitOptions;
+			FSceneOutlinerInitializationOptions InitOptions;
 			{
-				InitOptions.Mode = ESceneOutlinerMode::ActorPicker;
-
 				// We hide the header row to keep the UI compact.
 				InitOptions.bShowHeaderRow = false;
 				InitOptions.bShowSearchBox = true;
@@ -505,10 +551,10 @@ public:
 				InitOptions.bFocusSearchBoxWhenOpened = true;
 
 				// Only want the actor label column
-				InitOptions.ColumnMap.Add(FBuiltInColumnTypes::Label(), FColumnInfo(EColumnVisibility::Visible, 0));
+				InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Label(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 0));
 
 				// Only display actors that are not possessed already
-				InitOptions.Filters->AddFilterPredicate(FActorFilterPredicate::CreateLambda(OutlinerFilterPredicate));
+				InitOptions.Filters->AddFilterPredicate<FActorTreeItem>(FActorTreeItem::FFilterPredicate::CreateLambda(OutlinerFilterPredicate));
 			}
 
 			// actor selector to allow the user to choose an actor
@@ -518,7 +564,7 @@ public:
 				.MaxDesiredHeight(400.0f)
 				.WidthOverride(300.0f)
 				[
-					SceneOutlinerModule.CreateSceneOutliner(
+					SceneOutlinerModule.CreateActorPicker(
 						InitOptions,
 						FOnActorPicked::CreateLambda([Sources](AActor* Actor){
 							// Create a new binding for this actor
@@ -694,6 +740,25 @@ public:
 #endif
 	}
 
+	bool HandleCancelRecordTakeCommand(UWorld* InWorld, const TCHAR* InStr, FOutputDevice& Ar)
+	{
+#if WITH_EDITOR
+		if (UTakeRecorder* ActiveRecorder = UTakeRecorder::GetActiveRecorder())
+		{
+			ULevelSequence* ActiveSequence = ActiveRecorder->GetSequence();
+			if (ActiveSequence)
+			{
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->CloseAllEditorsForAsset(ActiveSequence);
+			}
+
+			ActiveRecorder->Cancel();
+		}
+		return true;
+#else
+		return false;
+#endif
+	}
+
 	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override
 	{
 #if WITH_EDITOR
@@ -704,6 +769,10 @@ public:
 		else if (FParse::Command(&Cmd, TEXT("StopRecordingTake")))
 		{
 			return HandleStopRecordTakeCommand(InWorld, Cmd, Ar);
+		}
+		else if (FParse::Command(&Cmd, TEXT("CancelRecordingTake")))
+		{
+			return HandleCancelRecordTakeCommand(InWorld, Cmd, Ar);
 		}
 #endif
 		return false;

@@ -12,6 +12,7 @@ namespace Insights
 {
 
 class FBaseTreeNode;
+class IFilterValueConverter;
 class FTable;
 class ITableCellValueGetter;
 class ITableCellValueFormatter;
@@ -36,8 +37,8 @@ enum class ETableColumnAggregation : uint32
 {
 	None = 0,
 	Sum,
-	//Min,
-	//Max,
+	Min,
+	Max,
 	//Average,
 	//Median,
 };
@@ -56,12 +57,12 @@ public:
 	/** Initialization constructor. */
 	FTableColumn(const FName InId)
 		: Id(InId)
-		, Order(0)
 		, Index(-1)
 		, ShortName()
 		, TitleName()
 		, Description()
 		, bIsVisible(false)
+		, bIsDynamic(false)
 		, Flags(ETableColumnFlags::None)
 		, HorizontalAlignment(HAlign_Left)
 		, InitialWidth(60.0f)
@@ -173,6 +174,8 @@ public:
 	FText GetValueAsText(const FBaseTreeNode& InNode) const;
 	FText GetValueAsTooltipText(const FBaseTreeNode& InNode) const;
 
+	FString GetValueAsSerializableString(const FBaseTreeNode& InNode) const;
+
 	//////////////////////////////////////////////////
 	// Value Sorter (can be nullptr)
 
@@ -183,16 +186,24 @@ public:
 	bool CanBeSorted() const { return ValueSorter.IsValid(); }
 
 	//////////////////////////////////////////////////
+	// Value Converter (can be nullptr)
+
+	TSharedPtr<IFilterValueConverter> GetValueConverter() const { return ValueConverter; }
+	void SetValueConverter(TSharedPtr<IFilterValueConverter> InValueConverter) { ValueConverter = InValueConverter; }
+
+	//////////////////////////////////////////////////
 
 	TWeakPtr<FTable> GetParentTable() const { return ParentTable; }
 	void SetParentTable(TWeakPtr<FTable> InParentTable) { ParentTable = InParentTable; }
 
+	//////////////////////////////////////////////////
+
+	void SetIsDynamic(bool InValue) { bIsDynamic = InValue; }
+	bool IsDynamic() const { return bIsDynamic; }
+
 private:
 	/** Id of the column. */
 	FName Id;
-
-	/** Order value, to sort columns in the list/tree view. */
-	int32 Order;
 
 	/** Column index in source table. */
 	int32 Index;
@@ -208,6 +219,9 @@ private:
 
 	/** Is this column visible? */
 	bool bIsVisible;
+
+	/** If it is not dynamic, the column's value can be cached. */
+	bool bIsDynamic;
 
 	/** Other on/off switches. */
 	ETableColumnFlags Flags;
@@ -234,6 +248,9 @@ private:
 
 	/** Custom sorter for values displayed by this column. */
 	TSharedPtr<ITableCellValueSorter> ValueSorter;
+	
+	/** Used to convert in a custom way from string to column data type in FilterConfigurator */
+	TSharedPtr<IFilterValueConverter> ValueConverter;
 
 	/* Parent table. Only one table instance can own this column. */
 	TWeakPtr<FTable> ParentTable;

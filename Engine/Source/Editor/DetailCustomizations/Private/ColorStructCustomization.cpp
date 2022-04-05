@@ -13,6 +13,7 @@
 #include "IPropertyUtilities.h"
 #include "Widgets/Colors/SColorPicker.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Widgets/Images/SImage.h"
 
 
 #define LOCTEXT_NAMESPACE "FColorStructCustomization"
@@ -51,7 +52,7 @@ void FColorStructCustomization::MakeHeaderRow(TSharedRef<class IPropertyHandle>&
 	const FText DisplayToolTipOverride = FText::GetEmpty();
 	
 	TSharedPtr<SWidget> ColorWidget;
-	float ContentWidth = 250.0f;
+	float ContentWidth = 125.0f;
 
 	TWeakPtr<IPropertyHandle> StructWeakHandlePtr = StructPropertyHandle;
 
@@ -77,51 +78,55 @@ void FColorStructCustomization::MakeHeaderRow(TSharedRef<class IPropertyHandle>&
 }
 
 
+FColorStructCustomization::~FColorStructCustomization()
+{
+}
+
 TSharedRef<SWidget> FColorStructCustomization::CreateColorWidget(TWeakPtr<IPropertyHandle> StructWeakHandlePtr)
 {
-	FSlateFontInfo NormalText = IDetailLayoutBuilder::GetDetailFont();
-
-	return SNew(SHorizontalBox)
-		+ SHorizontalBox::Slot()
+	return
+		SNew(SBox)
+		.Padding(FMargin(0,0,4.0f,0.0f))
 		.VAlign(VAlign_Center)
-		.Padding(0.0f, 2.0f)
 		[
-			SNew(SOverlay)
-			+SOverlay::Slot()
-			[
-				// Displays the color with alpha unless it is ignored
-				SAssignNew(ColorPickerParentWidget, SColorBlock)
-				.Color(this, &FColorStructCustomization::OnGetColorForColorBlock)
-				.ShowBackgroundForAlpha(true)
-				.IgnoreAlpha(bIgnoreAlpha)
-				.OnMouseButtonDown(this, &FColorStructCustomization::OnMouseButtonDownColorBlock)
-				.Size(FVector2D(35.0f, 12.0f))
-				.IsEnabled(this, &FColorStructCustomization::IsValueEnabled, StructWeakHandlePtr)
-			]
-			+SOverlay::Slot()
-			.HAlign(HAlign_Center)
+			SAssignNew(ColorWidgetBackgroundBorder, SBorder)
+			.Padding(1)
+			.BorderImage(FAppStyle::Get().GetBrush("ColorPicker.RoundedSolidBackground"))
+			.BorderBackgroundColor(this, &FColorStructCustomization::GetColorWidgetBorderColor)
 			.VAlign(VAlign_Center)
 			[
-				SNew(STextBlock)
-				.Text(NSLOCTEXT("PropertyEditor", "MultipleValues", "Multiple Values"))
-				.Font(NormalText)
-				.ColorAndOpacity(FSlateColor(FLinearColor::Black)) // we know the background is always white, so can safely set this to black
-				.Visibility(this, &FColorStructCustomization::GetMultipleValuesTextVisibility)
+				SNew(SOverlay)
+				+ SOverlay::Slot()
+				.VAlign(VAlign_Center)
+				[
+					SAssignNew(ColorPickerParentWidget, SColorBlock)
+					.AlphaBackgroundBrush(FAppStyle::Get().GetBrush("ColorPicker.RoundedAlphaBackground"))
+					.Color(this, &FColorStructCustomization::OnGetColorForColorBlock)
+					.ShowBackgroundForAlpha(true)
+					.AlphaDisplayMode(bIgnoreAlpha ? EColorBlockAlphaDisplayMode::Ignore : EColorBlockAlphaDisplayMode::Separate)
+					.OnMouseButtonDown(this, &FColorStructCustomization::OnMouseButtonDownColorBlock)
+					.Size(FVector2D(70.0f, 20.0f))
+					.CornerRadius(FVector4(4.0f,4.0f,4.0f,4.0f))
+					.IsEnabled(this, &FColorStructCustomization::IsValueEnabled, StructWeakHandlePtr)
+				]
+				+ SOverlay::Slot()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SBorder)
+					.Visibility(this, &FColorStructCustomization::GetMultipleValuesTextVisibility)
+					.BorderImage(FAppStyle::Get().GetBrush("ColorPicker.MultipleValuesBackground"))
+					.VAlign(VAlign_Center)
+					.ForegroundColor(FAppStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox").ForegroundColor)
+					.Padding(FMargin(12.0f, 2.0f))
+					[
+						SNew(STextBlock)
+						.Text(NSLOCTEXT("PropertyEditor", "MultipleValues", "Multiple Values"))
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+					]
+				]
 			]
-		]
-		+ SHorizontalBox::Slot()
-		.VAlign(VAlign_Center)
-		.Padding(0.0f, 2.0f)
-		[
-			// Displays the color without alpha
-			SNew(SColorBlock)
-			.Color(this, &FColorStructCustomization::OnGetColorForColorBlock)
-			.ShowBackgroundForAlpha(false)
-			.IgnoreAlpha(true)
-			.OnMouseButtonDown(this, &FColorStructCustomization::OnMouseButtonDownColorBlock)
-			.Size(FVector2D(35.0f, 12.0f))
 		];
-}
+	}
 
 
 void FColorStructCustomization::GetSortedChildren(TSharedRef<IPropertyHandle> InStructPropertyHandle, TArray< TSharedRef<IPropertyHandle> >& OutChildren)
@@ -368,6 +373,20 @@ FLinearColor FColorStructCustomization::OnGetColorForColorBlock() const
 }
 
 
+FSlateColor FColorStructCustomization::OnGetSlateColorForBlock() const
+{
+	FLinearColor Color = OnGetColorForColorBlock();
+	Color.A = 1;
+	return FSlateColor(Color);
+}
+
+FSlateColor FColorStructCustomization::GetColorWidgetBorderColor() const
+{
+	static const FSlateColor HoveredColor = FAppStyle::Get().GetSlateColor("Colors.Hover");
+	static const FSlateColor DefaultColor = FAppStyle::Get().GetSlateColor("Colors.InputOutline");
+	return ColorWidgetBackgroundBorder->IsHovered() ? HoveredColor : DefaultColor;
+}
+
 FPropertyAccess::Result FColorStructCustomization::GetColorAsLinear(FLinearColor& OutColor) const
 {
 	// Default to full alpha in case the alpha component is disabled.
@@ -402,7 +421,7 @@ EVisibility FColorStructCustomization::GetMultipleValuesTextVisibility() const
 {
 	FLinearColor Color;
 	const FPropertyAccess::Result ValueResult = GetColorAsLinear(Color);
-	return (ValueResult == FPropertyAccess::MultipleValues) ? EVisibility::Visible : EVisibility::Collapsed;
+	return (ValueResult == FPropertyAccess::MultipleValues) ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
 }
 
 

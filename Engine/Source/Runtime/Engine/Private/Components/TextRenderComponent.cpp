@@ -24,6 +24,7 @@
 #include "Engine/TextRenderActor.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "StaticMeshResources.h"
+#include "Containers/Ticker.h"
 
 #define LOCTEXT_NAMESPACE "TextRenderComponent"
 
@@ -506,12 +507,12 @@ private:
 
 	FTextRenderComponentMIDCache()
 	{
-		TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FTextRenderComponentMIDCache::PurgeUnreferencedMIDsTicker), 10.0f);
+		TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FTextRenderComponentMIDCache::PurgeUnreferencedMIDsTicker), 10.0f);
 	}
 
 	~FTextRenderComponentMIDCache()
 	{
-		FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 	}
 
 	bool PurgeUnreferencedMIDsTicker(float)
@@ -560,7 +561,7 @@ private:
 		MIDsPendingPurge = MoveTemp(MIDsToPurgeLater);
 	}
 
-	FDelegateHandle TickerHandle;
+	FTSTicker::FDelegateHandle TickerHandle;
 
 	TMap<FKey, FMIDDataPtr> CachedMIDs;
 
@@ -659,7 +660,7 @@ FTextRenderSceneProxy::FTextRenderSceneProxy( UTextRenderComponent* Component) :
 	{
 		const UMaterial* BaseMaterial = Component->TextMaterial->GetMaterial_Concurrent();
 
-		if(BaseMaterial->MaterialDomain == MD_Surface)
+		if(BaseMaterial->MaterialDomain == MD_Surface || BaseMaterial->MaterialDomain == MD_DeferredDecal)
 		{
 			EffectiveMaterial = Component->TextMaterial;
 		}
@@ -825,7 +826,7 @@ FPrimitiveViewRelevance FTextRenderSceneProxy::GetViewRelevance(const FSceneView
 	}
 
 	MaterialRelevance.SetPrimitiveViewRelevance(Result);
-	Result.bVelocityRelevance = IsMovable() && Result.bOpaque && Result.bRenderInMainPass;
+	Result.bVelocityRelevance = DrawsVelocity() && Result.bOpaque && Result.bRenderInMainPass;
 	return Result;
 }
 
@@ -935,7 +936,7 @@ bool FTextRenderSceneProxy::BuildStringMesh( TArray<FDynamicMeshVertex>& OutVert
 			if(Tex)
 			{
 				FIntPoint ImportedTextureSize = Tex->GetImportedSize();
-				FVector2D InvTextureSize(1.0f / (float)ImportedTextureSize.X, 1.0f / (float)ImportedTextureSize.Y);
+				FVector2f InvTextureSize(1.0f / (float)ImportedTextureSize.X, 1.0f / (float)ImportedTextureSize.Y);
 
 				const float X		= LineX + StartX;
 				const float Y		= StartY + Char.VerticalOffset * YScale;
@@ -952,19 +953,19 @@ bool FTextRenderSceneProxy::BuildStringMesh( TArray<FDynamicMeshVertex>& OutVert
 				const float Bottom = Y + SizeY;
 
 				// axis choice and sign to get good alignment when placed on surface
-				const FVector4 V0(0.f, -Left, -Top, 0.f);
-				const FVector4 V1(0.f, -Right, -Top, 0.f);
-				const FVector4 V2(0.f, -Left, -Bottom, 0.f);
-				const FVector4 V3(0.f, -Right, -Bottom, 0.f);
+				const FVector4f V0(0.f, -Left, -Top, 0.f);
+				const FVector4f V1(0.f, -Right, -Top, 0.f);
+				const FVector4f V2(0.f, -Left, -Bottom, 0.f);
+				const FVector4f V3(0.f, -Right, -Bottom, 0.f);
 
-				const FVector TangentX(0.f, -1.f, 0.f);
-				const FVector TangentY(0.f, 0.f, -1.f);
-				const FVector TangentZ(1.f, 0.f, 0.f);
+				const FVector3f TangentX(0.f, -1.f, 0.f);
+				const FVector3f TangentY(0.f, 0.f, -1.f);
+				const FVector3f TangentZ(1.f, 0.f, 0.f);
 
-				const int32 V00 = OutVertices.Add(FDynamicMeshVertex(V0, TangentX, TangentZ, FVector2D(U, V), TextRenderColor));
-				const int32 V10 = OutVertices.Add(FDynamicMeshVertex(V1, TangentX, TangentZ, FVector2D(U + SizeU, V), TextRenderColor));
-				const int32 V01 = OutVertices.Add(FDynamicMeshVertex(V2, TangentX, TangentZ, FVector2D(U, V + SizeV), TextRenderColor));
-				const int32 V11 = OutVertices.Add(FDynamicMeshVertex(V3, TangentX, TangentZ, FVector2D(U + SizeU, V + SizeV), TextRenderColor));
+				const int32 V00 = OutVertices.Add(FDynamicMeshVertex(V0, TangentX, TangentZ, FVector2f(U, V), TextRenderColor));
+				const int32 V10 = OutVertices.Add(FDynamicMeshVertex(V1, TangentX, TangentZ, FVector2f(U + SizeU, V), TextRenderColor));
+				const int32 V01 = OutVertices.Add(FDynamicMeshVertex(V2, TangentX, TangentZ, FVector2f(U, V + SizeV), TextRenderColor));
+				const int32 V11 = OutVertices.Add(FDynamicMeshVertex(V3, TangentX, TangentZ, FVector2f(U + SizeU, V + SizeV), TextRenderColor));
 
 				check(V00 < 65536);
 				check(V10 < 65536);
@@ -1106,6 +1107,21 @@ int32 UTextRenderComponent::GetNumMaterials() const
 	return 1;
 }
 
+#if WITH_EDITOR
+bool UTextRenderComponent::GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty)
+{
+	if (ElementIndex == 0)
+	{
+		OutOwner = this;
+		OutPropertyPath = GET_MEMBER_NAME_STRING_CHECKED(UTextRenderComponent, TextMaterial);
+		OutProperty = UTextRenderComponent::StaticClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UTextRenderComponent, TextMaterial));
+		return true;
+	}
+
+	return false;
+}
+#endif // WITH_EDITOR
+
 void UTextRenderComponent::SetMaterial(int32 ElementIndex, UMaterialInterface* InMaterial)
 {
 	if (ElementIndex == 0)
@@ -1157,9 +1173,7 @@ FBoxSphereBounds UTextRenderComponent::CalcBounds(const FTransform& LocalToWorld
 			while (It.NextCharacterInLine(Ch)) {}
 		}
 
-		LeftTop.Y = ComputeVerticalAlignmentOffset(Size.Y, VerticalAlignment, FirstLineHeight);
-		const FBox LocalBox(FVector(0.f, -LeftTop.X, -LeftTop.Y), FVector(0.f, -(LeftTop.X + Size.X), -(LeftTop.Y + Size.Y)));
-
+		const FBox LocalBox(FVector(0.f, -Size.X - LeftTop.X, -Size.Y), FVector(0.f, -LeftTop.X, 0.0f));
 		FBoxSphereBounds Ret(LocalBox.TransformBy(LocalToWorld));
 
 		Ret.BoxExtent *= BoundsScale;
@@ -1171,6 +1185,11 @@ FBoxSphereBounds UTextRenderComponent::CalcBounds(const FTransform& LocalToWorld
 	{
 		return FBoxSphereBounds(ForceInit).TransformBy(LocalToWorld);
 	}
+}
+
+void UTextRenderComponent::UpdateBounds()
+{
+	Bounds = CalcBounds(FTransform(GetRenderMatrix()));
 }
 
 bool UTextRenderComponent::RequiresGameThreadEndOfFrameUpdates() const
@@ -1212,11 +1231,6 @@ FMatrix UTextRenderComponent::GetRenderMatrix() const
 
 	}
 	return UPrimitiveComponent::GetRenderMatrix();
-}
-
-void UTextRenderComponent::SetText(const FString& Value)
-{
-	K2_SetText(FText::FromString(Value));
 }
 
 void UTextRenderComponent::SetText(const FText& Value)
@@ -1315,7 +1329,7 @@ void UTextRenderComponent::PostLoad()
 {
 	// Try and fix up assets created before the vertical alignment fix was implemented. Because we didn't flag that
 	// fix with its own version, use the version number closest to that CL
-	if (GetLinkerUE4Version() < VER_UE4_PACKAGE_REQUIRES_LOCALIZATION_GATHER_FLAGGING)
+	if (GetLinkerUEVersion() < VER_UE4_PACKAGE_REQUIRES_LOCALIZATION_GATHER_FLAGGING)
 	{
 		const float Offset = CalculateVerticalAlignmentOffset(*Text.ToString(), Font, XScale, YScale, HorizSpacingAdjust, VertSpacingAdjust, VerticalAlignment);
 		const FTransform RelativeTransform = GetRelativeTransform();
@@ -1326,12 +1340,12 @@ void UTextRenderComponent::PostLoad()
 		SetRelativeTransform(CorrectionLeft * RelativeTransform * CorrectionRight);
 	}
 
-	if (GetLinkerUE4Version() < VER_UE4_ADD_TEXT_COMPONENT_VERTICAL_ALIGNMENT)
+	if (GetLinkerUEVersion() < VER_UE4_ADD_TEXT_COMPONENT_VERTICAL_ALIGNMENT)
 	{
 		VerticalAlignment = EVRTA_QuadTop;
 	}
 
-	if( GetLinkerUE4Version() < VER_UE4_TEXT_RENDER_COMPONENTS_WORLD_SPACE_SIZING )
+	if( GetLinkerUEVersion() < VER_UE4_TEXT_RENDER_COMPONENTS_WORLD_SPACE_SIZING )
 	{
 		if( Font )
 		{

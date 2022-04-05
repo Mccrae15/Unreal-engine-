@@ -7,11 +7,19 @@
 #include "UObject/Object.h"
 #include "Misc/Guid.h"
 #include "UObject/LazyObjectPtr.h"
+#include "UObject/ScriptInterface.h"
+#include "ILandscapeSplineInterface.h"
+
+#if WITH_EDITOR
+#include "WorldPartition/WorldPartitionHandle.h"
+#endif
+
 #include "LandscapeInfo.generated.h"
 
 class ALandscape;
 class ALandscapeProxy;
 class ALandscapeStreamingProxy;
+class ALandscapeSplineActor;
 class ULandscapeComponent;
 class ULandscapeLayerInfoObject;
 class ULevel;
@@ -42,17 +50,17 @@ struct FLandscapeInfoLayerSettings
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	ULandscapeLayerInfoObject* LayerInfoObj;
+	TObjectPtr<ULandscapeLayerInfoObject> LayerInfoObj;
 
 	UPROPERTY()
 	FName LayerName;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(transient)
-	UMaterialInstanceConstant* ThumbnailMIC;
+	TObjectPtr<UMaterialInstanceConstant> ThumbnailMIC;
 
 	UPROPERTY()
-	ALandscapeProxy* Owner;
+	TObjectPtr<ALandscapeProxy> Owner;
 
 	UPROPERTY(transient)
 	int32 DebugColorChannel;
@@ -135,9 +143,14 @@ public:
 #endif
 
 	UPROPERTY()
-	TArray<ALandscapeStreamingProxy*> Proxies;
+	TArray<TObjectPtr<ALandscapeStreamingProxy>> Proxies;
 
 private:
+#if WITH_EDITORONLY_DATA
+	UPROPERTY()
+	TArray<TScriptInterface<ILandscapeSplineInterface>> SplineActors;
+#endif
+
 	TSet<ULandscapeComponent*> SelectedComponents;
 
 	TSet<ULandscapeComponent*> SelectedRegionComponents;
@@ -149,16 +162,29 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 	//~ End UObject Interface
 
+	FBox GetLoadedBounds() const;
+
+#if WITH_EDITOR
+	FBox GetCompleteBounds() const;
+#endif
+
 #if WITH_EDITOR
 	// @todo document 
 	// all below.
+	LANDSCAPE_API bool SupportsLandscapeEditing() const;
+
 	LANDSCAPE_API bool AreAllComponentsRegistered() const;
 	LANDSCAPE_API void GetComponentsInRegion(int32 X1, int32 Y1, int32 X2, int32 Y2, TSet<ULandscapeComponent*>& OutComponents, bool bOverlap = true) const;
+	LANDSCAPE_API bool HasUnloadedComponentsInRegion(int32 X1, int32 Y1, int32 X2, int32 Y2) const;
+	LANDSCAPE_API bool GetLandscapeExtent(ALandscapeProxy* Proxy, FIntRect& ProxyExtent) const;
+	LANDSCAPE_API bool GetLandscapeExtent(FIntRect& LandscapeExtent) const;
 	LANDSCAPE_API bool GetLandscapeExtent(int32& MinX, int32& MinY, int32& MaxX, int32& MaxY) const;
 	LANDSCAPE_API void ForAllLandscapeComponents(TFunctionRef<void(ULandscapeComponent*)> Fn) const;
 	LANDSCAPE_API void ExportHeightmap(const FString& Filename);
+	LANDSCAPE_API void ExportHeightmap(const FString& Filename, const FIntRect& ExportRegion);
 	LANDSCAPE_API void ExportLayer(ULandscapeLayerInfoObject* LayerInfo, const FString& Filename);
-	LANDSCAPE_API bool ApplySplines(bool bOnlySelected, TSet<ULandscapeComponent*>* OutModifiedComponents = nullptr, bool bMarkPackageDirty = true);
+	LANDSCAPE_API void ExportLayer(ULandscapeLayerInfoObject* LayerInfo, const FString& Filename, const FIntRect& ExportRegion);
+	LANDSCAPE_API bool ApplySplines(bool bOnlySelected, TSet<TObjectPtr<ULandscapeComponent>>* OutModifiedComponents = nullptr, bool bMarkPackageDirty = true);
 
 	LANDSCAPE_API bool GetSelectedExtent(int32& MinX, int32& MinY, int32& MaxX, int32& MaxY) const;
 	FVector GetLandscapeCenterPos(float& LengthZ, int32 MinX = MAX_int32, int32 MinY = MAX_int32, int32 MaxX = MIN_int32, int32 MaxY = MIN_int32);
@@ -185,6 +211,9 @@ public:
 	LANDSCAPE_API int32 GetLayerInfoIndex(FName LayerName, ALandscapeProxy* Owner = nullptr) const;
 	LANDSCAPE_API int32 GetLayerInfoIndex(ULandscapeLayerInfoObject* LayerInfo, ALandscapeProxy* Owner = nullptr) const;
 	LANDSCAPE_API bool UpdateLayerInfoMap(ALandscapeProxy* Proxy = nullptr, bool bInvalidate = false);
+
+
+	LANDSCAPE_API bool CanDeleteLandscape(FText& OutReason) const;
 
 	/**
 	 *  Returns the landscape proxy of this landscape info in the given level (if it exists)
@@ -220,10 +249,10 @@ public:
 	 *  requires LandscapeActor to be loaded
 	 *  Does not work in World composition mode!
 	 */
-	LANDSCAPE_API void FixupProxiesTransform();
+	LANDSCAPE_API void FixupProxiesTransform(bool bDirty = false);
 	
-	// Update per-component layer whitelists to include the currently painted layers
-	LANDSCAPE_API void UpdateComponentLayerWhitelist();
+	// Update per-component layer allow list to include the currently painted layers
+	LANDSCAPE_API void UpdateComponentLayerAllowList();
 
 	LANDSCAPE_API void RecreateCollisionComponents();
 
@@ -241,15 +270,38 @@ public:
 	/** Moves Components to target level. Creates ALandscapeProxy if needed. */
 	LANDSCAPE_API ALandscapeProxy* MoveComponentsToLevel(const TArray<ULandscapeComponent*>& InComponents, ULevel* TargetLevel, FName NewProxyName = NAME_None);
 
-	/** Moves Splines connected to this control point to target level. Creates ULandscapeSplineComponent if needed. */
+	/** Moves Components to target proxy. */
+	LANDSCAPE_API ALandscapeProxy* MoveComponentsToProxy(const TArray<ULandscapeComponent*>& InComponents, ALandscapeProxy* LandscapeProxy, bool bSetPositionAndOffset = false, ULevel* TargetLevel = nullptr);
+
+	/** Moves Splines connected to this control point to target level. Creates ULandscapeSplinesComponent if needed. */
 	LANDSCAPE_API void MoveSplineToLevel(ULandscapeSplineControlPoint* InControlPoint, ULevel* TargetLevel);
 
-	/** Moves all Splines to target level. Creates ULandscapeSplineComponent if needed. */
+	/** Moves all Splines to target level. Creates ULandscapeSplinesComponent if needed. */
 	LANDSCAPE_API void MoveSplinesToLevel(ULandscapeSplinesComponent* InSplineComponent, ULevel* TargetLevel);
 
+	/** Moves Splines connected to this control point to target Proxy. Creates ULandscapeSplinesComponent if needed. */
+	LANDSCAPE_API void MoveSplineToProxy(ULandscapeSplineControlPoint* InControlPoint, ALandscapeProxy* InLandscapeProxy);
+
+	/** Moves all Splines to target Proxy. Creates ULandscapeSplineComponent if needed */
+	LANDSCAPE_API void MoveSplinesToProxy(ULandscapeSplinesComponent* InSplineComponent, ALandscapeProxy* InLandscapeProxy);
+
+	/** Moves Splines connected to this control point to target Proxy. Creates ULandscapeSplinesComponent if needed. */
+	LANDSCAPE_API void MoveSpline(ULandscapeSplineControlPoint* InControlPoint, TScriptInterface<ILandscapeSplineInterface> InNewOwner);
+
+	/** Moves all Splines to target Spline owner. Creates ULandscapeSplinesComponent if needed. */
+	LANDSCAPE_API void MoveSplines(ULandscapeSplinesComponent* InSplineComponent, TScriptInterface<ILandscapeSplineInterface> InNewOwner);
+
 	/** Will call UpdateAllComponentMaterialInstances on all LandscapeProxies */
-	LANDSCAPE_API void UpdateAllComponentMaterialInstances();
+	LANDSCAPE_API void UpdateAllComponentMaterialInstances(bool bInInvalidateCombinationMaterials = false);
+
+	/** Returns LandscapeStreamingProxy Cell Size in WorldPartition */
+	LANDSCAPE_API uint32 GetGridSize(uint32 InGridSizeInComponents) const;
 #endif
+	LANDSCAPE_API static ULandscapeInfo* Find(UWorld* InWorld, const FGuid& LandscapeGuid);
+	LANDSCAPE_API static ULandscapeInfo* FindOrCreate(UWorld* InWorld, const FGuid& LandscapeGuid);
+
+	/** Called after creating object so that it can initialize its state */
+	void Initialize(UWorld* InWorld, const FGuid& InLandscapeGuid);
 
 	/**
 	 * Runs the given function on the root landscape actor and all streaming proxies
@@ -284,10 +336,23 @@ public:
 	LANDSCAPE_API void UnregisterCollisionComponent(ULandscapeHeightfieldCollisionComponent* Component);
 
 #if WITH_EDITOR
+	LANDSCAPE_API ALandscapeSplineActor* CreateSplineActor(const FVector& Location);
+
+	LANDSCAPE_API void ForAllSplineActors(TFunctionRef<void(TScriptInterface<ILandscapeSplineInterface>)> Fn) const;
+	LANDSCAPE_API TArray<TScriptInterface<ILandscapeSplineInterface>> GetSplineActors() const;
+
+	LANDSCAPE_API void RegisterSplineActor(TScriptInterface<ILandscapeSplineInterface> SplineActor);
+	LANDSCAPE_API void UnregisterSplineActor(TScriptInterface<ILandscapeSplineInterface> SplineActor);
+
+	LANDSCAPE_API void RequestSplineLayerUpdate();
+	LANDSCAPE_API void ForceLayersFullUpdate();
+#endif
+
+#if WITH_EDITOR
 private:
-	bool ApplySplinesInternal(bool bOnlySelected, ALandscapeProxy* Proxy, TSet<ULandscapeComponent*>* OutModifiedComponents, bool bMarkPackageDirty, int32 LandscapeMinX, int32 LandscapeMinY, int32 LandscapeMaxX, int32 LandscapeMaxY, TFunctionRef<TSharedPtr<FModulateAlpha>(ULandscapeLayerInfoObject*)> GetOrCreateModulate);
-	void MoveSegmentToLandscape(ULandscapeSplineSegment* InSegment, ALandscapeProxy* FromProxy, ALandscapeProxy* ToProxy);
-	void MoveControlPointToLandscape(ULandscapeSplineControlPoint* InControlPoint, ALandscapeProxy* FromProxy, ALandscapeProxy* ToProxy);
+	bool ApplySplinesInternal(bool bOnlySelected, TScriptInterface<ILandscapeSplineInterface> SplineOwner, TSet<TObjectPtr<ULandscapeComponent>>* OutModifiedComponents, bool bMarkPackageDirty, int32 LandscapeMinX, int32 LandscapeMinY, int32 LandscapeMaxX, int32 LandscapeMaxY, TFunctionRef<TSharedPtr<FModulateAlpha>(ULandscapeLayerInfoObject*)> GetOrCreateModulate);
+	void MoveSegment(ULandscapeSplineSegment* InSegment, TScriptInterface<ILandscapeSplineInterface> From, TScriptInterface<ILandscapeSplineInterface> To);
+	void MoveControlPoint(ULandscapeSplineControlPoint* InControlPoint, TScriptInterface<ILandscapeSplineInterface> From, TScriptInterface<ILandscapeSplineInterface> To);
 	bool UpdateLayerInfoMapInternal(ALandscapeProxy* Proxy, bool bInvalidate);
 #endif
 };

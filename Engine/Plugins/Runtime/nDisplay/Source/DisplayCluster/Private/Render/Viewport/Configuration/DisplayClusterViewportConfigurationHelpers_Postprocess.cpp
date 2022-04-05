@@ -166,27 +166,63 @@ static bool ImplUpdateIncameraAllNodesColorGrading(FDisplayClusterViewport& DstV
 	return true;
 }
 
+#if WITH_EDITOR
+// return true when same settings used for both viewports
+bool FDisplayClusterViewportConfigurationHelpers_Postprocess::IsInnerFrustumViewportSettingsEqual_Editor(const FDisplayClusterViewport& InViewport1, const FDisplayClusterViewport& InViewport2, UDisplayClusterICVFXCameraComponent& InCameraComponent)
+{
+	const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings = InCameraComponent.GetCameraSettingsICVFX();
+	for (const FDisplayClusterConfigurationViewport_PerNodeColorGrading& ColorGradingProfileIt : CameraSettings.PerNodeColorGrading)
+	{
+		if (ColorGradingProfileIt.bIsEnabled)
+		{
+			const FString* CustomNode1 = ColorGradingProfileIt.ApplyPostProcessToObjects.FindByPredicate([ClusterNodeId = InViewport1.GetClusterNodeId()](const FString& InClusterNodeId)
+			{
+				return ClusterNodeId.Equals(InClusterNodeId, ESearchCase::IgnoreCase);
+			});
+
+			const FString* CustomNode2 = ColorGradingProfileIt.ApplyPostProcessToObjects.FindByPredicate([ClusterNodeId = InViewport2.GetClusterNodeId()](const FString& InClusterNodeId)
+			{
+				return ClusterNodeId.Equals(InClusterNodeId, ESearchCase::IgnoreCase);
+			});
+
+			if (CustomNode1 && CustomNode2)
+			{
+				// equal custom settings
+				return true;
+			}
+
+			if (CustomNode1 || CustomNode2)
+			{
+				// one of node has custom settings
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+#endif
+
 bool FDisplayClusterViewportConfigurationHelpers_Postprocess::ImplUpdateInnerFrustumColorGrading(FDisplayClusterViewport& DstViewport, ADisplayClusterRootActor& RootActor, UDisplayClusterICVFXCameraComponent& InCameraComponent)
 {
 	const FDisplayClusterConfigurationICVFX_CameraSettings& CameraSettings = InCameraComponent.GetCameraSettingsICVFX();
-	const FDisplayClusterRenderFrameSettings& RenderFrameSettings = DstViewport.Owner.Configuration->GetRenderFrameSettingsConstRef();
+	const FDisplayClusterRenderFrameSettings& RenderFrameSettings = DstViewport.GetRenderFrameSettings();
 
 	// per node color grading first (it includes all nodes blending too)
-	const FString& ClusterNodeId = RenderFrameSettings.ClusterNodeId;
-	if (!ClusterNodeId.IsEmpty())
+	const FString& ClusterNodeId = DstViewport.GetClusterNodeId();
+	check(!ClusterNodeId.IsEmpty());
+
+	for (const FDisplayClusterConfigurationViewport_PerNodeColorGrading& ColorGradingProfileIt : CameraSettings.PerNodeColorGrading)
 	{
-		for (const FDisplayClusterConfigurationViewport_PerNodeColorGrading& ColorGradingProfileIt : CameraSettings.PerNodeColorGrading)
+		// Only allowed profiles
+		if (ColorGradingProfileIt.bIsEnabled)
 		{
-			// Only allowed profiles
-			if (ColorGradingProfileIt.bIsEnabled)
+			for (const FString& ClusterNodeIt : ColorGradingProfileIt.ApplyPostProcessToObjects)
 			{
-				for (const FString& ClusterNodeIt : ColorGradingProfileIt.ApplyPostProcessToObjects)
+				if (ClusterNodeId.Compare(ClusterNodeIt, ESearchCase::IgnoreCase) == 0)
 				{
-					if (ClusterNodeId.Compare(ClusterNodeIt, ESearchCase::IgnoreCase) == 0)
-					{
-						// Use cluster node PP
-						return ImplUpdateIncameraPerNodeColorGrading(DstViewport, RootActor, CameraSettings.AllNodesColorGrading, ColorGradingProfileIt);
-					}
+					// Use cluster node PP
+					return ImplUpdateIncameraPerNodeColorGrading(DstViewport, RootActor, CameraSettings.AllNodesColorGrading, ColorGradingProfileIt);
 				}
 			}
 		}

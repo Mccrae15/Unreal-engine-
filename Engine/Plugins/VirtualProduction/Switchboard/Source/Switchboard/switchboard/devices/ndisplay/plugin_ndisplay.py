@@ -3,6 +3,7 @@
 import concurrent.futures
 import json
 import os
+import typing
 from pathlib import Path
 import socket
 import struct
@@ -16,7 +17,8 @@ from switchboard import message_protocol
 from switchboard import switchboard_utils as sb_utils
 from switchboard import switchboard_widgets as sb_widgets
 from switchboard.config import CONFIG, BoolSetting, FilePathSetting, \
-    LoggingSetting, OptionSetting, Setting, StringSetting, SETTINGS
+    LoggingSetting, OptionSetting, Setting, StringSetting, SETTINGS, StringListSetting, \
+    migrate_comma_separated_string_to_list
 from switchboard.devices.device_widget_base import AddDeviceDialog
 from switchboard.devices.unreal.plugin_unreal import DeviceUnreal, \
     DeviceWidgetUnreal
@@ -252,7 +254,7 @@ class AddnDisplayDialog(AddDeviceDialog):
     def devices_to_add(self):
         cfg_file = self.current_config_path()
         try:
-            (devices, _) = DevicenDisplay.parse_config(cfg_file)
+            devices = DevicenDisplay.parse_config(cfg_file).nodes
 
             if len(devices) == 0:
                 LOGGER.error(
@@ -260,11 +262,10 @@ class AddnDisplayDialog(AddDeviceDialog):
                     f"{cfg_file}")
 
             # Initialize from the config our setting that identifies which
-            # device is the master.
+            # device is the primary.
             for node in devices:
-                if node['master']:
-                    DevicenDisplay.csettings[
-                        'master_device_name'].update_value(node['name'])
+                if node['primary']:
+                    DevicenDisplay.csettings['primary_device_name'].update_value(node['name'])
                     break
 
             return devices
@@ -279,35 +280,39 @@ class AddnDisplayDialog(AddDeviceDialog):
 
 class DeviceWidgetnDisplay(DeviceWidgetUnreal):
 
-    signal_device_widget_master = QtCore.Signal(object)
+    signal_device_widget_primary = QtCore.Signal(object)
+
+    def _add_control_buttons(self):
+        self._autojoin_visible = False
+        super()._add_control_buttons()
 
     def add_widget_to_layout(self, widget):
         ''' DeviceWidget base class method override. '''
 
         if widget == self.name_line_edit:
-            self.add_master_button()
+            self.add_primary_button()
 
-            # shorten the widget to account for the inserted master button
+            # shorten the widget to account for the inserted primary button
             btn_added_width = (
                 max(
-                    self.master_button.iconSize().width(),
-                    self.master_button.minimumSize().width())
+                    self.primary_button.iconSize().width(),
+                    self.primary_button.minimumSize().width())
                 + 2 * self.layout.spacing()
-                + self.master_button.contentsMargins().left()
-                + self.master_button.contentsMargins().right())
+                + self.primary_button.contentsMargins().left()
+                + self.primary_button.contentsMargins().right())
 
             le_maxwidth = self.name_line_edit.maximumWidth() - btn_added_width
             self.name_line_edit.setMaximumWidth(le_maxwidth)
 
         super().add_widget_to_layout(widget)
 
-    def add_master_button(self):
+    def add_primary_button(self):
         '''
         Adds to the layout a button to select which device should be the
-        master device in the cluster.
+        primary device in the cluster.
         '''
 
-        self.master_button = sb_widgets.ControlQPushButton.create(
+        self.primary_button = sb_widgets.ControlQPushButton.create(
             ':/icons/images/star_yellow_off.png',
             icon_disabled=':/icons/images/star_yellow_off.png',
             icon_hover=':/icons/images/star_yellow_off.png',
@@ -315,18 +320,25 @@ class DeviceWidgetnDisplay(DeviceWidgetUnreal):
             icon_on=':/icons/images/star_yellow.png',
             icon_hover_on=':/icons/images/star_yellow.png',
             icon_size=QtCore.QSize(16, 16),
-            tool_tip='Select as master node'
+            tool_tip='Select as primary node'
         )
 
-        self.add_widget_to_layout(self.master_button)
+        self.add_widget_to_layout(self.primary_button)
 
-        self.master_button.clicked.connect(self.on_master_button_clicked)
+        self.primary_button.clicked.connect(self.on_primary_button_clicked)
 
-    def on_master_button_clicked(self):
-        ''' Called when master_button is clicked '''
+    def on_primary_button_clicked(self):
+        ''' Called when primary_button is clicked '''
 
-        self.signal_device_widget_master.emit(self)
+        self.signal_device_widget_primary.emit(self)
 
+
+class DisplayConfig(object):
+    ''' Encapsulates nDisplay config'''
+
+    def __init__(self):
+        self.nodes = []
+        self.uasset_path = ''
 
 class DevicenDisplay(DeviceUnreal):
 
@@ -363,10 +375,23 @@ class DevicenDisplay(DeviceUnreal):
             possible_values=[
                 "Mono", "Frame sequential", "Side-by-Side", "Top-bottom"]
         ),
+        'render_sync_policy': OptionSetting(
+            attr_name="render_sync_policy",
+            nice_name="Render Sync Policy",
+            value='Config',
+            possible_values=['Config','None','Ethernet','Nvidia'],
+            tool_tip=(
+                "Select which cluster synchronization policy to use. \n"
+                "- 'Config': Use the setting in the nDisplay config file \n"
+                "- 'None': Freerun. Formerly known as 'sync policy 0'\n"
+                "- 'Ethernet': Ethernet-based sync. Formerly known as 'sync policy 1'\n"
+                "- 'Nvidia': Nvidia's Quadro Sync Framelock. Formerly known as 'sync policy 2'\n"
+            ),
+        ),
         'executable_filename': FilePathSetting(
             attr_name="executable_filename",
             nice_name="nDisplay Executable Filename",
-            value="UE4Editor.exe",
+            value="UnrealEditor.exe",
             file_path_filter="Programs (*.exe;*.bat)"
         ),
         'ndisplay_cmd_args': StringSetting(
@@ -374,17 +399,20 @@ class DevicenDisplay(DeviceUnreal):
             nice_name="Extra Cmd Line Args",
             value="",
         ),
-        'ndisplay_exec_cmds': StringSetting(
+        'ndisplay_exec_cmds': StringListSetting(
             attr_name="ndisplay_exec_cmds",
             nice_name='ExecCmds',
-            value="",
+            value= [],
             tool_tip='ExecCmds to be passed. No need for outer double quotes.',
+            allow_reset=False,
+            migrate_data=migrate_comma_separated_string_to_list
         ),
-        'ndisplay_dp_cvars': StringSetting(
+        'ndisplay_dp_cvars': StringListSetting(
             attr_name='ndisplay_dp_cvars',
             nice_name="DPCVars",
-            value='',
-            tool_tip="Device profile console variables (comma separated)."
+            value=[],
+            tool_tip="Device profile console variables.",
+            migrate_data=migrate_comma_separated_string_to_list
         ),
         'ndisplay_unattended': BoolSetting(
             attr_name='ndisplay_unattended',
@@ -424,13 +452,12 @@ class DevicenDisplay(DeviceUnreal):
             value=True,
             tool_tip="Minimizes windows before launch"
         ),
-        'master_device_name': StringSetting(
-            attr_name='master_device_name',
-            nice_name="Master Device",
+        'primary_device_name': StringSetting(
+            attr_name='primary_device_name',
+            nice_name="Primary Device",
             value='',
             tool_tip=(
-                "Identifies which nDisplay device should be the master in the "
-                "cluster"),
+                "Identifies which nDisplay device should be the primary node in the cluster"),
             show_ui=False,
         ),
         'logging': LoggingSetting(
@@ -441,17 +468,17 @@ class DevicenDisplay(DeviceUnreal):
             #   Engine\Plugins\Runtime\nDisplay\Source\DisplayCluster\
             #   Private\Misc\DisplayClusterLog.cpp
             categories=[
-                'LogDisplayClusterEngine',
-                'LogDisplayClusterModule',
+                'LogConcert',
                 'LogDisplayClusterCluster',
                 'LogDisplayClusterConfig',
+                'LogDisplayClusterEngine',
                 'LogDisplayClusterGame',
                 'LogDisplayClusterNetwork',
-                'LogDisplayClusterNetworkMsg',
                 'LogDisplayClusterRender',
                 'LogDisplayClusterRenderSync',
                 'LogDisplayClusterViewport',
-                'LogDisplayClusterBlueprint'
+                'LogLiveLink',
+                'LogRemoteControl',
             ],
             tool_tip='Logging categories and verbosity levels'
         ),
@@ -479,6 +506,12 @@ class DevicenDisplay(DeviceUnreal):
             value=True,
             tool_tip="When checked, disables the handling of ensure errors - which are non-fatal and may cause hitches."
         ),
+        'disable_all_screen_messages': BoolSetting(
+            attr_name='disable_all_screen_messages',
+            nice_name="Disable All Screen Messages",
+            value=True,
+            tool_tip="When checked, adds DisableAllScreenMessages to ExecCmds"
+        ),
     }
 
     ndisplay_monitor_ui = None
@@ -491,7 +524,8 @@ class DevicenDisplay(DeviceUnreal):
             'ue_command_line': StringSetting(
                 attr_name="ue_command_line",
                 nice_name="UE Command Line",
-                value=kwargs.get("ue_command_line", '')
+                value=kwargs.get("ue_command_line", ''),
+                allow_reset=False
             ),
             'window_position': Setting(
                 attr_name="window_position",
@@ -642,11 +676,6 @@ class DevicenDisplay(DeviceUnreal):
     def generate_unreal_command_line(self, map_name=""):
         uproject = os.path.normpath(CONFIG.UPROJECT_PATH.get_value(self.name))
 
-        # Device profile CVars
-        dp_cvars = str(
-            self.csettings['ndisplay_dp_cvars'].get_value(self.name)).strip()
-        dp_cvars = f'-DPCVars="{dp_cvars}"' if len(dp_cvars) else ''
-
         # Extra arguments specified in settings
         additional_args = self.extra_cmdline_args_setting
 
@@ -719,7 +748,7 @@ class DevicenDisplay(DeviceUnreal):
         session_id = f"-StageSessionId={session_id}" if session_id > 0 else ''
 
         # Friendly name. Avoid spaces to avoid parsing issues.
-        friendly_name = f'-StageFriendlyName={self.name.replace(" ", "_")}'
+        friendly_name = f'-StageFriendlyName="{self.name.replace(" ", "_")}"'
 
         # Unattended mode
         unattended = (
@@ -757,8 +786,8 @@ class DevicenDisplay(DeviceUnreal):
         # fill in fixed arguments
         args = [
             f'"{uproject}"',
-            f'{map_name}',                # map to open
             "-game",                      # render nodes run in -game
+            f'{map_name}',                # map to open
             "-messaging",                 # enables messaging, needed for
                                           # MultiUser
             "-dc_cluster",                # this is a cluster node
@@ -776,7 +805,6 @@ class DevicenDisplay(DeviceUnreal):
             f'{friendly_name}',           # Stage Friendly Name
             f'{session_id}',              # Session ID.
             f'{max_gpu_count}',           # Max GPU count (mGPU)
-            f'{dp_cvars}',                # Device profile CVars
             f'-dc_cfg="{cfg_file}"',      # nDisplay config file
             f'{render_api}',              # dx11/12
             f'{render_mode}',             # mono/...
@@ -795,10 +823,11 @@ class DevicenDisplay(DeviceUnreal):
         ]
 
         # fill in ExecCmds
-        exec_cmds = str(
-            self.csettings["ndisplay_exec_cmds"].get_value(
-                self.name)).strip().split(',')
-        exec_cmds.append('DisableAllScreenMessages')
+        exec_cmds = self.csettings["ndisplay_exec_cmds"].get_value(self.name).copy()
+
+        if DevicenDisplay.csettings['disable_all_screen_messages'].get_value() and 'DisableAllScreenMessages' not in exec_cmds:
+            exec_cmds.append('DisableAllScreenMessages')
+            
         exec_cmds = [cmd for cmd in exec_cmds if len(cmd.strip())]
 
         if len(exec_cmds):
@@ -821,21 +850,64 @@ class DevicenDisplay(DeviceUnreal):
             ])
 
         # MultiUser parameters
-        if CONFIG.MUSERVER_AUTO_JOIN:
+        if CONFIG.MUSERVER_AUTO_JOIN.get_value() and self.autojoin_mu_server.get_value():
             args.extend([
                 '-CONCERTRETRYAUTOCONNECTONERROR',
-                '-CONCERTAUTOCONNECT',
-                f'-CONCERTSERVER={CONFIG.MUSERVER_SERVER_NAME}',
-                f'-CONCERTSESSION={SETTINGS.MUSERVER_SESSION_NAME}',
-                f'-CONCERTDISPLAYNAME={self.name}',
-                '-CONCERTISHEADLESS',
+                '-CONCERTAUTOCONNECT'])
+
+        args.extend([
+            f'-CONCERTSERVER="{CONFIG.MUSERVER_SERVER_NAME.get_value()}"',
+            f'-CONCERTSESSION="{SETTINGS.MUSERVER_SESSION_NAME}"',
+            f'-CONCERTDISPLAYNAME="{self.name}"',
+            '-CONCERTISHEADLESS',
+        ])
+
+        # Device profile CVars.
+        dp_cvars = []
+
+        # Insights traces parameters
+        if CONFIG.INSIGHTS_TRACE_ENABLE.get_value():
+
+            LOGGER.warning(f"Unreal Insight Tracing is enabled for '{self.name}'. This may effect Unreal Engine performance.")
+
+            remote_utrace_path = self.get_utrace_filepath()
+
+            traces = CONFIG.INSIGHTS_TRACE_ARGS.get_value()
+
+            args.extend([
+                f'-tracefile="{remote_utrace_path}"',
+                f'-trace="{traces}"'
             ])
 
+            if CONFIG.INSIGHTS_STAT_EVENTS.get_value():
+                args.append("-statnamedevents")
+
+            # if bookmarks are enabled, also enable the vblank monitoring thread
+            if 'bookmark' in traces.split(','):
+                dp_cvars.append('nDisplay.sync.diag.VBlankMonitoring=1')
+
+        # Always tell Chaos to be deterministic
+        dp_cvars.append('p.Chaos.Solver.Deterministic=1')
+
+        # Always disable virtual shadow map caching until it supports multi-viewfamily.
+        dp_cvars.append('r.Shadow.Virtual.Cache=0')
+
+        # Add user set dp cvars, overriding any of the forced ones.
+        user_dp_cvars = self.csettings['ndisplay_dp_cvars'].get_value(self.name)
+        user_dp_cvars = [cvar.strip() for cvar in user_dp_cvars if len(cvar.strip()) and len(cvar.split('=')) == 2]
+        dp_cvars = self.add_or_override_cvars(dp_cvars, user_dp_cvars)
+
+        # add accumulated dpcvars to args
+        if len(dp_cvars):
+            args.append(f"-DPCVars=\"{','.join(dp_cvars)}\"")
+
+        # Logging
         args.append(self.csettings['logging'].get_command_line_arg(
             override_device_name=self.name))
 
         path_to_exe = self.generate_unreal_exe_path()
         args_expanded = ' '.join(args)
+        
         self.settings['ue_command_line'].update_value(
             f"{path_to_exe} {args_expanded}")
 
@@ -915,20 +987,20 @@ class DevicenDisplay(DeviceUnreal):
 
         super().device_widget_registered(device_widget)
 
-        # hook to its master_button clicked event
-        device_widget.signal_device_widget_master.connect(
-            self.select_as_master)
+        # hook to its primary_button clicked event
+        device_widget.signal_device_widget_primary.connect(
+            self.select_as_primary)
 
         # Update the state of the button depending on whether this device is
-        # the master or not.
-        is_master = (
+        # the primary or not.
+        is_primary = (
             self.name ==
-            DevicenDisplay.csettings['master_device_name'].get_value())
-        device_widget.master_button.setChecked(is_master)
+            DevicenDisplay.csettings['primary_device_name'].get_value())
+        device_widget.primary_button.setChecked(is_primary)
 
-    def select_as_master(self):
-        ''' Selects this node as the master in the nDisplay cluster '''
-        self.__class__.select_device_as_master(self)
+    def select_as_primary(self):
+        ''' Selects this node as the primary node in the nDisplay cluster '''
+        self.__class__.select_device_as_primary(self)
 
     @classmethod
     def extract_configexport_from_uasset(cls, cfg_file) -> str:
@@ -947,10 +1019,10 @@ class DevicenDisplay(DeviceUnreal):
         raise ValueError('Invalid nDisplay config .uasset')
 
     @classmethod
-    def select_device_as_master(cls, device):
-        ''' Selects the given devices as the master of the nDisplay cluster'''
+    def select_device_as_primary(cls, device):
+        ''' Selects the given devices as the primary of the nDisplay cluster'''
 
-        DevicenDisplay.csettings['master_device_name'].update_value(
+        DevicenDisplay.csettings['primary_device_name'].update_value(
             device.name)
 
         devices = [
@@ -960,7 +1032,7 @@ class DevicenDisplay(DeviceUnreal):
         for dev in devices:
             if dev.widget:
                 checked = (dev.name == device.name)
-                dev.widget.master_button.setChecked(checked)
+                dev.widget.primary_button.setChecked(checked)
 
     @classmethod
     def apply_local_overrides_to_config(cls, cfg_content, cfg_ext):
@@ -971,8 +1043,15 @@ class DevicenDisplay(DeviceUnreal):
 
         data = json.loads(cfg_content)
 
+        configversion = float(data['nDisplay']['version'])
+        primaryNodeKey = 'masterNode' if configversion < 5.0 else 'primaryNode'
+
+        # override primary node
+        #
+
         nodes = data['nDisplay']['cluster']['nodes']
-        masternodeid = data['nDisplay']['cluster']['masterNode']['id']
+
+        primaryNodeId = data['nDisplay']['cluster'][primaryNodeKey]['id']
 
         activenodes = {}
 
@@ -1003,14 +1082,39 @@ class DevicenDisplay(DeviceUnreal):
             # add to active nodes
             activenodes[device.name] = node
 
-            # override master node by name
-            if (device.name ==
-                    DevicenDisplay.csettings[
-                        'master_device_name'].get_value()):
-                masternodeid = device.name
+            # override primary node by name
+            if (device.name == DevicenDisplay.csettings['primary_device_name'].get_value()):
+                primaryNodeId = device.name
 
         data['nDisplay']['cluster']['nodes'] = activenodes
-        data['nDisplay']['cluster']['masterNode']['id'] = masternodeid
+        data['nDisplay']['cluster'][primaryNodeKey]['id'] = primaryNodeId
+
+        # override sync policy
+        #
+
+        render_sync_policy = DevicenDisplay.csettings['render_sync_policy'].get_value()
+
+        new_rsp = data['nDisplay']['cluster']['sync']['renderSyncPolicy']
+        
+        if render_sync_policy == 'Nvidia':
+
+            new_rsp['type'] = 'Nvidia'
+            new_rsp['parameters'] = {
+                "SwapGroup": "1",
+                "SwapBarrier": "1"
+            }
+
+        elif render_sync_policy == 'Ethernet':
+
+            new_rsp['type'] = 'ethernet' # .ndisplay uses lowercase
+            new_rsp['parameters'] = {}
+
+        elif render_sync_policy == 'None':
+
+            new_rsp['type'] = 'None'
+            new_rsp['parameters'] = {}
+
+        data['nDisplay']['cluster']['sync']['renderSyncPolicy'] = new_rsp
 
         return json.dumps(data)
 
@@ -1028,10 +1132,14 @@ class DevicenDisplay(DeviceUnreal):
 
         js = json.loads(jsstr)
 
-        nodes = []
+        config = DisplayConfig()
+
+        configversion = float(js['nDisplay']['version'])
+        primaryNodeKey = 'masterNode' if configversion < 5.0 else 'primaryNode'
+
         cnodes = js['nDisplay']['cluster']['nodes']
-        masterNode = js['nDisplay']['cluster']['masterNode']
-        uasset_path = js['nDisplay'].get('assetPath')
+        primaryNode = js['nDisplay']['cluster'][primaryNodeKey]
+        config.uasset_path = js['nDisplay'].get('assetPath')
 
         for name, cnode in cnodes.items():
             kwargs = {"ue_command_line": ""}
@@ -1045,18 +1153,18 @@ class DevicenDisplay(DeviceUnreal):
             kwargs["window_resolution"] = (resx, resy)
             # Note the capital 'S'.
             kwargs["fullscreen"] = bool(cnode.get('fullScreen', False))
+        
+            primary = True if primaryNode['id'] == name else False
 
-            master = True if masterNode['id'] == name else False
-
-            nodes.append({
+            config.nodes.append({
                 "name": name,
                 "ip_address": cnode['host'],
-                "master": master,
-                "port_ce": int(masterNode['ports']['ClusterEventsJson']),
+                "primary": primary,
+                "port_ce": int(primaryNode['ports']['ClusterEventsJson']),
                 "kwargs": kwargs,
             })
 
-        return (nodes, uasset_path)
+        return config
 
     @classmethod
     def parse_config_json(cls, cfg_file):
@@ -1072,26 +1180,22 @@ class DevicenDisplay(DeviceUnreal):
         '''
         ext = os.path.splitext(cfg_file)[1].lower()
 
-        try:
-            if ext == '.ndisplay':
-                return cls.parse_config_json(cfg_file)
+        if ext == '.ndisplay':
+            return cls.parse_config_json(cfg_file)
+        elif ext == '.uasset':
+            return cls.parse_config_uasset(cfg_file)
+        
+        raise Exception(f'Unknown config extension "{ext}"')
 
-            if ext == '.uasset':
-                return cls.parse_config_uasset(cfg_file)
-
-        except Exception as e:
-            LOGGER.error(
-                f'Error while parsing nDisplay config file "{cfg_file}": {e}')
-            return ([], None)
-
-        LOGGER.error(f'Unknown nDisplay config file "{cfg_file}"')
-        return ([], None)
 
     def update_settings_controlled_by_config(self, cfg_file):
         '''
         Updates settings that are exclusively controlled by the config file.
         '''
-        nodes, self.bp_object_path = self.__class__.parse_config(cfg_file)
+        config = self.__class__.parse_config(cfg_file)
+
+        self.bp_object_path = config.uasset_path
+        nodes = config.nodes
 
         # find which node is self:
         try:
@@ -1251,37 +1355,37 @@ class DevicenDisplay(DeviceUnreal):
     @classmethod
     def send_cluster_event(cls, devices, cluster_event):
         '''
-        Sends a cluster event (to the master, which will replicate to the rest
+        Sends a cluster event (to the primary node, which will replicate to the rest
         of the cluster).
         '''
 
-        # find the master node
+        # find the primary node
 
-        master = None
+        primary = None
 
         for device in devices:
             if (device.name ==
                     DevicenDisplay.csettings[
-                        'master_device_name'].get_value()):
-                master = device
+                        'primary_device_name'].get_value()):
+                primary = device
                 break
 
-        if master is None:
-            LOGGER.warning('Could not find master device when trying to send '
-                           'cluster event. Please make sure the master '
+        if primary is None:
+            LOGGER.warning('Could not find primary device when trying to send '
+                           'cluster event. Please make sure the primary '
                            'device is marked as such.')
             raise ValueError
 
         msg = bytes(json.dumps(cluster_event), 'utf-8')
         msg = struct.pack('I', len(msg)) + msg
 
-        # We copy the original master's cluster event port (port_ce) to the
+        # We copy the original primary's cluster event port (port_ce) to the
         # config of all nodes, so we can use the port from the overridden
-        # master.
-        port = master.nodeconfig['port_ce']
+        # primary.
+        port = primary.nodeconfig['port_ce']
 
         # Use the overridden ip address of this node
-        ip = master.ip_address
+        ip = primary.ip_address
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((ip, port))
@@ -1289,7 +1393,7 @@ class DevicenDisplay(DeviceUnreal):
 
     @classmethod
     def soft_kill_cluster(cls, devices):
-        ''' Kills the cluster by sending a message to the master. '''
+        ''' Kills the cluster by sending a message to the primary. '''
         LOGGER.info('Issuing nDisplay cluster soft kill')
 
         quit_event = {
@@ -1344,38 +1448,37 @@ class DevicenDisplay(DeviceUnreal):
         if len(devices) == 0:
             return
 
-        # Verify that there is a device that matches our master selection
-        master_device_name = DevicenDisplay.csettings[
-            'master_device_name'].get_value()
-        master_found = False
+        # Verify that there is a device that matches our primary selection
+        primary_device_name = DevicenDisplay.csettings['primary_device_name'].get_value()
+        primary_found = False
 
         for device in devices:
-            if device.name == master_device_name:
-                master_found = True
+            if device.name == primary_device_name:
+                primary_found = True
                 break
 
-        # If there isn't a master selection (e.g. old config), try to assign
+        # If there isn't a primary selection (e.g. old config), try to assign
         # one based on the nDisplay config.
-        if not master_found:
-            cfg_file = DevicenDisplay.csettings[
-                'ndisplay_config_file'].get_value()
+        if not primary_found:
+
+            cfg_file = DevicenDisplay.csettings['ndisplay_config_file'].get_value()
 
             try:
-                (nodes, _) = DevicenDisplay.parse_config(cfg_file)
+                config = DevicenDisplay.parse_config(cfg_file)
             except (IndexError, KeyError):
                 LOGGER.error(f"Error parsing nDisplay config file {cfg_file}")
-            else:
-                for node in nodes:
-                    if node['master']:
-                        for device in devices:
-                            if node['name'] == device.name:
-                                cls.select_device_as_master(device)
-                                master_found = True
-                                break
+                return
 
-                        break
+            for node in config.nodes:
+                if node['primary']:
+                    for device in devices:
+                        if node['name'] == device.name:
+                            cls.select_device_as_primary(device)
+                            primary_found = True
+                            break
+                    break
 
-            # If we still don't have a master, log the error.
-            if not master_found:
-                LOGGER.error('Could not find or assign master device in the '
+            # If we still don't have a primary device, log the error.
+            if not primary_found:
+                LOGGER.error('Could not find or assign primary device in the '
                              f'current devices and config file "{cfg_file}"')

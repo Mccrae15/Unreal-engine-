@@ -16,26 +16,29 @@
 
 namespace MediaShaders
 {
-	/** Color transform from YUV to sRGB (using values from MSDN). */
-	RENDERCORE_API extern const FMatrix YuvToSrgbDefault;
+	/** Color transform from YUV to Rec601 without range scaling. */
+	RENDERCORE_API extern const FMatrix YuvToRgbRec601Unscaled;
 
-	/** Color transform from YUV to sRGB (in JPEG color space). */
-	RENDERCORE_API extern const FMatrix YuvToSrgbJpeg;
+	/** Color transform from YUV Video Range to Rec601 Full Range. */
+	RENDERCORE_API extern const FMatrix YuvToRgbRec601Scaled;
 
-	/** Color transform from YUV to sRGB (using values from PS4 AvPlayer codec). */
+	/** Color transform from YUV to Rec709 without range scaling. */
+	RENDERCORE_API extern const FMatrix YuvToRgbRec709Unscaled;
+
+	/** Color transform from YUV Video Range to Rec709 Full Range. */
+	RENDERCORE_API extern const FMatrix YuvToRgbRec709Scaled;
+
+	/** Color transform from YUV to Rec2020 without range scaling. */
+	RENDERCORE_API extern const FMatrix YuvToRgbRec2020Unscaled;
+
+	/** Color transform from YUV Video Range to Rec2020 Full Range. */
+	RENDERCORE_API extern const FMatrix YuvToRgbRec2020Scaled;
+
+	/** Color transform from YUV to sRGB (using rounded values from PS4 AvPlayer codec). */
 	RENDERCORE_API extern const FMatrix YuvToSrgbPs4;
 
-	/** Color transform from YUV to sRGB (in Rec. 601 color space). */
-	RENDERCORE_API extern const FMatrix YuvToSrgbRec601;
-
-	/** Color transform from YUV to sRGB (in Rec. 709 color space). */
-	RENDERCORE_API extern const FMatrix YuvToRgbRec709;
-
-	/** Color transform from YUV to RGB (in Rec. 709 color space, RGB full range) */
-	RENDERCORE_API extern const FMatrix YuvToRgbRec709Full;
-
-	/** Color transform from RGB to YUV (in Rec. 709 color space, RGB full range) */
-	RENDERCORE_API extern const FMatrix RgbToYuvRec709Full;
+	/** Color transform from RGB to YUV (in Rec. 709 color space, including inversion of range scaling) */
+	RENDERCORE_API extern const FMatrix RgbToYuvRec709Scaled;
 
 	/** YUV Offset for 8 bit conversion (Computed as 16/255, 128/255, 128/255) */
 	RENDERCORE_API extern const FVector YUVOffset8bits;
@@ -53,22 +56,22 @@ namespace MediaShaders
  */
 struct FMediaElementVertex
 {
-	FVector4 Position;
-	FVector2D TextureCoordinate;
+	FVector4f Position;
+	FVector2f TextureCoordinate;
 
 	FMediaElementVertex() { }
 
-	FMediaElementVertex(const FVector4& InPosition, const FVector2D& InTextureCoordinate)
+	FMediaElementVertex(const FVector4f& InPosition, const FVector2f& InTextureCoordinate)
 		: Position(InPosition)
 		, TextureCoordinate(InTextureCoordinate)
 	{ }
 };
 
-inline FVertexBufferRHIRef CreateTempMediaVertexBuffer(float ULeft = 0.0f, float URight = 1.0f, float VTop = 0.0f, float VBottom = 1.0f)
+inline FBufferRHIRef CreateTempMediaVertexBuffer(float ULeft = 0.0f, float URight = 1.0f, float VTop = 0.0f, float VBottom = 1.0f)
 {
-	FRHIResourceCreateInfo CreateInfo;
-	FVertexBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FMediaElementVertex) * 4, BUF_Volatile, CreateInfo);
-	void* VoidPtr = RHILockVertexBuffer(VertexBufferRHI, 0, sizeof(FMediaElementVertex) * 4, RLM_WriteOnly);
+	FRHIResourceCreateInfo CreateInfo(TEXT("TempMediaVertexBuffer"));
+	FBufferRHIRef VertexBufferRHI = RHICreateVertexBuffer(sizeof(FMediaElementVertex) * 4, BUF_Volatile, CreateInfo);
+	void* VoidPtr = RHILockBuffer(VertexBufferRHI, 0, sizeof(FMediaElementVertex) * 4, RLM_WriteOnly);
 
 	FMediaElementVertex* Vertices = (FMediaElementVertex*)VoidPtr;
 	Vertices[0].Position.Set(-1.0f, 1.0f, 1.0f, 1.0f); // Top Left
@@ -80,7 +83,7 @@ inline FVertexBufferRHIRef CreateTempMediaVertexBuffer(float ULeft = 0.0f, float
 	Vertices[1].TextureCoordinate.Set(URight, VTop);
 	Vertices[2].TextureCoordinate.Set(ULeft, VBottom);
 	Vertices[3].TextureCoordinate.Set(URight, VBottom);
-	RHIUnlockVertexBuffer(VertexBufferRHI);
+	RHIUnlockBuffer(VertexBufferRHI);
 
 	return VertexBufferRHI;
 }
@@ -448,6 +451,32 @@ public:
 };
 
 
+/**
+ * Pixel shader to convert YUV Y416 to RGB
+ *
+ * This shader expects a single texture in PF_A16B16G16R16 format.
+ */
+class FYUVY416ConvertPS
+	: public FGlobalShader
+{
+	DECLARE_EXPORTED_SHADER_TYPE(FYUVY416ConvertPS, Global, RENDERCORE_API);
+
+public:
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::ES3_1);
+	}
+
+	FYUVY416ConvertPS() { }
+
+	FYUVY416ConvertPS(const ShaderMetaType::CompiledShaderInitializerType& Initializer)
+		: FGlobalShader(Initializer)
+	{ }
+
+	RENDERCORE_API void SetParameters(FRHICommandList& RHICmdList, FShaderResourceViewRHIRef SRV_Y, const FMatrix& ColorTransform, const FVector& YUVOffset, bool SrgbToLinear);
+};
+
 
 /**
  * Pixel shader to convert a YUY2 frame to RGBA.
@@ -586,7 +615,7 @@ public:
 		: FGlobalShader(Initializer)
 	{ }
 
-	RENDERCORE_API void SetParameters(FRHICommandList& RHICmdList, TRefCountPtr<FRHITexture2D> RGBATexture, const FVector4& ColorTransform, bool LinearToSrgb);
+	RENDERCORE_API void SetParameters(FRHICommandList& RHICmdList, TRefCountPtr<FRHITexture2D> RGBATexture, const FVector4f& ColorTransform, bool LinearToSrgb);
 };
 
 

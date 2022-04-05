@@ -112,10 +112,7 @@ public:
 	 *
 	 * @param InViewportInterface The interface to use
 	 */
-	void SetViewportInterface( TSharedRef<ISlateViewport> InViewportInterface )
-	{
-		ViewportInterface = InViewportInterface;
-	}
+	void SetViewportInterface( TSharedRef<ISlateViewport> InViewportInterface );
 
 	/**
 	 * Sets the interface to be used by this viewport for rendering and I/O
@@ -148,7 +145,7 @@ public:
 	void OnWindowClosed( const TSharedRef<SWindow>& InWindowBeingClosed );
 
 	/**
-	 * A delegate called when the viewports top level window is deactivated
+	 * A delegate called when the viewports top level window is activated
 	 */
 	FReply OnViewportActivated(const FWindowActivateEvent& InActivateEvent);
 
@@ -168,10 +165,7 @@ public:
 	 * 
 	 * @param	bInRenderDirectlyToWindow	Whether we should be able to render to the back buffer
 	 */
-	void SetRenderDirectlyToWindow( const bool bInRenderDirectlyToWindow )
-	{
-		bRenderDirectlyToWindow = bInRenderDirectlyToWindow;
-	}
+	void SetRenderDirectlyToWindow( const bool bInRenderDirectlyToWindow );
 
 	/**
 	 * If true, the viewport's texture alpha is ignored when performing blending.  In this case only the viewport tint opacity is used
@@ -179,10 +173,7 @@ public:
 	 * 
 	 * @param bIgnoreTextureAlpha If texture alpha should be ignored when blending.
 	 */
-	void SetIgnoreTextureAlpha(const bool bInIgnoreTextureAlpha)
-	{
-		bIgnoreTextureAlpha = bInIgnoreTextureAlpha;
-	}
+	void SetIgnoreTextureAlpha(const bool bInIgnoreTextureAlpha);
 
 	/** @return Whether or not to ignore texture alpha when blending */
 	bool GetIgnoreTextureAlpha(void) const
@@ -206,9 +197,6 @@ public:
 	 * @param bActive Whether to set the viewport as active
 	 */
 	void SetActive(bool bActive);
-
-	UE_DEPRECATED(4.11, "SetWidgetToFocusOnActivate is no longer needed, remove this call.")
-	void SetWidgetToFocusOnActivate(TSharedPtr<SWidget> WidgetToFocus) { }
 
 public:
 
@@ -242,16 +230,10 @@ public:
 	virtual FPopupMethodReply OnQueryPopupMethod() const override;
 	virtual void OnFinishedPointerInput() override;
 	virtual void OnArrangeChildren( const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren ) const override;
-	virtual TSharedPtr<struct FVirtualPointerPosition> TranslateMouseCoordinateForCustomHitTestChild(const TSharedRef<SWidget>& ChildWidget, const FGeometry& MyGeometry, const FVector2D& ScreenSpaceMouseCoordinate, const FVector2D& LastScreenSpaceMouseCoordinate) const override;
+	virtual TOptional<FVirtualPointerPosition> TranslateMouseCoordinateForCustomHitTestChild(const SWidget& ChildWidget, const FGeometry& MyGeometry, const FVector2D ScreenSpaceMouseCoordinate, const FVector2D LastScreenSpaceMouseCoordinate) const override;
 	virtual FNavigationReply OnNavigation( const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent ) override;
 
 private:
-
-	FSimpleSlot& Decl_GetContent()
-	{
-		return ChildSlot;
-	}
-
 	// Viewports shouldn't show focus
 	virtual const FSlateBrush* GetFocusBrush() const override
 	{
@@ -267,14 +249,17 @@ protected:
 	
 private:
 
+	/** The parent window during this viewport's last activation */
+	TWeakPtr<SWindow> CachedParentWindow;
+
 	/** The handle to the active EnsureTick() timer */
 	TWeakPtr<FActiveTimerHandle> ActiveTimerHandle;
 
 	/** Whether or not to show the disabled effect when this viewport is disabled. */
-	TAttribute<bool> ShowDisabledEffect;
+	TSlateAttribute<bool, EInvalidateWidgetReason::Paint> ShowDisabledEffect;
 
 	/** Size of the viewport. */
-	TAttribute<FVector2D> ViewportSize;
+	TSlateAttribute<FVector2D, EInvalidateWidgetReason::Layout> ViewportSize;
 
 	TSharedPtr<ICustomHitTestPath> CustomHitTestPath;
 

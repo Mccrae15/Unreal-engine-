@@ -6,6 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
+#include "Misc/ScopeLock.h"
 #include "Misc/SingleThreadRunnable.h"
 #include "Templates/Atomic.h"
 
@@ -58,9 +59,6 @@ public:
 	FORCEINLINE const TSet<TSharedPtr<FDMXInputPort, ESPMode::ThreadSafe>>& GetAssignedInputPorts() const { return AssignedInputPorts; }
 
 private:
-	/** Helper to Create an internet address from an IP address string. Returns the InternetAddr or nullptr if unsuccessful */
-	static TSharedPtr<FInternetAddr> CreateEndpointInternetAddr(const FString& IPAddress);
-
 	/** The input ports the receiver uses */
 	TSet<TSharedPtr<FDMXInputPort, ESPMode::ThreadSafe>> AssignedInputPorts;
 
@@ -107,16 +105,22 @@ private:
 	TSharedPtr<FDMXProtocolArtNet, ESPMode::ThreadSafe> Protocol;
 
 	/** The network socket. */
-	FSocket* Socket;
+	FSocket* Socket = nullptr;
 
-	/** The endpoint internet addr */
+	/** The endpoint internet addr (usually the network interface card IP Address) */
 	TSharedPtr<FInternetAddr> EndpointInternetAddr;
+
+	/** The sender when packets were received */
+	TSharedPtr<FInternetAddr> ReceivedSenderInternetAddr;
+
+	/** Critical section to be used when assigned input ports are changed */
+	FCriticalSection ChangeAssignedInputPortsCriticalSection;
 
 	/** Flag indicating that the thread is stopping. */
 	TAtomic<bool> bStopping;
 
 	/** The thread object. */
-	FRunnableThread* Thread;
+	FRunnableThread* Thread = nullptr;
 
 	/** The receiver thread's name. */
 	FString ThreadName;

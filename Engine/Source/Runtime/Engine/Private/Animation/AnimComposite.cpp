@@ -6,7 +6,7 @@
 
 #include "Animation/AnimComposite.h"
 #include "Animation/AnimationPoseData.h"
-#include "Animation/CustomAttributesRuntime.h"
+#include "Animation/AttributesRuntime.h"
 
 UAnimComposite::UAnimComposite(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -28,37 +28,37 @@ void UAnimComposite::ReplaceReferredAnimations(const TMap<UAnimationAsset*, UAni
 
 bool UAnimComposite::IsNotifyAvailable() const
 {
-	return (SequenceLength > 0.f && (Super::IsNotifyAvailable() || AnimationTrack.IsNotifyAvailable()));
+	return (GetPlayLength() > 0.f && (Super::IsNotifyAvailable() || AnimationTrack.IsNotifyAvailable()));
 }
 
-void UAnimComposite::GetAnimNotifiesFromDeltaPositions(const float& PreviousPosition, const float & CurrentPosition, TArray<FAnimNotifyEventReference>& OutActiveNotifies) const
+void UAnimComposite::GetAnimNotifiesFromDeltaPositions(const float& PreviousPosition, const float & CurrentPosition, FAnimNotifyContext& NotifyContext) const
 {
 	const bool bMovingForward = (RateScale >= 0.f);
 
-	Super::GetAnimNotifiesFromDeltaPositions(PreviousPosition, CurrentPosition, OutActiveNotifies);
+	Super::GetAnimNotifiesFromDeltaPositions(PreviousPosition, CurrentPosition, NotifyContext);
 
 	if (bMovingForward)
 	{
 		if (PreviousPosition <= CurrentPosition)
 		{
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, CurrentPosition, OutActiveNotifies);
+			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, CurrentPosition, NotifyContext);
 		}
 		else
 		{
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, SequenceLength, OutActiveNotifies);
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(0.f, CurrentPosition, OutActiveNotifies);
+			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, GetPlayLength(), NotifyContext);
+			AnimationTrack.GetAnimNotifiesFromTrackPositions(0.f, CurrentPosition, NotifyContext);
 		}
 	}
 	else
 	{
 		if (PreviousPosition >= CurrentPosition)
 		{
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, CurrentPosition, OutActiveNotifies);
+			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, CurrentPosition, NotifyContext);
 		}
 		else
 		{
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, 0.f, OutActiveNotifies);
-			AnimationTrack.GetAnimNotifiesFromTrackPositions(SequenceLength, CurrentPosition, OutActiveNotifies);
+			AnimationTrack.GetAnimNotifiesFromTrackPositions(PreviousPosition, 0.f, NotifyContext);
+			AnimationTrack.GetAnimNotifiesFromTrackPositions(GetPlayLength(), CurrentPosition, NotifyContext);
 		}
 	}
 }
@@ -139,4 +139,15 @@ bool UAnimComposite::ContainRecursive(TArray<UAnimCompositeBase*>& CurrentAccumu
 	}
 
 	return false;
+}
+
+void UAnimComposite::SetCompositeLength(float InLength)
+{
+#if WITH_EDITOR		
+	Controller->SetPlayLength(InLength);
+#else
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	SetSequenceLength(InLength);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif	
 }

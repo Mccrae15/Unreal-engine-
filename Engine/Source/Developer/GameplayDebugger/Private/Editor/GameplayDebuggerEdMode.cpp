@@ -3,6 +3,7 @@
 #include "Editor/GameplayDebuggerEdMode.h"
 
 #if WITH_EDITOR
+#include "CoreGlobals.h"
 #include "Editor/GameplayDebuggerToolkit.h"
 #include "Toolkits/ToolkitManager.h"
 #include "GameplayDebuggerPlayerManager.h"
@@ -108,14 +109,20 @@ void FGameplayDebuggerEdMode::Tick(FEditorViewportClient* ViewportClient, float 
 	}
 }
 
+void FGameplayDebuggerEdMode::SafeOpenMode()
+{
+	// By calling this get, it make sure that the singleton is created and not during the SafeCloseMode whitch can be called during garbage collect.
+	GLevelEditorModeTools();
+}
+
 void FGameplayDebuggerEdMode::SafeCloseMode()
 {
 	// this may be called on closing editor during PIE (~viewport -> teardown PIE -> debugger's cleanup on game end)
 	//
 	// DeactivateMode tries to bring up default mode, but toolkit is already destroyed by that time
 	// and editor crashes on check in GLevelEditorModeTools().GetToolkitHost() inside default mode's code
-
-	if (GLevelEditorModeTools().HasToolkitHost())
+	// note: no need to do it if IsEngineExitRequested since the GLevelEditorModeTools is no longer available 
+	if (IsEngineExitRequested() == false && GLevelEditorModeTools().HasToolkitHost())
 	{
 		GLevelEditorModeTools().DeactivateMode(FGameplayDebuggerEdMode::EM_GameplayDebugger);
 	}

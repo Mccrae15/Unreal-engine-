@@ -21,6 +21,10 @@
 #include "Containers/Map.h"
 #include <limits>
 
+#if PLATFORM_USE_PLATFORM_FILE_MANAGED_STORAGE_WRAPPER
+#include "HAL/IPlatformFileManagedStorageWrapper.h"
+#endif //PLATFORM_USE_PLATFORM_FILE_MANAGED_STORAGE_WRAPPER
+
 DEFINE_LOG_CATEGORY_STATIC(LogAndroidFile, Log, All);
 
 #define LOG_ANDROID_FILE 0
@@ -106,13 +110,13 @@ FString GAPKFilename;
 bool GOverrideAndroidLogDir = false;
 static FString AndroidLogDir;
 
-#define FILEBASE_DIRECTORY "/UE4Game/"
+#define FILEBASE_DIRECTORY "/UnrealGame/"
 
 extern jobject AndroidJNI_GetJavaAssetManager();
 extern AAssetManager * AndroidThunkCpp_GetAssetManager();
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeSetObbInfo(String PackageName, int Version, int PatchVersion);"
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetObbInfo(JNIEnv* jenv, jobject thiz, jstring ProjectName, jstring PackageName, jint Version, jint PatchVersion, jstring AppType)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeSetObbInfo(JNIEnv* jenv, jobject thiz, jstring ProjectName, jstring PackageName, jint Version, jint PatchVersion, jstring AppType)
 {
 	GAndroidProjectName = FJavaHelper::FStringFromParam(jenv, ProjectName);
 	GPackageName = FJavaHelper::FStringFromParam(jenv, PackageName);
@@ -511,12 +515,11 @@ public:
 
 		FString EntireFile;
 		char Buffer[1024];
-		Buffer[1023] = '\0';
 		int BytesRead = 1023;
 		while ( BytesRead == 1023 )
 		{
 			BytesRead = read(Handle, Buffer, 1023);
-			check( Buffer[1023] == '\0');
+			Buffer[BytesRead] = '\0';
 			EntireFile.Append(FString(UTF8_TO_TCHAR(Buffer)));
 		}
 
@@ -630,12 +633,12 @@ public:
 		FEntryMap::TIterator Current;
 		FString Path;
 
-		Directory(FEntryMap & entries, const FString & dirpath)
-			: Current(entries.CreateIterator()), Path(dirpath)
+		Directory(FEntryMap& Entries, const FString& DirPath)
+			: Current(Entries.CreateIterator()), Path(DirPath)
 		{
 			if (!Path.IsEmpty())
 			{
-				Path /= "";
+				Path /= TEXT("");
 			}
 			// This would be much easier, and efficient, if TMap
 			// supported getting iterators to found entries in
@@ -972,14 +975,20 @@ public:
 	// Singleton implementation.
 	static FAndroidPlatformFile & GetPlatformPhysical()
 	{
+#if PLATFORM_USE_PLATFORM_FILE_MANAGED_STORAGE_WRAPPER
+		static TManagedStoragePlatformFile<FAndroidPlatformFile> AndroidPlatformSingleton;
+#else
 		static FAndroidPlatformFile AndroidPlatformSingleton;
+#endif
 		return AndroidPlatformSingleton;
 	}
 
 	FAndroidPlatformFile()
 		: AssetMgr(nullptr)
 	{
+#if USE_ANDROID_JNI
 		AssetMgr = AndroidThunkCpp_GetAssetManager();
+#endif
 	}
 
 	//~ For visibility of overloads we don't override
@@ -1136,7 +1145,7 @@ public:
 			}
 		}
 
-		// make sure the base path directory exists (UE4Game and UE4Game/ProjectName)
+		// make sure the base path directory exists (UnrealGame and UnrealGame/ProjectName)
 		FString FileBaseDir = GFilePathBase + FString(FILEBASE_DIRECTORY);
 		mkdir(TCHAR_TO_UTF8(*FileBaseDir), 0777);
 		mkdir(TCHAR_TO_UTF8(*(FileBaseDir + GAndroidProjectName)), 0777);
@@ -1640,7 +1649,7 @@ public:
 			Flags |= O_WRONLY;
 		}
 
-		int32 Handle = open(TCHAR_TO_UTF8(*LocalPath), Flags, S_IRUSR | S_IWUSR);
+		int32 Handle = open(TCHAR_TO_UTF8(*LocalPath), Flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 		if (Handle != -1)
 		{
 			FFileHandleAndroid* FileHandleAndroid = new FFileHandleAndroid(LocalPath, Handle);
@@ -1946,10 +1955,12 @@ public:
 		return false;
 	}
 
+#if USE_ANDROID_JNI
 	virtual jobject GetAssetManager() override
 	{
 		return AndroidJNI_GetJavaAssetManager();
 	}
+#endif
 
 	virtual bool IsAsset(const TCHAR* Filename) override
 	{
@@ -2169,7 +2180,7 @@ IPlatformFile& IPlatformFile::GetPlatformPhysical()
 	return FAndroidPlatformFile::GetPlatformPhysical();
 }
 
-IAndroidPlatformFile & IAndroidPlatformFile::GetPlatformPhysical()
+IAndroidPlatformFile& IAndroidPlatformFile::GetPlatformPhysical()
 {
 	return FAndroidPlatformFile::GetPlatformPhysical();
 }

@@ -23,6 +23,7 @@ const FKey FOculusKey::OculusTouch_Left_FaceButton1("OculusTouch_Left_FaceButton
 const FKey FOculusKey::OculusTouch_Left_FaceButton2("OculusTouch_Left_FaceButton2");
 const FKey FOculusKey::OculusTouch_Left_IndexPointing("OculusTouch_Left_IndexPointing");
 const FKey FOculusKey::OculusTouch_Left_ThumbUp("OculusTouch_Left_ThumbUp");
+const FKey FOculusKey::OculusTouch_Left_ThumbRest("OculusTouch_Left_ThumbRest");
 
 const FKey FOculusKey::OculusTouch_Right_Thumbstick("OculusTouch_Right_Thumbstick");
 const FKey FOculusKey::OculusTouch_Right_Trigger("OculusTouch_Right_Trigger");
@@ -30,6 +31,7 @@ const FKey FOculusKey::OculusTouch_Right_FaceButton1("OculusTouch_Right_FaceButt
 const FKey FOculusKey::OculusTouch_Right_FaceButton2("OculusTouch_Right_FaceButton2");
 const FKey FOculusKey::OculusTouch_Right_IndexPointing("OculusTouch_Right_IndexPointing");
 const FKey FOculusKey::OculusTouch_Right_ThumbUp("OculusTouch_Right_ThumbUp");
+const FKey FOculusKey::OculusTouch_Right_ThumbRest("OculusTouch_Right_ThumbRest");
 
 const FKey FOculusKey::OculusRemote_DPad_Down("OculusRemote_DPad_Down");
 const FKey FOculusKey::OculusRemote_DPad_Up("OculusRemote_DPad_Up");
@@ -74,6 +76,7 @@ const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Left_FaceButton1("Oculu
 const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Left_FaceButton2("OculusTouch_Left_FaceButton2");
 const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Left_IndexPointing("OculusTouch_Left_IndexPointing");
 const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Left_ThumbUp("OculusTouch_Left_ThumbUp");
+const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Left_ThumbRest("OculusTouch_Left_ThumbRest");
 
 const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Right_Thumbstick("OculusTouch_Right_Thumbstick");
 const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Right_Trigger("OculusTouch_Right_Trigger");
@@ -81,6 +84,7 @@ const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Right_FaceButton1("Ocul
 const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Right_FaceButton2("OculusTouch_Right_FaceButton2");
 const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Right_IndexPointing("OculusTouch_Right_IndexPointing");
 const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Right_ThumbUp("OculusTouch_Right_ThumbUp");
+const FOculusKeyNames::Type FOculusKeyNames::OculusTouch_Right_ThumbRest("OculusTouch_Right_ThumbRest");
 
 const FOculusKeyNames::Type FOculusKeyNames::OculusRemote_DPad_Down("OculusRemote_DPad_Down");
 const FOculusKeyNames::Type FOculusKeyNames::OculusRemote_DPad_Up("OculusRemote_DPad_Up");
@@ -177,6 +181,7 @@ void FOculusInput::PreInit()
 	EKeys::AddKey(FKeyDetails(FOculusKey::OculusTouch_Left_FaceButton2, LOCTEXT("OculusTouch_Left_FaceButton2", "Oculus Touch (L) Y Button CapTouch"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D));
 	EKeys::AddKey(FKeyDetails(FOculusKey::OculusTouch_Left_IndexPointing, LOCTEXT("OculusTouch_Left_IndexPointing", "Oculus Touch (L) Pointing CapTouch"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey, "OculusTouch"));
 	EKeys::AddKey(FKeyDetails(FOculusKey::OculusTouch_Left_ThumbUp, LOCTEXT("OculusTouch_Left_ThumbUp", "Oculus Touch (L) Thumb Up CapTouch"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey, "OculusTouch"));
+	EKeys::AddKey(FKeyDetails(FOculusKey::OculusTouch_Left_ThumbRest, LOCTEXT("OculusTouch_Left_ThumbRest", "Oculus Touch (L) Thumb Rest CapTouch"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey, "OculusTouch"));
 
 	EKeys::AddKey(FKeyDetails(FOculusKey::OculusTouch_Right_Thumbstick, LOCTEXT("OculusTouch_Right_Thumbstick", "Oculus Touch (R) Thumbstick CapTouch"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey));
 	EKeys::AddKey(FKeyDetails(FOculusKey::OculusTouch_Right_FaceButton1, LOCTEXT("OculusTouch_Right_FaceButton1", "Oculus Touch (R) A Button CapTouch"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey));
@@ -184,6 +189,7 @@ void FOculusInput::PreInit()
 	EKeys::AddKey(FKeyDetails(FOculusKey::OculusTouch_Right_FaceButton2, LOCTEXT("OculusTouch_Right_FaceButton2", "Oculus Touch (R) B Button CapTouch"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey));
 	EKeys::AddKey(FKeyDetails(FOculusKey::OculusTouch_Right_IndexPointing, LOCTEXT("OculusTouch_Right_IndexPointing", "Oculus Touch (R) Pointing CapTouch"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey, "OculusTouch"));
 	EKeys::AddKey(FKeyDetails(FOculusKey::OculusTouch_Right_ThumbUp, LOCTEXT("OculusTouch_Right_ThumbUp", "Oculus Touch (R) Thumb Up CapTouch"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey, "OculusTouch"));
+	EKeys::AddKey(FKeyDetails(FOculusKey::OculusTouch_Right_ThumbRest, LOCTEXT("OculusTouch_Right_ThumbRest", "Oculus Touch (R) Thumb Rest CapTouch"), FKeyDetails::GamepadKey | FKeyDetails::Axis1D | FKeyDetails::NotBlueprintBindableKey, "OculusTouch"));
 
 	EKeys::AddMenuCategoryDisplayInfo("OculusRemote", LOCTEXT("OculusRemoteSubCategory", "Oculus Remote"), TEXT("GraphEditor.PadEvent_16x"));
 
@@ -613,6 +619,12 @@ void FOculusInput::SendControllerEvents()
 									CurrentAxisVal = (OvrpControllerState.NearTouches & mask) != 0 ? 0.f : 1.f;
 									break;
 								}
+								case EOculusTouchCapacitiveAxes::ThumbRest:
+								{
+									const uint32 mask = (bIsLeft) ? ovrpTouch_LThumbRest : ovrpTouch_RThumbRest;
+									CurrentAxisVal = (OvrpControllerState.Touches & mask) != 0 ? 1.f : 0.f;
+									break;
+								}
 								default:
 									check(0);
 								}
@@ -707,6 +719,12 @@ void FOculusInput::SendControllerEvents()
 
 								State.bIsDominantHand = (HandState.Status & ovrpHandStatus_DominantHand) != 0;
 								
+								// Poll for finger confidence
+								for (uint32 FingerIndex = 0; FingerIndex < (int32)EOculusHandAxes::TotalAxisCount; FingerIndex++)
+								{
+									State.FingerConfidences[FingerIndex] = FOculusHandTracking::ToETrackingConfidence(HandState.FingerConfidences[FingerIndex]);
+								}
+
 								// Poll for finger pinches
 								for (uint32 FingerIndex = 0; FingerIndex < (uint32)EOculusHandButton::TotalButtonCount; FingerIndex++)
 								{
@@ -858,6 +876,33 @@ void FOculusInput::SetChannelValues( int32 ControllerId, const FForceFeedbackVal
 	}
 }
 
+bool FOculusInput::SupportsForceFeedback(int32 ControllerId)
+{
+	for (FOculusControllerPair& ControllerPair : ControllerPairs)
+	{
+		if (ControllerPair.UnrealControllerIndex == ControllerId)
+		{
+			const FOculusTouchControllerState& ControllerStateLeft = ControllerPair.TouchControllerStates[(int32)EControllerHand::Left];
+			const FOculusTouchControllerState& ControllerStateRight = ControllerPair.TouchControllerStates[(int32)EControllerHand::Right];
+
+			if (!(ControllerStateLeft.bIsConnected || ControllerStateRight.bIsConnected))
+			{
+				// neither hand connected, won't be receiving force feedback
+				continue;
+			}
+
+			if (IOculusHMDModule::IsAvailable() && FOculusHMDModule::GetPluginWrapper().GetInitialized())
+			{
+				// available so could receive feedback
+				return true;
+			}
+		}
+	}
+
+	// not handling force feedback
+	return false;
+}
+
 void FOculusInput::UpdateForceFeedback( const FOculusControllerPair& ControllerPair, const EControllerHand Hand )
 {
 	const FOculusTouchControllerState& ControllerState = ControllerPair.TouchControllerStates[ (int32)Hand ];
@@ -985,7 +1030,14 @@ bool FOculusInput::GetControllerOrientationAndPosition( const int32 ControllerIn
 										OutOrientation = OutPose.Orientation.Rotator();
 									}
 
-									return true;
+									auto bSuccess = true;
+									UOculusInputFunctionLibrary::HandMovementFilter.Broadcast(
+										DeviceHand,
+										&OutPosition,
+										&OutOrientation,
+										&bSuccess);
+
+									return bSuccess;
 								}
 							}
 						}
@@ -997,7 +1049,13 @@ bool FOculusInput::GetControllerOrientationAndPosition( const int32 ControllerIn
 		}
 	}
 
-	return false;
+	auto bSuccess = false;
+	UOculusInputFunctionLibrary::HandMovementFilter.Broadcast(
+		DeviceHand,
+		&OutPosition,
+		&OutOrientation,
+		&bSuccess);
+	return bSuccess;
 }
 
 ETrackingStatus FOculusInput::GetControllerTrackingStatus(const int32 ControllerIndex, const EControllerHand DeviceHand) const
@@ -1075,9 +1133,13 @@ void FOculusInput::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const
 						(OvrpControllerState.ConnectedControllerTypes & (ovrpController_Touch | ovrpController_LTrackedRemote | ovrpController_RTrackedRemote)))
 					{
 						// Buffered haptics is currently only supported on Touch
-						FHapticFeedbackBuffer* HapticBuffer = Values.HapticBuffer;
+						if (Values.HapticBuffer)
+						{
+							ControllerState.ResampleHapticBufferData(*Values.HapticBuffer, ResampledRawDataCache);
+						}
+						FHapticFeedbackBuffer* HapticBuffer = &ControllerState.ResampledHapticBuffer;
 						if ( (OvrpControllerState.ConnectedControllerTypes & (ovrpController_Touch)) &&
-							HapticBuffer && HapticBuffer->SamplingRate == OvrpHapticsDesc.SampleRateHz)
+							Values.HapticBuffer && HapticBuffer->SamplingRate == OvrpHapticsDesc.SampleRateHz)
 						{
 							const ovrpController OvrpController = (EControllerHand(Hand) == EControllerHand::Left) ? ovrpController_LTouch : ovrpController_RTouch;
 
@@ -1100,7 +1162,8 @@ void FOculusInput::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const
 
 									if (OvrpHapticsBuffer.SamplesCount == 0 && OvrpHapticsState.SamplesQueued == 0)
 									{
-										HapticBuffer->bFinishedPlaying = true;
+										Values.HapticBuffer->bFinishedPlaying = HapticBuffer->bFinishedPlaying = true;
+
 										ControllerState.bPlayingHapticEffect = false;
 									}
 									else
@@ -1120,7 +1183,7 @@ void FOculusInput::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const
 											for (int i = 0; i < OvrpHapticsBuffer.SamplesCount; i++)
 											{
 												const uint32 DataIndex = HapticBuffer->CurrentPtr + (i * 2);
-												const uint16* const RawData = reinterpret_cast<uint16*>(&HapticBuffer->RawData[DataIndex]);
+												const uint16* const RawData = reinterpret_cast<const uint16*>(&HapticBuffer->RawData[DataIndex]);
 												samples[i] = static_cast<uint16>(*RawData * HapticBuffer->ScaleFactor);
 											}
 											OvrpHapticsBuffer.Samples = bufferToFree = samples;
@@ -1131,7 +1194,7 @@ void FOculusInput::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const
 											for (int i = 0; i < OvrpHapticsBuffer.SamplesCount; i++)
 											{
 												const uint32 DataIndex = HapticBuffer->CurrentPtr + (i * 4);
-												const uint32* const RawData = reinterpret_cast<uint32*>(&HapticBuffer->RawData[DataIndex]);
+												const uint32* const RawData = reinterpret_cast<const uint32*>(&HapticBuffer->RawData[DataIndex]);
 												samples[i] = static_cast<uint32>(*RawData * HapticBuffer->ScaleFactor);
 											}
 											OvrpHapticsBuffer.Samples = bufferToFree = samples;
@@ -1193,6 +1256,62 @@ void FOculusInput::SetHapticFeedbackValues(int32 ControllerId, int32 Hand, const
 
 			break;
 		}
+	}
+}
+
+void FOculusTouchControllerState::ResampleHapticBufferData(const FHapticFeedbackBuffer& HapticBuffer, TMap<const uint8*, TSharedPtr<TArray<uint8>>>& ResampledRawDataCache)
+{
+	const uint8* OriginalRawData = HapticBuffer.RawData;
+	TSharedPtr<TArray<uint8>>* ResampledRawDataSharedPtrPtr = ResampledRawDataCache.Find(OriginalRawData);
+	if (ResampledRawDataSharedPtrPtr == nullptr)
+	{
+		// We need to resample and cache the resampled data.
+
+		ResampledHapticBuffer = HapticBuffer;
+
+		int32 SampleRate = HapticBuffer.SamplingRate;
+		int TargetFrequency = 320;
+		int TargetBufferSize = (HapticBuffer.BufferLength * TargetFrequency) / (SampleRate * 2) + 1; //2 because we're only using half of the 16bit source PCM buffer
+		ResampledHapticBuffer.BufferLength = TargetBufferSize;
+		ResampledHapticBuffer.CurrentPtr = 0;
+		ResampledHapticBuffer.SamplingRate = TargetFrequency;
+
+		TSharedPtr<TArray<uint8>>& NewResampledRawDataSharedPtr = ResampledRawDataCache.Add(OriginalRawData);
+		NewResampledRawDataSharedPtr = MakeShared<TArray<uint8>>();
+		ResampledRawDataSharedPtrPtr = &NewResampledRawDataSharedPtr;
+		TArray<uint8>& ResampledRawData = *NewResampledRawDataSharedPtr;
+		ResampledRawData.SetNum(TargetBufferSize);
+
+		const uint8* PCMData = HapticBuffer.RawData;
+
+		int previousTargetIndex = -1;
+		int currentMin = 0;
+		for (int i = 1; i < HapticBuffer.BufferLength; i += 2)
+		{
+			int targetIndex = i * TargetFrequency / (SampleRate * 2);
+			int val = PCMData[i];
+			if (val & 0x80)
+			{
+				val = ~val;
+			}
+			currentMin = FMath::Min(currentMin, val);
+
+			if (targetIndex != previousTargetIndex)
+			{
+
+				ResampledRawData[targetIndex] = val * 2;// *Scale;
+				previousTargetIndex = targetIndex;
+				currentMin = 0;
+			}
+		}
+
+		ResampledHapticBuffer.RawData = ResampledRawData.GetData();
+	}
+	else if (ResampledHapticBuffer.RawData != (*ResampledRawDataSharedPtrPtr)->GetData())
+	{
+		// If this a cached effect, but not the same one we played last so we need to copy the new one's buffer and reference its cached resampled data.
+		ResampledHapticBuffer = HapticBuffer;
+		ResampledHapticBuffer.RawData = (*ResampledRawDataSharedPtrPtr)->GetData();
 	}
 }
 

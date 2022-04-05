@@ -191,7 +191,6 @@ void STiledLandscapeImportDlg::Construct(const FArguments& InArgs, TSharedPtr<SW
 				[
 					SNew( SVectorInputBox )
 					.bColorAxisLabels( true )
-					.AllowResponsiveLayout( true )
 					.AllowSpin(false)
 					.X( this, &STiledLandscapeImportDlg::GetScaleX )
 					.Y( this, &STiledLandscapeImportDlg::GetScaleY )
@@ -537,7 +536,7 @@ FReply STiledLandscapeImportDlg::OnClickedSelectHeightmapTiles()
 						break;
 					}
 
-					FLandscapeHeightmapInfo HeightmapInfo = HeightmapFormat->Validate(*Filename);
+					FLandscapeFileInfo HeightmapInfo = HeightmapFormat->Validate(*Filename, NAME_None);
 					if (HeightmapInfo.ResultCode != ELandscapeImportResult::Success)
 					{
 						StatusMessage = HeightmapInfo.ErrorMessage;

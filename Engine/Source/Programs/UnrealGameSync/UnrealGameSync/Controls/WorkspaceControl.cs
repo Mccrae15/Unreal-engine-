@@ -2,10 +2,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Data.SqlClient;
-using System.Deployment.Application;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -14,18 +10,28 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Windows.Forms.VisualStyles;
-using Microsoft.Win32;
 using System.Threading;
-using System.Drawing.Imaging;
-using System.Web.Script.Serialization;
 
 namespace UnrealGameSync
 {
-	public enum LatestChangeType
+	public class UncontrolledChangelist
+	{
+		public string GUID { get; set; }
+		public string Name { get; set; }
+		public List<string> Files { get; set; }
+	}
+
+	public class UncontrolledChangelistPersistency
+	{
+		public int Version { get; set; }
+		public List<UncontrolledChangelist> Changelists { get; set; }
+	}
+
+public enum LatestChangeType
 	{
 		Any,
 		Good,
@@ -56,27 +62,6 @@ namespace UnrealGameSync
 
 	partial class WorkspaceControl : UserControl, IMainWindowTabPanel
 	{
-		/// <summary>
-		/// Default sync categories.
-		/// NOTE: These category definitions are now overridden in UnrealGameSync.ini; this list exists solely for backwards compatibility, and will not normally be used.
-		/// </summary>
-		readonly WorkspaceSyncCategory[] DefaultSyncCategories =
-		{
-			new WorkspaceSyncCategory(new Guid("{6703E989-D912-451D-93AD-B48DE748D282}"), "Content", "*.uasset", "*.umap"),
-			new WorkspaceSyncCategory(new Guid("{6507C2FB-19DD-403A-AFA3-BBF898248D5A}"), "Documentation", "/Engine/Documentation/..."),
-			new WorkspaceSyncCategory(new Guid("{FD7C716E-4BAD-43AE-8FAE-8748EF9EE44D}"), "Platform Support: Android", "/Engine/Source/ThirdParty/.../Android/...", ".../Build/Android/PipelineCaches/..."),
-			new WorkspaceSyncCategory(new Guid("{176B2EB2-35F7-4E8E-B131-5F1C5F0959AF}"), "Platform Support: iOS", "/Engine/Source/ThirdParty/.../IOS/...", ".../Build/IOS/PipelineCaches/..."),
-			new WorkspaceSyncCategory(new Guid("{F44B2D25-CBC0-4A8F-B6B3-E4A8125533DD}"), "Platform Support: Linux", "/Engine/Source/ThirdParty/.../Linux/..."),
-			new WorkspaceSyncCategory(new Guid("{2AF45231-0D75-463B-BF9F-ABB3231091BB}"), "Platform Support: Mac", "/Engine/Source/ThirdParty/.../Mac/...", ".../Build/Mac/PipelineCaches/..."),
-			new WorkspaceSyncCategory(new Guid("{C8CB4934-ADE9-46C9-B6E3-61A659E1FAF5}"), "Platform Support: PS4", ".../PS4/..."),
-			new WorkspaceSyncCategory(new Guid("{F8AE5AC3-DA2D-4719-BABF-8A90D878379E}"), "Platform Support: Switch", ".../Switch/..."),
-			new WorkspaceSyncCategory(new Guid("{3788A0BC-188C-4A0D-950A-D68175F0D110}"), "Platform Support: tvOS", "/Engine/Source/ThirdParty/.../TVOS/..."),
-			new WorkspaceSyncCategory(new Guid("{1144E719-FCD7-491B-B0FC-8B4C3565BF79}"), "Platform Support: Win32", "/Engine/Source/ThirdParty/.../Win32/..."),
-			new WorkspaceSyncCategory(new Guid("{5206CCEE-9024-4E36-8B89-F5F5A7D288D2}"), "Platform Support: Win64", "/Engine/Source/ThirdParty/.../Win64/..."),
-			new WorkspaceSyncCategory(new Guid("{06887423-B094-4718-9B55-C7A21EE67EE4}"), "Platform Support: XboxOne", ".../XboxOne/..."),
-			new WorkspaceSyncCategory(new Guid("{CFEC942A-BB90-4F0C-ACCF-238ECAAD9430}"), "Source Code", "/Engine/Source/..."),
-		};
-
 		enum HorizontalAlignment
 		{
 			Left,
@@ -267,6 +252,7 @@ namespace UnrealGameSync
 		bool bUnstable;
 		string EditorTargetName;
 		bool bIsEnterpriseProject;
+		JupiterMonitor JupiterMonitor;
 		PerforceMonitor PerforceMonitor;
 		Workspace Workspace;
 		IssueMonitor IssueMonitor;
@@ -275,9 +261,10 @@ namespace UnrealGameSync
 		HashSet<int> PromotedChangeNumbers = new HashSet<int>();
 		List<int> ListIndexToChangeIndex = new List<int>();
 		List<int> SortedChangeNumbers = new List<int>();
-		Dictionary<string, Dictionary<int, string>> ArchiveToChangeNumberToArchivePath = new Dictionary<string, Dictionary<int, string>>();
+		Dictionary<string, Dictionary<int, string>> ArchiveToChangeNumberToArchiveKey = new Dictionary<string, Dictionary<int, string>>();
 		Dictionary<int, ChangeLayoutInfo> ChangeNumberToLayoutInfo = new Dictionary<int, ChangeLayoutInfo>();
-		List<ToolStripMenuItem> CustomToolMenuItems = new List<ToolStripMenuItem>();
+		List<ContextMenuStrip> CustomStatusPanelMenus = new List<ContextMenuStrip>();
+		List<(string, Action<Point, Rectangle>)> CustomStatusPanelLinks = new List<(string, Action<Point, Rectangle>)>();
 		int NumChanges;
 		int PendingSelectedChangeNumber = -1;
 		bool bHasBuildSteps = false;
@@ -331,7 +318,7 @@ namespace UnrealGameSync
 		// Placeholder text that is in the control and cleared when the user starts editing.
 		static string AuthorFilterPlaceholderText = "<username>";
 
-		public WorkspaceControl(IWorkspaceControlOwner InOwner, string InApiUrl, string InOriginalExecutableFileName, bool bInUnstable, DetectProjectSettingsTask DetectSettings, LineBasedTextWriter InLog, UserSettings InSettings)
+		public WorkspaceControl(IWorkspaceControlOwner InOwner, string InApiUrl, string InOriginalExecutableFileName, bool bInUnstable, DetectProjectSettingsTask DetectSettings, LineBasedTextWriter InLog, UserSettings InSettings, OIDCTokenManager InOidcTokenManager)
 		{
 			InitializeComponent();
 
@@ -417,6 +404,8 @@ namespace UnrealGameSync
 
 			EventMonitor = new EventMonitor(ApiUrl, PerforceUtils.GetClientOrDepotDirectoryName(SelectedProjectIdentifier), DetectSettings.PerforceClient.UserName, ProjectLogBaseName + ".review.log");
 			EventMonitor.OnUpdatesReady += UpdateReviewsCallback;
+
+			JupiterMonitor = JupiterMonitor.CreateFromConfigFile(InOidcTokenManager, ProjectLogBaseName + ".jupiter.log", DetectSettings.LatestProjectConfigFile, SelectedProjectIdentifier);
 
 			UpdateColumnSettings();
 
@@ -777,6 +766,11 @@ namespace UnrealGameSync
 				BadgeFont.Dispose();
 				BadgeFont = null;
 			}
+			if (JupiterMonitor != null)
+			{
+				JupiterMonitor.Dispose();
+				JupiterMonitor = null;
+			}
 
 			base.Dispose(disposing);
 		}
@@ -969,16 +963,16 @@ namespace UnrealGameSync
 			WorkspaceUpdateContext Context = new WorkspaceUpdateContext(ChangeNumber, Options, CombinedSyncFilter, GetDefaultBuildStepObjects(), ProjectSettings.BuildSteps, null, GetWorkspaceVariables(ChangeNumber));
 			if (Options.HasFlag(WorkspaceUpdateOptions.SyncArchives))
 			{
-				IReadOnlyList<IArchiveInfo> Archives = PerforceMonitor.AvailableArchives;
+				IReadOnlyList<IArchiveInfo> Archives = GetArchives();
 				foreach (IArchiveInfo Archive in Archives)
 				{
-					Context.ArchiveTypeToDepotPath[Archive.Type] = null;
+					Context.ArchiveTypeToArchive[Archive.Type] = null;
 				}
 
-				List<IArchiveInfo> SelectedArchives = GetSelectedArchives(PerforceMonitor.AvailableArchives);
+				List<IArchiveInfo> SelectedArchives = GetSelectedArchives(Archives);
 				foreach (IArchiveInfo Archive in SelectedArchives)
 				{
-					string ArchivePath = GetArchivePathForChangeNumber(Archive, ChangeNumber);
+					string ArchivePath = GetArchiveKeyForChangeNumber(Archive, ChangeNumber);
 					if (ArchivePath == null)
 					{
 						MessageBox.Show(String.Format("There are no compiled {0} binaries for this change. To sync it, you must disable syncing of precompiled editor binaries.", Archive.Name));
@@ -996,7 +990,7 @@ namespace UnrealGameSync
 						Context.SyncFilter = Enumerable.Concat(Context.SyncFilter, ZippedBinariesSyncFilter).ToArray();
 					}
 
-					Context.ArchiveTypeToDepotPath[Archive.Type] = ArchivePath;
+					Context.ArchiveTypeToArchive[Archive.Type] = new Tuple<IArchiveInfo, string>(Archive, ArchivePath);
 				}
 			}
 			StartWorkspaceUpdate(Context, Callback);
@@ -1107,7 +1101,7 @@ namespace UnrealGameSync
 
 			if (Result == WorkspaceUpdateResult.Success && WorkspaceSettings.ExpandedArchiveTypes != null)
 			{
-				WorkspaceSettings.ExpandedArchiveTypes = WorkspaceSettings.ExpandedArchiveTypes.Except(Context.ArchiveTypeToDepotPath.Where(x => x.Value == null).Select(x => x.Key)).ToArray();
+				WorkspaceSettings.ExpandedArchiveTypes = WorkspaceSettings.ExpandedArchiveTypes.Except(Context.ArchiveTypeToArchive.Where(x => x.Value == null).Select(x => x.Key)).ToArray();
 			}
 
 			WorkspaceSettings.LastSyncChangeNumber = Context.ChangeNumber;
@@ -1139,7 +1133,24 @@ namespace UnrealGameSync
 				DesiredTaskbarState = Tuple.Create(TaskbarState.Paused, 0.0f);
 				Owner.UpdateProgress();
 
-				ClobberWindow Window = new ClobberWindow(Context.ClobberFiles);
+				HashSet<string> UncontrolledFiles = new HashSet<string>();
+				
+				if (SelectedProject.LocalPath.EndsWith(".uprojectdirs", StringComparison.InvariantCultureIgnoreCase))
+				{
+					List<string> ProjectRoots = GetProjectRoots(SelectedProject.LocalPath);
+
+					foreach (string ProjectRoot in ProjectRoots)
+					{
+						ParseUncontrolledChangelistsPersistencyFile(ProjectRoot, UncontrolledFiles);
+					}
+				}
+				else
+				{
+					ParseUncontrolledChangelistsPersistencyFile(Path.GetDirectoryName(SelectedProject.LocalPath), UncontrolledFiles);
+				}
+
+				ClobberWindow Window = new ClobberWindow(Context.ClobberFiles, UncontrolledFiles);
+				
 				if (Window.ShowDialog(this) == DialogResult.OK)
 				{
 					StartWorkspaceUpdate(Context, UpdateCallback);
@@ -1200,7 +1211,7 @@ namespace UnrealGameSync
 		{
 			if (SelectedFileName != null)
 			{
-				ArchiveToChangeNumberToArchivePath.Clear();
+				ArchiveToChangeNumberToArchiveKey.Clear();
 				ChangeNumberToLayoutInfo.Clear();
 
 				List<PerforceChangeSummary> Changes = PerforceMonitor.GetChanges();
@@ -1614,7 +1625,7 @@ namespace UnrealGameSync
 			UpdateMaxBuildBadgeChars();
 
 			// Update everything else
-			ArchiveToChangeNumberToArchivePath.Clear();
+			ArchiveToChangeNumberToArchiveKey.Clear();
 			ChangeNumberToLayoutInfo.Clear();
 			BuildList.Invalidate();
 			UpdateServiceBadges();
@@ -1709,12 +1720,6 @@ namespace UnrealGameSync
 		{
 			Dictionary<Guid, WorkspaceSyncCategory> UniqueIdToCategory = new Dictionary<Guid, WorkspaceSyncCategory>();
 
-			// Add the default filters
-			foreach (WorkspaceSyncCategory DefaultSyncCategory in DefaultSyncCategories)
-			{
-				UniqueIdToCategory.Add(DefaultSyncCategory.UniqueId, DefaultSyncCategory);
-			}
-
 			// Add the custom filters
 			ConfigFile ProjectConfigFile = PerforceMonitor.LatestProjectConfigFile;
 			if (ProjectConfigFile != null)
@@ -1763,6 +1768,76 @@ namespace UnrealGameSync
 			}
 		}
 
+		List<string> GetProjectRoots(string InUProjectDirsPath)
+		{
+			List<string> ProjectRoots = new List<string>();
+
+			if (!File.Exists(InUProjectDirsPath))
+			{
+				return ProjectRoots;
+			}
+
+			string UProjectDirsRoot = Path.GetDirectoryName(InUProjectDirsPath);
+
+			foreach (string Line in File.ReadLines(InUProjectDirsPath))
+			{
+				// Remove unnecessary whitespaces
+				string TrimmedLine = Line.Trim();
+
+				// Remove every comments
+				int CommentIndex = TrimmedLine.IndexOf(';');
+
+				if (CommentIndex >= 0)
+				{
+					TrimmedLine = TrimmedLine.Substring(0, CommentIndex);
+				}
+
+				if (TrimmedLine.Length <= 0)
+				{
+					continue;
+				}
+
+				string UProjectDirsEntry = Path.Combine(UProjectDirsRoot, TrimmedLine);
+
+				if (!Directory.Exists(UProjectDirsEntry))
+				{
+					continue;
+				}
+
+				List<string> EntryDirectories = new List<string>(Directory.EnumerateDirectories(UProjectDirsEntry));
+
+				ProjectRoots = ProjectRoots.Concat(EntryDirectories).ToList();
+			}
+
+			return ProjectRoots;
+		}
+
+		void ParseUncontrolledChangelistsPersistencyFile(string InProjectRoot, HashSet<string> OutUncontrolledFiles)
+		{
+			String UncontrolledChangelistPersistencyFilePath = Path.Combine(InProjectRoot, "Saved", "SourceControl", "UncontrolledChangelists.json");
+
+			if (File.Exists(UncontrolledChangelistPersistencyFilePath))
+			{
+				try
+				{
+					string JsonString = File.ReadAllText(UncontrolledChangelistPersistencyFilePath);
+					UncontrolledChangelistPersistency UCLPersistency = JsonSerializer.Deserialize<UncontrolledChangelistPersistency>(JsonString, Program.DefaultJsonSerializerOptions);
+
+					foreach (UncontrolledChangelist UCL in UCLPersistency.Changelists)
+					{
+						foreach (string UncontrolledFile in UCL.Files)
+						{
+							OutUncontrolledFiles.Add(UncontrolledFile);
+						}
+					}
+				}
+				catch (Exception Ex)
+				{
+					Log.WriteLine("Exception while parsing Uncontrolled Changelist persistency file: {0}", Ex.ToString());
+				}
+			}
+		}
+
 		void UpdateReviewsCallback()
 		{
 			if (!bUpdateReviewsPosted)
@@ -1774,7 +1849,7 @@ namespace UnrealGameSync
 
 		void UpdateReviews()
 		{
-			ArchiveToChangeNumberToArchivePath.Clear();
+			ArchiveToChangeNumberToArchiveKey.Clear();
 			ChangeNumberToLayoutInfo.Clear();
 			EventMonitor.ApplyUpdates();
 
@@ -2009,15 +2084,15 @@ namespace UnrealGameSync
 			}
 		}
 
-		private string GetArchivePathForChangeNumber(IArchiveInfo Archive, int ChangeNumber)
+		private string GetArchiveKeyForChangeNumber(IArchiveInfo Archive, int ChangeNumber)
 		{
 			string ArchivePath;
 
 			Dictionary<int, string> ChangeNumberToArchivePath;
-			if (!ArchiveToChangeNumberToArchivePath.TryGetValue(Archive.Name, out ChangeNumberToArchivePath))
+			if (!ArchiveToChangeNumberToArchiveKey.TryGetValue(Archive.Name, out ChangeNumberToArchivePath))
 			{
 				ChangeNumberToArchivePath = new Dictionary<int, string>();
-				ArchiveToChangeNumberToArchivePath[Archive.Name] = ChangeNumberToArchivePath;
+				ArchiveToChangeNumberToArchiveKey[Archive.Name] = ChangeNumberToArchivePath;
 			}
 
 			if (!ChangeNumberToArchivePath.TryGetValue(ChangeNumber, out ArchivePath))
@@ -2026,13 +2101,13 @@ namespace UnrealGameSync
 				if (PerforceMonitor.TryGetChangeDetails(ChangeNumber, out Details))
 				{
 					// Try to get the archive for this CL
-					if (!Archive.TryGetArchivePathForChangeNumber(ChangeNumber, out ArchivePath) && !Details.bContainsCode)
+					if (!Archive.TryGetArchiveKeyForChangeNumber(ChangeNumber, out ArchivePath) && !Details.bContainsCode)
 					{
 						// Otherwise if it's a content-only change, find the previous build any use the archive path from that
 						int Index = SortedChangeNumbers.BinarySearch(ChangeNumber);
 						if (Index > 0)
 						{
-							ArchivePath = GetArchivePathForChangeNumber(Archive, SortedChangeNumbers[Index - 1]);
+							ArchivePath = GetArchiveKeyForChangeNumber(Archive, SortedChangeNumbers[Index - 1]);
 						}
 					}
 				}
@@ -2054,8 +2129,8 @@ namespace UnrealGameSync
 				return false;
 			}
 
-			List<IArchiveInfo> SelectedArchives = GetSelectedArchives(PerforceMonitor.AvailableArchives);
-			return SelectedArchives.Count == 0 || SelectedArchives.All(x => GetArchivePathForChangeNumber(x, ChangeNumber) != null);
+			List<IArchiveInfo> SelectedArchives = GetSelectedArchives(GetArchives());
+			return SelectedArchives.Count == 0 || SelectedArchives.All(x => GetArchiveKeyForChangeNumber(x, ChangeNumber) != null);
 		}
 
 		private ChangeLayoutInfo GetChangeLayoutInfo(PerforceChangeSummary Change)
@@ -2453,7 +2528,7 @@ namespace UnrealGameSync
 				if (ProjectConfigFile != null)
 				{
 					string[] BadgeDefinitions = ProjectConfigFile.GetValues("Badges.DescriptionBadges", new string[0]);
-					foreach (string BadgeDefinition in BadgeDefinitions)
+					foreach (string BadgeDefinition in BadgeDefinitions.Distinct())
 					{
 						ConfigObject BadgeDefinitionObject = new ConfigObject(BadgeDefinition);
 						string Pattern = BadgeDefinitionObject.GetValue("Pattern", null);
@@ -2520,7 +2595,10 @@ namespace UnrealGameSync
 		{
 			try
 			{
-				Process.Start(Url);
+				ProcessStartInfo StartInfo = new ProcessStartInfo();
+				StartInfo.FileName = Url;
+				StartInfo.UseShellExecute = true;
+				using Process _ = Process.Start(StartInfo);
 			}
 			catch
 			{
@@ -2532,7 +2610,11 @@ namespace UnrealGameSync
 		{
 			try
 			{
-				Process.Start(Url, Arguments);
+				ProcessStartInfo StartInfo = new ProcessStartInfo();
+				StartInfo.FileName = Url;
+				StartInfo.Arguments = Arguments;
+				StartInfo.UseShellExecute = true;
+				using Process _ = Process.Start(StartInfo);
 			}
 			catch
 			{
@@ -2548,7 +2630,8 @@ namespace UnrealGameSync
 				StartInfo.FileName = Url;
 				StartInfo.Arguments = Arguments;
 				StartInfo.WorkingDirectory = WorkingDir;
-				Process.Start(StartInfo).Dispose();
+				StartInfo.UseShellExecute = true;
+				using Process _ = Process.Start(StartInfo);
 			}
 			catch
 			{
@@ -3029,6 +3112,11 @@ namespace UnrealGameSync
 			return EditorTargetName;
 		}
 
+		private class ReceiptJsonObject
+		{
+			public string Launch { get; set; }
+		}
+
 		private string GetEditorExePath(BuildConfig Config)
 		{
 			// Try to read the executable path from the target receipt
@@ -3041,19 +3129,14 @@ namespace UnrealGameSync
 					try
 					{
 						string Text = File.ReadAllText(ReceiptFileName);
-						JavaScriptSerializer Serializer = new JavaScriptSerializer();
-						Dictionary<string, object> RawObject = Serializer.Deserialize<Dictionary<string, object>>(Text);
+						ReceiptJsonObject Receipt = JsonSerializer.Deserialize<ReceiptJsonObject>(Text, Program.DefaultJsonSerializerOptions);
 
-						object LaunchFileNameObject;
-						if (RawObject.TryGetValue("Launch", out LaunchFileNameObject))
+						string LaunchFileName = Receipt.Launch;
+						if (LaunchFileName != null)
 						{
-							string LaunchFileName = LaunchFileNameObject as string;
-							if (LaunchFileName != null)
-							{
-								LaunchFileName = LaunchFileName.Replace("$(EngineDir)", Path.Combine(BranchDirectoryName, "Engine"));
-								LaunchFileName = LaunchFileName.Replace("$(ProjectDir)", Path.GetDirectoryName(SelectedFileName));
-								return Path.GetFullPath(LaunchFileName);
-							}
+							LaunchFileName = LaunchFileName.Replace("$(EngineDir)", Path.Combine(BranchDirectoryName, "Engine"));
+							LaunchFileName = LaunchFileName.Replace("$(ProjectDir)", Path.GetDirectoryName(SelectedFileName));
+							return Path.GetFullPath(LaunchFileName);
 						}
 					}
 					catch (Exception Ex)
@@ -3093,53 +3176,50 @@ namespace UnrealGameSync
 		private string[] GetProcessesRunningInWorkspace()
 		{
 			HashSet<string> ProcessNames = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
-			ProcessNames.Add("UE4Editor");
-			ProcessNames.Add("UE4Editor-Cmd");
-			ProcessNames.Add("UE4Editor-Win64-Debug");
-			ProcessNames.Add("UE4Editor-Win64-Debug-Cmd");
-			ProcessNames.Add("UE4Editor-Win64-DebugGame");
-			ProcessNames.Add("UE4Editor-Win64-DebugGame-Cmd");
-			ProcessNames.Add("UnrealEditor");
-			ProcessNames.Add("UnrealEditor-Cmd");
-			ProcessNames.Add("UnrealEditor-Win64-Debug");
-			ProcessNames.Add("UnrealEditor-Win64-Debug-Cmd");
-			ProcessNames.Add("UnrealEditor-Win64-DebugGame");
-			ProcessNames.Add("UnrealEditor-Win64-DebugGame-Cmd");
-			ProcessNames.Add("CrashReportClient");
-			ProcessNames.Add("CrashReportClient-Win64-Development");
-			ProcessNames.Add("CrashReportClient-Win64-Debug");
-			ProcessNames.Add("CrashReportClientEditor");
-			ProcessNames.Add("CrashReportClientEditor-Win64-Development");
-			ProcessNames.Add("CrashReportClientEditor-Win64-Debug");
-			ProcessNames.Add("UnrealBuildTool");
-			ProcessNames.Add("AutomationTool");
+			ProcessNames.Add("Win64\\UE4Editor.exe");
+			ProcessNames.Add("Win64\\UE4Editor-Cmd.exe");
+			ProcessNames.Add("Win64\\UE4Editor-Win64-Debug.exe");
+			ProcessNames.Add("Win64\\UE4Editor-Win64-Debug-Cmd.exe");
+			ProcessNames.Add("Win64\\UE4Editor-Win64-DebugGame.exe");
+			ProcessNames.Add("Win64\\UE4Editor-Win64-DebugGame-Cmd.exe");
+			ProcessNames.Add("Win64\\UnrealEditor.exe");
+			ProcessNames.Add("Win64\\UnrealEditor-Cmd.exe");
+			ProcessNames.Add("Win64\\UnrealEditor-Win64-Debug.exe");
+			ProcessNames.Add("Win64\\UnrealEditor-Win64-Debug-Cmd.exe");
+			ProcessNames.Add("Win64\\UnrealEditor-Win64-DebugGame.exe");
+			ProcessNames.Add("Win64\\UnrealEditor-Win64-DebugGame-Cmd.exe");
+			ProcessNames.Add("Win64\\CrashReportClient.exe");
+			ProcessNames.Add("Win64\\CrashReportClient-Win64-Development.exe");
+			ProcessNames.Add("Win64\\CrashReportClient-Win64-Debug.exe");
+			ProcessNames.Add("Win64\\CrashReportClientEditor.exe");
+			ProcessNames.Add("Win64\\CrashReportClientEditor-Win64-Development.exe");
+			ProcessNames.Add("Win64\\CrashReportClientEditor-Win64-Debug.exe");
+			ProcessNames.Add("DotNET\\UnrealBuildTool\\UnrealBuildTool.exe");
+			ProcessNames.Add("DotNET\\AutomationTool\\AutomationTool.exe");
 
 			List<string> ProcessFileNames = new List<string>();
 			try
 			{
-				string RootDirectoryName = Path.GetFullPath(Workspace.LocalRootPath) + Path.DirectorySeparatorChar;
-				foreach (Process ProcessInstance in Process.GetProcesses())
+				string BinariesRootPath = Path.Combine(Workspace.LocalRootPath, "Engine\\Binaries");
+
+				foreach (string ProcessName in ProcessNames)
 				{
 					try
 					{
-						if (ProcessNames.Contains(ProcessInstance.ProcessName))
+						string ProcessFilename = Path.Combine(BinariesRootPath, ProcessName);
+
+						if (File.Exists(ProcessFilename))
 						{
-							string ProcessFileName = Path.GetFullPath(ProcessInstance.MainModule.FileName);
-							if (ProcessFileName.StartsWith(RootDirectoryName, StringComparison.InvariantCultureIgnoreCase))
+							try
 							{
-								string DisplayTitle = ProcessFileName;
-								try
-								{
-									string MainWindowTitle = ProcessInstance.MainWindowTitle;
-									if (!String.IsNullOrEmpty(MainWindowTitle))
-									{
-										DisplayTitle = String.Format("{0} ({1})", ProcessInstance.MainWindowTitle, DisplayTitle);
-									}
-								}
-								catch
-								{
-								}
-								ProcessFileNames.Add(DisplayTitle);
+								// Try to open the file to determine whether the executable is running.
+								// We do this so that we can also find processes running under other user sessions, without needing PROCESS_QUERY_INFORMATION access rights.
+								using FileStream TestStream = File.OpenWrite(ProcessFilename);
+							}
+							catch (IOException)
+							{
+								// This file is in use, so add it to the list of running processes
+								ProcessFileNames.Add(ProcessFilename);
 							}
 						}
 					}
@@ -3173,6 +3253,7 @@ namespace UnrealGameSync
 				else
 				{
 					PossiblePaths.Add(Path.Combine(Path.GetDirectoryName(SelectedFileName), "Binaries", "Win64", String.Format("{0}{1}.target", GetDefaultEditorTargetName(), ConfigSuffix)));
+					PossiblePaths.Add(Path.Combine(Workspace.LocalRootPath, "Engine", "Binaries", "Win64", String.Format("{0}{1}.target", GetDefaultEditorTargetName(), ConfigSuffix)));
 				}
 			}
 			else
@@ -3436,6 +3517,12 @@ namespace UnrealGameSync
 							ProgramsLine.AddText("  |  ");
 						}
 					}
+				}
+
+				foreach ((string Name, Action<Point, Rectangle> Action) in CustomStatusPanelLinks)
+				{
+					ProgramsLine.AddLink(Name, FontStyle.Regular, Action);
+					ProgramsLine.AddText("  |  ");
 				}
 
 				ProgramsLine.AddLink("Windows Explorer", FontStyle.Regular, () => { SafeProcessStart("explorer.exe", String.Format("\"{0}\"", Path.GetDirectoryName(SelectedFileName))); });
@@ -3887,6 +3974,11 @@ namespace UnrealGameSync
 			SyncLog.ScrollToEnd();
 		}
 
+		private void ShowToolContextMenu(Rectangle Bounds, ContextMenuStrip MenuStrip)
+		{
+			MenuStrip.Show(StatusPanel, new Point(Bounds.Left, Bounds.Bottom), ToolStripDropDownDirection.BelowRight);
+		}
+
 		private void ShowActionsMenu(Rectangle Bounds)
 		{
 			MoreToolsContextMenu.Show(StatusPanel, new Point(Bounds.Left, Bounds.Bottom), ToolStripDropDownDirection.BelowRight);
@@ -4329,7 +4421,7 @@ namespace UnrealGameSync
 
 			OptionsContextMenu_SyncPrecompiledBinaries.DropDownItems.Clear();
 
-			IReadOnlyList<IArchiveInfo> Archives = PerforceMonitor?.AvailableArchives;
+			IReadOnlyList<IArchiveInfo> Archives = GetArchives();
 			if (Archives == null || Archives.Count == 0)
 			{
 				OptionsContextMenu_SyncPrecompiledBinaries.Enabled = false;
@@ -4360,7 +4452,7 @@ namespace UnrealGameSync
 						Item.Enabled = Archive.Exists();
 						if (!Item.Enabled)
 						{
-							Item.ToolTipText = String.Format("No valid archives found at {0}", Archive.DepotPath);
+							Item.ToolTipText = String.Format("No valid archives found at {0}", Archive.BasePath);
 						}
 						Item.Checked = SelectedArchives.Contains(Archive);
 						Item.Click += (Sender, Args) => SetSelectedArchive(Archive, !Item.Checked);
@@ -4383,6 +4475,21 @@ namespace UnrealGameSync
 			OptionsContextMenu_TabNames_WorkspaceRoot.Checked = Settings.TabLabels == TabLabels.WorkspaceRoot;
 			OptionsContextMenu_TabNames_ProjectFile.Checked = Settings.TabLabels == TabLabels.ProjectFile;
 			OptionsContextMenu.Show(OptionsButton, new Point(OptionsButton.Width - OptionsContextMenu.Size.Width, OptionsButton.Height));
+		}
+
+		private IReadOnlyList<IArchiveInfo> GetArchives()
+		{
+			IReadOnlyList<IArchiveInfo> AvailableArchives = JupiterMonitor?.AvailableArchives;
+			if (AvailableArchives != null && AvailableArchives.Count != 0)
+				return AvailableArchives;
+
+			// if jupiter had no archives we fallback to the perforce monitor
+			if (PerforceMonitor != null)
+			{
+				return PerforceMonitor?.AvailableArchives;
+			}
+
+			return new List<IArchiveInfo>();
 		}
 
 		private void BuildAfterSyncCheckBox_CheckedChanged(object sender, EventArgs e)
@@ -4563,7 +4670,7 @@ namespace UnrealGameSync
 			string SwarmURL;
 			if (TryGetProjectSetting(PerforceMonitor.LatestProjectConfigFile, "SwarmURL", out SwarmURL))
 			{
-				Process.Start(String.Format("{0}/changes/{1}", SwarmURL, ContextMenuChange.Number));
+				Utility.OpenUrl(String.Format("{0}/changes/{1}", SwarmURL, ContextMenuChange.Number));
 			}
 			else
 			{
@@ -4825,6 +4932,7 @@ namespace UnrealGameSync
 			else
 			{
 				ProcessStartInfo StartInfo = new ProcessStartInfo(SolutionFileName);
+				StartInfo.UseShellExecute = true;
 				StartInfo.WorkingDirectory = BranchDirectoryName;
 				SafeProcessStart(StartInfo);
 			}
@@ -5032,12 +5140,20 @@ namespace UnrealGameSync
 		{
 			bHasBuildSteps = false;
 
-			foreach (ToolStripMenuItem CustomToolMenuItem in CustomToolMenuItems)
+			int MoreToolsItemCount = MoreToolsContextMenu.Items.IndexOf(MoreActionsContextMenu_CustomToolSeparator);
+			while (MoreToolsItemCount > 0)
 			{
-				MoreToolsContextMenu.Items.Remove(CustomToolMenuItem);
+				MoreToolsContextMenu.Items.RemoveAt(--MoreToolsItemCount);
 			}
 
-			CustomToolMenuItems.Clear();
+			for (int Idx = 0; Idx < CustomStatusPanelMenus.Count; Idx++)
+			{
+				components.Remove(CustomStatusPanelMenus[Idx]);
+				CustomStatusPanelMenus[Idx].Dispose();
+			}
+
+			CustomStatusPanelLinks.Clear();
+			CustomStatusPanelMenus.Clear();
 
 			if (Workspace != null)
 			{
@@ -5045,28 +5161,55 @@ namespace UnrealGameSync
 				if (ProjectConfigFile != null)
 				{
 					Dictionary<Guid, ConfigObject> ProjectBuildStepObjects = GetProjectBuildStepObjects(ProjectConfigFile);
-
-					int InsertIdx = 0;
-
 					List<BuildStep> UserSteps = GetUserBuildSteps(ProjectBuildStepObjects);
+
+					Dictionary<string, ContextMenuStrip> NameToMenu = new Dictionary<string, ContextMenuStrip>();
 					foreach (BuildStep Step in UserSteps)
 					{
-						if (Step.bShowAsTool)
+						if (!String.IsNullOrEmpty(Step.StatusPanelLink))
 						{
-							ToolStripMenuItem NewMenuItem = new ToolStripMenuItem(Step.Description.Replace("&", "&&"));
-							NewMenuItem.Click += new EventHandler((sender, e) => { RunCustomTool(Step.UniqueId); });
-							CustomToolMenuItems.Add(NewMenuItem);
-							MoreToolsContextMenu.Items.Insert(InsertIdx++, NewMenuItem);
+							int BaseMenuIdx = Step.StatusPanelLink.IndexOf('|');
+							if (BaseMenuIdx == -1)
+							{
+								CustomStatusPanelLinks.Add((Step.StatusPanelLink, (P, R) => RunCustomTool(Step, UserSteps)));
+							}
+							else
+							{
+								string MenuName = Step.StatusPanelLink.Substring(0, BaseMenuIdx);
+								string ItemName = Step.StatusPanelLink.Substring(BaseMenuIdx + 1).Replace("&", "&&");
+
+								ToolStripMenuItem NewMenuItem = new ToolStripMenuItem(ItemName);
+								NewMenuItem.Click += new EventHandler((sender, e) => { RunCustomTool(Step, UserSteps); });
+
+								if (MenuName == "More...")
+								{
+									MoreToolsContextMenu.Items.Insert(MoreToolsItemCount++, NewMenuItem);
+								}
+								else
+								{
+									ContextMenuStrip Menu;
+									if (!NameToMenu.TryGetValue(MenuName, out Menu))
+									{
+										Menu = new ContextMenuStrip();
+										NameToMenu.Add(MenuName, Menu);
+										CustomStatusPanelLinks.Add(($"{MenuName} \u25BE", (P, R) => ShowToolContextMenu(R, Menu)));
+										CustomStatusPanelMenus.Add(Menu);
+										components.Add(Menu);
+									}
+									Menu.Items.Add(NewMenuItem);
+								}
+							}
 						}
+
 						bHasBuildSteps |= Step.bNormalSync;
 					}
 				}
 			}
 
-			MoreActionsContextMenu_CustomToolSeparator.Visible = (CustomToolMenuItems.Count > 0);
+			MoreActionsContextMenu_CustomToolSeparator.Visible = (MoreToolsItemCount > 0);
 		}
 
-		private void RunCustomTool(Guid UniqueId)
+		private void RunCustomTool(BuildStep Step, List<BuildStep> AllSteps)
 		{
 			if (Workspace != null)
 			{
@@ -5076,7 +5219,40 @@ namespace UnrealGameSync
 				}
 				else
 				{
-					WorkspaceUpdateContext Context = new WorkspaceUpdateContext(Workspace.CurrentChangeNumber, WorkspaceUpdateOptions.Build, null, GetDefaultBuildStepObjects(), ProjectSettings.BuildSteps, new HashSet<Guid> { UniqueId }, GetWorkspaceVariables(Workspace.CurrentChangeNumber));
+					HashSet<Guid> StepSet = new HashSet<Guid> { Step.UniqueId };
+
+					ConfigFile ProjectConfigFile = Workspace.ProjectConfigFile;
+					if (ProjectConfigFile != null && Step.Requires.Length > 0)
+					{
+						Stack<Guid> Stack = new Stack<Guid>(StepSet);
+						while (Stack.Count > 0)
+						{
+							Guid Id = Stack.Pop();
+							BuildStep NextStep = AllSteps.FirstOrDefault(x => x.UniqueId == Id);
+							if (NextStep != null)
+							{
+								foreach (Guid RequiresId in NextStep.Requires)
+								{
+									if (StepSet.Add(RequiresId))
+									{
+										Stack.Push(RequiresId);
+									}
+								}
+							}
+						}
+					}
+
+					Dictionary<string, string> Variables = GetWorkspaceVariables(Workspace.CurrentChangeNumber);
+					if (Step.ToolId != Guid.Empty)
+					{
+						string ToolName = Owner.ToolUpdateMonitor.GetToolName(Step.ToolId);
+						if (ToolName != null)
+						{
+							Variables["ToolDir"] = Owner.ToolUpdateMonitor.GetToolPath(ToolName);
+						}
+					}
+
+					WorkspaceUpdateContext Context = new WorkspaceUpdateContext(Workspace.CurrentChangeNumber, WorkspaceUpdateOptions.Build, null, GetDefaultBuildStepObjects(), ProjectSettings.BuildSteps, StepSet, Variables);
 					StartWorkspaceUpdate(Context, null);
 				}
 			}
@@ -5158,6 +5334,7 @@ namespace UnrealGameSync
 
 				// Update the custom tools menu, because we might have changed it
 				UpdateBuildSteps();
+				UpdateStatusPanel();
 				UpdateSyncActionCheckboxes();
 			}
 		}
@@ -5182,7 +5359,7 @@ namespace UnrealGameSync
 
 		private bool ShouldSyncPrecompiledEditor
 		{
-			get { return Settings.Archives.Any(x => x.bEnabled && x.Type == EditorArchiveType) && PerforceMonitor != null && PerforceMonitor.AvailableArchives.Any(x => x.Type == "Editor"); }
+			get { return Settings.Archives.Any(x => x.bEnabled && x.Type == EditorArchiveType) && GetArchives().Any(x => x.Type == "Editor"); }
 		}
 
 		public BuildConfig GetEditorBuildConfig()
@@ -5255,14 +5432,14 @@ namespace UnrealGameSync
 			}
 
 			// Create the expanded task objects
-			return UserBuildStepObjects.Values.Select(x => new BuildStep(x)).OrderBy(x => x.OrderIndex).ToList();
+			return UserBuildStepObjects.Values.Select(x => new BuildStep(x)).OrderBy(x => (x.OrderIndex == -1)? 10000 : x.OrderIndex).ToList();
 		}
 
 		private void OptionsContextMenu_SyncPrecompiledBinaries_Click(object sender, EventArgs e)
 		{
 			if (OptionsContextMenu_SyncPrecompiledBinaries.DropDownItems.Count == 0)
 			{
-				IArchiveInfo EditorArchive = PerforceMonitor.AvailableArchives.FirstOrDefault(x => x.Type == EditorArchiveType);
+				IArchiveInfo EditorArchive = GetArchives().FirstOrDefault(x => x.Type == EditorArchiveType);
 				if (EditorArchive != null)
 				{
 					SetSelectedArchive(EditorArchive, !OptionsContextMenu_SyncPrecompiledBinaries.Checked);
@@ -5278,7 +5455,7 @@ namespace UnrealGameSync
 		private void OptionsContextMenu_Diagnostics_Click(object sender, EventArgs e)
 		{
 			StringBuilder DiagnosticsText = new StringBuilder();
-			DiagnosticsText.AppendFormat("Application version: {0}\n", Assembly.GetExecutingAssembly().GetName().Version);
+			DiagnosticsText.AppendFormat("Application version: {0}\n", Program.GetVersionString());
 			DiagnosticsText.AppendFormat("Synced from: {0}\n", Program.SyncVersion ?? "(unknown)");
 			DiagnosticsText.AppendFormat("Selected file: {0}\n", (SelectedFileName == null) ? "(none)" : SelectedFileName);
 			if (Workspace != null)

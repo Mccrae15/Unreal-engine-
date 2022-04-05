@@ -25,7 +25,7 @@ namespace Audio
 		}
 	}
 
-	void ArraySum(const AlignedFloatBuffer& InValues, float& OutSum)
+	void ArraySum(const FAlignedFloatBuffer& InValues, float& OutSum)
 	{
 		OutSum = 0.f;
 
@@ -37,15 +37,17 @@ namespace Audio
 
 		if (NumToSimd)
 		{
-			VectorRegister Total = VectorSetFloat1(0.f);
+			VectorRegister4Float Total = VectorSetFloat1(0.f);
 
 			for (int32 i = 0; i < NumToSimd; i += 4)
 			{
-				VectorRegister VectorData = VectorLoadAligned(&InData[i]);
+				VectorRegister4Float VectorData = VectorLoadAligned(&InData[i]);
 				Total = VectorAdd(Total, VectorData);
 			}
 
-			OutSum = VectorGetComponent(Total, 0) + VectorGetComponent(Total, 1) + VectorGetComponent(Total, 2) + VectorGetComponent(Total, 3);
+			MS_ALIGN(16) float Val[4] GCC_ALIGN(16);
+			VectorStoreAligned(Total, Val);
+			OutSum = Val[0] + Val[1] + Val[2] + Val[3];
 		}
 
 		if (NumNotToSimd)
@@ -101,6 +103,27 @@ namespace Audio
 		for (int32 i = 0; i < Num; i++)
 		{
 			OutMean += DataPtr[i];
+		}
+
+		OutMean /= static_cast<float>(Num);
+	}
+
+	void ArrayMeanSquared(TArrayView<const float> InView, float& OutMean)
+	{
+		OutMean = 0.0f;
+
+		const int32 Num = InView.Num();
+
+		if (Num < 1)
+		{
+			return;
+		}
+
+		const float* DataPtr = InView.GetData();
+
+		for (int32 i = 0; i < Num; i++)
+		{
+			OutMean += DataPtr[i] * DataPtr[i];
 		}
 
 		OutMean /= static_cast<float>(Num);
@@ -267,6 +290,21 @@ namespace Audio
 		OutEuclideanNorm = FMath::Sqrt(OutEuclideanNorm);
 	}
 
+	void ArrayAbs(TArrayView<const float> InBuffer, TArrayView<float> OutBuffer)
+	{
+		const int32 Num = InBuffer.Num();
+		check(OutBuffer.Num() == Num);
+
+		const float* InData = InBuffer.GetData();
+		float* OutData = OutBuffer.GetData();
+
+		for (int32 i = 0; i < Num; i++)
+		{
+			OutData[i] = FMath::Abs(InData[i]);
+		}
+	}
+
+
 	void ArrayAbsInPlace(TArrayView<float> InView)
 	{
 		const int32 Num = InView.Num();
@@ -364,7 +402,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayMultiplyInPlace(const AlignedFloatBuffer& InValues1, AlignedFloatBuffer& InValues2)
+	void ArrayMultiplyInPlace(const FAlignedFloatBuffer& InValues1, FAlignedFloatBuffer& InValues2)
 	{
 		check(InValues1.Num() == InValues2.Num());
 
@@ -410,7 +448,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayComplexMultiplyInPlace(const AlignedFloatBuffer& InValues1, AlignedFloatBuffer& InValues2)
+	void ArrayComplexMultiplyInPlace(const FAlignedFloatBuffer& InValues1, FAlignedFloatBuffer& InValues2)
 	{
 		check(InValues1.Num() == InValues2.Num());
 
@@ -423,18 +461,18 @@ namespace Audio
 
 		if (NumToSimd)
 		{
-			const VectorRegister RealSignFlip = MakeVectorRegister(-1.f, 1.f, -1.f, 1.f);
+			const VectorRegister4Float RealSignFlip = MakeVectorRegister(-1.f, 1.f, -1.f, 1.f);
 
 			for (int32 i = 0; i < NumToSimd; i += 4)
 			{
-				VectorRegister VectorData1 = VectorLoadAligned(&InData1[i]);
-				VectorRegister VectorData2 = VectorLoadAligned(&InData2[i]);
+				VectorRegister4Float VectorData1 = VectorLoadAligned(&InData1[i]);
+				VectorRegister4Float VectorData2 = VectorLoadAligned(&InData2[i]);
 
-				VectorRegister VectorData1Real = VectorSwizzle(VectorData1, 0, 0, 2, 2);
-				VectorRegister VectorData1Imag = VectorSwizzle(VectorData1, 1, 1, 3, 3);
-				VectorRegister VectorData2Swizzle = VectorSwizzle(VectorData2, 1, 0, 3, 2);
+				VectorRegister4Float VectorData1Real = VectorSwizzle(VectorData1, 0, 0, 2, 2);
+				VectorRegister4Float VectorData1Imag = VectorSwizzle(VectorData1, 1, 1, 3, 3);
+				VectorRegister4Float VectorData2Swizzle = VectorSwizzle(VectorData2, 1, 0, 3, 2);
 
-				VectorRegister Result = VectorMultiply(VectorData1Imag, VectorData2Swizzle);
+				VectorRegister4Float Result = VectorMultiply(VectorData1Imag, VectorData2Swizzle);
 				Result = VectorMultiply(Result, RealSignFlip);
 				Result = VectorMultiplyAdd(VectorData1Real, VectorData2, Result);
 
@@ -462,7 +500,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayMultiplyByConstantInPlace(AlignedFloatBuffer& InValues, float InMultiplier)
+	void ArrayMultiplyByConstantInPlace(FAlignedFloatBuffer& InValues, float InMultiplier)
 	{
 		const int32 Num = InValues.Num();
 		const int32 NumToSimd = Num & MathIntrinsics::SimdMask;
@@ -498,7 +536,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayAddInPlace(const AlignedFloatBuffer& InValues, AlignedFloatBuffer& InAccumulateValues)
+	void ArrayAddInPlace(const FAlignedFloatBuffer& InValues, FAlignedFloatBuffer& InAccumulateValues)
 	{
 		check(InValues.Num() == InAccumulateValues.Num());
 
@@ -511,10 +549,10 @@ namespace Audio
 
 		for (int32 i = 0; i < NumToSimd; i += 4)
 		{
-			VectorRegister VectorData = VectorLoadAligned(&InData[i]);
-			VectorRegister VectorAccumData = VectorLoadAligned(&InAccumulateData[i]);
+			VectorRegister4Float VectorData = VectorLoadAligned(&InData[i]);
+			VectorRegister4Float VectorAccumData = VectorLoadAligned(&InAccumulateData[i]);
 
-			VectorRegister VectorOut = VectorAdd(VectorData, VectorAccumData);
+			VectorRegister4Float VectorOut = VectorAdd(VectorData, VectorAccumData);
 			VectorStoreAligned(VectorOut, &InAccumulateData[i]);
 		}
 
@@ -542,7 +580,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayMultiplyAddInPlace(const AlignedFloatBuffer& InValues, float InMultiplier, AlignedFloatBuffer& InAccumulateValues)
+	void ArrayMultiplyAddInPlace(const FAlignedFloatBuffer& InValues, float InMultiplier, FAlignedFloatBuffer& InAccumulateValues)
 	{
 		check(InValues.Num() == InAccumulateValues.Num());
 
@@ -583,7 +621,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayLerpAddInPlace(const AlignedFloatBuffer& InValues, float InStartMultiplier, float InEndMultiplier, AlignedFloatBuffer& InAccumulateValues)
+	void ArrayLerpAddInPlace(const FAlignedFloatBuffer& InValues, float InStartMultiplier, float InEndMultiplier, FAlignedFloatBuffer& InAccumulateValues)
 	{
 		check(InValues.Num() == InAccumulateValues.Num());
 
@@ -597,15 +635,15 @@ namespace Audio
 		const float Delta = (InEndMultiplier - InStartMultiplier) / FMath::Max(1.f, static_cast<float>(Num - 1));
 
 		const float FourByDelta = 4.f * Delta;
-		VectorRegister VectorDelta = MakeVectorRegister(FourByDelta, FourByDelta, FourByDelta, FourByDelta);
-		VectorRegister VectorMultiplier = MakeVectorRegister(InStartMultiplier, InStartMultiplier + Delta, InStartMultiplier + 2.f * Delta, InStartMultiplier + 3.f * Delta);
+		VectorRegister4Float VectorDelta = MakeVectorRegister(FourByDelta, FourByDelta, FourByDelta, FourByDelta);
+		VectorRegister4Float VectorMultiplier = MakeVectorRegister(InStartMultiplier, InStartMultiplier + Delta, InStartMultiplier + 2.f * Delta, InStartMultiplier + 3.f * Delta);
 
 		for (int32 i = 0; i < NumToSimd; i += 4)
 		{
-			VectorRegister VectorData = VectorLoadAligned(&InData[i]);
-			VectorRegister VectorAccumData = VectorLoadAligned(&InAccumulateData[i]);
+			VectorRegister4Float VectorData = VectorLoadAligned(&InData[i]);
+			VectorRegister4Float VectorAccumData = VectorLoadAligned(&InAccumulateData[i]);
 
-			VectorRegister VectorOut = VectorMultiplyAdd(VectorData, VectorMultiplier, VectorAccumData);
+			VectorRegister4Float VectorOut = VectorMultiplyAdd(VectorData, VectorMultiplier, VectorAccumData);
 			VectorMultiplier = VectorAdd(VectorMultiplier, VectorDelta);
 
 			VectorStoreAligned(VectorOut, &InAccumulateData[i]);
@@ -630,7 +668,7 @@ namespace Audio
 		}
 	}
 
-	void ArraySubtractByConstantInPlace(AlignedFloatBuffer& InValues, float InSubtrahend)
+	void ArraySubtractByConstantInPlace(FAlignedFloatBuffer& InValues, float InSubtrahend)
 	{
 		const int32 Num = InValues.Num();
 		const int32 NumToSimd = Num & MathIntrinsics::SimdMask;
@@ -638,11 +676,11 @@ namespace Audio
 
 		float* InData = InValues.GetData();
 
-		const VectorRegister VectorSubtrahend = VectorSetFloat1(InSubtrahend);
+		const VectorRegister4Float VectorSubtrahend = VectorSetFloat1(InSubtrahend);
 
 		for (int32 i = 0; i < NumToSimd; i += 4)
 		{
-			VectorRegister VectorData = VectorLoadAligned(&InData[i]);
+			VectorRegister4Float VectorData = VectorLoadAligned(&InData[i]);
 			VectorData = VectorSubtract(VectorData, VectorSubtrahend);
 			VectorStoreAligned(VectorData, &InData[i]);
 		}
@@ -658,16 +696,13 @@ namespace Audio
 	{
 		const int32 Num = InMinuend.Num();
 
-		checkf(Num == InSubtrahend.Num(), TEXT("InMinuend and InSubtrahend must have equal Num elements (%d vs %d)"), Num, InSubtrahend.Num());
-
-		OutArray.Reset(Num);
+		checkf(Num == InSubtrahend.Num() && Num == OutArray.Num(), TEXT("InMinuend, InSubtrahend, and OutArray must have equal Num elements (%d vs %d vs %d)"), Num, InSubtrahend.Num(), OutArray.Num());
+		
 
 		if (Num < 1)
 		{
 			return;
 		}
-
-		OutArray.AddUninitialized(Num);
 		
 		const float* MinuendPtr = InMinuend.GetData();
 		const float* SubtrahendPtr = InSubtrahend.GetData();
@@ -676,6 +711,54 @@ namespace Audio
 		for (int32 i = 0; i < Num; i++)
 		{
 			OutPtr[i] = MinuendPtr[i] - SubtrahendPtr[i];
+		}
+	}
+
+	void ArraySubtract(const FAlignedFloatBuffer& InMinuend, const FAlignedFloatBuffer& InSubtrahend, FAlignedFloatBuffer& OutArray)
+	{
+		BufferSubtractFast(InMinuend, InSubtrahend, OutArray);
+	}
+
+	void ArraySquare(TArrayView<const float> InValues, TArrayView<float> OutValues)
+	{
+		check(InValues.Num() == OutValues.Num());
+
+		const uint32 Num = InValues.Num();
+		const uint32 NumToSimd = Num & MathIntrinsics::SimdMask;
+
+		const float* InData = InValues.GetData();
+		float* OutData = OutValues.GetData();
+
+		for (uint32 i = 0; i < NumToSimd; i += 4)
+		{
+			VectorRegister4Float VectorData = VectorLoad(&InData[i]);
+			VectorData = VectorMultiply(VectorData, VectorData);
+			VectorStore(VectorData, &OutData[i]);
+		}
+
+		for (uint32 i = NumToSimd; i < Num; i++)
+		{
+			OutData[i] = InData[i] * InData[i];
+		}
+	}
+
+	void ArraySquareInPlace(TArrayView<float> InValues)
+	{
+		const uint32 Num = InValues.Num();
+		const uint32 NumToSimd = Num & MathIntrinsics::SimdMask;
+
+		float* InData = InValues.GetData();
+
+		for (uint32 i = 0; i < NumToSimd; i += 4)
+		{
+			VectorRegister4Float VectorData = VectorLoad(&InData[i]);
+			VectorData = VectorMultiply(VectorData, VectorData);
+			VectorStore(VectorData, &InData[i]);
+		}
+
+		for (uint32 i = NumToSimd; i < Num; i++)
+		{
+			InData[i] = InData[i] * InData[i];
 		}
 	}
 
@@ -707,7 +790,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayComplexConjugate(const AlignedFloatBuffer& InValues, AlignedFloatBuffer& OutValues)
+	void ArrayComplexConjugate(const FAlignedFloatBuffer& InValues, FAlignedFloatBuffer& OutValues)
 	{
 		check(OutValues.Num() == InValues.Num());
 
@@ -718,11 +801,11 @@ namespace Audio
 		const float* InData = InValues.GetData();
 		float* OutData = OutValues.GetData();
 
-		const VectorRegister ConjugateMult = MakeVectorRegister(1.f, -1.f, 1.f, -1.f);
+		const VectorRegister4Float ConjugateMult = MakeVectorRegister(1.f, -1.f, 1.f, -1.f);
 
 		for (int32 i = 0; i < NumToSimd; i += 4)
 		{
-			VectorRegister VectorData = VectorLoadAligned(&InData[i]);
+			VectorRegister4Float VectorData = VectorLoadAligned(&InData[i]);
 			
 			VectorData = VectorMultiply(VectorData, ConjugateMult);
 
@@ -752,7 +835,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayComplexConjugateInPlace(AlignedFloatBuffer& InValues)
+	void ArrayComplexConjugateInPlace(FAlignedFloatBuffer& InValues)
 	{
 		const int32 Num = InValues.Num();
 		const int32 NumToSimd = Num & MathIntrinsics::SimdMask;
@@ -760,11 +843,11 @@ namespace Audio
 
 		float* InData = InValues.GetData();
 
-		const VectorRegister ConjugateMult = MakeVectorRegister(1.f, -1.f, 1.f, -1.f);
+		const VectorRegister4Float ConjugateMult = MakeVectorRegister(1.f, -1.f, 1.f, -1.f);
 
 		for (int32 i = 0; i < NumToSimd; i += 4)
 		{
-			VectorRegister VectorData = VectorLoadAligned(&InData[i]);
+			VectorRegister4Float VectorData = VectorLoadAligned(&InData[i]);
 			
 			VectorData = VectorMultiply(VectorData, ConjugateMult);
 
@@ -793,7 +876,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayMagnitudeToDecibelInPlace(AlignedFloatBuffer& InValues, float InMinimumDb)
+	void ArrayMagnitudeToDecibelInPlace(FAlignedFloatBuffer& InValues, float InMinimumDb)
 	{
 		const int32 Num = InValues.Num();
 		const int32 NumToSimd = Num & MathIntrinsics::SimdMask;
@@ -804,12 +887,12 @@ namespace Audio
 		const float Scale = 20.f / MathIntrinsics::Loge10;
 		const float Minimum = FMath::Exp(InMinimumDb * MathIntrinsics::Loge10 / 20.f);
 
-		const VectorRegister VectorScale = VectorSetFloat1(Scale);
-		const VectorRegister VectorMinimum = VectorSetFloat1(Minimum);
+		const VectorRegister4Float VectorScale = VectorSetFloat1(Scale);
+		const VectorRegister4Float VectorMinimum = VectorSetFloat1(Minimum);
 
 		for (int32 i = 0; i < NumToSimd; i += 4)
 		{
-			VectorRegister VectorData = VectorLoadAligned(&InData[i]);
+			VectorRegister4Float VectorData = VectorLoadAligned(&InData[i]);
 			
 			VectorData = VectorMax(VectorData, VectorMinimum);
 			VectorData = VectorLog(VectorData);
@@ -839,7 +922,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayPowerToDecibelInPlace(AlignedFloatBuffer& InValues, float InMinimumDb)
+	void ArrayPowerToDecibelInPlace(FAlignedFloatBuffer& InValues, float InMinimumDb)
 	{
 		const int32 Num = InValues.Num();
 		const int32 NumToSimd = Num & MathIntrinsics::SimdMask;
@@ -850,12 +933,12 @@ namespace Audio
 		const float Scale = 10.f / MathIntrinsics::Loge10;
 		const float Minimum = FMath::Exp(InMinimumDb * MathIntrinsics::Loge10 / 10.f);
 
-		const VectorRegister VectorMinimum = VectorSetFloat1(Minimum);
-		const VectorRegister VectorScale = VectorSetFloat1(Scale);
+		const VectorRegister4Float VectorMinimum = VectorSetFloat1(Minimum);
+		const VectorRegister4Float VectorScale = VectorSetFloat1(Scale);
 
 		for (int32 i = 0; i < NumToSimd; i += 4)
 		{
-			VectorRegister VectorData = VectorLoadAligned(&InData[i]);
+			VectorRegister4Float VectorData = VectorLoadAligned(&InData[i]);
 
 			VectorData = VectorMax(VectorData, VectorMinimum);
 			VectorData = VectorLog(VectorData);
@@ -892,7 +975,7 @@ namespace Audio
 		}
 	}
 
-	void ArrayComplexToPower(const AlignedFloatBuffer& InComplexValues, AlignedFloatBuffer& OutPowerValues)
+	void ArrayComplexToPower(const FAlignedFloatBuffer& InComplexValues, FAlignedFloatBuffer& OutPowerValues)
 	{
 		check((InComplexValues.Num() % 2) == 0);
 		check(InComplexValues.Num() == (OutPowerValues.Num() * 2));
@@ -906,16 +989,16 @@ namespace Audio
 
 		for (int32 i = 0; i < NumToSimd; i += 4)
 		{
-			VectorRegister VectorComplex1 = VectorLoadAligned(&InComplexData[2 * i]);
-			VectorRegister VectorSquared1 = VectorMultiply (VectorComplex1, VectorComplex1);
+			VectorRegister4Float VectorComplex1 = VectorLoadAligned(&InComplexData[2 * i]);
+			VectorRegister4Float VectorSquared1 = VectorMultiply (VectorComplex1, VectorComplex1);
 
-			VectorRegister VectorComplex2 = VectorLoadAligned(&InComplexData[(2 * i) + 4]);
-			VectorRegister VectorSquared2 = VectorMultiply (VectorComplex2, VectorComplex2);
+			VectorRegister4Float VectorComplex2 = VectorLoadAligned(&InComplexData[(2 * i) + 4]);
+			VectorRegister4Float VectorSquared2 = VectorMultiply (VectorComplex2, VectorComplex2);
 
-			VectorRegister VectorSquareReal = VectorShuffle(VectorSquared1, VectorSquared2, 0, 2, 0, 2);
-			VectorRegister VectorSquareImag = VectorShuffle(VectorSquared1, VectorSquared2, 1, 3, 1, 3);
+			VectorRegister4Float VectorSquareReal = VectorShuffle(VectorSquared1, VectorSquared2, 0, 2, 0, 2);
+			VectorRegister4Float VectorSquareImag = VectorShuffle(VectorSquared1, VectorSquared2, 1, 3, 1, 3);
 
-			VectorRegister VectorOut = VectorAdd(VectorSquareReal, VectorSquareImag);
+			VectorRegister4Float VectorOut = VectorAdd(VectorSquareReal, VectorSquareImag);
 			
 			VectorStoreAligned(VectorOut, &OutPowerData[i]);
 		}
@@ -981,7 +1064,7 @@ namespace Audio
 		TransformArray(InView.GetData(), OutArray.GetData());
 	}
 
-	void FContiguousSparse2DKernelTransform::TransformArray(TArrayView<const float> InView, AlignedFloatBuffer& OutArray) const
+	void FContiguousSparse2DKernelTransform::TransformArray(TArrayView<const float> InView, FAlignedFloatBuffer& OutArray) const
 	{	
 		check(InView.Num() == NumIn);
 

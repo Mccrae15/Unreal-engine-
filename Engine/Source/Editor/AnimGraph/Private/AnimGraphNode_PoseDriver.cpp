@@ -61,11 +61,11 @@ FText UAnimGraphNode_PoseDriver::GetNodeTitle(ENodeTitleType::Type TitleType) co
 	const FText& Description = Node.SoloTargetIndex == INDEX_NONE ? DescriptionAll : DescriptionSolo;
 
 	const FName FirstSourceBone = (Node.SourceBones.Num() > 0) ? Node.SourceBones[0].BoneName : NAME_None;
-	if ((TitleType == ENodeTitleType::ListView || TitleType == ENodeTitleType::MenuTitle) && (FirstSourceBone == NAME_None))
+ 	if ((TitleType == ENodeTitleType::ListView || TitleType == ENodeTitleType::MenuTitle) && (FirstSourceBone == NAME_None))
 	{
 		return Description;
 	}
-	else
+	else 
 	{
 		FFormatNamedArguments Args;
 		Args.Add(TEXT("ControllerDescription"), Description);
@@ -114,26 +114,29 @@ void UAnimGraphNode_PoseDriver::ValidateAnimNodeDuringCompilation(USkeleton* For
 	}
 
 	FName MissingBoneName = NAME_None;
-	for (const FBoneReference& BoneRef : Node.SourceBones)
+	if (ForSkeleton)
 	{
-		if (ForSkeleton->GetReferenceSkeleton().FindBoneIndex(BoneRef.BoneName) == INDEX_NONE)
+		for (const FBoneReference& BoneRef : Node.SourceBones)
 		{
-			MissingBoneName = BoneRef.BoneName;
-			break;
+			if (ForSkeleton->GetReferenceSkeleton().FindBoneIndex(BoneRef.BoneName) == INDEX_NONE)
+			{
+				MissingBoneName = BoneRef.BoneName;
+				break;
+			}
 		}
 	}
 
-	if (MissingBoneName != NAME_None)
+	if(MissingBoneName != NAME_None)
 	{
 		MessageLog.Warning(*LOCTEXT("SourceBoneNotFound", "@@ - Entry in SourceBones not found").ToString(), this);
 	}
-
+	
 	TArray<FRBFTarget> RBFTargets;
-	Node.GetRBFTargets(RBFTargets);
+	Node.GetRBFTargets(RBFTargets, nullptr);
 	TArray<int> InvalidTargets;
 	if (!FRBFSolver::ValidateTargets(Node.RBFParams, RBFTargets, InvalidTargets))
 	{
-		for (int TargetIdx : InvalidTargets)
+		for (int TargetIdx: InvalidTargets)
 		{
 			MessageLog.Error(*LOCTEXT("PoseDriver_InvalidTarget", "@@ - '@@' is an invalid or duplicate target.").ToString(),
 				this, GetData(Node.PoseTargets[TargetIdx].DrivenName.ToString()));
@@ -142,7 +145,7 @@ void UAnimGraphNode_PoseDriver::ValidateAnimNodeDuringCompilation(USkeleton* For
 
 	if (Node.SoloTargetIndex != INDEX_NONE)
 	{
-		MessageLog.Warning(*LOCTEXT("PoseDriver_SoloEnabled", "@@ - Solo enabled on target '@@'").ToString(),
+		MessageLog.Warning(*LOCTEXT("PoseDriver_SoloEnabled", "@@ - Solo enabled on target '@@'").ToString(), 
 			this, GetData(Node.PoseTargets[Node.SoloTargetIndex].DrivenName.ToString()));
 	}
 
@@ -233,7 +236,7 @@ void UAnimGraphNode_PoseDriver::Serialize(FArchive& Ar)
 	Ar.UsingCustomVersion(FPoseDriverCustomVersion::GUID);
 }
 
-void UAnimGraphNode_PoseDriver::CopyNodeDataToPreviewNode(FAnimNode_Base* InPreviewNode) {
+void UAnimGraphNode_PoseDriver::CopyNodeDataToPreviewNode(FAnimNode_Base* InPreviewNode){
 	FAnimNode_PoseDriver* PreviewPoseDriver = static_cast<FAnimNode_PoseDriver*>(InPreviewNode);
 
 	PreviewPoseDriver->RBFParams.SolverType = Node.RBFParams.SolverType;
@@ -258,14 +261,14 @@ void UAnimGraphNode_PoseDriver::CopyNodeDataToPreviewNode(FAnimNode_Base* InPrev
 FAnimNode_PoseDriver* UAnimGraphNode_PoseDriver::GetPreviewPoseDriverNode() const
 {
 	FAnimNode_PoseDriver* PreviewNode = nullptr;
-	USkeletalMeshComponent* Component = nullptr;
+	USkeletalMeshComponent * Component = nullptr;
 
 	// look for a valid component in the object being debugged,
 	// we might be set to something other than the preview.
-	UObject* ObjectBeingDebugged = GetAnimBlueprint()->GetObjectBeingDebugged();
+	UObject * ObjectBeingDebugged = GetAnimBlueprint()->GetObjectBeingDebugged();
 	if (ObjectBeingDebugged)
 	{
-		UAnimInstance* InstanceBeingDebugged = Cast<UAnimInstance>(ObjectBeingDebugged);
+		UAnimInstance * InstanceBeingDebugged = Cast<UAnimInstance>(ObjectBeingDebugged);
 		if (InstanceBeingDebugged)
 		{
 			Component = InstanceBeingDebugged->GetSkelMeshComponent();
@@ -378,7 +381,7 @@ void UAnimGraphNode_PoseDriver::CopyTargetsFromPoseAsset()
 			}
 
 			// re-apply the same setting in case we have seen this target before
-			const FPoseDriverTarget* PreviousTarget = PreviousTargets.Find(PoseTarget.DrivenName);
+			const FPoseDriverTarget * PreviousTarget = PreviousTargets.Find(PoseTarget.DrivenName);
 			if (PreviousTarget)
 			{
 				PoseTarget.TargetScale = PreviousTarget->TargetScale;
@@ -396,6 +399,80 @@ void UAnimGraphNode_PoseDriver::CopyTargetsFromPoseAsset()
 	}
 }
 
+void UAnimGraphNode_PoseDriver::SetSourceBones(const TArray<FName>& BoneNames)
+{
+	Node.SourceBones.Empty(BoneNames.Num());
+	for (const FName& BoneName : BoneNames)
+	{
+		Node.SourceBones.Add(BoneName);
+	}
+}
+
+void UAnimGraphNode_PoseDriver::GetSourceBoneNames(TArray<FName>& BoneNames)
+{
+	for (const FBoneReference& SourceBone : Node.SourceBones)
+	{
+		BoneNames.Add(SourceBone.BoneName);
+	}
+}
+
+void UAnimGraphNode_PoseDriver::SetDrivingBones(const TArray<FName>& BoneNames)
+{
+	Node.OnlyDriveBones.Empty(BoneNames.Num());
+	for (const FName& BoneName : BoneNames)
+	{
+		Node.OnlyDriveBones.Add(BoneName);
+	}
+}
+
+void UAnimGraphNode_PoseDriver::GetDrivingBoneNames(TArray<FName>& BoneNames)
+{
+	for (const FBoneReference& SourceBone : Node.OnlyDriveBones)
+	{
+		BoneNames.Add(SourceBone.BoneName);
+	}
+}
+
+void UAnimGraphNode_PoseDriver::SetRBFParameters(FRBFParams Parameters)
+{
+	Node.RBFParams = Parameters;
+}
+
+FRBFParams& UAnimGraphNode_PoseDriver::GetRBFParameters()
+{
+	return Node.RBFParams;
+}
+
+void UAnimGraphNode_PoseDriver::SetPoseDriverSource(EPoseDriverSource DriverSource)
+{
+	Node.DriveSource = DriverSource;	
+}
+
+EPoseDriverSource& UAnimGraphNode_PoseDriver::GetPoseDriverSource()
+{
+	return Node.DriveSource;
+}
+
+void UAnimGraphNode_PoseDriver::SetPoseDriverOutput(EPoseDriverOutput DriverOutput)
+{
+	Node.DriveOutput = DriverOutput;
+}
+
+EPoseDriverOutput& UAnimGraphNode_PoseDriver::GetPoseDriverOutput()
+{
+	return Node.DriveOutput;
+}
+
+void UAnimGraphNode_PoseDriver::SetOnlyDriveSelectedBones(bool bOnlyDriveSelectedBones)
+{
+	Node.bOnlyDriveSelectedBones = bOnlyDriveSelectedBones;
+}
+
+bool UAnimGraphNode_PoseDriver::GetOnlyDriveSelectedBones()
+{
+	return Node.bOnlyDriveSelectedBones == 1;
+}
+
 void UAnimGraphNode_PoseDriver::AddNewTarget()
 {
 	FPoseDriverTarget& NewTarget = Node.PoseTargets[Node.PoseTargets.Add(FPoseDriverTarget())];
@@ -408,7 +485,7 @@ void UAnimGraphNode_PoseDriver::AddNewTarget()
 void UAnimGraphNode_PoseDriver::ReserveTargetTransforms()
 {
 	// reallocate transforms array in each target
-	for (FPoseDriverTarget& PoseTarget : Node.PoseTargets)
+	for(FPoseDriverTarget& PoseTarget : Node.PoseTargets)
 	{
 		PoseTarget.BoneTransforms.SetNum(Node.SourceBones.Num());
 	}
@@ -419,28 +496,33 @@ FLinearColor UAnimGraphNode_PoseDriver::GetColorFromWeight(float InWeight)
 	return FMath::Lerp(FLinearColor::Blue.Desaturate(0.5), FLinearColor::Red, InWeight);
 }
 
-void UAnimGraphNode_PoseDriver::AutoSetTargetScales(float& OutMaxDistance)
+void UAnimGraphNode_PoseDriver::AutoSetTargetScales(float &OutMaxDistance)
 {
-	TArray<FRBFTarget> RBFTargets;
-	Node.GetRBFTargets(RBFTargets);
-
-	// Find distances from targets to nearest neighbours
-	TArray<float> Distances;
-	bool bSuccess = FRBFSolver::FindTargetNeighbourDistances(Node.RBFParams, RBFTargets, Distances);
-	if (bSuccess)
+	if (LastPreviewComponent && LastPreviewComponent->AnimScriptInstance)
 	{
-		// Find overall largest distance 
-		OutMaxDistance = KINDA_SMALL_NUMBER; // ensure result > 0
-		for (float Distance : Distances)
-		{
-			OutMaxDistance = FMath::Max(OutMaxDistance, Distance);
-		}
+		const FBoneContainer& RequiredBones = LastPreviewComponent->AnimScriptInstance->GetRequiredBones();
 
-		// Set scales so largest distance is 1.0, and others are less than that
-		for (int32 TargetIdx = 0; TargetIdx < Node.PoseTargets.Num(); TargetIdx++)
+		TArray<FRBFTarget> RBFTargets;
+		Node.GetRBFTargets(RBFTargets, &RequiredBones);
+
+		// Find distances from targets to nearest neighbours
+		TArray<float> Distances;
+		bool bSuccess = FRBFSolver::FindTargetNeighbourDistances(Node.RBFParams, RBFTargets, Distances);
+		if (bSuccess)
 		{
-			FPoseDriverTarget& PoseTarget = Node.PoseTargets[TargetIdx];
-			PoseTarget.TargetScale = Distances[TargetIdx] / OutMaxDistance;
+			// Find overall largest distance 
+			OutMaxDistance = KINDA_SMALL_NUMBER; // ensure result > 0
+			for (float Distance : Distances)
+			{
+				OutMaxDistance = FMath::Max(OutMaxDistance, Distance);
+			}
+
+			// Set scales so largest distance is 1.0, and others are less than that
+			for (int32 TargetIdx = 0; TargetIdx < Node.PoseTargets.Num(); TargetIdx++)
+			{
+				FPoseDriverTarget& PoseTarget = Node.PoseTargets[TargetIdx];
+				PoseTarget.TargetScale = Distances[TargetIdx] / OutMaxDistance;
+			}
 		}
 	}
 }

@@ -8,26 +8,30 @@
 #include "ActorTreeItem.h"
 #include "ComponentTreeItem.h"
 #include "ISceneOutliner.h"
-#include "SceneOutlinerVisitorTypes.h"
-#include "SceneOutlinerVisitorTypes.h"
-#include "SubComponentTreeItem.h"
 #include "UObject/Object.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 #include "Widgets/SNullWidget.h"
 #include "Widgets/SWidget.h"
+#include "GameFramework/Actor.h"
+#include "Components/ActorComponent.h"
 
 #define LOCTEXT_NAMESPACE "DataprepPreviewOutlinerColumn"
 
 namespace DataprepPreviewOutlinerColumnUtils
 {
-	struct FObjectGetter : public SceneOutliner::TTreeItemGetter<TWeakObjectPtr<UObject>>
+	
+	UObject* GetObjectPtr(const ISceneOutlinerTreeItem& Item)
 	{
-		virtual TWeakObjectPtr<UObject> Get(const SceneOutliner::FActorTreeItem& ActorItem) const override { return ActorItem.Actor; };
-		virtual TWeakObjectPtr<UObject> Get(const SceneOutliner::FWorldTreeItem& WorldItem) const override { return nullptr; }
-		virtual TWeakObjectPtr<UObject> Get(const SceneOutliner::FFolderTreeItem& FolderItem) const override { return nullptr; }
-		virtual TWeakObjectPtr<UObject> Get(const SceneOutliner::FComponentTreeItem& ComponentItem) const override { return ComponentItem.Component; }
-		virtual TWeakObjectPtr<UObject> Get(const SceneOutliner::FSubComponentTreeItem& SubComponentItem) const override { return SubComponentItem.ParentComponent; }
-	};
+		if (const FActorTreeItem* ActorItem = Item.CastTo<FActorTreeItem>())
+		{
+			return ActorItem->Actor.Get();
+		}
+		else if (const FComponentTreeItem* ComponentItem = Item.CastTo<FComponentTreeItem>())
+		{
+			return ComponentItem->Component.Get();
+		}
+		return nullptr;
+	}
 }
 
 const FName FDataprepPreviewOutlinerColumn::ColumnID = FName( TEXT("DataprepPreview") );
@@ -54,12 +58,9 @@ SHeaderRow::FColumn::FArguments FDataprepPreviewOutlinerColumn::ConstructHeaderR
 		.FillWidth( 5.0f );
 }
 
-const TSharedRef<SWidget> FDataprepPreviewOutlinerColumn::ConstructRowWidget(SceneOutliner::FTreeItemRef TreeItem, const STableRow<SceneOutliner::FTreeItemPtr>& Row)
+const TSharedRef<SWidget> FDataprepPreviewOutlinerColumn::ConstructRowWidget(FSceneOutlinerTreeItemRef TreeItem, const STableRow<FSceneOutlinerTreeItemPtr>& Row)
 {
-	DataprepPreviewOutlinerColumnUtils::FObjectGetter Visitor; 
-	TreeItem->Visit( Visitor );
-
-	if ( UObject* Object = Visitor.Result().Get() )
+	if ( UObject* Object = DataprepPreviewOutlinerColumnUtils::GetObjectPtr(*TreeItem))
 	{
 		if ( TSharedPtr<ISceneOutliner> SceneOutliner = WeakSceneOutliner.Pin() )
 		{ 
@@ -71,11 +72,9 @@ const TSharedRef<SWidget> FDataprepPreviewOutlinerColumn::ConstructRowWidget(Sce
 	return SNullWidget::NullWidget;
 }
 
-void FDataprepPreviewOutlinerColumn::PopulateSearchStrings(const SceneOutliner::ITreeItem& Item, TArray< FString >& OutSearchStrings) const
+void FDataprepPreviewOutlinerColumn::PopulateSearchStrings(const ISceneOutlinerTreeItem& Item, TArray< FString >& OutSearchStrings) const
 {
-	DataprepPreviewOutlinerColumnUtils::FObjectGetter Visitor;
-	Item.Visit(Visitor);
-	if (UObject* Object = Visitor.Result().Get())
+	if (UObject* Object = DataprepPreviewOutlinerColumnUtils::GetObjectPtr(Item))
 	{
 		if ( TSharedPtr<FDataprepPreviewProcessingResult> PreviewResult = CachedPreviewData->GetPreviewDataForObject( Object ) )
 		{
@@ -84,15 +83,12 @@ void FDataprepPreviewOutlinerColumn::PopulateSearchStrings(const SceneOutliner::
 	}
 }
 
-void FDataprepPreviewOutlinerColumn::SortItems(TArray<SceneOutliner::FTreeItemPtr>& OutItems, const EColumnSortMode::Type SortMode) const
+void FDataprepPreviewOutlinerColumn::SortItems(TArray<FSceneOutlinerTreeItemPtr>& OutItems, const EColumnSortMode::Type SortMode) const
 {
-	OutItems.Sort([this, SortMode](const SceneOutliner::FTreeItemPtr& First, const SceneOutliner::FTreeItemPtr& Second)
+	OutItems.Sort([this, SortMode](const FSceneOutlinerTreeItemPtr& First, const FSceneOutlinerTreeItemPtr& Second)
 	{
-			DataprepPreviewOutlinerColumnUtils::FObjectGetter Visitor;
-			First->Visit( Visitor );
-			UObject* FirstObject = Visitor.Result().Get();
-			Second->Visit( Visitor );
-			UObject* SecondObject = Visitor.Result().Get();
+			UObject* FirstObject = DataprepPreviewOutlinerColumnUtils::GetObjectPtr(*First);
+			UObject* SecondObject = DataprepPreviewOutlinerColumnUtils::GetObjectPtr(*Second);
 			if ( FirstObject && SecondObject )
 			{
 
@@ -133,8 +129,9 @@ void FDataprepPreviewOutlinerColumn::SortItems(TArray<SceneOutliner::FTreeItemPt
 			}
 
 		// If all else fail filter by name (always Ascending)
-		int32 SortPriorityFirst = First->GetTypeSortPriority();
-		int32 SortPrioritySecond = Second->GetTypeSortPriority();
+		auto Outliner = WeakSceneOutliner.Pin();
+		int32 SortPriorityFirst = Outliner->GetTypeSortPriority(*First);
+		int32 SortPrioritySecond = Outliner->GetTypeSortPriority(*Second);
 		if ( SortPriorityFirst != SortPrioritySecond )
 		{
 			return SortPriorityFirst < SortPrioritySecond;

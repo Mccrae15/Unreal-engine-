@@ -51,7 +51,7 @@ void FLandscapeVertexFactoryMobile::InitRHI()
 /** Shader parameters for use with FLandscapeVertexFactory */
 class FLandscapeVertexFactoryMobileVertexShaderParameters : public FVertexFactoryShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FLandscapeVertexFactoryMobileVertexShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FLandscapeVertexFactoryMobileVertexShaderParameters, NonVirtual);
 public:
 	/**
 	* Bind shader constants by name
@@ -81,6 +81,7 @@ public:
 
 		const FLandscapeComponentSceneProxyMobile* SceneProxy = (const FLandscapeComponentSceneProxyMobile*)BatchElementParams->SceneProxy;
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeUniformShaderParameters>(),*BatchElementParams->LandscapeUniformShaderParametersResource);
+		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeSectionLODUniformParameters>(), BatchElementParams->LandscapeSectionLODUniformParameters);
 
 		if (TexCoordOffsetParameter.IsBound())
 		{
@@ -90,27 +91,20 @@ public:
 				CameraLocalPos3D.X + SceneProxy->SectionBase.X,
 				CameraLocalPos3D.Y + SceneProxy->SectionBase.Y
 			);
-			ShaderBindings.Add(TexCoordOffsetParameter, TexCoordOffset);
+			ShaderBindings.Add(TexCoordOffsetParameter, FVector2f(TexCoordOffset));
 		}
-
-		if (SceneProxy->bRegistered)
-		{
-			ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeSectionLODUniformParameters>(), LandscapeRenderSystems.FindChecked(SceneProxy->LandscapeKey)->UniformBuffer);
-		}
-		else
-		{
-			ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeSectionLODUniformParameters>(), GNullLandscapeRenderSystemResources.UniformBuffer);
-		}
-			}
+	}
 
 protected:
 	LAYOUT_FIELD(FShaderParameter, TexCoordOffsetParameter);
 };
 
+IMPLEMENT_TYPE_LAYOUT(FLandscapeVertexFactoryMobileVertexShaderParameters);
+
 /** Shader parameters for use with FLandscapeVertexFactory */
 class FLandscapeVertexFactoryMobilePixelShaderParameters : public FLandscapeVertexFactoryPixelShaderParameters
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FLandscapeVertexFactoryMobilePixelShaderParameters, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FLandscapeVertexFactoryMobilePixelShaderParameters, NonVirtual);
 public:
 	/**
 	* Bind shader constants by name
@@ -139,12 +133,15 @@ public:
 	}
 };
 
+IMPLEMENT_TYPE_LAYOUT(FLandscapeVertexFactoryMobilePixelShaderParameters);
+
 /**
   * Shader parameters for use with FLandscapeFixedGridVertexFactory
   * Simple grid rendering (without dynamic lod blend) needs a simpler fixed setup.
   */
 class FLandscapeFixedGridVertexFactoryMobileVertexShaderParameters : public FLandscapeVertexFactoryMobileVertexShaderParameters
 {
+	DECLARE_TYPE_LAYOUT(FLandscapeFixedGridVertexFactoryMobileVertexShaderParameters, NonVirtual);
 public:
 	void GetElementShaderBindings(
 		const class FSceneInterface* Scene,
@@ -167,10 +164,12 @@ public:
 
 		if (TexCoordOffsetParameter.IsBound())
 		{
-			ShaderBindings.Add(TexCoordOffsetParameter, FVector4(ForceInitToZero));
+			ShaderBindings.Add(TexCoordOffsetParameter, FVector4f(ForceInitToZero));
 		}
 	}
 };
+
+IMPLEMENT_TYPE_LAYOUT(FLandscapeFixedGridVertexFactoryMobileVertexShaderParameters);
 
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeVertexFactoryMobile, SF_Vertex, FLandscapeVertexFactoryMobileVertexShaderParameters);
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeVertexFactoryMobile, SF_Pixel, FLandscapeVertexFactoryMobilePixelShaderParameters);
@@ -178,8 +177,17 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeVertexFactoryMobile, SF_Pixel,
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeFixedGridVertexFactoryMobile, SF_Vertex, FLandscapeFixedGridVertexFactoryMobileVertexShaderParameters);
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeFixedGridVertexFactoryMobile, SF_Pixel, FLandscapeVertexFactoryMobilePixelShaderParameters);
 
-IMPLEMENT_VERTEX_FACTORY_TYPE(FLandscapeVertexFactoryMobile, "/Engine/Private/LandscapeVertexFactory.ush", true, true, true, false, false);
-IMPLEMENT_VERTEX_FACTORY_TYPE_EX(FLandscapeFixedGridVertexFactoryMobile, "/Engine/Private/LandscapeVertexFactory.ush", true, true, true, false, false, true, false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FLandscapeVertexFactoryMobile, "/Engine/Private/LandscapeVertexFactory.ush",
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsStaticLighting
+	| EVertexFactoryFlags::SupportsDynamicLighting
+);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FLandscapeFixedGridVertexFactoryMobile, "/Engine/Private/LandscapeVertexFactory.ush", 
+	  EVertexFactoryFlags::UsedWithMaterials
+	| EVertexFactoryFlags::SupportsStaticLighting
+	| EVertexFactoryFlags::SupportsDynamicLighting
+	| EVertexFactoryFlags::SupportsCachingMeshDrawCommands
+);
 
 void FLandscapeFixedGridVertexFactoryMobile::ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 {
@@ -204,15 +212,15 @@ void FLandscapeVertexBufferMobile::UpdateMemoryStat(int32 Delta)
 void FLandscapeVertexBufferMobile::InitRHI()
 {
 	// create a static vertex buffer
-	FRHIResourceCreateInfo CreateInfo;
-	void* VertexDataPtr = nullptr;
-	VertexBufferRHI = RHICreateAndLockVertexBuffer(VertexData.Num(), BUF_Static, CreateInfo, VertexDataPtr);
+	FRHIResourceCreateInfo CreateInfo(TEXT("FLandscapeVertexBufferMobile"));
+	VertexBufferRHI = RHICreateBuffer(VertexData.Num(), BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
 
 	// Copy stored platform data and free CPU copy
+	void* VertexDataPtr = RHILockBuffer(VertexBufferRHI, 0, VertexData.Num(), RLM_WriteOnly);
 	FMemory::Memcpy(VertexDataPtr, VertexData.GetData(), VertexData.Num());
 	VertexData.Empty();
 
-	RHIUnlockVertexBuffer(VertexBufferRHI);
+	RHIUnlockBuffer(VertexBufferRHI);
 }
 
 struct FLandscapeMobileHoleData
@@ -261,14 +269,14 @@ FLandscapeMobileRenderData::FLandscapeMobileRenderData(const TArray<uint8>& InPl
 {
 	FMemoryReader MemAr(InPlatformData);
 
-	int32 NumHoleLods;
+	int32 NumHoleLods = 0;
 	MemAr << NumHoleLods;
 	if (NumHoleLods > 0)
 	{
 		HoleData = new FLandscapeMobileHoleData;
 		HoleData->NumHoleLods = NumHoleLods;
 
-		bool b16BitIndices;
+		bool b16BitIndices = false;
 		MemAr << b16BitIndices;
 		if (b16BitIndices)
 		{
@@ -281,25 +289,12 @@ FLandscapeMobileRenderData::FLandscapeMobileRenderData(const TArray<uint8>& InPl
 	}
 
 	{
-		int32 VertexCount;
+		int32 VertexCount = 0;
 		MemAr << VertexCount;
 		TArray<uint8> VertexData;
 		VertexData.SetNumUninitialized(VertexCount * sizeof(FLandscapeMobileVertex));
 		MemAr.Serialize(VertexData.GetData(), VertexData.Num());
 		VertexBuffer = new FLandscapeVertexBufferMobile(MoveTemp(VertexData));
-	}
-
-	{
-		int32 NumOccluderVertices;
-		MemAr << NumOccluderVertices;
-		if (NumOccluderVertices > 0)
-		{
-			OccluderVerticesSP = MakeShared<FOccluderVertexArray, ESPMode::ThreadSafe>();
-			OccluderVerticesSP->SetNumUninitialized(NumOccluderVertices);
-			MemAr.Serialize(OccluderVerticesSP->GetData(), NumOccluderVertices * sizeof(FVector));
-
-			INC_DWORD_STAT_BY(STAT_LandscapeOccluderMem, OccluderVerticesSP->GetAllocatedSize());
-		}
 	}
 }
 
@@ -325,11 +320,6 @@ FLandscapeMobileRenderData::~FLandscapeMobileRenderData()
 			});
 		}
 	}
-
-	if (OccluderVerticesSP.IsValid())
-	{
-		DEC_DWORD_STAT_BY(STAT_LandscapeOccluderMem, OccluderVerticesSP->GetAllocatedSize());
-	}
 }
 
 FLandscapeComponentSceneProxyMobile::FLandscapeComponentSceneProxyMobile(ULandscapeComponent* InComponent)
@@ -345,9 +335,9 @@ FLandscapeComponentSceneProxyMobile::FLandscapeComponentSceneProxyMobile(ULandsc
 	NormalmapTexture = InComponent->MobileWeightmapTextures[0];
 
 #if WITH_EDITOR
-	TArray<FWeightmapLayerAllocationInfo>& LayerAllocations = InComponent->MobileWeightmapLayerAllocations.Num() ? InComponent->MobileWeightmapLayerAllocations : InComponent->GetWeightmapLayerAllocations();
+	const TArray<FWeightmapLayerAllocationInfo>& LayerAllocations = InComponent->MobileWeightmapLayerAllocations.Num() ? InComponent->MobileWeightmapLayerAllocations : InComponent->GetWeightmapLayerAllocations();
 	LayerColors.Empty();
-	for (auto& Allocation : LayerAllocations)
+	for (const FWeightmapLayerAllocationInfo& Allocation : LayerAllocations)
 	{
 		if (Allocation.LayerInfo != nullptr)
 		{
@@ -355,17 +345,6 @@ FLandscapeComponentSceneProxyMobile::FLandscapeComponentSceneProxyMobile(ULandsc
 		}
 	}
 #endif
-}
-
-int32 FLandscapeComponentSceneProxyMobile::CollectOccluderElements(FOccluderElementsCollector& Collector) const
-{
-	if (MobileRenderData->OccluderVerticesSP.IsValid() && SharedBuffers->OccluderIndicesSP.IsValid())
-	{
-		Collector.AddElements(MobileRenderData->OccluderVerticesSP, SharedBuffers->OccluderIndicesSP, GetLocalToWorld());
-		return 1;
-	}
-
-	return 0;
 }
 
 FLandscapeComponentSceneProxyMobile::~FLandscapeComponentSceneProxyMobile()
@@ -387,9 +366,11 @@ void FLandscapeComponentSceneProxyMobile::CreateRenderThreadResources()
 {
 	LLM_SCOPE(ELLMTag::Landscape);
 
-	if (IsComponentLevelVisible())
+	FLandscapeRenderSystem::CreateResources(this);
+
+	if (VisibilityHelper.ShouldBeVisible())
 	{
-		RegisterNeighbors(this);
+		RegisterSection();
 	}
 	
 	auto FeatureLevel = GetScene().GetFeatureLevel();
@@ -398,11 +379,9 @@ void FLandscapeComponentSceneProxyMobile::CreateRenderThreadResources()
 	SharedBuffers = FLandscapeComponentSceneProxy::SharedBuffersMap.FindRef(SharedBuffersKey);
 	if (SharedBuffers == nullptr)
 	{
-		int32 NumOcclusionVertices = MobileRenderData->OccluderVerticesSP.IsValid() ? MobileRenderData->OccluderVerticesSP->Num() : 0;
-				
 		SharedBuffers = new FLandscapeSharedBuffers(
 			SharedBuffersKey, SubsectionSizeQuads, NumSubsections,
-			GetScene().GetFeatureLevel(), false, NumOcclusionVertices);
+			GetScene().GetFeatureLevel());
 
 		FLandscapeComponentSceneProxy::SharedBuffersMap.Add(SharedBuffersKey, SharedBuffers);
 	}
@@ -450,7 +429,7 @@ void FLandscapeComponentSceneProxyMobile::CreateRenderThreadResources()
 	{
 		LandscapeFixedGridUniformShaderParameters[LodIndex].InitResource();
 		FLandscapeFixedGridUniformShaderParameters Parameters;
-		Parameters.LodValues = FVector4(
+		Parameters.LodValues = FVector4f(
 			LodIndex,
 			0.f,
 			(float)((SubsectionSizeVerts >> LodIndex) - 1),

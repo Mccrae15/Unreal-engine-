@@ -15,7 +15,7 @@ def p4_login(f):
         try:
             return f(*args, **kwargs)
         except Exception as e:
-            LOGGER.error(f'{e}')
+            LOGGER.error(f'{repr(e)}')
             LOGGER.error('Error running P4 command. Please make sure you are logged into Perforce and environment variables are set')
             return None
 
@@ -30,7 +30,7 @@ def p4_latest_changelist(p4_path, working_dir, num_changelists=10):
     p4_command = f'p4 -ztag -F "%change%" changes -m {num_changelists} {p4_path}/...'
     LOGGER.info(f"Executing: {p4_command}")
 
-    p4_result = subprocess.check_output(p4_command, cwd=working_dir, startupinfo=sb_utils.get_hidden_sp_startupinfo()).decode()
+    p4_result = subprocess.check_output(p4_command, cwd=working_dir, shell=True, startupinfo=sb_utils.get_hidden_sp_startupinfo()).decode()
 
     if p4_result:
         return p4_result.split()
@@ -68,7 +68,7 @@ def run(cmd, args=[], input=None):
     return r
 
 
-def valueForMarshalledKey(obj, key):
+def valueForMarshalledKey(obj: dict, key: str):
     ''' The P4 marshal is using bytes as keys instead of strings,
     so this makes the conversion and returns the desired value for the given key.
 
@@ -77,6 +77,14 @@ def valueForMarshalledKey(obj, key):
         key(str): The key identifying the dict key desired from the object.
     '''
     return obj[key.encode('utf-8')].decode()
+
+
+def hasValueForMarshalledKey(obj: dict, key: str):
+    '''
+    Checks whether a key exists.
+    See valueForMarshalledKey.
+    '''
+    return key.encode('utf-8') in obj
 
 
 def workspaceInPath(ws, localpath):

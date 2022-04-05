@@ -326,7 +326,7 @@ public:
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline", meta = (AllowedClasses = "World"))
 	FSoftObjectPath Map;
 
-	/** (Optional) Name of the person who submitted the job. Can be shown in burn in as a first point of contact about the content. */
+	/** (Optional) If left blank, will default to system username. Can be shown in burn in as a first point of contact about the content. */
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Movie Render Pipeline")
 	FString Author;
 
@@ -399,6 +399,12 @@ public:
 	void DeleteJob(UMoviePipelineExecutorJob* InJob);
 
 	/**
+	* Delete all jobs from the Queue.
+	*/
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline|Queue", meta = (Keywords = "Clear Empty"))
+	void DeleteAllJobs();
+
+	/**
 	* Duplicate the specific job and return the duplicate. Configurations are duplicated and not shared.
 	*
 	* @param InJob	The job to look for to duplicate.
@@ -422,6 +428,10 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
 	void CopyFrom(UMoviePipelineQueue* InQueue);
+	
+	/* Set the index of the given job */
+	UFUNCTION(BlueprintCallable, Category = "Movie Render Pipeline")
+	void SetJobIndex(UMoviePipelineExecutorJob* InJob, int32 Index);
 	
 	/**
 	 * Retrieve the serial number that is incremented when a job is added or removed from this list.

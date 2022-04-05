@@ -47,6 +47,8 @@ enum ELauncherVersion
 	LAUNCHERSERVICES_ADDEDADDITIONALCOMMANDLINE = 26,
 	LAUNCHERSERVICES_ADDEDINCLUDEPREREQUISITES = 27,
 	LAUNCHERSERVICES_ADDEDBUILDMODE = 28,
+	LAUNCHERSERVICES_ADDEDUSEIOSTORE = 29,
+	LAUNCHERSERVICES_ADDEDMAKEBINARYCONFIG = 30,
 
 	//ADD NEW STUFF HERE
 
@@ -80,7 +82,7 @@ inline bool TryGetDefaultTargetName(const FString& ProjectFile, EBuildTargetType
 /**
 * Implements a simple profile which controls the desired output of the Launcher for simple
 */
-class FLauncherSimpleProfile
+class FLauncherSimpleProfile final
 	: public ILauncherSimpleProfile
 {
 public:
@@ -194,7 +196,7 @@ public:
 		// profiles created for your persistent devices to be in debug. The user might not see this if they don't expand the Advanced options.
 		BuildConfiguration = EBuildConfiguration::Development;
 		
-		CookMode = ELauncherProfileCookModes::OnTheFly;		
+		CookMode = ELauncherProfileCookModes::OnTheFly;
 	}
 
 private:
@@ -216,7 +218,7 @@ private:
 /**
  * Implements a profile which controls the desired output of the Launcher
  */
-class FLauncherProfile
+class FLauncherProfile final
 	: public ILauncherProfile
 {
 public:
@@ -391,6 +393,11 @@ public:
 	virtual EBuildConfiguration GetBuildConfiguration( ) const override
 	{
 		return BuildConfiguration;
+	}
+
+	virtual const FString& GetBuildTarget() const override
+	{
+		return BuildTargetName;
 	}
 
 	virtual EBuildConfiguration GetCookConfiguration( ) const override
@@ -695,7 +702,7 @@ public:
 				{
 					// Get the target we're building for
 					const ITargetPlatform* TargetPlatform = GetTargetPlatformManager()->FindTargetPlatform(TargetPlatformName);
-					const PlatformInfo::FPlatformInfo& PlatformInfo = TargetPlatform->GetPlatformInfo();
+					const PlatformInfo::FTargetPlatformInfo& PlatformInfo = TargetPlatform->GetTargetPlatformInfo();
 
 					// Figure out which target we're building
 					FString ReceiptDir;
@@ -725,7 +732,7 @@ public:
 					}
 
 					// Check if the existing target is valid
-					FString BuildPlatform = PlatformInfo.UBTTargetId.ToString();
+					FString BuildPlatform = PlatformInfo.DataDrivenPlatformInfo->UBTPlatformString;
 					if (!HasPromotedTarget(*ReceiptDir, *TargetName, *BuildPlatform, BuildConfiguration, nullptr))
 					{
 						break;
@@ -1013,6 +1020,17 @@ public:
 		{
 			Archive << BuildMode;
 		}
+
+		if (Version >= LAUNCHERSERVICES_ADDEDUSEIOSTORE)
+		{
+			Archive << bUseIoStore;
+		}
+
+		if (Version >= LAUNCHERSERVICES_ADDEDMAKEBINARYCONFIG)
+		{
+			Archive << bMakeBinaryConfig;
+		}
+
 		else if(Archive.IsLoading())
 		{
 			BuildMode = BuildGame ? ELauncherProfileBuildModes::Build : ELauncherProfileBuildModes::DoNotBuild;
@@ -1153,6 +1171,8 @@ public:
 		Writer.WriteValue("ArchiveDirectory", ArchiveDir);
 		Writer.WriteValue("AdditionalCommandLineParameters", AdditionalCommandLineParameters);
 		Writer.WriteValue("IncludePrerequisites", IncludePrerequisites);
+		Writer.WriteValue("UseIoStore", bUseIoStore);
+		Writer.WriteValue("MakeBinaryConfig", bMakeBinaryConfig);
 
 		// serialize the default launch role
 		DefaultLaunchRole->Save(Writer, TEXT("DefaultRole"));
@@ -1190,7 +1210,7 @@ public:
 		Writer.WriteValue("noP4", true);
 		Writer.WriteValue("nocompile", !IsBuildingUAT());
 		Writer.WriteValue("nocompileeditor", FApp::IsEngineInstalled());
-		Writer.WriteValue("ue4exe", GetEditorExe());
+		Writer.WriteValue("unrealexe", GetEditorExe());
 		Writer.WriteValue("utf8output", true);
 
 		// client configurations
@@ -1545,7 +1565,7 @@ public:
 		"runautomationtest", ""
 		"runautomationtests", "true/false"
 		"skipserver", "true/false"
-		"ue4exe", ""
+		"unrealexe", ""
 		"unattended", "true/false"
 		"deviceuser", ""
 		"devicepass", ""
@@ -1642,58 +1662,23 @@ public:
 		for (int32 PlatformIndex = 0; PlatformIndex < InPlatforms.Num(); ++PlatformIndex)
 		{
 			// Platform info for the given platform
-			const PlatformInfo::FPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(FName(*InPlatforms[PlatformIndex]));
+			const PlatformInfo::FTargetPlatformInfo* PlatformInfo = PlatformInfo::FindPlatformInfo(FName(*InPlatforms[PlatformIndex]));
 			if (PlatformInfo == nullptr)
 			{
 				return false;
 			}
 
-			// switch server and no editor platforms to the proper type
-			if (PlatformInfo->TargetPlatformName == FName("LinuxServer"))
-			{
-				ServerPlatforms.Add(TEXT("Linux"));
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("WindowsServer"))
-			{
-				ServerPlatforms.Add(TEXT("Win64"));
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("MacServer"))
-			{
-				ServerPlatforms.Add(TEXT("Mac"));
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("LinuxNoEditor") || PlatformInfo->TargetPlatformName == FName("LinuxClient"))
-			{
-				ClientPlatforms.Add(TEXT("Linux"));
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("LinuxAArch64NoEditor") || PlatformInfo->TargetPlatformName == FName("LinuxAArch64Client"))
-			{
-				ClientPlatforms.Add(TEXT("LinuxAArch64"));
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("LinuxAArch64Server"))
-			{
-				ServerPlatforms.Add(TEXT("LinuxAArch64"));
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("WindowsNoEditor") || PlatformInfo->TargetPlatformName == FName("Windows"))
-			{
-				ClientPlatforms.Add(TEXT("Win64"));
-			}
-			else if (PlatformInfo->TargetPlatformName == FName("MacNoEditor"))
-			{
-				ClientPlatforms.Add(TEXT("Mac"));
-			}
-			else
-			{
-				ClientPlatforms.Add(PlatformInfo->TargetPlatformName.ToString());
-			}
+			// add the UBT platform name to the appropriate list
+			TArray<FString>& Platforms = PlatformInfo->PlatformType == EBuildTargetType::Server ? ServerPlatforms : ClientPlatforms;
+			Platforms.Add(PlatformInfo->DataDrivenPlatformInfo->UBTPlatformName.ToString());
 
 			// Append any extra UAT flags specified for this platform flavor
 			if (!PlatformInfo->UATCommandLine.IsEmpty())
 			{
-				OptionalParams += TEXT(" ");
 				OptionalParams += PlatformInfo->UATCommandLine;
 			}
 
-			bUATClosesAfterLaunch |= PlatformInfo->bUATClosesAfterLaunch;
+			bUATClosesAfterLaunch |= PlatformInfo->DataDrivenPlatformInfo->bUATClosesAfterLaunch;
 		}
 		return bUATClosesAfterLaunch;
 	}
@@ -1835,6 +1820,16 @@ public:
 			IncludePrerequisites = Object.GetBoolField("IncludePrerequisites");
 		}
 
+		if (Version >= LAUNCHERSERVICES_ADDEDUSEIOSTORE)
+		{
+			bUseIoStore = Object.GetBoolField("UseIoStore");
+		}
+
+		if (Version >= LAUNCHERSERVICES_ADDEDMAKEBINARYCONFIG)
+		{
+			bMakeBinaryConfig = Object.GetBoolField("MakeBinaryConfig");
+		}
+
 		// load the default launch role
 		TSharedPtr<FJsonObject> Role = Object.GetObjectField("DefaultRole");
 		DefaultLaunchRole->Load(*(Role.Get()));
@@ -1883,6 +1878,19 @@ public:
 		else
 		{
 			FullProjectPath = FString();
+		}
+
+		FString RelativeProjectPath = FullProjectPath;
+		bool bRelative = FPaths::MakePathRelativeTo(RelativeProjectPath, *FPaths::RootDir());
+
+		bool bIsUnderUERoot = bRelative && !(RelativeProjectPath.StartsWith(FString("../"), ESearchCase::CaseSensitive));
+		if (bIsUnderUERoot)
+		{
+			ShareableProjectPath = RelativeProjectPath;
+		}
+		else
+		{
+			ShareableProjectPath = FullProjectPath;
 		}
 
 		// Use the locally specified project path is resolving through the root isn't working
@@ -1967,6 +1975,8 @@ public:
 
 		bNotForLicensees = false;
 		bUseIoStore = false;
+		bUseZenStore = false;
+		bShouldUpdateFlash = false;
 		bMakeBinaryConfig = false;
 
 		Validate();
@@ -2007,6 +2017,16 @@ public:
 		if (BuildConfiguration != Configuration)
 		{
 			BuildConfiguration = Configuration;
+
+			Validate();
+		}
+	}
+
+	virtual void SetBuildTarget( const FString& TargetName ) override
+	{
+		if (BuildTargetName != TargetName)
+		{
+			BuildTargetName = TargetName;
 
 			Validate();
 		}
@@ -2339,8 +2359,8 @@ public:
 				FString RelativeProjectPath = Path;
 				bool bRelative = FPaths::MakePathRelativeTo(RelativeProjectPath, *FPaths::RootDir());
 
-				bool bIsUnderUE4Root = bRelative && !(RelativeProjectPath.StartsWith(FString("../"), ESearchCase::CaseSensitive));
-				if (bIsUnderUE4Root)
+				bool bIsUnderUERoot = bRelative && !(RelativeProjectPath.StartsWith(FString("../"), ESearchCase::CaseSensitive));
+				if (bIsUnderUERoot)
 				{
 					ShareableProjectPath = RelativeProjectPath;
 				}
@@ -2445,6 +2465,29 @@ public:
 	virtual bool IsUsingIoStore() const override
 	{
 		return bUseIoStore;
+	}
+
+	virtual void SetUseZenStore(bool bInUseZenStore) override
+	{
+		bUseZenStore = bInUseZenStore;
+	}
+
+	virtual bool IsUsingZenStore() const override
+	{
+		return bUseZenStore;
+	}
+
+	virtual void SetShouldUpdateDeviceFlash(bool bInShouldUpdateFlash) override
+	{
+		bShouldUpdateFlash = bInShouldUpdateFlash;
+	}
+
+	/**
+	 * Whether or not the flash image/software on the device should attempt to be updated before running
+	 */
+	virtual bool ShouldUpdateDeviceFlash() const override
+	{
+		return bShouldUpdateFlash;
 	}
 
 	virtual void SetMakeBinaryConfig(bool bInMakeBinaryConfig) override
@@ -2731,6 +2774,9 @@ private:
 	// Holds the desired build configuration (only used if creating new builds).
 	EBuildConfiguration BuildConfiguration;
 
+	// Holds the name of the target (matching a .cs file) to build. Needed when multiple targets of a type exist
+	FString BuildTargetName;
+
 	// Holds the build mode.
 	// Holds the build configuration name of the cooker.
 	EBuildConfiguration CookConfiguration;
@@ -2885,7 +2931,7 @@ private:
 	// Holds the full absolute path to the Unreal project used by this profile.
 	FString FullProjectPath;
 
-	// Holds the path that might be shareable between people.  Only works if the project is under the UE4 root.
+	// Holds the path that might be shareable between people.  Only works if the project is under the UE root.
 	// otherwise this is an absolute path.
 	FString ShareableProjectPath;
 
@@ -2910,9 +2956,15 @@ private:
 
 	// Use I/O store.
 	bool bUseIoStore;
+	
+	// Use Zen storage server
+	bool bUseZenStore;
 
 	// Make binary config.
 	bool bMakeBinaryConfig;
+
+	// Update flash on device before running
+	bool bShouldUpdateFlash;
 
 private:
 

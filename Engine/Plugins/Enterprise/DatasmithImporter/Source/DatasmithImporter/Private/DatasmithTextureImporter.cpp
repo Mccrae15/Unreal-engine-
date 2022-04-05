@@ -22,7 +22,7 @@
 #include "Factories/TextureFactory.h"
 
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 
 #include "Logging/LogMacros.h"
 
@@ -30,8 +30,12 @@
 
 #include "Modules/ModuleManager.h"
 
+#include "InterchangeManager.h"
 #include "ObjectTools.h"
 #include "RHI.h"
+#include "InterchangeSourceData.h"
+#include "InterchangeTextureFactoryNode.h"
+#include "InterchangeTextureNode.h"
 
 #define LOCTEXT_NAMESPACE "DatasmithTextureImport"
 
@@ -230,10 +234,6 @@ UTexture* FDatasmithTextureImporter::CreateTexture(const TSharedPtr<IDatasmithTe
 		TextureFact->CompressionSettings = TC_Normalmap;
 		TextureFact->bFlipNormalMapGreenChannel = true;
 		break;
-	case EDatasmithTextureMode::Displace:
-		TextureFact->CompressionSettings = TC_Displacementmap;
-		TextureFact->LODGroup = TEXTUREGROUP_World;
-		break;
 	}
 
 	const EDatasmithColorSpace DatasmithColorSpace = TextureElement->GetSRGB();
@@ -259,9 +259,10 @@ UTexture* FDatasmithTextureImporter::CreateTexture(const TSharedPtr<IDatasmithTe
 
 	// This has to be called explicitly each time we create a texture since the flag gets reset in FactoryCreateBinary
 	TextureFact->SuppressImportOverwriteDialog();
-	UTexture2D* Texture =
-		(UTexture2D*)TextureFact->FactoryCreateBinary(UTexture2D::StaticClass(), TextureOuter, *TextureName, ImportContext.ObjectFlags /*& ~RF_Public*/, nullptr,
-															*Extension, PtrTextureData, PtrTextureDataEnd, GWarn);
+
+	UTexture* Texture =
+		Cast<UTexture>(TextureFact->FactoryCreateBinary(UTexture2D::StaticClass(), TextureOuter, *TextureName, ImportContext.ObjectFlags /*& ~RF_Public*/, nullptr,
+															*Extension, PtrTextureData, PtrTextureDataEnd, GWarn));
 	if (Texture != nullptr)
 	{
 		static_assert(TextureAddress::TA_Wrap == (int)EDatasmithTextureAddress::Wrap && TextureAddress::TA_Mirror == (int)EDatasmithTextureAddress::Mirror, "Texture Address enum doesn't match!" );
@@ -288,13 +289,18 @@ UTexture* FDatasmithTextureImporter::CreateTexture(const TSharedPtr<IDatasmithTe
 		}
 
 		bool bUpdateResource = false;
-		bUpdateResource |= Texture->Filter != TexFilter;
-		bUpdateResource |= Texture->AddressX != (TextureAddress)TextureElement->GetTextureAddressX();
-		bUpdateResource |= Texture->AddressY != (TextureAddress)TextureElement->GetTextureAddressY();
 
+		bUpdateResource |= Texture->Filter != TexFilter;
 		Texture->Filter = TexFilter;
-		Texture->AddressX = (TextureAddress)TextureElement->GetTextureAddressX();
-		Texture->AddressY = (TextureAddress)TextureElement->GetTextureAddressY();
+
+		if (UTexture2D* Texture2D = Cast<UTexture2D>(Texture))
+		{
+			bUpdateResource |= Texture2D->AddressX != (TextureAddress)TextureElement->GetTextureAddressX();
+			Texture2D->AddressX = (TextureAddress)TextureElement->GetTextureAddressX();
+
+			bUpdateResource |= Texture2D->AddressY != (TextureAddress)TextureElement->GetTextureAddressY();
+			Texture2D->AddressY = (TextureAddress)TextureElement->GetTextureAddressY();
+		}
 
 		// Update import data
 		Texture->AssetImportData->Update(Filename, &Hash);
@@ -379,6 +385,172 @@ UTexture* FDatasmithTextureImporter::CreateIESTexture(const TSharedPtr<IDatasmit
 	}
 
 	return IESTexture;
+}
+
+UE::Interchange::FAssetImportResultRef FDatasmithTextureImporter::CreateTextureAsync(const TSharedPtr<IDatasmithTextureElement>& TextureElement)
+{
+	UE::Interchange::FScopedSourceData ScopedSourceData( TextureElement->GetFile() );
+
+	if ( !UInterchangeManager::GetInterchangeManager().CanTranslateSourceData( ScopedSourceData.GetSourceData() ) )
+	{
+		return MakeShared< UE::Interchange::FImportResult, ESPMode::ThreadSafe >();
+	}
+
+	const FString ContentPath = ImportContext.AssetsContext.TexturesImportPackage->GetPathName();
+
+	FImportAssetParameters ImportAssetParameters;
+	ImportAssetParameters.bIsAutomated = true; // From the InterchangeManager point of view, this is considered an automated import
+
+	UDatasmithTexturePipeline* TexturePipeline = NewObject< UDatasmithTexturePipeline >();
+	TexturePipeline->TextureElement = TextureElement;
+
+	ImportAssetParameters.OverridePipelines.Add( TexturePipeline );
+
+	return UInterchangeManager::GetInterchangeManager().ImportAssetAsync( ContentPath, ScopedSourceData.GetSourceData(), ImportAssetParameters );
+}
+
+bool UDatasmithTexturePipeline::ExecutePreImportPipeline(UInterchangeBaseNodeContainer* BaseNodeContainer, const TArray<UInterchangeSourceData*>& SourceDatas)
+{
+	if ( !TextureElement.IsValid() )
+	{
+		return false;
+	}
+
+	TArray< FString > Nodes;
+	BaseNodeContainer->GetRoots( Nodes );
+
+	if ( Nodes.Num() <= 0)
+	{
+		return false;
+	}
+
+	UInterchangeTextureNode* TextureTranslatedNode = Cast<UInterchangeTextureNode >( BaseNodeContainer->GetNode( Nodes[0] ) );
+	if (!ensure(TextureTranslatedNode))
+	{
+		return false;
+	}
+
+	FString DisplayLabel = TextureTranslatedNode->GetDisplayLabel();
+	FString NodeUID = UInterchangeTextureFactoryNode::GetTextureFactoryNodeUidFromTextureNodeUid(TextureTranslatedNode->GetUniqueID());
+	UInterchangeTextureFactoryNode* TextureFactoryNode = NewObject<UInterchangeTextureFactoryNode>(BaseNodeContainer, NAME_None);
+	if (!ensure(TextureFactoryNode))
+	{
+		return false;
+	}
+	//Creating a UTexture2D
+	TextureFactoryNode->InitializeTextureNode(NodeUID, DisplayLabel, UTexture2D::StaticClass()->GetName(), TextureTranslatedNode->GetDisplayLabel());
+	TextureFactoryNode->SetCustomTranslatedTextureNodeUid(TextureTranslatedNode->GetUniqueID());
+	BaseNodeContainer->AddNode(TextureFactoryNode);
+
+	TOptional< bool > bFlipNormalMapGreenChannel;
+	TOptional< TextureMipGenSettings > MipGenSettings;
+	TOptional< TextureGroup > LODGroup;
+	TOptional< TextureCompressionSettings > CompressionSettings;
+
+	// Make sure to set the proper LODGroup as it's used to determine the CompressionSettings when using TEXTUREGROUP_WorldNormalMap
+	switch ( TextureElement->GetTextureMode() )
+	{
+	case EDatasmithTextureMode::Diffuse:
+		MipGenSettings = TMGS_Sharpen5;
+		LODGroup = TEXTUREGROUP_World;
+		break;
+	case EDatasmithTextureMode::Specular:
+		LODGroup = TEXTUREGROUP_WorldSpecular;
+		break;
+	case EDatasmithTextureMode::Bump:
+	case EDatasmithTextureMode::Normal:
+		LODGroup = TEXTUREGROUP_WorldNormalMap;
+		CompressionSettings = TC_Normalmap;
+		break;
+	case EDatasmithTextureMode::NormalGreenInv:
+		LODGroup = TEXTUREGROUP_WorldNormalMap;
+		CompressionSettings = TC_Normalmap;
+		bFlipNormalMapGreenChannel = true;
+		break;
+	}
+
+	const TOptional< float > RGBCurve = [ this ]() -> TOptional< float >
+	{
+		const float ElementRGBCurve = TextureElement->GetRGBCurve();
+
+		if ( FMath::IsNearlyEqual( ElementRGBCurve, 1.0f ) == false && ElementRGBCurve > 0.f )
+		{
+			return ElementRGBCurve;
+		}
+		else
+		{
+			return {};
+		}
+	}();
+
+	static_assert(TextureAddress::TA_Wrap == (int)EDatasmithTextureAddress::Wrap && TextureAddress::TA_Mirror == (int)EDatasmithTextureAddress::Mirror, "Texture Address enum doesn't match!" );
+
+	TOptional< TextureFilter > TexFilter;
+
+	switch ( TextureElement->GetTextureFilter() )
+	{
+	case EDatasmithTextureFilter::Nearest:
+		TexFilter = TextureFilter::TF_Nearest;
+		break;
+	case EDatasmithTextureFilter::Bilinear:
+		TexFilter = TextureFilter::TF_Bilinear;
+		break;
+	case EDatasmithTextureFilter::Trilinear:
+		TexFilter = TextureFilter::TF_Trilinear;
+		break;
+	}
+
+	TOptional< bool > bSrgb;
+
+	EDatasmithColorSpace ColorSpace = TextureElement->GetSRGB();
+	if ( ColorSpace == EDatasmithColorSpace::sRGB )
+	{
+		bSrgb = true;
+	}
+	else if ( ColorSpace == EDatasmithColorSpace::Linear )
+	{
+		bSrgb = false;
+	}
+
+	TextureFactoryNode->SetCustomAddressX( (TextureAddress)TextureElement->GetTextureAddressX() );
+	TextureFactoryNode->SetCustomAddressY( (TextureAddress)TextureElement->GetTextureAddressY() );
+
+	if ( bSrgb.IsSet() )
+	{
+		TextureFactoryNode->SetCustomSRGB( bSrgb.GetValue() );
+	}
+
+	if ( bFlipNormalMapGreenChannel.IsSet() )
+	{
+		TextureFactoryNode->SetCustombFlipGreenChannel( bFlipNormalMapGreenChannel.GetValue() );
+	}
+
+	if ( MipGenSettings.IsSet() )
+	{
+		TextureFactoryNode->SetCustomMipGenSettings( MipGenSettings.GetValue() );
+	}
+
+	if ( LODGroup.IsSet() )
+	{
+		TextureFactoryNode->SetCustomLODGroup( LODGroup.GetValue() );
+	}
+
+	if ( CompressionSettings.IsSet() )
+	{
+		TextureFactoryNode->SetCustomLODGroup( CompressionSettings.GetValue() );
+	}
+
+	if ( RGBCurve.IsSet() )
+	{
+		TextureFactoryNode->SetCustomAdjustRGBCurve( RGBCurve.GetValue() );
+	}
+
+	if ( TexFilter.IsSet() )
+	{
+		TextureFactoryNode->SetCustomFilter( TexFilter.GetValue() );
+	}
+
+	return true;
 }
 
 #undef LOCTEXT_NAMESPACE

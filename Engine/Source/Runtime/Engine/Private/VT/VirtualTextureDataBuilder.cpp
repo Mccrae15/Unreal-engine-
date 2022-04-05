@@ -219,12 +219,14 @@ struct FPixelDataRectangle
 			ImageWrapper->SetRaw(Data, BytesPerPixel * Width * Height, Width, Height, ERGBFormat::BGRA, 8);
 			break;
 		case TSF_BGRE8:
+			// This will probably result in bad image. (Should we convert the data or export it in a format that support float(ERGBFormat::BGRE)?)
 			ImageWrapper->SetRaw(Data, BytesPerPixel * Width * Height, Width, Height, ERGBFormat::BGRA, 8);
 			break;
 		case TSF_RGBA16:
 			ImageWrapper->SetRaw(Data, BytesPerPixel * Width * Height, Width, Height, ERGBFormat::RGBA, 16);
 			break;
 		case TSF_RGBA16F:
+			// This will probably result in bad image. (Should we convert the data or export it in a format that support float(ERGBFormat::RGBAF)?)
 			ImageWrapper->SetRaw(Data, BytesPerPixel * Width * Height, Width, Height, ERGBFormat::RGBA, 16);
 			break;
 		case TSF_RGBA8:
@@ -245,7 +247,7 @@ struct FPixelDataRectangle
 		FArchive* Ar = FileManager->CreateFileWriter(*Filename);
 		if (Ar != nullptr)
 		{
-			const TArray<uint8>& CompressedData = ImageWrapper->GetCompressed((int32)EImageCompressionQuality::Uncompressed);
+			TArray64<uint8> CompressedData = ImageWrapper->GetCompressed((int32)EImageCompressionQuality::Default);
 			Ar->Serialize((void *)CompressedData.GetData(), CompressedData.Num());
 			delete Ar;
 		}
@@ -256,7 +258,7 @@ struct FPixelDataRectangle
 
 #define TEXTURE_COMPRESSOR_MODULENAME "TextureCompressor"
 
-FVirtualTextureDataBuilder::FVirtualTextureDataBuilder(FVirtualTextureBuiltData &SetOutData, ITextureCompressorModule *InCompressor, IImageWrapperModule* InImageWrapper)
+FVirtualTextureDataBuilder::FVirtualTextureDataBuilder(FVirtualTextureBuiltData &SetOutData, const FString& InDebugTexturePathName, ITextureCompressorModule *InCompressor, IImageWrapperModule* InImageWrapper)
 	: OutData(SetOutData)
 	, SizeInBlocksX(0)
 	, SizeInBlocksY(0)
@@ -265,6 +267,7 @@ FVirtualTextureDataBuilder::FVirtualTextureDataBuilder(FVirtualTextureBuiltData 
 	, BlockSizeScale(1)
 	, SizeX(0)
 	, SizeY(0)
+	, DebugTexturePathName(InDebugTexturePathName)
 {
 	Compressor = InCompressor ? InCompressor : &FModuleManager::LoadModuleChecked<ITextureCompressorModule>(TEXTURE_COMPRESSOR_MODULENAME);
 	ImageWrapper = InImageWrapper ? InImageWrapper : &FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
@@ -350,9 +353,15 @@ void FVirtualTextureDataBuilder::Build(const FTextureSourceData& InSourceData, c
 	OutData.WidthInBlocks = InSourceData.SizeInBlocksX;
 	OutData.HeightInBlocks = InSourceData.SizeInBlocksY;
 
+	OutData.TileDataOffsetPerLayer.Empty();
+	OutData.ChunkIndexPerMip.Empty();
+	OutData.BaseOffsetPerMip.Empty();
+	OutData.TileOffsetData.Empty();
+
 	OutData.TileIndexPerChunk.Empty();
 	OutData.TileIndexPerMip.Empty();
 	OutData.TileOffsetInChunk.Empty();
+
 	OutData.Chunks.Empty();
 
 	const uint32 Size = FMath::Max(SizeX, SizeY);
@@ -382,6 +391,31 @@ void FVirtualTextureDataBuilder::BuildPagesForChunk(const TArray<FVTSourceTileEn
 		BuildTiles(ActiveTileList, LayerIndex, LayerData[LayerIndex], bAllowAsync);
 	}
 
+	// Fill out tile offsets per layer if we haven't yet and if all layers are raw uncompressed data.
+	if (OutData.TileDataOffsetPerLayer.Num() == 0)
+	{
+		bool bIsRawGPUData = true;
+		for (int32 LayerIndex = 0; LayerIndex < LayerData.Num(); LayerIndex++)
+		{
+			if (LayerData[LayerIndex].Codec != EVirtualTextureCodec::RawGPU)
+			{
+				bIsRawGPUData = false;
+				break;
+			}
+		}
+		if (bIsRawGPUData)
+		{
+			uint32 TileDataOffset = 0;
+			OutData.TileDataOffsetPerLayer.Reserve(LayerData.Num());
+			for (int32 LayerIndex = 0; LayerIndex < LayerData.Num(); LayerIndex++)
+			{
+				TileDataOffset += LayerData[LayerIndex].TilePayload[0].Num();
+				OutData.TileDataOffsetPerLayer.Add(TileDataOffset);
+			}
+		}
+	}
+
+	// Write tiles out to chunk.
 	PushDataToChunk(ActiveTileList, LayerData);
 }
 
@@ -407,16 +441,19 @@ void FVirtualTextureDataBuilder::BuildPagesMacroBlocks(bool bAllowAsync)
 		MipHeightInTiles = FMath::DivideAndRoundUp(MipHeightInTiles, 2u);
 	}
 
+	// loop over each macro block and assemble the tiles
 	FScopedSlowTask BuildTask(NumTiles);
 
-	//
 	TArray<FVTSourceTileEntry> TilesInChunk;
 	TilesInChunk.Reserve(NumTiles);
 
-	// loop over each macro block and assemble the tiles
 	{
 		uint32 TileIndex = 0u;
 		bool bInFinalChunk = false;
+
+		OutData.ChunkIndexPerMip.Reserve(OutData.NumMips);
+		OutData.BaseOffsetPerMip.Init(~0u, OutData.NumMips);
+		OutData.TileOffsetData.Reserve(OutData.NumMips);
 
 		OutData.TileOffsetInChunk.Init(~0u, NumTiles * NumLayers);
 		OutData.TileIndexPerChunk.Reserve(OutData.NumMips + 1);
@@ -428,14 +465,20 @@ void FVirtualTextureDataBuilder::BuildPagesMacroBlocks(bool bAllowAsync)
 		MipHeightInTiles = FMath::DivideAndRoundUp(SizeY, TileSize);
 		for (uint32 Mip = 0; Mip < OutData.NumMips; ++Mip)
 		{
+			FVirtualTextureTileOffsetData& OffsetData = OutData.TileOffsetData.AddDefaulted_GetRef();
+			OffsetData.Init(MipWidthInTiles, MipHeightInTiles);
+
+			OutData.ChunkIndexPerMip.Add(OutData.Chunks.Num());
+			OutData.TileIndexPerMip.Add(TileIndex);
+
 			const int32 MipBlockSizeInTilesX = FMath::Max(BlockSizeInTilesX >> Mip, 1);
 			const int32 MipBlockSizeInTilesY = FMath::Max(BlockSizeInTilesY >> Mip, 1);
 			const uint32 MaxTileInMip = FMath::MortonCode2(MipWidthInTiles - 1) | (FMath::MortonCode2(MipHeightInTiles - 1) << 1);
 
-			OutData.TileIndexPerMip.Add(TileIndex);
-
 			for (uint32 TileIndexInMip = 0u; TileIndexInMip <= MaxTileInMip; ++TileIndexInMip)
 			{
+				BuildTask.EnterProgressFrame();
+
 				const uint32 TileX = FMath::ReverseMortonCode2(TileIndexInMip);
 				const uint32 TileY = FMath::ReverseMortonCode2(TileIndexInMip >> 1);
 				if (TileX < MipWidthInTiles && TileY < MipHeightInTiles)
@@ -446,19 +489,22 @@ void FVirtualTextureDataBuilder::BuildPagesMacroBlocks(bool bAllowAsync)
 					const int32 BlockIndex = FindSourceBlockIndex(Mip, BlockX, BlockY);
 					if (BlockIndex != INDEX_NONE)
 					{
-						BuildTask.EnterProgressFrame();
-
 						const FTextureSourceBlockData& Block = SourceBlocks[BlockIndex];
 						FVTSourceTileEntry* TileEntry = new(TilesInChunk) FVTSourceTileEntry;
 						TileEntry->BlockIndex = BlockIndex;
 						TileEntry->TileIndex = TileIndex;
+						TileEntry->MipIndex = Mip;
 						TileEntry->MipIndexInBlock = Mip - Block.MipBias;
 						TileEntry->TileInBlockX = TileX - Block.BlockX * MipBlockSizeInTilesX;
 						TileEntry->TileInBlockY = TileY - Block.BlockY * MipBlockSizeInTilesY;
+
+						OffsetData.AddTile(TileIndexInMip);
 					}
 				}
 				TileIndex += NumLayers;
 			}
+
+			OffsetData.Finalize();
 
 			if (!bInFinalChunk && TilesInChunk.Num() >= (int32)MinTilesPerChunk)
 			{
@@ -483,31 +529,61 @@ void FVirtualTextureDataBuilder::BuildPagesMacroBlocks(bool bAllowAsync)
 		{
 			BuildPagesForChunk(TilesInChunk, bAllowAsync);
 		}
+
+		check(OutData.BaseOffsetPerMip.Num() == OutData.NumMips);
 	}
 
-	// Patch holes left in offset array
-	for (int32 ChunkIndex = 0; ChunkIndex < OutData.Chunks.Num(); ++ChunkIndex)
+	// Use compact tile offsets if we have fixed tile sizes on every layer (raw GPU codecs).
+	// Otherwise use legacy data.
+	const bool bUseLegacyData = OutData.TileDataOffsetPerLayer.Num() != NumLayers;
+	if (bUseLegacyData)
 	{
-		uint32 CurrentOffset = OutData.Chunks[ChunkIndex].SizeInBytes;
-		for (int32 TileIndex = OutData.TileIndexPerChunk[ChunkIndex + 1] - 1u; TileIndex >= (int32)OutData.TileIndexPerChunk[ChunkIndex]; --TileIndex)
+		// Using legacy data from now on so remove the compact data.
+		OutData.TileOffsetData.Empty();
+
+		// Patch holes left in offset array
+		for (int32 ChunkIndex = 0; ChunkIndex < OutData.Chunks.Num(); ++ChunkIndex)
 		{
-			const uint32 TileOffset = OutData.TileOffsetInChunk[TileIndex];
-			if (TileOffset > CurrentOffset)
+			uint32 CurrentOffset = OutData.Chunks[ChunkIndex].SizeInBytes;
+			for (int32 TileIndex = OutData.TileIndexPerChunk[ChunkIndex + 1] - 1u; TileIndex >= (int32)OutData.TileIndexPerChunk[ChunkIndex]; --TileIndex)
 			{
-				check(TileOffset == ~0u);
-				OutData.TileOffsetInChunk[TileIndex] = CurrentOffset;
-			}
-			else
-			{
-				CurrentOffset = TileOffset;
+				const uint32 TileOffset = OutData.TileOffsetInChunk[TileIndex];
+				if (TileOffset > CurrentOffset)
+				{
+					check(TileOffset == ~0u);
+					OutData.TileOffsetInChunk[TileIndex] = CurrentOffset;
+				}
+				else
+				{
+					CurrentOffset = TileOffset;
+				}
 			}
 		}
-	}
 
-	for (int32 TileIndex = 0u; TileIndex < OutData.TileOffsetInChunk.Num(); ++TileIndex)
+		for (int32 TileIndex = 0u; TileIndex < OutData.TileOffsetInChunk.Num(); ++TileIndex)
+		{
+			const uint32 TileOffset = OutData.TileOffsetInChunk[TileIndex];
+			check(TileOffset != ~0u);
+		}
+	}
+	else
 	{
-		const uint32 TileOffset = OutData.TileOffsetInChunk[TileIndex];
-		check(TileOffset != ~0u);
+		// We can remove legacy data and only reference the compact data from now on.
+		OutData.TileIndexPerChunk.Empty();
+		OutData.TileIndexPerMip.Empty();
+		OutData.TileOffsetInChunk.Empty();
+	}
+}
+
+static const TCHAR* GetSafePixelFormatName(EPixelFormat Format)
+{
+	if (Format >= PF_MAX)
+	{
+		return TEXT("INVALID");
+	}
+	else
+	{
+		return GPixelFormats[Format].Name;
 	}
 }
 
@@ -549,7 +625,7 @@ void FVirtualTextureDataBuilder::BuildTiles(const TArray<FVTSourceTileEntry>& Ti
 
 		// We can't split crunch compression into multiple tasks/threads, since all tiles need to compress together in order to generate the codec payload
 		// Instead we rely on internal Crunch threading to make this efficient
-		// Might be worth modifying Crunch to expose threading callbacks, so this can use UE4 task graph instead of Crunch's internal threadpool
+		// Might be worth modifying Crunch to expose threading callbacks, so this can use UE task graph instead of Crunch's internal threadpool
 		if (bAllowAsync && FApp::ShouldUseThreadingForPerformance())
 		{
 			CrunchParameters.NumWorkerThreads = FTaskGraphInterface::Get().GetNumWorkerThreads();
@@ -618,17 +694,27 @@ void FVirtualTextureDataBuilder::BuildTiles(const TArray<FVTSourceTileEntry>& Ti
 		TBSettings.bSRGB = BuildSettingsForLayer.bSRGB;
 		TBSettings.bUseLegacyGamma = BuildSettingsForLayer.bUseLegacyGamma;
 		TBSettings.MipGenSettings = TMGS_NoMipmaps;
+		TBSettings.bForceAlphaChannel = BuildSettingsForLayer.bForceAlphaChannel;
 		TBSettings.bVirtualStreamable = true;
+
+		// Encode speed must be resolved before we get here.
+		TBSettings.OodleEncodeEffort = BuildSettingsForLayer.OodleEncodeEffort;
+		TBSettings.LossyCompressionAmount = BuildSettingsForLayer.LossyCompressionAmount;
+		TBSettings.OodleUniversalTiling = BuildSettingsForLayer.OodleUniversalTiling;
+		TBSettings.bOodleUsesRDO = BuildSettingsForLayer.bOodleUsesRDO;
+		TBSettings.OodleRDO = BuildSettingsForLayer.OodleRDO;
+		TBSettings.OodleTextureSdkVersion = BuildSettingsForLayer.OodleTextureSdkVersion;
 
 		check(TBSettings.GetGammaSpace() == BuildSettingsForLayer.GetGammaSpace());
  
 		GeneratedData.TilePayload.AddDefaulted(TileList.Num());
 
-		// ParallelFor is implemented with TaskGraph so it can cause deadlock if it invokes a compressor that also
-		// uses TaskGraph in combination with FAsyncTask.
-		bool bUsesTaskGraph = Compressor->UsesTaskGraph(TBSettings);
-
-		ParallelFor(TileList.Num(), [&](int32 TileIndex)
+		// ParallelFor is on TaskGraph for VT tiles
+		//	TextureFormats should disable their own internal use of TaskGraph for VT tiles if necessary
+		
+		const bool bIsSingleThreaded = !bAllowAsync;
+		int NumTiles = TileList.Num();
+		ParallelFor(NumTiles, [&](int32 TileIndex)
 		{
 			const FVTSourceTileEntry& Tile = TileList[TileIndex];
 
@@ -664,16 +750,23 @@ void FVirtualTextureDataBuilder::BuildTiles(const TArray<FVTSourceTileEntry>& Ti
 			}
 #endif // SAVE_TILES
 
+			// give each tile a unique DebugTexturePathName for DebugDump option :
+			FString DebugTilePathName = FString::Printf(TEXT("%s_VT%04d"), *DebugTexturePathName, TileIndex);
+
 			TArray<FCompressedImage2D> CompressedMip;
 			TArray<FImage> EmptyList;
 			uint32 NumMipsInTail, ExtData;
-			if (!ensure(Compressor->BuildTexture(TileImages, EmptyList, TBSettings, CompressedMip, NumMipsInTail, ExtData)))
+			if (!ensure(Compressor->BuildTexture(TileImages, EmptyList, TBSettings, DebugTilePathName, CompressedMip, NumMipsInTail, ExtData)))
 			{
 				bCompressionError = true;
 			}
 
 			check(CompressedMip.Num() == 1);
-			check(CompressedFormat == PF_Unknown || CompressedFormat == CompressedMip[0].PixelFormat);
+			checkf(CompressedFormat == PF_Unknown || CompressedFormat == CompressedMip[0].PixelFormat, 
+				TEXT("CompressedFormat: %s (%d), CompressedMip[0].PixelFormat: %s (%d)"),
+				GetSafePixelFormatName(CompressedFormat), (int32)CompressedFormat, 
+				GetSafePixelFormatName((EPixelFormat)CompressedMip[0].PixelFormat), (int32)CompressedMip[0].PixelFormat);
+
 			CompressedFormat = (EPixelFormat)CompressedMip[0].PixelFormat;
 
 			const uint32 SizeRaw = CompressedMip[0].RawData.Num() * CompressedMip[0].RawData.GetTypeSize();
@@ -692,7 +785,7 @@ void FVirtualTextureDataBuilder::BuildTiles(const TArray<FVTSourceTileEntry>& Ti
 			{
 				GeneratedData.TilePayload[TileIndex] = MoveTemp(CompressedMip[0].RawData);
 			}
-		}, !bAllowAsync || bUsesTaskGraph); // ParallelFor
+		}, bIsSingleThreaded);
 
 		if (BuildSettingsLayer0.bVirtualTextureEnableCompressZlib)
 		{
@@ -726,7 +819,7 @@ void FVirtualTextureDataBuilder::PushDataToChunk(const TArray<FVTSourceTileEntry
 {
 	const int32 NumLayers = SourceLayers.Num();
 
-	uint32 TotalSize = 0u;
+	uint32 TotalSize = sizeof(FVirtualTextureChunkHeader);
 	for (int32 Layer = 0; Layer < NumLayers; ++Layer)
 	{
 		TotalSize += LayerData[Layer].CodecPayload.Num();
@@ -742,6 +835,12 @@ void FVirtualTextureDataBuilder::PushDataToChunk(const TArray<FVTSourceTileEntry
 	BulkData.Lock(LOCK_READ_WRITE);
 	uint8* NewChunkData = (uint8*)BulkData.Realloc(TotalSize);
 	uint32 ChunkOffset = 0u;
+
+	// Header for the chunk
+	FVirtualTextureChunkHeader* Header = (FVirtualTextureChunkHeader*)NewChunkData;
+	FMemory::Memzero(*Header);
+
+	ChunkOffset += sizeof(FVirtualTextureChunkHeader);
 
 	// codec payloads
 	for (int32 Layer = 0; Layer < NumLayers; ++Layer)
@@ -759,7 +858,13 @@ void FVirtualTextureDataBuilder::PushDataToChunk(const TArray<FVTSourceTileEntry
 	for (int32 TileIdx = 0; TileIdx < Tiles.Num(); ++TileIdx)
 	{
 		const FVTSourceTileEntry& Tile = Tiles[TileIdx];
-		uint32 TileIndex = Tile.TileIndex;
+		const int32 MipIndex = Tile.MipIndex;
+		// Set BaseOffsetPerMip from the first tile we find for the MipIndex.
+		if (OutData.BaseOffsetPerMip[MipIndex] == ~0u)
+		{
+			OutData.BaseOffsetPerMip[MipIndex] = ChunkOffset;
+		}
+		int32 TileIndex = Tile.TileIndex;
 		for (int32 Layer = 0; Layer < NumLayers; ++Layer)
 		{
 			check(OutData.TileOffsetInChunk[TileIndex] == ~0u);
@@ -776,6 +881,8 @@ void FVirtualTextureDataBuilder::PushDataToChunk(const TArray<FVTSourceTileEntry
 	}
 
 	check(ChunkOffset == TotalSize);
+
+	FSHA1::HashBuffer(NewChunkData, TotalSize, Chunk.BulkDataHash.Hash);
 
 	BulkData.Unlock();
 	BulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
@@ -813,9 +920,9 @@ static const FName RemovePrefixFromName(FName const& InName, FName& OutPrefix)
 	// Then we detect a non-platform prefix (such as codec name)
 	// and split the result into  explicit FORMAT and PREFIX parts.
 
-	for (const auto& PlatformInfo : FDataDrivenPlatformInfoRegistry::GetAllPlatformInfos())
+	for (FName PlatformName : FDataDrivenPlatformInfoRegistry::GetSortedPlatformNames())
 	{
-		FString PlatformTextureFormatPrefix = PlatformInfo.Key;
+		FString PlatformTextureFormatPrefix = PlatformName.ToString();
 		PlatformTextureFormatPrefix += TEXT('_');
 		if (NameString.StartsWith(PlatformTextureFormatPrefix, ESearchCase::IgnoreCase))
 		{
@@ -853,7 +960,7 @@ void FVirtualTextureDataBuilder::BuildSourcePixels(const FTextureSourceData& Sou
 		FVirtualTextureSourceLayerData& LayerData = SourceLayers[LayerIndex];
 
 		LayerData.GammaSpace = BuildSettingsForLayer.GetGammaSpace();
-		LayerData.bHasAlpha = false;
+		LayerData.bHasAlpha = BuildSettingsForLayer.bForceAlphaChannel;
 
 		FName TextureFormatPrefix;
 		const FName TextureFormatName = RemovePrefixFromName(BuildSettingsForLayer.TextureFormatName, TextureFormatPrefix);
@@ -891,7 +998,7 @@ void FVirtualTextureDataBuilder::BuildSourcePixels(const FTextureSourceData& Sou
 
 		FTextureSourceBlockData& BlockData = SourceBlocks[BlockIndex];
 		BlockData.BlockX = SourceBlockData.BlockX;
-		// UE4 applies a (1-y) transform to imported UVs, so apply a similar transform to UDIM block locations here
+		// UE applies a (1-y) transform to imported UVs, so apply a similar transform to UDIM block locations here
 		// This ensures that UDIM tiles will appear in the correct location when sampled with transformed UVs
 		BlockData.BlockY = (SizeInBlocksY - SourceBlockData.BlockY) % SizeInBlocksY;
 		BlockData.NumMips = SourceBlockData.NumMips;
@@ -919,6 +1026,7 @@ void FVirtualTextureDataBuilder::BuildSourcePixels(const FTextureSourceData& Sou
 			TBSettings.TextureFormatName = LayerData.FormatName;
 			TBSettings.bSRGB = BuildSettingsForLayer.bSRGB;
 			TBSettings.bUseLegacyGamma = BuildSettingsForLayer.bUseLegacyGamma;
+			TBSettings.bForceAlphaChannel = BuildSettingsForLayer.bForceAlphaChannel;
 			TBSettings.bApplyYCoCgBlockScale = BuildSettingsForLayer.bApplyYCoCgBlockScale;
 			TBSettings.bReplicateRed = BuildSettingsForLayer.bReplicateRed;
 			TBSettings.bReplicateAlpha = BuildSettingsForLayer.bReplicateAlpha;
@@ -948,7 +1056,7 @@ void FVirtualTextureDataBuilder::BuildSourcePixels(const FTextureSourceData& Sou
 			if (LocalBlockSizeScale == 1)
 			{
 				uint32 NumMipsInTail, ExtData;
-				bBuildTextureResult = Compressor->BuildTexture(SourceMips, *CompositeSourceMips, TBSettings, CompressedMips, NumMipsInTail, ExtData);
+				bBuildTextureResult = Compressor->BuildTexture(SourceMips, *CompositeSourceMips, TBSettings, DebugTexturePathName, CompressedMips, NumMipsInTail, ExtData);
 			}
 			else
 			{
@@ -971,7 +1079,7 @@ void FVirtualTextureDataBuilder::BuildSourcePixels(const FTextureSourceData& Sou
 				}
 
 				uint32 NumMipsInTail, ExtData;
-				bBuildTextureResult = Compressor->BuildTexture(ScaledSourceMips, ScaledCompositeMips, TBSettings, CompressedMips, NumMipsInTail, ExtData);
+				bBuildTextureResult = Compressor->BuildTexture(ScaledSourceMips, ScaledCompositeMips, TBSettings, DebugTexturePathName, CompressedMips, NumMipsInTail, ExtData);
 			}
 
 			check(bBuildTextureResult);
@@ -1105,7 +1213,7 @@ void FVirtualTextureDataBuilder::BuildSourcePixels(const FTextureSourceData& Sou
 			// TODO - composite images?
 			TArray<FCompressedImage2D> CompressedMips;
 			uint32 NumMipsInTail, ExtData;
-			if (!Compressor->BuildTexture(MiptailInputImages, EmptyImageArray, TBSettings, CompressedMips, NumMipsInTail, ExtData))
+			if (!Compressor->BuildTexture(MiptailInputImages, EmptyImageArray, TBSettings, DebugTexturePathName, CompressedMips, NumMipsInTail, ExtData))
 			{
 				check(false);
 			}
@@ -1129,6 +1237,14 @@ void FVirtualTextureDataBuilder::BuildSourcePixels(const FTextureSourceData& Sou
 				Image->RawData = MoveTemp(CompressedMip.RawData);
 			}
 		}
+	}
+
+	// Extract fallback color from last mip.
+	for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+	{
+		FImage OnePixelImage(1, 1, 1, ERawImageFormat::RGBA32F);
+		SourceBlocks.Last().MipsPerLayer[LayerIndex].Last().ResizeTo(OnePixelImage, 1, 1, ERawImageFormat::RGBA32F, EGammaSpace::Linear);
+		OutData.LayerFallbackColors[LayerIndex] = OnePixelImage.AsRGBA32F()[0];
 	}
 
 	for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
@@ -1169,6 +1285,7 @@ void FVirtualTextureDataBuilder::BuildSourcePixels(const FTextureSourceData& Sou
 				CrunchCompression::IsValidFormat(TextureFormatName);
 		}
 #endif // WITH_CRUNCH_COMPRESSION
+
 		if (bUseCrunch // NOTE: Crunch expects a format with no prefixes. See GetCrnFormat().
 			|| TextureFormatPrefix.IsNone())
 		{

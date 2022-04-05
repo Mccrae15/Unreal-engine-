@@ -281,11 +281,6 @@ struct CHAOS_API FRecordedTransformTrack
 		return Records.Num() > 1 ? Records[1].Timestamp - Records[0].Timestamp : 0;
 	}
 
-	int32 GetLastTime() const
-	{
-		return Records.Num() > 1 ? Records.Last().Timestamp : 0;
-	}
-
 	/**
 	 * Validates that the time is within the track timestamp bounds (inclusive)
 	 */
@@ -549,7 +544,7 @@ struct CHAOS_API FRecordedTransformTrack
 
 		FQuat Delta = Curr.GetRotation() * Prev.GetRotation().Inverse();
 		FVector Axis;
-		float Angle;
+		FVector::FReal Angle;
 		Delta.ToAxisAndAngle(Axis, Angle);
 
 		return (Axis * Angle) / SampleWidth;

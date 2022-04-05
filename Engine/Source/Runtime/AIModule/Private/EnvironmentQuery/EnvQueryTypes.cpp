@@ -13,9 +13,6 @@
 #include "DataProviders/AIDataProvider_QueryParams.h"
 #include "EnvironmentQuery/EnvQuery.h"
 #include "BehaviorTree/BlackboardComponent.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Float.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Int.h"
-#include "BehaviorTree/Blackboard/BlackboardKeyType_Bool.h"
 #include "EnvironmentQuery/EnvQueryManager.h"
 
 #define LOCTEXT_NAMESPACE "EnvQueryGenerator"
@@ -145,7 +142,7 @@ FText FEnvTraceData::ToText(FEnvTraceData::EDescriptionMode DescMode) const
 {
 	FText Desc;
 
-	if (TraceMode == EEnvQueryTrace::Geometry)
+	if (TraceMode == EEnvQueryTrace::GeometryByChannel || TraceMode == EEnvQueryTrace::GeometryByProfile)
 	{
 		FNumberFormattingOptions NumberFormatOptions;
 		NumberFormatOptions.MaximumFractionalDigits = 2;
@@ -246,7 +243,7 @@ FText FEnvTraceData::ToText(FEnvTraceData::EDescriptionMode DescMode) const
 
 void FEnvTraceData::SetGeometryOnly()
 {
-	TraceMode = EEnvQueryTrace::Geometry;
+	TraceMode = EEnvQueryTrace::GeometryByChannel;
 	bCanTraceOnGeometry = true;
 	bCanTraceOnNavMesh = false;
 	bCanDisableTrace = false;
@@ -411,7 +408,7 @@ void FEQSParametrizedQueryExecutionRequest::InitForOwnerAndBlackboard(UObject& O
 	}
 }
 
-int32 FEQSParametrizedQueryExecutionRequest::Execute(AActor& QueryOwner, const UBlackboardComponent* BlackboardComponent, FQueryFinishedSignature& QueryFinishedDelegate)
+int32 FEQSParametrizedQueryExecutionRequest::Execute(UObject& QueryOwner, const UBlackboardComponent* BlackboardComponent, FQueryFinishedSignature& QueryFinishedDelegate)
 {
 	if (bUseBBKeyForQueryTemplate)
 	{
@@ -433,62 +430,7 @@ int32 FEQSParametrizedQueryExecutionRequest::Execute(AActor& QueryOwner, const U
 			// resolve 
 			for (FAIDynamicParam& RuntimeParam : QueryConfig)
 			{
-				// check if given param requires runtime resolve, like reading from BB
-				if (RuntimeParam.BBKey.IsSet())
-				{
-					check(BlackboardComponent && "If BBKey.IsSet and there's no BB component then we\'re in the error land!");
-
-					// grab info from BB
-					switch (RuntimeParam.ParamType)
-					{
-					case EAIParamType::Float:
-					{
-						const float Value = BlackboardComponent->GetValue<UBlackboardKeyType_Float>(RuntimeParam.BBKey.GetSelectedKeyID());
-						QueryRequest.SetFloatParam(RuntimeParam.ParamName, Value);
-					}
-					break;
-					case EAIParamType::Int:
-					{
-						const int32 Value = BlackboardComponent->GetValue<UBlackboardKeyType_Int>(RuntimeParam.BBKey.GetSelectedKeyID());
-						QueryRequest.SetIntParam(RuntimeParam.ParamName, Value);
-					}
-					break;
-					case EAIParamType::Bool:
-					{
-						const bool Value = BlackboardComponent->GetValue<UBlackboardKeyType_Bool>(RuntimeParam.BBKey.GetSelectedKeyID());
-						QueryRequest.SetBoolParam(RuntimeParam.ParamName, Value);
-					}
-					break;
-					default:
-						checkNoEntry();
-						break;
-					}
-				}
-				else
-				{
-					switch (RuntimeParam.ParamType)
-					{
-					case EAIParamType::Float:
-					{
-						QueryRequest.SetFloatParam(RuntimeParam.ParamName, RuntimeParam.Value);
-					}
-					break;
-					case EAIParamType::Int:
-					{
-						QueryRequest.SetIntParam(RuntimeParam.ParamName, RuntimeParam.Value);
-					}
-					break;
-					case EAIParamType::Bool:
-					{
-						bool Result = RuntimeParam.Value > 0;
-						QueryRequest.SetBoolParam(RuntimeParam.ParamName, Result);
-					}
-					break;
-					default:
-						checkNoEntry();
-						break;
-					}
-				}
+				QueryRequest.SetDynamicParam(RuntimeParam, BlackboardComponent);
 			}
 		}
 

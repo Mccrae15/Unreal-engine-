@@ -9,7 +9,8 @@ using System.Diagnostics;
 using System.Reflection;
 using UnrealBuildTool;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace AutomationTool
 {
@@ -46,21 +47,46 @@ namespace AutomationTool
 		/// <returns>True if the directory was created, false otherwise.</returns>
 		public static bool SafeCreateDirectory(string Path, bool bQuiet = false)
 		{
-			if( !bQuiet)
+			if(!bQuiet)
 			{
 				Log.TraceLog("SafeCreateDirectory {0}", Path);
 			}
 
+			const int MaxAttempts = 10;
+			int Attempts = 0;
 			bool Result = true;
-			try
+			Exception LastException = null;
+			do
 			{
-				Result = Directory.CreateDirectory(Path).Exists;
-			}
-			catch (Exception)
-			{
-				if (Directory.Exists(Path) == false)
+				Result = Directory.Exists(Path);
+				if (!Result)
 				{
-					Result = false;
+					try
+					{
+						Result = Directory.CreateDirectory(Path).Exists;
+					}
+					catch (Exception Ex)
+					{
+						if (!Directory.Exists(Path))
+						{
+							Thread.Sleep(3000);
+						}
+						Result = Directory.Exists(Path);
+						LastException = Ex;
+					}
+				}
+			} while (Result == false && ++Attempts < MaxAttempts);
+
+			if (Result == false && LastException != null)
+			{
+				if (bQuiet)
+				{
+					Log.TraceLog("Failed to create directory {0} in {1} attempts.", Path, MaxAttempts);
+				}
+				else
+				{
+					Log.TraceWarning("Failed to create directory {0} in {1} attempts.", Path, MaxAttempts);
+					Log.TraceWarning(LogUtils.FormatException(LastException));
 				}
 			}
 			return Result;
@@ -279,7 +305,7 @@ namespace AutomationTool
 		// Characters that can appear at the start of
 		private static char[] IgnoredIniValuePrefixes = { '+', '-', ' ', '\t' };
 
-		private static void FilterIniFile(string SourceName, string TargetName, List<string> IniKeyBlacklist, List<string> InSectionBlacklist)
+		private static void FilterIniFile(string SourceName, string TargetName, List<string> IniKeyDenyList, List<string> InSectionDenyList)
 		{
 			string[] Lines = File.ReadAllLines(SourceName);
 			StringBuilder NewLines = new StringBuilder("");
@@ -300,7 +326,7 @@ namespace AutomationTool
 				if (!bFiltered)
 				{
 					string TrimmedLine = Line.TrimStart(IgnoredIniValuePrefixes);
-					foreach (string Filter in IniKeyBlacklist)
+					foreach (string Filter in IniKeyDenyList)
 					{
 						if (TrimmedLine.StartsWith(Filter + "="))
 						{
@@ -310,12 +336,12 @@ namespace AutomationTool
 					}
 				}
 
-				if (InSectionBlacklist != null)
+				if (InSectionDenyList != null)
 				{
 					if (Line.StartsWith("[") && Line.EndsWith("]"))
 					{
 						string SectionName = Line.Substring(1, Line.Length - 2);
-						bFilteringSection = bFiltered = InSectionBlacklist.Contains(SectionName);
+						bFilteringSection = bFiltered = InSectionDenyList.Contains(SectionName);
 
 						if (bFilteringSection)
 						{
@@ -348,7 +374,7 @@ namespace AutomationTool
 		/// <param name="SourceName">Source name</param>
 		/// <param name="TargetName">Target name</param>
 		/// <returns>True if the operation was successful, false otherwise.</returns>
-		public static bool SafeCopyFile(string SourceName, string TargetName, bool bQuiet = false, List<string> IniKeyBlacklist = null, List<string> IniSectionBlacklist = null)
+		public static bool SafeCopyFile(string SourceName, string TargetName, bool bQuiet = false, List<string> IniKeyDenyList = null, List<string> IniSectionDenyList = null)
 		{
 			if (!bQuiet)
 			{
@@ -367,9 +393,9 @@ namespace AutomationTool
 					bool bSkipSizeCheck = false;
 					// BinaryConfig.ini is a special case with binary data, but with same extension to handle all ini 
 					// file chunking/packaging/etc rules
-					if (IniKeyBlacklist != null && Path.GetExtension(SourceName) == ".ini" && Path.GetFileName(SourceName) != "BinaryConfig.ini")
+					if (IniKeyDenyList != null && Path.GetExtension(SourceName) == ".ini" && Path.GetFileName(SourceName) != "BinaryConfig.ini")
 					{
-						FilterIniFile(SourceName, TargetName, IniKeyBlacklist, IniSectionBlacklist);
+						FilterIniFile(SourceName, TargetName, IniKeyDenyList, IniSectionDenyList);
 						// ini files may change size, don't check
 						bSkipSizeCheck = true;
 					}
@@ -398,8 +424,15 @@ namespace AutomationTool
 						// http://ntfs.com/exfat-time-stamp.htm
 						if (!((SourceInfo.LastWriteTimeUtc - TargetInfo.LastWriteTimeUtc).TotalSeconds < 2 && (SourceInfo.LastWriteTimeUtc - TargetInfo.LastWriteTimeUtc).TotalSeconds > -2))
 						{
-							Log.TraceInformation("Date mismatch {0} = {1} to {2} = {3}", SourceName, SourceInfo.LastWriteTimeUtc, TargetName, TargetInfo.LastWriteTimeUtc);
-							Retry = true;
+							// Copy on some networks have lag for updating timestamps, so sleep and retry the check
+							Thread.Sleep(2000);
+							SourceInfo.Refresh();
+							TargetInfo.Refresh();
+							if (!((SourceInfo.LastWriteTimeUtc - TargetInfo.LastWriteTimeUtc).TotalSeconds < 2 && (SourceInfo.LastWriteTimeUtc - TargetInfo.LastWriteTimeUtc).TotalSeconds > -2))
+							{
+								Log.TraceInformation("Date mismatch {0} = {1} to {2} = {3}", SourceName, SourceInfo.LastWriteTimeUtc, TargetName, TargetInfo.LastWriteTimeUtc);
+								Retry = true;
+							}
 						}
 					}
 				}
@@ -708,45 +741,6 @@ namespace AutomationTool
 			return Result;
 		}
 
-		/// <summary>
-		/// Returns true/false based on whether this is the only instance
-		/// running (checked at startup).
-		/// </summary>
-		public static bool IsSoleInstance { get; private set; }
-
-		/// <summary>
-		/// Runs the specified delegate checking if this is the only instance of the application.
-		/// </summary>
-		/// <param name="Main"></param>
-		/// <param name="Param"></param>
-		public static ExitCode RunSingleInstance(Func<ExitCode> Main)
-		{
-			bool AllowMultipleInsances = (Environment.GetEnvironmentVariable("uebp_UATMutexNoWait") == "1");
-	
-			var bCreatedMutex = false;
-            var EntryAssemblyLocation = Assembly.GetEntryAssembly().GetOriginalLocation();
-			var LocationHash = EntryAssemblyLocation.GetHashCode();
-            var MutexName = "Global/" + Path.GetFileNameWithoutExtension(EntryAssemblyLocation) + "_" + LocationHash.ToString() + "_Mutex";
-			using (Mutex SingleInstanceMutex = new Mutex(true, MutexName, out bCreatedMutex))
-			{
-				IsSoleInstance = bCreatedMutex;
-
-				if (!IsSoleInstance && AllowMultipleInsances == false)
-				{ 
-					throw new AutomationException("A conflicting instance of AutomationTool is already running. Curent location: {0}. A process manager may be used to determine the conflicting process and what tool may have launched it", EntryAssemblyLocation);
-				}
-
-				ExitCode Result = Main();
-
-				if (IsSoleInstance)
-				{
-					SingleInstanceMutex.ReleaseMutex();
-				}
-
-				return Result;
-			}
-		}
-
 	    public static void Robust_CopyFile(string InputFileName, string OutputFileName)
 	    {
 	        if (OutputFileName.StartsWith("/Volumes/"))
@@ -838,7 +832,7 @@ namespace AutomationTool
 	            {
 	                int Retry = 0;
 	                int NumRetries = 60;
-	                if(!Directoryname.Contains("UE4"))
+	                if(!Directoryname.Contains("UE"))
 	                {
 	                    NumRetries = 2;
 	                }
@@ -882,6 +876,21 @@ namespace AutomationTool
 			}
 		}
 
+		/// <summary>
+		/// Indicates whether the Internet Protocol (IP) address is valid to appear in a Domain Name System (DNS) server database.
+		///
+		/// Addresses in the range 169.254.0.0 to 169.254.255.255 are not DNS eligible. These addresses are reserved for Automatic Private IP Addressing (APIPA).
+		/// https://docs.microsoft.com/en-us/dotnet/api/system.net.networkinformation.ipaddressinformation.isdnseligible?view=netcore-3.1
+		/// 
+		/// NET Core 3.1 does not include a usable implementation of UnicastIPAddressInformation.IsDnsEligible() for Linux or Mac
+		/// </summary>
+		/// <param name="AddressInformation">Information about the address to evaluate for DNS eligibility</param>
+		/// <returns></returns>
+		public static bool IsDnsEligible(System.Net.NetworkInformation.IPAddressInformation AddressInformation)
+		{
+			byte[] AddressBytes = AddressInformation.Address.GetAddressBytes();
+			return !(AddressBytes[0] == 169 && AddressBytes[1] == 254);
+		}
 	}
 
 
@@ -1165,31 +1174,6 @@ namespace AutomationTool
 				}
 			}
 			return Line.Substring(StartOffset, Offset - StartOffset);
-		}
-
-		/// <summary>
-		/// Doc
-		/// </summary>
-        public void SetAssemblyInformationalVersion(string NewInformationalVersion)
-		{
-            // This searches for the AssemblyInformationalVersion string. Most the mess is to allow whitespace in places that are possible.
-            // Captures the string into a group called "Ver" for replacement.
-            var regex = new Regex(@"\[assembly:\s+AssemblyInformationalVersion\s*\(\s*""(?<Ver>.*)""\s*\)\s*]", RegexOptions.IgnoreCase | RegexOptions.ExplicitCapture);
-            foreach (var Index in Enumerable.Range(0, Lines.Count))
-            {
-                var line = Lines[Index];
-                var match = regex.Match(line);
-                if (match.Success)
-                {
-                    var verGroup = match.Groups["Ver"];
-                    var sb = new StringBuilder(line);
-                    sb.Remove(verGroup.Index, verGroup.Length);
-                    sb.Insert(verGroup.Index, NewInformationalVersion);
-                    Lines[Index] = sb.ToString();
-                    return;
-                }
-            }
-            throw new AutomationException("Failed to find the AssemblyInformationalVersion attribute in {1}", MyFile.FullName);
 		}
 
 		/// <summary>

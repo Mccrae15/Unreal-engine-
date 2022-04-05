@@ -56,6 +56,8 @@ enum class EBlueprintCompileOptions
 	SkipFiBSearchMetaUpdate = 0x200,
 	/** Allow the delta serialization during FBlueprintCompileReinstancer::CopyPropertiesForUnrelatedObjects */
 	UseDeltaSerializationDuringReinstancing = 0x400,
+	/** Skips the new variable defaults detection - in some cases we do not want to use the defaults from the generated class such as during a reparent */
+	SkipNewVariableDefaultsDetection = 0x800,
 };
 
 ENUM_CLASS_FLAGS(EBlueprintCompileOptions)
@@ -106,6 +108,14 @@ public:
 	 * @return								the new blueprint
 	 */
 	static UBlueprint* CreateBlueprint(UClass* ParentClass, UObject* Outer, const FName NewBPName, enum EBlueprintType BlueprintType, TSubclassOf<UBlueprint> BlueprintClassType, TSubclassOf<UBlueprintGeneratedClass> BlueprintGeneratedClassType, FName CallingContext = NAME_None);
+
+	/**
+	 * Creates a user construction script graph for the blueprint.
+	 *
+	 * @param Blueprint					the blueprint
+	 * @return							the new UCS Graph, does not register it.
+	 */
+	static UEdGraph* CreateUserConstructionScript(UBlueprint* Blueprint);
 
 	/** 
 	 * Event that's broadcast anytime a blueprint is unloaded, and becomes 
@@ -494,6 +504,15 @@ public:
 	}
 
 	/**
+	 * Take a list of Actors and update an existing Blueprint by harvesting the components they have. Essentially HarvestBlueprintFromActors, but 
+	 * updates an existing Blueprint rather than creating a new one.
+	 * @param Path					The path to the existing Blueprint
+	 * @param Actors				The actor list to use as the template for the blueprint.
+	 * @return The updated blueprint, or null if it failed somehow
+	 */
+	static UBlueprint* UpdateExistingBlueprintFromActors(const FString& Path, const TArray<AActor*>& Actors);
+
+	/**
 	 * Take a list of Actors and generate a blueprint  by harvesting the components they have. Uses AActor as parent class type as the parent class.
 	 * @param BlueprintName			The name to use for the Blueprint
 	 * @param Outer					The package to create the blueprint within
@@ -510,6 +529,12 @@ public:
 		Params.ParentClass = ParentClass;
 		return HarvestBlueprintFromActors(BlueprintName, Package, Actors, Params);
 	}
+
+	/**
+	 * Updates this Actor's blueprint based on the actor itself. 
+	 * @return The number of properties that changes in the blueprint.
+	 */
+	static int32 ApplyInstanceChangesToBlueprint(AActor* Actor);
 
 	/** 
 	 * Creates a new blueprint instance and replaces the provided actor list with the new actor
@@ -578,8 +603,11 @@ public:
 	/** Returns true if the given property name has any bound component events in any blueprint graphs */
 	static bool PropertyHasBoundEvents(const UBlueprint* Blueprint, FName PropertyName);
 
-	/** Checks to see if a given class implements a blueprint-accesable interface */
-	static bool IsClassABlueprintInterface (const UClass* Class);
+	/** Checks to see if the class is an interface class of any type, including native interfaces that are blueprint accessible */
+	static bool IsClassABlueprintInterface(const UClass* Class);
+
+	/** Checks to see if a given class is implementable by any blueprints, if false a native class needs to implement it */
+	static bool IsClassABlueprintImplementableInterface(const UClass* Class);
 
 	/** Checks to see if a blueprint can implement the specified class as an interface */
 	static bool CanBlueprintImplementInterface(UBlueprint const* Blueprint, UClass const* Class);
@@ -683,3 +711,4 @@ private:
 
 	FKismetEditorUtilities() {}
 };
+

@@ -118,6 +118,11 @@ ECommandResult::Type FSubversionSourceControlProvider::GetState( const TArray<FS
 	return ECommandResult::Succeeded;
 }
 
+ECommandResult::Type FSubversionSourceControlProvider::GetState(const TArray<FSourceControlChangelistRef>& InChangelists, TArray<FSourceControlChangelistStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage)
+{
+	return ECommandResult::Failed;
+}
+
 TArray<FSourceControlStateRef> FSubversionSourceControlProvider::GetCachedStateByPredicate(TFunctionRef<bool(const FSourceControlStateRef&)> Predicate) const
 {
 	TArray<FSourceControlStateRef> Result;
@@ -142,7 +147,7 @@ void FSubversionSourceControlProvider::UnregisterSourceControlStateChanged_Handl
 	OnSourceControlStateChanged.Remove( Handle );
 }
 
-ECommandResult::Type FSubversionSourceControlProvider::Execute( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate )
+ECommandResult::Type FSubversionSourceControlProvider::Execute( const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate )
 {
 	if(!IsEnabled())
 	{
@@ -194,12 +199,12 @@ ECommandResult::Type FSubversionSourceControlProvider::Execute( const TSharedRef
 	}
 }
 
-bool FSubversionSourceControlProvider::CanCancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation ) const
+bool FSubversionSourceControlProvider::CanCancelOperation( const FSourceControlOperationRef& InOperation ) const
 {
 	return false;
 }
 
-void FSubversionSourceControlProvider::CancelOperation( const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation )
+void FSubversionSourceControlProvider::CancelOperation( const FSourceControlOperationRef& InOperation )
 {
 }
 
@@ -496,6 +501,11 @@ TArray< TSharedRef<ISourceControlLabel> > FSubversionSourceControlProvider::GetL
 	}
 
 	return Labels;
+}
+
+TArray<FSourceControlChangelistRef> FSubversionSourceControlProvider::GetChangelists( EStateCacheUsage::Type InStateCacheUsage )
+{
+	return TArray<FSourceControlChangelistRef>();
 }
 
 #if SOURCE_CONTROL_WITH_SLATE

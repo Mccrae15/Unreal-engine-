@@ -6,7 +6,7 @@
 #include <limits>
 #include "Algo/BinarySearch.h"
 
-namespace Trace
+namespace TraceServices
 {
 
 const FName FFrameProvider::ProviderName("FrameProvider");
@@ -97,9 +97,26 @@ void FFrameProvider::EndFrame(ETraceFrameType FrameType, double Time)
 	Session.UpdateDurationSeconds(Time);
 }
 
+uint32 FFrameProvider::GetFrameNumberForTimestamp(ETraceFrameType FrameType, double Timestamp) const
+{
+	if (FrameStartTimes[FrameType].Num() == 0 || Timestamp < FrameStartTimes[FrameType][0])
+	{
+		return 0;
+	}
+	else if (Timestamp >= FrameStartTimes[FrameType].Last())
+	{
+		return FrameStartTimes[FrameType].Num();
+	}
+	else
+	{
+		uint32 Index = static_cast<uint32>(Algo::LowerBound(FrameStartTimes[FrameType], Timestamp));
+		return Index + 1;
+	}
+}
+
 const IFrameProvider& ReadFrameProvider(const IAnalysisSession& Session)
 {
 	return *Session.ReadProvider<IFrameProvider>(FFrameProvider::ProviderName);
 }
 
-}
+} // namespace TraceServices

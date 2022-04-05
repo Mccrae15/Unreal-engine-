@@ -17,10 +17,13 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "BlueprintEditorSettings.h"
+#include "PinTypeSelectorFilter.h"
 
 #define LOCTEXT_NAMESPACE "PinTypeSelector"
 
-static const FString BigTooltipDocLink = TEXT("Shared/Editor/Blueprint/VariableTypes");
 
 /** Manages items in the Object Reference Type list, the sub-menu of the PinTypeSelector */
 struct FObjectReferenceType
@@ -41,6 +44,82 @@ struct FObjectReferenceType
 	{}
 };
 
+namespace PinTypeSelectorStatics
+{
+	static const FString BigTooltipDocLink = TEXT("Shared/Editor/Blueprint/VariableTypes");
+
+	// SComboBox is a bit restrictive:
+	static TArray<TSharedPtr<EPinContainerType>> PinTypes;
+
+	static FName Images[] = {
+		TEXT("Kismet.VariableList.TypeIcon"),
+		TEXT("Kismet.VariableList.ArrayTypeIcon"),
+		TEXT("Kismet.VariableList.SetTypeIcon"),
+		TEXT("Kismet.VariableList.MapKeyTypeIcon"),
+	};
+
+	static const FText Labels[] = {
+		LOCTEXT("SingleVariable", "Single"),
+		LOCTEXT("Array", "Array"),
+		LOCTEXT("Set", "Set"),
+		LOCTEXT("Map", "Map"),
+	};
+
+	static const FText Tooltips[] = {
+		LOCTEXT("SingleVariableTooltip", "Single Variable"),
+		LOCTEXT("ArrayTooltip", "Array"),
+		LOCTEXT("SetTooltip", "Set"),
+		LOCTEXT("MapTooltip", "Map (Dictionary)"),
+	};
+}
+
+
+/** Wraps a custom pin type filter provided at construction time. */
+class FPinTypeSelectorCustomFilterProxy : public IPinTypeSelectorFilter
+{
+public:
+	FPinTypeSelectorCustomFilterProxy(TSharedRef<IPinTypeSelectorFilter> InFilter, FSimpleDelegate InOnFilterChanged)
+		:Filter(InFilter)
+	{
+		// Auto-register the given delegate to respond to any filter change event and refresh the filtered item list, etc.
+		OnFilterChanged_DelegateHandle = Filter->RegisterOnFilterChanged(InOnFilterChanged);
+	}
+
+	virtual ~FPinTypeSelectorCustomFilterProxy()
+	{
+		// Auto-unregister the delegate that was previously registered at construction time.
+		Filter->UnregisterOnFilterChanged(OnFilterChanged_DelegateHandle);
+	}
+
+	virtual FDelegateHandle RegisterOnFilterChanged(FSimpleDelegate InOnFilterChanged)
+	{
+		return Filter->RegisterOnFilterChanged(InOnFilterChanged);
+	}
+
+	virtual void UnregisterOnFilterChanged(FDelegateHandle InDelegateHandle)
+	{
+		Filter->UnregisterOnFilterChanged(InDelegateHandle);
+	}
+
+	virtual TSharedPtr<SWidget> GetFilterOptionsWidget()
+	{
+		return Filter->GetFilterOptionsWidget();
+	}
+
+	virtual bool ShouldShowPinTypeTreeItem(FPinTypeTreeItem InItem) const
+	{
+		return Filter->ShouldShowPinTypeTreeItem(InItem);
+	}
+
+private:
+	/** The underlying filter for which we're acting as a proxy. */
+	TSharedRef<IPinTypeSelectorFilter> Filter;
+
+	/** A handle to a delegate that gets called whenever the custom filter changes. Will be unregistered automatically when the proxy is destroyed. */
+	FDelegateHandle OnFilterChanged_DelegateHandle;
+};
+
+
 class SPinTypeRow : public SComboRow<FPinTypeTreeItem>
 {
 public:
@@ -52,6 +131,9 @@ public:
 public:
 	void Construct(const FArguments& InArgs, const TSharedRef<STableViewBase>& InOwnerTable, TWeakPtr<SMenuOwner> InMenuOwner)
 	{
+		bHovered = false;
+		SetHover(TAttribute<bool>::CreateSP(this, &SPinTypeRow::ShouldAppearHovered));
+
 		SComboRow<FPinTypeTreeItem>::Construct( SComboRow<FPinTypeTreeItem>::FArguments()
 			.ToolTip(InArgs._ToolTip)
 			[
@@ -65,12 +147,24 @@ public:
 			InOwnerTable);
 	}
 
-	// SWidget interface
-	virtual bool IsHovered() const override
+	virtual void OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
 	{
-		return SComboRow<FPinTypeTreeItem>::IsHovered() || SubMenuHandler.Pin()->ShouldSubMenuAppearHovered();
+		bHovered = true;
+		SComboRow<FPinTypeTreeItem>::OnMouseEnter(MyGeometry, MouseEvent);
 	}
-	// End of SWidget interface
+
+	virtual void OnMouseLeave(const FPointerEvent& MouseEvent) override
+	{
+		bHovered = false;
+		SComboRow<FPinTypeTreeItem>::OnMouseLeave(MouseEvent);
+	}
+	//~ End of SWidget interface
+
+	/** Retuns TRUE if it should appear as hovered. */
+	bool ShouldAppearHovered() const
+	{
+		return bHovered || SubMenuHandler.Pin()->ShouldSubMenuAppearHovered();
+	}
 
 	/** Returns TRUE if there is a Sub-Menu available to open */
 	bool HasSubMenu() const
@@ -93,11 +187,25 @@ public:
 private:
 	/** The Sub-MenuHandler which is managing the sub-menu content so that mousing over other rows will not close the sub-menus immediately */
 	TWeakPtr<SSubMenuHandler> SubMenuHandler;
+	/** Keep an internal IsHovered flag*/
+	bool bHovered;
 };
 
 static bool ContainerRequiresGetTypeHash(EPinContainerType InType)
 {
 	return InType == EPinContainerType::Set || InType == EPinContainerType::Map;
+}
+
+static bool IsRightClickArrayStateToggleEnabled(SPinTypeSelector::ESelectorType SelectorType)
+{
+	// The Compact and Partial types both allow editing but omit the container-type
+	// (e.g. value, array) control. For both of these types, enable right-clicking
+	// on the type combo button to toggle between value/array.
+	// The None type isn't editable, so it doesn't need this behavior.
+	// The Full type shows a separate combo button for choosing the container type,
+	// so it doesn't need this right-click behavior either.
+	return SelectorType == SPinTypeSelector::ESelectorType::Compact ||
+		SelectorType == SPinTypeSelector::ESelectorType::Partial;
 }
 
 TSharedRef<SWidget> SPinTypeSelector::ConstructPinTypeImage(const FSlateBrush* PrimaryIcon, const FSlateColor& PrimaryColor, const FSlateBrush* SecondaryIcon, const FSlateColor& SecondaryColor, TSharedPtr<SToolTip> InToolTip)
@@ -186,31 +294,9 @@ TSharedRef<SWidget> SPinTypeSelector::ConstructPinTypeImage(UEdGraphPin* Pin)
 
 void SPinTypeSelector::Construct(const FArguments& InArgs, FGetPinTypeTree GetPinTypeTreeFunc)
 {
-	// SComboBox is a bit restrictive:
-	static TArray<TSharedPtr<EPinContainerType>> PinTypes;
-	if (PinTypes.Num() == 0)
-	{
-		PinTypes.Add(MakeShareable(new EPinContainerType(EPinContainerType::None)));
-		PinTypes.Add(MakeShareable(new EPinContainerType(EPinContainerType::Array)));
-		PinTypes.Add(MakeShareable(new EPinContainerType(EPinContainerType::Set)));
-		PinTypes.Add(MakeShareable(new EPinContainerType(EPinContainerType::Map)));
-	}
-
-	static const FSlateBrush* Images[] = {
-		FEditorStyle::GetBrush(TEXT("Kismet.VariableList.TypeIcon")),
-		FEditorStyle::GetBrush(TEXT("Kismet.VariableList.ArrayTypeIcon")),
-		FEditorStyle::GetBrush(TEXT("Kismet.VariableList.SetTypeIcon")),
-		FEditorStyle::GetBrush(TEXT("Kismet.VariableList.MapKeyTypeIcon")),
-	};
-
-	static const FText Tooltips[] = {
-		LOCTEXT("SingleVariableTooltip", "Single Variable"),
-		LOCTEXT("ArrayTooltip", "Array"),
-		LOCTEXT("SetTooltip", "Set"),
-		LOCTEXT("MapTooltip", "Map (Dictionary)"),
-	};
-
 	SearchText = FText::GetEmpty();
+
+	ReadOnly = InArgs._ReadOnly;
 
 	OnTypeChanged = InArgs._OnPinTypeChanged;
 	OnTypePreChanged = InArgs._OnPinTypePreChanged;
@@ -218,7 +304,8 @@ void SPinTypeSelector::Construct(const FArguments& InArgs, FGetPinTypeTree GetPi
 	check(GetPinTypeTreeFunc.IsBound());
 	GetPinTypeTree = GetPinTypeTreeFunc;
 
-	Schema = (UEdGraphSchema_K2*)(InArgs._Schema);
+	Schema = InArgs._Schema;
+	SchemaAction = InArgs._SchemaAction;
 	TypeTreeFilter = InArgs._TypeTreeFilter;
 	TreeViewWidth = InArgs._TreeViewWidth;
 	TreeViewHeight = InArgs._TreeViewHeight;
@@ -226,7 +313,41 @@ void SPinTypeSelector::Construct(const FArguments& InArgs, FGetPinTypeTree GetPi
 	TargetPinType = InArgs._TargetPinType;
 	SelectorType = InArgs._SelectorType;
 
+	NumFilteredPinTypeItems = 0;
+	if (InArgs._CustomFilter.IsValid())
+	{
+		CustomFilter = MakeShared<FPinTypeSelectorCustomFilterProxy>(InArgs._CustomFilter.ToSharedRef(), FSimpleDelegate::CreateSP(this, &SPinTypeSelector::OnCustomFilterChanged));
+	}
+	else if (UClass* PinTypeSelectorFilterClass = GetDefault<UPinTypeSelectorFilter>()->FilterClass.LoadSynchronous() )
+	{
+		TSharedPtr<IPinTypeSelectorFilter> SelectorFilter = GetDefault<UPinTypeSelectorFilter>(PinTypeSelectorFilterClass)->GetPinTypeSelectorFilter();
+		CustomFilter = MakeShared<FPinTypeSelectorCustomFilterProxy>(SelectorFilter.ToSharedRef(), FSimpleDelegate::CreateSP(this, &SPinTypeSelector::OnCustomFilterChanged));
+	}
+
 	bIsRightMousePressed = false;
+
+	// Depending on whether this is a full selector or not, we generate a different primary type image widget
+	TSharedPtr<SWidget> PrimaryTypeImage;
+	if (SelectorType == ESelectorType::Full)
+	{
+		// Full selector displays container and secondary type separately, so the main combo button should just have the primary icon
+		PrimaryTypeImage =
+			SNew(SImage)
+			.Image(this, &SPinTypeSelector::GetTypeIconImage)
+			.ColorAndOpacity(this, &SPinTypeSelector::GetTypeIconColor);
+	}
+	else
+	{
+		// Partial/compact selectors do not display container or secondary type separately, so we need to jam it all in the one image
+		PrimaryTypeImage =
+			SNew(
+				SLayeredImage,
+				TAttribute<const FSlateBrush*>(this, &SPinTypeSelector::GetSecondaryTypeIconImage),
+				TAttribute<FSlateColor>(this, &SPinTypeSelector::GetSecondaryTypeIconColor)
+			)
+			.Image(this, &SPinTypeSelector::GetTypeIconImage)
+			.ColorAndOpacity(this, &SPinTypeSelector::GetTypeIconColor);
+	}
 
 	// Depending on if this is a compact selector or not, we generate a different compound widget
 	TSharedPtr<SWidget> Widget;
@@ -242,188 +363,168 @@ void SPinTypeSelector::Construct(const FArguments& InArgs, FGetPinTypeTree GetPi
 			.ButtonStyle(FEditorStyle::Get(),  "BlueprintEditor.CompactPinTypeSelector")
 			.ButtonContent()
 			[
-				SNew(
-					SLayeredImage,
-					TAttribute<const FSlateBrush*>(this, &SPinTypeSelector::GetSecondaryTypeIconImage),
-					TAttribute<FSlateColor>(this, &SPinTypeSelector::GetSecondaryTypeIconColor)
-				)
-				.Image(this, &SPinTypeSelector::GetTypeIconImage)
-				.ColorAndOpacity(this, &SPinTypeSelector::GetTypeIconColor)
+				PrimaryTypeImage.ToSharedRef()
 			];
 	}
 	else if (SelectorType == ESelectorType::None)
 	{
-		Widget = SNew(
-					SLayeredImage,
-					TAttribute<const FSlateBrush*>(this, &SPinTypeSelector::GetSecondaryTypeIconImage),
-					TAttribute<FSlateColor>(this, &SPinTypeSelector::GetSecondaryTypeIconColor)
-				)
-				.ToolTipText(this, &SPinTypeSelector::GetToolTipForComboBoxType)
-				.Image(this, &SPinTypeSelector::GetTypeIconImage)
-				.ColorAndOpacity(this, &SPinTypeSelector::GetTypeIconColor);
+		Widget = PrimaryTypeImage.ToSharedRef();
+		Widget->SetToolTipText(TAttribute<FText>::CreateSP(this, &SPinTypeSelector::GetToolTipForComboBoxType));
 	}
-	else if (SelectorType == ESelectorType::Full)
+	else if (SelectorType == ESelectorType::Full || SelectorType == ESelectorType::Partial)
 	{
-		// Traditional Pin Type Selector with a combo button, the icon, the current type name, and a toggle button for being an array
-		TSharedPtr<SWidget> ContainerControl = SNew(SComboButton)
-		.ButtonStyle(FCoreStyle::Get(), "NoBorder")
-		.HasDownArrow(false)
-		.MenuPlacement(EMenuPlacement::MenuPlacement_ComboBoxRight)
-		.OnGetMenuContent(
-			FOnGetContent::CreateLambda(
-				[this]()
-				{
-					typedef SListView< TSharedPtr<EPinContainerType> > SPinContainerListView;
-					return SNew(SPinContainerListView)
-						.ListItemsSource(&PinTypes)
-						.OnGenerateRow(
-							SPinContainerListView::FOnGenerateRow::CreateLambda(
-								[this](TSharedPtr<EPinContainerType> InPinContainerType, const TSharedRef<STableViewBase>& OwnerTable)->TSharedRef<ITableRow>
-								{
-									EPinContainerType PinContainerType = *InPinContainerType;
-									check(sizeof(Images) / sizeof(*Images) > (int32)PinContainerType);
-									check(sizeof(Tooltips) / sizeof(*Tooltips) > (int32)PinContainerType);
-									const FSlateBrush* SecondaryIcon = PinContainerType == EPinContainerType::Map ? FEditorStyle::GetBrush(TEXT("Kismet.VariableList.MapValueTypeIcon")) : nullptr;
+		TSharedPtr<SWidget> ContainerControl;
 
-									return SNew(STableRow<TSharedPtr<EPinContainerType>>, OwnerTable)
-										.Content()
-										[
-											SNew(
-												SLayeredImage,
-													SecondaryIcon,
-													TAttribute<FSlateColor>(this, &SPinTypeSelector::GetSecondaryTypeIconColor)
-													)
-											.Image(Images[(int32)PinContainerType])
-											.ToolTip(IDocumentation::Get()->CreateToolTip(Tooltips[(int32)PinContainerType], nullptr, *BigTooltipDocLink, TEXT("Containers")))
-											.ColorAndOpacity(this, &SPinTypeSelector::GetTypeIconColor)
-										]
-										.IsEnabled(
-											TAttribute<bool>::Create(TAttribute<bool>::FGetter::CreateLambda( 
-												[PinContainerType, this]() 
-												{ 
-													return !ContainerRequiresGetTypeHash(PinContainerType) || FBlueprintEditorUtils::HasGetTypeHash( this->TargetPinType.Get() );
-												} ) )
-											);
-								}
-							)
-						)
-						.OnSelectionChanged(
-							SPinContainerListView::FOnSelectionChanged::CreateLambda(
-								[this](TSharedPtr<EPinContainerType> InType, ESelectInfo::Type)
-								{
-									this->OnContainerTypeSelectionChanged(*InType);
-								}
-							)
-						);
-				}
-			)
-		)
-		.ContentPadding(0)
-		.ToolTip(IDocumentation::Get()->CreateToolTip( TAttribute<FText>(this, &SPinTypeSelector::GetToolTipForContainerWidget), NULL, *BigTooltipDocLink, TEXT("Containers")))
-		.IsEnabled( TargetPinType.Get().PinCategory != UEdGraphSchema_K2::PC_Exec )
-		.Visibility(InArgs._bAllowArrays ? EVisibility::Visible : EVisibility::Collapsed)
-		.ButtonContent()
-		[
-			SNew(
-				SLayeredImage,
-				TAttribute<const FSlateBrush*>(this, &SPinTypeSelector::GetSecondaryTypeIconImage),
-				TAttribute<FSlateColor>(this, &SPinTypeSelector::GetSecondaryTypeIconColor)
-			)
-			.Image(this, &SPinTypeSelector::GetTypeIconImage)
-			.ColorAndOpacity(this, &SPinTypeSelector::GetTypeIconColor)
-		];
+		if(SelectorType == ESelectorType::Full)
+		{
+			// Traditional Pin Type Selector with a combo button, the icon, the current type name, and a toggle button for being an array
+			ContainerControl = SNew(SComboButton)
+				.ComboButtonStyle(FAppStyle::Get(),"BlueprintEditor.CompactVariableTypeSelector")
+				.MenuPlacement(EMenuPlacement::MenuPlacement_ComboBoxRight)
+				.OnGetMenuContent(this, &SPinTypeSelector::GetPinContainerTypeMenuContent)
+				.ContentPadding(0)
+				.ToolTip(IDocumentation::Get()->CreateToolTip(TAttribute<FText>(this, &SPinTypeSelector::GetToolTipForContainerWidget), NULL, *PinTypeSelectorStatics::BigTooltipDocLink, TEXT("Containers")))
+				.IsEnabled(TargetPinType.Get().PinCategory != UEdGraphSchema_K2::PC_Exec)
+				.Visibility(InArgs._bAllowArrays ? EVisibility::Visible : EVisibility::Collapsed)
+				.ButtonContent()
+				[
+					SNew(SLayeredImage, TAttribute<const FSlateBrush*>(this, &SPinTypeSelector::GetSecondaryTypeIconImage), TAttribute<FSlateColor>(this, &SPinTypeSelector::GetSecondaryTypeIconColor))
+					.Image(this, &SPinTypeSelector::GetTypeIconImage)
+					.ColorAndOpacity(this, &SPinTypeSelector::GetTypeIconColor)
+				];
+		}
 
-		Widget = SNew(SHorizontalBox)
-		+SHorizontalBox::Slot()
+		TSharedRef<SHorizontalBox> HBox = SNew(SHorizontalBox).Clipping(EWidgetClipping::ClipToBoundsAlways);
+		Widget = HBox;
+
+		const float FullComboButtonWidth = 125.f;
+
+		HBox->AddSlot()
+		.HAlign(HAlign_Left)
 		[
 			SNew(SBox)
-			.WidthOverride(100.f)
+			.WidthOverride(SelectorType == ESelectorType::Full ? FullComboButtonWidth : FOptionalSize())
 			[
-				SAssignNew( TypeComboButton, SComboButton )
-				.MenuPlacement(EMenuPlacement::MenuPlacement_ComboBoxRight)
+				SAssignNew(TypeComboButton, SComboButton)
+				.ComboButtonStyle(FAppStyle::Get(), "ComboButton")
 				.OnGetMenuContent(this, &SPinTypeSelector::GetMenuContent, false)
 				.ContentPadding(0)
 				.ToolTipText(this, &SPinTypeSelector::GetToolTipForComboBoxType)
+				.ForegroundColor(FSlateColor::UseForeground())
 				.ButtonContent()
 				[
 					SNew(SHorizontalBox)
-					.Clipping(EWidgetClipping::OnDemand)
-						
+					.Clipping(EWidgetClipping::ClipToBoundsAlways)
 					+ SHorizontalBox::Slot()
 					.VAlign(VAlign_Center)
 					.HAlign(HAlign_Left)
+					.Padding(0.0f, 0.0f, 2.0f, 0.0f)
 					.AutoWidth()
 					[
-						SNew(SImage)
-						.Image( this, &SPinTypeSelector::GetTypeIconImage )
-						.ColorAndOpacity( this, &SPinTypeSelector::GetTypeIconColor )
+						PrimaryTypeImage.ToSharedRef()
 					]
-						
 					+ SHorizontalBox::Slot()
+					.Padding(2.0f, 0.0f, 0.0f, 0.0f)
 					.VAlign(VAlign_Center)
 					.HAlign(HAlign_Left)
 					.AutoWidth()
 					[
 						SNew(STextBlock)
-						.Text( this, &SPinTypeSelector::GetTypeDescription )
+						.Text(this, &SPinTypeSelector::GetTypeDescription )
 						.Font(InArgs._Font)
-					]
-				]
-			]
-		]
-
-		+SHorizontalBox::Slot()
-		.AutoWidth()
-			.VAlign(VAlign_Center)
-			.HAlign(HAlign_Center)
-		[
-			ContainerControl.ToSharedRef()
-		]
-
-		+SHorizontalBox::Slot()
-		[
-			SNew(SBox)
-			.Visibility(
-				TAttribute<EVisibility>::Create(
-					TAttribute<EVisibility>::FGetter::CreateLambda(
-						[this]() {return this->TargetPinType.Get().IsMap() == true ? EVisibility::Visible : EVisibility::Collapsed; }
-					)
-				)
-			)
-			[
-				SAssignNew( SecondaryTypeComboButton, SComboButton )
-				.OnGetMenuContent(this, &SPinTypeSelector::GetMenuContent, true )
-				.ContentPadding(0)
-				.ToolTipText(this, &SPinTypeSelector::GetToolTipForComboBoxSecondaryType)
-				.ButtonContent()
-				[
-					SNew(SHorizontalBox)
-					.Clipping(EWidgetClipping::OnDemand)
-
-					+SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					.HAlign(HAlign_Center)
-					[
-						SNew(SImage)
-						.Image( this, &SPinTypeSelector::GetSecondaryTypeIconImage )
-						.ColorAndOpacity( this, &SPinTypeSelector::GetSecondaryTypeIconColor )
-					]
-					+SHorizontalBox::Slot()
-					.VAlign(VAlign_Center)
-					.HAlign(HAlign_Left)
-					[
-						SNew(STextBlock)
-						.Text( this, &SPinTypeSelector::GetSecondaryTypeDescription )
-						.Font(InArgs._Font)
+						.ColorAndOpacity(FSlateColor::UseForeground())
 					]
 				]
 			]
 		];
+
+		if(SelectorType == ESelectorType::Full)
+		{
+			HBox->AddSlot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				.Padding(2.0f)
+				[
+					ContainerControl.ToSharedRef()
+				];
+	
+			HBox->AddSlot()
+			[
+				SNew(SBox)
+				.WidthOverride(FullComboButtonWidth)
+				.Visibility_Lambda([this]() {return this->TargetPinType.Get().IsMap() == true ? EVisibility::Visible : EVisibility::Collapsed; })
+				[
+					SAssignNew( SecondaryTypeComboButton, SComboButton )
+					.OnGetMenuContent(this, &SPinTypeSelector::GetMenuContent, true )
+					.ContentPadding(0)
+					.ToolTipText(this, &SPinTypeSelector::GetToolTipForComboBoxSecondaryType)
+					.ButtonContent()
+					[
+						SNew(SHorizontalBox)
+						.Clipping(EWidgetClipping::OnDemand)
+						+SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						.HAlign(HAlign_Left)
+						.Padding(0.0f, 0.0f, 2.0f, 0.0f)
+						[
+							SNew(SImage)
+							.Image( this, &SPinTypeSelector::GetSecondaryTypeIconImage )
+							.ColorAndOpacity( this, &SPinTypeSelector::GetSecondaryTypeIconColor )
+						]
+						+SHorizontalBox::Slot()
+						.VAlign(VAlign_Center)
+						.HAlign(HAlign_Left)
+						.Padding(2.0f, 0.0f, 0.0f, 0.0f)
+						[
+							SNew(STextBlock)
+							.Text( this, &SPinTypeSelector::GetSecondaryTypeDescription )
+							.Font(InArgs._Font)
+						]
+					]
+				]
+			];
+		}
 	}
+
+
 	this->ChildSlot
 	[
-		Widget.ToSharedRef()
+		SNew(SWidgetSwitcher)
+		.WidgetIndex_Lambda([this](){return ReadOnly.Get() ? 1 : 0; })
+		+ SWidgetSwitcher::Slot() // editable version
+		.Padding(SelectorType == ESelectorType::Partial ? FMargin(-6.0f, 0.0f,0.0f,0.0f) : FMargin(0))
+		[
+			Widget.ToSharedRef()
+		]
+		+ SWidgetSwitcher::Slot() // read-only version
+		[
+			SNew(SHorizontalBox)
+			.Clipping(EWidgetClipping::OnDemand)
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.HAlign(HAlign_Left)
+			.Padding(FMargin(2.0f, 3.0f, 2.0f, 3.0f))
+			.AutoWidth()
+			[
+				// Read-only version does not display container or secondary type separately, so we need to jam it all in the one image
+				SNew(SLayeredImage, TAttribute<const FSlateBrush*>(this, &SPinTypeSelector::GetSecondaryTypeIconImage), TAttribute<FSlateColor>(this, &SPinTypeSelector::GetSecondaryTypeIconColor))
+				.Image(this, &SPinTypeSelector::GetTypeIconImage)
+				.ColorAndOpacity(this, &SPinTypeSelector::GetTypeIconColor)
+			]
+			+ SHorizontalBox::Slot()
+			.Padding(2.0f, 2.0f)
+			.VAlign(VAlign_Center)
+			.HAlign(HAlign_Left)
+			.AutoWidth()
+			[
+				SNew(STextBlock)
+				.Text(this, &SPinTypeSelector::GetTypeDescription)
+				.Font(InArgs._Font)
+				.ColorAndOpacity(FSlateColor::UseForeground())
+			]
+		]	
 	];
 }
 
@@ -466,6 +567,27 @@ FText SPinTypeSelector::GetSecondaryTypeDescription() const
 	}
 }
 
+FText SPinTypeSelector::GetCombinedTypeDescription() const
+{
+	FFormatNamedArguments Args;
+
+	EPinContainerType ContainerType = TargetPinType.Get().ContainerType;
+	switch (TargetPinType.Get().ContainerType)
+	{
+	case EPinContainerType::Map:
+		Args.Add(TEXT("KeyTitle"), GetTypeDescription());
+		Args.Add(TEXT("ValueTitle"), GetSecondaryTypeDescription());
+		return FText::Format(NSLOCTEXT("KismetSchema", "MapAsText", "Map of {KeyTitle}s to {ValueTitle}s"), Args);
+	case EPinContainerType::Set:
+		Args.Add(TEXT("PropertyTitle"), GetTypeDescription());
+		return FText::Format(NSLOCTEXT("SetAsText", "MapAsText", "Set of {PropertyTitle}s"), Args);
+	case EPinContainerType::Array:
+		Args.Add(TEXT("PropertyTitle"), GetTypeDescription());
+		return FText::Format(NSLOCTEXT("ArrayAsText", "MapAsText", "Array of {PropertyTitle}s"), Args);
+	default:
+		return GetTypeDescription();
+	}
+}
 
 const FSlateBrush* SPinTypeSelector::GetTypeIconImage() const
 {
@@ -528,7 +650,27 @@ TSharedRef<ITableRow> SPinTypeSelector::GenerateTypeTreeRow(FPinTypeTreeItem InI
 
 	// Use tooltip if supplied, otherwise just repeat description
 	const FText OrgTooltip = InItem->GetToolTip();
-	const FText Tooltip = !OrgTooltip.IsEmpty() ? OrgTooltip : Description;
+	FText Tooltip = !OrgTooltip.IsEmpty() ? OrgTooltip : Description;
+
+	// Switch to short tooltip based on settings
+	UClass* ClassType = Cast<UClass>(PinType.PinSubCategoryObject);
+	if (ClassType && ClassType->IsNative() && GetDefault<UBlueprintEditorSettings>()->bShowShortTooltips)
+	{
+		Tooltip = ClassType->GetToolTipText(true);
+	}
+
+	// If this is a struct type, get some useful information about it's native C++ declaration
+	if (PinType.PinCategory == UEdGraphSchema_K2::PC_Struct)
+	{
+		UScriptStruct* StructType = Cast<UScriptStruct>(PinType.PinSubCategoryObject);
+		if (StructType && StructType->IsNative())
+		{
+			Tooltip = FText::Format(LOCTEXT("NativePinTypeName", "{0}\n\n@see {1}"),
+				Tooltip,
+				FText::FromString(StructType->GetStructCPPName())
+			);
+		}
+	}
 
 	const FString PinTooltipExcerpt = ((PinType.PinCategory != UEdGraphSchema_K2::PC_Byte || PinType.PinSubCategoryObject == nullptr) ? PinType.PinCategory.ToString() : TEXT("Enum")); 
 
@@ -541,7 +683,7 @@ TSharedRef<ITableRow> SPinTypeSelector::GenerateTypeTreeRow(FPinTypeTreeItem InI
 
 	TSharedPtr< SHorizontalBox > HorizontalBox;
 	TSharedRef< ITableRow > ReturnWidget = SNew( SPinTypeRow, OwnerTree, MenuContent )
-		.ToolTip( IDocumentation::Get()->CreateToolTip( Tooltip, NULL, *BigTooltipDocLink, PinTooltipExcerpt) )
+		.ToolTip( IDocumentation::Get()->CreateToolTip( Tooltip, NULL, *PinTypeSelectorStatics::BigTooltipDocLink, PinTooltipExcerpt) )
 		.OnGetMenuContent(OnGetContent)
 		[
 			SAssignNew(HorizontalBox, SHorizontalBox)
@@ -577,7 +719,7 @@ TSharedRef<ITableRow> SPinTypeSelector::GenerateTypeTreeRow(FPinTypeTreeItem InI
 				.Padding(FMargin(7,0,0,0))
 				[
 					SNew( SImage )
-					.Image( FEditorStyle::Get().GetBrush( "ToolBar.SubMenuIndicator" ) )
+					.Image( FEditorStyle::Get().GetBrush( "Menu.SubMenuIndicator" ) )
 				]
 			];
 	}
@@ -588,7 +730,7 @@ TSharedRef<ITableRow> SPinTypeSelector::GenerateTypeTreeRow(FPinTypeTreeItem InI
 TSharedRef<SWidget> SPinTypeSelector::CreateObjectReferenceWidget(FPinTypeTreeItem InItem, FEdGraphPinType& InPinType, const FSlateBrush* InIconBrush, FText InSimpleTooltip) const
 {
 	return SNew(SHorizontalBox)
-		.ToolTip(IDocumentation::Get()->CreateToolTip(InSimpleTooltip, nullptr, *BigTooltipDocLink, InPinType.PinCategory.ToString()))
+		.ToolTip(IDocumentation::Get()->CreateToolTip(InSimpleTooltip, nullptr, *PinTypeSelectorStatics::BigTooltipDocLink, InPinType.PinCategory.ToString()))
 		+SHorizontalBox::Slot()
 		.AutoWidth()
 		.Padding(1.f)
@@ -666,9 +808,11 @@ TSharedRef< SWidget > SPinTypeSelector::GetAllowedObjectTypes(FPinTypeTreeItem I
 	const FSlateBrush* IconBrush = FBlueprintEditorUtils::GetIconFromPin(PinType);
 
 	FFormatNamedArguments Args;
+	bool bIsNative = false;
 
-	if(PinType.PinSubCategory != UEdGraphSchema_K2::PSC_Bitmask && PinType.PinSubCategoryObject.IsValid())
+	if (PinType.PinSubCategory != UEdGraphSchema_K2::PSC_Bitmask && PinType.PinSubCategoryObject.IsValid())
 	{
+		bIsNative = PinType.PinSubCategoryObject->IsNative() && PinType.PinSubCategoryObject != UBlueprint::StaticClass();
 		Args.Add(TEXT("TypeName"), InItem->GetDescription());
 	}
 
@@ -687,23 +831,35 @@ TSharedRef< SWidget > SPinTypeSelector::GetAllowedObjectTypes(FPinTypeTreeItem I
 	if (PossibleObjectReferenceTypes & static_cast<uint8>(EObjectReferenceType::ClassReference))
 	{
 		PinType.PinCategory = UEdGraphSchema_K2::PC_Class;
-		TSharedRef<SWidget> Widget = CreateObjectReferenceWidget(InItem, PinType, IconBrush, FText::Format(LOCTEXT("ClassTooltip", "Reference a class of type \'{TypeName}\'"), Args));
+		TSharedRef<SWidget> Widget = CreateObjectReferenceWidget(InItem, PinType, IconBrush, FText::Format(LOCTEXT("ClassTooltip", "Reference a class inheriting from type \'{TypeName}\'"), Args));
 		FObjectReferenceListItem ObjectReferenceType = MakeShareable(new FObjectReferenceType(InItem, Widget, PinType.PinCategory));
 		AllowedObjectReferenceTypes.Add(ObjectReferenceType);
 	}
 
 	if (PossibleObjectReferenceTypes & static_cast<uint8>(EObjectReferenceType::SoftObject))
 	{
+		FText FormatString = LOCTEXT("AssetTooltip", "Path to an instanced object of type \'{TypeName}\' which may not be loaded. Can be used to asynchronously load the asset.");
+		if (!bIsNative)
+		{
+			FormatString = LOCTEXT("AssetBPTooltip", "Path to an instanced object of type \'{TypeName}\' which may not be loaded. The blueprint type itself will always be loaded, which can be expensive.");
+		}
+
 		PinType.PinCategory = UEdGraphSchema_K2::PC_SoftObject;
-		TSharedRef<SWidget> Widget = CreateObjectReferenceWidget(InItem, PinType, IconBrush, FText::Format(LOCTEXT("AssetTooltip", "Path to an instanced object of type \'{TypeName}\' which may be in an unloaded state. Can be utilized to asynchronously load the object reference."), Args));
+		TSharedRef<SWidget> Widget = CreateObjectReferenceWidget(InItem, PinType, IconBrush, FText::Format(FormatString, Args));
 		FObjectReferenceListItem ObjectReferenceType = MakeShareable(new FObjectReferenceType(InItem, Widget, PinType.PinCategory));
 		AllowedObjectReferenceTypes.Add(ObjectReferenceType);
 	}
 
 	if (PossibleObjectReferenceTypes & static_cast<uint8>(EObjectReferenceType::SoftClass))
 	{
+		FText FormatString = LOCTEXT("ClassAssetTooltip", "Path to a class inheriting from type \'{TypeName}\' which may not be loaded. Can be utilized to asynchronously load the class.");
+		if (!bIsNative)
+		{
+			FormatString = LOCTEXT("ClassAssetBPTooltip", "Path to a class inheriting from type \'{TypeName}\' which may not be loaded. The blueprint type itself will always be loaded, which can be expensive.");
+		}
+
 		PinType.PinCategory = UEdGraphSchema_K2::PC_SoftClass;
-		TSharedRef<SWidget> Widget = CreateObjectReferenceWidget(InItem, PinType, IconBrush, FText::Format(LOCTEXT("ClassAssetTooltip", "Path to a class object of type \'{TypeName}\' which may be in an unloaded state. Can be utilized to asynchronously load the class."), Args));
+		TSharedRef<SWidget> Widget = CreateObjectReferenceWidget(InItem, PinType, IconBrush, FText::Format(FormatString, Args));
 		FObjectReferenceListItem ObjectReferenceType = MakeShareable(new FObjectReferenceType(InItem, Widget, PinType.PinCategory));
 		AllowedObjectReferenceTypes.Add(ObjectReferenceType);
 	}
@@ -792,6 +948,11 @@ void SPinTypeSelector::OnSelectPinType(FPinTypeTreeItem InItem, FName InPinCateg
 		FSlateNotificationManager::Get().AddNotification(Info);
 	}
 
+	if (!Schema->SupportsPinTypeContainer(SchemaAction, NewTargetPinType, NewTargetPinType.ContainerType))
+	{
+		NewTargetPinType.ContainerType = EPinContainerType::None;
+	}
+
 	OnTypeChanged.ExecuteIfBound(NewTargetPinType);
 }
 
@@ -869,7 +1030,22 @@ TSharedRef<SWidget>	SPinTypeSelector::GetMenuContent(bool bForSecondaryType)
 		}
 	}
 
-	FilteredTypeTreeRoot = TypeTreeRoot;
+	// Remove types not supported by schema
+	TArray<FPinTypeTreeItem> FilteredBySupportedTypes;
+	GetChildrenWithSupportedTypes(TypeTreeRoot, FilteredBySupportedTypes);
+	TypeTreeRoot = FilteredBySupportedTypes;
+
+	if (CustomFilter.IsValid())
+	{
+		NumFilteredPinTypeItems = 0;
+		FilteredTypeTreeRoot.Empty();
+
+		GetChildrenMatchingSearch(FText::GetEmpty(), TypeTreeRoot, FilteredTypeTreeRoot);
+	}
+	else
+	{
+		FilteredTypeTreeRoot = TypeTreeRoot;
+	}
 
 	if( !MenuContent.IsValid() || (bForSecondaryType != bMenuContentIsSecondary) )
 	{
@@ -885,6 +1061,12 @@ TSharedRef<SWidget>	SPinTypeSelector::GetMenuContent(bool bForSecondaryType)
 		SAssignNew(FilterTextBox, SSearchBox)
 			.OnTextChanged( this, &SPinTypeSelector::OnFilterTextChanged )
 			.OnTextCommitted( this, &SPinTypeSelector::OnFilterTextCommitted );
+
+		TSharedPtr<SWidget> CustomFilterOptionsWidget;
+		if (CustomFilter.IsValid())
+		{
+			CustomFilterOptionsWidget = CustomFilter->GetFilterOptionsWidget();
+		}
 
 		MenuContent = SAssignNew(PinTypeSelectorMenuOwner, SMenuOwner)
 			[
@@ -908,6 +1090,29 @@ TSharedRef<SWidget>	SPinTypeSelector::GetMenuContent(bool bForSecondaryType)
 								TypeTreeView.ToSharedRef()
 							]
 						]
+					+SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(8.f, 0.f, 8.f, 4.f)
+					[
+						SNew(SBox)
+						.Visibility(CustomFilter.IsValid() ? EVisibility::Visible : EVisibility::Collapsed)
+						[
+							SNew(SHorizontalBox)
+							+SHorizontalBox::Slot()
+							.VAlign(VAlign_Center)
+							.FillWidth(1.f)
+							[
+								SNew(STextBlock)
+								.Text(this, &SPinTypeSelector::GetPinTypeItemCountText)
+							]
+							+SHorizontalBox::Slot()
+							.VAlign(VAlign_Center)
+							.AutoWidth()
+							[
+								CustomFilterOptionsWidget.IsValid() ? CustomFilterOptionsWidget.ToSharedRef() : SNullWidget::NullWidget
+							]
+						]
+					]
 				]
 			];
 			
@@ -940,11 +1145,65 @@ TSharedRef<SWidget>	SPinTypeSelector::GetMenuContent(bool bForSecondaryType)
 	return MenuContent.ToSharedRef();
 }
 
+TSharedRef<SWidget> SPinTypeSelector::GetPinContainerTypeMenuContent()
+{
+	FMenuBuilder MenuBuilder(true, nullptr);
+
+	PinTypeSelectorStatics::PinTypes.Reset();
+	
+	PinTypeSelectorStatics::PinTypes.Add(MakeShared<EPinContainerType>(EPinContainerType::None));
+	PinTypeSelectorStatics::PinTypes.Add(MakeShared<EPinContainerType>(EPinContainerType::Array));
+	PinTypeSelectorStatics::PinTypes.Add(MakeShared<EPinContainerType>(EPinContainerType::Set));
+	PinTypeSelectorStatics::PinTypes.Add(MakeShared<EPinContainerType>(EPinContainerType::Map));
+
+
+	for (int32 i = PinTypeSelectorStatics::PinTypes.Num()-1; i >= 0; --i)
+	{
+		if (!Schema->SupportsPinTypeContainer(SchemaAction, TargetPinType.Get(), *PinTypeSelectorStatics::PinTypes[i].Get()))
+		{
+			PinTypeSelectorStatics::PinTypes.RemoveAt(i);
+		}
+	}	
+
+	for (auto& PinType : PinTypeSelectorStatics::PinTypes)
+	{
+		EPinContainerType PinContainerType = *PinType;
+		FUIAction Action;
+		Action.ExecuteAction.BindSP(this, &SPinTypeSelector::OnContainerTypeSelectionChanged, PinContainerType);
+		Action.CanExecuteAction.BindLambda([PinContainerType, this]() { return !ContainerRequiresGetTypeHash(PinContainerType) || FBlueprintEditorUtils::HasGetTypeHash(this->TargetPinType.Get()); });
+
+		const FSlateBrush* SecondaryIcon = PinContainerType == EPinContainerType::Map ? FAppStyle::Get().GetBrush(TEXT("Kismet.VariableList.MapValueTypeIcon")) : nullptr;
+
+		TSharedRef<SWidget> Widget =
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SLayeredImage, SecondaryIcon, TAttribute<FSlateColor>(this, &SPinTypeSelector::GetSecondaryTypeIconColor))
+				.Image(FAppStyle::Get().GetBrush(PinTypeSelectorStatics::Images[(int32)PinContainerType]))
+				.ToolTip(IDocumentation::Get()->CreateToolTip(PinTypeSelectorStatics::Tooltips[(int32)PinContainerType], nullptr, *PinTypeSelectorStatics::BigTooltipDocLink, TEXT("Containers")))
+				.ColorAndOpacity(this, &SPinTypeSelector::GetTypeIconColor)
+			]
+			+ SHorizontalBox::Slot()
+			.Padding(4.0f,2.0f)
+			[
+				SNew(STextBlock)
+				.Text(PinTypeSelectorStatics::Labels[(int32)PinContainerType])
+			];
+
+		MenuBuilder.AddMenuEntry(Action, Widget);
+	}
+
+	return MenuBuilder.MakeWidget();
+}
+
 //=======================================================================
 // Search Support
 void SPinTypeSelector::OnFilterTextChanged(const FText& NewText)
 {
 	SearchText = NewText;
+	NumFilteredPinTypeItems = 0;
 	FilteredTypeTreeRoot.Empty();
 
 	GetChildrenMatchingSearch(NewText, TypeTreeRoot, FilteredTypeTreeRoot);
@@ -978,25 +1237,67 @@ void SPinTypeSelector::OnFilterTextCommitted(const FText& NewText, ETextCommit::
 	}
 }
 
+bool SPinTypeSelector::GetChildrenWithSupportedTypes(const TArray<FPinTypeTreeItem>& UnfilteredList,
+	TArray<FPinTypeTreeItem>& OutFilteredList)
+{
+	bool bReturnVal = false;
+	
+	for( auto it = UnfilteredList.CreateConstIterator(); it; ++it )
+	{
+		FPinTypeTreeItem Item = *it;
+		FPinTypeTreeItem NewInfo = MakeShareable( new UEdGraphSchema_K2::FPinTypeTreeInfo(Item) );
+		TArray<FPinTypeTreeItem> ValidChildren;
+
+		const bool bHasChildrenWithValidTypes = GetChildrenWithSupportedTypes(Item->Children, ValidChildren);
+		bool bSupportsType = true;
+
+		if (!bHasChildrenWithValidTypes)
+		{
+			bSupportsType = Schema->SupportsPinType(SchemaAction, Item->GetPinType(false));
+		}
+		
+		if (bHasChildrenWithValidTypes || bSupportsType)
+		{
+			NewInfo->Children = ValidChildren;
+			OutFilteredList.Add(NewInfo);
+
+			if (!NewInfo->bReadOnly)
+			{
+				++NumFilteredPinTypeItems;
+			}
+
+			bReturnVal = true;
+		}
+	}
+
+	return bReturnVal;
+}
+
 bool SPinTypeSelector::GetChildrenMatchingSearch(const FText& InSearchText, const TArray<FPinTypeTreeItem>& UnfilteredList, TArray<FPinTypeTreeItem>& OutFilteredList)
 {
-	// Trim and sanitized the filter text (so that it more likely matches the action descriptions)
-	FString TrimmedFilterString = FText::TrimPrecedingAndTrailing(InSearchText).ToString();
-
-	// Tokenize the search box text into a set of terms; all of them must be present to pass the filter
 	TArray<FString> FilterTerms;
-	TrimmedFilterString.ParseIntoArray(FilterTerms, TEXT(" "), true);
-
-	// Generate a list of sanitized versions of the strings
 	TArray<FString> SanitizedFilterTerms;
-	for (int32 iFilters = 0; iFilters < FilterTerms.Num() ; iFilters++)
+
+	const bool bIsEmptySearch = InSearchText.IsEmpty();
+	if (!bIsEmptySearch)
 	{
-		FString EachString = FName::NameToDisplayString( FilterTerms[iFilters], false );
-		EachString = EachString.Replace( TEXT( " " ), TEXT( "" ) );
-		SanitizedFilterTerms.Add( EachString );
+		// Trim and sanitized the filter text (so that it more likely matches the action descriptions)
+		FString TrimmedFilterString = FText::TrimPrecedingAndTrailing(InSearchText).ToString();
+
+		// Tokenize the search box text into a set of terms; all of them must be present to pass the filter
+		TrimmedFilterString.ParseIntoArray(FilterTerms, TEXT(" "), true);
+
+		// Generate a list of sanitized versions of the strings
+		for (int32 iFilters = 0; iFilters < FilterTerms.Num(); iFilters++)
+		{
+			FString EachString = FName::NameToDisplayString(FilterTerms[iFilters], false);
+			EachString = EachString.Replace(TEXT(" "), TEXT(""));
+			SanitizedFilterTerms.Add(EachString);
+		}
+
+		// Both of these should match!
+		ensure(SanitizedFilterTerms.Num() == FilterTerms.Num());
 	}
-	// Both of these should match!
-	ensure( SanitizedFilterTerms.Num() == FilterTerms.Num() );
 
 	bool bReturnVal = false;
 
@@ -1007,35 +1308,48 @@ bool SPinTypeSelector::GetChildrenMatchingSearch(const FText& InSearchText, cons
 		TArray<FPinTypeTreeItem> ValidChildren;
 
 		const bool bHasChildrenMatchingSearch = GetChildrenMatchingSearch(InSearchText, Item->Children, ValidChildren);
-		const bool bIsEmptySearch = InSearchText.IsEmpty();
-		bool bFilterTextMatches = true;
+		bool bFilterMatches = bIsEmptySearch;
 
-		// If children match the search filter or it's an empty search, let's not do any checks against the FilterTerms
-		if ( !bHasChildrenMatchingSearch && !bIsEmptySearch)
+		// If children match the search filter, there's no need to do any additional checks
+		if (!bHasChildrenMatchingSearch)
 		{
-			const FText LocalizedDescription = Item->GetDescription();
-			const FString LocalizedDescriptionString = LocalizedDescription.ToString();
-			const FString* SourceDescriptionStringPtr = FTextInspector::GetSourceString(LocalizedDescription);
+			// If valid, attempt to match the custom filter; otherwise, treat it as a match by default.
+			bFilterMatches = CustomFilter.IsValid() ? CustomFilter->ShouldShowPinTypeTreeItem(Item) : true;
 
-			// Test both the localized and source strings for a match
-			const FString MangledLocalizedDescriptionString = LocalizedDescriptionString.Replace(TEXT(" "), TEXT(""));
-			const FString MangledSourceDescriptionString = (SourceDescriptionStringPtr && *SourceDescriptionStringPtr != LocalizedDescriptionString) ? SourceDescriptionStringPtr->Replace(TEXT(" "), TEXT("")) : FString();
-
-			for (int32 FilterIndex = 0; FilterIndex < FilterTerms.Num() && bFilterTextMatches; ++FilterIndex)
+			// If we didn't match the custom filter, or it's an empty search, let's not do any checks against the FilterTerms
+			if (bFilterMatches && !bIsEmptySearch)
 			{
-				const bool bMatchesLocalizedTerm = MangledLocalizedDescriptionString.Contains(FilterTerms[FilterIndex]) || MangledLocalizedDescriptionString.Contains(SanitizedFilterTerms[FilterIndex]);
-				const bool bMatchesSourceTerm = !MangledSourceDescriptionString.IsEmpty() && (MangledSourceDescriptionString.Contains(FilterTerms[FilterIndex]) || MangledSourceDescriptionString.Contains(SanitizedFilterTerms[FilterIndex]));
-				bFilterTextMatches = bFilterTextMatches && (bMatchesLocalizedTerm || bMatchesSourceTerm);
+				const FText LocalizedDescription = Item->GetDescription();
+				const FString LocalizedDescriptionString = LocalizedDescription.ToString();
+				const FString* SourceDescriptionStringPtr = FTextInspector::GetSourceString(LocalizedDescription);
+
+				// Test both the localized and source strings for a match
+				const FString MangledLocalizedDescriptionString = LocalizedDescriptionString.Replace(TEXT(" "), TEXT(""));
+				const FString MangledSourceDescriptionString = (SourceDescriptionStringPtr && *SourceDescriptionStringPtr != LocalizedDescriptionString) ? SourceDescriptionStringPtr->Replace(TEXT(" "), TEXT("")) : FString();
+
+				for (int32 FilterIndex = 0; FilterIndex < FilterTerms.Num() && bFilterMatches; ++FilterIndex)
+				{
+					const bool bMatchesLocalizedTerm = MangledLocalizedDescriptionString.Contains(FilterTerms[FilterIndex]) || MangledLocalizedDescriptionString.Contains(SanitizedFilterTerms[FilterIndex]);
+					const bool bMatchesSourceTerm = !MangledSourceDescriptionString.IsEmpty() && (MangledSourceDescriptionString.Contains(FilterTerms[FilterIndex]) || MangledSourceDescriptionString.Contains(SanitizedFilterTerms[FilterIndex]));
+					bFilterMatches = bFilterMatches && (bMatchesLocalizedTerm || bMatchesSourceTerm);
+				}
 			}
 		}
 		if( bHasChildrenMatchingSearch
-			|| bIsEmptySearch
-			|| bFilterTextMatches )
+			|| bFilterMatches )
 		{
 			NewInfo->Children = ValidChildren;
 			OutFilteredList.Add(NewInfo);
 
-			TypeTreeView->SetItemExpansion(NewInfo, !InSearchText.IsEmpty());
+			if (TypeTreeView.IsValid())
+			{
+				TypeTreeView->SetItemExpansion(NewInfo, !bIsEmptySearch);
+			}
+
+			if (!NewInfo->bReadOnly)
+			{
+				++NumFilteredPinTypeItems;
+			}
 
 			bReturnVal = true;
 		}
@@ -1049,7 +1363,7 @@ FText SPinTypeSelector::GetToolTipForComboBoxType() const
 	FText EditText;
 	if(IsEnabled())
 	{
-		if (SelectorType == ESelectorType::Compact)
+		if (IsRightClickArrayStateToggleEnabled(SelectorType))
 		{
 			EditText = LOCTEXT("CompactPinTypeSelector", "Left click to select the variable's pin type. Right click to toggle the type as an array.\n");
 		}
@@ -1063,7 +1377,9 @@ FText SPinTypeSelector::GetToolTipForComboBoxType() const
 		EditText = LOCTEXT("PinTypeSelector_Disabled", "Cannot edit variable type when they are inherited from parent.\n");
 	}
 
-	return FText::Format(LOCTEXT("PrimaryTypeTwoLines", "{0}Current Type: {1}"), EditText, GetTypeDescription());
+	// With the full selector type, just display the primary type in the tooltip because the secondary type has its own combo box.
+	// With the partial selector type, we need to jam everything into the tooltip for the single combo box.
+	return FText::Format(LOCTEXT("PrimaryTypeTwoLines", "{0}Current Type: {1}"), EditText, SelectorType == ESelectorType::Full ? GetTypeDescription() : GetCombinedTypeDescription());
 }
 
 FText SPinTypeSelector::GetToolTipForComboBoxSecondaryType() const
@@ -1132,9 +1448,21 @@ FText SPinTypeSelector::GetToolTipForContainerWidget() const
 	}
 }
 
+FText SPinTypeSelector::GetPinTypeItemCountText() const
+{
+	if (NumFilteredPinTypeItems == 1)
+	{
+		return FText::Format(LOCTEXT("PinTypeItemCount_Single", "{0} item"), FText::AsNumber(NumFilteredPinTypeItems));
+	}
+	else
+	{
+		return FText::Format(LOCTEXT("PinTypeItemCount_Plural", "{0} items"), FText::AsNumber(NumFilteredPinTypeItems));
+	}
+}
+
 FReply SPinTypeSelector::OnMouseButtonDown( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent )
 {
-	if (SelectorType == ESelectorType::Compact && MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
+	if (IsRightClickArrayStateToggleEnabled(SelectorType) && MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
 	{
 		bIsRightMousePressed = true;
 		return FReply::Handled();
@@ -1145,7 +1473,7 @@ FReply SPinTypeSelector::OnMouseButtonDown( const FGeometry& MyGeometry, const F
 
 FReply SPinTypeSelector::OnMouseButtonUp( const FGeometry& MyGeometry, const FPointerEvent& MouseEvent )
 {
-	if (SelectorType == ESelectorType::Compact && MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
+	if (IsRightClickArrayStateToggleEnabled(SelectorType) && MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
 	{
 		if (bIsRightMousePressed)
 		{
@@ -1161,6 +1489,18 @@ void SPinTypeSelector::OnMouseLeave( const FPointerEvent& MouseEvent )
 {
 	SCompoundWidget::OnMouseLeave(MouseEvent);
 	bIsRightMousePressed = false;
+}
+
+void SPinTypeSelector::OnCustomFilterChanged()
+{
+	NumFilteredPinTypeItems = 0;
+	FilteredTypeTreeRoot.Empty();
+	GetChildrenMatchingSearch(SearchText, TypeTreeRoot, FilteredTypeTreeRoot);
+
+	if (TypeTreeView.IsValid())
+	{
+		TypeTreeView->RequestTreeRefresh();
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

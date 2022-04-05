@@ -15,13 +15,14 @@ Field.h: Declares FField property system fundamentals
 #include "Math/RandomStream.h"
 #include "UObject/GarbageCollection.h"
 #include "UObject/CoreNative.h"
-#include "Templates/HasGetTypeHash.h"
 #include "Templates/IsAbstract.h"
 #include "Templates/IsEnum.h"
 #include "Misc/Optional.h"
 #include "Misc/EnumClassFlags.h"
 #include "Misc/CoreMiscDefines.h"
 #include "HAL/ThreadSafeCounter.h"
+
+#include <type_traits>
 
 class FProperty;
 class FField;
@@ -239,10 +240,15 @@ public:
 	{
 		Container.Field = const_cast<FField*>(InField);
 	}
-	FFieldVariant(const UObject* InObject)
+
+	template <
+		typename T,
+		decltype(ImplicitConv<const UObject*>(std::declval<T>()))* = nullptr
+	>
+	FFieldVariant(T&& InObject)
 		: bIsUObject(true)
 	{
-		Container.Object = const_cast<UObject*>(InObject);
+		Container.Object = const_cast<UObject*>(ImplicitConv<const UObject*>(InObject));
 	}
 
 	FFieldVariant(TYPE_OF_NULLPTR)
@@ -847,6 +853,12 @@ template<typename FieldType>
 FORCEINLINE FieldType* ExactCastField(FField* Src)
 {
 	return (Src && (Src->GetClass() == FieldType::StaticClass())) ? static_cast<FieldType*>(Src) : nullptr;
+}
+
+template<typename FieldType>
+FORCEINLINE FieldType* ExactCastField(const FField* Src)
+{
+	return (Src && (Src->GetClass() == FieldType::StaticClass())) ? static_cast<const FieldType*>(Src) : nullptr;
 }
 
 template<typename FieldType>

@@ -28,6 +28,7 @@
 #include "Factories.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "SCurveEditor.h" // for access to LogCurveEditor
+#include "Widgets/Colors/SColorPicker.h"
 
 #define LOCTEXT_NAMESPACE "CurveEditor"
 
@@ -138,7 +139,7 @@ FCurveModelID FCurveEditor::AddCurve(TUniquePtr<FCurveModel>&& InCurve)
 	++ActiveCurvesSerialNumber;
 	if (IsBroadcasting())
 	{
-		OnCurveArrayChanged.Broadcast(Curve, true);
+		OnCurveArrayChanged.Broadcast(Curve, true, this);
 	}
 	return NewID;
 }
@@ -147,7 +148,7 @@ void FCurveEditor::BroadcastCurveChanged(FCurveModel* InCurve)
 {
 	if (IsBroadcasting())
 	{
-		OnCurveArrayChanged.Broadcast(InCurve, true);
+		OnCurveArrayChanged.Broadcast(InCurve, true, this);
 	}
 }
 
@@ -158,7 +159,7 @@ FCurveModelID FCurveEditor::AddCurveForTreeItem(TUniquePtr<FCurveModel>&& InCurv
 
 	if(IsBroadcasting())
 	{
-		OnCurveArrayChanged.Broadcast(InCurve.Get(), true);
+		OnCurveArrayChanged.Broadcast(InCurve.Get(), true, this);
 	}
 
 	CurveData.Add(NewID, MoveTemp(InCurve));
@@ -179,7 +180,7 @@ void FCurveEditor::RemoveCurve(FCurveModelID InCurveID)
 
 	if(IsBroadcasting())
 	{
-		OnCurveArrayChanged.Broadcast(FindCurve(InCurveID), false);
+		OnCurveArrayChanged.Broadcast(FindCurve(InCurveID), false,this);
 	}
 
 
@@ -343,6 +344,9 @@ void FCurveEditor::BindCommands()
 	CommandList->MapAction(FCurveEditorCommands::Get().ToggleExpandCollapseNodes, FExecuteAction::CreateSP(this, &FCurveEditor::ToggleExpandCollapseNodes, false));
 	CommandList->MapAction(FCurveEditorCommands::Get().ToggleExpandCollapseNodesAndDescendants, FExecuteAction::CreateSP(this, &FCurveEditor::ToggleExpandCollapseNodes, true));
 
+	CommandList->MapAction(FCurveEditorCommands::Get().TranslateSelectedKeysLeft, FExecuteAction::CreateSP(this, &FCurveEditor::TranslateSelectedKeysLeft));
+	CommandList->MapAction(FCurveEditorCommands::Get().TranslateSelectedKeysRight, FExecuteAction::CreateSP(this, &FCurveEditor::TranslateSelectedKeysRight));
+
 	CommandList->MapAction(FCurveEditorCommands::Get().StepToNextKey, FExecuteAction::CreateSP(this, &FCurveEditor::StepToNextKey));
 	CommandList->MapAction(FCurveEditorCommands::Get().StepToPreviousKey, FExecuteAction::CreateSP(this, &FCurveEditor::StepToPreviousKey));
 	CommandList->MapAction(FCurveEditorCommands::Get().StepForward, FExecuteAction::CreateSP(this, &FCurveEditor::StepForward), EUIActionRepeatMode::RepeatEnabled);
@@ -353,6 +357,8 @@ void FCurveEditor::BindCommands()
 	CommandList->MapAction(FCurveEditorCommands::Get().SetSelectionRangeStart, FExecuteAction::CreateSP(this, &FCurveEditor::SetSelectionRangeStart));
 	CommandList->MapAction(FCurveEditorCommands::Get().SetSelectionRangeEnd, FExecuteAction::CreateSP(this, &FCurveEditor::SetSelectionRangeEnd));
 	CommandList->MapAction(FCurveEditorCommands::Get().ClearSelectionRange, FExecuteAction::CreateSP(this, &FCurveEditor::ClearSelectionRange));
+
+	CommandList->MapAction(FCurveEditorCommands::Get().SelectAllKeys, FExecuteAction::CreateSP(this, &FCurveEditor::SelectAllKeys));
 
 	{
 		FExecuteAction   ToggleInputSnapping     = FExecuteAction::CreateSP(this,   &FCurveEditor::ToggleInputSnapping);
@@ -370,6 +376,11 @@ void FCurveEditor::BindCommands()
 		CommandList->MapAction(FCurveEditorCommands::Get().StraightenTangents, FExecuteAction::CreateSP(this, &FCurveEditor::StraightenSelection), FCanExecuteAction::CreateSP(this, &FCurveEditor::CanFlattenOrStraightenSelection) );
 	}
 
+	// Curve Colors
+	{
+		CommandList->MapAction(FCurveEditorCommands::Get().SetRandomCurveColorsForSelected, FExecuteAction::CreateSP(this, &FCurveEditor::SetRandomCurveColorsForSelected), FCanExecuteAction());
+		CommandList->MapAction(FCurveEditorCommands::Get().SetCurveColorsForSelected, FExecuteAction::CreateSP(this, &FCurveEditor::SetCurveColorsForSelected), FCanExecuteAction());
+	}
 
 	// Tangent Visibility
 	{
@@ -402,7 +413,7 @@ void FCurveEditor::BindCommands()
 		FExecuteAction::CreateSP(this, &FCurveEditor::MakeToolActive, FCurveEditorToolID::Unset()),
 		FCanExecuteAction(),
 		FIsActionChecked::CreateLambda( [this]{ return ActiveTool.IsSet() == false; } ) );
-		
+
 	// Bind commands for Editor Extensions
 	for (TSharedRef<ICurveEditorExtension> Extension : EditorExtensions)
 	{
@@ -518,9 +529,27 @@ void FCurveEditor::ZoomToFitInternal(EAxisList::Type Axes, const TMap<FCurveMode
 		}
 		else
 		{
-			// Zoom to the min/max of the specified key set
-			KeyPositionsScratch.SetNum(NumKeys, false);
-			Curve->GetKeyPositions(Pair.Value.AsArray(), KeyPositionsScratch);
+			// Zoom to the min/max of the specified key set and the neighbors
+			TArray<FKeyHandle> SelectedAndNeighborKeyHandles;
+			for (const FKeyHandle& SelectedKeyHandle : Pair.Value.AsArray())
+			{
+				TOptional<FKeyHandle> PreviousKeyHandle;
+				TOptional<FKeyHandle> NextKeyHandle;
+				Curve->GetNeighboringKeys(SelectedKeyHandle, PreviousKeyHandle, NextKeyHandle);
+
+				SelectedAndNeighborKeyHandles.Add(SelectedKeyHandle);
+				if (PreviousKeyHandle.IsSet())
+				{
+					SelectedAndNeighborKeyHandles.Add(PreviousKeyHandle.GetValue());
+				}
+				if (NextKeyHandle.IsSet())
+				{
+					SelectedAndNeighborKeyHandles.Add(NextKeyHandle.GetValue());
+				}
+			}
+
+			KeyPositionsScratch.SetNum(SelectedAndNeighborKeyHandles.Num(), false);
+			Curve->GetKeyPositions(SelectedAndNeighborKeyHandles, KeyPositionsScratch);
 			for (const FKeyPosition& Key : KeyPositionsScratch)
 			{
 				InputMin  = FMath::Min(InputMin, Key.InputValue);
@@ -581,8 +610,23 @@ void FCurveEditor::ZoomToFitInternal(EAxisList::Type Axes, const TMap<FCurveMode
 		}
 		else
 		{
+			TSharedPtr<SCurveEditorPanel> Panel = WeakPanel.Pin();
+			TSharedPtr<SCurveEditorView> View = WeakView.Pin();
+
+			int32 PanelWidth = 0;
+			if (Panel.IsValid())
+			{
+				PanelWidth = WeakPanel.Pin()->GetViewContainerGeometry().GetLocalSize().X;
+			}
+			else if (View.IsValid())
+			{
+				PanelWidth = View->GetViewSpace().GetPhysicalWidth();
+			}
+			
+			double InputPercentage = PanelWidth != 0 ? FMath::Min(Settings->GetFrameInputPadding() / (float)PanelWidth, 0.5) : 0.1; // Cannot pad more than half the width
+
 			const double MinInputZoom = InputSnapEnabledAttribute.Get() ? InputSnapRateAttribute.Get().AsInterval() : 0.00001;
-			const double InputPadding = FMath::Max((InputMax - InputMin) * 0.1, MinInputZoom);
+			const double InputPadding = FMath::Max((InputMax - InputMin) * InputPercentage, MinInputZoom);
 			InputMax = FMath::Max(InputMin + MinInputZoom, InputMax);
 
 			InputMin -= InputPadding;
@@ -608,16 +652,76 @@ void FCurveEditor::ZoomToFitInternal(EAxisList::Type Axes, const TMap<FCurveMode
 		}
 		else
 		{
-			constexpr double MinOutputZoom = 0.00001;
-			const double OutputPadding = FMath::Max((OutputMax - OutputMin) * 0.05, MinOutputZoom);
+			TSharedPtr<SCurveEditorPanel> Panel = WeakPanel.Pin();
 
-			
+			int32 PanelHeight = 0;
+			if (Panel.IsValid())
+			{
+				PanelHeight = WeakPanel.Pin()->GetViewContainerGeometry().GetLocalSize().Y;
+			}
+			else 
+			{
+				PanelHeight = View->GetViewSpace().GetPhysicalHeight();
+			}
+
+			double OutputPercentage = PanelHeight != 0 ? FMath::Min(Settings->GetFrameOutputPadding() / (float)PanelHeight, 0.5) : 0.1; // Cannot pad more than half the height
+
+			constexpr double MinOutputZoom = 0.00001;
+			const double OutputPadding = FMath::Max((OutputMax - OutputMin) * OutputPercentage, MinOutputZoom);
+
 			OutputMin -= OutputPadding;
 			OutputMax = FMath::Max(OutputMin + MinOutputZoom, OutputMax) + OutputPadding;
 		}
 
 		View->SetOutputBounds(OutputMin, OutputMax);
 	}
+}
+
+void FCurveEditor::TranslateSelectedKeys(double SecondsToAdd)
+{
+	
+	if (Selection.Count() > 0)
+	{
+		for (const TTuple<FCurveModelID, FKeyHandleSet>& Pair : Selection.GetAll())
+		{
+			if (FCurveModel* Curve = FindCurve(Pair.Key))
+			{
+				int32 NumKeys = Pair.Value.Num();
+
+				if (NumKeys > 0)
+				{
+					TArrayView<const FKeyHandle> KeyHandles = Pair.Value.AsArray();
+					TArray<FKeyPosition> KeyPositions;
+					KeyPositions.SetNum(KeyHandles.Num());
+
+					Curve->GetKeyPositions(KeyHandles, KeyPositions);
+
+					for (int KeyIndex = 0; KeyIndex < KeyPositions.Num(); ++KeyIndex)
+					{
+						KeyPositions[KeyIndex].InputValue += SecondsToAdd;
+					}
+					Curve->SetKeyPositions(KeyHandles, KeyPositions);
+				}
+			}
+		}
+	}
+}
+
+void FCurveEditor::TranslateSelectedKeysLeft()
+{
+	FScopedTransaction Transaction(LOCTEXT("TranslateKeysLeft", "Translate Keys Left"));
+	FFrameRate FrameRate = WeakTimeSliderController.Pin()->GetDisplayRate();
+	double SecondsToAdd =  -FrameRate.AsInterval();
+	TranslateSelectedKeys(SecondsToAdd);
+}
+
+void FCurveEditor::TranslateSelectedKeysRight()
+{
+	FScopedTransaction Transaction(LOCTEXT("TranslateKeyRight", "Translate Keys Right"));
+	FFrameRate FrameRate = WeakTimeSliderController.Pin()->GetDisplayRate();
+	double SecondsToAdd = FrameRate.AsInterval();
+
+	TranslateSelectedKeys(SecondsToAdd);
 }
 
 void FCurveEditor::StepToNextKey()
@@ -670,11 +774,11 @@ void FCurveEditor::StepToNextKey()
 
 	if (NextTime.IsSet())
 	{
-		WeakTimeSliderController.Pin()->SetScrubPosition(NextTime.GetValue() * TickResolution);
+		WeakTimeSliderController.Pin()->SetScrubPosition(NextTime.GetValue() * TickResolution,/*bEvaluate*/ true);
 	}
 	else if (MinTime.IsSet())
 	{
-		WeakTimeSliderController.Pin()->SetScrubPosition(MinTime.GetValue() * TickResolution);
+		WeakTimeSliderController.Pin()->SetScrubPosition(MinTime.GetValue() * TickResolution, /*bEvaluate*/ true);
 	}
 }
 
@@ -728,11 +832,11 @@ void FCurveEditor::StepToPreviousKey()
 
 	if (PreviousTime.IsSet())
 	{
-		WeakTimeSliderController.Pin()->SetScrubPosition(PreviousTime.GetValue() * TickResolution);
+		WeakTimeSliderController.Pin()->SetScrubPosition(PreviousTime.GetValue() * TickResolution,/*bEvaluate*/ true);
 	}
 	else if (MaxTime.IsSet())
 	{
-		WeakTimeSliderController.Pin()->SetScrubPosition(MaxTime.GetValue() * TickResolution);
+		WeakTimeSliderController.Pin()->SetScrubPosition(MaxTime.GetValue() * TickResolution, /*bEvaluate*/ true);
 	}
 }
 
@@ -749,7 +853,7 @@ void FCurveEditor::StepForward()
 
 	FFrameTime OneFrame = FFrameRate::TransformTime(FFrameTime(1), DisplayRate, TickResolution);
 
-	WeakTimeSliderController.Pin()->SetScrubPosition(WeakTimeSliderController.Pin()->GetScrubPosition() + OneFrame);
+	WeakTimeSliderController.Pin()->SetScrubPosition(WeakTimeSliderController.Pin()->GetScrubPosition() + OneFrame, /*bEvaluate*/ true);
 }
 
 void FCurveEditor::StepBackward()
@@ -764,7 +868,7 @@ void FCurveEditor::StepBackward()
 
 	FFrameTime OneFrame = FFrameRate::TransformTime(FFrameTime(1), DisplayRate, TickResolution);
 
-	WeakTimeSliderController.Pin()->SetScrubPosition(WeakTimeSliderController.Pin()->GetScrubPosition() - OneFrame);
+	WeakTimeSliderController.Pin()->SetScrubPosition(WeakTimeSliderController.Pin()->GetScrubPosition() - OneFrame, /*bEvaluate*/ true);
 }
 
 void FCurveEditor::JumpToStart()
@@ -774,7 +878,7 @@ void FCurveEditor::JumpToStart()
 		return;
 	}
 
-	WeakTimeSliderController.Pin()->SetScrubPosition(WeakTimeSliderController.Pin()->GetPlayRange().GetLowerBoundValue());
+	WeakTimeSliderController.Pin()->SetScrubPosition(WeakTimeSliderController.Pin()->GetPlayRange().GetLowerBoundValue(), /*bEvaluate*/ true);
 }
 
 void FCurveEditor::JumpToEnd()
@@ -784,7 +888,17 @@ void FCurveEditor::JumpToEnd()
 		return;
 	}
 
-	WeakTimeSliderController.Pin()->SetScrubPosition(WeakTimeSliderController.Pin()->GetPlayRange().GetUpperBoundValue());
+	const bool bInsetDisplayFrame = IsInputSnappingEnabled();
+
+	FFrameRate TickResolution = WeakTimeSliderController.Pin()->GetTickResolution();
+	FFrameRate DisplayRate = WeakTimeSliderController.Pin()->GetDisplayRate();
+
+	// Calculate an offset from the end to go to. If they have snapping on (and the scrub style is a block) the last valid frame is represented as one
+	// whole display rate frame before the end, otherwise we just subtract a single frame which matches the behavior of hitting play and letting it run to the end.
+	FFrameTime OneFrame = bInsetDisplayFrame ? FFrameRate::TransformTime(FFrameTime(1), DisplayRate, TickResolution) : FFrameTime(1);
+	FFrameTime NewTime = WeakTimeSliderController.Pin()->GetPlayRange().GetUpperBoundValue() - OneFrame;
+
+	WeakTimeSliderController.Pin()->SetScrubPosition(NewTime, /*bEvaluate*/ true);
 }
 
 void FCurveEditor::SetSelectionRangeStart()
@@ -835,6 +949,18 @@ void FCurveEditor::ClearSelectionRange()
 	WeakTimeSliderController.Pin()->SetSelectionRange(TRange<FFrameNumber>::Empty());
 }
 
+void FCurveEditor::SelectAllKeys()
+{		
+	for (FCurveModelID ID : GetEditedCurves())
+	{
+		if (FCurveModel* Curve = FindCurve(ID))
+		{
+			TArray<FKeyHandle> KeyHandles;
+			Curve->GetKeys(*this, TNumericLimits<double>::Lowest(), TNumericLimits<double>::Max(), TNumericLimits<double>::Lowest(), TNumericLimits<double>::Max(), KeyHandles);
+			Selection.Add(ID, ECurvePointType::Key, KeyHandles);
+		}
+	}
+}
 
 bool FCurveEditor::IsInputSnappingEnabled() const
 {
@@ -1466,6 +1592,54 @@ void FCurveEditor::StraightenSelection()
 bool FCurveEditor::CanFlattenOrStraightenSelection() const
 {
 	return Selection.Count() > 0;
+}
+
+void FCurveEditor::SetRandomCurveColorsForSelected()
+{
+	for (TPair<FCurveModelID, TUniquePtr<FCurveModel>>& CurvePair : CurveData)
+	{
+		if (FCurveModel* Curve = CurvePair.Value.Get())
+		{
+			UObject* Object = nullptr;
+			FString Name;
+			Curve->GetCurveColorObjectAndName(&Object, Name);
+			if (Object)
+			{
+				FLinearColor Color = UCurveEditorSettings::GetNextRandomColor();
+				Settings->SetCustomColor(Object->GetClass(), Name, Color);
+				Curve->SetColor(Color);
+			}
+		}
+	}
+}
+
+void FCurveEditor::SetCurveColorsForSelected()
+{
+	if (CurveData.Num() > 0)
+	{
+		TMap<FCurveModelID, TUniquePtr<FCurveModel>>::TIterator It = CurveData.CreateIterator();
+		FColorPickerArgs PickerArgs;
+		PickerArgs.bUseAlpha = false;
+		PickerArgs.InitialColorOverride = It->Value->GetColor();
+		PickerArgs.OnColorCommitted.BindLambda([this](FLinearColor NewColor) {
+			for (TPair<FCurveModelID, TUniquePtr<FCurveModel>>& CurvePair : CurveData)
+			{
+				if (FCurveModel* Curve = CurvePair.Value.Get())
+				{
+					UObject* Object = nullptr;
+					FString Name;
+					Curve->GetCurveColorObjectAndName(&Object, Name);
+					if (Object)
+					{
+						Settings->SetCustomColor(Object->GetClass(), Name, NewColor);
+						Curve->SetColor(NewColor);
+					}
+				}
+			}
+		});
+		
+		OpenColorPicker(PickerArgs);
+	}
 }
 
 bool FCurveEditor::IsToolActive(const FCurveEditorToolID InToolID) const

@@ -1,4 +1,4 @@
-package com.epicgames.ue4;
+package com.epicgames.unreal;
 
 //import android.os.Bundle;
 import android.util.Log;
@@ -77,7 +77,7 @@ public class FacebookLogin
 	{
         this.activity = activity;
 
-		FBLog = new Logger("UE4", "FB");
+		FBLog = new Logger("UE", "FB");
 		ActivityLog = InLog;
     } 
 

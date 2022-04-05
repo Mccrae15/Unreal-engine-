@@ -93,6 +93,16 @@ const TArray<UUserWidget*>& UListViewBase::GetDisplayedEntryWidgets() const
 	return EntryWidgetPool.GetActiveWidgets(); 
 }
 
+float UListViewBase::GetScrollOffset() const
+{
+	if (MyTableViewBase.IsValid())
+	{
+		return MyTableViewBase->GetScrollOffset();
+	}
+
+	return 0.0f;
+}
+
 TSharedRef<SWidget> UListViewBase::RebuildWidget()
 {
 	FText ErrorText;
@@ -101,7 +111,8 @@ TSharedRef<SWidget> UListViewBase::RebuildWidget()
 		ErrorText = LOCTEXT("Error_MissingEntryWidgetClass", "No EntryWidgetClass specified on this list.\nEven if doing custom stuff, this is always required as a fallback.");
 	}
 #if WITH_EDITOR
-	else
+	// if the BP was cooked already, then the ClassGeneratedBy will be null, so nothing to check
+	else if (!EntryWidgetClass->bCooked)
 	{
 		UBlueprint* EntryWidgetBP = Cast<UBlueprint>(EntryWidgetClass->ClassGeneratedBy);
 		if (!EntryWidgetBP)
@@ -123,6 +134,7 @@ TSharedRef<SWidget> UListViewBase::RebuildWidget()
 
 	MyTableViewBase = RebuildListWidget();
 	MyTableViewBase->SetIsScrollAnimationEnabled(bEnableScrollAnimation);
+	MyTableViewBase->SetIsRightClickScrollingEnabled(bEnableRightClickScrolling);
 	MyTableViewBase->SetFixedLineScrollOffset(bEnableFixedLineOffset ? TOptional<double>(FixedLineScrollOffset) : TOptional<double>());
 	MyTableViewBase->SetWheelScrollMultiplier(GetGlobalScrollAmount() * WheelScrollMultiplier);
 
@@ -145,6 +157,8 @@ void UListViewBase::SynchronizeProperties()
 	if (MyTableViewBase)
 	{
 		MyTableViewBase->SetIsScrollAnimationEnabled(bEnableScrollAnimation);
+		MyTableViewBase->SetIsRightClickScrollingEnabled(bEnableRightClickScrolling);
+		MyTableViewBase->SetAllowOverscroll(AllowOverscroll ? EAllowOverscroll::Yes : EAllowOverscroll::No);
 		MyTableViewBase->SetFixedLineScrollOffset(bEnableFixedLineOffset ? TOptional<double>(FixedLineScrollOffset) : TOptional<double>());
 		MyTableViewBase->SetWheelScrollMultiplier(GetGlobalScrollAmount() * WheelScrollMultiplier);
 	}

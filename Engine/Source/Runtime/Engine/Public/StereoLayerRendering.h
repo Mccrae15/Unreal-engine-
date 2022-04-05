@@ -38,12 +38,12 @@ public:
 
 		if (InQuadAdjust.IsBound())
 		{
-			SetShaderValue(RHICmdList, VS, InQuadAdjust, QuadSize);
+			SetShaderValue(RHICmdList, VS, InQuadAdjust, FVector2f(QuadSize));
 		}
 
 		if (InUVAdjust.IsBound())
 		{
-			FVector4 UVAdjust;
+			FVector4f UVAdjust;
 			UVAdjust.X = UVRect.Min.X;
 			UVAdjust.Y = UVRect.Min.Y;
 			UVAdjust.Z = UVRect.Max.X - UVRect.Min.X;
@@ -53,12 +53,12 @@ public:
 
 		if (InViewProjection.IsBound())
 		{
-			SetShaderValue(RHICmdList, VS, InViewProjection, ViewProjection);
+			SetShaderValue(RHICmdList, VS, InViewProjection, (FMatrix44f)ViewProjection);
 		}
 
 		if (InWorld.IsBound())
 		{
-			SetShaderValue(RHICmdList, VS, InWorld, World);
+			SetShaderValue(RHICmdList, VS, InWorld, (FMatrix44f)World);
 		}
 	}
 

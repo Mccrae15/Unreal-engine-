@@ -18,6 +18,7 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
 #include "Engine/CollisionProfile.h"
+#include "Misc/NetworkVersion.h"
 #include "BodySetupEnums.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "PhysicsEngine/PhysicsSettings.h"
@@ -35,7 +36,7 @@ FHitResult::FHitResult(class AActor* InActor, class UPrimitiveComponent* InCompo
 	ImpactPoint = HitLoc;
 	Normal = HitNorm;
 	ImpactNormal = HitNorm;
-	Actor = InActor;
+	HitObjectHandle = FActorInstanceHandle(InActor);
 	Component = InComponent;
 }
 
@@ -130,7 +131,17 @@ bool FHitResult::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSu
 	}
 
 	Ar << PhysMaterial;
-	Ar << Actor;
+
+	if (Ar.IsLoading() && Ar.EngineNetVer() < HISTORY_HITRESULT_INSTANCEHANDLE)
+	{
+		AActor* HitActor = nullptr;
+		Ar << HitActor;
+		HitObjectHandle = HitActor;
+	}
+	else
+	{
+		Ar << HitObjectHandle;
+	}
 	Ar << Component;
 	Ar << BoneName;
 	if (!bInvalidFaceIndex)
@@ -159,7 +170,7 @@ bool FHitResult::NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSu
 
 AActor* FOverlapResult::GetActor() const
 {
-	return Actor.Get();
+	return OverlapObjectHandle.FetchActor();
 }
 
 UPrimitiveComponent* FOverlapResult::GetComponent() const
@@ -167,6 +178,14 @@ UPrimitiveComponent* FOverlapResult::GetComponent() const
 	return Component.Get();
 }
 
+//////////////////////////////////////////////////////////////////////////
+// FCollisionQueryFlag
+
+FCollisionQueryFlag& FCollisionQueryFlag::Get()
+{
+	static FCollisionQueryFlag CollisionQueryFlag;
+	return CollisionQueryFlag;
+}
 
 //////////////////////////////////////////////////////////////////////////
 // FCollisionQueryParams

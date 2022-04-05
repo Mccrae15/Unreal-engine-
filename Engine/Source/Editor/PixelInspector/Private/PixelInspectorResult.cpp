@@ -81,7 +81,7 @@ namespace PixelInspector
 		}
 		Depth = BufferDepthValue[0].R;
 	}
-	void PixelInspectorResult::DecodeHDR(TArray<FLinearColor> &BufferHDRValue)
+	void PixelInspectorResult::DecodeHDR(TArray<FLinearColor> &BufferHDRValue, bool bHasAlphaChannel)
 	{
 		if (BufferHDRValue.Num() <= 0)
 		{
@@ -91,6 +91,11 @@ namespace PixelInspector
 		}
 		HdrLuminance = BufferHDRValue[0].GetLuminance() * OneOverPreExposure;
 		HdrColor = BufferHDRValue[0] * OneOverPreExposure;
+		if (!bHasAlphaChannel)
+		{
+			//Set the alpha to 1.0 as the default value
+			HdrColor.A = 1.0f;
+		}
 	}
 
 	void PixelInspectorResult::DecodeBufferData(TArray<FColor> &BufferAValue, TArray<FColor> &BufferBCDEValue, bool AllowStaticLighting)
@@ -269,6 +274,8 @@ namespace PixelInspector
 			return EMaterialShadingModel::MSM_SingleLayerWater;
 		case PIXEL_INSPECTOR_SHADINGMODELID_THIN_TRANSLUCENT:
 			return EMaterialShadingModel::MSM_ThinTranslucent;
+		case PIXEL_INSPECTOR_SHADINGMODELID_STRATA:
+			return EMaterialShadingModel::MSM_Strata;
 		};
 		return EMaterialShadingModel::MSM_DefaultLit;
 	}
@@ -314,8 +321,9 @@ namespace PixelInspector
 		case EMaterialShadingModel::MSM_DefaultLit:
 		case EMaterialShadingModel::MSM_SingleLayerWater:
 		case EMaterialShadingModel::MSM_ThinTranslucent:
+		case EMaterialShadingModel::MSM_Strata:
 		{
-			SubSurfaceColor = FVector(0.0f);
+			SubSurfaceColor = FVector3f(0.0f);
 			Opacity = 0.0f;
 		}
 		break;
@@ -351,7 +359,7 @@ namespace PixelInspector
 		break;
 		case EMaterialShadingModel::MSM_Cloth:
 		{
-			SubSurfaceColor = FVector(InCustomData.X, InCustomData.Y, InCustomData.Z);
+			SubSurfaceColor = FVector3f(InCustomData.X, InCustomData.Y, InCustomData.Z);
 			Cloth = InCustomData.W;
 		}
 		break;

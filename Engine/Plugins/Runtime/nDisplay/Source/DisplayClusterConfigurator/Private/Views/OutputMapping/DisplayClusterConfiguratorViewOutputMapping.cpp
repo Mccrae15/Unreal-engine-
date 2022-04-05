@@ -3,10 +3,10 @@
 #include "Views/OutputMapping/DisplayClusterConfiguratorViewOutputMapping.h"
 
 #include "DisplayClusterConfiguratorBlueprintEditor.h"
-#include "DisplayClusterConfiguratorCommands.h"
 #include "Interfaces/IDisplayClusterConfigurator.h"
 #include "Views/OutputMapping/DisplayClusterConfiguratorGraph.h"
 #include "Views/OutputMapping/DisplayClusterConfiguratorGraphSchema.h"
+#include "Views/OutputMapping/DisplayClusterConfiguratorOutputMappingCommands.h"
 #include "Views/OutputMapping/SDisplayClusterConfiguratorViewOutputMapping.h"
 #include "Views/OutputMapping/SDisplayClusterConfiguratorGraphEditor.h"
 
@@ -110,15 +110,29 @@ void FDisplayClusterConfiguratorViewOutputMapping::BindCommands()
 {
 	CommandList = MakeShareable(new FUICommandList);
 
-	const FDisplayClusterConfiguratorCommands& Commands = IDisplayClusterConfigurator::Get().GetCommands();
+	const FDisplayClusterConfiguratorOutputMappingCommands& Commands = FDisplayClusterConfiguratorOutputMappingCommands::Get();
 
-	MAP_TOGGLE_COMMAND(Commands.ToggleWindowInfo, OutputMappingSettings.bShowWindowInfo);
-	MAP_TOGGLE_COMMAND(Commands.ToggleWindowCornerImage, OutputMappingSettings.bShowWindowCornerImage);
+	CommandList->MapAction(
+		Commands.ShowWindowInfo, 
+		FExecuteAction::CreateLambda([this]() { OutputMappingSettings.bShowWindowInfo = true; OutputMappingSettings.bShowWindowCornerImage = true; }), 
+		FCanExecuteAction(),
+		FIsActionChecked::CreateLambda([this]() { return OutputMappingSettings.bShowWindowInfo && OutputMappingSettings.bShowWindowCornerImage; }));
+
+	CommandList->MapAction(
+		Commands.ShowWindowCorner, 
+		FExecuteAction::CreateLambda([this]() { OutputMappingSettings.bShowWindowInfo = false; OutputMappingSettings.bShowWindowCornerImage = true; }), 
+		FCanExecuteAction(),
+		FIsActionChecked::CreateLambda([this]() { return !OutputMappingSettings.bShowWindowInfo && OutputMappingSettings.bShowWindowCornerImage; }));
+	
+	CommandList->MapAction(
+		Commands.ShowWindowNone, 
+		FExecuteAction::CreateLambda([this]() { OutputMappingSettings.bShowWindowInfo = false; OutputMappingSettings.bShowWindowCornerImage = false; }), 
+		FCanExecuteAction(),
+		FIsActionChecked::CreateLambda([this]() { return !OutputMappingSettings.bShowWindowInfo && !OutputMappingSettings.bShowWindowCornerImage; }));
+
 	MAP_TOGGLE_COMMAND(Commands.ToggleOutsideViewports, OutputMappingSettings.bShowOutsideViewports);
 	MAP_TOGGLE_COMMAND(Commands.ToggleClusterItemOverlap, OutputMappingSettings.bAllowClusterItemOverlap);
 	MAP_TOGGLE_COMMAND(Commands.ToggleLockClusterNodesInHosts, OutputMappingSettings.bKeepClusterNodesInHosts);
-	MAP_TOGGLE_COMMAND(Commands.ToggleLockViewports, OutputMappingSettings.bLockViewports);
-	MAP_TOGGLE_COMMAND(Commands.ToggleLockClusterNodes, OutputMappingSettings.bLockClusterNodes);
 	MAP_TOGGLE_COMMAND(Commands.ToggleTintViewports, OutputMappingSettings.bTintSelectedViewports);
 
 	MAP_TOGGLE_COMMAND(Commands.ToggleAdjacentEdgeSnapping, NodeAlignmentSettings.bSnapAdjacentEdges);

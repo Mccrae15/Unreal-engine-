@@ -21,6 +21,7 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/SToolTip.h"
 #include "Widgets/Layout/SSplitter.h"
@@ -39,6 +40,7 @@
 #include "Widgets/SInvalidationPanel.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/Navigation/SBreadcrumbTrail.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/SWidgetSnapshotVisualizer.h"
 #include "WidgetSnapshotService.h"
@@ -123,6 +125,10 @@ namespace WidgetReflectorIcon
 	static const FName FocusPicking = "Icon.FocusPicking";
 	static const FName HitTestPicking = "Icon.HitTestPicking";
 	static const FName VisualPicking = "Icon.VisualPicking";
+	static const FName Ellipsis = "Icon.Ellipsis";
+	static const FName Filter = "Icon.Filter";
+	static const FName LoadSnapshot = "Icon.LoadSnapshot";
+	static const FName TakeSnapshot = "Icon.TakeSnapshot";
 }
 
 enum class EWidgetPickingMode : uint8
@@ -264,8 +270,11 @@ private:
 	/** Clear previous selection and set the selection to the live widget. */
 	void SelectLiveWidget( TSharedPtr<const SWidget> InWidget );
 
-	/** Set the current selected node as the root of the tree. */
-	void SetSelectedAsReflectorTreeRoot();
+	/** Set the given nodes as the root of the tree. */
+	void SetNodesAsReflectorTreeRoot(TArray<TSharedRef<FWidgetReflectorNodeBase>> RootNodes);
+
+	/** Filter the selected nodes before setting them as root. */
+	TArray<TSharedRef<FWidgetReflectorNodeBase>> FilterSelectedToSetAsReflectorTreeRoot(TArray<TSharedRef<FWidgetReflectorNodeBase>> RootNodes);
 
 	/** Is there any selected node in the reflector tree. */
 	bool DoesReflectorTreeHasSelectedItem() const { return SelectedNodes.Num() > 0; }
@@ -278,8 +287,8 @@ private:
 
 	//~ Handle for the picking button
 	ECheckBoxState HandleGetPickingButtonChecked() const;
-	void HandlePickingModeStateChanged(ECheckBoxState NewValue);
-	const FSlateBrush* HandleGetPickingModeImage() const;
+	void HandlePickingModeStateChanged();
+	FSlateIcon HandleGetPickingModeImage() const;
 	FText HandleGetPickingModeText() const;
 	TSharedRef<SWidget> HandlePickingModeContextMenu();	
 	void HandlePickButtonClicked(EWidgetPickingMode InPickingMode);
@@ -314,7 +323,7 @@ private:
 	bool IsTakeSnapshotButtonEnabled() const;
 
 	/** Callback for clicking the "Take Snapshot" button. */
-	FReply HandleTakeSnapshotButtonClicked();
+	void HandleTakeSnapshotButtonClicked();
 
 	/** Build option menu for snaphot. */
 	TSharedRef<SWidget> HandleSnapshotOptionsTreeContextMenu();
@@ -330,7 +339,7 @@ private:
 
 #if SLATE_REFLECTOR_HAS_DESKTOP_PLATFORM
 	/** Callback for clicking the "Load Snapshot" button. */
-	FReply HandleLoadSnapshotButtonClicked();
+	void HandleLoadSnapshotButtonClicked();
 #endif // SLATE_REFLECTOR_HAS_DESKTOP_PLATFORM
 
 	/** Called to update the list of available snapshot targets */
@@ -341,6 +350,9 @@ private:
 
 	/** Called when the list of available snapshot targets changes */
 	void OnAvailableSnapshotTargetsChanged();
+
+	/** Called when a node is set as root to create the breadcrum trail */
+	void CreateCrumbTrailForNode(TSharedRef<FWidgetReflectorNodeBase> InReflectorNode);
 
 	/** Get the display name of the currently selected snapshot target */
 	FText GetSelectedSnapshotTargetDisplayName() const;
@@ -364,6 +376,15 @@ private:
 	TSharedRef<SWidget> HandleReflectorTreeContextMenu();
 	TSharedPtr<SWidget> HandleReflectorTreeContextMenuPtr();
 
+	/** Callback for when an item in the reflector tree is clicked on. */
+	void HandleReflectorTreeOnMouseClick(TSharedRef<FWidgetReflectorNodeBase> InReflectorNode);
+
+	/** Callback for when a crumb is clicked on. */
+	void HandleBreadcrumbOnClick(const TSharedRef<FWidgetReflectorNodeBase>& InReflectorNode);
+
+	/** Callback for when the menu of a crumb delimiter is requested. */
+	TSharedRef< SWidget > HandleBreadcrumbDelimiterMenu(const TSharedRef<FWidgetReflectorNodeBase>& InReflectorNode);
+
 	/** Callback for when the reflector tree header list changed. */
 	void HandleReflectorTreeHiddenColumnsListChanged();
 
@@ -373,8 +394,16 @@ private:
 	/** Show the start of the UMG tree. */
 	void HandleStartTreeWithUMG();
 
+	/** Should we display the breadcrumb trail. */
+	EVisibility HandleIsBreadcrumbVisible() const;
+
 	/** Should we show only the UMG tree. */
 	bool HandleIsStartTreeWithUMGEnabled() const { return bFilterReflectorTreeRootWithUMG; }
+
+	bool HandleHasPendingActions() const { return !bIsPendingDelayedSnapshot; }
+
+	/** Determine the text of Take Snapshot button */
+	FText HandleGetTakeSnapshotText() const { return bIsPendingDelayedSnapshot ? LOCTEXT("CancelSnapshotButtonText", "Cancel Snapshot") : LOCTEXT("TakeSnapshotButtonText", "Take Snapshot"); }
 
 private:
 	TSharedPtr<FTabManager> TabManager;
@@ -383,6 +412,7 @@ private:
 	TSharedPtr<SReflectorTree> ReflectorTree;
 	TArray<FString> HiddenReflectorTreeColumns;
 
+	TSharedPtr<SBreadcrumbTrail<TSharedRef<FWidgetReflectorNodeBase>> > BreadCrumb;
 	/** Node that are currently selected */
 	TArray<TSharedRef<FWidgetReflectorNodeBase>> SelectedNodes;
 	/** The original path of the widget picked. It may include node that are now hidden by the filter */
@@ -436,6 +466,7 @@ void SWidgetReflector::Construct( const FArguments& InArgs )
 	HiddenReflectorTreeColumns.Add(SReflectorTreeWidgetItem::NAME_Volatile.ToString());
 	HiddenReflectorTreeColumns.Add(SReflectorTreeWidgetItem::NAME_HasActiveTimer.ToString());
 	HiddenReflectorTreeColumns.Add(SReflectorTreeWidgetItem::NAME_ActualSize.ToString());
+	HiddenReflectorTreeColumns.Add(SReflectorTreeWidgetItem::NAME_LayerId.ToString());
 
 	LoadSettings();
 
@@ -531,7 +562,7 @@ void SWidgetReflector::Construct( const FArguments& InArgs )
 	TabManager->SetOnPersistLayout(FTabManager::FOnPersistLayout::CreateRaw(this, &SWidgetReflector::HandleTabManagerPersistLayout));
 
 	RegisterTrackedTabSpawner(WidgetReflectorTabID::SlateOptions, FOnSpawnTab::CreateSP(this, &SWidgetReflector::SpawnSlateOptionWidgetTab))
-		.SetDisplayName(LOCTEXT("OptionsTab", "Slate Debug Options"));
+		.SetDisplayName(LOCTEXT("OptionsTab", "Toolbar"));
 
 	RegisterTrackedTabSpawner(WidgetReflectorTabID::WidgetHierarchy, FOnSpawnTab::CreateSP(this, &SWidgetReflector::SpawnWidgetHierarchyTab))
 		.SetDisplayName(LOCTEXT("WidgetHierarchyTab", "Widget Hierarchy"));
@@ -583,6 +614,9 @@ void SWidgetReflector::Construct( const FArguments& InArgs )
 		"Window"
 		);
 
+	const TSharedRef<SWidget> MenuWidget = MenuBarBuilder.MakeWidget();
+	TabManager->SetMenuMultiBox(MenuBarBuilder.GetMultiBox(), MenuWidget);
+
 	this->ChildSlot
 	[
 		SNew(SBorder)
@@ -595,7 +629,7 @@ void SWidgetReflector::Construct( const FArguments& InArgs )
 			.AutoHeight()
 			.Padding(FMargin(0.0f, 4.0f, 0.0f, 0.0f))
 			[
-				MenuBarBuilder.MakeWidget()
+				MenuWidget
 			]
 			
 			+ SVerticalBox::Slot()
@@ -638,7 +672,7 @@ void SWidgetReflector::HandlePullDownWindowMenu(FMenuBuilder& MenuBuilder)
 TSharedRef<SDockTab> SWidgetReflector::SpawnSlateOptionWidgetTab(const FSpawnTabArgs& Args)
 {
 	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
-		.Label(LOCTEXT("WidgetHierarchyTab", "Widget Hierarchy"))
+		.Label(LOCTEXT("ToolbarTab", "Toolbar"))
 		.ShouldAutosize(true)
 		[
 			SNew(SSlateOptions)
@@ -648,6 +682,8 @@ TSharedRef<SDockTab> SWidgetReflector::SpawnSlateOptionWidgetTab(const FSpawnTab
 
 TSharedRef<SDockTab> SWidgetReflector::SpawnWidgetHierarchyTab(const FSpawnTabArgs& Args)
 {
+	FSlimHorizontalToolBarBuilder ToolbarBuilderGlobal(TSharedPtr<const FUICommandList>(), FMultiBoxCustomization::None);
+
 	TArray<FName> HiddenColumnsList;
 	HiddenColumnsList.Reserve(HiddenReflectorTreeColumns.Num());
 	for (const FString& Item : HiddenReflectorTreeColumns)
@@ -667,7 +703,116 @@ TSharedRef<SDockTab> SWidgetReflector::SpawnWidgetHierarchyTab(const FSpawnTabAr
 		.Text(this, &SWidgetReflector::GetSelectedSnapshotTargetDisplayName)
 	];
 
+	FSlateIcon EmptyIcon(FWidgetReflectorStyle::GetStyleSetName(), "Icon.Empty");
+	ToolbarBuilderGlobal.BeginSection("Picking");
+	{
+
+		FTextBuilder TooltipText;
+		ToolbarBuilderGlobal.AddToolBarButton(
+			FUIAction(
+				FExecuteAction::CreateSP(this, &SWidgetReflector::HandlePickingModeStateChanged),
+				FCanExecuteAction::CreateSP(this,&SWidgetReflector::HandleHasPendingActions),
+				FGetActionCheckState::CreateSP(this, &SWidgetReflector::HandleGetPickingButtonChecked)
+			),
+			NAME_None,
+			MakeAttributeSP(this,&SWidgetReflector::HandleGetPickingModeText),
+			TooltipText.ToText(),
+			MakeAttributeSP(this, &SWidgetReflector::HandleGetPickingModeImage),
+			EUserInterfaceActionType::ToggleButton
+		);
+
+		ToolbarBuilderGlobal.AddComboButton(
+			FUIAction(
+				FExecuteAction(),
+				FCanExecuteAction::CreateSP(this, &SWidgetReflector::HandleHasPendingActions),
+				FGetActionCheckState()
+			),
+			FOnGetContent::CreateSP(this, &SWidgetReflector::HandlePickingModeContextMenu),
+			FText::GetEmpty(),
+			TooltipText.ToText(),
+			EmptyIcon,
+			true
+		);
+
+
+	}
+	ToolbarBuilderGlobal.EndSection();
+
+	ToolbarBuilderGlobal.BeginSection("Filter");
+	{
+
+		FTextBuilder TooltipText;
+
+		ToolbarBuilderGlobal.AddComboButton(
+			FUIAction(
+				FExecuteAction(),
+				FCanExecuteAction::CreateSP(this, &SWidgetReflector::HandleHasPendingActions),
+				FGetActionCheckState()
+			),
+			FOnGetContent::CreateSP(this, &SWidgetReflector::HandleReflectorTreeContextMenu),
+			LOCTEXT("FilterLabel", "Filter"),
+			TooltipText.ToText(),
+			FSlateIcon(FWidgetReflectorStyle::GetStyleSetName(), WidgetReflectorIcon::Filter),
+			false
+		);
+
+	}
+	ToolbarBuilderGlobal.EndSection();
+
+	ToolbarBuilderGlobal.AddWidget(SNew(SSpacer),NAME_None,true,HAlign_Right);
+	ToolbarBuilderGlobal.BeginSection("Option");
+	{
+
+		FTextBuilder TooltipText;
+
+		ToolbarBuilderGlobal.AddToolBarButton(
+			FUIAction(
+				FExecuteAction::CreateSP(this, &SWidgetReflector::HandleTakeSnapshotButtonClicked),
+				FCanExecuteAction::CreateSP(this, &SWidgetReflector::IsTakeSnapshotButtonEnabled),
+				FGetActionCheckState()
+			),
+			NAME_None,
+			MakeAttributeSP(this, &SWidgetReflector::HandleGetTakeSnapshotText),
+			TooltipText.ToText(),
+			FSlateIcon(FWidgetReflectorStyle::GetStyleSetName(), WidgetReflectorIcon::TakeSnapshot),
+			EUserInterfaceActionType::Button
+		);
+
+		ToolbarBuilderGlobal.AddComboButton(
+			FUIAction(
+				FExecuteAction(),
+				FCanExecuteAction::CreateSP(this, &SWidgetReflector::HandleHasPendingActions),
+				FGetActionCheckState()
+			),
+			FOnGetContent::CreateSP(this, &SWidgetReflector::HandleSnapshotOptionsTreeContextMenu),
+			LOCTEXT("OptionsLabel", "Options"),
+			TooltipText.ToText(),
+			FSlateIcon(FWidgetReflectorStyle::GetStyleSetName(), WidgetReflectorIcon::Ellipsis),
+			false
+		);
+
+#if SLATE_REFLECTOR_HAS_DESKTOP_PLATFORM
+
+		ToolbarBuilderGlobal.AddToolBarButton(
+			FUIAction(
+				FExecuteAction::CreateSP(this, &SWidgetReflector::HandleLoadSnapshotButtonClicked),
+				FCanExecuteAction::CreateSP(this, &SWidgetReflector::HandleHasPendingActions),
+				FGetActionCheckState()
+			),
+			NAME_None,
+			LOCTEXT("LoadSnapshotButtonText", "Load Snapshot"),
+			TooltipText.ToText(),
+			FSlateIcon(FWidgetReflectorStyle::GetStyleSetName(), WidgetReflectorIcon::LoadSnapshot),
+			EUserInterfaceActionType::Button
+		);
+
+#endif
+	}
+	ToolbarBuilderGlobal.EndSection();
+	ToolbarBuilderGlobal.SetStyle(&FAppStyle::Get(), "SlimToolBar");
+
 	TSharedRef<SDockTab> SpawnedTab = SNew(SDockTab)
+
 		.Label(LOCTEXT("WidgetHierarchyTab", "Widget Hierarchy"))
 		//.OnCanCloseTab_Lambda([]() { return false; }) // Can't prevent this as it stops the editor from being able to close while the widget reflector is open
 		[
@@ -678,126 +823,31 @@ TSharedRef<SDockTab> SWidgetReflector::SpawnWidgetHierarchyTab(const FSpawnTabAr
 			.Padding(FMargin(0.0f, 2.0f))
 			[
 				SNew(SHorizontalBox)
-
-				+SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(FMargin(5.0f, 0.0f))
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot()
-					.FillWidth(1.f)
-					[
-						SNew(SCheckBox)
-						.Style(FWidgetReflectorStyle::Get(), "CheckBoxNoHover")
-						.Padding(FMargin(4.f, 0.f))
-						.HAlign(HAlign_Left)
-						.IsChecked(this, &SWidgetReflector::HandleGetPickingButtonChecked)
-						.IsEnabled_Lambda([this]() { return !bIsPendingDelayedSnapshot; })
-						.OnCheckStateChanged(this, &SWidgetReflector::HandlePickingModeStateChanged)
-						[
-							SNew(SBox)
-							.MinDesiredWidth(175.f)
-							.VAlign(VAlign_Center)
-							[
-								SNew(SHorizontalBox)
-								+ SHorizontalBox::Slot()
-								.AutoWidth()
-								[
-									SNew(SImage)
-									.Image(this, &SWidgetReflector::HandleGetPickingModeImage)
-								]
-								+ SHorizontalBox::Slot()
-								.AutoWidth()
-								.Padding(10.f, 4.f, 4.f, 4.f)
-								[
-									SNew(STextBlock)
-									.Text(this, &SWidgetReflector::HandleGetPickingModeText)
-								]
-							]
-						]
-					]
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						SNew(SComboButton)
-						.ButtonStyle(FWidgetReflectorStyle::Get(), "Button")
-						.IsEnabled_Lambda([this]() { return !bIsPendingDelayedSnapshot; })
-						.HAlign(HAlign_Center)
-						.VAlign(VAlign_Center)
-						.OnGetMenuContent(this, &SWidgetReflector::HandlePickingModeContextMenu)
-					]
-                ]
-
 				+ SHorizontalBox::Slot()
-				.AutoWidth()
 				[
-					SNew(SComboButton)
-					.ButtonStyle(FWidgetReflectorStyle::Get(), "Button")
-					.IsEnabled_Lambda([this]() { return !bIsPendingDelayedSnapshot; })
-					.HAlign(HAlign_Center)
-					.VAlign(VAlign_Center)
-					.OnGetMenuContent(this, &SWidgetReflector::HandleReflectorTreeContextMenu)
-					.ButtonContent()
-					[
-						SNew(STextBlock)
-						.Text(LOCTEXT("FilterLabel", "Filter "))
-						.ColorAndOpacity(FLinearColor::White)
-					]
+					ToolbarBuilderGlobal.MakeWidget()
 				]
-
-				+SHorizontalBox::Slot()
+			]
+			
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(FMargin(2.0f, 2.0f))
+			[
+				SNew(SVerticalBox)
+				.Visibility(this, &SWidgetReflector::HandleIsBreadcrumbVisible)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
 				[
-					SNew(SSpacer)
+					SNew(SSeparator).Thickness(5.f)
 				]
-
-				+SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(FMargin(5.0f, 0.0f))
+				+ SVerticalBox::Slot()
 				[
-					SNew(SHorizontalBox)
-
-					+SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						// Button that controls taking a snapshot of the current window(s)
-						SNew(SButton)
-						.VAlign(VAlign_Center)
-						.IsEnabled(this, &SWidgetReflector::IsTakeSnapshotButtonEnabled)
-						.OnClicked(this, &SWidgetReflector::HandleTakeSnapshotButtonClicked)
-						[
-							SNew(STextBlock)
-							.Text_Lambda([this]() { return bIsPendingDelayedSnapshot ? LOCTEXT("CancelSnapshotButtonText", "Cancel Snapshot") : LOCTEXT("TakeSnapshotButtonText", "Take Snapshot"); })
-						]
-					]
-
-					+SHorizontalBox::Slot()
-					.Padding(FMargin(5.0f, 0.0f))
-					.AutoWidth()
-					[
-						SNew(SComboButton)
-						.IsEnabled_Lambda([this]() { return !bIsPendingDelayedSnapshot; })
-						.OnGetMenuContent(this, &SWidgetReflector::HandleSnapshotOptionsTreeContextMenu)
-						.ButtonContent()
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("OptionsLabel", "Options"))
-						]
-					]
-#if SLATE_REFLECTOR_HAS_DESKTOP_PLATFORM
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					[
-						// Button that controls loading a saved snapshot
-						SNew(SButton)
-						.VAlign(VAlign_Center)
-						.IsEnabled_Lambda([this]() { return !bIsPendingDelayedSnapshot; })
-						.OnClicked(this, &SWidgetReflector::HandleLoadSnapshotButtonClicked)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("LoadSnapshotButtonText", "Load Snapshot"))
-						]
-					]
-#endif // SLATE_REFLECTOR_HAS_DESKTOP_PLATFORM
+					SAssignNew(BreadCrumb, SBreadcrumbTrail<TSharedRef<FWidgetReflectorNodeBase>>)
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+					.DelimiterImage(FAppStyle::Get().GetBrush("Icons.ChevronRight"))
+					.TextStyle(FAppStyle::Get(), "NormalText")
+					.OnCrumbClicked(this, &SWidgetReflector::HandleBreadcrumbOnClick)
+					.GetCrumbMenuContent(this, &SWidgetReflector::HandleBreadcrumbDelimiterMenu)
 				]
 			]
 
@@ -816,6 +866,7 @@ TSharedRef<SDockTab> SWidgetReflector::SpawnWidgetHierarchyTab(const FSpawnTabAr
 					.OnGetChildren(this, &SWidgetReflector::HandleReflectorTreeGetChildren)
 					.OnSelectionChanged(this, &SWidgetReflector::HandleReflectorTreeSelectionChanged)
 					.OnContextMenuOpening(this, &SWidgetReflector::HandleReflectorTreeContextMenuPtr)
+					.OnMouseButtonClick(this, &SWidgetReflector::HandleReflectorTreeOnMouseClick)
 					.HighlightParentNodesForSelection(true)
 					.HeaderRow
 					(
@@ -826,7 +877,7 @@ TSharedRef<SDockTab> SWidgetReflector::SpawnWidgetHierarchyTab(const FSpawnTabAr
 
 						+SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_WidgetName)
 						.DefaultLabel(LOCTEXT("WidgetName", "Widget Name"))
-						.FillWidth(0.80f)
+						.FillWidth(1.f)
 						.ShouldGenerateWidget(true)
 
 						+SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_ForegroundColor)
@@ -837,38 +888,42 @@ TSharedRef<SDockTab> SWidgetReflector::SpawnWidgetHierarchyTab(const FSpawnTabAr
 						+SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_Visibility)
 						.DefaultLabel(LOCTEXT("Visibility", "Visibility"))
 						.DefaultTooltip(LOCTEXT("VisibilityTooltip", "Visibility"))
-						.ManualWidth(125.0f)
+						.FillSized(125.0f)
 						
 						+ SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_Enabled)
 						.DefaultLabel(LOCTEXT("Enabled", "Enabled"))
 						.DefaultTooltip(LOCTEXT("EnabledToolTip", "Enabled"))
-						.ManualWidth(60.0f)
+						.FillSized(60.0f)
 
 						+ SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_Focusable)
 						.DefaultLabel(LOCTEXT("Focus", "Focus"))
 						.DefaultTooltip(LOCTEXT("FocusableTooltip", "Focusability (Note that for hit-test directional navigation to work it must be Focusable and \"Visible\"!)"))
-						.ManualWidth(60.0f)
+						.FillSized(60.0f)
 
 						+ SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_HasActiveTimer)
 						.DefaultLabel(LOCTEXT("HasActiveTimer", "Timer"))
 						.DefaultTooltip(LOCTEXT("HasActiveTimerTooltip", "Has Active Timer"))
-						.ManualWidth(60.0f)
+						.FillSized(60.0f)
 
 						+SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_Clipping)
 						.DefaultLabel(LOCTEXT("Clipping", "Clipping" ))
-						.ManualWidth(100.0f)
+						.FillSized(100.0f)
+
+						+ SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_LayerId)
+						.DefaultLabel(LOCTEXT("LayerId", "LayerId"))
+						.FillSized(35.f)
 
 						+ SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_ActualSize)
 						.DefaultLabel(LOCTEXT("ActualSize", "Size"))
-						.ManualWidth(100.0f)
+						.FillSized(100.0f)
 
 						+SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_WidgetInfo)
 						.DefaultLabel(LOCTEXT("Source", "Source" ))
-						.ManualWidth(200.f)
+						.FillSized(200.f)
 
 						+SHeaderRow::Column(SReflectorTreeWidgetItem::NAME_Address)
 						.DefaultLabel( LOCTEXT("Address", "Address") )
-						.ManualWidth(170.0f)
+						.FillSized(170.0f)
 					)
 				]
 			]
@@ -933,7 +988,7 @@ TSharedRef<SDockTab> SWidgetReflector::SpawnWidgetDetails(const FSpawnTabArgs& A
 		DetailsViewArgs.bShowOptions = true;
 		DetailsViewArgs.bAllowMultipleTopLevelObjects = false;
 		DetailsViewArgs.bAllowFavoriteSystem = true;
-		DetailsViewArgs.bShowActorLabel = false;
+		DetailsViewArgs.bShowObjectLabel = false;
 		DetailsViewArgs.bHideSelectionTip = true;
 	}
 	TSharedRef<IDetailsView> PropertyView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
@@ -1069,6 +1124,7 @@ void SWidgetReflector::SetUIMode(const EWidgetReflectorUIMode InNewMode)
 			CloseTab(WidgetReflectorTabID::SnapshotWidgetPicker);
 		}
 	}
+	BreadCrumb->ClearCrumbs();
 }
 
 
@@ -1127,7 +1183,7 @@ int32 SWidgetReflector::Visualize( const FWidgetPath& InWidgetsToVisualize, FSla
 		}
 	}
 
-	const bool bAttemptingToVisualizeReflector = InWidgetsToVisualize.ContainsWidget(ReflectorTree.ToSharedRef());
+	const bool bAttemptingToVisualizeReflector = InWidgetsToVisualize.ContainsWidget(ReflectorTree.Get());
 
 	if (PickingMode == EWidgetPickingMode::Drawable)
 	{
@@ -1227,16 +1283,51 @@ void SWidgetReflector::UpdateFilteredTreeRoot()
 	}
 }
 
-void SWidgetReflector::SetSelectedAsReflectorTreeRoot()
+void SWidgetReflector::SetNodesAsReflectorTreeRoot(TArray<TSharedRef<FWidgetReflectorNodeBase>> RootNodes)
 {
-	if (SelectedNodes.Num() > 0)
+	TArray<TSharedRef<FWidgetReflectorNodeBase>> FilteredNodes = FilterSelectedToSetAsReflectorTreeRoot(RootNodes);
+	if (FilteredNodes.Num() > 0)
 	{
 		FilteredTreeRoot.Reset();
-		FilteredTreeRoot.Append(SelectedNodes);
+		FilteredTreeRoot.Append(FilteredNodes);
 		ReflectorTree->RequestTreeRefresh();
+		TSharedPtr<FWidgetReflectorNodeBase> FirstNodeParent = FilteredNodes[0]->GetParentNode();
+		if (FirstNodeParent.IsValid())
+		{
+			CreateCrumbTrailForNode(FirstNodeParent.ToSharedRef());
+		}
+		else
+		{
+			BreadCrumb->ClearCrumbs();
+		}
 	}
 }
 
+TArray<TSharedRef<FWidgetReflectorNodeBase>> SWidgetReflector::FilterSelectedToSetAsReflectorTreeRoot(TArray<TSharedRef<FWidgetReflectorNodeBase>> RootNodes)
+{
+	if (RootNodes.Num() > 1)
+	{
+		TArray<TSharedRef<FWidgetReflectorNodeBase>> ShallowestNodes;
+		ShallowestNodes = RootNodes;
+		for (int32 index = ShallowestNodes.Num() -1 ; index >= 0; index--)
+		{
+			if (ShallowestNodes.Contains(ShallowestNodes[index]->GetParentNode()))
+			{
+				ShallowestNodes.RemoveAt(index);
+			}
+		}
+		TSharedPtr<FWidgetReflectorNodeBase> FirstNodeParent = ShallowestNodes[0]->GetParentNode();
+		for (int32 index = ShallowestNodes.Num() - 1; index >= 0; index--)
+		{
+			if (ShallowestNodes[index]->GetParentNode() != FirstNodeParent)
+			{
+				ShallowestNodes.RemoveAt(index);
+			}
+		}
+		return ShallowestNodes;
+	}
+	return RootNodes;
+}
 TSharedPtr<IToolTip> SWidgetReflector::GenerateToolTipForReflectorNode( TWeakPtr<FWidgetReflectorNodeBase> InReflectorNode ) const
 {
 	if (TSharedPtr<FWidgetReflectorNodeBase> ReflectorNode = InReflectorNode.Pin())
@@ -1391,7 +1482,7 @@ ECheckBoxState SWidgetReflector::HandleGetPickingButtonChecked() const
 	return PickingMode != EWidgetPickingMode::None ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
-void SWidgetReflector::HandlePickingModeStateChanged(ECheckBoxState NewValue)
+void SWidgetReflector::HandlePickingModeStateChanged()
 {
 	if (PickingMode == EWidgetPickingMode::None)
 	{
@@ -1408,21 +1499,23 @@ void SWidgetReflector::HandlePickingModeStateChanged(ECheckBoxState NewValue)
 	}
 }
 
-const FSlateBrush* SWidgetReflector::HandleGetPickingModeImage() const
+ FSlateIcon SWidgetReflector::HandleGetPickingModeImage() const
 {
+
+
 	switch (LastPickingMode)
 	{
 	case EWidgetPickingMode::Focus:
-		return FWidgetReflectorStyle::Get().GetBrush(WidgetReflectorIcon::FocusPicking);
+		return FSlateIcon(FWidgetReflectorStyle::GetStyleSetName(), WidgetReflectorIcon::FocusPicking);
 	case EWidgetPickingMode::HitTesting:
-		return FWidgetReflectorStyle::Get().GetBrush(WidgetReflectorIcon::HitTestPicking);
+		return FSlateIcon(FWidgetReflectorStyle::GetStyleSetName(), WidgetReflectorIcon::HitTestPicking);
 	case EWidgetPickingMode::Drawable:
-		return FWidgetReflectorStyle::Get().GetBrush(WidgetReflectorIcon::VisualPicking);
+		return FSlateIcon(FWidgetReflectorStyle::GetStyleSetName(), WidgetReflectorIcon::VisualPicking);
 	case EWidgetPickingMode::None:
 	default:
-		return nullptr;
+		return FSlateIcon(FWidgetReflectorStyle::GetStyleSetName(), "Icon.Empty");
 	}
-	return nullptr;
+	return FSlateIcon(FWidgetReflectorStyle::GetStyleSetName(), "Icon.Empty");
 }
 
 FText SWidgetReflector::HandleGetPickingModeText() const
@@ -1520,7 +1613,7 @@ bool SWidgetReflector::IsTakeSnapshotButtonEnabled() const
 	return SelectedSnapshotTargetInstanceId.IsValid() && !RemoteSnapshotRequestId.IsValid();
 }
 
-FReply SWidgetReflector::HandleTakeSnapshotButtonClicked()
+void SWidgetReflector::HandleTakeSnapshotButtonClicked()
 {
 	if (!bIsPendingDelayedSnapshot)
 	{
@@ -1540,7 +1633,6 @@ FReply SWidgetReflector::HandleTakeSnapshotButtonClicked()
 		TimeOfScheduledSnapshot = -1.0f;
 	}
 
-	return FReply::Handled();
 }
 
 TSharedRef<SWidget> SWidgetReflector::HandleSnapshotOptionsTreeContextMenu()
@@ -1722,7 +1814,7 @@ void SWidgetReflector::HandleRemoteSnapshotReceived(const TArray<uint8>& InSnaps
 
 #if SLATE_REFLECTOR_HAS_DESKTOP_PLATFORM
 
-FReply SWidgetReflector::HandleLoadSnapshotButtonClicked()
+void SWidgetReflector::HandleLoadSnapshotButtonClicked()
 {
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
 
@@ -1752,8 +1844,6 @@ FReply SWidgetReflector::HandleLoadSnapshotButtonClicked()
 			WidgetSnapshotVisualizer->SnapshotDataUpdated();
 		}
 	}
-
-	return FReply::Handled();
 }
 
 #endif // SLATE_REFLECTOR_HAS_DESKTOP_PLATFORM
@@ -1926,6 +2016,9 @@ void SWidgetReflector::HandleReflectorTreeSelectionChanged( TSharedPtr<FWidgetRe
 
 TSharedRef<SWidget> SWidgetReflector::HandleReflectorTreeContextMenu()
 {
+	// We spawn a large tooltip, close it immediately to prevent context menu from hiding.
+	FSlateApplication::Get().CloseToolTip();
+
 	const bool bShouldCloseWindowAfterMenuSelection = true;
 	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, nullptr);
 
@@ -1936,7 +2029,7 @@ TSharedRef<SWidget> SWidgetReflector::HandleReflectorTreeContextMenu()
 		LOCTEXT("SetAsRootTooltip", "Set selected node as the root of the graph"),
 		FSlateIcon(),
 		FUIAction(
-			FExecuteAction::CreateSP(this, &SWidgetReflector::SetSelectedAsReflectorTreeRoot),
+			FExecuteAction::CreateSP(this, &SWidgetReflector::SetNodesAsReflectorTreeRoot, SelectedNodes),
 			FCanExecuteAction::CreateSP(this, &SWidgetReflector::DoesReflectorTreeHasSelectedItem)
 		));
 
@@ -1986,9 +2079,80 @@ void SWidgetReflector::HandleReflectorTreeHiddenColumnsListChanged()
 	}
 #endif
 }
+void SWidgetReflector::CreateCrumbTrailForNode(TSharedRef<FWidgetReflectorNodeBase> InReflectorNode)
+{
+	FWidgetPath PathToWidget;
+	TSharedRef<SWidget> SelectedNodeAsWidget = InReflectorNode.Get().GetLiveWidget().ToSharedRef();
+	TArray<TSharedRef<FWidgetReflectorNodeBase>> PickedNodePath;
+	FWidgetReflectorNodeUtils::FindLiveWidget(ReflectorTreeRoot, SelectedNodeAsWidget, PickedNodePath);
+	BreadCrumb->ClearCrumbs();
+	if (PickedNodePath.Num() > 1)
+	{
+		for (int32 i = 0; i < PickedNodePath.Num(); i++)
+		{
+			TSharedPtr<SWidget> Parent = PickedNodePath[i]->GetLiveWidget();
+			FText WidgetType = FWidgetReflectorNodeUtils::GetWidgetType(Parent);
+			BreadCrumb->PushCrumb(WidgetType, PickedNodePath[i]);
+		}
+	}
+}
+void SWidgetReflector::HandleReflectorTreeOnMouseClick(TSharedRef<FWidgetReflectorNodeBase> InReflectorNode)
+{
+	const FModifierKeysState ModKeyState = FSlateApplication::Get().GetModifierKeys();
+
+	if (ModKeyState.IsLeftAltDown())
+	{
+		if (SelectedNodes.Num() > 0)
+		{
+			TArray<TSharedRef<FWidgetReflectorNodeBase>> RootNodes;
+			RootNodes.Add(InReflectorNode);
+			SetNodesAsReflectorTreeRoot(RootNodes);
+		}
+	}
+}
+
+void SWidgetReflector::HandleBreadcrumbOnClick(const TSharedRef<FWidgetReflectorNodeBase>& InReflectorNode)
+{
+	FilteredTreeRoot.Reset();
+	FilteredTreeRoot.Add(InReflectorNode);
+	BreadCrumb->PopCrumb();
+	ReflectorTree->RequestTreeRefresh();
+}
+
+TSharedRef< SWidget > SWidgetReflector::HandleBreadcrumbDelimiterMenu(const TSharedRef<FWidgetReflectorNodeBase>& InReflectorNode)
+{
+	const bool bShouldCloseWindowAfterMenuSelection = true;
+	FMenuBuilder MenuBuilder(bShouldCloseWindowAfterMenuSelection, nullptr);
+
+	bool bHasFilteredTreeRoot = ReflectorTreeRoot != FilteredTreeRoot;
+	TArray<TSharedRef< FWidgetReflectorNodeBase>> Children = InReflectorNode->GetChildNodes();
+	for (int32 ChildIndex = 0; ChildIndex < Children.Num(); ++ChildIndex)
+	{
+		TSharedPtr<SWidget> ChildWidget = Children[ChildIndex]->GetLiveWidget();
+		FText WidgetType = FWidgetReflectorNodeUtils::GetWidgetType(ChildWidget);
+		TArray<TSharedRef<FWidgetReflectorNodeBase>> RootNodes;
+		RootNodes.Add(Children[ChildIndex]);
+		MenuBuilder.AddMenuEntry(
+			WidgetType,
+			FText::GetEmpty(),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateSP(this, &SWidgetReflector::SetNodesAsReflectorTreeRoot, RootNodes)
+			
+			));
+	}
+
+	return MenuBuilder.MakeWidget();
+}
+
+EVisibility SWidgetReflector::HandleIsBreadcrumbVisible() const
+{
+	return BreadCrumb->HasCrumbs() ? EVisibility::Visible : EVisibility::Collapsed;
+}
 
 void SWidgetReflector::HandleResetFilteredTreeRoot()
 {
+	BreadCrumb->ClearCrumbs();
 	bFilterReflectorTreeRootWithUMG = false;
 	UpdateFilteredTreeRoot();
 	ReflectorTree->RequestTreeRefresh();

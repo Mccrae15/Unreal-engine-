@@ -4,7 +4,6 @@
 #include "IRemoteControlUIModule.h"
 
 #include "CoreMinimal.h"	
-#include "Input/Reply.h"
 #include "LevelEditor.h"
 #include "Modules/ModuleManager.h"
 #include "PropertyEditorDelegates.h"
@@ -45,6 +44,9 @@ public:
 	virtual void RegisterMetadataCustomization(FName MetadataKey, FOnCustomizeMetadataEntry OnCustomizeCallback) override;
 	virtual void UnregisterMetadataCustomization(FName MetadataKey) override;
 	virtual URemoteControlPreset* GetActivePreset() const override;
+	virtual void RegisterWidgetFactoryForType(UScriptStruct* RemoteControlEntityType, const FOnGenerateRCWidget& OnGenerateRCWidgetDelegate) override;
+	virtual void UnregisterWidgetFactoryForType(UScriptStruct* RemoteControlEntityType) override;
+
 	//~ End IRemoteControlUIModule interface
 
 	/**
@@ -66,6 +68,8 @@ public:
 	static const FName EntityDetailsTabName;
 	static const FName RemoteControlPanelTabName;
 
+	TSharedPtr<SRCPanelTreeNode> GenerateEntityWidget(const FGenerateWidgetArgs& Args);
+
 private:
 	/**
 	 * The status of a property.
@@ -82,6 +86,10 @@ private:
 	void RegisterAssetTools();
 	void UnregisterAssetTools();
 
+	//~ Remote Control Commands
+	void BindRemoteControlCommands();
+	void UnbindRemoteControlCommands();
+
 	//~ Context menu extenders
 	void RegisterContextMenuExtender();
 	void UnregisterContextMenuExtender();
@@ -90,20 +98,38 @@ private:
 	void RegisterDetailRowExtension();
 	void UnregisterDetailRowExtension();
 
-	/** Handle creating the property row extensions.  */
-	void HandleCreatePropertyRowExtension(const FOnGenerateGlobalRowExtensionArgs& InArgs, FOnGenerateGlobalRowExtensionArgs::EWidgetPosition InWidgetPosition, TArray<TSharedRef<SWidget>>& OutExtensions);
+	//~ Common Events
+	void RegisterEvents();
+	void UnregisterEvents();
 
-	/** Handle getting the icon displayed in the property row extension. */
-	const FSlateBrush* OnGetExposedIcon(TSharedPtr<IPropertyHandle> Handle) const;
+	//~ Toggle Edit Mode RC Command.
+	void ToggleEditMode();
+	bool CanToggleEditMode() const;	
+	bool IsInEditMode() const;
+
+	/** Handle creating the row extensions.  */
+	void HandleCreatePropertyRowExtension(const FOnGenerateGlobalRowExtensionArgs& InArgs, TArray<FPropertyRowExtensionButton>& OutExtensions);
+
+	/** Handle getting the icon displayed in the row extension. */
+	FSlateIcon OnGetExposedIcon(const FRCExposesPropertyArgs& InArgs) const;
 
 	/** Handle getting the expose button visibility. */
-	EVisibility OnGetExposeButtonVisibility(TSharedPtr<IPropertyHandle> Handle) const;
+	bool CanToggleExposeProperty(const FRCExposesPropertyArgs InArgs) const;
+
+	/** Is the property currently exposed? */
+	ECheckBoxState GetPropertyExposedCheckState(const FRCExposesPropertyArgs InArgs) const;
 
 	/** Handle clicking the expose button. */
-	FReply OnToggleExposeProperty(TSharedPtr<IPropertyHandle> Handle);
+	void OnToggleExposeProperty(const FRCExposesPropertyArgs InArgs);
 
 	/** Returns whether a property is exposed, unexposed or unexposable. */
-	EPropertyExposeStatus GetPropertyExposeStatus(const TSharedPtr<IPropertyHandle>& Handle) const;
+	EPropertyExposeStatus GetPropertyExposeStatus(const FRCExposesPropertyArgs& InArgs) const;
+
+	/** Handle getting the icon displayed in the row extension. */
+	FSlateIcon OnGetOverrideMaterialsIcon(const FRCExposesPropertyArgs& InArgs) const;
+
+	/** Handle getting the override materials button visibility. */
+	bool IsStaticOrSkeletalMaterialProperty(const FRCExposesPropertyArgs InArgs) const;
 
 	/** Handle adding an option to get the object path in the actors' context menu. */
 	void AddGetPathOption(class FMenuBuilder& MenuBuilder, AActor* SelectedActor);
@@ -111,8 +137,13 @@ private:
 	/** Handle adding the menu extender for the actors. */
 	TSharedRef<FExtender> ExtendLevelViewportContextMenuForRemoteControl(const TSharedRef<FUICommandList> CommandList, TArray<AActor*> SelectedActors);
 
-	/** Returns whether a given property should have an exposed icon. */
-	bool ShouldDisplayExposeIcon(const TSharedRef<IPropertyHandle>& PropertyHandle) const;
+	/** Returns whether a given extension args should have an exposed icon. */
+	bool ShouldDisplayExposeIcon(const FRCExposesPropertyArgs& InArgs) const;
+
+	/** Return true if the extension args from remote control panel */
+	bool ShouldSkipOwnPanelProperty(const FRCExposesPropertyArgs& InArgs) const;
+
+	bool IsAllowedOwnerObjects(TArray<UObject*> InOuterObjects) const;
 
 	//~ Handle struct details customizations for common RC types.
 	void RegisterStructCustomizations();
@@ -122,6 +153,24 @@ private:
 	void RegisterSettings();
 	void UnregisterSettings();
 	void OnSettingsModified(UObject*, struct FPropertyChangedEvent&);
+
+	void RegisterWidgetFactories();
+
+	/** Returns expose button tooltip based on exposed state */
+	FText GetExposePropertyButtonTooltip(const FRCExposesPropertyArgs InArgs) const;
+
+	/** Returns expose button text based on exposed state */
+	FText GetExposePropertyButtonText(const FRCExposesPropertyArgs InArgs) const;
+	
+	/** Attempts to replace the static or skeletal materials with their corressponding overrides. */
+	void TryOverridingMaterials(const FRCExposesPropertyArgs InArgs);
+
+	/** Return Selected Mesh Component by given OwnerObject and MaterialInterface */
+	UMeshComponent* GetSelectedMeshComponentToBeModified(UObject* InOwnerObject,  UMaterialInterface* InOriginalMaterial);
+
+	/** Attempts to refresh the details panel. */
+	void RefreshPanels();
+
 private:
 	/** The custom actions added to the actor context menu. */
 	TSharedPtr<class FRemoteControlPresetActions> RemoteControlPresetActions;
@@ -134,6 +183,12 @@ private:
 
 	/** Holds a weak ptr to the active control panel. */
 	TWeakPtr<SRemoteControlPanel> WeakActivePanel;
+	
+	/** Holds a weak ptr to the owner tree node of the active details panel. */
+	TWeakPtr<IDetailTreeNode> WeakDetailsTreeNode;
+	
+	/** Holds a shared ptr to the global details panel. */
+	TSharedPtr<IDetailsView> SharedDetailsPanel;
 
 	/** Delegate called to gather extensions added externally to the panel. */
 	FOnGenerateExtensions ExtensionsGenerator;
@@ -144,4 +199,5 @@ private:
 	/** Map of metadata key to customization handler. */
 	TMap<FName, FOnCustomizeMetadataEntry> ExternalEntityMetadataCustomizations;
 
+	TMap<TWeakObjectPtr<UScriptStruct>, FOnGenerateRCWidget> GenerateWidgetDelegates;
 };

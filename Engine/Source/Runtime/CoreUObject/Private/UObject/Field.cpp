@@ -29,9 +29,8 @@ Field.cpp: Defines FField property system fundamentals
 #include "UObject/Stack.h"
 #include "Misc/PackageName.h"
 #include "UObject/ObjectResource.h"
-#include "UObject/LinkerSave.h"
 #include "UObject/Interface.h"
-#include "Misc/HotReloadInterface.h"
+#include "UObject/LinkerLoad.h"
 #include "UObject/LinkerPlaceholderClass.h"
 #include "UObject/LinkerPlaceholderFunction.h"
 #include "UObject/StructScriptLoader.h"
@@ -478,10 +477,10 @@ void FField::BeginDestroy()
 
 void FField::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	UObject* UObjectOwner = GetOwnerUObject();
-	if (UObjectOwner)
+	UObject* OwnerUObject = Owner.ToUObject();
+	if (OwnerUObject)
 	{
-		Collector.AddReferencedObject(UObjectOwner);
+		Collector.AddReferencedObject(OwnerUObject);
 	}
 }
 
@@ -754,11 +753,7 @@ FText FField::GetToolTipText(bool bShortTooltip) const
 	const FString Key = GetFullGroupName(false);
 	if (!FText::FindText(Namespace, Key, /*OUT*/LocalizedToolTip, &NativeToolTip))
 	{
-		if (NativeToolTip.IsEmpty())
-		{
-			NativeToolTip = FName::NameToDisplayString(FFieldDisplayNameHelper::Get(*this), IsA<FBoolProperty>());
-		}
-		else
+		if (!NativeToolTip.IsEmpty())
 		{
 			static const FString DoxygenSee(TEXT("@see"));
 			static const FString TooltipSee(TEXT("See:"));
@@ -768,6 +763,16 @@ FText FField::GetToolTipText(bool bShortTooltip) const
 			}
 		}
 		LocalizedToolTip = FText::FromString(NativeToolTip);
+	}
+
+	const FText DisplayName = FText::FromString(FName::NameToDisplayString(FFieldDisplayNameHelper::Get(*this), IsA<FBoolProperty>()));
+	if (LocalizedToolTip.IsEmpty())
+	{
+		LocalizedToolTip = DisplayName;
+	}
+	else
+	{
+		LocalizedToolTip = FText::Join(FText::FromString(TEXT(":") LINE_TERMINATOR), DisplayName, LocalizedToolTip);
 	}
 
 	return LocalizedToolTip;
@@ -967,7 +972,7 @@ void FField::PostDuplicate(const FField& InField)
 FField* FField::Duplicate(const FField* InField, FFieldVariant DestOwner, const FName DestName, EObjectFlags FlagMask, EInternalObjectFlags InternalFlagsMask)
 {
 	check(InField);
-	FField* NewField = InField->GetClass()->Construct(DestOwner, DestName == NAME_None ? InField->GetFName() : DestName, InField->GetFlags() & FlagMask);
+	FField* NewField = InField->GetClass()->Construct(DestOwner, (DestName == NAME_None) ? InField->GetFName() : DestName, InField->GetFlags() & FlagMask);
 	NewField->PostDuplicate(*InField);
 	return NewField;
 }
@@ -1045,7 +1050,14 @@ FField* FField::CreateFromUField(UField* InField)
 	}
 	else if (UFieldClass == UObjectProperty::StaticClass())
 	{
-		NewField = new FObjectProperty(InField);
+		if (FLinkerLoad::IsImportLazyLoadEnabled())
+		{
+			NewField = new FObjectPtrProperty(InField);
+		}
+		else
+		{
+			NewField = new FObjectProperty(InField);
+		}
 	}
 	else if (UFieldClass == UWeakObjectProperty::StaticClass())
 	{

@@ -21,6 +21,13 @@ static FAutoConsoleVariableRef CVarUseMobileLODBiasOnDesktopES31(
 );
 #endif
 
+static int32 GDefaultNoRefBias = 0;
+static FAutoConsoleVariableRef CVarDefaultNoRefBias(
+	TEXT("r.Streaming.DefaultNoRefLODBias"),
+	GDefaultNoRefBias,
+	TEXT("The default LOD bias for no-ref meshes"),
+	ECVF_Scalability);
+
 FStreamingRenderAsset::FStreamingRenderAsset(
 	UStreamableRenderAsset* InRenderAsset,
 	const int32* NumStreamedMips,
@@ -67,7 +74,7 @@ void FStreamingRenderAsset::UpdateStaticData(const FRenderAssetStreamingSettings
 
 		if (IsTexture())
 		{
-			if (!ensureMsgf(FMath::IsWithin<int32>(LODGroup, 0, TEXTUREGROUP_MAX), TEXT("Invalid LODGroup %d for %s"), LODGroup, *RenderAsset->GetName()))
+			if (!ensureMsgf(FMath::IsWithin(LODGroup, 0, (int32)TEXTUREGROUP_MAX), TEXT("Invalid LODGroup %d for %s"), LODGroup, *RenderAsset->GetName()))
 			{
 				LODGroup = 0;
 			}
@@ -209,6 +216,17 @@ void FStreamingRenderAsset::UpdateDynamicData(const int32* NumStreamedMips, int3
 #endif
 		}
 
+		int32 LocalNoRefBias = 0;
+		if (RenderAssetType == EStreamableRenderAssetType::StaticMesh || RenderAssetType == EStreamableRenderAssetType::SkeletalMesh)
+		{
+			LocalNoRefBias = RenderAsset->GetCurrentNoRefStreamingLODBias();
+			if (LocalNoRefBias < 0)
+			{
+				LocalNoRefBias = GDefaultNoRefBias;
+			}
+		}
+		NoRefLODBias = LocalNoRefBias;
+
 		// If the optional mips are not available, or if we shouldn't load them now, clamp the possible mips requested. 
 		// (when the non-optional mips are not yet loaded, loading optional mips generates cross files requests).
 		// This is not bullet proof though since the texture/mesh could have a pending stream-out request.
@@ -239,6 +257,7 @@ void FStreamingRenderAsset::UpdateDynamicData(const int32* NumStreamedMips, int3
 		RequestedMips = 0;
 		MinAllowedMips = 0;
 		MaxAllowedMips = 0;
+		NoRefLODBias = 0;
 		OptionalMipsState = EOptionalMipsState::OMS_NotCached;
 		LastRenderTime = FLT_MAX;	
 	}
@@ -297,18 +316,21 @@ int32 FStreamingRenderAsset::GetWantedMipsFromSize(float Size, float InvMaxScree
 	else
 	{
 		check(RenderAssetType == EStreamableRenderAssetType::StaticMesh || RenderAssetType == EStreamableRenderAssetType::SkeletalMesh || RenderAssetType == EStreamableRenderAssetType::LandscapeMeshMobile);
-		if (Size != FLT_MAX)
+		if (Size == FLT_MAX)
 		{
-			const float NormalizedSize = Size * InvMaxScreenSizeOverAllViews;
-			for (int32 NumMips = MinAllowedMips; NumMips <= MaxAllowedMips; ++NumMips)
+			return MaxAllowedMips;
+		}
+		int32 Result = MaxAllowedMips;
+		const float NormalizedSize = Size * InvMaxScreenSizeOverAllViews;
+		for (int32 NumMips = MinAllowedMips; NumMips <= MaxAllowedMips; ++NumMips)
+		{
+			if (GetNormalizedScreenSize(NumMips) >= NormalizedSize)
 			{
-				if (GetNormalizedScreenSize(NumMips) >= NormalizedSize)
-				{
-					return NumMips;
-				}
+				Result = NumMips;
+				break;
 			}
 		}
-		return MaxAllowedMips;
+		return bUseUnkownRefHeuristic ? FMath::Max(Result - NoRefLODBias, MinAllowedMips) : Result;;
 	}
 }
 
@@ -489,12 +511,23 @@ bool FStreamingRenderAsset::UpdateLoadOrderPriority_Async(int32 MinMipForSplitRe
 	{
 		const bool bIsVisible			= ResidentMips < VisibleWantedMips; // Otherwise it means we are loading mips that are only useful for non visible primitives.
 		const bool bMustLoadFirst		= bForceFullyLoadHeuristic || bIsTerrainTexture || bLoadWithHigherPriority;
-		const bool bMipIsImportant		= WantedMips - ResidentMips > (bLooksLowRes ? 1 : 2);
 
-		if (bIsVisible)				LoadOrderPriority += 1024;
-		if (bMustLoadFirst)			LoadOrderPriority += 512; 
-		if (bMipIsImportant)		LoadOrderPriority += 256;
-		if (!bIsVisible)			LoadOrderPriority += FMath::Clamp<int32>(255 - (int32)LastRenderTime, 1, 255);
+		if (WantedMips > RequestedMips)
+		{
+			const bool bMipIsImportant = WantedMips - ResidentMips > (bLooksLowRes ? 1 : 2);
+
+			if (bIsVisible)				LoadOrderPriority += 1024;
+			if (bMustLoadFirst)			LoadOrderPriority += 512;
+			if (bMipIsImportant)		LoadOrderPriority += 256;
+			if (!bIsVisible)			LoadOrderPriority += FMath::Clamp<int32>(255 - (int32)LastRenderTime, 1, 255);
+		}
+		else // WantedMips < RequestedMips
+		{
+			// For stream out operations, unload mips that we will be less important to load quickly.
+			// Visibility is less relevant here because stream in requests might come from a visibily change.
+			if (!bMustLoadFirst)		LoadOrderPriority += 1024;
+			if (!bIsVisible)			LoadOrderPriority += 512;
+		}
 
 		return true;
 	}

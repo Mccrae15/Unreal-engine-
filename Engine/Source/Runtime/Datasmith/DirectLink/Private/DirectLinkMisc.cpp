@@ -76,5 +76,4 @@ void DumpSceneSnapshot(FSceneSnapshot& SceneSnapshot, const FString& BaseFileNam
 	}
 }
 
-
 } // namespace DirectLink

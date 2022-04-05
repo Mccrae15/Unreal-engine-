@@ -68,8 +68,8 @@ class GAMEPLAYABILITIES_API UAbilitySystemGlobals : public UObject
 	/** Returns data used to initialize attributes to their default values */
 	FAttributeSetInitter* GetAttributeSetInitter() const;
 
-	/** Searches the passed in actor for an ability system component, will use the AbilitySystemInterface */
-	static UAbilitySystemComponent* GetAbilitySystemComponentFromActor(const AActor* Actor, bool LookForComponent=false);
+	/** Searches the passed in actor for an ability system component, will use IAbilitySystemInterface or fall back to a component search */
+	static UAbilitySystemComponent* GetAbilitySystemComponentFromActor(const AActor* Actor, bool LookForComponent=true);
 
 	/** Should allocate a project specific AbilityActorInfo struct. Caller is responsible for deallocation */
 	virtual FGameplayAbilityActorInfo* AllocAbilityActorInfo() const;
@@ -87,6 +87,9 @@ class GAMEPLAYABILITIES_API UAbilitySystemGlobals : public UObject
 
 	/** Returns true if the ability system should try to predict gameplay effects applied to non local targets */
 	bool ShouldPredictTargetGameplayEffects() const;
+
+	/** Returns true if tags granted to owners from ability activations should be replicated */
+	bool ShouldReplicateActivationOwnedTags() const;
 
 	/** Searches the passed in class to look for a UFunction implementing the gameplay cue tag, sets MatchedTag to the exact tag found */
 	UFunction* GetGameplayCueFunction(const FGameplayTag &Tag, UClass* Class, FName &MatchedTag);
@@ -175,6 +178,10 @@ class GAMEPLAYABILITIES_API UAbilitySystemGlobals : public UObject
 
 	/** Global place to accumulate debug strings for ability system component. Used when we fill up client side debug string immediately, and then wait for server to send server strings */
 	TArray<FString>	AbilitySystemDebugStrings;
+
+	/** Set to true if you want the "ShowDebug AbilitySystem" cheat to use the hud's debug target instead of the ability system's debug target. */
+	UPROPERTY(config)
+	bool bUseDebugTargetFromHud;
 
 	/** Helper functions for applying global scaling to various ability system tasks. This isn't meant to be a shipping feature, but to help with debugging and interation via cvar AbilitySystem.GlobalAbilityScale */
 	static void NonShipping_ApplyGlobalAbilityScaler_Rate(float& Rate);
@@ -288,8 +295,20 @@ class GAMEPLAYABILITIES_API UAbilitySystemGlobals : public UObject
 	/** Path where the engine will load gameplay cue notifies from */
 	virtual TArray<FString> GetGameplayCueNotifyPaths() { return GameplayCueNotifyPaths; }
 
+	/** Add a path to the GameplayCueNotifyPaths array. */
+	virtual void AddGameplayCueNotifyPath(const FString& InPath);
+
+	/**
+	 * Remove the given gameplay cue notify path from the GameplayCueNotifyPaths array.
+	 *
+	 * @return Number of paths removed.
+	 */
+	virtual int32 RemoveGameplayCueNotifyPath(const FString& InPath);
+
 	UPROPERTY()
 	FNetSerializeScriptStructCache	TargetDataStructCache;
+
+	void AddAttributeDefaultTables(const TArray<FSoftObjectPath>& AttribDefaultTableNames);
 
 protected:
 
@@ -368,6 +387,13 @@ protected:
 	/** Set to true if you want clients to try to predict gameplay effects done to targets. If false it will only predict self effects */
 	UPROPERTY(config)
 	bool PredictTargetGameplayEffects;
+
+	/** 
+	 * Set to true if you want tags granted to owners from ability activations to be replicated. If false, ActivationOwnedTags are only applied locally. 
+	 * This should only be disabled for legacy game code that depends on non-replication of ActivationOwnedTags.
+	 */
+	UPROPERTY(config)
+	bool ReplicateActivationOwnedTags;
 
 	/** Manager for all gameplay cues */
 	UPROPERTY()

@@ -86,7 +86,7 @@ namespace GeometryCollectionTest
 	GTEST_TEST(AllTraits, GeometryCollection_EventBufferTest_Event_Handler)
 	{
 		Chaos::FEventManager EventManager(Chaos::EMultiBufferMode::Single);
-		Chaos::FPBDRigidsSolver* Solver = FChaosSolversModule::GetModule()->CreateSolver(nullptr);
+		Chaos::FPBDRigidsSolver* Solver = FChaosSolversModule::GetModule()->CreateSolver(nullptr, /*AsyncDt=*/-1);
 
 		MyEventHandler HandlerTest(EventManager);
 		MyEventHandler AnotherHandlerTest(EventManager);
@@ -95,7 +95,7 @@ namespace GeometryCollectionTest
 		EventTestData TestData;
 		EventTestData* TestDataPtr = &TestData;
 		EventManager.template RegisterEvent<EventTestData>(CustomEvent1, [TestDataPtr]
-		(const auto* Solver, EventTestData& MyData)
+		(const auto* Solver, EventTestData& MyData, bool ResetData)
 		{
 			MyData = *TestDataPtr;
 		});
@@ -104,7 +104,7 @@ namespace GeometryCollectionTest
 		TArray<EventTestData> TestArrayData;
 		TArray<EventTestData>* TestDataPtr2 = &TestArrayData;
 		EventManager.template RegisterEvent<TArray<EventTestData>>(CustomEvent2, [TestDataPtr2]
-		(const auto* Solver, TArray<EventTestData>& MyData)
+		(const auto* Solver, TArray<EventTestData>& MyData, bool ResetData)
 		{
 			MyData = *TestDataPtr2;
 		});

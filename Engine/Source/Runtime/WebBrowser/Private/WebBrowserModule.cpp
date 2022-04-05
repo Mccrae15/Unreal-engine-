@@ -7,6 +7,12 @@
 #include "Misc/EngineVersion.h"
 #if WITH_CEF3
 #	include "CEF3Utils.h"
+#	if PLATFORM_MAC
+#		include "include/wrapper/cef_library_loader.h"
+#		define CEF3_BIN_DIR TEXT("Binaries/ThirdParty/CEF3")
+#		define CEF3_FRAMEWORK_DIR CEF3_BIN_DIR TEXT("/Mac/Chromium Embedded Framework.framework")
+#		define CEF3_FRAMEWORK_EXE CEF3_FRAMEWORK_DIR TEXT("/Chromium Embedded Framework")
+#	endif
 #endif
 
 DEFINE_LOG_CATEGORY(LogWebBrowser);
@@ -14,7 +20,7 @@ DEFINE_LOG_CATEGORY(LogWebBrowser);
 static FWebBrowserSingleton* WebBrowserSingleton = nullptr;
 
 FWebBrowserInitSettings::FWebBrowserInitSettings()
-	: ProductVersion(FString::Printf(TEXT("%s/%s UnrealEngine/%s Chrome/59.0.3071.15"), FApp::GetProjectName(), FApp::GetBuildVersion(), *FEngineVersion::Current().ToString()))
+	: ProductVersion(FString::Printf(TEXT("%s/%s UnrealEngine/%s Chrome/84.0.4147.38"), FApp::GetProjectName(), FApp::GetBuildVersion(), *FEngineVersion::Current().ToString()))
 {
 }
 
@@ -26,8 +32,18 @@ private:
 	virtual void ShutdownModule() override;
 
 public:
+	virtual bool IsWebModuleAvailable() const override;
 	virtual IWebBrowserSingleton* GetSingleton() override;
 	virtual bool CustomInitialize(const FWebBrowserInitSettings& WebBrowserInitSettings) override;
+
+private:
+#if WITH_CEF3
+	bool bLoadedCEFModule = false;
+#if PLATFORM_MAC
+	// Dynamically load the CEF framework library.
+	CefScopedLibraryLoader *CEFLibraryLoader = nullptr;
+#endif
+#endif
 };
 
 IMPLEMENT_MODULE( FWebBrowserModule, WebBrowser );
@@ -35,7 +51,21 @@ IMPLEMENT_MODULE( FWebBrowserModule, WebBrowser );
 void FWebBrowserModule::StartupModule()
 {
 #if WITH_CEF3
-	CEF3Utils::LoadCEF3Modules();
+	bLoadedCEFModule = CEF3Utils::LoadCEF3Modules(true);
+#if PLATFORM_MAC
+	// Dynamically load the CEF framework library into this dylibs memory space.
+	// CEF now loads function pointers at runtime so we need this to be dylib specific.
+	CEFLibraryLoader = new CefScopedLibraryLoader();
+	
+	FString CefFrameworkPath(FPaths::Combine(*FPaths::EngineDir(), CEF3_FRAMEWORK_EXE));
+	CefFrameworkPath = FPaths::ConvertRelativePathToFull(CefFrameworkPath);
+	
+	bool bLoaderInitialized = false;
+	if (!CEFLibraryLoader->LoadInMain(TCHAR_TO_ANSI(*CefFrameworkPath)))
+	{
+			UE_LOG(LogWebBrowser, Error, TEXT("Chromium loader initialization failed"));
+	}
+#endif // PLATFORM_MAC
 #endif
 }
 
@@ -49,6 +79,10 @@ void FWebBrowserModule::ShutdownModule()
 
 #if WITH_CEF3
 	CEF3Utils::UnloadCEF3Modules();
+#if PLATFORM_MAC
+	delete CEFLibraryLoader;
+	CEFLibraryLoader = nullptr;
+#endif // PLATFORM_MAC
 #endif
 }
 
@@ -70,3 +104,14 @@ IWebBrowserSingleton* FWebBrowserModule::GetSingleton()
 	}
 	return WebBrowserSingleton;
 }
+
+
+bool FWebBrowserModule::IsWebModuleAvailable() const
+{
+#if WITH_CEF3
+	return bLoadedCEFModule;
+#else
+	return true;
+#endif
+}
+

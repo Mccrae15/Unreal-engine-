@@ -2,7 +2,7 @@
 
 #include "OculusUpdateSessionCallbackProxy.h"
 #include "OnlineSubsystemOculusPrivate.h"
-#include "UObject/CoreOnline.h"
+#include "Online/CoreOnline.h"
 #include "Online.h"
 #include "OnlineSessionInterfaceOculus.h"
 
@@ -31,7 +31,7 @@ void UOculusUpdateSessionCallbackProxy::Activate()
 
 		FOnlineSessionSettings Settings;
 		Settings.bShouldAdvertise = bShouldEnqueueInMatchmakingPool;
-		OculusSessionInterface->UpdateSession(GameSessionName, Settings);
+		OculusSessionInterface->UpdateSession(NAME_GameSession, Settings);
 	}
 	else
 	{

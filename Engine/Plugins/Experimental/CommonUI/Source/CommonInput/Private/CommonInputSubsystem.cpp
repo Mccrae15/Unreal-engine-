@@ -18,9 +18,15 @@
 #include "Engine/Engine.h"
 #include "Stats/Stats.h"
 
+#if NV_GEFORCENOW
+#include "GeForceNOWWrapper.h"
+#endif
+
 #if WITH_EDITOR
 #include "Settings/LevelEditorPlaySettings.h"
 #endif
+
+FPlatformInputSupportOverrideDelegate UCommonInputSubsystem::OnPlatformInputSupportOverride;
 
 /**
  * Helper class that is designed to fire before any UI has a chance to process input so that
@@ -42,13 +48,6 @@ public:
 	
 	virtual void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override
 	{
-#if PLATFORM_XBOXONE
-		//fall back to gamepad controls if the mouse is removed... seems to stop slate getting confused and preventing gamepad input
-		if( InputSubsystem.GetCurrentInputType() == ECommonInputType::MouseAndKeyboard && !FSlateApplication::Get().IsMouseAttached() )
-		{
-			InputSubsystem.SetCurrentInputType( ECommonInputType::Gamepad );
-		}
-#endif
 	}
 
 	virtual bool HandleKeyDownEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
@@ -144,6 +143,8 @@ public:
 		return InputMethodPermissions[(uint8)InputType];
 	}
 
+	FGamepadChangeDetectedEvent OnGamepadChangeDetected;
+
 private:
 	bool IsRelevantInput(FSlateApplication& SlateApp, const FInputEvent& InputEvent, const ECommonInputType DesiredInputType)
 	{
@@ -206,6 +207,28 @@ private:
 #endif
 
 		InputSubsystem.SetCurrentInputType(InputMethod);
+
+		// Try to auto-detect the type of gamepad
+		if ((InputMethod == ECommonInputType::Gamepad) && UCommonInputPlatformSettings::Get()->CanChangeGamepadType())
+		{
+			if (const FInputDeviceScope* DeviceScope = FInputDeviceScope::GetCurrent())
+			{
+				if ((DeviceScope->InputDeviceName != LastSeenGamepadInputDeviceName) || (DeviceScope->HardwareDeviceIdentifier != LastSeenGamepadHardwareDeviceIdentifier))
+				{
+					LastSeenGamepadInputDeviceName = DeviceScope->InputDeviceName;
+					LastSeenGamepadHardwareDeviceIdentifier = DeviceScope->HardwareDeviceIdentifier;
+
+					const FName GamepadInputType = InputSubsystem.GetCurrentGamepadName();
+					const FName BestGamepadType = UCommonInputPlatformSettings::Get()->GetBestGamepadNameForHardware(GamepadInputType, DeviceScope->InputDeviceName, DeviceScope->HardwareDeviceIdentifier);
+					if (BestGamepadType != GamepadInputType)
+					{
+						UE_LOG(LogCommonInput, Log, TEXT("UCommonInputSubsystem: Autodetect changed GamepadInputType to %s"), *BestGamepadType.ToString());
+						InputSubsystem.SetGamepadInputType(BestGamepadType);
+						OnGamepadChangeDetected.Broadcast(BestGamepadType);
+					}
+				}
+			}
+		}
 	}
 
 	ECommonInputType GetInputType(const FKey& Key)
@@ -247,6 +270,9 @@ private:
 	// The reasons we might be filtering input right now.
 	TMap<FName, bool> FilterInputTypeWithReasons[(uint8)ECommonInputType::Count];
 
+	FName LastSeenGamepadInputDeviceName;
+	FString LastSeenGamepadHardwareDeviceIdentifier;
+
 	friend class UCommonInputSubsystem;
 };
 
@@ -270,6 +296,7 @@ UCommonInputSubsystem* UCommonInputSubsystem::Get(const ULocalPlayer* LocalPlaye
 
 UCommonInputSubsystem::UCommonInputSubsystem()
 {
+	//@TODO: Project setting (should be done as another config var any platform can set tho)?
 //	// Uncomment this if we want mobile platforms to default to gamepad when gamepads are enabled.
 // #if PLATFORM_IOS
 //     bool bAllowControllers = false;
@@ -287,13 +314,16 @@ void UCommonInputSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 
 	FCommonInputBase::GetInputSettings()->LoadData();
-	GamepadInputType = FCommonInputBase::GetCurrentBasePlatformData().GetDefaultGamepadName();
-	CurrentInputType = LastInputType = FCommonInputBase::GetCurrentBasePlatformData().GetDefaultInputType();
+
+	const UCommonInputPlatformSettings* Settings = UPlatformSettingsManager::Get().GetSettingsForPlatform<UCommonInputPlatformSettings>();
+
+	GamepadInputType = Settings->GetDefaultGamepadName();
+	CurrentInputType = LastInputType = Settings->GetDefaultInputType();
 
 	CommonInputPreprocessor = MakeShared<FCommonInputPreprocessor>(*this);
 	FSlateApplication::Get().RegisterInputPreProcessor(CommonInputPreprocessor, 0);
 
-	TickHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCommonInputSubsystem::Tick), 0.1f);
+	TickHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UCommonInputSubsystem::Tick), 0.1f);
 
 	CVarInputKeysVisible->SetOnChangedCallback(FConsoleVariableDelegate::CreateUObject(this, &UCommonInputSubsystem::ShouldShowInputKeysChanged));
 }
@@ -301,10 +331,18 @@ void UCommonInputSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 void UCommonInputSubsystem::Deinitialize()
 {
 	Super::Deinitialize();
-	FSlateApplication::Get().UnregisterInputPreProcessor(CommonInputPreprocessor);
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().UnregisterInputPreProcessor(CommonInputPreprocessor);
+	}
 	CommonInputPreprocessor.Reset();
 
-	FTicker::GetCoreTicker().RemoveTicker(TickHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+}
+
+FGamepadChangeDetectedEvent& UCommonInputSubsystem::GetOnGamepadChangeDetected()
+{
+	return CommonInputPreprocessor->OnGamepadChangeDetected;
 }
 
 void UCommonInputSubsystem::SetInputTypeFilter(ECommonInputType InputType, FName Reason, bool Filter)
@@ -378,7 +416,7 @@ ECommonInputType UCommonInputSubsystem::GetCurrentInputType() const
 
 ECommonInputType UCommonInputSubsystem::GetDefaultInputType() const
 {
-	return FCommonInputBase::GetCurrentBasePlatformData().GetDefaultInputType();
+	return UCommonInputPlatformSettings::Get()->GetDefaultInputType();
 }
 
 void UCommonInputSubsystem::BroadcastInputMethodChanged()
@@ -447,7 +485,7 @@ bool UCommonInputSubsystem::CheckForInputMethodThrashing(ECommonInputType NewInp
 
 void UCommonInputSubsystem::SetCurrentInputType(ECommonInputType NewInputType)
 {
-	if (LastInputType != NewInputType && PlatformSupportsInputType(NewInputType))
+	if ((LastInputType != NewInputType) && PlatformSupportsInputType(NewInputType))
 	{
 		CheckForInputMethodThrashing(NewInputType);
 	
@@ -499,19 +537,16 @@ const FName UCommonInputSubsystem::GetCurrentGamepadName() const
 	return GamepadInputType;
 }
  
-void UCommonInputSubsystem::SetGamepadInputType(const FName& InGamepadInputType)
+void UCommonInputSubsystem::SetGamepadInputType(const FName InGamepadInputType) 
 {
-	if (!FCommonInputBase::GetCurrentBasePlatformData().CanChangeGamepadType())
+	if (ensure(UCommonInputPlatformSettings::Get()->CanChangeGamepadType()))
 	{
-		ensure(false);	// should not be called on the console platforms
-		return;
+		GamepadInputType = InGamepadInputType;
+
+		// Send out notifications so we update our buttons
+		//BroadcastLastInputDeviceChanged();
+		BroadcastInputMethodChanged();
 	}
-
-	GamepadInputType = InGamepadInputType;
-
-	// Send out notifications so we update our buttons
-	//BroadcastLastInputDeviceChanged();
-	BroadcastInputMethodChanged();
 }
 
 bool UCommonInputSubsystem::IsUsingPointerInput() const
@@ -677,42 +712,44 @@ FVector2D UCommonInputSubsystem::ClampPositionToViewport(const FVector2D& InPosi
 
 bool UCommonInputSubsystem::PlatformSupportsInputType(ECommonInputType InInputType) const
 {
-	bool bPlatformSupportsInput = FCommonInputBase::GetCurrentBasePlatformData().SupportsInputType(InInputType);
+	bool bPlatformSupportsInput = UCommonInputPlatformSettings::Get()->SupportsInputType(InInputType);
 	switch (InInputType)
 	{
-	case ECommonInputType::MouseAndKeyboard:
-	{
-#if PLATFORM_XBOXONE || PLATFORM_SWITCH
-		bPlatformSupportsInput &= FSlateApplication::Get().IsMouseAttached();
-#endif
-	}
-	break;
-	case ECommonInputType::Touch:
-	{
+		case ECommonInputType::MouseAndKeyboard:
+		{
 #if PLATFORM_SWITCH
-		bPlatformSupportsInput &= SUPPORT_SWITCH_TOUCHSCREEN;
+			bPlatformSupportsInput &= FSlateApplication::Get().IsMouseAttached();
+#endif
+		}
+		break;
+		case ECommonInputType::Touch:
+		{
+#if PLATFORM_SWITCH
+			bPlatformSupportsInput &= SUPPORT_SWITCH_TOUCHSCREEN;
 #elif PLATFORM_DESKTOP && !UE_BUILD_SHIPPING
-		bPlatformSupportsInput = true; // Support touch testing until touch is supported on desktop
+			bPlatformSupportsInput = true; // Support touch testing until touch is supported on desktop
 #endif
-	}
-	break;
-	case ECommonInputType::Gamepad:
+		}
+		break;
+		case ECommonInputType::Gamepad:
 #if PLATFORM_IOS
-        {
-            bool bAllowControllers = false;
-            GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bAllowControllers"), bAllowControllers, GEngineIni);
+		{
+			bool bAllowControllers = false;
+			GConfig->GetBool(TEXT("/Script/IOSRuntimeSettings.IOSRuntimeSettings"), TEXT("bAllowControllers"), bAllowControllers, GEngineIni);
 			bPlatformSupportsInput &= bAllowControllers;
-        }
+		}
 #elif PLATFORM_ANDROID
-        {
-            bool bAllowControllers = false;
-            GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bAllowControllers"), bAllowControllers, GEngineIni);
+		{
+			bool bAllowControllers = false;
+			GConfig->GetBool(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("bAllowControllers"), bAllowControllers, GEngineIni);
 			bPlatformSupportsInput &= bAllowControllers;
-        }
+		}
 #endif
-	break;
+		break;
 	}
 
+	GetOnPlatformInputSupportOverride().Broadcast(GetLocalPlayer(), InInputType, bPlatformSupportsInput);
+	
 	return bPlatformSupportsInput;
 }
 

@@ -3,7 +3,7 @@
 using System.IO;
 using UnrealBuildTool;
 
-[SupportedPlatforms("Win32", "Win64")]
+[SupportedPlatforms("Win64")]
 public class GameplayMediaEncoder : ModuleRules
 {
 	public GameplayMediaEncoder(ReadOnlyTargetRules Target) : base(Target)
@@ -27,11 +27,11 @@ public class GameplayMediaEncoder : ModuleRules
 			"AVEncoder"
 		});
 
-		if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{			
 			AddEngineThirdPartyPrivateStaticDependencies(Target, "NVAftermath");
 
-			if (Target.Platform == UnrealTargetPlatform.Win32 || Target.Platform == UnrealTargetPlatform.Win64)
+			if (Target.Platform == UnrealTargetPlatform.Win64)
 			{
 				PrivateDependencyModuleNames.AddRange(new string[]
 					{

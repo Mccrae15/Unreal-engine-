@@ -33,6 +33,7 @@ struct FRenderThreadUpdateContext
 	float WorldTimeSeconds;
 	float DeltaTimeSeconds;
 	float RealTimeSeconds;
+	float DeltaRealTimeSeconds;
 	FRenderTarget* RenderTarget;
 	ISlate3DRenderer* Renderer;
 	bool bClearTarget;
@@ -289,6 +290,19 @@ public:
 	virtual bool GenerateDynamicImageResource(FName ResourceName, FSlateTextureDataRef TextureData) { return false; }
 
 	/**
+	 * Creates a resource handle with a specific size and scale (for brushes with dynamic resizing such as vector art)
+	 * A handle is used as fast path for looking up a rendering resource for a given brush when adding Slate draw elements
+	 * This can be cached and stored safely in code.  It will become invalid when a resource is destroyed
+	 * It is expensive to create a resource so do not do it in time sensitive areas
+	 *
+	 * @param	Brush		The brush to get a rendering resource handle
+	 * @param	LocalSize	The local size of the element using the brush (Vector graphics only)
+	 * @param	DrawScale	The draw scale of the element using the brush (Vector graphics only)
+	 * @return	The created resource handle.
+	 */
+	virtual FSlateResourceHandle GetResourceHandle(const FSlateBrush& Brush, FVector2D LocalSize, float DrawScale) = 0;
+
+	/**
 	 * Creates a handle to a Slate resource
 	 * A handle is used as fast path for looking up a rendering resource for a given brush when adding Slate draw elements
 	 * This can be cached and stored safely in code.  It will become invalid when a resource is destroyed
@@ -297,7 +311,11 @@ public:
 	 * @param	Brush		The brush to get a rendering resource handle 
 	 * @return	The created resource handle.  
 	 */
-	virtual FSlateResourceHandle GetResourceHandle( const FSlateBrush& Brush ) = 0;
+	virtual FSlateResourceHandle GetResourceHandle(const FSlateBrush& Brush)
+	{
+		return GetResourceHandle(Brush, FVector2D::ZeroVector, 1.0f);
+	}
+
 
 	/** The default implementation assumes all things are renderable. */
 	virtual bool CanRenderResource(UObject& InResourceObject) const { return true; }
@@ -439,6 +457,15 @@ public:
 	 * @return	Newly created updatable texture
 	 */
 	virtual FSlateUpdatableTexture* CreateUpdatableTexture(uint32 Width, uint32 Height) = 0;
+
+	/**
+	 * Create an updatable texture that can receive new data via a shared handle
+	 *
+	 * @param	SharedHandle	The OS dependant handle that backs the texture data
+	 *
+	 * @return	Newly created updatable texture
+	 */
+	virtual FSlateUpdatableTexture* CreateSharedHandleTexture(void *SharedHandle) = 0;
 
 	/**
 	 * Return an updatable texture to the renderer for release

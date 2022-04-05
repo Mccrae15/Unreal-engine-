@@ -272,16 +272,16 @@ ERHIFeatureLevel::Type FPIEPreviewDevice::GetPreviewDeviceFeatureLevel() const
 			// use a local ini file, so that Windows can read settings that are in SwitchEngine.ini files...
 			FConfigFile SwitchSettings;
 			FConfigCacheIni::LoadLocalIniFile(SwitchSettings, TEXT("Engine"), true, TEXT("Switch"));
-			bool bUseMobileRenderer = false;
-			SwitchSettings.GetBool(TEXT("/Script/SwitchRuntimeSettings.SwitchRuntimeSettings"), TEXT("bUseMobileForwardRenderer"), bUseMobileRenderer);
+			bool bSupportDesktopRenderer = false;
+			SwitchSettings.GetBool(TEXT("/Script/SwitchRuntimeSettings.SwitchRuntimeSettings"), TEXT("bSupportDesktopRenderer"), bSupportDesktopRenderer);
 
-			if (bUseMobileRenderer)
+			if (bSupportDesktopRenderer)
 			{
-				return ERHIFeatureLevel::ES3_1;
+				return ERHIFeatureLevel::SM5;
 			}
 			else
 			{
-				return ERHIFeatureLevel::SM5;
+				return ERHIFeatureLevel::ES3_1;
 			}
 		}
 	}
@@ -411,6 +411,24 @@ void FPIEPreviewDevice::ApplyRHIOverrides() const
 	}
 }
 
+bool FPIEPreviewDevice::GetSelectorPropertyValue(const FName& PropertyType, FString& PropertyValueOUT) const
+{
+	switch (DeviceSpecs->DevicePlatform)
+	{
+		case EPIEPreviewDeviceType::Android:
+		{
+			IDeviceProfileSelectorModule* AndroidDeviceProfileSelector = FModuleManager::LoadModulePtr<IDeviceProfileSelectorModule>("AndroidDeviceProfileSelector");
+			if (AndroidDeviceProfileSelector)
+			{
+				return AndroidDeviceProfileSelector->GetSelectorPropertyValue(PropertyType, PropertyValueOUT);
+			}
+		}
+		break;
+	}
+	return false;
+}
+
+
 FString FPIEPreviewDevice::GetProfile() const
 {
 	FString Profile;
@@ -424,20 +442,23 @@ FString FPIEPreviewDevice::GetProfile() const
 			{
 				FPIEAndroidDeviceProperties& AndroidProperties = DeviceSpecs->AndroidProperties;
 
-				TMap<FString, FString> DeviceParameters;
-				DeviceParameters.Add("GPUFamily", AndroidProperties.GPUFamily);
-				DeviceParameters.Add("GLVersion", AndroidProperties.GLVersion);
-				DeviceParameters.Add("VulkanAvailable", AndroidProperties.VulkanAvailable ? "true" : "false");
-				DeviceParameters.Add("VulkanVersion", AndroidProperties.VulkanVersion);
-				DeviceParameters.Add("AndroidVersion", AndroidProperties.AndroidVersion);
-				DeviceParameters.Add("DeviceMake", AndroidProperties.DeviceMake);
-				DeviceParameters.Add("DeviceModel", AndroidProperties.DeviceModel);
-				DeviceParameters.Add("DeviceBuildNumber", AndroidProperties.DeviceBuildNumber);
-				DeviceParameters.Add("UsingHoudini", AndroidProperties.UsingHoudini ? "true" : "false");
-				DeviceParameters.Add("Hardware", AndroidProperties.Hardware);
-				DeviceParameters.Add("Chipset", AndroidProperties.Chipset);
+				TMap<FName, FString> DeviceParameters;
+				DeviceParameters.Add(FName(TEXT("SRC_GPUFamily")), AndroidProperties.GPUFamily);
+				DeviceParameters.Add(FName(TEXT("SRC_GLVersion")), AndroidProperties.GLVersion);
+				DeviceParameters.Add(FName(TEXT("SRC_VulkanAvailable")), AndroidProperties.VulkanAvailable ? "true" : "false");
+				DeviceParameters.Add(FName(TEXT("SRC_VulkanVersion")), AndroidProperties.VulkanVersion);
+				DeviceParameters.Add(FName(TEXT("SRC_AndroidVersion")), AndroidProperties.AndroidVersion);
+				DeviceParameters.Add(FName(TEXT("SRC_DeviceMake")), AndroidProperties.DeviceMake);
+				DeviceParameters.Add(FName(TEXT("SRC_DeviceModel")), AndroidProperties.DeviceModel);
+				DeviceParameters.Add(FName(TEXT("SRC_DeviceBuildNumber")), AndroidProperties.DeviceBuildNumber);
+				DeviceParameters.Add(FName(TEXT("SRC_UsingHoudini")), AndroidProperties.UsingHoudini ? "true" : "false");
+				DeviceParameters.Add(FName(TEXT("SRC_Hardware")), AndroidProperties.Hardware);
+				DeviceParameters.Add(FName(TEXT("SRC_Chipset")), AndroidProperties.Chipset);
+				DeviceParameters.Add(FName(TEXT("SRC_HMDSystemName")), AndroidProperties.HMDSystemName);
+				DeviceParameters.Add(FName(TEXT("SRC_TotalPhysicalGB")), AndroidProperties.TotalPhysicalGB);
 
-				FString PIEProfileName = AndroidDeviceProfileSelector->GetDeviceProfileName(DeviceParameters);
+				AndroidDeviceProfileSelector->SetSelectorProperties(DeviceParameters);
+				FString PIEProfileName = AndroidDeviceProfileSelector->GetDeviceProfileName();
 				if (!PIEProfileName.IsEmpty())
 				{
 					Profile = PIEProfileName;
@@ -456,15 +477,15 @@ FString FPIEPreviewDevice::GetProfile() const
 			// load switch renderer configuration
 			FConfigFile SwitchSettings;
 			FConfigCacheIni::LoadLocalIniFile(SwitchSettings, TEXT("Engine"), true, TEXT("Switch"));
-			bool bUseMobileRenderer = false;
-			SwitchSettings.GetBool(TEXT("/Script/SwitchRuntimeSettings.SwitchRuntimeSettings"), TEXT("bUseMobileForwardRenderer"), bUseMobileRenderer);
+			bool bSupportDesktopRenderer = false;
+			SwitchSettings.GetBool(TEXT("/Script/SwitchRuntimeSettings.SwitchRuntimeSettings"), TEXT("bSupportDesktopRenderer"), bSupportDesktopRenderer);
 			bool bForwardShading = false;
 			SwitchSettings.GetBool(TEXT("/Script/SwitchRuntimeSettings.SwitchRuntimeSettings"), TEXT("bUseForwardShading"), bForwardShading);
 	
 			// taken from FSwitchApplication::UpdateActiveDeviceProfile()
 			Profile = DeviceSpecs->SwitchProperties.Docked ?
-				((bUseMobileRenderer || bForwardShading) ? TEXT("Switch_Console_Forward") : TEXT("Switch_Console_Deferred")) :
-				((bUseMobileRenderer || bForwardShading) ? TEXT("Switch_Handheld_Forward") : TEXT("Switch_Handheld_Deferred"));
+				((!bSupportDesktopRenderer || bForwardShading) ? TEXT("Switch_Console_Forward") : TEXT("Switch_Console_Deferred")) :
+				((!bSupportDesktopRenderer || bForwardShading) ? TEXT("Switch_Handheld_Forward") : TEXT("Switch_Handheld_Deferred"));
 		
 			break;
 		}

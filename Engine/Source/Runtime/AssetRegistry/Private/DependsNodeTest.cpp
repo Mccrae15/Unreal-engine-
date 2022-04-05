@@ -970,7 +970,7 @@ bool FDependsNodeTest::RunTest(const FString& Parameters)
 							LinkHaver.AddDependency(LinkNode, EDependencyCategory::SearchableName, EDependencyProperty::None);
 							LinkHaver.AddDependency(LinkNode, EDependencyCategory::Manage, ManageProperties[NodeIndex]);
 						};
-						auto GetNodeIndex = [&LinkNodes](const FDependsNode* Existing) { return Existing - &LinkNodes[0]; };
+						auto GetNodeIndex = [&LinkNodes](const FDependsNode* Existing) { return UE_PTRDIFF_TO_INT32(Existing - &LinkNodes[0]); };
 
 						if (SortTestType != ESortTestType::AlwaysSorted)
 						{
@@ -1114,8 +1114,7 @@ bool FDependsNodeTest::RunTest(const FString& Parameters)
 					return nullptr;
 				};
 
-				FAssetRegistrySerializationOptions Options;
-				Options.ModifyForDevelopment();
+				FAssetRegistrySerializationOptions Options(UE::AssetRegistry::ESerializationTarget::ForDevelopment);
 				Options.bSerializeSearchableNameDependencies = bKeepNameDependencies;
 				Options.bSerializeManageDependencies = bKeepManageDependencies;
 

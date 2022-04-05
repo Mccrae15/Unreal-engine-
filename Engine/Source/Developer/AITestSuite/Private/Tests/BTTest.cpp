@@ -65,7 +65,8 @@ struct FAITest_SimpleBT : public FAITestBase
 			}
 		}
 
-		return VerifyResults();
+		VerifyResults();
+		return true;
 	}
 
 	bool VerifyResults()
@@ -420,6 +421,479 @@ struct FAITest_BTCompositeFailedDecoratorUnregistersChildren : public FAITest_Si
 	}
 };
 IMPLEMENT_AI_LATENT_TEST(FAITest_BTCompositeFailedDecoratorUnregistersChildren, "System.AI.Behavior Trees.Composite failed decorator unregisters child nodes")
+
+/* All BTAbortingDuringService/BTAbortingDuringTaskService come from UDN case 00317509*/
+struct FAITest_BTAbortingDuringServiceTick : public FAITest_SimpleBT
+{
+	FAITest_BTAbortingDuringServiceTick()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::NotSet, EBTFlowAbortMode::Self, TEXT("Bool1"));
+				FBTBuilder::WithServiceLog(CompNode2, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded, 10/*ExecutionTicks*/, 222/*LogTickIndex*/);
+			}
+			FBTBuilder::AddTask(CompNode, 6, EBTNodeResult::Succeeded);
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(222);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(6);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTAbortingDuringServiceTick, "System.AI.Behavior Trees.Abort: during service tick")
+
+struct FAITest_BTAbortingDuringServiceBecomeRelevant : public FAITest_SimpleBT
+{
+	FAITest_BTAbortingDuringServiceBecomeRelevant()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::NotSet, EBTFlowAbortMode::Self, TEXT("Bool1"));
+				FBTBuilder::WithServiceLog(CompNode2, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded);
+			}
+			FBTBuilder::AddTask(CompNode, 6, EBTNodeResult::Succeeded);
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(6);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTAbortingDuringServiceBecomeRelevant, "System.AI.Behavior Trees.Abort: during service becomes relevant")
+
+struct FAITest_BTAbortingDuringServiceBecomeRelevantTaskTicking : public FAITest_SimpleBT
+{
+	FAITest_BTAbortingDuringServiceBecomeRelevantTaskTicking()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::NotSet, EBTFlowAbortMode::Self, TEXT("Bool1"));
+				FBTBuilder::WithServiceLog(CompNode2, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded, 10/*ExecutionTicks*/, 222/*LogTickIndex*/);
+			}
+			FBTBuilder::AddTask(CompNode, 6, EBTNodeResult::Succeeded);
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(222);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(6);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTAbortingDuringServiceBecomeRelevantTaskTicking, "System.AI.Behavior Trees.Abort: during service becomes relevant when task continue to tick for a longer time")
+
+struct FAITest_BTAbortingDuringServiceCeaseRelevant : public FAITest_SimpleBT
+{
+	FAITest_BTAbortingDuringServiceCeaseRelevant()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSequence(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSelector(CompNode);
+			{
+				UBTCompositeNode& CompNode3 = FBTBuilder::AddSelector(CompNode2);
+				{
+					FBTBuilder::WithDecoratorBlackboard(CompNode2, EBasicKeyOperation::NotSet, EBTFlowAbortMode::Self, TEXT("Bool1"));
+					FBTBuilder::WithServiceLog(CompNode3, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, NAME_None, TEXT("Bool1"));
+
+					FBTBuilder::AddTask(CompNode3, 4, EBTNodeResult::Succeeded);
+				}
+				FBTBuilder::AddTask(CompNode2, 6, EBTNodeResult::Succeeded);
+			}
+			FBTBuilder::AddTask(CompNode, 7, EBTNodeResult::Succeeded);
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(7);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTAbortingDuringServiceCeaseRelevant, "System.AI.Behavior Trees.Abort: during service ceases relevant")
+
+struct FAITest_BTAbortingDuringTaskServiceTick : public FAITest_SimpleBT
+{
+	FAITest_BTAbortingDuringTaskServiceTick()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			FBTBuilder::AddTask(CompNode, 4, EBTNodeResult::Succeeded, 10/*ExecutionTicks*/, 222/*LogTickIndex*/);
+			FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::NotSet, EBTFlowAbortMode::Self, TEXT("Bool1"));
+			FBTBuilder::WithTaskServiceLog(CompNode, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, TEXT("Bool1"));
+
+			FBTBuilder::AddTask(CompNode, 6, EBTNodeResult::Succeeded);
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(222);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(6);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTAbortingDuringTaskServiceTick, "System.AI.Behavior Trees.Abort: during task service tick")
+
+struct FAITest_BTAbortingDuringTaskServiceBecomeRelevant : public FAITest_SimpleBT
+{
+	FAITest_BTAbortingDuringTaskServiceBecomeRelevant()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			FBTBuilder::AddTask(CompNode, 4, EBTNodeResult::Succeeded);
+			FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::NotSet, EBTFlowAbortMode::Self, TEXT("Bool1"));
+			FBTBuilder::WithTaskServiceLog(CompNode, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, TEXT("Bool1"));
+
+			FBTBuilder::AddTask(CompNode, 6, EBTNodeResult::Succeeded);
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(6);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTAbortingDuringTaskServiceBecomeRelevant, "System.AI.Behavior Trees.Abort: during task service becomes relevant")
+
+struct FAITest_BTAbortingDuringTaskServiceBecomeRelevantTaskTicking : public FAITest_SimpleBT
+{
+	FAITest_BTAbortingDuringTaskServiceBecomeRelevantTaskTicking()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			FBTBuilder::AddTask(CompNode, 4, EBTNodeResult::Succeeded, 10/*ExecutionTicks*/, 222/*LogTickIndex*/);
+			FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::NotSet, EBTFlowAbortMode::Self, TEXT("Bool1"));
+			FBTBuilder::WithTaskServiceLog(CompNode, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, TEXT("Bool1"));
+
+			FBTBuilder::AddTask(CompNode, 6, EBTNodeResult::Succeeded);
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(222);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(6);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTAbortingDuringTaskServiceBecomeRelevantTaskTicking, "System.AI.Behavior Trees.Abort: during task service becomes relevant when task continue to tick for a longer time")
+
+struct FAITest_BTAbortingDuringTaskServiceCeaseRelevant : public FAITest_SimpleBT
+{
+	FAITest_BTAbortingDuringTaskServiceCeaseRelevant()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSequence(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSelector(CompNode);
+			{
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded);
+				FBTBuilder::WithDecoratorBlackboard(CompNode2, EBasicKeyOperation::NotSet, EBTFlowAbortMode::Self, TEXT("Bool1"));
+				FBTBuilder::WithTaskServiceLog(CompNode2, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, NAME_None, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 6, EBTNodeResult::Succeeded);
+			}
+			FBTBuilder::AddTask(CompNode, 7, EBTNodeResult::Succeeded);
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(7);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTAbortingDuringTaskServiceCeaseRelevant, "System.AI.Behavior Trees.Abort: during task service ceases relevant")
+
+struct FAITest_BTSwitchingHigherPrioDuringServiceTick : public FAITest_SimpleBT
+{
+	FAITest_BTSwitchingHigherPrioDuringServiceTick()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::Set, EBTFlowAbortMode::LowerPriority, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded);
+			}
+			UBTCompositeNode& CompNode3 = FBTBuilder::AddSelector(CompNode);
+			{
+				FBTBuilder::WithServiceLog(CompNode3, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode3, 6, EBTNodeResult::Succeeded);
+			}
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(6);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(4);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTSwitchingHigherPrioDuringServiceTick, "System.AI.Behavior Trees.Switch: higher priority during service tick")
+
+struct FAITest_BTRequestExecutionOnLatentAbortFinished : public FAITest_SimpleBT
+{
+	FAITest_BTRequestExecutionOnLatentAbortFinished()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSequence(*BTAsset); // 0
+		{
+			FBTBuilder::AddTaskLatentFlags(CompNode, EBTNodeResult::Succeeded, // 3
+				1 /* ExecHalfNumTicks */, FName() /* ExecKeyName */, 100 /* ExecLogStart */, 199 /* ExecLogFinish */,
+				1 /* AbortHalfNumTicks */, FName() /* AbortKeyName */, 200 /* AbortLogStart */, 299 /* AbortLogFinish */);
+			{
+				FBTBuilder::WithDecorator<UBTDecorator_ForceSuccess>(CompNode); // 1
+				FBTBuilder::WithDecoratorDelayedAbort(CompNode, 1, false /* bOnlyOnce */); // 2
+			}
+
+			FBTBuilder::AddTask(CompNode, 4, EBTNodeResult::Succeeded); // 4
+			FBTBuilder::AddTask(CompNode, 5, EBTNodeResult::Succeeded); // 5
+		}
+
+		ExpectedResult.Add(100);
+		ExpectedResult.Add(200);
+		ExpectedResult.Add(299);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(5);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTRequestExecutionOnLatentAbortFinished, "System.AI.Behavior Trees.Abort: request on latent task finished")
+
+struct FAITest_BTSwitchingHigherPrioDuringServiceBecomeRelevant : public FAITest_SimpleBT
+{
+	FAITest_BTSwitchingHigherPrioDuringServiceBecomeRelevant()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::Set, EBTFlowAbortMode::LowerPriority, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded);
+			}
+			UBTCompositeNode& CompNode3 = FBTBuilder::AddSelector(CompNode);
+			{
+				FBTBuilder::WithServiceLog(CompNode3, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode3, 6, EBTNodeResult::Succeeded);
+			}
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(6);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(4);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTSwitchingHigherPrioDuringServiceBecomeRelevant, "System.AI.Behavior Trees.Switch: higher priority during service becomes relevant")
+
+struct FAITest_BTSwitchingHigherPrioDuringServiceBecomeRelevantWithTickingTask : public FAITest_SimpleBT
+{
+	FAITest_BTSwitchingHigherPrioDuringServiceBecomeRelevantWithTickingTask()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::Set, EBTFlowAbortMode::LowerPriority, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded);
+			}
+			UBTCompositeNode& CompNode3 = FBTBuilder::AddSelector(CompNode);
+			{
+				FBTBuilder::WithServiceLog(CompNode3, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode3, 6, EBTNodeResult::Succeeded, 10/*ExecutionTicks*/, 222/*LogTickIndex*/);
+			}
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(6);
+		ExpectedResult.Add(222);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(4);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTSwitchingHigherPrioDuringServiceBecomeRelevantWithTickingTask, "System.AI.Behavior Trees.Switch: higher priority during service becomes relevant with ticking task")
+
+struct FAITest_BTSwitchingHigherPrioDuringServiceCeaseRelevant : public FAITest_SimpleBT
+{
+	FAITest_BTSwitchingHigherPrioDuringServiceCeaseRelevant()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::Set, EBTFlowAbortMode::LowerPriority, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded);
+			}
+			UBTCompositeNode& CompNode3 = FBTBuilder::AddSequence(CompNode);
+			{
+				UBTCompositeNode& CompNode4 = FBTBuilder::AddSelector(CompNode3);
+				{
+					FBTBuilder::WithServiceLog(CompNode4, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, NAME_None, TEXT("Bool1"));
+
+					FBTBuilder::AddTask(CompNode4, 6, EBTNodeResult::Succeeded);
+				}
+				FBTBuilder::AddTask(CompNode3, 7, EBTNodeResult::Succeeded);
+			}
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(6);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(7);
+		ExpectedResult.Add(4);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTSwitchingHigherPrioDuringServiceCeaseRelevant, "System.AI.Behavior Trees.Switch: higher priority during service ceases relevant")
+
+struct FAITest_BTSwitchingHigherPrioDuringTaskServiceTick : public FAITest_SimpleBT
+{
+	FAITest_BTSwitchingHigherPrioDuringTaskServiceTick()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::Set, EBTFlowAbortMode::LowerPriority, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded);
+			}
+			FBTBuilder::AddTask(CompNode, 6, EBTNodeResult::Succeeded);
+			FBTBuilder::WithTaskServiceLog(CompNode, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, TEXT("Bool1"));
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(6);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(4);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTSwitchingHigherPrioDuringTaskServiceTick, "System.AI.Behavior Trees.Switch: higher priority during task service tick")
+
+
+struct FAITest_BTSwitchingHigherPrioDuringTaskServiceBecomeRelevant : public FAITest_SimpleBT
+{
+	FAITest_BTSwitchingHigherPrioDuringTaskServiceBecomeRelevant()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::Set, EBTFlowAbortMode::LowerPriority, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded);
+			}
+			FBTBuilder::AddTask(CompNode, 6, EBTNodeResult::Succeeded);
+			FBTBuilder::WithTaskServiceLog(CompNode, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, TEXT("Bool1"));
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(6);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(4);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTSwitchingHigherPrioDuringTaskServiceBecomeRelevant, "System.AI.Behavior Trees.Switch: higher priority during task service becomes relevant")
+
+struct FAITest_BTSwitchingHigherPrioDuringTaskServiceBecomeRelevantWithTickingTask : public FAITest_SimpleBT
+{
+	FAITest_BTSwitchingHigherPrioDuringTaskServiceBecomeRelevantWithTickingTask()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::Set, EBTFlowAbortMode::LowerPriority, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded);
+			}
+			FBTBuilder::AddTask(CompNode, 6, EBTNodeResult::Succeeded, 10/*ExecutionTicks*/, 222/*LogTickIndex*/);
+			FBTBuilder::WithTaskServiceLog(CompNode, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, TEXT("Bool1"));
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(6);
+		ExpectedResult.Add(222);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(4);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTSwitchingHigherPrioDuringTaskServiceBecomeRelevantWithTickingTask, "System.AI.Behavior Trees.Switch: higher priority during task service becomes relevant with ticking task")
+
+struct FAITest_BTSwitchingHigherPrioDuringTaskServiceCeaseRelevant : public FAITest_SimpleBT
+{
+	FAITest_BTSwitchingHigherPrioDuringTaskServiceCeaseRelevant()
+	{
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::Set, EBTFlowAbortMode::LowerPriority, TEXT("Bool1"));
+
+				FBTBuilder::AddTask(CompNode2, 4, EBTNodeResult::Succeeded);
+			}
+			UBTCompositeNode& CompNode3 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::AddTask(CompNode3, 6, EBTNodeResult::Succeeded);
+				FBTBuilder::WithTaskServiceLog(CompNode3, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 3/*TickIndex*/, NAME_None, false, NAME_None, TEXT("Bool1"));
+				FBTBuilder::AddTask(CompNode3, 7, EBTNodeResult::Succeeded);
+			}
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(6);
+		ExpectedResult.Add(3); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(2);
+		ExpectedResult.Add(7);
+		ExpectedResult.Add(4);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTSwitchingHigherPrioDuringTaskServiceCeaseRelevant, "System.AI.Behavior Trees.Switch: higher priority during task service ceases relevant")
 
 struct FAITest_BTAbortSelfFail : public FAITest_SimpleBT
 {
@@ -1306,6 +1780,63 @@ struct FAITest_BTSubtreeAbortOut : public FAITest_SimpleBT
 };
 IMPLEMENT_AI_LATENT_TEST(FAITest_BTSubtreeAbortOut, "System.AI.Behavior Trees.Subtree: abort out")
 
+/* This unittest come from UDN case 00320135 */
+struct FAITest_BTSubtreeAbortOutToLowerPrio : public FAITest_SimpleBT
+{
+	FAITest_BTSubtreeAbortOutToLowerPrio()
+	{
+		UBehaviorTree* ChildAsset = &FBTBuilder::CreateBehaviorTree(*BTAsset);
+		if (ChildAsset)
+		{
+			AddAutoDestroyObject(*ChildAsset);
+			UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*ChildAsset);
+			{
+				UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+				{
+					FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::Set, EBTFlowAbortMode::Both, TEXT("Bool2"), 3/*LogIndexBecomeRelevant*/, 4/*LogIndexCeaseRelevant*/);
+					FBTBuilder::AddTaskFlagChange(CompNode2, true, EBTNodeResult::Succeeded, TEXT("Bool3"));
+				}
+
+				UBTCompositeNode& CompNode3 = FBTBuilder::AddSequence(CompNode);
+				{
+					FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::Set, EBTFlowAbortMode::LowerPriority, TEXT("Bool3"), 5/*LogIndexBecomeRelevant*/, 6/*LogIndexCeaseRelevant*/);
+					FBTBuilder::AddTask(CompNode3, 12, EBTNodeResult::Succeeded, 10/*ExecutionTicks*/);
+					FBTBuilder::WithTaskServiceLog(CompNode3, 13/*ActivationIndex*/, 14/*DeactivationIndex*/, 15/*TickIndex*/, TEXT("Bool1"));
+				}
+			}
+		}
+
+		UBTCompositeNode& CompNode = FBTBuilder::AddSelector(*BTAsset);
+		{
+			FBTBuilder::AddTaskFlagChange(CompNode, true, EBTNodeResult::Failed, TEXT("Bool3"));
+			FBTBuilder::AddTaskSubtree(CompNode, ChildAsset);
+			{
+				FBTBuilder::WithDecoratorBlackboard(CompNode, EBasicKeyOperation::NotSet, EBTFlowAbortMode::Both, TEXT("Bool1"), 1/*LogIndexBecomeRelevant*/, 2/*LogIndexCeaseRelevant*/);
+			}
+
+			UBTCompositeNode& CompNode2 = FBTBuilder::AddSequence(CompNode);
+			{
+				FBTBuilder::AddTaskFlagChange(CompNode2, false, EBTNodeResult::Succeeded, TEXT("Bool3"));
+				FBTBuilder::AddTaskFlagChange(CompNode2, true, EBTNodeResult::Succeeded, TEXT("Bool2"));
+				FBTBuilder::AddTaskFlagChange(CompNode2, false, EBTNodeResult::Succeeded, TEXT("Bool1"));
+			}
+		}
+
+		ExpectedResult.Add(1);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(13);
+		ExpectedResult.Add(15);
+		ExpectedResult.Add(12);
+		ExpectedResult.Add(15); // Extra service tick because aux nodes are always ticked before any pending requests are processed
+		ExpectedResult.Add(14);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(3);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(2);
+	}
+};
+IMPLEMENT_AI_LATENT_TEST(FAITest_BTSubtreeAbortOutToLowerPrio, "System.AI.Behavior Trees.Subtree: abort out lower prio")
+
 struct FAITest_BTServiceInstantTask : public FAITest_SimpleBT
 {
 	FAITest_BTServiceInstantTask()
@@ -1314,14 +1845,16 @@ struct FAITest_BTServiceInstantTask : public FAITest_SimpleBT
 		{
 			FBTBuilder::AddTask(CompNode, 0, EBTNodeResult::Succeeded);
 			{
-				FBTBuilder::WithTaskServiceLog(CompNode, 1, 2);
+				FBTBuilder::WithTaskServiceLog(CompNode, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 4/*TickIndex*/);
 			}
 
 			FBTBuilder::AddTask(CompNode, 3, EBTNodeResult::Succeeded);
 		}
 
 		ExpectedResult.Add(1);
+		ExpectedResult.Add(4);
 		ExpectedResult.Add(0);
+		ExpectedResult.Add(4); // Extra service tick because aux nodes are always ticked before any pending requests are processed
 		ExpectedResult.Add(2);
 		ExpectedResult.Add(3);
 	}
@@ -1336,14 +1869,18 @@ struct FAITest_BTServiceLatentTask : public FAITest_SimpleBT
 		{
 			FBTBuilder::AddTask(CompNode, 0, EBTNodeResult::Succeeded, 2);
 			{
-				FBTBuilder::WithTaskServiceLog(CompNode, 1, 2);
+				FBTBuilder::WithTaskServiceLog(CompNode, 1/*ActivationIndex*/, 2/*DeactivationIndex*/, 4/*TickIndex*/);
 			}
 
 			FBTBuilder::AddTask(CompNode, 3, EBTNodeResult::Succeeded);
 		}
 
 		ExpectedResult.Add(1);
+		ExpectedResult.Add(4);
 		ExpectedResult.Add(0);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(4);
+		ExpectedResult.Add(4);// Extra service tick because aux nodes are always ticked before any pending requests are processed
 		ExpectedResult.Add(2);
 		ExpectedResult.Add(3);
 	}
@@ -1363,14 +1900,17 @@ struct FAITest_BTServiceAbortingTask : public FAITest_SimpleBT
 
 			FBTBuilder::AddTaskLatentFlags(CompNode, EBTNodeResult::Succeeded, 1, TEXT("Bool1"), 1, 2, 0, NAME_None, 3, 4);
 			{
-				FBTBuilder::WithTaskServiceLog(CompNode, 5, 6);
+				FBTBuilder::WithTaskServiceLog(CompNode, 5/*ActivationIndex*/, 6/*DeactivationIndex*/, 8/*TickIndex*/);
 			}
 
 			FBTBuilder::AddTask(CompNode, 7, EBTNodeResult::Succeeded);
 		}
 
 		ExpectedResult.Add(5);
+		ExpectedResult.Add(8);
 		ExpectedResult.Add(1);
+		ExpectedResult.Add(8);
+		ExpectedResult.Add(8); // Extra service tick because aux nodes are always ticked before any pending requests are processed
 		ExpectedResult.Add(3);
 		ExpectedResult.Add(4);
 		ExpectedResult.Add(6);

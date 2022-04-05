@@ -22,7 +22,7 @@
 #include "WaterEditorSettings.h"
 #include "WaterSubsystem.h"
 #include "WaterUtils.h"
-#include "WaterMeshActor.h"
+#include "WaterZoneActor.h"
 #include "WaterVersion.h"
 #include "Algo/Transform.h"
 #include "Curves/CurveFloat.h"
@@ -53,6 +53,8 @@ AWaterBrushManager::AWaterBrushManager(const FObjectInitializer& ObjectInitializ
 	SceneCaptureComponent2D->bCaptureOnMovement = false;
 	SceneCaptureComponent2D->SetRelativeRotation(FRotator(-90.0f, 0.0f, -90.0f));
 	SceneCaptureComponent2D->SetRelativeScale3D(FVector(0.01f, 0.01f, 0.01f));
+	// HACK [jonathan.bard] : Nanite doesn't support USceneCaptureComponent's ShowOnlyComponents ATM so just disable Nanite during captures : 
+	SceneCaptureComponent2D->ShowFlagSettings.Add(FEngineShowFlagsSetting { TEXT("NaniteMeshes"), false } );
 
 	PrimaryActorTick.TickGroup = ETickingGroup::TG_PrePhysics;
 	bIsEditorOnlyActor = false;
@@ -106,13 +108,13 @@ void AWaterBrushManager::PostLoad()
 		{
 			if (World == GetWorld())
 			{
-				TActorIterator<AWaterMeshActor> It(World);
-				if (AWaterMeshActor* WaterMeshActor = It ? *It : nullptr)
+				TActorIterator<AWaterZone> It(World);
+				if (AWaterZone* WaterZoneActor = It ? *It : nullptr)
 				{
 					FVector RTWorldLocation, RTWorldSizeVector;
 					if (DeprecateWaterLandscapeInfo(RTWorldLocation, RTWorldSizeVector))
 					{
-						WaterMeshActor->SetLandscapeInfo(RTWorldLocation, RTWorldSizeVector);
+						WaterZoneActor->SetLandscapeInfo(RTWorldLocation, RTWorldSizeVector);
 						SetMPCParams();
 					}
 				}
@@ -124,13 +126,13 @@ void AWaterBrushManager::PostLoad()
 		{
 			if ((World == GetWorld()) && (Level != nullptr))
 			{
-				TActorIterator<AWaterMeshActor> It(World);
-				if (AWaterMeshActor* WaterMeshActor = It ? *It : nullptr)
+				TActorIterator<AWaterZone> It(World);
+				if (AWaterZone* WaterZoneActor = It ? *It : nullptr)
 				{
 					FVector RTWorldLocation, RTWorldSizeVector;
 					if (DeprecateWaterLandscapeInfo(RTWorldLocation, RTWorldSizeVector))
 					{
-						WaterMeshActor->SetLandscapeInfo(RTWorldLocation, RTWorldSizeVector);
+						WaterZoneActor->SetLandscapeInfo(RTWorldLocation, RTWorldSizeVector);
 						SetMPCParams();
 					}
 				}
@@ -493,29 +495,32 @@ void AWaterBrushManager::GetRenderDependencies(TSet<UObject*>& OutDependencies)
 
 void AWaterBrushManager::UpdateTransform(const FTransform& Transform)
 {
-	LandscapeTransform = Transform;
-	check(SceneCaptureComponent2D != nullptr);
+	if (!Transform.Equals(LandscapeTransform))
+	{
+		LandscapeTransform = Transform;
+		check(SceneCaptureComponent2D != nullptr);
 
-	FVector Scale = LandscapeTransform.GetScale3D();
-	WorldSize.Set(Scale.X * (float)LandscapeQuads.X, Scale.Y * (float)LandscapeQuads.Y, 0.512f);
+		FVector Scale = LandscapeTransform.GetScale3D();
+		WorldSize.Set(Scale.X * (float)LandscapeQuads.X, Scale.Y * (float)LandscapeQuads.Y, 0.512f);
 
-	const FVector Temp(Scale.X * (float)LandscapeRTRes.X, Scale.Y * (float)LandscapeRTRes.Y, 0.512f);
-	SceneCaptureComponent2D->OrthoWidth = FMath::Max(Temp.X, Temp.Y);
+		const FVector Temp(Scale.X * (float)LandscapeRTRes.X, Scale.Y * (float)LandscapeRTRes.Y, 0.512f);
+		SceneCaptureComponent2D->OrthoWidth = FMath::Max(Temp.X, Temp.Y);
 
-	FVector LocationVector(Temp - Scale);
-	LocationVector *= 0.5f;
-	LocationVector = LandscapeTransform.GetRotation().RotateVector(LocationVector);
-	LocationVector += LandscapeTransform.GetLocation();
-	LocationVector.Z = 50000.0f;
-	SceneCaptureComponent2D->SetWorldLocation(LocationVector);
+		FVector LocationVector(Temp - Scale);
+		LocationVector *= 0.5f;
+		LocationVector = LandscapeTransform.GetRotation().RotateVector(LocationVector);
+		LocationVector += LandscapeTransform.GetLocation();
+		LocationVector.Z = 50000.0f;
+		SceneCaptureComponent2D->SetWorldLocation(LocationVector);
 
-	// The landscape transform has changed, let's re-draw everything (no need to request a landscape update because we're in the middle of one) :
-	bKillCache = true;
-	// Of course we also need to regenerate the water depth velocity RT : 
-	MarkRenderTargetsDirty();
+		// The landscape transform has changed, let's re-draw everything (no need to request a landscape update because we're in the middle of one) :
+		bKillCache = true;
+		// Of course we also need to regenerate the water depth velocity RT : 
+		MarkRenderTargetsDirty();
+	}
 }
 
-bool AWaterBrushManager::SetupRiverSplineRenderMIDs(const FBrushActorRenderContext& BrushActorRenderContext, bool bClearMIDs)
+bool AWaterBrushManager::SetupRiverSplineRenderMIDs(const FBrushActorRenderContext& BrushActorRenderContext, bool bRestoreMIDs, TArray<UMaterialInterface*>& InOutMIDs)
 {
 	AWaterBody* WaterBody = BrushActorRenderContext.GetActorAs<AWaterBody>();
 	check(WaterBody->GetWaterBodyType() == EWaterBodyType::River);
@@ -539,13 +544,22 @@ bool AWaterBrushManager::SetupRiverSplineRenderMIDs(const FBrushActorRenderConte
 		RiverSplineMIDs.SetNumZeroed(NumSplineMids);
 	}
 
+	if (bRestoreMIDs)
+	{
+		check(InOutMIDs.Num() == NumSplineMids);
+	}
+	else
+	{
+		InOutMIDs.SetNumZeroed(NumSplineMids);
+	}
+
 	for (int32 MIDIndex = 0; MIDIndex < NumSplineMids; ++MIDIndex)
 	{
 		USplineMeshComponent* SplineMeshComponent = SplineMeshComponents[MIDIndex];
 		check(SplineMeshComponent != nullptr);
-		if (bClearMIDs)
+		if (bRestoreMIDs)
 		{
-			SplineMeshComponent->SetMaterial(0, nullptr);
+			SplineMeshComponent->SetMaterial(0, InOutMIDs[MIDIndex]);
 		}
 		else
 		{
@@ -560,6 +574,8 @@ bool AWaterBrushManager::SetupRiverSplineRenderMIDs(const FBrushActorRenderConte
 				TempMID->SetScalarParameterValue(FName(TEXT("VelA")), SplineComponent->GetFloatPropertyAtSplinePoint(MIDIndex, FName(TEXT("WaterVelocityScalar"))));
 				TempMID->SetScalarParameterValue(FName(TEXT("VelB")), SplineComponent->GetFloatPropertyAtSplinePoint(MIDIndex + 1, FName(TEXT("WaterVelocityScalar"))));
 
+				// Save the previous material for restoring it further on : 
+				InOutMIDs[MIDIndex] = (SplineMeshComponent->GetMaterial(0));
 				SplineMeshComponent->SetMaterial(0, TempMID);
 			}
 			else
@@ -575,7 +591,8 @@ bool AWaterBrushManager::SetupRiverSplineRenderMIDs(const FBrushActorRenderConte
 
 void AWaterBrushManager::CaptureRiverDepthAndVelocity(const FBrushActorRenderContext& BrushActorRenderContext)
 {
-	if (!SetupRiverSplineRenderMIDs(BrushActorRenderContext, /*bClearMIDs = */false))
+	TArray<UMaterialInterface*> MIDsToRestore;
+	if (!SetupRiverSplineRenderMIDs(BrushActorRenderContext, /*bRestoreMIDs  = */false, MIDsToRestore))
 	{
 		UE_LOG(LogWaterEditor, Error, TEXT("Error in setup River spline render material for Water Brush. Aborting CaptureRiverDepthAndVelocity."));
 		return;
@@ -601,7 +618,7 @@ void AWaterBrushManager::CaptureRiverDepthAndVelocity(const FBrushActorRenderCon
 	WaterBody->SetIsTemporarilyHiddenInEditor(Hidden);
 
 	// Cleanup the spline components at the end (we're not supposed to have modified the water actors) :
-	SetupRiverSplineRenderMIDs(BrushActorRenderContext, /*bClearMIDs = */true);
+	SetupRiverSplineRenderMIDs(BrushActorRenderContext, /*bRestoreMIDs  = */true, MIDsToRestore);
 }
 
 void AWaterBrushManager::DrawCanvasShape(const FBrushActorRenderContext& BrushActorRenderContext)
@@ -1189,17 +1206,18 @@ void AWaterBrushManager::SetMPCParams()
 
 		// HACK [jonathan.bard] : Quick and dirty way to move the responsability of updating the Water MPC to the water mesh actor (because AWaterBrushManager doesn't exist on client builds, this 
 		//  information needs to live somewhere, at least until we get rid of the water MPC and the water texture/params are handled outside of the water landscape brush) :
-		TActorIterator<AWaterMeshActor> It(World);
-		if (AWaterMeshActor* WaterMeshActor = It ? *It : nullptr)
+		TActorIterator<AWaterZone> It(World);
+		if (AWaterZone* WaterZoneActor = It ? *It : nullptr)
 		{
-			WaterMeshActor->SetLandscapeInfo(RTWorldLocation, RTWorldSizeVector);
+			WaterZoneActor->SetLandscapeInfo(RTWorldLocation, RTWorldSizeVector);
 		}
 	}
 }
 
 void AWaterBrushManager::ApplyToCompositeWaterBodyTexture(FBrushRenderContext& BrushRenderContext, const FBrushActorRenderContext& BrushActorRenderContext)
 {
-	if (BrushRenderContext.bHeightmapRender && (BrushActorRenderContext.TryGetActorAs<AWaterBody>() != nullptr))
+	AWaterBody* WaterBody = BrushActorRenderContext.TryGetActorAs<AWaterBody>();
+	if (BrushRenderContext.bHeightmapRender && (WaterBody != nullptr))
 	{
 		check(::IsValid(BrushActorRenderContext.CacheContainer));
 		const FWaterBodyHeightmapSettings& HeightmapSettings = BrushActorRenderContext.WaterBrushActor->GetWaterHeightmapSettings();
@@ -1208,6 +1226,7 @@ void AWaterBrushManager::ApplyToCompositeWaterBodyTexture(FBrushRenderContext& B
 		CompositeWaterBodyTextureMID->SetTextureParameterValue(FName(TEXT("CombinedVelocityAndHeight")), VelocityPingPongRead(BrushRenderContext));
 		CompositeWaterBodyTextureMID->SetTextureParameterValue(FName(TEXT("LandscapeHeight")), HeightPingPongRead(BrushRenderContext));
 		CompositeWaterBodyTextureMID->SetScalarParameterValue(FName(TEXT("ZOffset")), HeightmapSettings.FalloffSettings.ZOffset);
+		CompositeWaterBodyTextureMID->SetScalarParameterValue(FName(TEXT("Shape Dilation")), WaterBody->GetWaterBodyComponent()->ShapeDilation);
 
 		UE_LOG(LogWaterEditor, Verbose, TEXT("Rendering Water Body Velocity/Height to Combined Texture: %s"), *UKismetSystemLibrary::GetDisplayName(VelocityPingPongWrite(BrushRenderContext)));
 
@@ -1289,7 +1308,8 @@ void AWaterBrushManager::RenderBrushActorContext(FBrushRenderContext& BrushRende
 
 	if (WaterBody != nullptr)
 	{
-		WaterBody->UpdateWaterComponentVisibility();
+		// rebuilding the water mesh is expensive and not necessary : 
+		WaterBody->GetWaterBodyComponent()->UpdateComponentVisibility(/* bAllowWaterMeshRebuild = */false);
 	}
 
 	ApplyToCompositeWaterBodyTexture(BrushRenderContext, BrushActorRenderContext);
@@ -1369,6 +1389,8 @@ void AWaterBrushManager::SetupDefaultMaterials()
 
 UTextureRenderTarget2D* AWaterBrushManager::Render_Native(bool InIsHeightmap, UTextureRenderTarget2D* InCombinedResult, FName const& InWeightmapLayerName)
 {
+	QUICK_SCOPE_CYCLE_COUNTER(AWaterBrushManager_Render_Native);
+
 	LandscapeRTRef = InCombinedResult;
 
 	FBrushRenderContext BrushRenderContext;
@@ -1406,6 +1428,7 @@ UTextureRenderTarget2D* AWaterBrushManager::Render_Native(bool InIsHeightmap, UT
 
 	for (AWaterBody* WaterBody : WaterBodies)
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(RenderWaterBody);
 		FBrushActorRenderContext BrushActorRenderContext(WaterBody);
 		RenderBrushActorContext(BrushRenderContext, BrushActorRenderContext);
 	}
@@ -1416,6 +1439,7 @@ UTextureRenderTarget2D* AWaterBrushManager::Render_Native(bool InIsHeightmap, UT
 
 	for (AWaterBodyIsland* WaterBodyIsland : WaterbodyIslands)
 	{
+		QUICK_SCOPE_CYCLE_COUNTER(RenderWaterIsland);
 		FBrushActorRenderContext BrushActorRenderContext(WaterBodyIsland);
 		RenderBrushActorContext(BrushRenderContext, BrushActorRenderContext);
 	}
@@ -1446,7 +1470,7 @@ void AWaterBrushManager::UpdateBrushCacheKeys()
 			// If no cache entry, create one and associate it to the actor : 
 			if (WaterBrushCacheContainer == nullptr)
 			{
-				WaterBrushCacheContainer = NewObject<UWaterBodyBrushCacheContainer>(this);
+				WaterBrushCacheContainer = NewObject<UWaterBodyBrushCacheContainer>(this, NAME_None, RF_Transactional);
 				check(!WaterBrushCacheContainer->Cache.CacheIsValid);
 				SetActorCache(Actor, WaterBrushCacheContainer);
 			}

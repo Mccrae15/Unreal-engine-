@@ -30,6 +30,7 @@ THIRD_PARTY_INCLUDES_END
 	#include "Windows/HideWindowsPlatformTypes.h"
 #endif
 #include "CEF/CEFSchemeHandler.h"
+#include "CEF/CEFResourceContextHandler.h"
 class CefListValue;
 class FCEFBrowserApp;
 class FCEFWebBrowserWindow;
@@ -48,7 +49,7 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
  */
 class FWebBrowserSingleton
 	: public IWebBrowserSingleton
-	, public FTickerObjectBase
+	, public FTSTickerObjectBase
 {
 public:
 
@@ -77,24 +78,11 @@ public:
 		TSharedPtr<FCEFWebBrowserWindow>& BrowserWindowParent,
 		TSharedPtr<FWebBrowserWindowInfo>& BrowserWindowInfo) override;
 
-	TSharedPtr<IWebBrowserWindow> CreateBrowserWindow(
-		void* OSWindowHandle,
-		FString InitialURL,
-		bool bUseTransparency,
-		bool bThumbMouseButtonNavigation,
-		TOptional<FString> ContentsToLoad = TOptional<FString>(),
-		bool ShowErrorMessage = true,
-		FColor BackgroundColor = FColor(255, 255, 255, 255),
-		int BrowserFrameRate = 24,
-		const TArray<FString>& AltRetryDomains = TArray<FString>()) override;
-
 	TSharedPtr<IWebBrowserWindow> CreateBrowserWindow(const FCreateBrowserWindowSettings& Settings) override;
 
 #if	BUILD_EMBEDDED_APP
 	TSharedPtr<IWebBrowserWindow> CreateNativeBrowserProxy() override;
 #endif
-
-	virtual void DeleteBrowserCookies(FString URL = TEXT(""), FString CookieName = TEXT(""), TFunction<void(int)> Completed = nullptr) override;
 
 	virtual TSharedPtr<IWebBrowserCookieManager> GetCookieManager() const override
 	{
@@ -126,6 +114,8 @@ public:
 		bJSBindingsToLoweringEnabled = bEnabled;
 	}
 
+	virtual void ClearOldCacheFolders(const FString& CachePathRoot, const FString& CachePrefix) override;
+
 	/** Set a reference to UWebBrowser's default material*/
 	virtual void SetDefaultMaterial(UMaterialInterface* InDefaultMaterial) override
 	{
@@ -152,7 +142,7 @@ public:
 
 public:
 
-	// FTickerObjectBase Interface
+	// FTSTickerObjectBase Interface
 
 	virtual bool Tick(float DeltaTime) override;
 
@@ -163,12 +153,16 @@ private:
 #if WITH_CEF3
 	/** When new render processes are created, send all permanent variable bindings to them. */
 	void HandleRenderProcessCreated(CefRefPtr<CefListValue> ExtraInfo);
+	/** Helper function to generate the CEF build unique name for the cache_path */
+	FString GenerateWebCacheFolderName(const FString &InputPath);
 	/** Pointer to the CEF App implementation */
 	CefRefPtr<FCEFBrowserApp>			CEFBrowserApp;
 
 	TMap<FString, CefRefPtr<CefRequestContext>> RequestContexts;
+	TMap<FString, CefRefPtr<FCEFResourceContextHandler>> RequestResourceHandlers;
 	FCefSchemeHandlerFactories SchemeHandlerFactories;
 	bool bAllowCEF;
+	bool bTaskFinished;
 #endif
 
 	/** List of currently existing browser windows */

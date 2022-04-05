@@ -66,7 +66,10 @@ namespace AndroidTexFormat
 	static FName NameVU8(TEXT("VU8"));
 	static FName NameRGBA16F(TEXT("RGBA16F"));
 	static FName NameR16F(TEXT("R16F"));
-
+	static FName NameR5G6B5(TEXT("R5G6B5"));
+	static FName NameA1RGB555(TEXT("A1RGB555"));
+	//A1RGB555 is mapped to RGB555A1, because OpenGL GL_RGB5_A1 only supports alpha on the lowest bit
+	static FName NameRGB555A1(TEXT("RGB555A1"));
 	// Error "formats" (uncompressed)
 	static FName NamePOTERROR(TEXT("POTERROR"));
 }
@@ -84,14 +87,14 @@ enum class EAndroidTextureFormatCategory
 /**
  * FAndroidTargetPlatform, abstraction for cooking Android platforms
  */
-class ANDROIDTARGETPLATFORM_API FAndroidTargetPlatform : public TTargetPlatformBase<FAndroidPlatformProperties>
+class ANDROIDTARGETPLATFORM_API FAndroidTargetPlatform : public TNonDesktopTargetPlatformBase<FAndroidPlatformProperties>
 {
 public:
 
 	/**
 	 * Default constructor.
 	 */
-	FAndroidTargetPlatform(bool bInIsClient);
+	FAndroidTargetPlatform(bool bIsClient, const TCHAR* FlavorName, const TCHAR* OverrideIniPlatformName=nullptr);
 
 	/**
 	 * Destructor
@@ -105,31 +108,9 @@ public:
 	 *
 	 * @param Variant name.
 	 */
-	virtual FString GetAndroidVariantName() const
+	FString GetAndroidVariantName() const
 	{
-		return FString();	
-	}
-
-
-	virtual FString IniPlatformName() const override
-	{
-		return "Android";
-	}
-
-	virtual FString PlatformName() const override
-	{
-		FString PlatformName = TEXT("Android");
-		FString Variant = GetAndroidVariantName();
-		if (Variant.Len() > 0)
-		{
-			PlatformName += FString(TEXT("_")) + Variant;
-		}
-		if (bIsClient)
-		{
-			PlatformName += TEXT("Client");
-		}
-
-		return PlatformName;
+		return PlatformInfo->PlatformFlavor.ToString();
 	}
 
 public:
@@ -154,18 +135,6 @@ public:
 
 	virtual ITargetDevicePtr GetDevice( const FTargetDeviceId& DeviceId ) override;
 
-	virtual bool IsRunningPlatform( ) const override;
-
-	virtual bool IsServerOnly( ) const override
-	{
-		return false;
-	}
-
-	virtual bool IsClientOnly() const override
-	{
-		return bIsClient;
-	}
-
 	virtual bool IsSdkInstalled(bool bProjectHasCode, FString& OutDocumentationPath) const override;
 
 	virtual int32 CheckRequirements(bool bProjectHasCode, EBuildConfiguration Configuration, bool bRequiresAssetNativization, FString& OutTutorialPath, FString& OutDocumentationPath, FText& CustomizedLogMessage) const override;
@@ -189,13 +158,13 @@ public:
 		return true;
 	}
 
-#if WITH_ENGINE
-	virtual void GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const override;
-
 	virtual void GetAllPossibleShaderFormats( TArray<FName>& OutFormats ) const override;
 
 	virtual void GetAllTargetedShaderFormats(TArray<FName>& OutFormats) const override;
 	
+#if WITH_ENGINE
+	virtual void GetReflectionCaptureFormats( TArray<FName>& OutFormats ) const override;
+
 	virtual const class FStaticMeshLODSettings& GetStaticMeshLODSettings() const override;
 
 	virtual void GetTextureFormats( const UTexture* InTexture, TArray< TArray<FName> >& OutFormats) const override;
@@ -218,27 +187,12 @@ public:
 
 	virtual bool SupportsVariants() const override;
 
-	virtual FText GetVariantTitle() const override;
-
 	virtual void GetBuildProjectSettingKeys(FString& OutSection, TArray<FString>& InBoolKeys, TArray<FString>& InIntKeys, TArray<FString>& InStringKeys) const override
 	{
 		OutSection = TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings");
-		InBoolKeys.Add(TEXT("bBuildForArmV7")); InBoolKeys.Add(TEXT("bBuildForArm64")); InBoolKeys.Add(TEXT("bBuildForX86"));
-		InBoolKeys.Add(TEXT("bBuildForX8664")); InBoolKeys.Add(TEXT("bBuildForES31")); InBoolKeys.Add(TEXT("bBuildWithHiddenSymbolVisibility"));
-		InBoolKeys.Add(TEXT("bUseNEONForArmV7")); InBoolKeys.Add(TEXT("bSaveSymbols"));
-		InStringKeys.Add(TEXT("NDKAPILevel"));
-	}
-
-	DECLARE_DERIVED_EVENT(FAndroidTargetPlatform, ITargetPlatform::FOnTargetDeviceDiscovered, FOnTargetDeviceDiscovered);
-	virtual FOnTargetDeviceDiscovered& OnDeviceDiscovered( ) override
-	{
-		return DeviceDiscoveredEvent;
-	}
-
-	DECLARE_DERIVED_EVENT(FAndroidTargetPlatform, ITargetPlatform::FOnTargetDeviceLost, FOnTargetDeviceLost);
-	virtual FOnTargetDeviceLost& OnDeviceLost( ) override
-	{
-		return DeviceLostEvent;
+		InBoolKeys.Add(TEXT("bBuildForArm64"));	InBoolKeys.Add(TEXT("bBuildForX8664"));
+		InBoolKeys.Add(TEXT("bBuildForES31")); InBoolKeys.Add(TEXT("bBuildWithHiddenSymbolVisibility"));
+		InBoolKeys.Add(TEXT("bSaveSymbols")); InStringKeys.Add(TEXT("NDKAPILevel"));
 	}
 
 	virtual bool ShouldExpandTo32Bit(const uint16* Indices, const int32 NumIndices) const override;
@@ -278,14 +232,8 @@ protected:
 	// query for rene3ring mode support
 	bool SupportsES31() const;
 	bool SupportsVulkan() const;
-	bool SupportsSoftwareOcclusion() const;
 	bool SupportsLandscapeMeshLODStreaming() const;
 	bool SupportsVulkanSM5() const;
-
-#if WITH_ENGINE
-	// Holds the Engine INI settings (for quick access).
-	FConfigFile EngineSettings;
-#endif //WITH_ENGINE
 
 protected:
 
@@ -294,9 +242,6 @@ protected:
 
 	virtual FAndroidTargetDeviceRef CreateNewDevice(const FAndroidDeviceInfo &DeviceInfo);
 
-	// true if this is a client TP
-	bool bIsClient;
-
 	// Holds a map of valid devices.
 	TMap<FString, FAndroidTargetDevicePtr> Devices;
 
@@ -304,7 +249,7 @@ protected:
 	FTickerDelegate TickDelegate;
 
 	// Handle to the registered TickDelegate.
-	FDelegateHandle TickDelegateHandle;
+	FTSTicker::FDelegateHandle TickDelegateHandle;
 
 	// Pointer to the device detection handler that grabs device ids in another thread
 	IAndroidDeviceDetection* DeviceDetection;
@@ -321,12 +266,6 @@ protected:
 
 	ITargetDevicePtr DefaultDevice;
 #endif //WITH_ENGINE
-
-	// Holds an event delegate that is executed when a new target device has been discovered.
-	FOnTargetDeviceDiscovered DeviceDiscoveredEvent;
-
-	// Holds an event delegate that is executed when a target device has been lost, i.e. disconnected or timed out.
-	FOnTargetDeviceLost DeviceLostEvent;
 };
 
 
@@ -336,19 +275,8 @@ protected:
 class FAndroid_DXTTargetPlatform : public FAndroidTargetPlatform
 {
 public:
-	FAndroid_DXTTargetPlatform(bool bIsClient) : FAndroidTargetPlatform(bIsClient)
+	FAndroid_DXTTargetPlatform(bool bIsClient) : FAndroidTargetPlatform(bIsClient, TEXT("DXT"))
 	{
-		this->PlatformInfo = PlatformInfo::FindPlatformInfo("Android_DXT");
-	}
-
-	virtual FString GetAndroidVariantName() const override
-	{
-		return TEXT("DXT");
-	}
-
-	virtual FText DisplayName() const override
-	{
-		return LOCTEXT("Android_DXT", "Android (DXT)");
 	}
 
 	virtual bool SupportsTextureFormat(FName Format) const override
@@ -372,11 +300,6 @@ public:
 		return (ExtensionsString.Contains(TEXT("GL_NV_texture_compression_s3tc")) || ExtensionsString.Contains(TEXT("GL_EXT_texture_compression_s3tc")));
 	}
 
-	virtual FText GetVariantDisplayName() const override
-	{
-		return LOCTEXT("Android_DXT_ShortName", "DXT");
-	}
-
 	virtual float GetVariantPriority() const override
 	{
 		float Priority;
@@ -389,19 +312,8 @@ public:
 class FAndroid_ASTCTargetPlatform : public FAndroidTargetPlatform
 {
 public:
-	FAndroid_ASTCTargetPlatform(bool bIsClient) : FAndroidTargetPlatform(bIsClient) 
+	FAndroid_ASTCTargetPlatform(bool bIsClient) : FAndroidTargetPlatform(bIsClient, TEXT("ASTC")) 
 	{
-		this->PlatformInfo = PlatformInfo::FindPlatformInfo("Android_ASTC");
-	}
-
-	virtual FString GetAndroidVariantName() const override
-	{
-		return TEXT("ASTC");
-	}
-
-	virtual FText DisplayName() const override
-	{
-		return LOCTEXT("Android_ASTC", "Android (ASTC)");
 	}
 
 	virtual bool SupportsTextureFormat(FName Format) const override
@@ -439,9 +351,12 @@ public:
 			{ { FName(TEXT("BC6H")) },		{ FName(TEXT("ASTC_RGB")) } },
 			{ { FName(TEXT("BC7")) },		{ FName(TEXT("ASTC_RGBAuto")) } },
 			{ { FName(TEXT("AutoDXT")) },	{ FName(TEXT("ASTC_RGBAuto")) } },
+			{ { AndroidTexFormat::NameA1RGB555 },	{ AndroidTexFormat::NameRGB555A1 } },
 		};
 
-		GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, Texture, EngineSettings, true, false, 1);
+		// Supported in ES3.2 with ASTC
+		bool bSupportCompressedVolumeTexture = true;
+		GetDefaultTextureFormatNamePerLayer(OutFormats.AddDefaulted_GetRef(), this, Texture, true, bSupportCompressedVolumeTexture, 1);
 
 		for (FName& TextureFormatName : OutFormats.Last())
 		{
@@ -513,11 +428,6 @@ public:
 		return ExtensionsString.Contains(TEXT("GL_KHR_texture_compression_astc_ldr"));
 	}
 
-	virtual FText GetVariantDisplayName() const override
-	{
-		return LOCTEXT("Android_ASTC_ShortName", "ASTC");
-	}
-
 	virtual float GetVariantPriority() const override
 	{
 		float Priority;
@@ -531,19 +441,8 @@ class FAndroid_ETC2TargetPlatform : public FAndroidTargetPlatform
 {
 public:
 
-	FAndroid_ETC2TargetPlatform(bool bIsClient) : FAndroidTargetPlatform(bIsClient)
+	FAndroid_ETC2TargetPlatform(bool bIsClient) : FAndroidTargetPlatform(bIsClient, TEXT("ETC2"))
 	{
-		this->PlatformInfo = PlatformInfo::FindPlatformInfo("Android_ETC2");
-	}
-
-	virtual FText DisplayName() const override
-	{
-		return LOCTEXT("Android_ETC2", "Android (ETC2)");
-	}
-
-	virtual FString GetAndroidVariantName() const override
-	{
-		return TEXT("ETC2");
 	}
 
 	virtual bool SupportsTextureFormat(FName Format) const override
@@ -568,11 +467,6 @@ public:
 		return GLESVersion >= 0x30000;
 	}
 
-	virtual FText GetVariantDisplayName() const override
-	{
-		return LOCTEXT("Android_ETC2_ShortName", "ETC2");
-	}
-
 	virtual float GetVariantPriority() const override
 	{
 		float Priority;
@@ -587,9 +481,8 @@ class FAndroid_MultiTargetPlatform : public FAndroidTargetPlatform
 	FString FormatTargetString;
 
 public:
-	FAndroid_MultiTargetPlatform(bool bIsClient) : FAndroidTargetPlatform(bIsClient)
+	FAndroid_MultiTargetPlatform(bool bIsClient) : FAndroidTargetPlatform(bIsClient, TEXT("Multi"))
 	{
-		this->PlatformInfo = PlatformInfo::FindPlatformInfo("Android_Multi");
 	}
 
 	// set up all of the multiple formats together into this one
@@ -637,12 +530,8 @@ public:
 			}
 		}
 
+		// @todo do we need this with DisplayName below?
 		PlatformInfo::UpdatePlatformDisplayName(TEXT("Android_Multi"), DisplayName());
-	}
-
-	virtual FString GetAndroidVariantName() const override
-	{
-		return TEXT("Multi");
 	}
 
 	virtual FText DisplayName() const override
@@ -679,11 +568,6 @@ public:
 		}
 	}
 #endif	
-
-	virtual FText GetVariantDisplayName() const override
-	{
-		return LOCTEXT("Android_Multi_ShortName", "Multi");
-	}
 
 	virtual float GetVariantPriority() const override
 	{

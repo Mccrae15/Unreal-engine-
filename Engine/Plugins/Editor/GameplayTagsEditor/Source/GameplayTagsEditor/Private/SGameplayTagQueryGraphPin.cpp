@@ -69,7 +69,7 @@ TSharedRef<SWidget> SGameplayTagQueryGraphPin::GetListContent()
 			.Stretch(EStretch::ScaleToFit)
 			.Content()
 			[
-				SNew(SGameplayTagQueryWidget, EditableQueries)
+				SNew(SGameplayTagQueryWidget, EditableQueries, nullptr)
 				.OnQueryChanged(this, &SGameplayTagQueryGraphPin::OnQueryChanged)
 				.Visibility( this, &SGraphPin::GetDefaultValueVisibility )
 				.AutoSave(true)

@@ -29,6 +29,7 @@
 #include "EntitySystem/Interrogation/MovieSceneInterrogationLinker.h"
 #include "SequencerSectionPainter.h"
 #include "MovieSceneToolHelpers.h"
+#include "Tools/MotionTrailOptions.h"
 
 const FEditorModeID FSequencerEdMode::EM_SequencerMode(TEXT("EM_SequencerMode"));
 
@@ -36,6 +37,13 @@ static TAutoConsoleVariable<bool> CVarDrawMeshTrails(
 	TEXT("Sequencer.DrawMeshTrails"),
 	true,
 	TEXT("Toggle to show or hide Level Sequencer VR Editor trails"));
+
+//if true still use old motion trails for sequencer objects.
+TAutoConsoleVariable<bool> CVarUseOldSequencerMotionTrails(
+	TEXT("Sequencer.UseOldSequencerTrails"),
+	true,
+	TEXT("If true show old motion trails, if false use new editable motion trails."));
+
 
 namespace UE
 {
@@ -532,6 +540,11 @@ void FSequencerEdMode::DrawTransformTrack(const TSharedPtr<ISequencer>& Sequence
 
 void FSequencerEdMode::DrawTracks3D(FPrimitiveDrawInterface* PDI)
 {
+
+	if (CVarUseOldSequencerMotionTrails->GetBool() == false)
+	{
+		return;
+	}
 	for (TWeakPtr<FSequencer> WeakSequencer : Sequencers)
 	{
 		TSharedPtr<FSequencer> Sequencer = WeakSequencer.Pin();
@@ -685,7 +698,7 @@ void FSequencerEdMode::DrawAudioTracks(FPrimitiveDrawInterface* PDI)
 								float Scale = PDI->View->WorldToScreen(Location).W * (4.0f / PDI->View->UnscaledViewRect.Width() / PDI->View->ViewMatrices.GetProjectionMatrix().M[0][0]);
 								Scale *= bIsActive ? 15.f : 10.f;
 
-								PDI->DrawSprite(Location, Scale, Scale, AudioTexture->Resource, Color, SDPG_Foreground, 0.0, 0.0, 0.0, 0.0, SE_BLEND_Masked);
+								PDI->DrawSprite(Location, Scale, Scale, AudioTexture->GetResource(), Color, SDPG_Foreground, 0.0, 0.0, 0.0, 0.0, SE_BLEND_Masked);
 								break;
 							}
 						}

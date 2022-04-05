@@ -5,6 +5,9 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Misc/Guid.h"
+#include "IMovieScenePlayer.h"
+#include "MovieSceneObjectBindingID.h"
+#include "MovieSceneSequenceID.h"
 #include "MovieScenePossessable.generated.h"
 
 /**
@@ -18,7 +21,7 @@ struct FMovieScenePossessable
 public:
 
 	/** Default constructor. */
-	FMovieScenePossessable() : PossessedObjectClass(nullptr) { }
+	FMovieScenePossessable() { }
 
 	/**
 	 * Creates and initializes a new instance.
@@ -29,7 +32,9 @@ public:
 	FMovieScenePossessable(const FString& InitName, UClass* InitPossessedObjectClass)
 		: Guid(FGuid::NewGuid())
 		, Name(InitName)
+#if WITH_EDITORONLY_DATA
 		, PossessedObjectClass(InitPossessedObjectClass)
+#endif
 	{ }
 
 public:
@@ -77,15 +82,17 @@ public:
 		Name = InName;
 	}
 
+#if WITH_EDITORONLY_DATA
+
 	/**
-	 * Get the class of the possessed object.
+	 * Get the class of the possessed object. Can return null if the class hasn't been loaded by any other means yet.
 	 *
 	 * @return Object class.
 	 * @see GetGuid, GetName
 	 */
 	const UClass* GetPossessedObjectClass() const
 	{
-		return PossessedObjectClass;
+		return (const UClass*)(PossessedObjectClass.Get());
 	}
 
 	/**
@@ -98,6 +105,8 @@ public:
 	{
 		PossessedObjectClass = InClass;
 	}
+
+#endif
 
 	/**
 	 * Get the guid of this possessable's parent, if applicable
@@ -123,6 +132,21 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=Actor)
 	TArray<FName> Tags;
 
+	/* Get the optional binding id for binding to a spawnable */
+	const FMovieSceneObjectBindingID& GetSpawnableObjectBindingID() const 
+	{
+		return SpawnableObjectBindingID;
+	}
+
+	/* Set the optional binding id for binding to a spawnable */
+	void SetSpawnableObjectBindingID(const FMovieSceneObjectBindingID& InSpawnableObjectBindingID)
+	{
+		SpawnableObjectBindingID = InSpawnableObjectBindingID;
+	}
+
+	/* Bind the potential spawnable object to this possessable by setting the ObjectBindingID */
+	MOVIESCENE_API bool BindSpawnableObject(FMovieSceneSequenceID SequenceID, UObject* Object, IMovieScenePlayer* Player);
+
 private:
 
 	/** Unique identifier of the possessable object. */
@@ -136,15 +160,19 @@ private:
 	UPROPERTY()
 	FString Name;
 
+#if WITH_EDITORONLY_DATA
+
 	/** Type of the object we'll be possessing */
-	// @todo sequencer: Might be able to be editor-only.  We'll see.
-	// @todo sequencer: This isn't used for anything yet.  We could use it to gate which types of objects can be bound to a
-	// possessable "slot" though.  Or we could use it to generate a "preview" spawnable puppet when previewing with no
-	// possessable object available.
 	UPROPERTY()
-	UClass* PossessedObjectClass;
+	TSoftClassPtr<UObject> PossessedObjectClass;
+
+#endif
 
 	/** GUID relating to this possessable's parent, if applicable. */
 	UPROPERTY()
 	FGuid ParentGuid;
+
+	/** Optional object binding ID if this possessable possesses a spawnable */
+	UPROPERTY()
+	FMovieSceneObjectBindingID SpawnableObjectBindingID;
 };

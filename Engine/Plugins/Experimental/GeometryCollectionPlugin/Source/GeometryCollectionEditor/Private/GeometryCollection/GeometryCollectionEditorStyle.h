@@ -4,7 +4,7 @@
 #include "Styling/SlateStyle.h"
 #include "Styling/SlateStyleRegistry.h"
 
-class FGeometryCollectionEditorStyle : public FSlateStyleSet
+class FGeometryCollectionEditorStyle final : public FSlateStyleSet
 {
 public:
 	FGeometryCollectionEditorStyle() : FSlateStyleSet("GeometryCollectionEditorStyle")
@@ -22,7 +22,7 @@ public:
 		FSlateStyleRegistry::RegisterSlateStyle(*this);
 	}
 
-	~FGeometryCollectionEditorStyle()
+	virtual ~FGeometryCollectionEditorStyle()
 	{
 		FSlateStyleRegistry::UnRegisterSlateStyle(*this);
 	}

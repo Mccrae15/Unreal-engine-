@@ -46,10 +46,7 @@ FEditorSessionSourceFilterService::FEditorSessionSourceFilterService()
 	FilterCollection = FTraceSourceFiltering::Get().GetFilterCollection();
 	FilterCollection->GetSourceFiltersUpdated().AddRaw(this, &FEditorSessionSourceFilterService::StateChanged);
 
-	if (GEditor)
-	{
-		GEditor->OnObjectsReplaced().AddRaw(this, &FEditorSessionSourceFilterService::OnObjectsReplaced);
-	}
+	FCoreUObjectDelegates::OnObjectsReplaced.AddRaw(this, &FEditorSessionSourceFilterService::OnObjectsReplaced);
 
 	// Register delegate to catch engine-level trace filtering system changes 
 	FTraceWorldFiltering::OnFilterStateChanged().AddRaw(this, &FEditorSessionSourceFilterService::StateChanged);	
@@ -59,10 +56,7 @@ FEditorSessionSourceFilterService::FEditorSessionSourceFilterService()
 
 FEditorSessionSourceFilterService::~FEditorSessionSourceFilterService()
 {
-	if (GEditor)
-	{
-		GEditor->OnObjectsReplaced().RemoveAll(this);
-	}
+	FCoreUObjectDelegates::OnObjectsReplaced.RemoveAll(this);
 	
 	FilterCollection->GetSourceFiltersUpdated().RemoveAll(this);
 	FTraceWorldFiltering::OnFilterStateChanged().RemoveAll(this);
@@ -185,7 +179,7 @@ TSharedRef<SWidget> FEditorSessionSourceFilterService::GetFilterPickerWidget(FOn
 	Options.bShowUnloadedBlueprints = true;
 	Options.bShowNoneOption = false;
 	TSharedPtr<FFilterClassFilter> ClassFilter = MakeShareable(new FFilterClassFilter);
-	Options.ClassFilter = ClassFilter;
+	Options.ClassFilters.Add(ClassFilter.ToSharedRef());
 
 	FOnClassPicked ClassPicked = FOnClassPicked::CreateLambda([InFilterClassPicked](UClass* Class)
 	{
@@ -248,7 +242,7 @@ TSharedRef<SWidget> FEditorSessionSourceFilterService::GetClassFilterPickerWidge
 	GetClassFilters(ExistingClasses);
 
 	TSharedPtr<FFilterClassFilter> ClassFilter = MakeShared<FFilterClassFilter>(ExistingClasses);
-	Options.ClassFilter = ClassFilter;
+	Options.ClassFilters.Add(ClassFilter.ToSharedRef());
 
 	FOnClassPicked ClassPicked = FOnClassPicked::CreateLambda([InFilterClassPicked](UClass* Class)
 	{

@@ -8,7 +8,7 @@ using UnrealBuildTool;
 using System.Threading;
 using System.Text.RegularExpressions;
 using System.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace Gauntlet
 {
@@ -110,9 +110,9 @@ namespace Gauntlet
 				{
 					string MacOSDir = Path.Combine(Di.FullName, "Contents", "MacOS");
 
-					// check both binary AND UE4 content. Regular UE4 builds won't have the latter
+					// check both binary AND Engine content. Regular Unreal builds won't have the latter
 					if (Directory.Exists(MacOSDir)
-						&& Directory.Exists(Path.Combine(Di.FullName, "Contents", "UE4")))
+						&& Directory.Exists(Path.Combine(Di.FullName, "Contents", "UE")))
 					{
 						// Check there's an executable
 						FileInfo Executable = new DirectoryInfo(MacOSDir).GetFiles().Where(Fi => Fi.Name.StartsWith(ShortName, StringComparison.OrdinalIgnoreCase)).FirstOrDefault();

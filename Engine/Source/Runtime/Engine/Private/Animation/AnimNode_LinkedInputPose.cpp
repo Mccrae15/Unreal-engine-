@@ -29,9 +29,7 @@ void FAnimNode_LinkedInputPose::Update_AnyThread(const FAnimationUpdateContext& 
 	if(InputProxy)
 	{
 		FAnimationUpdateContext InputContext = Context.WithOtherProxy(InputProxy);
-#if ANIM_NODE_IDS_AVAILABLE
-		InputContext = InputContext.WithNodeId(OuterGraphNodeIndex);
-#endif
+		InputContext.SetNodeId(OuterGraphNodeIndex);
 		InputPose.Update(InputContext);
 	}
 }
@@ -43,13 +41,14 @@ void FAnimNode_LinkedInputPose::Evaluate_AnyThread(FPoseContext& Output)
 		Output.Pose.SetBoneContainer(&InputProxy->GetRequiredBones());
 
 		FPoseContext InputContext(InputProxy, Output.ExpectsAdditivePose());
+		InputContext.SetNodeId(OuterGraphNodeIndex);
 		InputPose.Evaluate(InputContext);
 
 		Output.Pose.MoveBonesFrom(InputContext.Pose);
 		Output.Curve.MoveFrom(InputContext.Curve);
 		Output.CustomAttributes.MoveFrom(InputContext.CustomAttributes);
 	}
-	else if(CachedInputPose.IsValid() && CachedInputCurve.IsValid())
+	else if(CachedInputPose.IsValid() && CachedInputCurve.IsValid() && ensure(Output.Pose.GetNumBones() == CachedInputPose.GetNumBones()))
 	{
 		Output.Pose.CopyBonesFrom(CachedInputPose);
 		Output.Curve.CopyFrom(CachedInputCurve);

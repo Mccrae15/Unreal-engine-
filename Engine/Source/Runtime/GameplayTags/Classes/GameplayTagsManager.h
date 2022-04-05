@@ -100,11 +100,11 @@ struct GAMEPLAYTAGS_API FGameplayTagSource
 
 	/** If this is bound to an ini object for saving, this is the one */
 	UPROPERTY()
-	class UGameplayTagsList* SourceTagList;
+	TObjectPtr<class UGameplayTagsList> SourceTagList;
 
 	/** If this has restricted tags and is bound to an ini object for saving, this is the one */
 	UPROPERTY()
-	class URestrictedGameplayTagsList* SourceRestrictedTagList;
+	TObjectPtr<class URestrictedGameplayTagsList> SourceRestrictedTagList;
 
 	FGameplayTagSource() 
 		: SourceName(NAME_None), SourceType(EGameplayTagSourceType::Invalid), SourceTagList(nullptr), SourceRestrictedTagList(nullptr)
@@ -691,28 +691,6 @@ public:
 
 #endif //WITH_EDITOR
 
-	UE_DEPRECATED(4.15, "Call MatchesTag on FGameplayTag instead")
-	FORCEINLINE_DEBUGGABLE bool GameplayTagsMatch(const FGameplayTag& GameplayTagOne, TEnumAsByte<EGameplayTagMatchType::Type> MatchTypeOne, const FGameplayTag& GameplayTagTwo, TEnumAsByte<EGameplayTagMatchType::Type> MatchTypeTwo) const
-	{
-		SCOPE_CYCLE_COUNTER(STAT_UGameplayTagsManager_GameplayTagsMatch);
-		bool bResult = false;
-		if (MatchTypeOne == EGameplayTagMatchType::Explicit && MatchTypeTwo == EGameplayTagMatchType::Explicit)
-		{
-			bResult = GameplayTagOne == GameplayTagTwo;
-		}
-		else
-		{
-			// Convert both to their containers and do that match
-			const FGameplayTagContainer* ContainerOne = GetSingleTagContainer(GameplayTagOne);
-			const FGameplayTagContainer* ContainerTwo = GetSingleTagContainer(GameplayTagTwo);
-			if (ContainerOne && ContainerTwo)
-			{
-				bResult = ContainerOne->DoesTagContainerMatch(*ContainerTwo, MatchTypeOne, MatchTypeTwo, EGameplayContainerMatchType::Any);
-			}
-		}
-		return bResult;
-	}
-
 	void PrintReplicationIndices();
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
@@ -862,7 +840,7 @@ private:
 
 	/** Holds all of the valid gameplay-related tags that can be applied to assets */
 	UPROPERTY()
-	TArray<UDataTable*> GameplayTagTables;
+	TArray<TObjectPtr<UDataTable>> GameplayTagTables;
 
 	const static FName NAME_Categories;
 	const static FName NAME_GameplayTagFilter;

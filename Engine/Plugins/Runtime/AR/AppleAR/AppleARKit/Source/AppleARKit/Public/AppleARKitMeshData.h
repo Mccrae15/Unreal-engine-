@@ -11,7 +11,6 @@
 	#import <ARKit/ARKit.h>
 #endif
 
-struct FTransform;
 
 /** Represents a cached version of the data coming from an ARKit mesh anchor */
 class FARKitMeshData : public IMRMesh::FBrickDataReceipt
@@ -57,7 +56,7 @@ private:
 	
 private:
 	/** Mesh vertices in the anchor's local space */
-	TArray<FVector> Vertices;
+	TArray<FVector3f> Vertices;
 	
 	/** Mesh tangents in the anchor's local space */
 	TArray<FPackedNormal> TangentData;

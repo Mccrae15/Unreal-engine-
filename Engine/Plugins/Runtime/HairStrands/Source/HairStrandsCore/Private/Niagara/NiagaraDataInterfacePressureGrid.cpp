@@ -3,9 +3,10 @@
 #include "Niagara/NiagaraDataInterfacePressureGrid.h"
 #include "NiagaraShader.h"
 #include "NiagaraComponent.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
 #include "NiagaraRenderer.h"
+#include "NiagaraSimStageData.h"
 #include "NiagaraSystemInstance.h"
-#include "NiagaraEmitterInstanceBatcher.h"
 
 #include "ShaderParameterUtils.h"
 #include "ClearQuad.h"
@@ -13,6 +14,7 @@
 #include "RenderGraphUtils.h"
 #include "ShaderParameterStruct.h"
 #include "GlobalShader.h"
+#include "PipelineStateCache.h"
 
 #define LOCTEXT_NAMESPACE "NiagaraDataInterfacePressureGrid"
 DEFINE_LOG_CATEGORY_STATIC(LogPressureGrid, Log, All);
@@ -248,46 +250,46 @@ void UNiagaraDataInterfacePressureGrid::GetVMExternalFunction(const FVMExternalF
 	}
 }
 
-void UNiagaraDataInterfacePressureGrid::BuildDistanceField(FVectorVMContext& Context)
+void UNiagaraDataInterfacePressureGrid::BuildDistanceField(FVectorVMExternalFunctionContext& Context)
 {
 	// @todo : implement function for cpu 
 }
 
-void UNiagaraDataInterfacePressureGrid::BuildDensityField(FVectorVMContext& Context)
+void UNiagaraDataInterfacePressureGrid::BuildDensityField(FVectorVMExternalFunctionContext& Context)
 {
 	// @todo : implement function for cpu 
 }
 
-void UNiagaraDataInterfacePressureGrid::SolveGridPressure(FVectorVMContext& Context)
+void UNiagaraDataInterfacePressureGrid::SolveGridPressure(FVectorVMExternalFunctionContext& Context)
 {
 	// @todo : implement function for cpu 
 }
 
-void UNiagaraDataInterfacePressureGrid::ComputeBoundaryWeights(FVectorVMContext& Context)
+void UNiagaraDataInterfacePressureGrid::ComputeBoundaryWeights(FVectorVMExternalFunctionContext& Context)
 {
 	// @todo : implement function for cpu 
 }
 
-void UNiagaraDataInterfacePressureGrid::SetSolidBoundary(FVectorVMContext& Context)
+void UNiagaraDataInterfacePressureGrid::SetSolidBoundary(FVectorVMExternalFunctionContext& Context)
 {
 	// @todo : implement function for cpu 
 }
 
-void UNiagaraDataInterfacePressureGrid::ScaleCellFields(FVectorVMContext& Context)
+void UNiagaraDataInterfacePressureGrid::ScaleCellFields(FVectorVMExternalFunctionContext& Context)
 {
 	// @todo : implement function for cpu 
 }
 
-void UNiagaraDataInterfacePressureGrid::GetNodePosition(FVectorVMContext& Context)
+void UNiagaraDataInterfacePressureGrid::GetNodePosition(FVectorVMExternalFunctionContext& Context)
 {
 	// @todo : implement function for cpu 
 }
 
-void UNiagaraDataInterfacePressureGrid::GetDensityField(FVectorVMContext& Context)
+void UNiagaraDataInterfacePressureGrid::GetDensityField(FVectorVMExternalFunctionContext& Context)
 {
 	// @todo : implement function for cpu 
 }
-void UNiagaraDataInterfacePressureGrid::UpdateDeformationGradient(FVectorVMContext& Context)
+void UNiagaraDataInterfacePressureGrid::UpdateDeformationGradient(FVectorVMExternalFunctionContext& Context)
 {
 	// @todo : implement function for cpu 
 }
@@ -438,7 +440,7 @@ void UNiagaraDataInterfacePressureGrid::GetParameterDefinitionHLSL(const FNiagar
 
 //------------------------------------------------------------------------------------------------------------
 
-#define NIAGARA_HAIR_STRANDS_THREAD_COUNT_PRESSURE 64
+#define NIAGARA_HAIR_STRANDS_THREAD_COUNT_PRESSURE 4
 
 class FClearPressureGridCS : public FGlobalShader
 {
@@ -498,7 +500,7 @@ IMPLEMENT_SHADER_TYPE(, FClearPressureGridCS, TEXT("/Plugin/Runtime/HairStrands/
 
 //------------------------------------------------------------------------------------------------------------
 
-inline void ClearBuffer(FRHICommandList& RHICmdList, FNDIVelocityGridBuffer* CurrentGridBuffer, FNDIVelocityGridBuffer* DestinationGridBuffer, const FIntVector& GridSize, const bool CopyPressure)
+inline void ClearBuffer(FRHICommandList& RHICmdList, ERHIFeatureLevel::Type FeatureLevel, FNDIVelocityGridBuffer* CurrentGridBuffer, FNDIVelocityGridBuffer* DestinationGridBuffer, const FIntVector& GridSize, const bool CopyPressure)
 {
 	FRHIUnorderedAccessView* DestinationGridBufferUAV = DestinationGridBuffer->GridDataBuffer.UAV;
 	FRHIShaderResourceView* CurrentGridBufferSRV = CurrentGridBuffer->GridDataBuffer.SRV;
@@ -506,8 +508,8 @@ inline void ClearBuffer(FRHICommandList& RHICmdList, FNDIVelocityGridBuffer* Cur
 
 	if (DestinationGridBufferUAV != nullptr && CurrentGridBufferSRV != nullptr && CurrentGridBufferUAV != nullptr)
 	{
-		TShaderMapRef<FClearPressureGridCS> ComputeShader(GetGlobalShaderMap(ERHIFeatureLevel::SM5));
-		RHICmdList.SetComputeShader(ComputeShader.GetComputeShader());
+		TShaderMapRef<FClearPressureGridCS> ComputeShader(GetGlobalShaderMap(FeatureLevel));
+		SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
 
 		FRHITransitionInfo Transitions[] = {
 			FRHITransitionInfo(CurrentGridBufferUAV, ERHIAccess::Unknown, ERHIAccess::SRVCompute),
@@ -516,12 +518,14 @@ inline void ClearBuffer(FRHICommandList& RHICmdList, FNDIVelocityGridBuffer* Cur
 		RHICmdList.Transition(MakeArrayView(Transitions, UE_ARRAY_COUNT(Transitions)));
 
 		const uint32 GroupSize = NIAGARA_HAIR_STRANDS_THREAD_COUNT_PRESSURE;
-		const uint32 NumElements = (GridSize.X + 1) * (GridSize.Y + 1) * (GridSize.Z + 1);
+		const FIntVector ExtendedSize = GridSize + FIntVector(1, 1, 1);
+		
+		const uint32 DispatchCountX = FMath::DivideAndRoundUp((uint32)(ExtendedSize.X), GroupSize);
+		const uint32 DispatchCountY = FMath::DivideAndRoundUp((uint32)(ExtendedSize.Y), GroupSize);
+		const uint32 DispatchCountZ = FMath::DivideAndRoundUp((uint32)(ExtendedSize.Z), GroupSize);
 
-		const uint32 DispatchCount = FMath::DivideAndRoundUp(NumElements, GroupSize);
-
-		ComputeShader->SetParameters(RHICmdList, CurrentGridBufferSRV, DestinationGridBufferUAV, GridSize, CopyPressure);
-		DispatchComputeShader(RHICmdList, ComputeShader.GetShader(), DispatchCount, 1, 1);
+		ComputeShader->SetParameters(RHICmdList, CurrentGridBufferSRV, DestinationGridBufferUAV, ExtendedSize, CopyPressure);
+		DispatchComputeShader(RHICmdList, ComputeShader.GetShader(), DispatchCountX, DispatchCountY, DispatchCountZ);
 		ComputeShader->UnsetParameters(RHICmdList);
 	}
 }
@@ -537,7 +541,7 @@ void FNDIPressureGridProxy::PreStage(FRHICommandList& RHICmdList, const FNiagara
 	{
 		if (Context.SimStageData->bFirstStage)
 		{
-			ClearBuffer(RHICmdList, ProxyData->CurrentGridBuffer, ProxyData->DestinationGridBuffer, ProxyData->GridSize, true);
+			ClearBuffer(RHICmdList, Context.ComputeDispatchInterface->GetFeatureLevel(), ProxyData->CurrentGridBuffer, ProxyData->DestinationGridBuffer, ProxyData->GridSize, true);
 		}
 	}
 }

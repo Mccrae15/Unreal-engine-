@@ -26,17 +26,20 @@
 	#define TSPARSEARRAY_RANGED_FOR_CHECKS 1
 #endif
 
-// Forward declarations.
-template<typename ElementType,typename Allocator = FDefaultSparseArrayAllocator >
-class TSparseArray;
-
-
 /** The result of a sparse array allocation. */
 struct FSparseArrayAllocationInfo
 {
 	int32 Index;
 	void* Pointer;
 };
+
+// Forward declarations.
+template<typename ElementType,typename Allocator = FDefaultSparseArrayAllocator >
+class TSparseArray;
+
+template <typename T, typename Allocator> void* operator new(size_t Size, TSparseArray<T, Allocator>& Array);
+template <typename T, typename Allocator> void* operator new(size_t Size, TSparseArray<T, Allocator>& Array, int32 Index);
+inline void* operator new(size_t Size, const FSparseArrayAllocationInfo& Allocation);
 
 /** Allocated elements are overlapped with free element info in the element list. */
 template<typename ElementType>
@@ -78,7 +81,7 @@ class TSparseArray
 	friend class TScriptSparseArray;
 
 public:
-	static const bool SupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<InElementType>::Value;
+	static constexpr bool SupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<InElementType>::Value;
 
 	/** Destructor. */
 	~TSparseArray()
@@ -229,6 +232,31 @@ public:
 	FORCEINLINE int32 EmplaceAtLowestFreeIndex(int32& LowestFreeIndexSearchStart, ArgsType&&... Args)
 	{
 		FSparseArrayAllocationInfo Allocation = AddUninitializedAtLowestFreeIndex(LowestFreeIndexSearchStart);
+		new(Allocation) ElementType(Forward<ArgsType>(Args)...);
+		return Allocation.Index;
+	}
+
+	/**
+	 * Constructs a new item at a given index of the array.
+	 *
+	 * @param Index							Index at which the new allocation will be done
+	 * @param Args							The arguments to forward to the constructor of the new item.
+	 * @return								Index to the new item
+	 */
+	template <typename... ArgsType>
+	FORCEINLINE int32 EmplaceAt(int32 Index, ArgsType&&... Args)
+	{
+		FSparseArrayAllocationInfo Allocation;
+		if(!AllocationFlags[Index])
+		{
+			Allocation = InsertUninitialized(Index);
+		}
+		else
+		{
+			Allocation.Index = Index;
+			Allocation.Pointer = &GetData(Allocation.Index).ElementData;			
+		}
+		
 		new(Allocation) ElementType(Forward<ArgsType>(Args)...);
 		return Allocation.Index;
 	}
@@ -816,6 +844,7 @@ public:
 	}
 	bool IsAllocated(int32 Index) const { return AllocationFlags[Index]; }
 	int32 GetMaxIndex() const { return Data.Num(); }
+	bool IsEmpty() const { return Data.Num() == NumFreeIndices; }
 	int32 Num() const { return Data.Num() - NumFreeIndices; }
 
 	/**
@@ -1121,7 +1150,7 @@ private:
 			if (NumElements > 0)
 			{
 				const FTypeLayoutDesc& ElementTypeDesc = StaticGetTypeLayoutDesc<ElementType>();
-				FMemoryImageWriter ArrayWriter = Writer.WritePointer(FString::Printf(TEXT("TSparseArray<%s>"), ElementTypeDesc.Name));
+				FMemoryImageWriter ArrayWriter = Writer.WritePointer(ElementTypeDesc);
 				for (int32 i = 0; i < NumElements; ++i)
 				{
 					const FElementOrFreeListLink& Elem = Object.Data[i];
@@ -1140,7 +1169,7 @@ private:
 			}
 			else
 			{
-				Writer.WriteMemoryImagePointerSizedBytes(0u);
+				Writer.WriteNullPointer();
 			}
 			Writer.WriteBytes(NumElements);
 			Writer.WriteBytes(NumElements);
@@ -1212,9 +1241,10 @@ namespace Freeze
 	}
 
 	template<typename ElementType, typename Allocator>
-	void IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TSparseArray<ElementType, Allocator>& Object, void* OutDst)
+	uint32 IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TSparseArray<ElementType, Allocator>& Object, void* OutDst)
 	{
 		Object.CopyUnfrozen(Context, OutDst);
+		return sizeof(Object);
 	}
 
 	template<typename ElementType, typename Allocator>
@@ -1286,6 +1316,11 @@ public:
 		return AllocationFlags.IsValidIndex(Index) && AllocationFlags[Index];
 	}
 
+	bool IsEmpty() const
+	{
+		return Data.Num() == NumFreeIndices;
+	}
+
 	int32 Num() const
 	{
 		return Data.Num() - NumFreeIndices;
@@ -1310,7 +1345,7 @@ public:
 	{
 		checkSlow(this != &Other);
 		Empty(0, Layout);
-		Data.MoveAssign(Other.Data, Layout.Size);
+		Data.MoveAssign(Other.Data, Layout.Size, Layout.Alignment);
 		AllocationFlags.MoveAssign(Other.AllocationFlags);
 		FirstFreeIndex = Other.FirstFreeIndex; Other.FirstFreeIndex = 0;
 		NumFreeIndices = Other.NumFreeIndices; Other.NumFreeIndices = 0;
@@ -1319,7 +1354,7 @@ public:
 	void Empty(int32 Slack, const FScriptSparseArrayLayout& Layout)
 	{
 		// Free the allocated elements.
-		Data.Empty(Slack, Layout.Size);
+		Data.Empty(Slack, Layout.Size, Layout.Alignment);
 		FirstFreeIndex = -1;
 		NumFreeIndices = 0;
 		AllocationFlags.Empty(Slack);
@@ -1347,7 +1382,7 @@ public:
 		else
 		{
 			// Add a new element.
-			Index = Data.Add(1, Layout.Size);
+			Index = Data.Add(1, Layout.Size, Layout.Alignment);
 			AllocationFlags.Add(false);
 		}
 

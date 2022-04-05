@@ -239,9 +239,20 @@ void SphereMaxNoH( inout BxDFContext Context, float SinAlpha, bool bNewtonIterat
 
 // Physically based shading model
 // parameterized with the below options
+// [ Karis 2013, "Real Shading in Unreal Engine 4" slide 11 ]
 
-// Microfacet specular = D*G*F / (4*NoL*NoV) = D*Vis*F
+// E = Random sample for BRDF.
+// N = Normal of the macro surface.
+// H = Normal of the micro surface.
+// V = View vector going from surface's position towards the view's origin.
+// L = Light ray direction
+
+// D = Microfacet NDF
+// G = Shadowing and masking
+// F = Fresnel
+
 // Vis = G / (4*NoL*NoV)
+// f = Microfacet specular BRDF = D*G*F / (4*NoL*NoV) = D*Vis*F
 
 
 float3 Diffuse_Lambert( float3 DiffuseColor )
@@ -297,6 +308,34 @@ float3 Diffuse_Gotanda( float3 DiffuseColor, float Roughness, float NoV, float N
 	float Lr = (21.0 / 20.0) * (1 - F0) * ( Fr * Lm + Vd + Bp );
 	return DiffuseColor / PI * Lr;
 #endif
+}
+
+// [ Chan 2018, "Material Advances in Call of Duty: WWII" ]
+// It has been extended here to fade out retro reflectivity contribution from area light in order to avoid visual artefacts.
+float3 Diffuse_Chan( float3 DiffuseColor, float a2, float NoV, float NoL, float VoH, float NoH, float RetroReflectivityWeight)
+{
+	// We saturate each input to avoid out of range negative values which would result in weird darkening at the edge of meshes (resulting from tangent space interpolation).
+	NoV = saturate(NoV);
+	NoL = saturate(NoL);
+	VoH = saturate(VoH);
+	NoH = saturate(NoH);
+
+	// a2 = 2 / ( 1 + exp2( 18 * g )
+	float g = saturate( (1.0 / 18.0) * log2( 2 / a2 - 1 ) );
+
+	float F0 = VoH + Pow5( 1 - VoH );
+	float FdV = 1 - 0.75 * Pow5( 1 - NoV );
+	float FdL = 1 - 0.75 * Pow5( 1 - NoL );
+
+	// Rough (F0) to smooth (FdV * FdL) response interpolation
+	float Fd = lerp( F0, FdV * FdL, saturate( 2.2 * g - 0.5 ) );
+
+	// Retro reflectivity contribution.
+	float Fb = ( (34.5 * g - 59 ) * g + 24.5 ) * VoH * exp2( -max( 73.2 * g - 21.2, 8.9 ) * sqrt( NoH ) );
+	// It fades out when lights become area lights in order to avoid visual artefacts.
+	Fb *= RetroReflectivityWeight;
+	
+	return DiffuseColor * ( (1 / PI) * ( Fd + Fb ) );
 }
 
 // [Blinn 1977, "Models of light reflection for computer synthesized pictures"]
@@ -414,7 +453,12 @@ float3 F_Schlick( float3 SpecularColor, float VoH )
 	
 	// Anything less than 2% is physically impossible and is instead considered to be shadowing
 	return saturate( 50.0 * SpecularColor.g ) * Fc + (1 - Fc) * SpecularColor;
-	
+}
+
+float3 F_Schlick(float3 F0, float3 F90, float VoH)
+{
+	float Fc = Pow5(1 - VoH);
+	return F90 * Fc + (1 - Fc) * F0;
 }
 
 float3 F_Fresnel( float3 SpecularColor, float VoH )
@@ -449,6 +493,7 @@ void ModifyGGXAnisotropicNormalRoughness(float3 WorldTangent, float Anisotropy, 
 	}
 }
 
+// Convert a roughness and an anisotropy factor into GGX alpha values respectively for the major and minor axis of the tangent frame
 void GetAnisotropicRoughness(float Alpha, float Anisotropy, out float ax, out float ay)
 {
 #if 1
@@ -463,11 +508,33 @@ void GetAnisotropicRoughness(float Alpha, float Anisotropy, out float ax, out fl
 #endif
 }
 
+// Convert a roughness and an anisotropy factor, into two roughnesses respectively for the major and minor axis of the tangent frame
+float2 GetAnisotropicRoughness(float Roughness, float Anisotropy)
+{
+	// Anisotropic parameters: ax and ay are the roughness along the tangent and bitangent	
+	// Kulla 2017, "Revisiting Physically Based Shading at Imageworks"
+	float2 Out = saturate(Roughness);
+	Anisotropy = clamp(Anisotropy, -1.0, 1.0);
+	Out.x = max(Roughness * sqrt(1.0 + Anisotropy), 0.001f);
+	Out.y = max(Roughness * sqrt(1.0 - Anisotropy), 0.001f);
+	return Out;
+}
+
+// Return anisotropy factor (+1: Tangent is major axis, -1: Bitangent is the major axis), and the original roughness
+void GetAnisotropicFactor(float RoughnessX, float RoughnessY, inout float Anisotropy, inout float OriginalRoughness)
+{
+	const float MinRoughness = 0.001f;
+	float r = Pow2(max(RoughnessX, MinRoughness) / max(RoughnessY, MinRoughness));
+	Anisotropy = (r - 1.0) / (r + 1.0);
+	OriginalRoughness = (RoughnessX + RoughnessY) / (sqrt(1.0 + Anisotropy) + sqrt(1.0 - Anisotropy));
+}
+
 #ifndef PreIntegratedGF
 Texture2D		PreIntegratedGF;
 SamplerState	PreIntegratedGFSampler;
 #endif
 
+// [Karis 2013, "Real Shading in Unreal Engine 4" slide 11]
 half3 EnvBRDF( half3 SpecularColor, half Roughness, half NoV )
 {
 	// Importance sampled preintegrated G * F
@@ -475,6 +542,14 @@ half3 EnvBRDF( half3 SpecularColor, half Roughness, half NoV )
 
 	// Anything less than 2% is physically impossible and is instead considered to be shadowing 
 	float3 GF = SpecularColor * AB.x + saturate( 50.0 * SpecularColor.g ) * AB.y;
+	return GF;
+}
+
+half3 EnvBRDF(half3 F0, half3 F90, half Roughness, half NoV)
+{
+	// Importance sampled preintegrated G * F
+	float2 AB = Texture2DSampleLevel(PreIntegratedGF, PreIntegratedGFSampler, float2(NoV, Roughness), 0).rg;
+	float3 GF = F0 * AB.x + F90 * AB.y;
 	return GF;
 }
 
@@ -496,9 +571,15 @@ half3 EnvBRDFApprox( half3 SpecularColor, half Roughness, half NoV )
 
 	// Anything less than 2% is physically impossible and is instead considered to be shadowing
 	// Note: this is needed for the 'specular' show flag to work, since it uses a SpecularColor of 0
-	float F90 = saturate(50.0 * SpecularColor.g);
+	float F90 = saturate( 50.0 * SpecularColor.g );
 
 	return SpecularColor * AB.x + F90 * AB.y;
+}
+
+half3 EnvBRDFApprox(half3 F0, half3 F90, half Roughness, half NoV)
+{
+	half2 AB = EnvBRDFApproxLazarov(Roughness, NoV);
+	return F0 * AB.x + F90 * AB.y;
 }
 
 half EnvBRDFApproxNonmetal( half Roughness, half NoV )
@@ -521,6 +602,11 @@ void EnvBRDFApproxFullyRough(inout half3 DiffuseColor, inout half SpecularColor)
 {
 	DiffuseColor += SpecularColor * 0.45;
 	SpecularColor = 0;
+}
+void EnvBRDFApproxFullyRough(inout half3 DiffuseColor, inout half3 F0, inout half3 F90)
+{
+	DiffuseColor += F0 * 0.45;
+	F0 = F90 = 0;
 }
 
 

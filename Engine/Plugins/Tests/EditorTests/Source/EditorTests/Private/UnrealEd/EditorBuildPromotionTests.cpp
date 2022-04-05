@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "CoreMinimal.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "HAL/FileManager.h"
 #include "Misc/Paths.h"
@@ -52,6 +52,7 @@
 #include "Editor.h"
 #include "FileHelpers.h"
 #include "UnrealEdGlobals.h"
+#include "UObject/SavePackage.h"
 
 //Automation
 #include "Tests/AutomationTestSettings.h"
@@ -80,7 +81,7 @@
 #include "K2Node_CustomEvent.h"
 #include "EdGraphUtilities.h"
 #include "Kismet2/KismetDebugUtilities.h"
-#include "Engine/Breakpoint.h"
+#include "Kismet2/Breakpoint.h"
 #include "Engine/LevelScriptBlueprint.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
@@ -869,7 +870,10 @@ namespace BuildPromotionTestHelper
 					AssetPackage->SetDirtyFlag(true);
 					FString PackageFileName = FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension());
 					FPlatformFileManager::Get().GetPlatformFile().SetReadOnly(*PackageFileName, false);
-					if (UPackage::SavePackage(AssetPackage, NULL, RF_Standalone, *PackageFileName, GError, nullptr, false, true, SAVE_NoError))
+					FSavePackageArgs SaveArgs;
+					SaveArgs.TopLevelFlags = RF_Standalone;
+					SaveArgs.SaveFlags = SAVE_NoError;
+					if (UPackage::SavePackage(AssetPackage, NULL, *PackageFileName, SaveArgs))
 					{
 						UE_LOG(LogEditorBuildPromotionTests, Display, TEXT("Saved asset"));
 					}
@@ -1828,7 +1832,12 @@ namespace BuildPromotionTestHelper
 				BlueprintPackage->SetDirtyFlag(true);
 				BlueprintPackage->FullyLoad();
 				const FString PackagePath = FEditorPromotionTestUtilities::GetGamePath() + TEXT("/") + EditorBuildPromotionTestUtils::BlueprintNameString;
-				bool bHasPackageSaved = UPackage::SavePackage(BlueprintPackage, NULL, RF_Standalone, *FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension()), GLog, nullptr, false, true, SAVE_None);
+				FSavePackageArgs SaveArgs;
+				SaveArgs.TopLevelFlags = RF_Standalone;
+				SaveArgs.Error = GLog;
+				bool bHasPackageSaved = UPackage::SavePackage(BlueprintPackage, nullptr,
+					*FPackageName::LongPackageNameToFilename(PackagePath, FPackageName::GetAssetPackageExtension()),
+					SaveArgs);
 				Test->TestTrue(FString::Printf(TEXT("Saved blueprint (%s)"), *BlueprintObject->GetName()), bHasPackageSaved);
 			}
 		}
@@ -1989,11 +1998,7 @@ namespace BuildPromotionTestHelper
 			if (BlueprintObject)
 			{
 				//Add a breakpoint
-				UBreakpoint* NewBreakpoint = NewObject<UBreakpoint>(BlueprintObject);
-				FKismetDebugUtilities::SetBreakpointEnabled(NewBreakpoint, true);
-				FKismetDebugUtilities::SetBreakpointLocation(NewBreakpoint, PrintNode);
-				BlueprintObject->Breakpoints.Add(NewBreakpoint);
-				BlueprintObject->MarkPackageDirty();
+				FKismetDebugUtilities::CreateBreakpoint(BlueprintObject, PrintNode, /* bIsEnabled = */ true);
 
 				Test->AddInfo(TEXT("Set a breakpoint on the PrintString node"));
 				EditorBuildPromotionTestUtils::StartPIE(true);

@@ -30,25 +30,16 @@ UMaterialExpressionLandscapeLayerBlend::UMaterialExpressionLandscapeLayerBlend(c
 	static FConstructorStatics ConstructorStatics;
 
 #if WITH_EDITORONLY_DATA
-	bIsParameterExpression = true;
-
 	MenuCategories.Add(ConstructorStatics.NAME_Landscape);
 #endif
 }
-
-
-FGuid& UMaterialExpressionLandscapeLayerBlend::GetParameterExpressionId()
-{
-	return ExpressionGUID;
-}
-
 
 void UMaterialExpressionLandscapeLayerBlend::Serialize(FStructuredArchive::FRecord Record)
 {
 	Super::Serialize(Record);
 	FArchive& UnderlyingArchive = Record.GetUnderlyingArchive();
 
-	if (UnderlyingArchive.IsLoading() && UnderlyingArchive.UE4Ver() < VER_UE4_ADD_LB_WEIGHTBLEND)
+	if (UnderlyingArchive.IsLoading() && UnderlyingArchive.UEVer() < VER_UE4_ADD_LB_WEIGHTBLEND)
 	{
 		// convert any LB_AlphaBlend entries to LB_WeightBlend
 		for (FLayerBlendInput& LayerInput : Layers)
@@ -159,6 +150,16 @@ bool UMaterialExpressionLandscapeLayerBlend::IsResultMaterialAttributes(int32 Ou
 
 int32 UMaterialExpressionLandscapeLayerBlend::Compile(class FMaterialCompiler* Compiler, int32 OutputIndex)
 {
+	return Compile(Compiler, OutputIndex, false);
+}
+
+int32 UMaterialExpressionLandscapeLayerBlend::CompilePreview(class FMaterialCompiler* Compiler, int32 OutputIndex)
+{
+	return Compile(Compiler, OutputIndex, true);
+}
+
+int32 UMaterialExpressionLandscapeLayerBlend::Compile(class FMaterialCompiler* Compiler, int32 OutputIndex, bool bForPreview)
+{
 	// For renormalization
 	bool bNeedsRenormalize = false;
 	int32 WeightSumCode = Compiler->Constant(0);
@@ -179,7 +180,8 @@ int32 UMaterialExpressionLandscapeLayerBlend::Compile(class FMaterialCompiler* C
 			// Height input
 			const int32 HeightCode = Layer.HeightInput.Expression ? Layer.HeightInput.Compile(Compiler) : Compiler->Constant(Layer.ConstHeightInput);
 
-			const int32 WeightCode = Compiler->StaticTerrainLayerWeight(Layer.LayerName, Layer.PreviewWeight > 0.0f ? Compiler->Constant(Layer.PreviewWeight) : INDEX_NONE);
+			const int32 DefaultWeightCode = bForPreview && Layer.PreviewWeight > 0.0f ? Compiler->Constant(Layer.PreviewWeight) : INDEX_NONE;
+			const int32 WeightCode = Compiler->StaticTerrainLayerWeight(Layer.LayerName, DefaultWeightCode);
 			if (WeightCode != INDEX_NONE)
 			{
 				switch (Layer.BlendType)
@@ -241,7 +243,8 @@ int32 UMaterialExpressionLandscapeLayerBlend::Compile(class FMaterialCompiler* C
 	{
 		if (Layer.BlendType == LB_AlphaBlend)
 		{
-			const int32 WeightCode = Compiler->StaticTerrainLayerWeight(Layer.LayerName, Layer.PreviewWeight > 0.0f ? Compiler->Constant(Layer.PreviewWeight) : INDEX_NONE);
+			const int32 DefaultWeightCode = bForPreview && Layer.PreviewWeight > 0.0f ? Compiler->Constant(Layer.PreviewWeight) : INDEX_NONE;
+			const int32 WeightCode = Compiler->StaticTerrainLayerWeight(Layer.LayerName, DefaultWeightCode);
 			if (WeightCode != INDEX_NONE)
 			{
 				const int32 LayerCode = Layer.LayerInput.Expression ? Layer.LayerInput.Compile(Compiler) : Compiler->Constant3(Layer.ConstLayerInput.X, Layer.ConstLayerInput.Y, Layer.ConstLayerInput.Z);
@@ -323,22 +326,14 @@ void UMaterialExpressionLandscapeLayerBlend::PostEditChangeProperty(FPropertyCha
 		}
 	}
 }
-#endif // WITH_EDITOR
 
-
-void UMaterialExpressionLandscapeLayerBlend::GetAllParameterInfo(TArray<FMaterialParameterInfo> &OutParameterInfo, TArray<FGuid> &OutParameterIds, const FMaterialParameterInfo& InBaseParameterInfo) const
+void UMaterialExpressionLandscapeLayerBlend::GetLandscapeLayerNames(TArray<FName>& OutLayers) const
 {
 	for (const FLayerBlendInput& Layer : Layers)
 	{
-		int32 CurrentSize = OutParameterInfo.Num();
-		FMaterialParameterInfo NewParameter(Layer.LayerName, InBaseParameterInfo.Association, InBaseParameterInfo.Index);
-		OutParameterInfo.AddUnique(NewParameter);
-
-		if (CurrentSize != OutParameterInfo.Num())
-		{
-			OutParameterIds.Add(ExpressionGUID);
-		}
+		OutLayers.AddUnique(Layer.LayerName);
 	}
 }
+#endif // WITH_EDITOR
 
 #undef LOCTEXT_NAMESPACE

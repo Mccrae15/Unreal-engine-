@@ -2,6 +2,7 @@
 
 #include "DatasmithCADTranslatorModule.h"
 
+#include "CADOptions.h"
 #include "CADToolsModule.h"
 #include "DatasmithCADTranslator.h"
 
@@ -25,16 +26,17 @@ void FDatasmithCADTranslatorModule::StartupModule()
 		IFileManager::Get().DeleteDirectory(*OldCacheDir, true, true);
 	}
 
-	bool bCreateCacheFolder = false;
-	if (IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.CADTranslator.EnableCADCache")))
+	CacheDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("DatasmithCADCache"), *FString::FromInt(CacheVersion)));
+	if (!IFileManager::Get().MakeDirectory(*CacheDir, true))
 	{
-		bCreateCacheFolder = CVar->GetInt() != 0;
+		CacheDir.Empty();
+		CADLibrary::FImportParameters::bGEnableCADCache = false; // very weak protection: user could turn that on later, while the cache path is invalid
 	}
 
-	if (bCreateCacheFolder)
+	// Create body cache directory since this one is used even if bGEnableCADCache is false
+	if (!CacheDir.IsEmpty())
 	{
-		CacheDir = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("DatasmithCADCache"), *FString::FromInt(CacheVersion)));
-		IFileManager::Get().MakeDirectory(*CacheDir);
+		IFileManager::Get().MakeDirectory(*FPaths::Combine(CacheDir, TEXT("body")), true);
 	}
 
 	Datasmith::RegisterTranslator<FDatasmithCADTranslator>();

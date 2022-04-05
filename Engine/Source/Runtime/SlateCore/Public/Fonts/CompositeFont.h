@@ -201,7 +201,7 @@ struct SLATECORE_API FFontData
 		}
 		else
 		{
-			KeyHash = HashCombine(KeyHash, GetTypeHash(Key.FontFilename));
+			KeyHash = HashCombine(KeyHash, Key.FontFilenameHash);
 			KeyHash = HashCombine(KeyHash, GetTypeHash(Key.Hinting));
 			KeyHash = HashCombine(KeyHash, GetTypeHash(Key.LoadingPolicy));
 		}
@@ -230,6 +230,12 @@ private:
 	FString FontFilename;
 
 	/**
+	 * Cached hash value of FontFilename.
+	 * Must be updated everytime FontFilename changes.
+	 */
+	uint32  FontFilenameHash;
+
+	/**
 	 * The hinting algorithm to use with the font.
 	 * This variable is ignored if we have a font face asset, and is synchronized with the font face asset on load in a cooked build.
 	 */
@@ -254,7 +260,7 @@ private:
 	 * Font data v3. This points to a font face asset.
 	 */
 	UPROPERTY()
-	const UObject* FontFaceAsset;
+	TObjectPtr<const UObject> FontFaceAsset;
 
 #if WITH_EDITORONLY_DATA
 	/**
@@ -262,7 +268,7 @@ private:
 	 * This can be removed once we no longer support loading packages older than FEditorObjectVersion::AddedFontFaceAssets (as can UFontBulkData itself).
 	 */
 	UPROPERTY()
-	UFontBulkData* BulkDataPtr_DEPRECATED;
+	TObjectPtr<UFontBulkData> BulkDataPtr_DEPRECATED;
 
 	/**
 	 * Legacy font data v1. This used to be where font data was stored prior to font bulk data.

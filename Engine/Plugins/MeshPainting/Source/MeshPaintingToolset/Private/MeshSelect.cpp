@@ -22,7 +22,6 @@ bool UVertexAdapterClickToolBuilder::CanBuildTool(const FToolBuilderState& Scene
 UInteractiveTool* UVertexAdapterClickToolBuilder::BuildTool(const FToolBuilderState& SceneState) const
 {
 	UVertexAdapterClickTool* NewTool = NewObject<UVertexAdapterClickTool>(SceneState.ToolManager);
-
 	return NewTool;
 }
 
@@ -34,7 +33,6 @@ bool UTextureAdapterClickToolBuilder::CanBuildTool(const FToolBuilderState& Scen
 UInteractiveTool* UTextureAdapterClickToolBuilder::BuildTool(const FToolBuilderState& SceneState) const
 {
 	UTextureAdapterClickTool* NewTool = NewObject<UTextureAdapterClickTool>(SceneState.ToolManager);
-
 	return NewTool;
 }
 
@@ -79,7 +77,6 @@ void UMeshClickTool::OnClicked(const FInputDeviceRay& ClickPos)
 {
 	SelectionMechanic->OnClicked(ClickPos);
 }
-
 
 
 UVertexAdapterClickTool::UVertexAdapterClickTool()

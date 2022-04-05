@@ -187,6 +187,11 @@ void FChannelCurveModel<ChannelType, ChannelValue, KeyType>::SetKeyPositions(TAr
 			}
 		}
 		Channel->PostEditChange();
+		if(WeakSequencer.IsValid())
+		{ 
+			const FMovieSceneChannelMetaData* MetaData = ChannelHandle.GetMetaData();
+			WeakSequencer.Pin()->OnChannelChanged().Broadcast(MetaData, Section);
+		}
 		CurveModifiedDelegate.Broadcast();
 	}
 }
@@ -360,6 +365,11 @@ void FChannelCurveModel<ChannelType, ChannelValue, KeyType>::AddKeys(TArrayView<
 		// For now we need to duplicate the new key handle array due to API mismatch. This will auto calculate tangents if needed.
 		SetKeyAttributes(NewKeyHandles, InKeyAttributes);
 		Channel->PostEditChange();
+		if (WeakSequencer.IsValid())
+		{
+			const FMovieSceneChannelMetaData* MetaData = ChannelHandle.GetMetaData();
+			WeakSequencer.Pin()->OnChannelChanged().Broadcast(MetaData, Section);
+		}
 		CurveModifiedDelegate.Broadcast();
 	}
 }
@@ -384,6 +394,11 @@ void FChannelCurveModel<ChannelType, ChannelValue, KeyType>::RemoveKeys(TArrayVi
 			}
 		}
 		Channel->PostEditChange();
+		if (WeakSequencer.IsValid())
+		{
+			const FMovieSceneChannelMetaData* MetaData = ChannelHandle.GetMetaData();
+			WeakSequencer.Pin()->OnChannelChanged().Broadcast(MetaData, Section);
+		}
 		CurveModifiedDelegate.Broadcast();
 	}
 }
@@ -410,8 +425,23 @@ void FChannelCurveModel<ChannelType, ChannelValue, KeyType>::FixupCurve()
 		OnDestroyHandle = NewChannelProxy->OnDestroy.AddRaw(this, &FChannelCurveModel<ChannelType, ChannelValue, KeyType>::FixupCurve);
 	}
 }
+template <class ChannelType, class ChannelValue, class KeyType>
+void FChannelCurveModel<ChannelType, ChannelValue, KeyType>::GetCurveColorObjectAndName(UObject** OutObject, FString& OutName) const
+{
+	if (UMovieSceneSection* Section = WeakSection.Get())
+	{
+
+		*OutObject = Section->GetImplicitObjectOwner();
+		OutName = GetIntentionName();
+		return;
+	}
+	// Just call base if it doesn't work
+	FCurveModel::GetCurveColorObjectAndName(OutObject, OutName);
+}
+
 
 // Explicit template instantiation
+template class FChannelCurveModel<FMovieSceneDoubleChannel, FMovieSceneDoubleValue, double>;
 template class FChannelCurveModel<FMovieSceneFloatChannel, FMovieSceneFloatValue, float>;
 template class FChannelCurveModel<FMovieSceneIntegerChannel, int32, int32>;
 template class FChannelCurveModel<FMovieSceneBoolChannel, bool, bool>;

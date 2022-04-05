@@ -13,12 +13,13 @@ class FTextureShareDisplayExtension;
 class FViewport;
 class FTextureShareModule;
 class FSceneViewFamily;
+class FRDGBuilder;
+struct FSceneTextures;
 
 class FTextureShareDisplayManager
 {
 public:
 	FTextureShareDisplayManager(FTextureShareModule& InTextureShareModule);
-	~FTextureShareDisplayManager();
 
 	/** Will return the extension associated to the desired viewport or create one if it's not tracked */
 	TSharedPtr<FTextureShareDisplayExtension, ESPMode::ThreadSafe> FindOrAddDisplayConfiguration(FViewport* InViewport);
@@ -35,14 +36,13 @@ public:
 	void EndSceneSharing();
 
 	/** Display extension global cb */
-	void OnBeginRenderViewFamily(FSceneViewFamily& InViewFamily);
-	void OnPreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily);
-	void OnPostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily);
+	void PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily);
+	void PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily);
 
 
 private:
 	/** Rendered callback (get scene textures to share) */
-	void OnResolvedSceneColor_RenderThread(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext);
+	void OnResolvedSceneColor_RenderThread(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures);
 
 	bool IsSceneSharingValid() const
 	{ return bIsRenderedCallbackAssigned && DisplayExtensions.Num()>0; }

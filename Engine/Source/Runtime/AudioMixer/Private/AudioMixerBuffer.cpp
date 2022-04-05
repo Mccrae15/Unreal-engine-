@@ -5,6 +5,7 @@
 #include "AudioDecompress.h"
 #include "Interfaces/IAudioFormat.h"
 #include "AudioMixerSourceDecode.h"
+#include "AudioMixerTrace.h"
 #include "AudioStreaming.h"
 
 namespace Audio
@@ -151,18 +152,32 @@ namespace Audio
 			return false;
 		}
 
+		AUDIO_MIXER_TRACE_CPUPROFILER_EVENT_SCOPE(FMixerBuffer::ReadCompressedInfo);
+
 		FSoundQualityInfo QualityInfo;
 
-		if (DecompressionState->ReadCompressedInfo(SoundWave->ResourceData, SoundWave->ResourceSize, &QualityInfo))
+		if (!SoundWave->GetResourceData() || !SoundWave->GetResourceSize())
+		{
+			UE_LOG(LogAudioMixer, Warning, TEXT("Failed to read compressed info of '%s' because there was no resource data or invalid resource size."), *ResourceName);
+			return false;
+		}
+
+		if (DecompressionState->ReadCompressedInfo(SoundWave->GetResourceData(), SoundWave->GetResourceSize(), &QualityInfo))
 		{
 			NumFrames = QualityInfo.SampleDataSize / (QualityInfo.NumChannels * sizeof(int16));
 			return true;
+		}
+		else
+		{
+			UE_LOG(LogAudioMixer, Warning, TEXT("Failed to read compressed info of '%s'."), *ResourceName);
 		}
 		return false;
 	}
 
 	void FMixerBuffer::Seek(const float SeekTime)
 	{
+		AUDIO_MIXER_TRACE_CPUPROFILER_EVENT_SCOPE(FMixerBuffer::Seek);
+
 		if (ensure(DecompressionState))
 		{
 			DecompressionState->SeekToTime(SeekTime);
@@ -177,6 +192,8 @@ namespace Audio
 			return nullptr;
 		}
 
+		AUDIO_MIXER_TRACE_CPUPROFILER_EVENT_SCOPE(FMixerBuffer::Init);
+
 #if WITH_EDITOR
 		InWave->InvalidateSoundWaveIfNeccessary();
 #endif // WITH_EDITOR
@@ -187,7 +204,7 @@ namespace Audio
 
 		EDecompressionType DecompressionType = InWave->DecompressionType;
 
-		if (bForceRealtime  && DecompressionType != DTYPE_Setup && DecompressionType != DTYPE_Streaming)
+		if (bForceRealtime  && DecompressionType != DTYPE_Setup && DecompressionType != DTYPE_Streaming && DecompressionType != DTYPE_Procedural)
 		{
 			DecompressionType = DTYPE_RealTime;
 		}
@@ -309,14 +326,20 @@ namespace Audio
 
 	FMixerBuffer* FMixerBuffer::CreateStreamingBuffer(FAudioDevice* AudioDevice, USoundWave* InWave)
 	{
+		if (!InWave)
+		{
+			return nullptr;
+		}
+
+		AUDIO_MIXER_TRACE_CPUPROFILER_EVENT_SCOPE(FMixerBuffer::CreateStreamingBuffer);
+
 		FMixerBuffer* Buffer = new FMixerBuffer(AudioDevice, InWave, EBufferType::Streaming);
 
 		FSoundQualityInfo QualityInfo = { 0 };
-
 		Buffer->DecompressionState = AudioDevice->CreateCompressedAudioInfo(InWave);
 
 		// Get the header information of our compressed format
-		if (Buffer->DecompressionState->StreamCompressedInfo(InWave, &QualityInfo))
+		if (Buffer->DecompressionState && Buffer->DecompressionState->StreamCompressedInfo(InWave, &QualityInfo))
 		{
 			// Refresh the wave data
 			InWave->SetSampleRate(QualityInfo.SampleRate);
@@ -334,7 +357,7 @@ namespace Audio
 		{
 			// When set to seekable streaming, missing the first chunk is possible and
 			// does not signify any issue with the asset itself, so don't mark it as invalid.
-			if (InWave && !InWave->IsSeekableStreaming())
+			if (InWave && !InWave->IsSeekable())
 			{
 				UE_LOG(LogAudioMixer, Warning,
 					TEXT("FMixerBuffer::CreateStreamingBuffer failed to StreamCompressedInfo on SoundWave '%s'.  Invalidating wave resource data (asset now requires re-cook)."),
@@ -361,7 +384,7 @@ namespace Audio
 		// Create a new buffer for real-time sounds
 		FMixerBuffer* Buffer = new FMixerBuffer(AudioDevice, InWave, EBufferType::PCMRealTime);
 
-		if (InWave->ResourceData == nullptr)
+		if (InWave->GetResourceData() == nullptr)
 		{
 			InWave->InitAudioResource(AudioDevice->GetRuntimeFormat(InWave));
 		}

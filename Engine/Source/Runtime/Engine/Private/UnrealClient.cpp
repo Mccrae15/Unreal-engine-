@@ -26,7 +26,9 @@
 #include "EngineModule.h"
 #include "Performance/EnginePerformanceTargets.h"
 #include "Templates/UniquePtr.h"
+#include "Elements/Framework/TypedElementList.h"
 #include "EngineUtils.h"
+#include "RenderGraphUtils.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogClient, Log, All);
 
@@ -271,6 +273,11 @@ const FTexture2DRHIRef& FRenderTarget::GetRenderTargetTexture() const
 	return RenderTargetTextureRHI;
 }
 
+FRDGTextureRef FRenderTarget::GetRenderTargetTexture(FRDGBuilder& GraphBuilder) const
+{
+	return RegisterExternalTexture(GraphBuilder, GetRenderTargetTexture(), TEXT("RenderTarget"));
+}
+
 FUnorderedAccessViewRHIRef FRenderTarget::GetRenderTargetUAV() const
 {
 	return FUnorderedAccessViewRHIRef();
@@ -371,6 +378,10 @@ TArray<FColor>* FScreenshotRequest::GetHighresScreenshotMaskColorArray()
 	return &HighresScreenshotMaskColorArray;
 }
 
+FIntPoint& FScreenshotRequest::GetHighresScreenshotMaskExtents()
+{
+	return HighresScreenshotMaskExtents;
+}
 
 // @param bAutoType true: automatically choose GB/MB/KB/... false: always use MB for easier comparisons
 FString GetMemoryString( const double Value, const bool bAutoType )
@@ -402,6 +413,7 @@ FString FScreenshotRequest::Filename;
 FString FScreenshotRequest::NextScreenshotName;
 bool FScreenshotRequest::bShowUI = false;
 TArray<FColor> FScreenshotRequest::HighresScreenshotMaskColorArray;
+FIntPoint FScreenshotRequest::HighresScreenshotMaskExtents;
 
 static TAutoConsoleVariable<int32> CVarFullSizeUnitGraph(
 	TEXT("FullSizeUnitGraph"),
@@ -529,6 +541,11 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 #endif // #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 #endif // #if !UE_BUILD_SHIPPING
 
+	FColor StatRed(233, 109, 99);		// (Salmon) Red that survives video compression
+	FColor StatGreen(127, 202, 159);	// (De York) Green that survives video compression
+	FColor StatOrange(244, 186, 112);	// Orange that survives video compression
+	FColor StatMagenda(204, 153, 204);	// (Deep Pink) Magenta that survives video compression
+
 	// Render CPU thread and GPU frame times.
 	const bool bStereoRendering = GEngine->IsStereoscopic3D(InViewport);
 	UFont* Font = (!FPlatformProperties::SupportsWindowedMode() && GEngine->GetMediumFont()) ? GEngine->GetMediumFont() : GEngine->GetSmallFont();
@@ -638,13 +655,13 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 				FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
 
 				InCanvas->DrawShadowedString(X1, InY, TEXT("Mem:"), Font, bShowUnitTimeGraph ? FColor(100, 100, 255) : FColor::White);
-				InCanvas->DrawShadowedString(X2, InY, *GetMemoryString(Stats.UsedPhysical), Font, FColor::Green);
-				InCanvas->DrawShadowedString(X3, InY, *GetMemoryString(Stats.PeakUsedPhysical), Font, FColor::Green);
+				InCanvas->DrawShadowedString(X2, InY, *GetMemoryString(Stats.UsedPhysical), Font, StatGreen);
+				InCanvas->DrawShadowedString(X3, InY, *GetMemoryString(Stats.PeakUsedPhysical), Font, StatGreen);
 				InY += RowHeight;
 				
 				InCanvas->DrawShadowedString(X1, InY, TEXT("VMem:"), Font, bShowUnitTimeGraph ? FColor(100, 100, 255) : FColor::White);
-				InCanvas->DrawShadowedString(X2, InY, *GetMemoryString(Stats.UsedVirtual), Font, FColor::Green);
-				InCanvas->DrawShadowedString(X3, InY, *GetMemoryString(Stats.PeakUsedVirtual), Font, FColor::Green);
+				InCanvas->DrawShadowedString(X2, InY, *GetMemoryString(Stats.UsedVirtual), Font, StatGreen);
+				InCanvas->DrawShadowedString(X3, InY, *GetMemoryString(Stats.PeakUsedVirtual), Font, StatGreen);
 				InY += RowHeight;
 			}
 			else
@@ -654,37 +671,37 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 				{
 					// print out currently used memory
 					InCanvas->DrawShadowedString(X1, InY, TEXT("Mem:"), Font, bShowUnitTimeGraph ? FColor(100, 100, 255) : FColor::White);
-					InCanvas->DrawShadowedString(X2, InY, *GetMemoryString(MemoryUsed), Font, FColor::Green);
+					InCanvas->DrawShadowedString(X2, InY, *GetMemoryString(MemoryUsed), Font, StatGreen);
 					InY += RowHeight;
 				}
 			}
 		}
 
 		{
-			const float ResolutionFraction = DynamicResolutionStateInfos.ResolutionFractionApproximation;
-			const float ScreenPercentage = ResolutionFraction * 100.0f;
+			float ResolutionFraction = DynamicResolutionStateInfos.ResolutionFractionApproximation;
+			float ScreenPercentage = ResolutionFraction * 100.0f;
 
 			InCanvas->DrawShadowedString(X1, InY, TEXT("DynRes:"), Font, bShowUnitTimeGraph ? FColor(255, 160, 100) : FColor::White);
-			if (!GRHISupportsDynamicResolution || (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Unsupported))
+			if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Enabled)
 			{
-				InCanvas->DrawShadowedString(X2, InY, TEXT("Unsupported"), Font, FColor(160, 160, 160));
-			}
-			else if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Enabled)
-			{
-				FColor Color = (ResolutionFraction < AlertResolutionFraction) ? FColor::Red : ((ResolutionFraction < FMath::Min(ResolutionFraction * 0.97f, 1.0f)) ? FColor::Yellow : FColor::Green);
+				FColor Color = (ResolutionFraction < AlertResolutionFraction) ? StatRed : ((ResolutionFraction < FMath::Min(ResolutionFraction * 0.97f, 1.0f)) ? StatOrange : StatGreen);
 				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.1f%% x %3.1f%%"), ScreenPercentage, ScreenPercentage), Font, Color);
 			}
 			else if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::DebugForceEnabled)
 			{
-				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.1f%% x %3.1f%%"), ScreenPercentage, ScreenPercentage), Font, FColor::Magenta);
+				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%3.1f%% x %3.1f%%"), ScreenPercentage, ScreenPercentage), Font, StatMagenda);
 			}
 			else if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Paused)
 			{
-				InCanvas->DrawShadowedString(X2, InY, TEXT("Paused"), Font, FColor::Magenta);
+				InCanvas->DrawShadowedString(X2, InY, TEXT("Paused"), Font, StatMagenda);
 			}
 			else if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Disabled)
 			{
 				InCanvas->DrawShadowedString(X2, InY, TEXT("OFF"), Font, FColor(160, 160, 160));
+			}
+			else if (DynamicResolutionStateInfos.Status == EDynamicResolutionStatus::Unsupported)
+			{
+				InCanvas->DrawShadowedString(X2, InY, TEXT("Unsupported"), Font, FColor(160, 160, 160));
 			}
 			else
 			{
@@ -695,26 +712,26 @@ int32 FStatUnitData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32 In
 
 		// Draw calls
 		{
-			// Assume we don't have more than 1 GPU in mobile.
-			int32 NumDrawCalls = GNumDrawCallsRHI[0];
+				// Assume we don't have more than 1 GPU in mobile.
+				int32 NumDrawCalls = GNumDrawCallsRHI[0];
 			InCanvas->DrawShadowedString(X1, InY, TEXT("Draws:"), Font, bShowUnitTimeGraph ? FColor(100, 100, 255) : FColor::White);
-			InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%d"), NumDrawCalls), Font, FColor::Green);
+			InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%d"), NumDrawCalls), Font, StatGreen);
 			InY += RowHeight;
 		}
 			
 		// Primitives
 		{
-			// Assume we don't have more than 1 GPU in mobile.
-			int32 NumPrimitives = GNumPrimitivesDrawnRHI[0];
+				// Assume we don't have more than 1 GPU in mobile.
+				int32 NumPrimitives = GNumPrimitivesDrawnRHI[0];
 			InCanvas->DrawShadowedString(X1, InY, TEXT("Prims:"), Font, bShowUnitTimeGraph ? FColor(100, 100, 255) : FColor::White);
 			if (NumPrimitives < 10000)
 			{
-				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%d"), NumPrimitives), Font, FColor::Green);
+				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%d"), NumPrimitives), Font, StatGreen);
 			}
 			else
 			{
 				float NumPrimitivesK = NumPrimitives/1000.f;
-				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%.1fK"), NumPrimitivesK), Font, FColor::Green);
+				InCanvas->DrawShadowedString(X2, InY, *FString::Printf(TEXT("%.1fK"), NumPrimitivesK), Font, StatGreen);
 			}
 				
 			InY += RowHeight;
@@ -1103,19 +1120,8 @@ int32 FStatHitchesData::DrawStat(FViewport* InViewport, FCanvas* InCanvas, int32
 			Hitches[OverwriteIndex] = DeltaSeconds;
 			When[OverwriteIndex] = CurrentTime;
 			OverwriteIndex = (OverwriteIndex + 1) % NumHitches;
-			if (GEngine->ActiveMatinee.IsValid())
-			{
-				float MatineeTime = GEngine->ActiveMatinee.Get()->InterpPosition;
-				float MatineeMM = FPlatformMath::TruncToFloat(MatineeTime / 60.0f);
-				float MatineeSS = FPlatformMath::TruncToFloat(MatineeTime - MatineeMM * 60.0f);
-				float MatineeMS = FPlatformMath::TruncToFloat((MatineeTime - MatineeMM * 60.0f - MatineeSS) * 1000.0f);
-				UE_LOG(LogClient, Warning, TEXT("HITCH @ %02dm:%02d.%03ds,%d,%d,%d"),
-					(int32)MatineeMM, (int32)MatineeSS, (int32)MatineeMS, int32(MatineeTime * 1000), int32(DeltaSeconds * 1000), Count++);
-			}
-			else
-			{
-				UE_LOG(LogClient, Warning, TEXT("HITCH %d              running cnt = %5d"), int32(DeltaSeconds * 1000), Count++);
-			}
+
+			UE_LOG(LogClient, Warning, TEXT("HITCH %d              running cnt = %5d"), int32(DeltaSeconds * 1000), Count++);
 		}
 
 		const int32 MaxY = InCanvas->GetRenderTarget()->GetSizeXY().Y;
@@ -1273,8 +1279,6 @@ void FViewport::HighResScreenshot()
 	// cleared out before we use it below
 	const FString CachedScreenshotName = FScreenshotRequest::GetFilename();
 
-	FIntPoint RestoreSize(SizeX, SizeY);
-
 	FDummyViewport* DummyViewport = new FDummyViewport(ViewportClient);
 
 	DummyViewport->SizeX = (GScreenshotResolutionX > 0) ? GScreenshotResolutionX : SizeX;
@@ -1350,12 +1354,6 @@ void FViewport::HighResScreenshot()
 	{
 		ForceLODVar->Set(OldForceLOD, ECVF_SetByCode);
 	}
-
-	ENQUEUE_RENDER_COMMAND(EndDrawingCommand)(
-		[RestoreSize](FRHICommandListImmediate& RHICmdList)
-		{
-			GetRendererModule().SceneRenderTargetsSetBufferSize(RestoreSize.X, RestoreSize.Y);
-		});
 
 	BeginReleaseResource(DummyViewport);
 	FlushRenderingCommands();
@@ -1699,7 +1697,7 @@ const TArray<FColor>& FViewport::GetRawHitProxyData(FIntRect InRect)
 
 	bool bFetchHitProxyBytes = !bIsRenderingStereo && ( !bHitProxiesCached || (SizeY*SizeX) != CachedHitProxyData.Num() );
 
-	if( bIsRenderingStereo )
+	if (bIsRenderingStereo)
 	{
 		// Stereo viewports don't support hit proxies, and we don't want to update them because it will adversely
 		// affect performance.
@@ -1724,8 +1722,7 @@ const TArray<FColor>& FViewport::GetRawHitProxyData(FIntRect InRect)
 			});
 
 		// Let the viewport client draw its hit proxies.
-		UWorld* World = ViewportClient->GetWorld();
-		FCanvas Canvas(&HitProxyMap, &HitProxyMap, World, World ? World->FeatureLevel.GetValue() : GMaxRHIFeatureLevel, FCanvas::CDM_DeferDrawing, ViewportClient->ShouldDPIScaleSceneCanvas() ? ViewportClient->GetDPIScale() : 1.0f);
+		FCanvas Canvas(&HitProxyMap, &HitProxyMap, ViewportClient->GetWorld(), GetFeatureLevel(), FCanvas::CDM_DeferDrawing, ViewportClient->ShouldDPIScaleSceneCanvas() ? ViewportClient->GetDPIScale() : 1.0f);
 		{
 			ViewportClient->Draw(this, &Canvas);
 		}
@@ -1736,9 +1733,19 @@ const TArray<FColor>& FViewport::GetRawHitProxyData(FIntRect InRect)
 		ENQUEUE_RENDER_COMMAND(UpdateHitProxyRTCommand)(
 			[HitProxyMapPtr](FRHICommandListImmediate& RHICmdList)
 			{
+				FTexture2DRHIRef RenderTargetTexture = HitProxyMapPtr->GetRenderTargetTexture();
+
+				// Should not be multisampled, so can safely use copy src as state instead of taking care of ResolveSrc here
+				check(!RenderTargetTexture->IsMultisampled());
+				
+				// Keep in copy source because 2 resolve calls are done on the render target (skip one extra transition call)
+				FResolveParams ResolveParams;
+				ResolveParams.SourceAccessFinal = ERHIAccess::CopySrc;
+
 				// Copy (resolve) the rendered thumbnail from the render target to its texture
-				RHICmdList.CopyToResolveTarget(HitProxyMapPtr->GetRenderTargetTexture(), HitProxyMapPtr->GetHitProxyTexture(), FResolveParams());
-				RHICmdList.CopyToResolveTarget(HitProxyMapPtr->GetRenderTargetTexture(), HitProxyMapPtr->GetHitProxyCPUTexture(), FResolveParams());
+				RHICmdList.Transition(FRHITransitionInfo(RenderTargetTexture, ERHIAccess::Unknown, ERHIAccess::CopySrc));
+				RHICmdList.CopyToResolveTarget(RenderTargetTexture, HitProxyMapPtr->GetHitProxyTexture(), ResolveParams);
+				RHICmdList.CopyToResolveTarget(RenderTargetTexture, HitProxyMapPtr->GetHitProxyCPUTexture(), FResolveParams());
 			});
 
 		ENQUEUE_RENDER_COMMAND(EndDrawingCommand)(
@@ -1782,8 +1789,8 @@ const TArray<FColor>& FViewport::GetRawHitProxyData(FIntRect InRect)
 	}
 
 	return CachedHitProxyData;
-
 }
+
 void FViewport::GetHitProxyMap(FIntRect InRect,TArray<HHitProxy*>& OutMap)
 {
 	const TArray<FColor>& CachedData = GetRawHitProxyData(InRect);
@@ -1862,23 +1869,10 @@ HHitProxy* FViewport::GetHitProxy(int32 X,int32 Y)
 
 void FViewport::GetActorsAndModelsInHitProxy(FIntRect InRect, TSet<AActor*>& OutActors, TSet<UModel*>& OutModels)
 {
-	const TArray<FColor>& RawHitProxyData = GetRawHitProxyData(InRect);
-
 	OutActors.Empty();
 	OutModels.Empty();
 
-	// Lower the resolution with massive box selects
-	const int32 Step = (InRect.Width() > 500 && InRect.Height() > 500) ? 4 : 1;
-
-	for (int32 Y = InRect.Min.Y; Y < InRect.Max.Y; Y = Y < InRect.Max.Y - 1 ? FMath::Min(InRect.Max.Y-1, Y+Step) : ++Y )
-	{
-		const FColor* SourceData = &RawHitProxyData[Y * SizeX];
-		for (int32 X = InRect.Min.X; X < InRect.Max.X; X = X < InRect.Max.X-1 ? FMath::Min(InRect.Max.X-1, X + Step) : ++X )
-		{
-			FHitProxyId HitProxyId(SourceData[X]);
-			HHitProxy* HitProxy = GetHitProxyById(HitProxyId);
-
-			if (HitProxy)
+	EnumerateHitProxiesInRect(InRect, [&OutActors, &OutModels](HHitProxy* HitProxy)
 			{
 				if( HitProxy->IsA(HActor::StaticGetType()) )
 				{
@@ -1900,6 +1894,51 @@ void FViewport::GetActorsAndModelsInHitProxy(FIntRect InRect, TSet<AActor*>& Out
 						OutActors.Add( HitBSPBrushVert->Brush.Get() );
 					}
 				}
+		return true;
+	});
+}
+
+FTypedElementHandle FViewport::GetElementHandleAtPoint(int32 X, int32 Y)
+{
+	if (HHitProxy* HitProxy = GetHitProxy(X, Y))
+	{
+		return HitProxy->GetElementHandle();
+	}
+	return FTypedElementHandle();
+}
+
+void FViewport::GetElementHandlesInRect(FIntRect InRect, FTypedElementListRef OutElementHandles)
+{
+	OutElementHandles->Reset();
+
+	EnumerateHitProxiesInRect(InRect, [&OutElementHandles](HHitProxy* HitProxy)
+	{
+		if (FTypedElementHandle ElementHandle = HitProxy->GetElementHandle())
+		{
+			OutElementHandles->Add(MoveTemp(ElementHandle));
+		}
+		return true;
+	});
+}
+
+void FViewport::EnumerateHitProxiesInRect(FIntRect InRect, TFunctionRef<bool(HHitProxy*)> InCallback)
+{
+	const TArray<FColor>& RawHitProxyData = GetRawHitProxyData(InRect);
+
+	// Lower the resolution with massive box selects
+	const int32 Step = (InRect.Width() > 500 && InRect.Height() > 500) ? 4 : 1;
+
+	for (int32 Y = InRect.Min.Y; Y < InRect.Max.Y; Y = Y < InRect.Max.Y-1 ? FMath::Min(InRect.Max.Y-1, Y+Step) : ++Y)
+	{
+		const FColor* SourceData = &RawHitProxyData[Y * SizeX];
+		for (int32 X = InRect.Min.X; X < InRect.Max.X; X = X < InRect.Max.X-1 ? FMath::Min(InRect.Max.X-1, X+Step) : ++X)
+		{
+			FHitProxyId HitProxyId(SourceData[X]);
+			HHitProxy* HitProxy = GetHitProxyById(HitProxyId);
+
+			if (HitProxy && !InCallback(HitProxy))
+			{
+				return;
 			}
 		}
 	}
@@ -2078,11 +2117,11 @@ void FViewport::FHitProxyMap::Init(uint32 NewSizeX,uint32 NewSizeY)
 
 	// Create a render target to store the hit proxy map.
 	{
-		FRHIResourceCreateInfo CreateInfo(FClearValueBinding::White);
+		FRHIResourceCreateInfo CreateInfo(TEXT("HitProxyTexture"), FClearValueBinding::White);
 		RHICreateTargetableShaderResource2D(SizeX,SizeY,PF_B8G8R8A8,1,TexCreate_None,TexCreate_RenderTargetable,false,CreateInfo,RenderTargetTextureRHI,HitProxyTexture);
 	}
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("HitProxyCPUTexture"));
 		HitProxyCPUTexture = RHICreateTexture2D(SizeX, SizeY, PF_B8G8R8A8,1,1,TexCreate_CPUReadback,CreateInfo);
 	}
 }
@@ -2202,7 +2241,10 @@ ENGINE_API bool GetHighResScreenShotInput(const TCHAR* Cmd, FOutputDevice& Ar, u
 	const FString FilenameSearchString = TEXT("filename=");
 
 	// FParse::Value has better handling of escape characters than FParse::Token
-	FParse::Value(Cmd, *FilenameSearchString, OutFilenameOverride);
+	if (!FParse::Value(Cmd, *FilenameSearchString, OutFilenameOverride))
+	{
+		OutFilenameOverride.Reset();
+	}
 
 	FString Arg;
 	while (FParse::Token(Cmd, Arg, true))
@@ -2320,9 +2362,9 @@ float FCommonViewportClient::GetDPIDerivedResolutionFraction() const
 			return 1.0f;
 		}
 
-		static auto CVarEnableEditorScreenPercentageOverride = IConsoleManager::Get().FindConsoleVariable(TEXT("Editor.OverrideDPIBasedEditorViewportScaling"));
+		static auto CVarEditorViewportHighDPIPtr = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Editor.Viewport.HighDPI"));
 
-		if (CVarEnableEditorScreenPercentageOverride && CVarEnableEditorScreenPercentageOverride->GetInt() == 0)
+		if (CVarEditorViewportHighDPIPtr && CVarEditorViewportHighDPIPtr->GetInt() == 0)
 		{
 			return FMath::Min(1.0f / GetDPIScale(), 1.0f);
 		}

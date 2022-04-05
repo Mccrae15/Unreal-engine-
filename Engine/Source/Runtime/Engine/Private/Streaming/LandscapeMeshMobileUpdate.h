@@ -64,7 +64,7 @@ protected:
 	void DoFinishUpdate(const FContext& Context);
 	void DoCancel(const FContext& Context);
 
-	FVertexBufferRHIRef IntermediateVertexBuffer;
+	FBufferRHIRef IntermediateVertexBuffer;
 	void* StagingLODDataArray[MAX_MESH_LOD_COUNT];
 	int64 StagingLODDataSizes[MAX_MESH_LOD_COUNT];
 };
@@ -113,9 +113,8 @@ protected:
 
 	bool HasPendingIORequests() const;
 
-	FString GetIOFilename(const FContext& Context);
 	void SetAsyncFileCallback(const FContext& Context);
-	void SetIORequest(const FContext& Context, const FString& IOFilename);
+	void SetIORequest(const FContext& Context);
 	void GetIORequestResults(const FContext& Context);
 	void ClearIORequest(const FContext& Context);
 	void CancelIORequest();

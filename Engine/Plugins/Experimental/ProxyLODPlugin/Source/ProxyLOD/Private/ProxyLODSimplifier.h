@@ -332,7 +332,7 @@ namespace ProxyLOD
 		const auto 	TriQuadricFatory = [this](const SimpTriType& tri)->QuadricType
 		{
 			return QuadricType(
-				tri.verts[0]->GetPos(), tri.verts[1]->GetPos(), tri.verts[2]->GetPos(),
+				(FVector)tri.verts[0]->GetPos(), (FVector)tri.verts[1]->GetPos(), (FVector)tri.verts[2]->GetPos(),
 				tri.verts[0]->GetAttributes(), tri.verts[1]->GetAttributes(), tri.verts[2]->GetAttributes(),
 				this->attributeWeights);
 		};
@@ -524,7 +524,6 @@ namespace ProxyLOD
 						checkSlow(e == FindEdge(e->v0, e->v1));
 						checkSlow(e->v0->adjTris.Num() > 0);
 						checkSlow(e->v1->adjTris.Num() > 0);
-						checkSlow(e->v0->GetMaterialIndex() == e->v1->GetMaterialIndex());
 
 						e->v1->vert = newVerts[i++];
 						e->v0->DisableFlags(SIMP_MARK1);
@@ -643,9 +642,9 @@ namespace ProxyLOD
 			if (tri->TestFlags(SIMP_REMOVED))
 				continue;
 
-			const FVector& p0 = tri->verts[0]->GetPos();
-			const FVector& p1 = tri->verts[1]->GetPos();
-			const FVector& p2 = tri->verts[2]->GetPos();
+			const FVector& p0 = (FVector)tri->verts[0]->GetPos();
+			const FVector& p1 = (FVector)tri->verts[1]->GetPos();
+			const FVector& p2 = (FVector)tri->verts[2]->GetPos();
 			const FVector n = (p2 - p0) ^ (p1 - p0);
 
 			if (n.SizeSquared() == 0.0f)
@@ -790,7 +789,7 @@ namespace ProxyLOD
 			if (faceCount == 1)
 			{
 				// only one face on this edge
-				vertQuadric += EdgeQuadricFatory(v->GetPos(), vert->GetPos(), face->GetNormal());
+				vertQuadric += EdgeQuadricFatory((FVector)v->GetPos(), (FVector)vert->GetPos(), (FVector)face->GetNormal());
 			}
 		}
 

@@ -29,17 +29,20 @@ public class AnimationBlueprintEditor : ModuleRules
 				"SlateCore",
                 "EditorStyle",
 				"Engine", 
+				"EditorFramework",
 				"UnrealEd", 
 				"GraphEditor", 
                 "InputCore",
 				"KismetWidgets",
 				"AnimGraph",
-                "PropertyEditor",
+				"AnimGraphRuntime",
+				"PropertyEditor",
 				"EditorWidgets",
                 "BlueprintGraph",
                 "RHI",
                 "KismetCompiler",
 				"ToolMenus",
+				"AnimGraphRuntime",
             }
 		);
 

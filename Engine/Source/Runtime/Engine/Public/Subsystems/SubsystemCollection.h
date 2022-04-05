@@ -9,6 +9,8 @@
 class USubsystem;
 class UDynamicSubsystem;
 
+DECLARE_LOG_CATEGORY_EXTERN(LogSubsystemCollection, Log, All);
+
 class ENGINE_API FSubsystemCollectionBase : public FGCObject
 {
 public:
@@ -38,12 +40,25 @@ public:
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	virtual FString GetReferencerName() const override;
 
+	/** Registers and adds instances of the specified Subsystem class to all existing SubsystemCollections of the correct type.
+	 *  Should be used by specific subsystems in plug ins when plugin is activated.
+	 */
+	static void ActivateExternalSubsystem(UClass* SubsystemClass);
+
+	/** Unregisters and removed instances of the specified Subsystem class from all existing SubsystemCollections of the correct type.
+	 *  Should be used by specific subsystems in plug ins when plugin is deactivated.
+	 */
+	static void DeactivateExternalSubsystem(UClass* SubsystemClass);
+
 protected:
 	/** protected constructor - for use by the template only(FSubsystemCollection<TBaseType>) */
 	FSubsystemCollectionBase(UClass* InBaseType);
 
 	/** protected constructor - Use the FSubsystemCollection<TBaseType> class */
 	FSubsystemCollectionBase();
+	
+	/** destructor will be called from virtual ~FGCObject in GC cleanup **/
+	virtual ~FSubsystemCollectionBase();
 
 	/** Get a Subsystem by type */
 	USubsystem* GetSubsystemInternal(UClass* SubsystemClass) const;
@@ -58,6 +73,8 @@ private:
 	USubsystem* AddAndInitializeSubsystem(UClass* SubsystemClass);
 
 	void RemoveAndDeinitializeSubsystem(USubsystem* Subsystem);
+
+	void UpdateSubsystemArrayInternal(UClass* SubsystemClass, TArray<USubsystem*>& SubsystemArray) const;
 
 	TMap<UClass*, USubsystem*> SubsystemMap;
 
@@ -77,9 +94,6 @@ private:
 
 	/** Remove Instances of the specified Subsystem class from all existing SubsystemCollections of the correct type */
 	static void RemoveAllInstances(UClass* SubsystemClass);
-
-	static TArray<FSubsystemCollectionBase*> SubsystemCollections;
-	static TMap<FName, TArray<TSubclassOf<UDynamicSubsystem>>> DynamicSystemModuleMap;
 };
 
 template<typename TBaseType>

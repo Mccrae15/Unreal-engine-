@@ -18,6 +18,7 @@
 #include "ObjectTools.h"
 #include "Engine/TimecodeProvider.h"
 #include "Misc/App.h"
+#include "Editor.h"
 
 DEFINE_LOG_CATEGORY(SubSequenceSerialization);
 
@@ -332,7 +333,6 @@ void UTakeRecorderSources::StartRecording(class ULevelSequence* InSequence, cons
 
 	UE_LOG(LogTakesCore, Log, TEXT("StartRecording: %s"), *CurrentTimecode.ToString());
 
-	InSequence->GetMovieScene()->TimecodeSource = CurrentTimecode;
 	StartRecordingPreRecordedSources(InCurrentFrameTime);
 }
 
@@ -383,7 +383,7 @@ FFrameTime UTakeRecorderSources::TickRecording(class ULevelSequence* InSequence,
 	return CurrentFrameTime.ConvertTo(TargetLevelSequenceTickResolution);
 }
 
-void UTakeRecorderSources::StopRecording(class ULevelSequence* InSequence)
+void UTakeRecorderSources::StopRecording(class ULevelSequence* InSequence, const bool bCancelled)
 {
 	UE_LOG(LogTakesCore, Log, TEXT("StopRecording"));
 
@@ -402,7 +402,7 @@ void UTakeRecorderSources::StopRecording(class ULevelSequence* InSequence)
 	{
 		if (Source->bEnabled)
 		{
-			for (auto SourceToRemove : Source->PostRecording(SourceSubSequenceMap[Source], InSequence))
+			for (auto SourceToRemove : Source->PostRecording(SourceSubSequenceMap[Source], InSequence, bCancelled))
 			{
 				SourcesToRemove.Add(SourceToRemove);
 			}
@@ -418,6 +418,11 @@ void UTakeRecorderSources::StopRecording(class ULevelSequence* InSequence)
 		++SourcesSerialNumber;
 	}
 
+	for (UTakeRecorderSource* Source : Sources)
+	{
+		Source->FinalizeRecording();
+	}
+
 	// Re-enable transactional after recording
 	InSequence->GetMovieScene()->SetFlags(RF_Transactional);
 	for (UMovieSceneSection* Section : InSequence->GetMovieScene()->GetAllSections())
@@ -431,41 +436,51 @@ void UTakeRecorderSources::StopRecording(class ULevelSequence* InSequence)
 	// as we go (to show the 'animation' of it recording), but we need to restore it to the full length.
 	for (UMovieSceneSubSection* SubSection : ActiveSubSections)
 	{
-		UMovieSceneSequence* SubSequence = SubSection->GetSequence();
-		if (SubSequence)
+		if (bCancelled)
 		{
-			const bool bUpperBoundOnly = false; // Expand the Play Range of the sub-section to encompass all sections within it.
-			TakesUtils::ClampPlaybackRangeToEncompassAllSections(SubSequence->GetMovieScene(), bUpperBoundOnly);
-
-			// Lock the sequence so that it can't be changed without implicitly unlocking it now
-			if (Settings.bAutoLock)
+			if (UMovieSceneTrack* SubTrack = Cast<UMovieSceneTrack>(SubSection->GetOuter()))
 			{
-				SubSequence->GetMovieScene()->SetReadOnly(true);
+				SubTrack->RemoveSection(*SubSection);
 			}
-
-			// Lock the meta data so it can't be changed without implicitly unlocking it now
-			ULevelSequence* SequenceAsset = CastChecked<ULevelSequence>(SubSequence);
-			UTakeMetaData* AssetMetaData = SequenceAsset->FindMetaData<UTakeMetaData>();
-			check(AssetMetaData);
-			AssetMetaData->Lock();
-
-			SubSection->SetRange(SubSequence->GetMovieScene()->GetPlaybackRange());
-
-			for (UMovieSceneSection* Section : SubSequence->GetMovieScene()->GetAllSections())
+		}
+		else
+		{
+			UMovieSceneSequence* SubSequence = SubSection->GetSequence();
+			if (SubSequence)
 			{
-				Section->MarkAsChanged();
+				const bool bUpperBoundOnly = false; // Expand the Play Range of the sub-section to encompass all sections within it.
+				TakesUtils::ClampPlaybackRangeToEncompassAllSections(SubSequence->GetMovieScene(), bUpperBoundOnly);
+
+				// Lock the sequence so that it can't be changed without implicitly unlocking it now
+				if (Settings.bAutoLock)
+				{
+					SubSequence->GetMovieScene()->SetReadOnly(true);
+				}
+
+				// Lock the meta data so it can't be changed without implicitly unlocking it now
+				ULevelSequence* SequenceAsset = CastChecked<ULevelSequence>(SubSequence);
+				UTakeMetaData* AssetMetaData = SequenceAsset->FindMetaData<UTakeMetaData>();
+				check(AssetMetaData);
+				AssetMetaData->Lock();
+
+				SubSection->SetRange(SubSequence->GetMovieScene()->GetPlaybackRange());
+
+				for (UMovieSceneSection* Section : SubSequence->GetMovieScene()->GetAllSections())
+				{
+					Section->MarkAsChanged();
+				}
+
+				// Re-enable transactional after recording
+				SubSequence->GetMovieScene()->SetFlags(RF_Transactional);
 			}
 
 			// Re-enable transactional after recording
-			SubSequence->GetMovieScene()->SetFlags(RF_Transactional);
-		}
+			SubSection->SetFlags(RF_Transactional);
 
-		// Re-enable transactional after recording
-		SubSection->SetFlags(RF_Transactional);
-
-		if (UMovieSceneTrack* SubTrack = Cast<UMovieSceneTrack>(SubSection->GetOuter()))
-		{
-			SubTrack->SetFlags(RF_Transactional);
+			if (UMovieSceneTrack* SubTrack = Cast<UMovieSceneTrack>(SubSection->GetOuter()))
+			{
+				SubTrack->SetFlags(RF_Transactional);
+			}
 		}
 	}
 
@@ -482,11 +497,18 @@ void UTakeRecorderSources::StopRecording(class ULevelSequence* InSequence)
 		}
 	}
 
-	if (Settings.bSaveRecordedAssets)
+	TArray<UObject*> AssetsToCleanUp;
+	for (auto SourceSubSequence : SourceSubSequenceMap)
 	{
-		for (auto SourceSubSequence : SourceSubSequenceMap)
+		// Only save subsequences but not the master sequence, it is already saved in UTakeRecorder::StopInternal
+		const bool bIsValidSubSequence = SourceSubSequence.Value && SourceSubSequence.Value.Get() != InSequence;
+		if (bIsValidSubSequence)
 		{
-			if (SourceSubSequence.Value)
+			if (bCancelled)
+			{
+				AssetsToCleanUp.Add(SourceSubSequence.Value.Get());
+			}
+			else if (Settings.bSaveRecordedAssets)
 			{
 				TakesUtils::SaveAsset(SourceSubSequence.Value);
 			}
@@ -498,6 +520,11 @@ void UTakeRecorderSources::StopRecording(class ULevelSequence* InSequence)
 	CreatedManifestSerializers.Empty();
 	CachedManifestSerializer = nullptr;
 	CachedLevelSequence = nullptr;
+
+	if (GEditor && AssetsToCleanUp.Num() > 0)
+	{
+		ObjectTools::ForceDeleteObjects(AssetsToCleanUp, false);
+	}
 }
 
 ULevelSequence* UTakeRecorderSources::CreateSubSequenceForSource(ULevelSequence* InMasterSequence, const FString& SubSequenceTrackName, const FString& SubSequenceAssetName)

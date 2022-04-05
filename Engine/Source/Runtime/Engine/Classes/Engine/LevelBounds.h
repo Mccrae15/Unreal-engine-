@@ -33,7 +33,7 @@ class ENGINE_API ALevelBounds
 		
 	/** Bounding box for the level bounds. */
 	UPROPERTY(EditAnywhere, Category = LevelBounds)
-	class UBoxComponent* BoxComponent;
+	TObjectPtr<class UBoxComponent> BoxComponent;
 
 	/** Whether to automatically update actor bounds based on all relevant actors bounds belonging to the same level */
 	UPROPERTY(EditAnywhere, Category=LevelBounds)
@@ -49,7 +49,7 @@ class ENGINE_API ALevelBounds
 	//~ End AActor Interface.
 
 	/** @return Bounding box which includes all relevant actors bounding boxes belonging to specified level */
-	static FBox CalculateLevelBounds(ULevel* InLevel);
+	static FBox CalculateLevelBounds(const ULevel* InLevel);
 
 #if WITH_EDITOR
 	virtual void PostEditUndo() override;
@@ -66,6 +66,8 @@ class ENGINE_API ALevelBounds
 
 	/** Update level bounds immediately so the bounds are accurate when returning. Use only when needed because updating the bounds is slow */
 	void UpdateLevelBoundsImmediately();
+
+	virtual bool CanChangeIsSpatiallyLoadedFlag() const override { return false; }
 	
 protected:
 	/** FTickableGameObject interface */

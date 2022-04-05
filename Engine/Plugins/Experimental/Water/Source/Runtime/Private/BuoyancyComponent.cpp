@@ -162,12 +162,12 @@ void UBuoyancyComponent::Update(float DeltaTime)
 
 		FBuoyancyComponentBaseAsyncInput* BuoyancyInputState = static_cast<FBuoyancyComponentBaseAsyncInput*>(CurAsyncInput);
 
-		BuoyancyInputState->WaterBodies = GetCurrentWaterBodies();
+		BuoyancyInputState->WaterBodyComponents = GetCurrentWaterBodyComponents();
 		BuoyancyInputState->Pontoons = BuoyancyData.Pontoons;
 		bool bSetSmoothedTime = false;
-		for (AWaterBody* WaterBody : GetCurrentWaterBodies())
+		for (UWaterBodyComponent* WaterBody : GetCurrentWaterBodyComponents())
 		{
-			if (WaterBody->HasWaves())
+			if (WaterBody && WaterBody->HasWaves())
 			{
 				BuoyancyInputState->SmoothedWorldTimeSeconds = WaterBody->GetWaveReferenceTime();
 				bSetSmoothedTime = true;
@@ -263,13 +263,13 @@ void UBuoyancyComponent::AddCustomPontoon(float Radius, const FVector& RelativeL
 	BuoyancyData.Pontoons.Add(Pontoon);
 }
 
-void UBuoyancyComponent::EnteredWaterBody(AWaterBody* WaterBody)
+void UBuoyancyComponent::EnteredWaterBody(UWaterBodyComponent* WaterBodyComponent)
 {
-	bool bIsFirstBody = !CurrentWaterBodies.Num() && WaterBody;
-	CurrentWaterBodies.AddUnique(WaterBody);
+	bool bIsFirstBody = !CurrentWaterBodyComponents.Num() && WaterBodyComponent;
+	CurrentWaterBodyComponents.AddUnique(WaterBodyComponent);
 	for (FSphericalPontoon& Pontoon : BuoyancyData.Pontoons)
 	{
-		Pontoon.SplineSegments.FindOrAdd(WaterBody, -1);
+		Pontoon.SplineSegments.FindOrAdd(WaterBodyComponent, -1);
 	}
 	if (bIsFirstBody)
 	{
@@ -277,14 +277,14 @@ void UBuoyancyComponent::EnteredWaterBody(AWaterBody* WaterBody)
 	}
 }
 
-void UBuoyancyComponent::ExitedWaterBody(AWaterBody* WaterBody)
+void UBuoyancyComponent::ExitedWaterBody(UWaterBodyComponent* WaterBodyComponent)
 {
-	CurrentWaterBodies.Remove(WaterBody);
+	GetCurrentWaterBodyComponents().Remove(WaterBodyComponent);
 	for (FSphericalPontoon& Pontoon : BuoyancyData.Pontoons)
 	{
-		Pontoon.SplineSegments.Remove(WaterBody);
+		Pontoon.SplineSegments.Remove(WaterBodyComponent);
 	}
-	if (!CurrentWaterBodies.Num())
+	if (!CurrentWaterBodyComponents.Num())
 	{
 		bIsOverlappingWaterBody = false;
 		bIsInWaterBody = false;
@@ -365,10 +365,18 @@ void UBuoyancyComponent::ComputePontoonCoefficients()
 		}
 		for (int32 PontoonIndex = 0; PontoonIndex < BuoyancyData.Pontoons.Num(); ++PontoonIndex)
 		{
+			const FSphericalPontoon& Pontoon = BuoyancyData.Pontoons[PontoonIndex];
 			if (PontoonConfiguration & (1 << PontoonIndex))
 			{
-				const FVector LocalPosition = SimulatingComponent->GetSocketTransform(BuoyancyData.Pontoons[PontoonIndex].CenterSocket, ERelativeTransformSpace::RTS_ParentBoneSpace).GetLocation();
-				LocalPontoonLocations.Add(LocalPosition);
+				if (Pontoon.bUseCenterSocket)
+				{
+					const FVector LocalPosition = SimulatingComponent->GetSocketTransform(Pontoon.CenterSocket, ERelativeTransformSpace::RTS_ParentBoneSpace).GetLocation();
+					LocalPontoonLocations.Add(LocalPosition);
+				}
+				else
+				{
+					LocalPontoonLocations.Add(Pontoon.RelativeLocation);
+				}
 			}
 		}
 		PontoonCoefficients.AddZeroed(LocalPontoonLocations.Num());
@@ -416,7 +424,7 @@ int32 UBuoyancyComponent::UpdatePontoons(float DeltaTime, float ForwardSpeed, fl
 				GetWaterSplineKey(Pontoon.CenterLocation, Pontoon.SplineInputKeys, Pontoon.SplineSegments);
 				const FVector PontoonBottom = Pontoon.CenterLocation - FVector(0, 0, Pontoon.Radius);
 				/*Pass in large negative default value so we don't accidentally assume we're in water when we're not.*/
-				Pontoon.WaterHeight = GetWaterHeight(PontoonBottom - FVector::UpVector * 100.f, Pontoon.SplineInputKeys, -100000.f, Pontoon.CurrentWaterBody, Pontoon.WaterDepth, Pontoon.WaterPlaneLocation, Pontoon.WaterPlaneNormal, Pontoon.WaterSurfacePosition, Pontoon.WaterVelocity, Pontoon.WaterBodyIndex);
+				Pontoon.WaterHeight = GetWaterHeight(PontoonBottom - FVector::UpVector * 100.f, Pontoon.SplineInputKeys, -100000.f, Pontoon.CurrentWaterBodyComponent, Pontoon.WaterDepth, Pontoon.WaterPlaneLocation, Pontoon.WaterPlaneNormal, Pontoon.WaterSurfacePosition, Pontoon.WaterVelocity, Pontoon.WaterBodyIndex);
 
 				const bool bPrevIsInWater = Pontoon.bIsInWater;
 				const float ImmersionDepth = Pontoon.WaterHeight - PontoonBottom.Z;
@@ -459,8 +467,8 @@ int32 UBuoyancyComponent::UpdatePontoons(float DeltaTime, float ForwardSpeed, fl
 #if ENABLE_DRAW_DEBUG
 		if (CVarWaterDebugBuoyancy.GetValueOnAnyThread())
 		{
-			TMap<const AWaterBody*, float> DebugSplineKeyMap;
-			TMap<const AWaterBody*, float> DebugSplineSegmentsMap;
+			TMap<const UWaterBodyComponent*, float> DebugSplineKeyMap;
+			TMap<const UWaterBodyComponent*, float> DebugSplineSegmentsMap;
 			for (int i = 0; i < 10; ++i)
 			{
 				for (int j = 0; j < 10; ++j)
@@ -477,17 +485,17 @@ int32 UBuoyancyComponent::UpdatePontoons(float DeltaTime, float ForwardSpeed, fl
 	return NumPontoonsInWater;
 }
 
-float GetWaterSplineKeyFast(FVector Location, const AWaterBody* WaterBody, TMap<const AWaterBody*, float>& OutSegmentMap)/*const*/
+float GetWaterSplineKeyFast(FVector Location, const UWaterBodyComponent* WaterBodyComponent, TMap<const UWaterBodyComponent*, float>& OutSegmentMap)/*const*/
 {
-	if (!OutSegmentMap.Contains(WaterBody))
+	if (!OutSegmentMap.Contains(WaterBodyComponent))
 	{
-		OutSegmentMap.Add(WaterBody, -1);
+		OutSegmentMap.Add(WaterBodyComponent, -1);
 	}
 
-	const UWaterSplineComponent* WaterSpline = WaterBody->GetWaterSpline();
-	const FVector LocalLocation = WaterSpline->GetComponentTransform().InverseTransformPosition(Location);
+	const UWaterSplineComponent* WaterSpline = WaterBodyComponent->GetWaterSpline();
+	const FVector LocalLocation = WaterBodyComponent->GetComponentTransform().InverseTransformPosition(Location);
 	const FInterpCurveVector& InterpCurve = WaterSpline->GetSplinePointsPosition();
-	float& Segment = OutSegmentMap[WaterBody];
+	float& Segment = OutSegmentMap[WaterBodyComponent];
 
 	if (Segment == -1)
 	{
@@ -539,41 +547,41 @@ float GetWaterSplineKeyFast(FVector Location, const AWaterBody* WaterBody, TMap<
 	return 0.0f;
 }
 
-void UBuoyancyComponent::GetWaterSplineKey(FVector Location, TMap<const AWaterBody*, float>& OutMap, TMap<const AWaterBody*, float>& OutSegmentMap) const
+void UBuoyancyComponent::GetWaterSplineKey(FVector Location, TMap<const UWaterBodyComponent*, float>& OutMap, TMap<const UWaterBodyComponent*, float>& OutSegmentMap) const
 {
 	OutMap.Reset();
-	for (const AWaterBody* WaterBody : CurrentWaterBodies)
+	for (const UWaterBodyComponent* WaterBodyComponent : CurrentWaterBodyComponents)
 	{
-		if (WaterBody && WaterBody->GetWaterBodyType() == EWaterBodyType::River)
+		if (WaterBodyComponent && WaterBodyComponent->GetWaterBodyType() == EWaterBodyType::River)
 		{
 			float SplineInputKey;
 			if (CVarWaterUseSplineKeyOptimization.GetValueOnAnyThread())
 			{
-				SplineInputKey = GetWaterSplineKeyFast(Location, WaterBody, OutSegmentMap);
+				SplineInputKey = GetWaterSplineKeyFast(Location, WaterBodyComponent, OutSegmentMap);
 			}
 			else
 			{
-				SplineInputKey = WaterBody->FindInputKeyClosestToWorldLocation(Location);
+				SplineInputKey = WaterBodyComponent->FindInputKeyClosestToWorldLocation(Location);
 			}
-			OutMap.Add(WaterBody, SplineInputKey);
+			OutMap.Add(WaterBodyComponent, SplineInputKey);
 		}
 	}
 }
 
-float UBuoyancyComponent::GetWaterHeight(FVector Position, const TMap<const AWaterBody*, float>& SplineKeyMap, float DefaultHeight, AWaterBody*& OutWaterBody, float& OutWaterDepth, FVector& OutWaterPlaneLocation, FVector& OutWaterPlaneNormal, FVector& OutWaterSurfacePosition, FVector& OutWaterVelocity, int32& OutWaterBodyIdx, bool bShouldIncludeWaves)
+float UBuoyancyComponent::GetWaterHeight(FVector Position, const TMap<const UWaterBodyComponent*, float>& SplineKeyMap, float DefaultHeight, UWaterBodyComponent*& OutWaterBodyComponent, float& OutWaterDepth, FVector& OutWaterPlaneLocation, FVector& OutWaterPlaneNormal, FVector& OutWaterSurfacePosition, FVector& OutWaterVelocity, int32& OutWaterBodyIdx, bool bShouldIncludeWaves)
 {
 	float WaterHeight = DefaultHeight;
-	OutWaterBody = nullptr;
+	OutWaterBodyComponent = nullptr;
 	OutWaterDepth = 0.f;
 	OutWaterPlaneLocation = FVector::ZeroVector;
 	OutWaterPlaneNormal = FVector::UpVector;
 
 	float MaxImmersionDepth = -1.f;
-	for (AWaterBody* CurrentWaterBody : CurrentWaterBodies)
+	for (UWaterBodyComponent* CurrentWaterBodyComponent : CurrentWaterBodyComponents)
 	{
-		if (CurrentWaterBody)
+		if (CurrentWaterBodyComponent)
 		{
-			const float SplineInputKey = SplineKeyMap.FindRef(CurrentWaterBody);
+			const float SplineInputKey = SplineKeyMap.FindRef(CurrentWaterBodyComponent);
 
 			EWaterBodyQueryFlags QueryFlags =
 				EWaterBodyQueryFlags::ComputeLocation
@@ -586,12 +594,12 @@ float UBuoyancyComponent::GetWaterHeight(FVector Position, const TMap<const AWat
 				QueryFlags |= EWaterBodyQueryFlags::IncludeWaves;
 			}
 
-			FWaterBodyQueryResult QueryResult = CurrentWaterBody->QueryWaterInfoClosestToWorldLocation(Position, QueryFlags, SplineInputKey);
+			FWaterBodyQueryResult QueryResult = CurrentWaterBodyComponent->QueryWaterInfoClosestToWorldLocation(Position, QueryFlags, SplineInputKey);
 			if (QueryResult.IsInWater() && QueryResult.GetImmersionDepth() > MaxImmersionDepth)
 			{
 				check(!QueryResult.IsInExclusionVolume());
 				WaterHeight = Position.Z + QueryResult.GetImmersionDepth();
-				OutWaterBody = CurrentWaterBody;
+				OutWaterBodyComponent = CurrentWaterBodyComponent;
 				if (EnumHasAnyFlags(QueryResult.GetQueryFlags(), EWaterBodyQueryFlags::ComputeDepth))
 				{
 					OutWaterDepth = QueryResult.GetWaterSurfaceDepth();
@@ -600,7 +608,7 @@ float UBuoyancyComponent::GetWaterHeight(FVector Position, const TMap<const AWat
 				OutWaterPlaneNormal = QueryResult.GetWaterPlaneNormal();
 				OutWaterSurfacePosition = QueryResult.GetWaterSurfaceLocation();
 				OutWaterVelocity = QueryResult.GetVelocity();
-				OutWaterBodyIdx = CurrentWaterBody ? CurrentWaterBody->WaterBodyIndex : 0;
+				OutWaterBodyIdx = CurrentWaterBodyComponent ? CurrentWaterBodyComponent->GetWaterBodyIndex() : 0;
 				MaxImmersionDepth = QueryResult.GetImmersionDepth();
 			}
 		}
@@ -608,16 +616,16 @@ float UBuoyancyComponent::GetWaterHeight(FVector Position, const TMap<const AWat
 	return WaterHeight;
 }
 
-float UBuoyancyComponent::GetWaterHeight(FVector Position, const TMap<const AWaterBody*, float>& SplineKeyMap, float DefaultHeight, bool bShouldIncludeWaves /*= true*/)
+float UBuoyancyComponent::GetWaterHeight(FVector Position, const TMap<const UWaterBodyComponent*, float>& SplineKeyMap, float DefaultHeight, bool bShouldIncludeWaves /*= true*/)
 {
-	AWaterBody* DummyActor;
+	UWaterBodyComponent* DummyComponent;
 	float DummyDepth;
 	FVector DummyWaterPlaneLocation;
 	FVector DummyWaterPlaneNormal;
 	FVector DummyWaterSurfacePosition;
 	FVector DummyWaterVelocity;
 	int32 DummyWaterBodyIndex;
-	return GetWaterHeight(Position, SplineKeyMap, DefaultHeight, DummyActor, DummyDepth, DummyWaterPlaneLocation, DummyWaterPlaneNormal, DummyWaterSurfacePosition, DummyWaterVelocity, DummyWaterBodyIndex, bShouldIncludeWaves);
+	return GetWaterHeight(Position, SplineKeyMap, DefaultHeight, DummyComponent, DummyDepth, DummyWaterPlaneLocation, DummyWaterPlaneNormal, DummyWaterSurfacePosition, DummyWaterVelocity, DummyWaterBodyIndex, bShouldIncludeWaves);
 }
 
 void UBuoyancyComponent::OnPontoonEnteredWater(const FSphericalPontoon& Pontoon)
@@ -632,14 +640,18 @@ void UBuoyancyComponent::OnPontoonExitedWater(const FSphericalPontoon& Pontoon)
 
 void UBuoyancyComponent::GetLastWaterSurfaceInfo(FVector& OutWaterPlaneLocation, FVector& OutWaterPlaneNormal, FVector& OutWaterSurfacePosition, float& OutWaterDepth, int32& OutWaterBodyIdx, FVector& OutWaterVelocity)
 {
-	if (BuoyancyData.Pontoons.Num())
+	for (int i = 0; i < BuoyancyData.Pontoons.Num(); ++i)
 	{
-		OutWaterPlaneLocation = BuoyancyData.Pontoons[0].WaterPlaneLocation;
-		OutWaterPlaneNormal = BuoyancyData.Pontoons[0].WaterPlaneNormal;
-		OutWaterSurfacePosition = BuoyancyData.Pontoons[0].WaterSurfacePosition;
-		OutWaterDepth = BuoyancyData.Pontoons[0].WaterDepth;
-		OutWaterBodyIdx = BuoyancyData.Pontoons[0].WaterBodyIndex;
-		OutWaterVelocity = BuoyancyData.Pontoons[0].WaterVelocity;
+		if (BuoyancyData.Pontoons[i].ImmersionDepth > 0.0f)
+		{
+			OutWaterPlaneLocation = BuoyancyData.Pontoons[i].WaterPlaneLocation;
+			OutWaterPlaneNormal = BuoyancyData.Pontoons[i].WaterPlaneNormal;
+			OutWaterSurfacePosition = BuoyancyData.Pontoons[i].WaterSurfacePosition;
+			OutWaterDepth = BuoyancyData.Pontoons[i].WaterDepth;
+			OutWaterBodyIdx = BuoyancyData.Pontoons[i].WaterBodyIndex;
+			OutWaterVelocity = BuoyancyData.Pontoons[i].WaterVelocity;
+			return;
+		}
 	}
 }
 
@@ -675,18 +687,18 @@ FVector UBuoyancyComponent::ComputeWaterForce(const float DeltaTime, const FVect
 	if (BuoyancyData.Pontoons.Num())
 	{
 		const FSphericalPontoon& Pontoon = BuoyancyData.Pontoons[VelocityPontoonIndex];
-		const AWaterBody* WaterBody = Pontoon.CurrentWaterBody;
-		if (WaterBody && WaterBody->GetWaterBodyType() == EWaterBodyType::River)
+		const UWaterBodyComponent* WaterBodyComponent = Pontoon.CurrentWaterBodyComponent;;
+		if (WaterBodyComponent && WaterBodyComponent->GetWaterBodyType() == EWaterBodyType::River)
 		{
-			float InputKey = Pontoon.SplineInputKeys[WaterBody];
-			const float WaterSpeed = WaterBody->GetWaterVelocityAtSplineInputKey(InputKey);
+			float InputKey = Pontoon.SplineInputKeys[WaterBodyComponent];
+			const float WaterSpeed = WaterBodyComponent->GetWaterVelocityAtSplineInputKey(InputKey);
 
-			const FVector SplinePointLocation = WaterBody->GetWaterSpline()->GetLocationAtSplineInputKey(InputKey, ESplineCoordinateSpace::World);
+			const FVector SplinePointLocation = WaterBodyComponent->GetWaterSpline()->GetLocationAtSplineInputKey(InputKey, ESplineCoordinateSpace::World);
 			// Move away from spline
 			const FVector ShoreDirection = (Pontoon.CenterLocation - SplinePointLocation).GetSafeNormal2D();
 
 			const float WaterShorePushFactor = BuoyancyData.WaterShorePushFactor;
-			const FVector WaterDirection = WaterBody->GetWaterSpline()->GetDirectionAtSplineInputKey(InputKey, ESplineCoordinateSpace::World) * (1 - WaterShorePushFactor)
+			const FVector WaterDirection = WaterBodyComponent->GetWaterSpline()->GetDirectionAtSplineInputKey(InputKey, ESplineCoordinateSpace::World) * (1 - WaterShorePushFactor)
 				+ ShoreDirection * (WaterShorePushFactor);
 			const FVector WaterVelocity = WaterDirection * WaterSpeed;
 			check(SimulatingComponent && SimulatingComponent->GetBodyInstance());
@@ -822,12 +834,12 @@ void UBuoyancyComponent::SetCurrentAsyncInputOutputInternal(FBuoyancyComponentAs
 
 void UBuoyancyComponent::FinalizeSimCallbackData(FBuoyancyManagerAsyncInput& Input)
 {
-	for (AWaterBody* WaterBody : GetCurrentWaterBodies())
+	for (UWaterBodyComponent* WaterBodyComponent : GetCurrentWaterBodyComponents())
 	{
-		if (WaterBody && !Input.WaterBodyToSolverData.Contains(WaterBody))
+		if (WaterBodyComponent && !Input.WaterBodyComponentToSolverData.Contains(WaterBodyComponent))
 		{
-			TUniquePtr<FSolverSafeWaterBodyData> WaterBodyData = MakeUnique<FSolverSafeWaterBodyData>(WaterBody);
-			Input.WaterBodyToSolverData.Add(WaterBody, MoveTemp(WaterBodyData));
+			TUniquePtr<FSolverSafeWaterBodyData> WaterBodyData = MakeUnique<FSolverSafeWaterBodyData>(WaterBodyComponent);
+			Input.WaterBodyComponentToSolverData.Add(WaterBodyComponent, MoveTemp(WaterBodyData));
 		}
 	}
 

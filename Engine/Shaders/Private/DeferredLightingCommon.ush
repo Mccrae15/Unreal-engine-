@@ -12,6 +12,14 @@
 #include "CapsuleLightIntegrate.ush"
 #include "RectLightIntegrate.ush"
 
+#ifndef STRATA_ENABLED
+#define STRATA_ENABLED 0
+#endif
+
+#ifndef StrataStruct
+#define StrataStruct Strata
+#endif
+
 /** 
  * Data about a single light.
  * Putting the light data in this struct allows the same lighting code to be used between standard deferred, 
@@ -20,7 +28,7 @@
 // TODO: inherit or compose FLightShaderParameters
 struct FDeferredLightData
 {
-	float3 Position;
+	float3 TranslatedWorldPosition;
 	float  InvRadius;
 	float3 Color;
 	float  FalloffExponent;
@@ -49,14 +57,13 @@ struct FDeferredLightData
 	uint ShadowedBits;
 	float RectLightBarnCosAngle;
 	float RectLightBarnLength;
-
 	FHairTransmittanceData HairTransmittance;
 };
 
 /** Data about a single light to be shaded with the simple shading model, designed for speed and limited feature set. */
 struct FSimpleDeferredLightData
 {
-	float3 Position;
+	float3 TranslatedWorldPosition;
 	float  InvRadius;
 	float3 Color;
 	float  FalloffExponent;
@@ -67,7 +74,7 @@ struct FSimpleDeferredLightData
 #define REFERENCE_QUALITY	0
 
 /** Returns 0 for positions closer than the fade near distance from the camera, and 1 for positions further than the fade far distance. */
-float DistanceFromCameraFade(float SceneDepth, FDeferredLightData LightData, float3 WorldPosition, float3 CameraPosition)
+float DistanceFromCameraFade(float SceneDepth, FDeferredLightData LightData)
 {
 	// depth (non radial) based fading over distance
 	float Fade = saturate(SceneDepth * LightData.DistanceFadeMAD.x + LightData.DistanceFadeMAD.y);
@@ -104,6 +111,8 @@ float ShadowRayCast(
 
 	float FirstHitTime = -1.0;
 
+	const float StartDepth = SceneTexturesStruct.SceneDepthTexture.SampleLevel( SceneTexturesStruct_SceneDepthTextureSampler, RayStartUVz.xy, 0 ).r;
+
 	UNROLL
 	for( int i = 0; i < NumSteps; i++ )
 	{
@@ -112,6 +121,8 @@ float ShadowRayCast(
 
 		float DepthDiff = SampleUVz.z - SampleDepth;
 		bool Hit = abs( DepthDiff + CompareTolerance ) < CompareTolerance;
+		// Avoid self-intersection with the start pixel (exact comparison due to point sampling depth buffer)
+		Hit = Hit && ( SampleDepth != StartDepth );
 
 		FirstHitTime = (Hit && FirstHitTime < 0.0) ? SampleTime : FirstHitTime;
 
@@ -124,14 +135,26 @@ float ShadowRayCast(
 	{
 		// Ignore hits that come from non-shadow-casting pixels
 		float3 SampleUVz = RayStartUVz + RayStepUVz * FirstHitTime;
+	#if STRATA_ENABLED
+		#if (!MATERIAL_IS_STRATA || STRATA_TRANSLUCENT_ENABLED)
+		// StrataStruct.MaterialTextureArray is only available to translucent materials or global shaders computing contact shadows.
+		// It is not defined for opaque materials, only the UAV is available to write the strata buffer.
+		uint2 PixelPos = View.ViewRectMin.xy + View.ViewSizeAndInvSize.xy * SampleUVz.xy;
+		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPos, uint2(View.BufferSizeAndInvSize.xy), StrataStruct.MaxBytesPerPixel);
+		FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(StrataStruct.MaterialTextureArray, StrataAddressing, StrataStruct.TopLayerTexture);
+		bOutHitCastContactShadow = DoesCastContactShadow(StrataPixelHeader);
+		#endif
+	#else
 		FGBufferData SampleGBuffer = GetGBufferData( SampleUVz.xy );
-		bOutHitCastContactShadow = CastContactShadow( SampleGBuffer );
+		bOutHitCastContactShadow = CastContactShadow(SampleGBuffer);
+	#endif
 
 		// Off screen masking
 		float3 HitUVz = RayStartUVz + RayStepUVz * FirstHitTime;
 		bool bValidUV = all( 0.0 < HitUVz.xy && HitUVz.xy < 1.0 );
 		HitDistance = bValidUV ? ( FirstHitTime * RayLength ) : -1.0;
 	}	
+	
 	
 	return HitDistance;
 }
@@ -140,10 +163,10 @@ float ShadowRayCast(
 #error "Must set SUPPORT_CONTACT_SHADOWS"
 #endif
 
-void GetShadowTerms(FGBufferData GBuffer, FDeferredLightData LightData, float3 WorldPosition, float3 L, float4 LightAttenuation, float Dither, inout FShadowTerms Shadow)
+void GetShadowTerms(float SceneDepth, float4 PrecomputedShadowFactors, uint ShadingModelID, float ContactShadowOpacity, FDeferredLightData LightData, float3 TranslatedWorldPosition, float3 L, float4 LightAttenuation, float Dither, inout FShadowTerms Shadow)
 {
 	float ContactShadowLength = 0.0f;
-	const float ContactShadowLengthScreenScale = View.ClipToView[1][1] * GBuffer.Depth;
+	const float ContactShadowLengthScreenScale = View.ClipToView[1][1] * SceneDepth;
 
 	BRANCH
 	if (LightData.ShadowedBits)
@@ -154,7 +177,7 @@ void GetShadowTerms(FGBufferData GBuffer, FDeferredLightData LightData, float3 W
 		// Whole scene directional light shadows in x, whole scene directional light SSS shadows in y
 		// Get static shadowing from the appropriate GBuffer channel
 		float UsesStaticShadowMap = dot(LightData.ShadowMapChannelMask, float4(1, 1, 1, 1));
-		float StaticShadowing = lerp(1, dot(GBuffer.PrecomputedShadowFactors, LightData.ShadowMapChannelMask), UsesStaticShadowMap);
+		float StaticShadowing = lerp(1, dot(PrecomputedShadowFactors, LightData.ShadowMapChannelMask), UsesStaticShadowMap);
 
 		if (LightData.bRadialLight)
 		{
@@ -173,7 +196,7 @@ void GetShadowTerms(FGBufferData GBuffer, FDeferredLightData LightData, float3 W
 			// Also fix up the fade between dynamic and static shadows
 			// to work with plane splits rather than spheres.
 
-			float DynamicShadowFraction = DistanceFromCameraFade(GBuffer.Depth, LightData, WorldPosition, View.WorldCameraOrigin);
+			float DynamicShadowFraction = DistanceFromCameraFade(SceneDepth, LightData);
 			// For a directional light, fade between static shadowing and the whole scene dynamic shadowing based on distance + per object shadows
 			Shadow.SurfaceShadow = lerp(LightAttenuation.x, StaticShadowing, DynamicShadowFraction);
 			// Fade between SSS dynamic shadowing and static shadowing based on distance
@@ -194,16 +217,19 @@ void GetShadowTerms(FGBufferData GBuffer, FDeferredLightData LightData, float3 W
 	}
 
 #if SUPPORT_CONTACT_SHADOWS
-	if (LightData.ShadowedBits < 2 && (GBuffer.ShadingModelID == SHADINGMODELID_HAIR))
+
+#if STRATA_ENABLED == 0
+	if (LightData.ShadowedBits < 2 && (ShadingModelID == SHADINGMODELID_HAIR))
 	{
 		ContactShadowLength = 0.2 * ContactShadowLengthScreenScale;
 	}
 	// World space distance to cover eyelids and eyelashes but not beyond
-	if (GBuffer.ShadingModelID == SHADINGMODELID_EYE)
+	if (ShadingModelID == SHADINGMODELID_EYE)
 	{
 		ContactShadowLength = 0.5;
 		
 	}
+#endif
 
 	#if MATERIAL_CONTACT_SHADOWS
 		ContactShadowLength = 0.2 * ContactShadowLengthScreenScale;
@@ -214,28 +240,29 @@ void GetShadowTerms(FGBufferData GBuffer, FDeferredLightData LightData, float3 W
 	{
 		float StepOffset = Dither - 0.5;
 		bool bHitCastContactShadow = false;
-		float HitDistance = ShadowRayCast( WorldPosition + View.PreViewTranslation, L, ContactShadowLength, 8, StepOffset, bHitCastContactShadow );
+		float HitDistance = ShadowRayCast( TranslatedWorldPosition, L, ContactShadowLength, 8, StepOffset, bHitCastContactShadow );
 				
 		if ( HitDistance > 0.0 )
 		{
 			float ContactShadowOcclusion = bHitCastContactShadow ? 1.0 : LightData.ContactShadowNonShadowCastingIntensity;
 
+#if STRATA_ENABLED == 0
 			// Exponential attenuation is not applied on hair/eye/SSS-profile here, as the hit distance (shading-point to blocker) is different from the estimated 
 			// thickness (closest-point-from-light to shading-point), and this creates light leaks. Instead we consider first hit as a blocker (old behavior)
 			BRANCH
 			if (ContactShadowOcclusion > 0.0 && 
-				IsSubsurfaceModel(GBuffer.ShadingModelID) && 
-				GBuffer.ShadingModelID != SHADINGMODELID_HAIR && 
-				GBuffer.ShadingModelID != SHADINGMODELID_EYE && 
-				GBuffer.ShadingModelID != SHADINGMODELID_SUBSURFACE_PROFILE)
+				IsSubsurfaceModel(ShadingModelID) &&
+				ShadingModelID != SHADINGMODELID_HAIR &&
+				ShadingModelID != SHADINGMODELID_EYE &&
+				ShadingModelID != SHADINGMODELID_SUBSURFACE_PROFILE)
 			{
 				// Reduce the intensity of the shadow similar to the subsurface approximation used by the shadow maps path
 				// Note that this is imperfect as we don't really have the "nearest occluder to the light", but this should at least
 				// ensure that we don't darken-out the subsurface term with the contact shadows
-				float Opacity = GBuffer.CustomData.a;
-				float Density = SubsurfaceDensityFromOpacity( Opacity );
+				float Density = SubsurfaceDensityFromOpacity(ContactShadowOpacity);
 				ContactShadowOcclusion *= 1.0 - saturate( exp( -Density * HitDistance ) );
 			}
+#endif
 
 			float ContactShadow = 1.0 - ContactShadowOcclusion;
 
@@ -251,12 +278,12 @@ void GetShadowTerms(FGBufferData GBuffer, FDeferredLightData LightData, float3 W
 }
 
 float GetLocalLightAttenuation(
-	float3 WorldPosition, 
+	float3 TranslatedWorldPosition, 
 	FDeferredLightData LightData, 
 	inout float3 ToLight, 
 	inout float3 L)
 {
-	ToLight = LightData.Position - WorldPosition;
+	ToLight = LightData.TranslatedWorldPosition - TranslatedWorldPosition;
 		
 	float DistanceSqr = dot( ToLight, ToLight );
 	L = ToLight * rsqrt( DistanceSqr );
@@ -314,7 +341,7 @@ FCapsuleLight GetCapsule( float3 ToLight, FDeferredLightData LightData )
 
 /** Calculates lighting for a given position, normal, etc with a fully featured lighting model designed for quality. */
 FDeferredLightingSplit GetDynamicLightingSplit(
-	float3 WorldPosition, float3 CameraVector, FGBufferData GBuffer, float AmbientOcclusion, uint ShadingModelID, 
+	float3 TranslatedWorldPosition, float3 CameraVector, FGBufferData GBuffer, float AmbientOcclusion, uint ShadingModelID, 
 	FDeferredLightData LightData, float4 LightAttenuation, float Dither, uint2 SVPos, FRectTexture SourceTexture,
 	inout float SurfaceShadow)
 {
@@ -334,7 +361,7 @@ FDeferredLightingSplit GetDynamicLightingSplit(
 	float LightMask = 1;
 	if (LightData.bRadialLight)
 	{
-		LightMask = GetLocalLightAttenuation( WorldPosition, LightData, ToLight, L );
+		LightMask = GetLocalLightAttenuation( TranslatedWorldPosition, LightData, ToLight, L );
 	}
 
 	LightAccumulator.EstimatedCost += 0.3f;		// running the PixelShader at all has a cost
@@ -347,7 +374,9 @@ FDeferredLightingSplit GetDynamicLightingSplit(
 		Shadow.TransmissionShadow = 1;
 		Shadow.TransmissionThickness = 1;
 		Shadow.HairTransmittance.OpaqueVisibility = 1;
-		GetShadowTerms(GBuffer, LightData, WorldPosition, L, LightAttenuation, Dither, Shadow);
+		const float ContactShadowOpacity = GBuffer.CustomData.a;
+		GetShadowTerms(GBuffer.Depth, GBuffer.PrecomputedShadowFactors, GBuffer.ShadingModelID, ContactShadowOpacity,
+			LightData, TranslatedWorldPosition, L, LightAttenuation, Dither, Shadow);
 		SurfaceShadow = Shadow.SurfaceShadow;
 
 		LightAccumulator.EstimatedCost += 0.3f;		// add the cost of getting the shadow terms
@@ -414,12 +443,12 @@ FDeferredLightingSplit GetDynamicLightingSplit(
 }
 
 float4 GetDynamicLighting(
-	float3 WorldPosition, float3 CameraVector, FGBufferData GBuffer, float AmbientOcclusion, uint ShadingModelID, 
+	float3 TranslatedWorldPosition, float3 CameraVector, FGBufferData GBuffer, float AmbientOcclusion, uint ShadingModelID, 
 	FDeferredLightData LightData, float4 LightAttenuation, float Dither, uint2 SVPos, FRectTexture SourceTexture,
 	inout float SurfaceShadow)
 {
 	FDeferredLightingSplit SplitLighting = GetDynamicLightingSplit(
-		WorldPosition, CameraVector, GBuffer, AmbientOcclusion, ShadingModelID, 
+		TranslatedWorldPosition, CameraVector, GBuffer, AmbientOcclusion, ShadingModelID, 
 		LightData, LightAttenuation, Dither, SVPos, SourceTexture,
 		SurfaceShadow);
 
@@ -431,11 +460,11 @@ float4 GetDynamicLighting(
  * All lights rendered through this method are unshadowed point lights with no shadowing or light function or IES.
  * A cheap specular is used instead of the more correct area specular, no fresnel.
  */
-float3 GetSimpleDynamicLighting(float3 WorldPosition, float3 CameraVector, float3 WorldNormal, float AmbientOcclusion, float3 DiffuseColor, float3 SpecularColor, float Roughness, FSimpleDeferredLightData LightData)
+float3 GetSimpleDynamicLighting(float3 TranslatedWorldPosition, float3 CameraVector, float3 WorldNormal, float AmbientOcclusion, float3 DiffuseColor, float3 SpecularColor, float Roughness, FSimpleDeferredLightData LightData)
 {
 	float3 V = -CameraVector;
 	float3 N = WorldNormal;
-	float3 ToLight = LightData.Position - WorldPosition;
+	float3 ToLight = LightData.TranslatedWorldPosition - TranslatedWorldPosition;
 	float DistanceAttenuation = 1;
 	
 	float DistanceSqr = dot( ToLight, ToLight );

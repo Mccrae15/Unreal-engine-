@@ -77,6 +77,7 @@ private:
 	static void FixupPayloadParameterNameForSection(UMovieSceneEventSectionBase* Section, UK2Node* InNode, FName OldPinName, FName NewPinName);
 	static bool UpgradeLegacyEventEndpointForSection(UMovieSceneEventSectionBase* Section);
 	static void PostDuplicateEventSection(UMovieSceneEventSectionBase* Section);
+	static void RemoveForCookEventSection(UMovieSceneEventSectionBase* Section);
 
 private:
 
@@ -85,8 +86,10 @@ private:
 	FDelegateHandle BytePropertyTrackCreateEditorHandle;
 	FDelegateHandle ColorPropertyTrackCreateEditorHandle;
 	FDelegateHandle FloatPropertyTrackCreateEditorHandle;
+	FDelegateHandle DoublePropertyTrackCreateEditorHandle;
 	FDelegateHandle IntegerPropertyTrackCreateEditorHandle;
-	FDelegateHandle VectorPropertyTrackCreateEditorHandle;
+	FDelegateHandle FloatVectorPropertyTrackCreateEditorHandle;
+	FDelegateHandle DoubleVectorPropertyTrackCreateEditorHandle;
 	FDelegateHandle TransformPropertyTrackCreateEditorHandle;
 	FDelegateHandle EulerTransformPropertyTrackCreateEditorHandle;
 	FDelegateHandle VisibilityPropertyTrackCreateEditorHandle;
@@ -110,11 +113,13 @@ private:
 	FDelegateHandle FadeTrackCreateEditorHandle;
 	FDelegateHandle SpawnTrackCreateEditorHandle;
 	FDelegateHandle LevelVisibilityTrackCreateEditorHandle;
+	FDelegateHandle DataLayerTrackCreateEditorHandle;
 	FDelegateHandle CameraAnimTrackCreateEditorHandle;
 	FDelegateHandle CameraShakeTrackCreateEditorHandle;
 	FDelegateHandle MPCTrackCreateEditorHandle;
 	FDelegateHandle PrimitiveMaterialCreateEditorHandle;
 	FDelegateHandle CameraShakeSourceShakeCreateEditorHandle;
+	FDelegateHandle CVarTrackCreateEditorHandle;
 
 	FDelegateHandle GenerateEventEntryPointsHandle;
 	FDelegateHandle FixupPayloadParameterNameHandle;

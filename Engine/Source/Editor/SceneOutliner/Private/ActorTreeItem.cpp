@@ -8,289 +8,359 @@
 #include "Editor.h"
 #include "ScopedTransaction.h"
 #include "SceneOutlinerPublicTypes.h"
-#include "DragAndDrop/ActorDragDropGraphEdOp.h"
 #include "SceneOutlinerDragDrop.h"
 #include "SceneOutlinerStandaloneTypes.h"
-
-
-
+#include "Widgets/Text/SInlineEditableTextBlock.h"
+#include "ActorEditorUtils.h"
+#include "ClassIconFinder.h"
+#include "ISceneOutliner.h"
+#include "ISceneOutlinerMode.h"
 #include "Logging/MessageLog.h"
 #include "SSocketChooser.h"
+#include "LevelInstance/LevelInstanceActor.h"
+#include "WorldPartition/WorldPartition.h"
+#include "ToolMenu.h"
+#include "Engine/Level.h"
 
 #define LOCTEXT_NAMESPACE "SceneOutliner_ActorTreeItem"
 
-namespace SceneOutliner
+const FSceneOutlinerTreeItemType FActorTreeItem::Type(&ISceneOutlinerTreeItem::Type);
+
+struct SActorTreeLabel : FSceneOutlinerCommonLabelData, public SCompoundWidget
 {
+	SLATE_BEGIN_ARGS(SActorTreeLabel) {}
+	SLATE_END_ARGS()
 
-FDragValidationInfo FActorDropTarget::ValidateDrop(FDragDropPayload& DraggedObjects, UWorld& World) const
-{
-	if (DraggedObjects.Folders)
+	void Construct(const FArguments& InArgs, FActorTreeItem& ActorItem, ISceneOutliner& SceneOutliner, const STableRow<FSceneOutlinerTreeItemPtr>& InRow)
 	{
-		return FDragValidationInfo(FActorDragDropGraphEdOp::ToolTip_IncompatibleGeneric, LOCTEXT("FoldersOnActorError", "Cannot attach folders to actors"));
-	}
+		WeakSceneOutliner = StaticCastSharedRef<ISceneOutliner>(SceneOutliner.AsShared());
 
-	const AActor* DropTarget = Actor.Get();
+		TreeItemPtr = StaticCastSharedRef<FActorTreeItem>(ActorItem.AsShared());
+		ActorPtr = ActorItem.Actor;
 
-	if (!DropTarget || !DraggedObjects.Actors)
-	{
-		return FDragValidationInfo(FActorDragDropGraphEdOp::ToolTip_IncompatibleGeneric, FText());
-	}	
+		HighlightText = SceneOutliner.GetFilterHighlightText();
 
-	FText AttachErrorMsg;
-	bool bCanAttach = true;
-	bool bDraggedOntoAttachmentParent = true;
+		TSharedPtr<SInlineEditableTextBlock> InlineTextBlock;
 
-	const auto& DragActors = DraggedObjects.Actors.GetValue();
-	for (const auto& DragActorPtr : DragActors)
-	{
-		AActor* DragActor = DragActorPtr.Get();
-		if (DragActor)
-		{
-			if (bCanAttach)
-			{
-				if (DragActor->IsChildActor())
+		auto MainContent = SNew(SHorizontalBox)
+
+			// Main actor label
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			[
+				SAssignNew(InlineTextBlock, SInlineEditableTextBlock)
+				.Text(this, &SActorTreeLabel::GetDisplayText)
+				.ToolTipText(this, &SActorTreeLabel::GetTooltipText)
+				.HighlightText(HighlightText)
+				.ColorAndOpacity(this, &SActorTreeLabel::GetForegroundColor)
+				.OnTextCommitted(this, &SActorTreeLabel::OnLabelCommitted)
+				.OnVerifyTextChanged(this, &SActorTreeLabel::OnVerifyItemLabelChanged)
+				.OnEnterEditingMode(this, &SActorTreeLabel::OnEnterEditingMode)
+				.OnExitEditingMode(this, &SActorTreeLabel::OnExitEditingMode)
+				.IsSelected(FIsSelected::CreateSP(&InRow, &STableRow<FSceneOutlinerTreeItemPtr>::IsSelectedExclusively))
+				.IsReadOnly_Lambda([Item = ActorItem.AsShared(), this]()
 				{
-					AttachErrorMsg = FText::Format(LOCTEXT("Error_AttachChildActor", "Cannot move {0} as it is a child actor."), FText::FromString(DragActor->GetActorLabel()));
-					bCanAttach = bDraggedOntoAttachmentParent = false;
-					break;
-				}
-				if (!GEditor->CanParentActors(DropTarget, DragActor, &AttachErrorMsg))
+					return !CanExecuteRenameRequest(Item.Get());
+				})
+			]
+
+			+ SHorizontalBox::Slot()
+			.VAlign(VAlign_Center)
+			.AutoWidth()
+			.Padding(0.0f, 0.f, 3.0f, 0.0f)
+			[
+				SNew(STextBlock)
+				.Text(this, &SActorTreeLabel::GetTypeText)
+				.Visibility(this, &SActorTreeLabel::GetTypeTextVisibility)
+				.HighlightText(HighlightText)
+			];
+
+		if (WeakSceneOutliner.Pin()->GetMode()->IsInteractive())
+		{
+			ActorItem.RenameRequestEvent.BindSP(InlineTextBlock.Get(), &SInlineEditableTextBlock::EnterEditingMode);
+		}
+
+		ChildSlot
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FSceneOutlinerDefaultTreeItemMetrics::IconPadding())
+				[
+					SNew(SBox)
+					.WidthOverride(FSceneOutlinerDefaultTreeItemMetrics::IconSize())
+					.HeightOverride(FSceneOutlinerDefaultTreeItemMetrics::IconSize())
+					[
+						SNew(SImage)
+						.Image(this, &SActorTreeLabel::GetIcon)
+						.ToolTipText(this, &SActorTreeLabel::GetIconTooltip)
+						.ColorAndOpacity(FSlateColor::UseForeground())
+					]
+				]
+
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				.VAlign(VAlign_Center)
+				.Padding(0.0f, 0.0f)
+				[
+					MainContent
+				]
+			];
+	}
+
+private:
+	TWeakPtr<FActorTreeItem> TreeItemPtr;
+	TWeakObjectPtr<AActor> ActorPtr;
+	TAttribute<FText> HighlightText;
+	
+	FText GetDisplayText() const
+	{
+		if (const FSceneOutlinerTreeItemPtr TreeItem = TreeItemPtr.Pin())
+		{
+			const AActor* Actor = ActorPtr.Get();
+			if (const ALevelInstance* LevelInstanceActor = Cast<ALevelInstance>(Actor))
+			{
+				if (LevelInstanceActor->IsDirty() && !bInEditingMode)
 				{
-					bCanAttach = false;
+					FFormatNamedArguments Args;
+					Args.Add(TEXT("ActorLabel"), FText::FromString(TreeItem->GetDisplayString()));
+					Args.Add(TEXT("EditTag"), LOCTEXT("EditingLevelInstanceLabel", "*"));
+					return FText::Format(LOCTEXT("LevelInstanceDisplay", "{ActorLabel}{EditTag}"), Args);
 				}
 			}
+			return FText::FromString(TreeItem->GetDisplayString());
+		}
 
-			if (DragActor->GetAttachParentActor() != DropTarget)
+		return FText();
+	}
+
+	FText GetTooltipText() const
+	{
+		if (const FSceneOutlinerTreeItemPtr TreeItem = TreeItemPtr.Pin())
+		{
+			return FText::FromString(TreeItem->GetDisplayString());
+		}
+
+		return FText();
+	}
+
+	FText GetTypeText() const
+	{
+		if (const AActor* Actor = ActorPtr.Get())
+		{
+			return FText::FromName(Actor->GetClass()->GetFName());
+		}
+
+		return FText();
+	}
+
+	EVisibility GetTypeTextVisibility() const
+	{
+		return HighlightText.Get().IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible;
+	}
+
+	const FSlateBrush* GetIcon() const
+	{
+		if (const AActor* Actor = ActorPtr.Get())
+		{
+			if (WeakSceneOutliner.IsValid())
 			{
-				bDraggedOntoAttachmentParent = false;
+				FName IconName = Actor->GetCustomIconName();
+				if (IconName == NAME_None)
+				{
+					IconName = Actor->GetClass()->GetFName();
+				}
+
+				const FSlateBrush* CachedBrush = WeakSceneOutliner.Pin()->GetCachedIconForClass(IconName);
+				if (CachedBrush != nullptr)
+				{
+					return CachedBrush;
+				}
+				else
+				{
+
+					const FSlateBrush* FoundSlateBrush = FClassIconFinder::FindIconForActor(Actor);
+					WeakSceneOutliner.Pin()->CacheIconForClass(IconName, FoundSlateBrush);
+					return FoundSlateBrush;
+				}
+			}
+			else
+			{
+				return nullptr;
+			}
+		}
+		else
+		{
+			return FSlateIconFinder::FindIconForClass(AActor::StaticClass()).GetOptionalIcon();
+		}
+	}
+
+	const FSlateBrush* GetIconOverlay() const
+	{
+		static const FName SequencerActorTag(TEXT("SequencerActor"));
+
+		if (const AActor* Actor = ActorPtr.Get())
+		{
+			if (Actor->ActorHasTag(SequencerActorTag))
+			{
+				return FEditorStyle::GetBrush("Sequencer.SpawnableIconOverlay");
+			}
+		}
+		return nullptr;
+	}
+
+	FText GetIconTooltip() const
+	{
+		auto TreeItem = TreeItemPtr.Pin();
+		if (!TreeItem.IsValid())
+		{
+			return FText();
+		}
+
+		FText ToolTipText;
+		if (AActor* Actor = ActorPtr.Get())
+		{
+			ToolTipText = FText::FromString(Actor->GetClass()->GetName());
+			if (WeakSceneOutliner.Pin()->GetMode()->IsInteractive())
+			{
+				USceneComponent* RootComponent = Actor->GetRootComponent();
+				if (RootComponent)
+				{
+					FFormatNamedArguments Args;
+					Args.Add(TEXT("ActorClassName"), ToolTipText);
+
+					if (RootComponent->Mobility == EComponentMobility::Static)
+					{
+						ToolTipText = FText::Format(LOCTEXT("ComponentMobility_Static", "{ActorClassName} with static mobility"), Args);
+					}
+					else if (RootComponent->Mobility == EComponentMobility::Stationary)
+					{
+						ToolTipText = FText::Format(LOCTEXT("ComponentMobility_Stationary", "{ActorClassName} with stationary mobility"), Args);
+					}
+					else if (RootComponent->Mobility == EComponentMobility::Movable)
+					{
+						ToolTipText = FText::Format(LOCTEXT("ComponentMobility_Movable", "{ActorClassName} with movable mobility"), Args);
+					}
+				}
+			}
+		}
+
+		return ToolTipText;
+	}
+
+	FSlateColor GetForegroundColor() const
+	{
+		AActor* Actor = ActorPtr.Get();
+
+		// Color LevelInstances differently if they are being edited
+		if (const ALevelInstance* LevelInstanceActor = Cast<ALevelInstance>(Actor))
+		{
+			if (LevelInstanceActor->IsEditing())
+			{
+				return FAppStyle::Get().GetSlateColor("Colors.AccentGreen");
+			}
+		}
+
+		auto TreeItem = TreeItemPtr.Pin();
+		if (auto BaseColor = FSceneOutlinerCommonLabelData::GetForegroundColor(*TreeItem))
+		{
+			return BaseColor.GetValue();
+		}
+
+		if (!Actor)
+		{
+			// Deleted actor!
+			return FLinearColor(0.2f, 0.2f, 0.25f);
+		}
+
+		UWorld* OwningWorld = Actor->GetWorld();
+		if (!OwningWorld)
+		{
+			// Deleted world!
+			return FLinearColor(0.2f, 0.2f, 0.25f);
+		}
+
+		const bool bRepresentingPIEWorld = TreeItem->Actor->GetWorld()->IsPlayInEditor();
+		if (bRepresentingPIEWorld && !TreeItem->bExistsInCurrentWorldAndPIE)
+		{
+			// Highlight actors that are exclusive to PlayWorld
+			return FLinearColor(0.9f, 0.8f, 0.4f);
+		}
+
+		// also darken items that are non selectable in the active mode(s)
+		const bool bInSelected = true;
+		const bool bSelectEvenIfHidden = true;		// @todo outliner: Is this actually OK?
+		if (!GEditor->CanSelectActor(Actor, bInSelected, bSelectEvenIfHidden))
+		{
+			return FSceneOutlinerCommonLabelData::DarkColor;
+		}
+
+		return FSlateColor::UseForeground();
+	}
+
+	bool OnVerifyItemLabelChanged(const FText& InLabel, FText& OutErrorMessage)
+	{
+		return FActorEditorUtils::ValidateActorName(InLabel, OutErrorMessage);
+	}
+
+	void OnLabelCommitted(const FText& InLabel, ETextCommit::Type InCommitInfo)
+	{
+		auto* Actor = ActorPtr.Get();
+		if (Actor && Actor->IsActorLabelEditable() && !InLabel.ToString().Equals(Actor->GetActorLabel(), ESearchCase::CaseSensitive))
+		{
+			const FScopedTransaction Transaction(LOCTEXT("SceneOutlinerRenameActorTransaction", "Rename Actor"));
+			FActorLabelUtilities::RenameExistingActor(Actor, InLabel.ToString());
+
+			auto Outliner = WeakSceneOutliner.Pin();
+			if (Outliner.IsValid())
+			{
+				Outliner->SetKeyboardFocus();
 			}
 		}
 	}
 
-	const FText ActorLabel = FText::FromString(DropTarget->GetActorLabel());
-	if (bDraggedOntoAttachmentParent)
+	void OnEnterEditingMode()
 	{
-		if (DragActors.Num() == 1)
-		{
-			return FDragValidationInfo(FActorDragDropGraphEdOp::ToolTip_CompatibleDetach, ActorLabel);
-		}
-		else
-		{
-			return FDragValidationInfo(FActorDragDropGraphEdOp::ToolTip_CompatibleMultipleDetach, ActorLabel);
-		}
-	}
-	else if (bCanAttach)
-	{
-		if (DragActors.Num() == 1)
-		{
-			return FDragValidationInfo(FActorDragDropGraphEdOp::ToolTip_CompatibleAttach, ActorLabel);
-		}
-		else
-		{
-			return FDragValidationInfo(FActorDragDropGraphEdOp::ToolTip_CompatibleMultipleAttach, ActorLabel);
-		}
-	}
-	else
-	{
-		if (DragActors.Num() == 1)
-		{
-			return FDragValidationInfo(FActorDragDropGraphEdOp::ToolTip_IncompatibleGeneric, AttachErrorMsg);
-		}
-		else
-		{
-			const FText ReasonText = FText::Format(LOCTEXT("DropOntoText", "{0}. {1}"), ActorLabel, AttachErrorMsg);
-			return FDragValidationInfo(FActorDragDropGraphEdOp::ToolTip_IncompatibleMultipleAttach, ReasonText);
-		}
-	}
-}
-
-void FActorDropTarget::OnDrop(FDragDropPayload& DraggedObjects, UWorld& World, const FDragValidationInfo& ValidationInfo, TSharedRef<SWidget> DroppedOnWidget)
-{
-	AActor* DropActor = Actor.Get();
-	if (!DropActor)
-	{
-		return;
+		bInEditingMode = true;
 	}
 
-	FActorArray DraggedActors = DraggedObjects.Actors.GetValue();
-
-	FMessageLog EditorErrors("EditorErrors");
-	EditorErrors.NewPage(LOCTEXT("ActorAttachmentsPageLabel", "Actor attachment"));
-
-	if (ValidationInfo.TooltipType == FActorDragDropGraphEdOp::ToolTip_CompatibleMultipleDetach || ValidationInfo.TooltipType == FActorDragDropGraphEdOp::ToolTip_CompatibleDetach)
+	void OnExitEditingMode()
 	{
-		const FScopedTransaction Transaction( LOCTEXT("UndoAction_DetachActors", "Detach actors") );
-
-		for (const auto& WeakActor : DraggedActors)
-		{
-			if (auto* DragActor = WeakActor.Get())
-			{
-				DetachActorFromParent(DragActor);
-			}
-		}
-	}
-	else if (ValidationInfo.TooltipType == FActorDragDropGraphEdOp::ToolTip_CompatibleMultipleAttach || ValidationInfo.TooltipType == FActorDragDropGraphEdOp::ToolTip_CompatibleAttach)
-	{
-		// Show socket chooser if we have sockets to select
-
-		//@TODO: Should create a menu for each component that contains sockets, or have some form of disambiguation within the menu (like a fully qualified path)
-		// Instead, we currently only display the sockets on the root component
-		USceneComponent* Component = DropActor->GetRootComponent();
-		if ((Component != NULL) && (Component->HasAnySockets()))
-		{
-			// Create the popup
-			FSlateApplication::Get().PushMenu(
-				DroppedOnWidget,
-				FWidgetPath(),
-				SNew(SSocketChooserPopup)
-				.SceneComponent( Component )
-				.OnSocketChosen_Static(&FActorDropTarget::PerformAttachment, Actor, MoveTemp(DraggedActors) ),
-				FSlateApplication::Get().GetCursorPos(),
-				FPopupTransitionEffect( FPopupTransitionEffect::TypeInPopup )
-				);
-		}
-		else
-		{
-			PerformAttachment(NAME_None, Actor, MoveTemp(DraggedActors));
-		}
+		bInEditingMode = false;
 	}
 
-	// Report errors
-	EditorErrors.Notify(NSLOCTEXT("ActorAttachmentError", "AttachmentsFailed", "Attachments Failed!"));
-}
-
-void FActorDropTarget::PerformAttachment(FName SocketName, TWeakObjectPtr<AActor> Parent, const FActorArray NewAttachments)
-{
-	AActor* ParentActor = Parent.Get();
-	if (ParentActor)
-	{
-		// modify parent and child
-		const FScopedTransaction Transaction( LOCTEXT("UndoAction_PerformAttachment", "Attach actors") );
-
-		// Attach each child
-		bool bAttached = false;
-		for (auto& Child : NewAttachments)
-		{
-			AActor* ChildActor = Child.Get();
-			if (GEditor->CanParentActors(ParentActor, ChildActor))
-			{
-				GEditor->ParentActors(ParentActor, ChildActor, SocketName);
-
-				ChildActor->SetFolderPath_Recursively(ParentActor->GetFolderPath());
-			}
-		}
-	}
-}
-
-void FActorDropTarget::DetachActorFromParent(AActor* ChildActor)
-{
-	USceneComponent* RootComp = ChildActor->GetRootComponent();
-	if (RootComp && RootComp->GetAttachParent())
-	{
-		AActor* OldParent = RootComp->GetAttachParent()->GetOwner();
-		OldParent->Modify();
-		RootComp->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
-		
-		ChildActor->SetFolderPath_Recursively(OldParent->GetFolderPath());
-	}
-}
+	bool bInEditingMode = false;
+};
 
 FActorTreeItem::FActorTreeItem(AActor* InActor)
-	: Actor(InActor)
+	: ISceneOutlinerTreeItem(Type)
+	, Actor(InActor)
 	, ID(InActor)
 {
+	check(InActor);
+	ActorLabel = InActor->GetActorLabel();
+
+	Flags.bIsExpanded = InActor->bDefaultOutlinerExpansionState;
+	
 	bExistsInCurrentWorldAndPIE = GEditor->ObjectsThatExistInEditorWorld.Get(InActor);
 }
 
-FTreeItemPtr FActorTreeItem::FindParent(const FTreeItemMap& ExistingItems) const
-{
-	AActor* ActorPtr = Actor.Get();
-	if (!ActorPtr)
-	{
-		return nullptr;
-	}
-
-	// Parents should have already been added to the tree
-	AActor* ParentActor = ActorPtr->GetAttachParentActor();
-	if (ParentActor)
-	{
-		return ExistingItems.FindRef(ParentActor);
-	}
-	else
-	{
-		const bool bShouldShowFolders = SharedData->Mode == ESceneOutlinerMode::ActorBrowsing || SharedData->bOnlyShowFolders;
-
-		const FName ActorFolder = ActorPtr->GetFolderPath();
-		if (bShouldShowFolders && !ActorFolder.IsNone())
-		{
-			return ExistingItems.FindRef(ActorFolder);
-		}
-	}
-
-	if (UWorld* World = ActorPtr->GetWorld())
-	{
-		return ExistingItems.FindRef(World);
-	}
-
-	return nullptr;
-}
-
-FTreeItemPtr FActorTreeItem::CreateParent() const
-{
-	AActor* ActorPtr = Actor.Get();
-	if (!ActorPtr)
-	{
-		return nullptr;
-	}
-
-	AActor* ParentActor = ActorPtr->GetAttachParentActor();
-	if (ParentActor && ensureMsgf(ParentActor != ActorPtr, TEXT("Encountered an Actor attached to itself (%s)"), *ParentActor->GetName()))
-	{
-		return MakeShareable(new FActorTreeItem(ParentActor));
-	}
-	else if(!ParentActor)
-	{
-		const bool bShouldShowFolders = SharedData->Mode == ESceneOutlinerMode::ActorBrowsing || SharedData->bOnlyShowFolders;
-
-		const FName ActorFolder = ActorPtr->GetFolderPath();
-		if (bShouldShowFolders && !ActorFolder.IsNone())
-		{
-			return MakeShareable(new FFolderTreeItem(ActorFolder));
-		}
-
-		if (UWorld* World = ActorPtr->GetWorld())
-		{
-			return MakeShareable(new FWorldTreeItem(World));
-		}
-	}
-
-	return nullptr;
-}
-
-void FActorTreeItem::Visit(const ITreeItemVisitor& Visitor) const
-{
-	Visitor.Visit(*this);
-}
-
-void FActorTreeItem::Visit(const IMutableTreeItemVisitor& Visitor)
-{
-	Visitor.Visit(*this);
-}
-
-FTreeItemID FActorTreeItem::GetID() const
+FSceneOutlinerTreeItemID FActorTreeItem::GetID() const
 {
 	return ID;
 }
 
-FString FActorTreeItem::GetDisplayString() const
+FFolder::FRootObject FActorTreeItem::GetRootObject() const
 {
-	const AActor* ActorPtr = Actor.Get();
-	return ActorPtr ? ActorPtr->GetActorLabel() : LOCTEXT("ActorLabelForMissingActor", "(Deleted Actor)").ToString();
+	AActor* ActorPtr = Actor.Get();
+	return ActorPtr ? ActorPtr->GetFolderRootObject() : nullptr;
 }
 
-int32 FActorTreeItem::GetTypeSortPriority() const
+FString FActorTreeItem::GetDisplayString() const
 {
-	return ETreeItemSortOrder::Actor;
+	return ActorLabel;
 }
 
 bool FActorTreeItem::CanInteract() const
@@ -311,31 +381,83 @@ bool FActorTreeItem::CanInteract() const
 	return true;
 }
 
-void FActorTreeItem::PopulateDragDropPayload(FDragDropPayload& Payload) const
+TSharedRef<SWidget> FActorTreeItem::GenerateLabelWidget(ISceneOutliner& Outliner, const STableRow<FSceneOutlinerTreeItemPtr>& InRow)
 {
-	AActor* ActorPtr = Actor.Get();
-	if (ActorPtr)
+	return SNew(SActorTreeLabel, *this, Outliner, InRow);
+}
+
+bool FActorTreeItem::ShouldShowPinnedState() const
+{
+	if (const AActor* ActorPtr = Actor.Get())
 	{
-		if (!Payload.Actors)
+		const ULevel* Level = ActorPtr->GetLevel();
+		return !!Level->GetWorldPartition();
+	}
+
+	return false;
+}
+
+bool FActorTreeItem::ShouldShowVisibilityState() const
+{
+	if (const AActor* ActorPtr = Actor.Get())
+	{
+		const ULevel* Level = ActorPtr->GetLevel();
+		return Level->IsPersistentLevel() || !Level->IsInstancedLevel();
+	}
+
+	return false;
+}
+
+void FActorTreeItem::OnVisibilityChanged(const bool bNewVisibility)
+{
+	// Save the actor to the transaction buffer to support undo/redo, but do
+	// not call Modify, as we do not want to dirty the actor's package and
+	// we're only editing temporary, transient values
+	SaveToTransactionBuffer(Actor.Get(), false);
+	Actor->SetIsTemporarilyHiddenInEditor(!bNewVisibility);
+}
+
+bool FActorTreeItem::GetVisibility() const
+{
+	// We want deleted actors to appear as if they are visible to minimize visual clutter.
+	return !Actor.IsValid() || !Actor->IsTemporarilyHiddenInEditor(true);
+}
+
+bool FActorTreeItem::GetPinnedState() const
+{
+	if (Actor.IsValid())
+	{
+		if (const UWorld* const World = Actor->GetWorld())
 		{
-			Payload.Actors = FActorArray();
+			if (const UWorldPartition* const WorldPartition = World->GetWorldPartition())
+			{
+				return WorldPartition->IsActorPinned(Actor->GetActorGuid());
+			}
 		}
-		Payload.Actors->Add(Actor);
+	}
+
+	return false;
+}
+
+void FActorTreeItem::OnLabelChanged()
+{
+	if (Actor.IsValid())
+	{
+		ActorLabel = Actor->GetActorLabel();
 	}
 }
 
-FDragValidationInfo FActorTreeItem::ValidateDrop(FDragDropPayload& DraggedObjects, UWorld& World) const
+void FActorTreeItem::GenerateContextMenu(UToolMenu* Menu, SSceneOutliner& Outliner)
 {
-	FActorDropTarget Target(Actor.Get());
-	return Target.ValidateDrop(DraggedObjects, World);
+	const AActor* ActorPtr = Actor.Get();
+	const ALevelInstance* LevelInstanceActor = Cast<ALevelInstance>(ActorPtr);
+	if (LevelInstanceActor && LevelInstanceActor->IsEditing())
+	{
+		auto SharedOutliner = StaticCastSharedRef<SSceneOutliner>(Outliner.AsShared());
+		const FSlateIcon NewFolderIcon(FEditorStyle::GetStyleSetName(), "SceneOutliner.NewFolderIcon");
+		FToolMenuSection& Section = Menu->AddSection("Section");
+		Section.AddMenuEntry("CreateFolder", LOCTEXT("CreateFolder", "Create Folder"), FText(), NewFolderIcon, FUIAction(FExecuteAction::CreateSP(&Outliner, &SSceneOutliner::CreateFolder)));
+	}
 }
-
-void FActorTreeItem::OnDrop(FDragDropPayload& DraggedObjects, UWorld& World, const FDragValidationInfo& ValidationInfo, TSharedRef<SWidget> DroppedOnWidget)
-{
-	FActorDropTarget Target(Actor.Get());
-	return Target.OnDrop(DraggedObjects, World, ValidationInfo, DroppedOnWidget);
-}
-
-}	// namespace SceneOutliner
 
 #undef LOCTEXT_NAMESPACE

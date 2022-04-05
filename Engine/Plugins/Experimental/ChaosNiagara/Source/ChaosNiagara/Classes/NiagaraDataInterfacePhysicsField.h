@@ -9,7 +9,14 @@
 
 #include "NiagaraDataInterfacePhysicsField.generated.h"
 
-/** Data stored per physics asset instance*/
+/** Data stored per physics asset instance on the render thread */
+struct FNDIFieldRenderData
+{
+	/** Field render resource for gpu */
+	class FPhysicsFieldResource* FieldResource;
+};
+
+/** Data stored per physics asset instance on the game thread */
 struct FNDIPhysicsFieldData
 {
 	/** Initialize the resource */
@@ -29,6 +36,8 @@ struct FNDIPhysicsFieldData
 
 	/** Time in seconds*/
 	float TimeSeconds = 0.0;
+	
+	FNiagaraLWCConverter LWCConverter;
 };
 
 /** Data Interface for the strand base */
@@ -62,23 +71,24 @@ public:
 	virtual void GetCommonHLSL(FString& OutHLSL) override;
 	virtual void GetParameterDefinitionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, FString& OutHLSL) override;
 	virtual bool GetFunctionHLSL(const FNiagaraDataInterfaceGPUParamInfo& ParamInfo, const FNiagaraDataInterfaceGeneratedFunction& FunctionInfo, int FunctionInstanceIndex, FString& OutHLSL) override;
+	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) override;
 #endif
 	virtual void ProvidePerInstanceDataForRenderThread(void* DataForRenderThread, void* PerInstanceData, const FNiagaraSystemInstanceID& SystemInstance) override;
 
 	/** Sample the vector field */
-	void SamplePhysicsVectorField(FVectorVMContext& Context);
+	void SamplePhysicsVectorField(FVectorVMExternalFunctionContext& Context);
 
 	/** Sample the scalar field */
-	void SamplePhysicsScalarField(FVectorVMContext& Context);
+	void SamplePhysicsScalarField(FVectorVMExternalFunctionContext& Context);
 
 	/** Sample the integer field */
-	void SamplePhysicsIntegerField(FVectorVMContext& Context);
+	void SamplePhysicsIntegerField(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the field resolution */
-	void GetPhysicsFieldResolution(FVectorVMContext& Context);
+	void GetPhysicsFieldResolution(FVectorVMExternalFunctionContext& Context);
 
 	/** Get the field bounds */
-	void GetPhysicsFieldBounds(FVectorVMContext& Context);
+	void GetPhysicsFieldBounds(FVectorVMExternalFunctionContext& Context);
 
 	/** Shader attributes names */
 	static const FString ClipmapBufferName;
@@ -88,9 +98,8 @@ public:
 	static const FString ClipmapExponentName;
 	static const FString ClipmapCountName;
 	static const FString TargetCountName;
-	static const FString VectorTargetsName;
-	static const FString ScalarTargetsName;
-	static const FString IntegerTargetsName;
+	static const FString FieldTargetsName;
+	static const FString SystemLWCTileName;
 
 protected:
 	/** Copy one niagara DI to this */
@@ -101,7 +110,7 @@ protected:
 struct FNDIPhysicsFieldProxy : public FNiagaraDataInterfaceProxy
 {
 	/** Get the size of the data that will be passed to render*/
-	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return sizeof(FNDIPhysicsFieldData); }
+	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return sizeof(FNDIFieldRenderData); }
 
 	/** Get the data that will be passed to render*/
 	virtual void ConsumePerInstanceDataFromGameThread(void* PerInstanceData, const FNiagaraSystemInstanceID& Instance) override;
@@ -110,9 +119,9 @@ struct FNDIPhysicsFieldProxy : public FNiagaraDataInterfaceProxy
 	void InitializePerInstanceData(const FNiagaraSystemInstanceID& SystemInstance);
 
 	/** Destroy the proxy data if necessary */
-	void DestroyPerInstanceData(NiagaraEmitterInstanceBatcher* Batcher, const FNiagaraSystemInstanceID& SystemInstance);
+	void DestroyPerInstanceData(const FNiagaraSystemInstanceID& SystemInstance);
 
 	/** List of proxy data for each system instances*/
-	TMap<FNiagaraSystemInstanceID, FNDIPhysicsFieldData> SystemInstancesToProxyData;
+	TMap<FNiagaraSystemInstanceID, FNDIFieldRenderData> SystemInstancesToProxyData;
 };
 

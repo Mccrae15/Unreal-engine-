@@ -56,11 +56,11 @@ namespace UnrealBuildTool.Rules
 
             if (Target.bBuildEditor == true)
             {
+				PrivateDependencyModuleNames.Add("EditorFramework");
                 PrivateDependencyModuleNames.Add("UnrealEd");
             }
 
-            if (Target.Platform == UnrealTargetPlatform.Win32 ||
-                Target.Platform == UnrealTargetPlatform.Win64 ||
+            if (Target.Platform == UnrealTargetPlatform.Win64 ||
                 Target.Platform == UnrealTargetPlatform.HoloLens)
             {	
                 bEnableExceptions = true;

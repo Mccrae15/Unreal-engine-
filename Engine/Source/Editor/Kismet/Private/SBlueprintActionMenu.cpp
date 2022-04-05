@@ -10,6 +10,7 @@
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/SToolTip.h"
 #include "EditorStyleSet.h"
 #include "Editor/EditorPerProjectUserSettings.h"
 #include "EdGraphSchema_K2.h"
@@ -22,8 +23,10 @@
 #include "BlueprintActionMenuUtils.h"
 #include "BlueprintPaletteFavorites.h"
 #include "IDocumentation.h"
-#include "SSCSEditor.h"
+#include "SSubobjectEditor.h"
 #include "SBlueprintContextTargetMenu.h"
+#include "SBlueprintNamespaceEntry.h"
+#include "BlueprintEditorSettings.h"
 
 #define LOCTEXT_NAMESPACE "SBlueprintGraphContextMenu"
 
@@ -48,7 +51,7 @@ struct FBlueprintAction_PromoteVariable : public FEdGraphSchemaAction
 			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(ParentGraph);
 			if( ( MyBlueprintEditor.IsValid() == true ) && ( Blueprint != NULL ) )
 			{
-				MyBlueprintEditor.Pin()->DoPromoteToVariable( Blueprint, FromPin, bToMemberVariable );
+				MyBlueprintEditor.Pin()->DoPromoteToVariable( Blueprint, FromPin, bToMemberVariable, &Location );
 			}
 		}
 		return NULL;		
@@ -248,16 +251,47 @@ void SBlueprintActionMenu::Construct( const FArguments& InArgs, TSharedPtr<FBlue
 	FBlueprintActionContext MenuContext;
 	ConstructActionContext(MenuContext);
 
+	TSharedPtr<SWidget> AddImportTargetContent = SNullWidget::NullWidget;
+	if (GetDefault<UBlueprintEditorSettings>()->bEnableNamespaceImportingFeatures)
+	{
+		SAssignNew(AddImportTargetContent, SBox)
+			.ToolTipText(LOCTEXT("ImportActionLabelTooltip", "Choose a namespace to import and load additional actions."))
+		[
+			SNew(SHorizontalBox)
+			+SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("ImportActionButtonLabel", "Import Actions From:"))
+			]
+			+SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(4.f, 0.f)
+			[
+				SNew(SBlueprintNamespaceEntry)
+					.AllowTextEntry(false)
+					.OnFilterNamespaceList(this, &SBlueprintActionMenu::OnFilterImportNamespaceList)
+					.OnNamespaceSelected(this, &SBlueprintActionMenu::OnNamespaceSelectedForImport)
+			]
+		];
+	}
+
 	TSharedPtr<SComboButton> TargetContextSubMenuButton;
 	// @TODO: would be nice if we could use a checkbox style for this, and have a different state for open/closed
 	SAssignNew(TargetContextSubMenuButton, SComboButton)
 		.MenuPlacement(MenuPlacement_MenuRight)
 		.HasDownArrow(false)
 		.ButtonStyle(FEditorStyle::Get(), "BlueprintEditor.ContextMenu.TargetsButton")
+		.ContentPadding(FMargin(5))
 		.MenuContent()
 		[
 			SAssignNew(ContextTargetSubMenu, SBlueprintContextTargetMenu, MenuContext)
 				.OnTargetMaskChanged(this, &SBlueprintActionMenu::OnContextTargetsChanged)
+				.CustomTargetContent()
+				[
+					AddImportTargetContent.ToSharedRef()
+				]
 		];
 
 	// Build the widget layout
@@ -457,6 +491,12 @@ void SBlueprintActionMenu::CollectAllActions(FGraphActionListBuilderBase& OutAll
 	OutAllActions.Append(MenuBuilder); // @TODO: Avoid this copy
 	// also try adding promote to variable if we can do so.
 	TryInsertPromoteToVariable(FilterContext, OutAllActions);
+
+	// give the schema the opportunity to add another action
+	if(const UEdGraphSchema* Schema = Cast<const UEdGraphSchema>(GraphObj->GetSchema()))
+	{
+		Schema->InsertAdditionalActions(FilterContext.Blueprints, FilterContext.Graphs, FilterContext.Pins, OutAllActions);
+	}
 }
 
 void SBlueprintActionMenu::ConstructActionContext(FBlueprintActionContext& ContextDescOut)
@@ -491,10 +531,10 @@ void SBlueprintActionMenu::ConstructActionContext(FBlueprintActionContext& Conte
 			ContextDescOut.SelectedObjects.Add(SelectedVar->GetProperty());
 		}
 		// If the selection come from the SCS editor, add it to the filter context.
-		else if (Blueprint->SkeletonGeneratedClass && BlueprintEditor->GetSCSEditor().IsValid())
+		else if (Blueprint->SkeletonGeneratedClass && BlueprintEditor->GetSubobjectEditor().IsValid())
 		{
-			TArray<FSCSEditorTreeNodePtrType> Nodes = BlueprintEditor->GetSCSEditor()->GetSelectedNodes();
-			if (Nodes.Num() == 1 && Nodes[0]->GetNodeType() == FSCSEditorTreeNode::ComponentNode)
+			TArray<FSubobjectEditorTreeNodePtrType> Nodes = BlueprintEditor->GetSubobjectEditor()->GetSelectedNodes();
+			if (Nodes.Num() == 1 && Nodes[0]->IsComponentNode())
 			{
 				FName PropertyName = Nodes[0]->GetVariableName();
 				FObjectProperty* VariableProperty = FindFProperty<FObjectProperty>(Blueprint->SkeletonGeneratedClass, PropertyName);
@@ -561,6 +601,58 @@ void SBlueprintActionMenu::TryInsertPromoteToVariable(FBlueprintActionContext co
 			LocalPromoteAction->MyBlueprintEditor = EditorPtr;
 			OutAllActions.AddAction( LocalPromoteAction );
 		}
+	}
+}
+
+void SBlueprintActionMenu::OnFilterImportNamespaceList(TArray<FString>& InOutNamespaceList)
+{
+	FBlueprintActionContext MenuContext;
+	ConstructActionContext(MenuContext);
+
+	for (const UBlueprint* Blueprint : MenuContext.Blueprints)
+	{
+		InOutNamespaceList.RemoveSwap(Blueprint->BlueprintNamespace);
+
+		for (const FString& ImportedNamespace : Blueprint->ImportedNamespaces)
+		{
+			InOutNamespaceList.RemoveSwap(ImportedNamespace);
+		}
+	}
+}
+
+void SBlueprintActionMenu::OnNamespaceSelectedForImport(const FString& InNamespace)
+{
+	bool bWasAdded = false;
+
+	FBlueprintActionContext MenuContext;
+	ConstructActionContext(MenuContext);
+
+	// Add to the blueprint's list of imports.
+	if (!InNamespace.IsEmpty())
+	{
+		for (UBlueprint* Blueprint : MenuContext.Blueprints)
+		{
+			if (FBlueprintEditorUtils::AddNamespaceToImportList(Blueprint, InNamespace))
+			{
+				bWasAdded = true;
+			}
+		}
+	}
+
+	if (bWasAdded)
+	{
+		// Import the namespace into the current editor context. This may load additional type assets.
+		TSharedPtr<FBlueprintEditor> BlueprintEditorPtr = EditorPtr.Pin();
+		if (BlueprintEditorPtr.IsValid())
+		{
+			BlueprintEditorPtr->ImportNamespace(InNamespace);
+			BlueprintEditorPtr->RefreshInspector();
+		}
+
+		// Now that additional types have been loaded/imported, update the menu to include any additional action(s).
+		const bool bPreserveExpansion = true;
+		const bool bHandleOnSelectionEvent = false;
+		GraphActionMenu->RefreshAllActions(bPreserveExpansion, bHandleOnSelectionEvent);
 	}
 }
 

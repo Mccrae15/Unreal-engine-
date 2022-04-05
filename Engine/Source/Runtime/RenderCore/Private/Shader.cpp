@@ -24,6 +24,7 @@
 #include "UObject/FortniteMainBranchObjectVersion.h"
 #include "Misc/ScopeRWLock.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
+#include "Misc/LargeWorldRenderPosition.h"
 
 #if WITH_EDITORONLY_DATA
 #include "Interfaces/IShaderFormat.h"
@@ -98,6 +99,14 @@ static TAutoConsoleVariable<int32> CVarShaderCompilerEmitWarningsOnLoad(
 	ECVF_Default
 );
 
+static TAutoConsoleVariable<int32> CVarShadersForceDXC(
+	TEXT("r.Shaders.ForceDXC"),
+	0,
+	TEXT("Forces DirectX Shader Compiler (DXC) to be used for all shaders instead of HLSLcc if supported.\n")
+	TEXT(" 0: Disable (default)\n")
+	TEXT(" 1: Force new compiler for all shaders"),
+	ECVF_ReadOnly);
+
 static TLinkedList<FShaderType*>*			GShaderTypeList = nullptr;
 static TLinkedList<FShaderPipelineType*>*	GShaderPipelineList = nullptr;
 
@@ -167,12 +176,8 @@ void FShaderParameterMap::VerifyBindingsAreComplete(const TCHAR* ShaderTypeName,
 		{
 			FString ErrorMessage = FString(TEXT("Found unbound parameters being used in shadertype ")) + ShaderTypeName + TEXT(" (VertexFactory: ") + VertexFactoryName + TEXT(")\n") + UnBoundParameters;
 
-			// There will be unbound parameters for Metal's "Hull" shader stage as it is merely a placeholder to provide binding indices to the RHI
-			if(!IsMetalPlatform((EShaderPlatform)Target.Platform) || Target.Frequency != SF_Hull)
-			{
-				// We use a non-Slate message box to avoid problem where we haven't compiled the shaders for Slate.
-				FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ErrorMessage, TEXT("Error"));
-			}
+			// We use a non-Slate message box to avoid problem where we haven't compiled the shaders for Slate.
+			FPlatformMisc::MessageBoxExt(EAppMsgType::Ok, *ErrorMessage, TEXT("Error"));
 		}
 	}
 #endif // WITH_EDITORONLY_DATA
@@ -237,7 +242,7 @@ FShaderType::FShaderType(
 {
 	FTypeLayoutDesc::Register(InTypeLayout);
 
-	bCachedUniformBufferStructDeclarations = false;
+	CachedUniformBufferPlatform = SP_NumPlatforms;
 
 	// This will trigger if an IMPLEMENT_SHADER_TYPE was in a module not loaded before InitializeShaderTypes
 	// Shader types need to be implemented in modules that are loaded before that
@@ -427,8 +432,10 @@ void* FShaderMapPointerTable::GetIndexedPointer(const FTypeLayoutDesc& TypeDesc,
 	return Ptr;
 }
 
-void FShaderMapPointerTable::SaveToArchive(FArchive& Ar, void* FrozenContent, bool bInlineShaderResources) const
+void FShaderMapPointerTable::SaveToArchive(FArchive& Ar, const FPlatformTypeLayoutParameters& LayoutParams, const void* FrozenObject) const
 {
+	FPointerTableBase::SaveToArchive(Ar, LayoutParams, FrozenObject);
+
 	int32 NumTypes = ShaderTypes.Num();
 	int32 NumVFTypes = VFTypes.Num();
 
@@ -450,9 +457,11 @@ void FShaderMapPointerTable::SaveToArchive(FArchive& Ar, void* FrozenContent, bo
 	}
 }
 
-void FShaderMapPointerTable::LoadFromArchive(FArchive& Ar, void* FrozenContent, bool bInlineShaderResources, bool bLoadedByCookedMaterial)
+bool FShaderMapPointerTable::LoadFromArchive(FArchive& Ar, const FPlatformTypeLayoutParameters& LayoutParams, void* FrozenObject)
 {
 	SCOPED_LOADTIMER(FShaderMapPointerTable_LoadFromArchive);
+
+	const bool bResult = FPointerTableBase::LoadFromArchive(Ar, LayoutParams, FrozenObject);
 
 	int32 NumTypes = 0;
 	int32 NumVFTypes = 0;
@@ -477,28 +486,32 @@ void FShaderMapPointerTable::LoadFromArchive(FArchive& Ar, void* FrozenContent, 
 		FVertexFactoryType* VFType = FVertexFactoryType::GetVFByName(TypeName);
 		VFTypes.LoadIndexedPointer(VFType);
 	}
+
+	return bResult;
 }
 
 FShaderCompiledShaderInitializerType::FShaderCompiledShaderInitializerType(
 	const FShaderType* InType,
+	const FShaderType::FParameters* InParameters,
 	int32 InPermutationId,
 	const FShaderCompilerOutput& CompilerOutput,
 	const FSHAHash& InMaterialShaderMapHash,
 	const FShaderPipelineType* InShaderPipeline,
 	const FVertexFactoryType* InVertexFactoryType
-) :
-	Type(InType),
-	Target(CompilerOutput.Target),
-	Code(CompilerOutput.ShaderCode.GetReadAccess()),
-	ParameterMap(CompilerOutput.ParameterMap),
-	OutputHash(CompilerOutput.OutputHash),
-	MaterialShaderMapHash(InMaterialShaderMapHash),
-	ShaderPipeline(InShaderPipeline),
-	VertexFactoryType(InVertexFactoryType),
-	NumInstructions(CompilerOutput.NumInstructions),
-	NumTextureSamplers(CompilerOutput.NumTextureSamplers),
-	CodeSize(CompilerOutput.ShaderCode.GetShaderCodeSize()),
-	PermutationId(InPermutationId)
+	) 
+	: Type(InType)
+	, Parameters(InParameters)
+	, Target(CompilerOutput.Target)
+	, Code(CompilerOutput.ShaderCode.GetReadAccess())
+	, ParameterMap(CompilerOutput.ParameterMap)
+	, OutputHash(CompilerOutput.OutputHash)
+	, MaterialShaderMapHash(InMaterialShaderMapHash)
+	, ShaderPipeline(InShaderPipeline)
+	, VertexFactoryType(InVertexFactoryType)
+	, NumInstructions(CompilerOutput.NumInstructions)
+	, NumTextureSamplers(CompilerOutput.NumTextureSamplers)
+	, CodeSize(CompilerOutput.ShaderCode.GetShaderCodeSize())
+	, PermutationId(InPermutationId)
 {
 }
 
@@ -532,9 +545,13 @@ FShader::FShader(const CompiledShaderInitializerType& Initializer)
 	, CodeSize(Initializer.CodeSize)
 #endif // WITH_EDITORONLY_DATA
 {
-#if WITH_EDITORONLY_DATA
 	checkSlow(Initializer.OutputHash != FSHAHash());
-	
+
+	// Only store a truncated hash to minimize memory overhead
+	static_assert(sizeof(SortKey) <= sizeof(Initializer.OutputHash.Hash));
+	FMemory::Memcpy(&SortKey, Initializer.OutputHash.Hash, sizeof(SortKey));
+
+#if WITH_EDITORONLY_DATA
 	OutputHash = Initializer.OutputHash;
 
 	// Store off the source hash that this shader was compiled with
@@ -792,24 +809,21 @@ static TArray<FShaderPipelineType*>& GetSortedShaderPipelineTypes(FShaderType::E
 
 FShaderPipelineType::FShaderPipelineType(
 	const TCHAR* InName,
-	const FShaderType* InVertexShader,
-	const FShaderType* InHullShader,
-	const FShaderType* InDomainShader,
-	const FShaderType* InGeometryShader,
+	const FShaderType* InVertexOrMeshShader,
+	const FShaderType* InGeometryOrAmplificationShader,
 	const FShaderType* InPixelShader,
+	bool bInIsMeshPipeline,
 	bool bInShouldOptimizeUnusedOutputs) :
 	Name(InName),
 	TypeName(Name),
 	HashedName(TypeName),
-	HashedPrimaryShaderFilename(InVertexShader->GetShaderFilename()),
+	HashedPrimaryShaderFilename(InVertexOrMeshShader->GetShaderFilename()),
 	GlobalListLink(this),
 	bShouldOptimizeUnusedOutputs(bInShouldOptimizeUnusedOutputs)
 {
 	checkf(Name && *Name, TEXT("Shader Pipeline Type requires a valid Name!"));
 
-	checkf(InVertexShader, TEXT("A Shader Pipeline always requires a Vertex Shader"));
-
-	checkf((InHullShader == nullptr && InDomainShader == nullptr) || (InHullShader != nullptr && InDomainShader != nullptr), TEXT("Both Hull & Domain shaders are needed for tessellation on Pipeline %s"), Name);
+	checkf(InVertexOrMeshShader, TEXT("A Shader Pipeline always requires a Vertex or Mesh Shader"));
 
 	//make sure the name is shorter than the maximum serializable length
 	check(FCString::Strlen(InName) < NAME_SIZE);
@@ -818,28 +832,19 @@ FShaderPipelineType::FShaderPipelineType(
 
 	if (InPixelShader)
 	{
-		check(InPixelShader->GetTypeForDynamicCast() == InVertexShader->GetTypeForDynamicCast());
+		check(InPixelShader->GetTypeForDynamicCast() == InVertexOrMeshShader->GetTypeForDynamicCast());
 		Stages.Add(InPixelShader);
 		AllStages[SF_Pixel] = InPixelShader;
 	}
-	if (InGeometryShader)
-	{
-		check(InGeometryShader->GetTypeForDynamicCast() == InVertexShader->GetTypeForDynamicCast());
-		Stages.Add(InGeometryShader);
-		AllStages[SF_Geometry] = InGeometryShader;
-	}
-	if (InDomainShader)
-	{
-		check(InDomainShader->GetTypeForDynamicCast() == InVertexShader->GetTypeForDynamicCast());
-		check(InHullShader->GetTypeForDynamicCast() == InVertexShader->GetTypeForDynamicCast());
-		Stages.Add(InDomainShader);
-		AllStages[SF_Domain] = InDomainShader;
 
-		Stages.Add(InHullShader);
-		AllStages[SF_Hull] = InHullShader;
+	if (InGeometryOrAmplificationShader)
+	{
+		check(InGeometryOrAmplificationShader->GetTypeForDynamicCast() == InVertexOrMeshShader->GetTypeForDynamicCast());
+		Stages.Add(InGeometryOrAmplificationShader);
+		AllStages[bInIsMeshPipeline ? SF_Amplification : SF_Geometry] = InGeometryOrAmplificationShader;
 	}
-	Stages.Add(InVertexShader);
-	AllStages[SF_Vertex] = InVertexShader;
+	Stages.Add(InVertexOrMeshShader);
+	AllStages[bInIsMeshPipeline ? SF_Mesh : SF_Vertex] = InVertexOrMeshShader;
 
 	for (uint32 FrequencyIndex = 0; FrequencyIndex < SF_NumStandardFrequencies; ++FrequencyIndex)
 	{
@@ -856,7 +861,7 @@ FShaderPipelineType::FShaderPipelineType(
 	GlobalListLink.LinkHead(GetTypeList());
 	GetNameToTypeMap().Add(HashedName, this);
 
-	TArray<FShaderPipelineType*>& SortedTypes = GetSortedShaderPipelineTypes(InVertexShader->GetTypeForDynamicCast());
+	TArray<FShaderPipelineType*>& SortedTypes = GetSortedShaderPipelineTypes(InVertexOrMeshShader->GetTypeForDynamicCast());
 	const int32 SortedIndex = Algo::LowerBoundBy(SortedTypes, HashedName, [](const FShaderPipelineType* InType) { return InType->GetHashedName(); });
 	SortedTypes.Insert(this, SortedIndex);
 
@@ -870,7 +875,7 @@ FShaderPipelineType::~FShaderPipelineType()
 	GetNameToTypeMap().Remove(HashedName);
 	GlobalListLink.Unlink();
 
-	TArray<FShaderPipelineType*>& SortedTypes = GetSortedShaderPipelineTypes(AllStages[SF_Vertex]->GetTypeForDynamicCast());
+	TArray<FShaderPipelineType*>& SortedTypes = GetSortedShaderPipelineTypes(AllStages[HasMeshShader() ? SF_Mesh : SF_Vertex]->GetTypeForDynamicCast());
 	const int32 SortedIndex = Algo::BinarySearchBy(SortedTypes, HashedName, [](const FShaderPipelineType* InType) { return InType->GetHashedName(); });
 	check(SortedIndex != INDEX_NONE);
 	SortedTypes.RemoveAt(SortedIndex);
@@ -994,6 +999,18 @@ const FSHAHash& FShaderPipelineType::GetSourceHash(EShaderPlatform ShaderPlatfor
 		Filenames.Add(ShaderType->GetShaderFilename());
 	}
 	return GetShaderFilesHash(Filenames, ShaderPlatform);
+}
+
+bool FShaderPipelineType::ShouldCompilePermutation(const FShaderPermutationParameters& Parameters) const
+{
+	for (const FShaderType* ShaderType : Stages)
+	{
+		if (!ShaderType->ShouldCompilePermutation(Parameters))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 void FShaderPipeline::AddShader(FShader* Shader, int32 PermutationId)
@@ -1276,7 +1293,7 @@ void DispatchComputeShader(
 void DispatchIndirectComputeShader(
 	FRHIComputeCommandList& RHICmdList,
 	FShader* Shader,
-	FRHIVertexBuffer* ArgumentBuffer,
+	FRHIBuffer* ArgumentBuffer,
 	uint32 ArgumentOffset)
 {
 	RHICmdList.DispatchIndirectComputeShader(ArgumentBuffer, ArgumentOffset);
@@ -1284,36 +1301,56 @@ void DispatchIndirectComputeShader(
 
 bool IsDxcEnabledForPlatform(EShaderPlatform Platform)
 {
+	// Check the generic console variable first (if DXC is supported)
+	if (FDataDrivenShaderPlatformInfo::GetSupportsDxc(Platform))
+	{
+		static const IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shaders.ForceDXC"));
+		if (CVar && CVar->GetInt() != 0)
+		{
+			return true;
+		}
+	}
+	// Check backend specific console variables next
 	if (IsD3DPlatform(Platform) && IsPCPlatform(Platform))
 	{
-		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.D3D.ForceDXC"));
+		static const IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.D3D.ForceDXC"));
 		return (CVar && CVar->GetInt() != 0);
 	}
 	if (IsOpenGLPlatform(Platform))
 	{
-		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.OpenGL.ForceDXC"));
+		static const IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.OpenGL.ForceDXC"));
 		return (CVar && CVar->GetInt() != 0);
 	}
-	if (IsMetalPlatform(Platform))
+	// Hlslcc has been removed for Metal and Vulkan. There is only DXC now.
+	if (IsMetalPlatform(Platform) || IsVulkanPlatform(Platform))
 	{
-		// Hlslcc has been removed for Metal. There is only DXC now.
 		return true;
 	}
-	if (IsVulkanPlatform(Platform))
+	return false;
+}
+
+bool IsUsingEmulatedUniformBuffers(EShaderPlatform Platform)
+{
+	if (IsOpenGLPlatform(Platform))
 	{
-		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Vulkan.ForceDXC"));
-		int32 VulkanForceDxc = (CVar ? CVar->GetInt() : 0);
-		const bool bIsVulkanMobile = IsVulkanMobilePlatform((EShaderPlatform)Platform) || IsVulkanMobileSM5Platform((EShaderPlatform)Platform);
-		const bool bIsDxcEnabledForDesktop = (VulkanForceDxc == 1 && !bIsVulkanMobile);
-		const bool bIsDxcEnabledForMobile = (VulkanForceDxc == 2 && bIsVulkanMobile);
-		const bool bIsDxcEnableForAll = (VulkanForceDxc == 3);
-		return (bIsDxcEnabledForDesktop || bIsDxcEnabledForMobile || bIsDxcEnableForAll);
+		// Currently DXC only supports emulated uniform buffers on GLES
+		static const auto CForceDXCVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.OpenGL.ForceDXC"));
+		if (CForceDXCVar && CForceDXCVar->GetInt() != 0)
+		{
+			return true;
+		}
+
+		static auto* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("OpenGL.UseEmulatedUBs"));
+		return (CVar && CVar->GetValueOnAnyThread() != 0);
 	}
+
 	return false;
 }
 
 void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 {
+	const FName ShaderFormatName = LegacyShaderPlatformToShaderFormat(Platform);
+
 	// Globals that should cause all shaders to recompile when changed must be appended to the key here
 	// Key should be kept as short as possible while being somewhat human readable for debugging
 
@@ -1404,18 +1441,36 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	}
 
 	{
-		KeyString += ShouldKeepShaderDebugInfo(Platform) ? TEXT("_NoStrip") : TEXT("");
+		// Extra data (names, etc)
+		KeyString += ShouldEnableExtraShaderData(ShaderFormatName) ? TEXT("_ExtraData") : TEXT("");
+		// Symbols
+		KeyString += ShouldGenerateShaderSymbols(ShaderFormatName) ? TEXT("_Symbols") : TEXT("");
+		// Are symbols based on source or results
+		KeyString += ShouldAllowUniqueShaderSymbols(ShaderFormatName) ? TEXT("_FullDbg") : TEXT("");
 	}
 
 	{
-		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shaders.Optimize"));
-		KeyString += (CVar && CVar->GetInt() != 0) ? TEXT("") : TEXT("_NoOpt");
+		KeyString += ShouldOptimizeShaders(ShaderFormatName) ? TEXT("") : TEXT("_NoOpt");
 	}
 	
 	{
 		// Always default to fast math unless specified
 		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shaders.FastMath"));
 		KeyString += (CVar && CVar->GetInt() == 0) ? TEXT("_NoFastMath") : TEXT("");
+	}
+
+	{
+		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shaders.WarningsAsErrors"));
+		KeyString += (CVar && CVar->GetInt() == 1) ? TEXT("_WX") : TEXT("");
+	}
+	
+	{
+		static const auto CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shaders.CheckLevel"));
+		// Note: Since 1 is the default, we don't modify the hash for this case, so as to not force a rebuild, and to keep the hash shorter.
+		if (CVar && (CVar->GetInt() == 0 || CVar->GetInt() == 2))
+		{
+			KeyString.Appendf(TEXT("_C%d"), CVar->GetInt());
+		}
 	}
 	
 	{
@@ -1440,6 +1495,11 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	if (!AllowPixelDepthOffset(Platform))
 	{
 		KeyString += TEXT("_NoPDO");
+	}
+
+	if (!AllowPerPixelShadingModels(Platform))
+	{
+		KeyString += TEXT("_NoPPSM");
 	}
 	
 	if (IsD3DPlatform(Platform) && IsPCPlatform(Platform))
@@ -1466,8 +1526,11 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		}	
 		
 		{
-			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.ForceFullPrecisionInPS"));
-			KeyString += (CVar && CVar->GetInt() != 0) ? TEXT("_highp") : TEXT("");
+			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.FloatPrecisionMode"));
+			if(CVar && CVar->GetInt() > 0)
+			{
+				KeyString.Appendf(TEXT("_highp%d"), CVar->GetInt());
+			}
 		}
 
 		{
@@ -1475,31 +1538,21 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 			KeyString += (CVar && CVar->GetInt() != 0) ? TEXT("_DLODT") : TEXT("");
 		}
 		
-		if (IsOpenGLPlatform(Platform))
-		{
-			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("OpenGL.UseEmulatedUBs"));
-			KeyString += (CVar && CVar->GetInt() != 0) ? TEXT("_NoUB") : TEXT("");
-		}
-
-		if (IsVulkanPlatform(Platform))
-		{
-			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Vulkan.UseRealUBs"));
-			if ((CVar && CVar->GetInt() == 0) || 
-				Platform == SP_VULKAN_ES3_1_ANDROID) // we force eUB on mobile Android
-			{
-				KeyString += TEXT("_NoUB");
-			}
-		}
+		KeyString += IsUsingEmulatedUniformBuffers(Platform) ? TEXT("_NoUB") : TEXT("");
 
 		{
-			static FShaderPlatformCachedIniValue<bool> MobileEnableMovableSpotlightsIniValue(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.EnableMovableSpotlights"));
-			static FShaderPlatformCachedIniValue<bool> MobileEnableMovableSpotlightsShadowIniValue(TEXT("/Script/Engine.RendererSettings"), TEXT("r.Mobile.EnableMovableSpotlightsShadow"));
+			static FShaderPlatformCachedIniValue<bool> MobileEnableMovableSpotlightsIniValue(TEXT("r.Mobile.EnableMovableSpotlights"));
+			static FShaderPlatformCachedIniValue<bool> MobileEnableMovableSpotlightsShadowIniValue(TEXT("r.Mobile.EnableMovableSpotlightsShadow"));
+			static FShaderPlatformCachedIniValue<int32> MobileNumDynamicPointLightsIniValue(TEXT("r.MobileNumDynamicPointLights"));
 
 			bool bMobileEnableMovableSpotlights = (MobileEnableMovableSpotlightsIniValue.Get(Platform) != 0);
 			KeyString += (bMobileEnableMovableSpotlights) ? TEXT("_MSPTL") : TEXT("");
 
 			bool bMobileEnableMovableSpotlightsShadow = (MobileEnableMovableSpotlightsShadowIniValue.Get(Platform) != 0);
 			KeyString += (bMobileEnableMovableSpotlights && bMobileEnableMovableSpotlightsShadow) ? TEXT("S") : TEXT("");
+
+			const int32 MobileNumDynamicPointLights = MobileNumDynamicPointLightsIniValue.Get(Platform);
+			KeyString += (MobileNumDynamicPointLights != 0)? FString::Printf(TEXT("_MobDynPL_%d"), MobileNumDynamicPointLights): TEXT("");
 		}
 		
 		{
@@ -1512,18 +1565,6 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Mobile.SupportGPUScene"));
 			bool bMobileGpuScene = (CVar && CVar->GetInt() != 0);
 			KeyString += bMobileGpuScene ? TEXT("_MobGPUSc") : TEXT("");
-			if (bMobileGpuScene)
-			{
-				// Mobile specific verify if we are using texturebuffer or texture2D
-				if (!GPUSceneUseTexture2D(Platform))
-				{
-					KeyString += TEXT("_TexBuf");
-				}
-				else
-				{
-					KeyString += TEXT("_Tex2D");
-				}
-			}
 		}
 
 		{
@@ -1550,20 +1591,9 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	}
 	else
 	{
-		if (IsOpenGLPlatform(Platform))
-		{
-			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("OpenGL.UseEmulatedUBs"));
-			KeyString += (CVar && CVar->GetInt() != 0) ? TEXT("_NoUB") : TEXT("");
-		}
-
-		if (IsVulkanPlatform(Platform))
-		{
-			static IConsoleVariable* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.Vulkan.UseRealUBs"));
-			KeyString += (CVar && CVar->GetInt() == 0) ? TEXT("_NoUB") : TEXT("");
-		}
+		KeyString += IsUsingEmulatedUniformBuffers(Platform) ? TEXT("_NoUB") : TEXT("");
 	}
 
-	const FName ShaderFormatName = LegacyShaderPlatformToShaderFormat(Platform);
 	const IShaderFormat* ShaderFormat = GetTargetPlatformManagerRef().FindShaderFormat(ShaderFormatName);
 	if (ShaderFormat)
 	{
@@ -1585,7 +1615,7 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 			KeyString += RHISupportsManualVertexFetch(Platform) ? TEXT("_MVF_") : TEXT("");
 		}
 		
-		uint32 ShaderVersion = RHIGetShaderLanguageVersion(Platform);
+		uint32 ShaderVersion = RHIGetMetalShaderLanguageVersion(Platform);
 		KeyString += FString::Printf(TEXT("_MTLSTD%u_"), ShaderVersion);
 		
 		bool bAllowFastIntrinsics = false;
@@ -1646,7 +1676,7 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		}
 	}
 
-	ITargetPlatform* TargetPlatform = GetTargetPlatformManager()->FindTargetPlatformWithSupport(TEXT("ShaderFormat"), LegacyShaderPlatformToShaderFormat(Platform));
+	ITargetPlatform* TargetPlatform = GetTargetPlatformManager()->FindTargetPlatformWithSupport(TEXT("ShaderFormat"), ShaderFormatName);
 
 	{
 		bool bForwardShading = false;
@@ -1669,10 +1699,25 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	}
 
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PostProcessing.PropagateAlpha"));
-		if (CVar && CVar->GetValueOnAnyThread() > 0)
+		int PropagateAlphaType = 0;
+		if (IsMobilePlatform(Platform))
 		{
-			if (CVar->GetValueOnAnyThread() == 2)
+			static FShaderPlatformCachedIniValue<int32> MobilePropagateAlphaIniValue(TEXT("r.Mobile.PropagateAlpha"));
+			int MobilePropagateAlphaIniValueInt = MobilePropagateAlphaIniValue.Get((EShaderPlatform)Platform);
+			PropagateAlphaType = MobilePropagateAlphaIniValueInt > 0 ? 2 : 0;
+		}
+		else
+		{
+			static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PostProcessing.PropagateAlpha"));
+			if (CVar)
+			{
+				PropagateAlphaType = CVar->GetValueOnAnyThread();
+			}
+		}
+
+		if (PropagateAlphaType > 0)
+		{
+			if (PropagateAlphaType == 2)
 			{
 				KeyString += TEXT("_SA2");
 			}
@@ -1719,17 +1764,54 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	}
 
 	{
-		if (MaskedInEarlyPass(Platform))
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.SupportCloudShadowOnForwardLitTranslucent"));
+		if (CVar && CVar->GetValueOnAnyThread() > 0)
 		{
-			KeyString += TEXT("_EZPMM");
+			KeyString += TEXT("_CLDTRANS");
 		}
 	}
 
 	{
-		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.DistanceFieldBuild.EightBit"));
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Strata"));
+		const bool bStrataEnabled = CVar && CVar->GetValueOnAnyThread() > 0;
+		if (bStrataEnabled)
+		{
+			KeyString += TEXT("_STRATA");
+		}
+
+		static const auto CVarBudget = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Strata.BytesPerPixel"));
+		if (bStrataEnabled && CVarBudget)
+		{
+			KeyString += FString::Printf(TEXT("_BUDGET%u"), CVarBudget->GetValueOnAnyThread());
+		}
+
+		static const auto CVarBackCompatibility = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.StrataBackCompatibility"));
+		if (bStrataEnabled && CVarBackCompatibility && CVarBackCompatibility->GetValueOnAnyThread()>0)
+		{
+			KeyString += FString::Printf(TEXT("_BACKCOMPAT"));
+		}
+	}
+
+	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Material.RoughDiffuse"));
 		if (CVar && CVar->GetValueOnAnyThread() > 0)
 		{
-			KeyString += TEXT("_8u");
+			KeyString += FString::Printf(TEXT("_MATRDIFF"));
+		}
+	}
+
+	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Material.EnergyConservation"));
+		if (CVar && CVar->GetValueOnAnyThread() > 0)
+		{
+			KeyString += FString::Printf(TEXT("_MATENERGY"));
+		}
+	}
+
+	{
+		if (MaskedInEarlyPass(Platform))
+		{
+			KeyString += TEXT("_EZPMM");
 		}
 	}
 	
@@ -1752,6 +1834,14 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	}
 
 	{
+		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.GBufferDiffuseSampleOcclusion"));
+		if (CVar && CVar->GetValueOnAnyThread() != 0)
+		{
+			KeyString += TEXT("_GDSO");
+		}
+	}
+
+	{
 		static const auto CVarVirtualTextureLightmaps = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VirtualTexturedLightmaps"));
 		const bool VTLightmaps = CVarVirtualTextureLightmaps && CVarVirtualTextureLightmaps->GetValueOnAnyThread() != 0;
 
@@ -1766,10 +1856,10 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 
 		const bool VTSupported = TargetPlatform != nullptr && TargetPlatform->SupportsFeature(ETargetPlatformFeatures::VirtualTextureStreaming);
 
-		static const auto CVarVTFactor = IConsoleManager::Get().FindConsoleVariable(TEXT("r.vt.FeedbackFactor")); check(CVarVTFactor);
-		const int32 VTFeedbackFactor = CVarVTFactor->GetInt(); 
+		static const auto CVarVTAnisotropic = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VT.AnisotropicFiltering"));
+		const bool VTAnisotropic = CVarVTAnisotropic && CVarVTAnisotropic->GetValueOnAnyThread() != 0;
 
-		auto tt = FString::Printf(TEXT("_VT-%d-%d-%d-%d"), VTLightmaps, VTTextures, VTSupported, VTFeedbackFactor);
+		auto tt = FString::Printf(TEXT("_VT-%d-%d-%d-%d"), VTLightmaps, VTTextures, VTSupported, VTAnisotropic);
  		KeyString += tt;
 	}
 
@@ -1781,6 +1871,16 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 	if (FDataDrivenShaderPlatformInfo::GetSupportsPerPixelDBufferMask(Platform))
 	{
 		KeyString += TEXT("_PPDBM");
+	}
+
+	if (RHISupportsMeshShadersTier0(Platform))
+	{
+		KeyString += TEXT("_MS_T0");
+	}
+
+	if (RHISupportsMeshShadersTier1(Platform))
+	{
+		KeyString += TEXT("_MS_T1");
 	}
 
 	if (ShouldCompileRayTracingShadersForProject(Platform))
@@ -1809,4 +1909,42 @@ void ShaderMapAppendKeyString(EShaderPlatform Platform, FString& KeyString)
 		const bool bSupportsAnisotropicMaterials = FDataDrivenShaderPlatformInfo::GetSupportsAnisotropicMaterials(Platform);
 		KeyString += FString::Printf(TEXT("_Aniso-%d"), bSupportsAnisotropicMaterials ? 1 : 0);
 	}
+
+	{
+		// add shader compression format
+		KeyString += TEXT("_Compr");
+		FName CompressionFormat = GetShaderCompressionFormat();
+		KeyString += CompressionFormat.ToString();
+		if (CompressionFormat == NAME_Oodle)
+		{
+			FOodleDataCompression::ECompressor OodleCompressor;
+			FOodleDataCompression::ECompressionLevel OodleLevel;
+			GetShaderCompressionOodleSettings(OodleCompressor, OodleLevel);
+			KeyString += FString::Printf(TEXT("_Compr%d_Lev%d"), static_cast<int32>(OodleCompressor), static_cast<int32>(OodleLevel));
+		}
+	}
+
+	{
+		// add whether or not non-pipelined shader types are included
+		KeyString += FString::Printf(TEXT("_ExclNonPipSh-%d"), ExcludeNonPipelinedShaderTypes(Platform));
+	}
+
+	KeyString += FString::Printf(TEXT("_LWC-%d"), FMath::FloorToInt(FLargeWorldRenderScalar::GetTileSize()));
+}
+
+EShaderPermutationFlags GetShaderPermutationFlags(const FPlatformTypeLayoutParameters& LayoutParams)
+{
+	EShaderPermutationFlags Result = EShaderPermutationFlags::None;
+
+	static bool bProjectSupportsCookedEditor = []()
+	{
+		bool bSupportCookedEditorConfigValue = false;
+		return GConfig->GetBool(TEXT("CookedEditorSettings"), TEXT("bSupportCookedEditor"), bSupportCookedEditorConfigValue, GGameIni) && bSupportCookedEditorConfigValue;
+	}();
+
+	if (bProjectSupportsCookedEditor || LayoutParams.WithEditorOnly())
+	{
+		Result |= EShaderPermutationFlags::HasEditorOnlyData;
+	}
+	return Result;
 }

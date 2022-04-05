@@ -3,10 +3,14 @@
 #include "DatasmithContentEditorModule.h"
 
 #include "AssetTypeActions_DatasmithScene.h"
-#include "DatasmithContentEditorStyle.h"
-#include "DatasmithSceneActorDetailsPanel.h"
 #include "DatasmithAreaLightActorDetailsPanel.h"
+#include "DatasmithContentEditorStyle.h"
+#include "DatasmithImportInfoCustomization.h"
+#include "DatasmithSceneActorDetailsPanel.h"
+#include "DatasmithSceneDetails.h"
 
+#include "DatasmithAssetImportData.h"
+#include "DatasmithScene.h"
 #include "Developer/AssetTools/Public/IAssetTools.h"
 #include "Developer/AssetTools/Public/AssetToolsModule.h"
 #include "Engine/Blueprint.h"
@@ -40,6 +44,8 @@ public:
 		AssetTypeActionsArray.Add(DatasmithSceneAssetTypeAction);
 
 		FDatasmithContentEditorStyle::Initialize();
+
+		RegisterDetailCustomization();
 	}
 
 	virtual void ShutdownModule() override
@@ -65,6 +71,8 @@ public:
 
 		// Shutdown style set associated with datasmith content
 		FDatasmithContentEditorStyle::Shutdown();
+
+		UnregisterDetailCustomization();
 	}
 
 	virtual void RegisterSpawnDatasmithSceneActorsHandler( FOnSpawnDatasmithSceneActors InSpawnActorsDelegate ) override
@@ -122,10 +130,146 @@ public:
 		return Result;
 	}
 
+	virtual void RegisterSetAssetAutoReimportHandler(FOnSetAssetAutoReimport&& SetAssetAutoReimportDelegate) override
+	{
+		SetAssetAutoReimportHandler = MoveTemp(SetAssetAutoReimportDelegate);
+	}
+	
+	virtual void UnregisterSetAssetAutoReimportHandler(FDelegateHandle InHandle) override
+	{
+		if (SetAssetAutoReimportHandler.GetHandle() == InHandle)
+		{
+			SetAssetAutoReimportHandler.Unbind();
+		}
+	}
+		
+	virtual TOptional<bool> SetAssetAutoReimport(UObject* Asset, bool bEnabled) const override
+	{
+		if (SetAssetAutoReimportHandler.IsBound())
+		{
+			return SetAssetAutoReimportHandler.Execute(Asset, bEnabled);
+		}
+
+		return TOptional<bool>();
+	}
+
+	virtual void RegisterIsAssetAutoReimportAvailableHandler(FOnIsAssetAutoReimportAvailable&& IsAssetAutoReimportAvailableDelegate)
+	{
+		IsAssetAutoReimportAvailableHandler = MoveTemp(IsAssetAutoReimportAvailableDelegate);
+	}
+	
+	virtual void UnregisterIsAssetAutoReimportAvailableHandler(FDelegateHandle InHandle)
+	{
+		if (IsAssetAutoReimportAvailableHandler.GetHandle() == InHandle)
+		{
+			IsAssetAutoReimportAvailableHandler.Unbind();
+		}
+	}
+	
+	virtual TOptional<bool> IsAssetAutoReimportAvailable(UObject* Asset) const
+	{
+		if (IsAssetAutoReimportAvailableHandler.IsBound())
+		{
+			return IsAssetAutoReimportAvailableHandler.Execute(Asset);
+		}
+
+		return TOptional<bool>();
+	}
+
+	virtual void RegisterIsAssetAutoReimportEnabledHandler(FOnIsAssetAutoReimportEnabled&& IsAssetAutoReimportEnabledDelegate) override
+	{
+		IsAssetAutoReimportEnabledHandler = MoveTemp(IsAssetAutoReimportEnabledDelegate);
+	}
+	
+	virtual void UnregisterIsAssetAutoReimportEnabledHandler(FDelegateHandle InHandle) override
+	{
+		if (IsAssetAutoReimportEnabledHandler.GetHandle() == InHandle)
+		{
+			IsAssetAutoReimportEnabledHandler.Unbind();
+		}
+	}
+	
+	virtual TOptional<bool> IsAssetAutoReimportEnabled(UObject* Asset) const override
+	{
+		if (IsAssetAutoReimportEnabledHandler.IsBound())
+		{
+			return IsAssetAutoReimportEnabledHandler.Execute(Asset);
+		}
+
+		return TOptional<bool>();
+	}
+
+	virtual void RegisterBrowseExternalSourceUriHandler(FOnBrowseExternalSourceUri&& BrowseExternalSourceUriDelegate) override
+	{
+		BrowseExternalSourceUriHandler = MoveTemp(BrowseExternalSourceUriDelegate);
+	}
+
+	virtual void UnregisterBrowseExternalSourceUriHandler(FDelegateHandle InHandle) override
+	{
+		if (BrowseExternalSourceUriHandler.GetHandle() == InHandle)
+		{
+			BrowseExternalSourceUriHandler.Unbind();
+		}
+	}
+
+	virtual bool BrowseExternalSourceUri(FName UriScheme, const FString& DefaultUri, FString& OutSourceUri, FString& OutFallbackFilepath) const override
+	{
+		if (IsAssetAutoReimportEnabledHandler.IsBound())
+		{
+			return BrowseExternalSourceUriHandler.Execute(UriScheme, DefaultUri, OutSourceUri, OutFallbackFilepath);
+		}
+
+		return false;
+	}
+
+	virtual void RegisterGetSupportedUriSchemeHandler(FOnGetSupportedUriSchemes&& GetSupportedUriSchemeDelegate) override
+	{
+		GetSupportedUriSchemeHandler = MoveTemp(GetSupportedUriSchemeDelegate);
+	}
+
+	virtual void UnregisterGetSupportedUriSchemeHandler(FDelegateHandle InHandle) override
+	{
+		if (GetSupportedUriSchemeHandler.GetHandle() == InHandle)
+		{
+			GetSupportedUriSchemeHandler.Unbind();
+		}
+	}
+
+	virtual TOptional<TArray<FName>> GetSupportedUriScheme() const override
+	{
+		if (GetSupportedUriSchemeHandler.IsBound())
+		{
+			return GetSupportedUriSchemeHandler.Execute();
+		}
+
+		return TOptional<TArray<FName>>();
+	}
+
 private:
 	static TSharedPtr<IDataprepImporterInterface> CreateEmptyDatasmithImportHandler()
 	{
 		return TSharedPtr<IDataprepImporterInterface>();
+	}
+
+	void RegisterDetailCustomization()
+	{
+		const FName PropertyEditor("PropertyEditor");
+
+		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>(PropertyEditor);
+		PropertyModule.RegisterCustomPropertyTypeLayout(FDatasmithImportInfo::StaticStruct()->GetFName(), FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FDatasmithImportInfoCustomization::MakeInstance));
+		PropertyModule.RegisterCustomClassLayout(UDatasmithScene::StaticClass()->GetFName(), FOnGetDetailCustomizationInstance::CreateStatic(&FDatasmithSceneDetails::MakeDetails));
+	}
+
+	void UnregisterDetailCustomization()
+	{
+		const FName PropertyEditor("PropertyEditor");
+
+		if (UObjectInitialized() && FModuleManager::Get().IsModuleLoaded(PropertyEditor))
+		{
+			FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>(PropertyEditor);
+			PropertyModule.UnregisterCustomPropertyTypeLayout(FDatasmithImportInfo::StaticStruct()->GetFName());
+			PropertyModule.UnregisterCustomClassLayout(UDatasmithScene::StaticClass()->GetFName());
+		}
 	}
 
 private:
@@ -134,6 +278,11 @@ private:
 	TArray<TSharedPtr<FAssetTypeActions_Base>> AssetTypeActionsArray;
 	TMap<const void*, FImporterDescription> DatasmithImporterMap;
 
+	FOnSetAssetAutoReimport SetAssetAutoReimportHandler;
+	FOnIsAssetAutoReimportAvailable IsAssetAutoReimportAvailableHandler;
+	FOnIsAssetAutoReimportEnabled IsAssetAutoReimportEnabledHandler;
+	FOnBrowseExternalSourceUri BrowseExternalSourceUriHandler;
+	FOnGetSupportedUriSchemes GetSupportedUriSchemeHandler;
 };
 
 #undef LOCTEXT_NAMESPACE

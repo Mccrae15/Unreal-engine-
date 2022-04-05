@@ -99,7 +99,7 @@ public boolean AndroidThunkJava_IapBeginPurchase(String ProductId, String Accoun
 	<!-- optional additions to GameActivity imports in GameActivity.java -->
 	<gameActivityImportAdditions>
 		<insert>
-import com.epicgames.ue4.GooglePlayStoreHelper;
+import com.epicgames.unreal.GooglePlayStoreHelper;
 import java.io.UnsupportedEncodingException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -109,7 +109,7 @@ import java.security.NoSuchAlgorithmException;
 	<!-- optional additions to GameActivity class in GameActivity.java -->
 	<gameActivityClassAdditions>
 		<insert>
-	/** Implement this if app wants to handle IAB activity launch. For e.g use DaydreamApi for transitions **/
+	/** Implement this if app wants to handle IAB activity launch. **/
 	GooglePlayStoreHelper.PurchaseLaunchCallback purchaseLaunchCallback = null;
 
 	public GooglePlayStoreHelper.PurchaseLaunchCallback getPurchaseLaunchCallback()

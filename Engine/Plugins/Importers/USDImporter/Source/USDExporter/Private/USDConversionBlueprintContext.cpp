@@ -17,6 +17,7 @@
 #include "MaterialOptions.h"
 #include "MaterialUtilities.h"
 #include "MeshDescription.h"
+#include "RHI.h"
 #include "StaticMeshAttributes.h"
 
 namespace UE
@@ -270,7 +271,7 @@ bool UUsdConversionBlueprintContext::ConvertMeshComponent( const UMeshComponent*
 #endif // USE_USD_SDK
 }
 
-bool UUsdConversionBlueprintContext::ConvertCineCameraComponent( const UCineCameraComponent* Component, const FString& PrimPath )
+bool UUsdConversionBlueprintContext::ConvertCineCameraComponent( const UCineCameraComponent* Component, const FString& PrimPath, float TimeCode  )
 {
 #if USE_USD_SDK
 	UE::FUsdPrim Prim = UnrealToUsdImpl::GetPrim( Stage, PrimPath );
@@ -279,13 +280,13 @@ bool UUsdConversionBlueprintContext::ConvertCineCameraComponent( const UCineCame
 		return false;
 	}
 
-	return UnrealToUsd::ConvertCameraComponent( Stage, Component, Prim );
+	return UnrealToUsd::ConvertCameraComponent( *Component, Prim, TimeCode == FLT_MAX ? UsdUtils::GetDefaultTimeCode() : TimeCode );
 #else
 	return false;
 #endif // USE_USD_SDK
 }
 
-bool UUsdConversionBlueprintContext::ConvertInstancedFoliageActor( const AInstancedFoliageActor* Actor, const FString& PrimPath, float TimeCode )
+bool UUsdConversionBlueprintContext::ConvertInstancedFoliageActor( const AInstancedFoliageActor* Actor, const FString& PrimPath, ULevel* InstancesLevel, float TimeCode )
 {
 #if USE_USD_SDK
 	UE::FUsdPrim Prim = UnrealToUsdImpl::GetPrim( Stage, PrimPath );
@@ -294,7 +295,7 @@ bool UUsdConversionBlueprintContext::ConvertInstancedFoliageActor( const AInstan
 		return false;
 	}
 
-	return UnrealToUsd::ConvertInstancedFoliageActor( *Actor, Prim, TimeCode == FLT_MAX ? UsdUtils::GetDefaultTimeCode() : TimeCode );
+	return UnrealToUsd::ConvertInstancedFoliageActor( *Actor, Prim, TimeCode == FLT_MAX ? UsdUtils::GetDefaultTimeCode() : TimeCode, InstancesLevel );
 #else
 	return false;
 #endif // USE_USD_SDK
@@ -403,7 +404,7 @@ bool UUsdConversionBlueprintContext::ConvertLandscapeProxyActorMaterial( ALandsc
 		}
 	}
 
-	bool bSuccess = UnrealToUsd::ConvertFlattenMaterial( Actor->GetName() + TEXT( "_BakedMaterial" ), LandscapeFlattenMaterial, PropertiesToBake, TexturesDir, Prim );
+	bool bSuccess = UnrealToUsd::ConvertFlattenMaterial( Actor->GetPathName() + TEXT( "_BakedMaterial" ), LandscapeFlattenMaterial, PropertiesToBake, TexturesDir, Prim );
 
 	// FMaterialUtilities::ExportLandscapeMaterial always bakes WorldNormals, so we need to write to this material that it's meant to be using
 	// world-space normals. On import, we check for this and set the proper scalar parameter on our UsdPreviewSurface material to compensate for it.
@@ -415,6 +416,50 @@ bool UUsdConversionBlueprintContext::ConvertLandscapeProxyActorMaterial( ALandsc
 	}
 
 	return bSuccess;
+#else
+	return false;
+#endif // USE_USD_SDK
+}
+
+void UUsdConversionBlueprintContext::ReplaceUnrealMaterialsWithBaked( const FFilePath& LayerToAuthorIn, const TMap<FString, FString>& BakedMaterials, bool bIsAssetLayer, bool bUsePayload, bool bRemoveUnrealMaterials )
+{
+#if USE_USD_SDK
+	if ( !Stage || LayerToAuthorIn.FilePath.IsEmpty() )
+	{
+		return;
+	}
+
+	UE::FSdfLayer Layer = UE::FSdfLayer::FindOrOpen( *LayerToAuthorIn.FilePath );
+	if ( !Layer )
+	{
+		return;
+	}
+
+	UsdUtils::ReplaceUnrealMaterialsWithBaked( Stage, Layer, BakedMaterials, bIsAssetLayer, bUsePayload, bRemoveUnrealMaterials );
+#endif // USE_USD_SDK
+}
+
+bool UUsdConversionBlueprintContext::RemoveUnrealSurfaceOutput( const FString& PrimPath, const FFilePath& LayerToAuthorIn )
+{
+#if USE_USD_SDK
+	if ( !Stage )
+	{
+		return false;
+	}
+
+	UE::FUsdPrim Prim = UnrealToUsdImpl::GetPrim( Stage, PrimPath );
+	if ( !Prim )
+	{
+		return false;
+	}
+
+	UE::FSdfLayer Layer;
+	if ( !LayerToAuthorIn.FilePath.IsEmpty() )
+	{
+		Layer = UE::FSdfLayer::FindOrOpen( *LayerToAuthorIn.FilePath );
+	}
+
+	return UsdUtils::RemoveUnrealSurfaceOutput( Prim, Layer );
 #else
 	return false;
 #endif // USE_USD_SDK

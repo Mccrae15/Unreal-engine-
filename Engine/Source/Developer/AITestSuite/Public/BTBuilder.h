@@ -125,12 +125,13 @@ struct FBTBuilder
 		return *NodeOb;
 	}
 
-	static void AddTask(UBTCompositeNode& ParentNode, int32 LogIndex, EBTNodeResult::Type NodeResult, int32 ExecutionTicks = 0)
+	static void AddTask(UBTCompositeNode& ParentNode, int32 LogIndex, EBTNodeResult::Type NodeResult, int32 ExecutionTicks = 0, int32 LogTickIndex = -1)
 	{
 		UTestBTTask_Log* TaskNode = NewObject<UTestBTTask_Log>(ParentNode.GetTreeAsset());
 		TaskNode->LogIndex = LogIndex;
 		TaskNode->LogResult = NodeResult;
 		TaskNode->ExecutionTicks = ExecutionTicks;
+		TaskNode->LogTickIndex = LogTickIndex;
 
 		const int32 ChildIdx = ParentNode.Children.AddZeroed(1);
 		ParentNode.Children[ChildIdx].ChildTask = TaskNode;
@@ -187,15 +188,17 @@ struct FBTBuilder
 	}
 
 	static void AddTaskLatentFlags(UBTCompositeNode& ParentNode, EBTNodeResult::Type NodeResult,
-		int32 ExecuteHalfTicks, FName ExecuteKeyName, int32 ExecuteLogStart, int32 ExecuteLogFinish,
-		int32 AbortHalfTicks = 0, FName AbortKeyName = NAME_None, int32 AbortLogStart = 0, int32 AbortLogFinish = 0)
+		int32 ExecuteHalfTicks, /** Num of ticks before 'execute start' and `set execute flag` and then the same num of ticks before `execute finish` */
+		FName ExecuteKeyName, int32 ExecuteLogStart, int32 ExecuteLogFinish,
+		int32 AbortHalfTicks = 0, /** Num of ticks before 'abort start' and `set abort flag` and then the same num of ticks before `abort finish` */
+		FName AbortKeyName = NAME_None, int32 AbortLogStart = 0, int32 AbortLogFinish = 0)
 	{
 		UTestBTTask_LatentWithFlags* TaskNode = NewObject<UTestBTTask_LatentWithFlags>(ParentNode.GetTreeAsset());
-		TaskNode->ExecuteTicks = ExecuteHalfTicks;
+		TaskNode->ExecuteHalfTicks = ExecuteHalfTicks;
 		TaskNode->KeyNameExecute = ExecuteKeyName;
 		TaskNode->LogIndexExecuteStart = ExecuteLogStart;
 		TaskNode->LogIndexExecuteFinish = ExecuteLogFinish;
-		TaskNode->AbortTicks = AbortHalfTicks;
+		TaskNode->AbortHalfTicks = AbortHalfTicks;
 		TaskNode->KeyNameAbort = AbortKeyName;
 		TaskNode->LogIndexAbortStart = AbortLogStart;
 		TaskNode->LogIndexAbortFinish = AbortLogFinish;
@@ -287,13 +290,15 @@ struct FBTBuilder
 		return *ServiceOb;
 	}
 
-	static void WithServiceLog(UBTCompositeNode& ParentNode, int32 ActivationIndex, int32 DeactivationIndex, int32 TickIndex = INDEX_NONE, FName BoolKeyName = NAME_None, bool bCallTickOnSearchStart = false)
+	static void WithServiceLog(UBTCompositeNode& ParentNode, int32 ActivationIndex, int32 DeactivationIndex, int32 TickIndex = INDEX_NONE, FName TickBoolKeyName = NAME_None, bool bCallTickOnSearchStart = false, FName BecomeRelevantBoolKeyName = NAME_None, FName CeaseRelevantBoolKeyName = NAME_None)
 	{
 		UTestBTService_Log& LogService = WithService<UTestBTService_Log>(ParentNode);
 		LogService.LogActivation = ActivationIndex;
 		LogService.LogDeactivation = DeactivationIndex;
 		LogService.LogTick = TickIndex;
-		LogService.SetFlagOnTick(BoolKeyName, bCallTickOnSearchStart);
+		LogService.SetFlagOnTick(TickBoolKeyName, bCallTickOnSearchStart);
+		LogService.KeyNameBecomeRelevant = BecomeRelevantBoolKeyName;
+		LogService.KeyNameCeaseRelevant = CeaseRelevantBoolKeyName;
 	}
 
 	template<class T>
@@ -308,12 +313,14 @@ struct FBTBuilder
 		return *ServiceOb;
 	}
 
-	static void WithTaskServiceLog(UBTCompositeNode& ParentNode, int32 ActivationIndex, int32 DeactivationIndex, int32 TickIndex = INDEX_NONE, FName BoolKeyName = NAME_None, bool bCallTickOnSearchStart = false)
+	static void WithTaskServiceLog(UBTCompositeNode& ParentNode, int32 ActivationIndex, int32 DeactivationIndex, int32 TickIndex = INDEX_NONE, FName TickBoolKeyName = NAME_None, bool bCallTickOnSearchStart = false, FName BecomeRelevantBoolKeyName = NAME_None, FName CeaseRelevantBoolKeyName = NAME_None)
 	{
 		UTestBTService_Log& LogService = WithTaskService<UTestBTService_Log>(ParentNode);
 		LogService.LogActivation = ActivationIndex;
 		LogService.LogDeactivation = DeactivationIndex;
 		LogService.LogTick = TickIndex;
-		LogService.SetFlagOnTick(BoolKeyName, bCallTickOnSearchStart);
+		LogService.SetFlagOnTick(TickBoolKeyName, bCallTickOnSearchStart);
+		LogService.KeyNameBecomeRelevant = BecomeRelevantBoolKeyName;
+		LogService.KeyNameCeaseRelevant = CeaseRelevantBoolKeyName;
 	}
 };

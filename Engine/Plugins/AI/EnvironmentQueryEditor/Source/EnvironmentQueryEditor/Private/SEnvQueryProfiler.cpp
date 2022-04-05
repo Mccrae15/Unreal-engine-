@@ -107,6 +107,8 @@ void SEnvQueryProfiler::BuildStatData()
 {
 	StatData.Reset();
 
+#if USE_EQS_DEBUGGER
+
 	const FString MatchPattern = OwnerQueryName.ToString() + FString("_");
 	
 	CachedGraphDesc = LOCTEXT("ProfilerNoGraph", "Open query with recorded data to view tick load graph");
@@ -163,6 +165,7 @@ void SEnvQueryProfiler::BuildStatData()
 	}
 
 	TimeToNextUpdate = 2.0f;
+#endif
 }
 
 void SEnvQueryProfiler::ForceUpdate()
@@ -261,7 +264,7 @@ void SEnvQueryProfilerTableRow::Construct(const FArguments& InArgs, const TShare
 	StatInfo = InStatInfo;
 
 	SMultiColumnTableRow<FEnvQueryProfilerStatDataPtr>::Construct(FSuperRowType::FArguments(), InOwnerTableView);
-	BorderImage = TAttribute<const FSlateBrush*>(this, &SEnvQueryProfilerTableRow::GetBorder);
+	SetBorderImage(TAttribute<const FSlateBrush*>(this, &SEnvQueryProfilerTableRow::GetBorder));
 }
 
 const FSlateBrush* SEnvQueryProfilerTableRow::GetBorder() const
@@ -292,7 +295,7 @@ TSharedRef<SWidget> SEnvQueryProfilerTableRow::GenerateWidgetForColumn(const FNa
 				.IsFocusable(false)
 				[
 					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("PropertyWindow.Button_Browse"))
+					.Image(FEditorStyle::GetBrush("Icons.Search"))
 					.ColorAndOpacity(FSlateColor::UseForeground())
 				]
 			]

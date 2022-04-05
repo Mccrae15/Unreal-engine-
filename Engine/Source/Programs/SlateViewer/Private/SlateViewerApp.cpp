@@ -3,6 +3,7 @@
 #include "SlateViewerApp.h"
 #include "RequiredProgramMainCPPInclude.h"
 #include "Widgets/Testing/STestSuite.h"
+#include "Widgets/Testing/SStarshipSuite.h"
 #include "ISourceCodeAccessModule.h"
 #include "Widgets/Testing/SPerfSuite.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -10,6 +11,9 @@
 #include "Framework/Application/SlateApplication.h"
 #include "IWebBrowserWindow.h"
 #include "IWebBrowserPopupFeatures.h"
+
+#include "Styling/StarshipCoreStyle.h"
+
 
 IMPLEMENT_APPLICATION(SlateViewer, "SlateViewer");
 
@@ -23,6 +27,9 @@ namespace WorkspaceMenu
 
 int RunSlateViewer( const TCHAR* CommandLine )
 {
+
+	FTaskTagScope TaskTagScope(ETaskTag::EGameThread);	
+
 	// start up the main loop
 	GEngineLoop.PreInit(CommandLine);
 
@@ -32,8 +39,11 @@ int RunSlateViewer( const TCHAR* CommandLine )
 	// Tell the module manager it may now process newly-loaded UObjects when new C++ modules are loaded
 	FModuleManager::Get().StartProcessingNewlyLoadedObjects();
 
+
 	// crank up a normal Slate application using the platform's standalone renderer
 	FSlateApplication::InitializeAsStandaloneApplication(GetStandardStandaloneRenderer());
+
+	FSlateApplication::InitHighDPI(true);
 
 	// Load the source code access module
 	ISourceCodeAccessModule& SourceCodeAccessModule = FModuleManager::LoadModuleChecked<ISourceCodeAccessModule>( FName( "SourceCodeAccess" ) );
@@ -59,15 +69,21 @@ int RunSlateViewer( const TCHAR* CommandLine )
 		// Bring up perf test
 		SummonPerfTestSuite();
 	}
-	else
+	else if (FCoreStyle::IsStarshipStyle())
 	{
-		// Bring up the test suite.
-		RestoreSlateTestSuite();
+		FGlobalTabmanager::Get()->SetApplicationTitle(LOCTEXT("AppTitle", "Starship Slate Viewer"));
+		FAppStyle::SetAppStyleSetName(FStarshipCoreStyle::GetCoreStyle().GetStyleSetName());
+		RestoreStarshipSuite();	
+
+		if (FParse::Param(FCommandLine::Get(), TEXT("testsuite")))
+		{
+			RestoreSlateTestSuite();
+		}
 	}
 
 
 #if WITH_SHARED_POINTER_TESTS
-	SharedPointerTesting::TestSharedPointer<ESPMode::Fast>();
+	SharedPointerTesting::TestSharedPointer<ESPMode::NotThreadSafe>();
 	SharedPointerTesting::TestSharedPointer<ESPMode::ThreadSafe>();
 #endif
 
@@ -78,16 +94,20 @@ int RunSlateViewer( const TCHAR* CommandLine )
 
 		FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
 		FStats::AdvanceFrame(false);
-		FTicker::GetCoreTicker().Tick(FApp::GetDeltaTime());
+		FTSTicker::GetCoreTicker().Tick(FApp::GetDeltaTime());
 		FSlateApplication::Get().PumpMessages();
 		FSlateApplication::Get().Tick();		
-		FPlatformProcess::Sleep(0);
+		FPlatformProcess::Sleep(0.01);
+	
+		GFrameCounter++;
 	}
 
 	FCoreDelegates::OnExit.Broadcast();
 	FSlateApplication::Shutdown();
 	FModuleManager::Get().UnloadModulesAtShutdown();
 
+	GEngineLoop.AppPreExit();
+	GEngineLoop.AppExit();
 
 	return 0;
 }

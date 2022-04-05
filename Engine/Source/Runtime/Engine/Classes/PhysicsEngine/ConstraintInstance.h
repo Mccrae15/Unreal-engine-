@@ -27,26 +27,34 @@ struct ENGINE_API FConstraintProfileProperties
 	GENERATED_USTRUCT_BODY()
 
 	/** [PhysX only] Linear tolerance value in world units. If the distance error exceeds this tolerence limit, the body will be projected. */
-	UPROPERTY(EditAnywhere, Category = Projection, meta = (editcondition = "bEnableProjection", ClampMin = "0.0"))
+	UPROPERTY()
 	float ProjectionLinearTolerance;
 
 	/** [PhysX only] Angular tolerance value in world units. If the distance error exceeds this tolerence limit, the body will be projected. */
-	UPROPERTY(EditAnywhere, Category = Projection, meta = (editcondition = "bEnableProjection", ClampMin = "0.0"))
+	UPROPERTY()
 	float ProjectionAngularTolerance;
 
-	/** [Chaos Only] How much linear projection to apply [0-1]. Projection fixes any post-solve position error in the constraint. */
+	/**  How much linear projection to apply [0-1] */
 	UPROPERTY(EditAnywhere, Category = Projection, meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ProjectionLinearAlpha;
 
-	/** [Chaos Only] How much angular projection to apply [0-1]. Projection fixes any post-solve angle error in the constraint. */
+	/** How much angular projection to apply [0-1] */
 	UPROPERTY(EditAnywhere, Category = Projection, meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float ProjectionAngularAlpha;
+
+	/** 
+	 * How much shock propagation to apply [0-1]. Shock propagation increases the mass of the parent body for the last iteration of the
+	 * position and velocity solve phases. This can help stiffen up joint chains, but is also prone to introducing energy down the chain
+	 * especially at high alpha.
+	 */
+	UPROPERTY(EditAnywhere, Category = Projection, meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float ShockPropagationAlpha;
 
 	/** Force needed to break the distance constraint. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Linear, meta = (editcondition = "bLinearBreakable", ClampMin = "0.0"))
 	float LinearBreakThreshold;
 
-	/** Percent threshold from target position needed to reset the spring rest length.*/
+	/** [Chaos Only] Percent threshold from center of mass distance needed to reset the linear drive position target. This value can be greater than 1. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Linear, meta = (editcondition = "bLinearPlasticity", ClampMin = "0.0"))
 	float LinearPlasticityThreshold;
 
@@ -54,9 +62,13 @@ struct ENGINE_API FConstraintProfileProperties
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Angular, meta = (editcondition = "bAngularBreakable", ClampMin = "0.0"))
 	float AngularBreakThreshold;
 
-	/** Degree threshold from target angle needed to reset the target angle.*/
+	/** [Chaos Only] Degree threshold from target angle needed to reset the target angle.*/
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Angular, meta = (editcondition = "bAngularPlasticity", ClampMin = "0.0"))
 	float AngularPlasticityThreshold;
+
+	/** [Chaos Only] Colliison transfer on parent from the joints child. Range is 0.0-MAX*/
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Linear, meta = (ClampMin = "0.0"))
+	float ContactTransferScale;
 
 	UPROPERTY(EditAnywhere, Category = Linear)
 	FLinearConstraint LinearLimit;
@@ -82,27 +94,46 @@ struct ENGINE_API FConstraintProfileProperties
 	uint8 bParentDominates : 1;
 
 	/**
-	* [PhysX] If distance error between bodies exceeds 0.1 units, or rotation error exceeds 10 degrees, body will be projected to fix this.
-	* For example a chain spinning too fast will have its elements appear detached due to velocity, this will project all bodies so they still appear attached to each other.
+	* NOTE: RigidBody AnimNode only. Projection is not applied to ragdoll physics in the main scene. For Ragdolls, ShockPropagation has a similar effect
+	* and is more compatible with the world solver.
+	* 
+	* Projection is a post-solve position and angular fixup where the parent body in the constraint is treated as having infinite mass and the child body is
+	* translated and rotated to resolve any remaining errors using a semi-physical correction. This can be used to make constraint chains significantly stiffer 
+	* at lower iteration counts. Increasing iterations would have the same effect, but be much more expensive. Projection only works well if the chain is not 
+	* interacting with other objects (e.g., through collisions) because the projection of the bodies in the chain will cause other constraints to be violated. 
+	* Likewise, if a body is influenced by multiple constraints, then enabling projection on more than one constraint may lead to unexpected results - the 
+	* "last" constraint would win but the order in which constraints are solved cannot be directly controlled.
+	* 
+	* Projection is fairly expensive compared to a single position iteration, so if you can get the behaviour you need by adding a couple iterations, that
+	* is probably a better approach.
 	*
-	* [Chaos] Chaos applies a post-solve position and angular fixup where the parent body in the constraint is treated as having infinite mass and the child body is 
-	* translated and rotated to resolve any remaining errors. This can be used to make constraint chains significantly stiffer at lower iteration counts. Increasing
-	* iterations would have the same effect, but be much more expensive. Projection only works well if the chain is not interacting with other objects (e.g.,
-	* through collisions) because the projection of the bodies in the chain will cause other constraints to be violated. Likewise, if a body is influenced by multiple
-	* constraints, then enabling projection on more than one constraint may lead to unexpected results - the "last" constraint would win but the order in which constraints
-	* are solved cannot be directly controlled.
 	*
-	* Note: projection will not be applied to constraints with soft limits.
+	* Note: projection is only applied to hard-limit constraints, anf not applied to constraints with soft limits.
 	*/
 	UPROPERTY(EditAnywhere, Category = Projection)
-	uint8 bEnableProjection : 1;
+	uint8 bEnableLinearProjection : 1;
 
 	/**
-	 * [Chaos Only] Apply projection to constraints with soft limits. This can be used to stiffen up soft joints at low iteration counts, but the projection will
-	 * override a lot of the spring-damper behaviour of the soft limits. E.g., if you have soft projection enabled and ProjectionAngularAlpha = 1.0,
-	 * the joint will act as if it is a hard limit.
+	 * NOTE: RigidBody AnimNode only. See coments on bEnableLinearProjection
+	*/
+	UPROPERTY(EditAnywhere, Category = Projection)
+	uint8 bEnableAngularProjection : 1;
+
+	/**
+	 * Shock propagation increases the mass of the parent body for the last iteration of the position and velocity solve phases. 
+	 * This can help stiffen up joint chains, but is also prone to introducing energy down the chain especially at high alpha.
+	 * 
+	 * NOTE: This is intended to be used for world constraints, not RigidBody AnimNodes which have the Projection system.
 	 */
 	UPROPERTY(EditAnywhere, Category = Projection)
+	uint8 bEnableShockPropagation : 1;
+
+	// HIDDEN - TO BE DEPRECATED
+	UPROPERTY()
+	uint8 bEnableProjection : 1;
+
+	// HIDDEN - TO BE DEPRECATED
+	UPROPERTY()
 	uint8 bEnableSoftProjection : 1;
 
 	/** Whether it is possible to break the joint with angular force. */
@@ -121,16 +152,23 @@ struct ENGINE_API FConstraintProfileProperties
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Linear)
 	uint8 bLinearPlasticity : 1;
 
+	/** Whether linear plasticity has a operation mode [free]*/
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = Linear)
+	TEnumAsByte<enum EConstraintPlasticityType> LinearPlasticityType;
+
 	FConstraintProfileProperties();
 
 	/** Updates physx joint properties from unreal properties (limits, drives, flags, etc...) */
-	void Update_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float AverageMass, float UseScale) const;
+	void Update_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef, float AverageMass, float UseScale, bool InInitialize = false) const;
 
 	/** Updates joint breakable properties (threshold, etc...)*/
 	void UpdateBreakable_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef) const;
 
 	/** Updates joint breakable properties (threshold, etc...)*/
 	void UpdatePlasticity_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef) const;
+
+	/** Updates joint linear mass scales.*/
+	void UpdateContactTransferScale_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef) const;
 
 	/** Updates joint flag based on profile properties */
 	void UpdateConstraintFlags_AssumesLocked(const FPhysicsConstraintHandle& InConstraintRef) const;
@@ -161,6 +199,22 @@ struct ENGINE_API FConstraintInstanceBase
 
 	FPhysScene* GetPhysicsScene() { return PhysScene; }
 	const FPhysScene* GetPhysicsScene() const { return PhysScene; }
+
+	/** Set the constraint broken delegate. */
+	void SetConstraintBrokenDelegate(FOnConstraintBroken InConstraintBrokenDelegate);
+
+	/** Set the plastic deformation delegate. */
+	void SetPlasticDeformationDelegate(FOnPlasticDeformation InPlasticDeformationDelegate);
+
+	protected:
+
+		FOnConstraintBroken OnConstraintBrokenDelegate;
+		FOnPlasticDeformation OnPlasticDeformationDelegate;
+
+		friend struct FConstraintBrokenDelegateData;
+		friend struct FConstraintBrokenDelegateWrapper;
+		friend struct FPlasticDeformationDelegateWrapper;
+
 };
 
 /** Container for a physics representation of an object. */
@@ -250,10 +304,26 @@ public:
 	/** Constructor **/
 	FConstraintInstance();
 
+	/** Get the child bone name */
+	const FName& GetChildBoneName() const { return ConstraintBone1; }
+
+	/** Get the parent bone name */
+	const FName& GetParentBoneName() const { return ConstraintBone2; }
+
 	/** Gets the linear limit size */
 	float GetLinearLimit() const
 	{
 		return ProfileInstance.LinearLimit.Limit;
+	}
+
+	/** Sets the Linear XYZ Motion Type and the limit distance (Note distance is the same for all 3 axes) */
+	void SetLinearLimits(ELinearConstraintMotion XConstraintType, ELinearConstraintMotion YConstraintType, ELinearConstraintMotion ZConstraintType, float InLinearLimitSize)
+	{
+		ProfileInstance.LinearLimit.XMotion = XConstraintType;
+		ProfileInstance.LinearLimit.YMotion = YConstraintType;
+		ProfileInstance.LinearLimit.ZMotion = ZConstraintType;
+		ProfileInstance.LinearLimit.Limit = InLinearLimitSize;
+		UpdateLinearLimit();
 	}
 
 	/** Gets the motion type for the linear X-axis limit. */
@@ -263,18 +333,17 @@ public:
 	}
 
 	/** Sets the Linear XMotion type */
-	void SetLinearXMotion(ELinearConstraintMotion ConstraintType)
+	void SetLinearXMotion(ELinearConstraintMotion XConstraintType)
 	{
-		ProfileInstance.LinearLimit.XMotion = ConstraintType;
-		UpdateLinearLimit();
+		const FLinearConstraint& prevLimits = ProfileInstance.LinearLimit;
+		SetLinearLimits(XConstraintType, prevLimits.YMotion, prevLimits.ZMotion, prevLimits.Limit);
 	}
 
 	/** Sets the LinearX Motion Type and the limit distance (Note distance is the same for all 3 axes) */
-	void SetLinearXLimit(ELinearConstraintMotion ConstraintType, float InLinearLimitSize)
+	void SetLinearXLimit(ELinearConstraintMotion XConstraintType, float InLinearLimitSize)
 	{
-		ProfileInstance.LinearLimit.XMotion = ConstraintType;
-		ProfileInstance.LinearLimit.Limit = InLinearLimitSize;
-		UpdateLinearLimit();
+		const FLinearConstraint& prevLimits = ProfileInstance.LinearLimit;
+		SetLinearLimits(XConstraintType, prevLimits.YMotion, prevLimits.ZMotion, InLinearLimitSize);
 	}
 
 	/** Gets the motion type for the linear Y-axis limit. */
@@ -284,18 +353,17 @@ public:
 	}
 
 	/** Sets the Linear YMotion type */
-	void SetLinearYMotion(ELinearConstraintMotion ConstraintType)
+	void SetLinearYMotion(ELinearConstraintMotion YConstraintType)
 	{
-		ProfileInstance.LinearLimit.YMotion = ConstraintType;
-		UpdateLinearLimit();
+		const FLinearConstraint& prevLimits = ProfileInstance.LinearLimit;
+		SetLinearLimits(prevLimits.XMotion, YConstraintType, prevLimits.ZMotion, prevLimits.Limit);
 	}
 
 	/** Sets the LinearY Motion Type and the limit distance (Note distance is the same for all 3 axes) */
-	void SetLinearYLimit(ELinearConstraintMotion ConstraintType, float InLinearLimitSize)
+	void SetLinearYLimit(ELinearConstraintMotion YConstraintType, float InLinearLimitSize)
 	{
-		ProfileInstance.LinearLimit.YMotion = ConstraintType;
-		ProfileInstance.LinearLimit.Limit = InLinearLimitSize;
-		UpdateLinearLimit();
+		const FLinearConstraint& prevLimits = ProfileInstance.LinearLimit;
+		SetLinearLimits(prevLimits.XMotion, YConstraintType, prevLimits.ZMotion, InLinearLimitSize);
 	}
 
 	/** Gets the motion type for the linear Z-axis limit. */
@@ -305,18 +373,17 @@ public:
 	}
 
 	/** Sets the Linear ZMotion type */
-	void SetLinearZMotion(ELinearConstraintMotion ConstraintType)
+	void SetLinearZMotion(ELinearConstraintMotion ZConstraintType)
 	{
-		ProfileInstance.LinearLimit.ZMotion = ConstraintType;
-		UpdateLinearLimit();
+		const FLinearConstraint& prevLimits = ProfileInstance.LinearLimit;
+		SetLinearLimits(prevLimits.XMotion, prevLimits.YMotion, ZConstraintType, prevLimits.Limit);
 	}
 
 	/** Sets the LinearZ Motion Type and the limit distance (Note distance is the same for all 3 axes) */
-	void SetLinearZLimit(ELinearConstraintMotion ConstraintType, float InLinearLimitSize)
+	void SetLinearZLimit(ELinearConstraintMotion ZConstraintType, float InLinearLimitSize)
 	{
-		ProfileInstance.LinearLimit.ZMotion = ConstraintType;
-		ProfileInstance.LinearLimit.Limit = InLinearLimitSize;
-		UpdateLinearLimit();
+		const FLinearConstraint& prevLimits = ProfileInstance.LinearLimit;
+		SetLinearLimits(prevLimits.XMotion, prevLimits.YMotion, ZConstraintType, InLinearLimitSize);
 	}
 
 	/** Gets the motion type for the swing1 of the cone constraint */
@@ -416,57 +483,81 @@ public:
 	}
 
 	/** Whether the linear limits are soft (only if at least one axis if Limited) */
-	bool GetIsSoftLinearLimit() const
-	{
-		return ProfileInstance.LinearLimit.bSoftConstraint;
-	}
+	bool GetIsSoftLinearLimit() const { return ProfileInstance.LinearLimit.bSoftConstraint;	}
 
 	/** Linear stiffness if the constraint is set to use soft linear limits */
-	float GetSoftLinearLimitStiffness() const
-	{
-		return ProfileInstance.LinearLimit.Stiffness;
-	}
+	float GetSoftLinearLimitStiffness() const {	return ProfileInstance.LinearLimit.Stiffness; }
 
 	/** Linear damping if the constraint is set to use soft linear limits */
-	float GetSoftLinearLimitDamping() const
+	float GetSoftLinearLimitDamping() const { return ProfileInstance.LinearLimit.Damping; }
+
+	/** Linear restitution if the constraint is set to use soft linear limits */
+	float GetSoftLinearLimitRestitution() const { return ProfileInstance.LinearLimit.Restitution; }
+
+	/** Linear contact distance if the constraint is set to use soft linear limits */
+	float GetSoftLinearLimitContactDistance() const { return ProfileInstance.LinearLimit.ContactDistance; }
+
+	/** Set twist soft limit parameters */
+	void SetSoftLinearLimitParams(bool bIsSoftLimit, float Stiffness, float Damping, float Restitution, float ContactDistance)
 	{
-		return ProfileInstance.LinearLimit.Damping;
+		ProfileInstance.LinearLimit.bSoftConstraint = bIsSoftLimit;
+		ProfileInstance.LinearLimit.Stiffness = Stiffness;
+		ProfileInstance.LinearLimit.Damping = Damping;
+		ProfileInstance.LinearLimit.Restitution = Restitution;
+		ProfileInstance.LinearLimit.ContactDistance = ContactDistance;
+		UpdateLinearLimit();
 	}
 
 	/** Whether the twist limits are soft (only available if twist is Limited) */
-	bool GetIsSoftTwistLimit() const
-	{
-		return ProfileInstance.TwistLimit.bSoftConstraint;
-	}
+	bool GetIsSoftTwistLimit() const { return ProfileInstance.TwistLimit.bSoftConstraint; }
 
 	/** Twist stiffness if the constraint is set to use soft limits */
-	float GetSoftTwistLimitStiffness() const
-	{
-		return ProfileInstance.TwistLimit.Stiffness;
-	}
+	float GetSoftTwistLimitStiffness() const {	return ProfileInstance.TwistLimit.Stiffness; }
 
 	/** Twist damping if the constraint is set to use soft limits */
-	float GetSoftTwistLimitDamping() const
-	{
-		return ProfileInstance.TwistLimit.Damping;
+	float GetSoftTwistLimitDamping() const { return ProfileInstance.TwistLimit.Damping;	}
+
+	/** Twist restitution if the constraint is set to use soft limits */
+	float GetSoftTwistLimitRestitution() const { return ProfileInstance.TwistLimit.Restitution; }
+
+	/** Twist contact distance if the constraint is set to use soft limits */
+	float GetSoftTwistLimitContactDistance() const { return ProfileInstance.TwistLimit.ContactDistance; }
+
+	/** Set twist soft limit parameters */
+	void SetSoftTwistLimitParams(bool bIsSoftLimit, float Stiffness, float Damping, float Restitution, float ContactDistance) 
+	{ 
+		ProfileInstance.TwistLimit.bSoftConstraint = bIsSoftLimit;
+		ProfileInstance.TwistLimit.Stiffness = Stiffness;
+		ProfileInstance.TwistLimit.Damping = Damping;
+		ProfileInstance.TwistLimit.Restitution = Restitution;
+		ProfileInstance.TwistLimit.ContactDistance = ContactDistance;
+		UpdateAngularLimit();
 	}
 
 	/** Whether the swing limits are soft (only available if swing1 and/or swing2 is Limited) */
-	bool GetIsSoftSwingLimit() const
-	{
-		return ProfileInstance.ConeLimit.bSoftConstraint;
-	}
+	bool GetIsSoftSwingLimit() const { return ProfileInstance.ConeLimit.bSoftConstraint; }
 
 	/** Swing stiffness if the constraint is set to use soft limits */
-	float GetSoftSwingLimitStiffness() const
-	{
-		return ProfileInstance.ConeLimit.Stiffness;
-	}
+	float GetSoftSwingLimitStiffness() const { return ProfileInstance.ConeLimit.Stiffness; }
 
 	/** Swing damping if the constraint is set to use soft limits */
-	float GetSoftSwingLimitDamping() const
+	float GetSoftSwingLimitDamping() const { return ProfileInstance.ConeLimit.Damping; }
+
+	/** Swing restitution if the constraint is set to use soft limits */
+	float GetSoftSwingLimitRestitution() const { return ProfileInstance.ConeLimit.Restitution; }
+
+	/** Swing Contact distance if the constraint is set to use soft limits */
+	float GetSoftSwingLimitContactDistance() const { return ProfileInstance.ConeLimit.ContactDistance; }
+
+	/** Set twist soft limit parameters */
+	void SetSoftSwingLimitParams(bool bIsSoftLimit, float Stiffness, float Damping, float Restitution, float ContactDistance)
 	{
-		return ProfileInstance.ConeLimit.Damping;
+		ProfileInstance.ConeLimit.bSoftConstraint = bIsSoftLimit;
+		ProfileInstance.ConeLimit.Stiffness = Stiffness;
+		ProfileInstance.ConeLimit.Damping = Damping;
+		ProfileInstance.ConeLimit.Restitution = Restitution;
+		ProfileInstance.ConeLimit.ContactDistance = ContactDistance;
+		UpdateAngularLimit();
 	}
 
 	/** Sets the Linear Breakable properties
@@ -480,15 +571,61 @@ public:
 		UpdateBreakable();
 	}
 
+	/** Gets Whether it is possible to break the joint with linear force */
+	bool IsLinearBreakable() const
+	{
+		return ProfileInstance.bLinearBreakable;
+	}
+
+	/** Gets linear force needed to break the joint */
+	float GetLinearBreakThreshold() const
+	{
+		return ProfileInstance.LinearBreakThreshold;
+	}
+
 	/** Sets the Linear Plasticity properties
 	*	@param bInLinearPlasticity 	Whether it is possible to reset the target angles
 	*	@param InLinearPlasticityThreshold	Delta from target needed to reset the target joint
 	*/
-	void SetLinearPlasticity(bool bInLinearPlasticity, float InLinearPlasticityThreshold)
+	void SetLinearPlasticity(bool bInLinearPlasticity, float InLinearPlasticityThreshold, EConstraintPlasticityType InLinearPlasticityType)
 	{
 		ProfileInstance.bLinearPlasticity = bInLinearPlasticity;
 		ProfileInstance.LinearPlasticityThreshold = InLinearPlasticityThreshold;
+		ProfileInstance.LinearPlasticityType = InLinearPlasticityType;
 		UpdatePlasticity();
+	}
+
+	/** Gets Whether it is possible to reset the target position */
+	bool HasLinearPlasticity() const
+	{
+		return ProfileInstance.bLinearPlasticity;
+	}
+
+	/** Gets Delta from target needed to reset the target joint */
+	float GetLinearPlasticityThreshold() const
+	{
+		return ProfileInstance.LinearPlasticityThreshold;
+	}
+
+	/** Gets Plasticity Type from joint */
+	TEnumAsByte<enum EConstraintPlasticityType> GetLinearPlasticityType() const
+	{
+		return ProfileInstance.LinearPlasticityType;
+	}
+
+	/** Sets the Contact Transfer Scale properties
+	*	@param InContactTransferScale 	Contact transfer scale to joints parent
+	*/
+	void SetContactTransferScale(float InContactTransferScale)
+	{
+		ProfileInstance.ContactTransferScale = InContactTransferScale;
+		UpdateContactTransferScale();
+	}
+
+	/** Get the Contact Transfer Scale for the parent of the joint */
+	float GetContactTransferScale() const
+	{
+		return ProfileInstance.ContactTransferScale;
 	}
 
 	/** Sets the Angular Breakable properties
@@ -502,6 +639,17 @@ public:
 		UpdateBreakable();
 	}
 
+	/** Gets Whether it is possible to break the joint with angular force */
+	bool IsAngularBreakable() const
+	{
+		return ProfileInstance.bAngularBreakable;
+	}
+
+	/** Gets Torque needed to break the joint */
+	float GetAngularBreakThreshold() const
+	{
+		return ProfileInstance.AngularBreakThreshold;
+	}
 
 	/** Sets the Angular Plasticity properties
 	*	@param bInAngularPlasticity 	Whether it is possible to reset the target angles
@@ -514,11 +662,26 @@ public:
 		UpdatePlasticity();
 	}
 
+	/** Gets Whether it is possible to reset the target angles */
+	bool HasAngularPlasticity() const
+	{
+		return ProfileInstance.bAngularPlasticity;
+	}
+
+	/** Gets Delta from target needed to reset the target joint */
+	float GetAngularPlasticityThreshold() const
+	{
+		return ProfileInstance.AngularPlasticityThreshold;
+	}
+
 	// @todo document
 	void CopyConstraintGeometryFrom(const FConstraintInstance* FromInstance);
 
 	// @todo document
 	void CopyConstraintParamsFrom(const FConstraintInstance* FromInstance);
+
+	/** Copies non-identifying properties from another constraint instance */
+	void CopyConstraintPhysicalPropertiesFrom(const FConstraintInstance* FromInstance, bool bKeepPosition, bool bKeepRotation);
 
 	// Retrieve the constraint force most recently applied to maintain this constraint. Returns 0 forces if the constraint is not initialized or broken.
 	void GetConstraintForce(FVector& OutLinearForce, FVector& OutAngularForce);
@@ -529,6 +692,24 @@ public:
 	/** Set which linear position drives are enabled */
 	void SetLinearPositionDrive(bool bEnableXDrive, bool bEnableYDrive, bool bEnableZDrive);
 
+	/** Get which linear position drives is enabled on XAxis */
+	bool IsLinearPositionDriveXEnabled() const
+	{
+		return ProfileInstance.LinearDrive.XDrive.bEnablePositionDrive;
+	}
+
+	/** Get which linear position drives is enabled on YAxis */
+	bool IsLinearPositionDriveYEnabled() const
+	{
+		return ProfileInstance.LinearDrive.YDrive.bEnablePositionDrive;
+	}
+
+	/** Get which linear position drives is enabled on ZAxis */
+	bool IsLinearPositionDriveZEnabled() const
+	{
+		return ProfileInstance.LinearDrive.ZDrive.bEnablePositionDrive;
+	}
+
 	/** Whether the linear position drive is enabled */
 	bool IsLinearPositionDriveEnabled() const
 	{
@@ -538,8 +719,32 @@ public:
 	/** Set the linear drive's target position position */
 	void SetLinearPositionTarget(const FVector& InPosTarget);
 
+	/** Get the linear drive's target position position */
+	const FVector& GetLinearPositionTarget()
+	{
+		return ProfileInstance.LinearDrive.PositionTarget;
+	}
+
 	/** Set which linear velocity drives are enabled */
 	void SetLinearVelocityDrive(bool bEnableXDrive, bool bEnableYDrive, bool bEnableZDrive);
+
+	/** Get which linear position drives is enabled on XAxis */
+	bool IsLinearVelocityDriveXEnabled() const
+	{
+		return ProfileInstance.LinearDrive.XDrive.bEnableVelocityDrive;
+	}
+
+	/** Get which linear position drives is enabled on YAxis */
+	bool IsLinearVelocityDriveYEnabled() const
+	{
+		return ProfileInstance.LinearDrive.YDrive.bEnableVelocityDrive;
+	}
+
+	/** Get which linear position drives is enabled on ZAxis */
+	bool IsLinearVelocityDriveZEnabled() const
+	{
+		return ProfileInstance.LinearDrive.ZDrive.bEnableVelocityDrive;
+	}
 
 	/** Whether the linear velocity drive is enabled */
 	bool IsLinearVelocityDriveEnabled() const
@@ -547,23 +752,35 @@ public:
 		return ProfileInstance.LinearDrive.IsVelocityDriveEnabled();
 	}
 
-	/** Set the linear drive's target velocity*/
+	/** Set the linear drive's target velocity */
 	void SetLinearVelocityTarget(const FVector& InVelTarget);
+
+	/** Get the linear drive's target velocity */
+	const FVector& GetLinearVelocityTarget()
+	{
+		return ProfileInstance.LinearDrive.VelocityTarget;
+	}
 
 	/** Set the linear drive's strength parameters */
 	void SetLinearDriveParams(float InPositionStrength, float InVelocityStrength, float InForceLimit);
 
-	UE_DEPRECATED(4.15, "Please call SetOrientationDriveTwistAndSwing. Note the order of bools is reversed (Make sure to pass Twist and then Swing)")
-	void SetAngularPositionDrive(bool bInEnableSwingDrive, bool bInEnableTwistDrive)
-	{
-		SetOrientationDriveTwistAndSwing(bInEnableTwistDrive, bInEnableSwingDrive);
-	}
+	/** Get the linear drive's strength parameters */
+	void GetLinearDriveParams(float& OutPositionStrength, float& OutVelocityStrength, float& OutForceLimit);
 
 	/** Set which twist and swing orientation drives are enabled. Only applicable when Twist And Swing drive mode is used */
 	void SetOrientationDriveTwistAndSwing(bool bInEnableTwistDrive, bool bInEnableSwingDrive);
 
+	/** Get which twist and swing orientation drives are enabled. Only applicable when Twist And Swing drive mode is used */
+	void GetOrientationDriveTwistAndSwing(bool& bOutEnableTwistDrive, bool& bOutEnableSwingDrive);
+
 	/** Set whether the SLERP angular position drive is enabled. Only applicable when SLERP drive mode is used */
 	void SetOrientationDriveSLERP(bool bInEnableSLERP);
+
+	/** Get whether the SLERP angular position drive is enabled. Only applicable when SLERP drive mode is used */
+	bool GetOrientationDriveSLERP()
+	{
+		return ProfileInstance.AngularDrive.SlerpDrive.bEnablePositionDrive;
+	}
 
 	/** Whether the angular orientation drive is enabled */
 	bool IsAngularOrientationDriveEnabled() const
@@ -574,17 +791,26 @@ public:
 	/** Set the angular drive's orientation target*/
 	void SetAngularOrientationTarget(const FQuat& InPosTarget);
 
-	UE_DEPRECATED(4.15, "Please call SetAngularVelocityDriveTwistAndSwing. Note the order of bools is reversed (Make sure to pass Twist and then Swing)")
-	void SetAngularVelocityDrive(bool bInEnableSwingDrive, bool bInEnableTwistDrive)
+	/** Get the angular drive's orientation target*/
+	const FRotator& GetAngularOrientationTarget() const
 	{
-		SetAngularVelocityDriveTwistAndSwing(bInEnableTwistDrive, bInEnableSwingDrive);
+		return ProfileInstance.AngularDrive.OrientationTarget;
 	}
 
 	/** Set which twist and swing angular velocity drives are enabled. Only applicable when Twist And Swing drive mode is used */
 	void SetAngularVelocityDriveTwistAndSwing(bool bInEnableTwistDrive, bool bInEnableSwingDrive);
 
+	/** Get which twist and swing angular velocity drives are enabled. Only applicable when Twist And Swing drive mode is used */
+	void GetAngularVelocityDriveTwistAndSwing(bool& bOutEnableTwistDrive, bool& bOutEnableSwingDrive);
+
 	/** Set whether the SLERP angular velocity drive is enabled. Only applicable when SLERP drive mode is used */
 	void SetAngularVelocityDriveSLERP(bool bInEnableSLERP);
+
+	/** Get whether the SLERP angular velocity drive is enabled. Only applicable when SLERP drive mode is used */
+	bool GetAngularVelocityDriveSLERP()
+	{
+		return ProfileInstance.AngularDrive.SlerpDrive.bEnableVelocityDrive;
+	}
 
 	/** Whether the angular velocity drive is enabled */
 	bool IsAngularVelocityDriveEnabled() const
@@ -595,11 +821,26 @@ public:
 	/** Set the angular drive's angular velocity target*/
 	void SetAngularVelocityTarget(const FVector& InVelTarget);
 
+	/** Get the angular drive's angular velocity target*/
+	const FVector& GetAngularVelocityTarget() const
+	{
+		return ProfileInstance.AngularDrive.AngularVelocityTarget;
+	}
+
 	/** Set the angular drive's strength parameters*/
 	void SetAngularDriveParams(float InSpring, float InDamping, float InForceLimit);
 
+	/** Get the angular drive's strength parameters*/
+	void GetAngularDriveParams(float& OutSpring, float& OutDamping, float& OutForceLimit) const;
+
 	/** Set the angular drive mode */
 	void SetAngularDriveMode(EAngularDriveMode::Type DriveMode);
+
+	/** Set the angular drive mode */
+	EAngularDriveMode::Type GetAngularDriveMode()
+	{
+		return ProfileInstance.AngularDrive.AngularDriveMode;
+	}
 
 	/** Refreshes the physics engine joint's linear limits. Only applicable if the joint has been created already.*/
 	void UpdateLinearLimit();
@@ -614,13 +855,10 @@ public:
 	void SetLinearLimitSize(float NewLimitSize);
 
 	/** Create physics engine constraint. */
-	void InitConstraint(FBodyInstance* Body1, FBodyInstance* Body2, float Scale, UObject* DebugOwner, FOnConstraintBroken InConstraintBrokenDelegate = FOnConstraintBroken());
+	void InitConstraint(FBodyInstance* Body1, FBodyInstance* Body2, float Scale, UObject* DebugOwner, FOnConstraintBroken InConstraintBrokenDelegate = FOnConstraintBroken(), FOnPlasticDeformation InPlasticDeformationDelegate = FOnPlasticDeformation());
 
 	/** Create physics engine constraint using physx actors. */
-	void InitConstraint_AssumesLocked(const FPhysicsActorHandle& ActorRef1, const FPhysicsActorHandle& ActorRef2, float InScale, FOnConstraintBroken InConstraintBrokenDelegate = FOnConstraintBroken());
-
-	/** Set teh constraint broken delegate. */
-	void SetConstraintBrokenDelegate(FOnConstraintBroken InConstraintBrokenDelegate);
+	void InitConstraint_AssumesLocked(const FPhysicsActorHandle& ActorRef1, const FPhysicsActorHandle& ActorRef2, float InScale, FOnConstraintBroken InConstraintBrokenDelegate = FOnConstraintBroken(), FOnPlasticDeformation InPlasticDeformationDelegate = FOnPlasticDeformation());
 
 	/** Terminate physics engine constraint */
 	void TermConstraint();
@@ -689,6 +927,18 @@ public:
 	/** Turn off linear and angular projection */
 	void DisableProjection();
 
+	/** Set projection parameters */
+	void SetProjectionParams(bool bEnableLinearProjection, bool bEnableAngularProjection, float ProjectionLinearAlphaOrTolerance, float ProjectionAngularAlphaOrTolerance);
+
+	/** Get projection parameters */
+	void GetProjectionAlphasOrTolerances(float& ProjectionLinearAlphaOrTolerance, float& ProjectionAngularAlphaOrTolerance) const;
+
+	/** Set the shock propagation amount [0, 1] */
+	void SetShockPropagationParams(bool bEnableShockPropagation, float ShockPropagationAlpha);
+
+	/** Get the shock propagation amount [0, 1] */
+	float GetShockPropagationAlpha() const;
+
 	/** Whether parent domination is enabled (meaning the parent body cannot be be affected at all by a child) */
 	bool IsParentDominatesEnabled() const
 	{
@@ -747,11 +997,8 @@ private:
 
 	void UpdateBreakable();
 	void UpdatePlasticity();
+	void UpdateContactTransferScale();
 	void UpdateDriveTarget();
-
-	FOnConstraintBroken OnConstraintBrokenDelegate;
-
-	friend struct FConstraintBrokenDelegateData;
 
 public:
 
@@ -887,4 +1134,53 @@ struct TStructOpsTypeTraits<FConstraintInstance> : public TStructOpsTypeTraitsBa
 		WithPostSerialize = true
 #endif
 	};
+};
+
+
+// Wrapping type around instance pointer to be returned per value in Blueprints
+USTRUCT(BlueprintType)
+struct ENGINE_API FConstraintInstanceAccessor
+{
+	GENERATED_USTRUCT_BODY()
+
+public:
+	FConstraintInstanceAccessor()
+		: Owner(nullptr)
+		, Index(0)
+	{}
+
+	FConstraintInstanceAccessor(const TWeakObjectPtr<UObject>& Owner, uint32 Index = 0, TFunction<void(void)> InOnRelease = TFunction<void(void)>())
+		: Owner(Owner)
+		, Index(Index)
+#if WITH_EDITOR
+		, OnRelease(InOnRelease)
+#endif
+	{}
+
+#if WITH_EDITOR
+	~FConstraintInstanceAccessor()
+	{
+		if (OnRelease)
+		{
+			OnRelease();
+		}
+	}
+#endif
+
+	FConstraintInstance* Get() const;
+
+	/** Calls modify on the owner object to make sure the constraint is dirtied */
+	void Modify();
+
+private:
+	UPROPERTY()
+	TWeakObjectPtr<UObject> Owner;
+
+	UPROPERTY()
+	uint32 Index;
+
+#if WITH_EDITOR
+	/** Warning: it would be unwieldy to make the accessor move only, so the OnRelease callback should be safe to be called multiple times */
+	TFunction<void(void)> OnRelease;
+#endif
 };

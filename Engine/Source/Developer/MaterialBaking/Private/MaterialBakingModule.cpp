@@ -22,11 +22,15 @@
 #include "RHISurfaceDataConversion.h"
 #include "Misc/ScopedSlowTask.h"
 #include "MeshDescription.h"
+#include "TextureCompiler.h"
+#include "RenderCaptureInterface.h"
 #if WITH_EDITOR
 #include "Misc/FileHelper.h"
 #endif
 
 IMPLEMENT_MODULE(FMaterialBakingModule, MaterialBaking);
+
+DEFINE_LOG_CATEGORY_STATIC(LogMaterialBaking, All, All);
 
 #define LOCTEXT_NAMESPACE "MaterialBakingModule"
 
@@ -47,6 +51,14 @@ static TAutoConsoleVariable<int32> CVarSaveIntermediateTextures(
 	TEXT("1: Turned On"),
 	ECVF_Default);
 
+static TAutoConsoleVariable<int32> CVarMaterialBakingRDOCCapture(
+	TEXT("MaterialBaking.RenderDocCapture"),
+	0,
+	TEXT("Determines whether or not to trigger a RenderDoc capture.\n")
+	TEXT("0: Turned Off\n")
+	TEXT("1: Turned On"),
+	ECVF_Default);
+
 namespace FMaterialBakingModuleImpl
 {
 	// Custom dynamic mesh allocator specifically tailored for Material Baking.
@@ -59,8 +71,8 @@ namespace FMaterialBakingModuleImpl
 		// memory is first initialized.
 		const uint32 SmallestPooledBufferSize = 256*1024;
 
-		TArray<FIndexBufferRHIRef>  IndexBuffers;
-		TArray<FVertexBufferRHIRef> VertexBuffers;
+		TArray<FBufferRHIRef>  IndexBuffers;
+		TArray<FBufferRHIRef> VertexBuffers;
 
 		template <typename RefType>
 		RefType GetSmallestFit(uint32 SizeInBytes, TArray<RefType>& Array)
@@ -88,12 +100,12 @@ namespace FMaterialBakingModuleImpl
 			return Ref;
 		}
 
-		virtual FIndexBufferRHIRef AllocIndexBuffer(uint32 NumElements) override
+		virtual FBufferRHIRef AllocIndexBuffer(uint32 NumElements) override
 		{
 			uint32 BufferSize = GetIndexBufferSize(NumElements);
 			if (BufferSize > SmallestPooledBufferSize)
 			{
-				FIndexBufferRHIRef Ref = GetSmallestFit(GetIndexBufferSize(NumElements), IndexBuffers);
+				FBufferRHIRef Ref = GetSmallestFit(GetIndexBufferSize(NumElements), IndexBuffers);
 				if (Ref.IsValid())
 				{
 					return Ref;
@@ -103,7 +115,7 @@ namespace FMaterialBakingModuleImpl
 			return FDynamicMeshBufferAllocator::AllocIndexBuffer(NumElements);
 		}
 
-		virtual void ReleaseIndexBuffer(FIndexBufferRHIRef& IndexBufferRHI) override
+		virtual void ReleaseIndexBuffer(FBufferRHIRef& IndexBufferRHI) override
 		{
 			if (IndexBufferRHI->GetSize() > SmallestPooledBufferSize)
 			{
@@ -113,12 +125,12 @@ namespace FMaterialBakingModuleImpl
 			IndexBufferRHI = nullptr;
 		}
 
-		virtual FVertexBufferRHIRef AllocVertexBuffer(uint32 Stride, uint32 NumElements) override
+		virtual FBufferRHIRef AllocVertexBuffer(uint32 Stride, uint32 NumElements) override
 		{
 			uint32 BufferSize = GetVertexBufferSize(Stride, NumElements);
 			if (BufferSize > SmallestPooledBufferSize)
 			{
-				FVertexBufferRHIRef Ref = GetSmallestFit(BufferSize, VertexBuffers);
+				FBufferRHIRef Ref = GetSmallestFit(BufferSize, VertexBuffers);
 				if (Ref.IsValid())
 				{
 					return Ref;
@@ -128,7 +140,7 @@ namespace FMaterialBakingModuleImpl
 			return FDynamicMeshBufferAllocator::AllocVertexBuffer(Stride, NumElements);
 		}
 
-		virtual void ReleaseVertexBuffer(FVertexBufferRHIRef& VertexBufferRHI) override
+		virtual void ReleaseVertexBuffer(FBufferRHIRef& VertexBufferRHI) override
 		{
 			if (VertexBufferRHI->GetSize() > SmallestPooledBufferSize)
 			{
@@ -142,14 +154,14 @@ namespace FMaterialBakingModuleImpl
 	class FStagingBufferPool
 	{
 	public:
-		FTexture2DRHIRef CreateStagingBuffer_RenderThread(FRHICommandListImmediate& RHICmdList, int32 Width, int32 Height, EPixelFormat Format)
+		FTexture2DRHIRef CreateStagingBuffer_RenderThread(FRHICommandListImmediate& RHICmdList, int32 Width, int32 Height, EPixelFormat Format, bool bIsSRGB)
 		{
 			TRACE_CPUPROFILER_EVENT_SCOPE(CreateStagingBuffer_RenderThread)
 
 			auto StagingBufferPredicate = 
-				[Width, Height, Format](const FTexture2DRHIRef& Texture2DRHIRef)
+				[Width, Height, Format, bIsSRGB](const FTexture2DRHIRef& Texture2DRHIRef)
 				{
-					return Texture2DRHIRef->GetSizeX() == Width && Texture2DRHIRef->GetSizeY() == Height && Texture2DRHIRef->GetFormat() == Format;
+					return Texture2DRHIRef->GetSizeX() == Width && Texture2DRHIRef->GetSizeY() == Height && Texture2DRHIRef->GetFormat() == Format && bool(Texture2DRHIRef->GetFlags() & TexCreate_SRGB) == bIsSRGB;
 				};
 
 			// Process any staging buffers available for unmapping
@@ -178,8 +190,14 @@ namespace FMaterialBakingModuleImpl
 			}
 
 			TRACE_CPUPROFILER_EVENT_SCOPE(RHICreateTexture2D)
-			FRHIResourceCreateInfo CreateInfo;
-			return RHICreateTexture2D(Width, Height, Format, 1, 1, TexCreate_CPUReadback, CreateInfo);
+			FRHIResourceCreateInfo CreateInfo(TEXT("FStagingBufferPool_StagingBuffer"));
+			ETextureCreateFlags TextureCreateFlags = TexCreate_CPUReadback;
+			if (bIsSRGB)
+			{
+				TextureCreateFlags |= TexCreate_SRGB;
+			}
+			
+			return RHICreateTexture2D(Width, Height, Format, 1, 1, TextureCreateFlags, CreateInfo);
 		}
 
 		void ReleaseStagingBufferForUnmap_AnyThread(FTexture2DRHIRef& Texture2DRHIRef)
@@ -243,7 +261,7 @@ void FMaterialBakingModule::StartupModule()
 	bEmissiveHDR = false;
 
 	// Set which properties should enforce gamma correction
-	SetLinearBake(false);
+	SetLinearBake(true);
 
 	// Set which pixel format should be used for the possible baked out material properties
 	PerPropertyFormat.Add(MP_EmissiveColor, PF_FloatRGBA);
@@ -268,6 +286,9 @@ void FMaterialBakingModule::StartupModule()
 	
 	// Register callback for modified objects
 	FCoreUObjectDelegates::OnObjectModified.AddRaw(this, &FMaterialBakingModule::OnObjectModified);
+
+	// Register callback on garbage collection
+	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().AddRaw(this, &FMaterialBakingModule::OnPreGarbageCollect);
 }
 
 void FMaterialBakingModule::ShutdownModule()
@@ -279,7 +300,11 @@ void FMaterialBakingModule::ShutdownModule()
 	{
 		PropertyEditorModule->UnregisterCustomPropertyTypeLayout(TEXT("PropertyEntry"));
 	}
+
 	FCoreUObjectDelegates::OnObjectModified.RemoveAll(this);
+	FCoreUObjectDelegates::GetPreGarbageCollectDelegate().RemoveAll(this);
+
+	CleanupMaterialProxies();
 }
 
 void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialData*>& MaterialSettings, const TArray<FMeshData*>& MeshSettings, TArray<FBakeOutput>& Output)
@@ -336,6 +361,17 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialData*>& Material
 
 void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& MaterialSettings, const TArray<FMeshData*>& MeshSettings, TArray<FBakeOutputEx>& Output)
 {
+	UE_LOG(LogMaterialBaking, Verbose, TEXT("Performing material baking for %d materials"), MaterialSettings.Num());
+	for (int32 i = 0; i < MaterialSettings.Num(); i++)
+	{
+		if (MaterialSettings[i]->Material && MeshSettings[i]->MeshDescription)
+		{
+			UE_LOG(LogMaterialBaking, Verbose, TEXT("    [%5d] Material: %-50s Vertices: %8d    Triangles: %8d"), i, *MaterialSettings[i]->Material->GetName(), MeshSettings[i]->MeshDescription->Vertices().Num(), MeshSettings[i]->MeshDescription->Triangles().Num());
+		}
+	}
+
+	RenderCaptureInterface::FScopedCapture RenderCapture(CVarMaterialBakingRDOCCapture.GetValueOnAnyThread() == 1, TEXT("MaterialBaking"));
+
 	TRACE_CPUPROFILER_EVENT_SCOPE(FMaterialBakingModule::BakeMaterials)
 
 	checkf(MaterialSettings.Num() == MeshSettings.Num(), TEXT("Number of material settings does not match that of MeshSettings"));
@@ -361,7 +397,7 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& Materi
 	// Soft page faults are now incredibly expensive on Windows 10.
 	Algo::SortBy(
 		ProcessingOrder,
-		[&MeshSettings](const uint32 Index){ return MeshSettings[Index]->RawMeshDescription ? MeshSettings[Index]->RawMeshDescription->Vertices().Num() : 0; },
+		[&MeshSettings](const uint32 Index){ return MeshSettings[Index]->MeshDescription ? MeshSettings[Index]->MeshDescription->Vertices().Num() : 0; },
 		TGreater<>()
 	);
 
@@ -432,6 +468,8 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& Materi
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE(LoadTexturesForMaterial)
 
+				FTextureCompilingManager::Get().FinishCompilation(MaterialTextures);
+
 				for (UTexture* Texture : MaterialTextures)
 				{
 					if (Texture != NULL)
@@ -490,6 +528,8 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& Materi
 		const FMeshData* CurrentMeshSettings = MeshSettings[MaterialIndex];
 		FBakeOutputEx& CurrentOutput = Output[MaterialIndex];
 
+		TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*CurrentMaterialSettings->Material->GetName())
+
 		TArray<FMaterialPropertyEx> MaterialPropertiesToBakeOut;
 		CurrentMaterialSettings->PropertySizes.GenerateKeyArray(MaterialPropertiesToBakeOut);
 
@@ -513,6 +553,9 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& Materi
 			for (int32 PropertyIndex = 0; PropertyIndex < NumPropertiesToRender; ++PropertyIndex)
 			{
 				const FMaterialPropertyEx& Property = MaterialPropertiesToBakeOut[PropertyIndex];
+
+				TRACE_CPUPROFILER_EVENT_SCOPE_TEXT(*Property.ToString())
+
 				FExportMaterialProxy* ExportMaterialProxy = CreateMaterialProxy(CurrentMaterialSettings->Material, Property);
 
 				if (!ExportMaterialProxy->IsCompilationFinished())
@@ -544,14 +587,14 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& Materi
 
 							FSceneViewFamily ViewFamily(FSceneViewFamily::ConstructionValues(RenderTarget->GetRenderTargetResource(), nullptr,
 								FEngineShowFlags(ESFIM_Game))
-								.SetWorldTimes(0.0f, 0.0f, 0.0f)
+								.SetTime(FGameTime())
 								.SetGammaCorrection(RenderTarget->GetRenderTargetResource()->GetDisplayGamma()));
 
 							RenderItem.MaterialRenderProxy = ExportMaterialProxy;
 							RenderItem.ViewFamily = &ViewFamily;
 
 							FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GetRenderTargetResource();
-							FCanvas Canvas(RenderTargetResource, nullptr, FApp::GetCurrentTime() - GStartTime, FApp::GetDeltaTime(), FApp::GetCurrentTime() - GStartTime, GMaxRHIFeatureLevel);
+							FCanvas Canvas(RenderTargetResource, nullptr, FGameTime::GetTimeSinceAppStart(), GMaxRHIFeatureLevel);
 							Canvas.SetAllowedModes(FCanvas::Allow_Flush);
 							Canvas.SetRenderTargetRect(FIntRect(0, 0, RenderTarget->GetSurfaceWidth(), RenderTarget->GetSurfaceHeight()));
 							Canvas.SetBaseTransform(Canvas.CalcBaseTransform2D(RenderTarget->GetSurfaceWidth(), RenderTarget->GetSurfaceHeight()));
@@ -563,7 +606,7 @@ void FMaterialBakingModule::BakeMaterials(const TArray<FMaterialDataEx*>& Materi
 							Canvas.Flush_RenderThread(RHICmdList);
 							SortElement.RenderBatchArray.Empty();
 
-							FTexture2DRHIRef StagingBufferRef = StagingBufferPool.CreateStagingBuffer_RenderThread(RHICmdList, RenderTargetResource->GetSizeX(), RenderTargetResource->GetSizeY(), RenderTarget->GetFormat());
+							FTexture2DRHIRef StagingBufferRef = StagingBufferPool.CreateStagingBuffer_RenderThread(RHICmdList, RenderTargetResource->GetSizeX(), RenderTargetResource->GetSizeY(), RenderTarget->GetFormat(), RenderTarget->IsSRGB());
 							FGPUFenceRHIRef GPUFence = RHICreateGPUFence(TEXT("MaterialBackingFence"));
 
 							FResolveRect Rect(0, 0, RenderTargetResource->GetSizeX(), RenderTargetResource->GetSizeY());
@@ -773,11 +816,20 @@ void FMaterialBakingModule::SetLinearBake(bool bCorrectLinear)
 	}
 }
 
+static void DeleteCachedMaterialProxy(FExportMaterialProxy* Proxy)
+{
+	ENQUEUE_RENDER_COMMAND(DeleteCachedMaterialProxy)(
+		[Proxy](FRHICommandListImmediate& RHICmdList)
+		{
+			delete Proxy;
+		});
+}
+
 void FMaterialBakingModule::CleanupMaterialProxies()
 {
 	for (auto Iterator : MaterialProxyPool)
 	{
-		delete Iterator.Value.Value;
+		DeleteCachedMaterialProxy(Iterator.Value.Value);
 	}
 	MaterialProxyPool.Reset();
 }
@@ -986,19 +1038,17 @@ void FMaterialBakingModule::OnObjectModified(UObject* Object)
 				// We have a match, remove the entry from our pool
 				if (bMustDelete)
 				{
-					FExportMaterialProxy* Proxy = It.Value().Value;
-
-					ENQUEUE_RENDER_COMMAND(DeleteCachedMaterialProxy)(
-						[Proxy](FRHICommandListImmediate& RHICmdList)
-						{
-							delete Proxy;
-						});
-
+					DeleteCachedMaterialProxy(It.Value().Value);
 					It.RemoveCurrent();
 				}
 			}
 		}
 	}
+}
+
+void FMaterialBakingModule::OnPreGarbageCollect()
+{
+	CleanupMaterialProxies();
 }
 
 #undef LOCTEXT_NAMESPACE //"MaterialBakingModule"

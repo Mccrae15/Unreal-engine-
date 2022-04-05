@@ -1,5 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+#if WITH_CHAOS
+
 #include "Chaos/ChaosScene.h"
 
 #include "Async/AsyncWork.h"
@@ -33,20 +35,24 @@
 #include "PhysicsSettingsCore.h"
 #include "Chaos/PhysicsSolverBaseImpl.h"
 
-#include "ProfilingDebugging/CsvProfiler.h"
 
 DECLARE_CYCLE_STAT(TEXT("Update Kinematics On Deferred SkelMeshes"),STAT_UpdateKinematicsOnDeferredSkelMeshesChaos,STATGROUP_Physics);
 CSV_DEFINE_CATEGORY(ChaosPhysics,true);
+CSV_DEFINE_CATEGORY(AABBTreeExpensiveStats, false);
 
 // Stat Counters
 DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumDirtyAABBTreeElements"), STAT_ChaosCounter_NumDirtyAABBTreeElements, STATGROUP_ChaosCounters);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumDirtyGridOverflowElements"), STAT_ChaosCounter_NumDirtyGridOverflowElements, STATGROUP_ChaosCounters);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumDirtyElementsTooLargeForGrid"), STAT_ChaosCounter_NumDirtyElementsTooLargeForGrid, STATGROUP_ChaosCounters);
+DECLARE_DWORD_ACCUMULATOR_STAT(TEXT("NumDirtyNonEmptyCellsInGrid"), STAT_ChaosCounter_NumDirtyNonEmptyCellsInGrid, STATGROUP_ChaosCounters);
 
 TAutoConsoleVariable<int32> CVar_ChaosSimulationEnable(TEXT("P.Chaos.Simulation.Enable"),1,TEXT("Enable / disable chaos simulation. If disabled, physics will not tick."));
 TAutoConsoleVariable<int32> CVar_ApplyProjectSettings(TEXT("p.Chaos.Simulation.ApplySolverProjectSettings"), 1, TEXT("Whether to apply the solver project settings on spawning a solver"));
 
 FChaosScene::FChaosScene(
 	UObject* OwnerPtr
-#if CHAOS_CHECKED
+	, Chaos::FReal InAsyncDt
+#if CHAOS_DEBUG_NAME
 	, const FName& DebugName
 #endif
 )
@@ -55,7 +61,7 @@ FChaosScene::FChaosScene(
 	, SceneSolver(nullptr)
 	, Owner(OwnerPtr)
 {
-	LLM_SCOPE(ELLMTag::Chaos);
+	LLM_SCOPE(ELLMTag::ChaosScene);
 
 	ChaosModule = FChaosSolversModule::GetModule();
 	check(ChaosModule);
@@ -64,8 +70,8 @@ FChaosScene::FChaosScene(
 
 	Chaos::EThreadingMode ThreadingMode = bForceSingleThread ? Chaos::EThreadingMode::SingleThread : Chaos::EThreadingMode::TaskGraph;
 
-	SceneSolver = ChaosModule->CreateSolver(OwnerPtr,ThreadingMode
-#if CHAOS_CHECKED
+	SceneSolver = ChaosModule->CreateSolver(OwnerPtr, InAsyncDt, ThreadingMode
+#if CHAOS_DEBUG_NAME
 		,DebugName
 #endif
 		);
@@ -77,13 +83,15 @@ FChaosScene::FChaosScene(
 	if(CVar_ApplyProjectSettings.GetValueOnAnyThread() != 0)
 	{
 		UPhysicsSettingsCore* Settings = UPhysicsSettingsCore::Get();
-		SceneSolver->EnqueueCommandImmediate([InSolver = SceneSolver, SolverConfigCopy = Settings->SolverOptions]()
+		SceneSolver->RegisterSimOneShotCallback([InSolver = SceneSolver, SolverConfigCopy = Settings->SolverOptions]()
 		{
 			InSolver->ApplyConfig(SolverConfigCopy);
 		});
 	}
 
-	Flush();	//make sure acceleration structure exists right away
+	// Make sure we have initialized structure on game thread, evolution has already initialized structure, just need to copy.
+	CopySolverAccelerationStructure();
+
 }
 
 FChaosScene::~FChaosScene()
@@ -173,32 +181,28 @@ void FChaosScene::Flush()
 	CopySolverAccelerationStructure();
 }
 
-void FChaosScene::RemoveActorFromAccelerationStructure(Chaos::TGeometryParticle<Chaos::FReal, 3>* Particle)
+void FChaosScene::RemoveActorFromAccelerationStructure(FPhysicsActorHandle Actor)
 {
 #if WITH_CHAOS
 	using namespace Chaos;
-	if(GetSpacialAcceleration())
+	RemoveActorFromAccelerationStructureImp(Actor->GetParticle_LowLevel());
+#endif
+}
+
+#if WITH_CHAOS
+
+void FChaosScene::RemoveActorFromAccelerationStructureImp(Chaos::FGeometryParticle* Particle)
+{
+	using namespace Chaos;
+	if (GetSpacialAcceleration() && Particle->UniqueIdx().IsValid())
 	{
 		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
 		Chaos::FAccelerationStructureHandle AccelerationHandle(Particle);
 		GetSpacialAcceleration()->RemoveElementFrom(AccelerationHandle, Particle->SpatialIdx());
 	}
-#endif
 }
+#endif
 
-void FChaosScene::RemoveActorFromAccelerationStructure(FPhysicsActorHandle& Actor)
-{
-#if WITH_CHAOS
-	using namespace Chaos;
-	Chaos::FRigidBodyHandle_External& Body_External = Actor->GetGameThreadAPI();
-	if (GetSpacialAcceleration() && Body_External.UniqueIdx().IsValid())
-	{
-		FPhysicsSceneGuardScopedWrite ScopedWrite(SceneSolver->GetExternalDataLock_External());
-		Chaos::FAccelerationStructureHandle AccelerationHandle(Actor->GetParticle_LowLevel());
-		GetSpacialAcceleration()->RemoveElementFrom(AccelerationHandle, Body_External.SpatialIdx());
-	}
-#endif
-}
 
 void FChaosScene::UpdateActorInAccelerationStructure(const FPhysicsActorHandle& Actor)
 {
@@ -281,6 +285,8 @@ void FChaosScene::UpdateActorsInAccelerationStructure(const TArrayView<FPhysicsA
 void FChaosScene::AddActorsToScene_AssumesLocked(TArray<FPhysicsActorHandle>& InHandles,const bool bImmediate)
 {
 #if WITH_CHAOS
+	TRACE_CPUPROFILER_EVENT_SCOPE(FChaosScene::AddActorsToScene_AssumesLocked)
+
 	Chaos::FPhysicsSolver* Solver = GetSolver();
 	Chaos::ISpatialAcceleration<Chaos::FAccelerationStructureHandle,Chaos::FReal,3>* SpatialAcceleration = GetSpacialAcceleration();
 	for(FPhysicsActorHandle& Handle : InHandles)
@@ -321,24 +327,36 @@ void FChaosScene::SetGravity(const Chaos::FVec3& Acceleration)
 	SimCallback->GetProducerInputData_External()->Gravity = Acceleration;
 }
 
-void FChaosScene::SetUpForFrame(const FVector* NewGrav,float InDeltaSeconds /*= 0.0f*/,float InMaxPhysicsDeltaTime /*= 0.0f*/,float InMaxSubstepDeltaTime /*= 0.0f*/,int32 InMaxSubsteps,bool bSubstepping)
+void FChaosScene::SetUpForFrame(const FVector* NewGrav,float InDeltaSeconds /*= 0.0f*/,float InMinPhysicsDeltaTime /*= 0.0f*/,float InMaxPhysicsDeltaTime /*= 0.0f*/,float InMaxSubstepDeltaTime /*= 0.0f*/,int32 InMaxSubsteps,bool bSubstepping)
 {
 #if WITH_CHAOS
 	using namespace Chaos;
 	SetGravity(*NewGrav);
-	MDeltaTime = InMaxPhysicsDeltaTime > 0.f ? FMath::Min(InDeltaSeconds,InMaxPhysicsDeltaTime) : InDeltaSeconds;
+
+	InDeltaSeconds *= MNetworkDeltaTimeScale;
+
+	if(bSubstepping)
+	{
+		MDeltaTime = FMath::Min(InDeltaSeconds, InMaxSubsteps * InMaxSubstepDeltaTime);
+	}
+	else
+	{
+		MDeltaTime = InMaxPhysicsDeltaTime > 0.f ? FMath::Min(InDeltaSeconds, InMaxPhysicsDeltaTime) : InDeltaSeconds;
+	}
 
 	if(FPhysicsSolver* Solver = GetSolver())
 	{
 		if(bSubstepping)
 		{
-			Solver->SetMaxDeltaTime(InMaxSubstepDeltaTime);
-			Solver->SetMaxSubSteps(InMaxSubsteps);
-		} else
+			Solver->SetMaxDeltaTime_External(InMaxSubstepDeltaTime);
+			Solver->SetMaxSubSteps_External(InMaxSubsteps);
+		} 
+		else
 		{
-			Solver->SetMaxDeltaTime(InMaxPhysicsDeltaTime);
-			Solver->SetMaxSubSteps(1);
+			Solver->SetMaxDeltaTime_External(InMaxPhysicsDeltaTime);
+			Solver->SetMaxSubSteps_External(1);
 		}
+		Solver->SetMinDeltaTime_External(InMinPhysicsDeltaTime);
 	}
 #endif
 }
@@ -377,7 +395,7 @@ void FChaosScene::StartFrame()
 
 void FChaosScene::OnSyncBodies(Chaos::FPhysicsSolverBase* Solver)
 {
-	Solver->PullPhysicsStateForEachDirtyProxy_External([](auto){});
+	Solver->PullPhysicsStateForEachDirtyProxy_External([](auto){}, [](auto) {});
 }
 
 bool FChaosScene::AreAnyTasksPending() const
@@ -418,31 +436,36 @@ void FChaosScene::SyncBodies(TSolver* Solver)
 {
 #if WITH_CHAOS
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("SyncBodies"),STAT_SyncBodies,STATGROUP_Physics);
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(SyncBodies);
 	OnSyncBodies(Solver);
 #endif
 }
 
-
-// Find the number of dirty elements in all substructures that has dirty elements that we know of
-// This is non recursive for now
-// Todo: consider making DirtyElementsCount a method on ISpatialAcceleration instead
-int32 DirtyElementCount(Chaos::ISpatialAccelerationCollection<Chaos::FAccelerationStructureHandle,Chaos::FReal,3>& Collection)
+// Accumulate all the AABBTree stats
+void GetAABBTreeStats(Chaos::ISpatialAccelerationCollection<Chaos::FAccelerationStructureHandle, Chaos::FReal, 3>& Collection, Chaos::AABBTreeStatistics& OutAABBTreeStatistics, Chaos::AABBTreeExpensiveStatistics& OutAABBTreeExpensiveStatistics)
 {
+	CSV_SCOPED_TIMING_STAT(AABBTreeExpensiveStats, GetAABBTreeStats);
 	using namespace Chaos;
-	int32 DirtyElements = 0;
+	OutAABBTreeStatistics.Reset();
 	TArray<FSpatialAccelerationIdx> SpatialIndices = Collection.GetAllSpatialIndices();
-	for(const FSpatialAccelerationIdx SpatialIndex : SpatialIndices)
+	for (const FSpatialAccelerationIdx SpatialIndex : SpatialIndices)
 	{
 		auto SubStructure = Collection.GetSubstructure(SpatialIndex);
-		if(const auto AABBTree = SubStructure->template As<TAABBTree<FAccelerationStructureHandle,TAABBTreeLeafArray<FAccelerationStructureHandle>>>())
+		if (const auto AABBTree = SubStructure->template As<TAABBTree<FAccelerationStructureHandle, TAABBTreeLeafArray<FAccelerationStructureHandle>>>())
 		{
-			DirtyElements += AABBTree->NumDirtyElements();
-		} else if(const auto AABBTreeBV = SubStructure->template As<TAABBTree<FAccelerationStructureHandle,TBoundingVolume<FAccelerationStructureHandle>>>())
+			OutAABBTreeStatistics.MergeStatistics(AABBTree->GetAABBTreeStatistics());
+#if CSV_PROFILER
+			if (FCsvProfiler::Get()->IsCapturing() && FCsvProfiler::Get()->IsCategoryEnabled(CSV_CATEGORY_INDEX(AABBTreeExpensiveStats)))
+			{
+				OutAABBTreeExpensiveStatistics.MergeStatistics(AABBTree->GetAABBTreeExpensiveStatistics());
+			}
+#endif
+		}
+		else if (const auto AABBTreeBV = SubStructure->template As<TAABBTree<FAccelerationStructureHandle, TBoundingVolume<FAccelerationStructureHandle>>>())
 		{
-			DirtyElements += AABBTreeBV->NumDirtyElements();
+			OutAABBTreeStatistics.MergeStatistics(AABBTreeBV->GetAABBTreeStatistics());
 		}
 	}
-	return DirtyElements;
 }
 
 void FChaosScene::EndFrame()
@@ -458,9 +481,36 @@ void FChaosScene::EndFrame()
 		return;
 	}
 
-	int32 DirtyElements = DirtyElementCount(GetSpacialAcceleration()->AsChecked<SpatialAccelerationCollection>());
-	CSV_CUSTOM_STAT(ChaosPhysics,AABBTreeDirtyElementCount,DirtyElements,ECsvCustomStatOp::Set);
-	SET_DWORD_STAT(STAT_ChaosCounter_NumDirtyAABBTreeElements, DirtyElements);
+#if !UE_BUILD_SHIPPING
+	{
+		Chaos::AABBTreeStatistics TreeStats;
+		Chaos::AABBTreeExpensiveStatistics TreeExpensiveStats;
+		GetAABBTreeStats(GetSpacialAcceleration()->AsChecked<SpatialAccelerationCollection>(), TreeStats, TreeExpensiveStats);
+
+		CSV_CUSTOM_STAT(ChaosPhysics, AABBTreeDirtyElementCount, TreeStats.StatNumDirtyElements, ECsvCustomStatOp::Set);
+		SET_DWORD_STAT(STAT_ChaosCounter_NumDirtyAABBTreeElements, TreeStats.StatNumDirtyElements);
+
+		CSV_CUSTOM_STAT(ChaosPhysics, AABBTreeDirtyGridOverflowCount, TreeStats.StatNumGridOverflowElements, ECsvCustomStatOp::Set);
+		SET_DWORD_STAT(STAT_ChaosCounter_NumDirtyGridOverflowElements, TreeStats.StatNumGridOverflowElements);
+
+		CSV_CUSTOM_STAT(ChaosPhysics, AABBTreeDirtyElementTooLargeCount, TreeStats.StatNumElementsTooLargeForGrid, ECsvCustomStatOp::Set);
+		SET_DWORD_STAT(STAT_ChaosCounter_NumDirtyElementsTooLargeForGrid, TreeStats.StatNumElementsTooLargeForGrid);
+
+		CSV_CUSTOM_STAT(ChaosPhysics, AABBTreeDirtyElementNonEmptyCellCount, TreeStats.StatNumNonEmptyCellsInGrid, ECsvCustomStatOp::Set);
+		SET_DWORD_STAT(STAT_ChaosCounter_NumDirtyNonEmptyCellsInGrid, TreeStats.StatNumNonEmptyCellsInGrid);
+
+#if CSV_PROFILER
+		if (FCsvProfiler::Get()->IsCapturing() && FCsvProfiler::Get()->IsCategoryEnabled(CSV_CATEGORY_INDEX(AABBTreeExpensiveStats)))
+		{
+			CSV_CUSTOM_STAT(AABBTreeExpensiveStats, AABBTreeMaxNumLeaves, TreeExpensiveStats.StatMaxNumLeaves, ECsvCustomStatOp::Set);
+			CSV_CUSTOM_STAT(AABBTreeExpensiveStats, AABBTreeMaxDirtyElements, TreeExpensiveStats.StatMaxDirtyElements, ECsvCustomStatOp::Set);
+			CSV_CUSTOM_STAT(AABBTreeExpensiveStats, AABBTreeMaxTreeDepth, TreeExpensiveStats.StatMaxTreeDepth, ECsvCustomStatOp::Set);
+			CSV_CUSTOM_STAT(AABBTreeExpensiveStats, AABBTreeMaxLeafSize, TreeExpensiveStats.StatMaxLeafSize, ECsvCustomStatOp::Set);
+			CSV_CUSTOM_STAT(AABBTreeExpensiveStats, AABBTreeGlobalPayloadsSize, TreeExpensiveStats.StatGlobalPayloadsSize, ECsvCustomStatOp::Set);
+		}
+#endif // CSV_PROFILER
+	}
+#endif // UE_BUILD_SHIPPING
 
 	check(IsCompletionEventComplete())
 	//check(PhysicsTickTask->IsComplete());
@@ -516,3 +566,5 @@ FGraphEventArray FChaosScene::GetCompletionEvents()
 {
 	return CompletionEvents;
 }
+
+#endif

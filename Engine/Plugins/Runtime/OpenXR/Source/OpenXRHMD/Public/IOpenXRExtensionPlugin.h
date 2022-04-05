@@ -9,7 +9,7 @@
 #include "ARTraceResult.h"
 #include "DefaultSpectatorScreenController.h"
 #include "UObject/SoftObjectPath.h"
-
+#include "GenericPlatform/IInputInterface.h"
 #include <openxr/openxr.h>
 
 class IOpenXRCustomAnchorSupport
@@ -225,6 +225,15 @@ public:
 	}
 
 	/**
+	* Add any action sets provided by the plugin to be attached as active to the session
+	* This allows a plugin to manage a custom actionset that will be active in xrSyncActions
+	*/
+	virtual void AddActionSets(TArray<XrActiveActionSet>& OutActionSets)
+	{
+	}
+
+
+	/**
 	* Use this callback to handle events that the OpenXR plugin doesn't handle itself
 	*/
 	virtual void OnEvent(XrSession InSession, const XrEventDataBaseHeader* InHeader)
@@ -266,12 +275,16 @@ public:
 	* Remember to assign InNext to the next pointer of your struct or otherwise you may break the next chain.
 	*/
 
-	virtual const void* OnCreateInstance(class IOpenXRHMDPlugin* InPlugin, const void* InNext)
+	virtual const void* OnCreateInstance(class IOpenXRHMDModule* InModule, const void* InNext)
 	{
 		return InNext;
 	}
 
 	virtual void PostCreateInstance(XrInstance InInstance)
+	{
+	}
+
+	virtual void BindExtensionPluginDelegates(class IOpenXRExtensionPluginDelegates& OpenXRHMD)
 	{
 	}
 
@@ -304,8 +317,8 @@ public:
 		return InNext;
 	}
 
-	// OpenXRHMD::OnBeginRendering_RenderThread, before acquiring swapchain
-	virtual void OnAcquireSwapchainImage(XrSession InSession)
+	// OpenXRHMD::OnBeginRendering_RenderThread
+	virtual void OnBeginRendering_RenderThread(XrSession InSession)
 	{
 	}
 
@@ -352,6 +365,17 @@ public:
 	{
 	}
 
+	
+	virtual void OnSetDeviceProperty(XrSession InSession, int32 ControllerId, const FInputDeviceProperty* Property)
+	{
+	}
+
+	/** Update OpenXRHMD to use reference space types other than view, local, and stage. */
+	virtual bool UseCustomReferenceSpaceType(XrReferenceSpaceType& OutReferenceSpaceType)
+	{
+		return false;
+	}
+	
 	/**
 	 * Start the AR system.
 	 *

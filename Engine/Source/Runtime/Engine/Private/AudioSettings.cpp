@@ -4,8 +4,10 @@
 #include "AudioDevice.h"
 #include "AudioDeviceManager.h"
 #include "AudioMixerDevice.h"
+#include "IAudioParameterInterfaceRegistry.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
+#include "Sound/SoundAttenuation.h"
 #include "Sound/SoundBase.h"
 #include "Sound/SoundClass.h"
 #include "Sound/SoundConcurrency.h"
@@ -28,6 +30,7 @@ UAudioSettings::UAudioSettings(const FObjectInitializer& ObjectInitializer)
 	AddDefaultSettings();
 
 	bAllowPlayWhenSilent = true;
+	bParameterInterfacesRegistered = false;
 	bIsAudioMixerEnabled = false;
 
 	GlobalMinPitchScale = 0.4F;
@@ -256,6 +259,18 @@ void UAudioSettings::LoadDefaultObjects()
 	else
 	{
 		UE_LOG(LogAudio, Display, TEXT("No default SoundConcurrencyObject specified (or failed to load)."));
+	}
+}
+
+void UAudioSettings::RegisterParameterInterfaces()
+{
+	if (!bParameterInterfacesRegistered)
+	{
+		UE_LOG(LogAudio, Display, TEXT("Registering Engine Module Parameter Interfaces..."));
+		bParameterInterfacesRegistered = true;
+		Audio::IAudioParameterInterfaceRegistry& InterfaceRegistry = Audio::IAudioParameterInterfaceRegistry::Get();
+		InterfaceRegistry.RegisterInterface(Audio::AttenuationInterface::GetInterface());
+		InterfaceRegistry.RegisterInterface(Audio::SpatializationInterface::GetInterface());
 	}
 }
 

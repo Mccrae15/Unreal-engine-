@@ -17,6 +17,7 @@
 #include "Evaluation/MovieSceneEvaluation.h"
 #include "IMovieScenePlayer.h"
 #include "GameFramework/WorldSettings.h"
+#include "Channels/MovieSceneAudioTriggerChannel.h"
 
 
 DECLARE_CYCLE_STAT(TEXT("Audio Track Evaluate"), MovieSceneEval_AudioTrack_Evaluate, STATGROUP_MovieSceneEval);
@@ -100,6 +101,8 @@ struct FDestroyAudioPreAnimatedToken : IMovieScenePreAnimatedToken
 
 struct FCachedAudioTrackData : IPersistentEvaluationData
 {
+	TMap<FName, FMoveSceneAudioTriggerState> TriggerStateMap;
+
 	TMap<FObjectKey, TMap<FObjectKey, TWeakObjectPtr<UAudioComponent>>> AudioComponentsByActorKey;
 	
 	FCachedAudioTrackData()
@@ -269,7 +272,14 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 	{
 		FCachedAudioTrackData& TrackData = PersistentData.GetOrAddTrackData<FCachedAudioTrackData>();
 
-		if ((Context.GetStatus() != EMovieScenePlayerStatus::Playing && Context.GetStatus() != EMovieScenePlayerStatus::Scrubbing && Context.GetStatus() != EMovieScenePlayerStatus::Stepping) || Context.HasJumped() || Context.GetDirection() == EPlayDirection::Backwards)
+		// If the status says we jumped, we always stop all sounds, then allow them to be played again naturally below if status == Playing (for example)
+		if (Context.HasJumped())
+		{
+			TrackData.StopAllSounds();
+		}
+
+
+		if ((Context.GetStatus() != EMovieScenePlayerStatus::Playing && Context.GetStatus() != EMovieScenePlayerStatus::Scrubbing && Context.GetStatus() != EMovieScenePlayerStatus::Stepping) || Context.GetDirection() == EPlayDirection::Backwards)
 		{
 			// stopped, recording, etc
 			TrackData.StopAllSounds();
@@ -373,6 +383,37 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 		}
 	}
 
+	// Helper template to pair channel evaluation and parameter application.
+	template<typename ChannelType, typename ValueType>
+	void EvaluateAllAndSetParameters(IAudioParameterControllerInterface& InParamaterInterface, const FFrameTime& InTime) const
+	{
+		AudioSection->ForEachInput([&InParamaterInterface, &InTime](FName InName, const ChannelType& InChannel)
+		{
+			using namespace UE::MovieScene;
+			ValueType OutValue{};
+			if (EvaluateChannel(&InChannel, InTime, OutValue))
+			{
+				InParamaterInterface.SetParameter(InName, MoveTempIfPossible(OutValue));
+			}
+		});
+	}
+
+	void EvaluateAllAndFireTriggers(IAudioParameterControllerInterface& InParamaterInterface, const FMovieSceneContext& InContext, FCachedAudioTrackData& InPersistentData) const
+	{
+		AudioSection->ForEachInput([&InParamaterInterface, &InContext, &InPersistentData](FName InName, const FMovieSceneAudioTriggerChannel& InChannel)
+		{
+			bool OutValue = false;
+			FMoveSceneAudioTriggerState& TriggerState = InPersistentData.TriggerStateMap.FindOrAdd(InName);
+			if(InChannel.EvaluatePossibleTriggers(InContext, TriggerState, OutValue))
+			{
+				if(OutValue)
+				{
+					InParamaterInterface.SetTriggerParameter(InName);
+				}
+			}
+		});
+	}
+
 	void EnsureAudioIsPlaying(UAudioComponent& AudioComponent, FPersistentEvaluationData& PersistentData, const FMovieSceneContext& Context, bool bAllowSpatialization, IMovieScenePlayer& Player) const
 	{
 		Player.SavePreAnimatedState(AudioComponent, FStopAudioPreAnimatedToken::GetAnimTypeID(), FStopAudioPreAnimatedToken::FProducer());
@@ -392,6 +433,12 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 			AudioComponent.SetPitchMultiplier(PitchMultiplier);
 		}
 
+		// Evaluate inputs and apply the params.
+		EvaluateAllAndSetParameters<FMovieSceneFloatChannel, float>(AudioComponent, Context.GetTime());
+		EvaluateAllAndSetParameters<FMovieSceneBoolChannel, bool> (AudioComponent, Context.GetTime());
+		EvaluateAllAndSetParameters<FMovieSceneIntegerChannel, int32>(AudioComponent, Context.GetTime());
+		EvaluateAllAndSetParameters<FMovieSceneStringChannel, FString>(AudioComponent, Context.GetTime());
+		
 		float SectionStartTimeSeconds = (AudioSection->HasStartFrame() ? AudioSection->GetInclusiveStartFrame() : 0) / AudioSection->GetTypedOuter<UMovieScene>()->GetTickResolution();
 
 		FCachedAudioTrackData& TrackData = PersistentData.GetOrAddTrackData<FCachedAudioTrackData>();
@@ -468,14 +515,14 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 			// stop calls when a sound cue with a duration of zero is played.
 			if (AudioComponent.IsPlaying() || bSoundNeedsTimeSync)
 			{
-				UE_LOG(LogMovieScene, Verbose, TEXT("Audio Component stopped due to needing a state change bIsPlaying: %d bNeedsTimeSync: %d. Component: %s sound: %s"), AudioComponent.IsPlaying(), bSoundNeedsTimeSync, *AudioComponent.GetName(), *AudioComponent.Sound->GetName());
+				UE_LOG(LogMovieScene, Verbose, TEXT("Audio Component stopped due to needing a state change bIsPlaying: %d bNeedsTimeSync: %d. Component: %s sound: %s"), AudioComponent.IsPlaying(), bSoundNeedsTimeSync, *AudioComponent.GetName(), *GetNameSafe(AudioComponent.Sound));
 				AudioComponent.Stop();
 			}
 
 			// Only change the sound clip if it has actually changed. This calls Stop internally if needed.
 			if (AudioComponent.Sound != Sound)
 			{
-				UE_LOG(LogMovieScene, Verbose, TEXT("Audio Component calling SetSound due to new sound. Component: %s OldSound: %s NewSound: %s"), *AudioComponent.GetName(), *GetNameSafe(AudioComponent.Sound), *AudioComponent.Sound->GetName());
+				UE_LOG(LogMovieScene, Verbose, TEXT("Audio Component calling SetSound due to new sound. Component: %s OldSound: %s NewSound: %s"), *AudioComponent.GetName(), *GetNameSafe(AudioComponent.Sound), *GetNameSafe(AudioComponent.Sound));
 				AudioComponent.SetSound(Sound);
 			}
 #if WITH_EDITOR
@@ -494,7 +541,7 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 
 			if (AudioTime >= 0.f)
 			{
-				UE_LOG(LogMovieScene, Verbose, TEXT("Audio Component Play at Local Time: %6.2f CurrentTime: %6.2f(s) SectionStart: %6.2f(s), SoundDur: %6.2f OffsetIntoClip: %6.2f sound: %s"), AudioTime, (Context.GetTime() / Context.GetFrameRate()), SectionStartTimeSeconds, AudioComponent.Sound->GetDuration(), (float)Context.GetFrameRate().AsSeconds(AudioStartOffset), *AudioComponent.Sound->GetName());
+				UE_LOG(LogMovieScene, Verbose, TEXT("Audio Component Play at Local Time: %6.2f CurrentTime: %6.2f(s) SectionStart: %6.2f(s), SoundDur: %6.2f OffsetIntoClip: %6.2f sound: %s"), AudioTime, (Context.GetTime() / Context.GetFrameRate()), SectionStartTimeSeconds, AudioComponent.Sound ? AudioComponent.Sound->GetDuration() : 0.0f, (float)Context.GetFrameRate().AsSeconds(AudioStartOffset), *GetNameSafe(AudioComponent.Sound));
 				AudioComponent.Play(AudioTime);
 
 				// Keep track of when we asked this audio clip to play (in game time) so that we can figure out if there's a significant desync in the future.
@@ -517,12 +564,17 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 					
 				}
 			}
+		}
 
-			if (Context.GetStatus() == EMovieScenePlayerStatus::Scrubbing || Context.GetStatus() == EMovieScenePlayerStatus::Stepping)
-			{
-				// While scrubbing, play the sound for a short time and then cut it.
-				AudioComponent.StopDelayed(AudioTrackConstants::ScrubDuration);
-			}
+		if (Context.GetStatus() == EMovieScenePlayerStatus::Scrubbing || Context.GetStatus() == EMovieScenePlayerStatus::Stepping)
+		{
+			// While scrubbing, play the sound for a short time and then cut it.
+			AudioComponent.StopDelayed(AudioTrackConstants::ScrubDuration);
+		}
+
+		if(AudioComponent.IsPlaying())
+		{
+			EvaluateAllAndFireTriggers(AudioComponent, Context, TrackData);
 		}
 
 		if (bAllowSpatialization)
@@ -530,16 +582,10 @@ struct FAudioSectionExecutionToken : IMovieSceneExecutionToken
 			if (FAudioDevice* AudioDevice = AudioComponent.GetAudioDevice())
 			{
 				DECLARE_CYCLE_STAT(TEXT("FAudioThreadTask.MovieSceneUpdateAudioTransform"), STAT_MovieSceneUpdateAudioTransform, STATGROUP_TaskGraphTasks);
-
-				const FTransform ActorTransform = AudioComponent.GetComponentTransform();
-				const uint64 ActorComponentID = AudioComponent.GetAudioComponentID();
-				FAudioThread::RunCommandOnAudioThread([AudioDevice, ActorComponentID, ActorTransform]()
+				AudioDevice->SendCommandToActiveSounds(AudioComponent.GetAudioComponentID(), [ActorTransform = AudioComponent.GetComponentTransform()](FActiveSound& ActiveSound)
 				{
-					if (FActiveSound* ActiveSound = AudioDevice->FindActiveSound(ActorComponentID))
-					{
-						ActiveSound->bLocationDefined = true;
-						ActiveSound->Transform = ActorTransform;
-					}
+					ActiveSound.bLocationDefined = true;
+					ActiveSound.Transform = ActorTransform;
 				}, GET_STATID(STAT_MovieSceneUpdateAudioTransform));
 			}
 		}

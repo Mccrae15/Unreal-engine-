@@ -15,7 +15,7 @@
 
 class AActor;
 
-UCLASS()
+UCLASS(meta=(BlueprintThreadSafe))
 class ENGINE_API UKismetArrayLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_UCLASS_BODY()
@@ -129,6 +129,24 @@ class ENGINE_API UKismetArrayLibrary : public UBlueprintFunctionLibrary
 	*/
 	UFUNCTION(BlueprintPure, CustomThunk, meta=(DisplayName = "Length", CompactNodeTitle = "LENGTH", ArrayParm = "TargetArray", Keywords = "num size count", BlueprintThreadSafe), Category="Utilities|Array")
 	static int32 Array_Length(const TArray<int32>& TargetArray);
+
+	/*
+	 *Check if the array is empty
+	 *
+	 *@param	TargetArray		The array to check
+	 *@return	A boolean indicating if the array is empty
+	*/
+	UFUNCTION(BlueprintPure, CustomThunk, meta = (DisplayName = "Is Empty", CompactNodeTitle = "IS EMPTY", ArrayParm = "TargetArray", BlueprintThreadSafe), Category = "Utilities|Array")
+	static bool Array_IsEmpty(const TArray<int32>& TargetArray);
+
+	/*
+	 *Check if the array has any elements
+	 *
+	 *@param	TargetArray		The array to check
+	 *@return	A boolean indicating if the array has any elements
+	*/
+	UFUNCTION(BlueprintPure, CustomThunk, meta = (DisplayName = "Is Not Empty", CompactNodeTitle = "IS NOT EMPTY", ArrayParm = "TargetArray", BlueprintThreadSafe), Category = "Utilities|Array")
+	static bool Array_IsNotEmpty(const TArray<int32>& TargetArray);
 
 
 	/* 
@@ -252,6 +270,8 @@ class ENGINE_API UKismetArrayLibrary : public UBlueprintFunctionLibrary
 	static void GenericArray_Resize(void* TargetArray, const FArrayProperty* ArrayProp, int32 Size);
 	static void GenericArray_Reverse(void* TargetArray, const FArrayProperty* ArrayProp);
 	static int32 GenericArray_Length(const void* TargetArray, const FArrayProperty* ArrayProp);
+	static bool GenericArray_IsEmpty(const void* TargetArray, const FArrayProperty* ArrayProp);
+	static bool GenericArray_IsNotEmpty(const void* TargetArray, const FArrayProperty* ArrayProp);
 	static int32 GenericArray_LastIndex(const void* TargetArray, const FArrayProperty* ArrayProp);
 	static void GenericArray_Get(void* TargetArray, const FArrayProperty* ArrayProp, int32 Index, void* Item);
 	static void GenericArray_Set(void* TargetArray, const FArrayProperty* ArrayProp, int32 Index, const void* NewItem, bool bSizeToFit);
@@ -562,6 +582,40 @@ public:
 		*(int32*)RESULT_PARAM = GenericArray_Length(ArrayAddr, ArrayProperty);
 		P_NATIVE_END;
 	}
+	
+	DECLARE_FUNCTION(execArray_IsEmpty)
+	{
+		Stack.MostRecentProperty = nullptr;
+		Stack.StepCompiledIn<FArrayProperty>(nullptr);
+		void* ArrayAddr = Stack.MostRecentPropertyAddress;
+		FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Stack.MostRecentProperty);
+		if (!ArrayProperty)
+		{
+			Stack.bArrayContextFailed = true;
+			return;
+		}
+		P_FINISH;
+		P_NATIVE_BEGIN;
+		*(bool*)RESULT_PARAM = GenericArray_IsEmpty(ArrayAddr, ArrayProperty);
+		P_NATIVE_END;
+	}
+	
+	DECLARE_FUNCTION(execArray_IsNotEmpty)
+	{
+		Stack.MostRecentProperty = nullptr;
+		Stack.StepCompiledIn<FArrayProperty>(nullptr);
+		void* ArrayAddr = Stack.MostRecentPropertyAddress;
+		FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Stack.MostRecentProperty);
+		if (!ArrayProperty)
+		{
+			Stack.bArrayContextFailed = true;
+			return;
+		}
+		P_FINISH;
+		P_NATIVE_BEGIN;
+		*(bool*)RESULT_PARAM = GenericArray_IsNotEmpty(ArrayAddr, ArrayProperty);
+		P_NATIVE_END;
+	}
 
 	DECLARE_FUNCTION(execArray_LastIndex)
 	{
@@ -601,7 +655,19 @@ public:
 
 		Stack.MostRecentPropertyAddress = NULL;
 		Stack.StepCompiledIn<FProperty>(StorageSpace);
-		void* ItemPtr = (Stack.MostRecentPropertyAddress != NULL && Stack.MostRecentProperty->GetClass() == InnerProp->GetClass()) ? Stack.MostRecentPropertyAddress : StorageSpace;
+		const FFieldClass* InnerPropClass = InnerProp->GetClass();
+		const FFieldClass* MostRecentPropClass = Stack.MostRecentProperty->GetClass();
+		void* ItemPtr;
+		// If the destination and the inner type are identical in size and their field classes derive from one another, then permit the writing out of the array element to the destination memory
+		if (Stack.MostRecentPropertyAddress != NULL && (PropertySize == Stack.MostRecentProperty->ElementSize*Stack.MostRecentProperty->ArrayDim) &&
+			(MostRecentPropClass->IsChildOf(InnerPropClass) || InnerPropClass->IsChildOf(MostRecentPropClass)))
+		{
+			ItemPtr = Stack.MostRecentPropertyAddress;
+		}
+		else
+		{
+			ItemPtr = StorageSpace;
+		}
 
 		P_FINISH;
 		P_NATIVE_BEGIN;

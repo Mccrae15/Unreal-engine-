@@ -92,17 +92,23 @@ void FRayTracingGeometryManager::BoostPriority(BuildRequestIndex InRequestIndex,
 	GeometryBuildRequests[InRequestIndex].BuildPriority += InBoostValue;
 }
 
-void FRayTracingGeometryManager::ForceBuild(FRHIComputeCommandList& InCmdList, const TArrayView<const FRayTracingGeometry*> InGeometries)
+void FRayTracingGeometryManager::ForceBuildIfPending(FRHIComputeCommandList& InCmdList, const TArrayView<const FRayTracingGeometry*> InGeometries)
 {
 	FScopeLock ScopeLock(&RequestCS);
 
 	BuildParams.Empty(FMath::Max(BuildParams.Max(), InGeometries.Num()));
 	for (const FRayTracingGeometry* Geometry : InGeometries)
 	{
-		check(Geometry->HasPendingBuildRequest());
-		SetupBuildParams(GeometryBuildRequests[Geometry->RayTracingBuildRequestIndex], BuildParams);
+		if (Geometry->HasPendingBuildRequest())
+		{
+			SetupBuildParams(GeometryBuildRequests[Geometry->RayTracingBuildRequestIndex], BuildParams);
+		}
 	}
-	InCmdList.BuildAccelerationStructures(BuildParams);
+
+	if (BuildParams.Num())
+	{
+		InCmdList.BuildAccelerationStructures(BuildParams);
+	}
 }
 
 void FRayTracingGeometryManager::ProcessBuildRequests(FRHIComputeCommandList& InCmdList, bool bInBuildAll)
@@ -159,10 +165,10 @@ void FRayTracingGeometryManager::ProcessBuildRequests(FRHIComputeCommandList& In
 	InCmdList.BuildAccelerationStructures(BuildParams);
 }
 
-void FRayTracingGeometryManager::SetupBuildParams(const BuildRequest& InBuildRequest, TArray<FAccelerationStructureBuildParams>& InBuildParams)
+void FRayTracingGeometryManager::SetupBuildParams(const BuildRequest& InBuildRequest, TArray<FRayTracingGeometryBuildParams>& InBuildParams)
 {
 	// Setup the actual build params
-	FAccelerationStructureBuildParams BuildParam;
+	FRayTracingGeometryBuildParams BuildParam;
 	BuildParam.Geometry = InBuildRequest.Owner->RayTracingGeometryRHI;
 	BuildParam.BuildMode = InBuildRequest.BuildMode;
 	InBuildParams.Add(BuildParam);

@@ -68,6 +68,8 @@ class UDataTable
 {
 	GENERATED_UCLASS_BODY()
 
+	ENGINE_API virtual ~UDataTable() {};
+
 	DECLARE_MULTICAST_DELEGATE(FOnDataTableChanged);
 	DECLARE_MULTICAST_DELEGATE(FOnDataTableImport);
 	
@@ -78,7 +80,7 @@ class UDataTable
 
 	/** Structure to use for each row of the table, must inherit from FTableRowBase */
 	UPROPERTY(VisibleAnywhere, Category=DataTable, meta=(DisplayThumbnail="false"))
-	UScriptStruct*			RowStruct;
+	TObjectPtr<UScriptStruct>			RowStruct;
 
 protected:
 	/** Map of name of row to row data structure. */
@@ -136,7 +138,7 @@ public:
 
 	/** The file this data table was imported from, may be empty */
 	UPROPERTY(VisibleAnywhere, Instanced, Category=ImportSource)
-	class UAssetImportData* AssetImportData;
+	TObjectPtr<class UAssetImportData> AssetImportData;
 
 	/** The filename imported to create this object. Relative to this object's package, BaseDir() or absolute */
 	UPROPERTY()
@@ -152,7 +154,7 @@ protected:
 	TArray<uint8> RowsSerializedWithTags;
 
 	UPROPERTY(Transient)
-	TSet<UObject*> TemporarilyReferencedObjects;
+	TSet<TObjectPtr<UObject>> TemporarilyReferencedObjects;
 #endif	// WITH_EDITORONLY_DATA
 
 private:
@@ -353,6 +355,12 @@ public:
 	 */
 	ENGINE_API TArray<FString> CreateTableFromOtherTable(const UDataTable* InTable);
 
+	/**
+	 *	Create table from a raw data map with a given script struct
+	 *	@return	Set of problems encountered while processing input
+	 */
+	ENGINE_API TArray<FString> CreateTableFromRawData(TMap<FName, const uint8*>& DataMap, UScriptStruct* InRowStruct);
+
 #if WITH_EDITOR
 	/** Get an array of all the column titles, using the friendly display name from the property */
 	ENGINE_API TArray<FString> GetColumnTitles() const;
@@ -410,7 +418,7 @@ struct ENGINE_API FDataTableRowHandle
 
 	/** Pointer to table we want a row from */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=DataTableRowHandle)
-	const UDataTable*	DataTable;
+	TObjectPtr<const UDataTable>	DataTable;
 
 	/** Name of row in the table that we want */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=DataTableRowHandle)
@@ -476,7 +484,7 @@ struct ENGINE_API FDataTableCategoryHandle
 
 	/** Pointer to table we want a row from */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=DataTableCategoryHandle)
-	const class UDataTable*	DataTable = nullptr;
+	TObjectPtr<const class UDataTable>	DataTable = nullptr;
 
 	/** Name of column in the table that we want */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=DataTableCategoryHandle)

@@ -144,7 +144,7 @@ public:
 	 * Calls UEditorStaticMeshLibrary::SetLods on each static mesh of the resulting array.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dataprep | Operation")
-	static void SetLods(const TArray<UObject*>& SelectedObjects, const FEditorScriptingMeshReductionOptions& ReductionOptions, TArray<UObject*>& ModifiedObjects);
+	static void SetLods(const TArray<UObject*>& SelectedObjects, const FStaticMeshReductionOptions& ReductionOptions, TArray<UObject*>& ModifiedObjects);
 
 	/**
 	 * Set one simple collision of the given shape type on the static meshes contained in the
@@ -160,7 +160,7 @@ public:
 	 * Calls UEditorStaticMeshLibrary::AddSimpleCollisions on each static mesh of the resulting array.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dataprep | Operation")
-	static void SetSimpleCollision(const TArray<UObject*>& SelectedObjects, const EScriptingCollisionShapeType ShapeType, TArray<UObject*>& ModifiedObjects);
+	static void SetSimpleCollision(const TArray<UObject*>& SelectedObjects, const EScriptCollisionShapeType ShapeType, TArray<UObject*>& ModifiedObjects);
 
 	/**
 	 * Add complex collision on the static meshes contained in the input array
@@ -336,6 +336,17 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Dataprep | Operation")
 	static void ResizeTextures(const TArray<UTexture2D*>& InTextures, int32 InMaxSize);
+
+	/**
+	 * Set Nanite settings for selected meshes
+	 * @param	InSelectedObjects			Array of objects to process.
+	 * @param	bInEnabled					If true, Nanite data will be generated.
+	 * @param	InPositionPrecision			Step size is 2^(-PositionPrecision) cm. MIN_int32 is auto.
+	 * @param	InPercentTriangles			Percentage of triangles to keep from LOD0. 1.0 = no reduction, 0.0 = no triangles.
+	 * @param	OutModifiedObjects			List of modified objects the processed meshes will be added to
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Dataprep | Operation")
+	static void SetNaniteSettings(const TArray<UObject*>& InSelectedObjects, bool bInEnabled, int32 InPositionPrecision, float InPercentTriangles, TArray<UObject*>& OutModifiedObjects);
 
 private:
 	static void SubstituteMaterial(const TArray<UObject*>& SelectedObjects, const FString& MaterialSearch, EEditorScriptingStringMatchType StringMatch, const TArray<UMaterialInterface*>& MaterialList, UMaterialInterface* MaterialSubstitute);

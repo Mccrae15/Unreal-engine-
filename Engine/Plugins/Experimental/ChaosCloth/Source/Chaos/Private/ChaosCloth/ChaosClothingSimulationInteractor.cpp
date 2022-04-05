@@ -4,13 +4,16 @@
 #include "ChaosCloth/ChaosClothingSimulationCloth.h"
 #include "ChaosCloth/ChaosClothingSimulation.h"
 
-using namespace Chaos;
+namespace ChaosClothingInteractor
+{
+	static const float InvStiffnessLogBase = 1.f / FMath::Loge(1.e3f);  // Log base for updating old linear stiffnesses to the new stiffness exponentiation
+}
 
 void UChaosClothingInteractor::Sync(IClothingSimulation* Simulation)
 {
 	check(Simulation);
 
-	if (FClothingSimulationCloth* const Cloth = static_cast<FClothingSimulation*>(Simulation)->GetCloth(ClothingId))
+	if (Chaos::FClothingSimulationCloth* const Cloth = static_cast<Chaos::FClothingSimulation*>(Simulation)->GetCloth(ClothingId))
 	{
 		for (FChaosClothingInteractorCommand& Command : Commands)
 		{
@@ -23,43 +26,64 @@ void UChaosClothingInteractor::Sync(IClothingSimulation* Simulation)
 	UClothingInteractor::Sync(Simulation);
 }
 
-void UChaosClothingInteractor::SetMaterialLinear(float EdgeStiffness, float BendingStiffness, float AreaStiffness)
+void UChaosClothingInteractor::SetMaterialLinear(float EdgeStiffnessLinear, float BendingStiffnessLinear, float AreaStiffnessLinear)
 {
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([EdgeStiffness, BendingStiffness, AreaStiffness](FClothingSimulationCloth* Cloth)
+	const Chaos::TVec2<Chaos::FRealSingle> EdgeStiffness((FMath::Clamp(FMath::Loge(EdgeStiffnessLinear) * ChaosClothingInteractor::InvStiffnessLogBase + 1.f, 0.f, 1.f)), 1.f);
+	const Chaos::TVec2<Chaos::FRealSingle> BendingStiffness((FMath::Clamp(FMath::Loge(BendingStiffnessLinear) * ChaosClothingInteractor::InvStiffnessLogBase + 1.f, 0.f, 1.f)), 1.f);
+	const Chaos::TVec2<Chaos::FRealSingle> AreaStiffness((FMath::Clamp(FMath::Loge(AreaStiffnessLinear) * ChaosClothingInteractor::InvStiffnessLogBase + 1.f, 0.f, 1.f)), 1.f);
+
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([EdgeStiffness, BendingStiffness, AreaStiffness](Chaos::FClothingSimulationCloth* Cloth)
 	{
 		Cloth->SetMaterialProperties(EdgeStiffness, BendingStiffness, AreaStiffness);
 	}));
 }
 
-void UChaosClothingInteractor::SetLongRangeAttachmentLinear(float TetherStiffnessLinear)
+void UChaosClothingInteractor::SetMaterial(FVector2D EdgeStiffness, FVector2D BendingStiffness, FVector2D AreaStiffness)
 {
-	// Deprecated
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([TetherStiffnessLinear](FClothingSimulationCloth* Cloth)
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([EdgeStiffness, BendingStiffness, AreaStiffness](Chaos::FClothingSimulationCloth* Cloth)
 	{
-		const FVec2 TetherStiffness((FMath::Clamp(FMath::Loge(TetherStiffnessLinear) / FMath::Loge(1.e3f) + 1.f, 0.f, 1.f)), 1.f);
-		Cloth->SetLongRangeAttachmentProperties(TetherStiffness);
+		Cloth->SetMaterialProperties(Chaos::TVec2<Chaos::FRealSingle>(EdgeStiffness[0], EdgeStiffness[1]), Chaos::TVec2<Chaos::FRealSingle>(BendingStiffness[0], BendingStiffness[1]), Chaos::TVec2<Chaos::FRealSingle>(AreaStiffness[0], AreaStiffness[1]));
 	}));
 }
 
-void UChaosClothingInteractor::SetLongRangeAttachment(FVector2D TetherStiffness)
+void UChaosClothingInteractor::SetLongRangeAttachmentLinear(float TetherStiffnessLinear, float TetherScale)
 {
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([TetherStiffness](FClothingSimulationCloth* Cloth)
+	// Deprecated
+	const Chaos::TVec2<Chaos::FRealSingle> TetherStiffness((FMath::Clamp(FMath::Loge(TetherStiffnessLinear) * ChaosClothingInteractor::InvStiffnessLogBase + 1.f, 0.f, 1.f)), 1.f);
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([TetherStiffness, TetherScale](Chaos::FClothingSimulationCloth* Cloth)
 	{
-		Cloth->SetLongRangeAttachmentProperties(TetherStiffness);
+		Cloth->SetLongRangeAttachmentProperties(TetherStiffness, Chaos::TVec2<Chaos::FRealSingle>(TetherScale, TetherScale));
+	}));
+}
+
+void UChaosClothingInteractor::SetLongRangeAttachment(FVector2D TetherStiffness, FVector2D TetherScale)
+{
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([TetherStiffness, TetherScale](Chaos::FClothingSimulationCloth* Cloth)
+	{
+		Cloth->SetLongRangeAttachmentProperties(
+			Chaos::TVec2<Chaos::FRealSingle>(TetherStiffness[0], TetherStiffness[1]),
+			Chaos::TVec2<Chaos::FRealSingle>(TetherScale[0], TetherScale[1]));
 	}));
 }
 
 void UChaosClothingInteractor::SetCollision(float CollisionThickness, float FrictionCoefficient, bool bUseCCD, float SelfCollisionThickness)
 {
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([CollisionThickness, FrictionCoefficient, bUseCCD, SelfCollisionThickness](FClothingSimulationCloth* Cloth)
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([CollisionThickness, FrictionCoefficient, bUseCCD, SelfCollisionThickness](Chaos::FClothingSimulationCloth* Cloth)
 	{
 		Cloth->SetCollisionProperties(CollisionThickness, FrictionCoefficient, bUseCCD, SelfCollisionThickness);
 	}));
 }
 
+void UChaosClothingInteractor::SetBackstop(bool bEnabled)
+{
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([bEnabled](Chaos::FClothingSimulationCloth* Cloth)
+	{
+		Cloth->SetBackstopProperties(bEnabled);
+	}));
+}
 void UChaosClothingInteractor::SetDamping(float DampingCoefficient)
 {
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([DampingCoefficient](FClothingSimulationCloth* Cloth)
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([DampingCoefficient](Chaos::FClothingSimulationCloth* Cloth)
 	{
 		Cloth->SetDampingProperties(DampingCoefficient);
 	}));
@@ -67,15 +91,24 @@ void UChaosClothingInteractor::SetDamping(float DampingCoefficient)
 
 void UChaosClothingInteractor::SetAerodynamics(float DragCoefficient, float LiftCoefficient, FVector WindVelocity)
 {
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([DragCoefficient, LiftCoefficient, WindVelocity](FClothingSimulationCloth* Cloth)
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([DragCoefficient, LiftCoefficient, WindVelocity](Chaos::FClothingSimulationCloth* Cloth)
 	{
-		Cloth->SetAerodynamicsProperties(DragCoefficient, LiftCoefficient, WindVelocity);
+		constexpr Chaos::FRealSingle AirDensity = 1.225e-6f;
+		Cloth->SetAerodynamicsProperties(Chaos::TVec2<Chaos::FRealSingle>(DragCoefficient, DragCoefficient), Chaos::TVec2<Chaos::FRealSingle>(LiftCoefficient, LiftCoefficient), AirDensity, WindVelocity);
+	}));
+}
+
+void UChaosClothingInteractor::SetWind(FVector2D Drag, FVector2D Lift, float AirDensity, FVector WindVelocity)
+{
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([Drag, Lift, AirDensity, WindVelocity](Chaos::FClothingSimulationCloth* Cloth)
+	{
+		Cloth->SetAerodynamicsProperties(Chaos::TVec2<Chaos::FRealSingle>(Drag[0], Drag[1]), Chaos::TVec2<Chaos::FRealSingle>(Lift[0], Lift[1]), AirDensity, WindVelocity);
 	}));
 }
 
 void UChaosClothingInteractor::SetGravity(float GravityScale, bool bIsGravityOverridden, FVector GravityOverride)
 {
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([GravityScale, bIsGravityOverridden, GravityOverride](FClothingSimulationCloth* Cloth)
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([GravityScale, bIsGravityOverridden, GravityOverride](Chaos::FClothingSimulationCloth* Cloth)
 	{
 		Cloth->SetGravityProperties(GravityScale, bIsGravityOverridden, GravityOverride);
 	}));
@@ -84,26 +117,26 @@ void UChaosClothingInteractor::SetGravity(float GravityScale, bool bIsGravityOve
 void UChaosClothingInteractor::SetAnimDriveLinear(float AnimDriveStiffnessLinear)
 {
 	// Deprecated
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([AnimDriveStiffnessLinear](FClothingSimulationCloth* Cloth)
+	const Chaos::TVec2<Chaos::FRealSingle> AnimDriveStiffness(0.f, FMath::Clamp(FMath::Loge(AnimDriveStiffnessLinear) * ChaosClothingInteractor::InvStiffnessLogBase + 1.f, 0.f, 1.f));
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([AnimDriveStiffness](Chaos::FClothingSimulationCloth* Cloth)
 	{
 		// The Anim Drive stiffness Low value needs to be 0 in order to keep backward compatibility with existing mask (this wouldn't be an issue if this property had no legacy mask)
-		const FVec2 AnimDriveStiffness(0.f, FMath::Clamp(FMath::Loge(AnimDriveStiffnessLinear) / FMath::Loge(1.e3f) + 1.f, 0.f, 1.f));
-		const FVec2 AnimDriveDamping(0.f, 1.f);
+		static const Chaos::TVec2<Chaos::FRealSingle> AnimDriveDamping(0.f, 1.f);
 		Cloth->SetAnimDriveProperties(AnimDriveStiffness, AnimDriveDamping);
 	}));
 }
 
 void UChaosClothingInteractor::SetAnimDrive(FVector2D AnimDriveStiffness, FVector2D AnimDriveDamping)
 {
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([AnimDriveStiffness, AnimDriveDamping](FClothingSimulationCloth* Cloth)
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([AnimDriveStiffness, AnimDriveDamping](Chaos::FClothingSimulationCloth* Cloth)
 	{
-		Cloth->SetAnimDriveProperties(FVec2(AnimDriveStiffness.X, AnimDriveStiffness.Y), FVec2(AnimDriveDamping.X, AnimDriveDamping.Y));
+		Cloth->SetAnimDriveProperties(Chaos::TVec2<Chaos::FRealSingle>(AnimDriveStiffness.X, AnimDriveStiffness.Y), Chaos::TVec2<Chaos::FRealSingle>(AnimDriveDamping.X, AnimDriveDamping.Y));
 	}));
 }
 
 void UChaosClothingInteractor::SetVelocityScale(FVector LinearVelocityScale, float AngularVelocityScale, float FictitiousAngularScale)
 {
-	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([LinearVelocityScale, AngularVelocityScale, FictitiousAngularScale](FClothingSimulationCloth* Cloth)
+	Commands.Add(FChaosClothingInteractorCommand::CreateLambda([LinearVelocityScale, AngularVelocityScale, FictitiousAngularScale](Chaos::FClothingSimulationCloth* Cloth)
 	{
 		Cloth->SetVelocityScaleProperties(LinearVelocityScale, AngularVelocityScale, FictitiousAngularScale);
 	}));
@@ -113,14 +146,14 @@ void UChaosClothingInteractor::ResetAndTeleport(bool bReset, bool bTeleport)
 {
 	if (bReset)
 	{
-		Commands.Add(FChaosClothingInteractorCommand::CreateLambda([](FClothingSimulationCloth* Cloth)
+		Commands.Add(FChaosClothingInteractorCommand::CreateLambda([](Chaos::FClothingSimulationCloth* Cloth)
 		{
 			Cloth->Reset();
 		}));
 	}
 	if (bTeleport)
 	{
-		Commands.Add(FChaosClothingInteractorCommand::CreateLambda([](FClothingSimulationCloth* Cloth)
+		Commands.Add(FChaosClothingInteractorCommand::CreateLambda([](Chaos::FClothingSimulationCloth* Cloth)
 		{
 			Cloth->Teleport();
 		}));
@@ -134,7 +167,7 @@ void UChaosClothingSimulationInteractor::Sync(IClothingSimulation* Simulation, I
 
 	for (FChaosClothingSimulationInteractorCommand& Command : Commands)
 	{
-		Command.Execute(static_cast<FClothingSimulation*>(Simulation), static_cast<FClothingSimulationContext*>(Context));
+		Command.Execute(static_cast<Chaos::FClothingSimulation*>(Simulation), static_cast<Chaos::FClothingSimulationContext*>(Context));
 	}
 	Commands.Reset();
 
@@ -144,7 +177,7 @@ void UChaosClothingSimulationInteractor::Sync(IClothingSimulation* Simulation, I
 
 void UChaosClothingSimulationInteractor::PhysicsAssetUpdated()
 {
-	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([](FClothingSimulation* Simulation, FClothingSimulationContext* /*Context*/)
+	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([](Chaos::FClothingSimulation* Simulation, Chaos::FClothingSimulationContext* /*Context*/)
 	{
 		Simulation->RefreshPhysicsAsset();
 	}));
@@ -152,7 +185,7 @@ void UChaosClothingSimulationInteractor::PhysicsAssetUpdated()
 
 void UChaosClothingSimulationInteractor::ClothConfigUpdated()
 {
-	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([](FClothingSimulation* Simulation, FClothingSimulationContext* Context)
+	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([](Chaos::FClothingSimulation* Simulation, Chaos::FClothingSimulationContext* Context)
 	{
 		Simulation->RefreshClothConfig(Context);
 	}));
@@ -161,7 +194,7 @@ void UChaosClothingSimulationInteractor::ClothConfigUpdated()
 void UChaosClothingSimulationInteractor::SetAnimDriveSpringStiffness(float Stiffness)
 {
 	// Set the anim drive stiffness through the ChaosClothInteractor to allow the value to be overridden by the cloth interactor if needed
-	for (const TPair<FName, UClothingInteractor*>& ClothingInteractor : UClothingSimulationInteractor::ClothingInteractors)
+	for (const auto& ClothingInteractor : UClothingSimulationInteractor::ClothingInteractors)
 	{
 		if (UChaosClothingInteractor* const ChaosClothingInteractor = Cast<UChaosClothingInteractor>(ClothingInteractor.Value))
 		{
@@ -172,7 +205,7 @@ void UChaosClothingSimulationInteractor::SetAnimDriveSpringStiffness(float Stiff
 
 void UChaosClothingSimulationInteractor::EnableGravityOverride(const FVector& Gravity)
 {
-	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([Gravity](FClothingSimulation* Simulation, FClothingSimulationContext* /*Context*/)
+	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([Gravity](Chaos::FClothingSimulation* Simulation, Chaos::FClothingSimulationContext* /*Context*/)
 	{
 		Simulation->SetGravityOverride(Gravity);
 	}));
@@ -180,25 +213,33 @@ void UChaosClothingSimulationInteractor::EnableGravityOverride(const FVector& Gr
 
 void UChaosClothingSimulationInteractor::DisableGravityOverride()
 {
-	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([](FClothingSimulation* Simulation, FClothingSimulationContext* /*Context*/)
+	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([](Chaos::FClothingSimulation* Simulation, Chaos::FClothingSimulationContext* /*Context*/)
 	{
 		Simulation->DisableGravityOverride();
 	}));
 }
 
-void UChaosClothingSimulationInteractor::SetNumIterations(int32 InNumIterations)
+void UChaosClothingSimulationInteractor::SetNumIterations(int32 NumIterations)
 {
-	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([InNumIterations](FClothingSimulation* Simulation, FClothingSimulationContext* /*Context*/)
+	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([NumIterations](Chaos::FClothingSimulation* Simulation, Chaos::FClothingSimulationContext* /*Context*/)
 	{
-		Simulation->SetNumIterations(InNumIterations);
+		Simulation->SetNumIterations(NumIterations);
 	}));
 }
 
-void UChaosClothingSimulationInteractor::SetNumSubsteps(int32 InNumSubsteps)
+void UChaosClothingSimulationInteractor::SetMaxNumIterations(int32 MaxNumIterations)
 {
-	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([InNumSubsteps](FClothingSimulation* Simulation, FClothingSimulationContext* /*Context*/)
+	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([MaxNumIterations](Chaos::FClothingSimulation* Simulation, Chaos::FClothingSimulationContext* /*Context*/)
 	{
-		Simulation->SetNumSubsteps(InNumSubsteps);
+		Simulation->SetMaxNumIterations(MaxNumIterations);
+	}));
+}
+
+void UChaosClothingSimulationInteractor::SetNumSubsteps(int32 NumSubsteps)
+{
+	Commands.Add(FChaosClothingSimulationInteractorCommand::CreateLambda([NumSubsteps](Chaos::FClothingSimulation* Simulation, Chaos::FClothingSimulationContext* /*Context*/)
+	{
+		Simulation->SetNumSubsteps(NumSubsteps);
 	}));
 }
 

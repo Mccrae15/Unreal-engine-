@@ -11,9 +11,8 @@
 #pragma comment( lib, "TextureShareSDK.lib" )
 #endif
 
-FTextureShareD3D12Client::FTextureShareD3D12Client(const std::wstring& InShareName, ID3D12Device* InD3D12Device, ID3D12GraphicsCommandList* InCmdList, ID3D12DescriptorHeap* InD3D12HeapSRV)
-	: ShareName(InShareName)
-	, pD3D12Device(InD3D12Device)
+FTextureShareD3D12Client::FTextureShareD3D12Client(ID3D12Device* InD3D12Device, ID3D12GraphicsCommandList* InCmdList, ID3D12DescriptorHeap* InD3D12HeapSRV)
+	: pD3D12Device(InD3D12Device)
 	, pCmdList(InCmdList)
 	, pD3D12HeapSRV(InD3D12HeapSRV)
 {
@@ -23,7 +22,7 @@ FTextureShareD3D12Client::~FTextureShareD3D12Client()
 {
 }
 
-bool FTextureShareD3D12Client::CreateShare()
+bool FTextureShareD3D12Client::CreateShare(std::wstring ShareName)
 {
 	FTextureShareSyncPolicy DefaultSyncPolicy;
 	DefaultSyncPolicy.ConnectionSync = ETextureShareSyncConnect::None;
@@ -33,37 +32,37 @@ bool FTextureShareD3D12Client::CreateShare()
 	return FTextureShareInterface::CreateTextureShare(ShareName.c_str(), ETextureShareProcess::Client, DefaultSyncPolicy, ETextureShareDevice::D3D12);
 }
 
-bool FTextureShareD3D12Client::DeleteShare()
+bool FTextureShareD3D12Client::DeleteShare(std::wstring ShareName)
 {
 	return FTextureShareInterface::ReleaseTextureShare(ShareName.c_str());
 }
 
-bool FTextureShareD3D12Client::BeginSession()
+bool FTextureShareD3D12Client::BeginSession(std::wstring ShareName)
 {
 	return FTextureShareInterface::BeginSession(ShareName.c_str());
 }
 
-bool FTextureShareD3D12Client::EndSession()
+bool FTextureShareD3D12Client::EndSession(std::wstring ShareName)
 {
 	return FTextureShareInterface::EndSession(ShareName.c_str());
 }
 
-bool FTextureShareD3D12Client::BeginFrame_RenderThread()
+bool FTextureShareD3D12Client::BeginFrame_RenderThread(std::wstring ShareName)
 {
 	return FTextureShareInterface::BeginFrame_RenderThread(ShareName.c_str());
 }
 
-bool FTextureShareD3D12Client::EndFrame_RenderThread()
+bool FTextureShareD3D12Client::EndFrame_RenderThread(std::wstring ShareName)
 {
 	return FTextureShareInterface::EndFrame_RenderThread(ShareName.c_str());
 }
 
-bool FTextureShareD3D12Client::IsRemoteTextureUsed(std::wstring TextureName)
+bool FTextureShareD3D12Client::IsRemoteTextureUsed(std::wstring ShareName, std::wstring TextureName)
 {
 	return FTextureShareInterface::IsRemoteTextureUsed(ShareName.c_str(), TextureName.c_str());
 }
 
-bool FTextureShareD3D12Client::RegisterTexture(std::wstring TextureName, ETextureShareSurfaceOp TextureOp, uint32 Width, uint32 Height, DXGI_FORMAT InFormat)
+bool FTextureShareD3D12Client::RegisterTexture(std::wstring ShareName, std::wstring TextureName, ETextureShareSurfaceOp TextureOp, uint32 Width, uint32 Height, DXGI_FORMAT InFormat)
 {
 	ETextureShareFormat ShareFormat = ETextureShareFormat::Undefined;
 	uint32 ShareFormatValue = 0;
@@ -87,12 +86,12 @@ void ReleaseTextureAndSRV(ID3D12Resource** InOutSRVTexture)
 	}
 }
 
-bool FTextureShareD3D12Client::ReadAdditionalData(FTextureShareSDKAdditionalData* OutFrameData)
+bool FTextureShareD3D12Client::ReadAdditionalData(std::wstring ShareName, FTextureShareSDKAdditionalData* OutFrameData)
 {
 	return FTextureShareInterface::GetRemoteAdditionalData(ShareName.c_str(), *OutFrameData);
 }
 
-bool FTextureShareD3D12Client::ReadTextureFrame_RenderThread(std::wstring TextureName, ID3D12Resource** InOutSRVTexture, int SRVIndex)
+bool FTextureShareD3D12Client::ReadTextureFrame_RenderThread(std::wstring ShareName, std::wstring TextureName, ID3D12Resource** InOutSRVTexture, int SRVIndex)
 {
 	bool bResult = false;
 
@@ -133,7 +132,7 @@ bool FTextureShareD3D12Client::ReadTextureFrame_RenderThread(std::wstring Textur
 	return bResult;
 }
 
-bool FTextureShareD3D12Client::WriteTextureFrame_RenderThread(std::wstring TextureName, ID3D12Resource* InTexture)
+bool FTextureShareD3D12Client::WriteTextureFrame_RenderThread(std::wstring ShareName, std::wstring TextureName, ID3D12Resource* InTexture)
 {
 	if (FTextureShareInterface::IsValid(ShareName.c_str()))
 	{

@@ -14,7 +14,6 @@
 
 struct FOpenGL4 : public FOpenGL3
 {
-	static FORCEINLINE bool SupportsComputeShaders()					{ return bSupportsComputeShaders; }
 	static FORCEINLINE bool SupportsDrawIndirect()						{ return true; }
 	static FORCEINLINE bool SupportsTextureView()						{ return bSupportsTextureView; }
 
@@ -107,6 +106,7 @@ struct FOpenGL4 : public FOpenGL3
 
 	static FORCEINLINE GLint GetFirstComputeUAVUnit()			{ return 0; }
 	static FORCEINLINE GLint GetMaxComputeUAVUnits()			{ check(MaxComputeUAVUnits != -1); return MaxComputeUAVUnits; }
+	static FORCEINLINE GLint GetFirstVertexUAVUnit()			{ return 0; }
 	static FORCEINLINE GLint GetFirstPixelUAVUnit()				{ return 0; }
 	static FORCEINLINE GLint GetMaxPixelUAVUnits()				{ check(MaxPixelUAVUnits != -1); return MaxPixelUAVUnits; }
 	static FORCEINLINE GLint GetMaxCombinedUAVUnits()			{ return MaxCombinedUAVUnits; }
@@ -123,7 +123,6 @@ protected:
 	static GLint MaxComputeUAVUnits;
 	static GLint MaxPixelUAVUnits;
 
-	static bool bSupportsComputeShaders;
 	static bool bSupportsGPUMemoryInfo;
 	static bool bSupportsTextureView;
 

@@ -1,7 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 using UnrealBuildTool;
 using System.IO;
- 
+
 namespace UnrealBuildTool.Rules
 {
 	public class ElectraSamples: ModuleRules
@@ -9,10 +9,10 @@ namespace UnrealBuildTool.Rules
 		public ElectraSamples(ReadOnlyTargetRules Target) : base(Target)
 		{
 
-            bLegalToDistributeObjectCode = true;
-            PCHUsage = PCHUsageMode.NoPCHs;
+			bLegalToDistributeObjectCode = true;
+			PCHUsage = PCHUsageMode.NoPCHs;
 
-            DynamicallyLoadedModuleNames.AddRange(
+			DynamicallyLoadedModuleNames.AddRange(
 				new string[] {
 					"Media",
 				});
@@ -24,34 +24,31 @@ namespace UnrealBuildTool.Rules
 					"MediaUtils",
 					"RenderCore",
 					"RHI",
+					"RHICore",
 					"ElectraBase",
 				});
 
 			PrivateIncludePathModuleNames.AddRange(
 				new string[] {
 					"Media",
-                });
+				});
 
 			if (Target.bCompileAgainstEngine)
 			{
 				PrivateDependencyModuleNames.Add("Engine");
 			}
 
-            if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
-            {
-                string DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
-                PublicSystemIncludePaths.Add(DirectXSDKDir + "/include");
+			if (Target.Platform.IsInGroup(UnrealPlatformGroup.Windows))
+			{
+				string DirectXSDKDir = Target.UEThirdPartySourceDirectory + "Windows/DirectX";
+				PublicSystemIncludePaths.Add(DirectXSDKDir + "/include");
 
 				if (Target.Platform == UnrealTargetPlatform.Win64)
-                {
-                    DirectXSDKDir += "/Lib/x64/";
-                }
-                else if (Target.Platform == UnrealTargetPlatform.Win32)
-                {
-                    DirectXSDKDir += "/Lib/x86/";
-                }
+				{
+					DirectXSDKDir += "/Lib/x64/";
+				}
 
-				if (Target.Platform == UnrealTargetPlatform.Win64 || Target.Platform == UnrealTargetPlatform.Win32)
+				if (Target.Platform == UnrealTargetPlatform.Win64)
 				{
 					AddEngineThirdPartyPrivateStaticDependencies(Target, "DX9");
 
@@ -66,16 +63,16 @@ namespace UnrealBuildTool.Rules
 				}
 
 				PublicSystemLibraries.AddRange(new string[] {
-                    "strmiids.lib",
-                    "legacy_stdio_definitions.lib",
-                    "Dxva2.lib",
-                });
+					"strmiids.lib",
+					"legacy_stdio_definitions.lib",
+					"Dxva2.lib",
+				});
 
 				PublicIncludePaths.Add("$(ModuleDir)/Public/Windows");
 			}
 			else if (Target.Platform == UnrealTargetPlatform.Mac || Target.Platform == UnrealTargetPlatform.IOS)
-            {
-                PrivateDependencyModuleNames.Add("MetalRHI");
+			{
+				PrivateDependencyModuleNames.Add("MetalRHI");
 				PublicIncludePaths.Add("$(ModuleDir)/Public/Apple");
 			}
 			else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Android))

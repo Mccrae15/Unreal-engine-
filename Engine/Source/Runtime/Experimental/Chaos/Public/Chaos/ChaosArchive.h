@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
+#include "Chaos/Real.h"
 #include "CoreMinimal.h"
 #include "Serializable.h"
 #include "Serialization/ArchiveProxy.h"
@@ -228,6 +229,17 @@ public:
 		}
 	}
 
+	template <typename T, ESPMode Mode>
+	void SerializeConstPtr(TSharedPtr<const T, Mode>& Obj)
+	{
+		TSerializablePtr<T> Copy = MakeSerializable(Obj);
+		SerializePtr(Copy);
+		if (IsLoading())
+		{
+			Obj = Context->ToSharedPointerHelper<T, Mode>(Copy);
+		}
+	}
+
 #if CHAOS_MEMORY_TRACKING
 	virtual void Serialize(void* V, int64 Length) override
 	{
@@ -336,6 +348,28 @@ FChaosArchive& operator<<(FChaosArchive& Ar, TArray<T, TAllocator>& Array)
 		Ar << Array[Idx];
 	}
 
+	return Ar;
+}
+
+FORCEINLINE FChaosArchive& operator<<(FChaosArchive& Ar, Chaos::FReal& Real)
+{
+	// we need to check if we are storing doubles or floats
+	if (Ar.UEVer() >= EUnrealEngineObjectUE5Version::LARGE_WORLD_COORDINATES)
+	{
+		// normal umodified type path 
+		operator<<((FArchive&)Ar, Real);
+	}
+	else
+	{
+		// in that case data is stored as float and we need to read it as such		
+		//ensure(Ar.IsLoading()); // this case should normally only happening when reading 
+		FRealSingle RealSingle = (FRealSingle)Real; 
+		operator<<((FArchive&)Ar, RealSingle);
+		if(Ar.IsLoading())
+		{
+			Real = (FReal)RealSingle;
+		}
+	}
 	return Ar;
 }
 

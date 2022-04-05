@@ -9,7 +9,6 @@ namespace Electra
 		EmptyBuffer = CreateNewBuffer();
 		LastPoppedDTS.SetToInvalid();
 		LastPoppedPTS.SetToInvalid();
-		bIsDeselected = false;
 		bEndOfData = false;
 		bLastPushWasBlocked = false;
 		bIsParallelTrackMode = false;
@@ -17,10 +16,7 @@ namespace Electra
 
 	TSharedPtrTS<FAccessUnitBuffer> FMultiTrackAccessUnitBuffer::CreateNewBuffer()
 	{
-		// All buffers here are internally unbounded as we need them to accept all incoming data.
-		// Limits are used on the active buffer only.
 		TSharedPtrTS<FAccessUnitBuffer> NewBuffer = MakeSharedTS<FAccessUnitBuffer>();
-		NewBuffer->CapacitySet(FAccessUnitBuffer::FConfiguration(1024 << 20, 3600.0));
 		return NewBuffer;
 	}
 
@@ -34,13 +30,7 @@ namespace Electra
 		bIsParallelTrackMode = true;
 	}
 
-
-	void FMultiTrackAccessUnitBuffer::CapacitySet(const FAccessUnitBuffer::FConfiguration& Config)
-	{
-		BufferConfiguration = Config;
-	}
-
-	bool FMultiTrackAccessUnitBuffer::Push(FAccessUnit*& AU)
+	bool FMultiTrackAccessUnitBuffer::Push(FAccessUnit*& AU, const FAccessUnitBuffer::FConfiguration* BufferConfiguration, const FAccessUnitBuffer::FExternalBufferInfo* InCurrentTotalBufferUtilization)
 	{
 		check(AU->BufferSourceInfo.IsValid());
 
@@ -59,7 +49,6 @@ namespace Electra
 		// This does not necessarily mean that the selected track is not at EOD. Just that some track is not.
 		bEndOfData = false;
 
-
 		bool bIsSwitchOverAU = false;
 		for(auto &SwitchBuf : SwitchOverBufferChain)
 		{
@@ -72,11 +61,18 @@ namespace Electra
 
 		// Get the combined buffer utilization of enqueued buffers.
 		FAccessUnitBuffer::FExternalBufferInfo EnqueuedBufferInfo;
-		GetEnqueuedBufferInfo(EnqueuedBufferInfo, bIsSwitchOverAU);
+		if (InCurrentTotalBufferUtilization)
+		{
+			EnqueuedBufferInfo = *InCurrentTotalBufferUtilization;
+		}
+		else
+		{
+			GetEnqueuedBufferInfo(EnqueuedBufferInfo, bIsSwitchOverAU);
+		}
 
 		AccessLock.Unlock();
 
-		bool bWasPushed = TrackBuffer->Push(AU, &BufferConfiguration, &EnqueuedBufferInfo);
+		bool bWasPushed = TrackBuffer->Push(AU, BufferConfiguration, &EnqueuedBufferInfo);
 		bLastPushWasBlocked = TrackBuffer->WasLastPushBlocked();
 
 		return bWasPushed;
@@ -103,7 +99,7 @@ namespace Electra
 
 	void FMultiTrackAccessUnitBuffer::PushEndOfDataAll()
 	{
-		FMediaCriticalSection::ScopedLock lock(AccessLock);
+		FScopeLock lock(&AccessLock);
 		bEndOfData = true;
 		// Push an end-of-data into all tracks.
 		for(auto& It : TrackBuffers)
@@ -126,18 +122,25 @@ namespace Electra
 
 	void FMultiTrackAccessUnitBuffer::Flush()
 	{
-		FMediaCriticalSection::ScopedLock lock(AccessLock);
-		// Flush all existing buffers but keep them in the track map.
-		for(auto& It : TrackBuffers)
+		FScopeLock lock(&AccessLock);
+		if (bIsParallelTrackMode)
 		{
-			It.Value->Flush();
+			// Flush all existing buffers but keep them in the track map.
+			for(auto& It : TrackBuffers)
+			{
+				It.Value->Flush();
+			}
+		}
+		else
+		{
+			TrackBuffers.Empty();
 		}
 		Clear();
 	}
 
 	void FMultiTrackAccessUnitBuffer::PurgeAll()
 	{
-		FMediaCriticalSection::ScopedLock lock(AccessLock);
+		FScopeLock lock(&AccessLock);
 		// Get rid of all buffers
 		TrackBuffers.Empty();
 		Clear();
@@ -148,7 +151,7 @@ namespace Electra
 	{
 		if (InBufferSourceInfo.IsValid())
 		{
-			FMediaCriticalSection::ScopedLock lock(AccessLock);
+			FScopeLock lock(&AccessLock);
 			if (SwitchOverBufferChain.Num() == 0)
 			{
 				FQueuedBuffer Next;
@@ -209,58 +212,47 @@ namespace Electra
 
 	void FMultiTrackAccessUnitBuffer::AddUpcomingBuffer(TSharedPtrTS<FBufferSourceInfo> InBufferSourceInfo)
 	{
-		FMediaCriticalSection::ScopedLock lock(AccessLock);
-		// Add to the current or the switch-over chain?
-		if (SwitchOverBufferChain.Num())
+		if (InBufferSourceInfo.IsValid())
 		{
-			if (!SwitchOverBufferChain.Last().Info->PeriodAdaptationSetID.Equals(InBufferSourceInfo->PeriodAdaptationSetID))
+			FScopeLock lock(&AccessLock);
+			// Add to the current or the switch-over chain?
+			if (SwitchOverBufferChain.Num())
 			{
-				FQueuedBuffer Next;
-				Next.Info = MoveTemp(InBufferSourceInfo);
-				SwitchOverBufferChain.Emplace(MoveTemp(Next));
+				if (!SwitchOverBufferChain.Last().Info->PeriodAdaptationSetID.Equals(InBufferSourceInfo->PeriodAdaptationSetID))
+				{
+					FQueuedBuffer Next;
+					Next.Info = MoveTemp(InBufferSourceInfo);
+					SwitchOverBufferChain.Emplace(MoveTemp(Next));
+				}
+			}
+			else
+			{
+				if (UpcomingBufferChain.Num() == 0 || !UpcomingBufferChain.Last().Info->PeriodAdaptationSetID.Equals(InBufferSourceInfo->PeriodAdaptationSetID))
+				{
+					FQueuedBuffer Next;
+					Next.Info = MoveTemp(InBufferSourceInfo);
+					UpcomingBufferChain.Emplace(MoveTemp(Next));
+				}
 			}
 		}
-		else
-		{
-			if (UpcomingBufferChain.Num() == 0 || !UpcomingBufferChain.Last().Info->PeriodAdaptationSetID.Equals(InBufferSourceInfo->PeriodAdaptationSetID))
-			{
-				FQueuedBuffer Next;
-				Next.Info = MoveTemp(InBufferSourceInfo);
-				UpcomingBufferChain.Emplace(MoveTemp(Next));
-			}
-		}
-	}
-
-
-	void FMultiTrackAccessUnitBuffer::Activate()
-	{
-		bIsDeselected = false;
-	}
-
-	void FMultiTrackAccessUnitBuffer::Deselect()
-	{
-		// The buffer remains selected in order to track its fullness etc.
-		// Deselected only means that the access unit may not get sent to the decoder
-		// or be replaced by one that produces no output.
-		bIsDeselected = true;
-	}
-
-	bool FMultiTrackAccessUnitBuffer::IsDeselected()
-	{
-		return bIsDeselected;
 	}
 
 	FTimeValue FMultiTrackAccessUnitBuffer::GetLastPoppedPTS()
 	{
-		FMediaCriticalSection::ScopedLock lock(AccessLock);
+		FScopeLock lock(&AccessLock);
 		return LastPoppedPTS;
 	}
 
+	FTimeValue FMultiTrackAccessUnitBuffer::GetLastPoppedDTS()
+	{
+		FScopeLock lock(&AccessLock);
+		return LastPoppedDTS;
+	}
 
 	TSharedPtrTS<FAccessUnitBuffer> FMultiTrackAccessUnitBuffer::GetSelectedTrackBuffer()
 	{
 		TSharedPtrTS<FAccessUnitBuffer> TrackBuffer;
-		FMediaCriticalSection::ScopedLock lock(AccessLock);
+		FScopeLock lock(&AccessLock);
 		if (ActiveOutputBufferInfo.IsValid() && TrackBuffers.Contains(ActiveOutputBufferInfo->PeriodAdaptationSetID))
 		{
 			TrackBuffer = TrackBuffers[ActiveOutputBufferInfo->PeriodAdaptationSetID];
@@ -274,11 +266,9 @@ namespace Electra
 
 	void FMultiTrackAccessUnitBuffer::GetStats(FAccessUnitBufferInfo& OutStats)
 	{
-		FMediaCriticalSection::ScopedLock lock(AccessLock);
-		// Stats are always returned with the configuration for one buffer, not
-		// any summation of enqueued buffers.
+		FScopeLock lock(&AccessLock);
 		TSharedPtrTS<const FAccessUnitBuffer> Buf = GetSelectedTrackBuffer();
-		Buf->GetStats(OutStats, &BufferConfiguration);
+		Buf->GetStats(OutStats);
 		if (Buf == EmptyBuffer)
 		{
 			OutStats.bEndOfData = bEndOfData;
@@ -396,6 +386,8 @@ namespace Electra
 				bool bSwitch = false;
 				if (PopUntilDTS.IsValid() && PopUntilPTS.IsValid())
 				{
+					TSharedPtrTS<FAccessUnitBuffer> ActiveBuffer = GetSelectedTrackBuffer();
+					bool bActiveIsEmpty = !ActiveBuffer.IsValid() || ActiveBuffer->Num() == 0;
 					for(int32 nBuf=0; nBuf<SwitchOverBufferChain.Num(); ++nBuf)
 					{
 						if (SwitchOverBufferChain[nBuf].Buffer.IsValid())
@@ -405,6 +397,15 @@ namespace Electra
 
 							// Does it contain the time we want to switch at?
 							if (SwitchOverBufferChain[nBuf].Buffer->ContainsPTS(PopUntilPTS))
+							{
+								bSwitch = true;
+								break;
+							}
+							// If this buffer is empty and the switchover one is not we switch over now.
+							// This is for the cases where we are not getting any more data from the current buffer
+							// and the LastPoppedDTS/PTS are in the past and will not be contained in the new buffer,
+							// which happens mostly with sparse data like infrequent subtitle AUs.
+							if (bActiveIsEmpty && SwitchOverBufferChain[nBuf].Buffer->Num())
 							{
 								bSwitch = true;
 								break;
@@ -448,6 +449,21 @@ namespace Electra
 		}
 	}
 
+	bool FMultiTrackAccessUnitBuffer::PeekAndAddRef(FAccessUnit*& OutAU)
+	{
+		FScopedLock lock(AsShared());
+		ActivateBuffer(false);
+		TSharedPtrTS<FAccessUnitBuffer> Buf = FMultiTrackAccessUnitBuffer::GetSelectedTrackBuffer();
+		if (Buf->Num())
+		{
+			return Buf->PeekAndAddRef(OutAU);
+		}
+		else
+		{
+			OutAU = nullptr;
+			return false;
+		}
+	}
 
 	bool FMultiTrackAccessUnitBuffer::Pop(FAccessUnit*& OutAU)
 	{
@@ -463,8 +479,11 @@ namespace Electra
 				// Did we just pop from a different buffer than last time?
 				if (LastPoppedBufferInfo != ActiveOutputBufferInfo)
 				{
-					// FIXME: We may need to discard everything that is not tagged as a sync sample to ensure proper stream switching.
-					OutAU->bTrackChangeDiscontinuity = true;
+					if (LastPoppedBufferInfo)
+					{
+						// FIXME: We may need to discard everything that is not tagged as a sync sample to ensure proper stream switching.
+						OutAU->bTrackChangeDiscontinuity = true;
+					}
 
 					// Remember from which buffer we popped.
 					LastPoppedBufferInfo = ActiveOutputBufferInfo;
@@ -509,6 +528,18 @@ namespace Electra
 		}
 	}
 
+	FTimeValue FMultiTrackAccessUnitBuffer::PrepareForDecodeStartingAt(FTimeValue DecodeStartTime)
+	{
+		FTimeValue TaggedDuration(FTimeValue::GetZero());
+		// We lock the access mutex here.
+		FScopedLock lock(AsShared());
+		for(auto& It : TrackBuffers)
+		{
+			TSharedPtrTS<FAccessUnitBuffer> Buf = It.Value;
+			TaggedDuration += Buf->PrepareForDecodeStartingAt(DecodeStartTime);
+		}
+		return TaggedDuration;
+	}
 
 	bool FMultiTrackAccessUnitBuffer::IsEODFlagSet()
 	{

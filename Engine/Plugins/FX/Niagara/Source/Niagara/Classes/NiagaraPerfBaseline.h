@@ -7,7 +7,7 @@
 
 #include "NiagaraPerfBaseline.generated.h"
 
-#define NIAGARA_PERF_BASELINES (!UE_BUILD_SHIPPING && WITH_PARTICLE_PERF_STATS)
+#define NIAGARA_PERF_BASELINES ((!UE_BUILD_SHIPPING || WITH_EDITOR) && WITH_PARTICLE_PERF_STATS)
 
 class UNiagaraComponent;
 class UNiagaraSystem;
@@ -101,11 +101,11 @@ public:
 
 	/** The effect type this controller is in use by. */
 	UPROPERTY(Category = "Baseline", BlueprintReadOnly)
-	UNiagaraEffectType* EffectType = nullptr;
+	TObjectPtr<UNiagaraEffectType> EffectType = nullptr;
 
 	/** The owning actor for this baseline controller. */
 	UPROPERTY(Category = "Baseline", BlueprintReadOnly)
-	ANiagaraPerfBaselineActor* Owner;
+	TObjectPtr<ANiagaraPerfBaselineActor> Owner;
 
 private:
 	/** The baseline system to spawn. */
@@ -131,7 +131,7 @@ class NIAGARA_API UNiagaraBaselineController_Basic : public UNiagaraBaselineCont
 	int32 NumInstances = 1;
 
 	UPROPERTY()
-	TArray<UNiagaraComponent*> SpawnedComponents;
+	TArray<TObjectPtr<UNiagaraComponent>> SpawnedComponents;
 };
 
 /** Actor that controls how the baseline system behaves and also controls stats gathering for. */
@@ -144,10 +144,10 @@ class NIAGARA_API ANiagaraPerfBaselineActor : public AActor
 public:
 
 	UPROPERTY(EditAnywhere, Category="Baseline")
-	UNiagaraBaselineController* Controller;
+	TObjectPtr<UNiagaraBaselineController> Controller;
 
 	UPROPERTY(EditAnywhere, Category="Baseline")
-	UTextRenderComponent* Label;
+	TObjectPtr<UTextRenderComponent> Label;
 
 #if NIAGARA_PERF_BASELINES
 
@@ -178,9 +178,9 @@ public:
 	virtual bool Tick()override;
 	virtual void TickRT()override;
 
-	virtual bool NeedsWorldStats()const { return false; }
-	virtual bool NeedsSystemStats()const { return true; }
-	virtual bool NeedsComponentStats()const { return false; }
+	virtual bool NeedsWorldStats()const override { return false; }
+	virtual bool NeedsSystemStats()const override { return true; }
+	virtual bool NeedsComponentStats()const override { return false; }
 
 private:
 	/** The baseline actor controlling the test conditions and which we'll send the completed stats to. */
@@ -206,7 +206,7 @@ public:
 	int32 NumFrames = 0;
 	int32 NumFramesRT = 0;
 
-	TMap<TWeakObjectPtr<UFXSystemAsset>, FNiagaraPerfBaselineStats> CurrentStats;
+	TMap<TWeakObjectPtr<const UFXSystemAsset>, FNiagaraPerfBaselineStats> CurrentStats;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -221,8 +221,8 @@ public:
 
 	virtual bool Tick()override;
 	virtual void TickRT()override;
-	virtual bool NeedsWorldStats()const { return false; }
-	virtual bool NeedsSystemStats()const { return true; }
+	virtual bool NeedsWorldStats()const override { return false; }
+	virtual bool NeedsSystemStats()const override { return true; }
 
 	void HandleTestResults();
 	void ReportToScreen();
@@ -259,7 +259,7 @@ public:
 		TArray<FStatTestInfo> BadTestHistory;
 	};
 	/** Track the worst recorded stats for each system. */
-	TMap<TWeakObjectPtr<UFXSystemAsset>, FStoredStatsInfo> StoredStats;
+	TMap<TWeakObjectPtr<const UFXSystemAsset>, FStoredStatsInfo> StoredStats;
 
 	/** We use an RT Command Fence to know when the RT data is valid and we can report the current stats to the screen. */
 	FRenderCommandFence ResultsFence;

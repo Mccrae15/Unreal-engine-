@@ -2,13 +2,19 @@
 
 #pragma once
 
-#include "Widgets/SCompoundWidget.h"
-#include "WorkflowOrientedApp/WorkflowTabFactory.h"
+#include "CoreMinimal.h"
 
 struct FAssetData;
 class UBlueprint;
+class FTabManager;
 
+#define WATCH_VIEWER_DEPRECATED
+
+#ifdef WATCH_VIEWER_DEPRECATED
+namespace UE_DEPRECATED(5.0, "WatchViewer has been deprecated, use SKismetDebuggingView instead") WatchViewer
+#else
 namespace WatchViewer
+#endif
 {
 	// updates the instanced watch values, these are only valid while execution is paused
 	void KISMET_API UpdateInstancedWatchDisplay();

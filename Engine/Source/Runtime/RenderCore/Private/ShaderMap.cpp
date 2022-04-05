@@ -28,13 +28,21 @@
 #include "Interfaces/IShaderFormat.h"
 #endif
 
-FShaderMapBase::FShaderMapBase(const FTypeLayoutDesc& InContentTypeLayout)
-	: ContentTypeLayout(InContentTypeLayout)
-	, PointerTable(nullptr)
-	, Content(nullptr)
-	, FrozenContentSize(0u)
+static EShaderPermutationFlags GetCurrentShaderPermutationFlags()
+{
+	EShaderPermutationFlags Result = EShaderPermutationFlags::None;
+#if WITH_EDITORONLY_DATA 
+	Result |= EShaderPermutationFlags::HasEditorOnlyData;
+#endif
+	return Result;
+}
+
+FShaderMapBase::FShaderMapBase()
+	: PointerTable(nullptr)
 	, NumFrozenShaders(0u)
-{}
+{
+	PermutationFlags = GetCurrentShaderPermutationFlags();
+}
 
 FShaderMapBase::~FShaderMapBase()
 {
@@ -54,17 +62,45 @@ FShaderMapResourceCode* FShaderMapBase::GetResourceCode()
 	return Code;
 }
 
-void FShaderMapBase::CopyResourceCode(const FShaderMapResourceCode& Source)
+void FShaderMapBase::AssignContent(TMemoryImageObject<FShaderMapContent> InContent)
 {
-	Code = new FShaderMapResourceCode(Source);
-}
-
-void FShaderMapBase::AssignContent(FShaderMapContent* InContent)
-{
-	check(!Content);
+	check(!Content.Object);
 	check(!PointerTable);
+	const FTypeLayoutDesc& ExpectedTypeDesc = GetContentTypeDesc();
+	checkf(*InContent.TypeDesc == ExpectedTypeDesc, TEXT("FShaderMapBase expected content of type %s, got %s"), ExpectedTypeDesc.Name, InContent.TypeDesc->Name);
+
 	Content = InContent;
 	PointerTable = CreatePointerTable();
+
+	PostFinalizeContent();
+}
+
+void FShaderMapBase::AssignCopy(const FShaderMapBase& Source)
+{
+	check(!PointerTable);
+	check(!Code);
+	check(Source.Content.Object);
+
+	if (Source.Content.FrozenSize == 0u)
+	{
+		PointerTable = CreatePointerTable();
+		Content = TMemoryImageObject<FShaderMapContent>(FreezeMemoryImageObject(Source.Content.Object, *Source.Content.TypeDesc, PointerTable));
+	}
+	else
+	{
+		PointerTable = Source.PointerTable->Clone();
+		Content.TypeDesc = Source.Content.TypeDesc;
+		Content.FrozenSize = Source.Content.FrozenSize;
+		Content.Object = static_cast<FShaderMapContent*>(FMemory::Malloc(Content.FrozenSize));
+		FMemory::Memcpy(Content.Object, Source.Content.Object, Content.FrozenSize);
+	}
+
+	NumFrozenShaders = Content.Object->GetNumShaders();
+	INC_DWORD_STAT_BY(STAT_Shaders_ShaderMemory, Content.FrozenSize);
+	INC_DWORD_STAT_BY(STAT_Shaders_NumShadersLoaded, NumFrozenShaders);
+
+	Code = new FShaderMapResourceCode(*Source.Code);
+	InitResource();
 }
 
 void FShaderMapBase::InitResource()
@@ -76,62 +112,26 @@ void FShaderMapBase::InitResource()
 		Resource = new FShaderMapResource_InlineCode(GetShaderPlatform(), Code);
 		BeginInitResource(Resource);
 	}
+	PostFinalizeContent();
 }
 
-void FShaderMapBase::AssignAndFreezeContent(const FShaderMapContent* InContent)
+void FShaderMapBase::FinalizeContent()
 {
-	FShaderMapPointerTable* LocalPointerTable = nullptr;
-	void* LocalContentMemory = nullptr;
-	uint32 LocalContentSize = 0u;
-	if (InContent)
+	if (Content.Freeze(PointerTable))
 	{
-		LocalPointerTable = CreatePointerTable();
-
-		FMemoryImage MemoryImage;
-		MemoryImage.TargetLayoutParameters.InitializeForCurrent();
-		MemoryImage.PointerTable = LocalPointerTable;
-		FMemoryImageWriter Writer(MemoryImage);
-
-		Writer.WriteObject(InContent, ContentTypeLayout);
-
-		FMemoryImageResult MemoryImageResult;
-		MemoryImage.Flatten(MemoryImageResult, true);
-
-		LocalContentSize = MemoryImageResult.Bytes.Num();
-		check(LocalContentSize > 0u);
-		LocalContentMemory = FMemory::Malloc(LocalContentSize);
-		FMemory::Memcpy(LocalContentMemory, MemoryImageResult.Bytes.GetData(), LocalContentSize);
-		MemoryImageResult.ApplyPatches(LocalContentMemory);
-	}
-
-	DestroyContent();
-
-	if (LocalContentMemory)
-	{
-		PointerTable = LocalPointerTable;
-		Content = static_cast<FShaderMapContent*>(LocalContentMemory);
-		FrozenContentSize = LocalContentSize;
-		NumFrozenShaders = Content->GetNumShaders();
-
-		INC_DWORD_STAT_BY(STAT_Shaders_ShaderMemory, FrozenContentSize);
+		NumFrozenShaders = Content.Object->GetNumShaders();
+		INC_DWORD_STAT_BY(STAT_Shaders_ShaderMemory, Content.FrozenSize);
 		INC_DWORD_STAT_BY(STAT_Shaders_NumShadersLoaded, NumFrozenShaders);
 	}
+	InitResource();
 }
 
 void FShaderMapBase::UnfreezeContent()
 {
-	if (Content && FrozenContentSize > 0u)
-	{
-		void* UnfrozenMemory = FMemory::Malloc(ContentTypeLayout.Size, ContentTypeLayout.Alignment);
-
-		FMemoryUnfreezeContent Context;
-		Context.PrevPointerTable = PointerTable;
-		Context.UnfreezeObject(Content, ContentTypeLayout, UnfrozenMemory);
-
-		DestroyContent();
-
-		Content = static_cast<FShaderMapContent*>(UnfrozenMemory);
-	}
+	DEC_DWORD_STAT_BY(STAT_Shaders_ShaderMemory, Content.FrozenSize);
+	DEC_DWORD_STAT_BY(STAT_Shaders_NumShadersLoaded, NumFrozenShaders);
+	Content.Unfreeze(PointerTable);
+	NumFrozenShaders = 0u;
 }
 
 #define CHECK_SHADERMAP_DEPENDENCIES (WITH_EDITOR || !(UE_BUILD_SHIPPING || UE_BUILD_TEST))
@@ -139,45 +139,26 @@ void FShaderMapBase::UnfreezeContent()
 bool FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool bLoadedByCookedMaterial, bool bInlineShaderCode)
 {
 	LLM_SCOPE(ELLMTag::Shaders);
-	bool bContentValid = true;
 	if (Ar.IsSaving())
 	{
-		check(Content);
-		Content->Validate(*this);
+		check(Content.Object);
+		Content.Object->Validate(*this);
 
-		FShaderMapPointerTable* SavePointerTable = CreatePointerTable();
-
-		FMemoryImage MemoryImage;
-		MemoryImage.PrevPointerTable = PointerTable;
-		MemoryImage.PointerTable = SavePointerTable;
-		MemoryImage.TargetLayoutParameters.InitializeForArchive(Ar);
-
-		FMemoryImageWriter Writer(MemoryImage);
-
-		Writer.WriteObject(Content, ContentTypeLayout);
-
-		FMemoryImageResult MemoryImageResult;
-		MemoryImage.Flatten(MemoryImageResult, true);
-
-		void* SaveFrozenContent = MemoryImageResult.Bytes.GetData();
-		uint32 SaveFrozenContentSize = MemoryImageResult.Bytes.Num();
-		check(SaveFrozenContentSize > 0u);
-		Ar << SaveFrozenContentSize;
-		Ar.Serialize(SaveFrozenContent, SaveFrozenContentSize);
-		MemoryImageResult.SaveToArchive(Ar);
-		SavePointerTable->SaveToArchive(Ar, SaveFrozenContent, bInlineShaderResources);
-		delete SavePointerTable;
-
-		int32 NumDependencies = MemoryImage.TypeDependencies.Num();
-		Ar << NumDependencies;
-		for (const FTypeLayoutDesc* DependencyTypeDesc : MemoryImage.TypeDependencies)
 		{
-			uint64 NameHash = DependencyTypeDesc->NameHash;
-			FSHAHash LayoutHash;
-			uint32 LayoutSize = Freeze::HashLayout(*DependencyTypeDesc, MemoryImage.TargetLayoutParameters, LayoutHash);
-			Ar << NameHash;
-			Ar << LayoutSize;
-			Ar << LayoutHash;
+			TUniquePtr<FShaderMapPointerTable> SavePointerTable(CreatePointerTable());
+
+			FMemoryImage MemoryImage;
+			MemoryImage.PrevPointerTable = PointerTable;
+			MemoryImage.PointerTable = SavePointerTable.Get();
+			MemoryImage.TargetLayoutParameters.InitializeForArchive(Ar);
+
+			FMemoryImageWriter Writer(MemoryImage);
+			Writer.WriteRootObject(Content.Object, *Content.TypeDesc);
+
+			FMemoryImageResult MemoryImageResult;
+			MemoryImage.Flatten(MemoryImageResult, true);
+
+			MemoryImageResult.SaveToArchive(Ar);
 		}
 
 		bool bShareCode = false;
@@ -186,9 +167,19 @@ bool FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 #endif // WITH_EDITOR
 		Ar << bShareCode;
 #if WITH_EDITOR
+
+		// Serialize a copy of ShaderPlatform directly into the archive
+		// This will allow us to correctly deserialize the stream, even if we're not able to load the frozen content
+		TEnumAsByte<EShaderPlatform> ShaderPlatform = GetShaderPlatform();
+		Ar << ShaderPlatform;
+
 		if (Ar.IsCooking())
 		{
-			Code->NotifyShadersCooked(Ar.CookingTarget());
+			const FName ShaderFormat = LegacyShaderPlatformToShaderFormat(ShaderPlatform);
+			if (ShaderFormat != NAME_None)
+			{
+				Code->NotifyShadersCompiled(ShaderFormat);
+			}
 		}
 
 		if (bShareCode)
@@ -208,58 +199,16 @@ bool FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 		check(!PointerTable);
 		PointerTable = CreatePointerTable();
 
-		Ar << FrozenContentSize;
-		// ensure frozen content is at least as big as our FShaderMapContent-derived class
-		checkf(FrozenContentSize >= ContentTypeLayout.Size, TEXT("Invalid FrozenContentSize for %s, got %d, expected at least %d"), ContentTypeLayout.Name, FrozenContentSize, ContentTypeLayout.Size);
+		FPlatformTypeLayoutParameters LayoutParameters;
+		FMemoryImageObject LoadedContent = FMemoryImageResult::LoadFromArchive(Ar, GetContentTypeDesc(), PointerTable, LayoutParameters);
+		PermutationFlags = GetShaderPermutationFlags(LayoutParameters);
 
-		void* ContentMemory = FMemory::Malloc(FrozenContentSize);
-		Ar.Serialize(ContentMemory, FrozenContentSize);
-		Content = static_cast<FShaderMapContent*>(ContentMemory);
-		FMemoryImageResult::ApplyPatchesFromArchive(Content, Ar);
-		PointerTable->LoadFromArchive(Ar, Content, bInlineShaderResources, bLoadedByCookedMaterial);
-
-		int32 NumDependencies = 0;
-		Ar << NumDependencies;
-		if(NumDependencies > 0)
-		{
-#if CHECK_SHADERMAP_DEPENDENCIES
-			FPlatformTypeLayoutParameters LayoutParams;
-			LayoutParams.InitializeForCurrent();
-#endif // CHECK_SHADERMAP_DEPENDENCIES
-
-			// Waste a bit of time even in shipping builds skipping over this stuff
-			// Could add a cook-time option to exclude dependencies completely
-			for (int32 i = 0u; i < NumDependencies; ++i)
-			{
-				uint64 NameHash = 0u;
-				uint32 SavedLayoutSize = 0u;
-				FSHAHash SavedLayoutHash;
-				Ar << NameHash;
-				Ar << SavedLayoutSize;
-				Ar << SavedLayoutHash;
-#if CHECK_SHADERMAP_DEPENDENCIES
-				const FTypeLayoutDesc* DependencyType = FTypeLayoutDesc::Find(NameHash);
-				if (DependencyType)
-				{
-					FSHAHash CheckLayoutHash;
-					const uint32 CheckLayoutSize = Freeze::HashLayout(*DependencyType, LayoutParams, CheckLayoutHash);
-					if (CheckLayoutSize != SavedLayoutSize)
-					{
-						UE_LOG(LogShaders, Error, TEXT("Mismatch size for type %s, compiled size is %d, loaded size is %d"), DependencyType->Name, CheckLayoutSize, SavedLayoutSize);
-						bContentValid = false;
-					}
-					else if (CheckLayoutHash != SavedLayoutHash)
-					{
-						UE_LOG(LogShaders, Error, TEXT("Mismatch hash for type %s"), DependencyType->Name);
-						bContentValid = false;
-					}
-				}
-#endif // CHECK_SHADERMAP_DEPENDENCIES
-			}
-		}
-		
 		bool bShareCode = false;
 		Ar << bShareCode;
+
+		TEnumAsByte<EShaderPlatform> ShaderPlatform = SP_NumPlatforms;
+		Ar << ShaderPlatform;
+
 		if (bShareCode)
 		{
 			FSHAHash ResourceHash;
@@ -269,42 +218,47 @@ bool FShaderMapBase::Serialize(FArchive& Ar, bool bInlineShaderResources, bool b
 			{
 				// do not warn when running -nullrhi (the resource cannot be created as the shader library will not be uninitialized),
 				// also do not warn for shader platforms other than current (if the game targets more than one RHI)
-				if (FApp::CanEverRender() && GetShaderPlatform() == GMaxRHIShaderPlatform)
+				if (FApp::CanEverRender() && ShaderPlatform == GMaxRHIShaderPlatform)
 				{
-					UE_LOG(LogShaders, Error, TEXT("Missing shader resource for hash '%s' for shader platform %d in the shader library"), *ResourceHash.ToString(), GetShaderPlatform());
+					UE_LOG(LogShaders, Error, TEXT("Missing shader resource for hash '%s' for shader platform '%s' in the shader library"), *ResourceHash.ToString(), *LexToString(ShaderPlatform));
 				}
-				bContentValid = false;
 			}
 		}
 		else
 		{
 			Code = new FShaderMapResourceCode();
 			Code->Serialize(Ar, bLoadedByCookedMaterial);
-			Resource = new FShaderMapResource_InlineCode(GetShaderPlatform(), Code);
+			Resource = new FShaderMapResource_InlineCode(ShaderPlatform, Code);
 		}
 
-		if (bContentValid)
+		if (LoadedContent.Object && Resource)
 		{
-			check(Resource);
-			NumFrozenShaders = Content->GetNumShaders();
+			Content = TMemoryImageObject<FShaderMapContent>(LoadedContent);
+
+			// Possible we've loaded/converted unfrozen content, make sure it's frozen for the current platform before trying to render anything
+			if (Content.FrozenSize == 0u)
+			{
+				Content.Freeze(PointerTable);
+			}
+			PostFinalizeContent();
+
+			NumFrozenShaders = Content.Object->GetNumShaders();
+			INC_DWORD_STAT_BY(STAT_Shaders_ShaderMemory, Content.FrozenSize);
+			INC_DWORD_STAT_BY(STAT_Shaders_NumShadersLoaded, NumFrozenShaders);
 
 			BeginInitResource(Resource);
-
 			INC_DWORD_STAT_BY(STAT_Shaders_ShaderResourceMemory, Resource->GetSizeBytes());
-			INC_DWORD_STAT_BY(STAT_Shaders_ShaderMemory, FrozenContentSize);
-			INC_DWORD_STAT_BY(STAT_Shaders_NumShadersLoaded, NumFrozenShaders);
 		}
 		else
 		{
+			// Missing either content and/or resource
+			// In either case, shader map has failed to load
+			LoadedContent.Destroy(PointerTable);
 			Resource.SafeRelease();
-
-			// Don't call destructors here, this is basically unknown/invalid memory at this point
-			FMemory::Free(Content);
-			Content = nullptr;
 		}
 	}
 
-	return bContentValid;
+	return (bool)Content.Object;
 }
 
 FString FShaderMapBase::ToString() const
@@ -318,7 +272,7 @@ FString FShaderMapBase::ToString() const
 		FPlatformTypeLayoutParameters LayoutParams;
 		LayoutParams.InitializeForCurrent();
 
-		ContentTypeLayout.ToStringFunc(Content, ContentTypeLayout, LayoutParams, Context);
+		Content.TypeDesc->ToStringFunc(Content.Object, *Content.TypeDesc, LayoutParams, Context);
 	}
 
 	if (Code)
@@ -331,21 +285,10 @@ FString FShaderMapBase::ToString() const
 
 void FShaderMapBase::DestroyContent()
 {
-	if (Content)
-	{
-		DEC_DWORD_STAT_BY(STAT_Shaders_ShaderMemory, FrozenContentSize);
-		DEC_DWORD_STAT_BY(STAT_Shaders_NumShadersLoaded, NumFrozenShaders);
-
-		InternalDeleteObjectFromLayout(Content, ContentTypeLayout, PointerTable, FrozenContentSize > 0u);
-		if (FrozenContentSize > 0u)
-		{
-			FMemory::Free(Content);
-		}
-
-		FrozenContentSize = 0u;
-		NumFrozenShaders = 0u;
-		Content = nullptr;
-	}
+	DEC_DWORD_STAT_BY(STAT_Shaders_ShaderMemory, Content.FrozenSize);
+	DEC_DWORD_STAT_BY(STAT_Shaders_NumShadersLoaded, NumFrozenShaders);
+	Content.Destroy(PointerTable);
+	NumFrozenShaders = 0u;
 }
 
 static uint16 MakeShaderHash(const FHashedName& TypeName, int32 PermutationId)
@@ -355,7 +298,8 @@ static uint16 MakeShaderHash(const FHashedName& TypeName, int32 PermutationId)
 
 FShader* FShaderMapContent::GetShader(const FHashedName& TypeName, int32 PermutationId) const
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(FShaderMapContent::GetShader);
+	// TRACE_CPUPROFILER_EVENT_SCOPE(FShaderMapContent::GetShader); -- this function is called too frequently, so don't add the scope by default
+
 	const uint16 Hash = MakeShaderHash(TypeName, PermutationId);
 	const FHashedName* RESTRICT LocalShaderTypes = ShaderTypes.GetData();
 	const int32* RESTRICT LocalShaderPermutations = ShaderPermutations.GetData();
@@ -761,24 +705,13 @@ void FShaderMapContent::UpdateHash(FSHA1& Hasher) const
 	}
 }
 
-void FShaderMapContent::Empty(const FPointerTableBase* PointerTable)
+void FShaderMapContent::Empty()
 {
-	EmptyShaderPipelines(PointerTable);
+	EmptyShaderPipelines();
 	for (int32 i = 0; i < Shaders.Num(); ++i)
 	{
 		TMemoryImagePtr<FShader>& Shader = Shaders[i];
-		// It's possible that frozen shader map may have certain shaders embedded that are compiled out of the target build
-		// In this case, we won't be able to find the shader type, and SafeDelete() will crash, as DeleteObjectFromLayout() relies on getting FTypeLayoutDesc from the shader type
-		// In the future, we should ensure that we're not including these shaders at all, but for now it should be OK to skip them
-		if (Shader->GetType(PointerTable))
-		{
-			Shader.SafeDelete(PointerTable);
-		}
-		else
-		{
-			// If we can't find the type, and the shadermap isn't frozen, then something has gone wrong
-			checkf(Shader.IsFrozen(), TEXT("Shader type %016X is missing, but shader isn't frozen"), ShaderTypes[i].GetHash());
-		}
+		Shader.SafeDelete();
 	}
 	Shaders.Empty();
 	ShaderTypes.Empty();
@@ -786,11 +719,11 @@ void FShaderMapContent::Empty(const FPointerTableBase* PointerTable)
 	ShaderHash.Clear();
 }
 
-void FShaderMapContent::EmptyShaderPipelines(const FPointerTableBase* PointerTable)
+void FShaderMapContent::EmptyShaderPipelines()
 {
 	for (TMemoryImagePtr<FShaderPipeline>& Pipeline : ShaderPipelines)
 	{
-		Pipeline.SafeDelete(PointerTable);
+		Pipeline.SafeDelete();
 	}
 	ShaderPipelines.Empty();
 }

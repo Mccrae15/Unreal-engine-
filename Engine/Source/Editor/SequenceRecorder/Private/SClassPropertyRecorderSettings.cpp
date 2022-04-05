@@ -12,6 +12,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "IDetailsView.h"
 #include "Sections/MovieSceneMultiPropertyRecorder.h"
+#include "Framework/Docking/TabManager.h"
 
 #define LOCTEXT_NAMESPACE "SClassPropertyRecorderSettings"
 
@@ -71,7 +72,9 @@ FReply SClassPropertyRecorderSettings::HandleChoosePropertiesButtonClicked()
 {
 	if (ClassHandle.IsValid() && PropertiesHandle.IsValid())
 	{
-		FDetailsViewArgs DetailsViewArgs(false, false, true, FDetailsViewArgs::HideNameArea, true);
+		FDetailsViewArgs DetailsViewArgs;
+		DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+		DetailsViewArgs.bHideSelectionTip = true;
 		FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 		TSharedRef<IDetailsView> DetailsView = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 
@@ -143,7 +146,7 @@ bool SClassPropertyRecorderSettings::IsPropertyExtendable(const UClass* InObject
 	return PropertyHandle.GetProperty()->HasAnyPropertyFlags(CPF_Interp) && FMovieSceneMultiPropertyRecorder::CanPropertyBeRecorded(*PropertyHandle.GetProperty());
 }
 
-TSharedRef<SWidget> SClassPropertyRecorderSettings::GenerateExtensionWidget(const IDetailLayoutBuilder& InDetailLayoutBuilder, const UClass* InObjectClass, TSharedPtr<IPropertyHandle> PropertyHandle)
+void SClassPropertyRecorderSettings::ExtendWidgetRow(FDetailWidgetRow& InWidgetRow, const IDetailLayoutBuilder& InDetailLayoutBuilder, const UClass* InObjectClass, TSharedPtr<IPropertyHandle> PropertyHandle)
 {
 	ECheckBoxState InitialState = ECheckBoxState::Unchecked;
 	FName PropertyName = *PropertyHandle->GeneratePathToProperty();
@@ -154,9 +157,12 @@ TSharedRef<SWidget> SClassPropertyRecorderSettings::GenerateExtensionWidget(cons
 		InitialState = PropertiesToRecord->Contains(PropertyName) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 	}
 
-	return SNew(SCheckBox)
-		.OnCheckStateChanged(this, &SClassPropertyRecorderSettings::HandlePropertyCheckStateChanged, PropertyHandle)
-		.IsChecked(InitialState);
+	InWidgetRow.ExtensionContent()
+	[
+		SNew(SCheckBox)
+			.OnCheckStateChanged(this, &SClassPropertyRecorderSettings::HandlePropertyCheckStateChanged, PropertyHandle)
+			.IsChecked(InitialState)
+	];
 }
 
 void SClassPropertyRecorderSettings::HandlePropertyCheckStateChanged(ECheckBoxState InState, TSharedPtr<IPropertyHandle> PropertyHandle)
@@ -177,7 +183,7 @@ void SClassPropertyRecorderSettings::HandlePropertyCheckStateChanged(ECheckBoxSt
 				PropertiesToRecord->Remove(PropertyPath);
 			}
 
-			PropertiesHandle->NotifyPostChange();
+			PropertiesHandle->NotifyPostChange(InState == ECheckBoxState::Checked ? EPropertyChangeType::ArrayAdd : EPropertyChangeType::ArrayRemove);
 		}
 	}
 }

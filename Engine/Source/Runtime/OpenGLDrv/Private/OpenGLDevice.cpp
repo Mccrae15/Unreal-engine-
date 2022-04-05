@@ -16,6 +16,7 @@
 #include "Containers/List.h"
 #include "RenderResource.h"
 #include "ShaderCore.h"
+#include "Shader.h"
 #include "RenderUtils.h"
 #include "OpenGLDrv.h"
 #include "OpenGLDrvPrivate.h"
@@ -25,6 +26,7 @@
 
 #if PLATFORM_ANDROID
 #include <jni.h>
+extern bool AndroidThunkCpp_IsOculusMobileApplication();
 #endif
 
 #ifndef GL_STEREO
@@ -52,6 +54,12 @@ static TAutoConsoleVariable<int32> CVarAllowRGLHIThread(
 	TEXT("Toggle OpenGL RHI thread support.\n")
 	TEXT("0: GL scene rendering operations are performed on the render thread.\n")
 	TEXT("1: GL scene rendering operations are queued onto the RHI thread gaining some parallelism with the render thread. (default, mobile feature levels only)"),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+
+static TAutoConsoleVariable<int32> CVarGLExtraDeletionLatency(
+	TEXT("r.OpenGL.ExtraDeletionLatency"),
+	1,
+	TEXT("Toggle the engine's deferred deletion queue for RHI resources. (default:1)"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
 void OnQueryCreation( FOpenGLRenderQuery* Query )
@@ -82,16 +90,10 @@ void OnProgramDeletion( GLint ProgramResource )
 	PrivateOpenGLDevicePtr->OnProgramDeletion( ProgramResource );
 }
 
-void OnVertexBufferDeletion( GLuint VertexBufferResource )
+void OnBufferDeletion( GLuint BufferResource )
 {
 	check(PrivateOpenGLDevicePtr);
-	PrivateOpenGLDevicePtr->OnVertexBufferDeletion( VertexBufferResource );
-}
-
-void OnIndexBufferDeletion( GLuint IndexBufferResource )
-{
-	check(PrivateOpenGLDevicePtr);
-	PrivateOpenGLDevicePtr->OnIndexBufferDeletion( IndexBufferResource );
+	PrivateOpenGLDevicePtr->OnBufferDeletion( BufferResource );
 }
 
 void OnPixelBufferDeletion( GLuint PixelBufferResource )
@@ -106,19 +108,28 @@ void OnUniformBufferDeletion( GLuint UniformBufferResource, uint32 AllocatedSize
 	PrivateOpenGLDevicePtr->OnUniformBufferDeletion( UniformBufferResource, AllocatedSize, bStreamDraw );
 }
 
-void CachedBindArrayBuffer( GLuint Buffer )
+void CachedBindBuffer( GLenum Type, GLuint Buffer )
 {
 	check(PrivateOpenGLDevicePtr);
-	PrivateOpenGLDevicePtr->CachedBindArrayBuffer(PrivateOpenGLDevicePtr->GetContextStateForCurrentContext(),Buffer);
+	if (Type == GL_ARRAY_BUFFER)
+	{
+		PrivateOpenGLDevicePtr->CachedBindArrayBuffer(PrivateOpenGLDevicePtr->GetContextStateForCurrentContext(), Buffer);
+	}
+	else if (Type == GL_ELEMENT_ARRAY_BUFFER)
+	{
+		PrivateOpenGLDevicePtr->CachedBindElementArrayBuffer(PrivateOpenGLDevicePtr->GetContextStateForCurrentContext(), Buffer);
+	}
+	else if (Type == GL_SHADER_STORAGE_BUFFER)
+	{
+		PrivateOpenGLDevicePtr->CachedBindStorageBuffer(PrivateOpenGLDevicePtr->GetContextStateForCurrentContext(), Buffer);
+	}
+	else
+	{
+		checkNoEntry();
+	}
 }
 
-void CachedBindElementArrayBuffer( GLuint Buffer )
-{
-	check(PrivateOpenGLDevicePtr);
-	PrivateOpenGLDevicePtr->CachedBindElementArrayBuffer(PrivateOpenGLDevicePtr->GetContextStateForCurrentContext(),Buffer);
-}
-
-void CachedBindPixelUnpackBuffer( GLuint Buffer )
+void CachedBindPixelUnpackBuffer( GLenum Type, GLuint Buffer )
 {
 	check(PrivateOpenGLDevicePtr);
 	PrivateOpenGLDevicePtr->CachedBindPixelUnpackBuffer(PrivateOpenGLDevicePtr->GetContextStateForCurrentContext(),Buffer);
@@ -179,7 +190,7 @@ void FOpenGLDynamicRHI::RHIBeginFrame()
 
 	GPUProfilingData.BeginFrame(this);
 
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4 //adding #if since not sure if this is required for any other platform.
+#if PLATFORM_ANDROID //adding #if since not sure if this is required for any other platform.
 	PendingState.DepthStencil = 0 ;
 #endif
 
@@ -226,7 +237,7 @@ void FOpenGLDynamicRHI::RHIEndScene()
 
 #if PLATFORM_ANDROID
 
-JNI_METHOD void Java_com_epicgames_ue4_MediaPlayer14_nativeClearCachedAttributeState(JNIEnv* jenv, jobject thiz, jint PositionAttrib, jint TexCoordsAttrib)
+JNI_METHOD void Java_com_epicgames_unreal_MediaPlayer14_nativeClearCachedAttributeState(JNIEnv* jenv, jobject thiz, jint PositionAttrib, jint TexCoordsAttrib)
 {
 	FOpenGLContextState& ContextState = PrivateOpenGLDevicePtr->GetContextStateForCurrentContext();
 
@@ -484,6 +495,7 @@ static inline void SetupTextureFormat( EPixelFormat Format, const FOpenGLTexture
 {
 	GOpenGLTextureFormats[Format] = GLFormat;
 	GPixelFormats[Format].Supported = (GLFormat.Format != GL_NONE && (GLFormat.InternalFormat[0] != GL_NONE || GLFormat.InternalFormat[1] != GL_NONE));
+	GPixelFormats[Format].PlatformFormat = GLFormat.InternalFormat[0];
 }
 
 
@@ -625,6 +637,10 @@ static void InitRHICapabilitiesForGL()
 
 	GRHIAdapterName = FOpenGL::GetAdapterName();
 	GRHIAdapterInternalDriverVersion = ANSI_TO_TCHAR((const ANSICHAR*)glGetString(GL_VERSION));
+
+	// Shader platform & RHI feature level
+	GMaxRHIFeatureLevel = FOpenGL::GetFeatureLevel();
+	GMaxRHIShaderPlatform = FOpenGL::GetShaderPlatform();
 
 	// Log all supported extensions.
 #if PLATFORM_WINDOWS
@@ -781,11 +797,7 @@ static void InitRHICapabilitiesForGL()
 	// Set capabilities.
 	const GLint MajorVersion = FOpenGL::GetMajorVersion();
 	const GLint MinorVersion = FOpenGL::GetMinorVersion();
-
-	// Shader platform & RHI feature level
-	GMaxRHIFeatureLevel = FOpenGL::GetFeatureLevel();
-	GMaxRHIShaderPlatform = FOpenGL::GetShaderPlatform();
-	 
+ 
 	// Enable the OGL rhi thread if explicitly requested.
 	GRHISupportsRHIThread = (GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1 && CVarAllowRGLHIThread.GetValueOnAnyThread())
 #if WITH_EDITOR
@@ -794,9 +806,7 @@ static void InitRHICapabilitiesForGL()
 		;
 	
 	// By default use emulated UBs on mobile
-	static auto* CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("OpenGL.UseEmulatedUBs"));
-	const bool bUseEmulatedUBs = (CVar && CVar->GetValueOnAnyThread() != 0);
-	GUseEmulatedUniformBuffers = (IsMobilePlatform(GMaxRHIShaderPlatform) && bUseEmulatedUBs);
+	GUseEmulatedUniformBuffers = IsUsingEmulatedUniformBuffers(GMaxRHIShaderPlatform);
 
 	FString FeatureLevelName;
 	GetFeatureLevelName(GMaxRHIFeatureLevel, FeatureLevelName);
@@ -804,11 +814,7 @@ static void InitRHICapabilitiesForGL()
 
 	UE_LOG(LogRHI, Log, TEXT("OpenGL MajorVersion = %d, MinorVersion = %d, ShaderPlatform = %s, FeatureLevel = %s"), MajorVersion, MinorVersion, *ShaderPlatformName, *FeatureLevelName);
 #if PLATFORM_ANDROID
-#if PLATFORM_LUMINGL4
-	UE_LOG(LogRHI, Log, TEXT("PLATFORM_LUMINGL4"));
-#else
 	UE_LOG(LogRHI, Log, TEXT("PLATFORM_ANDROID"));
-#endif
 #endif
 
 	GMaxTextureSamplers = Value_GL_MAX_TEXTURE_IMAGE_UNITS;
@@ -847,14 +853,20 @@ static void InitRHICapabilitiesForGL()
 	GSupportsTexture3D = FOpenGL::SupportsTexture3D();
 	GSupportsMobileMultiView = FOpenGL::SupportsMobileMultiView();
 	GSupportsImageExternal = FOpenGL::SupportsImageExternal();
-	GSupportsResourceView = FOpenGL::SupportsResourceView();
 
 	GSupportsShaderFramebufferFetch = FOpenGL::SupportsShaderFramebufferFetch();
+	GSupportsShaderMRTFramebufferFetch = FOpenGL::SupportsShaderMRTFramebufferFetch();
 	GSupportsShaderDepthStencilFetch = FOpenGL::SupportsShaderDepthStencilFetch();
+	GSupportsPixelLocalStorage = FOpenGL::SupportsPixelLocalStorage();
+
 	GMaxShadowDepthBufferSizeX = FMath::Min<int32>(Value_GL_MAX_RENDERBUFFER_SIZE, 4096); // Limit to the D3D11 max.
 	GMaxShadowDepthBufferSizeY = FMath::Min<int32>(Value_GL_MAX_RENDERBUFFER_SIZE, 4096);
 	GHardwareHiddenSurfaceRemoval = FOpenGL::HasHardwareHiddenSurfaceRemoval();
 	GSupportsTimestampRenderQueries = FOpenGL::SupportsTimestampQueries();
+
+	GRHIMaxDispatchThreadGroupsPerDimension.X = MAX_uint16;
+	GRHIMaxDispatchThreadGroupsPerDimension.Y = MAX_uint16;
+	GRHIMaxDispatchThreadGroupsPerDimension.Z = MAX_uint16;
 
 	// It's not possible to create a framebuffer with the backbuffer as the color attachment and a custom renderbuffer as the depth/stencil surface.
 	GRHISupportsBackBufferWithCustomDepthStencil = false;
@@ -865,11 +877,6 @@ static void InitRHICapabilitiesForGL()
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::ES3_1] = (GMaxRHIFeatureLevel == ERHIFeatureLevel::ES3_1) ? GMaxRHIShaderPlatform : SP_OPENGL_PCES3_1;
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM4_REMOVED] = SP_NumPlatforms;
 	GShaderPlatformForFeatureLevel[ERHIFeatureLevel::SM5] = SP_NumPlatforms;
-
-	// Set to same values as in DX11, as for the time being clip space adjustment are done entirely
-	// in HLSLCC-generated shader code and OpenGLDrv.
-	GMinClipZ = 0.0f;
-	GProjectionSignY = 1.0f;
 
 	// Disable texture streaming on devices with ES3.1 or lower, unless we have the GL_APPLE_copy_texture_levels extension or support for glCopyImageSubData
 	if (GMaxRHIFeatureLevel <= ERHIFeatureLevel::ES3_1)
@@ -914,7 +921,14 @@ static void InitRHICapabilitiesForGL()
 	SetupTextureFormat( PF_R16G16_UINT,			FOpenGLTextureFormat( GL_RG16UI,				GL_RG16UI,				GL_RG_INTEGER,		GL_UNSIGNED_SHORT,				false,			false));
 	SetupTextureFormat( PF_R8,					FOpenGLTextureFormat( GL_R8,					GL_R8,					GL_RED,				GL_UNSIGNED_BYTE,				false,			false));
 
-	SetupTextureFormat( PF_R5G6B5_UNORM,		FOpenGLTextureFormat( ));
+	SetupTextureFormat( PF_R5G6B5_UNORM,        FOpenGLTextureFormat( GL_RGB565,                GL_RGB565,              GL_RGB,             GL_UNSIGNED_SHORT_5_6_5,        false,          false));
+
+	//GL_UNSIGNED_SHORT_1_5_5_5_REV is not defined in gles
+	GLenum GL5551Format = FOpenGL::GetPlatfrom5551Format();
+	//the last 5 bits of GL_UNSIGNED_SHORT_1_5_5_5_REV is Red, while the last 5 bits of DXGI_FORMAT_B5G5R5A1_UNORM is Blue
+	bool bNeedsToSwizzleRedBlue = GL5551Format != GL_UNSIGNED_SHORT_5_5_5_1;
+	SetupTextureFormat( PF_B5G5R5A1_UNORM,		FOpenGLTextureFormat( GL_RGB5_A1,               GL_RGB5_A1,             GL_RGBA,			GL5551Format,					false,          bNeedsToSwizzleRedBlue));
+
 
 	SetupTextureFormat( PF_G16,					FOpenGLTextureFormat( GL_R16,					GL_R16,					GL_RED,				GL_UNSIGNED_SHORT,					false,	false));
 	SetupTextureFormat( PF_R32_FLOAT,			FOpenGLTextureFormat( GL_R32F,					GL_R32F,				GL_RED,				GL_FLOAT,							false,	false));
@@ -939,7 +953,18 @@ static void InitRHICapabilitiesForGL()
 	SetupTextureFormat( PF_FloatR11G11B10,		FOpenGLTextureFormat( GL_R11F_G11F_B10F,		GL_R11F_G11F_B10F,		GL_RGB,				GL_UNSIGNED_INT_10F_11F_11F_REV,	false,  false));
 	SetupTextureFormat( PF_FloatRGBA,			FOpenGLTextureFormat( GL_RGBA16F,				GL_RGBA16F,				GL_RGBA,			GL_HALF_FLOAT,						false,	false));
 
-#if PLATFORM_DESKTOP || PLATFORM_LUMINGL4
+	SetupTextureFormat( PF_R8G8_UINT,			FOpenGLTextureFormat( GL_RG8UI,					GL_RG8UI,				GL_RG_INTEGER,		GL_UNSIGNED_BYTE,					false, false));
+	SetupTextureFormat( PF_R32G32B32_UINT,		FOpenGLTextureFormat( GL_RGB32UI,				GL_RGB32UI,				GL_RGB_INTEGER,		GL_UNSIGNED_INT,					false, false));
+	SetupTextureFormat( PF_R32G32B32_SINT,		FOpenGLTextureFormat( GL_RGB32I,				GL_RGB32I,				GL_RGB_INTEGER,		GL_INT,								false, false));
+	SetupTextureFormat( PF_R32G32B32F,			FOpenGLTextureFormat( GL_RGB32F,				GL_RGB32F,				GL_RGB,				GL_FLOAT,							false, false));
+	SetupTextureFormat( PF_R8_SINT,				FOpenGLTextureFormat( GL_R8I,					GL_R8I,					GL_RED_INTEGER,		GL_BYTE,							false, false));
+
+	SetupTextureFormat( PF_B8G8R8A8,			FOpenGLTextureFormat( GL_RGBA8,					GL_SRGB8_ALPHA8,		GL_RGBA,			GL_UNSIGNED_BYTE,					false, true));
+	SetupTextureFormat( PF_R8G8B8A8,			FOpenGLTextureFormat( GL_RGBA8,					GL_SRGB8_ALPHA8,		GL_RGBA,			GL_UNSIGNED_BYTE,					false, false));
+	SetupTextureFormat( PF_R8G8B8A8_UINT,		FOpenGLTextureFormat( GL_RGBA8UI,				GL_RGBA8UI,				GL_RGBA_INTEGER,	GL_UNSIGNED_BYTE,					false, false));
+	SetupTextureFormat( PF_G8,					FOpenGLTextureFormat( GL_R8,					GL_R8,					GL_RED,				GL_UNSIGNED_BYTE,					false, false));
+
+#if PLATFORM_DESKTOP
 	CA_SUPPRESS(6286);
 	if (PLATFORM_DESKTOP || FOpenGL::GetFeatureLevel() >= ERHIFeatureLevel::SM5)
 	{
@@ -947,22 +972,13 @@ static void InitRHICapabilitiesForGL()
 		SetupTextureFormat( PF_BC5,				FOpenGLTextureFormat( GL_COMPRESSED_RG_RGTC2,	GL_COMPRESSED_RG_RGTC2,	GL_RG,			GL_UNSIGNED_BYTE,					true,	false));
 		SetupTextureFormat( PF_BC4,				FOpenGLTextureFormat( GL_COMPRESSED_RED_RGTC1,	GL_COMPRESSED_RED_RGTC1,GL_RED,			GL_UNSIGNED_BYTE,					true,	false));
 
-		SetupTextureFormat(PF_G8, FOpenGLTextureFormat(GL_R8, GL_SRGB8, GL_RED, GL_UNSIGNED_BYTE, false, false));
-		SetupTextureFormat(PF_B8G8R8A8, FOpenGLTextureFormat(GL_RGBA8, GL_SRGB8_ALPHA8, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, false, false));
-		SetupTextureFormat(PF_R8G8B8A8, FOpenGLTextureFormat(GL_RGBA8, GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_INT_8_8_8_8_REV, false, false));
-		SetupTextureFormat(PF_R8G8B8A8_UINT, FOpenGLTextureFormat(GL_RGBA8UI, GL_RGBA8UI, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, false, false));
-
-		SetupTextureFormat(PF_G16R16, FOpenGLTextureFormat(GL_RG16, GL_RG16, GL_RG, GL_UNSIGNED_SHORT, false, false));
+		SetupTextureFormat( PF_G16R16,			FOpenGLTextureFormat(GL_RG16, GL_RG16, GL_RG, GL_UNSIGNED_SHORT, false, false));
+		SetupTextureFormat( PF_G16R16_SNORM,	FOpenGLTextureFormat(GL_RG16_SNORM, GL_RG16_SNORM, GL_RG, GL_SHORT, false, false));
 	}
 	else
-#endif // PLATFORM_DESKTOP || PLATFORM_LUMINGL4
+#endif // PLATFORM_DESKTOP
 	{
-#if !PLATFORM_DESKTOP && !PLATFORM_LUMINGL4
-		SetupTextureFormat(PF_B8G8R8A8, FOpenGLTextureFormat(GL_RGBA8, GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE, false, true));
-		SetupTextureFormat(PF_R8G8B8A8, FOpenGLTextureFormat(GL_RGBA8, GL_SRGB8_ALPHA8, GL_RGBA, GL_UNSIGNED_BYTE, false, false));
-		SetupTextureFormat(PF_R8G8B8A8_UINT, FOpenGLTextureFormat(GL_RGBA8UI, GL_RGBA8UI, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, false, false));
-		SetupTextureFormat(PF_G8, FOpenGLTextureFormat(GL_R8, GL_R8, GL_RED, GL_UNSIGNED_BYTE, false, false));
-		
+#if !PLATFORM_DESKTOP
 		FOpenGL::PE_SetupTextureFormat(&SetupTextureFormat); // platform extension
 #endif // !PLATFORM_DESKTOP
 	}
@@ -973,7 +989,7 @@ static void InitRHICapabilitiesForGL()
 		SetupTextureFormat( PF_DXT3,	FOpenGLTextureFormat(GL_COMPRESSED_RGBA_S3TC_DXT3_EXT,	GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT,	GL_RGBA,	GL_UNSIGNED_BYTE,	true,	false));
 		SetupTextureFormat( PF_DXT5,	FOpenGLTextureFormat(GL_COMPRESSED_RGBA_S3TC_DXT5_EXT,	GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT,	GL_RGBA,	GL_UNSIGNED_BYTE,	true,	false));
 	}
-#if PLATFORM_ANDROID && !PLATFORM_LUMINGL4
+#if PLATFORM_ANDROID
 	if ( FOpenGL::SupportsETC2() )
 	{
 		SetupTextureFormat( PF_ETC2_RGB,		FOpenGLTextureFormat(GL_COMPRESSED_RGB8_ETC2,		GL_COMPRESSED_SRGB8_ETC2,					GL_RGBA,		GL_UNSIGNED_BYTE,	true,		false));
@@ -990,7 +1006,14 @@ static void InitRHICapabilitiesForGL()
 		SetupTextureFormat( PF_ASTC_10x10,	FOpenGLTextureFormat(GL_COMPRESSED_RGBA_ASTC_10x10_KHR,	GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR,	GL_RGBA,	GL_UNSIGNED_BYTE,	true,	false) );
 		SetupTextureFormat( PF_ASTC_12x12,	FOpenGLTextureFormat(GL_COMPRESSED_RGBA_ASTC_12x12_KHR,	GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR,	GL_RGBA,	GL_UNSIGNED_BYTE,	true,	false) );
 	}
-
+	if (FOpenGL::SupportsASTCHDR())
+	{
+		SetupTextureFormat(PF_ASTC_4x4_HDR, FOpenGLTextureFormat(GL_COMPRESSED_RGBA_ASTC_4x4_KHR, GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR, GL_RGBA, GL_HALF_FLOAT, true, false));
+		SetupTextureFormat(PF_ASTC_6x6_HDR, FOpenGLTextureFormat(GL_COMPRESSED_RGBA_ASTC_6x6_KHR, GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR, GL_RGBA, GL_HALF_FLOAT, true, false));
+		SetupTextureFormat(PF_ASTC_8x8_HDR, FOpenGLTextureFormat(GL_COMPRESSED_RGBA_ASTC_8x8_KHR, GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR, GL_RGBA, GL_HALF_FLOAT, true, false));
+		SetupTextureFormat(PF_ASTC_10x10_HDR, FOpenGLTextureFormat(GL_COMPRESSED_RGBA_ASTC_10x10_KHR, GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR, GL_RGBA, GL_HALF_FLOAT, true, false));
+		SetupTextureFormat(PF_ASTC_12x12_HDR, FOpenGLTextureFormat(GL_COMPRESSED_RGBA_ASTC_12x12_KHR, GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR, GL_RGBA, GL_HALF_FLOAT, true, false));
+	}
 	// Some formats need to know how large a block is.
 	GPixelFormats[ PF_DepthStencil		].BlockBytes	 = 4;
 	GPixelFormats[ PF_FloatRGB			].BlockBytes	 = 4;
@@ -1022,6 +1045,10 @@ FOpenGLDynamicRHI::FOpenGLDynamicRHI()
 	// This should be called once at the start
 	check( IsInGameThread() );
 	check( !GIsThreadedRendering );
+
+#if PLATFORM_ANDROID
+	GRHINeedsExtraDeletionLatency = CVarGLExtraDeletionLatency.GetValueOnAnyThread() == 1;
+#endif
 
 	PlatformInitOpenGL();
 	PlatformDevice = PlatformCreateOpenGLDevice();
@@ -1056,7 +1083,12 @@ FOpenGLDynamicRHI::FOpenGLDynamicRHI()
 		auto* CVar = IConsoleManager::Get().FindConsoleVariable(TEXT("FX.AllowGPUSorting"));
 		if (CVar)
 		{
-			CVar->Set(false);
+#if PLATFORM_ANDROID
+			if(!AndroidThunkCpp_IsOculusMobileApplication())
+#endif
+			{
+				CVar->Set(false);
+			}
 		}
 	}
 
@@ -1107,6 +1139,8 @@ void FOpenGLDynamicRHI::Init()
 	check(!GIsRHIInitialized);
 	VERIFY_GL_SCOPE();
 
+	GRHISupportsMultithreadedShaderCreation = false;
+
 	FOpenGLProgramBinaryCache::Initialize();
 	RegisterSharedShaderCodeDelegates();
 	InitializeStateResources();
@@ -1114,13 +1148,6 @@ void FOpenGLDynamicRHI::Init()
 	// Create a default point sampler state for internal use.
 	FSamplerStateInitializerRHI PointSamplerStateParams(SF_Point,AM_Clamp,AM_Clamp,AM_Clamp);
 	PointSamplerState = this->RHICreateSamplerState(PointSamplerStateParams);
-
-	if (FOpenGL::SupportsFastBufferData())
-	{
-		// Allocate vertex and index buffers for DrawPrimitiveUP calls.
-		DynamicVertexBuffers.Init(CalcDynamicBufferSize(1));
-		DynamicIndexBuffers.Init(CalcDynamicBufferSize(1));
-	}
 
 #if PLATFORM_WINDOWS || PLATFORM_LINUX
 
@@ -1208,10 +1235,6 @@ void FOpenGLDynamicRHI::Cleanup()
 		FRenderResource::ReleaseRHIForAllResources();
 	}
 
-	// Release dynamic vertex and index buffers.
-	DynamicVertexBuffers.Cleanup();
-	DynamicIndexBuffers.Cleanup();
-
 	// Release the point sampler state.
 	PointSamplerState.SafeRelease();
 
@@ -1223,7 +1246,7 @@ void FOpenGLDynamicRHI::Cleanup()
 	{
 		FOpenGL::DeleteBuffers(1, &PendingState.ZeroFilledDummyUniformBuffer);
 		PendingState.ZeroFilledDummyUniformBuffer = 0;
-		DecrementBufferMemory(GL_UNIFORM_BUFFER, false, ZERO_FILLED_DUMMY_UNIFORM_BUFFER_SIZE);
+		DecrementBufferMemory(GL_UNIFORM_BUFFER, ZERO_FILLED_DUMMY_UNIFORM_BUFFER_SIZE);
 	}
 
 	// Release pending shader

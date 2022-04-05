@@ -4,15 +4,13 @@
 
 #include "CoreMinimal.h"
 
+#include "UsdWrappers/ForwardDeclarations.h"
+
 class AUsdStageActor;
 class FUsdLevelSequenceHelperImpl;
 class ULevelSequence;
+class UUsdAssetCache;
 class UUsdPrimTwin;
-
-namespace UE
-{
-	class FUsdStage;
-}
 
 /**
  * Builds and maintains the level sequence and subsequences for a Usd Stage
@@ -35,6 +33,15 @@ public:
 public:
 	/** Creates the main level sequence and subsequences from the usd stage layers */
 	ULevelSequence* Init(const UE::FUsdStage& UsdStage);
+
+	/** Sets the asset cache to use when fetching assets and asset info required for the level sequence animation, like UAnimSequences */
+	void SetAssetCache( UUsdAssetCache* AssetCache );
+
+	/* Returns true if we have at least one possessable or a reference to a subsequence */
+	bool HasData() const;
+
+	/** Call this whenever the stage actor is renamed, to replace the possessable binding with a new one */
+	void OnStageActorRenamed();
 
 	/** Resets the helper, abandoning all managed LevelSequences */
 	void Clear();
@@ -62,4 +69,21 @@ public:
 
 private:
 	TUniquePtr<FUsdLevelSequenceHelperImpl> UsdSequencerImpl;
+};
+
+class USDSTAGE_API FScopedBlockMonitoringChangesForTransaction final
+{
+public:
+	explicit FScopedBlockMonitoringChangesForTransaction( FUsdLevelSequenceHelper& InHelper );
+	~FScopedBlockMonitoringChangesForTransaction();
+
+	FScopedBlockMonitoringChangesForTransaction() = delete;
+	FScopedBlockMonitoringChangesForTransaction( const FScopedBlockMonitoringChangesForTransaction& ) = delete;
+	FScopedBlockMonitoringChangesForTransaction( FScopedBlockMonitoringChangesForTransaction&& ) = delete;
+	FScopedBlockMonitoringChangesForTransaction& operator=( const FScopedBlockMonitoringChangesForTransaction& ) = delete;
+	FScopedBlockMonitoringChangesForTransaction& operator=( FScopedBlockMonitoringChangesForTransaction&& ) = delete;
+
+private:
+	FUsdLevelSequenceHelper& Helper;
+	bool bStoppedMonitoringChanges = false;
 };

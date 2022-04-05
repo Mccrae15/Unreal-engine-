@@ -13,6 +13,7 @@
 #include "Engine/DeveloperSettings.h"
 #include "PhysicsSettingsEnums.h"
 #include "BodySetupEnums.h"
+#include "Chaos/ChaosEngineInterface.h"
 #include "GameFramework/WorldSettings.h"
 #include "PhysicsCoreTypes.h"
 #include "PhysicsSettingsCore.h"
@@ -160,6 +161,10 @@ class ENGINE_API UPhysicsSettings : public UPhysicsSettingsCore
 	UPROPERTY(config, EditAnywhere, Category = Simulation)
 	bool bSimulateAnimPhysicsAfterReset;
 
+	/** Min Physics Delta Time; the simulation will not step if the delta time is below this value */
+	UPROPERTY(config, EditAnywhere, meta = (ClampMin = "0.0", UIMin = "0.0", ClampMax = "0.0001", UIMax = "0.0001"), Category = Framerate)
+	float MinPhysicsDeltaTime;
+
 	/** Max Physics Delta Time to be clamped. */
 	UPROPERTY(config, EditAnywhere, meta=(ClampMin="0.0013", UIMin = "0.0013", ClampMax="1.0", UIMax="1.0"), Category=Framerate)
 	float MaxPhysicsDeltaTime;
@@ -171,6 +176,14 @@ class ENGINE_API UPhysicsSettings : public UPhysicsSettingsCore
 	/** Whether to substep the async physics simulation. This feature is still experimental. Certain functionality might not work correctly*/
 	UPROPERTY(config, EditAnywhere, Category = Framerate)
 	bool bSubsteppingAsync;
+
+	/** Whether to tick physics simulation on an async thread. This feature is still experimental. Certain functionality might not work correctly*/
+	UPROPERTY(config, EditAnywhere, Category = Framerate)
+	bool bTickPhysicsAsync;
+
+	/** If using async, the time step size to tick at. This feature is still experimental. Certain functionality might not work correctly*/
+	UPROPERTY(config, EditAnywhere, Category = Framerate, meta=(editcondition = "bTickPhysicsAsync"))
+	float AsyncFixedTimeStepSize;
 
 	/** Max delta time (in seconds) for an individual simulation substep. */
 	UPROPERTY(config, EditAnywhere, meta = (ClampMin = "0.0013", UIMin = "0.0013", ClampMax = "1.0", UIMax = "1.0", editcondition = "bSubStepping"), Category=Framerate)

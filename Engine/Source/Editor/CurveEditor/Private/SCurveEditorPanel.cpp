@@ -233,7 +233,7 @@ void SCurveEditorPanel::Construct(const FArguments& InArgs, TSharedRef<FCurveEdi
 			SNew(SSplitter)
 			.Orientation(Orient_Horizontal)
 			.Style(FEditorStyle::Get(), "SplitterDark")
-			.PhysicalSplitterHandleSize(2.0f)
+			.PhysicalSplitterHandleSize(3.0f)
 
 			+ SSplitter::Slot()
 			.Value(InArgs._TreeSplitterWidth)
@@ -899,6 +899,13 @@ TSharedRef<SWidget> SCurveEditorPanel::MakeCurveEditorCurveViewOptionsMenu()
 	}
 	MenuBuilder.EndSection();
 
+	MenuBuilder.BeginSection("CurveColors", LOCTEXT("CurveColorsHeader", "Curve Colors"));
+	{
+		MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().SetRandomCurveColorsForSelected);
+		MenuBuilder.AddMenuEntry(FCurveEditorCommands::Get().SetCurveColorsForSelected);
+	}
+	MenuBuilder.EndSection();
+
 	return MenuBuilder.MakeWidget();
 }
 
@@ -1031,6 +1038,7 @@ TSharedPtr<FExtender> SCurveEditorPanel::GetToolbarExtender()
 		static void FillToolbar(FToolBarBuilder& ToolBarBuilder, TSharedRef<SCurveKeyDetailPanel> InKeyDetailsPanel, TSharedRef<SCurveEditorPanel> InEditorPanel)
 		{
 			ToolBarBuilder.BeginSection("View");
+			ToolBarBuilder.BeginStyleOverride("CurveEditorToolbar");
 			{
 				// Dropdown Menu for choosing your viewing mode
 				TAttribute<FSlateIcon> ViewModeIcon;
@@ -1072,7 +1080,7 @@ TSharedPtr<FExtender> SCurveEditorPanel::GetToolbarExtender()
 					FOnGetContent::CreateSP(InEditorPanel, &SCurveEditorPanel::MakeCurveEditorCurveViewOptionsMenu),
 					LOCTEXT("CurveEditorCurveOptions", "Curves Options"),
 					LOCTEXT("CurveEditorCurveOptionsToolTip", "Curve Options"),
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "GenericCurveEditor.VisibilityOptions"));
+					FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Icons.Visibility"));
 
 			}
 			ToolBarBuilder.EndSection();
@@ -1179,7 +1187,9 @@ TSharedPtr<FExtender> SCurveEditorPanel::GetToolbarExtender()
 				ToolBarBuilder.AddToolBarButton(FCurveEditorCommands::Get().OpenUserImplementableFilterWindow);
 			}
 			ToolBarBuilder.EndSection();
+			ToolBarBuilder.EndStyleOverride();
 		}
+
 	};
 
 	Extender->AddToolBarExtension(

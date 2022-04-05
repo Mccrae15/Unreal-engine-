@@ -5,6 +5,8 @@
 #include "TraceServices/Containers/Allocators.h"
 #include "Containers/Array.h"
 
+namespace TraceServices {
+
 template<typename ItemType>
 struct TPagedArrayPage
 {
@@ -220,6 +222,12 @@ private:
 		}
 	}
 
+	FORCEINLINE friend bool operator!=(const TPagedArrayIterator& Lhs, const TPagedArrayIterator& Rhs)
+	{
+		checkSlow(Lhs.Outer == Rhs.Outer); // Needs to be iterators of the same array
+		return Lhs.CurrentItem != Rhs.CurrentItem;
+	}
+	
 	const TPagedArray<ItemType, PageType>* Outer = nullptr;
 	const ItemType* CurrentItem = nullptr;
 	const ItemType* CurrentPageFirstItem = nullptr;
@@ -235,7 +243,7 @@ public:
 	typedef InPageType PageType;
 	typedef TPagedArrayIterator<InItemType, InPageType> TIterator;
 
-	TPagedArray(Trace::ILinearAllocator& InAllocator, uint64 InPageSize)
+	TPagedArray(ILinearAllocator& InAllocator, uint64 InPageSize)
 		: Allocator(InAllocator)
 		, PageSize(InPageSize)
 	{
@@ -396,12 +404,17 @@ public:
 		const ItemType* Item = LastPage->Items + LastPage->Count - 1;
 		return *Item;
 	}
+	
+	FORCEINLINE TIterator begin() { return TIterator(*this, 0, 0); }
+	FORCEINLINE TIterator begin() const { return TIterator(*this, 0, 0); }
+	FORCEINLINE TIterator end() { return TIterator(*this, NumPages()-1, LastPage->Count - 1); }
+	FORCEINLINE TIterator end() const { return TIterator(*this, NumPages()-1, LastPage->Count - 1); }
 
 private:
 	template<typename ItemType, typename PageType>
 	friend class TPagedArrayIterator;
 
-	Trace::ILinearAllocator& Allocator;
+	ILinearAllocator& Allocator;
 	TArray<PageType> PagesArray;
 	PageType* FirstPage = nullptr;
 	PageType* LastPage = nullptr;
@@ -420,3 +433,5 @@ inline SIZE_T GetNum(const TPagedArray<ItemType, PageType>& PagedArray)
 {
 	return PagedArray.NumPages();
 }
+
+} // namespace TraceServices

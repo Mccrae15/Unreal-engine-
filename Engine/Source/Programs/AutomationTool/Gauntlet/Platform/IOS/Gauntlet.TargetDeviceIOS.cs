@@ -591,7 +591,8 @@ namespace Gauntlet
 			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Config, Path.Combine(ProjectDir, "Config"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Content, Path.Combine(ProjectDir, "Content"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Demos, Path.Combine(ProjectDir, "Demos"));
-            LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Profiling, Path.Combine(ProjectDir, "Profiling"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.PersistentDownloadDir, Path.Combine(ProjectDir, "Saved", "PersistentDownloadDir"));
+			LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Profiling, Path.Combine(ProjectDir, "Profiling"));
             LocalDirectoryMappings.Add(EIntendedBaseCopyDirectory.Saved, ProjectDir);
         }
 
@@ -747,7 +748,7 @@ namespace Gauntlet
 		void KillZombies()
 		{
 
-			if (Globals.IsWorker || ZombiesKilled)
+			if (ZombiesKilled)
 			{
 				return;
 			}
@@ -765,7 +766,7 @@ namespace Gauntlet
 		{
 			get
 			{	
-				return Path.Combine(Globals.TempDir, string.Format("IOSAppCache{0}", Globals.WorkerID == -1 ? "" : Globals.WorkerID.ToString()));
+				return Path.Combine(Globals.TempDir, "IOSAppCache");
 			}
 		}
 
@@ -894,7 +895,7 @@ namespace Gauntlet
 				CommandLine = String.Format("--id {0} {1}", DeviceName, CommandLine);
 			}
 
-			String IOSDeployPath = Path.Combine(Globals.UE4RootDir, "Engine/Extras/ThirdPartyNotUE/ios-deploy/bin/ios-deploy");
+			String IOSDeployPath = Path.Combine(Globals.UnrealRootDir, "Engine/Extras/ThirdPartyNotUE/ios-deploy/bin/ios-deploy");
 
 			if (!File.Exists(IOSDeployPath))
 			{
@@ -945,18 +946,6 @@ namespace Gauntlet
 			}
 
 			return Result;
-		}
-
-		public bool IsOSOutOfDate()
-		{
-			//TODO: not yet implemented
-			return false;
-		}
-
-		public bool UpdateOS()
-		{
-			//TODO: not yet implemented
-			return true;
 		}
 	}
 
@@ -1187,5 +1176,11 @@ namespace Gauntlet
 
 		}
 
+	}
+
+	public class IOSBuildSupport : BaseBuildSupport
+	{
+		protected override BuildFlags SupportedBuildTypes => BuildFlags.Packaged | BuildFlags.CanReplaceCommandLine | BuildFlags.CanReplaceExecutable | BuildFlags.Bulk | BuildFlags.NotBulk;
+		protected override UnrealTargetPlatform? Platform => UnrealTargetPlatform.IOS;
 	}
 }

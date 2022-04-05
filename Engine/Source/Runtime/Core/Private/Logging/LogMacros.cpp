@@ -2,6 +2,7 @@
 
 #include "Logging/LogMacros.h"
 #include "CoreGlobals.h"
+#include "HAL/Platform.h"
 #include "Misc/ScopeLock.h"
 #include "Misc/OutputDeviceRedirector.h"
 #include "Misc/FeedbackContext.h"
@@ -9,7 +10,7 @@
 #include "Stats/Stats.h"
 #include "ProfilingDebugging/CsvProfiler.h"
 
-void StaticFailDebug( const TCHAR* Error, const ANSICHAR* File, int32 Line, const TCHAR* Description, bool bIsEnsure, int32 NumStackFramesToIgnore );
+void StaticFailDebug( const TCHAR* Error, const ANSICHAR* File, int32 Line, void* ProgramCounter, const TCHAR* Description, bool bIsEnsure );
 
 /** Statics to prevent FMsg::Logf from allocating too much stack memory. */
 static FCriticalSection* GetMsgLogfStaticBufferGuard()
@@ -67,7 +68,7 @@ void FMsg::LogfImpl(const ANSICHAR* File, int32 Line, const FLogCategoryName& Ca
 		}
 
 		const int32 NumStackFramesToIgnore = 1;
-		StaticFailDebug(TEXT("Fatal error:"), File, Line, Message, false, NumStackFramesToIgnore);
+		StaticFailDebug(TEXT("Fatal error:"), File, Line, PLATFORM_RETURN_ADDRESS(), Message, false);
 		FDebug::AssertFailed("", File, Line, Message);
 	}
 #endif
@@ -114,7 +115,7 @@ void FMsg::Logf_InternalImpl(const ANSICHAR* File, int32 Line, const FLogCategor
 		}
 
 		const int32 NumStackFramesToIgnore = 1;
-		StaticFailDebug(TEXT("Fatal error:"), File, Line, Message, false, NumStackFramesToIgnore);
+		StaticFailDebug(TEXT("Fatal error:"), File, Line, PLATFORM_RETURN_ADDRESS(), Message, false);
 	}
 #endif
 }

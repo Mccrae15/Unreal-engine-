@@ -15,12 +15,14 @@
 
 #include "UsdWrappers/SdfPath.h"
 #include "UsdWrappers/UsdPrim.h"
+#include "UsdWrappers/UsdStage.h"
 
 #include "Async/Async.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/StaticMesh.h"
 #include "GeometryCache.h"
+#include "GeometryCacheComponent.h"
 #include "Interfaces/ITargetPlatform.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
 #include "Materials/Material.h"
@@ -34,7 +36,6 @@
 #include "StaticMeshAttributes.h"
 #include "StaticMeshOperations.h"
 #include "StaticMeshResources.h"
-#include "TessellationRendering.h"
 #include "UObject/SoftObjectPath.h"
 
 #if WITH_EDITOR
@@ -65,6 +66,118 @@ static FAutoConsoleVariableRef CVarUsdUseGeometryCache(
 
 namespace UsdGeomMeshTranslatorImpl
 {
+	bool ShouldEnableNanite(
+		const TArray<FMeshDescription>& LODIndexToMeshDescription,
+		const TArray<UsdUtils::FUsdPrimMaterialAssignmentInfo>& LODIndexToMaterialInfo,
+		const FUsdSchemaTranslationContext& Context,
+		const UE::FUsdPrim& Prim
+	)
+	{
+		if ( LODIndexToMeshDescription.Num() < 1 )
+		{
+			return false;
+		}
+
+		FScopedUsdAllocs UsdAllocs;
+
+		pxr::UsdPrim UsdPrim{ Prim };
+		if ( !UsdPrim )
+		{
+			return false;
+		}
+
+		bool bHasNaniteOverrideEnabled = false;
+
+		// We want Nanite because of an override on Prim
+		if ( pxr::UsdAttribute NaniteOverride = UsdPrim.GetAttribute( UnrealIdentifiers::UnrealNaniteOverride ) )
+		{
+			pxr::TfToken OverrideValue;
+			if ( NaniteOverride.Get( &OverrideValue ) )
+			{
+				if ( OverrideValue == UnrealIdentifiers::UnrealNaniteOverrideEnable )
+				{
+					bHasNaniteOverrideEnabled = true;
+					UE_LOG( LogUsd, Log, TEXT( "Trying to enable Nanite for mesh generated for prim '%s' as the '%s' attribute is set to '%s'" ),
+						*Prim.GetPrimPath().GetString(),
+						*UsdToUnreal::ConvertToken( UnrealIdentifiers::UnrealNaniteOverride ),
+						*UsdToUnreal::ConvertToken( UnrealIdentifiers::UnrealNaniteOverrideEnable )
+					);
+
+				}
+				else if ( OverrideValue == UnrealIdentifiers::UnrealNaniteOverrideDisable )
+				{
+					UE_LOG( LogUsd, Log, TEXT( "Not enabling Nanite for mesh generated for prim '%s' as the '%s' attribute is set to '%s'" ),
+						*Prim.GetPrimPath().GetString(),
+						*UsdToUnreal::ConvertToken( UnrealIdentifiers::UnrealNaniteOverride ),
+						*UsdToUnreal::ConvertToken( UnrealIdentifiers::UnrealNaniteOverrideDisable )
+					);
+					return false;
+				}
+			}
+		}
+
+		// We want Nanite because the mesh is large enough for the threshold, which is set to something valid
+		if ( !bHasNaniteOverrideEnabled )
+		{
+			const int32 NumTriangles = LODIndexToMeshDescription[ 0 ].Triangles().Num();
+			if ( NumTriangles >= Context.NaniteTriangleThreshold )
+			{
+				UE_LOG( LogUsd, Verbose, TEXT( "Trying to enable Nanite for mesh generated for prim '%s' as it has '%d' triangles, and the threshold is '%d'" ),
+					*Prim.GetPrimPath().GetString(),
+					NumTriangles,
+					Context.NaniteTriangleThreshold
+				);
+			}
+			else
+			{
+				UE_LOG( LogUsd, Verbose, TEXT( "Not enabling Nanite for mesh generated for prim '%s' as it has '%d' triangles, and the threshold is '%d'" ),
+					*Prim.GetPrimPath().GetString(),
+					NumTriangles,
+					Context.NaniteTriangleThreshold
+				);
+				return false;
+			}
+		}
+
+		// Don't enable Nanite if we have more than one LOD. This means the Mesh came from the LOD variant set setup, and
+		// we're considering the LOD setup "stronger" than the Nanite override: If you have all that LOD variant set situation you
+		// likely don't want Nanite for one of the LOD meshes anyway, as that doesn't really make any sense.
+		// If the user wants to have Nanite within the variant set all he would otherwise need is to name the variant set something
+		// else other than LOD.
+		if ( LODIndexToMeshDescription.Num() > 1 )
+		{
+			UE_LOG( LogUsd, Warning, TEXT( "Not enabling Nanite for mesh generated for prim '%s' as it has more than one generated LOD (and so came from a LOD variant set setup)" ),
+				*Prim.GetPrimPath().GetString()
+			);
+			return false;
+		}
+
+		// We cannot enable Nanite here due to a limit on the number of material slots
+		if ( LODIndexToMaterialInfo.Num() > 0 )
+		{
+			const int32 NumSections = LODIndexToMaterialInfo[0].Slots.Num();
+			const int32 MaxNumSections = 64; // There is no define for this, but it's checked for on NaniteBuilder.cpp, FBuilderModule::Build
+			if ( NumSections > MaxNumSections )
+			{
+				UE_LOG( LogUsd, Warning, TEXT( "Not enabling Nanite for mesh generated for prim '%s' as LOD0 has '%d' material slots, which is above the Nanite limit of '%d'" ),
+					*Prim.GetPrimPath().GetString(),
+					NumSections,
+					MaxNumSections
+				);
+				return false;
+			}
+		}
+
+#if !WITH_EDITOR
+		UE_LOG( LogUsd, Warning, TEXT( "Not enabling Nanite for mesh generated for prim '%s' as we can't setup Nanite during runtime" ),
+			*Prim.GetPrimPath().GetString()
+		);
+		return false;
+#endif
+
+		return true;
+	}
+
 	bool IsAnimated( const pxr::UsdPrim& Prim )
 	{
 		FScopedUsdAllocs UsdAllocs;
@@ -82,7 +195,7 @@ namespace UsdGeomMeshTranslatorImpl
 			{
 				const pxr::UsdAttribute& Attribute = Prim.GetAttribute( AttributeName );
 
-				if ( Attribute.ValueMightBeTimeVarying() )
+				if ( Attribute && Attribute.ValueMightBeTimeVarying() )
 				{
 					bHasAttributesTimeSamples = true;
 					break;
@@ -338,7 +451,7 @@ namespace UsdGeomMeshTranslatorImpl
 	// Note that these other LODs will be hidden in other variants, and won't show up on traversal unless we actively switch the variants (which we do here).
 	// We use a separate function for this because there is a very specific set of conditions where we successfully can do this, and we
 	// want to fall back to just parsing UsdMesh as a simple single-LOD mesh if we fail.
-	bool TryLoadingMultipleLODs( const pxr::UsdTyped& UsdMesh, TArray<FMeshDescription>& OutLODIndexToMeshDescription, TArray<UsdUtils::FUsdPrimMaterialAssignmentInfo>& OutLODIndexToMaterialInfo, const TMap< FString, TMap< FString, int32 > >& InMaterialToPrimvarToUVIndex, const pxr::UsdTimeCode InTimeCode )
+	bool TryLoadingMultipleLODs( const pxr::UsdTyped& UsdMesh, TArray<FMeshDescription>& OutLODIndexToMeshDescription, TArray<UsdUtils::FUsdPrimMaterialAssignmentInfo>& OutLODIndexToMaterialInfo, const TMap< FString, TMap< FString, int32 > >& InMaterialToPrimvarToUVIndex, const pxr::UsdTimeCode InTimeCode, const pxr::TfToken& RenderContext )
 	{
 		FScopedUsdAllocs Allocs;
 
@@ -365,7 +478,7 @@ namespace UsdGeomMeshTranslatorImpl
 			FStaticMeshAttributes StaticMeshAttributes( TempMeshDescription );
 			StaticMeshAttributes.Register();
 
-			bool bSuccess = UsdToUnreal::ConvertGeomMesh( LODMesh, TempMeshDescription, TempMaterialInfo, FTransform::Identity, InMaterialToPrimvarToUVIndex, InTimeCode );
+			bool bSuccess = UsdToUnreal::ConvertGeomMesh( LODMesh, TempMeshDescription, TempMaterialInfo, FTransform::Identity, InMaterialToPrimvarToUVIndex, InTimeCode, RenderContext );
 			if ( bSuccess )
 			{
 				LODIndexToMeshDescriptionMap.Add( LODIndex, MoveTemp( TempMeshDescription ) );
@@ -398,10 +511,16 @@ namespace UsdGeomMeshTranslatorImpl
 			return;
 		}
 
+		pxr::TfToken RenderContextToken = pxr::UsdShadeTokens->universalRenderContext;
+		if ( !RenderContext.IsNone() )
+		{
+			RenderContextToken = UnrealToUsd::ConvertToken( *RenderContext.ToString() ).Get();
+		}
+
 		bool bInterpretedLODs = false;
 		if ( bInterpretLODs )
 		{
-			bInterpretedLODs = TryLoadingMultipleLODs( UsdMesh, OutLODIndexToMeshDescription, OutLODIndexToMaterialInfo, MaterialToPrimvarToUVIndex, TimeCode );
+			bInterpretedLODs = TryLoadingMultipleLODs( UsdMesh, OutLODIndexToMeshDescription, OutLODIndexToMaterialInfo, MaterialToPrimvarToUVIndex, TimeCode, RenderContextToken );
 		}
 
 		if ( !bInterpretedLODs )
@@ -411,12 +530,6 @@ namespace UsdGeomMeshTranslatorImpl
 
 			FStaticMeshAttributes StaticMeshAttributes( TempMeshDescription );
 			StaticMeshAttributes.Register();
-
-			pxr::TfToken RenderContextToken = pxr::UsdShadeTokens->universalRenderContext;
-			if ( !RenderContext.IsNone() )
-			{
-				RenderContextToken = UnrealToUsd::ConvertToken( *RenderContext.ToString() ).Get();
-			}
 
 			bool bSuccess = UsdToUnreal::ConvertGeomMesh( UsdMesh, TempMeshDescription, TempMaterialInfo, FTransform::Identity, MaterialToPrimvarToUVIndex, TimeCode, RenderContextToken );
 
@@ -428,26 +541,46 @@ namespace UsdGeomMeshTranslatorImpl
 		}
 	}
 
-	UStaticMesh* CreateStaticMesh( TArray<FMeshDescription>& LODIndexToMeshDescription, FUsdSchemaTranslationContext& Context, bool& bOutIsNew )
+	UStaticMesh* CreateStaticMesh( TArray<FMeshDescription>& LODIndexToMeshDescription, FUsdSchemaTranslationContext& Context, const FString& MeshName, const bool bShouldEnableNanite, bool& bOutIsNew )
 	{
 		UStaticMesh* StaticMesh = nullptr;
 
 		bool bHasValidMeshDescription = false;
 
 		FSHAHash AllLODHash;
-		FSHA1 SHA1;
-		for (const FMeshDescription& MeshDescription : LODIndexToMeshDescription )
 		{
-			FSHAHash LODHash = FStaticMeshOperations::ComputeSHAHash( MeshDescription );
-			SHA1.Update( &LODHash.Hash[0], sizeof(LODHash.Hash) );
+			FSHA1 SHA1;
 
-			if ( !MeshDescription.IsEmpty() )
+			for (const FMeshDescription& MeshDescription : LODIndexToMeshDescription )
 			{
-				bHasValidMeshDescription = true;
+				FSHAHash LODHash = FStaticMeshOperations::ComputeSHAHash( MeshDescription );
+				SHA1.Update( &LODHash.Hash[0], sizeof(LODHash.Hash) );
+
+				if ( !MeshDescription.IsEmpty() )
+				{
+					bHasValidMeshDescription = true;
+				}
 			}
+
+			// Put whether we want Nanite or not within the hash, so that the user could have one instance of the mesh without Nanite and another
+			// with Nanite if he wants to (using the override parameters). This also nicely handles a couple of edge cases:
+			//	- What if we change a mesh from having Nanite disabled to enabled, or vice-versa (e.g. by changing the threshold)? We'd reuse the mesh from the asset cache
+			//    in that case, so we'd need to rebuild it;
+			//  - What if multiple meshes on the scene hash the same, but only one of them has a Nanite override attribute?
+			// If we always enabled Nanite when either the mesh from the asset cache or the new prim wanted it, we wouldn't be able to turn Nanite off from
+			// a single mesh that once had it enabled: It would always find the old Nanite-enabled mesh on the cache and leave it enabled.
+			// If we always set Nanite to whatever the current prim wants, we could handle a single mesh turning Nanite on/off alright, but then we can't handle
+			// the case where multiple meshes on the scene hash the same and only one of them has the override: The last prim would win, and they'd all be randomly either
+			// enabled or disabled.
+			// Note that we could also fix these problems by trying to check if a mesh is reused due to being in the cache from an old instance of the stage, or due to being used by
+			// another prim, but that doesn't seem like a good path to go down
+			// Additionally, hashing this bool also prevents us from having to force-rebuild a mesh to switch its Nanite flag, which could be tricky to do since some of
+			// these build steps are async/thread-pool based.
+			SHA1.Update( reinterpret_cast< const uint8* >( &bShouldEnableNanite ), sizeof( bShouldEnableNanite ) );
+
+			SHA1.Final();
+			SHA1.GetHash(&AllLODHash.Hash[0]);
 		}
-		SHA1.Final();
-		SHA1.GetHash(&AllLODHash.Hash[0]);
 
 		StaticMesh = Cast< UStaticMesh >( Context.AssetCache->GetCachedAsset( AllLODHash.ToString() ) );
 
@@ -455,7 +588,8 @@ namespace UsdGeomMeshTranslatorImpl
 		{
 			bOutIsNew = true;
 
-			StaticMesh = NewObject< UStaticMesh >( GetTransientPackage(), NAME_None, Context.ObjectFlags | EObjectFlags::RF_Public );
+			FName AssetName = MakeUniqueObjectName( GetTransientPackage(), UStaticMesh::StaticClass(), *FPaths::GetBaseFilename( MeshName ) );
+			StaticMesh = NewObject< UStaticMesh >( GetTransientPackage(), AssetName, Context.ObjectFlags | EObjectFlags::RF_Public );
 
 #if WITH_EDITOR
 			for ( int32 LODIndex = 0; LODIndex < LODIndexToMeshDescription.Num(); ++LODIndex )
@@ -470,7 +604,6 @@ namespace UsdGeomMeshTranslatorImpl
 				SourceModel.BuildSettings.bGenerateLightmapUVs = false;
 				SourceModel.BuildSettings.bRecomputeNormals = bHasInvalidNormals;
 				SourceModel.BuildSettings.bRecomputeTangents = bHasInvalidTangents;
-				SourceModel.BuildSettings.bBuildAdjacencyBuffer = false;
 				SourceModel.BuildSettings.bBuildReversedIndexBuffer = false;
 
 				FMeshDescription* StaticMeshDescription = StaticMesh->CreateMeshDescription(LODIndex);
@@ -506,7 +639,7 @@ namespace UsdGeomMeshTranslatorImpl
 		StaticMesh.CreateBodySetup();
 	}
 
-	bool BuildStaticMesh( UStaticMesh& StaticMesh, const FStaticFeatureLevel& FeatureLevel, TArray<FMeshDescription*>& LODIndexToMeshDescription )
+	bool BuildStaticMesh( UStaticMesh& StaticMesh, const FStaticFeatureLevel& FeatureLevel, TArray<FMeshDescription>& LODIndexToMeshDescription )
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE( UsdGeomMeshTranslatorImpl::BuildStaticMesh );
 
@@ -516,22 +649,6 @@ namespace UsdGeomMeshTranslatorImpl
 		}
 
 #if WITH_EDITOR
-		// Enable adjacency buffer if we're using a material that requires it
-		for ( const FStaticMaterial& StaticMaterial : StaticMesh.GetStaticMaterials() )
-		{
-			if ( StaticMaterial.MaterialInterface )
-			{
-				if ( RequiresAdjacencyInformation( StaticMaterial.MaterialInterface, nullptr, FeatureLevel ) )
-				{
-					for ( FStaticMeshSourceModel& SourceModel : StaticMesh.GetSourceModels() )
-					{
-						SourceModel.BuildSettings.bBuildAdjacencyBuffer = true;
-					}
-					break;
-				}
-			}
-		}
-
 		ITargetPlatformManagerModule& TargetPlatformManager = GetTargetPlatformManagerRef();
 		ITargetPlatform* RunningPlatform = TargetPlatformManager.GetRunningTargetPlatform();
 		check( RunningPlatform );
@@ -546,20 +663,20 @@ namespace UsdGeomMeshTranslatorImpl
 		{
 			FStaticMeshLODResources& LODResources = StaticMesh.GetRenderData()->LODResources[ LODIndex ];
 
-			FMeshDescription* MeshDescription = LODIndexToMeshDescription[ LODIndex ];
-			TVertexInstanceAttributesConstRef< FVector4 > MeshDescriptionColors = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector4>( MeshAttribute::VertexInstance::Color );
+			FMeshDescription& MeshDescription = LODIndexToMeshDescription[ LODIndex ];
+			TVertexInstanceAttributesConstRef< FVector4f > MeshDescriptionColors = MeshDescription.VertexInstanceAttributes().GetAttributesRef<FVector4f>( MeshAttribute::VertexInstance::Color );
 
 			// Compute normals here if necessary because they're not going to be computed via the regular static mesh build pipeline at runtime
 			// (i.e. StaticMeshBuilder is not available at runtime)
 			// We need polygon info because ComputeTangentsAndNormals uses it to repair the invalid vertex normals/tangents
 			// Can't calculate just the required polygons as ComputeTangentsAndNormals is parallel and we can't guarantee thread-safe access patterns
-			FStaticMeshOperations::ComputePolygonTangentsAndNormals( *MeshDescription );
-			FStaticMeshOperations::ComputeTangentsAndNormals( *MeshDescription, EComputeNTBsFlags::UseMikkTSpace );
+			FStaticMeshOperations::ComputeTriangleTangentsAndNormals( MeshDescription );
+			FStaticMeshOperations::ComputeTangentsAndNormals( MeshDescription, EComputeNTBsFlags::UseMikkTSpace );
 
 			// Manually set this as it seems the UStaticMesh only sets this whenever the mesh is serialized, which we won't do
 			LODResources.bHasColorVertexData = MeshDescriptionColors.GetNumElements() > 0;
 
-			StaticMesh.BuildFromMeshDescription( *MeshDescription, LODResources );
+			StaticMesh.BuildFromMeshDescription( MeshDescription, LODResources );
 		}
 
 #endif // WITH_EDITOR
@@ -570,7 +687,7 @@ namespace UsdGeomMeshTranslatorImpl
 		return true;
 	}
 
-	void PostBuildStaticMesh( UStaticMesh& StaticMesh, const TArray<FMeshDescription*>& LODIndexToMeshDescription )
+	void PostBuildStaticMesh( UStaticMesh& StaticMesh, const TArray<FMeshDescription>& LODIndexToMeshDescription )
 	{
 		// For runtime builds, the analogue for this stuff is already done from within BuildFromMeshDescriptions
 		TRACE_CPUPROFILER_EVENT_SCOPE( UsdGeomMeshTranslatorImpl::PostBuildStaticMesh );
@@ -587,13 +704,58 @@ namespace UsdGeomMeshTranslatorImpl
 		StaticMesh.ClearMeshDescriptions(); // Clear mesh descriptions to reduce memory usage, they are kept only in bulk data form
 #else
 		// Fetch the MeshDescription from the imported LODIndexToMeshDescription as StaticMesh.GetMeshDescription is editor-only
-		StaticMesh.GetRenderData()->Bounds = LODIndexToMeshDescription[ 0 ]->GetBounds();
+		StaticMesh.GetRenderData()->Bounds = LODIndexToMeshDescription[ 0 ].GetBounds();
 		StaticMesh.CalculateExtendedBounds();
 #endif // WITH_EDITOR
 	}
 
 #if WITH_EDITOR
 	void GeometryCacheDataForMeshDescription( FGeometryCacheMeshData& OutMeshData, FMeshDescription& MeshDescription );
+
+	void GetGeometryCacheDataTimeCodeRange( const UE::FUsdStage& Stage, const FString& PrimPath, int32& OutStartFrame, int32& OutEndFrame )
+	{
+		if ( !Stage || PrimPath.IsEmpty() )
+		{
+			return;
+		}
+
+		FScopedUsdAllocs Allocs;
+
+		pxr::UsdPrim UsdPrim = pxr::UsdPrim{ Stage.GetPrimAtPath( UE::FSdfPath{ *PrimPath } ) };
+		if ( !UsdPrim )
+		{
+			return;
+		}
+
+		constexpr bool bIncludeInherited = false;
+		pxr::TfTokenVector GeomMeshAttributeNames = pxr::UsdGeomMesh::GetSchemaAttributeNames( bIncludeInherited );
+		pxr::TfTokenVector GeomPointBasedAttributeNames = pxr::UsdGeomPointBased::GetSchemaAttributeNames( bIncludeInherited );
+
+		GeomMeshAttributeNames.reserve( GeomMeshAttributeNames.size() + GeomPointBasedAttributeNames.size() );
+		GeomMeshAttributeNames.insert( GeomMeshAttributeNames.end(), GeomPointBasedAttributeNames.begin(), GeomPointBasedAttributeNames.end() );
+
+		TOptional<double> MinStartTimeCode;
+		TOptional<double> MaxEndTimeCode;
+
+		for ( const pxr::TfToken& AttributeName : GeomMeshAttributeNames )
+		{
+			if ( const pxr::UsdAttribute& Attribute = UsdPrim.GetAttribute( AttributeName ) )
+			{
+				std::vector<double> TimeSamples;
+				if ( Attribute.GetTimeSamples( &TimeSamples ) && TimeSamples.size() > 0 )
+				{
+					MinStartTimeCode = FMath::Min( MinStartTimeCode.Get( TNumericLimits<double>::Max() ), TimeSamples[ 0 ] );
+					MaxEndTimeCode = FMath::Max( MaxEndTimeCode.Get( TNumericLimits<double>::Lowest() ), TimeSamples[ TimeSamples.size() - 1 ] );
+				}
+			}
+		}
+
+		if ( MinStartTimeCode.IsSet() && MaxEndTimeCode.IsSet() )
+		{
+			OutStartFrame = FMath::FloorToInt( MinStartTimeCode.GetValue() );
+			OutEndFrame = FMath::CeilToInt( MaxEndTimeCode.GetValue() );
+		}
+	}
 
 	UGeometryCache* CreateGeometryCache( const FString& InPrimPath, TArray< FMeshDescription >& LODIndexToMeshDescription, TSharedRef< FUsdSchemaTranslationContext> Context, bool& bOutIsNew )
 	{
@@ -622,33 +784,64 @@ namespace UsdGeomMeshTranslatorImpl
 		{
 			bOutIsNew = true;
 
-			GeometryCache = NewObject< UGeometryCache >( GetTransientPackage(), NAME_None, Context->ObjectFlags | EObjectFlags::RF_Public );
+			const FName AssetName = MakeUniqueObjectName( GetTransientPackage(), UGeometryCache::StaticClass(), *FPaths::GetBaseFilename( InPrimPath ) );
+			GeometryCache = NewObject< UGeometryCache >( GetTransientPackage(), AssetName, Context->ObjectFlags | EObjectFlags::RF_Public );
+
+			const UE::FUsdStage& Stage = Context->Stage;
+
+			TMap< FString, TMap< FString, int32 > > Unused;
+			TMap< FString, TMap< FString, int32 > >* MaterialToPrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex ? Context->MaterialToPrimvarToUVIndex : &Unused;
+
+			// Fetch the animated mesh start/end frame as they may be different from just the stage's start and end time codes
+			int32 StartFrame = FMath::FloorToInt( Stage.GetStartTimeCode() );
+			int32 EndFrame = FMath::CeilToInt( Stage.GetEndTimeCode() );
+			UsdGeomMeshTranslatorImpl::GetGeometryCacheDataTimeCodeRange( Stage, InPrimPath, StartFrame, EndFrame );
+
+			// The GeometryCache module expects the end frame to be one past the last animation frame
+			EndFrame += 1;
 
 			// Create and configure a new USDTrack to be added to the GeometryCache
 			UGeometryCacheTrackUsd* UsdTrack = NewObject< UGeometryCacheTrackUsd >( GeometryCache );
-
-			UE::FUsdStage Stage = Context->Stage;
-			TMap< FString, TMap< FString, int32 > > MaterialToPrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex ? *Context->MaterialToPrimvarToUVIndex : TMap< FString, TMap< FString, int32 > >();
-			const bool bAllowInterpretingLODs = Context->bAllowInterpretingLODs;
-			FName RenderContext = Context->RenderContext;
-			UsdTrack->Initialize( [ = ]( FGeometryCacheMeshData& OutMeshData, const FString& InPrimPath, float Time )
+			UsdTrack->Initialize(
+				Stage,
+				InPrimPath,
+				Context->RenderContext,
+				*MaterialToPrimvarToUVIndex,
+				StartFrame,
+				EndFrame,
+				[InPrimPath]( const TWeakObjectPtr<UGeometryCacheTrackUsd> TrackPtr, float Time, FGeometryCacheMeshData& OutMeshData )
 				{
+					UGeometryCacheTrackUsd* Track = TrackPtr.Get();
+					if ( !Track )
+					{
+						return;
+					}
+
+					if ( !Track->CurrentStagePinned )
+					{
+						return;
+					}
+
+					UE::FUsdPrim Prim = Track->CurrentStagePinned.GetPrimAtPath( UE::FSdfPath{ *Track->PrimPath } );
+					if ( !Prim )
+					{
+						return;
+					}
+
 					// Get MeshDescription associated with the prim
 					// #ueent_todo: Replace MeshDescription with RawMesh to optimize
 					TArray< FMeshDescription > LODIndexToMeshDescription;
 					TArray< UsdUtils::FUsdPrimMaterialAssignmentInfo > LODIndexToMaterialInfo;
-
-					UE::FSdfPath PrimPath( *InPrimPath );
-					UE::FUsdPrim Prim = Stage.GetPrimAtPath( PrimPath );
+					const bool bAllowInterpretingLODs = false;  // GeometryCaches don't have LODs, so we will never do this
 
 					UsdGeomMeshTranslatorImpl::LoadMeshDescriptions(
 						pxr::UsdTyped( Prim ),
 						LODIndexToMeshDescription,
 						LODIndexToMaterialInfo,
-						MaterialToPrimvarToUVIndex,
+						Track->MaterialToPrimvarToUVIndex,
 						pxr::UsdTimeCode( Time ),
 						bAllowInterpretingLODs,
-						RenderContext
+						Track->RenderContext
 					);
 
 					// Convert the MeshDescription to MeshData
@@ -660,7 +853,7 @@ namespace UsdGeomMeshTranslatorImpl
 							const float ComparisonThreshold = THRESH_POINTS_ARE_SAME;
 
 							// This function make sure the Polygon Normals Tangents Binormals are computed and also remove degenerated triangle from the render mesh description.
-							FStaticMeshOperations::ComputePolygonTangentsAndNormals(MeshDescription, ComparisonThreshold);
+							FStaticMeshOperations::ComputeTriangleTangentsAndNormals( MeshDescription, ComparisonThreshold );
 
 							// Compute any missing normals or tangents.
 							// Static meshes always blend normals of overlapping corners.
@@ -671,15 +864,9 @@ namespace UsdGeomMeshTranslatorImpl
 							FStaticMeshOperations::ComputeTangentsAndNormals( MeshDescription, ComputeNTBsOptions );
 
 							UsdGeomMeshTranslatorImpl::GeometryCacheDataForMeshDescription( OutMeshData, MeshDescription );
-
-							return true;
 						}
 					}
-					return false;
-				},
-				InPrimPath,
-				Stage.GetStartTimeCode(),
-				Stage.GetEndTimeCode()
+				}
 			);
 
 			GeometryCache->AddTrack( UsdTrack );
@@ -727,12 +914,12 @@ namespace UsdGeomMeshTranslatorImpl
 
 		FStaticMeshAttributes MeshDescriptionAttributes( MeshDescription );
 
-		TVertexAttributesConstRef< FVector > VertexPositions = MeshDescriptionAttributes.GetVertexPositions();
-		TVertexInstanceAttributesConstRef< FVector > VertexInstanceNormals = MeshDescriptionAttributes.GetVertexInstanceNormals();
-		TVertexInstanceAttributesConstRef< FVector > VertexInstanceTangents = MeshDescriptionAttributes.GetVertexInstanceTangents();
+		TVertexAttributesConstRef< FVector3f > VertexPositions = MeshDescriptionAttributes.GetVertexPositions();
+		TVertexInstanceAttributesConstRef< FVector3f > VertexInstanceNormals = MeshDescriptionAttributes.GetVertexInstanceNormals();
+		TVertexInstanceAttributesConstRef< FVector3f > VertexInstanceTangents = MeshDescriptionAttributes.GetVertexInstanceTangents();
 		TVertexInstanceAttributesConstRef< float > VertexInstanceBinormalSigns = MeshDescriptionAttributes.GetVertexInstanceBinormalSigns();
-		TVertexInstanceAttributesConstRef< FVector4 > VertexInstanceColors = MeshDescriptionAttributes.GetVertexInstanceColors();
-		TVertexInstanceAttributesConstRef< FVector2D > VertexInstanceUVs = MeshDescriptionAttributes.GetVertexInstanceUVs();
+		TVertexInstanceAttributesConstRef< FVector4f > VertexInstanceColors = MeshDescriptionAttributes.GetVertexInstanceColors();
+		TVertexInstanceAttributesConstRef< FVector2f > VertexInstanceUVs = MeshDescriptionAttributes.GetVertexInstanceUVs();
 
 		const int32 NumVertices = MeshDescription.Vertices().Num();
 		const int32 NumTriangles = MeshDescription.Triangles().Num();
@@ -760,15 +947,15 @@ namespace UsdGeomMeshTranslatorImpl
 			BatchInfo.MaterialIndex = MaterialIndex++;
 
 			int32 TriangleCount = 0;
-			for ( FPolygonID PolygonID : MeshDescription.GetPolygonGroupPolygons( PolygonGroupID ) )
+			for ( FPolygonID PolygonID : MeshDescription.GetPolygonGroupPolygonIDs( PolygonGroupID ) )
 			{
-				for ( FTriangleID TriangleID : MeshDescription.GetPolygonTriangleIDs( PolygonID ) )
+				for ( FTriangleID TriangleID : MeshDescription.GetPolygonTriangles( PolygonID ) )
 				{
 					for ( FVertexInstanceID VertexInstanceID : MeshDescription.GetTriangleVertexInstances( TriangleID ) )
 					{
-						const FVector& Position = VertexPositions[ MeshDescription.GetVertexInstanceVertex( VertexInstanceID ) ];
+						const FVector3f& Position = VertexPositions[ MeshDescription.GetVertexInstanceVertex( VertexInstanceID ) ];
 						OutMeshData.Positions.Add( Position );
-						BoundingBox += Position;
+						BoundingBox += (FVector)Position;
 
 						OutMeshData.Indices.Add( VertexIndex++ );
 
@@ -789,7 +976,7 @@ namespace UsdGeomMeshTranslatorImpl
 				}
 			}
 
-			OutMeshData.BoundingBox = BoundingBox;
+			OutMeshData.BoundingBox = (FBox3f)BoundingBox;
 
 			BatchInfo.NumTriangles = TriangleCount;
 			OutMeshData.BatchesInfo.Add( BatchInfo );
@@ -821,16 +1008,33 @@ void FBuildStaticMeshTaskChain::SetupTasks()
 			FModuleManager::LoadModuleChecked< IMeshBuilderModule >( TEXT("MeshBuilder") );
 #endif // WITH_EDITOR
 
-			bool bIsNew = true;
-			StaticMesh = UsdGeomMeshTranslatorImpl::CreateStaticMesh( LODIndexToMeshDescription, *Context, bIsNew );
-
 			const FString PrimPathString = PrimPath.GetString();
+
+			// It's useful to have the LOD Mesh prims be named "LOD0", "LOD1", etc. within the LOD variants so that we
+			// can easily tell which Mesh is actually meant to be the LOD mesh (in case there are more Meshes in each
+			// variant or other Meshes outside of the variant), but it's not ideal to have all the generated assets end
+			// up imported as "SM_LOD0_22", "SM_LOD0_23", etc. So here we fetch the parent prim name in case we're a LOD
+			FString MeshName;
+			if ( Context->bAllowInterpretingLODs && UsdUtils::IsGeomMeshALOD( GetPrim() ) )
+			{
+				MeshName = PrimPath.GetParentPath().GetString();
+			}
+			else
+			{
+				MeshName = PrimPath.GetString();
+			}
+
+			bool bIsNew = true;
+			const bool bShouldEnableNanite = UsdGeomMeshTranslatorImpl::ShouldEnableNanite( LODIndexToMeshDescription, LODIndexToMaterialInfo, *Context, GetPrim() );
+			StaticMesh = UsdGeomMeshTranslatorImpl::CreateStaticMesh( LODIndexToMeshDescription, *Context, MeshName, bShouldEnableNanite, bIsNew );
 
 			if ( StaticMesh )
 			{
 				Context->AssetCache->LinkAssetToPrim( PrimPathString, StaticMesh );
 
 #if WITH_EDITOR
+				StaticMesh->NaniteSettings.bEnabled = bShouldEnableNanite;
+
 				if ( bIsNew )
 				{
 					UUsdAssetImportData* ImportData = NewObject<UUsdAssetImportData>( StaticMesh, TEXT( "UUSDAssetImportData" ) );
@@ -915,13 +1119,6 @@ void FBuildStaticMeshTaskChain::SetupTasks()
 	Then( ESchemaTranslationLaunchPolicy::Async,
 		[ this ]() mutable
 		{
-			TArray<FMeshDescription*> MeshDescriptionPtrs;
-			MeshDescriptionPtrs.Reserve( LODIndexToMeshDescription.Num() );
-			for ( FMeshDescription& MeshDescription : LODIndexToMeshDescription )
-			{
-				MeshDescriptionPtrs.Add( &MeshDescription );
-			}
-
 			FStaticFeatureLevel FeatureLevel = GMaxRHIFeatureLevel;
 
 			UWorld* World = Context->Level ? Context->Level->GetWorld() : nullptr;
@@ -934,7 +1131,7 @@ void FBuildStaticMeshTaskChain::SetupTasks()
 				FeatureLevel = World->FeatureLevel;
 			}
 
-			if ( !UsdGeomMeshTranslatorImpl::BuildStaticMesh( *StaticMesh, FeatureLevel, MeshDescriptionPtrs ) )
+			if ( !UsdGeomMeshTranslatorImpl::BuildStaticMesh( *StaticMesh, FeatureLevel, LODIndexToMeshDescription ) )
 			{
 				// Build failed, discard the mesh
 				StaticMesh = nullptr;
@@ -949,14 +1146,7 @@ void FBuildStaticMeshTaskChain::SetupTasks()
 	Then( ESchemaTranslationLaunchPolicy::Sync,
 		[ this ]()
 		{
-			TArray<FMeshDescription*> MeshDescriptionPtrs;
-			MeshDescriptionPtrs.Reserve( LODIndexToMeshDescription.Num() );
-			for ( FMeshDescription& MeshDescription : LODIndexToMeshDescription )
-			{
-				MeshDescriptionPtrs.Add( &MeshDescription );
-			}
-
-			UsdGeomMeshTranslatorImpl::PostBuildStaticMesh( *StaticMesh, MeshDescriptionPtrs );
+			UsdGeomMeshTranslatorImpl::PostBuildStaticMesh( *StaticMesh, LODIndexToMeshDescription );
 
 			RecreateRenderStateContextPtr.Reset();
 
@@ -1031,18 +1221,15 @@ void FGeometryCacheCreateAssetsTaskChain::SetupTasks()
 {
 	FScopedUnrealAllocs UnrealAllocs;
 
-	// To parse all LODs we need to actively switch variant sets to other variants (triggering prim loading/unloading and notices),
-	// which could cause race conditions if other async translation tasks are trying to access those prims
-	ESchemaTranslationLaunchPolicy LaunchPolicy = ESchemaTranslationLaunchPolicy::Async;
-	if ( Context->bAllowInterpretingLODs && UsdUtils::IsGeomMeshALOD( GetPrim() ) )
-	{
-		LaunchPolicy = ESchemaTranslationLaunchPolicy::ExclusiveSync;
-	}
-
 	// Create mesh descriptions (Async or ExclusiveSync)
-	Do( LaunchPolicy,
+	Do( ESchemaTranslationLaunchPolicy::Async,
 		[ this ]() -> bool
 		{
+			// Always hash the mesh at the same time because it may be animated, and
+			// otherwise we may think it's a new asset just because the context is at a different timecode (e.g. if we reload)
+			// TODO: Hash all timecodes, or else our mesh may change at t=5 and we never reload it because we only hash t=0
+			const double TimeCode = UsdUtils::GetEarliestTimeCode();
+			const bool bAllowInterpretingLODs = false;  // GeometryCaches don't have LODs
 			TMap< FString, TMap< FString, int32 > > Unused;
 			TMap< FString, TMap< FString, int32 > >* MaterialToPrimvarToUVIndex = Context->MaterialToPrimvarToUVIndex ? Context->MaterialToPrimvarToUVIndex : &Unused;
 
@@ -1051,8 +1238,8 @@ void FGeometryCacheCreateAssetsTaskChain::SetupTasks()
 				LODIndexToMeshDescription,
 				LODIndexToMaterialInfo,
 				*MaterialToPrimvarToUVIndex,
-				pxr::UsdTimeCode( Context->Time ),
-				Context->bAllowInterpretingLODs,
+				pxr::UsdTimeCode( TimeCode ),
+				bAllowInterpretingLODs,
 				Context->RenderContext
 			);
 
@@ -1124,95 +1311,61 @@ void FUsdGeomMeshTranslator::CreateAssets()
 
 USceneComponent* FUsdGeomMeshTranslator::CreateComponents()
 {
+	TOptional< TSubclassOf< USceneComponent > > ComponentType;
+
 #if WITH_EDITOR
-	// Animated meshes as GeometryCache
+	// Force animated meshes as GeometryCache
 	if ( GUseGeometryCacheUSD && UsdGeomMeshTranslatorImpl::IsAnimated( GetPrim() ) )
 	{
-		TOptional< TSubclassOf< USceneComponent > > GeometryCacheComponent( UGeometryCacheUsdComponent::StaticClass() );
-		return CreateComponentsEx( GeometryCacheComponent, {} );
+		ComponentType = UGeometryCacheUsdComponent::StaticClass();
 	}
 #endif // WITH_EDITOR
 
-	// Animated and static meshes as StaticMesh
-	USceneComponent* SceneComponent = CreateComponentsEx( {}, {} );
+	USceneComponent* SceneComponent = CreateComponentsEx( ComponentType, {} );
+
+	const FString PrimPathString = PrimPath.GetString();
 
 	// Handle material overrides
-	// #ueent_todo: Do the analogue for geometry cache
 	// Note: This can be here and not in USDGeomXformableTranslator because there is no way that a collapsed mesh prim could end up with a material override
 	if ( UStaticMeshComponent* StaticMeshComponent = Cast<UStaticMeshComponent>( SceneComponent ) )
 	{
-		if ( UStaticMesh* StaticMesh = Cast< UStaticMesh >( Context->AssetCache->GetAssetForPrim( PrimPath.GetString() ) ) )
+		if ( UStaticMesh* StaticMesh = Cast< UStaticMesh >( Context->AssetCache->GetAssetForPrim( PrimPathString ) ) )
 		{
-#if WITH_EDITOR
-			// If the prim paths match, it means that it was this prim that created (and so "owns") the static mesh,
-			// so its material assignments will already be directly on the mesh. If they differ, we're using some other prim's mesh,
-			// so we may need material overrides on our component
-			UUsdAssetImportData* UsdImportData = Cast<UUsdAssetImportData>( StaticMesh->AssetImportData );
-			if ( UsdImportData && UsdImportData->PrimPath != PrimPath.GetString() )
-#endif // WITH_EDITOR
+			TArray<UMaterialInterface*> ExistingAssignments;
+			for ( FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials() )
 			{
-				TArray<UMaterialInterface*> ExistingAssignments;
-				for ( FStaticMaterial& StaticMaterial : StaticMesh->GetStaticMaterials() )
-				{
-					ExistingAssignments.Add( StaticMaterial.MaterialInterface );
-				}
-
-				MeshTranslationImpl::SetMaterialOverrides(
-					GetPrim(),
-					ExistingAssignments,
-					*StaticMeshComponent,
-					*Context->AssetCache.Get(),
-					Context->Time,
-					Context->ObjectFlags,
-					Context->bAllowInterpretingLODs,
-					Context->RenderContext
-				);
-
-#if WITH_EDITOR
-				FStaticFeatureLevel FeatureLevel = GMaxRHIFeatureLevel;
-
-				UWorld* World = Context->Level ? Context->Level->GetWorld() : nullptr;
-				if ( !World )
-				{
-					World = GWorld;
-				}
-				if ( World )
-				{
-					FeatureLevel = World->FeatureLevel;
-				}
-
-				// Enable adjacency buffer if we're using a material override that requires it.
-				// This is currently editor-only because UStaticMesh::BuildFromMeshDescription doesn't
-				// build the adjacency buffer anyway, and that's what we use to build at runtime.
-				// Possibly because StaticMesh.cpp can't use MeshBuilderCommon stuff, which is where
-				// ThirdPartyBuildOptimizationHelper.h is. That seems to be the procedure for building
-				// adjacency buffer indices.
-				// TODO: Whenever that is refactored, expand this to support detecting adjacency buffer rebuilds for
-				// material overrides at runtime
-				for ( UMaterialInterface* Material : StaticMeshComponent->OverrideMaterials )
-				{
-					if ( RequiresAdjacencyInformation( Material, nullptr, FeatureLevel ) )
-					{
-						FStaticMeshComponentRecreateRenderStateContext RecreateContext{ StaticMesh };
-
-						TArray<FMeshDescription*> LODIndexToMeshDescriptionPtr;
-						TArray<FStaticMeshSourceModel>& SourceModels = StaticMesh->GetSourceModels();
-						for ( int32 Index = 0; Index < SourceModels.Num(); ++Index )
-						{
-							SourceModels[Index].BuildSettings.bBuildAdjacencyBuffer = true;
-							LODIndexToMeshDescriptionPtr.Add( StaticMesh->GetMeshDescription( Index ) );
-						}
-
-						// Rebuild the mesh if we know we need adjacency buffer info
-						UsdGeomMeshTranslatorImpl::PreBuildStaticMesh( *StaticMesh );
-						UsdGeomMeshTranslatorImpl::BuildStaticMesh( *StaticMesh, FeatureLevel, LODIndexToMeshDescriptionPtr );
-						UsdGeomMeshTranslatorImpl::PostBuildStaticMesh( *StaticMesh, LODIndexToMeshDescriptionPtr );
-
-						break;
-					}
-				}
-#endif // WITH_EDITOR
+				ExistingAssignments.Add( StaticMaterial.MaterialInterface );
 			}
+
+			MeshTranslationImpl::SetMaterialOverrides(
+				GetPrim(),
+				ExistingAssignments,
+				*StaticMeshComponent,
+				*Context->AssetCache.Get(),
+				Context->Time,
+				Context->ObjectFlags,
+				Context->bAllowInterpretingLODs,
+				Context->RenderContext
+			);
+		}
+	}
+	else if ( UGeometryCacheComponent* Component = Cast<UGeometryCacheComponent>( SceneComponent ) )
+	{
+		if ( UGeometryCache* GeometryCache = Cast< UGeometryCache >( Context->AssetCache->GetAssetForPrim( PrimPathString ) ) )
+		{
+			// Geometry caches don't support LODs
+			const bool bAllowInterpretingLODs = false;
+
+			MeshTranslationImpl::SetMaterialOverrides(
+				GetPrim(),
+				GeometryCache->Materials,
+				*Component,
+				*Context->AssetCache.Get(),
+				Context->Time,
+				Context->ObjectFlags,
+				bAllowInterpretingLODs,
+				Context->RenderContext
+			);
 		}
 	}
 
@@ -1234,7 +1387,10 @@ void FUsdGeomMeshTranslator::UpdateComponents( USceneComponent* SceneComponent )
 	)
 	{
 		// The assets might have changed since our attributes are animated
+		// Note that we must wait for these to complete as they make take a while and we want to
+		// reassign our new static meshes when we get to FUsdGeomXformableTranslator::UpdateComponents
 		CreateAssets();
+		Context->CompleteTasks();
 	}
 
 #if WITH_EDITOR
@@ -1243,8 +1399,11 @@ void FUsdGeomMeshTranslator::UpdateComponents( USceneComponent* SceneComponent )
 	{
 		UGeometryCache* GeometryCache = Cast< UGeometryCache >( Context->AssetCache->GetAssetForPrim( PrimPath.GetString() ) );
 
+		bool bShouldRegister = false;
 		if ( GeometryCache != GeometryCacheUsdComponent->GetGeometryCache() )
 		{
+			bShouldRegister = true;
+
 			if ( GeometryCacheUsdComponent->IsRegistered() )
 			{
 				GeometryCacheUsdComponent->UnregisterComponent();
@@ -1252,13 +1411,31 @@ void FUsdGeomMeshTranslator::UpdateComponents( USceneComponent* SceneComponent )
 
 			// Skip the extra handling in SetGeometryCache
 			GeometryCacheUsdComponent->GeometryCache = GeometryCache;
-
-			GeometryCacheUsdComponent->RegisterComponent();
 		}
-		else
+
+		float TimeCode = Context->Time;
+		if ( FMath::IsNaN( TimeCode ) )
 		{
-			GeometryCacheUsdComponent->SetManualTick( true );
-			GeometryCacheUsdComponent->TickAtThisTime( Context->Time, true, false, true );
+			int32 StartFrame = FMath::FloorToInt( Context->Stage.GetStartTimeCode() );
+			int32 EndFrame = FMath::CeilToInt( Context->Stage.GetEndTimeCode() );
+			UsdGeomMeshTranslatorImpl::GetGeometryCacheDataTimeCodeRange( Context->Stage, PrimPath.GetString(), StartFrame, EndFrame );
+
+			TimeCode = static_cast< float >( StartFrame );
+		}
+
+		// This is the main call responsible for animating the geometry cache.
+		// It needs to happen after setting the geometry cache and before registering, because we must force the
+		// geometry cache to register itself at Context->Time so that it will synchronously load that frame right away.
+		// Otherwise the geometry cache will start at t=0 regardless of Context->Time
+		GeometryCacheUsdComponent->SetManualTick( true );
+		GeometryCacheUsdComponent->TickAtThisTime( TimeCode, true, false, true );
+
+		// Note how we should only register if our geometry cache changed: If we did this every time we would
+		// register too early during the process of duplicating into PIE, and that would prevent a future RegisterComponent
+		// call from naturally creating the required render state
+		if ( bShouldRegister && !GeometryCacheUsdComponent->IsRegistered() )
+		{
+			GeometryCacheUsdComponent->RegisterComponent();
 		}
 	}
 #endif // WITH_EDITOR
@@ -1266,13 +1443,20 @@ void FUsdGeomMeshTranslator::UpdateComponents( USceneComponent* SceneComponent )
 	Super::UpdateComponents( SceneComponent );
 }
 
+bool FUsdGeomMeshTranslator::CollapsesChildren( ECollapsingType CollapsingType ) const
+{
+	// We can't claim we collapse anything here since we'll just parse the mesh for this prim and that's it,
+	// otherwise the translation context wouldn't spawn translators for our child prims.
+	// Another approach would be to actually recursively collapse our child mesh prims, but that leads to a few
+	// issues. For example this translator could end up globbing a child Mesh prim, while the translation context
+	// could simultaneously spawn other translators that could also end up accounting for that same mesh.
+	// Generally Gprims shouldn't be nested into each other anyway (see https://graphics.pixar.com/usd/release/glossary.html#usdglossary-gprim)
+	// so it's likely best to just not collapse anything here.
+	return false;
+}
+
 bool FUsdGeomMeshTranslator::CanBeCollapsed( ECollapsingType CollapsingType ) const
 {
-	if ( !Context->bAllowCollapsing )
-	{
-		return false;
-	}
-
 	UE::FUsdPrim Prim = GetPrim();
 
 	// Don't collapse if our final UStaticMesh would have multiple LODs

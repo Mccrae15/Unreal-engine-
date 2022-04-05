@@ -10,29 +10,28 @@
 #include "ShaderCore.h"
 #include "ShaderCompilerCore.h"
 #include "DXCWrapper.h"
+#include "ShaderConductorContext.h"
 
 static FName NAME_VULKAN_ES3_1_ANDROID(TEXT("SF_VULKAN_ES31_ANDROID"));
 static FName NAME_VULKAN_ES3_1(TEXT("SF_VULKAN_ES31"));
-static FName NAME_VULKAN_ES3_1_LUMIN(TEXT("SF_VULKAN_ES31_LUMIN"));
 static FName NAME_VULKAN_SM5(TEXT("SF_VULKAN_SM5"));
-static FName NAME_VULKAN_SM5_LUMIN(TEXT("SF_VULKAN_SM5_LUMIN"));
 static FName NAME_VULKAN_SM5_ANDROID(TEXT("SF_VULKAN_SM5_ANDROID"));
 
 class FShaderFormatVulkan : public IShaderFormat
 {
 	enum 
 	{
-		UE_SHADER_VULKAN_ES3_1_VER	= 32,
-		UE_SHADER_VULKAN_SM5_VER 	= 32,
+		UE_SHADER_VULKAN_ES3_1_VER	= 34,
+		UE_SHADER_VULKAN_SM5_VER 	= 34,
 	};
 
 	int32 InternalGetVersion(FName Format) const
 	{
-		if (Format == NAME_VULKAN_SM5 || Format == NAME_VULKAN_SM5_LUMIN ||	Format == NAME_VULKAN_SM5_ANDROID)
+		if (Format == NAME_VULKAN_SM5 || Format == NAME_VULKAN_SM5_ANDROID)
 		{
 			return UE_SHADER_VULKAN_SM5_VER;
 		}
-		else if (Format == NAME_VULKAN_ES3_1_ANDROID || Format == NAME_VULKAN_ES3_1  || Format == NAME_VULKAN_ES3_1_LUMIN)
+		else if (Format == NAME_VULKAN_ES3_1_ANDROID || Format == NAME_VULKAN_ES3_1)
 		{
 			return UE_SHADER_VULKAN_ES3_1_VER;
 		}
@@ -41,30 +40,39 @@ class FShaderFormatVulkan : public IShaderFormat
 		return -1;
 	}
 
+	uint32 ShaderConductorVersionHash;
+
 public:
+
+	FShaderFormatVulkan(uint32 InShaderConductorVersionHash)
+		: ShaderConductorVersionHash(InShaderConductorVersionHash)
+	{
+	}
+
 	virtual uint32 GetVersion(FName Format) const override
 	{
-		const uint8 HLSLCCVersion = ((HLSLCC_VersionMajor & 0x0f) << 4) | (HLSLCC_VersionMinor & 0x0f);
-		uint16 Version = ((HLSLCCVersion & 0xff) << 8) | (InternalGetVersion(Format) & 0xff);
-#if VULKAN_ENABLE_BINDING_DEBUG_NAMES
-		Version = (Version << 1) + Version;
-#endif
+		uint32 Version = HashCombine(GetTypeHash(HLSLCC_VersionMajor), GetTypeHash(HLSLCC_VersionMinor));
+		Version = HashCombine(Version, GetTypeHash(InternalGetVersion(Format)));
+		Version = HashCombine(Version, GetTypeHash(ShaderConductorVersionHash));
+
+	#if VULKAN_ENABLE_BINDING_DEBUG_NAMES
+		Version = HashCombine(Version, 0xFC0848E2);
+	#endif
+
 		return Version;
 	}
 	virtual void GetSupportedFormats(TArray<FName>& OutFormats) const
 	{
 		OutFormats.Add(NAME_VULKAN_SM5);
-		OutFormats.Add(NAME_VULKAN_SM5_LUMIN);
 		OutFormats.Add(NAME_VULKAN_ES3_1_ANDROID);
 		OutFormats.Add(NAME_VULKAN_ES3_1);
-		OutFormats.Add(NAME_VULKAN_ES3_1_LUMIN);
 		OutFormats.Add(NAME_VULKAN_SM5_ANDROID);
 	}
 
 	virtual void CompileShader(FName Format, const struct FShaderCompilerInput& Input, struct FShaderCompilerOutput& Output,const FString& WorkingDirectory) const
 	{
 		check(InternalGetVersion(Format) >= 0);
-		if (Format == NAME_VULKAN_ES3_1 || Format == NAME_VULKAN_ES3_1_LUMIN)
+		if (Format == NAME_VULKAN_ES3_1)
 		{
 			DoCompileVulkanShader(Input, Output, WorkingDirectory, EVulkanShaderVersion::ES3_1);
 		}
@@ -72,18 +80,11 @@ public:
 		{
 			DoCompileVulkanShader(Input, Output, WorkingDirectory, EVulkanShaderVersion::ES3_1_ANDROID);
 		}
-		else if (Format == NAME_VULKAN_SM5 || Format == NAME_VULKAN_SM5_LUMIN || Format == NAME_VULKAN_SM5_ANDROID)
+		else if (Format == NAME_VULKAN_SM5 || Format == NAME_VULKAN_SM5_ANDROID)
 		{
 			DoCompileVulkanShader(Input, Output, WorkingDirectory, EVulkanShaderVersion::SM5);
 		}
 	}
-
-	//virtual bool CreateLanguage(FName Format, ILanguageSpec*& OutSpec, FCodeBackend*& OutBackend, uint32 InHlslCompileFlags) override
-	//{
-	//	OutSpec = new FVulkanLanguageSpec(false);
-	//	OutBackend = new FVulkanCodeBackend(InHlslCompileFlags, HCT_FeatureLevelSM4);
-	//	return false;
-	//}
 
 	virtual const TCHAR* GetPlatformIncludeDirectory() const
 	{
@@ -115,10 +116,15 @@ public:
 	{
 		if (!Singleton)
 		{
-			Singleton = new FShaderFormatVulkan();
+			Singleton = new FShaderFormatVulkan(FShaderConductorModuleWrapper::GetModuleVersionHash());
 		}
 
 		return Singleton;
+	}
+
+	virtual void ShutdownModule() override
+	{
+		CrossCompiler::FShaderConductorContext::Shutdown();
 	}
 };
 

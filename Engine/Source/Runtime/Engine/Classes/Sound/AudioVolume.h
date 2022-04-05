@@ -35,7 +35,7 @@ enum class EAudioVolumeLocationState : uint8
 
 /** Struct to determine dynamic submix send data for use with audio volumes. */
 USTRUCT(BlueprintType)
-struct FAudioVolumeSubmixSendSettings
+struct ENGINE_API FAudioVolumeSubmixSendSettings
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -52,17 +52,17 @@ struct FAudioVolumeSubmixSendSettings
 };
 
 USTRUCT(BlueprintType)
-struct FAudioVolumeSubmixOverrideSettings
+struct ENGINE_API FAudioVolumeSubmixOverrideSettings
 {
 	GENERATED_USTRUCT_BODY()
 
 	// The submix to override the effect chain of
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = AudioVolumeSubmixSends)
-	USoundSubmix* Submix = nullptr;
+	TObjectPtr<USoundSubmix> Submix = nullptr;
 
-	// The submix effect chain to overrideac
+	// The submix effect chain to override
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = SoundSubmix)
-	TArray<USoundEffectSubmixPreset*> SubmixEffectChain;
+	TArray<TObjectPtr<USoundEffectSubmixPreset>> SubmixEffectChain;
 
 	// The amount of time to crossfade to the override for the submix chain
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = SoundSubmix)
@@ -72,7 +72,7 @@ struct FAudioVolumeSubmixOverrideSettings
 
 /** Struct encapsulating settings for interior areas. */
 USTRUCT(BlueprintType)
-struct FInteriorSettings
+struct ENGINE_API FInteriorSettings
 {
 	GENERATED_USTRUCT_BODY()
 
@@ -88,7 +88,7 @@ struct FInteriorSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=InteriorSettings)
 	float ExteriorTime;
 
-	// The desired LPF frequency cutoff in hertz of sounds inside the volume when the player is outside the volume
+	// The desired LPF frequency cutoff in hertz of sounds outside the volume when the player is inside the volume
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = InteriorSettings)
 	float ExteriorLPF;
 
@@ -100,15 +100,15 @@ struct FInteriorSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=InteriorSettings)
 	float InteriorVolume;
 
-	// The time over which to interpolate from the current volume to the desired volume of sounds inside the volume when the player enters the volume
+	// The time over which to interpolate from the current volume to the desired volume of sounds inside the volume when the player exits the volume
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=InteriorSettings)
 	float InteriorTime;
 
-	// The desired LPF frequency cutoff in hertz of sounds outside the volume when the player is inside the volume
+	// The desired LPF frequency cutoff in hertz of sounds inside the volume when the player is outside the volume
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = InteriorSettings)
 	float InteriorLPF;
 
-	// The time over which to interpolate from the current LPF to the desired LPF of sounds inside the volume when the player enters the volume
+	// The time over which to interpolate from the current LPF to the desired LPF of sounds inside the volume when the player exits the volume
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=InteriorSettings)
 	float InteriorLPFTime;
 
@@ -135,24 +135,17 @@ struct TStructOpsTypeTraits<FInteriorSettings> : public TStructOpsTypeTraitsBase
 
 struct FAudioVolumeProxy
 {
-	FAudioVolumeProxy()
-		: AudioVolumeID(0)
-		, WorldID(0)
-		, Priority(0.f)
-		, BodyInstance(nullptr)
-	{
-	}
-
 	FAudioVolumeProxy(const AAudioVolume* AudioVolume);
 
-	uint32 AudioVolumeID;
-	uint32 WorldID;
-	float Priority;
+	uint32 AudioVolumeID = 0;
+	uint32 WorldID = 0;
+	float Priority = 0.0f;
 	FReverbSettings ReverbSettings;
 	FInteriorSettings InteriorSettings;
 	TArray<FAudioVolumeSubmixSendSettings> SubmixSendSettings;
 	TArray<FAudioVolumeSubmixOverrideSettings> SubmixOverrideSettings;
-	FBodyInstance* BodyInstance; // This is scary
+	FBodyInstance* BodyInstance = nullptr;
+	bool bChanged = false;
 };
 
 UCLASS(hidecategories=(Advanced, Attachment, Collision, Volume))
@@ -162,13 +155,13 @@ class ENGINE_API AAudioVolume : public AVolume
 
 private:
 	/**
-	 * Priority of this volume. In the case of overlapping volumes the one with the highest priority
+	 * Priority of this volume. In the case of overlapping volumes, the one with the highest priority
 	 * is chosen. The order is undefined if two or more overlapping volumes have the same priority.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=AudioVolume, meta=(AllowPrivateAccess="true"))
 	float Priority;
 
-	/** whether this volume is currently enabled and able to affect sounds */
+	/** Whether this volume is currently enabled and able to affect sounds */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_bEnabled, Category=AudioVolume, meta=(AllowPrivateAccess="true"))
 	uint32 bEnabled:1;
 
@@ -176,7 +169,7 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Reverb, meta=(AllowPrivateAccess="true"))
 	FReverbSettings Settings;
 
-	/** Interior settings used for this volume */
+	/** Impacts sounds that have "Apply Ambient Volumes" set to true in their Sound Class, based on whether the sound sources and the player are inside or outside the audio volume */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=AmbientZone, meta=(AllowPrivateAccess="true"))
 	FInteriorSettings AmbientZoneSettings;
 

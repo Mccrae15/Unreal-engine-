@@ -102,8 +102,8 @@ struct FMobileBloomUpInputs
 	FScreenPassTexture BloomUpSourceB;
 
 	FVector2D ScaleAB;
-	FVector4 TintA;
-	FVector4 TintB;
+	FVector4f TintA;
+	FVector4f TintB;
 };
 
 FScreenPassTexture AddMobileBloomUpPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FMobileBloomUpInputs& Inputs);
@@ -151,23 +151,6 @@ struct FMobileSunMergeInputs
 
 FScreenPassTexture AddMobileSunMergePass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FMobileSunMergeInputs& Inputs);
 
-struct FMobileSunAvgInputs
-{
-	FScreenPassTexture SunMerge;
-	FScreenPassTexture LastFrameSunMerge;
-};
-
-FScreenPassTexture AddMobileSunAvgPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FMobileSunAvgInputs& Inputs);
-
-struct FMobileTAAInputs
-{
-	FScreenPassRenderTarget OverrideOutput;
-	FScreenPassTexture SceneColor;
-	FScreenPassTexture LastFrameSceneColor;
-};
-
-FScreenPassTexture AddMobileTAAPass(FRDGBuilder& GraphBuilder, const FViewInfo& View, const FMobileTAAInputs& Inputs);
-
 struct FMobileEyeAdaptationSetupInputs
 {
 	FScreenPassTexture BloomSetup_EyeAdaptation;
@@ -185,6 +168,7 @@ FMobileEyeAdaptationSetupOutputs AddMobileEyeAdaptationSetupPass(FRDGBuilder& Gr
 struct FMobileEyeAdaptationInputs
 {
 	FRDGBufferSRVRef EyeAdaptationSetupSRV;
+	FRDGBufferRef EyeAdaptationBuffer;
 	bool bUseBasicEyeAdaptation;
 	bool bUseHistogramEyeAdaptation;
 };

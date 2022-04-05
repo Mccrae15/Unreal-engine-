@@ -3,6 +3,16 @@
 #include "Engine/StreamableRenderAsset.h"
 #include "Misc/App.h"
 #include "ContentStreaming.h"
+#include "Rendering/NaniteCoarseMeshStreamingManager.h"
+
+static const TCHAR* GNoRefBiasQualityLevelCVarName = TEXT("r.Streaming.NoRefLODBiasQualityLevel");
+static const TCHAR* GNoRefBiasQualityLevelScalabilitySection = TEXT("ViewDistanceQuality");
+static int32 GNoRefBiasQualityLevel = -1;
+static FAutoConsoleVariableRef CVarNoRefBiasQualityLevel(
+	GNoRefBiasQualityLevelCVarName,
+	GNoRefBiasQualityLevel,
+	TEXT("The quality level for the no-ref mesh streaming LOD bias"),
+	ECVF_Scalability);
 
 extern bool TrackRenderAssetEvent(struct FStreamingRenderAsset* StreamingRenderAsset, UStreamableRenderAsset* RenderAsset, bool bForceMipLevelsToBeResident, const FRenderAssetStreamingManager* Manager);
 
@@ -10,6 +20,9 @@ UStreamableRenderAsset::UStreamableRenderAsset(const FObjectInitializer& ObjectI
 	: Super(ObjectInitializer)
 {
 	check(sizeof(FStreamableRenderResourceState) == sizeof(uint64));
+
+	SetNoRefStreamingLODBias(-1);
+	NoRefStreamingLODBias.Init(GNoRefBiasQualityLevelCVarName, GNoRefBiasQualityLevelScalabilitySection);
 }
 
 void UStreamableRenderAsset::RegisterMipLevelChangeCallback(UPrimitiveComponent* Component, int32 LODIndex, float TimeoutSecs, bool bOnStreamIn, FLODStreamingCallback&& Callback)
@@ -90,6 +103,64 @@ void UStreamableRenderAsset::TickMipLevelChangeCallbacks(TArray<UStreamableRende
 	}
 }
 
+#if WITH_EDITOR
+struct FResourceSizeNeedsUpdating
+{
+	static FResourceSizeNeedsUpdating& Get()
+	{
+		static FResourceSizeNeedsUpdating Singleton;
+		return Singleton;
+	}
+
+	void Add(UObject* InObject)
+	{
+		TWeakObjectPtr<UObject> NewValue(InObject);
+		const uint32 NewHash = GetTypeHash(NewValue);
+
+		FScopeLock ScopeLock(&Lock);
+		const int32 OriginalNum = Pending.Num();
+		Pending.AddByHash(NewHash, MoveTemp(NewValue));
+
+		// Schedule update to occur when not in the middle of a TickStreaming call
+		// TickStreaming can be called by multiple threads
+		// TickStreaming may also possibly be called where OnObjectPropertyChanged could cause problems
+		if (OriginalNum == 0)
+		{
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FResourceSizeNeedsUpdating::BroadcastOnObjectPropertyChanged));
+		}
+	}
+
+private:
+
+	bool BroadcastOnObjectPropertyChanged(float DeltaTime)
+	{
+		check(IsInGameThread());
+		if (IsInGameThread())
+		{
+			FScopeLock ScopeLock(&Lock);
+			if (Pending.Num() > 0)
+			{
+				FPropertyChangedEvent EmptyPropertyChangedEvent(nullptr);
+				for (const TWeakObjectPtr<UObject>& WeakObjectPtr : Pending)
+				{
+					if (UObject* Obj = WeakObjectPtr.Get())
+					{
+						FCoreUObjectDelegates::OnObjectPropertyChanged.Broadcast(Obj, EmptyPropertyChangedEvent);
+					}
+				}
+				Pending.Empty();
+			}
+		}
+
+		// Return false because we only wanted one tick
+		return false;
+	}
+
+	FCriticalSection Lock;
+	TSet<TWeakObjectPtr<UObject>> Pending;
+};
+#endif // WITH_EDITOR
+
 void UStreamableRenderAsset::TickStreaming(bool bSendCompletionEvents, TArray<UStreamableRenderAsset*>* DeferredTickCBAssets)
 {
 	// if resident and requested mip counts match then no pending request is in flight
@@ -106,7 +177,7 @@ void UStreamableRenderAsset::TickStreaming(bool bSendCompletionEvents, TArray<US
 			}
 			else
 			{
-				check(PendingUpdate->IsCancelled());
+				checkf(PendingUpdate->IsCancelled(), TEXT("Invalid completion of streaming request for asset %s of type %s."), *GetName(), *GetClass()->GetName());
 				CachedSRRState.NumRequestedLODs = CachedSRRState.NumResidentLODs;
 			}
 
@@ -117,8 +188,7 @@ void UStreamableRenderAsset::TickStreaming(bool bSendCompletionEvents, TArray<US
 			{
 				// When all the requested mips are streamed in, generate an empty property changed event, to force the
 				// ResourceSize asset registry tag to be recalculated.
-				FPropertyChangedEvent EmptyPropertyChangedEvent(nullptr);
-				FCoreUObjectDelegates::OnObjectPropertyChanged.Broadcast(this, EmptyPropertyChangedEvent);
+				FResourceSizeNeedsUpdating::Get().Add(this);
 			}
 #endif
 		}
@@ -201,11 +271,19 @@ bool UStreamableRenderAsset::IsPendingStreamingRequestLocked() const
 void UStreamableRenderAsset::LinkStreaming()
 {
 	// Note that this must be called after InitResource() otherwise IsStreamable will always be false.
-	if (!IsTemplate() && RenderResourceSupportsStreaming() && IStreamingManager::Get().IsRenderAssetStreamingEnabled(GetRenderAssetType()))
+	EStreamableRenderAssetType RenderAssetType = GetRenderAssetType();
+	if (!IsTemplate() && RenderResourceSupportsStreaming() && IStreamingManager::Get().IsRenderAssetStreamingEnabled(RenderAssetType))
 	{
 		if (StreamingIndex == INDEX_NONE)
 		{
-			IStreamingManager::Get().GetRenderAssetStreamingManager().AddStreamingRenderAsset(this);
+			if (RenderAssetType == EStreamableRenderAssetType::NaniteCoarseMesh)
+			{
+				IStreamingManager::Get().GetNaniteCoarseMeshStreamingManager()->RegisterRenderAsset(this);
+			}
+			else
+			{
+				IStreamingManager::Get().GetRenderAssetStreamingManager().AddStreamingRenderAsset(this);
+			}
 		}
 	}
 	else
@@ -218,7 +296,16 @@ void UStreamableRenderAsset::UnlinkStreaming()
 {
 	if (StreamingIndex != INDEX_NONE)
 	{
-		IStreamingManager::Get().GetRenderAssetStreamingManager().RemoveStreamingRenderAsset(this);
+		EStreamableRenderAssetType RenderAssetType = GetRenderAssetType();
+		if (RenderAssetType == EStreamableRenderAssetType::NaniteCoarseMesh)
+		{
+			IStreamingManager::Get().GetNaniteCoarseMeshStreamingManager()->UnregisterRenderAsset(this);
+		}
+		else
+		{
+			IStreamingManager::Get().GetRenderAssetStreamingManager().RemoveStreamingRenderAsset(this);
+		}
+
 		// Reset the timer effect from SetForceMipLevelsToBeResident()
 		ForceMipLevelsToBeResidentTimestamp = 0;
 		// No more streaming events can happen now
@@ -244,6 +331,8 @@ bool UStreamableRenderAsset::IsFullyStreamedIn()
 
 void UStreamableRenderAsset::WaitForPendingInitOrStreaming(bool bWaitForLODTransition, bool bSendCompletionEvents)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UStreamableRenderAsset::WaitForPendingInitOrStreaming);
+
 	while (HasPendingInitOrStreaming(bWaitForLODTransition))
 	{
 		ensure(!IsAssetStreamingSuspended());
@@ -252,8 +341,13 @@ void UStreamableRenderAsset::WaitForPendingInitOrStreaming(bool bWaitForLODTrans
 		TickStreaming(bSendCompletionEvents);
 		// Make sure any render commands are executed, in particular things like InitRHI, or asset updates on the render thread.
 		FlushRenderingCommands();
-		// Give some time increment so that LOD transition can complete, and also for the gamethread to give room for streaming async tasks.
-		FPlatformProcess::Sleep(RENDER_ASSET_STREAMING_SLEEP_DT);
+
+		// Most of the time, sleeping is not required, so avoid loosing a whole quantum (10ms on W10Pro) unless stricly necessary.
+		if (HasPendingInitOrStreaming(bWaitForLODTransition))
+		{
+			// Give some time increment so that LOD transition can complete, and also for the gamethread to give room for streaming async tasks.
+			FPlatformProcess::Sleep(RENDER_ASSET_STREAMING_SLEEP_DT);
+		}
 	}
 }
 
@@ -312,4 +406,9 @@ bool UStreamableRenderAsset::IsReadyForFinishDestroy()
 	}
 
 	return !PendingUpdate.IsValid();
+}
+
+int32 UStreamableRenderAsset::GetCurrentNoRefStreamingLODBias() const
+{
+	return GetNoRefStreamingLODBias().GetValue(GNoRefBiasQualityLevel);
 }

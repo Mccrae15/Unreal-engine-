@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Misc/Guid.h"
 #include "Serialization/BulkData.h"
+#include "Templates/DontCopy.h"
 
 enum
 {
@@ -32,18 +33,18 @@ struct FRawMesh
 	TArray<uint32> FaceSmoothingMasks;
 
 	/** Position in local space. Array[VertexId] = float3(x,y,z) */
-	TArray<FVector> VertexPositions;
+	TArray<FVector3f> VertexPositions;
 
 	/** Index of the vertex at this wedge. Array[WedgeId] = VertexId */
 	TArray<uint32> WedgeIndices;
 	/** Tangent, U direction. Array[WedgeId] = float3(x,y,z) */
-	TArray<FVector>	WedgeTangentX;
+	TArray<FVector3f>	WedgeTangentX;
 	/** Tangent, V direction. Array[WedgeId] = float3(x,y,z) */
-	TArray<FVector>	WedgeTangentY;
+	TArray<FVector3f>	WedgeTangentY;
 	/** Normal. Array[WedgeId] = float3(x,y,z) */
-	TArray<FVector>	WedgeTangentZ;
+	TArray<FVector3f>	WedgeTangentZ;
 	/** Texture coordinates. Array[UVId][WedgeId]=float2(u,v) */
-	TArray<FVector2D> WedgeTexCoords[MAX_MESH_TEXTURE_COORDS];
+	TArray<FVector2f> WedgeTexCoords[MAX_MESH_TEXTURE_COORDS];
 	/** Color. Array[WedgeId]=float3(r,g,b,a) */
 	TArray<FColor> WedgeColors;
 
@@ -74,7 +75,7 @@ struct FRawMesh
 	RAWMESH_API bool IsValidOrFixable() const;
 
 	/** Helper for getting the position of a wedge. */
-	FORCEINLINE FVector GetWedgePosition(int32 WedgeIndex) const
+	FORCEINLINE FVector3f GetWedgePosition(int32 WedgeIndex) const
 	{
 		return VertexPositions[WedgeIndices[WedgeIndex]];
 	}
@@ -99,6 +100,10 @@ RAWMESH_API FArchive& operator<<(FArchive& Ar, FRawMesh& RawMesh);
  */
 class FRawMeshBulkData
 {
+#if WITH_EDITOR
+	/** Protects simultaneous access to BulkData */
+	TDontCopy<FRWLock> BulkDataLock;
+#endif
 	/** Internally store bulk data as bytes. */
 	FByteBulkData BulkData;
 	/** GUID associated with the data stored herein. */
@@ -124,6 +129,7 @@ public:
 
 	/** Uses a hash as the GUID, useful to prevent creating new GUIDs on load for legacy assets. */
 	RAWMESH_API void UseHashAsGuid(class UObject* Owner);
+	RAWMESH_API bool UsesHashAsGuid() const { return bGuidIsHash; }
 
 	RAWMESH_API const FByteBulkData& GetBulkData() const;
 

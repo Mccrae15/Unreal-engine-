@@ -41,13 +41,14 @@ namespace IFC
 
 	void FStaticMeshFactory::FillMeshDescription(const IFC::FObject* InObject, FMeshDescription* MeshDescription) const
 	{
-		TVertexAttributesRef<FVector> VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
-		TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = MeshDescription->PolygonGroupAttributes().GetAttributesRef<FName>(MeshAttribute::PolygonGroup::ImportedMaterialSlotName);
-		TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector>(MeshAttribute::VertexInstance::Normal);
-		TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
+		FStaticMeshAttributes Attributes(*MeshDescription);
+		TVertexAttributesRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
+		TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = Attributes.GetPolygonGroupMaterialSlotNames();
+		TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = Attributes.GetVertexInstanceNormals();
+		TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
 		const int32 NumUVs = 1;
-		VertexInstanceUVs.SetNumIndices(NumUVs);
+		VertexInstanceUVs.SetNumChannels(NumUVs);
 
 		FIndexVertexIdMap PositionIndexToVertexId;
 		PositionIndexToVertexId.Empty(InObject->facesVerticesCount);
@@ -113,14 +114,14 @@ namespace IFC
 
 				for (int32 UVIndex = 0; UVIndex < NumUVs; ++UVIndex)
 				{
-					VertexInstanceUVs.Set(VertexInstanceID, UVIndex, FVector2D::ZeroVector);
+					VertexInstanceUVs.Set(VertexInstanceID, UVIndex, FVector2f::ZeroVector);
 				}
 
 				const float* Vertex = &(InObject->facesVertices[(IFCVertexIndex * (InObject->vertexElementSize / sizeof(float)))]);
 
 				// Flip Y to go from RH -> LH
 				FVector Normal = WorldToObject.TransformVector(FVector(Vertex[3], -Vertex[4], Vertex[5]));
-				VertexInstanceNormals.Set(VertexInstanceID, Normal.GetSafeNormal());
+				VertexInstanceNormals.Set(VertexInstanceID, (FVector3f)Normal.GetSafeNormal());
 			}
 
 			MeshDescription->CreatePolygon(MaterialIndexToPolygonGroupID[IFCPolygon.MaterialIndex], VertexInstanceIDs);

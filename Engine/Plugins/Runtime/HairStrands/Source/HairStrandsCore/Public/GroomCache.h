@@ -53,7 +53,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Import options used for this GroomCache */
 	UPROPERTY(Category = ImportSettings, VisibleAnywhere, Instanced)
-	class UAssetImportData* AssetImportData;	
+	TObjectPtr<class UAssetImportData> AssetImportData;	
 #endif
 
 protected:
@@ -89,7 +89,7 @@ class HAIRSTRANDSCORE_API FGroomCacheProcessor
 public:
 	FGroomCacheProcessor(EGroomCacheType InType, EGroomCacheAttributes InAttributes);
 
-	void AddGroomSample(TArray<FHairGroupData>&& GroomData);
+	void AddGroomSample(TArray<FHairDescriptionGroup>&& GroomData);
 	void TransferChunks(UGroomCache* GroomCache);
 	EGroomCacheType GetType() const { return Type; }
 

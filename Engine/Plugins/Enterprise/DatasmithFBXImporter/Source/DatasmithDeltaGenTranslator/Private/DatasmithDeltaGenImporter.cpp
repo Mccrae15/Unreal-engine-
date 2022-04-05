@@ -21,7 +21,7 @@
 
 #include "FbxImporter.h"
 #include "HAL/FileManager.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "LevelSequence.h"
 #include "MeshAttributes.h"
 #include "Misc/Paths.h"
@@ -281,6 +281,7 @@ TSharedPtr<IDatasmithActorElement> FDatasmithDeltaGenImporter::ConvertNode(const
 		TSharedPtr<FDatasmithFBXSceneMesh> ThisMesh = Node->Mesh;
 		FName MeshName = FName(*ThisMesh->Name);
 
+		TSharedPtr<IDatasmithMeshElement> CreatedMesh = nullptr;
 		TSharedPtr<FDatasmithFBXSceneMesh>* FoundMesh = MeshNameToFBXMesh.Find(MeshName);
 		if (FoundMesh && (*FoundMesh).IsValid())
 		{
@@ -291,21 +292,21 @@ TSharedPtr<IDatasmithActorElement> FDatasmithDeltaGenImporter::ConvertNode(const
 		{
 			// Create a mesh
 			MeshNameToFBXMesh.Add(MeshName, ThisMesh);
-			TSharedRef<IDatasmithMeshElement> MeshElement = FDatasmithSceneFactory::CreateMesh(*ThisMesh->Name);
+			CreatedMesh = FDatasmithSceneFactory::CreateMesh(*ThisMesh->Name);
 
 			FMeshDescription& MeshDescription = ThisMesh->MeshDescription;
 			FStaticMeshAttributes StaticMeshAttributes(MeshDescription);
-			TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
-			int32 NumUVChannels = VertexInstanceUVs.GetNumIndices();
+			TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
+			int32 NumUVChannels = VertexInstanceUVs.GetNumChannels();
 
 			// DeltaGen uses UV channel 0 for texture UVs, and UV channel 1 for lightmap UVs
 			// Don't set it to zero or else it will disable Datasmith's GenerateLightmapUV option
 			if (NumUVChannels > 1)
 			{
-				MeshElement->SetLightmapCoordinateIndex(1);
+				CreatedMesh->SetLightmapCoordinateIndex(1);
 			}
 
-			DatasmithScene->AddMesh(MeshElement);
+			DatasmithScene->AddMesh(CreatedMesh);
 		}
 
 		TSharedPtr<IDatasmithMeshActorElement> MeshActorElement = FDatasmithSceneFactory::CreateMeshActor(*Node->Name);
@@ -319,6 +320,12 @@ TSharedPtr<IDatasmithActorElement> FDatasmithDeltaGenImporter::ConvertNode(const
 			TSharedRef<IDatasmithMaterialIDElement> MaterialIDElement(FDatasmithSceneFactory::CreateMaterialId(MaterialElement->GetName()));
 			MaterialIDElement->SetId(MaterialID);
 			MeshActorElement->AddMaterialOverride(MaterialIDElement);
+
+			// Also set the material directly on the mesh if this was the node that created it
+			if (CreatedMesh)
+			{
+				CreatedMesh->SetMaterial(MaterialElement->GetName(), MaterialID);
+			}
 		}
 
 		ActorElement = MeshActorElement;
@@ -862,7 +869,7 @@ namespace DeltaGenImporterImpl
 			}
 			else if (DSType == EDatasmithTransformType::Translation)
 			{
-				// Deltagen is right-handed Z up, UE4 is left-handed Z up. We try keeping the same X, so here we
+				// Deltagen is right-handed Z up, UnrealEditor is left-handed Z up. We try keeping the same X, so here we
 				// just flip the Y coordinate to convert between them.
 				// Note: Geometry, transforms and VRED animations get converted when parsing the FBX file in DatasmithFBXFileImporter, so
 				// you won't find analogue for this in VRED importer, even though the conversion is the same

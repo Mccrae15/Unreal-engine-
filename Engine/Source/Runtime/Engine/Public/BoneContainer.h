@@ -13,6 +13,18 @@
 class USkeletalMesh;
 class USkeleton;
 class USkeletalMesh;
+struct FBoneContainer;
+struct FSkeletonRemapping;
+struct FBlendedCurve;
+
+/** Struct used to store per-component ref pose override */
+struct FSkelMeshRefPoseOverride
+{
+	/** Inverse of (component space) ref pose matrices  */
+	TArray<FMatrix44f> RefBasesInvMatrix;
+	/** Per bone transforms (local space) for new ref pose */
+	TArray<FTransform> RefBonePoses;
+};
 
 /** in the future if we need more bools, please convert to bitfield 
  * These are not saved in asset but per skeleton. 
@@ -91,6 +103,58 @@ struct FOrientAndScaleRetargetingCachedData
 	}
 };
 
+/**
+ * An array of cached curve remappings. This is used to remap curves between skeletons.
+ * It is used in the FBoneContainer and is generated using a lazy approach. 
+ */
+struct FCachedSkeletonCurveMapping
+{
+	TArray<SmartName::UID_Type>	UIDToArrayIndices; /** The mapping table used for mapping curves. This is indexed by UID and returns the curve index, or MAX_uint16 in case its not used. */
+	bool bIsDirty = true; /** Specifies whether we need to rebuild this cached data or not. */
+};
+
+/**
+ * A scoped curve remapping.
+ * This object is used in a RAII pattern. It initializes the curve remapping on the provided curve.
+ * When the object gets destructed it will automatically revert the remapping on the curve object.
+ * 
+ * Usage would be something like this:
+ * \code{.cpp}
+ * FSkeletonRemapping* Mapping = TargetSkeleton->GetSkeletonRemapping(SourceSkeleton);
+ * if (Mapping)
+ * {
+ *		FSkeletonRemappingCurve Context(BlendedCurve, RequiredBones, Mapping);
+ *		EvaluateCurveData(BlendedCurve);
+ * }
+ * \endcode
+ * 
+ * @param InCurve The curve object that will be used during sampling of the animation data. We will modify its UIDToArrayIndexLUT member to point to a remapped version.
+ * @param InBoneContainer The bone container that we're using. This stores the remappings.
+ * @param InSkeletonMapping The skeleton mapping to use. This can be requested with USkeleton::GetSkeletonRemapping(SourceSkeleton).
+ */
+struct FSkeletonRemappingCurve
+{
+public:
+	FSkeletonRemappingCurve() = delete;
+	FSkeletonRemappingCurve(const FSkeletonRemappingCurve&) = delete;
+	FSkeletonRemappingCurve(FSkeletonRemappingCurve&&) = delete;
+	FSkeletonRemappingCurve(FBlendedCurve& InCurve, FBoneContainer& InBoneContainer, const FSkeletonRemapping* InSkeletonMapping);
+	FSkeletonRemappingCurve(FBlendedCurve& InCurve, FBoneContainer& InBoneContainer, const USkeleton* SourceSkeleton);
+	~FSkeletonRemappingCurve();
+
+	FSkeletonRemappingCurve& operator = (const FSkeletonRemappingCurve&) = delete;
+	FSkeletonRemappingCurve& operator = (FSkeletonRemappingCurve&&) = delete;
+
+	FBlendedCurve& GetCurve() { return Curve;  }
+	const FBlendedCurve& GetCurve() const { return Curve; }
+
+private:
+	FBlendedCurve& Curve;
+	FBoneContainer& BoneContainer;
+	bool bIsRemapping = false;
+};
+
+
 /** Retargeting cached data for a specific Retarget Source */
 struct FRetargetSourceCachedData
 {
@@ -99,6 +163,32 @@ struct FRetargetSourceCachedData
 
 	/** LUT from CompactPoseIndex to OrientAndScaleIndex */
 	TArray<int32> CompactPoseIndexToOrientAndScaleIndex;
+};
+
+/** Iterator for compact pose indices */
+struct FCompactPoseBoneIndexIterator
+{
+	int32 Index;
+
+	FCompactPoseBoneIndexIterator(int32 InIndex) : Index(InIndex) {}
+
+	FCompactPoseBoneIndexIterator& operator++() { ++Index; return (*this); }
+	bool operator==(FCompactPoseBoneIndexIterator& Rhs) { return Index == Rhs.Index; }
+	bool operator!=(FCompactPoseBoneIndexIterator& Rhs) { return Index != Rhs.Index; }
+	FCompactPoseBoneIndex operator*() const { return FCompactPoseBoneIndex(Index); }
+};
+
+/** Reverse iterator for compact pose indices */
+struct FCompactPoseBoneIndexReverseIterator
+{
+	int32 Index;
+
+	FCompactPoseBoneIndexReverseIterator(int32 InIndex) : Index(InIndex) {}
+
+	FCompactPoseBoneIndexReverseIterator& operator++() { --Index; return (*this); }
+	bool operator==(FCompactPoseBoneIndexReverseIterator& Rhs) { return Index == Rhs.Index; }
+	bool operator!=(FCompactPoseBoneIndexReverseIterator& Rhs) { return Index != Rhs.Index; }
+	FCompactPoseBoneIndex operator*() const { return FCompactPoseBoneIndex(Index); }
 };
 
 /**
@@ -140,9 +230,6 @@ private:
 	// Compact pose format of Parent Bones (to save us converting to mesh space and back)
 	TArray<FCompactPoseBoneIndex> CompactPoseParentBones;
 
-	// Compact pose format of Ref Pose Bones (to save us converting to mesh space and back)
-	TArray<FTransform>    CompactPoseRefPoseBones;
-
 	// Array of cached virtual bone data so that animations running from raw data can generate them.
 	TArray<FVirtualBoneCompactPoseData> VirtualBoneCompactPoseData;
 
@@ -152,11 +239,12 @@ private:
 	/** Number of valid entries in UIDToArrayIndexLUT. I.e. a count of entries whose value does not equal to  MAX_uint16. */
 	int32 UIDToArrayIndexLUTValidCount;
 
-	/** Look up table of UID to Name UIDToNameLUT[InUID] = Name of curve. If NAME_None, it is invalid.*/
-	TArray<FName> UIDToNameLUT;
-
-	/** Look up table of UID to FAnimCurveType UIDToNameLUT[InUID] = FAnimCurveType of curve. */
-	TArray<FAnimCurveType> UIDToCurveTypeLUT;
+	TSharedPtr<FSkelMeshRefPoseOverride> RefPoseOverride;
+	
+	// The serial number of this bone container. This is incremented each time the container is regenerated and can
+	// be used to track whether to cache bone data. If this value is zero then the bone container is considered invalid
+	// as it has never been regenerated.
+	uint16 SerialNumber;
 
 	/** For debugging. */
 #if DO_CHECK
@@ -169,7 +257,7 @@ private:
 	bool bUseRAWData;
 	/** Use Source Data that is imported that are not compressed. */
 	bool bUseSourceData;
-
+	
 public:
 
 	FBoneContainer();
@@ -240,8 +328,9 @@ public:
 	}
 
 	/**
-	* returns Required Bone Indices Array
-	*/
+	 * Returns array of the size of compact pose, mapping to mesh pose index
+	 * returns Required Bone Indices Array
+	 */
 	const TArray<FBoneIndexType>& GetBoneIndicesArray() const
 	{
 		return BoneIndicesArray;
@@ -271,20 +360,46 @@ public:
 		return CompactPoseParentBones;
 	}
 
+	// Fill the supplied buffer with the compact pose reference pose
+	template<typename ArrayType>
+	void FillWithCompactRefPose(ArrayType& OutTransforms) const
+	{
+		const int32 CompactPoseBoneCount = GetCompactPoseNumBones();
+		OutTransforms.Reset(CompactPoseBoneCount);
+		if (RefPoseOverride.IsValid())
+		{
+			OutTransforms.Append(RefPoseOverride->RefBonePoses);
+		}
+		else
+		{
+			OutTransforms.SetNumUninitialized(CompactPoseBoneCount);
+			const TArray<FTransform>& RefPoseTransforms = RefSkeleton->GetRefBonePose();
+			for (int32 CompactBoneIndex = 0; CompactBoneIndex < CompactPoseBoneCount; ++CompactBoneIndex)
+			{
+				OutTransforms[CompactBoneIndex] = RefPoseTransforms[BoneIndicesArray[CompactBoneIndex]];
+			}
+		}
+	}
+	
 	const FTransform& GetRefPoseTransform(const FCompactPoseBoneIndex& BoneIndex) const
 	{
-		return CompactPoseRefPoseBones[BoneIndex.GetInt()];
+		if (RefPoseOverride.IsValid())
+		{
+			return RefPoseOverride->RefBonePoses[BoneIndex.GetInt()];
+		}
+		else
+		{
+			return RefSkeleton->GetRefBonePose()[BoneIndicesArray[BoneIndex.GetInt()]];
+		}
 	}
 
-	const TArray<FTransform>& GetRefPoseCompactArray() const
+	/** Override skeleton ref pose. */
+	void SetRefPoseOverride(const TSharedPtr<FSkelMeshRefPoseOverride>& InRefPoseOverride)
 	{
-		return CompactPoseRefPoseBones;
-	}
-
-	void SetRefPoseCompactArray(const TArray<FTransform>& InRefPoseCompactArray)
-	{
-		check(InRefPoseCompactArray.Num() == CompactPoseRefPoseBones.Num());
-		CompactPoseRefPoseBones = InRefPoseCompactArray;
+		if (InRefPoseOverride.Get() != RefPoseOverride.Get())
+		{
+			RefPoseOverride = InRefPoseOverride;
+		}
 	}
 
 	/** Access to Asset's RefSkeleton. */
@@ -333,18 +448,28 @@ public:
 	{
 		return UIDToArrayIndexLUTValidCount;
 	}
-	
 
-	/** Get UID To Name look up table */
+	/** DEPRECATED: Get UID To Name look up table */
+	UE_DEPRECATED(5.0, "GetUIDToNameLookupTable is deprecated, please access from the SmartNameMapping directly via GetSkeletonAsset()->GetSmartNameContainer(USkeleton::AnimCurveMappingName)")
 	TArray<FName> const& GetUIDToNameLookupTable() const
 	{
-		return UIDToNameLUT;
+		static TArray<FName> Dummy;
+		return Dummy;
 	}
 
-	/** Get UID To curve type look up table */
+	/** DEPRECATED: Get UID To curve type look up table */
+	UE_DEPRECATED(5.0, "GetUIDToCurveTypeLookupTable is deprecated, please access from the SmartNameMapping directly via GetSkeletonAsset()->GetSmartNameContainer(USkeleton::AnimCurveMappingName)")
 	TArray<FAnimCurveType> const& GetUIDToCurveTypeLookupTable() const
 	{
-		return UIDToCurveTypeLUT;
+		static TArray<FAnimCurveType> Dummy;
+		return Dummy;
+	}
+
+	
+	/** Get the array that maps UIDs to array indexes. */
+	TArray<SmartName::UID_Type> const& GetUIDToArrayLookupTableBackup() const
+	{
+		return UIDToArrayIndexLUTBackup;
 	}
 
 	/**
@@ -381,28 +506,139 @@ public:
 		return BoneSwitchArray[NewIndex];
 	}
 
-	/** Const accessor to GetSkeletonToPoseBoneIndexArray(). */
+	/** Const accessor to SkeletonToPoseBoneIndexArray. */
+	UE_DEPRECATED(5.0, "Please use GetMeshPoseIndexFromSkeletonPoseIndex")
 	TArray<int32> const & GetSkeletonToPoseBoneIndexArray() const
 	{
 		return SkeletonToPoseBoneIndexArray;
 	}
 
-	/** Const accessor to GetSkeletonToPoseBoneIndexArray(). */
+	/** Const accessor to PoseToSkeletonBoneIndexArray. */
+	UE_DEPRECATED(5.0, "Please use GetSkeletonPoseIndexFromMeshPoseIndex")
 	TArray<int32> const & GetPoseToSkeletonBoneIndexArray() const
 	{
 		return PoseToSkeletonBoneIndexArray;
 	}
+	
+	template<typename IterType>
+	struct FRangedForSupport
+	{
+		const FBoneContainer& BoneContainer;
 
+		FRangedForSupport(const FBoneContainer& InBoneContainer) : BoneContainer(InBoneContainer) {};
+		
+		IterType begin() { return BoneContainer.MakeBeginIter(); }
+		IterType end() { return BoneContainer.MakeEndIter(); }
+	};
+
+	template<typename IterType>
+	struct FRangedForReverseSupport
+	{
+		const FBoneContainer& BoneContainer;
+
+		FRangedForReverseSupport(const FBoneContainer& InBoneContainer) : BoneContainer(InBoneContainer) {};
+
+		IterType begin() { return BoneContainer.MakeBeginIterReverse(); }
+		IterType end() { return BoneContainer.MakeEndIterReverse(); }
+	};
+	
+	FORCEINLINE FRangedForSupport<FCompactPoseBoneIndexIterator> ForEachCompactPoseBoneIndex() const
+	{
+		return FRangedForSupport<FCompactPoseBoneIndexIterator>(*this);
+	}
+	FORCEINLINE FRangedForReverseSupport<FCompactPoseBoneIndexReverseIterator> ForEachCompactPoseBoneIndexReverse() const
+	{
+		return FRangedForReverseSupport<FCompactPoseBoneIndexReverseIterator>(*this);
+	}
+	FORCEINLINE FCompactPoseBoneIndexIterator MakeBeginIter() const
+	{
+		return FCompactPoseBoneIndexIterator(0);
+	}
+	FORCEINLINE FCompactPoseBoneIndexIterator MakeEndIter() const
+	{
+		return FCompactPoseBoneIndexIterator(GetCompactPoseNumBones());
+	}
+	FORCEINLINE FCompactPoseBoneIndexReverseIterator MakeBeginIterReverse() const
+	{
+		return FCompactPoseBoneIndexReverseIterator(GetCompactPoseNumBones() - 1);
+	}
+	FORCEINLINE FCompactPoseBoneIndexReverseIterator MakeEndIterReverse() const
+	{
+		return FCompactPoseBoneIndexReverseIterator(-1);
+	}
+	
+	/** 
+	 * Map skeleton bone index to mesh index
+	 * @return	the mesh pose bone index for the specified skeleton pose bone index. Returns an invalid index if the mesh
+	 *			does not include the specified skeleton bone.
+	 */
+	FMeshPoseBoneIndex GetMeshPoseIndexFromSkeletonPoseIndex(const FSkeletonPoseBoneIndex& SkeletonIndex) const
+	{
+		if (SkeletonToPoseBoneIndexArray.IsValidIndex(SkeletonIndex.GetInt()))
+		{
+			return FMeshPoseBoneIndex(SkeletonToPoseBoneIndexArray[SkeletonIndex.GetInt()]);
+		}
+		
+		return FMeshPoseBoneIndex(INDEX_NONE);
+	}
+
+	/**
+	 * Map mesh bone index to skeleton index
+	 * @return	the skeleton pose bone index for the specified mesh pose bone index. Ensures and returns an invalid
+	 *			index if the skeleton does not include the specified mesh bone.
+	 */
+	FSkeletonPoseBoneIndex GetSkeletonPoseIndexFromMeshPoseIndex(const FMeshPoseBoneIndex& MeshIndex) const
+	{
+		if (ensure(PoseToSkeletonBoneIndexArray.IsValidIndex(MeshIndex.GetInt())))
+		{
+			return FSkeletonPoseBoneIndex(PoseToSkeletonBoneIndexArray[MeshIndex.GetInt()]);
+		}
+		
+		return FSkeletonPoseBoneIndex(INDEX_NONE);
+	}
+
+	// DEPRECATED - Ideally should use GetSkeletonPoseIndexFromCompactPoseIndex due to raw int32 here
 	int32 GetSkeletonIndex(const FCompactPoseBoneIndex& BoneIndex) const
 	{
 		return CompactPoseToSkeletonIndex[BoneIndex.GetInt()];
 	}
 
+	/**
+	 * Map compact bone index to skeleton index
+	 * @return	the skeleton pose bone index for the specified compact pose bone index. Ensures and returns an invalid
+	 *			index if the skeleton does not include the specified compact pose bone.
+	 */	
+	FSkeletonPoseBoneIndex GetSkeletonPoseIndexFromCompactPoseIndex(const FCompactPoseBoneIndex& BoneIndex) const
+	{
+		if (ensure(CompactPoseToSkeletonIndex.IsValidIndex(BoneIndex.GetInt())))
+		{
+			return FSkeletonPoseBoneIndex(CompactPoseToSkeletonIndex[BoneIndex.GetInt()]);
+		}
+		
+		return FSkeletonPoseBoneIndex(INDEX_NONE);
+	}
+
+	// DEPRECATED - Ideally should use GetCompactPoseIndexFromSkeletonPoseIndex due to raw int32 here
 	FCompactPoseBoneIndex GetCompactPoseIndexFromSkeletonIndex(const int32 SkeletonIndex) const
 	{
 		if (ensure(SkeletonToCompactPose.IsValidIndex(SkeletonIndex)))
 		{
 			return SkeletonToCompactPose[SkeletonIndex];
+		}
+
+		return FCompactPoseBoneIndex(INDEX_NONE);
+	}
+
+	/** 
+	 * Map skeleton bone index to compact pose index
+	 * @return	the compact pose bone index for the specified skeleton pose bone index. Returns an invalid index if the
+	 *			compact pose does not include the specified skeleton bone.
+	 */	
+	FCompactPoseBoneIndex GetCompactPoseIndexFromSkeletonPoseIndex(const FSkeletonPoseBoneIndex& SkeletonIndex) const
+	{
+		if (SkeletonToCompactPose.IsValidIndex(SkeletonIndex.GetInt()))
+		{
+			return SkeletonToCompactPose[SkeletonIndex.GetInt()];
 		}
 
 		return FCompactPoseBoneIndex(INDEX_NONE);
@@ -429,7 +665,20 @@ public:
 	int32 GetCalculatedForLOD() const { return CalculatedForLOD; }
 #endif
 	
+	// Curve remapping
+	const FCachedSkeletonCurveMapping& GetOrCreateCachedCurveMapping(const FSkeletonRemapping* SkeletonRemapping);
+	void MarkAllCachedCurveMappingsDirty();
+
+	// Get the serial number of this bone container. @see SerialNumber
+	uint16 GetSerialNumber() const { return SerialNumber; }
+	
 private:
+	/** The map of cached curve mapping indexes, which is used for skeleton remapping. The key of this table is the source skeleton of the asset we are sampling curve values from. */
+	mutable TMap<USkeleton*, FCachedSkeletonCurveMapping> CachedCurveMappingTable;
+
+	/** The backup of the original UIDToArrayIndexLUT array. This is needed for skeleton remapping curves, as we have to modify this array and later need to restore it again. */
+	TArray<SmartName::UID_Type> UIDToArrayIndexLUTBackup;
+
 	/** 
 	 * Runtime cached data for retargeting from a specific RetargetSource to this current SkelMesh LOD.
 	 * @todo: We could also cache this once per skelmesh per lod, rather than creating it at runtime for each skelmesh instance.
@@ -444,6 +693,9 @@ private:
 
 	/** Cache remapping data if current Asset is a Skeleton, with all compatible Skeletons. */
 	void RemapFromSkeleton(USkeleton const & SourceSkeleton);
+
+	// Regenerate the serial number after internal data is updated
+	void RegenerateSerialNumber();
 };
 
 
@@ -486,6 +738,12 @@ struct FBoneReference
 	{
 		return BoneName == Other.BoneName;
 	}
+
+	bool operator!=(const FBoneReference& Other) const
+	{
+		return BoneName != Other.BoneName;
+	}
+
 	/** Initialize Bone Reference, return TRUE if success, otherwise, return false **/
 	ENGINE_API bool Initialize(const FBoneContainer& RequiredBones);
 
@@ -494,10 +752,7 @@ struct FBoneReference
 	// it triggers ensure in those functions
 	ENGINE_API bool Initialize(const USkeleton* Skeleton);
 
-	/** Deprecated functions */
-	UE_DEPRECATED(4.17, "Please use IsValidToEvaluate instead")
-	ENGINE_API bool IsValid(const FBoneContainer& RequiredBones) const;
-	
+
 	/** return true if it has valid set up */
 	bool HasValidSetup() const
 	{
@@ -518,6 +773,24 @@ struct FBoneReference
 		CachedCompactPoseIndex = FCompactPoseBoneIndex(INDEX_NONE);
 	}
 
+	FSkeletonPoseBoneIndex GetSkeletonPoseIndex(const FBoneContainer& RequiredBones) const
+	{ 
+		// accessing array with invalid index would cause crash, so we have to check here
+		if (BoneIndex != INDEX_NONE)
+		{
+			if (bUseSkeletonIndex)
+			{
+				return FSkeletonPoseBoneIndex(BoneIndex);
+			}
+			else
+			{
+				return RequiredBones.GetSkeletonPoseIndexFromMeshPoseIndex(FMeshPoseBoneIndex(BoneIndex));
+			}
+		}
+
+		return FSkeletonPoseBoneIndex(INDEX_NONE);
+	}
+	
 	FMeshPoseBoneIndex GetMeshPoseIndex(const FBoneContainer& RequiredBones) const
 	{ 
 		// accessing array with invalid index would cause crash, so we have to check here
@@ -525,7 +798,7 @@ struct FBoneReference
 		{
 			if (bUseSkeletonIndex)
 			{
-				return FMeshPoseBoneIndex(RequiredBones.GetSkeletonToPoseBoneIndexArray()[BoneIndex]);
+				return RequiredBones.GetMeshPoseIndexFromSkeletonPoseIndex(FSkeletonPoseBoneIndex(BoneIndex));
 			}
 			else
 			{
@@ -544,7 +817,7 @@ struct FBoneReference
 			if (BoneIndex != INDEX_NONE)
 			{
 				// accessing array with invalid index would cause crash, so we have to check here
-				return RequiredBones.GetCompactPoseIndexFromSkeletonIndex(BoneIndex);
+				return RequiredBones.GetCompactPoseIndexFromSkeletonPoseIndex(FSkeletonPoseBoneIndex(BoneIndex));
 			}
 			return FCompactPoseBoneIndex(INDEX_NONE);
 		}

@@ -16,9 +16,9 @@ class FBackgroundHttpFileHashHelper;
 /**
  * Contains implementation of some common functions that don't vary between implementation
  */
-class FBackgroundHttpManagerImpl 
+class BACKGROUNDHTTP_API FBackgroundHttpManagerImpl 
 	: public IBackgroundHttpManager
-	, public FTickerObjectBase
+	, public FTSTickerObjectBase
 {
 public:
 	FBackgroundHttpManagerImpl();
@@ -40,7 +40,7 @@ public:
 	
 	virtual void CleanUpDataAfterCompletingRequest(const FBackgroundHttpRequestPtr Request) override;
 	
-	//FTickerObjectBase implementation
+	//FTSTickerObjectBase implementation
 	virtual bool Tick(float DeltaTime) override;
 	
 protected:
@@ -49,7 +49,7 @@ protected:
 	virtual bool CheckForExistingCompletedDownload(const FBackgroundHttpRequestPtr Request, FString& ExistingFilePathOut, int64& ExistingFileSizeOut);
 	virtual void ActivatePendingRequests();
 	
-	//Different from DeleteAllTemporaryFiles as this doesn't nuke all files but rather cleans up specific bad files that have gone stale
+	//Different from DeleteAllTemporaryFiles as this doesn't delete all files but rather cleans up specific bad files that have gone stale
 	virtual void DeleteStaleTempFiles();
 	
 	//Gets a list of full filenames for all temp files.

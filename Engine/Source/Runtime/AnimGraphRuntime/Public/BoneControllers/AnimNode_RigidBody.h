@@ -10,12 +10,11 @@
 
 struct FBodyInstance;
 struct FConstraintInstance;
+class FEvent;
 
 extern ANIMGRAPHRUNTIME_API TAutoConsoleVariable<int32> CVarEnableRigidBodyNode;
 extern ANIMGRAPHRUNTIME_API TAutoConsoleVariable<int32> CVarEnableRigidBodyNodeSimulation;
 extern ANIMGRAPHRUNTIME_API TAutoConsoleVariable<int32> CVarRigidBodyLODThreshold;
-
-#define ENABLE_RBAN_PERF_LOGGING (1 && !NO_LOGGING && !UE_BUILD_SHIPPING)
 
 /** Determines in what space the simulation should run */
 UENUM()
@@ -152,7 +151,7 @@ struct ANIMGRAPHRUNTIME_API FAnimNode_RigidBody : public FAnimNode_SkeletalContr
 public:
 	/** Physics asset to use. If empty use the skeletal mesh's default physics asset */
 	UPROPERTY(EditAnywhere, Category = Settings)
-	UPhysicsAsset* OverridePhysicsAsset;
+	TObjectPtr<UPhysicsAsset> OverridePhysicsAsset;
 
 private:
 	FTransform PreviousCompWorldSpaceTM;
@@ -319,14 +318,19 @@ private:
 	// Update sim-space transforms of world objects
 	void UpdateWorldObjects(const FTransform& SpaceTransform);
 
+	// Advances the simulation by a given timestep
+	void RunPhysicsSimulation(float DeltaSeconds, const FVector& SimSpaceGravity);
+
+	// Waits for the deferred simulation task to complete if it's not already finished
+	void FlushDeferredSimulationTask();
+
+	// Destroy the simulation and free related structures
+	void DestroyPhysicsSimulation();
+
 private:
 
 	float WorldTimeSeconds;
 	float LastEvalTimeSeconds;
-
-#if ENABLE_RBAN_PERF_LOGGING
-	float LastPerfWarningTimeSeconds;
-#endif
 
 	float AccumulatedDeltaTime;
 	float AnimPhysicsMinDeltaTime;
@@ -335,7 +339,11 @@ private:
 	TWeakObjectPtr<USkeletalMeshComponent> SkelMeshCompWeakPtr;
 
 	ImmediatePhysics::FSimulation* PhysicsSimulation;
-	FSolverIterations SolverIterations;
+	FPhysicsAssetSolverSettings SolverSettings;
+	FSolverIterations SolverIterations;	// to be deprecated
+
+	friend class FRigidBodyNodeSimulationTask;
+	UE::Tasks::FTask SimulationTask;
 
 	struct FOutputBoneData
 	{
@@ -445,7 +453,8 @@ struct TStructOpsTypeTraits<FAnimNode_RigidBody> : public TStructOpsTypeTraitsBa
 {
 	enum
 	{
-		WithPostSerialize = true
+		WithPostSerialize = true,
 	};
 };
 #endif
+

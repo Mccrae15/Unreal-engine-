@@ -9,7 +9,6 @@
 
 #include "Chaos/TriangleMesh.h"
 #include "PhysicsProxy/GeometryCollectionPhysicsProxy.h"
-#include "Chaos/MassProperties.h"
 #include "Chaos/Particles.h"
 #include "Chaos/Vector.h"
 
@@ -40,7 +39,7 @@ FText UFractureToolClusterMagnet::GetDisplayText() const
 
 FText UFractureToolClusterMagnet::GetTooltipText() const
 {
-	return FText(NSLOCTEXT("Fracture", "FractureToolClusterMagnetToolTip", "Builds clusters at local level by collecting bones adjacent to clusters or bones with highest mass."));
+	return FText(NSLOCTEXT("Fracture", "FractureToolClusterMagnetToolTip", "Builds clusters by grouping the selected bones with their adjacent, neighboring bones. Can iteratively expand to a larger set of neighbors-of-neighbors."));
 }
 
 FText UFractureToolClusterMagnet::GetApplyText() const
@@ -63,7 +62,7 @@ TArray<UObject*> UFractureToolClusterMagnet::GetSettingsObjects() const
 
 void UFractureToolClusterMagnet::RegisterUICommand(FFractureEditorCommands* BindingContext)
 {
-	UI_COMMAND_EXT(BindingContext, UICommandInfo, "ClusterMagnet", "Magnet", "Builds clusters at local level by collecting bones adjacent to clusters or bones with highest mass.", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND_EXT(BindingContext, UICommandInfo, "ClusterMagnet", "Magnet", "Builds clusters by grouping the selected bones with their adjacent, neighboring bones. Can iteratively expand to a larger set of neighbors-of-neighbors.", EUserInterfaceActionType::ToggleButton, FInputChord());
 	BindingContext->ClusterMagnet = UICommandInfo;
 }
 
@@ -84,9 +83,12 @@ void UFractureToolClusterMagnet::Execute(TWeakPtr<FFractureEditorModeToolkit> In
 				continue;
 			}
 
+			FGeometryCollectionEdit Edit(Context.GetGeometryCollectionComponent(), GeometryCollection::EEditUpdate::RestPhysicsDynamic);
+
 			const TManagedArray<TSet<int32>>& Children = Context.GetGeometryCollection()->Children;
 			const TManagedArray<int32>& Levels = Context.GetGeometryCollection()->GetAttribute<int32>("Level", FGeometryCollection::TransformGroup);
-
+			int32 StartTransformCount = Children.Num();
+			
 			Context.Sanitize();
 			TMap<int32, TArray<int32>> ClusteredSelection = Context.GetClusteredSelections();
 
@@ -135,6 +137,8 @@ void UFractureToolClusterMagnet::Execute(TWeakPtr<FFractureEditorModeToolkit> In
 				}
 			}
 
+			Context.GenerateGuids(StartTransformCount);
+
 			Refresh(Context, Toolkit);
 		}
 
@@ -161,7 +165,8 @@ bool UFractureToolClusterMagnet::CheckPresenceOfNecessaryAttributes(const FGeome
 
 TMap<int32, TSet<int32>> UFractureToolClusterMagnet::InitializeConnectivity(const TSet<int32>& TopNodes, FGeometryCollectionPtr GeometryCollection, int32 OperatingLevel) const
 {
-	FGeometryCollectionProximityUtility::UpdateProximity(GeometryCollection.Get());
+	FGeometryCollectionProximityUtility ProximityUtility(GeometryCollection.Get());
+	ProximityUtility.UpdateProximity();
 
 	TMap<int32, TSet<int32>> ConnectivityMap;
 	for (int32 Index : TopNodes)
@@ -182,12 +187,12 @@ TMap<int32, TSet<int32>> UFractureToolClusterMagnet::InitializeConnectivity(cons
 
 void UFractureToolClusterMagnet::CollectTopNodeConnections(FGeometryCollectionPtr GeometryCollection, int32 Index, int32 OperatingLevel, TSet<int32>& OutConnections) const
 {
-	const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
-	if (Children[Index].Num() == 0) // leaf node
+	const TManagedArray<int32>& TransformToGeometryIndex = GeometryCollection->TransformToGeometryIndex;
+	if (GeometryCollection->SimulationType[Index] == FGeometryCollection::ESimulationTypes::FST_Rigid
+		&& TransformToGeometryIndex[Index] != INDEX_NONE) // rigid node with geometry, leaf of the simulated part
 	{
 		const TManagedArray<TSet<int32>>& Proximity = GeometryCollection->GetAttribute<TSet<int32>>("Proximity", FGeometryCollection::GeometryGroup);
 		const TManagedArray<int32>& GeometryToTransformIndex = GeometryCollection->TransformIndex;
-		const TManagedArray<int32>& TransformToGeometryIndex = GeometryCollection->TransformToGeometryIndex;
 
 
 		for (int32 Neighbor : Proximity[TransformToGeometryIndex[Index]])
@@ -198,11 +203,12 @@ void UFractureToolClusterMagnet::CollectTopNodeConnections(FGeometryCollectionPt
 	}
 	else
 	{
+		const TManagedArray<TSet<int32>>& Children = GeometryCollection->Children;
 		for (int32 ChildIndex : Children[Index])
 		{
 			CollectTopNodeConnections(GeometryCollection, ChildIndex, OperatingLevel, OutConnections);
 		}
-	}	
+	}
 }
 
 void UFractureToolClusterMagnet::SeparateClusterMagnets(
@@ -212,8 +218,6 @@ void UFractureToolClusterMagnet::SeparateClusterMagnets(
 	TArray<FClusterMagnet>& OutClusterMagnets,
 	TSet<int32>& OutRemainingPool) const
 {
-	// Push any top nodes over the mass threshold into cluster magnets.
-	
 	OutClusterMagnets.Reserve(TopNodes.Num());
 	OutRemainingPool.Reserve(TopNodes.Num());
 	

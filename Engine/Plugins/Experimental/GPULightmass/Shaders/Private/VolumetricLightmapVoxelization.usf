@@ -4,7 +4,7 @@
 	VolumetricLightmapVoxelization.usf
 =============================================================================*/
 
-#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/Common.ush" 
 
 #include "/Engine/Generated/Material.ush"
 #include "/Engine/Generated/VertexFactory.ush"
@@ -12,8 +12,6 @@
 #include "BrickAllocationDefs.ush"
 
 #define SOFTWARE_CONSERVATIVE_RASTERIZATION 1
-
-RWTexture3D<uint> VoxelizeVolume;
 
 struct FVLMVoxelizationVSToGS
 {
@@ -28,7 +26,7 @@ void VLMVoxelizationVS(
 	ResolvedView = ResolveView();
 
 	FVertexFactoryIntermediates VFIntermediates = GetVertexFactoryIntermediates(Input);
-	Output.WorldPosition = VertexFactoryGetWorldPosition(Input, VFIntermediates) - float4(ResolvedView.PreViewTranslation, 0.0f);
+	Output.WorldPosition = VertexFactoryGetWorldPosition(Input, VFIntermediates) - float4(LWCHackToFloat(ResolvedView.PreViewTranslation), 0.0f);
 	Output.WorldPosition = float4((Output.WorldPosition.xyz - VLMVoxelizationParams.VolumeCenter) / max(VLMVoxelizationParams.VolumeExtent, float4(0.0001, 0.0001, 0.0001, 0)), 1.0f);
 }
 

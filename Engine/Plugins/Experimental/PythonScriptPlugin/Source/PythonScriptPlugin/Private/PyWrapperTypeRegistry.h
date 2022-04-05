@@ -25,6 +25,7 @@ struct FPyWrapperArray;
 struct FPyWrapperFixedArray;
 struct FPyWrapperSet;
 struct FPyWrapperMap;
+struct FPyWrapperStructMetaData;
 
 class FPyWrapperOwnerContext;
 class UPythonGeneratedClass;
@@ -59,12 +60,11 @@ struct TPyWrapperTypeFactoryConversion
 
 /** Type conversion specialization for FPyWrapperTextFactory */
 template <>
-struct TPyWrapperTypeFactoryConversion<FText, FString*>
+struct TPyWrapperTypeFactoryConversion<FText, const void*>
 {
-	static FString* UnrealTypeToKeyType(FText InUnrealInstance)
+	static const void* UnrealTypeToKeyType(FText InUnrealInstance)
 	{
-		FTextDisplayStringPtr DisplayString = FTextInspector::GetSharedDisplayString(InUnrealInstance);
-		return DisplayString.Get();
+		return FTextInspector::GetSharedDataId(InUnrealInstance);
 	}
 };
 
@@ -230,7 +230,7 @@ public:
 };
 
 /** Factory for wrapped FText instances */
-class FPyWrapperTextFactory : public TPyWrapperTypeFactory<FText, FPyWrapperText, FString*>
+class FPyWrapperTextFactory : public TPyWrapperTypeFactory<FText, FPyWrapperText, const void*>
 {
 public:
 	/** Access the singleton instance */
@@ -505,6 +505,12 @@ private:
 
 	/** Map from the Unreal module name to its generated type names (names are the Unreal names) */
 	TMultiMap<FName, FName> GeneratedWrappedTypesForModule;
+
+	/** Map make func name to the meta data of the struct to make. Used when meta 'HasNativeMake' references a function not loaded yet. */
+	TMap<FString, TSharedPtr<FPyWrapperStructMetaData>> UnresolvedMakeFuncs;
+
+	/** Map break func name to the meta data of the struct to break. Used when meta 'HasNativeBreak' references a function not loaded yet. */
+	TMap<FString, TSharedPtr<FPyWrapperStructMetaData>> UnresolvedBreakFuncs;
 
 	/** Array of generated Python type data that has been orphaned (due to its owner module being unloaded/reloaded) */
 	TArray<TSharedPtr<PyGenUtil::FGeneratedWrappedType>> OrphanedWrappedTypes;

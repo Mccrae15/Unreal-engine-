@@ -12,9 +12,7 @@
 #define LOCTEXT_NAMESPACE "AnimNodeEditMode"
 
 FAnimNodeEditMode::FAnimNodeEditMode()
-	: AnimNode(nullptr)
-	, RuntimeAnimNode(nullptr)
-	, bManipulating(false)
+	: bManipulating(false)
 	, bInTransaction(false)
 {
 	// Disable grid drawing for this mode as the viewport handles this
@@ -37,15 +35,18 @@ IPersonaPreviewScene& FAnimNodeEditMode::GetAnimPreviewScene() const
 
 void FAnimNodeEditMode::GetOnScreenDebugInfo(TArray<FText>& OutDebugInfo) const
 {
-	if (AnimNode != nullptr)
+	for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
 	{
-		AnimNode->GetOnScreenDebugInfo(OutDebugInfo, RuntimeAnimNode, GetAnimPreviewScene().GetPreviewMeshComponent());
+		if ((CurrentNodePair.EditorAnimNode != nullptr) && (CurrentNodePair.RuntimeAnimNode != nullptr))
+		{
+			CurrentNodePair.EditorAnimNode->GetOnScreenDebugInfo(OutDebugInfo, CurrentNodePair.RuntimeAnimNode, GetAnimPreviewScene().GetPreviewMeshComponent());
+		}
 	}
 }
 
 ECoordSystem FAnimNodeEditMode::GetWidgetCoordinateSystem() const
 {
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
+	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(GetActiveWidgetAnimNode());
 	if (SkelControl != nullptr)
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -56,35 +57,35 @@ ECoordSystem FAnimNodeEditMode::GetWidgetCoordinateSystem() const
 	return ECoordSystem::COORD_None;
 }
 
-FWidget::EWidgetMode FAnimNodeEditMode::GetWidgetMode() const
+UE::Widget::EWidgetMode FAnimNodeEditMode::GetWidgetMode() const
 {
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
+	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(GetActiveWidgetAnimNode());
 	if (SkelControl != nullptr)
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return (FWidget::EWidgetMode)SkelControl->GetWidgetMode(GetAnimPreviewScene().GetPreviewMeshComponent());
+		return (UE::Widget::EWidgetMode)SkelControl->GetWidgetMode(GetAnimPreviewScene().GetPreviewMeshComponent());
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
-	return FWidget::EWidgetMode::WM_None;
+	return UE::Widget::EWidgetMode::WM_None;
 }
 
-FWidget::EWidgetMode FAnimNodeEditMode::ChangeToNextWidgetMode(FWidget::EWidgetMode CurWidgetMode)
+UE::Widget::EWidgetMode FAnimNodeEditMode::ChangeToNextWidgetMode(UE::Widget::EWidgetMode CurWidgetMode)
 {
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
+	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(GetActiveWidgetAnimNode());
 	if (SkelControl != nullptr)
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return (FWidget::EWidgetMode)SkelControl->ChangeToNextWidgetMode(GetAnimPreviewScene().GetPreviewMeshComponent(), CurWidgetMode);
+		return (UE::Widget::EWidgetMode)SkelControl->ChangeToNextWidgetMode(GetAnimPreviewScene().GetPreviewMeshComponent(), CurWidgetMode);
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
-	return FWidget::EWidgetMode::WM_None;
+	return UE::Widget::EWidgetMode::WM_None;
 }
 
-bool FAnimNodeEditMode::SetWidgetMode(FWidget::EWidgetMode InWidgetMode)
+bool FAnimNodeEditMode::SetWidgetMode(UE::Widget::EWidgetMode InWidgetMode)
 {
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
+	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(GetActiveWidgetAnimNode());
 	if (SkelControl != nullptr)
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -97,7 +98,7 @@ bool FAnimNodeEditMode::SetWidgetMode(FWidget::EWidgetMode InWidgetMode)
 
 FName FAnimNodeEditMode::GetSelectedBone() const
 {
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
+	UAnimGraphNode_SkeletalControlBase* const SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(GetActiveWidgetAnimNode());
 	if (SkelControl != nullptr)
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -110,16 +111,20 @@ FName FAnimNodeEditMode::GetSelectedBone() const
 
 void FAnimNodeEditMode::EnterMode(UAnimGraphNode_Base* InEditorNode, FAnimNode_Base* InRuntimeNode)
 {
-	AnimNode = InEditorNode;
-	RuntimeAnimNode = InRuntimeNode;
+	check(InEditorNode && InRuntimeNode); // Expect valid Node ptrs.
 
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
-	if (SkelControl != nullptr)
+	if (InEditorNode && InRuntimeNode)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		SkelControl->MoveSelectActorLocation(GetAnimPreviewScene().GetPreviewMeshComponent(), (FAnimNode_SkeletalControlBase*)RuntimeAnimNode);
-		SkelControl->CopyNodeDataTo(RuntimeAnimNode);
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		AnimNodes.Add(EditorRuntimeNodePair(InEditorNode, InRuntimeNode));
+
+		UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(InEditorNode);
+		if (SkelControl != nullptr)
+		{
+			PRAGMA_DISABLE_DEPRECATION_WARNINGS
+			SkelControl->MoveSelectActorLocation(GetAnimPreviewScene().GetPreviewMeshComponent(), static_cast<FAnimNode_SkeletalControlBase*>(InRuntimeNode));
+			SkelControl->CopyNodeDataTo(InRuntimeNode);
+			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		}
 	}
 
 	GetModeManager()->SetCoordSystem(GetWidgetCoordinateSystem());
@@ -128,31 +133,42 @@ void FAnimNodeEditMode::EnterMode(UAnimGraphNode_Base* InEditorNode, FAnimNode_B
 
 void FAnimNodeEditMode::ExitMode()
 {
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
-	if (SkelControl != nullptr)
+	for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
 	{
-		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		SkelControl->DeselectActor(GetAnimPreviewScene().GetPreviewMeshComponent());
-		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		if (CurrentNodePair.EditorAnimNode != nullptr)
+		{
+			UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(CurrentNodePair.EditorAnimNode);
+			if (SkelControl != nullptr)
+			{
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				SkelControl->DeselectActor(GetAnimPreviewScene().GetPreviewMeshComponent());
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			}
+		}
 	}
 
-	AnimNode = nullptr;
-	RuntimeAnimNode = nullptr;
+	AnimNodes.Empty();
 }
 
 void FAnimNodeEditMode::Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI)
 {
-	if (AnimNode != nullptr)
+	for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
 	{
-		AnimNode->Draw(PDI, GetAnimPreviewScene().GetPreviewMeshComponent());
+		if (CurrentNodePair.EditorAnimNode != nullptr)
+		{
+			CurrentNodePair.EditorAnimNode->Draw(PDI, GetAnimPreviewScene().GetPreviewMeshComponent());
+		}
 	}
 }
 
 void FAnimNodeEditMode::DrawHUD(FEditorViewportClient* ViewportClient, FViewport* Viewport, const FSceneView* View, FCanvas* Canvas)
 {
-	if (AnimNode != nullptr)
+	for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
 	{
-		AnimNode->DrawCanvas(*Viewport, *const_cast<FSceneView*>(View), *Canvas, GetAnimPreviewScene().GetPreviewMeshComponent());
+		if (CurrentNodePair.EditorAnimNode != nullptr)
+		{
+			CurrentNodePair.EditorAnimNode->DrawCanvas(*Viewport, *const_cast<FSceneView*>(View), *Canvas, GetAnimPreviewScene().GetPreviewMeshComponent());
+		}
 	}
 }
 
@@ -163,13 +179,17 @@ bool FAnimNodeEditMode::HandleClick(FEditorViewportClient* InViewportClient, HHi
 		HActor* ActorHitProxy = static_cast<HActor*>(HitProxy);
 		GetAnimPreviewScene().SetSelectedActor(ActorHitProxy->Actor);
 
-		UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
-		if (SkelControl != nullptr)
+		for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
 		{
-			PRAGMA_DISABLE_DEPRECATION_WARNINGS
-			SkelControl->ProcessActorClick(ActorHitProxy);
-			PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(CurrentNodePair.EditorAnimNode);
+			if (SkelControl != nullptr)
+			{
+				PRAGMA_DISABLE_DEPRECATION_WARNINGS
+				SkelControl->ProcessActorClick(ActorHitProxy);
+				PRAGMA_ENABLE_DEPRECATION_WARNINGS
+			}
 		}
+
 		return true;
 	}
 
@@ -178,11 +198,12 @@ bool FAnimNodeEditMode::HandleClick(FEditorViewportClient* InViewportClient, HHi
 
 FVector FAnimNodeEditMode::GetWidgetLocation() const
 {
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
-	if (SkelControl != nullptr)
+	UAnimGraphNode_SkeletalControlBase* const EditorSkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(GetActiveWidgetAnimNode());
+	FAnimNode_SkeletalControlBase* const RuntimeSkelControl = static_cast<FAnimNode_SkeletalControlBase*>(GetActiveWidgetRuntimeAnimNode());
+	if ((EditorSkelControl != nullptr) && (RuntimeSkelControl != nullptr))
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		return SkelControl->GetWidgetLocation(GetAnimPreviewScene().GetPreviewMeshComponent(), (FAnimNode_SkeletalControlBase*)RuntimeAnimNode);
+		return EditorSkelControl->GetWidgetLocation(GetAnimPreviewScene().GetPreviewMeshComponent(), RuntimeSkelControl);
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 
@@ -194,8 +215,16 @@ bool FAnimNodeEditMode::StartTracking(FEditorViewportClient* InViewportClient, F
 	if (!bInTransaction)
 	{
 		GEditor->BeginTransaction(LOCTEXT("EditSkelControlNodeTransaction", "Edit Skeletal Control Node"));
-		AnimNode->SetFlags(RF_Transactional);
-		AnimNode->Modify();
+
+		for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
+		{
+			if (CurrentNodePair.EditorAnimNode != nullptr)
+			{
+				CurrentNodePair.EditorAnimNode->SetFlags(RF_Transactional);
+				CurrentNodePair.EditorAnimNode->Modify();
+			}
+		}
+
 		bInTransaction = true;
 	}
 
@@ -227,9 +256,9 @@ bool FAnimNodeEditMode::InputKey(FEditorViewportClient* InViewportClient, FViewp
 	// Handle switching modes - only allowed when not already manipulating
 	if ((InEvent == IE_Pressed) && (InKey == EKeys::SpaceBar) && !bManipulating)
 	{
-		FWidget::EWidgetMode WidgetMode = (FWidget::EWidgetMode)ChangeToNextWidgetMode(GetModeManager()->GetWidgetMode());
+		UE::Widget::EWidgetMode WidgetMode = (UE::Widget::EWidgetMode)ChangeToNextWidgetMode(GetModeManager()->GetWidgetMode());
 		GetModeManager()->SetWidgetMode(WidgetMode);
-		if (WidgetMode == FWidget::WM_Scale)
+		if (WidgetMode == UE::Widget::WM_Scale)
 		{
 			GetModeManager()->SetCoordSystem(COORD_Local);
 		}
@@ -248,19 +277,17 @@ bool FAnimNodeEditMode::InputKey(FEditorViewportClient* InViewportClient, FViewp
 bool FAnimNodeEditMode::InputDelta(FEditorViewportClient* InViewportClient, FViewport* InViewport, FVector& InDrag, FRotator& InRot, FVector& InScale)
 {
 	const EAxisList::Type CurrentAxis = InViewportClient->GetCurrentWidgetAxis();
-	const FWidget::EWidgetMode WidgetMode = InViewportClient->GetWidgetMode();
+	const UE::Widget::EWidgetMode WidgetMode = InViewportClient->GetWidgetMode();
 
 	bool bHandled = false;
-
-	UDebugSkelMeshComponent* PreviewMeshComponent = GetAnimPreviewScene().GetPreviewMeshComponent();
 
 	if (bManipulating && CurrentAxis != EAxisList::None)
 	{
 		bHandled = true;
 
-		const bool bDoRotation = WidgetMode == FWidget::WM_Rotate || WidgetMode == FWidget::WM_TranslateRotateZ;
-		const bool bDoTranslation = WidgetMode == FWidget::WM_Translate || WidgetMode == FWidget::WM_TranslateRotateZ;
-		const bool bDoScale = WidgetMode == FWidget::WM_Scale;
+		const bool bDoRotation = WidgetMode == UE::Widget::WM_Rotate || WidgetMode == UE::Widget::WM_TranslateRotateZ;
+		const bool bDoTranslation = WidgetMode == UE::Widget::WM_Translate || WidgetMode == UE::Widget::WM_TranslateRotateZ;
+		const bool bDoScale = WidgetMode == UE::Widget::WM_Scale;
 
 		if (bDoRotation)
 		{
@@ -275,6 +302,14 @@ bool FAnimNodeEditMode::InputDelta(FEditorViewportClient* InViewportClient, FVie
 		if (bDoScale)
 		{
 			DoScale(InScale);
+		}
+
+		for (EditorRuntimeNodePair CurrentNodePair : AnimNodes)
+		{
+			if (CurrentNodePair.EditorAnimNode)
+			{
+				CurrentNodePair.EditorAnimNode->PostEditRefreshDebuggedComponent();
+			}
 		}
 
 		InViewport->Invalidate();
@@ -310,33 +345,36 @@ bool FAnimNodeEditMode::ShouldDrawWidget() const
 
 void FAnimNodeEditMode::DoTranslation(FVector& InTranslation)
 {
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
-	if (SkelControl != nullptr)
+	UAnimGraphNode_SkeletalControlBase* const EditorSkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(GetActiveWidgetAnimNode());
+	FAnimNode_SkeletalControlBase* const RuntimeSkelControl = static_cast<FAnimNode_SkeletalControlBase*>(GetActiveWidgetRuntimeAnimNode());
+	if ((EditorSkelControl != nullptr) && (RuntimeSkelControl != nullptr))
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		SkelControl->DoTranslation(GetAnimPreviewScene().GetPreviewMeshComponent(), InTranslation, (FAnimNode_SkeletalControlBase*)RuntimeAnimNode);
+		EditorSkelControl->DoTranslation(GetAnimPreviewScene().GetPreviewMeshComponent(), InTranslation, RuntimeSkelControl);
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 }
 
 void FAnimNodeEditMode::DoRotation(FRotator& InRotation)
 {
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
-	if (SkelControl != nullptr)
+	UAnimGraphNode_SkeletalControlBase* const EditorSkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(GetActiveWidgetAnimNode());
+	FAnimNode_SkeletalControlBase* const RuntimeSkelControl = static_cast<FAnimNode_SkeletalControlBase*>(GetActiveWidgetRuntimeAnimNode());
+	if ((EditorSkelControl != nullptr) && (RuntimeSkelControl != nullptr))
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		SkelControl->DoRotation(GetAnimPreviewScene().GetPreviewMeshComponent(), InRotation, (FAnimNode_SkeletalControlBase*)RuntimeAnimNode);
+		EditorSkelControl->DoRotation(GetAnimPreviewScene().GetPreviewMeshComponent(), InRotation, RuntimeSkelControl);
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 }
 
 void FAnimNodeEditMode::DoScale(FVector& InScale)
 {
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
-	if (SkelControl != nullptr)
+	UAnimGraphNode_SkeletalControlBase* const EditorSkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(GetActiveWidgetAnimNode());
+	FAnimNode_SkeletalControlBase* const RuntimeSkelControl = static_cast<FAnimNode_SkeletalControlBase*>(GetActiveWidgetRuntimeAnimNode());
+	if ((EditorSkelControl != nullptr) && (RuntimeSkelControl != nullptr))
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		SkelControl->DoScale(GetAnimPreviewScene().GetPreviewMeshComponent(), InScale, (FAnimNode_SkeletalControlBase*)RuntimeAnimNode);
+		EditorSkelControl->DoScale(GetAnimPreviewScene().GetPreviewMeshComponent(), InScale, RuntimeSkelControl);
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 }
@@ -346,13 +384,41 @@ void FAnimNodeEditMode::Tick(FEditorViewportClient* ViewportClient, float DeltaT
 	IAnimNodeEditMode::Tick(ViewportClient, DeltaTime);
 
 	// Keep actor location in sync with animation
-	UAnimGraphNode_SkeletalControlBase* SkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(AnimNode);
-	if (SkelControl != nullptr)
+	UAnimGraphNode_SkeletalControlBase* const EditorSkelControl = Cast<UAnimGraphNode_SkeletalControlBase>(GetActiveWidgetAnimNode());
+	FAnimNode_SkeletalControlBase* const RuntimeSkelControl = static_cast<FAnimNode_SkeletalControlBase*>(GetActiveWidgetRuntimeAnimNode());
+	if ((EditorSkelControl != nullptr) && (RuntimeSkelControl != nullptr))
 	{
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
-		SkelControl->MoveSelectActorLocation(GetAnimPreviewScene().GetPreviewMeshComponent(), (FAnimNode_SkeletalControlBase*)RuntimeAnimNode);
+		EditorSkelControl->MoveSelectActorLocation(GetAnimPreviewScene().GetPreviewMeshComponent(), RuntimeSkelControl);
 		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
+}
+
+void FAnimNodeEditMode::Exit()
+{
+	IAnimNodeEditMode::Exit();
+
+	AnimNodes.Empty();
+}
+
+UAnimGraphNode_Base* FAnimNodeEditMode::GetActiveWidgetAnimNode() const
+{
+	if (AnimNodes.Num() > 0)
+	{
+		return AnimNodes.Last().EditorAnimNode;
+	}
+
+	return nullptr;
+}
+
+FAnimNode_Base* FAnimNodeEditMode::GetActiveWidgetRuntimeAnimNode() const
+{
+	if (AnimNodes.Num() > 0)
+	{
+		return AnimNodes.Last().RuntimeAnimNode;
+	}
+
+	return nullptr;
 }
 
 void FAnimNodeEditMode::ConvertToComponentSpaceTransform(const USkeletalMeshComponent* SkelComp, const FTransform & InTransform, FTransform & OutCSTransform, int32 BoneIndex, EBoneControlSpace Space)

@@ -388,7 +388,7 @@ bool UUnitTestManager::QueueUnitTest(UClass* UnitTestClass, bool bRequeued/*=fal
 		ELogType StatusType = ELogType::StyleBold;
 
 		// @todo #JohnBAutomation: This should be enabled by default instead, so automation testing does give an error when a game doesn't
-		//				have a unit test environment. You should probably setup a whitelist of 'known-unsupported-games' somewhere,
+		//				have a unit test environment. You should probably setup an allow list of 'known-unsupported-games' somewhere,
 		//				to keep track of what games need support added, without breaking automation testing (but without breaking the
 		//				flow of setting-up/running automation tests)
 		if (!GIsAutomationTesting)
@@ -752,7 +752,7 @@ void UUnitTestManager::NotifyLogWindowClosed(const TSharedRef<SWindow>& ClosedWi
 	else
 	{
 		// Match the log window to a unit test
-		UUnitTest** CurUnitTestRef = ActiveUnitTests.FindByPredicate(
+		TObjectPtr<UUnitTest>* CurUnitTestRef = ActiveUnitTests.FindByPredicate(
 			[&](const UUnitTest* Element)
 			{
 				return Element->LogWindow == ClosedWindow;
@@ -1305,7 +1305,7 @@ void UUnitTestManager::Tick(float DeltaTime)
 
 		for (auto CurUnitTest : ActiveUnitTestsCopy)
 		{
-			if (!CurUnitTest->IsPendingKill())
+			if (IsValid(CurUnitTest))
 			{
 				if (CurUnitTest->IsTickable())
 				{
@@ -1345,7 +1345,7 @@ void UUnitTestManager::Tick(float DeltaTime)
 		// Now mark all of these unit tests, for garbage collection
 		for (auto CurUnitTest : FinishedUnitTests)
 		{
-			CurUnitTest->MarkPendingKill();
+			CurUnitTest->MarkAsGarbage();
 		}
 
 		FinishedUnitTests.Empty();
@@ -1591,7 +1591,7 @@ bool UUnitTestManager::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar
 	// If this command was triggered within a specific unit test (as identified by InWorld), abort it
 	else if (UnitTestName == TEXT("abort"))
 	{
-		UUnitTest** UnitTestRef = (InWorld != nullptr ? ActiveUnitTests.FindByPredicate(FindUnitTestByWorld) :
+		TObjectPtr<UUnitTest>* UnitTestRef = (InWorld != nullptr ? ActiveUnitTests.FindByPredicate(FindUnitTestByWorld) :
 									ActiveUnitTests.FindByPredicate(FindUnitTestByLog));
 
 		UUnitTest* AbortUnitTest = (UnitTestRef != nullptr ? *UnitTestRef : nullptr);
@@ -1610,7 +1610,7 @@ bool UUnitTestManager::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar
 	// If this command was triggered within a specific unit test, restart the unit test
 	else if (UnitTestName == TEXT("restart"))
 	{
-		UUnitTest** UnitTestRef = (InWorld != nullptr ? ActiveUnitTests.FindByPredicate(FindUnitTestByWorld) :
+		TObjectPtr<UUnitTest>* UnitTestRef = (InWorld != nullptr ? ActiveUnitTests.FindByPredicate(FindUnitTestByWorld) :
 									ActiveUnitTests.FindByPredicate(FindUnitTestByLog));
 
 		UUnitTest* RestartUnitTest = (UnitTestRef != nullptr ? *UnitTestRef : nullptr);
@@ -1663,7 +1663,7 @@ bool UUnitTestManager::Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar
 	// Debug unit test commands
 	else if (UnitTestName == TEXT("debug"))
 	{
-		UUnitTest** TargetUnitTestRef = (InWorld != nullptr ? ActiveUnitTests.FindByPredicate(
+		TObjectPtr<UUnitTest>* TargetUnitTestRef = (InWorld != nullptr ? ActiveUnitTests.FindByPredicate(
 			[&InWorld](const UUnitTest* InElement)
 			{
 				auto CurUnitTest = Cast<UClientUnitTest>(InElement);
@@ -1997,7 +1997,7 @@ void UUnitTestManager::Serialize(const TCHAR* Data, ELogVerbosity::Type Verbosit
 			{
 				// @todo #JohnB: This chain of getting the desired world is very messy...but it's hard to get the correct world.
 				UGameEngine* GameEngine = Cast<UGameEngine>(GEngine);
-				UGameInstance* GameInstance = GameEngine != nullptr ? GameEngine->GameInstance : nullptr;
+				UGameInstance* GameInstance = GameEngine != nullptr ? ToRawPtr(GameEngine->GameInstance) : nullptr;
 				UGameViewportClient* GameViewport = GameInstance != nullptr ? GameInstance->GetGameViewportClient() : nullptr;
 				UWorld* BaseWorld = GameViewport != nullptr ? GameViewport->GetWorld() : nullptr;
 
@@ -2329,11 +2329,11 @@ static bool UnitTestExec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
 		bReturnVal = true;
 	}
 	/**
-	 * Implements a command for utilizing the UE4 reflection system, through the NetcodeUnitTest FVMReflection helper class.
-	 * This is like a supercharged version of the 'get/set' commands, able to access anything in the UE4 VM, using C++-like syntax.
+	 * Implements a command for utilizing the UE reflection system, through the NetcodeUnitTest FVMReflection helper class.
+	 * This is like a supercharged version of the 'get/set' commands, able to access anything in the UE VM, using C++-like syntax.
 	 *
 	 * This can save lots of time spent debugging using other means (e.g. log messages and associated recompiling/launching),
-	 * by allowing much better reach through the UE4 VM - almost like writing/executing code from the console.
+	 * by allowing much better reach through the UE VM - almost like writing/executing code from the console.
 	 *
 	 *
 	 * Basic Usage:

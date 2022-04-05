@@ -24,6 +24,7 @@
 #include "GameFramework/ForceFeedbackEffect.h"
 #include "GameFramework/UpdateLevelVisibilityLevelInfo.h"
 #include "GenericPlatform/IInputInterface.h"
+#include "GameFramework/PlayerInput.h"
 #include "PlayerController.generated.h"
 
 class ACameraActor;
@@ -230,26 +231,26 @@ public:
 
 	/** UPlayer associated with this PlayerController.  Could be a local player or a net connection. */
 	UPROPERTY()
-	UPlayer* Player;
+	TObjectPtr<UPlayer> Player;
 
 	/** Used in net games so client can acknowledge it possessed a specific pawn. */
 	UPROPERTY()
-	APawn* AcknowledgedPawn;
+	TObjectPtr<APawn> AcknowledgedPawn;
 
 	/** Director track that's currently possessing this player controller, or none if not possessed. */
 	UPROPERTY(Transient)
-	UInterpTrackInstDirector* ControllingDirTrackInst;
+	TObjectPtr<UInterpTrackInstDirector> ControllingDirTrackInst;
 
 	/** Heads up display associated with this PlayerController. */
 	UPROPERTY()
-	AHUD* MyHUD;
+	TObjectPtr<AHUD> MyHUD;
 
 	// ******************************************************************************
 	// Camera/view related variables
 
 	/** Camera manager associated with this Player Controller. */
 	UPROPERTY(BlueprintReadOnly, Category=PlayerController)
-	APlayerCameraManager* PlayerCameraManager;
+	TObjectPtr<APlayerCameraManager> PlayerCameraManager;
 
 	/** PlayerCamera class should be set for each game, otherwise Engine.PlayerCameraManager is used */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=PlayerController)
@@ -282,7 +283,7 @@ public:
 
 	/** The actors which the camera shouldn't see - e.g. used to hide actors which the camera penetrates */
 	UPROPERTY()
-	TArray<class AActor*> HiddenActors;
+	TArray<TObjectPtr<class AActor>> HiddenActors;
 
 	/** Explicit components the camera shouldn't see (helpful for external systems to hide a component from a single player) */
 	UPROPERTY()
@@ -311,13 +312,14 @@ public:
 	 * Object that manages "cheat" commands.
 	 *
 	 * By default:
-	 *   - Debug and Development builds will force it to be instantiated (@see APlayerController::EnableCheats).
-	 *   - Test and Shipping builds will only instantiate it if the authoritative game mode allows cheats (@see AGameModeBase::AllowCheats).
+	 *	 - In Shipping configurations, the manager is always disabled because UE_WITH_CHEAT_MANAGER is 0
+	 *   - When playing in the editor, cheats are always enabled
+	 *   - In other cases, cheats are enabled by default in single player games but can be forced on with the EnableCheats console command
 	 * 
 	 * This behavior can be changed either by overriding APlayerController::EnableCheats or AGameModeBase::AllowCheats.
 	 */
 	UPROPERTY(Transient, BlueprintReadOnly, Category="Cheat Manager")
-	UCheatManager* CheatManager;
+	TObjectPtr<UCheatManager> CheatManager;
 	
 	/**
 	 * Class of my CheatManager.
@@ -328,7 +330,7 @@ public:
 
 	/** Object that manages player input. */
 	UPROPERTY(Transient)
-	class UPlayerInput* PlayerInput;    
+	TObjectPtr<UPlayerInput> PlayerInput;    
 	
 	UPROPERTY(Transient)
 	TArray<FActiveForceFeedbackEffect> ActiveForceFeedbackEffects;
@@ -376,6 +378,7 @@ public:
 	TSharedPtr<struct FActiveHapticFeedbackEffect> ActiveHapticEffect_Left;
 	TSharedPtr<struct FActiveHapticFeedbackEffect> ActiveHapticEffect_Right;
 	TSharedPtr<struct FActiveHapticFeedbackEffect> ActiveHapticEffect_Gun;
+	TSharedPtr<struct FActiveHapticFeedbackEffect> ActiveHapticEffect_HMD;
 
 	/** Currently active force feedback weights */
 	FForceFeedbackValues ForceFeedbackValues;
@@ -428,26 +431,56 @@ public:
 	 * @see GameModeBase::SwapPlayerControllers()
 	 */
 	UPROPERTY(DuplicateTransient)
-	UNetConnection* PendingSwapConnection;
+	TObjectPtr<UNetConnection> PendingSwapConnection;
 
 	/** The net connection this controller is communicating on, nullptr for local players on server */
 	UPROPERTY(DuplicateTransient)
-	UNetConnection* NetConnection;
+	TObjectPtr<UNetConnection> NetConnection;
 
 	/** Input axes values, accumulated each tick. */
 	FRotator RotationInput;
 
 	/** Yaw input speed scaling */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category=PlayerController)
-	float InputYawScale;
+	UPROPERTY(config, meta = (DeprecatedProperty, DeprecationMessage = "Use the Enhanced Input plugin Scalar Modifier instead. See UInputSettings::bEnableLegacyInputScales to enable legacy behavior"))
+	float InputYawScale_DEPRECATED = 1.0f;
 
 	/** Pitch input speed scaling */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category=PlayerController)
-	float InputPitchScale;
+	UPROPERTY(config, meta = (DeprecatedProperty, DeprecationMessage = "Use the Enhanced Input plugin Scalar Modifier instead. See UInputSettings::bEnableLegacyInputScales to enable legacy behavior"))
+	float InputPitchScale_DEPRECATED = 1.0f;
 
 	/** Roll input speed scaling */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, config, Category=PlayerController)
-	float InputRollScale;
+	UPROPERTY(config, meta = (DeprecatedProperty, DeprecationMessage = "Use the Enhanced Input plugin Scalar Modifier instead. See UInputSettings::bEnableLegacyInputScales to enable legacy behavior"))
+	float InputRollScale_DEPRECATED = 1.0f;
+
+	/** A getter for the deprecated InputYawScale property. This should only be used if UInputSettings::bEnableLegacyInputScales is turned on. */
+	UE_DEPRECATED(5.0, "GetDeprecatedInputYawScale is deprecated, please use the Enhanced Input plugin Scalar Modifier instead.")
+	UFUNCTION(BlueprintCallable, Category = PlayerController)
+	float GetDeprecatedInputYawScale() const;
+	
+	/** A getter for the deprecated InputPitchScale property. This should only be used if UInputSettings::bEnableLegacyInputScales is turned on. */
+	UE_DEPRECATED(5.0, "GetDeprecatedInputPitchScale is deprecated, please use the Enhanced Input plugin Scalar Modifier instead.")
+	UFUNCTION(BlueprintCallable, Category = PlayerController)
+	float GetDeprecatedInputPitchScale() const;
+	
+	/** A getter for the deprecated InputRollScale property. This should only be used if UInputSettings::bEnableLegacyInputScales is turned on. */
+	UE_DEPRECATED(5.0, "GetDeprecatedInputRollScale is deprecated, please use the Enhanced Input plugin Scalar Modifier instead.)")
+	UFUNCTION(BlueprintCallable, Category = PlayerController)
+	float GetDeprecatedInputRollScale() const;
+
+	/** A getter for the deprecated InputYawScale property. This should only be used if UInputSettings::bEnableLegacyInputScales is turned on. */
+	UE_DEPRECATED(5.0, "SetDeprecatedInputYawScale is deprecated, please use the Enhanced Input plugin Scalar Modifier instead.")
+	UFUNCTION(BlueprintCallable, Category = PlayerController)
+	void SetDeprecatedInputYawScale(float NewValue);
+
+	/** A getter for the deprecated InputPitchScale property. This should only be used if UInputSettings::bEnableLegacyInputScales is turned on. */
+	UE_DEPRECATED(5.0, "SetDeprecatedInputPitchScale is deprecated, please use the Enhanced Input plugin Scalar Modifier instead.")
+	UFUNCTION(BlueprintCallable, Category = PlayerController)
+	void SetDeprecatedInputPitchScale(float NewValue);
+
+	/** A getter for the deprecated InputRollScale property. This should only be used if UInputSettings::bEnableLegacyInputScales is turned on. */
+	UE_DEPRECATED(5.0, "SetDeprecatedInputRollScale is deprecated, please use the Enhanced Input plugin Scalar Modifier instead.)")
+	UFUNCTION(BlueprintCallable, Category = PlayerController)
+	void SetDeprecatedInputRollScale(float NewValue);
 
 	/** Whether the mouse cursor should be displayed. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=MouseInterface)
@@ -471,6 +504,18 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Game|Feedback")
 	uint32 bForceFeedbackEnabled:1;
+
+	/** Whether the PlayerController should be used as a World Partiton streaming source. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WorldPartition)
+	uint32 bEnableStreamingSource:1;
+
+	/** Whether the PlayerController streaming source should activate cells after loading. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WorldPartition, meta=(EditCondition="bEnableStreamingSource"))
+	uint32 bStreamingSourceShouldActivate:1;
+
+	/** Whether the PlayerController streaming source should block on slow streaming. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = WorldPartition, meta=(EditCondition="bEnableStreamingSource"))
+	uint32 bStreamingSourceShouldBlockOnSlowStreaming:1;
 
 	/** Scale applied to force feedback values */
 	UPROPERTY(config)
@@ -509,7 +554,7 @@ public:
 	uint16 LastCompletedSeamlessTravelCount;
 
 public:
-	/** Enables cheats within the game */
+	/** Run from the console to try and manually enable cheats which are disabled by default in multiplayer, games can override this */
 	UFUNCTION(exec)
 	virtual void EnableCheats();
 
@@ -628,18 +673,18 @@ public:
 	bool GetHitResultUnderFingerForObjects(ETouchIndex::Type FingerIndex, const  TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, bool bTraceComplex, FHitResult& HitResult) const;
 
 	/** Convert current mouse 2D position to World Space 3D position and direction. Returns false if unable to determine value. **/
-	UFUNCTION(BlueprintCallable, Category="Game|Player", meta = (DisplayName = "ConvertMouseLocationToWorldSpace", Keywords = "deproject"))
+	UFUNCTION(BlueprintCallable, Category="Game|Player", meta = (DisplayName = "Convert Mouse Location To World Space", Keywords = "deproject"))
 	bool DeprojectMousePositionToWorld(FVector& WorldLocation, FVector& WorldDirection) const;
 
 	/** Convert 2D screen position to World Space 3D position and direction. Returns false if unable to determine value. **/
-	UFUNCTION(BlueprintCallable, Category="Game|Player", meta = (DisplayName = "ConvertScreenLocationToWorldSpace", Keywords = "deproject"))
+	UFUNCTION(BlueprintCallable, Category="Game|Player", meta = (DisplayName = "Convert Screen Location To World Space", Keywords = "deproject"))
 	bool DeprojectScreenPositionToWorld(float ScreenX, float ScreenY, FVector& WorldLocation, FVector& WorldDirection) const;
 
 	/**
 	 * Convert a World Space 3D position into a 2D Screen Space position.
 	 * @return true if the world coordinate was successfully projected to the screen.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Game|Player", meta = (DisplayName = "ConvertWorldLocationToScreenLocation", Keywords = "project"))
+	UFUNCTION(BlueprintCallable, Category="Game|Player", meta = (DisplayName = "Convert World Location To Screen Location", Keywords = "project"))
 	bool ProjectWorldLocationToScreen(FVector WorldLocation, FVector2D& ScreenLocation, bool bPlayerViewportRelative = false) const;
 
 	/**
@@ -655,7 +700,7 @@ public:
 	virtual bool PostProcessWorldToScreen(FVector WorldLocation, FVector2D& ScreenLocation, bool bPlayerViewportRelative) const;
 
 	/** Positions the mouse cursor in screen space, in pixels. */
-	UFUNCTION( BlueprintCallable, Category="Game|Player", meta = (DisplayName = "SetMousePosition", Keywords = "mouse" ))
+	UFUNCTION( BlueprintCallable, Category="Game|Player", meta = (DisplayName = "Set Mouse Position", Keywords = "mouse" ))
 	void SetMouseLocation( const int X, const int Y );
 
 	/**
@@ -663,6 +708,30 @@ public:
 	 * This may then be modified by the PlayerCamera, and is passed to Pawn->FaceRotation().
 	 */
 	virtual void UpdateRotation(float DeltaTime);
+
+	/**
+	* Whether the PlayerController should be used as a World Partiton streaming source. 
+	* Default implementation returns bEnableStreamingSource but can be overriden in child classes.
+	* @return true if it should.
+	*/
+	UFUNCTION(BlueprintCallable, Category = WorldPartition)
+	virtual bool IsStreamingSourceEnabled() const { return bEnableStreamingSource; }
+
+	/**
+	* Whether the PlayerController streaming source should activate cells after loading.
+	* Default implementation returns bStreamingSourceShouldActivate but can be overriden in child classes.
+	* @return true if it should.
+	*/
+	UFUNCTION(BlueprintCallable, Category = WorldPartition)
+	virtual bool StreamingSourceShouldActivate() const { return bEnableStreamingSource && bStreamingSourceShouldActivate; }
+
+	/**
+	* Whether the PlayerController streaming source should block on slow streaming.
+	* Default implementation returns bStreamingSourceShouldBlockOnSlowStreaming but can be overriden in child classes.
+	* @return true if it should.
+	*/
+	UFUNCTION(BlueprintCallable, Category = WorldPartition)
+	virtual bool StreamingSourceShouldBlockOnSlowStreaming() const { return bEnableStreamingSource && bStreamingSourceShouldBlockOnSlowStreaming; }
 
 protected:
 	/** Pawn has been possessed, so changing state to NAME_Playing. Start it walking and begin playing with it. */
@@ -777,6 +846,27 @@ public:
 	virtual void ClientUnmutePlayer(FUniqueNetIdRepl PlayerId);
 
 	/**
+	 * Tell the client to block a player for this controller
+	 * @param PlayerId player id to block
+	 */
+	UFUNCTION(server, reliable, WithValidation)
+	virtual void ServerBlockPlayer(FUniqueNetIdRepl PlayerId);
+
+	/**
+	 * Tell the client to unblock a player for this controller
+	 * @param PlayerId player id to unblock
+	 */
+	UFUNCTION(server, reliable, WithValidation)
+	virtual void ServerUnblockPlayer(FUniqueNetIdRepl PlayerId);
+
+	/**
+	 * Tell the client to unmute an array of players for this controller
+	 * @param PlayerIds player ids to unmute
+	 */
+	UFUNCTION(Reliable, Client)
+	virtual void ClientUnmutePlayers(const TArray<FUniqueNetIdRepl>& PlayerIds);
+
+	/**
 	 * Mutes a remote player on the server and then tells the client to mute
 	 *
 	 * @param PlayerNetId the remote player to mute
@@ -789,6 +879,11 @@ public:
 	 * @param PlayerNetId the remote player to unmute
 	 */
 	void GameplayUnmutePlayer(const FUniqueNetIdRepl& PlayerNetId);
+
+	/**
+	 * Unmutes all remote players muted due to gameplay rules on the server and then tells the client to unmute
+	 */
+	void GameplayUnmuteAllPlayers();
 
 	/**
 	* Get a remote player controller on the server for muting
@@ -806,8 +901,6 @@ public:
 	 */
 	virtual bool IsPlayerMuted(const class FUniqueNetId& PlayerId);
 
-	/** Notification when a matinee director track starts or stops controlling the ViewTarget of this PlayerController */
-	virtual void NotifyDirectorControl(bool bNowControlling, class AMatineeActor* CurrentMatinee);
 
 	/** Console control commands, useful when remote debugging so you can't touch the console the normal way */
 	UFUNCTION(exec)
@@ -1035,7 +1128,7 @@ public:
 	 * @param Cursor - the cursor to set the widget for
 	 * @param CursorWidget - the widget to set the cursor to
 	 */
-	UFUNCTION(BlueprintCallable, Category="User Interface")
+	UFUNCTION(BlueprintCallable, Category="Game|Player")
 	void SetMouseCursorWidget(EMouseCursor::Type Cursor, class UUserWidget* CursorWidget);
 
 	/** Set the view target
@@ -1044,9 +1137,12 @@ public:
 	 */
 	UFUNCTION(Reliable, Client)
 	void ClientSetViewTarget(class AActor* A, struct FViewTargetTransitionParams TransitionParams = FViewTargetTransitionParams());
-
-	/** Spawn a camera lens effect (e.g. blood). */
+	
+	/** Spawn a camera lens effect (e.g. blood). */	
 	UFUNCTION(unreliable, client, BlueprintCallable, Category="Game|Feedback")
+	void ClientSpawnGenericCameraLensEffect(UPARAM(meta=(MustImplement ="CameraLensEffectInterface")) TSubclassOf<class AActor>  LensEffectEmitterClass);
+
+	UFUNCTION(unreliable, client, Category="Game|Feedback", meta=(DeprecatedFunction, DeprecationMessage="Prefer the version taking ICameraLensEffectInterface (ClientSpawnGenericCameraLensEffect)"))
 	void ClientSpawnCameraLensEffect(TSubclassOf<class AEmitterCameraLensEffectBase>  LensEffectEmitterClass);
 
 	/** Removes all Camera Lens Effects. */
@@ -1095,12 +1191,6 @@ public:
 	{
 		ClientPlayForceFeedback_Internal(ForceFeedbackEffect, Params);
 	}
-
-	UE_DEPRECATED(4.22, "Use version that specifies parameters using a struct instead of a list of parameters")
-	void ClientPlayForceFeedback(class UForceFeedbackEffect* ForceFeedbackEffect, bool bLooping, bool bIgnoreTimeDilation, FName Tag);
-
-	UE_DEPRECATED(4.18, "Use version that specifies parameters using a struct instead of a list of parameters")
-	void ClientPlayForceFeedback(class UForceFeedbackEffect* ForceFeedbackEffect, bool bLooping, FName Tag);
 
 	/** 
 	 * Stops a playing force feedback pattern
@@ -1418,6 +1508,7 @@ public:
 	/** Retrieves the X and Y screen coordinates of the specified touch key. Returns false if the touch index is not down */
 	UFUNCTION(BlueprintCallable, Category="Game|Player")
 	void GetInputTouchState(ETouchIndex::Type FingerIndex, float& LocationX, float& LocationY, bool& bIsCurrentlyPressed) const;
+	void GetInputTouchState(ETouchIndex::Type FingerIndex, double& LocationX, double& LocationY, bool& bIsCurrentlyPressed) const;	// LWC_TODO: Temp stand in for native calls with FVector2D components.
 
 	/** Retrieves the current motion state of the player's input device */
 	UFUNCTION(BlueprintCallable, Category="Game|Player")
@@ -1426,6 +1517,7 @@ public:
 	/** Retrieves the X and Y screen coordinates of the mouse cursor. Returns false if there is no associated mouse device */
 	UFUNCTION(BlueprintCallable, Category="Game|Player")
 	bool GetMousePosition(float& LocationX, float& LocationY) const;
+	bool GetMousePosition(double& LocationX, double& LocationY) const;	// LWC_TODO: Temp stand in for native calls with FVector2D components.
 
 	/** Returns how long the given key/button has been down.  Returns 0 if it's up or it just went down this frame. */
 	UFUNCTION(BlueprintCallable, Category="Game|Player")
@@ -1434,10 +1526,12 @@ public:
 	/** Retrieves how far the mouse moved this frame. */
 	UFUNCTION(BlueprintCallable, Category="Game|Player")
 	void GetInputMouseDelta(float& DeltaX, float& DeltaY) const;
-
+	void GetInputMouseDelta(double& DeltaX, double& DeltaY) const;	// LWC_TODO: Temp stand in for native calls with FVector2D components.
+	
 	/** Retrieves the X and Y displacement of the given analog stick. */
 	UFUNCTION(BlueprintCallable, Category="Game|Player")
 	void GetInputAnalogStickState(EControllerAnalogStick::Type WhichStick, float& StickX, float& StickY) const;
+	void GetInputAnalogStickState(EControllerAnalogStick::Type WhichStick, double& StickX, double& StickY) const;	// LWC_TODO: Temp stand in for native calls with FVector2D components.
 
 	/** Activates a new touch interface for this player controller */
 	UFUNCTION(BlueprintCallable, Category="Game|Player")
@@ -1480,7 +1574,7 @@ protected:
 	
 	/** InputComponent we use when player is in Inactive state. */
 	UPROPERTY()
-	UInputComponent* InactiveStateInputComponent;
+	TObjectPtr<UInputComponent> InactiveStateInputComponent;
 
 	/** Sets up input bindings for the input component pushed on the stack in the inactive state. */
 	virtual void SetupInactiveStateInputComponent(UInputComponent* InComponent);
@@ -1510,7 +1604,7 @@ protected:
 
 	/** The currently set touch interface */
 	UPROPERTY()
-	class UTouchInterface* CurrentTouchInterface;
+	TObjectPtr<class UTouchInterface> CurrentTouchInterface;
 
 	/** Handle for efficient management of UnFreeze timer */
 	FTimerHandle TimerHandle_UnFreeze;
@@ -1533,20 +1627,19 @@ public:
 	virtual void FlushPressedKeys();
 
 	/** Handles a key press */
+	UE_DEPRECATED(5.0, "This version of InputKey has been deprecated, please use the version that takes FInputKeyParams instead")
 	virtual bool InputKey(FKey Key, EInputEvent EventType, float AmountDepressed, bool bGamepad);
+
+	/** Handles a key press */
+	virtual bool InputKey(const FInputKeyParams& Params);
 
 	/** Handles a touch screen action */
 	virtual bool InputTouch(uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, float Force, FDateTime DeviceTimestamp, uint32 TouchpadIndex);
 
-	UE_DEPRECATED(4.20, "InputTouch now takes a Force")
-	bool InputTouch(uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, FDateTime DeviceTimestamp, uint32 TouchpadIndex)
-	{
-		return InputTouch(Handle, Type, TouchLocation, 1.0f, DeviceTimestamp, TouchpadIndex);
-	}
-
 	/** Handles a controller axis input */
+	UE_DEPRECATED(5.0, "InputAxis has been deprecated, please use InputKey instead.")
 	virtual bool InputAxis(FKey Key, float Delta, float DeltaTime, int32 NumSamples, bool bGamepad);
-
+	
 	/** Handles motion control */
 	virtual bool InputMotion(const FVector& Tilt, const FVector& RotationRate, const FVector& Gravity, const FVector& Acceleration);
 
@@ -1650,16 +1743,6 @@ public:
 	 */
 	void BuildHiddenComponentList(const FVector& ViewLocation, TSet<FPrimitiveComponentId>& HiddenComponentsOut);
 
-	/**
-	 * Sets the Matinee director track instance that's currently possessing this player controller
-	 * @param   NewControllingDirector    The director track instance that's now controlling this player controller (or nullptr for none)
-	 * @param	bClientSimulatingViewTarget	True to allow clients to simulate their own camera cuts (ignored if NewControllingDirector is nullptr).
-	 */
-	void SetControllingDirector(UInterpTrackInstDirector* NewControllingDirector, bool bClientSimulatingViewTarget);
-
-	/** Returns the Matinee director track that's currently possessing this player controller, or nullptr for none */
-	UInterpTrackInstDirector* GetControllingDirector();
-
 	/** spawn cameras for servers and owning players */
 	virtual void SpawnPlayerCameraManager();
 
@@ -1746,7 +1829,7 @@ public:
 	/** Clears out 'left-over' audio components. */
 	virtual void CleanUpAudioComponents();
 
-	/** Notifies the server that the client has ticked gameplay code, and should no longer get the extended "still loading" timeout grace period */
+	/** Called to try and enable cheats for this player, happens during initialization or from AllowCheats command */
 	virtual void AddCheats(bool bForce = false);
 
 	/** Spawn a HUD (make sure that PlayerController always has valid HUD, even if ClientSetHUD() hasn't been called */
@@ -1758,7 +1841,7 @@ public:
 	/** Gives the PlayerController an opportunity to cleanup any changes it applied to the game viewport, primarily for the touch interface */
 	virtual void CleanupGameViewport();
 
-	/** Returns true if input should be frozen (whether UnFreeze timer is active) */
+	/** Called on the client to do local pawn setup after possession, before calling ServerAcknowledgePossession */
 	virtual void AcknowledgePossession(class APawn* P);
 
 	/** Clean up when a Pawn's player is leaving a game. Base implementation destroys the pawn. */
@@ -1780,7 +1863,7 @@ public:
 	virtual void ViewAPlayer(int32 dir);
 
 	/** Returns true if this controller thinks it's able to restart. Called from GameModeBase::PlayerCanRestart */
-	UFUNCTION(BlueprintCallable, Category = "Game")
+	UFUNCTION(BlueprintCallable, Category = "Game|Player")
 	virtual bool CanRestartPlayer();
 
 	/**
@@ -1931,7 +2014,7 @@ protected:
 private:
 	/** The pawn used when spectating (nullptr if not spectating). */
 	UPROPERTY()
-	ASpectatorPawn* SpectatorPawn;
+	TObjectPtr<ASpectatorPawn> SpectatorPawn;
 
 	/** Used to delay calling ClientRestart() again when it hasn't been appropriately acknowledged. */
 	float		LastRetryPlayerTime;
@@ -1997,4 +2080,82 @@ private:
 	/** If true, prevent any haptic effects from playing */
 	bool bDisableHaptics : 1;
 
+public: 
+
+	/**
+	 * Frame number exchange. This doesn't inherently do anything but is used by the network prediction physics system.
+	 * This may be moved out at some point.
+	 * 
+	 * This is meant ot provide a mechanism for client side prediction to correlate client input and server frame numbers.
+	 * Frame is a loose concept here. It doesn't necessary mean GFrameNumber. Its just an arbitrary increasing sequence of numbers that is used
+	 * to label disrete units of client->Server input. For example the main thread may tick at a high variable rate but input is generated at a fixed
+	 * step interval.
+	 */
+
+	struct FInputCmdBuffer
+	{
+		int32 HeadFrame() const { return LastWritten; }
+		int32 TailFrame() const { return FMath::Max(0, LastWritten - Buffer.Num() + 1); }
+		TArray<uint8>& Write(int32 Frame) { LastWritten = Frame; return Buffer[Frame % Buffer.Num()]; }
+		const TArray<uint8>& Get(int32 Frame) const { return Buffer[Frame % Buffer.Num()]; }
+
+	private:
+		int32 LastWritten = INDEX_NONE;
+		TStaticArray<TArray<uint8>, 16> Buffer;
+	};
+
+	FInputCmdBuffer& GetInputBuffer() { return InputBuffer; }
+
+	// -------------------------------------------------------------------------
+	// Client
+	// -------------------------------------------------------------------------
+
+	struct FClientFrameInfo
+	{
+		int32 LastRecvInputFrame = INDEX_NONE;	// The latest inputcmd that the server acknowledged receiving, but not yet processed (this is our frame number that we gave them)
+		int32 LastProcessedInputFrame = INDEX_NONE; // The latest InputCmd that the server actually processed (this is our frame number that we gave them)
+		int32 LastRecvServerFrame = INDEX_NONE; // the latest ServerFrame number that the processing of LastRecvInputFrame happened on (Server's local frame number)
+
+		int8 QuantizedTimeDilation = 1; // Server sent this to this client, telling them to dilate local time either catch up or slow down
+		float TargetNumBufferedCmds = 0.f;
+	};	
+
+	// Client pushes input data locally. RPC is sent here but also includes redundant data
+	void PushClientInput(int32 ClientInputFrame, TArray<uint8>& Data);
+
+	// Client says "Here is input frame number X" (and then calls other RPCs to deliver InputCmd payload)
+	UFUNCTION(Server, unreliable)
+	void ServerRecvClientInputFrame(int32 RecvClientInputFrame, const TArray<uint8>& Data);
+
+	const FClientFrameInfo& GetClientFrameInfo() const { return ClientFrameInfo; }
+
+	// -------------------------------------------------------------------------
+	// Server
+	// -------------------------------------------------------------------------
+
+	struct FServerFrameInfo
+	{
+		int32 LastProcessedInputFrame = INDEX_NONE;	// The last client frame number we processed. "processed" is arbitrary and we are informed about when commands are processed via SetServerProessedInputFrame
+		int32 LastLocalFrame = INDEX_NONE; // The local frame number that we processed the latest client input frame on. Again, processed is arbitrary and set via SetServerProessedInputFrame
+		int32 LastSentLocalFrame = INDEX_NONE;	// Tracks the latest LastLocalFrame that we sent to the client. Just to prevent redundantly sending info via RPC
+
+		float TargetTimeDilation = 1.f;
+		int8 QuantizedTimeDilation = 1; // Server sets this to tell client to slowdown or speed up
+		float TargetNumBufferedCmds = 1.f; // How many buffered cmds the server thinks this client should ideally have to absorb PL and latency variance
+		bool bFault = true;
+	};
+
+	// We call this in ::SendClientAdjustment to tell the client what the last processed input frame was for him and on what local frame number it was processed
+	UFUNCTION(Client, unreliable)
+	void ClientRecvServerAckFrame(int32 LastProcessedInputFrame, int32 RecvServerFrameNumber, int8 TimeDilation);
+
+	UFUNCTION(Client, unreliable)
+	void ClientRecvServerAckFrameDebug(uint8 NumBuffered, float TargetNumBufferedCmds);
+
+	FServerFrameInfo& GetServerFrameInfo() { return ServerFrameInfo; };
+private:
+
+	FInputCmdBuffer InputBuffer;
+	FClientFrameInfo ClientFrameInfo;
+	FServerFrameInfo ServerFrameInfo;
 };

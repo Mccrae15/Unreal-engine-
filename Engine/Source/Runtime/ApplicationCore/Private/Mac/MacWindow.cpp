@@ -39,7 +39,7 @@ void FMacWindow::Initialize( FMacApplication* const Application, const TSharedRe
 	// Finally, let's initialize the new native window object.  Calling this function will often cause OS
 	// window messages to be sent! (such as activation messages)
 
-	TSharedRef<FMacScreen> TargetScreen = FMacApplication::FindScreenBySlatePosition(Definition->XDesiredPositionOnScreen, Definition->YDesiredPositionOnScreen);
+	FMacScreenRef TargetScreen = FMacApplication::FindScreenBySlatePosition(Definition->XDesiredPositionOnScreen, Definition->YDesiredPositionOnScreen);
 
 	const int32 SizeX = FMath::Max(FMath::CeilToInt( Definition->WidthDesiredOnScreen ), 1);
 	const int32 SizeY = FMath::Max(FMath::CeilToInt( Definition->HeightDesiredOnScreen ), 1);
@@ -85,6 +85,7 @@ void FMacWindow::Initialize( FMacApplication* const Application, const TSharedRe
 	MainThreadCall(^{
 		SCOPED_AUTORELEASE_POOL;
 		WindowHandle = [[FCocoaWindow alloc] initWithContentRect: ViewRect styleMask: WindowStyle backing: NSBackingStoreBuffered defer: NO];
+		WindowHandle.Type = Definition->Type;
 		
 		if( WindowHandle != nullptr )
 		{
@@ -213,7 +214,7 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 			check(0);
 		}
-	}, UE4ShowEventMode, true);
+	}, UnrealShowEventMode, true);
 }
 
 FCocoaWindow* FMacWindow::GetWindowHandle() const
@@ -249,7 +250,7 @@ void FMacWindow::MoveWindowTo( int32 X, int32 Y )
 		SCOPED_AUTORELEASE_POOL;
 		const FVector2D Point = FMacApplication::ConvertSlatePositionToCocoa(X, Y);
 		[WindowHandle setFrameOrigin:NSMakePoint(Point.X, Point.Y - [WindowHandle openGLFrame].size.height + 1)];
-	}, UE4ResizeEventMode, true);
+	}, UnrealResizeEventMode, true);
 }
 
 void FMacWindow::BringToFront( bool bForce )
@@ -266,7 +267,7 @@ void FMacWindow::BringToFront( bool bForce )
 		MainThreadCall(^{
 			SCOPED_AUTORELEASE_POOL;
 			[WindowHandleCopy orderFrontAndMakeMain:bOrderAndKey andKey:bOrderAndKey];
-		}, UE4ShowEventMode, true);
+		}, UnrealShowEventMode, true);
 
 		MacApplication->OnWindowOrderedFront(SharedThis(this));
 	}
@@ -284,7 +285,7 @@ void FMacWindow::Destroy()
 			SCOPED_AUTORELEASE_POOL;
 			[WindowHandleCopy setAlphaValue:0.0f];
 			[WindowHandleCopy setBackgroundColor:[NSColor clearColor]];
-		}, UE4ShowEventMode, false);
+		}, UnrealShowEventMode, false);
 
 		MacApplication->OnWindowDestroyed(SharedThis(this));
 		WindowHandle = nullptr;
@@ -296,7 +297,7 @@ void FMacWindow::Minimize()
 	MainThreadCall(^{
 		SCOPED_AUTORELEASE_POOL;
 		[WindowHandle miniaturize:nil];
-	}, UE4ResizeEventMode, true);
+	}, UnrealResizeEventMode, true);
 }
 
 void FMacWindow::Maximize()
@@ -308,7 +309,7 @@ void FMacWindow::Maximize()
 			WindowHandle->bZoomed = true;
 			[WindowHandle zoom:nil];
 		}
-	}, UE4ResizeEventMode, true);
+	}, UnrealResizeEventMode, true);
 }
 
 void FMacWindow::Restore()
@@ -323,7 +324,7 @@ void FMacWindow::Restore()
 		{
 			[WindowHandle zoom:nil];
 		}
-	}, UE4ResizeEventMode, true);
+	}, UnrealResizeEventMode, true);
 
 	WindowHandle->bZoomed = WindowHandle.zoomed;
 }
@@ -360,7 +361,7 @@ void FMacWindow::Show()
 		MainThreadCall(^{
 			SCOPED_AUTORELEASE_POOL;
 			[WindowHandleCopy orderFrontAndMakeMain:bShouldActivate andKey:bShouldActivate];
-		}, UE4ShowEventMode, true);
+		}, UnrealShowEventMode, true);
 
 		bIsVisible = true;
 	}
@@ -375,7 +376,7 @@ void FMacWindow::Hide()
 		MainThreadCall(^{
 			SCOPED_AUTORELEASE_POOL;
 			[WindowHandle orderOut:nil];
-		}, UE4CloseEventMode, true);
+		}, UnrealCloseEventMode, true);
 	}
 }
 
@@ -439,7 +440,7 @@ void FMacWindow::SetWindowFocus()
 	MainThreadCall(^{
 		SCOPED_AUTORELEASE_POOL;
 		[WindowHandle orderFrontAndMakeMain:true andKey:true];
-	}, UE4ShowEventMode, true);
+	}, UnrealShowEventMode, true);
 
 	MacApplication->OnWindowOrderedFront(SharedThis(this));
 }
@@ -450,7 +451,7 @@ void FMacWindow::SetOpacity( const float InOpacity )
 		SCOPED_AUTORELEASE_POOL;
         CachedOpacity = InOpacity;
 		[WindowHandle setAlphaValue:InOpacity];
-	}, UE4NilEventMode, true);
+	}, UnrealNilEventMode, true);
 }
 
 bool FMacWindow::IsPointInWindow( int32 X, int32 Y ) const
@@ -521,7 +522,7 @@ void FMacWindow::SetText(const TCHAR* const Text)
 				[NSApp changeWindowsItem: WindowHandle title: (NSString*)CFName filename: NO];
 			}
 			CFRelease( CFName );
-		}, UE4NilEventMode, true);
+		}, UnrealNilEventMode, true);
 	}
 }
 
@@ -611,7 +612,7 @@ void FMacWindow::ApplySizeAndModeChanges(int32 X, int32 Y, int32 Width, int32 He
 			{
 				CGDisplayFade(FadeReservationToken, 0.3, kCGDisplayBlendNormal, kCGDisplayBlendSolidColor, 0, 0, 0, true);
 			}
-		}, UE4ResizeEventMode, true);
+		}, UnrealResizeEventMode, true);
 	}
 
 	if (WindowMode == EWindowMode::Windowed || WindowMode == EWindowMode::WindowedFullscreen)
@@ -620,7 +621,7 @@ void FMacWindow::ApplySizeAndModeChanges(int32 X, int32 Y, int32 Width, int32 He
 		{
 			MainThreadCall(^{
 				CGDisplaySetDisplayMode(WindowedModeSavedState.CapturedDisplayID, WindowedModeSavedState.DesktopDisplayMode, nullptr);
-			}, UE4ResizeEventMode, true);
+			}, UnrealResizeEventMode, true);
 
 			CGDisplayModeRelease(WindowedModeSavedState.DesktopDisplayMode);
 			WindowedModeSavedState.DesktopDisplayMode = nullptr;
@@ -666,7 +667,7 @@ void FMacWindow::ApplySizeAndModeChanges(int32 X, int32 Y, int32 Width, int32 He
 					{
 						[WindowHandle setContentAspectRatio:NSMakeSize((float)Width / (float)Height, 1.0f)];
 					}
-				}, UE4ResizeEventMode, true);
+				}, UnrealResizeEventMode, true);
 			}
 		}
 	}
@@ -689,7 +690,7 @@ void FMacWindow::ApplySizeAndModeChanges(int32 X, int32 Y, int32 Width, int32 He
 			CGDisplayModeRef DisplayMode = FPlatformApplicationMisc::GetSupportedDisplayMode(WindowedModeSavedState.CapturedDisplayID, Width, Height);
 			MainThreadCall(^{
 				CGDisplaySetDisplayMode(WindowedModeSavedState.CapturedDisplayID, DisplayMode, nullptr);
-			}, UE4ResizeEventMode, true);
+			}, UnrealResizeEventMode, true);
 
 			UpdateFullScreenState(bIsFullScreen != bWantsFullScreen);
 
@@ -707,7 +708,7 @@ void FMacWindow::ApplySizeAndModeChanges(int32 X, int32 Y, int32 Width, int32 He
 		MainThreadCall(^{
 			CGDisplayFade(FadeReservationToken, 0.5, kCGDisplayBlendNormal, kCGDisplayBlendSolidColor, 0, 0, 0, false);
 			CGReleaseDisplayFadeReservation(FadeReservationToken);
-		}, UE4ResizeEventMode, false);
+		}, UnrealResizeEventMode, false);
 	}
 }
 
@@ -738,7 +739,7 @@ void FMacWindow::UpdateFullScreenState(bool bToggleFullScreen)
 			[WindowHandle setLevel:WindowedModeSavedState.WindowLevel];
 			[NSApp setPresentationOptions:NSApplicationPresentationDefault];
 		}
-	}, UE4FullscreenEventMode, true);
+	}, UnrealFullscreenEventMode, true);
 
 	// If we toggle fullscreen, ensure that the window has transitioned BEFORE leaving this function.
 	// This prevents problems with failure to correctly update mouse locks and rendering contexts due to bad event ordering.

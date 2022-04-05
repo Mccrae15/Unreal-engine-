@@ -16,7 +16,6 @@ public class FreeType2 : ModuleRules
 			}
 			else if (Target.Platform == UnrealTargetPlatform.IOS ||
 				Target.Platform == UnrealTargetPlatform.Mac ||
-				Target.Platform == UnrealTargetPlatform.Win32 ||
 				Target.Platform == UnrealTargetPlatform.Win64 ||
 				Target.IsInPlatformGroup(UnrealPlatformGroup.Unix)
 			)
@@ -73,11 +72,10 @@ public class FreeType2 : ModuleRules
 			PublicDefinitions.Add("WITH_FREETYPE_V210=1"); // TODO: Remove this once everything is using FreeType 2.10.0
 		}
 
-		if (Target.Platform == UnrealTargetPlatform.Win64 ||
-			Target.Platform == UnrealTargetPlatform.Win32)
+		if (Target.Platform == UnrealTargetPlatform.Win64)
 		{
 			LibPath = Path.Combine(FreeType2LibPath,
-					(Target.Platform == UnrealTargetPlatform.Win64) ? "Win64" : "Win32",
+					"Win64",
 					"VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
 
 			LibPath = Target.Configuration == UnrealTargetConfiguration.Debug && Target.bDebugBuildsActuallyUseDebugCRT
@@ -89,11 +87,11 @@ public class FreeType2 : ModuleRules
 		}
 		else if (Target.Platform == UnrealTargetPlatform.HoloLens)
 		{
-			string PlatformSubpath = Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM32 || Target.WindowsPlatform.Architecture == WindowsArchitecture.x86 ? "Win32" : "Win64";
+			string PlatformSubpath = "Win64";
 
 			LibPath = Path.Combine(FreeType2LibPath, PlatformSubpath,
 					"VS" + Target.WindowsPlatform.GetVisualStudioCompilerVersionName());
-			if (Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM32 || Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM64)
+			if (Target.WindowsPlatform.Architecture == WindowsArchitecture.ARM64)
 			{
 				LibPath = Path.Combine(LibPath, Target.WindowsPlatform.GetArchitectureSubpath());
 			}
@@ -132,9 +130,7 @@ public class FreeType2 : ModuleRules
 				: Path.Combine("Release", "libfreetype.a");
 
 			// filtered out in the toolchain
-			PublicAdditionalLibraries.Add(Path.Combine(LibPath, "ARMv7", LibName));
 			PublicAdditionalLibraries.Add(Path.Combine(LibPath, "ARM64", LibName));
-			PublicAdditionalLibraries.Add(Path.Combine(LibPath, "x86", LibName));
 			PublicAdditionalLibraries.Add(Path.Combine(LibPath, "x64", LibName));
 		}
 		else if (Target.IsInPlatformGroup(UnrealPlatformGroup.Unix))
@@ -150,7 +146,7 @@ public class FreeType2 : ModuleRules
 				? "libfreetyped_fPIC.a"
 				: "libfreetype_fPIC.a";
 
-			PublicAdditionalLibraries.Add(Path.Combine(FreeType2LibPath, "Linux", Target.Architecture, LibPath));
+			PublicAdditionalLibraries.Add(Path.Combine(FreeType2LibPath, "Unix", Target.Architecture, LibPath));
 		}
 	}
 }

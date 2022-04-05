@@ -2,6 +2,7 @@
 
 #include "LiveLinkClientPanelToolbar.h"
 
+#include "Algo/StableSort.h"
 #include "AssetData.h"
 #include "AssetRegistryModule.h"
 #include "AssetToolsModule.h"
@@ -46,6 +47,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SNullWidget.h"
+#include "SPositiveActionButton.h"
 
 
 #define LOCTEXT_NAMESPACE "LiveLinkClientPanel"
@@ -295,7 +297,7 @@ private:
 		FClassViewerInitializationOptions Options;
 		Options.Mode = EClassViewerMode::ClassPicker;
 
-		Options.ClassFilter = MakeShared<FLiveLinkRoleClassFilter>();
+		Options.ClassFilters.Add(MakeShared<FLiveLinkRoleClassFilter>());
 
 		RoleClassPicker->ClearChildren();
 		RoleClassPicker->AddSlot()
@@ -422,6 +424,11 @@ void SLiveLinkClientPanelToolbar::Construct(const FArguments& Args, FLiveLinkCli
 		}
 	}
 
+	Algo::StableSort(Factories, [](ULiveLinkSourceFactory* LHS, ULiveLinkSourceFactory* RHS)
+	{
+		return LHS->GetSourceDisplayName().CompareTo(RHS->GetSourceDisplayName()) <= 0;
+	});
+
 	const int32 ButtonBoxSize = 28;
 	FMargin ButtonPadding(4.f);
 
@@ -436,53 +443,11 @@ void SLiveLinkClientPanelToolbar::Construct(const FArguments& Args, FLiveLinkCli
 			.Padding(.0f)
 			.AutoWidth()
 			[
-				// The green button containing the "+ Add Source" items
-				SAssignNew(AddSourceButton, SComboButton)
-				.ToolTipText(LOCTEXT("AddSource_ToolTip", "Add a new LiveLink source"))
-				.ButtonStyle(FEditorStyle::Get(), "FlatButton.Success")
-				.ForegroundColor(FLinearColor::White)
-				.ContentPadding(FMargin(4, 0))
+				SNew(SPositiveActionButton)
 				.OnGetMenuContent(this, &SLiveLinkClientPanelToolbar::OnGenerateSourceMenu)
-				.OnMenuOpenChanged(this, &SLiveLinkClientPanelToolbar::OnGeneratedSourceMenuOpenChanged)
-				.HasDownArrow(false)
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
-				.ButtonContent()
-				[
-					SNew(SHorizontalBox)
-					// The "+" sign.
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					.Padding(FMargin(0, 1))
-					[
-						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-						.Text(FEditorFontGlyphs::Plus)
-					]
-					// The "Create Session" text.
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					.Padding(FMargin(4, 0, 0, 0))
-					[
-						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-						.Text(LOCTEXT("AddSource", "Source"))
-					]
-					// The caret sign.
-					+ SHorizontalBox::Slot()
-					.VAlign(VAlign_Center)
-					.AutoWidth()
-					.Padding(4, 0, 0, 0)
-					[
-						SNew(STextBlock)
-						.TextStyle(FEditorStyle::Get(), "NormalText.Important")
-						.Font(FEditorStyle::Get().GetFontStyle("FontAwesome.10"))
-						.Text(FEditorFontGlyphs::Caret_Down)
-					]
-				]
+				.Icon(FAppStyle::Get().GetBrush("Icons.Plus"))
+				.Text(LOCTEXT("AddSource", "Source"))
+				.ToolTipText(LOCTEXT("AddSource_ToolTip", "Add a new LiveLink source"))
 			]
 
 			+ SHorizontalBox::Slot()
@@ -646,17 +611,6 @@ TSharedRef<SWidget> SLiveLinkClientPanelToolbar::OnGenerateSourceMenu()
 	return MenuBuilder.MakeWidget();
 }
 
-void SLiveLinkClientPanelToolbar::OnGeneratedSourceMenuOpenChanged(bool bOpen)
-{
-	if (!bOpen)
-	{
-		if (AddSourceButton.IsValid())
-		{
-			AddSourceButton->SetMenuContent(SNullWidget::NullWidget);
-		}
-	}
-}
-
 void SLiveLinkClientPanelToolbar::RetrieveFactorySourcePanel(FMenuBuilder& MenuBuilder, int32 FactoryIndex)
 {
 	if (Factories.IsValidIndex(FactoryIndex))
@@ -776,7 +730,7 @@ TSharedRef<SWidget> SLiveLinkClientPanelToolbar::OnPresetGeneratePresetsMenu()
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SaveAsPreset_Text", "Save As Preset"),
 		LOCTEXT("SaveAsPreset_Tip", "Save the current setup as a new preset that can be imported at a later date"),
-		FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset.Greyscale"),
+		FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
 		FUIAction(
 			FExecuteAction::CreateSP(this, &SLiveLinkClientPanelToolbar::OnSaveAsPreset)
 		)
@@ -930,7 +884,7 @@ void SLiveLinkClientPanelToolbar::OnImportPreset(const FAssetData& InPreset)
 	if (ImportedPreset)
 	{
 		FScopedTransaction Transaction(LOCTEXT("ImportPreset_Transaction", "Import LiveLink Preset"));
-		ImportedPreset->ApplyToClient();
+		ImportedPreset->ApplyToClientLatent();
 	}
 	LiveLinkPreset = ImportedPreset;
 }
@@ -947,7 +901,7 @@ FReply SLiveLinkClientPanelToolbar::OnRevertChanges()
 	ULiveLinkPreset* CurrentPreset = LiveLinkPreset.Get();
 	if (CurrentPreset)
 	{
-		CurrentPreset->ApplyToClient();
+		CurrentPreset->ApplyToClientLatent();
 	}
 
 	return FReply::Handled();
@@ -957,5 +911,6 @@ bool SLiveLinkClientPanelToolbar::HasLoadedLiveLinkPreset() const
 {
 	return LiveLinkPreset.IsValid();
 }
+
 
 #undef LOCTEXT_NAMESPACE

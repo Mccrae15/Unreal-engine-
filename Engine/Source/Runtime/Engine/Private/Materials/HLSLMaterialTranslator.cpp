@@ -2,15 +2,52 @@
 /*=============================================================================
 	HLSLMaterialTranslator.cpp: Translates material expressions into HLSL code.
 =============================================================================*/
-
 #include "HLSLMaterialTranslator.h"
-
-class Error;
+#include "VT/VirtualTextureScalability.h"
 
 #if WITH_EDITORONLY_DATA
 
+static int32 GAnalyticDerivEnabled = 1;
+static FAutoConsoleVariableRef CVarAnalyticDerivEnabled(
+	TEXT("r.MaterialEditor.AnalyticDeriv"),
+	GAnalyticDerivEnabled,
+	TEXT("Enable analytic derivative code generation.")
+	);
+
+// Debugging options
+static int32 GDebugTextureSampleEnabled = 0;
+static FAutoConsoleVariableRef CVarAnalyticDerivDebugTextureSample(
+	TEXT("r.MaterialEditor.AnalyticDeriv.DebugTextureSample"),
+	GDebugTextureSampleEnabled,
+	TEXT("Debug: Instrument texture sampling with modes that can be controlled with r.GeneralPurposeTweak/r.GeneralPurposeTweak2.")
+);
+
+static int32 GDebugEmitInvalidDerivTokensEnabled = 0;
+static FAutoConsoleVariableRef CVarAnalyticDerivDebugEmitInvalidDerivTokens(
+	TEXT("r.MaterialEditor.AnalyticDeriv.DebugEmitInvalidDerivTokens"),
+	GDebugEmitInvalidDerivTokensEnabled,
+	TEXT("Debug: Emit '$' tokens to mark expressions with invalid derivatives.\n")
+);
+
+static int32 GLWCEnabled = 1;
+static FAutoConsoleVariableRef CVarLWCEnabled(
+	TEXT("r.MaterialEditor.LWCEnabled"),
+	GLWCEnabled,
+	TEXT("Enable generation of LWC values in materials. If disabled, materials will perform all operations at float-precision")
+);
+
+static inline bool IsAnalyticDerivEnabled()
+{
+	return GAnalyticDerivEnabled != 0;
+}
+
+static inline bool IsDebugTextureSampleEnabled()
+{
+	return IsAnalyticDerivEnabled() && (GDebugTextureSampleEnabled != 0);
+}
+
 /** @return the number of components in a vector type. */
-static inline uint32 GetNumComponents(EMaterialValueType Type)
+uint32 GetNumComponents(EMaterialValueType Type)
 {
 	switch(Type)
 	{
@@ -19,6 +56,10 @@ static inline uint32 GetNumComponents(EMaterialValueType Type)
 		case MCT_Float2: return 2;
 		case MCT_Float3: return 3;
 		case MCT_Float4: return 4;
+		case MCT_LWCScalar: return 1;
+		case MCT_LWCVector2: return 2;
+		case MCT_LWCVector3: return 3;
+		case MCT_LWCVector4: return 4;
 		default: return 0;
 	}
 }
@@ -36,6 +77,60 @@ static inline EMaterialValueType GetVectorType(uint32 NumComponents)
 	};
 }
 
+static inline EMaterialValueType GetLWCVectorType(uint32 NumComponents)
+{
+	switch (NumComponents)
+	{
+	case 1: return MCT_LWCScalar;
+	case 2: return MCT_LWCVector2;
+	case 3: return MCT_LWCVector3;
+	case 4: return MCT_LWCVector4;
+	default: return MCT_Unknown;
+	};
+}
+
+static inline EMaterialValueType GetMaterialValueType(UE::Shader::EValueType Type)
+{
+	switch (Type)
+	{
+	case UE::Shader::EValueType::Void: return MCT_VoidStatement;
+
+	case UE::Shader::EValueType::Float1: return MCT_Float;
+	case UE::Shader::EValueType::Float2: return MCT_Float2;
+	case UE::Shader::EValueType::Float3: return MCT_Float3;
+	case UE::Shader::EValueType::Float4: return MCT_Float4;
+
+	case UE::Shader::EValueType::Double1: return MCT_LWCScalar;
+	case UE::Shader::EValueType::Double2: return MCT_LWCVector2;
+	case UE::Shader::EValueType::Double3: return MCT_LWCVector3;
+	case UE::Shader::EValueType::Double4: return MCT_LWCVector4;
+
+	case UE::Shader::EValueType::Int1: return MCT_Float;
+	case UE::Shader::EValueType::Int2: return MCT_Float2;
+	case UE::Shader::EValueType::Int3: return MCT_Float3;
+	case UE::Shader::EValueType::Int4: return MCT_Float4;
+
+	case UE::Shader::EValueType::Bool1: return MCT_Float;
+	case UE::Shader::EValueType::Bool2: return MCT_Float2;
+	case UE::Shader::EValueType::Bool3: return MCT_Float3;
+	case UE::Shader::EValueType::Bool4: return MCT_Float4;
+
+	case UE::Shader::EValueType::MaterialAttributes: return MCT_MaterialAttributes;
+	default: checkNoEntry(); return MCT_Unknown;
+	}
+}
+
+static inline EMaterialValueType GetMaterialValueType(EMaterialParameterType Type)
+{
+	switch (Type)
+	{
+	case EMaterialParameterType::Scalar: return MCT_Float;
+	case EMaterialParameterType::Vector: return MCT_Float4;
+	case EMaterialParameterType::DoubleVector: return MCT_LWCVector4;
+	default: checkNoEntry(); return MCT_Unknown;
+	}
+}
+
 static inline int32 SwizzleComponentToIndex(TCHAR Component)
 {
 	switch (Component)
@@ -46,6 +141,24 @@ static inline int32 SwizzleComponentToIndex(TCHAR Component)
 	case TCHAR('w'): case TCHAR('W'): case TCHAR('a'): case TCHAR('A'): return 3;
 	default:
 		return -1;
+	}
+}
+
+static inline const TCHAR * GetFloatZeroVector(uint32 NumComponents)
+{
+	switch (NumComponents)
+	{
+	case 1:
+		return TEXT("0.0f");
+	case 2:
+		return TEXT("float2(0.0f, 0.0f)");
+	case 3:
+		return TEXT("float3(0.0f, 0.0f, 0.0f)");
+	case 4:
+		return TEXT("float4(0.0f, 0.0f, 0.0f, 0.0f)");
+	default:
+		check(0);
+		return TEXT("");
 	}
 }
 
@@ -89,12 +202,13 @@ FHLSLMaterialTranslator::FHLSLMaterialTranslator(FMaterial* InMaterial,
 ,	bNeedsWorldPositionExcludingShaderOffsets(false)
 ,	bNeedsParticleSize(false)
 ,	bNeedsSceneTexturePostProcessInputs(false)
-,	bUsesAtmosphericFog(false)
 ,	bUsesSkyAtmosphere(false)
 ,	bUsesVertexColor(false)
 ,	bUsesParticleColor(false)
 ,	bUsesParticleLocalToWorld(false)
 ,	bUsesParticleWorldToLocal(false)
+,	bUsesInstanceLocalToWorldPS(false)
+,	bUsesInstanceWorldToLocalPS(false)
 ,	bUsesVertexPosition(false)
 ,	bUsesTransformVector(false)
 ,	bCompilingPreviousFrame(false)
@@ -105,15 +219,23 @@ FHLSLMaterialTranslator::FHLSLMaterialTranslator(FMaterial* InMaterial,
 ,	bUsesDistanceCullFade(false)
 ,	bIsFullyRough(0)
 ,	bAllowCodeChunkGeneration(true)
-,	bUsesPerInstanceCustomData(false)
 ,	bUsesAnisotropy(false)
+,	bMaterialIsStrata(false)
+,	bUsesCurvature(false)
 ,	AllocatedUserTexCoords()
 ,	AllocatedUserVertexTexCoords()
 ,	DynamicParticleParameterMask(0)
+,	StrataValidFrontMaterialCodeChunkPostTranslate(INDEX_NONE)
+,	NextFreeStrataShaderNormalIndex(0)
+,	FinalUsedSharedLocalBasesCount(0)
 ,	NumVtSamples(0)
 ,	TargetPlatform(InTargetPlatform)
 {
 	FMemory::Memzero(SharedPixelProperties);
+
+	FMemory::Memzero(NumForLoops);
+
+	FMemory::Memzero(MaterialAttributesReturned);
 
 	SharedPixelProperties[MP_Normal] = true;
 	SharedPixelProperties[MP_Tangent] = true;
@@ -130,6 +252,7 @@ FHLSLMaterialTranslator::FHLSLMaterialTranslator(FMaterial* InMaterial,
 	SharedPixelProperties[MP_PixelDepthOffset] = true;
 	SharedPixelProperties[MP_SubsurfaceColor] = true;
 	SharedPixelProperties[MP_ShadingModel] = true;
+	SharedPixelProperties[MP_FrontMaterial] = true;
 
 	for (int32 Frequency = 0; Frequency < SF_NumFrequencies; ++Frequency)
 	{
@@ -243,7 +366,7 @@ void FHLSLMaterialTranslator::GatherCustomVertexInterpolators(TArray<UMaterialEx
 				FunctionCall->LinkFunctionIntoCaller(this);
 				PushFunction(&LocalState);
 
-				if (const TArray<UMaterialExpression*>* FunctionExpressions = FunctionCall->MaterialFunction->GetFunctionExpressions())
+				if (const TArray<TObjectPtr<UMaterialExpression>>* FunctionExpressions = FunctionCall->MaterialFunction->GetFunctionExpressions())
 				{
 					GatherCustomVertexInterpolators(*FunctionExpressions);
 				}
@@ -255,7 +378,7 @@ void FHLSLMaterialTranslator::GatherCustomVertexInterpolators(TArray<UMaterialEx
 		}
 		else if (UMaterialExpressionMaterialAttributeLayers* LayersExpression = Cast<UMaterialExpressionMaterialAttributeLayers>(Expression))
 		{
-			const FMaterialLayersFunctions* OverrideLayers = StaticMaterialLayersParameter(LayersExpression->ParameterName);
+			const FMaterialLayersFunctions* OverrideLayers = GetMaterialLayers();
 			if (OverrideLayers)
 			{
 				LayersExpression->OverrideLayerGraph(OverrideLayers);
@@ -263,7 +386,7 @@ void FHLSLMaterialTranslator::GatherCustomVertexInterpolators(TArray<UMaterialEx
 
 			if (LayersExpression->bIsLayerGraphBuilt)
 			{
-				for (auto* Layer : LayersExpression->LayerCallers)
+				for (auto& Layer : LayersExpression->LayerCallers)
 				{
 					if (Layer && Layer->MaterialFunction)
 					{
@@ -271,7 +394,7 @@ void FHLSLMaterialTranslator::GatherCustomVertexInterpolators(TArray<UMaterialEx
 						Layer->LinkFunctionIntoCaller(this);
 						PushFunction(&LocalState);
 
-						if (const TArray<UMaterialExpression*>* FunctionExpressions = Layer->MaterialFunction->GetFunctionExpressions())
+						if (const TArray<TObjectPtr<UMaterialExpression>>* FunctionExpressions = Layer->MaterialFunction->GetFunctionExpressions())
 						{
 							GatherCustomVertexInterpolators(*FunctionExpressions);
 						}
@@ -282,7 +405,7 @@ void FHLSLMaterialTranslator::GatherCustomVertexInterpolators(TArray<UMaterialEx
 					}
 				}
 
-				for (auto* Blend : LayersExpression->BlendCallers)
+				for (auto& Blend : LayersExpression->BlendCallers)
 				{
 					if (Blend && Blend->MaterialFunction)
 					{
@@ -290,7 +413,7 @@ void FHLSLMaterialTranslator::GatherCustomVertexInterpolators(TArray<UMaterialEx
 						Blend->LinkFunctionIntoCaller(this);
 						PushFunction(&LocalState);
 
-						if (const TArray<UMaterialExpression*>* FunctionExpressions = Blend->MaterialFunction->GetFunctionExpressions())
+						if (const TArray<TObjectPtr<UMaterialExpression>>* FunctionExpressions = Blend->MaterialFunction->GetFunctionExpressions())
 						{
 							GatherCustomVertexInterpolators(*FunctionExpressions);
 						}
@@ -335,21 +458,22 @@ void FHLSLMaterialTranslator::CompileCustomOutputs(TArray<UMaterialExpressionCus
 
 			if (NumOutputs > 0)
 			{
+				EShaderFrequency CustomOutputShaderFrequency = CustomOutput->GetShaderFrequency();
 				for (int32 Index = 0; Index < NumOutputs; Index++)
 				{
 					{
-						ClearFunctionStack(SF_Pixel);
-						FunctionStacks[SF_Pixel].Add(new FMaterialFunctionCompileState(nullptr));
+						ClearFunctionStack(CustomOutputShaderFrequency);
+						FunctionStacks[CustomOutputShaderFrequency].Add(new FMaterialFunctionCompileState(nullptr));
 					}
 					MaterialProperty = MP_MAX; // Indicates we're not compiling any material property.
-					ShaderFrequency = SF_Pixel;
+					ShaderFrequency = CustomOutputShaderFrequency;
 					TArray<FShaderCodeChunk> CustomExpressionChunks;
 					AssignTempScope(CustomExpressionChunks);
 					CustomOutput->Compile(this, Index);
 				}
 
-				ClearFunctionStack(SF_Pixel);
-				FunctionStacks[SF_Pixel].Add(new FMaterialFunctionCompileState(nullptr));
+				ClearFunctionStack(CustomOutputShaderFrequency);
+				FunctionStacks[CustomOutputShaderFrequency].Add(new FMaterialFunctionCompileState(nullptr));
 			}
 		}
 	}
@@ -374,7 +498,7 @@ EMaterialExpressionVisitResult FHLSLMaterialTranslator::VisitExpressionsRecursiv
 				FunctionCall->LinkFunctionIntoCaller(this);
 				PushFunction(&LocalState);
 
-				if (const TArray<UMaterialExpression*>* FunctionExpressions = FunctionCall->MaterialFunction->GetFunctionExpressions())
+				if (const TArray<TObjectPtr<UMaterialExpression>>* FunctionExpressions = FunctionCall->MaterialFunction->GetFunctionExpressions())
 				{
 					VisitResult = VisitExpressionsRecursive(*FunctionExpressions, InVisitor);
 				}
@@ -391,7 +515,7 @@ EMaterialExpressionVisitResult FHLSLMaterialTranslator::VisitExpressionsRecursiv
 		}
 		else if (UMaterialExpressionMaterialAttributeLayers* LayersExpression = Cast<UMaterialExpressionMaterialAttributeLayers>(Expression))
 		{
-			const FMaterialLayersFunctions* OverrideLayers = StaticMaterialLayersParameter(LayersExpression->ParameterName);
+			const FMaterialLayersFunctions* OverrideLayers = GetMaterialLayers();
 			if (OverrideLayers)
 			{
 				LayersExpression->OverrideLayerGraph(OverrideLayers);
@@ -399,7 +523,7 @@ EMaterialExpressionVisitResult FHLSLMaterialTranslator::VisitExpressionsRecursiv
 
 			if (LayersExpression->bIsLayerGraphBuilt)
 			{
-				for (auto* Layer : LayersExpression->LayerCallers)
+				for (auto& Layer : LayersExpression->LayerCallers)
 				{
 					if (Layer && Layer->MaterialFunction)
 					{
@@ -407,7 +531,7 @@ EMaterialExpressionVisitResult FHLSLMaterialTranslator::VisitExpressionsRecursiv
 						Layer->LinkFunctionIntoCaller(this);
 						PushFunction(&LocalState);
 
-						if (const TArray<UMaterialExpression*>* FunctionExpressions = Layer->MaterialFunction->GetFunctionExpressions())
+						if (const TArray<TObjectPtr<UMaterialExpression>>* FunctionExpressions = Layer->MaterialFunction->GetFunctionExpressions())
 						{
 							VisitResult = VisitExpressionsRecursive(*FunctionExpressions, InVisitor);
 						}
@@ -423,7 +547,7 @@ EMaterialExpressionVisitResult FHLSLMaterialTranslator::VisitExpressionsRecursiv
 					}
 				}
 
-				for (auto* Blend : LayersExpression->BlendCallers)
+				for (auto& Blend : LayersExpression->BlendCallers)
 				{
 					if (Blend && Blend->MaterialFunction)
 					{
@@ -431,7 +555,7 @@ EMaterialExpressionVisitResult FHLSLMaterialTranslator::VisitExpressionsRecursiv
 						Blend->LinkFunctionIntoCaller(this);
 						PushFunction(&LocalState);
 
-						if (const TArray<UMaterialExpression*>* FunctionExpressions = Blend->MaterialFunction->GetFunctionExpressions())
+						if (const TArray<TObjectPtr<UMaterialExpression>>* FunctionExpressions = Blend->MaterialFunction->GetFunctionExpressions())
 						{
 							VisitResult = VisitExpressionsRecursive(*FunctionExpressions, InVisitor);
 						}
@@ -534,11 +658,15 @@ bool FHLSLMaterialTranslator::Translate()
 		SCOPE_SECONDS_COUNTER(HLSLTranslateTime);
 		bSuccess = true;
 
+		check(ScopeStack.Num() == 0);
+
 		// WARNING: No compile outputs should be stored on the UMaterial / FMaterial / FMaterialResource, unless they are transient editor-only data (like error expressions)
 		// Compile outputs that need to be saved must be stored in MaterialCompilationOutput, which will be saved to the DDC.
 
 		Material->CompileErrors.Empty();
 		Material->ErrorExpressions.Empty();
+
+		bEnableExecutionFlow = Material->IsCompiledWithExecutionFlow();
 
 		bCompileForComputeShader = Material->IsLightFunction();
 
@@ -566,6 +694,8 @@ bool FHLSLMaterialTranslator::Translate()
 
 		int32 NormalCodeChunkEnd = -1;
 		int32 Chunk[CompiledMP_MAX];
+		int32 VertexAttributesChunk = INDEX_NONE;
+		int32 PixelAttributesChunk = INDEX_NONE;
 			
 		memset(Chunk, INDEX_NONE, sizeof(Chunk));
 
@@ -619,20 +749,27 @@ bool FHLSLMaterialTranslator::Translate()
 		// Some custom outputs must be pre-compiled so they can be re-used as shared inputs
 		CompileCustomOutputs(CustomOutputExpressions, SeenCustomOutputExpressionsClasses, true);			
 
-		// Normal must always be compiled first; this will ensure its chunk calculations are the first to be added
-		{
-			// Verify that start chunk is 0
-			check(SharedPropertyCodeChunks[NormalShaderFrequency].Num() == 0);
-			Chunk[MP_Normal]					= Material->CompilePropertyAndSetMaterialProperty(MP_Normal					,this);
-			NormalCodeChunkEnd = SharedPropertyCodeChunks[NormalShaderFrequency].Num();
-		}
-
 		// Validate some things on the VT system. Since generated code for expressions shared between multiple properties
 		// (e.g. a texture sample connected to both diffuse and opacity mask) is reused we can't check based on the MaterialProperty
 		// variable inside the actual code generation pass. So we do a pre-pass over it here.
 		if (UseVirtualTexturing(FeatureLevel, TargetPlatform))
 		{
 			ValidateVtPropertyLimits();
+		}
+
+		if (bEnableExecutionFlow)
+		{
+			PixelAttributesChunk = Material->CompilePropertyAndSetMaterialProperty(MP_MaterialAttributes, this, SF_Pixel);
+			VertexAttributesChunk = Material->CompilePropertyAndSetMaterialProperty(MP_MaterialAttributes, this, SF_Vertex);
+		}
+		else
+		{
+		// Normal must always be compiled first; this will ensure its chunk calculations are the first to be added
+		{
+			// Verify that start chunk is 0
+			check(SharedPropertyCodeChunks[NormalShaderFrequency].Num() == 0);
+			Chunk[MP_Normal]					= Material->CompilePropertyAndSetMaterialProperty(MP_Normal					,this);
+			NormalCodeChunkEnd = SharedPropertyCodeChunks[NormalShaderFrequency].Num();
 		}
 
 		// Rest of properties
@@ -648,65 +785,61 @@ bool FHLSLMaterialTranslator::Translate()
 		Chunk[MP_OpacityMask]					= Material->CompilePropertyAndSetMaterialProperty(MP_OpacityMask			,this);
 		Chunk[MP_Tangent]						= Material->CompilePropertyAndSetMaterialProperty(MP_Tangent				,this);
 		Chunk[MP_WorldPositionOffset]			= Material->CompilePropertyAndSetMaterialProperty(MP_WorldPositionOffset	,this);
-		Chunk[MP_WorldDisplacement]				= Material->CompilePropertyAndSetMaterialProperty(MP_WorldDisplacement		,this);
-		Chunk[MP_TessellationMultiplier]		= Material->CompilePropertyAndSetMaterialProperty(MP_TessellationMultiplier	,this);			
 
 		// Make sure to compile this property before using ShadingModelsFromCompilation
 		Chunk[MP_ShadingModel]					= Material->CompilePropertyAndSetMaterialProperty(MP_ShadingModel			,this);
 			
-		// Get shading models from material.
-		FMaterialShadingModelField MaterialShadingModels = Material->GetShadingModels(); 
-
-		// If the material gets its shading model from material expressions and we have compiled one or more shading model expressions, 
-		// then use that shading model field instead. It's the most optimal set of shading models
-		if (Material->IsShadingModelFromMaterialExpression() && ShadingModelsFromCompilation.IsValid())
-		{
-			MaterialShadingModels = ShadingModelsFromCompilation;
+			Chunk[MP_FrontMaterial]					= Material->CompilePropertyAndSetMaterialProperty(MP_FrontMaterial			,this);
 		}
+
+		// Get shading models from compilation (or material).
+		FMaterialShadingModelField MaterialShadingModels = GetCompiledShadingModels(); 
 		
 		ValidateShadingModelsForFeatureLevel(MaterialShadingModels);
 		
-		if (Domain == MD_Volume || (Domain == MD_Surface && IsSubsurfaceShadingModel(MaterialShadingModels)))
+		if (!bEnableExecutionFlow)
 		{
-			// Note we don't test for the blend mode as you can have a translucent material using the subsurface shading model
+			if (Domain == MD_Volume || (Domain == MD_Surface && IsSubsurfaceShadingModel(MaterialShadingModels)))
+			{
+				// Note we don't test for the blend mode as you can have a translucent material using the subsurface shading model
 
-			// another ForceCast as CompilePropertyAndSetMaterialProperty() can return MCT_Float which we don't want here
-			int32 SubsurfaceColor = Material->CompilePropertyAndSetMaterialProperty(MP_SubsurfaceColor, this);
-			SubsurfaceColor = ForceCast(SubsurfaceColor, FMaterialAttributeDefinitionMap::GetValueType(MP_SubsurfaceColor), MFCF_ExactMatch | MFCF_ReplicateValue);
+				// another ForceCast as CompilePropertyAndSetMaterialProperty() can return MCT_Float which we don't want here
+				int32 SubsurfaceColor = Material->CompilePropertyAndSetMaterialProperty(MP_SubsurfaceColor, this);
+				SubsurfaceColor = ForceCast(SubsurfaceColor, FMaterialAttributeDefinitionMap::GetValueType(MP_SubsurfaceColor), MFCF_ExactMatch | MFCF_ReplicateValue);
 
-			static FName NameSubsurfaceProfile(TEXT("__SubsurfaceProfile"));
+				static FName NameSubsurfaceProfile(TEXT("__SubsurfaceProfile"));
 
-			// 1.0f is is a not used profile - later this gets replaced with the actual profile
-			int32 CodeSubsurfaceProfile = ForceCast(ScalarParameter(NameSubsurfaceProfile, 1.0f), MCT_Float1);
+				// 1.0f is is a not used profile - later this gets replaced with the actual profile
+				int32 CodeSubsurfaceProfile = ForceCast(ScalarParameter(NameSubsurfaceProfile, 1.0f), MCT_Float1);
 
-			Chunk[MP_SubsurfaceColor] = AppendVector(SubsurfaceColor, CodeSubsurfaceProfile);		
+				Chunk[MP_SubsurfaceColor] = AppendVector(SubsurfaceColor, CodeSubsurfaceProfile);
+			}
+
+			Chunk[MP_CustomData0] = Material->CompilePropertyAndSetMaterialProperty(MP_CustomData0, this);
+			Chunk[MP_CustomData1] = Material->CompilePropertyAndSetMaterialProperty(MP_CustomData1, this);
+			Chunk[MP_AmbientOcclusion] = Material->CompilePropertyAndSetMaterialProperty(MP_AmbientOcclusion, this);
+
+			if (IsTranslucentBlendMode(BlendMode) || MaterialShadingModels.HasShadingModel(MSM_SingleLayerWater))
+			{
+				int32 UserRefraction = ForceCast(Material->CompilePropertyAndSetMaterialProperty(MP_Refraction, this), MCT_Float1);
+				int32 RefractionDepthBias = ForceCast(ScalarParameter(FName(TEXT("RefractionDepthBias")), Material->GetRefractionDepthBiasValue()), MCT_Float1);
+
+				Chunk[MP_Refraction] = AppendVector(UserRefraction, RefractionDepthBias);
+			}
+
+			if (bCompileForComputeShader)
+			{
+				Chunk[CompiledMP_EmissiveColorCS] = Material->CompilePropertyAndSetMaterialProperty(MP_EmissiveColor, this, SF_Compute);
+			}
+
+			if (Chunk[MP_WorldPositionOffset] != INDEX_NONE)
+			{
+				// Only calculate previous WPO if there is a current WPO
+				Chunk[CompiledMP_PrevWorldPositionOffset] = Material->CompilePropertyAndSetMaterialProperty(MP_WorldPositionOffset, this, SF_Vertex, true);
+			}
+
+			Chunk[MP_PixelDepthOffset] = Material->CompilePropertyAndSetMaterialProperty(MP_PixelDepthOffset, this);
 		}
-
-		Chunk[MP_CustomData0]					= Material->CompilePropertyAndSetMaterialProperty(MP_CustomData0		,this);
-		Chunk[MP_CustomData1]					= Material->CompilePropertyAndSetMaterialProperty(MP_CustomData1		,this);
-		Chunk[MP_AmbientOcclusion]				= Material->CompilePropertyAndSetMaterialProperty(MP_AmbientOcclusion	,this);
-
-		if (IsTranslucentBlendMode(BlendMode) || MaterialShadingModels.HasShadingModel(MSM_SingleLayerWater))
-		{
-			int32 UserRefraction = ForceCast(Material->CompilePropertyAndSetMaterialProperty(MP_Refraction, this), MCT_Float1);
-			int32 RefractionDepthBias = ForceCast(ScalarParameter(FName(TEXT("RefractionDepthBias")), Material->GetRefractionDepthBiasValue()), MCT_Float1);
-
-			Chunk[MP_Refraction] = AppendVector(UserRefraction, RefractionDepthBias);
-		}
-
-		if (bCompileForComputeShader)
-		{
-			Chunk[CompiledMP_EmissiveColorCS]	= Material->CompilePropertyAndSetMaterialProperty(MP_EmissiveColor, this, SF_Compute);
-		}
-
-		if (Chunk[MP_WorldPositionOffset] != INDEX_NONE)
-		{
-			// Only calculate previous WPO if there is a current WPO
-			Chunk[CompiledMP_PrevWorldPositionOffset] = Material->CompilePropertyAndSetMaterialProperty(MP_WorldPositionOffset, this, SF_Vertex, true);
-		}
-
-		Chunk[MP_PixelDepthOffset] = Material->CompilePropertyAndSetMaterialProperty(MP_PixelDepthOffset, this);
-
 
 		ResourcesString = TEXT("");
 
@@ -782,14 +915,17 @@ bool FHLSLMaterialTranslator::Translate()
 		// No more calls to non-vertex shader CompilePropertyAndSetMaterialProperty beyond this point
 		const uint32 SavedNumUserTexCoords = GetNumUserTexCoords();
 
-		for (uint32 CustomUVIndex = MP_CustomizedUVs0; CustomUVIndex <= MP_CustomizedUVs7; CustomUVIndex++)
+		if (!bEnableExecutionFlow)
 		{
-			// Only compile custom UV inputs for UV channels requested by the pixel shader inputs
-			// Any unconnected inputs will have a texcoord generated for them in Material->CompileProperty, which will pass through the vertex (uncustomized) texture coordinates
-			// Note: this is using NumUserTexCoords, which is set by translating all the pixel properties above
-			if (CustomUVIndex - MP_CustomizedUVs0 < SavedNumUserTexCoords)
+			for (uint32 CustomUVIndex = MP_CustomizedUVs0; CustomUVIndex <= MP_CustomizedUVs7; CustomUVIndex++)
 			{
-				Chunk[CustomUVIndex] = Material->CompilePropertyAndSetMaterialProperty((EMaterialProperty)CustomUVIndex, this);
+				// Only compile custom UV inputs for UV channels requested by the pixel shader inputs
+				// Any unconnected inputs will have a texcoord generated for them in Material->CompileProperty, which will pass through the vertex (uncustomized) texture coordinates
+				// Note: this is using NumUserTexCoords, which is set by translating all the pixel properties above
+				if (CustomUVIndex - MP_CustomizedUVs0 < SavedNumUserTexCoords)
+				{
+					Chunk[CustomUVIndex] = Material->CompilePropertyAndSetMaterialProperty((EMaterialProperty)CustomUVIndex, this);
+				}
 			}
 		}
 
@@ -804,8 +940,7 @@ bool FHLSLMaterialTranslator::Translate()
 		bAllowCodeChunkGeneration = false;
 
 		bUsesEmissiveColor = IsMaterialPropertyUsed(MP_EmissiveColor, Chunk[MP_EmissiveColor], FLinearColor(0, 0, 0, 0), 3);
-		bUsesPixelDepthOffset = (AllowPixelDepthOffset(Platform) && IsMaterialPropertyUsed(MP_PixelDepthOffset, Chunk[MP_PixelDepthOffset], FLinearColor(0, 0, 0, 0), 1))
-			|| (Domain == MD_DeferredDecal && Material->GetDecalBlendMode() == DBM_Volumetric_DistanceFunction);
+		bUsesPixelDepthOffset = (AllowPixelDepthOffset(Platform) && IsMaterialPropertyUsed(MP_PixelDepthOffset, Chunk[MP_PixelDepthOffset], FLinearColor(0, 0, 0, 0), 1));
 
 		bool bUsesWorldPositionOffsetCurrent = IsMaterialPropertyUsed(MP_WorldPositionOffset, Chunk[MP_WorldPositionOffset], FLinearColor(0, 0, 0, 0), 3);
 		bool bUsesWorldPositionOffsetPrevious = IsMaterialPropertyUsed(MP_WorldPositionOffset, Chunk[CompiledMP_PrevWorldPositionOffset], FLinearColor(0, 0, 0, 0), 3);
@@ -821,6 +956,25 @@ bool FHLSLMaterialTranslator::Translate()
 		bUsesAnisotropy = IsMaterialPropertyUsed(MP_Anisotropy, Chunk[MP_Anisotropy], FLinearColor(0, 0, 0, 0), 1);
 		MaterialCompilationOutput.bUsesAnisotropy = bUsesAnisotropy;
 
+		EMaterialDecalResponse MDR = (EMaterialDecalResponse)Material->GetMaterialDecalResponse();
+		if (MDR == MDR_Color || MDR == MDR_ColorNormal || MDR == MDR_ColorRoughness || MDR == MDR_ColorNormalRoughness)
+		{
+			MaterialCompilationOutput.SetIsDBufferTextureUsed(0);
+			AddEstimatedTextureSample(1);
+		}
+		if (MDR == MDR_Normal || MDR == MDR_ColorNormal || MDR == MDR_NormalRoughness || MDR == MDR_ColorNormalRoughness)
+		{
+			MaterialCompilationOutput.SetIsDBufferTextureUsed(1);
+			AddEstimatedTextureSample(1);
+		}
+		if (MDR == MDR_Roughness || MDR == MDR_ColorRoughness || MDR == MDR_NormalRoughness || MDR == MDR_ColorNormalRoughness)
+		{
+			MaterialCompilationOutput.SetIsDBufferTextureUsed(2);
+			AddEstimatedTextureSample(1);
+		}
+
+		bUsesCurvature = FeatureLevel == ERHIFeatureLevel::ES3_1 && MaterialShadingModels.HasShadingModel(MSM_SubsurfaceProfile) && IsMaterialPropertyUsed(MP_CustomData0, Chunk[MP_CustomData0], FLinearColor(1, 0, 0, 0), 1);
+
 		if (BlendMode == BLEND_Modulate && MaterialShadingModels.IsLit() && !Material->IsDeferredDecal())
 		{
 			Errorf(TEXT("Dynamically lit translucency is not supported for BLEND_Modulate materials."));
@@ -833,7 +987,6 @@ bool FHLSLMaterialTranslator::Translate()
 				Errorf(TEXT("Translucency after DOF with BLEND_Modulate is only allowed on platforms that support dual-blending. Consider using BLEND_Translucent with black emissive"));
 			}
 		}
-		
 
 		// Don't allow opaque and masked materials to scene depth as the results are undefined
 		if (bUsesSceneDepth && Domain != MD_PostProcess && !IsTranslucentBlendMode(BlendMode))
@@ -909,7 +1062,12 @@ bool FHLSLMaterialTranslator::Translate()
 			{
 				Errorf(TEXT("SingleLayerWater materials cannot be combined with other shading models.")); // Simply untested for now
 			}
-			if (Material->GetMaterialInterface() && !Material->GetMaterialInterface()->GetMaterial()->HasAnyExpressionsInMaterialAndFunctionsOfType<UMaterialExpressionSingleLayerWaterMaterialOutput>())
+
+			static const auto CVarStrata = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Strata"));
+			const bool bStrata = CVarStrata ? CVarStrata->GetValueOnAnyThread() > 0 : false;
+			if (Material->GetMaterialInterface() && !Material->GetMaterialInterface()->GetMaterial()->HasAnyExpressionsInMaterialAndFunctionsOfType<UMaterialExpressionSingleLayerWaterMaterialOutput>()
+				&& !bStrata
+				)
 			{
 				Errorf(TEXT("SingleLayerWater materials requires the use of SingleLayerWaterMaterial output node."));
 			}
@@ -936,25 +1094,40 @@ bool FHLSLMaterialTranslator::Translate()
 			{
 				Errorf(TEXT("ThinTranslucent materials requires the use of ThinTranslucentMaterial output node."));
 			}
+			if (Material->IsTranslucencyAfterMotionBlurEnabled())
+			{
+				// We don't currently have a separate translucency modulation pass for After Motion Blur
+				Errorf(TEXT("ThinTranslucent materials are not currently supported in the \"After Motion Blur\" translucency pass."));
+			}
 		}
 
-		const bool bDBufferSupported = IsUsingDBuffers(Platform);
-		const bool bDBufferFallback = IsMobilePlatform(Platform); // Mobile doesn't support DBuffer but has runtime path to convert to something usable.
-		const bool bDBufferAllowed = bDBufferSupported || bDBufferFallback;
-		const bool bDBufferBlendMode = IsDBufferDecalBlendMode((EDecalBlendMode)Material->GetDecalBlendMode());
-
-		if (bDBufferBlendMode && !bDBufferAllowed)
+		if (Material->GetMaterialInterface() && Material->GetMaterialInterface()->GetMaterial()->HasAnyExpressionsInMaterialAndFunctionsOfType<UMaterialExpressionAbsorptionMediumMaterialOutput>())
 		{
-			// Error feedback for when the decal would not be displayed due to project settings
-			Errorf(TEXT("DBuffer decal blend modes are only supported when the 'DBuffer Decals' Rendering Project setting is enabled."));
+			// User placed an AbsorptionMedium node, make sure default lit is being used
+			if (!MaterialShadingModels.HasShadingModel(MSM_DefaultLit))
+			{
+				Errorf(TEXT("AbsorptionMedium custom output requires Default Lit shading model."));
+			}
+			if (Material->GetRefractionMode() != RM_IndexOfRefraction)
+			{
+				Errorf(TEXT("AbsorptionMedium custom output requires \"Index of Refraction\" as the \"Refraction Mode\"."));
+			}
 		}
 
-		if (Domain == MD_DeferredDecal && BlendMode != BLEND_Translucent)
+		if (Material->IsStrataMaterial())
+		{
+			if (Domain!= MD_Volume && !(BlendMode == BLEND_Translucent || BlendMode == BLEND_Opaque || BlendMode == BLEND_Masked))
+		{
+				Errorf(TEXT("Strata materials must be an opaque or translucent surface, or a volume."));
+			}
+		}
+
+		if (Domain == MD_DeferredDecal && !(BlendMode == BLEND_Translucent || BlendMode == BLEND_AlphaComposite || BlendMode == BLEND_Modulate))
 		{
 			// We could make the change for the user but it would be confusing when going to DeferredDecal and back
 			// or we would have to pay a performance cost to make the change more transparently.
 			// The change saves performance as with translucency we don't need to test for MeshDecals in all opaque rendering passes
-			Errorf(TEXT("Material using the DeferredDecal domain need to use the BlendModel Translucent (this saves performance)"));
+			Errorf(TEXT("Material using the DeferredDecal domain can only use the BlendModes Translucent, AlphaComposite or Modulate"));
 		}
 
 		if (MaterialCompilationOutput.bNeedsSceneTextures)
@@ -971,6 +1144,12 @@ bool FHLSLMaterialTranslator::Translate()
 					Errorf(TEXT("SceneTexture expressions cannot use post process inputs or scene color in non post process domain materials"));
 				}
 			}
+		}
+
+		if (BlendMode == BLEND_Modulate && Material->IsTranslucencyAfterMotionBlurEnabled())
+		{
+			// We don't currently have a separate translucency modulation pass for After Motion Blur
+			Errorf(TEXT("Blend Mode \"Modulate\" materials are not currently supported in the \"After Motion Blur\" translucency pass."));
 		}
 
 		// Catch any modifications to NumUserTexCoords that will not seen by customized UVs
@@ -995,6 +1174,30 @@ bool FHLSLMaterialTranslator::Translate()
 		MaterialCompilationOutput.NumUsedUVScalars = GetNumUserTexCoords() * 2;
 		MaterialCompilationOutput.NumUsedCustomInterpolatorScalars = CurrentCustomVertexInterpolatorOffset;
 
+		if (bEnableExecutionFlow)
+		{
+			if (VertexAttributesChunk != INDEX_NONE)
+			{
+				LinkParentScopes(SharedPropertyCodeChunks[SF_Vertex]);
+
+				TSet<int32> EmittedChunks;
+				GetScopeCode(1, VertexAttributesChunk, SharedPropertyCodeChunks[SF_Vertex], EmittedChunks, TranslatedAttributesCodeChunks[SF_Vertex]);
+			}
+
+			if (PixelAttributesChunk != INDEX_NONE)
+			{
+				LinkParentScopes(SharedPropertyCodeChunks[SF_Pixel]);
+
+				TSet<int32> EmittedChunks;
+				GetScopeCode(1, PixelAttributesChunk, SharedPropertyCodeChunks[SF_Pixel], EmittedChunks, TranslatedAttributesCodeChunks[SF_Pixel]);
+			}
+		}
+		else
+		{
+			for (int32 VariationIter = 0; VariationIter < CompiledPDV_MAX; VariationIter++)
+			{
+				ECompiledPartialDerivativeVariation Variation = (ECompiledPartialDerivativeVariation)VariationIter;
+
 		// Do Normal Chunk first
 		{
 			GetFixedParameterCode(
@@ -1002,18 +1205,19 @@ bool FHLSLMaterialTranslator::Translate()
 				NormalCodeChunkEnd,
 				Chunk[MP_Normal],
 				SharedPropertyCodeChunks[NormalShaderFrequency],
-				TranslatedCodeChunkDefinitions[MP_Normal],
-				TranslatedCodeChunks[MP_Normal]);
+						DerivativeVariations[Variation].TranslatedCodeChunkDefinitions[MP_Normal],
+						DerivativeVariations[Variation].TranslatedCodeChunks[MP_Normal],
+						Variation);
 
 			// Always gather MP_Normal definitions as they can be shared by other properties
-			if (TranslatedCodeChunkDefinitions[MP_Normal].IsEmpty())
+					if (DerivativeVariations[Variation].TranslatedCodeChunkDefinitions[MP_Normal].IsEmpty())
 			{
-				TranslatedCodeChunkDefinitions[MP_Normal] = GetDefinitions(SharedPropertyCodeChunks[NormalShaderFrequency], 0, NormalCodeChunkEnd);
+						DerivativeVariations[Variation].TranslatedCodeChunkDefinitions[MP_Normal] = GetDefinitions(SharedPropertyCodeChunks[NormalShaderFrequency], 0, NormalCodeChunkEnd, Variation);
 			}
 		}
 
 		// Now the rest, skipping Normal
-		for(uint32 PropertyId = 0; PropertyId < MP_MAX; ++PropertyId)
+				for (uint32 PropertyId = 0; PropertyId < MP_MAX; ++PropertyId)
 		{
 			if (PropertyId == MP_MaterialAttributes || PropertyId == MP_Normal || PropertyId == MP_CustomOutput)
 			{
@@ -1029,28 +1233,35 @@ bool FHLSLMaterialTranslator::Translate()
 				StartChunk = NormalCodeChunkEnd;
 			}
 
+			// Reduce definition statements that don't contribute to the function's return value.
+			// @todo-lh: This should be expanded to a general reduction, but is currently only intended to fix an FXC internal compiler error reported in UE-117831
+			const bool bReduceAfterReturnValue = (PropertyId == MP_WorldPositionOffset || PropertyId == CompiledMP_PrevWorldPositionOffset);
+
 			GetFixedParameterCode(
 				StartChunk,
 				SharedPropertyCodeChunks[PropertyShaderFrequency].Num(),
 				Chunk[PropertyId],
 				SharedPropertyCodeChunks[PropertyShaderFrequency],
-				TranslatedCodeChunkDefinitions[PropertyId],
-				TranslatedCodeChunks[PropertyId]);
+				DerivativeVariations[Variation].TranslatedCodeChunkDefinitions[PropertyId],
+				DerivativeVariations[Variation].TranslatedCodeChunks[PropertyId],
+				Variation,
+				bReduceAfterReturnValue);
+
 		}
 
-		for(uint32 PropertyId = MP_MAX; PropertyId < CompiledMP_MAX; ++PropertyId)
+				for (uint32 PropertyId = MP_MAX; PropertyId < CompiledMP_MAX; ++PropertyId)
 		{
-			switch(PropertyId)
+					switch (PropertyId)
 			{
 			case CompiledMP_EmissiveColorCS:
 			    if (bCompileForComputeShader)
 				{
-					GetFixedParameterCode(Chunk[PropertyId], SharedPropertyCodeChunks[SF_Compute], TranslatedCodeChunkDefinitions[PropertyId], TranslatedCodeChunks[PropertyId]);
+							GetFixedParameterCode(Chunk[PropertyId], SharedPropertyCodeChunks[SF_Compute], DerivativeVariations[Variation].TranslatedCodeChunkDefinitions[PropertyId], DerivativeVariations[Variation].TranslatedCodeChunks[PropertyId], Variation);
 				}
 				break;
 			case CompiledMP_PrevWorldPositionOffset:
 				{
-					GetFixedParameterCode(Chunk[PropertyId], SharedPropertyCodeChunks[SF_Vertex], TranslatedCodeChunkDefinitions[PropertyId], TranslatedCodeChunks[PropertyId]);
+						GetFixedParameterCode(Chunk[PropertyId], SharedPropertyCodeChunks[SF_Vertex], DerivativeVariations[Variation].TranslatedCodeChunkDefinitions[PropertyId], DerivativeVariations[Variation].TranslatedCodeChunks[PropertyId], Variation);
 				}
 				break;
 			default: check(0);
@@ -1059,26 +1270,15 @@ bool FHLSLMaterialTranslator::Translate()
 		}
 
 		// Output the implementation for any custom output expressions
-		for (int32 ExpressionIndex = 0; ExpressionIndex < CustomOutputImplementations.Num(); ExpressionIndex++)
+				for (int32 ExpressionIndex = 0; ExpressionIndex < DerivativeVariations[Variation].CustomOutputImplementations.Num(); ExpressionIndex++)
 		{
-			ResourcesString += CustomOutputImplementations[ExpressionIndex] + "\r\n\r\n";
+					ResourcesString += DerivativeVariations[Variation].CustomOutputImplementations[ExpressionIndex] + "\r\n\r\n";
+				}
+			}
 		}
 
-		for (const FMaterialUniformExpression* ScalarExpression : UniformScalarExpressions)
-		{
-			FMaterialUniformPreshaderHeader& Preshader = MaterialCompilationOutput.UniformExpressionSet.UniformScalarPreshaders.AddDefaulted_GetRef();
-			Preshader.OpcodeOffset = MaterialCompilationOutput.UniformExpressionSet.UniformPreshaderData.Num();
-			ScalarExpression->WriteNumberOpcodes(MaterialCompilationOutput.UniformExpressionSet.UniformPreshaderData);
-			Preshader.OpcodeSize = MaterialCompilationOutput.UniformExpressionSet.UniformPreshaderData.Num() - Preshader.OpcodeOffset;
-		}
-
-		for (FMaterialUniformExpression* VectorExpression : UniformVectorExpressions)
-		{
-			FMaterialUniformPreshaderHeader& Preshader = MaterialCompilationOutput.UniformExpressionSet.UniformVectorPreshaders.AddDefaulted_GetRef();
-			Preshader.OpcodeOffset = MaterialCompilationOutput.UniformExpressionSet.UniformPreshaderData.Num();
-			VectorExpression->WriteNumberOpcodes(MaterialCompilationOutput.UniformExpressionSet.UniformPreshaderData);
-			Preshader.OpcodeSize = MaterialCompilationOutput.UniformExpressionSet.UniformPreshaderData.Num() - Preshader.OpcodeOffset;
-		}
+		// Store the number of float4s
+		MaterialCompilationOutput.UniformExpressionSet.UniformPreshaderBufferSize = (UniformPreshaderOffset + 3u) / 4u;
 
 		for (uint32 TypeIndex = 0u; TypeIndex < NumMaterialTextureParameterTypes; ++TypeIndex)
 		{
@@ -1092,6 +1292,73 @@ bool FHLSLMaterialTranslator::Translate()
 		for (FMaterialUniformExpressionExternalTexture* TextureExpression : UniformExternalTextureExpressions)
 		{
 			TextureExpression->GetExternalTextureParameterInfo(MaterialCompilationOutput.UniformExpressionSet.UniformExternalTextureParameters.AddDefaulted_GetRef());
+		}
+
+		const bool bStrataFrontMaterialProvided = Chunk[MP_FrontMaterial] != INDEX_NONE && CodeChunkToStrataCompilationInfoMap.Contains(Chunk[MP_FrontMaterial]) == true;
+		bool bStrataFrontMaterialIsValid = bStrataFrontMaterialProvided;
+		if (bStrataFrontMaterialIsValid)
+		{
+			StrataValidFrontMaterialCodeChunkPostTranslate = Chunk[MP_FrontMaterial];
+			const FStrataMaterialCompilationInfo& StrataCompilationInfo = CodeChunkToStrataCompilationInfoMap[StrataValidFrontMaterialCodeChunkPostTranslate];
+
+			// The material can be null when some entries are automatically generated, for instance in the material layer blending system
+			const bool bIsNullMaterial = (StrataCompilationInfo.LayerCount == 0 && StrataCompilationInfo.TotalBSDFCount == 0);
+			bStrataFrontMaterialIsValid &= !bIsNullMaterial;
+		}
+
+		if (bStrataFrontMaterialIsValid)
+		{
+			bMaterialIsStrata = true;
+			const FStrataMaterialCompilationInfo& StrataCompilationInfo = CodeChunkToStrataCompilationInfoMap[StrataValidFrontMaterialCodeChunkPostTranslate];
+
+			// VolumetricFogCloud must be used in isolation
+			if (StrataMaterialContainsAnyBSDF(this, StrataCompilationInfo, STRATA_BSDF_TYPE_VOLUMETRICFOGCLOUD))
+			{
+				// If the unlit node is used, it must be the only one used
+				if (!StrataIsVolumetricFogCloudOnly(this, StrataCompilationInfo))
+				{
+					FString ErrorMsg = FString::Printf(TEXT("Material %s contains Unlit BSDF but it is not the only one representing the material asset: %s. It must be the single BSDF.\r\n"), *Material->GetDebugName(), *Material->GetAssetPath().ToString());
+					Error(*ErrorMsg);
+				}
+			}
+
+			// Unlit must be used in isolation
+			if (StrataMaterialContainsAnyBSDF(this, StrataCompilationInfo, STRATA_BSDF_TYPE_UNLIT))
+			{
+				// If the unlit node is used, it must be the only one used
+				if (!StrataIsUnlitOnly(this, StrataCompilationInfo))
+				{
+					FString ErrorMsg = FString::Printf(TEXT("Material %s contains Unlit BSDF but it is not the only one representing the material asset: %s. It must be the single BSDF.\r\n"), *Material->GetDebugName(), *Material->GetAssetPath().ToString());
+					Error(*ErrorMsg);
+				}
+			}
+
+			// Hair must be used in isolation
+			if (StrataMaterialContainsAnyBSDF(this, StrataCompilationInfo, STRATA_BSDF_TYPE_HAIR))
+			{
+				// If the unlit node is used, it must be the only one used
+				if (!StrataIsHairOnly(this, StrataCompilationInfo))
+				{
+					FString ErrorMsg = FString::Printf(TEXT("Material %s contains hair BSDF but it is not the only representing the material asset: %s. It must be the single BSDF.\r\n"), *Material->GetDebugName(), *Material->GetAssetPath().ToString());
+					Error(*ErrorMsg);
+				}
+			}
+
+			// SingleLayerWater must be used in isolation
+			if (StrataMaterialContainsAnyBSDF(this, StrataCompilationInfo, STRATA_BSDF_TYPE_SINGLELAYERWATER))
+			{
+				// If the unlit node is used, it must be the only one used
+				if (!StrataIsSingleLayerWaterOnly(this, StrataCompilationInfo))
+				{
+					FString ErrorMsg = FString::Printf(TEXT("Material %s contains water BSDF but it is not the only representing the material asset: %s. It must be the single BSDF.\r\n"), *Material->GetDebugName(), *Material->GetAssetPath().ToString());
+					Error(*ErrorMsg);
+				}
+			}
+		}
+		else
+		{
+			MaterialCompilationOutput.StrataMaterialDescription = "";
+			ResourcesString += "// No Strata material provided \r\n";
 		}
 
 		LoadShaderSourceFileChecked(TEXT("/Engine/Private/MaterialTemplate.ush"), GetShaderPlatform(), MaterialTemplate);
@@ -1118,8 +1385,8 @@ bool FHLSLMaterialTranslator::Translate()
 
 		MaterialCompilationOutput.UniformExpressionSet.SetParameterCollections(ParameterCollections);
 
-		// Create the material uniform buffer struct.
-		MaterialCompilationOutput.UniformExpressionSet.CreateBufferStruct();
+		// This will be created shortly after the Translate call in FMaterial::BeginCompileShaderMap()
+		//MaterialCompilationOutput.UniformExpressionSet.CreateBufferStruct();
 
 		// Store the number of unique VT samples
 		MaterialCompilationOutput.EstimatedNumVirtualTextureLookups = NumVtSamples;
@@ -1134,7 +1401,7 @@ void FHLSLMaterialTranslator::ValidateShadingModelsForFeatureLevel(const FMateri
 {
 	if (FeatureLevel <= ERHIFeatureLevel::ES3_1)
 	{
-		const TArray<EMaterialShadingModel>& InvalidShadingModels = { MSM_Hair, MSM_Eye };
+		const TArray<EMaterialShadingModel>& InvalidShadingModels = { MSM_Eye };
 		for (EMaterialShadingModel InvalidShadingModel : InvalidShadingModels)
 		{
 			if (ShadingModels.HasShadingModel(InvalidShadingModel))
@@ -1157,6 +1424,8 @@ void FHLSLMaterialTranslator::ValidateShadingModelsForFeatureLevel(const FMateri
 
 void FHLSLMaterialTranslator::GetMaterialEnvironment(EShaderPlatform InPlatform, FShaderCompilerEnvironment& OutEnvironment)
 {
+	bool bMaterialRequestsDualSourceBlending = false;
+
 	if (bNeedsParticlePosition || Material->ShouldGenerateSphericalParticleNormals() || bUsesSphericalParticleOpacity)
 	{
 		OutEnvironment.SetDefine(TEXT("NEEDS_PARTICLE_POSITION"), 1);
@@ -1237,15 +1506,17 @@ void FHLSLMaterialTranslator::GetMaterialEnvironment(EShaderPlatform InPlatform,
 		OutEnvironment.SetDefine(TEXT("VIRTUAL_TEXTURE_OUTPUT"), 1);
 	}
 
-	OutEnvironment.SetDefine(TEXT("USES_PER_INSTANCE_CUSTOM_DATA"), bUsesPerInstanceCustomData && Material->IsUsedWithInstancedStaticMeshes());
-		
-	// @todo MetalMRT: Remove this hack and implement proper atmospheric-fog solution for Metal MRT...
-	OutEnvironment.SetDefine(TEXT("MATERIAL_ATMOSPHERIC_FOG"), !IsMetalMRTPlatform(InPlatform) ? bUsesAtmosphericFog : 0);
+	OutEnvironment.SetDefine(TEXT("USES_PER_INSTANCE_CUSTOM_DATA"), MaterialCompilationOutput.bUsesPerInstanceCustomData && Material->IsUsedWithInstancedStaticMeshes());
+	OutEnvironment.SetDefine(TEXT("USES_PER_INSTANCE_RANDOM"), MaterialCompilationOutput.bUsesPerInstanceRandom && Material->IsUsedWithInstancedStaticMeshes());
+	OutEnvironment.SetDefine(TEXT("USES_VERTEX_INTERPOLATOR"), MaterialCompilationOutput.bUsesVertexInterpolator);
+
 	OutEnvironment.SetDefine(TEXT("MATERIAL_SKY_ATMOSPHERE"), bUsesSkyAtmosphere);
 	OutEnvironment.SetDefine(TEXT("INTERPOLATE_VERTEX_COLOR"), bUsesVertexColor);
 	OutEnvironment.SetDefine(TEXT("NEEDS_PARTICLE_COLOR"), bUsesParticleColor); 
 	OutEnvironment.SetDefine(TEXT("NEEDS_PARTICLE_LOCAL_TO_WORLD"), bUsesParticleLocalToWorld);
 	OutEnvironment.SetDefine(TEXT("NEEDS_PARTICLE_WORLD_TO_LOCAL"), bUsesParticleWorldToLocal);
+	OutEnvironment.SetDefine(TEXT("NEEDS_INSTANCE_LOCAL_TO_WORLD_PS"), bUsesInstanceLocalToWorldPS);
+	OutEnvironment.SetDefine(TEXT("NEEDS_INSTANCE_WORLD_TO_LOCAL_PS"), bUsesInstanceWorldToLocalPS);
 	OutEnvironment.SetDefine(TEXT("USES_TRANSFORM_VECTOR"), bUsesTransformVector);
 	OutEnvironment.SetDefine(TEXT("WANT_PIXEL_DEPTH_OFFSET"), bUsesPixelDepthOffset);
 	if (IsMetalPlatform(InPlatform))
@@ -1262,6 +1533,8 @@ void FHLSLMaterialTranslator::GetMaterialEnvironment(EShaderPlatform InPlatform,
 	OutEnvironment.SetDefine(TEXT("MATERIAL_COMPUTE_FOG_PER_PIXEL"), Material->ComputeFogPerPixel());
 	OutEnvironment.SetDefine(TEXT("MATERIAL_FULLY_ROUGH"), bIsFullyRough || Material->IsFullyRough());
 	OutEnvironment.SetDefine(TEXT("MATERIAL_USES_ANISOTROPY"), bUsesAnisotropy && FDataDrivenShaderPlatformInfo::GetSupportsAnisotropicMaterials(InPlatform));
+
+	OutEnvironment.SetDefine(TEXT("MATERIAL_DECAL_READ_MASK"), MaterialCompilationOutput.UsedDBufferTextures);
 
 	// Count the number of VTStacks (each stack will allocate a feedback slot)
 	OutEnvironment.SetDefine(TEXT("NUM_VIRTUALTEXTURE_SAMPLES"), VTStacks.Num());
@@ -1329,6 +1602,11 @@ void FHLSLMaterialTranslator::GetMaterialEnvironment(EShaderPlatform InPlatform,
 		{
 			OutEnvironment.SetDefine(TEXT("MATERIAL_SHADINGMODEL_SUBSURFACE_PROFILE"), TEXT("1"));
 			NumSetMaterials++;
+
+			if (bUsesCurvature)
+			{
+				OutEnvironment.SetDefine(TEXT("MATERIAL_SUBSURFACE_PROFILE_USE_CURVATURE"), TEXT("1"));
+			}
 		}
 		if (ShadingModels.HasShadingModel(MSM_ClearCoat))
 		{
@@ -1365,23 +1643,16 @@ void FHLSLMaterialTranslator::GetMaterialEnvironment(EShaderPlatform InPlatform,
 			OutEnvironment.SetDefine(TEXT("MATERIAL_SHADINGMODEL_THIN_TRANSLUCENT"), TEXT("1"));
 			NumSetMaterials++;
 
-			// if it is not enabled, it will fall back to standard alpha blending
-			if (Material->IsDualBlendingEnabled(Platform))
-			{
-				OutEnvironment.SetDefine(TEXT("THIN_TRANSLUCENT_USE_DUAL_BLEND"), TEXT("1"));
-			}
+			bMaterialRequestsDualSourceBlending = true;
 		}
 
-		if (ShadingModels.HasShadingModel(MSM_SingleLayerWater) &&
-			(IsVulkanMobileSM5Platform(Platform) || FDataDrivenShaderPlatformInfo::GetRequiresDisableForwardLocalLights(Platform)))
+		if (ShadingModels.HasShadingModel(MSM_SingleLayerWater) && FDataDrivenShaderPlatformInfo::GetRequiresDisableForwardLocalLights(Platform))
 		{
 			OutEnvironment.SetDefine(TEXT("DISABLE_FORWARD_LOCAL_LIGHTS"), TEXT("1"));
 		}
 
-		// This is to have switch use the simple single layer water shading similar to mobile: no dynamic lights, only sun and sky, no distortion, no colored transmittance on background, no custom depth read.
-		bool bSingleLayerWaterUsesSimpleShading = IsVulkanMobileSM5Platform(InPlatform);
-		bSingleLayerWaterUsesSimpleShading = bSingleLayerWaterUsesSimpleShading || FDataDrivenShaderPlatformInfo::GetWaterUsesSimpleForwardShading(InPlatform);
-		bSingleLayerWaterUsesSimpleShading = bSingleLayerWaterUsesSimpleShading && IsForwardShadingEnabled(InPlatform);
+		// This is to have platforms use the simple single layer water shading similar to mobile: no dynamic lights, only sun and sky, no distortion, no colored transmittance on background, no custom depth read.
+		const bool bSingleLayerWaterUsesSimpleShading = FDataDrivenShaderPlatformInfo::GetWaterUsesSimpleForwardShading(InPlatform) && IsForwardShadingEnabled(InPlatform);
 
 		if (ShadingModels.HasShadingModel(MSM_SingleLayerWater) && bSingleLayerWaterUsesSimpleShading)
 		{
@@ -1446,6 +1717,190 @@ void FHLSLMaterialTranslator::GetMaterialEnvironment(EShaderPlatform InPlatform,
 				VolumetricAdvancedNode->bGroundContribution ? TEXT("1") : TEXT("0"));
 		}
 	}
+
+	OutEnvironment.SetDefine(TEXT("MATERIAL_IS_STRATA"), bMaterialIsStrata ? TEXT("1") : TEXT("0"));
+
+	// STRATA_TODO do not request DualSourceBlending if gray scale transmittance is selected.
+	// bMaterialRequestsDualSourceBlending this base on limited set of blend mode: Opaque, Masked, TransmittanceCoverage, TransmittanceColored;
+	bMaterialRequestsDualSourceBlending |= bMaterialIsStrata;
+
+	// if duals source blending (colored transmittance) is not supported on a platform, it will fall back to standard alpha blending (grey scale transmittance)
+	OutEnvironment.SetDefine(TEXT("DUAL_SOURCE_COLOR_BLENDING_ENABLED"), bMaterialRequestsDualSourceBlending && Material->IsDualBlendingEnabled(Platform) ? TEXT("1") : TEXT("0"));
+
+	if (bMaterialIsStrata)
+	{
+		StrataPixelNormalInitializerValues += FString::Printf(TEXT("\n\n\n\t// Strata normal and tangent\n"));
+		FinalUsedSharedLocalBasesCount = 0;
+		FStrataRegisteredSharedLocalBasis UsedSharedLocalBasesInfo[STRATA_MAX_SHAREDLOCALBASES_REGISTERS];
+
+
+		/*
+		* The final output code/workflow for shared tangent basis should look like
+		*
+		* #define SHAREDLOCALBASIS_INDEX_0 0		// default, unused
+		* #define SHAREDLOCALBASIS_INDEX_1 0		// default, unused
+		* #define SHAREDLOCALBASIS_INDEX_2 0
+		*
+		* FStrataData BSDF0 = GetStrataSlabBSDF(... SHAREDLOCALBASIS_0, NormalCode0 ...)
+		* FStrataData BSDF1 = GetStrataSlabBSDF(... SHAREDLOCALBASIS_1, NormalCode1 ...)
+		*
+		* float3 NormalCode2 = lerp(NormalCode0, NormalCode1, mix)
+		* FStrataData BSDF2 = StrataHorizontalMixingParameterBlending(BSDF0, BSDF1, mix, NormalCode2, SHAREDLOCALBASIS_INDEX_2) // will internally create NormalCode2
+		*
+		* tParameters.SharedLocalBases.Normals[SHAREDLOCALBASIS_INDEX_2] = NormalCode2;
+		* #if MATERIAL_TANGENTSPACENORMAL
+		* Parameters.SharedLocalBases.Normals[SHAREDLOCALBASIS_INDEX_2] *= Parameters.TwoSidedSign;
+		* #endif
+		*/
+
+
+		// We go over all output BSDF and reserve actual space for there shared tangent basis. Only up to STRATA_MAX_SHAREDLOCALBASES_REGISTERS.
+		// When we know we will need a basis, it is allocated as FinalSharedLocalBasisIndex. A macro is created with proper output index for the correct value to be output ot the correct slot by the BSDF.
+		// If too many output are required, we fail the compilation.
+		// STRATA_TODO: parameter blend in case it is not possible to output according to per pixel cost restriction.
+		const FStrataMaterialCompilationInfo& StrataCompilationInfo = CodeChunkToStrataCompilationInfoMap[StrataValidFrontMaterialCodeChunkPostTranslate];
+		for (uint32 LayerIt = 0; LayerIt < StrataCompilationInfo.LayerCount; ++LayerIt)
+		{
+			const FStrataMaterialCompilationInfo::FLayer& Layer = StrataCompilationInfo.Layers[LayerIt];
+			for (uint32 BSDFIt = 0; BSDFIt < Layer.BSDFCount; ++BSDFIt)
+			{
+				const FStrataMaterialCompilationInfo::FBSDF& BSDF = Layer.BSDFs[BSDFIt];
+				if (BSDF.RegisteredSharedLocalBasis.NormalCodeChunk == INDEX_NONE && BSDF.RegisteredSharedLocalBasis.TangentCodeChunk == INDEX_NONE)
+				{
+					// We skip null normal on certain BSDF, for instance unlit.
+					continue;
+				}
+
+				const FStrataSharedLocalBasesInfo StrataSharedLocalBasesInfo = StrataCompilationInfoGetMatchingSharedLocalBasisInfo(BSDF.RegisteredSharedLocalBasis);
+
+				// First, we check that the normal/tangent has not already written out (avoid 2 BSDFs sharing the same normal to note generate the same code twice)
+				bool bAlreadyProcessed = false;
+				for (uint8 i = 0; i < FinalUsedSharedLocalBasesCount; ++i)
+				{
+					if (UsedSharedLocalBasesInfo[i].NormalCodeChunkHash == StrataSharedLocalBasesInfo.SharedData.NormalCodeChunkHash &&
+						(UsedSharedLocalBasesInfo[i].TangentCodeChunkHash == StrataSharedLocalBasesInfo.SharedData.TangentCodeChunkHash || BSDF.RegisteredSharedLocalBasis.TangentCodeChunk == INDEX_NONE))
+					{
+						bAlreadyProcessed = true;
+						break;
+					}
+				}
+				if (bAlreadyProcessed)
+				{
+					continue;
+				}
+
+				check(FinalUsedSharedLocalBasesCount < STRATA_MAX_SHAREDLOCALBASES_REGISTERS);
+				const uint8 FinalSharedLocalBasisIndex = FinalUsedSharedLocalBasesCount++;
+				UsedSharedLocalBasesInfo[FinalSharedLocalBasisIndex] = StrataSharedLocalBasesInfo.SharedData;
+
+				// Write out normals
+				StrataPixelNormalInitializerValues += FString::Printf(TEXT("\tParameters.SharedLocalBases.Normals[%u] = %s;\n"), FinalSharedLocalBasisIndex, *StrataSharedLocalBasesInfo.NormalCode);
+				StrataPixelNormalInitializerValues += FString::Printf(TEXT("\t#if MATERIAL_TANGENTSPACENORMAL\n"));
+				StrataPixelNormalInitializerValues += FString::Printf(TEXT("\tParameters.SharedLocalBases.Normals[%u] *= Parameters.TwoSidedSign;\n"), FinalSharedLocalBasisIndex);
+				StrataPixelNormalInitializerValues += FString::Printf(TEXT("\t#endif\n"));
+
+				// Write out tangents
+				if (StrataSharedLocalBasesInfo.SharedData.TangentCodeChunk != INDEX_NONE)
+				{
+					StrataPixelNormalInitializerValues += FString::Printf(TEXT("\tParameters.SharedLocalBases.Tangents[%u] = %s;\n"), FinalSharedLocalBasisIndex, *StrataSharedLocalBasesInfo.TangentCode);
+				}
+				else
+				{
+					StrataPixelNormalInitializerValues += FString::Printf(TEXT("\tParameters.SharedLocalBases.Tangents[%u] = Parameters.TangentToWorld[0];\n"), FinalSharedLocalBasisIndex);
+				}
+				StrataPixelNormalInitializerValues += FString::Printf(TEXT("\t#if MATERIAL_TANGENTSPACENORMAL\n"));
+				StrataPixelNormalInitializerValues += FString::Printf(TEXT("\tParameters.SharedLocalBases.Tangents[%u] *= Parameters.TwoSidedSign;\n"), FinalSharedLocalBasisIndex);
+				StrataPixelNormalInitializerValues += FString::Printf(TEXT("\t#endif\n"));
+			}
+		}
+		StrataPixelNormalInitializerValues += FString::Printf(TEXT("\tParameters.SharedLocalBases.Count = %u;\n"), FinalUsedSharedLocalBasesCount);
+
+		// Now write out all the macros, them mapping from the BSDF to the effective position/index in the shared local basis array they should write to.
+		for (TMultiMap<uint64, FStrataSharedLocalBasesInfo>::TIterator It(CodeChunkToStrataSharedLocalBasis); It; ++It)
+		{
+			// The default linear output index will be 0 by default, and different if in fact the shared local basis points to one that is effectively in used in the array of shared local bases.
+			uint8 LinearIndex = 0;
+			for (uint8 i = 0; i < FinalUsedSharedLocalBasesCount; ++i)
+			{
+				if (UsedSharedLocalBasesInfo[i].NormalCodeChunkHash == It->Value.SharedData.NormalCodeChunkHash &&
+					(UsedSharedLocalBasesInfo[i].TangentCodeChunkHash == It->Value.SharedData.TangentCodeChunkHash || It->Value.SharedData.TangentCodeChunk == INDEX_NONE))
+				{
+					LinearIndex = i;
+					break;
+				}
+			}
+
+			OutEnvironment.SetDefine(*GetStrataSharedLocalBasisIndexMacro(It->Value.SharedData), LinearIndex);
+		}
+
+		// Now write some feedback to the user
+		{
+			// Output some debug info as comment in code and in the material stat window
+			static const auto CVarStrataBytePerPixel = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Strata.BytesPerPixel"));
+			check(CVarStrataBytePerPixel);
+			const uint32 StrataBytePerPixel = CVarStrataBytePerPixel ? CVarStrataBytePerPixel->GetValueOnAnyThread() : 0;
+			FStrataMaterialAnalysisResult StrataMaterialAnalysis = StrataCompilationInfoMaterialAnalysis(this, StrataCompilationInfo, StrataBytePerPixel);
+
+			if (StrataMaterialAnalysis.RequestedBSDFCount > 0)
+			{
+				OutEnvironment.SetDefine(TEXT("STRATA_CLAMPED_LAYER_COUNT"), StrataMaterialAnalysis.ClampedLayerCount);
+			}
+
+			if (StrataMaterialAnalysis.RequestedMaxBSDFCountPerLayer > 0)
+			{
+				OutEnvironment.SetDefine(TEXT("STRATA_CLAMPED_MAX_BSDF_COUNT_PER_LAYER"), StrataMaterialAnalysis.RequestedMaxBSDFCountPerLayer);
+			}
+
+			FString StrataMaterialDescription;
+
+			StrataMaterialDescription += FString::Printf(TEXT("----- STRATA -----\r\n"));
+			StrataMaterialDescription += FString::Printf(TEXT("StrataCompilationInfo -\r\n"));
+			StrataMaterialDescription += FString::Printf(TEXT(" - TotalBSDFCount    = %i\r\n"), StrataCompilationInfo.TotalBSDFCount);
+			StrataMaterialDescription += FString::Printf(TEXT(" - SharedLocalBasesCount = %i\r\n"), StrataCompilationInfoGetSharedLocalBasesCount());
+
+			for (uint32 LayerIt = 0; LayerIt < StrataCompilationInfo.LayerCount; ++LayerIt)
+			{
+				StrataMaterialDescription += FString::Printf(TEXT(" Layer %i BSDFs:\r\n"), LayerIt);
+
+				const FStrataMaterialCompilationInfo::FLayer& Layer = StrataCompilationInfo.Layers[LayerIt];
+				for (uint32 BSDFIt = 0; BSDFIt < Layer.BSDFCount; ++BSDFIt)
+				{
+					StrataMaterialDescription += FString::Printf(TEXT("     - %s - SharedLocalBasisIndexMacro = %s \r\n"), *GetStrataBSDFName(Layer.BSDFs[BSDFIt].Type), *GetStrataSharedLocalBasisIndexMacro(Layer.BSDFs[BSDFIt].RegisteredSharedLocalBasis));
+				}
+			}
+
+			StrataMaterialDescription += FString::Printf(TEXT("Byte Per Pixel Budget      %u\r\n"), StrataBytePerPixel);
+			StrataMaterialDescription += FString::Printf(TEXT("Result.bFitInMemoryBudget  %s\r\n"), StrataMaterialAnalysis.bFitInMemoryBudget ? TEXT("YES") : TEXT("NO"));
+			StrataMaterialDescription += FString::Printf(TEXT("Result.RequestedLayerCount %u\r\n"), StrataMaterialAnalysis.RequestedLayerCount);
+			StrataMaterialDescription += FString::Printf(TEXT("Result.RequestedBSDFCount  %u\r\n"), StrataMaterialAnalysis.RequestedBSDFCount);
+			StrataMaterialDescription += FString::Printf(TEXT("Result.RequestedByteCount  %u\r\n"), StrataMaterialAnalysis.RequestedByteCount);
+			if (!StrataMaterialAnalysis.bFitInMemoryBudget)
+			{
+				StrataMaterialDescription += FString::Printf(TEXT("Result.ClampedLayerCount   %u\r\n"), StrataMaterialAnalysis.ClampedLayerCount);
+				StrataMaterialDescription += FString::Printf(TEXT("Result.ClampedBSDFCount    %u\r\n"), StrataMaterialAnalysis.ClampedBSDFCount);
+				StrataMaterialDescription += FString::Printf(TEXT("Result.UsedByteCount       %u\r\n"), StrataMaterialAnalysis.UsedByteCount);
+			}
+			StrataMaterialDescription += FString::Printf(TEXT("------------------\r\n"));
+
+			ResourcesString += TEXT("/*");
+			ResourcesString += StrataMaterialDescription;
+			ResourcesString += TEXT("*/");
+
+			MaterialCompilationOutput.StrataMaterialDescription = StrataMaterialDescription;
+
+			if (StrataMaterialAnalysis.ClampedLayerCount == 0)
+			{
+				UE_LOG(LogMaterial, Error, TEXT("Material %s cannot have any layers rendered due to its complexity (asset: %s).\r\n"), *Material->GetDebugName(), *Material->GetAssetPath().ToString());
+			}
+			else if (StrataMaterialAnalysis.RequestedLayerCount > StrataMaterialAnalysis.ClampedLayerCount)
+			{
+				UE_LOG(LogMaterial, Warning, TEXT("Material %s is not fitting the allocated byte per pixel budget for starta. Layers will be removed (asset: %s).\r\n"), *Material->GetDebugName(), *Material->GetAssetPath().ToString());
+			}
+		}
+
+	}
+
+	OutEnvironment.SetDefine(TEXT("TEXTURE_SAMPLE_DEBUG"), IsDebugTextureSampleEnabled() ? TEXT("1") : TEXT("0"));
 }
 
 // Assign custom interpolators to slots, packing them as much as possible in unused slots.
@@ -1516,7 +1971,7 @@ TBitArray<> FHLSLMaterialTranslator::GetVertexInterpolatorsOffsets(FString& Vert
 	return AllocatedCoords;
 }
 
-void FHLSLMaterialTranslator::GetSharedInputsMaterialCode(FString& PixelMembersDeclaration, FString& NormalAssignment, FString& PixelMembersInitializationEpilog)
+void FHLSLMaterialTranslator::GetSharedInputsMaterialCode(FString& PixelMembersDeclaration, FString& NormalAssignment, FString& PixelMembersInitializationEpilog, ECompiledPartialDerivativeVariation DerivativeVariation)
 {
 	{
 		int32 LastProperty = -1;
@@ -1539,25 +1994,22 @@ void FHLSLMaterialTranslator::GetSharedInputsMaterialCode(FString& PixelMembersD
 			check(PropertyName.Len() > 0);				
 			const EMaterialValueType Type = Property == MP_SubsurfaceColor ? MCT_Float4 : FMaterialAttributeDefinitionMap::GetValueType(Property);
 
+			if (!bEnableExecutionFlow)
+			{
 			// Normal requires its own separate initializer
 			if (Property == MP_Normal)
 			{
-				NormalInitializerValue = FString::Printf(TEXT("\tPixelMaterialInputs.%s = %s;\n"), *PropertyName, *TranslatedCodeChunks[Property]);
+					NormalInitializerValue = FString::Printf(TEXT("\tPixelMaterialInputs.%s = %s;\n"), *PropertyName, *DerivativeVariations[DerivativeVariation].TranslatedCodeChunks[Property]);
 			}
 			else
 			{
-				if (TranslatedCodeChunkDefinitions[Property].Len() > 0)
-				{
-					if (LastProperty >= 0)
+					if (DerivativeVariations[DerivativeVariation].TranslatedCodeChunkDefinitions[Property].Len() > 0)
 					{
-						// Verify that all code chunks have the same contents
-						check(TranslatedCodeChunkDefinitions[Property].Len() == TranslatedCodeChunkDefinitions[LastProperty].Len());
+						LastProperty = Property;
 					}
-
-					LastProperty = Property;
 				}
 
-				PixelInputInitializerValues += FString::Printf(TEXT("\tPixelMaterialInputs.%s = %s;\n"), *PropertyName, *TranslatedCodeChunks[Property]);
+				PixelInputInitializerValues += FString::Printf(TEXT("\tPixelMaterialInputs.%s = %s;\n"), *PropertyName, *DerivativeVariations[DerivativeVariation].TranslatedCodeChunks[Property]);
 			}
 
 			PixelMembersDeclaration += FString::Printf(TEXT("\t%s %s;\n"), HLSLTypeString(Type), *PropertyName);
@@ -1566,7 +2018,12 @@ void FHLSLMaterialTranslator::GetSharedInputsMaterialCode(FString& PixelMembersD
 		NormalAssignment = NormalInitializerValue;
 		if (LastProperty != -1)
 		{
-			PixelMembersInitializationEpilog += TranslatedCodeChunkDefinitions[LastProperty] + TEXT("\n");
+			PixelMembersInitializationEpilog += DerivativeVariations[DerivativeVariation].TranslatedCodeChunkDefinitions[LastProperty] + TEXT("\n");
+		}
+
+		if (CodeChunkToStrataSharedLocalBasis.Num() > 0)
+		{
+			PixelInputInitializerValues += StrataPixelNormalInitializerValues;
 		}
 
 		PixelMembersInitializationEpilog += PixelInputInitializerValues;
@@ -1595,41 +2052,89 @@ FString FHLSLMaterialTranslator::GetMaterialShaderCode()
 	LazyPrintf.PushParam(*VertexInterpolatorsOffsetsDefinition);
 
 	FString MaterialAttributesDeclaration;
+	FString MaterialAttributesUtilities;
+	FString MaterialAttributesDefault;
+
+	const EMaterialShadingModel DefaultShadingModel = Material->GetShadingModels().GetFirstShadingModel();
 
 	const TArray<FGuid>& OrderedVisibleAttributes = FMaterialAttributeDefinitionMap::GetOrderedVisibleAttributeList();
-	for(const FGuid& AttributeID : OrderedVisibleAttributes)
+	for (const FGuid& AttributeID : OrderedVisibleAttributes)
 	{
 		const FString PropertyName = FMaterialAttributeDefinitionMap::GetAttributeName(AttributeID);
 		const EMaterialValueType PropertyType = FMaterialAttributeDefinitionMap::GetValueType(AttributeID);
+		const TCHAR* HLSLType = nullptr;
+
 		switch (PropertyType)
 		{
-		case MCT_Float1: case MCT_Float: MaterialAttributesDeclaration += FString::Printf(TEXT("\tfloat %s;") LINE_TERMINATOR, *PropertyName); break;
-		case MCT_Float2: MaterialAttributesDeclaration += FString::Printf(TEXT("\tfloat2 %s;") LINE_TERMINATOR, *PropertyName); break;
-		case MCT_Float3: MaterialAttributesDeclaration += FString::Printf(TEXT("\tfloat3 %s;") LINE_TERMINATOR, *PropertyName); break;
-		case MCT_Float4: MaterialAttributesDeclaration += FString::Printf(TEXT("\tfloat4 %s;") LINE_TERMINATOR, *PropertyName); break;
-		case MCT_ShadingModel: MaterialAttributesDeclaration += FString::Printf(TEXT("\tuint %s;") LINE_TERMINATOR, *PropertyName); break;
+		case MCT_Float1: case MCT_Float: HLSLType = TEXT("float"); break;
+		case MCT_Float2: HLSLType = TEXT("float2"); break;
+		case MCT_Float3: HLSLType = TEXT("float3"); break;
+		case MCT_Float4: HLSLType = TEXT("float4"); break;
+		case MCT_ShadingModel: HLSLType = TEXT("uint"); break;
+		case MCT_Strata: HLSLType = TEXT("FStrataData"); break;
+		default: break;
+		}
+
+		if (HLSLType)
+		{
+			const FVector4f DefaultValue = FMaterialAttributeDefinitionMap::GetDefaultValue(AttributeID);
+
+			MaterialAttributesDeclaration += FString::Printf(TEXT("\t%s %s;") LINE_TERMINATOR, HLSLType, *PropertyName);
+
+			// Chainable method to set the attribute
+			MaterialAttributesUtilities += FString::Printf(TEXT("FMaterialAttributes FMaterialAttributes_Set%s(FMaterialAttributes InAttributes, %s InValue) { InAttributes.%s = InValue; return InAttributes; }") LINE_TERMINATOR,
+				*PropertyName, HLSLType, *PropertyName);
+
+			// Standard value type
+			switch (PropertyType)
+			{
+			case MCT_Float: case MCT_Float1: MaterialAttributesDefault += FString::Printf(TEXT("\tResult.%s = %0.8f;") LINE_TERMINATOR, *PropertyName, DefaultValue.X); break;
+			case MCT_Float2: MaterialAttributesDefault += FString::Printf(TEXT("\tResult.%s = MaterialFloat2(%0.8f,%0.8f);") LINE_TERMINATOR, *PropertyName, DefaultValue.X, DefaultValue.Y); break;
+			case MCT_Float3: MaterialAttributesDefault += FString::Printf(TEXT("\tResult.%s = MaterialFloat3(%0.8f,%0.8f,%0.8f);") LINE_TERMINATOR, *PropertyName, DefaultValue.X, DefaultValue.Y, DefaultValue.Z); break;
+			case MCT_Float4: MaterialAttributesDefault += FString::Printf(TEXT("\tResult.%s = MaterialFloat4(%0.8f,%0.8f,%0.8f,%0.8f);") LINE_TERMINATOR, *PropertyName, DefaultValue.X, DefaultValue.Y, DefaultValue.Z, DefaultValue.W); break;
+			case MCT_ShadingModel: MaterialAttributesDefault += FString::Printf(TEXT("\tResult.%s = %d;") LINE_TERMINATOR, *PropertyName, (int32)DefaultShadingModel); break;
+			case MCT_Strata: MaterialAttributesDefault += FString::Printf(TEXT("\tResult.%s = GetInitialisedStrataData();") LINE_TERMINATOR, *PropertyName); break; // TODO
+			default: checkNoEntry(); break;
+			}
 		}
 	}
 
 	LazyPrintf.PushParam(*MaterialAttributesDeclaration);
+	LazyPrintf.PushParam(*MaterialAttributesUtilities);
 
 	// Stores the shared shader results member declarations
-	FString PixelMembersDeclaration;
+	FString PixelMembersDeclaration[CompiledPDV_MAX];
 
-	FString NormalAssignment;
+	FString NormalAssignment[CompiledPDV_MAX];
 
 	// Stores the code to initialize all inputs after MP_Normal
-	FString PixelMembersSetupAndAssignments;
+	FString PixelMembersSetupAndAssignments[CompiledPDV_MAX];
 
-	GetSharedInputsMaterialCode(PixelMembersDeclaration, NormalAssignment, PixelMembersSetupAndAssignments);
+	for (int32 Index = 0; Index < CompiledPDV_MAX; Index++)
+	{
+		GetSharedInputsMaterialCode(PixelMembersDeclaration[Index], NormalAssignment[Index], PixelMembersSetupAndAssignments[Index], (ECompiledPartialDerivativeVariation)Index);
+	}
 
-	LazyPrintf.PushParam(*PixelMembersDeclaration);
+	// PixelMembersDeclaration should be the same for all variations, but might change in the future. There are cases where work is shared
+	// between the pixel and vertex shader, but with Nanite all work has to be moved into the pixel shader, which means we will want
+	// different inputs. But for now, we are keeping them the same.
+	LazyPrintf.PushParam(*PixelMembersDeclaration[CompiledPDV_FiniteDifferences]);
 
-	LazyPrintf.PushParam(*ResourcesString);
+	{
+		FString DerivativeHelpers = DerivativeAutogen.GenerateUsedFunctions(*this);
+		FString DerivativeHelpersAndResources = DerivativeHelpers + ResourcesString;
+		//LazyPrintf.PushParam(*ResourcesString);
+		LazyPrintf.PushParam(*DerivativeHelpersAndResources);
+	}
+
+	// Anything used bye the GenerationFunctionCode() like WorldPositionOffset shouldn't be using texures, right?
+	// Let those use the standard finite differences textures, since they should be the same. If we actually want
+	// those to handle texture reads properly, we'll have to make extra versions.
+	ECompiledPartialDerivativeVariation BaseDerivativeVariation = CompiledPDV_FiniteDifferences;
 
 	if (bCompileForComputeShader)
 	{
-		LazyPrintf.PushParam(*GenerateFunctionCode(CompiledMP_EmissiveColorCS));
+		LazyPrintf.PushParam(*GenerateFunctionCode(CompiledMP_EmissiveColorCS, BaseDerivativeVariation));
 	}
 	else
 	{
@@ -1652,34 +2157,35 @@ FString FHLSLMaterialTranslator::GetMaterialShaderCode()
 
 	LazyPrintf.PushParam(*FString::Printf(TEXT("return %.5f"), Material->GetOpacityMaskClipValue()));
 
-	LazyPrintf.PushParam(*GenerateFunctionCode(MP_WorldPositionOffset));
-	LazyPrintf.PushParam(*GenerateFunctionCode(CompiledMP_PrevWorldPositionOffset));
-	LazyPrintf.PushParam(*GenerateFunctionCode(MP_WorldDisplacement));
-	LazyPrintf.PushParam(*FString::Printf(TEXT("return %.5f"), Material->GetMaxDisplacement()));
-	LazyPrintf.PushParam(*GenerateFunctionCode(MP_TessellationMultiplier));
-	LazyPrintf.PushParam(*GenerateFunctionCode(MP_CustomData0));
-	LazyPrintf.PushParam(*GenerateFunctionCode(MP_CustomData1));
+	LazyPrintf.PushParam(!bEnableExecutionFlow ? *GenerateFunctionCode(MP_WorldPositionOffset, BaseDerivativeVariation) : TEXT("return Parameters.MaterialVertexAttributes.WorldPositionOffset"));
+	LazyPrintf.PushParam(!bEnableExecutionFlow ? *GenerateFunctionCode(CompiledMP_PrevWorldPositionOffset, BaseDerivativeVariation) : TEXT("return 0.0f"));
+	LazyPrintf.PushParam(!bEnableExecutionFlow ? *GenerateFunctionCode(MP_CustomData0, BaseDerivativeVariation) : TEXT("return 0.0f"));
+	LazyPrintf.PushParam(!bEnableExecutionFlow ? *GenerateFunctionCode(MP_CustomData1, BaseDerivativeVariation) : TEXT("return 0.0f"));
 
-	// Print custom texture coordinate assignments
+	// Print custom texture coordinate assignments, should be fine with regular derivatives
 	FString CustomUVAssignments;
 
 	int32 LastProperty = -1;
 	for (uint32 CustomUVIndex = 0; CustomUVIndex < NumUserTexCoords; CustomUVIndex++)
 	{
+		if (bEnableExecutionFlow)
+		{
+			const FString AttributeName = FMaterialAttributeDefinitionMap::GetAttributeName((EMaterialProperty)(MP_CustomizedUVs0 + CustomUVIndex));
+			CustomUVAssignments += FString::Printf(TEXT("\tOutTexCoords[%u] = Parameters.MaterialVertexAttributes.%s;") LINE_TERMINATOR, CustomUVIndex, *AttributeName);
+		}
+		else
+		{
 		if (CustomUVIndex == 0)
 		{
-			CustomUVAssignments += TranslatedCodeChunkDefinitions[MP_CustomizedUVs0 + CustomUVIndex];
+				CustomUVAssignments += DerivativeVariations[BaseDerivativeVariation].TranslatedCodeChunkDefinitions[MP_CustomizedUVs0 + CustomUVIndex];
 		}
 
-		if (TranslatedCodeChunkDefinitions[MP_CustomizedUVs0 + CustomUVIndex].Len() > 0)
-		{
-			if (LastProperty >= 0)
+			if (DerivativeVariations[BaseDerivativeVariation].TranslatedCodeChunkDefinitions[MP_CustomizedUVs0 + CustomUVIndex].Len() > 0)
 			{
-				check(TranslatedCodeChunkDefinitions[LastProperty].Len() == TranslatedCodeChunkDefinitions[MP_CustomizedUVs0 + CustomUVIndex].Len());
+				LastProperty = MP_CustomizedUVs0 + CustomUVIndex;
 			}
-			LastProperty = MP_CustomizedUVs0 + CustomUVIndex;
+			CustomUVAssignments += FString::Printf(TEXT("\tOutTexCoords[%u] = %s;") LINE_TERMINATOR, CustomUVIndex, *DerivativeVariations[BaseDerivativeVariation].TranslatedCodeChunks[MP_CustomizedUVs0 + CustomUVIndex]);
 		}
-		CustomUVAssignments += FString::Printf(TEXT("\tOutTexCoords[%u] = %s;") LINE_TERMINATOR, CustomUVIndex, *TranslatedCodeChunks[MP_CustomizedUVs0 + CustomUVIndex]);
 	}
 
 	LazyPrintf.PushParam(*CustomUVAssignments);
@@ -1721,11 +2227,76 @@ FString FHLSLMaterialTranslator::GetMaterialShaderCode()
 
 	LazyPrintf.PushParam(*CustomInterpolatorAssignments);
 
+	LazyPrintf.PushParam(*MaterialAttributesDefault);
+
+	if (bEnableExecutionFlow)
+	{
+		FString EvaluateVertexCode;
+
+		// Set default texcoords in the VS
+		for (uint32 TexCoordIndex = 0; TexCoordIndex < NumUserVertexTexCoords; ++TexCoordIndex)
+		{
+			const FString AttributeName = FMaterialAttributeDefinitionMap::GetAttributeName((EMaterialProperty)(MP_CustomizedUVs0 + TexCoordIndex));
+
+			EvaluateVertexCode += FString::Printf(TEXT("\tDefaultMaterialAttributes.%s = Parameters.TexCoords[%d];") LINE_TERMINATOR, *AttributeName, TexCoordIndex);
+		}
+
+		EvaluateVertexCode += TranslatedAttributesCodeChunks[SF_Vertex];
+
+		LazyPrintf.PushParam(*EvaluateVertexCode);
+		LazyPrintf.PushParam(*TranslatedAttributesCodeChunks[SF_Pixel]);
+
+		FString EvaluateMaterialAttributesCode = TEXT("    FMaterialAttributes MaterialAttributes = EvaluatePixelMaterialAttributes(Parameters);" LINE_TERMINATOR);
+
+		for (int32 PropertyIndex = 0; PropertyIndex < MP_MAX; ++PropertyIndex)
+		{
+			// Skip non-shared properties
+			if (!SharedPixelProperties[PropertyIndex])
+			{
+				continue;
+			}
+
+			const EMaterialProperty Property = (EMaterialProperty)PropertyIndex;
+			check(FMaterialAttributeDefinitionMap::GetShaderFrequency(Property) == SF_Pixel);
+			// Special case MP_SubsurfaceColor as the actual property is a combination of the color and the profile but we don't want to expose the profile
+			const FString PropertyName = FMaterialAttributeDefinitionMap::GetAttributeName(Property);
+
+			if (PropertyIndex == MP_SubsurfaceColor)
+			{
+				// TODO - properly handle subsurface profile
+				EvaluateMaterialAttributesCode += FString::Printf("    PixelMaterialInputs.Subsurface = float4(MaterialAttributes.%s, 0.0f);" LINE_TERMINATOR, *PropertyName);
+			}
+			else
+			{
+				EvaluateMaterialAttributesCode += FString::Printf("    PixelMaterialInputs.%s = MaterialAttributes.%s;" LINE_TERMINATOR, *PropertyName, *PropertyName);
+			}
+		}
+
+		// TODO - deriv
+		for (int32 Iter = 0; Iter < CompiledPDV_MAX; Iter++)
+		{
+			LazyPrintf.PushParam(*EvaluateMaterialAttributesCode);
+			LazyPrintf.PushParam(TEXT(""));
+			LazyPrintf.PushParam(TEXT(""));
+		}
+	}
+	else
+	{
+		// skip material attributes code
+		LazyPrintf.PushParam(TEXT(""));
+		LazyPrintf.PushParam(TEXT(""));
+
+		for (int32 Iter = 0; Iter < CompiledPDV_MAX; Iter++)
+		{
+			ECompiledPartialDerivativeVariation Variation = (ECompiledPartialDerivativeVariation)Iter;
+
 	// Initializers required for Normal
-	LazyPrintf.PushParam(*TranslatedCodeChunkDefinitions[MP_Normal]);
-	LazyPrintf.PushParam(*NormalAssignment);
+			LazyPrintf.PushParam(*DerivativeVariations[Variation].TranslatedCodeChunkDefinitions[MP_Normal]);
+			LazyPrintf.PushParam(*NormalAssignment[Variation]);
 	// Finally the rest of common code followed by assignment into each input
-	LazyPrintf.PushParam(*PixelMembersSetupAndAssignments);
+			LazyPrintf.PushParam(*PixelMembersSetupAndAssignments[Variation]);
+		}
+	}
 
 	LazyPrintf.PushParam(*FString::Printf(TEXT("%u"),MaterialTemplateLineNumber));
 
@@ -1737,15 +2308,20 @@ FString FHLSLMaterialTranslator::GetMaterialShaderCode()
 
 bool FHLSLMaterialTranslator::IsMaterialPropertyUsed(EMaterialProperty Property, int32 PropertyChunkIndex, const FLinearColor& ReferenceValue, int32 NumComponents) const
 {
+	const int32 Frequency = (int32)FMaterialAttributeDefinitionMap::GetShaderFrequency(Property);
 	bool bPropertyUsed = false;
 
-	if (PropertyChunkIndex == -1)
+	if ((MaterialAttributesReturned[Frequency] & (1ull << Property)) != 0u)
+	{
+		// Property was set via a 'Return Material Attributes' expression
+		bPropertyUsed = true;
+	}
+	else if (PropertyChunkIndex == -1)
 	{
 		bPropertyUsed = false;
 	}
 	else
 	{
-		int32 Frequency = (int32)FMaterialAttributeDefinitionMap::GetShaderFrequency(Property);
 		const FShaderCodeChunk& PropertyChunk = SharedPropertyCodeChunks[Frequency][PropertyChunkIndex];
 
 		// Determine whether the property is used. 
@@ -1773,26 +2349,45 @@ bool FHLSLMaterialTranslator::IsMaterialPropertyUsed(EMaterialProperty Property,
 
 // only used by GetMaterialShaderCode()
 // @param Index ECompiledMaterialProperty or EMaterialProperty
-FString FHLSLMaterialTranslator::GenerateFunctionCode(uint32 Index) const
+FString FHLSLMaterialTranslator::GenerateFunctionCode(uint32 Index, ECompiledPartialDerivativeVariation Variation) const
 {
 	check(Index < CompiledMP_MAX);
-	return TranslatedCodeChunkDefinitions[Index] + TEXT("	return ") + TranslatedCodeChunks[Index] + TEXT(";");
+	return DerivativeVariations[Variation].TranslatedCodeChunkDefinitions[Index] + TEXT("	return ") + DerivativeVariations[Variation].TranslatedCodeChunks[Index] + TEXT(";");
 }
 
-// GetParameterCode
-FString FHLSLMaterialTranslator::GetParameterCode(int32 Index, const TCHAR* Default)
-{
-	if(Index == INDEX_NONE && Default)
-	{
-		return Default;
-	}
 
+const FShaderCodeChunk& FHLSLMaterialTranslator::AtParameterCodeChunk(int32 Index) const
+{
+	check(Index != INDEX_NONE);
 	checkf(Index >= 0 && Index < CurrentScopeChunks->Num(), TEXT("Index %d/%d, Platform=%d"), Index, CurrentScopeChunks->Num(), (int)Platform);
 	const FShaderCodeChunk& CodeChunk = (*CurrentScopeChunks)[Index];
+	return CodeChunk;
+}
+
+EDerivativeStatus FHLSLMaterialTranslator::GetDerivativeStatus(int32 Index) const
+{
+	return AtParameterCodeChunk(Index).DerivativeStatus;
+}
+
+FDerivInfo FHLSLMaterialTranslator::GetDerivInfo(int32 Index, bool bAllowNonFloat) const
+{
+	const FShaderCodeChunk& CodeChunk = AtParameterCodeChunk(Index);
+	return FDerivInfo { CodeChunk.Type, GetDerivType(CodeChunk.Type, bAllowNonFloat), CodeChunk.DerivativeStatus };
+}
+
+// Similar to GetParameterCode, but has no default, and is derivative aware. Making it a separate function in case it needs to diverge,
+// but after looking at it, it has the same logic as GetParameterCode() for now.
+FString FHLSLMaterialTranslator::GetParameterCodeDeriv(int32 Index, ECompiledPartialDerivativeVariation Variation)
+{
+	// In the case of a uniform expression, both finite and deriv versions are the same (raw floats, known zero)
+	checkf(Index >= 0 && Index < CurrentScopeChunks->Num(), TEXT("Index %d/%d, Platform=%d"), Index, CurrentScopeChunks->Num(), (int)Platform);
+	const FShaderCodeChunk& CodeChunk = (*CurrentScopeChunks)[Index];
+
+	FString Result;
 	if((CodeChunk.UniformExpression && CodeChunk.UniformExpression->IsConstant()) || CodeChunk.bInline)
 	{
 		// Constant uniform expressions and code chunks which are marked to be inlined are accessed via Definition
-		return CodeChunk.Definition;
+		Result = CodeChunk.AtDefinition(Variation);
 	}
 	else
 	{
@@ -1804,12 +2399,72 @@ FString FHLSLMaterialTranslator::GetParameterCode(int32 Index, const TCHAR* Defa
 			if(AccessedCodeChunk.bInline)
 			{
 				// Handle the accessed code chunk being inlined
-				return AccessedCodeChunk.Definition;
+				Result = AccessedCodeChunk.AtDefinition(Variation);
+			}
+			else
+			{
+				// Return the symbol used to reference this code chunk
+				check(AccessedCodeChunk.SymbolName.Len() > 0);
+				Result = AccessedCodeChunk.SymbolName;
+			}
+		}
+		else
+		{
+			// Return the symbol used to reference this code chunk
+			check(CodeChunk.SymbolName.Len() > 0);
+			Result = CodeChunk.SymbolName;
+		}
+	}
+
+	return Result;
+}
+
+FString FHLSLMaterialTranslator::GetParameterCode(int32 Index, const TCHAR* Default)
+{
+	FString Ret = GetParameterCodeRaw(Index,Default);
+
+	if (GetDerivativeStatus(Index) == EDerivativeStatus::Valid)
+	{
+		Ret = TEXT("DERIV_BASE_VALUE(") + Ret + TEXT(")");
+	}
+
+	return Ret;
+}
+
+// GetParameterCode
+FString FHLSLMaterialTranslator::GetParameterCodeRaw(int32 Index, const TCHAR* Default)
+{
+	if(Index == INDEX_NONE && Default)
+	{
+		return Default;
+	}
+
+	checkf(Index >= 0 && Index < CurrentScopeChunks->Num(), TEXT("Index %d/%d, Platform=%d"), Index, CurrentScopeChunks->Num(), (int)Platform);
+	const FShaderCodeChunk& CodeChunk = (*CurrentScopeChunks)[Index];
+	if((CodeChunk.UniformExpression && CodeChunk.UniformExpression->IsConstant()) || CodeChunk.bInline)
+	{
+		// Constant uniform expressions and code chunks which are marked to be inlined are accessed via Definition
+		return CodeChunk.DefinitionFinite;
+	}
+	else
+	{
+		// TODO - don't access uniform expressions for intermediate values
+		if (CodeChunk.UniformExpression)
+		{
+			// If the code chunk has a uniform expression, create a new code chunk to access it
+			const int32 AccessedIndex = AccessUniformExpression(Index);
+			const FShaderCodeChunk& AccessedCodeChunk = (*CurrentScopeChunks)[AccessedIndex];
+			if(AccessedCodeChunk.bInline)
+			{
+				// Handle the accessed code chunk being inlined
+				return AccessedCodeChunk.DefinitionFinite;
 			}
 			// Return the symbol used to reference this code chunk
 			check(AccessedCodeChunk.SymbolName.Len() > 0);
 			return AccessedCodeChunk.SymbolName;
 		}
+			
+		ReferencedCodeChunks.AddUnique(Index);
 			
 		// Return the symbol used to reference this code chunk
 		check(CodeChunk.SymbolName.Len() > 0);
@@ -1838,25 +2493,60 @@ uint64 FHLSLMaterialTranslator::GetParameterHash(int32 Index)
 	return CodeChunk.Hash;
 }
 
+uint64 FHLSLMaterialTranslator::GetParameterMaterialAttributeMask(int32 Index)
+{
+	if (Index == INDEX_NONE)
+	{
+		return 0u;
+	}
+
+	checkf(Index >= 0 && Index < CurrentScopeChunks->Num(), TEXT("Index %d/%d, Platform=%d"), Index, CurrentScopeChunks->Num(), (int)Platform);
+	const FShaderCodeChunk& CodeChunk = (*CurrentScopeChunks)[Index];
+	check(CodeChunk.Type == MCT_MaterialAttributes);
+	check(!CodeChunk.UniformExpression);
+
+	return CodeChunk.MaterialAttributeMask;
+}
+
+void FHLSLMaterialTranslator::SetParameterMaterialAttributes(int32 Index, uint64 Mask)
+{
+	checkf(Index >= 0 && Index < CurrentScopeChunks->Num(), TEXT("Index %d/%d, Platform=%d"), Index, CurrentScopeChunks->Num(), (int)Platform);
+	FShaderCodeChunk& CodeChunk = (*CurrentScopeChunks)[Index];
+	check(CodeChunk.Type == MCT_MaterialAttributes);
+	CodeChunk.MaterialAttributeMask |= Mask;
+}
+
+
 /** Creates a string of all definitions needed for the given material input. */
-FString FHLSLMaterialTranslator::GetDefinitions(TArray<FShaderCodeChunk>& CodeChunks, int32 StartChunk, int32 EndChunk) const
+FString FHLSLMaterialTranslator::GetDefinitions(const TArray<FShaderCodeChunk>& CodeChunks, int32 StartChunk, int32 EndChunk, ECompiledPartialDerivativeVariation Variation, const TCHAR* ReturnValueSymbolName) const
 {
 	FString Definitions;
 	for (int32 ChunkIndex = StartChunk; ChunkIndex < EndChunk; ChunkIndex++)
 	{
 		const FShaderCodeChunk& CodeChunk = CodeChunks[ChunkIndex];
 		// Uniform expressions (both constant and variable) and inline expressions don't have definitions.
-		if (!CodeChunk.UniformExpression && !CodeChunk.bInline)
+		if (!CodeChunk.UniformExpression &&
+			(!CodeChunk.bInline || CodeChunk.Type == MCT_VoidStatement))
 		{
-			Definitions += CodeChunk.Definition;
+			Definitions += CodeChunk.AtDefinition(Variation);
+
+			// If we found the definition of the return value, there is no need to add more definitions as they won't contribute to the outcome
+			if (ReturnValueSymbolName != nullptr && CodeChunk.SymbolName == ReturnValueSymbolName)
+			{
+				break;
+			}
 		}
 	}
 	return Definitions;
 }
 
 // GetFixedParameterCode
-void FHLSLMaterialTranslator::GetFixedParameterCode(int32 StartChunk, int32 EndChunk, int32 ResultIndex, TArray<FShaderCodeChunk>& CodeChunks, FString& OutDefinitions, FString& OutValue)
+void FHLSLMaterialTranslator::GetFixedParameterCode(int32 StartChunk, int32 EndChunk, int32 ResultIndex, TArray<FShaderCodeChunk>& CodeChunks, FString& OutDefinitions, FString& OutValue, ECompiledPartialDerivativeVariation OriginalVariation, bool bReduceAfterReturnValue)
 {
+	// Only allow the analytic variation for pixel shaders.
+	ECompiledPartialDerivativeVariation Variation = OriginalVariation;
+
+	// This function is hardcoded to finite differences for now.
 	if (ResultIndex != INDEX_NONE)
 	{
 		checkf(ResultIndex >= 0 && ResultIndex < CodeChunks.Num(), TEXT("Index out of range %d/%d [%s]"), ResultIndex, CodeChunks.Num(), *Material->GetFriendlyName());
@@ -1865,15 +2555,22 @@ void FHLSLMaterialTranslator::GetFixedParameterCode(int32 StartChunk, int32 EndC
 		{
 			// Handle a constant uniform expression being the only code chunk hooked up to a material input
 			const FShaderCodeChunk& ResultChunk = CodeChunks[ResultIndex];
-			OutValue = ResultChunk.Definition;
+			OutValue = ResultChunk.AtDefinition(Variation);
 		}
 		else
 		{
 			const FShaderCodeChunk& ResultChunk = CodeChunks[ResultIndex];
-			// Combine the definition lines and the return statement
+			// Combine the definition lines and the return statement.
+			// Also specify the return symbol name to terminate the iteration over all definitions earlier,
+			// if there are unnecessary statements that don't contribute to the outcome.
 			check(ResultChunk.bInline || ResultChunk.SymbolName.Len() > 0);
-			OutDefinitions = GetDefinitions(CodeChunks, StartChunk, EndChunk);
-			OutValue = ResultChunk.bInline ? ResultChunk.Definition : ResultChunk.SymbolName;
+			const TCHAR* ReturnValueSymbolName = (bReduceAfterReturnValue && !ResultChunk.bInline ? *ResultChunk.SymbolName : nullptr);
+			OutDefinitions = GetDefinitions(CodeChunks, StartChunk, EndChunk, Variation, ReturnValueSymbolName);
+			OutValue = ResultChunk.bInline ? ResultChunk.AtDefinition(Variation) : ResultChunk.SymbolName;
+			if (Variation == CompiledPDV_Analytic && ResultChunk.DerivativeStatus == EDerivativeStatus::Valid)
+			{
+				OutValue = FString(TEXT("(")) + OutValue + TEXT(").Value");
+			}
 		}
 	}
 	else
@@ -1882,9 +2579,81 @@ void FHLSLMaterialTranslator::GetFixedParameterCode(int32 StartChunk, int32 EndC
 	}
 }
 
-void FHLSLMaterialTranslator::GetFixedParameterCode(int32 ResultIndex, TArray<FShaderCodeChunk>& CodeChunks, FString& OutDefinitions, FString& OutValue)
+void FHLSLMaterialTranslator::GetFixedParameterCode(int32 ResultIndex, TArray<FShaderCodeChunk>& CodeChunks, FString& OutDefinitions, FString& OutValue, ECompiledPartialDerivativeVariation Variation)
 {
-	GetFixedParameterCode(0, CodeChunks.Num(), ResultIndex, CodeChunks, OutDefinitions, OutValue);
+	GetFixedParameterCode(0, CodeChunks.Num(), ResultIndex, CodeChunks, OutDefinitions, OutValue, Variation);
+}
+
+static void AppendIndent(int32 Level, FString& OutValue)
+{
+	for (int32 i = 0; i < Level; ++i)
+	{
+		OutValue += '\t';
+	}
+}
+
+void FHLSLMaterialTranslator::LinkParentScopes(TArray<FShaderCodeChunk>& CodeChunks)
+{
+	// Add all chunks to parent's child array
+	for (int32 ChunkIndex = 0; ChunkIndex < CodeChunks.Num(); ++ChunkIndex)
+	{
+		FShaderCodeChunk& ChildChunk = CodeChunks[ChunkIndex];
+		if (ChildChunk.UsedScopeIndex != INDEX_NONE)
+		{
+			FShaderCodeChunk& ParentChunk = CodeChunks[ChildChunk.UsedScopeIndex];
+			ParentChunk.ScopedChunks.Add(ChunkIndex);
+		}
+	}
+}
+
+void FHLSLMaterialTranslator::GetScopeCode(int32 IndentLevel, int32 ScopeChunkIndex, const TArray<FShaderCodeChunk>& CodeChunks, TSet<int32>& EmittedChunks, FString& OutValue)
+{
+	bool bAlreadyAddedChunk = false;
+	EmittedChunks.Add(ScopeChunkIndex, &bAlreadyAddedChunk);
+	if (bAlreadyAddedChunk)
+	{
+		// Only emit code for the chunk the first time we visit it
+		return;
+	}
+
+	const FShaderCodeChunk& CodeChunk = CodeChunks[ScopeChunkIndex];
+
+	// Add code for any dependencies of the current chunk
+	for (int32 ReferencedChunkIndex : CodeChunk.ReferencedCodeChunks)
+{
+		GetScopeCode(IndentLevel, ReferencedChunkIndex, CodeChunks, EmittedChunks, OutValue);
+	}
+
+	if ((!CodeChunk.UniformExpression && !CodeChunk.bInline) || CodeChunk.Type == MCT_VoidStatement)
+	{
+		AppendIndent(IndentLevel, OutValue);
+		OutValue += CodeChunk.AtDefinition(CompiledPDV_FiniteDifferences); // TODO - deriv
+	}
+
+	if (CodeChunk.ScopedChunks.Num() > 0)
+	{
+		AppendIndent(IndentLevel, OutValue);
+		OutValue += TEXT("{\n");
+		for (int32 ChildChunkIndex : CodeChunk.ScopedChunks)
+		{
+			const FShaderCodeChunk& ChildChunk = CodeChunks[ChildChunkIndex];
+			check(ChildChunk.UsedScopeIndex == ScopeChunkIndex);
+			if (ChildChunk.DeclaredScopeIndex != ScopeChunkIndex)
+			{
+				GetScopeCode(IndentLevel + 1, ChildChunkIndex, CodeChunks, EmittedChunks, OutValue);
+			}
+		}
+		for (int32 ChildChunkIndex : CodeChunk.ScopedChunks)
+		{
+			const FShaderCodeChunk& ChildChunk = CodeChunks[ChildChunkIndex];
+			if (ChildChunk.DeclaredScopeIndex == ScopeChunkIndex)
+			{
+				GetScopeCode(IndentLevel + 1, ChildChunkIndex, CodeChunks, EmittedChunks, OutValue);
+			}
+		}
+		AppendIndent(IndentLevel, OutValue);
+		OutValue += TEXT("}\n");
+	}
 }
 
 /** Used to get a user friendly type from EMaterialValueType */
@@ -1900,6 +2669,7 @@ const TCHAR* FHLSLMaterialTranslator::DescribeType(EMaterialValueType Type) cons
 	case MCT_Texture2D:				return TEXT("texture2D");
 	case MCT_TextureCube:			return TEXT("textureCube");
 	case MCT_Texture2DArray:		return TEXT("texture2DArray");
+	case MCT_TextureCubeArray:		return TEXT("textureCubeArray");
 	case MCT_VolumeTexture:			return TEXT("volumeTexture");
 	case MCT_StaticBool:			return TEXT("static bool");
 	case MCT_MaterialAttributes:	return TEXT("MaterialAttributes");
@@ -1907,6 +2677,11 @@ const TCHAR* FHLSLMaterialTranslator::DescribeType(EMaterialValueType Type) cons
 	case MCT_TextureVirtual:		return TEXT("TextureVirtual");
 	case MCT_VTPageTableResult:		return TEXT("VTPageTableResult");
 	case MCT_ShadingModel:			return TEXT("ShadingModel");
+	case MCT_Strata:				return TEXT("Strata");
+	case MCT_LWCScalar:				return TEXT("LWCScalar");
+	case MCT_LWCVector2:			return TEXT("LWCVector2");
+	case MCT_LWCVector3:			return TEXT("LWCVector3");
+	case MCT_LWCVector4:			return TEXT("LWCVector4");
 	default:						return TEXT("unknown");
 	};
 }
@@ -1924,6 +2699,7 @@ const TCHAR* FHLSLMaterialTranslator::HLSLTypeString(EMaterialValueType Type) co
 	case MCT_Texture2D:				return TEXT("texture2D");
 	case MCT_TextureCube:			return TEXT("textureCube");
 	case MCT_Texture2DArray:		return TEXT("texture2DArray");
+	case MCT_TextureCubeArray:		return TEXT("textureCubeArray");
 	case MCT_VolumeTexture:			return TEXT("volumeTexture");
 	case MCT_StaticBool:			return TEXT("static bool");
 	case MCT_MaterialAttributes:	return TEXT("FMaterialAttributes");
@@ -1931,6 +2707,41 @@ const TCHAR* FHLSLMaterialTranslator::HLSLTypeString(EMaterialValueType Type) co
 	case MCT_TextureVirtual:		return TEXT("TextureVirtual");
 	case MCT_VTPageTableResult:		return TEXT("VTPageTableResult");
 	case MCT_ShadingModel:			return TEXT("uint");
+	case MCT_Strata:				return TEXT("FStrataData");
+	case MCT_LWCScalar:				return TEXT("FLWCScalar");
+	case MCT_LWCVector2:			return TEXT("FLWCVector2");
+	case MCT_LWCVector3:			return TEXT("FLWCVector3");
+	case MCT_LWCVector4:			return TEXT("FLWCVector4");
+	default:						return TEXT("unknown");
+	};
+}
+
+/** Used to get an HLSL type from EMaterialValueType */
+const TCHAR* FHLSLMaterialTranslator::HLSLTypeStringDeriv(EMaterialValueType Type, EDerivativeStatus DerivativeStatus) const
+{
+	switch(Type)
+	{
+	case MCT_Float1:				return (DerivativeStatus == EDerivativeStatus::Valid) ? TEXT("FloatDeriv") : TEXT("MaterialFloat");
+	case MCT_Float2:				return (DerivativeStatus == EDerivativeStatus::Valid) ? TEXT("FloatDeriv2") : TEXT("MaterialFloat2");
+	case MCT_Float3:				return (DerivativeStatus == EDerivativeStatus::Valid) ? TEXT("FloatDeriv3") : TEXT("MaterialFloat3");
+	case MCT_Float4:				return (DerivativeStatus == EDerivativeStatus::Valid) ? TEXT("FloatDeriv4") : TEXT("MaterialFloat4");
+	case MCT_Float:					return (DerivativeStatus == EDerivativeStatus::Valid) ? TEXT("FloatDeriv") : TEXT("MaterialFloat");
+	case MCT_Texture2D:				return TEXT("texture2D");
+	case MCT_TextureCube:			return TEXT("textureCube");
+	case MCT_Texture2DArray:		return TEXT("texture2DArray");
+	case MCT_TextureCubeArray:		return TEXT("textureCubeArray");
+	case MCT_VolumeTexture:			return TEXT("volumeTexture");
+	case MCT_StaticBool:			return TEXT("static bool");
+	case MCT_MaterialAttributes:	return TEXT("FMaterialAttributes");
+	case MCT_TextureExternal:		return TEXT("TextureExternal");
+	case MCT_TextureVirtual:		return TEXT("TextureVirtual");
+	case MCT_VTPageTableResult:		return TEXT("VTPageTableResult");
+	case MCT_ShadingModel:			return TEXT("uint");
+	case MCT_Strata:				return TEXT("FStrataData");
+	case MCT_LWCScalar:				return (DerivativeStatus == EDerivativeStatus::Valid) ? TEXT("FLWCScalarDeriv") : TEXT("FLWCScalar");
+	case MCT_LWCVector2:			return (DerivativeStatus == EDerivativeStatus::Valid) ? TEXT("FLWCVector2Deriv") : TEXT("FLWCVector2");
+	case MCT_LWCVector3:			return (DerivativeStatus == EDerivativeStatus::Valid) ? TEXT("FLWCVector3Deriv") : TEXT("FLWCVector3");
+	case MCT_LWCVector4:			return (DerivativeStatus == EDerivativeStatus::Valid) ? TEXT("FLWCVector4Deriv") : TEXT("FLWCVector4");
 	default:						return TEXT("unknown");
 	};
 }
@@ -1989,7 +2800,7 @@ FString FHLSLMaterialTranslator::CreateSymbolName(const TCHAR* SymbolNameHint)
 }
 
 /** Adds an already formatted inline or referenced code chunk */
-int32 FHLSLMaterialTranslator::AddCodeChunkInner(uint64 Hash, const TCHAR* FormattedCode, EMaterialValueType Type, bool bInlined)
+int32 FHLSLMaterialTranslator::AddCodeChunkInner(uint64 Hash, const TCHAR* FormattedCode, EMaterialValueType Type, EDerivativeStatus DerivativeStatus, bool bInlined)
 {
 	check(bAllowCodeChunkGeneration);
 
@@ -1998,33 +2809,124 @@ int32 FHLSLMaterialTranslator::AddCodeChunkInner(uint64 Hash, const TCHAR* Forma
 		return INDEX_NONE;
 	}
 
-	if (bInlined)
+	int32 CodeIndex = INDEX_NONE;
+	if (Type == MCT_VoidStatement)
 	{
-		const int32 CodeIndex = CurrentScopeChunks->Num();
+		CodeIndex = CurrentScopeChunks->Num();
+		const FString Statement = FString("") + FormattedCode + LINE_TERMINATOR;
+		new(*CurrentScopeChunks) FShaderCodeChunk(Hash, *Statement, *Statement, TEXT(""), Type, DerivativeStatus, true);
+	}
+	else if (bInlined)
+	{
+		CodeIndex = CurrentScopeChunks->Num();
 		// Adding an inline code chunk, the definition will be the code to inline
-		new(*CurrentScopeChunks) FShaderCodeChunk(Hash, FormattedCode,TEXT(""),Type,true);
-		return CodeIndex;
+		new(*CurrentScopeChunks) FShaderCodeChunk(Hash, FormattedCode, FormattedCode, TEXT(""), Type, DerivativeStatus, true);
 	}
 	// Can only create temporaries for certain types
-	else if ((Type & (MCT_Float | MCT_VTPageTableResult)) || Type == MCT_ShadingModel || Type == MCT_MaterialAttributes)
+	else if ((Type & (MCT_Float | MCT_LWCType | MCT_VTPageTableResult)) || Type == MCT_ShadingModel || Type == MCT_MaterialAttributes || Type == MCT_Strata)
 	{
 		// Check for existing
 		for (int32 i = 0; i < CurrentScopeChunks->Num(); ++i)
 		{
 			if ((*CurrentScopeChunks)[i].Hash == Hash)
 			{
-				return i;
+				CodeIndex = i;
+				break;
 			}
 		}
 
-		const int32 CodeIndex = CurrentScopeChunks->Num();
+		if (CodeIndex == INDEX_NONE)
+		{
+			CodeIndex = CurrentScopeChunks->Num();
 		// Allocate a local variable name
 		const FString SymbolName = CreateSymbolName(TEXT("Local"));
 		// Construct the definition string which stores the result in a temporary and adds a newline for readability
-		const FString LocalVariableDefinition = FString("	") + HLSLTypeString(Type) + TEXT(" ") + SymbolName + TEXT(" = ") + FormattedCode + TEXT(";") + LINE_TERMINATOR;
+			const FString LocalVariableDefinitionFinite = FString("	") + HLSLTypeString(Type) + TEXT(" ") + SymbolName + TEXT(" = ") + FormattedCode + TEXT(";") + LINE_TERMINATOR;
+			// Construct the definition string which stores the result in a temporary and adds a newline for readability
+			const FString LocalVariableDefinitionAnalytic = FString("	") + HLSLTypeString(Type) + TEXT(" ") + SymbolName + TEXT(" = ") + FormattedCode + TEXT(";") + LINE_TERMINATOR;
 		// Adding a code chunk that creates a local variable
-		new(*CurrentScopeChunks) FShaderCodeChunk(Hash, *LocalVariableDefinition,SymbolName,Type,false);
-		return CodeIndex;
+			new(*CurrentScopeChunks) FShaderCodeChunk(Hash, *LocalVariableDefinitionFinite, *LocalVariableDefinitionAnalytic, SymbolName, Type, DerivativeStatus, false);
+		}
+	}
+	else
+	{
+		if (Type & MCT_Texture)
+		{
+			return Errorf(TEXT("Operation not supported on a Texture"));
+		}
+		else if (Type == MCT_StaticBool)
+		{
+			return Errorf(TEXT("Operation not supported on a Static Bool"));
+		}
+		else
+		{
+			return Errorf(TEXT("Operation not supported for type %s"), DescribeType(Type));
+		}
+	}
+	
+	AddCodeChunkToCurrentScope(CodeIndex);
+	return CodeIndex;
+}
+			
+static inline uint32 GetTCharStringBytes(const TCHAR* String)
+{
+	uint32 Length = 0u;
+	while (String[Length])
+	{
+		++Length;
+	}
+	return Length * sizeof(TCHAR);
+}
+
+/** Adds an already formatted inline or referenced code chunk, and notes the derivative status. */
+int32 FHLSLMaterialTranslator::AddCodeChunkInnerDeriv(const TCHAR* FormattedCodeFinite, const TCHAR* FormattedCodeAnalytic, EMaterialValueType Type, bool bInlined, EDerivativeStatus DerivativeStatus)
+{
+	const bool bEmitInvalidDerivToken = GDebugEmitInvalidDerivTokensEnabled && !IsDerivativeValid(DerivativeStatus);
+
+	const uint64 Hash = CityHash64WithSeed((const char*)FormattedCodeFinite, GetTCharStringBytes(FormattedCodeFinite),
+		CityHash64((const char*)FormattedCodeAnalytic, GetTCharStringBytes(FormattedCodeAnalytic)));
+
+	check(bAllowCodeChunkGeneration);
+
+	if (Type == MCT_Unknown)
+	{
+		return INDEX_NONE;
+	}
+
+	check(Type != MCT_VoidStatement);
+
+	int32 CodeIndex = INDEX_NONE;
+	if (bInlined)
+	{
+		CodeIndex = CurrentScopeChunks->Num();
+		// Adding an inline code chunk, the definition will be the code to inline
+		new(*CurrentScopeChunks) FShaderCodeChunk(Hash, FormattedCodeFinite, FormattedCodeAnalytic, TEXT(""), Type, DerivativeStatus, true);
+	}
+	// Can only create temporaries for certain types
+	else if ((Type & (MCT_Float | MCT_LWCType | MCT_VTPageTableResult)) || Type == MCT_ShadingModel || Type == MCT_MaterialAttributes || Type == MCT_Strata)
+	{
+		// Check for existing
+		for (int32 i = 0; i < CurrentScopeChunks->Num(); ++i)
+		{
+			if ((*CurrentScopeChunks)[i].Hash == Hash)
+			{
+				CodeIndex = i;
+				break;
+			}
+		}
+
+		if (CodeIndex == INDEX_NONE)
+		{
+			CodeIndex = CurrentScopeChunks->Num();
+			// Allocate a local variable name
+			const FString SymbolName = CreateSymbolName(TEXT("Local"));
+			// Construct the definition string which stores the result in a temporary and adds a newline for readability
+			const FString LocalVariableDefinitionFinite = FString("	") + HLSLTypeString(Type) + TEXT(" ") + SymbolName + TEXT(" = ") + FormattedCodeFinite + TEXT(";") + LINE_TERMINATOR;
+			// Analytic version too
+			const FString LocalVariableDefinitionAnalytic = FString("	") + (bEmitInvalidDerivToken ? "$" : "") + HLSLTypeStringDeriv(Type, DerivativeStatus) + TEXT(" ") + SymbolName + TEXT(" = ") + FormattedCodeAnalytic + TEXT(";") + LINE_TERMINATOR;
+			// Adding a code chunk that creates a local variable
+			new(*CurrentScopeChunks) FShaderCodeChunk(Hash, *LocalVariableDefinitionFinite, *LocalVariableDefinitionAnalytic, SymbolName, Type, DerivativeStatus, false);
+		}
 	}
 	else
 	{
@@ -2037,9 +2939,16 @@ int32 FHLSLMaterialTranslator::AddCodeChunkInner(uint64 Hash, const TCHAR* Forma
 		{
 			return Errorf(TEXT("Operation not supported on a Static Bool"));
 		}
-			
-		return INDEX_NONE;
+
 	}
+
+	AddCodeChunkToCurrentScope(CodeIndex);
+	return CodeIndex;
+}
+
+int32 FHLSLMaterialTranslator::AddCodeChunkInnerDeriv(const TCHAR* FormattedCode, EMaterialValueType Type, bool bInlined, EDerivativeStatus DerivativeStatus)
+{
+	return AddCodeChunkInnerDeriv(FormattedCode, FormattedCode, Type, bInlined, DerivativeStatus);
 }
 
 /** 
@@ -2048,7 +2957,7 @@ int32 FHLSLMaterialTranslator::AddCodeChunkInner(uint64 Hash, const TCHAR* Forma
 	* Creating local variables instead of inlining simplifies the generated code and reduces redundant expression chains,
 	* Making compiles faster and enabling the shader optimizer to do a better job.
 	*/
-int32 FHLSLMaterialTranslator::AddCodeChunk(EMaterialValueType Type,const TCHAR* Format,...)
+int32 FHLSLMaterialTranslator::AddCodeChunkInner(EMaterialValueType Type, EDerivativeStatus DerivativeStatus, bool bInlined, const TCHAR* Format, ...)
 {
 	int32	BufferSize		= 256;
 	TCHAR*	FormattedCode	= NULL;
@@ -2063,20 +2972,10 @@ int32 FHLSLMaterialTranslator::AddCodeChunk(EMaterialValueType Type,const TCHAR*
 	FormattedCode[Result] = 0;
 
 	const uint64 Hash = CityHash64((char*)FormattedCode, Result * sizeof(TCHAR));
-	const int32 CodeIndex = AddCodeChunkInner(Hash, FormattedCode,Type,false);
+	const int32 CodeIndex = AddCodeChunkInner(Hash, FormattedCode, Type, DerivativeStatus, bInlined);
 	FMemory::Free(FormattedCode);
 
 	return CodeIndex;
-}
-
-static inline uint32 GetTCharStringLength(const TCHAR* String)
-{
-	uint32 Length = 0u;
-	while (String[Length])
-	{
-		++Length;
-	}
-	return Length * sizeof(TCHAR);
 }
 
 int32 FHLSLMaterialTranslator::AddCodeChunkWithHash(uint64 BaseHash, EMaterialValueType Type, const TCHAR* Format, ...)
@@ -2093,54 +2992,9 @@ int32 FHLSLMaterialTranslator::AddCodeChunkWithHash(uint64 BaseHash, EMaterialVa
 	};
 	FormattedCode[Result] = 0;
 
-	const uint64 Hash = CityHash64WithSeed((char*)Format, GetTCharStringLength(Format), BaseHash);
-	const int32 CodeIndex = AddCodeChunkInner(Hash, FormattedCode, Type, false);
-	FMemory::Free(FormattedCode);
-
-	return CodeIndex;
-}
-
-/** 
-	* Constructs the formatted code chunk and creates an inlined code chunk from it. 
-	* This should be used instead of AddCodeChunk when the code chunk does not add any actual shader instructions, for example a component mask.
-	*/
-int32 FHLSLMaterialTranslator::AddInlinedCodeChunk(EMaterialValueType Type, const TCHAR* Format,...)
-{
-	int32	BufferSize		= 256;
-	TCHAR*	FormattedCode	= NULL;
-	int32	Result			= -1;
-
-	while(Result == -1)
-	{
-		FormattedCode = (TCHAR*) FMemory::Realloc( FormattedCode, BufferSize * sizeof(TCHAR) );
-		GET_VARARGS_RESULT( FormattedCode, BufferSize, BufferSize-1, Format, Format, Result );
-		BufferSize *= 2;
-	};
-	FormattedCode[Result] = 0;
-
-	const uint64 Hash = CityHash64((char*)FormattedCode, Result * sizeof(TCHAR));
-	const int32 CodeIndex = AddCodeChunkInner(Hash, FormattedCode,Type,true);
-	FMemory::Free(FormattedCode);
-
-	return CodeIndex;
-}
-
-int32 FHLSLMaterialTranslator::AddInlinedCodeChunkWithHash(uint64 BaseHash, EMaterialValueType Type, const TCHAR* Format, ...)
-{
-	int32	BufferSize = 256;
-	TCHAR*	FormattedCode = NULL;
-	int32	Result = -1;
-
-	while (Result == -1)
-	{
-		FormattedCode = (TCHAR*)FMemory::Realloc(FormattedCode, BufferSize * sizeof(TCHAR));
-		GET_VARARGS_RESULT(FormattedCode, BufferSize, BufferSize - 1, Format, Format, Result);
-		BufferSize *= 2;
-	};
-	FormattedCode[Result] = 0;
-
-	const uint64 Hash = CityHash64WithSeed((char*)Format, GetTCharStringLength(Format), BaseHash);
-	const int32 CodeIndex = AddCodeChunkInner(Hash, FormattedCode, Type, true);
+	uint64 Hash = CityHash64((char*)FormattedCode, Result * sizeof(TCHAR));
+	Hash = CityHash128to64({ BaseHash, Hash });
+	const int32 CodeIndex = AddCodeChunkInner(Hash, FormattedCode, Type, EDerivativeStatus::NotAware, false);
 	FMemory::Free(FormattedCode);
 
 	return CodeIndex;
@@ -2200,6 +3054,7 @@ int32 FHLSLMaterialTranslator::AddUniformExpressionInner(uint64 Hash, FMaterialU
 				{
 					delete UniformExpression;
 					// Reuse the entry in CurrentScopeChunks
+					AddCodeChunkToCurrentScope(ChunkIndex);
 					return ChunkIndex;
 				}
 			}
@@ -2246,14 +3101,16 @@ int32 FHLSLMaterialTranslator::AddUniformExpressionInner(uint64 Hash, FMaterialU
 
 	const int32 ReturnIndex = CurrentScopeChunks->Num();
 	// Create a new code chunk for the uniform expression
-	new(*CurrentScopeChunks) FShaderCodeChunk(Hash, UniformExpression, FormattedCode, Type);
+	// Note that uniforms have a known-zero derivative
+	new(*CurrentScopeChunks) FShaderCodeChunk(Hash, UniformExpression, FormattedCode, FormattedCode, Type, EDerivativeStatus::Zero);
 
 	if (!bFoundExistingExpression)
 	{
 		// Add an entry to the material-wide list of uniform expressions
-		new(UniformExpressions) FShaderCodeChunk(Hash, UniformExpression, FormattedCode, Type);
+		new(UniformExpressions) FShaderCodeChunk(Hash, UniformExpression, FormattedCode, FormattedCode, Type, EDerivativeStatus::Zero);
 	}
 
+	AddCodeChunkToCurrentScope(ReturnIndex);
 	return ReturnIndex;
 }
 
@@ -2278,25 +3135,8 @@ int32 FHLSLMaterialTranslator::AddUniformExpression(FMaterialUniformExpression* 
 	return CodeIndex;
 }
 
-int32 FHLSLMaterialTranslator::AddUniformExpressionWithHash(uint64 BaseHash, FMaterialUniformExpression* UniformExpression, EMaterialValueType Type, const TCHAR* Format, ...)
-{
-	int32	BufferSize = 256;
-	TCHAR*	FormattedCode = NULL;
-	int32	Result = -1;
-
-	while (Result == -1)
-	{
-		FormattedCode = (TCHAR*)FMemory::Realloc(FormattedCode, BufferSize * sizeof(TCHAR));
-		GET_VARARGS_RESULT(FormattedCode, BufferSize, BufferSize - 1, Format, Format, Result);
-		BufferSize *= 2;
-	};
-	FormattedCode[Result] = 0;
-
-	const uint64 Hash = CityHash64WithSeed((char*)Format, GetTCharStringLength(Format), BaseHash);
-	const int32 CodeIndex = AddUniformExpressionInner(Hash, UniformExpression, Type, FormattedCode);
-	FMemory::Free(FormattedCode);
-	return CodeIndex;
-}
+// From MaterialUniformExpressions.cpp
+extern void WriteMaterialUniformAccess(UE::Shader::EValueComponentType ComponentType, uint32 NumComponents, uint32 UniformOffset, FStringBuilderBase& OutResult);
 
 // AccessUniformExpression - Adds code to access the value of a uniform expression to the Code array and returns its index.
 int32 FHLSLMaterialTranslator::AccessUniformExpression(int32 Index)
@@ -2304,6 +3144,7 @@ int32 FHLSLMaterialTranslator::AccessUniformExpression(int32 Index)
 	check(Index >= 0 && Index < CurrentScopeChunks->Num());
 	const FShaderCodeChunk&	CodeChunk = (*CurrentScopeChunks)[Index];
 	check(CodeChunk.UniformExpression && !CodeChunk.UniformExpression->IsConstant());
+	const bool bIsLWC = IsLWCType(CodeChunk.Type);
 
 	FMaterialUniformExpressionTexture* TextureUniformExpression = CodeChunk.UniformExpression->GetTextureUniformExpression();
 	FMaterialUniformExpressionExternalTexture* ExternalTextureUniformExpression = CodeChunk.UniformExpression->GetExternalTextureUniformExpression();
@@ -2316,28 +3157,54 @@ int32 FHLSLMaterialTranslator::AccessUniformExpression(int32 Index)
 	// Virtual texture samples must have a corresponding uniform expression
 	check(!(CodeChunk.Type & MCT_TextureVirtual) || TextureUniformExpression);
 
-	TCHAR FormattedCode[MAX_SPRINTF]=TEXT("");
-	if(CodeChunk.Type == MCT_Float)
+	TStringBuilder<1024> FormattedCode;
+	if (IsFloatNumericType(CodeChunk.Type))
 	{
-		const static TCHAR IndexToMask[] = {'x', 'y', 'z', 'w'};
-		const int32 ScalarInputIndex = UniformScalarExpressions.AddUnique(CodeChunk.UniformExpression);
-		// Update the above FMemory::Malloc if this FCString::Sprintf grows in size, e.g. %s, ...
-		FCString::Sprintf(FormattedCode, TEXT("Material.ScalarExpressions[%u].%c"), ScalarInputIndex / 4, IndexToMask[ScalarInputIndex % 4]);
-	}
-	else if(CodeChunk.Type & MCT_Float)
-	{
-		const TCHAR* Mask;
-		switch(CodeChunk.Type)
-		{
-		case MCT_Float:
-		case MCT_Float1: Mask = TEXT(".r"); break;
-		case MCT_Float2: Mask = TEXT(".rg"); break;
-		case MCT_Float3: Mask = TEXT(".rgb"); break;
-		default: Mask = TEXT(""); break;
-		};
+		check(CodeChunk.DerivativeStatus != EDerivativeStatus::Valid);
+		const uint32 NumComponents = GetNumComponents(CodeChunk.Type);
 
-		const int32 VectorInputIndex = UniformVectorExpressions.AddUnique(CodeChunk.UniformExpression);
-		FCString::Sprintf(FormattedCode, TEXT("Material.VectorExpressions[%u]%s"), VectorInputIndex, Mask);
+		if (CodeChunk.UniformExpression->UniformOffset == INDEX_NONE)
+		{
+			const uint32 RegisterOffset = UniformPreshaderOffset % 4;
+			if (!bIsLWC && RegisterOffset + NumComponents > 4u)
+			{
+				// If this uniform would span multiple registers, align offset to the next register to avoid this
+				UniformPreshaderOffset = Align(UniformPreshaderOffset, 4u);
+			}
+
+			FMaterialUniformPreshaderHeader& Preshader = MaterialCompilationOutput.UniformExpressionSet.UniformPreshaders.AddDefaulted_GetRef();
+			Preshader.OpcodeOffset = MaterialCompilationOutput.UniformExpressionSet.UniformPreshaderData.Num();
+			CodeChunk.UniformExpression->WriteNumberOpcodes(MaterialCompilationOutput.UniformExpressionSet.UniformPreshaderData);
+			Preshader.BufferOffset = UniformPreshaderOffset;
+			Preshader.OpcodeSize = MaterialCompilationOutput.UniformExpressionSet.UniformPreshaderData.Num() - Preshader.OpcodeOffset;
+			Preshader.ComponentType = bIsLWC ? UE::Shader::EValueComponentType::Double : UE::Shader::EValueComponentType::Float;
+			Preshader.NumComponents = NumComponents;
+
+			CodeChunk.UniformExpression->UniformOffset = UniformPreshaderOffset;
+			UniformPreshaderOffset += bIsLWC ? NumComponents * 2u : NumComponents;
+		}
+
+		const uint32 UniformOffset = CodeChunk.UniformExpression->UniformOffset;
+		if (bIsLWC)
+		{
+			if (NumComponents == 1)
+			{
+				FormattedCode.Append(TEXT("MakeLWCScalar("));
+			}
+			else
+			{
+				FormattedCode.Appendf(TEXT("MakeLWCVector%d("), NumComponents);
+			}
+
+			WriteMaterialUniformAccess(UE::Shader::EValueComponentType::Float, NumComponents, UniformOffset, FormattedCode); // Tile
+			FormattedCode.Append(TEXT(","));
+			WriteMaterialUniformAccess(UE::Shader::EValueComponentType::Float, NumComponents, UniformOffset + NumComponents, FormattedCode); // Offset
+			FormattedCode.Append(TEXT(")"));
+		}
+		else
+		{
+			WriteMaterialUniformAccess(UE::Shader::EValueComponentType::Float, NumComponents, UniformOffset, FormattedCode);
+		}
 	}
 	else if(CodeChunk.Type & MCT_Texture)
 	{
@@ -2358,6 +3225,10 @@ int32 FHLSLMaterialTranslator::AccessUniformExpression(int32 Index)
 			TextureInputIndex = UniformTextureExpressions[(uint32)EMaterialTextureParameterType::Array2D].AddUnique(TextureUniformExpression);
 			BaseName = TEXT("Texture2DArray");
 			break;
+		case MCT_TextureCubeArray:
+			TextureInputIndex = UniformTextureExpressions[(uint32)EMaterialTextureParameterType::ArrayCube].AddUnique(TextureUniformExpression);
+			BaseName = TEXT("TextureCubeArray");
+			break;
 		case MCT_VolumeTexture:
 			TextureInputIndex = UniformTextureExpressions[(uint32)EMaterialTextureParameterType::Volume].AddUnique(TextureUniformExpression);
 			BaseName = TEXT("VolumeTexture");
@@ -2374,7 +3245,7 @@ int32 FHLSLMaterialTranslator::AccessUniformExpression(int32 Index)
 		};
 		if(GenerateCode)
 		{
-			FCString::Sprintf(FormattedCode, TEXT("Material.%s_%u"), BaseName, TextureInputIndex);
+			FormattedCode.Appendf(TEXT("Material.%s_%u"), BaseName, TextureInputIndex);
 		}
 	}
 	else
@@ -2382,42 +3253,25 @@ int32 FHLSLMaterialTranslator::AccessUniformExpression(int32 Index)
 		UE_LOG(LogMaterial, Fatal,TEXT("User input of unknown type: %s"),DescribeType(CodeChunk.Type));
 	}
 
-	return AddInlinedCodeChunk((*CurrentScopeChunks)[Index].Type,FormattedCode);
+
+	return AddInlinedCodeChunkZeroDeriv(CodeChunk.Type,FormattedCode.ToString());
+}
+
+FString FHLSLMaterialTranslator::CoerceValue(const FString& Code, EMaterialValueType SourceType, EMaterialValueType DestType)
+{
+	EMaterialCastFlags CastFlags = EMaterialCastFlags::ReplicateScalar;
+	if (DestType == MCT_Float || DestType == MCT_Float1 || DestType == MCT_LWCScalar)
+	{
+		// CoerceValue allows truncating to scalar types only
+		CastFlags |= EMaterialCastFlags::AllowTruncate;
+	}
+	return CastValue(Code, SourceType, DestType, CastFlags);
 }
 
 // CoerceParameter
 FString FHLSLMaterialTranslator::CoerceParameter(int32 Index,EMaterialValueType DestType)
 {
-	check(Index >= 0 && Index < CurrentScopeChunks->Num());
-	const FShaderCodeChunk&	CodeChunk = (*CurrentScopeChunks)[Index];
-	if( CodeChunk.Type == DestType )
-	{
-		return GetParameterCode(Index);
-	}
-	else
-	{
-		if( (CodeChunk.Type & DestType) && (CodeChunk.Type & MCT_Float) )
-		{
-			switch( DestType )
-			{
-			case MCT_Float1:
-				return FString::Printf( TEXT("MaterialFloat(%s)"), *GetParameterCode(Index) );
-			case MCT_Float2:
-				return FString::Printf( TEXT("MaterialFloat2(%s,%s)"), *GetParameterCode(Index), *GetParameterCode(Index) );
-			case MCT_Float3:
-				return FString::Printf( TEXT("MaterialFloat3(%s,%s,%s)"), *GetParameterCode(Index), *GetParameterCode(Index), *GetParameterCode(Index) );
-			case MCT_Float4:
-				return FString::Printf( TEXT("MaterialFloat4(%s,%s,%s,%s)"), *GetParameterCode(Index), *GetParameterCode(Index), *GetParameterCode(Index), *GetParameterCode(Index) );
-			default: 
-				return FString::Printf( TEXT("%s"), *GetParameterCode(Index) );
-			}
-		}
-		else
-		{
-			Errorf(TEXT("Coercion failed: %s: %s -> %s"),*CodeChunk.Definition,DescribeType(CodeChunk.Type),DescribeType(DestType));
-			return TEXT("");
-		}
-	}
+	return CoerceValue(GetParameterCode(Index), GetParameterType(Index), DestType);
 }
 
 // GetParameterType
@@ -2477,15 +3331,32 @@ bool FHLSLMaterialTranslator::GetTextureForExpression(int32 Index, int32& OutTex
 // GetArithmeticResultType
 EMaterialValueType FHLSLMaterialTranslator::GetArithmeticResultType(EMaterialValueType TypeA, EMaterialValueType TypeB)
 {
-	if (!((TypeA & MCT_Float) || TypeA == MCT_ShadingModel) || !((TypeB & MCT_Float) || TypeB == MCT_ShadingModel))
+	if (!IsNumericType(TypeA) || !IsNumericType(TypeB))
 	{
-		Errorf(TEXT("Attempting to perform arithmetic on non-numeric types: %s %s"),DescribeType(TypeA),DescribeType(TypeB));
+		Errorf(TEXT("Attempting to perform arithmetic on non-numeric types: %s %s"), DescribeType(TypeA),DescribeType(TypeB));
 		return MCT_Unknown;
 	}
 
 	if(TypeA == TypeB)
 	{
 		return TypeA;
+	}
+	else if (IsLWCType(TypeA) || IsLWCType(TypeB))
+	{
+		const EMaterialValueType LWCTypeA = MakeLWCType(TypeA);
+		const EMaterialValueType LWCTypeB = MakeLWCType(TypeB);
+		if (LWCTypeA == LWCTypeB)
+		{
+			return LWCTypeA;
+		}
+		else if (LWCTypeA == MCT_LWCScalar && IsFloatNumericType(LWCTypeB))
+		{
+			return LWCTypeB;
+		}
+		else if (LWCTypeB == MCT_LWCScalar && IsFloatNumericType(LWCTypeA))
+		{
+			return LWCTypeA;
+		}
 	}
 	else if(TypeA & TypeB)
 	{
@@ -2499,11 +3370,9 @@ EMaterialValueType FHLSLMaterialTranslator::GetArithmeticResultType(EMaterialVal
 			return TypeA;
 		}
 	}
-	else
-	{
-		Errorf(TEXT("Arithmetic between types %s and %s are undefined"),DescribeType(TypeA),DescribeType(TypeB));
-		return MCT_Unknown;
-	}
+
+	Errorf(TEXT("Arithmetic between types %s and %s are undefined"), DescribeType(TypeA), DescribeType(TypeB));
+	return MCT_Unknown;
 }
 
 EMaterialValueType FHLSLMaterialTranslator::GetArithmeticResultType(int32 A,int32 B)
@@ -2584,6 +3453,20 @@ EShaderFrequency FHLSLMaterialTranslator::GetCurrentShaderFrequency() const
 FMaterialShadingModelField FHLSLMaterialTranslator::GetMaterialShadingModels() const
 {
 	check(Material);
+	return Material->GetShadingModels();
+}
+
+FMaterialShadingModelField FHLSLMaterialTranslator::GetCompiledShadingModels() const
+{
+	check(Material);
+
+	// If the material gets its shading model from material expressions and we have compiled one or more shading model expressions already, 
+	// then use that shading model field instead. It's the most optimal set of shading models
+	if (Material->IsShadingModelFromMaterialExpression() && ShadingModelsFromCompilation.IsValid())
+	{
+		return ShadingModelsFromCompilation;
+	}
+
 	return Material->GetShadingModels();
 }
 
@@ -2687,10 +3570,13 @@ int32 FHLSLMaterialTranslator::CallExpression(FMaterialExpressionKey ExpressionK
 	auto& CurrentFunctionStack = FunctionStacks[ShaderFrequency];
 	FMaterialFunctionCompileState* CurrentFunctionState = CurrentFunctionStack.Last();
 
-	int32* ExistingCodeIndex = CurrentFunctionState->ExpressionCodeMap.Find(ExpressionKey);
+	static bool sDebugCacheDuplicateCode = true;
+	int32* ExistingCodeIndex = sDebugCacheDuplicateCode ? CurrentFunctionState->ExpressionCodeMap.Find(ExpressionKey) : nullptr;
+	int32 Result = INDEX_NONE;
 	if (ExistingCodeIndex)
 	{
-		return *ExistingCodeIndex;
+		Result = *ExistingCodeIndex;
+		AddCodeChunkToCurrentScope(Result);
 	}
 	else
 	{
@@ -2716,7 +3602,9 @@ int32 FHLSLMaterialTranslator::CallExpression(FMaterialExpressionKey ExpressionK
 			FunctionCall->SetSharedCompileState(SharedFunctionState);
 		}
 
-		int32 Result = ExpressionKey.Expression->Compile(Compiler, ExpressionKey.OutputIndex);
+		ReferencedCodeChunks.Reset();
+
+		Result = ExpressionKey.Expression->Compile(Compiler, ExpressionKey.OutputIndex);
 
 		// Restore state
 		if (FunctionCall)
@@ -2733,7 +3621,105 @@ int32 FHLSLMaterialTranslator::CallExpression(FMaterialExpressionKey ExpressionK
 		// Cache the translation.
 		CurrentFunctionStack.Last()->ExpressionCodeMap.Add(ExpressionKey,Result);
 
+		if (Result != INDEX_NONE)
+		{
+			FShaderCodeChunk& ResultChunk = (*CurrentScopeChunks)[Result];
+			ResultChunk.ReferencedCodeChunks = MoveTemp(ReferencedCodeChunks);
+		}
+		ReferencedCodeChunks.Reset();
+	}
+
 		return Result;
+	}
+
+int32 FHLSLMaterialTranslator::CallExpressionExec(UMaterialExpression* Expression)
+{
+	check(ShaderFrequency < SF_NumFrequencies);
+	auto& CurrentFunctionStack = FunctionStacks[ShaderFrequency];
+	FMaterialFunctionCompileState* CurrentFunctionState = CurrentFunctionStack.Last();
+
+	int32 Result = INDEX_NONE;
+	/*int32* ExistingCodeIndex = CurrentFunctionState->ExecExpressionCodeMap.Find(Expression);
+	if (ExistingCodeIndex)
+	{
+		Result = *ExistingCodeIndex;
+		FShaderCodeChunk& Chunk = (*CurrentScopeChunks)[Result];
+		const int32 CurrentScopeIndex = ScopeStack.Last();
+		const FShaderCodeChunk& CurrentScope = (*CurrentScopeChunks)[CurrentScopeIndex];
+		const FShaderCodeChunk& PrevScope = (*CurrentScopeChunks)[Chunk.UsedScopeIndex];
+		if (CurrentScope.UsedScopeIndex == PrevScope.UsedScopeIndex)
+		{
+			AddCodeChunkToScope(Result, CurrentScope.UsedScopeIndex);
+		}
+		else
+		{
+			return Errorf(TEXT("Invalid scopes"));
+		}
+	}
+	else*/
+	{
+		ReferencedCodeChunks.Reset();
+		Result = Expression->Compile(this, UMaterialExpression::CompileExecutionOutputIndex);
+		CurrentFunctionState->ExecExpressionCodeMap.Add(Expression, Result);
+
+		if (Result != INDEX_NONE)
+		{
+			FShaderCodeChunk& ResultChunk = (*CurrentScopeChunks)[Result];
+			ResultChunk.ReferencedCodeChunks = MoveTemp(ReferencedCodeChunks);
+		}
+		ReferencedCodeChunks.Reset();
+	}
+	return Result;
+}
+
+void FHLSLMaterialTranslator::AddCodeChunkToCurrentScope(int32 ChunkIndex)
+{
+	if (ChunkIndex != INDEX_NONE && ScopeStack.Num() > 0)
+	{
+		const int32 CurrentScopeIndex = ScopeStack.Last();
+		AddCodeChunkToScope(ChunkIndex, CurrentScopeIndex);
+	}
+}
+
+void FHLSLMaterialTranslator::AddCodeChunkToScope(int32 ChunkIndex, int32 ScopeIndex)
+{
+	if (ChunkIndex != INDEX_NONE)
+	{
+		FShaderCodeChunk& CurrentScope = (*CurrentScopeChunks)[ScopeIndex];
+
+		FShaderCodeChunk& Chunk = (*CurrentScopeChunks)[ChunkIndex];
+		if (Chunk.DeclaredScopeIndex == INDEX_NONE)
+		{
+			check(Chunk.UsedScopeIndex == INDEX_NONE);
+			Chunk.DeclaredScopeIndex = ScopeIndex;
+			Chunk.UsedScopeIndex = ScopeIndex;
+			Chunk.ScopeLevel = CurrentScope.ScopeLevel + 1;
+		}
+		else if (Chunk.UsedScopeIndex != ScopeIndex)
+		{
+			// Find the most derived scope that's shared by the current scope, and the scope this code was previously referenced from
+			int32 ScopeIndex0 = ScopeIndex;
+			int32 ScopeIndex1 = Chunk.UsedScopeIndex;
+			while (ScopeIndex0 != ScopeIndex1)
+			{
+				const FShaderCodeChunk& Scope0 = (*CurrentScopeChunks)[ScopeIndex0];
+				const FShaderCodeChunk& Scope1 = (*CurrentScopeChunks)[ScopeIndex1];
+				if (Scope0.ScopeLevel > Scope1.ScopeLevel)
+				{
+					check(Scope0.UsedScopeIndex != INDEX_NONE);
+					ScopeIndex0 = Scope0.UsedScopeIndex;
+				}
+				else
+				{
+					check(Scope1.UsedScopeIndex != INDEX_NONE);
+					ScopeIndex1 = Scope1.UsedScopeIndex;
+				}
+			}
+
+			const FShaderCodeChunk& Scope = (*CurrentScopeChunks)[ScopeIndex0];
+			Chunk.UsedScopeIndex = ScopeIndex0;
+			Chunk.ScopeLevel = Scope.ScopeLevel + 1;
+		}
 	}
 }
 
@@ -2777,7 +3763,7 @@ bool FHLSLMaterialTranslator::IsMaterialPropertyUsed(EMaterialProperty Property,
 	}
 	else
 	{
-		FVector4 DefaultValue = FMaterialAttributeDefinitionMap::GetDefaultValue(Property);
+		FVector4f DefaultValue = FMaterialAttributeDefinitionMap::GetDefaultValue(Property);
 		EMaterialValueType ValueType = FMaterialAttributeDefinitionMap::GetValueType(Property);
 		int32 ComponentCount = GetNumComponents(ValueType);
 
@@ -2796,7 +3782,8 @@ int32 FHLSLMaterialTranslator::ValidCast(int32 Code, EMaterialValueType DestType
 		return INDEX_NONE;
 	}
 
-	EMaterialValueType SourceType = GetParameterType(Code);
+	const EMaterialCastFlags Flags = EMaterialCastFlags::ValidCast;
+	const EMaterialValueType SourceType = GetParameterType(Code);
 	int32 CompiledResult = INDEX_NONE;
 
 	if (SourceType & DestType)
@@ -2814,50 +3801,29 @@ int32 FHLSLMaterialTranslator::ValidCast(int32 Code, EMaterialValueType DestType
 			return ValidCast(AccessUniformExpression(Code), DestType);
 		}
 	}
-	else if((SourceType & MCT_Float) && (DestType & MCT_Float))
+	else if(IsFloatNumericType(SourceType) && IsFloatNumericType(DestType))
 	{
-		const uint32 NumSourceComponents = GetNumComponents(SourceType);
-		const uint32 NumDestComponents = GetNumComponents(DestType);
+		const FDerivInfo CodeDerivInfo = GetDerivInfo(Code);
 
-		if(NumSourceComponents > NumDestComponents) // Use a mask to select the first NumDestComponents components from the source.
+		FString FiniteCode = CastValue(GetParameterCode(Code), SourceType, DestType, Flags);
+		if (IsAnalyticDerivEnabled() && IsDerivativeValid(CodeDerivInfo.DerivativeStatus))
 		{
-			const TCHAR*	Mask;
-			switch(NumDestComponents)
+			if (CodeDerivInfo.DerivativeStatus == EDerivativeStatus::Valid)
 			{
-			case 1: Mask = TEXT(".r"); break;
-			case 2: Mask = TEXT(".rg"); break;
-			case 3: Mask = TEXT(".rgb"); break;
-			default: UE_LOG(LogMaterial, Fatal,TEXT("Should never get here!")); return INDEX_NONE;
-			};
-
-			return AddInlinedCodeChunk(DestType,TEXT("%s%s"),*GetParameterCode(Code),Mask);
-		}
-		else if(NumSourceComponents < NumDestComponents) // Pad the source vector up to NumDestComponents.
-		{
-			// Only allow replication when the Source is a Float1
-			if (NumSourceComponents == 1)
-			{
-				const uint32 NumPadComponents = NumDestComponents - NumSourceComponents;
-				FString CommaParameterCodeString = FString::Printf(TEXT(",%s"), *GetParameterCode(Code));
-
-				CompiledResult = AddInlinedCodeChunk(
-					DestType,
-					TEXT("%s(%s%s%s%s)"),
-					HLSLTypeString(DestType),
-					*GetParameterCode(Code),
-					NumPadComponents >= 1 ? *CommaParameterCodeString : TEXT(""),
-					NumPadComponents >= 2 ? *CommaParameterCodeString : TEXT(""),
-					NumPadComponents >= 3 ? *CommaParameterCodeString : TEXT("")
-					);
+				FString DerivString = *GetParameterCodeDeriv(Code, CompiledPDV_Analytic);
+				FString DDXCode = CastValue(DerivString + TEXT(".Ddx"), MakeNonLWCType(SourceType), MakeNonLWCType(DestType), Flags);
+				FString DDYCode = CastValue(DerivString + TEXT(".Ddy"), MakeNonLWCType(SourceType), MakeNonLWCType(DestType), Flags);
+				FString AnalyticCode = DerivativeAutogen.ConstructDeriv(FiniteCode, DDXCode, DDYCode, GetDerivType(DestType));
+				return AddCodeChunkInnerDeriv(*FiniteCode, *AnalyticCode, DestType, false, EDerivativeStatus::Valid);
 			}
 			else
 			{
-				CompiledResult = Errorf(TEXT("Cannot cast from %s to %s."), DescribeType(SourceType), DescribeType(DestType));
+				return AddInlinedCodeChunkZeroDeriv(DestType, *FiniteCode);
 			}
 		}
 		else
 		{
-			CompiledResult = Code;
+			return AddInlinedCodeChunk(DestType, *FiniteCode);
 		}
 	}
 	else
@@ -2888,57 +3854,45 @@ int32 FHLSLMaterialTranslator::ForceCast(int32 Code, EMaterialValueType DestType
 		return ForceCast(AccessUniformExpression(Code),DestType,ForceCastFlags);
 	}
 
-	EMaterialValueType	SourceType = GetParameterType(Code);
-
-	bool bExactMatch = (ForceCastFlags & MFCF_ExactMatch) ? true : false;
-	bool bReplicateValue = (ForceCastFlags & MFCF_ReplicateValue) ? true : false;
+	const EMaterialValueType SourceType = GetParameterType(Code);
+	const bool bExactMatch = (ForceCastFlags & MFCF_ExactMatch) ? true : false;
 
 	if (bExactMatch ? (SourceType == DestType) : (SourceType & DestType))
 	{
 		return Code;
 	}
-	else if((SourceType & MCT_Float) && (DestType & MCT_Float))
+	else if (IsFloatNumericType(SourceType) && IsFloatNumericType(DestType))
 	{
-		const uint32 NumSourceComponents = GetNumComponents(SourceType);
-		const uint32 NumDestComponents = GetNumComponents(DestType);
+		const FDerivInfo CodeDerivInfo = GetDerivInfo(Code);
 
-		if(NumSourceComponents > NumDestComponents) // Use a mask to select the first NumDestComponents components from the source.
+		EMaterialCastFlags CastFlags = EMaterialCastFlags::AllowTruncate | EMaterialCastFlags::AllowAppendZeroes;
+		if ((ForceCastFlags & MFCF_ReplicateValue) || !bExactMatch)
 		{
-			const TCHAR*	Mask;
-			switch(NumDestComponents)
-			{
-			case 1: Mask = TEXT(".r"); break;
-			case 2: Mask = TEXT(".rg"); break;
-			case 3: Mask = TEXT(".rgb"); break;
-			default: UE_LOG(LogMaterial, Fatal,TEXT("Should never get here!")); return INDEX_NONE;
-			};
-
-			return AddInlinedCodeChunk(DestType,TEXT("%s%s"),*GetParameterCode(Code),Mask);
+			// Replicate scalar if requested, or if we don't require an exact match (this can happen when force-casting to/from LWC
+			// The only way we *don't* replicate scalar is requesting an exact match without the ReplicateValue flag
+			// TODO - My guess is that case probably isn't relevant, and we should just always replicate scalar on cast, but trying to preserve behavior for now
+			CastFlags |= EMaterialCastFlags::ReplicateScalar;
 		}
-		else if(NumSourceComponents < NumDestComponents) // Pad the source vector up to NumDestComponents.
+
+		FString FiniteCode = CastValue(GetParameterCode(Code), SourceType, DestType, CastFlags);
+		if (IsAnalyticDerivEnabled() && IsDerivativeValid(CodeDerivInfo.DerivativeStatus))
 		{
-			// Only allow replication when the Source is a Float1
-			if (NumSourceComponents != 1)
+			if (CodeDerivInfo.DerivativeStatus == EDerivativeStatus::Valid)
 			{
-				bReplicateValue = false;
+				FString DerivString = *GetParameterCodeDeriv(Code, CompiledPDV_Analytic);
+				FString DDXCode = CastValue(DerivString + TEXT(".Ddx"), MakeNonLWCType(SourceType), MakeNonLWCType(DestType), CastFlags);
+				FString DDYCode = CastValue(DerivString + TEXT(".Ddy"), MakeNonLWCType(SourceType), MakeNonLWCType(DestType), CastFlags);
+				FString AnalyticCode = DerivativeAutogen.ConstructDeriv(FiniteCode, DDXCode, DDYCode, GetDerivType(DestType));
+				return AddCodeChunkInnerDeriv(*FiniteCode, *AnalyticCode, DestType, false, EDerivativeStatus::Valid);
 			}
-
-			const uint32 NumPadComponents = NumDestComponents - NumSourceComponents;
-			FString CommaParameterCodeString = FString::Printf(TEXT(",%s"), *GetParameterCode(Code));
-
-			return AddInlinedCodeChunk(
-				DestType,
-				TEXT("%s(%s%s%s%s)"),
-				HLSLTypeString(DestType),
-				*GetParameterCode(Code),
-				NumPadComponents >= 1 ? (bReplicateValue ? *CommaParameterCodeString : TEXT(",0")) : TEXT(""),
-				NumPadComponents >= 2 ? (bReplicateValue ? *CommaParameterCodeString : TEXT(",0")) : TEXT(""),
-				NumPadComponents >= 3 ? (bReplicateValue ? *CommaParameterCodeString : TEXT(",0")) : TEXT("")
-				);
+			else
+			{
+				return AddInlinedCodeChunkZeroDeriv(DestType, *FiniteCode);
+			}
 		}
 		else
 		{
-			return Code;
+			return AddInlinedCodeChunk(DestType, *FiniteCode);
 		}
 	}
 	else if ((SourceType & MCT_TextureVirtual) && (DestType & MCT_Texture2D))
@@ -2948,6 +3902,149 @@ int32 FHLSLMaterialTranslator::ForceCast(int32 Code, EMaterialValueType DestType
 	else
 	{
 		return Errorf(TEXT("Cannot force a cast between non-numeric types."));
+	}
+}
+
+int32 FHLSLMaterialTranslator::CastToNonLWCIfDisabled(int32 Code)
+{
+	int32 Result = Code;
+	if (!GLWCEnabled)
+	{
+		const EMaterialValueType Type = GetParameterType(Code);
+		if (IsLWCType(Type))
+		{
+			Result = ValidCast(Code, MakeNonLWCType(Type));
+		}
+	}
+	return Result;
+}
+
+FString FHLSLMaterialTranslator::CastValue(const FString& Code, EMaterialValueType SourceType, EMaterialValueType DestType, EMaterialCastFlags Flags)
+{
+	const bool bAllowTruncate = EnumHasAnyFlags(Flags, EMaterialCastFlags::AllowTruncate);
+	const bool bAllowAppendZeroes = EnumHasAnyFlags(Flags, EMaterialCastFlags::AllowAppendZeroes);
+	bool bReplicateScalar = EnumHasAnyFlags(Flags, EMaterialCastFlags::ReplicateScalar);
+
+	if (SourceType == DestType)
+	{
+		return Code;
+	}
+	else if (IsFloatNumericType(SourceType) && IsFloatNumericType(DestType))
+	{
+		const uint32 NumSourceComponents = GetNumComponents(SourceType);
+		const uint32 NumDestComponents = GetNumComponents(DestType);
+		if (NumSourceComponents != 1)
+		{
+			bReplicateScalar = false;
+		}
+		if (!bReplicateScalar && !bAllowAppendZeroes && NumDestComponents > NumSourceComponents)
+		{
+			Errorf(TEXT("Cannot cast from smaller type %s to larger type %s."), DescribeType(SourceType), DescribeType(DestType));
+			return FString();
+		}
+		if (!bReplicateScalar && !bAllowTruncate && NumDestComponents < NumSourceComponents)
+		{
+			Errorf(TEXT("Cannot cast from larger type %s to smaller type %s."), DescribeType(SourceType), DescribeType(DestType));
+			return FString();
+		}
+
+		const bool bIsLWC = IsLWCType(DestType);
+		if (bIsLWC != IsLWCType(SourceType))
+		{
+			if (bIsLWC)
+			{
+				// float->LWC
+				return FString::Printf(TEXT("LWCPromote(%s)"), *CastValue(Code, SourceType, MakeNonLWCType(DestType), Flags));
+			}
+			else
+			{
+				//LWC->float
+				return CastValue(FString::Printf(TEXT("LWCToFloat(%s)"), *Code), MakeNonLWCType(SourceType), DestType, Flags);
+			}
+		}
+
+		FString Result;
+		uint32 NumComponents = 0u;
+		bool bNeedClosingParen = false;
+		if (bIsLWC)
+		{
+			Result = TEXT("MakeLWCVector(");
+			bNeedClosingParen = true;
+		}
+		else
+		{
+			if (NumSourceComponents == NumDestComponents)
+			{
+				NumComponents = NumDestComponents;
+				Result += Code;
+			}
+			else if (bReplicateScalar)
+			{
+				NumComponents = NumDestComponents;
+				// Cast the scalar to the correct type, HLSL language will replicate the scalar when performing this cast
+				Result += FString::Printf(TEXT("((%s)%s)"), HLSLTypeString(DestType), *Code);
+			}
+			else
+			{
+				NumComponents = FMath::Min(NumSourceComponents, NumDestComponents);
+				if (NumComponents < NumDestComponents)
+				{
+					Result = FString(HLSLTypeString(DestType)) + TEXT("(");
+					bNeedClosingParen = true;
+				}
+				if (NumComponents == NumSourceComponents)
+				{
+					// If we're taking all the components from the source, can avoid adding a swizzle
+					Result += Code;
+				}
+				else
+				{
+					static const TCHAR* Mask[] = { TEXT("<ERROR>"), TEXT("x"), TEXT("xy"), TEXT("xyz"), TEXT("xyzw") };
+					check(NumComponents <= 4);
+					Result += FString::Printf(TEXT("%s.%s"), *Code, Mask[NumComponents]);
+				}
+			}
+		}
+
+		if (bNeedClosingParen)
+		{
+			for (uint32 ComponentIndex = NumComponents; ComponentIndex < NumDestComponents; ++ComponentIndex)
+			{
+				if (ComponentIndex > 0u)
+				{
+					Result += TEXT(",");
+				}
+				if (bIsLWC)
+				{
+					if (!bReplicateScalar && ComponentIndex >= NumSourceComponents)
+					{
+						check(bAllowAppendZeroes);
+						Result += TEXT("LWCPromote(0.0f)");
+					}
+					else
+					{
+						Result += FString::Printf(TEXT("LWCGetComponent(%s, %d)"), *Code, bReplicateScalar ? 0 : ComponentIndex);
+					}
+				}
+				else
+				{
+					// Non-LWC case should only be zero-filling here, other cases should have already been handled
+					check(bAllowAppendZeroes);
+					check(!bReplicateScalar);
+					check(ComponentIndex >= NumSourceComponents);
+					Result += TEXT("0.0f");
+				}
+			}
+			NumComponents = NumDestComponents;
+			Result += TEXT(")");
+		}
+		check(NumComponents == NumDestComponents);
+		return Result;
+	}
+	else
+	{
+		Errorf(TEXT("Cannot cast between non-numeric types %s to %s."), DescribeType(SourceType), DescribeType(DestType));
+		return FString();
 	}
 }
 
@@ -2994,7 +4091,7 @@ int32 FHLSLMaterialTranslator::AccessCollectionParameter(UMaterialParameterColle
 		CollectionIndex = ParameterCollections.Num() - 1;
 	}
 
-	int32 VectorChunk = AddCodeChunk(MCT_Float4,TEXT("MaterialCollection%u.Vectors[%u]"),CollectionIndex,ParameterIndex);
+	int32 VectorChunk = AddCodeChunkZeroDeriv(MCT_Float4,TEXT("MaterialCollection%u.Vectors[%u]"),CollectionIndex,ParameterIndex);
 
 	return ComponentMask(VectorChunk, 
 		ComponentIndex == -1 ? true : ComponentIndex % 4 == 0,
@@ -3003,55 +4100,61 @@ int32 FHLSLMaterialTranslator::AccessCollectionParameter(UMaterialParameterColle
 		ComponentIndex == -1 ? true : ComponentIndex % 4 == 3);
 }
 
-int32 FHLSLMaterialTranslator::ScalarParameter(FName ParameterName, float DefaultValue)
+bool FHLSLMaterialTranslator::GetParameterOverrideValueForCurrentFunction(EMaterialParameterType ParameterType, FName ParameterName, FMaterialParameterMetadata& OutResult) const
 {
-	FMaterialParameterInfo ParameterInfo = GetParameterAssociationInfo();
-	ParameterInfo.Name = ParameterName;
-	int32 ParameterIndex = INDEX_NONE;
-	for (int32 i = 0; i < MaterialCompilationOutput.UniformExpressionSet.UniformScalarParameters.Num(); ++i)
+	const TArray<FMaterialFunctionCompileState*>& FunctionStack = FunctionStacks[ShaderFrequency];
+
+	// Give every function in the callstack on opportunity to override the parameter value
+	// Parameters in outer functions take priority
+	// For example, if a layer instance calls a function instance that includes an overriden parameter, we want to use the value from the layer instance rather than the function instance
+	bool bResult = false;
+	for (const FMaterialFunctionCompileState* FunctionState : FunctionStack)
 	{
-		const FMaterialScalarParameterInfo& Parameter = MaterialCompilationOutput.UniformExpressionSet.UniformScalarParameters[i];
-		if (Parameter.ParameterInfo == ParameterInfo)
+		const UMaterialFunctionInterface* CurrentFunction = (FunctionState && FunctionState->FunctionCall) ? FunctionState->FunctionCall->MaterialFunction : nullptr;
+		if (CurrentFunction)
 		{
-			ParameterIndex = i;
-			break;
+			if (CurrentFunction->GetParameterOverrideValue(ParameterType, ParameterName, OutResult))
+			{
+				bResult = true;
+				break;
+			}
 		}
 	}
-	if (ParameterIndex == INDEX_NONE)
-	{
-		ParameterIndex = MaterialCompilationOutput.UniformExpressionSet.UniformScalarParameters.Num();
-		FMaterialScalarParameterInfo& Parameter = MaterialCompilationOutput.UniformExpressionSet.UniformScalarParameters.AddDefaulted_GetRef();
-		Parameter.ParameterInfo = ParameterInfo;
-		Parameter.DefaultValue = DefaultValue;
-	}
 
-	return AddUniformExpression(new FMaterialUniformExpressionScalarParameter(ParameterInfo, ParameterIndex), MCT_Float, TEXT(""));
+	return bResult;
 }
 
-int32 FHLSLMaterialTranslator::VectorParameter(FName ParameterName, const FLinearColor& DefaultValue)
+int32 FHLSLMaterialTranslator::NumericParameter(EMaterialParameterType ParameterType, FName ParameterName, const UE::Shader::FValue& InDefaultValue)
 {
+	const UE::Shader::EValueType ValueType = GetShaderValueType(ParameterType);
+	check(InDefaultValue.GetType() == ValueType);
+	UE::Shader::FValue DefaultValue(InDefaultValue);
+
+	// If we're compiling a function, give the function a chance to override the default parameter value
+	FMaterialParameterMetadata Meta;
+	if (GetParameterOverrideValueForCurrentFunction(ParameterType, ParameterName, Meta))
+	{
+		DefaultValue = Meta.Value.AsShaderValue();
+		check(DefaultValue.GetType() == ValueType);
+	}
+
+	const uint32* PrevDefaultOffset = DefaultUniformValues.Find(DefaultValue);
+	uint32 DefaultOffset;
+	if (PrevDefaultOffset)
+	{
+		DefaultOffset = *PrevDefaultOffset;
+	}
+	else
+	{
+		DefaultOffset = MaterialCompilationOutput.UniformExpressionSet.AddDefaultParameterValue(DefaultValue);
+		DefaultUniformValues.Add(DefaultValue, DefaultOffset);
+	}
+
 	FMaterialParameterInfo ParameterInfo = GetParameterAssociationInfo();
 	ParameterInfo.Name = ParameterName;
 
-	int32 ParameterIndex = INDEX_NONE;
-	for (int32 i = 0; i < MaterialCompilationOutput.UniformExpressionSet.UniformVectorParameters.Num(); ++i)
-	{
-		const FMaterialVectorParameterInfo& Parameter = MaterialCompilationOutput.UniformExpressionSet.UniformVectorParameters[i];
-		if (Parameter.ParameterInfo == ParameterInfo)
-		{
-			ParameterIndex = i;
-			break;
-		}
-	}
-	if (ParameterIndex == INDEX_NONE)
-	{
-		ParameterIndex = MaterialCompilationOutput.UniformExpressionSet.UniformVectorParameters.Num();
-		FMaterialVectorParameterInfo& Parameter = MaterialCompilationOutput.UniformExpressionSet.UniformVectorParameters.AddDefaulted_GetRef();
-		Parameter.ParameterInfo = ParameterInfo;
-		Parameter.DefaultValue = DefaultValue;
-	}
-
-	return AddUniformExpression(new FMaterialUniformExpressionVectorParameter(ParameterInfo, ParameterIndex), MCT_Float4, TEXT(""));
+	const int32 ParameterIndex = MaterialCompilationOutput.UniformExpressionSet.FindOrAddNumericParameter(ParameterType, ParameterInfo, DefaultOffset);
+	return AddUniformExpression(new FMaterialUniformExpressionNumericParameter(ParameterInfo, ParameterIndex), GetMaterialValueType(ParameterType), TEXT(""));
 }
 
 int32 FHLSLMaterialTranslator::Constant(float X)
@@ -3073,6 +4176,12 @@ int32 FHLSLMaterialTranslator::Constant4(float X,float Y,float Z,float W)
 {
 	return AddUniformExpression(new FMaterialUniformExpressionConstant(FLinearColor(X,Y,Z,W),MCT_Float4),MCT_Float4,TEXT("MaterialFloat4(%0.8f,%0.8f,%0.8f,%0.8f)"),X,Y,Z,W);
 }
+
+int32 FHLSLMaterialTranslator::GenericConstant(const UE::Shader::FValue& Value)
+{
+	const FString Code = Value.ToString(UE::Shader::EValueStringFormat::HLSL);
+	return AddUniformExpression(new FMaterialUniformExpressionGenericConstant(Value), GetMaterialValueType(Value.GetType()), *Code);
+}
 	
 int32 FHLSLMaterialTranslator::ViewProperty(EMaterialExposedViewProperty Property, bool InvProperty)
 {
@@ -3092,8 +4201,8 @@ int32 FHLSLMaterialTranslator::ViewProperty(EMaterialExposedViewProperty Propert
 		{MEVP_FieldOfView, MCT_Float2, TEXT("View.<PREV>FieldOfViewWideAngles"), nullptr},
 		{MEVP_TanHalfFieldOfView, MCT_Float2, TEXT("Get<PREV>TanHalfFieldOfView()"), TEXT("Get<PREV>CotanHalfFieldOfView()")},
 		{MEVP_ViewSize, MCT_Float2, TEXT("View.ViewSizeAndInvSize.xy"), TEXT("View.ViewSizeAndInvSize.zw")},
-		{MEVP_WorldSpaceViewPosition, MCT_Float3, TEXT("ResolvedView.<PREV>WorldViewOrigin"), nullptr},
-		{MEVP_WorldSpaceCameraPosition, MCT_Float3, TEXT("ResolvedView.<PREV>WorldCameraOrigin"), nullptr},
+		{MEVP_WorldSpaceViewPosition, MCT_LWCVector3, TEXT("ResolvedView.<PREV>WorldViewOrigin"), nullptr},
+		{MEVP_WorldSpaceCameraPosition, MCT_LWCVector3, TEXT("ResolvedView.<PREV>WorldCameraOrigin"), nullptr},
 		{MEVP_ViewportOffset, MCT_Float2, TEXT("View.ViewRectMin.xy"), nullptr},
 		{MEVP_TemporalSampleCount, MCT_Float1, TEXT("View.TemporalAAParams.y"), nullptr},
 		{MEVP_TemporalSampleIndex, MCT_Float1, TEXT("View.TemporalAAParams.x"), nullptr},
@@ -3121,22 +4230,18 @@ int32 FHLSLMaterialTranslator::ViewProperty(EMaterialExposedViewProperty Propert
 	if (InvProperty && !PropertyMeta.InvPropertyCode)
 	{
 		// fall back to compute the property's inverse from PropertyCode
-		return Div(Constant(1.f), AddInlinedCodeChunk(PropertyMeta.Type, *Code));
+		return Div(Constant(1.f), AddCodeChunkZeroDeriv(PropertyMeta.Type, *Code));
 	}
 
-	return AddCodeChunk(PropertyMeta.Type, *Code);
+	const int32 Result = AddCodeChunkZeroDeriv(PropertyMeta.Type, *Code);
+	return CastToNonLWCIfDisabled(Result);
 }
 
 int32 FHLSLMaterialTranslator::GameTime(bool bPeriodic, float Period)
 {
 	if (!bPeriodic)
 	{
-		if (bCompilingPreviousFrame)
-		{
-			return AddInlinedCodeChunk(MCT_Float, TEXT("View.PrevFrameGameTime"));
-		}
-
-		return AddInlinedCodeChunk(MCT_Float, TEXT("View.GameTime"));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, bCompilingPreviousFrame ? TEXT("View.PrevFrameGameTime") : TEXT("View.GameTime"));
 	}
 	else if (Period == 0.0f)
 	{
@@ -3147,12 +4252,12 @@ int32 FHLSLMaterialTranslator::GameTime(bool bPeriodic, float Period)
 
 	if (bCompilingPreviousFrame)
 	{
-		return AddInlinedCodeChunk(MCT_Float, TEXT("fmod(View.PrevFrameGameTime,%s)"), *GetParameterCode(PeriodChunk));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(View.PrevFrameGameTime,%s)"), *GetParameterCode(PeriodChunk));
 	}
 
 	// Note: not using FHLSLMaterialTranslator::Fmod(), which will emit MaterialFloat types which will be converted to fp16 on mobile.
 	// We want full 32 bit float precision until the fmod when using a period.
-	return AddInlinedCodeChunk(MCT_Float, TEXT("fmod(View.GameTime,%s)"), *GetParameterCode(PeriodChunk));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(View.GameTime,%s)"), *GetParameterCode(PeriodChunk));
 }
 
 int32 FHLSLMaterialTranslator::RealTime(bool bPeriodic, float Period)
@@ -3161,10 +4266,10 @@ int32 FHLSLMaterialTranslator::RealTime(bool bPeriodic, float Period)
 	{
 		if (bCompilingPreviousFrame)
 		{
-			return AddInlinedCodeChunk(MCT_Float, TEXT("View.PrevFrameRealTime"));
+			return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("View.PrevFrameRealTime"));
 		}
 
-		return AddInlinedCodeChunk(MCT_Float, TEXT("View.RealTime"));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("View.RealTime"));
 	}
 	else if (Period == 0.0f)
 	{
@@ -3175,10 +4280,10 @@ int32 FHLSLMaterialTranslator::RealTime(bool bPeriodic, float Period)
 
 	if (bCompilingPreviousFrame)
 	{
-		return AddInlinedCodeChunk(MCT_Float, TEXT("fmod(View.PrevFrameRealTime,%s)"), *GetParameterCode(PeriodChunk));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(View.PrevFrameRealTime,%s)"), *GetParameterCode(PeriodChunk));
 	}
 
-	return AddInlinedCodeChunk(MCT_Float, TEXT("fmod(View.RealTime,%s)"), *GetParameterCode(PeriodChunk));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("fmod(View.RealTime,%s)"), *GetParameterCode(PeriodChunk));
 }
 
 int32 FHLSLMaterialTranslator::DeltaTime()
@@ -3186,7 +4291,7 @@ int32 FHLSLMaterialTranslator::DeltaTime()
 	// explicitly avoid trying to return previous frame's delta time for bCompilingPreviousFrame here
 	// DeltaTime expression is designed to be used when generating custom motion vectors, by using world position offset along with previous frame switch
 	// in this context, we will technically be evaluating the previous frame, but we want to use the current frame's delta tick in order to offset the vector used to create previous position
-	return AddInlinedCodeChunk(MCT_Float, TEXT("View.DeltaTime"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("View.DeltaTime"));
 }
 
 int32 FHLSLMaterialTranslator::PeriodicHint(int32 PeriodicCode)
@@ -3219,8 +4324,15 @@ int32 FHLSLMaterialTranslator::Sine(int32 X)
 	}
 	else
 	{
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this,FMaterialDerivativeAutogen::EFunc1::Sin,X);
+		}
+		else
+		{
 		return AddCodeChunk(GetParameterType(X),TEXT("sin(%s)"),*GetParameterCode(X));
 	}
+}
 }
 
 int32 FHLSLMaterialTranslator::Cosine(int32 X)
@@ -3236,8 +4348,15 @@ int32 FHLSLMaterialTranslator::Cosine(int32 X)
 	}
 	else
 	{
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this,FMaterialDerivativeAutogen::EFunc1::Cos,X);
+		}
+		else
+		{
 		return AddCodeChunk(GetParameterType(X),TEXT("cos(%s)"),*GetParameterCode(X));
 	}
+}
 }
 
 int32 FHLSLMaterialTranslator::Tangent(int32 X)
@@ -3253,8 +4372,15 @@ int32 FHLSLMaterialTranslator::Tangent(int32 X)
 	}
 	else
 	{
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::Tan, X);
+		}
+		else
+		{
 		return AddCodeChunk(GetParameterType(X),TEXT("tan(%s)"),*GetParameterCode(X));
 	}
+}
 }
 
 int32 FHLSLMaterialTranslator::Arcsine(int32 X)
@@ -3270,8 +4396,15 @@ int32 FHLSLMaterialTranslator::Arcsine(int32 X)
 	}
 	else
 	{
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::Asin, X);
+		}
+		else
+		{
 		return AddCodeChunk(GetParameterType(X),TEXT("asin(%s)"),*GetParameterCode(X));
 	}
+}
 }
 
 int32 FHLSLMaterialTranslator::ArcsineFast(int32 X)
@@ -3287,7 +4420,14 @@ int32 FHLSLMaterialTranslator::ArcsineFast(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("asinFast(%s)"),*GetParameterCode(X));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::AsinFast, X);
+		}
+		else
+		{
+			return AddCodeChunk(GetParameterType(X), TEXT("asinFast(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3304,7 +4444,14 @@ int32 FHLSLMaterialTranslator::Arccosine(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("acos(%s)"),*GetParameterCode(X));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::Acos, X);
+		}
+		else
+		{
+			return AddCodeChunk(GetParameterType(X), TEXT("acos(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3321,7 +4468,14 @@ int32 FHLSLMaterialTranslator::ArccosineFast(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("acosFast(%s)"),*GetParameterCode(X));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::AcosFast, X);
+		}
+		else
+		{
+			return AddCodeChunk(GetParameterType(X), TEXT("acosFast(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3338,7 +4492,14 @@ int32 FHLSLMaterialTranslator::Arctangent(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("atan(%s)"),*GetParameterCode(X));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::Atan, X);
+		}
+		else
+		{
+			return AddCodeChunk(GetParameterType(X), TEXT("atan(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3355,7 +4516,14 @@ int32 FHLSLMaterialTranslator::ArctangentFast(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("atanFast(%s)"),*GetParameterCode(X));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::AtanFast, X);
+		}
+		else
+		{
+			return AddCodeChunk(GetParameterType(X), TEXT("atanFast(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3372,7 +4540,14 @@ int32 FHLSLMaterialTranslator::Arctangent2(int32 Y, int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(Y),TEXT("atan2(%s, %s)"),*GetParameterCode(Y),*GetParameterCode(X));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc2(*this, FMaterialDerivativeAutogen::EFunc2::Atan2, Y, X);
+		}
+		else
+		{
+			return AddCodeChunk(GetParameterType(Y), TEXT("atan2(%s, %s)"), *GetParameterCode(Y), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3389,7 +4564,14 @@ int32 FHLSLMaterialTranslator::Arctangent2Fast(int32 Y, int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(Y),TEXT("atan2Fast(%s, %s)"),*GetParameterCode(Y),*GetParameterCode(X));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc2(*this, FMaterialDerivativeAutogen::EFunc2::Atan2Fast, Y, X);
+		}
+		else
+		{
+			return AddCodeChunk(GetParameterType(Y), TEXT("atan2Fast(%s, %s)"), *GetParameterCode(Y), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3406,7 +4588,15 @@ int32 FHLSLMaterialTranslator::Floor(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("floor(%s)"),*GetParameterCode(X));
+		const EMaterialValueType ValueType = GetParameterType(X);
+		if (IsLWCType(ValueType))
+		{
+			return AddCodeChunkZeroDeriv(ValueType, TEXT("LWCFloor(%s)"), *GetParameterCode(X));
+		}
+		else
+		{
+			return AddCodeChunkZeroDeriv(ValueType, TEXT("floor(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3423,7 +4613,15 @@ int32 FHLSLMaterialTranslator::Ceil(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("ceil(%s)"),*GetParameterCode(X));
+		const EMaterialValueType ValueType = GetParameterType(X);
+		if (IsLWCType(ValueType))
+		{
+			return AddCodeChunkZeroDeriv(ValueType, TEXT("LWCCeil(%s)"), *GetParameterCode(X));
+		}
+		else
+		{
+			return AddCodeChunkZeroDeriv(ValueType, TEXT("ceil(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3440,7 +4638,15 @@ int32 FHLSLMaterialTranslator::Round(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("round(%s)"),*GetParameterCode(X));
+		const EMaterialValueType ValueType = GetParameterType(X);
+		if (IsLWCType(ValueType))
+		{
+			return AddCodeChunkZeroDeriv(ValueType, TEXT("LWCRound(%s)"), *GetParameterCode(X));
+		}
+		else
+		{
+			return AddCodeChunkZeroDeriv(ValueType, TEXT("round(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3457,7 +4663,15 @@ int32 FHLSLMaterialTranslator::Truncate(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("trunc(%s)"),*GetParameterCode(X));
+		const EMaterialValueType ValueType = GetParameterType(X);
+		if (IsLWCType(ValueType))
+		{
+			return AddCodeChunkZeroDeriv(ValueType, TEXT("LWCTrunc(%s)"), *GetParameterCode(X));
+		}
+		else
+		{
+			return AddCodeChunkZeroDeriv(ValueType, TEXT("trunc(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3474,7 +4688,15 @@ int32 FHLSLMaterialTranslator::Sign(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("sign(%s)"),*GetParameterCode(X));
+		const EMaterialValueType ValueType = GetParameterType(X);
+		if (IsLWCType(ValueType))
+		{
+			return AddCodeChunkZeroDeriv(MakeNonLWCType(ValueType), TEXT("LWCSign(%s)"), *GetParameterCode(X));
+		}
+		else
+		{
+			return AddCodeChunkZeroDeriv(ValueType, TEXT("sign(%s)"), *GetParameterCode(X));
+		}
 	}
 }	
 
@@ -3491,7 +4713,22 @@ int32 FHLSLMaterialTranslator::Frac(int32 X)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("frac(%s)"),*GetParameterCode(X));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::Frac, X);
+		}
+		else
+		{
+			const EMaterialValueType Type = GetParameterType(X);
+			if (IsLWCType(Type))
+			{
+				return AddCodeChunk(MakeNonLWCType(Type), TEXT("LWCFrac(%s)"), *GetParameterCode(X));
+			}
+			else
+			{
+				return AddCodeChunk(Type, TEXT("frac(%s)"), *GetParameterCode(X));
+			}
+		}
 	}
 }
 
@@ -3509,8 +4746,17 @@ int32 FHLSLMaterialTranslator::Fmod(int32 A, int32 B)
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(A),
-			TEXT("fmod(%s,%s)"),*GetParameterCode(A),*CoerceParameter(B,GetParameterType(A)));
+		const FDerivInfo& BDerivInfo = GetDerivInfo(B);
+		if (IsAnalyticDerivEnabled() && BDerivInfo.DerivativeStatus == EDerivativeStatus::Zero)
+		{
+			// Analytic derivatives only make sense when RHS derivatives are zero.
+			return DerivativeAutogen.GenerateExpressionFunc2(*this, FMaterialDerivativeAutogen::EFunc2::Fmod, A, B);
+		}
+		else
+		{
+			return AddCodeChunk(GetParameterType(A), TEXT("fmod(%s,%s)"), *GetParameterCode(A), *CoerceParameter(B, GetParameterType(A)));
+		}
+		
 	}
 }
 
@@ -3520,23 +4766,27 @@ int32 FHLSLMaterialTranslator::Fmod(int32 A, int32 B)
 * @param	X - Index to the FMaterialCompiler::CodeChunk entry for the input expression
 * @return	Index to the new FMaterialCompiler::CodeChunk entry for this expression
 */	
-int32 FHLSLMaterialTranslator::Abs( int32 X )
+int32 FHLSLMaterialTranslator::Abs(int32 X)
 {
-	if(X == INDEX_NONE)
+	if (X == INDEX_NONE)
 	{
 		return INDEX_NONE;
 	}
 
-	// get the user input struct for the input expression
-	FMaterialUniformExpression* pInputParam = GetParameterUniformExpression(X);
-	if( pInputParam )
+	if (GetParameterUniformExpression(X))
 	{
-		FMaterialUniformExpressionAbs* pUniformExpression = new FMaterialUniformExpressionAbs( pInputParam );
-		return AddUniformExpression( pUniformExpression, GetParameterType(X), TEXT("abs(%s)"), *GetParameterCode(X) );
+		return AddUniformExpression(new FMaterialUniformExpressionAbs(GetParameterUniformExpression(X)), GetParameterType(X), TEXT("abs(%s)"), *GetParameterCode(X));
 	}
 	else
 	{
-		return AddCodeChunk( GetParameterType(X), TEXT("abs(%s)"), *GetParameterCode(X) );
+		if (IsAnalyticDerivEnabled())
+	{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::Abs, X);
+	}
+	else
+	{
+			return AddCodeChunk(GetParameterType(X), TEXT("abs(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -3572,7 +4822,7 @@ int32 FHLSLMaterialTranslator::ReflectionAboutCustomWorldNormal(int32 CustomWorl
 
 	const TCHAR* ShouldNormalize = (!!bNormalizeCustomWorldNormal) ? TEXT("true") : TEXT("false");
 
-	return AddCodeChunk(MCT_Float3,TEXT("ReflectionAboutCustomWorldNormal(Parameters, %s, %s)"), *GetParameterCode(CustomWorldNormal), ShouldNormalize);
+	return AddCodeChunk(MCT_Float3,TEXT("ReflectionAboutCustomWorldNormal(Parameters, %s, %s)"), *CoerceParameter(CustomWorldNormal, MCT_Float3), ShouldNormalize);
 }
 
 int32 FHLSLMaterialTranslator::CameraVector()
@@ -3609,7 +4859,17 @@ int32 FHLSLMaterialTranslator::GetViewportUV()
 	{
 		return Errorf(TEXT("GetViewportUV() node is only available in vertex or pixel shader input."));
 	}
-	return AddCodeChunk(MCT_Float2, TEXT("GetViewportUV(Parameters)"));	
+
+	FString FiniteCode = TEXT("GetViewportUV(Parameters)");
+	if (IsAnalyticDerivEnabled())
+	{
+		FString AnalyticCode = DerivativeAutogen.ConstructDeriv(FiniteCode, TEXT("float2(View.ViewSizeAndInvSize.z, 0.0f)"), TEXT("float2(0.0f, View.ViewSizeAndInvSize.w)"), EDerivativeType::Float2);
+		return AddCodeChunkInnerDeriv(*FiniteCode, *AnalyticCode, MCT_Float2, false, EDerivativeStatus::Valid);
+	}
+	else
+	{
+		return AddCodeChunk(MCT_Float2, *FiniteCode);
+	}
 }
 
 int32 FHLSLMaterialTranslator::GetPixelPosition()
@@ -3631,7 +4891,7 @@ int32 FHLSLMaterialTranslator::ParticleMacroUV()
 	return AddCodeChunk(MCT_Float2,TEXT("GetParticleMacroUV(Parameters)"));
 }
 
-int32 FHLSLMaterialTranslator::ParticleSubUV(int32 TextureIndex, EMaterialSamplerType SamplerType, bool bBlend)
+int32 FHLSLMaterialTranslator::ParticleSubUV(int32 TextureIndex, EMaterialSamplerType SamplerType, int32 MipValue0Index, int32 MipValue1Index, ETextureMipValueMode MipValueMode, bool bBlend)
 {
 	if (ShaderFrequency != SF_Pixel && ShaderFrequency != SF_Compute)
 	{
@@ -3657,13 +4917,13 @@ int32 FHLSLMaterialTranslator::ParticleSubUV(int32 TextureIndex, EMaterialSample
 		const int32 TexCoord2 = AddCodeChunk( MCT_Float2,*TexCoordCode,1);
 		const int32 SubImageLerp = AddCodeChunk(MCT_Float, TEXT("Parameters.Particle.SubUVLerp"));
 
-		const int32 TexSampleA = TextureSample(TextureIndex, TexCoord1, SamplerType );
-		const int32 TexSampleB = TextureSample(TextureIndex, TexCoord2, SamplerType );
+		const int32 TexSampleA = TextureSample(TextureIndex, TexCoord1, SamplerType, MipValue0Index, MipValue1Index, MipValueMode);
+		const int32 TexSampleB = TextureSample(TextureIndex, TexCoord2, SamplerType, MipValue0Index, MipValue1Index, MipValueMode);
 		ParticleSubUV = Lerp( TexSampleA,TexSampleB, SubImageLerp);
 	} 
 	else
 	{
-		ParticleSubUV = TextureSample(TextureIndex, TexCoord1, SamplerType );
+		ParticleSubUV = TextureSample(TextureIndex, TexCoord1, SamplerType, MipValue0Index, MipValue1Index, MipValueMode);
 	}
 	
 	bUsesParticleSubUVs = true;
@@ -3700,7 +4960,7 @@ int32 FHLSLMaterialTranslator::ParticleColor()
 		return NonVertexOrPixelShaderExpressionError();
 	}
 	bUsesParticleColor |= (ShaderFrequency != SF_Vertex);
-	return AddInlinedCodeChunk(MCT_Float4,TEXT("Parameters.Particle.Color"));	
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float4,TEXT("Parameters.Particle.Color"));
 }
 
 int32 FHLSLMaterialTranslator::ParticlePosition()
@@ -3710,7 +4970,8 @@ int32 FHLSLMaterialTranslator::ParticlePosition()
 		return NonVertexOrPixelShaderExpressionError();
 	}
 	bNeedsParticlePosition = true;
-	return AddInlinedCodeChunk(MCT_Float3,TEXT("(Parameters.Particle.TranslatedWorldPositionAndSize.xyz - ResolvedView.PreViewTranslation.xyz)"));	
+	const int32 Result = AddInlinedCodeChunkZeroDeriv(MCT_LWCVector3,TEXT("LWCSubtract(Parameters.Particle.TranslatedWorldPositionAndSize.xyz, ResolvedView.PreViewTranslation)"));
+	return CastToNonLWCIfDisabled(Result);
 }
 
 int32 FHLSLMaterialTranslator::ParticleRadius()
@@ -3720,7 +4981,7 @@ int32 FHLSLMaterialTranslator::ParticleRadius()
 		return NonVertexOrPixelShaderExpressionError();
 	}
 	bNeedsParticlePosition = true;
-	return AddInlinedCodeChunk(MCT_Float,TEXT("max(Parameters.Particle.TranslatedWorldPositionAndSize.w, .001f)"));	
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float,TEXT("max(Parameters.Particle.TranslatedWorldPositionAndSize.w, .001f)"));
 }
 
 int32 FHLSLMaterialTranslator::SphericalParticleOpacity(int32 Density)
@@ -3749,7 +5010,7 @@ int32 FHLSLMaterialTranslator::ParticleRelativeTime()
 		return NonVertexOrPixelShaderExpressionError();
 	}
 	bNeedsParticleTime = true;
-	return AddInlinedCodeChunk(MCT_Float,TEXT("Parameters.Particle.RelativeTime"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float,TEXT("Parameters.Particle.RelativeTime"));
 }
 
 int32 FHLSLMaterialTranslator::ParticleMotionBlurFade()
@@ -3759,7 +5020,7 @@ int32 FHLSLMaterialTranslator::ParticleMotionBlurFade()
 		return NonVertexOrPixelShaderExpressionError();
 	}
 	bUsesParticleMotionBlur = true;
-	return AddInlinedCodeChunk(MCT_Float,TEXT("Parameters.Particle.MotionBlurFade"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float,TEXT("Parameters.Particle.MotionBlurFade"));
 }
 
 int32 FHLSLMaterialTranslator::ParticleRandom()
@@ -3769,7 +5030,7 @@ int32 FHLSLMaterialTranslator::ParticleRandom()
 		return NonVertexOrPixelShaderExpressionError();
 	}
 	bNeedsParticleRandom = true;
-	return AddInlinedCodeChunk(MCT_Float,TEXT("Parameters.Particle.Random"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float,TEXT("Parameters.Particle.Random"));
 }
 
 
@@ -3780,7 +5041,7 @@ int32 FHLSLMaterialTranslator::ParticleDirection()
 		return NonVertexOrPixelShaderExpressionError();
 	}
 	bNeedsParticleVelocity = true;
-	return AddInlinedCodeChunk(MCT_Float3,TEXT("Parameters.Particle.Velocity.xyz"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float3,TEXT("Parameters.Particle.Velocity.xyz"));
 }
 
 int32 FHLSLMaterialTranslator::ParticleSpeed()
@@ -3790,7 +5051,7 @@ int32 FHLSLMaterialTranslator::ParticleSpeed()
 		return NonVertexOrPixelShaderExpressionError();
 	}
 	bNeedsParticleVelocity = true;
-	return AddInlinedCodeChunk(MCT_Float,TEXT("Parameters.Particle.Velocity.w"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float,TEXT("Parameters.Particle.Velocity.w"));
 }
 
 int32 FHLSLMaterialTranslator::ParticleSize()
@@ -3800,12 +5061,13 @@ int32 FHLSLMaterialTranslator::ParticleSize()
 		return NonVertexOrPixelShaderExpressionError();
 	}
 	bNeedsParticleSize = true;
-	return AddInlinedCodeChunk(MCT_Float2,TEXT("Parameters.Particle.Size"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float2,TEXT("Parameters.Particle.Size"));
 }
 
 int32 FHLSLMaterialTranslator::WorldPosition(EWorldPositionIncludedOffsets WorldPositionIncludedOffsets)
 {
 	FString FunctionNamePattern;
+	EMaterialValueType Type = (EMaterialValueType)0;
 
 	// If this material has no expressions for world position offset or world displacement, the non-offset world position will
 	// be exactly the same as the offset one, so there is no point bringing in the extra code.
@@ -3816,6 +5078,7 @@ int32 FHLSLMaterialTranslator::WorldPosition(EWorldPositionIncludedOffsets World
 	case WPT_Default:
 		{
 			FunctionNamePattern = TEXT("Get<PREV>WorldPosition");
+			Type = MCT_LWCVector3;
 			break;
 		}
 
@@ -3823,12 +5086,14 @@ int32 FHLSLMaterialTranslator::WorldPosition(EWorldPositionIncludedOffsets World
 		{
 			bNeedsWorldPositionExcludingShaderOffsets = true;
 			FunctionNamePattern = TEXT("Get<PREV>WorldPosition<NO_MATERIAL_OFFSETS>");
+			Type = MCT_LWCVector3;
 			break;
 		}
 
 	case WPT_CameraRelative:
 		{
 			FunctionNamePattern = TEXT("Get<PREV>TranslatedWorldPosition");
+			Type = MCT_Float3;
 			break;
 		}
 
@@ -3836,6 +5101,7 @@ int32 FHLSLMaterialTranslator::WorldPosition(EWorldPositionIncludedOffsets World
 		{
 			bNeedsWorldPositionExcludingShaderOffsets = true;
 			FunctionNamePattern = TEXT("Get<PREV>TranslatedWorldPosition<NO_MATERIAL_OFFSETS>");
+			Type = MCT_Float3;
 			break;
 		}
 
@@ -3862,22 +5128,35 @@ int32 FHLSLMaterialTranslator::WorldPosition(EWorldPositionIncludedOffsets World
 
 	bUsesVertexPosition = true;
 
-	return AddInlinedCodeChunk(MCT_Float3, TEXT("%s(Parameters)"), *FunctionNamePattern);
+	FString FiniteCode = FString::Printf(TEXT("%s(Parameters)"), *FunctionNamePattern);
+	int32 Result = INDEX_NONE;
+	if (IsAnalyticDerivEnabled())
+	{
+		FString AnalyticCode = DerivativeAutogen.ConstructDeriv(FiniteCode, TEXT("Parameters.WorldPosition_DDX"), TEXT("Parameters.WorldPosition_DDY"), GetDerivType(Type));
+		Result = AddCodeChunkInnerDeriv(*FiniteCode, *AnalyticCode, Type, false, EDerivativeStatus::Valid);
+	}
+	else
+	{
+		Result = AddInlinedCodeChunk(Type, *FiniteCode);
+	}
+
+	return CastToNonLWCIfDisabled(Result);
 }
 
 int32 FHLSLMaterialTranslator::ObjectWorldPosition()
 {
-	return AddInlinedCodeChunk(MCT_Float3,TEXT("GetObjectWorldPosition(Parameters)"));		
+	const int32 Result = AddInlinedCodeChunkZeroDeriv(MCT_LWCVector3,TEXT("GetObjectWorldPosition(Parameters)"));
+	return CastToNonLWCIfDisabled(Result);
 }
 
 int32 FHLSLMaterialTranslator::ObjectRadius()
 {
-	return GetPrimitiveProperty(MCT_Float, TEXT("ObjectRadius"), TEXT("ObjectWorldPositionAndRadius.w"));		
+	return GetPrimitiveProperty(MCT_Float, TEXT("ObjectRadius"), TEXT("ObjectRadius"));		
 }
 
 int32 FHLSLMaterialTranslator::ObjectBounds()
 {
-	return GetPrimitiveProperty(MCT_Float3, TEXT("ObjectBounds"), TEXT("ObjectBounds.xyz"));
+	return AddInlinedCodeChunk(MCT_Float3, TEXT("float3(GetPrimitiveData(Parameters).ObjectBoundsX, GetPrimitiveData(Parameters).ObjectBoundsY, GetPrimitiveData(Parameters).ObjectBoundsZ)"));
 }
 
 int32 FHLSLMaterialTranslator::PreSkinnedLocalBounds(int32 OutputIndex)
@@ -3885,9 +5164,9 @@ int32 FHLSLMaterialTranslator::PreSkinnedLocalBounds(int32 OutputIndex)
 	switch (OutputIndex)
 	{
 	case 0: // Half extents
-		return AddInlinedCodeChunk(MCT_Float3, TEXT("((GetPrimitiveData(Parameters.PrimitiveId).PreSkinnedLocalBoundsMax - GetPrimitiveData(Parameters.PrimitiveId).PreSkinnedLocalBoundsMin) / 2.0f)"));
+		return AddInlinedCodeChunk(MCT_Float3, TEXT("((GetPrimitiveData(Parameters).PreSkinnedLocalBoundsMax - GetPrimitiveData(Parameters).PreSkinnedLocalBoundsMin) / 2.0f)"));
 	case 1: // Full extents
-		return AddInlinedCodeChunk(MCT_Float3, TEXT("(GetPrimitiveData(Parameters.PrimitiveId).PreSkinnedLocalBoundsMax - GetPrimitiveData(Parameters.PrimitiveId).PreSkinnedLocalBoundsMin)"));
+		return AddInlinedCodeChunk(MCT_Float3, TEXT("(GetPrimitiveData(Parameters).PreSkinnedLocalBoundsMax - GetPrimitiveData(Parameters).PreSkinnedLocalBoundsMin)"));
 	case 2: // Min point
 		return GetPrimitiveProperty(MCT_Float3, TEXT("PreSkinnedLocalBounds"), TEXT("PreSkinnedLocalBoundsMin"));
 	case 3: // Max point
@@ -3908,23 +5187,31 @@ int32 FHLSLMaterialTranslator::DistanceCullFade()
 
 int32 FHLSLMaterialTranslator::ActorWorldPosition()
 {
+	int32 Result = INDEX_NONE;
 	if (bCompilingPreviousFrame && ShaderFrequency == SF_Vertex)
 	{
 		// Decal VS doesn't have material code so FMaterialVertexParameters
 		// and primitve uniform buffer are guaranteed to exist if ActorPosition
 		// material node is used in VS
-		return AddInlinedCodeChunk(
-			MCT_Float3,
-			TEXT("mul(mul(float4(GetActorWorldPosition(Parameters.PrimitiveId), 1), GetPrimitiveData(Parameters.PrimitiveId).WorldToLocal), Parameters.PrevFrameLocalToWorld)"));
+		Result = AddInlinedCodeChunkZeroDeriv(
+			MCT_LWCVector3,
+			TEXT("LWCMultiply(LWCMultiply(GetActorWorldPosition(Parameters), GetPrimitiveData(Parameters).WorldToLocal), Parameters.PrevFrameLocalToWorld)"));
 	}
 	else
 	{
-		return AddInlinedCodeChunk(MCT_Float3, TEXT("GetActorWorldPosition(Parameters.PrimitiveId)"));
+		Result = AddInlinedCodeChunkZeroDeriv(MCT_LWCVector3, TEXT("GetActorWorldPosition(Parameters)"));
 	}
+
+	return CastToNonLWCIfDisabled(Result);
 }
 
 int32 FHLSLMaterialTranslator::If(int32 A,int32 B,int32 AGreaterThanB,int32 AEqualsB,int32 ALessThanB,int32 ThresholdArg)
 {
+	if (IsAnalyticDerivEnabled())
+	{
+		return DerivativeAutogen.GenerateIfFunc(*this, A, B, AGreaterThanB, AEqualsB, ALessThanB, ThresholdArg);
+	}
+	
 	if(A == INDEX_NONE || B == INDEX_NONE || AGreaterThanB == INDEX_NONE || ALessThanB == INDEX_NONE)
 	{
 		return INDEX_NONE;
@@ -4038,31 +5325,29 @@ int32 FHLSLMaterialTranslator::TextureCoordinate(uint32 CoordinateIndex, bool Un
 		AllocateSlot(AllocatedUserTexCoords, CoordinateIndex);
 	}
 
-	FString	SampleCode;
-	if ( UnMirrorU && UnMirrorV )
+	FString TexCoordCode = FString::Printf(TEXT("Parameters.TexCoords[%u].xy"), CoordinateIndex);
+	FString	SampleCodeFinite = TexCoordCode;
+	
+	if (UnMirrorU || UnMirrorV)
 	{
-		SampleCode = TEXT("UnMirrorUV(Parameters.TexCoords[%u].xy, Parameters)");
+		SampleCodeFinite = FString::Printf(TEXT("%s(%s, Parameters)"), (UnMirrorU && UnMirrorV) ? TEXT("UnMirrorUV") : (UnMirrorU ? TEXT("UnMirrorU") : TEXT("UnMirrorV")), *SampleCodeFinite);
 	}
-	else if ( UnMirrorU )
+
+	if (IsAnalyticDerivEnabled())
 	{
-		SampleCode = TEXT("UnMirrorU(Parameters.TexCoords[%u].xy, Parameters)");
-	}
-	else if ( UnMirrorV )
-	{
-		SampleCode = TEXT("UnMirrorV(Parameters.TexCoords[%u].xy, Parameters)");
+		FString TexCoordCodeDDX = FString::Printf(TEXT("Parameters.TexCoords_DDX[%u].xy"), CoordinateIndex);
+		FString TexCoordCodeDDY = FString::Printf(TEXT("Parameters.TexCoords_DDY[%u].xy"), CoordinateIndex);
+		FString TexCoordCodeAnalytic = DerivativeAutogen.ConstructDeriv(TexCoordCode, TexCoordCodeDDX, TexCoordCodeDDY, EDerivativeType::Float2);
+		FString SampleCodeAnalytic = DerivativeAutogen.ApplyUnMirror(TexCoordCodeAnalytic, UnMirrorU, UnMirrorV);
+
+		return AddCodeChunkInnerDeriv(*SampleCodeFinite, *SampleCodeAnalytic, MCT_Float2, false, EDerivativeStatus::Valid);
 	}
 	else
 	{
-		SampleCode = TEXT("Parameters.TexCoords[%u].xy");
-	}
-
 	// Note: inlining is important so that on GLES devices, where half precision is used in the pixel shader, 
 	// The UV does not get assigned to a half temporary in cases where the texture sample is done directly from interpolated UVs
-	return AddInlinedCodeChunk(
-			MCT_Float2,
-			*SampleCode,
-			CoordinateIndex
-			);
+		return AddInlinedCodeChunk(MCT_Float2, *SampleCodeFinite, CoordinateIndex);
+	}
 }
 
 static const TCHAR* GetVTAddressMode(TextureAddress Address)
@@ -4083,6 +5368,9 @@ uint32 FHLSLMaterialTranslator::AcquireVTStackIndex(
 	int32 CoordinateIndex, 
 	int32 MipValue0Index, int32 MipValue1Index, 
 	int32 PreallocatedStackTextureIndex, 
+	const FString& UV_Value,
+	const FString& UV_Ddx,
+	const FString& UV_Ddy,
 	bool bAdaptive, bool bGenerateFeedback)
 {
 	const uint64 CoordinatHash = GetParameterHash(CoordinateIndex);
@@ -4153,12 +5441,16 @@ uint32 FHLSLMaterialTranslator::AcquireVTStackIndex(
 	check(bGenerateFeedback || MipValueMode == TMVM_MipLevel)
 	FString FeedbackParameter = bGenerateFeedback ? FString::Printf(TEXT(", %dU + LIGHTMAP_VT_ENABLED, Parameters.VirtualTextureFeedback"), StackIndex) : TEXT("");
 
+	EDerivativeStatus UVDerivativeStatus = GetDerivativeStatus(CoordinateIndex);
+	const bool bHasValidDerivative = IsAnalyticDerivEnabled() && IsDerivativeValid(UVDerivativeStatus);
+
 	// Code to load the VT page table...this will execute the first time a given VT stack is accessed
 	// Additional stack layers will simply reuse these results
 	switch (MipValueMode)
 	{
 	case TMVM_None:
-		Entry.CodeIndex = AddCodeChunk(MCT_VTPageTableResult, TEXT(
+	{
+		FString SampleCodeFinite = FString::Printf(TEXT(
 			"%s("
 			"VIRTUALTEXTURE_PAGETABLE_%d, "
 			"VTPageTableUniform_Unpack(Material.VTPackedPageTableUniform[%d*2], Material.VTPackedPageTableUniform[%d*2+1]), "
@@ -4169,9 +5461,33 @@ uint32 FHLSLMaterialTranslator::AcquireVTStackIndex(
 			StackIndex, StackIndex, StackIndex,
 			*CoerceParameter(CoordinateIndex, MCT_Float2), GetVTAddressMode(AddressU), GetVTAddressMode(AddressV),
 			StackIndex);
+
+		if (bHasValidDerivative)
+		{
+			FString SampleCodeAnalytic = FString::Printf(TEXT(
+				"%sGrad("
+				"VIRTUALTEXTURE_PAGETABLE_%d, "
+				"VTPageTableUniform_Unpack(Material.VTPackedPageTableUniform[%d*2], Material.VTPackedPageTableUniform[%d*2+1]), "
+				"%s, %s, %s, "
+				"%s, %s, Parameters.SvPosition.xy, "
+				"%dU + LIGHTMAP_VT_ENABLED, Parameters.VirtualTextureFeedback)"),
+				*BaseFunctionName,
+				StackIndex, StackIndex, StackIndex,
+				*UV_Value, GetVTAddressMode(AddressU), GetVTAddressMode(AddressV), 
+				*UV_Ddx, *UV_Ddy,
+				StackIndex);
+			Entry.CodeIndex = AddCodeChunkInnerDeriv(*SampleCodeFinite, *SampleCodeAnalytic, MCT_VTPageTableResult, false, EDerivativeStatus::NotValid);
+		}
+		else
+		{
+			Entry.CodeIndex = AddCodeChunk(MCT_VTPageTableResult, *SampleCodeFinite);
+		}
 		break;
+	}
+		
 	case TMVM_MipBias:
-		Entry.CodeIndex = AddCodeChunk(MCT_VTPageTableResult, TEXT(
+	{
+		FString SampleCodeFinite = FString::Printf(TEXT(
 			"%s("
 			"VIRTUALTEXTURE_PAGETABLE_%d, "
 			"VTPageTableUniform_Unpack(Material.VTPackedPageTableUniform[%d*2], Material.VTPackedPageTableUniform[%d*2+1]), "
@@ -4183,7 +5499,28 @@ uint32 FHLSLMaterialTranslator::AcquireVTStackIndex(
 			*CoerceParameter(CoordinateIndex, MCT_Float2), GetVTAddressMode(AddressU), GetVTAddressMode(AddressV), 
 			*CoerceParameter(MipValue0Index, MCT_Float1),
 			StackIndex);
+		if (bHasValidDerivative)
+		{
+			FString SampleCodeAnalytic = FString::Printf(TEXT(
+				"%sGrad("
+				"VIRTUALTEXTURE_PAGETABLE_%d, "
+				"VTPageTableUniform_Unpack(Material.VTPackedPageTableUniform[%d*2], Material.VTPackedPageTableUniform[%d*2+1]), "
+				"%s, %s, %s, "
+				"%s, %s, Parameters.SvPosition.xy, "
+				"%dU + LIGHTMAP_VT_ENABLED, Parameters.VirtualTextureFeedback)"),
+				*BaseFunctionName,
+				StackIndex, StackIndex, StackIndex,
+				*UV_Value, GetVTAddressMode(AddressU), GetVTAddressMode(AddressV),
+				*UV_Ddx, *UV_Ddy,
+				StackIndex);
+			Entry.CodeIndex = AddCodeChunkInnerDeriv(*SampleCodeFinite, *SampleCodeAnalytic, MCT_VTPageTableResult, false, EDerivativeStatus::NotValid);
+		}
+		else
+		{
+			Entry.CodeIndex = AddCodeChunk(MCT_VTPageTableResult, *SampleCodeFinite);
+		}
 		break;
+	}
 	case TMVM_MipLevel:
 		Entry.CodeIndex = AddCodeChunk(MCT_VTPageTableResult, TEXT(
 			"%sLevel("
@@ -4220,6 +5557,74 @@ uint32 FHLSLMaterialTranslator::AcquireVTStackIndex(
 	return StackIndex;
 }
 
+
+static FString ApplySamplerType(const FString& InSampleCode, EMaterialSamplerType SamplerType)
+{
+	FString DstSampleCode;
+
+	switch( SamplerType )
+	{
+	case SAMPLERTYPE_External:
+		DstSampleCode = FString::Printf(TEXT("ProcessMaterialExternalTextureLookup(%s)"), *InSampleCode);
+		break;
+
+	case SAMPLERTYPE_Color:
+		DstSampleCode = FString::Printf( TEXT("ProcessMaterialColorTextureLookup(%s)"), *InSampleCode );
+		break;
+	case SAMPLERTYPE_VirtualColor:
+		// has a mobile specific workaround
+		DstSampleCode = FString::Printf( TEXT("ProcessMaterialVirtualColorTextureLookup(%s)"), *InSampleCode );
+		break;
+
+	case SAMPLERTYPE_LinearColor:
+	case SAMPLERTYPE_VirtualLinearColor:
+		DstSampleCode = FString::Printf(TEXT("ProcessMaterialLinearColorTextureLookup(%s)"), *InSampleCode);
+		break;
+
+	case SAMPLERTYPE_Alpha:
+	case SAMPLERTYPE_VirtualAlpha:
+	case SAMPLERTYPE_DistanceFieldFont:
+		DstSampleCode = FString::Printf( TEXT("ProcessMaterialAlphaTextureLookup(%s)"), *InSampleCode );
+		break;
+
+	case SAMPLERTYPE_Grayscale:
+	case SAMPLERTYPE_VirtualGrayscale:
+		DstSampleCode = FString::Printf( TEXT("ProcessMaterialGreyscaleTextureLookup(%s)"), *InSampleCode );
+		break;
+
+	case SAMPLERTYPE_LinearGrayscale:
+	case SAMPLERTYPE_VirtualLinearGrayscale:
+		DstSampleCode = FString::Printf(TEXT("ProcessMaterialLinearGreyscaleTextureLookup(%s)"), *InSampleCode);
+		break;
+
+	case SAMPLERTYPE_Normal:
+	case SAMPLERTYPE_VirtualNormal:
+		// Normal maps need to be unpacked in the pixel shader.
+		DstSampleCode = FString::Printf( TEXT("UnpackNormalMap(%s)"), *InSampleCode );
+		break;
+
+	case SAMPLERTYPE_Masks:
+	case SAMPLERTYPE_VirtualMasks:
+		DstSampleCode = InSampleCode;
+		break;
+
+	case SAMPLERTYPE_Data:
+		DstSampleCode = InSampleCode;
+		break;
+
+	default:
+		check(0);
+		break;
+	}
+
+	return DstSampleCode;
+}
+
+static bool SamplerDebugSupported(EMaterialValueType TextureType, bool bVirtualTexture, bool bDecal)
+{
+	return IsDebugTextureSampleEnabled() && (TextureType == MCT_Texture2D || bVirtualTexture) && !bDecal;
+}
+
 int32 FHLSLMaterialTranslator::TextureSample(
 	int32 TextureIndex,
 	int32 CoordinateIndex,
@@ -4231,22 +5636,22 @@ int32 FHLSLMaterialTranslator::TextureSample(
 	int32 TextureReferenceIndex,
 	bool AutomaticViewMipBias,
 	bool AdaptiveVirtualTexture
-	)
+)
 {
-	if(TextureIndex == INDEX_NONE || CoordinateIndex == INDEX_NONE)
+	if (TextureIndex == INDEX_NONE || CoordinateIndex == INDEX_NONE)
 	{
 		return INDEX_NONE;
 	}
 
 	EMaterialValueType TextureType = GetParameterType(TextureIndex);
 
-	if(!(TextureType & MCT_Texture))
+	if (!(TextureType & MCT_Texture))
 	{
-		Errorf(TEXT("Sampling unknown texture type: %s"),DescribeType(TextureType));
+		Errorf(TEXT("Sampling unknown texture type: %s"), DescribeType(TextureType));
 		return INDEX_NONE;
 	}
 
-	if(ShaderFrequency != SF_Pixel && MipValueMode == TMVM_MipBias)
+	if (ShaderFrequency != SF_Pixel && MipValueMode == TMVM_MipBias)
 	{
 		Errorf(TEXT("MipBias is only supported in the pixel shader"));
 		return INDEX_NONE;
@@ -4255,16 +5660,9 @@ int32 FHLSLMaterialTranslator::TextureSample(
 	const bool bVirtualTexture = TextureType == MCT_TextureVirtual;
 	if (bVirtualTexture)
 	{
-		if (Material->GetMaterialDomain() == MD_DeferredDecal)
+		if (Material->GetMaterialDomain() != MD_Surface && Material->GetMaterialDomain() != MD_DeferredDecal)
 		{
-			if (Material->GetDecalBlendMode() == DBM_Volumetric_DistanceFunction)
-			{
-				return Errorf(TEXT("Sampling a virtual texture is currently only supported inside a volumetric decal."));
-			}
-		}
-		else if (Material->GetMaterialDomain() != MD_Surface)
-		{
-			return Errorf(TEXT("Sampling a virtual texture is currently only supported inside surface and decal shaders."));
+			return Errorf(TEXT("Sampling a virtual texture is currently only supported for surface and decal materials."));
 		}
 	}
 
@@ -4278,22 +5676,22 @@ int32 FHLSLMaterialTranslator::TextureSample(
 		{
 			return Errorf(TEXT("Missing DDY(UVs) parameter"));
 		}
-		else if (!(GetParameterType(MipValue0Index) & MCT_Float))
+		else if (!IsFloatNumericType(GetParameterType(MipValue0Index)))
 		{
 			return Errorf(TEXT("Invalid DDX(UVs) parameter"));
 		}
-		else if (!(GetParameterType(MipValue1Index) & MCT_Float))
+		else if (!IsFloatNumericType(GetParameterType(MipValue1Index)))
 		{
 			return Errorf(TEXT("Invalid DDY(UVs) parameter"));
 		}
 	}
-	else if (MipValueMode != TMVM_None && MipValue0Index != INDEX_NONE && !(GetParameterType(MipValue0Index) & MCT_Float))
+	else if (MipValueMode != TMVM_None && MipValue0Index != INDEX_NONE && !IsFloatNumericType(GetParameterType(MipValue0Index)))
 	{
 		return Errorf(TEXT("Invalid mip map parameter"));
 	}
 
 	// if we are not in the PS we need a mip level
-	if(ShaderFrequency != SF_Pixel)
+	if (ShaderFrequency != SF_Pixel)
 	{
 		MipValueMode = TMVM_MipLevel;
 		AutomaticViewMipBias = false;
@@ -4317,208 +5715,13 @@ int32 FHLSLMaterialTranslator::TextureSample(
 	}
 
 	// If not 2D texture, disable AutomaticViewMipBias.
-	if (!(TextureType & (MCT_Texture2D|MCT_TextureVirtual)))
+	if (!(TextureType & (MCT_Texture2D | MCT_TextureVirtual)))
 	{
 		AutomaticViewMipBias = false;
 	}
 
-	FString SamplerStateCode;
-	bool RequiresManualViewMipBias = AutomaticViewMipBias;
-
-	if (!bVirtualTexture) //VT does not have explict samplers (and always requires manual view mip bias)
-	{
-		if (SamplerSource == SSM_FromTextureAsset)
-		{
-			SamplerStateCode = TEXT("%sSampler");
-		}
-		else if (SamplerSource == SSM_Wrap_WorldGroupSettings)
-		{
-			// Use the shared sampler to save sampler slots
-			SamplerStateCode = AutomaticViewMipBias
-				? TEXT("GetMaterialSharedSampler(%sSampler,View.MaterialTextureBilinearWrapedSampler)")
-				: TEXT("GetMaterialSharedSampler(%sSampler,Material.Wrap_WorldGroupSettings)");
-			RequiresManualViewMipBias = false;
-		}
-		else if (SamplerSource == SSM_Clamp_WorldGroupSettings)
-		{
-			// Use the shared sampler to save sampler slots
-			SamplerStateCode = AutomaticViewMipBias
-				? TEXT("GetMaterialSharedSampler(%sSampler,View.MaterialTextureBilinearClampedSampler)")
-				: TEXT("GetMaterialSharedSampler(%sSampler,Material.Clamp_WorldGroupSettings)");
-			RequiresManualViewMipBias = false;
-		}
-	}
-
-	FString SampleCode;
-	if (TextureType == MCT_TextureCube)
-	{
-		SampleCode += TEXT("TextureCubeSample");
-	}
-	else if (TextureType == MCT_Texture2DArray)
-	{
-		SampleCode += TEXT("Texture2DArraySample");
-	}
-	else if (TextureType == MCT_VolumeTexture)
-	{
-		SampleCode += TEXT("Texture3DSample");
-	}
-	else if (TextureType == MCT_TextureExternal)
-	{
-		SampleCode += TEXT("TextureExternalSample");
-	}
-	else if (bVirtualTexture)
-	{
-		SampleCode += TEXT("TextureVirtualSample");
-	}
-	else // MCT_Texture2D
-	{
-		SampleCode += TEXT("Texture2DSample");
-	}
-		
-	EMaterialValueType UVsType = (TextureType == MCT_TextureCube || TextureType == MCT_Texture2DArray || TextureType == MCT_VolumeTexture) ? MCT_Float3 : MCT_Float2;
-	
-	if (RequiresManualViewMipBias)
-	{
-		if (MipValueMode == TMVM_Derivative)
-		{
-			// When doing derivative based sampling, multiply.
-			int32 Multiplier = AddInlinedCodeChunk(MCT_Float, TEXT("View.MaterialTextureDerivativeMultiply"));
-			MipValue0Index = Mul(MipValue0Index, Multiplier);
-			MipValue1Index = Mul(MipValue1Index, Multiplier);
-		}
-		else if (MipValue0Index != INDEX_NONE && MipValueMode != TMVM_None)
-		{
-			// Adds bias to existing input level bias.
-			MipValue0Index = Add(MipValue0Index, AddInlinedCodeChunk(MCT_Float, TEXT("View.MaterialTextureMipBias")));
-		}
-		else
-		{
-			// Sets bias.
-			MipValue0Index = AddInlinedCodeChunk(MCT_Float1, TEXT("View.MaterialTextureMipBias"));
-		}
-
-		// If no Mip mode, then use MipBias.
-		MipValueMode = MipValueMode == TMVM_None ? TMVM_MipBias : MipValueMode;
-	}
-
-	FString MipValue0Code = TEXT("0.0f");
-	FString MipValue1Code = TEXT("0.0f");
-	if (MipValue0Index != INDEX_NONE && (MipValueMode == TMVM_MipBias || MipValueMode == TMVM_MipLevel))
-	{
-		MipValue0Code = CoerceParameter(MipValue0Index, MCT_Float1);
-	}
-	else if (MipValueMode == TMVM_Derivative)
-	{
-		MipValue0Code = CoerceParameter(MipValue0Index, UVsType);
-		MipValue1Code = CoerceParameter(MipValue1Index, UVsType);
-	}
-
-	if (bVirtualTexture)
-	{
-		// VT MipValueMode logic (most of work for VT case is in page table lookup)
-		if (MipValueMode == TMVM_MipLevel)
-		{
-			SampleCode += TEXT("Level");
-		}
-
-		// 'Texture name/sampler', 'PageTableResult', 'LayerIndex', 'PackedUniform'
-		SampleCode += TEXT("(%s, %s, %d, VTUniform_Unpack(Material.VTPackedUniform[%d]))");
-	}
-	else
-	{
-		// Non-VT MipValueMode logic			
-
-		// Re-route decal texture sampling so platforms may add specific workarounds there
-		if (ShaderFrequency == SF_Pixel && Material->GetMaterialDomain() == MD_DeferredDecal && MipValueMode == TMVM_None)
-		{
-			SampleCode += TEXT("_Decal");
-		}
-
-		SamplerStateCode = ", " + SamplerStateCode;
-
-		if (MipValueMode == TMVM_None)
-		{
-			SampleCode += TEXT("(%s") + SamplerStateCode + TEXT(",%s)");
-		}
-		else if (MipValueMode == TMVM_MipLevel)
-		{
-			SampleCode += TEXT("Level(%s") + SamplerStateCode + TEXT(",%s,%s)");
-		}
-		else if (MipValueMode == TMVM_MipBias)
-		{
-			SampleCode += TEXT("Bias(%s") + SamplerStateCode + TEXT(",%s,%s)");
-		}
-		else if (MipValueMode == TMVM_Derivative)
-		{
-			SampleCode += TEXT("Grad(%s") + SamplerStateCode + TEXT(",%s,%s,%s)");
-		}
-		else
-		{
-			check(0);
-		}
-	}
-
-	switch( SamplerType )
-	{
-		case SAMPLERTYPE_External:
-			SampleCode = FString::Printf(TEXT("ProcessMaterialExternalTextureLookup(%s)"), *SampleCode);
-			break;
-
-		case SAMPLERTYPE_Color:
-			SampleCode = FString::Printf( TEXT("ProcessMaterialColorTextureLookup(%s)"), *SampleCode );
-			break;
-		case SAMPLERTYPE_VirtualColor:
-			// has a mobile specific workaround
-			SampleCode = FString::Printf( TEXT("ProcessMaterialVirtualColorTextureLookup(%s)"), *SampleCode );
-			break;
-
-		case SAMPLERTYPE_LinearColor:
-		case SAMPLERTYPE_VirtualLinearColor:
-			SampleCode = FString::Printf(TEXT("ProcessMaterialLinearColorTextureLookup(%s)"), *SampleCode);
-		break;
-
-		case SAMPLERTYPE_Alpha:
-		case SAMPLERTYPE_VirtualAlpha:
-		case SAMPLERTYPE_DistanceFieldFont:
-			// Sampling a single channel texture in D3D9 gives: (G,G,G)
-			// Sampling a single channel texture in D3D11 gives: (G,0,0)
-			// This replication reproduces the D3D9 behavior in all cases.
-			SampleCode = FString::Printf( TEXT("(%s).rrrr"), *SampleCode );
-			break;
-			
-		case SAMPLERTYPE_Grayscale:
-		case SAMPLERTYPE_VirtualGrayscale:
-			// Sampling a greyscale texture in D3D9 gives: (G,G,G)
-			// Sampling a greyscale texture in D3D11 gives: (G,0,0)
-			// This replication reproduces the D3D9 behavior in all cases.
-			SampleCode = FString::Printf( TEXT("ProcessMaterialGreyscaleTextureLookup((%s).r).rrrr"), *SampleCode );
-			break;
-
-		case SAMPLERTYPE_LinearGrayscale:
-		case SAMPLERTYPE_VirtualLinearGrayscale:
-			// Sampling a greyscale texture in D3D9 gives: (G,G,G)
-			// Sampling a greyscale texture in D3D11 gives: (G,0,0)
-			// This replication reproduces the D3D9 behavior in all cases.
-			SampleCode = FString::Printf(TEXT("ProcessMaterialLinearGreyscaleTextureLookup((%s).r).rrrr"), *SampleCode);
-			break;
-
-		case SAMPLERTYPE_Normal:
-		case SAMPLERTYPE_VirtualNormal:
-			// Normal maps need to be unpacked in the pixel shader.
-			SampleCode = FString::Printf( TEXT("UnpackNormalMap(%s)"), *SampleCode );
-			break;
-
-		case SAMPLERTYPE_Masks:
-		case SAMPLERTYPE_VirtualMasks:
-			break;
-
-		case SAMPLERTYPE_Data:
-			break;
-	}
-
 	FString TextureName;
 	int32 VirtualTextureIndex = INDEX_NONE;
-
 	if (TextureType == MCT_TextureCube)
 	{
 		TextureName = CoerceParameter(TextureIndex, MCT_TextureCube);
@@ -4526,6 +5729,10 @@ int32 FHLSLMaterialTranslator::TextureSample(
 	else if (TextureType == MCT_Texture2DArray)
 	{
 		TextureName = CoerceParameter(TextureIndex, MCT_Texture2DArray);
+	}
+	else if (TextureType == MCT_TextureCubeArray)
+	{
+		TextureName = CoerceParameter(TextureIndex, MCT_TextureCubeArray);
 	}
 	else if (TextureType == MCT_VolumeTexture)
 	{
@@ -4556,8 +5763,10 @@ int32 FHLSLMaterialTranslator::TextureSample(
 
 		if (SamplerSource != SSM_FromTextureAsset)
 		{
-			// VT doesn't care if the shared sampler is wrap or clamp this is handled in the shader explicitly by our code so we still inherit this from the texture
-			const TCHAR* SharedSamplerName = (MipValueMode == TMVM_MipLevel) ? TEXT("View.SharedBilinearClampedSampler") : TEXT("View.SharedBilinearAnisoClampedSampler");
+			// VT doesn't care if the shared sampler is wrap or clamp. It only cares if it is aniso or not.
+			// The wrap/clamp/mirror operation is handled in the shader explicitly.
+			const bool bUseAnisoSampler = VirtualTextureScalability::IsAnisotropicFilteringEnabled() && MipValueMode != TMVM_MipLevel;
+			const TCHAR* SharedSamplerName = bUseAnisoSampler ? TEXT("View.SharedBilinearAnisoClampedSampler") : TEXT("View.SharedBilinearClampedSampler");
 			TextureName += FString::Printf(TEXT("Material.VirtualTexturePhysical_%d, GetMaterialSharedSampler(Material.VirtualTexturePhysical_%dSampler, %s)")
 				, VirtualTextureIndex, VirtualTextureIndex, SharedSamplerName);
 		}
@@ -4568,65 +5777,281 @@ int32 FHLSLMaterialTranslator::TextureSample(
 		}
 
 		NumVtSamples++;
- 	}
+	}
 	else // MCT_Texture2D
 	{
 		TextureName = CoerceParameter(TextureIndex, MCT_Texture2D);
 	}
 
-	const FString UVs = CoerceParameter(CoordinateIndex, UVsType);
-	const bool bStoreTexCoordScales = ShaderFrequency == SF_Pixel && TextureReferenceIndex != INDEX_NONE;
-	const bool bStoreAvailableVTLevel = ShaderFrequency == SF_Pixel && TextureReferenceIndex != INDEX_NONE;
-
-	if (bStoreTexCoordScales)
+	// Won't be able to get the texture, if this is an external texture sample
+	const UTexture* Texture = nullptr;
+	if (TextureType != MCT_TextureExternal)
 	{
-		AddCodeChunk(MCT_Float, TEXT("MaterialStoreTexCoordScale(Parameters, %s, %d)"), *UVs, (int)TextureReferenceIndex);
+		FMaterialUniformExpression* Expression = (*CurrentScopeChunks)[TextureIndex].UniformExpression;
+		const FMaterialUniformExpressionTexture* TextureExpression = Expression ? Expression->GetTextureUniformExpression() : nullptr;
+		if (ensure(TextureExpression))
+		{
+			Texture = Cast<UTexture>(Material->GetReferencedTextures()[TextureExpression->GetTextureIndex()]);
+		}
 	}
 
-	int32 VTStackIndex = INDEX_NONE;
-	int32 VTLayerIndex = INDEX_NONE;
-	int32 VTPageTableIndex = INDEX_NONE;
-	if (bVirtualTexture)
+	// StaticAddress mode at time of compile
+	// This may not be 100% correct, if SamplerSource is set to 'SSM_FromTextureAsset', as texture parameter may change the address mode in a derived instance
+	TextureAddress StaticAddressX = TA_Wrap;
+	TextureAddress StaticAddressY = TA_Wrap;
+	TextureAddress StaticAddressZ = TA_Wrap;
+	if (Texture && Texture->Source.GetNumBlocks() > 1)
 	{
-		check(VirtualTextureIndex >= 0);
-
-		const FShaderCodeChunk&	TextureChunk = (*CurrentScopeChunks)[TextureIndex];
-		check(TextureChunk.UniformExpression);
-		const FMaterialUniformExpressionTexture* Expr = TextureChunk.UniformExpression->GetTextureUniformExpression();
-		check(Expr);
-		const UTexture2D* Tex2D = Cast<UTexture2D>(Material->GetReferencedTextures()[Expr->GetTextureIndex()]);
-
-		TextureAddress AddressU = TA_Wrap;
-		TextureAddress AddressV = TA_Wrap;
-		if (Tex2D && Tex2D->Source.GetNumBlocks() > 1)
+		// UDIM (multi-block) texture are forced to use wrap address mode
+		// This is important for supporting VT stacks made from UDIMs with differing number of blocks, as this requires wrapping vAddress for certain layers
+		StaticAddressX = TA_Wrap;
+		StaticAddressY = TA_Wrap;
+		StaticAddressZ = TA_Wrap;
+	}
+	else
+	{
+		switch (SamplerSource)
 		{
-			// UDIM (multi-block) texture are forced to use wrap address mode
-			// This is important for supporting VT stacks made from UDIMs with differing number of blocks, as this requires wrapping vAddress for certain layers
-			AddressU = TA_Wrap;
-			AddressV = TA_Wrap;
+		case SSM_FromTextureAsset:
+			if (Texture)
+			{
+				StaticAddressX = Texture->GetTextureAddressX();
+				StaticAddressY = Texture->GetTextureAddressY();
+				StaticAddressZ = Texture->GetTextureAddressZ();
+			}
+			break;
+		case SSM_Wrap_WorldGroupSettings:
+			StaticAddressX = TA_Wrap;
+			StaticAddressY = TA_Wrap;
+			StaticAddressZ = TA_Wrap;
+			break;
+		case SSM_Clamp_WorldGroupSettings:
+			StaticAddressX = TA_Clamp;
+			StaticAddressY = TA_Clamp;
+			StaticAddressZ = TA_Clamp;
+			break;
+		default:
+			checkNoEntry();
+			break;
+		}
+	}
+
+	EMaterialValueType UVsType;
+	switch (TextureType)
+	{
+	case MCT_TextureCubeArray:
+		UVsType = MCT_Float4;
+		break;
+	case MCT_TextureCube:
+	case MCT_Texture2DArray:
+	case MCT_VolumeTexture:
+		UVsType = MCT_Float3;
+		break;
+	default:
+		UVsType = MCT_Float2;
+		break;
+	}
+	
+	int32 NonLWCCoordinateIndex = CoordinateIndex;
+	const bool bLWCCoordinates = IsLWCType(GetParameterType(CoordinateIndex));
+	if (bLWCCoordinates)
+	{
+		// Apply texture address math manually, using LWC-scale operations, then convert the result to float
+		// This could potentially cause problems if content is relying on SSM_FromTextureAsset, and having texture parameters change address mode in MI
+		// Trade-off would be skip manual address mode in this case, and just accept precision loss
+		auto AddressModeToString = [](TextureAddress InAddress)
+		{
+			switch (InAddress)
+			{
+			case TA_Clamp: return TEXT("LWCADDRESSMODE_CLAMP");
+			case TA_Wrap: return TEXT("LWCADDRESSMODE_WRAP");
+			case TA_Mirror: return TEXT("LWCADDRESSMODE_MIRROR");
+			default: checkNoEntry(); return TEXT("");
+			}
+		};
+		const uint32 NumComponents = GetNumComponents(UVsType);
+		switch (NumComponents)
+		{
+		case 1u:
+			NonLWCCoordinateIndex = AddCodeChunkZeroDeriv(UVsType, TEXT("LWCApplyAddressMode(%s, %s)"),
+				*CoerceParameter(CoordinateIndex, MCT_LWCScalar),
+				AddressModeToString(StaticAddressX));
+			break;
+		case 2u:
+			NonLWCCoordinateIndex = AddCodeChunkZeroDeriv(UVsType, TEXT("LWCApplyAddressMode(%s, %s, %s)"),
+				*CoerceParameter(CoordinateIndex, MCT_LWCVector2),
+				AddressModeToString(StaticAddressX),
+				AddressModeToString(StaticAddressY));
+			break;
+		case 3u:
+			NonLWCCoordinateIndex = AddCodeChunkZeroDeriv(UVsType, TEXT("LWCApplyAddressMode(%s, %s, %s, %s)"),
+				*CoerceParameter(CoordinateIndex, MCT_LWCVector3),
+				AddressModeToString(StaticAddressX),
+				AddressModeToString(StaticAddressY),
+				AddressModeToString(StaticAddressZ));
+			break;
+		default:
+			checkf(false, TEXT("Invalid number of components %d"), NumComponents);
+			break;
+		}
+
+		// Explicitly compute the derivatives for LWC UVs
+		// This is needed for 100% correct functionality, otherwise filtering seams are possible where there is discontinuity in LWC->float UV conversion
+		// This is expensive though, and discontinuities can be minimized by carefully choosing conversion operation
+		// Disabled for now, may enable as an option in the future
+		const bool bExplicitLWCDerivatives = false;
+		if (bExplicitLWCDerivatives && (MipValueMode == TMVM_None || MipValueMode == TMVM_MipBias))
+		{
+			int32 MipScaleIndex = INDEX_NONE;
+			if (MipValueMode == TMVM_MipBias)
+			{
+				MipScaleIndex = AddCodeChunkZeroDeriv(UVsType, TEXT("exp2(%s)"), *CoerceParameter(MipValue0Index, MCT_Float1));
+			}
+
+			MipValue0Index = AddCodeChunkZeroDeriv(UVsType, TEXT("LWCDdx(%s)"), *GetParameterCode(CoordinateIndex));
+			MipValue1Index = AddCodeChunkZeroDeriv(UVsType, TEXT("LWCDdy(%s)"), *GetParameterCode(CoordinateIndex));
+			if (MipScaleIndex != INDEX_NONE)
+			{
+				MipValue0Index = Mul(MipValue0Index, MipScaleIndex);
+				MipValue1Index = Mul(MipValue1Index, MipScaleIndex);
+			}
+
+			MipValueMode = TMVM_Derivative;
+		}
+	}
+
+	FString SamplerStateCode;
+	bool RequiresManualViewMipBias = AutomaticViewMipBias;
+
+	if (!bVirtualTexture) //VT does not have explict samplers (and always requires manual view mip bias)
+	{
+		if (SamplerSource == SSM_FromTextureAsset)
+		{
+			SamplerStateCode = FString::Printf(TEXT("%sSampler"), *TextureName);
+		}
+		else if (SamplerSource == SSM_Wrap_WorldGroupSettings)
+		{
+			// Use the shared sampler to save sampler slots
+			SamplerStateCode = FString::Printf(TEXT("GetMaterialSharedSampler(%sSampler,%s)"),
+				*TextureName, AutomaticViewMipBias ? TEXT("View.MaterialTextureBilinearWrapedSampler") : TEXT("Material.Wrap_WorldGroupSettings"));
+			RequiresManualViewMipBias = false;
+		}
+		else if (SamplerSource == SSM_Clamp_WorldGroupSettings)
+		{
+			// Use the shared sampler to save sampler slots
+			SamplerStateCode = FString::Printf(TEXT("GetMaterialSharedSampler(%sSampler,%s)"),
+				*TextureName, AutomaticViewMipBias ? TEXT("View.MaterialTextureBilinearClampedSampler") : TEXT("Material.Clamp_WorldGroupSettings"));
+			RequiresManualViewMipBias = false;
+		}
+	}
+
+	const EDerivativeStatus UvDerivativeStatus = GetDerivativeStatus(CoordinateIndex);
+
+	if (RequiresManualViewMipBias)
+	{
+		if (MipValueMode == TMVM_Derivative)
+		{
+			// When doing derivative based sampling, multiply.
+			int32 Multiplier = AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("View.MaterialTextureDerivativeMultiply"));
+			MipValue0Index = Mul(MipValue0Index, Multiplier);
+			MipValue1Index = Mul(MipValue1Index, Multiplier);
+		}
+		else if (MipValue0Index != INDEX_NONE && (MipValueMode == TMVM_MipLevel || MipValueMode == TMVM_MipBias))
+		{
+			// Adds bias to existing input level bias.
+			MipValue0Index = Add(MipValue0Index, AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("View.MaterialTextureMipBias")));
 		}
 		else
 		{
-			switch (SamplerSource)
-			{
-			case SSM_FromTextureAsset:
-				check(Tex2D);
-				AddressU = Tex2D->AddressX;
-				AddressV = Tex2D->AddressY;
-				break;
-			case SSM_Wrap_WorldGroupSettings:
-				AddressU = TA_Wrap;
-				AddressV = TA_Wrap;
-				break;
-			case SSM_Clamp_WorldGroupSettings:
-				AddressU = TA_Clamp;
-				AddressV = TA_Clamp;
-				break;
-			default:
-				checkNoEntry();
-				break;
-			}
+			// Sets bias.
+			MipValue0Index = AddInlinedCodeChunkZeroDeriv(MCT_Float1, TEXT("View.MaterialTextureMipBias"));
 		}
+
+		// If no Mip mode, then use MipBias.
+		MipValueMode = MipValueMode == TMVM_None ? TMVM_MipBias : MipValueMode;
+	}
+
+	FString MipValue0Code = TEXT("0.0f");
+	FString MipValue1Code = TEXT("0.0f");
+	if (MipValue0Index != INDEX_NONE && (MipValueMode == TMVM_MipBias || MipValueMode == TMVM_MipLevel))
+	{
+		MipValue0Code = CoerceParameter(MipValue0Index, MCT_Float1);
+	}
+	else if (MipValueMode == TMVM_Derivative)
+	{
+		MipValue0Code = CoerceParameter(MipValue0Index, UVsType);
+		MipValue1Code = CoerceParameter(MipValue1Index, UVsType);
+	}
+
+	FString TextureTypeName;
+	if (TextureType == MCT_TextureCube)
+	{
+		TextureTypeName = TEXT("TextureCubeSample");
+	}
+	else if (TextureType == MCT_Texture2DArray)
+	{
+		TextureTypeName = TEXT("Texture2DArraySample");
+	}
+	else if (TextureType == MCT_TextureCubeArray)
+	{
+		TextureTypeName = TEXT("TextureCubeArraySample");
+	}
+	else if (TextureType == MCT_VolumeTexture)
+	{
+		TextureTypeName = TEXT("Texture3DSample");
+	}
+	else if (TextureType == MCT_TextureExternal)
+	{
+		TextureTypeName = TEXT("TextureExternalSample");
+	}
+	else if (bVirtualTexture)
+	{
+		TextureTypeName = TEXT("TextureVirtualSample");
+	}
+	else // MCT_Texture2D
+	{
+		TextureTypeName = TEXT("Texture2DSample");
+	}
+
+	const bool bStoreTexCoordScales = ShaderFrequency == SF_Pixel && TextureReferenceIndex != INDEX_NONE;
+	const bool bDecal = ShaderFrequency == SF_Pixel && Material->GetMaterialDomain() == MD_DeferredDecal && MipValueMode == TMVM_None;
+
+	if (IsDebugTextureSampleEnabled() && !IsDerivativeValid(UvDerivativeStatus))
+	{
+		UE_LOG(LogMaterial, Warning, TEXT("Unknown derivatives: '%s'[%s]: %s"), *Material->GetDebugName(), *Material->GetAssetPath().ToString(), *AtParameterCodeChunk(CoordinateIndex).DefinitionAnalytic);
+	}
+
+	if (bStoreTexCoordScales)
+	{
+		AddCodeChunk(MCT_Float, TEXT("MaterialStoreTexCoordScale(Parameters, %s, %d)"), *CoerceParameter(NonLWCCoordinateIndex, UVsType), (int)TextureReferenceIndex);
+	}
+
+	const FString UV_Value = CoerceParameter(NonLWCCoordinateIndex, UVsType);
+	FString UV_Ddx = TEXT("0.0f");
+	FString UV_Ddy = TEXT("0.0f");
+	FString UV_Scale = TEXT("1.0f");
+	if (IsAnalyticDerivEnabled() && UvDerivativeStatus == EDerivativeStatus::Valid)
+	{
+		const EMaterialValueType SourceUVsType = GetParameterType(CoordinateIndex);
+		const FString UVAnalytic = GetParameterCodeDeriv(CoordinateIndex, CompiledPDV_Analytic);
+		UV_Ddx = CoerceValue(UVAnalytic + TEXT(".Ddx"), MakeNonLWCType(SourceUVsType), UVsType); // Ddx/y are never LWC scale
+		UV_Ddy = CoerceValue(UVAnalytic + TEXT(".Ddy"), MakeNonLWCType(SourceUVsType), UVsType);
+		if (MipValueMode == TMVM_MipBias)
+		{
+			UV_Scale = FString::Printf(TEXT("exp2(%s)"), *MipValue0Code);
+			UV_Ddx = FString::Printf(TEXT("(%s)*exp2(%s)"), *UV_Ddx, *MipValue0Code);
+			UV_Ddy = FString::Printf(TEXT("(%s)*exp2(%s)"), *UV_Ddy, *MipValue0Code);
+		}
+	}
+
+	int32 SamplingCodeIndex = INDEX_NONE;
+	if (bVirtualTexture)
+	{
+		int32 VTStackIndex = INDEX_NONE;
+		int32 VTLayerIndex = INDEX_NONE;
+		int32 VTPageTableIndex = INDEX_NONE;
+
+		check(VirtualTextureIndex >= 0);
 
 		// Only support GPU feedback from pixel shader
 		//todo[vt]: Support feedback from other shader types
@@ -4637,7 +6062,7 @@ int32 FHLSLMaterialTranslator::TextureSample(
 		{
 			// The layer index in the virtual texture stack is already known
 			// Create a page table sample for each new combination of virtual texture and sample parameters
-			VTStackIndex = AcquireVTStackIndex(MipValueMode, AddressU, AddressV, 1.0f, CoordinateIndex, MipValue0Index, MipValue1Index, TextureReferenceIndex, AdaptiveVirtualTexture, bGenerateFeedback);
+			VTStackIndex = AcquireVTStackIndex(MipValueMode, StaticAddressX, StaticAddressY, 1.0f, NonLWCCoordinateIndex, MipValue0Index, MipValue1Index, TextureReferenceIndex, UV_Value, UV_Ddx, UV_Ddy, AdaptiveVirtualTexture, bGenerateFeedback);
 			VTPageTableIndex = UniformTextureExpressions[(uint32)EMaterialTextureParameterType::Virtual][VirtualTextureIndex]->GetPageTableLayerIndex();
 		}
 		else
@@ -4645,61 +6070,118 @@ int32 FHLSLMaterialTranslator::TextureSample(
 			// Textures can only be combined in a VT stack if they have the same aspect ratio
 			// This also means that any texture parameters set in material instances for VTs must match the aspect ratio of the texture in the parent material
 			// (Otherwise could potentially break stacks)
-			check(Tex2D);
+			check(Texture);
 
 			// Using Source size because we care about the aspect ratio of each block (each block of multi-block texture must have same aspect ratio)
 			// We can still combine multi-block textures of different block aspect ratios, as long as each block has the same ratio
 			// This is because we only need to overlay VT pages from within a given block
-			const float TextureAspectRatio = (float)Tex2D->Source.GetSizeX() / (float)Tex2D->Source.GetSizeY();
+			const float TextureAspectRatio = (float)Texture->Source.GetSizeX() / (float)Texture->Source.GetSizeY();
 
 			// Create a page table sample for each new set of sample parameters
-			VTStackIndex = AcquireVTStackIndex(MipValueMode, AddressU, AddressV, TextureAspectRatio, CoordinateIndex, MipValue0Index, MipValue1Index, INDEX_NONE, AdaptiveVirtualTexture, bGenerateFeedback);
+			VTStackIndex = AcquireVTStackIndex(MipValueMode, StaticAddressX, StaticAddressY, TextureAspectRatio, NonLWCCoordinateIndex, MipValue0Index, MipValue1Index, INDEX_NONE, UV_Value, UV_Ddx, UV_Ddy, AdaptiveVirtualTexture, bGenerateFeedback);
 			// Allocate a layer in the virtual texture stack for this physical sample
 			VTLayerIndex = MaterialCompilationOutput.UniformExpressionSet.VTStacks[VTStackIndex].AddLayer();
 			VTPageTableIndex = VTLayerIndex;
 		}
 
 		MaterialCompilationOutput.UniformExpressionSet.VTStacks[VTStackIndex].SetLayer(VTLayerIndex, VirtualTextureIndex);
-	}
 
-	int32 SamplingCodeIndex = INDEX_NONE;
-	if (bVirtualTexture)
-	{
-		const FMaterialVTStackEntry& VTStackEntry = VTStacks[VTStackIndex];
-		const FString VTPageTableResult = GetParameterCode(VTStackEntry.CodeIndex);
-
-		SamplingCodeIndex = AddCodeChunk(
-			MCT_Float4,
-			*SampleCode,
-			*TextureName,
-			*VTPageTableResult,
-			VTPageTableIndex,
-			VirtualTextureIndex);
-
-		// TODO
-		/*if (bStoreAvailableVTLevel)
+		// VT MipValueMode logic (most of work for VT case is in page table lookup)
+		if (MipValueMode == TMVM_MipLevel)
 		{
-			check(VirtualTextureUniformExpressionIndex >= 0);
-			check(VirtualTextureIndex >= 0);
+			TextureTypeName += TEXT("Level");
+		}
 
-			AddCodeChunk(MCT_Float, TEXT("StoreAvailableVTLevel(Parameters.TexCoordScalesParams, TextureVirtualGetSampledLevelSize(Material.VirtualTexturePageTable_%d, Material.VirtualTextureUniformData[%d], Parameters.SvPosition.xy, %s), %d)"),
-				VirtualTextureUniformExpressionIndex,
-				VirtualTextureIndex,
-				*UVs,
-				(int)TextureReferenceIndex);
-		}*/
+		const FMaterialVTStackEntry& VTStackEntry = VTStacks[VTStackIndex];
+		const FString VTPageTableResult_Finite = GetParameterCode(VTStackEntry.CodeIndex);
+
+		// 'Texture name/sampler', 'PageTableResult', 'LayerIndex', 'PackedUniform'
+		FString SampleCodeFinite = FString::Printf(TEXT("%s(%s, %s, %d, VTUniform_Unpack(Material.VTPackedUniform[%d]))"), *TextureTypeName, *TextureName, *VTPageTableResult_Finite, VTPageTableIndex, VirtualTextureIndex);
+		SampleCodeFinite = ApplySamplerType(SampleCodeFinite, SamplerType);
+
+		if (IsAnalyticDerivEnabled() && IsDerivativeValid(UvDerivativeStatus))
+		{
+			const FString VTPageTableResult_Analytic = GetParameterCodeDeriv(VTStackEntry.CodeIndex, CompiledPDV_Analytic);
+			// 'Texture name/sampler', 'PageTableResult', 'LayerIndex', 'PackedUniform'
+			FString SampleCodeAnalytic;
+
+			if (SamplerDebugSupported(TextureType, bVirtualTexture, bDecal))
+			{
+				SampleCodeAnalytic = FString::Printf(TEXT("Debug%s(%s, %s, %d, VTUniform_Unpack(Material.VTPackedUniform[%d]), %s)"), *TextureTypeName, *TextureName, *VTPageTableResult_Analytic, VTPageTableIndex, VirtualTextureIndex, *UV_Scale);
+			}
+			else
+			{
+				SampleCodeAnalytic = FString::Printf(TEXT("%s(%s, %s, %d, VTUniform_Unpack(Material.VTPackedUniform[%d]))"), *TextureTypeName, *TextureName, *VTPageTableResult_Analytic, VTPageTableIndex, VirtualTextureIndex);
+			}
+
+			SampleCodeAnalytic = ApplySamplerType(SampleCodeAnalytic, SamplerType);
+			SamplingCodeIndex = AddCodeChunkInnerDeriv(*SampleCodeFinite, *SampleCodeAnalytic, MCT_Float4, false, EDerivativeStatus::NotValid);
+		}
+		else
+		{
+			SamplingCodeIndex = AddCodeChunk(MCT_Float4, *SampleCodeFinite, *TextureName, *VTPageTableResult_Finite, VTPageTableIndex, VirtualTextureIndex);
+		}
+	
+		const bool bStoreVTSampleInfo = ShaderFrequency == SF_Pixel && TextureReferenceIndex != INDEX_NONE;
+		if (bStoreVTSampleInfo)
+		{
+			AddCodeChunk(MCT_Float, TEXT("MaterialStoreVTSampleInfo(Parameters.TexCoordScalesParams, %s, %d, %d)"), *VTPageTableResult_Finite, VTPageTableIndex, TextureReferenceIndex);
+		}
 	}
 	else
 	{
-		SamplingCodeIndex = AddCodeChunk(
-			MCT_Float4,
-			*SampleCode,
-			*TextureName,
-			*TextureName,
-			*UVs,
-			*MipValue0Code,
-			*MipValue1Code
-		);
+		// Non-VT MipValueMode logic
+		// 
+		// Re-route decal texture sampling so platforms may add specific workarounds there
+		if (bDecal)
+		{
+			TextureTypeName += TEXT("_Decal");
+		}
+
+		FString SampleCodeFinite;
+		if (MipValueMode == TMVM_None)
+		{
+			SampleCodeFinite = FString::Printf(TEXT("%s(%s,%s,%s)"), *TextureTypeName, *TextureName, *SamplerStateCode, *UV_Value);
+		}
+		else if (MipValueMode == TMVM_MipLevel)
+		{
+			SampleCodeFinite = FString::Printf(TEXT("%sLevel(%s,%s,%s,%s)"), *TextureTypeName, *TextureName, *SamplerStateCode, *UV_Value, *MipValue0Code);
+		}
+		else if (MipValueMode == TMVM_MipBias)
+		{
+			SampleCodeFinite = FString::Printf(TEXT("%sBias(%s,%s,%s,%s)"), *TextureTypeName, *TextureName, *SamplerStateCode, *UV_Value, *MipValue0Code);
+		}
+		else if (MipValueMode == TMVM_Derivative)
+		{
+			SampleCodeFinite = FString::Printf(TEXT("%sGrad(%s,%s,%s,%s,%s)"), *TextureTypeName, *TextureName, *SamplerStateCode, *UV_Value, *MipValue0Code, *MipValue1Code);
+		}
+		else
+		{
+			check(0);
+		}
+
+		SampleCodeFinite = ApplySamplerType(SampleCodeFinite, SamplerType);
+
+		if (IsAnalyticDerivEnabled() && IsDerivativeValid(UvDerivativeStatus) && !bDecal)
+		{
+			FString SampleCodeAnalytic = SampleCodeFinite;
+			if (MipValueMode == TMVM_None || MipValueMode == TMVM_MipBias)
+			{
+				
+				if (SamplerDebugSupported(TextureType, bVirtualTexture, bDecal))
+					SampleCodeAnalytic = FString::Printf(TEXT("Debug%sGrad(%s,%s,%s,%s,%s,%s)"), *TextureTypeName, *TextureName, *SamplerStateCode, *UV_Value, *UV_Ddx, *UV_Ddy, *UV_Scale);
+				else
+					SampleCodeAnalytic = FString::Printf(TEXT("%sGrad(%s,%s,%s,%s,%s)"), *TextureTypeName, *TextureName, *SamplerStateCode, *UV_Value, *UV_Ddx, *UV_Ddy);
+
+				SampleCodeAnalytic = ApplySamplerType(SampleCodeAnalytic, SamplerType);
+			}
+
+			SamplingCodeIndex = AddCodeChunkInnerDeriv(*SampleCodeFinite, *SampleCodeAnalytic, MCT_Float4, false /*?*/, EDerivativeStatus::NotValid);
+		}
+		else
+		{
+			SamplingCodeIndex = AddCodeChunk(MCT_Float4, *SampleCodeFinite);
+		}
 	}
 
 	AddEstimatedTextureSample();
@@ -4720,9 +6202,9 @@ int32 FHLSLMaterialTranslator::TextureProperty(int32 TextureIndex, EMaterialExpo
 		TextureType != MCT_VolumeTexture &&
 		TextureType != MCT_Texture2DArray)
 	{
-		return Errorf(TEXT("Texture size only available for Texture2D, TextureVirtual, Texture2DArray, and VolumeTexture, not %s"),DescribeType(TextureType));
+		return Errorf(TEXT("Texture size only available for Texture2D, TextureVirtual, Texture2DArray, and VolumeTexture, not %s"), DescribeType(TextureType));
 	}
-		
+
 	FMaterialUniformExpressionTexture* TextureExpression = (*CurrentScopeChunks)[TextureIndex].UniformExpression->GetTextureUniformExpression();
 	if (!TextureExpression)
 	{
@@ -4782,7 +6264,7 @@ int32 FHLSLMaterialTranslator::DecalLifetimeOpacity()
 		return Errorf(TEXT("Decal lifetime fade is only available in the pixel shader."));
 	}
 
-	return AddCodeChunk(
+	return AddCodeChunkZeroDeriv(
 		MCT_Float,
 		TEXT("DecalLifetimeOpacity()")
 		);
@@ -4794,11 +6276,17 @@ int32 FHLSLMaterialTranslator::PixelDepth()
 	{
 		return Errorf(TEXT("Invalid node used in hull/domain shader input!"));
 	}
-	if (Material->IsTranslucencyWritingVelocity())
+
+	FString FiniteCode = TEXT("GetPixelDepth(Parameters)");
+	if (IsAnalyticDerivEnabled())
 	{
-		return Errorf(TEXT("Translucenct material with 'Output Velocity' enabled will write to depth buffer, therefore cannot read from depth buffer at the same time."));
+		FString AnalyticCode = DerivativeAutogen.ConstructDeriv(TEXT("Parameters.ScreenPosition.w"), TEXT("Parameters.ScreenPosition_DDX.w"), TEXT("Parameters.ScreenPosition_DDY.w"), EDerivativeType::Float1);
+		return AddCodeChunkInnerDeriv(*FiniteCode, *AnalyticCode, MCT_Float, false, EDerivativeStatus::Valid);
 	}
-	return AddInlinedCodeChunk(MCT_Float, TEXT("GetPixelDepth(Parameters)"));
+	else
+	{
+		return AddInlinedCodeChunk(MCT_Float, *FiniteCode);
+	}
 }
 
 /** Calculate screen aligned UV coordinates from an offset fraction or texture coordinate */
@@ -4813,8 +6301,8 @@ int32 FHLSLMaterialTranslator::GetScreenAlignedUV(int32 Offset, int32 ViewportUV
 		int32 BufferUV = AddCodeChunk(MCT_Float2, TEXT("MaterialFloat2(ViewportUVToBufferUV(%s))"), *CoerceParameter(ViewportUV, MCT_Float2));
 
 		EMaterialDomain MaterialDomain = Material->GetMaterialDomain();
-		int32 Min = AddInlinedCodeChunk(MCT_Float2, MaterialDomain == MD_Surface ? TEXT("ResolvedView.BufferBilinearUVMinMax.xy") : TEXT("View.BufferBilinearUVMinMax.xy"));
-		int32 Max = AddInlinedCodeChunk(MCT_Float2, MaterialDomain == MD_Surface ? TEXT("ResolvedView.BufferBilinearUVMinMax.zw") : TEXT("View.BufferBilinearUVMinMax.zw"));
+		int32 Min = AddInlinedCodeChunkZeroDeriv(MCT_Float2, MaterialDomain == MD_Surface ? TEXT("ResolvedView.BufferBilinearUVMinMax.xy") : TEXT("View.BufferBilinearUVMinMax.xy"));
+		int32 Max = AddInlinedCodeChunkZeroDeriv(MCT_Float2, MaterialDomain == MD_Surface ? TEXT("ResolvedView.BufferBilinearUVMinMax.zw") : TEXT("View.BufferBilinearUVMinMax.zw"));
 		return Clamp(BufferUV, Min, Max);
 	}
 	else
@@ -4829,6 +6317,11 @@ int32 FHLSLMaterialTranslator::SceneDepth(int32 Offset, int32 ViewportUV, bool b
 	{
 		// mobile currently does not support this, we need to read a separate copy of the depth, we must disable framebuffer fetch and force scene texture reads.
 		return Errorf(TEXT("Cannot read scene depth from the vertex shader with feature level ES3.1 or below."));
+	}
+
+	if (Material->IsTranslucencyWritingVelocity())
+	{
+		return Errorf(TEXT("Translucenct material with 'Output Velocity' enabled will write to depth buffer, therefore cannot read from depth buffer at the same time."));
 	}
 
 	if (Offset == INDEX_NONE && bUseOffset)
@@ -4859,7 +6352,7 @@ int32 FHLSLMaterialTranslator::SceneTextureLookup(int32 ViewportUV, uint32 InSce
 									SceneTextureId == PPI_SceneDepth ||
 									SceneTextureId == PPI_CustomStencil;
 
-	if (!bSupportedOnMobile	&& ErrorUnlessFeatureLevelSupported(ERHIFeatureLevel::SM5) == INDEX_NONE)
+	if (!bSupportedOnMobile && ErrorUnlessFeatureLevelSupported(ERHIFeatureLevel::SM5) == INDEX_NONE)
 	{
 		return INDEX_NONE;
 	}
@@ -4870,6 +6363,67 @@ int32 FHLSLMaterialTranslator::SceneTextureLookup(int32 ViewportUV, uint32 InSce
 		return NonPixelShaderExpressionError();
 	}
 		
+	// Special case for DBuffer normals.
+	// Note that full reprojection only happens with r.Decal.NormalReprojectionEnabled 1.
+	// Otherwise we use a depth buffer approximation.
+	bool bIsUsingReprojectedNormal = false;
+	if (Material->GetMaterialDomain() == MD_DeferredDecal)
+	{
+		if (SceneTextureId == PPI_WorldNormal)
+		{
+			const bool bUsingDBuffer = IsUsingDBuffers(Platform);
+			const bool bIsDBufferOutput = 
+				MaterialProperty == MP_BaseColor ||
+				MaterialProperty == MP_Normal || 
+				MaterialProperty == MP_Roughness || 
+				MaterialProperty == MP_Specular || 
+				MaterialProperty == MP_Metallic ||
+				MaterialProperty == MP_Opacity;
+
+			if (bUsingDBuffer && bIsDBufferOutput)
+			{
+				bIsUsingReprojectedNormal = true;
+			}
+		}
+	}
+
+	if (bIsUsingReprojectedNormal)
+	{
+		int32 BufferUV;
+		if (ViewportUV != INDEX_NONE)
+		{
+			BufferUV = AddCodeChunk(MCT_Float2,
+				TEXT("ClampSceneTextureUV(ViewportUVToSceneTextureUV(%s, %d), %d)"),
+				*CoerceParameter(ViewportUV, MCT_Float2), (int)SceneTextureId, (int)SceneTextureId);
+		}
+		else
+		{
+			BufferUV = AddInlinedCodeChunk(MCT_Float2, TEXT("GetDefaultSceneTextureUV(Parameters, %d)"), (int)SceneTextureId);
+		}
+
+		int32 PixelNormal = PixelNormalWS();
+		if (PixelNormal == INDEX_NONE)
+		{
+			return INDEX_NONE;
+		}
+
+		if (FeatureLevel >= ERHIFeatureLevel::SM5)
+		{
+			return AddCodeChunk(MCT_Float4,
+				TEXT("GetDBufferReprojectedWorldNormal(%s,%s)"),
+				*CoerceParameter(BufferUV, MCT_Float2),
+				*CoerceParameter(PixelNormalWS(),MCT_Float3));
+		}
+		else
+		{
+			// Return the original geometry normal as a fall back.
+			// Shouldn't get here since DBuffer isn't enabled on mobile rendering paths?
+			return AddCodeChunk(MCT_Float4,
+				TEXT("float4(%s,1.0f)"),
+				*CoerceParameter(PixelNormalWS(),MCT_Float3));
+		}
+	}
+
 	if (SceneTextureId == PPI_DecalMask)
 	{
 		return Error(TEXT("Decal Mask bit was move out of GBuffer to the stencil buffer for performance optimisation and is therefor no longer available"));
@@ -4920,9 +6474,9 @@ int32 FHLSLMaterialTranslator::GetSceneTextureViewSize(int32 SceneTextureId, boo
 {
 	if (InvProperty)
 	{
-		return AddCodeChunk(MCT_Float2, TEXT("GetSceneTextureViewSize(%d).zw"), SceneTextureId);
+		return AddCodeChunkZeroDeriv(MCT_Float2, TEXT("GetSceneTextureViewSize(%d).zw"), SceneTextureId);
 	}
-	return AddCodeChunk(MCT_Float2, TEXT("GetSceneTextureViewSize(%d).xy"), SceneTextureId);
+	return AddCodeChunkZeroDeriv(MCT_Float2, TEXT("GetSceneTextureViewSize(%d).xy"), SceneTextureId);
 }
 
 // @param bTextureLookup true: texture, false:no texture lookup, usually to get the size
@@ -4931,38 +6485,26 @@ void FHLSLMaterialTranslator::UseSceneTextureId(ESceneTextureId SceneTextureId, 
 	MaterialCompilationOutput.bNeedsSceneTextures = true;
 	MaterialCompilationOutput.SetIsSceneTextureUsed(SceneTextureId);
 
-	if(Material->GetMaterialDomain() == MD_DeferredDecal)
+	if (Material->GetMaterialDomain() == MD_DeferredDecal)
 	{
-		EDecalBlendMode DecalBlendMode = (EDecalBlendMode)Material->GetDecalBlendMode();
-		bool bDBuffer = IsDBufferDecalBlendMode(DecalBlendMode);
-
-		bool bRequiresSM5 = (SceneTextureId == PPI_WorldNormal || SceneTextureId == PPI_CustomDepth || SceneTextureId == PPI_CustomStencil || SceneTextureId == PPI_AmbientOcclusion);
-
-		if(bDBuffer)
+		const bool bSceneTextureSupportsDecal = SceneTextureId == PPI_SceneDepth || SceneTextureId == PPI_WorldNormal || SceneTextureId == PPI_CustomDepth || SceneTextureId == PPI_CustomStencil;
+		if (!bSceneTextureSupportsDecal)
 		{
-			if(!(SceneTextureId == PPI_SceneDepth || SceneTextureId == PPI_CustomDepth || SceneTextureId == PPI_CustomStencil))
-			{
-				// Note: For DBuffer decals: CustomDepth and CustomStencil are only available if r.CustomDepth.Order = 0
-				Errorf(TEXT("DBuffer decals (MaterialDomain=DeferredDecal and DecalBlendMode is using DBuffer) can only access SceneDepth, CustomDepth, CustomStencil"));
-			}
-		}
-		else
-		{
-			if(!(SceneTextureId == PPI_SceneDepth || SceneTextureId == PPI_CustomDepth || SceneTextureId == PPI_CustomStencil || SceneTextureId == PPI_WorldNormal || SceneTextureId == PPI_AmbientOcclusion))
-			{
-				Errorf(TEXT("Decals (MaterialDomain=DeferredDecal) can only access WorldNormal, AmbientOcclusion, SceneDepth, CustomDepth, CustomStencil"));
-			}
-
-			if (SceneTextureId == PPI_WorldNormal && Material->HasNormalConnected())
-			{
-					// GBuffer can only relate to WorldNormal here.
-				Errorf(TEXT("Decals that read WorldNormal cannot output to normal at the same time"));
-			}
+			// Note: For DBuffer decals CustomDepth and CustomStencil are not available if r.CustomDepth.Order = 1
+			Errorf(TEXT("Decals can only access SceneDepth, CustomDepth, CustomStencil, and WorldNormal."));
 		}
 
-		if (bRequiresSM5)
+		const bool bSceneTextureRequiresSM5 = SceneTextureId == PPI_WorldNormal;
+		if (bSceneTextureRequiresSM5)
 		{
 			ErrorUnlessFeatureLevelSupported(ERHIFeatureLevel::SM5);
+		}
+
+		if (SceneTextureId == PPI_WorldNormal && Material->HasNormalConnected() && !IsUsingDBuffers(Platform))
+		{
+			// GBuffer decals can't bind Normal for read and write.
+			// Note: DBuffer decals can support this but only if the sampled WorldNormal isn't connected to the output normal.
+			Errorf(TEXT("Decals that read WorldNormal cannot output to normal at the same time. Enable DBuffer to support this."));
 		}
 	}
 
@@ -5044,6 +6586,29 @@ int32 FHLSLMaterialTranslator::SceneColor(int32 Offset, int32 ViewportUV, bool b
 		);
 }
 
+int32 FHLSLMaterialTranslator::DBufferTextureLookup(int32 ViewportUV, uint32 DBufferTextureIndex)
+{
+	if (Material->GetMaterialDomain() != MD_Surface || IsTranslucentBlendMode(Material->GetBlendMode()))
+	{
+		Errorf(TEXT("DBuffer scene textures are only available on opaque or masked surfaces."));
+	}
+
+	int32 BufferUV = INDEX_NONE;
+	if (ViewportUV != INDEX_NONE)
+	{
+		BufferUV = AddCodeChunk(MCT_Float2,	TEXT("ClampSceneTextureUV(ViewportUVToBufferUV(%s), 0)"), *CoerceParameter(ViewportUV, MCT_Float2));
+	}
+	else
+	{
+		BufferUV = AddInlinedCodeChunk(MCT_Float2, TEXT("GetDefaultSceneTextureUV(Parameters, 0)"));
+	}
+
+	MaterialCompilationOutput.SetIsDBufferTextureUsed(DBufferTextureIndex);
+	AddEstimatedTextureSample();
+
+	return AddCodeChunk(MCT_Float4, TEXT("MaterialExpressionDBufferTextureLookup(%s, %d)"), *CoerceParameter(BufferUV, MCT_Float2), (int)DBufferTextureIndex);
+}
+
 int32 FHLSLMaterialTranslator::Texture(UTexture* InTexture, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType, ESamplerSourceMode SamplerSource, ETextureMipValueMode MipValueMode)
 {
 	EMaterialValueType ShaderType = InTexture->GetMaterialType();
@@ -5073,8 +6638,17 @@ int32 FHLSLMaterialTranslator::Texture(UTexture* InTexture, int32& TextureRefere
 	return AddUniformExpression(new FMaterialUniformExpressionTexture(TextureReferenceIndex, SamplerType, SamplerSource, bVirtual),ShaderType,TEXT(""));
 }
 
-int32 FHLSLMaterialTranslator::TextureParameter(FName ParameterName, UTexture* DefaultValue, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType, ESamplerSourceMode SamplerSource)
+int32 FHLSLMaterialTranslator::TextureParameter(FName ParameterName, UTexture* InDefaultValue, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType, ESamplerSourceMode SamplerSource)
 {
+	UTexture* DefaultValue = InDefaultValue;
+
+	// If we're compiling a function, give the function a chance to override the default parameter value
+	FMaterialParameterMetadata Meta;
+	if (GetParameterOverrideValueForCurrentFunction(EMaterialParameterType::Texture, ParameterName, Meta))
+	{
+		DefaultValue = Meta.Value.Texture;
+	}
+
 	EMaterialValueType ShaderType = DefaultValue->GetMaterialType();
 	TextureReferenceIndex = Material->GetReferencedTextures().Find(DefaultValue);
 	checkf(TextureReferenceIndex != INDEX_NONE, TEXT("Material expression called Compiler->TextureParameter() without implementing UMaterialExpression::GetReferencedTexture properly"));
@@ -5105,11 +6679,20 @@ int32 FHLSLMaterialTranslator::VirtualTexture(URuntimeVirtualTexture* InTexture,
 	return AddUniformExpression(new FMaterialUniformExpressionTexture(TextureReferenceIndex, TextureLayerIndex, PageTableLayerIndex, SamplerType), MCT_TextureVirtual, TEXT(""));
 }
 
-int32 FHLSLMaterialTranslator::VirtualTextureParameter(FName ParameterName, URuntimeVirtualTexture* DefaultValue, int32 TextureLayerIndex, int32 PageTableLayerIndex, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType)
+int32 FHLSLMaterialTranslator::VirtualTextureParameter(FName ParameterName, URuntimeVirtualTexture* InDefaultValue, int32 TextureLayerIndex, int32 PageTableLayerIndex, int32& TextureReferenceIndex, EMaterialSamplerType SamplerType)
 {
 	if (!UseVirtualTexturing(FeatureLevel, TargetPlatform))
 	{
 		return INDEX_NONE;
+	}
+
+	URuntimeVirtualTexture* DefaultValue = InDefaultValue;
+
+	// If we're compiling a function, give the function a chance to override the default parameter value
+	FMaterialParameterMetadata Meta;
+	if (GetParameterOverrideValueForCurrentFunction(EMaterialParameterType::RuntimeVirtualTexture, ParameterName, Meta))
+	{
+		DefaultValue = Meta.Value.RuntimeVirtualTexture;
 	}
 
 	TextureReferenceIndex = Material->GetReferencedTextures().Find(DefaultValue);
@@ -5121,23 +6704,27 @@ int32 FHLSLMaterialTranslator::VirtualTextureParameter(FName ParameterName, URun
 	return AddUniformExpression(new FMaterialUniformExpressionTextureParameter(ParameterInfo, TextureReferenceIndex, TextureLayerIndex, PageTableLayerIndex, SamplerType), MCT_TextureVirtual, TEXT(""));
 }
 
-int32 FHLSLMaterialTranslator::VirtualTextureUniform(int32 TextureIndex, int32 VectorIndex)
+int32 FHLSLMaterialTranslator::VirtualTextureUniform(int32 TextureIndex, int32 VectorIndex, UE::Shader::EValueType Type)
 {
-	return AddUniformExpression(new FMaterialUniformExpressionRuntimeVirtualTextureUniform(TextureIndex, VectorIndex), MCT_Float3, TEXT(""));
+	return AddUniformExpression(new FMaterialUniformExpressionRuntimeVirtualTextureUniform(TextureIndex, VectorIndex), GetMaterialValueType(Type), TEXT(""));
 }
 
-int32 FHLSLMaterialTranslator::VirtualTextureUniform(FName ParameterName, int32 TextureIndex, int32 VectorIndex)
+int32 FHLSLMaterialTranslator::VirtualTextureUniform(FName ParameterName, int32 TextureIndex, int32 VectorIndex, UE::Shader::EValueType Type)
 {
 	FMaterialParameterInfo ParameterInfo = GetParameterAssociationInfo();
 	ParameterInfo.Name = ParameterName;
 
-	return AddUniformExpression(new FMaterialUniformExpressionRuntimeVirtualTextureUniform(ParameterInfo, TextureIndex, VectorIndex), MCT_Float3, TEXT(""));
+	return AddUniformExpression(new FMaterialUniformExpressionRuntimeVirtualTextureUniform(ParameterInfo, TextureIndex, VectorIndex), GetMaterialValueType(Type), TEXT(""));
 }
 
 int32 FHLSLMaterialTranslator::VirtualTextureWorldToUV(int32 WorldPositionIndex, int32 P0, int32 P1, int32 P2)
 {
+	if (WorldPositionIndex == INDEX_NONE || P0 == INDEX_NONE || P1 == INDEX_NONE || P2 == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
 	FString	SampleCode(TEXT("VirtualTextureWorldToUV(%s, %s, %s, %s)"));
-	return AddInlinedCodeChunk(MCT_Float2, *SampleCode, *GetParameterCode(WorldPositionIndex), *GetParameterCode(P0), *GetParameterCode(P1), *GetParameterCode(P2));
+	return AddInlinedCodeChunk(MCT_Float2, *SampleCode, *CoerceParameter(WorldPositionIndex, MCT_LWCVector3), *GetParameterCode(P0), *GetParameterCode(P1), *GetParameterCode(P2));
 }
 
 int32 FHLSLMaterialTranslator::VirtualTextureUnpack(int32 CodeIndex0, int32 CodeIndex1, int32 CodeIndex2, int32 P0, EVirtualTextureUnpackType UnpackType)
@@ -5172,7 +6759,16 @@ int32 FHLSLMaterialTranslator::VirtualTextureUnpack(int32 CodeIndex0, int32 Code
 		FString	SampleCode(TEXT("VirtualTextureUnpackHeight(%s, %s)"));
 		return CodeIndex0 == INDEX_NONE ? INDEX_NONE : AddCodeChunk(MCT_Float, *SampleCode, *GetParameterCode(CodeIndex0), *GetParameterCode(P0));
 	}
-
+	else if (UnpackType == EVirtualTextureUnpackType::NormalBGR565)
+	{
+		FString	SampleCode(TEXT("VirtualTextureUnpackNormalBGR565(%s)"));
+		return CodeIndex0 == INDEX_NONE || CodeIndex1 == INDEX_NONE ? INDEX_NONE : AddCodeChunk(MCT_Float3, *SampleCode, *GetParameterCode(CodeIndex1));
+	}
+	if (UnpackType == EVirtualTextureUnpackType::BaseColorSRGB)
+	{
+		FString	SampleCode(TEXT("VirtualTextureUnpackBaseColorSRGB(%s)"));
+		return CodeIndex0 == INDEX_NONE ? INDEX_NONE : AddCodeChunk(MCT_Float3, *SampleCode, *GetParameterCode(CodeIndex0));
+	}
 	return CodeIndex0;
 }
 
@@ -5227,11 +6823,11 @@ int32 FHLSLMaterialTranslator::ExternalTextureCoordinateScaleRotation(const FGui
 }
 int32 FHLSLMaterialTranslator::ExternalTextureCoordinateOffset(int32 TextureReferenceIndex, TOptional<FName> ParameterName)
 {
-	return AddUniformExpression(new FMaterialUniformExpressionExternalTextureCoordinateOffset(TextureReferenceIndex, ParameterName), MCT_Float4, TEXT(""));
+	return AddUniformExpression(new FMaterialUniformExpressionExternalTextureCoordinateOffset(TextureReferenceIndex, ParameterName), MCT_Float2, TEXT(""));
 }
 int32 FHLSLMaterialTranslator::ExternalTextureCoordinateOffset(const FGuid& ExternalTextureGuid)
 {
-	return AddUniformExpression(new FMaterialUniformExpressionExternalTextureCoordinateOffset(ExternalTextureGuid), MCT_Float4, TEXT(""));
+	return AddUniformExpression(new FMaterialUniformExpressionExternalTextureCoordinateOffset(ExternalTextureGuid), MCT_Float2, TEXT(""));
 }
 
 UObject* FHLSLMaterialTranslator::GetReferencedTexture(int32 Index)
@@ -5290,20 +6886,9 @@ int32 FHLSLMaterialTranslator::StaticComponentMask(int32 Vector,FName ParameterN
 	return ComponentMask(Vector,bValueR,bValueG,bValueB,bValueA);
 }
 
-const FMaterialLayersFunctions* FHLSLMaterialTranslator::StaticMaterialLayersParameter(FName ParameterName)
+const FMaterialLayersFunctions* FHLSLMaterialTranslator::GetMaterialLayers()
 {
-	FMaterialParameterInfo ParameterInfo = GetParameterAssociationInfo();
-	ParameterInfo.Name = ParameterName;
-
-	for (const FStaticMaterialLayersParameter& Parameter : StaticParameters.MaterialLayersParameters)
-	{
-		if(Parameter.ParameterInfo == ParameterInfo)
-		{
-			return &Parameter.Value;
-		}
-	}
-
-	return nullptr;
+	return StaticParameters.bHasMaterialLayers ? &StaticParameters.MaterialLayers : nullptr;
 }
 
 bool FHLSLMaterialTranslator::GetStaticBoolValue(int32 BoolIndex, bool& bSucceeded)
@@ -5329,7 +6914,7 @@ bool FHLSLMaterialTranslator::GetStaticBoolValue(int32 BoolIndex, bool& bSucceed
 	return false;
 }
 
-int32 FHLSLMaterialTranslator::StaticTerrainLayerWeight(FName ParameterName,int32 Default)
+int32 FHLSLMaterialTranslator::StaticTerrainLayerWeight(FName LayerName,int32 Default)
 {
 	if (GetFeatureLevel() <= ERHIFeatureLevel::ES3_1 && ShaderFrequency != SF_Pixel)
 	{
@@ -5341,9 +6926,6 @@ int32 FHLSLMaterialTranslator::StaticTerrainLayerWeight(FName ParameterName,int3
 	bool bFoundParameter = false;
 	bool bAtLeastOneWeightBasedBlend = false;
 
-	FMaterialParameterInfo ParameterInfo = GetParameterAssociationInfo();
-	ParameterInfo.Name = ParameterName;
-
 	int32 NumActiveTerrainLayerWeightParameters = 0;
 	for(int32 ParameterIndex = 0;ParameterIndex < StaticParameters.TerrainLayerWeightParameters.Num(); ++ParameterIndex)
 	{
@@ -5352,7 +6934,7 @@ int32 FHLSLMaterialTranslator::StaticTerrainLayerWeight(FName ParameterName,int3
 		{
 			NumActiveTerrainLayerWeightParameters++;
 		}
-		if(Parameter.ParameterInfo == ParameterInfo)
+		if(Parameter.LayerName == LayerName)
 		{
 			WeightmapIndex = Parameter.WeightmapIndex;
 			bFoundParameter = true;
@@ -5390,7 +6972,7 @@ int32 FHLSLMaterialTranslator::StaticTerrainLayerWeight(FName ParameterName,int3
 			WeightmapCode = TextureSample(TextureCodeIndex, TextureCoordinate(3, false, false), SamplerType);
 		}
 
-		FString LayerMaskName = FString::Printf(TEXT("LayerMask_%s"),*ParameterName.ToString());
+		FString LayerMaskName = FString::Printf(TEXT("LayerMask_%s"),*LayerName.ToString());
 		return Dot(WeightmapCode,VectorParameter(FName(*LayerMaskName), FLinearColor(1.f,0.f,0.f,0.f)));
 	}
 }
@@ -5398,27 +6980,17 @@ int32 FHLSLMaterialTranslator::StaticTerrainLayerWeight(FName ParameterName,int3
 int32 FHLSLMaterialTranslator::VertexColor()
 {
 	bUsesVertexColor |= (ShaderFrequency != SF_Vertex);
-	return AddInlinedCodeChunk(MCT_Float4,TEXT("Parameters.VertexColor"));
-}
 
-int32 FHLSLMaterialTranslator::PreSkinVertexOffset()
-{
-	if (ShaderFrequency != SF_Vertex)
+	FString FiniteCode = TEXT("Parameters.VertexColor");
+	if (IsAnalyticDerivEnabled())
 	{
-		return Errorf(TEXT("Pre Skin Offset only available in the vertex shader, pass through custom interpolators if needed."));
+		FString AnalyticCode = DerivativeAutogen.ConstructDeriv(FiniteCode, TEXT("Parameters.VertexColor_DDX"), TEXT("Parameters.VertexColor_DDY"), EDerivativeType::Float4);
+		return AddCodeChunkInnerDeriv(*FiniteCode, *AnalyticCode, MCT_Float4, false, EDerivativeStatus::Valid);
 	}
-
-	return AddCodeChunk(MCT_Float3, TEXT("MaterialExpressionPreSkinOffset(Parameters)"));
-}
-
-int32 FHLSLMaterialTranslator::PostSkinVertexOffset()
-{
-	if (ShaderFrequency != SF_Vertex)
+	else
 	{
-		return Errorf(TEXT("Post Skin Offset only available in the vertex shader, pass through custom interpolators if needed."));
+		return AddInlinedCodeChunk(MCT_Float4, *FiniteCode);
 	}
-
-	return AddCodeChunk(MCT_Float3, TEXT("MaterialExpressionPostSkinOffset(Parameters)"));
 }
 
 int32 FHLSLMaterialTranslator::PreSkinnedPosition()
@@ -5454,6 +7026,8 @@ int32 FHLSLMaterialTranslator::VertexInterpolator(uint32 InterpolatorIndex)
 		return Errorf(TEXT("Invalid custom interpolator index."));
 	}
 
+	MaterialCompilationOutput.bUsesVertexInterpolator = true;
+
 	UMaterialExpressionVertexInterpolator* Interpolator = *InterpolatorPtr;
 	check(Interpolator->InterpolatorIndex == InterpolatorIndex);
 	check(Interpolator->InterpolatedType & MCT_Float);
@@ -5481,62 +7055,108 @@ int32 FHLSLMaterialTranslator::VertexInterpolator(uint32 InterpolatorIndex)
 	const int32 Offset = Interpolator->InterpolatorOffset;
 	
 	// Note: We reference the UV define directly to avoid having to pre-accumulate UV counts before property translation
-	FString GetValueCode = FString::Printf(TEXT("%s(Parameters.TexCoords[VERTEX_INTERPOLATOR_%i_TEXCOORDS_X].%s"), TypeName, InterpolatorIndex, Swizzle[Offset%2]);
+	FString ValueCode	= FString::Printf(TEXT("%s(Parameters.TexCoords[VERTEX_INTERPOLATOR_%i_TEXCOORDS_X].%s"),		TypeName, InterpolatorIndex, Swizzle[Offset%2]);
+	FString DDXCode		= FString::Printf(TEXT("%s(Parameters.TexCoords_DDX[VERTEX_INTERPOLATOR_%i_TEXCOORDS_X].%s"),	TypeName, InterpolatorIndex, Swizzle[Offset%2]);
+	FString DDYCode		= FString::Printf(TEXT("%s(Parameters.TexCoords_DDY[VERTEX_INTERPOLATOR_%i_TEXCOORDS_X].%s"),	TypeName, InterpolatorIndex, Swizzle[Offset%2]);
 	if (InterpolatorSize >= 2)
 	{
-		GetValueCode += FString::Printf(TEXT(", Parameters.TexCoords[VERTEX_INTERPOLATOR_%i_TEXCOORDS_Y].%s"), InterpolatorIndex, Swizzle[(Offset+1)%2]);
+		ValueCode	+= FString::Printf(TEXT(", Parameters.TexCoords[VERTEX_INTERPOLATOR_%i_TEXCOORDS_Y].%s"),		InterpolatorIndex, Swizzle[(Offset+1)%2]);
+		DDXCode		+= FString::Printf(TEXT(", Parameters.TexCoords_DDX[VERTEX_INTERPOLATOR_%i_TEXCOORDS_Y].%s"),	InterpolatorIndex, Swizzle[(Offset+1)%2]);
+		DDYCode		+= FString::Printf(TEXT(", Parameters.TexCoords_DDY[VERTEX_INTERPOLATOR_%i_TEXCOORDS_Y].%s"),	InterpolatorIndex, Swizzle[(Offset+1)%2]);
 
 		if (InterpolatorSize >= 3)
 		{
-			GetValueCode += FString::Printf(TEXT(", Parameters.TexCoords[VERTEX_INTERPOLATOR_%i_TEXCOORDS_Z].%s"), InterpolatorIndex, Swizzle[(Offset+2)%2]);
+			ValueCode	+= FString::Printf(TEXT(", Parameters.TexCoords[VERTEX_INTERPOLATOR_%i_TEXCOORDS_Z].%s"),		InterpolatorIndex, Swizzle[(Offset+2)%2]);
+			DDXCode		+= FString::Printf(TEXT(", Parameters.TexCoords_DDX[VERTEX_INTERPOLATOR_%i_TEXCOORDS_Z].%s"),	InterpolatorIndex, Swizzle[(Offset+2)%2]);
+			DDYCode		+= FString::Printf(TEXT(", Parameters.TexCoords_DDY[VERTEX_INTERPOLATOR_%i_TEXCOORDS_Z].%s"),	InterpolatorIndex, Swizzle[(Offset+2)%2]);
 
 			if (InterpolatorSize >= 4)
 			{
 				check(InterpolatorSize == 4);
-				GetValueCode += FString::Printf(TEXT(", Parameters.TexCoords[VERTEX_INTERPOLATOR_%i_TEXCOORDS_W].%s"), InterpolatorIndex, Swizzle[(Offset+3)%2]);
+				ValueCode	+= FString::Printf(TEXT(", Parameters.TexCoords[VERTEX_INTERPOLATOR_%i_TEXCOORDS_W].%s"),		InterpolatorIndex, Swizzle[(Offset+3)%2]);
+				DDXCode		+= FString::Printf(TEXT(", Parameters.TexCoords_DDX[VERTEX_INTERPOLATOR_%i_TEXCOORDS_W].%s"),	InterpolatorIndex, Swizzle[(Offset+3)%2]);
+				DDYCode		+= FString::Printf(TEXT(", Parameters.TexCoords_DDY[VERTEX_INTERPOLATOR_%i_TEXCOORDS_W].%s"),	InterpolatorIndex, Swizzle[(Offset+3)%2]);
 			}
 		}
 	}
 
-	GetValueCode.Append(TEXT(")"));
+	ValueCode.Append(TEXT(")"));
+	DDXCode.Append(TEXT(")"));
+	DDYCode.Append(TEXT(")"));
 
-	int32 RetCode = AddCodeChunk(Interpolator->InterpolatedType, *GetValueCode);
-	return RetCode;
+	if (IsAnalyticDerivEnabled())
+	{
+		FString AnalyticCode = DerivativeAutogen.ConstructDeriv(*ValueCode, *DDXCode, *DDYCode, GetDerivType(Interpolator->InterpolatedType));
+		return AddCodeChunkInnerDeriv(*ValueCode, *AnalyticCode, Interpolator->InterpolatedType, false, EDerivativeStatus::Valid);
+	}
+	else
+	{
+		return AddCodeChunk(Interpolator->InterpolatedType, *ValueCode);
+	}
+
 }
 
-int32 FHLSLMaterialTranslator::Add(int32 A,int32 B)
+int32 FHLSLMaterialTranslator::Add(int32 A, int32 B)
 {
-	if(A == INDEX_NONE || B == INDEX_NONE)
+	if (A == INDEX_NONE || B == INDEX_NONE)
 	{
 		return INDEX_NONE;
 	}
 
-	const uint64 Hash = CityHash128to64({ GetParameterHash(A), GetParameterHash(B) });
-	if(GetParameterUniformExpression(A) && GetParameterUniformExpression(B))
+	const EMaterialValueType ResultType = GetArithmeticResultType(A, B);
+	if (GetParameterUniformExpression(A) && GetParameterUniformExpression(B))
 	{
-		return AddUniformExpressionWithHash(Hash, new FMaterialUniformExpressionFoldedMath(GetParameterUniformExpression(A),GetParameterUniformExpression(B),FMO_Add),GetArithmeticResultType(A,B),TEXT("(%s + %s)"),*GetParameterCode(A),*GetParameterCode(B));
+		return AddUniformExpression(new FMaterialUniformExpressionFoldedMath(GetParameterUniformExpression(A), GetParameterUniformExpression(B), FMO_Add), ResultType, TEXT("(%s + %s)"), *GetParameterCode(A), *GetParameterCode(B));
 	}
 	else
 	{
-		return AddCodeChunkWithHash(Hash, GetArithmeticResultType(A,B),TEXT("(%s + %s)"),*GetParameterCode(A),*GetParameterCode(B));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc2(*this, FMaterialDerivativeAutogen::EFunc2::Add, A, B);
+		}
+		else
+		{
+			if (ResultType & MCT_LWCType)
+			{
+				return AddCodeChunk(ResultType, TEXT("LWCAdd(%s, %s)"), *GetParameterCode(A), *GetParameterCode(B));
+			}
+			else
+			{
+				return AddCodeChunk(ResultType, TEXT("(%s + %s)"), *GetParameterCode(A), *GetParameterCode(B));
+			}
+		}
 	}
 }
 
-int32 FHLSLMaterialTranslator::Sub(int32 A,int32 B)
+int32 FHLSLMaterialTranslator::Sub(int32 A, int32 B)
 {
-	if(A == INDEX_NONE || B == INDEX_NONE)
+	if (A == INDEX_NONE || B == INDEX_NONE)
 	{
 		return INDEX_NONE;
 	}
 
-	const uint64 Hash = CityHash128to64({ GetParameterHash(A), GetParameterHash(B) });
-	if(GetParameterUniformExpression(A) && GetParameterUniformExpression(B))
+	const EMaterialValueType ResultType = GetArithmeticResultType(A, B);
+	if (GetParameterUniformExpression(A) && GetParameterUniformExpression(B))
 	{
-		return AddUniformExpressionWithHash(Hash, new FMaterialUniformExpressionFoldedMath(GetParameterUniformExpression(A),GetParameterUniformExpression(B),FMO_Sub),GetArithmeticResultType(A,B),TEXT("(%s - %s)"),*GetParameterCode(A),*GetParameterCode(B));
+		return AddUniformExpression(new FMaterialUniformExpressionFoldedMath(GetParameterUniformExpression(A), GetParameterUniformExpression(B), FMO_Sub), ResultType, TEXT("(%s - %s)"), *GetParameterCode(A), *GetParameterCode(B));
 	}
 	else
 	{
-		return AddCodeChunkWithHash(Hash, GetArithmeticResultType(A,B),TEXT("(%s - %s)"),*GetParameterCode(A),*GetParameterCode(B));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc2(*this, FMaterialDerivativeAutogen::EFunc2::Sub, A, B);
+		}
+		else
+		{
+			if (ResultType & MCT_LWCType)
+			{
+				return AddCodeChunk(ResultType, TEXT("LWCSubtract(%s, %s)"), *GetParameterCode(A), *GetParameterCode(B));
+			}
+			else
+			{
+				return AddCodeChunk(ResultType, TEXT("(%s - %s)"), *GetParameterCode(A), *GetParameterCode(B));
+			}
+		}
 	}
 }
 
@@ -5547,32 +7167,53 @@ int32 FHLSLMaterialTranslator::Mul(int32 A,int32 B)
 		return INDEX_NONE;
 	}
 
-	const uint64 Hash = CityHash128to64({ GetParameterHash(A), GetParameterHash(B) });
 	if(GetParameterUniformExpression(A) && GetParameterUniformExpression(B))
 	{
-		return AddUniformExpressionWithHash(Hash, new FMaterialUniformExpressionFoldedMath(GetParameterUniformExpression(A),GetParameterUniformExpression(B),FMO_Mul),GetArithmeticResultType(A,B),TEXT("(%s * %s)"),*GetParameterCode(A),*GetParameterCode(B));
+		return AddUniformExpression(new FMaterialUniformExpressionFoldedMath(GetParameterUniformExpression(A),GetParameterUniformExpression(B),FMO_Mul),GetArithmeticResultType(A,B),TEXT("(%s * %s)"),*GetParameterCode(A),*GetParameterCode(B));
 	}
 	else
 	{
-		return AddCodeChunkWithHash(Hash, GetArithmeticResultType(A,B),TEXT("(%s * %s)"),*GetParameterCode(A),*GetParameterCode(B));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc2(*this,FMaterialDerivativeAutogen::EFunc2::Mul,A,B);
+		}
+		else
+		{
+			return AddCodeChunk(GetArithmeticResultType(A,B),TEXT("(%s * %s)"),*GetParameterCode(A),*GetParameterCode(B));
+		}
 	}
 }
 
-int32 FHLSLMaterialTranslator::Div(int32 A,int32 B)
+int32 FHLSLMaterialTranslator::Div(int32 A, int32 B)
 {
-	if(A == INDEX_NONE || B == INDEX_NONE)
+	if (A == INDEX_NONE || B == INDEX_NONE)
 	{
 		return INDEX_NONE;
 	}
 
-	const uint64 Hash = CityHash128to64({ GetParameterHash(A), GetParameterHash(B) });
-	if(GetParameterUniformExpression(A) && GetParameterUniformExpression(B))
+	FMaterialUniformExpression* UniformA = GetParameterUniformExpression(A);
+	FMaterialUniformExpression* UniformB = GetParameterUniformExpression(B);
+	if (UniformA && UniformB)
 	{
-		return AddUniformExpressionWithHash(Hash, new FMaterialUniformExpressionFoldedMath(GetParameterUniformExpression(A),GetParameterUniformExpression(B),FMO_Div),GetArithmeticResultType(A,B),TEXT("(%s / %s)"),*GetParameterCode(A),*GetParameterCode(B));
+		return AddUniformExpression(new FMaterialUniformExpressionFoldedMath(UniformA, UniformB, FMO_Div), GetArithmeticResultType(A, B), TEXT("(%s / %s)"), *GetParameterCode(A), *GetParameterCode(B));
+	}
+	else if (UniformB && !UniformB->IsConstant())
+	{
+		// Division is often optimized as multiplication by reciprocal
+		// If the divisor is a uniform expression, we can fold the reciprocal into the preshader
+		const int32 RcpB = AddUniformExpression(new FMaterialUniformExpressionRcp(UniformB), GetParameterType(B), TEXT("rcp(%s)"), *GetParameterCode(B));
+		return Mul(A, RcpB);
 	}
 	else
 	{
-		return AddCodeChunkWithHash(Hash, GetArithmeticResultType(A,B),TEXT("(%s / %s)"),*GetParameterCode(A),*GetParameterCode(B));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc2(*this, FMaterialDerivativeAutogen::EFunc2::Div, A, B);
+		}
+		else
+		{
+			return AddCodeChunk(GetArithmeticResultType(A, B), TEXT("(%s / %s)"), *GetParameterCode(A), *GetParameterCode(B));
+		}
 	}
 }
 
@@ -5616,6 +7257,12 @@ int32 FHLSLMaterialTranslator::Dot(int32 A,int32 B)
 	}
 	else
 	{
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc2(*this, FMaterialDerivativeAutogen::EFunc2::Dot, A, B);
+		}
+		else
+		{
 		// Promote scalar (or truncate the bigger type)
 		if (TypeA == MCT_Float || (TypeB != MCT_Float && GetNumComponents(TypeA) > GetNumComponents(TypeB)))
 		{
@@ -5626,6 +7273,7 @@ int32 FHLSLMaterialTranslator::Dot(int32 A,int32 B)
 			return AddCodeChunk(MCT_Float,TEXT("dot(%s, %s)"), *GetParameterCode(A), *CoerceParameter(B, TypeA));
 		}
 	}
+}
 }
 
 int32 FHLSLMaterialTranslator::Cross(int32 A,int32 B)
@@ -5646,6 +7294,9 @@ int32 FHLSLMaterialTranslator::Cross(int32 A,int32 B)
 	}
 	else
 	{
+		if(IsAnalyticDerivEnabled())
+			return DerivativeAutogen.GenerateExpressionFunc2(*this, FMaterialDerivativeAutogen::EFunc2::Cross, A, B);
+		else
 		return AddCodeChunk(MCT_Float3,TEXT("cross(%s,%s)"),*CoerceParameter(A,MCT_Float3),*CoerceParameter(B,MCT_Float3));
 	}
 }
@@ -5657,8 +7308,15 @@ int32 FHLSLMaterialTranslator::Power(int32 Base,int32 Exponent)
 		return INDEX_NONE;
 	}
 
+	if (IsAnalyticDerivEnabled())
+	{
+		return DerivativeAutogen.GenerateExpressionFunc2(*this,FMaterialDerivativeAutogen::EFunc2::PowPositiveClamped,Base,Exponent);
+	}
+	else
+	{
 	// Clamp Pow input to >= 0 to help avoid common NaN cases
 	return AddCodeChunk(GetParameterType(Base),TEXT("PositiveClampedPow(%s,%s)"),*GetParameterCode(Base),*CoerceParameter(Exponent,MCT_Float));
+}
 }
 	
 int32 FHLSLMaterialTranslator::Logarithm2(int32 X)
@@ -5672,8 +7330,14 @@ int32 FHLSLMaterialTranslator::Logarithm2(int32 X)
 	{
 		return AddUniformExpression(new FMaterialUniformExpressionLogarithm2(GetParameterUniformExpression(X)),GetParameterType(X),TEXT("log2(%s)"),*GetParameterCode(X));
 	}
-
-	return AddCodeChunk(GetParameterType(X),TEXT("log2(%s)"),*GetParameterCode(X));
+	else if (IsAnalyticDerivEnabled())
+	{
+		return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::Log2, X);
+	}
+	else
+	{
+		return AddCodeChunk(GetParameterType(X), TEXT("log2(%s)"), *GetParameterCode(X));
+	}
 }
 
 int32 FHLSLMaterialTranslator::Logarithm10(int32 X)
@@ -5687,8 +7351,14 @@ int32 FHLSLMaterialTranslator::Logarithm10(int32 X)
 	{
 		return AddUniformExpression(new FMaterialUniformExpressionLogarithm10(GetParameterUniformExpression(X)),GetParameterType(X),TEXT("log10(%s)"),*GetParameterCode(X));
 	}
-
-	return AddCodeChunk(GetParameterType(X),TEXT("log10(%s)"),*GetParameterCode(X));
+	else if (IsAnalyticDerivEnabled())
+	{
+		return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::Log10, X);
+	}
+	else
+	{
+		return AddCodeChunk(GetParameterType(X), TEXT("log10(%s)"), *GetParameterCode(X));
+	}
 }
 
 int32 FHLSLMaterialTranslator::SquareRoot(int32 X)
@@ -5704,24 +7374,64 @@ int32 FHLSLMaterialTranslator::SquareRoot(int32 X)
 	}
 	else
 	{
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this,FMaterialDerivativeAutogen::EFunc1::Sqrt,X);
+		}
+		else
+		{
 		return AddCodeChunk(GetParameterType(X),TEXT("sqrt(%s)"),*GetParameterCode(X));
 	}
+}
 }
 
 int32 FHLSLMaterialTranslator::Length(int32 X)
 {
-	if(X == INDEX_NONE)
+	if (X == INDEX_NONE)
 	{
 		return INDEX_NONE;
 	}
 
-	if(GetParameterUniformExpression(X))
+	if (GetParameterUniformExpression(X))
 	{
-		return AddUniformExpression(new FMaterialUniformExpressionLength(GetParameterUniformExpression(X),GetParameterType(X)),MCT_Float,TEXT("length(%s)"),*GetParameterCode(X));
+		return AddUniformExpression(new FMaterialUniformExpressionLength(GetParameterUniformExpression(X), GetParameterType(X)), MCT_Float, TEXT("length(%s)"), *GetParameterCode(X));
 	}
 	else
 	{
-		return AddCodeChunk(MCT_Float,TEXT("length(%s)"),*GetParameterCode(X));
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::Length, X);
+		}
+		else
+		{
+			return AddCodeChunk(MCT_Float, TEXT("length(%s)"), *GetParameterCode(X));
+		}
+	}
+}
+
+int32 FHLSLMaterialTranslator::Normalize(int32 X)
+{
+	if (X == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+
+	const EMaterialValueType ResultType = MakeNonLWCType(GetParameterType(X));
+
+	if (GetParameterUniformExpression(X))
+	{
+		return AddUniformExpression(new FMaterialUniformExpressionNormalize(GetParameterUniformExpression(X)), ResultType, TEXT("normalize(%s)"), *GetParameterCode(X));
+	}
+	else
+	{
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this, FMaterialDerivativeAutogen::EFunc1::Normalize, X);
+		}
+		else
+		{
+			return AddCodeChunk(ResultType, TEXT("normalize(%s)"), *GetParameterCode(X));
+		}
 	}
 }
 
@@ -5795,8 +7505,14 @@ int32 FHLSLMaterialTranslator::Step(int32 Y, int32 X)
 		}
 	}
 
-	return AddCodeChunk(ResultType, TEXT("step(%s,%s)"), *CoerceParameter(Y, ResultType), *CoerceParameter(X, ResultType));
-	// return;
+	if (IsLWCType(ResultType))
+	{
+		return AddCodeChunkZeroDeriv(MakeNonLWCType(ResultType), TEXT("LWCStep(%s,%s)"), *CoerceParameter(Y, ResultType), *CoerceParameter(X, ResultType));
+	}
+	else
+	{
+		return AddCodeChunkZeroDeriv(ResultType, TEXT("step(%s,%s)"), *CoerceParameter(Y, ResultType), *CoerceParameter(X, ResultType));
+	}
 }
 
 int32 FHLSLMaterialTranslator::SmoothStep(int32 X, int32 Y, int32 A)
@@ -5924,7 +7640,14 @@ int32 FHLSLMaterialTranslator::SmoothStep(int32 X, int32 Y, int32 A)
 		}
 	}
 
-	return AddCodeChunk(ResultType, TEXT("smoothstep(%s,%s,%s)"), *CoerceParameter(X, ResultType), *CoerceParameter(Y, ResultType), *CoerceParameter(A, ResultType));
+	if (IsLWCType(ResultType))
+	{
+		return AddCodeChunk(MakeNonLWCType(ResultType), TEXT("LWCSmoothStep(%s,%s,%s)"), *CoerceParameter(X, ResultType), *CoerceParameter(Y, ResultType), *CoerceParameter(A, ResultType));
+	}
+	else
+	{
+		return AddCodeChunk(ResultType, TEXT("smoothstep(%s,%s,%s)"), *CoerceParameter(X, ResultType), *CoerceParameter(Y, ResultType), *CoerceParameter(A, ResultType));
+	}
 }
 
 int32 FHLSLMaterialTranslator::InvLerp(int32 X, int32 Y, int32 A)
@@ -6103,7 +7826,14 @@ int32 FHLSLMaterialTranslator::Lerp(int32 X,int32 Y,int32 A)
 		}
 	}
 
-	return AddCodeChunk(ResultType,TEXT("lerp(%s,%s,%s)"),*CoerceParameter(X,ResultType),*CoerceParameter(Y,ResultType),*CoerceParameter(A,AlphaType));
+	if (IsAnalyticDerivEnabled())
+	{
+		return DerivativeAutogen.GenerateLerpFunc(*this, X, Y, A);
+	}
+	else
+	{
+		return AddCodeChunk(ResultType,TEXT("lerp(%s, %s, %s)"),*CoerceParameter(X,ResultType),*CoerceParameter(Y,ResultType),*CoerceParameter(A,AlphaType));
+	}
 }
 
 int32 FHLSLMaterialTranslator::Min(int32 A,int32 B)
@@ -6119,8 +7849,15 @@ int32 FHLSLMaterialTranslator::Min(int32 A,int32 B)
 	}
 	else
 	{
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc2(*this,FMaterialDerivativeAutogen::EFunc2::Min,A,B);
+		}
+		else
+		{
 		return AddCodeChunk(GetParameterType(A),TEXT("min(%s,%s)"),*GetParameterCode(A),*CoerceParameter(B,GetParameterType(A)));
 	}
+}
 }
 
 int32 FHLSLMaterialTranslator::Max(int32 A,int32 B)
@@ -6136,24 +7873,58 @@ int32 FHLSLMaterialTranslator::Max(int32 A,int32 B)
 	}
 	else
 	{
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc2(*this,FMaterialDerivativeAutogen::EFunc2::Max,A,B);
+		}
+		else
+		{
 		return AddCodeChunk(GetParameterType(A),TEXT("max(%s,%s)"),*GetParameterCode(A),*CoerceParameter(B,GetParameterType(A)));
 	}
 }
+}
 
-int32 FHLSLMaterialTranslator::Clamp(int32 X,int32 A,int32 B)
+int32 FHLSLMaterialTranslator::Clamp(int32 X, int32 A, int32 B)
 {
-	if(X == INDEX_NONE || A == INDEX_NONE || B == INDEX_NONE)
+	if (X == INDEX_NONE || A == INDEX_NONE || B == INDEX_NONE)
 	{
 		return INDEX_NONE;
 	}
 
-	if(GetParameterUniformExpression(X) && GetParameterUniformExpression(A) && GetParameterUniformExpression(B))
+	FMaterialUniformExpression* UniformX = GetParameterUniformExpression(X);
+	FMaterialUniformExpression* UniformA = GetParameterUniformExpression(A);
+	FMaterialUniformExpression* UniformB = GetParameterUniformExpression(B);
+
+	if (UniformA && UniformB && UniformA->IsConstant() && UniformB->IsConstant())
 	{
-		return AddUniformExpression(new FMaterialUniformExpressionClamp(GetParameterUniformExpression(X),GetParameterUniformExpression(A),GetParameterUniformExpression(B)),GetParameterType(X),TEXT("min(max(%s,%s),%s)"),*GetParameterCode(X),*CoerceParameter(A,GetParameterType(X)),*CoerceParameter(B,GetParameterType(X)));
+		// Check to see if we're clamping between 0-1, in that case we can use Saturate, which has some additional optimizations
+		FMaterialRenderContext DummyContext(nullptr, *Material, nullptr);
+		FLinearColor ValueA;
+		FLinearColor ValueB;
+		UniformA->GetNumberValue(DummyContext, ValueA);
+		UniformB->GetNumberValue(DummyContext, ValueB);
+		if (ValueA == FLinearColor(0.0f, 0.0f, 0.0f, 0.0f) && ValueB == FLinearColor(1.0f, 1.0f, 1.0f, 1.0f))
+		{
+			return Saturate(X);
+		}
+	}
+	
+	if (UniformX && UniformA && UniformB)
+	{
+		return AddUniformExpression(new FMaterialUniformExpressionClamp(UniformX, UniformA, UniformB), GetParameterType(X), TEXT("min(max(%s,%s),%s)"), *GetParameterCode(X), *CoerceParameter(A, GetParameterType(X)), *CoerceParameter(B, GetParameterType(X)));
+	}
+
+	if (IsAnalyticDerivEnabled())
+	{
+		// Make sure 'X' is given as first parameter, to ensure proper type coercion
+		// LWC_TODO - should handle the case where an LWC value is clamped between 2 scalars, could use optimized clamping function in that case
+		int32 MaxXA = DerivativeAutogen.GenerateExpressionFunc2(*this, FMaterialDerivativeAutogen::EFunc2::Max, X, A);
+		int32 Result = DerivativeAutogen.GenerateExpressionFunc2(*this, FMaterialDerivativeAutogen::EFunc2::Min, MaxXA, B);
+		return Result;
 	}
 	else
 	{
-		return AddCodeChunk(GetParameterType(X),TEXT("min(max(%s,%s),%s)"),*GetParameterCode(X),*CoerceParameter(A,GetParameterType(X)),*CoerceParameter(B,GetParameterType(X)));
+		return AddCodeChunk(GetParameterType(X), TEXT("min(max(%s,%s),%s)"), *GetParameterCode(X), *CoerceParameter(A, GetParameterType(X)), *CoerceParameter(B, GetParameterType(X)));
 	}
 }
 
@@ -6170,8 +7941,63 @@ int32 FHLSLMaterialTranslator::Saturate(int32 X)
 	}
 	else
 	{
+		if (IsAnalyticDerivEnabled())
+		{
+			return DerivativeAutogen.GenerateExpressionFunc1(*this,FMaterialDerivativeAutogen::EFunc1::Saturate,X);
+		}
+		else
+		{
 		return AddCodeChunk(GetParameterType(X),TEXT("saturate(%s)"),*GetParameterCode(X));
 	}
+}
+}
+
+static FString ComponentMaskLWC(const FString& SourceString, EMaterialValueType SourceType, EMaterialValueType ResultType, bool R, bool G, bool B, bool A)
+{
+	const TCHAR* ComponentAccess[] =
+	{
+		TEXT("LWCGetX"),
+		TEXT("LWCGetY"),
+		TEXT("LWCGetZ"),
+		TEXT("LWCGetW"),
+	};
+
+	bool bNeedClosingParen = false;
+	bool bNeedComma = false;
+	FString Result;
+	if (ResultType != MCT_LWCScalar)
+	{
+		Result = TEXT("MakeLWCVector(");
+		bNeedClosingParen = true;
+	}
+	if (R)
+	{
+		Result += FString::Printf(TEXT("%s(%s)"), ComponentAccess[0], *SourceString);
+		bNeedComma = true;
+	}
+	if (G)
+	{
+		if (bNeedComma) Result += TEXT(", ");
+		Result += FString::Printf(TEXT("%s(%s)"), ComponentAccess[SourceType == MCT_LWCScalar ? 0 : 1], *SourceString);
+		bNeedComma = true;
+	}
+	if (B)
+	{
+		if (bNeedComma) Result += TEXT(", ");
+		Result += FString::Printf(TEXT("%s(%s)"), ComponentAccess[SourceType == MCT_LWCScalar ? 0 : 2], *SourceString);
+		bNeedComma = true;
+	}
+	if (A)
+	{
+		if (bNeedComma) Result += TEXT(", ");
+		Result += FString::Printf(TEXT("%s(%s)"), ComponentAccess[SourceType == MCT_LWCScalar ? 0 : 3], *SourceString);
+		bNeedComma = true;
+	}
+	if (bNeedClosingParen)
+	{
+		Result += TEXT(")");
+	}
+	return Result;
 }
 
 int32 FHLSLMaterialTranslator::ComponentMask(int32 Vector,bool R,bool G,bool B,bool A)
@@ -6181,23 +8007,33 @@ int32 FHLSLMaterialTranslator::ComponentMask(int32 Vector,bool R,bool G,bool B,b
 		return INDEX_NONE;
 	}
 
-	EMaterialValueType	VectorType = GetParameterType(Vector);
+	EMaterialValueType VectorType = GetParameterType(Vector);
+	uint32 NumValidComponents = 0u;
+	if (VectorType & MCT_Float4) NumValidComponents = 4u;
+	else if (VectorType & MCT_Float3) NumValidComponents = 3u;
+	else if (VectorType & MCT_Float2) NumValidComponents = 2u;
+	else if (VectorType & MCT_Float1) NumValidComponents = 1u;
+	else if (VectorType == MCT_LWCScalar) NumValidComponents = 4u; // Allow .gba mask on scalar values, will use .rrrr as needed
+	else if (VectorType == MCT_LWCVector2) NumValidComponents = 2u;
+	else if (VectorType == MCT_LWCVector3) NumValidComponents = 3u;
+	else if (VectorType == MCT_LWCVector4) NumValidComponents = 4u;
 
-	if(	(A && (VectorType & MCT_Float) < MCT_Float4) ||
-		(B && (VectorType & MCT_Float) < MCT_Float3) ||
-		(G && (VectorType & MCT_Float) < MCT_Float2) ||
-		(R && (VectorType & MCT_Float) < MCT_Float1))
+	if(	(A && NumValidComponents < 4u) ||
+		(B && NumValidComponents < 3u) ||
+		(G && NumValidComponents < 2u) ||
+		(R && NumValidComponents < 1u))
 	{
-		return Errorf(TEXT("Not enough components in (%s: %s) for component mask %u%u%u%u"),*GetParameterCode(Vector),DescribeType(GetParameterType(Vector)),R,G,B,A);
+		return Errorf(TEXT("Not enough components in (%s: %s) for component mask %u%u%u%u"),*GetParameterCode(Vector),DescribeType(VectorType),R,G,B,A);
 	}
 
-	EMaterialValueType	ResultType;
+	const bool bIsLWC = (VectorType & MCT_LWCType);
+	EMaterialValueType ResultType;
 	switch((R ? 1 : 0) + (G ? 1 : 0) + (B ? 1 : 0) + (A ? 1 : 0))
 	{
-	case 1: ResultType = MCT_Float; break;
-	case 2: ResultType = MCT_Float2; break;
-	case 3: ResultType = MCT_Float3; break;
-	case 4: ResultType = MCT_Float4; break;
+	case 1: ResultType = bIsLWC ? MCT_LWCScalar : MCT_Float; break;
+	case 2: ResultType = bIsLWC ? MCT_LWCVector2 : MCT_Float2; break;
+	case 3: ResultType = bIsLWC ? MCT_LWCVector3 : MCT_Float3; break;
+	case 4: ResultType = bIsLWC ? MCT_LWCVector4 : MCT_Float4; break;
 	default: 
 		return Errorf(TEXT("Couldn't determine result type of component mask %u%u%u%u"),R,G,B,A);
 	};
@@ -6210,6 +8046,7 @@ int32 FHLSLMaterialTranslator::ComponentMask(int32 Vector,bool R,bool G,bool B,b
 		A ? (VectorType == MCT_Float ? TEXT("r") : TEXT("a")) : TEXT("")
 		);
 
+	FString SourceString = GetParameterCode(Vector);
 	auto* Expression = GetParameterUniformExpression(Vector);
 	if (Expression)
 	{
@@ -6222,17 +8059,56 @@ int32 FHLSLMaterialTranslator::ComponentMask(int32 Vector,bool R,bool G,bool B,b
 			new FMaterialUniformExpressionComponentSwizzle(Expression, Mask[0], Mask[1], Mask[2], Mask[3]),
 			ResultType,
 			TEXT("%s.%s"),
-			*GetParameterCode(Vector),
+			*SourceString,
 			*MaskString
 			);
 	}
 
-	return AddInlinedCodeChunk(
-		ResultType,
-		TEXT("%s.%s"),
-		*GetParameterCode(Vector),
-		*MaskString
-		);
+	const EDerivativeStatus VectorDerivStatus = GetDerivativeStatus(Vector);
+	FString CodeFinite;
+	if (bIsLWC)
+	{
+		CodeFinite = ComponentMaskLWC(SourceString, VectorType, ResultType, R, G, B, A);
+	}
+	else
+	{
+		CodeFinite = FString::Printf(TEXT("%s.%s"), *SourceString, *MaskString);
+	}
+
+	if (IsAnalyticDerivEnabled() && IsDerivativeValid(VectorDerivStatus))
+	{
+		const FString VectorDeriv = GetParameterCodeDeriv(Vector, CompiledPDV_Analytic);
+
+		FString CodeAnalytic;
+		if (VectorDerivStatus == EDerivativeStatus::Valid)
+		{
+			FString ValueDeriv;
+			if (bIsLWC)
+			{
+				ValueDeriv = ComponentMaskLWC(VectorDeriv + TEXT(".Value"), VectorType, ResultType, R, G, B, A);
+			}
+			else
+			{
+				ValueDeriv = FString::Printf(TEXT("%s.Value.%s"), *VectorDeriv, *MaskString);
+			}
+
+			CodeAnalytic = DerivativeAutogen.ConstructDeriv(
+				ValueDeriv,
+				FString::Printf(TEXT("%s.Ddx.%s"), *VectorDeriv, *MaskString),
+				FString::Printf(TEXT("%s.Ddy.%s"), *VectorDeriv, *MaskString),
+				GetDerivType(ResultType));
+
+			return AddCodeChunkInnerDeriv(*CodeFinite, *CodeAnalytic, ResultType, false, EDerivativeStatus::Valid);
+		}
+		else
+		{
+			return AddInlinedCodeChunkZeroDeriv(ResultType, *CodeFinite);
+		}
+	}
+	else
+	{
+		return AddInlinedCodeChunk(ResultType, *CodeFinite);
+	}
 }
 
 int32 FHLSLMaterialTranslator::AppendVector(int32 A,int32 B)
@@ -6242,8 +8118,13 @@ int32 FHLSLMaterialTranslator::AppendVector(int32 A,int32 B)
 		return INDEX_NONE;
 	}
 
-	int32 NumResultComponents = GetNumComponents(GetParameterType(A)) + GetNumComponents(GetParameterType(B));
-	EMaterialValueType	ResultType = GetVectorType(NumResultComponents);
+	const EMaterialValueType TypeA = GetParameterType(A);
+	const EMaterialValueType TypeB = GetParameterType(B);
+	const bool bIsLWC = IsLWCType(TypeA) || IsLWCType(TypeB);
+	const int32 NumComponentsA = GetNumComponents(TypeA);
+	const int32 NumComponentsB = GetNumComponents(TypeB);
+	const int32 NumResultComponents = NumComponentsA + NumComponentsB;
+	const EMaterialValueType ResultType = bIsLWC ? GetLWCVectorType(NumResultComponents) : GetVectorType(NumResultComponents);
 
 	if(GetParameterUniformExpression(A) && GetParameterUniformExpression(B))
 	{
@@ -6251,7 +8132,91 @@ int32 FHLSLMaterialTranslator::AppendVector(int32 A,int32 B)
 	}
 	else
 	{
-		return AddInlinedCodeChunk(ResultType,TEXT("MaterialFloat%u(%s,%s)"),NumResultComponents,*GetParameterCode(A),*GetParameterCode(B));
+		FString FiniteCode;
+		if (bIsLWC)
+		{
+			FiniteCode = FString::Printf(TEXT("MakeLWCVector(LWCPromote(%s),LWCPromote(%s))"), *GetParameterCode(A), *GetParameterCode(B));
+		}
+		else
+		{
+			FiniteCode = FString::Printf(TEXT("MaterialFloat%u(%s,%s)"), NumResultComponents, *GetParameterCode(A), *GetParameterCode(B));
+		}
+		
+		const EDerivativeStatus ADerivativeStatus = GetDerivativeStatus(A);
+		const EDerivativeStatus BDerivativeStatus = GetDerivativeStatus(B);
+		if (IsAnalyticDerivEnabled() && IsDerivativeValid(ADerivativeStatus) && IsDerivativeValid(BDerivativeStatus))
+		{
+			if (ADerivativeStatus == EDerivativeStatus::Zero && BDerivativeStatus == EDerivativeStatus::Zero)
+			{
+				return AddInlinedCodeChunkZeroDeriv(ResultType, *FiniteCode);
+			}
+			else
+			{
+				FString A_DDX = GetFloatZeroVector(NumComponentsA);
+				FString A_DDY = GetFloatZeroVector(NumComponentsA);
+				FString B_DDX = GetFloatZeroVector(NumComponentsB);
+				FString B_DDY = GetFloatZeroVector(NumComponentsB);
+
+				if (ADerivativeStatus == EDerivativeStatus::Valid)
+				{
+					FString Deriv = *GetParameterCodeDeriv(A, CompiledPDV_Analytic);
+					A_DDX = Deriv + TEXT(".Ddx");
+					A_DDY = Deriv + TEXT(".Ddy");
+				}
+
+				if (BDerivativeStatus == EDerivativeStatus::Valid)
+				{
+					FString Deriv = *GetParameterCodeDeriv(B, CompiledPDV_Analytic);
+					B_DDX = Deriv + TEXT(".Ddx");
+					B_DDY = Deriv + TEXT(".Ddy");
+				}
+
+				FString DDXCode = FString::Printf(TEXT("MaterialFloat%u(%s, %s)"), NumResultComponents, *A_DDX, *B_DDX);
+				FString DDYCode = FString::Printf(TEXT("MaterialFloat%u(%s, %s)"), NumResultComponents, *A_DDY, *B_DDY);
+				FString AnalyticCode = DerivativeAutogen.ConstructDeriv(FiniteCode, *DDXCode, *DDYCode, GetDerivType(ResultType));
+				return AddCodeChunkInnerDeriv(*FiniteCode, *AnalyticCode, ResultType, false, EDerivativeStatus::Valid);
+			}
+		}
+		else
+		{
+			return AddInlinedCodeChunk(ResultType, *FiniteCode);
+		}
+	}
+}
+
+static FString MultiplyMatrix(const TCHAR* Vector, const TCHAR* Matrix, int AWComponent)
+{
+	if (AWComponent)
+	{
+		return FString::Printf(TEXT("mul(MaterialFloat4(%s, 1.0f), %s).xyz"), Vector, Matrix);
+	}
+	else
+	{
+		return FString::Printf(TEXT("mul(%s, (MaterialFloat3x3)(%s))"), Vector, Matrix);
+	}
+}
+
+static FString MultiplyTransposeMatrix(const TCHAR* Matrix, const TCHAR* Vector, int AWComponent)
+{
+	if (AWComponent)
+	{
+		return FString::Printf(TEXT("mul(%s, MaterialFloat4(%s, 1.0f)).xyz"), Matrix, Vector);
+	}
+	else
+	{
+		return FString::Printf(TEXT("mul((MaterialFloat3x3)(%s), %s)"), Matrix, Vector);
+	}
+}
+
+static FString LWCMultiplyMatrix(const TCHAR* Vector, const TCHAR* Matrix, int AWComponent)
+{
+	if (AWComponent)
+	{
+		return FString::Printf(TEXT("LWCMultiply(%s, %s)"), Vector, Matrix);
+	}
+	else
+	{
+		return FString::Printf(TEXT("LWCMultiplyVector(%s, %s)"), Vector, Matrix);
 	}
 }
 
@@ -6262,9 +8227,11 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 		// unable to compile
 		return INDEX_NONE;
 	}
+
+	const EMaterialValueType SourceType = GetParameterType(A);
 		
 	{ // validation
-		if (ShaderFrequency != SF_Pixel && ShaderFrequency != SF_Compute && ShaderFrequency != SF_Domain && ShaderFrequency != SF_Vertex)
+		if (ShaderFrequency != SF_Pixel && ShaderFrequency != SF_Compute && ShaderFrequency != SF_Vertex)
 		{
 			return NonPixelShaderExpressionError();
 		}
@@ -6284,13 +8251,14 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 		
 		// Construct float3(0,0,x) out of the input if it is a scalar
 		// This way artists can plug in a scalar and it will be treated as height, or a vector displacement
-		if (GetType(A) == MCT_Float1 && SourceCoordBasis == MCB_Tangent)
+		const uint32 NumInputComponents = GetNumComponents(SourceType);
+		if (NumInputComponents == 1u && SourceCoordBasis == MCB_Tangent)
 		{
 			A = AppendVector(Constant2(0, 0), A);
 		}
-		else if (GetNumComponents(GetParameterType(A)) < 3)
+		else if (NumInputComponents < 3u)
 		{
-			return Errorf(TEXT("input must be a vector (%s: %s) or a scalar (if source is Tangent)"), *GetParameterCode(A), DescribeType(GetParameterType(A)));
+			return Errorf(TEXT("input must be a vector (%s: %s) or a scalar (if source is Tangent)"), *GetParameterCode(A), DescribeType(SourceType));
 		}
 	}
 		
@@ -6310,15 +8278,7 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 			check(AWComponent == 0);
 			if (DestCoordBasis == MCB_World)
 			{
-				if (ShaderFrequency == SF_Domain)
-				{
-					// domain shader uses a prescale value to preserve scaling factor on WorldTransform	when sampling a displacement map
-					CodeStr = FString(TEXT("TransformTangent<TO>World_PreScaled(Parameters, <A>.xyz)"));
-				}
-				else
-				{
-					CodeStr = TEXT("mul(<A>, <MATRIX>(Parameters.TangentToWorld))");
-				}
+				CodeStr = TEXT("mul(<A>, Parameters.TangentToWorld)");
 			}
 			// else use MCB_World as intermediary basis
 			break;
@@ -6327,7 +8287,7 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 		{
 			if (DestCoordBasis == MCB_World)
 			{
-				CodeStr = TEXT("TransformLocal<TO><PREV>World(Parameters, <A>.xyz)");
+				CodeStr = TEXT("TransformLocal<TO><PREV>World(Parameters, <A>)");
 			}
 			// else use MCB_World as intermediary basis
 			break;
@@ -6338,7 +8298,7 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 			{
 				if (AWComponent)
 				{
-					CodeStr = TEXT("(<A>.xyz - ResolvedView.<PREV>PreViewTranslation.xyz)");
+					CodeStr = TEXT("LWCSubtract(<A>, ResolvedView.<PREV>PreViewTranslation)");
 				}
 				else
 				{
@@ -6347,11 +8307,11 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 			}
 			else if (DestCoordBasis == MCB_Camera)
 			{
-				CodeStr = TEXT("mul(<A>, <MATRIX>(ResolvedView.<PREV>TranslatedWorldToCameraView))");
+				CodeStr = MultiplyMatrix(TEXT("<A>"), TEXT("ResolvedView.<PREV>TranslatedWorldToCameraView"), AWComponent);
 			}
 			else if (DestCoordBasis == MCB_View)
 			{
-				CodeStr = TEXT("mul(<A>, <MATRIX>(ResolvedView.<PREV>TranslatedWorldToView))");
+				CodeStr = MultiplyMatrix(TEXT("<A>"), TEXT("ResolvedView.<PREV>TranslatedWorldToView"), AWComponent);
 			}
 			// else use MCB_World as intermediary basis
 			break;
@@ -6360,7 +8320,7 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 		{
 			if (DestCoordBasis == MCB_Tangent)
 			{
-				CodeStr = TEXT("mul(<MATRIX>(Parameters.TangentToWorld), <A>)");
+				CodeStr = MultiplyTransposeMatrix(TEXT("Parameters.TangentToWorld"), TEXT("<A>"), AWComponent);
 			}
 			else if (DestCoordBasis == MCB_Local)
 			{
@@ -6374,21 +8334,13 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 				}
 
 				// TODO: inconsistent with TransformLocal<TO>World with instancing
-				if (bCompilingPreviousFrame)
-				{
-					// uses different prefix than other Prev* names, so can't use <PREV> tag here
-					CodeStr = TEXT("mul(<A>, <MATRIX>(GetPrimitiveData(Parameters.PrimitiveId).PreviousWorldToLocal))");
-				}
-				else
-				{
-					CodeStr = TEXT("mul(<A>, <MATRIX>(GetPrimitiveData(Parameters.PrimitiveId).WorldToLocal))");
-				}
+				CodeStr = LWCMultiplyMatrix(TEXT("<A>"), TEXT("GetPrimitiveData(Parameters).<PREVIOUS>WorldToLocal"), AWComponent);
 			}
 			else if (DestCoordBasis == MCB_TranslatedWorld)
 			{
 				if (AWComponent)
 				{
-					CodeStr = TEXT("(<A>.xyz + ResolvedView.<PREV>PreViewTranslation.xyz)");
+					CodeStr = TEXT("LWCToFloat(LWCAdd(<A>, ResolvedView.<PREV>PreViewTranslation))");
 				}
 				else
 				{
@@ -6397,8 +8349,13 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 			}
 			else if (DestCoordBasis == MCB_MeshParticle)
 			{
-				CodeStr = TEXT("mul(<A>, <MATRIX>(Parameters.Particle.WorldToParticle))");
+				CodeStr = LWCMultiplyMatrix(TEXT("<A>"), TEXT("Parameters.Particle.WorldToParticle"), AWComponent);
 				bUsesParticleWorldToLocal = true;
+			}
+			else if (DestCoordBasis == MCB_Instance)
+			{
+				CodeStr = LWCMultiplyMatrix(TEXT("<A>"), TEXT("GetWorldToInstance(Parameters)"), AWComponent);
+				bUsesInstanceWorldToLocalPS = ShaderFrequency == SF_Pixel;
 			}
 
 			// else use MCB_TranslatedWorld as intermediary basis
@@ -6409,7 +8366,7 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 		{
 			if (DestCoordBasis == MCB_TranslatedWorld)
 			{
-				CodeStr = TEXT("mul(<A>, <MATRIX>(ResolvedView.<PREV>CameraViewToTranslatedWorld))");
+				CodeStr = MultiplyMatrix(TEXT("<A>"), TEXT("ResolvedView.<PREV>CameraViewToTranslatedWorld"), AWComponent);
 			}
 			// else use MCB_TranslatedWorld as intermediary basis
 			IntermediaryBasis = MCB_TranslatedWorld;
@@ -6419,7 +8376,7 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 		{
 			if (DestCoordBasis == MCB_TranslatedWorld)
 			{
-				CodeStr = TEXT("mul(<A>, <MATRIX>(ResolvedView.<PREV>ViewToTranslatedWorld))");
+				CodeStr = MultiplyMatrix(TEXT("<A>"), TEXT("ResolvedView.<PREV>ViewToTranslatedWorld"), AWComponent);
 			}
 			// else use MCB_TranslatedWorld as intermediary basis
 			IntermediaryBasis = MCB_TranslatedWorld;
@@ -6429,12 +8386,23 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 		{
 			if (DestCoordBasis == MCB_World)
 			{
-				CodeStr = TEXT("mul(<A>, <MATRIX>(Parameters.Particle.ParticleToWorld))");
+				CodeStr = LWCMultiplyMatrix(TEXT("<A>"), TEXT("Parameters.Particle.ParticleToWorld"), AWComponent);
 				bUsesParticleLocalToWorld = true;
 			}
 			// use World as an intermediary base
 			break;
 		}
+		case MCB_Instance:
+		{
+			if (DestCoordBasis == MCB_World)
+			{
+				CodeStr = LWCMultiplyMatrix(TEXT("<A>"), TEXT("GetInstanceToWorld(Parameters)"), AWComponent);
+				bUsesInstanceLocalToWorldPS = ShaderFrequency == SF_Pixel;
+			}
+			// use World as an intermediary base
+			break;
+		}
+
 		default:
 			check(0);
 			break;
@@ -6454,40 +8422,47 @@ int32 FHLSLMaterialTranslator::TransformBase(EMaterialCommonBasis SourceCoordBas
 		
 	if (AWComponent != 0)
 	{
-		if (GetType(A) == MCT_Float3)
-		{
-			A = AppendVector(A, Constant(1));
-		}
 		CodeStr.ReplaceInline(TEXT("<TO>"),TEXT("PositionTo"));
-		CodeStr.ReplaceInline(TEXT("<MATRIX>"),TEXT(""));
-		CodeStr += ".xyz";
 	}
 	else
 	{
 		CodeStr.ReplaceInline(TEXT("<TO>"),TEXT("VectorTo"));
-		CodeStr.ReplaceInline(TEXT("<MATRIX>"),TEXT("(MaterialFloat3x3)"));
 	}
 		
 	if (bCompilingPreviousFrame)
 	{
 		CodeStr.ReplaceInline(TEXT("<PREV>"),TEXT("Prev"));
+		CodeStr.ReplaceInline(TEXT("<PREVIOUS>"), TEXT("Previous"));
 	}
 	else
 	{
 		CodeStr.ReplaceInline(TEXT("<PREV>"),TEXT(""));
+		CodeStr.ReplaceInline(TEXT("<PREVIOUS>"), TEXT(""));
 	}
-		
-	CodeStr.ReplaceInline(TEXT("<A>"), *GetParameterCode(A));
+
+	int32 CastA = A;
+	if (SourceCoordBasis == MCB_World && AWComponent)
+	{
+		CastA = ValidCast(CastA, MCT_LWCVector3);
+	}
+	else
+	{
+		CastA = ValidCast(CastA, MCT_Float3);
+	}
+
+	CodeStr.ReplaceInline(TEXT("<A>"), *GetParameterCode(CastA));
 
 	if (ShaderFrequency != SF_Vertex && (DestCoordBasis == MCB_Tangent || SourceCoordBasis == MCB_Tangent))
 	{
 		bUsesTransformVector = true;
 	}
 
-	return AddCodeChunk(
-		MCT_Float3,
+	const EMaterialValueType ResultType = (DestCoordBasis == MCB_World && AWComponent) ? MCT_LWCVector3 : MCT_Float3;
+	const int32 Result = AddCodeChunk(
+		ResultType,
 		*CodeStr
 		);
+	return CastToNonLWCIfDisabled(Result);
 }
 
 int32 FHLSLMaterialTranslator::TransformVector(EMaterialCommonBasis SourceCoordBasis, EMaterialCommonBasis DestCoordBasis, int32 A)
@@ -6500,6 +8475,11 @@ int32 FHLSLMaterialTranslator::TransformPosition(EMaterialCommonBasis SourceCoor
 	return TransformBase(SourceCoordBasis, DestCoordBasis, A, 1);
 }
 
+int32 FHLSLMaterialTranslator::TransformNormalFromRequestedBasisToWorld(int32 NormalCodeChunk)
+{
+	return Material->IsTangentSpaceNormal() ? TransformBase(MCB_Tangent, MCB_World, NormalCodeChunk, 0) : NormalCodeChunk;
+}
+
 int32 FHLSLMaterialTranslator::DynamicParameter(FLinearColor& DefaultValue, uint32 ParameterIndex)
 {
 	if (ShaderFrequency != SF_Vertex && ShaderFrequency != SF_Pixel && ShaderFrequency != SF_Compute)
@@ -6510,7 +8490,7 @@ int32 FHLSLMaterialTranslator::DynamicParameter(FLinearColor& DefaultValue, uint
 	DynamicParticleParameterMask |= (1 << ParameterIndex);
 
 	int32 Default = Constant4(DefaultValue.R, DefaultValue.G, DefaultValue.B, DefaultValue.A);
-	return AddInlinedCodeChunk(
+	return AddInlinedCodeChunkZeroDeriv(
 		MCT_Float4,
 		TEXT("GetDynamicParameter(Parameters.Particle, %s, %u)"),
 		*GetParameterCode(Default),
@@ -6532,13 +8512,19 @@ int32 FHLSLMaterialTranslator::LightmapUVs()
 
 	bUsesLightmapUVs = true;
 
-	int32 ResultIdx = INDEX_NONE;
-	FString CodeChunk = FString::Printf(TEXT("GetLightmapUVs(Parameters)"));
-	ResultIdx = AddCodeChunk(
-		MCT_Float2,
-		*CodeChunk
-		);
-	return ResultIdx;
+	const TCHAR* FiniteCode = TEXT("GetLightmapUVs(Parameters)");
+	if (IsAnalyticDerivEnabled())
+	{
+		FString AnalyticCode = DerivativeAutogen.ConstructDeriv(
+			FiniteCode,
+			TEXT("GetLightmapUVs_DDX(Parameters)"),
+			TEXT("GetLightmapUVs_DDY(Parameters)"), EDerivativeType::Float2);
+		return AddCodeChunkInnerDeriv(FiniteCode, *AnalyticCode, MCT_Float2, false, EDerivativeStatus::Valid);
+	}
+	else
+	{
+		return AddCodeChunk(MCT_Float2, FiniteCode);
+	}
 }
 
 int32 FHLSLMaterialTranslator::PrecomputedAOMask()
@@ -6564,86 +8550,89 @@ int32 FHLSLMaterialTranslator::PrecomputedAOMask()
 	return ResultIdx;
 }
 
-int32 FHLSLMaterialTranslator::GIReplace(int32 Direct, int32 StaticIndirect, int32 DynamicIndirect)
-{ 
-	if(Direct == INDEX_NONE || DynamicIndirect == INDEX_NONE)
+int32 FHLSLMaterialTranslator::GenericSwitch(const TCHAR* SwitchExpressionText, int32 IfTrue, int32 IfFalse)
+{
+	if (IfTrue == INDEX_NONE || IfFalse == INDEX_NONE)
 	{
 		return INDEX_NONE;
 	}
 
-	EMaterialValueType ResultType = GetArithmeticResultType(Direct, DynamicIndirect);
+	// exactly the same inputs on both sides - no need to generate anything extra
+	if (IfTrue == IfFalse)
+	{
+		return IfTrue;
+	}
 
-	return AddCodeChunk(ResultType,TEXT("(GetGIReplaceState() ? (%s) : (%s))"), *GetParameterCode(DynamicIndirect), *GetParameterCode(Direct));
+	FMaterialUniformExpression* IfTrueExpression = GetParameterUniformExpression(IfTrue);
+	FMaterialUniformExpression* IfFalseExpression = GetParameterUniformExpression(IfFalse);
+	if (IfTrueExpression &&
+		IfFalseExpression &&
+		IfTrueExpression->IsConstant() &&
+		IfFalseExpression->IsConstant())
+	{
+		FMaterialRenderContext DummyContext(nullptr, *Material, nullptr);
+		FLinearColor IfTrueValue;
+		FLinearColor IfFalseValue;
+		IfTrueExpression->GetNumberValue(DummyContext, IfTrueValue);
+		IfFalseExpression->GetNumberValue(DummyContext, IfFalseValue);
+		if (IfTrueValue == IfFalseValue)
+		{
+			// If both inputs are wired to == constant values, avoid adding the runtime switch
+			// This will avoid breaking various offline checks for constant values
+			return IfTrue;
+		}
+	}
+
+	// Both branches of '?:' need to be the same type
+	const EMaterialValueType ResultType = GetArithmeticResultType(IfTrue, IfFalse);
+	const FString IfTrueCode = CoerceParameter(IfTrue, ResultType);
+	const FString IfFalseCode = CoerceParameter(IfFalse, ResultType);
+	
+	if (IsLWCType(ResultType))
+	{
+		return AddCodeChunk(ResultType, TEXT("LWCSelect(%s, %s, %s)"), SwitchExpressionText, *IfTrueCode, *IfFalseCode);
+	}
+	else
+	{
+		return AddCodeChunk(ResultType, TEXT("(%s ? (%s) : (%s))"), SwitchExpressionText, *IfTrueCode, *IfFalseCode);
+	}
+}
+
+int32 FHLSLMaterialTranslator::GIReplace(int32 Direct, int32 StaticIndirect, int32 DynamicIndirect)
+{ 
+	return GenericSwitch(TEXT("GetGIReplaceState()"), DynamicIndirect, Direct);
 }
 
 int32 FHLSLMaterialTranslator::ShadowReplace(int32 Default, int32 Shadow)
 {
-	if (Default == INDEX_NONE || Shadow == INDEX_NONE)
-	{
-		return INDEX_NONE;
-	}
-
-	FMaterialUniformExpression* DefaultExpression = GetParameterUniformExpression(Default);
-	FMaterialUniformExpression* ShadowExpression = GetParameterUniformExpression(Shadow);
-	if (DefaultExpression &&
-		ShadowExpression &&
-		DefaultExpression->IsConstant() &&
-		ShadowExpression->IsConstant())
-	{
-		FMaterialRenderContext DummyContext(nullptr, *Material, nullptr);
-		FLinearColor DefaultValue;
-		FLinearColor ShadowValue;
-		DefaultExpression->GetNumberValue(DummyContext, DefaultValue);
-		ShadowExpression->GetNumberValue(DummyContext, ShadowValue);
-		if (DefaultValue == ShadowValue)
-		{
-			// If both inputs are wired to == constant values, avoid adding the runtime switch
-			// This will avoid breaking various offline checks for constant values
-			return Default;
-		}
-	}
-
-	EMaterialValueType ResultType = GetArithmeticResultType(Default, Shadow);
-	return AddCodeChunk(ResultType, TEXT("(GetShadowReplaceState() ? (%s) : (%s))"), *GetParameterCode(Shadow), *GetParameterCode(Default));
+	return GenericSwitch(TEXT("GetShadowReplaceState()"), Shadow, Default);
 }
 
 
 int32 FHLSLMaterialTranslator::ReflectionCapturePassSwitch(int32 Default, int32 Reflection)
 {
-	if (Default == INDEX_NONE || Reflection == INDEX_NONE)
-	{
-		return INDEX_NONE;
-	}
-
-	EMaterialValueType ResultType = GetArithmeticResultType(Default, Reflection);
-	return AddCodeChunk(ResultType, TEXT("(GetReflectionCapturePassSwitchState() ? (%s) : (%s))"), *GetParameterCode(Reflection), *GetParameterCode(Default));
+	return GenericSwitch(TEXT("GetReflectionCapturePassSwitchState()"), Reflection, Default);
 }
 
 int32 FHLSLMaterialTranslator::RayTracingQualitySwitchReplace(int32 Normal, int32 RayTraced)
 {
-	if (Normal == INDEX_NONE || RayTraced == INDEX_NONE)
-	{
-		return INDEX_NONE;
-	}
-
-	EMaterialValueType ResultType = GetArithmeticResultType(Normal, RayTraced);
-	return AddCodeChunk(ResultType, TEXT("(GetRayTracingQualitySwitch() ? (%s) : (%s))"), *GetParameterCode(RayTraced), *GetParameterCode(Normal));
+	return GenericSwitch(TEXT("GetRayTracingQualitySwitch()"), RayTraced, Normal);
 }
+
+int32 FHLSLMaterialTranslator::PathTracingQualitySwitchReplace(int32 Normal, int32 PathTraced)
+{
+	return GenericSwitch(TEXT("GetPathTracingQualitySwitch()"), PathTraced, Normal);
+}
+
 
 int32 FHLSLMaterialTranslator::VirtualTextureOutputReplace(int32 Default, int32 VirtualTexture)
 {
-	if (Default == INDEX_NONE || VirtualTexture == INDEX_NONE)
-	{
-		return INDEX_NONE;
-	}
-
-	EMaterialValueType ResultType = GetArithmeticResultType(Default, VirtualTexture);
-	return AddCodeChunk(ResultType, TEXT("(GetRuntimeVirtualTextureOutputSwitch() ? (%s) : (%s))"), *GetParameterCode(VirtualTexture), *GetParameterCode(Default));
+	return GenericSwitch(TEXT("GetRuntimeVirtualTextureOutputSwitch()"), VirtualTexture, Default);
 }
 
 int32 FHLSLMaterialTranslator::ObjectOrientation()
 { 
-	return AddInlinedCodeChunk(MCT_Float3,TEXT("GetObjectOrientation(Parameters.PrimitiveId)"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float3,TEXT("GetObjectOrientation(Parameters)"));
 }
 
 int32 FHLSLMaterialTranslator::RotateAboutAxis(int32 NormalizedRotationAxisAndAngleIndex, int32 PositionOnAxisIndex, int32 PositionIndex)
@@ -6656,12 +8645,15 @@ int32 FHLSLMaterialTranslator::RotateAboutAxis(int32 NormalizedRotationAxisAndAn
 	}
 	else
 	{
+		const EMaterialValueType PositionOnAxisType = GetParameterType(PositionOnAxisIndex);
+		const EMaterialValueType PositionType = GetParameterType(PositionIndex);
+		const EMaterialValueType InputType = IsLWCType(PositionOnAxisType) || IsLWCType(PositionType) ? MCT_LWCVector3 : MCT_Float3;
 		return AddCodeChunk(
 			MCT_Float3,
 			TEXT("RotateAboutAxis(%s,%s,%s)"),
 			*CoerceParameter(NormalizedRotationAxisAndAngleIndex,MCT_Float4),
-			*CoerceParameter(PositionOnAxisIndex,MCT_Float3),
-			*CoerceParameter(PositionIndex,MCT_Float3)
+			*CoerceParameter(PositionOnAxisIndex, InputType),
+			*CoerceParameter(PositionIndex, InputType)
 			);	
 	}
 }
@@ -6672,7 +8664,7 @@ int32 FHLSLMaterialTranslator::TwoSidedSign()
 	{
 		return NonPixelShaderExpressionError();
 	}
-	return AddInlinedCodeChunk(MCT_Float,TEXT("Parameters.TwoSidedSign"));	
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("Parameters.TwoSidedSign"));
 }
 
 int32 FHLSLMaterialTranslator::VertexNormal()
@@ -6710,9 +8702,9 @@ int32 FHLSLMaterialTranslator::PixelNormalWS()
 	return AddInlinedCodeChunk(MCT_Float3,TEXT("Parameters.WorldNormal"));	
 }
 
-int32 FHLSLMaterialTranslator::DDX( int32 X )
+int32 FHLSLMaterialTranslator::Derivative(int32 A, const TCHAR* Component)
 {
-	if (X == INDEX_NONE)
+	if (A == INDEX_NONE)
 	{
 		return INDEX_NONE;
 	}
@@ -6720,7 +8712,7 @@ int32 FHLSLMaterialTranslator::DDX( int32 X )
 	if (ShaderFrequency == SF_Compute)
 	{
 		// running a material in a compute shader pass (e.g. when using SVOGI)
-		return AddInlinedCodeChunk(MCT_Float, TEXT("0"));	
+		return AddInlinedCodeChunk(MCT_Float, TEXT("0"));
 	}
 
 	if (ShaderFrequency != SF_Pixel)
@@ -6728,27 +8720,38 @@ int32 FHLSLMaterialTranslator::DDX( int32 X )
 		return NonPixelShaderExpressionError();
 	}
 
-	return AddCodeChunk(GetParameterType(X),TEXT("DDX(%s)"),*GetParameterCode(X));
+	const FDerivInfo ADerivInfo = GetDerivInfo(A);
+	const EMaterialValueType ResultType = MakeNonLWCType(ADerivInfo.Type);
+	const TCHAR* FunctionName = IsLWCType(ADerivInfo.Type) ? TEXT("LWCDd") : TEXT("dd");
+	const FString FiniteCode = FString::Printf(TEXT("%s%s(%s)"), FunctionName, Component, *GetParameterCode(A));
+
+	if (IsAnalyticDerivEnabled() && ADerivInfo.DerivativeStatus == EDerivativeStatus::Valid)
+	{
+		FString ADeriv = GetParameterCodeDeriv(A, CompiledPDV_Analytic);
+
+		FString AnalyticCode = DerivativeAutogen.ConstructDeriv(
+			FString::Printf(TEXT("%s.Dd%s"), *ADeriv, Component),
+			FString::Printf(TEXT("dd%s(%s.Ddx)"), Component, *ADeriv),
+			FString::Printf(TEXT("dd%s(%s.Ddy)"), Component, *ADeriv),
+			MakeNonLWCType(ADerivInfo.DerivType)
+		);
+
+		return AddCodeChunkInnerDeriv(*FiniteCode, *AnalyticCode, ResultType, false, EDerivativeStatus::Valid);
+	}
+	else
+	{
+		return AddCodeChunkInnerDeriv(*FiniteCode, ResultType, false, (ADerivInfo.DerivativeStatus == EDerivativeStatus::Zero) ? EDerivativeStatus::Zero : EDerivativeStatus::NotValid);
+	}
 }
 
-int32 FHLSLMaterialTranslator::DDY( int32 X )
+int32 FHLSLMaterialTranslator::DDX( int32 A )
 {
-	if(X == INDEX_NONE)
-	{
-		return INDEX_NONE;
-	}
+	return Derivative(A, TEXT("x"));
+}
 
-	if (ShaderFrequency == SF_Compute)
-	{
-		// running a material in a compute shader pass
-		return AddInlinedCodeChunk(MCT_Float, TEXT("0"));	
-	}
-	if (ShaderFrequency != SF_Pixel)
-	{
-		return NonPixelShaderExpressionError();
-	}
-
-	return AddCodeChunk(GetParameterType(X),TEXT("DDY(%s)"),*GetParameterCode(X));
+int32 FHLSLMaterialTranslator::DDY( int32 A )
+{
+	return Derivative(A, TEXT("y"));
 }
 
 int32 FHLSLMaterialTranslator::AntialiasedTextureMask(int32 Tex, int32 UV, float Threshold, uint8 Channel)
@@ -6778,11 +8781,6 @@ int32 FHLSLMaterialTranslator::AntialiasedTextureMask(int32 Tex, int32 UV, float
 
 int32 FHLSLMaterialTranslator::DepthOfFieldFunction(int32 Depth, int32 FunctionValueIndex)
 {
-	if (ShaderFrequency == SF_Hull)
-	{
-		return Errorf(TEXT("Invalid node DepthOfFieldFunction used in hull shader input!"));
-	}
-
 	if (Depth == INDEX_NONE)
 	{
 		return INDEX_NONE;
@@ -6843,9 +8841,18 @@ int32 FHLSLMaterialTranslator::Noise(int32 Position, float Scale, int32 Quality,
 	int32 TilingConst = Constant(bTiling);
 	int32 RepeatSizeConst = Constant(RepeatSize);
 
+	const EMaterialValueType PositionType = GetParameterType(Position);
+	if (IsLWCType(PositionType))
+	{
+		// If Noise is driven by a LWC position, just take the offset within the current tile
+		// Will generate discontinuity in noise at tile boudaries
+		// Could potentially add noise functions that operate directly on LWC values, but that would be very expensive
+		Position = AddCodeChunk(MCT_Float3, TEXT("LWCNormalizeTile(%s).Offset"), *CoerceParameter(Position, MCT_LWCVector3));
+	}
+
 	return AddCodeChunk(MCT_Float, 
 		TEXT("MaterialExpressionNoise(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"), 
-		*GetParameterCode(Position),
+		*CoerceParameter(Position, MCT_Float3),
 		*GetParameterCode(ScaleConst),
 		*GetParameterCode(QualityConst),
 		*GetParameterCode(NoiseFunctionConst),
@@ -6875,7 +8882,7 @@ int32 FHLSLMaterialTranslator::VectorNoise(int32 Position, int32 Quality, uint8 
 	{
 		return AddCodeChunk(MCT_Float4,
 			TEXT("MaterialExpressionVectorNoise(%s,%s,%s,%s,%s)"),
-			*GetParameterCode(Position),
+			*CoerceParameter(Position, MCT_Float3), // LWC_TODO - maybe possible/useful to add LWC-aware noise functions
 			*GetParameterCode(QualityConst),
 			*GetParameterCode(NoiseFunctionConst),
 			*GetParameterCode(TilingConst),
@@ -6885,7 +8892,7 @@ int32 FHLSLMaterialTranslator::VectorNoise(int32 Position, int32 Quality, uint8 
 	{
 		return AddCodeChunk(MCT_Float3,
 			TEXT("MaterialExpressionVectorNoise(%s,%s,%s,%s,%s).xyz"),
-			*GetParameterCode(Position),
+			*CoerceParameter(Position, MCT_Float3),
 			*GetParameterCode(QualityConst),
 			*GetParameterCode(NoiseFunctionConst),
 			*GetParameterCode(TilingConst),
@@ -6958,6 +8965,11 @@ int32 FHLSLMaterialTranslator::GetHairAtlasUVs()
 	return AddCodeChunk(MCT_Float2, TEXT("MaterialExpressionGetAtlasUVs(Parameters)"));
 }
 
+int32 FHLSLMaterialTranslator::GetHairGroupIndex()
+{
+	return AddCodeChunk(MCT_Float1, TEXT("MaterialExpressionGetHairGroupIndex(Parameters)"));
+}
+
 int32 FHLSLMaterialTranslator::GetHairColorFromMelanin(int32 Melanin, int32 Redness, int32 DyeColor)
 {
 	if (Melanin == INDEX_NONE)
@@ -6991,7 +9003,8 @@ int32 FHLSLMaterialTranslator::DistanceToNearestSurface(int32 PositionArg)
 
 	MaterialCompilationOutput.bUsesGlobalDistanceField = true;
 
-	return AddCodeChunk(MCT_Float, TEXT("GetDistanceToNearestSurfaceGlobal(%s)"), *GetParameterCode(PositionArg));
+	// LWC_TODO: update for LWC position
+	return AddCodeChunk(MCT_Float, TEXT("GetDistanceToNearestSurfaceGlobal(%s)"), *CoerceParameter(PositionArg, MCT_Float3));
 }
 
 int32 FHLSLMaterialTranslator::DistanceFieldGradient(int32 PositionArg)
@@ -7008,7 +9021,8 @@ int32 FHLSLMaterialTranslator::DistanceFieldGradient(int32 PositionArg)
 
 	MaterialCompilationOutput.bUsesGlobalDistanceField = true;
 
-	return AddCodeChunk(MCT_Float3, TEXT("GetDistanceFieldGradientGlobal(%s)"), *GetParameterCode(PositionArg));
+	// LWC_TODO: update for LWC position
+	return AddCodeChunk(MCT_Float3, TEXT("GetDistanceFieldGradientGlobal(%s)"), *CoerceParameter(PositionArg, MCT_Float3));
 }
 
 int32 FHLSLMaterialTranslator::SamplePhysicsField(int32 PositionArg, const int32 OutputType, const int32 TargetIndex)
@@ -7023,19 +9037,20 @@ int32 FHLSLMaterialTranslator::SamplePhysicsField(int32 PositionArg, const int32
 		return INDEX_NONE;
 	}
 
+	// LWC_TODO: LWC aware physics field
 	if (TargetIndex != INDEX_NONE)
 	{
 		if (OutputType == EFieldOutputType::Field_Output_Vector)
 		{
-			return AddCodeChunk(MCT_Float3, TEXT("MatPhysicsField_SamplePhysicsVectorField(%s,%d)"), *GetParameterCode(PositionArg), static_cast<uint8>(TargetIndex));
+			return AddCodeChunk(MCT_Float3, TEXT("MatPhysicsField_SamplePhysicsVectorField(%s,%d)"), *CoerceParameter(PositionArg, MCT_Float3), static_cast<uint8>(TargetIndex));
 		}
 		else if (OutputType == EFieldOutputType::Field_Output_Scalar)
 		{
-			return AddCodeChunk(MCT_Float, TEXT("MatPhysicsField_SamplePhysicsScalarField(%s,%d)"), *GetParameterCode(PositionArg), static_cast<uint8>(TargetIndex));
+			return AddCodeChunk(MCT_Float, TEXT("MatPhysicsField_SamplePhysicsScalarField(%s,%d)"), *CoerceParameter(PositionArg, MCT_Float3), static_cast<uint8>(TargetIndex));
 		}
 		else if (OutputType == EFieldOutputType::Field_Output_Integer)
 		{
-			return AddCodeChunk(MCT_Float, TEXT("MatPhysicsField_SamplePhysicsIntegerField(%s,%d)"), *GetParameterCode(PositionArg), static_cast<uint8>(TargetIndex));
+			return AddCodeChunk(MCT_Float, TEXT("MatPhysicsField_SamplePhysicsIntegerField(%s,%d)"), *CoerceParameter(PositionArg, MCT_Float3), static_cast<uint8>(TargetIndex));
 		}
 		else
 		{
@@ -7050,42 +9065,24 @@ int32 FHLSLMaterialTranslator::SamplePhysicsField(int32 PositionArg, const int32
 
 int32 FHLSLMaterialTranslator::AtmosphericFogColor( int32 WorldPosition )
 {
-	if (ErrorUnlessFeatureLevelSupported(ERHIFeatureLevel::SM5) == INDEX_NONE)
-	{
-		return INDEX_NONE;
-	}
-
-	bUsesAtmosphericFog = true;
-	if( WorldPosition == INDEX_NONE )
-	{
-		return AddCodeChunk( MCT_Float4, TEXT("MaterialExpressionAtmosphericFog(Parameters, Parameters.AbsoluteWorldPosition)"));
-	}
-	else
-	{
-		return AddCodeChunk( MCT_Float4, TEXT("MaterialExpressionAtmosphericFog(Parameters, %s)"), *GetParameterCode(WorldPosition) );
-	}
+	return SkyAtmosphereAerialPerspective(WorldPosition);
 }
 
 int32 FHLSLMaterialTranslator::AtmosphericLightVector()
 {
-	bUsesAtmosphericFog = true;
-
 	return AddCodeChunk(MCT_Float3, TEXT("MaterialExpressionAtmosphericLightVector(Parameters)"));
-
 }
 
 int32 FHLSLMaterialTranslator::AtmosphericLightColor()
 {
-	bUsesAtmosphericFog = true;
-
 	return AddCodeChunk(MCT_Float3, TEXT("MaterialExpressionAtmosphericLightColor(Parameters)"));
-
 }
 
 int32 FHLSLMaterialTranslator::SkyAtmosphereLightIlluminance(int32 WorldPosition, int32 LightIndex)
 {
 	bUsesSkyAtmosphere = true;
-	return AddCodeChunk(MCT_Float3, TEXT("MaterialExpressionSkyAtmosphereLightIlluminance(Parameters, %s, %d)"), *GetParameterCode(WorldPosition), LightIndex);
+	FString WorldPosCode = WorldPosition == INDEX_NONE ? FString(TEXT("Parameters.AbsoluteWorldPosition")) : CoerceParameter(WorldPosition, MCT_LWCVector3);
+	return AddCodeChunk(MCT_Float3, TEXT("MaterialExpressionSkyAtmosphereLightIlluminance(Parameters, %s, %d)"), *WorldPosCode, LightIndex);
 }
 
 int32 FHLSLMaterialTranslator::SkyAtmosphereLightDirection(int32 LightIndex)
@@ -7109,13 +9106,23 @@ int32 FHLSLMaterialTranslator::SkyAtmosphereViewLuminance()
 int32 FHLSLMaterialTranslator::SkyAtmosphereAerialPerspective(int32 WorldPosition)
 {
 	bUsesSkyAtmosphere = true;
-	return AddCodeChunk(MCT_Float4, TEXT("MaterialExpressionSkyAtmosphereAerialPerspective(Parameters, %s)"), *GetParameterCode(WorldPosition));
+	FString WorldPosCode = WorldPosition == INDEX_NONE ? FString(TEXT("Parameters.AbsoluteWorldPosition")) : CoerceParameter(WorldPosition, MCT_LWCVector3);
+	return AddCodeChunk(MCT_Float4, TEXT("MaterialExpressionSkyAtmosphereAerialPerspective(Parameters, %s)"), *WorldPosCode);
 }
 
 int32 FHLSLMaterialTranslator::SkyAtmosphereDistantLightScatteredLuminance()
 {
 	bUsesSkyAtmosphere = true;
 	return AddCodeChunk(MCT_Float3, TEXT("MaterialExpressionSkyAtmosphereDistantLightScatteredLuminance(Parameters)"));
+}
+
+int32 FHLSLMaterialTranslator::SkyLightEnvMapSample(int32 DirectionCodeChunk, int32 RoughnessCodeChunk)
+{
+	if (Material->GetMaterialDomain() != MD_Surface)
+	{
+		return Errorf(TEXT("The SkyLightEnvMapSample node can only be used when material Domain is set to Surface."));
+	}
+	return AddCodeChunk(MCT_Float3, TEXT("MaterialExpressionSkyLightEnvMapSample(%s, %s)"), *GetParameterCode(DirectionCodeChunk), *GetParameterCode(RoughnessCodeChunk));
 }
 
 int32 FHLSLMaterialTranslator::SceneDepthWithoutWater(int32 Offset, int32 ViewportUV, bool bUseOffset, float FallbackDepth)
@@ -7211,7 +9218,7 @@ int32 FHLSLMaterialTranslator::CustomPrimitiveData(int32 OutputIndex, EMaterialV
 			const int32 CustomDataIndex = CurrentOutputIndex / 4;
 			const int32 ElementIndex = CurrentOutputIndex % 4; // Index x, y, z or w
 
-			HlslCode.Append(FString::Printf(TEXT("GetPrimitiveData(Parameters.PrimitiveId).CustomPrimitiveData[%d][%d]"), CustomDataIndex, ElementIndex));
+			HlslCode.Append(FString::Printf(TEXT("GetPrimitiveData(Parameters).CustomPrimitiveData[%d][%d]"), CustomDataIndex, ElementIndex));
 		}
 		else
 		{
@@ -7239,6 +9246,577 @@ int32 FHLSLMaterialTranslator::ShadingModel(EMaterialShadingModel InSelectedShad
 	return AddInlinedCodeChunk(MCT_ShadingModel, TEXT("%d"), InSelectedShadingModel);
 }
 
+int32 FHLSLMaterialTranslator::DefaultMaterialAttributes()
+{
+	return AddInlinedCodeChunk(MCT_MaterialAttributes, TEXT("DefaultMaterialAttributes"));
+}
+
+int32 FHLSLMaterialTranslator::SetMaterialAttribute(int32 MaterialAttributes, int32 Value, const FGuid& AttributeID)
+{
+	const EMaterialProperty Property = FMaterialAttributeDefinitionMap::GetProperty(AttributeID);
+	const FString PropertyName = FMaterialAttributeDefinitionMap::GetAttributeName(AttributeID);
+	const EMaterialValueType PropertyType = FMaterialAttributeDefinitionMap::GetValueType(AttributeID);
+	const EShaderFrequency Frequency = FMaterialAttributeDefinitionMap::GetShaderFrequency(AttributeID);
+	
+	if (MaterialAttributes == INDEX_NONE ||
+		GetParameterType(MaterialAttributes) != MCT_MaterialAttributes)
+	{
+		return Error(TEXT("Expected MaterialAttributes"));
+	}
+
+	if (Frequency != ShaderFrequency)
+	{
+		return Errorf(TEXT("Can't set material attribute %s from shader stage %d"), *PropertyName, ShaderFrequency);
+	}
+
+	const int32 CastValue = ValidCast(Value, PropertyType);
+	FMaterialUniformExpression* UniformExpression = GetParameterUniformExpression(CastValue);
+	bool bSetDefaultValue = false;
+	if (UniformExpression && UniformExpression->IsConstant())
+	{
+		FMaterialRenderContext Context(nullptr, *Material, nullptr);
+		FLinearColor ConstantValue(ForceInitToZero);
+		UniformExpression->GetNumberValue(Context, ConstantValue);
+		const FVector4f DefaultValue = FMaterialAttributeDefinitionMap::GetDefaultValue(AttributeID);
+		bSetDefaultValue = (ConstantValue == FLinearColor(DefaultValue));
+	}
+
+	uint64 AttributeMask = GetParameterMaterialAttributeMask(MaterialAttributes);
+	if (bSetDefaultValue)
+	{
+		if (!(AttributeMask & (1ull << Property)))
+		{
+			// Setting default value to an input that already has the default value set, this is a NOP
+			return MaterialAttributes;
+		}
+		// Otherwise, explicitly set the value back to default
+		AttributeMask &= ~(1ull << Property);
+	}
+	else
+	{
+		// Setting a non-default value
+		AttributeMask |= (1ull << Property);
+	}
+
+	const int32 Result = AddCodeChunk(MCT_MaterialAttributes, TEXT("FMaterialAttributes_Set%s(%s, %s)"),
+		*PropertyName,
+		*GetParameterCode(MaterialAttributes),
+		*GetParameterCode(CastValue));
+
+	SetParameterMaterialAttributes(Result, AttributeMask);
+
+	return Result;
+}
+
+int32 FHLSLMaterialTranslator::BeginScope()
+{
+	const int32 Result = AddCodeChunk(MCT_VoidStatement, TEXT(""));
+	ScopeStack.Add(Result);
+	return Result;
+}
+
+int32 FHLSLMaterialTranslator::BeginScope_If(int32 Condition)
+{
+	const int32 ConditionAsFloat = ForceCast(Condition, MCT_Float1);
+	if (ConditionAsFloat == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+
+	const int32 Result = AddCodeChunk(MCT_VoidStatement, TEXT("if (%s != 0.0f)"), *GetParameterCode(ConditionAsFloat));
+	ScopeStack.Add(Result);
+
+	return Result;
+}
+
+int32 FHLSLMaterialTranslator::BeginScope_Else()
+{
+	const int32 Result = AddCodeChunk(MCT_VoidStatement, TEXT("else"));
+	ScopeStack.Add(Result);
+
+	return Result;
+}
+
+int32 FHLSLMaterialTranslator::BeginScope_For(const UMaterialExpression* Expression, int32 StartIndex, int32 EndIndex, int32 IndexStep)
+{
+	const int32 StartIndexAsFloat = ForceCast(StartIndex, MCT_Float1);
+	const int32 EndIndexAsFloat = ForceCast(EndIndex, MCT_Float1);
+	const int32 IndexStepAsFloat = ForceCast(IndexStep, MCT_Float1);
+	if (StartIndexAsFloat == INDEX_NONE || EndIndexAsFloat == INDEX_NONE || IndexStepAsFloat == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+
+	const int32 LoopIndex = NumForLoops[ShaderFrequency]++;
+	check(!ForLoopMap[ShaderFrequency].Contains(Expression));
+	ForLoopMap[ShaderFrequency].Add(Expression, LoopIndex);
+
+	const int32 Result = AddCodeChunk(MCT_VoidStatement, TEXT("for (float ForLoopCounter%d = %s; ForLoopCounter%d < %s; ForLoopCounter%d += %s)"),
+		LoopIndex, *GetParameterCode(StartIndexAsFloat),
+		LoopIndex, *GetParameterCode(EndIndexAsFloat),
+		LoopIndex, *GetParameterCode(IndexStepAsFloat));
+	ScopeStack.Add(Result);
+	return Result;
+}
+
+int32 FHLSLMaterialTranslator::EndScope()
+{
+	return ScopeStack.Pop(false);
+}
+
+int32 FHLSLMaterialTranslator::ForLoopIndex(const UMaterialExpression* Expression)
+{
+	const int32* Result = ForLoopMap[ShaderFrequency].Find(Expression);
+	if (Result)
+	{
+		return AddInlinedCodeChunk(MCT_Float1, TEXT("ForLoopCounter%d"), *Result);
+	}
+	return Error(TEXT("Expression is not a for-loop"));
+}
+
+int32 FHLSLMaterialTranslator::ReturnMaterialAttributes(int32 MaterialAttributes)
+{
+	if (MaterialAttributes == INDEX_NONE ||
+		GetParameterType(MaterialAttributes) != MCT_MaterialAttributes)
+	{
+		return Error(TEXT("Expected MaterialAttributes"));
+	}
+
+	const uint64 AttributeMask = GetParameterMaterialAttributeMask(MaterialAttributes);
+	MaterialAttributesReturned[ShaderFrequency] |= AttributeMask;
+
+	return AddCodeChunk(MCT_VoidStatement, TEXT("return %s;"), *GetParameterCode(MaterialAttributes));
+}
+
+int32 FHLSLMaterialTranslator::SetLocal(const FName& LocalName, int32 Value)
+{
+	const int32 ValueAsFloat = ForceCast(Value, MCT_Float1);
+	if (ValueAsFloat == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+
+	FMaterialLocalVariableEntry& Entry = LocalVariables[ShaderFrequency].FindOrAdd(LocalName);
+	if (Entry.DeclarationCodeIndex == INDEX_NONE)
+	{
+		Entry.Name = LocalName.ToString();
+		Entry.DeclarationCodeIndex = AddCodeChunk(MCT_VoidStatement, TEXT("float %s = %s;"), *Entry.Name, *GetParameterCode(ValueAsFloat));
+		return Entry.DeclarationCodeIndex;
+	}
+	else
+	{
+		// ensure the declaration is visible in the current scope
+		AddCodeChunkToCurrentScope(Entry.DeclarationCodeIndex);
+		return AddCodeChunk(MCT_VoidStatement, TEXT("%s = %s;"), *Entry.Name, *GetParameterCode(ValueAsFloat));
+	}
+}
+
+int32 FHLSLMaterialTranslator::GetLocal(const FName& LocalName)
+{
+	const FMaterialLocalVariableEntry* Entry = LocalVariables[ShaderFrequency].Find(LocalName);
+	if (!Entry)
+	{
+		return Errorf(TEXT("Local %s used before being set"), *LocalName.ToString());
+	}
+
+	// ensure the declaration is visible in the current scope
+	AddCodeChunkToCurrentScope(Entry->DeclarationCodeIndex);
+	return AddInlinedCodeChunk(MCT_Float1, TEXT("%s"), *Entry->Name);
+}
+
+void FHLSLMaterialTranslator::StrataCompilationInfoRegisterCodeChunk(int32 CodeChunk, FStrataMaterialCompilationInfo& StrataMaterialCompilationInfo)
+{
+	check(CodeChunk != INDEX_NONE);
+	CodeChunkToStrataCompilationInfoMap.Add(CodeChunk, StrataMaterialCompilationInfo);
+}
+
+bool FHLSLMaterialTranslator::StrataCompilationInfoContainsCodeChunk(int32 CodeChunk)
+{
+	return CodeChunk != INDEX_NONE ? CodeChunkToStrataCompilationInfoMap.Contains(CodeChunk) : false;
+}
+
+const FStrataMaterialCompilationInfo& FHLSLMaterialTranslator::GetStrataCompilationInfo(int32 CodeChunk)
+{
+	check(CodeChunk != INDEX_NONE);
+	return CodeChunkToStrataCompilationInfoMap[CodeChunk];
+}
+
+FStrataRegisteredSharedLocalBasis FHLSLMaterialTranslator::StrataCompilationInfoRegisterSharedLocalBasis(int32 NormalCodeChunk)
+{
+	check(NormalCodeChunk != INDEX_NONE);
+	check(NextFreeStrataShaderNormalIndex < 255);	// Out of shared local basis slots
+
+	FStrataRegisteredSharedLocalBasis StrataRegisteredSharedLocalBasis;
+	StrataRegisteredSharedLocalBasis.NormalCodeChunk		= NormalCodeChunk;
+	StrataRegisteredSharedLocalBasis.NormalCodeChunkHash	= GetParameterHash(NormalCodeChunk);
+	StrataRegisteredSharedLocalBasis.TangentCodeChunk		= INDEX_NONE;
+	StrataRegisteredSharedLocalBasis.TangentCodeChunkHash	= GetParameterHash(INDEX_NONE);
+	StrataRegisteredSharedLocalBasis.GraphSharedLocalBasisIndex = NextFreeStrataShaderNormalIndex++;
+
+	// Find any basis which match the Normal code chunk
+	// A normal can be duplicated when it is paired with different tangent, so find the first one which matches
+	TArray<FStrataSharedLocalBasesInfo*> NormalInfos;
+	CodeChunkToStrataSharedLocalBasis.MultiFindPointer(StrataRegisteredSharedLocalBasis.NormalCodeChunkHash, NormalInfos);
+	if (NormalInfos.Num() == 0)
+	{
+		CodeChunkToStrataSharedLocalBasis.Add(StrataRegisteredSharedLocalBasis.NormalCodeChunkHash, { StrataRegisteredSharedLocalBasis, *GetParameterCode(StrataRegisteredSharedLocalBasis.NormalCodeChunk), FString() });
+		return StrataRegisteredSharedLocalBasis;
+	}
+	// Return the first existing code chunk which match the normal chunk code
+	return NormalInfos[0]->SharedData;
+}
+
+FStrataRegisteredSharedLocalBasis FHLSLMaterialTranslator::StrataCompilationInfoRegisterSharedLocalBasis(int32 NormalCodeChunk, int32 TangentCodeChunk)
+{
+	check(NormalCodeChunk != INDEX_NONE);
+	check(NextFreeStrataShaderNormalIndex < 255);	// Out of shared local basis slots
+	
+
+	FStrataRegisteredSharedLocalBasis StrataRegisteredSharedLocalBasis;
+	StrataRegisteredSharedLocalBasis.NormalCodeChunk		= NormalCodeChunk;
+	StrataRegisteredSharedLocalBasis.NormalCodeChunkHash	= GetParameterHash(NormalCodeChunk);
+	StrataRegisteredSharedLocalBasis.TangentCodeChunk		= TangentCodeChunk;
+	StrataRegisteredSharedLocalBasis.TangentCodeChunkHash	= GetParameterHash(TangentCodeChunk);
+	StrataRegisteredSharedLocalBasis.GraphSharedLocalBasisIndex = NextFreeStrataShaderNormalIndex++;
+
+	// Find a basis which matches both the Normal & the Tangent code chunks
+	TArray<FStrataSharedLocalBasesInfo*> NormalInfos;
+	CodeChunkToStrataSharedLocalBasis.MultiFindPointer(StrataRegisteredSharedLocalBasis.NormalCodeChunkHash, NormalInfos);
+	for (FStrataSharedLocalBasesInfo* NormalInfo : NormalInfos)
+	{
+		// * Either we find a perfect match (normal & tangent matches)
+		// * Or we find a normal which doesn't have a tangent associated with, and we set the tangent for code
+		if (StrataRegisteredSharedLocalBasis.TangentCodeChunkHash == NormalInfo->SharedData.TangentCodeChunk)
+		{
+			return NormalInfo->SharedData;
+			break;
+		}
+		else if (NormalInfo->SharedData.TangentCodeChunk == INDEX_NONE)
+		{
+			NormalInfo->SharedData.TangentCodeChunk		= TangentCodeChunk;
+			NormalInfo->SharedData.TangentCodeChunkHash = StrataRegisteredSharedLocalBasis.TangentCodeChunkHash;
+			NormalInfo->TangentCode				= *GetParameterCode(TangentCodeChunk);
+			return NormalInfo->SharedData;
+			break;
+		}
+	}
+
+	// Allocate a new slot for a new shared local basis
+	CodeChunkToStrataSharedLocalBasis.Add(StrataRegisteredSharedLocalBasis.NormalCodeChunkHash, { StrataRegisteredSharedLocalBasis, *GetParameterCode(StrataRegisteredSharedLocalBasis.NormalCodeChunk), *GetParameterCode(StrataRegisteredSharedLocalBasis.TangentCodeChunk) });
+	return StrataRegisteredSharedLocalBasis;
+}
+
+FHLSLMaterialTranslator::FStrataSharedLocalBasesInfo FHLSLMaterialTranslator::StrataCompilationInfoGetMatchingSharedLocalBasisInfo(const FStrataRegisteredSharedLocalBasis& SearchedSharedLocalBasis)
+{
+	check(NextFreeStrataShaderNormalIndex < 255);	// Out of shared local basis slots
+
+	// Find a basis which matches both the Normal & the Tangent code chunks
+	TArray<FStrataSharedLocalBasesInfo*> NormalInfos;
+	CodeChunkToStrataSharedLocalBasis.MultiFindPointer(SearchedSharedLocalBasis.NormalCodeChunkHash, NormalInfos);
+
+	// We first try to find a perfect match for normal and tangent from all the registered element.
+	for (FStrataSharedLocalBasesInfo* NormalInfo : NormalInfos)
+	{
+		if (SearchedSharedLocalBasis.TangentCodeChunk == INDEX_NONE ||											// We selected the first available normal if there is no tangent specified on the material.
+			SearchedSharedLocalBasis.TangentCodeChunkHash == NormalInfo->SharedData.TangentCodeChunkHash)		// Otherwise we select the normal+tangent that exactly matches the request.
+		{
+			return *NormalInfo;
+			break;
+		}
+	}
+
+	check(0);	// When the compiler is querying, this is to get a result to generate code from a fully processed graph. No result means a bug happened during graph processing.
+	return FStrataSharedLocalBasesInfo();
+}
+
+uint8 FHLSLMaterialTranslator::StrataCompilationInfoGetSharedLocalBasesCount()
+{
+	return FinalUsedSharedLocalBasesCount;
+}
+
+int32 FHLSLMaterialTranslator::StrataAddParameterBlendingBSDFCoverageToNormalMixCodeChunk(int32 ACodeChunk, int32 BCodeChunk)
+{
+	return AddCodeChunk(MCT_Float, TEXT("AddParameterBlendingBSDFCoverageToNormalMix(%s, %s)"), *GetParameterCode(ACodeChunk), *GetParameterCode(BCodeChunk));
+}
+
+int32 FHLSLMaterialTranslator::StrataVerticalLayeringParameterBlendingBSDFCoverageToNormalMixCodeChunk(int32 TopCodeChunk)
+{
+	return AddCodeChunk(MCT_Float, TEXT("VerticalLayeringParameterBlendingBSDFCoverageToNormalMix(%s)"), *GetParameterCode(TopCodeChunk));
+}
+
+int32 FHLSLMaterialTranslator::StrataHorizontalMixingParameterBlendingBSDFCoverageToNormalMixCodeChunk(int32 BackgroundCodeChunk, int32 ForegroundCodeChunk, int32 HorizontalMixCodeChunk)
+{
+	return AddCodeChunk(MCT_Float, TEXT("HorizontalMixingParameterBlendingBSDFCoverageToNormalMix(%s, %s, %s)"), *GetParameterCode(BackgroundCodeChunk), *GetParameterCode(ForegroundCodeChunk), *GetParameterCode(HorizontalMixCodeChunk));
+}
+
+int32 FHLSLMaterialTranslator::StrataCreateAndRegisterNullMaterial()
+{
+	int32 OutputCodeChunk = AddInlinedCodeChunk(MCT_Strata, TEXT("GetInitialisedStrataData()"));
+	StrataCompilationInfoCreateNullBSDF(this, OutputCodeChunk);
+	return OutputCodeChunk;
+}
+
+int32 FHLSLMaterialTranslator::StrataSlabBSDF(
+	int32 UseMetalness,
+	int32 BaseColor, int32 EdgeColor, int32 Specular, int32 Metallic,
+	int32 DiffuseAlbedo, int32 F0, int32 F90,
+	int32 Roughness, int32 Anisotropy,
+	int32 SSSProfileId, int32 SSSDMFP, int32 SSSDMFPScale, 
+	int32 EmissiveColor,	
+	int32 Haziness, 
+	int32 ThinFilmThickness, 
+	int32 FuzzAmount, int32 FuzzColor,
+	int32 Thickness, 
+	int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro)
+{
+	const FString NormalCode = GetParameterCode(Normal);
+	const FString TangentCode = Tangent != INDEX_NONE ? *GetParameterCode(Tangent) : TEXT("NONE");
+	return AddCodeChunk(
+		MCT_Strata, TEXT("GetStrataSlabBSDF(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, Parameters.SharedLocalBases.Types) /* Normal = %s ; Tangent = %s */"),
+		* GetParameterCode(UseMetalness),
+		*GetParameterCode(BaseColor),		*GetParameterCode(EdgeColor),	*GetParameterCode(Specular), *GetParameterCode(Metallic),
+		*GetParameterCode(DiffuseAlbedo),	*GetParameterCode(F0),			*GetParameterCode(F90),
+		*GetParameterCode(Roughness),		*GetParameterCode(Anisotropy),
+		*GetParameterCode(SSSProfileId),
+		*GetParameterCode(SSSDMFP),
+		*GetParameterCode(SSSDMFPScale),
+		*GetParameterCode(EmissiveColor),
+		*GetParameterCode(Haziness),
+		*GetParameterCode(ThinFilmThickness),
+		*GetParameterCode(FuzzAmount),		*GetParameterCode(FuzzColor),
+		*GetParameterCode(Thickness),
+		*SharedLocalBasisIndexMacro,
+		*NormalCode,
+		*TangentCode
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataConversionFromLegacy(
+	bool bHasDynamicShadingModels,
+	int32 BaseColor, int32 Specular, int32 Metallic,
+	int32 Roughness, int32 Anisotropy,
+	int32 SubSurfaceColor, int32 SubSurfaceProfileId,
+	int32 ClearCoat, int32 ClearCoatRoughness,
+	int32 EmissiveColor,
+	int32 Opacity,
+	int32 TransmittanceColor,
+	int32 WaterScatteringCoefficients, int32 WaterAbsorptionCoefficients, int32 WaterPhaseG, int32 ColorScaleBehindWater,
+	int32 ShadingModel,
+	int32 Normal, int32 Tangent, const FString& SharedLocalBasisIndexMacro,
+	int32 ClearCoat_Normal, int32 ClearCoat_Tangent, const FString& ClearCoat_SharedLocalBasisIndexMacro)
+{
+	const FString NormalCode = GetParameterCode(Normal);
+	const FString TangentCode = Tangent != INDEX_NONE ? *GetParameterCode(Tangent) : TEXT("NONE");
+
+	const FString ClearCoat_NormalCode = GetParameterCode(ClearCoat_Normal);
+	const FString ClearCoat_TangentCode = Tangent != INDEX_NONE ? *GetParameterCode(ClearCoat_Tangent) : TEXT("NONE");
+
+	return AddCodeChunk(
+		MCT_Strata, TEXT("StrataConvertLegacyMaterial%s(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, Parameters.SharedLocalBases.Types) /* Normal = %s ; Tangent = %s ; ClearCoat_Normal = %s ; ClearCoat_Tangent = %s */"),
+		bHasDynamicShadingModels ? TEXT("Dynamic") : TEXT("Static"),
+		*GetParameterCode(BaseColor), *GetParameterCode(Specular), *GetParameterCode(Metallic),
+		*GetParameterCode(Roughness), *GetParameterCode(Anisotropy),
+		*GetParameterCode(SubSurfaceColor), *GetParameterCode(SubSurfaceProfileId),
+		*GetParameterCode(ClearCoat), *GetParameterCode(ClearCoatRoughness),
+		*GetParameterCode(EmissiveColor),
+		*GetParameterCode(Opacity),
+		*GetParameterCode(TransmittanceColor),
+		*GetParameterCode(WaterScatteringCoefficients), *GetParameterCode(WaterAbsorptionCoefficients), *GetParameterCode(WaterPhaseG), *GetParameterCode(ColorScaleBehindWater),
+		*GetParameterCode(ShadingModel),
+		*SharedLocalBasisIndexMacro,
+		*ClearCoat_SharedLocalBasisIndexMacro,
+		// Regular normal basis
+		*NormalCode,
+		*TangentCode,
+		// Clear coat bottom layer normal basis
+		*ClearCoat_NormalCode,
+		*ClearCoat_TangentCode
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataVolumetricFogCloudBSDF(int32 Albedo, int32 Extinction, int32 EmissiveColor, int32 AmbientOcclusion)
+{
+	return AddCodeChunk(
+		MCT_Strata, TEXT("GetStrataVolumeFogCloudBSDF(%s, %s, %s, %s)"),
+		*GetParameterCode(Albedo),
+		*GetParameterCode(Extinction),
+		*GetParameterCode(EmissiveColor),
+		*GetParameterCode(AmbientOcclusion)
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataUnlitBSDF(int32 EmissiveColor, int32 TransmittanceColor)
+{
+	return AddCodeChunk(
+		MCT_Strata, TEXT("GetStrataUnlitBSDF(%s, %s)"),
+		*GetParameterCode(EmissiveColor),
+		*GetParameterCode(TransmittanceColor)
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataHairBSDF(int32 BaseColor, int32 Scatter, int32 Specular, int32 Roughness, int32 Backlit, int32 EmissiveColor, int32 Tangent, const FString& SharedLocalBasisIndexMacro)
+{
+	return AddCodeChunk(
+		MCT_Strata, TEXT("GetStrataHairBSDF(%s, %s, %s, %s, %s, %s, %s) /* %s */"),
+		*GetParameterCode(BaseColor),
+		*GetParameterCode(Scatter),
+		*GetParameterCode(Specular),
+		*GetParameterCode(Roughness),
+		*GetParameterCode(Backlit),
+		*GetParameterCode(EmissiveColor),
+		*SharedLocalBasisIndexMacro,
+		*GetParameterCode(Tangent)
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataSingleLayerWaterBSDF(
+	int32 BaseColor, int32 Metallic, int32 Specular, int32 Roughness, int32 EmissiveColor, int32 TopMaterialOpacity,
+	int32 WaterAlbedo, int32 WaterExtinction, int32 WaterPhaseG, int32 ColorScaleBehindWater, int32 Normal, const FString& SharedLocalBasisIndexMacro)
+{
+	return AddCodeChunk(
+		MCT_Strata, TEXT("GetStrataSingleLayerWaterBSDF(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) /* %s */"),
+		*GetParameterCode(BaseColor),
+		*GetParameterCode(Metallic),
+		*GetParameterCode(Specular),
+		*GetParameterCode(Roughness),
+		*GetParameterCode(EmissiveColor),
+		*GetParameterCode(TopMaterialOpacity),
+		*GetParameterCode(WaterAlbedo),
+		*GetParameterCode(WaterExtinction),
+		*GetParameterCode(WaterPhaseG),
+		*GetParameterCode(ColorScaleBehindWater),
+		*SharedLocalBasisIndexMacro,
+		*GetParameterCode(Normal)
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataHorizontalMixing(int32 Background, int32 Foreground, int32 Mix)
+{
+	if (Foreground == INDEX_NONE || Background == INDEX_NONE || Mix == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+	return AddCodeChunk(
+		MCT_Strata, TEXT("StrataHorizontalMixing(%s, %s, %s)"),
+		*GetParameterCode(Background),
+		*GetParameterCode(Foreground),
+		*GetParameterCode(Mix)
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataHorizontalMixingParameterBlending(int32 Background, int32 Foreground, int32 HorizontalMixCodeChunk, int32 NormalMixCodeChunk, const FString& SharedLocalBasisIndexMacro)
+{
+	if (Foreground == INDEX_NONE || Background == INDEX_NONE || HorizontalMixCodeChunk == INDEX_NONE || NormalMixCodeChunk == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+	return AddCodeChunk(
+		MCT_Strata, TEXT("StrataHorizontalMixingParameterBlending(%s, %s, %s, %s, %s)"),
+		*GetParameterCode(Background),
+		*GetParameterCode(Foreground),
+		*GetParameterCode(HorizontalMixCodeChunk),
+		*GetParameterCode(NormalMixCodeChunk),
+		*SharedLocalBasisIndexMacro
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataVerticalLayering(int32 Top, int32 Base)
+{
+	if (Top == INDEX_NONE || Base == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+	return AddCodeChunk(
+		MCT_Strata, TEXT("StrataVerticalLayering(%s, %s)"),
+		*GetParameterCode(Top),
+		*GetParameterCode(Base)
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataVerticalLayeringParameterBlending(int32 Top, int32 Base, const FString& SharedLocalBasisIndexMacro, int32 TopBSDFNormalCodeChunk)
+{
+	if (Top == INDEX_NONE || Base == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+	return AddCodeChunk(
+		MCT_Strata, TEXT("StrataVerticalLayeringParameterBlending(%s, %s, %s, dot(%s, %s))"),
+		*GetParameterCode(Top),
+		*GetParameterCode(Base),
+		*SharedLocalBasisIndexMacro,
+		*GetParameterCode(TopBSDFNormalCodeChunk),
+		*GetParameterCode(CameraVector())
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataAdd(int32 A, int32 B)
+{
+	if (A == INDEX_NONE || B == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+	return AddCodeChunk(
+		MCT_Strata, TEXT("StrataAdd(%s, %s)"),
+		*GetParameterCode(A),
+		*GetParameterCode(B)
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataAddParameterBlending(int32 A, int32 B, int32 AMixWeight, const FString& SharedLocalBasisIndexMacro)
+{
+	if (A == INDEX_NONE || B == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+	return AddCodeChunk(
+		MCT_Strata, TEXT("StrataAddParameterBlending(%s, %s, %s, %s)"),
+		*GetParameterCode(A),
+		*GetParameterCode(B),
+		*GetParameterCode(AMixWeight),
+		*SharedLocalBasisIndexMacro
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataWeight(int32 A, int32 Weight)
+{
+	if (A == INDEX_NONE || Weight == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+	return AddCodeChunk(
+		MCT_Strata, TEXT("StrataWeight(%s, %s)"),
+		*GetParameterCode(A),
+		*GetParameterCode(Weight)
+	);
+}
+
+int32 FHLSLMaterialTranslator::StrataTransmittanceToMFP(int32 TransmittanceColor, int32 DesiredThickness, int32 OutputIndex)
+{
+	if (OutputIndex == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+
+	const int32 DefaultThicknessCodechunk = AddInlinedCodeChunk(MCT_Float1, TEXT("%f"), STRATA_LAYER_DEFAULT_THICKNESS_CM);
+	switch (OutputIndex)
+	{
+	case 0:
+		return AddCodeChunk(MCT_Float3, 
+			// For the math to be valid, input to TransmittanceToMeanFreePath must be in meter.
+			// Then the output needs to be is converted to centimeters.
+			TEXT("(TransmittanceToMeanFreePath(%s, %s * CENTIMETER_TO_METER) * METER_TO_CENTIMETER)"), 
+			*GetParameterCode(TransmittanceColor),
+			*GetParameterCode(DesiredThickness == INDEX_NONE ? DefaultThicknessCodechunk : DesiredThickness));
+		break;
+	case 1:
+		// Thickness to be plugged into other nodes thickness input.
+		// This matches the Slab node default using STRATA_LAYER_DEFAULT_THICKNESS_CM
+		return DesiredThickness == INDEX_NONE ? DefaultThicknessCodechunk : DesiredThickness;
+		break;
+	}
+	return INDEX_NONE;
+}
+
 int32 FHLSLMaterialTranslator::MapARPassthroughCameraUV(int32 UV)
 {
 	if (UV == INDEX_NONE)
@@ -7246,8 +9824,8 @@ int32 FHLSLMaterialTranslator::MapARPassthroughCameraUV(int32 UV)
 		return INDEX_NONE;
 	}
 
-	int32 UVPair0 = AddInlinedCodeChunk(MCT_Float4, TEXT("ResolvedView.XRPassthroughCameraUVs[0]"));
-	int32 UVPair1 = AddInlinedCodeChunk(MCT_Float4, TEXT("ResolvedView.XRPassthroughCameraUVs[1]"));
+	int32 UVPair0 = AddInlinedCodeChunkZeroDeriv(MCT_Float4, TEXT("ResolvedView.XRPassthroughCameraUVs[0]"));
+	int32 UVPair1 = AddInlinedCodeChunkZeroDeriv(MCT_Float4, TEXT("ResolvedView.XRPassthroughCameraUVs[1]"));
 
 	int32 ULerp = Lerp(UVPair0, UVPair1, ComponentMask(UV, 1, 0, 0, 0));
 	return Lerp(ComponentMask(ULerp, 1, 1, 0, 0), ComponentMask(ULerp, 0, 0, 1, 1), ComponentMask(UV, 0, 1, 0, 0));
@@ -7352,6 +9930,30 @@ int32 FHLSLMaterialTranslator::CustomExpression( class UMaterialExpressionCustom
 				InputParamDecl += TEXT("MaterialFloat4 ");
 				InputParamDecl += InputNameStr;
 				break;
+			case MCT_LWCScalar:
+				InputParamDecl += TEXT("float ");
+				InputParamDecl += InputNameStr;
+				InputParamDecl += TEXT(", FLWCScalar LWC");
+				InputParamDecl += InputNameStr;
+				break;
+			case MCT_LWCVector2:
+				InputParamDecl += TEXT("float2 ");
+				InputParamDecl += InputNameStr;
+				InputParamDecl += TEXT(", FLWCVector2 LWC");
+				InputParamDecl += InputNameStr;
+				break;
+			case MCT_LWCVector3:
+				InputParamDecl += TEXT("float3 ");
+				InputParamDecl += InputNameStr;
+				InputParamDecl += TEXT(", FLWCVector3 LWC");
+				InputParamDecl += InputNameStr;
+				break;
+			case MCT_LWCVector4:
+				InputParamDecl += TEXT("float4 ");
+				InputParamDecl += InputNameStr;
+				InputParamDecl += TEXT(", FLWCVector4 LWC");
+				InputParamDecl += InputNameStr;
+				break;
 			case MCT_Texture2D:
 				InputParamDecl += TEXT("Texture2D ");
 				InputParamDecl += InputNameStr;
@@ -7368,6 +9970,13 @@ int32 FHLSLMaterialTranslator::CustomExpression( class UMaterialExpressionCustom
 				break;
 			case MCT_Texture2DArray:
 				InputParamDecl += TEXT("Texture2DArray ");
+				InputParamDecl += InputNameStr;
+				InputParamDecl += TEXT(", SamplerState ");
+				InputParamDecl += InputNameStr;
+				InputParamDecl += TEXT("Sampler ");
+				break;
+			case MCT_TextureCubeArray:
+				InputParamDecl += TEXT("TextureCubeArray ");
 				InputParamDecl += InputNameStr;
 				InputParamDecl += TEXT(", SamplerState ");
 				InputParamDecl += InputNameStr;
@@ -7438,7 +10047,7 @@ int32 FHLSLMaterialTranslator::CustomExpression( class UMaterialExpressionCustom
 		}
 		Code.ReplaceInline(TEXT("\n"), TEXT("\r\n"), ESearchCase::CaseSensitive);
 
-		FString ParametersType = ShaderFrequency == SF_Vertex ? TEXT("Vertex") : ((ShaderFrequency == SF_Domain || ShaderFrequency == SF_Hull) ? TEXT("Tessellation") : TEXT("Pixel"));
+		FString ParametersType = ShaderFrequency == SF_Vertex ? TEXT("Vertex") : TEXT("Pixel");
 
 		FMaterialCustomExpressionEntry& Entry = CustomExpressions.AddDefaulted_GetRef();
 		CustomEntry = &Entry;
@@ -7516,8 +10125,16 @@ int32 FHLSLMaterialTranslator::CustomExpression( class UMaterialExpressionCustom
 			EMaterialValueType ParamType = GetParameterType(CompiledInputs[i]);
 
 			CodeChunk += TEXT(",");
+			if (ParamType & MCT_LWCType)
+			{
+				// LWC types get two values, first the value converted to float, then the raw LWC value
+				// This way legacy custom expressions can continue to operate on regular float values
+				CodeChunk += TEXT("LWCToFloat(");
+				CodeChunk += *ParamCode;
+				CodeChunk += TEXT("),");
+			}
 			CodeChunk += *ParamCode;
-			if (ParamType == MCT_Texture2D || ParamType == MCT_TextureCube || ParamType == MCT_Texture2DArray || ParamType == MCT_TextureExternal || ParamType == MCT_VolumeTexture)
+			if (ParamType == MCT_Texture2D || ParamType == MCT_TextureCube || ParamType == MCT_TextureCubeArray || ParamType == MCT_Texture2DArray || ParamType == MCT_TextureExternal || ParamType == MCT_VolumeTexture)
 			{
 				CodeChunk += TEXT(",");
 				CodeChunk += *ParamCode;
@@ -7568,41 +10185,65 @@ int32 FHLSLMaterialTranslator::CustomOutput(class UMaterialExpressionCustomOutpu
 	}
 
 	EMaterialValueType OutputType = GetParameterType(OutputCode);
-	FString OutputTypeString;
-	switch (OutputType)
+	if (!IsFloatNumericType(OutputType))
 	{
-		case MCT_Float:
-		case MCT_Float1:
-			OutputTypeString = TEXT("MaterialFloat");
-			break;
-		case MCT_Float2:
-			OutputTypeString += TEXT("MaterialFloat2");
-			break;
-		case MCT_Float3:
-			OutputTypeString += TEXT("MaterialFloat3");
-			break;
-		case MCT_Float4:
-			OutputTypeString += TEXT("MaterialFloat4");
-			break;
-		default:
-			return Errorf(TEXT("Bad type %s for %s"), DescribeType(GetParameterType(OutputCode)), *Custom->GetDescription());
-			break;
+		return Errorf(TEXT("Bad type %s for %s"), DescribeType(OutputType), *Custom->GetDescription());
 	}
 
+	FString OutputTypeString = HLSLTypeString(OutputType);
 	FString Definitions;
 	FString Body;
 
+	// For now just grab the finite differences version, and use both for finite and analytic. Should fix later.
 	if ((*CurrentScopeChunks)[OutputCode].UniformExpression && !(*CurrentScopeChunks)[OutputCode].UniformExpression->IsConstant())
 	{
 		Body = GetParameterCode(OutputCode);
 	}
 	else
 	{
-		GetFixedParameterCode(OutputCode, *CurrentScopeChunks, Definitions, Body);
+		GetFixedParameterCode(OutputCode, *CurrentScopeChunks, Definitions, Body, CompiledPDV_FiniteDifferences);
 	}
 
-	FString ImplementationCode = FString::Printf(TEXT("%s %s%d(FMaterial%sParameters Parameters)\r\n{\r\n%s return %s;\r\n}\r\n"), *OutputTypeString, *Custom->GetFunctionName(), OutputIndex, ShaderFrequency == SF_Vertex ? TEXT("Vertex") : TEXT("Pixel"), *Definitions, *Body);
-	CustomOutputImplementations.Add(ImplementationCode);
+	const FString FunctionNameBase = FString::Printf(TEXT("%s%d"), *Custom->GetFunctionName(), OutputIndex);
+
+	// Primary function will have _LWC suffix if it returns an LWC type
+	// We also define a pre-processor symbol to indicate the custom output function is available so that
+	// shaders can implement some fallback behavior for cases where the custom output has not been added
+	FString ImplementationCodeFinite = FString::Printf(TEXT("#define HAVE_%s 1\r\n%s %s%s(%s FMaterial%sParameters Parameters)\r\n{\r\n%s return %s;\r\n}\r\n"),
+		*FunctionNameBase,
+		*OutputTypeString,
+		*FunctionNameBase,
+		IsLWCType(OutputType) ? TEXT("_LWC") : TEXT(""),
+		ShaderFrequency == SF_Vertex ? TEXT("const") : TEXT("inout"), // don't use 'inout' for Vertex parameters, to work around potential compiler bug with FXC
+		ShaderFrequency == SF_Vertex ? TEXT("Vertex") : TEXT("Pixel"),
+		*Definitions,
+		*Body);
+	if (IsLWCType(OutputType))
+	{
+		// Add a wrapper with no suffix to return a non-LWC type
+		ImplementationCodeFinite += FString::Printf(TEXT("%s %s(%s FMaterial%sParameters Parameters) { return LWCToFloat(%s_LWC(Parameters)); }\r\n"),
+			HLSLTypeString(MakeNonLWCType(OutputType)),
+			*FunctionNameBase,
+			ShaderFrequency == SF_Vertex ? TEXT("const") : TEXT("inout"),
+			ShaderFrequency == SF_Vertex ? TEXT("Vertex") : TEXT("Pixel"),
+			*FunctionNameBase);
+	}
+	else
+	{
+		// Add a wrapper with LWC suffix to return a LWC type
+		ImplementationCodeFinite += FString::Printf(TEXT("%s %s_LWC(%s FMaterial%sParameters Parameters) { return LWCPromote(%s(Parameters)); }\r\n"),
+			HLSLTypeString(MakeLWCType(OutputType)),
+			*FunctionNameBase,
+			ShaderFrequency == SF_Vertex ? TEXT("const") : TEXT("inout"),
+			ShaderFrequency == SF_Vertex ? TEXT("Vertex") : TEXT("Pixel"),
+			*FunctionNameBase);
+	}
+
+	DerivativeVariations[CompiledPDV_FiniteDifferences].CustomOutputImplementations.Add(ImplementationCodeFinite);
+
+	// FIXEM: for now just skipping these, as they create invalid code.
+	//FString ImplementationCodeAnalytic = FString::Printf(TEXT("%s %s%d_Analytic(FMaterial%sParameters Parameters)\r\n{\r\n%s return %s;\r\n}\r\n"), *OutputTypeString, *Custom->GetFunctionName(), OutputIndex, ShaderFrequency == SF_Vertex ? TEXT("Vertex") : TEXT("Pixel"), *Definitions, *Body);
+	//DerivativeVariations[CompiledPDV_Analytic].CustomOutputImplementations.Add(ImplementationCodeAnalytic);
 
 	// return value is not used
 	return INDEX_NONE;
@@ -7674,7 +10315,8 @@ int32 FHLSLMaterialTranslator::PerInstanceRandom()
 	}
 	else
 	{
-		return AddInlinedCodeChunk(MCT_Float, TEXT("GetPerInstanceRandom(Parameters)"));
+		MaterialCompilationOutput.bUsesPerInstanceRandom = true;
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("GetPerInstanceRandom(Parameters)"));
 	}
 }
 
@@ -7691,7 +10333,7 @@ int32 FHLSLMaterialTranslator::PerInstanceFadeAmount()
 	}
 	else
 	{
-		return AddInlinedCodeChunk(MCT_Float, TEXT("GetPerInstanceFadeAmount(Parameters)"));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("GetPerInstanceFadeAmount(Parameters)"));
 	}
 }
 
@@ -7705,12 +10347,37 @@ int32 FHLSLMaterialTranslator::PerInstanceCustomData(int32 DataIndex, int32 Defa
 {
 	if (ShaderFrequency != SF_Vertex)
 	{
-		return NonVertexShaderExpressionError();
+		//return NonVertexShaderExpressionError();
+		// Only works with Nanite - TODO: Edge case the error
+		MaterialCompilationOutput.bUsesPerInstanceCustomData = true;
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("GetPerInstanceCustomData(Parameters, %d, %s)"), DataIndex, *GetParameterCode(DefaultValueIndex));
 	}
 	else
 	{
-		bUsesPerInstanceCustomData = true;
-		return AddInlinedCodeChunk(MCT_Float, TEXT("GetPerInstanceCustomData(Parameters, %d, %s)"), DataIndex, *GetParameterCode(DefaultValueIndex));
+		MaterialCompilationOutput.bUsesPerInstanceCustomData = true;
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("GetPerInstanceCustomData(Parameters, %d, %s)"), DataIndex, *GetParameterCode(DefaultValueIndex));
+	}
+}
+
+/**
+ *	Returns a custom data on a per-instance basis when instancing
+ *	@DataIndex - index in array that represents custom data
+ *
+ *	@return	Code index
+ */
+int32 FHLSLMaterialTranslator::PerInstanceCustomData3Vector(int32 DataIndex, int32 DefaultValueIndex)
+{
+	if (ShaderFrequency != SF_Vertex)
+	{
+		//return NonVertexShaderExpressionError();
+		// Only works with Nanite - TODO: Edge case the error
+		MaterialCompilationOutput.bUsesPerInstanceCustomData = true;
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float3, TEXT("GetPerInstanceCustomData3Vector(Parameters, %d, %s)"), DataIndex, *GetParameterCode(DefaultValueIndex));
+	}
+	else
+	{
+		MaterialCompilationOutput.bUsesPerInstanceCustomData = true;
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float3, TEXT("GetPerInstanceCustomData3Vector(Parameters, %d, %s)"), DataIndex, *GetParameterCode(DefaultValueIndex));
 	}
 }
 
@@ -7721,11 +10388,18 @@ int32 FHLSLMaterialTranslator::PerInstanceCustomData(int32 DataIndex, int32 Defa
 	*/
 int32 FHLSLMaterialTranslator::RotateScaleOffsetTexCoords(int32 TexCoordCodeIndex, int32 RotationScale, int32 Offset)
 {
+	if (IsAnalyticDerivEnabled())
+	{
+		return DerivativeAutogen.GenerateRotateScaleOffsetTexCoordsFunc(*this, TexCoordCodeIndex, RotationScale, Offset);
+	}
+	else
+	{
 	return AddCodeChunk(MCT_Float2,
 		TEXT("RotateScaleOffsetTexCoords(%s, %s, %s.xy)"),
 		*GetParameterCode(TexCoordCodeIndex),
 		*GetParameterCode(RotationScale),
 		*GetParameterCode(Offset));
+}
 }
 
 /**
@@ -7765,7 +10439,7 @@ int32 FHLSLMaterialTranslator::TextureCoordinateOffset()
 {
 	if (FeatureLevel < ERHIFeatureLevel::SM5 && ShaderFrequency == SF_Vertex)
 	{
-		return AddInlinedCodeChunk(MCT_Float2, TEXT("Parameters.TexCoordOffset"));
+		return AddInlinedCodeChunkZeroDeriv(MCT_Float2, TEXT("Parameters.TexCoordOffset"));
 	}
 	else
 	{
@@ -7783,7 +10457,39 @@ int32 FHLSLMaterialTranslator::EyeAdaptation()
 
 	MaterialCompilationOutput.bUsesEyeAdaptation = true;
 
-	return AddInlinedCodeChunk(MCT_Float, TEXT("EyeAdaptationLookup()"));
+	return AddInlinedCodeChunkZeroDeriv(MCT_Float, TEXT("EyeAdaptationLookup()"));
+}
+
+/**Experimental access to the EyeAdaptation RT for applying an inverse. */
+int32 FHLSLMaterialTranslator::EyeAdaptationInverse(int32 LightValueArg, int32 AlphaArg)
+{
+	if (ShaderFrequency != SF_Pixel)
+	{
+		return NonPixelShaderExpressionError();
+	}
+
+	if (LightValueArg == INDEX_NONE || AlphaArg == INDEX_NONE)
+	{
+		return INDEX_NONE;
+	}
+
+	if (GetParameterType(LightValueArg) != MCT_Float3)
+	{
+		Errorf(TEXT("EyeAdaptationInverse expects a float3 type for LightValue"));
+		return INDEX_NONE;
+	}
+	int32 LightValueName = LightValueArg;
+
+	if (GetParameterType(AlphaArg) != MCT_Float)
+	{
+		Errorf(TEXT("EyeAdaptationInverse expects a float type for Alpha"));
+		return INDEX_NONE;
+	}
+	int32 AlphaName = AlphaArg;
+
+	MaterialCompilationOutput.bUsesEyeAdaptation = true;
+
+	return AddInlinedCodeChunk(MCT_Float3, TEXT("EyeAdaptationInverseLookup(%s,%s)"), *GetParameterCode(LightValueName), *GetParameterCode(AlphaName));
 }
 
 // to only have one piece of code dealing with error handling if the Primitive constant buffer is not used.
@@ -7798,7 +10504,7 @@ int32 FHLSLMaterialTranslator::GetPrimitiveProperty(EMaterialValueType Type, con
 		return INDEX_NONE;
 	}
 
-	return AddInlinedCodeChunk(Type, TEXT("GetPrimitiveData(Parameters.PrimitiveId).%s"), HLSLName);
+	return AddInlinedCodeChunkZeroDeriv(Type, TEXT("GetPrimitiveData(Parameters).%s"), HLSLName);
 }
 
 // The compiler can run in a different state and this affects caching of sub expression, Expressions are different (e.g. View.PrevWorldViewOrigin) when using previous frame's values

@@ -22,7 +22,7 @@ struct FPooledCameraShakes
 	GENERATED_BODY()
 		
 	UPROPERTY()
-	TArray<UCameraShakeBase*> PooledShakes;
+	TArray<TObjectPtr<UCameraShakeBase>> PooledShakes;
 };
 
 USTRUCT()
@@ -37,7 +37,7 @@ struct FActiveCameraShakeInfo
 	{}
 
 	UPROPERTY()
-	UCameraShakeBase* ShakeInstance;
+	TObjectPtr<UCameraShakeBase> ShakeInstance;
 
 	UPROPERTY()
 	TWeakObjectPtr<const UCameraShakeSourceComponent> ShakeSource;

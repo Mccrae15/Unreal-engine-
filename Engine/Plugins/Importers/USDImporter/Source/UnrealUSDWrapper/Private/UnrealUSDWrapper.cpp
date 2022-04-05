@@ -11,6 +11,14 @@
 #include "UsdWrappers/UsdStage.h"
 #include "UsdWrappers/SdfLayer.h"
 
+#include "CineCameraComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/LightComponent.h"
+#include "Components/LightComponentBase.h"
+#include "Components/PointLightComponent.h"
+#include "Components/RectLightComponent.h"
+#include "Components/SpotLightComponent.h"
+#include "GameFramework/Actor.h"
 #include "Interfaces/IPluginManager.h"
 #include "Internationalization/Regex.h"
 #include "Misc/Paths.h"
@@ -90,6 +98,11 @@ namespace UnrealIdentifiers
 
 	const TfToken MaterialAssignments = TfToken("unrealMaterials"); // DEPRECATED in favor of MaterialAssignment
 	const TfToken MaterialAssignment = TfToken("unrealMaterial");
+	const TfToken Unreal = TfToken("unreal");
+
+	const TfToken UnrealNaniteOverride = TfToken("unrealNanite");
+	const TfToken UnrealNaniteOverrideEnable = TfToken("enable");
+	const TfToken UnrealNaniteOverrideDisable = TfToken("disable");
 
 	const TfToken DiffuseColor = TfToken("diffuseColor");
 	const TfToken EmissiveColor = TfToken("emissiveColor");
@@ -102,6 +115,7 @@ namespace UnrealIdentifiers
 	const TfToken Tangent = TfToken("tangent");
 	const TfToken SubsurfaceColor = TfToken("subsurfaceColor");
 	const TfToken AmbientOcclusion = TfToken("ambientOcclusion");
+	const TfToken Refraction = TfToken("ior");
 
 	const TfToken Surface = TfToken("surface");
 	const TfToken St = TfToken("st");
@@ -114,6 +128,7 @@ namespace UnrealIdentifiers
 
 	const TfToken UsdPreviewSurface = TfToken( "UsdPreviewSurface" );
 	const TfToken UsdPrimvarReader_float2 = TfToken( "UsdPrimvarReader_float2" );
+	const TfToken UsdPrimvarReader_float3 = TfToken( "UsdPrimvarReader_float3" );
 	const TfToken UsdUVTexture = TfToken( "UsdUVTexture" );
 
 	const TfToken WorldSpaceNormals = TfToken( "worldSpaceNormals" );
@@ -657,147 +672,6 @@ std::string DiscoverInformationAboutUsdMaterial(const UsdShadeMaterial& ShadeMat
 	return ShadingEngineName;
 }
 
-TTuple< TArray< FString >, TArray< int32 > > IUsdPrim::GetGeometryMaterials(double Time, const UsdPrim& Prim)
-{
-	// Material mappings
-	// @todo time not supported yet
-
-	FScopedUsdAllocs UsdAllocs;
-
-	TArray< FString > MaterialNames;
-	TArray< int32 > FaceMaterialIndices;
-	VtArray<int> FaceVertexCounts;
-
-	UsdShadeMaterialBindingAPI BindingAPI(Prim);
-	UsdShadeMaterial ShadeMaterial = BindingAPI.ComputeBoundMaterial();
-	UsdPrim ShadeMaterialPrim = ShadeMaterial.GetPrim();
-	if (ShadeMaterialPrim)
-	{
-		SdfPath Path = ShadeMaterialPrim.GetPath();
-		std::string ShadingEngineName = DiscoverInformationAboutUsdMaterial(ShadeMaterial, UsdGeomGprim());
-
-		MaterialNames.Emplace( ANSI_TO_TCHAR( ShadingEngineName.c_str() ) );
-		FaceMaterialIndices.Emplace( 0 );
-
-		return MakeTuple( MaterialNames, FaceMaterialIndices );
-	}
-
-	// If the gprim does not have a material faceSet which represents per-face
-	// shader assignments, assign the shading engine to the entire gprim.
-	std::vector<UsdGeomSubset> FaceSubsets = UsdShadeMaterialBindingAPI(Prim).GetMaterialBindSubsets();
-
-	if (FaceSubsets.empty())
-	{
-		return {};
-	}
-
-	UsdGeomMesh Mesh(Prim);
-
-	if (!FaceSubsets.empty() && Mesh)
-	{
-		UsdAttribute FaceCounts = Mesh.GetFaceVertexCountsAttr();
-		if (FaceCounts)
-		{
-			FaceCounts.Get(&FaceVertexCounts, Time);
-		}
-
-		int FaceCount = FaceVertexCounts.size();
-		if (FaceCount == 0)
-		{
-			//MGlobal::displayError(TfStringPrintf("Unable to get face count "
-			//	"for gprim at path <%s>.", primSchema.GetPath().GetText()).c_str());
-			return {};
-		}
-
-		std::string ReasonWhyNotPartition;
-
-		bool ValidPartition = UsdGeomSubset::ValidateSubsets(FaceSubsets, FaceCount, UsdGeomTokens->partition, &ReasonWhyNotPartition);
-		if (!ValidPartition)
-		{
-			VtIntArray unassignedIndices = UsdGeomSubset::GetUnassignedIndices(FaceSubsets, FaceCount);
-		}
-
-		MaterialNames.AddDefaulted(FaceSubsets.size());
-		FaceMaterialIndices.AddUninitialized(FaceVertexCounts.size());
-		for ( int32& FaceMaterialIndex : FaceMaterialIndices )
-		{
-			FaceMaterialIndex = INDEX_NONE; // Signal "no material assigned", so that we can fill in those spots with DisplayColor materials, if any
-		}
-
-		int MaterialIndex = 0;
-		for (const auto &Subset : FaceSubsets)
-		{
-			UsdShadeMaterialBindingAPI SubsetBindingAPI(Subset.GetPrim());
-			UsdShadeMaterial BoundMaterial = SubsetBindingAPI.ComputeBoundMaterial();
-
-			// Only transfer the first timeSample or default Indices, if
-			// there are no time-samples.
-			VtIntArray Indices;
-			Subset.GetIndicesAttr().Get(&Indices, UsdTimeCode::EarliestTime());
-
-			if (!BoundMaterial)
-			{
-				++MaterialIndex;
-				continue;
-			}
-
-			std::string ShadingEngineName = DiscoverInformationAboutUsdMaterial(BoundMaterial, UsdGeomGprim());
-			MaterialNames[MaterialIndex] = ANSI_TO_TCHAR( ShadingEngineName.c_str() ) ;
-
-			for (int i = 0; i < Indices.size(); ++i)
-			{
-				int PolygonIndex = Indices[i];
-				if (PolygonIndex >= 0 && PolygonIndex < FaceMaterialIndices.Num())
-				{
-					FaceMaterialIndices[PolygonIndex] = MaterialIndex;
-				}
-			}
-
-			++MaterialIndex;
-		}
-	}
-
-	// TODO: ...
-
-/////////////////////////////////////////////
-	if (FaceMaterialIndices.Num() != 0)
-	{
-		return MakeTuple( MaterialNames, FaceMaterialIndices );
-	}
-
-	FaceMaterialIndices.AddUninitialized( FaceVertexCounts.size() );
-	for ( int32& FaceMaterialIndex : FaceMaterialIndices )
-	{
-		FaceMaterialIndex = INDEX_NONE; // Signal "no material assigned", so that we can fill in those spots with DisplayColor materials, if any
-	}
-
-	// Figure out a zero based material index for each face.  The mapping is FaceMaterialIndices[FaceIndex] = MaterialIndex;
-	// This is done by walking the face sets and for each face set getting the number number of unique groups of faces in the set
-	// Each one of these groups represents a material index for that face set.  If there are multiple face sets the material index is offset by the face set index
-	// Once the groups of faces are determined, walk the Indices for the total number of faces in each group.  Each element in the face Indices array represents a single global face index
-	// Assign the current material index to it
-
-	// @todo USD/Unreal.  This is probably wrong for multiple face sets.  They don't make a ton of sense for unreal as there can only be one "set" of materials at once and there is no construct in the engine for material sets
-
-	//MaterialNames.Resize(FaceSets)
-	{
-		// No face sets, find a relationship that defines the material
-		UsdRelationship Relationship = Prim.GetRelationship(UsdShadeTokens->materialBinding);
-		if (Relationship)
-		{
-			SdfPathVector Targets;
-			Relationship.GetTargets(&Targets);
-			// Note there should only be one target without a face set but fill them out so we can warn later
-			for (const SdfPath& Path : Targets)
-			{
-				MaterialNames.Append( Internal::FillMaterialInfo(Path, Prim.GetStage()) );
-			}
-		}
-	}
-
-	return MakeTuple( MaterialNames, FaceMaterialIndices );
-}
-
 bool IUsdPrim::IsUnrealProperty(const pxr::UsdPrim& Prim)
 {
 	return Prim.HasCustomDataKey(UnrealIdentifiers::PropertyPath);
@@ -862,6 +736,27 @@ const TCHAR* UnrealIdentifiers::Invisible = TEXT("invisible");
 const TCHAR* UnrealIdentifiers::Inherited = TEXT("inherited");
 const TCHAR* UnrealIdentifiers::IdentifierPrefix = TEXT("@identifier:");
 
+FName UnrealIdentifiers::TransformPropertyName = TEXT( "Transform" ); // Fake FName because the transform is stored decomposed on the component
+FName UnrealIdentifiers::HiddenInGamePropertyName = GET_MEMBER_NAME_CHECKED( USceneComponent, bHiddenInGame );
+FName UnrealIdentifiers::HiddenPropertyName = AActor::GetHiddenPropertyName();
+
+FName UnrealIdentifiers::CurrentFocalLengthPropertyName = GET_MEMBER_NAME_CHECKED( UCineCameraComponent, CurrentFocalLength );
+FName UnrealIdentifiers::ManualFocusDistancePropertyName = GET_MEMBER_NAME_CHECKED( UCineCameraComponent, FocusSettings.ManualFocusDistance );
+FName UnrealIdentifiers::CurrentAperturePropertyName = GET_MEMBER_NAME_CHECKED( UCineCameraComponent, CurrentAperture );
+FName UnrealIdentifiers::SensorWidthPropertyName = GET_MEMBER_NAME_CHECKED( UCineCameraComponent, Filmback.SensorWidth );
+FName UnrealIdentifiers::SensorHeightPropertyName = GET_MEMBER_NAME_CHECKED( UCineCameraComponent, Filmback.SensorHeight );
+
+FName UnrealIdentifiers::IntensityPropertyName = GET_MEMBER_NAME_CHECKED( ULightComponentBase, Intensity );
+FName UnrealIdentifiers::LightColorPropertyName = GET_MEMBER_NAME_CHECKED( ULightComponentBase, LightColor );
+FName UnrealIdentifiers::UseTemperaturePropertyName = GET_MEMBER_NAME_CHECKED( ULightComponent, bUseTemperature );
+FName UnrealIdentifiers::TemperaturePropertyName = GET_MEMBER_NAME_CHECKED( ULightComponent, Temperature );
+FName UnrealIdentifiers::SourceWidthPropertyName = GET_MEMBER_NAME_CHECKED( URectLightComponent, SourceWidth );
+FName UnrealIdentifiers::SourceHeightPropertyName = GET_MEMBER_NAME_CHECKED( URectLightComponent, SourceHeight );
+FName UnrealIdentifiers::SourceRadiusPropertyName = GET_MEMBER_NAME_CHECKED( UPointLightComponent, SourceRadius );
+FName UnrealIdentifiers::OuterConeAnglePropertyName = GET_MEMBER_NAME_CHECKED( USpotLightComponent, OuterConeAngle );
+FName UnrealIdentifiers::InnerConeAnglePropertyName = GET_MEMBER_NAME_CHECKED( USpotLightComponent, InnerConeAngle );
+FName UnrealIdentifiers::LightSourceAnglePropertyName = GET_MEMBER_NAME_CHECKED( UDirectionalLightComponent, LightSourceAngle );
+
 FUsdDelegates::FUsdImportDelegate FUsdDelegates::OnPreUsdImport;
 FUsdDelegates::FUsdImportDelegate FUsdDelegates::OnPostUsdImport;
 
@@ -922,21 +817,6 @@ class FUsdDiagnosticDelegate { };
 TUniquePtr<FUsdDiagnosticDelegate> UnrealUSDWrapper::Delegate = nullptr;
 
 #if USE_USD_SDK
-TUsdStore< pxr::UsdStageRefPtr > UnrealUSDWrapper::OpenUsdStage(const char* Path, const char* Filename)
-{
-	bool bImportedSuccessfully = false;
-
-	string PathAndFilename = string(Path) + string(Filename);
-
-	bool bIsSupported = UsdStage::IsSupportedFile(PathAndFilename);
-
-	FScopedUsdAllocs UsdAllocs;
-
-	pxr::UsdStageCacheContext UsdStageCacheContext( pxr::UsdUtilsStageCache::Get() );
-	UsdStageRefPtr Stage = UsdStage::Open(PathAndFilename);
-
-	return Stage;
-}
 
 double UnrealUSDWrapper::GetDefaultTimeCode()
 {

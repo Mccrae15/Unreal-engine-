@@ -36,6 +36,13 @@ class UNetDriver;
 
 /** Delegate for overriding the behavior when a navigation action is taken, Not to be confused with FNavigationDelegate which allows a specific widget to override behavior for itself */
 DECLARE_DELEGATE_RetVal_TwoParams(bool, FCustomNavigationHandler, const uint32, TSharedPtr<SWidget>);
+
+/** Delegate for overriding key input before it is routed to player controllers, returning true means it was handled by delegate */
+DECLARE_DELEGATE_RetVal_OneParam(bool, FOverrideInputKeyHandler, FInputKeyEventArgs& /*EventArgs*/);
+
+/** Delegate for overriding axis input before it is routed to player controllers, returning true means it was handled by delegate */
+DECLARE_DELEGATE_RetVal_FourParams(bool, FOverrideInputAxisHandler, FInputKeyEventArgs& /*EventArgs*/, float& /*Delta*/, float& /*DeltaTime*/, int32& /*NumSamples*/);
+
 DECLARE_MULTICAST_DELEGATE_SevenParams(FOnInputAxisSignature, FViewport* /*InViewport*/, int32 /*ControllerId*/, FKey /*Key*/, float /*Delta*/, float /*DeltaTime*/, int32 /*NumSamples*/, bool /*bGamepad*/);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnInputKeySignature, const FInputKeyEventArgs& /*EventArgs*/);
 
@@ -66,7 +73,7 @@ public:
 
 	/** The viewport's console.   Might be null on consoles */
 	UPROPERTY()
-	class UConsole* ViewportConsole;
+	TObjectPtr<class UConsole> ViewportConsole;
 
 	/** Debug properties that have been added via one of the "displayall" commands */
 	UPROPERTY()
@@ -99,10 +106,10 @@ protected:
 
 	/* The relative world context for this viewport */
 	UPROPERTY()
-	UWorld* World;
+	TObjectPtr<UWorld> World;
 
 	UPROPERTY()
-	UGameInstance* GameInstance;
+	TObjectPtr<UGameInstance> GameInstance;
 
 	/** If true will suppress the blue transition text messages. */
 	bool bSuppressTransitionMessage;
@@ -138,6 +145,9 @@ public:
 	/** Returns a relative world context for this viewport.	 */
 	virtual UWorld* GetWorld() const override;
 
+	/* Create the game viewport */
+	virtual FSceneViewport* CreateGameViewport(TSharedPtr<SViewport> InViewportWidget);
+
 	/* Returns the game viewport */
 	FSceneViewport* GetGameViewport();
 	const FSceneViewport* GetGameViewport() const;
@@ -159,8 +169,6 @@ public:
 	//~ Begin FViewportClient Interface.
 	virtual void RedrawRequested(FViewport* InViewport) override {}
 	virtual bool InputKey(const FInputKeyEventArgs& EventArgs) override;
-	UE_DEPRECATED(4.21, "Use the new InputKey(const FInputKeyEventArgs& EventArgs) function.")
-	virtual bool InputKey(FViewport* InViewport, int32 ControllerId, FKey Key, EInputEvent Event, float AmountDepressed = 1.f, bool bGamepad = false) override final { return false; }
 	virtual bool InputAxis(FViewport* Viewport, int32 ControllerId, FKey Key, float Delta, float DeltaTime, int32 NumSamples=1, bool bGamepad=false) override;
 	virtual bool InputChar(FViewport* Viewport,int32 ControllerId, TCHAR Character) override;
 	virtual bool InputTouch(FViewport* Viewport, int32 ControllerId, uint32 Handle, ETouchType::Type Type, const FVector2D& TouchLocation, float Force, FDateTime DeviceTimestamp, uint32 TouchpadIndex) override;
@@ -199,6 +207,9 @@ public:
 	 * Gives the game's custom viewport client a way to handle F11 or Alt+Enter before processing the input
 	 */
 	bool TryToggleFullscreenOnInputKey(FKey Key, EInputEvent EventType);
+
+	/** Function that handles remapping controller information for cases like PIE */
+	virtual void RemapControllerInput(FInputKeyEventArgs& InOutKeyEvent);
 
 	/**
 	 * Exec command handlers
@@ -587,13 +598,25 @@ public:
 		return CustomNavigationEvent;
 	}
 
-	/** fetches OnInputKeyEvent reference */
+	/** Set an override handler for input key handling, can be used for things like press start screen */
+	FOverrideInputKeyHandler& OnOverrideInputKey()
+	{
+		return OnOverrideInputKeyEvent;
+	}
+
+	/** Set an override handler for input axis handling */
+	FOverrideInputAxisHandler& OnOverrideInputAxis()
+	{
+		return OnOverrideInputAxisEvent;
+	}
+
+	/** Gets broadcast delegate for input key, happens in addition to player controller input */
 	FOnInputKeySignature& OnInputKey()
 	{
 		return OnInputKeyEvent;
 	}
 
-	/** fetches OnInputAxisEvent reference */
+	/** Gets broadcast delegate for input axis, happens in addition to player controller input */
 	FOnInputAxisSignature& OnInputAxis()
 	{
 		return OnInputAxisEvent;
@@ -620,6 +643,16 @@ public:
 protected:
 	void SetCurrentBufferVisualizationMode(FName NewBufferVisualizationMode) { CurrentBufferVisualizationMode = NewBufferVisualizationMode; }
 	FName GetCurrentBufferVisualizationMode() const { return CurrentBufferVisualizationMode; }
+
+	void SetCurrentNaniteVisualizationMode(FName NewNaniteVisualizationMode) { CurrentNaniteVisualizationMode = NewNaniteVisualizationMode; }
+	FName GetCurrentNaniteVisualizationMode() const { return CurrentNaniteVisualizationMode; }
+
+	void SetCurrentLumenVisualizationMode(FName NewLumenVisualizationMode) { CurrentLumenVisualizationMode = NewLumenVisualizationMode; }
+	FName GetCurrentLumenVisualizationMode() const { return CurrentLumenVisualizationMode; }
+
+	void SetCurrentVirtualShadowMapVisualizationMode(FName NewVirtualShadowMapVisualizationMode) { CurrentVirtualShadowMapVisualizationMode = NewVirtualShadowMapVisualizationMode; }
+	FName GetCurrentVirtualShadowMapVisualizationMode() const { return CurrentVirtualShadowMapVisualizationMode; }
+
 	bool HasAudioFocus() const { return bHasAudioFocus; }
 
 	/** Updates CSVProfiler camera stats */
@@ -728,15 +761,6 @@ public:
 	virtual bool CaptureMouseOnLaunch() override;
 
 	/**
-	 * Sets whether or not the cursor is locked to the viewport when the viewport captures the mouse
-	 */
-	UE_DEPRECATED(4.13, "Mouse locking is now controlled by an enum value. Please call UGameViewportClient::SetMouseLockMode(EMouseLockMode) instead.")
-	void SetLockDuringCapture(bool InLockDuringCapture)
-	{
-		SetMouseLockMode( InLockDuringCapture ? EMouseLockMode::LockOnCapture : EMouseLockMode::DoNotLock );
-	}
-
-	/**
 	 * Gets whether or not the cursor is locked to the viewport when the viewport captures the mouse
 	 */
 	virtual bool LockDuringCapture() override
@@ -808,6 +832,13 @@ public:
 	{
 		return ToggleFullscreenDelegate;
 	}
+
+	/** 
+	 * Applies requested changes to display configuration 
+	 * @param Dimensions Pointer to new dimensions of the display. nullptr for no change.
+	 * @param WindowMode What window mode do we want to st the display to.
+	 */
+	bool SetDisplayConfiguration( const FIntPoint* Dimensions, EWindowMode::Type WindowMode);
 
 	void SetVirtualCursorWidget(EMouseCursor::Type Cursor, class UUserWidget* Widget);
 
@@ -923,6 +954,15 @@ private:
 	/** Current buffer visualization mode for this game viewport */
 	FName CurrentBufferVisualizationMode;
 
+	/** Current Nanite visualization mode for this game viewport */
+	FName CurrentNaniteVisualizationMode;
+
+	/** Current Lumen visualization mode for this game viewport */
+	FName CurrentLumenVisualizationMode;
+
+	/** Current virtual shadow map visualization mode for this game viewport */
+	FName CurrentVirtualShadowMapVisualizationMode;
+
 	/** Weak pointer to the highres screenshot dialog if it's open */
 	TWeakPtr<SWindow> HighResScreenshotDialog;
 
@@ -940,13 +980,6 @@ private:
 
 	/* Function that handles bug screen-shot requests w/ or w/o extra HUD info (project-specific) */
 	bool RequestBugScreenShot(const TCHAR* Cmd, bool bDisplayHUDInfo);
-
-	/** 
-	 * Applies requested changes to display configuration 
-	 * @param Dimensions Pointer to new dimensions of the display. nullptr for no change.
-	 * @param WindowMode What window mode do we want to st the display to.
-	 */
-	bool SetDisplayConfiguration( const FIntPoint* Dimensions, EWindowMode::Type WindowMode);
 
 #if WITH_EDITOR
 	/** Delegate called when game viewport client received input key */
@@ -991,6 +1024,12 @@ private:
 
 	/** Delegate for custom navigation behavior */
 	FCustomNavigationHandler CustomNavigationEvent;
+
+	/** Delegate for overriding input key behavior */
+	FOverrideInputKeyHandler OnOverrideInputKeyEvent;
+
+	/** Delegate for overriding input axis behavior */
+	FOverrideInputAxisHandler OnOverrideInputAxisEvent;
 
 	/** A broadcast delegate broadcasting from UGameViewportClient::InputKey */
 	FOnInputKeySignature OnInputKeyEvent;

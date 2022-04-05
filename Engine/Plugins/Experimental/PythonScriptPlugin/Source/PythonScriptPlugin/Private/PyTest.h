@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "PyTestInterface.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "PyTest.generated.h"
 
@@ -117,7 +118,7 @@ class UPyTestStructLibrary : public UBlueprintFunctionLibrary
  * Object to allow testing of the various UObject features that are exposed to Python wrapped types.
  */
 UCLASS(Blueprintable)
-class UPyTestObject : public UObject
+class UPyTestObject : public UObject, public IPyTestChildInterface, public IPyTestOtherInterface
 {
 	GENERATED_BODY()
 
@@ -203,6 +204,9 @@ public:
 	void LegacyFuncTakingPyTestStruct(const FPyTestStruct& InStruct) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Python|Internal")
+	void FuncTakingPyTestStructDefault(const FPyTestStruct& InStruct = FPyTestStruct());
+
+	UFUNCTION(BlueprintCallable, Category = "Python|Internal")
 	int32 FuncTakingPyTestDelegate(const FPyTestDelegate& InDelegate, const int32 InValue) const;
 
 	UFUNCTION(BlueprintCallable, Category = "Python|Internal")
@@ -228,6 +232,10 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Python|Internal", meta=(ScriptConstant="ConstantValue"))
 	static int32 GetConstantValue();
+
+	virtual int32 FuncInterface(const int32 InValue) const override;
+	virtual int32 FuncInterfaceChild(const int32 InValue) const override;
+	virtual int32 FuncInterfaceOther(const int32 InValue) const override;
 };
 
 /**

@@ -58,24 +58,27 @@ public:
 	/**
 	 * Copies the selected components to the clipboard
 	 * @param ComponentsToCopy The list of components to copy
+	 * @param DestinationData Buffer to fill with the copied data, or null to use the clipboard
 	 */
-	static void CopyComponents(const TArray<UActorComponent*>& ComponentsToCopy);
+	static void CopyComponents(const TArray<UActorComponent*>& ComponentsToCopy, FString* DestinationData = nullptr);
 
 	/**
 	 * Determines whether the current contents of the clipboard contain paste-able component information
 	 * @param RootComponent The root component of the actor being pasted on
 	 * @param bOverrideCanAttach Optional override declaring that components can be attached and a check is not needed
+	 * @param SourceData Component data to paste, or null to use the clipboard
 	 * @return Whether components can be pasted
 	 */
-	static bool CanPasteComponents(USceneComponent* RootComponent, bool bOverrideCanAttach = false, bool bPasteAsArchetypes = false);
+	static bool CanPasteComponents(const USceneComponent* RootComponent, bool bOverrideCanAttach = false, bool bPasteAsArchetypes = false, const FString* SourceData = nullptr);
 
 	/**
 	 * Attempts to paste components from the clipboard as siblings of the target component
 	 * @param OutPastedComponents List of all the components that were pasted
 	 * @param TargetActor The actor to attach the pasted components to
 	 * @param TargetComponent The component the paste is targeting (will attempt to paste components as siblings). If null, will attach pasted components to the root.
+	 * @param SourceData Component data to paste, or null to use the clipboard
 	 */
-	static void PasteComponents(TArray<UActorComponent*>& OutPastedComponents, AActor* TargetActor, USceneComponent* TargetComponent = nullptr);
+	static void PasteComponents(TArray<UActorComponent*>& OutPastedComponents, AActor* TargetActor, USceneComponent* TargetComponent = nullptr, const FString* SourceData = nullptr);
 
 	/**
 	 * Gets the copied components from the clipboard without attempting to paste/apply them in any way
@@ -83,6 +86,13 @@ public:
 	 * @param OutNewObjectMap Contains the name->instance object mapping of the copied components
 	 */
 	static void GetComponentsFromClipboard(TMap<FName, FName>& OutParentMap, TMap<FName, UActorComponent*>& OutNewObjectMap, bool bGetComponentsAsArchetypes);
+
+	/**
+	 * Determines whether the indicated component can be deleted
+	 * @param ComponentToDelete The component to determine can be deleted
+	 * @return Whether the indicated component can be deleted
+	 */
+	static bool CanDeleteComponent(const UActorComponent* ComponentToDelete);
 
 	/**
 	 * Determines whether the indicated components can be deleted
@@ -129,7 +139,7 @@ public:
 	static bool AttemptApplyMaterialToComponent( USceneComponent* SceneComponent, UMaterialInterface* MaterialToApply, int32 OptionalMaterialSlot = -1 );
 
 	/** Potentially transforms the delta to be applied to a component into the appropriate space */
-	static void AdjustComponentDelta(USceneComponent* Component, FVector& Drag, FRotator& Rotation);
+	static void AdjustComponentDelta(const USceneComponent* Component, FVector& Drag, FRotator& Rotation);
 
 	// Given a template and a property, propagates a default value change to all instances (only if applicable)
 	template<typename T>
@@ -265,7 +275,7 @@ public:
 	 * @param ComponentList List containing possible matches
 	 * @return Valid Component pointer if match was found. nullptr otherwise.
 	 */
-	static UActorComponent* FindMatchingComponent(UActorComponent* ComponentInstance, const TInlineComponentArray<UActorComponent*>& ComponentList);
+	static UActorComponent* FindMatchingComponent(const UActorComponent* ComponentInstance, const TInlineComponentArray<UActorComponent*>& ComponentList);
 
 	/**
 	 * Make a FComponentReference from a component pointer.

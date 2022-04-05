@@ -3,8 +3,7 @@ import { Request, Response, NextFunction, static as expressStatic } from 'expres
 import bodyParser from 'body-parser';
 import path from 'path';
 import request from 'superagent';
-import { Program, Api, Notify } from './';
-import { UnrealEngine } from './UnrealEngine';
+import { Program, Api, Notify, UnrealEngine, LogServer } from './';
 
 
 export class App extends Server {
@@ -29,6 +28,7 @@ export class App extends Server {
       // Trying to kill a zombie process
       await request.get(`http://127.0.0.1:${Program.port}/api/shutdown`)
                     .timeout(100)
+                    .then(() => new Promise(resolve => setTimeout(resolve, 100)))
                     .catch(() => {});
 
       await this.startServer();
@@ -45,6 +45,7 @@ export class App extends Server {
       const server = this.app.listen(Program.port, async () => {
         await Notify.initialize(server);
         await UnrealEngine.initialize();
+        await LogServer.initialize();
         resolve();
       });
 

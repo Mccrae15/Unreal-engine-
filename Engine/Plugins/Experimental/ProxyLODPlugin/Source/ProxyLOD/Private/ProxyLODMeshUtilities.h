@@ -31,7 +31,7 @@ namespace ProxyLOD
 	void ComputeVertexNormals( FVertexDataMesh& InOutMesh, 
 		                       const ENormalComputationMethod Method = ENormalComputationMethod::AngleWeighted);
 	/**
-	* Uses UE4 code in the Mesh Utilities module to compute the tangent space
+	* Uses UE code in the Mesh Utilities module to compute the tangent space
 	* The computation is a Mikk-T(angent) space version of tangent space.  
 	*
 	* NB: This updates the FMeshDescription::TangentX and FMeshDescription::TangentY and optionally TangentZ.
@@ -112,7 +112,7 @@ namespace ProxyLOD
 	* @param AdditionalVertices  On return An array that maps old vertices to new ones
 	*                            (i.e. need to add Vertex[NumVerts + i] as a copy of VertexId = AdditionVertices[i] )
 	*/
-	void SplitHardAngles(const float HardAngleRadians, const TArray<FVector>& FaceNormals, const int32 NumVerts, TArray<uint32>& Indices, std::vector<uint32_t>& AdditionalVertices);
+	void SplitHardAngles(const float HardAngleRadians, const TArray<FVector3f>& FaceNormals, const int32 NumVerts, TArray<uint32>& Indices, std::vector<uint32_t>& AdditionalVertices);
 
 	/**
 	* Splits vertices in the InOutMesh according to the mapping provided by the dupVerts array

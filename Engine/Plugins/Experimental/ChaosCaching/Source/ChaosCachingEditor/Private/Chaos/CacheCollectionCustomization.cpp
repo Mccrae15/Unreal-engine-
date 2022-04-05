@@ -24,6 +24,8 @@ void FCacheCollectionDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuild
 	TArray<TWeakObjectPtr<UObject>> Objects;
 	DetailBuilder.GetObjectsBeingCustomized(Objects);
 
+	NameEditBoxes.Empty();
+
 	// In the simple asset editor we should only get one object
 	if(Objects.Num() != 1)
 	{
@@ -32,18 +34,37 @@ void FCacheCollectionDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuild
 
 	Item = Objects[0];
 
-	if(UChaosCacheCollection* Collection = GetSelectedCollection())
+	if (UChaosCacheCollection* Collection = GetSelectedCollection())
 	{
-		NameEditBoxes.SetNum(Collection->Caches.Num());
+		if (Collection->Caches.Num())
+		{
+			for (int i=0;i<Collection->Caches.Num();i++)
+			{
+				NameEditBoxes.Add(i, TSharedPtr<SEditableTextBox>());
+			}
 
-		TSharedRef<IPropertyHandle> CachesProp    = DetailBuilder.GetProperty("Caches");
-		IDetailCategoryBuilder&     CacheCategory = DetailBuilder.EditCategory(CachesProp->GetDefaultCategoryName());
+			TSharedRef<IPropertyHandle> CachesProp = DetailBuilder.GetProperty("Caches");
+			IDetailCategoryBuilder& CacheCategory = DetailBuilder.EditCategory(CachesProp->GetDefaultCategoryName());
 
-		TSharedRef<FDetailArrayBuilder> CacheArrayBuilder = MakeShareable(new FDetailArrayBuilder(CachesProp, true, false, true));
-		CacheArrayBuilder->OnGenerateArrayElementWidget(FOnGenerateArrayElementWidget::CreateSP(this, &FCacheCollectionDetails::GenerateCacheArrayElementWidget, &DetailBuilder));
-		CacheCategory.AddCustomBuilder(CacheArrayBuilder);
+			TSharedRef<FDetailArrayBuilder> CacheArrayBuilder = MakeShareable(new FDetailArrayBuilder(CachesProp, true, false, true));
+			CacheArrayBuilder->OnGenerateArrayElementWidget(FOnGenerateArrayElementWidget::CreateSP(this, &FCacheCollectionDetails::GenerateCacheArrayElementWidget, &DetailBuilder));
+			CacheCategory.AddCustomBuilder(CacheArrayBuilder);
+		}
 	}
 }
+
+const UChaosCache* FCacheCollectionDetails::GetCacheCollection(int32 Index) const
+{
+	if (const UChaosCacheCollection* Collection = GetSelectedCollection())
+	{
+		if(0 <= Index && Index < Collection->Caches.Num())
+		{
+			return Collection->Caches[Index];
+		}
+	}
+	return nullptr;
+}
+
 
 UChaosCacheCollection* FCacheCollectionDetails::GetSelectedCollection()
 {
@@ -88,7 +109,7 @@ void FCacheCollectionDetails::OnDeleteCache(int32 InArrayIndex, IDetailLayoutBui
 {
 	if(UChaosCacheCollection* Collection = GetSelectedCollection())
 	{
-		if(Collection->Caches.IsValidIndex(InArrayIndex) && Collection->Caches[InArrayIndex])
+		if(Collection->Caches.IsValidIndex(InArrayIndex) )
 		{
 			Collection->Caches.RemoveAt(InArrayIndex);
 			InLayoutBuilder->ForceRefreshDetails();
@@ -158,6 +179,12 @@ void FCacheCollectionDetails::GenerateCacheArrayElementWidget(TSharedRef<IProper
 			InPropertyHandle->CreatePropertyNameWidget()
 		];
 
+	TSharedPtr<SEditableTextBox> TextBox = SNew(SEditableTextBox);
+	if (NameEditBoxes.Contains(ArrayIndex))
+	{
+		TextBox = NameEditBoxes[ArrayIndex];
+	}
+
 	WidgetRow.ValueContent()
 		[
 			SNew(SHorizontalBox)
@@ -166,11 +193,12 @@ void FCacheCollectionDetails::GenerateCacheArrayElementWidget(TSharedRef<IProper
 			.HAlign(HAlign_Fill)
 			.AutoWidth()
 			[
-				SAssignNew(NameEditBoxes[ArrayIndex], SEditableTextBox)
+				SAssignNew(TextBox, SEditableTextBox)
 				.Text(this, &FCacheCollectionDetails::GetCacheName, ArrayIndex)
 				.OnTextChanged(this, &FCacheCollectionDetails::OnChangeCacheName, ArrayIndex)
 				.OnTextCommitted(this, &FCacheCollectionDetails::OnCommitCacheName, ArrayIndex)
 			]
+
 			+SHorizontalBox::Slot()
 			.VAlign(VAlign_Center)
 			.HAlign(HAlign_Fill)

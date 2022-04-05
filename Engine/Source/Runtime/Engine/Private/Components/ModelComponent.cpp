@@ -243,7 +243,7 @@ void UModelComponent::Serialize(FArchive& Ar)
 
 	Ar << Model;
 
-	if( Ar.IsLoading() && Ar.UE4Ver() < VER_UE4_REMOVE_ZONES_FROM_MODEL)
+	if( Ar.IsLoading() && Ar.UEVer() < VER_UE4_REMOVE_ZONES_FROM_MODEL)
 	{
 		int32 DummyZoneIndex;
 		Ar << DummyZoneIndex << Elements;
@@ -300,7 +300,7 @@ void UModelComponent::PostLoad()
 	}
 
 	// Stop existing ModelComponents from generating mirrored collision mesh
-	if ((GetLinkerUE4Version() < VER_UE4_NO_MIRROR_BRUSH_MODEL_COLLISION) && (ModelBodySetup != NULL))
+	if ((GetLinkerUEVersion() < VER_UE4_NO_MIRROR_BRUSH_MODEL_COLLISION) && (ModelBodySetup != NULL))
 	{
 		ModelBodySetup->bGenerateMirroredCollision = false;
 	}
@@ -443,7 +443,7 @@ void UModelComponent::GetStreamingRenderAssetInfo(FStreamingTextureLevelContext&
 					const FBspNode& Node = Model->Nodes[SurfaceNodes[NodeIndex]];
 					for(int32 VertexIndex = 0;VertexIndex < Node.NumVertices;VertexIndex++)
 					{
-						const FVector WorldVertex = GetComponentTransform().TransformPosition(Model->Points[Model->Verts[Node.iVertPool + VertexIndex].pVertex]);
+						const FVector WorldVertex = GetComponentTransform().TransformPosition((FVector)Model->Points[Model->Verts[Node.iVertPool + VertexIndex].pVertex]);
 						SurfaceVertices.Add(WorldVertex);
 					}
 				}
@@ -655,7 +655,7 @@ bool UModelComponent::GetPhysicsTriMeshData(struct FTriMeshCollisionData* Collis
 		CollisionData->Vertices[i] = Model->VertexBuffer.Vertices[i].Position;
 		if (bCopyUVs)
 		{
-			CollisionData->UVs[0][i] = Model->VertexBuffer.Vertices[i].TexCoord;
+			CollisionData->UVs[0][i] = FVector2D(Model->VertexBuffer.Vertices[i].TexCoord);
 		}
 	}
 
@@ -702,9 +702,9 @@ bool UModelComponent::GetPhysicsTriMeshData(struct FTriMeshCollisionData* Collis
 
 			if (AreaThreshold >= 0.f)
 			{
-				const FVector V0 = Model->VertexBuffer.Vertices[Triangle.v0].Position;
-				const FVector V1 = Model->VertexBuffer.Vertices[Triangle.v1].Position;
-				const FVector V2 = Model->VertexBuffer.Vertices[Triangle.v2].Position;
+				const FVector V0 = (FVector)Model->VertexBuffer.Vertices[Triangle.v0].Position;
+				const FVector V1 = (FVector)Model->VertexBuffer.Vertices[Triangle.v1].Position;
+				const FVector V2 = (FVector)Model->VertexBuffer.Vertices[Triangle.v2].Position;
 
 				const FVector V01 = (V1 - V0);
 				const FVector V02 = (V2 - V0);

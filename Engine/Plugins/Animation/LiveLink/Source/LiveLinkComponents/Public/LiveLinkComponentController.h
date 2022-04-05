@@ -7,6 +7,7 @@
 #include "LiveLinkComponentController.generated.h"
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FLiveLinkTickDelegate, float, DeltaTime);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnControllerMapUpdatedDelegate);
 
 class ULiveLinkControllerBase;
 
@@ -20,17 +21,17 @@ public:
 	~ULiveLinkComponentController();
 
 public:
-	UPROPERTY(BlueprintReadOnly, EditAnywhere, Category="LiveLink")
+	UPROPERTY(EditAnywhere, BlueprintSetter = SetSubjectRepresentation, BlueprintGetter = GetSubjectRepresentation, Category="LiveLink")
 	FLiveLinkSubjectRepresentation SubjectRepresentation;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY(Instanced, NoClear)
-	ULiveLinkControllerBase* Controller_DEPRECATED;
+	TObjectPtr<ULiveLinkControllerBase> Controller_DEPRECATED;
 #endif
 
 	/** Instanced controllers used to control the desired role */
 	UPROPERTY(Interp, BlueprintReadOnly, EditAnywhere, Category = "LiveLink", Instanced, NoClear, meta = (ShowOnlyInnerProperties))
-	TMap<TSubclassOf<ULiveLinkRole>, ULiveLinkControllerBase*> ControllerMap;
+	TMap<TSubclassOf<ULiveLinkRole>, TObjectPtr<ULiveLinkControllerBase>> ControllerMap;
 
 	UPROPERTY(EditAnywhere, Category="LiveLink", AdvancedDisplay)
 	bool bUpdateInEditor;
@@ -38,6 +39,10 @@ public:
 	// This Event is triggered any time new LiveLink data is available, including in the editor
 	UPROPERTY(BlueprintAssignable, Category = "LiveLink")
 	FLiveLinkTickDelegate OnLiveLinkUpdated;
+
+	// This Event is triggered any time the controller map is updated
+	UPROPERTY(BlueprintAssignable, Category = "LiveLink")
+	FOnControllerMapUpdatedDelegate OnControllerMapUpdatedDelegate;
 
 	UPROPERTY(EditInstanceOnly, Category = "LiveLink", meta = (UseComponentPicker, AllowedClasses = "ActorComponent", DisallowedClasses = "LiveLinkComponentController"))
 	FComponentReference ComponentToControl;
@@ -49,6 +54,10 @@ public:
 	// If false, will not evaluate live link, effectively pausing.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "LiveLink")
 	bool bEvaluateLiveLink = true;
+
+	// If true, will tick when the world is a preview (i.e Blueprint editors)
+	UPROPERTY(EditAnywhere, Category = "LiveLink", AdvancedDisplay, meta = (EditCondition = "bUpdateInEditor"))
+	bool bUpdateInPreviewEditor = false;
 	
 protected:
 	// Keep track when component gets registered or controller map gets changed
@@ -63,7 +72,12 @@ public:
 	void SetControllerClassForRole(TSubclassOf<ULiveLinkRole> RoleClass, TSubclassOf<ULiveLinkControllerBase> DesiredControllerClass);
 
 	/** Return Representation of Subject that is used in the controller */
+	UFUNCTION(BlueprintGetter)
 	FLiveLinkSubjectRepresentation GetSubjectRepresentation() const { return SubjectRepresentation; }
+
+	/** Set Representation of Subject that is used in the controller and update the controller map */
+	UFUNCTION(BlueprintSetter)
+	void SetSubjectRepresentation(FLiveLinkSubjectRepresentation InSubjectRepresentation);
 
 	/** Returns true if ControllerMap needs to be updated for the current Role. Useful for customization or C++ modification to the Role */
 	bool IsControllerMapOutdated() const;

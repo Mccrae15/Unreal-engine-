@@ -13,7 +13,8 @@ using System.IO;
 using Newtonsoft.Json;
 using System.Reflection;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace Gauntlet
 {
@@ -56,7 +57,7 @@ namespace Gauntlet
 				throw new AutomationException("No project specified. Use -project=ShooterGame etc");
 			}
 
-			ContextOptions.Namespaces = "Gauntlet.UnrealTest,UE4Game";
+			ContextOptions.Namespaces = "Gauntlet.UnrealTest,UnrealGame,UnrealEditor";
 			ContextOptions.UsesSharedBuildType = true;
 
 			return RunTests(ContextOptions);
@@ -67,7 +68,7 @@ namespace Gauntlet
 		/// </summary>
 		/// <param name="Context"></param>
 		/// <returns></returns>
-		public ExitCode RunTests(UnrealTestOptions ContextOptions)
+		public virtual ExitCode RunTests(UnrealTestOptions ContextOptions)
 		{
 			if (ContextOptions.Verbose)
 			{
@@ -97,7 +98,7 @@ namespace Gauntlet
 
 			if (string.IsNullOrEmpty(ContextOptions.Build))
 			{
-				throw new AutomationException("No builds specified. Use -builds=p:\\path\\to\\build");
+				throw new AutomationException("No build specified. Use -build=p:\\path\\to\\build");
 			}
 
 			if (typeof(UnrealBuildSource).IsAssignableFrom(ContextOptions.BuildSourceType) == false)
@@ -128,7 +129,7 @@ namespace Gauntlet
 
 			DirectoryReference UnrealPath = new DirectoryReference(Environment.CurrentDirectory);
 					
-			// todo, pass this in as a BuildSource and remove the COntextOption params specific to finding builds
+			// todo, pass this in as a BuildSource and remove the ContextOption params specific to finding builds
 			UnrealBuildSource BuildInfo = (UnrealBuildSource)Activator.CreateInstance(ContextOptions.BuildSourceType, new object[] { ContextOptions.Project, ContextOptions.ProjectPath, UnrealPath, ContextOptions.UsesSharedBuildType, ContextOptions.Build, ContextOptions.SearchPaths });
 
 			// Setup accounts
@@ -138,8 +139,6 @@ namespace Gauntlet
 
 			bool InitializedDevices = false;
 
-			HashSet<UnrealTargetPlatform> UsedPlatforms = new HashSet<UnrealTargetPlatform>();
-			
 			// for all platforms we want to test...
 			foreach (ArgumentWithParams PlatformWithParams in ContextOptions.PlatformList)
 			{
@@ -167,7 +166,7 @@ namespace Gauntlet
 					Role.Platform = DefaultPlatform;
 					Role.Configuration = DefaultConfiguration;
 
-					// globally, what was requested (e.g -platform=PS4 -configuration=Shipping)
+					// globally, what was requested (e.g -platform=Win64 -configuration=Shipping)
 					UnrealTargetPlatform RequestedPlatform = PlatformType;
 					UnrealTargetConfiguration RequestedConfiguration = ContextOptions.Configuration;
 
@@ -187,12 +186,11 @@ namespace Gauntlet
 					}
 
 					// look for-args= and then -clientargs= and -editorargs etc
-					Role.ExtraArgs = Globals.Params.ParseValue("Args", "");
-					string ExtraRoleArgs = Globals.Params.ParseValue(Type.ToString() + "Args", "");
-
-					if (!string.IsNullOrEmpty(ExtraRoleArgs))
+					Role.ExtraArgs = string.Join(' ', Globals.Params.ParseValues("Args", true));
+					IEnumerable<string> ExtraRoleArgs = Globals.Params.ParseValues(Type.ToString() + "Args", true);
+					if (ExtraRoleArgs.Count() > 0)
 					{
-						Role.ExtraArgs += ExtraRoleArgs;
+						Role.ExtraArgs += " " + string.Join(' ', ExtraRoleArgs);
 					}
 
 					// look for -clientexeccmds=, -editorexeccmds= etc, these are separate from clientargs for sanity
@@ -260,8 +258,6 @@ namespace Gauntlet
 					Gauntlet.Log.Verbose("Mapped Role {0} to RoleContext {1}", Type, Role);
 
 					RoleContexts[Type] = Role;
-
-					UsedPlatforms.Add(Role.Platform);
 				}
 
 				UnrealTestContext Context = new UnrealTestContext(BuildInfo, RoleContexts, ContextOptions);
@@ -276,26 +272,11 @@ namespace Gauntlet
 			// dispose now, not during shutdown gc, because this runs commands...
 			DevicePool.Instance.Dispose();
 
-			DoCleanup(UsedPlatforms);
+			// Generate Horde summary for CIS test (maybe want to use a delegate here)
+			Horde.GenerateSummary();
 
 			return AllTestsPassed ? ExitCode.Success : ExitCode.Error_TestFailure;
 		}
-
-		void DoCleanup(IEnumerable<UnrealTargetPlatform> UsedPlatforms)
-		{
-			if (!Globals.Params.ParseParam("removedevices"))
-			{
-				return;
-			}
-
-			if (UsedPlatforms.Contains(UnrealTargetPlatform.PS4))
-			{
-				String DevKitUtilPath = Path.Combine(Environment.CurrentDirectory, "Engine/Platforms/PS4/Binaries/DotNET/PS4DevKitUtil.exe");
-				Gauntlet.Log.Verbose("PS4DevkitUtil executing 'removeall'");
-				IProcessResult BootResult = CommandUtils.Run(DevKitUtilPath, "removeall");
-			}
-		}
-
 
 		bool ExecuteTests(UnrealTestOptions Options, IEnumerable<ITestNode> TestList)
 		{
@@ -364,9 +345,9 @@ namespace Gauntlet
 					continue;
 				}
 
-				if (Blacklist.Instance.IsTestBlacklisted(Test.TestName, UnrealPlatform, TestContext.BuildInfo.Branch))
+				if (Denylist.Instance.IsTestDenylisted(Test.TestName, UnrealPlatform, TestContext.BuildInfo.Branch))
 				{
-					Gauntlet.Log.Info("Test {0} is currently blacklisted on {1} in branch {2}", Test.TestName, UnrealPlatform, TestContext.BuildInfo.Branch);
+					Gauntlet.Log.Info("Test {0} is currently denylisted on {1} in branch {2}", Test.TestName, UnrealPlatform, TestContext.BuildInfo.Branch);
 					continue;
 				}
 
@@ -386,7 +367,7 @@ namespace Gauntlet
 				List<string> ModelArgs = CombinedParams.ParseValues("PerfModel", false);
 				string Model = ModelArgs.Count > 0 ? ModelArgs.Last() : string.Empty;
 
-				TestContext.Constraint = new UnrealTargetConstraint(UnrealPlatform, PerfSpec, Model);
+				TestContext.Constraint = new UnrealDeviceTargetConstraint(UnrealPlatform, PerfSpec, Model);
 
 				// parse worker job id
 				List<string> WorkerJobIDArgs = CombinedParams.ParseValues("WorkerJobID", false);
@@ -436,7 +417,8 @@ namespace Gauntlet
 			Reservation.ReservationDetails = Options.JobDetails;
 
 			DevicePool.Instance.SetLocalOptions(Options.TempDir, Options.Parallel > 1, Options.DeviceURL);
-			DevicePool.Instance.AddLocalDevices(10);
+			DevicePool.Instance.AddLocalDevices(Options.MaxLocalDevices);
+			DevicePool.Instance.AddVirtualDevices(Options.MaxVirtualDevices);
 
 			foreach (var DeviceWithParams in Options.DeviceList)
 			{

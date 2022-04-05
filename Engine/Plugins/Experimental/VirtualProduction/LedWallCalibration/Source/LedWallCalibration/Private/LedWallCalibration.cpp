@@ -17,11 +17,10 @@
 #if WITH_OPENCV
 
 #include "OpenCVHelper.h"
-OPENCV_INCLUDES_START
-#undef check 
-#include "opencv2/opencv.hpp"
+
+#include "PreOpenCVHeaders.h"
 #include "opencv2/aruco.hpp"
-OPENCV_INCLUDES_END
+#include "PostOpenCVHeaders.h"
 
 #endif //WITH_OPENCV
 
@@ -42,7 +41,7 @@ namespace LedWallCalibration
 		FVector Vertices[4];
 
 		/** UV (2d) corners of this panel. Expected to be sorted top-left, top-right, bottom-left, bottom-right */
-		FVector2D UVs[4];
+		FVector2f UVs[4];
 
 		/** Estimated row number (zero based) of this panel in the wall it belongs to */
 		int32 Row = 0;
@@ -67,7 +66,7 @@ namespace LedWallCalibration
 				});
 
 			FVector VerticesCopy[4];
-			FVector2D UVsCopy[4];
+			FVector2f UVsCopy[4];
 
 			for (int32 Idx = 0; Idx < 4; ++Idx)
 			{
@@ -180,10 +179,10 @@ namespace LedWallCalibration
 		FStaticMeshAttributes Attributes(*MeshDescription); // MeshDescription can't be const here
 
 		// Vertex 3d positions, indexable by VertexId
-		const TVertexAttributesRef<const FVector> VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector>(MeshAttribute::Vertex::Position);
+		const TVertexAttributesRef<const FVector3f> VertexPositions = MeshDescription->VertexAttributes().GetAttributesRef<FVector3f>(MeshAttribute::Vertex::Position);
 
 		// UV 2d positions, indexable by VertexInstaceId
-		const TVertexInstanceAttributesRef<const FVector2D> VertexInstanceUVs = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
+		const TVertexInstanceAttributesRef<const FVector2f> VertexInstanceUVs = MeshDescription->VertexInstanceAttributes().GetAttributesRef<FVector2f>(MeshAttribute::VertexInstance::TextureCoordinate);
 
 		// Iterate over all the triangles
 		for (const FTriangleID& TriangleElementId : MeshDescription->Triangles().GetElementIDs())
@@ -200,9 +199,9 @@ namespace LedWallCalibration
 
 			FWallPanel WallPanel;
 
-			WallPanel.Vertices[0] = VertexPositions[V0];
-			WallPanel.Vertices[1] = VertexPositions[V1];
-			WallPanel.Vertices[2] = VertexPositions[V2];
+			WallPanel.Vertices[0] = (FVector)VertexPositions[V0];
+			WallPanel.Vertices[1] = (FVector)VertexPositions[V1];
+			WallPanel.Vertices[2] = (FVector)VertexPositions[V2];
 
 			WallPanel.UVs[0] = VertexInstanceUVs[VI0];
 			WallPanel.UVs[1] = VertexInstanceUVs[VI1];
@@ -211,15 +210,15 @@ namespace LedWallCalibration
 			// Now we just need to find the 4th vertex/uv. 
 			// In this algorithm, we assume they are rectangular. So it is a matter of adding the 2 vectors.
 
-			const float DistanceUV01 = FVector2D::Distance(WallPanel.UVs[0], WallPanel.UVs[1]);
-			const float DistanceUV02 = FVector2D::Distance(WallPanel.UVs[0], WallPanel.UVs[2]);
-			const float DistanceUV12 = FVector2D::Distance(WallPanel.UVs[1], WallPanel.UVs[2]);
+			const float DistanceUV01 = FVector2f::Distance(WallPanel.UVs[0], WallPanel.UVs[1]);
+			const float DistanceUV02 = FVector2f::Distance(WallPanel.UVs[0], WallPanel.UVs[2]);
+			const float DistanceUV12 = FVector2f::Distance(WallPanel.UVs[1], WallPanel.UVs[2]);
 
 			const float DistanceMax = FMath::Max(DistanceUV01, FMath::Max(DistanceUV02, DistanceUV12));
 
 			if (FMath::IsNearlyEqual(DistanceMax, DistanceUV01))
 			{
-				const FVector2D& OriginUV = WallPanel.UVs[2];
+				const FVector2f& OriginUV = WallPanel.UVs[2];
 				const FVector& Origin3d = WallPanel.Vertices[2];
 
 				WallPanel.UVs[3] = OriginUV + (WallPanel.UVs[0] - OriginUV) + (WallPanel.UVs[1] - OriginUV);
@@ -227,7 +226,7 @@ namespace LedWallCalibration
 			}
 			else if (FMath::IsNearlyEqual(DistanceMax, DistanceUV02))
 			{
-				const FVector2D& OriginUV = WallPanel.UVs[1];
+				const FVector2f& OriginUV = WallPanel.UVs[1];
 				const FVector& Origin3d = WallPanel.Vertices[1];
 
 				WallPanel.UVs[3] = OriginUV + (WallPanel.UVs[0] - OriginUV) + (WallPanel.UVs[2] - OriginUV);
@@ -235,7 +234,7 @@ namespace LedWallCalibration
 			}
 			else
 			{
-				const FVector2D& OriginUV = WallPanel.UVs[0];
+				const FVector2f& OriginUV = WallPanel.UVs[0];
 				const FVector& Origin3d = WallPanel.Vertices[0];
 
 				WallPanel.UVs[3] = OriginUV + (WallPanel.UVs[1] - OriginUV) + (WallPanel.UVs[2] - OriginUV);

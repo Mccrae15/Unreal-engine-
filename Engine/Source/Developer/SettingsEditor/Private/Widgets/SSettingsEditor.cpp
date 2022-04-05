@@ -21,7 +21,7 @@
 #include "Widgets/Input/SHyperlink.h"
 #include "Widgets/SSettingsSectionHeader.h"
 #include "SSettingsEditorCheckoutNotice.h"
-#include "HAL/PlatformFilemanager.h"
+#include "HAL/PlatformFileManager.h"
 #include "HAL/PlatformFile.h"
 
 #define LOCTEXT_NAMESPACE "SSettingsEditor"
@@ -58,16 +58,19 @@ void SSettingsEditor::Construct( const FArguments& InArgs, const ISettingsEditor
 		DetailsViewArgs.NotifyHook = this;
 		DetailsViewArgs.bShowOptions = true;
 		DetailsViewArgs.bShowModifiedPropertiesOption = false;
+		DetailsViewArgs.bShowAnimatedPropertiesOption = false;
+		DetailsViewArgs.bShowDifferingPropertiesOption = false;
+		DetailsViewArgs.bShowKeyablePropertiesOption = false;
+		DetailsViewArgs.bShowHiddenPropertiesWhilePlayingOption = false;
+		DetailsViewArgs.bShowPropertyMatrixButton = false;
 		DetailsViewArgs.bAllowMultipleTopLevelObjects = true;
-		DetailsViewArgs.bShowActorLabel = false;
 		DetailsViewArgs.bCustomNameAreaLocation = true;
 		DetailsViewArgs.bCustomFilterAreaLocation = true;
 		DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
-		DetailsViewArgs.bShowPropertyMatrixButton = false;
 	}
 
 	SettingsView = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor").CreateDetailView(DetailsViewArgs);
-	SettingsView->SetVisibility(TAttribute<EVisibility>::Create(TAttribute<EVisibility>::FGetter::CreateSP(this, &SSettingsEditor::HandleSettingsViewVisibility)));
+	SettingsView->SetVisibility(TAttribute<EVisibility>::CreateSP(this, &SSettingsEditor::HandleSettingsViewVisibility));
 	SettingsView->SetIsPropertyEditingEnabledDelegate(FIsPropertyEditingEnabled::CreateSP(this, &SSettingsEditor::HandleSettingsViewEnabled));
 
 	TSharedPtr<FSettingsDetailRootObjectCustomization> RootObjectCustomization = MakeShareable(new FSettingsDetailRootObjectCustomization(Model, SettingsView.ToSharedRef()));
@@ -213,7 +216,7 @@ void SSettingsEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyCha
 
 				if (ObjectBeingEdited->GetClass()->HasAnyClassFlags(CLASS_DefaultConfig) && !bIsArrayOrArrayElement && !bIsSetOrSetElement && !bIsMapOrMapElement)
 				{
-					if(Section->NotifySectionOnPropertyModified())
+					if (!Section.IsValid() || Section->NotifySectionOnPropertyModified())
 					{
 						ObjectBeingEdited->UpdateSinglePropertyInConfigFile(PropertyThatChanged->GetActiveMemberNode()->GetValue(), ObjectBeingEdited->GetDefaultConfigFilename());
 					}
@@ -221,6 +224,12 @@ void SSettingsEditor::NotifyPostChange( const FPropertyChangedEvent& PropertyCha
 				else if (Section.IsValid())
 				{
 					Section->Save();
+				}
+				// Some files being edited might have an array element, but they may also not have a corresponding section for inlined
+				// external objects, for them if they're DefaultConfig, we update them here.
+				else if (ObjectBeingEdited->GetClass()->HasAnyClassFlags(CLASS_DefaultConfig))
+				{
+					ObjectBeingEdited->TryUpdateDefaultConfigFile();
 				}
 
 				if (bIsNewFile && bIsSourceControlled)

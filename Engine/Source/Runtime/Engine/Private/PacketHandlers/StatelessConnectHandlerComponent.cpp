@@ -324,7 +324,7 @@ void StatelessConnectHandlerComponent::NotifyHandshakeBegin()
 {
 	if (Handler->Mode == Handler::Mode::Client)
 	{
-		UNetConnection* ServerConn = (Driver != nullptr ? Driver->ServerConnection : nullptr);
+		UNetConnection* ServerConn = (Driver != nullptr ? ToRawPtr(Driver->ServerConnection) : nullptr);
 
 		if (ServerConn != nullptr)
 		{
@@ -465,7 +465,7 @@ void StatelessConnectHandlerComponent::SendConnectChallenge(TSharedPtr<const FIn
 
 void StatelessConnectHandlerComponent::SendChallengeResponse(uint8 InSecretId, double InTimestamp, uint8 InCookie[COOKIE_BYTE_SIZE])
 {
-	UNetConnection* ServerConn = (Driver != nullptr ? Driver->ServerConnection : nullptr);
+	UNetConnection* ServerConn = (Driver != nullptr ? ToRawPtr(Driver->ServerConnection) : nullptr);
 
 	if (ServerConn != nullptr)
 	{
@@ -641,7 +641,7 @@ void StatelessConnectHandlerComponent::SendRestartHandshakeRequest(const TShared
 #if !UE_BUILD_SHIPPING
 		FDDoSDetection* DDoS = Handler->GetDDoS();
 
-		UE_CLOG((DDoS == nullptr || !DDoS->CheckLogRestrictions()), LogHandshake, Log, TEXT("SendRestartHandshakeRequest."));
+		UE_CLOG((DDoS == nullptr || !DDoS->CheckLogRestrictions()), LogHandshake, Verbose, TEXT("SendRestartHandshakeRequest."));
 #endif
 
 		CapHandshakePacket(RestartPacket);
@@ -742,6 +742,8 @@ void StatelessConnectHandlerComponent::InitFromConnectionless(StatelessConnectHa
 	LastChallengeSuccessAddress = InConnectionlessHandler->LastChallengeSuccessAddress;
 
 	FMemory::Memcpy(AuthorisedCookie, InConnectionlessHandler->AuthorisedCookie, UE_ARRAY_COUNT(AuthorisedCookie));
+
+	LastInitTimestamp = (Driver != nullptr ? Driver->GetElapsedTime() : 0.0);
 }
 
 void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
@@ -792,7 +794,7 @@ void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 					{
 						if (!bRestartedHandshake)
 						{
-							UNetConnection* ServerConn = (Driver != nullptr ? Driver->ServerConnection : nullptr);
+							UNetConnection* ServerConn = (Driver != nullptr ? ToRawPtr(Driver->ServerConnection) : nullptr);
 
 							// Extract the initial packet sequence from the random Cookie data
 							if (ensure(ServerConn != nullptr))
@@ -831,7 +833,7 @@ void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 
 						if (!bRestartedHandshake)
 						{
-							UNetConnection* ServerConn = (Driver != nullptr ? Driver->ServerConnection : nullptr);
+							UNetConnection* ServerConn = (Driver != nullptr ? ToRawPtr(Driver->ServerConnection) : nullptr);
 							double LastNetConnPacketTime = (ServerConn != nullptr ? ServerConn->LastReceiveRealtime : 0.0);
 
 							// The server may send multiple restart handshake packets, so have a 10 second delay between accepting them
@@ -954,10 +956,19 @@ void StatelessConnectHandlerComponent::Incoming(FBitReader& Packet)
 		UE_LOG(LogHandshake, Log, TEXT("Incoming: Error reading handshake bit from packet."));
 	}
 #endif
-	// Servers should wipe LastChallengeSuccessAddress when the first non-handshake packet is received by the client, in order to disable challenge ack resending
-	else if (LastChallengeSuccessAddress.IsValid() && Handler->Mode == Handler::Mode::Server)
+	// Servers should wipe LastChallengeSuccessAddress shortly after the first non-handshake packet is received by the client,
+	// in order to disable challenge ack resending
+	else if (LastInitTimestamp != 0.0 && LastChallengeSuccessAddress.IsValid() && Handler->Mode == Handler::Mode::Server)
 	{
-		LastChallengeSuccessAddress.Reset();
+		// Restart handshakes require extra time before disabling challenge ack resends, as NetConnection packets will already be in flight
+		const double RestartHandshakeAckResendWindow = 10.0;
+		double CurTime = Driver != nullptr ? Driver->GetElapsedTime() : 0.0;
+
+		if (LastInitTimestamp - CurTime >= RestartHandshakeAckResendWindow)
+		{
+			LastChallengeSuccessAddress.Reset();
+			LastInitTimestamp = 0.0;
+		}
 	}
 }
 

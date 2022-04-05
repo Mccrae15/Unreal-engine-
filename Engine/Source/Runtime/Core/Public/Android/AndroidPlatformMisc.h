@@ -19,7 +19,7 @@ class TFunction;
 
 #define UE_DEBUG_BREAK_IMPL()	PLATFORM_BREAK()
 
-#define ANDROID_HAS_RTSIGNALS !PLATFORM_LUMIN && PLATFORM_USED_NDK_VERSION_INTEGER >= 21
+#define ANDROID_HAS_RTSIGNALS PLATFORM_USED_NDK_VERSION_INTEGER >= 21
 
 enum class ECrashContextType;
 
@@ -53,7 +53,6 @@ struct CORE_API FAndroidMisc : public FGenericPlatformMisc
 	static bool UseRenderThread();
 	static bool HasPlatformFeature(const TCHAR* FeatureName);
 	static bool ShouldDisablePluginAtRuntime(const FString& PluginName);
-	static void SetThreadName(const char* name);
 	static bool SupportsES30();
 
 public:
@@ -165,12 +164,6 @@ public:
 	static bool FileExistsInPlatformPackage(const FString& RelativePath);
 
 	// ANDROID ONLY:
-
-	// called when OS (via JNI) reports memory trouble, triggers MemoryWarningHandler callback on game thread if set.
-	enum class EOSMemoryStatusCategory { OSTrim };
-	static void UpdateOSMemoryStatus(EOSMemoryStatusCategory OSMemoryStatusCategory, int value);
-	static void UpdateMemoryAdvisorState(int State, int EstimateAvailableMB, int OOMScore);
-
 	static void SetVersionInfo(FString AndroidVersion, int32 InTargetSDKVersion, FString DeviceMake, FString DeviceModel, FString DeviceBuildNumber, FString OSLanguage);
 	static const FString GetAndroidVersion();
 	static int32 GetAndroidMajorVersion();
@@ -211,7 +204,6 @@ public:
 	static bool ShouldUseVulkan();
 	static bool ShouldUseDesktopVulkan();
 	static FString GetVulkanVersion();
-	static bool IsDaydreamApplication();
 	typedef TFunction<void(void* NewNativeHandle)> ReInitWindowCallbackType;
 	static ReInitWindowCallbackType GetOnReInitWindowCallback();
 	static void SetOnReInitWindowCallback(ReInitWindowCallbackType InOnReInitWindowCallback);
@@ -303,6 +295,11 @@ public:
 	 */
 	static bool Expand16BitIndicesTo32BitOnLoad();
 
+	/**
+	 * Will return true if we wish to propagate the alpha to the backbuffer
+	 */
+	static int GetMobilePropagateAlphaSetting();
+
 	static bool SupportsBackbufferSampling();
 
 	static void SetMemoryWarningHandler(void (*Handler)(const FGenericMemoryWarningContext& Context));
@@ -310,6 +307,12 @@ public:
 
 	// Android specific requesting of exit, *ONLY* use this function in signal handling code. Otherwise normal RequestExit functions
 	static void NonReentrantRequestExit();
+
+	// Register/Get thread names for Android specific threads
+	static void RegisterThreadName(const char* Name, uint32 ThreadId);
+	static const char* GetThreadName(uint32 ThreadId);
+
+	static void ShowConsoleWindow();
 
 private:
 	static const ANSICHAR* CodeToString(int Signal, int si_code);
@@ -338,6 +341,4 @@ private:
 #endif // USE_ANDROID_JNI
 };
 
-#if !PLATFORM_LUMIN
 typedef FAndroidMisc FPlatformMisc;
-#endif

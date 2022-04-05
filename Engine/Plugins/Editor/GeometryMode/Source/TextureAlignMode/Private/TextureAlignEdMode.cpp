@@ -116,9 +116,9 @@ bool FEdModeTexture::GetCustomDrawingCoordinateSystem( FMatrix& InMatrix, void* 
 
 	InMatrix = FMatrix::Identity;
 
-	InMatrix.SetAxis( 2, poly->Normal );
-	InMatrix.SetAxis( 0, poly->TextureU );
-	InMatrix.SetAxis( 1, poly->TextureV );
+	InMatrix.SetAxis( 2, (FVector)poly->Normal );
+	InMatrix.SetAxis( 0, (FVector)poly->TextureU );
+	InMatrix.SetAxis( 1, (FVector)poly->TextureV );
 
 	InMatrix.RemoveScaling();
 
@@ -130,16 +130,16 @@ bool FEdModeTexture::GetCustomInputCoordinateSystem( FMatrix& InMatrix, void* In
 	return false;
 }
 
-EAxisList::Type FEdModeTexture::GetWidgetAxisToDraw( FWidget::EWidgetMode InWidgetMode ) const
+EAxisList::Type FEdModeTexture::GetWidgetAxisToDraw( UE::Widget::EWidgetMode InWidgetMode ) const
 {
 	switch( InWidgetMode ) //-V719
 	{
-	case FWidget::WM_Translate:
-	case FWidget::WM_Scale:
+	case UE::Widget::WM_Translate:
+	case UE::Widget::WM_Scale:
 		return EAxisList::XY;
 		break;
 
-	case FWidget::WM_Rotate:
+	case UE::Widget::WM_Rotate:
 		return EAxisList::Z;
 		break;
 	}
@@ -239,7 +239,7 @@ bool FModeTool_Texture::InputDelta(FEditorViewportClient* InViewportClient,FView
 
 				if(Surf.PolyFlags & PF_Selected)
 				{
-					const FVector Base = Model->Points[Surf.pBase];
+					const FVector3f Base = Model->Points[Surf.pBase];
 					Surf.pBase = Model->Points.Add(Base);
 				}
 			}
@@ -259,14 +259,14 @@ bool FModeTool_Texture::InputDelta(FEditorViewportClient* InViewportClient,FView
 			FBspSurf* Surf = *It;
 			UModel* Model = It.GetModel();
 
-			FVector	TextureU = Model->Vectors[Surf->vTextureU];
-			FVector TextureV = Model->Vectors[Surf->vTextureV];
+			FVector	TextureU = (FVector)Model->Vectors[Surf->vTextureU];
+			FVector TextureV = (FVector)Model->Vectors[Surf->vTextureV];
 
 			TextureU = RotationMatrix.TransformPosition( TextureU );
 			TextureV = RotationMatrix.TransformPosition( TextureV );
 
-			Surf->vTextureU = Model->Vectors.Add(TextureU);
-			Surf->vTextureV = Model->Vectors.Add(TextureV);
+			Surf->vTextureU = Model->Vectors.Add((FVector3f)TextureU);
+			Surf->vTextureV = Model->Vectors.Add((FVector3f)TextureV);
 
 			const bool bUpdateTexCoords = true;
 			const bool bOnlyRefreshSurfaceMaterials = true;
@@ -291,8 +291,8 @@ bool FModeTool_Texture::InputDelta(FEditorViewportClient* InViewportClient,FView
 				FBspSurf& Surf = Model->Surfs[SurfaceIndex];
 				if(Surf.PolyFlags & PF_Selected)
 				{
-					const FVector TextureU = Model->Vectors[Surf.vTextureU];
-					const FVector TextureV = Model->Vectors[Surf.vTextureV];
+					const FVector3f TextureU = Model->Vectors[Surf.vTextureU];
+					const FVector3f TextureV = Model->Vectors[Surf.vTextureV];
 
 					Surf.vTextureU = Model->Vectors.Add(TextureU);
 					Surf.vTextureV = Model->Vectors.Add(TextureV);

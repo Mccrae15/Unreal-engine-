@@ -4,8 +4,8 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Class.h"
-
 #include "Templates/Models.h"
+#include "RigVMDefines.h"
 
 struct CRigVMUStruct
 {
@@ -43,29 +43,26 @@ struct TRigVMIsBaseStructure
 	enum { Value = false };
 };
 
-struct FRotator;
 template<> struct TRigVMIsBaseStructure<FRotator> { enum { Value = true }; };
-struct FQuat;
 template<> struct TRigVMIsBaseStructure<FQuat> { enum { Value = true }; };
-struct FTransform;
 template<> struct TRigVMIsBaseStructure<FTransform> { enum { Value = true }; };
 struct FLinearColor;
 template<> struct TRigVMIsBaseStructure<FLinearColor> { enum { Value = true }; };
 struct FColor;
 template<> struct TRigVMIsBaseStructure<FColor> { enum { Value = true }; };
-struct FPlane;
+
 template<> struct TRigVMIsBaseStructure<FPlane> { enum { Value = true }; };
-struct FVector;
+
 template<> struct TRigVMIsBaseStructure<FVector> { enum { Value = true }; };
-struct FVector2D;
+
 template<> struct TRigVMIsBaseStructure<FVector2D> { enum { Value = true }; };
-struct FVector4;
+
 template<> struct TRigVMIsBaseStructure<FVector4> { enum { Value = true }; };
 struct FRandomStream;
 template<> struct TRigVMIsBaseStructure<FRandomStream> { enum { Value = true }; };
 struct FGuid;
 template<> struct TRigVMIsBaseStructure<FGuid> { enum { Value = true }; };
-struct FBox2D;
+
 template<> struct TRigVMIsBaseStructure<FBox2D> { enum { Value = true }; };
 struct FFallbackStruct;
 template<> struct TRigVMIsBaseStructure<FFallbackStruct> { enum { Value = true }; };

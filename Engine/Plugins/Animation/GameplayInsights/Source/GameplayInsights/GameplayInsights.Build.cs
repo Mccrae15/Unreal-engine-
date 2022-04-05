@@ -20,6 +20,7 @@ namespace UnrealBuildTool.Rules
 				"TraceInsights",
 				"AssetRegistry",
 				"ApplicationCore",
+				"RewindDebuggerInterface"
 			});
 
 			if (Target.bCompileAgainstEngine)
@@ -39,11 +40,13 @@ namespace UnrealBuildTool.Rules
 				{
 					"AnimationBlueprintEditor",
 					"Persona",
+					"EditorFramework",
 					"UnrealEd",
   					"GameplayInsightsEditor",
 					"EditorWidgets",
 					"ToolMenus",
 					"Kismet",
+					"SubobjectEditor",
 				});
 			}
 		}

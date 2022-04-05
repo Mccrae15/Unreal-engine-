@@ -31,10 +31,11 @@ public:
 	};
 	
 	/** Make a new ListPanel::Slot  */
-	static FSlot& Slot();
+	static FSlot::FSlotArguments Slot();
 	
+	using FScopedWidgetSlotArguments = TPanelChildren<FSlot>::FScopedWidgetSlotArguments;
 	/** Add a slot to the ListPanel */
-	FSlot& AddSlot(int32 InsertAtIndex = INDEX_NONE);
+	FScopedWidgetSlotArguments AddSlot(int32 InsertAtIndex = INDEX_NONE);
 	
 	SLATE_BEGIN_ARGS( SListPanel )
 		: _ItemWidth(0)
@@ -47,6 +48,7 @@ public:
 			_Clipping = EWidgetClipping::ClipToBounds;
 		}
 	
+		SLATE_SLOT_ARGUMENT(FSlot, Slots)
 		SLATE_ATTRIBUTE( float, ItemWidth )
 		SLATE_ATTRIBUTE( float, ItemHeight )
 		SLATE_ATTRIBUTE( int32, NumDesiredItems )
@@ -155,10 +157,4 @@ protected:
 
 	/** The preferred number of lines that this widget should have orthogonal to the scroll axis. Only relevant for tile views. */
 	int32 PreferredNumLines = 1;
-
-
-private:
-	
-	/** Used to pretend that the panel has no children when asked to cache desired size. */
-	static FNoChildren NoChildren;
 };

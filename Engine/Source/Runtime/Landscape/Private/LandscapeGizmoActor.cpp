@@ -38,7 +38,8 @@ public:
 
 	/** Initialization constructor. */
 	FLandscapeGizmoMeshRenderProxy(const FMaterialRenderProxy* InParent, const float InTop, const float InBottom, const UTexture2D* InAlphaTexture, const FLinearColor& InScaleBias, const FMatrix& InWorldToLandscapeMatrix)
-	:	Parent(InParent)
+	:	FMaterialRenderProxy(InParent->GetMaterialName())
+	,	Parent(InParent)
 	,	TopHeight(InTop)
 	,	BottomHeight(InBottom)
 	,	AlphaTexture(InAlphaTexture)
@@ -57,68 +58,62 @@ public:
 		return Parent->GetFallback(InFeatureLevel);
 	}
 
-	virtual bool GetVectorValue(const FHashedMaterialParameterInfo& ParameterInfo, FLinearColor* OutValue, const FMaterialRenderContext& Context) const override
+	virtual bool GetParameterValue(EMaterialParameterType Type, const FHashedMaterialParameterInfo& ParameterInfo, FMaterialParameterValue& OutValue, const FMaterialRenderContext& Context) const
 	{
-		if (ParameterInfo.Name == FName(TEXT("AlphaScaleBias")))
+		switch (Type)
 		{
-			*OutValue = ScaleBias;
-			return true;
+		case EMaterialParameterType::Vector:
+			if (ParameterInfo.Name == FName(TEXT("AlphaScaleBias")))
+			{
+				OutValue = ScaleBias;
+				return true;
+			}
+			else if (ParameterInfo.Name == FName(TEXT("MatrixRow1")))
+			{
+				OutValue = FLinearColor(WorldToLandscapeMatrix.M[0][0], WorldToLandscapeMatrix.M[0][1], WorldToLandscapeMatrix.M[0][2], WorldToLandscapeMatrix.M[0][3]);
+				return true;
+			}
+			else if (ParameterInfo.Name == FName(TEXT("MatrixRow2")))
+			{
+				OutValue = FLinearColor(WorldToLandscapeMatrix.M[1][0], WorldToLandscapeMatrix.M[1][1], WorldToLandscapeMatrix.M[1][2], WorldToLandscapeMatrix.M[1][3]);
+				return true;
+			}
+			else if (ParameterInfo.Name == FName(TEXT("MatrixRow3")))
+			{
+				OutValue = FLinearColor(WorldToLandscapeMatrix.M[2][0], WorldToLandscapeMatrix.M[2][1], WorldToLandscapeMatrix.M[2][2], WorldToLandscapeMatrix.M[2][3]);
+				return true;
+			}
+			else if (ParameterInfo.Name == FName(TEXT("MatrixRow4")))
+			{
+				OutValue = FLinearColor(WorldToLandscapeMatrix.M[3][0], WorldToLandscapeMatrix.M[3][1], WorldToLandscapeMatrix.M[3][2], WorldToLandscapeMatrix.M[3][3]);
+				return true;
+			}
+			break;
+		case EMaterialParameterType::Scalar:
+			if (ParameterInfo.Name == FName(TEXT("Top")))
+			{
+				OutValue = TopHeight;
+				return true;
+			}
+			else if (ParameterInfo.Name == FName(TEXT("Bottom")))
+			{
+				OutValue = BottomHeight;
+				return true;
+			}
+			break;
+		case EMaterialParameterType::Texture:
+			if (ParameterInfo.Name == FName(TEXT("AlphaTexture")))
+			{
+				// FIXME: This needs to return a black texture if AlphaTexture is NULL.
+				// Returning NULL will cause the material to use GWhiteTexture.
+				OutValue = AlphaTexture;
+				return true;
+			}
+			break;
+		default:
+			break;
 		}
-		else
-		if (ParameterInfo.Name == FName(TEXT("MatrixRow1")))
-		{
-			*OutValue = FLinearColor(WorldToLandscapeMatrix.M[0][0], WorldToLandscapeMatrix.M[0][1], WorldToLandscapeMatrix.M[0][2],WorldToLandscapeMatrix.M[0][3]);
-			return true;
-		}
-		else
-		if (ParameterInfo.Name == FName(TEXT("MatrixRow2")))
-		{
-			*OutValue = FLinearColor(WorldToLandscapeMatrix.M[1][0], WorldToLandscapeMatrix.M[1][1], WorldToLandscapeMatrix.M[1][2],WorldToLandscapeMatrix.M[1][3]);
-			return true;
-		}
-		else
-		if (ParameterInfo.Name == FName(TEXT("MatrixRow3")))
-		{
-			*OutValue = FLinearColor(WorldToLandscapeMatrix.M[2][0], WorldToLandscapeMatrix.M[2][1], WorldToLandscapeMatrix.M[2][2],WorldToLandscapeMatrix.M[2][3]);
-			return true;
-		}
-		else
-		if (ParameterInfo.Name == FName(TEXT("MatrixRow4")))
-		{
-			*OutValue = FLinearColor(WorldToLandscapeMatrix.M[3][0], WorldToLandscapeMatrix.M[3][1], WorldToLandscapeMatrix.M[3][2],WorldToLandscapeMatrix.M[3][3]);
-			return true;
-		}
-
-		return Parent->GetVectorValue(ParameterInfo, OutValue, Context);
-	}
-	virtual bool GetScalarValue(const FHashedMaterialParameterInfo& ParameterInfo, float* OutValue, const FMaterialRenderContext& Context) const override
-	{
-		if (ParameterInfo.Name == FName(TEXT("Top")))
-		{
-			*OutValue = TopHeight;
-			return true;
-		}
-		else if (ParameterInfo.Name == FName(TEXT("Bottom")))
-		{
-			*OutValue = BottomHeight;
-			return true;
-		}
-		return Parent->GetScalarValue(ParameterInfo, OutValue, Context);
-	}
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo,const UTexture** OutValue, const FMaterialRenderContext& Context) const override
-	{
-		if (ParameterInfo.Name == FName(TEXT("AlphaTexture")))
-		{
-			// FIXME: This needs to return a black texture if AlphaTexture is NULL.
-			// Returning NULL will cause the material to use GWhiteTexture.
-			*OutValue = AlphaTexture;
-			return true;
-		}
-		return Parent->GetTextureValue(ParameterInfo, OutValue, Context);
-	}
-	virtual bool GetTextureValue(const FHashedMaterialParameterInfo& ParameterInfo, const URuntimeVirtualTexture** OutValue, const FMaterialRenderContext& Context) const
-	{
-		return Parent->GetTextureValue(ParameterInfo, OutValue, Context);
+		return Parent->GetParameterValue(Type, ParameterInfo, OutValue, Context);
 	}
 };
 
@@ -264,35 +259,35 @@ public:
 						FDynamicMeshBuilder MeshBuilder(View->GetFeatureLevel());
 
 						const FColor GizmoColor = FColor::White;
-						MeshBuilder.AddVertex(FrustumVerts[0], FVector2D(0, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[1], FVector2D(1, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[2], FVector2D(1, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[3], FVector2D(0, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[0], FVector2f(0, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[1], FVector2f(1, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[2], FVector2f(1, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[3], FVector2f(0, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
 
-						MeshBuilder.AddVertex(FrustumVerts[4], FVector2D(0, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[5], FVector2D(1, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[6], FVector2D(1, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[7], FVector2D(0, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[4], FVector2f(0, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[5], FVector2f(1, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[6], FVector2f(1, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[7], FVector2f(0, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
 
-						MeshBuilder.AddVertex(FrustumVerts[1], FVector2D(0, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[0], FVector2D(1, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[4], FVector2D(1, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[5], FVector2D(0, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[1], FVector2f(0, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[0], FVector2f(1, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[4], FVector2f(1, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[5], FVector2f(0, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
 
-						MeshBuilder.AddVertex(FrustumVerts[3], FVector2D(0, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[2], FVector2D(1, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[6], FVector2D(1, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[7], FVector2D(0, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[3], FVector2f(0, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[2], FVector2f(1, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[6], FVector2f(1, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[7], FVector2f(0, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
 
-						MeshBuilder.AddVertex(FrustumVerts[2], FVector2D(0, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[1], FVector2D(1, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[5], FVector2D(1, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[6], FVector2D(0, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[2], FVector2f(0, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[1], FVector2f(1, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[5], FVector2f(1, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[6], FVector2f(0, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
 
-						MeshBuilder.AddVertex(FrustumVerts[0], FVector2D(0, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[3], FVector2D(1, 0), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[7], FVector2D(1, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
-						MeshBuilder.AddVertex(FrustumVerts[4], FVector2D(0, 1), FVector(1,0,0), FVector(0,1,0), FVector(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[0], FVector2f(0, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[3], FVector2f(1, 0), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[7], FVector2f(1, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
+						MeshBuilder.AddVertex((FVector3f)FrustumVerts[4], FVector2f(0, 1), FVector3f(1,0,0), FVector3f(0,1,0), FVector3f(0,0,1), GizmoColor);
 
 						for (int32 i = 0; i < 6; ++i)
 						{
@@ -316,7 +311,7 @@ public:
 								FVector TangentX(SampledNormal.Z, 0, -SampledNormal.X);
 								TangentX = TangentX.GetSafeNormal();
 
-								MeshBuilder.AddVertex(SampledPositions[X + Y * SampleSizeX], FVector2D((float)X / (SampleSizeX), (float)Y / (SampleSizeY)), TangentX, SampledNormal^TangentX, SampledNormal, FColor::White);
+								MeshBuilder.AddVertex((FVector3f)SampledPositions[X + Y * SampleSizeX], FVector2f((float)X / (SampleSizeX), (float)Y / (SampleSizeY)), (FVector3f)TangentX, FVector3f(SampledNormal^TangentX), (FVector3f)SampledNormal, FColor::White);
 							}
 						}
 
@@ -451,6 +446,7 @@ ALandscapeGizmoActor::ALandscapeGizmoActor(const FObjectInitializer& ObjectIniti
 	RootComponent = SceneComponent;
 
 #if WITH_EDITORONLY_DATA
+	bListedInSceneOutliner = false;
 	bEditable = false;
 	Width = 1280.0f;
 	Height = 1280.0f;
@@ -601,7 +597,7 @@ FRotator ALandscapeGizmoActiveActor::SnapToLandscapeGrid(const FRotator& GizmoRo
 	//const FRotator ResultRotation = (SnappedLandscapeSpaceRotation.Quaternion() * LToW.GetRotation()).Rotator().GetNormalized();
 
 	// Gizmo rotation is used as if it was relative to the landscape even though it isn't, so snap in world space
-	const FRotator ResultRotation = FRotator(0.f, FMath::GridSnap(GizmoRotation.Yaw, 90.f), 0.f);
+	const FRotator ResultRotation = FRotator(0.f, FMath::GridSnap(GizmoRotation.Yaw, (FRotator::FReal)90.f), 0.f);
 	return ResultRotation;
 }
 
@@ -642,7 +638,9 @@ void ALandscapeGizmoActiveActor::EditorApplyRotation(const FRotator& DeltaRotati
 ALandscapeGizmoActor* ALandscapeGizmoActiveActor::SpawnGizmoActor()
 {
 	// ALandscapeGizmoActor is history for ALandscapeGizmoActiveActor
-	ALandscapeGizmoActor* NewActor = GetWorld()->SpawnActor<ALandscapeGizmoActor>();
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.ObjectFlags |= RF_Transient;
+	ALandscapeGizmoActor* NewActor = GetWorld()->SpawnActor<ALandscapeGizmoActor>(SpawnParams);
 	Duplicate(NewActor);
 	return NewActor;
 }
@@ -658,7 +656,7 @@ void ALandscapeGizmoActiveActor::SetTargetLandscape(ULandscapeInfo* LandscapeInf
 			for (const TPair<FGuid, ULandscapeInfo*>& InfoMapPair : ULandscapeInfoMap::GetLandscapeInfoMap(GetWorld()).Map)
 			{
 				ULandscapeInfo* CandidateInfo = InfoMapPair.Value;
-				if (CandidateInfo && !CandidateInfo->HasAnyFlags(RF_BeginDestroyed) && CandidateInfo->GetLandscapeProxy() != nullptr)
+				if (CandidateInfo && CandidateInfo->SupportsLandscapeEditing() && !CandidateInfo->HasAnyFlags(RF_BeginDestroyed) && CandidateInfo->GetLandscapeProxy() != nullptr)
 				{
 					TargetLandscapeInfo = CandidateInfo;
 					break;

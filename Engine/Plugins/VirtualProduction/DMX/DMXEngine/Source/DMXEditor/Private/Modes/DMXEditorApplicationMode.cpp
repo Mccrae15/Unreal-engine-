@@ -34,17 +34,10 @@ FDMXEditorDefaultApplicationMode::FDMXEditorDefaultApplicationMode(TSharedPtr<FD
 	DefaultsTabFactories.RegisterFactory(MakeShared<FDMXEditorFixturePatchSummoner>(InDMXEditor));
 
 	// 2. Register Tab Layouts
-	TabLayout = FTabManager::NewLayout("Standalone_SimpleAssetEditor_Layout_v5")
+	TabLayout = FTabManager::NewLayout("Standalone_SimpleAssetEditor_Layout_v6")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(InDMXEditor->GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewStack()

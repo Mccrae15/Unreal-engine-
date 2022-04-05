@@ -86,6 +86,9 @@ struct UNREALED_API FLevelEditorViewportInstanceSettings
 		, EditorShowFlagsString()
 		, GameShowFlagsString()
 		, BufferVisualizationMode()
+		, NaniteVisualizationMode()
+		, LumenVisualizationMode()
+		, VirtualShadowMapVisualizationMode()
 		, ExposureSettings()
 		, FOVAngle(EditorViewportDefs::DefaultPerspectiveFOVAngle)
 		, FarViewPlane(0)
@@ -125,6 +128,18 @@ struct UNREALED_API FLevelEditorViewportInstanceSettings
 	/** The buffer visualization mode for the viewport. */
 	UPROPERTY(config)
 	FName BufferVisualizationMode;
+
+	/** The Nanite visualization mode for the viewport. */
+	UPROPERTY(config)
+	FName NaniteVisualizationMode;
+
+	/** The Lumen visualization mode for the viewport. */
+	UPROPERTY(config)
+	FName LumenVisualizationMode;
+
+	/** The virtual shadow map visualization mode for the viewport. */
+	UPROPERTY(config)
+	FName VirtualShadowMapVisualizationMode;
 
 	/** The buffer visualization mode for the viewport. */
 	UPROPERTY(config)
@@ -275,7 +290,7 @@ class UNREALED_API ULevelEditorViewportSettings
 	int32 MouseScrollCameraSpeed;
 
 	/** The sensitivity of mouse movement when rotating the camera. */
-	UPROPERTY(EditAnywhere, config, Category=Controls, meta=(DisplayName="Mouse Sensitivity", ClampMin="0.0",ClampMax="1.0") )
+	UPROPERTY(EditAnywhere, config, Category=Controls, meta=(DisplayName="Mouse Sensitivity", ClampMin="0.01",ClampMax="1.0") )
 	float MouseSensitivty;
 	
 	/** Whether or not to invert mouse on the y axis in free look mode */
@@ -384,11 +399,11 @@ private:
 
 public:
 
-	/** If enabled, actor rotations will snap to the grid. */
+	/** If enabled, new Actors that you drag into the viewport snap to the active 2D layer. */
 	UPROPERTY(EditAnywhere, config, Category=GridSnapping, meta=(DisplayName = "Enable 2D Layer Snapping"))
 	uint32 bEnableLayerSnap:1;
 
-	/** The index of the snap plane to use when bEnableLayerSnap is true (from the project SnapLayers array) */
+	/** The index of the snap plane to use when 2D Layer Snapping is enabled, from the array of Snap Layers set for the project. */
 	UPROPERTY(config)
 	int32 ActiveSnapLayerIndex;
 
@@ -425,11 +440,6 @@ public:
 	/** Controls which array of rotation grid values we are using */
 	UPROPERTY(config)
 	TEnumAsByte<ERotationGridMode> CurrentRotGridMode;
-
-	/** Toggles legacy behavior for updating components and actors during drag operations. This could be useful if you're seeing a degradation in performance due to too many PostEditMove calls */
-	UE_DEPRECATED(4.26, "This property is meant to be a temporary toggle for a rollback if too many post edit move calls degrade performance during drag operations.")
-	UPROPERTY(EditAnywhere, config, Category=Controls, AdvancedDisplay, meta = (DisplayName = "Use Legacy Behavior for actor and component updates while dragging"))
-	bool bUseLegacyPostEditBehavior = false;
 
 public:
 
@@ -506,19 +516,22 @@ public:
 
 	/** The size adjustment to apply to selected spline points (in screen space units). */
 	UPROPERTY(EditAnywhere, config, Category = LookAndFeel, AdvancedDisplay, meta = (ClampMin = "-5.00", ClampMax = "20.00"))
-	float SelectedSplinePointSizeAdjustment;
+	float SelectedSplinePointSizeAdjustment = 0.0f;
 
 	/** The size adjustment to apply to spline line thickness which increases the spline's hit tolerance. */
 	UPROPERTY(EditAnywhere, config, Category = LookAndFeel, AdvancedDisplay, meta = (ClampMin = "0.00"))
-	float SplineLineThicknessAdjustment;
+	float SplineLineThicknessAdjustment = 0.0f;
 
 	/** The size adjustment to apply to spline tangent handle (in screen space units). */
 	UPROPERTY(EditAnywhere, config, Category = LookAndFeel, AdvancedDisplay, meta = (ClampMin = "-5.00", ClampMax = "20.00"))
-	float SplineTangentHandleSizeAdjustment;
+	float SplineTangentHandleSizeAdjustment = 0.0f;
 
 	/** The scale to apply to spline tangent lengths */
 	UPROPERTY(EditAnywhere, config, Category = LookAndFeel, AdvancedDisplay, meta = (ClampMin = "0.00"))
-	float SplineTangentScale;
+	float SplineTangentScale = 0.5f;
+	
+	UPROPERTY(config)
+	FVector2D LastInViewportMenuLocation;
 
 private:
 

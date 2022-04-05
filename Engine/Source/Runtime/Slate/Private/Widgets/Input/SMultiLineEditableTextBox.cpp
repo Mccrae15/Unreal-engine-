@@ -47,6 +47,7 @@ void SMultiLineEditableTextBox::Construct( const FArguments& InArgs )
 	ForegroundColorOverride = InArgs._ForegroundColor;
 	BackgroundColorOverride = InArgs._BackgroundColor;
 	ReadOnlyForegroundColorOverride = InArgs._ReadOnlyForegroundColor;
+	FocusedForegroundColorOverride = InArgs._FocusedForegroundColor;
 	bSelectWordOnMouseDoubleClick = InArgs._SelectWordOnMouseDoubleClick;
 
 	bHasExternalHScrollBar = InArgs._HScrollBar.IsValid();
@@ -132,6 +133,7 @@ void SMultiLineEditableTextBox::Construct( const FArguments& InArgs )
 					.TextShapingMethod(InArgs._TextShapingMethod)
 					.TextFlowDirection(InArgs._TextFlowDirection)
 					.AllowContextMenu(InArgs._AllowContextMenu)
+					.OverflowPolicy(InArgs._OverflowPolicy)
 				]
 
 				+SVerticalBox::Slot()
@@ -214,22 +216,64 @@ FSlateColor SMultiLineEditableTextBox::DetermineForegroundColor() const
 {
 	check(Style);
 
-	if ( EditableText->IsTextReadOnly() )
+	FSlateColor Result = FSlateColor::UseStyle();
+
+	if (EditableText->IsTextReadOnly())
 	{
 		if (ReadOnlyForegroundColorOverride.IsSet())
 		{
-			return ReadOnlyForegroundColorOverride.Get();
+			Result = ReadOnlyForegroundColorOverride.Get();
 		}
-		if (ForegroundColorOverride.IsSet())
+		else if (ForegroundColorOverride.IsSet())
 		{
-			return ForegroundColorOverride.Get();
+			Result = ForegroundColorOverride.Get();
 		}
 
-		return Style->ReadOnlyForegroundColor;
+		if (Result == FSlateColor::UseStyle())
+		{
+			return Style->ReadOnlyForegroundColor;
+		}
+		else
+		{
+			return Result;
+		}
+	}
+	else if (HasKeyboardFocus())
+	{
+		if (FocusedForegroundColorOverride.IsSet())
+		{
+			Result = FocusedForegroundColorOverride.Get();
+		}
+		else if (ForegroundColorOverride.IsSet())
+		{
+			Result = ForegroundColorOverride.Get();
+		}
+
+		if (Result == FSlateColor::UseStyle())
+		{
+			return Style->FocusedForegroundColor;
+		}
+		else
+		{
+			return Result;
+		}
 	}
 	else
 	{
-		return ForegroundColorOverride.IsSet() ? ForegroundColorOverride.Get() : Style->ForegroundColor;
+		if (ForegroundColorOverride.IsSet())
+		{
+			Result = ForegroundColorOverride.Get();
+		}
+
+		if (Result == FSlateColor::UseStyle())
+		{
+			return Style->ForegroundColor;
+		}
+		else
+		{
+			return Result;
+		}
+
 	}
 }
 
@@ -311,6 +355,11 @@ void SMultiLineEditableTextBox::SetMargin(const TAttribute<FMargin>& InMargin)
 void SMultiLineEditableTextBox::SetJustification(const TAttribute<ETextJustify::Type>& InJustification)
 {
 	EditableText->SetJustification(InJustification);
+}
+
+void SMultiLineEditableTextBox::SetOverflowPolicy(TOptional<ETextOverflowPolicy> InOverflowPolicy)
+{
+	EditableText->SetOverflowPolicy(InOverflowPolicy);
 }
 
 void SMultiLineEditableTextBox::SetAllowContextMenu(const TAttribute< bool >& InAllowContextMenu)
@@ -482,6 +531,11 @@ TSharedPtr<const IRun> SMultiLineEditableTextBox::GetRunUnderCursor() const
 TArray<TSharedRef<const IRun>> SMultiLineEditableTextBox::GetSelectedRuns() const
 {
 	return EditableText->GetSelectedRuns();
+}
+
+FTextLocation SMultiLineEditableTextBox::GetCursorLocation() const
+{
+	return EditableText->GetCursorLocation();
 }
 
 TSharedPtr<const SScrollBar> SMultiLineEditableTextBox::GetHScrollBar() const

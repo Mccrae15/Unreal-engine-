@@ -9,6 +9,7 @@ namespace UnrealBuildTool.Rules
 			PublicDependencyModuleNames.AddRange(
 				new string[]
 				{
+					"LiveLinkAnimationCore",
 					"LiveLinkInterface",
 					"LiveLink",
 					"SlateCore",
@@ -26,6 +27,7 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"DetailCustomizations",
 					"EditorStyle",
+					"EditorWidgets",
 					"Engine",
 					"InputCore",
 					"KismetCompiler",
@@ -42,8 +44,10 @@ namespace UnrealBuildTool.Rules
 					"Sequencer",
 					"Slate",
 					"TimeManagement",
+					"EditorFramework",
 					"UnrealEd",
 					"WorkspaceMenuStructure",
+					"ToolWidgets",
 				}
 			);
 		}

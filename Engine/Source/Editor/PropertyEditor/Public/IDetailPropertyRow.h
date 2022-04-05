@@ -4,13 +4,89 @@
 
 #include "CoreMinimal.h"
 #include "Misc/Attribute.h"
+
 #include "Layout/Visibility.h"
 #include "Framework/SlateDelegates.h"
 #include "PropertyHandle.h"
+#include "Widgets/Layout/SSplitter.h"
+
 
 class FDetailWidgetRow;
 class FDetailWidgetDecl;
+class IDetailDragDropHandler;
 
+class FDetailColumnSizeData
+{
+public:
+	
+	FDetailColumnSizeData()
+	{
+		ValueColumnWidthValue = 0.7f;
+		RightColumnWidthValue = 0;
+		HoveredSplitterIndexValue = INDEX_NONE;
+
+		NameColumnWidth.BindRaw(this, &FDetailColumnSizeData::GetNameColumnWidth);
+		ValueColumnWidth.BindRaw(this, &FDetailColumnSizeData::GetValueColumnWidth);
+		PropertyColumnWidth.BindRaw(this, &FDetailColumnSizeData::GetPropertyColumnWidth);
+		RightColumnWidth.BindRaw(this, &FDetailColumnSizeData::GetRightColumnWidth);
+		RightColumnMinWidth.BindRaw(this, &FDetailColumnSizeData::GetRightColumnMinWidth);
+		HoveredSplitterIndex.BindRaw(this, &FDetailColumnSizeData::GetHoveredSplitterIndex);
+		OnValueColumnResized.BindRaw(this, &FDetailColumnSizeData::SetValueColumnWidth);
+		OnRightColumnResized.BindRaw(this, &FDetailColumnSizeData::OnSetRightColumnWidth);
+		OnSplitterHandleHovered.BindRaw(this, &FDetailColumnSizeData::OnSetHoveredSplitterIndex);
+
+		// these are intentionally left no-op, since the widths are derived from the other column width
+		OnPropertyColumnResized.BindLambda([](float) {});
+		OnNameColumnResized.BindLambda([](float) {}); 
+	}
+
+	// don't change these attributes directly - they're here only to be forwarded to the details view
+	TAttribute<float> NameColumnWidth;
+	TAttribute<float> ValueColumnWidth;
+	TAttribute<float> PropertyColumnWidth;
+	TAttribute<float> RightColumnWidth;
+	TAttribute<float> RightColumnMinWidth;
+	TAttribute<int32> HoveredSplitterIndex;
+	SSplitter::FOnSlotResized OnNameColumnResized; 
+	SSplitter::FOnSlotResized OnValueColumnResized;
+	SSplitter::FOnSlotResized OnPropertyColumnResized; 
+	SSplitter::FOnSlotResized OnRightColumnResized;
+	SSplitter::FOnHandleHovered OnSplitterHandleHovered;
+
+	void SetValueColumnWidth(float NewWidth)
+	{ 
+		ensureAlways(NewWidth <= 1.0f);
+		ValueColumnWidthValue = NewWidth;
+	}
+
+	float GetRightColumnMinWidth() const { return RightColumnMinWidthValue; }
+	void SetRightColumnMinWidth(float NewWidth)
+	{ 
+		RightColumnMinWidthValue = NewWidth;
+	}
+
+private:
+	float ValueColumnWidthValue;
+	float RightColumnWidthValue;
+	float RightColumnMinWidthValue;
+	int HoveredSplitterIndexValue;
+
+	float GetNameColumnWidth() const { return 1.0f - (ValueColumnWidthValue + RightColumnWidthValue); }
+	float GetValueColumnWidth() const { return ValueColumnWidthValue; }
+	float GetRightColumnWidth() const { return RightColumnWidthValue; }
+	float GetPropertyColumnWidth() const { return 1.0f - RightColumnWidthValue; }
+	int32 GetHoveredSplitterIndex() const { return HoveredSplitterIndexValue; }
+	
+	void OnSetRightColumnWidth(float NewWidth)
+	{
+		RightColumnWidthValue = NewWidth;
+	}
+
+	void OnSetHoveredSplitterIndex(int32 HoveredIndex)
+	{
+		HoveredSplitterIndexValue = HoveredIndex;
+	}
+};
 
 DECLARE_DELEGATE_RetVal_OneParam(bool, FIsResetToDefaultVisible, TSharedPtr<IPropertyHandle> /* PropertyHandle */);
 DECLARE_DELEGATE_OneParam(FResetToDefaultHandler, TSharedPtr<IPropertyHandle> /* PropertyHandle*/);
@@ -26,7 +102,7 @@ public:
 	{
 		FResetToDefaultOverride ResetToDefault;
 		ResetToDefault.bForceShow = true;
-		ResetToDefault.OnResetToDefaultClickedDelegate = InResetToDefaultClicked;
+		ResetToDefault.OnClickedPropertyDelegate = InResetToDefaultClicked;
 		ResetToDefault.bPropagateToChildren = InPropagateToChildren;
 		ResetToDefault.bForceHide = false;
 		return ResetToDefault;
@@ -37,8 +113,42 @@ public:
 	{
 		FResetToDefaultOverride ResetToDefault;
 		ResetToDefault.bForceShow = false;
-		ResetToDefault.IsResetToDefaultVisibleDelegate = InIsResetToDefaultVisible;
-		ResetToDefault.OnResetToDefaultClickedDelegate = InResetToDefaultClicked;
+		ResetToDefault.IsVisiblePropertyDelegate = InIsResetToDefaultVisible;
+		ResetToDefault.OnClickedPropertyDelegate = InResetToDefaultClicked;
+		ResetToDefault.bPropagateToChildren = InPropagateToChildren;
+		ResetToDefault.bForceHide = false;
+		return ResetToDefault;
+	} 
+
+	/** Create a FResetToDefaultOverride from a visibility attribute. */
+	static FResetToDefaultOverride Create(TAttribute<bool> InIsResetToDefaultVisible, const bool InPropagateToChildren = false)
+	{
+		FResetToDefaultOverride ResetToDefault;
+		ResetToDefault.bForceShow = false;
+		ResetToDefault.IsVisibleAttribute = InIsResetToDefaultVisible;
+		ResetToDefault.bPropagateToChildren = InPropagateToChildren;
+		ResetToDefault.bForceHide = false;
+		return ResetToDefault;
+	}
+
+	/** Create a FResetToDefaultOverride from a visibility attribute and a simple delegate. */
+	static FResetToDefaultOverride Create(TAttribute<bool> InIsResetToDefaultVisible, FSimpleDelegate InResetToDefaultClicked, const bool InPropagateToChildren = false)
+	{
+		FResetToDefaultOverride ResetToDefault;
+		ResetToDefault.bForceShow = false;
+		ResetToDefault.IsVisibleAttribute = InIsResetToDefaultVisible;
+		ResetToDefault.OnClickedDelegate = InResetToDefaultClicked;
+		ResetToDefault.bPropagateToChildren = InPropagateToChildren;
+		ResetToDefault.bForceHide = false;
+		return ResetToDefault;
+	}
+
+	/** Create a FResetToDefaultOverride from a simple delegate. */
+	static FResetToDefaultOverride Create(FSimpleDelegate InResetToDefaultClicked, const bool InPropagateToChildren = false)
+	{
+		FResetToDefaultOverride ResetToDefault;
+		ResetToDefault.bForceShow = true;
+		ResetToDefault.OnClickedDelegate = InResetToDefaultClicked;
 		ResetToDefault.bPropagateToChildren = InPropagateToChildren;
 		ResetToDefault.bForceHide = false;
 		return ResetToDefault;
@@ -61,18 +171,46 @@ public:
 		{
 			return true;
 		}
-		if (!bForceHide && IsResetToDefaultVisibleDelegate.IsBound())
+
+		if (bForceHide)
 		{
-			return IsResetToDefaultVisibleDelegate.Execute(Property);
+			return false;
 		}
+
+		if (IsVisiblePropertyDelegate.IsBound() && Property.IsValid())
+		{
+			return IsVisiblePropertyDelegate.Execute(Property);
+		}
+
+		if (IsVisibleAttribute.IsSet())
+		{
+			return IsVisibleAttribute.Get();
+		}
+		
 		return false;
 	}
 
-	/** Called by the property editor to actually reset the property to default */
-	FResetToDefaultHandler OnResetToDefaultClicked() const
+	/** Does this have a custom reset to default handler? */
+	bool HasResetToDefaultHandler() const
 	{
-		return OnResetToDefaultClickedDelegate;
+		return OnClickedPropertyDelegate.IsBound() || OnClickedDelegate.IsBound();
 	}
+
+	/** Called by the property editor to actually reset the property to default */
+	void OnResetToDefaultClicked(TSharedPtr<IPropertyHandle> PropertyHandle) const
+	{
+		if (PropertyHandle.IsValid() && OnClickedPropertyDelegate.IsBound())
+		{
+			PropertyHandle->ExecuteCustomResetToDefault(*this);
+		} 
+		else
+		{
+			OnClickedDelegate.ExecuteIfBound();
+		}
+	}
+
+	/** Get the actual delegate bound to this reset to default handler. */
+	FResetToDefaultHandler GetPropertyResetToDefaultDelegate() const { return OnClickedPropertyDelegate; }
 
 	/** Called by properties to determine whether this override should set on their children */
 	bool PropagatesToChildren() const
@@ -82,10 +220,16 @@ public:
 
 private:
 	/** Callback to indicate whether or not reset to default is visible */
-	FIsResetToDefaultVisible IsResetToDefaultVisibleDelegate;
+	FIsResetToDefaultVisible IsVisiblePropertyDelegate;
 
 	/** Delegate called when reset to default is clicked */
-	FResetToDefaultHandler OnResetToDefaultClickedDelegate;
+	FResetToDefaultHandler OnClickedPropertyDelegate;
+
+	/** Attribute to determine whether or not reset to default is visible */
+	TAttribute<bool> IsVisibleAttribute; 
+
+	/** Delegate called when reset to default is clicked */
+	FSimpleDelegate OnClickedDelegate;
 
 	/** Should properties pass this on to their children? */
 	bool bPropagateToChildren;
@@ -106,7 +250,7 @@ public:
 	virtual ~IDetailPropertyRow(){}
 
 	/** @return the property handle for the property on this row */
-	virtual TSharedPtr<IPropertyHandle> GetPropertyHandle() = 0;
+	virtual TSharedPtr<IPropertyHandle> GetPropertyHandle() const = 0;
 
 	/**
 	 * Sets the localized display name of the property
@@ -167,6 +311,13 @@ public:
 	 * @param ResetToDefault	Contains the delegates needed to override the behavior of reset to default
 	 */
 	virtual IDetailPropertyRow& OverrideResetToDefault(const FResetToDefaultOverride& ResetToDefault) = 0;
+
+	/**
+	 * Sets a handler for this property row to be a source or target of drag-and-drop operations
+	 * 
+	 * @param InDragDropHandler	Handler used when starting a drag or accepting a drop operation
+	 */
+	virtual IDetailPropertyRow& DragDropHandler(TSharedPtr<IDetailDragDropHandler> InDragDropHandler) = 0;
 
 	/**
 	 * Returns the name and value widget of this property row.  You can use this widget to apply further customization to existing widgets (by using this  with CustomWidget)

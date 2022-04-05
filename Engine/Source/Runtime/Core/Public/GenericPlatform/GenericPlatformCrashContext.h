@@ -10,8 +10,10 @@
 #include "Containers/UnrealString.h"
 
 #ifndef WITH_ADDITIONAL_CRASH_CONTEXTS
-#define WITH_ADDITIONAL_CRASH_CONTEXTS 0
+#define WITH_ADDITIONAL_CRASH_CONTEXTS 1
 #endif
+
+struct FProgramCounterSymbolInfo;
 
 /** Defines special exit codes used to diagnose abnormal terminations. The code values are arbitrary, but easily recongnizable in decimal. They are meant to be
     used with the out-of-process monitoring/analytics in order to figure out unexpected cases. */
@@ -95,6 +97,7 @@ enum class ECrashContextType
 	Crash,
 	Assert,
 	Ensure,
+	Stall,
 	GPUCrash,
 	Hang,
 	OutOfMemory,
@@ -118,7 +121,7 @@ enum class ECrashTrigger
 #define CR_MAX_GENERIC_FIELD_CHARS 64
 #define CR_MAX_COMMANDLINE_CHARS 1024
 #define CR_MAX_RICHTEXT_FIELD_CHARS 512
-#define CR_MAX_DYNAMIC_BUFFER_CHARS 1024*16
+#define CR_MAX_DYNAMIC_BUFFER_CHARS 1024*32
 
 /**
  * Fixed size structure that holds session specific state.
@@ -128,7 +131,7 @@ struct FSessionContext
 	bool 					bIsInternalBuild;
 	bool 					bIsPerforceBuild;
 	bool 					bIsSourceDistribution;
-	bool 					bIsUE4Release;
+	bool 					bIsUERelease;
 	bool					bIsOOM;
 	bool					bIsExitRequested;
 	uint32					ProcessId;
@@ -150,6 +153,7 @@ struct FSessionContext
 	TCHAR 					RootDir[CR_MAX_DIRECTORY_CHARS];
 	TCHAR 					EpicAccountId[CR_MAX_GENERIC_FIELD_CHARS];
 	TCHAR 					LoginIdStr[CR_MAX_GENERIC_FIELD_CHARS];
+	TCHAR					SymbolsLabel[CR_MAX_GENERIC_FIELD_CHARS];
 	TCHAR 					OsVersion[CR_MAX_GENERIC_FIELD_CHARS];
 	TCHAR 					OsSubVersion[CR_MAX_GENERIC_FIELD_CHARS];
 	TCHAR 					CPUVendor[CR_MAX_GENERIC_FIELD_CHARS];
@@ -191,7 +195,6 @@ struct FSharedCrashContext
 	TCHAR					ThreadNames[CR_MAX_THREAD_NAME_CHARS * CR_MAX_THREADS];
 	uint32					NumThreads;
 	uint32					CrashingThreadId;
-	uint32					NumStackFramesToIgnore;
 	ECrashContextType		CrashType;
 
 	// Additional user settings.
@@ -214,6 +217,12 @@ struct FSharedCrashContext
 	uint32					GameDataOffset;
 	// Fixed size dynamic buffer
 	TCHAR					DynamicData[CR_MAX_DYNAMIC_BUFFER_CHARS];
+
+	// Program counter address where the error occurred.
+	void*					ErrorProgramCounter;
+
+	// Instruction address where the exception was raised that initiated crash reporting
+	void*					ExceptionProgramCounter;
 };
 
 /**
@@ -240,13 +249,14 @@ public:
 	static const TCHAR* const EngineDataTag;
 	static const TCHAR* const GameDataTag;
 	static const TCHAR* const EnabledPluginsTag;
-	static const TCHAR* const UE4MinidumpName;
+	static const TCHAR* const UEMinidumpName;
 	static const TCHAR* const NewLineTag;
-	static const int32 CrashGUIDLength = 128;
+	static constexpr int32 CrashGUIDLength = 128;
 
 	static const TCHAR* const CrashTypeCrash;
 	static const TCHAR* const CrashTypeAssert;
 	static const TCHAR* const CrashTypeEnsure;
+	static const TCHAR* const CrashTypeStall;
 	static const TCHAR* const CrashTypeGPU;
 	static const TCHAR* const CrashTypeHang;
 	static const TCHAR* const CrashTypeAbnormalShutdown;
@@ -323,6 +333,9 @@ public:
 	/** Get the file path to the temporary session context file that we create for the given process. */
 	static FString GetTempSessionContextFilePath(uint64 ProcessID);
 
+	/** Clean up expired context files that were left-over on the user disks (because the consumer crashed and/or failed to delete it). */
+	static void CleanupTempSessionContextFiles(const FTimespan& ExpirationAge);
+
 	/** Serializes all data to the buffer. */
 	void SerializeContentToBuffer() const;
 
@@ -395,8 +408,8 @@ public:
 	/** Adds a plugin descriptor string to the enabled plugins list in the crash context */
 	static void AddPlugin(const FString& PluginDesc);
 
-	/** Flushes the logs. In the case of in memory logs is used on this configuration, dumps them to file. */
-	static void DumpLog(const FString& CrashFolderAbsolute);
+	/** Flushes the logs. In the case of in memory logs is used on this configuration, dumps them to file. Returns the name of the file */
+	static FString DumpLog(const FString& CrashFolderAbsolute);
 
 	/** Collects additional crash context providers. See FAdditionalCrashContextStack. */
 	static void DumpAdditionalContext(const TCHAR* CrashFolderAbsolute);
@@ -424,7 +437,14 @@ public:
 	/** Sets the number of stack frames to ignore when symbolicating from a minidump */
 	void SetNumMinidumpFramesToIgnore(int32 InNumMinidumpFramesToIgnore);
 
-	/** Generate raw call stack for crash report (image base + offset) */
+	/**
+	 * Generate raw call stack for crash report (image base + offset)
+	 * @param ErrorProgramCounter The program counter of where the occur occurred in the callstack being captured
+	 * @param Context Optional thread context information
+	 */
+	void CapturePortableCallStack(void* ErrorProgramCounter, void* Context);
+
+	UE_DEPRECATED(5.0, "")
 	void CapturePortableCallStack(int32 NumStackFramesToIgnore, void* Context);
 	
 	/** Sets the portable callstack to a specified stack */
@@ -443,9 +463,25 @@ public:
 	static void CleanupPlatformSpecificFiles();
 
 	/**
-	 * @return whether this crash is a non-crash event
+	 * @return the type of this crash
 	 */
 	ECrashContextType GetType() const { return Type; }
+
+	/**
+	 * @return whether a crash context type is continable
+	 */
+	static bool IsTypeContinuable(ECrashContextType Type)
+	{
+		switch (Type)
+		{
+		case ECrashContextType::Ensure:
+			return true;
+		case ECrashContextType::Stall:
+			return true;
+		default:
+			return false;
+		}
+	}
 
 	/**
 	 * Set the current deployment name (ie. EpicApp)
@@ -474,6 +510,12 @@ protected:
 
 	/** Allow platform implementations to provide a callstack property. Primarily used when non-native code triggers a crash. */
 	virtual const TCHAR* GetCallstackProperty() const;
+
+	/** Get arbitrary engine data from the crash context */
+	static const FString* GetEngineData(const FString& Key);
+
+	/** Get arbitrary game data from the crash context */
+	static const FString* GetGameData(const FString& Key);
 
 private:
 
@@ -574,6 +616,7 @@ struct FCrashContextExtendedWriter
  */
 struct FAdditionalCrashContextStack
 {
+	CORE_API static FAdditionalCrashContextStack& GetThreadContextProvider();
 	CORE_API static void PushProvider(struct FScopedAdditionalCrashContextProvider* Provider);
 	CORE_API static void PopProvider();
 
@@ -581,7 +624,6 @@ struct FAdditionalCrashContextStack
 
 private:
 	enum { MaxStackDepth = 16 };
-	static thread_local FAdditionalCrashContextStack ThreadContextProvider;
 	FAdditionalCrashContextStack* Next;
 	const FScopedAdditionalCrashContextProvider* Stack[MaxStackDepth];
 	uint32 StackIndex = 0;

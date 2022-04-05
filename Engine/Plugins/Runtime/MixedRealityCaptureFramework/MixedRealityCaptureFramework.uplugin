@@ -21,9 +21,8 @@
       "Name": "MixedRealityCaptureFramework",
       "Type": "Runtime",
       "LoadingPhase": "PostEngineInit",
-      "WhitelistPlatforms": [
+      "PlatformAllowList": [
         "Win64",
-        "Win32",
         "Linux"
       ]
     }

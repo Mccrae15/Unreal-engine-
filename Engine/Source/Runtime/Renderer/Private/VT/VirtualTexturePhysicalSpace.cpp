@@ -1,75 +1,95 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "VirtualTexturePhysicalSpace.h"
-#include "VirtualTextureSystem.h"
+
+#include "Engine/Canvas.h"
 #include "RenderTargetPool.h"
 #include "VisualizeTexture.h"
-#include "Stats/Stats.h"
 #include "VT/VirtualTexturePoolConfig.h"
+#include "VT/VirtualTextureScalability.h"
+#include "VT/VirtualTextureSystem.h"
+
+CSV_DECLARE_CATEGORY_EXTERN(VirtualTexturing);
+
+static TAutoConsoleVariable<float> CVarVTResidencyMaxMipMapBias(
+	TEXT("r.VT.Residency.MaxMipMapBias"),
+	4,
+	TEXT("Maximum mip bias to apply to prevent Virtual Texture pool residency over-subscription.\n")
+	TEXT("Default 4"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarVTResidencyUpperBound(
+	TEXT("r.VT.Residency.UpperBound"),
+	0.95f,
+	TEXT("Virtual Texture pool residency above which we increase mip bias.\n")
+	TEXT("Default 0.95"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarVTResidencyLowerBound(
+	TEXT("r.VT.Residency.LowerBound"),
+	0.95f,
+	TEXT("Virtual Texture pool residency below which we decrease mip bias.\n")
+	TEXT("Default 0.95"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarVTResidencyLockedUpperBound(
+	TEXT("r.VT.Residency.LockedUpperBound"),
+	0.65f,
+	TEXT("Virtual Texture pool locked page residency above which we kill any mip bias.\n")
+	TEXT("That's because locked pages are never affected by the mip bias setting. So it is unlikely that we can get the pool within budget.\n")
+	TEXT("Default 0.65"),
+	ECVF_RenderThreadSafe);
+
+static TAutoConsoleVariable<float> CVarVTResidencyAdjustmentRate(
+	TEXT("r.VT.Residency.AdjustmentRate"),
+	0.2,
+	TEXT("Rate at which we adjust mip bias due to Virtual Texture pool residency.\n")
+	TEXT("Default 0.2"),
+	ECVF_RenderThreadSafe);
 
 
-FVirtualTexturePhysicalSpace::FVirtualTexturePhysicalSpace(const FVTPhysicalSpaceDescription& InDesc, uint16 InID)
+FVirtualTexturePhysicalSpace::FVirtualTexturePhysicalSpace(const FVTPhysicalSpaceDescription& InDesc, uint16 InID, int32 InTileWidthHeight, bool bInEnableResidencyMipMapBias)
 	: Description(InDesc)
+	, TextureSizeInTiles(InTileWidthHeight)
 	, NumRefs(0u)
 	, ID(InID)
-	, bPageTableLimit(false)
-	, bGpuTextureLimit(false)
+	, bEnableResidencyMipMapBias(bInEnableResidencyMipMapBias)
+	, ResidencyMipMapBias(0.0f)
+	, LastFrameOversubscribed(0)
+#if !UE_BUILD_SHIPPING
+	, VisibleHistory(HistorySize)
+	, LockedHistory(HistorySize)
+	, MipMapBiasHistory(HistorySize)
+	, HistoryIndex(0)
+#endif
 {
-	// Find matching physical pool
-	FVirtualTextureSpacePoolConfig Config;
-	UVirtualTexturePoolConfig const* PoolConfig = GetDefault<UVirtualTexturePoolConfig>();
-	PoolConfig->FindPoolConfig(InDesc.Format, InDesc.NumLayers, InDesc.TileSize, Config);
-	const uint32 PoolSizeInBytes = Config.SizeInMegabyte * 1024u * 1024u;
-
-	const FPixelFormatInfo& FormatInfo = GPixelFormats[InDesc.Format[0]];
-	check(InDesc.TileSize % FormatInfo.BlockSizeX == 0);
-	check(InDesc.TileSize % FormatInfo.BlockSizeY == 0);
-	SIZE_T TileSizeBytes = 0;
-	for (int32 Layer = 0; Layer < InDesc.NumLayers; ++Layer)
-	{
-		TileSizeBytes += CalculateImageBytes(InDesc.TileSize, InDesc.TileSize, 0, InDesc.Format[Layer]);
-	}
-	const uint32 MaxTiles = FMath::Max((uint32)(PoolSizeInBytes / TileSizeBytes), 1u);
-	TextureSizeInTiles = FMath::FloorToInt(FMath::Sqrt((float)MaxTiles));
-	
-	if (TextureSizeInTiles * InDesc.TileSize > GetMax2DTextureDimension())
-	{
-		// A good option to support extremely large caches would be to allow additional slices in an array here for caches...
-		// Just try to use the maximum texture size for now
-		TextureSizeInTiles = GetMax2DTextureDimension() / InDesc.TileSize;
-		bGpuTextureLimit = true;
-	}
-
 	Pool.Initialize(GetNumTiles());
 
 	// Initialize this resource FeatureLevel, so it gets re-created on FeatureLevel changes
 	SetFeatureLevel(GMaxRHIFeatureLevel);
 
-#if STATS
-	const FString LongName = FString::Printf(TEXT("WorkingSet %s %%"), FormatInfo.Name);
-	WorkingSetSizeStatID = FDynamicStats::CreateStatIdDouble<STAT_GROUP_TO_FStatGroup(STATGROUP_VirtualTexturing)>(LongName);
-#endif // STATS
+	// Store string for logging.
+	for (uint32 Layer = 0u; Layer < Description.NumLayers; ++Layer)
+	{
+		FormatString += GPixelFormats[Description.Format[Layer]].Name;
+		if (Layer + 1u < Description.NumLayers)
+		{
+			FormatString += TEXT(", ");
+		}
+	}
 }
 
 FVirtualTexturePhysicalSpace::~FVirtualTexturePhysicalSpace()
 {
 }
 
-EPixelFormat GetUnorderedAccessViewFormat(EPixelFormat InFormat)
+static EPixelFormat GetUnorderedAccessViewFormat(EPixelFormat InFormat)
 {
 	// Use alias formats for compressed textures on APIs where that is possible
 	// This allows us to compress runtime data directly to the physical texture
-	const bool bUAVAliasForCompressedTextures = GRHISupportsUAVFormatAliasing;
-
-	switch (InFormat)
+	if (IsBlockCompressedFormat(InFormat))
 	{
-	case PF_DXT1: 
-	case PF_BC4: 
-		return bUAVAliasForCompressedTextures ? PF_R32G32_UINT : PF_Unknown;
-	case PF_DXT3: 
-	case PF_DXT5: 
-	case PF_BC5: 
-		return bUAVAliasForCompressedTextures ? PF_R32G32B32A32_UINT : PF_Unknown;
+		return GRHISupportsUAVFormatAliasing ? GetBlockCompressedFormatUAVAliasFormat(InFormat) : PF_Unknown;
 	}
 
 	return InFormat;
@@ -92,18 +112,19 @@ void FVirtualTexturePhysicalSpace::InitRHI()
 {
 	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
 
-	// Not all mobile RHIs support sRGB texture views/aliasing, use only linear targets on mobile
-	ETextureCreateFlags VT_SRGB = GetFeatureLevel() > ERHIFeatureLevel::ES3_1 ? TexCreate_SRGB : TexCreate_None;
-
 	for (int32 Layer = 0; Layer < Description.NumLayers; ++Layer)
 	{
 		const EPixelFormat FormatSRV = RemapVirtualTexturePhysicalSpaceFormat(Description.Format[Layer]);
 		const EPixelFormat FormatUAV = GetUnorderedAccessViewFormat(FormatSRV);
 		const bool bCreateAliasedUAV = (FormatUAV != PF_Unknown) && (FormatUAV != FormatSRV);
 		
+		const bool b16BitFormat = (FormatSRV == EPixelFormat::PF_R5G6B5_UNORM) || (FormatSRV == EPixelFormat::PF_B5G5R5A1_UNORM);
+		// Not all mobile RHIs support sRGB texture views/aliasing, use only linear targets on mobile, and the 16bit format transfer the color space manually in shader
+		ETextureCreateFlags VT_SRGB = (b16BitFormat || GetFeatureLevel() <= ERHIFeatureLevel::ES3_1) ? TexCreate_None : TexCreate_SRGB;
+
 		// Allocate physical texture from the render target pool
 		const uint32 TextureSize = GetTextureSize();
-		const FPooledRenderTargetDesc Desc = FPooledRenderTargetDesc::Create2DDesc(
+		FPooledRenderTargetDesc Desc = FPooledRenderTargetDesc::Create2DDesc(
 			FIntPoint(TextureSize, TextureSize),
 			FormatSRV,
 			FClearValueBinding::None,
@@ -112,7 +133,12 @@ void FVirtualTexturePhysicalSpace::InitRHI()
 			(bCreateAliasedUAV || FormatSRV == PF_A32B32G32R32F) ? TexCreate_ShaderResource | TexCreate_UAV : TexCreate_ShaderResource,
 			false);
 
-		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, PooledRenderTarget[Layer], TEXT("PhysicalTexture"));
+		if (bCreateAliasedUAV)
+		{
+			Desc.UAVFormat = FormatUAV;
+		}
+
+		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, PooledRenderTarget[Layer], TEXT("VirtualPhysicalTexture"));
 		FRHITexture* TextureRHI = PooledRenderTarget[Layer]->GetRenderTargetItem().ShaderResourceTexture;
 
 		// Create sRGB and non-sRGB shader resource views into the physical texture
@@ -126,7 +152,7 @@ void FVirtualTexturePhysicalSpace::InitRHI()
 
 		if (bCreateAliasedUAV)
 		{
-			TextureUAV[Layer] = RHICreateUnorderedAccessView(TextureRHI, 0, FormatUAV);
+			TextureUAV[Layer] = PooledRenderTarget[Layer]->GetRenderTargetItem().UAV;
 		}
 	}
 }
@@ -152,10 +178,145 @@ uint32 FVirtualTexturePhysicalSpace::GetSizeInBytes() const
 	return GetNumTiles() * TileSizeBytes;
 }
 
-#if STATS
-void FVirtualTexturePhysicalSpace::UpdateWorkingSetStat()
+void FVirtualTexturePhysicalSpace::UpdateResidencyTracking(uint32 Frame)
 {
-	const double Value = (double)WorkingSetSize.GetValue() / (double)GetNumTiles() * 100.0;
-	FThreadStats::AddMessage(WorkingSetSizeStatID.GetName(), EStatOperation::Set, Value);
+	float LockedUpperBound = CVarVTResidencyLockedUpperBound.GetValueOnRenderThread();
+	float LowerBound = CVarVTResidencyLowerBound.GetValueOnRenderThread();
+	float UpperBound = CVarVTResidencyUpperBound.GetValueOnRenderThread();
+	float AdjustmentRate = CVarVTResidencyAdjustmentRate.GetValueOnRenderThread();
+	float MaxMipMapBias = CVarVTResidencyMaxMipMapBias.GetValueOnRenderThread();
+
+	const uint32 NumPages = Pool.GetNumPages();
+	const uint32 NumLockedPages = Pool.GetNumLockedPages();
+	const float LockedPageResidency = (float)NumLockedPages / (float)NumPages;
+
+	const uint32 PageFreeThreshold = FMath::Max(VirtualTextureScalability::GetPageFreeThreshold(), 0u);
+	const uint32 FrameMinusThreshold = Frame > PageFreeThreshold ? Frame - PageFreeThreshold : 0;
+	const uint32 NumVisiblePages = Pool.GetNumVisiblePages(FrameMinusThreshold);
+	const float VisiblePageResidency = (float)NumVisiblePages / (float)NumPages;
+	
+	if (ResidencyMipMapBias > 0.f && VisiblePageResidency < LowerBound)
+	{
+		ResidencyMipMapBias -= AdjustmentRate * (LowerBound - VisiblePageResidency);
+	}
+	else if (VisiblePageResidency > UpperBound)
+	{
+		ResidencyMipMapBias += AdjustmentRate * (VisiblePageResidency - UpperBound);
+	}
+
+	if (ResidencyMipMapBias > 0.f)
+	{
+		LastFrameOversubscribed = Frame;
+	}
+
+	ResidencyMipMapBias = FMath::Clamp(ResidencyMipMapBias, 0.f, MaxMipMapBias);
+
+	if (!bEnableResidencyMipMapBias || LockedPageResidency > LockedUpperBound)
+	{
+		ResidencyMipMapBias = 0.f;
+	}
+
+#if !UE_BUILD_SHIPPING
+	LockedHistory[HistoryIndex+1] = LockedPageResidency;
+	VisibleHistory[HistoryIndex+1] = VisiblePageResidency;
+	MipMapBiasHistory[HistoryIndex+1] = ResidencyMipMapBias / MaxMipMapBias;
+	HistoryIndex++;
+#endif
 }
-#endif // STATS
+
+void FVirtualTexturePhysicalSpace::DrawResidencyGraph(FCanvas* Canvas, FBox2D CanvasPosition, bool bDrawKey)
+{
+	// Note that this is called on game thread and reads the history values written on the render thread.
+	// But it should be safe and any race condition will only lead to a slightly incorrect graph.
+
+#if !UE_BUILD_SHIPPING
+	const int32 BorderSize = 10;
+
+	const FLinearColor BackgroundColor(0.0f, 0.0f, 0.0f, 0.7f);
+	const FLinearColor GraphBorderColor(0.1f, 0.1f, 0.1f);
+	const FLinearColor GraphResidencyColor(0.8f, 0.1f, 0.1f);
+	const FLinearColor GraphLockedPageColor(0.8f, 0.8f, 0.1f);
+	const FLinearColor GraphMipMapBiasColor(0.1f, 0.8f, 0.1f);
+
+	FCanvasTileItem BackgroundTile(CanvasPosition.Min, CanvasPosition.GetSize(), BackgroundColor);
+	BackgroundTile.BlendMode = SE_BLEND_AlphaBlend;
+	Canvas->DrawItem(BackgroundTile);
+
+	const FString Title = FString::Printf(TEXT("%s (%dPages, %dMB)"), *FormatString, Pool.GetNumPages(), GetSizeInBytes() / (1024 * 1024));
+	Canvas->DrawShadowedString(CanvasPosition.Min.X + BorderSize, CanvasPosition.Min.Y, *Title, GEngine->GetSmallFont(), FLinearColor::White);
+
+	if (bDrawKey)
+	{
+		Canvas->DrawShadowedString(CanvasPosition.Min.X, CanvasPosition.Max.Y + 10, TEXT("Page Residency"), GEngine->GetSmallFont(), GraphResidencyColor);
+		Canvas->DrawShadowedString(CanvasPosition.Min.X + 100, CanvasPosition.Max.Y + 10, TEXT("MipMap Bias"), GEngine->GetSmallFont(), GraphMipMapBiasColor);
+		Canvas->DrawShadowedString(CanvasPosition.Min.X + 180, CanvasPosition.Max.Y + 10, TEXT("LockedPage Residency"), GEngine->GetSmallFont(), GraphLockedPageColor);
+	}
+
+	CanvasPosition.Min += FVector2D(BorderSize, BorderSize);
+	CanvasPosition.Max -= FVector2D(BorderSize, BorderSize);
+
+	const uint32 NumSamples = FMath::Min3<uint32>((uint32)CanvasPosition.GetSize().X, HistorySize, HistoryIndex);
+
+	FHitProxyId HitProxyId = Canvas->GetHitProxyId();
+	FBatchedElements* BatchedElements = Canvas->GetBatchedElements(FCanvas::ET_Line);
+	BatchedElements->AddReserveLines(2 + 3 * NumSamples);
+
+	BatchedElements->AddLine(
+		FVector(CanvasPosition.Min.X - 1.0f, CanvasPosition.Max.Y, 0.0f),
+		FVector(CanvasPosition.Min.X - 1.0f, CanvasPosition.Min.Y - 1.0f, 0.0f),
+		GraphBorderColor,
+		HitProxyId);
+
+	BatchedElements->AddLine(
+		FVector(CanvasPosition.Min.X, CanvasPosition.Max.Y - 1.0f, 0.0f),
+		FVector(CanvasPosition.Max.X, CanvasPosition.Max.Y - 1.0f, 0.0f),
+		GraphBorderColor,
+		HitProxyId);
+
+	for (uint32 SampleIndex = 0; SampleIndex < NumSamples; ++SampleIndex)
+	{
+		float Visible0 = VisibleHistory[HistoryIndex - NumSamples + SampleIndex];
+		float Visible1 = VisibleHistory[HistoryIndex - NumSamples + SampleIndex + 1];
+
+		BatchedElements->AddLine(
+			FVector(CanvasPosition.Min.X + SampleIndex, CanvasPosition.Max.Y - Visible0 * CanvasPosition.GetSize().Y, 0.0f),
+			FVector(CanvasPosition.Min.X + SampleIndex + 1, CanvasPosition.Max.Y - Visible1 * CanvasPosition.GetSize().Y, 0.0f),
+			GraphResidencyColor,
+			HitProxyId);
+
+		float Locked0 = LockedHistory[HistoryIndex - NumSamples + SampleIndex];
+		float Locked1 = LockedHistory[HistoryIndex - NumSamples + SampleIndex + 1];
+
+		BatchedElements->AddLine(
+			FVector(CanvasPosition.Min.X + SampleIndex, CanvasPosition.Max.Y - Locked0 * CanvasPosition.GetSize().Y, 0.0f),
+			FVector(CanvasPosition.Min.X + SampleIndex + 1, CanvasPosition.Max.Y - Locked1 * CanvasPosition.GetSize().Y, 0.0f),
+			GraphLockedPageColor,
+			HitProxyId);
+
+		float MipMapBias0 = MipMapBiasHistory[HistoryIndex - NumSamples + SampleIndex];
+		float MipMapBias1 = MipMapBiasHistory[HistoryIndex - NumSamples + SampleIndex + 1];
+
+		BatchedElements->AddLine(
+			FVector(CanvasPosition.Min.X + SampleIndex, CanvasPosition.Max.Y - MipMapBias0 * CanvasPosition.GetSize().Y, 0.0f),
+			FVector(CanvasPosition.Min.X + SampleIndex + 1, CanvasPosition.Max.Y - MipMapBias1 * CanvasPosition.GetSize().Y, 0.0f),
+			GraphMipMapBiasColor,
+			HitProxyId);
+	}
+#endif // UE_BUILD_SHIPPING
+}
+
+void FVirtualTexturePhysicalSpace::UpdateCsvStats() const
+{
+#if CSV_PROFILER && !UE_BUILD_SHIPPING
+	FCsvProfiler* Profiler = FCsvProfiler::Get();
+	if (Profiler->IsCapturing_Renderthread())
+	{
+		const FString LockedTitle = FString::Printf(TEXT("%s_%d/LockedPages"), *FormatString, GetID());
+		Profiler->RecordCustomStat(*LockedTitle, CSV_CATEGORY_INDEX(VirtualTexturing), LockedHistory[HistoryIndex], ECsvCustomStatOp::Set);
+		const FString VisbileTitle = FString::Printf(TEXT("%s_%d/VisiblePages"), *FormatString, GetID());
+		Profiler->RecordCustomStat(*VisbileTitle, CSV_CATEGORY_INDEX(VirtualTexturing), VisibleHistory[HistoryIndex], ECsvCustomStatOp::Set);
+		const FString MipBiasTitle = FString::Printf(TEXT("%s_%d/MipBias"), *FormatString, GetID());
+		Profiler->RecordCustomStat(*MipBiasTitle, CSV_CATEGORY_INDEX(VirtualTexturing), MipMapBiasHistory[HistoryIndex], ECsvCustomStatOp::Set);
+	}
+#endif
+}

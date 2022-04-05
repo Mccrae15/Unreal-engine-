@@ -18,9 +18,8 @@
       "Name": "OodleNetworkHandlerComponent",
       "Type": "Runtime",
       "LoadingPhase": "Default",
-	  "BlacklistPlatforms": [ 
-		"HoloLens", 
-		"Lumin" 
+	  "PlatformDenyList": [ 
+		"HoloLens"
       ]
     }
   ]

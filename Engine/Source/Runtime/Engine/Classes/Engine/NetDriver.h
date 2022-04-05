@@ -194,7 +194,7 @@
  * Those bunches are then passed along to individual Channels to be processed further.
  *
  * A Packet may contain no bunches, a single bunch, or multiple bunches.
- * Because size limits for bunches may be larger than the size limits of a single packet, UE4 supports
+ * Because size limits for bunches may be larger than the size limits of a single packet, UE supports
  * the notion of partial bunches.
  *
  * When a bunch is too large, before transmission we will slice it into a number of smaller bunches.
@@ -220,7 +220,7 @@
  *****************************************************************************************
  *
  *
- * UE4 Networking typically assumes reliability isn't guaranteed by the underlying network protocol.
+ * UE Networking typically assumes reliability isn't guaranteed by the underlying network protocol.
  * Instead, it implements its own reliability and retransmission of both packets and bunches.
  *
  * When a NetConnection is established, it will establish a Sequence Number for its packets and bunches.
@@ -603,7 +603,7 @@ struct ENGINE_API FChannelDefinition
 	FName ClassName;			// UClass name used to create the UChannel
 
 	UPROPERTY()
-	UClass* ChannelClass;		// UClass used to create the UChannel
+	TObjectPtr<UClass> ChannelClass;		// UClass used to create the UChannel
 
 	UPROPERTY()
 	int32 StaticChannelIndex;	// Channel always uses this index, INDEX_NONE if dynamically chosen
@@ -695,6 +695,9 @@ private:
 
 public:
 
+	/** Destructor */
+	ENGINE_API virtual ~UNetDriver() {};
+
 	/** Used to specify the class to use for connections */
 	UPROPERTY(Config)
 	FString NetConnectionClassName;
@@ -777,11 +780,11 @@ public:
 
 	/** Connection to the server (this net driver is a client) */
 	UPROPERTY()
-	class UNetConnection* ServerConnection;
+	TObjectPtr<class UNetConnection> ServerConnection;
 
 	/** Array of connections to clients (this net driver is a host) - unsorted, and ordering changes depending on actor replication */
 	UPROPERTY()
-	TArray<UNetConnection*> ClientConnections;
+	TArray<TObjectPtr<UNetConnection>> ClientConnections;
 
 	/**
 	 * Map of IP's to NetConnection's - for fast lookup, particularly under DDoS.
@@ -811,10 +814,10 @@ public:
 
 	/** World this net driver is associated with */
 	UPROPERTY()
-	class UWorld* World;
+	TObjectPtr<class UWorld> World;
 
 	UPROPERTY()
-	class UPackage* WorldPackage;
+	TObjectPtr<class UPackage> WorldPackage;
 
 	/** @todo document */
 	TSharedPtr< class FNetGUIDCache > GuidCache;
@@ -823,10 +826,10 @@ public:
 
 	/** The loaded UClass of the net connection type to use */
 	UPROPERTY()
-	UClass* NetConnectionClass;
+	TObjectPtr<UClass> NetConnectionClass;
 
 	UPROPERTY()
-	UClass* ReplicationDriverClass;
+	TObjectPtr<UClass> ReplicationDriverClass;
 
 	/** @todo document */
 	FProperty* RoleProperty;
@@ -862,7 +865,7 @@ private:
 
 	/** List of channels that were previously used and can be used again */
 	UPROPERTY()
-	TArray<UChannel*> ActorChannelPool;
+	TArray<TObjectPtr<UChannel>> ActorChannelPool;
 
 public:
 
@@ -885,11 +888,6 @@ public:
 	/** Interface for communication network state to others (ie World usually, but anything that implements FNetworkNotify) */
 	class FNetworkNotify*		Notify;
 	
-	/** Accumulated time for the net driver, updated by Tick */
-	UE_DEPRECATED(4.25, "Time is being replaced with a double precision value, please use GetElapsedTime() instead.")
-	UPROPERTY()
-	float						Time;
-
 	double GetElapsedTime() const { return ElapsedTime; }
 	void ResetElapsedTime() { ElapsedTime = 0.0; }
 
@@ -900,6 +898,7 @@ public:
 
 private:
 	double						ElapsedTime;
+	
 
 	/** Whether or not the NetDriver is ticking */
 	bool bInTick;
@@ -958,10 +957,10 @@ public:
 	uint32						OutPacketsLost;
 	/** Total packets lost that have been sent by the server since the net driver's creation  */
 	uint32						OutTotalPacketsLost;
-	/** todo document */
-	uint32						InOutOfOrderPackets;
-	/** todo document */
-	uint32						OutOutOfOrderPackets;
+	UE_DEPRECATED(5.0, "Use GetTotalOutOfOrderPackets instead.")
+	uint32						InOutOfOrderPackets = 0;
+	UE_DEPRECATED(5.0, "OutOutOfOrderPackets is not updated and is now deprecated.")
+	uint32						OutOutOfOrderPackets = 0;
 	/** Tracks the total number of voice packets sent */
 	uint32						VoicePacketsSent;
 	/** Tracks the total number of voice bytes sent */
@@ -1136,7 +1135,7 @@ public:
 	void UpdateStandbyCheatStatus(void);
 
 	/** Sets the analytics provider */
-	virtual void ENGINE_API SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InProvider);
+	ENGINE_API virtual void SetAnalyticsProvider(TSharedPtr<IAnalyticsProvider> InProvider);
 
 #if DO_ENABLE_NET_TEST
 	FPacketSimulationSettings	PacketSimulationSettings;
@@ -1288,7 +1287,7 @@ public:
 	ENGINE_API virtual void ProcessRemoteFunction(class AActor* Actor, class UFunction* Function, void* Parameters, struct FOutParmRec* OutParms, struct FFrame* Stack, class UObject* SubObject = nullptr );
 
 
-	enum ENGINE_API ERemoteFunctionSendPolicy
+	enum ERemoteFunctionSendPolicy
 	{		
 		/** Unreliable multicast are queued. Everything else is send immediately */
 		Default, 
@@ -1398,13 +1397,16 @@ public:
 	/**
 	 * Exec command handlers
 	 */
-	bool HandleSocketsCommand( const TCHAR* Cmd, FOutputDevice& Ar );
-	bool HandlePackageMapCommand( const TCHAR* Cmd, FOutputDevice& Ar );
-	bool HandleNetFloodCommand( const TCHAR* Cmd, FOutputDevice& Ar );
-	bool HandleNetDebugTextCommand( const TCHAR* Cmd, FOutputDevice& Ar );
-	bool HandleNetDisconnectCommand( const TCHAR* Cmd, FOutputDevice& Ar );
-	bool HandleNetDumpServerRPCCommand( const TCHAR* Cmd, FOutputDevice& Ar );
-	bool HandleNetDumpDormancy( const TCHAR* Cmd, FOutputDevice& Ar );
+	bool HandleSocketsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandlePackageMapCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleNetFloodCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleNetDebugTextCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleNetDisconnectCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleNetDumpServerRPCCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleNetDumpDormancy(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleDumpSubObjectsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandleDumpRepLayoutFlagsCommand(const TCHAR* Cmd, FOutputDevice& Ar);
+	bool HandlePushModelMemCommand(const TCHAR* Cmd, FOutputDevice& Ar);
 #endif
 
 	void HandlePacketLossBurstCommand( int32 DurationInMilliseconds );
@@ -1424,6 +1426,9 @@ public:
 
 	/** Notifies the NetDriver that the desired Dormancy state for this Actor has changed. */
 	ENGINE_API void NotifyActorDormancyChange(AActor* Actor, ENetDormancy OldDormancyState);
+
+	/** Called after an actor channel is opened on a client when the actor was previously dormant. */
+	ENGINE_API virtual void NotifyActorClientDormancyChanged(AActor* Actor, ENetDormancy OldDormancyState);
 
 	/** Forces properties on this actor to do a compare for one frame (rather than share shadow state) */
 	ENGINE_API void ForcePropertyCompare( AActor* Actor );
@@ -1480,7 +1485,7 @@ public:
 	/**
 	 * Get the socket subsytem appropriate for this net driver
 	 */
-	virtual class ISocketSubsystem* GetSocketSubsystem() PURE_VIRTUAL(UNetDriver::GetSocketSubsystem, return NULL;);
+	ENGINE_API virtual class ISocketSubsystem* GetSocketSubsystem() PURE_VIRTUAL(UNetDriver::GetSocketSubsystem, return NULL;);
 
 	/**
 	 * Associate a world with this net driver. 
@@ -1493,7 +1498,7 @@ public:
 	/**
 	 * Get the world associated with this net driver
 	 */
-	virtual class UWorld* GetWorld() const override final { return World; }
+	ENGINE_API virtual class UWorld* GetWorld() const override final { return World; }
 
 	class UPackage* GetWorldPackage() const { return WorldPackage; }
 
@@ -1501,7 +1506,7 @@ public:
 	ENGINE_API virtual void ResetGameWorldState();
 
 	/** @return true if the net resource is valid or false if it should not be used */
-	virtual bool IsNetResourceValid(void) PURE_VIRTUAL(UNetDriver::IsNetResourceValid, return false;);
+	ENGINE_API virtual bool IsNetResourceValid(void) PURE_VIRTUAL(UNetDriver::IsNetResourceValid, return false;);
 
 	bool NetObjectIsDynamic(const UObject *Object) const;
 
@@ -1515,25 +1520,25 @@ public:
 	TSharedPtr<FRepChangedPropertyTracker> FindOrCreateRepChangedPropertyTracker(UObject *Obj);
 
 	/** Returns true if the client should destroy immediately any actor that becomes torn-off */
-	virtual bool ShouldClientDestroyTearOffActors() const { return false; }
+	ENGINE_API virtual bool ShouldClientDestroyTearOffActors() const { return false; }
 
 	/** Returns whether or not properties that are replicating using this driver should not call RepNotify functions. */
 	ENGINE_API virtual bool ShouldSkipRepNotifies() const;
 
 	/** Returns true if actor channels with InGUID should queue up bunches, even if they wouldn't otherwise be queued. */
-	virtual bool ShouldQueueBunchesForActorGUID(FNetworkGUID InGUID) const { return false; }
+	ENGINE_API virtual bool ShouldQueueBunchesForActorGUID(FNetworkGUID InGUID) const { return false; }
 
 	/** Returns whether or not RPCs processed by this driver should be ignored. */
-	virtual bool ShouldIgnoreRPCs() const { return false; }
+	ENGINE_API virtual bool ShouldIgnoreRPCs() const { return false; }
 
 	/** Returns the existing FNetworkGUID of InActor, if it has one. */
-	virtual FNetworkGUID GetGUIDForActor(const AActor* InActor) const { return FNetworkGUID(); }
+	ENGINE_API virtual FNetworkGUID GetGUIDForActor(const AActor* InActor) const { return FNetworkGUID(); }
 
 	/** Returns the actor that corresponds to InGUID, if one can be found. */
-	virtual AActor* GetActorForGUID(FNetworkGUID InGUID) const { return nullptr; }
+	ENGINE_API virtual AActor* GetActorForGUID(FNetworkGUID InGUID) const { return nullptr; }
 
 	/** Returns true if RepNotifies should be checked and generated when receiving properties for the given object. */
-	virtual bool ShouldReceiveRepNotifiesForObject(UObject* Object) const { return true; }
+	ENGINE_API virtual bool ShouldReceiveRepNotifiesForObject(UObject* Object) const { return true; }
 
 	/** Returns the object that manages the list of replicated UObjects. */
 	ENGINE_API FNetworkObjectList& GetNetworkObjectList() { return *NetworkObjects; }
@@ -1620,6 +1625,9 @@ public:
 
 	ENGINE_API virtual void NotifyActorTornOff(AActor* Actor);
 
+	/** Called on clients when an actor channel is closed because it went dormant. */
+	ENGINE_API virtual void ClientSetActorDormant(AActor* Actor);
+
 	/**
 	 * Returns the current delinquency analytics and resets them.
 	 * This would be similar to calls to Get and Reset separately, except that the caller
@@ -1701,6 +1709,80 @@ public:
 	 */
 	inline void IncreaseOutTotalNotifiedPackets() { ++OutTotalNotifiedPackets; }
 
+	/**
+	 * Get the total number of out of order packets for all connections.
+	 *
+	 * @return The total number of out of order packets.
+	 */
+	int32 GetTotalOutOfOrderPackets() const
+	{
+		return TotalOutOfOrderPacketsLost + TotalOutOfOrderPacketsRecovered + TotalOutOfOrderPacketsDuplicate;
+	}
+
+	/**
+	 * Get the total number of out of order packets lost for all connections.
+	 *
+	 * @return The total number of out of order packets lost.
+	 */
+	int32 GetTotalOutOfOrderPacketsLost() const
+	{
+		return TotalOutOfOrderPacketsLost;
+	}
+
+	/**
+	 * Increase the value of TotalOutOfOrderPacketsLost.
+	 *
+	 * @param Count		The amount to add to TotalOutOfOrderPacketsLost
+	 */
+	void IncreaseTotalOutOfOrderPacketsLost(int32 Count=1)
+	{
+		TotalOutOfOrderPacketsLost += Count;
+
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		InOutOfOrderPackets += Count;
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	}
+
+	/**
+	 * Get the total number of out of order packets recovered for all connections.
+	 *
+	 * @return The total number of out of order packets recovered.
+	 */
+	int32 GetTotalOutOfOrderPacketsRecovered() const
+	{
+		return TotalOutOfOrderPacketsRecovered;
+	}
+
+	/**
+	 * Increase the value of TotalOutOfOrderPacketsRecovered.
+	 *
+	 * @param Count		The amount to add to TotalOutOfOrderPacketsRecovered
+	 */
+	void IncreaseTotalOutOfOrderPacketsRecovered(int32 Count=1)
+	{
+		TotalOutOfOrderPacketsRecovered += Count;
+	}
+
+	/**
+	 * Get the total number of out of order packets that were duplicates for all connections.
+	 *
+	 * @return The total number of out of order packets that were duplicates.
+	 */
+	int32 GetTotalOutOfOrderPacketsDuplicate() const
+	{
+		return TotalOutOfOrderPacketsDuplicate;
+	}
+
+	/**
+	 * Increase the value of TotalOutOfOrderPacketsDuplicate.
+	 *
+	 * @param Count		The amount to add to TotalOutOfOrderPacketsDuplicate
+	 */
+	void IncreaseTotalOutOfOrderPacketsDuplicate(int32 Count=1)
+	{
+		TotalOutOfOrderPacketsDuplicate += Count;
+	}
+
 	bool DidHitchLastFrame() const;
 
 	static bool IsDormInitialStartupActor(AActor* Actor);
@@ -1720,6 +1802,9 @@ protected:
 	/** Stream of random numbers to be used by this instance of UNetDriver */
 	FRandomStream UpdateDelayRandomStream;
 
+	/** Creates a trace event that updates the name and properties of the associated Game Instance */
+	void NotifyGameInstanceUpdated();
+
 private:
 
 	ENGINE_API virtual ECreateReplicationChangelistMgrFlags GetCreateReplicationChangelistMgrFlags() const;
@@ -1738,11 +1823,13 @@ private:
 	/** Used with FNetDelegates::OnSyncLoadDetected to log sync loads */
 	void ReportSyncLoad(const FNetSyncLoadReport& Report);
 
+	void UpdateCrashContext();
+
 	/** Handle to FNetDelegates::OnSyncLoadDetected delegate */
 	FDelegateHandle ReportSyncLoadDelegateHandle;
 
 	UPROPERTY(transient)
-	UReplicationDriver* ReplicationDriver;
+	TObjectPtr<UReplicationDriver> ReplicationDriver;
 
 	/** Stores the list of objects to replicate into the replay stream. This should be a TUniquePtr, but it appears the generated.cpp file needs the full definition of the pointed-to type. */
 	TSharedPtr<FNetworkObjectList> NetworkObjects;
@@ -1774,4 +1861,13 @@ private:
 
 	/** cache whether or not we have a replay connection, updated when a connection is added or removed */
 	bool bHasReplayConnection;
+
+	/** Stat tracking for the total number of out of order packets lost */
+	int32 TotalOutOfOrderPacketsLost = 0;
+
+	/** Stat tracking for the total number of out of order packets recovered */
+	int32 TotalOutOfOrderPacketsRecovered = 0;
+
+	/** Stat tracking for the total number of out of order packets that were duplicates */
+	int32 TotalOutOfOrderPacketsDuplicate = 0;
 };

@@ -9,6 +9,7 @@
 #include "Modules/ModuleManager.h"
 #include "UObject/ObjectMacros.h"
 #include "AudioDefines.h"
+#include "IAudioProxyInitializer.h"
 
 #include "IAudioExtensionPlugin.generated.h"
 
@@ -18,10 +19,12 @@ class FAudioDevice;
 class FSoundEffectBase;
 class FSoundEffectSource;
 class FSoundEffectSubmix;
-class IAudioModulation;
+struct FWaveInstance;
+class IAudioModulationManager;
 class IAudioOcclusion;
 class IAudioPluginListener;
 class IAudioReverb;
+class IAudioSourceDataOverride;
 class IAudioSpatialization;
 class USoundSubmix;
 
@@ -36,8 +39,9 @@ enum class EAudioPlugin : uint8
 	REVERB = 1,
 	OCCLUSION = 2,
 	MODULATION = 3,
+	SOURCEDATAOVERRIDE = 4,
 
-	COUNT = 4
+	COUNT = 5
 };
 
 
@@ -48,7 +52,8 @@ using TSoundEffectPtr		  = TSharedPtr<FSoundEffectBase, ESPMode::ThreadSafe>;
 using TSoundEffectSourcePtr   = TSharedPtr<FSoundEffectSource, ESPMode::ThreadSafe>;
 using TSoundEffectSubmixPtr   = TSharedPtr<FSoundEffectSubmix, ESPMode::ThreadSafe>;
 using TAudioSpatializationPtr = TSharedPtr<IAudioSpatialization, ESPMode::ThreadSafe>;
-using TAudioModulationPtr     = TSharedPtr<IAudioModulation, ESPMode::ThreadSafe>;
+using TAudioSourceDataOverridePtr = TSharedPtr<IAudioSourceDataOverride, ESPMode::ThreadSafe>;
+using TAudioModulationPtr     = TSharedPtr<IAudioModulationManager, ESPMode::ThreadSafe>;
 using TAudioOcclusionPtr      = TSharedPtr<IAudioOcclusion, ESPMode::ThreadSafe>;
 using TAudioReverbPtr         = TSharedPtr<IAudioReverb, ESPMode::ThreadSafe>;
 using TAudioPluginListenerPtr = TSharedPtr<IAudioPluginListener, ESPMode::ThreadSafe>;
@@ -145,7 +150,7 @@ struct FAudioPluginSourceInputData
 	uint64 AudioComponentId;
 
 	// The audio input buffer
-	Audio::AlignedFloatBuffer* AudioBuffer;
+	Audio::FAlignedFloatBuffer* AudioBuffer;
 
 	// Number of channels of the source audio buffer.
 	int32 NumChannels;
@@ -160,7 +165,7 @@ struct FAudioPluginSourceInputData
 struct FAudioPluginSourceOutputData
 {
 	// The audio output buffer
-	Audio::AlignedFloatBuffer AudioBuffer;
+	Audio::FAlignedFloatBuffer AudioBuffer;
 };
 
 /** This is a class which should be overridden to provide users with settings to use for individual sounds */
@@ -360,6 +365,88 @@ public:
 	{
 		return nullptr;
 	}
+};
+
+
+/** This is a class which should be overridden to provide users with settings to use for individual sounds */
+UCLASS(config = Engine, abstract, editinlinenew, BlueprintType)
+class AUDIOEXTENSIONS_API USourceDataOverridePluginSourceSettingsBase : public UObject
+{
+	GENERATED_BODY()
+};
+
+/************************************************************************/
+/* IAudioSourceDataOverrideFactory										*/
+/* Implement this modular feature to make your SourceDataOverride plugin*/
+/* visible to the engine.                                               */
+/************************************************************************/
+class IAudioSourceDataOverrideFactory : public IAudioPluginFactory, public IModularFeature
+{
+public:
+	/** Virtual destructor */
+	virtual ~IAudioSourceDataOverrideFactory()
+	{
+	}
+
+	// IModularFeature
+	static FName GetModularFeatureName()
+	{
+		static FName AudioExtFeatureName = FName(TEXT("AudioSourceDataOverridePlugin"));
+		return AudioExtFeatureName;
+	}
+
+	/* Begin IAudioPluginWithMetadata implementation */
+	virtual FString GetDisplayName() override
+	{
+		static FString DisplayName = FString(TEXT("Generic Audio Source Data Override Plugin"));
+		return DisplayName;
+	}
+	/* End IAudioPluginWithMetadata implementation */
+
+		/**
+	* @return the UClass type of your settings for source data overrides. This allows us to only pass in user settings for your plugin.
+	*/
+	virtual UClass* GetCustomSourceDataOverrideSettingsClass() const
+	{
+		return nullptr;
+	}
+
+	/**
+	* @return a new instance of your source data override plugin, owned by a shared pointer.
+	*/
+	virtual TAudioSourceDataOverridePtr CreateNewSourceDataOverridePlugin(FAudioDevice* OwningDevice) = 0;
+};
+
+
+/** Interface to allow a plugin to override a sound's actual position and simulate propagation (e.g. traversal around corners, etc). */
+class IAudioSourceDataOverride
+{
+public:
+	/** Virtual destructor */
+	virtual ~IAudioSourceDataOverride()
+	{
+	}
+
+	/** Initializes the source data override plugin with the given buffer length. */
+	virtual void Initialize(const FAudioPluginInitializationParams InitializationParams)
+	{
+	}
+
+	/** Called when a source is assigned to a voice. */
+	virtual void OnInitSource(const uint32 SourceId, const FName& AudioComponentUserId, USourceDataOverridePluginSourceSettingsBase* InSettings)
+	{
+	}
+
+	/** Called when a source is done playing and is released. */
+	virtual void OnReleaseSource(const uint32 SourceId)
+	{
+	}
+
+	/** Allows this plugin to override any source data. Called per audio source before any other parameters are updated on sound sources. */
+	virtual void GetSourceDataOverrides(const uint32 SourceId, const FTransform& InListenerTransform, FWaveInstance* InOutWaveInstance)
+	{
+	}
+
 };
 
 /** This is a class which should be overridden to provide users with settings to use for individual sounds */

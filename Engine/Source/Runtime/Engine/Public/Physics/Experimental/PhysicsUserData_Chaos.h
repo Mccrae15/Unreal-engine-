@@ -7,6 +7,7 @@
 
 struct FConstraintInstanceBase;
 
+// Note: this must match the enum EChaosUserDataType in PhysicsInterfaceTypesCore
 class FPhysicsUserData_Chaos
 {
 private:
@@ -14,6 +15,7 @@ private:
 	{
 		Invalid,
 		BodyInstance,
+		PhysicalMaterial,
 		PhysScene,
 		ConstraintInstanceBase
 	};
@@ -24,6 +26,7 @@ private:
 public:
 	FPhysicsUserData_Chaos() : Type(EType::Invalid), Payload(nullptr) { }
 	FPhysicsUserData_Chaos(FBodyInstance* InPayload) : Type(EType::BodyInstance), Payload(InPayload) { }
+	FPhysicsUserData_Chaos(UPhysicalMaterial* InPayload) : Type(EType::PhysicalMaterial), Payload(InPayload) { }
 	FPhysicsUserData_Chaos(FPhysScene* InPayload) : Type(EType::PhysScene), Payload(InPayload) { }
 	FPhysicsUserData_Chaos(FConstraintInstanceBase* InPayload) : Type(EType::ConstraintInstanceBase), Payload(InPayload) { }
 
@@ -54,6 +57,11 @@ private:
 template<> FORCEINLINE FBodyInstance* FPhysicsUserData_Chaos::Get(void* UserData)
 {
 	return Get<FBodyInstance, EType::BodyInstance>(UserData);
+}
+
+template<> FORCEINLINE UPhysicalMaterial* FPhysicsUserData_Chaos::Get(void* UserData)
+{
+	return Get<UPhysicalMaterial, EType::PhysicalMaterial>(UserData);
 }
 
 template<> FORCEINLINE FPhysScene* FPhysicsUserData_Chaos::Get(void* UserData)

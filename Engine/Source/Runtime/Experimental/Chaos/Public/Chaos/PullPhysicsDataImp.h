@@ -10,10 +10,9 @@
 #include "GeometryCollectionProxyData.h"
 #include "PBDRigidsEvolutionFwd.h"
 
-class FJointConstraintPhysicsProxy;
-
 namespace Chaos
 {
+class FJointConstraintPhysicsProxy;
 
 template <typename TProxy>
 struct TBasePullData
@@ -28,7 +27,11 @@ public:
 
 	TProxy* GetProxy() const
 	{
-		return !Timestamp->bDeleted ? Proxy : nullptr;
+		if( Timestamp )
+		{
+			return !Timestamp->bDeleted ? Proxy : nullptr;
+		}
+		return nullptr;
 	}
 
 	const FProxyTimestamp* GetTimestamp() const { return Timestamp.Get(); }
@@ -58,7 +61,9 @@ struct FDirtyGeometryCollectionData : public TBasePullData<FGeometryCollectionPh
 };
 
 struct FJointConstraintOutputData {
+	bool bIsBreaking = false;
 	bool bIsBroken = false;
+	bool bDriveTargetChanged = false;
 	FVector Force = FVector(0);
 	FVector Torque = FVector(0);
 };

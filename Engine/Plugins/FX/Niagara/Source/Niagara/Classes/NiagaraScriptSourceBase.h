@@ -12,6 +12,7 @@
 
 class INiagaraParameterDefinitionsSubscriber;
 class UNiagaraParameterDefinitionsBase;
+class UNiagaraScriptSourceBase;
 
 struct EditorExposedVectorConstant
 {
@@ -30,13 +31,27 @@ class FNiagaraCompileRequestDataBase
 {
 public:
 	virtual ~FNiagaraCompileRequestDataBase() {}
-	virtual bool GatherPreCompiledVariables(const FString& InNamespaceFilter, TArray<FNiagaraVariable>& OutVars) = 0;
-	virtual void GetReferencedObjects(TArray<UObject*>& Objects) = 0;
-	virtual const TMap<FName, UNiagaraDataInterface*>& GetObjectNameMap() = 0;
+	virtual void GatherPreCompiledVariables(const FString& InNamespaceFilter, TArray<FNiagaraVariable>& OutVars) const = 0;
 	virtual int32 GetDependentRequestCount() const = 0;
 	virtual TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> GetDependentRequest(int32 Index) = 0;
+	virtual const FNiagaraCompileRequestDataBase* GetDependentRequest(int32 Index) const = 0;
 	virtual FName ResolveEmitterAlias(FName VariableName) const = 0;
 	virtual bool GetUseRapidIterationParams() const = 0;
+	virtual bool GetDisableDebugSwitches() const = 0;
+};
+
+/** External reference to the compile request data generated.*/
+class FNiagaraCompileRequestDuplicateDataBase
+{
+public:
+	virtual ~FNiagaraCompileRequestDuplicateDataBase() {}
+	virtual bool IsDuplicateDataFor(UNiagaraSystem* InSystem, UNiagaraEmitter* InEmitter, UNiagaraScript* InScript) const = 0;
+	virtual void GetDuplicatedObjects(TArray<UObject*>& Objects) = 0;
+	virtual const TMap<FName, UNiagaraDataInterface*>& GetObjectNameMap() = 0;
+	virtual const UNiagaraScriptSourceBase* GetScriptSource() const =  0;
+	virtual int32 GetDependentRequestCount() const = 0;
+	virtual TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe> GetDependentRequest(int32 Index) = 0;
+	virtual void ReleaseCompilationCopies() = 0;
 };
 
 class FNiagaraCompileOptions
@@ -44,6 +59,7 @@ class FNiagaraCompileOptions
 public:
 	NIAGARA_API static const FString CpuScriptDefine;
 	NIAGARA_API static const FString GpuScriptDefine;
+	NIAGARA_API static const FString EventSpawnDefine;
 
 	FNiagaraCompileOptions() : TargetUsage(ENiagaraScriptUsage::Function), TargetUsageBitmask(0)
 	{
@@ -102,6 +118,8 @@ class UNiagaraScriptSourceBase : public UObject
 
 	virtual void ComputeVMCompilationId(struct FNiagaraVMExecutableDataId& Id, ENiagaraScriptUsage InUsage, const FGuid& InUsageId, bool bForceRebuild = false) const {};
 
+	virtual TMap<FName, UNiagaraDataInterface*> ComputeObjectNameMap(UNiagaraSystem& System, ENiagaraScriptUsage Usage, FGuid UsageId, FString EmitterUniqueName) const { return TMap<FName, UNiagaraDataInterface*>(); }
+
 	virtual FGuid GetCompileBaseId(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const { return FGuid(); }
 
 	virtual FNiagaraCompileHash GetCompileHash(ENiagaraScriptUsage InUsage, const FGuid& InUsageId) const { return FNiagaraCompileHash(); }
@@ -149,6 +167,11 @@ class UNiagaraScriptSourceBase : public UObject
 	 *  Used when synchronizing definitions with source scripts of systems and emitters.
 	 */
 	virtual void RenameGraphAssignmentAndSetNodePins(const FName OldName, const FName NewName) {};
+
+	/** Checks if any of the provided variables are linked to function inputs of position type data
+	 */
+	virtual void GetLinkedPositionTypeInputs(const TArray<FNiagaraVariable>& ParametersToCheck, TSet<FNiagaraVariable>& OutLinkedParameters) {};
+	virtual void ChangedLinkedInputTypes(const FNiagaraVariable& ParametersToCheck, const FNiagaraTypeDefinition& NewType) {};
 
 protected:
 	FOnChanged OnChangedDelegate;

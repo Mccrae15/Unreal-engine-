@@ -4,7 +4,7 @@
 
 #include "Fonts/FontMeasure.h"
 #include "Fonts/SlateFontInfo.h"
-#include "Styling/CoreStyle.h"
+#include "Styling/AppStyle.h"
 
 // Insights
 #include "Insights/Common/PaintUtils.h"
@@ -20,7 +20,7 @@ FLinearColor FTooltipDrawState::DefaultValueColor(1.0f, 1.0f, 1.0f, 1.0f);
 
 FTooltipDrawState::FTooltipDrawState()
 	: WhiteBrush(FInsightsStyle::Get().GetBrush("WhiteBrush"))
-	, Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+	, Font(FAppStyle::Get().GetFontStyle("SmallFont"))
 	, BackgroundColor(0.05f, 0.05f, 0.05f, 1.0f)
 	, Size(0.0f, 0.0f)
 	, DesiredSize(0.0f, 0.0f)
@@ -29,6 +29,7 @@ FTooltipDrawState::FTooltipDrawState()
 	, NewLineY(0.0f)
 	, Opacity(0.0f)
 	, DesiredOpacity(0.0f)
+	, FontScale(1.0f)
 	, Texts()
 {
 }
@@ -65,7 +66,7 @@ void FTooltipDrawState::AddTitle(const FString& Title)
 {
 	const TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 
-	const FVector2D TextSize = FontMeasureService->Measure(Title, Font);
+	const FVector2D TextSize = FontMeasureService->Measure(Title, Font, FontScale) / FontScale;
 	Texts.Add({ BorderX, NewLineY, TextSize, Title, DefaultTitleColor, FDrawTextType::Title });
 
 	NewLineY += DefaultTitleHeight;
@@ -77,7 +78,7 @@ void FTooltipDrawState::AddTitle(const FString& Title, const FLinearColor& Color
 {
 	const TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 
-	const FVector2D TextSize = FontMeasureService->Measure(Title, Font);
+	const FVector2D TextSize = FontMeasureService->Measure(Title, Font, FontScale) / FontScale;
 	Texts.Add({ BorderX, NewLineY, TextSize, Title, Color, FDrawTextType::Misc });
 
 	NewLineY += DefaultTitleHeight;
@@ -89,10 +90,10 @@ void FTooltipDrawState::AddNameValueTextLine(const FString& Name, const FString&
 {
 	const TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 
-	const FVector2D NameTextSize = FontMeasureService->Measure(Name, Font);
+	const FVector2D NameTextSize = FontMeasureService->Measure(Name, Font, FontScale) / FontScale;
 	Texts.Add({ 0.0f, NewLineY, NameTextSize, Name, DefaultNameColor, FDrawTextType::Name });
 
-	const FVector2D ValueTextSize = FontMeasureService->Measure(Value, Font);
+	const FVector2D ValueTextSize = FontMeasureService->Measure(Value, Font, FontScale) / FontScale;
 	Texts.Add({ 0.0f, NewLineY, ValueTextSize, Value, DefaultValueColor, FDrawTextType::Value });
 
 	NewLineY += DefaultLineHeight;
@@ -104,7 +105,7 @@ void FTooltipDrawState::AddTextLine(const FString& Text, const FLinearColor& Col
 {
 	const TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 
-	const FVector2D TextSize = FontMeasureService->Measure(Text, Font);
+	const FVector2D TextSize = FontMeasureService->Measure(Text, Font, FontScale) / FontScale;
 	Texts.Add({ BorderX, NewLineY, TextSize, Text, Color, FDrawTextType::Misc });
 
 	NewLineY += DefaultLineHeight;
@@ -116,7 +117,7 @@ void FTooltipDrawState::AddTextLine(const float X, const float Y, const FString&
 {
 	const TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 
-	const FVector2D TextSize = FontMeasureService->Measure(Text, Font);
+	const FVector2D TextSize = FontMeasureService->Measure(Text, Font, FontScale) / FontScale;
 	Texts.Add({ X, Y, TextSize, Text, Color, FDrawTextType::Misc });
 }
 

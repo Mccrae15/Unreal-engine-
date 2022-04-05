@@ -46,9 +46,6 @@ public:
 	virtual bool SupportsChangeEnabled() const override { return true; }
 	virtual bool GetIsEnabled() const override;
 
-	virtual bool SupportsHighlights() const override;
-	virtual const TArray<FNiagaraScriptHighlight>& GetHighlights() const override;
-
 	int32 GetModuleIndex() const;
 	
 	UObject* GetExternalAsset() const override;
@@ -75,6 +72,9 @@ public:
 
 	void SetInputValuesFromClipboardFunctionInputs(const TArray<const UNiagaraClipboardFunctionInput*>& ClipboardFunctionInputs);
 
+	void GetParameterInputs(TArray<class UNiagaraStackFunctionInput*>& OutResult) const;
+	TArray<class UNiagaraStackFunctionInput*> GetInlineParameterInputs() const;
+
 	virtual bool SupportsCut() const override { return true; }
 	virtual bool TestCanCutWithMessage(FText& OutMessage) const override;
 	virtual FText GetCutTransactionText() const override;
@@ -94,6 +94,10 @@ public:
 	virtual bool TestCanDeleteWithMessage(FText& OutCanDeleteMessage) const override;
 	virtual FText GetDeleteTransactionText() const override;
 	virtual void Delete() override;
+
+	virtual bool SupportsInheritance() const override { return true; }
+	virtual bool GetIsInherited() const override;
+	virtual FText GetInheritanceMessage() const override;
 
 	bool IsScratchModule() const;
 
@@ -152,13 +156,13 @@ private:
 	bool bCanRefresh;
 
 	UPROPERTY()
-	UNiagaraStackModuleItemLinkedInputCollection* LinkedInputCollection;
+	TObjectPtr<UNiagaraStackModuleItemLinkedInputCollection> LinkedInputCollection;
 
 	UPROPERTY()
-	UNiagaraStackFunctionInputCollection* InputCollection;
+	TObjectPtr<UNiagaraStackFunctionInputCollection> InputCollection;
 
 	UPROPERTY()
-	UNiagaraStackModuleItemOutputCollection* OutputCollection;
+	TObjectPtr<UNiagaraStackModuleItemOutputCollection> OutputCollection;
 
 	INiagaraStackItemGroupAddUtilities* GroupAddUtilities;
 

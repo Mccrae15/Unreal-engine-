@@ -24,40 +24,53 @@
 #include "BasePassRendering.h"
 #include "SkyAtmosphereRendering.h"
 #include "RenderUtils.h"
+#include "DebugViewModeRendering.h"
+
+struct FMobileBasePassTextures
+{
+	FRDGTextureRef ScreenSpaceAO = nullptr;
+};
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileBasePassUniformParameters, )
-	SHADER_PARAMETER(int32, UseCSM)
 	SHADER_PARAMETER(float, AmbientOcclusionStaticFraction)
 	SHADER_PARAMETER_STRUCT(FFogUniformParameters, Fog)
+	SHADER_PARAMETER_STRUCT(FForwardLightData, Forward)
 	SHADER_PARAMETER_STRUCT(FPlanarReflectionUniformParameters, PlanarReflection) // Single global planar reflection for the forward pass.
 	SHADER_PARAMETER_STRUCT(FMobileSceneTextureUniformParameters, SceneTextures)
+	SHADER_PARAMETER_STRUCT(FDebugViewModeUniformParameters, DebugViewMode)
 	SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGFTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
-	SHADER_PARAMETER_SRV(Buffer<float4>, EyeAdaptationBuffer)
-	SHADER_PARAMETER_TEXTURE(Texture2D, AmbientOcclusionTexture)
+	SHADER_PARAMETER_RDG_BUFFER_SRV(Buffer<float4>, EyeAdaptationBuffer)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, AmbientOcclusionTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, AmbientOcclusionSampler)
-	SHADER_PARAMETER_TEXTURE(Texture2D, ScreenSpaceShadowMaskTexture)
+	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ScreenSpaceShadowMaskTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, ScreenSpaceShadowMaskSampler)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
+enum class EMobileBasePass
+{
+	Opaque,
+	Translucent
+};
+
 extern void SetupMobileBasePassUniformParameters(
-	FRHICommandListImmediate& RHICmdList,
+	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
-	bool bTranslucentPass,
-	bool bCanUseCSM,
+	EMobileBasePass BasePass,
+	const FMobileBasePassTextures& MobileBasePassTextures,
 	FMobileBasePassUniformParameters& BasePassParameters);
 
-extern void CreateMobileBasePassUniformBuffer(
-	FRHICommandListImmediate& RHICmdList,
+extern TRDGUniformBufferRef<FMobileBasePassUniformParameters> CreateMobileBasePassUniformBuffer(
+	FRDGBuilder& GraphBuilder,
 	const FViewInfo& View,
-	bool bTranslucentPass,
-	bool bCanUseCSM,
-	TUniformBufferRef<FMobileBasePassUniformParameters>& BasePassUniformBuffer);
+	EMobileBasePass BasePass,
+	EMobileSceneTextureSetupMode SetupMode,
+	const FMobileBasePassTextures& MobileBasePassTextures = {});
 
 extern void SetupMobileDirectionalLightUniformParameters(
 	const FScene& Scene,
 	const FViewInfo& View,
-	const TArray<FVisibleLightInfo,SceneRenderingAllocator> VisibleLightInfos,
+	const TArray<FVisibleLightInfo,SceneRenderingAllocator>& VisibleLightInfos,
 	int32 ChannelIdx,
 	bool bDynamicShadows,
 	FMobileDirectionalLightShaderParameters& Parameters);
@@ -95,11 +108,14 @@ template<typename LightMapPolicyType>
 class TMobileBasePassShaderElementData : public FMeshMaterialShaderElementData
 {
 public:
-	TMobileBasePassShaderElementData(const typename LightMapPolicyType::ElementDataType& InLightMapPolicyElementData) :
-		LightMapPolicyElementData(InLightMapPolicyElementData)
+	TMobileBasePassShaderElementData(const typename LightMapPolicyType::ElementDataType& InLightMapPolicyElementData, bool bInCanReceiveCSM)
+		: LightMapPolicyElementData(InLightMapPolicyElementData)
+		, bCanReceiveCSM(bInCanReceiveCSM)
 	{}
 
 	typename LightMapPolicyType::ElementDataType LightMapPolicyElementData;
+
+	const bool bCanReceiveCSM;
 };
 
 /**
@@ -224,6 +240,11 @@ public:
 	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
 	{
 		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+		// This define simply lets the compilation environment know that we are using a Base Pass PixelShader.
+		OutEnvironment.SetDefine(TEXT("IS_BASE_PASS"), 1);
+		OutEnvironment.SetDefine(TEXT("IS_MOBILE_BASE_PASS"), 1);
+
 		// Modify compilation environment depending upon material shader quality level settings.
 		ModifyCompilationEnvironmentForQualityLevel(Parameters.Platform, Parameters.MaterialParameters.QualityLevel, OutEnvironment);
 	}
@@ -247,12 +268,14 @@ public:
 		HQReflectionInvAverageBrigtnessParams.Bind(Initializer.ParameterMap, TEXT("ReflectionAverageBrigtness"));
 		HQReflectanceMaxValueRGBMParams.Bind(Initializer.ParameterMap, TEXT("ReflectanceMaxValueRGBM"));
 		HQReflectionPositionsAndRadii.Bind(Initializer.ParameterMap, TEXT("ReflectionPositionsAndRadii"));
+		HQReflectionTilePositions.Bind(Initializer.ParameterMap, TEXT("ReflectionTilePositions"));
 		HQReflectionCaptureBoxTransformArray.Bind(Initializer.ParameterMap, TEXT("CaptureBoxTransformArray"));
 		HQReflectionCaptureBoxScalesArray.Bind(Initializer.ParameterMap, TEXT("CaptureBoxScalesArray"));
 
 		NumDynamicPointLightsParameter.Bind(Initializer.ParameterMap, TEXT("NumDynamicPointLights"));
 						
 		CSMDebugHintParams.Bind(Initializer.ParameterMap, TEXT("CSMDebugHint"));
+		UseCSMParameter.Bind(Initializer.ParameterMap, TEXT("UseCSM"));
 	}
 
 	TMobileBasePassPSPolicyParamType() {}
@@ -267,12 +290,14 @@ private:
 	LAYOUT_FIELD(FShaderParameter, HQReflectionInvAverageBrigtnessParams);
 	LAYOUT_FIELD(FShaderParameter, HQReflectanceMaxValueRGBMParams);
 	LAYOUT_FIELD(FShaderParameter, HQReflectionPositionsAndRadii);
+	LAYOUT_FIELD(FShaderParameter, HQReflectionTilePositions);
 	LAYOUT_FIELD(FShaderParameter, HQReflectionCaptureBoxTransformArray);
 	LAYOUT_FIELD(FShaderParameter, HQReflectionCaptureBoxScalesArray);
 
 	LAYOUT_FIELD(FShaderParameter, NumDynamicPointLightsParameter);
 
 	LAYOUT_FIELD(FShaderParameter, CSMDebugHintParams);
+	LAYOUT_FIELD(FShaderParameter, UseCSMParameter);
 	
 public:
 	void GetShaderBindings(
@@ -345,7 +370,6 @@ namespace MobileBasePass
 
 	bool StationarySkyLightHasBeenApplied(const FScene* Scene, ELightMapPolicyType LightMapPolicyType);
 
-	extern FShaderPlatformCachedIniValue<bool> MobileDynamicPointLightsUseStaticBranchIniValue;
 	extern FShaderPlatformCachedIniValue<int32> MobileNumDynamicPointLightsIniValue;
 };
 
@@ -373,7 +397,6 @@ public:
 		// We compile the point light shader combinations based on the project settings
 		static auto* MobileSkyLightPermutationCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.SkyLightPermutation"));
 
-		const bool bMobileDynamicPointLightsUseStaticBranch = MobileBasePass::MobileDynamicPointLightsUseStaticBranchIniValue.Get(Parameters.Platform);
 		const int32 MobileNumDynamicPointLights = MobileBasePass::MobileNumDynamicPointLightsIniValue.Get(Parameters.Platform);
 		const int32 MobileSkyLightPermutationOptions = MobileSkyLightPermutationCVar->GetValueOnAnyThread();
 		const bool bDeferredShading = IsMobileDeferredShadingEnabled(Parameters.Platform);
@@ -397,8 +420,7 @@ public:
 
 		const bool bShouldCacheByNumDynamicPointLights =
 			(NumMovablePointLights == 0 ||
-			(bIsLit && NumMovablePointLights == INT32_MAX && bMobileDynamicPointLightsUseStaticBranch && MobileNumDynamicPointLights > 0) ||	// single shader for variable number of point lights
-				(bIsLit && NumMovablePointLights <= MobileNumDynamicPointLights && !bMobileDynamicPointLightsUseStaticBranch));				// unique 1...N point light shaders
+			(bIsLit && NumMovablePointLights == INT32_MAX && MobileNumDynamicPointLights > 0));		// single shader for variable number of point lights
 
 		return TMobileBasePassPSBaseType<LightMapPolicyType>::ShouldCompilePermutation(Parameters) && 
 				ShouldCacheShaderByPlatformAndOutputFormat(Parameters.Platform, OutputFormat) && 
@@ -418,8 +440,7 @@ public:
 		OutEnvironment.SetDefine(TEXT("OUTPUT_MOBILE_HDR"), OutputFormat == HDR_LINEAR_64 ? 1u : 0u);
 		if (NumMovablePointLights == INT32_MAX)
 		{
-			static auto* MobileNumDynamicPointLightsCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MobileNumDynamicPointLights"));
-			const int32 MaxDynamicPointLights = FMath::Clamp(MobileNumDynamicPointLightsCVar->GetValueOnAnyThread(), 0, MAX_BASEPASS_DYNAMIC_POINT_LIGHTS);
+			const int32 MaxDynamicPointLights = FMath::Clamp(MobileBasePass::MobileNumDynamicPointLightsIniValue.Get(Parameters.Platform), 0, MAX_BASEPASS_DYNAMIC_POINT_LIGHTS);
 			
 			OutEnvironment.SetDefine(TEXT("MAX_DYNAMIC_POINT_LIGHTS"), (uint32)MaxDynamicPointLights);
 			OutEnvironment.SetDefine(TEXT("VARIABLE_NUM_DYNAMIC_POINT_LIGHTS"), (uint32)1);
@@ -488,6 +509,7 @@ private:
 		EBlendMode BlendMode,
 		FMaterialShadingModelField ShadingModels,
 		const ELightMapPolicyType LightMapPolicyType,
+		const bool bCanReceiveCSM,
 		const FUniformLightMapPolicy::ElementDataType& RESTRICT LightMapElementData);
 
 	const ETranslucencyPass::Type TranslucencyPassType;

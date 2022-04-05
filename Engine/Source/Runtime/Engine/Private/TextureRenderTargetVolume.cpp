@@ -63,9 +63,9 @@ void UTextureRenderTargetVolume::InitAutoFormat(uint32 InSizeX, uint32 InSizeY, 
 
 void UTextureRenderTargetVolume::UpdateResourceImmediate(bool bClearRenderTarget/*=true*/)
 {
-	if (Resource)
+	if (GetResource())
 	{
-		FTextureRenderTargetVolumeResource* InResource = static_cast<FTextureRenderTargetVolumeResource*>(Resource);
+		FTextureRenderTargetVolumeResource* InResource = static_cast<FTextureRenderTargetVolumeResource*>(GetResource());
 		ENQUEUE_RENDER_COMMAND(UpdateResourceImmediate)(
 			[InResource, bClearRenderTarget](FRHICommandListImmediate& RHICmdList)
 			{
@@ -151,6 +151,7 @@ UVolumeTexture* UTextureRenderTargetVolume::ConstructTextureVolume(UObject* ObjO
 	switch (PixelFormat)
 	{
 		case PF_R32_FLOAT:
+		case PF_FloatRGBA:
 			TextureFormat = TSF_RGBA16F;
 			break;
 	}
@@ -205,7 +206,7 @@ UVolumeTexture* UTextureRenderTargetVolume::ConstructTextureVolume(UObject* ObjO
 	VolumeTexture->Source.UnlockMip(0);
 	VolumeTexture->SRGB = bSRGB;
 	// If HDR source image then choose HDR compression settings..
-	VolumeTexture->CompressionSettings = TextureFormat == TSF_RGBA16F ? TextureCompressionSettings::TC_HDR : TextureCompressionSettings::TC_Default;
+	VolumeTexture->CompressionSettings = TextureFormat == TSF_RGBA16F ? TextureCompressionSettings::TC_HDR : TextureCompressionSettings::TC_Default; //-V547 - future proofing
 	// Default to no mip generation for cube render target captures.
 	VolumeTexture->MipGenSettings = TextureMipGenSettings::TMGS_NoMipmaps;
 	VolumeTexture->PostEditChange();
@@ -246,7 +247,7 @@ void FTextureRenderTargetVolumeResource::InitDynamicRHI()
 		}
 
 		{
-			FRHIResourceCreateInfo CreateInfo = { FClearValueBinding(Owner->ClearColor) };
+			FRHIResourceCreateInfo CreateInfo(TEXT("FTextureRenderTargetVolumeResource"), FClearValueBinding(Owner->ClearColor));
 			RHICreateTargetableShaderResource3D(
 				Owner->SizeX,
 				Owner->SizeY,
@@ -262,7 +263,7 @@ void FTextureRenderTargetVolumeResource::InitDynamicRHI()
 			);
 		}
 
-		if ((TexCreateFlags & TexCreate_UAV) != 0)
+		if (EnumHasAnyFlags(TexCreateFlags, TexCreate_UAV))
 		{
 			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(RenderTargetVolumeRHI);
 		}

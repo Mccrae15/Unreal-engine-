@@ -10,7 +10,7 @@
   "DocsURL": "https://developers.google.com/resonance-audio/develop/unreal/getting-started",
   "MarketplaceURL": "",
   "SupportURL": "https://developers.google.com/resonance-audio/community/connect",
-  "EnabledByDefault": false,
+  "EnabledByDefault": true,
   "CanContainContent": true,
   "IsBetaVersion": true,
   "Installed": false,
@@ -19,26 +19,21 @@
 		"Name": "ResonanceAudio",
 		"Type": "Runtime",
 		"LoadingPhase": "Default",
-		"WhitelistPlatforms": [
+		"PlatformAllowList": [
 			"Android",
 			"IOS",
 			"Linux",
 			"Mac",
-			"Win32",
 			"Win64",
-			"Lumin",
-			"XboxOne",
-			"PS4"
 		]
 	},
     {
       "Name": "ResonanceAudioEditor",
       "Type": "Editor",
       "LoadingPhase": "PostEngineInit",
-      "WhitelistPlatforms": [
+      "PlatformAllowList": [
         "Linux",
         "Mac",
-        "Win32",
         "Win64"
       ]
     }

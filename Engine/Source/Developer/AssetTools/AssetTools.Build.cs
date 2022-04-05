@@ -13,6 +13,7 @@ public class AssetTools : ModuleRules
 				"Core",
 				"CoreUObject",
 				"SlateCore",
+				"EditorFramework",
 				"UnrealEd",
 			}
 		);
@@ -36,7 +37,11 @@ public class AssetTools : ModuleRules
 				"MaterialEditor",
 				"ToolMenus",
 				"PhysicsCore",
-				"DeveloperSettings"
+				"DeveloperSettings",
+				"EngineSettings",
+				"InterchangeCore",
+				"InterchangeEngine",
+				"PhysicsUtilities",
 			}
 		);
 

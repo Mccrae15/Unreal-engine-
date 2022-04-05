@@ -12,6 +12,8 @@
 #include "DetailCategoryBuilder.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionComposite.h"
+#include "Materials/MaterialExpressionPinBase.h"
 #include "MaterialLayersFunctionsCustomization.h"
 #include "PropertyEditorModule.h"
 #include "MaterialEditor/MaterialEditorPreviewParameters.h"
@@ -734,6 +736,9 @@ TSharedRef<class IDetailCustomization> FMaterialDetailCustomization::MakeInstanc
 
 void FMaterialDetailCustomization::CustomizeDetails( IDetailLayoutBuilder& DetailLayout )
 {
+	static const auto CVarMaterialEnableControlFlow = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MaterialEnableControlFlow"));
+	static const auto CVarMaterialEnableNewHLSLGenerator = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.MaterialEnableNewHLSLGenerator"));
+
 	TArray<TWeakObjectPtr<UObject> > Objects;
 	DetailLayout.GetObjectsBeingCustomized( Objects );
 
@@ -779,6 +784,16 @@ void FMaterialDetailCustomization::CustomizeDetails( IDetailLayoutBuilder& Detai
 				}
 			}
 
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterial, bEnableExecWire) && !CVarMaterialEnableControlFlow->GetValueOnAnyThread())
+			{
+				DetailLayout.HideProperty(PropertyHandle);
+			}
+
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(UMaterial, bEnableNewHLSLGenerator) && !CVarMaterialEnableNewHLSLGenerator->GetValueOnAnyThread())
+			{
+				DetailLayout.HideProperty(PropertyHandle);
+			}
+
 #if WITH_EDITORONLY_DATA
 			// Hide the shading model 
 			if (!bIsShadingModelFromMaterialExpression && PropertyName == GET_MEMBER_NAME_CHECKED(UMaterial, UsedShadingModels))
@@ -813,7 +828,7 @@ void FMaterialDetailCustomization::CustomizeDetails( IDetailLayoutBuilder& Detai
 				FProperty* Property = PropertyHandle->GetProperty();
 				FName PropertyName = Property->GetFName();
 
-				if (PropertyName != GET_MEMBER_NAME_CHECKED(UMaterial, bUseFullPrecision)) 
+				if (PropertyName != GET_MEMBER_NAME_CHECKED(UMaterial, FloatPrecisionMode))
 				{
 					DetailLayout.HideProperty(PropertyHandle);
 				}
@@ -844,6 +859,46 @@ void FMaterialExpressionLayersParameterDetails::CustomizeDetails(IDetailLayoutBu
 	TSharedRef<FMaterialLayersFunctionsCustomization> MaterialLayersFunctionsCustomization = MakeShareable(new FMaterialLayersFunctionsCustomization(GroupPropertyHandle, &DetailLayout));
 	Category.AddCustomBuilder(MaterialLayersFunctionsCustomization);
 	
+}
+
+TSharedRef<class IDetailCustomization> FMaterialExpressionCompositeDetails::MakeInstance()
+{
+	return MakeShareable(new FMaterialExpressionCompositeDetails());
+}
+
+void FMaterialExpressionCompositeDetails::CustomizeDetails(IDetailLayoutBuilder& DetailLayout)
+{
+	FName DefaultCategory = NAME_None;
+	IDetailCategoryBuilder& Category = DetailLayout.EditCategory(DefaultCategory);
+	Category.AddProperty("SubgraphName");
+
+	const FName MaterialExpressionCategory = TEXT("MaterialExpression");
+	IDetailCategoryBuilder& ExpressionCategory = DetailLayout.EditCategory(MaterialExpressionCategory);
+
+	TArray< TWeakObjectPtr<UObject> > Objects;
+	DetailLayout.GetObjectsBeingCustomized(Objects);
+	
+	for (const auto& WeakObjectPtr : Objects)
+	{
+		UObject* Object = WeakObjectPtr.Get();
+
+		UMaterialExpressionComposite* Composite = Cast<UMaterialExpressionComposite>(Object);
+
+		if (Composite)
+		{
+			if (IDetailPropertyRow* PinBaseRow = ExpressionCategory.AddExternalObjectProperty({Composite->InputExpressions}, GET_MEMBER_NAME_CHECKED(UMaterialExpressionPinBase, ReroutePins)))
+			{
+				PinBaseRow->DisplayName(LOCTEXT("InputPinsComposite", "Input Pins"));
+				PinBaseRow->Visibility(EVisibility::Visible);
+			}
+
+			if (IDetailPropertyRow* PinBaseRow = ExpressionCategory.AddExternalObjectProperty({Composite->OutputExpressions }, GET_MEMBER_NAME_CHECKED(UMaterialExpressionPinBase, ReroutePins)))
+			{
+				PinBaseRow->DisplayName(LOCTEXT("OutPinsComposite", "Output Pins"));
+				PinBaseRow->Visibility(EVisibility::Visible);
+			}
+		}
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

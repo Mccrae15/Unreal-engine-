@@ -264,7 +264,7 @@ void SSequencerEvaluationTemplateDebugVisualizer::OnArrangeChildren( const FGeom
  			{
  				ArrangedChildren.AddWidget( 
  					WidgetVisibility, 
- 					AllottedGeometry.MakeChild(Child, SegmentGeometry.Position, SegmentGeometry.GetLocalSize())
+ 					AllottedGeometry.MakeChild(Child, FVector2D(SegmentGeometry.Position), SegmentGeometry.GetLocalSize())
  					);
  			}
  		}
@@ -382,19 +382,21 @@ void SSequencerEntityComponentSystemDebugSlot::Refresh()
 		}
 
 		FEntityInfo EntityInfo = Linker->EntityManager.GetEntity(CachedEntityID);
-		for (FComponentHeader ComponentHeader : EntityInfo.Data.Allocation->GetComponentHeaders())
+		for (const FComponentHeader& ComponentHeader : EntityInfo.Data.Allocation->GetComponentHeaders())
 		{
 			const FComponentTypeInfo& ComponentTypeInfo = Linker->GetComponents()->GetComponentTypeChecked(ComponentHeader.ComponentType);
 			const int32 ComponentBitIndex = ComponentHeader.ComponentType.BitIndex();
 
 			if (!PreviousComponentWidgets.Contains(ComponentBitIndex))
 			{
+#if UE_MOVIESCENE_ENTITY_DEBUG
 				// Component was added.
 				Container->AddSlot()
 					[
 						SNew(SSequencerDebugComponentSlot, ComponentBitIndex, 
 								FText::FromString(ComponentTypeInfo.DebugInfo->DebugName))
 					];
+#endif
 			}
 			else
 			{
@@ -625,7 +627,7 @@ void SSequencerEntityComponentSystemDebugVisualizer::OnArrangeChildren( const FG
  			{
  				ArrangedChildren.AddWidget( 
  					WidgetVisibility, 
- 					AllottedGeometry.MakeChild(Child, SegmentGeometry.Position, SegmentGeometry.GetLocalSize())
+ 					AllottedGeometry.MakeChild(Child, FVector2D(SegmentGeometry.Position), SegmentGeometry.GetLocalSize())
  					);
  			}
  		}

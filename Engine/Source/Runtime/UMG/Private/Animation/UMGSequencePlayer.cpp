@@ -66,7 +66,7 @@ void UUMGSequencePlayer::Tick(float DeltaTime)
 		TimeCursorPosition += DeltaFrameTime;
 
 		// Check if we crossed over bounds
-		const bool bCrossedLowerBound = TimeCursorPosition < 0;
+		const bool bCrossedLowerBound = TimeCursorPosition < FFrameTime(0);
 		const bool bCrossedUpperBound = TimeCursorPosition >= FFrameTime(Duration);
 		const bool bCrossedEndTime = bIsPlayingForward
 			? LastTimePosition < EndTime && EndTime <= TimeCursorPosition
@@ -81,7 +81,9 @@ void UUMGSequencePlayer::Tick(float DeltaTime)
 		// Did the animation complete
 		const bool bCompleted = NumLoopsToPlay != 0 && NumLoopsCompleted >= NumLoopsToPlay;
 
-		// Handle Times
+		// Handle times and see if we need to loop or ping-pong. If looping/ping-ponging,
+		// we update the sequence for the last little bit before it happens.
+		const FFrameTime LastValidFrame(Duration-1, 0.99999994f);
 		if (bCrossedLowerBound)
 		{
 			if (bCompleted)
@@ -90,37 +92,41 @@ void UUMGSequencePlayer::Tick(float DeltaTime)
 			}
 			else
 			{
+				UpdateInternal(LastTimePosition, FFrameTime(0), false);
+
 				if (PlayMode == EUMGSequencePlayMode::PingPong)
 				{
 					bIsPlayingForward = !bIsPlayingForward;
 					TimeCursorPosition = FMath::Abs(TimeCursorPosition);
+					LastTimePosition = FFrameTime(0);
 				}
 				else
 				{
 					TimeCursorPosition += FFrameTime(Duration);
-					LastTimePosition = TimeCursorPosition;
+					LastTimePosition = LastValidFrame;
 				}
 			}
 		}
 		else if (bCrossedUpperBound)
 		{
-			FFrameTime LastValidFrame(Duration-1, 0.99999994f);
-
 			if (bCompleted)
 			{
 				TimeCursorPosition = LastValidFrame;
 			}
 			else
 			{
+				UpdateInternal(LastTimePosition, LastValidFrame, false);
+
 				if (PlayMode == EUMGSequencePlayMode::PingPong)
 				{
 					bIsPlayingForward = !bIsPlayingForward;
 					TimeCursorPosition = LastValidFrame - (TimeCursorPosition - FFrameTime(Duration));
+					LastTimePosition = LastValidFrame;
 				}
 				else
 				{
 					TimeCursorPosition = TimeCursorPosition - FFrameTime(Duration);
-					LastTimePosition = TimeCursorPosition;
+					LastTimePosition = FFrameTime(0);
 				}
 			}
 		}
@@ -134,56 +140,62 @@ void UUMGSequencePlayer::Tick(float DeltaTime)
 
 		bCompleteOnPostEvaluation = bCompleted;
 
-		if (RootTemplateInstance.IsValid())
+		const bool bHasJumped = (bCrossedLowerBound || bCrossedUpperBound || bCrossedEndTime);
+		UpdateInternal(LastTimePosition, TimeCursorPosition, bHasJumped);
+	}
+}
+
+void UUMGSequencePlayer::UpdateInternal(FFrameTime LastTimePosition, FFrameTime NextTimePosition, bool bHasJumped)
+{
+	if (RootTemplateInstance.IsValid())
+	{
+		UMovieScene* MovieScene = Animation->GetMovieScene();
+
+		FMovieSceneContext Context(
+				FMovieSceneEvaluationRange(
+					AbsolutePlaybackStart + TimeCursorPosition,
+					AbsolutePlaybackStart + LastTimePosition,
+					AnimationResolution),
+				PlayerStatus);
+		Context.SetHasJumped(bHasJumped);
+
+		UMovieSceneSequence* MovieSceneSequence = RootTemplateInstance.GetSequence(MovieSceneSequenceID::Root);
+		const bool bIsSequenceBlocking = EnumHasAnyFlags(MovieSceneSequence->GetFlags(), EMovieSceneSequenceFlags::BlockingEvaluation);
+
+		const bool bIsRunningWithTickManager = CVarUserWidgetUseParallelAnimation.GetValueOnGameThread();
+
+		if (bIsRunningWithTickManager)
 		{
-			UMovieScene* MovieScene = Animation->GetMovieScene();
+			UUserWidget* Widget = UserWidget.Get();
+			UUMGSequenceTickManager* TickManager = Widget ? ToRawPtr(Widget->AnimationTickManager) : nullptr;
 
-			FMovieSceneContext Context(
-					FMovieSceneEvaluationRange(
-						AbsolutePlaybackStart + TimeCursorPosition,
-						AbsolutePlaybackStart + LastTimePosition,
-						AnimationResolution),
-					PlayerStatus);
-			Context.SetHasJumped(bCrossedLowerBound || bCrossedUpperBound || bCrossedEndTime);
-
-			UMovieSceneSequence* MovieSceneSequence = RootTemplateInstance.GetSequence(MovieSceneSequenceID::Root);
-			const bool bIsSequenceBlocking = EnumHasAnyFlags(MovieSceneSequence->GetFlags(), EMovieSceneSequenceFlags::BlockingEvaluation);
-
-			const bool bIsRunningTickManager = CVarUserWidgetUseParallelAnimation.GetValueOnGameThread();
-
-			if (bIsRunningTickManager)
+			if (!TickManager)
 			{
-				UUserWidget* Widget = UserWidget.Get();
-				UUMGSequenceTickManager* TickManager = Widget ? Widget->AnimationTickManager : nullptr;
+				return;
+			}
 
-				if (!TickManager)
-				{
-					return;
-				}
-
-				if (!bIsSequenceBlocking)
-				{
-					// Queue an evaluation of this player's widget animation, to be evaluated later by our
-					// global tick manager as part of a glorious multi-threaded job fest.
-					FMovieSceneEntitySystemRunner& Runner = TickManager->GetRunner();
-					Runner.QueueUpdate(Context, RootTemplateInstance.GetRootInstanceHandle());
-					// WARNING: the evalution hasn't run yet so don't run any stateful code after this point
-					// unless you know it's OK to do so. Most likely, you want to run stateful code in the
-					// PostEvaluation method, or queue up a latent action.
-				}
-				else
-				{
-					// Synchronous evaluation. Sucks for performance.
-					RootTemplateInstance.Evaluate(Context, *this);
-					// The latent actions will be run by the tick manager.
-				}
+			if (!bIsSequenceBlocking)
+			{
+				// Queue an evaluation of this player's widget animation, to be evaluated later by our
+				// global tick manager as part of a glorious multi-threaded job fest.
+				FMovieSceneEntitySystemRunner& Runner = TickManager->GetRunner();
+				Runner.QueueUpdate(Context, RootTemplateInstance.GetRootInstanceHandle());
+				// WARNING: the evalution hasn't run yet so don't run any stateful code after this point
+				// unless you know it's OK to do so. Most likely, you want to run stateful code in the
+				// PostEvaluation method, or queue up a latent action.
 			}
 			else
 			{
 				// Synchronous evaluation. Sucks for performance.
 				RootTemplateInstance.Evaluate(Context, *this);
-				ApplyLatentActions();
+				// The latent actions will be run by the tick manager.
 			}
+		}
+		else
+		{
+			// Synchronous evaluation. Sucks for performance.
+			RootTemplateInstance.Evaluate(Context, *this);
+			ApplyLatentActions();
 		}
 	}
 }
@@ -233,7 +245,7 @@ void UUMGSequencePlayer::PlayInternal(double StartAtTime, double EndAtTime, int3
 	PlayerStatus = EMovieScenePlayerStatus::Playing;
 
 	UUserWidget* Widget = UserWidget.Get();
-	UUMGSequenceTickManager* TickManager = Widget ? Widget->AnimationTickManager : nullptr;
+	UUMGSequenceTickManager* TickManager = Widget ? ToRawPtr(Widget->AnimationTickManager) : nullptr;
 
 	// Playback assumes the start frame has already been evaulated, so we also want to evaluate any events on the start frame here.
 	if (TickManager && RootTemplateInstance.IsValid())
@@ -288,7 +300,7 @@ void UUMGSequencePlayer::Pause()
 	if (RootTemplateInstance.HasEverUpdated())
 	{
 		UUserWidget* Widget = UserWidget.Get();
-		UUMGSequenceTickManager* TickManager = Widget ? Widget->AnimationTickManager : nullptr;
+		UUMGSequenceTickManager* TickManager = Widget ? ToRawPtr(Widget->AnimationTickManager) : nullptr;
 
 		if (TickManager)
 		{
@@ -317,7 +329,7 @@ void UUMGSequencePlayer::Stop()
 	PlayerStatus = EMovieScenePlayerStatus::Stopped;
 
 	UUserWidget* Widget = UserWidget.Get();
-	UUMGSequenceTickManager* TickManager = Widget ? Widget->AnimationTickManager : nullptr;
+	UUMGSequenceTickManager* TickManager = Widget ? ToRawPtr(Widget->AnimationTickManager) : nullptr;
 
 	if (TickManager && RootTemplateInstance.IsValid())
 	{
@@ -427,7 +439,7 @@ void UUMGSequencePlayer::QueueLatentAction(FMovieSceneSequenceLatentActionDelega
 	if (CVarUserWidgetUseParallelAnimation.GetValueOnGameThread())
 	{
 		UUserWidget* Widget = UserWidget.Get();
-		UUMGSequenceTickManager* TickManager = Widget ? Widget->AnimationTickManager : nullptr;
+		UUMGSequenceTickManager* TickManager = Widget ? ToRawPtr(Widget->AnimationTickManager) : nullptr;
 
 		if (ensure(TickManager))
 		{
@@ -445,7 +457,7 @@ void UUMGSequencePlayer::ApplyLatentActions()
 	if (CVarUserWidgetUseParallelAnimation.GetValueOnGameThread())
 	{
 		UUserWidget* Widget = UserWidget.Get();
-		UUMGSequenceTickManager* TickManager = Widget ? Widget->AnimationTickManager : nullptr;
+		UUMGSequenceTickManager* TickManager = Widget ? ToRawPtr(Widget->AnimationTickManager) : nullptr;
 		if (TickManager)
 		{
 			TickManager->RunLatentActions();
@@ -459,6 +471,20 @@ void UUMGSequencePlayer::ApplyLatentActions()
 			Delegate.ExecuteIfBound();
 			LatentActions.RemoveAt(0);
 		}
+	}
+}
+
+void UUMGSequencePlayer::RemoveEvaluationData()
+{
+	using namespace UE::MovieScene;
+
+	UMovieSceneEntitySystemLinker* Linker           = RootTemplateInstance.GetEntitySystemLinker();
+	FSequenceInstance*             SequenceInstance = RootTemplateInstance.FindInstance(MovieSceneSequenceID::Root);
+
+	if (SequenceInstance && Linker)
+	{
+		SequenceInstance->Ledger.UnlinkEverything(Linker);
+		SequenceInstance->InvalidateCachedData(Linker);
 	}
 }
 

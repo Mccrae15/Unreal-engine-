@@ -61,6 +61,8 @@ public:
 	virtual bool HasTransformKeyBindings() const override { return true; }
 	virtual bool CanAddTransformKeysForSelectedObjects() const override;
 	virtual void OnAddTransformKeysForSelectedObjects(EMovieSceneTransformChannel Channel) override;
+	virtual void OnPreSaveWorld(UWorld* World) override;
+	virtual void OnPostSaveWorld(UWorld* World) override;
 
 private:
 
@@ -120,13 +122,18 @@ private:
 	/** Delegate for camera button lock tooltip */
 	FText GetLockCameraToolTip(FGuid ObjectGuid) const; 
 
+	/** Implementation of checking if a camera is locked */
+	bool IsCameraBindingLocked(FGuid ObjectGuid) const; 
 
+	/** Toggle whether a camera is locked */
+	void LockCameraBinding(bool bLock, FGuid ObjectGuid);
 
 	/** Generates transform keys based on the last transform, the current transform, and other options. 
 		One transform key is generated for each individual key to be added to the section. */
 	void GetTransformKeys( const TOptional<FTransformData>& LastTransform, const FTransformData& CurrentTransform, EMovieSceneTransformChannel ChannelsToKey, UObject* Object, UMovieSceneSection* Section, FGeneratedTrackKeys& OutGeneratedKeys );
 
-
+	/** Transform origin which may be set for the current level sequence */
+	FTransform GetTransformOrigin() const;
 
 	/** 
 	 * Adds transform keys to an object represented by a handle.
@@ -176,4 +183,6 @@ private:
 	/** Command Bindings added by the Transform Track Editor to Sequencer and curve editor. */
 	TSharedPtr<FUICommandList> CommandBindings;
 
+	/** List of locked cameras to restore after save */
+	TArray<FGuid> LockedCameraBindings;
 };

@@ -17,6 +17,7 @@
 #include "RenderTargetPool.h"
 #include "RHIResources.h"
 #include "SceneRenderTargetParameters.h"
+#include "SimpleMeshDrawCommandPass.h"
 
 DECLARE_GPU_STAT_NAMED(LandscapePhysicalMaterial_Draw, TEXT("LandscapePhysicalMaterial"));
 
@@ -136,7 +137,15 @@ public:
 		int32 StaticMeshId = -1) override final;
 
 private:
-	void Process(
+	bool TryAddMeshBatch(
+		const FMeshBatch& RESTRICT MeshBatch,
+		uint64 BatchElementMask,
+		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
+		int32 StaticMeshId,
+		const FMaterialRenderProxy& MaterialRenderProxy,
+		const FMaterial& MaterialResource);
+
+	bool Process(
 		const FMeshBatch& MeshBatch,
 		uint64 BatchElementMask,
 		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
@@ -154,9 +163,6 @@ FLandscapePhysicalMaterialMeshProcessor::FLandscapePhysicalMaterialMeshProcessor
 {
 	PassDrawRenderState.SetBlendState(TStaticBlendState<>::GetRHI());
 	PassDrawRenderState.SetDepthStencilState(TStaticDepthStencilState<false, CF_Always>::GetRHI());
-
-	PassDrawRenderState.SetViewUniformBuffer(InViewIfDynamicMeshCommand->ViewUniformBuffer);
-	PassDrawRenderState.SetPassUniformBuffer(nullptr);
 }
 
 void FLandscapePhysicalMaterialMeshProcessor::AddMeshBatch(
@@ -165,14 +171,34 @@ void FLandscapePhysicalMaterialMeshProcessor::AddMeshBatch(
 	const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
 	int32 StaticMeshId)
 {
-	const FMaterialRenderProxy* FallbackMaterialRenderProxyPtr = nullptr;
-	const FMaterial& MaterialResource = MeshBatch.MaterialRenderProxy->GetMaterialWithFallback(FeatureLevel, FallbackMaterialRenderProxyPtr);
-	const FMaterialRenderProxy& MaterialRenderProxy = FallbackMaterialRenderProxyPtr ? *FallbackMaterialRenderProxyPtr : *MeshBatch.MaterialRenderProxy;
+	const FMaterialRenderProxy* MaterialRenderProxy = MeshBatch.MaterialRenderProxy;
+	while (MaterialRenderProxy)
+	{
+		const FMaterial* Material = MaterialRenderProxy->GetMaterialNoFallback(FeatureLevel);
+		if (Material)
+		{
+			if (TryAddMeshBatch(MeshBatch, BatchElementMask, PrimitiveSceneProxy, StaticMeshId, *MaterialRenderProxy, *Material))
+			{
+				break;
+			}
+		}
 
-	Process(MeshBatch, BatchElementMask, PrimitiveSceneProxy, MaterialRenderProxy, MaterialResource);
+		MaterialRenderProxy = MaterialRenderProxy->GetFallback(FeatureLevel);
+	}
 }
 
-void FLandscapePhysicalMaterialMeshProcessor::Process(
+bool FLandscapePhysicalMaterialMeshProcessor::TryAddMeshBatch(
+	const FMeshBatch& RESTRICT MeshBatch,
+	uint64 BatchElementMask,
+	const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
+	int32 StaticMeshId,
+	const FMaterialRenderProxy& MaterialRenderProxy,
+	const FMaterial& MaterialResource)
+{
+	return Process(MeshBatch, BatchElementMask, PrimitiveSceneProxy, MaterialRenderProxy, MaterialResource);
+}
+
+bool FLandscapePhysicalMaterialMeshProcessor::Process(
 	const FMeshBatch& MeshBatch,
 	uint64 BatchElementMask,
 	const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
@@ -183,12 +209,20 @@ void FLandscapePhysicalMaterialMeshProcessor::Process(
 
 	TMeshProcessorShaders<
 		FLandscapePhysicalMaterialVS,
-		FMeshMaterialShader,
-		FMeshMaterialShader,
 		FLandscapePhysicalMaterialPS> PassShaders;
 
-	PassShaders.PixelShader = MaterialResource.GetShader<FLandscapePhysicalMaterialPS>(VertexFactory->GetType());
-	PassShaders.VertexShader = MaterialResource.GetShader<FLandscapePhysicalMaterialVS>(VertexFactory->GetType());
+	FMaterialShaderTypes ShaderTypes;
+	ShaderTypes.AddShaderType<FLandscapePhysicalMaterialVS>();
+	ShaderTypes.AddShaderType<FLandscapePhysicalMaterialPS>();
+
+	FMaterialShaders Shaders;
+	if (!MaterialResource.TryGetShaders(ShaderTypes, VertexFactory->GetType(), Shaders))
+	{
+		return false;
+	}
+
+	Shaders.TryGetVertexShader(PassShaders.VertexShader);
+	Shaders.TryGetPixelShader(PassShaders.PixelShader);
 
 	const FMeshDrawingPolicyOverrideSettings OverrideSettings = ComputeMeshOverrideSettings(MeshBatch);
 	const ERasterizerFillMode MeshFillMode = ComputeMeshFillMode(MeshBatch, MaterialResource, OverrideSettings);
@@ -212,6 +246,8 @@ void FLandscapePhysicalMaterialMeshProcessor::Process(
 		SortKey,
 		EMeshPassFeatures::Default,
 		ShaderElementData);
+
+	return true;
 }
 
 
@@ -238,29 +274,34 @@ namespace
 		OutMeshInfos[MeshInfoIndex].MeshBatch = &((FLandscapeComponentSceneProxy*)InSceneProxy)->GetGrassMeshBatch();
 		OutMeshInfos[MeshInfoIndex].MeshBatchElementMask = 1 << 0; // LOD 0 only
 	}
+	
+	BEGIN_SHADER_PARAMETER_STRUCT(FLandscapePhysicalMaterialPassParameters, )
+		SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, View)
+		SHADER_PARAMETER_STRUCT_INCLUDE(FInstanceCullingDrawParams, InstanceCullingDrawParams)
+		RENDER_TARGET_BINDING_SLOTS()
+	END_SHADER_PARAMETER_STRUCT()
 
 	/** Render the landscape physical material IDs and copy to the read back texture. */
 	void Render_RenderThread(
 		FRHICommandListImmediate& RHICmdList,
+		FSceneInterface* SceneInterface,
 		FMeshInfoArray const& MeshInfos,
 		FIntPoint TargetSize,
 		FVector ViewOrigin,
 		FMatrix ViewRotationMatrix,
 		FMatrix ProjectionMatrix,
-		FTextureRHIRef ReadbackTexture,
-		FGPUFenceRHIRef ReadbackFence)
+		FRHIGPUTextureReadback* Readback)
 	{
-		// Allocate temporary render target
-		TRefCountPtr<IPooledRenderTarget> PooledRenderTarget;
-		FPooledRenderTargetDesc Desc(FPooledRenderTargetDesc::Create2DDesc(TargetSize, PF_G8, FClearValueBinding::Black, TexCreate_None, TexCreate_RenderTargetable | TexCreate_ShaderResource, false));
-		GRenderTargetPool.FindFreeElement(RHICmdList, Desc, PooledRenderTarget, TEXT("LandscapePhysicalMaterialTarget"), ERenderTargetTransience::Transient);
-		FTextureRHIRef RenderTargetTexture = PooledRenderTarget->GetRenderTargetItem().TargetableTexture;
+		FMemMark Mark(FMemStack::Get());
+		FRDGBuilder GraphBuilder(RHICmdList);
 
 		// Create the view
-		FSceneViewFamily::ConstructionValues ViewFamilyInit(nullptr, nullptr, FEngineShowFlags(ESFIM_Game));
-		ViewFamilyInit.SetWorldTimes(0.0f, 0.0f, 0.0f);
+		FSceneViewFamily::ConstructionValues ViewFamilyInit(nullptr, SceneInterface, FEngineShowFlags(ESFIM_Game));
+		ViewFamilyInit.SetTime(FGameTime());
 		FSceneViewFamilyContext ViewFamily(ViewFamilyInit);
 		ViewFamily.LandscapeLODOverride = 0; // Force LOD 0 render
+
+		FScenePrimitiveRenderingContextScopeHelper ScenePrimitiveRenderingContextScopeHelper(GetRendererModule().BeginScenePrimitiveRendering(GraphBuilder, &ViewFamily));
 
 		FSceneViewInitOptions ViewInitOptions;
 		ViewInitOptions.SetViewRectangle(FIntRect(0, 0, TargetSize.X, TargetSize.Y));
@@ -272,63 +313,47 @@ namespace
 		GetRendererModule().CreateAndInitSingleView(RHICmdList, &ViewFamily, &ViewInitOptions);
 		const FSceneView* View = ViewFamily.Views[0];
 
-		// Draw
-		{
-			SCOPED_DRAW_EVENTF(RHICmdList, LandscapePhysicalMaterial, TEXT("LandscapePhysicalMaterial"));
+		FRDGTextureRef OutputTexture = GraphBuilder.CreateTexture(
+			FRDGTextureDesc::Create2D(TargetSize, PF_G8, FClearValueBinding::Black, TexCreate_RenderTargetable | TexCreate_ShaderResource),
+			TEXT("LandscapePhysicalMaterialTarget"));
 
-			FRHIRenderPassInfo RPInfo(RenderTargetTexture, ERenderTargetActions::Clear_Store);
-			RHICmdList.BeginRenderPass(RPInfo, TEXT("LandscapePhysicalMaterial"));
-			RHICmdList.SetViewport(View->UnscaledViewRect.Min.X, View->UnscaledViewRect.Min.Y, 0.0f, View->UnscaledViewRect.Max.X, View->UnscaledViewRect.Max.Y, 1.0f);
-			RHICmdList.SetScissorRect(false, 0, 0, 0, 0);
+		auto* PassParameters = GraphBuilder.AllocParameters<FLandscapePhysicalMaterialPassParameters>();
+		PassParameters->View = View->ViewUniformBuffer;
+		PassParameters->RenderTargets[0] = FRenderTargetBinding(OutputTexture, ERenderTargetLoadAction::EClear);
 
+		AddSimpleMeshPass(GraphBuilder, PassParameters, SceneInterface->GetRenderScene(), *View, nullptr, RDG_EVENT_NAME("LandscapePhysicalMaterial"), View->UnscaledViewRect,
+			[View, &MeshInfos](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
 			{
-				SCOPED_GPU_STAT(RHICmdList, LandscapePhysicalMaterial_Draw);
-
-				FMemMark Mark(FMemStack::Get());
-
-				DrawDynamicMeshPass(*View, RHICmdList,
-					[View, &MeshInfos = MeshInfos](FDynamicPassMeshDrawListContext* DynamicMeshPassContext)
+				FLandscapePhysicalMaterialMeshProcessor PassMeshProcessor(
+					nullptr,
+					View,
+					DynamicMeshPassContext);
+				for (auto& MeshInfo : MeshInfos)
+				{
+					const FMeshBatch& Mesh = *MeshInfo.MeshBatch;
+					if (Mesh.MaterialRenderProxy != nullptr)
 					{
-						FLandscapePhysicalMaterialMeshProcessor PassMeshProcessor(
-							nullptr,
-							View,
-							DynamicMeshPassContext);
+						Mesh.MaterialRenderProxy->UpdateUniformExpressionCacheIfNeeded(View->GetFeatureLevel());
+						PassMeshProcessor.AddMeshBatch(Mesh, MeshInfo.MeshBatchElementMask, MeshInfo.Proxy);
+					}
+				}
+			});
 
-						for (auto& MeshInfo : MeshInfos)
-						{
-							const FMeshBatch& Mesh = *MeshInfo.MeshBatch;
-							if (Mesh.MaterialRenderProxy != nullptr)
-							{
-								Mesh.MaterialRenderProxy->UpdateUniformExpressionCacheIfNeeded(View->GetFeatureLevel());
-								PassMeshProcessor.AddMeshBatch(Mesh, MeshInfo.MeshBatchElementMask, MeshInfo.Proxy);
-							}
-						}
-					});
-			}
+		AddEnqueueCopyPass(GraphBuilder, Readback, OutputTexture);
 
-			RHICmdList.EndRenderPass();
-
-			// Copy to the read back texture
-			RHICmdList.Transition(FRHITransitionInfo(RenderTargetTexture, ERHIAccess::RTV, ERHIAccess::CopySrc));
-			RHICmdList.Transition(FRHITransitionInfo(ReadbackTexture, ERHIAccess::Unknown, ERHIAccess::CopyDest));
-			RHICmdList.CopyToResolveTarget(RenderTargetTexture, ReadbackTexture, FResolveParams());
-			RHICmdList.WriteGPUFence(ReadbackFence);
-		}
+		GraphBuilder.Execute();
 	}
 
 	/** Fetch the landscape physical material IDs from a read back texture. */
 	void FetchResults_RenderThread(
 		FRHICommandListImmediate& RHICmdList,
 		FIntPoint TargetSize,
-		FTextureRHIRef InReadbackTexture,
-		FGPUFenceRHIRef InReadbackFence,
+		FRHIGPUTextureReadback* Readback,
 		TArray<uint8>& OutPhysicalMaterialIds)
 	{
-		void* Data = nullptr;
-		int32 TargetWidth, TargetHeight;
-		RHICmdList.MapStagingSurface(InReadbackTexture, InReadbackFence.GetReference(), Data, TargetWidth, TargetHeight);
-		check(Data != nullptr);
-		check(TargetSize.X <= TargetWidth && TargetSize.Y <= TargetHeight);
+		int32 Pitch = 0;
+		void* Data = Readback->Lock(Pitch);
+		check(Data && TargetSize.X <= Pitch);
 
 		OutPhysicalMaterialIds.Empty(TargetSize.X * TargetSize.Y);
 		OutPhysicalMaterialIds.AddUninitialized(TargetSize.X * TargetSize.Y);
@@ -338,11 +363,11 @@ namespace
 		for (int32 Y = 0; Y < TargetSize.Y; ++Y)
 		{
 			FMemory::Memcpy(WritePtr, ReadPtr, TargetSize.X);
-			ReadPtr += TargetWidth;
+			ReadPtr += Pitch;
 			WritePtr += TargetSize.X;
 		}
 
-		RHICmdList.UnmapStagingSurface(InReadbackTexture);
+		Readback->Unlock();
 	}
 }
 
@@ -372,8 +397,7 @@ namespace
 		TArray<UPhysicalMaterial*> ResultMaterials;
 
 		// Create on render thread
-		FTextureRHIRef ReadbackTexture;
-		FGPUFenceRHIRef ReadbackFence;
+		TUniquePtr<FRHIGPUTextureReadback> Readback;
 
 		// Result written on render thread and read on game thread
 		ECompletionState CompletionState = ECompletionState::None;
@@ -401,6 +425,11 @@ namespace
 				const float ZOffset = WORLD_MAX;
 				const FMatrix ProjectionMatrix = FReversedZOrthoMatrix(TargetExtent.X, TargetExtent.Y, 0.5f / ZOffset, ZOffset);
 
+				if (Task.TargetSize != TargetSize)
+				{
+					Task.Readback = nullptr;
+				}
+
 				Task.TargetSize = TargetSize;
 				Task.ViewOrigin = TargetCenter;
 				Task.ViewRotationMatrix = ViewRotationMatrix;
@@ -417,14 +446,9 @@ namespace
 	bool InitTaskRenderResources(FLandscapePhysicalMaterialRenderTaskImpl& Task)
 	{
 		//todo: Consider pooling these and throttling to the pool size?
-		if (!Task.ReadbackTexture.IsValid() || Task.ReadbackTexture->GetSizeXYZ() != FIntVector(Task.TargetSize.X, Task.TargetSize.Y, 1))
+		if (!Task.Readback.IsValid())
 		{
-			FRHIResourceCreateInfo CreateInfo(TEXT("LandscapePhysicalMaterialReadback"));
-			Task.ReadbackTexture = RHICreateTexture2D(Task.TargetSize.X, Task.TargetSize.Y, PF_G8, 1, 1, TexCreate_CPUReadback | TexCreate_HideInVisualizeTexture, CreateInfo);
-		}
-		if (!Task.ReadbackFence.IsValid())
-		{
-			Task.ReadbackFence = RHICreateGPUFence(TEXT(""));
+			Task.Readback = MakeUnique<FRHIGPUTextureReadback>(TEXT("LandscapePhysicalMaterialReadback"));
 		}
 
 		return true;
@@ -447,13 +471,13 @@ namespace
 
 				Render_RenderThread(
 					RHICmdList,
+					&SceneProxy->GetScene(),
 					MeshInfos,
 					Task.TargetSize,
 					Task.ViewOrigin,
 					Task.ViewRotationMatrix,
 					Task.ProjectionMatrix,
-					Task.ReadbackTexture,
-					Task.ReadbackFence);
+					Task.Readback.Get());
 
 				FPlatformMisc::MemoryBarrier();
 				Task.CompletionState = ECompletionState::Pending;
@@ -461,9 +485,14 @@ namespace
 		}
 		else if (Task.CompletionState == ECompletionState::Pending)
 		{
-			if (bFlush || Task.ReadbackFence->Poll())
+			if (bFlush || Task.Readback->IsReady())
 			{
-				FetchResults_RenderThread(RHICmdList, Task.TargetSize, Task.ReadbackTexture, Task.ReadbackFence, Task.ResultIds);
+				if (!Task.Readback->IsReady())
+				{
+					RHICmdList.ImmediateFlush(EImmediateFlushType::FlushRHIThread);
+				}
+
+				FetchResults_RenderThread(RHICmdList, Task.TargetSize, Task.Readback.Get(), Task.ResultIds);
 
 				FPlatformMisc::MemoryBarrier();
 				Task.CompletionState = ECompletionState::Complete;
@@ -551,8 +580,7 @@ public:
 					ENQUEUE_RENDER_COMMAND(FLandscapePhysicalMaterialFree)(
 						[Task](FRHICommandListImmediate& RHICmdList)
 						{
-							Task->ReadbackTexture.SafeRelease();
-							Task->ReadbackFence.SafeRelease();
+							Task->Readback = nullptr;
 						});
 				}
 			}

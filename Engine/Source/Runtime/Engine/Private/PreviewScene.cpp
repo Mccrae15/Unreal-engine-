@@ -42,7 +42,8 @@ FPreviewScene::FPreviewScene(FPreviewScene::ConstructionValues CVS)
 										.CreateAISystem(false)
 										.ShouldSimulatePhysics(CVS.bShouldSimulatePhysics)
 										.SetTransactional(CVS.bTransactional)
-										.SetDefaultGameMode(CVS.DefaultGameMode));
+										.SetDefaultGameMode(CVS.DefaultGameMode)
+										.ForceUseMovementComponentInNonGameWorld(CVS.bForceUseMovementComponentInNonGameWorld));
 
 	FURL URL = FURL();
 	//URL += TEXT("?SpectatorOnly=1");
@@ -124,7 +125,7 @@ FPreviewScene::~FPreviewScene()
 	}
 	
 	// The world may be released by now.
-	if (PreviewWorld)
+	if (PreviewWorld && GEngine)
 	{
 		PreviewWorld->CleanupWorld();
 		GEngine->DestroyWorldContext(GetWorld());

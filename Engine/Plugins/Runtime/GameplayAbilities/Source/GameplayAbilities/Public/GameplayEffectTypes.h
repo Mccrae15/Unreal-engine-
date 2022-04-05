@@ -368,7 +368,7 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContext
 	, bHasWorldOrigin(false)
 	, bReplicateSourceObject(false)
 	{
-		AddInstigator(InInstigator, InEffectCauser);
+		FGameplayEffectContext::AddInstigator(InInstigator, InEffectCauser);
 	}
 
 	virtual ~FGameplayEffectContext()
@@ -502,7 +502,6 @@ struct GAMEPLAYABILITIES_API FGameplayEffectContext
 	{
 		FGameplayEffectContext* NewContext = new FGameplayEffectContext();
 		*NewContext = *this;
-		NewContext->AddActors(Actors);
 		if (GetHitResult())
 		{
 			// Does a deep copy of the hit result
@@ -1036,7 +1035,7 @@ struct TStructOpsTypeTraits<FGameplayCueParameters> : public TStructOpsTypeTrait
 UENUM(BlueprintType)
 namespace EGameplayCueEvent
 {
-	/** Indicates what type of action happend to a specific gameplay cue tag. Sometimes you will get multiple events at once */
+	/** Indicates what type of action happened to a specific gameplay cue tag. Sometimes you will get multiple events at once */
 	enum Type
 	{
 		/** Called when GameplayCue is activated */
@@ -1059,7 +1058,6 @@ DECLARE_DELEGATE(FDeferredTagChangeDelegate);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnGameplayEffectTagCountChanged, const FGameplayTag, int32);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnGivenActiveGameplayEffectRemoved, const FActiveGameplayEffect&);
 
-DECLARE_MULTICAST_DELEGATE(FOnActiveGameplayEffectRemoved);
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnActiveGameplayEffectRemoved_Info, const FGameplayEffectRemovalInfo&);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnActiveGameplayEffectStackChange, FActiveGameplayEffectHandle, int32 /*NewStackCount*/, int32 /*PreviousStackCount*/);
 DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnActiveGameplayEffectTimeChange, FActiveGameplayEffectHandle, float /*NewStartTime*/, float /*NewDuration*/);
@@ -1068,7 +1066,6 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(FOnActiveGameplayEffectInhibitionChanged, F
 /** Callback struct for different types of gameplay effect changes */
 struct FActiveGameplayEffectEvents
 {
-	FOnActiveGameplayEffectRemoved DEPRECATED_OnEffectRemoved;
 	FOnActiveGameplayEffectRemoved_Info OnEffectRemoved;
 	FOnActiveGameplayEffectStackChange OnStackChanged;
 	FOnActiveGameplayEffectTimeChange OnTimeChanged;
@@ -1388,6 +1385,16 @@ struct GAMEPLAYABILITIES_API FGameplayTagBlueprintPropertyMapping
 
 public:
 
+	FGameplayTagBlueprintPropertyMapping() {}
+	FGameplayTagBlueprintPropertyMapping(const FGameplayTagBlueprintPropertyMapping& Other)
+	{
+		// Don't copy handle
+		TagToMap = Other.TagToMap;
+		PropertyToEdit = Other.PropertyToEdit;
+		PropertyName = Other.PropertyName;
+		PropertyGuid = Other.PropertyGuid;
+	}
+
 	/** Gameplay tag being counted. */
 	UPROPERTY(EditAnywhere, Category = GameplayTagBlueprintProperty)
 	FGameplayTag TagToMap;
@@ -1412,7 +1419,7 @@ public:
 /**
  * Struct used to manage gameplay tag blueprint property mappings.
  * It registers the properties with delegates on an ability system component.
- * This struct should not be used in containers (such as TArray) since it uses a raw pointer
+ * This struct can not be used in containers (such as TArray) since it uses a raw pointer
  * to bind the delegate and it's address could change causing an invalid binding.
  */
 USTRUCT()
@@ -1423,10 +1430,14 @@ struct GAMEPLAYABILITIES_API FGameplayTagBlueprintPropertyMap
 public:
 
 	FGameplayTagBlueprintPropertyMap();
+	FGameplayTagBlueprintPropertyMap(const FGameplayTagBlueprintPropertyMap& Other);
 	~FGameplayTagBlueprintPropertyMap();
 
 	/** Call this to initialize and bind the properties with the ability system component. */
 	void Initialize(UObject* Owner, class UAbilitySystemComponent* ASC);
+
+	/** Call to manually apply the current tag state, can handle cases where callbacks were skipped */
+	void ApplyCurrentTags();
 
 #if WITH_EDITOR
 	/** This can optionally be called in the owner's IsDataValid() for data validation. */
@@ -1437,7 +1448,7 @@ protected:
 
 	void Unregister();
 
-	void GameplayTagEventCallback(const FGameplayTag Tag, int32 NewCount);
+	void GameplayTagEventCallback(const FGameplayTag Tag, int32 NewCount, TWeakObjectPtr<UObject> RegisteredOwner);
 
 	bool IsPropertyTypeValid(const FProperty* Property) const;
 
@@ -1655,6 +1666,19 @@ struct GAMEPLAYABILITIES_API FMinimalReplicationTagCountMap
 		for (const FGameplayTag& Tag : Container)
 		{
 			RemoveTag(Tag);
+		}
+	}
+
+	void SetTagCount(const FGameplayTag& Tag, int32 NewCount)
+	{
+		MapID++;
+		int32& Count = TagMap.FindOrAdd(Tag);
+		Count = NewCount;
+		
+		if (Count == 0)
+		{
+			// Remove from map so that we do not replicate
+			TagMap.Remove(Tag);
 		}
 	}
 

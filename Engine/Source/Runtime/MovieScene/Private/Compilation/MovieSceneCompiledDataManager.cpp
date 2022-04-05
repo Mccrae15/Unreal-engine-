@@ -151,13 +151,13 @@ struct FGatherParameters
 	{
 		FGatherParameters SubParams = *this;
 
-		SubParams.RootToSequenceTransform	= SubData.RootToSequenceTransform;
+		SubParams.RootToSequenceTransform   = SubData.RootToSequenceTransform;
 		SubParams.HierarchicalBias          = SubData.HierarchicalBias;
 		SubParams.bHasHierarchicalEasing    = SubData.bHasHierarchicalEasing;
 		SubParams.SequenceID                = InSubSequenceID;
 		SubParams.RootToSequenceWarpCounter = WarpCounter;
 
-		SubParams.LocalClampRange			= SubData.RootToSequenceTransform.TransformRangeUnwarped(SubParams.RootClampRange);
+		SubParams.LocalClampRange           = SubData.RootToSequenceTransform.TransformRangeUnwarped(SubParams.RootClampRange);
 
 		return SubParams;
 	}
@@ -612,6 +612,11 @@ void UMovieSceneCompiledDataManager::DestroyTemplate(FMovieSceneCompiledDataID D
 
 bool UMovieSceneCompiledDataManager::IsDirty(const FMovieSceneCompiledDataEntry& Entry) const
 {
+	if (!Entry.GetSequence())
+	{
+		return false;
+	}
+
 	if (Entry.CompiledSignature != Entry.GetSequence()->GetSignature())
 	{
 		return true;
@@ -706,29 +711,32 @@ void UMovieSceneCompiledDataManager::Compile(FMovieSceneCompiledDataID DataID, U
 	{
 		UMovieScene* MovieScene = Sequence->GetMovieScene();
 
-		for (const FMovieSceneMarkedFrame& Mark : MovieScene->GetMarkedFrames())
+		if (ensure(MovieScene))
 		{
-			if (Mark.bIsDeterminismFence)
+			for (const FMovieSceneMarkedFrame& Mark : MovieScene->GetMarkedFrames())
 			{
-				GatheredData.DeterminismData.Fences.Add(Mark.FrameNumber);
+				if (Mark.bIsDeterminismFence)
+				{
+					GatheredData.DeterminismData.Fences.Add(Mark.FrameNumber);
+				}
 			}
-		}
 
-		if (UMovieSceneTrack* Track = MovieScene->GetCameraCutTrack())
-		{
-			CompileTrack(&Entry, nullptr, Track, Params, &GatheredSignatures, &GatheredData);
-		}
-
-		for (UMovieSceneTrack* Track : MovieScene->GetMasterTracks())
-		{
-			CompileTrack(&Entry, nullptr, Track, Params, &GatheredSignatures, &GatheredData);
-		}
-
-		for (const FMovieSceneBinding& ObjectBinding : MovieScene->GetBindings())
-		{
-			for (UMovieSceneTrack* Track : ObjectBinding.GetTracks())
+			if (UMovieSceneTrack* Track = MovieScene->GetCameraCutTrack())
 			{
-				CompileTrack(&Entry, &ObjectBinding, Track, Params, &GatheredSignatures, &GatheredData);
+				CompileTrack(&Entry, nullptr, Track, Params, &GatheredSignatures, &GatheredData);
+			}
+
+			for (UMovieSceneTrack* Track : MovieScene->GetMasterTracks())
+			{
+				CompileTrack(&Entry, nullptr, Track, Params, &GatheredSignatures, &GatheredData);
+			}
+
+			for (const FMovieSceneBinding& ObjectBinding : MovieScene->GetBindings())
+			{
+				for (UMovieSceneTrack* Track : ObjectBinding.GetTracks())
+				{
+					CompileTrack(&Entry, &ObjectBinding, Track, Params, &GatheredSignatures, &GatheredData);
+				}
 			}
 		}
 	}
@@ -820,7 +828,7 @@ void UMovieSceneCompiledDataManager::Compile(FMovieSceneCompiledDataID DataID, U
 	else
 	{
 		UE_LOG(LogMovieScene, Log, TEXT("No sequence hierarchy"));
-	}
+}
 #endif
 #endif
 }
@@ -832,21 +840,24 @@ void UMovieSceneCompiledDataManager::Gather(const FMovieSceneCompiledDataEntry& 
 
 	UMovieScene* MovieScene = Sequence->GetMovieScene();
 
-	if (UMovieSceneTrack* Track = MovieScene->GetCameraCutTrack())
+	if (ensure(MovieScene))
 	{
-		GatherTrack(nullptr, Track, Params, TrackTemplate, OutCompilerData);
-	}
-
-	for (UMovieSceneTrack* Track : MovieScene->GetMasterTracks())
-	{
-		GatherTrack(nullptr, Track, Params, TrackTemplate, OutCompilerData);
-	}
-
-	for (const FMovieSceneBinding& ObjectBinding : MovieScene->GetBindings())
-	{
-		for (UMovieSceneTrack* Track : ObjectBinding.GetTracks())
+		if (UMovieSceneTrack* Track = MovieScene->GetCameraCutTrack())
 		{
-			GatherTrack(&ObjectBinding, Track, Params, TrackTemplate, OutCompilerData);
+			GatherTrack(nullptr, Track, Params, TrackTemplate, OutCompilerData);
+		}
+
+		for (UMovieSceneTrack* Track : MovieScene->GetMasterTracks())
+		{
+			GatherTrack(nullptr, Track, Params, TrackTemplate, OutCompilerData);
+		}
+
+		for (const FMovieSceneBinding& ObjectBinding : MovieScene->GetBindings())
+		{
+			for (UMovieSceneTrack* Track : ObjectBinding.GetTracks())
+			{
+				GatherTrack(&ObjectBinding, Track, Params, TrackTemplate, OutCompilerData);
+			}
 		}
 	}
 }
@@ -1237,6 +1248,11 @@ void UMovieSceneCompiledDataManager::GatherTrack(const FMovieSceneBinding* Objec
 
 		for (const FMovieSceneTrackEvaluationFieldEntry& Entry : EvaluationField.Entries)
 		{
+			if (Entry.Section && Track->IsRowEvalDisabled(Entry.Section->GetRowIndex()))
+			{
+				continue;
+			}
+
 			IMovieSceneEntityProvider* EntityProvider = Cast<IMovieSceneEntityProvider>(Entry.Section);
 			if (!EntityProvider)
 			{
@@ -1411,6 +1427,12 @@ bool UMovieSceneCompiledDataManager::GenerateSubSequenceData(UMovieSceneSubTrack
 
 		UMovieSceneSequence* SubSequence = SubSection->GetSequence();
 		if (!SubSequence)
+		{
+			continue;
+		}
+
+		UMovieScene* MovieScene = SubSequence->GetMovieScene();
+		if (!MovieScene)
 		{
 			continue;
 		}

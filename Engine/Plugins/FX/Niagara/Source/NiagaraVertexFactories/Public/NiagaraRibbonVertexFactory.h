@@ -26,15 +26,19 @@ struct FNiagaraRibbonVertexDynamicParameter
 * Uniform buffer for particle beam/trail vertex factories.
 */
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraRibbonUniformParameters, NIAGARAVERTEXFACTORIES_API)
-	SHADER_PARAMETER(FVector4, CameraRight)
-	SHADER_PARAMETER(FVector4, CameraUp)
-	SHADER_PARAMETER(FVector4, ScreenAlignment)
+	SHADER_PARAMETER(FVector4f, CameraRight)
+	SHADER_PARAMETER(FVector4f, CameraUp)
+	SHADER_PARAMETER(FVector4f, ScreenAlignment)
 	SHADER_PARAMETER(int, PositionDataOffset)
+	SHADER_PARAMETER(int, PrevPositionDataOffset)
 	SHADER_PARAMETER(int, VelocityDataOffset)
 	SHADER_PARAMETER(int, WidthDataOffset)
+	SHADER_PARAMETER(int, PrevWidthDataOffset)
 	SHADER_PARAMETER(int, TwistDataOffset)
+	SHADER_PARAMETER(int, PrevTwistDataOffset)
 	SHADER_PARAMETER(int, ColorDataOffset)
 	SHADER_PARAMETER(int, FacingDataOffset)
+	SHADER_PARAMETER(int, PrevFacingDataOffset)
 	SHADER_PARAMETER(int, NormalizedAgeDataOffset)
 	SHADER_PARAMETER(int, MaterialRandomDataOffset)
 	SHADER_PARAMETER(uint32, MaterialParamValidMask)
@@ -58,7 +62,8 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraRibbonUniformParameters, NIAGARAVER
 	SHADER_PARAMETER(int, ShouldFlipNormalToView)
 	SHADER_PARAMETER(int, U0DistributionMode)
 	SHADER_PARAMETER(int, U1DistributionMode)
-	SHADER_PARAMETER(FVector4, PackedVData)
+	SHADER_PARAMETER(FVector3f, SystemLWCTile)
+	SHADER_PARAMETER(FVector4f, PackedVData)
 	SHADER_PARAMETER(uint32, bLocalSpace)
 	SHADER_PARAMETER_EX(float, DeltaSeconds, EShaderPrecisionModifier::Half)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
@@ -69,6 +74,7 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraRibbonVFLooseParameters, NIAGARAVER
 	SHADER_PARAMETER(uint32, SortedIndicesOffset)
 	SHADER_PARAMETER(uint32, FacingMode)
 	SHADER_PARAMETER(uint32, Shape)
+	SHADER_PARAMETER(uint32, NeedsPreciseMotionVectors)
 	SHADER_PARAMETER_SRV(Buffer<int>, SortedIndices)
 	SHADER_PARAMETER_SRV(Buffer<float4>, TangentsAndDistances)
 	SHADER_PARAMETER_SRV(Buffer<uint>, MultiRibbonIndices)
@@ -129,7 +135,7 @@ public:
 	/**
 	* Retrieve the uniform buffer for this vertex factory.
 	*/
-	FORCEINLINE FNiagaraRibbonUniformBufferRef GetRibbonUniformBuffer()
+	FORCEINLINE FNiagaraRibbonUniformBufferRef GetRibbonUniformBuffer() const
 	{
 		return NiagaraRibbonUniformBuffer;
 	}
@@ -144,33 +150,33 @@ public:
 	*/
 	void SetDynamicParameterBuffer(const FVertexBuffer* InDynamicParameterBuffer, int32 ParameterIndex, uint32 StreamOffset, uint32 Stride);
 
-	void SetSortedIndices(const FVertexBufferRHIRef& InSortedIndicesBuffer, const FShaderResourceViewRHIRef& InSortedIndicesSRV, uint32 InSortedIndicesOffset)
+	void SetSortedIndices(const FBufferRHIRef& InSortedIndicesBuffer, const FShaderResourceViewRHIRef& InSortedIndicesSRV, uint32 InSortedIndicesOffset)
 	{
 		SortedIndicesBuffer = InSortedIndicesBuffer;
 		SortedIndicesSRV = InSortedIndicesSRV;
 		SortedIndicesOffset = InSortedIndicesOffset;
 	}
 
-	void SetTangentAndDistances(const FVertexBufferRHIRef& InTangentAndDistancesBuffer, const FShaderResourceViewRHIRef& InTangentAndDistancesSRV)
+	void SetTangentAndDistances(const FBufferRHIRef& InTangentAndDistancesBuffer, const FShaderResourceViewRHIRef& InTangentAndDistancesSRV)
 	{
 		TangentAndDistancesBuffer = InTangentAndDistancesBuffer;
 		TangentAndDistancesSRV = InTangentAndDistancesSRV;
 	}
 
 
-	void SetMultiRibbonIndicesSRV(const FVertexBufferRHIRef& InMultiRibbonIndicesBuffer, const FShaderResourceViewRHIRef& InMultiRibbonIndicesSRV)
+	void SetMultiRibbonIndicesSRV(const FBufferRHIRef& InMultiRibbonIndicesBuffer, const FShaderResourceViewRHIRef& InMultiRibbonIndicesSRV)
 	{
 		MultiRibbonIndicesBuffer = InMultiRibbonIndicesBuffer;
 		MultiRibbonIndicesSRV = InMultiRibbonIndicesSRV;
 	}
 
-	void SetPackedPerRibbonDataByIndexSRV(const FVertexBufferRHIRef& InPackedPerRibbonDataByIndexBuffer, const FShaderResourceViewRHIRef& InPackedPerRibbonDataByIndexSRV)
+	void SetPackedPerRibbonDataByIndexSRV(const FBufferRHIRef& InPackedPerRibbonDataByIndexBuffer, const FShaderResourceViewRHIRef& InPackedPerRibbonDataByIndexSRV)
 	{
 		PackedPerRibbonDataByIndexBuffer = InPackedPerRibbonDataByIndexBuffer;
 		PackedPerRibbonDataByIndexSRV = InPackedPerRibbonDataByIndexSRV;
 	}
 
-	void SetSliceVertexDataSRV(const FVertexBufferRHIRef& InSliceVertexDataBuffer, const FShaderResourceViewRHIRef& InSliceVertexDataSRV)
+	void SetSliceVertexDataSRV(const FBufferRHIRef& InSliceVertexDataBuffer, const FShaderResourceViewRHIRef& InSliceVertexDataSRV)
 	{
 		SliceVertexDataBuffer = InSliceVertexDataBuffer;
 		SliceVertexDataSRV = InSliceVertexDataSRV;
@@ -186,36 +192,35 @@ public:
 		return SortedIndicesSRV;
 	}
 
-	FORCEINLINE int32 GetSortedIndicesOffset()
+	FORCEINLINE int32 GetSortedIndicesOffset() const
 	{
 		return SortedIndicesOffset;
 	}
 
-	FORCEINLINE FRHIShaderResourceView* GetTangentAndDistancesSRV()
+	FORCEINLINE FRHIShaderResourceView* GetTangentAndDistancesSRV() const
 	{
 		return TangentAndDistancesSRV;
 	}
 
-	FORCEINLINE FRHIShaderResourceView* GetMultiRibbonIndicesSRV()
+	FORCEINLINE FRHIShaderResourceView* GetMultiRibbonIndicesSRV() const
 	{
 		return MultiRibbonIndicesSRV;
 	}
 
-	FORCEINLINE FRHIShaderResourceView* GetPackedPerRibbonDataByIndexSRV()
+	FORCEINLINE FRHIShaderResourceView* GetPackedPerRibbonDataByIndexSRV() const
 	{
 		return PackedPerRibbonDataByIndexSRV;
 	}
 
-	FORCEINLINE FRHIShaderResourceView* GetSliceVertexDataSRV()
+	FORCEINLINE FRHIShaderResourceView* GetSliceVertexDataSRV() const
 	{
 		return SliceVertexDataSRV;
 	}
 
-	FORCEINLINE int32 GetFacingMode()
+	FORCEINLINE int32 GetFacingMode() const
 	{
 		return FacingMode;
 	}
-
 	FIndexBuffer*& GetIndexBuffer()
 	{
 		return IndexBuffer;
@@ -245,11 +250,11 @@ private:
 
 	const FNiagaraDataSet *DataSet;
 
-	FVertexBufferRHIRef SortedIndicesBuffer;
-	FVertexBufferRHIRef TangentAndDistancesBuffer;
-	FVertexBufferRHIRef MultiRibbonIndicesBuffer;
-	FVertexBufferRHIRef PackedPerRibbonDataByIndexBuffer;
-	FVertexBufferRHIRef SliceVertexDataBuffer;
+	FBufferRHIRef SortedIndicesBuffer;
+	FBufferRHIRef TangentAndDistancesBuffer;
+	FBufferRHIRef MultiRibbonIndicesBuffer;
+	FBufferRHIRef PackedPerRibbonDataByIndexBuffer;
+	FBufferRHIRef SliceVertexDataBuffer;
 
 	FShaderResourceViewRHIRef SortedIndicesSRV;
 	FShaderResourceViewRHIRef TangentAndDistancesSRV;

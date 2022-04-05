@@ -37,7 +37,7 @@ public:
 	virtual void RegisterAudioMixerAssetActions() = 0;
 
 	/** Registers effect preset asset actions. */
-	virtual void RegisterEffectPresetAssetActions() {}
+	virtual void RegisterEffectPresetAssetActions() = 0;
 
 	/** Creates a new sound class editor for a sound class object. */
 	virtual TSharedRef<FAssetEditorToolkit> CreateSoundClassEditor( const EToolkitMode::Type Mode, const TSharedPtr< IToolkitHost >& InitToolkitHost, USoundClass* InSoundClass ) = 0;
@@ -65,15 +65,6 @@ public:
 
 	/** Returns the toolbar extensibility manager for the given audio editor type. */
 	virtual TSharedPtr<FExtensibilityManager> GetSoundCueToolBarExtensibilityManager() = 0;
-
-	/** Registers a custom widget blueprint with a SoundEffectPreset class for editing. */
-	virtual void RegisterSoundEffectPresetWidget(TSubclassOf<USoundEffectPreset> PresetClass, UWidgetBlueprint* WidgetBlueprint) = 0;
-
-	/** Returns custom widget blueprint for a given SoundEffectPreset class (or null if unset). */
-	virtual UWidgetBlueprint* GetSoundEffectPresetWidget(TSubclassOf<USoundEffectPreset> PresetClass) = 0;
-
-	/** Unregisters a custom widget blueprint with a SoundEffectPreset class for editing. */
-	virtual void UnregisterSoundEffectPresetWidget(TSubclassOf<USoundEffectPreset> PresetClass) = 0;
 
 	/** Replaces sound cue nodes in the graph. */
 	virtual void ReplaceSoundNodesInGraph(USoundCue* SoundCue, UDialogueWave* DialogueWave, TArray<USoundNode*>& NodesToReplace, const FDialogueContextMapping& ContextMapping) = 0;

@@ -9,7 +9,8 @@
 #include "NiagaraStats.h"
 #include "NiagaraRenderer.h"
 #include "NiagaraGPUInstanceCountManager.h"
-#include "NiagaraEmitterInstanceBatcher.h"
+#include "NiagaraGpuComputeDispatchInterface.h"
+#include "NiagaraGpuComputeDispatch.h"
 #include "NiagaraShaderParticleID.h"
 
 DECLARE_CYCLE_STAT(TEXT("InitRenderData"), STAT_InitRenderData, STATGROUP_Niagara);
@@ -84,6 +85,24 @@ static FAutoConsoleVariableRef CVarNiagaraGPUDataBufferShrinkFactor(
 	ECVF_Default
 );
 
+static int32 GNiagaraGPUDataWarningSize = 0;
+static FAutoConsoleVariableRef CVarNiagaraGPUDataWarningSize(
+	TEXT("fx.NiagaraGPUDataWarningSize"),
+	GNiagaraGPUDataWarningSize,
+	TEXT("Allocation size where we should log a warning."),
+	ECVF_Scalability
+);
+
+void NiagaraWarnGpuBufferSize(const int32 ByteSize, const TCHAR* DebugSimName)
+{
+	static int32 MaxEncountered = 0;
+	if ((GNiagaraGPUDataWarningSize > 0) && (ByteSize > GNiagaraGPUDataWarningSize) && (MaxEncountered < ByteSize))
+	{
+		MaxEncountered = ByteSize;
+		UE_LOG(LogNiagara, Warning, TEXT("GpuBuffer Allocation (%d bytes) from %s"), ByteSize, DebugSimName);
+	}
+}
+
 FNiagaraDataSet::FNiagaraDataSet()
 	: NumFreeIDs(0)
 	, MaxUsedID(0)
@@ -95,6 +114,7 @@ FNiagaraDataSet::FNiagaraDataSet()
 	, BufferSizeBytes(0)
 #endif
 	, MaxInstanceCount(UINT_MAX)
+	, MaxAllocationCount(UINT_MAX)
 	, bInitialized(false)
 {
 	CompiledData.Init(&FNiagaraDataSetCompiledData::DummyCompiledData);
@@ -244,6 +264,12 @@ void FNiagaraDataSet::EndSimulate(bool SetCurrentData)
 	DestinationData = nullptr;
 }
 
+void FNiagaraDataSet::SetCurrentData(FNiagaraDataBuffer* InCurrentData)
+{
+	check(DestinationData == nullptr);
+
+	CurrentData = InCurrentData;
+}
 
 void FNiagaraDataSet::Allocate(int32 NumInstances, bool bMaintainExisting)
 {
@@ -375,17 +401,17 @@ void FNiagaraDataSet::CheckForNaNs() const
 	}
 }
 
-void FNiagaraDataSet::Dump(int32 StartIndex, int32 NumInstances, const FString& Label)const
+void FNiagaraDataSet::Dump(int32 StartIndex, int32 NumInstances, const FString& Label, const FName& SortParameterKey)const
 {
 	if (CurrentData)
 	{
-		CurrentData->Dump(StartIndex, NumInstances, Label);
+		CurrentData->Dump(StartIndex, NumInstances, Label, SortParameterKey);
 	}
 
 	if (GetDestinationData())
 	{
 		FString DestLabel = Label + TEXT("[Destination]");
-		DestinationData->Dump(StartIndex, NumInstances, DestLabel);
+		DestinationData->Dump(StartIndex, NumInstances, DestLabel, SortParameterKey);
 	}
 }
 
@@ -414,7 +440,7 @@ void FNiagaraDataSet::AllocateGPUFreeIDs(uint32 InNumInstances, FRHICommandList&
 	TCHAR DebugBufferName[128];
 	FCString::Snprintf(DebugBufferName, UE_ARRAY_COUNT(DebugBufferName), TEXT("NiagaraFreeIDList_%s"), DebugSimName ? DebugSimName : TEXT(""));
 	FRWBuffer NewFreeIDsBuffer;
-	NewFreeIDsBuffer.Initialize(sizeof(int32), NumIDsToAlloc, EPixelFormat::PF_R32_SINT, BUF_Static, DebugBufferName);
+	NewFreeIDsBuffer.Initialize(DebugBufferName, sizeof(int32), NumIDsToAlloc, EPixelFormat::PF_R32_SINT, BUF_Static);
 
 	FRHIShaderResourceView* ExistingBuffer = GPUNumAllocatedIDs > 0 ? GPUFreeIDs.SRV.GetReference() : FNiagaraRenderer::GetDummyIntBuffer();
 
@@ -602,9 +628,6 @@ bool FNiagaraDataBuffer::CheckForNaNs()const
 
 void FNiagaraDataBuffer::Allocate(uint32 InNumInstances, bool bMaintainExisting)
 {
-	//CheckUsage(false);
-	checkSlow(Owner->GetSimTarget() == ENiagaraSimTarget::CPUSim);
-
 	NumInstances = 0;
 	if (!bMaintainExisting)
 	{
@@ -723,7 +746,7 @@ void FNiagaraDataBuffer::Allocate(uint32 InNumInstances, bool bMaintainExisting)
 
 void FNiagaraDataBuffer::AllocateGPU(FRHICommandList& RHICmdList, uint32 InNumInstances, ERHIFeatureLevel::Type FeatureLevel, const TCHAR* DebugSimName)
 {
-	static constexpr uint32 GPUBufferFlags = BUF_Static | BUF_SourceCopy;
+	static constexpr EBufferUsageFlags GPUBufferFlags = BUF_Static | BUF_SourceCopy;
 
 	CheckUsage(false);
 	checkSlow(Owner->GetSimTarget() == ENiagaraSimTarget::GPUComputeSim);
@@ -733,9 +756,8 @@ void FNiagaraDataBuffer::AllocateGPU(FRHICommandList& RHICmdList, uint32 InNumIn
 
 	NumInstancesAllocated = InNumInstances;
 
-	// GetMaxInstanceCount() returns the maximum number of usable instances, but it's computed in such a way as to allow fitting an extra
-	// scratch instance in the buffer. Our allocation maximum is therefore one more than what this function returns.
-	const uint32 MaxAllocatedInstances = Owner->GetMaxInstanceCount() + 1;
+	// GetMaxInstanceCount() returns the maximum number of usable instances
+	const uint32 MaxAllocatedInstances = Owner->GetMaxAllocationCount();
 
 	// Round the count up to the nearest threadgroup size. GetMaxNumInstances() ensures that the returned value is aligned to NiagaraComputeMaxThreadGroupSize, so if the calling
 	// code clamps the instance count correctly, this operation should never exceed the max instance count.
@@ -775,8 +797,6 @@ void FNiagaraDataBuffer::AllocateGPU(FRHICommandList& RHICmdList, uint32 InNumIn
 	}
 	else // Otherwise check for growing and possibly shrinking (if GNiagaraGPUDataBufferBufferSlack > 1) .
 	{
-		TArray<FRHITransitionInfo, TInlineAllocator<5>> Transitions;
-
 		// Float buffer requires growing or shrinking?
 		const int32 RequiredFloatByteSize = Align(FloatStride * Owner->GetNumFloatComponents(), GNiagaraGPUDataBufferChunkSize);
 		const int32 CurrentFloatByteSize = (int32)GPUBufferFloat.NumBytes;
@@ -786,8 +806,8 @@ void FNiagaraDataBuffer::AllocateGPU(FRHICommandList& RHICmdList, uint32 InNumIn
 			{
 				GPUBufferFloat.Release();
 			}
-			GPUBufferFloat.Initialize(sizeof(float), RequiredFloatByteSize / sizeof(float), EPixelFormat::PF_R32_FLOAT, GPUBufferFlags);
-			Transitions.Add(FRHITransitionInfo(GPUBufferFloat.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
+			NiagaraWarnGpuBufferSize(RequiredFloatByteSize, DebugSimName);
+			GPUBufferFloat.Initialize(TEXT("GPUBufferFloat"), sizeof(float), RequiredFloatByteSize / sizeof(float), EPixelFormat::PF_R32_FLOAT, ERHIAccess::SRVMask, GPUBufferFlags);
 		}
 
 		// Half buffer requires growing or shrinking?
@@ -799,8 +819,8 @@ void FNiagaraDataBuffer::AllocateGPU(FRHICommandList& RHICmdList, uint32 InNumIn
 			{
 				GPUBufferHalf.Release();
 			}
-			GPUBufferHalf.Initialize(sizeof(FFloat16), RequiredHalfByteSize / sizeof(FFloat16), EPixelFormat::PF_R16F, GPUBufferFlags);
-			Transitions.Add(FRHITransitionInfo(GPUBufferHalf.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
+			NiagaraWarnGpuBufferSize(RequiredHalfByteSize, DebugSimName);
+			GPUBufferHalf.Initialize(TEXT("GPUBufferHalf"), sizeof(FFloat16), RequiredHalfByteSize / sizeof(FFloat16), EPixelFormat::PF_R16F, ERHIAccess::SRVMask, GPUBufferFlags);
 		}
 
 		// Int buffer requires growing or shrinking?
@@ -812,8 +832,8 @@ void FNiagaraDataBuffer::AllocateGPU(FRHICommandList& RHICmdList, uint32 InNumIn
 			{
 				GPUBufferInt.Release();
 			}
-			GPUBufferInt.Initialize(sizeof(int32), RequiredInt32ByteSize / sizeof(int32), EPixelFormat::PF_R32_SINT, GPUBufferFlags);
-			Transitions.Add(FRHITransitionInfo(GPUBufferInt.UAV, ERHIAccess::Unknown, ERHIAccess::SRVMask));
+			NiagaraWarnGpuBufferSize(RequiredInt32ByteSize, DebugSimName);
+			GPUBufferInt.Initialize(TEXT("GPUBufferInt"), sizeof(int32), RequiredInt32ByteSize / sizeof(int32), EPixelFormat::PF_R32_SINT, ERHIAccess::SRVMask, GPUBufferFlags);
 		}
 
 		// Allocate persistent IDs?
@@ -827,15 +847,12 @@ void FNiagaraDataBuffer::AllocateGPU(FRHICommandList& RHICmdList, uint32 InNumIn
 				{
 					GPUIDToIndexTable.Release();
 				}
+				NiagaraWarnGpuBufferSize(NumNeededElems * sizeof(int32), DebugSimName);
 				TStringBuilder<128> DebugBufferName;
 				DebugBufferName.Appendf(TEXT("NiagaraIDToIndexTable_%s_%p"), DebugSimName ? DebugSimName : TEXT(""), this);
-				GPUIDToIndexTable.Initialize(sizeof(int32), NumNeededElems, EPixelFormat::PF_R32_SINT, BUF_Static, DebugBufferName.ToString());
-				Transitions.Add(FRHITransitionInfo(GPUIDToIndexTable.UAV, ERHIAccess::Unknown, ERHIAccess::SRVCompute));
+				GPUIDToIndexTable.Initialize(DebugBufferName.ToString(), sizeof(int32), NumNeededElems, EPixelFormat::PF_R32_SINT, ERHIAccess::SRVCompute, BUF_Static);
 			}
 		}
-
-		// NiagaraEmitterInstanceBatcher expects the buffers to be readable before running the sim.
-		RHICmdList.Transition(MakeArrayView(Transitions.GetData(), Transitions.Num()));
 	}
 #if NIAGARA_MEMORY_TRACKING
 	AllocationSizeBytes = GPUBufferFloat.NumBytes + GPUBufferHalf.NumBytes + GPUBufferInt.NumBytes + GPUIDToIndexTable.NumBytes;
@@ -844,24 +861,25 @@ void FNiagaraDataBuffer::AllocateGPU(FRHICommandList& RHICmdList, uint32 InNumIn
 #endif
 }
 
-void FNiagaraDataBuffer::SwapGPU(FNiagaraDataBuffer* BufferToAlias)
+void FNiagaraDataBuffer::SwapGPU(FNiagaraDataBuffer* BufferToSwap)
 {
 #if NIAGARA_MEMORY_TRACKING
-	Swap(AllocationSizeBytes, BufferToAlias->AllocationSizeBytes);
+	Swap(AllocationSizeBytes, BufferToSwap->AllocationSizeBytes);
 #endif
 
-	Swap(GPUInstanceCountBufferOffset, BufferToAlias->GPUInstanceCountBufferOffset);
-	Swap(GPUBufferFloat, BufferToAlias->GPUBufferFloat);
-	Swap(GPUBufferInt, BufferToAlias->GPUBufferInt);
-	Swap(GPUIDToIndexTable, BufferToAlias->GPUIDToIndexTable);
-	Swap(GPUBufferHalf, BufferToAlias->GPUBufferHalf);
-	Swap(NumInstances, BufferToAlias->NumInstances);
-	Swap(NumInstancesAllocated, BufferToAlias->NumInstancesAllocated);
-	Swap(FloatStride, BufferToAlias->FloatStride);
-	Swap(Int32Stride, BufferToAlias->Int32Stride);
-	Swap(HalfStride, BufferToAlias->HalfStride);
-	Swap(NumSpawnedInstances, BufferToAlias->NumSpawnedInstances);
-	Swap(IDAcquireTag, BufferToAlias->IDAcquireTag);
+	Swap(GPUDataReadyStage, BufferToSwap->GPUDataReadyStage);
+	Swap(GPUInstanceCountBufferOffset, BufferToSwap->GPUInstanceCountBufferOffset);
+	Swap(GPUBufferFloat, BufferToSwap->GPUBufferFloat);
+	Swap(GPUBufferInt, BufferToSwap->GPUBufferInt);
+	Swap(GPUIDToIndexTable, BufferToSwap->GPUIDToIndexTable);
+	Swap(GPUBufferHalf, BufferToSwap->GPUBufferHalf);
+	Swap(NumInstances, BufferToSwap->NumInstances);
+	Swap(NumInstancesAllocated, BufferToSwap->NumInstancesAllocated);
+	Swap(FloatStride, BufferToSwap->FloatStride);
+	Swap(Int32Stride, BufferToSwap->Int32Stride);
+	Swap(HalfStride, BufferToSwap->HalfStride);
+	Swap(NumSpawnedInstances, BufferToSwap->NumSpawnedInstances);
+	Swap(IDAcquireTag, BufferToSwap->IDAcquireTag);
 }
 
 void FNiagaraDataBuffer::ReleaseGPU()
@@ -1124,7 +1142,7 @@ void FNiagaraDataBuffer::GPUCopyFrom(const float* GPUReadBackFloat, const int* G
 	}
 }
 
-void FNiagaraDataBuffer::Dump(int32 StartIndex, int32 InNumInstances, const FString& Label)const
+void FNiagaraDataBuffer::Dump(int32 StartIndex, int32 InNumInstances, const FString& Label, const FName& SortParameterKey)const
 {
 	FNiagaraDataVariableIterator Itr(this, StartIndex);
 
@@ -1135,18 +1153,35 @@ void FNiagaraDataBuffer::Dump(int32 StartIndex, int32 InNumInstances, const FStr
 	}
 
 	int32 NumInstancesDumped = 0;
-	TArray<FString> Lines;
+	TArray<TPair<float, FString>> Lines;
 	Lines.Reserve(GetNumInstances());
+	bool bKeyFound = false;
+	int32 MaxKeySize = 0;
 	while (Itr.IsValid() && NumInstancesDumped < InNumInstances)
 	{
 		Itr.Get();
 
 		FString Line = TEXT("| ");
+		float Key = 0.0f;
 		for (const FNiagaraVariable& Var : Itr.GetVariables())
 		{
 			Line += Var.ToString() + TEXT(" | ");
+			if (SortParameterKey.IsNone() == false && Var.GetName() == SortParameterKey)
+			{
+				// Dump value to string so that we can sort on it later.
+				if (Var.GetType() == FNiagaraTypeDefinition::GetFloatDef())
+				{
+					Key = Var.GetValue<float>();
+					bKeyFound = true;
+				}
+				else if (Var.GetType() == FNiagaraTypeDefinition::GetIntDef())
+				{
+					Key = (float)Var.GetValue<int32>();
+					bKeyFound = true;
+				}
+			}
 		}
-		Lines.Add(Line);
+		Lines.Add(TPair<float, FString>(Key, Line));
 		Itr.Advance();
 		NumInstancesDumped++;
 	}
@@ -1160,14 +1195,32 @@ void FNiagaraDataBuffer::Dump(int32 StartIndex, int32 InNumInstances, const FStr
 		}
 	}
 
+	if (bKeyFound)
+	{
+		Lines.StableSort([](const TPair<float, FString>& Lhs, const TPair<float, FString>& Rhs)
+			{
+				return Lhs.Key < Rhs.Key;
+			});
+	}
+
 	UE_LOG(LogNiagara, Log, TEXT("%s"), *Sep);
 	UE_LOG(LogNiagara, Log, TEXT(" %s "), *Label);
 	UE_LOG(LogNiagara, Log, TEXT("%s"), *Sep);
 	// 	UE_LOG(LogNiagara, Log, TEXT("%s"), *HeaderStr);
 	// 	UE_LOG(LogNiagara, Log, TEXT("%s"), *Sep);
-	for (FString& Str : Lines)
+	if (bKeyFound)
 	{
-		UE_LOG(LogNiagara, Log, TEXT("%s"), *Str);
+		for (TPair<float, FString>& Str : Lines)
+		{
+			UE_LOG(LogNiagara, Log, TEXT("[%f] %s"), Str.Key, *Str.Value);
+		}
+	}
+	else
+	{
+		for (TPair<float, FString>& Str : Lines)
+	{
+			UE_LOG(LogNiagara, Log, TEXT("%s"), *Str.Value);
+		}
 	}
 	if (IDToIndexTable.Num() > 0)
 	{
@@ -1266,12 +1319,12 @@ void FNiagaraDataBuffer::UnsetShaderParams(FRHICommandList& RHICmdList, FNiagara
 }
 
 #if WITH_EDITOR
-void FScopedNiagaraDataSetGPUReadback::ReadbackData(NiagaraEmitterInstanceBatcher* InBatcher, FNiagaraDataSet* InDataSet)
+void FScopedNiagaraDataSetGPUReadback::ReadbackData(FNiagaraGpuComputeDispatchInterface* InComputeDispatchInterface, FNiagaraDataSet* InDataSet)
 {
 	check(DataSet == nullptr);
 	check(InDataSet != nullptr);
 
-	Batcher = InBatcher && !InBatcher->IsPendingKill() ? Batcher : nullptr;
+	ComputeDispatchInterface = InComputeDispatchInterface && !InComputeDispatchInterface->IsPendingKill() ? ComputeDispatchInterface : nullptr;
 	DataSet = InDataSet;
 	DataBuffer = DataSet->GetCurrentData();
 
@@ -1285,13 +1338,13 @@ void FScopedNiagaraDataSetGPUReadback::ReadbackData(NiagaraEmitterInstanceBatche
 		{
 			// Read DrawIndirect Params
 			const uint32 BufferOffset = DataBuffer->GetGPUInstanceCountBufferOffset();
-			if (Batcher && BufferOffset != INDEX_NONE)
+			if (ComputeDispatchInterface && BufferOffset != INDEX_NONE)
 			{
-				FRHIVertexBuffer* InstanceCountBuffer = Batcher->GetGPUInstanceCounterManager().GetInstanceCountBuffer().Buffer;
+				FRHIBuffer* InstanceCountBuffer = static_cast<FNiagaraGpuComputeDispatch*>(ComputeDispatchInterface)->GetGPUInstanceCounterManager().GetInstanceCountBuffer().Buffer;
 
-				void* Data = RHICmdList.LockVertexBuffer(InstanceCountBuffer, 0, (BufferOffset + 1) * sizeof(int32), RLM_ReadOnly);
+				void* Data = RHICmdList.LockBuffer(InstanceCountBuffer, 0, (BufferOffset + 1) * sizeof(int32), RLM_ReadOnly);
 				NumInstances = reinterpret_cast<int32*>(Data)[BufferOffset];
-				RHICmdList.UnlockVertexBuffer(InstanceCountBuffer);
+				RHICmdList.UnlockBuffer(InstanceCountBuffer);
 			}
 			else
 			{
@@ -1304,9 +1357,9 @@ void FScopedNiagaraDataSetGPUReadback::ReadbackData(NiagaraEmitterInstanceBatche
 			{
 				DataBuffer->FloatData.AddUninitialized(GPUFloatBuffer.NumBytes);
 
-				void* CPUFloatBuffer = RHICmdList.LockVertexBuffer(GPUFloatBuffer.Buffer, 0, GPUFloatBuffer.NumBytes, RLM_ReadOnly);
+				void* CPUFloatBuffer = RHICmdList.LockBuffer(GPUFloatBuffer.Buffer, 0, GPUFloatBuffer.NumBytes, RLM_ReadOnly);
 				FMemory::Memcpy(DataBuffer->FloatData.GetData(), CPUFloatBuffer, GPUFloatBuffer.NumBytes);
-				RHICmdList.UnlockVertexBuffer(GPUFloatBuffer.Buffer);
+				RHICmdList.UnlockBuffer(GPUFloatBuffer.Buffer);
 			}
 
 			// Read int data
@@ -1315,9 +1368,9 @@ void FScopedNiagaraDataSetGPUReadback::ReadbackData(NiagaraEmitterInstanceBatche
 			{
 				DataBuffer->Int32Data.AddUninitialized(GPUIntBuffer.NumBytes);
 
-				void* CPUIntBuffer = RHICmdList.LockVertexBuffer(GPUIntBuffer.Buffer, 0, GPUIntBuffer.NumBytes, RLM_ReadOnly);
+				void* CPUIntBuffer = RHICmdList.LockBuffer(GPUIntBuffer.Buffer, 0, GPUIntBuffer.NumBytes, RLM_ReadOnly);
 				FMemory::Memcpy(DataBuffer->Int32Data.GetData(), CPUIntBuffer, GPUIntBuffer.NumBytes);
-				RHICmdList.UnlockVertexBuffer(GPUIntBuffer.Buffer);
+				RHICmdList.UnlockBuffer(GPUIntBuffer.Buffer);
 			}
 	
 			// Read half data
@@ -1326,9 +1379,9 @@ void FScopedNiagaraDataSetGPUReadback::ReadbackData(NiagaraEmitterInstanceBatche
 			{
 				DataBuffer->HalfData.AddUninitialized(GPUHalfBuffer.NumBytes);
 
-				void* CPUHalfBuffer = RHICmdList.LockVertexBuffer(GPUHalfBuffer.Buffer, 0, GPUHalfBuffer.NumBytes, RLM_ReadOnly);
+				void* CPUHalfBuffer = RHICmdList.LockBuffer(GPUHalfBuffer.Buffer, 0, GPUHalfBuffer.NumBytes, RLM_ReadOnly);
 				FMemory::Memcpy(DataBuffer->HalfData.GetData(), CPUHalfBuffer, GPUHalfBuffer.NumBytes);
-				RHICmdList.UnlockVertexBuffer(GPUHalfBuffer.Buffer);
+				RHICmdList.UnlockBuffer(GPUHalfBuffer.Buffer);
 			}
 	}
 	);
@@ -1396,6 +1449,18 @@ void FNiagaraDataBuffer::BuildRegisterTable()
 //////////////////////////////////////////////////////////////////////////
 
 FNiagaraDataSetCompiledData FNiagaraDataSetCompiledData::DummyCompiledData;
+
+const FNiagaraVariableLayoutInfo* FNiagaraDataSetCompiledData::FindVariableLayoutInfo(const FNiagaraVariableBase& VariableDef) const
+{
+	for ( int i=0; i < Variables.Num(); ++i )
+	{
+		if ( Variables[i].GetName() == VariableDef.GetName() && Variables[i].GetType() == VariableDef.GetType() )
+		{
+			return &VariableLayouts[i];
+		}
+	}
+	return nullptr;
+}
 
 // note, this method is also implemented in FNiagaraDataSet::BuildLayout()
 void FNiagaraDataSetCompiledData::BuildLayout()

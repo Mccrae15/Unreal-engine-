@@ -70,8 +70,16 @@ struct UNREALED_API FEditorDelegates
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDollyPerspectiveCamera, const FVector&, int32 );
 	/** delegate type for pre save world events ( uint32 SaveFlags, UWorld* World ) */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPreSaveWorld, uint32, class UWorld*);
+	/** delegate type for pre save world events ( UWorld* World, FObjectPreSaveContext ObjectSaveContext ) */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPreSaveWorldWithContext, class UWorld*, FObjectPreSaveContext);
 	/** delegate type for post save world events ( uint32 SaveFlags, UWorld* World, bool bSuccess ) */
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnPostSaveWorld, uint32, class UWorld*, bool);
+	/** delegate type for post save world events ( UWorld* World, FObjectPostSaveContext ObjectSaveContext ) */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnPostSaveWorldWithContext, class UWorld*, FObjectPostSaveContext);
+	/** delegate type for pre save external actors event, called by editor save codepaths and auto saves ( UWorld* World )*/
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPreSaveExternalActors, class UWorld*);
+	/** delegate type for post save external actors event, called by editor save codepaths and auto saves ( UWorld* World )*/
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPostSaveExternalActors, class UWorld*);
 	/** delegate for a PIE event (begin, end, pause/resume, etc) (Params: bool bIsSimulating) */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPIEEvent, const bool);
 	/** delegate for a standalone local play event (Params: uint32 processID) */
@@ -102,6 +110,8 @@ struct UNREALED_API FEditorDelegates
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnEditorModeIDTransitioned, const FEditorModeID& /*Mode*/);
 	/** delegate type to determine if a user requests can delete certain assets. */
 	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnAssetsCanDelete, const TArray<UObject*>& /*InObjectToDelete*/, FCanDeleteAssetResult& /*OutCanDelete*/);
+	/** delegate type for when a user requests to delete certain package */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnPackageDeleted, UPackage*);
 	/** delegate type for when a user requests to delete certain assets... It allows the addition of secondary assets that should also be deleted */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAssetsAddExtraObjectsToDelete, TArray<UObject*>&);
 	/** delegate type for when a user requests to delete certain assets... DOES NOT mean the asset(s) will be deleted (the user could cancel) */
@@ -146,6 +156,8 @@ struct UNREALED_API FEditorDelegates
 	static FOnMapChanged MapChange;
 	/** Called when an actor is added to a layer */
 	static FSimpleMulticastDelegate LayerChange;
+	/** Called after an undo/redo */
+	static FSimpleMulticastDelegate PostUndoRedo;
 	/** surfprops changed */
 	static FSimpleMulticastDelegate SurfProps;
 	/** Sent when requesting to display the properties of selected actors or BSP surfaces */
@@ -178,8 +190,10 @@ struct UNREALED_API FEditorDelegates
 	UE_DEPRECATED(4.24, "Use EditorModeIDExit instead")
 	static FOnEditorModeTransitioned EditorModeExit;
 	/** Called when an editor mode ID is being entered */
+	UE_DEPRECATED(5.0, "Use the asset editor's mode manager to scope mode enter notifications.")
 	static FOnEditorModeIDTransitioned EditorModeIDEnter;
 	/** Called when an editor mode ID is being exited */
+	UE_DEPRECATED(5.0, "Use the asset editor's mode manager to scope mode exit notifications.")
 	static FOnEditorModeIDTransitioned EditorModeIDExit;
 	/** Sent when a PIE session is beginning (before we decide if PIE can run - allows clients to avoid blocking PIE) */
 	static FOnPIEEvent PreBeginPIE;
@@ -201,16 +215,26 @@ struct UNREALED_API FEditorDelegates
 	static FOnPIEEvent OnPreSwitchBeginPIEAndSIE;
 	/** Sent after the user switches between from PIE to SIE, or vice-versa.  Passes in whether we are currently in SIE */
 	static FOnPIEEvent OnSwitchBeginPIEAndSIE;
+	/** Sent when a PIE session is cancelled */
+	static FSimpleMulticastDelegate CancelPIE;
 	/** Sent when PC local play session is starting */
 	static FOnStandaloneLocalPlayEvent BeginStandaloneLocalPlay;
 	/** Within a property window, the currently selected item was changed.*/
 	static FSimpleMulticastDelegate PropertySelectionChange;
 	/** Called after Landscape layer infomap update have completed */
 	static FSimpleMulticastDelegate PostLandscapeLayerUpdated;
-	/** Called before SaveWorld is processed */
+	UE_DEPRECATED(5.0, "Use PreSaveWorldWithContext instead.")
 	static FOnPreSaveWorld PreSaveWorld;
-	/** Called after SaveWorld is processed */
+	/** Called before SaveWorld is processed */
+	static FOnPreSaveWorldWithContext PreSaveWorldWithContext;
+	UE_DEPRECATED(5.0, "Use PostSaveWorldWithContext instead.")
 	static FOnPostSaveWorld PostSaveWorld;
+	/** Called after SaveWorld is processed */
+	static FOnPostSaveWorldWithContext PostSaveWorldWithContext;
+	/** Called before any number of external actors will be saved */
+	static FOnPreSaveExternalActors PreSaveExternalActors;
+	/** Called after any number of external actors has been saved */
+	static FOnPostSaveExternalActors PostSaveExternalActors;
 	/** Called when finishing picking a new blueprint class during construction */
 	static FOnFinishPickingBlueprintClass OnFinishPickingBlueprintClass;
 	/** Called when beginning configuration of a new asset */
@@ -250,6 +274,8 @@ struct UNREALED_API FEditorDelegates
 	static FOnDollyPerspectiveCamera OnDollyPerspectiveCamera;
 	/** Called on editor shutdown after packages have been successfully saved */
 	static FSimpleMulticastDelegate OnShutdownPostPackagesSaved;
+	/** Called when one or more packages have been deleted through save */
+	static FOnPackageDeleted OnPackageDeleted;
 	/** Called when the user requests assets to be deleted to determine if the operation is available.  */
 	static FOnAssetsCanDelete OnAssetsCanDelete;
 	/** Called when the user requests certain assets be deletedand  allows the addition of secondary assets that should also be deleted */
@@ -260,6 +286,8 @@ struct UNREALED_API FEditorDelegates
 	static FOnAssetsDeleted OnAssetsDeleted;
 	/** Called when a user starts dragging something out of content browser (can be multiple assets) */
 	static FOnAssetDragStarted OnAssetDragStarted;
+	/** Called when a user changes the UInputSettings::bEnableGestureRecognizer setting to refresh the available actions. */
+	static FSimpleMulticastDelegate OnEnableGestureRecognizerChanged;
 	/** Called when Action or Axis mappings have been changed */
 	static FSimpleMulticastDelegate OnActionAxisMappingsChanged;
 	/** Called from FEditorUtils::AddLevelToWorld after the level is added successfully to the world. */
@@ -628,6 +656,11 @@ UNREALED_API bool IsUniqueObjectName( const FName& InName, UObject* Outer, FText
  * Provides access to the FEditorModeTools for the level editor
  */
 UNREALED_API class FEditorModeTools& GLevelEditorModeTools();
+
+/**
+ * Checks if FEditorModeTools is valid
+ */
+UNREALED_API bool GLevelEditorModeToolsIsValid();
 
 namespace EditorUtilities
 {

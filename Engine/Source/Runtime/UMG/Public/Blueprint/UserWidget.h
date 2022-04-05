@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+#include "UObject/ObjectSaveContext.h"
 #include "Styling/SlateColor.h"
 #include "Layout/Geometry.h"
 #include "Input/CursorReply.h"
@@ -78,7 +79,7 @@ public:
 
 	/** The animation to look for. */
 	UPROPERTY()
-	UWidgetAnimation* Animation;
+	TObjectPtr<UWidgetAnimation> Animation;
 
 	/** The callback. */
 	UPROPERTY()
@@ -156,7 +157,7 @@ public:
 	FName Name;
 
 	UPROPERTY(Instanced)
-	UWidget* Content;
+	TObjectPtr<UWidget> Content;
 };
 
 class UUMGSequencePlayer;
@@ -845,6 +846,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Animation)
 	void BindToAnimationEvent(UWidgetAnimation* Animation, FWidgetAnimationDynamicEvent Delegate, EWidgetAnimationEvent AnimationEvent, FName UserTag = NAME_None);
 
+	/** Is this widget an editor utility widget. */
+	virtual bool IsEditorUtility() const { return false; }
+
 protected:
 
 	/**
@@ -1091,7 +1095,11 @@ public:
 
 	//~ Begin UObject Interface
 	virtual bool IsAsset() const;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	//~ End UObject Interface
 
 	/** Are we currently playing any animations? */
@@ -1134,6 +1142,8 @@ public:
 private:
 	static UUserWidget* CreateInstanceInternal(UObject* Outer, TSubclassOf<UUserWidget> UserWidgetClass, FName WidgetName, UWorld* World, ULocalPlayer* LocalPlayer);
 
+	void ClearStoppedSequencePlayers();
+
 public:
 	/** The color and opacity of this widget.  Tints all child widgets. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Appearance")
@@ -1164,14 +1174,14 @@ public:
 
 	/** All the sequence players currently playing */
 	UPROPERTY(Transient)
-	TArray<UUMGSequencePlayer*> ActiveSequencePlayers;
+	TArray<TObjectPtr<UUMGSequencePlayer>> ActiveSequencePlayers;
 
 	UPROPERTY(Transient)
-	UUMGSequenceTickManager* AnimationTickManager;
+	TObjectPtr<UUMGSequenceTickManager> AnimationTickManager;
 
 	/** List of sequence players to cache and clean up when safe */
 	UPROPERTY(Transient)
-	TArray<UUMGSequencePlayer*> StoppedSequencePlayers;
+	TArray<TObjectPtr<UUMGSequencePlayer>> StoppedSequencePlayers;
 
 private:
 	/** Stores the widgets being assigned to named slots */
@@ -1181,7 +1191,7 @@ private:
 public:
 	/** The widget tree contained inside this user widget initialized by the blueprint */
 	UPROPERTY(Transient, DuplicateTransient, TextExportTransient)
-	UWidgetTree* WidgetTree;
+	TObjectPtr<UWidgetTree> WidgetTree;
 
 public:
 
@@ -1203,7 +1213,7 @@ public:
 	 * a texture with a screenshot of your game in it, for example if you were designing a HUD.
 	 */
 	UPROPERTY(EditDefaultsOnly, Category="Designer")
-	UTexture2D* PreviewBackground;
+	TObjectPtr<UTexture2D> PreviewBackground;
 
 #endif
 
@@ -1330,6 +1340,8 @@ protected:
 
 	void TearDownAnimations();
 
+	void DisableAnimations();
+
 	UE_DEPRECATED(4.21, "You now need to provide the reason you're invalidating.")
 	void Invalidate();
 
@@ -1399,7 +1411,7 @@ private:
 
 protected:
 	UPROPERTY(Transient, DuplicateTransient)
-	class UInputComponent* InputComponent;
+	TObjectPtr<class UInputComponent> InputComponent;
 
 protected:
 	UPROPERTY(Transient, DuplicateTransient)

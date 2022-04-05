@@ -55,19 +55,19 @@ public:
 
 	/** Text style */
 	UPROPERTY()
-	USlateWidgetStyleAsset* Style_DEPRECATED;
+	TObjectPtr<USlateWidgetStyleAsset> Style_DEPRECATED;
 
 	/** Background image for the selected text (overrides Style) */
 	UPROPERTY()
-	USlateBrushAsset* BackgroundImageSelected_DEPRECATED;
+	TObjectPtr<USlateBrushAsset> BackgroundImageSelected_DEPRECATED;
 
 	/** Background image for the composing text (overrides Style) */
 	UPROPERTY()
-	USlateBrushAsset* BackgroundImageComposing_DEPRECATED;
+	TObjectPtr<USlateBrushAsset> BackgroundImageComposing_DEPRECATED;
 
 	/** Image brush used for the caret (overrides Style) */
 	UPROPERTY()
-	USlateBrushAsset* CaretImage_DEPRECATED;
+	TObjectPtr<USlateBrushAsset> CaretImage_DEPRECATED;
 
 	/** Font color and opacity (overrides Style) */
 	UPROPERTY()
@@ -132,6 +132,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetJustification, Category=Appearance)
 	TEnumAsByte<ETextJustify::Type> Justification;
 
+	/** Sets what should happen when text is clipped because the block does not have enough space */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, BlueprintSetter=SetTextOverflowPolicy, Category=Appearance)
+	ETextOverflowPolicy OverflowPolicy;
+
 	/** Controls how the text within this widget should be shaped. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Localization, AdvancedDisplay, meta=(ShowOnlyInnerProperties))
 	FShapedTextOptions ShapedTextOptions;
@@ -173,7 +177,12 @@ public:
 	UFUNCTION(BlueprintSetter)
 	void SetJustification(ETextJustify::Type InJustification);
 
+	UFUNCTION(BlueprintSetter)
+	void SetTextOverflowPolicy(ETextOverflowPolicy InOverflowPolicy);
+
 	void SetClearKeyboardFocusOnCommit(bool bInClearKeyboardFocusOnCommit);
+
+	void SetKeyboardType(EVirtualKeyboardType::Type Type);
 
 public:
 	

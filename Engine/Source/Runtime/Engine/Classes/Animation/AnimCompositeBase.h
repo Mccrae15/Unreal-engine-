@@ -28,7 +28,7 @@ struct FRootMotionExtractionStep
 
 	/** AnimSequence ref */
 	UPROPERTY()
-	UAnimSequence* AnimSequence;
+	TObjectPtr<UAnimSequence> AnimSequence;
 
 	/** Start position to extract root motion from. */
 	UPROPERTY()
@@ -61,7 +61,7 @@ struct FAnimSegment
 
 	/** Anim Reference to play - only allow AnimSequence or AnimComposite **/
 	UPROPERTY(EditAnywhere, Category=AnimSegment)
-	UAnimSequenceBase* AnimReference;
+	TObjectPtr<UAnimSequenceBase> AnimReference;
 
 	/** Start Pos within this AnimCompositeBase */
 	UPROPERTY(VisibleAnywhere, Category=AnimSegment)
@@ -148,7 +148,7 @@ struct FAnimSegment
 
 	/** Converts 'Track Position' to position on AnimSequence.
 	 * Note: doesn't check that position is in valid range, must do that before calling this function! */
-	float ConvertTrackPosToAnimPos(const float& TrackPosition) const;
+	ENGINE_API float ConvertTrackPosToAnimPos(const float& TrackPosition) const;
 
 	/** 
 	 * Retrieves AnimNotifies between two Track time positions. ]PreviousTrackPosition, CurrentTrackPosition]
@@ -156,7 +156,7 @@ struct FAnimSegment
 	 * Supports playing backwards (CurrentTrackPosition<PreviousTrackPosition).
 	 * Only supports contiguous range, does NOT support looping and wrapping over.
 	 */
-	UE_DEPRECATED(4.19, "Use the GetAnimNotifiesFromTrackPositions that takes FAnimNotifyEventReferences instead")
+	UE_DEPRECATED(4.19, "Use the GetAnimNotifiesFromTrackPositions that takes FAnimNotifyContext instead")
 	void GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, TArray<const FAnimNotifyEvent *> & OutActiveNotifies) const;
 	
 	/**
@@ -165,7 +165,10 @@ struct FAnimSegment
 	* Supports playing backwards (CurrentTrackPosition<PreviousTrackPosition).
 	* Only supports contiguous range, does NOT support looping and wrapping over.
 	*/
-	void GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, TArray<FAnimNotifyEventReference> & OutActiveNotifies) const;
+	UE_DEPRECATED(5.0, "Use the GetAnimNotifiesFromTrackPositions that takes FAnimNotifyContext instead")
+	ENGINE_API void GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, TArray<FAnimNotifyEventReference> & OutActiveNotifies) const;
+
+	ENGINE_API void GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, FAnimNotifyContext& NotifyContext) const;
 
 	/** 
 	 * Given a Track delta position [StartTrackPosition, EndTrackPosition]
@@ -284,7 +287,16 @@ struct FAnimTrack
 	* Supports playing backwards (CurrentTrackPosition<PreviousTrackPosition).
 	* Only supports contiguous range, does NOT support looping and wrapping over.
 	*/
-	void GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, TArray<FAnimNotifyEventReference> & OutActiveNotifies) const;
+	UE_DEPRECATED(5.0, "Use the GetAnimNotifiesFromTrackPositions that takes FAnimNotifyContext instead")
+	ENGINE_API void GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, TArray<FAnimNotifyEventReference>& OutActiveNotifies) const;
+
+	/**
+	* Retrieves AnimNotifies between two Track time positions. ]PreviousTrackPosition, CurrentTrackPosition]
+	* Between PreviousTrackPosition (exclusive) and CurrentTrackPosition (inclusive).
+	* Supports playing backwards (CurrentTrackPosition<PreviousTrackPosition).
+	* Only supports contiguous range, does NOT support looping and wrapping over.
+	*/
+	ENGINE_API void GetAnimNotifiesFromTrackPositions(const float& PreviousTrackPosition, const float& CurrentTrackPosition, FAnimNotifyContext& NotifyContext) const;
 
 	/** return true if anim notify is available */
 	bool IsNotifyAvailable() const;
@@ -294,11 +306,6 @@ UCLASS(abstract, MinimalAPI)
 class UAnimCompositeBase : public UAnimSequenceBase
 {
 	GENERATED_UCLASS_BODY()
-
-#if WITH_EDITOR
-	/** Set Sequence Length */
-	ENGINE_API void SetSequenceLength(float InSequenceLength);
-#endif
 
 	//~ Begin UObject Interface
 	virtual void PostLoad() override;
@@ -315,5 +322,7 @@ class UAnimCompositeBase : public UAnimSequenceBase
 	// and clear the reference if recursive is found. 
 	// We're going to remove the top reference if found
 	virtual bool ContainRecursive(TArray<UAnimCompositeBase*>& CurrentAccumulatedList) PURE_VIRTUAL(UAnimCompositeBase::ContainRecursive, return false; );
+
+	virtual void SetCompositeLength(float InLength) PURE_VIRTUAL(UAnimCompositeBase::SetCompositeLength, );
 };
 

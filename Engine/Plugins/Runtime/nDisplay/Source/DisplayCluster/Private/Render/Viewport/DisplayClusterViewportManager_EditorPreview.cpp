@@ -37,10 +37,10 @@ void FDisplayClusterViewportManager::ImplUpdatePreviewRTTResources()
 {
 	check(IsInGameThread());
 
-	// Only for preview modes:
-	switch (Configuration->GetRenderFrameSettingsConstRef().RenderMode)
+	switch (GetRenderFrameSettings().RenderMode)
 	{
-	case EDisplayClusterRenderFrameMode::PreviewMono:
+	case EDisplayClusterRenderFrameMode::PreviewInScene:
+		// Only for preview modes:
 		break;
 	default:
 		return;
@@ -53,6 +53,8 @@ void FDisplayClusterViewportManager::ImplUpdatePreviewRTTResources()
 		return;
 	}
 
+	const FString& ClusterNodeId = GetRenderFrameSettings().ClusterNodeId;
+
 	TArray<FString>        PreviewViewportNames;
 	TArray<FTextureRHIRef> PreviewRenderTargetableTextures;
 
@@ -62,10 +64,14 @@ void FDisplayClusterViewportManager::ImplUpdatePreviewRTTResources()
 	// Collect visible and enabled viewports for preview rendering:
 	for (FDisplayClusterViewport* const ViewportIt : Viewports)
 	{
-		if (ViewportIt->RenderSettings.bEnable && ViewportIt->RenderSettings.bVisible)
+		// update only current cluster node
+		if (ViewportIt->GetClusterNodeId() == ClusterNodeId)
 		{
-			PreviewViewportNames.Add(ViewportIt->GetId());
-			PreviewRenderTargetableTextures.AddDefaulted();
+			if (ViewportIt->RenderSettings.bEnable && ViewportIt->RenderSettings.bVisible)
+			{
+				PreviewViewportNames.Add(ViewportIt->GetId());
+				PreviewRenderTargetableTextures.AddDefaulted();
+			}
 		}
 	}
 
@@ -76,7 +82,7 @@ void FDisplayClusterViewportManager::ImplUpdatePreviewRTTResources()
 	for (int32 ViewportIndex = 0; ViewportIndex < PreviewViewportNames.Num(); ViewportIndex++)
 	{
 		FDisplayClusterViewport* DesiredViewport = ImplFindViewport(PreviewViewportNames[ViewportIndex]);
-		if (DesiredViewport)
+		if (DesiredViewport != nullptr)
 		{
 			FTextureRHIRef& PreviewRTT = PreviewRenderTargetableTextures[ViewportIndex];
 			if (PreviewRTT.IsValid())
@@ -93,14 +99,11 @@ void FDisplayClusterViewportManager::ImplUpdatePreviewRTTResources()
 	}
 }
 
-bool FDisplayClusterViewportManager::UpdatePreviewConfiguration(const FDisplayClusterConfigurationViewportPreview& PreviewConfiguration, class ADisplayClusterRootActor* InRootActorPtr)
+bool FDisplayClusterViewportManager::RenderInEditor(class FDisplayClusterRenderFrame& InRenderFrame, FViewport* InViewport, const uint32 InFirstViewportNum, const int32 InViewportsAmount, int32& OutViewportsAmount, bool& bOutFrameRendered)
 {
-	Configuration->SetRootActor(InRootActorPtr);
-	return Configuration->UpdatePreviewConfiguration(PreviewConfiguration);
-}
+	bOutFrameRendered = false;
+	OutViewportsAmount = 0;
 
-bool FDisplayClusterViewportManager::RenderInEditor(class FDisplayClusterRenderFrame& InRenderFrame, FViewport* InViewport)
-{
 	UWorld* CurrentWorld = GetCurrentWorld();
 	if (CurrentWorld == nullptr)
 	{
@@ -108,59 +111,87 @@ bool FDisplayClusterViewportManager::RenderInEditor(class FDisplayClusterRenderF
 	}
 
 	FSceneInterface* PreviewScene = CurrentWorld->Scene;
-
-	bool bHasRender = false;
-
 	FEngineShowFlags EngineShowFlags = FEngineShowFlags(EShowFlagInitMode::ESFIM_Game);
 
 	//Experimental code from render team, now always disabled
 	const bool bIsRenderedImmediatelyAfterAnotherViewFamily = false;
 
+	int32 ViewportIndex = 0;
+	bool bViewportsRenderPassDone = false;
+
 	for (FDisplayClusterRenderFrame::FFrameRenderTarget& RenderTargetIt : InRenderFrame.RenderTargets)
 	{
+		if (bViewportsRenderPassDone)
+		{
+			break;
+		}
+
 		// Special flag, allow clear RTT surface only for first family
-		bool AdditionalViewFamily = false;
+		bool bAdditionalViewFamily = false;
 
 		for (FDisplayClusterRenderFrame::FFrameViewFamily& ViewFamiliesIt : RenderTargetIt.ViewFamilies)
 		{
+			if (bViewportsRenderPassDone)
 			{
-				FRenderTarget* DstResource = RenderTargetIt.RenderTargetPtr;
+				break;
+			}
+
+			if ((ViewportIndex + ViewFamiliesIt.Views.Num()) < (int32)(InFirstViewportNum + 1))
+			{
+				// Skip already rendered viewports
+				ViewportIndex += ViewFamiliesIt.Views.Num();
+			}
+			else
+			{
 				// Create the view family for rendering the world scene to the viewport's render target
-				FSceneViewFamilyContext ViewFamily(
-					FSceneViewFamily::ConstructionValues(DstResource, PreviewScene, EngineShowFlags)
-					.SetResolveScene(true)
-					.SetRealtimeUpdate(true)
-					.SetAdditionalViewFamily(AdditionalViewFamily));
+				FSceneViewFamilyContext ViewFamily(CreateViewFamilyConstructionValues(
+					RenderTargetIt,
+					PreviewScene,
+					EngineShowFlags,
+					bAdditionalViewFamily
+				));
 
 				ConfigureViewFamily(RenderTargetIt, ViewFamiliesIt, ViewFamily);
 
-				// Disable clean op for all next families on this render target
-				AdditionalViewFamily = true;
-
 				for (FDisplayClusterRenderFrame::FFrameView& ViewIt : ViewFamiliesIt.Views)
 				{
-					FDisplayClusterViewport* ViewportPtr = static_cast<FDisplayClusterViewport*>(ViewIt.Viewport);
+					bool bViewportAlreadyRendered = ViewportIndex < (int32)InFirstViewportNum;
+					ViewportIndex++;
 
-					check(ViewportPtr != nullptr);
-					check(ViewIt.ContextNum < (uint32)ViewportPtr->Contexts.Num());
-
-					// Calculate the player's view information.
-					FVector  ViewLocation;
-					FRotator ViewRotation;
-					FSceneView* View = ViewportPtr->ImplCalcScenePreview(ViewFamily, ViewIt.ContextNum);
-
-					if (View && ViewIt.bDisableRender)
+					if (!bViewportAlreadyRendered)
 					{
-						ViewFamily.Views.Remove(View);
+						FDisplayClusterViewport* ViewportPtr = static_cast<FDisplayClusterViewport*>(ViewIt.Viewport);
+						check(ViewportPtr != nullptr);
+						check(ViewIt.ContextNum < (uint32)ViewportPtr->Contexts.Num());
 
-						delete View;
-						View = nullptr;
-					}
+						// Calculate the player's view information.
+						FVector  ViewLocation;
+						FRotator ViewRotation;
+						FSceneView* View = ViewportPtr->ImplCalcScenePreview(ViewFamily, ViewIt.ContextNum);
 
-					if (View)
-					{
-						// Apply viewport context settings to view (crossGPU, visibility, etc)
-						ViewIt.Viewport->SetupSceneView(ViewIt.ContextNum, PreviewScene->GetWorld(), ViewFamily, *View);
+						if (View != nullptr && ViewIt.IsShouldRenderView() == false)
+						{
+							ViewFamily.Views.Remove(View);
+
+							delete View;
+							View = nullptr;
+						}
+
+						if (View != nullptr)
+						{
+							// Count all rendered viewports on this render pass
+							OutViewportsAmount++;
+
+							// Apply viewport context settings to view (crossGPU, visibility, etc)
+							ViewIt.Viewport->SetupSceneView(ViewIt.ContextNum, PreviewScene->GetWorld(), ViewFamily, *View);
+
+							// The allowed number of viewports is limited by the "InViewportAmount" value.
+							if (InViewportsAmount > 0 && OutViewportsAmount >= InViewportsAmount)
+							{
+								bViewportsRenderPassDone = true;
+								break;
+							}
+						}
 					}
 				}
 
@@ -168,22 +199,42 @@ bool FDisplayClusterViewportManager::RenderInEditor(class FDisplayClusterRenderF
 				{
 					// Screen percentage is still not supported in scene capture.
 					ViewFamily.EngineShowFlags.ScreenPercentage = false;
-					ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(ViewFamily, 1.0f, false));
+					ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(ViewFamily, 1.0f));
 
 					ViewFamily.bIsRenderedImmediatelyAfterAnotherViewFamily = bIsRenderedImmediatelyAfterAnotherViewFamily;
 
-					FCanvas Canvas(DstResource, nullptr, PreviewScene->GetWorld(), ERHIFeatureLevel::SM5, FCanvas::CDM_DeferDrawing /*FCanvas::CDM_ImmediateDrawing*/, 1.0f);
+					FCanvas Canvas(RenderTargetIt.RenderTargetPtr, nullptr, PreviewScene->GetWorld(), ERHIFeatureLevel::SM5, FCanvas::CDM_DeferDrawing /*FCanvas::CDM_ImmediateDrawing*/, 1.0f);
 					Canvas.Clear(FLinearColor::Black);
 
 					GetRendererModule().BeginRenderingViewFamily(&Canvas, &ViewFamily);
-					bHasRender = true;
+
+					if (GNumExplicitGPUsForRendering > 1)
+					{
+						const FRHIGPUMask SubmitGPUMask = ViewFamily.Views.Num() == 1 ? ViewFamily.Views[0]->GPUMask : FRHIGPUMask::All();
+						ENQUEUE_RENDER_COMMAND(UDisplayClusterViewportClient_SubmitCommandList)(
+							[SubmitGPUMask](FRHICommandListImmediate& RHICmdList)
+						{
+							SCOPED_GPU_MASK(RHICmdList, SubmitGPUMask);
+							RHICmdList.SubmitCommandsHint();
+						});
+					}
 				}
 			}
 		}
 	}
 
-	if (bHasRender)
+	// Render cluster node compose on this pass if possible
+	bool bHasExtraRenderPass = (InViewportsAmount < 0) || (OutViewportsAmount < InViewportsAmount);
+
+	// bViewportsRenderPassDone means all viewports for this cluster node have been rendered
+	// and we can start frame composing(creating mips, warps, composing icvfx, OutputRemap, etc.).
+	// The main idea is to move the frame composition to a separate render pass.
+	// This will reduce the load on the CPU + GPU and increase the FPS for the preview.
+	if (!bViewportsRenderPassDone && bHasExtraRenderPass)
 	{
+		// Count cluster node compose render pass as viewport
+		OutViewportsAmount++;
+
 		// Handle special viewports game-thread logic at frame end
 		// custom postprocess single frame flag must be removed at frame end on game thread
 		FinalizeNewFrame();
@@ -191,10 +242,10 @@ bool FDisplayClusterViewportManager::RenderInEditor(class FDisplayClusterRenderF
 		// After all render target rendered call nDisplay frame rendering:
 		RenderFrame(InViewport);
 
-		return true;
+		bOutFrameRendered = true;
 	}
 
-	return false;
+	return true;
 }
 
 #endif

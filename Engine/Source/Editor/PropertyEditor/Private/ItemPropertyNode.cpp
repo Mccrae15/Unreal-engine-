@@ -1,12 +1,13 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-
 #include "ItemPropertyNode.h"
-#include "Misc/ConfigCacheIni.h"
-#include "Classes/EditorStyleSettings.h"
+#include "Editor.h"
+#include "EditorMetadataOverrides.h"
 #include "ObjectPropertyNode.h"
 #include "PropertyEditorHelpers.h"
 #include "PropertyPathHelpers.h"
+#include "Classes/EditorStyleSettings.h"
+#include "UserInterface/PropertyEditor/SPropertyEditorArrayItem.h"
 
 #define LOCTEXT_NAMESPACE "ItemPropertyNode"
 
@@ -88,29 +89,6 @@ uint8* FItemPropertyNode::GetValueBaseAddress(uint8* StartAddress, bool bIsSpars
 uint8* FItemPropertyNode::GetValueAddress(uint8* StartAddress, bool bIsSparseData) const
 {
 	uint8* Result = GetValueBaseAddress(StartAddress, bIsSparseData);
-
-	const FProperty* MyProperty = GetProperty();
-
-	const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(MyProperty);
-	const FSetProperty* SetProperty = CastField<FSetProperty>(MyProperty);
-	const FMapProperty* MapProperty = CastField<FMapProperty>(MyProperty);
-
-	if( Result && ArrayProperty)
-	{
-		FScriptArrayHelper ArrayHelper(ArrayProperty, Result);
-		Result = ArrayHelper.GetRawPtr();
-	}
-	else if (Result && SetProperty)
-	{
-		FScriptSetHelper SetHelper(SetProperty, Result);
-		Result = SetHelper.GetElementPtr(0);
-	}
-	else if (Result && MapProperty)
-	{
-		FScriptMapHelper MapHelper(MapProperty, Result);
-		Result = MapHelper.GetPairPtr(0);
-	}
-
 	return Result;
 }
 
@@ -119,18 +97,15 @@ uint8* FItemPropertyNode::GetValueAddress(uint8* StartAddress, bool bIsSparseDat
  */
 void FItemPropertyNode::InitExpansionFlags (void)
 {
-	
 	FProperty* MyProperty = GetProperty();
 
-	FReadAddressList Addresses;
-
 	bool bExpandableType = CastField<FStructProperty>(MyProperty) 
-		|| ( ( CastField<FArrayProperty>(MyProperty) || CastField<FSetProperty>(MyProperty) || CastField<FMapProperty>(MyProperty) ) && GetReadAddress(false,Addresses) );
+		|| (CastField<FArrayProperty>(MyProperty) || CastField<FSetProperty>(MyProperty) || CastField<FMapProperty>(MyProperty));
 
 	if(	bExpandableType
 		|| HasNodeFlags(EPropertyNodeFlags::EditInlineNew)
 		|| HasNodeFlags(EPropertyNodeFlags::ShowInnerObjectProperties)
-		||	( MyProperty->ArrayDim > 1 && ArrayIndex == -1 ) )
+		|| ( MyProperty->ArrayDim > 1 && ArrayIndex == -1 ) )
 	{
 		SetNodeFlags(EPropertyNodeFlags::CanBeExpanded, true);
 	}
@@ -390,54 +365,85 @@ void FItemPropertyNode::InitChildNodes()
 	}
 }
 
-void FItemPropertyNode::SetFavorite(bool FavoriteValue)
+void FItemPropertyNode::SetFavorite(bool IsFavorite)
 {
-	const FObjectPropertyNode* CurrentObjectNode = FindObjectItemParent();
-	if (CurrentObjectNode == nullptr || CurrentObjectNode->GetNumObjects() <= 0)
-		return;
-	const UClass *ObjectClass = CurrentObjectNode->GetObjectBaseClass();
-	if (ObjectClass == nullptr)
-		return;
-	FString FullPropertyPath = ObjectClass->GetName() + TEXT(":") + PropertyPath;
-	if (FavoriteValue)
+	if (GEditor == nullptr)
 	{
-		GConfig->SetBool(TEXT("DetailPropertyFavorites"), *FullPropertyPath, FavoriteValue, GEditorPerProjectIni);
+		return;
+	}
+
+	UEditorMetadataOverrides* MetadataOverrides = GEditor->GetEditorSubsystem<UEditorMetadataOverrides>();
+	if (MetadataOverrides == nullptr)
+	{
+		return;
+	}
+
+	const FObjectPropertyNode* ObjectParent = FindObjectItemParent();
+	if (ObjectParent == nullptr)
+	{
+		return;
+	}
+				
+	FString Path;
+	GetQualifiedName(Path, /*bWithArrayIndex=*/true, ObjectParent, /*bIgnoreCategories=*/true);
+
+	static const FName FavoritePropertiesName("FavoriteProperties");
+
+	TArray<FString> FavoritePropertiesList;
+	if (MetadataOverrides->GetArrayMetadata(ObjectParent->GetObjectBaseClass(), FavoritePropertiesName, FavoritePropertiesList))
+	{
+		if (IsFavorite)
+		{
+			FavoritePropertiesList.AddUnique(Path);
+		}
+		else
+		{
+			FavoritePropertiesList.Remove(Path);
+		}
+
+		MetadataOverrides->SetArrayMetadata(ObjectParent->GetObjectBaseClass(), FavoritePropertiesName, FavoritePropertiesList);
 	}
 	else
 	{
-		GConfig->RemoveKey(TEXT("DetailPropertyFavorites"), *FullPropertyPath, GEditorPerProjectIni);
+		if (IsFavorite)
+		{
+			FavoritePropertiesList.Add(Path);
+			MetadataOverrides->SetArrayMetadata(ObjectParent->GetObjectBaseClass(), FavoritePropertiesName, FavoritePropertiesList);
+		}
 	}
 }
 
 bool FItemPropertyNode::IsFavorite() const
 {
-	const FObjectPropertyNode* CurrentObjectNode = FindObjectItemParent();
-	if (CurrentObjectNode == nullptr ||CurrentObjectNode->GetNumObjects() <= 0)
+	if (GEditor == nullptr)
+	{
 		return false;
-	const UClass *ObjectClass = CurrentObjectNode->GetObjectBaseClass();
-	if (ObjectClass == nullptr)
-		return false;
-	FString FullPropertyPath = ObjectClass->GetName() + TEXT(":") + PropertyPath;
-	bool FavoritesPropertyValue = false;
-	if (!GConfig->GetBool(TEXT("DetailPropertyFavorites"), *FullPropertyPath, FavoritesPropertyValue, GEditorPerProjectIni))
-		return false;
-	return FavoritesPropertyValue;
-}
+	}
 
-/**
-* Set the permission to display the favorite icon
-*/
-void FItemPropertyNode::SetCanDisplayFavorite(bool CanDisplayFavoriteIcon)
-{
-	bCanDisplayFavorite = CanDisplayFavoriteIcon;
-}
+	UEditorMetadataOverrides* MetadataOverrides = GEditor->GetEditorSubsystem<UEditorMetadataOverrides>();
+	if (MetadataOverrides == nullptr)
+	{
+		return false;
+	}
 
-/**
-* Set the permission to display the favorite icon
-*/
-bool FItemPropertyNode::CanDisplayFavorite() const
-{
-	return bCanDisplayFavorite;
+	const FObjectPropertyNode* ObjectParent = FindObjectItemParent();
+	if (ObjectParent == nullptr)
+	{
+		return false;
+	}
+
+	FString Path;
+	GetQualifiedName(Path, /*bWithArrayIndex=*/true, ObjectParent, /*bIgnoreCategories=*/true);
+
+	static const FName FavoritePropertiesName("FavoriteProperties");
+
+	TArray<FString> FavoritePropertiesList;
+	if (MetadataOverrides->GetArrayMetadata(ObjectParent->GetObjectBaseClass(), FavoritePropertiesName, FavoritePropertiesList))
+	{
+		return FavoritePropertiesList.Contains(Path);
+	}
+
+	return false;
 }
 
 void FItemPropertyNode::SetDisplayNameOverride( const FText& InDisplayNameOverride )
@@ -529,8 +535,8 @@ FText FItemPropertyNode::GetDisplayName() const
 				{
 					// Check if this property has Title Property Meta
 					static const FName NAME_TitleProperty = FName(TEXT("TitleProperty"));
-					FName TitlePropertyName = *PropertyPtr->GetMetaData(NAME_TitleProperty);
-					if (TitlePropertyName != NAME_None)
+					FString TitleProperty = PropertyPtr->GetMetaData(NAME_TitleProperty);
+					if (!TitleProperty.IsEmpty())
 					{
 						FItemPropertyNode* NonConstThis = const_cast<FItemPropertyNode*>(this);
 
@@ -554,22 +560,20 @@ FText FItemPropertyNode::GetDisplayName() const
 						// Find the property and get the right property handle
 						if (PropertyStruct != nullptr)
 						{
-							FProperty* TitleProperty = PropertyStruct->FindPropertyByName(TitlePropertyName);
-							if (TitleProperty != nullptr)
+							const TSharedPtr<IPropertyHandle> ThisAsHandle = PropertyEditorHelpers::GetPropertyHandle(NonConstThis->AsShared(), nullptr, nullptr);
+							TSharedPtr<FTitleMetadataFormatter> TitleFormatter = FTitleMetadataFormatter::TryParse(ThisAsHandle, TitleProperty);
+							if (TitleFormatter)
 							{
-								const TSharedPtr<IPropertyHandle> ThisAsHandle = PropertyEditorHelpers::GetPropertyHandle(NonConstThis->AsShared(), nullptr, nullptr);
-								const TSharedPtr<IPropertyHandle> ChildPropertyHandle = ThisAsHandle->GetChildHandle(TitlePropertyName, true);
-
-								// Can be null in the case that it doesn't have a UI handle yet (like in the case of newly created instanced properties)
-								if (ChildPropertyHandle.IsValid())
-								{
-									ChildPropertyHandle->GetValueAsDisplayText(FinalDisplayName);
-								}
+								TitleFormatter->GetDisplayText(FinalDisplayName);
 							}
 						}
 					}
+				}
 
-					if (FinalDisplayName.IsEmpty())
+				if(FinalDisplayName.IsEmpty())
+				{
+					// This item is a member of an array, its display name is its index 
+					if (PropertyPtr == NULL || ArraySizeEnum == NULL)
 					{
 						if (ArraySizeEnum == nullptr)
 						{
@@ -580,15 +584,10 @@ FText FItemPropertyNode::GetDisplayName() const
 							FinalDisplayName = ArraySizeEnum->GetDisplayNameTextByIndex(GetArrayIndex());
 						}
 					}
-				}
-				// This item is a member of an array, its display name is its index 
-				else if (PropertyPtr == NULL || ArraySizeEnum == NULL)
-				{
-					FinalDisplayName = FText::AsNumber(GetArrayIndex());
-				}
-				else
-				{
-					FinalDisplayName = ArraySizeEnum->GetDisplayNameTextByIndex(GetArrayIndex());
+					else
+					{
+						FinalDisplayName = ArraySizeEnum->GetDisplayNameTextByIndex(GetArrayIndex());
+					}
 				}
 			}
 			// Maps should have display names that reflect the key and value types

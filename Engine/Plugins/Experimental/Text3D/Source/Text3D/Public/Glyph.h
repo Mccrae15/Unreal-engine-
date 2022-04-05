@@ -3,10 +3,8 @@
 #pragma once
 
 #include "Mesh.h"
-#include "MeshTypes.h"
 #include "MeshDescription.h"
 #include "StaticMeshAttributes.h"
-
 
 struct FText3DPolygonGroup
 {
@@ -16,7 +14,7 @@ struct FText3DPolygonGroup
 
 using TText3DGroupList = TArray<FText3DPolygonGroup, TFixedAllocator<static_cast<int32>(EText3DGroupType::TypeCount)>>;
 
-class FText3DGlyph final
+class FText3DGlyph
 {
 public:
 	FText3DGlyph();

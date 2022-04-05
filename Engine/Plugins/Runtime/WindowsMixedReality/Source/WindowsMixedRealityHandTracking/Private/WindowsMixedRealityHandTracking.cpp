@@ -154,7 +154,7 @@ public:
 	virtual bool GetHandJointTransform(EControllerHand Hand, EWMRHandKeypoint Keypoint, FTransform& Transform, float& OutRadius) override
 	{
 		OutRadius = 0.0f;
-		return UWindowsMixedRealityHandTrackingFunctionLibrary::GetHandJointTransform(Hand, Keypoint, Transform, OutRadius);
+		return UDEPRECATED_WindowsMixedRealityHandTrackingFunctionLibrary::GetHandJointTransform(Hand, Keypoint, Transform, OutRadius);
 	}
 
 private:
@@ -355,15 +355,6 @@ void FWindowsMixedRealityHandTracking::Tick(float DeltaTime)
 void FWindowsMixedRealityHandTracking::SendControllerEvents()
 {
 // @TODO: implement for WMRSDK
-// #if WITH_MLSDK
-// 	{
-// 		const MLHandTrackingData& CurrentHandTrackingData = GetCurrentHandTrackingData();
-// 		const MLHandTrackingData& OldHandTrackingData = GetPreviousHandTrackingData();
-// 
-// 		SendControllerEventsForHand(CurrentHandTrackingData.left_hand_state, OldHandTrackingData.left_hand_state, LeftStaticGestureMap);
-// 		SendControllerEventsForHand(CurrentHandTrackingData.right_hand_state, OldHandTrackingData.right_hand_state, RightStaticGestureMap);
-// 	}
-// #endif //WITH_MLSDK
 }
 
 void FWindowsMixedRealityHandTracking::SetMessageHandler(const TSharedRef<FGenericApplicationMessageHandler>& InMessageHandler)
@@ -399,7 +390,7 @@ bool FWindowsMixedRealityHandTracking::IsHandTrackingStateValid() const
 
 void FWindowsMixedRealityHandTracking::OnGetXRSystemFlags(int32& XRFlags)
 {
-	if (UWindowsMixedRealityHandTrackingFunctionLibrary::SupportsHandTracking())
+	if (UDEPRECATED_WindowsMixedRealityHandTrackingFunctionLibrary::SupportsHandTracking())
 	{
 		XRFlags |= EXRSystemFlags::SupportsHandTracking;
 	}
@@ -411,7 +402,7 @@ bool FWindowsMixedRealityHandTracking::GetKeypointTransform(EControllerHand Hand
 	bool gotTransform = false;
  
 #if WITH_INPUT_SIMULATION
-	if (auto* InputSim = UWindowsMixedRealityInputSimulationEngineSubsystem::GetInputSimulationIfEnabled())
+	if (auto* InputSim = UDEPRECATED_WindowsMixedRealityInputSimulationEngineSubsystem::GetInputSimulationIfEnabled())
 	{
 		gotTransform = InputSim->GetHandJointTransform(Hand, Keypoint, OutTransform);
 	}
@@ -434,7 +425,7 @@ bool FWindowsMixedRealityHandTracking::GetKeypointTransform(EControllerHand Hand
 bool FWindowsMixedRealityHandTracking::GetKeypointRadius(EControllerHand Hand, EWMRHandKeypoint Keypoint, float& OutRadius) const
 {
 #if WITH_INPUT_SIMULATION
-	if (auto* InputSim = UWindowsMixedRealityInputSimulationEngineSubsystem::GetInputSimulationIfEnabled())
+	if (auto* InputSim = UDEPRECATED_WindowsMixedRealityInputSimulationEngineSubsystem::GetInputSimulationIfEnabled())
 	{
 		return InputSim->GetHandJointRadius(Hand, Keypoint, OutRadius);
 	}

@@ -19,6 +19,17 @@ enum class ELightmapUVVersion : int32
 	Latest = OptimalSurfaceArea
 };
 
+/**
+*	Contains the vertices that are most dominated by that bone. Vertices are in Bone space.
+*	Not used at runtime, but useful for fitting physics assets etc.
+*/
+struct FBoneVertInfo
+{
+	// Invariant: Arrays should be same length!
+	TArray<FVector3f>	Positions;
+	TArray<FVector3f>	Normals;
+};
+
 /** Helper struct for building acceleration structures. */
 struct FIndexAndZ
 {
@@ -46,6 +57,17 @@ struct FCompareIndexAndZ
 * Returns true if the specified points are about equal
 */
 inline bool PointsEqual(const FVector& V1, const FVector& V2, float ComparisonThreshold)
+{
+	if (FMath::Abs(V1.X - V2.X) > ComparisonThreshold
+		|| FMath::Abs(V1.Y - V2.Y) > ComparisonThreshold
+		|| FMath::Abs(V1.Z - V2.Z) > ComparisonThreshold)
+	{
+		return false;
+	}
+	return true;
+}
+
+inline bool PointsEqual(const FVector3f& V1, const FVector3f& V2, float ComparisonThreshold)
 {
 	if (FMath::Abs(V1.X - V2.X) > ComparisonThreshold
 		|| FMath::Abs(V1.Y - V2.Y) > ComparisonThreshold

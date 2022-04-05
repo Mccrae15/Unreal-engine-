@@ -6,8 +6,9 @@ using System.IO;
 using AutomationTool;
 using UnrealBuildTool;
 using System.Text.RegularExpressions;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Linq;
+using UnrealBuildBase;
 
 class CheckCsprojDotNetVersion : BuildCommand
 {
@@ -24,7 +25,7 @@ class CheckCsprojDotNetVersion : BuildCommand
 
 		CommandUtils.LogInformation("Scanning for all csproj's...");
 		// Check for all csproj's in the engine dir
-		DirectoryReference EngineDir = CommandUtils.EngineDirectory;
+		DirectoryReference EngineDir = Unreal.EngineDirectory;
 
 		// grab the targeted version.,
 		Regex FrameworkRegex = new Regex("<TargetFrameworkVersion>v(\\d\\.\\d\\.?\\d?)<\\/TargetFrameworkVersion>");

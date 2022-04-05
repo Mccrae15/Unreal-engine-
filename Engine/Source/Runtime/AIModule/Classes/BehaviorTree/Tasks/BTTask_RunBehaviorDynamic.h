@@ -33,6 +33,9 @@ class AIMODULE_API UBTTask_RunBehaviorDynamic : public UBTTaskNode
 
 	bool HasMatchingTag(const FGameplayTag& Tag) const;
 	bool SetBehaviorAsset(UBehaviorTree* NewBehaviorAsset);
+	
+	/** @returns default subtree asset */
+	UBehaviorTree* GetDefaultBehaviorAsset() const;
 
 protected:
 
@@ -42,11 +45,11 @@ protected:
 
 	/** default behavior to run */
 	UPROPERTY(Category=Node, EditAnywhere)
-	UBehaviorTree* DefaultBehaviorAsset;
+	TObjectPtr<UBehaviorTree> DefaultBehaviorAsset;
 
 	/** current subtree */
 	UPROPERTY()
-	UBehaviorTree* BehaviorAsset;
+	TObjectPtr<UBehaviorTree> BehaviorAsset;
 
 	/** called when subtree is removed from active stack */
 	virtual void OnSubtreeDeactivated(UBehaviorTreeComponent& OwnerComp, EBTNodeResult::Type NodeResult);
@@ -58,5 +61,10 @@ protected:
 FORCEINLINE bool UBTTask_RunBehaviorDynamic::HasMatchingTag(const FGameplayTag& Tag) const
 {
 	return InjectionTag == Tag;
+}
+
+FORCEINLINE UBehaviorTree* UBTTask_RunBehaviorDynamic::GetDefaultBehaviorAsset() const
+{
+	return DefaultBehaviorAsset;
 }
 

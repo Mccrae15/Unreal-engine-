@@ -24,6 +24,8 @@ DEFINE_STAT(STAT_GCSweep);
 DEFINE_STAT(STAT_GCCUpdateBounds);
 DEFINE_STAT(STAT_GCCUGlobalMatrices);
 DEFINE_STAT(STAT_GCInitDynamicData);
+DEFINE_STAT(STAT_GCTotalTransforms);
+DEFINE_STAT(STAT_GCChangedTransforms);
 DEFINE_STAT(STAT_LockWaits);
 DEFINE_STAT(STAT_GeomBeginFrame);
 DEFINE_STAT(STAT_SkelMeshUpdateAnim);
@@ -35,6 +37,9 @@ DEFINE_STAT(STAT_FlipResults);
 DEFINE_STAT(STAT_ProcessDeferredCreatePhysicsState);
 DEFINE_STAT(STAT_SqUpdateMaterials);
 DEFINE_STAT(STAT_CacheResultGeomCollection);
+DEFINE_STAT(STAT_UpdateGeometryCollectionViews);
+DEFINE_STAT(STAT_BufferPhysicsResultsParticleLoop);
+DEFINE_STAT(STAT_CaptureSolverData);
 DEFINE_STAT(STAT_CacheResultStaticMesh);
 DEFINE_STAT(STAT_CaptureDisabledState);
 DEFINE_STAT(STAT_CalcGlobalGCMatrices);
@@ -88,5 +93,14 @@ DEFINE_STAT(STAT_ParamUpdateField_DynamicConstraint);
 DEFINE_STAT(STAT_ForceUpdateField_LinearForce);
 DEFINE_STAT(STAT_ForceUpdateField_AngularTorque);
 
-
-// Field update stats
+DEFINE_STAT(STAT_Collisions_Detect);
+DEFINE_STAT(STAT_Collisions_ParticlePairBroadPhase);
+DEFINE_STAT(STAT_Collisions_SpatialBroadPhase);
+DEFINE_STAT(STAT_Collisions_AABBTree);
+DEFINE_STAT(STAT_Collisions_Restore);
+DEFINE_STAT(STAT_Collisions_Filtering);
+DEFINE_STAT(STAT_Collisions_GenerateCollisions);
+DEFINE_STAT(STAT_Collisions_Gather);
+DEFINE_STAT(STAT_Collisions_Scatter);
+DEFINE_STAT(STAT_Collisions_Apply);
+DEFINE_STAT(STAT_Collisions_ApplyPushOut);

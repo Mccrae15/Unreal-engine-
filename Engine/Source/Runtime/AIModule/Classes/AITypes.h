@@ -533,17 +533,11 @@ struct AIMODULE_API FAIMoveRequest
 	bool UpdateGoalLocation(const FVector& NewLocation) const;
 	FString ToString() const;
 
-	UE_DEPRECATED(4.13, "This function is deprecated, please use SetReachTestIncludesAgentRadius instead.")
-	FAIMoveRequest& SetStopOnOverlap(bool bStop);
-	
-	UE_DEPRECATED(4.13, "This function is deprecated, please use IsReachTestIncludingAgentRadius instead.")
-	bool CanStopOnOverlap() const;
-
 protected:
 
 	/** move goal: actor */
 	UPROPERTY()
-	AActor* GoalActor;
+	TObjectPtr<AActor> GoalActor;
 
 	/** move goal: location */
 	mutable FVector GoalLocation;

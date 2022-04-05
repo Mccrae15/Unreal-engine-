@@ -7,6 +7,7 @@
 #include "Templates/UnrealTypeTraits.h"
 #include "Templates/UnrealTemplate.h"
 #include "Containers/ContainerAllocationPolicies.h"
+#include "Containers/ContainerElementTypeCompatibility.h"
 #include "Templates/Sorting.h"
 #include "Containers/Array.h"
 #include "Math/UnrealMathUtility.h"
@@ -21,6 +22,7 @@
 #include "Serialization/MemoryImageWriter.h"
 #include "ContainersFwd.h"
 #include "Templates/RetainedRef.h"
+#include <type_traits>
 
 /**
  * The base KeyFuncs type with some useful definitions for all KeyFuncs; meant to be derived from instead of used directly.
@@ -176,7 +178,7 @@ public:
 	FORCEINLINE TSetElementBase() {}
 
 	/** Initialization constructor. */
-	template <typename InitType, typename = typename TEnableIf<!TAreTypesEqual<TSetElementBase, typename TDecay<InitType>::Type>::Value>::Type> explicit FORCEINLINE TSetElementBase(InitType&& InValue) : Value(Forward<InitType>(InValue)) {}
+	template <typename InitType, typename = std::enable_if_t<!TAreTypesEqual<TSetElementBase, typename TDecay<InitType>::Type>::Value>> explicit FORCEINLINE TSetElementBase(InitType&& InValue) : Value(Forward<InitType>(InValue)) {}
 
 	TSetElementBase(TSetElementBase&&) = default;
 	TSetElementBase(const TSetElementBase&) = default;
@@ -203,7 +205,7 @@ public:
 	FORCEINLINE TSetElementBase() {}
 
 	/** Initialization constructor. */
-	template <typename InitType, typename = typename TEnableIf<!TAreTypesEqual<TSetElementBase, typename TDecay<InitType>::Type>::Value>::Type> explicit FORCEINLINE TSetElementBase(InitType&& InValue) : Value(Forward<InitType>(InValue)) {}
+	template <typename InitType, typename = std::enable_if_t<!TAreTypesEqual<TSetElementBase, typename TDecay<InitType>::Type>::Value>> explicit FORCEINLINE TSetElementBase(InitType&& InValue) : Value(Forward<InitType>(InValue)) {}
 
 	TSetElementBase(TSetElementBase&&) = default;
 	TSetElementBase(const TSetElementBase&) = default;
@@ -231,7 +233,7 @@ public:
 	{}
 
 	/** Initialization constructor. */
-	template <typename InitType, typename = typename TEnableIf<!TAreTypesEqual<TSetElement, typename TDecay<InitType>::Type>::Value>::Type> explicit FORCEINLINE TSetElement(InitType&& InValue) : Super(Forward<InitType>(InValue)) {}
+	template <typename InitType, typename = std::enable_if_t<!TAreTypesEqual<TSetElement, typename TDecay<InitType>::Type>::Value>> explicit FORCEINLINE TSetElement(InitType&& InValue) : Super(Forward<InitType>(InValue)) {}
 
 	TSetElement(TSetElement&&) = default;
 	TSetElement(const TSetElement&) = default;
@@ -284,7 +286,11 @@ template<
 class TSet
 {
 public:
-	static const bool SupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<InElementType>::Value;
+	static constexpr bool SupportsFreezeMemoryImage = TAllocatorTraits<Allocator>::SupportsFreezeMemoryImage && THasTypeLayout<InElementType>::Value;
+
+	typedef InElementType ElementType;
+	typedef KeyFuncs    KeyFuncsType;
+	typedef Allocator   AllocatorType;
 
 private:
 	friend struct TContainerTraits<TSet>;
@@ -298,8 +304,6 @@ private:
 	typedef TSetElement<InElementType> SetElementType;
 
 public:
-	typedef InElementType ElementType;
-
 	/** Initialization constructor. */
 	FORCEINLINE TSet()
 	:	HashSize(0)
@@ -349,7 +353,7 @@ public:
 
 private:
 	template <typename SetType>
-	static FORCEINLINE typename TEnableIf<TContainerTraits<SetType>::MoveWillEmptyContainer>::Type MoveOrCopy(SetType& ToSet, SetType& FromSet)
+	static FORCEINLINE std::enable_if_t<TContainerTraits<SetType>::MoveWillEmptyContainer> MoveOrCopy(SetType& ToSet, SetType& FromSet)
 	{
 		ToSet.Elements = (ElementArrayType&&)FromSet.Elements;
 
@@ -360,7 +364,7 @@ private:
 	}
 
 	template <typename SetType>
-	static FORCEINLINE typename TEnableIf<!TContainerTraits<SetType>::MoveWillEmptyContainer>::Type MoveOrCopy(SetType& ToSet, SetType& FromSet)
+	static FORCEINLINE std::enable_if_t<!TContainerTraits<SetType>::MoveWillEmptyContainer> MoveOrCopy(SetType& ToSet, SetType& FromSet)
 	{
 		ToSet = FromSet;
 	}
@@ -543,6 +547,17 @@ public:
 		Ar.CountBytes(HashSize * sizeof(int32),HashSize * sizeof(FSetElementId));
 	}
 
+	/**
+	 * Returns true if the sets is empty and contains no elements. 
+	 *
+	 * @returns True if the set is empty.
+	 * @see Num
+	 */
+	bool IsEmpty() const
+	{
+		return Elements.IsEmpty();
+	}
+
 	/** @return the number of elements. */
 	FORCEINLINE int32 Num() const
 	{
@@ -590,6 +605,22 @@ public:
 	FORCEINLINE FSetElementId Add(      InElementType&& InElement, bool* bIsAlreadyInSetPtr = nullptr) { return Emplace(MoveTempIfPossible(InElement), bIsAlreadyInSetPtr); }
 
 	/**
+	 * Adds an element to the set if not already present and returns a reference to the added or existing element.
+	 *
+	 * @param	InElement					Element to add to set
+	 * @param	bIsAlreadyInSetPtr	[out]	Optional pointer to bool that will be set depending on whether element is already in set
+	 * @return	A reference to the element stored in the set.
+	 */
+	FORCEINLINE ElementType& FindOrAdd(const InElementType& InElement, bool* bIsAlreadyInSetPtr = nullptr)
+	{
+		return FindOrAddByHash(KeyFuncs::GetKeyHash(KeyFuncs::GetSetKey(InElement)), InElement, bIsAlreadyInSetPtr);
+	}
+	FORCEINLINE ElementType& FindOrAdd(InElementType&& InElement, bool* bIsAlreadyInSetPtr = nullptr)
+	{
+		return FindOrAddByHash(KeyFuncs::GetKeyHash(KeyFuncs::GetSetKey(InElement)), MoveTempIfPossible(InElement), bIsAlreadyInSetPtr);
+	}
+
+	/**
 	 * Adds an element to the set.
 	 *
 	 * @see		Class documentation section on ByHash() functions
@@ -606,8 +637,37 @@ public:
 		return EmplaceByHash(KeyHash, MoveTempIfPossible(InElement), bIsAlreadyInSetPtr);
 	}
 
+	/**
+	 * Adds an element to the set if not already present and returns a reference to the added or existing element.
+	 *
+	 * @see		Class documentation section on ByHash() functions
+	 * @param	InElement					Element to add to set
+	 * @param	bIsAlreadyInSetPtr	[out]	Optional pointer to bool that will be set depending on whether element is already in set
+	 * @return  A reference to the element stored in the set
+	 */
+	template <typename ElementReferenceType>
+	ElementType& FindOrAddByHash(uint32 KeyHash, ElementReferenceType&& InElement, bool* bIsAlreadyInSetPtr = nullptr)
+	{
+		FSetElementId ExistingId = FindIdByHash(KeyHash, KeyFuncs::GetSetKey(InElement));
+		bool bIsAlreadyInSet = ExistingId.IsValidId();
+		if (bIsAlreadyInSetPtr)
+		{
+			*bIsAlreadyInSetPtr = bIsAlreadyInSet;
+		}
+		if (bIsAlreadyInSet)
+		{
+			return Elements[ExistingId].Value;
+		}
+
+		// Create a new element.
+		FSparseArrayAllocationInfo ElementAllocation = Elements.AddUninitialized();
+		SetElementType& Element = *new (ElementAllocation) SetElementType(Forward<ElementReferenceType>(InElement));
+		RehashOrLink(KeyHash, Element, ElementAllocation.Index);
+		return Element.Value;
+	}
+
 private:
-	FSetElementId EmplaceImpl(uint32 KeyHash, SetElementType& Element, FSetElementId ElementId, bool* bIsAlreadyInSetPtr)
+	bool TryReplaceExisting(uint32 KeyHash, SetElementType& Element, FSetElementId& InOutElementId, bool* bIsAlreadyInSetPtr)
 	{
 		bool bIsAlreadyInSet = false;
 		if (!KeyFuncs::bAllowDuplicateKeys)
@@ -625,30 +685,28 @@ private:
 					MoveByRelocate(Elements[ExistingId].Value, Element.Value);
 
 					// Then remove the new element.
-					Elements.RemoveAtUninitialized(ElementId);
+					Elements.RemoveAtUninitialized(InOutElementId);
 
 					// Then point the return value at the replaced element.
-					ElementId = ExistingId;
+					InOutElementId = ExistingId;
 				}
 			}
 		}
-
-		if (!bIsAlreadyInSet)
-		{
-			// Check if the hash needs to be resized.
-			if (!ConditionalRehash(Elements.Num()))
-			{
-				// If the rehash didn't add the new element to the hash, add it.
-				LinkElement(ElementId, Element, KeyHash);
-			}
-		}
-
 		if (bIsAlreadyInSetPtr)
 		{
 			*bIsAlreadyInSetPtr = bIsAlreadyInSet;
 		}
+		return bIsAlreadyInSet;
+	}
 
-		return ElementId;
+	FORCEINLINE void RehashOrLink(uint32 KeyHash, SetElementType& Element, FSetElementId ElementId)
+	{
+		// Check if the hash needs to be resized.
+		if (!ConditionalRehash(Elements.Num()))
+		{
+			// If the rehash didn't add the new element to the hash, add it.
+			LinkElement(ElementId, Element, KeyHash);
+		}
 	}
 
 public:
@@ -665,9 +723,14 @@ public:
 		// Create a new element.
 		FSparseArrayAllocationInfo ElementAllocation = Elements.AddUninitialized();
 		SetElementType& Element = *new (ElementAllocation) SetElementType(Forward<ArgsType>(Args));
+		FSetElementId ElementId = ElementAllocation.Index;
 
 		uint32 KeyHash = KeyFuncs::GetKeyHash(KeyFuncs::GetSetKey(Element.Value));
-		return EmplaceImpl(KeyHash, Element, ElementAllocation.Index, bIsAlreadyInSetPtr);
+		if (!TryReplaceExisting(KeyHash, Element, ElementId, bIsAlreadyInSetPtr))
+		{
+			RehashOrLink(KeyHash, Element, ElementId);
+		}
+		return ElementId;
 	}
 	
 	/**
@@ -684,8 +747,23 @@ public:
 		// Create a new element.
 		FSparseArrayAllocationInfo ElementAllocation = Elements.AddUninitialized();
 		SetElementType& Element = *new (ElementAllocation) SetElementType(Forward<ArgsType>(Args));
+		FSetElementId ElementId = ElementAllocation.Index;
 
-		return EmplaceImpl(KeyHash, Element, ElementAllocation.Index, bIsAlreadyInSetPtr);
+		if (!TryReplaceExisting(KeyHash, Element, ElementId, bIsAlreadyInSetPtr))
+		{
+			RehashOrLink(KeyHash, Element, ElementId);
+		}
+		return ElementId;
+	}
+
+	template<typename ViewSizeType>
+	void Append(const TArrayView<ElementType, ViewSizeType>& InElements)
+	{
+		Reserve(Elements.Num() + InElements.Num());
+		for (const ElementType& Element : InElements)
+		{
+			Add(Element);
+		}
 	}
 
 	template<typename ArrayAllocator>
@@ -1204,6 +1282,88 @@ public:
 		Elements.CheckAddress(Addr);
 	}
 
+	/**
+	 * Move assignment operator.
+	 * Compatible element type version.
+	 *
+	 * @param Other Set to assign and move from.
+	 */
+	template <
+		typename OtherKeyFuncs,
+		typename AliasElementType = ElementType,
+		typename std::enable_if_t<TIsContainerElementTypeCopyable<AliasElementType>::Value>* = nullptr
+	>
+	TSet& operator=(TSet<typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType, OtherKeyFuncs, Allocator>&& Other)
+	{
+		TContainerElementTypeCompatibility<ElementType>::CopyingFromOtherType();
+		Reset();
+		Append(MoveTemp(Other));
+		return *this;
+	}
+
+	/**
+	 * Assignment operator. First deletes all currently contained elements
+	 * and then copies from other set.
+	 * Compatible element type version.
+	 *
+	 * @param Other The source set to assign from.
+	 */
+	template <
+		typename OtherKeyFuncs,
+		typename OtherAllocator,
+		typename AliasElementType = ElementType,
+		typename std::enable_if_t<TIsContainerElementTypeCopyable<AliasElementType>::Value>* = nullptr
+	>
+	TSet& operator=(const TSet<typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType, OtherKeyFuncs, OtherAllocator>& Other)
+	{
+		TContainerElementTypeCompatibility<ElementType>::CopyingFromOtherType();
+		Reset();
+		Append(Other);
+		return *this;
+	}
+
+	/**
+	 * Add all items from another set to our set (union without creating a new set)
+	 * Compatible element type version.
+	 * @param OtherSet - The other set of items to add.
+	 */
+	template <
+		typename OtherKeyFuncs,
+		typename OtherAllocator,
+		typename AliasElementType = ElementType,
+		typename std::enable_if_t<TIsContainerElementTypeCopyable<AliasElementType>::Value>* = nullptr
+	>
+	void Append(const TSet<typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType, OtherKeyFuncs, OtherAllocator>& OtherSet)
+	{
+		TContainerElementTypeCompatibility<ElementType>::CopyingFromOtherType();
+		Reserve(Elements.Num() + OtherSet.Num());
+		for (const ElementType& Element : OtherSet)
+		{
+			Add(Element);
+		}
+	}
+
+	/**
+	 * Add all items from another set to our set (union without creating a new set)
+	 * Compatible element type version.
+	 * @param OtherSet - The other set of items to add.
+	 */
+	template <
+		typename OtherKeyFuncs,
+		typename AliasElementType = ElementType,
+		typename std::enable_if_t<TIsContainerElementTypeCopyable<AliasElementType>::Value>* = nullptr
+	>
+	void Append(TSet<typename TContainerElementTypeCompatibility<ElementType>::CopyFromOtherType, OtherKeyFuncs, Allocator>&& OtherSet)
+	{
+		TContainerElementTypeCompatibility<ElementType>::CopyingFromOtherType();
+		Reserve(Elements.Num() + OtherSet.Num());
+		for (ElementType& Element : OtherSet)
+		{
+			Add(MoveTempIfPossible(Element));
+		}
+		OtherSet.Reset();
+	}
+
 private:
 	/** Extracts the element value from the set's element structure and passes it to the user provided comparison class. */
 	template <typename PREDICATE_CLASS>
@@ -1467,7 +1627,7 @@ private:
 	};
 
 	/** The base type of whole set iterators. */
-	template <bool bConst>
+	template<bool bConst>
 	class TBaseKeyIterator
 	{
 	private:
@@ -1485,8 +1645,8 @@ private:
 
 		/** Initialization constructor. */
 		FORCEINLINE TBaseKeyIterator(SetType& InSet, KeyArgumentType InKey)
-			: Set(InSet)
-			, Key(InKey)
+		:	Set(InSet)
+		,	Key(InKey) //-V1041
 		{
 			// The set's hash needs to be initialized to find the elements with the specified key.
 			Set.ConditionalRehash(Set.Elements.Num());
@@ -1653,9 +1813,10 @@ namespace Freeze
 	}
 
 	template<typename ElementType, typename KeyFuncs, typename Allocator>
-	void IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TSet<ElementType, KeyFuncs, Allocator>& Object, void* OutDst)
+	uint32 IntrinsicUnfrozenCopy(const FMemoryUnfreezeContent& Context, const TSet<ElementType, KeyFuncs, Allocator>& Object, void* OutDst)
 	{
 		Object.CopyUnfrozen(Context, OutDst);
+		return sizeof(Object);
 	}
 
 	template<typename ElementType, typename KeyFuncs, typename Allocator>
@@ -1720,6 +1881,11 @@ public:
 	bool IsValidIndex(int32 Index) const
 	{
 		return Elements.IsValidIndex(Index);
+	}
+
+	bool IsEmpty() const
+	{
+		return Elements.IsEmpty();
 	}
 
 	int32 Num() const
@@ -2004,6 +2170,16 @@ struct TIsZeroConstructType<TScriptSet<AllocatorType, InDerivedType>>
 {
 	enum { Value = true };
 };
+
+/**
+ * Traits class which determines whether or not a type is a TSet.
+ */
+template <typename T> struct TIsTSet { enum { Value = false }; };
+
+template <typename ElementType, typename KeyFuncs, typename Allocator> struct TIsTSet<               TSet<ElementType, KeyFuncs, Allocator>> { enum { Value = true }; };
+template <typename ElementType, typename KeyFuncs, typename Allocator> struct TIsTSet<const          TSet<ElementType, KeyFuncs, Allocator>> { enum { Value = true }; };
+template <typename ElementType, typename KeyFuncs, typename Allocator> struct TIsTSet<      volatile TSet<ElementType, KeyFuncs, Allocator>> { enum { Value = true }; };
+template <typename ElementType, typename KeyFuncs, typename Allocator> struct TIsTSet<const volatile TSet<ElementType, KeyFuncs, Allocator>> { enum { Value = true }; };
 
 class FScriptSet : public TScriptSet<FDefaultSetAllocator, FScriptSet>
 {

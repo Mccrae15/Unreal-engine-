@@ -428,6 +428,7 @@ PyTypeObject InitializePyWrapperEnumType()
 	PyType.tp_dealloc = (destructor)&FFuncs::Dealloc;
 	PyType.tp_init = (initproc)&FFuncs::Init;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Str;
 	PyType.tp_richcompare = (richcmpfunc)&FFuncs::RichCmp;
 	PyType.tp_hash = (hashfunc)&FFuncs::Hash;
 
@@ -435,7 +436,7 @@ PyTypeObject InitializePyWrapperEnumType()
 	PyType.tp_methods = PyMethods;
 
 	PyType.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE;
-	PyType.tp_doc = "Type for all UE4 exposed enum instances";
+	PyType.tp_doc = "Type for all Unreal exposed enum instances";
 
 	return PyType;
 }
@@ -523,6 +524,7 @@ PyTypeObject InitializePyWrapperEnumValueDescrType()
 
 	PyType.tp_dealloc = (destructor)&FFuncs::Dealloc;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Str;
 	PyType.tp_descr_get = (descrgetfunc)&FFuncs::DescrGet;
 	PyType.tp_descr_set = (descrsetfunc)&FFuncs::DescrSet;
 	PyType.tp_getattro = (getattrofunc)&PyObject_GenericGetAttr;
@@ -580,7 +582,7 @@ PyTypeObject InitializePyWrapperEnumMetaclassType()
 	PyType.tp_iter = (getiterfunc)&FFuncs::GetIter;
 
 	PyType.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE;
-	PyType.tp_doc = "Metaclass type for all UE4 exposed enum instances";
+	PyType.tp_doc = "Metaclass type for all Unreal exposed enum instances";
 
 	static PySequenceMethods PySequence;
 	PySequence.sq_length = (lenfunc)&FSequenceFuncs::Len;
@@ -651,7 +653,7 @@ PyTypeObject InitializePyWrapperEnumIteratorType()
 	PyType.tp_iternext = (iternextfunc)&FFuncs::IterNext;
 
 	PyType.tp_flags = Py_TPFLAGS_DEFAULT;
-	PyType.tp_doc = "Type for all UE4 exposed enum iterators";
+	PyType.tp_doc = "Type for all Unreal exposed enum iterators";
 
 	return PyType;
 }

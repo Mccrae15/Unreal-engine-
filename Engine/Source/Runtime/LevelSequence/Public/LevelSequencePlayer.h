@@ -22,33 +22,11 @@ class FLevelSequenceSpawnRegister;
 class FViewportClient;
 class UCameraComponent;
 
-struct UE_DEPRECATED(4.15, "Please use FMovieSceneSequencePlaybackSettings.") FLevelSequencePlaybackSettings
-	: public FMovieSceneSequencePlaybackSettings
-{};
-
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnLevelSequencePlayerCameraCutEvent, UCameraComponent*, CameraComponent);
 
 USTRUCT(BlueprintType)
-struct FLevelSequenceSnapshotSettings
-{
-	GENERATED_BODY()
-
-	FLevelSequenceSnapshotSettings()
-		: ZeroPadAmount(4), FrameRate(30, 1)
-	{}
-
-	FLevelSequenceSnapshotSettings(int32 InZeroPadAmount, FFrameRate InFrameRate)
-		: ZeroPadAmount(InZeroPadAmount), FrameRate(InFrameRate)
-	{}
-
-	/** Zero pad frames */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
-	uint8 ZeroPadAmount;
-
-	/** Playback framerate */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="General")
-	FFrameRate FrameRate;
-};
+struct UE_DEPRECATED(5.0, "Snapshot settings are deprecated. Use the frame rate from the FQualifiedFrameTime on the MasterTime and the ShotTime") FLevelSequenceSnapshotSettings
+{ GENERATED_BODY() };
 
 /**
  * Frame snapshot information for a level sequence
@@ -83,10 +61,7 @@ struct FLevelSequencePlayerSnapshot
 	TSoftObjectPtr<UCameraComponent> CameraComponent;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "General")
-	FLevelSequenceSnapshotSettings Settings;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "General")
-	ULevelSequence* ActiveShot = nullptr;
+	TObjectPtr<ULevelSequence> ActiveShot = nullptr;
 
 	UPROPERTY()
 	FMovieSceneSequenceID ShotID;
@@ -144,9 +119,6 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Sequencer|Player", meta=(WorldContext="WorldContextObject", DynamicOutputParam="OutActor"))
 	static ULevelSequencePlayer* CreateLevelSequencePlayer(UObject* WorldContextObject, ULevelSequence* LevelSequence, FMovieSceneSequencePlaybackSettings Settings, ALevelSequenceActor*& OutActor);
 
-	/** Set the settings used to capture snapshots with */
-	void SetSnapshotSettings(const FLevelSequenceSnapshotSettings& InSettings) { SnapshotSettings = InSettings; }
-
 	/** Event triggered when there is a camera cut */
 	UPROPERTY(BlueprintAssignable, Category="Sequencer|Player")
 	FOnLevelSequencePlayerCameraCutEvent OnCameraCut;
@@ -156,13 +128,6 @@ public:
 	UCameraComponent* GetActiveCameraComponent() const { return CachedCameraComponent.Get(); }
 
 public:
-
-	/**
-	 * Access the level sequence this player is playing
-	 * @return the level sequence currently assigned to this player
-	 */
-	UE_DEPRECATED(4.15, "Please use GetSequence instead.")
-	ULevelSequence* GetLevelSequence() const { return Cast<ULevelSequence>(Sequence); }
 
 	// IMovieScenePlayer interface
 	virtual UObject* GetPlaybackContext() const override;
@@ -218,9 +183,6 @@ private:
 	TOptional<EAspectRatioAxisConstraint> LastAspectRatioAxisConstraint;
 
 protected:
-
-	/** How to take snapshots */
-	FLevelSequenceSnapshotSettings SnapshotSettings;
 
 	TOptional<int32> SnapshotOffsetTime;
 

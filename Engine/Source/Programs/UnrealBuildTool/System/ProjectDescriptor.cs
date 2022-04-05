@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.IO;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace UnrealBuildTool
 {
@@ -58,27 +58,27 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The engine to open this project with.
 		/// </summary>
-		public string EngineAssociation;
+		public string? EngineAssociation;
 
 		/// <summary>
 		/// Category to show under the project browser
 		/// </summary>
-		public string Category;
+		public string? Category;
 
 		/// <summary>
 		/// Description to show in the project browser
 		/// </summary>
-		public string Description;
+		public string? Description;
 
 		/// <summary>
 		/// List of all modules associated with this project
 		/// </summary>
-		public ModuleDescriptor[] Modules;
+		public ModuleDescriptor[]? Modules;
 
 		/// <summary>
 		/// List of plugins for this project (may be enabled/disabled)
 		/// </summary>
-		public PluginReferenceDescriptor[] Plugins;
+		public PluginReferenceDescriptor[]? Plugins;
 
 		/// <summary>
 		/// Array of additional root directories
@@ -93,7 +93,7 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Array of platforms that this project is targeting
 		/// </summary>
-		public string[] TargetPlatforms;
+		public string[]? TargetPlatforms;
 
 		/// <summary>
 		/// A hash that is used to determine if the project was forked from a sample
@@ -103,12 +103,12 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Steps to execute before building targets in this project
 		/// </summary>
-		public CustomBuildSteps PreBuildSteps;
+		public CustomBuildSteps? PreBuildSteps;
 
 		/// <summary>
 		/// Steps to execute before building targets in this project
 		/// </summary>
-		public CustomBuildSteps PostBuildSteps;
+		public CustomBuildSteps? PostBuildSteps;
 
 		/// <summary>
 		/// Indicates if this project is an Enterprise project
@@ -135,7 +135,8 @@ namespace UnrealBuildTool
 		/// </summary>
 		/// <param name="RawObject">Raw JSON object to parse</param>
 		/// <param name="BaseDir">Base directory for resolving relative paths</param>
-		public ProjectDescriptor(JsonObject RawObject, DirectoryReference BaseDir)
+		/// <param name="JsonFilePath"></param>
+		public ProjectDescriptor(JsonObject RawObject, DirectoryReference BaseDir, FileReference JsonFilePath)
 		{
 			// Read the version
 			if (!RawObject.TryGetIntegerField("FileVersion", out FileVersion))
@@ -160,28 +161,28 @@ namespace UnrealBuildTool
 			RawObject.TryGetBoolField("DisableEnginePluginsByDefault", out DisableEnginePluginsByDefault);
 
 			// Read the modules
-			JsonObject[] ModulesArray;
+			JsonObject[]? ModulesArray;
 			if (RawObject.TryGetObjectArrayField("Modules", out ModulesArray))
 			{
-				Modules = Array.ConvertAll(ModulesArray, x => ModuleDescriptor.FromJsonObject(x));
+				Modules = Array.ConvertAll(ModulesArray, x => ModuleDescriptor.FromJsonObject(x, JsonFilePath));
 			}
 
 			// Read the plugins
-			JsonObject[] PluginsArray;
+			JsonObject[]? PluginsArray;
 			if (RawObject.TryGetObjectArrayField("Plugins", out PluginsArray))
 			{
 				Plugins = Array.ConvertAll(PluginsArray, x => PluginReferenceDescriptor.FromJsonObject(x));
 			}
 
 			// Read the additional root directories
-			string[] RootDirectoryStrings;
+			string[]? RootDirectoryStrings;
 			if (RawObject.TryGetStringArrayField("AdditionalRootDirectories", out RootDirectoryStrings))
 			{
 				AdditionalRootDirectories.AddRange(RootDirectoryStrings.Select(x => DirectoryReference.Combine(BaseDir, x)));
 			}
 
 			// Read the additional plugin directories
-			string[] PluginDirectoryStrings;
+			string[]? PluginDirectoryStrings;
 			if (RawObject.TryGetStringArrayField("AdditionalPluginDirectories", out PluginDirectoryStrings))
 			{
 				AdditionalPluginDirectories.AddRange(PluginDirectoryStrings.Select(x => DirectoryReference.Combine(BaseDir, x)));
@@ -208,7 +209,7 @@ namespace UnrealBuildTool
 			JsonObject RawObject = JsonObject.Read(FileName);
 			try
 			{
-				ProjectDescriptor Descriptor = new ProjectDescriptor(RawObject, FileName.Directory);
+				ProjectDescriptor Descriptor = new ProjectDescriptor(RawObject, FileName.Directory, FileName);
 				if(Descriptor.Modules != null)
 				{
 					foreach (ModuleDescriptor Module in Descriptor.Modules)

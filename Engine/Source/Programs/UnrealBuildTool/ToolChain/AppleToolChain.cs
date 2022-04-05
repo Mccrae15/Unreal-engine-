@@ -6,8 +6,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Diagnostics;
 using System.Text;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 using System.Text.RegularExpressions;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -53,27 +54,16 @@ namespace UnrealBuildTool
 			}
 
 			// Installed engine requires Xcode 11
-			if (UnrealBuildTool.IsEngineInstalled())
+			if (Unreal.IsEngineInstalled())
 			{
-				string XcodeBuilderVersionOutput = Utils.RunLocalProcessAndReturnStdOut("xcodebuild", "-version");
-				if (XcodeBuilderVersionOutput.Length > 10)
+				string? InstalledSdkVersion = UnrealBuildBase.ApplePlatformSDK.InstalledSDKVersion;
+				if (String.IsNullOrEmpty(InstalledSdkVersion))
 				{
-					string[] Version = XcodeBuilderVersionOutput.Substring(6, 4).Split('.');
-					if (Version.Length == 2)
-					{
-						if (int.Parse(Version[0]) < 11)
-						{
-							throw new BuildException("Building for macOS, iOS and tvOS requires Xcode 11 or newer, Xcode " + Version[0] + "." + Version[1] + " detected");
-						}
-					}
-					else
-					{
-						Log.TraceWarning("Failed to query Xcode version");
-					}
+					throw new BuildException("Unable to get xcode version");
 				}
-				else
+				if (int.Parse(InstalledSdkVersion.Substring(0,2)) < 11)
 				{
-					Log.TraceWarning("Failed to query Xcode version");
+					throw new BuildException("Building for macOS, iOS and tvOS requires Xcode 11 or newer, Xcode " + InstalledSdkVersion + " detected");
 				}
 			}
 		}
@@ -91,7 +81,7 @@ namespace UnrealBuildTool
 					// loop over the subdirs and parse out the version
 					int MaxSDKVersionMajor = 0;
 					int MaxSDKVersionMinor = 0;
-					string MaxSDKVersionString = null;
+					string? MaxSDKVersionString = null;
 					foreach (string SubDir in SubDirs)
 					{
 						string SubDirName = Path.GetFileNameWithoutExtension(SubDir);
@@ -143,7 +133,7 @@ namespace UnrealBuildTool
 			}
 
 			// make sure we have a valid SDK directory
-			if (Utils.IsRunningOnMono && !Directory.Exists(Path.Combine(BaseSDKDir, OSPrefix + PlatformSDKVersion + ".sdk")))
+			if (!RuntimePlatform.IsWindows && !Directory.Exists(Path.Combine(BaseSDKDir, OSPrefix + PlatformSDKVersion + ".sdk")))
 			{
 				throw new BuildException("Invalid SDK {0}{1}.sdk, not found in {2}", OSPrefix, PlatformSDKVersion, BaseSDKDir);
 			}
@@ -157,9 +147,9 @@ namespace UnrealBuildTool
 
 	abstract class AppleToolChain : ISPCToolChain
 	{
-		protected FileReference ProjectFile;
+		protected FileReference? ProjectFile;
 
-		public AppleToolChain(FileReference InProjectFile)
+		public AppleToolChain(FileReference? InProjectFile)
 		{
 			ProjectFile = InProjectFile;
 		}
@@ -185,8 +175,8 @@ namespace UnrealBuildTool
 			Utils.RunLocalProcessAndLogOutput(StartInfo);
 		}
 
-		static Version ClangVersion = null;
-		static string FullClangVersion = null;
+		static Version? ClangVersion = null;
+		static string? FullClangVersion = null;
 
 		protected Version GetClangVersion()
 		{	
@@ -204,10 +194,41 @@ namespace UnrealBuildTool
 			{
 				// get the first line that has the full clang and build number
 				FileReference ClangLocation = new FileReference("/usr/bin/clang");
-				FullClangVersion = RunToolAndCaptureOutput(ClangLocation, "--version", "(.*)");
+				FullClangVersion = RunToolAndCaptureOutput(ClangLocation, "--version", "(.*)")!;
 			}
 
 			return FullClangVersion;
+		}
+
+		protected static string GetCppStandardCompileArgument(CppCompileEnvironment CompileEnvironment)
+		{
+			string Result;
+			switch (CompileEnvironment.CppStandard)
+			{
+				case CppStandardVersion.Cpp14:
+					Result = " -std=c++14";
+					break;
+				case CppStandardVersion.Latest:
+				case CppStandardVersion.Cpp17:
+					Result = " -std=c++17";
+					break;
+				case CppStandardVersion.Cpp20:
+					Result = " -std=c++20";
+					break;
+				default:
+					throw new BuildException($"Unsupported C++ standard type set: {CompileEnvironment.CppStandard}");
+			}
+
+			if (CompileEnvironment.bEnableCoroutines)
+			{
+				Result += " -fcoroutines-ts";
+				if (!CompileEnvironment.bEnableExceptions)
+				{
+					Result += " -Wno-coroutine-missing-unhandled-exception";
+				}
+			}
+
+			return Result;
 		}
 
 		protected string GetDsymutilPath(out string ExtraOptions, bool bIsForLTOBuild=false)
@@ -256,14 +277,14 @@ namespace UnrealBuildTool
 			// if the installed one is too old, use a fixed up one if it can
 			if (bUseInstalledDsymutil == false)
 			{
-				FileReference PatchedDsymutilLocation = FileReference.Combine(UnrealBuildTool.EngineDirectory, "Restricted/NotForLicensees/Binaries/Mac/LLVM/bin/dsymutil");
+				FileReference PatchedDsymutilLocation = FileReference.Combine(Unreal.EngineDirectory, "Restricted/NotForLicensees/Binaries/Mac/LLVM/bin/dsymutil");
 
 				if (File.Exists(PatchedDsymutilLocation.FullName))
 				{
 					DsymutilLocation = PatchedDsymutilLocation;
 				}
 
-				DirectoryReference AutoSdkDir;
+				DirectoryReference? AutoSdkDir;
 				if (UEBuildPlatformSDK.TryGetHostPlatformAutoSDKDir(out AutoSdkDir))
 				{
 					FileReference AutoSdkDsymutilLocation = FileReference.Combine(AutoSdkDir, "Mac", "LLVM", "bin", "dsymutil");

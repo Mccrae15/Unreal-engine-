@@ -54,7 +54,7 @@ public:
 	~FSkeletalMeshRenderData();
 
 #if WITH_EDITOR
-	void Cache(const ITargetPlatform* TargetPlatform, USkeletalMesh* Owner);
+	void Cache(const ITargetPlatform* TargetPlatform, USkeletalMesh* Owner, class FSkeletalMeshCompilationContext* ContextPtr);
 	FString GetDerivedDataKey(const ITargetPlatform* TargetPlatform, USkeletalMesh* Owner);
 
 	void SyncUVChannelData(const TArray<FSkeletalMaterial>& ObjectData);
@@ -72,6 +72,9 @@ public:
 	/** Return the resource size */
 	void GetResourceSizeEx(FResourceSizeEx& CumulativeResourceSize);
 
+	/** Get the estimated memory overhead of buffers marked as NeedsCPUAccess. */
+	SIZE_T GetCPUAccessMemoryOverhead() const;
+
 	/** Returns true if this resource must be skinned on the CPU for the given feature level. */
 	ENGINE_API bool RequiresCPUSkinning(ERHIFeatureLevel::Type FeatureLevel) const;
 	
@@ -79,10 +82,10 @@ public:
 	ENGINE_API bool RequiresCPUSkinning(ERHIFeatureLevel::Type FeatureLevel, int32 MinLODIdx) const;
 
 	/** Returns the number of bone influences per vertex. */
-	uint32 GetNumBoneInfluences() const;
+	ENGINE_API uint32 GetNumBoneInfluences() const;
 
 	/** Returns the number of bone influences per vertex starting at MinLODIdx. */
-	uint32 GetNumBoneInfluences(int32 MinLODIdx) const;
+	ENGINE_API uint32 GetNumBoneInfluences(int32 MinLODIdx) const;
 	
 	/**
 	* Computes the maximum number of bones per section used to render this mesh.

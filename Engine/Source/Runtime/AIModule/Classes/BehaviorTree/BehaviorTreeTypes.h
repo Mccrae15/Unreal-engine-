@@ -76,10 +76,14 @@ namespace EBTNodeResult
 	// keep in sync with DescribeNodeResult()
 	enum Type
 	{
-		Succeeded,		// finished as success
-		Failed,			// finished as failure
-		Aborted,		// finished aborting = failure
-		InProgress,		// not finished yet
+		// finished as success
+		Succeeded,
+		// finished as failure
+		Failed,
+		// finished aborting = failure
+		Aborted,
+		// not finished yet
+		InProgress,
 	};
 }
 
@@ -582,7 +586,7 @@ struct AIMODULE_API FBlackboardKeySelector
 	/** array of allowed types with additional properties (e.g. uobject's base class) 
 	  * EditAnywhere is required for FBlackboardSelectorDetails::CacheBlackboardData() */
 	UPROPERTY(transient, EditAnywhere, BlueprintReadWrite, Category = Blackboard)
-	TArray<UBlackboardKeyType*> AllowedTypes;
+	TArray<TObjectPtr<UBlackboardKeyType>> AllowedTypes;
 
 	/** name of selected key */
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = Blackboard)
@@ -663,4 +667,19 @@ public:
 	// @param NewBTLoggingContext the object which name's will be added to some of the BT logging
 	// 	pass nullptr to clear
 	static void SetBTLoggingContext(const UBTNode* NewBTLoggingContext);
+};
+
+/** Helper struct to push a node as the new logging context and automatically reset the context on destruction. */
+struct FScopedBTLoggingContext
+{
+	FScopedBTLoggingContext() = delete;
+	explicit FScopedBTLoggingContext(const UBTNode* Context)
+	{
+		UBehaviorTreeTypes::SetBTLoggingContext(Context);
+	}
+
+	~FScopedBTLoggingContext()
+	{
+		UBehaviorTreeTypes::SetBTLoggingContext(nullptr);
+	}
 };

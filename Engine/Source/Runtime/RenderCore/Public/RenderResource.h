@@ -40,6 +40,23 @@ public:
 		ResourceListIterationActive.Decrement();
 	}
 
+	template<typename FunctionType>
+	static void ForAllResourcesReverse(const FunctionType& Function)
+	{
+		const TArray<FRenderResource*>& ResourceList = GetResourceList();
+		ResourceListIterationActive.Increment();
+		for (int32 Index = ResourceList.Num() - 1; Index >= 0; --Index)
+		{
+			FRenderResource* Resource = ResourceList[Index];
+			if (Resource)
+			{
+				checkSlow(Resource->ListIndex == Index);
+				Function(Resource);
+			}
+		}
+		ResourceListIterationActive.Decrement();
+	}
+
 	static void InitRHIForAllResources()
 	{
 		ForAllResources([](FRenderResource* Resource) { Resource->InitRHI(); });
@@ -49,8 +66,8 @@ public:
 
 	static void ReleaseRHIForAllResources()
 	{
-		ForAllResources([](FRenderResource* Resource) { check(Resource->IsInitialized()); Resource->ReleaseRHI(); });
-		ForAllResources([](FRenderResource* Resource) { Resource->ReleaseDynamicRHI(); });
+		ForAllResourcesReverse([](FRenderResource* Resource) { check(Resource->IsInitialized()); Resource->ReleaseRHI(); });
+		ForAllResourcesReverse([](FRenderResource* Resource) { Resource->ReleaseDynamicRHI(); });
 	}
 
 	static void ChangeFeatureLevel(ERHIFeatureLevel::Type NewFeatureLevel);
@@ -437,16 +454,11 @@ public:
 	/** SRV that views the entire texture */
 	FShaderResourceViewRHIRef ShaderResourceViewRHI;
 
-	/** *optional* UAV that views the entire texture */
-	FUnorderedAccessViewRHIRef UnorderedAccessViewRHI;
-
-
 	virtual ~FTextureWithSRV() {}
 
 	virtual void ReleaseRHI() override
 	{
 		ShaderResourceViewRHI.SafeRelease();
-		UnorderedAccessViewRHI.SafeRelease();
 		FTexture::ReleaseRHI();
 	}
 };
@@ -460,9 +472,6 @@ public:
 
 
 private:
-	/** The last time the texture has been rendered via this reference. */
-	FLastRenderTimeContainer LastRenderTimeRHI;
-
 	/** True if the texture reference has been initialized from the game thread. */
 	bool bInitialized_GameThread;
 
@@ -474,7 +483,7 @@ public:
 	virtual ~FTextureReference();
 
 	/** Returns the last time the texture has been rendered via this reference. */
-	double GetLastRenderTime() const { return LastRenderTimeRHI.GetLastRenderTime(); }
+	double GetLastRenderTime() const;
 
 	/** Invalidates the last render time. */
 	void InvalidateLastRenderTime();
@@ -498,7 +507,7 @@ public:
 class RENDERCORE_API FVertexBuffer : public FRenderResource
 {
 public:
-	FVertexBufferRHIRef VertexBufferRHI;
+	FBufferRHIRef VertexBufferRHI;
 
 	/** Destructor. */
 	virtual ~FVertexBuffer() {}
@@ -541,16 +550,15 @@ public:
 	virtual void InitRHI() override
 	{
 		// create a static vertex buffer
-		FRHIResourceCreateInfo CreateInfo;
-		
-		void* LockedData = nullptr;
-		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(uint32) * 4, BUF_Static | BUF_ShaderResource, CreateInfo, LockedData);
-		uint32* Vertices = (uint32*)LockedData;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FNullColorVertexBuffer"));
+
+		VertexBufferRHI = RHICreateBuffer(sizeof(uint32) * 4, BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
+		uint32* Vertices = (uint32*)RHILockBuffer(VertexBufferRHI, 0, sizeof(uint32) * 4, RLM_WriteOnly);
 		Vertices[0] = FColor(255, 255, 255, 255).DWColor();
 		Vertices[1] = FColor(255, 255, 255, 255).DWColor();
 		Vertices[2] = FColor(255, 255, 255, 255).DWColor();
 		Vertices[3] = FColor(255, 255, 255, 255).DWColor();
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		RHIUnlockBuffer(VertexBufferRHI);
 		VertexBufferSRV = RHICreateShaderResourceView(VertexBufferRHI, sizeof(FColor), PF_R8G8B8A8);
 	}
 
@@ -578,14 +586,11 @@ public:
 	virtual void InitRHI() override
 	{
 		// create a static vertex buffer
-		FRHIResourceCreateInfo CreateInfo;
-
-		void* LockedData = nullptr;
-		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(float) * 3, BUF_Static | BUF_ShaderResource, CreateInfo, LockedData);
-
-		*reinterpret_cast<FVector*>(LockedData) = FVector(0.0f);
-
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FNullVertexBuffer"));
+		VertexBufferRHI = RHICreateBuffer(sizeof(FVector3f), BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
+		FVector3f* LockedData = (FVector3f*)RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector3f), RLM_WriteOnly);
+		*LockedData = FVector3f(0.0f);
+		RHIUnlockBuffer(VertexBufferRHI);
 
 		VertexBufferSRV = RHICreateShaderResourceView(VertexBufferRHI, sizeof(FColor), PF_R8G8B8A8);
 	}
@@ -606,7 +611,7 @@ extern RENDERCORE_API TGlobalResource<FNullVertexBuffer> GNullVertexBuffer;
 class FIndexBuffer : public FRenderResource
 {
 public:
-	FIndexBufferRHIRef IndexBufferRHI;
+	FBufferRHIRef IndexBufferRHI;
 
 	/** Destructor. */
 	virtual ~FIndexBuffer() {}
@@ -619,13 +624,24 @@ public:
 	virtual FString GetFriendlyName() const override { return TEXT("FIndexBuffer"); }
 };
 
+FORCEINLINE bool IsRayTracingEnabledForProject(EShaderPlatform ShaderPlatform)
+{
+	if (RHISupportsRayTracing(ShaderPlatform))
+	{
+		extern RENDERCORE_API uint64 GRayTracingPlaformMask;
+		return !!(GRayTracingPlaformMask & (1ull << ShaderPlatform));
+	}
+	else
+	{
+		return false;
+	}
+}
 
 FORCEINLINE bool ShouldCompileRayTracingShadersForProject(EShaderPlatform ShaderPlatform)
 {
 	if (RHISupportsRayTracingShaders(ShaderPlatform))
 	{
-		extern RENDERCORE_API uint64 GRayTracingPlaformMask;
-		return !!(GRayTracingPlaformMask & (1ull << ShaderPlatform));
+		return IsRayTracingEnabledForProject(ShaderPlatform);
 	}
 	else
 	{
@@ -673,25 +689,42 @@ public:
 
 	FRayTracingGeometryInitializer Initializer;
 	FRayTracingGeometryRHIRef RayTracingGeometryRHI;
-
-	// FRenderResource interface.
-	virtual FString GetFriendlyName() const override { return TEXT("FRayTracingGeometry"); }
+	bool bRequiresBuild = false;
 
 	void SetInitializer(const FRayTracingGeometryInitializer& InInitializer)
 	{
 		Initializer = InInitializer;
 	}
 
-	virtual void InitRHI() override
-	{
-		if (!IsRayTracingEnabled())
-			return;
+	bool IsValid() const;
 
-		CreateRayTracingGeometry(ERTAccelerationStructureBuildPriority::Normal);
+	template <uint32 MaxNumUpdates>
+	void InitRHIForStreaming(FRHIRayTracingGeometry* IntermediateGeometry, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		if (RayTracingGeometryRHI && IntermediateGeometry)
+		{
+			Batcher.QueueUpdateRequest(RayTracingGeometryRHI, IntermediateGeometry);
+			bValid = true;
+		}
 	}
 
+	template <uint32 MaxNumUpdates>
+	void ReleaseRHIForStreaming(TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	{
+		Initializer = {};
+
+		RemoveBuildRequest();
+
+		if (RayTracingGeometryRHI)
+		{
+			Batcher.QueueUpdateRequest(RayTracingGeometryRHI, nullptr);
+			bValid = false;
+		}		
+	}
+	void CreateRayTracingGeometryFromCPUData(TResourceArray<uint8>& OfflineData);
+	void RequestBuildIfNeeded(ERTAccelerationStructureBuildPriority InBuildPriority);
+
 	void CreateRayTracingGeometry(ERTAccelerationStructureBuildPriority InBuildPriority);
-	virtual void ReleaseRHI() override;
 
 	bool HasPendingBuildRequest() const
 	{
@@ -699,28 +732,22 @@ public:
 	}
 	void BoostBuildPriority(float InBoostValue = 0.01f) const;
 
+	// FRenderResource interface
+
+	virtual FString GetFriendlyName() const override { return TEXT("FRayTracingGeometry"); }
+
+	virtual void InitRHI() override;
+	virtual void ReleaseRHI() override;
+
+	virtual void ReleaseResource() override;
 protected:
+	void RemoveBuildRequest();
 
 	friend class FRayTracingGeometryManager;
 	int32 RayTracingBuildRequestIndex = INDEX_NONE;
-
+	bool bValid = false;
 #endif
 };
-
-#if RHI_RAYTRACING
-class RENDERCORE_API FRayTracingScene : public FRenderResource
-{
-public:
-	FRayTracingSceneRHIRef RayTracingSceneRHI = nullptr;
-
-	virtual FString GetFriendlyName() const override { return TEXT("FRayTracingScene"); }
-
-	virtual void ReleaseRHI()
-	{
-		RayTracingSceneRHI.SafeRelease();
-	}
-};
-#endif // RHI_RAYTRACING
 
 /**
  * A system for dynamically allocating GPU memory for vertices.

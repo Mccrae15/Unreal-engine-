@@ -78,10 +78,6 @@ public:
 	{
 		FName FuncName;
 		int32 Calls;
-
-		UE_DEPRECATED(4.25, "Please use LastCallTimestamp instead")
-		float LastCallTime;
-
 		double LastCallTimestamp;
 	};
 
@@ -136,6 +132,7 @@ public:
 	//~ Both of these should be private, IMO, but we'll leave them public for now for back compat
 	//~ in case anyone was using SerializeCustomDeltaProperty already.
 
+	UE_DEPRECATED(5.0, "No longer used.")
 	bool SendCustomDeltaProperty(
 		UObject* InObject,
 		FProperty* Property,
@@ -159,6 +156,9 @@ public:
 	/** Writes dirty properties to bunch */
 	void ReplicateCustomDeltaProperties(FNetBitWriter& Bunch, FReplicationFlags RepFlags);
 	bool ReplicateProperties(FOutBunch& Bunch, FReplicationFlags RepFlags);
+	bool ReplicateProperties(FOutBunch& Bunch, FReplicationFlags RepFlags, FNetBitWriter& Writer);
+	bool ReplicateProperties_r(FOutBunch& Bunch, FReplicationFlags RepFlags, FNetBitWriter& Writer);
+
 	void PostSendBunch(FPacketIdRange& PacketRange, uint8 bReliable);
 
 	/** Updates the custom delta state for a replay delta checkpoint */
@@ -242,6 +242,12 @@ public:
 		FNetBitWriter& Bunch,
 		FNetBitWriter& Payload) const;	
 
+	/**
+	 * @return True if we've determined nothing needs to be updated / resent by the replicator, meaning
+	 *			we can safely skip updating it this frame.
+	 */
+	bool CanSkipUpdate(FReplicationFlags Flags);
+
 public:
 
 	/** Net GUID for the object we're replicating. */
@@ -266,6 +272,12 @@ private:
 
 	/** Whether or not we are going to use Fast Array Delta Struct Delta Serialization. See FFastArraySerializer::FastArrayDeltaSerialize_DeltaSerializeStructs. */
 	uint32 bSupportsFastArrayDelta : 1;
+
+	/**
+	 * Whether or not this object replicator is eligible to skip replication calls based on
+	 * simple flag checks.
+	 */
+	uint32 bCanUseNonDirtyOptimization : 1;
 
 public:
 	

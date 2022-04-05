@@ -158,11 +158,12 @@ namespace ObjectTools
 	 *
 	 * @param	Object									The objects to delete.
 	 * @param	PGN										The new package, group, and name of the object.
-	 * @param	InOutPackagesUserRefusedToFullyLoad		A set of packages the user opted out of fully loading. This is used internally to prevent asking multiple times.\
+	 * @param	InOutPackagesUserRefusedToFullyLoad		A set of packages the user opted out of fully loading. This is used internally to prevent asking multiple times.
 	 * @param	bPromptToOverwrite						If true the user will be prompted to overwrite if duplicating to an existing object.  If false, the duplication will always happen
+	 * @param	DuplicatedObjects						If non-null, the map is filled with all objects (including sub-objects) that were duplicated with their source object as key
 	 * @retun	The duplicated object or NULL if a failure occurred.
 	 */
-	UNREALED_API UObject* DuplicateSingleObject(UObject* Object, const FPackageGroupName& PGN, TSet<UPackage*>& InOutPackagesUserRefusedToFullyLoad, bool bPromptToOverwrite = true);
+	UNREALED_API UObject* DuplicateSingleObject(UObject* Object, const FPackageGroupName& PGN, TSet<UPackage*>& InOutPackagesUserRefusedToFullyLoad, bool bPromptToOverwrite = true, TMap<TSoftObjectPtr<UObject>, TSoftObjectPtr<UObject>>* DuplicatedObjects = nullptr);
 
 	/** Helper struct to detail the results of a consolidation operation */
 	struct UNREALED_API FConsolidationResults : public FGCObject
@@ -173,6 +174,10 @@ namespace ObjectTools
 			Collector.AddReferencedObjects( DirtiedPackages );
 			Collector.AddReferencedObjects( InvalidConsolidationObjs );
 			Collector.AddReferencedObjects( FailedConsolidationObjs );
+		}
+		virtual FString GetReferencerName() const override
+		{
+			return TEXT("ObjectTools::FConsolidationResults");
 		}
 
 		/** Packages dirtied by a consolidation operation */
@@ -201,7 +206,7 @@ namespace ObjectTools
 	 */
 	UNREALED_API FConsolidationResults ConsolidateObjects( UObject* ObjectToConsolidateTo, TArray<UObject*>& ObjectsToConsolidate, bool bShowDeleteConfirmation = true );
 	UNREALED_API FConsolidationResults ConsolidateObjects(UObject* ObjectToConsolidateTo, TArray<UObject*>& ObjectsToConsolidate, TSet<UObject*>& ObjectsToConsolidateWithin, TSet<UObject*>& ObjectsToNotConsolidateWithin, bool bShouldDeleteAfterConsolidate, bool bWarnAboutRootSet = true);
-	UNREALED_API void CompileBlueprintsAfterRefUpdate(TArray<UObject*>& ObjectsConsolidatedWithin);
+	UNREALED_API void CompileBlueprintsAfterRefUpdate(const TArray<UObject*>& ObjectsConsolidatedWithin);
 	/**
 	 * Copies references for selected generic browser objects to the clipboard.
 	 */
@@ -460,6 +465,14 @@ namespace ObjectTools
 	 */
 	UNREALED_API void AppendFactoryFileExtensions( UFactory* InFactory, FString& out_Filetypes, FString& out_Extensions );
 
+	/**
+	 * Populates two strings with all of the file types and extensions the format list provides.
+	 *
+	 * @param	InFormats		Array of supported file types. Each entry needs to be of the form "ext;Description" where ext is the file extension. 
+	 * @param	out_FileTypes	File types supported by the provided array of formats, concatenated into a string
+	 * @param	out_Extensions	Extensions supported by the provided array of formats, concatenated into a string
+	 */
+	UNREALED_API void AppendFormatsFileExtensions(const TArray<FString>& InFormats, FString& out_FileTypes, FString& out_Extensions);
 
 	/**
 	 * Iterates over all classes and assembles a list of non-abstract UExport-derived type instances.
@@ -471,19 +484,6 @@ namespace ObjectTools
 	 */
 	UNREALED_API void GetDirectoryFromObjectPath(const UObject* Obj, FString& OutResult);
 
-
-	/**
-	 * Exports the specified objects to file.
-	 *
-	 * @param	ObjectsToExport					The set of objects to export.
-	 * @param	bPromptIndividualFilenames		If true, prompt individually for filenames.  If false, bulk export to a single directory.
-	 * @param	ExportPath						receives the value of the path the user chose for exporting.
-	 * @param	bUseProvidedExportPath			If true and out_ExportPath is specified, use the value in out_ExportPath as the export path w/o prompting for a directory when applicable
-	 */
-	UE_DEPRECATED(4.17, "ObjectTools::ExportObjects is deprecated.  Use AssetTools::ExportObjects instead")
-	UNREALED_API void ExportObjects( const TArray<UObject*>& ObjectsToExport, bool bPromptIndividualFilenames, FString* ExportPath = NULL, bool bUseProvidedExportPath = false );
-
-
 	/** Options for in use object tagging */
 	enum EInUseSearchOption
 	{
@@ -492,12 +492,20 @@ namespace ObjectTools
 		SO_LoadedLevels // Searches for in use objects referenced by all loaded levels
 	};
 
+	enum class EInUseSearchFlags : uint32
+	{
+		None = 0,
+		SkipCompilingAssets = 1, // Skip serialization of assets still being compiled, some data might be missing.
+	};
+	ENUM_CLASS_FLAGS(EInUseSearchFlags);
+
 	/**
 	 * Tags objects which are in use by levels specified by the search option
 	 *
-	 * @param SearchOption	 The search option for finding in use objects
+	 * @param SearchOption                  The search option for finding in use objects
+	 * @param bShouldSkipCompilingAssets    Whether to avoid stalls on assets still being compiled.
 	 */
-	UNREALED_API void TagInUseObjects( EInUseSearchOption SearchOption );
+	UNREALED_API void TagInUseObjects( EInUseSearchOption SearchOption, EInUseSearchFlags InUseSearchFlags = EInUseSearchFlags::None);
 
 	/**
 	 * Opens a property window for the selected objects

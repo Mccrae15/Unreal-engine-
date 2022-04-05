@@ -2,17 +2,17 @@
 #pragma once
 
 #include "AudioDefines.h"
-#include "CoreMinimal.h"
 #include "DSP/BufferVectorOperations.h"
 #include "IAudioExtensionPlugin.h"
-#include "Internationalization/Text.h"
+#include "IAudioProxyInitializer.h"
+#include "Templates/SharedPointer.h"
 #include "UObject/NameTypes.h"
 
 #include "IAudioModulation.generated.h"
 
 
 // Forward Declarations
-class IAudioModulation;
+class IAudioModulationManager;
 class ISoundModulatable;
 class USoundModulatorBase;
 class UObject;
@@ -30,13 +30,19 @@ namespace Audio
 	using FModulatorTypeId = uint32;
 	using FModulatorHandleId = uint32;
 
-	using FModulationUnitConvertFunction = TFunction<void(float* RESTRICT /* OutValueNormalizedToUnitBuffer */, int32 /* InNumSamples */)>;
-	using FModulationNormalizedConversionFunction = TFunction<void(float* RESTRICT /* OutValueUnitToNormalizedBuffer */, int32 /* InNumSamples */)>;
-	using FModulationMixFunction = TFunction<void(float* RESTRICT /* OutBufferNormalizedA */, const float* RESTRICT /* InBufferNormalizedB */, int32 /* InNumSamples */)>;
+	using FModulationUnitConversionFunction = TFunction<void(float& /* OutValueNormalizedToUnit */)>;
+	using FModulationNormalizedConversionFunction = TFunction<void(float& /* OutValueUnitToNormalized */)>;
+	using FModulationMixFunction = TFunction<void(float& /* OutNormalizedA */, float /* InNormalizedB */)>;
+
 
 	struct AUDIOEXTENSIONS_API FModulationParameter
 	{
 		FModulationParameter();
+		FModulationParameter(const FModulationParameter& InParam);
+		FModulationParameter(FModulationParameter&& InParam);
+
+		FModulationParameter& operator=(FModulationParameter&& InParam);
+		FModulationParameter& operator=(const FModulationParameter& InParam);
 
 		FName ParameterName;
 
@@ -56,23 +62,51 @@ namespace Audio
 		FText UnitDisplayName;
 #endif // WITH_EDITORONLY_DATA
 
+		// Function used to mix normalized values together.
+		FModulationMixFunction MixFunction;
+
 		// Function used to convert value buffer from normalized, unitless space [0.0f, 1.0f] to unit space.
-		FModulationUnitConvertFunction UnitFunction;
+		FModulationUnitConversionFunction UnitFunction;
 
 		// Function used to convert value buffer from unit space to normalized, unitless [0.0f, 1.0f] space.
 		FModulationNormalizedConversionFunction NormalizedFunction;
 
 		static const FModulationMixFunction& GetDefaultMixFunction();
-
-		// Function used to mix normalized values together.
-		FModulationMixFunction MixFunction;
+		static const FModulationUnitConversionFunction& GetDefaultUnitConversionFunction();
+		static const FModulationNormalizedConversionFunction& GetDefaultNormalizedConversionFunction();
 	};
 
-	/** Handle to a modulator which interacts with the modulation API to manage lifetime of internal objects */
+	AUDIOEXTENSIONS_API bool IsModulationParameterRegistered(FName InName);
+	AUDIOEXTENSIONS_API void RegisterModulationParameter(FName InName, FModulationParameter&& InParameter);
+	AUDIOEXTENSIONS_API bool UnregisterModulationParameter(FName InName);
+	AUDIOEXTENSIONS_API void UnregisterAllModulationParameters();
+	AUDIOEXTENSIONS_API const FModulationParameter& GetModulationParameter(FName InName);
+
+	/** Interface for cached off Modulator UObject data used as default settings to
+	  * be converted to instanced proxy data per AudioDevice on the AudioRenderThread.
+	  * If proxy is already active, implementation is expected to ignore register call
+	  * and return existing modulator proxy's type Id & set parameter accordingly.
+	  */
+	class AUDIOEXTENSIONS_API IModulatorSettings
+	{
+	public:
+		virtual ~IModulatorSettings() = default;
+		virtual TUniquePtr<IModulatorSettings> Clone() const = 0;
+		virtual FModulatorId GetModulatorId() const = 0;
+		virtual const Audio::FModulationParameter& GetOutputParameter() const = 0;
+		virtual Audio::FModulatorTypeId Register(
+			Audio::FModulatorHandleId HandleId,
+			IAudioModulationManager& InModulation) const = 0;
+	};
+
+	/** Handle to a modulator which interacts with the modulation API to manage lifetime
+	  * of modulator proxy objects internal to modulation plugin implementation.
+	  */
 	struct AUDIOEXTENSIONS_API FModulatorHandle
 	{
 		FModulatorHandle() = default;
-		FModulatorHandle(IAudioModulation& InModulation, const USoundModulatorBase* InModulatorBase, FName InParameterName);
+		FModulatorHandle(Audio::FModulationParameter&& InParameter);
+		FModulatorHandle(IAudioModulationManager& InModulation, const Audio::IModulatorSettings& InModulatorSettings, Audio::FModulationParameter&& InParameter);
 		FModulatorHandle(const FModulatorHandle& InOther);
 		FModulatorHandle(FModulatorHandle&& InOther);
 
@@ -86,6 +120,7 @@ namespace Audio
 		FModulatorTypeId GetTypeId() const;
 		FModulatorHandleId GetHandleId() const;
 		bool GetValue(float& OutValue) const;
+		bool GetValueThreadSafe(float& OutValue) const;
 		bool IsValid() const;
 
 	private:
@@ -93,18 +128,15 @@ namespace Audio
 		FModulatorHandleId HandleId = INDEX_NONE;
 		FModulatorTypeId ModulatorTypeId = INDEX_NONE;
 		FModulatorId ModulatorId = INDEX_NONE;
-		IAudioModulation* Modulation = nullptr;
+		TWeakPtr<IAudioModulationManager> Modulation;
 	};
 } // namespace Audio
 
-class AUDIOEXTENSIONS_API IAudioModulation
+class AUDIOEXTENSIONS_API IAudioModulationManager : public TSharedFromThis<IAudioModulationManager>
 {
 public:
 	/** Virtual destructor */
-	virtual ~IAudioModulation() { }
-
-	/** Returns parameter info for the given parameter name */
-	virtual Audio::FModulationParameter GetParameter(FName InParamName) { return Audio::FModulationParameter(); }
+	virtual ~IAudioModulationManager() { }
 
 	/** Initialize the modulation plugin with the same rate and number of sources */
 	virtual void Initialize(const FAudioPluginInitializationParams& InitializationParams) { }
@@ -128,12 +160,18 @@ public:
 	/** Processes all modulators Run on the audio render thread prior to processing audio */
 	virtual void ProcessModulators(const double InElapsed) { }
 
+	/** Updates modulator definition on the AudioRender Thread with that provided by the UObject representation */
 	virtual void UpdateModulator(const USoundModulatorBase& InModulator) { }
 
 protected:
-	virtual Audio::FModulatorTypeId RegisterModulator(uint32 InHandleId, const USoundModulatorBase* InModulatorBase, Audio::FModulationParameter& OutParameter) { return INDEX_NONE; }
 	virtual void RegisterModulator(uint32 InHandleId, Audio::FModulatorId InModulatorId) { }
+
+	// Get the modulator value from the AudioRender Thread
 	virtual bool GetModulatorValue(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const { return false; }
+
+	// Get the modulator value from any thread.
+	virtual bool GetModulatorValueThreadSafe(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const { return false; }
+
 	virtual void UnregisterModulator(const Audio::FModulatorHandle& InHandle) { }
 
 	friend Audio::FModulatorHandle;
@@ -143,27 +181,87 @@ protected:
  * Base class for all modulators
  */
 UCLASS(config = Engine, abstract, editinlinenew, BlueprintType)
-class AUDIOEXTENSIONS_API USoundModulatorBase : public UObject
+class AUDIOEXTENSIONS_API USoundModulatorBase : public UObject, public IAudioProxyDataFactory
 {
 	GENERATED_BODY()
 
-	/** Returns the parameter referenced by the modulator.  The default implementation
-	  * assumes value is always [0.0f, 1.0f], mixes multiplicatively, and requires no
-	  * unit conversion.
-	  */
-	virtual void GetParameter(Audio::FModulationParameter& OutParameter) const
-	{
-		OutParameter = Audio::FModulationParameter();
-	}
-
 public:
-	virtual FName GetOutputParameterName() const
-	{
-		return FName();
-	}
+	virtual const Audio::FModulationParameter& GetOutputParameter() const;
+
+	virtual TUniquePtr<Audio::IProxyData> CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams) override;
+
+	virtual TUniquePtr<Audio::IModulatorSettings> CreateProxySettings() const;
 };
 
-/** Interface to sound that is modulateable, allowing for certain specific
+/** Proxy to modulator, allowing for modulator to be referenced by the Audio Render Thread independently
+  * from the implementing modulation plugin (ex. for MetaSound implementation).
+  */
+class AUDIOEXTENSIONS_API FSoundModulatorAssetProxy : public Audio::TProxyData<FSoundModulatorAssetProxy>, public TSharedFromThis<FSoundModulatorAssetProxy, ESPMode::ThreadSafe>
+{
+public:
+	IMPL_AUDIOPROXY_CLASS(FSoundModulatorAssetProxy);
+
+	FSoundModulatorAssetProxy(const FSoundModulatorAssetProxy& InAssetProxy)
+		: Parameter(InAssetProxy.Parameter)
+		, ModulatorSettings(InAssetProxy.ModulatorSettings.IsValid() ? InAssetProxy.ModulatorSettings->Clone() : nullptr)
+	{
+	}
+
+	FSoundModulatorAssetProxy(const USoundModulatorBase& InModulatorBase)
+		: Parameter(InModulatorBase.GetOutputParameter())
+		, ModulatorSettings(InModulatorBase.CreateProxySettings())
+	{
+	}
+
+	virtual Audio::IProxyDataPtr Clone() const
+	{
+		return MakeUnique<FSoundModulatorAssetProxy>(*this);
+	}
+
+	virtual Audio::FModulatorHandle CreateModulatorHandle(IAudioModulationManager& InModulation) const
+	{
+		check(ModulatorSettings.IsValid());
+
+		Audio::FModulationParameter HandleParameter = Parameter;
+		return Audio::FModulatorHandle(InModulation, *ModulatorSettings.Get(), MoveTemp(HandleParameter));
+	}
+
+	virtual Audio::FModulatorId GetModulatorId() const
+	{
+		check(ModulatorSettings.IsValid())
+		return ModulatorSettings->GetModulatorId();
+	}
+
+protected:
+	Audio::FModulationParameter Parameter;
+	TUniquePtr<Audio::IModulatorSettings> ModulatorSettings;
+};
+using FSoundModulatorAssetProxyPtr = TSharedPtr<FSoundModulatorAssetProxy, ESPMode::ThreadSafe>;
+
+/** Proxy to modulator, allowing for modulator to be referenced by the Audio Render Thread independently
+  * from the implementing modulation plugin (ex. for MetaSound implementation).
+  */
+class AUDIOEXTENSIONS_API FSoundModulationParameterAssetProxy : public Audio::TProxyData<FSoundModulationParameterAssetProxy>, public TSharedFromThis<FSoundModulationParameterAssetProxy, ESPMode::ThreadSafe>
+{
+public:
+	IMPL_AUDIOPROXY_CLASS(FSoundModulationParameterAssetProxy);
+
+	virtual Audio::IProxyDataPtr Clone() const override
+	{
+		return Audio::IProxyDataPtr();
+	}
+
+	virtual const Audio::FModulationParameter& GetParameter() const
+	{
+		return Parameter;
+	}
+
+protected:
+	Audio::FModulationParameter Parameter;
+};
+using FSoundModulationParameterAssetProxyPtr = TSharedPtr<FSoundModulationParameterAssetProxy, ESPMode::ThreadSafe>;
+
+/** Interface to sound that is modulatable, allowing for certain specific
   * behaviors to be controlled on the sound level by the modulation system.
   */
 class AUDIOEXTENSIONS_API ISoundModulatable

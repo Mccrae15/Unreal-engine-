@@ -7,6 +7,7 @@
 #include "CoreMinimal.h"
 
 #include "CameraCalibrationTypes.h"
+#include "CameraImageCenterAlgo.h"
 #include "CameraNodalOffsetAlgo.h"
 #include "CameraCalibrationStep.h"
 #include "Containers/ArrayView.h"
@@ -79,6 +80,26 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Lens Distortion")
 	TArray<FName> GetCameraNodalOffsetAlgos() const;
 
+	/** Returns the image center algorithm by name */
+	UFUNCTION(BlueprintCallable, Category = "Lens Distortion")
+	TSubclassOf<UCameraImageCenterAlgo> GetCameraImageCenterAlgo(FName Name) const;
+
+	/** Returns an array with the names of the available image center algorithms */
+	UFUNCTION(BlueprintCallable, Category = "Lens Distortion")
+	TArray<FName> GetCameraImageCenterAlgos() const;
+
+	/** Returns the overlay material associated with the input overlay name */
+	UFUNCTION(BlueprintCallable, Category = "Lens Distortion")
+	UMaterialInterface* GetOverlayMaterial(const FName& OverlayName) const;
+
+	/** 
+	 * Returns a list of all overlays known to the subsystem
+	 * This includes the default overlays listed in the camera calibration settings 
+	 * as well as any of overlays that have been registered with this subsystem
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Lens Distortion")
+	TArray<FName> GetOverlayMaterialNames() const;
+
 	/** Returns an array with the names of the available camera calibration steps */
 	UFUNCTION(BlueprintCallable, Category = "Lens Distortion")
 	TArray<FName> GetCameraCalibrationSteps() const;
@@ -105,6 +126,12 @@ public:
 	/** Update the overscanned focal length of the input camera component */
 	void UpdateOverscanFocalLength(UCineCameraComponent* Component, float InFocalLength);
 
+	/** Register a new overlay material name and path that can be queried from camera calibration tools */
+	void RegisterOverlayMaterial(const FName& MaterialName, const FName& MaterialPath);
+
+	/** Unregister an overlay material */
+	void UnregisterOverlayMaterial(const FName& MaterialName);
+
 	/** 
 	 * Get the original focal length of the input camera component, if it exists in the subsystems map. 
 	 * Returns false and does not update the output parameter if the input camera is not in the map. 
@@ -124,9 +151,16 @@ private:
 	UPROPERTY(Transient)
 	TMap<FName, TSubclassOf<UCameraNodalOffsetAlgo>> CameraNodalOffsetAlgosMap;
 
+	/** Holds the registered camera image center algos */
+	UPROPERTY(Transient)
+	TMap<FName, TSubclassOf<UCameraImageCenterAlgo>> CameraImageCenterAlgosMap;
+
 	/** Holds the registered camera calibration steps */
 	UPROPERTY(Transient)
 	TMap<FName, TSubclassOf<UCameraCalibrationStep>> CameraCalibrationStepsMap;
+
+	/** Map of overlay names to overlay materials */
+	TMap<FName, TSoftObjectPtr<UMaterialInterface>> RegisteredOverlayMaterials;
 
 	/** Map of actor components to the authoritative lens model that should be used with that component */
 	TMap<FObjectKey, TSubclassOf<ULensModel>> ComponentsWithAuthoritativeModels;

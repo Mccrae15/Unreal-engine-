@@ -51,6 +51,14 @@ class FeatureManager {
     return extinst_importid_GLSLstd450_;
   }
 
+  uint32_t GetExtInstImportId_OpenCL100DebugInfo() const {
+    return extinst_importid_OpenCL100DebugInfo_;
+  }
+
+  uint32_t GetExtInstImportId_Shader100DebugInfo() const {
+    return extinst_importid_Shader100DebugInfo_;
+  }
+
   friend bool operator==(const FeatureManager& a, const FeatureManager& b);
   friend bool operator!=(const FeatureManager& a, const FeatureManager& b) {
     return !(a == b);
@@ -84,6 +92,14 @@ class FeatureManager {
 
   // Common external instruction import ids, cached for performance.
   uint32_t extinst_importid_GLSLstd450_ = 0;
+
+  // Common OpenCL100DebugInfo external instruction import ids, cached
+  // for performance.
+  uint32_t extinst_importid_OpenCL100DebugInfo_ = 0;
+
+  // Common NonSemanticShader100DebugInfo external instruction import ids,
+  // cached for performance.
+  uint32_t extinst_importid_Shader100DebugInfo_ = 0;
 };
 
 }  // namespace opt

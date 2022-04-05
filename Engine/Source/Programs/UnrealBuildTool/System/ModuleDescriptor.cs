@@ -5,7 +5,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Diagnostics;
 using System.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using JsonExtensions;
 
 namespace UnrealBuildTool
 {
@@ -20,7 +21,7 @@ namespace UnrealBuildTool
 		Default,
 
 		/// <summary>
-		/// Any target using the UE4 runtime
+		/// Any target using the UE runtime
 		/// </summary>
 		Runtime,
 
@@ -170,47 +171,52 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// List of allowed platforms
 		/// </summary>
-		public List<UnrealTargetPlatform> WhitelistPlatforms;
+		public List<UnrealTargetPlatform>? PlatformAllowList;
 
 		/// <summary>
 		/// List of disallowed platforms
 		/// </summary>
-		public List<UnrealTargetPlatform> BlacklistPlatforms;
+		public List<UnrealTargetPlatform>? PlatformDenyList;
 
 		/// <summary>
 		/// List of allowed targets
 		/// </summary>
-		public TargetType[] WhitelistTargets;
+		public TargetType[]? TargetAllowList;
 
 		/// <summary>
 		/// List of disallowed targets
 		/// </summary>
-		public TargetType[] BlacklistTargets;
+		public TargetType[]? TargetDenyList;
 
 		/// <summary>
 		/// List of allowed target configurations
 		/// </summary>
-		public UnrealTargetConfiguration[] WhitelistTargetConfigurations;
+		public UnrealTargetConfiguration[]? TargetConfigurationAllowList;
 
 		/// <summary>
 		/// List of disallowed target configurations
 		/// </summary>
-		public UnrealTargetConfiguration[] BlacklistTargetConfigurations;
+		public UnrealTargetConfiguration[]? TargetConfigurationDenyList;
 
 		/// <summary>
 		/// List of allowed programs
 		/// </summary>
-		public string[] WhitelistPrograms;
+		public string[]? ProgramAllowList;
 
 		/// <summary>
 		/// List of disallowed programs
 		/// </summary>
-		public string[] BlacklistPrograms;
+		public string[]? ProgramDenyList;
 
 		/// <summary>
 		/// List of additional dependencies for building this module.
 		/// </summary>
-		public string[] AdditionalDependencies;
+		public string[]? AdditionalDependencies;
+
+		/// <summary>
+		/// When true, an empty PlatformAllowList is interpreted as 'no platforms' with the expectation that explicit platforms will be added in plugin extensions */
+		/// </summary>
+		public bool bHasExplicitPlatforms;
 
 		/// <summary>
 		/// Constructor
@@ -227,8 +233,9 @@ namespace UnrealBuildTool
 		/// Constructs a ModuleDescriptor from a Json object
 		/// </summary>
 		/// <param name="InObject"></param>
+		/// <param name="JsonFilePath"></param>
 		/// <returns>The new module descriptor</returns>
-		public static ModuleDescriptor FromJsonObject(JsonObject InObject)
+		public static ModuleDescriptor FromJsonObject(JsonObject InObject, FileReference JsonFilePath)
 		{
 			ModuleDescriptor Module = new ModuleDescriptor(InObject.GetStringField("Name"), InObject.GetEnumField<ModuleHostType>("Type"));
 
@@ -240,41 +247,41 @@ namespace UnrealBuildTool
 
 			try
 			{
-				string[] WhitelistPlatforms;
-				// it's important we default to null, and don't have an empty whitelist by default, because that will indicate that no
+				string[]? PlatformAllowList;
+				// it's important we default to null, and don't have an empty allow list by default, because that will indicate that no
 				// platforms should be compiled (see IsCompiledInConfiguration(), it only checks for null, not length)
-				Module.WhitelistPlatforms = null;
-				if (InObject.TryGetStringArrayField("WhitelistPlatforms", out WhitelistPlatforms))
+				Module.PlatformAllowList = null;
+				if (InObject.TryGetStringArrayFieldWithDeprecatedFallback("PlatformAllowList", "WhitelistPlatforms", out PlatformAllowList))
 				{
-					Module.WhitelistPlatforms = new List<UnrealTargetPlatform>();
-					foreach (string TargetPlatformName in WhitelistPlatforms)
+					Module.PlatformAllowList = new List<UnrealTargetPlatform>();
+					foreach (string TargetPlatformName in PlatformAllowList)
 					{
 						UnrealTargetPlatform Platform;
 						if (UnrealTargetPlatform.TryParse(TargetPlatformName, out Platform))
 						{
-							Module.WhitelistPlatforms.Add(Platform);
+							Module.PlatformAllowList.Add(Platform);
 						}
 						else
 						{
-							Log.TraceWarning("Unknown platform {0} while parsing whitelist for module descriptor {1}", TargetPlatformName, Module.Name);
+							Log.TraceWarningTask(JsonFilePath, $"Unknown platform {TargetPlatformName} while parsing allow list for module descriptor {Module.Name}");
 						}
 					}
 				}
 
-				string[] BlacklistPlatforms;
-				if (InObject.TryGetStringArrayField("BlacklistPlatforms", out BlacklistPlatforms))
+				string[]? PlatformDenyList;
+				if (InObject.TryGetStringArrayFieldWithDeprecatedFallback("PlatformDenyList", "BlacklistPlatforms", out PlatformDenyList))
 				{
-					Module.BlacklistPlatforms = new List<UnrealTargetPlatform>();
-					foreach (string TargetPlatformName in BlacklistPlatforms)
+					Module.PlatformDenyList = new List<UnrealTargetPlatform>();
+					foreach (string TargetPlatformName in PlatformDenyList)
 					{
 						UnrealTargetPlatform Platform;
 						if (UnrealTargetPlatform.TryParse(TargetPlatformName, out Platform))
 						{
-							Module.BlacklistPlatforms.Add(Platform);
+							Module.PlatformDenyList.Add(Platform);
 						}
 						else
 						{
-							Log.TraceWarning("Unknown platform {0} while parsing blacklist for module descriptor {1}", TargetPlatformName, Module.Name);
+							Log.TraceWarningTask(JsonFilePath, $"Unknown platform {TargetPlatformName} while parsing deny list for module descriptor {Module.Name}");
 						}
 					}
 				}
@@ -285,46 +292,52 @@ namespace UnrealBuildTool
 				throw;
 			}
 
-			TargetType[] WhitelistTargets;
-			if (InObject.TryGetEnumArrayField<TargetType>("WhitelistTargets", out WhitelistTargets))
+			TargetType[]? TargetAllowList;
+			if (InObject.TryGetEnumArrayFieldWithDeprecatedFallback<TargetType>("TargetAllowList", "WhitelistTargets", out TargetAllowList))
 			{
-				Module.WhitelistTargets = WhitelistTargets;
+				Module.TargetAllowList = TargetAllowList;
 			}
 
-			TargetType[] BlacklistTargets;
-			if (InObject.TryGetEnumArrayField<TargetType>("BlacklistTargets", out BlacklistTargets))
+			TargetType[]? TargetDenyList;
+			if (InObject.TryGetEnumArrayFieldWithDeprecatedFallback<TargetType>("TargetDenyList", "BlacklistTargets", out TargetDenyList))
 			{
-				Module.BlacklistTargets = BlacklistTargets;
+				Module.TargetDenyList = TargetDenyList;
 			}
 
-			UnrealTargetConfiguration[] WhitelistTargetConfigurations;
-			if (InObject.TryGetEnumArrayField<UnrealTargetConfiguration>("WhitelistTargetConfigurations", out WhitelistTargetConfigurations))
+			UnrealTargetConfiguration[]? TargetConfigurationAllowList;
+			if (InObject.TryGetEnumArrayFieldWithDeprecatedFallback<UnrealTargetConfiguration>("TargetConfigurationAllowList", "WhitelistTargetConfigurations", out TargetConfigurationAllowList))
 			{
-				Module.WhitelistTargetConfigurations = WhitelistTargetConfigurations;
+				Module.TargetConfigurationAllowList = TargetConfigurationAllowList;
 			}
 
-			UnrealTargetConfiguration[] BlacklistTargetConfigurations;
-			if (InObject.TryGetEnumArrayField<UnrealTargetConfiguration>("BlacklistTargetConfigurations", out BlacklistTargetConfigurations))
+			UnrealTargetConfiguration[]? TargetConfigurationDenyList;
+			if (InObject.TryGetEnumArrayFieldWithDeprecatedFallback<UnrealTargetConfiguration>("TargetConfigurationDenyList", "BlacklistTargetConfigurations", out TargetConfigurationDenyList))
 			{
-				Module.BlacklistTargetConfigurations = BlacklistTargetConfigurations;
+				Module.TargetConfigurationDenyList = TargetConfigurationDenyList;
 			}
 
-			string[] WhitelistPrograms;
-			if (InObject.TryGetStringArrayField("WhitelistPrograms", out WhitelistPrograms))
+			string[]? ProgramAllowList;
+			if (InObject.TryGetStringArrayFieldWithDeprecatedFallback("ProgramAllowList", "WhitelistPrograms", out ProgramAllowList))
 			{
-				Module.WhitelistPrograms = WhitelistPrograms;
+				Module.ProgramAllowList = ProgramAllowList;
 			}
 
-			string[] BlacklistPrograms;
-			if (InObject.TryGetStringArrayField("BlacklistPrograms", out BlacklistPrograms))
+			string[]? ProgramDenyList;
+			if (InObject.TryGetStringArrayFieldWithDeprecatedFallback("ProgramDenyList", "BlacklistPrograms", out ProgramDenyList))
 			{
-				Module.BlacklistPrograms = BlacklistPrograms;
+				Module.ProgramDenyList = ProgramDenyList;
 			}
 
-			string[] AdditionalDependencies;
+			string[]? AdditionalDependencies;
 			if (InObject.TryGetStringArrayField("AdditionalDependencies", out AdditionalDependencies))
 			{
 				Module.AdditionalDependencies = AdditionalDependencies;
+			}
+
+			bool bHasExplicitPlatforms;
+			if (InObject.TryGetBoolField("HasExplicitPlatforms", out bHasExplicitPlatforms))
+			{
+				Module.bHasExplicitPlatforms = bHasExplicitPlatforms;
 			}
 
 			return Module;
@@ -340,70 +353,70 @@ namespace UnrealBuildTool
 			Writer.WriteValue("Name", Name);
 			Writer.WriteValue("Type", Type.ToString());
 			Writer.WriteValue("LoadingPhase", LoadingPhase.ToString());
-			// important note: we don't check the length of the whitelist platforms, because if an unknown platform was read in, but was not valid, the 
-			// list will exist but be empty. We don't want to remove the whitelist completely, because that would allow this module on all platforms,
+			// important note: we don't check the length of the platform allow list, because if an unknown platform was read in, but was not valid, the 
+			// list will exist but be empty. We don't want to remove the allow list completely, because that would allow this module on all platforms,
 			// which will not be the desired effect
-			if (WhitelistPlatforms != null)
+			if (PlatformAllowList != null)
 			{
-				Writer.WriteArrayStart("WhitelistPlatforms");
-				foreach (UnrealTargetPlatform WhitelistPlatform in WhitelistPlatforms)
+				Writer.WriteArrayStart("PlatformAllowList");
+				foreach (UnrealTargetPlatform Platform in PlatformAllowList)
 				{
-					Writer.WriteValue(WhitelistPlatform.ToString());
+					Writer.WriteValue(Platform.ToString());
 				}
 				Writer.WriteArrayEnd();
 			}
-			if (BlacklistPlatforms != null && BlacklistPlatforms.Count > 0)
+			if (PlatformDenyList != null && PlatformDenyList.Count > 0)
 			{
-				Writer.WriteArrayStart("BlacklistPlatforms");
-				foreach (UnrealTargetPlatform BlacklistPlatform in BlacklistPlatforms)
+				Writer.WriteArrayStart("PlatformDenyList");
+				foreach (UnrealTargetPlatform Platform in PlatformDenyList)
 				{
-					Writer.WriteValue(BlacklistPlatform.ToString());
+					Writer.WriteValue(Platform.ToString());
 				}
 				Writer.WriteArrayEnd();
 			}
-			if (WhitelistTargets != null && WhitelistTargets.Length > 0)
+			if (TargetAllowList != null && TargetAllowList.Length > 0)
 			{
-				Writer.WriteArrayStart("WhitelistTargets");
-				foreach (TargetType WhitelistTarget in WhitelistTargets)
+				Writer.WriteArrayStart("TargetAllowList");
+				foreach (TargetType Target in TargetAllowList)
 				{
-					Writer.WriteValue(WhitelistTarget.ToString());
+					Writer.WriteValue(Target.ToString());
 				}
 				Writer.WriteArrayEnd();
 			}
-			if (BlacklistTargets != null && BlacklistTargets.Length > 0)
+			if (TargetDenyList != null && TargetDenyList.Length > 0)
 			{
-				Writer.WriteArrayStart("BlacklistTargets");
-				foreach (TargetType BlacklistTarget in BlacklistTargets)
+				Writer.WriteArrayStart("TargetDenyList");
+				foreach (TargetType Target in TargetDenyList)
 				{
-					Writer.WriteValue(BlacklistTarget.ToString());
+					Writer.WriteValue(Target.ToString());
 				}
 				Writer.WriteArrayEnd();
 			}
-			if (WhitelistTargetConfigurations != null && WhitelistTargetConfigurations.Length > 0)
+			if (TargetConfigurationAllowList != null && TargetConfigurationAllowList.Length > 0)
 			{
-				Writer.WriteArrayStart("WhitelistTargetConfigurations");
-				foreach (UnrealTargetConfiguration WhitelistTargetConfiguration in WhitelistTargetConfigurations)
+				Writer.WriteArrayStart("TargetConfigurationAllowList");
+				foreach (UnrealTargetConfiguration Config in TargetConfigurationAllowList)
 				{
-					Writer.WriteValue(WhitelistTargetConfiguration.ToString());
+					Writer.WriteValue(Config.ToString());
 				}
 				Writer.WriteArrayEnd();
 			}
-			if (BlacklistTargetConfigurations != null && BlacklistTargetConfigurations.Length > 0)
+			if (TargetConfigurationDenyList != null && TargetConfigurationDenyList.Length > 0)
 			{
-				Writer.WriteArrayStart("BlacklistTargetConfigurations");
-				foreach (UnrealTargetConfiguration BlacklistTargetConfiguration in BlacklistTargetConfigurations)
+				Writer.WriteArrayStart("TargetConfigurationDenyList");
+				foreach (UnrealTargetConfiguration Config in TargetConfigurationDenyList)
 				{
-					Writer.WriteValue(BlacklistTargetConfiguration.ToString());
+					Writer.WriteValue(Config.ToString());
 				}
 				Writer.WriteArrayEnd();
 			}
-			if(WhitelistPrograms != null && WhitelistPrograms.Length > 0)
+			if(ProgramAllowList != null && ProgramAllowList.Length > 0)
 			{
-				Writer.WriteStringArrayField("WhitelistPrograms", WhitelistPrograms);
+				Writer.WriteStringArrayField("ProgramAllowList", ProgramAllowList);
 			}
-			if(BlacklistPrograms != null && BlacklistPrograms.Length > 0)
+			if(ProgramDenyList != null && ProgramDenyList.Length > 0)
 			{
-				Writer.WriteStringArrayField("BlacklistPrograms", BlacklistPrograms);
+				Writer.WriteStringArrayField("ProgramDenyList", ProgramDenyList);
 			}
 			if (AdditionalDependencies != null && AdditionalDependencies.Length > 0)
 			{
@@ -414,6 +427,10 @@ namespace UnrealBuildTool
 				}
 				Writer.WriteArrayEnd();
 			}
+			if (bHasExplicitPlatforms)
+			{
+				Writer.WriteValue("HasExplicitPlatforms", bHasExplicitPlatforms);
+			}
 			Writer.WriteObjectEnd();
 		}
 
@@ -423,7 +440,7 @@ namespace UnrealBuildTool
 		/// <param name="Writer">The Json writer to output to</param>
 		/// <param name="Name">Name of the array</param>
 		/// <param name="Modules">Array of modules</param>
-		public static void WriteArray(JsonWriter Writer, string Name, ModuleDescriptor[] Modules)
+		public static void WriteArray(JsonWriter Writer, string Name, ModuleDescriptor[]? Modules)
 		{
 			if (Modules != null && Modules.Length > 0)
 			{
@@ -460,41 +477,42 @@ namespace UnrealBuildTool
 		/// <param name="bBuildRequiresCookedData">Whether the configuration requires cooked content (typically UEBuildConfiguration.bBuildRequiresCookedData for UBT callers)</param>
 		public bool IsCompiledInConfiguration(UnrealTargetPlatform Platform, UnrealTargetConfiguration Configuration, string TargetName, TargetType TargetType, bool bBuildDeveloperTools, bool bBuildRequiresCookedData)
 		{
-			// Check the platform is whitelisted
-			// important note: we don't check the length of the whitelist platforms, because if an unknown platform was read in, but was not valid, the 
+			// Check the platform is allowed
+			// important note: we don't check the length of the platform allow list, because if an unknown platform was read in, but was not valid, the 
 			// list will exist but be empty. In this case, we need to disallow all platforms from building, otherwise, build errors will occur when
-			// it starts compiling for _all_ platforms
-			if (WhitelistPlatforms != null && !WhitelistPlatforms.Contains(Platform))
+			// it starts compiling for _all_ platforms. This means we don't need to check bHasExplicitPlatforms either
+			
+			if (PlatformAllowList != null && !PlatformAllowList.Contains(Platform))
 			{
 				return false;
 			}
 
-			// Check the platform is not blacklisted
-			if (BlacklistPlatforms != null && BlacklistPlatforms.Contains(Platform))
+			// Check the platform is not denied
+			if (PlatformDenyList != null && PlatformDenyList.Contains(Platform))
 			{
 				return false;
 			}
 
-			// Check the target is whitelisted
-			if (WhitelistTargets != null && WhitelistTargets.Length > 0 && !WhitelistTargets.Contains(TargetType))
+			// Check the target is allowed
+			if (TargetAllowList != null && TargetAllowList.Length > 0 && !TargetAllowList.Contains(TargetType))
 			{
 				return false;
 			}
 
-			// Check the target is not blacklisted
-			if (BlacklistTargets != null && BlacklistTargets.Contains(TargetType))
+			// Check the target is not denied
+			if (TargetDenyList != null && TargetDenyList.Contains(TargetType))
 			{
 				return false;
 			}
 
-			// Check the target configuration is whitelisted
-			if (WhitelistTargetConfigurations != null && WhitelistTargetConfigurations.Length > 0 && !WhitelistTargetConfigurations.Contains(Configuration))
+			// Check the target configuration is allowed
+			if (TargetConfigurationAllowList != null && TargetConfigurationAllowList.Length > 0 && !TargetConfigurationAllowList.Contains(Configuration))
 			{
 				return false;
 			}
 
-			// Check the target configuration is not blacklisted
-			if (BlacklistTargetConfigurations != null && BlacklistTargetConfigurations.Contains(Configuration))
+			// Check the target configuration is not denied
+			if (TargetConfigurationDenyList != null && TargetConfigurationDenyList.Contains(Configuration))
 			{
 				return false;
 			}
@@ -502,14 +520,14 @@ namespace UnrealBuildTool
 			// Special checks just for programs
 			if(TargetType == TargetType.Program)
 			{
-				// Check the program name is whitelisted. Note that this behavior is slightly different to other whitelist/blacklist checks; we will whitelist a module of any type if it's explicitly allowed for this program.
-				if(WhitelistPrograms != null && WhitelistPrograms.Length > 0)
+				// Check the program name is on the allow list. Note that this behavior is slightly different to other allow/deny checks; we will allow a module of any type if it's explicitly allowed for this program.
+				if(ProgramAllowList != null && ProgramAllowList.Length > 0)
 				{
-					return WhitelistPrograms.Contains(TargetName);
+					return ProgramAllowList.Contains(TargetName);
 				}
 				
-				// Check the program name is not blacklisted
-				if(BlacklistPrograms != null && BlacklistPrograms.Contains(TargetName))
+				// Check the program name is not denied
+				if(ProgramDenyList != null && ProgramDenyList.Contains(TargetName))
 				{
 					return false;
 				}

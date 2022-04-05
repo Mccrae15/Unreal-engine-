@@ -19,6 +19,7 @@ namespace UnrealBuildTool.Rules
 					"CoreUObject",
 					"DataprepCore",
 					"DesktopPlatform",
+					"EditorFramework",
 					"EditorStyle",
 					"EditorWidgets",
 					"EditorWidgets",
@@ -43,6 +44,8 @@ namespace UnrealBuildTool.Rules
 					"StatsViewer",
 					"ToolMenus",
 					"UnrealEd",
+					"SubobjectEditor",
+					"SubobjectDataInterface",
 				}
 			);
 

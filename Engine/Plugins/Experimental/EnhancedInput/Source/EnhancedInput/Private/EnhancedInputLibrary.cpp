@@ -32,7 +32,9 @@ void UEnhancedInputLibrary::RequestRebuildControlMappingsUsingContext(const UInp
 			check(Subsystem);
 			if (Subsystem && Subsystem->HasMappingContext(Context))
 			{
-				Subsystem->RequestRebuildControlMappings(bForceImmediately);
+				FModifyContextOptions Options {};
+				Options.bForceImmediately = bForceImmediately;
+				Subsystem->RequestRebuildControlMappings(Options);
 			}
 		});
 }
@@ -77,4 +79,9 @@ FVector2D UEnhancedInputLibrary::Conv_InputActionValueToAxis2D(FInputActionValue
 FVector UEnhancedInputLibrary::Conv_InputActionValueToAxis3D(FInputActionValue InValue)
 {
 	return InValue.Get<FInputActionValue::Axis3D>();
+}
+
+FString UEnhancedInputLibrary::Conv_InputActionValueToString(FInputActionValue ActionValue)
+{
+	return ActionValue.ToString();
 }

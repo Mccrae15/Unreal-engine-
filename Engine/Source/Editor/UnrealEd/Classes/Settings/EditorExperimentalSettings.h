@@ -7,6 +7,7 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "InputCoreTypes.h"
+#include "InterchangePipelineBase.h"
 #include "EditorExperimentalSettings.generated.h"
 
 /**
@@ -19,6 +20,25 @@ class UNREALED_API UEditorExperimentalSettings
 	GENERATED_UCLASS_BODY()
 
 public:
+	/** Enable async texture compilation to improve PIE and map load time performance when compilation is required */
+	UPROPERTY(EditAnywhere, config, Category = Performance, meta = (DisplayName = "Enable async texture compilation and loading"))
+	bool bEnableAsyncTextureCompilation;
+
+	/** Enable async static mesh compilation to improve import and map load time performance when compilation is required */
+	UPROPERTY(EditAnywhere, config, Category = Performance, meta = (DisplayName = "Enable async static mesh compilation and loading"))
+	bool bEnableAsyncStaticMeshCompilation;
+
+	/** Enable async skeletal mesh compilation to improve import and map load time performance when compilation is required */
+	UPROPERTY(EditAnywhere, config, Category = Performance, meta = (DisplayName = "Enable async skeletal mesh compilation and loading"))
+	bool bEnableAsyncSkeletalMeshCompilation;
+
+	/** Enable interchange framework, the interchange framework is a new import system which can import asynchronously and in parallel. See the interchange project settings to configure the import pipeline*/
+	UPROPERTY(EditAnywhere, config, Category = Interchange, meta = (DisplayName = "Enable interchange framework import"))
+	bool bEnableInterchangeFramework;
+
+	/** Enable interchange framework, the interchange framework is a new import system which can import asynchronously and in parallel but only add support the texture assets. See the interchange project settings to configure the import pipeline*/
+	UPROPERTY(EditAnywhere, config, Category = Interchange, meta = (DisplayName = "Enable interchange framework import for textures only"))
+	bool bEnableInterchangeFrameworkForTextureOnly;
 
 	/** Allows the editor to run on HDR monitors on Windows 10 */
 	UPROPERTY(EditAnywhere, config, Category = HDR, meta = (ConfigRestartRequired = true, DisplayName = "Enable Editor Support for HDR Monitors"))
@@ -31,20 +51,10 @@ public:
 	/** Allows usage of the procedural foliage system */
 	UPROPERTY(EditAnywhere, config, Category = Foliage, meta = (DisplayName = "Procedural Foliage"))
 	bool bProceduralFoliage;
-		
-	/** Allows usage of the Localization Dashboard */
-	UPROPERTY(EditAnywhere, config, Category = Tools, meta = (DisplayName = "Localization Dashboard"))
-	bool bEnableLocalizationDashboard;
 
 	/** Allows usage of the Translation Picker */
 	UPROPERTY(EditAnywhere, config, Category = Tools, meta = (DisplayName = "Translation Picker"))
 	bool bEnableTranslationPicker;
-
-	/** When enabled, all details panels will be able to have properties marked as favorite that show in a top most category.  
-	 * NOTE: Some customizations are not supported yet
-	 */
-	UPROPERTY(EditAnywhere, config, Category = Tools, meta = (DisplayName = "Enable Details Panel Favorites"))
-	bool bEnableFavoriteSystem;
 
 	/** Specify which console-specific nomenclature to use for gamepad label text */
 	UPROPERTY(EditAnywhere, config, Category=UserInterface, meta=(DisplayName="Console for Gamepad Labels"))
@@ -57,21 +67,6 @@ public:
 	/** Break on Exceptions allows you to trap Access Nones and other exceptional events in Blueprints. */
 	UPROPERTY(EditAnywhere, config, Category=Blueprints, meta=(DisplayName="Blueprint Break on Exceptions"))
 	bool bBreakOnExceptions;
-
-	/** Allows the One File Per Actor option for worlds */
-	UPROPERTY(EditAnywhere, config, Category = World, meta = (DisplayName = "Enable One File Per Actor Support"))
-	bool bEnableOneFilePerActorSupport;
-	
-protected:
-	/** Any blueprint deriving from one of these base classes will be allowed to recompile during Play-in-Editor */
-	UPROPERTY(EditAnywhere, config, Category = Blueprints, meta=(AllowAbstract))
-	TArray<TSoftClassPtr<UObject>> BaseClassesToAllowRecompilingDuringPlayInEditor;
-
-	UPROPERTY(Transient)
-	mutable TArray<UClass*> ResolvedBaseClassesToAllowRecompilingDuringPlayInEditor;
-
-public:
-	bool IsClassAllowedToRecompileDuringPIE(UClass* TestClass) const;
 
 	/** Should arrows indicating data/execution flow be drawn halfway along wires? */
 	UPROPERTY(/*EditAnywhere - deprecated (moved into UBlueprintEditorSettings), */config/*, Category=Blueprints, meta=(DisplayName="Draw midpoint arrows in Blueprints")*/)
@@ -119,6 +114,14 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Tools, meta = (ConfigRestartRequired = true))
 	bool bFacialAnimationImporter;
 
+	/** Whether to enable one file per actor support in the engine. */
+	UPROPERTY(EditAnywhere, config, Category = Tools, meta=(DisplayName="Enable One File Per Actor"))
+	bool bEnableOneFilePerActorSupport;
+
+	/** Whether to enable actor folder object support in the engine. */
+	UPROPERTY(EditAnywhere, config, Category = Tools, meta = (DisplayName = "Enable Actor Folder Objects"))
+	bool bEnableActorFolderObjectSupport;
+
 	/** Enable experimental PIE preview device launch */
 	UPROPERTY(EditAnywhere, config, Category = PIE, meta = (DisplayName = "Enable mobile PIE with preview device launch options."))
 	bool bMobilePIEPreviewDeviceLaunch;
@@ -134,6 +137,14 @@ public:
 	/** Allows creation of assets with paths longer than 260 characters. Note that this also requires the Windows 10 Anniversary Update (1607), and support for long paths to be enabled through the group policy editor. */
 	UPROPERTY(EditAnywhere, config, Category = "Content Browser", meta = (DisplayName = "Enable support for long paths (> 260 characters)"))
 	bool bEnableLongPathsSupport;
+
+	/** Allows creating APackedLevelActor blueprint actors */
+	UPROPERTY(EditAnywhere, config, Category = Level)
+	bool bPackedLevelActor;
+
+	/** Allows creating ALevelInstance actors */
+	UPROPERTY(EditAnywhere, config, Category = Level)
+	bool bLevelInstance;
 
 	/**
 	 * Returns an event delegate that is executed when a setting has changed.

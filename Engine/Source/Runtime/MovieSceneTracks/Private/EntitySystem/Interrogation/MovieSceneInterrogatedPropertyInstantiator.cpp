@@ -16,9 +16,6 @@ UMovieSceneInterrogatedPropertyInstantiatorSystem::UMovieSceneInterrogatedProper
 {
 	using namespace UE::MovieScene;
 
-	// This system should never run at runtime
-	SystemExclusionContext |= EEntitySystemContext::Runtime;
-
 	BuiltInComponents = FBuiltInComponentTypes::Get();
 
 	RecomposerImpl.OnGetPropertyInfo = FOnGetPropertyRecomposerPropertyInfo::CreateUObject(
@@ -36,7 +33,9 @@ UMovieSceneInterrogatedPropertyInstantiatorSystem::UMovieSceneInterrogatedProper
 
 bool UMovieSceneInterrogatedPropertyInstantiatorSystem::IsRelevantImpl(UMovieSceneEntitySystemLinker* InLinker) const
 {
-	return true;
+	using namespace UE::MovieScene;
+
+	return InLinker->EntityManager.Contains(FEntityComponentFilter().All({ BuiltInComponents->PropertyBinding, BuiltInComponents->Interrogation.InputKey }));
 }
 
 UE::MovieScene::FPropertyRecomposerPropertyInfo UMovieSceneInterrogatedPropertyInstantiatorSystem::FindPropertyFromSource(FMovieSceneEntityID EntityID, UObject* Object) const
@@ -50,11 +49,11 @@ UE::MovieScene::FPropertyRecomposerPropertyInfo UMovieSceneInterrogatedPropertyI
 	return FPropertyRecomposerPropertyInfo::Invalid();
 }
 
-UMovieSceneInterrogatedPropertyInstantiatorSystem::FFloatRecompositionResult UMovieSceneInterrogatedPropertyInstantiatorSystem::RecomposeBlendFloatChannel(const UE::MovieScene::FPropertyDefinition& PropertyDefinition, int32 ChannelCompositeIndex, const UE::MovieScene::FDecompositionQuery& InQuery, float InCurrentValue)
+UMovieSceneInterrogatedPropertyInstantiatorSystem::FValueRecompositionResult UMovieSceneInterrogatedPropertyInstantiatorSystem::RecomposeBlendChannel(const UE::MovieScene::FPropertyDefinition& PropertyDefinition, int32 ChannelCompositeIndex, const UE::MovieScene::FDecompositionQuery& InQuery, double InCurrentValue)
 {
 	using namespace UE::MovieScene;
 
-	FFloatRecompositionResult Result(InCurrentValue, InQuery.Entities.Num());
+	FValueRecompositionResult Result(InCurrentValue, InQuery.Entities.Num());
 
 	if (InQuery.Entities.Num() == 0)
 	{
@@ -73,7 +72,7 @@ UMovieSceneInterrogatedPropertyInstantiatorSystem::FFloatRecompositionResult UMo
 		return Result;
 	}
 
-	FFloatDecompositionParams Params;
+	FValueDecompositionParams Params;
 	Params.Query = InQuery;
 	Params.PropertyEntityID = Property->PropertyEntityID;
 	Params.DecomposeBlendChannel = Property->BlendChannel;
@@ -82,7 +81,7 @@ UMovieSceneInterrogatedPropertyInstantiatorSystem::FFloatRecompositionResult UMo
 	TArrayView<const FPropertyCompositeDefinition> Composites = BuiltInComponents->PropertyRegistry.GetComposites(PropertyDefinition);
 	check(Composites.IsValidIndex(ChannelCompositeIndex));
 
-	PropertyDefinition.Handler->RecomposeBlendChannel(PropertyDefinition, Composites[ChannelCompositeIndex], Params, Blender, InCurrentValue, Result.Values);
+	PropertyDefinition.Handler->RecomposeBlendChannel(PropertyDefinition, Composites, ChannelCompositeIndex, Params, Blender, InCurrentValue, Result.Values);
 
 	return Result;
 }
@@ -116,11 +115,11 @@ bool UMovieSceneInterrogatedPropertyInstantiatorSystem::PropertySupportsFastPath
 	return true;
 }
 
-UClass* UMovieSceneInterrogatedPropertyInstantiatorSystem::ResolveBlenderClass(TArrayView<const FMovieSceneEntityID> Inputs) const
+UClass* UMovieSceneInterrogatedPropertyInstantiatorSystem::ResolveBlenderClass(const UE::MovieScene::FPropertyDefinition& PropertyDefinition, TArrayView<const FMovieSceneEntityID> Inputs) const
 {
 	using namespace UE::MovieScene;
 
-	UClass* BlenderClass = UMovieScenePiecewiseFloatBlenderSystem::StaticClass();
+	UClass* BlenderClass = PropertyDefinition.BlenderSystemClass;
 
 	for (FMovieSceneEntityID Input : Inputs)
 	{
@@ -131,8 +130,12 @@ UClass* UMovieSceneInterrogatedPropertyInstantiatorSystem::ResolveBlenderClass(T
 			break;
 		}
 	}
-
-	check(BlenderClass);
+	
+	if (!ensureMsgf(BlenderClass, TEXT("No default blender class specified on property, and no custom blender specified on entities. Falling back to float blender.")))
+	{
+		BlenderClass = UMovieScenePiecewiseFloatBlenderSystem::StaticClass();
+	}
+	
 	return BlenderClass;
 }
 
@@ -177,7 +180,7 @@ void UMovieSceneInterrogatedPropertyInstantiatorSystem::UpdateOutput(UE::MovieSc
 	TArrayView<const FPropertyCompositeDefinition> Composites = BuiltInComponents->PropertyRegistry.GetComposites(*PropertyDefinition);
 
 	// Find the blender class to use
-	UClass* BlenderClass = ResolveBlenderClass(Inputs);
+	UClass* BlenderClass = ResolveBlenderClass(*PropertyDefinition, Inputs);
 
 	UMovieSceneBlenderSystem* ExistingBlender = Output->Blender.Get();
 	if (ExistingBlender && BlenderClass != ExistingBlender->GetClass())

@@ -7,7 +7,7 @@ using UnrealBuildTool;
 using System.Text.RegularExpressions;
 using System.IO;
 using System.Linq;
-using Tools.DotNETCommon;
+using EpicGames.Core;
 
 namespace Gauntlet
 {
@@ -63,12 +63,7 @@ namespace Gauntlet
 
 		public bool CanSupportPlatform(UnrealTargetPlatform Platform)
 		{
-			// todo - need to return values of discovered builds
-			return Platform == UnrealTargetPlatform.Win64
-				|| Platform == UnrealTargetPlatform.PS4
-				|| Platform == UnrealTargetPlatform.XboxOne
-				|| Platform == UnrealTargetPlatform.Android
-				|| Platform == UnrealTargetPlatform.Mac;
+			return UnrealTargetPlatform.GetValidPlatforms().Contains(Platform);
 		}
 
 
@@ -246,6 +241,26 @@ namespace Gauntlet
 		}
 
 		/// <summary>
+		/// Adds the provided build to our list (calls ShouldMakeBuildAvailable to verify).
+		/// </summary>
+		/// <param name="InPlatform"></param>
+		/// <param name="NewBuild"></param>
+		virtual protected void AddBuild(IBuild NewBuild)
+		{
+			NewBuild = ShouldMakeBuildAvailable(NewBuild);
+
+			if (NewBuild != null)
+			{
+				if (!DiscoveredBuilds.ContainsKey(NewBuild.Platform))
+				{
+					DiscoveredBuilds[NewBuild.Platform] = new List<IBuild>();
+				}
+
+				DiscoveredBuilds[NewBuild.Platform].Add(NewBuild);
+			}
+		}
+
+		/// <summary>
 		/// Allows derived classes to nix or modify builds as they are discovered
 		/// </summary>
 		/// <param name="InBuild"></param>
@@ -254,6 +269,37 @@ namespace Gauntlet
 		{
 			return InBuild;
 		}
+
+		/// <summary>
+		/// Adds an Editor build to our list of available builds if one exists
+		/// </summary>
+		/// <param name="InUnrealPath"></param>
+		virtual protected IBuild CreateEditorBuild(DirectoryReference InUnrealPath)
+		{
+			if (InUnrealPath != null)
+			{
+				// check for the editor
+				string EditorExe = Path.Combine(InUnrealPath.FullName, GetRelativeExecutablePath(UnrealTargetRole.Editor, BuildHostPlatform.Current.Platform, UnrealTargetConfiguration.Development));
+
+				if (Utils.SystemHelpers.ApplicationExists(EditorExe))
+				{
+					EditorBuild NewBuild = new EditorBuild(EditorExe, UnrealTargetConfiguration.Development);
+
+					return NewBuild;
+				}
+				else
+				{
+					Log.Info("No editor binaries found at {0}. Unable to create an editor build source.", EditorExe);
+				}
+			}
+			else
+			{
+				Log.Info("No path to Unreal found. Unable to create an editor build source.");
+			}
+
+			return null;
+		}
+
 
 		/// <summary>
 		/// True/false on whether we've tried to discover builds for the specified platform
@@ -270,7 +316,7 @@ namespace Gauntlet
 		/// for the provided platform
 		/// </summary>
 		/// <param name="InPlatform"></param>
-		void DiscoverBuilds(UnrealTargetPlatform InPlatform)
+		virtual protected void DiscoverBuilds(UnrealTargetPlatform InPlatform)
 		{
 			if (!HaveDiscoveredBuilds(InPlatform))
 			{
@@ -280,7 +326,16 @@ namespace Gauntlet
 				// Add an editor build if this is our current platform.
 				if (InPlatform == BuildHostPlatform.Current.Platform)
 				{
-					AddBuild(CreateEditorBuild(UnrealPath));
+					IBuild EditorBuild = CreateEditorBuild(UnrealPath);
+
+					if (EditorBuild == null)
+					{
+						Log.Info("Could not create editor build for project. Binaries are likely missing");
+					}
+					else
+					{
+						AddBuild(EditorBuild);
+					}
 				}
 
 				if (BuildPaths.Count() > 0)
@@ -318,48 +373,6 @@ namespace Gauntlet
 			}
 
 			return DiscoveredBuilds[InPlatform].Where(B => (B.Flags & InFlags) == InFlags).Count();
-		}
-
-		/// <summary>
-		/// Adds the provided build to our list (calls ShouldMakeBuildAvailable to verify).
-		/// </summary>
-		/// <param name="InPlatform"></param>
-		/// <param name="NewBuild"></param>
-		void AddBuild(IBuild NewBuild)
-		{
-			NewBuild = ShouldMakeBuildAvailable(NewBuild);
-
-			if (NewBuild != null)
-			{
-				if (!DiscoveredBuilds.ContainsKey(NewBuild.Platform))
-				{
-					DiscoveredBuilds[NewBuild.Platform] = new List<IBuild>();
-				}
-
-				DiscoveredBuilds[NewBuild.Platform].Add(NewBuild);
-			}
-		}
-
-		/// <summary>
-		/// Adds an Editor build to our list of available builds if one exists
-		/// </summary>
-		/// <param name="InUnrealPath"></param>
-		IBuild CreateEditorBuild(DirectoryReference InUnrealPath)
-		{
-			if (InUnrealPath != null)
-			{
-				// check for the editor
-				string EditorExe = Path.Combine(InUnrealPath.FullName, GetRelativeExecutablePath(UnrealTargetRole.Editor, BuildHostPlatform.Current.Platform, UnrealTargetConfiguration.Development));
-
-				if (Utils.SystemHelpers.ApplicationExists(EditorExe))
-				{
-					EditorBuild NewBuild = new EditorBuild(EditorExe, UnrealTargetConfiguration.Development);
-
-					return NewBuild;
-				}
-			}
-
-			return null;
 		}
 
 		/// <summary>
@@ -453,7 +466,7 @@ namespace Gauntlet
 				}
 			}
 
-			Reasons.Add(string.Format("No build at {0} that matches {1}", string.Join(",", BuildPaths), Role.ToString()));
+			Reasons.Add(string.Format("No build at {0} that matches {1} (RequiredFlags={2})", string.Join(",", BuildPaths), Role.ToString(), Role.RequiredBuildFlags.ToString()));
 
 			return false;
 		}
@@ -503,6 +516,7 @@ namespace Gauntlet
 			}
 
 			// Cleanup the commandline
+			Log.Info("Processing CommandLine {0}", Config.CommandLine);
 			Config.CommandLine = GenerateProcessedCommandLine(Config.CommandLine);
 
 			// Now add the project (the above code doesn't handle arguments without a leading - so do this last
@@ -549,7 +563,7 @@ namespace Gauntlet
 			// Break down Commandline into individual tokens 
 			Dictionary<string, string> CommandlineTokens = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 			// turn Name(p1,etc) into a collection of Name|(p1,etc) groups
-			MatchCollection Matches = Regex.Matches(InCommandLine, "(?<option>\\-?[\\w\\d.:\\[\\]\\/\\\\\\?]+)(=(?<value>(\"([^\"]*)\")|(\\S+)))?");
+			MatchCollection Matches = Regex.Matches(InCommandLine, "(?<option>\\-?[\\w\\d.:!\\[\\]\\/\\\\\\?]+)(=(?<value>(\"([^\"]*)\")|(\\S+)))?");
 
 			foreach (Match M in Matches)
 			{
@@ -610,41 +624,54 @@ namespace Gauntlet
 
 
 		/// <summary>
-		/// Given a platform, a build config, and true/false for client, returns the path to the binary for that config. E.g.
-		/// Win64, Shipping, false = Binaries\Win64\FooServer-Win64-Shipping.exe
+		/// Given a role, platform, and config, returns the path to the binary for that config. E.g. Binaries\Win64\FooServer-Win64-Shipping.exe
 		/// </summary>
+		/// <param name="TargetRole"></param>
 		/// <param name="TargetPlatform"></param>
-		/// <param name="BuildConfig"></param>
-		/// <param name="IsClient"></param>
+		/// <param name="TargetConfiguration"></param>
 		/// <returns></returns>
-		virtual public string GetRelativeExecutablePath(UnrealTargetRole TargetType, UnrealTargetPlatform TargetPlatform, UnrealTargetConfiguration TargetConfiguration)
+		virtual public string GetRelativeExecutablePath(UnrealTargetRole TargetRole, UnrealTargetPlatform TargetPlatform, UnrealTargetConfiguration TargetConfiguration)
 		{
 			string ExePath;
 
-			if (TargetType.UsesEditor())
+			if (TargetRole.UsesEditor())
 			{
-				string ExeFileName = "UE4Editor";
-				if (TargetConfiguration != UnrealTargetConfiguration.Development)
+				FileSystemReference EditorExe = null;
+
+				if (BuildName == "Editor")
 				{
-					ExeFileName += string.Format("-{0}-{1}", TargetPlatform.ToString(), TargetConfiguration.ToString());
+					EditorExe = ProjectUtils.GetProjectTarget(ProjectPath, UnrealBuildTool.TargetType.Editor, TargetPlatform, TargetConfiguration);
 				}
 
-				ExeFileName += Platform.GetExeExtension(TargetPlatform);
+				if (EditorExe != null)
+				{
+					ExePath = EditorExe.FullName;
+				}
+				else
+				{
+					string ExeFileName = "UnrealEditor";
+					if (TargetConfiguration != UnrealTargetConfiguration.Development)
+					{
+						ExeFileName += string.Format("-{0}-{1}", TargetPlatform.ToString(), TargetConfiguration.ToString());
+					}
 
-				ExePath = string.Format("Engine/Binaries/{0}/{1}", BuildHostPlatform.Current.Platform, ExeFileName);
+					ExeFileName += Platform.GetExeExtension(TargetPlatform);
+
+					ExePath = string.Format("Engine/Binaries/{0}/{1}", BuildHostPlatform.Current.Platform, ExeFileName);
+				}
 			}
 			else
 			{
 				string BuildType = "";
 
-				if (TargetType == UnrealTargetRole.Client)
+				if (TargetRole == UnrealTargetRole.Client)
 				{
 					if (!UsesSharedBuildType)
 					{
 						BuildType = "Client";
 					}
 				}
-				else if (TargetType == UnrealTargetRole.Server)
+				else if (TargetRole == UnrealTargetRole.Server)
 				{
 					if (!UsesSharedBuildType)
 					{
@@ -668,16 +695,16 @@ namespace Gauntlet
 					{
 						Flags |= BuildFlags.CanReplaceExecutable;
 					}
-                    if (Globals.Params.ParseParam("bulk"))
-                    {
-                        Flags |= BuildFlags.Bulk;
-                    }
+					if (Globals.Params.ParseParam("bulk"))
+					{
+						Flags |= BuildFlags.Bulk;
+					}
 					else if(Globals.Params.ParseParam("notbulk"))
 					{
 						Flags |= BuildFlags.NotBulk;
 					}
 
-                    var Build = GetMatchingBuilds(TargetType, TargetPlatform, TargetConfiguration, Flags).FirstOrDefault();
+					var Build = GetMatchingBuilds(TargetRole, TargetPlatform, TargetConfiguration, Flags).FirstOrDefault();
 
 					if (Build != null)
 					{
@@ -702,12 +729,12 @@ namespace Gauntlet
 
 					ExeFileName += Platform.GetExeExtension(TargetPlatform);
 
-					string BasePath = GetPlatformPath(TargetType, TargetPlatform);
+					string BasePath = GetPlatformPath(TargetRole, TargetPlatform);
 					string ProjectBinary = string.Format("{0}\\Binaries\\{1}\\{2}", ProjectName, TargetPlatform.ToString(), ExeFileName);
 					string StubBinary = Path.Combine(BasePath, ExeFileName);
 					string DevBinary = Path.Combine(Environment.CurrentDirectory, ProjectBinary);
 
-					string NonCodeProjectName = "UE4Game" + Platform.GetExeExtension(TargetPlatform);
+					string NonCodeProjectName = "UnrealGame" + Platform.GetExeExtension(TargetPlatform);
 					string NonCodeProjectBinary = Path.Combine(BasePath, "Engine", "Binaries", TargetPlatform.ToString());
 					NonCodeProjectBinary = Path.Combine(NonCodeProjectBinary, NonCodeProjectName);
 

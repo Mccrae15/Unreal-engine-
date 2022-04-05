@@ -6,6 +6,7 @@
 
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
+#include "Misc/ScopeLock.h"
 #include "Misc/SingleThreadRunnable.h"
 #include "Templates/Atomic.h"
 
@@ -58,6 +59,7 @@ public:
 	FORCEINLINE const TSet<TSharedPtr<FDMXInputPort, ESPMode::ThreadSafe>>& GetAssignedInputPorts() const { return AssignedInputPorts; }
 
 	/** Returns the IP address of a universe */
+	UE_DEPRECATED(5.0, "Deprecated in favor of the more generic FDMXProtocolSACNUtils::GetIPForUniverseID")
 	static uint32 GetIpForUniverseID(uint16 InUniverseID);
 
 private:
@@ -100,16 +102,25 @@ private:
 	TSharedPtr<FDMXProtocolSACN, ESPMode::ThreadSafe> Protocol;
 
 	/** The network socket. */
-	FSocket* Socket;
+	FSocket* Socket = nullptr;
 
-	/** The endpoint internet addr */
+	/** The endpoint internet addr (usually the network interface card IP Address) */
 	TSharedPtr<FInternetAddr> EndpointInternetAddr;
+
+	/** The sender when packets are received */
+	TSharedPtr<FInternetAddr> ReceivedSenderInternetAddr;
+
+	/** The destination when packets are received */
+	TSharedPtr<FInternetAddr> ReceivedDestinationInternetAddr;
+
+	/** Critical section to be used when assigned input ports are changed */
+	FCriticalSection ChangeAssignedInputPortsCriticalSection;
 
 	/** Flag indicating that the thread is stopping. */
 	TAtomic<bool> bStopping;
 
 	/** The thread object. */
-	FRunnableThread* Thread;
+	FRunnableThread* Thread = nullptr;
 
 	/** The receiver thread's name. */
 	FString ThreadName;

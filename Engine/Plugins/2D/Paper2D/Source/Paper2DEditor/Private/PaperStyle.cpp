@@ -10,6 +10,7 @@
 
 
 #define IMAGE_PLUGIN_BRUSH( RelativePath, ... ) FSlateImageBrush( FPaperStyle::InContent( RelativePath, ".png" ), __VA_ARGS__ )
+#define IMAGE_PLUGIN_BRUSH_SVG( RelativePath, ... ) FSlateVectorImageBrush( FPaperStyle::InContent( RelativePath, ".svg" ), __VA_ARGS__ )
 #define IMAGE_BRUSH(RelativePath, ...) FSlateImageBrush(StyleSet->RootToContentDir(RelativePath, TEXT(".png")), __VA_ARGS__)
 #define BOX_BRUSH(RelativePath, ...) FSlateBoxBrush(StyleSet->RootToContentDir(RelativePath, TEXT(".png")), __VA_ARGS__)
 #define DEFAULT_FONT(...) FCoreStyle::GetDefaultFontStyle(__VA_ARGS__)
@@ -38,6 +39,7 @@ void FPaperStyle::Initialize()
 	const FVector2D Icon16x16(16.0f, 16.0f);
 	const FVector2D Icon20x20(20.0f, 20.0f);
 	const FVector2D Icon40x40(40.0f, 40.0f);
+	const FVector2D Icon64x64(64.0f, 64.0f);
 
 	// Only register once
 	if (StyleSet.IsValid())
@@ -211,6 +213,7 @@ void FPaperStyle::Initialize()
 		StyleSet->Set("SpriteEditor.EnterSourceRegionEditMode.Small", new IMAGE_PLUGIN_BRUSH("Icons/icon_Paper2D_EditSourceRegion_40x", Icon20x20));
 		StyleSet->Set("SpriteEditor.EnterRenderingEditMode", new IMAGE_PLUGIN_BRUSH("Icons/icon_Paper2D_RenderGeom_40x", Icon40x40));
 		StyleSet->Set("SpriteEditor.EnterRenderingEditMode.Small", new IMAGE_PLUGIN_BRUSH("Icons/icon_Paper2D_RenderGeom_40x", Icon20x20));
+		StyleSet->Set("SpriteEditor.SpriteActions", new IMAGE_PLUGIN_BRUSH_SVG(TEXT("Icons/SpriteActions"), Icon16x16));
 	}
 
 	// Sprite geometry editor (shared between the sprite editor, tile set editor, etc...)
@@ -257,6 +260,57 @@ void FPaperStyle::Initialize()
 		StyleSet->Set("AssetActions.ExtractSprites", new IMAGE_PLUGIN_BRUSH(TEXT("Icons/icon_Texture_ExtractSprites_16x"), Icon16x16));
 		StyleSet->Set("AssetActions.ConfigureForRetroSprites", new IMAGE_PLUGIN_BRUSH(TEXT("Icons/icon_Texture_ConfigureForRetroSprites_16x"), Icon16x16));
 		StyleSet->Set("AssetActions.CreateTileSet", new IMAGE_PLUGIN_BRUSH(TEXT("Icons/icon_Texture_CreateTileSet_16x"), Icon16x16));
+	}
+
+	{
+		// Sprites (asset, component, actor)
+		StyleSet->Set("ClassIcon.PaperSprite", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperSpriteActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperSprite", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperSpriteActor_64", Icon64x64));
+		StyleSet->Set("ClassIcon.PaperSpriteComponent", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperSpriteActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperSpriteComponent", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperSpriteActor_64", Icon64x64));
+		StyleSet->Set("ClassIcon.PaperSpriteActor", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperSpriteActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperSpriteActor", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperSpriteActor_64", Icon64x64));
+
+		// Flipbooks (asset, component, actor)
+		StyleSet->Set("ClassIcon.PaperFlipbook", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperFlipbookActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperFlipbook", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperFlipbookActor_64", Icon64x64));
+		StyleSet->Set("ClassIcon.PaperFlipbookComponent", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperFlipbookActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperFlipbookComponent", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperFlipbookActor_64", Icon64x64));
+		StyleSet->Set("ClassIcon.PaperFlipbookActor", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperFlipbookActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperFlipbookActor", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperFlipbookActor_64", Icon64x64));
+
+		// Tile maps (asset, component, actor)
+		StyleSet->Set("ClassIcon.PaperTileMap", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTileMapActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperTileMap", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTileMapActor_64", Icon64x64));
+		StyleSet->Set("ClassIcon.PaperTileMapComponent", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTileMapActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperTileMapComponent", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTileMapActor_64", Icon64x64));
+		StyleSet->Set("ClassIcon.PaperTileMapActor", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTileMapActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperTileMapActor", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTileMapActor_64", Icon64x64));
+
+		// UPaperSpriteAtlas assets
+		//@TODO: Paper2D: These icons don't match the naming scheme
+		StyleSet->Set("ClassIcon.PaperSpriteAtlas", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperSpriteAtlas_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperSpriteAtlas", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperSpriteAtlas_64", Icon64x64));
+
+		//@TODO: UPaperSpriteSheet icons?
+
+		// APaperCharacter icons
+		StyleSet->Set("ClassIcon.PaperCharacter", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperCharacter_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperCharacter", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperCharacter_64", Icon64x64));
+
+		// UPaperTileSet icons
+		StyleSet->Set("ClassIcon.PaperTileSet", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTileMapActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperTileSet", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTileMapActor_64", Icon64x64));
+
+		// UPaperTerrainMaterial icons
+		StyleSet->Set("ClassIcon.PaperTerrainMaterial", new IMAGE_PLUGIN_BRUSH("Icons/AssetIcons/PaperTerrainMaterial_16x", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperTerrainMaterial", new IMAGE_PLUGIN_BRUSH("Icons/AssetIcons/PaperTerrainMaterial_64x", Icon64x64));
+
+		// Terrain splines (component, actor)
+		StyleSet->Set("ClassIcon.PaperTerrainComponent", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTerrainActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperTerrainComponent", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTerrainActor_16", Icon64x64));
+		StyleSet->Set("ClassIcon.PaperTerrainActor", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTerrainActor_16", Icon16x16));
+		StyleSet->Set("ClassThumbnail.PaperTerrainActor", new IMAGE_PLUGIN_BRUSH_SVG("Icons/AssetIcons/PaperTerrainActor_64", Icon64x64));
 	}
 
 	FSlateStyleRegistry::RegisterSlateStyle(*StyleSet.Get());

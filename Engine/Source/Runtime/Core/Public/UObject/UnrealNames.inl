@@ -2,6 +2,12 @@
 
 // [[ IncludeTool: Inline ]] // Markup to tell IncludeTool that this file is state changing and cannot be optimized out.
 
+// Suppress any macros that may conflict with name constant symbols.
+UE_PUSH_MACRO("TRUE")
+#undef TRUE
+UE_PUSH_MACRO("FALSE")
+#undef FALSE
+
 // Special zero value, meaning no name.
 REGISTER_NAME(0,None)
 
@@ -45,6 +51,7 @@ REGISTER_NAME(33,CoreUObject)
 // More class properties
 REGISTER_NAME(34,EnumProperty)
 
+
 // Special types.
 REGISTER_NAME(50,Cylinder)
 REGISTER_NAME(51,BoxSphereBounds)
@@ -68,6 +75,30 @@ REGISTER_NAME(68,Double)
 REGISTER_NAME(69,Quat)
 REGISTER_NAME(70,Self)
 REGISTER_NAME(71,Transform)
+REGISTER_NAME(72,Vector3f)
+REGISTER_NAME(73,Vector3d)
+REGISTER_NAME(74,Plane4f)
+REGISTER_NAME(75,Plane4d)
+REGISTER_NAME(76,Matrix44f)
+REGISTER_NAME(77,Matrix44d)
+REGISTER_NAME(78,Quat4f)
+REGISTER_NAME(79,Quat4d)
+REGISTER_NAME(80,Transform3f)
+REGISTER_NAME(81,Transform3d)
+REGISTER_NAME(82,Box3f)
+REGISTER_NAME(83,Box3d)
+REGISTER_NAME(84,BoxSphereBounds3f)
+REGISTER_NAME(85,BoxSphereBounds3d)
+REGISTER_NAME(86,Vector4f)			
+REGISTER_NAME(87,Vector4d)
+REGISTER_NAME(88,Rotator3f)
+REGISTER_NAME(89,Rotator3d)
+REGISTER_NAME(90,Vector2f)
+REGISTER_NAME(91,Vector2d)
+REGISTER_NAME(92,Box2D)
+REGISTER_NAME(93,Box2f)
+REGISTER_NAME(94,Box2d)
+
 
 // Object class names.
 REGISTER_NAME(100,Object)
@@ -140,6 +171,7 @@ REGISTER_NAME(257, Zlib)
 REGISTER_NAME(258, Gzip)
 REGISTER_NAME(259, LZ4)
 REGISTER_NAME(260, Mobile)
+REGISTER_NAME(261, Oodle)
 
 // Online
 REGISTER_NAME(280,DGram)
@@ -210,3 +242,7 @@ REGISTER_NAME(602,GameUserSettings)
 REGISTER_NAME(700,Filename)
 REGISTER_NAME(701,Lerp)
 REGISTER_NAME(702,Root)
+
+// Restore any macros suppressed at the top of this file.
+UE_POP_MACRO("TRUE")
+UE_POP_MACRO("FALSE")

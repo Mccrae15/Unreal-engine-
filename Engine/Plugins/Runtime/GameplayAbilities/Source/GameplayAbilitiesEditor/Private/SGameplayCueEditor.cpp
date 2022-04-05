@@ -454,7 +454,7 @@ public:
 
 	void CheckSelectGCItem(TSharedPtr< FGCTreeItem > NewItem)
 	{
-		if (SelectedTag != NAME_Name && !SelectedItem.IsValid() && (SelectedTag == NewItem->GameplayCueTagName && NewItem->TranslationUniqueID == SelectedUniqueID))
+		if (SelectedTag != NAME_None && !SelectedItem.IsValid() && (SelectedTag == NewItem->GameplayCueTagName && NewItem->TranslationUniqueID == SelectedUniqueID))
 		{
 			SelectedItem = NewItem;
 		}
@@ -1312,7 +1312,7 @@ void SGameplayCueEditorImpl::Construct(const FArguments& InArgs)
 		.FillHeight(1.0f)
 		[
 			SNew(SBorder)
-			.BorderImage(FEditorStyle::GetBrush("ToolBar.Background"))
+			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
 			[
 				SAssignNew(GameplayCueTreeView, SGameplayCueTreeView)
 				.ItemHeight(24)

@@ -58,31 +58,14 @@ FPyApiBuffer TCHARToPyApiBuffer(const TCHAR* InStr)
 
 FString PyObjectToUEString(PyObject* InPyObj)
 {
-	if (PyUnicode_Check(InPyObj)
-#if PY_MAJOR_VERSION < 3
-		|| PyString_Check(InPyObj)
-#endif	// PY_MAJOR_VERSION < 3
-		)
+	if (PyUnicode_Check(InPyObj))
 	{
 		return PyStringToUEString(InPyObj);
 	}
 
-#if PY_MAJOR_VERSION < 3
+	if (FPyObjectPtr PyStrObj = FPyObjectPtr::StealReference(PyObject_Str(InPyObj)))
 	{
-		FPyObjectPtr PyUnicodeObj = FPyObjectPtr::StealReference(PyObject_Unicode(InPyObj));
-		if (PyUnicodeObj)
-		{
-			return PyStringToUEString(PyUnicodeObj);
-		}
-	}
-#endif	// PY_MAJOR_VERSION < 3
-
-	{
-		FPyObjectPtr PyStrObj = FPyObjectPtr::StealReference(PyObject_Str(InPyObj));
-		if (PyStrObj)
-		{
-			return PyStringToUEString(PyStrObj);
-		}
+		return PyStringToUEString(PyStrObj);
 	}
 
 	return FString();
@@ -321,11 +304,7 @@ bool CalculatePropertyDef(PyTypeObject* InPyType, FPropertyDef& OutPropertyDef)
 		return true;
 	}
 
-	if (PyObject_IsSubclass((PyObject*)InPyType, (PyObject*)&PyUnicode_Type) == 1
-#if PY_MAJOR_VERSION < 3
-		|| PyObject_IsSubclass((PyObject*)InPyType, (PyObject*)&PyString_Type) == 1
-#endif	// PY_MAJOR_VERSION < 3
-		)
+	if (PyObject_IsSubclass((PyObject*)InPyType, (PyObject*)&PyUnicode_Type) == 1)
 	{
 		OutPropertyDef.PropertyClass = FStrProperty::StaticClass();
 		return true;
@@ -336,14 +315,6 @@ bool CalculatePropertyDef(PyTypeObject* InPyType, FPropertyDef& OutPropertyDef)
 		OutPropertyDef.PropertyClass = FBoolProperty::StaticClass();
 		return true;
 	}
-
-#if PY_MAJOR_VERSION < 3
-	if (PyObject_IsSubclass((PyObject*)InPyType, (PyObject*)&PyInt_Type) == 1)
-	{
-		OutPropertyDef.PropertyClass = FIntProperty::StaticClass();
-		return true;
-	}
-#endif	// PY_MAJOR_VERSION < 3
 
 	if (PyObject_IsSubclass((PyObject*)InPyType, (PyObject*)&PyLong_Type) == 1)
 	{
@@ -494,17 +465,19 @@ FProperty* CreateProperty(PyObject* InPyObj, const int32 InArrayDim, FFieldVaria
 
 bool IsInputParameter(const FProperty* InParam)
 {
+	const bool bIsParam = InParam->HasAnyPropertyFlags(CPF_Parm);
 	const bool bIsReturnParam = InParam->HasAnyPropertyFlags(CPF_ReturnParm);
 	const bool bIsReferenceParam = InParam->HasAnyPropertyFlags(CPF_ReferenceParm);
 	const bool bIsOutParam = InParam->HasAnyPropertyFlags(CPF_OutParm) && !InParam->HasAnyPropertyFlags(CPF_ConstParm);
-	return !bIsReturnParam && (!bIsOutParam || bIsReferenceParam);
+	return bIsParam && !bIsReturnParam && (!bIsOutParam || bIsReferenceParam);
 }
 
 bool IsOutputParameter(const FProperty* InParam)
 {
+	const bool bIsParam = InParam->HasAnyPropertyFlags(CPF_Parm);
 	const bool bIsReturnParam = InParam->HasAnyPropertyFlags(CPF_ReturnParm);
 	const bool bIsOutParam = InParam->HasAnyPropertyFlags(CPF_OutParm) && !InParam->HasAnyPropertyFlags(CPF_ConstParm);
-	return !bIsReturnParam && bIsOutParam;
+	return bIsParam && !bIsReturnParam && bIsOutParam;
 }
 
 void ImportDefaultValue(const FProperty* InProp, void* InPropValue, const FString& InDefaultValue)
@@ -597,11 +570,7 @@ bool InspectFunctionArgs(PyObject* InFunc, TArray<FString>& OutArgNames, TArray<
 	if (PyInspectModule)
 	{
 		PyObject* PyInspectDict = PyModule_GetDict(PyInspectModule);
-#if PY_MAJOR_VERSION >= 3
 		PyObject* PyGetArgSpecFunc = PyDict_GetItemString(PyInspectDict, "getfullargspec");
-#else	// PY_MAJOR_VERSION >= 3
-		PyObject* PyGetArgSpecFunc = PyDict_GetItemString(PyInspectDict, "getargspec");
-#endif	// PY_MAJOR_VERSION >= 3
 		if (PyGetArgSpecFunc)
 		{
 			FPyObjectPtr PyGetArgSpecResult = FPyObjectPtr::StealReference(PyObject_CallFunctionObjArgs(PyGetArgSpecFunc, InFunc, nullptr));
@@ -794,7 +763,7 @@ UObject* GetOwnerObject(PyObject* InPyObj)
 	}
 
 	return nullptr;
-			}
+}
 
 PyObject* GetPropertyValue(const UStruct* InStruct, const void* InStructData, const FProperty* InProp, const char *InAttributeName, PyObject* InOwnerPyObject, const TCHAR* InErrorCtxt)
 {
@@ -1084,8 +1053,29 @@ FString GetInterpreterExecutablePath(bool* OutIsEnginePython)
 	return PythonPath;
 }
 
+void AddSitePackagesPath(const FString& InPath)
+{
+	if (FPyObjectPtr PySiteModule = FPyObjectPtr::StealReference(PyImport_ImportModule("site")))
+	{
+		PyObject* PySiteDict = PyModule_GetDict(PySiteModule);
+		if (PyObject* PyAddSiteDirFunc = PyDict_GetItemString(PySiteDict, "addsitedir"))
+		{
+			FPyObjectPtr PyPath;
+			if (PyConversion::Pythonize(InPath, PyPath.Get(), PyConversion::ESetErrorState::No))
+			{
+				FPyObjectPtr PyAddSiteDirResult = FPyObjectPtr::StealReference(PyObject_CallFunctionObjArgs(PyAddSiteDirFunc, PyPath.Get(), nullptr));
+			}
+		}
+	}
+}
+
 void AddSystemPath(const FString& InPath)
 {
+	if (!IFileManager::Get().DirectoryExists(*InPath))
+	{
+		return;
+	}
+
 	if (PyObject* PyPathList = PySys_GetObject(PyCStrCast("path")))
 	{
 		FPyObjectPtr PyPath;
@@ -1453,13 +1443,13 @@ bool FetchPythonError(FString& OutError)
 
 	PyErr_Clear();
 
-	// Raise the excepthook (if set)
-	// We set this to None after enabling our stderr redirection
+	// Raise the excepthook if it was changed.
 	{
-		PyObject* PyExceptHook = PySys_GetObject(PyCStrCast("excepthook"));
-		if (PyExceptHook && PyExceptHook != Py_None)
+		PyObject* PyDefaultExceptHook = PySys_GetObject(PyCStrCast("__excepthook__"));
+		PyObject* PyCurrentExceptHook = PySys_GetObject(PyCStrCast("excepthook"));
+		if (PyCurrentExceptHook && PyDefaultExceptHook && PyCurrentExceptHook != PyDefaultExceptHook)
 		{
-			FPyObjectPtr PyExceptHookResult = FPyObjectPtr::StealReference(PyObject_CallFunctionObjArgs(PyExceptHook, PyExceptionType.Get(), PyExceptionValue.Get(), PyExceptionTraceback.Get(), nullptr));
+			FPyObjectPtr PyExceptHookResult = FPyObjectPtr::StealReference(PyObject_CallFunctionObjArgs(PyCurrentExceptHook, PyExceptionType.Get(), PyExceptionValue.Get(), PyExceptionTraceback.Get(), nullptr));
 		}
 	}
 

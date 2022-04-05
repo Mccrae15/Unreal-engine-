@@ -70,7 +70,8 @@ void ULiveLinkMessageBusFinder::PollNetwork()
 
 	PollData.Reset();
 	CurrentPollRequest = FGuid::NewGuid();
-	MessageEndpoint->Publish(new FLiveLinkPingMessage(CurrentPollRequest, ILiveLinkClient::LIVELINK_VERSION));
+	const int32 Version = ILiveLinkClient::LIVELINK_VERSION;
+	MessageEndpoint->Publish(FMessageEndpoint::MakeMessage<FLiveLinkPingMessage>(CurrentPollRequest, Version));
 };
 
 void ULiveLinkMessageBusFinder::HandlePongMessage(const FLiveLinkPongMessage& Message, const TSharedRef<IMessageContext, ESPMode::ThreadSafe>& Context)
@@ -78,9 +79,16 @@ void ULiveLinkMessageBusFinder::HandlePongMessage(const FLiveLinkPongMessage& Me
 	if (Message.PollRequest == CurrentPollRequest)
 	{
 		FScopeLock ScopedLock(&PollDataCriticalSection);
-		
+
+		bool bIsValidProvider = true;
+
+		if (Message.LiveLinkVersion < ILiveLinkClient::LIVELINK_VERSION) // UE4 Remote Clients always send 1 as the LiveLink version
+		{
+			bIsValidProvider = false;
+		}
+
 		const double MachineTimeOffset = LiveLinkMessageBusHelper::CalculateProviderMachineOffset(Message.CreationPlatformTime, Context);
-		PollData.Add(FProviderPollResult(Context->GetSender(), Message.ProviderName, Message.MachineName, MachineTimeOffset));
+		PollData.Add(FProviderPollResult(Context->GetSender(), Message.ProviderName, Message.MachineName, MachineTimeOffset, bIsValidProvider));
 	}
 };
 

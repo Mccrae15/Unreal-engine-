@@ -13,6 +13,7 @@
 #include "Rendering/DrawElements.h"
 #include "Styling/SlateTypes.h"
 #include "Styling/CoreStyle.h"
+#include "Styling/UMGCoreStyle.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Slate/UMGDragDropOp.h"
 #include "Slate/SlateBrushAsset.h"
@@ -75,11 +76,6 @@ UDragDropOperation* UWidgetBlueprintLibrary::CreateDragDropOperation(TSubclassOf
 	return DragDropOperation;
 }
 
-void UWidgetBlueprintLibrary::SetInputMode_UIOnly(APlayerController* Target, UWidget* InWidgetToFocus, bool bLockMouseToViewport)
-{
-	SetInputMode_UIOnlyEx(Target, InWidgetToFocus, bLockMouseToViewport ? EMouseLockMode::LockOnCapture : EMouseLockMode::DoNotLock);
-}
-
 void UWidgetBlueprintLibrary::SetInputMode_UIOnlyEx(APlayerController* PlayerController, UWidget* InWidgetToFocus, EMouseLockMode InMouseLockMode)
 {
 	if (PlayerController != nullptr)
@@ -99,11 +95,6 @@ void UWidgetBlueprintLibrary::SetInputMode_UIOnlyEx(APlayerController* PlayerCon
 		FMessageLog("PIE").Error(LOCTEXT("UMG WidgetBlueprint Library: SetInputMode_UIOnly", "SetInputMode_UIOnly expects a valid player controller as 'PlayerController' target"));
 	}
 	#endif // WITH_EDITOR
-}
-
-void UWidgetBlueprintLibrary::SetInputMode_GameAndUI(APlayerController* Target, UWidget* InWidgetToFocus, bool bLockMouseToViewport, bool bHideCursorDuringCapture)
-{
-	SetInputMode_GameAndUIEx(Target, InWidgetToFocus, bLockMouseToViewport ? EMouseLockMode::LockOnCapture : EMouseLockMode::DoNotLock, bHideCursorDuringCapture);
 }
 
 void UWidgetBlueprintLibrary::SetInputMode_GameAndUIEx(APlayerController* PlayerController, UWidget* InWidgetToFocus, EMouseLockMode InMouseLockMode, bool bHideCursorDuringCapture)
@@ -204,7 +195,7 @@ void UWidgetBlueprintLibrary::DrawText(FPaintContext& Context, const FString& In
 	Context.MaxLayer++;
 
 	//TODO UMG Create a font asset usable as a UFont or as a slate font asset.
-	FSlateFontInfo FontInfo = FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText").Font;
+	FSlateFontInfo FontInfo = FUMGCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText").Font;
 	
 	FSlateDrawElement::MakeText(
 		Context.OutDrawElements,

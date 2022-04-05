@@ -49,6 +49,7 @@ public:
 
 FSkeletalMeshComponentDetails::FSkeletalMeshComponentDetails()
 	: CurrentDetailBuilder(NULL)
+	, Skeleton(nullptr)
 	, bAnimPickerEnabled(false)
 {
 
@@ -99,7 +100,8 @@ void FSkeletalMeshComponentDetails::UpdateAnimationCategory(IDetailLayoutBuilder
 	AnimationModeHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(USkeletalMeshComponent, AnimationMode));
 	check (AnimationModeHandle->IsValidHandle());
 
-	AnimationBlueprintHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(USkeletalMeshComponent, AnimClass));
+	const FName AnimationBlueprintName = GET_MEMBER_NAME_CHECKED(USkeletalMeshComponent, AnimClass);
+	AnimationBlueprintHandle = DetailBuilder.GetProperty(AnimationBlueprintName);
 	check(AnimationBlueprintHandle->IsValidHandle());
 
 	AnimationCategory.AddProperty(AnimationModeHandle);
@@ -109,6 +111,7 @@ void FSkeletalMeshComponentDetails::UpdateAnimationCategory(IDetailLayoutBuilder
 
 	DetailBuilder.HideProperty(AnimationBlueprintHandle);
 	AnimationCategory.AddCustomRow(AnimationBlueprintHandle->GetPropertyDisplayName())
+		.RowTag(AnimationBlueprintName)
 		.Visibility(BlueprintVisibility)
 		.NameContent()
 		[
@@ -223,8 +226,13 @@ EVisibility FSkeletalMeshComponentDetails::VisibilityForAnimationMode(EAnimation
 
 bool FSkeletalMeshComponentDetails::OnShouldFilterAnimAsset( const FAssetData& AssetData )
 {
-	const FString SkeletonName = AssetData.GetTagValueRef<FString>("Skeleton");
-	return SkeletonName != SelectedSkeletonName;
+	// Check the compatible skeletons.
+	if (Skeleton && Skeleton->IsCompatibleSkeletonByAssetData(AssetData))
+	{
+		return false;
+	}
+
+	return true;
 }
 
 void FSkeletalMeshComponentDetails::SkeletalMeshPropertyChanged()
@@ -235,7 +243,7 @@ void FSkeletalMeshComponentDetails::SkeletalMeshPropertyChanged()
 void FSkeletalMeshComponentDetails::UpdateSkeletonNameAndPickerVisibility()
 {
 	// Update the selected skeleton name and the picker visibility
-	USkeleton* Skeleton = GetValidSkeletonFromRegisteredMeshes();
+	Skeleton = GetValidSkeletonFromRegisteredMeshes();
 
 	if (Skeleton)
 	{
@@ -291,7 +299,7 @@ TSharedRef<SWidget> FSkeletalMeshComponentDetails::GetClassPickerMenuContent()
 	FClassViewerModule& ClassViewerModule = FModuleManager::LoadModuleChecked<FClassViewerModule>("ClassViewer");
 	FClassViewerInitializationOptions InitOptions;
 	InitOptions.Mode = EClassViewerMode::ClassPicker;
-	InitOptions.ClassFilter = Filter;
+	InitOptions.ClassFilters.Add(Filter.ToSharedRef());
 	InitOptions.bShowNoneOption = true;
 
 	return SNew(SBorder)
@@ -356,8 +364,7 @@ void FSkeletalMeshComponentDetails::UseSelectedAnimBlueprint()
 		{
 			if(USkeleton* AnimBlueprintSkeleton = AnimBlueprintToAssign->TargetSkeleton)
 			{
-				FString BlueprintSkeletonName = FString::Printf(TEXT("%s'%s'"), *AnimBlueprintSkeleton->GetClass()->GetName(), *AnimBlueprintSkeleton->GetPathName());
-				if (BlueprintSkeletonName == SelectedSkeletonName)
+				if (Skeleton && Skeleton->IsCompatible(AnimBlueprintSkeleton))
 				{
 					OnClassPicked(AnimBlueprintToAssign->GetAnimBlueprintGeneratedClass());
 				}
@@ -385,7 +392,7 @@ void FSkeletalMeshComponentDetails::PerformInitialRegistrationOfSkeletalMeshes(I
 
 USkeleton* FSkeletalMeshComponentDetails::GetValidSkeletonFromRegisteredMeshes() const
 {
-	USkeleton* Skeleton = NULL;
+	USkeleton* ResultSkeleton = NULL;
 
 	for (auto ObjectIter = SelectedObjects.CreateConstIterator(); ObjectIter; ++ObjectIter)
 	{
@@ -396,22 +403,22 @@ USkeleton* FSkeletalMeshComponentDetails::GetValidSkeletonFromRegisteredMeshes()
 		}
 
 		// If we've not come across a valid skeleton yet, store this one.
-		if (!Skeleton)
+		if (!ResultSkeleton)
 		{
-			Skeleton = Mesh->SkeletalMesh->GetSkeleton();
+			ResultSkeleton = Mesh->SkeletalMesh->GetSkeleton();
 			continue;
 		}
 
 		// We've encountered a valid skeleton before.
 		// If this skeleton is not the same one, that means there are multiple
 		// skeletons selected, so we don't want to take any action.
-		if (Mesh->SkeletalMesh->GetSkeleton() != Skeleton)
+		if (Mesh->SkeletalMesh->GetSkeleton() != ResultSkeleton)
 		{
 			return NULL;
 		}
 	}
 
-	return Skeleton;
+	return ResultSkeleton;
 }
 
 #undef LOCTEXT_NAMESPACE

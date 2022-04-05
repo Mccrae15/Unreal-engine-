@@ -32,6 +32,14 @@ namespace Chaos
 		Force,
 	};
 
+	enum class EPlasticityType : int32
+	{
+		Free,
+		Shrink,
+		Grow,
+	};
+
+
 	/**
 	 * The order of the angular constraints (for settings held in vectors etc)
 	 */
@@ -41,6 +49,12 @@ namespace Chaos
 		Twist,
 		Swing2,
 		Swing1,
+	};
+
+	enum class EJointCylindricalPositionConstraintType : int32
+	{
+		Axial,
+		Radial
 	};
 
 	struct FJointConstants
@@ -99,20 +113,31 @@ namespace Chaos
 	class CHAOS_API FPBDJointSettings
 	{
 	public:
+		using FTransformPair = TVector<FRigidTransform3, 2>;
+
 		FPBDJointSettings();
 
 		// Ensure that settings are consistent and within valid ranges. Should be called
 		// whenever settings change.
 		void Sanitize();
 
+		bool operator==(const FPBDJointSettings& Other) const
+		{
+			return !FMemory::Memcmp(this, &Other, sizeof(*this));
+		}
+
+		FTransformPair ConnectorTransforms;
+
 		FReal Stiffness;
 		FReal LinearProjection;
 		FReal AngularProjection;
+		FReal ShockPropagation;
 		FReal ParentInvMassScale;
 
 		bool bCollisionEnabled;
-		bool bProjectionEnabled;
-		bool bSoftProjectionEnabled;
+		bool bProjectionEnabled;		// @chaos(todo): remove - implied by alpha
+		bool bShockPropagationEnabled;	// @chaos(todo): remove - implied by alpha
+		bool bSoftProjectionEnabled;	// @chaos(todo): remove - old PBD solver only
 
 		TVector<EJointMotionType, 3> LinearMotionTypes;
 		FReal LinearLimit;
@@ -163,8 +188,12 @@ namespace Chaos
 
 		FReal LinearBreakForce;
 		FReal LinearPlasticityLimit;
+		EPlasticityType LinearPlasticityType;
+		FReal LinearPlasticityInitialDistanceSquared;
 		FReal AngularBreakTorque;
 		FReal AngularPlasticityLimit;
+
+		FReal ContactTransferScale;
 
 		void* UserData;
 	};
@@ -191,8 +220,16 @@ namespace Chaos
 		FReal MinSolverStiffness;
 		FReal MaxSolverStiffness;
 		int32 NumIterationsAtMaxSolverStiffness;
+		int32 NumShockPropagationIterations;
 
-		// @todo(ccaulfield): remove these TEMP overrides for testing
+		// Whether to use the linear or non-linear joint solver
+		bool bUseLinearSolver;
+
+		// Whether to solve rotation then position limits (true), or vice versa
+		// Solving position last leads to less separation at the joints when limits are being forced
+		bool bSolvePositionLast;
+
+		// @todo(chaos): remove these TEMP overrides for testing
 		bool bEnableTwistLimits;
 		bool bEnableSwingLimits;
 		bool bEnableDrives;
@@ -201,6 +238,7 @@ namespace Chaos
 		FReal SwingStiffnessOverride;
 		FReal LinearProjectionOverride;
 		FReal AngularProjectionOverride;
+		FReal ShockPropagationOverride;
 		FReal LinearDriveStiffnessOverride;
 		FReal LinearDriveDampingOverride;
 		FReal AngularDriveStiffnessOverride;

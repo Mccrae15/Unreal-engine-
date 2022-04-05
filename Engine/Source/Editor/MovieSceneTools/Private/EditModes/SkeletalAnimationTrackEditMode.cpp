@@ -20,7 +20,7 @@
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimationPoseData.h"
-#include "Animation/CustomAttributesRuntime.h"
+#include "Animation/AttributesRuntime.h"
 
 #include "Tracks/MovieScene3DTransformTrack.h"
 #include "Sections/MovieScene3DTransformSection.h"
@@ -123,28 +123,6 @@ void FSkeletalAnimationTrackEditMode::Exit()
 void FSkeletalAnimationTrackEditMode::Tick(FEditorViewportClient* ViewportClient, float DeltaTime)
 {
 	FEdMode::Tick(ViewportClient, DeltaTime);
-}
-
-static USkeletalMeshComponent* AcquireSkeletalMeshFromObject(UObject* BoundObject)
-{
-	if (AActor* Actor = Cast<AActor>(BoundObject))
-	{
-		for (UActorComponent* Component : Actor->GetComponents())
-		{
-			if (USkeletalMeshComponent* SkeletalMeshComp = Cast<USkeletalMeshComponent>(Component))
-			{
-				return SkeletalMeshComp;
-			}
-		}
-	}
-	else if (USkeletalMeshComponent* SkeletalMeshComponent = Cast<USkeletalMeshComponent>(BoundObject))
-	{
-		if (SkeletalMeshComponent->SkeletalMesh)
-		{
-			return SkeletalMeshComponent;
-		}
-	}
-	return nullptr;
 }
 
 static void DrawBones(const TArray<FBoneIndexType>& RequiredBones, const FReferenceSkeleton& RefSkeleton, const TArray<FTransform>& WorldTransforms,
@@ -359,7 +337,7 @@ void FSkeletalAnimationTrackEditMode::Render(const FSceneView* View, FViewport* 
 								}
 							}
 							//show skeletons
-							USkeletalMeshComponent* SkelMeshComp = AcquireSkeletalMeshFromObject(BoundObject);
+							USkeletalMeshComponent* SkelMeshComp = MovieSceneToolHelpers::AcquireSkeletalMeshFromObject(BoundObject);
 							if (SkelMeshComp && SkelMeshComp->GetAnimInstance())
 							{
 								const FLinearColor Colors[5] = { FLinearColor(1.0f,0.0f,1.0f,1.0f), FLinearColor(0.0f,1.0f,0.0f,1.0f), FLinearColor(0.0f, 0.0f, 1.0f, 0.0f),
@@ -383,10 +361,10 @@ void FSkeletalAnimationTrackEditMode::Render(const FSceneView* View, FViewport* 
 
 											FBlendedCurve OutCurve;
 											OutCurve.InitFrom(SkelMeshComp->GetAnimInstance()->GetRequiredBones());
-											FStackCustomAttributes TempAttributes;
+											UE::Anim::FStackAttributeContainer TempAttributes;
 											FAnimationPoseData OutAnimationPoseData(OutPose, OutCurve, TempAttributes);
 
-											const float Seconds = AnimSection->MapTimeToAnimation(CurrentTime.Time, CurrentTime.Rate);
+											const float Seconds = static_cast<float>(AnimSection->MapTimeToAnimation(CurrentTime.Time, CurrentTime.Rate));
 											FAnimExtractContext ExtractionContext(Seconds, false);
 
 											AnimSequence->GetAnimationPose(OutAnimationPoseData, ExtractionContext);
@@ -491,20 +469,12 @@ bool FSkeletalAnimationTrackEditMode::StartTracking(FEditorViewportClient* InVie
 
 bool FSkeletalAnimationTrackEditMode::UsesTransformWidget() const
 {
-	if (IsSomethingSelected())
-	{
-		return true;
-	}
-	return FEdMode::UsesTransformWidget();
+	return IsSomethingSelected();
 }
 
-bool FSkeletalAnimationTrackEditMode::UsesTransformWidget(FWidget::EWidgetMode CheckMode) const
+bool FSkeletalAnimationTrackEditMode::UsesTransformWidget(UE::Widget::EWidgetMode CheckMode) const
 {
-	if (IsSomethingSelected())
-	{
-		return true;
-	}
-	return FEdMode::UsesTransformWidget(CheckMode);
+	return IsSomethingSelected();
 }
 
 FVector FSkeletalAnimationTrackEditMode::GetWidgetLocation() const
@@ -539,7 +509,7 @@ bool FSkeletalAnimationTrackEditMode::HandleClick(FEditorViewportClient* InViewp
 			}
 		}
 	}
-	return FEdMode::HandleClick(InViewportClient, HitProxy, Click);
+	return false;
 }
 
 bool FSkeletalAnimationTrackEditMode::IsSomethingSelected() const
@@ -586,13 +556,13 @@ bool FSkeletalAnimationTrackEditMode::InputDelta(FEditorViewportClient* InViewpo
 	const bool bAltDown = InViewport->KeyState(EKeys::LeftAlt) || InViewport->KeyState(EKeys::RightAlt);
 	const bool bMouseButtonDown = InViewport->KeyState(EKeys::LeftMouseButton);
 
-	const FWidget::EWidgetMode WidgetMode = InViewportClient->GetWidgetMode();
+	const UE::Widget::EWidgetMode WidgetMode = InViewportClient->GetWidgetMode();
 	const EAxisList::Type CurrentAxis = InViewportClient->GetCurrentWidgetAxis();
 
 	if (bIsTransacting && bMouseButtonDown && !bCtrlDown && !bShiftDown && !bAltDown && CurrentAxis != EAxisList::None)
 	{
-		const bool bDoRotation = !Rot.IsZero() && (WidgetMode == FWidget::WM_Rotate || WidgetMode == FWidget::WM_TranslateRotateZ);
-		const bool bDoTranslation = !Drag.IsZero() && (WidgetMode == FWidget::WM_Translate || WidgetMode == FWidget::WM_TranslateRotateZ);
+		const bool bDoRotation = !Rot.IsZero() && (WidgetMode == UE::Widget::WM_Rotate || WidgetMode == UE::Widget::WM_TranslateRotateZ);
+		const bool bDoTranslation = !Drag.IsZero() && (WidgetMode == UE::Widget::WM_Translate || WidgetMode == UE::Widget::WM_TranslateRotateZ);
 
 		if (IsSomethingSelected())
 		{

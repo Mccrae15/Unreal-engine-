@@ -16,6 +16,7 @@
 namespace Chaos
 {
 	class FHeightfieldRaycastVisitor;
+	class FContactPoint;
 	class FConvex;
 	class FTriangle;
 	struct FMTDInfo;
@@ -66,14 +67,14 @@ namespace Chaos
 		bool OverlapGeom(const TImplicitObjectScaled<FCapsule>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD = nullptr) const;
 		bool OverlapGeom(const TImplicitObjectScaled<FConvex>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FMTDInfo* OutMTD = nullptr) const;
 
-		bool SweepGeom(const TSphere<FReal, 3>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, const FReal Thickness = 0, bool bComputeMTD = false) const;
-		bool SweepGeom(const TBox<FReal, 3>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, const FReal Thickness = 0, bool bComputeMTD = false) const;
-		bool SweepGeom(const FCapsule& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, const FReal Thickness = 0, bool bComputeMTD = false) const;
-		bool SweepGeom(const FConvex& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, const FReal Thickness = 0, bool bComputeMTD = false) const;
-		bool SweepGeom(const TImplicitObjectScaled<TSphere<FReal, 3>>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, const FReal Thickness = 0, bool bComputeMTD = false) const;
-		bool SweepGeom(const TImplicitObjectScaled<TBox<FReal, 3>>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, const FReal Thickness = 0, bool bComputeMTD = false) const;
-		bool SweepGeom(const TImplicitObjectScaled<FCapsule>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, const FReal Thickness = 0, bool bComputeMTD = false) const;
-		bool SweepGeom(const TImplicitObjectScaled<FConvex>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, const FReal Thickness = 0, bool bComputeMTD = false) const;
+		bool SweepGeom(const TSphere<FReal, 3>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal, const FReal Thickness = 0, bool bComputeMTD = false) const;
+		bool SweepGeom(const TBox<FReal, 3>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal, const FReal Thickness = 0, bool bComputeMTD = false) const;
+		bool SweepGeom(const FCapsule& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal, const FReal Thickness = 0, bool bComputeMTD = false) const;
+		bool SweepGeom(const FConvex& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal, const FReal Thickness = 0, bool bComputeMTD = false) const;
+		bool SweepGeom(const TImplicitObjectScaled<TSphere<FReal, 3>>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal, const FReal Thickness = 0, bool bComputeMTD = false) const;
+		bool SweepGeom(const TImplicitObjectScaled<TBox<FReal, 3>>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal, const FReal Thickness = 0, bool bComputeMTD = false) const;
+		bool SweepGeom(const TImplicitObjectScaled<FCapsule>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal, const FReal Thickness = 0, bool bComputeMTD = false) const;
+		bool SweepGeom(const TImplicitObjectScaled<FConvex>& QueryGeom, const FRigidTransform3& StartTM, const FVec3& Dir, const FReal Length, FReal& OutTime, FVec3& OutPosition, FVec3& OutNormal, int32& OutFaceIndex, FVec3& OutFaceNormal, const FReal Thickness = 0, bool bComputeMTD = false) const;
 
 		bool GJKContactPoint(const TBox<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const;
 		bool GJKContactPoint(const TSphere<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const;
@@ -83,6 +84,13 @@ namespace Chaos
 		bool GJKContactPoint(const TImplicitObjectScaled<TSphere<FReal, 3>>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const;
 		bool GJKContactPoint(const TImplicitObjectScaled<FCapsule>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const;
 		bool GJKContactPoint(const TImplicitObjectScaled<FConvex>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const;
+
+		bool ContactManifold(const TBox<FReal, 3>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const;
+		bool ContactManifold(const FCapsule& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const;
+		bool ContactManifold(const FConvex& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const;
+		bool ContactManifold(const TImplicitObjectScaled<TBox<FReal, 3>>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const;
+		bool ContactManifold(const TImplicitObjectScaled<FCapsule>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const;
+		bool ContactManifold(const TImplicitObjectScaled<FConvex>& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const;
 
 
 		virtual int32 FindMostOpposingFace(const FVec3& Position, const FVec3& UnitDir, int32 HintFaceIndex, FReal SearchDist) const override;
@@ -126,7 +134,9 @@ namespace Chaos
 
 		virtual const FAABB3 BoundingBox() const
 		{
-			CachedBounds = FAABB3(LocalBounds.Min() * GeomData.Scale, LocalBounds.Max() * GeomData.Scale);
+			// Generate a correct bound including scales (may be negative)
+			CachedBounds = FAABB3::FromPoints(LocalBounds.Min() * GeomData.Scale, LocalBounds.Max() * GeomData.Scale);
+
 			return CachedBounds;
 		}
 
@@ -140,7 +150,7 @@ namespace Chaos
 			// to support loading. Cast const away here to get bytes written
 			const_cast<FHeightField*>(this)->Serialize(ChaosAr);
 
-			return FCrc::MemCrc32(Bytes.GetData(), Bytes.GetAllocatedSize());
+			return FCrc::MemCrc32(Bytes.GetData(), (int32)Bytes.GetAllocatedSize());
 		}
 
 		static constexpr EImplicitObjectType StaticType()
@@ -257,6 +267,27 @@ namespace Chaos
 				OutPts[3] = {(FReal)X + 1, (FReal)Y + 1, H3};
 			}
 
+			FORCEINLINE void GetPointsAndBounds(int32 Index, FVec3 OutPts[4], FAABB3& OutBounds) const
+			{
+				const FReal H0 = MinValue + Heights[Index] * HeightPerUnit;
+				const FReal H1 = MinValue + Heights[Index + 1] * HeightPerUnit;
+				const FReal H2 = MinValue + Heights[Index + NumCols] * HeightPerUnit;
+				const FReal H3 = MinValue + Heights[Index + NumCols + 1] * HeightPerUnit;
+
+				const int32 X = Index % (NumCols);
+				const int32 Y = Index / (NumCols);
+
+				OutPts[0] = { (FReal)X, (FReal)Y, H0 };
+				OutPts[1] = { (FReal)X + 1, (FReal)Y, H1 };
+				OutPts[2] = { (FReal)X, (FReal)Y + 1, H2 };
+				OutPts[3] = { (FReal)X + 1, (FReal)Y + 1, H3 };
+
+				const FReal MinZ = FMath::Min<FReal>(H0, FMath::Min<FReal>(H1, FMath::Min<FReal>(H2, H3)));
+				const FReal MaxZ = FMath::Max<FReal>(H0, FMath::Max<FReal>(H1, FMath::Max<FReal>(H2, H3)));
+
+				OutBounds = FAABB3(FVec3((FReal)X, (FReal)Y, MinZ), FVec3((FReal)X + 1, (FReal)Y + 1, MaxZ));
+			}
+
 			FORCEINLINE void GetPointsScaled(int32 Index, FVec3 OutPts[4]) const
 			{
 				GetPoints(Index, OutPts);
@@ -267,6 +298,19 @@ namespace Chaos
 				OutPts[3] *= Scale;
 			}
 
+			FORCEINLINE void GetPointsAndBoundsScaled(int32 Index, FVec3 OutPts[4], FAABB3& OutBounds) const
+			{
+				GetPointsAndBounds(Index, OutPts, OutBounds);
+
+				OutPts[0] *= Scale;
+				OutPts[1] *= Scale;
+				OutPts[2] *= Scale;
+				OutPts[3] *= Scale;
+
+				const FVec3 Scale3(Scale);
+				OutBounds = FAABB3::FromPoints(OutBounds.Min() * Scale3, OutBounds.Max() * Scale3);
+			}
+
 			FORCEINLINE FReal GetMinHeight() const
 			{
 				return MinValue;
@@ -275,31 +319,6 @@ namespace Chaos
 			FORCEINLINE FReal GetMaxHeight() const
 			{
 				return MaxValue;
-			}
-
-			void SafeSerializeReal(FChaosArchive& Ar, FReal& RealValue, int32 RuntimeRealSize, int32 SerializedRealSize)
-			{
-				if (RuntimeRealSize == SerializedRealSize)
-				{
-					// same sizes all FReal
-					Ar << RealValue;
-				}
-				else 
-				{
-					// size don't match need to do some conversion
-					if (SerializedRealSize == sizeof(float))
-					{
-						float Value = (float)RealValue;
-						Ar << Value;
-						RealValue = (FReal)Value;
-					}
-					else if (SerializedRealSize == sizeof(double))
-					{
-						double Value = (double)RealValue;
-						Ar << Value;
-						RealValue = (FReal)Value;
-					}
-				}
 			}
 
 			void Serialize(FChaosArchive& Ar)
@@ -324,22 +343,22 @@ namespace Chaos
 				
 				Ar << Heights;
 				Ar << Scale;
-				SafeSerializeReal(Ar, MinValue, RuntimeRealSize, SerializedRealSize);
-				SafeSerializeReal(Ar, MaxValue, RuntimeRealSize, SerializedRealSize);
+				Ar << MinValue;
+				Ar << MaxValue;
 				Ar << NumRows;
 				Ar << NumCols;
 
 				Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
 				if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) >= FExternalPhysicsCustomObjectVersion::HeightfieldData)
 				{
-					SafeSerializeReal(Ar, Range, RuntimeRealSize, SerializedRealSize);
-					SafeSerializeReal(Ar, HeightPerUnit, RuntimeRealSize, SerializedRealSize);
+					Ar << Range;
+					Ar << HeightPerUnit;
 
 					if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) < FExternalPhysicsCustomObjectVersion::HeightfieldImplicitBounds)
 					{
 						// todo(chaos) this may not matter if the Vector types are handling serialization properly 
 						// legacy, need to keep the inner box type as float ( not FReal ) 
-						TArray<TBox<float, 3>> CellBounds;
+						TArray<FBoxFloat3> CellBounds;
 						Ar << CellBounds;
 					}
 					else if(Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) < FExternalPhysicsCustomObjectVersion::HeightfieldUsesHeightsDirectly)
@@ -373,6 +392,27 @@ namespace Chaos
 				, Max(0)
 			{}
 
+			FBounds2D(const FVec2& InMin, const FVec2& InMax)
+				: Min(InMin)
+				, Max(InMax)
+			{}
+
+			/**
+			 * Given a set of points, wrap a 2D bounds around them
+			 * @param P0 The first of the points to wrap
+			 * @param InPoints Parameter pack of all subsequent points
+			 */
+			template<typename... Points>
+			static FBounds2D FromPoints(const FVec2& P0, const Points&... InPoints)
+			{
+				static_assert(sizeof...(InPoints) > 0);
+				static_assert(std::is_same_v<std::common_type_t<Points...>, FVec2>);
+
+				FBounds2D Result(P0, P0);
+				(Result.GrowToInclude(InPoints), ...);
+				return Result;
+			}
+
 			explicit FBounds2D(const FAABB3& In3DBounds)
 			{
 				Set(In3DBounds);
@@ -392,6 +432,12 @@ namespace Chaos
 			bool IsInside(const FVec2& InPoint) const
 			{
 				return InPoint[0] >= Min[0] && InPoint[0] <= Max[0] && InPoint[1] >= Min[1] && InPoint[1] <= Max[1];
+			}
+
+			void GrowToInclude(const FVec2& InPoint)
+			{
+				Min = { FMath::Min(Min.X, InPoint.X), FMath::Min(Min.Y, InPoint.Y) };
+				Max = { FMath::Max(Max.X, InPoint.X), FMath::Max(Max.Y, InPoint.Y) };
 			}
 
 			FVec2 Clamp(const FVec2& InToClamp, FReal InNudge = SMALL_NUMBER) const
@@ -597,6 +643,15 @@ namespace Chaos
 
 		template <typename GeomType>
 		bool GJKContactPointImp(const GeomType& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, FVec3& ContactLocation, FVec3& ContactNormal, FReal& ContactPhi) const;
+
+		// @todo(chaos): remove ContactManifoldNonPlanarConvexImp and ContactManifoldPlanarConvexImp and move collision detection code out of this class.
+		// Instead, provide an API for generating triangles in a query bounds in some space.
+
+		template <typename GeomType>
+		bool ContactManifoldNonPlanarConvexImp(const GeomType& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const;
+
+		template <typename GeomType>
+		bool ContactManifoldPlanarConvexImp(const GeomType& QueryGeom, const FRigidTransform3& QueryTM, const FReal Thickness, TArray<FContactPoint>& ContactPoints) const;
 
 	};
 }

@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WidgetBlueprint.h"
+
 #include "Components/Widget.h"
 #include "Blueprint/UserWidget.h"
 #include "MovieScene.h"
@@ -19,6 +20,8 @@
 #include "WidgetBlueprintCompiler.h"
 #include "UObject/EditorObjectVersion.h"
 #include "UObject/FortniteMainBranchObjectVersion.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "UObject/ObjectSaveContext.h"
 #include "WidgetGraphSchema.h"
 #include "UMGEditorProjectSettings.h"
 
@@ -31,6 +34,7 @@
 #include "K2Node_CallFunction.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_Composite.h"
+#include "K2Node_FunctionResult.h"
 #include "Blueprint/WidgetNavigation.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
@@ -580,13 +584,106 @@ void UWidgetBlueprint::ReplaceDeprecatedNodes()
 		}
 	}
 
+#if WITH_EDITORONLY_DATA
+	if (GetLinkerCustomVersion(FUE5ReleaseStreamObjectVersion::GUID) < FUE5ReleaseStreamObjectVersion::BlueprintPinsUseRealNumbers)
+	{
+		// Revert any overzealous PC_Float to PC_Real/PC_Double conversions.
+
+		// The Blueprint real number changes will automatically convert pin types to doubles if used in a non-native context.
+		// However, UMG property bindings are a special case: the BP functions that bind to the native delegate must agree on their underlying types.
+		// Specifically, bindings used with float properties *must* use the PC_Float type as the return value in a BP function.
+		// In order to correct this behavior, we need to:
+		// * Iterate throught the property bindings.
+		// * Find the corresponding delegate signature.
+		// * Find the function graph that matches the binding.
+		// * Find the result node.
+		// * Change the pin type back to float if that's what the delegate signature expects.
+
+		TArray<UEdGraph*> Graphs;
+		GetAllGraphs(Graphs);
+
+		for (const FDelegateEditorBinding& Binding : Bindings)
+		{
+			if (Binding.IsAttributePropertyBinding(this))
+			{
+				check(WidgetTree);
+				if (UWidget* TargetWidget = WidgetTree->FindWidget(FName(*Binding.ObjectName)))
+				{
+					const FDelegateProperty* BindableProperty =
+						FindFProperty<FDelegateProperty>(TargetWidget->GetClass(), FName(*(Binding.PropertyName.ToString() + TEXT("Delegate"))));
+
+					if (BindableProperty)
+					{
+						auto GraphMatchesBindingPredicate = [&Binding](const UEdGraph* Graph) {
+							check(Graph);
+							return (Binding.FunctionName == Graph->GetFName());
+						};
+
+						if (UEdGraph** GraphEntry = Graphs.FindByPredicate(GraphMatchesBindingPredicate))
+						{
+							UEdGraph* CurrentGraph = *GraphEntry;
+							check(CurrentGraph);
+
+							for (UEdGraphNode* Node : CurrentGraph->Nodes)
+							{
+								check(Node);
+								if (Node->IsA<UK2Node_FunctionResult>())
+								{
+									for (UEdGraphPin* Pin : Node->Pins)
+									{
+										check(Pin);
+										if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Real)
+										{
+											FName PinName = Pin->GetFName();
+
+											const UFunction* DelegateFunction = BindableProperty->SignatureFunction;
+											check(DelegateFunction);
+
+											auto OutputParameterMatchesPin = [PinName](FFloatProperty* FloatParam) {
+												check(FloatParam);
+												bool bHasMatch =
+													(FloatParam->PropertyFlags & CPF_OutParm) &&
+													(FloatParam->GetFName() == PinName);
+
+												return bHasMatch;
+											};
+
+											for (TFieldIterator<FFloatProperty> It(DelegateFunction); It; ++It)
+											{
+												if (OutputParameterMatchesPin(*It))
+												{
+													Pin->PinType.PinSubCategory = UEdGraphSchema_K2::PC_Float;
+													break;
+												}
+											}
+
+											break;
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+#endif
+
 	Super::ReplaceDeprecatedNodes();
 }
 
 #if WITH_EDITORONLY_DATA
 void UWidgetBlueprint::PreSave(const class ITargetPlatform* TargetPlatform)
 {
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS;
 	Super::PreSave(TargetPlatform);
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS;
+}
+
+void UWidgetBlueprint::PreSave(FObjectPreSaveContext ObjectSaveContext)
+{
+	Super::PreSave(ObjectSaveContext);
 }
 #endif // WITH_EDITORONLY_DATA
 
@@ -693,6 +790,7 @@ bool UWidgetBlueprint::DetectSlateWidgetLeaks(TArray<FText>& ValidationErrors)
 		}
 	});
 
+	DummyWorld->MarkObjectsPendingKill();
 	return bFoundLeak;
 }
 
@@ -837,6 +935,7 @@ void UWidgetBlueprint::Serialize(FArchive& Ar)
 
 	Ar.UsingCustomVersion(FEditorObjectVersion::GUID);
 	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
 }
 
 void UWidgetBlueprint::PostLoad()
@@ -849,7 +948,7 @@ void UWidgetBlueprint::PostLoad()
 		Widget->ConnectEditorData();
 	});
 
-	if( GetLinkerUE4Version() < VER_UE4_FIXUP_WIDGET_ANIMATION_CLASS )
+	if( GetLinkerUEVersion() < VER_UE4_FIXUP_WIDGET_ANIMATION_CLASS )
 	{
 		// Fixup widget animations.
 		for( auto& OldAnim : AnimationData_DEPRECATED )
@@ -872,7 +971,7 @@ void UWidgetBlueprint::PostLoad()
 		AnimationData_DEPRECATED.Empty();
 	}
 
-	if ( GetLinkerUE4Version() < VER_UE4_RENAME_WIDGET_VISIBILITY )
+	if ( GetLinkerUEVersion() < VER_UE4_RENAME_WIDGET_VISIBILITY )
 	{
 		static const FName Visiblity(TEXT("Visiblity"));
 		static const FName Visibility(TEXT("Visibility"));
@@ -921,6 +1020,11 @@ UClass* UWidgetBlueprint::GetBlueprintClass() const
 }
 
 bool UWidgetBlueprint::AllowsDynamicBinding() const
+{
+	return true;
+}
+
+bool UWidgetBlueprint::SupportsInputEvents() const
 {
 	return true;
 }

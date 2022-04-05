@@ -11,6 +11,7 @@
 #include "Engine/Level.h"
 #include "Engine/World.h"
 #include "Engine/LevelStreaming.h"
+#include "UObject/SavePackage.h"
 #include "UObject/UObjectHash.h"
 #include "AssetRegistryModule.h"
 #include "PackageHelperFunctions.h"
@@ -63,14 +64,16 @@ void UConvertLevelsToExternalActorsCommandlet::GetSubLevelsToConvert(ULevel* Mai
 
 bool UConvertLevelsToExternalActorsCommandlet::CheckExternalActors(const FString& Level, bool bRepair)
 {
-	const FString LevelExternalPathActors = ULevel::GetExternalActorsPath(Level);
-
 	// Gather duplicated actor files.
 	TMultiMap<FName, FName> DuplicatedActorFiles;
 	{
 		TMap<FName, FName> ActorFiles;
 
 		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+
+		// Let the asset registry process any pending operations before continuing
+		AssetRegistry.Tick(-1);
+
 		FDelegateHandle AddedCheckHandle = AssetRegistry.OnAssetAdded().AddLambda([&ActorFiles](const FAssetData& AssetData)
 		{
 			check(!ActorFiles.Contains(AssetData.ObjectPath));
@@ -88,7 +91,7 @@ bool UConvertLevelsToExternalActorsCommandlet::CheckExternalActors(const FString
 			DuplicatedActorFiles.Add(AssetData.ObjectPath, AssetData.PackageName);			
 		});
 
-		AssetRegistry.ScanPathsSynchronous({LevelExternalPathActors});
+		AssetRegistry.ScanPathsSynchronous(ULevel::GetExternalObjectsPaths(Level), /*bForceRescan*/true, /*bIgnoreDenyListScanFilters*/true);
 
 		AssetRegistry.OnAssetAdded().Remove(AddedCheckHandle);
 		AssetRegistry.OnAssetUpdated().Remove(UpdatedCheckHandle);
@@ -175,8 +178,9 @@ bool UConvertLevelsToExternalActorsCommandlet::SavePackage(UPackage* Package)
 {
 	// Use GEditor save as it does some UWorld specific shenanigans such as handle level offsets
 	FString PackageFileName = SourceControlHelpers::PackageFilename(Package);
-	FSavePackageResultStruct SaveResult = GEditor->Save(Package, nullptr, RF_Standalone, *PackageFileName,
-		GError, nullptr, false, true, SAVE_None);
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Standalone;
+	FSavePackageResultStruct SaveResult = GEditor->Save(Package, nullptr, *PackageFileName, SaveArgs);
 
 	if (SaveResult.Result != ESavePackageResult::Success)
 	{
@@ -377,11 +381,10 @@ int32 UConvertLevelsToExternalActorsCommandlet::Main(const FString& Params)
 	TArray<UPackage*> PackagesToSave;
 	for(ULevel* Level : LevelsToConvert)
 	{
-		Level->SetUseExternalActors(bConvertToExternal);
 		Level->ConvertAllActorsToPackaging(bConvertToExternal);
 		UPackage* LevelPackage = Level->GetPackage();
 		PackagesToSave.Add(LevelPackage);
-		PackagesToSave.Append(Level->GetLoadedExternalActorPackages());
+		PackagesToSave.Append(Level->GetLoadedExternalObjectPackages());
 	}
 
 	for (UPackage* PackageToSave : PackagesToSave)

@@ -7,14 +7,26 @@ using System.Text;
 using System.IO;
 using System.Diagnostics;
 using UnrealBuildTool;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace AutomationTool
 {
 	class WindowsHostPlatform : HostPlatform
 	{
-		public override string GetMsBuildExe()
+		public override string GetFrameworkMsbuildExe()
 		{
 			return WindowsExports.GetMSBuildToolPath();
+		}
+
+		public override FileReference GetDotnetExe()
+		{
+			return FileReference.Combine(Unreal.EngineDirectory, @"Binaries\ThirdParty\DotNet\Windows\dotnet.exe");
+		}
+
+		public override string GetDotnetMsbuildExe()
+		{
+			return @"..\..\ThirdParty\DotNet\Windows\dotnet.exe";
 		}
 
 		public override string RelativeBinariesFolder
@@ -22,15 +34,15 @@ namespace AutomationTool
 			get { return @"Engine/Binaries/Win64/"; }
 		}
 
-		public override string GetUE4ExePath(string UE4Exe)
+		public override string GetUnrealExePath(string UnrealExe)
 		{
-			if(Path.IsPathRooted(UE4Exe))
+			if(Path.IsPathRooted(UnrealExe))
 			{
-				return CommandUtils.CombinePaths(UE4Exe);
+				return CommandUtils.CombinePaths(UnrealExe);
 			}
 			else
 			{
-				return CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, RelativeBinariesFolder, UE4Exe);
+				return CommandUtils.CombinePaths(CommandUtils.CmdEnv.LocalRoot, RelativeBinariesFolder, UnrealExe);
 			}
 		}
 
@@ -57,11 +69,6 @@ namespace AutomationTool
 		public override void SetConsoleCtrlHandler(ProcessManager.CtrlHandlerDelegate Handler)
 		{
 			ProcessManager.SetConsoleCtrlHandler(Handler, true);
-		}
-
-		public override bool IsScriptModuleSupported(string ModuleName)
-		{
-			return true;
 		}
 
 		public override UnrealTargetPlatform HostEditorPlatform

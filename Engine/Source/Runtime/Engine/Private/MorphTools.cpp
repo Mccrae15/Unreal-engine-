@@ -10,6 +10,57 @@
 #include "Animation/MorphTarget.h"
 #include "Rendering/SkeletalMeshModel.h"
 #include "Rendering/SkeletalMeshLODModel.h"
+#include "Interfaces/ITargetPlatform.h"
+
+FArchive& operator<<(FArchive& Ar, FMorphTargetLODModel& M)
+{
+	Ar.UsingCustomVersion(FEditorObjectVersion::GUID);
+	Ar.UsingCustomVersion(FFortniteMainBranchObjectVersion::GUID);
+	Ar.UsingCustomVersion(FUE5PrivateFrostyStreamObjectVersion::GUID);
+
+	if (!Ar.IsObjectReferenceCollector())
+	{
+		if (Ar.IsLoading() && Ar.CustomVer(FEditorObjectVersion::GUID) < FEditorObjectVersion::AddedMorphTargetSectionIndices)
+		{
+			Ar << M.Vertices << M.NumBaseMeshVerts;
+			M.bGeneratedByEngine = false;
+		}
+		else if (Ar.IsLoading() && Ar.CustomVer(FFortniteMainBranchObjectVersion::GUID) < FFortniteMainBranchObjectVersion::SaveGeneratedMorphTargetByEngine)
+		{
+			Ar << M.Vertices << M.NumBaseMeshVerts << M.SectionIndices;
+			M.bGeneratedByEngine = false;
+		}
+		else
+		{
+			bool bVerticesAreStrippedForCookedBuilds = false;
+			if (Ar.IsPersistent() && (Ar.CustomVer(FUE5PrivateFrostyStreamObjectVersion::GUID) >= FUE5PrivateFrostyStreamObjectVersion::StripMorphTargetSourceDataForCookedBuilds))
+			{
+				// Strip source morph data for cooked build if targets don't include mobile. Mobile uses CPU morphing which needs the source morph data.
+				bVerticesAreStrippedForCookedBuilds = Ar.IsCooking() && (!Ar.CookingTarget()->SupportsFeature(ETargetPlatformFeatures::MobileRendering));
+				Ar << bVerticesAreStrippedForCookedBuilds;
+			}
+
+			if (bVerticesAreStrippedForCookedBuilds)
+			{
+				M.NumVertices = M.Vertices.Num();
+				Ar << M.NumVertices;
+			}
+			else
+			{
+				Ar << M.Vertices;
+
+				if (Ar.IsLoading())
+				{
+					M.NumVertices = M.Vertices.Num();
+				}
+			}
+
+			Ar << M.NumBaseMeshVerts << M.SectionIndices << M.bGeneratedByEngine;
+		}
+	}
+
+	return Ar;
+}
 
 /** compare based on base mesh source vertex indices */
 struct FCompareMorphTargetDeltas
@@ -20,11 +71,12 @@ struct FCompareMorphTargetDeltas
 	}
 };
 
-FMorphTargetDelta* UMorphTarget::GetMorphTargetDelta(int32 LODIndex, int32& OutNumDeltas)
+const FMorphTargetDelta* UMorphTarget::GetMorphTargetDelta(int32 LODIndex, int32& OutNumDeltas) const
 {
 	if(LODIndex < MorphLODModels.Num())
 	{
-		FMorphTargetLODModel& MorphModel = MorphLODModels[LODIndex];
+		// Calling GetMorphLODModels to potentially get from subclasses
+		const FMorphTargetLODModel& MorphModel = GetMorphLODModels()[LODIndex];
 		OutNumDeltas = MorphModel.Vertices.Num();
 		return MorphModel.Vertices.GetData();
 	}
@@ -33,10 +85,15 @@ FMorphTargetDelta* UMorphTarget::GetMorphTargetDelta(int32 LODIndex, int32& OutN
 	return NULL;
 }
 
-bool UMorphTarget::HasDataForLOD(int32 LODIndex) 
+bool UMorphTarget::HasDataForLOD(int32 LODIndex) const
 {
 	// If we have an entry for this LOD, and it has verts
+#if WITH_EDITOR
 	return (MorphLODModels.IsValidIndex(LODIndex) && MorphLODModels[LODIndex].Vertices.Num() > 0);
+#else
+	// Morph target's vertices array could have been emptied after render data is created, so check NumVertices instead
+	return (MorphLODModels.IsValidIndex(LODIndex) && MorphLODModels[LODIndex].NumVertices > 0);
+#endif
 }
 
 bool UMorphTarget::HasValidData() const
@@ -47,9 +104,34 @@ bool UMorphTarget::HasValidData() const
 		{
 			return true;
 		}
+#if !WITH_EDITOR
+		// In cooked builds, Model.Vertices is stripped but Model.NumVertices is valid
+		else if (Model.NumVertices > 0)
+		{
+			return true;
+		}
+#endif
 	}
 
 	return false;
+}
+
+bool UMorphTarget::HasDataForSection(int32 LODIndex, int32 SectionIndex) const
+{
+	return HasDataForLOD(LODIndex) && MorphLODModels[LODIndex].SectionIndices.Contains(SectionIndex);
+}
+
+void UMorphTarget::EmptyMorphLODModels()
+{
+	MorphLODModels.Empty();
+}
+
+void UMorphTarget::DiscardVertexData()
+{
+	for (FMorphTargetLODModel& Model : MorphLODModels)
+	{
+		Model.DiscardVertexData();
+	}
 }
 
 #if WITH_EDITOR
@@ -108,6 +190,7 @@ void UMorphTarget::PopulateDeltas(const TArray<FMorphTargetDelta>& Deltas, const
 
 	// remove array slack
 	MorphModel.Vertices.Shrink();
+	MorphModel.NumVertices = MorphModel.Vertices.Num();
 }
 
 void UMorphTarget::RemoveEmptyMorphTargets()

@@ -11,6 +11,7 @@
 #include "Widgets/Layout/SSpacer.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "EditorStyleSet.h"
+#include "Styling/CoreStyle.h"
 #include "GameFramework/Actor.h"
 #include "Containers/ArrayBuilder.h"
 #include "KeyParams.h"
@@ -294,18 +295,11 @@ void FSequencerObjectBindingNode::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		}
 		else
 		{
-			
-			if (ObjectClass->IsChildOf(AActor::StaticClass()))
-			{
-				FFormatNamedArguments Args;
-
-				MenuBuilder.AddSubMenu(
-					FText::Format(LOCTEXT("AssignActor", "Assign Actor"), Args),
-					FText::Format(LOCTEXT("AssignActorTooltip", "Assign an actor to this track"), Args),
-					FNewMenuDelegate::CreateSP(this, &FSequencerObjectBindingNode::AddAssignActorMenu));
-			}
+			MenuBuilder.BeginSection("Possessable");
 
 			MenuBuilder.AddMenuEntry( FSequencerCommands::Get().ConvertToSpawnable );
+
+			MenuBuilder.EndSection();
 		}
 
 		MenuBuilder.BeginSection("Import/Export", LOCTEXT("ImportExportMenuSectionName", "Import/Export"));
@@ -541,60 +535,6 @@ void FSequencerObjectBindingNode::HandleTemplateActorClassPicked(UClass* ChosenC
 	}
 }
 
-
-void FSequencerObjectBindingNode::AddAssignActorMenu(FMenuBuilder& MenuBuilder)
-{
-	TArray<AActor*> SelectedActors;
-	GEditor->GetSelectedActors()->GetSelectedObjects<AActor>(SelectedActors);
-
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("AddSelectedToBinding", "Add Selected"),
-		LOCTEXT("AddSelectedToBindingTooltip", "Add selected objects to this track"),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda([=] { GetSequencer().AddActorsToBinding(ObjectBinding, SelectedActors); }),
-			FCanExecuteAction::CreateLambda([=] { return SelectedActors.Num() > 0; })
-			)
-		);
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("ReplaceBindingWithSelected", "Replace with Selected"),
-		LOCTEXT("ReplaceBindingWithSelectedTooltip", "Replace the object binding with selected objects"),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda([=] { GetSequencer().ReplaceBindingWithActors(ObjectBinding, SelectedActors); }),
-			FCanExecuteAction::CreateLambda([=] { return SelectedActors.Num() > 0; })
-		)
-	);
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("RemoveSelectedFromBinding", "Remove Selected"),
-		LOCTEXT("RemoveSelectedFromBindingTooltip", "Remove selected objects from this track"),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda([=] { GetSequencer().RemoveActorsFromBinding(ObjectBinding, SelectedActors); }),
-			FCanExecuteAction::CreateLambda([=] { return SelectedActors.Num() > 0; })
-		)
-	);
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("RemoveAllBindings", "Remove All"),
-		LOCTEXT("RemoveAllBindingsTooltip", "Remove all bound objects from this track"),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda([=] { GetSequencer().RemoveAllBindings(ObjectBinding); })
-		)
-	);
-	MenuBuilder.AddMenuEntry(
-		LOCTEXT("RemoveMissing", "Remove Missing"),
-		LOCTEXT("RemoveMissingooltip", "Remove missing objects bound to this track"),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda([=] { GetSequencer().RemoveInvalidBindings(ObjectBinding); })
-		)
-	);
-
-	GetSequencer().AssignActor(MenuBuilder, ObjectBinding);
-}
-
-
 void FSequencerObjectBindingNode::AddTagMenu(FMenuBuilder& MenuBuilder)
 {
 	MenuBuilder.AddMenuEntry(FSequencerCommands::Get().OpenTaggedBindingManager);
@@ -804,7 +744,7 @@ FText FSequencerObjectBindingNode::GetDisplayName() const
 	return FText();
 }
 
-FLinearColor FSequencerObjectBindingNode::GetDisplayNameColor() const
+FSlateColor FSequencerObjectBindingNode::GetDisplayNameColor() const
 {
 	FSequencer& Sequencer = ParentTree.GetSequencer();
 
@@ -843,7 +783,7 @@ FLinearColor FSequencerObjectBindingNode::GetDisplayNameColor() const
 		{
 			if (StaticCastSharedPtr<FSequencerObjectBindingNode>(CurrentNode)->GetBindingType() == EObjectBindingType::Spawnable)
 			{
-				return FLinearColor::Gray;
+				return FSlateColor::UseSubduedForeground();
 			}
 		}
 
@@ -862,7 +802,7 @@ FText FSequencerObjectBindingNode::GetDisplayNameToolTipText() const
 
 	if ( BoundObjects.Num() == 0 )
 	{
-		return LOCTEXT("InvalidBoundObjectToolTip", "The object bound to this track is missing.");
+		return FText::Format(LOCTEXT("InvalidBoundObjectToolTip", "The object bound to this track is missing (BindingID: {0})."), FText::FromString(LexToString(ObjectBinding)));
 	}
 	else
 	{
@@ -895,7 +835,7 @@ FText FSequencerObjectBindingNode::GetDisplayNameToolTipText() const
 			}
 		}
 
-		// If only 1 bound object, no need to display tooltip
+		// If only 1 bound object, display a simpler tooltip.
 		if (ValidBoundObjectLabels.Num() == 1 && NumMissing == 0)
 		{
 			if (BindingType == EObjectBindingType::Spawnable)
@@ -903,14 +843,14 @@ FText FSequencerObjectBindingNode::GetDisplayNameToolTipText() const
 				const UClass* ClassForObjectBinding = GetClassForObjectBinding();
 				if (ClassForObjectBinding)
 				{
-					return FText::FromString(TEXT("Spawnable Class: ") + ClassForObjectBinding->GetFName().ToString());
+					return FText::Format(LOCTEXT("SpawnableBoundObjectToolTip", "Spawnable Class: {0} (BindingID: {1})"), FText::FromName(ClassForObjectBinding->GetFName()), FText::FromString(LexToString(ObjectBinding)));
 				}
 			}
-			return FText();
+			return FText::Format(LOCTEXT("PossessableBoundObjectToolTip", "(BindingID: {0}"), FText::FromString(LexToString(ObjectBinding)));
 		}
 		else if (ValidBoundObjectLabels.Num() == 0 && NumMissing == 1)
 		{
-			return LOCTEXT("InvalidBoundObjectToolTip", "The object bound to this track is missing.");
+			return FText::Format(LOCTEXT("InvalidBoundObjectToolTip", "The object bound to this track is missing (BindingID: {0})."), FText::FromString(LexToString(ObjectBinding)));
 		}
 
 		FString MultipleBoundObjectLabel = FString::Join(ValidBoundObjectLabels, TEXT(", "));
@@ -924,7 +864,7 @@ FText FSequencerObjectBindingNode::GetDisplayNameToolTipText() const
 			MultipleBoundObjectLabel += FString::Printf(TEXT(" (%d missing)"), NumMissing);
 		}
 
-		return FText::FromString(MultipleBoundObjectLabel);
+		return FText::FromString(MultipleBoundObjectLabel + FString::Printf(TEXT(" (BindingID: %s)"), *LexToString(ObjectBinding)));
 	}
 }
 
@@ -1005,20 +945,20 @@ void FSequencerObjectBindingNode::SetDisplayName(const FText& NewDisplayName)
 		FMovieSceneSpawnable* Spawnable = MovieScene->FindSpawnable(GetObjectBinding());
 		FMovieScenePossessable* Possessable = MovieScene->FindPossessable(GetObjectBinding());
 
-		if (Spawnable)
+		// If there is only one binding, set the name of the bound actor
+		TArrayView<TWeakObjectPtr<>> Objects = GetSequencer().FindObjectsInCurrentSequence(GetObjectBinding());
+		if (Objects.Num() == 1)
 		{
-			TArrayView<TWeakObjectPtr<>> Objects = GetSequencer().FindObjectsInCurrentSequence(GetObjectBinding());
-			// If there is only one binding, set the name of the bound actor
-			if (Objects.Num() == 1)
+			if (AActor* Actor = Cast<AActor>(Objects[0].Get()))
 			{
-				AActor* Actor = Cast<AActor>(Objects[0].Get());
 				Actor->SetActorLabel(NewDisplayName.ToString());
 			}
-			else
-			{
-				// Otherwise set our display name
-				Spawnable->SetName(NewDisplayName.ToString());
-			}
+		}
+
+		if (Spawnable)
+		{
+			// Otherwise set our display name
+			Spawnable->SetName(NewDisplayName.ToString());
 		}
 		else if (Possessable)
 		{
@@ -1348,7 +1288,13 @@ TSharedRef<SWidget> FSequencerObjectBindingNode::HandleAddTrackComboButtonGetMen
 		TrackEditor->ExtendObjectBindingTrackMenu(Extender, ObjectBindings, ObjectClass);
 	}
 
-	FMenuBuilder AddTrackMenuBuilder(true, nullptr, Extender);
+	// The menu are generated through reflection and sometime the API exposes some recursivity (think about a Widget returning it parent which is also a Widget). Just by reflection
+	// it is not possible to determine when the root object is reached. It needs a kind of simulation which is not implemented. Also, even if the recursivity was correctly handled, the possible
+	// permutations tend to grow exponentially. Until a clever solution is found, the simple approach is to disable recursively searching those menus. User can still search the current one though.
+	// See UE-131257
+	const bool bInRecursivelySearchable = false;
+
+	FMenuBuilder AddTrackMenuBuilder(true, nullptr, Extender, false, &FCoreStyle::Get(), true, NAME_None, bInRecursivelySearchable);
 
 	const int32 NumStartingBlocks = AddTrackMenuBuilder.GetMultiBox()->GetBlocks().Num();
 

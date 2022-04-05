@@ -5,9 +5,10 @@
 #include "Transport.h"
 #include "Analysis/StreamReader.h"
 #include "Containers/Array.h"
+#include "Trace/Detail/Transport.h"
 
-namespace Trace
-{
+namespace UE {
+namespace Trace {
 
 class FStreamReader;
 
@@ -21,7 +22,8 @@ public:
 	void					Update();
 	uint32					GetThreadCount() const;
 	FStreamReader*			GetThreadStream(uint32 Index);
-	int32					GetThreadId(uint32 Index) const;
+	uint32					GetThreadId(uint32 Index) const;
+	uint32					GetSyncCount() const;
 
 private:
 	struct FThreadStream
@@ -31,8 +33,34 @@ private:
 	};
 
 	bool					ReadPacket();
-	FThreadStream&			FindOrAddThread(uint32 ThreadId);
-	TArray<FThreadStream>	Threads;
+	FThreadStream*			FindOrAddThread(uint32 ThreadId, bool bAddIfNotFound);
+	TArray<FThreadStream>	Threads = {
+								{ {}, ETransportTid::Events },
+								{ {}, ETransportTid::Importants },
+							};
+
+protected:
+	uint32					Synced = 0x7fff'ffff;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+inline uint32 FTidPacketTransport::GetSyncCount() const
+{
+	return Synced;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+class FTidPacketTransportSync
+	: public FTidPacketTransport
+{
+public:
+	FTidPacketTransportSync()
+	{
+		Synced = 0;
+	}
 };
 
 } // namespace Trace
+} // namespace UE

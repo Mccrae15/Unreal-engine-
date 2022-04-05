@@ -15,7 +15,7 @@ function generateDockerfile {
 		# Engine source code are defined by Docker build arguments that the user sets when building images with the generated Dockerfiles.
 		# The need to specify a release number is purely an artifact of how the `ue4-docker build` command was originally designed prior to
 		# the addition of functionality to generate Dockerfiles rather than always building container images.
-		'4.27.0'
+		'5.0.0'
 		
 		# Ensure that we generate Dockerfiles for Linux container images even if this script is run on a Windows host system (e.g. in git bash)
 		# (Note that although generating the Dockerfiles under Windows is fine, it is NOT recommended that the images actually be built under Windows)
@@ -31,7 +31,7 @@ function generateDockerfile {
 		--no-engine --no-full
 		
 		# This disables building the Engine for AArch64 when creating an Installed Build, and enables support for client and dedicated server targets
-		--opt buildgraph-args='-set:WithLinuxAArch64=false -set:WithClient=true -set:WithServer=true'
+		--opt buildgraph-args='-set:WithLinuxArm64=false -set:WithClient=true -set:WithServer=true'
 		
 		# This enables the use of BuildKit build secrets, which is necessary in order to build images independently of ue4-docker itself
 		--opt credential-mode=secrets

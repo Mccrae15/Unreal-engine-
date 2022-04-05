@@ -17,6 +17,7 @@
  */
 
 struct TStatId;
+enum class EStatFlags : uint8;
 
 // used by the profiler
 enum EStatType
@@ -58,10 +59,24 @@ public:
 	 * Pushes the specified stat onto the hierarchy for this thread. Starts
 	 * the timing of the cycles used
 	 */
-	FORCEINLINE_STATS FScopeCycleCounter( TStatId StatId, bool bAlways = false )
+	FORCEINLINE_STATS FScopeCycleCounter( TStatId StatId, EStatFlags StatFlags, bool bAlways = false
+#if CPUPROFILERTRACE_ENABLED
+		// Optional verbose description added for CPU profiler, without affecting the stat name.  Should be invariant
+		// across frames, to avoid bloating memory in the name map used in the CPU profiler.
+		, const TCHAR* OptionalVerboseDescription = nullptr
+#endif
+	)
 	{
-		Start( StatId, bAlways );
+		Start( StatId, StatFlags, bAlways
+#if CPUPROFILERTRACE_ENABLED
+			, OptionalVerboseDescription
+#endif
+			);
 	}
+
+	FORCEINLINE_STATS FScopeCycleCounter(TStatId StatId, bool bAlways = false)
+		: FScopeCycleCounter(StatId, EStatFlags::None, bAlways)
+	{}
 
 	/**
 	 * Updates the stat with the time spent
@@ -114,10 +129,20 @@ struct TStatId
 	{
 		return StatString != nullptr;
 	}
+
+	FORCEINLINE bool operator==(TStatId Other) const
+	{
+		return StatString == Other.StatString;
+	}
+
+	FORCEINLINE bool operator!=(TStatId Other) const
+	{
+		return StatString != Other.StatString;
+	}
 };
 
 #if USE_LIGHTWEIGHT_STATS_FOR_HITCH_DETECTION && USE_HITCH_DETECTION
-extern CORE_API bool GHitchDetected;
+extern CORE_API TSAN_ATOMIC(bool) GHitchDetected;
 
 class FLightweightStatScope
 {
@@ -144,7 +169,7 @@ public:
 class FScopeCycleCounter
 {
 public:
-	FORCEINLINE FScopeCycleCounter(TStatId InStatId, bool bAlways = false)
+	FORCEINLINE FScopeCycleCounter(TStatId InStatId, EStatFlags StatFlags, bool bAlways = false)
 		: 
 #if USE_LIGHTWEIGHT_STATS_FOR_HITCH_DETECTION && USE_HITCH_DETECTION
 		StatScope(InStatId.StatString),
@@ -157,6 +182,11 @@ public:
 			bPop = true;
 			FPlatformMisc::BeginNamedEvent(FColor(0), InStatId.StatString);
 		}
+	}
+
+	FORCEINLINE FScopeCycleCounter(TStatId InStatId, bool bAlways = false)
+		: FScopeCycleCounter(InStatId, EStatFlags::None, bAlways)
+	{
 	}
 
 	FORCEINLINE ~FScopeCycleCounter()
@@ -179,6 +209,9 @@ struct TStatId {};
 class FScopeCycleCounter
 {
 public:
+	FORCEINLINE_STATS FScopeCycleCounter(TStatId, EStatFlags, bool bAlways = false)
+	{
+	}
 	FORCEINLINE_STATS FScopeCycleCounter(TStatId, bool bAlways = false)
 	{
 	}
@@ -202,18 +235,29 @@ FORCEINLINE void StatsMasterEnableSubtract(int32 Value = 1)
 #define ANSI_TO_PROFILING(x) TEXT(x)
 #endif
 
+#define SCOPE_CYCLE_COUNTER_TO_TRACE(StatString, StatName, Condition) \
+	TRACE_CPUPROFILER_EVENT_DECLARE(StatString, PREPROCESSOR_JOIN(PREPROCESSOR_JOIN(__Decl_, StatName), __LINE__), CpuChannel, Condition && GCycleStatsShouldEmitNamedEvents>0); \
+	TRACE_CPUPROFILER_EVENT_SCOPE_USE(PREPROCESSOR_JOIN(PREPROCESSOR_JOIN(__Decl_, StatName), __LINE__), PREPROCESSOR_JOIN(PREPROCESSOR_JOIN(__Scope_, StatName), __LINE__), CpuChannel, Condition && GCycleStatsShouldEmitNamedEvents>0);
 
 #define DECLARE_SCOPE_CYCLE_COUNTER(CounterName,Stat,GroupId) \
-	FScopeCycleCounter StatNamedEventsScope_##Stat(TStatId(ANSI_TO_PROFILING(#Stat)));
+	FScopeCycleCounter StatNamedEventsScope_##Stat(TStatId(ANSI_TO_PROFILING(#Stat))); \
+	SCOPE_CYCLE_COUNTER_TO_TRACE(CounterName, Stat, true);
 
 #define QUICK_SCOPE_CYCLE_COUNTER(Stat) \
-	FScopeCycleCounter StatNamedEventsScope_##Stat(TStatId(ANSI_TO_PROFILING(#Stat)));
+	FScopeCycleCounter StatNamedEventsScope_##Stat(TStatId(ANSI_TO_PROFILING(#Stat))); \
+	SCOPE_CYCLE_COUNTER_TO_TRACE(#Stat, Stat, true);
 
 #define SCOPE_CYCLE_COUNTER(Stat) \
-	FScopeCycleCounter StatNamedEventsScope_##Stat(TStatId(ANSI_TO_PROFILING(#Stat)));
+	FScopeCycleCounter StatNamedEventsScope_##Stat(TStatId(ANSI_TO_PROFILING(#Stat))); \
+	SCOPE_CYCLE_COUNTER_TO_TRACE(#Stat, Stat, true);
 
 #define CONDITIONAL_SCOPE_CYCLE_COUNTER(Stat,bCondition) \
-	FScopeCycleCounter StatNamedEventsScope_##Stat(bCondition ? ANSI_TO_PROFILING(#Stat) : nullptr);
+	FScopeCycleCounter StatNamedEventsScope_##Stat(bCondition ? ANSI_TO_PROFILING(#Stat) : nullptr); \
+	SCOPE_CYCLE_COUNTER_TO_TRACE(#Stat, Stat, bCondition);
+
+#define SCOPE_CYCLE_COUNTER_VERBOSE(Stat, VerboseDescription) \
+	FScopeCycleCounter StatNamedEventsScope_##Stat(TStatId(ANSI_TO_PROFILING(#Stat))); \
+	SCOPE_CYCLE_COUNTER_TO_TRACE(#Stat, Stat, true);
 
 #define RETURN_QUICK_DECLARE_CYCLE_STAT(StatId,GroupId) return TStatId(ANSI_TO_PROFILING(#StatId));
 
@@ -221,7 +265,7 @@ FORCEINLINE void StatsMasterEnableSubtract(int32 Value = 1)
 
 
 #elif USE_LIGHTWEIGHT_STATS_FOR_HITCH_DETECTION && USE_HITCH_DETECTION
-extern CORE_API bool GHitchDetected;
+extern CORE_API TSAN_ATOMIC(bool) GHitchDetected;
 
 class FLightweightStatScope
 {
@@ -255,6 +299,9 @@ public:
 #define CONDITIONAL_SCOPE_CYCLE_COUNTER(Stat,bCondition) \
 	FLightweightStatScope LightweightStatScope_##Stat(bCondition ? TEXT(#Stat) : nullptr);
 
+#define SCOPE_CYCLE_COUNTER_VERBOSE(Stat,VerboseDescription) \
+	FLightweightStatScope LightweightStatScope_##Stat(TEXT(#Stat));
+
 #define RETURN_QUICK_DECLARE_CYCLE_STAT(StatId,GroupId) return TStatId();
 #define GET_STATID(Stat) (TStatId())
 
@@ -263,6 +310,7 @@ public:
 #define QUICK_SCOPE_CYCLE_COUNTER(Stat)
 #define DECLARE_SCOPE_CYCLE_COUNTER(CounterName,StatId,GroupId)
 #define CONDITIONAL_SCOPE_CYCLE_COUNTER(Stat,bCondition)
+#define SCOPE_CYCLE_COUNTER_VERBOSE(Stat,VerboseDescription)
 #define RETURN_QUICK_DECLARE_CYCLE_STAT(StatId,GroupId) return TStatId();
 #define GET_STATID(Stat) (TStatId())
 
@@ -273,6 +321,7 @@ public:
 #define DEFINE_STAT(Stat)
 #define QUICK_USE_CYCLE_STAT(StatId,GroupId) TStatId()
 #define DECLARE_CYCLE_STAT(CounterName,StatId,GroupId)
+#define DECLARE_CYCLE_STAT_WITH_FLAGS(CounterName,StatId,GroupId,StatFlags)
 #define DECLARE_FLOAT_COUNTER_STAT(CounterName,StatId,GroupId)
 #define DECLARE_DWORD_COUNTER_STAT(CounterName,StatId,GroupId)
 #define DECLARE_FLOAT_ACCUMULATOR_STAT(CounterName,StatId,GroupId)
@@ -282,6 +331,7 @@ public:
 #define DECLARE_MEMORY_STAT(CounterName,StatId,GroupId)
 #define DECLARE_MEMORY_STAT_POOL(CounterName,StatId,GroupId,Pool)
 #define DECLARE_CYCLE_STAT_EXTERN(CounterName,StatId,GroupId, API)
+#define DECLARE_CYCLE_STAT_WITH_FLAGS_EXTERN(CounterName,StatId,GroupId,StatFlags, API)
 #define DECLARE_FLOAT_COUNTER_STAT_EXTERN(CounterName,StatId,GroupId, API)
 #define DECLARE_DWORD_COUNTER_STAT_EXTERN(CounterName,StatId,GroupId, API)
 #define DECLARE_FLOAT_ACCUMULATOR_STAT_EXTERN(CounterName,StatId,GroupId, API)

@@ -67,6 +67,11 @@ void FGenericPlatformProcess::SetThreadAffinityMask( uint64 AffinityMask )
 	// Not implemented cross-platform. Each platform may or may not choose to implement this.
 }
 
+void FGenericPlatformProcess::SetThreadPriority(EThreadPriority NewPriority)
+{
+	// Not implemented cross-platform. Each platform may or may not choose to implement this.
+}
+
 uint32 FGenericPlatformProcess::GetStackSize()
 {
 	return 0;
@@ -234,9 +239,15 @@ FString FGenericPlatformProcess::GetGameBundleId()
 	return TEXT("");
 }
 
-FProcHandle FGenericPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void * PipeReadChild)
+FProcHandle FGenericPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild )
 {
 	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::CreateProc not implemented on this platform"));
+	return FProcHandle();
+}
+
+FProcHandle FGenericPlatformProcess::CreateProc( const TCHAR* URL, const TCHAR* Parms, bool bLaunchDetached, bool bLaunchHidden, bool bLaunchReallyHidden, uint32* OutProcessID, int32 PriorityModifier, const TCHAR* OptionalWorkingDirectory, void* PipeWriteChild, void* PipeReadChild, void* PipeStdErrChild )
+{
+	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::CreateProc with std out/in/err not implemented on this platform"));
 	return FProcHandle();
 }
 
@@ -303,7 +314,7 @@ FString FGenericPlatformProcess::GetApplicationName( uint32 ProcessId )
 	return FString(TEXT(""));
 }
 
-bool FGenericPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory)
+bool FGenericPlatformProcess::ExecProcess(const TCHAR* URL, const TCHAR* Params, int32* OutReturnCode, FString* OutStdOut, FString* OutStdErr, const TCHAR* OptionalWorkingDirectory, bool bShouldEndWithParentProcess)
 {
 	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::ExecProcess not implemented on this platform"));
 	return false;
@@ -314,9 +325,10 @@ bool FGenericPlatformProcess::ExecElevatedProcess(const TCHAR* URL, const TCHAR*
 	return FPlatformProcess::ExecProcess(URL, Params, OutReturnCode, NULL, NULL);
 }
 
-void FGenericPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms, ELaunchVerb::Type Verb )
+bool FGenericPlatformProcess::LaunchFileInDefaultExternalApplication( const TCHAR* FileName, const TCHAR* Parms, ELaunchVerb::Type Verb, bool bPromptToOpenOnFailure )
 {
 	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::LaunchFileInDefaultExternalApplication not implemented on this platform"));
+	return false;
 }
 
 void FGenericPlatformProcess::ExploreFolder( const TCHAR* FilePath )
@@ -351,7 +363,10 @@ void FGenericPlatformProcess::SleepNoStats( float Seconds )
 void FGenericPlatformProcess::SleepInfinite()
 {
 	// stop this thread forever
-	pause();
+	while (true)
+	{
+		pause();
+	}
 }
 
 void FGenericPlatformProcess::YieldThread()
@@ -495,14 +510,14 @@ FEvent* FGenericPlatformProcess::CreateSynchEvent(bool bIsManualReset)
 FEvent* FGenericPlatformProcess::GetSynchEventFromPool(bool bIsManualReset)
 {
 	return bIsManualReset
-		? TLazySingleton<FEventPool<EEventPoolTypes::ManualReset>>::Get().GetEventFromPool()
-		: TLazySingleton<FEventPool<EEventPoolTypes::AutoReset>>::Get().GetEventFromPool();
+		? TLazySingleton<TEventPool<EEventMode::ManualReset>>::Get().GetEventFromPool()
+		: TLazySingleton<TEventPool<EEventMode::AutoReset>>::Get().GetEventFromPool();
 }
 
 void FGenericPlatformProcess::FlushPoolSyncEvents()
 {
-	TLazySingleton<FEventPool<EEventPoolTypes::ManualReset>>::Get().EmptyPool();
-	TLazySingleton<FEventPool<EEventPoolTypes::AutoReset>>::Get().EmptyPool();
+	TLazySingleton<TEventPool<EEventMode::ManualReset>>::Get().EmptyPool();
+	TLazySingleton<TEventPool<EEventMode::AutoReset>>::Get().EmptyPool();
 }
 
 void FGenericPlatformProcess::ReturnSynchEventToPool(FEvent* Event)
@@ -514,11 +529,11 @@ void FGenericPlatformProcess::ReturnSynchEventToPool(FEvent* Event)
 
 	if (Event->IsManualReset())
 	{
-		TLazySingleton<FEventPool<EEventPoolTypes::ManualReset>>::Get().ReturnToPool(Event);
+		TLazySingleton<TEventPool<EEventMode::ManualReset>>::Get().ReturnToPool(Event);
 	}
 	else
 	{
-		TLazySingleton<FEventPool<EEventPoolTypes::AutoReset>>::Get().ReturnToPool(Event);
+		TLazySingleton<TEventPool<EEventMode::AutoReset>>::Get().ReturnToPool(Event);
 	}
 }
 
@@ -542,7 +557,7 @@ void FGenericPlatformProcess::ClosePipe( void* ReadPipe, void* WritePipe )
 	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::ClosePipe not implemented on this platform"));
 }
 
-bool FGenericPlatformProcess::CreatePipe( void*& ReadPipe, void*& WritePipe )
+bool FGenericPlatformProcess::CreatePipe(void*& ReadPipe, void*& WritePipe, bool bWritePipeLocal)
 {
 	UE_LOG(LogHAL, Fatal, TEXT("FGenericPlatformProcess::CreatePipe not implemented on this platform"));
 	return false;
@@ -639,8 +654,8 @@ FSystemWideCriticalSectionNotImplemented::FSystemWideCriticalSectionNotImplement
 
 void FGenericPlatformProcess::TearDown()
 {
-	TLazySingleton<FEventPool<EEventPoolTypes::AutoReset>>::TearDown();
-	TLazySingleton<FEventPool<EEventPoolTypes::ManualReset>>::TearDown();
+	TLazySingleton<TEventPool<EEventMode::AutoReset>>::TearDown();
+	TLazySingleton<TEventPool<EEventMode::ManualReset>>::TearDown();
 }
 
 ENamedThreads::Type FGenericPlatformProcess::GetDesiredThreadForUObjectReferenceCollector()
@@ -654,6 +669,10 @@ void FGenericPlatformProcess::ModifyThreadAssignmentForUObjectReferenceCollector
 	// On devices with overridden affinity only HiPri threads can run on big cores
 	NormalThreadName = ENamedThreads::AnyHiPriThreadHiPriTask; 
 	NumBackgroundThreads = 0; // run on single group
+#elif WITH_EDITOR
+	// Avoid the ReferenceCollector being slowed down by long running background tasks, async compilation, etc...
+	NormalThreadName = ENamedThreads::AnyHiPriThreadHiPriTask;
+	BackgroundThreadName = ENamedThreads::AnyHiPriThreadHiPriTask;
 #endif
 }
 

@@ -108,7 +108,9 @@ enum class EParticleAllocationMode : uint8
 	/** This mode tries to estimate the max particle count at runtime by using previous simulations as reference.*/
 	AutomaticEstimate = 0,
 	/** This mode is useful if the particle count can vary wildly at runtime (e.g. due to user parameters) and a lot of reallocations happen.*/
-	ManualEstimate
+	ManualEstimate,
+	/** This mode defines an upper limit on the number of particles that will be simulated.  Useful for rejection sampling where we expect many spawned particles to get killed. */
+	FixedCount
 };
 
 USTRUCT()
@@ -122,7 +124,7 @@ struct FNiagaraEmitterScriptProperties
 	GENERATED_BODY()
 	
 	UPROPERTY()
-	UNiagaraScript *Script;
+	TObjectPtr<UNiagaraScript> Script;
 
 	UPROPERTY()
 	TArray<FNiagaraEventReceiverProperties> EventReceivers;
@@ -239,7 +241,10 @@ public:
 	virtual void PostRename(UObject* OldOuter, const FName OldName) override;
 	virtual void PostDuplicate(EDuplicateMode::Type DuplicateMode) override;
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
-	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	NIAGARA_API FOnPropertiesChanged& OnPropertiesChanged();
 	NIAGARA_API FOnRenderersChanged& OnRenderersChanged();
 	/** Helper method for when a rename has been detected within the graph. Covers renaming the internal renderer bindings.*/
@@ -249,6 +254,8 @@ public:
 
 	/** Helper method for binding the notifications needed for proper editor integration. */
 	NIAGARA_API void BindNotifications();
+
+	NIAGARA_API void GatherStaticVariables(TArray<FNiagaraVariable>& OutVars) const;
 #endif
 	virtual bool NeedsLoadForTargetPlatform(const ITargetPlatform* TargetPlatform) const override;
 	void Serialize(FArchive& Ar)override;
@@ -272,6 +279,9 @@ public:
 	/** Get All adapters to editor only script vars owned directly by this subscriber. */
 	virtual TArray<UNiagaraEditorParametersAdapterBase*> GetEditorOnlyParametersAdapters() override;
 	//~ End INiagaraParameterDefinitionsSubscriber Interface
+
+	/** Get the cached parameter map traversal for this emitter.  */
+	NIAGARA_API const TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe>& GetCachedTraversalData() const;
 #endif
 
 	bool IsEnabledOnPlatform(const FString& PlatformName)const;
@@ -300,7 +310,7 @@ public:
 	The emitter will allocate at least this many particles on it's first tick.
 	This can aid performance by avoiding many allocations as an emitter ramps up to it's max size.
 	*/
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter", meta = (EditCondition = "AllocationMode == EParticleAllocationMode::ManualEstimate"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter", meta = (EditCondition = "AllocationMode == EParticleAllocationMode::ManualEstimate || AllocationMode == EParticleAllocationMode::FixedCount"))
 	int32 PreAllocationCount;
 
 	UPROPERTY()
@@ -316,10 +326,12 @@ public:
 	UPROPERTY()
 	FNiagaraEmitterScriptProperties EmitterUpdateScriptProps;
 
-	/** A whitelist of Particle attributes (e.g. "Particle.Position" or "Particle.Age") that will not be removed from the DataSet  even if they aren't read by the VM.
+	/** An allow list of Particle attributes (e.g. "Particle.Position" or "Particle.Age") that will not be removed from the DataSet  even if they aren't read by the VM.
 	    Used in conjunction with UNiagaraSystem::bTrimAttributes */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter")
 	TArray<FString> AttributesToPreserve;
+
+	const static FGuid EmitterMergeMessageId;
 #endif
 
 	UPROPERTY(EditAnywhere, Category = "Emitter")
@@ -371,34 +383,19 @@ public:
 	uint32 bCombineEventSpawn : 1;
 
 	/** Limits the delta time per tick to prevent simulation spikes due to frame lags. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter", meta = (EditCondition = "bLimitDeltaTime"))
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter", meta = (EditCondition = "bLimitDeltaTime", ForceUnits=s))
 	float MaxDeltaTimePerTick;
 
-	/** Get the default shader stage index. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Simulation Stages", meta = (EditCondition = "bDeprecatedShaderStagesEnabled", DisplayAfter = "bDeprecatedShaderStagesEnabled"))
-	uint32 DefaultShaderStageIndex;
-
-	/** Get the number of shader stages that we fire off. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Simulation Stages", meta = (EditCondition = "bDeprecatedShaderStagesEnabled", DisplayAfter = "DefaultShaderStageIndex"))
-	uint32 MaxUpdateIterations;
-
-	/** Get whether or not shaderstages spwn. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Simulation Stages", meta = (EditCondition = "bDeprecatedShaderStagesEnabled", DisplayAfter = "MaxUpdateIterations"))
-	TSet<uint32> SpawnStages;
-
-	/** Get whether or not to use simulation stages. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Simulation Stages", meta = (DisplayName = "Enable Simulation Stages (Experimental GPU Only)"))
-	uint32 bSimulationStagesEnabled : 1;
-
-	/** Get whether or not to use shader stages. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Simulation Stages", meta = (DisplayName = "Enable Deprecated Shader Stages (Experimental GPU Only)"))
-	uint32 bDeprecatedShaderStagesEnabled : 1;
 
 	/** Whether to limit the max tick delta time or not. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter", meta = (InlineEditConditionToggle))
 	uint32 bLimitDeltaTime : 1;
 
-	void NIAGARA_API GetScripts(TArray<UNiagaraScript*>& OutScripts, bool bCompilableOnly = true, bool bEnabledOnly = false) const;
+	/** An override on the max number of GPU particles we expect to spawn in a single frame. A value of 0 means it'll use fx.MaxNiagaraGPUParticlesSpawnPerFrame.*/
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter", meta = (EditCondition = "SimTarget == ENiagaraSimTarget::GPUComputeSim", DisplayName = "Max GPU Particles Spawn per Frame"))
+	int32 MaxGPUParticlesSpawnPerFrame;
+
+	NIAGARA_API void GetScripts(TArray<UNiagaraScript*>& OutScripts, bool bCompilableOnly = true, bool bEnabledOnly = false) const;
 
 	NIAGARA_API UNiagaraScript* GetScript(ENiagaraScriptUsage Usage, FGuid UsageId);
 
@@ -413,19 +410,15 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** 'Source' data/graphs for the scripts used by this emitter. */
 	UPROPERTY()
-	class UNiagaraScriptSourceBase*	GraphSource;
+	TObjectPtr<class UNiagaraScriptSourceBase>	GraphSource;
 
-	/** Should we enable rapid iteration removal if the system is also set to remove rapid iteration parameters on compile? This value defaults to true.*/
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Emitter", meta = (DisplayName = "Supports Baked Rapid Iteration"))
-	uint32 bBakeOutRapidIteration : 1;
+	NIAGARA_API bool AreAllScriptAndSourcesSynchronized() const;
+	NIAGARA_API void OnPostCompile();
 
-	bool NIAGARA_API AreAllScriptAndSourcesSynchronized() const;
-	void NIAGARA_API OnPostCompile();
-
-	void NIAGARA_API InvalidateCompileResults();
+	NIAGARA_API void InvalidateCompileResults();
 
 	/* Gets a Guid which is updated any time data in this emitter is changed. */
-	FGuid NIAGARA_API GetChangeId() const;
+	NIAGARA_API FGuid GetChangeId() const;
 
 	NIAGARA_API UNiagaraEditorDataBase* GetEditorData() const;
 	NIAGARA_API UNiagaraEditorParametersAdapterBase* GetEditorParameters();
@@ -434,34 +427,40 @@ public:
 
 	/** Internal: The thumbnail image.*/
 	UPROPERTY()
-	class UTexture2D* ThumbnailImage;
+	TObjectPtr<class UTexture2D> ThumbnailImage;
 
 	/** Internal: Indicates the thumbnail image is out of date.*/
 	UPROPERTY()
 	uint32 ThumbnailImageOutOfDate : 1;
 
-	/* If this emitter is exposed to the library. */
-	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
-	bool bExposeToLibrary;
+	/** Deprecated library exposure bool. Use the LibraryVisibility enum instead. FNiagaraEditorUtilities has accessor functions that takes deprecation into account */
+	UPROPERTY()
+	bool bExposeToLibrary_DEPRECATED;
 	
+	/** If this emitter is exposed to the library, or should be explicitly hidden. */
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
+	ENiagaraScriptLibraryVisibility LibraryVisibility = ENiagaraScriptLibraryVisibility::Unexposed;
+
+	/** Deprecated template asset bool. Use the TemplateSpecification enum instead. */
 	UPROPERTY()
 	bool bIsTemplateAsset_DEPRECATED;
 
+	/** If this emitter is a standard parent emitter, a template or a behavior example. Templates and behavior examples get copied rather than inherited from. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
-	ENiagaraScriptTemplateSpecification TemplateSpecification;
+	ENiagaraScriptTemplateSpecification TemplateSpecification = ENiagaraScriptTemplateSpecification::None;
 	
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
 	FText TemplateAssetDescription;
 
 	/** Category to collate this emitter into for "add new emitter" dialogs.*/
-	UPROPERTY(AssetRegistrySearchable, EditAnywhere, Category = Script)
+	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "Asset Options", AssetRegistrySearchable)
 	FText Category;
 
 	UPROPERTY()
-	TArray<UNiagaraScript*> ScratchPadScripts;
+	TArray<TObjectPtr<UNiagaraScript>> ScratchPadScripts;
 
 	UPROPERTY()
-	TArray<UNiagaraScript*> ParentScratchPadScripts;
+	TArray<TObjectPtr<UNiagaraScript>> ParentScratchPadScripts;
 	
 	/** Callback issued whenever a VM compilation successfully happened (even if the results are a script that cannot be executed due to errors)*/
 	NIAGARA_API FOnEmitterCompiled& OnEmitterVMCompiled();
@@ -502,17 +501,19 @@ public:
 	bool UsesScript(const UNiagaraScript* Script)const;
 	//bool UsesDataInterface(UNiagaraDataInterface* Interface);
 	bool UsesCollection(const class UNiagaraParameterCollection* Collection)const;
-	bool CanObtainParticleAttribute(const FNiagaraVariableBase& InVar) const;
-	bool CanObtainEmitterAttribute(const FNiagaraVariableBase& InVarWithUniqueNameNamespace) const;
-	bool CanObtainSystemAttribute(const FNiagaraVariableBase& InVar) const;
+	bool CanObtainParticleAttribute(const FNiagaraVariableBase& InVar, FNiagaraTypeDefinition& OutBoundType) const;
+	bool CanObtainEmitterAttribute(const FNiagaraVariableBase& InVarWithUniqueNameNamespace, FNiagaraTypeDefinition& OutBoundType) const;
+	bool CanObtainSystemAttribute(const FNiagaraVariableBase& InVar, FNiagaraTypeDefinition& OutBoundType) const;
 	bool CanObtainUserVariable(const FNiagaraVariableBase& InVar) const;
 
-#if !UE_BUILD_SHIPPING
+#if WITH_NIAGARA_DEBUG_EMITTER_NAME
 	const TCHAR* GetDebugSimName() const { return *DebugSimName; }
+#else
+	const TCHAR* GetDebugSimName() const { return TEXT(""); }
 #endif
 
-	FString NIAGARA_API GetUniqueEmitterName()const;
-	bool NIAGARA_API SetUniqueEmitterName(const FString& InName);
+	NIAGARA_API const FString& GetUniqueEmitterName() const;
+	NIAGARA_API bool SetUniqueEmitterName(const FString& InName);
 
 	const TArray<UNiagaraRendererProperties*>& GetRenderers() const { return RendererProperties; }
 
@@ -522,9 +523,9 @@ public:
 	template<typename TAction>
 	void ForEachScript(TAction Func) const;
 
-	void NIAGARA_API AddRenderer(UNiagaraRendererProperties* Renderer);
+	NIAGARA_API void AddRenderer(UNiagaraRendererProperties* Renderer);
 
-	void NIAGARA_API RemoveRenderer(UNiagaraRendererProperties* Renderer);
+	NIAGARA_API void RemoveRenderer(UNiagaraRendererProperties* Renderer);
 
 	FORCEINLINE const TArray<FNiagaraEventScriptProperties>& GetEventHandlers() const { return EventHandlerScriptProps; }
 
@@ -532,19 +533,19 @@ public:
 	   the event handler array can make this pointer become invalid without warning. */
 	NIAGARA_API FNiagaraEventScriptProperties* GetEventHandlerByIdUnsafe(FGuid ScriptUsageId);
 
-	void NIAGARA_API AddEventHandler(FNiagaraEventScriptProperties EventHandler);
+	NIAGARA_API void AddEventHandler(FNiagaraEventScriptProperties EventHandler);
 
-	void NIAGARA_API RemoveEventHandlerByUsageId(FGuid EventHandlerUsageId);
+	NIAGARA_API void RemoveEventHandlerByUsageId(FGuid EventHandlerUsageId);
 
 	NIAGARA_API const TArray<UNiagaraSimulationStageBase*>& GetSimulationStages() const { return SimulationStages; }
 
 	NIAGARA_API UNiagaraSimulationStageBase* GetSimulationStageById(FGuid ScriptUsageId) const;
 
-	void NIAGARA_API AddSimulationStage(UNiagaraSimulationStageBase* SimulationStage);
+	NIAGARA_API void AddSimulationStage(UNiagaraSimulationStageBase* SimulationStage);
 
-	void NIAGARA_API RemoveSimulationStage(UNiagaraSimulationStageBase* SimulationStage);
+	NIAGARA_API void RemoveSimulationStage(UNiagaraSimulationStageBase* SimulationStage);
 
-	void NIAGARA_API MoveSimulationStageToIndex(UNiagaraSimulationStageBase* SimulationStage, int32 TargetIndex);
+	NIAGARA_API void MoveSimulationStageToIndex(UNiagaraSimulationStageBase* SimulationStage, int32 TargetIndex);
 
 	/* Gets whether or not the supplied event generator id matches an event generator which is shared between the particle spawn and update scrips. */
 	bool IsEventGeneratorShared(FName EventGeneratorId) const;
@@ -560,6 +561,10 @@ public:
 
 	/* Returns the number of max expected particles for memory allocations. */
 	NIAGARA_API int32 GetMaxParticleCountEstimate();
+	NIAGARA_API uint32 GetMaxInstanceCount() { return MaxInstanceCount; }
+
+	/* Returns the maximum size we can allocate and hold for instances */
+	uint32 GetMaxAllocationCount() const { return MaxAllocationCount; }
 
 #if WITH_EDITORONLY_DATA
 	NIAGARA_API UNiagaraEmitter* GetParent() const;
@@ -578,7 +583,7 @@ public:
 	void OnScalabilityCVarChanged();
 
 #if WITH_EDITORONLY_DATA
-	NIAGARA_API const TMap<FGuid, UNiagaraMessageDataBase*>& GetMessages() const { return MessageKeyToMessageMap; };
+	NIAGARA_API const TMap<FGuid, TObjectPtr<UNiagaraMessageDataBase>>& GetMessages() const { return MessageKeyToMessageMap; };
 	NIAGARA_API void AddMessage(const FGuid& MessageKey, UNiagaraMessageDataBase* NewMessage) { MessageKeyToMessageMap.Add(MessageKey, NewMessage); };
 	NIAGARA_API void RemoveMessage(const FGuid& MessageKey) { MessageKeyToMessageMap.Remove(MessageKey); };
 	void RemoveMessageDelegateable(const FGuid MessageKey) { MessageKeyToMessageMap.Remove(MessageKey); };
@@ -586,9 +591,12 @@ public:
 
 	bool RequiresViewUniformBuffer() const { return bRequiresViewUniformBuffer; }
 
-	uint32 GetMaxInstanceCount() const { return MaxInstanceCount; }
-
 	TConstArrayView<TUniquePtr<FNiagaraBoundsCalculator>> GetBoundsCalculators() const { return MakeArrayView(BoundsCalculators); }
+
+	UPROPERTY()
+	FNiagaraParameterStore RendererBindings;
+
+	void RebuildRendererBindings();
 
 protected:
 	virtual void BeginDestroy() override;
@@ -613,6 +621,7 @@ private:
 
 	void PersistentEditorDataChanged();
 
+	mutable TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> CachedTraversalData;
 private:
 	/** Adjusted every time that we compile this emitter. Lets us know that we might differ from any cached versions.*/
 	UPROPERTY()
@@ -620,11 +629,11 @@ private:
 
 	/** Data used by the editor to maintain UI state etc.. */
 	UPROPERTY()
-	UNiagaraEditorDataBase* EditorData;
+	TObjectPtr<UNiagaraEditorDataBase> EditorData;
 
 	/** Wrapper for editor only parameters. */
 	UPROPERTY()
-	UNiagaraEditorParametersAdapterBase* EditorParameters;
+	TObjectPtr<UNiagaraEditorParametersAdapterBase> EditorParameters;
 
 	/** A multicast delegate which is called whenever all the scripts for this emitter have been compiled (successfully or not). */
 	FOnEmitterCompiled OnVMScriptCompiledDelegate;
@@ -637,7 +646,7 @@ private:
 
 	bool bFullyLoaded = false;
 
-#if !UE_BUILD_SHIPPING
+#if WITH_NIAGARA_DEBUG_EMITTER_NAME
 	FString DebugSimName;
 #endif
 
@@ -645,30 +654,31 @@ private:
 	FString UniqueEmitterName;
 
 	UPROPERTY()
-	TArray<UNiagaraRendererProperties*> RendererProperties;
+	TArray<TObjectPtr<UNiagaraRendererProperties>> RendererProperties;
 
 	UPROPERTY(EditAnywhere, Category = "Events", meta=(NiagaraNoMerge))
 	TArray<FNiagaraEventScriptProperties> EventHandlerScriptProps;
 
 	UPROPERTY(meta = (NiagaraNoMerge))
-	TArray<UNiagaraSimulationStageBase*> SimulationStages;
+	TArray<TObjectPtr<UNiagaraSimulationStageBase>> SimulationStages;
 
 	UPROPERTY()
-	UNiagaraScript* GPUComputeScript;
+	TObjectPtr<UNiagaraScript> GPUComputeScript;
 
 	UPROPERTY()
 	TArray<FName> SharedEventGeneratorIds;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	UNiagaraEmitter* Parent;
+	TObjectPtr<UNiagaraEmitter> Parent;
 
 	UPROPERTY()
-	UNiagaraEmitter* ParentAtLastMerge;
+	TObjectPtr<UNiagaraEmitter> ParentAtLastMerge;
 
 	/** Subscriptions to definitions of parameters. */
 	UPROPERTY()
 	TArray<FParameterDefinitionsSubscription> ParameterDefinitionsSubscriptions;
+
 #endif
 
 #if WITH_EDITOR
@@ -690,8 +700,16 @@ private:
 	/** Indicates that the GPU script requires the view uniform buffer. */
 	uint32 bRequiresViewUniformBuffer : 1;
 
+#if WITH_EDITORONLY_DATA
+	/* Flag set on load based on whether the serialized data includes editor only data */
+	uint32 IsCooked : 1;
+#endif
+
 	/** Maximum number of instances we can create for this emitter. */
 	uint32 MaxInstanceCount = 0;
+
+	/** Maximum instance allocations size for the emitter, can be larger than MaxInstanceCount */
+	uint32 MaxAllocationCount = 0;
 
 	/** Optional list of bounds calculators. */
 	TArray<TUniquePtr<FNiagaraBoundsCalculator>, TInlineAllocator<1>> BoundsCalculators;
@@ -704,7 +722,7 @@ private:
 #if WITH_EDITORONLY_DATA
 	/** Messages associated with the Emitter asset. */
 	UPROPERTY()
-	TMap<FGuid, UNiagaraMessageDataBase*> MessageKeyToMessageMap;
+	TMap<FGuid, TObjectPtr<UNiagaraMessageDataBase>> MessageKeyToMessageMap;
 #endif
 };
 

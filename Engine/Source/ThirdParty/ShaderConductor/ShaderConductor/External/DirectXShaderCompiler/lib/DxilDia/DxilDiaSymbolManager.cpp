@@ -738,7 +738,6 @@ STDMETHODIMP dxil_dia::hlsl_symbols::TypeSymbol::get_baseType(
   *pRetVal = btNoType;
 
   if (auto *BT = llvm::dyn_cast<llvm::DIBasicType>(m_pNode)) {
-    const DWORD SizeInBits = BT->getSizeInBits();
     switch (BT->getEncoding()) {
     case llvm::dwarf::DW_ATE_boolean:
       *pRetVal = btBool; break;
@@ -1750,7 +1749,6 @@ HRESULT dxil_dia::hlsl_symbols::SymbolManagerInit::CreateLocalVariable(DWORD dwP
   for (llvm::DIType *Ty : Tys) {
     TypeInfo *TI;
     IFR(GetTypeInfo(Ty, &TI));
-    const DWORD dwTypeID = TI->GetTypeID();
     DWORD dwNewLVID;
     newVars.emplace_back(std::make_shared<symbol_factory::LocalVarInfo>());
     std::shared_ptr<symbol_factory::LocalVarInfo> VI = newVars.back();
@@ -1815,13 +1813,15 @@ HRESULT dxil_dia::hlsl_symbols::SymbolManagerInit::CreateLocalVariables() {
     auto *LS = llvm::dyn_cast_or_null<llvm::DILocalScope>(CI->getDebugLoc()->getInlinedAtScope());
     auto SymIt = m_ScopeToSym.find(LS);
     if (SymIt == m_ScopeToSym.end()) {
-      return E_FAIL;
+        continue;
     }
 
     auto *LocalNameMetadata = llvm::dyn_cast<llvm::MetadataAsValue>(CI->getArgOperand(1));
     if (auto *LV = llvm::dyn_cast<llvm::DILocalVariable>(LocalNameMetadata->getMetadata())) {
       const DWORD dwParentID = SymIt->second;
-      IFR(CreateLocalVariable(dwParentID, LV));
+      if (FAILED(CreateLocalVariable(dwParentID, LV))) {
+          continue;
+      }
     }
   }
 

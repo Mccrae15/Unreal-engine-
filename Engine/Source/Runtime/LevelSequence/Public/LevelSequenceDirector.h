@@ -74,7 +74,7 @@ public:
 
 	/** Pointer to the player that's playing back this director's sequence. Only valid in game or in PIE/Simulate. */
 	UPROPERTY(BlueprintReadOnly, Category="Cinematics")
-	ULevelSequencePlayer* Player;
+	TObjectPtr<ULevelSequencePlayer> Player;
 
 	/** The Sequence ID for the sequence this director is playing back within - has to be stored as an int32 so that it is reinstanced correctly*/
 	UPROPERTY()

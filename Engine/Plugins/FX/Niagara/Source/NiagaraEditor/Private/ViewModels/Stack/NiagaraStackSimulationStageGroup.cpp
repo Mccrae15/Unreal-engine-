@@ -102,7 +102,44 @@ void UNiagaraStackSimulationStagePropertiesItem::RefreshChildrenInternal(const T
 	if (SimulationStageObject == nullptr)
 	{
 		SimulationStageObject = NewObject<UNiagaraStackObject>(this);
-		SimulationStageObject->Initialize(CreateDefaultChildRequiredData(), SimulationStage.Get(), GetStackEditorDataKey());
+		bool bIsTopLevelObject = true;
+		SimulationStageObject->Initialize(CreateDefaultChildRequiredData(), SimulationStage.Get(), bIsTopLevelObject, GetStackEditorDataKey());
+	}
+
+	if ( SimulationStage.IsValid() )
+	{
+		UNiagaraEmitter* Emitter = GetEmitterViewModel()->GetEmitter();
+		if ( Emitter && (Emitter->SimTarget != ENiagaraSimTarget::GPUComputeSim) && SimulationStage->bEnabled )
+		{
+			TArray<FStackIssueFix> IssueFixes;
+			IssueFixes.Emplace(
+				LOCTEXT("DisableSimulationStageFix", "Disable Simulation Stage"),
+				FStackIssueFixDelegate::CreateUObject(this, &UNiagaraStackSimulationStagePropertiesItem::SetSimulationStageEnabled, false)
+			);
+			IssueFixes.Emplace(
+				LOCTEXT("SetGpuSimulationFix", "Set GPU simulation"),
+				FStackIssueFixDelegate::CreateLambda(
+					[WeakEmitter=TWeakObjectPtr<UNiagaraEmitter>(GetEmitterViewModel()->GetEmitter())]()
+					{
+						if ( UNiagaraEmitter* NiagaraEmitter = WeakEmitter.Get() )
+						{
+							FScopedTransaction Transaction(LOCTEXT("SetGpuSimulation", "Set Gpu Simulation"));
+							NiagaraEmitter->Modify();
+							NiagaraEmitter->SimTarget = ENiagaraSimTarget::GPUComputeSim;
+						}
+					}
+				)
+			);
+
+			NewIssues.Emplace(
+				EStackIssueSeverity::Error,
+				LOCTEXT("SimulationStagesNotSupportedOnCPU", "Simulation stages are not supported on CPU"),
+				LOCTEXT("SimulationStagesNotSupportedOnCPULong", "Simulations stages are currently not supported on CPU, please disable or remove."),
+				GetStackEditorDataKey(),
+				false,
+				IssueFixes
+			);
+		}
 	}
 
 	NewChildren.Add(SimulationStageObject);
@@ -137,6 +174,18 @@ bool UNiagaraStackSimulationStagePropertiesItem::HasBaseSimulationStage() const
 	return bHasBaseSimulationStageCache.GetValue();
 }
 
+void UNiagaraStackSimulationStagePropertiesItem::SetSimulationStageEnabled(bool bIsEnabled)
+{
+	if (UNiagaraSimulationStageBase* SimStage = SimulationStage.Get())
+	{
+		static FText TEXT_Enabled(LOCTEXT("Enabled", "Enabled"));
+		static FText TEXT_Disabled(LOCTEXT("Disabled", "Disabled"));
+		FScopedTransaction Transaction(FText::Format(LOCTEXT("SetSimulationStageEnable", "Set Simulation Stage {1} {0}"), bIsEnabled ? TEXT_Enabled : TEXT_Disabled, GetDisplayName()));
+		SimStage->Modify();
+		SimStage->SetEnabled(bIsEnabled);
+	}
+}
+
 void UNiagaraStackSimulationStageGroup::Initialize(
 	FRequiredEntryData InRequiredEntryData,
 	TSharedRef<FNiagaraScriptViewModel> InScriptViewModel,
@@ -168,14 +217,7 @@ bool UNiagaraStackSimulationStageGroup::GetIsEnabled() const
 
 void UNiagaraStackSimulationStageGroup::SetIsEnabled(bool bEnabled)
 {
-	if (UNiagaraSimulationStageBase* SimStage = SimulationStage.Get())
-	{
-		static FText TEXT_Enabled(LOCTEXT("Enabled", "Enabled"));
-		static FText TEXT_Disabled(LOCTEXT("Disabled", "Disabled"));
-		FScopedTransaction Transaction(FText::Format(LOCTEXT("SetSimulationStageEnable", "Set Simulation Stage {1} {0}"), bEnabled ? TEXT_Enabled : TEXT_Disabled, GetDisplayName()));
-		SimStage->Modify();
-		SimStage->SetEnabled(bEnabled);
-	}
+	SimulationStageProperties->SetSimulationStageEnabled(bEnabled);
 }
 
 void UNiagaraStackSimulationStageGroup::FinalizeInternal()
@@ -356,6 +398,16 @@ void UNiagaraStackSimulationStageGroup::Delete()
 	ScriptViewModelPinned->SetScripts(Emitter);
 	
 	OnModifiedSimulationStagesDelegate.ExecuteIfBound();
+}
+
+bool UNiagaraStackSimulationStageGroup::GetIsInherited() const
+{
+	return HasBaseSimulationStage();
+}
+
+FText UNiagaraStackSimulationStageGroup::GetInheritanceMessage() const
+{
+	return LOCTEXT("SimulationStageGroupInheritanceMessage", "This simulation stage is inherited from a parent emitter.  Inherited\nsimulation stages can only be deleted while editing the parent emitter.");
 }
 
 void UNiagaraStackSimulationStageGroup::SimulationStagePropertiesChanged()

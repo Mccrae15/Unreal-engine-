@@ -6,6 +6,7 @@
 
 #include "Components/PointLightComponent.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Misc/LargeWorldRenderPosition.h"
 #include "RenderingThread.h"
 #include "Engine/Texture2D.h"
 #include "SceneManagement.h"
@@ -29,16 +30,17 @@ void FLocalLightSceneProxy::UpdateRadius_GameThread(float ComponentRadius)
 }
 
 /** Accesses parameters needed for rendering the light. */
-void FPointLightSceneProxy::GetLightShaderParameters(FLightShaderParameters& LightParameters) const
+void FPointLightSceneProxy::GetLightShaderParameters(FLightRenderParameters& LightParameters) const
 {
-	LightParameters.Position = GetOrigin();
+	LightParameters.WorldPosition = GetOrigin();
 	LightParameters.InvRadius = InvRadius;
-	LightParameters.Color = FVector(GetColor());
+	LightParameters.Color = GetColor();
 	LightParameters.FalloffExponent = FalloffExponent;
 
-	LightParameters.Direction = -GetDirection();
-	LightParameters.Tangent = FVector(WorldToLight.M[0][2], WorldToLight.M[1][2], WorldToLight.M[2][2]);
-	LightParameters.SpotAngles = FVector2D( -2.0f, 1.0f );
+	// TODO LWC - GetDirection() seems like it needs to be normalized, somehow accumulating error with large-scale position values
+	LightParameters.Direction = (FVector3f)-GetDirection(); // LWC_TODO: Precision Loss
+	LightParameters.Tangent = FVector3f(WorldToLight.M[0][2], WorldToLight.M[1][2], WorldToLight.M[2][2]);
+	LightParameters.SpotAngles = FVector2f( -2.0f, 1.0f );
 	LightParameters.SpecularScale = SpecularScale;
 	LightParameters.SourceRadius = SourceRadius;
 	LightParameters.SoftSourceRadius = SoftSourceRadius;
@@ -60,15 +62,12 @@ bool FPointLightSceneProxy::GetWholeSceneProjectedShadowInitializer(const FScene
 		FWholeSceneProjectedShadowInitializer& OutInitializer = *new(OutInitializers) FWholeSceneProjectedShadowInitializer;
 		OutInitializer.PreShadowTranslation = -GetLightToWorld().GetOrigin();
 		OutInitializer.WorldToLight = GetWorldToLight().RemoveTranslation();
-		OutInitializer.Scales = FVector(1, 1, 1);
-		OutInitializer.FaceDirection = FVector(0,0,1);
+		OutInitializer.Scales = FVector2D(1, 1);
 		OutInitializer.SubjectBounds = FBoxSphereBounds(FVector(0, 0, 0),FVector(Radius,Radius,Radius),Radius);
 		OutInitializer.WAxis = FVector4(0,0,1,0);
 		OutInitializer.MinLightW = 0.1f;
 		OutInitializer.MaxDistanceToCastInLightW = Radius;
-
-		bool bSupportsGeometryShaders = RHISupportsGeometryShaders(GShaderPlatformForFeatureLevel[ViewFamily.GetFeatureLevel()]) || RHISupportsVertexShaderLayer(ViewFamily.GetShaderPlatform());
-		OutInitializer.bOnePassPointLightShadow = bSupportsGeometryShaders;
+		OutInitializer.bOnePassPointLightShadow = true;
 
 		OutInitializer.bRayTracedDistanceField = UseRayTracedDistanceFieldShadows() && DoesPlatformSupportDistanceFieldShadowing(ViewFamily.GetShaderPlatform());
 		return true;
@@ -237,12 +236,12 @@ void UPointLightComponent::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	if (Ar.UE4Ver() < VER_UE4_INVERSE_SQUARED_LIGHTS_DEFAULT)
+	if (Ar.UEVer() < VER_UE4_INVERSE_SQUARED_LIGHTS_DEFAULT)
 	{
 		bUseInverseSquaredFalloff = InverseSquaredFalloff_DEPRECATED;
 	}
 	// Reorient old light tubes that didn't use an IES profile
-	else if(Ar.UE4Ver() < VER_UE4_POINTLIGHT_SOURCE_ORIENTATION && SourceLength > KINDA_SMALL_NUMBER && IESTexture == nullptr)
+	else if(Ar.UEVer() < VER_UE4_POINTLIGHT_SOURCE_ORIENTATION && SourceLength > KINDA_SMALL_NUMBER && IESTexture == nullptr)
 	{
 		AddLocalRotation( FRotator(-90.f, 0.f, 0.f) );
 	}

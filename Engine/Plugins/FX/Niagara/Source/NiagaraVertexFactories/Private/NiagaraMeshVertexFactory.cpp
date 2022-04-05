@@ -12,12 +12,13 @@
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FNiagaraMeshUniformParameters, "NiagaraMeshVF");
 
-class FNiagaraMeshVertexFactoryShaderParametersVS : public FVertexFactoryShaderParameters
+class FNiagaraMeshVertexFactoryShaderParametersVS : public FNiagaraVertexFactoryShaderParametersBase
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FNiagaraMeshVertexFactoryShaderParametersVS, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FNiagaraMeshVertexFactoryShaderParametersVS, NonVirtual);
 public:
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
+		FNiagaraVertexFactoryShaderParametersBase::Bind(ParameterMap);
 	}
 
 	void GetElementShaderBindings(
@@ -31,14 +32,18 @@ public:
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams) const
 	{
-		FNiagaraMeshVertexFactory* NiagaraMeshVF = (FNiagaraMeshVertexFactory*)VertexFactory;
+		FNiagaraVertexFactoryShaderParametersBase::GetElementShaderBindings(Scene, View, Shader, InputStreamType, FeatureLevel, VertexFactory, BatchElement, ShaderBindings, VertexStreams);
+
+		const FNiagaraMeshVertexFactory* NiagaraMeshVF = static_cast<const FNiagaraMeshVertexFactory*>(VertexFactory);
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FNiagaraMeshUniformParameters>(), NiagaraMeshVF->GetUniformBuffer());
 	}
 };
 
-class FNiagaraMeshVertexFactoryShaderParametersPS : public FVertexFactoryShaderParameters
+IMPLEMENT_TYPE_LAYOUT(FNiagaraMeshVertexFactoryShaderParametersVS);
+
+class FNiagaraMeshVertexFactoryShaderParametersPS : public FNiagaraVertexFactoryShaderParametersBase
 {
-	DECLARE_INLINE_TYPE_LAYOUT(FNiagaraMeshVertexFactoryShaderParametersPS, NonVirtual);
+	DECLARE_TYPE_LAYOUT(FNiagaraMeshVertexFactoryShaderParametersPS, NonVirtual);
 public:
 	void GetElementShaderBindings(
 		const FSceneInterface* Scene,
@@ -51,10 +56,15 @@ public:
 		class FMeshDrawSingleShaderBindings& ShaderBindings,
 		FVertexInputStreamArray& VertexStreams) const
 	{
-		FNiagaraMeshVertexFactory* NiagaraMeshVF = (FNiagaraMeshVertexFactory*)VertexFactory;
+		FNiagaraVertexFactoryShaderParametersBase::GetElementShaderBindings(Scene, View, Shader, InputStreamType, FeatureLevel, VertexFactory, BatchElement, ShaderBindings, VertexStreams);
+
+		const FNiagaraMeshVertexFactory* NiagaraMeshVF = static_cast<const FNiagaraMeshVertexFactory*>(VertexFactory);
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FNiagaraMeshUniformParameters>(), NiagaraMeshVF->GetUniformBuffer());
 	}
+
 };
+
+IMPLEMENT_TYPE_LAYOUT(FNiagaraMeshVertexFactoryShaderParametersPS);
 
 void FNiagaraMeshVertexFactory::InitRHI()
 {
@@ -115,6 +125,14 @@ void FNiagaraMeshVertexFactory::InitRHI()
 			}
 		}
 
+#if NIAGARA_ENABLE_GPU_SCENE_MESHES
+		if (bAddPrimitiveIDElement)
+		{
+			// TODO: Support GPU Scene on mobile? Maybe only for CPU particles?
+			AddPrimitiveIdStreamElement(EVertexInputStreamType::Default, Elements, 13, 0xFF);
+		}
+#endif
+
 		//if (Streams.Num() > 0)
 		{
 			InitDeclaration(Elements);
@@ -130,12 +148,60 @@ bool FNiagaraMeshVertexFactory::ShouldCompilePermutation(const FVertexFactorySha
 			&& (Parameters.MaterialParameters.MaterialDomain != MD_Volume);
 }
 
+void FNiagaraMeshVertexFactory::ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+{
+	FNiagaraVertexFactoryBase::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+
+	// Set a define so we can tell in MaterialTemplate.usf when we are compiling a mesh particle vertex factory
+	OutEnvironment.SetDefine(TEXT("NIAGARA_MESH_FACTORY"), TEXT("1"));
+	OutEnvironment.SetDefine(TEXT("NIAGARA_MESH_INSTANCED"), TEXT("1"));
+	OutEnvironment.SetDefine(TEXT("NiagaraVFLooseParameters"), TEXT("NiagaraMeshVF"));
+
+#if NIAGARA_ENABLE_GPU_SCENE_MESHES
+	const ERHIFeatureLevel::Type MaxSupportedFeatureLevel = GetMaxSupportedFeatureLevel(Parameters.Platform);
+
+	// TODO: Support GPU Scene on mobile?
+	const bool bUseGPUScene = UseGPUScene(Parameters.Platform, MaxSupportedFeatureLevel) && MaxSupportedFeatureLevel > ERHIFeatureLevel::ES3_1;
+	const bool bSupportsPrimitiveIdStream = Parameters.VertexFactoryType->SupportsPrimitiveIdStream();
+	
+	// TODO: Support GPU Scene for raytracing
+	if (bSupportsPrimitiveIdStream && bUseGPUScene)
+	{
+		OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), TEXT("!(RAYHITGROUPSHADER)"));
+		OutEnvironment.SetDefine(TEXT("VF_REQUIRES_PER_INSTANCE_CUSTOM_DATA"), TEXT("!(RAYHITGROUPSHADER)"));
+	}
+	else
+	{
+		OutEnvironment.SetDefine(TEXT("VF_SUPPORTS_PRIMITIVE_SCENE_DATA"), 0);
+		OutEnvironment.SetDefine(TEXT("VF_REQUIRES_PER_INSTANCE_CUSTOM_DATA"), 0);
+	}
+#endif
+
+	const bool ContainsManualVertexFetch = OutEnvironment.GetDefinitions().Contains("MANUAL_VERTEX_FETCH");
+	if (!ContainsManualVertexFetch && RHISupportsManualVertexFetch(Parameters.Platform))
+	{
+		OutEnvironment.SetDefine(TEXT("MANUAL_VERTEX_FETCH"), TEXT("1"));
+	}
+}
+
 void FNiagaraMeshVertexFactory::SetData(const FStaticMeshDataType& InData)
 {
 	check(IsInRenderingThread());
 	Data = InData;
 	UpdateRHI();
 }
+
+#if NIAGARA_ENABLE_GPU_SCENE_MESHES
+	#define NIAGARA_MESH_VF_FLAGS (EVertexFactoryFlags::UsedWithMaterials \
+		| EVertexFactoryFlags::SupportsDynamicLighting \
+		| EVertexFactoryFlags::SupportsRayTracing \
+		| EVertexFactoryFlags::SupportsPrimitiveIdStream)
+#else
+	#define NIAGARA_MESH_VF_FLAGS (EVertexFactoryFlags::UsedWithMaterials \
+		| EVertexFactoryFlags::SupportsDynamicLighting \
+		| EVertexFactoryFlags::SupportsRayTracing)
+#endif
+#define NIAGARA_MESH_VF_FLAGS_EX (NIAGARA_MESH_VF_FLAGS | EVertexFactoryFlags::SupportsPrecisePrevWorldPos)
 
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraMeshVertexFactory, SF_Vertex, FNiagaraMeshVertexFactoryShaderParametersVS);
 #if RHI_RAYTRACING
@@ -144,7 +210,7 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraMeshVertexFactory, SF_RayHitGrou
 #endif
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraMeshVertexFactory, SF_Pixel, FNiagaraMeshVertexFactoryShaderParametersPS);
 
-IMPLEMENT_VERTEX_FACTORY_TYPE(FNiagaraMeshVertexFactory, "/Plugin/FX/Niagara/Private/NiagaraMeshVertexFactory.ush", true, false, true, false, false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FNiagaraMeshVertexFactory, "/Plugin/FX/Niagara/Private/NiagaraMeshVertexFactory.ush",	NIAGARA_MESH_VF_FLAGS);
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -155,4 +221,4 @@ IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraMeshVertexFactoryEx, SF_RayHitGr
 #endif
 IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FNiagaraMeshVertexFactoryEx, SF_Pixel, FNiagaraMeshVertexFactoryShaderParametersPS);
 
-IMPLEMENT_VERTEX_FACTORY_TYPE(FNiagaraMeshVertexFactoryEx, "/Plugin/FX/Niagara/Private/NiagaraMeshVertexFactory.ush", true, false, true, true, false);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FNiagaraMeshVertexFactoryEx, "/Plugin/FX/Niagara/Private/NiagaraMeshVertexFactory.ush", NIAGARA_MESH_VF_FLAGS_EX);

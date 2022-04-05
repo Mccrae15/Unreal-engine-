@@ -97,6 +97,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Appearance")
 	void SetTextTransformPolicy(ETextTransformPolicy InTransformPolicy);
 
+	/**
+	 * Set the text overflow policy for this text block.
+	 *
+	 * @param InOverflowPolicy the new text overflow policy.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Appearance")
+	void SetTextOverflowPolicy(ETextOverflowPolicy InOverflowPolicy);
+
 	/**  */
 	UFUNCTION(BlueprintCallable, Category="Appearance")
 	UMaterialInstanceDynamic* GetDynamicFontMaterial();
@@ -157,6 +165,10 @@ public:
 	/** The text transformation policy to apply to this text block */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Appearance, meta=(DisplayName="Transform Policy"))
 	ETextTransformPolicy TextTransformPolicy;
+
+	/** Sets what happens to text that is clipped and doesn't fit within the clip rect for this widget */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Clipping, AdvancedDisplay, meta = (DisplayName = "Overflow Policy"))
+	ETextOverflowPolicy TextOverflowPolicy;
 
 	/** 
 	 * Gets the widget text

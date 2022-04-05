@@ -231,6 +231,10 @@ public:
 	void ClickedOnNode(SelectedItemType Node, const FPointerEvent& MouseEvent);
 
 	void AddReferencedObjects(FReferenceCollector& Collector) override;
+	virtual FString GetReferencerName() const override
+	{
+		return TEXT("FGraphSelectionManager");
+	}
 };
 
 /**
@@ -271,48 +275,56 @@ public:
 	public:
 
 		/** A slot that support alignment of content and padding and z-order */
-		class FNodeSlot : public TSlotBase<FNodeSlot>
+		class GRAPHEDITOR_API FNodeSlot : public TSlotBase<FNodeSlot>, public TAlignmentWidgetSlotMixin<FNodeSlot>
 		{
 		public:
+			friend SNode;
+
 			FNodeSlot()
-				: TSlotBase<FNodeSlot>()
-				, HAlignment(HAlign_Fill)
-				, VAlignment(VAlign_Fill)
-				, SlotPadding(0.0f)
-				, Offset( FVector2D::ZeroVector )
-				, AllowScale( true )
+				: FNodeSlot(ENodeZone::TopLeft)
 			{ }
 
-			FNodeSlot& HAlign( EHorizontalAlignment InHAlignment )
-			{
-				HAlignment = InHAlignment;
-				return *this;
-			}
+			FNodeSlot(ENodeZone::Type InZone)
+				: TSlotBase<FNodeSlot>()
+				, TAlignmentWidgetSlotMixin<FNodeSlot>(HAlign_Fill, VAlign_Fill)
+				, Zone(InZone)
+				, SlotPadding(0.0f)
+				, Offset(FVector2D::ZeroVector)
+				, AllowScale(true)
+			{ }
 
-			FNodeSlot& VAlign( EVerticalAlignment InVAlignment )
-			{
-				VAlignment = InVAlignment;
-				return *this;
-			}
+			SLATE_SLOT_BEGIN_ARGS_OneMixin(FNodeSlot, TSlotBase<FNodeSlot>, TAlignmentWidgetSlotMixin<FNodeSlot>)
+				SLATE_ATTRIBUTE(FMargin, Padding)
+				SLATE_ATTRIBUTE(FVector2D, SlotOffset)
+				SLATE_ATTRIBUTE(FVector2D, SlotSize)
+				SLATE_ATTRIBUTE(bool, AllowScaling)
+			SLATE_SLOT_END_ARGS()
 
+			void Construct(const FChildren& SlotOwner, FSlotArguments&& InArgs);
+
+		public:
+			UE_DEPRECATED(5.0, "Padding is now deprecated. Use the FSlotArgument or the SetPadding function.")
 			FNodeSlot& Padding( const TAttribute<FMargin> InPadding )
 			{
 				SlotPadding = InPadding;
 				return *this;
 			}
 
+			UE_DEPRECATED(5.0, "SlotOffset is now deprecated. Use the FSlotArgument or the SetSlotOffset function.")
 			FNodeSlot& SlotOffset( const TAttribute<FVector2D> InOffset )
 			{
 				Offset = InOffset;
 				return *this;
 			}
 
+			UE_DEPRECATED(5.0, "SlotSize is now deprecated. Use the FSlotArgument or the SetSlotSize function.")
 			FNodeSlot& SlotSize( const TAttribute<FVector2D> InSize )
 			{
 				Size = InSize;
 				return *this;
 			}
 
+			UE_DEPRECATED(5.0, "AllowScaling is now deprecated. Use the FSlotArgument or the SetAllowScalingfunction.")
 			FNodeSlot& AllowScaling( const TAttribute<bool> InAllowScale )
 			{
 				AllowScale = InAllowScale;
@@ -320,11 +332,54 @@ public:
 			}
 
 		public:
+			ENodeZone::Type GetZoneType() const
+			{
+				return Zone;
+			}
 
+			void SetPadding(TAttribute<FMargin> InPadding)
+			{
+				SlotPadding = MoveTemp(InPadding);
+			}
+
+			FMargin GetPadding() const
+			{
+				return SlotPadding.Get();
+			}
+
+			void SetSlotOffset(TAttribute<FVector2D> InOffset)
+			{
+				Offset = MoveTemp(InOffset);
+			}
+
+			FVector2D GetSlotOffset() const
+			{
+				return Offset.Get();
+			}
+
+			void SetSlotSize(TAttribute<FVector2D> InSize)
+			{
+				Size = MoveTemp(InSize);
+			}
+
+			FVector2D GetSlotSize() const
+			{
+				return Size.Get();
+			}
+
+			void SetAllowScaling(TAttribute<bool> InAllowScaling)
+			{
+				AllowScale = MoveTemp(InAllowScaling);
+			}
+
+			bool GetAllowScaling() const
+			{
+				return AllowScale.Get();
+			}
+
+		private:
 			/** The child widget contained in this slot. */
 			ENodeZone::Type Zone;
-			EHorizontalAlignment HAlignment;
-			EVerticalAlignment VAlignment;
 			TAttribute<FMargin> SlotPadding;
 			TAttribute<FVector2D> Offset;
 			TAttribute<FVector2D> Size;
@@ -433,22 +488,23 @@ public:
 		}
 		// End of SPanel Interface
 
-		FNodeSlot& GetOrAddSlot( const ENodeZone::Type SlotId )
+
+		using FScopedWidgetSlotArguments = TPanelChildren<FNodeSlot>::FScopedWidgetSlotArguments;
+		FScopedWidgetSlotArguments GetOrAddSlot( const ENodeZone::Type SlotId )
 		{
 			// Return existing
+			int32 InsertIndex = INDEX_NONE;
 			for( int32 ChildIndex = 0; ChildIndex < Children.Num(); ++ChildIndex )
 			{
 				if( Children[ ChildIndex ].Zone == SlotId )
 				{
-					return Children[ ChildIndex ];
+					Children.RemoveAt(ChildIndex);
+					InsertIndex = ChildIndex;
 				}
 			}
-			// Add Zone
-			FNodeSlot& NewSlot = *new FNodeSlot();
-			NewSlot.Zone = SlotId;
-			Children.Add( &NewSlot );
 
-			return NewSlot;
+			// Add new
+			return FScopedWidgetSlotArguments{ MakeUnique<FNodeSlot>(SlotId), Children, InsertIndex };
 		}
 
 		FNodeSlot* GetSlot( const ENodeZone::Type SlotId )
@@ -849,7 +905,21 @@ protected:
 
 	// Cancels any active zoom-to-fit action
 	void CancelZoomToFit();
+
+public:
+	
+	// Sets the zoom levels container
+	template<typename T>
+	void SetZoomLevelsContainer()
+	{
+		ZoomLevels = MakeUnique<T>();
+		OldZoomAmount = ZoomLevels->GetZoomAmount(ZoomLevel);
+		ZoomLevel = PreviousZoomLevel = ZoomLevels->GetNearestZoomLevel(OldZoomAmount);
+		PostChangedZoom();
+	}
+	
 protected:
+	
 	// The interface for mapping ZoomLevel values to actual node scaling values
 	TUniquePtr<FZoomLevelsContainer> ZoomLevels;
 

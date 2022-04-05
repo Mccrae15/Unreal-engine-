@@ -50,11 +50,13 @@ enum EPropertyType
 	CPT_MulticastDelegate,
 	CPT_WeakObjectReference,
 	CPT_LazyObjectReference,
+	CPT_ObjectPtrReference,
 	CPT_SoftObjectReference,
 	CPT_Double,
 	CPT_Map,
 	CPT_Set,
 	CPT_FieldPath,
+	CPT_FLargeWorldCoordinatesReal,
 
 	CPT_MAX
 };
@@ -109,6 +111,11 @@ public:
 	UFunction* CurrentNativeFunction;
 
 	bool bArrayContextFailed;
+
+#if PER_FUNCTION_SCRIPT_STATS
+	/** Increment for each PreviousFrame on the stack (Max 255) */
+	uint8 DepthCounter;
+#endif
 public:
 
 	// Constructors.
@@ -126,7 +133,10 @@ public:
 	}
 
 	// Functions.
-	COREUOBJECT_API void Step( UObject* Context, RESULT_DECL );
+	COREUOBJECT_API void Step(UObject* Context, RESULT_DECL);
+
+	/** Convenience function that calls Step, but also returns true if both MostRecentProperty and MostRecentPropertyAddress are non-null. */
+	FORCEINLINE_DEBUGGABLE bool StepAndCheckMostRecentProperty(UObject* Context, RESULT_DECL);
 
 	/** Replacement for Step that uses an explicitly specified property to unpack arguments **/
 	COREUOBJECT_API void StepExplicitProperty(void*const Result, FProperty* Property);
@@ -150,9 +160,12 @@ public:
 	/** Skips over the number of op codes specified by NumOps */
 	void SkipCode(const int32 NumOps) { Code += NumOps; }
 
+	template<typename T>
+	T Read();
 	template<typename TNumericType>
 	TNumericType ReadInt();
 	float ReadFloat();
+	double ReadDouble();
 	FName ReadName();
 	UObject* ReadObject();
 	int32 ReadWord();
@@ -218,18 +231,33 @@ inline FFrame::FFrame( UObject* InObject, UFunction* InNode, void* InLocals, FFr
 	, PropertyChainForCompiledIn(InPropertyChainForCompiledIn)
 	, CurrentNativeFunction(NULL)
 	, bArrayContextFailed(false)
+#if PER_FUNCTION_SCRIPT_STATS
+	, DepthCounter(0)
+#endif
 {
 #if DO_BLUEPRINT_GUARD
 	FBlueprintContextTracker::Get().ScriptStack.Push(this);
 #endif
+#if PER_FUNCTION_SCRIPT_STATS
+	if (InPreviousFrame)
+	{
+		DepthCounter = (InPreviousFrame->DepthCounter < MAX_uint8) ? InPreviousFrame->DepthCounter + 1 : MAX_uint8;
+	}
+#endif
+}
+
+template<typename T>
+inline T FFrame::Read()
+{
+	T Result = FPlatformMemory::ReadUnaligned<T>(Code);
+	Code += sizeof(T);
+	return Result;
 }
 
 template<typename TNumericType>
 inline TNumericType FFrame::ReadInt()
 {
-	TNumericType Result = FPlatformMemory::ReadUnaligned<TNumericType>(Code);
-	Code += sizeof(TNumericType);
-	return Result;
+	return Read<TNumericType>();
 }
 
 inline UObject* FFrame::ReadObject()
@@ -263,16 +291,17 @@ inline FProperty* FFrame::ReadPropertyUnchecked()
 
 inline float FFrame::ReadFloat()
 {
-	float Result = FPlatformMemory::ReadUnaligned<float>(Code);
-	Code += sizeof(float);
-	return Result;
+	return Read<float>();
+}
+
+inline double FFrame::ReadDouble()
+{
+	return Read<double>();
 }
 
 inline int32 FFrame::ReadWord()
 {
-	int32 Result = FPlatformMemory::ReadUnaligned<uint16>(Code);
-	Code += sizeof(uint16);
-	return Result;
+	return Read<uint16>();
 }
 
 /**
@@ -313,6 +342,13 @@ inline FName FFrame::ReadName()
 }
 
 COREUOBJECT_API void GInitRunaway();
+
+FORCEINLINE_DEBUGGABLE bool FFrame::StepAndCheckMostRecentProperty(UObject* Context, RESULT_DECL)
+{
+	Step(Context, RESULT_PARAM);
+
+	return (MostRecentProperty && MostRecentPropertyAddress);
+}
 
 /**
  * Replacement for Step that checks the for byte code, and if none exists, then PropertyChainForCompiledIn is used.

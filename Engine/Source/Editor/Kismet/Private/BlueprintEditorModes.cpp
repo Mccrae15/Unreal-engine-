@@ -5,7 +5,6 @@
 #include "ToolMenus.h"
 
 // Core kismet tabs
-#include "SSCSEditor.h"
 #include "SSCSEditorViewport.h"
 #include "SKismetInspector.h"
 #include "SMyBlueprint.h"
@@ -20,6 +19,7 @@
 #include "BlueprintEditorTabFactories.h"
 #include "BlueprintEditorSharedTabFactories.h"
 #include "BlueprintEditorSettings.h"
+#include "SSubobjectEditor.h"
 
 #define LOCTEXT_NAMESPACE "BlueprintEditor"
 
@@ -32,17 +32,10 @@ const FName FBlueprintEditorApplicationModes::BlueprintMacroMode( TEXT("MacroNam
 
 TSharedPtr<FTabManager::FLayout> GetDefaltEditorLayout(TSharedPtr<class FBlueprintEditor> InBlueprintEditor)
 {
-	return FTabManager::NewLayout( "Standalone_BlueprintEditor_Layout_v6" )
+	return FTabManager::NewLayout( "Standalone_BlueprintEditor_Layout_v7" )
 	->AddArea
 	(
 		FTabManager::NewPrimaryArea() ->SetOrientation(Orient_Vertical)
-		->Split
-		(
-			FTabManager::NewStack()
-			->SetSizeCoefficient( 0.186721f )
-			->SetHideTabWell(true)
-			->AddTab( InBlueprintEditor->GetToolbarTabId(), ETabState::OpenedTab )
-		)
 		->Split
 		(
 			FTabManager::NewSplitter() ->SetOrientation(Orient_Horizontal)
@@ -92,7 +85,6 @@ FBlueprintEditorApplicationMode::FBlueprintEditorApplicationMode(TSharedPtr<clas
 	MyBlueprintEditor = InBlueprintEditor;
 
 	// Create the tab factories
-	BlueprintEditorTabFactories.RegisterFactory(MakeShareable(new FDebugInfoSummoner(InBlueprintEditor)));
 	BlueprintEditorTabFactories.RegisterFactory(MakeShareable(new FPaletteSummoner(InBlueprintEditor)));
 	BlueprintEditorTabFactories.RegisterFactory(MakeShareable(new FMyBlueprintSummoner(InBlueprintEditor)));
 	BlueprintEditorTabFactories.RegisterFactory(MakeShareable(new FReplaceNodeReferencesSummoner(InBlueprintEditor)));
@@ -163,7 +155,7 @@ FBlueprintDefaultsApplicationMode::FBlueprintDefaultsApplicationMode(TSharedPtr<
 	BlueprintDefaultsTabFactories.RegisterFactory(MakeShareable(new FFindResultsSummoner(InBlueprintEditor)));
 	BlueprintDefaultsTabFactories.RegisterFactory(MakeShareable(new FMyBlueprintSummoner(InBlueprintEditor)));
 
-	TabLayout = FTabManager::NewLayout( "Standalone_BlueprintDefaults_Layout_v6" )
+	TabLayout = FTabManager::NewLayout( "Standalone_BlueprintDefaults_Layout_v7" )
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
@@ -171,14 +163,9 @@ FBlueprintDefaultsApplicationMode::FBlueprintDefaultsApplicationMode(TSharedPtr<
 			->Split
 			(
 				FTabManager::NewStack()
-				->SetSizeCoefficient( 0.2f )
-				->SetHideTabWell(true)
-				->AddTab( InBlueprintEditor->GetToolbarTabId(), ETabState::OpenedTab )
-			)
-			->Split
-			(
-				FTabManager::NewStack()
 				->AddTab( FBlueprintEditorTabs::DefaultEditorID, ETabState::OpenedTab )
+				->SetHideTabWell(true)
+
 			)
 		);
 
@@ -222,18 +209,11 @@ FBlueprintComponentsApplicationMode::FBlueprintComponentsApplicationMode(TShared
 	BlueprintComponentsTabFactories.RegisterFactory(MakeShareable(new FDefaultsEditorSummoner(InBlueprintEditor)));
 	BlueprintComponentsTabFactories.RegisterFactory(MakeShareable(new FFindResultsSummoner(InBlueprintEditor)));
 
-	TabLayout = FTabManager::NewLayout( "Standalone_BlueprintComponents_Layout_v5" )
+	TabLayout = FTabManager::NewLayout( "Standalone_BlueprintComponents_Layout_v6" )
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient( 0.2f )
-				->SetHideTabWell(true)
-				->AddTab( InBlueprintEditor->GetToolbarTabId(), ETabState::OpenedTab )
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -291,18 +271,19 @@ void FBlueprintComponentsApplicationMode::PreDeactivateMode()
 	FApplicationMode::PreDeactivateMode();
 
 	TSharedPtr<FBlueprintEditor> BP = MyBlueprintEditor.Pin();
-	BP->GetSCSEditor()->SetEnabled(true);
-	BP->GetSCSEditor()->UpdateTree();
+	BP->GetSubobjectEditor()->SetEnabled(true);
+    BP->GetSubobjectEditor()->UpdateTree();
 	BP->GetInspector()->SetEnabled(true);
 	BP->GetInspector()->EnableComponentDetailsCustomization(false);
-	BP->EnableSCSPreview(false);
+	BP->EnableSubobjectPreview(false);
 
 	// Cache component selection before clearing so it can be restored
-	for( auto& SCSNode : BP->GetSCSEditor()->GetSelectedNodes() )
+	for(FSubobjectEditorTreeNodePtrType& Node : BP->GetSubobjectEditor()->GetSelectedNodes())
 	{
-		CachedComponentSelection.AddUnique(SCSNode->GetComponentTemplate());
+		CachedComponentSelection.AddUnique(Node->GetComponentTemplate());
 	}
-	BP->GetSCSEditor()->ClearSelection();
+	
+	BP->GetSubobjectEditor()->ClearSelection();
 }
 
 void FBlueprintComponentsApplicationMode::PostActivateMode()
@@ -310,25 +291,25 @@ void FBlueprintComponentsApplicationMode::PostActivateMode()
 	TSharedPtr<FBlueprintEditor> BP = MyBlueprintEditor.Pin();
 	if (BP.IsValid())
 	{
-		auto SCSEditor = BP->GetSCSEditor();
-		SCSEditor->UpdateTree();
-		BP->EnableSCSPreview(true);
-		BP->UpdateSCSPreview();
+		TSharedPtr<SSubobjectEditor> SubobjectEditor = BP->GetSubobjectEditor();
+		SubobjectEditor->UpdateTree();
+		BP->EnableSubobjectPreview(true);
+		BP->UpdateSubobjectPreview();
 		BP->GetInspector()->EnableComponentDetailsCustomization(true);
 
 		// Reselect the cached components
 		TArray<TSharedPtr<FSCSEditorTreeNode>> Selection;
-		for (auto Component : CachedComponentSelection)
+		for (TWeakObjectPtr<const UActorComponent>& Component : CachedComponentSelection)
 		{
 			if (Component.IsValid())
 			{
-				SCSEditor->SCSTreeWidget->SetItemSelection(SCSEditor->GetNodeFromActorComponent(Component.Get()), true);
+				SubobjectEditor->GetDragDropTree()->SetItemSelection(SubobjectEditor->FindSlateNodeForObject(Component.Get()), true);
 			}
 		}
 
-		if (BP->GetSCSViewport()->GetIsSimulateEnabled())
+		if (BP->GetSubobjectViewport()->GetIsSimulateEnabled())
 		{
-			SCSEditor->SetEnabled(false);
+			SubobjectEditor->SetEnabled(false);
 			BP->GetInspector()->SetEnabled(false);
 		}
 	}
@@ -344,7 +325,6 @@ FBlueprintInterfaceApplicationMode::FBlueprintInterfaceApplicationMode(TSharedPt
 	MyBlueprintEditor = InBlueprintEditor;
 	
 	// Create the tab factories
-	BlueprintInterfaceTabFactories.RegisterFactory(MakeShareable(new FDebugInfoSummoner(InBlueprintEditor)));
 	BlueprintInterfaceTabFactories.RegisterFactory(MakeShareable(new FMyBlueprintSummoner(InBlueprintEditor)));
 	BlueprintInterfaceTabFactories.RegisterFactory(MakeShareable(new FReplaceNodeReferencesSummoner(InBlueprintEditor)));
 	BlueprintInterfaceTabFactories.RegisterFactory(MakeShareable(new FCompilerResultsSummoner(InBlueprintEditor)));
@@ -352,7 +332,7 @@ FBlueprintInterfaceApplicationMode::FBlueprintInterfaceApplicationMode(TSharedPt
 	BlueprintInterfaceTabFactories.RegisterFactory(MakeShareable(new FFindResultsSummoner(InBlueprintEditor)));
 	BlueprintInterfaceTabFactories.RegisterFactory(MakeShareable(new FSelectionDetailsSummoner(InBlueprintEditor)));
 
-	TabLayout = FTabManager::NewLayout( "Standalone_BlueprintInterface_Layout_v3" )
+	TabLayout = FTabManager::NewLayout( "Standalone_BlueprintInterface_Layout_v4" )
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea() ->SetOrientation(Orient_Vertical)
@@ -363,13 +343,6 @@ FBlueprintInterfaceApplicationMode::FBlueprintInterfaceApplicationMode(TSharedPt
 				(
 					FTabManager::NewSplitter()->SetOrientation( Orient_Vertical )
 					->SetSizeCoefficient(0.70f)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(0.186721f)
-						->SetHideTabWell(true)
-						->AddTab(InBlueprintEditor->GetToolbarTabId(), ETabState::OpenedTab)
-					)
 					->Split
 					(
 						FTabManager::NewStack()
@@ -450,7 +423,6 @@ FBlueprintMacroApplicationMode::FBlueprintMacroApplicationMode(TSharedPtr<class 
 	MyBlueprintEditor = InBlueprintEditor;
 	
 	// Create the tab factories
-	BlueprintMacroTabFactories.RegisterFactory(MakeShareable(new FDebugInfoSummoner(InBlueprintEditor)));
 	BlueprintMacroTabFactories.RegisterFactory(MakeShareable(new FMyBlueprintSummoner(InBlueprintEditor)));
 	BlueprintMacroTabFactories.RegisterFactory(MakeShareable(new FReplaceNodeReferencesSummoner(InBlueprintEditor)));
 	BlueprintMacroTabFactories.RegisterFactory(MakeShareable(new FPaletteSummoner(InBlueprintEditor)));
@@ -458,7 +430,7 @@ FBlueprintMacroApplicationMode::FBlueprintMacroApplicationMode(TSharedPtr<class 
 	BlueprintMacroTabFactories.RegisterFactory(MakeShareable(new FFindResultsSummoner(InBlueprintEditor)));
 	BlueprintMacroTabFactories.RegisterFactory(MakeShareable(new FSelectionDetailsSummoner(InBlueprintEditor)));
 
-	TabLayout = FTabManager::NewLayout( "Standalone_BlueprintMacro_Layout_v3" )
+	TabLayout = FTabManager::NewLayout( "Standalone_BlueprintMacro_Layout_v4" )
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea() ->SetOrientation(Orient_Vertical)
@@ -468,14 +440,6 @@ FBlueprintMacroApplicationMode::FBlueprintMacroApplicationMode(TSharedPtr<class 
 				->Split
 				(
 					FTabManager::NewSplitter()->SetOrientation( Orient_Vertical )
-					->SetSizeCoefficient(0.70f)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(0.186721f)
-						->SetHideTabWell(true)
-						->AddTab(InBlueprintEditor->GetToolbarTabId(), ETabState::OpenedTab)
-					)
 					->Split
 					(
 						FTabManager::NewStack()
@@ -556,7 +520,6 @@ FBlueprintEditorUnifiedMode::FBlueprintEditorUnifiedMode(TSharedPtr<class FBluep
 	MyBlueprintEditor = InBlueprintEditor;
 
 	// Create the tab factories
-	BlueprintEditorTabFactories.RegisterFactory(MakeShareable(new FDebugInfoSummoner(InBlueprintEditor)));
 	BlueprintEditorTabFactories.RegisterFactory(MakeShareable(new FPaletteSummoner(InBlueprintEditor)));
 	BlueprintEditorTabFactories.RegisterFactory(MakeShareable(new FMyBlueprintSummoner(InBlueprintEditor)));
 	BlueprintEditorTabFactories.RegisterFactory(MakeShareable(new FReplaceNodeReferencesSummoner(InBlueprintEditor)));
@@ -574,7 +537,7 @@ FBlueprintEditorUnifiedMode::FBlueprintEditorUnifiedMode(TSharedPtr<class FBluep
 
 	if ( bRegisterViewport )
 	{
-		TabLayout = FTabManager::NewLayout( "Blueprints_Unified_Components_v6" )
+		TabLayout = FTabManager::NewLayout( "Blueprints_Unified_Components_v7" )
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
@@ -602,13 +565,6 @@ FBlueprintEditorUnifiedMode::FBlueprintEditorUnifiedMode(TSharedPtr<class FBluep
 				(
 					FTabManager::NewSplitter()->SetOrientation( Orient_Vertical )
 					->SetSizeCoefficient(0.60f)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(0.186721f)
-						->SetHideTabWell(true)
-						->AddTab(InBlueprintEditor->GetToolbarTabId(), ETabState::OpenedTab)
-					)
 					->Split
 					(
 						FTabManager::NewStack()
@@ -642,7 +598,7 @@ FBlueprintEditorUnifiedMode::FBlueprintEditorUnifiedMode(TSharedPtr<class FBluep
 	}
 	else
 	{
-		TabLayout = FTabManager::NewLayout( "Blueprints_Unified_v4" )
+		TabLayout = FTabManager::NewLayout( "Blueprints_Unified_v5" )
 		->AddArea
 		(
 		FTabManager::NewPrimaryArea()->SetOrientation(Orient_Vertical)
@@ -664,13 +620,6 @@ FBlueprintEditorUnifiedMode::FBlueprintEditorUnifiedMode(TSharedPtr<class FBluep
 				(
 					FTabManager::NewSplitter()->SetOrientation( Orient_Vertical )
 					->SetSizeCoefficient(0.60f)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(0.186721f)
-						->SetHideTabWell(true)
-						->AddTab(InBlueprintEditor->GetToolbarTabId(), ETabState::OpenedTab)
-					)
 					->Split
 					(
 						FTabManager::NewStack()

@@ -2,10 +2,11 @@
 
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffectAggregator.h"
-#include "GameplayEffect.h"
 #include "AbilitySystemGlobals.h"
 #include "AbilitySystemComponent.h"
-#include "AbilitySystemInterface.h"
+#include "GameplayEffect.h"
+#include "GameplayEffectUIData.h"
+#include "GameplayAbilitySpec.h"
 
 UAbilitySystemBlueprintLibrary::UAbilitySystemBlueprintLibrary(const FObjectInitializer& ObjectInitializer)
 : Super(ObjectInitializer)
@@ -19,21 +20,17 @@ UAbilitySystemComponent* UAbilitySystemBlueprintLibrary::GetAbilitySystemCompone
 
 void UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(AActor* Actor, FGameplayTag EventTag, FGameplayEventData Payload)
 {
-	if (Actor && !Actor->IsPendingKill())
+	if (::IsValid(Actor))
 	{
-		IAbilitySystemInterface* AbilitySystemInterface = Cast<IAbilitySystemInterface>(Actor);
-		if (AbilitySystemInterface != nullptr)
+		UAbilitySystemComponent* AbilitySystemComponent = GetAbilitySystemComponent(Actor);
+		if (AbilitySystemComponent != nullptr && IsValidChecked(AbilitySystemComponent))
 		{
-			UAbilitySystemComponent* AbilitySystemComponent = AbilitySystemInterface->GetAbilitySystemComponent();
-			if (AbilitySystemComponent != nullptr && !AbilitySystemComponent->IsPendingKill())
-			{
-				FScopedPredictionWindow NewScopedWindow(AbilitySystemComponent, true);
-				AbilitySystemComponent->HandleGameplayEvent(EventTag, &Payload);
-			}
-			else
-			{
-				ABILITY_LOG(Error, TEXT("UAbilitySystemBlueprintLibrary::SendGameplayEventToActor: Invalid ability system component retrieved from Actor %s. EventTag was %s"), *Actor->GetName(), *EventTag.ToString());
-			}
+			FScopedPredictionWindow NewScopedWindow(AbilitySystemComponent, true);
+			AbilitySystemComponent->HandleGameplayEvent(EventTag, &Payload);
+		}
+		else
+		{
+			ABILITY_LOG(Error, TEXT("UAbilitySystemBlueprintLibrary::SendGameplayEventToActor: Invalid ability system component retrieved from Actor %s. EventTag was %s"), *Actor->GetName(), *EventTag.ToString());
 		}
 	}
 }
@@ -813,7 +810,7 @@ FGameplayEffectSpecHandle UAbilitySystemBlueprintLibrary::AddAssetTag(FGameplayE
 	FGameplayEffectSpec* Spec = SpecHandle.Data.Get();
 	if (Spec)
 	{
-		Spec->DynamicAssetTags.AddTag(NewGameplayTag);
+		Spec->AddDynamicAssetTag(NewGameplayTag);
 	}
 	else
 	{
@@ -828,7 +825,7 @@ FGameplayEffectSpecHandle UAbilitySystemBlueprintLibrary::AddAssetTags(FGameplay
 	FGameplayEffectSpec* Spec = SpecHandle.Data.Get();
 	if (Spec)
 	{
-		Spec->DynamicAssetTags.AppendTags(NewGameplayTags);
+		Spec->AppendDynamicAssetTags(NewGameplayTags);
 	}
 	else
 	{
@@ -1045,4 +1042,120 @@ FString UAbilitySystemBlueprintLibrary::GetActiveGameplayEffectDebugString(FActi
 		Str = ASC->GetActiveGEDebugString(ActiveHandle);
 	}
 	return Str;
+}
+
+bool UAbilitySystemBlueprintLibrary::AddLooseGameplayTags(AActor* Actor, const FGameplayTagContainer& GameplayTags, bool bShouldReplicate)
+{
+	if (UAbilitySystemComponent* AbilitySysComp = GetAbilitySystemComponent(Actor))
+	{
+		AbilitySysComp->AddLooseGameplayTags(GameplayTags);
+
+		if (bShouldReplicate)
+		{
+			AbilitySysComp->AddReplicatedLooseGameplayTags(GameplayTags);
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+bool UAbilitySystemBlueprintLibrary::RemoveLooseGameplayTags(AActor* Actor, const FGameplayTagContainer& GameplayTags, bool bShouldReplicate)
+{
+	if (UAbilitySystemComponent* AbilitySysComp = GetAbilitySystemComponent(Actor))
+	{
+		AbilitySysComp->RemoveLooseGameplayTags(GameplayTags);
+
+		if (bShouldReplicate)
+		{
+			AbilitySysComp->RemoveReplicatedLooseGameplayTags(GameplayTags);
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+const UGameplayEffectUIData* UAbilitySystemBlueprintLibrary::GetGameplayEffectUIData(TSubclassOf<UGameplayEffect> EffectClass, TSubclassOf<UGameplayEffectUIData> DataType)
+{
+	if (UClass* ActualPtr = EffectClass.Get())
+	{
+		const UGameplayEffectUIData* UIData = GetDefault<UGameplayEffect>(ActualPtr)->UIData;
+		if ((UIData != nullptr) && (DataType != nullptr) && UIData->IsA(DataType))
+		{
+			return UIData;
+		}
+	}
+	return nullptr;
+}
+
+bool UAbilitySystemBlueprintLibrary::EqualEqual_ActiveGameplayEffectHandle(const FActiveGameplayEffectHandle& A, const FActiveGameplayEffectHandle& B)
+{
+	return A == B;
+}
+
+bool UAbilitySystemBlueprintLibrary::NotEqual_ActiveGameplayEffectHandle(const FActiveGameplayEffectHandle& A, const FActiveGameplayEffectHandle& B)
+{
+	return A != B;
+}
+
+const UGameplayEffect* UAbilitySystemBlueprintLibrary::GetGameplayEffectFromActiveEffectHandle(const FActiveGameplayEffectHandle& ActiveHandle)
+{
+	const UAbilitySystemComponent* ASC = ActiveHandle.GetOwningAbilitySystemComponent();
+
+	if (ASC)
+	{
+		return ASC->GetGameplayEffectCDO(ActiveHandle);
+	}
+
+	ABILITY_LOG(Error, TEXT("GetGameplayAbilityFromSpecHandle() called with an invalid Active Gameplay Effect Handle"));
+
+	return nullptr;
+}
+
+const UGameplayAbility* UAbilitySystemBlueprintLibrary::GetGameplayAbilityFromSpecHandle(UAbilitySystemComponent* AbilitySystem, const FGameplayAbilitySpecHandle& AbilitySpecHandle, bool& bIsInstance)
+{
+	// validate the ASC
+	if (!AbilitySystem)
+	{
+		ABILITY_LOG(Error, TEXT("GetGameplayAbilityFromSpecHandle() called with an invalid Ability System Component"));
+
+		bIsInstance = false;
+		return nullptr;
+	}
+
+	// get and validate the ability spec
+	FGameplayAbilitySpec* AbilitySpec = AbilitySystem->FindAbilitySpecFromHandle(AbilitySpecHandle);
+	if (!AbilitySpec)
+	{
+		ABILITY_LOG(Error, TEXT("GetGameplayAbilityFromSpecHandle() Ability Spec not found on passed Ability System Component"));
+
+		bIsInstance = false;
+		return nullptr;
+	}
+
+	// try to get the ability instance
+	UGameplayAbility* AbilityInstance = AbilitySpec->GetPrimaryInstance();
+	bIsInstance = true;
+
+	// default to the CDO if we can't
+	if (!AbilityInstance)
+	{
+		AbilityInstance = AbilitySpec->Ability;
+		bIsInstance = false;
+	}
+
+	return AbilityInstance;
+}
+
+bool UAbilitySystemBlueprintLibrary::EqualEqual_GameplayAbilitySpecHandle(const FGameplayAbilitySpecHandle& A, const FGameplayAbilitySpecHandle& B)
+{
+	return A == B;
+}
+
+bool UAbilitySystemBlueprintLibrary::NotEqual_GameplayAbilitySpecHandle(const FGameplayAbilitySpecHandle& A, const FGameplayAbilitySpecHandle& B)
+{
+	return A != B;
 }

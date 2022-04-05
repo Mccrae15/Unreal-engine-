@@ -45,6 +45,18 @@ FText SEditorViewportViewMenu::GetViewMenuLabel() const
 		{
 			Label = ViewportClient->GetCurrentBufferVisualizationModeDisplayName();
 		}
+		else if (ViewMode == VMI_VisualizeNanite)
+		{
+			Label = ViewportClient->GetCurrentNaniteVisualizationModeDisplayName();
+		}
+		else if (ViewMode == VMI_VisualizeLumen)
+		{
+			Label = ViewportClient->GetCurrentLumenVisualizationModeDisplayName();
+		}
+		else if (ViewMode == VMI_VisualizeVirtualShadowMap)
+		{
+			Label = ViewportClient->GetCurrentVirtualShadowMapVisualizationModeDisplayName();
+		}
 		// For any other category, return its own name
 		else
 		{
@@ -57,141 +69,18 @@ FText SEditorViewportViewMenu::GetViewMenuLabel() const
 
 const FSlateBrush* SEditorViewportViewMenu::GetViewMenuLabelIcon() const
 {
-	FName Icon = NAME_None;
+
 	TSharedPtr< SEditorViewport > PinnedViewport = Viewport.Pin();
 	if( PinnedViewport.IsValid() )
 	{
-		static FName WireframeIcon( "EditorViewport.WireframeMode" );
-		static FName UnlitIcon( "EditorViewport.UnlitMode" );
-		static FName LitIcon( "EditorViewport.LitMode" );
-		static FName DetailLightingIcon("EditorViewport.DetailLightingMode");
-		static FName LightingOnlyIcon("EditorViewport.LightingOnlyMode");
-		static FName LightComplexityIcon("EditorViewport.LightComplexityMode");
-		static FName ShaderComplexityIcon("EditorViewport.ShaderComplexityMode");
-		static FName QuadOverdrawIcon("EditorViewport.QuadOverdrawMode");
-		static FName ShaderComplexityWithQuadOverdrawIcon("EditorViewport.ShaderCOmplexityWithQuadOverdrawMode");
-		static FName PrimitiveDistanceAccuracyIcon("EditorViewport.TexStreamAccPrimitiveDistanceMode");
-		static FName MeshUVDensityAccuracyIcon("EditorViewport.TexStreamAccMeshUVDensityMode");
-		static FName MaterialTextureScaleAccuracyIcon("EditorViewport.TexStreamAccMaterialTextureScaleMode");
-		static FName RequiredTextureResolutionIcon("EditorViewport.RequiredTextureResolutionMode");
-		static FName LightOverlapIcon("EditorViewport.StationaryLightOverlapMode");
-		static FName LightmapDensityIcon("EditorViewport.LightmapDensityMode");
-		static FName ReflectionModeIcon("EditorViewport.ReflectionOverrideMode");
-		static FName LODColorationIcon("EditorViewport.LODColorationMode");
-		static FName VisualizeBufferIcon("EditorViewport.VisualizeBufferMode");
-		static FName CollisionPawnIcon("EditorViewport.CollisionPawn");
-		static FName CollisionVisibilityIcon("EditorViewport.CollisionVisibility");
+		const TSharedPtr<FEditorViewportClient> ViewportClient = PinnedViewport->GetViewportClient();
+		check(ViewportClient.IsValid());
+		const EViewModeIndex ViewMode = ViewportClient->GetViewMode();
 
-		switch( PinnedViewport->GetViewportClient()->GetViewMode() )
-		{
-			case VMI_BrushWireframe:
-				Icon = WireframeIcon;
-				break;
-
-			case VMI_Wireframe:
-				Icon = WireframeIcon;
-				break;
-
-			case VMI_Unlit:
-				Icon = UnlitIcon;
-				break;
-
-			case VMI_Lit:
-				Icon = LitIcon;
-				break;
-
-#if RHI_RAYTRACING
-			// #dxr_todo: UE-72550 use special icons for ray tracing view modes
-			case VMI_RayTracingDebug:
-				Icon = LitIcon; 
-				break;
-
-			case VMI_PathTracing:
-				Icon = LitIcon; 
-				break;
-#endif
-			case VMI_Lit_DetailLighting:
-				Icon = DetailLightingIcon;
-				break;
-
-			case VMI_LightingOnly:
-				Icon = LightingOnlyIcon;
-				break;
-
-			case VMI_LightComplexity:
-				Icon = LightComplexityIcon;
-				break;
-
-			case VMI_ShaderComplexity:
-				Icon = ShaderComplexityIcon;
-				break;
-
-			case VMI_QuadOverdraw:
-				Icon = QuadOverdrawIcon;
-				break;
-
-			case VMI_ShaderComplexityWithQuadOverdraw:
-				Icon = ShaderComplexityWithQuadOverdrawIcon;
-				break;
-
-			case VMI_PrimitiveDistanceAccuracy:
-				Icon = PrimitiveDistanceAccuracyIcon;
-				break;
-
-			case VMI_MeshUVDensityAccuracy:
-				Icon = MeshUVDensityAccuracyIcon;
-				break;
-
-			case VMI_MaterialTextureScaleAccuracy:
-				Icon = MaterialTextureScaleAccuracyIcon;
-				break;
-
-			case VMI_RequiredTextureResolution:
-				Icon = RequiredTextureResolutionIcon;
-				break;
-
-			case VMI_StationaryLightOverlap:
-				Icon = LightOverlapIcon;
-				break;
-
-			case VMI_LightmapDensity:
-				Icon = LightmapDensityIcon;
-				break;
-
-			case VMI_ReflectionOverride:
-				Icon = ReflectionModeIcon;
-				break;
-
-			case VMI_VisualizeBuffer:
-				Icon = VisualizeBufferIcon;
-				break;
-
-			case VMI_CollisionPawn:
-				Icon = CollisionPawnIcon;
-				break;
-
-			case VMI_CollisionVisibility:
-				Icon = CollisionVisibilityIcon;
-				break;
-
-			case VMI_LitLightmapDensity:
-				break;
-
-			case VMI_LODColoration:
-				Icon = LODColorationIcon;
-				break;
-
-			case VMI_HLODColoration:
-				Icon = LODColorationIcon;
-				break;
-
-			case VMI_GroupLODColoration:
-				Icon = LODColorationIcon;
-				break;
-		}
+		return UViewModeUtils::GetViewModeDisplayIcon(ViewMode);
 	}
 
-	return FEditorStyle::GetBrush(Icon);
+	return FStyleDefaults::GetNoBrush();
 }
 
 void SEditorViewportViewMenu::RegisterMenus() const
@@ -242,7 +131,11 @@ void SEditorViewportViewMenu::FillViewMenu(UToolMenu* Menu) const
 #if RHI_RAYTRACING
 			if (IsRayTracingEnabled())
 			{
-				Section.AddMenuEntry(BaseViewportActions.PathTracingMode, UViewModeUtils::GetViewModeDisplayName(VMI_PathTracing));
+				static auto PathTracingCvar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.PathTracing"));
+				if (PathTracingCvar && PathTracingCvar->GetValueOnAnyThread() != 0)
+				{
+					Section.AddMenuEntry(BaseViewportActions.PathTracingMode, UViewModeUtils::GetViewModeDisplayName(VMI_PathTracing));
+				}
 			}
 #endif
 
@@ -296,9 +189,13 @@ void SEditorViewportViewMenu::FillViewMenu(UToolMenu* Menu) const
 							{
 								Section.AddMenuEntry(BaseViewportCommands.TexStreamAccMaterialTextureScaleMode, UViewModeUtils::GetViewModeDisplayName(VMI_MaterialTextureScaleAccuracy));
 							}
-							if (AllowDebugViewShaderMode(DVSM_RequiredTextureResolution, GMaxRHIShaderPlatform, FeatureLevel) && (!InParentToolBar.IsValid() || InParentToolBar.Pin()->IsViewModeSupported(VMI_MaterialTextureScaleAccuracy)))
+							if (AllowDebugViewShaderMode(DVSM_RequiredTextureResolution, GMaxRHIShaderPlatform, FeatureLevel) && (!InParentToolBar.IsValid() || InParentToolBar.Pin()->IsViewModeSupported(VMI_RequiredTextureResolution)))
 							{
 								Section.AddMenuEntry(BaseViewportCommands.RequiredTextureResolutionMode, UViewModeUtils::GetViewModeDisplayName(VMI_RequiredTextureResolution));
+							}
+							if (AllowDebugViewShaderMode(DVSM_RequiredTextureResolution, GMaxRHIShaderPlatform, FeatureLevel) && (!InParentToolBar.IsValid() || InParentToolBar.Pin()->IsViewModeSupported(VMI_VirtualTexturePendingMips)))
+							{
+								Section.AddMenuEntry(BaseViewportCommands.VirtualTexturePendingMipsMode, UViewModeUtils::GetViewModeDisplayName(VMI_VirtualTexturePendingMips));
 							}
 						}
 					}
@@ -320,7 +217,8 @@ void SEditorViewportViewMenu::FillViewMenu(UToolMenu* Menu) const
 									ViewMode == VMI_LightComplexity || ViewMode == VMI_LightmapDensity || ViewMode == VMI_StationaryLightOverlap
 									|| ViewMode == VMI_ShaderComplexity || ViewMode == VMI_ShaderComplexityWithQuadOverdraw || ViewMode == VMI_QuadOverdraw
 									// Texture Streaming Accuracy
-									|| ViewMode == VMI_PrimitiveDistanceAccuracy || ViewMode == VMI_MeshUVDensityAccuracy || ViewMode == VMI_MaterialTextureScaleAccuracy || ViewMode == VMI_RequiredTextureResolution
+									|| ViewMode == VMI_PrimitiveDistanceAccuracy || ViewMode == VMI_MeshUVDensityAccuracy || ViewMode == VMI_MaterialTextureScaleAccuracy 
+									|| ViewMode == VMI_RequiredTextureResolution || ViewMode == VMI_VirtualTexturePendingMips
 								);
 						})),
 					EUserInterfaceActionType::RadioButton,
@@ -339,7 +237,7 @@ void SEditorViewportViewMenu::FillViewMenu(UToolMenu* Menu) const
 					}
 				};
 
-				Section.AddSubMenu("RayTracingDebugSubMenu", LOCTEXT("RayTracingDebugSubMenu", "Ray Tracing Debug"), LOCTEXT("RayTracing_ToolTip", "Select ray tracing buffer visualization view modes"), FNewMenuDelegate::CreateStatic(&Local::BuildRayTracingDebugMenu, ParentToolBar));
+				Section.AddSubMenu("RayTracingDebugSubMenu", LOCTEXT("RayTracingDebugSubMenu", "Ray Tracing Debug"), LOCTEXT("RayTracing_ToolTip", "Select ray tracing buffer visualization view modes"), FNewMenuDelegate::CreateStatic(&Local::BuildRayTracingDebugMenu, ParentToolBar), false, FSlateIcon(FAppStyle::GetAppStyleSetName(), "EditorViewport.RayTracingDebugMode"));
 			}
 #endif
 

@@ -22,9 +22,8 @@ namespace fuzz {
 
 TransformationToggleAccessChainInstruction::
     TransformationToggleAccessChainInstruction(
-        const spvtools::fuzz::protobufs::
-            TransformationToggleAccessChainInstruction& message)
-    : message_(message) {}
+        protobufs::TransformationToggleAccessChainInstruction message)
+    : message_(std::move(message)) {}
 
 TransformationToggleAccessChainInstruction::
     TransformationToggleAccessChainInstruction(
@@ -33,10 +32,9 @@ TransformationToggleAccessChainInstruction::
 }
 
 bool TransformationToggleAccessChainInstruction::IsApplicable(
-    opt::IRContext* context, const spvtools::fuzz::FactManager& /*unused*/
-    ) const {
+    opt::IRContext* ir_context, const TransformationContext& /*unused*/) const {
   auto instruction =
-      FindInstruction(message_.instruction_descriptor(), context);
+      FindInstruction(message_.instruction_descriptor(), ir_context);
   if (instruction == nullptr) {
     return false;
   }
@@ -56,10 +54,9 @@ bool TransformationToggleAccessChainInstruction::IsApplicable(
 }
 
 void TransformationToggleAccessChainInstruction::Apply(
-    opt::IRContext* context, spvtools::fuzz::FactManager* /*unused*/
-    ) const {
+    opt::IRContext* ir_context, TransformationContext* /*unused*/) const {
   auto instruction =
-      FindInstruction(message_.instruction_descriptor(), context);
+      FindInstruction(message_.instruction_descriptor(), ir_context);
   SpvOp opcode = instruction->opcode();
 
   if (opcode == SpvOpAccessChain) {
@@ -77,6 +74,11 @@ TransformationToggleAccessChainInstruction::ToMessage() const {
   protobufs::Transformation result;
   *result.mutable_toggle_access_chain_instruction() = message_;
   return result;
+}
+
+std::unordered_set<uint32_t>
+TransformationToggleAccessChainInstruction::GetFreshIds() const {
+  return std::unordered_set<uint32_t>();
 }
 
 }  // namespace fuzz

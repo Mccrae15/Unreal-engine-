@@ -15,6 +15,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "ICollectionManager.h"
 #include "IContentBrowserSingleton.h"
+#include "LevelSequence.h"
 #include "Misc/ConfigCacheIni.h"
 #include "MovieSceneCommonHelpers.h"
 #include "MovieSceneTimeHelpers.h"
@@ -48,6 +49,11 @@ TSharedRef<ISequencerTrackEditor> FTemplateSequenceTrackEditor::CreateTrackEdito
 bool FTemplateSequenceTrackEditor::SupportsType(TSubclassOf<UMovieSceneTrack> Type) const
 {
 	return Type == UTemplateSequenceTrack::StaticClass();
+}
+
+bool FTemplateSequenceTrackEditor::SupportsSequence(UMovieSceneSequence* InSequence) const
+{
+	return InSequence && (InSequence->IsA(ULevelSequence::StaticClass()) || InSequence->IsA(UTemplateSequence::StaticClass()));
 }
 
 void FTemplateSequenceTrackEditor::BuildObjectBindingTrackMenu(FMenuBuilder& MenuBuilder, const TArray<FGuid>& ObjectBindings, const UClass* ObjectClass)
@@ -148,6 +154,7 @@ public:
 			AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
 			AssetPickerConfig.Filter.bRecursiveClasses = true;
 			AssetPickerConfig.Filter.ClassNames.Add(UTemplateSequence::StaticClass()->GetFName());
+			AssetPickerConfig.SaveSettingsName = TEXT("SequencerAssetPicker");
 			if (LegacyBaseClass != nullptr)
 			{
 				AssetPickerConfig.Filter.ClassNames.Add(LegacyBaseClass->GetFName());

@@ -23,7 +23,7 @@
 
 #endif // #if USE_USD_SDK
 
-FUsdLayerViewModel::FUsdLayerViewModel( FUsdLayerViewModel* InParentItem, const UE::FUsdStage& InUsdStage, const FString& InLayerIdentifier )
+FUsdLayerViewModel::FUsdLayerViewModel( FUsdLayerViewModel* InParentItem, const UE::FUsdStageWeak& InUsdStage, const FString& InLayerIdentifier )
 	: LayerModel( MakeShared< FUsdLayerModel >() )
 	, ParentItem( InParentItem )
 	, UsdStage( InUsdStage )
@@ -143,8 +143,14 @@ void FUsdLayerViewModel::RefreshData()
 
 	const TUsdStore< std::string > UsdLayerIdentifier = UnrealToUsd::ConvertString( *LayerIdentifier );
 
-	LayerModel->DisplayName = FText::FromString( UsdToUnreal::ConvertString( pxr::SdfLayer::GetDisplayNameFromIdentifier( UsdLayerIdentifier.Get() ) ) );
+	LayerModel->DisplayName = UsdToUnreal::ConvertString( pxr::SdfLayer::GetDisplayNameFromIdentifier( UsdLayerIdentifier.Get() ) );
 	LayerModel->bIsMuted = UsdStageRef->IsLayerMuted( UsdLayerIdentifier.Get() );
+
+	pxr::SdfLayerRefPtr UsdLayer = UE::FSdfLayer::FindOrOpen( *LayerIdentifier );
+	if ( UsdLayer )
+	{
+		LayerModel->bIsDirty = UsdLayer->IsDirty() && !UsdLayer->IsAnonymous();
+	}
 
 	const pxr::SdfLayerHandle& EditTargetLayer = UsdStageRef->GetEditTarget().GetLayer();
 	LayerModel->bIsEditTarget = ( EditTargetLayer
@@ -161,6 +167,23 @@ void FUsdLayerViewModel::RefreshData()
 UE::FSdfLayer FUsdLayerViewModel::GetLayer() const
 {
 	return UE::FSdfLayer::FindOrOpen( *LayerIdentifier );
+}
+
+FText FUsdLayerViewModel::GetDisplayName() const
+{
+	FString DisplayName = LayerModel->DisplayName;
+
+	if ( IsLayerDirty() )
+	{
+		DisplayName += TEXT("*");
+	}
+
+	return FText::FromString(DisplayName);
+}
+
+bool FUsdLayerViewModel::IsLayerMuted() const
+{
+	return LayerModel->bIsMuted;
 }
 
 bool FUsdLayerViewModel::CanMuteLayer() const
@@ -252,4 +275,9 @@ bool FUsdLayerViewModel::RemoveSubLayer( int32 SubLayerIndex )
 #endif // #if USE_USD_SDK
 
 	return bLayerRemoved;
+}
+
+bool FUsdLayerViewModel::IsLayerDirty() const
+{
+	return LayerModel->bIsDirty;
 }

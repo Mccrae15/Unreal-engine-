@@ -5,6 +5,7 @@
 #include "Async/ParallelFor.h"
 #include "IImageWrapper.h"
 #include "IImageWrapperModule.h"
+#include "ImageWrapperHelper.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
@@ -98,7 +99,7 @@ public:
 		{
 			if ( ImageWriter->SetRaw(Image.GetData(), Image.Num(), Width, Height, ERGBFormat::RGBA, 8) )
 			{
-				const TArray64<uint8>& PngData = ImageWriter->GetCompressed();
+				TArray64<uint8> PngData = ImageWriter->GetCompressed();
 
 				if ( FFileHelper::SaveArrayToFile(PngData, *TempDeltaFile) )
 				{
@@ -144,7 +145,7 @@ float FPixelOperations::GetHue(const FColor& Color)
 	}
 }
 
-bool FPixelOperations::IsAntialiased(const FColor& SourcePixel, FComparableImage* Image, int32 X, int32 Y, const FImageTolerance& Tolerance)
+bool FPixelOperations::IsAntialiased(const FColor& SourcePixel, const FComparableImage* Image, int32 X, int32 Y, const FImageTolerance& Tolerance)
 {
 	int32 hasHighContrastSibling = 0;
 	int32 hasSiblingWithDifferentHue = 0;
@@ -211,41 +212,17 @@ FComparisonReport::FComparisonReport(const FString& InReportRootDirectory, const
 	ReportPath = FPaths::GetPath(InReportFile);
 }
 
-void FComparableImage::Process()
-{
-	ParallelFor(Width,
-		[&] (int32 ColumnIndex)
-	{
-		for ( int Y = 0; Y < Height; Y++ )
-		{
-			FColor Pixel = GetPixel(ColumnIndex, Y);
-			double Luminance = FPixelOperations::GetLuminance(Pixel);
-
-			RedTotal += ( Pixel.R / 255.0 );
-			GreenTotal += ( Pixel.G / 255.0 );
-			BlueTotal += ( Pixel.B / 255.0 );
-			AlphaTotal += ( Pixel.A / 255.0 );
-			LuminanceTotal += ( Luminance / 255.0 );
-		}
-	});
-
-	const double PixelCount = Width * Height;
-
-	RedAverage = RedTotal / PixelCount;
-	GreenAverage = GreenTotal / PixelCount;
-	BlueAverage = BlueTotal / PixelCount;
-	AlphaAverage = AlphaTotal / PixelCount;
-	LuminanceAverage = LuminanceTotal / PixelCount;
-}
-
 TSharedPtr<FComparableImage> FImageComparer::Open(const FString& ImagePath, FText& OutError)
 {
+	const FString ImageExtension = FPaths::GetExtension(ImagePath);
+	const EImageFormat ImageFormat = ImageWrapperHelper::GetImageFormat(ImageExtension);
+
 	IImageWrapperModule& ImageWrapperModule = FModuleManager::GetModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
-	TSharedPtr<IImageWrapper> ImageReader = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+	TSharedPtr<IImageWrapper> ImageReader = ImageWrapperModule.CreateImageWrapper(ImageFormat);
 
 	if ( !ImageReader.IsValid() )
 	{
-		OutError = LOCTEXT("PNGWrapperMissing", "Unable locate the PNG Image Processor");
+		OutError = FText::Format(LOCTEXT("ImageWrapperMissing", "Unable to locate image processor for file format {0}"), FText::FromString(ImageExtension));
 		return nullptr;
 	}
 
@@ -268,7 +245,7 @@ TSharedPtr<FComparableImage> FImageComparer::Open(const FString& ImagePath, FTex
 	
 	if ( !ImageReader->GetRaw(ERGBFormat::RGBA, 8, Image->Bytes) )
 	{
-		OutError = LOCTEXT("ErrorReadingRawDataA", "Unable decompress ImageA");
+		OutError = LOCTEXT("ErrorReadingRawDataA", "Unable to decompress image");
 		return nullptr;
 	}
 	else
@@ -280,31 +257,39 @@ TSharedPtr<FComparableImage> FImageComparer::Open(const FString& ImagePath, FTex
 	return Image;
 }
 
-
 FImageComparisonResult FImageComparer::Compare(const FString& ImagePathA, const FString& ImagePathB, FImageTolerance Tolerance, const FString& OutDeltaPath)
 {
-	FImageComparisonResult Results;
-	Results.ApprovedFilePath = ImagePathA;
-	Results.IncomingFilePath = ImagePathB;
-	
 	FText ErrorA, ErrorB;
 	TSharedPtr<FComparableImage> ImageA = Open(ImagePathA, ErrorA);
 	TSharedPtr<FComparableImage> ImageB = Open(ImagePathB, ErrorB);
 
 	if ( !ImageA.IsValid() )
 	{
+		FImageComparisonResult Results;
+		Results.ApprovedFilePath = ImagePathA;
+		Results.IncomingFilePath = ImagePathB;
 		Results.ErrorMessage = ErrorA;
 		return Results;
 	}
 
 	if ( !ImageB.IsValid() )
 	{
+		FImageComparisonResult Results;
+		Results.ApprovedFilePath = ImagePathA;
+		Results.IncomingFilePath = ImagePathB;
 		Results.ErrorMessage = ErrorB;
 		return Results;
 	}
 
-	ImageA->Process();
-	ImageB->Process();
+	FImageComparisonResult Results = Compare(ImageA.Get(), ImageB.Get(), Tolerance, OutDeltaPath);
+	Results.ApprovedFilePath = ImagePathA;
+	Results.IncomingFilePath = ImagePathB;
+	return Results;
+}
+
+FImageComparisonResult FImageComparer::Compare(const FComparableImage* ImageA, const FComparableImage* ImageB, FImageTolerance Tolerance, const FString& OutDeltaPath)
+{
+	FImageComparisonResult Results;
 
 	// Compare the smallest shared dimensions, this will be a forced failure
 	// but still offer a delta for context to the result reviewer
@@ -365,8 +350,8 @@ FImageComparisonResult FImageComparer::Compare(const FString& ImagePathA, const 
 				ImageDelta.SetClearPixel(ColumnIndex, Y);
 			}
 			else if ( Tolerance.IgnoreAntiAliasing && (
-				FPixelOperations::IsAntialiased(PixelA, ImageA.Get(), ColumnIndex, Y, Tolerance) ||
-				FPixelOperations::IsAntialiased(PixelB, ImageB.Get(), ColumnIndex, Y, Tolerance)
+				FPixelOperations::IsAntialiased(PixelA, ImageA, ColumnIndex, Y, Tolerance) ||
+				FPixelOperations::IsAntialiased(PixelB, ImageB, ColumnIndex, Y, Tolerance)
 				) )
 			{
 				if ( FPixelOperations::IsBrightnessSimilar(PixelA, PixelB, Tolerance) )
@@ -454,6 +439,11 @@ double FImageComparer::CompareStructuralSimilarity(const FString& ImagePathA, co
 	//ImageA->Process();
 	//ImageB->Process();
 
+	return CompareStructuralSimilarity(ImageA.Get(), ImageB.Get(), InCompareComponent, OutDeltaPath);
+}
+
+double FImageComparer::CompareStructuralSimilarity(const FComparableImage* ImageA, const FComparableImage* ImageB, EStructuralSimilarityComponent InCompareComponent, const FString& OutDeltaPath)
+{
 	// Implementation of https://en.wikipedia.org/wiki/Structural_similarity
 
 	const double K1 = 0.01;

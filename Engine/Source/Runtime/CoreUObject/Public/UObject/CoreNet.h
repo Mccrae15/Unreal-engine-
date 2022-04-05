@@ -14,10 +14,23 @@
 #include "UObject/SoftObjectPath.h"
 #include "UObject/Field.h"
 #include "Trace/Config.h"
+#include "Templates/PimplPtr.h"
 
+
+// Forward declarations
 class FOutBunch;
 class INetDeltaBaseState;
 class FNetTraceCollector;
+class UPackageMap;
+
+namespace UE
+{
+	namespace Net
+	{
+		struct FNetResult;
+	}
+}
+
 
 DECLARE_DELEGATE_RetVal_OneParam( bool, FNetObjectIsDynamic, const UObject*);
 
@@ -188,10 +201,6 @@ class COREUOBJECT_API UPackageMap : public UObject
 	virtual void Serialize(FArchive& Ar) override;
 
 protected:
-
-	UE_DEPRECATED(4.25, "bSuppressLogs will be removed in a future release.")
-	bool					bSuppressLogs;
-
 	bool					bShouldTrackUnmappedGuids;
 	TSet< FNetworkGUID >	TrackedUnmappedNetGuids;
 	TSet< FNetworkGUID >	TrackedMappedDynamicNetGuids;
@@ -269,7 +278,7 @@ public:
 	}
 
 	FLifetimeProperty(int32 InRepIndex)
-		: RepIndex(InRepIndex)
+		: RepIndex((uint16)InRepIndex)
 		, Condition(COND_None)
 		, RepNotifyCondition(REPNOTIFY_OnChanged)
 		, bIsPushBased(false)
@@ -278,7 +287,7 @@ public:
 	}
 
 	FLifetimeProperty(int32 InRepIndex, ELifetimeCondition InCondition, ELifetimeRepNotifyCondition InRepNotifyCondition=REPNOTIFY_OnChanged, bool bInIsPushBased=false)
-		: RepIndex(InRepIndex)
+		: RepIndex((uint16)InRepIndex)
 		, Condition(InCondition)
 		, RepNotifyCondition(InRepNotifyCondition)
 		, bIsPushBased(bInIsPushBased)
@@ -350,6 +359,7 @@ public:
 	virtual FArchive& operator<<(UObject*& Object) override;
 	virtual FArchive& operator<<(FSoftObjectPath& Value) override;
 	virtual FArchive& operator<<(FSoftObjectPtr& Value) override;
+	virtual FArchive& operator<<(FObjectPtr& Value) override;
 	virtual FArchive& operator<<(struct FWeakObjectPtr& Value) override;
 
 	virtual void CountMemory(FArchive& Ar) const override;
@@ -364,14 +374,20 @@ public:
 class COREUOBJECT_API FNetBitReader : public FBitReader
 {
 public:
-	FNetBitReader( UPackageMap* InPackageMap=NULL, uint8* Src=NULL, int64 CountBits=0 );
+	UPackageMap*													PackageMap		= nullptr;
 
-	class UPackageMap * PackageMap;
+	/** Stores additional error information. Avoid using to modify control flow, where bunches with errors may be copied/cached/queued. */
+	TPimplPtr<UE::Net::FNetResult, EPimplPtrMode::DeepCopy>	ExtendedError;
+
+
+public:
+	FNetBitReader(UPackageMap* InPackageMap=nullptr, uint8* Src=nullptr, int64 CountBits=0);
 
 	virtual FArchive& operator<<(FName& Name) override;
 	virtual FArchive& operator<<(UObject*& Object) override;
 	virtual FArchive& operator<<(FSoftObjectPath& Value) override;
 	virtual FArchive& operator<<(FSoftObjectPtr& Value) override;
+	virtual FArchive& operator<<(FObjectPtr& Value) override;
 	virtual FArchive& operator<<(struct FWeakObjectPtr& Value) override;
 
 	virtual void CountMemory(FArchive& Ar) const override;
@@ -465,14 +481,6 @@ public:
 	 */
 	virtual void NetSerializeStruct(FNetDeltaSerializeInfo& Params) = 0;
 
-	UE_DEPRECATED(4.23, "Please use the version of NetSerializeStruct that accepts an FNetDeltaSerializeInfo reference")
-	virtual void NetSerializeStruct(
-		class UScriptStruct* Struct,
-		class FBitArchive& Ar,
-		class UPackageMap* Map,
-		void* Data,
-		bool& bHasUnmapped);
-
 	/**
 	 * Gathers any guid references for a FastArraySerializer.
 	 * @see GuidReferences.h for more info.
@@ -512,10 +520,8 @@ public:
 		const uint16 RepIndex,
 		const bool bIsActive) = 0;
 
+	UE_DEPRECATED(5.0, "Please use UReplaySubsystem::SetExternalDataForObject instead.")
 	virtual void SetExternalData(const uint8* Src, const int32 NumBits) = 0;
-
-	UE_DEPRECATED(4.26, "Will be removed in a future release.")
-	virtual bool IsReplay() const = 0;
 
 	/**
 	* Used when tracking memory to gather the total size of a given instance.

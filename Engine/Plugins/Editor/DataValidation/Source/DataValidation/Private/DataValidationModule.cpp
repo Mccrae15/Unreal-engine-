@@ -1,7 +1,9 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "DataValidationModule.h"
+
 #include "UObject/Object.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/SoftObjectPath.h"
 #include "GameFramework/HUD.h"
 
@@ -34,16 +36,16 @@ class FDataValidationModule : public IDataValidationModule
 	// End IModuleInterface
 
 	/** Validates selected assets and opens a window to report the results. If bValidateDependencies is true it will also validate any assets that the selected assets depend on. */
-	virtual void ValidateAssets(TArray<FAssetData> SelectedAssets, bool bValidateDependencies) override;
+	virtual void ValidateAssets(const TArray<FAssetData>& SelectedAssets, bool bValidateDependencies, const EDataValidationUsecase InValidationUsecase) override;
 
-	void ValidateFolders(TArray<FString> SelectedFolders);
+	void ValidateFolders(TArray<FString> SelectedFolders, const EDataValidationUsecase InValidationUsecase);
 
 private:
 	TSharedRef<FExtender> OnExtendContentBrowserAssetSelectionMenu(const TArray<FAssetData>& SelectedAssets);
 	TSharedRef<FExtender> OnExtendContentBrowserPathSelectionMenu(const TArray<FString>& SelectedPaths);
 	void CreateDataValidationContentBrowserAssetMenu(FMenuBuilder& MenuBuilder, TArray<FAssetData> SelectedAssets);
 	void CreateDataValidationContentBrowserPathMenu(FMenuBuilder& MenuBuilder, TArray<FString> SelectedPaths);
-	void OnPackageSaved(const FString& PackageFileName, UObject* PackageObj);
+	void OnPackageSaved(const FString& PackageFileName, UPackage* Package, FObjectPostSaveContext ObjectSaveContext);
 
 	// Adds Asset and any assets it depends on to the set DependentAssets
 	void FindAssetDependencies(const FAssetRegistryModule& AssetRegistryModule, const FAssetData& Asset, TSet<FAssetData>& DependentAssets);
@@ -78,7 +80,7 @@ void FDataValidationModule::StartupModule()
 		FCoreDelegates::OnPostEngineInit.AddRaw(this, &FDataValidationModule::RegisterMenus);
 
 		// Add save callback
-		UPackage::PackageSavedEvent.AddRaw(this, &FDataValidationModule::OnPackageSaved);
+		UPackage::PackageSavedWithContextEvent.AddRaw(this, &FDataValidationModule::OnPackageSaved);
 
 		ISettingsModule& SettingsModule = FModuleManager::LoadModuleChecked<ISettingsModule>("Settings");
 		SettingsModule.RegisterSettings("Editor", "Advanced", "DataValidation",
@@ -105,15 +107,15 @@ void FDataValidationModule::ShutdownModule()
 		UToolMenus::UnregisterOwner(this);
 		FCoreDelegates::OnPostEngineInit.RemoveAll(this);
 
-		UPackage::PackageSavedEvent.RemoveAll(this);
+		UPackage::PackageSavedWithContextEvent.RemoveAll(this);
 	}
 }
 
 void FDataValidationModule::RegisterMenus()
 {
 	FToolMenuOwnerScoped OwnerScoped(this);
-	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.File");
-	FToolMenuSection& Section = Menu->AddSection("DataValidation", LOCTEXT("DataValidation", "DataValidation"), FToolMenuInsert("FileLoadAndSave", EToolMenuInsertType::After));
+	UToolMenu* Menu = UToolMenus::Get()->ExtendMenu("LevelEditor.MainMenu.Tools");
+	FToolMenuSection& Section = Menu->AddSection("DataValidation", LOCTEXT("DataValidation", "DataValidation"));
 	Section.AddEntry(FToolMenuEntry::InitMenuEntry(
 		"ValidateData",
 		TAttribute<FText>::Create(&Menu_ValidateDataGetTitle),
@@ -188,29 +190,35 @@ void FDataValidationModule::FindAssetDependencies(const FAssetRegistryModule& As
 	}
 }
 
-void FDataValidationModule::ValidateAssets(TArray<FAssetData> SelectedAssets, bool bValidateDependencies)
+void FDataValidationModule::ValidateAssets(const TArray<FAssetData>& SelectedAssets, bool bValidateDependencies, const EDataValidationUsecase InValidationUsecase)
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
 	TSet<FAssetData> DependentAssets;
+
 	if (bValidateDependencies)
 	{
 		for (const FAssetData& Asset : SelectedAssets)
 		{
 			FindAssetDependencies(AssetRegistryModule, Asset, DependentAssets);
 		}
-
-		SelectedAssets = DependentAssets.Array();
 	}
 
 	UEditorValidatorSubsystem* EditorValidationSubsystem = GEditor->GetEditorSubsystem<UEditorValidatorSubsystem>();
 	if (EditorValidationSubsystem)
 	{
-		EditorValidationSubsystem->ValidateAssets(SelectedAssets, false);
+		FValidateAssetsSettings Settings;
+		FValidateAssetsResults Results;
+
+		Settings.bSkipExcludedDirectories = false;
+		Settings.bShowIfNoFailures = true;
+		Settings.ValidationUsecase = InValidationUsecase;
+
+		EditorValidationSubsystem->ValidateAssetsWithSettings(bValidateDependencies ? DependentAssets.Array() : SelectedAssets, Settings, Results);
 	}
 }
 
-void FDataValidationModule::ValidateFolders(TArray<FString> SelectedFolders)
+void FDataValidationModule::ValidateFolders(TArray<FString> SelectedFolders, const EDataValidationUsecase InValidationUsecase)
 {
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::Get().LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
@@ -226,7 +234,7 @@ void FDataValidationModule::ValidateFolders(TArray<FString> SelectedFolders)
 	TArray<FAssetData> AssetList;
 	AssetRegistryModule.Get().GetAssets(Filter, AssetList);
 
-	ValidateAssets(AssetList, false);
+	ValidateAssets(AssetList, false, InValidationUsecase);
 }
 
 // Extend content browser menu for groups of selected assets
@@ -251,14 +259,15 @@ void FDataValidationModule::CreateDataValidationContentBrowserAssetMenu(FMenuBui
 		LOCTEXT("ValidateAssetsTabTitle", "Validate Assets"),
 		LOCTEXT("ValidateAssetsTooltipText", "Runs data validation on these assets."),
 		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateRaw(this, &FDataValidationModule::ValidateAssets, SelectedAssets, false))
+		FUIAction(FExecuteAction::CreateLambda([this, SelectedAssets]() { ValidateAssets(SelectedAssets, false, EDataValidationUsecase::Manual); }))
 	);
+
 	MenuBuilder.AddMenuEntry
 	(
 		LOCTEXT("ValidateAssetsAndDependenciesTabTitle", "Validate Assets and Dependencies"),
 		LOCTEXT("ValidateAssetsAndDependenciesTooltipText", "Runs data validation on these assets and all assets they depend on."),
 		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateRaw(this, &FDataValidationModule::ValidateAssets, SelectedAssets, true))
+		FUIAction(FExecuteAction::CreateLambda([this, SelectedAssets]() { ValidateAssets(SelectedAssets, true, EDataValidationUsecase::Manual); }))
 	);
 }
 
@@ -283,7 +292,7 @@ void FDataValidationModule::CreateDataValidationContentBrowserPathMenu(FMenuBuil
 	(
 		LOCTEXT("ValidateAssetsPathTabTitle", "Validate Assets in Folder"),
 		LOCTEXT("ValidateAssetsPathTooltipText", "Runs data validation on the assets in the selected folder."),
-		FSlateIcon(),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Validate"),
 		FUIAction(FExecuteAction::CreateLambda([this, SelectedPaths]
 		{
 			FString FormattedSelectedPaths;
@@ -300,18 +309,18 @@ void FDataValidationModule::CreateDataValidationContentBrowserPathMenu(FMenuBuil
 			const EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNo, FText::Format(LOCTEXT("DataValidationConfirmation", "Are you sure you want to proceed with validating the following folders?\n\n{Paths}"), Args));
 			if (Result == EAppReturnType::Yes)
 			{
-				ValidateFolders(SelectedPaths);
+				ValidateFolders(SelectedPaths, EDataValidationUsecase::Manual);
 			}
 		}))
 	);
 }
 
-void FDataValidationModule::OnPackageSaved(const FString& PackageFileName, UObject* PackageObj)
+void FDataValidationModule::OnPackageSaved(const FString& PackageFileName, UPackage* Package, FObjectPostSaveContext ObjectSaveContext)
 {
 	UEditorValidatorSubsystem* EditorValidationSubsystem = GEditor->GetEditorSubsystem<UEditorValidatorSubsystem>();
-	if (EditorValidationSubsystem && PackageObj)
+	if (EditorValidationSubsystem && Package)
 	{
-		EditorValidationSubsystem->ValidateSavedPackage(PackageObj->GetFName());
+		EditorValidationSubsystem->ValidateSavedPackage(Package->GetFName(), ObjectSaveContext.IsProceduralSave());
 	}
 }
 

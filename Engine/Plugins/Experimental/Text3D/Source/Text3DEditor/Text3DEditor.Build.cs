@@ -9,6 +9,7 @@ public class Text3DEditor : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core",
 			"CoreUObject",
+			"EditorFramework",
 			"Projects",
 			"SlateCore",
 			"Text3D",

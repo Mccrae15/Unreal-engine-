@@ -90,7 +90,7 @@ int32 ConcertSyncServerLoop(int32 ArgC, TCHAR** ArgV, const FConcertSyncServerLo
 
 	if (Result >= 0)
 	{
-		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin("UdpMessaging");
+		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UdpMessaging"));
 		if (!Plugin || !Plugin->IsEnabled())
 		{
 			// The UdpMessaging plugin should be added to the {appname}.Target.cs build file.
@@ -157,7 +157,7 @@ int32 ConcertSyncServerLoop(int32 ArgC, TCHAR** ArgV, const FConcertSyncServerLo
 			FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
 
 			// Pump & Tick objects
-			FTicker::GetCoreTicker().Tick(DeltaTime);
+			FTSTicker::GetCoreTicker().Tick(DeltaTime);
 
 			GFrameCounter++;
 			FStats::AdvanceFrame(false);
@@ -191,10 +191,6 @@ int32 ConcertSyncServerLoop(int32 ArgC, TCHAR** ArgV, const FConcertSyncServerLo
 
 	// Unloading Modules isn't handled by AppExit
 	FModuleManager::Get().UnloadModulesAtShutdown();
-	// Nor is it handling stats, if any
-#if STATS
-	FThreadStats::StopThread();
-#endif
 
 	FEngineLoop::AppExit();
 

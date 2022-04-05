@@ -8,8 +8,10 @@ UNiagaraScriptBase::UNiagaraScriptBase(const FObjectInitializer& ObjectInitializ
 }
 
 FSimulationStageMetaData::FSimulationStageMetaData()
-	: bSpawnOnly(0)
-	, bWritesParticles(0)
+	: bWritesParticles(0)
 	, bPartialParticleUpdate(0)
+	, bParticleIterationStateEnabled(0)
+	, GpuDispatchType(ENiagaraGpuDispatchType::OneD)
+	, GpuDispatchNumThreads(0, 0, 0)
 {
 }

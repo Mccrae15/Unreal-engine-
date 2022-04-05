@@ -45,7 +45,7 @@ void FIntegerDelay::SetDelayLengthSamples(int32 InNumDelaySamples)
 	// and abide by alignment rules of FAlignedBlockBuffer
 	NumDelayLineOffsetSamples = MaxNumDelaySamples - NumDelaySamples;
 	NumBufferOffsetSamples = 0;
-	while (0 != (NumDelayLineOffsetSamples % AUDIO_SIMD_FLOAT_ALIGNMENT))
+	while (0 != (NumDelayLineOffsetSamples % AUDIO_NUM_FLOATS_PER_VECTOR_REGISTER))
 	{
 		NumDelayLineOffsetSamples--;
 		NumBufferOffsetSamples++;
@@ -65,7 +65,7 @@ int32 FIntegerDelay::GetNumDelaySamples() const
 	return NumDelaySamples;
 }
 
-void FIntegerDelay::ProcessAudio(const Audio::AlignedFloatBuffer& InSamples, Audio::AlignedFloatBuffer& OutSamples)
+void FIntegerDelay::ProcessAudio(const Audio::FAlignedFloatBuffer& InSamples, Audio::FAlignedFloatBuffer& OutSamples)
 {
 	const float* InSampleData = InSamples.GetData();
 	const int32 InNum = InSamples.Num();
@@ -102,7 +102,7 @@ void FIntegerDelay::ProcessAudioBlock(const float* InSamples, const int32 InNum,
 	DelayLine->RemoveSamples(InNum);
 }
 
-void FIntegerDelay::PeekDelayLine(int32 InNum, Audio::AlignedFloatBuffer& OutSamples)
+void FIntegerDelay::PeekDelayLine(int32 InNum, Audio::FAlignedFloatBuffer& OutSamples)
 {
 	int32 NumToInspect = FMath::Min(DelayLine->GetNumAvailable(), NumDelaySamples);
 	NumToInspect = FMath::Min(InNum, NumToInspect);

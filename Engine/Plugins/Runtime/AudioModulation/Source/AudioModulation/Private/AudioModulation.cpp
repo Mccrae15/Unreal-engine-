@@ -2,210 +2,275 @@
 #include "AudioModulation.h"
 
 #include "AudioModulationLogging.h"
+#include "AudioModulationSettings.h"
 #include "AudioModulationSystem.h"
 #include "CanvasTypes.h"
 #include "Features/IModularFeatures.h"
 #include "IAudioModulation.h"
+#include "MetasoundDataTypeRegistrationMacro.h"
+#include "MetasoundFrontendRegistries.h"
 #include "Modules/ModuleManager.h"
 #include "SoundControlBusMix.h"
+#include "SoundModulationParameter.h"
 #include "SoundModulationPatch.h"
-#include "UnrealClient.h"
+#include "SoundModulatorAsset.h"
+#include "UObject/NoExportTypes.h"
 
 
-DEFINE_STAT(STAT_AudioModulationProcessControls);
-DEFINE_STAT(STAT_AudioModulationProcessModulators);
+REGISTER_METASOUND_DATATYPE(AudioModulation::FSoundModulatorAsset, "Modulator", Metasound::ELiteralType::UObjectProxy, USoundModulatorBase);
+REGISTER_METASOUND_DATATYPE(AudioModulation::FSoundModulationParameterAsset, "ModulationParameter", Metasound::ELiteralType::UObjectProxy, USoundModulationParameter);
 
 namespace AudioModulation
 {
-	FAudioModulation::FAudioModulation()
+	FAudioModulationManager::FAudioModulationManager()
 		: ModSystem(new FAudioModulationSystem())
 	{
 	}
 
-	FAudioModulation::~FAudioModulation()
+	FAudioModulationManager::~FAudioModulationManager()
 	{
 		delete ModSystem;
 	}
 
-	Audio::FModulationParameter FAudioModulation::GetParameter(FName InParamName)
-	{
-		return ModSystem->GetParameter(InParamName);
-	}
-
-	void FAudioModulation::Initialize(const FAudioPluginInitializationParams& InitializationParams)
+	void FAudioModulationManager::Initialize(const FAudioPluginInitializationParams& InitializationParams)
 	{
 		ModSystem->Initialize(InitializationParams);
 	}
 
-	void FAudioModulation::OnAuditionEnd()
+	void FAudioModulationManager::OnAuditionEnd()
 	{
 		ModSystem->OnAuditionEnd();
 	}
 
-	void FAudioModulation::ActivateBus(const USoundControlBus& InBus)
+	void FAudioModulationManager::ActivateBus(const USoundControlBus& InBus)
 	{
 		ModSystem->ActivateBus(InBus);
 	}
 
-	void FAudioModulation::ActivateBusMix(const USoundControlBusMix& InBusMix)
+	void FAudioModulationManager::ActivateBusMix(const USoundControlBusMix& InBusMix)
 	{
 		ModSystem->ActivateBusMix(InBusMix);
 	}
 
-	void FAudioModulation::ActivateGenerator(const USoundModulationGenerator& InGenerator)
+	void FAudioModulationManager::ActivateGenerator(const USoundModulationGenerator& InGenerator)
 	{
 		ModSystem->ActivateGenerator(InGenerator);
 	}
 
-	void FAudioModulation::DeactivateBus(const USoundControlBus& InBus)
+	void FAudioModulationManager::DeactivateBus(const USoundControlBus& InBus)
 	{
 		ModSystem->DeactivateBus(InBus);
 	}
 
-	void FAudioModulation::DeactivateBusMix(const USoundControlBusMix& InBusMix)
+	void FAudioModulationManager::DeactivateBusMix(const USoundControlBusMix& InBusMix)
 	{
 		ModSystem->DeactivateBusMix(InBusMix);
 	}
 
-	void FAudioModulation::DeactivateAllBusMixes()
+	void FAudioModulationManager::DeactivateAllBusMixes()
 	{
 		ModSystem->DeactivateAllBusMixes();
 	}
 
-	void FAudioModulation::DeactivateGenerator(const USoundModulationGenerator& InGenerator)
+	void FAudioModulationManager::DeactivateGenerator(const USoundModulationGenerator& InGenerator)
 	{
 		ModSystem->DeactivateGenerator(InGenerator);
 	}
 
 #if !UE_BUILD_SHIPPING
-	void FAudioModulation::SetDebugBusFilter(const FString* InNameFilter)
+	void FAudioModulationManager::SetDebugBusFilter(const FString* InNameFilter)
 	{
 		ModSystem->SetDebugBusFilter(InNameFilter);
 	}
 
-	void FAudioModulation::SetDebugGeneratorFilter(const FString* InFilter)
+	void FAudioModulationManager::SetDebugGeneratorFilter(const FString* InFilter)
 	{
 		ModSystem->SetDebugGeneratorFilter(InFilter);
 	}
 
-	void FAudioModulation::SetDebugGeneratorTypeFilter(const FString* InFilter, bool bInIsEnabled)
+	void FAudioModulationManager::SetDebugGeneratorTypeFilter(const FString* InFilter, bool bInIsEnabled)
 	{
 		ModSystem->SetDebugGeneratorTypeFilter(InFilter, bInIsEnabled);
 	}
 
-	void FAudioModulation::SetDebugGeneratorsEnabled(bool bInIsEnabled)
+	void FAudioModulationManager::SetDebugGeneratorsEnabled(bool bInIsEnabled)
 	{
 		ModSystem->SetDebugGeneratorsEnabled(bInIsEnabled);
 	}
 
-	void FAudioModulation::SetDebugMatrixEnabled(bool bInIsEnabled)
+	void FAudioModulationManager::SetDebugMatrixEnabled(bool bInIsEnabled)
 	{
 		ModSystem->SetDebugMatrixEnabled(bInIsEnabled);
 	}
 
-	void FAudioModulation::SetDebugMixFilter(const FString* InNameFilter)
+	void FAudioModulationManager::SetDebugMixFilter(const FString* InNameFilter)
 	{
 		ModSystem->SetDebugMixFilter(InNameFilter);
 	}
 
 #endif // !UE_BUILD_SHIPPING
 
-	void FAudioModulation::SaveMixToProfile(const USoundControlBusMix& InBusMix, const int32 InProfileIndex)
+	void FAudioModulationManager::SaveMixToProfile(const USoundControlBusMix& InBusMix, const int32 InProfileIndex)
 	{
 		ModSystem->SaveMixToProfile(InBusMix, InProfileIndex);
 	}
 
-	TArray<FSoundControlBusMixStage> FAudioModulation::LoadMixFromProfile(const int32 InProfileIndex, USoundControlBusMix& OutBusMix)
+	TArray<FSoundControlBusMixStage> FAudioModulationManager::LoadMixFromProfile(const int32 InProfileIndex, USoundControlBusMix& OutBusMix)
 	{
 		return ModSystem->LoadMixFromProfile(InProfileIndex, OutBusMix);
 	}
 
-	void FAudioModulation::UpdateMix(const TArray<FSoundControlBusMixStage>& InStages, USoundControlBusMix& InOutMix, bool bInUpdateObject, float InFadeTime)
+	void FAudioModulationManager::UpdateMix(const TArray<FSoundControlBusMixStage>& InStages, USoundControlBusMix& InOutMix, bool bInUpdateObject, float InFadeTime)
 	{
 		ModSystem->UpdateMix(InStages, InOutMix, bInUpdateObject, InFadeTime);
 	}
 
-	void FAudioModulation::UpdateMix(const USoundControlBusMix& InMix, float InFadeTime)
+	void FAudioModulationManager::UpdateMix(const USoundControlBusMix& InMix, float InFadeTime)
 	{
 		ModSystem->UpdateMix(InMix, InFadeTime);
 	}
 
-	void FAudioModulation::UpdateMixByFilter(const FString& InAddressFilter, const TSubclassOf<USoundModulationParameter>& InParamClassFilter, USoundModulationParameter* InParamFilter, float Value, float FadeTime, USoundControlBusMix& InOutMix, bool bInUpdateObject)
+	void FAudioModulationManager::UpdateMixByFilter(const FString& InAddressFilter, const TSubclassOf<USoundModulationParameter>& InParamClassFilter, USoundModulationParameter* InParamFilter, float Value, float FadeTime, USoundControlBusMix& InOutMix, bool bInUpdateObject)
 	{
 		ModSystem->UpdateMixByFilter(InAddressFilter, InParamClassFilter, InParamFilter, Value, FadeTime, InOutMix, bInUpdateObject);
 	}
 
-	void FAudioModulation::SoloBusMix(const USoundControlBusMix& InBusMix)
+	void FAudioModulationManager::SoloBusMix(const USoundControlBusMix& InBusMix)
 	{
 		ModSystem->SoloBusMix(InBusMix);
 	}
 
+	void FAudioModulationManager::SetGlobalBusMixValue(USoundControlBus& InBus, float InValue, float InFadeTime)
+	{
+		ModSystem->SetGlobalBusMixValue(InBus, InValue, InFadeTime);
+	}
+
+	void FAudioModulationManager::ClearGlobalBusMixValue(const USoundControlBus& InBus, float InFadeTime)
+	{
+		ModSystem->ClearGlobalBusMixValue(InBus, InFadeTime);
+	}
+
+	void FAudioModulationManager::ClearAllGlobalBusMixValues(float InFadeTime)
+	{
+		ModSystem->ClearAllGlobalBusMixValues(InFadeTime);
+	}
+
 #if !UE_BUILD_SHIPPING
-	bool FAudioModulation::OnPostHelp(FCommonViewportClient* ViewportClient, const TCHAR* Stream)
+	bool FAudioModulationManager::OnPostHelp(FCommonViewportClient* ViewportClient, const TCHAR* Stream)
 	{
 		return ModSystem->OnPostHelp(ViewportClient, Stream);
 	}
 
-	int32 FAudioModulation::OnRenderStat(FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const UFont& Font, const FVector* ViewLocation, const FRotator* ViewRotation)
+	int32 FAudioModulationManager::OnRenderStat(FViewport* Viewport, FCanvas* Canvas, int32 X, int32 Y, const UFont& Font, const FVector* ViewLocation, const FRotator* ViewRotation)
 	{
 		return ModSystem->OnRenderStat(Viewport, Canvas, X, Y, Font, ViewLocation, ViewRotation);
 	}
 
-	bool FAudioModulation::OnToggleStat(FCommonViewportClient* ViewportClient, const TCHAR* Stream)
+	bool FAudioModulationManager::OnToggleStat(FCommonViewportClient* ViewportClient, const TCHAR* Stream)
 	{
 		return ModSystem->OnToggleStat(ViewportClient, Stream);
 	}
 #endif // !UE_BUILD_SHIPPING
 
-	void FAudioModulation::ProcessModulators(const double InElapsed)
+	void FAudioModulationManager::ProcessModulators(const double InElapsed)
 	{
-		SCOPE_CYCLE_COUNTER(STAT_AudioModulationProcessModulators);
 		ModSystem->ProcessModulators(InElapsed);
 	}
 
-	Audio::FModulatorTypeId FAudioModulation::RegisterModulator(Audio::FModulatorHandleId InHandleId, const USoundModulatorBase* InModulatorBase, Audio::FModulationParameter& OutParameter)
-	{
-		return ModSystem->RegisterModulator(InHandleId, InModulatorBase, OutParameter);
-	}
-
-	void FAudioModulation::RegisterModulator(Audio::FModulatorHandleId InHandleId, Audio::FModulatorId InModulatorId)
+	void FAudioModulationManager::RegisterModulator(Audio::FModulatorHandleId InHandleId, Audio::FModulatorId InModulatorId)
 	{
 		ModSystem->RegisterModulator(InHandleId, InModulatorId);
 	}
 
-	bool FAudioModulation::GetModulatorValue(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const
+	bool FAudioModulationManager::GetModulatorValue(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const
 	{
 		return ModSystem->GetModulatorValue(ModulatorHandle, OutValue);
 	}
 
-	void FAudioModulation::UnregisterModulator(const Audio::FModulatorHandle& InHandle)
+	bool FAudioModulationManager::GetModulatorValueThreadSafe(const Audio::FModulatorHandle& ModulatorHandle, float& OutValue) const
+	{
+		return ModSystem->GetModulatorValueThreadSafe(ModulatorHandle, OutValue);
+	}
+
+	FAudioModulationSystem& FAudioModulationManager::GetSystem()
+	{
+		check(ModSystem);
+		return *ModSystem;
+	}
+
+	void FAudioModulationManager::UnregisterModulator(const Audio::FModulatorHandle& InHandle)
 	{
 		ModSystem->UnregisterModulator(InHandle);
 	}
 
-	void FAudioModulation::UpdateModulator(const USoundModulatorBase& InModulator)
+	void FAudioModulationManager::UpdateModulator(const USoundModulatorBase& InModulator)
 	{
 		ModSystem->UpdateModulator(InModulator);
+	}
+
+	FAudioModulationManager* GetDeviceModulationManager(Audio::FDeviceId InDeviceId)
+	{
+		FAudioDeviceManager* DeviceManager = FAudioDeviceManager::Get();
+		if (ensure(DeviceManager))
+		{
+			FAudioDevice* AudioDevice = DeviceManager->GetAudioDeviceRaw(InDeviceId);
+			if (ensure(AudioDevice))
+			{
+				if (AudioDevice->IsModulationPluginEnabled())
+				{
+					if (IAudioModulationManager* Modulation = AudioDevice->ModulationInterface.Get())
+					{
+						return static_cast<FAudioModulationManager*>(Modulation);
+					}
+				}
+			}
+		}
+
+		return nullptr;
+	}
+
+	void IterateModulationManagers(TFunctionRef<void(FAudioModulationManager&)> InFunction)
+	{
+		if (FAudioDeviceManager* DeviceManager = FAudioDeviceManager::Get())
+		{
+			TArray<FAudioDevice*> Devices = DeviceManager->GetAudioDevices();
+			DeviceManager->IterateOverAllDevices([ModFunction = MoveTemp(InFunction)](Audio::FDeviceId DeviceId, FAudioDevice* AudioDevice)
+			{
+				if (AudioDevice && AudioDevice->IsModulationPluginEnabled() && AudioDevice->ModulationInterface.IsValid())
+				{
+					auto ModulationInterface = static_cast<AudioModulation::FAudioModulationManager*>(AudioDevice->ModulationInterface.Get());
+					ModFunction(*ModulationInterface);
+				}
+			});
+		}
 	}
 } // namespace AudioModulation
 
 TAudioModulationPtr FAudioModulationPluginFactory::CreateNewModulationPlugin(FAudioDevice* OwningDevice)
 {
-	return TAudioModulationPtr(new AudioModulation::FAudioModulation());
+	return TAudioModulationPtr(new AudioModulation::FAudioModulationManager());
 }
 
 void FAudioModulationModule::StartupModule()
 {
-	UE_LOG(LogAudioModulation, Log, TEXT("Starting Audio Modulation Module"));
-
 	IModularFeatures::Get().RegisterModularFeature(FAudioModulationPluginFactory::GetModularFeatureName(), &ModulationPluginFactory);
+
+	if (const UAudioModulationSettings* ModulationSettings = GetDefault<UAudioModulationSettings>())
+	{
+		ModulationSettings->RegisterParameters();
+	}
+
+	// flush node registration queue to guarantee AudioModulation DataTypes/Nodes are ready prior to assets loading
+	FMetasoundFrontendRegistryContainer::Get()->RegisterPendingNodes();
+
+	UE_LOG(LogAudioModulation, Log, TEXT("Audio Modulation Initialized"));
 }
 
 void FAudioModulationModule::ShutdownModule()
 {
-	UE_LOG(LogAudioModulation, Log, TEXT("Shutting Down Audio Modulation Module"));
-
 	IModularFeatures::Get().UnregisterModularFeature(FAudioModulationPluginFactory::GetModularFeatureName(), &ModulationPluginFactory);
+	UE_LOG(LogAudioModulation, Log, TEXT("Audio Modulation Shutdown"));
 }
+
 
 IMPLEMENT_MODULE(FAudioModulationModule, AudioModulation);

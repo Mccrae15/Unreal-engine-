@@ -476,7 +476,7 @@ void SMorphTargetViewer::CreateMorphTargetList( const FString& SearchText )
 				continue; // Skip items that don't match our filter
 			}
 
-			int32 NumberOfVerts = (MorphTargets[I]->MorphLODModels.Num() > 0)? MorphTargets[I]->MorphLODModels[0].Vertices.Num() : 0;
+			int32 NumberOfVerts = (MorphTargets[I]->GetMorphLODModels().Num() > 0)? MorphTargets[I]->GetMorphLODModels()[0].Vertices.Num() : 0;
 
 			TSharedRef<FDisplayedMorphTargetInfo> Info = FDisplayedMorphTargetInfo::Make( MorphTargets[I]->GetFName(), NumberOfVerts);
 			if(MeshComponent)
@@ -606,13 +606,16 @@ void SMorphTargetViewer::SetSelectedMorphTargets(const TArray<FName>& SelectedMo
 
 		if (SelectedMorphTargetNames.Num() > 0)
 		{
-			for (const FName& MorphTargetName : SelectedMorphTargetNames)
+			if (SkeletalMesh)
 			{
-				int32 MorphtargetIdx;
-				UMorphTarget* MorphTarget = SkeletalMesh->FindMorphTargetAndIndex(MorphTargetName, MorphtargetIdx);
-				if (MorphTarget != nullptr)
+				for (const FName& MorphTargetName : SelectedMorphTargetNames)
 				{
-					PreviewComponent->MorphTargetOfInterests.AddUnique(MorphTarget);
+					int32 MorphtargetIdx;
+					UMorphTarget* MorphTarget = SkeletalMesh->FindMorphTargetAndIndex(MorphTargetName, MorphtargetIdx);
+					if (MorphTarget != nullptr)
+					{
+						PreviewComponent->MorphTargetOfInterests.AddUnique(MorphTarget);
+					}
 				}
 			}
 

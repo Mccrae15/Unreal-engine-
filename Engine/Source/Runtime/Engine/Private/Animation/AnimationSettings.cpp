@@ -12,7 +12,7 @@ UAnimationSettings::UAnimationSettings(const FObjectInitializer& ObjectInitializ
 	, bRaiseMaxErrorToExisting(false)
 	, bEnablePerformanceLog(false)
 	, bTickAnimationOnSkeletalMeshInit(true)
-	, DefaultAttributeBlendMode(ECustomAttributeBlendType::Override)
+	, DefaultAttributeBlendMode(ECustomAttributeBlendType::Blend)
 {
 	SectionName = TEXT("Animation");
 
@@ -22,6 +22,36 @@ UAnimationSettings::UAnimationSettings(const FObjectInitializer& ObjectInitializ
 	KeyEndEffectorsMatchNameArray.Add(TEXT("hand"));
 	KeyEndEffectorsMatchNameArray.Add(TEXT("attach"));
 	KeyEndEffectorsMatchNameArray.Add(TEXT("camera"));
+
+	MirrorFindReplaceExpressions = {
+		FMirrorFindReplaceExpression("r_", "l_", EMirrorFindReplaceMethod::Prefix), FMirrorFindReplaceExpression("l_", "r_", EMirrorFindReplaceMethod::Prefix),
+		FMirrorFindReplaceExpression("R_", "L_", EMirrorFindReplaceMethod::Prefix), FMirrorFindReplaceExpression("L_", "R_", EMirrorFindReplaceMethod::Prefix),
+		FMirrorFindReplaceExpression("_l", "_r", EMirrorFindReplaceMethod::Suffix), FMirrorFindReplaceExpression("_r", "_l",  EMirrorFindReplaceMethod::Suffix),
+		FMirrorFindReplaceExpression("_R", "_L", EMirrorFindReplaceMethod::Suffix), FMirrorFindReplaceExpression("_L", "_R", EMirrorFindReplaceMethod::Suffix),
+		FMirrorFindReplaceExpression("right", "left", EMirrorFindReplaceMethod::Prefix), FMirrorFindReplaceExpression("left", "right",  EMirrorFindReplaceMethod::Prefix),
+		FMirrorFindReplaceExpression("Right", "Left", EMirrorFindReplaceMethod::Prefix), FMirrorFindReplaceExpression("Left", "Right",  EMirrorFindReplaceMethod::Prefix),
+		FMirrorFindReplaceExpression("((?:^[sS]pine|^[rR]oot|^[pP]elvis|^[nN]eck|^[hH]ead|^ik_hand_gun).*)", "$1", EMirrorFindReplaceMethod::RegularExpression)
+	};
+}
+
+TArray<FString> UAnimationSettings::GetBoneCustomAttributeNamesToImport() const
+{
+	TArray<FString> AttributeNames = {
+		BoneTimecodeCustomAttributeNameSettings.HourAttributeName.ToString(),
+		BoneTimecodeCustomAttributeNameSettings.MinuteAttributeName.ToString(),
+		BoneTimecodeCustomAttributeNameSettings.SecondAttributeName.ToString(),
+		BoneTimecodeCustomAttributeNameSettings.FrameAttributeName.ToString(),
+		BoneTimecodeCustomAttributeNameSettings.SubframeAttributeName.ToString(),
+		BoneTimecodeCustomAttributeNameSettings.RateAttributeName.ToString(),
+		BoneTimecodeCustomAttributeNameSettings.TakenameAttributeName.ToString()
+	};
+
+	for (const FCustomAttributeSetting& Setting : BoneCustomAttributesNames)
+	{
+		AttributeNames.AddUnique(Setting.Name);
+	}
+
+	return AttributeNames;
 }
 
 

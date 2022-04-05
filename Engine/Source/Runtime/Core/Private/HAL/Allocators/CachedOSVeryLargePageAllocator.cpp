@@ -75,6 +75,7 @@ void* FCachedOSVeryLargePageAllocator::Allocate(SIZE_T Size, uint32 AllocationHi
 #if UE_ALLOW_OSMEMORYLOCKFREE
 						FScopeUnlock FScopeUnlock(Mutex);
 #endif
+						LLM_PLATFORM_SCOPE(ELLMTag::FMalloc);
 						Block.Commit(LargePage->BaseAddress - AddressSpaceReserved, SizeOfLargePage);
 					}
 					LargePage->LinkHead(UsedLargePagesWithSpaceHead[AllocationHint]);
@@ -97,7 +98,7 @@ void* FCachedOSVeryLargePageAllocator::Allocate(SIZE_T Size, uint32 AllocationHi
 				{
 					if (AllocationHint == FMemory::AllocationHints::SmallPool)
 					{
-						UE_CLOG(!ret, LogMemory, Fatal, TEXT("The FCachedOSVeryLargePageAllocator has run out of address space for SmallPool allocations, increase UE_VERYLARGEPAGEALLOCATOR_RESERVEDSIZEINGB for your platform!"));
+						UE_CLOG(!ret, LogMemory, Fatal, TEXT("The FCachedOSVeryLargePageAllocator has run out of address space for SmallPool allocations, increase UE_VERYLARGEPAGEALLOCATOR_RESERVED_SIZE_IN_GB for your platform!"));
 					}
 				}
 			}
@@ -113,7 +114,7 @@ void* FCachedOSVeryLargePageAllocator::Allocate(SIZE_T Size, uint32 AllocationHi
 
 #define LARGEPAGEALLOCATOR_SORT_OnAddress 1
 
-void FCachedOSVeryLargePageAllocator::Free(void* Ptr, SIZE_T Size, FCriticalSection* Mutex)
+void FCachedOSVeryLargePageAllocator::Free(void* Ptr, SIZE_T Size, FCriticalSection* Mutex, bool ThreadIsTimeCritical)
 {
 	Size = Align(Size, 4096);
 	uint64 Index = ((uintptr_t)Ptr - (uintptr_t)AddressSpaceReserved) / SizeOfLargePage;
@@ -194,7 +195,7 @@ void FCachedOSVeryLargePageAllocator::Free(void* Ptr, SIZE_T Size, FCriticalSect
 	}
 	else
 	{
-		CachedOSPageAllocator.Free(Ptr, Size, Mutex);
+		CachedOSPageAllocator.Free(Ptr, Size, Mutex, ThreadIsTimeCritical);
 	}
 }
 

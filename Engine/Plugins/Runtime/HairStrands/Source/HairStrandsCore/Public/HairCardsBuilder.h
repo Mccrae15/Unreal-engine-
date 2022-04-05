@@ -13,15 +13,23 @@
 #include "GroomResources.h"
 
 struct FHairGroupCardsTextures;
+struct FHairStrandsVoxelData;
 
 #if WITH_EDITOR
 namespace FHairCardsBuilder
 {
 	bool ImportGeometry(
 		const UStaticMesh* StaticMesh,
-		FHairCardsDatas& OutCards,
+		const FHairStrandsDatas& InStrandsData,
+		const FHairStrandsVoxelData& InStrandsVoxelData,
+		FHairCardsBulkData& OutBulk,
 		FHairStrandsDatas& OutGuides,
-		FHairCardsInterpolationDatas& OutInterpolationData);
+		FHairCardsInterpolationBulkData& OutInterpolationBulkData);
+
+	HAIRSTRANDSCORE_API bool ExtractCardsData(
+		const UStaticMesh* StaticMesh, 
+		const FHairStrandsDatas& InStrandsData,
+		FHairCardsDatas& Out);
 
 	void ExportGeometry(
 		const FHairCardsDatas& InCardsData, 
@@ -29,12 +37,13 @@ namespace FHairCardsBuilder
 
 	void BuildGeometry(
 		const FString& LODName,
-		const struct FHairStrandsDatas& In,
+		const struct FHairStrandsDatas& InRen,
 		const struct FHairStrandsDatas& InSim,
 		const struct FHairGroupsProceduralCards& Settings,
 		FHairCardsProceduralDatas& Out,
+		FHairCardsBulkData& OutBulk,
 		FHairStrandsDatas& OutGuides,
-		FHairCardsInterpolationDatas& OutInterpolation,
+		FHairCardsInterpolationBulkData& OutInterpolationBulk,
 		FHairGroupCardsTextures& OutTextures);
 
 	void BuildTextureAtlas(
@@ -43,21 +52,18 @@ namespace FHairCardsBuilder
 		FHairCardsProceduralResource* AtlasResource,
 		FHairGroupCardsTextures* Textures);
 
-	void Convert(const FHairCardsProceduralDatas& In, FHairCardsDatas& Out);
-
 	FString GetVersion();
 }
 
 namespace FHairMeshesBuilder
 {
 	void BuildGeometry(
-		const struct FHairStrandsDatas& In,
-		const struct FHairStrandsDatas& InSim,
-		FHairMeshesDatas& Out);
+		const FBox& InBox,
+		FHairMeshesBulkData& OutBulk);
 
 	void ImportGeometry(
 		const UStaticMesh* StaticMesh,
-		FHairMeshesDatas& Out);
+		FHairMeshesBulkData& OutBulk);
 
 	FString GetVersion();
 }

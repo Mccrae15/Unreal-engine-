@@ -6,7 +6,7 @@
 #include "Components/SplineComponent.h"
 #include "NiagaraDataInterfaceWater.generated.h"
 
-class AWaterBody;
+class UWaterBodyComponent;
 
 UCLASS(EditInlineNew, Category = "Water", meta = (DisplayName = "Water"))
 class WATER_API UNiagaraDataInterfaceWater : public UNiagaraDataInterface
@@ -19,22 +19,27 @@ public:
 	/** UNiagaraDataInterface interface */
 	virtual void GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunctions) override;
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction &OutFunc) override;
-	virtual bool Equals(const UNiagaraDataInterface* Other) const;
-	virtual bool CopyTo(UNiagaraDataInterface* Destination) const;
+	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
+	virtual bool CopyToInternal(UNiagaraDataInterface* Destination) const override;
 
 	virtual int32 PerInstanceDataSize() const override;
-	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance);
-	virtual void DestroyPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance);
+	virtual bool InitPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
+	virtual void DestroyPerInstanceData(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance) override;
 	virtual bool PerInstanceTick(void* PerInstanceData, FNiagaraSystemInstance* SystemInstance, float DeltaSeconds) override;
 	virtual bool HasPreSimulateTick() const override { return true; }
+	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target) const override { return Target == ENiagaraSimTarget::CPUSim; }
 
-	void GetWaterDataAtPoint(FVectorVMContext& Context);
+#if WITH_EDITORONLY_DATA
+	virtual bool UpgradeFunctionCall(FNiagaraFunctionSignature& FunctionSignature) override;
+#endif
 
-	void GetWaveParamLookupTableOffset(FVectorVMContext& Context);
+	void GetWaterDataAtPoint(FVectorVMExternalFunctionContext& Context);
+
+	void GetWaveParamLookupTableOffset(FVectorVMExternalFunctionContext& Context);
 
 	/** Sets the current water body to be used by this data interface */
-	void SetWaterBody(AWaterBody* InWaterBody) { SourceBody = InWaterBody; }
+	void SetWaterBodyComponent(UWaterBodyComponent* InWaterBodyComponent) { SourceBodyComponent = InWaterBodyComponent; }
 private:
 	UPROPERTY(EditAnywhere, Category = "Water") 
-	AWaterBody* SourceBody;
+	UWaterBodyComponent* SourceBodyComponent;
 };

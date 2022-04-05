@@ -40,12 +40,9 @@ public:
 	// Returns the LightColor property of the ULightComponent class
 	static FStructProperty* GetLightColorProperty();
 
-	// Returns the DefaultLightColor property of the UAtmosphericFogComponent class
-	static FStructProperty* GetDefaultLightColorProperty();
-
 private:
 	// Invalidates all of our cached FProperty pointers
-	static void InvalidateCache(UClass* OldClass, UClass* NewClass, EHotReloadedClassFlags Flags);
+	static void InvalidateCache();
 
 	static FArrayProperty* OverrideMaterialsProperty;
 	static FStructProperty* RelativeLocationProperty;

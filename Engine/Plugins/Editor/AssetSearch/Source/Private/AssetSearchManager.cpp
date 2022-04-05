@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetSearchManager.h"
+
 #include "IAssetRegistry.h"
 #include "AssetRegistryModule.h"
 #include "AssetSearchDatabase.h"
@@ -8,7 +9,6 @@
 #include "DerivedDataCacheInterface.h"
 
 #include "Containers/StringConv.h"
-#include "Containers/Ticker.h"
 #include "Misc/Paths.h"
 #include "HAL/RunnableThread.h"
 #include "StudioAnalytics.h"
@@ -29,6 +29,7 @@
 #include "PackageTools.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/ObjectKey.h"
+#include "UObject/ObjectSaveContext.h"
 #include "UObject/WeakObjectPtrTemplates.h"
 #include "FileHelpers.h"
 #include "Misc/MessageDialog.h"
@@ -202,11 +203,11 @@ FAssetSearchManager::~FAssetSearchManager()
 
 	StopScanningAssets();
 
-	UPackage::PackageSavedEvent.RemoveAll(this);
+	UPackage::PackageSavedWithContextEvent.RemoveAll(this);
 	FCoreUObjectDelegates::OnAssetLoaded.RemoveAll(this);
 	UObject::FAssetRegistryTag::OnGetExtraObjectTags.RemoveAll(this);
 
-	FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 }
 
 void FAssetSearchManager::Start()
@@ -227,10 +228,10 @@ void FAssetSearchManager::Start()
 
 	RegisterSearchProvider(TEXT("AssetRegistry"), MakeUnique<FAssetRegistrySearchProvider>());
 
-	UPackage::PackageSavedEvent.AddRaw(this, &FAssetSearchManager::HandlePackageSaved);
+	UPackage::PackageSavedWithContextEvent.AddRaw(this, &FAssetSearchManager::HandlePackageSaved);
 	FCoreUObjectDelegates::OnAssetLoaded.AddRaw(this, &FAssetSearchManager::OnAssetLoaded);
 
-	TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FAssetSearchManager::Tick_GameThread), 0);
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FAssetSearchManager::Tick_GameThread), 0);
 
 	RunThread = true;
 	DatabaseThread = FRunnableThread::Create(this, TEXT("UniversalSearch"), 0, TPri_BelowNormal);
@@ -447,17 +448,15 @@ void FAssetSearchManager::OnAssetScanFinished()
 	});
 }
 
-void FAssetSearchManager::HandlePackageSaved(const FString& PackageFilename, UObject* Outer)
+void FAssetSearchManager::HandlePackageSaved(const FString& PackageFilename, UPackage* Package, FObjectPostSaveContext ObjectSaveContext)
 {
 	check(IsInGameThread());
 
-	// Ignore package operations fired by the cooker (cook on the fly).
-	if (GIsCookerLoadingPackage)
+	// Only execute if this is a user save
+	if (ObjectSaveContext.IsProceduralSave())
 	{
 		return;
 	}
-
-	UPackage* Package = CastChecked<UPackage>(Outer);
 
 	if (GIsEditor && !IsRunningCommandlet())
 	{
@@ -551,7 +550,7 @@ bool FAssetSearchManager::TryLoadIndexForAsset(const FAssetData& InAssetData)
 			FScopeLock ScopedLock(&SearchDatabaseCS);
 			if (!SearchDatabase.IsAssetUpToDate(InAssetData, InDDCKey))
 			{
-				AsyncRequestDownlaod(InAssetData, InDDCKey);
+				AsyncRequestDownload(InAssetData, InDDCKey);
 			}
 
 			IsAssetUpToDateCount--;
@@ -566,7 +565,7 @@ bool FAssetSearchManager::TryLoadIndexForAsset(const FAssetData& InAssetData)
 	return bSuccess;
 }
 
-void FAssetSearchManager::AsyncRequestDownlaod(const FAssetData& InAssetData, const FString& InDDCKey)
+void FAssetSearchManager::AsyncRequestDownload(const FAssetData& InAssetData, const FString& InDDCKey)
 {
 	DownloadQueueCount++;
 
@@ -579,6 +578,12 @@ void FAssetSearchManager::AsyncRequestDownlaod(const FAssetData& InAssetData, co
 bool FAssetSearchManager::AsyncGetDerivedDataKey(const FAssetData& InAssetData, TFunction<void(bool, FString)> DDCKeyCallback)
 {
 	check(IsInGameThread());
+
+	const FString AssetPath = InAssetData.PackagePath.ToString();
+	if (AssetPath.Contains(FPackagePath::GetExternalActorsFolderName()) || AssetPath.Contains(FPackagePath::GetExternalObjectsFolderName()))
+	{
+		return false;
+	}
 
 	FString IndexersNamesAndVersions = GetIndexerVersion(InAssetData.GetClass());
 

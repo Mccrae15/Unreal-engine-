@@ -5,6 +5,7 @@
 #include "Animation/DebugSkelMeshComponent.h"
 #include "AnimationRuntime.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/AnimSequenceHelpers.h"
 
 #if WITH_EDITOR
 #include "ScopedTransaction.h"
@@ -123,21 +124,24 @@ void FAnimPreviewInstanceProxy::Update(float DeltaSeconds)
 	}
 #endif // #if WITH_EDITORONLY_DATA
 
+	FAnimSingleNodeInstanceProxy::Update(DeltaSeconds);
+}
+
+void FAnimPreviewInstanceProxy::UpdateAnimationNode(const FAnimationUpdateContext& InContext)
+{
 	if (CopyPoseNode.SourceMeshComponent.IsValid())
 	{
-		FAnimationUpdateContext UpdateContext(this, DeltaSeconds);
-		CopyPoseNode.Update_AnyThread(UpdateContext);
+		CopyPoseNode.Update_AnyThread(InContext);
 	}
 	else if (UPoseAsset* PoseAsset = Cast<UPoseAsset>(CurrentAsset))
 	{
 		PoseBlendNode.PoseAsset = PoseAsset;
 
-		FAnimationUpdateContext UpdateContext(this, DeltaSeconds);
-		PoseBlendNode.Update_AnyThread(UpdateContext);
+		PoseBlendNode.Update_AnyThread(InContext);
 	}
 	else
 	{
-		FAnimSingleNodeInstanceProxy::Update(DeltaSeconds);
+		FAnimSingleNodeInstanceProxy::UpdateAnimationNode(InContext);
 	}
 }
 
@@ -265,17 +269,17 @@ void FAnimPreviewInstanceProxy::RefreshCurveBoneControllers(UAnimationAsset* Ass
 	CurveBoneControllers.Empty();
 
 	// do not apply if BakedAnimation is on
-	if(CurrentSequence)
+	if(CurrentSequence && CurrentSequence->IsDataModelValid())
 	{
 		// make sure if this needs source update
-		if ( !CurrentSequence->DoesContainTransformCurves() )
+		if (CurrentSequence->GetDataModel()->GetNumberOfTransformCurves() == 0)
 		{
 			return;
 		}
 
 		GetRequiredBones().SetUseSourceData(true);
 
-		TArray<FTransformCurve>& Curves = CurrentSequence->RawCurveData.TransformCurves;
+		const TArray<FTransformCurve>& Curves = CurrentSequence->GetDataModel()->GetCurveData().TransformCurves;
 		USkeleton* MySkeleton = CurrentSequence->GetSkeleton();
 		for (auto& Curve : Curves)
 		{
@@ -303,7 +307,7 @@ void FAnimPreviewInstanceProxy::UpdateCurveController()
 	if (CurrentSequence && PreviewSkeleton)
 	{
 		TMap<FName, FTransform> ActiveCurves;
-		CurrentSequence->RawCurveData.EvaluateTransformCurveData(PreviewSkeleton, ActiveCurves, GetCurrentTime(), 1.f);
+		UE::Anim::EvaluateTransformCurvesFromModel(CurrentSequence->GetDataModel(), ActiveCurves, GetCurrentTime(), 1.f);
 
 		// make sure those curves exists in the bone controller, otherwise problem
 		if ( ActiveCurves.Num() > 0 )
@@ -519,6 +523,11 @@ void UAnimPreviewInstance::ResetModifiedBone(bool bCurveController/*=false*/)
 	GetProxyOnGameThread<FAnimPreviewInstanceProxy>().ResetModifiedBone(bCurveController);
 }
 
+const TArray<FAnimNode_ModifyBone>& UAnimPreviewInstance::GetBoneControllers()
+{
+	return GetProxyOnGameThread<FAnimPreviewInstanceProxy>().GetBoneControllers();
+}
+
 #if WITH_EDITOR	
 
 void UAnimPreviewInstance::SetKey()
@@ -582,6 +591,14 @@ void UAnimPreviewInstance::SetAnimationAsset(UAnimationAsset* NewAsset, bool bIs
 
 	Super::SetAnimationAsset(NewAsset, bIsLooping, InPlayRate);
 	RootMotionMode = Cast<UAnimMontage>(CurrentAsset) != nullptr ? ERootMotionMode::RootMotionFromMontagesOnly : ERootMotionMode::RootMotionFromEverything;
+
+	// disable playing for single frame assets
+	UAnimSequence* AnimSequence = GetAnimSequence();
+	bool bSingleFrameSequence = (AnimSequence != nullptr) ? AnimSequence->GetNumberOfSampledKeys() <= 1 : false;
+	if (bSingleFrameSequence && Proxy.IsPlaying())
+	{
+		Proxy.SetPlaying(false);
+	}
 
 	// should re sync up curve bone controllers from new asset
 	Proxy.RefreshCurveBoneControllers(CurrentAsset);
@@ -704,11 +721,11 @@ void UAnimPreviewInstance::MontagePreview_StepForward()
 		MontagePreview_SetPlaying(true);
 
 		// Advance a single frame, leaving it paused afterwards
-		int32 NumFrames = Montage->GetNumberOfFrames();
+		const int32 NumKeys = Montage->GetNumberOfSampledKeys();
 		// Add DELTA to prefer next frame when we're close to the boundary
-		float CurrentFraction = Proxy.GetCurrentTime() / Montage->SequenceLength + DELTA;
-		float NextFrame = FMath::Clamp<float>(FMath::FloorToFloat(CurrentFraction * NumFrames) + 1.0f, 0, NumFrames);
-		float NewTime = Montage->SequenceLength * (NextFrame / (NumFrames-1));
+		const float CurrentFraction = Proxy.GetCurrentTime() / Montage->GetPlayLength() + DELTA;
+		const float NextFrame = FMath::Clamp<float>(FMath::FloorToFloat(CurrentFraction * NumKeys) + 1.0f, 0, NumKeys);
+		const float NewTime = Montage->GetPlayLength() * (NextFrame / (NumKeys-1));
 
 		GetSkelMeshComponent()->GlobalAnimRateScale = 1.0f;
 		GetSkelMeshComponent()->TickAnimation(NewTime - Proxy.GetCurrentTime(), false);
@@ -760,11 +777,11 @@ void UAnimPreviewInstance::MontagePreview_StepBackward()
 		MontagePreview_SetPlaying(true);
 
 		// Advance a single frame, leaving it paused afterwards
-		int32 NumFrames = Montage->GetNumberOfFrames();
+		const int32 NumKeys = Montage->GetNumberOfSampledKeys();
 		// Add DELTA to prefer next frame when we're close to the boundary
-		float CurrentFraction = Proxy.GetCurrentTime() / Montage->SequenceLength + DELTA;
-		float NextFrame = FMath::Clamp<float>(FMath::FloorToFloat(CurrentFraction * NumFrames) - 1.0f, 0, NumFrames);
-		float NewTime = Montage->SequenceLength * (NextFrame / (NumFrames-1));
+		const float CurrentFraction = Proxy.GetCurrentTime() / Montage->GetPlayLength() + DELTA;
+		const float NextFrame = FMath::Clamp<float>(FMath::FloorToFloat(CurrentFraction * NumKeys) - 1.0f, 0, NumKeys);
+		const float NewTime = Montage->GetPlayLength() * (NextFrame / (NumKeys-1));
 
 		GetSkelMeshComponent()->GlobalAnimRateScale = 1.0f;
 		GetSkelMeshComponent()->TickAnimation(FMath::Abs(NewTime - Proxy.GetCurrentTime()), false);
@@ -897,7 +914,7 @@ void UAnimPreviewInstance::MontagePreview_RemoveBlendOut()
 void UAnimPreviewInstance::MontagePreview_PreviewNormal(int32 FromSectionIdx, bool bPlay)
 {
 	UAnimMontage* Montage = Cast<UAnimMontage>(CurrentAsset);
-	if (Montage && Montage->SequenceLength > 0.0f)
+	if (Montage && Montage->GetPlayLength() > 0.0f)
 	{
 		FAnimPreviewInstanceProxy& Proxy = GetProxyOnGameThread<FAnimPreviewInstanceProxy>();
 
@@ -933,7 +950,7 @@ void UAnimPreviewInstance::MontagePreview_PreviewNormal(int32 FromSectionIdx, bo
 void UAnimPreviewInstance::MontagePreview_PreviewAllSections(bool bPlay)
 {
 	UAnimMontage* Montage = Cast<UAnimMontage>(CurrentAsset);
-	if (Montage && Montage->SequenceLength > 0.0f)
+	if (Montage && Montage->GetPlayLength() > 0.0f)
 	{
 		FAnimPreviewInstanceProxy& Proxy = GetProxyOnGameThread<FAnimPreviewInstanceProxy>();
 

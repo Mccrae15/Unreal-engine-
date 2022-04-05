@@ -16,7 +16,6 @@
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FWaterVertexFactoryParameters, )
 	SHADER_PARAMETER(float, LODScale)
 	SHADER_PARAMETER(int32, NumQuadsPerTileSide)
-	SHADER_PARAMETER(FVector2D, MorphOrigin)
 	SHADER_PARAMETER(int32, bRenderSelected)
 	SHADER_PARAMETER(int32, bRenderUnselected)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
@@ -46,7 +45,7 @@ public:
 
 private:
 	template <typename IndexType>
-	FIndexBufferRHIRef CreateIndexBuffer()
+	FBufferRHIRef CreateIndexBuffer()
 	{
 		TResourceArray<IndexType, INDEXBUFFER_ALIGNMENT> Indices;
 
@@ -88,7 +87,7 @@ private:
 		const uint32 Stride = sizeof(IndexType);
 
 		// Create index buffer. Fill buffer with initial data upon creation
-		FRHIResourceCreateInfo CreateInfo(&Indices);
+		FRHIResourceCreateInfo CreateInfo(TEXT("FWaterMeshIndexBuffer"), &Indices);
 		return RHICreateIndexBuffer(Stride, Size, BUF_Static, CreateInfo);
 	}
 
@@ -110,14 +109,13 @@ public:
 
 		NumVerts = NumVertsPerSide * NumVertsPerSide;
 
-		FRHIResourceCreateInfo CreateInfo;
-		void* BufferData = nullptr;
-		VertexBufferRHI = RHICreateAndLockVertexBuffer(sizeof(FVector4) * NumVerts, BUF_Static, CreateInfo, BufferData);
-		FVector4* DummyContents = (FVector4*)BufferData;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FWaterMeshVertexBuffer"));
+		VertexBufferRHI = RHICreateBuffer(sizeof(FVector4f) * NumVerts, BUF_Static | BUF_VertexBuffer, 0, ERHIAccess::VertexOrIndexBuffer, CreateInfo);
+		FVector4f* DummyContents = (FVector4f*)RHILockBuffer(VertexBufferRHI, 0, sizeof(FVector4f) * NumVerts, RLM_WriteOnly);
 
 		for (uint32 VertY = 0; VertY < NumVertsPerSide; VertY++)
 		{
-			FVector4 VertPos;
+			FVector4f VertPos;
 			VertPos.Y = (float)VertY / NumQuadsPerSide - 0.5f;
 
 			for (uint32 VertX = 0; VertX < NumVertsPerSide; VertX++)
@@ -128,7 +126,7 @@ public:
 			}
 		}
 
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		RHIUnlockBuffer(VertexBufferRHI);
 	}
 
 	int32 GetVertexCount() const { return NumVerts; }
@@ -159,7 +157,7 @@ public:
 	static constexpr int32 NumRenderGroups = bWithWaterSelectionSupport ? 3 : 1; // Must match EWaterMeshRenderGroupType
 	static constexpr int32 NumAdditionalVertexStreams = TWaterInstanceDataBuffers<bWithWaterSelectionSupport>::NumBuffers;
 
-	TWaterVertexFactory(ERHIFeatureLevel::Type InFeatureLevel, int32 InNumQuadsPerSide,	float InLODScale, FVector2D InMorphOrigin);
+	TWaterVertexFactory(ERHIFeatureLevel::Type InFeatureLevel, int32 InNumQuadsPerSide,	float InLODScale);
 	~TWaterVertexFactory();
 
 	/**
@@ -195,9 +193,6 @@ private:
 
 	const int32 NumQuadsPerSide = 0;
 	const float LODScale = 0.0f;
-
-	/** Center of the water quadtree. Used to ensure that the morphing algorithm works on all LOD levels */
-	const FVector2D MorphOrigin = FVector2D::ZeroVector;
 };
 
 

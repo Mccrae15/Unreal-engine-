@@ -39,7 +39,7 @@ public:
 
 	//TODO: Abstract to some interface to allow a hierarchy like UMaterialInstance?
 	UPROPERTY(EditAnywhere, Category=Instance)
-	UNiagaraParameterCollection* Collection;
+	TObjectPtr<UNiagaraParameterCollection> Collection;
 
 	/**
 	When editing instances, we must track which parameters are overridden so we can pull in any changes to the default.
@@ -114,7 +114,7 @@ public:
 	void SetVector2DParameter(const FString& InVariableName, FVector2D InValue);
 
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Vector Parameter"))
-	void SetVectorParameter(const FString& InVariableName, FVector InValue);
+	void SetVectorParameter(const FString& InVariableName, FVector InValue); // TODO[mg]: add position setter for LWC
 
 	UFUNCTION(BlueprintCallable, Category = Niagara, meta = (DisplayName = "Set Vector4 Parameter"))
 	void SetVector4Parameter(const FString& InVariableName, const FVector4& InValue);
@@ -205,10 +205,10 @@ protected:
 
 	/** Optional set of MPC that can drive scalar and vector parameters */
 	UPROPERTY(EditAnywhere, Category = "Parameter Collection")
-	UMaterialParameterCollection* SourceMaterialCollection;
+	TObjectPtr<UMaterialParameterCollection> SourceMaterialCollection;
 	
 	UPROPERTY()
-	UNiagaraParameterCollectionInstance* DefaultInstance;
+	TObjectPtr<UNiagaraParameterCollectionInstance> DefaultInstance;
 
 	/** Used to track whenever something of note changes in this parameter collection that might invalidate a compilation downstream of a script/emitter/system.*/
 	UPROPERTY()

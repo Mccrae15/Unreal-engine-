@@ -110,7 +110,16 @@ public:
 
 	void AddRequest(FLightmapTileRequest TileRequest);
 
-	virtual void Finalize(FRHICommandListImmediate& RHICmdList) override;
+	void RenderMeshBatchesIntoGBuffer(
+		FRHICommandList& RHICmdList,
+		const FSceneView* View,
+		int32 GPUScenePrimitiveId,
+		TArray<FMeshBatch>& MeshBatches,
+		FVector4f VirtualTexturePhysicalTileCoordinateScaleAndBias,
+		int32 RenderPassIndex,
+		FIntPoint ScratchTilePoolOffset);
+
+	virtual void Finalize(FRDGBuilder& GraphBuilder) override;
 
 	virtual ~FLightmapRenderer();
 

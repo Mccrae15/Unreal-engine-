@@ -6,6 +6,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "JsonUtils/JsonObjectArrayUpdater.h"
 #include "ProjectDescriptor.h"
+#include "JsonExtensions.h"
 
 #define LOCTEXT_NAMESPACE "PluginDescriptor"
 
@@ -31,6 +32,7 @@ FPluginReferenceDescriptor::FPluginReferenceDescriptor( const FString& InName, b
 	: Name(InName)
 	, bEnabled(bInEnabled)
 	, bOptional(false)
+	, bHasExplicitPlatforms(false)
 { }
 
 
@@ -42,14 +44,14 @@ bool FPluginReferenceDescriptor::IsEnabledForPlatform( const FString& Platform )
 		return false;
 	}
 
-	// If there is a list of whitelisted platforms, and this isn't one of them, return false
-	if(WhitelistPlatforms.Num() > 0 && !WhitelistPlatforms.Contains(Platform))
+	// If there is a list of allowed platform platforms, and this isn't one of them, return false
+	if( (bHasExplicitPlatforms || PlatformAllowList.Num() > 0) && !PlatformAllowList.Contains(Platform))
 	{
 		return false;
 	}
 
-	// If this platform is blacklisted, also return false
-	if(BlacklistPlatforms.Contains(Platform))
+	// If this platform is denied, also return false
+	if(PlatformDenyList.Contains(Platform))
 	{
 		return false;
 	}
@@ -65,14 +67,14 @@ bool FPluginReferenceDescriptor::IsEnabledForTarget(EBuildTargetType TargetType)
         return false;
     }
 
-    // If there is a list of whitelisted platforms, and this isn't one of them, return false
-    if (WhitelistTargets.Num() > 0 && !WhitelistTargets.Contains(TargetType))
+    // If there is a list of allowed targets, and this isn't one of them, return false
+    if (TargetAllowList.Num() > 0 && !TargetAllowList.Contains(TargetType))
     {
         return false;
     }
 
-    // If this platform is blacklisted, also return false
-    if (BlacklistTargets.Contains(TargetType))
+    // If this platform is denied, also return false
+    if (TargetDenyList.Contains(TargetType))
     {
         return false;
     }
@@ -88,14 +90,14 @@ bool FPluginReferenceDescriptor::IsEnabledForTargetConfiguration(EBuildConfigura
 		return false;
 	}
 
-	// If there is a list of whitelisted target configurations, and this isn't one of them, return false
-	if (WhitelistTargetConfigurations.Num() > 0 && !WhitelistTargetConfigurations.Contains(Configuration))
+	// If there is a list of allowed target configurations, and this isn't one of them, return false
+	if (TargetConfigurationAllowList.Num() > 0 && !TargetConfigurationAllowList.Contains(Configuration))
 	{
 		return false;
 	}
 
-	// If this target configuration is blacklisted, also return false
-	if (BlacklistTargetConfigurations.Contains(Configuration))
+	// If this target configuration is denied, also return false
+	if (TargetConfigurationDenyList.Contains(Configuration))
 	{
 		return false;
 	}
@@ -105,22 +107,35 @@ bool FPluginReferenceDescriptor::IsEnabledForTargetConfiguration(EBuildConfigura
 
 bool FPluginReferenceDescriptor::IsSupportedTargetPlatform(const FString& Platform) const
 {
-	return SupportedTargetPlatforms.Num() == 0 || SupportedTargetPlatforms.Contains(Platform);
+	if (bHasExplicitPlatforms)
+	{
+		return SupportedTargetPlatforms.Contains(Platform);
+	}
+	else
+	{
+		return SupportedTargetPlatforms.Num() == 0 || SupportedTargetPlatforms.Contains(Platform);
+	}
 }
 
-bool FPluginReferenceDescriptor::Read( const FJsonObject& Object, FText& OutFailReason )
+bool FPluginReferenceDescriptor::Read(const FJsonObject& Object, FText* OutFailReason /*= nullptr*/)
 {
 	// Get the name
 	if(!Object.TryGetStringField(TEXT("Name"), Name))
 	{
-		OutFailReason = LOCTEXT("PluginReferenceWithoutName", "Plugin references must have a 'Name' field");
+		if (OutFailReason)
+		{
+			*OutFailReason = LOCTEXT("PluginReferenceWithoutName", "Plugin references must have a 'Name' field");
+		}
 		return false;
 	}
 
 	// Get the enabled field
 	if(!Object.TryGetBoolField(TEXT("Enabled"), bEnabled))
 	{
-		OutFailReason = LOCTEXT("PluginReferenceWithoutEnabled", "Plugin references must have an 'Enabled' field");
+		if (OutFailReason)
+		{
+			*OutFailReason = LOCTEXT("PluginReferenceWithoutEnabled", "Plugin references must have an 'Enabled' field");
+		}
 		return false;
 	}
 
@@ -132,25 +147,30 @@ bool FPluginReferenceDescriptor::Read( const FJsonObject& Object, FText& OutFail
 	Object.TryGetStringField(TEXT("MarketplaceURL"), MarketplaceURL);
 
 	// Get the platform lists
-	Object.TryGetStringArrayField(TEXT("WhitelistPlatforms"), WhitelistPlatforms);
-	Object.TryGetStringArrayField(TEXT("BlacklistPlatforms"), BlacklistPlatforms);
+	JsonExtensions::TryGetStringArrayFieldWithDeprecatedFallback(Object, TEXT("PlatformAllowList"), TEXT("WhitelistPlatforms"), /*out*/ PlatformAllowList);
+	JsonExtensions::TryGetStringArrayFieldWithDeprecatedFallback(Object, TEXT("PlatformDenyList"), TEXT("BlacklistPlatforms"), /*out*/ PlatformDenyList);
 
 	// Get the target configuration lists
-	Object.TryGetEnumArrayField(TEXT("WhitelistTargetConfigurations"), WhitelistTargetConfigurations);
-	Object.TryGetEnumArrayField(TEXT("BlacklistTargetConfigurations"), BlacklistTargetConfigurations);
+	JsonExtensions::TryGetEnumArrayFieldWithDeprecatedFallback(Object, TEXT("TargetConfigurationAllowList"), TEXT("WhitelistTargetConfigurations"), /*out*/ TargetConfigurationAllowList);
+	JsonExtensions::TryGetEnumArrayFieldWithDeprecatedFallback(Object, TEXT("TargetConfigurationDenyList"), TEXT("BlacklistTargetConfigurations"), /*out*/ TargetConfigurationDenyList);
 
 	// Get the target lists
-	Object.TryGetEnumArrayField(TEXT("WhitelistTargets"), WhitelistTargets);
-	Object.TryGetEnumArrayField(TEXT("BlacklistTargets"), BlacklistTargets);
+	JsonExtensions::TryGetEnumArrayFieldWithDeprecatedFallback(Object, TEXT("TargetAllowList"), TEXT("WhitelistTargets"), /*out*/ TargetAllowList);
+	JsonExtensions::TryGetEnumArrayFieldWithDeprecatedFallback(Object, TEXT("TargetDenyList"), TEXT("BlacklistTargets"), /*out*/ TargetDenyList);
 
 	// Get the supported platform list
 	Object.TryGetStringArrayField(TEXT("SupportedTargetPlatforms"), SupportedTargetPlatforms);
+	Object.TryGetBoolField(TEXT("HasExplicitPlatforms"), bHasExplicitPlatforms);
 
 	return true;
 }
 
+bool FPluginReferenceDescriptor::Read(const FJsonObject& Object, FText& OutFailReason)
+{
+	return Read(Object, &OutFailReason);
+}
 
-bool FPluginReferenceDescriptor::ReadArray( const FJsonObject& Object, const TCHAR* Name, TArray<FPluginReferenceDescriptor>& OutPlugins, FText& OutFailReason )
+bool FPluginReferenceDescriptor::ReadArray(const FJsonObject& Object, const TCHAR* Name, TArray<FPluginReferenceDescriptor>& OutPlugins, FText* OutFailReason /*= nullptr*/)
 {
 	const TArray< TSharedPtr<FJsonValue> > *Array;
 
@@ -177,6 +197,10 @@ bool FPluginReferenceDescriptor::ReadArray( const FJsonObject& Object, const TCH
 	return true;
 }
 
+bool FPluginReferenceDescriptor::ReadArray(const FJsonObject& Object, const TCHAR* Name, TArray<FPluginReferenceDescriptor>& OutPlugins, FText& OutFailReason)
+{
+	return ReadArray(Object, Name, OutPlugins, &OutFailReason);
+}
 
 void FPluginReferenceDescriptor::Write(TJsonWriter<>& Writer) const
 {
@@ -218,88 +242,88 @@ void FPluginReferenceDescriptor::UpdateJson(FJsonObject& JsonObject) const
 		JsonObject.RemoveField(TEXT("MarketplaceURL"));
 	}
 
-	if (WhitelistPlatforms.Num() > 0)
+	if (PlatformAllowList.Num() > 0)
 	{
-		TArray<TSharedPtr<FJsonValue>> WhitelistPlatformValues;
-		for (const FString& WhitelistPlatform : WhitelistPlatforms)
+		TArray<TSharedPtr<FJsonValue>> PlatformAllowListValues;
+		for (const FString& Platform : PlatformAllowList)
 		{
-			WhitelistPlatformValues.Add(MakeShareable(new FJsonValueString(WhitelistPlatform)));
+			PlatformAllowListValues.Add(MakeShareable(new FJsonValueString(Platform)));
 		}
-		JsonObject.SetArrayField(TEXT("WhitelistPlatforms"), WhitelistPlatformValues);
+		JsonObject.SetArrayField(TEXT("PlatformAllowList"), PlatformAllowListValues);
 	}
 	else
 	{
-		JsonObject.RemoveField(TEXT("WhitelistPlatforms"));
+		JsonObject.RemoveField(TEXT("PlatformAllowList"));
 	}
 
-	if (BlacklistPlatforms.Num() > 0)
+	if (PlatformDenyList.Num() > 0)
 	{
-		TArray<TSharedPtr<FJsonValue>> BlacklistPlatformValues;
-		for (const FString& BlacklistPlatform : BlacklistPlatforms)
+		TArray<TSharedPtr<FJsonValue>> PlatformDenyListValues;
+		for (const FString& Platform : PlatformDenyList)
 		{
-			BlacklistPlatformValues.Add(MakeShareable(new FJsonValueString(BlacklistPlatform)));
+			PlatformDenyListValues.Add(MakeShareable(new FJsonValueString(Platform)));
 		}
-		JsonObject.SetArrayField(TEXT("BlacklistPlatforms"), BlacklistPlatformValues);
+		JsonObject.SetArrayField(TEXT("PlatformDenyList"), PlatformDenyListValues);
 	}
 	else
 	{
-		JsonObject.RemoveField(TEXT("BlacklistPlatforms"));
+		JsonObject.RemoveField(TEXT("PlatformDenyList"));
 	}
 
-	if (WhitelistTargetConfigurations.Num() > 0)
+	if (TargetConfigurationAllowList.Num() > 0)
 	{
-		TArray<TSharedPtr<FJsonValue>> WhitelistTargetConfigurationValues;
-		for (EBuildConfiguration WhitelistTargetConfiguration : WhitelistTargetConfigurations)
+		TArray<TSharedPtr<FJsonValue>> TargetConfigurationAllowListValues;
+		for (EBuildConfiguration Config : TargetConfigurationAllowList)
 		{
-			WhitelistTargetConfigurationValues.Add(MakeShareable(new FJsonValueString(LexToString(WhitelistTargetConfiguration))));
+			TargetConfigurationAllowListValues.Add(MakeShareable(new FJsonValueString(LexToString(Config))));
 		}
-		JsonObject.SetArrayField(TEXT("WhitelistTargetConfigurations"), WhitelistTargetConfigurationValues);
+		JsonObject.SetArrayField(TEXT("TargetConfigurationAllowList"), TargetConfigurationAllowListValues);
 	}
 	else
 	{
-		JsonObject.RemoveField(TEXT("WhitelistTargetConfigurations"));
+		JsonObject.RemoveField(TEXT("TargetConfigurationAllowList"));
 	}
 
-	if (BlacklistTargetConfigurations.Num() > 0)
+	if (TargetConfigurationDenyList.Num() > 0)
 	{
-		TArray<TSharedPtr<FJsonValue>> BlacklistTargetConfigurationValues;
-		for (EBuildConfiguration BlacklistTargetConfiguration : BlacklistTargetConfigurations)
+		TArray<TSharedPtr<FJsonValue>> TargetConfigurationDenyListValues;
+		for (EBuildConfiguration Config : TargetConfigurationDenyList)
 		{
-			BlacklistTargetConfigurationValues.Add(MakeShareable(new FJsonValueString(LexToString(BlacklistTargetConfiguration))));
+			TargetConfigurationDenyListValues.Add(MakeShareable(new FJsonValueString(LexToString(Config))));
 		}
-		JsonObject.SetArrayField(TEXT("BlacklistTargetConfigurations"), BlacklistTargetConfigurationValues);
+		JsonObject.SetArrayField(TEXT("TargetConfigurationDenyList"), TargetConfigurationDenyListValues);
 	}
 	else
 	{
-		JsonObject.RemoveField(TEXT("BlacklistTargetConfigurations"));
+		JsonObject.RemoveField(TEXT("TargetConfigurationDenyList"));
 	}
 
-	if (WhitelistTargets.Num() > 0)
+	if (TargetAllowList.Num() > 0)
 	{
-		TArray<TSharedPtr<FJsonValue>> WhitelistTargetValues;
-		for (EBuildTargetType WhitelistTarget : WhitelistTargets)
+		TArray<TSharedPtr<FJsonValue>> TargetAllowListValues;
+		for (EBuildTargetType Target : TargetAllowList)
 		{
-			WhitelistTargetValues.Add(MakeShareable(new FJsonValueString(LexToString(WhitelistTarget))));
+			TargetAllowListValues.Add(MakeShareable(new FJsonValueString(LexToString(Target))));
 		}
-		JsonObject.SetArrayField(TEXT("WhitelistTargets"), WhitelistTargetValues);
+		JsonObject.SetArrayField(TEXT("TargetAllowList"), TargetAllowListValues);
 	}
 	else
 	{
-		JsonObject.RemoveField(TEXT("WhitelistTargets"));
+		JsonObject.RemoveField(TEXT("TargetAllowList"));
 	}
 
-	if (BlacklistTargets.Num() > 0)
+	if (TargetDenyList.Num() > 0)
 	{
-		TArray<TSharedPtr<FJsonValue>> BlacklistTargetValues;
-		for (EBuildTargetType BlacklistTarget : BlacklistTargets)
+		TArray<TSharedPtr<FJsonValue>> TargetDenyListValues;
+		for (EBuildTargetType Target : TargetDenyList)
 		{
-			BlacklistTargetValues.Add(MakeShareable(new FJsonValueString(LexToString(BlacklistTarget))));
+			TargetDenyListValues.Add(MakeShareable(new FJsonValueString(LexToString(Target))));
 		}
-		JsonObject.SetArrayField(TEXT("BlacklistTargets"), BlacklistTargetValues);
+		JsonObject.SetArrayField(TEXT("TargetDenyList"), TargetDenyListValues);
 	}
 	else
 	{
-		JsonObject.RemoveField(TEXT("BlacklistTargets"));
+		JsonObject.RemoveField(TEXT("TargetDenyList"));
 	}
 
 	if (SupportedTargetPlatforms.Num() > 0)
@@ -315,6 +339,23 @@ void FPluginReferenceDescriptor::UpdateJson(FJsonObject& JsonObject) const
 	{
 		JsonObject.RemoveField(TEXT("SupportedTargetPlatforms"));
 	}
+
+	if (bHasExplicitPlatforms)
+	{
+		JsonObject.SetBoolField(TEXT("HasExplicitPlatforms"), bHasExplicitPlatforms);
+	}
+	else
+	{
+		JsonObject.RemoveField(TEXT("HasExplicitPlatforms"));
+	}
+
+	// Remove deprecated fields
+	JsonObject.RemoveField(TEXT("WhitelistPlatforms"));
+	JsonObject.RemoveField(TEXT("BlacklistPlatforms"));
+	JsonObject.RemoveField(TEXT("WhitelistTargetConfigurations"));
+	JsonObject.RemoveField(TEXT("BlacklistTargetConfigurations"));
+	JsonObject.RemoveField(TEXT("WhitelistTargets"));
+	JsonObject.RemoveField(TEXT("BlacklistTargets"));
 }
 
 void FPluginReferenceDescriptor::WriteArray(TJsonWriter<>& Writer, const TCHAR* ArrayName, const TArray<FPluginReferenceDescriptor>& Plugins)

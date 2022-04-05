@@ -75,7 +75,7 @@ class FSortOffsetBuffers : public FRenderResource
 public:
 
 	/** Vertex buffer storage for the actual offsets. */
-	FVertexBufferRHIRef Buffers[2];
+	FBufferRHIRef Buffers[2];
 	/** Shader resource views for offset buffers. */
 	FShaderResourceViewRHIRef BufferSRVs[2];
 	/** Unordered access views for offset buffers. */
@@ -134,9 +134,9 @@ public:
 
 		OutOffsets.Empty( OffsetsCount );
 		OutOffsets.AddUninitialized( OffsetsCount );
-		uint32* MappedOffsets = (uint32*)RHILockVertexBuffer( Buffers[BufferIndex], 0, OffsetsBufferSize, RLM_ReadOnly );
+		uint32* MappedOffsets = (uint32*)RHILockBuffer( Buffers[BufferIndex], 0, OffsetsBufferSize, RLM_ReadOnly );
 		FMemory::Memcpy( OutOffsets.GetData(), MappedOffsets, OffsetsBufferSize );
-		RHIUnlockVertexBuffer( Buffers[BufferIndex] );
+		RHIUnlockBuffer( Buffers[BufferIndex] );
 	}
 
 	/**
@@ -178,7 +178,7 @@ class FRadixSortParametersBuffer : public FRenderResource
 public:
 
 	/** The vertex buffer used for storage. */
-	FVertexBufferRHIRef SortParametersBufferRHI;
+	FBufferRHIRef SortParametersBufferRHI;
 	/** Shader resource view in to the vertex buffer. */
 	FShaderResourceViewRHIRef SortParametersBufferSRV;
 	
@@ -189,7 +189,7 @@ public:
 	{
 		if (RHISupportsComputeShaders(GShaderPlatformForFeatureLevel[GetFeatureLevel()]))
 		{
-			FRHIResourceCreateInfo CreateInfo;
+			FRHIResourceCreateInfo CreateInfo(TEXT("FRadixSortParametersBuffer"));
 			SortParametersBufferRHI = RHICreateVertexBuffer(
 				/*Size=*/ sizeof(FRadixSortParameters),
 				/*Usage=*/ BUF_Volatile | BUF_ShaderResource,
@@ -664,7 +664,7 @@ int32 GetGPUSortPassCount(uint32 KeyMask)
  * @param Count - How many items in the buffer need to be sorted.
  * @returns The index of the buffer containing sorted results.
  */
-int32 SortGPUBuffers(FRHICommandListImmediate& RHICmdList, FGPUSortBuffers SortBuffers, int32 BufferIndex, uint32 KeyMask, int32 Count, ERHIFeatureLevel::Type FeatureLevel)
+int32 SortGPUBuffers(FRHICommandList& RHICmdList, FGPUSortBuffers SortBuffers, int32 BufferIndex, uint32 KeyMask, int32 Count, ERHIFeatureLevel::Type FeatureLevel)
 {
 	FRadixSortParameters SortParameters;
 	FRadixSortUniformBufferRef SortUniformBufferRef;
@@ -732,9 +732,9 @@ int32 SortGPUBuffers(FRHICommandListImmediate& RHICmdList, FGPUSortBuffers SortB
 			// Update uniform buffer.
 			if ( bUseConstantBufferWorkaround )
 			{
-				void* ParameterBuffer = RHILockVertexBuffer( GRadixSortParametersBuffer.SortParametersBufferRHI, 0, sizeof(FRadixSortParameters), RLM_WriteOnly );
+				void* ParameterBuffer = RHILockBuffer( GRadixSortParametersBuffer.SortParametersBufferRHI, 0, sizeof(FRadixSortParameters), RLM_WriteOnly );
 				FMemory::Memcpy( ParameterBuffer, &SortParameters, sizeof(FRadixSortParameters) );
-				RHIUnlockVertexBuffer( GRadixSortParametersBuffer.SortParametersBufferRHI );
+				RHIUnlockBuffer( GRadixSortParametersBuffer.SortParametersBufferRHI );
 			}
 			else
 			{
@@ -742,7 +742,9 @@ int32 SortGPUBuffers(FRHICommandListImmediate& RHICmdList, FGPUSortBuffers SortB
 			}
 
 			//make UAV safe for clear
-			RHICmdList.Transition(FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[0], ERHIAccess::Unknown, ERHIAccess::ERWBarrier));
+			RHICmdList.Transition({
+				FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[0], ERHIAccess::Unknown, ERHIAccess::UAVCompute)
+			});
 			
 			// Clear the offsets buffer.			
 			RHICmdList.SetComputeShader(ClearOffsetsCS.GetComputeShader());			
@@ -751,7 +753,10 @@ int32 SortGPUBuffers(FRHICommandListImmediate& RHICmdList, FGPUSortBuffers SortB
 			ClearOffsetsCS->UnbindBuffers(RHICmdList);
 
 			//make UAV safe for readback
-			RHICmdList.Transition(FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[0], ERHIAccess::Unknown, ERHIAccess::ERWBarrier));
+			RHICmdList.Transition({
+				FRHITransitionInfo(SortBuffers.RemoteKeyUAVs[BufferIndex], ERHIAccess::Unknown, ERHIAccess::SRVCompute),
+				FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[0], ERHIAccess::Unknown, ERHIAccess::UAVCompute)
+			});
 
 			// Phase 1: Scan upsweep to compute per-digit totals.
 			RHICmdList.SetComputeShader(UpsweepCS.GetComputeShader());
@@ -761,10 +766,10 @@ int32 SortGPUBuffers(FRHICommandListImmediate& RHICmdList, FGPUSortBuffers SortB
 			UpsweepCS->UnbindBuffers(RHICmdList);
 
 			//barrier both UAVS since for next step.
-			FRHITransitionInfo PrePhase2BarrierUAVS[2];
-			PrePhase2BarrierUAVS[0] = FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[0], ERHIAccess::Unknown, ERHIAccess::ERWBarrier);
-			PrePhase2BarrierUAVS[1] = FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[1], ERHIAccess::Unknown, ERHIAccess::ERWBarrier);
-			RHICmdList.Transition(MakeArrayView(PrePhase2BarrierUAVS, 2));
+			RHICmdList.Transition({
+				FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[0], ERHIAccess::UAVCompute, ERHIAccess::SRVCompute),
+				FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[1], ERHIAccess::Unknown, ERHIAccess::UAVCompute)
+			});
 
 			if (bDebugOffsets)
 			{
@@ -785,13 +790,11 @@ int32 SortGPUBuffers(FRHICommandListImmediate& RHICmdList, FGPUSortBuffers SortB
 				GSortOffsetBuffers.DumpOffsets(1);
 			}
 
-			//UAV is going to SRV, so transition to Readable.
-			RHICmdList.Transition(FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[1], ERHIAccess::Unknown, ERHIAccess::SRVCompute));
-
-			FRHITransitionInfo PrePhase3BarrierUAVS[2];
-			PrePhase3BarrierUAVS[0] = FRHITransitionInfo(SortBuffers.RemoteKeyUAVs[BufferIndex ^ 0x1], ERHIAccess::Unknown, ERHIAccess::ERWBarrier);
-			PrePhase3BarrierUAVS[1] = FRHITransitionInfo(SortBuffers.RemoteValueUAVs[BufferIndex ^ 0x1], ERHIAccess::Unknown, ERHIAccess::ERWBarrier);
-			RHICmdList.Transition(MakeArrayView(PrePhase3BarrierUAVS, 2));
+			RHICmdList.Transition({
+				FRHITransitionInfo(GSortOffsetBuffers.BufferUAVs[1], ERHIAccess::UAVCompute, ERHIAccess::SRVCompute),
+				FRHITransitionInfo(SortBuffers.RemoteKeyUAVs[BufferIndex ^ 0x1], ERHIAccess::Unknown, ERHIAccess::UAVCompute),
+				FRHITransitionInfo(SortBuffers.RemoteValueUAVs[BufferIndex ^ 0x1], ERHIAccess::Unknown, ERHIAccess::UAVCompute)
+			});
 
 			const bool bIsLastPass = ((PassBits << RADIX_BITS) & KeyMask) == 0;
 			// Phase 3: Downsweep to compute final offsets and scatter keys.
@@ -802,7 +805,7 @@ int32 SortGPUBuffers(FRHICommandListImmediate& RHICmdList, FGPUSortBuffers SortB
 				{
 					ValuesUAV = SortBuffers.FinalValuesUAV;
 					// Transition resource since FinalValuesUAV can also be SortBuffers.FirstValuesSRV.
-					RHICmdList.Transition(FRHITransitionInfo(ValuesUAV, ERHIAccess::Unknown, ERHIAccess::ERWBarrier));
+					RHICmdList.Transition(FRHITransitionInfo(ValuesUAV, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 				}
 				else
 				{
@@ -817,7 +820,11 @@ int32 SortGPUBuffers(FRHICommandListImmediate& RHICmdList, FGPUSortBuffers SortB
 			DispatchComputeShader(RHICmdList, DownsweepCS.GetShader(), GroupCount, 1, 1 );
 			DownsweepCS->UnbindBuffers(RHICmdList);
 
-			RHICmdList.Transition(MakeArrayView(PrePhase3BarrierUAVS, 2));
+
+			RHICmdList.Transition({
+				FRHITransitionInfo(SortBuffers.RemoteKeyUAVs[BufferIndex ^ 0x1], ERHIAccess::UAVCompute, ERHIAccess::SRVCompute),
+				FRHITransitionInfo(SortBuffers.RemoteValueUAVs[BufferIndex ^ 0x1], ERHIAccess::UAVCompute, ERHIAccess::SRVCompute)
+			});
 
 			// Flip buffers.
 			BufferIndex ^= 0x1;
@@ -861,7 +868,7 @@ static bool RunGPUSortTest(FRHICommandListImmediate& RHICmdList, int32 TestSize,
 	TArray<uint32> RefSortedKeys;
 	TArray<uint32> SortedKeys;
 	TArray<uint32> SortedValues;
-	FVertexBufferRHIRef KeysBufferRHI[2], ValuesBufferRHI[2];
+	FBufferRHIRef KeysBufferRHI[2], ValuesBufferRHI[2];
 	FShaderResourceViewRHIRef KeysBufferSRV[2], ValuesBufferSRV[2];
 	FUnorderedAccessViewRHIRef KeysBufferUAV[2], ValuesBufferUAV[2];
 	int32 ResultBufferIndex;
@@ -890,10 +897,11 @@ static bool RunGPUSortTest(FRHICommandListImmediate& RHICmdList, int32 TestSize,
 	// Allocate GPU resources.
 	for (int32 BufferIndex = 0; BufferIndex < 2; ++BufferIndex)
 	{
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("KeysBuffer"));
 		KeysBufferRHI[BufferIndex] = RHICreateVertexBuffer(BufferSize, BUF_Static | BUF_ShaderResource | BUF_UnorderedAccess, CreateInfo);
 		KeysBufferSRV[BufferIndex] = RHICmdList.CreateShaderResourceView(KeysBufferRHI[BufferIndex], /*Stride=*/ sizeof(uint32), PF_R32_UINT);
 		KeysBufferUAV[BufferIndex] = RHICmdList.CreateUnorderedAccessView(KeysBufferRHI[BufferIndex], PF_R32_UINT);
+		CreateInfo.DebugName = TEXT("ValuesBuffer");
 		ValuesBufferRHI[BufferIndex] = RHICreateVertexBuffer(BufferSize, BUF_Static | BUF_ShaderResource | BUF_UnorderedAccess, CreateInfo);
 		ValuesBufferSRV[BufferIndex] = RHICmdList.CreateShaderResourceView(ValuesBufferRHI[BufferIndex], /*Stride=*/ sizeof(uint32), PF_R32_UINT);
 		ValuesBufferUAV[BufferIndex] = RHICmdList.CreateUnorderedAccessView(ValuesBufferRHI[BufferIndex], PF_R32_UINT);
@@ -903,12 +911,12 @@ static bool RunGPUSortTest(FRHICommandListImmediate& RHICmdList, int32 TestSize,
 	{
 		uint32* Buffer;
 
-		Buffer = (uint32*)RHICmdList.LockVertexBuffer(KeysBufferRHI[0], /*Offset=*/ 0, BufferSize, RLM_WriteOnly);
+		Buffer = (uint32*)RHICmdList.LockBuffer(KeysBufferRHI[0], /*Offset=*/ 0, BufferSize, RLM_WriteOnly);
 		FMemory::Memcpy(Buffer, Keys.GetData(), BufferSize);
-		RHICmdList.UnlockVertexBuffer(KeysBufferRHI[0]);
-		Buffer = (uint32*)RHICmdList.LockVertexBuffer(ValuesBufferRHI[0], /*Offset=*/ 0, BufferSize, RLM_WriteOnly);
+		RHICmdList.UnlockBuffer(KeysBufferRHI[0]);
+		Buffer = (uint32*)RHICmdList.LockBuffer(ValuesBufferRHI[0], /*Offset=*/ 0, BufferSize, RLM_WriteOnly);
 		FMemory::Memcpy(Buffer, Keys.GetData(), BufferSize);
-		RHICmdList.UnlockVertexBuffer(ValuesBufferRHI[0]);
+		RHICmdList.UnlockBuffer(ValuesBufferRHI[0]);
 	}
 
 	// Execute the GPU sort.
@@ -930,12 +938,12 @@ static bool RunGPUSortTest(FRHICommandListImmediate& RHICmdList, int32 TestSize,
 		SortedValues.Reserve(TestSize);
 		SortedValues.AddUninitialized(TestSize);
 
-		Buffer = (uint32*)RHICmdList.LockVertexBuffer(KeysBufferRHI[ResultBufferIndex], /*Offset=*/ 0, BufferSize, RLM_ReadOnly);
+		Buffer = (uint32*)RHICmdList.LockBuffer(KeysBufferRHI[ResultBufferIndex], /*Offset=*/ 0, BufferSize, RLM_ReadOnly);
 		FMemory::Memcpy(SortedKeys.GetData(), Buffer, BufferSize);
-		RHICmdList.UnlockVertexBuffer(KeysBufferRHI[ResultBufferIndex]);
-		Buffer = (uint32*)RHICmdList.LockVertexBuffer(ValuesBufferRHI[ResultBufferIndex], /*Offset=*/ 0, BufferSize, RLM_ReadOnly);
+		RHICmdList.UnlockBuffer(KeysBufferRHI[ResultBufferIndex]);
+		Buffer = (uint32*)RHICmdList.LockBuffer(ValuesBufferRHI[ResultBufferIndex], /*Offset=*/ 0, BufferSize, RLM_ReadOnly);
 		FMemory::Memcpy(SortedValues.GetData(), Buffer, BufferSize);
-		RHICmdList.UnlockVertexBuffer(ValuesBufferRHI[ResultBufferIndex]);
+		RHICmdList.UnlockBuffer(ValuesBufferRHI[ResultBufferIndex]);
 	}
 
 	// Verify results.

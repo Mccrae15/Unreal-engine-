@@ -31,20 +31,20 @@ public:
 	TArray<struct FEditorParameterGroup> ParameterGroups;
 
 	UPROPERTY()
-	class UMaterial* PreviewMaterial;
+	TObjectPtr<class UMaterial> PreviewMaterial;
 
 	UPROPERTY()
-	class UMaterialFunction* OriginalFunction;
+	TObjectPtr<class UMaterialFunction> OriginalFunction;
 
 	UPROPERTY()
-	class UMaterial* OriginalMaterial;
+	TObjectPtr<class UMaterial> OriginalMaterial;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	TArray<class UMaterialInstanceConstant*> StoredLayerPreviews;
+	TArray<TObjectPtr<class UMaterialInstanceConstant>> StoredLayerPreviews;
 
 	UPROPERTY()
-	TArray<class UMaterialInstanceConstant*> StoredBlendPreviews;
+	TArray<TObjectPtr<class UMaterialInstanceConstant>> StoredBlendPreviews;
 #endif
 
 	//~ Begin UObject Interface.
@@ -66,12 +66,10 @@ protected:
 	/**
 	*  Creates/adds value to group retrieved from parent material .
 	*
-	* @param ParentMaterial		Name of material to search for groups.
 	* @param ParameterValue		Current data to be grouped
-	* @param OptionalGroupName	Optional Group Name that be used directly instead of resolving it from the material
-
+	* @param GroupName			Name of the group
 	*/
-	void AssignParameterToGroup(UMaterial* ParentMaterial, UDEditorParameterValue* ParameterValue, FName* OptionalGroupName = nullptr);
+	void AssignParameterToGroup(UDEditorParameterValue* ParameterValue, const FName& GroupName);
 
 	static FName GlobalGroupPrefix;
 };

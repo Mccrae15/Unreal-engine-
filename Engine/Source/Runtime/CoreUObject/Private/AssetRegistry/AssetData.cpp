@@ -1,7 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "AssetRegistry/AssetData.h"
+
+#include "Algo/Sort.h"
 #include "AssetRegistry/ARFilter.h"
+#include "Containers/Set.h"
+#include "HAL/CriticalSection.h"
+#include "Misc/ScopeRWLock.h"
 #include "Serialization/CustomVersion.h"
 #include "String/Find.h"
 #include "UObject/PropertyPortFlags.h"
@@ -21,8 +26,8 @@ const FName GAssetBundleDataName("AssetBundleData");
 
 static TSharedPtr<FAssetBundleData, ESPMode::ThreadSafe> ParseAssetBundles(const TCHAR* Text, const FAssetData& Context)
 {
-	// Register that we're reading string assets for a specific package
-	FSoftObjectPathSerializationScope SerializationScope(Context.PackageName, GAssetBundleDataName, ESoftObjectPathCollectType::NeverCollect, ESoftObjectPathSerializeType::AlwaysSerialize);
+	// Register that the SoftObjectPaths we read in the FAssetBundleEntry::BundleAssets are non-package data and don't need to be tracked
+	FSoftObjectPathSerializationScope SerializationScope(NAME_None, NAME_None, ESoftObjectPathCollectType::NonPackage, ESoftObjectPathSerializeType::AlwaysSerialize);
 
 	FAssetBundleData Temp;
 	if (!Temp.ImportTextItem(Text, PPF_None, nullptr, (FOutputDevice*)GWarn))
@@ -55,8 +60,7 @@ FAssetData::FAssetData(FName InPackageName, FName InPackagePath, FName InAssetNa
 {
 	SetTagsAndAssetBundles(MoveTemp(InTags));
 
-	TStringBuilder<FName::StringBufferSize> ObjectPathStr;
-	PackageName.AppendString(ObjectPathStr);
+	FNameBuilder ObjectPathStr(PackageName);
 	ObjectPathStr << TEXT('.');
 	AssetName.AppendString(ObjectPathStr);
 	ObjectPath = FName(FStringView(ObjectPathStr));
@@ -81,29 +85,35 @@ FAssetData::FAssetData(const FString& InLongPackageName, const FString& InObject
 	AssetName = FName(*InObjectPath.Mid(CharPos + 1));
 }
 
-FAssetData::FAssetData(const UObject* InAsset, bool bAllowBlueprintClass)
+FAssetData::FAssetData(const UObject* InAsset, FAssetData::ECreationFlags InCreationFlags)
 {
 	if (InAsset != nullptr)
 	{
+#if WITH_EDITORONLY_DATA
+		// ClassGeneratedBy TODO: This may be wrong in cooked builds
 		const UClass* InClass = Cast<UClass>(InAsset);
-		if (InClass && InClass->ClassGeneratedBy && !bAllowBlueprintClass)
+		if (InClass && InClass->ClassGeneratedBy && !EnumHasAnyFlags(InCreationFlags, FAssetData::ECreationFlags::AllowBlueprintClass))
 		{
 			// For Blueprints, the AssetData refers to the UBlueprint and not the UBlueprintGeneratedClass
 			InAsset = InClass->ClassGeneratedBy;
 		}
+#endif
 
-		const UPackage* Outermost = InAsset->GetOutermost();
+		const UPackage* Package = InAsset->GetPackage();
 
-		PackageName = Outermost->GetFName();
-		PackagePath = FName(*FPackageName::GetLongPackagePath(Outermost->GetName()));
+		PackageName = Package->GetFName();
+		PackagePath = FName(*FPackageName::GetLongPackagePath(Package->GetName()));
 		AssetName = InAsset->GetFName();
 		AssetClass = InAsset->GetClass()->GetFName();
 		ObjectPath = FName(*InAsset->GetPathName());
 
-		InAsset->GetAssetRegistryTags(*this);
+		if (!EnumHasAnyFlags(InCreationFlags, FAssetData::ECreationFlags::SkipAssetRegistryTagsGathering))
+		{
+			InAsset->GetAssetRegistryTags(*this);
+		}
 
-		ChunkIDs = Outermost->GetChunkIDs();
-		PackageFlags = Outermost->GetPackageFlags();
+		ChunkIDs = Package->GetChunkIDs();
+		PackageFlags = Package->GetPackageFlags();
 	}
 }
 
@@ -123,6 +133,27 @@ bool FAssetData::IsUAsset(UObject* InAsset)
 	Package->GetFName().AppendString(PackageNameStrBuilder);
 
 	return DetectIsUAssetByNames(PackageNameStrBuilder, AssetNameStrBuilder);
+}
+
+bool FAssetData::IsTopLevelAsset() const
+{
+	int32 SubObjectIndex;
+	FStringView(WriteToString<256>(ObjectPath)).FindChar(SUBOBJECT_DELIMITER_CHAR, SubObjectIndex);
+	return SubObjectIndex == INDEX_NONE;
+}
+
+bool FAssetData::IsTopLevelAsset(UObject* Object)
+{
+	if (!Object)
+	{
+		return false;
+	}
+	UObject* Outer = Object->GetOuter();
+	if (!Outer)
+	{
+		return false;
+	}
+	return Outer->IsA<UPackage>();
 }
 
 void FAssetData::SetTagsAndAssetBundles(FAssetDataTagMap&& Tags)
@@ -190,4 +221,108 @@ bool FAssetRegistryVersion::SerializeVersion(FArchive& Ar, FAssetRegistryVersion
 	}
 
 	return !Ar.IsError();
+}
+
+namespace UE
+{
+namespace AssetRegistry
+{
+
+uint32 GetTypeHash(const TArray<FPackageCustomVersion>& Versions)
+{
+	constexpr uint32 HashPrime = 23;
+	uint32 Hash = 0;
+	for (const FPackageCustomVersion& Version : Versions)
+	{
+		Hash = Hash * HashPrime + GetTypeHash(Version.Key);
+		Hash = Hash * HashPrime + Version.Version;
+	}
+	return Hash;
+}
+
+class FPackageCustomVersionRegistry
+{
+public:
+	FPackageCustomVersionsHandle FindOrAdd(TArray<FPackageCustomVersion>&& InVersions)
+	{
+		FPackageCustomVersionsHandle Result;
+		Algo::Sort(InVersions);
+		uint32 Hash = GetTypeHash(InVersions);
+		{
+			FReadScopeLock ScopeLock(Lock);
+			TArray<FPackageCustomVersion>* Existing = RegisteredValues.FindByHash(Hash, InVersions);
+			if (Existing)
+			{
+				// We return a TArrayView with a pointer to the allocation managed by the element in the Set
+				// The element in the set may be destroyed and a moved copy recreated when the set changes size,
+				// but since TSet uses move constructors during the resize, the allocation will be unchanged,
+				// so we can safely refer to it from external handles.
+				Result.Ptr = TConstArrayView<FPackageCustomVersion>(*Existing);
+				return Result;
+			}
+		}
+		{
+			FWriteScopeLock ScopeLock(Lock);
+			TArray<FPackageCustomVersion>& Existing = RegisteredValues.FindOrAddByHash(Hash, MoveTemp(InVersions));
+			Result.Ptr = TConstArrayView<FPackageCustomVersion>(Existing);
+			return Result;
+		}
+	}
+
+private:
+	TSet<TArray<FPackageCustomVersion>> RegisteredValues;
+	FRWLock Lock;
+} GFPackageCustomVersionRegistry;
+
+FPackageCustomVersionsHandle FPackageCustomVersionsHandle::FindOrAdd(TConstArrayView<FCustomVersion> InVersions)
+{
+	TArray<FPackageCustomVersion> PackageFormat;
+	PackageFormat.Reserve(InVersions.Num());
+	for (const FCustomVersion& Version : InVersions)
+	{
+		PackageFormat.Emplace(Version.Key, Version.Version);
+	}
+	return GFPackageCustomVersionRegistry.FindOrAdd(MoveTemp(PackageFormat));
+}
+
+FPackageCustomVersionsHandle FPackageCustomVersionsHandle::FindOrAdd(TConstArrayView<FPackageCustomVersion> InVersions)
+{
+	return GFPackageCustomVersionRegistry.FindOrAdd(TArray<FPackageCustomVersion>(InVersions));
+}
+
+FPackageCustomVersionsHandle FPackageCustomVersionsHandle::FindOrAdd(TArray<FPackageCustomVersion>&& InVersions)
+{
+	return GFPackageCustomVersionRegistry.FindOrAdd(MoveTemp(InVersions));
+}
+
+FArchive& operator<<(FArchive& Ar, UE::AssetRegistry::FPackageCustomVersionsHandle& Handle)
+{
+	using namespace UE::AssetRegistry;
+
+	if (Ar.IsLoading())
+	{
+		int32 NumCustomVersions;
+		Ar << NumCustomVersions;
+		TArray<UE::AssetRegistry::FPackageCustomVersion> CustomVersions;
+		CustomVersions.SetNum(NumCustomVersions);
+		for (UE::AssetRegistry::FPackageCustomVersion& CustomVersion : CustomVersions)
+		{
+			Ar << CustomVersion;
+		}
+		Handle = FPackageCustomVersionsHandle::FindOrAdd(MoveTemp(CustomVersions));
+	}
+	else
+	{
+		TConstArrayView<UE::AssetRegistry::FPackageCustomVersion> CustomVersions = Handle.Get();
+		int32 NumCustomVersions = CustomVersions.Num();
+		Ar << NumCustomVersions;
+		for (UE::AssetRegistry::FPackageCustomVersion CustomVersion : CustomVersions)
+		{
+			Ar << CustomVersion;
+		}
+	}
+	return Ar;
+}
+
+}
 }

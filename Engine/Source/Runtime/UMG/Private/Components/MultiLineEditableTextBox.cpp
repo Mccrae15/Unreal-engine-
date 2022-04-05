@@ -5,6 +5,7 @@
 #include "Engine/Font.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Styling/UMGCoreStyle.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -13,6 +14,11 @@
 
 static FEditableTextBoxStyle* DefaultMultiLineEditableTextBoxStyle = nullptr;
 static FTextBlockStyle* DefaultMultiLineEditableTextBoxTextStyle = nullptr;
+
+#if WITH_EDITOR
+static FEditableTextBoxStyle* EditorMultiLineEditableTextBoxStyle = nullptr;
+static FTextBlockStyle* EditorMultiLineEditableTextBoxTextStyle = nullptr;
+#endif 
 
 UMultiLineEditableTextBox::UMultiLineEditableTextBox(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -23,24 +29,49 @@ UMultiLineEditableTextBox::UMultiLineEditableTextBox(const FObjectInitializer& O
 
 	if (DefaultMultiLineEditableTextBoxStyle == nullptr)
 	{
-		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
-		DefaultMultiLineEditableTextBoxStyle = new FEditableTextBoxStyle(FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox"));
+		DefaultMultiLineEditableTextBoxStyle = new FEditableTextBoxStyle(FUMGCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox"));
 
-		// Unlink UMG default colors from the editor settings colors.
+		// Unlink UMG default colors.
 		DefaultMultiLineEditableTextBoxStyle->UnlinkColors();
 	}
 
 	if (DefaultMultiLineEditableTextBoxTextStyle == nullptr)
 	{
-		// HACK: THIS SHOULD NOT COME FROM CORESTYLE AND SHOULD INSTEAD BE DEFINED BY ENGINE TEXTURES/PROJECT SETTINGS
-		DefaultMultiLineEditableTextBoxTextStyle = new FTextBlockStyle(FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"));
+		DefaultMultiLineEditableTextBoxTextStyle = new FTextBlockStyle(FUMGCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"));
 
-		// Unlink UMG default colors from the editor settings colors.
+		// Unlink UMG default colors.
 		DefaultMultiLineEditableTextBoxTextStyle->UnlinkColors();
 	}
 	
 	WidgetStyle = *DefaultMultiLineEditableTextBoxStyle;
 	TextStyle = *DefaultMultiLineEditableTextBoxTextStyle;
+
+#if WITH_EDITOR 
+	if (EditorMultiLineEditableTextBoxStyle == nullptr)
+	{
+		EditorMultiLineEditableTextBoxStyle = new FEditableTextBoxStyle(FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox"));
+
+		// Unlink UMG Editor colors from the editor settings colors.
+		EditorMultiLineEditableTextBoxStyle->UnlinkColors();
+	}
+
+	if (EditorMultiLineEditableTextBoxTextStyle == nullptr)
+	{
+		EditorMultiLineEditableTextBoxTextStyle = new FTextBlockStyle(FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>("NormalText"));
+
+		// Unlink UMG Editor colors from the editor settings colors.
+		EditorMultiLineEditableTextBoxTextStyle->UnlinkColors();
+	}
+	
+	if (IsEditorWidget())
+	{
+		WidgetStyle = *EditorMultiLineEditableTextBoxStyle;
+		TextStyle = *EditorMultiLineEditableTextBoxTextStyle;
+
+		// The CDO isn't an editor widget and thus won't use the editor style, call post edit change to mark difference from CDO
+		PostEditChange();
+	}
+#endif // WITH_EDITOR
 
 	bIsReadOnly = false;
 	AllowContextMenu = true;
@@ -51,11 +82,6 @@ UMultiLineEditableTextBox::UMultiLineEditableTextBox(const FObjectInitializer& O
 	{
 		static ConstructorHelpers::FObjectFinder<UFont> RobotoFontObj(*UWidget::GetDefaultFontName());
 		Font_DEPRECATED = FSlateFontInfo(RobotoFontObj.Object, 12, FName("Bold"));
-
-		WidgetStyle.SetFont(Font_DEPRECATED);
-		WidgetStyle.SetForegroundColor(ForegroundColor_DEPRECATED);
-		WidgetStyle.SetBackgroundColor(BackgroundColor_DEPRECATED);
-		WidgetStyle.SetReadOnlyForegroundColor(ReadOnlyForegroundColor_DEPRECATED);
 	}
 }
 
@@ -188,6 +214,14 @@ void UMultiLineEditableTextBox::SetTextStyle(const FTextBlockStyle& InTextStyle)
 	}
 }
 
+void UMultiLineEditableTextBox::SetForegroundColor(FLinearColor color)
+{
+	if(MyEditableTextBlock.IsValid())
+	{
+		MyEditableTextBlock->SetForegroundColor(color);
+	}
+}
+
 void UMultiLineEditableTextBox::HandleOnTextChanged(const FText& InText)
 {
 	OnTextChanged.Broadcast(InText);
@@ -202,7 +236,7 @@ void UMultiLineEditableTextBox::PostLoad()
 {
 	Super::PostLoad();
 
-	if ( GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
+	if ( GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_ASSETS )
 	{
 		if ( Style_DEPRECATED != nullptr )
 		{
@@ -216,7 +250,7 @@ void UMultiLineEditableTextBox::PostLoad()
 		}
 	}
 
-	if (GetLinkerUE4Version() < VER_UE4_DEPRECATE_UMG_STYLE_OVERRIDES)
+	if (GetLinkerUEVersion() < VER_UE4_DEPRECATE_UMG_STYLE_OVERRIDES)
 	{
 		if (Font_DEPRECATED.HasValidFont())
 		{

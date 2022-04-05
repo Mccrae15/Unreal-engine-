@@ -15,7 +15,6 @@
 #include "Toolkits/AssetEditorToolkit.h"
 #include "HairStrandsEditor.h"
 #include "GroomEditorCommands.h"
-#include "GroomEditorMode.h"
 #include "GroomEditorStyle.h"
 #include "GroomAssetDetails.h"
 #include "GroomMaterialDetails.h"
@@ -107,14 +106,6 @@ void FGroomCustomAssetEditorToolkit::UnregisterTabSpawners(const TSharedRef<clas
 	InTabManager->UnregisterTabSpawner(TabId_PreviewGroomComponent);
 #endif
 }
-
-FEdMode* FGroomCustomAssetEditorToolkit::GetEditorMode() const 
-{
-	static FGroomEditorMode *Mode = new FGroomEditorMode;
-	return Mode;
-}
-
-static uint32 GOpenedGroomEditorCount = 0;
 
 void FGroomCustomAssetEditorToolkit::DocPropChanged(UObject *InObject, FPropertyChangedEvent &Property)
 {
@@ -238,6 +229,7 @@ void FGroomCustomAssetEditorToolkit::InitPreviewComponents()
 	PreviewGroomComponent = NewObject<UGroomComponent>(GetTransientPackage(), NAME_None, RF_Transient);
 	PreviewGroomComponent->CastShadow = 1;
 	PreviewGroomComponent->bCastDynamicShadow = 1;
+	PreviewGroomComponent->SetPreviewMode(true);
 	PreviewGroomComponent->SetGroomAsset(GroomAsset.Get());
 	PreviewGroomComponent->Activate(true);
 	
@@ -294,10 +286,6 @@ void FGroomCustomAssetEditorToolkit::OnClose()
 
 void FGroomCustomAssetEditorToolkit::InitCustomAssetEditor(const EToolkitMode::Type Mode, const TSharedPtr<class IToolkitHost>& InitToolkitHost, UGroomAsset* InCustomAsset)
 {
-	const bool bIsUpdatable		= false;
-	const bool bAllowFavorites	= true;
-	const bool bIsLockable		= false;
-
 	PreviewGroomComponent		 = nullptr;
 	PreviewStaticMeshComponent	 = nullptr;
 	PreviewSkeletalMeshComponent = nullptr;
@@ -307,15 +295,18 @@ void FGroomCustomAssetEditorToolkit::InitCustomAssetEditor(const EToolkitMode::T
 	
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	DetailView_LODProperties			= PropertyEditorModule.CreateDetailView(FDetailsViewArgs(bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false));
-	DetailView_InterpolationProperties	= PropertyEditorModule.CreateDetailView(FDetailsViewArgs(bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false));
-	DetailView_RenderingProperties		= PropertyEditorModule.CreateDetailView(FDetailsViewArgs(bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false));
-	DetailView_PhysicsProperties		= PropertyEditorModule.CreateDetailView(FDetailsViewArgs(bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false));
-	DetailView_CardsProperties			= PropertyEditorModule.CreateDetailView(FDetailsViewArgs(bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false));
-	DetailView_MeshesProperties			= PropertyEditorModule.CreateDetailView(FDetailsViewArgs(bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false));
-	DetailView_MaterialProperties		= PropertyEditorModule.CreateDetailView(FDetailsViewArgs(bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false));
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+
+	DetailView_LODProperties			= PropertyEditorModule.CreateDetailView(DetailsViewArgs);
+	DetailView_InterpolationProperties	= PropertyEditorModule.CreateDetailView(DetailsViewArgs);
+	DetailView_RenderingProperties		= PropertyEditorModule.CreateDetailView(DetailsViewArgs);
+	DetailView_PhysicsProperties		= PropertyEditorModule.CreateDetailView(DetailsViewArgs);
+	DetailView_CardsProperties			= PropertyEditorModule.CreateDetailView(DetailsViewArgs);
+	DetailView_MeshesProperties			= PropertyEditorModule.CreateDetailView(DetailsViewArgs);
+	DetailView_MaterialProperties		= PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 #if GROOMEDITOR_ENABLE_COMPONENT_PANEL
-	DetailView_PreviewGroomComponent	= PropertyEditorModule.CreateDetailView(FDetailsViewArgs(bIsUpdatable, bIsLockable, true, FDetailsViewArgs::ObjectsUseNameArea, false));
+	DetailView_PreviewGroomComponent	= PropertyEditorModule.CreateDetailView(DetailsViewArgs);
 #endif
 
 	// Customization
@@ -331,18 +322,11 @@ void FGroomCustomAssetEditorToolkit::InitCustomAssetEditor(const EToolkitMode::T
 	ViewportTab = SNew(SGroomEditorViewport);
 	
 	// Default layout
-	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_GroomAssetEditor_Layout_v14")
+	const TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_GroomAssetEditor_Layout_v15a")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -393,7 +377,6 @@ void FGroomCustomAssetEditorToolkit::InitCustomAssetEditor(const EToolkitMode::T
 	FProperty* P5 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMeshes));
 	FProperty* P6 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsMaterials));
 	FProperty* P7 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, HairGroupsInfo));
-	FProperty* P8 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, LODSelectionType));
 	FProperty* P9 = FindFProperty<FProperty>(GroomAsset->GetClass(), GET_MEMBER_NAME_CHECKED(UGroomAsset, AssetUserData));
 
 	P7->SetMetaData(TEXT("Category"), TEXT("Hidden"));
@@ -405,7 +388,6 @@ void FGroomCustomAssetEditorToolkit::InitCustomAssetEditor(const EToolkitMode::T
 	P5->RemoveMetaData(TEXT("ShowOnlyInnerProperties"));
 	P6->RemoveMetaData(TEXT("ShowOnlyInnerProperties"));
 	P7->RemoveMetaData(TEXT("ShowOnlyInnerProperties"));
-	P8->RemoveMetaData(TEXT("ShowOnlyInnerProperties"));
 	P9->RemoveMetaData(TEXT("ShowOnlyInnerProperties"));
 
 	// Override the display name so that it show correct/readable name when the details view is displayed as grid view
@@ -540,24 +522,11 @@ FGroomCustomAssetEditorToolkit::FGroomCustomAssetEditorToolkit()
 	PreviewGroomComponent			= nullptr;	
 	PreviewStaticMeshComponent		= nullptr;
 	PreviewSkeletalMeshComponent	= nullptr;
-
-	// Set LOD debug mode to show current LOD index & screen size
-	if (GOpenedGroomEditorCount == 0)
-	{
-		SetHairScreenLODInfo(true);
-	}
-	++GOpenedGroomEditorCount;
 }
 
 FGroomCustomAssetEditorToolkit::~FGroomCustomAssetEditorToolkit()
 {
-	// Disable LOD debug mode info
-	--GOpenedGroomEditorCount;
-	if (GOpenedGroomEditorCount == 0)
-	{
-		SetHairScreenLODInfo(false);
-	}
-	check(GOpenedGroomEditorCount >= 0);
+
 }
 
 FText FGroomCustomAssetEditorToolkit::GetToolkitName() const
@@ -605,7 +574,6 @@ TSharedRef<SDockTab> FGroomCustomAssetEditorToolkit::SpawnTab_CardsProperties(co
 	check(Args.GetTabId() == TabId_CardsProperties);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Properties"))
 		.Label(LOCTEXT("CardsPropertiesTab", "Cards"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -618,7 +586,6 @@ TSharedRef<SDockTab> FGroomCustomAssetEditorToolkit::SpawnTab_MeshesProperties(c
 	check(Args.GetTabId() == TabId_MeshesProperties);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Properties"))
 		.Label(LOCTEXT("MeshesPropertiesTab", "Meshes"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -631,7 +598,6 @@ TSharedRef<SDockTab> FGroomCustomAssetEditorToolkit::SpawnTab_MaterialProperties
 	check(Args.GetTabId() == TabId_MaterialProperties);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Properties"))
 		.Label(LOCTEXT("MaterialPropertiesTab", "Material"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -644,7 +610,6 @@ TSharedRef<SDockTab> FGroomCustomAssetEditorToolkit::SpawnTab_PhysicsProperties(
 	check(Args.GetTabId() == TabId_PhysicsProperties);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Properties"))
 		.Label(LOCTEXT("PhysicsPropertiesTab", "Physics"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -657,7 +622,6 @@ TSharedRef<SDockTab> FGroomCustomAssetEditorToolkit::SpawnTab_RenderingPropertie
 	check(Args.GetTabId() == TabId_RenderingProperties);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Properties"))
 		.Label(LOCTEXT("RenderingPropertiesTab", "Strands"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -670,7 +634,6 @@ TSharedRef<SDockTab>  FGroomCustomAssetEditorToolkit::SpawnTab_InterpolationProp
 	check(Args.GetTabId() == TabId_InterpolationProperties);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Properties"))
 		.Label(LOCTEXT("InterpolationPropertiesTab", "Interpolation"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -683,7 +646,6 @@ TSharedRef<SDockTab>  FGroomCustomAssetEditorToolkit::SpawnTab_LODProperties(con
 	check(Args.GetTabId() == TabId_LODProperties);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Properties"))
 		.Label(LOCTEXT("LODPropertiesTab", "LOD"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -696,7 +658,6 @@ TSharedRef<SDockTab> FGroomCustomAssetEditorToolkit::SpawnTab_PreviewGroomCompon
 	check(Args.GetTabId() == TabId_PreviewGroomComponent);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Properties"))
 		.Label(LOCTEXT("GroomComponentTab", "Component"))
 		.TabColorScale(GetTabColorScale())
 		[
@@ -731,7 +692,6 @@ TSharedRef<SDockTab> FGroomCustomAssetEditorToolkit::SpawnViewportTab(const FSpa
 	ViewportTab->SetSkeletalMeshComponent(GetPreview_SkeletalMeshComponent());
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("GenericEditor.Tabs.Render"))
 		.Label(LOCTEXT("RenderTitle", "Render"))
 		.TabColorScale(GetTabColorScale())
 		[

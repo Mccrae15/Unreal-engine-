@@ -5,7 +5,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -29,7 +30,7 @@ namespace UnrealBuildTool
 		{
 			string DeployFolder = string.Format("{0}-{1}-{2}",
 				ShortProjectName,
-				UnrealBuildTool.RootDirectory.GetDirectoryName(),
+				Unreal.RootDirectory.GetDirectoryName(),
 				Environment.UserName);
 
 			DeployFolder = DeployFolder.Replace(" ", "");

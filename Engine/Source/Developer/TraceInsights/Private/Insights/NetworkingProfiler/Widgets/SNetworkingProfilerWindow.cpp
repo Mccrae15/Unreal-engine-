@@ -2,17 +2,17 @@
 
 #include "SNetworkingProfilerWindow.h"
 
-#include "EditorStyleSet.h"
 #include "Framework/Commands/UICommandList.h"
+#include "Framework/Docking/LayoutService.h"
+#include "Framework/Docking/TabManager.h"
 #include "Framework/Docking/WorkspaceItem.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "SlateOptMacros.h"
+#include "Styling/AppStyle.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
-#include "Widgets/Layout/SSpacer.h"
-#include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -31,6 +31,7 @@
 #include "Insights/NetworkingProfiler/Widgets/SNetworkingProfilerToolbar.h"
 #include "Insights/NetworkingProfiler/Widgets/SPacketContentView.h"
 #include "Insights/NetworkingProfiler/Widgets/SPacketView.h"
+#include "Insights/TraceInsightsModule.h"
 #include "Insights/Version.h"
 #include "Insights/Widgets/SInsightsSettings.h"
 
@@ -40,7 +41,6 @@
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const FName FNetworkingProfilerTabs::ToolbarID(TEXT("Toolbar"));
 const FName FNetworkingProfilerTabs::PacketViewID(TEXT("PacketView"));
 const FName FNetworkingProfilerTabs::PacketContentViewID(TEXT("PacketContent"));
 const FName FNetworkingProfilerTabs::NetStatsViewID(TEXT("NetStats"));
@@ -48,12 +48,11 @@ const FName FNetworkingProfilerTabs::NetStatsViewID(TEXT("NetStats"));
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 SNetworkingProfilerWindow::SNetworkingProfilerWindow()
-	: AvailableGameInstances()
-	, SelectedGameInstance(nullptr)
-	, AvailableConnections()
-	, SelectedConnection(nullptr)
-	, AvailableConnectionModes()
-	, SelectedConnectionMode(nullptr)
+	: SelectedPacketStartIndex(0)
+	, SelectedPacketEndIndex(0)
+	, SelectionStartPosition(0)
+	, SelectionEndPosition(0)
+	, SelectedEventTypeIndex(InvalidEventTypeIndex)
 	, DurationActive(0.0f)
 {
 }
@@ -79,8 +78,6 @@ SNetworkingProfilerWindow::~SNetworkingProfilerWindow()
 		HideTab(FNetworkingProfilerTabs::PacketViewID);
 		check(PacketView == nullptr);
 	}
-
-	HideTab(FNetworkingProfilerTabs::ToolbarID);
 
 #if WITH_EDITOR
 	if (DurationActive > 0.0f && FEngineAnalytics::IsAvailable())
@@ -120,34 +117,13 @@ void SNetworkingProfilerWindow::Reset()
 	SelectedPacketEndIndex = 0;
 	SelectionStartPosition = 0;
 	SelectionEndPosition = 0;
+
+	SelectedEventTypeIndex = InvalidEventTypeIndex;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
 BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-TSharedRef<SDockTab> SNetworkingProfilerWindow::SpawnTab_Toolbar(const FSpawnTabArgs& Args)
-{
-	const TSharedRef<SDockTab> DockTab = SNew(SDockTab)
-		.ShouldAutosize(true)
-		.TabRole(ETabRole::PanelTab)
-		[
-			SNew(SNetworkingProfilerToolbar, SharedThis(this))
-		];
-
-	DockTab->SetOnTabClosed(SDockTab::FOnTabClosedCallback::CreateRaw(this, &SNetworkingProfilerWindow::OnToolbarTabClosed));
-
-	return DockTab;
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-void SNetworkingProfilerWindow::OnToolbarTabClosed(TSharedRef<SDockTab> TabBeingClosed)
-{
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 TSharedRef<SDockTab> SNetworkingProfilerWindow::SpawnTab_PacketView(const FSpawnTabArgs& Args)
 {
 	const TSharedRef<SDockTab> DockTab = SNew(SDockTab)
@@ -161,6 +137,7 @@ TSharedRef<SDockTab> SNetworkingProfilerWindow::SpawnTab_PacketView(const FSpawn
 
 	return DockTab;
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -171,6 +148,7 @@ void SNetworkingProfilerWindow::OnPacketViewTabClosed(TSharedRef<SDockTab> TabBe
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SDockTab> SNetworkingProfilerWindow::SpawnTab_PacketContentView(const FSpawnTabArgs& Args)
 {
 	const TSharedRef<SDockTab> DockTab = SNew(SDockTab)
@@ -184,6 +162,7 @@ TSharedRef<SDockTab> SNetworkingProfilerWindow::SpawnTab_PacketContentView(const
 
 	return DockTab;
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -194,6 +173,7 @@ void SNetworkingProfilerWindow::OnPacketContentViewTabClosed(TSharedRef<SDockTab
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 TSharedRef<SDockTab> SNetworkingProfilerWindow::SpawnTab_NetStatsView(const FSpawnTabArgs& Args)
 {
 	const TSharedRef<SDockTab> DockTab = SNew(SDockTab)
@@ -207,6 +187,7 @@ TSharedRef<SDockTab> SNetworkingProfilerWindow::SpawnTab_NetStatsView(const FSpa
 
 	return DockTab;
 }
+END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -217,87 +198,78 @@ void SNetworkingProfilerWindow::OnNetStatsViewTabClosed(TSharedRef<SDockTab> Tab
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+BEGIN_SLATE_FUNCTION_BUILD_OPTIMIZATION
 void SNetworkingProfilerWindow::Construct(const FArguments& InArgs, const TSharedRef<SDockTab>& ConstructUnderMajorTab, const TSharedPtr<SWindow>& ConstructUnderWindow)
 {
 	CommandList = MakeShared<FUICommandList>();
 
 	// Create & initialize tab manager.
 	TabManager = FGlobalTabmanager::Get()->NewTabManager(ConstructUnderMajorTab);
+	const auto& PersistLayout = [](const TSharedRef<FTabManager::FLayout>& LayoutToSave)
+	{
+		FLayoutSaveRestore::SaveToConfig(FTraceInsightsModule::GetUnrealInsightsLayoutIni(), LayoutToSave);
+	};
+	TabManager->SetOnPersistLayout(FTabManager::FOnPersistLayout::CreateLambda(PersistLayout));
+
 	TSharedRef<FWorkspaceItem> AppMenuGroup = TabManager->AddLocalWorkspaceMenuCategory(LOCTEXT("NetworkingProfilerMenuGroupName", "Networking Insights"));
 
-	TabManager->RegisterTabSpawner(FNetworkingProfilerTabs::ToolbarID, FOnSpawnTab::CreateRaw(this, &SNetworkingProfilerWindow::SpawnTab_Toolbar))
-		.SetDisplayName(LOCTEXT("DeviceToolbarTabTitle", "Toolbar"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Toolbar.Icon.Small"))
-		.SetGroup(AppMenuGroup);
-
 	TabManager->RegisterTabSpawner(FNetworkingProfilerTabs::PacketViewID, FOnSpawnTab::CreateRaw(this, &SNetworkingProfilerWindow::SpawnTab_PacketView))
-		.SetDisplayName(LOCTEXT("NetworkingProfiler.PacketViewTabTitle", "Packet View"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "PacketView.Icon.Small"))
+		.SetDisplayName(LOCTEXT("PacketViewTabTitle", "Packet View"))
+		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.PacketView"))
 		.SetGroup(AppMenuGroup);
 
 	TabManager->RegisterTabSpawner(FNetworkingProfilerTabs::PacketContentViewID, FOnSpawnTab::CreateRaw(this, &SNetworkingProfilerWindow::SpawnTab_PacketContentView))
-		.SetDisplayName(LOCTEXT("NetworkingProfiler.PacketContentViewTabTitle", "Packet Content"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "PacketContentView.Icon.Small"))
+		.SetDisplayName(LOCTEXT("PacketContentViewTabTitle", "Packet Content"))
+		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.PacketContentView"))
 		.SetGroup(AppMenuGroup);
 
 	TabManager->RegisterTabSpawner(FNetworkingProfilerTabs::NetStatsViewID, FOnSpawnTab::CreateRaw(this, &SNetworkingProfilerWindow::SpawnTab_NetStatsView))
-		.SetDisplayName(LOCTEXT("NetworkingProfiler.NetStatsViewTabTitle", "Net Stats"))
-		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "NetStatsView.Icon.Small"))
+		.SetDisplayName(LOCTEXT("NetStatsViewTabTitle", "Net Stats"))
+		.SetIcon(FSlateIcon(FInsightsStyle::GetStyleSetName(), "Icons.NetStatsView"))
 		.SetGroup(AppMenuGroup);
 
 	TSharedPtr<FNetworkingProfilerManager> NetworkingProfilerManager = FNetworkingProfilerManager::Get();
 	ensure(NetworkingProfilerManager.IsValid());
 
 	// Create tab layout.
-	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("InsightsNetworkingProfilerLayout_v1.0")
+	TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout("InsightsNetworkingProfilerLayout_v1.2")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
-			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->AddTab(FNetworkingProfilerTabs::ToolbarID, ETabState::OpenedTab)
-				->SetHideTabWell(true)
-			)
+			->SetOrientation(Orient_Horizontal)
 			->Split
 			(
 				FTabManager::NewSplitter()
-				->SetOrientation(Orient_Horizontal)
-				->SetSizeCoefficient(1.0f)
-				->Split
-				(
-					FTabManager::NewSplitter()
-					->SetOrientation(Orient_Vertical)
-					->SetSizeCoefficient(0.65f)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(0.35f)
-						->SetHideTabWell(true)
-						->AddTab(FNetworkingProfilerTabs::PacketViewID, ETabState::OpenedTab)
-					)
-					->Split
-					(
-						FTabManager::NewStack()
-						->SetSizeCoefficient(0.65f)
-						->SetHideTabWell(true)
-						->AddTab(FNetworkingProfilerTabs::PacketContentViewID, ETabState::OpenedTab)
-					)
-				)
+				->SetOrientation(Orient_Vertical)
+				->SetSizeCoefficient(0.65f)
 				->Split
 				(
 					FTabManager::NewStack()
 					->SetSizeCoefficient(0.35f)
-					->AddTab(FNetworkingProfilerTabs::NetStatsViewID, ETabState::OpenedTab)
-					//->SetForegroundTab(FNetworkingProfilerTabs::NetStatsViewID)
+					->SetHideTabWell(true)
+					->AddTab(FNetworkingProfilerTabs::PacketViewID, ETabState::OpenedTab)
 				)
+				->Split
+				(
+					FTabManager::NewStack()
+					->SetSizeCoefficient(0.65f)
+					->SetHideTabWell(true)
+					->AddTab(FNetworkingProfilerTabs::PacketContentViewID, ETabState::OpenedTab)
+				)
+			)
+			->Split
+			(
+				FTabManager::NewStack()
+				->SetSizeCoefficient(0.35f)
+				->AddTab(FNetworkingProfilerTabs::NetStatsViewID, ETabState::OpenedTab)
+				->SetForegroundTab(FNetworkingProfilerTabs::NetStatsViewID)
 			)
 		);
 
+	Layout = FLayoutSaveRestore::LoadFromConfig(FTraceInsightsModule::GetUnrealInsightsLayoutIni(), Layout);
+
 	// Create & initialize main menu.
 	FMenuBarBuilder MenuBarBuilder = FMenuBarBuilder(TSharedPtr<FUICommandList>());
-
 	MenuBarBuilder.AddPullDownMenu(
 		LOCTEXT("MenuLabel", "Menu"),
 		FText::GetEmpty(),
@@ -305,66 +277,84 @@ void SNetworkingProfilerWindow::Construct(const FArguments& InArgs, const TShare
 		FName(TEXT("Menu"))
 	);
 
+#if !WITH_EDITOR
+	TSharedRef<SWidget> MenuWidget = MenuBarBuilder.MakeWidget();
+	MenuWidget->SetClipping(EWidgetClipping::ClipToBoundsWithoutIntersecting);
+#endif
+
 	ChildSlot
+	[
+		SNew(SOverlay)
+
+#if !WITH_EDITOR
+		// Menu
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Left)
+		.VAlign(VAlign_Top)
+		.Padding(34.0f, -60.0f, 0.0f, 0.0f)
 		[
-			SNew(SOverlay)
+			MenuWidget
+		]
+#endif
 
-			// Version
-			+ SOverlay::Slot()
-				.HAlign(HAlign_Right)
-				.VAlign(VAlign_Top)
-				.Padding(0.0f, -16.0f, 0.0f, 0.0f)
-				[
-					SNew(STextBlock)
-						.Clipping(EWidgetClipping::ClipToBoundsWithoutIntersecting)
-						.Text(LOCTEXT("UnrealInsightsVersion", UNREAL_INSIGHTS_VERSION_STRING_EX))
-						.ColorAndOpacity(FLinearColor(0.15f, 0.15f, 0.15f, 1.0f))
-				]
+		// Version
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Right)
+		.VAlign(VAlign_Top)
+		.Padding(0.0f, -16.0f, 4.0f, 0.0f)
+		[
+			SNew(STextBlock)
+			.Clipping(EWidgetClipping::ClipToBoundsWithoutIntersecting)
+			.Text(LOCTEXT("UnrealInsightsVersion", UNREAL_INSIGHTS_VERSION_STRING_EX))
+			.ColorAndOpacity(FLinearColor(0.15f, 0.15f, 0.15f, 1.0f))
+		]
 
-			// Overlay slot for the main window area
-			+ SOverlay::Slot()
-				.HAlign(HAlign_Fill)
-				.VAlign(VAlign_Fill)
-				[
-					SNew(SVerticalBox)
+		// Overlay slot for the main window area
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Fill)
+		.VAlign(VAlign_Fill)
+		[
+			SNew(SVerticalBox)
 
-					+ SVerticalBox::Slot()
-						.AutoHeight()
-						[
-							MenuBarBuilder.MakeWidget()
-						]
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(FMargin(0.0f, 0.0f, 0.0f, 5.0f))
+			[
+				SNew(SNetworkingProfilerToolbar, SharedThis(this))
+			]
 
-					+ SVerticalBox::Slot()
-						.FillHeight(1.0f)
-						[
-							TabManager->RestoreFrom(Layout, ConstructUnderWindow).ToSharedRef()
-						]
-				]
+			+ SVerticalBox::Slot()
+			.FillHeight(1.0f)
+			[
+				TabManager->RestoreFrom(Layout, ConstructUnderWindow).ToSharedRef()
+			]
+		]
 
-			// Session hint overlay
-			+ SOverlay::Slot()
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
-				[
-					SNew(SBorder)
-						.Visibility(this, &SNetworkingProfilerWindow::IsSessionOverlayVisible)
-						.BorderImage(FEditorStyle::GetBrush("NotificationList.ItemBackground"))
-						.Padding(8.0f)
-						[
-							SNew(STextBlock)
-								.Text(LOCTEXT("SelectTraceOverlayText", "Please select a trace."))
-						]
-				]
-		];
+		// Session hint overlay
+		+ SOverlay::Slot()
+		.HAlign(HAlign_Center)
+		.VAlign(VAlign_Center)
+		[
+			SNew(SBorder)
+			.Visibility(this, &SNetworkingProfilerWindow::IsSessionOverlayVisible)
+			.BorderImage(FAppStyle::Get().GetBrush("PopupText.Background"))
+			.Padding(8.0f)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("SelectTraceOverlayText", "Please select a trace."))
+			]
+		]
+	];
 
+#if !WITH_EDITOR
 	// Tell tab-manager about the global menu bar.
-	TabManager->SetMenuMultiBox(MenuBarBuilder.GetMultiBox());
+	TabManager->SetMenuMultiBox(MenuBarBuilder.GetMultiBox(), MenuWidget);
+#endif
 
 	BindCommands();
 }
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void SNetworkingProfilerWindow::BindCommands()
@@ -487,14 +477,17 @@ EActiveTimerReturnType SNetworkingProfilerWindow::UpdateActiveDuration(double In
 
 void SNetworkingProfilerWindow::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
 {
-	TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 
 	uint32 GameInstanceCount = 0;
 	if (Session.IsValid())
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
-		const Trace::INetProfilerProvider& NetProfilerProvider = Trace::ReadNetProfilerProvider(*Session.Get());
-		GameInstanceCount = NetProfilerProvider.GetGameInstanceCount();
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+		const TraceServices::INetProfilerProvider* NetProfilerProvider = TraceServices::ReadNetProfilerProvider(*Session.Get());
+		if (NetProfilerProvider)
+		{
+			GameInstanceCount = NetProfilerProvider->GetGameInstanceCount();
+		}
 	}
 
 	if (GameInstanceCount != AvailableGameInstances.Num())
@@ -505,9 +498,12 @@ void SNetworkingProfilerWindow::Tick(const FGeometry& AllottedGeometry, const do
 	uint32 ConnectionCount = 0;
 	if (Session.IsValid() && SelectedGameInstance.IsValid())
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
-		const Trace::INetProfilerProvider& NetProfilerProvider = Trace::ReadNetProfilerProvider(*Session.Get());
-		ConnectionCount = NetProfilerProvider.GetConnectionCount(SelectedGameInstance->GetIndex());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+		const TraceServices::INetProfilerProvider* NetProfilerProvider = TraceServices::ReadNetProfilerProvider(*Session.Get());
+		if (NetProfilerProvider)
+		{
+			ConnectionCount = NetProfilerProvider->GetConnectionCount(SelectedGameInstance->GetIndex());
+		}
 	}
 
 	if (ConnectionCount != AvailableConnections.Num())
@@ -520,22 +516,45 @@ void SNetworkingProfilerWindow::Tick(const FGeometry& AllottedGeometry, const do
 
 void SNetworkingProfilerWindow::UpdateAvailableGameInstances()
 {
+	uint32 CurrentSelectedGameInstanceIndex = 0;
+	bool bIsInstanceSelected = false;
+	if (GameInstanceComboBox.IsValid())
+	{
+		TSharedPtr<FGameInstanceItem> CurrentSelectedGameInstance = GameInstanceComboBox->GetSelectedItem();
+		if (CurrentSelectedGameInstance.IsValid())
+		{
+			CurrentSelectedGameInstanceIndex = CurrentSelectedGameInstance->GetIndex();
+			bIsInstanceSelected = true;
+		}
+	}
+
 	AvailableGameInstances.Reset();
 
-	TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 	if (Session.IsValid())
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
-		const Trace::INetProfilerProvider& NetProfilerProvider = Trace::ReadNetProfilerProvider(*Session.Get());
-		NetProfilerProvider.ReadGameInstances([this](const Trace::FNetProfilerGameInstance& GameInstance)
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+		const TraceServices::INetProfilerProvider* NetProfilerProvider = TraceServices::ReadNetProfilerProvider(*Session.Get());
+		if (NetProfilerProvider)
 		{
-			AvailableGameInstances.Add(MakeShared<FGameInstanceItem>(GameInstance));
-		});
+			NetProfilerProvider->ReadGameInstances([this](const TraceServices::FNetProfilerGameInstance& GameInstance)
+			{
+				AvailableGameInstances.Add(MakeShared<FGameInstanceItem>(GameInstance));
+			});
+		}
 	}
 
 	if (GameInstanceComboBox.IsValid())
 	{
-		GameInstanceComboBox->SetSelectedItem(AvailableGameInstances.Num() > 0 ? AvailableGameInstances[0] : nullptr);
+		const uint32 AvailableGameInstanceCount = AvailableGameInstances.Num();
+		if (bIsInstanceSelected && AvailableGameInstanceCount > CurrentSelectedGameInstanceIndex)
+		{
+			GameInstanceComboBox->SetSelectedItem(AvailableGameInstances[CurrentSelectedGameInstanceIndex]);
+		}
+		else
+		{
+			GameInstanceComboBox->SetSelectedItem(AvailableGameInstances.Num() > 0 ? AvailableGameInstances[0] : nullptr);
+		}
 	}
 
 	UpdateAvailableConnections();
@@ -545,22 +564,45 @@ void SNetworkingProfilerWindow::UpdateAvailableGameInstances()
 
 void SNetworkingProfilerWindow::UpdateAvailableConnections()
 {
+	uint32 CurrentSelectedConnectionIndex = 0;
+	bool bIsConnectionSelected = false;
+	if (ConnectionComboBox.IsValid())
+	{
+		TSharedPtr<FConnectionItem> CurrentSelectedConnection = ConnectionComboBox->GetSelectedItem();
+		if (CurrentSelectedConnection.IsValid())
+		{
+			CurrentSelectedConnectionIndex = CurrentSelectedConnection->GetIndex();
+			bIsConnectionSelected = true;
+		}
+	}
+
 	AvailableConnections.Reset();
 
-	TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 	if (Session.IsValid() && SelectedGameInstance.IsValid())
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
-		const Trace::INetProfilerProvider& NetProfilerProvider = Trace::ReadNetProfilerProvider(*Session.Get());
-		NetProfilerProvider.ReadConnections(SelectedGameInstance->GetIndex(), [this](const Trace::FNetProfilerConnection& Connection)
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+		const TraceServices::INetProfilerProvider* NetProfilerProvider = TraceServices::ReadNetProfilerProvider(*Session.Get());
+		if (NetProfilerProvider)
 		{
-			AvailableConnections.Add(MakeShared<FConnectionItem>(Connection));
-		});
+			NetProfilerProvider->ReadConnections(SelectedGameInstance->GetIndex(), [this](const TraceServices::FNetProfilerConnection& Connection)
+			{
+				AvailableConnections.Add(MakeShared<FConnectionItem>(Connection));
+			});
+		}
 	}
 
 	if (ConnectionComboBox.IsValid())
 	{
-		ConnectionComboBox->SetSelectedItem(AvailableConnections.Num() > 0 ? AvailableConnections[0] : nullptr);
+		const uint32 AvailableConnectionCount = AvailableConnections.Num();
+		if (bIsConnectionSelected && AvailableConnectionCount > CurrentSelectedConnectionIndex)
+		{
+			ConnectionComboBox->SetSelectedItem(AvailableConnections[CurrentSelectedConnectionIndex]);
+		}
+		else
+		{
+			ConnectionComboBox->SetSelectedItem(AvailableConnections.Num() > 0 ? AvailableConnections[0] : nullptr);
+		}
 	}
 
 	UpdateAvailableConnectionModes();
@@ -570,23 +612,50 @@ void SNetworkingProfilerWindow::UpdateAvailableConnections()
 
 void SNetworkingProfilerWindow::UpdateAvailableConnectionModes()
 {
+	bool bIsConnectionModeSelected = false;
+	TraceServices::ENetProfilerConnectionMode CurrentSelectedConnectionModeChoice = TraceServices::ENetProfilerConnectionMode::Incoming;
+	if (ConnectionModeComboBox.IsValid())
+	{
+		TSharedPtr<FConnectionModeItem> CurrentSelectedConnectionMode = ConnectionModeComboBox->GetSelectedItem();
+		if (CurrentSelectedConnectionMode.IsValid())
+		{
+			CurrentSelectedConnectionModeChoice = CurrentSelectedConnectionMode->Mode;
+			bIsConnectionModeSelected = true;
+		}
+	}
+
 	AvailableConnectionModes.Reset();
 
 	if (SelectedConnection.IsValid())
 	{
 		if (SelectedConnection->Connection.bHasIncomingData)
 		{
-			AvailableConnectionModes.Add(MakeShared<FConnectionModeItem>(Trace::ENetProfilerConnectionMode::Incoming));
+			AvailableConnectionModes.Add(MakeShared<FConnectionModeItem>(TraceServices::ENetProfilerConnectionMode::Incoming));
 		}
 		if (SelectedConnection->Connection.bHasOutgoingData)
 		{
-			AvailableConnectionModes.Add(MakeShared<FConnectionModeItem>(Trace::ENetProfilerConnectionMode::Outgoing));
+			AvailableConnectionModes.Add(MakeShared<FConnectionModeItem>(TraceServices::ENetProfilerConnectionMode::Outgoing));
 		}
 	}
 
 	if (ConnectionModeComboBox.IsValid())
 	{
-		ConnectionModeComboBox->SetSelectedItem(AvailableConnectionModes.Num() > 0 ? AvailableConnectionModes[0] : nullptr);
+		const uint32 AvailableConnectionModeCount = AvailableConnectionModes.Num();
+		if (bIsConnectionModeSelected && AvailableConnectionModeCount == 2)
+		{
+			if (CurrentSelectedConnectionModeChoice == TraceServices::ENetProfilerConnectionMode::Outgoing)
+			{
+				ConnectionModeComboBox->SetSelectedItem(AvailableConnectionModes[1]);
+			}
+			else
+			{
+				ConnectionModeComboBox->SetSelectedItem(AvailableConnectionModes[0]);
+			}
+		}
+		else
+		{
+			ConnectionModeComboBox->SetSelectedItem(AvailableConnectionModes.Num() > 0 ? AvailableConnectionModes[0] : nullptr);
+		}
 	}
 }
 
@@ -626,58 +695,39 @@ FReply SNetworkingProfilerWindow::OnKeyDown(const FGeometry& MyGeometry, const F
 
 FReply SNetworkingProfilerWindow::OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
 {
-	TSharedPtr<FExternalDragOperation> DragDropOp = DragDropEvent.GetOperationAs<FExternalDragOperation>();
-	if (DragDropOp.IsValid())
+	if (FInsightsManager::Get()->OnDragOver(DragDropEvent))
 	{
-		if (DragDropOp->HasFiles())
-		{
-			const TArray<FString>& Files = DragDropOp->GetFiles();
-			if (Files.Num() == 1)
-			{
-				const FString DraggedFileExtension = FPaths::GetExtension(Files[0], true);
-				if (DraggedFileExtension == TEXT(".utrace"))
-				{
-					return FReply::Handled();
-				}
-			}
-		}
+		return FReply::Handled();
 	}
 
-	return SCompoundWidget::OnDragOver(MyGeometry,DragDropEvent);
+	return SCompoundWidget::OnDragOver(MyGeometry, DragDropEvent);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FReply SNetworkingProfilerWindow::OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
 {
-	TSharedPtr<FExternalDragOperation> DragDropOp = DragDropEvent.GetOperationAs<FExternalDragOperation>();
-	if (DragDropOp.IsValid())
+	if (FInsightsManager::Get()->OnDrop(DragDropEvent))
 	{
-		if (DragDropOp->HasFiles())
-		{
-			// For now, only allow a single file.
-			const TArray<FString>& Files = DragDropOp->GetFiles();
-			if (Files.Num() == 1)
-			{
-				const FString DraggedFileExtension = FPaths::GetExtension(Files[0], true);
-				if (DraggedFileExtension == TEXT(".utrace"))
-				{
-					// Enqueue load operation.
-					FInsightsManager::Get()->LoadTraceFile(Files[0]);
-					return FReply::Handled();
-				}
-			}
-		}
+		return FReply::Handled();
 	}
 
-	return SCompoundWidget::OnDrop(MyGeometry,DragDropEvent);
+	return SCompoundWidget::OnDrop(MyGeometry, DragDropEvent);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 FText SNetworkingProfilerWindow::FGameInstanceItem::GetText() const
 {
-	return FText::Format(LOCTEXT("GameInstanceItemFmt", "Game Instance {0}"), FText::AsNumber(GetIndex()));
+	if (IsInstanceNameSet())
+	{
+		return FText::Format(LOCTEXT("GameInstanceItemFmt0", "{0} Game Instance {1} [{2}]"), FText::FromString(GetInstanceName()), FText::AsNumber(GetIndex()),
+			IsServer() ? FText::FromString("Server") : FText::FromString("Client"));
+	}
+	else
+	{
+		return FText::Format(LOCTEXT("GameInstanceItemFmt1", "Game Instance {0}"), FText::AsNumber(GetIndex()));
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -691,13 +741,29 @@ FText SNetworkingProfilerWindow::FGameInstanceItem::GetTooltipText() const
 
 FText SNetworkingProfilerWindow::FConnectionItem::GetText() const
 {
-	if (!Connection.Name)
+	if (IsConnectionNameSet())
 	{
-		return FText::Format(LOCTEXT("ConnectionItemFmt1", "Connection {0}"), FText::AsNumber(GetIndex()));
+		if (IsConnectionAddressSet())
+		{
+			return FText::Format(LOCTEXT("ConnectionItemFmt3", "Connection {0} ({1}) to {2}"), FText::AsNumber(GetIndex()), FText::FromString(GetConnectionName()),
+				FText::FromString(GetConnectionAddress()));
+		}
+		else
+		{
+			return FText::Format(LOCTEXT("ConnectionItemFmt4", "Connection {0} ({1})"), FText::AsNumber(GetIndex()), FText::FromString(GetConnectionName()));
+		}
 	}
 	else
 	{
-		return FText::Format(LOCTEXT("ConnectionItemFmt2", "Connection {0} ({1})"), FText::AsNumber(GetIndex()), FText::FromString(Connection.Name));
+		if (IsConnectionAddressSet())
+		{
+			return FText::Format(LOCTEXT("ConnectionItemFmt1", "Connection {0} to {1}"), FText::AsNumber(GetIndex()),
+				FText::FromString(GetConnectionAddress()));
+		}
+		else
+		{
+			return FText::Format(LOCTEXT("ConnectionItemFmt2", "Connection {0}"), FText::AsNumber(GetIndex()));
+		}
 	}
 }
 
@@ -714,10 +780,10 @@ FText SNetworkingProfilerWindow::FConnectionModeItem::GetText() const
 {
 	switch (Mode)
 	{
-	case Trace::ENetProfilerConnectionMode::Outgoing:
+	case TraceServices::ENetProfilerConnectionMode::Outgoing:
 		return LOCTEXT("ConnectionMode_Outgoing", "Outgoing");
 
-	case Trace::ENetProfilerConnectionMode::Incoming:
+	case TraceServices::ENetProfilerConnectionMode::Incoming:
 		return LOCTEXT("ConnectionMode_Incoming", "Incoming");
 
 	default:
@@ -746,8 +812,11 @@ TSharedRef<SWidget> SNetworkingProfilerWindow::CreateGameInstanceComboBox()
 			SNew(STextBlock)
 			.Text(this, &SNetworkingProfilerWindow::GameInstance_GetSelectedText)
 		];
-
-	return GameInstanceComboBox.ToSharedRef();
+	return SNew(SBox)
+		.Padding(FMargin(4.0f, 0.0f, 2.0f, 0.0f))
+		[
+			GameInstanceComboBox.ToSharedRef()
+		];
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
@@ -811,8 +880,11 @@ TSharedRef<SWidget> SNetworkingProfilerWindow::CreateConnectionComboBox()
 			SNew(STextBlock)
 			.Text(this, &SNetworkingProfilerWindow::Connection_GetSelectedText)
 		];
-
-	return ConnectionComboBox.ToSharedRef();
+	return SNew(SBox)
+		.Padding(FMargin(2.0f, 0.0f, 2.0f, 0.0f))
+		[
+			ConnectionComboBox.ToSharedRef()
+		];
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 
@@ -877,7 +949,11 @@ TSharedRef<SWidget> SNetworkingProfilerWindow::CreateConnectionModeComboBox()
 			.Text(this, &SNetworkingProfilerWindow::ConnectionMode_GetSelectedText)
 		];
 
-	return ConnectionModeComboBox.ToSharedRef();
+	return SNew(SBox)
+		.Padding(FMargin(2.0f, 0.0f, 4.0f, 0.0f))
+		[
+			ConnectionModeComboBox.ToSharedRef()
+		];
 }
 END_SLATE_FUNCTION_BUILD_OPTIMIZATION
 

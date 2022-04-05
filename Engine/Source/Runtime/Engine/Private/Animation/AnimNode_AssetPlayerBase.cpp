@@ -2,21 +2,7 @@
 
 #include "Animation/AnimNode_AssetPlayerBase.h"
 #include "Animation/AnimInstanceProxy.h"
-
-FAnimNode_AssetPlayerBase::FAnimNode_AssetPlayerBase()
-	: GroupName(NAME_None)
-#if WITH_EDITORONLY_DATA
-	, GroupIndex_DEPRECATED(INDEX_NONE)
-#endif
-	, GroupRole(EAnimGroupRole::CanBeLeader)
-	, GroupScope(EAnimSyncGroupScope::Local)
-	, bIgnoreForRelevancyTest(false)
-	, bHasBeenFullWeight(false)
-	, BlendWeight(0.0f)
-	, InternalTimeAccumulator(0.0f)
-{
-
-}
+#include "Animation/AnimSyncScope.h"
 
 void FAnimNode_AssetPlayerBase::Initialize_AnyThread(const FAnimationInitializeContext& Context)
 {
@@ -37,22 +23,29 @@ void FAnimNode_AssetPlayerBase::Update_AnyThread(const FAnimationUpdateContext& 
 
 void FAnimNode_AssetPlayerBase::CreateTickRecordForNode(const FAnimationUpdateContext& Context, UAnimSequenceBase* Sequence, bool bLooping, float PlayRate)
 {
-	// Create a tick record and fill it out
+	// Create a tick record and push into the closest scope
 	const float FinalBlendWeight = Context.GetFinalBlendWeight();
 
-	FAnimGroupInstance* SyncGroup;
-	const FName GroupNameToUse = ((GroupRole < EAnimGroupRole::TransitionLeader) || bHasBeenFullWeight) ? GroupName : NAME_None;
+	UE::Anim::FAnimSyncGroupScope& SyncScope = Context.GetMessageChecked<UE::Anim::FAnimSyncGroupScope>();
 
-	FAnimTickRecord& TickRecord = Context.AnimInstanceProxy->CreateUninitializedTickRecordInScope(/*out*/ SyncGroup, GroupNameToUse, GroupScope);
+	const EAnimGroupRole::Type SyncGroupRole = GetGroupRole();
+	const FName SyncGroupName = GetGroupName();
 
-	Context.AnimInstanceProxy->MakeSequenceTickRecord(TickRecord, Sequence, bLooping, PlayRate, FinalBlendWeight, /*inout*/ InternalTimeAccumulator, MarkerTickRecord);
-	TickRecord.RootMotionWeightModifier = Context.GetRootMotionWeightModifier();
-
-	// Update the sync group if it exists
-	if (SyncGroup != NULL)
+	const FName GroupNameToUse = ((SyncGroupRole < EAnimGroupRole::TransitionLeader) || bHasBeenFullWeight) ? SyncGroupName : NAME_None;
+	EAnimSyncMethod MethodToUse = GetGroupMethod();
+	if(GroupNameToUse == NAME_None && MethodToUse == EAnimSyncMethod::SyncGroup)
 	{
-		SyncGroup->TestTickRecordForLeadership(GroupRole);
+		MethodToUse = EAnimSyncMethod::DoNotSync;
 	}
+
+	const UE::Anim::FAnimSyncParams SyncParams(GroupNameToUse, SyncGroupRole, MethodToUse);
+	FAnimTickRecord TickRecord(Sequence, bLooping, PlayRate, FinalBlendWeight, /*inout*/ InternalTimeAccumulator, MarkerTickRecord);
+	TickRecord.GatherContextData(Context);
+
+	TickRecord.RootMotionWeightModifier = Context.GetRootMotionWeightModifier();
+	TickRecord.DeltaTimeRecord = &DeltaTimeRecord;
+
+	SyncScope.AddTickRecord(TickRecord, SyncParams, UE::Anim::FAnimSyncDebugInfo(Context));
 
 	TRACE_ANIM_TICK_RECORD(Context, TickRecord);
 }
@@ -67,12 +60,12 @@ float FAnimNode_AssetPlayerBase::GetAccumulatedTime() const
 	return InternalTimeAccumulator;
 }
 
-void FAnimNode_AssetPlayerBase::SetAccumulatedTime(const float& NewTime)
+void FAnimNode_AssetPlayerBase::SetAccumulatedTime(float NewTime)
 {
 	InternalTimeAccumulator = NewTime;
 }
 
-UAnimationAsset* FAnimNode_AssetPlayerBase::GetAnimAsset()
+UAnimationAsset* FAnimNode_AssetPlayerBase::GetAnimAsset() const
 {
 	return nullptr;
 }
@@ -81,4 +74,3 @@ void FAnimNode_AssetPlayerBase::ClearCachedBlendWeight()
 {
 	BlendWeight = 0.0f;
 }
-

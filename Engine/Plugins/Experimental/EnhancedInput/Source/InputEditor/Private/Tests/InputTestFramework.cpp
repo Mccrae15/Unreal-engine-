@@ -59,7 +59,10 @@ UInputAction* AnInputAction(UControllablePlayer& PlayerData, FName ActionName, E
 
 void ControlMappingsAreRebuilt(UControllablePlayer& PlayerData)
 {
-	PlayerData.Subsystem->RequestRebuildControlMappings(true);
+	FInputTestHelper::ResetActionInstanceData(PlayerData);
+	FModifyContextOptions Options;
+	Options.bForceImmediately = true;
+	PlayerData.Subsystem->RequestRebuildControlMappings(Options);
 }
 
 FEnhancedActionKeyMapping& AnActionIsMappedToAKey(UControllablePlayer& PlayerData, FName ContextName, FName ActionName, FKey Key)
@@ -107,7 +110,15 @@ UInputModifier* AModifierIsAppliedToAnAction(UControllablePlayer& PlayerData, cl
 		// Control mapping rebuild required to recalculate modifier default values
 		// TODO: This will be an issue for run time modification of modifiers
 		ControlMappingsAreRebuilt(PlayerData);
-		return  FInputTestHelper::HasActionData(PlayerData, ActionName) ? FInputTestHelper::GetActionData(PlayerData, ActionName).GetModifiers().Last() : nullptr;	// If the action hasn't been mapped to yet we can't get a valid instance. TODO: assert?
+		if(FInputTestHelper::HasActionData(PlayerData, ActionName))
+		{
+			const TArray<UInputModifier*>& TestModifiers = FInputTestHelper::GetActionData(PlayerData, ActionName).GetModifiers();
+			// If the action hasn't been mapped to yet we can't get a valid instance. TODO: assert?
+			if(ensure(!TestModifiers.IsEmpty()))
+			{
+				return TestModifiers.Last();
+			}
+		}
 	}
 	return nullptr;
 }
@@ -128,7 +139,7 @@ UInputModifier* AModifierIsAppliedToAnActionMapping(UControllablePlayer& PlayerD
 			ControlMappingsAreRebuilt(PlayerData);	// Generate the live mapping instance for this key
 			if (FEnhancedActionKeyMapping* LiveMapping = FInputTestHelper::FindLiveActionMapping(PlayerData, ActionName, Key))
 			{
-				return LiveMapping->Modifiers.Last();
+				return !LiveMapping->Modifiers.IsEmpty() ? LiveMapping->Modifiers.Last() : nullptr;
 			}
 		}
 	}
@@ -141,7 +152,16 @@ UInputTrigger* ATriggerIsAppliedToAnAction(UControllablePlayer& PlayerData, clas
 	{
 		Action->Triggers.Add(Trigger);
 		ControlMappingsAreRebuilt(PlayerData);
-		return  FInputTestHelper::HasActionData(PlayerData, ActionName) ? FInputTestHelper::GetActionData(PlayerData, ActionName).GetTriggers().Last() : nullptr;	// If the action hasn't been mapped to yet we can't get a valid instance. TODO: assert?
+		if(FInputTestHelper::HasActionData(PlayerData, ActionName))
+		{
+			const FInputActionInstance& ActionInstance = FInputTestHelper::GetActionData(PlayerData, ActionName);
+			const TArray<UInputTrigger*>& InstanceTriggers = ActionInstance.GetTriggers();
+			// If the action hasn't been mapped to yet we can't get a valid instance. TODO: assert?
+			if(ensure(!InstanceTriggers.IsEmpty()))
+			{
+				return InstanceTriggers.Last();
+			}
+		}
 	}
 	return nullptr;
 }
@@ -160,7 +180,7 @@ UInputTrigger* ATriggerIsAppliedToAnActionMapping(UControllablePlayer& PlayerDat
 			ControlMappingsAreRebuilt(PlayerData);	// Generate the live mapping instance for this key
 			if (FEnhancedActionKeyMapping* LiveMapping = FInputTestHelper::FindLiveActionMapping(PlayerData, ActionName, Key))
 			{
-				return LiveMapping->Triggers.Last();
+				return !LiveMapping->Triggers.IsEmpty() ? LiveMapping->Triggers.Last() : nullptr;
 			}
 		}
 	}
@@ -171,11 +191,11 @@ void AKeyIsActuated(UControllablePlayer& PlayerData, FKey Key, float Delta)
 {
 	if (Key.IsAnalog())
 	{
-		PlayerData.Player->InputAxis(Key, Delta, 1 / 60.f, 1, Key.IsGamepadKey());
+		PlayerData.Player->InputKey(FInputKeyParams(Key, Delta, 1 / 60.f, 1));
 	}
 	else
 	{
-		PlayerData.Player->InputKey(Key, EInputEvent::IE_Pressed, 1.f, Key.IsGamepadKey());
+		PlayerData.Player->InputKey(FInputKeyParams(Key, EInputEvent::IE_Pressed, 1.0));
 	}
 }
 
@@ -183,11 +203,11 @@ void AKeyIsReleased(UControllablePlayer& PlayerData, FKey Key)
 {
 	if (Key.IsAnalog())
 	{
-		PlayerData.Player->InputAxis(Key, 0.f, 1 / 60.f, 1, Key.IsGamepadKey());
+		PlayerData.Player->InputKey(FInputKeyParams(Key, 0.f, 1 / 60.f, 1, Key.IsGamepadKey()));
 	}
 	else
 	{
-		PlayerData.Player->InputKey(Key, EInputEvent::IE_Released, 0.f, Key.IsGamepadKey());
+		PlayerData.Player->InputKey(FInputKeyParams(Key, EInputEvent::IE_Released, 0.0));
 	}
 }
 
@@ -239,6 +259,11 @@ bool FInputTestHelper::HasActionData(UControllablePlayer& Data, FName ActionName
 {
 	UInputAction* Action = FInputTestHelper::FindAction(Data, ActionName);
 	return Action && Data.PlayerInput->ActionInstanceData.Find(Action) != nullptr;
+}
+
+void FInputTestHelper::ResetActionInstanceData(UControllablePlayer& Data)
+{
+	Data.PlayerInput->ActionInstanceData.Empty();
 }
 
 const FInputActionInstance& FInputTestHelper::GetActionData(UControllablePlayer& Data, FName ActionName)

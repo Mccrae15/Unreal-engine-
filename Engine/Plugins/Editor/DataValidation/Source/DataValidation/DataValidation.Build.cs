@@ -21,6 +21,7 @@ public class DataValidation : ModuleRules
 				"Slate",
 				"SlateCore",
 				"InputCore",
+				"EditorFramework",
 				"UnrealEd",
 				"AssetRegistry",
 				"Json",
@@ -36,6 +37,8 @@ public class DataValidation : ModuleRules
 				"SandboxFile",
 				"Blutility",
 				"ToolMenus",
+				"SourceControl",
+				"UncontrolledChangelists",
 			}
 		);
 	}

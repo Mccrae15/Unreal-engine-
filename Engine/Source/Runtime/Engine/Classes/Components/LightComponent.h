@@ -45,7 +45,7 @@ class ENGINE_API ULightComponent : public ULightComponentBase
 	* Color temperature in Kelvin of the blackbody illuminant.
 	* White (D65) is 6500K.
 	*/
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = Light, meta = (UIMin = "1700.0", UIMax = "12000.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, interp, Category = Light, meta = (UIMin = "1700.0", UIMax = "12000.0", ShouldShowInViewport = true, DisplayAfter ="bUseTemperature"))
 	float Temperature;
 	
 	UPROPERTY(EditAnywhere, Category = Performance)
@@ -55,7 +55,7 @@ class ENGINE_API ULightComponent : public ULightComponentBase
 	float MaxDistanceFadeRange;
 
 	/** false: use white (D65) as illuminant. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, meta=(DisplayName = "Use Temperature"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Light, meta=(DisplayName = "Use Temperature", ShouldShowInViewport = true))
 	uint32 bUseTemperature : 1;
 
 	/** 
@@ -156,7 +156,7 @@ class ENGINE_API ULightComponent : public ULightComponentBase
 	 * Light functions are supported within VolumetricFog, but only for Directional, Point and Spot lights. Rect lights are not supported.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightFunction)
-	class UMaterialInterface* LightFunctionMaterial;
+	TObjectPtr<class UMaterialInterface> LightFunctionMaterial;
 
 	/** Scales the light function projection.  X and Y scale in the directions perpendicular to the light's direction, Z scales along the light direction. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightFunction, meta=(AllowPreserveRatio = "true"))
@@ -164,7 +164,7 @@ class ENGINE_API ULightComponent : public ULightComponentBase
 
 	/** IES texture (light profiles from real world measured data) */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightProfiles, meta=(DisplayName = "IES Texture"))
-	class UTextureLightProfile* IESTexture;
+	TObjectPtr<class UTextureLightProfile> IESTexture;
 
 	/** true: take light brightness from IES profile, false: use the light brightness - the maximum light in one direction is used to define no masking. Use with InverseSquareFalloff. Will be disabled if a valid IES profile texture is not supplied. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=LightProfiles, meta=(DisplayName = "Use IES Intensity"))
@@ -347,6 +347,13 @@ public:
 		return FSphere(FVector::ZeroVector, WORLD_MAX);
 	}
 
+#if WITH_EDITOR
+	virtual FBox GetStreamingBounds() const override
+	{
+		return GetBoundingBox();
+	}
+#endif // WITH_EDITOR
+
 	/**
 	 * Return the homogenous position of the light.
 	 */
@@ -394,7 +401,11 @@ public:
 	virtual void Serialize(FArchive& Ar) override;
 	virtual void PostLoad() override;
 #if WITH_EDITOR
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS // Suppress compiler warning on override of deprecated function
+	UE_DEPRECATED(5.0, "Use version that takes FObjectPreSaveContext instead.")
 	virtual void PreSave(const class ITargetPlatform* TargetPlatform) override;
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+	virtual void PreSave(FObjectPreSaveContext ObjectSaveContext) override;
 	virtual bool CanEditChange(const FProperty* InProperty) const override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void UpdateLightSpriteTexture() override;
@@ -429,6 +440,12 @@ protected:
 	virtual void SendRenderTransform_Concurrent() override;
 	virtual void DestroyRenderState_Concurrent() override;
 	//~ Begin UActorComponent Interface
+
+	//~ Begin USceneComponent Interface
+#if WITH_EDITOR
+	virtual bool GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty) override;
+#endif // WITH_EDITOR
+	//~ End USceneComponent Interface
 
 public:
 	virtual void InvalidateLightingCacheDetailed(bool bInvalidateBuildEnqueuedLighting, bool bTranslationOnly) override;

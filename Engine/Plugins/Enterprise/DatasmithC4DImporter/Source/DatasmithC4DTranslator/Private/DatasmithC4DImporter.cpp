@@ -41,7 +41,7 @@
 #include "StaticMeshOperations.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
-#include "ImathMatrixAlgo.h"
+#include "Imath/ImathMatrixAlgo.h"
 
 DECLARE_CYCLE_STAT(TEXT("C4DImporter - Load File"), STAT_C4DImporter_LoadFile, STATGROUP_C4DImporter);
 
@@ -51,8 +51,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogDatasmithC4DImport, Log, All);
 
 // What we multiply the C4D light brightness values with when the lights are not
 // using photometric units. Those are chosen so that 100% brightness C4D point lights matches the
-// default value of 8 candelas of UE4 point lights, and 100% brightness C4D infinite lights matches
-// the default 10 lux of UE4 directional lights
+// default value of 8 candelas of UnrealEditor point lights, and 100% brightness C4D infinite lights matches
+// the default 10 lux of UnrealEditor directional lights
 #define UnitlessGlobalLightIntensity 10.0
 #define UnitlessIESandPointLightIntensity 8000
 
@@ -273,11 +273,11 @@ TSharedRef<FCraneCameraAttributes> ExtractCraneCameraAttributes(melange::BaseTag
 // coordinate system
 FTransform CalculateCraneCameraTransform(const FCraneCameraAttributes& Params)
 {
-	// We will first construct a transformation in the UE4 coordinate system, as that is
+	// We will first construct a transformation in the UnrealEditor coordinate system, as that is
 	// easier to visualize and test
 
 	// Local rotation of 90deg around the Y axis in Melange.
-	// Will compensate the difference in convention between UE4 (camera shoots out the +X) and
+	// Will compensate the difference in convention between UnrealEditor (camera shoots out the +X) and
 	// C4D (camera shoots out the +Z)
 	FTransform Conv = FTransform(FRotator(0, -90, 0), FVector(0, 0, 0));
 
@@ -315,17 +315,17 @@ FTransform CalculateCraneCameraTransform(const FCraneCameraAttributes& Params)
 			  Arm;
 	}
 
-	FTransform FinalTransUE4 = Conv * Cam * Head * Arm * Base;
-	FVector TranslationUE4 = FinalTransUE4.GetTranslation();
-	FVector EulerUE4 = FinalTransUE4.GetRotation().Euler();
+	FTransform FinalTransUE = Conv * Cam * Head * Arm * Base;
+	FVector TranslationUE = FinalTransUE.GetTranslation();
+	FVector3f EulerUE = (FVector3f)FinalTransUE.GetRotation().Euler();
 
-	// Convert FinalTransUE4 into the melange coordinate system, so that this can be treated
+	// Convert FinalTransUnrealEditor into the melange coordinate system, so that this can be treated
 	// like the other types of animations in ImportAnimations.
 	// More specifically, convert them so that that ConvertDirectionLeftHandedYup and
-	// the conversion for Ocamera rotations gets them back into UE4's coordinate system
+	// the conversion for Ocamera rotations gets them back into UnrealEditor's coordinate system
 	// Note: Remember that FRotator's constructor is Pitch, Yaw and Roll (i.e. Y, Z, X)
-	return FTransform(FRotator(EulerUE4.Y, EulerUE4.X, -EulerUE4.Z-90),
-					  FVector(TranslationUE4.X, TranslationUE4.Z, -TranslationUE4.Y));
+	return FTransform(FRotator(EulerUE.Y, EulerUE.X, -EulerUE.Z-90),
+					  FVector(TranslationUE.X, TranslationUE.Z, -TranslationUE.Y));
 }
 
 void FDatasmithC4DImporter::ImportSpline(melange::SplineObject* SplineActor)
@@ -697,7 +697,7 @@ bool FDatasmithC4DImporter::AddChildActor(melange::BaseObject* Object, TSharedPt
 	if (Object->GetType() == Ocamera || Object->GetType() == Olight)
 	{
 		// Compensates the fact that in C4D cameras/lights shoot out towards +Z, while in
-		// UE4 they shoot towards +X
+		// UnrealEditor they shoot towards +X
 		melange::Matrix CameraRotation(
 			melange::Vector(0.0, 0.0, 0.0),
 			melange::Vector(0.0, 0.0, 1.0),
@@ -1002,7 +1002,7 @@ TSharedPtr<IDatasmithLightActorElement> FDatasmithC4DImporter::ImportLight(melan
 	}
 
 	// Color
-	FLinearColor Color = MelangeGetColor(InC4DLightPtr, melange::LIGHT_COLOR);
+	FLinearColor Color = FLinearColor(MelangeGetColor(InC4DLightPtr, melange::LIGHT_COLOR));
 
 	// Temperature
 	bool bUseTemperature = MelangeGetBool(InC4DLightPtr, melange::LIGHT_TEMPERATURE);
@@ -1274,7 +1274,7 @@ TSharedPtr<IDatasmithMasterMaterialElement> FDatasmithC4DImporter::ImportMateria
 	AddBoolToMaterial(MaterialPtr, TEXT("Use_Color"), bUseColor);
 	if (bUseColor)
 	{
-		FVector Color = MelangeGetLayerColor(InC4DMaterialPtr, melange::MATERIAL_COLOR_COLOR, melange::MATERIAL_COLOR_BRIGHTNESS);
+		FLinearColor Color = FLinearColor(MelangeGetLayerColor(InC4DMaterialPtr, melange::MATERIAL_COLOR_COLOR, melange::MATERIAL_COLOR_BRIGHTNESS));
 		AddColorToMaterial(MaterialPtr, TEXT("Color"), Color);
 
 		melange::BaseList2D* MaterialShader = MelangeGetLink(InC4DMaterialPtr, melange::MATERIAL_COLOR_SHADER);
@@ -1319,7 +1319,7 @@ TSharedPtr<IDatasmithMasterMaterialElement> FDatasmithC4DImporter::ImportMateria
 		float EmissiveGlowStrength = MelangeGetFloat(InC4DMaterialPtr, melange::MATERIAL_LUMINANCE_BRIGHTNESS);
 		AddFloatToMaterial(MaterialPtr, TEXT("Emissive_Glow_Strength"), EmissiveGlowStrength);
 
-		FLinearColor EmissiveColor = MelangeGetColor(InC4DMaterialPtr, melange::MATERIAL_LUMINANCE_COLOR);
+		FLinearColor EmissiveColor = FLinearColor(MelangeGetColor(InC4DMaterialPtr, melange::MATERIAL_LUMINANCE_COLOR));
 		AddColorToMaterial(MaterialPtr, TEXT("Emissive_Color"), EmissiveColor);
 
 		melange::BaseList2D* LuminanceShader = MelangeGetLink(InC4DMaterialPtr, melange::MATERIAL_LUMINANCE_SHADER);
@@ -1358,7 +1358,7 @@ TSharedPtr<IDatasmithMasterMaterialElement> FDatasmithC4DImporter::ImportMateria
 		else
 		{
 			float BrightnessValue = MelangeGetFloat(InC4DMaterialPtr, melange::MATERIAL_TRANSPARENCY_BRIGHTNESS);
-			FVector TransparencyColor = MelangeGetVector(InC4DMaterialPtr, melange::MATERIAL_TRANSPARENCY_COLOR);
+			FVector3f TransparencyColor = (FVector3f)MelangeGetVector(InC4DMaterialPtr, melange::MATERIAL_TRANSPARENCY_COLOR);
 
 			// In Cinema4D Transparency Color seems to be used just as another multiplier for the opacity, not as an actual color
 			AddFloatToMaterial(MaterialPtr, TEXT("Transparency_Amount"), BrightnessValue * TransparencyColor.X * TransparencyColor.Y * TransparencyColor.Z);
@@ -1456,7 +1456,7 @@ TSharedPtr<IDatasmithMasterMaterialElement> FDatasmithC4DImporter::ImportMateria
 				// temp solution until we get proper material graphs
 				float ReflectionChannelColorWeight = (GlobalReflection * 0.75f + GlobalSpecular * 0.25f);
 				AddFloatToMaterial(MaterialPtr, TEXT("ReflectionColor_Strength"), ReflectionChannelColorWeight);
-				AddColorToMaterial(MaterialPtr, TEXT("ReflectionColor"), ReflectionColor);
+				AddColorToMaterial(MaterialPtr, TEXT("ReflectionColor"), FLinearColor(ReflectionColor));
 			}
 
 			// Only set those one for the last Layer of reflection
@@ -1602,7 +1602,7 @@ TSharedPtr<IDatasmithMasterMaterialElement> FDatasmithC4DImporter::ImportSimpleC
 	Material->SetMaterialType(EDatasmithMasterMaterialType::Opaque);
 
 	// Color
-	AddColorToMaterial(Material, TEXT("Color"), DisplayColor);
+	AddColorToMaterial(Material, TEXT("Color"), FLinearColor(DisplayColor));
 	AddBoolToMaterial(Material, TEXT("Use_Color"), true);
 	AddBoolToMaterial(Material, TEXT("Use_ColorMap"), false);
 
@@ -1876,7 +1876,7 @@ namespace
 				}
 				else
 				{
-					Value /= InitialSize[TransformVectorIndex];
+					Value /= (float)InitialSize[TransformVectorIndex];		// LWC_TODO: InitialSize may be doubles!
 				}
 			}
 		}
@@ -2285,7 +2285,7 @@ void FDatasmithC4DImporter::ImportAnimations(TSharedPtr<IDatasmithActorElement> 
 			else if (TransFormType == EDatasmithTransformType::Rotation)
 			{
 				// Copy as we might be reusing a LastValue
-				FVector TransformValueCopy = *TransformValue;
+				FVector3f TransformValueCopy = (FVector3f)*TransformValue;
 
 				// If the object is in the HPB rotation order, melange will store its euler rotation
 				// as "H, P, B", basically storing the rotations as "YXZ". Lets switch it back to XYZ
@@ -2295,13 +2295,14 @@ void FDatasmithC4DImporter::ImportAnimations(TSharedPtr<IDatasmithActorElement> 
 				}
 
 				// TransformValue represents, in radians, the rotations around the C4D axes
-				// XRot, YRot, ZRot are rotations around UE4 axes, in the UE4 CS, with the sign given by Quaternion rotations (NOT Rotators)
+				// XRot, YRot, ZRot are rotations around UnrealEditor axes, in the UnrealEditor CS,
+				// with the sign given by Quaternion rotations (NOT Rotators)
 				FQuat XRot = FQuat(FVector(1, 0, 0), -TransformValueCopy.X);
 				FQuat YRot = FQuat(FVector(0, 1, 0),  TransformValueCopy.Z);
 				FQuat ZRot = FQuat(FVector(0, 0, 1), -TransformValueCopy.Y);
 
-				// Swap YRot and ZRot in the composition order, as an XYZ order in the C4D CS really means a XZY order in the UE4 CS
-				// This effectively converts the rotation order from the C4D CS to the UE4 CS, the sign of the rotations being handled when
+				// Swap YRot and ZRot in the composition order, as an XYZ order in the C4D CS really means a XZY order in the UnrealEditor CS
+				// This effectively converts the rotation order from the C4D CS to the UnrealEditor CS, the sign of the rotations being handled when
 				// creating the FQuats
 				Swap(YRot, ZRot);
 
@@ -2330,7 +2331,7 @@ void FDatasmithC4DImporter::ImportAnimations(TSharedPtr<IDatasmithActorElement> 
 					break;
 				}
 
-				// In C4D cameras and lights shoot towards +Z, but in UE4 they shoot towards +X, so fix that with a yaw
+				// In C4D cameras and lights shoot towards +Z, but in UnrealEditor they shoot towards +X, so fix that with a yaw
 				if (Object->GetType() == Olight || Object->GetType() == Ocamera)
 				{
 					FinalQuat = FinalQuat * FQuat(FVector(0, 0, 1), FMath::DegreesToRadians(-90.0f));
@@ -2817,9 +2818,9 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DImporter::ImportMesh(melange::Pol
 	MeshDescription.Empty();
 
 	FStaticMeshAttributes StaticMeshAttributes(MeshDescription);
-	TVertexAttributesRef<FVector> VertexPositions = StaticMeshAttributes.GetVertexPositions();
-	TVertexInstanceAttributesRef<FVector> VertexInstanceNormals = StaticMeshAttributes.GetVertexInstanceNormals();
-	TVertexInstanceAttributesRef<FVector2D> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
+	TVertexAttributesRef<FVector3f> VertexPositions = StaticMeshAttributes.GetVertexPositions();
+	TVertexInstanceAttributesRef<FVector3f> VertexInstanceNormals = StaticMeshAttributes.GetVertexInstanceNormals();
+	TVertexInstanceAttributesRef<FVector2f> VertexInstanceUVs = StaticMeshAttributes.GetVertexInstanceUVs();
 	TPolygonGroupAttributesRef<FName> PolygonGroupImportedMaterialSlotNames = StaticMeshAttributes.GetPolygonGroupMaterialSlotNames();
 
 	// Reserve space for attributes. These might not be enough as some of these polygons might be quads or n-gons, but its better than nothing
@@ -2831,7 +2832,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DImporter::ImportMesh(melange::Pol
 
 	// At least one UV set must exist.
 	int32 UVChannelCount = UVWTagsData.Num();
-	VertexInstanceUVs.SetNumIndices(FMath::Max(1, UVChannelCount));
+	VertexInstanceUVs.SetNumChannels(FMath::Max(1, UVChannelCount));
 
 	// Vertices
 	for (int32 PointIndex = 0; PointIndex < PointCount; ++PointIndex)
@@ -2840,7 +2841,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DImporter::ImportMesh(melange::Pol
 		// We count on this check when creating polygons
 		check(NewVertexID.GetValue() == PointIndex);
 
-		VertexPositions[NewVertexID] = ConvertMelangePosition(Points[PointIndex]);
+		VertexPositions[NewVertexID] = (FVector3f)ConvertMelangePosition(Points[PointIndex]);
 	}
 
 	// Create one material slot per polygon selection tag (including the "unselected" group)
@@ -2860,7 +2861,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DImporter::ImportMesh(melange::Pol
 	IDsCopy.SetNumUninitialized(3);
 	TArray<FVector> QuadNormals;
 	QuadNormals.SetNumZeroed(4);
-	TArray<FVector2D> QuadUVs;
+	TArray<FVector2f> QuadUVs;
 	QuadUVs.SetNumZeroed(4);
 
 	// Used to check for degenerate triangles
@@ -2900,7 +2901,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DImporter::ImportMesh(melange::Pol
 				FVertexID VertID = VerticesForPolygon[ TriangleIndex * 3 + VertexIndex ];
 
 				TriangleVertices[ VertexIndex ] = VertID;
-				TriangleVertexPositions[ VertexIndex ] = VertexPositions[ VertID ];
+				TriangleVertexPositions[ VertexIndex ] = (FVector)VertexPositions[ VertID ];
 			}
 
 			// Check if those vertices lead to degenerate triangles first, to prevent us from ever adding unused data to the MeshDescription
@@ -2930,7 +2931,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DImporter::ImportMesh(melange::Pol
 				FVertexInstanceID& VertInstanceID = VertexInstances[VertexCount];
 				int32 VertexIDInQuad = (*IndexOffsets)[VertexCount];
 
-				VertexInstanceNormals.Set(VertInstanceID, QuadNormals[VertexIDInQuad]);
+				VertexInstanceNormals.Set(VertInstanceID, (FVector3f)QuadNormals[VertexIDInQuad]);
 			}
 		}
 
@@ -2946,7 +2947,7 @@ TSharedPtr<IDatasmithMeshElement> FDatasmithC4DImporter::ImportMesh(melange::Pol
 			for (int32 VertexIndex = 0; VertexIndex < 4; ++VertexIndex)
 			{
 				melange::Vector& PointUVs = UVs[VertexIndex];
-				FVector2D& UnrealUVs = QuadUVs[VertexIndex];
+				FVector2f& UnrealUVs = QuadUVs[VertexIndex];
 
 				if (PointUVs.z != 0.0f && PointUVs.z != 1.0f)
 				{

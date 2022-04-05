@@ -88,7 +88,7 @@ public:
 
 	/** Returns the index that the specified item is at. Will return the first found, or -1 for not found */
 	UFUNCTION(BlueprintCallable, Category = ListView)
-	int32 GetIndexForItem(UObject* Item) const;
+	int32 GetIndexForItem(const UObject* Item) const;
 
 	/** Removes all items from the list */
 	UFUNCTION(BlueprintCallable, Category = ListView)
@@ -116,6 +116,12 @@ public:
 
 protected:
 	virtual void OnItemsChanged(const TArray<UObject*>& AddedItems, const TArray<UObject*>& RemovedItems);
+
+	UFUNCTION()
+	void OnListItemEndPlayed(AActor* Item, EEndPlayReason::Type EndPlayReason);
+
+	UFUNCTION()
+	void OnListItemOuterEndPlayed(AActor* ItemOuter, EEndPlayReason::Type EndPlayReason);
 
 	virtual TSharedRef<STableViewBase> RebuildListWidget() override;
 	virtual void HandleListEntryHovered(UUserWidget& EntryWidget) override;
@@ -146,6 +152,8 @@ protected:
 		Args.ConsumeMouseWheel = ConsumeMouseWheel;
 		Args.bReturnFocusToSelection = bReturnFocusToSelection;
 		Args.Orientation = Orientation;
+		Args.ListViewStyle = &WidgetStyle;
+		Args.ScrollBarStyle = &ScrollBarStyle;
 		MyListView = ITypedUMGListView<UObject*>::ConstructListView<ListViewT>(this, ListItems, Args);
 		
 		MyListView->SetOnEntryInitialized(SListView<UObject*>::FOnEntryInitialized::CreateUObject(this, &UListView::HandleOnEntryInitializedInternal));
@@ -154,6 +162,12 @@ protected:
 	}
 
 protected:
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = ListView, meta = (DisplayName = "Style"))
+	FTableViewStyle WidgetStyle;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = ListView)
+	FScrollBarStyle ScrollBarStyle;
+
 	/** 
 	 * The scroll & layout orientation of the list. ListView and TileView only. 
 	 * Vertical will scroll vertically and arrange tiles into rows.
@@ -181,7 +195,7 @@ protected:
 	bool bReturnFocusToSelection = false;
 
 	UPROPERTY(Transient)
-	TArray<UObject*> ListItems;
+	TArray<TObjectPtr<UObject>> ListItems;
 
 	TSharedPtr<SListView<UObject*>> MyListView;
 

@@ -6,12 +6,19 @@
 
 #define EYE_ADAPTATION_LOOSE_PARAMETERS 1
 
+#ifndef SUPPORTS_SCENE_COLOR_APPLY_PARAMETERS
+	#define Undefined SUPPORTS_SCENE_COLOR_APPLY_PARAMETERS 0
+#endif
+
+
 #include "Common.ush"
 #include "PostProcessCommon.ush"
 #include "TonemapCommon.ush"
 #include "EyeAdaptationCommon.ush"
+#include "PostProcessHistogramCommon.ush"
 #include "PixelQuadMessagePassing.ush"
 #include "ScreenPass.ush"
+
 
 /** Values of DIM_OUTPUT_DEVICE (matching C++'s ETonemapperOutputDevice) */
 #define TONEMAPPER_OUTPUT_sRGB 0
@@ -37,15 +44,26 @@
 #define DEBUG_TONEMAPPER 0
 
 SCREEN_PASS_TEXTURE_VIEWPORT(Color)
-SCREEN_PASS_TEXTURE_VIEWPORT(Bloom)
 SCREEN_PASS_TEXTURE_VIEWPORT(Output)
-SCREEN_PASS_TEXTURE_VIEWPORT_TRANSFORM(ColorToBloom)
 
 Texture2D ColorTexture;
 SamplerState ColorSampler;
 
+
+FScreenTransform ColorToBloom;
+float2 BloomUVViewportBilinearMin;
+float2 BloomUVViewportBilinearMax;
 Texture2D BloomTexture;
 SamplerState BloomSampler;
+
+#if SUPPORTS_SCENE_COLOR_APPLY_PARAMETERS
+	StructuredBuffer<float4> SceneColorApplyParamaters;
+#endif
+
+Texture3D LumBilateralGrid;
+Texture2D BlurredLogLum;
+SamplerState LumBilateralGridSampler;
+SamplerState BlurredLogLumSampler;
 
 // xyz:SceneColorTint.rgb, w:unused
 float4 ColorScale0;
@@ -56,9 +74,22 @@ float4 ColorScale1;
 // from the postprocess settings, x:VignetteIntensity, y:SharpenDiv6
 float4 TonemapperParams;
 
-// Fine film grain
+// Grain quantization
 float3 GrainRandomFull;
-float3 GrainScaleBiasJitter;
+
+// Film grain
+float FilmGrainIntensityShadows;
+float FilmGrainIntensityMidtones;
+float FilmGrainIntensityHighlights;
+float FilmGrainShadowsMax;
+float FilmGrainHighlightsMin;
+float FilmGrainHighlightsMax;
+Texture2D<half3> FilmGrainTexture;
+SamplerState FilmGrainSampler;
+float4 ScreenPosToFilmGrainTextureUV;
+#if SUPPORTS_FILM_GRAIN
+	StructuredBuffer<float4> FilmGrainTextureConstants;
+#endif // SUPPORTS_FILM_GRAIN
 
 float EditorNITLevel;
 
@@ -106,6 +137,32 @@ half3 LinearToPostTonemapSpace(half3 lin)
 	return LinearToSrgbBranchless(lin);
 #endif
 }
+
+
+// Nuke-style Color Correct
+float ComputeFilmGrainIntensity(float3 LinearColorRGBGamut)
+{
+	const float3x3 sRGB_2_AP1 = mul( XYZ_2_AP1_MAT, mul( D65_2_D60_CAT, sRGB_2_XYZ_MAT ) );
+	const float3x3 AP1_2_sRGB = mul( XYZ_2_sRGB_MAT, mul( D60_2_D65_CAT, AP1_2_XYZ_MAT ) );
+
+	float3 ColorAP1 = mul(sRGB_2_AP1, LinearColorRGBGamut);
+	
+	//float Luma = dot(ColorAP1, AP1_RGB2Y);
+	float Luma = dot(LinearColorRGBGamut,  mul(AP1_2_sRGB, AP1_RGB2Y));
+
+	float CCWeightShadows = 1 - smoothstep(0, FilmGrainShadowsMax, Luma);
+	float CCWeightHighlights = smoothstep(FilmGrainHighlightsMin, FilmGrainHighlightsMax, Luma);
+	float CCWeightMidtones = 1 - CCWeightShadows - CCWeightHighlights;
+	
+	// Blend Shadow, Midtone and Highlight CCs
+	float FilmGrainIntensity = (
+		FilmGrainIntensityShadows * CCWeightShadows +
+		FilmGrainIntensityMidtones * CCWeightMidtones +
+		FilmGrainIntensityHighlights * CCWeightHighlights);
+	
+	return FilmGrainIntensity;
+}
+
 
 // LUT for color grading
 #if USE_VOLUME_LUT == 1
@@ -173,7 +230,7 @@ float4 ChromaticAberrationParams;
 void TonemapCommonVS(
 	in	float4 Position,
 	in	float2 TexCoord,
-	out	float3 OutExposureScaleVignette,
+	out	float4 OutExposureScaleVignette,
 	out	float4 OutGrainUV,
 	out	float2 OutScreenPos,
 	out	float2 OutFullViewUV
@@ -190,14 +247,17 @@ void TonemapCommonVS(
 #if EYEADAPTATION_EXPOSURE_FIX == 1
 	#if FEATURE_LEVEL >= FEATURE_LEVEL_SM5
 		// texture can be GWhiteTexture which is 1x1. It's important we don't read outside bounds.
-		OutExposureScaleVignette.x = EyeAdaptationTexture.Load(int3(0, 0, 0)).x;
+		OutExposureScaleVignette.xy = EyeAdaptationTexture.Load(int3(0, 0, 0)).xw;
 	#else
-		OutExposureScaleVignette.x = EyeAdaptationBuffer[0].x;
+		OutExposureScaleVignette.xy = EyeAdaptationBuffer[0].xw;
 	#endif
 #else
 	// If eye adaptation is disabled (e.g. fixed exposure level ) or  not available.  
-	OutExposureScaleVignette.x = DefaultEyeExposure;
+	OutExposureScaleVignette.xy = DefaultEyeExposure;
 #endif
+
+	// Middle grey lum value adjusted by exposure compensation
+	OutExposureScaleVignette.y = log2(0.18 * OutExposureScaleVignette.y * EyeAdaptation_LocalExposureMiddleGreyExposureCompensation);
 
 	const float AspectRatio = Output_ViewportSize.y * Output_ViewportSizeInverse.x;
 
@@ -205,7 +265,7 @@ void TonemapCommonVS(
 
 	// Scale vignette to always be a circle with consistent corner intensity.
 	float2 LensViewportPos = ConvertScreenViewportSpaceToLensViewportSpace(ColorViewportPos);
-	OutExposureScaleVignette.yz = VignetteSpace(LensViewportPos, AspectRatio);
+	OutExposureScaleVignette.zw = VignetteSpace(LensViewportPos, AspectRatio);
 
 	// Grain
 	OutGrainUV.xy = TexCoord + Color_ExtentInverse * float2(-0.5,0.5);
@@ -220,7 +280,7 @@ void MainVS(
 	in 					float4 InPosition 				: ATTRIBUTE0,
 	in 					float2 InTexCoord 				: ATTRIBUTE1,
 	out noperspective 	float2 OutTexCoord 				: TEXCOORD0,
-	out noperspective 	float3 OutExposureScaleVignette : TEXCOORD1,
+	out noperspective 	float4 OutExposureScaleVignette : TEXCOORD1,
 	out noperspective 	float4 OutGrainUV 				: TEXCOORD2,
 	out noperspective 	float2 OutScreenPos 			: TEXCOORD3,
 	out noperspective 	float2 OutFullViewUV 			: TEXCOORD4,
@@ -328,30 +388,21 @@ float2 ComputeCounterStepForTileDebugging(float4 SvPosition, int2 TileSize, out 
 #define OffsetInterpolator(CounterStep, InterpolatorName) \
 		InterpolatorName += ddx(InterpolatorName) * CounterStep.x + ddy(InterpolatorName) * CounterStep.y;
 
-half3 LookupSceneColor(float2 SceneUV, int2 PixelOffset)
-{
-#if (ES3_1_PROFILE && COMPILER_GLSL_ES3_1)
-	// slower but always works
-	// to prevent "error: Texture offset not supported on GLSL ES"
-	return Texture2DSample(ColorTexture, ColorSampler, SceneUV + PixelOffset * Color_ExtentInverse).rgb;
-#else
-	// faster
-	return ColorTexture.SampleLevel(ColorSampler, SceneUV, 0, PixelOffset).rgb;
-#endif
-}
-
 float4 SampleSceneColor(float2 SceneUV)
 {
-	#if USE_GRAIN_JITTER
-		SceneUV = clamp(SceneUV, Color_UVViewportBilinearMin, Color_UVViewportBilinearMax);
-	#endif
-
+	SceneUV = clamp(SceneUV, Color_UVViewportBilinearMin, Color_UVViewportBilinearMax);
 	return Texture2DSample(ColorTexture, ColorSampler, SceneUV);
+}
+
+half3 LookupSceneColor(float2 SceneUV, float2 PixelOffset)
+{
+	float2 SampleUV = SceneUV + PixelOffset * Color_ExtentInverse;
+	return SampleSceneColor(SampleUV);
 }
 
 float4 TonemapCommonPS(
 	float2 UV,
-	float3 ExposureScaleVignette,
+	float4 ExposureScaleVignette,
 	float4 GrainUV,
 	float2 ScreenPos, // [-1, 1]x[-1, 1]
 	float2 FullViewUV,
@@ -359,12 +410,6 @@ float4 TonemapCommonPS(
 	)
 {
 	float4 OutColor = 0;
-
-#if USE_PREEXPOSURE
-	const float OneOverPreExposure = View.OneOverPreExposure;
-#else
-	const float OneOverPreExposure = 1.f;
-#endif
 
 #if DEBUG_TONEMAPPER
 	// @param DebugTile 0,0 is center, -1,0 is left, 1,0 is right, ...
@@ -390,19 +435,10 @@ float4 TonemapCommonPS(
 	}
 #endif
 
-	#if USE_GRAIN_JITTER || USE_GRAIN_INTENSITY || USE_GRAIN_QUANTIZATION
-		half Grain = GrainFromUV(GrainUV.zw);
-	#endif
 	float2 SceneUV = UV.xy;
-	#if USE_GRAIN_JITTER
-		SceneUV = lerp(UV.xy, GrainUV.xy, (1.0 - Grain*Grain) * GrainScaleBiasJitter.z);
-	#endif
 
 	#if USE_COLOR_FRINGE
 		float2 SceneUVJitter = float2(0.0, 0.0);
-		#if USE_GRAIN_JITTER
-			SceneUVJitter = SceneUV.xy - UV.xy;
-		#endif
 		
 	        float2 CAScale = ChromaticAberrationParams.rg;
 	        float StartOffset = ChromaticAberrationParams.z;
@@ -427,9 +463,21 @@ float4 TonemapCommonPS(
 		half4 SceneColor = SampleSceneColor(SceneUV);
 	#endif
 
-	SceneColor.rgb *= OneOverPreExposure;
+	SceneColor.rgb *= View.OneOverPreExposure;
 
 	float ExposureScale = ExposureScaleVignette.x;
+
+#if USE_LOCAL_EXPOSURE
+	float LuminanceVal = CalculateEyeAdaptationLuminance(SceneColor.rgb);
+	float LogLuminance = log2(LuminanceVal);
+	float MiddleGreyLumValue = ExposureScaleVignette.y;
+
+	float BaseLogLum = CalculateBaseLogLuminance(LogLuminance, EyeAdaptation_LocalExposureBlurredLuminanceBlend, ExposureScale, FullViewUV, LumBilateralGrid, BlurredLogLum, LumBilateralGridSampler, BlurredLogLumSampler);
+	float LocalExposure = CalculateLocalExposure(LogLuminance + log2(ExposureScale), BaseLogLum, MiddleGreyLumValue, EyeAdaptation_LocalExposureContrastScale, EyeAdaptation_LocalExposureDetailStrength);
+
+	// Apply before bloom
+	SceneColor.rgb *= LocalExposure;
+#endif
 
 #if DEBUG_TONEMAPPER
 	if (all(DebugTile == int2(-1, 1)))
@@ -458,14 +506,14 @@ float4 TonemapCommonPS(
 
 		half A0 = Luminance(SceneColor.rgb);
 
-	#if HAS_PIXEL_QUAD_MESSAGE_PASSING_SUPPORT 
+	#if HAS_PIXEL_QUAD_MESSAGE_PASSING_SUPPORT
 		// Use Wave Intrinsics to reduce texture taps
 		FPQMPContext PQMP = PQMPInit(floor(SceneUV* Color_Extent));
 				
 		half4 LuminanceNeighbors;
 
-		half3 C1 = Texture2DSample(ColorTexture, ColorSampler, SceneUV + float2(PQMP.QuadVector.x, 0) * Color_ExtentInverse).rgb * OneOverPreExposure;
-		half3 C3 = Texture2DSample(ColorTexture, ColorSampler, SceneUV + float2(0, PQMP.QuadVector.y) * Color_ExtentInverse).rgb * OneOverPreExposure;
+		half3 C1 = LookupSceneColor(SceneUV, float2(PQMP.QuadVector.x, 0)).rgb * View.OneOverPreExposure;
+		half3 C3 = LookupSceneColor(SceneUV, float2(0, PQMP.QuadVector.y)).rgb * View.OneOverPreExposure;
 		LuminanceNeighbors.x = Luminance(C1);
 		LuminanceNeighbors.y = Luminance(C3);
 		
@@ -474,10 +522,10 @@ float4 TonemapCommonPS(
 		LuminanceNeighbors.z =  PQMPReadX(PQMP,A0);
 		LuminanceNeighbors.w =  PQMPReadY(PQMP,A0);
 	#else
-		half3 C1 = LookupSceneColor(SceneUV, int2(-1,  0)) * OneOverPreExposure;
-		half3 C2 = LookupSceneColor(SceneUV, int2( 1,  0)) * OneOverPreExposure;
-		half3 C3 = LookupSceneColor(SceneUV, int2( 0, -1)) * OneOverPreExposure;
-		half3 C4 = LookupSceneColor(SceneUV, int2( 0,  1)) * OneOverPreExposure;
+		half3 C1 = LookupSceneColor(SceneUV, float2(-1,  0)) * View.OneOverPreExposure;
+		half3 C2 = LookupSceneColor(SceneUV, float2( 1,  0)) * View.OneOverPreExposure;
+		half3 C3 = LookupSceneColor(SceneUV, float2( 0, -1)) * View.OneOverPreExposure;
+		half3 C4 = LookupSceneColor(SceneUV, float2( 0,  1)) * View.OneOverPreExposure;
 		half4 LuminanceNeighbors = half4(Luminance(C1), Luminance(C2), Luminance(C3), Luminance(C4));
 	#endif
 
@@ -514,7 +562,7 @@ float4 TonemapCommonPS(
 		OutColor.rgb = pow(SceneColor.rgb, InverseGamma.x);
 
 	#else 
-
+	{
 		#if METAL_MSAA_HDR_DECODE
 			// look for PreTonemapMSAA 
 			SceneColor.rgb *= rcp(SceneColor.r*(-0.299) + SceneColor.g*(-0.587) + SceneColor.b*(-0.114) + 1.0);
@@ -524,14 +572,29 @@ float4 TonemapCommonPS(
 	
 		half3 LinearColor = SceneColor.rgb * ColorScale0.rgb;
 
+		#if SUPPORTS_SCENE_COLOR_APPLY_PARAMETERS
+		{
+			float4 SceneColorMultiply = SceneColorApplyParamaters[0];
+			LinearColor *= SceneColorMultiply;
+		}
+		#endif
+
 		#if USE_BLOOM
-			float2 BloomUV = ColorToBloom_Scale * UV + ColorToBloom_Bias;
-			BloomUV = clamp(BloomUV, Bloom_UVViewportBilinearMin, Bloom_UVViewportBilinearMax);
+		{
+			float2 BloomUV;
 			#if ES3_1_PROFILE
+			{
 				BloomUV = FullViewUV.xy;
+			}
+			#else
+			{
+				BloomUV = ApplyScreenTransform(UV, ColorToBloom);
+				BloomUV = clamp(BloomUV, BloomUVViewportBilinearMin, BloomUVViewportBilinearMax);
+			}
 			#endif
+
 			float4 CombinedBloom = Texture2DSample(BloomTexture, BloomSampler, BloomUV);
-			CombinedBloom.rgb *= OneOverPreExposure; // Standard bloom path, convolution path has bloom already in scene color.
+			CombinedBloom.rgb *= View.OneOverPreExposure;
 
 			//float2 DirtViewportUV = (SvPosition.xy - float2(Output_ViewportMin)) * Output_ViewportSizeInverse; 
 
@@ -551,39 +614,53 @@ float4 TonemapCommonPS(
 #endif //DEBUG_TONEMAPPER
 
 			#if FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
+			{
 				// Support sunshaft and vignette for mobile, and we have applied the BloomIntensity and the BloomDirtMask at the sun merge pass.
 				LinearColor = LinearColor.rgb * CombinedBloom.a + CombinedBloom.rgb;
+			}
 			#else
-			
+			{
 				float2 DirtLensUV = ConvertScreenViewportSpaceToLensViewportSpace(ScreenPos) * float2(1.0f, -1.0f);
 
 				float3 BloomDirtMaskColor = Texture2DSample(BloomDirtMaskTexture, BloomDirtMaskSampler, DirtLensUV * .5f + .5f).rgb * BloomDirtMaskTint.rgb;
-
-				LinearColor += CombinedBloom.rgb * (ColorScale1.rgb + BloomDirtMaskColor); 
+				
+				LinearColor += CombinedBloom.rgb * (1.0 + BloomDirtMaskColor);
+			}
 			#endif
+		}
 		#endif
 
+		// TODO: doesn't need a shader permutation for a scalar.
 		#if NO_EYEADAPTATION_EXPOSURE_FIX == 1
-			ExposureScale = BloomDirtMaskTint.w;
+			ExposureScale = 1.0;
 		#endif
 		
 		LinearColor *= ExposureScale;
 
 		#if USE_VIGNETTE
-			LinearColor.rgb *= ComputeVignetteMask( ExposureScaleVignette.yz, TonemapperParams.x );
+			LinearColor.rgb *= ComputeVignetteMask( ExposureScaleVignette.zw, TonemapperParams.x );
 		#endif
 
-		#if USE_GRAIN_INTENSITY
-			// Needs to go before tonemapping.
-			half GrainMul = Grain * GrainScaleBiasJitter.x + GrainScaleBiasJitter.y;
-			LinearColor.rgb *= GrainMul;
+		#if USE_FILM_GRAIN
+		{
+			float3 FilmGrainDecodeMultiply = FilmGrainTextureConstants[0].rgb;
+
+			half FilmGrainIntensity = ComputeFilmGrainIntensity(LinearColor);
+
+			float2 FilmGrainUV = ApplyScreenTransform(ScreenPos, ScreenPosToFilmGrainTextureUV);
+
+			half3 RawGrain = FilmGrainTexture.SampleLevel(FilmGrainSampler, FilmGrainUV, 0);
+			half3 FinalGrain = RawGrain * half3(FilmGrainDecodeMultiply);
+
+			LinearColor.rgb *= lerp(1.0, FinalGrain, FilmGrainIntensity);
+		}
 		#endif
 
-			half3 OutDeviceColor = ColorLookupTable(LinearColor);
-
-		half LuminanceForPostProcessAA  = dot(OutDeviceColor, half3(0.299f, 0.587f, 0.114f));
+		half3 OutDeviceColor = ColorLookupTable(LinearColor);
 
 		#if USE_GRAIN_QUANTIZATION
+			half Grain = GrainFromUV(GrainUV.zw);
+
 			#if DIM_OUTPUT_DEVICE == TONEMAPPER_OUTPUT_NoToneCurve
 				#error LinearNoToneCurve device requires no Grain Quantization
 			#endif
@@ -602,7 +679,7 @@ float4 TonemapCommonPS(
 		#endif
 
 		// RETURN_COLOR not needed unless writing to SceneColor
-		OutColor = float4(OutDeviceColor, saturate(LuminanceForPostProcessAA));
+		OutColor.rgb = OutDeviceColor;
 
 		#if USE_LINEAR_FLOAT_RT
 			OutColor.rgb = sRGBToLinear( OutColor.rgb );
@@ -618,10 +695,10 @@ float4 TonemapCommonPS(
 		#elif DIM_OUTPUT_DEVICE == TONEMAPPER_OUTPUT_WithToneCurve
 			OutColor.xyz = OutDeviceColor;
 		#endif
-
+	}
 	#endif
 	
-	#if (FEATURE_LEVEL <= FEATURE_LEVEL_ES3_1 && USE_FXAA == 0) || POST_PROCESS_ALPHA == 2 || (POST_PROCESS_ALPHA == 1 && DIM_OUTPUT_DEVICE == TONEMAPPER_OUTPUT_NoToneCurve)  || (POST_PROCESS_ALPHA == 1 && DIM_OUTPUT_DEVICE == TONEMAPPER_OUTPUT_WithToneCurve)
+	#if POST_PROCESS_ALPHA == 2 || (POST_PROCESS_ALPHA == 1 && DIM_OUTPUT_DEVICE == TONEMAPPER_OUTPUT_NoToneCurve)  || (POST_PROCESS_ALPHA == 1 && DIM_OUTPUT_DEVICE == TONEMAPPER_OUTPUT_WithToneCurve)
 		OutColor.a = SceneColor.a;
 	#endif
 
@@ -644,7 +721,7 @@ float4 TonemapCommonPS(
 	}
 #endif //DEBUG_TONEMAPPER
 
-#if SM5_PROFILE && !USE_GAMMA_ONLY
+#if PC_D3D && !USE_GAMMA_ONLY
 	// If HDR in the editor need to convert from PQ space to linear sRGB
 	BRANCH
 	if(bOutputInHDR)
@@ -660,7 +737,7 @@ float4 TonemapCommonPS(
 // pixel shader entry point
 void MainPS(
 	in noperspective float2 UV : TEXCOORD0,
-	in noperspective float3 InExposureScaleVignette : TEXCOORD1,
+	in noperspective float4 InExposureScaleVignette : TEXCOORD1,
 	in noperspective float4 GrainUV : TEXCOORD2,
 	in noperspective float2 ScreenPos : TEXCOORD3,
 	in noperspective float2 FullViewUV : TEXCOORD4,
@@ -686,7 +763,7 @@ void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 
-	float3 ExposureScaleVignette;
+	float4 ExposureScaleVignette;
 	float4 GrainUV;
 	float2 FullViewUV, ScreenPos;	
 	TonemapCommonVS(InScreenPos, UV, ExposureScaleVignette, GrainUV, ScreenPos, FullViewUV);
@@ -701,248 +778,3 @@ void MainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 }
 #endif
 
-
-// Mobile version
-// TODO: Convert float to half.
-
-float FringeIntensity;
-
-float4 BufferSizeAndInvSize;
-float4 DofBlurSizeAndInvSize;
-
-// vertex shader entry point
-void MainVS_Mobile(
-	in float4 InPosition : ATTRIBUTE0,
-	in float2 InTexCoord : ATTRIBUTE1,
-	out float4 OutTexCoord : TEXCOORD0,
-	out float4 OutFineDofGrain : TEXCOORD1,
-	out float4 OutFullViewUV : TEXCOORD2,
-	out float3 OutVignetteExposureScale : TEXCOORD3,
-	out float2 OutTexCoords[4] : TEXCOORD4,
-	out float4 OutFringeTexCoords : FRINGE_COORDS,
-	out float4 OutPosition : SV_POSITION
-	)
-{
-#if NEEDTOSWITCHVERTICLEAXIS
-	// This is currently the last pass, so flip the texture on V to match D3D
-	InTexCoord.y = 1.0-InTexCoord.y;
-#endif
-
-#if EYEADAPTATION_EXPOSURE_FIX == 1
-	// texture can be GWhiteTexture which is 1x1. It's important we don't read outside bounds.
-	OutVignetteExposureScale.z = EyeAdaptationBuffer[0].x;
-#else
-	// If eye adaptation is disabled (e.g. fixed exposure level ) or  not available.  
-	OutVignetteExposureScale.z = DefaultEyeExposure;
-#endif
-
-	DrawRectangle(InPosition, InTexCoord, OutPosition, OutTexCoord.xy);
-	OutTexCoord = float4(OutTexCoord.xy, OutPosition.xy);
-
-	// Fine adjustment is inside the possible non-full viewport in the full resolution texture.
-	OutFineDofGrain.xy = OutTexCoord.xy + BufferSizeAndInvSize.zw * float2(-0.5,0.5);
-	// Want grain and a second UV based on the knowledge that the source texture has a full viewport.
-	OutFullViewUV.xy = OutPosition.xy * float2(0.5,-0.5) + 0.5;
-	#if NEEDTOSWITCHVERTICLEAXIS
-		// This is currently the last pass, so flip the texture on V to match D3D
-		OutFullViewUV.y = 1.0 - OutFullViewUV.y;
-	#endif
-	// For DOF attempt to undo sampling bias for the first transition region.
-	// This is better for the fine transition, breaks down for the larger bokeh.
-	// This is the best compromise for mobile using 4 bilinear taps only.
-	OutFullViewUV.zw = OutFullViewUV.xy + DofBlurSizeAndInvSize.zw * float2(0.25,-0.5);
-	OutFineDofGrain.zw = OutFullViewUV.xy + GrainRandomFull.xy;
-	// NEWS
-	OutTexCoords[0] = OutTexCoord.xy + BufferSizeAndInvSize.zw * float2( 0,-1);
-	OutTexCoords[1] = OutTexCoord.xy + BufferSizeAndInvSize.zw * float2( 1, 0);
-	OutTexCoords[2] = OutTexCoord.xy + BufferSizeAndInvSize.zw * float2(-1, 0);
-	OutTexCoords[3] = OutTexCoord.xy + BufferSizeAndInvSize.zw * float2( 0, 1);
-
-	float2 ColorViewportPos = UVToScreenPos(OutTexCoord.xy, BufferSizeAndInvSize.xy);
-
-	// Scale vignette to always be a circle with consistent corner intensity.
-	float2 LensViewportPos = ConvertScreenViewportSpaceToLensViewportSpace(ColorViewportPos);
-	OutVignetteExposureScale.xy = VignetteSpace(LensViewportPos);
-
-	// Compute fringe tex coord offsets
-	BRANCH
-	if (FringeIntensity > 0.0)
-	{
-		// Wavelength of primaries in nm
-		half PrimaryR = 611.3f;
-		half PrimaryG = 549.1f;
-		half PrimaryB = 464.3f;
-
-		// Simple lens chromatic aberration is roughly linear in wavelength
-		float ScaleR = 0.007f * (PrimaryR - PrimaryB);
-		float ScaleG = 0.007f * (PrimaryG - PrimaryB);
-
-		// Fringe
-		float2 ScreenPos = UVToScreenPos(OutTexCoord.xy, BufferSizeAndInvSize.xy);
-		OutFringeTexCoords.xy = ScreenPosToUV(ScreenPos * (1.0/(1.0 + (FringeIntensity * ScaleG))), BufferSizeAndInvSize.zw);
-		OutFringeTexCoords.zw = ScreenPosToUV(ScreenPos * (1.0/(1.0 + (FringeIntensity * ScaleR))), BufferSizeAndInvSize.zw);
-	}
-	else
-	{
-		OutFringeTexCoords = 0.0;
-	}
-}
-
-float4 OverlayColor;
-float SRGBAwareTarget;
-
-Texture2D SceneColorTexture;
-SamplerState SceneColorSampler;
-
-Texture2D DofBlurTexture;
-SamplerState DofBlurSampler;
-
-Texture2D SunShaftAndDofTexture;
-SamplerState SunShaftAndDofSampler;
-
-void MainPS_Mobile(
-	in float4 UVAndScreenPos : TEXCOORD0,
-	in float4 FineDofGrain : TEXCOORD1,
-	in float4 FullViewUV : TEXCOORD2,
-	in float3 InVignetteExposureScale : TEXCOORD3,
-	in float2 InTexCoords[4] : TEXCOORD4,
-	in float4 InFringeTexCoords : FRINGE_COORDS,
-	out half4 OutColor : SV_Target0
-	)
-{
-	float2 UV = UVAndScreenPos.xy;
-	float2 ScreenSpacePos = UVAndScreenPos.zw;
-
-	half4 SceneColor;
-
-#if USE_PREEXPOSURE
-	const float OneOverPreExposure = View.OneOverPreExposure;
-#else
-	const float OneOverPreExposure = 1.f;
-#endif
-	
-	BRANCH
-	if (FringeIntensity > 0.0)
-	{
-		SceneColor.r = Texture2DSample(SceneColorTexture, SceneColorSampler, InFringeTexCoords.zw).r;
-		SceneColor.g = Texture2DSample(SceneColorTexture, SceneColorSampler, InFringeTexCoords.xy).g;
-		SceneColor.b = Texture2DSample(SceneColorTexture, SceneColorSampler, UV).b;
-		SceneColor.a = 1.0;
-	}
-	else
-	{
-		SceneColor = Texture2DSample(SceneColorTexture, SceneColorSampler, UV);
-	}
-
-	#if USE_GAMMA_ONLY
-		
-		#if FEATURE_LEVEL == FEATURE_LEVEL_ES3_1
-			OutColor.rgb = pow(SceneColor.rgb, InverseGamma.x);
-		#else
-			OutColor.rgb = sqrt(SceneColor.rgb);
-		#endif
-
-	#else
-
-		#if USE_GRAIN_JITTER || USE_GRAIN_INTENSITY || USE_GRAIN_QUANTIZATION
-			half Grain = GrainFromUV(FineDofGrain.zw);
-		#endif
-
-		#if USE_DOF
-			half4 DofFine = Texture2DSample(SceneColorTexture, SceneColorSampler, FineDofGrain.xy);
-			half4 Dof = Texture2DSample(DofBlurTexture, DofBlurSampler, FullViewUV.zw);
-			half DofCoc = Texture2DSample(SunShaftAndDofTexture, SunShaftAndDofSampler, UV).r;
-			// Convert alpha back into circle of confusion.
-			SceneColor.a = max(Dof.a, abs(DofCoc * 2.0 - 1.0));
-			// Convert circle of confusion into blend factors.		
-			half2 ScaleBias = CocBlendScaleBias(); // Constant.
-			half DofAmount = saturate(SceneColor.a * ScaleBias.x + ScaleBias.y);
-			half2 ScaleBias2 = CocBlendScaleBiasFine(); // Constant.
-			half DofAmountFine = saturate(SceneColor.a * ScaleBias2.x + ScaleBias2.y);
-			#if USE_GRAIN_JITTER
-				// Grain can increase fine DOF.
-				DofAmountFine = max((1.0-Grain*Grain) * GrainScaleBiasJitter.z, DofAmountFine);
-			#endif
-			// Blend in fine DOF.
-			SceneColor.rgb = lerp(SceneColor.rgb, DofFine.rgb, DofAmountFine);
-			// Blend in coarse DOF.
-			SceneColor.rgb = lerp(SceneColor.rgb, Dof.rgb, DofAmount);
-		#else
-			#if USE_GRAIN_JITTER
-				// Do jitter for grain.
-				half4 DofFine = Texture2DSample(SceneColorTexture, SceneColorSampler, FineDofGrain.xy);
-				// Grain jitter.
-				SceneColor.rgb = lerp(SceneColor.rgb, DofFine.rgb, (1.0-Grain*Grain) * GrainScaleBiasJitter.z);
-			#endif
-		#endif
-
-		#if METAL_MSAA_HDR_DECODE
-			// Do after jitter for grain as an optimization.
-			SceneColor.rgb *= rcp(SceneColor.r*(-0.299) + SceneColor.g*(-0.587) + SceneColor.b*(-0.114) + 1.0);
-			// Try to kill negatives and NaNs here
-			SceneColor.rgb = max(SceneColor.rgb, 0);
-		#endif
-
-		#if !USE_DOF
-			// Set so temporal AA shader knows everything is in focus.
-			SceneColor.a = 0.0;
-		#endif
-
-		// Match PC naming.
-		half3 LinearColor = SceneColor.rgb * OneOverPreExposure;
-
-		float ExposureScale = InVignetteExposureScale.z;
-		
-		#if USE_VIGNETTE
-			LinearColor.rgb *= ComputeVignetteMask(InVignetteExposureScale.xy, TonemapperParams.x );
-		#endif
-
-		// It is faster to do vignette as a texture lookup + mad because this is an ALU bound shader.
-		#if (USE_BLOOM || USE_LIGHT_SHAFTS || USE_VIGNETTE)
-		{
-			half4 CombinedBloomSunVignette = Texture2DSample(BloomTexture, BloomSampler, FullViewUV.xy);
-			LinearColor.rgb = LinearColor.rgb * CombinedBloomSunVignette.a + CombinedBloomSunVignette.rgb * OneOverPreExposure;
-		}
-		#endif
-
-		LinearColor *= ExposureScale;
-
-		#if USE_GRAIN_INTENSITY
-			// Needs to go before tonemapping.
-			half GrainMul = Grain * GrainScaleBiasJitter.x + GrainScaleBiasJitter.y;
-			LinearColor.rgb *= GrainMul;
-		#endif
-
-		half3 FilmColor = FilmPostProcess(LinearColor.rgb);
-		half3 TonemappedColor;
-		if (SRGBAwareTarget > 0.5)
-		{
-			// skip sRGB conversion if HW conversion will take place.
-			TonemappedColor = FilmColor;
-		}
-		else
-		{
-			// Apply conversion to sRGB (this must be an exact sRGB conversion else darks are bad).
-			TonemappedColor = LinearToPostTonemapSpace(FilmColor);
-		}
-
-
-		// Blend with custom LDR color, used for Fade track in Matinee.
-		// This is the 101% wrong way to do this,
-		//  - It adds an extra redundant lerp.
-		//  - It is not going to work with the future-forward ES3 fast path of sRGB output.
-		//  - And it does super ugly non-linear blending.
-		// The right way is to adjust exposure instead.
-		TonemappedColor = lerp(TonemappedColor.rgb, OverlayColor.rgb, OverlayColor.a);
-
-		#if USE_GRAIN_QUANTIZATION
-			// Needs to go after tonemapping.
-			half GrainQuantization = 1.0/256.0;
-			half GrainAdd = (Grain * GrainQuantization) + (-0.5 * GrainQuantization);
-			TonemappedColor.rgb += GrainAdd;
-		#endif
-			
-			OutColor = half4(TonemappedColor, SceneColor.a);
-
-	#endif
-}

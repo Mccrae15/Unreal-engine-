@@ -2,7 +2,6 @@
 
 #include "HeadlessChaos.h"
 
-#include "Chaos/Collision/CollisionReceiver.h"
 #include "Chaos/Collision/NarrowPhase.h"
 #include "Chaos/Collision/ParticlePairBroadPhase.h"
 #include "Chaos/Collision/ParticlePairCollisionDetector.h"
@@ -24,13 +23,14 @@ namespace ChaosTest
 	{
 		// @todo(ccaulfield): remove template parameters on collisions and other constraints
 		using FCollisionConstraints = FPBDCollisionConstraints;
-		using FCollisionDetector = FParticlePairCollisionDetector;
+		using FCollisionDetector = FBasicCollisionDetector;
 		using FRigidParticleSOAs = FPBDRigidsSOAs;
 		using FParticleHandle = FPBDRigidParticleHandle;
 		using FParticlePair = TVec2<FGeometryParticleHandle*>;
 
 		// Particles
-		FRigidParticleSOAs ParticlesContainer;
+		FParticleUniqueIndicesMultithreaded UniqueIndices;
+		FRigidParticleSOAs ParticlesContainer(UniqueIndices);
 
 		// @todo(ccaulfield): we shouldn't require collisions to use an evolution...
 		// Stuff needed for collisions
@@ -40,9 +40,9 @@ namespace ChaosTest
 		TArrayCollectionArray<TUniquePtr<Chaos::FChaosPhysicsMaterial>> PerParticleMaterials;
 		TArrayCollectionArray<FVec3> ParticlePrevXs;
 		TArrayCollectionArray<FRotation3> ParticlePrevRs;
-		FCollisionConstraints Collisions(ParticlesContainer, CollidedParticles, ParticleMaterials, PerParticleMaterials);
-		FParticlePairBroadPhase BroadPhase(&ActivePotentiallyCollidingPairs, nullptr, nullptr, 0);
-		FNarrowPhase NarrowPhase;
+		FCollisionConstraints Collisions(ParticlesContainer, CollidedParticles, ParticleMaterials, PerParticleMaterials, nullptr);
+		FBasicBroadPhase BroadPhase(&ActivePotentiallyCollidingPairs, nullptr, nullptr);
+		FNarrowPhase NarrowPhase(0, 0, Collisions.GetConstraintAllocator());
 		FCollisionDetector CollisionDetector(BroadPhase, NarrowPhase, Collisions);
 		TSimpleConstraintRule<FCollisionConstraints> CollisionsRule(1, Collisions);
 		// End collisions stuff
@@ -71,17 +71,17 @@ namespace ChaosTest
 		// @todo(ccaulfield) this needs to be easier
 		Particles[0]->X() = FVec3(-50, 0, 0);
 		Particles[0]->M() = 1.0f;
-		Particles[0]->I() = FMatrix33(100.0f, 100.0f, 100.0f);
+		Particles[0]->I() = TVec3<FRealSingle>(100.0f, 100.0f, 100.0f);
 		Particles[0]->InvM() = 1.0f;
-		Particles[0]->InvI() = FMatrix33(1.0f / 100.0f, 1.0f / 100.0f, 1.0f / 100.0f);
+		Particles[0]->InvI() = TVec3<FRealSingle>(1.0f / 100.0f, 1.0f / 100.0f, 1.0f / 100.0f);
 		Particles[0]->AuxilaryValue(ParticlePrevXs) = Particles[0]->X();
 		Particles[0]->AuxilaryValue(ParticlePrevRs) = Particles[0]->R();
 
 		Particles[1]->X() = FVec3(50, 0, 0);
 		Particles[1]->M() = 1.0f;
-		Particles[1]->I() = FMatrix33(100.0f, 100.0f, 100.0f);
+		Particles[1]->I() = TVec3<FRealSingle>(100.0f, 100.0f, 100.0f);
 		Particles[1]->InvM() = 1.0f;
-		Particles[1]->InvI() = FMatrix33(1.0f / 100.0f, 1.0f / 100.0f, 1.0f / 100.0f);
+		Particles[1]->InvI() = TVec3<FRealSingle>(1.0f / 100.0f, 1.0f / 100.0f, 1.0f / 100.0f);
 		Particles[1]->AuxilaryValue(ParticlePrevXs) = Particles[1]->X();
 		Particles[1]->AuxilaryValue(ParticlePrevRs) = Particles[1]->R();
 

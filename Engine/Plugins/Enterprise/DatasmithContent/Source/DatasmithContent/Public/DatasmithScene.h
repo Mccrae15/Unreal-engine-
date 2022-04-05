@@ -30,7 +30,7 @@ public:
 #if WITH_EDITORONLY_DATA
 	/** Importing data and options used for this Datasmith scene */
 	UPROPERTY(EditAnywhere, Instanced, Category=ImportSettings)
-	class UDatasmithSceneImportData* AssetImportData;
+	TObjectPtr<class UDatasmithSceneImportData> AssetImportData;
 
 	UPROPERTY()
 	int32 BulkDataVersion; // Need an external version number because loading of the bulk data is handled externally
@@ -63,8 +63,12 @@ public:
 
 	/** Array of user data stored with the asset */
 	UPROPERTY()
-	TArray< UAssetUserData* > AssetUserData;
+	TArray< TObjectPtr<UAssetUserData> > AssetUserData;
 #endif // #if WITH_EDITORONLY_DATA
+
+	//~ Begin UObject Interface
+	virtual void GetAssetRegistryTags(TArray<FAssetRegistryTag>& OutTags) const override;
+	//~ End UObject Interface
 
 	/** Register the DatasmithScene to the PreWorldRename callback as needed*/
 	void RegisterPreWorldRenameCallback();

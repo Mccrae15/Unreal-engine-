@@ -31,34 +31,6 @@ FPixelShaderRHIRef FMetalDynamicRHI::RHICreatePixelShader(TArrayView<const uint8
 	}
 }
 
-FHullShaderRHIRef FMetalDynamicRHI::RHICreateHullShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	@autoreleasepool {
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		FMetalHullShader* Shader = new FMetalHullShader(Code);
-#else
-		FMetalHullShader* Shader = new FMetalHullShader;
-		FMetalCodeHeader Header;
-		Shader->Init(Code, Header);
-#endif // PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		return Shader;
-	}
-}
-
-FDomainShaderRHIRef FMetalDynamicRHI::RHICreateDomainShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	@autoreleasepool {
-#if PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		FMetalDomainShader* Shader = new FMetalDomainShader(Code);
-#else
-		FMetalDomainShader* Shader = new FMetalDomainShader;
-		FMetalCodeHeader Header;
-		Shader->Init(Code, Header);
-#endif // PLATFORM_SUPPORTS_TESSELLATION_SHADERS
-		return Shader;
-	}
-}
-
 FGeometryShaderRHIRef FMetalDynamicRHI::RHICreateGeometryShader(TArrayView<const uint8> Code, const FSHAHash& Hash)
 {
 	@autoreleasepool {
@@ -131,10 +103,7 @@ FRHIShaderLibraryRef FMetalDynamicRHI::RHICreateShaderLibrary(EShaderPlatform Pl
 				for (uint32 i = 0; i < Header.NumLibraries; i++)
 				{
 					FString MetalLibraryFilePath = (FilePath / LibName) + FString::Printf(TEXT(".%d.metallib"), i);
-					MetalLibraryFilePath = FPaths::ConvertRelativePathToFull(MetalLibraryFilePath);
-#if !PLATFORM_MAC
 					MetalLibraryFilePath = IFileManager::Get().ConvertToAbsolutePathForExternalAppForRead(*MetalLibraryFilePath);
-#endif // !PLATFORM_MAC
 
 					METAL_GPUPROFILE(FScopedMetalCPUStats CPUStat(FString::Printf(TEXT("NewLibraryFile: %s"), *MetalLibraryFilePath)));
 					NSError* Error;
@@ -170,8 +139,6 @@ FRHIShaderLibraryRef FMetalDynamicRHI::RHICreateShaderLibrary(EShaderPlatform Pl
 FBoundShaderStateRHIRef FMetalDynamicRHI::RHICreateBoundShaderState(
 	FRHIVertexDeclaration* VertexDeclarationRHI,
 	FRHIVertexShader* VertexShaderRHI,
-	FRHIHullShader* HullShaderRHI,
-	FRHIDomainShader* DomainShaderRHI,
 	FRHIPixelShader* PixelShaderRHI,
 	FRHIGeometryShader* GeometryShaderRHI)
 {
@@ -182,16 +149,6 @@ FBoundShaderStateRHIRef FMetalDynamicRHI::RHICreateBoundShaderState(
 FVertexShaderRHIRef FMetalDynamicRHI::CreateVertexShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
 {
 	return RHICreateVertexShader(Code, Hash);
-}
-
-FHullShaderRHIRef FMetalDynamicRHI::CreateHullShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return RHICreateHullShader(Code, Hash);
-}
-
-FDomainShaderRHIRef FMetalDynamicRHI::CreateDomainShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)
-{
-	return RHICreateDomainShader(Code, Hash);
 }
 
 FGeometryShaderRHIRef FMetalDynamicRHI::CreateGeometryShader_RenderThread(class FRHICommandListImmediate& RHICmdList, TArrayView<const uint8> Code, const FSHAHash& Hash)

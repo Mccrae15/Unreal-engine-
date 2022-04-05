@@ -12,7 +12,9 @@
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 #include "UObject/LinkerDiff.h"
+#include "UObject/LinkerSave.h"
 #include "UObject/Package.h"
+#include "UObject/SavePackage.h"
 #include "UObject/UObjectGlobals.h"
 #include "UObject/UObjectHash.h"
 
@@ -25,32 +27,18 @@ int32 USavePackageUtilitiesCommandlet::Main(const FString& Params)
 {
 	InitParameters(Params);
 
-	auto GetPackageAsset = [](UPackage* InPackage) -> UObject*
-	{
-		UObject* Asset = nullptr;
-		ForEachObjectWithPackage(InPackage, [&Asset](UObject* Object)
-			{
-				if (Object->IsAsset())
-				{
-					Asset = Object;
-					return false;
-				}
-				return true;
-			}, /*bIncludeNestedObjects*/ false);
-		return Asset;
-	};
-
 	for (const FString& PackageName : PackageNames)
 	{
 		// Load Package
 		UPackage* Package = LoadPackage(nullptr, *PackageName, LOAD_None);
-		UObject* Asset = GetPackageAsset(Package);
+		UObject* Asset = Package->FindAssetInPackage();
 		FString Filename = FPaths::CreateTempFilename(*FPaths::ProjectSavedDir());
 
 		FSavePackageArgs SaveArgs;
 		SaveArgs.TopLevelFlags = RF_Public;
 		SaveArgs.SaveFlags = SAVE_CompareLinker;
 		SaveArgs.TargetPlatform = TargetPlatform;
+		SaveArgs.bSlowTask = false;
 
 		// if not cooking add RF_Standalone to the top level flags
 		if (TargetPlatform == nullptr)
@@ -65,22 +53,22 @@ int32 USavePackageUtilitiesCommandlet::Main(const FString& Params)
 		// New Save Package
 		FSavePackageResultStruct NewResult;
 		{
-			EnableNewSave->Set(1);
-			NewResult = GEditor->Save(Package, Asset, SaveArgs.TopLevelFlags, *Filename,
-				GError, nullptr, false, true, SaveArgs.SaveFlags, SaveArgs.TargetPlatform,
-				FDateTime::MinValue(), false, /*DiffMap*/ nullptr,
-				nullptr);
-
+			EnableNewSave->Set(3); // Enable new save cooked and uncooked data
+			NewResult = GEditor->Save(Package, Asset, *Filename, SaveArgs);
 		}
 
 		// Old Save Package
 		FSavePackageResultStruct OldResult;
 		{
 			EnableNewSave->Set(0);
-			OldResult = GEditor->Save(Package, Asset, SaveArgs.TopLevelFlags, *Filename,
-				GError, nullptr, false, true, SaveArgs.SaveFlags, SaveArgs.TargetPlatform,
-				FDateTime::MinValue(), false, /*DiffMap*/ nullptr,
-				nullptr);
+			OldResult = GEditor->Save(Package, Asset, *Filename, SaveArgs);
+		}
+
+		// Old Save Package
+		FSavePackageResultStruct OldResultCheck;
+		{
+			EnableNewSave->Set(0);
+			OldResultCheck = GEditor->Save(Package, Asset, *Filename, SaveArgs);
 		}
 		EnableNewSave->Set(EnableNewSavePreviousValue);
 
@@ -90,7 +78,15 @@ int32 USavePackageUtilitiesCommandlet::Main(const FString& Params)
 			FLinkerDiff LinkerDiff = FLinkerDiff::CompareLinkers(OldResult.LinkerSave.Get(), NewResult.LinkerSave.Get());
 			LinkerDiff.PrintDiff(*GWarn);
 		}
-		
+
+		// Add a old save against itself check to test potential byproduct, doesn't catch them all, since oftentimes byproduct are caused by the first save
+		if (OldResultCheck.LinkerSave && OldResult.LinkerSave)
+		{
+			// Compare Linker Save info
+			FLinkerDiff LinkerDiff = FLinkerDiff::CompareLinkers(OldResultCheck.LinkerSave.Get(), OldResult.LinkerSave.Get());
+			LinkerDiff.PrintDiff(*GWarn);
+		}
+
 		// Delete the temp filename
 		IFileManager::Get().Delete(*Filename);
 	}

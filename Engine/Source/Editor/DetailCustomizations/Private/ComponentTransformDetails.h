@@ -31,7 +31,7 @@ namespace ETransformField
 /**
  * Manages the Transform section of a details view                    
  */
-class FComponentTransformDetails : public TSharedFromThis<FComponentTransformDetails>, public IDetailCustomNodeBuilder, public TNumericUnitTypeInterface<float>
+class FComponentTransformDetails : public TSharedFromThis<FComponentTransformDetails>, public IDetailCustomNodeBuilder, public TNumericUnitTypeInterface<FVector::FReal>
 {
 public:
 	FComponentTransformDetails( const TArray< TWeakObjectPtr<UObject> >& InSelectedObjects, const FSelectedActorInfo& InSelectedActorInfo, IDetailLayoutBuilder& DetailBuilder );
@@ -45,7 +45,7 @@ public:
 	virtual void GenerateHeaderRowContent( FDetailWidgetRow& NodeRow ) override {}
 	virtual void GenerateChildContent( IDetailChildrenBuilder& ChildrenBuilder ) override;
 	virtual bool RequiresTick() const override { return true; }
-	virtual FName GetName() const override { return NAME_None; }
+	virtual FName GetName() const override { return "Transform"; }
 	virtual bool InitiallyCollapsed() const override { return false; }
 	virtual void Tick( float DeltaTime ) override;
 	virtual void SetOnRebuildChildren( FSimpleDelegate OnRebuildChildren ) override{}
@@ -77,13 +77,12 @@ private:
 	 * Sets a single axis value, called from UI
 	 *
 	 * @param TransformField	The field (location/rotation/scale) to modify
-	 * @param NewValue		The new translation value
-	 * @param CommitInfo	Whether or not this was committed from pressing enter or losing focus
+	 * @param NewValue			The new translation value
+	 * @param CommitInfo		Whether or not this was committed from pressing enter or losing focus
 	 * @param Axis				Bitfield of which axis to set, can be multiple
-	 * @param bCommittted	true if the value was committed, false is the value comes from the slider
+	 * @param bCommittted		true if the value was committed, false is the value comes from the slider
 	 */
-	void OnSetTransformAxis(float NewValue, ETextCommit::Type CommitInfo, ETransformField::Type TransformField, EAxisList::Type Axis, bool bCommitted);
-
+	void OnSetTransformAxis(FVector::FReal NewValue, ETextCommit::Type CommitInfo, ETransformField::Type TransformField, EAxisList::Type Axis, bool bCommitted);
 
 	/** 
 	 * Helper to begin a new transaction for a slider interaction. 
@@ -96,19 +95,19 @@ private:
 	void OnBeginRotationSlider();
 
 	/** Called when the one of the axis sliders for object rotation is released */
-	void OnEndRotationSlider(float NewValue);
+	void OnEndRotationSlider(FRotator::FReal NewValue);
 
 	/** Called when one of the axis sliders for object location begins to change */
 	void OnBeginLocationSlider();
 
 	/** Called when one of the axis sliders for object location is released */
-	void OnEndLocationSlider(float NewValue);
+	void OnEndLocationSlider(FVector::FReal NewValue);
 
 	/** Called when one of the axis sliders for object scale begins to change */
 	void OnBeginScaleSlider();
 
 	/** Called when one of the axis sliders for object scale is released */
-	void OnEndScaleSlider(float NewValue);
+	void OnEndScaleSlider(FVector::FReal NewValue);
 
 	/** @return Icon to use in the preserve scale ratio check box */
 	const FSlateBrush* GetPreserveScaleRatioImage() const;
@@ -186,13 +185,13 @@ private:
 	FUIAction CreatePasteAction( ETransformField::Type TransformField ) const;
 
 	/** Called when the "Reset to Default" button for the location has been clicked */
-	FReply OnLocationResetClicked();
+	void OnLocationResetClicked();
 
 	/** Called when the "Reset to Default" button for the rotation has been clicked */
-	FReply OnRotationResetClicked();
+	void OnRotationResetClicked();
 
 	/** Called when the "Reset to Default" button for the scale has been clicked */
-	FReply OnScaleResetClicked();
+	void OnScaleResetClicked();
 
 	/** Extend the context menu for the X component */
 	void ExtendXScaleContextMenu( FMenuBuilder& MenuBuilder );
@@ -209,31 +208,31 @@ private:
 	void OnZScaleMirrored();
 
 	/** @return The X component of location */
-	TOptional<float> GetLocationX() const { return CachedLocation.X; }
+	TOptional<FVector::FReal> GetLocationX() const { return CachedLocation.X; }
 	/** @return The Y component of location */
-	TOptional<float> GetLocationY() const { return CachedLocation.Y; }
+	TOptional<FVector::FReal> GetLocationY() const { return CachedLocation.Y; }
 	/** @return The Z component of location */
-	TOptional<float> GetLocationZ() const { return CachedLocation.Z; }
+	TOptional<FVector::FReal> GetLocationZ() const { return CachedLocation.Z; }
 	/** @return The visibility of the "Reset to Default" button for the location component */
-	EVisibility GetLocationResetVisibility() const;
+	bool GetLocationResetVisibility() const;
 
 	/** @return The X component of rotation */
-	TOptional<float> GetRotationX() const { return CachedRotation.X; }
+	TOptional<FRotator::FReal> GetRotationX() const { return CachedRotation.X; }
 	/** @return The Y component of rotation */
-	TOptional<float> GetRotationY() const { return CachedRotation.Y; }
+	TOptional<FRotator::FReal> GetRotationY() const { return CachedRotation.Y; }
 	/** @return The Z component of rotation */
-	TOptional<float> GetRotationZ() const { return CachedRotation.Z; }
+	TOptional<FRotator::FReal> GetRotationZ() const { return CachedRotation.Z; }
 	/** @return The visibility of the "Reset to Default" button for the rotation component */
-	EVisibility GetRotationResetVisibility() const;
+	bool GetRotationResetVisibility() const;
 
 	/** @return The X component of scale */
-	TOptional<float> GetScaleX() const { return CachedScale.X; }
+	TOptional<FVector::FReal> GetScaleX() const { return CachedScale.X; }
 	/** @return The Y component of scale */
-	TOptional<float> GetScaleY() const { return CachedScale.Y; }
+	TOptional<FVector::FReal> GetScaleY() const { return CachedScale.Y; }
 	/** @return The Z component of scale */
-	TOptional<float> GetScaleZ() const { return CachedScale.Z; }
+	TOptional<FVector::FReal> GetScaleZ() const { return CachedScale.Z; }
 	/** @return The visibility of the "Reset to Default" button for the scale component */
-	EVisibility GetScaleResetVisibility() const;
+	bool GetScaleResetVisibility() const;
 
 	/** Cache a single unit to display all location components in */
 	void CacheCommonLocationUnits();
@@ -247,6 +246,7 @@ private:
 	void OnObjectsReplaced(const TMap<UObject*, UObject*>& ReplacementMap);
 private:
 	/** A vector where it may optionally be unset */
+	template <typename NumericType>
 	struct FOptionalVector
 	{
 		/**
@@ -260,15 +260,15 @@ private:
 		}
 
 		/**
-		 * Sets the value from an FRotator                   
+		 * Sets the value from an FRotator
 		 */
-		void Set( const FRotator& InRot )
+		void Set(const FRotator& InRot)
 		{
 			X = InRot.Roll;
 			Y = InRot.Pitch;
 			Z = InRot.Yaw;
 		}
-
+		
 		/** @return Whether or not the value is set */
 		bool IsSet() const
 		{
@@ -276,20 +276,20 @@ private:
 			return X.IsSet() && Y.IsSet() && Z.IsSet();
 		}
 
-		TOptional<float> X;
-		TOptional<float> Y;
-		TOptional<float> Z;
+		TOptional<NumericType> X;
+		TOptional<NumericType> Y;
+		TOptional<NumericType> Z;
 	};
-
+	
 	FSelectedActorInfo SelectedActorInfo;
 	/** Copy of selected actor references in the details view */
 	TArray< TWeakObjectPtr<UObject> > SelectedObjects;
 	/** Cache translation value of the selected set */
-	FOptionalVector CachedLocation;
+	FOptionalVector<FVector::FReal> CachedLocation;
 	/** Cache rotation value of the selected set */
-	FOptionalVector CachedRotation;
+	FOptionalVector<FRotator::FReal> CachedRotation;
 	/** Cache scale value of the selected set */
-	FOptionalVector CachedScale;
+	FOptionalVector<FVector::FReal> CachedScale;
 	/** Notify hook to use */
 	FNotifyHook* NotifyHook;
 	/** Mapping from object to relative rotation values which are not affected by Quat->Rotator conversions during transform calculations */

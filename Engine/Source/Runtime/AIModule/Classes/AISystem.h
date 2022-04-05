@@ -36,6 +36,9 @@ protected:
 	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", meta = (MetaClass = "AIHotSpotManager", DisplayName = "AIHotSpotManager Class"))
 	FSoftClassPath HotSpotManagerClassName;
 
+	/** Class that will be used to spawn the env query manager, can be game-specific */
+	UPROPERTY(globalconfig, EditAnywhere, Category = "AISystem", meta = (MetaClass = "EnvQueryManager", DisplayName = "EnvQueryManager Class"))
+	FSoftClassPath EnvQueryManagerClassName;
 public:
 	/** Default AI movement's acceptance radius used to determine whether 
  	 * AI reached path's end */
@@ -65,10 +68,9 @@ public:
 	bool bAllowStrafing;
 
 	/** 
-	 * Whether or not to enable Gameplay Tasks for move tasks
-     * this property is just a transition-time flag - in the end we're going to switch over to Gameplay Tasks anyway, that's the goal. 
+	 * Deprecated: Whether or not to enable Gameplay Tasks for move tasks (always enabled now)
 	 */
-	UPROPERTY(globalconfig, EditDefaultsOnly, Category = "Gameplay Tasks")
+	UPROPERTY(globalconfig, EditDefaultsOnly, Category = "Gameplay Tasks", meta=(DisplayName="DEPRECATED Enable BT AITasks"))
 	bool bEnableBTAITasks;
 
 	/** if enable will make EQS not complaint about using Controllers as queriers. Default behavior (false) will 
@@ -92,6 +94,9 @@ public:
 	UPROPERTY(globalconfig, EditDefaultsOnly, Category = "Blackboard")
 	bool bAddBlackboardSelfKey = true;
 
+	UPROPERTY(globalconfig, EditDefaultsOnly, Category = "Behavior Tree")
+	bool bClearBBEntryOnBTEQSFail = true;
+
 	/** Which collision channel to use for sight checks by default */
 	UPROPERTY(globalconfig, EditDefaultsOnly, Category = "PerceptionSystem")
 	TEnumAsByte<ECollisionChannel> DefaultSightCollisionChannel;
@@ -99,23 +104,23 @@ public:
 protected:
 	/** Behavior tree manager used by game */
 	UPROPERTY(Transient)
-	UBehaviorTreeManager* BehaviorTreeManager;
+	TObjectPtr<UBehaviorTreeManager> BehaviorTreeManager;
 
 	/** Environment query manager used by game */
 	UPROPERTY(Transient)
-	UEnvQueryManager* EnvironmentQueryManager;
+	TObjectPtr<UEnvQueryManager> EnvironmentQueryManager;
 
 	UPROPERTY(Transient)
-	UAIPerceptionSystem* PerceptionSystem;
+	TObjectPtr<UAIPerceptionSystem> PerceptionSystem;
 
 	UPROPERTY(Transient)
-	TArray<UAIAsyncTaskBlueprintProxy*> AllProxyObjects;
+	TArray<TObjectPtr<UAIAsyncTaskBlueprintProxy>> AllProxyObjects;
 
 	UPROPERTY(Transient)
-	UAIHotSpotManager* HotSpotManager;
+	TObjectPtr<UAIHotSpotManager> HotSpotManager;
 
 	UPROPERTY(Transient)
-	UNavLocalGridManager* NavLocalGrids;
+	TObjectPtr<UNavLocalGridManager> NavLocalGrids;
 
 	typedef TMultiMap<TWeakObjectPtr<UBlackboardData>, TWeakObjectPtr<UBlackboardComponent> > FBlackboardDataToComponentsMap;
 

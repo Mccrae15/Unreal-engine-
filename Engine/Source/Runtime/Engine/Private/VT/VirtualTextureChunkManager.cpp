@@ -15,13 +15,6 @@
 #include "VirtualTextureChunkDDCCache.h"
 #endif
 
-static int32 NumTranscodeRequests = 32;
-static FAutoConsoleVariableRef CVarNumTranscodeRequests(
-	TEXT("r.VT.NumTranscodeRequests"),
-	NumTranscodeRequests,
-	TEXT("Number of transcode request that can be in flight. default 32\n"),
-	ECVF_Default);
-
 FVirtualTextureChunkStreamingManager::FVirtualTextureChunkStreamingManager()
 {
 #if WITH_EDITOR
@@ -74,9 +67,8 @@ FVTRequestPageResult FVirtualTextureChunkStreamingManager::RequestTile(FUploadin
 	SCOPE_CYCLE_COUNTER(STAT_VTP_RequestTile);
 
 	const FVirtualTextureBuiltData* VTData = VTexture->GetVTData();
-	const uint32 TileIndex = VTData->GetTileIndex(vLevel, vAddress);
-	const int32 ChunkIndex = VTData->GetChunkIndex(TileIndex);
-	if (ChunkIndex == -1)
+	const uint32 TileOffset = VTData->GetTileOffset(vLevel, vAddress, 0);
+	if (TileOffset == ~0u)
 	{
 		static const auto CVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.VT.Verbose"));
 		if (CVar->GetValueOnRenderThread())
@@ -87,17 +79,21 @@ FVTRequestPageResult FVirtualTextureChunkStreamingManager::RequestTile(FUploadin
 		return EVTRequestPageStatus::Invalid;
 	}
 
+	const int32 ChunkIndex = VTData->GetChunkIndex(vLevel);
+	check(ChunkIndex >= 0);
+
 	// tile is being transcoded/is done transcoding
 	const FVTTranscodeKey TranscodeKey = FVirtualTextureTranscodeCache::GetKey(ProducerHandle, LayerMask, vLevel, vAddress);
-	FVTTranscodeTileHandle TranscodeHandle = TranscodeCache.FindTask(TranscodeKey);
-	if (TranscodeHandle.IsValid())
+	const FVTTranscodeTileHandleAndStatus TranscodeTaskResult = TranscodeCache.FindTask(TranscodeKey);
+	if (TranscodeTaskResult.Handle.IsValid())
 	{
-		const EVTRequestPageStatus Status = TranscodeCache.IsTaskFinished(TranscodeHandle) ? EVTRequestPageStatus::Available : EVTRequestPageStatus::Pending;
-		return FVTRequestPageResult(Status, TranscodeHandle.PackedData);
+		const EVTRequestPageStatus Status = TranscodeTaskResult.IsComplete ? EVTRequestPageStatus::Available : EVTRequestPageStatus::Pending;
+		return FVTRequestPageResult(Status, TranscodeTaskResult.Handle.PackedData);
 	}
 
 	// we limit the number of pending upload tiles in order to limit the memory required to store all the staging buffers
-	if (UploadCache.GetNumPendingTiles() >= (uint32)NumTranscodeRequests)
+	// Never throttle high priority requests
+	if (!UploadCache.IsInMemoryBudget() && Priority != EVTRequestPagePriority::High)
 	{
 		INC_DWORD_STAT(STAT_VTP_NumTranscodeDropped);
 		return EVTRequestPageStatus::Saturated;
@@ -123,8 +119,8 @@ FVTRequestPageResult FVirtualTextureChunkStreamingManager::RequestTile(FUploadin
 	}
 
 	// make a single read request that covers region of all requested tiles
-	const uint32 OffsetStart = VTData->GetTileOffset(ChunkIndex, TileIndex + MinLayerIndex);
-	const uint32 OffsetEnd = VTData->GetTileOffset(ChunkIndex, TileIndex + MaxLayerIndex + 1u);
+	const uint32 OffsetStart = VTData->GetTileOffset(vLevel, vAddress, MinLayerIndex);
+	const uint32 OffsetEnd = VTData->GetTileOffset(vLevel, vAddress, MaxLayerIndex + 1u);
 	const uint32 RequestSize = OffsetEnd - OffsetStart;
 
 	const FVTDataAndStatus TileDataResult = VTexture->ReadData(GraphCompletionEvents, ChunkIndex, OffsetStart, RequestSize, Priority);
@@ -142,7 +138,8 @@ FVTRequestPageResult FVirtualTextureChunkStreamingManager::RequestTile(FUploadin
 	TranscodeParams.vLevel = vLevel;
 	TranscodeParams.LayerMask = LayerMask;
 	TranscodeParams.Codec = CodecResult.Codec;
-	TranscodeHandle = TranscodeCache.SubmitTask(UploadCache, TranscodeKey, TranscodeParams, &GraphCompletionEvents);
+	TranscodeParams.Name = VTexture->GetName();
+	const FVTTranscodeTileHandle TranscodeHandle = TranscodeCache.SubmitTask(UploadCache, TranscodeKey, ProducerHandle, TranscodeParams, &GraphCompletionEvents);
 	return FVTRequestPageResult(EVTRequestPageStatus::Pending, TranscodeHandle.PackedData);
 }
 
@@ -163,7 +160,16 @@ IVirtualTextureFinalizer* FVirtualTextureChunkStreamingManager::ProduceTile(FRHI
 	return &UploadCache;
 }
 
-void FVirtualTextureChunkStreamingManager::WaitTasksFinished() const
+void FVirtualTextureChunkStreamingManager::GatherProducePageDataTasks(FVirtualTextureProducerHandle const& ProducerHandle, FGraphEventArray& InOutTasks) const
 {
-	TranscodeCache.WaitTasksFinished();
+	TranscodeCache.GatherProducePageDataTasks(ProducerHandle, InOutTasks);
+}
+
+void FVirtualTextureChunkStreamingManager::GatherProducePageDataTasks(uint64 RequestHandle, FGraphEventArray& InOutTasks) const
+{
+	FGraphEventRef Event = TranscodeCache.GetTaskEvent(FVTTranscodeTileHandle(RequestHandle));
+	if (Event)
+	{
+		InOutTasks.Emplace(MoveTemp(Event));
+	}
 }

@@ -109,6 +109,7 @@ struct AIMODULE_API FCrowdAvoidanceConfig
 	{}
 };
 
+// LWC_TODO_AI: Info.Angles and Info.Radii should be FReals. Most likely leave this until after 5.0
 USTRUCT()
 struct AIMODULE_API FCrowdAvoidanceSamplingPattern
 {
@@ -172,7 +173,6 @@ class AIMODULE_API UCrowdManager : public UCrowdManagerBase
 public:
 	UCrowdManager(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
-	virtual void PostInitProperties() override;
 	virtual void Tick(float DeltaTime) override;
 	virtual void BeginDestroy() override;
 
@@ -269,7 +269,7 @@ public:
 protected:
 
 	UPROPERTY(transient)
-	ANavigationData* MyNavData;
+	TObjectPtr<ANavigationData> MyNavData;
 
 	/** obstacle avoidance params */
 	UPROPERTY(config, EditAnywhere, Category = Config)
@@ -339,14 +339,6 @@ protected:
 	FCrowdTickHelper* TickHelper;
 #endif // WITH_EDITOR
 
-#if WITH_EDITORONLY_DATA
-	/** UWorld that's going to be used for debug drawing calls. DebugDrawingWorld should be different than GetWorld()
-	 *	only on dedicated-server.
-	 *	Note that this is only relevant when ENABLE_DRAW_DEBUG is enabled*/
-	UPROPERTY(transient)
-	UWorld* DebugDrawingWorld;
-#endif // WITH_EDITORONLY_DATA
-
 	/** try to initialize nav data from already existing ones */
 	virtual void UpdateNavData();
 
@@ -385,6 +377,7 @@ protected:
 	void DestroyCrowdManager();
 
 #if ENABLE_DRAW_DEBUG
+	UWorld* GetDebugDrawingWorld() const;
 	void DrawDebugCorners(const dtCrowdAgent* CrowdAgent) const;
 	void DrawDebugCollisionSegments(const dtCrowdAgent* CrowdAgent) const;
 	void DrawDebugPath(const dtCrowdAgent* CrowdAgent) const;

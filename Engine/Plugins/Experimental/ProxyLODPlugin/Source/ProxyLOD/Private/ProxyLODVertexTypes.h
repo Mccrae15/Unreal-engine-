@@ -19,7 +19,7 @@ public:
 	FPositionOnlyVertex() {}
 
 	uint32          MaterialIndex = 0;
-	FVector			Position;
+	FVector3f			Position;
 
 	FPositionOnlyVertex(const FPositionOnlyVertex& OtherVert) :
 		MaterialIndex(OtherVert.MaterialIndex),
@@ -33,13 +33,12 @@ public:
 	}
 
 	// Methods needed by the simplifier.
-	uint32			GetMaterialIndex() const { return MaterialIndex; }
-	FVector&		GetPos() { return Position; }
-	const FVector&	GetPos() const { return Position; }
+	FVector3f&		GetPos() { return Position; }
+	const FVector3f&	GetPos() const { return Position; }
 
 	// Required for the simplifier
-	float*			GetAttributes() { return (float*)NULL; }
-	const float*	GetAttributes() const { return (const float*)NULL; }
+	float*			GetAttributes() { return nullptr; }
+	const float*	GetAttributes() const { return nullptr; }
 
 	// Required for simplifier
 	void Correct() {}
@@ -48,8 +47,7 @@ public:
 	bool operator==(const VertType& OtherVert) const
 	{
 		bool Result = true;
-		if (MaterialIndex != OtherVert.MaterialIndex ||
-			Position != OtherVert.Position)
+		if (Position != OtherVert.Position)
 		{
 			Result = false;
 		}
@@ -111,10 +109,10 @@ public:
 	enum { NumAttributesValue = 3 };
 
 	uint32          MaterialIndex = 0;
-	FVector			Position;
+	FVector3f			Position;
 	// ---- Attributes --------
 	// currently just the components of the normal.
-	FVector			Normal;
+	FVector3f			Normal;
 
 
 	FPositionNormalVertex(const FPositionNormalVertex& OtherVert) :
@@ -128,13 +126,13 @@ public:
 	static uint32 NumAttributes()
 	{
 
-		return (sizeof(VertType) - sizeof(uint32) - sizeof(FVector)) / sizeof(float);
+		return (sizeof(VertType) - sizeof(uint32) - sizeof(FVector3f)) / sizeof(float);
 	}
 
 	// Methods needed by the simplifier.
 	uint32			GetMaterialIndex() const { return MaterialIndex; }
-	FVector&		GetPos() { return Position; }
-	const FVector&	GetPos() const { return Position; }
+	FVector3f&		GetPos() { return Position; }
+	const FVector3f&	GetPos() const { return Position; }
 	float*			GetAttributes() { return (float*)&Normal; }
 	const float*	GetAttributes() const { return (const float*)&Normal; }
 

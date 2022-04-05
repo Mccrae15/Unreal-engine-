@@ -55,11 +55,11 @@ public:
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category = "View")
 	FName ViewIdentifier = NAME_None;
 
-	/** Which categories to show in the details panel. If both this and the Properties To Show whitelist are empty, all properties will show. */
+	/** Which categories to show in the details panel. If both this and the Properties To Show lists are empty, all properties will show. */
 	UPROPERTY(EditAnywhere, Category = "View")
 	TArray<FName> CategoriesToShow;
 
-	/** Which properties to show in the details panel. If both this and the Categories To Show whitelist are empty, all properties will show. */
+	/** Which properties to show in the details panel. If both this and the Categories To Show lists are empty, all properties will show. */
 	UPROPERTY(EditAnywhere, Category = "View")
 	TArray<FName> PropertiesToShow;
 
@@ -83,15 +83,15 @@ public:
 	//~ End of UObject interface
 
 protected:
-	void ToggleWhitelistedProperties();
-	bool IsRowVisibilityFiltered() const;
-	bool GetIsPropertyVisible(const FPropertyAndParent& PropertyAndParent) const;
-	bool GetIsRowVisible(FName InRowName, FName InParentName) const;
+	void ToggleShowingOnlyAllowedProperties();
+	virtual bool IsRowVisibilityFiltered() const;
+	virtual bool GetIsPropertyVisible(const FPropertyAndParent& PropertyAndParent) const;
+	virtual bool GetIsRowVisible(FName InRowName, FName InParentName) const;
 
 private:
 	TSharedPtr<IDetailsView> DetailViewWidget;
 
-	/** Showing properties in this details panel works by whitelisting categories and properties. This flag enables you to show all properties without needing to specify. */
+	/** Showing properties in this details panel works by allowing only specific categories and properties. This flag enables you to show all properties without needing to specify. */
 	UPROPERTY()
-	bool bShowOnlyWhitelisted = true;
+	bool bShowOnlyAllowed = true;
 };

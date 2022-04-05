@@ -3,9 +3,9 @@
 #pragma once
 
 #include "RenderResource.h"
+#include "SkeletalMeshTypes.h"
 
 class FSkeletalMeshVertexDataInterface;
-struct FMeshToMeshVertData;
 
 /**
 * A vertex buffer for holding skeletal mesh clothing information only.
@@ -44,9 +44,9 @@ public:
 	/**
 	* Initializes the buffer with the given vertices.
 	* @param InVertices - The vertices to initialize the buffer with.
-	* @param InClothIndexMapping - Packed Map: u32 Key, u32 Value.
+	* @param InClothIndexMapping - The cloth deformer mapping data offset for a specific section/LODBias.
 	*/
-	ENGINE_API void Init(const TArray<FMeshToMeshVertData>& InMappingData, const TArray<uint64>& InClothIndexMapping);
+	ENGINE_API void Init(const TArray<FMeshToMeshVertData>& InMappingData, const TArray<FClothBufferIndexMapping>& InClothIndexMapping);
 
 
 	/**
@@ -118,24 +118,24 @@ public:
 		return VertexBufferSRV;
 	}
 
-	inline const TArray<uint64>& GetClothIndexMapping() const
+	inline const TArray<FClothBufferIndexMapping>& GetClothIndexMapping() const
 	{
 		return ClothIndexMapping;
 	}
 
 	/** Create an RHI vertex buffer with CPU data. CPU data may be discarded after creation (see TResourceArray::Discard) */
-	FVertexBufferRHIRef CreateRHIBuffer_RenderThread();
-	FVertexBufferRHIRef CreateRHIBuffer_Async();
+	FBufferRHIRef CreateRHIBuffer_RenderThread();
+	FBufferRHIRef CreateRHIBuffer_Async();
 
 	/** Similar to Init/ReleaseRHI but only update existing SRV so references to the SRV stays valid */
 	template <uint32 MaxNumUpdates>
-	void InitRHIForStreaming(FRHIVertexBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
+	void InitRHIForStreaming(FRHIBuffer* IntermediateBuffer, TRHIResourceUpdateBatcher<MaxNumUpdates>& Batcher)
 	{
 		if (VertexBufferRHI && IntermediateBuffer)
 		{
 			check(VertexBufferSRV);
 			Batcher.QueueUpdateRequest(VertexBufferRHI, IntermediateBuffer);
-			Batcher.QueueUpdateRequest(VertexBufferSRV, VertexBufferRHI, sizeof(FVector4), PF_A32B32G32R32F);
+			Batcher.QueueUpdateRequest(VertexBufferSRV, VertexBufferRHI, sizeof(FVector4f), PF_A32B32G32R32F);
 		}
 	}
 
@@ -155,8 +155,8 @@ public:
 private:
 	FShaderResourceViewRHIRef VertexBufferSRV;
 
-	// Packed Map: u32 Key, u32 Value
-	TArray<uint64> ClothIndexMapping;
+	/** The Cloth deformer mapping to the simulation LODs. */
+	TArray<FClothBufferIndexMapping> ClothIndexMapping;
 
 	/** The vertex data storage type */
 	FSkeletalMeshVertexDataInterface* VertexData;
@@ -173,5 +173,5 @@ private:
 	void AllocateData();
 
 	template <bool bRenderThread>
-	FVertexBufferRHIRef CreateRHIBuffer_Internal();
+	FBufferRHIRef CreateRHIBuffer_Internal();
 };

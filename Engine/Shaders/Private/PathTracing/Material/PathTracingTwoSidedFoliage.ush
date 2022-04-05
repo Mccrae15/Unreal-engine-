@@ -7,36 +7,31 @@
 #pragma once
 
 #include "PathTracingDefaultLit.ush"
-
-float CalcTransmissionSelectionPdf(
-	float3 IncomingDirection,
-	FMaterialClosestHitPayload Payload
-)
-{
-	// pick back lobe proportionally to its contribution relative to front side
-	float3 Diff = GetDiffuseColor(Payload);
-	float3 Spec = GetSpecularColor(Payload);
-	float3 Back = GetSubsurfaceColor(Payload);
-	return LobeSelectionProb(Back, Diff + Spec);
-}
+#include "PathTracingEnergyConservation.ush"
 
 FMaterialSample TwoSidedFoliage_SampleMaterial(
 	float3 RayDirection,
-	FMaterialClosestHitPayload Payload,
+	FPathTracingPayload Payload,
 	float4 RandSample
 )
 {
-	float TransmissionSelectionPdf = CalcTransmissionSelectionPdf(RayDirection, Payload);
+	const float NoV = saturate(-dot(RayDirection, Payload.WorldNormal));
+	const FBxDFEnergyTerms Spec = ComputeGGXSpecEnergyTerms(Payload.Roughness, NoV, Payload.SpecularColor);
+
+	// pick back lobe proportionally to its contribution relative to front side
+	const float3 Diff = (1 - Spec.E) * Payload.DiffuseColor;
+	const float3 Back = (1 - Spec.E) * Payload.GetSubsurfaceColor();
+	float TransmissionSelectionPdf = LobeSelectionProb(Back, Diff + Spec.E);
+
 	if (RandSample.x < TransmissionSelectionPdf)
 	{
 		RandSample.x /= TransmissionSelectionPdf;
 
-		float3 N = GetWorldNormal(Payload);
-		float3 SubsurfaceColor = GetSubsurfaceColor(Payload);
+		float3 N = Payload.WorldNormal;
 
 		float4 SampledValue = CosineSampleHemisphere(RandSample.yz);
 
-		return CreateMaterialSample(TangentToWorld(SampledValue.xyz, -N), SubsurfaceColor / TransmissionSelectionPdf, TransmissionSelectionPdf * SampledValue.w, -1.0, 1.0);
+		return CreateMaterialSample(TangentToWorld(SampledValue.xyz, -N), Back / TransmissionSelectionPdf, TransmissionSelectionPdf * SampledValue.w, -1.0, 1.0);
 	}
 	else
 	{
@@ -53,12 +48,18 @@ FMaterialSample TwoSidedFoliage_SampleMaterial(
 FMaterialEval TwoSidedFoliage_EvalMaterial(
 	float3 IncomingDirection,
 	float3 OutgoingDirection,
-	FMaterialClosestHitPayload Payload
+	FPathTracingPayload Payload
 )
 {
-	float TransmissionSelectionPdf = CalcTransmissionSelectionPdf(IncomingDirection, Payload);
+	const float NoV = saturate(-dot(IncomingDirection, Payload.WorldNormal));
+	const FBxDFEnergyTerms Spec = ComputeGGXSpecEnergyTerms(Payload.Roughness, NoV, Payload.SpecularColor);
 
-	float3 N = GetWorldNormal(Payload);
+	// pick back lobe proportionally to its contribution relative to front side
+	const float3 Diff = (1 - Spec.E) * Payload.DiffuseColor;
+	const float3 Back = (1 - Spec.E) * Payload.GetSubsurfaceColor();
+	float TransmissionSelectionPdf = LobeSelectionProb(Back, Diff + Spec.E);
+
+	float3 N = Payload.WorldNormal;
 	float NoL = dot(N, OutgoingDirection);
 	if (NoL < 0.0)
 	{
@@ -66,10 +67,9 @@ FMaterialEval TwoSidedFoliage_EvalMaterial(
 
 		if (TransmissionSelectionPdf > 0)
 		{
-			float3 SubsurfaceColor = GetSubsurfaceColor(Payload);
 			float LambertPdf = -NoL / PI;
 
-			return CreateMaterialEval(SubsurfaceColor / TransmissionSelectionPdf, TransmissionSelectionPdf * LambertPdf);
+			return CreateMaterialEval(Back / TransmissionSelectionPdf, TransmissionSelectionPdf * LambertPdf);
 		}
 	}
 	else if (TransmissionSelectionPdf < 1)

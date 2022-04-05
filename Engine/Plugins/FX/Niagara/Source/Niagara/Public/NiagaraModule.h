@@ -10,6 +10,7 @@
 #include "Templates/SharedPointer.h"
 #include "NiagaraPerfBaseline.h"
 #include "NiagaraDebuggerCommon.h"
+#include "NiagaraScript.h"
 #include "Templates/PimplPtr.h"
 
 class FNiagaraWorldManager;
@@ -18,6 +19,7 @@ struct FNiagaraVMExecutableData;
 class UNiagaraScript;
 class FNiagaraCompileOptions;
 class FNiagaraCompileRequestDataBase;
+class FNiagaraCompileRequestDuplicateDataBase;
 class INiagaraMergeManager;
 class INiagaraEditorOnlyDataUtilities;
 struct FNiagaraParameterStore;
@@ -34,9 +36,14 @@ class NIAGARA_API INiagaraModule : public IModuleInterface
 public:
 #if WITH_EDITOR
 	typedef TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> CompileRequestPtr;
-	DECLARE_DELEGATE_RetVal_TwoParams(int32, FScriptCompiler, const FNiagaraCompileRequestDataBase*, const FNiagaraCompileOptions&);
+	typedef TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe> CompileRequestDuplicatePtr;
+	typedef TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> GraphCachedDataPtr;
+
+	DECLARE_DELEGATE_RetVal_ThreeParams(int32, FScriptCompiler, const FNiagaraCompileRequestDataBase*, const FNiagaraCompileRequestDuplicateDataBase*, const FNiagaraCompileOptions&);
 	DECLARE_DELEGATE_RetVal_TwoParams(TSharedPtr<FNiagaraVMExecutableData>, FCheckCompilationResult, int32, bool);
 	DECLARE_DELEGATE_RetVal_TwoParams(CompileRequestPtr, FOnPrecompile, UObject*, FGuid);
+	DECLARE_DELEGATE_RetVal_FiveParams(CompileRequestDuplicatePtr, FOnPrecompileDuplicate, const FNiagaraCompileRequestDataBase* /*OwningSystemRequestData*/, UNiagaraSystem* /*OwningSystem*/, UNiagaraEmitter* /*OwningEmitter*/, UNiagaraScript* /*TargetScript*/, FGuid /*Version*/);
+	DECLARE_DELEGATE_RetVal_TwoParams(GraphCachedDataPtr, FOnCacheGraphTraversal, const UObject*, FGuid);
 #endif
 	DECLARE_DELEGATE_RetVal(void, FOnProcessQueue);
 
@@ -72,7 +79,7 @@ public:
 
 	void UnregisterEditorOnlyDataUtilities(TSharedRef<INiagaraEditorOnlyDataUtilities> InEditorOnlyDataUtilities);
 
-	int32 StartScriptCompileJob(const FNiagaraCompileRequestDataBase* InCompileData, const FNiagaraCompileOptions& InCompileOptions);
+	int32 StartScriptCompileJob(const FNiagaraCompileRequestDataBase* InCompileData, const FNiagaraCompileRequestDuplicateDataBase* InCompileDuplicateData, const FNiagaraCompileOptions& InCompileOptions);
 	TSharedPtr<FNiagaraVMExecutableData> GetCompileJobResult(int32 JobID, bool bWait);
 
 	FDelegateHandle RegisterScriptCompiler(FScriptCompiler ScriptCompiler);
@@ -82,8 +89,20 @@ public:
 	void UnregisterCompileResultDelegate(FDelegateHandle DelegateHandle);
 
 	TSharedPtr<FNiagaraCompileRequestDataBase, ESPMode::ThreadSafe> Precompile(UObject* InObj, FGuid Version);
+	TSharedPtr<FNiagaraCompileRequestDuplicateDataBase, ESPMode::ThreadSafe> PrecompileDuplicate(
+		const FNiagaraCompileRequestDataBase* OwningSystemRequestData,
+		UNiagaraSystem* OwningSystem,
+		UNiagaraEmitter* OwningEmitter,
+		UNiagaraScript* TargetScript,
+		FGuid TargetVersion);
 	FDelegateHandle RegisterPrecompiler(FOnPrecompile PreCompiler);
 	void UnregisterPrecompiler(FDelegateHandle DelegateHandle);
+	FDelegateHandle RegisterPrecompileDuplicator(FOnPrecompileDuplicate PreCompileDuplicator);
+	void UnregisterPrecompileDuplicator(FDelegateHandle DelegateHandle);
+
+	TSharedPtr<FNiagaraGraphCachedDataBase, ESPMode::ThreadSafe> CacheGraphTraversal(const UObject* InObj, FGuid Version);
+	FDelegateHandle RegisterGraphTraversalCacher(FOnCacheGraphTraversal PreCompiler);
+	void UnregisterGraphTraversalCacher(FDelegateHandle DelegateHandle);
 
 	void OnAssetLoaded(UObject* Asset);
 
@@ -118,6 +137,7 @@ public:
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Owner_ZAxis() { return Engine_Owner_ZAxis; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Owner_Scale() { return Engine_Owner_Scale; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Owner_Rotation() { return Engine_Owner_Rotation; }
+	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Owner_LWC_Tile() { return Engine_Owner_LWC_Tile; }
 
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Owner_SystemLocalToWorld() { return Engine_Owner_SystemLocalToWorld; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_Owner_SystemWorldToLocal() { return Engine_Owner_SystemWorldToLocal; }
@@ -141,6 +161,7 @@ public:
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_System_TickCount() { return Engine_System_TickCount; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_System_NumEmittersAlive() { return Engine_System_NumEmittersAlive; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_System_SignificanceIndex() { return Engine_System_SignificanceIndex; }
+	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_System_RandomSeed() { return Engine_System_RandomSeed; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_System_NumEmitters() { return Engine_System_NumEmitters; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Engine_NumSystemInstances() { return Engine_NumSystemInstances; }
 
@@ -151,6 +172,7 @@ public:
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_Age() { return Emitter_Age; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_LocalSpace() { return Emitter_LocalSpace; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_Determinism() { return Emitter_Determinism; }
+	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_InterpolatedSpawn() { return Emitter_InterpolatedSpawn; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_OverrideGlobalSpawnCountScale() { return Emitter_OverrideGlobalSpawnCountScale; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_RandomSeed() { return Emitter_RandomSeed; }
 	FORCEINLINE static const FNiagaraVariable&  GetVar_Emitter_SpawnRate() { return Emitter_SpawnRate; }
@@ -214,7 +236,9 @@ public:
 
 	FScriptCompiler ScriptCompilerDelegate;
 	FCheckCompilationResult CompilationResultDelegate;
-	FOnPrecompile ObjectPrecompilerDelegate;
+	FOnPrecompile PrecompileDelegate;
+	FOnPrecompileDuplicate PrecompileDuplicateDelegate;
+	FOnCacheGraphTraversal GraphTraversalCacheDelegate;
 #endif
 
 	static int32 EngineEffectsQuality;
@@ -236,6 +260,7 @@ private:
 	static FNiagaraVariable Engine_Owner_ZAxis;
 	static FNiagaraVariable Engine_Owner_Scale;
 	static FNiagaraVariable Engine_Owner_Rotation;
+	static FNiagaraVariable Engine_Owner_LWC_Tile;
 
 	static FNiagaraVariable Engine_Owner_SystemLocalToWorld;
 	static FNiagaraVariable Engine_Owner_SystemWorldToLocal;
@@ -258,6 +283,7 @@ private:
 	static FNiagaraVariable Engine_System_TickCount;
 	static FNiagaraVariable Engine_System_NumEmittersAlive;
 	static FNiagaraVariable Engine_System_SignificanceIndex;
+	static FNiagaraVariable Engine_System_RandomSeed;
 	static FNiagaraVariable Engine_System_NumEmitters;
 	static FNiagaraVariable Engine_NumSystemInstances;
 
@@ -268,6 +294,7 @@ private:
 	static FNiagaraVariable Emitter_Age;
 	static FNiagaraVariable Emitter_LocalSpace;
 	static FNiagaraVariable Emitter_Determinism;
+	static FNiagaraVariable Emitter_InterpolatedSpawn;
 	static FNiagaraVariable Emitter_OverrideGlobalSpawnCountScale;
 	static FNiagaraVariable Emitter_SimulationTarget;
 	static FNiagaraVariable Emitter_RandomSeed;

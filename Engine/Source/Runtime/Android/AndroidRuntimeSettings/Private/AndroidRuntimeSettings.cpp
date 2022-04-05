@@ -20,7 +20,6 @@ UAndroidRuntimeSettings::UAndroidRuntimeSettings(const FObjectInitializer& Objec
 	, Orientation(EAndroidScreenOrientation::Landscape)
 	, MaxAspectRatio(2.1f)
 	, bAndroidVoiceEnabled(false)
-	, GoogleVRCaps({EGoogleVRCaps::Daydream33})
 	, bEnableGooglePlaySupport(false)
 	, bUseGetAccounts(false)
 	, bSupportAdMob(true)
@@ -28,6 +27,13 @@ UAndroidRuntimeSettings::UAndroidRuntimeSettings(const FObjectInitializer& Objec
 	, AudioSampleRate(44100)
 	, AudioCallbackBufferFrameSize(1024)
 	, AudioNumBuffersToEnqueue(4)
+	, CacheSizeKB(65536)
+	, MaxSampleRate(48000)
+	, HighSampleRate(32000)
+    , MedSampleRate(24000)
+    , LowSampleRate(12000)
+	, MinSampleRate(8000)
+	, CompressionQualityModifier(1)
 	, bMultiTargetFormat_ETC2(true)
 	, bMultiTargetFormat_DXT(true)
 	, bMultiTargetFormat_ASTC(true)
@@ -87,10 +93,10 @@ void UAndroidRuntimeSettings::PostEditChangeProperty(struct FPropertyChangedEven
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	// Ensure that at least one architecture is supported
-	if (!bBuildForArmV7 && !bBuildForX8664 && !bBuildForArm64)
+	if (!bBuildForX8664 && !bBuildForArm64)
 	{
-		bBuildForArmV7 = true;
-		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForArmV7)), GetDefaultConfigFilename());
+		bBuildForArm64 = true;
+		UpdateSinglePropertyInConfigFile(GetClass()->FindPropertyByName(GET_MEMBER_NAME_CHECKED(UAndroidRuntimeSettings, bBuildForArm64)), GetDefaultConfigFilename());
 	}
 
 	if (PropertyChangedEvent.Property != nullptr)
@@ -171,35 +177,7 @@ void UAndroidRuntimeSettings::PostInitProperties()
 	{
 		AdMobAdUnitIDs.Add(AdMobAdUnitID);
 		AdMobAdUnitID.Empty();
-		UpdateDefaultConfigFile();
-	}
-
-	// Upgrade old GoogleVR settings as necessary.
-	FString GoogleVRMode = GConfig->GetStr(TEXT("/Script/AndroidRuntimeSettings.AndroidRuntimeSettings"), TEXT("GoogleVRMode"), GEngineIni);
-	if (GoogleVRMode != TEXT(""))
-	{
-		if (GoogleVRMode == TEXT("Cardboard"))
-		{
-			GoogleVRCaps.Empty(1);
-			GoogleVRCaps.Add(EGoogleVRCaps::Cardboard);
-			UE_LOG(LogAndroidRuntimeSettings, Log, TEXT("Upgraded GoogleVRMode -> GoogleVRCaps, Cardboard"));
-		}
-		else if (GoogleVRMode == TEXT("Daydream"))
-		{
-			GoogleVRCaps.Empty(1);
-			GoogleVRCaps.Add(EGoogleVRCaps::Daydream33);
-			UE_LOG(LogAndroidRuntimeSettings, Log, TEXT("Upgraded GoogleVRMode -> GoogleVRCaps, Daydream"));
-		}
-		else if (GoogleVRMode == TEXT("DaydreamAndCardboard"))
-		{
-			GoogleVRCaps.Empty(2);
-			GoogleVRCaps.Add(EGoogleVRCaps::Cardboard);
-			GoogleVRCaps.Add(EGoogleVRCaps::Daydream33);
-			UE_LOG(LogAndroidRuntimeSettings, Log, TEXT("Upgraded GoogleVRMode -> GoogleVRCaps, Cardboard & Daydream"));
-		}
-
-		// Save changes to the ini file.
-		UpdateDefaultConfigFile();
+		TryUpdateDefaultConfigFile();
 	}
 
 	EnsureValidGPUArch();

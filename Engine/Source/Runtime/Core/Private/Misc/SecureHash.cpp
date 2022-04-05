@@ -476,7 +476,7 @@ void LexFromString(FMD5Hash& Hash, const TCHAR* Buffer)
 {
 	auto HexCharacterToDecimalValue = [](const TCHAR InHexChar, uint8& OutDecValue) -> bool
 	{
-		TCHAR Base = 0;
+		TCHAR Base = TEXT('\0');
 		if (InHexChar >= '0' && InHexChar <= '9')
 		{
 			OutDecValue = (uint8)(InHexChar - '0');
@@ -984,7 +984,7 @@ void FAsyncSHAVerify::DoWork()
  */
 
 /* *** NEVER CHECK THE BELOW IN SET TO 1!!! *** */
-#define DISABLE_AUTHENTICATION_FOR_DEV 1    // UE4 - for now, we _will_ check this in with 1 because we are not generating shipping images at the moment.
+#define DISABLE_AUTHENTICATION_FOR_DEV 1    // UE - for now, we _will_ check this in with 1 because we are not generating shipping images at the moment.
 /* *** NEVER CHECK THE ABOVE IN SET TO 1!!! *** */
 
 void appOnFailSHAVerification(const TCHAR* FailedPathname, bool bFailedDueToMissingHash)

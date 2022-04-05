@@ -228,7 +228,7 @@ class FScriptItemGroupAddUtilities : public TNiagaraStackItemGroupAddUtilities<U
 {
 public:
 	FScriptItemGroupAddUtilities(TSharedRef<FNiagaraSystemViewModel> InSystemViewModel, TSharedPtr<FNiagaraEmitterViewModel> InEmitterViewModel, UNiagaraStackEditorData& InStackEditorData, FOnItemAdded InOnItemAdded)
-		: TNiagaraStackItemGroupAddUtilities(LOCTEXT("ScriptGroupAddItemName", "Module"), EAddMode::AddFromAction, false, InOnItemAdded)
+		: TNiagaraStackItemGroupAddUtilities(LOCTEXT("ScriptGroupAddItemName", "Module"), EAddMode::AddFromAction, false, false, InOnItemAdded)
 		, OutputNode(nullptr)
 		, SystemViewModel(InSystemViewModel)
 		, EmitterViewModel(InEmitterViewModel)
@@ -288,7 +288,16 @@ public:
 		UNiagaraNodeFunctionCall* NewModuleNode = nullptr;
 		if (ScriptGroupAddAction->GetModuleAssetData().IsValid())
 		{
-			NewModuleNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(ScriptGroupAddAction->GetModuleAssetData(), *OutputNode, TargetIndex);
+			FNiagaraStackGraphUtilities::FAddScriptModuleToStackArgs AddScriptModuleToStackArgs(ScriptGroupAddAction->GetModuleAssetData(), *OutputNode);
+			AddScriptModuleToStackArgs.TargetIndex = TargetIndex;
+
+			// If the user has specified a target index, do not try to fixup the target index.
+			if (TargetIndex == INDEX_NONE)
+			{
+				AddScriptModuleToStackArgs.bFixupTargetIndex = true;
+			}
+
+			NewModuleNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(AddScriptModuleToStackArgs);
 		}
 		else if (ScriptGroupAddAction->GetModuleParameterVariable().IsValid())
 		{
@@ -323,7 +332,10 @@ public:
 private:
 	UNiagaraNodeFunctionCall* AddScriptAssetModule(const FAssetData& AssetData, int32 TargetIndex)
 	{
-		return FNiagaraStackGraphUtilities::AddScriptModuleToStack(AssetData, *OutputNode, TargetIndex);
+		FNiagaraStackGraphUtilities::FAddScriptModuleToStackArgs AddScriptModuleToStackArgs(AssetData, *OutputNode);
+		AddScriptModuleToStackArgs.TargetIndex = TargetIndex;
+		AddScriptModuleToStackArgs.bFixupTargetIndex = true;
+		return FNiagaraStackGraphUtilities::AddScriptModuleToStack(AddScriptModuleToStackArgs);
 	}
 
 	UNiagaraNodeFunctionCall* AddParameterModule(const FNiagaraVariable& ParameterVariable, bool bRenameParameterOnAdd, int32 TargetIndex)
@@ -381,6 +393,26 @@ void UNiagaraStackScriptItemGroup::Initialize(
 	ScriptGraph = InScriptViewModel->GetGraphViewModel()->GetGraph();
 	ScriptGraph->AddOnGraphChangedHandler(
 		FOnGraphChanged::FDelegate::CreateUObject(this, &UNiagaraStackScriptItemGroup::OnScriptGraphChanged));
+
+	if (ScriptUsage == ENiagaraScriptUsage::SystemSpawnScript || ScriptUsage == ENiagaraScriptUsage::EmitterSpawnScript)
+	{
+		OwningSystemWeak = &GetSystemViewModel()->GetSystem();
+		OwningSystemWeak->GetSystemSpawnScript()->OnVMScriptCompiled().AddUObject(this, &UNiagaraStackScriptItemGroup::OnSystemScriptCompiled);
+	}
+	else if (ScriptUsage == ENiagaraScriptUsage::SystemUpdateScript || ScriptUsage == ENiagaraScriptUsage::EmitterUpdateScript)
+	{
+		OwningSystemWeak = &GetSystemViewModel()->GetSystem();
+		OwningSystemWeak->GetSystemUpdateScript()->OnVMScriptCompiled().AddUObject(this, &UNiagaraStackScriptItemGroup::OnSystemScriptCompiled);
+	}
+	else if (GetEmitterViewModel().IsValid())
+	{
+		OwningParticleScriptWeak = GetEmitterViewModel()->GetEmitter()->GetScript(ScriptUsage, ScriptUsageId);
+		if (OwningParticleScriptWeak.IsValid())
+		{
+			OwningParticleScriptWeak->OnVMScriptCompiled().AddUObject(this, &UNiagaraStackScriptItemGroup::OnParticleScriptCompiled);
+			OwningParticleScriptWeak->OnGPUScriptCompiled().AddUObject(this, &UNiagaraStackScriptItemGroup::OnParticleScriptCompiled);
+		}
+	}
 }
 
 UNiagaraNodeOutput* UNiagaraStackScriptItemGroup::GetScriptOutputNode() const
@@ -411,6 +443,21 @@ void UNiagaraStackScriptItemGroup::FinalizeInternal()
 	{
 		ScriptViewModel.Reset();
 	}
+
+	if ((ScriptUsage == ENiagaraScriptUsage::SystemSpawnScript || ScriptUsage == ENiagaraScriptUsage::EmitterSpawnScript) && OwningSystemWeak.IsValid())
+	{
+		OwningSystemWeak->GetSystemSpawnScript()->OnVMScriptCompiled().RemoveAll(this);
+	}
+	else if ((ScriptUsage == ENiagaraScriptUsage::SystemUpdateScript || ScriptUsage == ENiagaraScriptUsage::EmitterUpdateScript) && OwningSystemWeak.IsValid())
+	{
+		OwningSystemWeak->GetSystemUpdateScript()->OnVMScriptCompiled().RemoveAll(this);
+	}
+	else if (OwningParticleScriptWeak.IsValid())
+	{
+		OwningParticleScriptWeak->OnVMScriptCompiled().RemoveAll(this);
+		OwningParticleScriptWeak->OnGPUScriptCompiled().RemoveAll(this);
+	}
+
 	Super::FinalizeInternal();
 }
 
@@ -808,10 +855,13 @@ TOptional<UNiagaraStackEntry::FDropRequestResponse> UNiagaraStackScriptItemGroup
 		return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantMoveModuleError", "This inherited module can't be moved."));
 	}
 
-	TArray<ENiagaraScriptUsage> SourceUsages = SourceModuleItem->GetModuleNode().GetScriptData()->GetSupportedUsageContexts();
-	if (SourceUsages.ContainsByPredicate([this](ENiagaraScriptUsage SourceUsage) { return UNiagaraScript::IsEquivalentUsage(ScriptUsage, SourceUsage); }) == false)
+	if ( FVersionedNiagaraScriptData* ScriptData = SourceModuleItem->GetModuleNode().GetScriptData() )
 	{
-		return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantMoveModuleByUsage", "This module can't be moved to this section of the\nstack because it's not valid for this usage context."));
+		TArray<ENiagaraScriptUsage> SourceUsages = ScriptData->GetSupportedUsageContexts();
+		if (SourceUsages.ContainsByPredicate([this](ENiagaraScriptUsage SourceUsage) { return UNiagaraScript::IsEquivalentUsage(ScriptUsage, SourceUsage); }) == false)
+		{
+			return FDropRequestResponse(TOptional<EItemDropZone>(), LOCTEXT("CantMoveModuleByUsage", "This module can't be moved to this section of the\nstack because it's not valid for this usage context."));
+		}
 	}
 
 	TOptional<EItemDropZone> TargetDropZone = GetTargetDropZoneForTargetEntry(this, TargetEntry, DropRequest.DropZone);
@@ -1149,6 +1199,22 @@ void UNiagaraStackScriptItemGroup::OnScriptGraphChanged(const struct FEdGraphEdi
 	}
 }
 
+void UNiagaraStackScriptItemGroup::OnSystemScriptCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion)
+{
+	if (IsFinalized() == false)
+	{
+		RefreshChildren();
+	}
+}
+
+void UNiagaraStackScriptItemGroup::OnParticleScriptCompiled(UNiagaraScript* InScript, const FGuid& ScriptVersion)
+{
+	if (IsFinalized() == false)
+	{
+		RefreshChildren();
+	}
+}
+
 void GatherRenamedModuleOutputs(
 	UNiagaraStackScriptItemGroup* InOwnerEntry,
 	TArray<TPair<const UNiagaraClipboardFunction*, UNiagaraNodeFunctionCall*>> InClipboardFunctionAndNodeFunctionPairs,
@@ -1248,7 +1314,13 @@ void UNiagaraStackScriptItemGroup::PasteModules(const UNiagaraClipboardContent* 
 						// Otherwise it's a scratch pad script from another asset so we need to add a duplicate scratch pad script to this asset.
 						NewFunctionScript = GetSystemViewModel()->GetScriptScratchPadViewModel()->CreateNewScriptAsDuplicate(ClipboardFunctionScript)->GetOriginalScript();
 					}
-					NewFunctionCallNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(NewFunctionScript, *OutputNode, CurrentPasteIndex, ClipboardFunction->FunctionName, ClipboardFunction->ScriptVersion);
+
+					FNiagaraStackGraphUtilities::FAddScriptModuleToStackArgs AddScriptModuleToStackArgs(NewFunctionScript, *OutputNode);
+					AddScriptModuleToStackArgs.TargetIndex = CurrentPasteIndex;
+					AddScriptModuleToStackArgs.bFixupTargetIndex = ClipboardContent->bFixupPasteIndexForScriptDependenciesInStack;
+					AddScriptModuleToStackArgs.SuggestedName = ClipboardFunction->FunctionName;
+					AddScriptModuleToStackArgs.VersionGuid = ClipboardFunction->ScriptVersion;
+					NewFunctionCallNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(AddScriptModuleToStackArgs);
 				}
 				else
 				{

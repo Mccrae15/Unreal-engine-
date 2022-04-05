@@ -4,12 +4,16 @@ import datetime
 import logging
 import os
 import threading
+import time
+import re
 from typing import List, Optional, Set
 
 from PySide2 import QtCore
 from PySide2 import QtGui
 from PySide2 import QtUiTools
 from PySide2 import QtWidgets
+
+from PySide2.QtWidgets import QWidgetAction, QMenu
 
 from switchboard import config
 from switchboard import config_osc as osc
@@ -26,11 +30,141 @@ from switchboard.devices.device_base import DeviceStatus
 from switchboard.devices.device_manager import DeviceManager
 from switchboard.settings_dialog import SettingsDialog
 from switchboard.switchboard_logging import ConsoleStream, LOGGER
+from switchboard.tools.insights_launcher import InsightsLauncher
+from switchboard.tools.listener_launcher import ListenerLauncher
+from switchboard.devices.unreal.plugin_unreal import DeviceUnreal
+from switchboard.util import collect_logs
 
 ENGINE_PATH = "../../../../.."
 RELATIVE_PATH = os.path.dirname(__file__)
 EMPTY_SYNC_ENTRY = "-- None --"
 
+class TraceSettings(QtWidgets.QDialog):
+    """
+    Custom class to prompt user for the trace arguments to use for Unreal Insights trace collection.
+    """
+    def __init__(self, trace_settings, parent=None):
+        super().__init__(parent=parent, f=QtCore.Qt.WindowCloseButtonHint)
+
+        self.setWindowTitle("Trace Settings")
+
+        self.arguments_field = QtWidgets.QLineEdit(self)
+        self.arguments_field.setText(trace_settings)
+
+        self.form_layout = QtWidgets.QFormLayout()
+        self.form_layout.addRow("Arguments", self.arguments_field)
+
+        layout = QtWidgets.QVBoxLayout()
+        layout.insertLayout(0, self.form_layout)
+
+        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        button_box.accepted.connect(lambda: self.accept())
+        button_box.rejected.connect(lambda: self.reject())
+        layout.addWidget(button_box)
+
+        self.setLayout(layout)
+
+    def trace_settings(self):
+        """
+        Return the current trace settings.
+        """
+        return self.arguments_field.text()
+
+class DeviceAdditionalSettingsUI(QtCore.QObject):
+    signal_device_widget_tracing = QtCore.Signal(object)
+
+    enable_insight_trace = False
+    insight_trace_args = "log,cpu,gpu,frame,bookmark,concert,messaging"
+
+    def __init__(self, name, parent = None):
+        super().__init__(parent)
+        self.name = name
+
+    def _update_enable_state(self):
+        """
+        The button assigned for the settings UI should be "checked" when the user has traces enabled.
+        """
+        self._button.setChecked(self.enable_insights_menu().isChecked())
+
+    def set_insight_trace_state(self, is_checked):
+        """
+        External setter for the current tracing state.  This is applied by the device one loading the setting from the global
+        configuration.
+        """
+        if is_checked is not self.enable_insights_menu().isChecked():
+            self.enable_insights_menu().setChecked(is_checked)
+            self._update_enable_state()
+
+    def set_insight_tracing_args(self, value):
+        """
+        External setter for tracing arguments. This is applied by the device one loading the setting from the global
+        configuration.
+        """
+        if value != self.insight_trace_args:
+            self.insight_trace_args = value
+            self._update_enable_state()
+
+    def enable_insights_menu(self):
+        return self._tracing_action
+
+    def trace_settings(self):
+        return (self.enable_insights_menu().isChecked(), self.insight_trace_args)
+
+    def _set_tracing(self, is_checked):
+        self.signal_device_widget_tracing.emit(self)
+        self._update_enable_state()
+
+    def _set_trace_settings(self, is_checked):
+        self._tracing_settings.setChecked(False)
+        settings = TraceSettings(self.insight_trace_args)
+        settings.exec()
+        self.insight_trace_args = settings.trace_settings()
+        self.signal_device_widget_tracing.emit(self)
+        self._update_enable_state()
+
+    def _generate_trace_menu_item(self, menu):
+        action_item = QtWidgets.QAction("Enable Unreal Insights Tracing",
+                                        menu, checked=DeviceAdditionalSettingsUI.enable_insight_trace, checkable=True)
+        action_item.setChecked(DeviceAdditionalSettingsUI.enable_insight_trace)
+        action_item.triggered.connect(self._set_tracing)
+        self._tracing_action = action_item
+        return action_item
+
+    def _generate_trace_settings_item(self, menu):
+        action_item = QtWidgets.QAction("Unreal Insights Trace Settings...",
+                                        menu, checked=DeviceAdditionalSettingsUI.enable_insight_trace, checkable=True)
+        action_item.setChecked(DeviceAdditionalSettingsUI.enable_insight_trace)
+        action_item.triggered.connect(self._set_trace_settings)
+        self._tracing_settings = action_item
+        return action_item
+
+    def _generate_settings_menu_items(self, menu):
+        self.settings_menu.addAction(self._generate_trace_menu_item(menu))
+        self.settings_menu.addAction(self._generate_trace_settings_item(menu))
+
+    def get_button(self):
+        return self._button
+
+    def assign_button(self, button, parent):
+        self._button = button
+        self.settings_menu = QtWidgets.QMenu(parent)
+        self._generate_settings_menu_items(self.settings_menu)
+        self._button.setMenu(self.settings_menu)
+        self._button.setStyleSheet("QPushButton::menu-indicator{image:none;}");
+        self._button.setDisabled(False)
+
+    def make_button(self, parent):
+        """
+        Make a new device setting push button.
+        """
+        button = sb_widgets.ControlQPushButton.create(
+                icon_size=QtCore.QSize(21, 21),
+                tool_tip=f'Change device settings',
+                hover_focus=False,
+                name='settings')
+
+        self.assign_button(button,parent)
+        return button
 
 class SwitchboardDialog(QtCore.QObject):
     STYLESHEET_PATH = os.path.join(RELATIVE_PATH, 'ui/switchboard.qss')
@@ -78,12 +212,16 @@ class SwitchboardDialog(QtCore.QObject):
         self.window = loader.load(
             os.path.join(RELATIVE_PATH, "ui/switchboard.ui"))
 
+        # Add Tools Menu
+        self.add_tools_menu()
+
         # used to shut down services cleanly on exit
         self.window.installEventFilter(self)
         self.close_event_counter = 0
 
         self.init_stylesheet_watcher()
 
+        self._exiting = False
         self._shoot = None
         self._sequence = None
         self._slate = None
@@ -94,6 +232,7 @@ class SwitchboardDialog(QtCore.QObject):
         self._multiuser_session_name = None
         self._is_recording = False
         self._description = 'description'
+        self._started_mu_server = False
 
         # Recording Manager
         self.recording_manager = recording.RecordingManager(CONFIG.SWITCHBOARD_DIR)
@@ -102,6 +241,16 @@ class SwitchboardDialog(QtCore.QObject):
         # DeviceManager
         self.device_manager = DeviceManager()
         self.device_manager.signal_device_added.connect(self.device_added)
+
+        # Convenience UnrealInsights launcher
+        self.init_insights_launcher()
+
+        # Convenience local Switchboard lister launcher
+        self.init_listener_launcher()
+
+        # Convenience Open Logs Folder menu item
+        self.register_open_logs_menuitem()
+        self.register_zip_logs_menuitem()
 
         # Transport Manager
         #self.transport_queue = recording.TransportQueue(CONFIG.SWITCHBOARD_DIR)
@@ -142,7 +291,7 @@ class SwitchboardDialog(QtCore.QObject):
 
         # Start the OSC server
         self.osc_server = switchboard_application.OscServer()
-        self.osc_server.launch(SETTINGS.IP_ADDRESS, CONFIG.OSC_SERVER_PORT.get_value())
+        self.osc_server.launch(SETTINGS.IP_ADDRESS.get_value(), CONFIG.OSC_SERVER_PORT.get_value())
 
         # Register with OSC server
         self.osc_server.dispatcher_map(osc.TAKE, self.osc_take)
@@ -162,14 +311,17 @@ class SwitchboardDialog(QtCore.QObject):
         self.osc_server.dispatcher_map(osc.DATA, self.osc_data)
 
         # Connect UI to methods
-        self.window.multiuser_session_lineEdit.textChanged.connect(self.set_multiuser_session_name)
+        self.window.multiuser_session_lineEdit.textChanged.connect(self.on_multiuser_session_lineEdit_textChanged)
         self.window.slate_line_edit.textChanged.connect(self._set_slate)
         self.window.take_spin_box.valueChanged.connect(self._set_take)
         self.window.sequence_line_edit.textChanged.connect(self._set_sequence)
-        self.window.level_combo_box.currentTextChanged.connect(self._set_level)
+        self.window.level_combo_box.currentIndexChanged.connect(self._on_selected_level_changed)
         self.window.refresh_levels_button.clicked.connect(self.refresh_levels_incremental)
         self.window.project_cl_combo_box.currentTextChanged.connect(self._set_project_changelist)
-        self.window.engine_cl_combo_box.currentTextChanged.connect(self._set_engine_changelist)
+        self.window.engine_cl_combo_box.currentIndexChanged.connect(
+            lambda _: self._set_engine_changelist(self.window.engine_cl_combo_box.currentText()))
+        self.window.engine_cl_combo_box.lineEdit().editingFinished.connect(
+            lambda: self._set_engine_changelist(self.window.engine_cl_combo_box.currentText()))
         self.window.logger_level_comboBox.currentTextChanged.connect(self.logger_level_comboBox_currentTextChanged)
         self.window.logger_autoscroll_checkbox.stateChanged.connect(self.logger_autoscroll_stateChanged)
         self.window.logger_wrap_checkbox.stateChanged.connect(self.logger_wrap_stateChanged)
@@ -181,8 +333,26 @@ class SwitchboardDialog(QtCore.QObject):
         self.window.refresh_engine_cl_button.clicked.connect(self.refresh_engine_cl_button_clicked)
         self.window.connect_all_button.clicked.connect(self.connect_all_button_clicked)
         self.window.launch_all_button.clicked.connect(self.launch_all_button_clicked)
+        self.window.settings_button.clicked.connect(self.settings_button_clicked)
 
-        # Stylesheet-related: Object names used for selectors, no focus forcing
+        self.window.additional_settings = DeviceAdditionalSettingsUI("global")
+        self.window.additional_settings.assign_button(self.window.device_settings_button, self.window)
+
+        self.window.use_device_autojoin_setting_checkbox.toggled.connect(self.on_device_autojoin_changed)
+        self.refresh_muserver_autojoin()
+
+        self.window.muserver_start_stop_button.clicked.connect(self.on_muserver_start_stop_click)
+
+        self.window.additional_settings.signal_device_widget_tracing.connect(self.on_tracing_settings_changed)
+        self.refresh_trace_settings()
+
+        # set up a thread that does periodic maintenace tasks
+        self.setup_periodic_tasks_thread()
+
+        # Connect to the session increment number.
+        self.window.multiuser_session_inc_button.clicked.connect(self.on_multiuser_session_inc)
+
+         # Stylesheet-related: Object names used for selectors, no focus forcing
         def configure_ctrl_btn(btn: sb_widgets.ControlQPushButton, name: str):
             btn.setObjectName(name)
             btn.hover_focus = False
@@ -234,6 +404,206 @@ class SwitchboardDialog(QtCore.QObject):
 
         # Run the transport queue
         #self.transport_queue_resume()
+        
+        self.update_current_config_text()
+        self.update_current_ip_address_text()
+        SETTINGS.IP_ADDRESS.signal_setting_changed.connect(
+            lambda: self.update_current_ip_address_text()
+        )
+        self.window.current_ip_value.editingFinished.connect(self._try_change_ip_address)
+
+        self.refresh_window_title()
+        
+    def _try_change_ip_address(self):
+        def is_valid_ip_format(address):
+            ip_port_split = address.split(":")
+            if len(ip_port_split) != 1:
+                return False
+            
+            ip_elements = ip_port_split[0].split(".")
+            if len(ip_elements) != 4:
+                return False
+            
+            return all(element.isdigit() for element in ip_elements)
+        
+        new_value = self.window.current_ip_value.text()
+        if is_valid_ip_format(new_value):
+            SETTINGS.IP_ADDRESS.update_value(new_value)
+            SETTINGS.save()
+            # Print to make it clear to the user that the IP was updated
+            LOGGER.info(f"Updated IP to {new_value}")
+        else:
+            self.window.current_ip_value.setText(SETTINGS.IP_ADDRESS.get_value())
+            LOGGER.warning(f"{new_value} must be in the format a.b.c.d (without port)")
+
+    def _poll_muserver_status(self):
+        '''
+        Poll the status of the Multi-user server on a 1 second timer.
+        '''
+        while not self._exiting:
+            self.update_muserver_button()
+            time.sleep(1.0)
+
+    def update_muserver_button(self):
+        '''
+        Update the status of the Multi-user start/stop button to reflect the status of Multi-user server.
+        '''
+        ServerInstance = switchboard_application.get_multi_user_server_instance()
+        is_checked = self.window.muserver_start_stop_button.isChecked()
+        is_running = ServerInstance.is_running()
+        if  (is_running or self._started_mu_server) and not is_checked:
+            self.window.muserver_start_stop_button.setChecked( True )
+        elif not is_running and is_checked:
+            self.window.muserver_start_stop_button.setChecked( False )
+
+        if is_running and self._started_mu_server:
+            # Server has finished starting so reset our start flag.
+            self._started_mu_server = False
+
+    def setup_periodic_tasks_thread(self):
+        '''
+        Sets up a thread for performing maintenance tasks
+        '''
+        thread = threading.Thread(target=self._do_periodic_tasks, args=[], kwargs={})
+        thread.start()
+
+    def _do_periodic_tasks(self):
+        ''' Performs periodic tasks, like updating certain parts of the UI '''
+
+        while not self._exiting:
+
+            self.update_muserver_button()
+            self.update_locallistener_menuitem()
+            self.update_insights_menuitem()
+
+            time.sleep(1.0)
+
+    def update_locallistener_menuitem(self):
+        ''' 
+        Enables/disables the local listener launch menu item depending on whether 
+        it is already running or not.
+        '''
+        self.locallistener_launcher_menuitem.setEnabled(not self.listener_launcher.is_running())
+
+    def update_insights_menuitem(self):
+        ''' 
+        Enables/disables the UnrealInsights launch menu item depending on whether 
+        it is already running or not.
+        '''
+        self.insights_launcher_menuitem.setEnabled(not self.insights_launcher.is_running())
+
+    def on_muserver_start_stop_click(self):
+        '''
+        Handle the multi-user server button click. If we are running we stop the process. If we are not
+        running then we launch the multi-user server.
+        '''
+        ServerInstance = switchboard_application.get_multi_user_server_instance()
+        if ServerInstance.is_running():
+            ServerInstance.terminate(bypolling=True)
+            self._started_mu_server = False
+        else:
+            self._started_mu_server = True
+            ServerInstance.launch()
+        self.update_muserver_button()
+
+    def init_insights_launcher(self):
+        ''' Initializes insights launcher '''
+
+        self.insights_launcher = InsightsLauncher()
+
+        def launch_insights():
+            try:
+                self.insights_launcher.launch()
+            except Exception as e:
+                LOGGER.error(e)
+
+        action = self.register_tools_menu_action("&Insights")
+        action.triggered.connect(launch_insights)
+
+        self.insights_launcher_menuitem = action
+
+    def init_listener_launcher(self):
+        ''' Initializes switcboard listener launcher '''
+        self.listener_launcher = ListenerLauncher()
+
+        def launch_listener():
+            try:
+                self.listener_launcher.launch()
+            except Exception as e:
+                LOGGER.error(e)
+
+        action = self.register_tools_menu_action("&Listener")
+        action.triggered.connect(launch_listener)
+
+        self.locallistener_launcher_menuitem = action
+
+    def register_open_logs_menuitem(self):
+        ''' Registers convenience "Open Logs Folder" menu item '''
+        action = self.register_tools_menu_action("&Open Logs Folder")
+        action.triggered.connect(collect_logs.open_logs_folder)
+     
+    def register_zip_logs_menuitem(self):
+        def save_logs():
+            collect_logs.execute_zip_logs_workflow(
+                CONFIG,
+                [device for device in self.device_manager.devices() if isinstance(device, DeviceUnreal)]
+            )
+            collect_logs.open_logs_folder()
+        action = self.register_tools_menu_action("&Zip Logs")
+        action.triggered.connect(save_logs)
+
+    def add_tools_menu(self):
+        ''' Adds tools menu to menu bar and populates built-in items '''
+
+        self.tools_menu = self.window.menu_bar.addMenu("&Tools")
+
+    def register_tools_menu_action(self, actionname:str, menunames:List[str] = []) -> QWidgetAction:
+        ''' Registers a QWidgetAction with the tools menu
+
+        Args:
+            actionname: Name of the action to be added
+            menunames: Submenu(s) where to place the given action
+
+        Returns:
+            QWidgetAction: The action that was created.
+        '''
+
+        # Find find submenu, and create the ones that don't exist along the way
+
+        current_menu:QMenu = self.tools_menu
+
+        # iterate over menunames give
+        for menuname in menunames:
+
+            create_menu = True
+
+            # try to find existing menu
+            for current_action in current_menu.actions():
+
+                submenu = current_action.menu()
+
+                if submenu and (menuname == submenu.title()):
+                    current_menu = submenu
+                    create_menu = False
+                    break
+            
+            # if we didn't find the submenu, create it
+            if create_menu:
+                newmenu = QMenu(parent=current_menu)
+                newmenu.setTitle(menuname)
+                current_menu.addMenu(newmenu)
+                current_menu = newmenu
+
+        # add the given action
+        action = QWidgetAction(current_menu)
+        action.setText(actionname)
+        current_menu.addAction(action)
+        
+        return action
+
+    def on_device_autojoin_changed(self):
+        CONFIG.MUSERVER_AUTO_JOIN.update_value(
+            self.window.use_device_autojoin_setting_checkbox.isChecked())
 
     def set_config_hooks(self):
         CONFIG.P4_PROJECT_PATH.signal_setting_changed.connect(lambda: self.p4_refresh_project_cl())
@@ -242,6 +612,24 @@ class SwitchboardDialog(QtCore.QObject):
         CONFIG.P4_ENABLED.signal_setting_changed.connect(lambda _, enabled: self.toggle_p4_controls(enabled))
         CONFIG.MAPS_PATH.signal_setting_changed.connect(lambda: self.refresh_levels())
         CONFIG.MAPS_FILTER.signal_setting_changed.connect(lambda: self.refresh_levels())
+        CONFIG.INSIGHTS_TRACE_ENABLE.signal_setting_changed.connect(lambda: self.refresh_trace_settings())
+        CONFIG.INSIGHTS_TRACE_ARGS.signal_setting_changed.connect(lambda: self.refresh_trace_settings())
+        CONFIG.INSIGHTS_STAT_EVENTS.signal_setting_changed.connect(lambda: self.refresh_trace_settings())
+        CONFIG.MUSERVER_AUTO_JOIN.signal_setting_changed.connect(lambda: self.refresh_muserver_autojoin())
+        CONFIG.PROJECT_NAME.signal_setting_changed.connect(lambda: self.refresh_window_title())
+
+    def refresh_trace_settings(self):
+        self.window.additional_settings.set_insight_trace_state(CONFIG.INSIGHTS_TRACE_ENABLE.get_value())
+        self.window.additional_settings.set_insight_tracing_args(CONFIG.INSIGHTS_TRACE_ARGS.get_value())
+
+    def refresh_muserver_autojoin(self):
+        self.window.use_device_autojoin_setting_checkbox.setChecked(CONFIG.MUSERVER_AUTO_JOIN.get_value())
+
+    def on_tracing_settings_changed(self):
+        settings = self.window.additional_settings
+        trace_tuple = settings.trace_settings()
+        CONFIG.INSIGHTS_TRACE_ENABLE.update_value(trace_tuple[0])
+        CONFIG.INSIGHTS_TRACE_ARGS.update_value(trace_tuple[1])
 
     def show_device_add_menu(self):
         self.device_add_menu.clear()
@@ -286,6 +674,7 @@ class SwitchboardDialog(QtCore.QObject):
                    for device in self.device_manager.devices())
 
     def on_exit(self):
+        self._exiting = True
         self.osc_server.close()
         for device in self.device_manager.devices():
             device.disconnect_listener()
@@ -385,6 +774,31 @@ class SwitchboardDialog(QtCore.QObject):
         self.p4_refresh_project_cl()
         self.p4_refresh_engine_cl()
         self.refresh_levels()
+        self.update_current_config_text()
+        self.refresh_muserver_autojoin()
+        self.refresh_trace_settings()
+        self.refresh_window_title()
+
+    def refresh_window_title(self):
+        ''' Updates the window title based on the project name '''
+
+        project_name = CONFIG.PROJECT_NAME.get_value()
+
+        if project_name:
+            self.window.setWindowTitle(f"Switchboard - {project_name}")
+        else:
+            self.window.setWindowTitle(f"Switchboard")
+
+    def update_current_config_text(self):
+        # Can be none when current file is deleted
+        if SETTINGS.CONFIG is not None:
+            file_name = os.path.basename(SETTINGS.CONFIG)
+            self.window.current_config_file_value.setText(file_name)
+        else:
+            self.window.current_config_file_value.setText("No config loaded")
+    
+    def update_current_ip_address_text(self):
+        self.window.current_ip_value.setText(SETTINGS.IP_ADDRESS.get_value())
 
     def menu_new_config(self):
         uproject_search_path = os.path.dirname(CONFIG.UPROJECT_PATH.get_value().replace('"',''))
@@ -423,6 +837,10 @@ class SwitchboardDialog(QtCore.QObject):
             # Update the UI
             self.toggle_p4_controls(CONFIG.P4_ENABLED.get_value())
             self.refresh_levels()
+            self.update_current_config_text()
+            self.refresh_muserver_autojoin()
+            self.refresh_trace_settings()
+            self.refresh_window_title()
 
     def menu_delete_config(self):
         """
@@ -459,39 +877,17 @@ class SwitchboardDialog(QtCore.QObject):
         Settings window
         """
         # TODO: VALIDATE RECORD PATH
-        settings_dialog = SettingsDialog()
-
-        settings_dialog.set_config_path(SETTINGS.CONFIG)
-        settings_dialog.set_ip_address(SETTINGS.IP_ADDRESS)
-        settings_dialog.set_transport_path(SETTINGS.TRANSPORT_PATH)
-        settings_dialog.set_listener_exe(CONFIG.LISTENER_EXE)
-        settings_dialog.set_project_name(CONFIG.PROJECT_NAME)
-        settings_dialog.set_uproject(CONFIG.UPROJECT_PATH.get_value())
-        settings_dialog.set_engine_dir(CONFIG.ENGINE_DIR.get_value())
-        settings_dialog.set_build_engine(CONFIG.BUILD_ENGINE.get_value())
-        settings_dialog.set_p4_enabled(bool(CONFIG.P4_ENABLED.get_value()))
-        settings_dialog.set_source_control_workspace(CONFIG.SOURCE_CONTROL_WORKSPACE.get_value())
-        settings_dialog.set_p4_project_path(CONFIG.P4_PROJECT_PATH.get_value())
-        settings_dialog.set_p4_engine_path(CONFIG.P4_ENGINE_PATH.get_value())
-        settings_dialog.set_map_path(CONFIG.MAPS_PATH.get_value())
-        settings_dialog.set_map_filter(CONFIG.MAPS_FILTER.get_value())
-        settings_dialog.set_osc_server_port(CONFIG.OSC_SERVER_PORT.get_value())
-        settings_dialog.set_osc_client_port(CONFIG.OSC_CLIENT_PORT.get_value())
-        settings_dialog.set_mu_server_name(CONFIG.MUSERVER_SERVER_NAME)
-        settings_dialog.set_mu_server_endpoint(CONFIG.MUSERVER_ENDPOINT)
-        settings_dialog.set_mu_cmd_line_args(CONFIG.MUSERVER_COMMAND_LINE_ARGUMENTS)
-        settings_dialog.set_mu_clean_history(CONFIG.MUSERVER_CLEAN_HISTORY)
-        settings_dialog.set_mu_auto_launch(CONFIG.MUSERVER_AUTO_LAUNCH)
-        settings_dialog.set_mu_auto_join(CONFIG.MUSERVER_AUTO_JOIN)
-        settings_dialog.set_mu_server_exe(CONFIG.MULTIUSER_SERVER_EXE)
-        settings_dialog.set_mu_server_auto_build(CONFIG.MUSERVER_AUTO_BUILD)
-        settings_dialog.set_mu_server_auto_endpoint(CONFIG.MUSERVER_AUTO_ENDPOINT)
+        settings_dialog = SettingsDialog(SETTINGS, CONFIG)
 
         for plugin_name in sorted(self.device_manager.available_device_plugins(), key=str.lower):
             device_instances = self.device_manager.devices_of_type(plugin_name)
             device_settings = [(device.name, device.device_settings(), device.setting_overrides()) for device in device_instances]
             settings_dialog.add_section_for_plugin(plugin_name, self.device_manager.plugin_settings(plugin_name), device_settings)
+        
+        settings_dialog.select_all_tab()
 
+        old_ip_address = SETTINGS.IP_ADDRESS.get_value()
+        old_transport_path = SETTINGS.TRANSPORT_PATH.get_value()
         # avoid saving the config all the time while in the settings dialog
         CONFIG.push_saving_allowed(False)
         try:
@@ -504,73 +900,14 @@ class SwitchboardDialog(QtCore.QObject):
         new_config_path = settings_dialog.config_path()
         if new_config_path != SETTINGS.CONFIG and new_config_path is not None:
             CONFIG.replace(new_config_path)
-
             SETTINGS.CONFIG = new_config_path
             SETTINGS.save()
 
-        ip_address = settings_dialog.ip_address()
-        if ip_address != SETTINGS.IP_ADDRESS:
-            SETTINGS.IP_ADDRESS = ip_address
+        if old_ip_address != SETTINGS.IP_ADDRESS.get_value() or SETTINGS.TRANSPORT_PATH.get_value():
             SETTINGS.save()
-
-            # Relaunch the OSC server
+        if old_ip_address != SETTINGS.IP_ADDRESS.get_value():
             self.osc_server.close()
-            self.osc_server.launch(SETTINGS.IP_ADDRESS, CONFIG.OSC_SERVER_PORT.get_value())
-
-        transport_path = settings_dialog.transport_path()
-        if transport_path != SETTINGS.TRANSPORT_PATH:
-            SETTINGS.TRANSPORT_PATH = transport_path
-            SETTINGS.save()
-
-        # todo-dara, when these project settings have been converted into actual Settings
-        # these assignments are not needed anymore, as the settings would be directly connected to their widgets
-
-        project_name = settings_dialog.project_name()
-        if project_name != CONFIG.PROJECT_NAME:
-            CONFIG.PROJECT_NAME = project_name
-
-        listener_exe = settings_dialog.listener_exe()
-        if listener_exe != CONFIG.LISTENER_EXE:
-            CONFIG.LISTENER_EXE = listener_exe
-
-        # Multi User Settings
-        mu_server_name = settings_dialog.mu_server_name()
-        if mu_server_name != CONFIG.MUSERVER_SERVER_NAME:
-            CONFIG.MUSERVER_SERVER_NAME = mu_server_name
-
-        mu_server_endpoint = settings_dialog.mu_server_endpoint()
-        if mu_server_endpoint != CONFIG.MUSERVER_ENDPOINT:
-            CONFIG.MUSERVER_ENDPOINT = mu_server_endpoint
-
-        mu_cmd_line_args = settings_dialog.mu_cmd_line_args()
-        if mu_cmd_line_args != CONFIG.MUSERVER_COMMAND_LINE_ARGUMENTS:
-            CONFIG.MUSERVER_COMMAND_LINE_ARGUMENTS = mu_cmd_line_args
-
-        mu_clean_history = settings_dialog.mu_clean_history()
-        if mu_clean_history != CONFIG.MUSERVER_CLEAN_HISTORY:
-            CONFIG.MUSERVER_CLEAN_HISTORY = mu_clean_history
-
-        mu_auto_launch = settings_dialog.mu_auto_launch()
-        if mu_auto_launch != CONFIG.MUSERVER_AUTO_LAUNCH:
-            CONFIG.MUSERVER_AUTO_LAUNCH = mu_auto_launch
-
-        mu_auto_join = settings_dialog.mu_auto_join()
-        if mu_auto_join != CONFIG.MUSERVER_AUTO_JOIN:
-            CONFIG.MUSERVER_AUTO_JOIN = mu_auto_join
-
-        mu_server_exe = settings_dialog.mu_server_exe()
-        if mu_server_exe != CONFIG.MULTIUSER_SERVER_EXE:
-            CONFIG.MULTIUSER_SERVER_EXE = mu_server_exe
-
-        mu_auto_build = settings_dialog.mu_server_auto_build()
-        if mu_auto_build != CONFIG.MUSERVER_AUTO_BUILD:
-            CONFIG.MUSERVER_AUTO_BUILD = mu_auto_build
-
-        mu_auto_endpoint = settings_dialog.mu_server_auto_endpoint()
-        if mu_auto_endpoint != CONFIG.MUSERVER_AUTO_ENDPOINT:
-            CONFIG.MUSERVER_AUTO_ENDPOINT = mu_auto_endpoint
-
-        CONFIG.P4_ENABLED.update_value(settings_dialog.p4_enabled())
+            self.osc_server.launch(SETTINGS.IP_ADDRESS.get_value(), CONFIG.OSC_SERVER_PORT.get_value())
 
         CONFIG.save()
 
@@ -613,6 +950,9 @@ class SwitchboardDialog(QtCore.QObject):
     def launch_all_button_clicked(self, button_state):
         devices = self.device_manager.devices()
         self.set_device_launch_state(devices, button_state)
+
+    def settings_button_clicked(self, button_state):
+        self.menu_update_settings()
 
     def set_device_launch_state(self, devices, launch_state):
         for device in devices:
@@ -702,6 +1042,7 @@ class SwitchboardDialog(QtCore.QObject):
         device.device_qt_handler.signal_device_client_disconnected.connect(self.device_client_disconnected, QtCore.Qt.QueuedConnection)
         device.device_qt_handler.signal_device_project_changelist_changed.connect(self.device_project_changelist_changed, QtCore.Qt.QueuedConnection)
         device.device_qt_handler.signal_device_engine_changelist_changed.connect(self.device_engine_changelist_changed, QtCore.Qt.QueuedConnection)
+        device.device_qt_handler.signal_device_built_engine_changelist_changed.connect(self.device_built_engine_changelist_changed, QtCore.Qt.QueuedConnection)
         device.device_qt_handler.signal_device_status_changed.connect(self.device_status_changed, QtCore.Qt.QueuedConnection)
         device.device_qt_handler.signal_device_sync_failed.connect(self.device_sync_failed, QtCore.Qt.QueuedConnection)
         device.device_qt_handler.signal_device_is_recording_device_changed.connect(self.device_is_recording_device_changed, QtCore.Qt.QueuedConnection)
@@ -749,13 +1090,41 @@ class SwitchboardDialog(QtCore.QObject):
     def multiuser_session_name(self):
         return self._multiuser_session_name
 
+    def on_multiuser_session_lineEdit_textChanged(self, text):
+        self.set_multiuser_session_name(text)
+
+    def on_multiuser_session_inc(self):
+        '''
+        Increment the session name by 1.
+        '''
+        current_name = self.multiuser_session_name()
+        match = re.search(r'\d+$', current_name)
+        basename = current_name
+        num_as_int = 1
+        padding = 0
+        if match is not None:
+            num_as_str = match.group()
+            basename = str.join(num_as_str, current_name.split(num_as_str)[:-1])
+            try:
+                num_as_int = int(num_as_str) + 1
+                padding = len(num_as_str)
+            except ValueError:
+                # Do not treat value conversion as an error it will just refer back to default value.
+                pass
+        new_num = f'{num_as_int}'.zfill(padding)
+        self.set_multiuser_session_name(f'{basename}{new_num}')
+
     def set_multiuser_session_name(self, value):
+
+        # sanitize the session name
+        value = value.replace(' ', '_')
+
         self._multiuser_session_name = value
 
         if self.window.multiuser_session_lineEdit.text() != value:
             self.window.multiuser_session_lineEdit.setText(value)
         
-        if value !=SETTINGS.MUSERVER_SESSION_NAME:
+        if value != SETTINGS.MUSERVER_SESSION_NAME:
             SETTINGS.MUSERVER_SESSION_NAME = value
             SETTINGS.save()
 
@@ -899,6 +1268,14 @@ class SwitchboardDialog(QtCore.QObject):
     def level(self, value):
         self._set_level(value)
 
+    def _on_selected_level_changed(self, index: int):
+        full_map_path = self._get_level_from_combo_box(index)
+        self._set_level(full_map_path)
+        
+    def _get_level_from_combo_box(self, index: int):
+        # Tooltip stores full path
+        return self.window.level_combo_box.itemData(index, QtCore.Qt.ToolTipRole)
+
     def _set_level(self, value):
         ''' Called when level dropdown text changes
         '''
@@ -909,7 +1286,12 @@ class SwitchboardDialog(QtCore.QObject):
             CONFIG.save()
 
         if self.window.level_combo_box.currentText() != self._level:
-            self.window.level_combo_box.setCurrentText(self._level)
+            for index in range(self.window.level_combo_box.count()):
+                if self._get_level_from_combo_box(index) == self._level:
+                    self.window.level_combo_box.blockSignals(True)
+                    self.window.level_combo_box.setCurrentIndex(index)
+                    self.window.level_combo_box.blockSignals(False)
+                    break
 
     @property
     def project_changelist(self):
@@ -927,17 +1309,12 @@ class SwitchboardDialog(QtCore.QObject):
 
         # Check if all of the devices are on the right changelist
         for device in self.device_manager.devices():
-            if not device.project_changelist:
-                continue
-
-            device_widget = self.device_list_widget.device_widget_by_hash(device.device_hash)
-            if value == EMPTY_SYNC_ENTRY:
-                device_widget.project_changelist_display_warning(False)
-            else:
-                if device.project_changelist == self.project_changelist:
-                    device_widget.project_changelist_display_warning(False)
-                else:
-                    device_widget.project_changelist_display_warning(True)
+            if device.project_changelist:
+                device_widget = self.device_list_widget.device_widget_by_hash(device.device_hash)
+                device_widget.update_project_changelist(
+                    required_cl=self.project_changelist if self.project_changelist != EMPTY_SYNC_ENTRY else None,
+                    current_device_cl=device.project_changelist
+                )
 
     @property
     def engine_changelist(self):
@@ -947,25 +1324,21 @@ class SwitchboardDialog(QtCore.QObject):
     def engine_changelist(self, value):
         self._set_engine_changelist(value)
 
-    def _set_engine_changelist(self, value):
-        self._engine_changelist = value
+    def _set_engine_changelist(self, changelist_value):
+        self._engine_changelist = changelist_value
 
         if self.window.engine_cl_combo_box.currentText() != self._engine_changelist:
             self.window.engine_cl_combo_box.setText(self._engine_changelist)
 
         # Check if all of the devices are on the right changelist
         for device in self.device_manager.devices():
-            if not device.engine_changelist:
-                continue
-
-            device_widget = self.device_list_widget.device_widget_by_hash(device.device_hash)
-            if value == EMPTY_SYNC_ENTRY:
-                device_widget.engine_changelist_display_warning(False)
-            else:
-                if device.engine_changelist == self.engine_changelist:
-                    device_widget.engine_changelist_display_warning(False)
-                else:
-                    device_widget.engine_changelist_display_warning(True)
+            if device.engine_changelist:
+                device_widget = self.device_list_widget.device_widget_by_hash(device.device_hash)
+                device_widget.update_engine_changelist(
+                    required_cl=self.engine_changelist if self.engine_changelist != EMPTY_SYNC_ENTRY else None, 
+                    synched_cl=device.engine_changelist,
+                    built__cl=device.built_engine_changelist
+                )
 
     @QtCore.Slot(object)
     def device_widget_connect(self, device_widget):
@@ -1061,28 +1434,39 @@ class SwitchboardDialog(QtCore.QObject):
     @QtCore.Slot(object)
     def device_project_changelist_changed(self, device):
         device_widget = self.device_list_widget.device_widget_by_hash(device.device_hash)
-        device_widget.update_project_changelist(device.project_changelist)
-
-        if self.project_changelist == EMPTY_SYNC_ENTRY:
-            device_widget.project_changelist_display_warning(False)
-        else:
-            if device.project_changelist == self.project_changelist:
-                device_widget.project_changelist_display_warning(False)
-            else:
-                device_widget.project_changelist_display_warning(True)
+        device_widget.update_project_changelist(
+            required_cl=self.project_changelist if self.project_changelist != EMPTY_SYNC_ENTRY else None,
+            current_device_cl=device.project_changelist
+        )
+        
+        cl = device.project_changelist
+        ip = device.ip_address
+        for device in self.device_manager.devices():
+            if device.ip_address == ip and device.project_changelist and device.project_changelist != cl:
+                device.project_changelist = cl
 
     @QtCore.Slot(object)
     def device_engine_changelist_changed(self, device):
         device_widget = self.device_list_widget.device_widget_by_hash(device.device_hash)
-        device_widget.update_engine_changelist(device.engine_changelist)
+        device_widget.update_engine_changelist(
+            required_cl=self.engine_changelist if self.engine_changelist != EMPTY_SYNC_ENTRY else None,
+            synched_cl=device.engine_changelist,
+            built__cl=device.built_engine_changelist
+        )
 
-        if self.engine_changelist == EMPTY_SYNC_ENTRY:
-            device_widget.engine_changelist_display_warning(False)
-        else:
-            if device.engine_changelist == self.engine_changelist:
-                device_widget.engine_changelist_display_warning(False)
-            else:
-                device_widget.engine_changelist_display_warning(True)
+        cl = device.engine_changelist
+        ip = device.ip_address
+        for device in self.device_manager.devices():
+            if device.ip_address == ip and device.engine_changelist and device.engine_changelist != cl:
+                device.engine_changelist = cl
+
+    @QtCore.Slot(object)
+    def device_built_engine_changelist_changed(self, device):
+        device_widget = self.device_list_widget.device_widget_by_hash(device.device_hash)
+        device_widget.update_build_info(
+            synched_cl=device.engine_changelist,
+            built_cl=device.built_engine_changelist
+        )
 
     @QtCore.Slot(object)
     def device_status_changed(self, device, previous_status):
@@ -1293,14 +1677,53 @@ class SwitchboardDialog(QtCore.QObject):
         current_level = CONFIG.CURRENT_LEVEL
 
         self.window.level_combo_box.clear()
-        self.window.level_combo_box.addItems([DEFAULT_MAP_TEXT] + levels)
+        self._update_level_list(self.window.level_combo_box, levels)
 
         if current_level and current_level in levels:
             self.level = current_level
 
+
+    def _update_level_list(self, level_combo_box: QtWidgets.QComboBox, level_path_list: List[str]):
+        def compare_file_names(path_a: str, path_b: str):
+            return -1 if path_a.lower() < path_b.lower() \
+                else 1 if path_a.lower() > path_b.lower() else 0
+        
+        def generate_short_map_path(map_path: str, file_name: str) -> str:
+            map_path = map_path.replace("/Game", "", 1)
+            map_path = map_path.removesuffix(file_name)
+            return f"{file_name} ({map_path})"
+            
+        
+        name_counts = {}
+        for map_path in level_path_list:
+            file_name = os.path.basename(map_path)
+            name_counts[file_name] = name_counts.get(file_name, 0) + 1
+            
+        # Show only level name if unique and show path behind to disambiguate duplicates
+        short_name_list = []
+        short_name_to_path = {}
+        for map_path in level_path_list:
+            file_name = os.path.basename(map_path)
+            short_name = file_name if name_counts[file_name] == 1 else generate_short_map_path(map_path, file_name)
+            short_name_list.append(short_name)
+            short_name_to_path[short_name] = map_path
+            
+        from functools import cmp_to_key
+        short_name_list = sorted(short_name_list, key=cmp_to_key(compare_file_names))
+        level_combo_box.addItems([DEFAULT_MAP_TEXT] + short_name_list)
+        
+        if len(level_path_list) == 0:
+            return
+        
+        # To disambiguate, show the full path name in the drop-down
+        level_combo_box.setItemData(0, "Default level", QtCore.Qt.ToolTipRole)
+        for short_name_index in range(len(short_name_list)):
+            short_name = short_name_list[short_name_index]
+            level_combo_box.setItemData(short_name_index + 1, short_name_to_path[short_name], QtCore.Qt.ToolTipRole)
+
     def get_current_level_list(self):
         level_combo = self.window.level_combo_box
-        return [level_combo.itemText(i) for i in range(1, level_combo.count())] # skip DEFAULT_MAP_TEXT
+        return [self._get_level_from_combo_box(i) for i in range(1, level_combo.count())] # skip DEFAULT_MAP_TEXT
 
     def refresh_levels_incremental(self):
         ''' Wrapper around `refresh_levels` with the following differences:
@@ -1435,7 +1858,7 @@ class SwitchboardDialog(QtCore.QObject):
 
         # Return a Recording object
         new_recording = recording.Recording()
-        new_recording.project = CONFIG.PROJECT_NAME
+        new_recording.project = CONFIG.PROJECT_NAME.get_value()
         new_recording.shoot = self.shoot
         new_recording.sequence = self.sequence
         new_recording.slate = self.slate

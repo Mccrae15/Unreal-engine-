@@ -10,11 +10,10 @@
 #include "PerPlatformProperties.h"
 #include "LandscapePhysicalMaterial.h"
 #include "LandscapeWeightmapUsage.h"
+#include "Containers/ArrayView.h"
 #include "Engine/StreamableRenderAsset.h"
 
 #include "LandscapeComponent.generated.h"
-
-#define LANDSCAPE_LOD_STREAMING_USE_TOKEN (!WITH_EDITORONLY_DATA && USE_BULKDATA_STREAMING_TOKEN)
 
 class ALandscape;
 class ALandscapeProxy;
@@ -37,7 +36,6 @@ struct FEngineShowFlags;
 struct FLandscapeEditDataInterface;
 struct FLandscapeTextureDataInfo;
 struct FStaticLightingPrimitiveInfo;
-
 struct FLandscapeEditDataInterface;
 struct FLandscapeMobileRenderData;
 
@@ -72,11 +70,11 @@ public:
 
 	// Material used to render the tool.
 	UPROPERTY(NonTransactional)
-	UMaterialInterface* ToolMaterial;
+	TObjectPtr<UMaterialInterface> ToolMaterial;
 
 	// Material used to render the gizmo selection region...
 	UPROPERTY(NonTransactional)
-	UMaterialInterface* GizmoMaterial;
+	TObjectPtr<UMaterialInterface> GizmoMaterial;
 
 	// Component is selected
 	UPROPERTY(NonTransactional)
@@ -92,13 +90,13 @@ public:
 	int32 DebugChannelB;
 
 	UPROPERTY(NonTransactional)
-	UTexture2D* DataTexture; // Data texture other than height/weight
+	TObjectPtr<UTexture2D> DataTexture; // Data texture other than height/weight
 
 	UPROPERTY(NonTransactional)
-	UTexture2D* LayerContributionTexture; // Data texture used to represent layer contribution
+	TObjectPtr<UTexture2D> LayerContributionTexture; // Data texture used to represent layer contribution
 
 	UPROPERTY(NonTransactional)
-	UTexture2D* DirtyTexture; // Data texture used to represent layer blend dirtied area
+	TObjectPtr<UTexture2D> DirtyTexture; // Data texture used to represent layer blend dirtied area
 
 #if WITH_EDITOR
 	void UpdateDebugColorMaterial(const ULandscapeComponent* const Component);
@@ -112,16 +110,15 @@ class FLandscapeComponentDerivedData
 	    On device, freed once it has been decompressed. */
 	TArray<uint8> CompressedLandscapeData;
 
-#if LANDSCAPE_LOD_STREAMING_USE_TOKEN
-	TArray<FBulkDataStreamingToken> StreamingLODDataArray;
-#else
 	TArray<FByteBulkData> StreamingLODDataArray;
-#endif
 	
 	/** Cached render data. Only valid on device. */
 	TSharedPtr<FLandscapeMobileRenderData, ESPMode::ThreadSafe > CachedRenderData;
 
-	FString CachedLODDataFileName;
+	UE_DEPRECATED(5.0, "The path will not be valid when staged via the IoStore, functionality is being removed")
+	FPackagePath CachedLODDataPackagePath;
+	UE_DEPRECATED(5.0, "The path will not be valid when staged via the IoStore, functionality is being removed")
+	EPackageSegment CachedLODDataPackageSegment;
 
 	friend class ULandscapeLODStreamingProxy;
 
@@ -198,7 +195,7 @@ struct FWeightmapLayerAllocationInfo
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	ULandscapeLayerInfoObject* LayerInfo;
+	TObjectPtr<ULandscapeLayerInfoObject> LayerInfo;
 
 	UPROPERTY()
 	uint8 WeightmapTextureIndex;
@@ -221,6 +218,13 @@ struct FWeightmapLayerAllocationInfo
 	{
 	}
 	
+	bool operator == (const FWeightmapLayerAllocationInfo& RHS) const
+	{
+		return (LayerInfo == RHS.LayerInfo)
+			&& (WeightmapTextureIndex == RHS.WeightmapTextureIndex)
+			&& (WeightmapTextureChannel == RHS.WeightmapTextureChannel); 
+	}
+
 	FName GetLayerName() const;
 
 	uint32 GetHash() const;
@@ -233,6 +237,12 @@ struct FWeightmapLayerAllocationInfo
 
 	bool IsAllocated() const { return (WeightmapTextureChannel != 255 && WeightmapTextureIndex != 255); }
 };
+
+inline uint32 GetTypeHash(const FWeightmapLayerAllocationInfo& InAllocInfo)
+{
+	return InAllocInfo.GetHash();
+}
+
 
 struct FLandscapeComponentGrassData
 {
@@ -247,34 +257,40 @@ struct FLandscapeComponentGrassData
 	FQuat RotationForWPO;
 #endif
 
-	TArray<uint16> HeightData;
 #if WITH_EDITORONLY_DATA
 	// Height data for LODs 1+, keyed on LOD index
 	TMap<int32, TArray<uint16>> HeightMipData;
 
 	// Grass data was updated but not saved yet
-	bool bIsDirty;
+	bool bIsDirty = false;
 #endif
-	TMap<ULandscapeGrassType*, TArray<uint8>> WeightData;
+	
+	static constexpr int32 UnknownNumElements = -1;
+	// Elements per contiguous array: for validation and also to indicate whether the grass data is valid (NumElements >= 0, meaning 0 elements is valid but the grass data is all zero and 
+	//  therefore empty) or not known yet (== UnknownNumElements)
+	int32 NumElements = UnknownNumElements;
+	// Serialized in one block to prevent Slack waste
+	TMap<ULandscapeGrassType*, int32> WeightOffsets;
+	TArray<uint8> HeightWeightData;
 
-	FLandscapeComponentGrassData()
-#if WITH_EDITORONLY_DATA
-		: bIsDirty(false) 
-#endif
-	{}
+	FLandscapeComponentGrassData() = default;
 
 #if WITH_EDITOR
 	FLandscapeComponentGrassData(ULandscapeComponent* Component);
 #endif
 
-	bool HasData()
-	{
-		return HeightData.Num() > 0 ||
-#if WITH_EDITORONLY_DATA
-			HeightMipData.Num() > 0 ||
-#endif
-			WeightData.Num() > 0;
-	}
+	// Returns whether grass data has been computed (or serialized) yet. Returns true even if the data is completely empty (e.g. all-zero weightmap data)
+	bool HasValidData() const;
+
+	// Returns whether the data is completely empty (e.g. all-zero weightmap data). Returns false if the data just wasn't computed yet :
+	bool HasData() const;
+
+	void InitializeFrom(const TArray<uint16>& HeightData, const TMap<ULandscapeGrassType*, TArray<uint8>>& WeightData);
+
+	bool HasWeightData() const;
+	TArrayView<uint8> GetWeightData(const ULandscapeGrassType* GrassType);
+	bool Contains(ULandscapeGrassType* GrassType) const;
+	TArrayView<uint16> GetHeightData();
 
 	SIZE_T GetAllocatedSize() const;
 
@@ -293,7 +309,7 @@ struct FLandscapeComponentMaterialOverride
 	FPerPlatformInt LODIndex;
 
 	UPROPERTY(EditAnywhere, Category = LandscapeComponent)
-	UMaterialInterface* Material = nullptr;
+	TObjectPtr<UMaterialInterface> Material = nullptr;
 };
 
 USTRUCT(NotBlueprintable)
@@ -302,13 +318,13 @@ struct FWeightmapData
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	TArray<UTexture2D*> Textures;
+	TArray<TObjectPtr<UTexture2D>> Textures;
 	
 	UPROPERTY()
 	TArray<FWeightmapLayerAllocationInfo> LayerAllocations;
 
-	UPROPERTY(Transient)
-	TArray<ULandscapeWeightmapUsage*> TextureUsages;
+	UPROPERTY(Transient, NonTransactional)
+	TArray<TObjectPtr<ULandscapeWeightmapUsage>> TextureUsages;
 };
 
 USTRUCT(NotBlueprintable)
@@ -317,13 +333,28 @@ struct FHeightmapData
 	GENERATED_USTRUCT_BODY()
 
 	UPROPERTY()
-	UTexture2D* Texture = nullptr;
+	TObjectPtr<UTexture2D> Texture = nullptr;
 };
 
 USTRUCT(NotBlueprintable)
 struct FLandscapeLayerComponentData
 {
 	GENERATED_USTRUCT_BODY()
+
+	FLandscapeLayerComponentData() = default;
+
+#if WITH_EDITOR
+	FLandscapeLayerComponentData(const FName& InDebugName)
+		: DebugName(InDebugName)
+	{}
+
+#endif // WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
+	// Edit layers are referenced by Guid, this name is just there to provide some insights as to what edit layer name this layer data corresponded to in case of a missing edit layer guid
+	UPROPERTY()
+	FName DebugName; 
+#endif // WITH_EDITORONLY_DATA
 
 	UPROPERTY()
 	FHeightmapData HeightmapData;
@@ -398,14 +429,15 @@ class ULandscapeLODStreamingProxy : public UStreamableRenderAsset
 	virtual EStreamableRenderAssetType GetRenderAssetType() const final override { return EStreamableRenderAssetType::LandscapeMeshMobile; }
 	//~ End UStreamableRenderAsset Interface
 
+	UE_DEPRECATED(5.0, "The mip will not be able to return a valid file name when staged via the IoStore, functionality is being removed")
 	LANDSCAPE_API bool GetMipDataFilename(const int32 MipIndex, FString& OutBulkDataFilename) const;
-
+	UE_DEPRECATED(5.0, "The mip will not be able to return a valid package path when staged via the IoStore, functionality is being removed")
+	LANDSCAPE_API bool GetMipDataPackagePath(const int32 MipIndex, FPackagePath& OutBulkDataPackagePath, EPackageSegment& OutPackageSegment) const;
 
 	LANDSCAPE_API TArray<float> GetLODScreenSizeArray() const;
 	LANDSCAPE_API TSharedPtr<FLandscapeMobileRenderData, ESPMode::ThreadSafe> GetRenderData() const;
 
-	typedef typename TChooseClass<LANDSCAPE_LOD_STREAMING_USE_TOKEN, FBulkDataStreamingToken, FByteBulkData>::Result BulkDataType;
-	LANDSCAPE_API BulkDataType& GetStreamingLODBulkData(int32 LODIdx) const;
+	LANDSCAPE_API FByteBulkData& GetStreamingLODBulkData(int32 LODIdx) const;
 
 	static LANDSCAPE_API void CancelAllPendingStreamingActions();
 
@@ -443,36 +475,32 @@ class ULandscapeComponent : public UPrimitiveComponent
 	int32 NumSubsections;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=LandscapeComponent)
-	UMaterialInterface* OverrideMaterial;
+	TObjectPtr<UMaterialInterface> OverrideMaterial;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=LandscapeComponent, AdvancedDisplay)
-	UMaterialInterface* OverrideHoleMaterial;
+	TObjectPtr<UMaterialInterface> OverrideHoleMaterial;
 
 	UPROPERTY(EditAnywhere, Category = LandscapeComponent)
 	TArray<FLandscapeComponentMaterialOverride> OverrideMaterials;
 
 #if WITH_EDITORONLY_DATA
 	UPROPERTY()
-	UMaterialInstanceConstant* MaterialInstance_DEPRECATED;
+	TObjectPtr<UMaterialInstanceConstant> MaterialInstance_DEPRECATED;
 #endif
 
 	UPROPERTY(TextExportTransient)
-	TArray<UMaterialInstanceConstant*> MaterialInstances;
+	TArray<TObjectPtr<UMaterialInstanceConstant>> MaterialInstances;
 
 	UPROPERTY(Transient, TextExportTransient)
-	TArray<UMaterialInstanceDynamic*> MaterialInstancesDynamic;
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> MaterialInstancesDynamic;
 
 	/** Mapping between LOD and Material Index*/
 	UPROPERTY(TextExportTransient)
 	TArray<int8> LODIndexToMaterialIndex;
 
-	/** Mapping between Material Index to associated generated disabled Tessellation Material*/
-	UPROPERTY(TextExportTransient)
-	TArray<int8> MaterialIndexToDisabledTessellationMaterial;
-
 	/** XYOffsetmap texture reference */
-	UPROPERTY(TextExportTransient)
-	UTexture2D* XYOffsetmapTexture;
+	UPROPERTY()
+	TObjectPtr<UTexture2D> XYOffsetmapTexture;
 
 	/** UV offset to component's weightmap data from component local coordinates*/
 	UPROPERTY()
@@ -510,7 +538,7 @@ private:
 		
 	// Final layer data
 	UPROPERTY(Transient)
-	TArray<ULandscapeWeightmapUsage*> WeightmapTexturesUsage;
+	TArray<TObjectPtr<ULandscapeWeightmapUsage>> WeightmapTexturesUsage;
 
 	UPROPERTY(Transient)
 	uint32 LayerUpdateFlagPerMode;
@@ -526,20 +554,20 @@ private:
 #endif // WITH_EDITORONLY_DATA
 
 	/** Heightmap texture reference */
-	UPROPERTY(TextExportTransient)
-	UTexture2D* HeightmapTexture;
+	UPROPERTY()
+	TObjectPtr<UTexture2D> HeightmapTexture;
 
 	/** List of layers, and the weightmap and channel they are stored */
 	UPROPERTY()
 	TArray<FWeightmapLayerAllocationInfo> WeightmapLayerAllocations;
 
 	/** Weightmap texture reference */
-	UPROPERTY(TextExportTransient)
-	TArray<UTexture2D*> WeightmapTextures;
+	UPROPERTY()
+	TArray<TObjectPtr<UTexture2D>> WeightmapTextures;
 
 	/** Used to interface the component to the LOD streamer. */
 	UPROPERTY()
-	ULandscapeLODStreamingProxy* LODStreamingProxy;
+	TObjectPtr<ULandscapeLODStreamingProxy> LODStreamingProxy;
 
 public:
 
@@ -588,18 +616,22 @@ public:
 	UPROPERTY()
 	FGuid BakedTextureMaterialGuid;
 
+	/** The Material Guid that last saved, to notify manual build operation to bake textures */
+	UPROPERTY(Transient)
+	FGuid LastBakedTextureMaterialGuid;
+
 	/** Pre-baked Base Color texture for use by distance field GI */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = BakedTextures)
-	UTexture2D* GIBakedBaseColorTexture;
+	TObjectPtr<UTexture2D> GIBakedBaseColorTexture;
 
 #if WITH_EDITORONLY_DATA
-	/** LOD level Bias to use when lighting buidling via lightmass, -1 Means automatic LOD calculation based on ForcedLOD + LODBias */
+	/** LOD level Bias to use when lighting building via lightmass, -1 Means automatic LOD calculation based on ForcedLOD + LODBias */
 	UPROPERTY(EditAnywhere, Category=LandscapeComponent)
 	int32 LightingLODBias;
 
 	// List of layers allowed to be painted on this component
 	UPROPERTY(EditAnywhere, Category=LandscapeComponent)
-	TArray<ULandscapeLayerInfoObject*> LayerWhitelist;
+	TArray<TObjectPtr<ULandscapeLayerInfoObject>> LayerAllowList;
 
 	/** Pointer to data shared with the render thread, used by the editor tools */
 	UPROPERTY(Transient, DuplicateTransient, NonTransactional)
@@ -611,7 +643,7 @@ public:
 
 	/** Represent the chosen material for each LOD */
 	UPROPERTY(DuplicateTransient)
-	TMap<UMaterialInterface*, int8> MaterialPerLOD;
+	TMap<TObjectPtr<UMaterialInterface>, int8> MaterialPerLOD;
 
 	/** Represents hash of last weightmap usage update */
 	uint32 WeightmapsHash;
@@ -622,6 +654,10 @@ public:
 	/** Represents hash for last PhysicalMaterialTask */
 	UPROPERTY()
 	uint32 PhysicalMaterialHash;
+
+	/** Represents last saved hash for PhysicalMaterialTask */
+	UPROPERTY(Transient)
+	uint32 LastSavedPhysicalMaterialHash;
 #endif
 
 	/** For mobile */
@@ -629,16 +665,16 @@ public:
 	uint8 MobileBlendableLayerMask;
 
 	UPROPERTY(NonPIEDuplicateTransient)
-	UMaterialInterface* MobileMaterialInterface_DEPRECATED;
+	TObjectPtr<UMaterialInterface> MobileMaterialInterface_DEPRECATED;
 
 	/** Material interfaces used for mobile */
 	UPROPERTY(NonPIEDuplicateTransient)
-	TArray<UMaterialInterface*> MobileMaterialInterfaces;
+	TArray<TObjectPtr<UMaterialInterface>> MobileMaterialInterfaces;
 
 	/** Generated weightmap textures used for mobile. The first entry is also used for the normal map. 
 	  * Serialized only when cooking or loading cooked builds. */
 	UPROPERTY(NonPIEDuplicateTransient)
-	TArray<UTexture2D*> MobileWeightmapTextures;
+	TArray<TObjectPtr<UTexture2D>> MobileWeightmapTextures;
 
 #if WITH_EDITORONLY_DATA
 	/** Layer allocations used by mobile. Cached value here used only in the editor for usage visualization. */
@@ -647,10 +683,10 @@ public:
 	/** The editor needs to save out the combination MIC we'll use for mobile, 
 	  because we cannot generate it at runtime for standalone PIE games */
 	UPROPERTY(NonPIEDuplicateTransient)
-	TArray<UMaterialInstanceConstant*> MobileCombinationMaterialInstances;
+	TArray<TObjectPtr<UMaterialInstanceConstant>> MobileCombinationMaterialInstances;
 
 	UPROPERTY(NonPIEDuplicateTransient)
-	UMaterialInstanceConstant* MobileCombinationMaterialInstance_DEPRECATED;
+	TObjectPtr<UMaterialInstanceConstant> MobileCombinationMaterialInstance_DEPRECATED;
 #endif
 
 public:
@@ -684,12 +720,15 @@ public:
 
 	LANDSCAPE_API void UpdateEditToolRenderData();
 
-	/** Fix up component layers, weightmaps
-	 */
+	/** Fix up component layers, weightmaps */
 	LANDSCAPE_API void FixupWeightmaps();
+	LANDSCAPE_API void FixupWeightmaps(const FGuid& InEditLayerGuid);
 
-	// Update layer whitelist to include the currently painted layers
-	LANDSCAPE_API void UpdateLayerWhitelistFromPaintedLayers();
+	/** Repair invalid texture data that might have been introduced by a faulty version. Returns the list of repaired textures  */
+	TArray<UTexture*> RepairInvalidTextures();
+
+	// Update layer allow list to include the currently painted layers
+	LANDSCAPE_API void UpdateLayerAllowListFromPaintedLayers();
 	
 	//~ Begin UPrimitiveComponent Interface.
 	virtual bool GetLightMapResolution( int32& Width, int32& Height ) const override;
@@ -707,9 +746,14 @@ public:
 	virtual TArray<URuntimeVirtualTexture*> const& GetRuntimeVirtualTextures() const override;
 	virtual ERuntimeVirtualTextureMainPassType GetVirtualTextureRenderPassType() const override;
 
+	// Returns the heightmap for this component. If InReturnEditingHeightmap is passed, returns the currently active edit layer's heightmap : 
 	LANDSCAPE_API UTexture2D* GetHeightmap(bool InReturnEditingHeightmap = false) const;
+	// Returns the heightmap for this component and the edit layer specified by InLayerGuid. If InLayerGuid is invalid, returns the final (base) heightmap : 
+	LANDSCAPE_API UTexture2D* GetHeightmap(const FGuid& InLayerGuid) const;
 	LANDSCAPE_API TArray<UTexture2D*>& GetWeightmapTextures(bool InReturnEditingWeightmap = false);
 	LANDSCAPE_API const TArray<UTexture2D*>& GetWeightmapTextures(bool InReturnEditingWeightmap = false) const;
+	LANDSCAPE_API TArray<UTexture2D*>& GetWeightmapTextures(const FGuid& InLayerGuid);
+	LANDSCAPE_API const TArray<UTexture2D*>& GetWeightmapTextures(const FGuid& InLayerGuid) const;
 
 	LANDSCAPE_API TArray<FWeightmapLayerAllocationInfo>& GetWeightmapLayerAllocations(bool InReturnEditingWeightmap = false);
 	LANDSCAPE_API const TArray<FWeightmapLayerAllocationInfo>& GetWeightmapLayerAllocations(bool InReturnEditingWeightmap = false) const;
@@ -717,7 +761,7 @@ public:
 	LANDSCAPE_API const TArray<FWeightmapLayerAllocationInfo>& GetWeightmapLayerAllocations(const FGuid& InLayerGuid) const;
 
 #if WITH_EDITOR
-	LANDSCAPE_API uint32 ComputeLayerHash() const;
+	LANDSCAPE_API uint32 ComputeLayerHash(bool InReturnEditingHash = true) const;
 
 	LANDSCAPE_API void SetHeightmap(UTexture2D* NewHeightmap);
 
@@ -727,6 +771,9 @@ public:
 	LANDSCAPE_API void SetWeightmapTexturesUsage(const TArray<ULandscapeWeightmapUsage*>& InNewWeightmapTexturesUsage, bool InApplyToEditingWeightmap = false);
 	LANDSCAPE_API TArray<ULandscapeWeightmapUsage*>& GetWeightmapTexturesUsage(bool InReturnEditingWeightmap = false);
 	LANDSCAPE_API const TArray<ULandscapeWeightmapUsage*>& GetWeightmapTexturesUsage(bool InReturnEditingWeightmap = false) const;
+	LANDSCAPE_API TArray<ULandscapeWeightmapUsage*>& GetWeightmapTexturesUsage(const FGuid& InLayerGuid);
+	LANDSCAPE_API const TArray<ULandscapeWeightmapUsage*>& GetWeightmapTexturesUsage(const FGuid& InLayerGuid) const;
+	LANDSCAPE_API void InitializeLayersWeightmapUsage(const FGuid& InLayerGuid);
 
 	LANDSCAPE_API bool HasLayersData() const;
 	LANDSCAPE_API const FLandscapeLayerComponentData* GetLayerData(const FGuid& InLayerGuid) const;
@@ -760,6 +807,9 @@ public:
 	//~ End UPrimitiveComponent Interface.
 
 	//~ Begin USceneComponent Interface.
+#if WITH_EDITOR
+	virtual bool GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty) override;
+#endif // WITH_EDITOR
 	virtual void DestroyComponent(bool bPromoteChildren = false) override;
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	//~ End USceneComponent Interface.
@@ -771,6 +821,7 @@ public:
 	virtual void InvalidateLightingCacheDetailed(bool bInvalidateBuildEnqueuedLighting, bool bTranslationOnly) override;
 #endif
 	virtual void PropagateLightingScenarioChange() override;
+	virtual bool IsHLODRelevant() const { return true; }
 	//~ End UActorComponent Interface.
 
 	/** Gets the landscape info object for this landscape */
@@ -812,10 +863,12 @@ public:
 	// Generates mobile platform data for this component
 	void GenerateMobileWeightmapLayerAllocations();
 	void GeneratePlatformVertexData(const ITargetPlatform* TargetPlatform);
-	void GeneratePlatformPixelData();
+	void GeneratePlatformPixelData(bool bIsCooking, const ITargetPlatform* TargetPlatform);
 
 	/** Generate mobile data if it's missing or outdated */
 	void CheckGenerateLandscapePlatformData(bool bIsCooking, const ITargetPlatform* TargetPlatform);
+
+	virtual TSubclassOf<class UHLODBuilder> GetCustomHLODBuilderClass() const override;
 #endif
 
 	LANDSCAPE_API int32 GetMaterialInstanceCount(bool InDynamic = true) const;
@@ -842,6 +895,8 @@ public:
 #if WITH_EDITOR
 	/** Returns all generated textures and material instances used by this component. */
 	LANDSCAPE_API void GetGeneratedTexturesAndMaterialInstances(TArray<UObject*>& OutTexturesAndMaterials) const;
+	LANDSCAPE_API TArray<UTexture*> GetGeneratedTextures() const;
+	LANDSCAPE_API TArray<UMaterialInstance*> GetGeneratedMaterialInstances() const;
 #endif
 
 	/** Gets the landscape proxy actor which owns this component */
@@ -998,7 +1053,7 @@ public:
 	/**
 	 * Create weightmaps for this component for the layers specified in the WeightmapLayerAllocations array
 	 */
-	LANDSCAPE_API void ReallocateWeightmaps(FLandscapeEditDataInterface* DataInterface = nullptr, bool InCanUseEditingWeightmap = true, bool InSaveToTransactionBuffer = true, bool InInitPlatformDataAsync = false, bool InForceReallocate = false, ALandscapeProxy* InTargetProxy = nullptr, TArray<UTexture2D*>* OutNewCreatedTextures = nullptr);
+	LANDSCAPE_API void ReallocateWeightmaps(FLandscapeEditDataInterface* DataInterface = nullptr, bool InCanUseEditingWeightmap = true, bool InSaveToTransactionBuffer = true, bool InForceReallocate = false, ALandscapeProxy* InTargetProxy = nullptr, TArray<UTexture*>* OutNewCreatedTextures = nullptr);
 
 	/** Returns the component's LandscapeMaterial, or the Component's OverrideLandscapeMaterial if set */
 	LANDSCAPE_API UMaterialInterface* GetLandscapeMaterial(int8 InLODIndex = INDEX_NONE) const;
@@ -1017,17 +1072,14 @@ public:
 	 */
 	static FString GetLayerAllocationKey(const TArray<FWeightmapLayerAllocationInfo>& Allocations, UMaterialInterface* LandscapeMaterial, bool bMobile = false);
 
+	bool ValidateCombinationMaterial(UMaterialInstanceConstant* InCombinationMaterial) const;
+
 	/** @todo document */
 	void GetLayerDebugColorKey(int32& R, int32& G, int32& B) const;
 
 	/** @todo document */
 	void RemoveInvalidWeightmaps();
-
-	/** @todo document */
-	virtual void ExportCustomProperties(FOutputDevice& Out, uint32 Indent) override;
-
-	/** @todo document */
-	virtual void ImportCustomProperties(const TCHAR* SourceText, FFeedbackContext* Warn) override;
+	void RemoveInvalidWeightmaps(const FGuid& InEditLayerGuid);
 
 	/** @todo document */
 	LANDSCAPE_API void InitHeightmapData(TArray<FColor>& Heights, bool bUpdateCollision);
@@ -1040,6 +1092,8 @@ public:
 
 	/** Extends passed region with this component section size */
 	LANDSCAPE_API void GetComponentExtent(int32& MinX, int32& MinY, int32& MaxX, int32& MaxY) const;
+
+	LANDSCAPE_API FIntRect GetComponentExtent() const;
 
 	/** Updates navigation properties to match landscape's master switch */
 	void UpdateNavigationRelevance();
@@ -1057,6 +1111,12 @@ public:
 	LANDSCAPE_API void RequestDeferredClientUpdate();
 	LANDSCAPE_API uint32 GetLayerUpdateFlagPerMode() const { return LayerUpdateFlagPerMode; }
 	LANDSCAPE_API uint32 ComputeWeightmapsHash();
+
+	void GetUsedPaintLayers(const FGuid& InLayerGuid, TArray<ULandscapeLayerInfoObject*>& OutUsedLayerInfos) const;
+
+	void GetLandscapeComponentNeighborsToRender(TSet<ULandscapeComponent*>& NeighborComponents) const;
+	void GetLandscapeComponentWeightmapsToRender(TSet<ULandscapeComponent*>& WeightmapComponents) const;
+	void GetLandscapeComponentNeighbors3x3(TStaticArray<ULandscapeComponent*, 9>& OutNeighborComponents) const;
 #endif
 
 	friend class FLandscapeComponentSceneProxy;

@@ -58,7 +58,8 @@ public:
 	TSharedPtr< FUICommandInfo > DisableAllBreakpoints;
 	TSharedPtr< FUICommandInfo > ClearAllBreakpoints;
 	TSharedPtr< FUICommandInfo > ClearAllWatches;
-
+	TSharedPtr< FUICommandInfo > OpenBlueprintDebugger;
+	
 	// New documents
 	TSharedPtr< FUICommandInfo > AddNewVariable;
 	TSharedPtr< FUICommandInfo > AddNewLocalVariable;
@@ -70,7 +71,6 @@ public:
 
 	// Development commands
 	TSharedPtr< FUICommandInfo > SaveIntermediateBuildProducts;
-	TSharedPtr< FUICommandInfo > GenerateNativeCode;
 	TSharedPtr< FUICommandInfo > GenerateSearchIndex;
 	TSharedPtr< FUICommandInfo > DumpCachedIndexData;
 	TSharedPtr< FUICommandInfo > ShowActionMenuItemSignatures;

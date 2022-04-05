@@ -106,10 +106,10 @@ UDisplayClusterConfigurationClusterNode* FDisplayClusterConfiguratorClusterUtils
 
 		NewNode = AddClusterNodeToCluster(NodeTemplate, Cluster, ItemName);
 
-		// If the newly added cluster node is the only node in the cluster, it should be the master node, so set it as the master
+		// If the newly added cluster node is the only node in the cluster, it should be the primary node, so set it as the primary
 		if (Cluster->Nodes.Num() == 1)
 		{
-			SetClusterNodeAsMaster(NewNode);
+			SetClusterNodeAsPrimary(NewNode);
 		}
 
 		if (bAddViewport)
@@ -456,7 +456,7 @@ UDisplayClusterConfigurationHostDisplayData* FDisplayClusterConfiguratorClusterU
 	TArray<FString> PendingKillHostData;
 	for (TPair<FString, UDisplayClusterConfigurationHostDisplayData*>& HostPair : Cluster->HostDisplayData)
 	{
-		if (!HostPair.Value || HostPair.Value->IsPendingKill())
+		if (!IsValid(HostPair.Value))
 		{
 			PendingKillHostData.Add(HostPair.Key);
 		}
@@ -472,7 +472,7 @@ UDisplayClusterConfigurationHostDisplayData* FDisplayClusterConfiguratorClusterU
 		const FString HostName = GetUniqueNameForHost(DefaultNewHostName, Cluster, true);
 		UDisplayClusterConfigurationHostDisplayData* NewData = NewObject<UDisplayClusterConfigurationHostDisplayData>(Cluster, NAME_None, RF_Transactional);
 		NewData->HostName = FText::FromString(HostName);
-		NewData->Color = FDisplayClusterConfiguratorStyle::GetCornerColor(Cluster->HostDisplayData.Num()).CopyWithNewOpacity(1.0f);
+		NewData->Color = FDisplayClusterConfiguratorStyle::Get().GetDefaultColor(Cluster->HostDisplayData.Num()).CopyWithNewOpacity(1.0f);
 
 		Cluster->HostDisplayData.Add(HostIPAddress, NewData);
 	}
@@ -498,7 +498,7 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveUnusedHostDisplayData(UDispl
 
 		for (const FString& UnusedHost : UnusedHosts)
 		{
-			Cluster->HostDisplayData[UnusedHost]->MarkPendingKill();
+			Cluster->HostDisplayData[UnusedHost]->MarkAsGarbage();
 			Cluster->HostDisplayData.Remove(UnusedHost);
 		}
 
@@ -510,32 +510,13 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveUnusedHostDisplayData(UDispl
 
 FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForHost(FString InitialName, UDisplayClusterConfigurationCluster* ParentCluster, bool bAddZero)
 {
-	FString UniqueName = InitialName;
-	int NameIndex = 0;
-
-	if (bAddZero)
-	{
-		UniqueName = FString::Printf(TEXT("%s_%d"), *InitialName, NameIndex);
-	}
-
 	TArray<FString> UsedNames;
 	for (TPair<FString, UDisplayClusterConfigurationHostDisplayData*>& HostPair : ParentCluster->HostDisplayData)
 	{
 		UsedNames.Add(HostPair.Value->HostName.ToString());
 	}
 
-	while (UsedNames.Contains(UniqueName))
-	{
-		UniqueName = FString::Printf(TEXT("%s_%d"), *InitialName, ++NameIndex);
-	}
-
-	// If there is already an in-memory object connected to the parent cluster with the name, we need to use a globally unique object name.
-	if (StaticFindObject(nullptr, ParentCluster, *UniqueName, true))
-	{
-		UniqueName = MakeUniqueObjectName(ParentCluster, UDisplayClusterConfigurationClusterNode::StaticClass(), *UniqueName).ToString();
-	}
-
-	return UniqueName;
+	return GetUniqueName(InitialName, UsedNames, UDisplayClusterConfigurationClusterNode::StaticClass(), ParentCluster, bAddZero);
 }
 
 FString FDisplayClusterConfiguratorClusterUtils::GetAddressForHost(UDisplayClusterConfigurationHostDisplayData* HostDisplayData)
@@ -612,12 +593,12 @@ FString FDisplayClusterConfiguratorClusterUtils::GetClusterNodeName(UDisplayClus
 	return "";
 }
 
-bool FDisplayClusterConfiguratorClusterUtils::IsClusterNodeMaster(UDisplayClusterConfigurationClusterNode* ClusterNode)
+bool FDisplayClusterConfiguratorClusterUtils::IsClusterNodePrimary(UDisplayClusterConfigurationClusterNode* ClusterNode)
 {
 	if (const UDisplayClusterConfigurationCluster* Cluster = Cast<UDisplayClusterConfigurationCluster>(ClusterNode->GetOuter()))
 	{
-		const FString MasterNodeId = Cluster->MasterNode.Id;
-		if (Cluster->Nodes.Contains(MasterNodeId) && Cluster->Nodes[MasterNodeId] == ClusterNode)
+		const FString PrimaryNodeId = Cluster->PrimaryNode.Id;
+		if (Cluster->Nodes.Contains(PrimaryNodeId) && Cluster->Nodes[PrimaryNodeId] == ClusterNode)
 		{
 			return true;
 		}
@@ -628,26 +609,10 @@ bool FDisplayClusterConfiguratorClusterUtils::IsClusterNodeMaster(UDisplayCluste
 
 FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForClusterNode(FString InitialName, UDisplayClusterConfigurationCluster* ParentCluster, bool bAddZero)
 {
-	FString UniqueName = InitialName;
-	int NameIndex = 0;
+	TArray<FString> UsedNames;
+	ParentCluster->Nodes.GenerateKeyArray(UsedNames);
 
-	if (bAddZero)
-	{
-		UniqueName = FString::Printf(TEXT("%s_%d"), *InitialName, NameIndex);
-	}
-
-	while (ParentCluster->Nodes.Contains(UniqueName))
-	{
-		UniqueName = FString::Printf(TEXT("%s_%d"), *InitialName, ++NameIndex);
-	}
-
-	// If there is already an in-memory object connected to the parent cluster with the name, we need to use a globally unique object name.
-	if (StaticFindObject(nullptr, ParentCluster, *UniqueName, true))
-	{
-		UniqueName = MakeUniqueObjectName(ParentCluster, UDisplayClusterConfigurationClusterNode::StaticClass(), *UniqueName).ToString();
-	}
-
-	return UniqueName;
+	return GetUniqueName(InitialName, UsedNames, UDisplayClusterConfigurationClusterNode::StaticClass(), ParentCluster, bAddZero);
 }
 
 UDisplayClusterConfigurationClusterNode* FDisplayClusterConfiguratorClusterUtils::AddClusterNodeToCluster(UDisplayClusterConfigurationClusterNode* ClusterNode, UDisplayClusterConfigurationCluster* Cluster, FString NewClusterNodeName)
@@ -703,10 +668,27 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveClusterNodeFromCluster(UDisp
 			ClusterNode->Modify();
 
 			ClusterNodeParent->Modify();
-			RemoveKeyFromMap(ClusterNodeParent, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Nodes), *KeyPtr);
 
-			ClusterNode->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_DoNotDirty);
+			const bool bRemovingPrimaryNode = IsClusterNodePrimary(ClusterNode);
+			if (bRemovingPrimaryNode)
+			{
+				ClusterNodeParent->PrimaryNode.Id.Empty();
+			}
+			
+			RemoveKeyFromMap(ClusterNodeParent, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationCluster, Nodes), *KeyPtr);
+			ensure (ClusterNode->GetPackage() == GetTransientPackage());
+			
 			ClusterNode->SetFlags(RF_Transient);
+
+			if (bRemovingPrimaryNode)
+			{
+				for (const TTuple<FString, UDisplayClusterConfigurationClusterNode*>& NodesKeyVal : ClusterNodeParent->Nodes)
+				{
+					SetClusterNodeAsPrimary(NodesKeyVal.Value);
+					break;
+				}
+			}
+			
 			FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(ClusterNodeParent, true);
 			
 			return true;
@@ -727,7 +709,7 @@ bool FDisplayClusterConfiguratorClusterUtils::RenameClusterNode(UDisplayClusterC
 				return false;
 			}
 
-			const bool bIsMaster = IsClusterNodeMaster(ClusterNode);
+			const bool bIsPrimary = IsClusterNodePrimary(ClusterNode);
 
 			ClusterNode->Modify();
 			ClusterNodeParent->Modify();
@@ -738,7 +720,7 @@ bool FDisplayClusterConfiguratorClusterUtils::RenameClusterNode(UDisplayClusterC
 			RemoveKeyFromMap(ClusterNodeParent, FieldName, *KeyPtr);
 
 			// Rename after remove, before add.
-			ClusterNode->Rename(*UniqueName, nullptr, REN_DontCreateRedirectors);
+			ClusterNode->Rename(*UniqueName, ClusterNodeParent, REN_DontCreateRedirectors);
 			
 			UDisplayClusterConfigurationClusterNode* NewClusterNode = CastChecked<UDisplayClusterConfigurationClusterNode>(AddKeyWithInstancedValueToMap(ClusterNodeParent, FieldName, UniqueName, ClusterNode));
 
@@ -746,10 +728,10 @@ bool FDisplayClusterConfiguratorClusterUtils::RenameClusterNode(UDisplayClusterC
 			ClusterNode->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_DoNotDirty | REN_ForceNoResetLoaders);
 			ClusterNode->SetFlags(RF_Transient);
 			
-			// If the cluster node was a master node before the rename, we need to update the master reference in the cluster with the new name
-			if (bIsMaster)
+			// If the cluster node was a primary node before the rename, we need to update the primary reference in the cluster with the new name
+			if (bIsPrimary)
 			{
-				SetClusterNodeAsMaster(NewClusterNode);
+				SetClusterNodeAsPrimary(NewClusterNode);
 			}
 
 			return true;
@@ -759,7 +741,7 @@ bool FDisplayClusterConfiguratorClusterUtils::RenameClusterNode(UDisplayClusterC
 	return false;
 }
 
-bool FDisplayClusterConfiguratorClusterUtils::SetClusterNodeAsMaster(UDisplayClusterConfigurationClusterNode* ClusterNode)
+bool FDisplayClusterConfiguratorClusterUtils::SetClusterNodeAsPrimary(UDisplayClusterConfigurationClusterNode* ClusterNode)
 {
 	if (UDisplayClusterConfigurationCluster* ClusterNodeParent = Cast<UDisplayClusterConfigurationCluster>(ClusterNode->GetOuter()))
 	{
@@ -768,7 +750,7 @@ bool FDisplayClusterConfiguratorClusterUtils::SetClusterNodeAsMaster(UDisplayClu
 		if (NodeIdPtr != nullptr)
 		{
 			ClusterNodeParent->Modify();
-			ClusterNodeParent->MasterNode.Id = *NodeIdPtr;
+			ClusterNodeParent->PrimaryNode.Id = *NodeIdPtr;
 			return true;
 		}
 	}
@@ -791,21 +773,13 @@ FString FDisplayClusterConfiguratorClusterUtils::GetViewportName(UDisplayCluster
 
 FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForViewport(FString InitialName, UDisplayClusterConfigurationClusterNode* ParentClusterNode, bool bAddZero)
 {
-	FString UniqueName = InitialName;
-	int NameIndex = 0;
-
-	if (bAddZero)
-	{
-		UniqueName = FString::Printf(TEXT("%s_%d"), *InitialName, NameIndex);
-	}
-
 	// Viewport names must be unique across the entire cluster, not just within its parent cluster nodes. Gather all of the viewport names
 	// in the cluster to check for uniqueness. Add the parent cluster node's viewports first, in case we can't get to the root cluster through
 	// the cluster node's Outer (i.e. the cluster node has not been added to the cluster yet)
-	TSet<FString> UsedViewportNames;
+	TSet<FString> UsedNames;
 	for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportKeyPair : ParentClusterNode->Viewports)
 	{
-		UsedViewportNames.Add(ViewportKeyPair.Key);
+		UsedNames.Add(ViewportKeyPair.Key);
 	}
 
 	if (UDisplayClusterConfigurationCluster* Cluster = Cast<UDisplayClusterConfigurationCluster>(ParentClusterNode->GetOuter()))
@@ -817,24 +791,15 @@ FString FDisplayClusterConfiguratorClusterUtils::GetUniqueNameForViewport(FStrin
 			{
 				for (const TPair<FString, UDisplayClusterConfigurationViewport*>& ViewportKeyPair : ClusterNode->Viewports)
 				{
-					UsedViewportNames.Add(ViewportKeyPair.Key);
+					UsedNames.Add(ViewportKeyPair.Key);
 				}
 			}
 		}
 	}
 
-	while (UsedViewportNames.Contains(UniqueName))
-	{
-		UniqueName = FString::Printf(TEXT("%s_%d"), *InitialName, ++NameIndex);
-	}
-
-	// If there is already an in-memory object connected to the parent cluster node with the name, we need to use a globally unique object name.
-	if (StaticFindObject(nullptr, ParentClusterNode, *UniqueName, true))
-	{
-		UniqueName = MakeUniqueObjectName(ParentClusterNode, UDisplayClusterConfigurationViewport::StaticClass(), *UniqueName).ToString();
-	}
-
-	return UniqueName;
+	TArray<FString> UsedNamesArray = UsedNames.Array();
+	
+	return GetUniqueName(InitialName, UsedNamesArray, UDisplayClusterConfigurationViewport::StaticClass(), ParentClusterNode, bAddZero);
 }
 
 UDisplayClusterConfigurationViewport* FDisplayClusterConfiguratorClusterUtils::AddViewportToClusterNode(UDisplayClusterConfigurationViewport* Viewport, UDisplayClusterConfigurationClusterNode* ClusterNode, FString NewViewportName)
@@ -893,9 +858,10 @@ bool FDisplayClusterConfiguratorClusterUtils::RemoveViewportFromClusterNode(UDis
 			ViewportParent->Modify();
 
 			RemoveKeyFromMap(ViewportParent, GET_MEMBER_NAME_CHECKED(UDisplayClusterConfigurationClusterNode, Viewports), *KeyPtr);
-
-			Viewport->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_DoNotDirty);
+			ensure (Viewport->GetPackage() == GetTransientPackage());
+			
 			Viewport->SetFlags(RF_Transient);
+			
 			FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(ViewportParent, true);
 			
 			return true;
@@ -929,11 +895,15 @@ bool FDisplayClusterConfiguratorClusterUtils::RenameViewport(UDisplayClusterConf
 			RemoveKeyFromMap(ViewportParent, FieldName, *KeyPtr);
 
 			// Rename after removing. If this is done after adding instances will lose sync with the CDO.
-			Viewport->Rename(*UniqueName, nullptr, REN_DontCreateRedirectors);
+			Viewport->Rename(*UniqueName, ViewportParent, REN_DontCreateRedirectors);
 			
-			AddKeyWithInstancedValueToMap(ViewportParent, FieldName, UniqueName, Viewport);
+			UDisplayClusterConfigurationViewport* NewViewport =
+				CastChecked<UDisplayClusterConfigurationViewport>(AddKeyWithInstancedValueToMap(ViewportParent, FieldName, UniqueName, Viewport));
+			check(Viewport != NewViewport);
+			Viewport->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_DoNotDirty | REN_ForceNoResetLoaders);
+			Viewport->SetFlags(RF_Transient);
 			
-			FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(Viewport, true);
+			FDisplayClusterConfiguratorUtils::MarkDisplayClusterBlueprintAsModified(NewViewport, true);
 			
 			return true;
 		}
@@ -1173,6 +1143,16 @@ TArray<UObject*> FDisplayClusterConfiguratorClusterUtils::PasteClusterItemsFromC
 				ClusterNodeCopy->WindowRect.Y = NewLocation.Y;
 			}
 
+			// Rename viewports in the new cluster node to ensure they're unique. Copy the viewport pointers into an array
+			// first since renaming would cause the dictionary to change while we're iterating it.
+			TArray<UDisplayClusterConfigurationViewport*> CopiedViewports;
+			ClusterNodeCopy->Viewports.GenerateValueArray(CopiedViewports);
+			
+			for (UDisplayClusterConfigurationViewport* Viewport : CopiedViewports)
+			{
+				RenameViewport(Viewport, *GetUniqueNameForViewport(*Viewport->GetName(), ClusterNodeCopy));
+			}
+
 			CopiedObjects.Add(ClusterNodeCopy);
 		}
 	}
@@ -1227,6 +1207,57 @@ TArray<UObject*> FDisplayClusterConfiguratorClusterUtils::PasteClusterItemsFromC
 	}
 
 	return CopiedObjects;
+}
+
+FString FDisplayClusterConfiguratorClusterUtils::GetUniqueName(const FString& InitialName, const TArray<FString>& UsedNames, const UClass* Class, UObject* Parent, bool bAddZero)
+{
+	FString NewName;
+	if (!bAddZero && !UsedNames.Contains(InitialName))
+	{
+		// Name doesn't need to be modified
+		NewName = InitialName;
+	}
+	else
+	{
+		int32 Counter = bAddZero ? 0 : 1;
+
+		// Find the start of the existing numeric suffix
+		int32 Index = InitialName.Len();
+		while (Index > 0 && InitialName[Index-1] >= '0' && InitialName[Index-1] <= '9')
+		{
+			--Index;
+		}
+
+		FString BaseName = InitialName;
+		if (Index < BaseName.Len())
+		{
+			// Strip away the suffix and store the value in the counter so we can count up from there
+			FString NumericSuffix = BaseName.RightChop(Index);
+			Counter = FCString::Atoi(*NumericSuffix);
+			NumericSuffix = FString::FromInt(Counter); // Restringify the counter to account for leading 0s that we don't want to remove
+			BaseName.RemoveAt(BaseName.Len() - NumericSuffix.Len(), NumericSuffix.Len(), false);
+		}
+		else
+		{
+			// No existing suffix, so add our underscore separator
+			BaseName += "_";
+		}
+
+		do
+		{
+			NewName = FString::Printf(TEXT("%s%d"), *BaseName, Counter);
+			++Counter;
+		}
+		while (UsedNames.Contains(NewName));
+	}
+	
+	// If there is already an in-memory object connected to the parent cluster with our generated name, we need to use a globally unique object name.
+	if (StaticFindObject(nullptr, Parent, *NewName, true))
+	{
+		NewName = MakeUniqueObjectName(Parent, Class, *NewName).ToString();
+	}
+
+	return NewName;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -3,18 +3,24 @@
 #include "ThreadTimingTrack.h"
 
 #include "CborReader.h"
-#include "Fonts/FontMeasure.h"
+#include "Framework/Commands/Commands.h"
+#include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Serialization/MemoryReader.h"
 #include "Styling/SlateBrush.h"
+#include "TraceServices/Model/TasksProfiler.h"
+#include "Async/TaskGraphInterfaces.h"
 
 // Insights
 #include "Insights/Common/PaintUtils.h"
 #include "Insights/Common/TimeUtils.h"
 #include "Insights/InsightsManager.h"
+#include "Insights/InsightsStyle.h"
 #include "Insights/ITimingViewSession.h"
 #include "Insights/TimingProfilerManager.h"
+#include "Insights/ViewModels/Filters.h"
+#include "Insights/ViewModels/FilterConfigurator.h"
 #include "Insights/ViewModels/TimerNode.h"
 #include "Insights/ViewModels/ThreadTrackEvent.h"
 #include "Insights/ViewModels/TimingEventSearch.h"
@@ -25,6 +31,48 @@
 
 #define LOCTEXT_NAMESPACE "ThreadTimingTrack"
 
+using namespace Insights;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// FThreadTimingViewCommands
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FThreadTimingViewCommands::FThreadTimingViewCommands()
+: TCommands<FThreadTimingViewCommands>(
+	TEXT("ThreadTimingViewCommands"),
+	NSLOCTEXT("Contexts", "ThreadTimingViewCommands", "Insights - Timing View - Threads"),
+	NAME_None,
+	FInsightsStyle::GetStyleSetName())
+{
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+FThreadTimingViewCommands::~FThreadTimingViewCommands()
+{
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// UI_COMMAND takes long for the compiler to optimize
+PRAGMA_DISABLE_OPTIMIZATION
+void FThreadTimingViewCommands::RegisterCommands()
+{
+	UI_COMMAND(ShowHideAllGpuTracks,
+		"GPU Track(s)",
+		"Shows/hides the GPU track(s).",
+		EUserInterfaceActionType::ToggleButton,
+		FInputChord(EKeys::Y));
+
+	UI_COMMAND(ShowHideAllCpuTracks,
+		"CPU Thread Tracks",
+		"Shows/hides all CPU tracks (and all CPU thread groups).",
+		EUserInterfaceActionType::ToggleButton,
+		FInputChord(EKeys::U));
+}
+PRAGMA_ENABLE_OPTIMIZATION
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 static void AppendMetadataToTooltip(FTooltipDrawState& Tooltip, TArrayView<const uint8>& Metadata)
@@ -62,7 +110,15 @@ static void AppendMetadataToTooltip(FTooltipDrawState& Tooltip, TArrayView<const
 		case ECborCode::Uint:
 			{
 				uint64 Value = Context.AsUInt();
-				FString ValueStr = FString::Printf(TEXT("%llu"), Value);
+				FString ValueStr;
+				if (Value > 999'999'999ULL)
+				{
+					ValueStr = FString::Printf(TEXT("0x%llX"), Value);
+				}
+				else
+				{
+					ValueStr = FString::Printf(TEXT("%llu"), Value);
+				}
 				Tooltip.AddNameValueTextLine(Key, ValueStr);
 				continue;
 			}
@@ -96,6 +152,18 @@ static void AppendMetadataToTooltip(FTooltipDrawState& Tooltip, TArrayView<const
 			double Value = Context.AsDouble();
 			FString ValueStr = FString::Printf(TEXT("%g"), Value);
 			Tooltip.AddNameValueTextLine(Key, ValueStr);
+			continue;
+		}
+
+		if (Context.RawCode() == (ECborCode::Prim | ECborCode::False))
+		{
+			Tooltip.AddNameValueTextLine(Key, FString(TEXT("false")));
+			continue;
+		}
+
+		if (Context.RawCode() == (ECborCode::Prim | ECborCode::True))
+		{
+			Tooltip.AddNameValueTextLine(Key, FString(TEXT("true")));
 			continue;
 		}
 
@@ -154,7 +222,14 @@ static void AppendMetadataToString(FString& Str, TArrayView<const uint8>& Metada
 		case ECborCode::Uint:
 			{
 				uint64 Value = Context.AsUInt();
-				Str += FString::Printf(TEXT("%llu"), Value);
+				if (Value > 999'999'999ULL)
+				{
+					Str += FString::Printf(TEXT("0x%llX"), Value);
+				}
+				else
+				{
+					Str += FString::Printf(TEXT("%llu"), Value);
+				}
 				continue;
 			}
 
@@ -185,6 +260,18 @@ static void AppendMetadataToString(FString& Str, TArrayView<const uint8>& Metada
 			continue;
 		}
 
+		if (Context.RawCode() == (ECborCode::Prim | ECborCode::False))
+		{
+			Str += TEXT("false");
+			continue;
+		}
+
+		if (Context.RawCode() == (ECborCode::Prim | ECborCode::True))
+		{
+			Str += TEXT("true");
+			continue;
+		}
+
 		if (Context.IsFiniteContainer())
 		{
 			CborReader.SkipContainer(ECborCode::Array);
@@ -196,10 +283,36 @@ static void AppendMetadataToString(FString& Str, TArrayView<const uint8>& Metada
 
 static void AddTimingEventToBuilder(ITimingEventsTrackDrawStateBuilder& Builder,
 									double EventStartTime, double EventEndTime, uint32 EventDepth,
-									uint32 TimerIndex, const Trace::FTimingProfilerTimer* Timer)
+									uint32 TimerIndex, const TraceServices::FTimingProfilerTimer* Timer)
 {
-	//const uint32 EventColor = FTimingEvent::ComputeEventColor(Timer->Id);
-	const uint32 EventColor = FTimingEvent::ComputeEventColor(Timer->Name);
+	if (EventDepth >= FTimingProfilerManager::Get()->GetEventDepthLimit())
+	{
+		return;
+	}
+
+	uint32 EventColor;
+	switch (FTimingProfilerManager::Get()->GetColoringMode())
+	{
+		case Insights::ETimingEventsColoringMode::ByTimerName:
+			EventColor = FTimingEvent::ComputeEventColor(Timer->Name);
+			break;
+		case Insights::ETimingEventsColoringMode::ByTimerId:
+			EventColor = FTimingEvent::ComputeEventColor(Timer->Id);
+			break;
+		case Insights::ETimingEventsColoringMode::ByDuration:
+		{
+			const double EventDuration = EventEndTime - EventStartTime;
+			EventColor = (EventDuration >= 0.01)     ? 0xFF883333 : // red:    >= 10ms
+						 (EventDuration >= 0.001)    ? 0xFF998833 : // yellow: [1ms .. 10ms)
+						 (EventDuration >= 0.0001)   ? 0xFF338833 : // green:  [100us .. 1ms)
+						 (EventDuration >= 0.00001)  ? 0xFF338888 : // cyan:   [10us .. 100us)
+						 (EventDuration >= 0.000001) ? 0xFF333388 : // blue:   [1us .. 10us)
+						                               0xFF888888;  // grey:   < 1us
+			break;
+		}
+		default:
+			EventColor = 0xFF000000;
+	}
 
 	Builder.AddEvent(EventStartTime, EventEndTime, EventDepth, EventColor,
 		[TimerIndex, Timer, EventStartTime, EventEndTime](float Width)
@@ -217,15 +330,15 @@ static void AddTimingEventToBuilder(ITimingEventsTrackDrawStateBuilder& Builder,
 				{
 					//EventName = TEXT("!") + EventName; // for debugging
 
-					TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+					TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 					check(Session.IsValid());
 
-					//Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+					//TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-					const Trace::ITimingProfilerProvider& TimingProfilerProvider = *Trace::ReadTimingProfilerProvider(*Session.Get());
+					const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
-					const Trace::ITimingProfilerTimerReader* TimerReader;
-					TimingProfilerProvider.ReadTimers([&TimerReader](const Trace::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
+					const TraceServices::ITimingProfilerTimerReader* TimerReader;
+					TimingProfilerProvider.ReadTimers([&TimerReader](const TraceServices::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
 
 					TArrayView<const uint8> Metadata = TimerReader->GetMetadata(TimerIndex);
 					if (Metadata.Num() > 0)
@@ -331,19 +444,19 @@ void FThreadTimingSharedState::OnEndSession(Insights::ITimingViewSession& InSess
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FThreadTimingSharedState::Tick(Insights::ITimingViewSession& InSession, const Trace::IAnalysisSession& InAnalysisSession)
+void FThreadTimingSharedState::Tick(Insights::ITimingViewSession& InSession, const TraceServices::IAnalysisSession& InAnalysisSession)
 {
 	if (&InSession != TimingView)
 	{
 		return;
 	}
 
-	const Trace::ITimingProfilerProvider* TimingProfilerProvider = Trace::ReadTimingProfilerProvider(InAnalysisSession);
-	const Trace::ILoadTimeProfilerProvider* LoadTimeProfilerProvider = Trace::ReadLoadTimeProfilerProvider(InAnalysisSession);
+	const TraceServices::ITimingProfilerProvider* TimingProfilerProvider = TraceServices::ReadTimingProfilerProvider(InAnalysisSession);
+	const TraceServices::ILoadTimeProfilerProvider* LoadTimeProfilerProvider = TraceServices::ReadLoadTimeProfilerProvider(InAnalysisSession);
 
 	if (TimingProfilerProvider)
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(InAnalysisSession);
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(InAnalysisSession);
 
 		const uint64 CurrentTimingProfilerTimelineCount = TimingProfilerProvider->GetTimelineCount();
 		const uint64 CurrentLoadTimeProfilerTimelineCount = (LoadTimeProfilerProvider) ? LoadTimeProfilerProvider->GetTimelineCount() : 0;
@@ -360,7 +473,7 @@ void FThreadTimingSharedState::Tick(Insights::ITimingViewSession& InSession, con
 				uint32 GpuTimelineIndex;
 				if (TimingProfilerProvider->GetGpuTimelineIndex(GpuTimelineIndex))
 				{
-					GpuTrack = MakeShared<FGpuTimingTrack>(*this, TEXT("GPU"), nullptr, GpuTimelineIndex, 0);
+					GpuTrack = MakeShared<FGpuTimingTrack>(*this, TEXT("GPU"), nullptr, GpuTimelineIndex, FGpuTimingTrack::Gpu1ThreadId);
 					GpuTrack->SetOrder(FTimingTrackOrder::Gpu);
 					GpuTrack->SetVisibilityFlag(bShowHideAllGpuTracks);
 					InSession.AddScrollableTrack(GpuTrack);
@@ -371,7 +484,7 @@ void FThreadTimingSharedState::Tick(Insights::ITimingViewSession& InSession, con
 				uint32 GpuTimelineIndex;
 				if (TimingProfilerProvider->GetGpu2TimelineIndex(GpuTimelineIndex))
 				{
-					Gpu2Track = MakeShared<FGpuTimingTrack>(*this, TEXT("GPU2"), nullptr, GpuTimelineIndex, 0);
+					Gpu2Track = MakeShared<FGpuTimingTrack>(*this, TEXT("GPU2"), nullptr, GpuTimelineIndex, FGpuTimingTrack::Gpu2ThreadId);
 					Gpu2Track->SetOrder(FTimingTrackOrder::Gpu);
 					Gpu2Track->SetVisibilityFlag(bShowHideAllGpuTracks);
 					InSession.AddScrollableTrack(Gpu2Track);
@@ -382,25 +495,30 @@ void FThreadTimingSharedState::Tick(Insights::ITimingViewSession& InSession, con
 			int32 Order = FTimingTrackOrder::Cpu;
 
 			// Iterate through threads.
-			const Trace::IThreadProvider& ThreadProvider = Trace::ReadThreadProvider(InAnalysisSession);
-			ThreadProvider.EnumerateThreads([this, &InSession, &bTracksOrderChanged, &Order, TimingProfilerProvider, LoadTimeProfilerProvider](const Trace::FThreadInfo& ThreadInfo)
+			const TraceServices::IThreadProvider& ThreadProvider = TraceServices::ReadThreadProvider(InAnalysisSession);
+			ThreadProvider.EnumerateThreads([this, &InSession, &bTracksOrderChanged, &Order, TimingProfilerProvider, LoadTimeProfilerProvider](const TraceServices::FThreadInfo& ThreadInfo)
 			{
 				// Check if this thread is part of a group?
 				bool bIsGroupVisible = bShowHideAllCpuTracks;
-				const TCHAR* const GroupName = ThreadInfo.GroupName ? ThreadInfo.GroupName : ThreadInfo.Name;
-				if (GroupName != nullptr)
+				const TCHAR* GroupName = ThreadInfo.GroupName;
+				if (!GroupName || *GroupName == 0)
 				{
-					if (!ThreadGroups.Contains(GroupName))
-					{
-						//UE_LOG(TimingProfiler, Log, TEXT("New CPU Thread Group (%d) : \"%s\""), ThreadGroups.Num() + 1, GroupName);
-						ThreadGroups.Add(GroupName, { GroupName, bIsGroupVisible, 0, Order });
-					}
-					else
-					{
-						FThreadGroup& ThreadGroup = ThreadGroups[GroupName];
-						bIsGroupVisible = ThreadGroup.bIsVisible;
-						ThreadGroup.Order = Order;
-					}
+					GroupName = ThreadInfo.Name;
+				}
+				if (!GroupName || *GroupName == 0)
+				{
+					GroupName = TEXT("Other Threads");
+				}
+				if (!ThreadGroups.Contains(GroupName))
+				{
+					// Note: The GroupName pointer should be valid for the duration of the session.
+					ThreadGroups.Add(GroupName, { GroupName, bIsGroupVisible, 0, Order });
+				}
+				else
+				{
+					FThreadGroup& ThreadGroup = ThreadGroups[GroupName];
+					bIsGroupVisible = ThreadGroup.bIsVisible;
+					ThreadGroup.Order = Order;
 				}
 
 				// Check if there is an available Asset Loading track for this thread.
@@ -466,44 +584,60 @@ void FThreadTimingSharedState::Tick(Insights::ITimingViewSession& InSession, con
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-void FThreadTimingSharedState::ExtendFilterMenu(Insights::ITimingViewSession& InSession, FMenuBuilder& InOutMenuBuilder)
+void FThreadTimingSharedState::ExtendGpuTracksFilterMenu(Insights::ITimingViewSession& InSession, FMenuBuilder& InOutMenuBuilder)
 {
 	if (&InSession != TimingView)
 	{
 		return;
 	}
 
-	InOutMenuBuilder.BeginSection("ThreadProfiler", LOCTEXT("ThreadProfilerHeading", "Threads"));
+	InOutMenuBuilder.BeginSection("GpuTracks", LOCTEXT("ContextMenu_Section_GpuTracks", "GPU Tracks"));
 	{
-		//TODO: MenuBuilder.AddMenuEntry(Commands.ShowAllGpuTracks);
-		InOutMenuBuilder.AddMenuEntry(
-			LOCTEXT("ShowAllGpuTracks", "GPU Track - Y"),
-			LOCTEXT("ShowAllGpuTracks_Tooltip", "Show/hide the GPU track"),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateSP(this, &FThreadTimingSharedState::ShowHideAllGpuTracks),
-					  FCanExecuteAction(),
-					  FIsActionChecked::CreateSP(this, &FThreadTimingSharedState::IsAllGpuTracksToggleOn)),
-			NAME_None, //"QuickFilterSeparator",
-			EUserInterfaceActionType::ToggleButton
-		);
+		InOutMenuBuilder.AddMenuEntry(FThreadTimingViewCommands::Get().ShowHideAllGpuTracks);
+	}
+	InOutMenuBuilder.EndSection();
+}
 
-		//TODO: MenuBuilder.AddMenuEntry(Commands.ShowAllCpuTracks);
-		InOutMenuBuilder.AddMenuEntry(
-			LOCTEXT("ShowAllCpuTracks", "CPU Thread Tracks - U"),
-			LOCTEXT("ShowAllCpuTracks_Tooltip", "Show/hide all CPU tracks (and all CPU thread groups)"),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateSP(this, &FThreadTimingSharedState::ShowHideAllCpuTracks),
-					  FCanExecuteAction(),
-					  FIsActionChecked::CreateSP(this, &FThreadTimingSharedState::IsAllCpuTracksToggleOn)),
-			NAME_None, //"QuickFilterSeparator",
-			EUserInterfaceActionType::ToggleButton
-		);
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FThreadTimingSharedState::ExtendCpuTracksFilterMenu(Insights::ITimingViewSession& InSession, FMenuBuilder& InOutMenuBuilder)
+{
+	if (&InSession != TimingView)
+	{
+		return;
+	}
+
+	InOutMenuBuilder.BeginSection("CpuTracks", LOCTEXT("ContextMenu_Section_CpuTracks", "CPU Tracks"));
+	{
+		InOutMenuBuilder.AddMenuEntry(FThreadTimingViewCommands::Get().ShowHideAllCpuTracks);
 	}
 	InOutMenuBuilder.EndSection();
 
-	InOutMenuBuilder.BeginSection("ThreadGroups", LOCTEXT("ThreadGroupsHeading", "CPU Thread Groups"));
+	InOutMenuBuilder.BeginSection("CpuThreadGroups", LOCTEXT("ContextMenu_Section_CpuThreadGroups", "CPU Thread Groups"));
 	CreateThreadGroupsMenu(InOutMenuBuilder);
 	InOutMenuBuilder.EndSection();
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FThreadTimingSharedState::BindCommands()
+{
+	FThreadTimingViewCommands::Register();
+
+	TSharedPtr<FUICommandList> CommandList = TimingView->GetCommandList();
+	ensure(CommandList.IsValid());
+
+	CommandList->MapAction(
+		FThreadTimingViewCommands::Get().ShowHideAllGpuTracks,
+		FExecuteAction::CreateSP(this, &FThreadTimingSharedState::ShowHideAllGpuTracks),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &FThreadTimingSharedState::IsAllGpuTracksToggleOn));
+
+	CommandList->MapAction(
+		FThreadTimingViewCommands::Get().ShowHideAllCpuTracks,
+		FExecuteAction::CreateSP(this, &FThreadTimingSharedState::ShowHideAllCpuTracks),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateSP(this, &FThreadTimingSharedState::IsAllCpuTracksToggleOn));
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -630,30 +764,40 @@ INSIGHTS_IMPLEMENT_RTTI(FThreadTimingTrack)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+FThreadTimingTrack::~FThreadTimingTrack()
+{
+	if (FilterConfigurator.IsValid())
+	{
+		FilterConfigurator->GetOnChangesCommitedEvent().Remove(OnFilterChangesCommitedHandle);
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void FThreadTimingTrack::BuildDrawState(ITimingEventsTrackDrawStateBuilder& Builder, const ITimingTrackUpdateContext& Context)
 {
-	TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
-	if (Session.IsValid() && Trace::ReadTimingProfilerProvider(*Session.Get()))
+	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+	if (Session.IsValid() && TraceServices::ReadTimingProfilerProvider(*Session.Get()))
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-		const Trace::ITimingProfilerProvider& TimingProfilerProvider = *Trace::ReadTimingProfilerProvider(*Session.Get());
+		const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
-		const Trace::ITimingProfilerTimerReader* TimerReader;
-		TimingProfilerProvider.ReadTimers([&TimerReader](const Trace::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
+		const TraceServices::ITimingProfilerTimerReader* TimerReader;
+		TimingProfilerProvider.ReadTimers([&TimerReader](const TraceServices::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
 
 		const FTimingTrackViewport& Viewport = Context.GetViewport();
 
 		TimingProfilerProvider.ReadTimeline(TimelineIndex,
-			[&Viewport, this, &Builder, TimerReader](const Trace::ITimingProfilerProvider::Timeline& Timeline)
+			[&Viewport, this, &Builder, TimerReader](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
 			{
 				if (FTimingEventsTrack::bUseDownSampling)
 				{
 					const double SecondsPerPixel = 1.0 / Viewport.GetScaleX();
 					Timeline.EnumerateEventsDownSampled(Viewport.GetStartTime(), Viewport.GetEndTime(), SecondsPerPixel,
-						[this, &Builder, TimerReader](double StartTime, double EndTime, uint32 Depth, const Trace::FTimingProfilerEvent& Event)
+						[this, &Builder, TimerReader](double StartTime, double EndTime, uint32 Depth, const TraceServices::FTimingProfilerEvent& Event)
 						{
-							const Trace::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
+							const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
 							if (ensure(Timer != nullptr))
 							{
 								AddTimingEventToBuilder(Builder, StartTime, EndTime, Depth, Event.TimerIndex, Timer);
@@ -662,15 +806,15 @@ void FThreadTimingTrack::BuildDrawState(ITimingEventsTrackDrawStateBuilder& Buil
 							{
 								Builder.AddEvent(StartTime, EndTime, Depth, 0xFF000000, [&Event](float) { return FString::Printf(TEXT("[%u]"), Event.TimerIndex); });
 							}
-							return Trace::EEventEnumerate::Continue;
+							return TraceServices::EEventEnumerate::Continue;
 						});
 				}
 				else
 				{
 					Timeline.EnumerateEvents(Viewport.GetStartTime(), Viewport.GetEndTime(),
-						[this, &Builder, TimerReader](double StartTime, double EndTime, uint32 Depth, const Trace::FTimingProfilerEvent& Event)
+						[this, &Builder, TimerReader](double StartTime, double EndTime, uint32 Depth, const TraceServices::FTimingProfilerEvent& Event)
 						{
-							const Trace::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
+							const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
 							if (ensure(Timer != nullptr))
 							{
 								AddTimingEventToBuilder(Builder, StartTime, EndTime, Depth, Event.TimerIndex, Timer);
@@ -679,7 +823,7 @@ void FThreadTimingTrack::BuildDrawState(ITimingEventsTrackDrawStateBuilder& Buil
 							{
 								Builder.AddEvent(StartTime, EndTime, Depth, 0xFF000000, [&Event](float) { return FString::Printf(TEXT("[%u]"), Event.TimerIndex); });
 							}
-							return Trace::EEventEnumerate::Continue;
+							return TraceServices::EEventEnumerate::Continue;
 						});
 				}
 			});
@@ -702,15 +846,15 @@ void FThreadTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuild
 			FilterEventType = EventFilter.GetEventType();
 		}
 
-		TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
-		if (Session.IsValid() && Trace::ReadTimingProfilerProvider(*Session.Get()))
+		TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+		if (Session.IsValid() && TraceServices::ReadTimingProfilerProvider(*Session.Get()))
 		{
-			Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+			TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-			const Trace::ITimingProfilerProvider& TimingProfilerProvider = *Trace::ReadTimingProfilerProvider(*Session.Get());
+			const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
-			const Trace::ITimingProfilerTimerReader* TimerReader;
-			TimingProfilerProvider.ReadTimers([&TimerReader](const Trace::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
+			const TraceServices::ITimingProfilerTimerReader* TimerReader;
+			TimingProfilerProvider.ReadTimers([&TimerReader](const TraceServices::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
 
 			const FTimingTrackViewport& Viewport = Context.GetViewport();
 
@@ -720,11 +864,11 @@ void FThreadTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuild
 				if (true)
 				{
 					TimingProfilerProvider.ReadTimeline(TimelineIndex,
-						[&Viewport, this, &Builder, TimerReader, FilterEventType](const Trace::ITimingProfilerProvider::Timeline& Timeline)
+						[&Viewport, this, &Builder, TimerReader, FilterEventType](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
 						{
 							TArray<TArray<FPendingEventInfo>> FilteredEvents;
 
-							Trace::ITimeline<Trace::FTimingProfilerEvent>::EnumerateAsyncParams Params;
+							TraceServices::ITimeline<TraceServices::FTimingProfilerEvent>::EnumerateAsyncParams Params;
 							Params.IntervalStart = Viewport.GetStartTime();
 							Params.IntervalEnd = Viewport.GetEndTime();
 							Params.Resolution = 0.0;
@@ -732,9 +876,9 @@ void FThreadTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuild
 							{
 								FilteredEvents.AddDefaulted(NumTasks);
 							};
-							Params.Callback = [this, &Builder, TimerReader, FilterEventType, &FilteredEvents](double StartTime, double EndTime, uint32 Depth, const Trace::FTimingProfilerEvent& Event, uint32 TaskIndex)
+							Params.Callback = [this, &Builder, TimerReader, FilterEventType, &FilteredEvents](double StartTime, double EndTime, uint32 Depth, const TraceServices::FTimingProfilerEvent& Event, uint32 TaskIndex)
 							{
-								const Trace::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
+								const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
 								if (ensure(Timer != nullptr))
 								{
 									if (Timer->Id == FilterEventType)
@@ -747,7 +891,7 @@ void FThreadTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuild
 										FilteredEvents[TaskIndex].Add(TimelineEvent);
 									}
 								}
-								return Trace::EEventEnumerate::Continue;
+								return TraceServices::EEventEnumerate::Continue;
 							};
 
 							// Note: Enumerating events for filtering should not use downsampling.
@@ -757,7 +901,7 @@ void FThreadTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuild
 							{
 								for (FPendingEventInfo& TimelineEvent : Array)
 								{
-									const Trace::FTimingProfilerTimer* Timer = TimerReader->GetTimer(TimelineEvent.TimerIndex);
+									const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(TimelineEvent.TimerIndex);
 									AddTimingEventToBuilder(Builder, TimelineEvent.StartTime, TimelineEvent.EndTime, TimelineEvent.Depth, TimelineEvent.TimerIndex, Timer);
 								}
 							}
@@ -766,13 +910,13 @@ void FThreadTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuild
 				else
 				{
 					TimingProfilerProvider.ReadTimeline(TimelineIndex,
-						[&Viewport, this, &Builder, TimerReader, FilterEventType](const Trace::ITimingProfilerProvider::Timeline& Timeline)
+						[&Viewport, this, &Builder, TimerReader, FilterEventType](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
 						{
 							// Note: Enumerating events for filtering should not use downsampling.
 							Timeline.EnumerateEventsDownSampled(Viewport.GetStartTime(), Viewport.GetEndTime(), 0,
-								[this, &Builder, TimerReader, FilterEventType](double StartTime, double EndTime, uint32 Depth, const Trace::FTimingProfilerEvent& Event)
+								[this, &Builder, TimerReader, FilterEventType](double StartTime, double EndTime, uint32 Depth, const TraceServices::FTimingProfilerEvent& Event)
 								{
-									const Trace::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
+									const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
 									if (ensure(Timer != nullptr))
 									{
 										if (Timer->Id == FilterEventType)
@@ -780,7 +924,7 @@ void FThreadTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuild
 											AddTimingEventToBuilder(Builder, StartTime, EndTime, Depth, Event.TimerIndex, Timer);
 										}
 									}
-									return Trace::EEventEnumerate::Continue;
+									return TraceServices::EEventEnumerate::Continue;
 								});
 						});
 				}
@@ -788,15 +932,15 @@ void FThreadTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuild
 			else // generic filter
 			{
 				TimingProfilerProvider.ReadTimeline(TimelineIndex,
-					[&Viewport, this, &Builder, TimerReader, &EventFilterPtr](const Trace::ITimingProfilerProvider::Timeline& Timeline)
+					[&Viewport, this, &Builder, TimerReader, &EventFilterPtr](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
 					{
 						// Note: Enumerating events for filtering should not use downsampling.
 						//const double SecondsPerPixel = 1.0 / Viewport.GetScaleX();
 						//Timeline.EnumerateEventsDownSampled(Viewport.GetStartTime(), Viewport.GetEndTime(), SecondsPerPixel,
 						Timeline.EnumerateEvents(Viewport.GetStartTime(), Viewport.GetEndTime(),
-							[this, &Builder, TimerReader, &EventFilterPtr](double StartTime, double EndTime, uint32 Depth, const Trace::FTimingProfilerEvent& Event)
+							[this, &Builder, TimerReader, &EventFilterPtr](double StartTime, double EndTime, uint32 Depth, const TraceServices::FTimingProfilerEvent& Event)
 							{
-								const Trace::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
+								const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
 								if (ensure(Timer != nullptr))
 								{
 									FThreadTrackEvent TimingEvent(SharedThis(this), StartTime, EndTime, Depth);
@@ -808,10 +952,91 @@ void FThreadTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuild
 										AddTimingEventToBuilder(Builder, StartTime, EndTime, Depth, Event.TimerIndex, Timer);
 									}
 								}
-								return Trace::EEventEnumerate::Continue;
+								return TraceServices::EEventEnumerate::Continue;
 							});
 					});
 			}
+		}
+	}
+
+	if (HasCustomFilter()) // Custom filter (from the filtering widget)
+	{
+		TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+		if (Session.IsValid() && TraceServices::ReadTimingProfilerProvider(*Session.Get()))
+		{
+			TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+
+			const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
+
+			const TraceServices::ITimingProfilerTimerReader* TimerReader;
+			TimingProfilerProvider.ReadTimers([&TimerReader](const TraceServices::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
+
+			const FTimingTrackViewport& Viewport = Context.GetViewport();
+
+			TimingProfilerProvider.ReadTimeline(TimelineIndex,
+				[&Viewport, this, &Builder, TimerReader](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
+				{
+					TArray<TArray<FPendingEventInfo>> FilteredEvents;
+					TArray<FFilterContext> FilterContexts;
+
+					TraceServices::ITimeline<TraceServices::FTimingProfilerEvent>::EnumerateAsyncParams Params;
+					Params.IntervalStart = Viewport.GetStartTime();
+					Params.IntervalEnd = Viewport.GetEndTime();
+
+					// Note: Enumerating events for filtering should not use downsampling.
+					Params.Resolution = 0.0;
+					Params.SetupCallback = [&FilteredEvents, &FilterContexts, this](uint32 NumTasks)
+					{
+						FilteredEvents.AddDefaulted(NumTasks);
+						FilterContexts.AddDefaulted(NumTasks);
+						for (FFilterContext& Context : FilterContexts)
+						{
+							Context.SetReturnValueForUnsetFilters(false);
+							Context.AddFilterData<double>(static_cast<int32>(EFilterField::StartTime), 0.0f);
+							Context.AddFilterData<double>(static_cast<int32>(EFilterField::EndTime), 0.0f);
+							Context.AddFilterData<double>(static_cast<int32>(EFilterField::Duration), 0.0f);
+							Context.AddFilterData<FString>(static_cast<int32>(EFilterField::TrackName), this->GetName());
+							Context.AddFilterData<int64>(static_cast<int32>(EFilterField::TimerId), 0);
+							Context.AddFilterData<int64>(static_cast<int32>(EFilterField::TimerName), 0);
+						}
+					};
+					Params.Callback = [this, &Builder, TimerReader, &FilteredEvents, &FilterContexts](double StartTime, double EndTime, uint32 Depth, const TraceServices::FTimingProfilerEvent& Event, uint32 TaskIndex)
+					{
+						const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
+						if (ensure(Timer != nullptr))
+						{
+							FFilterContext& Context = FilterContexts[TaskIndex];
+							Context.SetFilterData<double>(static_cast<int32>(EFilterField::StartTime), StartTime);
+							Context.SetFilterData<double>(static_cast<int32>(EFilterField::EndTime), EndTime);
+							Context.SetFilterData<double>(static_cast<int32>(EFilterField::Duration), EndTime - StartTime);
+							// The TimerName filter also translates to the numeric Id for performance reasons.
+							Context.SetFilterData<int64>(static_cast<int32>(EFilterField::TimerId), Timer->Id);
+							Context.SetFilterData<int64>(static_cast<int32>(EFilterField::TimerName), Timer->Id);
+
+							if (FilterConfigurator->ApplyFilters(Context))
+							{
+								FPendingEventInfo TimelineEvent;
+								TimelineEvent.StartTime = StartTime;
+								TimelineEvent.EndTime = EndTime;
+								TimelineEvent.Depth = Depth;
+								TimelineEvent.TimerIndex = Event.TimerIndex;
+								FilteredEvents[TaskIndex].Add(TimelineEvent);
+							}
+						}
+						return TraceServices::EEventEnumerate::Continue;
+					};
+
+					Timeline.EnumerateEventsDownSampledAsync(Params);
+
+					for (TArray<FPendingEventInfo>& Array : FilteredEvents)
+					{
+						for (FPendingEventInfo& TimelineEvent : Array)
+						{
+							const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(TimelineEvent.TimerIndex);
+							AddTimingEventToBuilder(Builder, TimelineEvent.StartTime, TimelineEvent.EndTime, TimelineEvent.Depth, TimelineEvent.TimerIndex, Timer);
+						}
+					}
+				});
 		}
 	}
 }
@@ -820,6 +1045,11 @@ void FThreadTimingTrack::BuildFilteredDrawState(ITimingEventsTrackDrawStateBuild
 
 void FThreadTimingTrack::PostDraw(const ITimingTrackDrawContext& Context) const
 {
+	if (ChildTrack.IsValid())
+	{
+		ChildTrack->PostDraw(Context);
+	}
+
 	const TSharedPtr<const ITimingEvent> SelectedEventPtr = Context.GetSelectedEvent();
 	if (SelectedEventPtr.IsValid() &&
 		SelectedEventPtr->CheckTrack(this) &&
@@ -827,45 +1057,27 @@ void FThreadTimingTrack::PostDraw(const ITimingTrackDrawContext& Context) const
 	{
 		const FThreadTrackEvent& SelectedEvent = SelectedEventPtr->As<FThreadTrackEvent>();
 		const ITimingViewDrawHelper& Helper = Context.GetHelper();
-		DrawSelectedEventInfo(SelectedEvent, Context.GetViewport(), Context.GetDrawContext(), Helper.GetWhiteBrush(), Helper.GetEventFont());
-	}
-}
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
+		TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+		check(Session.IsValid());
 
-void FThreadTimingTrack::DrawSelectedEventInfo(const FThreadTrackEvent& SelectedEvent, const FTimingTrackViewport& Viewport, const FDrawContext& DrawContext, const FSlateBrush* WhiteBrush, const FSlateFontInfo& Font) const
-{
-	TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
-	check(Session.IsValid());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-	Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+		const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
-	const Trace::ITimingProfilerProvider& TimingProfilerProvider = *Trace::ReadTimingProfilerProvider(*Session.Get());
+		const TraceServices::ITimingProfilerTimerReader* TimerReader;
+		TimingProfilerProvider.ReadTimers([&TimerReader](const TraceServices::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
 
-	const Trace::ITimingProfilerTimerReader* TimerReader;
-	TimingProfilerProvider.ReadTimers([&TimerReader](const Trace::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
+		const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(SelectedEvent.GetTimerIndex());
+		if (Timer != nullptr)
+		{
+			FString Str = FString::Printf(TEXT("%s (Incl.: %s, Excl.: %s)"),
+				Timer->Name,
+				*TimeUtils::FormatTimeAuto(SelectedEvent.GetDuration()),
+				*TimeUtils::FormatTimeAuto(SelectedEvent.GetExclusiveTime()));
 
-	const Trace::FTimingProfilerTimer* Timer = TimerReader->GetTimer(SelectedEvent.GetTimerIndex());
-	if (Timer != nullptr)
-	{
-		FString Str = FString::Printf(TEXT("%s (Incl.: %s, Excl.: %s)"),
-			Timer->Name,
-			*TimeUtils::FormatTimeAuto(SelectedEvent.GetDuration()),
-			*TimeUtils::FormatTimeAuto(SelectedEvent.GetExclusiveTime()));
-
-		const TSharedRef<FSlateFontMeasure> FontMeasureService = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
-		const FVector2D Size = FontMeasureService->Measure(Str, Font);
-		const float X = Viewport.GetWidth() - Size.X - 23.0f;
-		const float Y = Viewport.GetHeight() - Size.Y - 18.0f;
-
-		const FLinearColor BackgroundColor(0.05f, 0.05f, 0.05f, 1.0f);
-		const FLinearColor TextColor(0.7f, 0.7f, 0.7f, 1.0f);
-
-		DrawContext.DrawBox(X - 8.0f, Y - 2.0f, Size.X + 16.0f, Size.Y + 4.0f, WhiteBrush, BackgroundColor);
-		DrawContext.LayerId++;
-
-		DrawContext.DrawText(X, Y, Str, Font, TextColor);
-		DrawContext.LayerId++;
+			DrawSelectedEventInfo(Str, Context.GetViewport(), Context.GetDrawContext(), Helper.GetWhiteBrush(), Helper.GetEventFont());
+		}
 	}
 }
 
@@ -883,17 +1095,17 @@ void FThreadTimingTrack::InitTooltip(FTooltipDrawState& InOutTooltip, const ITim
 		TSharedPtr<FThreadTrackEvent> RootTimingEvent;
 		GetParentAndRoot(TooltipEvent, ParentTimingEvent, RootTimingEvent);
 
-		TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+		TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 		check(Session.IsValid());
 
-		Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-		const Trace::ITimingProfilerProvider& TimingProfilerProvider = *Trace::ReadTimingProfilerProvider(*Session.Get());
+		const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
-		const Trace::ITimingProfilerTimerReader* TimerReader;
-		TimingProfilerProvider.ReadTimers([&TimerReader](const Trace::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
+		const TraceServices::ITimingProfilerTimerReader* TimerReader;
+		TimingProfilerProvider.ReadTimers([&TimerReader](const TraceServices::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
 
-		const Trace::FTimingProfilerTimer* Timer = TimerReader->GetTimer(TooltipEvent.GetTimerIndex());
+		const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(TooltipEvent.GetTimerIndex());
 		FString TimerName = (Timer != nullptr) ? Timer->Name : TEXT("N/A");
 		InOutTooltip.AddTitle(TimerName);
 
@@ -919,10 +1131,12 @@ void FThreadTimingTrack::InitTooltip(FTooltipDrawState& InOutTooltip, const ITim
 
 		InOutTooltip.AddNameValueTextLine(TEXT("Inclusive Time:"), TimeUtils::FormatTimeAuto(TooltipEvent.GetDuration()));
 
+		if (TooltipEvent.GetDuration() > 0.0)
 		{
+			const double ExclusiveTimePercent = TooltipEvent.GetExclusiveTime() / TooltipEvent.GetDuration();
 			FNumberFormattingOptions FormattingOptions;
 			FormattingOptions.MaximumFractionalDigits = 2;
-			const FString ExclStr = FString::Printf(TEXT("%s (%s)"), *TimeUtils::FormatTimeAuto(TooltipEvent.GetExclusiveTime()), *FText::AsPercent(TooltipEvent.GetExclusiveTime() / TooltipEvent.GetDuration(), &FormattingOptions).ToString());
+			const FString ExclStr = FString::Printf(TEXT("%s (%s)"), *TimeUtils::FormatTimeAuto(TooltipEvent.GetExclusiveTime()), *FText::AsPercent(ExclusiveTimePercent, &FormattingOptions).ToString());
 			InOutTooltip.AddNameValueTextLine(TEXT("Exclusive Time:"), ExclStr);
 		}
 
@@ -933,6 +1147,163 @@ void FThreadTimingTrack::InitTooltip(FTooltipDrawState& InOutTooltip, const ITim
 		{
 			AppendMetadataToTooltip(InOutTooltip, Metadata);
 		}
+
+		// tasks
+
+		const TraceServices::ITasksProvider* TasksProvider = TraceServices::ReadTasksProvider(*Session.Get());
+		if (TasksProvider != nullptr)
+		{
+			auto AddTaskInfo = [&InOutTooltip, this](const TraceServices::FTaskInfo& Task)
+			{
+				InOutTooltip.AddTextLine(FString::Printf(TEXT("-------- Task %d%s --------"), Task.Id, Task.bTracked ? TEXT("") : TEXT(" (not tracked)")), FLinearColor::Green);
+
+				if (Task.DebugName != nullptr)
+				{
+					InOutTooltip.AddTextLine(FString::Printf(TEXT("%s"), Task.DebugName), FLinearColor::Green);
+				}
+
+				ENamedThreads::Type ThreadInfo = (ENamedThreads::Type)Task.ThreadToExecuteOn;
+				const TCHAR* NamedThreadsStr[] = { TEXT("Stats"), TEXT("RHI"), TEXT("Audio"), TEXT("Game"), TEXT("Rendering") };
+				ENamedThreads::Type ThreadIndex = ENamedThreads::GetThreadIndex(ThreadInfo);
+
+				if (ThreadIndex == ENamedThreads::AnyThread)
+				{
+					const TCHAR* TaskPri = ENamedThreads::GetTaskPriority(ThreadInfo) == ENamedThreads::NormalTaskPriority ? TEXT("Normal") : TEXT("High");
+
+					int32 ThreadPriIndex = ENamedThreads::GetThreadPriorityIndex(ThreadInfo);
+					const TCHAR* ThreadPriStrs[] = { TEXT("Normal"), TEXT("High"), TEXT("Low") };
+					const TCHAR* ThreadPri = ThreadPriStrs[ThreadPriIndex];
+
+					InOutTooltip.AddTextLine(FString::Printf(TEXT("%s Pri task on %s Pri worker"), TaskPri, ThreadPri), FLinearColor::Green);
+				}
+				else
+				{
+					const TCHAR* QueueStr = ENamedThreads::GetQueueIndex(ThreadInfo) == ENamedThreads::MainQueue ? TEXT("Main") : TEXT("Local");
+					InOutTooltip.AddTextLine(FString::Printf(TEXT("%s (%s queue)"), NamedThreadsStr[ThreadIndex], QueueStr), FLinearColor::Green);
+				}
+
+				{
+					TSharedPtr<FCpuTimingTrack> Track = SharedState.GetCpuTrack(Task.CreatedThreadId);
+					FString TrackName = Track.IsValid() ? Track->GetName() : TEXT("Unknown");
+					InOutTooltip.AddNameValueTextLine(TEXT("Created:"), FString::Printf(TEXT("%f on %s"), Task.CreatedTimestamp, *TrackName));
+				}
+
+				{
+					TSharedPtr<FCpuTimingTrack> Track = SharedState.GetCpuTrack(Task.LaunchedThreadId);
+					FString TrackName = Track.IsValid() ? Track->GetName() : TEXT("Unknown");
+					InOutTooltip.AddNameValueTextLine(TEXT("Launched:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.LaunchedTimestamp, *TimeUtils::FormatTimeAuto(Task.LaunchedTimestamp - Task.CreatedTimestamp), *TrackName));
+				}
+
+				{
+					TSharedPtr<FCpuTimingTrack> Track = SharedState.GetCpuTrack(Task.ScheduledThreadId);
+					FString TrackName = Track.IsValid() ? Track->GetName() : TEXT("Unknown");
+					InOutTooltip.AddNameValueTextLine(TEXT("Scheduled:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.ScheduledTimestamp, *TimeUtils::FormatTimeAuto(Task.ScheduledTimestamp - Task.LaunchedTimestamp), *TrackName));
+				}
+
+				InOutTooltip.AddNameValueTextLine(TEXT("Started:"), FString::Printf(TEXT("%f (+%s)"), Task.StartedTimestamp, *TimeUtils::FormatTimeAuto(Task.StartedTimestamp - Task.ScheduledTimestamp)));
+				if (Task.FinishedTimestamp != TraceServices::FTaskInfo::InvalidTimestamp)
+				{
+					InOutTooltip.AddNameValueTextLine(TEXT("Finished:"), FString::Printf(TEXT("%f (+%s)"), Task.FinishedTimestamp, *TimeUtils::FormatTimeAuto(Task.FinishedTimestamp - Task.StartedTimestamp)));
+
+					if (Task.CompletedTimestamp != TraceServices::FTaskInfo::InvalidTimestamp)
+					{
+						TSharedPtr<FCpuTimingTrack> Track = SharedState.GetCpuTrack(Task.CompletedThreadId);
+						FString TrackName = Track.IsValid() ? Track->GetName() : TEXT("Unknown");
+						InOutTooltip.AddNameValueTextLine(TEXT("Completed:"), FString::Printf(TEXT("%f (+%s) on %s"), Task.FinishedTimestamp, *TimeUtils::FormatTimeAuto(Task.CompletedTimestamp - Task.FinishedTimestamp), *TrackName));
+					}
+				}
+				InOutTooltip.AddNameValueTextLine(TEXT("Prerequisite tasks:"), FString::Printf(TEXT("%d"), Task.Prerequisites.Num()));
+				InOutTooltip.AddNameValueTextLine(TEXT("Subsequent tasks:"), FString::Printf(TEXT("%d"), Task.Subsequents.Num()));
+				InOutTooltip.AddNameValueTextLine(TEXT("Nested tasks:"), FString::Printf(TEXT("%d"), Task.NestedTasks.Num()));
+			};
+
+			do // info about a task
+			{
+				const TraceServices::FTaskInfo* Task = TasksProvider->TryGetTask(ThreadId, TooltipEvent.GetStartTime());
+				if (Task == nullptr)
+				{
+					break;
+				}
+
+				if (Task->FinishedTimestamp < TooltipEvent.GetEndTime())
+				{
+					break;
+				}
+
+				AddTaskInfo(*Task);
+			} while (false);
+
+			do // info about blocking
+			{
+				const TraceServices::FWaitingForTasks* Waiting = TasksProvider->TryGetWaiting(*TimerName, ThreadId, TooltipEvent.GetStartTime());
+				if (Waiting == nullptr || Waiting->Tasks.Num() == 0)
+				{
+					break;
+				}
+
+				InOutTooltip.AddTextLine(TEXT("-------- Waiting for tasks --------"), FLinearColor::Red);
+				constexpr int32 NumIdsOnRow = 4;
+				TStringBuilder<1024> StringBuilder;
+
+				// Add the first line of Task Id values.
+				for (int32 Index = 0; Index < Waiting->Tasks.Num() && Index < NumIdsOnRow; ++Index)
+				{
+					StringBuilder.Appendf(TEXT("%d, "), Waiting->Tasks[Index]);
+				}
+
+				// Remove separators from last entry.
+				if (Waiting->Tasks.Num() <= NumIdsOnRow)
+				{
+					StringBuilder.RemoveSuffix(2);
+				}
+				InOutTooltip.AddNameValueTextLine(FString::Printf(TEXT("Tasks[%d]:"), Waiting->Tasks.Num()), StringBuilder.ToString());
+				StringBuilder.Reset();
+
+				// Add the rest of the lines with an empty name so they appear as a multi line value.
+				for (int32 Index = NumIdsOnRow; Index < Waiting->Tasks.Num(); ++Index)
+				{
+					StringBuilder.Appendf(TEXT("%d, "), Waiting->Tasks[Index]);
+
+					if ((Index + 1) % NumIdsOnRow == 0)
+					{
+						InOutTooltip.AddNameValueTextLine(TEXT(""), StringBuilder.ToString());
+						StringBuilder.Reset();
+					}
+				}
+
+				if (StringBuilder.Len() > 1)
+				{
+					StringBuilder.RemoveSuffix(2);
+					InOutTooltip.AddNameValueTextLine(TEXT(""), StringBuilder.ToString());
+				}
+
+				InOutTooltip.AddNameValueTextLine(TEXT("Started waiting:"), FString::Printf(TEXT("%f"), Waiting->StartedTimestamp));
+				InOutTooltip.AddNameValueTextLine(TEXT("Finished waiting:"),
+					FString::Printf(TEXT("%s (+%s)"),
+						Waiting->FinishedTimestamp == TraceServices::FTaskInfo::InvalidTimestamp ? TEXT("[not set]") : *FString::SanitizeFloat(Waiting->FinishedTimestamp),
+						*TimeUtils::FormatTimeAuto(Waiting->FinishedTimestamp - Waiting->StartedTimestamp)));
+
+				const int32 MaxWaitedTasksToList = 5;
+				int32 NumTasksToList = FMath::Min(Waiting->Tasks.Num(), MaxWaitedTasksToList);
+				for (int32 i = 0; i != NumTasksToList; ++i)
+				{
+					const TraceServices::FTaskInfo* Task = TasksProvider->TryGetTask(Waiting->Tasks[i]);
+					if (Task != nullptr)
+					{
+						AddTaskInfo(*Task);
+					}
+				}
+				if (NumTasksToList < Waiting->Tasks.Num())
+				{
+					InOutTooltip.AddTextLine(TEXT("[...]"), FLinearColor::Green);
+				}
+
+			} while (false);
+		}
+	}
+	else if (ChildTrack.IsValid())
+	{
+		ChildTrack->InitTooltip(InOutTooltip, InTooltipEvent);
 	}
 
 	InOutTooltip.UpdateLayout();
@@ -944,16 +1315,16 @@ void FThreadTimingTrack::GetParentAndRoot(const FThreadTrackEvent& TimingEvent, 
 {
 	if (TimingEvent.GetDepth() > 0)
 	{
-		TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+		TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 		if (Session.IsValid())
 		{
-			Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+			TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-			if (Trace::ReadTimingProfilerProvider(*Session.Get()))
+			if (TraceServices::ReadTimingProfilerProvider(*Session.Get()))
 			{
-				const Trace::ITimingProfilerProvider& TimingProfilerProvider = *Trace::ReadTimingProfilerProvider(*Session.Get());
+				const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
-				TimingProfilerProvider.ReadTimeline(GetTimelineIndex(), [&TimingEvent, &OutParentTimingEvent, &OutRootTimingEvent](const Trace::ITimingProfilerProvider::Timeline& Timeline)
+				TimingProfilerProvider.ReadTimeline(GetTimelineIndex(), [&TimingEvent, &OutParentTimingEvent, &OutRootTimingEvent](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
 					{
 						const double Time = (TimingEvent.GetStartTime() + TimingEvent.GetEndTime()) / 2;
 						TimelineEventInfo EventInfo;
@@ -981,11 +1352,37 @@ const TSharedPtr<const ITimingEvent> FThreadTimingTrack::GetEvent(float InPosX, 
 	TSharedPtr<FThreadTrackEvent> TimingEvent;
 
 	const FTimingViewLayout& Layout = Viewport.GetLayout();
-	const float TopLaneY = GetPosY() + 1.0f + Layout.TimelineDY; // +1.0f is for horizontal line between timelines
+
+	float TopLaneY = 0.0f;
+	float TrackLanesHeight = 0.0f;
+	if (ChildTrack.IsValid() && ChildTrack->GetHeight() > 0.0f)
+	{
+		const float HeaderDY = InPosY - ChildTrack->GetPosY();
+		if (HeaderDY >= 0.0f && HeaderDY < ChildTrack->GetHeight())
+		{
+			return ChildTrack->GetEvent(InPosX, InPosY, Viewport);
+		}
+		TopLaneY = GetPosY() + 1.0f + Layout.TimelineDY + ChildTrack->GetHeight() + Layout.ChildTimelineDY;
+		TrackLanesHeight = GetHeight() - ChildTrack->GetHeight() - 1.0f - 2.0f * Layout.TimelineDY - Layout.ChildTimelineDY;
+	}
+	else
+	{
+		if (IsChildTrack())
+		{
+			TopLaneY = GetPosY();
+			TrackLanesHeight = GetHeight();
+		}
+		else
+		{
+			TopLaneY = GetPosY() + 1.0f + Layout.TimelineDY;
+			TrackLanesHeight = GetHeight() - 1.0f - 2.0f * Layout.TimelineDY;
+		}
+	}
+
 	const float DY = InPosY - TopLaneY;
 
 	// If mouse is not above first sub-track or below last sub-track...
-	if (DY >= 0 && DY < GetHeight() - 1.0f - 2 * Layout.TimelineDY)
+	if (DY >= 0 && DY < TrackLanesHeight)
 	{
 		const int32 Depth = DY / (Layout.EventH + Layout.EventDY);
 
@@ -993,16 +1390,16 @@ const TSharedPtr<const ITimingEvent> FThreadTimingTrack::GetEvent(float InPosX, 
 
 		const double EventTime = Viewport.SlateUnitsToTime(InPosX);
 
-		TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+		TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 		if (Session.IsValid())
 		{
-			Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+			TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-			if (Trace::ReadTimingProfilerProvider(*Session.Get()))
+			if (TraceServices::ReadTimingProfilerProvider(*Session.Get()))
 			{
-				const Trace::ITimingProfilerProvider& TimingProfilerProvider = *Trace::ReadTimingProfilerProvider(*Session.Get());
+				const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
-				TimingProfilerProvider.ReadTimeline(GetTimelineIndex(), [this, &EventTime, &Depth, &TimingEvent, &SecondsPerPixel](const Trace::ITimingProfilerProvider::Timeline& Timeline)
+				TimingProfilerProvider.ReadTimeline(GetTimelineIndex(), [this, &EventTime, &Depth, &TimingEvent, &SecondsPerPixel](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
 					{
 						TimelineEventInfo EventInfo;
 						bool IsFound = Timeline.GetEventInfo(EventTime, 2 * SecondsPerPixel, Depth, EventInfo);
@@ -1023,7 +1420,7 @@ const TSharedPtr<const ITimingEvent> FThreadTimingTrack::GetEvent(float InPosX, 
 const TSharedPtr<const ITimingEvent> FThreadTimingTrack::SearchEvent(const FTimingEventSearchParameters& InSearchParameters) const
 {
 	TSharedPtr<FThreadTrackEvent> FoundEvent;
-	FindTimingProfilerEvent(InSearchParameters, [this, &FoundEvent](double InFoundStartTime, double InFoundEndTime, uint32 InFoundDepth, const Trace::FTimingProfilerEvent& InFoundEvent)
+	FindTimingProfilerEvent(InSearchParameters, [this, &FoundEvent](double InFoundStartTime, double InFoundEndTime, uint32 InFoundDepth, const TraceServices::FTimingProfilerEvent& InFoundEvent)
 	{
 		FoundEvent = MakeShared<FThreadTrackEvent>(SharedThis(this), InFoundStartTime, InFoundEndTime, InFoundDepth);
 		FoundEvent->SetTimerIndex(InFoundEvent.TimerIndex);
@@ -1051,17 +1448,17 @@ void FThreadTimingTrack::UpdateEventStats(ITimingEvent& InOutEvent) const
 			return;
 		}
 
-		TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+		TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 		if (Session.IsValid())
 		{
-			Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+			TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-			if (Trace::ReadTimingProfilerProvider(*Session.Get()))
+			if (TraceServices::ReadTimingProfilerProvider(*Session.Get()))
 			{
-				const Trace::ITimingProfilerProvider& TimingProfilerProvider = *Trace::ReadTimingProfilerProvider(*Session.Get());
+				const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
 				// Get Exclusive Time.
-				TimingProfilerProvider.ReadTimeline(GetTimelineIndex(), [&TrackEvent](const Trace::ITimingProfilerProvider::Timeline& Timeline)
+				TimingProfilerProvider.ReadTimeline(GetTimelineIndex(), [&TrackEvent](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
 				{
 					TimelineEventInfo EventInfo;
 					bool bIsFound = Timeline.GetEventInfo(TrackEvent.GetStartTime(), 0.0, TrackEvent.GetDepth(), EventInfo);
@@ -1112,10 +1509,10 @@ void FThreadTimingTrack::BuildContextMenu(FMenuBuilder& MenuBuilder)
 {
 	if (GetGroupName() != nullptr)
 	{
-		MenuBuilder.BeginSection(TEXT("Misc"));
+		MenuBuilder.BeginSection("CpuThread", LOCTEXT("ContextMenu_Section_CpuThread", "CPU Thread"));
 		{
 			MenuBuilder.AddMenuEntry(
-				FText::Format(LOCTEXT("CpuThreadGroupFmt", "CPU Thread Group: {0}"), FText::FromString(GetGroupName())),
+				FText::Format(LOCTEXT("CpuThreadGroupFmt", "Group: {0}"), FText::FromString(GetGroupName())),
 				FText(),
 				FSlateIcon(),
 				FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })),
@@ -1123,7 +1520,7 @@ void FThreadTimingTrack::BuildContextMenu(FMenuBuilder& MenuBuilder)
 				EUserInterfaceActionType::Button
 			);
 
-			const FString ThreadIdStr = FString::Printf(TEXT("%s%u (0x%X)"), ThreadId & 0x70000000 ? "*" : "", ThreadId & ~0x70000000, ThreadId);
+			const FString ThreadIdStr = FString::Printf(TEXT("%s%u (0x%X)"), ThreadId & 0x70000000 ? TEXT("*") : TEXT(""), ThreadId & ~0x70000000, ThreadId);
 			MenuBuilder.AddMenuEntry(
 				FText::Format(LOCTEXT("CpuThreadIdFmt", "Thread Id: {0}"), FText::FromString(ThreadIdStr)),
 				FText(),
@@ -1135,11 +1532,32 @@ void FThreadTimingTrack::BuildContextMenu(FMenuBuilder& MenuBuilder)
 		}
 		MenuBuilder.EndSection();
 	}
+
+	if (ChildTrack.IsValid())
+	{
+		ChildTrack->BuildContextMenu(MenuBuilder);
+	}
+
+	MenuBuilder.BeginSection("TimingEvents", LOCTEXT("ContextMenu_Section_TimingEvents", "Timing Events"));
+	{
+		FExecuteAction FilterTrackAction;
+		FilterTrackAction.BindSP(this, &FThreadTimingTrack::OnFilterTrackClicked);
+
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("FilterTrack", "Filter Track..."),
+			FText(),
+			FSlateIcon(FAppStyle::Get().GetStyleSetName(), "Icons.Filter"),
+			FUIAction(FilterTrackAction, FCanExecuteAction::CreateLambda([]() { return true; })),
+			NAME_None,
+			EUserInterfaceActionType::Button
+		);
+	}
+	MenuBuilder.EndSection();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool FThreadTimingTrack::FindTimingProfilerEvent(const FThreadTrackEvent& InTimingEvent, TFunctionRef<void(double, double, uint32, const Trace::FTimingProfilerEvent&)> InFoundPredicate) const
+bool FThreadTimingTrack::FindTimingProfilerEvent(const FThreadTrackEvent& InTimingEvent, TFunctionRef<void(double, double, uint32, const TraceServices::FTimingProfilerEvent&)> InFoundPredicate) const
 {
 	auto MatchEvent = [&InTimingEvent](double InStartTime, double InEndTime, uint32 InDepth)
 	{
@@ -1156,40 +1574,95 @@ bool FThreadTimingTrack::FindTimingProfilerEvent(const FThreadTrackEvent& InTimi
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-bool FThreadTimingTrack::FindTimingProfilerEvent(const FTimingEventSearchParameters& InParameters, TFunctionRef<void(double, double, uint32, const Trace::FTimingProfilerEvent&)> InFoundPredicate) const
+bool FThreadTimingTrack::FindTimingProfilerEvent(const FTimingEventSearchParameters& InParameters, TFunctionRef<void(double, double, uint32, const TraceServices::FTimingProfilerEvent&)> InFoundPredicate) const
 {
-	return TTimingEventSearch<Trace::FTimingProfilerEvent>::Search(
+	FFilterContext FilterConfiguratorContext;
+	FilterConfiguratorContext.SetReturnValueForUnsetFilters(false);
+	FilterConfiguratorContext.AddFilterData<double>(static_cast<int32>(EFilterField::StartTime), 0.0f);
+	FilterConfiguratorContext.AddFilterData<double>(static_cast<int32>(EFilterField::EndTime), 0.0f);
+	FilterConfiguratorContext.AddFilterData<double>(static_cast<int32>(EFilterField::Duration), 0.0f);
+	FilterConfiguratorContext.AddFilterData<FString>(static_cast<int32>(EFilterField::TrackName), this->GetName());
+	FilterConfiguratorContext.AddFilterData<int64>(static_cast<int32>(EFilterField::TimerId), 0);
+	FilterConfiguratorContext.AddFilterData<int64>(static_cast<int32>(EFilterField::TimerName), 0);
+
+	return TTimingEventSearch<TraceServices::FTimingProfilerEvent>::Search(
 		InParameters,
 
-		[this](TTimingEventSearch<Trace::FTimingProfilerEvent>::FContext& InContext)
+		[this](TTimingEventSearch<TraceServices::FTimingProfilerEvent>::FContext& InContext)
 		{
-			TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+			TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 			if (Session.IsValid())
 			{
-				Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+				TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-				if (Trace::ReadTimingProfilerProvider(*Session.Get()))
+				if (TraceServices::ReadTimingProfilerProvider(*Session.Get()))
 				{
-					const Trace::ITimingProfilerProvider& TimingProfilerProvider = *Trace::ReadTimingProfilerProvider(*Session.Get());
+					const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
-					TimingProfilerProvider.ReadTimeline(GetTimelineIndex(), [&InContext](const Trace::ITimingProfilerProvider::Timeline& Timeline)
+					TimingProfilerProvider.ReadTimeline(GetTimelineIndex(), [&InContext](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
 					{
-						Timeline.EnumerateEvents(InContext.GetParameters().StartTime, InContext.GetParameters().EndTime, [&InContext](double EventStartTime, double EventEndTime, uint32 EventDepth, const Trace::FTimingProfilerEvent& Event)
+						auto Callback = [&InContext](double EventStartTime, double EventEndTime, uint32 EventDepth, const TraceServices::FTimingProfilerEvent& Event)
 						{
 							InContext.Check(EventStartTime, EventEndTime, EventDepth, Event);
-							return InContext.ShouldContinueSearching() ? Trace::EEventEnumerate::Continue : Trace::EEventEnumerate::Stop;
-						});
+							return InContext.ShouldContinueSearching() ? TraceServices::EEventEnumerate::Continue : TraceServices::EEventEnumerate::Stop;
+						};
+
+						if (InContext.GetParameters().SearchDirection == FTimingEventSearchParameters::ESearchDirection::Forward)
+						{
+							Timeline.EnumerateEvents(InContext.GetParameters().StartTime, InContext.GetParameters().EndTime, Callback);
+						}
+						else
+						{
+							Timeline.EnumerateEventsBackwards(InContext.GetParameters().EndTime, InContext.GetParameters().StartTime, Callback);
+						}
 					});
 				}
 			}
 		},
 
-		[&InFoundPredicate](double InFoundStartTime, double InFoundEndTime, uint32 InFoundDepth, const Trace::FTimingProfilerEvent& InEvent)
+		[&FilterConfiguratorContext, &InParameters](double EventStartTime, double EventEndTime, uint32 EventDepth, const TraceServices::FTimingProfilerEvent& Event)
+		{
+			if (!InParameters.FilterExecutor.IsValid())
+			{
+				return true;
+			}
+
+			TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+			if (Session.IsValid())
+			{
+				TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+
+				if (TraceServices::ReadTimingProfilerProvider(*Session.Get()))
+				{
+					const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
+					const TraceServices::ITimingProfilerTimerReader* TimerReader;
+					TimingProfilerProvider.ReadTimers([&TimerReader](const TraceServices::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
+
+					const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(Event.TimerIndex);
+					if (ensure(Timer != nullptr))
+					{
+						FilterConfiguratorContext.SetFilterData<double>(static_cast<int32>(EFilterField::StartTime), EventStartTime);
+						FilterConfiguratorContext.SetFilterData<double>(static_cast<int32>(EFilterField::EndTime), EventEndTime);
+						FilterConfiguratorContext.SetFilterData<double>(static_cast<int32>(EFilterField::Duration), EventEndTime - EventStartTime);
+						FilterConfiguratorContext.SetFilterData<int64>(static_cast<int32>(EFilterField::TimerId), Timer->Id);
+						// The TimerName filter also translates to the numeric Id for performance reasons.
+						FilterConfiguratorContext.SetFilterData<int64>(static_cast<int32>(EFilterField::TimerName), Timer->Id);
+					}
+					return InParameters.FilterExecutor->ApplyFilters(FilterConfiguratorContext);
+				}
+			}
+
+			return false;
+		},
+
+		[&InFoundPredicate](double InFoundStartTime, double InFoundEndTime, uint32 InFoundDepth, const TraceServices::FTimingProfilerEvent& InEvent)
 		{
 			InFoundPredicate(InFoundStartTime, InFoundEndTime, InFoundDepth, InEvent);
 		},
 
-		SearchCache);
+		TTimingEventSearch<TraceServices::FTimingProfilerEvent>::NoMatch,
+
+		&SearchCache);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1215,17 +1688,17 @@ void FThreadTimingTrack::CreateFThreadTrackEventFromInfo(const TimelineEventInfo
 
 bool FThreadTimingTrack::TimerIndexToTimerId(uint32 InTimerIndex, uint32& OutTimerId)
 {
-	TSharedPtr<const Trace::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
 	check(Session.IsValid())
 
-	Trace::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+	TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
 
-	const Trace::ITimingProfilerProvider& TimingProfilerProvider = *Trace::ReadTimingProfilerProvider(*Session.Get());
+	const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
 
-	const Trace::ITimingProfilerTimerReader* TimerReader;
-	TimingProfilerProvider.ReadTimers([&TimerReader](const Trace::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
+	const TraceServices::ITimingProfilerTimerReader* TimerReader;
+	TimingProfilerProvider.ReadTimers([&TimerReader](const TraceServices::ITimingProfilerTimerReader& Out) { TimerReader = &Out; });
 
-	const Trace::FTimingProfilerTimer* Timer = TimerReader->GetTimer(InTimerIndex);
+	const TraceServices::FTimingProfilerTimer* Timer = TimerReader->GetTimer(InTimerIndex);
 	if (Timer == nullptr)
 	{
 		return false;
@@ -1233,6 +1706,82 @@ bool FThreadTimingTrack::TimerIndexToTimerId(uint32 InTimerIndex, uint32& OutTim
 
 	OutTimerId = Timer->Id;
 	return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FThreadTimingTrack::OnFilterTrackClicked()
+{
+	if (!FilterConfigurator.IsValid())
+	{
+		FilterConfigurator = MakeShared<FFilterConfigurator>();
+		TSharedPtr<TArray<TSharedPtr<struct FFilter>>>& AvailableFilters = FilterConfigurator->GetAvailableFilters();
+
+		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::StartTime), LOCTEXT("StartTime", "Start Time"), LOCTEXT("StartTime", "Start Time"), EFilterDataType::Double, FFilterService::Get()->GetDoubleOperators()));
+		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::EndTime), LOCTEXT("EndTime", "End Time"), LOCTEXT("EndTime", "End Time"), EFilterDataType::Double, FFilterService::Get()->GetDoubleOperators()));
+		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::Duration), LOCTEXT("Duration", "Duration"), LOCTEXT("Duration", "Duration"), EFilterDataType::Double, FFilterService::Get()->GetDoubleOperators()));
+		AvailableFilters->Add(MakeShared<FFilter>(static_cast<int32>(EFilterField::TimerId), LOCTEXT("TimerId", "Timer Id"), LOCTEXT("TimerId", "Timer Id"), EFilterDataType::Int64, FFilterService::Get()->GetIntegerOperators()));
+
+		OnFilterChangesCommitedHandle = FilterConfigurator->GetOnChangesCommitedEvent().AddLambda([this]()
+			{
+				this->SetDirtyFlag();
+			});
+	}
+
+	FFilterService::Get()->CreateFilterConfiguratorWidget(FilterConfigurator);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool FThreadTimingTrack::HasCustomFilter() const
+{
+	if (!FilterConfigurator.IsValid())
+	{
+		return false;
+	}
+	if (FilterConfigurator->GetRootNode().IsValid() && FilterConfigurator->GetRootNode()->GetChildren().Num() > 0)
+	{
+		return true;
+	}
+
+	return false;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+int32 FThreadTimingTrack::GetDepthAt(double Time) const
+{
+	int32 Depth = 0;
+	TSharedPtr<const TraceServices::IAnalysisSession> Session = FInsightsManager::Get()->GetSession();
+	if (Session.IsValid() && TraceServices::ReadTimingProfilerProvider(*Session.Get()))
+	{
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(*Session.Get());
+
+		const TraceServices::ITimingProfilerProvider& TimingProfilerProvider = *TraceServices::ReadTimingProfilerProvider(*Session.Get());
+
+		TimingProfilerProvider.ReadTimeline(TimelineIndex,
+			[Time, &Depth](const TraceServices::ITimingProfilerProvider::Timeline& Timeline)
+			{
+				Depth = Timeline.GetDepthAt(Time);
+			});
+	}
+	return Depth;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void FThreadTimingTrack::SetFilterConfigurator(TSharedPtr<Insights::FFilterConfigurator> InFilterConfigurator)
+{
+	if (InFilterConfigurator.IsValid())
+	{
+		FilterConfigurator = MakeShared<Insights::FFilterConfigurator>(*InFilterConfigurator);
+	}
+	else
+	{
+		FilterConfigurator.Reset();
+	}
+
+	SetDirtyFlag();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

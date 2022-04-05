@@ -139,10 +139,10 @@ struct FParticleSysParam
 	FColor Color;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=ParticleSysParam)
-	class AActor* Actor;
+	TObjectPtr<class AActor> Actor;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=ParticleSysParam)
-	class UMaterialInterface* Material;
+	TObjectPtr<class UMaterialInterface> Material;
 
 	FParticleSysParam()
 		: ParamType(0)
@@ -328,6 +328,29 @@ struct FParticleEventKismetData : public FParticleEventData
 {
 };
 
+/** Parameters controlling the spawning behavior of FX systems via the SpawnSystemAtLocation and SpawnSystemAttached. */
+USTRUCT(BlueprintType)
+struct FFXSystemSpawnParameters
+{
+	GENERATED_BODY()
+
+	const UObject* WorldContextObject = nullptr;
+	UFXSystemAsset* SystemTemplate = nullptr;
+	FVector Location = FVector::ZeroVector;
+	FRotator Rotation = FRotator::ZeroRotator;
+	FVector Scale = FVector(1.f);
+
+	USceneComponent* AttachToComponent = nullptr;
+	FName AttachPointName = NAME_None;
+	EAttachLocation::Type LocationType = EAttachLocation::KeepWorldPosition;
+
+	bool bAutoDestroy = true;
+	bool bAutoActivate = true;
+	EPSCPoolMethod PoolingMethod = EPSCPoolMethod::None;
+	bool bPreCullCheck = true;
+	bool bIsPlayerEffect = false;
+};
+
 UCLASS(Abstract)
 class ENGINE_API UFXSystemComponent : public UPrimitiveComponent
 {
@@ -430,7 +453,7 @@ public:
 /** 
  * A particle emitter.
  */
-UCLASS(ClassGroup=(Rendering, Common), hidecategories=Object, hidecategories=Physics, hidecategories=Collision, showcategories=Trigger, editinlinenew, meta=(BlueprintSpawnableComponent))
+UCLASS(ClassGroup=(Rendering), hidecategories=Object, hidecategories=Physics, hidecategories=Collision, showcategories=Trigger, editinlinenew, meta=(BlueprintSpawnableComponent))
 class ENGINE_API UParticleSystemComponent : public UFXSystemComponent
 {
 	friend class FParticleSystemWorldManager;
@@ -438,17 +461,17 @@ class ENGINE_API UParticleSystemComponent : public UFXSystemComponent
 	GENERATED_UCLASS_BODY()
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category=Particles)
-	class UParticleSystem* Template;
+	TObjectPtr<class UParticleSystem> Template;
 
 	UPROPERTY(transient, duplicatetransient)
-	TArray<class UMaterialInterface*> EmitterMaterials;
+	TArray<TObjectPtr<class UMaterialInterface>> EmitterMaterials;
 
 	/**
 	 *	The skeletal mesh components used with the socket location module.
 	 *	This is to prevent them from being garbage collected.
 	 */
 	UPROPERTY(transient, duplicatetransient)
-	TArray<class USkeletalMeshComponent*> SkelMeshComponents;
+	TArray<TObjectPtr<class USkeletalMeshComponent>> SkelMeshComponents;
 
 	uint8 bWasCompleted:1;
 
@@ -698,7 +721,7 @@ public:
 
 	/** Array of replay clips for this particle system component.  These are serialized to disk.  You really should never add anything to this in the editor.  It's exposed so that you can delete clips if you need to, but be careful when doing so! */
 	UPROPERTY()
-	TArray<class UParticleSystemReplay*> ReplayClips;
+	TArray<TObjectPtr<class UParticleSystemReplay>> ReplayClips;
 
 	/** Clip ID number we're either playing back or capturing to, depending on the value of ReplayState. */
 	int32 ReplayClipIDNumber;
@@ -824,7 +847,8 @@ private:
 	FBoxSphereBounds AsyncBounds;
 	/** Cached copy of PartSysVelocity */
 	FVector AsyncPartSysVelocity;
-
+	/** LWC tile offset for gpu simulations */
+	FVector3f LWCTile = FVector3f::ZeroVector;
 public:
 
 	/** Called from game code when the significance required for a component changes. */
@@ -841,6 +865,8 @@ public:
 		bIsManagingSignificance = bManageSignificance;
 	}
 
+	FORCEINLINE const FVector3f& GetLWCTile() const { return LWCTile;  }
+	
 	/** Returns the approximate distance squared from this component to the passed location. */
 	float GetApproxDistanceSquared(FVector Point)const;
 	
@@ -1370,14 +1396,14 @@ public:
 	//~ End UObject Interface.
 
 	//Begin UPrimitiveComponent Interface
-	virtual int32 GetNumMaterials() const override; 
+	virtual int32 GetNumMaterials() const override;
 	virtual UMaterialInterface* GetMaterial(int32 ElementIndex) const override;
 	virtual void SetMaterial(int32 ElementIndex, UMaterialInterface* Material) override;
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	virtual void GetUsedMaterials( TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials = false ) const override;
 	virtual void GetStreamingRenderAssetInfo(FStreamingTextureLevelContext& LevelContext, TArray<FStreamingRenderAssetPrimitiveInfo>& OutStreamingRenderAssets) const override;
-	virtual FBodyInstance* GetBodyInstance(FName BoneName = NAME_None, bool bGetWelded = true) const override;
+	virtual FBodyInstance* GetBodyInstance(FName BoneName = NAME_None, bool bGetWelded = true, int32 Index = INDEX_NONE) const override;
 	//End UPrimitiveComponent Interface
 
 	//~ Begin USceneComonent Interface
@@ -1385,6 +1411,9 @@ protected:
 	virtual bool ShouldActivate() const override;
 
 public:
+#if WITH_EDITOR
+	virtual bool GetMaterialPropertyPath(int32 ElementIndex, UObject*& OutOwner, FString& OutPropertyPath, FProperty*& OutProperty) override;
+#endif // WITH_EDITOR
 	virtual void Activate(bool bReset=false) override;
 	virtual void Deactivate() override;
 	virtual void DeactivateImmediate() override;

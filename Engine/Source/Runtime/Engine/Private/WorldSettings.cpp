@@ -12,6 +12,8 @@
 #include "EngineUtils.h"
 #include "Engine/AssetUserData.h"
 #include "Engine/WorldComposition.h"
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
 #include "Net/UnrealNetwork.h"
 #include "GameFramework/GameNetworkManager.h"
 #include "AudioDevice.h"
@@ -29,15 +31,15 @@
 #include "AI/NavigationSystemBase.h"
 #include "Engine/BookmarkBase.h"
 #include "Engine/BookMark.h"
+#include "WorldSettingsCustomVersion.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
 #include "HierarchicalLOD.h"
-#include "IMeshMergeUtilities.h"
-#include "MeshMergeModule.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "Landscape.h"
 #include "Rendering/StaticLightingSystemInterface.h"
+#include "WorldPartition/DataLayer/WorldDataLayers.h"
 #endif 
 
 #define LOCTEXT_NAMESPACE "ErrorChecking"
@@ -55,6 +57,7 @@ AWorldSettings::FOnNumberOfBookmarksChanged AWorldSettings::OnNumberOfBoomarksCh
 
 AWorldSettings::AWorldSettings(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer.DoNotCreateDefaultSubobject(TEXT("Sprite")))
+	, WorldPartition(nullptr)
 {
 	// Structure to hold one-time initialization
 	struct FConstructorStatics
@@ -67,26 +70,32 @@ AWorldSettings::AWorldSettings(const FObjectInitializer& ObjectInitializer)
 	};
 	static FConstructorStatics ConstructorStatics;
 
+	bEnableLargeWorlds = false;
 	bEnableWorldBoundsChecks = true;
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	bEnableNavigationSystem = true;
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	NavigationSystemConfig = nullptr;
 	bEnableAISystem = true;
+	AISystemClass = UAISystemBase::GetAISystemClassName();
 	bEnableWorldComposition = false;
 	bEnableWorldOriginRebasing = false;
-#if WITH_EDITORONLY_DATA	
-	bEnableHierarchicalLODSystem = false;
-
- 	FHierarchicalSimplification LODBaseSetup;
-	HierarchicalLODSetup.Add(LODBaseSetup);
-	NumHLODLevels = HierarchicalLODSetup.Num();
+#if WITH_EDITORONLY_DATA
+	bEnableHierarchicalLODSystem_DEPRECATED = true;
+	NumHLODLevels = 0;
 	bGenerateSingleClusterForLevel = false;
 #endif
 
 	KillZ = -HALF_WORLD_MAX1;
 	KillZDamageType = ConstructorStatics.DmgType_Environmental_Object.Object;
 
+#if WITH_EDITORONLY_DATA
+	InstancedFoliageGridSize = DefaultPlacementGridSize = 25600;
+	NavigationDataChunkGridSize = 102400;
+	NavigationDataBuilderLoadingCellSize = 102400 * 4;
+	bIncludeGridSizeInNameForFoliageActors = false;
+	bIncludeGridSizeInNameForPartitionedActors = false;
+#endif
 	WorldToMeters = 100.f;
 
 	DefaultPhysicsVolumeClass = ADefaultPhysicsVolume::StaticClass();
@@ -118,6 +127,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 	DefaultBookmarkClass = UBookMark::StaticClass();
 	LastBookmarkClass = DefaultBookmarkClass;
+
+	LevelInstancePivotOffset = FVector::ZeroVector;
 }
 
 void AWorldSettings::PostInitProperties()
@@ -199,6 +210,31 @@ void AWorldSettings::PostRegisterAllComponents()
 	{
 		AudioDevice->SetDefaultAudioSettings(World, DefaultReverbSettings, DefaultAmbientZoneSettings);
 	}
+	
+	if(bEnableLargeWorlds)
+	{
+		UpdateEnableLargeWorldsCVars(bEnableLargeWorlds);
+	}	
+}
+
+UWorldPartition* AWorldSettings::GetWorldPartition() const
+{
+	return WorldPartition;
+}
+
+void AWorldSettings::SetWorldPartition(UWorldPartition* InWorldPartition)
+{
+	check(!IsValid(WorldPartition));
+	check(InWorldPartition);
+	WorldPartition = InWorldPartition;
+	ApplyWorldPartitionForcedSettings();
+}
+
+void AWorldSettings::ApplyWorldPartitionForcedSettings()
+{
+	bEnableWorldComposition = false;
+	bForceNoPrecomputedLighting = true;
+	bPrecomputeVisibility = false;
 }
 
 float AWorldSettings::GetGravityZ() const
@@ -249,12 +285,26 @@ void AWorldSettings::NotifyBeginPlay()
 
 		World->bBegunPlay = true;
 	}
+
+	if(bEnableLargeWorlds)
+	{
+		// Done post BeginPlay to give code a chance to set bEnableLargeWorlds.
+		UpdateEnableLargeWorldsCVars(bEnableLargeWorlds);
+	}	
 }
 
 void AWorldSettings::NotifyMatchStarted()
 {
 	UWorld* World = GetWorld();
+	World->OnWorldMatchStarting.Broadcast();
 	World->bMatchStarted = true;
+}
+
+void AWorldSettings::UpdateEnableLargeWorldsCVars(bool bEnable) const
+{
+	// LWC_TODO: Large world support. This will be removed once UE_LARGE_WORLD_MAX is stable.
+	IConsoleManager::Get().FindConsoleVariable(TEXT("r.UseVisibilityOctree"))->Set(!bEnable);
+	IConsoleManager::Get().FindConsoleVariable(TEXT("r.Shadow.UseOctreeForCulling"))->Set(!bEnable); 
 }
 
 void AWorldSettings::GetLifetimeReplicatedProps( TArray< FLifetimeProperty > & OutLifetimeProps ) const
@@ -268,14 +318,19 @@ void AWorldSettings::GetLifetimeReplicatedProps( TArray< FLifetimeProperty > & O
 	DOREPLIFETIME( AWorldSettings, bHighPriorityLoading );
 }
 
+const FGuid FWorldSettingCustomVersion::GUID(0x1ED048F4, 0x2F2E4C68, 0x89D053A4, 0xF18F102D);
+// Register the custom version with core
+FCustomVersionRegistration GRegisterWorldSettingCustomVersion(FWorldSettingCustomVersion::GUID, FWorldSettingCustomVersion::LatestVersion, TEXT("WorldSettingVer"));
+
 void AWorldSettings::Serialize( FArchive& Ar )
 {
 	Super::Serialize(Ar);
 
 	Ar.UsingCustomVersion(FReleaseObjectVersion::GUID);
 	Ar.UsingCustomVersion(FEnterpriseObjectVersion::GUID);
+	Ar.UsingCustomVersion(FWorldSettingCustomVersion::GUID);
 
-	if (Ar.UE4Ver() < VER_UE4_ADD_OVERRIDE_GRAVITY_FLAG)
+	if (Ar.UEVer() < VER_UE4_ADD_OVERRIDE_GRAVITY_FLAG)
 	{
 		//before we had override flag we would use GlobalGravityZ != 0
 		if(GlobalGravityZ != 0.0f)
@@ -311,10 +366,18 @@ PRAGMA_DISABLE_DEPRECATION_WARNINGS
 	{
 		if (Ar.CustomVer(FEnterpriseObjectVersion::GUID) < FEnterpriseObjectVersion::BookmarkExtensibilityUpgrade)
 		{
-			UBookmarkBase** LocalBookmarks = reinterpret_cast<UBookmarkBase**>(static_cast<UBookMark**>(BookMarks)); //-V777
+			UBookmarkBase** LocalBookmarks = reinterpret_cast<UBookmarkBase**>(static_cast<UBookMark**>(ToRawPtrArrayUnsafe(BookMarks))); //-V777
 			const int32 NumBookmarks = sizeof(BookMarks) / sizeof(UBookMark*);
 			BookmarkArray = TArray<UBookmarkBase*>(LocalBookmarks, NumBookmarks);
 			AdjustNumberOfBookmarks();
+		}
+
+		if (Ar.CustomVer(FWorldSettingCustomVersion::GUID) < FWorldSettingCustomVersion::DeprecatedEnableHierarchicalLODSystem)
+		{
+			if (!bEnableHierarchicalLODSystem_DEPRECATED)
+			{
+				ResetHierarchicalLODSetup();
+			}
 		}
 	}
 PRAGMA_ENABLE_DEPRECATION_WARNINGS
@@ -346,6 +409,12 @@ UAssetUserData* AWorldSettings::GetAssetUserDataOfClass(TSubclassOf<UAssetUserDa
 	}
 	return NULL;
 }
+
+const TArray<UAssetUserData*>* AWorldSettings::GetAssetUserDataArray() const
+{
+	return &ToRawPtrTArrayUnsafe(AssetUserData);
+}
+
 #if WITH_EDITOR
 const TArray<FHierarchicalSimplification>& AWorldSettings::GetHierarchicalLODSetup() const
 {
@@ -395,7 +464,7 @@ int32 AWorldSettings::GetNumHierarchicalLODLevels() const
 		return HLODSettings->DefaultSetup->GetDefaultObject<UHierarchicalLODSetup>()->HierarchicalLODSetup.Num();
 	}
 
-	return  HierarchicalLODSetup.Num();
+	return HierarchicalLODSetup.Num();
 }
 
 UMaterialInterface* AWorldSettings::GetHierarchicalLODBaseMaterial() const
@@ -418,6 +487,43 @@ UMaterialInterface* AWorldSettings::GetHierarchicalLODBaseMaterial() const
 	return Material;
 }
 
+void AWorldSettings::ResetHierarchicalLODSetup()
+{
+	HLODSetupAsset = nullptr;
+	OverrideBaseMaterial = nullptr;
+	HierarchicalLODSetup.Reset();
+	NumHLODLevels = 0;
+}
+
+void AWorldSettings::SaveDefaultWorldPartitionSettings()
+{
+	ResetDefaultWorldPartitionSettings();
+
+	if (WorldPartition)
+	{
+		DefaultWorldPartitionSettings.LoadedEditorGridCells = WorldPartition->GetUserLoadedEditorGridCells();		
+		if (AWorldDataLayers* WorldDataLayers = GetWorld()->GetWorldDataLayers())
+		{
+			WorldDataLayers->GetUserLoadedInEditorStates(DefaultWorldPartitionSettings.LoadedDataLayers, DefaultWorldPartitionSettings.NotLoadedDataLayers);
+		}
+	}
+}
+
+void AWorldSettings::ResetDefaultWorldPartitionSettings()
+{
+	Modify();
+	DefaultWorldPartitionSettings.Reset();
+}
+
+const FWorldPartitionPerWorldSettings* AWorldSettings::GetDefaultWorldPartitionSettings() const
+{
+	if (WorldPartition)
+	{
+		return &DefaultWorldPartitionSettings;
+	}
+
+	return nullptr;
+}
 #endif // WITH_EDITOR
 
 void AWorldSettings::RemoveUserDataOfClass(TSubclassOf<UAssetUserData> InUserDataClass)
@@ -444,6 +550,11 @@ void AWorldSettings::PostLoad()
 		Entry.MergeSetting.PostLoadDeprecated();
 	}
 
+	if (WorldPartition)
+	{
+		// Force to re-apply WorldPartition restrictions on WorldSettings (in case they changed)
+		ApplyWorldPartitionForcedSettings();
+	}
 #endif// WITH_EDITOR
 
 PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -500,24 +611,26 @@ void AWorldSettings::CheckForErrors()
 			->AddToken(FMapErrorToken::Create(FMapErrors::DuplicateLevelInfo));
 	}
 
-	int32 NumLightingScenariosEnabled = 0;
-
-	for (int32 LevelIndex = 0; LevelIndex < World->GetNumLevels(); LevelIndex++)
+	if (!World->GetWorldSettings()->bForceNoPrecomputedLighting)
 	{
-		ULevel* Level = World->GetLevels()[LevelIndex];
+		int32 NumLightingScenariosEnabled = 0;
 
-		if (Level->bIsLightingScenario && Level->bIsVisible)
+		for (int32 LevelIndex = 0; LevelIndex < World->GetNumLevels(); LevelIndex++)
 		{
-			NumLightingScenariosEnabled++;
-		}
-	}
+			ULevel* Level = World->GetLevels()[LevelIndex];
 
-	if( World->NumLightingUnbuiltObjects > 0 && NumLightingScenariosEnabled <= 1 )
-	{
-		FMessageLog("MapCheck").Error()
-			->AddToken(FUObjectToken::Create(this))
-			->AddToken(FTextToken::Create(LOCTEXT( "MapCheck_Message_RebuildLighting", "Maps need lighting rebuilt" ) ))
-			->AddToken(FMapErrorToken::Create(FMapErrors::RebuildLighting));
+			if (Level->bIsLightingScenario && Level->bIsVisible)
+			{
+				NumLightingScenariosEnabled++;
+			}
+		}
+		if( World->NumLightingUnbuiltObjects > 0 && NumLightingScenariosEnabled <= 1 )
+		{
+			FMessageLog("MapCheck").Error()
+				->AddToken(FUObjectToken::Create(this))
+				->AddToken(FTextToken::Create(LOCTEXT( "MapCheck_Message_RebuildLighting", "Maps need lighting rebuilt" ) ))
+				->AddToken(FMapErrorToken::Create(FMapErrors::RebuildLighting));
+		}
 	}
 }
 
@@ -558,6 +671,16 @@ bool AWorldSettings::CanEditChange(const FProperty* InProperty) const
 				return LightmassSettings.EnvironmentIntensity > 0;
 			}
 		}
+		else if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(AWorldSettings, bEnableWorldComposition ) ||
+				 PropertyName == GET_MEMBER_NAME_STRING_CHECKED(AWorldSettings, bForceNoPrecomputedLighting ) ||
+				 PropertyName == GET_MEMBER_NAME_STRING_CHECKED(AWorldSettings, bPrecomputeVisibility))
+		{
+			return !IsPartitionedWorld();
+		}
+		if (PropertyName == GET_MEMBER_NAME_STRING_CHECKED(AWorldSettings, InstancedFoliageGridSize))
+		{
+			return false;
+		}
 	}
 
 	return Super::CanEditChange(InProperty);
@@ -565,9 +688,11 @@ bool AWorldSettings::CanEditChange(const FProperty* InProperty) const
 
 void AWorldSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
+	UWorld* World = GetWorld();
+
 	FProperty* PropertyThatChanged = PropertyChangedEvent.Property;
 	if (PropertyThatChanged)
-{
+	{
 		InternalPostPropertyChanged(PropertyThatChanged->GetFName());
 	}
 
@@ -587,12 +712,22 @@ void AWorldSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChang
 	LightmassSettings.MaxOcclusionDistance = FMath::Max(LightmassSettings.MaxOcclusionDistance, 0.0f);
 	LightmassSettings.EnvironmentIntensity = FMath::Max(LightmassSettings.EnvironmentIntensity, 0.0f);
 
+	const FName PropName = PropertyChangedEvent.GetPropertyName();
+	if (PropName == GET_MEMBER_NAME_CHECKED(AWorldSettings, bEnableAISystem)
+	|| PropName == GET_MEMBER_NAME_CHECKED(AWorldSettings, AISystemClass))
+	{
+		if (World)
+		{
+			World->CreateAISystem();
+		}
+	}
+
 	// Ensure texture size is power of two between 512 and 4096.
 	PackedLightAndShadowMapTextureSize = FMath::Clamp<uint32>( FMath::RoundUpToPowerOfTwo( PackedLightAndShadowMapTextureSize ), 512, 4096 );
 
-	if (PropertyThatChanged != nullptr && GetWorld() != nullptr && GetWorld()->Scene)
+	if (PropertyThatChanged != nullptr && World != nullptr && World->Scene)
 	{
-		GetWorld()->Scene->UpdateSceneSettings(this);
+		World->Scene->UpdateSceneSettings(this);
 	}
 
 	for (UAssetUserData* Datum : AssetUserData)
@@ -629,39 +764,36 @@ void AWorldSettings::InternalPostPropertyChanged(FName PropertyName)
 		}
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, bForceNoPrecomputedLighting) && bForceNoPrecomputedLighting)
+	{
+		FMessageDialog::Open( EAppMsgType::Ok, LOCTEXT("bForceNoPrecomputedLightingIsEnabled", "bForceNoPrecomputedLighting is now enabled, build lighting once to propagate the change (will remove existing precomputed lighting data)."));
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings,bEnableWorldComposition))
+	{
+		bEnableWorldComposition = UWorldComposition::EnableWorldCompositionEvent.IsBound() ? UWorldComposition::EnableWorldCompositionEvent.Execute(GetWorld(), bEnableWorldComposition): false;
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, NavigationSystemConfig))
+	{
+		UWorld* World = GetWorld();
+		if (World)
 		{
-			FMessageDialog::Open( EAppMsgType::Ok, LOCTEXT("bForceNoPrecomputedLightingIsEnabled", "bForceNoPrecomputedLighting is now enabled, build lighting once to propagate the change (will remove existing precomputed lighting data)."));
-		}
-		else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings,bEnableWorldComposition))
-		{
-			if (UWorldComposition::EnableWorldCompositionEvent.IsBound())
+			World->SetNavigationSystem(nullptr);
+			if (NavigationSystemConfig)
 			{
-				bEnableWorldComposition = UWorldComposition::EnableWorldCompositionEvent.Execute(GetWorld(), bEnableWorldComposition);
-			}
-			else
-			{
-				bEnableWorldComposition = false;
-			}
-		}
-		else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, NavigationSystemConfig))
-		{
-			UWorld* World = GetWorld();
-			if (World)
-			{
-				World->SetNavigationSystem(nullptr);
-				if (NavigationSystemConfig)
-				{
-					FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
-				}
+				FNavigationSystem::AddNavigationSystemToWorld(*World, FNavigationSystemRunMode::EditorMode);
 			}
 		}
-		else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, MaxNumberOfBookmarks))
-		{
-			UpdateNumberOfBookmarks();
-		}
-		else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, DefaultBookmarkClass))
-		{
-			UpdateBookmarkClass();
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, MaxNumberOfBookmarks))
+	{
+		UpdateNumberOfBookmarks();
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, DefaultBookmarkClass))
+	{
+		UpdateBookmarkClass();
+	}
+	else if(PropertyName == GET_MEMBER_NAME_CHECKED(AWorldSettings, bEnableLargeWorlds))
+	{
+		UpdateEnableLargeWorldsCVars(bEnableLargeWorlds);
 	}
 
 	if (GetWorld() != nullptr && GetWorld()->PersistentLevel && GetWorld()->PersistentLevel->GetWorldSettings() == this)
@@ -679,10 +811,9 @@ void AWorldSettings::InternalPostPropertyChanged(FName PropertyName)
 		{
 			if (!OverrideBaseMaterial.IsNull())
 			{
-				const IMeshMergeUtilities& Module = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
-				if (!Module.IsValidBaseMaterial(OverrideBaseMaterial.LoadSynchronous(), true))
+				if (!UHierarchicalLODSettings::IsValidFlattenMaterial(OverrideBaseMaterial.LoadSynchronous(), true))
 				{
-					OverrideBaseMaterial = LoadObject<UMaterialInterface>(NULL, TEXT("/Engine/EngineMaterials/BaseFlattenMaterial.BaseFlattenMaterial"), NULL, LOAD_None, NULL);
+					OverrideBaseMaterial = GEngine->DefaultHLODFlattenMaterial;
 				}
 			}
 		}
@@ -695,10 +826,9 @@ void UHierarchicalLODSetup::PostEditChangeProperty(struct FPropertyChangedEvent&
 	{
 		if (!OverrideBaseMaterial.IsNull())
 		{
-			const IMeshMergeUtilities& Module = FModuleManager::Get().LoadModuleChecked<IMeshMergeModule>("MeshMergeUtilities").GetUtilities();
-			if (!Module.IsValidBaseMaterial(OverrideBaseMaterial.LoadSynchronous(), true))
+			if (!UHierarchicalLODSettings::IsValidFlattenMaterial(OverrideBaseMaterial.LoadSynchronous(), true))
 			{
-				OverrideBaseMaterial = LoadObject<UMaterialInterface>(NULL, TEXT("/Engine/EngineMaterials/BaseFlattenMaterial.BaseFlattenMaterial"), NULL, LOAD_None, NULL);
+				OverrideBaseMaterial = GEngine->DefaultHLODFlattenMaterial;
 			}
 		}
 	}
@@ -724,7 +854,7 @@ class UBookmarkBase* AWorldSettings::GetOrAddBookmark(const uint32 BookmarkIndex
 {
 	if (BookmarkArray.IsValidIndex(BookmarkIndex))
 	{
-		UBookmarkBase*& Bookmark = BookmarkArray[BookmarkIndex];
+		TObjectPtr<UBookmarkBase>& Bookmark = BookmarkArray[BookmarkIndex];
 
 		if (Bookmark == nullptr || (bRecreateOnClassMismatch && Bookmark->GetClass() != GetDefaultBookmarkClass()))
 		{
@@ -774,7 +904,7 @@ void AWorldSettings::ClearBookmark(const uint32 BookmarkIndex)
 {
 	if (BookmarkArray.IsValidIndex(BookmarkIndex))
 	{
-		if (UBookmarkBase*& Bookmark = BookmarkArray[BookmarkIndex])
+		if (TObjectPtr<UBookmarkBase>& Bookmark = BookmarkArray[BookmarkIndex])
 		{
 			Modify();
 			Bookmark->OnCleared();
@@ -786,7 +916,7 @@ void AWorldSettings::ClearBookmark(const uint32 BookmarkIndex)
 void AWorldSettings::ClearAllBookmarks()
 {
 	Modify();
-	for (UBookmarkBase*& Bookmark : BookmarkArray)
+	for (TObjectPtr<UBookmarkBase>& Bookmark : BookmarkArray)
 	{
 		if (Bookmark)
 		{
@@ -800,7 +930,7 @@ void AWorldSettings::AdjustNumberOfBookmarks()
 {
 	if (MaxNumberOfBookmarks < 0)
 	{
-		UE_LOG(LogWorldSettings, Warning, TEXT("%s: MaxNumberOfBookmarks cannot be below 0 (Value=%d). Defaulting to 10"), *GetPathName(this), MaxNumberOfBookmarks);
+		UE_LOG(LogWorldSettings, Warning, TEXT("%s: MaxNumberOfBookmarks cannot be below 0 (Value=%d). Defaulting to 10"), *GetPathNameSafe(this), MaxNumberOfBookmarks);
 		MaxNumberOfBookmarks = NumMappedBookmarks;
 	}
 
@@ -835,7 +965,7 @@ void AWorldSettings::SanitizeBookmarkClasses()
 		bool bFoundInvalidBookmarks = false;
 		for (int32 i = 0; i < BookmarkArray.Num(); ++i)
 		{
-			if (UBookmarkBase*& Bookmark = BookmarkArray[i])
+			if (TObjectPtr<UBookmarkBase>& Bookmark = BookmarkArray[i])
 			{
 				if (Bookmark->GetClass() != ExpectedClass)
 				{
@@ -849,12 +979,12 @@ void AWorldSettings::SanitizeBookmarkClasses()
 
 		if (bFoundInvalidBookmarks)
 		{
-			UE_LOG(LogWorldSettings, Warning, TEXT("%s: Bookmarks found with invalid classes"), *GetPathName(this));
+			UE_LOG(LogWorldSettings, Warning, TEXT("%s: Bookmarks found with invalid classes"), *GetPathNameSafe(this));
 		}
 	}
 	else
 	{
-		UE_LOG(LogWorldSettings, Warning, TEXT("%s: Invalid bookmark class, clearing existing bookmarks."), *GetPathName(this));
+		UE_LOG(LogWorldSettings, Warning, TEXT("%s: Invalid bookmark class, clearing existing bookmarks."), *GetPathNameSafe(this));
 		DefaultBookmarkClass = UBookMark::StaticClass();
 		SanitizeBookmarkClasses();
 	}
@@ -879,7 +1009,7 @@ void AWorldSettings::UpdateBookmarkClass()
 
 FSoftClassPath AWorldSettings::GetAISystemClassName() const
 {
-	return bEnableAISystem ? UAISystemBase::GetAISystemClassName() : FSoftClassPath();
+	return bEnableAISystem ? FSoftClassPath(AISystemClass.ToString()) : FSoftClassPath();
 }
 
 void AWorldSettings::RewindForReplay()

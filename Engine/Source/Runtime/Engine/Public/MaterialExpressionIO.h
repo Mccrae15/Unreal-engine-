@@ -6,6 +6,22 @@
 #include "UObject/Class.h"
 #include "SceneTypes.h"
 
+class FMaterialHLSLGenerator;
+
+namespace UE
+{
+namespace HLSLTree
+{
+class FScope;
+class FExpression;
+class FTextureParameterDeclaration;
+}
+namespace Shader
+{
+enum class EValueType : uint8;
+}
+}
+
 //
 //	FExpressionInput
 //
@@ -61,6 +77,9 @@ struct FExpressionInput
 
 #if WITH_EDITOR
 	ENGINE_API int32 Compile(class FMaterialCompiler* Compiler);
+	ENGINE_API UE::HLSLTree::FExpression* AcquireHLSLExpression(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope) const;
+	ENGINE_API UE::HLSLTree::FExpression* AcquireHLSLExpressionWithCast(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope, UE::Shader::EValueType Type) const;
+	ENGINE_API UE::HLSLTree::FTextureParameterDeclaration* AcquireHLSLTexture(FMaterialHLSLGenerator& Generator, UE::HLSLTree::FScope& Scope) const;
 #endif // WITH_EDITOR
 
 	/**
@@ -176,7 +195,7 @@ template<class InputType> struct FMaterialInput : FExpressionInput
 
 #if WITH_EDITORONLY_DATA
 	uint32	UseConstant : 1;
-	InputType Constant;
+	InputType	Constant;
 #endif
 };
 
@@ -237,7 +256,26 @@ struct TStructOpsTypeTraits<FShadingModelMaterialInput>
 	};
 };
 
-struct FVectorMaterialInput : FMaterialInput<FVector>
+struct FStrataMaterialInput : FMaterialInput<uint32> // Still giving it a default type
+{
+#if WITH_EDITOR
+	ENGINE_API int32 CompileWithDefault(class FMaterialCompiler* Compiler, EMaterialProperty Property);
+#endif  // WITH_EDITOR
+	/** ICPPStructOps interface */
+	ENGINE_API bool Serialize(FArchive& Ar);
+};
+
+template<>
+struct TStructOpsTypeTraits<FStrataMaterialInput>
+	: public TStructOpsTypeTraitsBase2<FStrataMaterialInput>
+{
+	enum
+	{
+		WithSerializer = true,
+	};
+};
+
+struct FVectorMaterialInput : FMaterialInput<FVector3f>
 {
 #if WITH_EDITOR
 	ENGINE_API int32 CompileWithDefault(class FMaterialCompiler* Compiler, EMaterialProperty Property);
@@ -256,7 +294,7 @@ struct TStructOpsTypeTraits<FVectorMaterialInput>
 	};
 };
 
-struct FVector2MaterialInput : FMaterialInput<FVector2D>
+struct FVector2MaterialInput : FMaterialInput<FVector2f>
 {
 #if WITH_EDITOR
 	ENGINE_API int32 CompileWithDefault(class FMaterialCompiler* Compiler, EMaterialProperty Property);

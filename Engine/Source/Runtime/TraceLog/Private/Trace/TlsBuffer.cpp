@@ -9,11 +9,12 @@
 #include "Trace/Detail/Writer.inl"
 #include "Trace/Trace.inl"
 
+namespace UE {
 namespace Trace {
 namespace Private {
 
 ////////////////////////////////////////////////////////////////////////////////
-uint32			Writer_SendData(uint32, uint8* __restrict, uint32);
+void			Writer_TailAppend(uint32, uint8* __restrict, uint32, bool);
 FWriteBuffer*	Writer_AllocateBlockFromPool();
 uint32			Writer_GetThreadId();
 void			Writer_FreeBlockListToPool(FWriteBuffer*, FWriteBuffer*);
@@ -22,28 +23,15 @@ extern uint64	GStartCycle;
 
 
 ////////////////////////////////////////////////////////////////////////////////
-UE_TRACE_EVENT_BEGIN($Trace, ThreadTiming, NoSync|Important)
+UE_TRACE_EVENT_BEGIN($Trace, ThreadTiming, NoSync)
 	UE_TRACE_EVENT_FIELD(uint64, BaseTimestamp)
 UE_TRACE_EVENT_END()
-
-#define TRACE_PRIVATE_PERF 0
-#if TRACE_PRIVATE_PERF
-UE_TRACE_EVENT_BEGIN($Trace, WorkerThread)
-	UE_TRACE_EVENT_FIELD(uint32, Cycles)
-	UE_TRACE_EVENT_FIELD(uint32, BytesReaped)
-	UE_TRACE_EVENT_FIELD(uint32, BytesSent)
-UE_TRACE_EVENT_END()
-
-UE_TRACE_EVENT_BEGIN($Trace, Memory)
-	UE_TRACE_EVENT_FIELD(uint32, AllocSize)
-UE_TRACE_EVENT_END()
-#endif // TRACE_PRIVATE_PERF
 
 
 
 ////////////////////////////////////////////////////////////////////////////////
 #define T_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
-static FWriteBuffer						GNullWriteBuffer	= { 0, 0, 0, 0, nullptr, nullptr, (uint8*)&GNullWriteBuffer };
+static FWriteBuffer						GNullWriteBuffer	= { {}, 0, 0, nullptr, nullptr, (uint8*)&GNullWriteBuffer };
 thread_local FWriteBuffer*				GTlsWriteBuffer		= &GNullWriteBuffer;
 static FWriteBuffer* __restrict			GActiveThreadList;	// = nullptr;
 T_ALIGN static FWriteBuffer* volatile	GNewThreadList;		// = nullptr;
@@ -67,7 +55,7 @@ static FWriteBuffer* Writer_NextBufferInternal()
 	NextBuffer->Cursor = (uint8*)NextBuffer - NextBuffer->Size;
 	NextBuffer->Committed = NextBuffer->Cursor;
 	NextBuffer->Reaped = NextBuffer->Cursor;
-	NextBuffer->EtxOffset = UPTRINT(0) - sizeof(FWriteBuffer);
+	NextBuffer->EtxOffset = 0 - int32(sizeof(FWriteBuffer));
 	NextBuffer->NextBuffer = nullptr;
 
 	FWriteBuffer* CurrentBuffer = GTlsWriteBuffer;
@@ -75,6 +63,7 @@ static FWriteBuffer* Writer_NextBufferInternal()
 	{
 		NextBuffer->ThreadId = uint16(Writer_GetThreadId());
 		NextBuffer->PrevTimestamp = TimeGetTimestamp();
+		NextBuffer->Partial = 0;
 
 		GTlsWriteBuffer = NextBuffer;
 
@@ -96,11 +85,12 @@ static FWriteBuffer* Writer_NextBufferInternal()
 		CurrentBuffer->NextBuffer = NextBuffer;
 		NextBuffer->ThreadId = CurrentBuffer->ThreadId;
 		NextBuffer->PrevTimestamp = CurrentBuffer->PrevTimestamp;
+		NextBuffer->Partial = 0;
 
 		GTlsWriteBuffer = NextBuffer;
 
 		// Retire current buffer.
-		UPTRINT EtxOffset = UPTRINT((uint8*)(CurrentBuffer) - CurrentBuffer->Cursor);
+		int32 EtxOffset = int32(PTRINT((uint8*)(CurrentBuffer) - CurrentBuffer->Cursor));
 		AtomicStoreRelease(&(CurrentBuffer->EtxOffset), EtxOffset);
 	}
 
@@ -129,6 +119,25 @@ TRACELOG_API FWriteBuffer* Writer_NextBuffer(int32 Size)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+static bool Writer_DrainBuffer(uint32 ThreadId, FWriteBuffer* Buffer)
+{
+	uint8* Committed = AtomicLoadRelaxed((uint8**)&Buffer->Committed);
+
+	// Send as much as we can.
+	if (uint32 SizeToReap = uint32(Committed - Buffer->Reaped))
+	{
+		bool bPartial = (Buffer->Partial == 1);
+		bPartial &= UPTRINT(Buffer->Reaped + Buffer->Size) == UPTRINT(Buffer);
+		Writer_TailAppend(ThreadId, Buffer->Reaped, SizeToReap, bPartial);
+		Buffer->Reaped = Committed;
+	}
+
+	// Is this buffer still in use?
+	int32 EtxOffset = AtomicLoadAcquire(&Buffer->EtxOffset);
+	return ((uint8*)Buffer - EtxOffset) > Committed;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 void Writer_DrainBuffers()
 {
 	struct FRetireList
@@ -144,22 +153,8 @@ void Writer_DrainBuffers()
 		}
 	};
 
-#if TRACE_PRIVATE_PERF
-	uint64 StartTsc = TimeGetTimestamp();
-	uint32 BytesReaped = 0;
-	uint32 BytesSent = 0;
-#endif
-
 	// Claim ownership of any new thread buffer lists
-	FWriteBuffer* __restrict NewThreadList;
-	for (;; PlatformYield())
-	{
-		NewThreadList = AtomicLoadRelaxed(&GNewThreadList);
-		if (AtomicCompareExchangeAcquire(&GNewThreadList, (FWriteBuffer*)nullptr, NewThreadList))
-		{
-			break;
-		}
-	}
+	FWriteBuffer* __restrict NewThreadList = AtomicExchangeAcquire(&GNewThreadList, (FWriteBuffer*)nullptr);
 
 	// Reverse the new threads list so they're more closely ordered by age
 	// when sent out.
@@ -193,22 +188,7 @@ void Writer_DrainBuffers()
 			// For each of the thread's buffers...
 			for (FWriteBuffer* __restrict NextBuffer; Buffer != nullptr; Buffer = NextBuffer)
 			{
-				uint8* Committed = AtomicLoadRelaxed((uint8**)&Buffer->Committed);
-
-				// Send as much as we can.
-				if (uint32 SizeToReap = uint32(Committed - Buffer->Reaped))
-				{
-#if TRACE_PRIVATE_PERF
-					BytesReaped += SizeToReap;
-					BytesSent += /*...*/
-#endif
-					Writer_SendData(ThreadId, Buffer->Reaped, SizeToReap);
-					Buffer->Reaped = Committed;
-				}
-
-				// Is this buffer still in use?
-				int32 EtxOffset = int32(AtomicLoadAcquire(&Buffer->EtxOffset));
-				if ((uint8*)Buffer - EtxOffset > Committed)
+				if (Writer_DrainBuffer(ThreadId, Buffer))
 				{
 					break;
 				}
@@ -226,16 +206,6 @@ void Writer_DrainBuffers()
 		}
 	}
 
-#if TRACE_PRIVATE_PERF
-	UE_TRACE_LOG($Trace, WorkerThread, TraceLogChannel)
-		<< WorkerThread.Cycles(uint32(TimeGetTimestamp() - StartTsc))
-		<< WorkerThread.BytesReaped(BytesReaped)
-		<< WorkerThread.BytesSent(BytesSent);
-
-	UE_TRACE_LOG($Trace, Memory, TraceLogChannel)
-		<< Memory.AllocSize(GPoolUsage);
-#endif // TRACE_PRIVATE_PERF
-
 	// Put the retirees we found back into the system again.
 	if (RetireList.Head != nullptr)
 	{
@@ -251,11 +221,12 @@ void Writer_EndThreadBuffer()
 		return;
 	}
 
-	UPTRINT EtxOffset = UPTRINT((uint8*)GTlsWriteBuffer - GTlsWriteBuffer->Cursor);
+	int32 EtxOffset = int32(PTRINT((uint8*)GTlsWriteBuffer - GTlsWriteBuffer->Cursor));
 	AtomicStoreRelaxed(&(GTlsWriteBuffer->EtxOffset), EtxOffset);
 }
 
 } // namespace Private
 } // namespace Trace
+} // namespace UE
 
 #endif // UE_TRACE_ENABLED

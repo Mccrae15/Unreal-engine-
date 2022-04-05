@@ -122,21 +122,22 @@ namespace ChaosTest {
 	void UnitImplicitObjectSupportPhis(GeometryType& Subject, FString Caller)
 	{
 		FString Error = FString("Called by ") + Caller + FString(".");
+		int32 VertexIndex = INDEX_NONE;
 
 		// support phi
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 0, 1), FReal(0)), (FVec3(0, 0, 1)), KINDA_SMALL_NUMBER, Error);
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 0, -1), FReal(0)), (FVec3(0, 0, -1)), KINDA_SMALL_NUMBER, Error);
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 1, 0), FReal(0)), (FVec3(0, 1, 0)), KINDA_SMALL_NUMBER, Error);
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, -1, 0), FReal(0)), (FVec3(0, -1, 0)), KINDA_SMALL_NUMBER, Error);
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(1, 0, 0), FReal(0)), (FVec3(1, 0, 0)), KINDA_SMALL_NUMBER, Error);
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(-1, 0, 0), FReal(0)), (FVec3(-1, 0, 0)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 0, 1), FReal(0), VertexIndex), (FVec3(0, 0, 1)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 0, -1), FReal(0), VertexIndex), (FVec3(0, 0, -1)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 1, 0), FReal(0), VertexIndex), (FVec3(0, 1, 0)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, -1, 0), FReal(0), VertexIndex), (FVec3(0, -1, 0)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(1, 0, 0), FReal(0), VertexIndex), (FVec3(1, 0, 0)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(-1, 0, 0), FReal(0), VertexIndex), (FVec3(-1, 0, 0)), KINDA_SMALL_NUMBER, Error);
 
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 0, 1), FReal(1)), (FVec3(0, 0, 2)), KINDA_SMALL_NUMBER, Error);
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 0, -1), FReal(1)), (FVec3(0, 0, -2)), KINDA_SMALL_NUMBER, Error);
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 1, 0), FReal(1)), (FVec3(0, 2, 0)), KINDA_SMALL_NUMBER, Error);
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, -1, 0), FReal(1)), (FVec3(0, -2, 0)), KINDA_SMALL_NUMBER, Error);
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(1, 0, 0), FReal(1)), (FVec3(2, 0, 0)), KINDA_SMALL_NUMBER, Error);
-		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(-1, 0, 0), FReal(1)), (FVec3(-2, 0, 0)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 0, 1), FReal(1), VertexIndex), (FVec3(0, 0, 2)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 0, -1), FReal(1), VertexIndex), (FVec3(0, 0, -2)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, 1, 0), FReal(1), VertexIndex), (FVec3(0, 2, 0)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(0, -1, 0), FReal(1), VertexIndex), (FVec3(0, -2, 0)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(1, 0, 0), FReal(1), VertexIndex), (FVec3(2, 0, 0)), KINDA_SMALL_NUMBER, Error);
+		EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(-1, 0, 0), FReal(1), VertexIndex), (FVec3(-2, 0, 0)), KINDA_SMALL_NUMBER, Error);
 	}
 
 	/* Takes 3 ImplictObject of unit size (circumscribed inside a 2x2 cube)
@@ -233,7 +234,8 @@ namespace ChaosTest {
 		UnitImplicitObjectIntersections(Subject, Caller);
 		
 		{// support phi - expects the corners for boxes
-			// Iterate through every face, edge, and corner direction, and ensure it snaps to the proper corner. 
+			// Iterate through every face, edge, and corner direction, and ensure it snaps to the proper corner.
+			int32 VertexIndex = INDEX_NONE;
 			for (int i0 = -1; i0 < 2; ++i0)
 			{
 				for (int i1 = -1; i1 < 2; ++i1)
@@ -250,7 +252,7 @@ namespace ChaosTest {
 						FString Error("Direction: ");
 						Error += FString::Printf(TEXT("(%d, %d, %d)"), i0, i1, i2);
 
-						EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(i0, i1, i2), FReal(0)), Expected, KINDA_SMALL_NUMBER, Error);
+						EXPECT_VECTOR_NEAR_ERR(Subject.Support(FVec3(i0, i1, i2), FReal(0), VertexIndex), Expected, KINDA_SMALL_NUMBER, Error);
 					}
 				}
 			}
@@ -267,22 +269,22 @@ namespace ChaosTest {
 
 		{// support phi off origin
 			TBox<FReal, 3> Subject2(FVec3(2), FVec3(4));
-
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 0, 1), FReal(0)), (FVec3(4, 4, 4)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 0, -1), FReal(0)), (FVec3(4, 4, 2)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 1, 0), FReal(0)), (FVec3(4, 4, 4)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, -1, 0), FReal(0)), (FVec3(4, 2, 4)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 1, 0), FReal(0)), (FVec3(4, 4, 4)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(1, 0, 0), FReal(0)), (FVec3(4, 4, 4)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(-1, 0, 0), FReal(0)), (FVec3(2, 4, 4)));
+			int32 VertexIndex = INDEX_NONE;
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 0, 1), FReal(0), VertexIndex), (FVec3(4, 4, 4)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 0, -1), FReal(0), VertexIndex), (FVec3(4, 4, 2)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 1, 0), FReal(0), VertexIndex), (FVec3(4, 4, 4)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, -1, 0), FReal(0), VertexIndex), (FVec3(4, 2, 4)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 1, 0), FReal(0), VertexIndex), (FVec3(4, 4, 4)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(1, 0, 0), FReal(0), VertexIndex), (FVec3(4, 4, 4)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(-1, 0, 0), FReal(0), VertexIndex), (FVec3(2, 4, 4)));
 
 #if RUN_KNOWN_BROKEN_TESTS
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 0, 1), FReal(1)), (FVec3(5, 5, 5)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 0, -1), FReal(1)), (FVec3(5, 5, 1)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 1, 0), FReal(1)), (FVec3(5, 5, 5)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, -1, 0), FReal(1)), (FVec3(5, 1, 5)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(1, 0, 0), FReal(1)), (FVec3(5, 5, 5)));
-			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(-1, 0, 0), FReal(1)), (FVec3(1, 5, 5)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 0, 1), FReal(1), VertexIndex), (FVec3(5, 5, 5)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 0, -1), FReal(1), VertexIndex), (FVec3(5, 5, 1)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, 1, 0), FReal(1), VertexIndex), (FVec3(5, 5, 5)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(0, -1, 0), FReal(1), VertexIndex), (FVec3(5, 1, 5)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(1, 0, 0), FReal(1), VertexIndex), (FVec3(5, 5, 5)));
+			EXPECT_VECTOR_NEAR_DEFAULT(Subject2.Support(FVec3(-1, 0, 0), FReal(1), VertexIndex), (FVec3(1, 5, 5)));
 #endif
 		}
 
@@ -547,11 +549,11 @@ namespace ChaosTest {
 		
 		// Note: tapered cylinders always return normals parallel to the endcap planes when calculating for points near/on the body,
 		// very much like a normal cylinder. The slant is ignored. 
-		EXPECT_VECTOR_NEAR_DEFAULT(SubjectCone.Normal(FVec3(0, 1 / 3., 1 / 3.)),  FVec3(0, 1, 0));
-		EXPECT_VECTOR_NEAR_DEFAULT(SubjectCone.Normal(FVec3(1 / 3., 0, 1 / 3.)),  FVec3(1, 0, 0)); 
-		EXPECT_VECTOR_NEAR_DEFAULT(SubjectCone.Normal(FVec3(0, -1 / 3., 1 / 3.)), FVec3(0, -1, 0)); 
-		EXPECT_VECTOR_NEAR_DEFAULT(SubjectCone.Normal(FVec3(-1 / 3., 0, 1 / 3.)), FVec3(-1, 0, 0)); 
-		EXPECT_VECTOR_NEAR(SubjectCone.Normal(FVec3(1 / 3., 1 / 3., 1 / 2.)), FVec3(0.707, 0.707, 0), 0.001); 
+		EXPECT_VECTOR_NEAR_DEFAULT(SubjectCone.Normal(FVec3(0, 1 / 2., 1 / 2.)),  FVec3(0, 1, 0));
+		EXPECT_VECTOR_NEAR_DEFAULT(SubjectCone.Normal(FVec3(1 / 2., 0, 1 / 2.)),  FVec3(1, 0, 0)); 
+		EXPECT_VECTOR_NEAR_DEFAULT(SubjectCone.Normal(FVec3(0, -1 / 2., 1 / 2.)), FVec3(0, -1, 0)); 
+		EXPECT_VECTOR_NEAR_DEFAULT(SubjectCone.Normal(FVec3(-1 / 2., 0, 1 / 2.)), FVec3(-1, 0, 0)); 
+		EXPECT_VECTOR_NEAR(SubjectCone.Normal(FVec3(1 / 2., 1 / 2., 1 / 2.)), FVec3(0.707, 0.707, 0), 0.001); 
 
 		// outside normals
 		EXPECT_VECTOR_NEAR_DEFAULT(SubjectCone.Normal(FVec3(0, 0, -1 / 2.)), FVec3(0, 0, -1));
@@ -779,15 +781,15 @@ namespace ChaosTest {
 	void ImplicitScaled()
 	{
 		TUniquePtr<TBox<FReal, 3>> UnitCube = MakeUnique<TBox<FReal, 3>>(FVec3(-1), FVec3(1));
-		TImplicitObjectScaled<TBox<FReal,3>> UnitUnscaled(MakeSerializable(UnitCube), FVec3(1));
+		TImplicitObjectScaled<TBox<FReal,3>> UnitUnscaled(MakeSerializable(UnitCube), nullptr, FVec3(1));
 		UnitImplicitObjectNormalsInternal(UnitUnscaled, FString("ImplicitTransformed()"));
 		UnitImplicitObjectNormalsExternal(UnitUnscaled, FString("ImplicitTransformed()"));
 		UnitImplicitObjectIntersections(UnitUnscaled, FString("ImplicitTransformed()"));
 
 		TUniquePtr<TSphere<FReal, 3>> Sphere = MakeUnique<TSphere<FReal, 3>>(FVec3(3, 0, 0), 5);
-		TImplicitObjectScaled<TSphere<FReal, 3>> Unscaled(MakeSerializable(Sphere), FVec3(1));
-		TImplicitObjectScaled<TSphere<FReal, 3>> UniformScale(MakeSerializable(Sphere), FVec3(2));
-		TImplicitObjectScaled<TSphere<FReal, 3>> NonUniformScale(MakeSerializable(Sphere), FVec3(2, 1, 1));
+		TImplicitObjectScaled<TSphere<FReal, 3>> Unscaled(MakeSerializable(Sphere), nullptr, FVec3(1));
+		TImplicitObjectScaled<TSphere<FReal, 3>> UniformScale(MakeSerializable(Sphere), nullptr, FVec3(2));
+		TImplicitObjectScaled<TSphere<FReal, 3>> NonUniformScale(MakeSerializable(Sphere), nullptr, FVec3(2, 1, 1));
 
 		{//phi
 			const FVec3 NearEdge(7.5, 0, 0);
@@ -812,21 +814,23 @@ namespace ChaosTest {
 		}
 		
 		{//support
+			int32 VertexIndex = INDEX_NONE;
+			
 			const FVec3 DirX(1, 0, 0);
-			FVec3 SupportPt = Unscaled.Support(DirX, 1);
+			FVec3 SupportPt = Unscaled.Support(DirX, 1, VertexIndex);
 			EXPECT_VECTOR_NEAR(SupportPt, FVec3(9, 0, 0), 0);
 
-			SupportPt = UniformScale.Support(DirX, 1);
+			SupportPt = UniformScale.Support(DirX, 1, VertexIndex);
 			EXPECT_VECTOR_NEAR(SupportPt, FVec3(17, 0, 0), 0);
 
 			const FVec3 DirZ(0, 0, -1);
-			SupportPt = UniformScale.Support(DirZ, 1);
+			SupportPt = UniformScale.Support(DirZ, 1, VertexIndex);
 			EXPECT_VECTOR_NEAR(SupportPt, FVec3(6, 0, -11), 0);
 
-			SupportPt = NonUniformScale.Support(DirX, 1);
+			SupportPt = NonUniformScale.Support(DirX, 1, VertexIndex);
 			EXPECT_VECTOR_NEAR(SupportPt, FVec3(17, 0, 0), 0);
 
-			SupportPt = NonUniformScale.Support(DirZ, 1);
+			SupportPt = NonUniformScale.Support(DirZ, 1, VertexIndex);
 			EXPECT_VECTOR_NEAR(SupportPt, FVec3(6, 0, -6), 0);
 		}
 
@@ -1016,7 +1020,7 @@ namespace ChaosTest {
 		FRigidTransform3 Identity(FVec3(0), FQuat::Identity);
 		
 		TUniquePtr<TBox<FReal, 3>> UnitCube = MakeUnique<TBox<FReal, 3>>(FVec3(-1), FVec3(1));
-		TImplicitObjectTransformed<FReal, 3> UnitUnrotated(MakeSerializable(UnitCube), FRigidTransform3(FVec3(0), FQuat(0,0,0, 0)));
+		TImplicitObjectTransformed<FReal, 3> UnitUnrotated(MakeSerializable(UnitCube), FRigidTransform3(FVec3(0), FQuat::Identity));
 		UnitImplicitObjectNormalsInternal(UnitUnrotated, FString("ImplicitTransformed()"));
 		UnitImplicitObjectNormalsExternal(UnitUnrotated, FString("ImplicitTransformed()"));
 		UnitImplicitObjectIntersections(UnitUnrotated, FString("ImplicitTransformed()"));
@@ -1075,16 +1079,17 @@ namespace ChaosTest {
 		{//support
 
 			const FVec3 DirX(1, 0, 0);
+			int32 VertexIndex = INDEX_NONE;
 			FVec3 SupportPt = Utilities::CastHelper(Untransformed, Identity, [&](const auto& Concrete, const auto& FullTM)
 			{
-				FVec3 SupportLocal = Concrete.Support(FullTM.InverseTransformVectorNoScale(DirX), 1);
+				FVec3 SupportLocal = Concrete.Support(FullTM.InverseTransformVectorNoScale(DirX), 1, VertexIndex);
 				return FullTM.TransformPosition(SupportLocal);
 			});
 			EXPECT_VECTOR_NEAR_DEFAULT(SupportPt, FVec3(9, 5, 5));
 
 			SupportPt = Utilities::CastHelper(Translated, Identity, [&](const auto& Concrete, const auto& FullTM)
 			{
-				FVec3 SupportLocal = Concrete.Support(FullTM.InverseTransformVectorNoScale(DirX), 1);
+				FVec3 SupportLocal = Concrete.Support(FullTM.InverseTransformVectorNoScale(DirX), 1, VertexIndex);
 				return FullTM.TransformPosition(SupportLocal);
 			});
 			EXPECT_VECTOR_NEAR_DEFAULT(SupportPt, FVec3(13, 5, 5));
@@ -1092,21 +1097,21 @@ namespace ChaosTest {
 			const FVec3 DirZ(0, 0, -1);
 			SupportPt = Utilities::CastHelper(Translated, Identity, [&](const auto& Concrete, const auto& FullTM)
 			{
-				FVec3 SupportLocal = Concrete.Support(FullTM.InverseTransformVectorNoScale(DirZ), 1);
+				FVec3 SupportLocal = Concrete.Support(FullTM.InverseTransformVectorNoScale(DirZ), 1, VertexIndex);
 				return FullTM.TransformPosition(SupportLocal);
 			});
 			EXPECT_VECTOR_NEAR_DEFAULT(SupportPt, FVec3(12, 5, -6));
 
 			SupportPt = Utilities::CastHelper(Rotated, Identity, [&](const auto& Concrete, const auto& FullTM)
 			{
-				FVec3 SupportLocal = Concrete.Support(FullTM.InverseTransformVectorNoScale(DirZ), 1);
+				FVec3 SupportLocal = Concrete.Support(FullTM.InverseTransformVectorNoScale(DirZ), 1, VertexIndex);
 				return FullTM.TransformPosition(SupportLocal);
 			});
 			EXPECT_VECTOR_NEAR_DEFAULT(SupportPt, FVec3(-5, 8, -6)); // @todo why -5?
 
 			SupportPt = Utilities::CastHelper(Transformed, Identity, [&](const auto& Concrete, const auto& FullTM)
 			{
-				FVec3 SupportLocal = Concrete.Support(FullTM.InverseTransformVectorNoScale(DirZ), 1);
+				FVec3 SupportLocal = Concrete.Support(FullTM.InverseTransformVectorNoScale(DirZ), 1, VertexIndex);
 				FVec3 TransformedPt = FullTM.TransformPosition(SupportLocal);
 				return TransformedPt;
 			});
@@ -1491,7 +1496,7 @@ namespace ChaosTest {
 			EXPECT_LT(Volume, 3);
 			EXPECT_LT(Inertia.M[0][0] * 1.5, Inertia.M[1][1]);
 			EXPECT_GT(Inertia.M[0][0] * 3, Inertia.M[1][1]);
-			EXPECT_EQ(Inertia.M[2][2], Inertia.M[1][1]);
+			EXPECT_NEAR(Inertia.M[2][2], Inertia.M[1][1], SMALL_NUMBER);
 		}
 	}
 
@@ -1549,23 +1554,23 @@ namespace ChaosTest {
 				EXPECT_NE(Tri.Z, 8);
 			}
 
-			TArray<FVec3> Vertices;
+			TArray<FConvex::FVec3Type> Vertices;
 			Vertices.SetNum((int32)Particles.Size());
 			for (int32 VertexIndex = 0; VertexIndex < (int32)Particles.Size(); ++VertexIndex)
 			{
 				Vertices[VertexIndex] = Particles.X(VertexIndex);
 			}
 			FConvex Convex(Vertices, 0.0f);
-			const TArray<FVec3>& CulledParticles = Convex.GetVertices();
+			const TArray<FConvex::FVec3Type>& CulledParticles = Convex.GetVertices();
 			EXPECT_EQ(CulledParticles.Num(), 8);
 
 			for (int32 Idx = 0; Idx < CulledParticles.Num(); ++Idx)
 			{
-				EXPECT_NE(Particles.X(8), CulledParticles[Idx]);	//interior particle gone
+				EXPECT_NE(Particles.X(8), (Chaos::TVector<FRealDouble, 3>)CulledParticles[Idx]);	//interior particle gone
 				bool bFound = false;
 				for (uint32 InnerIdx = 0; InnerIdx < Particles.Size(); ++InnerIdx)	//remaining particles are from the original set
 				{
-					if (Particles.X(InnerIdx) == CulledParticles[Idx])
+					if (Particles.X(InnerIdx) == (Chaos::TVector<FRealDouble,3>)CulledParticles[Idx])
 					{
 						bFound = true;
 						break;
@@ -1595,11 +1600,11 @@ namespace ChaosTest {
 	{
 		{
 			//degenerates
-			TArray<Chaos::FVec3> Particles;
+			TArray<FConvex::FVec3Type> Particles;
 			Particles.SetNum(3);
-			Particles[0] = Chaos::FVec3(-1, -1, -1);
-			Particles[1] = Chaos::FVec3(1, -1, -1);
-			Particles[2] = Chaos::FVec3(1, 1, -1);
+			Particles[0] = { -1, -1, -1};
+			Particles[1] = { 1, -1, -1 };
+			Particles[2] = { 1, 1, -1 };
 			TArray<TVector<int32, 3>>Indices;
 			Chaos::FConvexBuilder::BuildConvexHull(Particles, Indices);
 			EXPECT_EQ(Indices.Num(), 0);
@@ -1608,17 +1613,17 @@ namespace ChaosTest {
 			EXPECT_EQ(Indices.Num(), 0);
 		}
 		{
-			TArray <Chaos::FVec3> Particles;
+			TArray <FConvex::FVec3Type> Particles;
 			Particles.SetNum(9);
-			Particles[0] = Chaos::FVec3(-1, -1, -1);
-			Particles[1] = Chaos::FVec3(-1, -1, 1);
-			Particles[2] = Chaos::FVec3(-1, 1, -1);
-			Particles[3] = Chaos::FVec3(-1, 1, 1);
-			Particles[4] = Chaos::FVec3(1, -1, -1);
-			Particles[5] = Chaos::FVec3(1, -1, 1);
-			Particles[6] = Chaos::FVec3(1, 1, -1);
-			Particles[7] = Chaos::FVec3(1, 1, 1);
-			Particles[8] = Chaos::FVec3(0, 0, 0);
+			Particles[0] = { -1, -1, -1 };
+			Particles[1] = { -1, -1, 1 };
+			Particles[2] = { -1, 1, -1 };
+			Particles[3] = { -1, 1, 1 };
+			Particles[4] = { 1, -1, -1 };
+			Particles[5] = { 1, -1, 1 };
+			Particles[6] = { 1, 1, -1 };
+			Particles[7] = { 1, 1, 1 };
+			Particles[8] = { 0, 0, 0 };
 			TArray<TVector<int32, 3>>Indices;
 			Chaos::FConvexBuilder::BuildConvexHull(Particles, Indices);
 			EXPECT_EQ(Indices.Num(), 12);
@@ -1630,26 +1635,26 @@ namespace ChaosTest {
 			}
 		}
 		{
-			TArray<FVec3> Particles;
+			TArray<FConvex::FVec3Type> Particles;
 			Particles.SetNum(5);
-			Particles[0] = Chaos::FVec3(-1, -1, -1);
-			Particles[1] = Chaos::FVec3(1, -1, -1);
-			Particles[2] = Chaos::FVec3(1, 1, -1);
-			Particles[3] = Chaos::FVec3(0, 0, 0.5);
-			Particles[4] = (Particles[3]- Particles[1]) * 0.5 + Particles[1]+ Chaos::TVec3<float>(0, 0, 0.1);
+			Particles[0] = { -1, -1, -1 };
+			Particles[1] = { 1, -1, -1 };
+			Particles[2] = { 1, 1, -1 };
+			Particles[3] = { 0, 0, 0.5 };
+			Particles[4] = (Particles[3] - Particles[1]) * 0.5 + Particles[1] + FConvex::FVec3Type{ 0, 0, 0.1 };
 			TArray<TVector<int32, 3>> Indices;
 			Chaos::FConvexBuilder::BuildConvexHull(Particles, Indices);
 			EXPECT_EQ(Indices.Num(), 6);
 		}
 		{
-			TArray<FVec3> Particles;
+			TArray<FConvex::FVec3Type> Particles;
 			Particles.SetNum(6);
-			Particles[0] = Chaos::FVec3(-1, -1, -1);
-			Particles[1] = Chaos::FVec3(1, -1, -1);
-			Particles[2] = Chaos::FVec3(1, 1, -1);
-			Particles[3] = Chaos::FVec3(0, 0, 0.5);
-			Particles[4] = (Particles[3]- Particles[1]) * 0.5 + Particles[1] + Chaos::TVec3<float>(0, 0, 0.1);
-			Particles[5] = Particles[4]+ Chaos::TVec3<float>(-0.1, 0, 0);
+			Particles[0] = { -1, -1, -1 };
+			Particles[1] = { 1, -1, -1 };
+			Particles[2] = { 1, 1, -1 };
+			Particles[3] = { 0, 0, 0.5 };
+			Particles[4] = (Particles[3] - Particles[1]) * 0.5 + Particles[1] + FConvex::FVec3Type{ 0, 0, 0.1 };
+			Particles[5] = Particles[4] + FConvex::FVec3Type{ -0.1, 0, 0 };
 			TArray<TVector<int32, 3>> Indices;
 			Chaos::FConvexBuilder::BuildConvexHull(Particles, Indices);
 			EXPECT_EQ(Indices.Num(), 8);
@@ -1659,17 +1664,17 @@ namespace ChaosTest {
 			// a large enough epsilon for building horizons in hull generation
 			// (tested to fail with 1e-1) we will generate a non-convex hull
 			// Using a scaled epsilon resolves this case
-			TArray<FVec3> Particles;
+			TArray<FConvex::FVec3Type> Particles;
 			Particles.SetNum(9);
-			Particles[0] = Chaos::FVec3(-1, -1, -1);
-			Particles[1] = Chaos::FVec3(-1, -1, 1);
-			Particles[2] = Chaos::FVec3(-1, 1, -1);
-			Particles[3] = Chaos::FVec3(-1, 1, 1);
-			Particles[4] = Chaos::FVec3(1, -1, -1);
-			Particles[5] = Chaos::FVec3(1, -1, 1);
-			Particles[6] = Chaos::FVec3(1, 1, -1);
-			Particles[7] = Chaos::FVec3(1, 1, 1);
-			Particles[8] = Chaos::FVec3(0.966962576, -0.0577232838, 0.959515572);
+			Particles[0] = { -1, -1, -1 };
+			Particles[1] = { -1, -1, 1 };
+			Particles[2] = { -1, 1, -1 };
+			Particles[3] = { -1, 1, 1 };
+			Particles[4] = { 1, -1, -1 };
+			Particles[5] = { 1, -1, 1 };
+			Particles[6] = { 1, 1, -1 };
+			Particles[7] = { 1, 1, 1 };
+			Particles[8] = { 0.966962576, -0.0577232838, 0.959515572 };
 			
 			TArray<TVec3<int32>> Indices;
 			Chaos::FConvexBuilder::Params BuildParams;
@@ -1695,17 +1700,17 @@ namespace ChaosTest {
 			// only the original box - ignoring all interior and coplanar points.
 			// Note: If hull generation is changed to support non-triangular faces the conditions here
 			// will need to change as a correct hull in that method will produce only 6 faces not 12
-			TArray<FVec3> Particles;
+			TArray<FConvex::FVec3Type> Particles;
 			int32 NumParticles = 3600;
 			Particles.SetNum(NumParticles);
-			Particles[0] = Chaos::FVec3(-1, -1, -1);
-			Particles[1] = Chaos::FVec3(-1, -1, 1);
-			Particles[2] = Chaos::FVec3(-1, 1, -1);
-			Particles[3] = Chaos::FVec3(-1, 1, 1);
-			Particles[4] = Chaos::FVec3(1, -1, -1);
-			Particles[5] = Chaos::FVec3(1, -1, 1);
-			Particles[6] = Chaos::FVec3(1, 1, -1);
-			Particles[7] = Chaos::FVec3(1, 1, 1);
+			Particles[0] = { -1, -1, -1 };
+			Particles[1] = { -1, -1, 1 };
+			Particles[2] = { -1, 1, -1 };
+			Particles[3] = { -1, 1, 1 };
+			Particles[4] = { 1, -1, -1 };
+			Particles[5] = { 1, -1, 1 };
+			Particles[6] = { 1, 1, -1 };
+			Particles[7] = { 1, 1, 1 };
 			FRandomStream Stream(42);
 			for(int i = 8; i < NumParticles; ++i)
 			{
@@ -1734,26 +1739,26 @@ namespace ChaosTest {
 
 	void Simplify()
 	{
-		TArray<FVec3> Particles;
+		TArray<FConvex::FVec3Type> Particles;
 		Particles.SetNum(18);
-		Particles[0] = Chaos::FVec3(0, 0, 12.0f);
-		Particles[1] = Chaos::FVec3(-0.707f, -0.707f, 10.0f);
-		Particles[2] = Chaos::FVec3(0, -1, 10.0f);
-		Particles[3] = Chaos::FVec3(0.707f, -0.707f, 10.0f);
-		Particles[4] = Chaos::FVec3(1, 0, 10.0f);
-		Particles[5] = Chaos::FVec3(0.707f, 0.707f, 10.0f);
-		Particles[6] = Chaos::FVec3(0.0f, 1.0f, 10.0f);
-		Particles[7] = Chaos::FVec3(-0.707f, 0.707f, 10.0f);
-		Particles[8] = Chaos::FVec3(-1.0f, 0.0f, 10.0f);
-		Particles[9] = Chaos::FVec3(-0.707f, -0.707f, 0.0f);
-		Particles[10] = Chaos::FVec3(0, -1, 0.0f);
-		Particles[11] = Chaos::FVec3(0.707f, -0.707f, 0.0f);
-		Particles[12] = Chaos::FVec3(1, 0, 0.0f);
-		Particles[13] = Chaos::FVec3(0.707f, 0.707f, 0.0f);
-		Particles[14] = Chaos::FVec3(0.0f, 1.0f, 0.0f);
-		Particles[15] = Chaos::FVec3(-0.707f, 0.707f, 0.0f);
-		Particles[16] = Chaos::FVec3(-1.0f, 0.0f, 0.0f);
-		Particles[17] = Chaos::FVec3(0, 0, -2.0f);
+		Particles[0] = { 0, 0, 12.0f };
+		Particles[1] = { -0.707f, -0.707f, 10.0f };
+		Particles[2] = { 0, -1, 10.0f };
+		Particles[3] = { 0.707f, -0.707f, 10.0f };
+		Particles[4] = { 1, 0, 10.0f };
+		Particles[5] = { 0.707f, 0.707f, 10.0f };
+		Particles[6] = { 0.0f, 1.0f, 10.0f };
+		Particles[7] = { -0.707f, 0.707f, 10.0f };
+		Particles[8] = { -1.0f, 0.0f, 10.0f };
+		Particles[9] = { -0.707f, -0.707f, 0.0f };
+		Particles[10] = { 0, -1, 0.0f };
+		Particles[11] = { 0.707f, -0.707f, 0.0f };
+		Particles[12] = { 1, 0, 0.0f };
+		Particles[13] = { 0.707f, 0.707f, 0.0f };
+		Particles[14] = { 0.0f, 1.0f, 0.0f };
+		Particles[15] = { -0.707f, 0.707f, 0.0f };
+		Particles[16] = { -1.0f, 0.0f, 0.0f };
+		Particles[17] = { 0, 0, -2.0f };
 					
 		FConvex Convex(Particles, 0.0f);
 
@@ -1762,8 +1767,8 @@ namespace ChaosTest {
 		int32 OriginalNumberFaces = Convex.GetFaces().Num();
 		FAABB3 OriginalBoundingBox = Convex.BoundingBox();
 
-		const TArray<FVec3>& CulledParticles = Convex.GetVertices();
-		const TArray<TPlaneConcrete<Chaos::FReal, 3>> Planes = Convex.GetFaces();
+		const TArray<FConvex::FVec3Type>& CulledParticles = Convex.GetVertices();
+		const TArray<FConvex::FPlaneType> Planes = Convex.GetFaces();
 
 		// set target number of particles in simplified convex
 		FConvexBuilder::PerformGeometryReduction = 1;
@@ -1802,12 +1807,12 @@ namespace ChaosTest {
 		// ImplicitObjectScaled is ignored.
 		FReal Thickness = 0.1;
 		TUniquePtr<TSphere<FReal, 3>> Sphere = MakeUnique<TSphere<FReal,3>>(FVec3(3, 0, 0), 5);
-		TImplicitObjectScaled<TSphere<FReal, 3>> Unscaled(MakeSerializable(Sphere), FVec3(1));
-		TImplicitObjectScaled<TSphere<FReal, 3>> UnscaledThickened(MakeSerializable(Sphere), FVec3(1), Thickness);
-		TImplicitObjectScaled<TSphere<FReal, 3>> UniformScale(MakeSerializable(Sphere),FVec3(2));
-		TImplicitObjectScaled<TSphere<FReal, 3>> UniformScaleThickened(MakeSerializable(Sphere), FVec3(2), Thickness);
-		TImplicitObjectScaled<TSphere<FReal, 3>> NonUniformScale(MakeSerializable(Sphere), FVec3(2, 1, 1));
-		TImplicitObjectScaled<TSphere<FReal, 3>> NonUniformScaleThickened(MakeSerializable(Sphere), FVec3(2, 1, 1), Thickness);
+		TImplicitObjectScaled<TSphere<FReal, 3>> Unscaled(MakeSerializable(Sphere), nullptr, FVec3(1));
+		TImplicitObjectScaled<TSphere<FReal, 3>> UnscaledThickened(MakeSerializable(Sphere), nullptr, FVec3(1), Thickness);
+		TImplicitObjectScaled<TSphere<FReal, 3>> UniformScale(MakeSerializable(Sphere), nullptr, FVec3(2));
+		TImplicitObjectScaled<TSphere<FReal, 3>> UniformScaleThickened(MakeSerializable(Sphere), nullptr, FVec3(2), Thickness);
+		TImplicitObjectScaled<TSphere<FReal, 3>> NonUniformScale(MakeSerializable(Sphere), nullptr, FVec3(2, 1, 1));
+		TImplicitObjectScaled<TSphere<FReal, 3>> NonUniformScaleThickened(MakeSerializable(Sphere), nullptr, FVec3(2, 1, 1), Thickness);
 
 		//phi
 		{
@@ -1875,54 +1880,55 @@ namespace ChaosTest {
 
 		//support
 		{
+			int32 VertexIndex = INDEX_NONE;
 			const FVec3 DirX(1, 0, 0);
-			FVec3 SupportPt = Unscaled.Support(DirX, 1);
+			FVec3 SupportPt = Unscaled.Support(DirX, 1, VertexIndex);
 			EXPECT_FLOAT_EQ(SupportPt[0], 9);
 			EXPECT_FLOAT_EQ(SupportPt[1], 0);
 			EXPECT_FLOAT_EQ(SupportPt[2], 0);
 
-			SupportPt = UnscaledThickened.Support(DirX, 1);
+			SupportPt = UnscaledThickened.Support(DirX, 1, VertexIndex);
 			EXPECT_FLOAT_EQ(SupportPt[0], 9);
 			EXPECT_FLOAT_EQ(SupportPt[1], 0);
 			EXPECT_FLOAT_EQ(SupportPt[2], 0);
 
-			SupportPt = UniformScale.Support(DirX, 1);
+			SupportPt = UniformScale.Support(DirX, 1, VertexIndex);
 			EXPECT_FLOAT_EQ(SupportPt[0], 17);
 			EXPECT_FLOAT_EQ(SupportPt[1], 0);
 			EXPECT_FLOAT_EQ(SupportPt[2], 0);
 
-			SupportPt = UniformScaleThickened.Support(DirX, 1);
+			SupportPt = UniformScaleThickened.Support(DirX, 1, VertexIndex);
 			EXPECT_FLOAT_EQ(SupportPt[0], 17);
 			EXPECT_FLOAT_EQ(SupportPt[1], 0);
 			EXPECT_FLOAT_EQ(SupportPt[2], 0);
 
 			const FVec3 DirZ(0, 0, -1);
-			SupportPt = UniformScale.Support(DirZ, 1);
+			SupportPt = UniformScale.Support(DirZ, 1, VertexIndex);
 			EXPECT_FLOAT_EQ(SupportPt[0], 6);
 			EXPECT_FLOAT_EQ(SupportPt[1], 0);
 			EXPECT_FLOAT_EQ(SupportPt[2], -11);
 
-			SupportPt = UniformScaleThickened.Support(DirZ, 1);
+			SupportPt = UniformScaleThickened.Support(DirZ, 1, VertexIndex);
 			EXPECT_FLOAT_EQ(SupportPt[0], 6);
 			EXPECT_FLOAT_EQ(SupportPt[1], 0);
 			EXPECT_FLOAT_EQ(SupportPt[2], -11);
 
-			SupportPt = NonUniformScale.Support(DirX, 1);
+			SupportPt = NonUniformScale.Support(DirX, 1, VertexIndex);
 			EXPECT_FLOAT_EQ(SupportPt[0], 17);
 			EXPECT_FLOAT_EQ(SupportPt[1], 0);
 			EXPECT_FLOAT_EQ(SupportPt[2], 0);
 
-			SupportPt = NonUniformScaleThickened.Support(DirX, 1);
+			SupportPt = NonUniformScaleThickened.Support(DirX, 1, VertexIndex);
 			EXPECT_FLOAT_EQ(SupportPt[0], 17);
 			EXPECT_FLOAT_EQ(SupportPt[1], 0);
 			EXPECT_FLOAT_EQ(SupportPt[2], 0);
 
-			SupportPt = NonUniformScale.Support(DirZ, 1);
+			SupportPt = NonUniformScale.Support(DirZ, 1, VertexIndex);
 			EXPECT_FLOAT_EQ(SupportPt[0], 6);
 			EXPECT_FLOAT_EQ(SupportPt[1], 0);
 			EXPECT_FLOAT_EQ(SupportPt[2], -6);
 
-			SupportPt = NonUniformScaleThickened.Support(DirZ, 1);
+			SupportPt = NonUniformScaleThickened.Support(DirZ, 1, VertexIndex);
 			EXPECT_FLOAT_EQ(SupportPt[0], 6);
 			EXPECT_FLOAT_EQ(SupportPt[1], 0);
 			EXPECT_FLOAT_EQ(SupportPt[2], -6);

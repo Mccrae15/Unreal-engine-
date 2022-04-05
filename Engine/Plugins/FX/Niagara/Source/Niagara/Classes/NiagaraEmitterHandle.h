@@ -7,6 +7,7 @@
 #include "UObject/Object.h"
 #include "Misc/Guid.h"
 #include "NiagaraModule.h"
+#include "NiagaraScript.h"
 #include "NiagaraEmitterHandle.generated.h"
 
 class UNiagaraSystem;
@@ -99,17 +100,18 @@ private:
 #if WITH_EDITORONLY_DATA
 	/** The source emitter this emitter handle was built from. */
 	UPROPERTY()
-	UNiagaraEmitter* Source_DEPRECATED;
+	TObjectPtr<UNiagaraEmitter> Source_DEPRECATED;
 
 	/** An unmodified copy of the emitter this handle references for use when merging change from the source emitter. */
 	UPROPERTY()
-	UNiagaraEmitter* LastMergedSource_DEPRECATED;
+	TObjectPtr<UNiagaraEmitter> LastMergedSource_DEPRECATED;
 
 	UPROPERTY(Transient)
 	bool bIsolated;
+
 #endif
 
 	/** The copied instance of the emitter this handle references. */
 	UPROPERTY()
-	UNiagaraEmitter* Instance;
+	TObjectPtr<UNiagaraEmitter> Instance;
 };

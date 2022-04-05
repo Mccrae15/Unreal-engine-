@@ -37,6 +37,7 @@ struct CORE_API FMacPlatformMisc : public FApplePlatformMisc
 	static int32 NumberOfCores();
 	static int32 NumberOfCoresIncludingHyperthreads();
 	static void NormalizePath(FString& InPath);
+	static void NormalizePath(FStringBuilderBase& InPath);
 	static FString GetPrimaryGPUBrand();
 	static struct FGPUDriverInfo GetGPUDriverInfo(const FString& DeviceDescription);
 	static void GetOSVersions( FString& out_OSVersionLabel, FString& out_OSSubVersionLabel );
@@ -52,7 +53,7 @@ struct CORE_API FMacPlatformMisc : public FApplePlatformMisc
 	 */
 	FORCEINLINE static const TCHAR* GetNullRHIShaderFormat() 
 	{ 
-		return TEXT("SF_METAL"); 
+		return TEXT("SF_METAL_SM5"); 
 	}
 
 	/**

@@ -51,7 +51,7 @@ FString FApplePlatformMisc::GetEnvironmentVariable(const TCHAR* VariableName)
 void FApplePlatformMisc::LocalPrint(const TCHAR* Message)
 {
 	//NsLog will out to all iOS output consoles, instead of just the Xcode console.
-	NSLog(@"[UE4] %s", TCHAR_TO_UTF8(Message));
+	NSLog(@"[UE] %s", TCHAR_TO_UTF8(Message));
 }
 
 const TCHAR* FApplePlatformMisc::GetSystemErrorMessage(TCHAR* OutBuffer, int32 BufferCount, int32 Error)
@@ -63,8 +63,14 @@ const TCHAR* FApplePlatformMisc::GetSystemErrorMessage(TCHAR* OutBuffer, int32 B
 		Error = errno;
 	}
 	char* ErrorBuffer = (char*)alloca(BufferCount);
-	strerror_r(Error, ErrorBuffer, BufferCount);
-	FCString::Strcpy(OutBuffer, BufferCount, UTF8_TO_TCHAR((const ANSICHAR*)ErrorBuffer));
+	if (strerror_r(Error, ErrorBuffer, 1024) == 0)
+	{
+		FCString::Strcpy(OutBuffer, BufferCount, UTF8_TO_TCHAR((const ANSICHAR*)ErrorBuffer));
+	}
+	else
+	{
+		*OutBuffer = TEXT('\0');
+	}
 	return OutBuffer;
 }
 

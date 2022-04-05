@@ -22,6 +22,7 @@
 #include "MaterialShaderQualitySettings.h"
 #include "RHIShaderPlatformDefinitions.inl"
 #include "RayTracingDebugVisualizationMenuCommands.h"
+#include "Widgets/Colors/SComplexGradient.h"
 
 #define LOCTEXT_NAMESPACE "EditorViewport"
 
@@ -58,30 +59,20 @@ void SEditorViewport::Construct( const FArguments& InArgs )
 			.ViewportSize(InArgs._ViewportSize)
 			[
 				SAssignNew(ViewportOverlay, SOverlay)
-				+ SOverlay::Slot()
-				[
-					SNew(SBorder)
-					.BorderImage(this, &SEditorViewport::OnGetViewportBorderBrush)
-					.BorderBackgroundColor(this, &SEditorViewport::OnGetViewportBorderColorAndOpacity)
-					.Visibility(this, &SEditorViewport::OnGetViewportContentVisibility)
-					.Padding(0.0f)
-					.ShowEffectWhenDisabled(false)
-				]
 			]
 		]
 	];
 
-	TSharedRef<FEditorViewportClient> ViewportClient = MakeEditorViewportClient();
+	Client = MakeEditorViewportClient();
 
-	if (!ViewportClient->VisibilityDelegate.IsBound())
+	if (!Client->VisibilityDelegate.IsBound())
 	{
-		ViewportClient->VisibilityDelegate.BindSP(this, &SEditorViewport::IsVisible);
+		Client->VisibilityDelegate.BindSP(this, &SEditorViewport::IsVisible);
 	}
 
-	SceneViewport = MakeShareable( new FSceneViewport( &ViewportClient.Get(), ViewportWidget ) );
-	ViewportClient->Viewport = SceneViewport.Get();
+	SceneViewport = MakeShareable( new FSceneViewport( Client.Get(), ViewportWidget ) );
+	Client->Viewport = SceneViewport.Get();
 	ViewportWidget->SetViewportInterface(SceneViewport.ToSharedRef());
-	Client = ViewportClient;
 
 	if ( Client->IsRealtime() )
 	{
@@ -95,7 +86,7 @@ void SEditorViewport::Construct( const FArguments& InArgs )
 
 	TSharedPtr<SWidget> ViewportToolbar = MakeViewportToolbar();
 
-	if( ViewportToolbar.IsValid() )
+	if(ViewportToolbar.IsValid())
 	{
 		ViewportOverlay->AddSlot()
 			.VAlign(VAlign_Top)
@@ -103,6 +94,37 @@ void SEditorViewport::Construct( const FArguments& InArgs )
 				ViewportToolbar.ToSharedRef()
 			];
 	}
+	
+	ViewportOverlay->AddSlot()
+	[
+		SNew(SBorder)
+		.BorderImage(this, &SEditorViewport::OnGetViewportBorderBrush)
+		.BorderBackgroundColor(this, &SEditorViewport::OnGetViewportBorderColorAndOpacity)
+		.Visibility(this, &SEditorViewport::GetActiveBorderVisibility)
+		.Padding(0.0f)
+		.ShowEffectWhenDisabled(false)
+	];
+
+	// This makes a gradient that displays whether or not a viewport is active
+	FLinearColor ActiveBorderColor = FAppStyle::Get().GetSlateColor("EditorViewport.ActiveBorderColor").GetSpecifiedColor();
+	FLinearColor ActiveBorderColorTransparent = ActiveBorderColor;
+	ActiveBorderColorTransparent.A = 0.0f;
+
+	static TArray<FLinearColor> GradientStops{ ActiveBorderColorTransparent, ActiveBorderColor, ActiveBorderColorTransparent };
+
+	ViewportOverlay->AddSlot()
+	.VAlign(VAlign_Top)
+	[
+		SNew(SBox)
+		.Visibility(this, &SEditorViewport::OnGetFocusedViewportIndicatorVisibility)
+		.MaxDesiredHeight(1.0f)
+		.MinDesiredHeight(1.0f)
+		[
+			SNew(SComplexGradient)
+			.GradientColors(GradientStops)
+			.Orientation(EOrientation::Orient_Vertical)
+		]
+	];
 
 	PopulateViewportOverlays(ViewportOverlay.ToSharedRef());
 }
@@ -246,40 +268,47 @@ void SEditorViewport::BindCommands()
 
 	
 	CommandListRef.MapAction(
+		Commands.SelectMode,
+		FExecuteAction::CreateSP(ClientRef, &FEditorViewportClient::SetWidgetMode, UE::Widget::WM_None),
+		FCanExecuteAction::CreateSP(ClientRef, &FEditorViewportClient::CanSetWidgetMode, UE::Widget::WM_None),
+		FIsActionChecked::CreateSP(this, &SEditorViewport::IsWidgetModeActive, UE::Widget::WM_None)
+	);
+
+	CommandListRef.MapAction(
 		Commands.TranslateMode,
-		FExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::SetWidgetMode, FWidget::WM_Translate ),
-		FCanExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::CanSetWidgetMode, FWidget::WM_Translate ),
-		FIsActionChecked::CreateSP( this, &SEditorViewport::IsWidgetModeActive, FWidget::WM_Translate ) 
+		FExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::SetWidgetMode, UE::Widget::WM_Translate ),
+		FCanExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::CanSetWidgetMode, UE::Widget::WM_Translate ),
+		FIsActionChecked::CreateSP( this, &SEditorViewport::IsWidgetModeActive, UE::Widget::WM_Translate ) 
 		);
 
 	CommandListRef.MapAction( 
 		Commands.RotateMode,
-		FExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::SetWidgetMode, FWidget::WM_Rotate ),
-		FCanExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::CanSetWidgetMode, FWidget::WM_Rotate ),
-		FIsActionChecked::CreateSP( this, &SEditorViewport::IsWidgetModeActive, FWidget::WM_Rotate )
+		FExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::SetWidgetMode, UE::Widget::WM_Rotate ),
+		FCanExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::CanSetWidgetMode, UE::Widget::WM_Rotate ),
+		FIsActionChecked::CreateSP( this, &SEditorViewport::IsWidgetModeActive, UE::Widget::WM_Rotate )
 		);
 		
 
 	CommandListRef.MapAction( 
 		Commands.ScaleMode,
-		FExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::SetWidgetMode, FWidget::WM_Scale ),
-		FCanExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::CanSetWidgetMode, FWidget::WM_Scale ),
-		FIsActionChecked::CreateSP( this, &SEditorViewport::IsWidgetModeActive, FWidget::WM_Scale )
+		FExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::SetWidgetMode, UE::Widget::WM_Scale ),
+		FCanExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::CanSetWidgetMode, UE::Widget::WM_Scale ),
+		FIsActionChecked::CreateSP( this, &SEditorViewport::IsWidgetModeActive, UE::Widget::WM_Scale )
 		);
 
 	CommandListRef.MapAction( 
 		Commands.TranslateRotateMode,
-		FExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::SetWidgetMode, FWidget::WM_TranslateRotateZ ),
-		FCanExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::CanSetWidgetMode, FWidget::WM_TranslateRotateZ ),
-		FIsActionChecked::CreateSP( this, &SEditorViewport::IsWidgetModeActive, FWidget::WM_TranslateRotateZ ),
+		FExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::SetWidgetMode, UE::Widget::WM_TranslateRotateZ ),
+		FCanExecuteAction::CreateSP( ClientRef, &FEditorViewportClient::CanSetWidgetMode, UE::Widget::WM_TranslateRotateZ ),
+		FIsActionChecked::CreateSP( this, &SEditorViewport::IsWidgetModeActive, UE::Widget::WM_TranslateRotateZ ),
 		FIsActionButtonVisible::CreateSP( this, &SEditorViewport::IsTranslateRotateModeVisible )
 		);
 
 	CommandListRef.MapAction(
 		Commands.TranslateRotate2DMode,
-		FExecuteAction::CreateSP(ClientRef, &FEditorViewportClient::SetWidgetMode, FWidget::WM_2D),
-		FCanExecuteAction::CreateSP(ClientRef, &FEditorViewportClient::CanSetWidgetMode, FWidget::WM_2D),
-		FIsActionChecked::CreateSP(this, &SEditorViewport::IsWidgetModeActive, FWidget::WM_2D),
+		FExecuteAction::CreateSP(ClientRef, &FEditorViewportClient::SetWidgetMode, UE::Widget::WM_2D),
+		FCanExecuteAction::CreateSP(ClientRef, &FEditorViewportClient::CanSetWidgetMode, UE::Widget::WM_2D),
+		FIsActionChecked::CreateSP(this, &SEditorViewport::IsWidgetModeActive, UE::Widget::WM_2D),
 		FIsActionButtonVisible::CreateSP(this, &SEditorViewport::Is2DModeVisible)
 		);
 
@@ -338,6 +367,12 @@ void SEditorViewport::BindCommands()
 		FCanExecuteAction(),
 		FIsActionChecked::CreateSP( this, &SEditorViewport::IsExposureSettingSelected ) );
 
+	CommandListRef.MapAction(
+		Commands.ToggleInViewportContextMenu,
+		FExecuteAction::CreateSP(this, &SEditorViewport::ToggleInViewportContextMenu),
+		FCanExecuteAction::CreateSP(this, &SEditorViewport::CanToggleInViewportContextMenu)
+	);
+
 	// Simple macro for binding many view mode UI commands
 
 #define MAP_VIEWMODEPARAM_ACTION( ViewModeCommand, ViewModeParam ) \
@@ -377,14 +412,23 @@ void SEditorViewport::BindCommands()
 	MAP_VIEWMODE_ACTION( Commands.TexStreamAccPrimitiveDistanceMode, VMI_PrimitiveDistanceAccuracy );
 	MAP_VIEWMODE_ACTION( Commands.TexStreamAccMeshUVDensityMode, VMI_MeshUVDensityAccuracy);
 	MAP_VIEWMODE_ACTION( Commands.TexStreamAccMaterialTextureScaleMode, VMI_MaterialTextureScaleAccuracy );
-	MAP_VIEWMODE_ACTION( Commands.RequiredTextureResolutionMode, VMI_RequiredTextureResolution );
+	MAP_VIEWMODE_ACTION( Commands.RequiredTextureResolutionMode, VMI_RequiredTextureResolution);
+	MAP_VIEWMODE_ACTION( Commands.VirtualTexturePendingMipsMode, VMI_VirtualTexturePendingMips );
 	MAP_VIEWMODE_ACTION( Commands.StationaryLightOverlapMode, VMI_StationaryLightOverlap );
-	MAP_VIEWMODE_ACTION( Commands.LightmapDensityMode, VMI_LightmapDensity );
+
+	if (IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"))->GetValueOnAnyThread() != 0)
+	{
+		MAP_VIEWMODE_ACTION(Commands.LightmapDensityMode, VMI_LightmapDensity);
+	}
+
 	MAP_VIEWMODE_ACTION( Commands.ReflectionOverrideMode, VMI_ReflectionOverride );
 	MAP_VIEWMODE_ACTION( Commands.GroupLODColorationMode, VMI_GroupLODColoration);
 	MAP_VIEWMODE_ACTION( Commands.LODColorationMode, VMI_LODColoration );
 	MAP_VIEWMODE_ACTION( Commands.HLODColorationMode, VMI_HLODColoration);
 	MAP_VIEWMODE_ACTION( Commands.VisualizeBufferMode, VMI_VisualizeBuffer );
+	MAP_VIEWMODE_ACTION( Commands.VisualizeNaniteMode, VMI_VisualizeNanite );
+	MAP_VIEWMODE_ACTION( Commands.VisualizeLumenMode, VMI_VisualizeLumen );
+	MAP_VIEWMODE_ACTION( Commands.VisualizeVirtualShadowMapMode, VMI_VisualizeVirtualShadowMap );
 	MAP_VIEWMODE_ACTION( Commands.CollisionPawn, VMI_CollisionPawn);
 	MAP_VIEWMODE_ACTION( Commands.CollisionVisibility, VMI_CollisionVisibility);
 
@@ -553,7 +597,7 @@ void SEditorViewport::OnScreenCaptureForProjectThumbnail()
 
 EVisibility SEditorViewport::GetTransformToolbarVisibility() const
 {
-	return (Client->GetWidgetMode() != FWidget::WM_None) ? EVisibility::Visible : EVisibility::Hidden;
+	return (Client->GetWidgetMode() != UE::Widget::WM_None) ? EVisibility::Visible : EVisibility::Hidden;
 }
 
 TSharedRef<SWidget> SEditorViewport::BuildFixedEV100Menu()  const
@@ -569,19 +613,33 @@ TSharedRef<SWidget> SEditorViewport::BuildFixedEV100Menu()  const
 			.Padding( FMargin(0.0f, 0.0f, 0.0f, 0.0f) )
 			.WidthOverride( 100.0f )
 			[
-				SNew(SSpinBox<float>)
-				.Font( FEditorStyle::GetFontStyle( TEXT( "MenuItem.Font" ) ) )
-				.MinValue(EV100Min)
-				.MaxValue(EV100Max)
-				.Value( this, &SEditorViewport::OnGetFixedEV100Value )
-				.OnValueChanged( const_cast<SEditorViewport*>(this), &SEditorViewport::OnFixedEV100ValueChanged )
-				.ToolTipText(LOCTEXT( "EV100ToolTip", "Sets the exposure value of the camera using the specified EV100. Exposure = 1 / (1.2 * 2^EV100)"))
-				.IsEnabled( this, &SEditorViewport::IsFixedEV100Enabled )
+				SNew ( SBorder )
+				.BorderImage(FAppStyle::Get().GetBrush("Menu.WidgetBorder"))
+				.Padding(FMargin(1.0f))
+				[
+					SNew(SSpinBox<float>)
+					.Style(&FAppStyle::Get(), "Menu.SpinBox")
+					.Font( FEditorStyle::GetFontStyle( TEXT( "MenuItem.Font" ) ) )
+					.MinValue(EV100Min)
+					.MaxValue(EV100Max)
+					.Value( this, &SEditorViewport::OnGetFixedEV100Value )
+					.OnValueChanged( const_cast<SEditorViewport*>(this), &SEditorViewport::OnFixedEV100ValueChanged )
+					.ToolTipText(LOCTEXT( "EV100ToolTip", "Sets the exposure value of the camera using the specified EV100. Exposure = 1 / (1.2 * 2^EV100)"))
+					.IsEnabled( this, &SEditorViewport::IsFixedEV100Enabled )
+				]
 			]
 		];
 };
 
 				
+void SEditorViewport::UpdateInViewportMenuLocation(const FVector2D InLocation)
+{
+	InViewportContextMenuLocation = InLocation;
+	ULevelEditorViewportSettings* LevelEditorViewportSettings = GetMutableDefault<ULevelEditorViewportSettings>();
+	LevelEditorViewportSettings->LastInViewportMenuLocation = InLocation;
+	LevelEditorViewportSettings->SaveConfig();
+}
+
 float SEditorViewport::OnGetFixedEV100Value() const
 {
 	if( Client.IsValid() )
@@ -611,7 +669,7 @@ void SEditorViewport::OnFixedEV100ValueChanged(float NewValue)
 	}
 }
 
-bool SEditorViewport::IsWidgetModeActive( FWidget::EWidgetMode Mode ) const
+bool SEditorViewport::IsWidgetModeActive( UE::Widget::EWidgetMode Mode ) const
 {
 	return Client->GetWidgetMode() == Mode;
 }
@@ -633,10 +691,10 @@ bool SEditorViewport::IsCoordSystemActive(ECoordSystem CoordSystem) const
 
 void SEditorViewport::OnCycleWidgetMode()
 {
-	FWidget::EWidgetMode WidgetMode = Client->GetWidgetMode();
+	UE::Widget::EWidgetMode WidgetMode = Client->GetWidgetMode();
 
 	// Can't cycle the widget mode if we don't currently have a widget
-	if (WidgetMode == FWidget::WM_None)
+	if (WidgetMode == UE::Widget::WM_None)
 	{
 		return;
 	}
@@ -647,24 +705,24 @@ void SEditorViewport::OnCycleWidgetMode()
 	{
 		++WidgetModeAsInt;
 
-		if ((WidgetModeAsInt == FWidget::WM_TranslateRotateZ) && (!GetDefault<ULevelEditorViewportSettings>()->bAllowTranslateRotateZWidget))
+		if ((WidgetModeAsInt == UE::Widget::WM_TranslateRotateZ) && (!GetDefault<ULevelEditorViewportSettings>()->bAllowTranslateRotateZWidget))
 		{
 			++WidgetModeAsInt;
 		}
 
-		if ((WidgetModeAsInt == FWidget::WM_2D) && (!GetDefault<ULevelEditor2DSettings>()->bEnable2DWidget))
+		if ((WidgetModeAsInt == UE::Widget::WM_2D) && (!GetDefault<ULevelEditor2DSettings>()->bEnable2DWidget))
 		{
 			++WidgetModeAsInt;
 		}
 
-		if( WidgetModeAsInt == FWidget::WM_Max )
+		if( WidgetModeAsInt == UE::Widget::WM_Max )
 		{
-			WidgetModeAsInt -= FWidget::WM_Max;
+			WidgetModeAsInt -= UE::Widget::WM_Max;
 		}
 	}
-	while( !Client->CanSetWidgetMode( (FWidget::EWidgetMode)WidgetModeAsInt ) && WidgetModeAsInt != WidgetMode );
+	while( !Client->CanSetWidgetMode( (UE::Widget::EWidgetMode)WidgetModeAsInt ) && WidgetModeAsInt != WidgetMode );
 
-	Client->SetWidgetMode( (FWidget::EWidgetMode)WidgetModeAsInt );
+	Client->SetWidgetMode( (UE::Widget::EWidgetMode)WidgetModeAsInt );
 }
 
 void SEditorViewport::OnCycleCoordinateSystem()
@@ -705,6 +763,18 @@ EActiveTimerReturnType SEditorViewport::EnsureTick( double InCurrentTime, float 
 	return bShouldContinue ? EActiveTimerReturnType::Continue : EActiveTimerReturnType::Stop;
 }
 
+EVisibility SEditorViewport::GetActiveBorderVisibility() const
+{
+	EVisibility BaseVisibility = OnGetViewportContentVisibility();
+	if (BaseVisibility != EVisibility::Collapsed)
+	{
+		// The active border should never be hit testable as it overlays viewport UI but is for display purposes only
+		return EVisibility::HitTestInvisible;
+	}
+
+	return BaseVisibility;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // begin feature level control functions block
 ///////////////////////////////////////////////////////////////////////////////
@@ -732,8 +802,7 @@ TSharedRef<SWidget> SEditorViewport::BuildFeatureLevelWidget() const
 		[
 			SNew(STextBlock)
 			.Text(this, &SEditorViewport::GetCurrentFeatureLevelPreviewText, true)
-		.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
-		.ShadowOffset(FVector2D(1, 1))
+			.ShadowOffset(FVector2D(1, 1))
 		]
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
@@ -741,8 +810,6 @@ TSharedRef<SWidget> SEditorViewport::BuildFeatureLevelWidget() const
 		[
 			SNew(STextBlock)
 			.Text(this, &SEditorViewport::GetCurrentFeatureLevelPreviewText, false)
-			.Font(FEditorStyle::GetFontStyle(TEXT("MenuItem.Font")))
-			.ColorAndOpacity(FLinearColor(0.4f, 1.0f, 1.0f))
 			.ShadowOffset(FVector2D(1, 1))
 		];
 
@@ -751,9 +818,9 @@ TSharedRef<SWidget> SEditorViewport::BuildFeatureLevelWidget() const
 
 EVisibility SEditorViewport::GetCurrentFeatureLevelPreviewTextVisibility() const
 {
-	if (GetWorld())
+	if (Client->GetWorld())
 	{
-		return (GetWorld()->FeatureLevel != GMaxRHIFeatureLevel) ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed;
+		return (Client->GetWorld()->FeatureLevel != GMaxRHIFeatureLevel) ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed;
 	}
 	else
 	{
@@ -771,7 +838,7 @@ FText SEditorViewport::GetCurrentFeatureLevelPreviewText(bool bDrawOnlyLabel) co
 	}
 	else
 	{
-		UWorld* World = GetWorld();
+		UWorld* World = Client->GetWorld();
 		if (World != nullptr)
 		{
 			ERHIFeatureLevel::Type TargetFeatureLevel = World->FeatureLevel;

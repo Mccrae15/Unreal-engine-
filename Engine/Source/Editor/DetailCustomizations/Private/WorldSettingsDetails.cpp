@@ -10,6 +10,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Misc/MessageDialog.h"
 #include "GameFramework/Actor.h"
@@ -24,7 +25,10 @@
 #include "GameModeInfoCustomizer.h"
 #include "Settings/EditorExperimentalSettings.h"
 #include "GameFramework/WorldSettings.h"
+#include "WorldPartition/WorldPartition.h"
+#include "WorldPartition/WorldPartitionSubsystem.h"
 #include "ScopedTransaction.h"
+#include "ActorFolder.h"
 
 #define LOCTEXT_NAMESPACE "WorldSettingsDetails"
 
@@ -43,8 +47,8 @@ void FWorldSettingsDetails::CustomizeDetails( IDetailLayoutBuilder& DetailBuilde
 
 	AddLightmapCustomization(DetailBuilder);
 
-	AddLevelExternalActorsCustomization(DetailBuilder);
-
+	AddWorldCustomization(DetailBuilder);
+	
 	DetailBuilder.HideProperty(AActor::GetHiddenPropertyName(), AActor::StaticClass());
 }
 
@@ -77,40 +81,140 @@ void FWorldSettingsDetails::AddLightmapCustomization( IDetailLayoutBuilder& Deta
 	Category.AddCustomBuilder(LightMapGroupBuilder, bForAdvanced);
 }
 
-void FWorldSettingsDetails::AddLevelExternalActorsCustomization(IDetailLayoutBuilder& DetailBuilder)
+void FWorldSettingsDetails::AddWorldCustomization(IDetailLayoutBuilder& DetailBuilder)
 {
-	if (GetDefault<UEditorExperimentalSettings>()->bEnableOneFilePerActorSupport)
+	TArray<TWeakObjectPtr<UObject>> CustomizedObjects;
+	DetailBuilder.GetObjectsBeingCustomized(CustomizedObjects);
+	ULevel* CustomizedLevel = nullptr;
+	if (CustomizedObjects.Num() > 0)
 	{
-		TArray<TWeakObjectPtr<UObject>> CustomizedObjects;
-		DetailBuilder.GetObjectsBeingCustomized(CustomizedObjects);
-		ULevel* CustomizedLevel = nullptr;
-		if (CustomizedObjects.Num() > 0)
+		if (AWorldSettings* WorldSettings = Cast<AWorldSettings>(CustomizedObjects[0]))
 		{
-			if (AActor* WorldSettings = Cast<AWorldSettings>(CustomizedObjects[0]))
-			{
-				CustomizedLevel = WorldSettings->GetLevel();
-			}
-		}
-
-		if (CustomizedLevel)
-		{
-			IDetailCategoryBuilder& WorldCategory = DetailBuilder.EditCategory("World");
-			WorldCategory.AddCustomRow(LOCTEXT("LevelUseExternalActorsRow", "LevelUseExternalActors"), true)
-			.NameContent()
-			[
-				SNew(STextBlock)
-				.Text(LOCTEXT("LevelUseExternalActors", "Use External Actors"))
-				.ToolTipText(LOCTEXT("ActorPackagingMode_ToolTip", "Use external actors, new actor spawned in this level will be external and existing external actors will be loaded on load."))
-				.Font(IDetailLayoutBuilder::GetDetailFont())
-			]
-			.ValueContent()
-			[
-				SNew(SCheckBox)
-				.OnCheckStateChanged(this, &FWorldSettingsDetails::OnUseExternalActorsChanged, CustomizedLevel)
-				.IsChecked(this, &FWorldSettingsDetails::IsUseExternalActorsChecked, CustomizedLevel)
-			];
+			CustomizedLevel = WorldSettings->GetLevel();
+			SelectedWorldSettings = WorldSettings;
 		}
 	}
+
+	// Hide some of the WorldPartition properties found in AActor
+	TArray<TSharedRef<IPropertyHandle>> PropertiesToHide;
+	PropertiesToHide.Add(DetailBuilder.GetProperty(AActor::GetRuntimeGridPropertyName(), AActor::StaticClass()));
+	PropertiesToHide.Add(DetailBuilder.GetProperty(AActor::GetIsSpatiallyLoadedPropertyName(), AActor::StaticClass()));
+	for (TSharedRef<IPropertyHandle> Property : PropertiesToHide)
+	{
+		DetailBuilder.HideProperty(Property);
+	}
+
+	if (CustomizedLevel)
+	{
+		const bool bIsPartitionedWorld = UWorld::HasSubsystem<UWorldPartitionSubsystem>(CustomizedLevel->GetWorld());
+
+		IDetailCategoryBuilder& WorldCategory = DetailBuilder.EditCategory("World");
+		if (GetDefault<UEditorExperimentalSettings>()->bEnableOneFilePerActorSupport)
+		{
+			WorldCategory.AddCustomRow(LOCTEXT("LevelUseExternalActorsRow", "LevelUseExternalActors"), true)
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("LevelUseExternalActors", "Use External Actors"))
+					.ToolTipText(LOCTEXT("ActorPackagingMode_ToolTip", "Use external actors, new actor spawned in this level will be external and existing external actors will be loaded on load."))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.IsEnabled(!bIsPartitionedWorld)
+				]
+				.ValueContent()
+				[
+					SNew(SCheckBox)
+					.OnCheckStateChanged(this, &FWorldSettingsDetails::OnUseExternalActorsChanged, CustomizedLevel)
+					.IsChecked(this, &FWorldSettingsDetails::IsUseExternalActorsChecked, CustomizedLevel)
+					.IsEnabled(!bIsPartitionedWorld)
+				];
+		}
+
+		const bool bIsUsingActorFolders = CustomizedLevel->IsUsingActorFolders();
+		if (bIsUsingActorFolders || GetDefault<UEditorExperimentalSettings>()->bEnableActorFolderObjectSupport)
+		{
+			WorldCategory.AddCustomRow(LOCTEXT("LevelUseActorFoldersRow", "LevelUseActorFolders"), true)
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("LevelUseActorFolders", "Use Actor Folder Objects"))
+					.ToolTipText(LOCTEXT("LevelUseActorFolders_ToolTip", "Use actor folder objects, actor folders of this level will be persistent in their own object."))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.IsEnabled(!bIsUsingActorFolders)
+				]
+				.ValueContent()
+				[
+					SNew(SCheckBox)
+					.OnCheckStateChanged(this, &FWorldSettingsDetails::OnUseActorFoldersChanged, CustomizedLevel)
+					.IsChecked(this, &FWorldSettingsDetails::IsUsingActorFoldersChecked, CustomizedLevel)
+					.IsEnabled(!bIsUsingActorFolders)
+				];
+		}
+
+		if (bIsPartitionedWorld)
+		{
+			IDetailCategoryBuilder& WorldPartitionCategory = DetailBuilder.EditCategory("WorldPartition");
+
+			WorldPartitionCategory.AddCustomRow(LOCTEXT("DefaultWorldPartitionSettingsRow", "DefaultWorldPartitionSettings"), true)
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("DefaultWorldPartitionSettings", "Default World Partition Settings"))
+					.ToolTipText(LOCTEXT("DefaultWorldPartitionSettings_ToolTip", "Save or Reset the current World Partition default editor state"))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.IsEnabled(bIsPartitionedWorld)
+				]
+				.ValueContent()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					[
+						SNew(SButton)
+						.OnClicked_Lambda([CustomizedLevel]()
+							{
+								FScopedTransaction Transaction(LOCTEXT("ResetDefaultWorldPartitionSettings", "Reset Default World Partition Settings"));
+								CustomizedLevel->GetWorldSettings()->ResetDefaultWorldPartitionSettings();
+								return FReply::Handled();
+							})
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("ResetButtonText", "Reset"))
+							.ToolTipText(LOCTEXT("ResetButtonToolTip", "Reset World Partition default editor state"))
+							.Font(IDetailLayoutBuilder::GetDetailFont())
+						]
+					]
+					+ SHorizontalBox::Slot()
+					[
+						SNew(SButton)
+						.OnClicked_Lambda([CustomizedLevel]()
+							{
+								FScopedTransaction Transaction(LOCTEXT("SaveDefaultWorldPartitionSettings", "Save Default World Partition Settings"));
+								CustomizedLevel->GetWorldSettings()->SaveDefaultWorldPartitionSettings();
+								return FReply::Handled();
+							})
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("SaveButtonText", "Save"))
+							.ToolTipText(LOCTEXT("SaveButtonToolTip", "Save current World Partition editor state as map default"))
+							.Font(IDetailLayoutBuilder::GetDetailFont())
+							.IsEnabled(bIsPartitionedWorld)
+						]
+					]
+				];
+		}
+	}
+}
+
+void FWorldSettingsDetails::OnUseActorFoldersChanged(ECheckBoxState BoxState, ULevel* Level)
+{
+	if (Level && (BoxState == ECheckBoxState::Checked))
+	{
+		Level->SetUseActorFolders(true, /*bInteractiveMode*/ true);
+	}
+}
+
+ECheckBoxState FWorldSettingsDetails::IsUsingActorFoldersChecked(ULevel* Level) const
+{
+	return Level->IsUsingActorFolders() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 }
 
 void FWorldSettingsDetails::OnUseExternalActorsChanged(ECheckBoxState BoxState, ULevel* Level)
@@ -199,7 +303,7 @@ void FLightmapCustomNodeBuilder::GenerateChildContent(IDetailChildrenBuilder& Ch
 	for(TSharedPtr<FLightmapItem>& Item : LightmapItems)
 	{
 		ChildrenBuilder.AddCustomRow(LOCTEXT("LightMapsFilter", "Lightmaps"))
-		.ValueContent()
+		.WholeRowContent()
 		.HAlign(HAlign_Fill)
 		[
 			MakeLightMapList(Item)
@@ -377,7 +481,7 @@ void FLightmapCustomNodeBuilder::RefreshLightmapItems()
 	if ( World )
 	{
 		TArray<UTexture2D*> LightMapsAndShadowMaps;
-		World->GetLightMapsAndShadowMaps(World->GetCurrentLevel(), LightMapsAndShadowMaps);
+		World->GetLightMapsAndShadowMaps(World->GetCurrentLevel(), LightMapsAndShadowMaps, false);
 
 		for ( auto ObjIt = LightMapsAndShadowMaps.CreateConstIterator(); ObjIt; ++ObjIt )
 		{

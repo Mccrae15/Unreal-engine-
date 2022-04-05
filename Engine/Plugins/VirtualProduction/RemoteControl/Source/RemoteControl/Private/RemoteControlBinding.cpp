@@ -5,7 +5,10 @@
 #include "Engine/Engine.h"
 #include "Engine/EngineTypes.h"
 #include "Engine/World.h"
-#include "GameFramework/Actor.h"
+#include "HAL/IConsoleManager.h"
+#include "IRemoteControlModule.h"
+#include "RemoteControlPreset.h"
+#include "RemoteControlSettings.h"
 #include "UObject/SoftObjectPath.h"
 #include "UObject/SoftObjectPtr.h"
 
@@ -15,6 +18,8 @@
 #include "Editor/UnrealEd/Public/Editor.h"
 #include "Misc/App.h"
 #endif
+
+#define LOCTEXT_NAMESPACE "RemoteControlBinding"
 
 namespace
 {
@@ -53,7 +58,31 @@ namespace
 #endif
 		return CounterpartObject ? CounterpartObject : Object;
 	}
+
+	void DumpBindings(const TArray<FString>& Args)
+	{
+		if (Args.Num())
+		{
+			if (URemoteControlPreset* Preset = FindObject<URemoteControlPreset>(ANY_PACKAGE, *Args[0]))
+			{
+				TStringBuilder<1000> Output;
+				for (URemoteControlBinding* Binding : Preset->Bindings)
+				{
+					if (GEngine)
+					{
+						GEngine->Exec(nullptr, *FString::Format(TEXT("obj dump {0} hide=\"actor,object,lighting,movement\""), { Binding->GetPathName() }));
+					}
+				}
+			}
+		}
+	}
 }
+
+static FAutoConsoleCommand CCmdDumpBindings = FAutoConsoleCommand(
+	TEXT("RemoteControl.DumpBindings"),
+	TEXT("Dumps all binding info on the preset passed as argument."),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&DumpBindings)
+);
 
 void URemoteControlLevelIndependantBinding::SetBoundObject(const TSoftObjectPtr<UObject>& InObject)
 {
@@ -83,14 +112,42 @@ bool URemoteControlLevelIndependantBinding::IsBound(const TSoftObjectPtr<UObject
 	return BoundObject == Object;
 }
 
+bool URemoteControlLevelIndependantBinding::PruneDeletedObjects()
+{
+	if (!BoundObject.IsValid())
+	{
+		Modify();
+		BoundObject.Reset();
+		return true;
+	}
+
+	return false;
+}
+
 void URemoteControlLevelDependantBinding::SetBoundObject(const TSoftObjectPtr<UObject>& InObject)
 {
 	if (ensure(InObject))
 	{
 		UObject* EditorObject = FindObjectInCounterpartWorld(InObject.Get(), ECounterpartWorldTarget::Editor);
-		BoundObjectMap.FindOrAdd(EditorObject->GetTypedOuter<ULevel>()) = EditorObject;
+		ULevel* OuterLevel = EditorObject->GetTypedOuter<ULevel>();
+		BoundObjectMap.FindOrAdd(OuterLevel) = EditorObject;
+		SubLevelSelectionMap.FindOrAdd(OuterLevel->GetWorld()) = OuterLevel;
 		
 		Name = EditorObject->GetName();
+		
+		if (BindingContext.OwnerActorName.IsNone() || !GetDefault<URemoteControlSettings>()->bUseRebindingContext) 
+		{
+			InitializeBindingContext(InObject.Get());
+		}
+	}
+}
+
+void URemoteControlLevelDependantBinding::SetBoundObject_OverrideContext(const TSoftObjectPtr<UObject>& InObject)
+{
+	SetBoundObject(InObject);
+	if (InObject)
+	{
+		InitializeBindingContext(InObject.Get());
 	}
 }
 
@@ -128,6 +185,11 @@ void URemoteControlLevelDependantBinding::UnbindObject(const TSoftObjectPtr<UObj
 	{
 		if (It.Value() == InBoundObject)
 		{
+			if (InBoundObject)
+			{
+				SubLevelSelectionMap.Remove(InBoundObject->GetWorld());
+			}
+
 			It.RemoveCurrent();
 		}
 	}
@@ -136,7 +198,27 @@ void URemoteControlLevelDependantBinding::UnbindObject(const TSoftObjectPtr<UObj
 UObject* URemoteControlLevelDependantBinding::Resolve() const
 {
 	// Find the object in PIE if possible
-	UObject* Object = FindObjectFromCurrentWorld().Get();
+	UObject* Object = ResolveForCurrentWorld().Get();
+
+	if (Object)
+	{
+		// Make sure we don't resolve on a subobject of a dying parent actor.
+		if (AActor* OwnerActor = Object->GetTypedOuter<AActor>())
+		{
+			if (!::IsValid(OwnerActor))
+			{
+				return nullptr;
+			}
+		}
+
+		LevelWithLastSuccessfulResolve = Object->GetTypedOuter<ULevel>();
+
+		if (BindingContext.OwnerActorName.IsNone())
+		{
+			InitializeBindingContext(Object);
+		}
+	}
+
 	return FindObjectInCounterpartWorld(Object, ECounterpartWorldTarget::PIE);
 }
 
@@ -158,28 +240,89 @@ bool URemoteControlLevelDependantBinding::IsBound(const TSoftObjectPtr<UObject>&
 	return false;
 }
 
-TSoftObjectPtr<UObject> URemoteControlLevelDependantBinding::FindObjectFromCurrentWorld() const
+bool URemoteControlLevelDependantBinding::PruneDeletedObjects()
 {
-	constexpr bool bForResolving = true;
+	if (!ResolveForCurrentWorld())
+	{
+		if (UWorld* World = GetCurrentWorld())
+		{
+			if (TSoftObjectPtr<ULevel> LastLevelForBinding = SubLevelSelectionMap.FindRef(World))
+			{
+				if (!BoundObjectMap.FindRef(LastLevelForBinding))
+				{
+					Modify();
+					BoundObjectMap.Remove(LastLevelForBinding);
+					SubLevelSelectionMap.Remove(World);
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+
+TSoftObjectPtr<UObject> URemoteControlLevelDependantBinding::ResolveForCurrentWorld() const
+{
 	if (UWorld* World = GetCurrentWorld())
 	{
+		// Try finding the object using the sub level selection map first.
+		if (TSoftObjectPtr<ULevel> LastBindingLevel = SubLevelSelectionMap.FindRef(World))
+		{
+			return BoundObjectMap.FindRef(LastBindingLevel);
+		}
+		// Resort to old method where we use the first level we find in the bound object map,
+		// and add an entry in the sub level selection map.
 		for (auto LevelIt = World->GetLevelIterator(); LevelIt; ++LevelIt)
 		{
 			TSoftObjectPtr<ULevel> WeakLevel = *LevelIt;
-			if (const TSoftObjectPtr<UObject>* ObjectPtr = BoundObjectMap.Find(WeakLevel))
+			if (TSoftObjectPtr<UObject> ObjectPtr = BoundObjectMap.FindRef(WeakLevel))
 			{
-				if (ObjectPtr->IsValid())
-				{
-					LevelWithLastSuccessfulResolve = WeakLevel;
-				}
-				return *ObjectPtr;
+				SubLevelSelectionMap.FindOrAdd(World) = WeakLevel;
+
+				return ObjectPtr;
 			}
 		}
 	}
 	return nullptr;
 }
 
-UWorld* URemoteControlLevelDependantBinding::GetCurrentWorld() const
+void URemoteControlLevelDependantBinding::InitializeBindingContext(UObject* InObject) const
+{
+	if (InObject)
+	{
+		BindingContext.SupportedClass = InObject->GetClass();
+
+		if (InObject->IsA<AActor>())
+		{
+			BindingContext.OwnerActorClass = InObject->GetClass();
+			BindingContext.OwnerActorName = InObject->GetFName();
+		}
+		else if (InObject->IsA<UActorComponent>())
+		{
+			AActor* Owner = InObject->GetTypedOuter<AActor>();
+			check(Owner);
+			BindingContext.ComponentName = InObject->GetFName();
+			BindingContext.OwnerActorClass = Owner->GetClass();
+			BindingContext.OwnerActorName = Owner->GetFName();
+		}
+		else
+		{
+			AActor* Owner = InObject->GetTypedOuter<AActor>();
+			check(Owner);
+			BindingContext.ComponentName = InObject->GetFName();
+			BindingContext.OwnerActorClass = Owner->GetClass();
+			BindingContext.OwnerActorName = Owner->GetFName();
+		}
+	}
+}
+
+UClass* URemoteControlLevelDependantBinding::GetSupportedOwnerClass() const
+{
+	return BindingContext.OwnerActorClass.LoadSynchronous();
+}
+
+UWorld* URemoteControlLevelDependantBinding::GetCurrentWorld()
 {
 	// Since this is used to retrieve the binding in the map, we never use the PIE world in editor.
 	UWorld* World = nullptr;
@@ -222,3 +365,5 @@ void URemoteControlLevelDependantBinding::SetBoundObject(const TSoftObjectPtr<UL
 	ensure(ObjectName.Len());
 	Name = MoveTemp(ObjectName);
 }
+
+#undef LOCTEXT_NAMESPACE 

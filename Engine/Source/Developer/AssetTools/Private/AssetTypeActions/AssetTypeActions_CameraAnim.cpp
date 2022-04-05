@@ -180,7 +180,7 @@ void FAssetTypeActions_CameraAnim::OpenAssetEditor( const TArray<UObject*>& InOb
 		{
 			// construct a temporary matinee actor
 			CreateMatineeActorForCameraAnim(CameraAnim);
-
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 			if (GEditor->ShouldOpenMatinee(PreviewMatineeActor.Get()))
 			{
 				// changed the actor type, but don't want to lose any properties from previous
@@ -227,6 +227,7 @@ void FAssetTypeActions_CameraAnim::OpenAssetEditor( const TArray<UObject*>& InOb
 			{
 				GEditor->GetEditorWorldContext().World()->DestroyActor(PreviewMatineeActor.Get());
 			}
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 		}
 	}
 }
@@ -255,7 +256,9 @@ void FAssetTypeActions_CameraAnim::OnMatineeEditorClosed(const FEditorModeID& In
 		}
 
 		// remove our delegate
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
 		FEditorDelegates::EditorModeIDExit.Remove(OnMatineeEditorClosedDelegateHandle);
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
 	}
 }
 

@@ -10,6 +10,7 @@
 #include "GameFramework/WorldSettings.h"
 #include "Net/UnrealNetwork.h"
 #include "Misc/CoreDelegates.h"
+#include "MoviePlayerProxy.h"
 
 AGameState::AGameState(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -42,11 +43,6 @@ void AGameState::DefaultTimer()
 	GetWorldTimerManager().SetTimer(TimerHandle_DefaultTimer, this, &AGameState::DefaultTimer, GetWorldSettings()->GetEffectiveTimeDilation() / GetWorldSettings()->DemoPlayTimeDilation, true);
 }
 
-bool AGameState::ShouldShowGore() const
-{
-	return true;
-}
-
 void AGameState::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
@@ -59,6 +55,7 @@ void AGameState::HandleMatchIsWaitingToStart()
 {
 	if (GetLocalRole() != ROLE_Authority)
 	{
+		FMoviePlayerProxyBlock MoviePlayerBlock;
 		// Server handles this in AGameMode::HandleMatchIsWaitingToStart
 		GetWorldSettings()->NotifyBeginPlay();
 	}

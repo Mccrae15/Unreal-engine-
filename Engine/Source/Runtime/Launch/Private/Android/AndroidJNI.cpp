@@ -73,7 +73,7 @@ if (Id == 0) \
 void FJavaWrapper::FindClassesAndMethods(JNIEnv* Env)
 {
 	auto bIsOptional = false;
-	GGameActivityClassID = GameActivityClassID = FindClassGlobalRef(Env, "com/epicgames/ue4/GameActivity", bIsOptional);
+	GGameActivityClassID = GameActivityClassID = FindClassGlobalRef(Env, "com/epicgames/unreal/GameActivity", bIsOptional);
 	AndroidThunkJava_ShowConsoleWindow = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_ShowConsoleWindow", "(Ljava/lang/String;)V", bIsOptional);
     AndroidThunkJava_ShowVirtualKeyboardInputDialog = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_ShowVirtualKeyboardInputDialog", "(ILjava/lang/String;Ljava/lang/String;)V", bIsOptional);
     AndroidThunkJava_HideVirtualKeyboardInputDialog = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_HideVirtualKeyboardInputDialog", "()V", bIsOptional);
@@ -94,7 +94,7 @@ void FJavaWrapper::FindClassesAndMethods(JNIEnv* Env)
 	AndroidThunkJava_DismissSplashScreen = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_DismissSplashScreen", "()V", bIsOptional);
 	AndroidThunkJava_ShowProgressDialog = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_ShowProgressDialog", "(ZLjava/lang/String;ZI)V", bIsOptional);
 	AndroidThunkJava_UpdateProgressDialog = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_UpdateProgressDialog", "(I)V", bIsOptional);
-	AndroidThunkJava_GetInputDeviceInfo = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_GetInputDeviceInfo", "(I)Lcom/epicgames/ue4/GameActivity$InputDeviceInfo;", bIsOptional);
+	AndroidThunkJava_GetInputDeviceInfo = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_GetInputDeviceInfo", "(I)Lcom/epicgames/unreal/GameActivity$InputDeviceInfo;", bIsOptional);
 	AndroidThunkJava_IsGamepadAttached = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_IsGamepadAttached", "()Z", bIsOptional);
 	AndroidThunkJava_HasMetaDataKey = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_HasMetaDataKey", "(Ljava/lang/String;)Z", bIsOptional);
 	AndroidThunkJava_GetMetaDataBoolean = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_GetMetaDataBoolean", "(Ljava/lang/String;)Z", bIsOptional);
@@ -107,7 +107,7 @@ void FJavaWrapper::FindClassesAndMethods(JNIEnv* Env)
 	AndroidThunkJava_LocalNotificationScheduleAtTime = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_LocalNotificationScheduleAtTime", "(Ljava/lang/String;ZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I", bIsOptional);
 	AndroidThunkJava_LocalNotificationClearAll = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_LocalNotificationClearAll", "()V", bIsOptional);
 	AndroidThunkJava_LocalNotificationExists = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_LocalNotificationExists", "(I)Z", bIsOptional);
-	AndroidThunkJava_LocalNotificationGetLaunchNotification = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_LocalNotificationGetLaunchNotification", "()Lcom/epicgames/ue4/GameActivity$LaunchNotification;", bIsOptional);
+	AndroidThunkJava_LocalNotificationGetLaunchNotification = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_LocalNotificationGetLaunchNotification", "()Lcom/epicgames/unreal/GameActivity$LaunchNotification;", bIsOptional);
 	AndroidThunkJava_LocalNotificationDestroyIfExists = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_LocalNotificationDestroyIfExists", "(I)Z", bIsOptional);
 	AndroidThunkJava_GetNetworkConnectionType = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_GetNetworkConnectionType", "()I", bIsOptional);
 	AndroidThunkJava_GetAndroidId = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_GetAndroidId", "()Ljava/lang/String;", bIsOptional);
@@ -136,7 +136,7 @@ void FJavaWrapper::FindClassesAndMethods(JNIEnv* Env)
 	AndroidThunkJava_IsAllowedRemoteNotifications = FindMethod(Env, GameActivityClassID, "AndroidThunkJava_IsAllowedRemoteNotifications", "()Z", true);
 
 	// get field IDs for InputDeviceInfo class members
-	InputDeviceInfoClass = FindClassGlobalRef(Env, "com/epicgames/ue4/GameActivity$InputDeviceInfo", bIsOptional);
+	InputDeviceInfoClass = FindClassGlobalRef(Env, "com/epicgames/unreal/GameActivity$InputDeviceInfo", bIsOptional);
 	InputDeviceInfo_VendorId = FJavaWrapper::FindField(Env, InputDeviceInfoClass, "vendorId", "I", bIsOptional);
 	InputDeviceInfo_ProductId = FJavaWrapper::FindField(Env, InputDeviceInfoClass, "productId", "I", bIsOptional);
 	InputDeviceInfo_ControllerId = FJavaWrapper::FindField(Env, InputDeviceInfoClass, "controllerId", "I", bIsOptional);
@@ -149,7 +149,7 @@ void FJavaWrapper::FindClassesAndMethods(JNIEnv* Env)
 	FindGooglePlayBillingMethods(Env);
 
 	// get field IDs for LaunchNotificationClass class members
-	LaunchNotificationClass = FindClassGlobalRef(Env, "com/epicgames/ue4/GameActivity$LaunchNotification", bIsOptional);
+	LaunchNotificationClass = FindClassGlobalRef(Env, "com/epicgames/unreal/GameActivity$LaunchNotification", bIsOptional);
 	LaunchNotificationUsed = FJavaWrapper::FindField(Env, LaunchNotificationClass, "used", "Z", bIsOptional);
 	LaunchNotificationEvent = FJavaWrapper::FindField(Env, LaunchNotificationClass, "event", "Ljava/lang/String;", bIsOptional);
 	LaunchNotificationFireDate = FJavaWrapper::FindField(Env, LaunchNotificationClass, "fireDate", "I", bIsOptional);
@@ -185,7 +185,7 @@ void FJavaWrapper::FindGooglePlayMethods(JNIEnv* Env)
 	bool bIsOptional = true;
 
 	// @todo split GooglePlay
-	//	GoogleServicesClassID = FindClass(Env, "com/epicgames/ue4/GoogleServices", bIsOptional);
+	//	GoogleServicesClassID = FindClass(Env, "com/epicgames/unreal/GoogleServices", bIsOptional);
 	GoogleServicesClassID = GameActivityClassID;
 	AndroidThunkJava_ResetAchievements = FindMethod(Env, GoogleServicesClassID, "AndroidThunkJava_ResetAchievements", "()V", bIsOptional);
 	AndroidThunkJava_ShowAdBanner = FindMethod(Env, GoogleServicesClassID, "AndroidThunkJava_ShowAdBanner", "(Ljava/lang/String;Z)V", bIsOptional);
@@ -616,7 +616,7 @@ void AndroidThunkCpp_RestartApplication(const FString& IntentString)
 	}
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_WebViewVisible(JNIEnv* jenv, jobject thiz, jboolean bShown)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_WebViewVisible(JNIEnv* jenv, jobject thiz, jboolean bShown)
 {
 	GWebViewShown = bShown;
 }
@@ -627,7 +627,7 @@ bool AndroidThunkCpp_IsWebViewShown()
 }
 
 //Set GVirtualKeyboardShown.This function is declared in the Java-defined class, GameActivity.java: "public native void nativeVirtualKeyboardVisible(boolean bShown)"
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeVirtualKeyboardVisible(JNIEnv* jenv, jobject thiz, jboolean bShown)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeVirtualKeyboardVisible(JNIEnv* jenv, jobject thiz, jboolean bShown)
 {
 	GVirtualKeyboardShown = bShown;
 
@@ -935,7 +935,7 @@ void AndroidThunkCpp_HideVirtualKeyboardInputDialog()
 }
 
 // This is called from the ViewTreeObserver.OnGlobalLayoutListener in GameActivity
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeVirtualKeyboardShown(JNIEnv* jenv, jobject thiz, jint left, jint top, jint right, jint bottom)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeVirtualKeyboardShown(JNIEnv* jenv, jobject thiz, jint left, jint top, jint right, jint bottom)
 {
 	FPlatformRect ScreenRect(left, top, right, bottom);
 
@@ -995,7 +995,7 @@ void AndroidThunkCpp_ShowVirtualKeyboardInput(TSharedPtr<IVirtualKeyboardEntry> 
 }
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeVirtualKeyboardResult(bool update, String contents);"
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeVirtualKeyboardResult(JNIEnv* jenv, jobject thiz, jboolean update, jstring contents)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeVirtualKeyboardResult(JNIEnv* jenv, jobject thiz, jboolean update, jstring contents)
 {
 	// update text widget with new contents if OK pressed
 	if (update == JNI_TRUE)
@@ -1035,7 +1035,7 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeVirtualKeyboardResult(
 }
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeVirtualKeyboardChanged(String contents);"
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeVirtualKeyboardChanged(JNIEnv* jenv, jobject thiz, jstring contents)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeVirtualKeyboardChanged(JNIEnv* jenv, jobject thiz, jstring contents)
 {
 	if (VirtualKeyboardWidget.IsValid())
 	{
@@ -1057,7 +1057,7 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeVirtualKeyboardChanged
 	}
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeVirtualKeyboardSendKey(JNIEnv* jenv, jobject thiz, jint keyCode)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeVirtualKeyboardSendKey(JNIEnv* jenv, jobject thiz, jint keyCode)
 {
 	FDeferredAndroidMessage Message;
 
@@ -1066,7 +1066,7 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeVirtualKeyboardSendKey
 	FAndroidInputInterface::DeferMessage(Message);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeVirtualKeyboardSendSelection(JNIEnv* jenv, jobject thiz, jint selStart, jint selEnd)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeVirtualKeyboardSendSelection(JNIEnv* jenv, jobject thiz, jint selStart, jint selEnd)
 {
 	// call to set the widget selection on game thread
 	if (VirtualKeyboardWidget.IsValid())
@@ -1492,7 +1492,7 @@ void AndroidThunkCpp_SetDesiredViewSize(int32 Width, int32 Height)
 
 	// also send info to native wrapper around embedded
 	FEmbeddedCallParamsHelper Helper;
-	Helper.Command = TEXT("setue4resolution");
+	Helper.Command = TEXT("setueresolution");
 	Helper.Parameters = { {TEXT("width"), LexToString(Width)}, {TEXT("height"), LexToString(Height)} };
 	FEmbeddedDelegates::GetEmbeddedToNativeParamsDelegateForSubsystem(TEXT("native")).Broadcast(Helper);
 
@@ -1646,7 +1646,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* InJavaVM, void* InReserved)
 //Native-defined functions
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void naativeSetObbFilePaths();"
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetObbFilePaths(JNIEnv* jenv, jobject thiz, jstring OBBMainFilePath, jstring OBBPatchFilePath, jstring OBBOverflow1FilePath, jstring OBBOverflow2FilePath)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeSetObbFilePaths(JNIEnv* jenv, jobject thiz, jstring OBBMainFilePath, jstring OBBPatchFilePath, jstring OBBOverflow1FilePath, jstring OBBOverflow2FilePath)
 {
 	GOBBMainFilePath = FJavaHelper::FStringFromParam(jenv, OBBMainFilePath);
 	GOBBPatchFilePath = FJavaHelper::FStringFromParam(jenv, OBBPatchFilePath);
@@ -1655,7 +1655,7 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetObbFilePaths(JNIEnv
 }
 
 //This function is declared in the Java-defined class, GameActivity.java: "public native void nativeSetGlobalActivity();"
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetGlobalActivity(JNIEnv* jenv, jobject thiz, jboolean bUseExternalFilesDir, jboolean bPublicLogFiles, jstring internalFilePath, jstring externalFilePath, jboolean bOBBinAPK, jstring APKFilename /*, jobject googleServices*/)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeSetGlobalActivity(JNIEnv* jenv, jobject thiz, jboolean bUseExternalFilesDir, jboolean bPublicLogFiles, jstring internalFilePath, jstring externalFilePath, jboolean bOBBinAPK, jstring APKFilename /*, jobject googleServices*/)
 {
 	if (!FJavaWrapper::GameActivityThis)
 	{
@@ -1699,7 +1699,7 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetGlobalActivity(JNIE
 }
 
 
-JNI_METHOD bool Java_com_epicgames_ue4_GameActivity_nativeIsShippingBuild(JNIEnv* LocalJNIEnv, jobject LocalThiz)
+JNI_METHOD bool Java_com_epicgames_unreal_GameActivity_nativeIsShippingBuild(JNIEnv* LocalJNIEnv, jobject LocalThiz)
 {
 #if UE_BUILD_SHIPPING
 	return JNI_TRUE;
@@ -1708,12 +1708,12 @@ JNI_METHOD bool Java_com_epicgames_ue4_GameActivity_nativeIsShippingBuild(JNIEnv
 #endif
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnActivityResult(JNIEnv* jenv, jobject thiz, jobject activity, jint requestCode, jint resultCode, jobject data)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnActivityResult(JNIEnv* jenv, jobject thiz, jobject activity, jint requestCode, jint resultCode, jobject data)
 {
 	FJavaWrapper::OnActivityResultDelegate.Broadcast(jenv, thiz, activity, requestCode, resultCode, data);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeHandleSensorEvents(JNIEnv* jenv, jobject thiz, jfloatArray tilt, jfloatArray rotation_rate, jfloatArray gravity, jfloatArray acceleration)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeHandleSensorEvents(JNIEnv* jenv, jobject thiz, jfloatArray tilt, jfloatArray rotation_rate, jfloatArray gravity, jfloatArray acceleration)
 {
 	jfloat* tiltFloatValues = jenv->GetFloatArrayElements(tilt, 0);
 	FVector current_tilt(tiltFloatValues[0], tiltFloatValues[1], tiltFloatValues[2]);
@@ -1809,7 +1809,7 @@ void AndroidThunkCpp_EnableMotion(bool bEnable)
 	}
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnSafetyNetAttestationSucceeded(JNIEnv* jenv, jobject thiz, jstring jwsData)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnSafetyNetAttestationSucceeded(JNIEnv* jenv, jobject thiz, jstring jwsData)
 {
 	FString JwsString = FJavaHelper::FStringFromParam(jenv, jwsData);
 
@@ -1824,7 +1824,7 @@ JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnSafetyNetAttestation
 	}
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnSafetyNetAttestationFailed(JNIEnv* jenv, jobject thiz, jint jwsValue)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnSafetyNetAttestationFailed(JNIEnv* jenv, jobject thiz, jint jwsValue)
 {
 	// call to OnSafetyNetAttestationResultDelegate on game thread
 	if (FTaskGraphInterface::IsRunning())
@@ -1878,7 +1878,7 @@ void AndroidThunkCpp_OnNativeToEmbeddedReply(FString ID, const FEmbeddedCommunic
 
 
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_CallNativeToEmbedded(JNIEnv* jenv, jobject thiz, jstring InID, jint Priority, jstring InSubsystem, jstring InCommand, jobjectArray InParams, jstring InRoutingFunction)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_CallNativeToEmbedded(JNIEnv* jenv, jobject thiz, jstring InID, jint Priority, jstring InSubsystem, jstring InCommand, jobjectArray InParams, jstring InRoutingFunction)
 {
 #if BUILD_EMBEDDED_APP
 	auto Subsystem = FJavaHelper::FStringFromParam(jenv, InSubsystem);
@@ -1937,30 +1937,29 @@ JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_CallNativeToEmbedded(JNIEnv* 
 #endif // BUILD_EMBEDDED_APP
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_SetNamedObject(JNIEnv* jenv, jobject thiz, jstring InName, jobject InObj)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_SetNamedObject(JNIEnv* jenv, jobject thiz, jstring InName, jobject InObj)
 {
 	auto Name = FJavaHelper::FStringFromParam(jenv, InName);
 	FEmbeddedDelegates::SetNamedObject(Name, (void*)InObj);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_KeepAwake(JNIEnv* jenv, jobject thiz, jstring InRequester, jboolean bIsForRendering)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_KeepAwake(JNIEnv* jenv, jobject thiz, jstring InRequester, jboolean bIsForRendering)
 {
 	auto Requester = FJavaHelper::FStringFromParam(jenv, InRequester);
 	FEmbeddedCommunication::KeepAwake(*Requester, bIsForRendering);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_AllowSleep(JNIEnv* jenv, jobject thiz, jstring InRequester)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_AllowSleep(JNIEnv* jenv, jobject thiz, jstring InRequester)
 {
 	auto Requester = FJavaHelper::FStringFromParam(jenv, InRequester);
 	FEmbeddedCommunication::AllowSleep(*Requester);
 }
 
-
 #if !BUILD_EMBEDDED_APP
 DEFINE_LOG_CATEGORY_STATIC(LogJava, Log, All);
 #endif
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogError(JNIEnv* jenv, jobject thiz, jstring InString)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_UELogError(JNIEnv* jenv, jobject thiz, jstring InString)
 {
 	const auto chars = jenv->GetStringUTFChars(InString, 0);
 #if BUILD_EMBEDDED_APP
@@ -1974,7 +1973,7 @@ JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogError(JNIEnv* jenv, jobj
 	jenv->ReleaseStringUTFChars(InString, chars);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogWarning(JNIEnv* jenv, jobject thiz, jstring InString)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_UELogWarning(JNIEnv* jenv, jobject thiz, jstring InString)
 {
 	const auto chars = jenv->GetStringUTFChars(InString, 0);
 #if BUILD_EMBEDDED_APP
@@ -1988,7 +1987,7 @@ JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogWarning(JNIEnv* jenv, jo
 	jenv->ReleaseStringUTFChars(InString, chars);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogLog(JNIEnv* jenv, jobject thiz, jstring InString)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_UELogLog(JNIEnv* jenv, jobject thiz, jstring InString)
 {
 	const auto chars = jenv->GetStringUTFChars(InString, 0);
 #if BUILD_EMBEDDED_APP
@@ -2002,7 +2001,7 @@ JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogLog(JNIEnv* jenv, jobjec
 	jenv->ReleaseStringUTFChars(InString, chars);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_UELogVerbose(JNIEnv* jenv, jobject thiz, jstring InString)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_UELogVerbose(JNIEnv* jenv, jobject thiz, jstring InString)
 {
 	const auto chars = jenv->GetStringUTFChars(InString, 0);
 #if BUILD_EMBEDDED_APP
@@ -2051,12 +2050,12 @@ void FJavaWrapper::SetupEmbeddedCommunication(JNIEnv* Env)
 #endif
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_ForwardNotification(JNIEnv* jenv, jobject thiz, jstring payload)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_ForwardNotification(JNIEnv* jenv, jobject thiz, jstring payload)
 {
 	//
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_RouteServiceIntent(JNIEnv* jenv, jobject thiz, jstring InAction, jstring InPayload)
+JNI_METHOD void Java_com_epicgames_unreal_NativeCalls_RouteServiceIntent(JNIEnv* jenv, jobject thiz, jstring InAction, jstring InPayload)
 {
 	// call to OnSafetyNetAttestationResultDelegate on game thread
 	if (FTaskGraphInterface::IsRunning())
@@ -2076,21 +2075,41 @@ JNI_METHOD void Java_com_epicgames_ue4_NativeCalls_RouteServiceIntent(JNIEnv* je
 	}
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnThermalStatusChangedListener(JNIEnv* jenv, jobject thiz, jint Status)
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnThermalStatusChangedListener(JNIEnv* jenv, jobject thiz, jint Status)
 {
 	FAndroidStats::OnThermalStatusChanged(Status);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeOnTrimMemory(JNIEnv* jenv, jobject thiz, jint MemoryTrimValue)
+static void OnTrimMessage(int MemoryTrimValue)
 {
-	FAndroidMisc::UpdateOSMemoryStatus(FAndroidMisc::EOSMemoryStatusCategory::OSTrim, MemoryTrimValue);
+	FAndroidPlatformMemory::UpdateOSMemoryStatus(FAndroidPlatformMemory::EOSMemoryStatusCategory::OSTrim, MemoryTrimValue);
 	FAndroidStats::OnTrimMemory(MemoryTrimValue);
 }
 
-JNI_METHOD void Java_com_epicgames_ue4_GameActivity_nativeSetMemoryAdvisorState(JNIEnv* jenv, jobject thiz, jint State, jint EstimateAvailableMB, jint OOMScore)
+#if !UE_BUILD_SHIPPING
+FAutoConsoleCommand TestTrimMessage(
+	TEXT("android.TestTrimMessage"),
+	TEXT("testing only, android.TestTrimMessage int \n")
+	TEXT("int value must match expected values from android OS (see ComponentCallbacks2 api)\n")
+	TEXT("eg. android.TestTrimMessage 15")
+	,
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			if(Args.Num() > 0)
+			{
+				uint64 MemoryTrimValue = 0;
+				LexFromString(MemoryTrimValue, *Args[0]);
+				if(MemoryTrimValue)
+				{
+					OnTrimMessage(MemoryTrimValue);
+				}
+			}
+		}));
+#endif
+
+JNI_METHOD void Java_com_epicgames_unreal_GameActivity_nativeOnTrimMemory(JNIEnv* jenv, jobject thiz, jint MemoryTrimValue)
 {
-	FAndroidStats::SetMemoryWarningState(State);
-	FAndroidMisc::UpdateMemoryAdvisorState(State, EstimateAvailableMB, OOMScore);
+	OnTrimMessage(MemoryTrimValue);
 }
 
 

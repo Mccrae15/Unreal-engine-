@@ -17,7 +17,6 @@
 #include "UObject/UObjectHash.h"
 #include "ComponentReregisterContext.h"
 #include "DestructibleMesh.h"
-#include "Widgets/Docking/SDockableTab.h"
 #include "Engine/StaticMesh.h"
 #include "PhysXPublic.h"
 #include "Settings/SkeletalMeshEditorSettings.h"
@@ -254,7 +253,7 @@ bool FDestructibleMeshEditorViewportClient::CanRefreshFromStaticMesh()
 		return false;
 	}
 
-	const auto* ImportInfo = DestructibleMesh->SourceStaticMesh->AssetImportData;
+	const TObjectPtr<UAssetImportData> ImportInfo = DestructibleMesh->SourceStaticMesh->AssetImportData;
 	FDateTime CurrentSourceTimestamp = FDateTime::MinValue();
 	if (ImportInfo && ImportInfo->SourceData.SourceFiles.Num() == 1)
 	{
@@ -422,7 +421,7 @@ void FDestructibleMeshEditorViewportClient::ImportFBXChunks()
 	{
 		bOpened = DesktopPlatform->OpenFileDialog(
 			NULL, 
-			NSLOCTEXT("UnrealEd", "ImportMatineeSequence", "Import UnrealMatinee Sequence").ToString(),
+			NSLOCTEXT("UnrealEd", "ImportDestructableMeshFBXSequence", "Import FBX File").ToString(),
 			*(FEditorDirectories::Get().GetLastDirectory(ELastDirectory::GENERIC_IMPORT)),
 			TEXT(""),
 			TEXT("FBX document|*.fbx"),
@@ -466,7 +465,6 @@ void FDestructibleMeshEditorViewportClient::ImportFBXChunks()
 			ImportOptions->bInvertNormalMap = false;
 			ImportOptions->bPreserveSmoothingGroups = true;
 			ImportOptions->bAutoComputeLodDistances = false;
-			ImportOptions->bBuildAdjacencyBuffer = true;
 			ImportOptions->bBuildReversedIndexBuffer = true;
 			ImportOptions->bTransformVertexToAbsolute = true;
 			ImportOptions->bUsedAsFullName = true;
@@ -660,7 +658,7 @@ void SDestructibleMeshEditorViewport::UpdatePreviewMesh(UDestructibleMesh* InDes
 
 bool SDestructibleMeshEditorViewport::IsVisible() const
 {
-	return ViewportWidget.IsValid() && (!ParentTab.IsValid() || ParentTab.Pin()->IsForeground());
+	return ViewportWidget.IsValid();
 }
 
 void SDestructibleMeshEditorViewport::SetPreviewDepth(uint32 InPreviewDepth)

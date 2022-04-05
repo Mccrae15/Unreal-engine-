@@ -18,10 +18,10 @@ class FPersonaToolkit : public IPersonaToolkit, public TSharedFromThis<FPersonaT
 {
 public:
 	FPersonaToolkit();
-	virtual ~FPersonaToolkit() {}
+	virtual ~FPersonaToolkit();
 
 	/** Initialize from a various sources */
-	void Initialize(UObject* InAsset);
+	void Initialize(UObject* InAsset, USkeleton* InSkeleton = nullptr);
 	void Initialize(USkeleton* InSkeleton);
 	void Initialize(UAnimationAsset* InAnimationAsset);
 	void Initialize(USkeletalMesh* InSkeletalMesh);

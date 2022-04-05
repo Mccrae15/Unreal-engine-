@@ -113,6 +113,16 @@ void FAdaptiveStreamingPlayer::InternalCancelLoadManifest()
 }
 
 
+void FAdaptiveStreamingPlayer::InternalCloseManifestReader()
+{
+	if (ManifestReader.IsValid())
+	{
+		ManifestReader->Close();
+		ManifestReader.Reset();
+	}
+}
+
+
 //-----------------------------------------------------------------------------
 /**
  * Starts asynchronous loading and parsing of a manifest.
@@ -198,20 +208,32 @@ void FAdaptiveStreamingPlayer::InternalLoadManifest(const FString& URL, const FS
 }
 
 
+void FAdaptiveStreamingPlayer::InternalHandleManifestReader()
+{
+	if (ManifestReader.IsValid())
+	{
+		ManifestReader->HandleOnce();
+	}
+}
+
+
+
 //-----------------------------------------------------------------------------
 /**
- * Selects the internal presentation for playback after having selected/disabled candidate streams via AccessManifest().
+ * Selects the internal presentation for playback, setting the initial metadata and
+ * updating options that may appear in the playlist.
  *
  * @return
  */
 bool FAdaptiveStreamingPlayer::SelectManifest()
 {
-	if (ManifestReader)
+	if (ManifestReader.IsValid())
 	{
 		check(Manifest == nullptr);
 		if (ManifestType != EMediaFormatType::Unknown)
 		{
 			TArray<FTimespan> SeekablePositions;
+			FTimeRange RestrictedPlaybackRange;
 			TSharedPtrTS<IManifest> NewPresentation = ManifestReader->GetManifest();
 			check(NewPresentation.IsValid());
 
@@ -220,12 +242,27 @@ bool FAdaptiveStreamingPlayer::SelectManifest()
 			PlaybackState.SetSeekablePositions(SeekablePositions);
 			PlaybackState.SetTimelineRange(NewPresentation->GetTotalTimeRange());
 			PlaybackState.SetDuration(NewPresentation->GetDuration());
+			
+			// Check for playback range restriction. This is currently assumed to come from URL fragment parameters
+			// like example.mp4#t=10.8,18.4
+			// These do not override any user defined range values!
+			RestrictedPlaybackRange = NewPresentation->GetPlaybackRange();
+			if (RestrictedPlaybackRange.Start.IsValid() && !GetOptions().HaveKey(OptionPlayRangeStart))
+			{
+				GetOptions().Set(OptionPlayRangeStart, FVariantValue(RestrictedPlaybackRange.Start));
+			}
+			if (RestrictedPlaybackRange.End.IsValid() && !GetOptions().HaveKey(OptionPlayRangeEnd))
+			{
+				GetOptions().Set(OptionPlayRangeEnd, FVariantValue(RestrictedPlaybackRange.End));
+			}
 
 			TArray<FTrackMetadata> VideoTrackMetadata;
 			TArray<FTrackMetadata> AudioTrackMetadata;
+			TArray<FTrackMetadata> SubtitleTrackMetadata;
 			NewPresentation->GetTrackMetadata(VideoTrackMetadata, EStreamType::Video);
 			NewPresentation->GetTrackMetadata(AudioTrackMetadata, EStreamType::Audio);
-			PlaybackState.SetTrackMetadata(VideoTrackMetadata, AudioTrackMetadata);
+			NewPresentation->GetTrackMetadata(SubtitleTrackMetadata, EStreamType::Subtitle);
+			PlaybackState.SetTrackMetadata(VideoTrackMetadata, AudioTrackMetadata, SubtitleTrackMetadata);
 			PlaybackState.SetHaveMetadata(true);
 
 			Manifest = NewPresentation;
@@ -236,6 +273,12 @@ bool FAdaptiveStreamingPlayer::SelectManifest()
 			PlayerConfig.InitialBufferMinTimeAvailBeforePlayback = Utils::Min(minBufTimeMPD, PlayerConfig.InitialBufferMinTimeAvailBeforePlayback);
 			PlayerConfig.SeekBufferMinTimeAvailBeforePlayback    = Utils::Min(minBufTimeMPD, PlayerConfig.SeekBufferMinTimeAvailBeforePlayback);
 			PlayerConfig.RebufferMinTimeAvailBeforePlayback 	 = Utils::Min(minBufTimeMPD, PlayerConfig.RebufferMinTimeAvailBeforePlayback);
+
+			// For an mp4 stream we can now get rid of the manifest reader. It is no longer needed and we don't need to have it linger.
+			if (ManifestType == EMediaFormatType::ISOBMFF)
+			{
+				InternalCloseManifestReader();
+			}
 
 			return true;
 		}

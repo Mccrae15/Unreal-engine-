@@ -5,19 +5,25 @@
 #include "CoreMinimal.h"
 #include "BulkDataCommon.h"
 #include "BulkDataBuffer.h"
+#include "Containers/StringView.h"
 #include "Async/AsyncFileHandle.h"
 #include "IO/IoDispatcher.h"
+#include "Misc/PackagePath.h"
+#include "Misc/PackageSegment.h"
 
 struct FOwnedBulkDataPtr;
+class FBulkDataBase;
+class FLinkerLoad;
 class IMappedFileHandle;
 class IMappedFileRegion;
-class FBulkDataBase;
 
 /** A loose hash value that can be created from either a filenames or a FIoChunkId */
 using FIoFilenameHash = uint32;
 const FIoFilenameHash INVALID_IO_FILENAME_HASH = 0;
 /** Helpers to create the hash from a filename. Returns IOFILENAMEHASH_NONE if and only if the filename is empty. */
 COREUOBJECT_API FIoFilenameHash MakeIoFilenameHash(const FString& Filename);
+/** Helpers to create the hash from a FPackagePath. Returns IOFILENAMEHASH_NONE if and only if the PackagePath is empty. */
+COREUOBJECT_API FIoFilenameHash MakeIoFilenameHash(const FPackagePath& Filename);
 /** Helpers to create the hash from a chunk id. Returns IOFILENAMEHASH_NONE if and only if the chunk id is invalid. */
 COREUOBJECT_API FIoFilenameHash MakeIoFilenameHash(const FIoChunkId& ChunkID);
 
@@ -40,6 +46,14 @@ public:
 
 	virtual void Cancel() = 0;
 };
+
+namespace UE::BulkData::Private
+{
+
+IAsyncReadFileHandle* CreateAsyncReadHandle(const FIoChunkId& InChunkID);
+
+} // namespace UE::BulkData::Private
+
 
 struct FBulkDataOrId
 {
@@ -71,8 +85,13 @@ DECLARE_INTRINSIC_TYPE_LAYOUT(EBulkDataFlags);
 class FBulkDataAllocation
 {
 public:
-	// Misc
-	bool IsLoaded() const { return Allocation != nullptr; }
+	FBulkDataAllocation() = default;
+	~FBulkDataAllocation() = default;
+
+	bool IsLoaded() const
+	{
+		return Allocation.RawData != nullptr; // Doesn't matter which allocation we test
+	}
 	void Free(FBulkDataBase* Owner);
 
 	// Set as a raw buffer
@@ -89,8 +108,18 @@ public:
 
 	FOwnedBulkDataPtr* StealFileMapping(FBulkDataBase* Owner);
 	void Swap(FBulkDataBase* Owner, void** DstBuffer);
+
 private:
-	void* Allocation = nullptr; // Will either be the data allocation or a FOwnedBulkDataPtr if memory mapped
+
+	union FAllocation
+	{
+		/** Raw memory allocations, allocated via FMemory::Malloc/Realloc */
+		void* RawData;
+		/** Wrapper around memory mapped allocations allocated via new */
+		FOwnedBulkDataPtr* MemoryMappedData;
+	};
+
+	FAllocation Allocation{ nullptr };
 };
 DECLARE_INTRINSIC_TYPE_LAYOUT(FBulkDataAllocation);
 
@@ -107,7 +136,8 @@ TUniquePtr<IBulkDataIORequest> CreateBulkDataIoDispatcherRequest(
 	int64 InOffsetInBulkData = 0,
 	int64 InBytesToRead = INDEX_NONE,
 	FBulkDataIORequestCallBack* InCompleteCallback = nullptr,
-	uint8* InUserSuppliedMemory = nullptr);
+	uint8* InUserSuppliedMemory = nullptr,
+	int32 InPriority = IoDispatcherPriority_Low);
 
 /**
  * @documentation @todo documentation
@@ -146,10 +176,9 @@ protected:
 	void Serialize(FArchive& Ar, UObject* Owner, int32 Index, bool bAttemptFileMapping, int32 ElementSize);
 
 public:
-	// Unimplemented:
 	void* Lock(uint32 LockFlags);
 	const void* LockReadOnly() const;
-	void Unlock();
+	void Unlock() const;
 	bool IsLocked() const;
 
 	void* Realloc(int64 SizeInBytes);
@@ -203,6 +232,12 @@ public:
 
 	static IBulkDataIORequest* CreateStreamingRequestForRange(const BulkDataRangeArray& RangeArray, EAsyncIOPriorityAndFlags Priority, FBulkDataIORequestCallBack* CompleteCallback);
 
+	/**
+	 * Clears/removes any currently allocated data payload.
+	 *
+	 * Note that once this has been called, the bulkdata object will no longer be able to reload
+	 * it's payload from disk!
+	 */
 	void RemoveBulkData();
 
 	/**
@@ -219,7 +254,14 @@ public:
 	// Added for compatibility with the older BulkData system
 	int64 GetBulkDataOffsetInFile() const;
 
+	UE_DEPRECATED(5.0, "Use GetPackagePath instead")
 	FString GetFilename() const;
+
+	/** Returns the PackagePath this bulkdata resides in */
+	FPackagePath GetPackagePath() const;
+
+	/** Returns which segment of its PackagePath this bulkdata resides in */
+	EPackageSegment GetPackageSegment() const;
 
 	/** 
 	 * Returns the io filename hash associated with this bulk data.
@@ -234,10 +276,9 @@ public:
 	void ForceBulkDataResident(); // Is closer to MakeSureBulkDataIsLoaded in the old system but kept the name due to existing use
 	FOwnedBulkDataPtr* StealFileMapping();
 
+	FIoChunkId CreateChunkId() const;
 private:
 	friend FBulkDataAllocation;
-
-	FIoChunkId CreateChunkId() const;
 
 	void SetRuntimeBulkDataFlags(uint32 BulkDataFlagsToSet);
 	void ClearRuntimeBulkDataFlags(uint32 BulkDataFlagsToClear);
@@ -252,11 +293,13 @@ private:
 	 */
 	bool CanDiscardInternalData() const;
 
-	void ProcessDuplicateData(FArchive& Ar, const UPackage* Package, const FString* Filename, int64& InOutOffsetInFile);
+	void ProcessDuplicateData(EBulkDataFlags NewFlags, int64 NewSizeOnDisk, int64 NewOffset, const UPackage* Package,
+		const FPackagePath* PackagePath, const FLinkerLoad* Linker);
+	void ConditionalSetInlineAlwaysAllowDiscard(bool bPackageUsesIoStore);
 	void SerializeDuplicateData(FArchive& Ar, EBulkDataFlags& OutBulkDataFlags, int64& OutBulkDataSizeOnDisk, int64& OutBulkDataOffsetInFile);
 	void SerializeBulkData(FArchive& Ar, void* DstBuffer, int64 DataLength);
 
-	bool MemoryMapBulkData(const FString& Filename, int64 OffsetInBulkData, int64 BytesToRead);
+	bool MemoryMapBulkData(const FPackagePath& PackagePath, EPackageSegment PackageSegment, int64 OffsetInBulkData, int64 BytesToRead);
 
 	// Methods for dealing with the allocated data
 	FORCEINLINE void* AllocateData(SIZE_T SizeInBytes) { return DataAllocation.AllocateData(this, SizeInBytes); }
@@ -268,7 +311,7 @@ private:
 	/** Blocking call that waits until any pending async load finishes */
 	void FlushAsyncLoading();
 	
-	FString ConvertFilenameFromFlags(const FString& Filename) const;
+	EPackageSegment GetPackageSegmentFromFlags() const;
 
 private:
 	using AsyncCallback = TFunction<void(TIoStatusOr<FIoBuffer>)>;
@@ -277,7 +320,7 @@ private:
 	void LoadDataAsynchronously(AsyncCallback&& Callback);
 
 	// Used by LoadDataDirectly/LoadDataAsynchronously
-	void InternalLoadFromFileSystem(void** DstBuffer);
+	void InternalLoadFromPackageResource(void** DstBuffer);
 	void InternalLoadFromIoStore(void** DstBuffer);
 	void InternalLoadFromIoStoreAsync(void** DstBuffer, AsyncCallback&& Callback);
 

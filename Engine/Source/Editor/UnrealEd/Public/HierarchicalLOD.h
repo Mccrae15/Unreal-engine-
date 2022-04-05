@@ -48,17 +48,13 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = HLODSystem, AdvancedDisplay, meta = (DisplayName = "Map UAssets used for building HLOD data through the ", RelativeToGameContentDir, LongPackageName))
 	TArray<FFilePath> MapsToBuild;
 
-	UPROPERTY(EditAnywhere, config, Category = HLODSystem, meta = (DisplayName = "Invalidate HLOD Clusters on changes to the Sub Actors"))
-	bool bInvalidateHLODClusters;
-
-	UPROPERTY(EditAnywhere, config, Category = HLODSystem, meta = (DisplayName = "Delete (out-dated) HLOD Assets on Save", editcondition = "bInvalidateHLODClusters"))
-	bool bDeleteHLODAssets;
-	
 	/** Base material used for creating a Constant Material Instance as the Proxy Material */
 	UPROPERTY(EditAnywhere, config, Category = HLODSystem)
 	TSoftObjectPtr<class UMaterialInterface> BaseMaterial;
 
 #if WITH_EDITOR
+	static bool IsValidFlattenMaterial(const UMaterialInterface* InBaseMaterial, bool bShowToaster);
+
 	virtual void PostEditChangeProperty(struct FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif // WITH_EDITOR
 };
@@ -159,9 +155,10 @@ private:
 
 	/* Retrieves HierarchicalLODVolumes and creates a cluster for each individual one
 	*
-	* @param InLevel - Level for which the HLODs are currently being build
+	* @param InLevel	Level for which the HLODs are currently being build
+	* @param LODIdx		LOD index to process
 	*/
-	void HandleHLODVolumes(ULevel* InLevel);
+	void HandleHLODVolumes(ULevel* InLevel, int32 LODIdx);
 
 	/**
 	* Determine whether or not this level should have HLODs built for it in the specified world

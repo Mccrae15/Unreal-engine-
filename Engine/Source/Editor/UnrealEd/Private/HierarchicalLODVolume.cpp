@@ -24,3 +24,9 @@ AHierarchicalLODVolume::AHierarchicalLODVolume(const FObjectInitializer& ObjectI
 	BrushColor.B = 255;
 	BrushColor.A = 255;
 }
+
+bool AHierarchicalLODVolume::AppliesToHLODLevel(int32 LODIdx) const
+{
+	return ApplyOnlyToSpecificHLODLevels.Num() == 0 ||
+		   ApplyOnlyToSpecificHLODLevels.Contains(LODIdx);
+}

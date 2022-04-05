@@ -77,7 +77,7 @@ struct ENGINE_API FSplineCurves
 	FInterpCurveFloat ReparamTable;
 
 	UPROPERTY()
-	USplineMetadata* Metadata_DEPRECATED = nullptr;
+	TObjectPtr<USplineMetadata> Metadata_DEPRECATED = nullptr;
 
 	UPROPERTY(transient)
 	uint32 Version = 0xffffffff;
@@ -267,16 +267,16 @@ public:
 	FVector DefaultUpVector;
 
 #if WITH_EDITORONLY_DATA
-	/** Color of an unselected spline component segment in the editor */
-	UPROPERTY(EditAnywhere, Category = Editor)
+	/** Color of unselected spline component parts in the editor */
+	UPROPERTY(EditAnywhere, Category = Editor, meta = (DisplayName="Editor Spline Unselected Color"))
 	FLinearColor EditorUnselectedSplineSegmentColor;
 
-	/** Color of a selected spline component segment in the editor */
-	UPROPERTY(EditAnywhere, Category = Editor)
+	/** Color of selected spline component parts in the editor */
+	UPROPERTY(EditAnywhere, Category = Editor, meta = (DisplayName="Editor Spline Selected Color"))
 	FLinearColor EditorSelectedSplineSegmentColor;
 
-	/** Color of spline point tangent in the editor */
-	UPROPERTY(EditAnywhere, Category = Editor)
+	/** Color of spline point tangents in the editor */
+	UPROPERTY(EditAnywhere, Category = Editor, meta = (DisplayName="Editor Spline Tangent Color"))
 	FLinearColor EditorTangentColor;
 
 	/** Whether the spline's leave and arrive tangents can be different */
@@ -305,7 +305,7 @@ public:
 	virtual TStructOnScope<FActorComponentInstanceData> GetComponentInstanceData() const override;
 	//~ End UActorComponent Interface.
 
-#if !UE_BUILD_SHIPPING
+#if UE_ENABLE_DEBUG_DRAWING
 	//~ Begin UPrimitiveComponent Interface.
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
 	//~ End UPrimitiveComponent Interface.
@@ -313,10 +313,10 @@ public:
 	//~ Begin USceneComponent Interface
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	//~ End USceneComponent Interface
-#endif
 
 	/** Helper function to draw a vector curve */
 	static void Draw(FPrimitiveDrawInterface* PDI, const FSceneView* View, const FInterpCurveVector& SplineInfo, const FMatrix& LocalToWorld, const FLinearColor& LineColor, uint8 DepthPriorityGroup);
+#endif
 
 	FInterpCurveVector& GetSplinePointsPosition() { return SplineCurves.Position; }
 	const FInterpCurveVector& GetSplinePointsPosition() const { return SplineCurves.Position; }
@@ -752,6 +752,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = Spline)
 	FTransform FindTransformClosestToWorldLocation(const FVector& WorldLocation, ESplineCoordinateSpace::Type CoordinateSpace, bool bUseScale = false) const;
 
+	/** Given a threshold, recursively sub-divides the spline section until the list of segments (polyline) matches the spline shape. */
+	UFUNCTION(BlueprintCallable, Category = Spline)
+	bool DivideSplineIntoPolylineRecursive(float StartDistanceAlongSpline, float EndDistanceAlongSpline, ESplineCoordinateSpace::Type CoordinateSpace, const float MaxSquareDistanceFromSpline, TArray<FVector>& OutPoints) const;
+
+	/** Given a threshold, returns a list of vertices along the spline segment that, treated as a list of segments (polyline), matches the spline shape. */
+	UFUNCTION(BlueprintCallable, Category = Spline)
+	bool ConvertSplineSegmentToPolyLine(int32 SplinePointStartIndex, ESplineCoordinateSpace::Type CoordinateSpace, const float MaxSquareDistanceFromSpline, TArray<FVector>& OutPoints) const;
+
+	/** Given a threshold, returns a list of vertices along the spline that, treated as a list of segments (polyline), matches the spline shape. */
+	UFUNCTION(BlueprintCallable, Category = Spline)
+	bool ConvertSplineToPolyLine(ESplineCoordinateSpace::Type CoordinateSpace, const float MaxSquareDistanceFromSpline, TArray<FVector>& OutPoints) const;
 
 private:
 	/** The dummy value used for queries when there are no point in a spline */

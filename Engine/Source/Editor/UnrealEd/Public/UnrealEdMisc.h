@@ -231,7 +231,6 @@ public:
 	void CB_SelectedProps();
 	void CB_DisplayLoadErrors();
 	void CB_RefreshEditor();
-	void PreSaveWorld(uint32 SaveFlags, class UWorld* World);
 
 	/** Tells the editor that something has been done to change the map.  Can be anything from loading a whole new map to changing the BSP. */
 	void CB_MapChange( uint32 InFlags );
@@ -248,6 +247,10 @@ public:
 	void OnEditorChangeMode(FEditorModeID NewEditorMode);
 	void OnEditorPreModal();
 	void OnEditorPostModal();
+
+	/** BP nativization settings */
+	UE_DEPRECATED(5.0, "Blueprint Nativization has been removed as a supported feature. This delegate method will eventually be removed.")
+	void OnNativizeBlueprintsSettingChanged(const FString& PackageName, bool bSelect) {}
 
 	/** Called from tab manager when the tab changes */
 	void OnActiveTabChanged(TSharedPtr<SDockTab> PreviouslyActive, TSharedPtr<SDockTab> NewlyActivated);
@@ -280,20 +283,17 @@ public:
 	/** Delegate for (default) message log message selection - selects the objects that the tokens refer to (if any) */
 	void OnMessageSelectionChanged(TArray< TSharedRef<class FTokenizedMessage> >& Selection);
 
-	/** Delegate for URL generation, used to generate UDN pages */
-	FString GenerateURL(const FString& InUDNPage);
-
 	/** Delegate used to go to assets in the content browser */
 	void OnGotoAsset(const FString& InAssetPath) const;
 
-	/** Delegate used to update the map of asset update counts */
-	void OnObjectSaved(UObject* SavedObject);
+	/** Delegate used on message log AActor token activation */
+	void OnActorTokenActivated(const TSharedRef<class IMessageToken>& Token);
 
-	/** Delegate used to update the map of asset update counts (for UWorlds specifically) */
-	void OnWorldSaved(uint32 SaveFlags, UWorld* SavedWorld);
+	/** Delegate used to update the map of asset update counts */
+	void OnObjectSaved(UObject* SavedObject, FObjectPreSaveContext SaveContext);
 
 	/** Logs an update to an asset */
-	void LogAssetUpdate(UObject* UpdatedAsset);
+	void LogAssetUpdate(UObject* UpdatedAsset, FObjectPreSaveContext SaveContext);
 
 	/** Initialize engine analytics */
 	void InitEngineAnalytics();
@@ -304,10 +304,16 @@ public:
 	/** Handles "Enable World Composition" option in WorldSettings */
 	bool EnableWorldComposition(UWorld* InWorld, bool bEnable);
 
+	/** Get the path to the executable that runs the editor */
+	FString GetProjectEditorBinaryPath();
+
 	/** Finds a map using only the map name, no extension, no path, also caches it for faster lookup next time. */
 	FString FindMapFileFromPartialName(const FString& PartialMapName);
 
 private:
+	void SelectActorFromMessageToken(AActor* InActor);
+
+	void PreSaveWorld(class UWorld* World, FObjectPreSaveContext ObjectSaveContext);
 
 	/** The current state of the autosave */
 	EAutosaveState::Type AutosaveState;

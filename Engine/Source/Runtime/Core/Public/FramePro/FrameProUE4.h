@@ -44,7 +44,7 @@
 		#define FRAMEPRO_API CORE_API
 
 		// Windows or Linux based platform
-#if !defined(FRAMEPRO_WIN_BASED_PLATFORM) //@EPIC begin - allow external definition
+#if !defined(FRAMEPRO_WIN_BASED_PLATFORM) //@EPIC begin - allow external definition + XBOXONE removed
 		#define FRAMEPRO_WIN_BASED_PLATFORM (PLATFORM_WINDOWS)
 #endif //@EPIC: end
 		#define FRAMEPRO_LINUX_BASED_PLATFORM (!FRAMEPRO_WIN_BASED_PLATFORM && !PLATFORM_SWITCH)
@@ -52,9 +52,10 @@
 		#define FRAMEPRO_USE_TLS_SLOTS 1
 
 		// Port
-#if !defined(FRAMEPRO_PORT) //@EPIC begin - allow external definition
+#if !defined(FRAMEPRO_PORT) //@EPIC begin - allow external definition + XBOXONE removed
 		#define FRAMEPRO_PORT "8428"
 #endif //@EPIC: end
+
 		// x64 or x32
 		#define FRAMEPRO_X64 PLATFORM_64BITS
 
@@ -90,6 +91,8 @@
 		#define FRAMEPRO_ALIGN_STRUCT(a) GCC_ALIGN(a)
 
 		#define FRAMEPRO_ENUMERATE_ALL_MODULES 0
+
+		#define FRAMEPRO_PS4_CONTEXT_SWITCH_RECORDING 0
 
 	#endif		// #ifndef FRAMEPRO_UE4_INCLUDED
 

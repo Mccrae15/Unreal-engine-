@@ -4,6 +4,10 @@
 
 #ifdef USE_AXFSDK
 
+// To avoid annoying VS' visual cue that AFX_SDK_VERSION is not defined
+#ifndef AFX_SDK_VERSION
+#define AFX_SDK_VERSION
+#endif
 
 #include "PackageTools.h"
 #include "ObjectTools.h"
@@ -1139,7 +1143,7 @@ public:
 									float HoV = H_V[U][V];
 
 									float xrite = NoL*CarPaint2BRDF.CT(Params, 3, NoV, NoL, NoH, HoV);
-									FVector ue = NoL*UeGgxBRDF.SpecularGGX(Roughness, FVector(Specularity), NoV, NoL, NoH, HoV);
+									FVector3f ue = FVector3f(NoL*UeGgxBRDF.SpecularGGX(Roughness, FVector(Specularity), NoV, NoL, NoH, HoV));
 
 									SumOfSquaredDiff += FMath::Square(FMath::Max(xrite, 0.0f) - FMath::Max(ue.X, 0.0f));
 									SumOfAbsDiff += FMath::Abs(FMath::Max(xrite, 0.0f) - FMath::Max(ue.X, 0.0f));
@@ -1446,28 +1450,6 @@ private:
 					Connect(Material->OpacityMask, DitherTemporalAA);
 				}
 			}
-
-			if (ExpressionHeight)
-			{
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-				Material->D3D11TessellationMode = EMaterialTessellationMode::MTM_FlatTessellation;
-				Material->bEnableAdaptiveTessellation = true;
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
-
-				UMaterialExpressionVertexNormalWS* VertexNormalWS = CreateMaterialExpression<UMaterialExpressionVertexNormalWS>();
-
-				UMaterialExpressionScalarParameter* DisplacementScale = CreateMaterialExpression<UMaterialExpressionScalarParameter>();
-				DisplacementScale->DefaultValue = 1.0f;
-				DisplacementScale->ParameterName = FName(TEXT("Displacement Scale"));
-				
-				Connect(Material->WorldDisplacement, Mul(VertexNormalWS, Mul(ExpressionHeight, DisplacementScale)));
-
-				UMaterialExpressionScalarParameter* TessellationMultiplier = CreateMaterialExpression<UMaterialExpressionScalarParameter>();
-				TessellationMultiplier->DefaultValue = 1.0f;
-				TessellationMultiplier->ParameterName = FName(TEXT("Tessellation Multiplier"));
-
-				Connect(Material->TessellationMultiplier, TessellationMultiplier);
-			}
 		}
 
 		void SetTextureDiffuseColor(FProcessedTextureSource Source) override
@@ -1640,7 +1622,8 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 			Log.Info(TEXT("Material name: ") + MaterialName);
 
-			axf::decoding::AXF_REPRESENTATION_HANDLE RepresentationHandle = axf::decoding::axfGetPreferredRepresentation(MaterialHandle);
+			// Look for using axfGetBestCompatibleRepresentation
+			axf::decoding::AXF_REPRESENTATION_HANDLE RepresentationHandle = axf::decoding::axfGetBestSDKSupportedRepresentation(MaterialHandle);
 			if (!RepresentationHandle)
 			{
 				Log.Error(FString::Printf(TEXT("Can't retrieve preferred representation for material %d('%s')"), MaterialIndex, *MaterialName));
@@ -2025,11 +2008,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 						// 1x1 or constant on samples
 					}
 
-					if (TextureName == AXF_SVBRDF_TEXTURE_NAME_CLEARCOAT_COLOR)
-					{
-						// not present on samples
-					}
-
 					bool bReplaceTextureByConstant = (Width == 1) && (Height == 1);
 
 
@@ -2173,10 +2151,6 @@ PRAGMA_ENABLE_DEPRECATION_WARNINGS
 					else if (TextureName == AXF_SVBRDF_TEXTURE_NAME_CLEARCOAT_IOR)
 					{
 						Material.SetTextureClearcoatIOR(ProcessedTextureSource);
-					}
-					else if (TextureName == AXF_SVBRDF_TEXTURE_NAME_CLEARCOAT_COLOR)
-					{
-						Material.SetTextureClearcoatColor(ProcessedTextureSource);
 					}
 					else if (TextureName == AXF_SVBRDF_TEXTURE_NAME_HEIGHT)
 					{
@@ -2619,7 +2593,8 @@ FAxFImporter::FAxFImporter(const FString& PluginPath)
 	FString LibraryPath = FPaths::Combine(ThirdPartyPath, TEXT("AxF"), Platform);
 
 	FPlatformProcess::PushDllDirectory(*LibraryPath);
-	AxFDecodingHandle = FPlatformProcess::GetDllHandle(TEXT("AxFDecoding.dll"));
+	FString DllName = TEXT("AxFDecoding.") + FString(AFX_SDK_VERSION) + TEXT(".dll");
+	AxFDecodingHandle = FPlatformProcess::GetDllHandle(*DllName);
 	FPlatformProcess::PopDllDirectory(*LibraryPath);
 
 	axf::decoding::axfEnableLogging(FAxFFileImporter::LoggingCallback, axf::decoding::LOGLEVEL_INFO);
@@ -2640,7 +2615,7 @@ bool FAxFImporter::IsLoaded()
 	return AxFDecodingHandle != nullptr;
 }
 
-#else
+#else // USE_AXFSDK
 
 FAxFImporter::FAxFImporter(const FString& PluginPath)
 {
@@ -2660,6 +2635,6 @@ bool FAxFImporter::IsLoaded()
 	return false;
 }
 
-#endif
+#endif // USE_AXFSDK
 
 

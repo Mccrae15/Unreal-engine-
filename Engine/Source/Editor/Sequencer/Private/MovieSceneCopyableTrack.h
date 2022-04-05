@@ -15,10 +15,13 @@ public:
 	GENERATED_BODY()
 
 	UPROPERTY()
-	UMovieSceneTrack* Track;
+	TObjectPtr<UMovieSceneTrack> Track;
 
 	UPROPERTY()
 	bool bIsAMasterTrack;
+
+	UPROPERTY()
+	bool bIsACameraCutTrack;
 
 	UPROPERTY()
 	TArray<FName> FolderPath;

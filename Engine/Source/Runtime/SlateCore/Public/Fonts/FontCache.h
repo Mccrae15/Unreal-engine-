@@ -224,7 +224,7 @@ public:
 	~FShapedGlyphSequence();
 
 	/** Get the amount of memory allocated to this sequence */
-	uint32 GetAllocatedSize() const;
+	SIZE_T GetAllocatedSize() const;
 
 	/** Get the array of glyphs in this sequence. This data will be ordered so that you can iterate and draw left-to-right, which means it will be backwards for right-to-left languages */
 	const TArray<FShapedGlyphEntry>& GetGlyphsToRender() const
@@ -418,7 +418,7 @@ private:
 			return (GlyphDataArray.IsValidIndex(InternalIndex)) ? &GlyphDataArray[InternalIndex] : nullptr;
 		}
 
-		FORCEINLINE uint32 GetAllocatedSize() const
+		FORCEINLINE SIZE_T GetAllocatedSize() const
 		{
 			return GlyphDataArray.GetAllocatedSize();
 		}
@@ -583,7 +583,7 @@ private:
 	 * 
 	 * @param Character	The character to cache
 	 */
-	FCharacterListEntry CacheCharacter(TCHAR Character);
+	FCharacterListEntry* CacheCharacter(TCHAR Character);
 
 	/**
 	 * Convert the cached internal entry to the external data for the old non-shaped API
@@ -615,7 +615,7 @@ private:
  * Font caching implementation
  * Caches characters into textures as needed
  */
-class SLATECORE_API FSlateFontCache : public ISlateAtlasProvider
+class SLATECORE_API FSlateFontCache : public ISlateAtlasProvider, public FSlateFlushableAtlasCache
 {
 	friend FCharacterList;
 
@@ -682,18 +682,12 @@ public:
 	 */
 	FShapedGlyphFontAtlasData GetShapedGlyphFontAtlasData( const FShapedGlyphEntry& InShapedGlyph, const FFontOutlineSettings& InOutlineSettings);
 
-	/** 
-	 * Add a new entries into a cache atlas
-	 *
-	 * @param InFontInfo	Information about the font being used for the characters
-	 * @param Characters	The characters to cache
-	 * @param FontScale		The font scale to use
-	 * @return true if the characters could be cached. false if the cache is full
+	/**
+	 * Gets the overflow glyph sequence for a given font. The overflow sequence is used to replace characters that are clipped
 	 */
-	bool AddNewEntry( const FShapedGlyphEntry& InShapedGlyph, const FFontOutlineSettings& InOutlineSettings, FShapedGlyphFontAtlasData& OutAtlasData );
+	FShapedGlyphSequenceRef GetOverflowEllipsisText(const FSlateFontInfo& InFontInfo, const float InFontScale);
 
-	bool AddNewEntry( const FCharacterRenderData InRenderData, uint8& OutTextureIndex, uint16& OutGlyphX, uint16& OutGlyphY, uint16& OutGlyphWidth, uint16& OutGlyphHeight );
-
+public:
 	/**
 	 * Flush the given object out of the cache
 	 */
@@ -848,7 +842,8 @@ public:
 	/**
 	 * Gets the allocated font face data for a font data asset
 	 */
-	uint32 GetFontDataAssetResidentMemory(const UObject* FontDataAsset) const;
+	SIZE_T GetFontDataAssetResidentMemory(const UObject* FontDataAsset) const;
+
 private:
 	// Non-copyable
 	FSlateFontCache(const FSlateFontCache&);
@@ -867,6 +862,17 @@ private:
 	/** Called after the active culture has changed */
 	void HandleCultureChanged();
 
+	/**
+	 * Add a new entries into a cache atlas
+	 *
+	 * @param InFontInfo	Information about the font being used for the characters
+	 * @param Characters	The characters to cache
+	 * @param FontScale		The font scale to use
+	 * @return true if the characters could be cached. false if the cache is full
+	 */
+	bool AddNewEntry(const FShapedGlyphEntry& InShapedGlyph, const FFontOutlineSettings& InOutlineSettings, FShapedGlyphFontAtlasData& OutAtlasData);
+
+	bool AddNewEntry(const FCharacterRenderData InRenderData, uint8& OutTextureIndex, uint16& OutGlyphX, uint16& OutGlyphY, uint16& OutGlyphWidth, uint16& OutGlyphHeight);
 private:
 
 	/** FreeType library instance (owned by this font cache) */
@@ -885,19 +891,22 @@ private:
 	TUniquePtr<FSlateTextShaper> TextShaper;
 
 	/** Mapping Font keys to cached data */
-	TMap<FSlateFontKey, TSharedRef<class FCharacterList>, FDefaultSetAllocator, FSlateFontKeyFuncs<TSharedRef<class FCharacterList>>> FontToCharacterListCache;
+	TMap<FSlateFontKey, TUniquePtr<FCharacterList>, FDefaultSetAllocator, FSlateFontKeyFuncs<TUniquePtr<FCharacterList>>> FontToCharacterListCache;
+
+	/** Caches overflow text to display usually an ellipsis character for text elements that are clipped and request replacing clipped text with an ellipsis */
+	TMap<FSlateFontKey, FShapedGlyphSequenceRef, FDefaultSetAllocator, FSlateFontKeyFuncs<FShapedGlyphSequenceRef>> FontToOverflowGlyphSequence;
 
 	/** Mapping shaped glyphs to their cached atlas data */
 	TMap<FShapedGlyphEntryKey, TSharedRef<FShapedGlyphFontAtlasData>> ShapedGlyphToAtlasData;
 
 	/** Array of grayscale font atlas indices for use with AllFontTextures (cast the element to FSlateFontAtlas) */
-	TArray<int32> GrayscaleFontAtlasIndices;
+	TArray<uint8> GrayscaleFontAtlasIndices;
 
 	/** Array of color font atlas indices for use with AllFontTextures (cast the element to FSlateFontAtlas) */
-	TArray<int32> ColorFontAtlasIndices;
+	TArray<uint8> ColorFontAtlasIndices;
 
 	/** Array of any non-atlased font texture indices for use with AllFontTextures */
-	TArray<int32> NonAtlasedTextureIndices;
+	TArray<uint8> NonAtlasedTextureIndices;
 
 	/** Array of all font textures - both atlased and non-atlased */
 	TArray<TSharedRef<ISlateFontTexture>> AllFontTextures;
@@ -907,18 +916,6 @@ private:
 
 	/** Whether or not we have a pending request to flush the cache when it is safe to do so */
 	volatile bool bFlushRequested;
-
-	/** Number of grayscale atlas pages we can have before we request that the cache be flushed */
-	int32 CurrentMaxGrayscaleAtlasPagesBeforeFlushRequest;
-
-	/** Number of color atlas pages we can have before we request that the cache be flushed */
-	int32 CurrentMaxColorAtlasPagesBeforeFlushRequest;
-
-	/** Number of non-atlased textures we can have before we request that the cache be flushed */
-	int32 CurrentMaxNonAtlasedTexturesBeforeFlushRequest;
-
-	/** The frame counter the last time the font cache was asked to be flushed */
-	uint64 FrameCounterLastFlushRequest;
 
 	/** Critical section preventing concurrent access to FontObjectsToFlush */
 	mutable FCriticalSection FontObjectsToFlushCS;
@@ -930,4 +927,8 @@ private:
 	FOnReleaseFontResources OnReleaseResourcesDelegate;
 
 	ESlateTextureAtlasThreadId OwningThread;
+
+	/** Overflow text string to use to replace clipped characters */
+	FText EllipsisText;
+
 };

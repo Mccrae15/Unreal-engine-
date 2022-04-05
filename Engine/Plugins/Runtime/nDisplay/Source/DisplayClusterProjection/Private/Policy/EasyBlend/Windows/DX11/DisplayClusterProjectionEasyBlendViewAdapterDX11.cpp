@@ -59,7 +59,7 @@ FDisplayClusterProjectionEasyBlendViewAdapterDX11::~FDisplayClusterProjectionEas
 	}
 }
 
-bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::Initialize(const FString& File)
+bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::Initialize(class IDisplayClusterViewport* InViewport, const FString& File)
 {
 	if (!IsEasyBlendRenderingEnabled())
 	{
@@ -69,7 +69,7 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::Initialize(const FString
 	// Initialize EasyBlend DLL API
 	if (!DisplayClusterProjectionEasyBlendLibraryDX11::Initialize())
 	{
-		if (!FDisplayClusterProjectionPolicyBase::IsEditorOperationMode())
+		if (!FDisplayClusterProjectionPolicyBase::IsEditorOperationMode(InViewport))
 		{
 			UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("Couldn't link to the EasyBlend DLL"));
 		}
@@ -78,7 +78,7 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::Initialize(const FString
 
 	if(File.IsEmpty())
 	{
-		if (!FDisplayClusterProjectionPolicyBase::IsEditorOperationMode())
+		if (!FDisplayClusterProjectionPolicyBase::IsEditorOperationMode(InViewport))
 		{
 			UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("File is empty"));
 		}
@@ -96,7 +96,7 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::Initialize(const FString
 		TRACE_CPUPROFILER_EVENT_SCOPE(nDisplay EasyBlend::Initialize);
 
 		// Initialize EasyBlend data for each view
-		const char* const FileName = TCHAR_TO_ANSI(*File);
+		const auto FileName = StringCast<ANSICHAR>(*File);
 		for (FViewData& It : Views)
 		{
 			// Initialize the mesh data
@@ -104,7 +104,7 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::Initialize(const FString
 				FScopeLock lock(&DllAccessCS);
 
 				check(DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendInitializeFunc);
-				const EasyBlendSDKDXError Result = DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendInitializeFunc(FileName, It.EasyBlendMeshData.Get());
+				const EasyBlendSDKDXError Result = DisplayClusterProjectionEasyBlendLibraryDX11::EasyBlendInitializeFunc(FileName.Get(), It.EasyBlendMeshData.Get());
 				if (!EasyBlendSDKDX_SUCCEEDED(Result))
 				{
 					UE_LOG(LogDisplayClusterProjectionEasyBlend, Error, TEXT("Couldn't initialize EasyBlend internals"));
@@ -174,7 +174,7 @@ void FDisplayClusterProjectionEasyBlendViewAdapterDX11::ImplInitializeResources_
 // Location/Rotation inside the function is in EasyBlend space with a scale applied
 bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::CalculateView(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FVector& InOutViewLocation, FRotator& InOutViewRotation, const FVector& ViewOffset, const float WorldToMeters, const float NCP, const float FCP)
 {
-	check(Views.Num() > (int)InContextNum);
+	check(Views.Num() > (int32)InContextNum);
 
 	ZNear = NCP;
 	ZFar = FCP;
@@ -210,7 +210,7 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::CalculateView(IDisplayCl
 
 bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::GetProjectionMatrix(IDisplayClusterViewport* InViewport, const uint32 InContextNum, FMatrix& OutPrjMatrix)
 {
-	check(Views.Num() > (int)InContextNum);
+	check(Views.Num() > (int32)InContextNum);
 
 	// Build Projection matrix:
 	const float Left   = Views[InContextNum].EasyBlendMeshData->Frustum.LeftAngle;
@@ -252,7 +252,7 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::ApplyWarpBlend_RenderThr
 	ImplInitializeResources_RenderThread();
 
 	TRACE_CPUPROFILER_EVENT_SCOPE(nDisplay EasyBlend::Render);
-	for (int ContextNum = 0; ContextNum < InputTextures.Num(); ContextNum++)
+	for (int32 ContextNum = 0; ContextNum < InputTextures.Num(); ContextNum++)
 	{
 		if (!ImplApplyWarpBlend_RenderThread(RHICmdList, ContextNum, InputTextures[ContextNum], OutputTextures[ContextNum]))
 		{
@@ -261,10 +261,10 @@ bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::ApplyWarpBlend_RenderThr
 	}
 
 	// resolve warp result images from temp targetable to FrameTarget
-	return InViewportProxy->ResolveResources(RHICmdList, EDisplayClusterViewportResourceType::AdditionalTargetableResource, InViewportProxy->GetOutputResourceType());
+	return InViewportProxy->ResolveResources_RenderThread(RHICmdList, EDisplayClusterViewportResourceType::AdditionalTargetableResource, InViewportProxy->GetOutputResourceType_RenderThread());
 }
 
-bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::ImplApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, int ContextNum, FRHITexture2D* InputTexture, FRHITexture2D* OutputTexture)
+bool FDisplayClusterProjectionEasyBlendViewAdapterDX11::ImplApplyWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, uint32 ContextNum, FRHITexture2D* InputTexture, FRHITexture2D* OutputTexture)
 {
 	if (!IsEasyBlendRenderingEnabled())
 	{

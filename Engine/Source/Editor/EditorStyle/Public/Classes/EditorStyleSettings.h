@@ -29,6 +29,22 @@ enum class EAssetEditorOpenLocation : uint8
 	LastDockedWindowOrContentBrowser
 };
 
+UENUM()
+enum class ELogCategoryColorizationMode : uint8
+{
+	/** Do not colorize based on log categories */
+	None,
+
+	/** Colorize the entire log line, but not warnings or errors */
+	ColorizeWholeLine,
+
+	/** Colorize only the category name (including on warnings and errors) */
+	ColorizeCategoryOnly,
+
+	/** Colorize the background of the category name (including on warnings and errors) */
+	ColorizeCategoryAsBadge
+};
+
 /**
  * Implements the Editor style settings.
  */
@@ -71,36 +87,15 @@ public:
 	bool bColorVisionDeficiencyCorrectionPreviewWithDeficiency;
 
 	/** The color used to represent selection */
-	UPROPERTY(EditAnywhere, config, Category=Colors, meta=(DisplayName="Selection Color"))
+	UPROPERTY(EditAnywhere, config, Category=Colors, meta=(DisplayName="Viewport Selection Color"))
 	FLinearColor SelectionColor;
 
-	/** The color used to represent a pressed item */
-	UPROPERTY(EditAnywhere, config, Category=Colors, meta=(DisplayName="Pressed Selection Color"))
-	FLinearColor PressedSelectionColor;
-
-	/** The color used to represent selected items that are currently inactive */
-	UPROPERTY(EditAnywhere, config, Category=Colors, meta=(DisplayName="Inactive Selection Color"))
-	FLinearColor InactiveSelectionColor;
-
-	/** The color used to represent keyboard input selection focus */
-	UPROPERTY(EditAnywhere, config, Category=Colors, meta=(DisplayName="Keyboard Focus Color"), AdvancedDisplay)
-	FLinearColor KeyboardFocusColor;
+	UPROPERTY(config)
+	bool bEnableEditorWindowBackgroundColor;
 
 	/** The color used to tint the editor window backgrounds */
-	UPROPERTY(EditAnywhere, config, Category=Colors)
+	UPROPERTY(EditAnywhere, config, Category=Colors, meta=(EditCondition="bEnableEditorWindowBackgroundColor"))
 	FLinearColor EditorWindowBackgroundColor;
-
-	/** The override for the background of the main window (if not modified, the defaults will be used) */
-	UPROPERTY(EditAnywhere, config, Category=Colors)
-	FSlateBrush EditorMainWindowBackgroundOverride;
-
-	/** The override for the background of the child window (if not modified, the defaults will be used) */
-	UPROPERTY(EditAnywhere, config, Category=Colors)
-	FSlateBrush EditorChildWindowBackgroundOverride;
-
-	/** Check to reset the window background settings to editor defaults */
-	UPROPERTY(EditAnywhere, config, Category=Colors)
-	bool bResetEditorWindowBackgroundSettings;
 
 	/** Whether to use small toolbar icons without labels or not. */
 	UPROPERTY(EditAnywhere, config, Category=UserInterface)
@@ -130,10 +125,6 @@ public:
 	UPROPERTY(EditAnywhere, config, Category = Graphs, meta = (DisplayName = "Background Brush"))
 	FSlateBrush GraphBackgroundBrush;
 
-	/** Enables animated transitions for certain menus and pop-up windows.  Note that animations may be automatically disabled at low frame rates in order to improve responsiveness. */
-	UPROPERTY(EditAnywhere, config, Category=UserInterface)
-	uint32 bEnableWindowAnimations:1;
-
 	/** When enabled, the C++ names for properties and functions will be displayed in a format that is easier to read */
 	UPROPERTY(EditAnywhere, config, Category=UserInterface, meta=(DisplayName="Show Friendly Variable Names"))
 	uint32 bShowFriendlyNames:1;
@@ -154,30 +145,6 @@ public:
 	UPROPERTY(config)
 	uint32 bShowLaunchMenus : 1;
 
-	/** The color used for the background in the output log */
-	UPROPERTY(EditAnywhere, config, Category="Output Log", meta=(DisplayName="Background Color"))
-	FLinearColor LogBackgroundColor;
-
-	/** The color used for the background of selected text in the output log */
-	UPROPERTY(EditAnywhere, config, Category="Output Log", meta=(DisplayName="Selection Background Color"))
-	FLinearColor LogSelectionBackgroundColor;
-
-	/** The color used for normal text in the output log */
-	UPROPERTY(EditAnywhere, config, Category="Output Log", meta=(DisplayName="Normal Text Color"))
-	FLinearColor LogNormalColor;
-
-	/** The color used for normal text in the output log */
-	UPROPERTY(EditAnywhere, config, Category="Output Log", meta=(DisplayName="Command Text Color"))
-	FLinearColor LogCommandColor;
-
-	/** The color used for warning log lines */
-	UPROPERTY(EditAnywhere, config, Category="Output Log", meta=(DisplayName="Warning Text Color"))
-	FLinearColor LogWarningColor;
-
-	/** The color used for error log lines */
-	UPROPERTY(EditAnywhere, config, Category="Output Log", meta=(DisplayName="Error Text Color"))
-	FLinearColor LogErrorColor;
-
 	/** When enabled, the Advanced Details will always auto expand. */
 	UPROPERTY(config)
 	uint32 bShowAllAdvancedDetails : 1;
@@ -190,13 +157,24 @@ public:
 	UPROPERTY(EditAnywhere, config, Category="Output Log", meta=(DisplayName="Log Font Size", ConfigRestartRequired=true))
 	int32 LogFontSize;
 
-	/** The display mode for timestamps in the output log window*/
+	/** The display mode for timestamps in the output log window */
 	UPROPERTY(EditAnywhere, config, Category="Output Log", meta=(DisplayName = "Output Log Window Timestamp Mode"))
 	TEnumAsByte<ELogTimes::Type> LogTimestampMode;
 
 	/** Should warnings and errors in the Output Log during "Play in Editor" be promoted to the message log? */
 	UPROPERTY(EditAnywhere, config, Category="Output Log")
 	bool bPromoteOutputLogWarningsDuringPIE;
+
+	/** How should categories be colorized in the output log? */
+	UPROPERTY(EditAnywhere, config, Category = "Output Log")
+	ELogCategoryColorizationMode CategoryColorizationMode;
+
+	/**
+	 * If checked pressing the console command shortcut will cycle between focusing the status bar console, opening the output log drawer, and back to the previous focus target. 
+	 * If unchecked, the console command shortcut will only focus the status bar console
+	 */
+	UPROPERTY(EditAnywhere, config, Category = "Output Log", meta = (DisplayName = "Open Output Log Drawer with Console Command Shortcut"))
+	bool bCycleToOutputLogDrawer;
 
 	/** New asset editor tabs will open at the specified location. */
 	UPROPERTY(EditAnywhere, config, Category=UserInterface)
@@ -205,10 +183,6 @@ public:
 	/** Should editor tabs be colorized according to the asset type */
 	UPROPERTY(EditAnywhere, config, Category=UserInterface)
 	uint32 bEnableColorizedEditorTabs : 1;
-
-	/** If enabled, the modes tab will revert to the previous mode UI */
-	UPROPERTY(EditAnywhere, config, AdvancedDisplay, Category = UserInterface, meta=(ConfigRestartRequired = true))
-	uint32 bEnableLegacyEditorModeUI : 1;
 
 public:
 

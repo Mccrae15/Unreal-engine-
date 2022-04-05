@@ -22,7 +22,7 @@
 
 FMetalTransitionData::FMetalTransitionData(ERHIPipeline                         InSrcPipelines,
 										   ERHIPipeline                         InDstPipelines,
-										   ERHICreateTransitionFlags            InCreateFlags,
+										   ERHITransitionCreateFlags            InCreateFlags,
 										   TArrayView<const FRHITransitionInfo> InInfos)
 {
 	SrcPipelines   = InSrcPipelines;
@@ -35,7 +35,7 @@ FMetalTransitionData::FMetalTransitionData(ERHIPipeline                         
 
 	// TODO: Determine whether the Metal RHI needs to create a separate, per-transition fence.
 #if UE_METAL_TRANSITION_DATA_USES_EXPLICIT_FENCING
-	if (bCrossPipeline && !EnumHasAnyFlags(CreateFlags, ERHICreateTransitionFlags::NoFence))
+	if (bCrossPipeline && !EnumHasAnyFlags(CreateFlags, ERHITransitionCreateFlags::NoFence))
 	{
 		// Get the current context pointer.
 		FMetalContext* Context = GetMetalDeviceContext().GetCurrentContext();
@@ -94,33 +94,15 @@ void FMetalTransitionData::EndResourceTransitions() const
 		switch (Info.Type)
 		{
 			case FRHITransitionInfo::EType::UAV:
-			{
 				GetMetalDeviceContext().TransitionResource(Info.UAV);
-			}
 				break;
 
-			case FRHITransitionInfo::EType::VertexBuffer:
-			{
-				GetMetalDeviceContext().TransitionRHIResource(Info.VertexBuffer);
-			}
-				break;
-
-			case FRHITransitionInfo::EType::IndexBuffer:
-			{
-				GetMetalDeviceContext().TransitionRHIResource(Info.IndexBuffer);
-			}
-				break;
-
-			case FRHITransitionInfo::EType::StructuredBuffer:
-			{
-				GetMetalDeviceContext().TransitionRHIResource(Info.StructuredBuffer);
-			}
+			case FRHITransitionInfo::EType::Buffer:
+				GetMetalDeviceContext().TransitionRHIResource(Info.Buffer);
 				break;
 
 			case FRHITransitionInfo::EType::Texture:
-			{
 				GetMetalDeviceContext().TransitionResource(Info.Texture);
-			}
 				break;
 
 			default:

@@ -50,7 +50,7 @@ public:
 	
 	/** New state of the channel */
 	UPROPERTY(VisibleAnywhere, Category = "Timed Data State")
-	ETimedDataInputState NewState;
+	ETimedDataInputState NewState = ETimedDataInputState::Connected;
 
 	/** Input owning that channel */
 	UPROPERTY(VisibleAnywhere, Category = "Timed Data State")
@@ -78,7 +78,7 @@ public:
 
 	/** New state of the channel */
 	UPROPERTY(VisibleAnywhere, Category = "Timed Data State")
-	ETimedDataMonitorEvaluationState NewState;
+	ETimedDataMonitorEvaluationState NewState = ETimedDataMonitorEvaluationState::NoSample;
 
 	/** Input owning that channel */
 	UPROPERTY(VisibleAnywhere, Category = "Timed Data State")
@@ -369,6 +369,10 @@ public:
 	/** Get the channel latest sample time. */
 	UFUNCTION(BlueprintCallable, Category = "Timed Data Monitor|Channel")
 	FTimedDataChannelSampleTime GetChannelNewestDataTime(const FTimedDataMonitorChannelIdentifier& Identifier);
+
+	/** Get the sample times for every frame in the channel */
+	UFUNCTION(BlueprintCallable, Category = "Timed Data Monitor|Channel")
+	TArray<FTimedDataChannelSampleTime> GetChannelFrameDataTimes(const FTimedDataMonitorChannelIdentifier& Identifier);
 
 	/** Get the number of data samples available. */
 	UFUNCTION(BlueprintCallable, Category = "Timed Data Monitor|Channel")

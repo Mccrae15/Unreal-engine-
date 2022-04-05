@@ -22,7 +22,7 @@ FArchive& operator<<(FArchive& Ar, FUserPinInfo& Info)
 
 	if (Ar.CustomVer(FFrameworkObjectVersion::GUID) >= FFrameworkObjectVersion::PinsStoreFName)
 	{
-	Ar << Info.PinName;
+		Ar << Info.PinName;
 	}
 	else
 	{
@@ -31,7 +31,7 @@ FArchive& operator<<(FArchive& Ar, FUserPinInfo& Info)
 		Info.PinName = *PinNameStr;
 	}
 
-	if (Ar.UE4Ver() >= VER_UE4_SERIALIZE_PINTYPE_CONST)
+	if (Ar.UEVer() >= VER_UE4_SERIALIZE_PINTYPE_CONST)
 	{
 		Info.PinType.Serialize(Ar);
 		Ar << Info.DesiredPinDirection;
@@ -46,8 +46,8 @@ FArchive& operator<<(FArchive& Ar, FUserPinInfo& Info)
 		bool bIsReference = Info.PinType.bIsReference;
 		Ar << bIsReference;
 
-			Info.PinType.ContainerType = (bIsArray ? EPinContainerType::Array : EPinContainerType::None);
-			Info.PinType.bIsReference = bIsReference;
+		Info.PinType.ContainerType = (bIsArray ? EPinContainerType::Array : EPinContainerType::None);
+		Info.PinType.bIsReference = bIsReference;
 
 		FString PinCategoryStr;
 		FString PinSubCategoryStr;
@@ -57,6 +57,15 @@ FArchive& operator<<(FArchive& Ar, FUserPinInfo& Info)
 
 		Info.PinType.PinCategory = *PinCategoryStr;
 		Info.PinType.PinSubCategory = *PinSubCategoryStr;
+
+		bool bFixupPinCategories =
+			((Info.PinType.PinCategory == TEXT("double")) || (Info.PinType.PinCategory == TEXT("float")));
+
+		if (bFixupPinCategories)
+		{
+			Info.PinType.PinCategory = TEXT("real");
+			Info.PinType.PinSubCategory = TEXT("double");
+		}
 
 		Ar << Info.PinType.PinSubCategoryObject;
 	}
@@ -119,7 +128,7 @@ void UK2Node_EditablePinBase::RemoveUserDefinedPinByName(const FName PinName)
 			Pin->Modify();
 
 			Pins.Remove(Pin);
-			Pin->MarkPendingKill();
+			Pin->MarkAsGarbage();
 
 			if (UBlueprint* Blueprint = GetBlueprint())
 			{

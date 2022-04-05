@@ -9,10 +9,19 @@
 #include "Chaos/PhysicalMaterials.h"
 #include "Chaos/GeometryParticlesfwd.h"
 #include "Chaos/CollisionFilterData.h"
+#include "Chaos/Collision/CollisionConstraintFlags.h"
 #include "Chaos/KinematicTargets.h"
 #include "UObject/ExternalPhysicsCustomObjectVersion.h"
 #include "UObject/ExternalPhysicsMaterialCustomObjectVersion.h"
 #include "UObject/PhysicsObjectVersion.h"
+#include "UObject/UE5MainStreamObjectVersion.h"
+#include "UObject/UE5ReleaseStreamObjectVersion.h"
+#include "Framework/PhysicsProxyBase.h"
+#include "PBDJointConstraintTypes.h"
+
+#ifndef CHAOS_DEBUG_NAME
+#define CHAOS_DEBUG_NAME 0
+#endif
 
 class FName;
 
@@ -22,6 +31,7 @@ namespace Chaos
 using FKinematicTarget = TKinematicTarget<FReal, 3>;
 
 enum class EResimType: uint8;
+enum class ESleepType: uint8;
 
 class FParticlePositionRotation
 {
@@ -53,7 +63,7 @@ public:
 	void SetX(const FVec3& InX){ MX = InX; }
 
 	const FRotation3& R() const { return MR; }
-	void SetR(const FRotation3& InR){ MR = InR; }
+	void SetR(const FRotation3& InR) { MR = InR; }
 	
 private:
 	FVec3 MX;
@@ -115,28 +125,28 @@ class FParticleDynamics
 public:
 	void Serialize(FChaosArchive& Ar)
 	{
-		Ar << MF;
-		Ar << MTorque;
-		Ar << MLinearImpulse;
-		Ar << MAngularImpulse;	
+		Ar << MAcceleration;
+		Ar << MAngularAcceleration;
+		Ar << MLinearImpulseVelocity;
+		Ar << MAngularImpulseVelocity;	
 	}
 
 	template <typename TOther>
 	void CopyFrom(const TOther& Other)
 	{
-		MF = Other.F();
-		MTorque = Other.Torque();
-		MLinearImpulse = Other.LinearImpulse();
-		MAngularImpulse = Other.AngularImpulse();
+		MAcceleration = Other.Acceleration();
+		MAngularAcceleration = Other.AngularAcceleration();
+		MLinearImpulseVelocity = Other.LinearImpulseVelocity();
+		MAngularImpulseVelocity = Other.AngularImpulseVelocity();
 	}
 
 	template <typename TOther>
 	bool IsEqual(const TOther& Other) const
 	{
-		return F() == Other.F()
-			&& Torque() == Other.Torque()
-			&& LinearImpulse() == Other.LinearImpulse()
-			&& AngularImpulse() == Other.AngularImpulse();
+		return Acceleration() == Other.Acceleration()
+			&& AngularAcceleration() == Other.AngularAcceleration()
+			&& LinearImpulseVelocity() == Other.LinearImpulseVelocity()
+			&& AngularImpulseVelocity() == Other.AngularImpulseVelocity();
 	}
 
 	bool operator==(const FParticleDynamics& Other) const
@@ -144,25 +154,38 @@ public:
 		return IsEqual(Other);
 	}
 
-	const FVec3& F() const { return MF; }
-	void SetF(const FVec3& F){ MF = F; }
+	const FVec3& Acceleration() const { return MAcceleration; }
+	void SetAcceleration(const FVec3& Acceleration){ MAcceleration = Acceleration; }
 
-	const FVec3& Torque() const { return MTorque; }
-	void SetTorque(const FVec3& Torque){ MTorque = Torque; }
+	const FVec3& AngularAcceleration() const { return MAngularAcceleration; }
+	void SetAngularAcceleration(const FVec3& AngularAcceleration){ MAngularAcceleration = AngularAcceleration; }
 
-	const FVec3& LinearImpulse() const { return MLinearImpulse; }
-	void SetLinearImpulse(const FVec3& LinearImpulse){ MLinearImpulse = LinearImpulse; }
+	const FVec3& LinearImpulseVelocity() const { return MLinearImpulseVelocity; }
+	void SetLinearImpulseVelocity(const FVec3& LinearImpulseVelocity){ MLinearImpulseVelocity = LinearImpulseVelocity; }
 
-	const FVec3& AngularImpulse() const { return MAngularImpulse; }
-	void SetAngularImpulse(const FVec3& AngularImpulse){ MAngularImpulse = AngularImpulse; }
+	const FVec3& AngularImpulseVelocity() const { return MAngularImpulseVelocity; }
+	void SetAngularImpulseVelocity(const FVec3& AngularImpulseVelocity){ MAngularImpulseVelocity = AngularImpulseVelocity; }
+
+	static FParticleDynamics ZeroValue()
+	{
+		FParticleDynamics Result;
+		Result.MAcceleration = FVec3(0);
+		Result.MAngularAcceleration = FVec3(0);
+		Result.MLinearImpulseVelocity = FVec3(0);
+		Result.MAngularImpulseVelocity = FVec3(0);
+
+		return Result;
+	}
 
 private:
-	FVec3 MF;
-	FVec3 MTorque;
-	FVec3 MLinearImpulse;
-	FVec3 MAngularImpulse;
+	FVec3 MAcceleration;
+	FVec3 MAngularAcceleration;
+	FVec3 MLinearImpulseVelocity;
+	FVec3 MAngularImpulseVelocity;
 
 };
+
+typedef TVector<IPhysicsProxyBase*, 2> FProxyBasePair;
 
 inline FChaosArchive& operator<<(FChaosArchive& Ar, FParticleDynamics& Data)
 {
@@ -216,11 +239,11 @@ public:
 	const FRotation3& RotationOfMass() const { return MRotationOfMass; }
 	void SetRotationOfMass(const FRotation3& InRotationOfMass){ MRotationOfMass = InRotationOfMass; }
 
-	const FMatrix33& I() const { return MI; }
-	void SetI(const FMatrix33& InI){ MI = InI; }
+	const TVec3<FRealSingle>& I() const { return MI; }
+	void SetI(const TVec3<FRealSingle>& InI){ MI = InI; }
 
-	const FMatrix33& InvI() const { return MInvI; }
-	void SetInvI(const FMatrix33& InInvI){ MInvI = InInvI; }
+	const TVec3<FRealSingle>& InvI() const { return MInvI; }
+	void SetInvI(const TVec3<FRealSingle>& InInvI){ MInvI = InInvI; }
 
 	FReal M() const { return MM; }
 	void SetM(FReal InM){ MM = InM; }
@@ -231,8 +254,8 @@ public:
 private:
 	FVec3 MCenterOfMass;
 	FRotation3 MRotationOfMass;
-	FMatrix33 MI;
-	FMatrix33 MInvI;
+	TVec3<FRealSingle> MI;
+	TVec3<FRealSingle> MInvI;
 	FReal MM;
 	FReal MInvM;
 
@@ -250,11 +273,16 @@ class FParticleDynamicMisc
 public:
 	void Serialize(FChaosArchive& Ar)
 	{
+		Ar.UsingCustomVersion(FUE5ReleaseStreamObjectVersion::GUID);
+		Ar.UsingCustomVersion(FUE5MainStreamObjectVersion::GUID);
 		Ar.UsingCustomVersion(FExternalPhysicsCustomObjectVersion::GUID);
+		Ar.UsingCustomVersion(FPhysicsObjectVersion::GUID);
+
 		Ar << MLinearEtherDrag;
 		Ar << MAngularEtherDrag;
 		Ar << MObjectState;
 		Ar << MGravityEnabled;
+		Ar << MSleepType;
 		if (Ar.CustomVer(FExternalPhysicsCustomObjectVersion::GUID) >= FExternalPhysicsCustomObjectVersion::AddOneWayInteraction)
 		{
 			Ar << MOneWayInteraction;
@@ -263,9 +291,32 @@ public:
 		{
 			MOneWayInteraction = false;
 		}
+
 		if (Ar.CustomVer(FPhysicsObjectVersion::GUID) >= FPhysicsObjectVersion::AddCCDEnableFlag)
 		{
 			Ar << bCCDEnabled;
+		}
+
+		const bool bAddCollisionConstraintFlagUE4 = (Ar.CustomVer(FPhysicsObjectVersion::GUID) >= FPhysicsObjectVersion::AddCollisionConstraintFlag);
+		const bool bAddCollisionConstraintFlagUE5 = (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::AddCollisionConstraintFlag);		
+		if (bAddCollisionConstraintFlagUE4 || bAddCollisionConstraintFlagUE5)
+		{
+			Ar << MCollisionConstraintFlag;
+		}
+
+		const bool bAddDisableFlagUE4 = (Ar.CustomVer(FPhysicsObjectVersion::GUID) >= FPhysicsObjectVersion::AddDisabledFlag);
+		const bool bAddDisableFlagUE5 = (Ar.CustomVer(FUE5MainStreamObjectVersion::GUID) >= FUE5MainStreamObjectVersion::AddDisabledFlag);
+		if (bAddDisableFlagUE4 || bAddDisableFlagUE5)
+		{
+			Ar << bDisabled;
+		}
+		
+		const bool bAddChaosMaxLinearAngularSpeedUE4 = (Ar.CustomVer(FPhysicsObjectVersion::GUID) >= FPhysicsObjectVersion::AddChaosMaxLinearAngularSpeed);
+		const bool bAddChaosMaxLinearAngularSpeedUE5 = (Ar.CustomVer(FUE5ReleaseStreamObjectVersion::GUID) >= FUE5ReleaseStreamObjectVersion::AddChaosMaxLinearAngularSpeed);
+		if (bAddChaosMaxLinearAngularSpeedUE4 || bAddChaosMaxLinearAngularSpeedUE5)
+		{
+			Ar << MMaxLinearSpeedSq;
+			Ar << MMaxAngularSpeedSq;
 		}
 	}
 
@@ -274,13 +325,16 @@ public:
 	{
 		SetLinearEtherDrag(Other.LinearEtherDrag());
 		SetAngularEtherDrag(Other.AngularEtherDrag());
+		SetMaxLinearSpeedSq(Other.MaxLinearSpeedSq());
+		SetMaxAngularSpeedSq(Other.MaxAngularSpeedSq());
 		SetObjectState(Other.ObjectState());
 		SetGravityEnabled(Other.GravityEnabled());
 		SetCollisionGroup(Other.CollisionGroup());
-		SetResimType(Other.ResimType());
+		SetSleepType(Other.SleepType());
 		SetOneWayInteraction(Other.OneWayInteraction());
-		SetCollisionConstraintFlag(Other.CollisionConstraintFlag());
+		SetCollisionConstraintFlags(Other.CollisionConstraintFlags());
 		SetCCDEnabled(Other.CCDEnabled());
+		SetDisabled(Other.Disabled());
 	}
 
 	template <typename TOther>
@@ -289,12 +343,15 @@ public:
 		return ObjectState() == Other.ObjectState()
 			&& LinearEtherDrag() == Other.LinearEtherDrag()
 			&& AngularEtherDrag() == Other.AngularEtherDrag()
+			&& MaxLinearSpeedSq() == Other.MaxLinearSpeedSq()
+			&& MaxAngularSpeedSq() == Other.MaxAngularSpeedSq()
 			&& GravityEnabled() == Other.GravityEnabled()
 			&& CollisionGroup() == Other.CollisionGroup()
-			&& ResimType() == Other.ResimType()
+			&& SleepType() == Other.SleepType()
 			&& OneWayInteraction() == Other.OneWayInteraction() 
-			&& CollisionConstraintFlag() == Other.CollisionConstraintFlag()
-			&& CCDEnabled() == Other.CCDEnabled();
+			&& CollisionConstraintFlags() == Other.CollisionConstraintFlags()
+			&& CCDEnabled() == Other.CCDEnabled()
+			&& Disabled() == Other.Disabled();
 	}
 
 	bool operator==(const FParticleDynamicMisc& Other) const
@@ -308,6 +365,12 @@ public:
 	FReal AngularEtherDrag() const { return MAngularEtherDrag; }
 	void SetAngularEtherDrag(FReal InAngularEtherDrag) { MAngularEtherDrag = InAngularEtherDrag; }
 
+	FReal MaxLinearSpeedSq() const { return MMaxLinearSpeedSq; }
+	void SetMaxLinearSpeedSq(FReal InMaxLinearSpeed) { MMaxLinearSpeedSq = InMaxLinearSpeed; }
+
+	FReal MaxAngularSpeedSq() const { return MMaxAngularSpeedSq; }
+	void SetMaxAngularSpeedSq(FReal InMaxAngularSpeed) { MMaxAngularSpeedSq = InMaxAngularSpeed; }
+
 	EObjectStateType ObjectState() const { return MObjectState; }
 	void SetObjectState(EObjectStateType InState){ MObjectState = InState; }
 
@@ -317,14 +380,20 @@ public:
 	bool CCDEnabled() const { return bCCDEnabled; }
 	void SetCCDEnabled(bool bInCCDEnabled) { bCCDEnabled = bInCCDEnabled; }
 
+	bool Disabled() const { return bDisabled; }
+	void SetDisabled(bool bInDisabled) { bDisabled = bInDisabled; }
+
 	int32 CollisionGroup() const { return MCollisionGroup; }
 	void SetCollisionGroup(int32 InGroup){ MCollisionGroup = InGroup; }
 
-	EResimType ResimType() const { return MResimType; }
-	void SetResimType(EResimType Type) { MResimType = Type; }
+	ESleepType SleepType() const { return MSleepType; }
+	void SetSleepType(ESleepType Type) { MSleepType = Type; }
 
-	uint32 CollisionConstraintFlag() const { return MCollisionConstraintFlag; }
-	void SetCollisionConstraintFlag(uint32 InCollisionConstraintFlag) { MCollisionConstraintFlag = InCollisionConstraintFlag; }
+	uint32 CollisionConstraintFlags() const { return MCollisionConstraintFlag; }
+	void SetCollisionConstraintFlags(uint32 InCollisionConstraintFlag) { MCollisionConstraintFlag = InCollisionConstraintFlag; }
+	void AddCollisionConstraintFlag(const ECollisionConstraintFlags Flag) { MCollisionConstraintFlag |= uint32(Flag); }
+	void RemoveCollisionConstraintFlag(const ECollisionConstraintFlags Flag) { MCollisionConstraintFlag &= ~uint32(Flag); }
+	
 	bool OneWayInteraction() const { return MOneWayInteraction; }
 	void SetOneWayInteraction(bool InOneWayInteraction) { MOneWayInteraction = InOneWayInteraction; }
 
@@ -334,16 +403,20 @@ private:
 	//Or consider breaking it (and object state) out of this struct entirely
 	FReal MLinearEtherDrag;
 	FReal MAngularEtherDrag;
+	FReal MMaxLinearSpeedSq;
+	FReal MMaxAngularSpeedSq;
 	int32 MCollisionGroup;
 
 	EObjectStateType MObjectState;
 	EResimType MResimType;
+	ESleepType MSleepType;
 
 	bool MGravityEnabled;
 	bool MOneWayInteraction = false;
 	uint32 MCollisionConstraintFlag = 0;
 
 	bool bCCDEnabled;
+	bool bDisabled;
 };
 
 inline FChaosArchive& operator<<(FChaosArchive& Ar,FParticleDynamicMisc& Data)
@@ -362,7 +435,7 @@ public:
 
 	void Serialize(FChaosArchive& Ar)
 	{
-		Ar << MGeometry;
+		Ar.SerializeConstPtr(MGeometry);
 	}
 
 	template <typename TOther>
@@ -371,7 +444,9 @@ public:
 		SetGeometry(Other.SharedGeometryLowLevel());
 		SetUniqueIdx(Other.UniqueIdx());
 		SetSpatialIdx(Other.SpatialIdx());
-#if CHAOS_CHECKED
+		SetResimType(Other.ResimType());
+		SetEnabledDuringResim(Other.EnabledDuringResim());
+#if CHAOS_DEBUG_NAME
 		SetDebugName(Other.DebugName());
 #endif
 	}
@@ -379,13 +454,11 @@ public:
 	template <typename TOther>
 	bool IsEqual(const TOther& Other) const
 	{
-		return Geometry() == Other.SharedGeometryLowLevel()
+		return Geometry() == Other.Geometry()
 			&& UniqueIdx() == Other.UniqueIdx()
 			&& SpatialIdx() == Other.SpatialIdx()
-#if CHAOS_CHECKED
-			&& DebugName() == Other.DebugName()
-#endif
-			;
+			&& ResimType() == Other.ResimType()
+			&& EnabledDuringResim() == Other.EnabledDuringResim();
 	}
 
 	bool operator==(const FParticleNonFrequentData& Other) const
@@ -393,10 +466,13 @@ public:
 		return IsEqual(Other);
 	}
 
-	TSharedPtr<FImplicitObject, ESPMode::ThreadSafe>& AccessGeometry() { return MGeometry; }
-	const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& Geometry() const { return MGeometry;}
-	const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return MGeometry;}
-	void SetGeometry(const TSharedPtr<FImplicitObject,ESPMode::ThreadSafe>& InGeometry) { MGeometry = InGeometry;}
+	//This function should only be used when geometry is not used by physics thread. The owning particle should not have a solver yet
+	//Avoid using this function unless you know the threading model, see TGeometryParticle::ModifyGeometry
+	FImplicitObject* AccessGeometryDangerous() { return const_cast<FImplicitObject*>(MGeometry.Get()); }
+
+	TSerializablePtr<FImplicitObject> Geometry() const { return TSerializablePtr<const FImplicitObject>(MGeometry);}
+	const TSharedPtr<const FImplicitObject,ESPMode::ThreadSafe>& SharedGeometryLowLevel() const { return MGeometry;}
+	void SetGeometry(const TSharedPtr<const FImplicitObject,ESPMode::ThreadSafe>& InGeometry) { MGeometry = InGeometry;}
 
 	const FUniqueIdx& UniqueIdx() const { return MUniqueIdx; }
 	void SetUniqueIdx(FUniqueIdx InIdx){ MUniqueIdx = InIdx; }
@@ -404,17 +480,28 @@ public:
 	FSpatialAccelerationIdx SpatialIdx() const { return MSpatialIdx; }
 	void SetSpatialIdx(FSpatialAccelerationIdx InIdx){ MSpatialIdx = InIdx; }
 
-#if CHAOS_CHECKED
-	FName DebugName() const { return MDebugName; }
-	void SetDebugName(FName InName) { MDebugName = InName; }
+	EResimType ResimType() const { return MResimType; }
+
+	void SetResimType(EResimType InType)
+	{
+		MResimType = InType;
+	}
+
+	bool EnabledDuringResim() const { return MEnabledDuringResim; }
+	void SetEnabledDuringResim(bool bEnabledDuringResim) { MEnabledDuringResim = bEnabledDuringResim; }
+
+#if CHAOS_DEBUG_NAME
+	const TSharedPtr<FString, ESPMode::ThreadSafe>& DebugName() const { return MDebugName; }
+	void SetDebugName(const TSharedPtr<FString, ESPMode::ThreadSafe>& InName) { MDebugName = InName; }
 #endif
 private:
-	TSharedPtr<FImplicitObject,ESPMode::ThreadSafe> MGeometry;
+	TSharedPtr<const FImplicitObject,ESPMode::ThreadSafe> MGeometry;
 	FUniqueIdx MUniqueIdx;
 	FSpatialAccelerationIdx MSpatialIdx;
-
-#if CHAOS_CHECKED
-	FName MDebugName;
+	EResimType MResimType;
+	bool MEnabledDuringResim;
+#if CHAOS_DEBUG_NAME
+	TSharedPtr<FString, ESPMode::ThreadSafe> MDebugName;
 #endif
 };
 
@@ -522,56 +609,32 @@ inline FChaosArchive& operator<<(FChaosArchive& Ar,FMaterialData& Data)
 	return Ar;
 }
 
-#define PARTICLE_PROPERTY(PropName, Type) PropName,
-	enum class EParticleProperty : uint32
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) PropName,
+	enum class EChaosProperty : uint32
 	{
 #include "ParticleProperties.inl"
 		NumProperties
 	};
 
-#undef PARTICLE_PROPERTY
+#undef CHAOS_PROPERTY
 
-#define PROPERTY_TYPE(TypeName, Type) TypeName,
-	enum class EPropertyType: uint32
-	{
-#include "PropertiesTypes.inl"
-		NumTypes
-	};
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) PropName = (uint32)1 << (uint32)EChaosProperty::PropName,
 
-#undef PROPERTY_TYPE
-
-template <typename T>
-struct TPropertyTypeTrait
-{
-};
-
-#define PROPERTY_TYPE(TypeName, Type) \
-template <>\
-struct TPropertyTypeTrait<Type>\
-{\
-	static constexpr EPropertyType PoolIdx = EPropertyType::TypeName;\
-};
-
-#include "PropertiesTypes.inl"
-#undef PROPERTY_TYPE
-
-#define PARTICLE_PROPERTY(PropName, Type) PropName = (uint32)1 << (uint32)EParticleProperty::PropName,
-
-	enum class EParticleFlags : uint32
+	enum class EChaosPropertyFlags : uint32
 	{
 		#include "ParticleProperties.inl"
 		DummyFlag
 	};
-#undef PARTICLE_PROPERTY
+#undef CHAOS_PROPERTY
 
-	constexpr EParticleFlags ParticlePropToFlag(EParticleProperty Prop)
+	constexpr EChaosPropertyFlags ChaosPropertyToFlag(EChaosProperty Prop)
 	{
 		switch(Prop)
 		{
-			#define PARTICLE_PROPERTY(PropName, Type) case EParticleProperty::PropName: return EParticleFlags::PropName;
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) case EChaosProperty::PropName: return EChaosPropertyFlags::PropName;
 #include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
-		default: return (EParticleFlags)0;
+#undef CHAOS_PROPERTY
+		default: return (EChaosPropertyFlags)0;
 		}
 	}
 
@@ -650,7 +713,7 @@ struct TPropertyTypeTrait<Type>\
 		int32 Bits;
 	};
 
-	using FParticleDirtyFlags = TDirtyFlags<EParticleFlags>;
+	using FDirtyChaosPropertyFlags = TDirtyFlags<EChaosPropertyFlags>;
 	using FShapeDirtyFlags = TDirtyFlags<EShapeFlags>;
 
 	struct FDirtyIdx
@@ -662,7 +725,6 @@ struct TPropertyTypeTrait<Type>\
 	template <typename T>
 	class TDirtyElementPool
 	{
-		static_assert(sizeof(TPropertyTypeTrait<T>::PoolIdx),"Property type must be registered. Is it in PropertiesTypes.inl?");
 	public:
 		const T& GetElement(int32 Idx) const { return Elements[Idx]; }
 		T& GetElement(int32 Idx){ return Elements[Idx]; }
@@ -687,321 +749,51 @@ struct TPropertyTypeTrait<Type>\
 		TArray<T> Elements;
 	};
 
-	//want this for sparse representation
-#if 0
-	template <typename T>
-	class TDirtyElementPool
+
+/** Helper struct to let us know how many proxies are dirty per type,
+  * as well as how to go from a contiguous index into a per bucket index */
+struct FDirtyProxiesBucketInfo
+{
+	int32 Num[(uint32)(EPhysicsProxyType::Count)] = {};
+	int32 TotalNum = 0;
+
+	void Reset()
 	{
-		static_assert(sizeof(TPropertyTypeTrait<T>::PoolIdx),"Property type must be registered. Is it in PropertiesTypes.inl?");
-	public:
-		const T& Read(int32 Idx) const
-		{
-			return Elements[Idx];
-		}
+		for (int32 Idx = 0; Idx < (uint32)EPhysicsProxyType::Count; ++Idx) { Num[Idx] = 0; }
+		TotalNum = 0;
+	}
 
-		void Free(int32 Idx)
+	void GetBucketIdx(int32 Idx, int32& OutBucketIdx, int32& InnerIdx) const
+	{
+		int32 Remaining = Idx;
+		for (int32 BucketIdx = 0; BucketIdx < (uint32)EPhysicsProxyType::Count; ++BucketIdx)
 		{
-			Elements[Idx].~T();
-			FreeIndices.Add(Idx);
-		}
-
-		T Pop(int32 Idx)
-		{
-			FreeIndices.Add(Idx);
-			T Result;
-			Swap(Result,Elements[Idx]);
-			Elements[Idx].~T();
-			return Result;
-		}
-
-		int32 Write(const T& Element)
-		{
-			const int32 Idx = GetFree();
-			Elements[Idx] = Element;
-			return Idx;
-		}
-
-		void Update(int32 Entry, const T& Element)
-		{
-			Elements[Entry] = Element;
-		}
-
-	private:
-
-		int32 GetFree()
-		{
-			//todo: can we avoid default constructors? maybe if std::is_trivially_copyable
-			if(FreeIndices.Num())
+			if (Remaining < Num[BucketIdx])
 			{
-				int32 NewIdx = FreeIndices.Pop(/*bAllowShrinking=*/false);
-				Elements[NewIdx] = T();
-				return NewIdx;
+				InnerIdx = Remaining;
+				OutBucketIdx = BucketIdx;
+				return;
 			}
 			else
 			{
-				return Elements.AddDefaulted(1);
+				Remaining -= Num[BucketIdx];
 			}
 		}
 
-		TArray<T> Elements;
-		TArray<int32> FreeIndices;
-	};
-
-class FDirtyPropertiesManager;
-
-template <typename T>
-class TRemoteProperty
-{
-public:
-	TRemoteProperty()
-	{
-		Idx.bHasEntry = false;
+		check(false);	//couldn't find bucket for the given index
 	}
-
-	TRemoteProperty(const TRemoteProperty<T>& Rhs) = delete;
-	TRemoteProperty(TRemoteProperty<T>&& Rhs)
-	: Idx(Rhs.Idx)
-	{
-		Rhs.bHasEntry = false;
-	}
-
-	~TRemoteProperty()
-	{
-		ensure(!Idx.bHasEntry);	//leaking, make sure to call Pop
-	}
-
-	const T& Read(const FDirtyPropertiesManager& Manager) const;
-	void Clear(FDirtyPropertiesManager& Manager);
-	void Write(FDirtyPropertiesManager& Manager,const T& Val);
-	
-	bool IsSet() const
-	{
-		return Idx.bHasEntry;
-	}
-private:
-	FDirtyIdx Idx;
-
-	TRemoteProperty<T>& operator=(const TRemoteProperty<T>& Rhs){}
 };
 
-struct FParticlePropertiesData
-{
-	FParticlePropertiesData(FDirtyPropertiesManager* InManager = nullptr)
-		: Manager(InManager)
-	{
-	}
-
-	template <typename T, EParticleProperty PropertyIdx>
-	TRemoteProperty<T>& GetProperty()
-	{
-		switch(PropertyIdx)
-		{
-#define PARTICLE_PROPERTY(PropName, Type) case EParticleProperty::PropName: return (TRemoteProperty<T>&) PropName;
-#include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
-		default: check(false);
-		}
-
-		static TRemoteProperty<T> Error;
-		return Error;
-	}
-
-	void Clear()
-	{
-		if(Manager)
-		{
-#define PARTICLE_PROPERTY(PropName, Type) PropName.Clear(*Manager);
-#include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
-		}
-	}
-
-	inline void FreeToManager();
-	
-	~FParticlePropertiesData()
-	{
-		Clear();
-	}
-
-	FDirtyPropertiesManager* GetManager(){ return Manager; }
-	const FDirtyPropertiesManager* GetManager() const { return Manager; }
-
-#define PARTICLE_PROPERTY(PropName, Type)\
-Type const & Get##PropName() const { return PropName.Read(*Manager); }\
-bool Has##PropName() const { return PropName.IsSet(); }\
-Type const * Find##PropName() const { return Has##PropName() ? &Get##PropName() : nullptr; }
-
-#include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
-
-private:
-#define PARTICLE_PROPERTY(PropName, Type) TRemoteProperty<Type> PropName;
-#include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
-
-	FDirtyPropertiesManager* Manager;
-
-};
-
-struct FShapePropertiesData
-{
-	FShapePropertiesData(FDirtyPropertiesManager* InManager)
-		: Manager(InManager)
-	{
-
-	}
-	template <typename T,EShapeProperty PropertyIdx>
-	TRemoteProperty<T>& GetProperty()
-	{
-		switch(PropertyIdx)
-		{
-#define SHAPE_PROPERTY(PropName, Type) case EShapeProperty::PropName: return (TRemoteProperty<T>&) PropName;
-#include "ShapeProperties.inl"
-#undef SHAPE_PROPERTY
-		default: check(false);
-		}
-
-		static TRemoteProperty<T> Error;
-		return Error;
-	}
-
-	void Clear()
-	{
-		if(Manager)
-		{
-#define SHAPE_PROPERTY(PropName, Type) PropName.Clear(*Manager);
-#include "ShapeProperties.inl"
-#undef SHAPE_PROPERTY
-		}
-	}
-
-	~FShapePropertiesData()
-	{
-		Clear();
-	}
-
-	inline void FreeToManager();
-
-	FDirtyPropertiesManager* GetManager(){ return Manager; }
-	const FDirtyPropertiesManager* GetManager() const { return Manager; }
-
-#define SHAPE_PROPERTY(PropName, Type)\
-Type const & Get##PropName() const { return PropName.Read(*Manager); }\
-bool Has##PropName() const { return PropName.IsSet(); }\
-Type const * Find##PropName() const { return Has##PropName() ? &Get##PropName() : nullptr; }
-
-#include "ShapeProperties.inl"
-#undef SHAPE_PROPERTY
-
-private:
-#define SHAPE_PROPERTY(PropName, Type) TRemoteProperty<Type> PropName;
-#include "ShapeProperties.inl"
-#undef SHAPE_PROPERTY
-
-	FDirtyPropertiesManager* Manager;
-};
-
-class FPerShapeData;
-
-class CHAOS_API FShapeRemoteDataContainer
-{
-public:
-	FShapeRemoteDataContainer(FDirtyPropertiesManager* InManager)
-	: Manager(InManager)
-	{
-	}
-
-	~FShapeRemoteDataContainer()
-	{
-		Clear();
-	}
-
-	void SyncShapes(TArray<TUniquePtr<FPerShapeData>, TInlineAllocator<1>>& Shapes);
-	
-	void DetachRemoteData(TArray<TUniquePtr<FPerShapeData>,TInlineAllocator<1>>& Shapes);
-
-	inline void FreeToManager();
-
-	inline FShapePropertiesData* NewRemoteShapeProperties();
-	
-	void Clear()
-	{
-		//todo: avoid iterating all remote data regardless of if dirty or not
-		for(FShapePropertiesData* RemoteData : RemoteDatas)
-		{
-			if(RemoteData)
-			{
-				RemoteData->FreeToManager();
-			}
-		}
-
-		RemoteDatas.Reset();
-	}
-
-	const auto& GetRemoteDatas() const
-	{
-		return RemoteDatas;
-	}
-
-	auto& GetRemoteDatas()
-	{
-		return RemoteDatas;
-	}
-	
-private:
-
-	FDirtyPropertiesManager* Manager;
-	TArray<FShapePropertiesData*,TInlineAllocator<4>> RemoteDatas;
-};
-#endif
 
 class FDirtyPropertiesManager
 {
 public:
 
-#if 0
-	FParticlePropertiesData* NewRemoteParticleProperties()
+	void PrepareBuckets(const FDirtyProxiesBucketInfo& DirtyProxiesBucketInfo)
 	{
-		return RemoteParticlePool.NewEntry(this);
-	}
-
-	void FreeRemoteParticleProperties(FParticlePropertiesData* Entry)
-	{
-		RemoteParticlePool.FreeEntry(Entry);
-	}
-
-	FShapePropertiesData* NewRemoteShapeProperties()
-	{
-		return RemoteShapePool.NewEntry(this);
-	}
-
-	void FreeRemoteShapeProperties(FShapePropertiesData* Entry)
-	{
-		RemoteShapePool.FreeEntry(Entry);
-	}
-
-	FShapeRemoteDataContainer* NewRemoteShapeContainer()
-	{
-		return RemoteShapeContainerPool.NewEntry(this);
-	}
-
-	void FreeRemoteShapeContainer(FShapeRemoteDataContainer* Entry)
-	{
-		RemoteShapeContainerPool.FreeEntry(Entry);
-	}
-#endif
-
-	void SetNumParticles(int32 NumParticles)
-	{
-#define PARTICLE_PROPERTY(PropName, Type) PropName##Pool.SetNum(NumParticles);
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) PropName##Pool.SetNum(DirtyProxiesBucketInfo.Num[(uint32)ProxyType]);
 #include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
-	}
-
-	int32 GetNumParticles() const
-	{
-		//assume this property exists, if it gets renamed just pick any property
-		return XRPool.Num();
+#undef CHAOS_PROPERTY
 	}
 
 	void SetNumShapes(int32 NumShapes)
@@ -1011,14 +803,14 @@ public:
 #undef SHAPE_PROPERTY
 	}
 
-	template <typename T, EParticleProperty PropName>
-	TDirtyElementPool<T>& GetParticlePool()
+	template <typename T, EChaosProperty PropName>
+	TDirtyElementPool<T>& GetChaosPropertyPool()
 	{
 		switch(PropName)
 		{
-#define PARTICLE_PROPERTY(PropName, Type) case EParticleProperty::PropName: return (TDirtyElementPool<T>&)PropName##Pool;
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) case EChaosProperty::PropName: return (TDirtyElementPool<T>&)PropName##Pool;
 #include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
+#undef CHAOS_PROPERTY
 		default: check(false);
 		}
 
@@ -1026,14 +818,14 @@ public:
 		return ErrorPool;
 	}
 
-	template <typename T,EParticleProperty PropName>
-	const TDirtyElementPool<T>& GetParticlePool() const
+	template <typename T,EChaosProperty PropName>
+	const TDirtyElementPool<T>& GetChaosPropertyPool() const
 	{
 		switch(PropName)
 		{
-#define PARTICLE_PROPERTY(PropName, Type) case EParticleProperty::PropName: return (TDirtyElementPool<T>&)PropName##Pool;
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) case EChaosProperty::PropName: return (TDirtyElementPool<T>&)PropName##Pool;
 #include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
+#undef CHAOS_PROPERTY
 		default: check(false);
 		}
 
@@ -1073,58 +865,17 @@ public:
 
 private:
 
-#define PARTICLE_PROPERTY(PropName, Type) TDirtyElementPool<Type> PropName##Pool;
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) TDirtyElementPool<Type> PropName##Pool;
 #include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
+#undef CHAOS_PROPERTY
 
 #define SHAPE_PROPERTY(PropName, Type) TDirtyElementPool<Type> PropName##ShapePool;
 #include "ShapeProperties.inl"
 #undef SHAPE_PROPERTY
 
-#if 0
-	template <typename T>
-	class TRemotePropertiesPool
-	{
-	public:
-		T* NewEntry(FDirtyPropertiesManager* Manager)
-		{
-			if(Pool.Num())
-			{
-				return Pool.Pop(/*bAllowShrinking=*/false);
-			} else
-			{
-				return new T(Manager);
-			}
-		}
-
-		void FreeEntry(T* Entry)
-		{
-			Entry->Clear();
-			Pool.Add(Entry);
-		}
-
-		~TRemotePropertiesPool()
-		{
-			for(T* Entry : Pool)
-			{
-				delete Entry;
-			}
-		}
-
-		int32 NumInPool() const { return Pool.Num(); }
-
-	private:
-		TArray<T*> Pool;
-	};
-
-	TRemotePropertiesPool<FParticlePropertiesData> RemoteParticlePool;
-	TRemotePropertiesPool<FShapePropertiesData> RemoteShapePool;
-	TRemotePropertiesPool<FShapeRemoteDataContainer> RemoteShapeContainerPool;
-#endif
-
 };
 
-class FParticleDirtyData
+class FDirtyChaosProperties
 {
 public:
 	
@@ -1133,73 +884,75 @@ public:
 		ParticleBufferType = Type;
 	}
 
+	//NOTE: this is only valid if the proxy is a particle type and SetParticleBufferType was used
+	//TODO: remove this from API
 	EParticleType GetParticleBufferType() const
 	{
 		return ParticleBufferType;
 	}
 
-	void SetFlags(FParticleDirtyFlags InFlags)
+	void SetFlags(FDirtyChaosPropertyFlags InFlags)
 	{
 		Flags = InFlags;
 	}
 
-	FParticleDirtyFlags GetFlags() const
+	FDirtyChaosPropertyFlags GetFlags() const
 	{
 		return Flags;
 	}
 
-	void DirtyFlag(EParticleFlags Flag)
+	void DirtyFlag(EChaosPropertyFlags Flag)
 	{
 		Flags.MarkDirty(Flag);
 	}
 
-	template <typename T, EParticleProperty PropName>
+	template <typename T, EChaosProperty PropName>
 	void SyncRemote(FDirtyPropertiesManager& Manager, int32 Idx, const T& Val) const
 	{
-		if(Flags.IsDirty(ParticlePropToFlag(PropName)))
+		if(Flags.IsDirty(ChaosPropertyToFlag(PropName)))
 		{
-			Manager.GetParticlePool<T,PropName>().GetElement(Idx) = Val;
+			Manager.GetChaosPropertyPool<T,PropName>().GetElement(Idx) = Val;
 		}
 	}
 
 	void Clear(FDirtyPropertiesManager& Manager, int32 Idx)
 	{
-#define PARTICLE_PROPERTY(PropName, Type) ClearHelper<Type, EParticleProperty::PropName>(Manager, Idx);
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) ClearHelper<Type, EChaosProperty::PropName>(Manager, Idx);
 #include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
+#undef CHAOS_PROPERTY
 		Flags.Clear();
 	}
 
-	bool IsDirty(EParticleFlags InBits) const
+	bool IsDirty(EChaosPropertyFlags InBits) const
 	{
 		return Flags.IsDirty(InBits);
 	}
 
-#define PARTICLE_PROPERTY(PropName, Type)\
-Type const & Get##PropName(const FDirtyPropertiesManager& Manager, int32 Idx) const { return ReadImp<Type, EParticleProperty::PropName>(Manager, Idx); }\
-bool Has##PropName() const { return Flags.IsDirty(ParticlePropToFlag(EParticleProperty::PropName)); }\
+#define CHAOS_PROPERTY(PropName, Type, ProxyType)\
+Type const & Get##PropName(const FDirtyPropertiesManager& Manager, int32 Idx) const { return ReadImp<Type, EChaosProperty::PropName>(Manager, Idx); }\
+bool Has##PropName() const { return Flags.IsDirty(ChaosPropertyToFlag(EChaosProperty::PropName)); }\
 Type const * Find##PropName(const FDirtyPropertiesManager& Manager, int32 Idx) const { return Has##PropName() ? &Get##PropName(Manager, Idx) : nullptr; }
 
 #include "ParticleProperties.inl"
-#undef PARTICLE_PROPERTY
+#undef CHAOS_PROPERTY
 
 private:
-	FParticleDirtyFlags Flags;
+	FDirtyChaosPropertyFlags Flags;
 	EParticleType ParticleBufferType;
 
-	template <typename T,EParticleProperty PropName>
+	template <typename T,EChaosProperty PropName>
 	const T& ReadImp(const FDirtyPropertiesManager& Manager, int32 Idx) const
 	{
-		ensure(Flags.IsDirty(ParticlePropToFlag(PropName)));
-		return Manager.GetParticlePool<T,PropName>().GetElement(Idx);
+		ensure(Flags.IsDirty(ChaosPropertyToFlag(PropName)));
+		return Manager.GetChaosPropertyPool<T,PropName>().GetElement(Idx);
 	}
 
-	template <typename T, EParticleProperty PropName>
+	template <typename T, EChaosProperty PropName>
 	void ClearHelper(FDirtyPropertiesManager& Manager, int32 Idx)
 	{
-		if(Flags.IsDirty(ParticlePropToFlag(PropName)))
+		if(Flags.IsDirty(ChaosPropertyToFlag(PropName)))
 		{
-			Manager.GetParticlePool<T, PropName>().Reset(Idx);
+			Manager.GetChaosPropertyPool<T, PropName>().Reset(Idx);
 		}
 	}
 };
@@ -1230,6 +983,12 @@ public:
 		}
 	}
 
+	template <EShapeProperty PropName>
+	bool IsDirty() const
+	{
+		return Flags.IsDirty(ShapePropToFlag(PropName));
+	}
+
 	void Clear(FDirtyPropertiesManager& Manager, int32 Idx)
 	{
 #define SHAPE_PROPERTY(PropName, Type) ClearHelper<Type, EShapeProperty::PropName>(Manager, Idx);
@@ -1244,7 +1003,7 @@ bool Has##PropName() const { return Flags.IsDirty(ShapePropToFlag(EShapeProperty
 Type const * Find##PropName(const FDirtyPropertiesManager& Manager, int32 Idx) const { return Has##PropName() ? &Get##PropName(Manager, Idx) : nullptr; }
 
 #include "ShapeProperties.inl"
-#undef PARTICLE_PROPERTY
+#undef CHAOS_PROPERTY
 
 private:
 	int32 ShapeIdx;
@@ -1267,65 +1026,96 @@ private:
 	}
 };
 
-#if 0
-void FParticlePropertiesData::FreeToManager()
-{
-	if(Manager)
-	{
-		Manager->FreeRemoteParticleProperties(this);
-	}
-}
+template <typename T>
+class TPropertyPool;
 
-void FShapePropertiesData::FreeToManager()
-{
-	if(Manager)
-	{
-		Manager->FreeRemoteShapeProperties(this);
-	}
-}
-
-void FShapeRemoteDataContainer::FreeToManager()
-{
-	if(Manager)
-	{
-		Manager->FreeRemoteShapeContainer(this);
-	}
-}
-
-FShapePropertiesData* FShapeRemoteDataContainer::NewRemoteShapeProperties()
-{
-	return Manager ? Manager->NewRemoteShapeProperties() : nullptr;
-}
+using FPropertyIdx = int32;
 
 template <typename T>
-const T& TRemoteProperty<T>::Read(const FDirtyPropertiesManager& Manager) const
+class TPropertyPool
 {
-	ensure(Idx.bHasEntry);
-	return Manager.GetPool<T>().Read(Idx.Entry);
-}
+public:
 
-template <typename T>
-void TRemoteProperty<T>::Clear(FDirtyPropertiesManager& Manager)
-{
-	if(Idx.bHasEntry)
+	T& AddElement(FPropertyIdx& OutIdx)
 	{
-		Idx.bHasEntry = false;
-		Manager.GetPool<T>().Pop(Idx.Entry);
+		if(FreeList.Num())
+		{
+			OutIdx = FreeList.Pop();
+			return Elements[OutIdx];
+		}
+		else
+		{
+			OutIdx = Elements.AddDefaulted(1);
+			return Elements[OutIdx];
+		}
 	}
-}
 
-template <typename T>
-void TRemoteProperty<T>::Write(FDirtyPropertiesManager& Manager,const T& Val)
-{
-	if(Idx.bHasEntry)
+	void RemoveElement(const FPropertyIdx Idx)
 	{
-		Manager.GetPool<T>().Update(Idx.Entry,Val);
-	} else
-	{
-		Idx.Entry = Manager.GetPool<T>().Write(Val);
-		Idx.bHasEntry = true;
+		Elements[Idx] = T();
+		FreeList.Push(Idx);
 	}
-}
-#endif
 
+	T& GetElement(const FPropertyIdx Idx)
+	{
+		return Elements[Idx];
+	}
+
+	const T& GetElement(const FPropertyIdx Idx) const
+	{
+		return Elements[Idx];
+	}
+
+	~TPropertyPool()
+	{
+		ensure(Elements.Num() == FreeList.Num());	//All elements have been freed
+	}
+
+private:
+
+	TArray<T> Elements;
+	TArray<FPropertyIdx> FreeList;
+};
+
+//Similar to FDirtyPropertiesManager but is not needed to be used across threads
+//This means we just have one big pool per property that you can new/free into
+class FDirtyPropertiesPool
+{
+public:
+	template <typename T, EChaosProperty PropName>
+	TPropertyPool<T>& GetPool()
+	{
+		switch (PropName)
+		{
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) case EChaosProperty::PropName: return (TPropertyPool<T>&)PropName##Pool;
+#include "ParticleProperties.inl"
+#undef CHAOS_PROPERTY
+		default: check(false);
+		}
+
+		static TPropertyPool<T> ErrorPool;
+		return ErrorPool;
+	}
+
+	template <typename T, EChaosProperty PropName>
+	const TPropertyPool<T>& GetPool() const
+	{
+		switch (PropName)
+		{
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) case EChaosProperty::PropName: return (TPropertyPool<T>&)PropName##Pool;
+#include "ParticleProperties.inl"
+#undef CHAOS_PROPERTY
+		default: check(false);
+		}
+
+		static TPropertyPool<T> ErrorPool;
+		return ErrorPool;
+	}
+
+private:
+
+#define CHAOS_PROPERTY(PropName, Type, ProxyType) TPropertyPool<Type> PropName##Pool;
+#include "ParticleProperties.inl"
+#undef CHAOS_PROPERTY
+};
 }

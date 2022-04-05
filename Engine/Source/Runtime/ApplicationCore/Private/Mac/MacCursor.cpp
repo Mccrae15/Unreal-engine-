@@ -16,7 +16,7 @@ int32 GMacDisableMouseCoalescing = 1;
 static FAutoConsoleVariableRef CVarMacDisableMouseCoalescing(
 	TEXT("io.Mac.HighPrecisionDisablesMouseCoalescing"),
 	GMacDisableMouseCoalescing,
-	TEXT("If set to true then OS X mouse event coalescing will be disabled while using high-precision mouse mode, to send all mouse events to UE4's event handling routines to reduce apparent mouse lag. (Default: True)"));
+	TEXT("If set to true then OS X mouse event coalescing will be disabled while using high-precision mouse mode, to send all mouse events to Unreal's event handling routines to reduce apparent mouse lag. (Default: True)"));
 
 int32 GMacDisableMouseAcceleration = 0;
 static FAutoConsoleVariableRef CVarMacDisableMouseAcceleration(
@@ -363,10 +363,10 @@ void FMacCursor::Lock(const RECT* const Bounds)
 	}
 	else
 	{
-		CursorClipRect.Min.X = FMath::TruncToInt(Bounds->left);
-		CursorClipRect.Min.Y = FMath::TruncToInt(Bounds->top);
-		CursorClipRect.Max.X = Bounds->right > Bounds->left ? FMath::TruncToInt(Bounds->right) - 1 : Bounds->left;
-		CursorClipRect.Max.Y = Bounds->bottom > Bounds->top ? FMath::TruncToInt(Bounds->bottom) - 1 : Bounds->top;
+		CursorClipRect.Min.X = Bounds->left;
+		CursorClipRect.Min.Y = Bounds->top;
+		CursorClipRect.Max.X = Bounds->right > Bounds->left ? Bounds->right - 1 : Bounds->left;
+		CursorClipRect.Max.Y = Bounds->bottom > Bounds->top ? Bounds->bottom - 1 : Bounds->top;
 	}
 
 	MacApplication->OnCursorLock();

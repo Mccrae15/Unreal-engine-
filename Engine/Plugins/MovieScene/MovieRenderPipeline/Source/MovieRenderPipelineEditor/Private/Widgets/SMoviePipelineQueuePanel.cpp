@@ -54,7 +54,10 @@ PRAGMA_DISABLE_OPTIMIZATION
 void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 {
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::Get().LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	FDetailsViewArgs DetailsViewArgs(false, false, false, FDetailsViewArgs::HideNameArea, true);
+	FDetailsViewArgs DetailsViewArgs;
+	DetailsViewArgs.bAllowSearch = false;
+	DetailsViewArgs.NameAreaSettings = FDetailsViewArgs::HideNameArea;
+	DetailsViewArgs.bHideSelectionTip = true;
 	DetailsViewArgs.ColumnWidth = 0.7f;
 
 	JobDetailsPanelWidget = PropertyEditorModule.CreateDetailView(DetailsViewArgs);
@@ -131,7 +134,7 @@ void SMoviePipelineQueuePanel::Construct(const FArguments& InArgs)
 						.AutoWidth()
 						[
 							SNew(SImage)
-							.Image(FEditorStyle::Get().GetBrush("AssetEditor.SaveAsset.Greyscale"))
+							.Image(FEditorStyle::Get().GetBrush("AssetEditor.SaveAsset"))
 						]
 
 						+ SHorizontalBox::Slot()
@@ -276,6 +279,7 @@ bool SMoviePipelineQueuePanel::IsRenderLocalEnabled() const
 	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
 	const bool bHasExecutor = ProjectSettings->DefaultLocalExecutor != nullptr;
 	const bool bNotRendering = !Subsystem->IsRendering();
+	const bool bConfigWindowIsOpen = WeakEditorWindow.IsValid();
 
 	bool bAtLeastOneJobAvailable = false;
 	for (UMoviePipelineExecutorJob* Job : Subsystem->GetQueue()->GetJobs())
@@ -288,7 +292,7 @@ bool SMoviePipelineQueuePanel::IsRenderLocalEnabled() const
 	}
 
 	const bool bWorldIsActive = GEditor->IsPlaySessionInProgress();
-	return bHasExecutor && bNotRendering && bAtLeastOneJobAvailable && !bWorldIsActive;
+	return bHasExecutor && bNotRendering && bAtLeastOneJobAvailable && !bWorldIsActive && !bConfigWindowIsOpen;
 }
 
 FReply SMoviePipelineQueuePanel::OnRenderRemoteRequested()
@@ -311,6 +315,7 @@ bool SMoviePipelineQueuePanel::IsRenderRemoteEnabled() const
 	const UMovieRenderPipelineProjectSettings* ProjectSettings = GetDefault<UMovieRenderPipelineProjectSettings>();
 	const bool bHasExecutor = ProjectSettings->DefaultRemoteExecutor != nullptr;
 	const bool bNotRendering = !Subsystem->IsRendering();
+	const bool bConfigWindowIsOpen = WeakEditorWindow.IsValid();
 
 	bool bAtLeastOneJobAvailable = false;
 	for (UMoviePipelineExecutorJob* Job : Subsystem->GetQueue()->GetJobs())
@@ -322,7 +327,7 @@ bool SMoviePipelineQueuePanel::IsRenderRemoteEnabled() const
 		}
 	}
 
-	return bHasExecutor && bNotRendering && bAtLeastOneJobAvailable;
+	return bHasExecutor && bNotRendering && bAtLeastOneJobAvailable && !bConfigWindowIsOpen;
 }
 
 void SMoviePipelineQueuePanel::OnJobPresetChosen(TWeakObjectPtr<UMoviePipelineExecutorJob> InJob, TWeakObjectPtr<UMoviePipelineExecutorShot> InShot)
@@ -493,7 +498,7 @@ TSharedRef<SWidget> SMoviePipelineQueuePanel::OnGenerateSavedQueuesMenu()
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("SaveAsQueue_Text", "Save As Asset"),
 		LOCTEXT("SaveAsQueue_Tip", "Save the current configuration as a new preset that can be shared between multiple jobs, or imported later as the base of a new configuration."),
-		FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset.Greyscale"),
+		FSlateIcon(FEditorStyle::Get().GetStyleSetName(), "AssetEditor.SaveAsset"),
 		FUIAction(FExecuteAction::CreateSP(this, &SMoviePipelineQueuePanel::OnSaveAsAsset))
 	);
 
@@ -621,6 +626,7 @@ void SMoviePipelineQueuePanel::OnSaveAsAsset()
 	// Saving into a new package
 	const FString NewAssetName = FPackageName::GetLongPackageAssetName(PackageName);
 	UPackage* NewPackage = CreatePackage(*PackageName);
+	NewPackage->MarkAsFullyLoaded();
 	UMoviePipelineQueue* DuplicateQueue = DuplicateObject<UMoviePipelineQueue>(CurrentQueue, NewPackage, *NewAssetName);
 
 	if (DuplicateQueue)

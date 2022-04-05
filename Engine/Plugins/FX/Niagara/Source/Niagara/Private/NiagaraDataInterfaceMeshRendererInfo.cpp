@@ -38,8 +38,8 @@ class FNDIMeshRendererInfo
 public:
 	struct FMeshData
 	{
-		FVector MinLocalBounds = FVector(ForceInitToZero);
-		FVector MaxLocalBounds = FVector(ForceInitToZero);
+		FVector3f MinLocalBounds = FVector3f(ForceInitToZero);
+		FVector3f MaxLocalBounds = FVector3f(ForceInitToZero);
 	};
 
 	using FMeshDataArray = TArray<FMeshData>;
@@ -74,25 +74,24 @@ public:
 	{}
 
 	uint32 GetNumMeshes() { return MeshData.Num(); }
-	FVertexBufferRHIRef GetMeshDataBufferRHI() const { return BufferMeshDataRHI; }
+	FBufferRHIRef GetMeshDataBufferRHI() const { return BufferMeshDataRHI; }
 	FShaderResourceViewRHIRef GetMeshDataBufferSRV() const { return BufferMeshDataSRV; }
 
 	virtual void InitRHI() override final
 	{
-		FRHIResourceCreateInfo CreateInfo;
-		void* BufferData = nullptr;
-		uint32 SizeByte = MeshData.Num() * sizeof(FVector) * 2;
+		uint32 SizeByte = MeshData.Num() * sizeof(FVector3f) * 2;
 		
 		if (SizeByte > 0)
 		{
-			BufferMeshDataRHI = RHICreateAndLockVertexBuffer(SizeByte, BUF_Static | BUF_ShaderResource, CreateInfo, BufferData);		
-			FVector* BufferDataVector = reinterpret_cast<FVector*>(BufferData);
+			FRHIResourceCreateInfo CreateInfo(TEXT("FNDIMeshRendererInfoGPUData"));
+			BufferMeshDataRHI = RHICreateBuffer(SizeByte, BUF_Static | BUF_VertexBuffer | BUF_ShaderResource, 0, ERHIAccess::VertexOrIndexBuffer | ERHIAccess::SRVMask, CreateInfo);
+			FVector3f* BufferDataVector = reinterpret_cast<FVector3f*>(RHILockBuffer(BufferMeshDataRHI, 0, SizeByte, RLM_WriteOnly));
 			for (const auto& Mesh : MeshData)
 			{
 				*BufferDataVector++ = Mesh.MinLocalBounds;
 				*BufferDataVector++ = Mesh.MaxLocalBounds;
 			}
-			RHIUnlockVertexBuffer(BufferMeshDataRHI);
+			RHIUnlockBuffer(BufferMeshDataRHI);
 
 			BufferMeshDataSRV = RHICreateShaderResourceView(BufferMeshDataRHI, sizeof(float), PF_R32_FLOAT);
 		}
@@ -115,7 +114,7 @@ public:
 	}
 
 private:
-	FVertexBufferRHIRef BufferMeshDataRHI = nullptr;
+	FBufferRHIRef BufferMeshDataRHI = nullptr;
 	FShaderResourceViewRHIRef BufferMeshDataSRV = nullptr;
 	const FNDIMeshRendererInfo::FMeshDataArray& MeshData; // cached from FNDIMeshRendererInfo, which is guaranteed to live longer than we are
 #if STATS
@@ -281,8 +280,8 @@ void FNDIMeshRendererInfo::ResetMeshData(const UNiagaraMeshRendererProperties& R
 	for (const auto& MeshSlot : Renderer.Meshes)
 	{
 		FMeshData& NewMeshData = OutMeshData.AddDefaulted_GetRef();
-		NewMeshData.MinLocalBounds = FVector(EForceInit::ForceInitToZero);
-		NewMeshData.MaxLocalBounds = FVector(EForceInit::ForceInitToZero);
+		NewMeshData.MinLocalBounds = FVector3f(EForceInit::ForceInitToZero);
+		NewMeshData.MaxLocalBounds = FVector3f(EForceInit::ForceInitToZero);
 
 		if (MeshSlot.Mesh)
 		{
@@ -291,8 +290,8 @@ void FNDIMeshRendererInfo::ResetMeshData(const UNiagaraMeshRendererProperties& R
 			{
 				// Scale the local bounds if there's a scale on this slot
 				// TODO: Should we also apply the pivot offset if it's in mesh space? Seems like that might be strange
-				NewMeshData.MinLocalBounds = LocalBounds.Min * MeshSlot.Scale;
-				NewMeshData.MaxLocalBounds = LocalBounds.Max * MeshSlot.Scale;
+				NewMeshData.MinLocalBounds = FVector3f(LocalBounds.Min * MeshSlot.Scale);
+				NewMeshData.MaxLocalBounds = FVector3f(LocalBounds.Max * MeshSlot.Scale);
 			}
 		}
 	}	
@@ -590,7 +589,7 @@ void UNiagaraDataInterfaceMeshRendererInfo::PushToRenderThreadImpl()
 	}
 }
 
-void UNiagaraDataInterfaceMeshRendererInfo::GetNumMeshes(FVectorVMContext& Context)
+void UNiagaraDataInterfaceMeshRendererInfo::GetNumMeshes(FVectorVMExternalFunctionContext& Context)
 {
 	FNDIOutputParam<int32> OutNum(Context);
 
@@ -601,17 +600,17 @@ void UNiagaraDataInterfaceMeshRendererInfo::GetNumMeshes(FVectorVMContext& Conte
 	}
 }
 
-void UNiagaraDataInterfaceMeshRendererInfo::GetMeshLocalBounds(FVectorVMContext& Context)
+void UNiagaraDataInterfaceMeshRendererInfo::GetMeshLocalBounds(FVectorVMExternalFunctionContext& Context)
 {
 	FNDIInputParam<int32> InMeshIdx(Context);
-	FNDIOutputParam<FVector> OutMinBounds(Context);
-	FNDIOutputParam<FVector> OutMaxBounds(Context);
-	FNDIOutputParam<FVector> OutSize(Context);
+	FNDIOutputParam<FVector3f> OutMinBounds(Context);
+	FNDIOutputParam<FVector3f> OutMaxBounds(Context);
+	FNDIOutputParam<FVector3f> OutSize(Context);
 
 	for (int32 Instance = 0; Instance < Context.GetNumInstances(); ++Instance)
 	{
-		FVector MinLocalBounds(ForceInitToZero);
-		FVector MaxLocalBounds(ForceInitToZero);
+		FVector3f MinLocalBounds(ForceInitToZero);
+		FVector3f MaxLocalBounds(ForceInitToZero);
 		if (Info.IsValid())
 		{
 			const FNDIMeshRendererInfo::FMeshDataArray& MeshData = Info->GetMeshData();

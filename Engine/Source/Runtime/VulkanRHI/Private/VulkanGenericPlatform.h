@@ -30,14 +30,17 @@ public:
 
 	// Array of required extensions for the platform (Required!)
 	static void GetInstanceExtensions(TArray<const ANSICHAR*>& OutExtensions);
+	static void GetInstanceLayers(TArray<const ANSICHAR*>& OutLayers) {}
 	static void GetDeviceExtensions(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutExtensions);
+	static void GetDeviceLayers(EGpuVendorId VendorId, TArray<const ANSICHAR*>& OutLayers) {}
 
 	// create the platform-specific surface object - required
 	static void CreateSurface(VkSurfaceKHR* OutSurface);
 
-	// most platforms support BC* but not ASTC*
+	// most platforms support BC* but not ASTC* or ETC2*
 	static bool SupportsBCTextureFormats() { return true; }
 	static bool SupportsASTCTextureFormats() { return false; }
+	static bool SupportsETC2TextureFormats() { return false; }
 
 	// most platforms can query the surface for the present mode, and size, etc
 	static bool SupportsQuerySurfaceProperties() { return true; }
@@ -80,11 +83,6 @@ public:
 		InOutFeaturesToEnable.sparseResidencyAliased	= VK_FALSE;
 	}
 
-	// Some platforms only support real or non-real UBs, so this function can optimize it out
-	static bool UseRealUBsOptimization(bool bCodeHeaderUseRealUBs) { return bCodeHeaderUseRealUBs; }
-
-	static bool SupportsUniformBufferPatching() { return false; }
-
 	static bool SupportParallelRenderingTasks() { return true; }
 
 	/** The status quo is false, so the default is chosen to not change it. As platforms opt in it may be better to flip the default. */
@@ -93,7 +91,7 @@ public:
 	static bool SupportsVolumeTextureRendering() { return true; }
 
 	// Allow platforms to add extension features to the DeviceInfo pNext chain
-	static void EnablePhysicalDeviceFeatureExtensions(VkDeviceCreateInfo& DeviceInfo) {}
+	static void EnablePhysicalDeviceFeatureExtensions(VkDeviceCreateInfo& DeviceInfo, FVulkanDevice& Device) {}
 
 	static bool RequiresSwapchainGeneralInitialLayout() { return false; }
 

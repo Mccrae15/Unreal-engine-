@@ -15,7 +15,7 @@
 #include "NiagaraScriptVariable.h"
 #include "NiagaraTypes.h"
 #include "SDropTarget.h"
-#include "SNiagaraPinTypeSelector.h"
+#include "Widgets/SNiagaraPinTypeSelector.h"
 #include "ViewModels/NiagaraParameterPanelViewModel.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 #include "Widgets/SToolTip.h"
@@ -58,7 +58,6 @@ void SNiagaraParameterPanel::Construct(const FArguments& InArgs, const TSharedPt
 	ToolkitCommands = InToolkitCommands;
 	bPendingRefresh = false;
 	bParameterItemsPendingChange = false;
-	const FVector2D ViewOptionsShadowOffset = FNiagaraEditorStyle::Get().GetVector("NiagaraEditor.Stack.ViewOptionsShadowOffset");
 	ParametersWithNamespaceModifierRenamePending = MakeShared<TArray<FName>>();
 
 	ParameterPanelViewModel->GetOnRequestRefreshDelegate().BindSP(this, &SNiagaraParameterPanel::Refresh);
@@ -86,7 +85,7 @@ void SNiagaraParameterPanel::Construct(const FArguments& InArgs, const TSharedPt
 	.OnItemSelected(this, &SNiagaraParameterPanel::OnParameterItemSelected)
 	.OnItemsDragged(this, &SNiagaraParameterPanel::OnParameterItemsDragged)
 	.OnItemActivated(this, &SNiagaraParameterPanel::OnParameterItemActived)
-	.AllowMultiselect(false)
+	.AllowMultiselect(true)
 	.ClearSelectionOnClick(true)
 	.CategoryRowStyle(FNiagaraEditorStyle::Get(), "NiagaraEditor.Parameters.TableRow")
 	.OnGetCategoryBackgroundImage(this, &SNiagaraParameterPanel::GetCategoryBackgroundImage)
@@ -96,39 +95,6 @@ void SNiagaraParameterPanel::Construct(const FArguments& InArgs, const TSharedPt
 	.OnGetKeyForItem(this, &SNiagaraParameterPanel::OnGetKeyForItem)
 	.OnGetKeyForCategory(this, &SNiagaraParameterPanel::OnGetKeyForCategory);
 
-	// View options
-	TSharedRef<SWidget> ViewOptionsWidget = SNew(SBorder)
-		.Padding(0)
-		.BorderImage_Static(&SNiagaraParameterPanel::GetViewOptionsBorderBrush)
-		[
-			SNew(SComboButton)
-			.ContentPadding(0)
-			.ForegroundColor(FSlateColor::UseForeground())
-			.ButtonStyle(FEditorStyle::Get(), "ToggleButton")
-			.ToolTipText(LOCTEXT("ViewOptionsToolTip", "View Options"))
-			.OnGetMenuContent(this, &SNiagaraParameterPanel::GetViewOptionsMenu)
-			.ButtonContent()
-			[
-				SNew(SOverlay)
-				// drop shadow
-				+ SOverlay::Slot()
-				.VAlign(VAlign_Top)
-				.Padding(ViewOptionsShadowOffset.X, ViewOptionsShadowOffset.Y, 0, 0)
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("GenericViewButton"))
-					.ColorAndOpacity(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.Stack.ViewOptionsShadowColor"))
-				]
-				+ SOverlay::Slot()
-				.VAlign(VAlign_Top)
-				[
-					SNew(SImage)
-					.Image(FEditorStyle::GetBrush("GenericViewButton"))
-					.ColorAndOpacity(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.Stack.FlatButtonColor"))
-				]
-			]
-		];
-
 	// Finalize the widget
 	ChildSlot
 	[
@@ -137,12 +103,8 @@ void SNiagaraParameterPanel::Construct(const FArguments& InArgs, const TSharedPt
 		[
 			// Drop target
 			SNew(SDropTarget)
-			.OnDrop(this, &SNiagaraParameterPanel::HandleDragDropOperation)
+			.OnDropped(this, &SNiagaraParameterPanel::HandleDragDropOperation)
 			.OnAllowDrop(this, &SNiagaraParameterPanel::GetCanHandleDragDropOperation)
-			.HorizontalImage(FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.DropTarget.BorderHorizontal"))
-			.VerticalImage(FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.DropTarget.BorderVertical"))
-			.BackgroundColor(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.DropTarget.BackgroundColor"))
-			.BackgroundColorHover(FNiagaraEditorStyle::Get().GetColor("NiagaraEditor.DropTarget.BackgroundColorHover"))
 			.Content()
 			[
 				ItemSelector.ToSharedRef()
@@ -242,7 +204,7 @@ TSharedRef<SWidget> SNiagaraParameterPanel::OnGenerateWidgetForItem(const FNiaga
 {
 	// Generate the icon widget.
 	FText			   IconToolTip = Item.ScriptVariable->Variable.GetType().GetNameText();
-	FSlateBrush const* IconBrush = FEditorStyle::GetBrush(TEXT("Kismet.AllClasses.VariableIcon"));
+	FSlateBrush const* IconBrush = Item.GetVariable().GetType().IsStatic() ? FNiagaraEditorStyle::Get().GetBrush(TEXT("NiagaraEditor.StaticIcon")) : FEditorStyle::GetBrush(TEXT("Kismet.AllClasses.VariableIcon"));
 	const FLinearColor TypeColor = UEdGraphSchema_Niagara::GetTypeColor(Item.GetVariable().GetType());
 	FSlateColor        IconColor = FSlateColor(TypeColor);
 	FString			   IconDocLink, IconDocExcerpt;
@@ -546,10 +508,7 @@ bool SNiagaraParameterPanel::GetCanAddParametersToCategory(FNiagaraParameterPane
 
 void SNiagaraParameterPanel::DeleteSelectedItems() const
 {
-	for (const FNiagaraParameterPanelItem& Item : ItemSelector->GetSelectedItems())
-	{
-		ParameterPanelViewModel->DeleteParameter(Item);
-	}
+	ParameterPanelViewModel->DeleteParameters(ItemSelector->GetSelectedItems());
 }
 
 bool SNiagaraParameterPanel::CanDeleteSelectedItems() const
@@ -740,9 +699,15 @@ TSharedRef<SWidget> SNiagaraParameterPanel::GetViewOptionsMenu()
 	return MenuBuilder.MakeWidget();
 }
 
-FReply SNiagaraParameterPanel::HandleDragDropOperation(TSharedPtr<FDragDropOperation> DropOperation)
+FReply SNiagaraParameterPanel::HandleDragDropOperation(const FGeometry& InGeometry, const FDragDropEvent& InDragDropEvent)
 {
-	return ParameterPanelViewModel->HandleDragDropOperation(DropOperation);
+	TSharedPtr<FDragDropOperation> DragDropOperation = InDragDropEvent.GetOperation();
+	if (DragDropOperation)
+	{
+		return ParameterPanelViewModel->HandleDragDropOperation(DragDropOperation);
+	}
+
+	return FReply::Unhandled();
 }
 
 bool SNiagaraParameterPanel::GetCanHandleDragDropOperation(TSharedPtr<FDragDropOperation> DragDropOperation)

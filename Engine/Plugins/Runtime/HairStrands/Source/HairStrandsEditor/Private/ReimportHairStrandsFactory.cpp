@@ -218,9 +218,6 @@ namespace ReimportGroomCacheHelpers
 	{
 		if (Settings.bImportGroomCache && GroomAsset)
 		{
-			// Compute the duration as it is not known yet
-			AnimInfo.Duration = AnimInfo.NumFrames * AnimInfo.SecondsPerFrame;
-
 			// If the reimport was from a GroomCache, set it as the parent to preserve the package name
 			// Otherwise, use the previously set GroomAsset package as the base for the package name
 			if (SourceGroomCache)
@@ -334,7 +331,7 @@ EReimportResult::Type UReimportHairStrandsFactory::Reimport(UObject* Obj)
 	FGroomAnimationInfo AnimInfo;
 
 	// Load the alembic file upfront to preview & report any potential issue
-	FProcessedHairDescription OutDescription;
+	FHairDescriptionGroups OutDescription;
 	{
 		FScopedSlowTask Progress((float)1, LOCTEXT("ReimportHairAsset", "Reimporting hair asset for preview..."), true);
 		Progress.MakeDialog(true);
@@ -346,13 +343,14 @@ EReimportResult::Type UReimportHairStrandsFactory::Reimport(UObject* Obj)
 			return EReimportResult::Failed;
 		}
 
-		FGroomBuilder::ProcessHairDescription(HairDescription, OutDescription);
+		FGroomBuilder::BuildHairDescriptionGroups(HairDescription, OutDescription);
 
 		// Populate the interpolation settings based on the group count from the description
 		const uint32 GroupCount = OutDescription.HairGroups.Num();
 		if (uint32(HairAsset->GetNumHairGroups()) != GroupCount)
 		{
-			HairAsset->SetNumGroup(GroupCount);
+			// When reimporting an asset, if the number of groups has changed, we try to preserve existing settings
+			HairAsset->SetNumGroup(GroupCount, true /*bResetGroupData*/, false /*bResetOtherData*/);
 		}
 
 		// Initialized the settings value based on the assets interpolation options 
@@ -364,24 +362,21 @@ EReimportResult::Type UReimportHairStrandsFactory::Reimport(UObject* Obj)
 		}
 	}
 
-	// GroomCache options are only shown if there's a valid groom animation
-	GroomCacheReimportOptions->ImportSettings.bImportGroomCache = GroomCacheReimportOptions->ImportSettings.bImportGroomCache && AnimInfo.IsValid();
+	FGroomCacheImporter::SetupImportSettings(GroomCacheReimportOptions->ImportSettings, AnimInfo);
 
 	if (!GIsRunningUnattendedScript && !IsAutomatedImport())
 	{
 		// Convert the process hair description into hair groups
 		UGroomHairGroupsPreview* GroupsPreview = NewObject<UGroomHairGroupsPreview>();
 		{
-			uint32 GroupIndex = 0;
-			for (TPair<int32, FProcessedHairDescription::FHairGroup> HairGroupIt : OutDescription.HairGroups)
+			for (const FHairDescriptionGroup& Group : OutDescription.HairGroups)
 			{
-				const FProcessedHairDescription::FHairGroup& Group = HairGroupIt.Value;
-				const FHairGroupInfo& GroupInfo = Group.Key;
-
 				FGroomHairGroupPreview& OutGroup = GroupsPreview->Groups.AddDefaulted_GetRef();
-				OutGroup.GroupID = GroupInfo.GroupID;
-				OutGroup.CurveCount = GroupInfo.NumCurves;
-				OutGroup.GuideCount = GroupInfo.NumGuides;
+				OutGroup.GroupName  = Group.Info.GroupName;
+				OutGroup.GroupID	= Group.Info.GroupID;
+				OutGroup.CurveCount = Group.Info.NumCurves;
+				OutGroup.GuideCount = Group.Info.NumGuides;
+				OutGroup.bHasPrecomputedWeights = Group.Strands.StrandsCurves.HasPrecomputedWeights();
 
 				if (OutGroup.GroupID < OutDescription.HairGroups.Num())
 				{
@@ -406,6 +401,8 @@ EReimportResult::Type UReimportHairStrandsFactory::Reimport(UObject* Obj)
 			}
 		}
 	}
+
+	FGroomCacheImporter::ApplyImportSettings(GroomCacheReimportOptions->ImportSettings, AnimInfo);
 
 	FHairDescription HairDescription;
 	if (!SelectedTranslator->Translate(CurrentFilename, HairDescription, GroomReimportOptions->ConversionSettings))

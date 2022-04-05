@@ -487,12 +487,12 @@ void FSequenceRecorder::DrawDebug(UCanvas* InCanvas, APlayerController* InPlayer
 	if(bCountingDown)
 	{
 		const FVector2D IconSize(128.0f, 128.0f);
-		const FVector2D HalfIconSize(64.0f, 64.0f);
+		const FVector2f HalfIconSize(64.0f, 64.0f);
 		const float LineThickness = 2.0f;
 
-		FVector2D Center;
+		FVector2f Center;
 		InCanvas->GetCenter(Center.X, Center.Y);
-		FVector2D IconPosition = Center - HalfIconSize;
+		FVector2f IconPosition = Center - HalfIconSize;
 
 		InCanvas->SetDrawColor(FColor::White);
 
@@ -503,8 +503,8 @@ void FSequenceRecorder::DrawDebug(UCanvas* InCanvas, APlayerController* InPlayer
 		const float Angle = 2.0f * PI * FMath::Fmod(CurrentDelay, 1.0f);
 		const FVector2D AxisX(0.f, -1.f);
 		const FVector2D AxisY(-1.f, 0.f);
-		const FVector2D EndPos = Center + (AxisX * FMath::Cos(Angle) + AxisY * FMath::Sin(Angle)) * (InCanvas->SizeX + InCanvas->SizeY);
-		FCanvasLineItem LineItem(Center, EndPos);
+		const FVector2D EndPos = FVector2D(Center) + (AxisX * FMath::Cos(Angle) + AxisY * FMath::Sin(Angle)) * (InCanvas->SizeX + InCanvas->SizeY);
+		FCanvasLineItem LineItem(FVector2D(Center), EndPos);
 		LineItem.LineThickness = LineThickness;
 		LineItem.SetColor(FLinearColor::Black);
 		InCanvas->DrawItem(LineItem);
@@ -544,7 +544,7 @@ void FSequenceRecorder::DrawDebug(UCanvas* InCanvas, APlayerController* InPlayer
 		TimeAccumulator -= Minutes * 60.0f;
 		float Seconds = FMath::FloorToFloat(TimeAccumulator);
 		TimeAccumulator -= Seconds;
-		float Frames = FMath::FloorToFloat(TimeAccumulator * GetDefault<USequenceRecorderSettings>()->DefaultAnimationSettings.SampleRate);
+		float Frames = FMath::FloorToFloat(GetDefault<USequenceRecorderSettings>()->DefaultAnimationSettings.SampleFrameRate.AsFrameTime(TimeAccumulator).AsDecimal());
 
 		FNumberFormattingOptions Options;
 		Options.MinimumIntegralDigits = 2;
@@ -762,8 +762,6 @@ bool FSequenceRecorder::StartRecordingInternal(UWorld* World)
 			if(LevelSequence)
 			{
 				CurrentSequence = LevelSequence;
-
-				LevelSequence->GetMovieScene()->TimecodeSource = SequenceRecorderUtils::GetTimecodeSource();
 
 				FAssetRegistryModule::AssetCreated(LevelSequence);
 

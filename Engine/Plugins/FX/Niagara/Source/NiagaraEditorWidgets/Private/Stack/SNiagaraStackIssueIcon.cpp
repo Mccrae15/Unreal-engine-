@@ -11,50 +11,78 @@
 #include "NiagaraEditorStyle.h"
 #include "Internationalization/Text.h"
 #include "NiagaraEditorWidgetsStyle.h"
+#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE "SNiagaraStackIssueIcon"
+
+const float SNiagaraStackIssueIcon::NormalSize = 16.0f;
+const float SNiagaraStackIssueIcon::CompactSize = 10.0f;
 
 void SNiagaraStackIssueIcon::Construct(const FArguments& InArgs, UNiagaraStackViewModel* InStackViewModel, UNiagaraStackEntry* InStackEntry)
 {
 	StackViewModel = InStackViewModel;
 	StackEntry = InStackEntry;
+	IconMode = InArgs._IconMode;
 	if (StackEntry != nullptr)
 	{
 		StackEntry->OnStructureChanged().AddSP(this, &SNiagaraStackIssueIcon::UpdateFromEntry);
 	}
 
-	TSharedRef<SWidget> IconWidget =
-		SNew(SBox)
-		.IsEnabled(this, &SNiagaraStackIssueIcon::GetIconIsEnabled)
-		.ToolTipText(this, &SNiagaraStackIssueIcon::GetIconToolTip)
-		.HeightOverride(16)
-		.WidthOverride(16)
-		.HAlign(HAlign_Center)
-		.VAlign(VAlign_Center)
-		[
-			SNew(SImage)
-			.Image(this, &SNiagaraStackIssueIcon::GetIconBrush)
-		];
-
-	if (InArgs._OnClicked.IsBound())
+	TSharedPtr<SWidget> IconWidget;
+	if (IconMode == EIconMode::Normal)
 	{
-		TSharedRef<SButton> IconButton =
-			SNew(SButton)
-			.ButtonStyle(FEditorStyle::Get(), "HoverHintOnly")
-			.ForegroundColor(FNiagaraEditorWidgetsStyle::Get().GetColor("NiagaraEditor.Stack.ForegroundColor"))
-			.ContentPadding(FMargin(1, 0, 0, 0))
-			.OnClicked(InArgs._OnClicked)
-			.Content()
+		IconWidget =
+			SNew(SBox)
+			.IsEnabled(this, &SNiagaraStackIssueIcon::GetIconIsEnabled)
+			.ToolTipText(this, &SNiagaraStackIssueIcon::GetIconToolTip)
+			.HeightOverride(this, &SNiagaraStackIssueIcon::GetIconHeight)
+			.WidthOverride(NormalSize)
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
 			[
-				IconWidget
+				SNew(SImage)
+				.Image(this, &SNiagaraStackIssueIcon::GetIconBrush)
 			];
 
-		IconWidget = IconButton;
+		if (InArgs._OnClicked.IsBound())
+		{
+			TSharedRef<SButton> IconButton =
+				SNew(SButton)
+				.ContentPadding(0)
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+				.OnClicked(InArgs._OnClicked)
+				.Content()
+				[
+					IconWidget.ToSharedRef()
+				];
+
+			IconWidget = IconButton;
+		}
+	}
+	else if (IconMode == EIconMode::Compact)
+	{
+		IconWidget = 
+			SNew(SBorder)
+			.BorderImage(FNiagaraEditorWidgetsStyle::Get().GetBrush("NiagaraEditor.Stack.ModuleHighlightLarge"))
+			.BorderBackgroundColor(FStyleColors::Panel)
+			.IsEnabled(this, &SNiagaraStackIssueIcon::GetIconIsEnabled)
+			.ToolTipText(this, &SNiagaraStackIssueIcon::GetIconToolTip)
+			[
+				SNew(SBox)
+				.HeightOverride(this, &SNiagaraStackIssueIcon::GetIconHeight)
+				.WidthOverride(CompactSize)
+				.HAlign(HAlign_Center)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SImage)
+					.Image(this, &SNiagaraStackIssueIcon::GetIconBrush)
+				]
+			];
 	}
 
 	ChildSlot
 	[
-		IconWidget
+		IconWidget.ToSharedRef()
 	];
 	UpdateFromEntry(ENiagaraStructureChangedFlags::StructureChanged);
 }
@@ -218,30 +246,45 @@ FText SNiagaraStackIssueIcon::GetIconToolTip() const
 	return IconToolTipCache.GetValue();
 }
 
+FOptionalSize SNiagaraStackIssueIcon::GetIconHeight() const
+{
+	return IconHeight;
+}
+
 void SNiagaraStackIssueIcon::UpdateFromEntry(ENiagaraStructureChangedFlags Flags)
 {
 	if (StackEntry.IsValid() == false || StackEntry->IsFinalized() || StackEntry->HasIssuesOrAnyChildHasIssues() == false)
 	{
 		IconBrush = FEditorStyle::GetBrush("NoBrush");
+		IconHeight = 0;
 		IconToolTipCache = FText();
 		return;
 	}
 
+	IconHeight = IconMode == EIconMode::Compact ? CompactSize : NormalSize;
 	if (StackEntry->GetTotalNumberOfErrorIssues() > 0)
 	{
-		IconBrush = FEditorStyle::GetBrush("Icons.Error");
+		IconBrush = IconMode == EIconMode::Compact
+			? FNiagaraEditorWidgetsStyle::Get().GetBrush("Niagara.CompactStackIssue.Error")
+			: FAppStyle::Get().GetBrush("Icons.ErrorWithColor");
 	}
 	else if (StackEntry->GetTotalNumberOfWarningIssues() > 0)
 	{
-		IconBrush = FEditorStyle::GetBrush("Icons.Warning");
+		IconBrush = IconMode == EIconMode::Compact
+			? FNiagaraEditorWidgetsStyle::Get().GetBrush("Niagara.CompactStackIssue.Warning")
+			: FAppStyle::Get().GetBrush("Icons.WarningWithColor");
 	}
 	else if (StackEntry->GetTotalNumberOfInfoIssues() > 0)
 	{
-		IconBrush = FEditorStyle::GetBrush("Icons.Info");
+		IconBrush = IconMode == EIconMode::Compact
+			? FNiagaraEditorWidgetsStyle::Get().GetBrush("Niagara.CompactStackIssue.Info")
+			: FAppStyle::Get().GetBrush("Icons.InfoWithColor");
 	}
 	else if (StackEntry->GetTotalNumberOfCustomNotes() > 0)
 	{
-		IconBrush = FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Message.CustomNote");
+		IconBrush = IconMode == EIconMode::Compact
+			? FNiagaraEditorWidgetsStyle::Get().GetBrush("Niagara.CompactStackIssue.Message")
+			: FNiagaraEditorStyle::Get().GetBrush("NiagaraEditor.Message.CustomNote");
 	}
 
 	IconToolTipCache.Reset();

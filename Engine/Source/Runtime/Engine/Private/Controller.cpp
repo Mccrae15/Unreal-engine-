@@ -23,6 +23,7 @@
 #include "Engine/Canvas.h"
 
 #include "GameFramework/PlayerState.h"
+#include "ObjectTrace.h"
 
 DEFINE_LOG_CATEGORY(LogController);
 DEFINE_LOG_CATEGORY(LogPath);
@@ -289,7 +290,7 @@ void AController::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
 
-	if ( !IsPendingKill() )
+	if ( IsValid(this) )
 	{
 		GetWorld()->AddController( this );
 
@@ -316,10 +317,10 @@ void AController::Possess(APawn* InPawn)
 
 	REDIRECT_OBJECT_TO_VLOG(InPawn, this);
 
-	const APawn* CurrentPawn = GetPawn();
+	APawn* CurrentPawn = GetPawn();
 
 	// A notification is required when the current assigned pawn is not possessed (i.e. pawn assigned before calling Possess)
-	const bool bNotificationRequired = (CurrentPawn != nullptr && CurrentPawn->GetController() == nullptr);
+	const bool bNotificationRequired = (CurrentPawn != nullptr) && (CurrentPawn->GetController() == nullptr);
 
 	// To preserve backward compatibility we keep notifying derived classed for null pawn in case some
 	// overrides decided to react differently when asked to possess a null pawn.
@@ -328,11 +329,14 @@ void AController::Possess(APawn* InPawn)
 
 	// Notify when pawn to possess (different than the assigned one) has been accepted by the native class or notification is explicitly required
 	APawn* NewPawn = GetPawn();
-	if (NewPawn != CurrentPawn || bNotificationRequired)
+	if ((NewPawn != CurrentPawn) || bNotificationRequired)
 	{
 		ReceivePossess(NewPawn);
 		OnNewPawn.Broadcast(NewPawn);
+		OnPossessedPawnChanged.Broadcast(bNotificationRequired ? nullptr : CurrentPawn, NewPawn);
 	}
+	
+	TRACE_PAWN_POSSESS(this, InPawn); 
 }
 
 void AController::OnPossess(APawn* InPawn)
@@ -362,7 +366,7 @@ void AController::OnPossess(APawn* InPawn)
 	// update rotation to match possessed pawn's rotation
 	SetControlRotation(Pawn->GetActorRotation());
 
-	Pawn->Restart();
+	Pawn->DispatchRestart(false);
 }
 
 void AController::UnPossess()
@@ -383,7 +387,10 @@ void AController::UnPossess()
 	{
 		ReceiveUnPossess(CurrentPawn);
 		OnNewPawn.Broadcast(NewPawn);
+		OnPossessedPawnChanged.Broadcast(CurrentPawn, NewPawn);
 	}
+	
+	TRACE_PAWN_POSSESS(this, (APawn*)nullptr) 
 }
 
 void AController::OnUnPossess()
@@ -519,16 +526,22 @@ void AController::SetPawnFromRep(APawn* InPawn)
 
 void AController::OnRep_Pawn()
 {
+	APawn* StrongOldPawn = OldPawn.Get();
 	// Detect when pawn changes, so we can NULL out the controller on the old pawn
-	if ( OldPawn != NULL && Pawn != OldPawn.Get() && OldPawn->Controller == this )
+	if ((StrongOldPawn != nullptr) && (Pawn != StrongOldPawn) && (StrongOldPawn->Controller == this))
 	{
 		// Set the old controller to NULL, since we are no longer the owner, and can't rely on it replicating to us anymore
-		OldPawn->Controller = NULL;
+		StrongOldPawn->Controller = nullptr;
 	}
 
 	OldPawn = Pawn;
 
 	SetPawn(Pawn);
+
+	if (StrongOldPawn != Pawn)
+	{
+		OnPossessedPawnChanged.Broadcast(StrongOldPawn, Pawn);
+	}
 }
 
 void AController::OnRep_PlayerState()
@@ -701,12 +714,6 @@ bool AController::IsInState(FName InStateName) const
 void AController::BeginInactiveState() {}
 
 void AController::EndInactiveState() {}
-
-
-APlayerController* AController::CastToPlayerController()
-{
-	return Cast<APlayerController>(this);
-}
 
 APawn* AController::K2_GetPawn() const
 {

@@ -54,14 +54,9 @@ TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe> FConcertSourceControlSta
 	return ActualState.IsValid() ? ActualState->GetBaseRevForMerge() : TSharedPtr<ISourceControlRevision, ESPMode::ThreadSafe>();
 }
 
-FName FConcertSourceControlStateProxy::GetIconName() const
+FSlateIcon FConcertSourceControlStateProxy::GetIcon() const
 {
-	return ActualState.IsValid() ? ActualState->GetIconName() : NAME_None;
-}
-
-FName FConcertSourceControlStateProxy::GetSmallIconName() const
-{
-	return ActualState.IsValid() ? ActualState->GetSmallIconName() : NAME_None;
+	return ActualState.IsValid() ? ActualState->GetIcon() : FSlateIcon();
 }
 
 FText FConcertSourceControlStateProxy::GetDisplayName() const
@@ -202,6 +197,60 @@ bool FConcertSourceControlStateProxy::CanRevert() const
 }
 
 
+FConcertSourceControlChangelistStateProxy::FConcertSourceControlChangelistStateProxy(FSourceControlChangelistStateRef InActualState)
+	: ActualState(InActualState)
+{
+}
+
+FName FConcertSourceControlChangelistStateProxy::GetIconName() const
+{
+	return ActualState.IsValid() ? ActualState->GetIconName() : NAME_None;
+}
+
+FName FConcertSourceControlChangelistStateProxy::GetSmallIconName() const
+{
+	return ActualState.IsValid() ? ActualState->GetSmallIconName() : NAME_None;
+}
+
+FText FConcertSourceControlChangelistStateProxy::GetDisplayText() const
+{
+	return ActualState.IsValid() ? ActualState->GetDisplayText() : FText::GetEmpty();
+}
+
+FText FConcertSourceControlChangelistStateProxy::GetDescriptionText() const
+{
+	return ActualState.IsValid() ? ActualState->GetDescriptionText() : FText::GetEmpty();
+}
+
+FText FConcertSourceControlChangelistStateProxy::GetDisplayTooltip() const
+{
+	return ActualState.IsValid() ? ActualState->GetDisplayTooltip() : FText::GetEmpty();
+}
+
+const FDateTime& FConcertSourceControlChangelistStateProxy::GetTimeStamp() const
+{
+	static const FDateTime DummyTime;
+	return ActualState.IsValid() ? ActualState->GetTimeStamp() : DummyTime;
+}
+
+const TArray<FSourceControlStateRef>& FConcertSourceControlChangelistStateProxy::GetFilesStates() const
+{
+	static const TArray<FSourceControlStateRef> DummyResult;
+	return ActualState.IsValid() ? ActualState->GetFilesStates() : DummyResult;
+}
+
+const TArray<FSourceControlStateRef>& FConcertSourceControlChangelistStateProxy::GetShelvedFilesStates() const
+{
+	static const TArray<FSourceControlStateRef> DummyResult;
+	return ActualState.IsValid() ? ActualState->GetShelvedFilesStates() : DummyResult;
+}
+
+FSourceControlChangelistRef FConcertSourceControlChangelistStateProxy::GetChangelist() const
+{
+	static const FSourceControlChangelistRef DummyResult;
+	return ActualState.IsValid() ? ActualState->GetChangelist() : DummyResult;
+}
+
 FConcertSourceControlProxy::FConcertSourceControlProxy()
 	: bHandlingProviderChanges(false)
 	, ActualProvider(nullptr)
@@ -323,6 +372,38 @@ ECommandResult::Type FConcertSourceControlProxy::GetState(const TArray<FString>&
 	return Result;
 }
 
+
+ECommandResult::Type FConcertSourceControlProxy::GetState(const TArray<FSourceControlChangelistRef>& InChangelists, TArray<FSourceControlChangelistStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage)
+{
+	ECommandResult::Type Result = ECommandResult::Failed;
+
+	if (ActualProvider)
+	{
+		Result = ActualProvider->GetState(InChangelists, OutState, InStateCacheUsage);
+	}
+
+	if (Result == ECommandResult::Failed)
+	{
+		// We always return dummy state entries if the underlying provider fails
+		Result = ECommandResult::Succeeded;
+
+		OutState.Reset();
+		for (const FSourceControlChangelistRef& Changelist : InChangelists)
+		{
+			OutState.Add(MakeShared<FConcertSourceControlChangelistStateProxy, ESPMode::ThreadSafe>());
+		}
+ 	}
+	else
+	{
+		for (auto& State : OutState)
+		{
+			State = MakeShared<FConcertSourceControlChangelistStateProxy, ESPMode::ThreadSafe>(State);
+		}
+	}
+
+	return Result;
+}
+
 TArray<FSourceControlStateRef> FConcertSourceControlProxy::GetCachedStateByPredicate(TFunctionRef<bool(const FSourceControlStateRef&)> Predicate) const
 {
 	if (ActualProvider)
@@ -351,17 +432,23 @@ void FConcertSourceControlProxy::UnregisterSourceControlStateChanged_Handle(FDel
 	}
 }
 
-ECommandResult::Type FConcertSourceControlProxy::Execute(const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate)
+ECommandResult::Type FConcertSourceControlProxy::Execute(const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate)
 {
 	if (ActualProvider)
 	{
-		return ActualProvider->Execute(InOperation, InFiles, InConcurrency, InOperationCompleteDelegate);
+		// We do not want to allow a P4 add when we operating within a sandbox. Perforce is the only SCS that will allow you to add a file that does
+		// not yet exist.
+		//
+		if (!IFileManager::Get().IsSandboxEnabled() || InOperation->GetName() != FName(TEXT("MarkForAdd")))
+		{
+			return ActualProvider->Execute(InOperation, InChangelist, InFiles, InConcurrency, InOperationCompleteDelegate);
+		}
 	}
 
 	return ECommandResult::Failed;
 }
 
-bool FConcertSourceControlProxy::CanCancelOperation(const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation) const
+bool FConcertSourceControlProxy::CanCancelOperation(const FSourceControlOperationRef& InOperation) const
 {
 	if (ActualProvider)
 	{
@@ -371,7 +458,7 @@ bool FConcertSourceControlProxy::CanCancelOperation(const TSharedRef<ISourceCont
 	return false;
 }
 
-void FConcertSourceControlProxy::CancelOperation(const TSharedRef<ISourceControlOperation, ESPMode::ThreadSafe>& InOperation)
+void FConcertSourceControlProxy::CancelOperation(const FSourceControlOperationRef& InOperation)
 {
 	if (ActualProvider)
 	{
@@ -421,6 +508,15 @@ TArray<TSharedRef<class ISourceControlLabel>> FConcertSourceControlProxy::GetLab
 		return ActualProvider->GetLabels(InMatchingSpec);
 	}
 	return TArray<TSharedRef<class ISourceControlLabel>>();
+}
+
+TArray<FSourceControlChangelistRef> FConcertSourceControlProxy::GetChangelists(EStateCacheUsage::Type InStateCacheUsage)
+{
+	if (ActualProvider)
+	{
+		return ActualProvider->GetChangelists(InStateCacheUsage);
+	}
+	return TArray<FSourceControlChangelistRef>();
 }
 
 TSharedRef<class SWidget> FConcertSourceControlProxy::MakeSettingsWidget() const

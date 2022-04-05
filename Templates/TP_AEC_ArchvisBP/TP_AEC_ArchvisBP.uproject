@@ -5,32 +5,12 @@
 	"Description": "",
 	"Plugins": [
 		{
-			"Name": "SunPosition",
-			"Enabled": true
-		},
-		{
-			"Name": "DataPrepEditor",
-			"Enabled": true
-		},
-		{
 			"Name": "DatasmithImporter",
 			"Enabled": true
 		},
 		{
-			"Name": "VariantManager",
+			"Name": "DatasmithGLTFImporter",
 			"Enabled": true
-		},
-		{
-			"Name": "PythonScriptPlugin",
-			"Enabled": true
-		},
-		{
-			"Name": "HDRIBackdrop",
-			"Enabled": true
-		},
-		{
-			"Name": "SequencerScripting",
-			"Enabled": false
 		},
 		{
 			"Name": "DatasmithCADImporter",
@@ -47,12 +27,12 @@
 			]
 		},
 		{
-			"Name": "StaticMeshEditorExtension",
-			"Enabled": true
-		},
-		{
-			"Name": "DatasmithGLTFImporter",
-			"Enabled": true
+			"Name": "DatasmithC4DImporter",
+			"Enabled": true,
+			"SupportedTargetPlatforms": [
+				"Win64",
+				"Mac"
+			]
 		},
 		{
 			"Name": "AxFImporter",
@@ -62,19 +42,51 @@
 			]
 		},
 		{
+			"Name": "DataPrepEditor",
+			"Enabled": true
+		},
+		{
+			"Name": "VariantManager",
+			"Enabled": true
+		},
+		{
+			"Name": "SunPosition",
+			"Enabled": true
+		},
+		{
+			"Name": "HDRIBackdrop",
+			"Enabled": true
+		},
+		{
+			"Name": "PythonScriptPlugin",
+			"Enabled": true
+		},
+		{
+			"Name": "SequencerScripting",
+			"Enabled": false
+		},
+		{
 			"Name": "ModelingToolsEditorMode",
 			"Enabled": true
 		},
 		{
-			"Name": "DatasmithC4DImporter",
-			"Enabled": true,
-			"SupportedTargetPlatforms": [
-				"Win64",
-				"Mac"
-			]
+			"Name": "MovieRenderPipeline",
+			"Enabled": true
 		},
 		{
-			"Name": "MovieRenderPipeline",
+			"Name": "MoviePipelineMaskRenderPass",
+			"Enabled": true
+		},
+		{
+			"Name": "ElectraPlayer",
+			"Enabled": true
+		},
+		{
+			"Name": "RemoteControl",
+			"Enabled": true
+		},
+		{
+			"Name": "GPULightmass",
 			"Enabled": true
 		}
 	]

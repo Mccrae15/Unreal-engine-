@@ -12,11 +12,15 @@
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "Containers/ResourceArray.h"
 #include "Rendering/Texture3DResource.h"
+#include "Streaming/VolumeTextureStreaming.h"
+#include "Streaming/TextureStreamIn.h"
+#include "Streaming/TextureStreamOut.h"
+#include "Engine/TextureMipDataProviderFactory.h"
 
 //*****************************************************************************
 
 // Master switch to control whether streaming is enabled for volume texture. 
-bool GSupportsVolumeTextureStreaming = false;
+bool GSupportsVolumeTextureStreaming = true;
 
 // Limit the possible depth of volume texture otherwise when the user converts 2D textures, he can crash the engine.
 const int32 MAX_VOLUME_TEXTURE_DEPTH = 512;
@@ -275,11 +279,25 @@ uint32 UVolumeTexture::CalcTextureMemorySizeEnum( ETextureMipCount Enum ) const
 	}
 }
 
+#if WITH_EDITOR
+bool UVolumeTexture::GetStreamableRenderResourceState(FTexturePlatformData* InPlatformData, FStreamableRenderResourceState& OutState) const
+{
+	TGuardValue<FTexturePlatformData*> Guard(const_cast<UVolumeTexture*>(this)->PlatformData, InPlatformData);
+	const FPixelFormatInfo& FormatInfo = GPixelFormats[GetPixelFormat()];
+	const bool bFormatIsSupported = FormatInfo.Supported;
+	if (GetNumMips() > 0 && GSupportsTexture3D && bFormatIsSupported)
+	{
+		OutState = GetResourcePostInitState(PlatformData, GSupportsVolumeTextureStreaming, 0, 0, /*bSkipCanBeLoaded*/ true);
+		return true;
+	}
+	return false;
+}
+#endif
+
 FTextureResource* UVolumeTexture::CreateResource()
 {
 	const FPixelFormatInfo& FormatInfo = GPixelFormats[GetPixelFormat()];
-	const bool bCompressedFormat = FormatInfo.BlockSizeX > 1; 
-	const bool bFormatIsSupported = FormatInfo.Supported && (!bCompressedFormat || ShaderPlatformSupportsCompression(GMaxRHIShaderPlatform));
+	const bool bFormatIsSupported = FormatInfo.Supported;
 
 	if (GetNumMips() > 0 && GSupportsTexture3D && bFormatIsSupported)
 	{
@@ -374,26 +392,60 @@ void UVolumeTexture::UpdateMipGenSettings()
 
 #endif // #if WITH_EDITOR
 
-bool UVolumeTexture::ShaderPlatformSupportsCompression(FStaticShaderPlatform ShaderPlatform)
-{
-	switch (ShaderPlatform)
-	{
-	case SP_PCD3D_SM5:
-	case SP_VULKAN_SM5:
-	case SP_VULKAN_SM5_LUMIN:
-		return true;
-
-	default:
-		return FDataDrivenShaderPlatformInfo::GetSupportsVolumeTextureCompression(ShaderPlatform);
-	}
-}
-
 bool UVolumeTexture::StreamOut(int32 NewMipCount)
 {
+	FTexture3DResource* Texture3DResource = GetResource() ? GetResource()->GetTexture3DResource() : nullptr;
+	if (!HasPendingInitOrStreaming() && CachedSRRState.StreamOut(NewMipCount) && ensure(Texture3DResource))
+	{
+		FTextureMipAllocator* MipAllocator = nullptr;
+
+		// FVolumeTextureMipAllocator_Virtual?
+		MipAllocator = new FVolumeTextureMipAllocator_Reallocate(this);
+
+		PendingUpdate = new FTextureStreamOut(this, MipAllocator);
+		return !PendingUpdate->IsCancelled();
+	}
 	return false;
 }
 
 bool UVolumeTexture::StreamIn(int32 NewMipCount, bool bHighPrio)
 {
+	FTexture3DResource* Texture3DResource = GetResource() ? GetResource()->GetTexture3DResource() : nullptr;
+	if (!HasPendingInitOrStreaming() && CachedSRRState.StreamIn(NewMipCount) && ensure(Texture3DResource))
+	{
+		FTextureMipDataProvider* CustomMipDataProvider = nullptr;
+		for (UAssetUserData* UserData : AssetUserData)
+		{
+			UTextureMipDataProviderFactory* CustomMipDataProviderFactory = Cast<UTextureMipDataProviderFactory>(UserData);
+			if (CustomMipDataProviderFactory)
+			{
+				CustomMipDataProvider = CustomMipDataProviderFactory->AllocateMipDataProvider(this);
+				if (CustomMipDataProvider)
+				{
+					break;
+				}
+			}
+		}
+
+		FTextureMipAllocator* MipAllocator = nullptr;
+		FTextureMipDataProvider* DefaultMipDataProvider = nullptr;
+
+#if WITH_EDITORONLY_DATA
+		if (FPlatformProperties::HasEditorOnlyData() && !GetOutermost()->bIsCookedForEditor)
+		{
+			DefaultMipDataProvider = new FVolumeTextureMipDataProvider_DDC(this);
+		}
+		else 
+#endif
+		{
+			DefaultMipDataProvider = new FVolumeTextureMipDataProvider_IO(this, bHighPrio);
+		}
+
+		// FVolumeTextureMipAllocator_Virtual?
+		MipAllocator = new FVolumeTextureMipAllocator_Reallocate(this);
+
+		PendingUpdate = new FTextureStreamIn(this, MipAllocator, CustomMipDataProvider, DefaultMipDataProvider);
+		return !PendingUpdate->IsCancelled();
+	}
 	return false;
 }

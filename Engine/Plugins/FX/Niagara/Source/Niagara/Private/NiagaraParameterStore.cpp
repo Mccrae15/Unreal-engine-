@@ -23,14 +23,6 @@ static FAutoConsoleVariableRef CVarNiagaraDumpParticleParameterStores(
 );
 #endif
 
-int32 GNiagaraAllowQuickSortedParameterOffetsCopy = 1;
-static FAutoConsoleVariableRef CVarNiagaraAllowQuickSortedParameterOffetsCopy(
-	TEXT("Niagara.AllowQuickSortedParameterOffsetsCopy"),
-	GNiagaraAllowQuickSortedParameterOffetsCopy,
-	TEXT("Whether to use memcpy to copy sortedparameteroffset arrays. (default=1)\n"),
-	ECVF_Scalability
-);
-
 //////////////////////////////////////////////////////////////////////////
 
 struct FNiagaraVariableSearch
@@ -131,26 +123,66 @@ void FNiagaraVariableWithOffset::PostSerialize(const FArchive& Ar)
 
 void FNiagaraParameterStore::CopySortedParameterOffsets(TArrayView<const FNiagaraVariableWithOffset> Src)
 {
-	if (GNiagaraAllowQuickSortedParameterOffetsCopy)
-	{
-		const int32 VariableCount = Src.Num();
-
-		SortedParameterOffsets.SetNumUninitialized(VariableCount);
-		FMemory::Memcpy(SortedParameterOffsets.GetData(), Src.GetData(), SortedParameterOffsets.GetTypeSize() * VariableCount);
-	}
-	else
-	{
-		SortedParameterOffsets = TArray<FNiagaraVariableWithOffset>(Src.GetData(), Src.Num());
-	}
+	SortedParameterOffsets = TArray<FNiagaraVariableWithOffset>(Src.GetData(), Src.Num());
 }
 
 //////////////////////////////////////////////////////////////////////////
+
+void FNiagaraParameterStore::SetPositionData(const FName& Name, const FVector& Position)
+{
+	for (FNiagaraPositionSource& Data : OriginalPositionData)
+	{
+		if (Data.Name == Name)
+		{
+			Data.Value = Position;
+			return;
+		}
+	}
+	OriginalPositionData.Emplace(Name, Position);
+}
+
+bool FNiagaraParameterStore::HasPositionData(const FName& Name) const
+{
+	for (const FNiagaraPositionSource& Data : OriginalPositionData)
+	{
+		if (Data.Name == Name)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+const FVector* FNiagaraParameterStore::GetPositionData(const FName& Name) const
+{
+	for (const FNiagaraPositionSource& Data : OriginalPositionData)
+	{
+		if (Data.Name == Name)
+		{
+			return &Data.Value;
+		}
+	}
+	return nullptr;
+}
+
+void FNiagaraParameterStore::RemovePositionData(const FName& Name)
+{
+	for (int i = 0; i < OriginalPositionData.Num(); i++)
+	{
+		if (OriginalPositionData[i].Name == Name)
+		{
+			OriginalPositionData.RemoveAtSwap(i);
+			return;
+		}
+	}
+}
 
 FNiagaraParameterStore::FNiagaraParameterStore()
 	: Owner(nullptr)
 	, bParametersDirty(true)
 	, bInterfacesDirty(true)
 	, bUObjectsDirty(true)
+	, bPositionDataDirty(true)
 	, LayoutVersion(0)
 {
 }
@@ -180,6 +212,7 @@ FNiagaraParameterStore& FNiagaraParameterStore::operator=(const FNiagaraParamete
 	AssignParameterData(Other.ParameterData);
 	DataInterfaces = Other.DataInterfaces;
 	UObjects = Other.UObjects;
+	SetOriginalPositionData(Other.OriginalPositionData);
 	++LayoutVersion;
 #if WITH_EDITOR
 	OnChangedDelegate.Broadcast();
@@ -192,6 +225,8 @@ FNiagaraParameterStore::~FNiagaraParameterStore()
 {
 	DEC_MEMORY_STAT_BY(STAT_NiagaraParamStoreMemory, ParameterData.GetAllocatedSize());
 	
+	checkf(IsInGameThread() || (SourceStores.Num() == 0), TEXT("ParameterStore destruction must be on the GameThread(%d) or SourceStores(%d) must be unbound"), IsInGameThread() ? 1 : 0, SourceStores.Num());
+
 	UnbindAll();
 }
 
@@ -228,7 +263,16 @@ void FNiagaraParameterStoreBinding::MatchParameters(FNiagaraParameterStore* Dest
 			const FNiagaraVariableWithOffset& SrcParamWithOffset = SrcParamWithOffsets[SrcIndex];
 			const FNiagaraVariableWithOffset& DestParamWithOffset = DestParamWithOffsets[DestIndex];
 
-			const int32 CompValue = FNiagaraVariableSearch::Compare(SrcParamWithOffset, DestParamWithOffset);
+			int32 CompValue;
+			if (FNiagaraTypeHelper::IsLWCType(SrcParamWithOffset.GetType()) || FNiagaraTypeHelper::IsLWCType(DestParamWithOffset.GetType()))
+			{
+				CompValue = FNiagaraVariableSearch::CompareIgnoreType(SrcParamWithOffset, DestParamWithOffset);
+			}
+			else
+			{
+				CompValue = FNiagaraVariableSearch::Compare(SrcParamWithOffset, DestParamWithOffset);
+			}
+			
 			if (CompValue < 0)
 			{
 				++SrcIndex;
@@ -239,7 +283,7 @@ void FNiagaraParameterStoreBinding::MatchParameters(FNiagaraParameterStore* Dest
 			}
 			else // CompValue == 0
 			{
-				Visitor(SrcParamWithOffset, SrcParamWithOffset.Offset, DestParamWithOffset.Offset);
+				Visitor(DestParamWithOffset, SrcParamWithOffset.Offset, DestParamWithOffset.Offset);
 				++SrcIndex;
 				++DestIndex;
 			}
@@ -252,14 +296,20 @@ void FNiagaraParameterStoreBinding::MatchParameters(FNiagaraParameterStore* Dest
 	{
 		for (const FNiagaraVariableWithOffset& ParamWithOffset : DestParamWithOffsets)
 		{
-			Visitor(ParamWithOffset, SrcStore->IndexOf(ParamWithOffset), ParamWithOffset.Offset);
+			if (const FNiagaraVariableWithOffset* Var = SrcStore->FindParameterVariable(ParamWithOffset, true))
+			{
+				Visitor(ParamWithOffset, Var->Offset, ParamWithOffset.Offset);
+			}
 		}
 	}
 	else
 	{
 		for (const FNiagaraVariableWithOffset& ParamWithOffset : SrcParamWithOffsets)
 		{
-			Visitor(ParamWithOffset, ParamWithOffset.Offset, DestStore->IndexOf(ParamWithOffset));
+			if (const FNiagaraVariableWithOffset* Var = DestStore->FindParameterVariable(ParamWithOffset, true))
+			{
+				Visitor(*Var, ParamWithOffset.Offset, Var->Offset);
+			}
 		}
 	}
 }
@@ -411,23 +461,23 @@ void FNiagaraParameterStore::CheckForNaNs()const
 		}
 		else if (Var.GetType() == FNiagaraTypeDefinition::GetVec2Def())
 		{
-			FVector2D Val = *(FVector2D*)GetParameterData(Offset);
+			FVector2f Val = *(FVector2f*)GetParameterData(Offset);
 			bContainsNans = Val.ContainsNaN();
 		}
 		else if (Var.GetType() == FNiagaraTypeDefinition::GetVec3Def())
 		{
-			FVector Val = *(FVector*)GetParameterData(Offset);
+			FVector3f Val = *(FVector3f*)GetParameterData(Offset);
 			bContainsNans = Val.ContainsNaN();
 		}
 		else if (Var.GetType() == FNiagaraTypeDefinition::GetVec4Def())
 		{
-			FVector4 Val = *(FVector4*)GetParameterData(Offset);
+			FVector4f Val = *(FVector4f*)GetParameterData(Offset);
 			bContainsNans = Val.ContainsNaN();
 		}
 		else if (Var.GetType() == FNiagaraTypeDefinition::GetMatrix4Def())
 		{
 			FMatrix Val;
-			FMemory::Memcpy(&Val, GetParameterData(Offset), sizeof(FMatrix));
+			FMemory::Memcpy(&Val, GetParameterData(Offset), sizeof(FMatrix44f));
 			bContainsNans = Val.ContainsNaN();
 		}
 
@@ -438,6 +488,35 @@ void FNiagaraParameterStore::CheckForNaNs()const
 		}
 	}
 }
+
+#if WITH_EDITORONLY_DATA
+void FNiagaraParameterStore::ConvertParameterType(const FNiagaraVariable& ExistingParam, const FNiagaraTypeDefinition& NewType)
+{
+	ensure(ExistingParam.GetType().GetSize() == NewType.GetSize());
+	int32 Idx = IndexOf(ExistingParam);
+	if (!ensure(Idx != INDEX_NONE))
+	{
+		return;
+	}
+
+	for (FNiagaraVariableWithOffset& OffsetVar : SortedParameterOffsets)
+	{
+		if (OffsetVar.GetName() == ExistingParam.GetName() && OffsetVar.GetType() == ExistingParam.GetType())
+		{
+			OffsetVar.SetType(NewType);
+			break;
+		}
+	}
+	if (NewType == FNiagaraTypeDefinition::GetPositionDef())
+	{
+		FVector CurrentValue = (FVector)*reinterpret_cast<FVector3f*>(GetParameterData_Internal(Idx));
+		SetPositionData(ExistingParam.GetName(), CurrentValue);
+		bPositionDataDirty = true;
+	}
+	
+	OnParameterChange();
+}
+#endif
 
 void FNiagaraParameterStore::TickBindings()
 {
@@ -538,15 +617,22 @@ bool FNiagaraParameterStore::AddParameter(const FNiagaraVariable& Param, bool bI
 		}
 	}
 
-	int32& Offset = SortedParameterOffsets.EmplaceAt_GetRef(InsertPos, Param, (int32)INDEX_NONE).Offset;
+	FNiagaraTypeDefinition ParamType = Param.GetType();
+	FNiagaraLwcStructConverter StructConverter;
+	if (FNiagaraTypeHelper::IsLWCType(ParamType))
+	{
+		StructConverter = FNiagaraTypeRegistry::GetStructConverter(ParamType);
+	}
 
-	if (Param.GetType().IsDataInterface())
+	int32& Offset = SortedParameterOffsets.EmplaceAt_GetRef(InsertPos, Param, (int32)INDEX_NONE, StructConverter).Offset;
+
+	if (ParamType.IsDataInterface())
 	{
 		Offset = DataInterfaces.AddZeroed();
-		DataInterfaces[Offset] = bInitInterfaces ? NewObject<UNiagaraDataInterface>(Owner, const_cast<UClass*>(Param.GetType().GetClass()), NAME_None, RF_Transactional | RF_Public) : nullptr;
+		DataInterfaces[Offset] = bInitInterfaces ? NewObject<UNiagaraDataInterface>(Owner, const_cast<UClass*>(ParamType.GetClass()), NAME_None, RF_Transactional | RF_Public) : nullptr;
 		bInterfacesDirty = true;
 	}
-	else if (Param.GetType().IsUObject())
+	else if (ParamType.IsUObject())
 	{
 		Offset = UObjects.AddDefaulted();
 		bUObjectsDirty = true;
@@ -555,8 +641,10 @@ bool FNiagaraParameterStore::AddParameter(const FNiagaraVariable& Param, bool bI
 	{
 		DEC_MEMORY_STAT_BY(STAT_NiagaraParamStoreMemory, ParameterData.GetAllocatedSize());
 
-		int32 ParamSize = Param.GetSizeInBytes();
-		int32 ParamAlignment = Param.GetAlignment();
+		// the size here is too large for custom structs with lwc types, as we only write data for the swc type. But since the api allows direct access to the memory,
+		// we allocate a bit more than necessary to prevent access violations due to wrong access. Note that the script execution store actually uses the correct size for the allocated data.
+		int32 ParamSize = ParamType.GetSize(); 
+		//int32 ParamAlignment = Param.GetAlignment();
 		//int32 Offset = AlignArbitrary(ParameterData.Num(), ParamAlignment);//TODO: We need to handle alignment better here. Need to both satisfy CPU and GPU alignment concerns. VM doesn't care but the VM complier needs to be aware. Probably best to have everything adhere to GPU alignment rules.
 		Offset = ParameterData.Num();
 				
@@ -564,7 +652,14 @@ bool FNiagaraParameterStore::AddParameter(const FNiagaraVariable& Param, bool bI
 		if (Param.IsDataAllocated())
 		{
 			ParameterData.AddUninitialized(ParamSize);
-			FMemory::Memcpy(GetParameterData_Internal(Offset), Param.GetData(), ParamSize);
+			if (StructConverter.IsValid())
+			{
+				StructConverter.ConvertDataToSimulation(GetParameterData_Internal(Offset), Param.GetData());
+			}
+			else
+			{
+				FMemory::Memcpy(GetParameterData_Internal(Offset), Param.GetData(), ParamSize);	
+			}			
 		}
 		else
 		{
@@ -574,6 +669,12 @@ bool FNiagaraParameterStore::AddParameter(const FNiagaraVariable& Param, bool bI
 		}
 
 		bParametersDirty = true;
+
+		if (ParamType == FNiagaraTypeDefinition::GetPositionDef() && !HasPositionData(Param.GetName()))
+		{
+			SetPositionData(Param.GetName(), FVector::ZeroVector);
+			bPositionDataDirty = true;
+		}
 
 		INC_MEMORY_STAT_BY(STAT_NiagaraParamStoreMemory, ParameterData.GetAllocatedSize());
 	}
@@ -603,7 +704,8 @@ bool FNiagaraParameterStore::RemoveParameter(const FNiagaraVariableBase& ToRemov
 	}
 	//check(!ParameterOffsets.Num()); // Migration to SortedParameterOffsets
 #endif
-
+	RemovePositionData(ToRemove.GetName());
+	
 	if (IndexOf(ToRemove) != INDEX_NONE)
 	{
 		//TODO: Ensure direct bindings are either updated or disallowed here.
@@ -623,20 +725,20 @@ bool FNiagaraParameterStore::RemoveParameter(const FNiagaraVariableBase& ToRemov
 				if (ExistingVar.GetType().IsDataInterface())
 				{
 					int32 Offset = NewInterfaces.AddZeroed();
-					NewOffsets.Add(FNiagaraVariableWithOffset(ExistingVar, Offset));
+					NewOffsets.Add(FNiagaraVariableWithOffset(ExistingVar, Offset, FNiagaraLwcStructConverter()));
 					NewInterfaces[Offset] = DataInterfaces[ExistingOffset];
 				}
 				else if (ExistingVar.IsUObject())
 				{
 					int32 Offset = NewUObjects.AddDefaulted();
-					NewOffsets.Add(FNiagaraVariableWithOffset(ExistingVar, Offset));
+					NewOffsets.Add(FNiagaraVariableWithOffset(ExistingVar, Offset, FNiagaraLwcStructConverter()));
 					NewUObjects[Offset] = UObjects[ExistingOffset];
 				}
 				else
 				{
 					int32 Offset = NewData.Num();
 					int32 ParamSize = ExistingVar.GetSizeInBytes();
-					NewOffsets.Add(FNiagaraVariableWithOffset(ExistingVar, Offset));
+					NewOffsets.Add(FNiagaraVariableWithOffset(ExistingVar, Offset, Existing.StructConverter));
 					NewData.AddUninitialized(ParamSize);
 					FMemory::Memcpy(NewData.GetData() + Offset, ParameterData.GetData() + ExistingOffset, ParamSize);
 				}
@@ -710,6 +812,22 @@ void FNiagaraParameterStore::RenameParameter(const FNiagaraVariableBase& Param, 
 		else
 		{
 			UE_LOG(LogNiagara, Warning, TEXT("Ignored attempt to rename a parameter overtop of an existing parameter!  Old name: %s, New name: %s"), *Param.GetName().ToString(), *NewName.ToString());
+		}
+	}
+}
+
+void FNiagaraParameterStore::ChangeParameterType(const FNiagaraVariableBase& Param,	const FNiagaraTypeDefinition& NewType)
+{
+	ensure(Param.GetType().GetSize() == NewType.GetSize());
+	ensure(Param.GetType() != NewType);
+
+	for (FNiagaraVariableWithOffset& OffsetVar : SortedParameterOffsets)
+	{
+		if (OffsetVar == Param)
+		{
+			OffsetVar.SetType(NewType);
+			OnParameterChange();
+			return;
 		}
 	}
 }
@@ -892,6 +1010,12 @@ void FNiagaraParameterStore::SetUObjects(const TArray<UObject*>& InUObjects, boo
 	}
 }
 
+void FNiagaraParameterStore::SetOriginalPositionData(const TArray<FNiagaraPositionSource>& InOriginalPositionData)
+{
+	OriginalPositionData = InOriginalPositionData;
+	bPositionDataDirty = true;
+}
+
 void FNiagaraParameterStore::InitFromSource(const FNiagaraParameterStore* SrcStore, bool bNotifyAsDirty)
 {
 	Empty(false);
@@ -911,8 +1035,8 @@ void FNiagaraParameterStore::InitFromSource(const FNiagaraParameterStore* SrcSto
 	AssignParameterData(SrcStore->ParameterData);
 
 	DataInterfaces = SrcStore->DataInterfaces;
-
 	UObjects = SrcStore->UObjects;
+	SetOriginalPositionData(SrcStore->OriginalPositionData);
 
 	if (bNotifyAsDirty)
 	{
@@ -921,6 +1045,20 @@ void FNiagaraParameterStore::InitFromSource(const FNiagaraParameterStore* SrcSto
 		MarkUObjectsDirty();
 		OnLayoutChange();
 	}
+}
+
+const FNiagaraVariableWithOffset* FNiagaraParameterStore::FindParameterVariable(const FNiagaraVariable& Parameter, bool IgnoreType) const
+{
+	auto ParameterVariables = ReadParameterVariables();
+	if (ParameterVariables.Num())
+	{
+		int32 MatchingIndex = 0;
+		if (FNiagaraVariableSearch::Find(ParameterVariables.GetData(), Parameter, 0, ParameterVariables.Num(), IgnoreType, MatchingIndex))
+		{
+			return &ParameterVariables[MatchingIndex];
+		}
+	}
+	return nullptr;
 }
 
 void FNiagaraParameterStore::RemoveParameters(FNiagaraParameterStore& DestStore)
@@ -944,8 +1082,8 @@ void FNiagaraParameterStore::Empty(bool bClearBindings)
 	INC_MEMORY_STAT_BY(STAT_NiagaraParamStoreMemory, ParameterData.GetAllocatedSize());
 
 	DataInterfaces.Empty();
-
 	UObjects.Empty();
+	OriginalPositionData.Empty();
 
 	if (bClearBindings)
 	{
@@ -966,13 +1104,112 @@ void FNiagaraParameterStore::Reset(bool bClearBindings)
 	INC_MEMORY_STAT_BY(STAT_NiagaraParamStoreMemory, ParameterData.GetAllocatedSize());
 
 	DataInterfaces.Reset();
-
 	UObjects.Reset();
+	OriginalPositionData.Reset();
 
 	if (bClearBindings)
 	{
 		UnbindAll();
 	}
+}
+
+bool FNiagaraParameterStore::SetPositionParameterValue(const FVector& InValue, const FName& ParamName, bool bAdd)
+{
+	SetPositionData(ParamName, InValue);
+	bPositionDataDirty = true;
+
+	FNiagaraPosition Position = InValue;
+	FNiagaraVariable Param(FNiagaraTypeDefinition::GetPositionDef(), ParamName);
+	return SetParameterValue(Position, Param, bAdd);
+}
+
+const FVector* FNiagaraParameterStore::GetPositionParameterValue(const FName& ParamName) const
+{
+	if (const FVector* SourceData = GetPositionData(ParamName))
+	{
+		return SourceData;
+	}
+	return nullptr;
+}
+
+void FNiagaraParameterStore::ResolvePositions(FNiagaraLWCConverter LwcConverter)
+{
+	if (!bPositionDataDirty)
+	{
+		return;
+	}
+	bPositionDataDirty = false;
+	
+	for (const FNiagaraPositionSource& Data : OriginalPositionData)
+	{
+		FNiagaraVariable Param(FNiagaraTypeDefinition::GetPositionDef(), Data.Name);
+		int32 Offset = IndexOf(Param);
+		if (Offset != INDEX_NONE)
+		{
+			FNiagaraPosition SimPosition = LwcConverter.ConvertWorldToSimulationPosition(Data.Value);
+			FNiagaraPosition* ParamData = reinterpret_cast<FNiagaraPosition*>( GetParameterData_Internal(Offset) );
+			FMemory::Memcpy(ParamData, &SimPosition, sizeof(FNiagaraPosition));
+		}
+	}
+	OnParameterChange();
+}
+
+bool FNiagaraParameterStore::SetParameterData(const uint8* Data, FNiagaraVariable Param, bool bAdd)
+{
+	checkSlow(Data != nullptr);
+	FNiagaraTypeDefinition SourceType = Param.GetType();
+	if (SourceType == FNiagaraTypeDefinition::GetPositionDef())
+	{
+		FNiagaraPosition Value = *reinterpret_cast<const FNiagaraPosition*>(Data);
+		return SetPositionParameterValue((FVector)Value, Param.GetName(), bAdd);
+	}
+	
+	int32 Offset = IndexOf(Param);
+	if (Offset != INDEX_NONE)
+	{
+		checkSlow(!Param.IsDataInterface());
+		uint8* Dest = GetParameterData_Internal(Offset);
+		if (Dest != Data)
+		{
+			FNiagaraLwcStructConverter StructConverter = GetStructConverter(Param);
+			if (StructConverter.IsValid())
+			{
+				StructConverter.ConvertDataToSimulation(Dest, Data);
+			}
+			else
+			{
+				FMemory::Memcpy(Dest, Data, Param.GetSizeInBytes());
+			}
+		}
+		OnParameterChange();
+		return true;
+	}
+	else
+	{
+		if (bAdd)
+		{
+			bool bInitInterfaces = false;
+			bool bTriggerRebind = false;
+			AddParameter(Param, bInitInterfaces, bTriggerRebind, &Offset);
+			check(Offset != INDEX_NONE);
+			uint8* Dest = GetParameterData_Internal(Offset);
+			if (Dest != Data)
+			{
+				FNiagaraLwcStructConverter StructConverter = GetStructConverter(Param);
+				if (StructConverter.IsValid())
+				{
+					StructConverter.ConvertDataToSimulation(Dest, Data);
+				}
+				else
+				{
+					FMemory::Memcpy(Dest, Data, Param.GetSizeInBytes());
+				}
+			}
+			OnLayoutChange();
+			return true;
+		}
+	}
+	return false;
 }
 
 void FNiagaraParameterStore::OnLayoutChange()
@@ -1007,6 +1244,38 @@ const FNiagaraVariableBase* FNiagaraParameterStore::FindVariable(const UNiagaraD
 	return nullptr;
 }
 
+bool FNiagaraParameterStore::CopyParameterData(const FNiagaraVariable& Parameter, uint8* DestinationData) const
+{
+	if (const FNiagaraVariableWithOffset* NiagaraVariableWithOffset = FindParameterVariable(Parameter))
+	{
+		const uint8* SourceData = GetParameterData(NiagaraVariableWithOffset->Offset);
+		if (NiagaraVariableWithOffset->StructConverter.IsValid())
+		{
+			NiagaraVariableWithOffset->StructConverter.ConvertDataFromSimulation(DestinationData, SourceData);
+		}
+		else
+		{
+			FMemory::Memcpy(DestinationData, SourceData, Parameter.GetSizeInBytes());
+		}
+		return true;
+	}
+	return false;
+}
+
+FNiagaraLwcStructConverter FNiagaraParameterStore::GetStructConverter(const FNiagaraVariable& Parameter) const
+{
+	auto ParameterVariables = ReadParameterVariables();
+	if (ParameterVariables.Num())
+	{
+		int32 MatchingIndex = 0;
+		if (FNiagaraVariableSearch::Find(ParameterVariables.GetData(), Parameter, 0, ParameterVariables.Num(), false, MatchingIndex))
+		{
+			return ParameterVariables[MatchingIndex].StructConverter;
+		}
+	}
+	return FNiagaraLwcStructConverter();
+}
+
 const int32* FNiagaraParameterStore::FindParameterOffset(const FNiagaraVariableBase& Parameter, bool IgnoreType) const
 {
 #if WITH_EDITORONLY_DATA
@@ -1037,7 +1306,7 @@ void FNiagaraParameterStore::PostLoad()
 	{
 		for (const TPair<FNiagaraVariable, int32>& ParamOffsetPair : ParameterOffsets)
 		{
-			SortedParameterOffsets.Emplace(ParamOffsetPair.Key, ParamOffsetPair.Value);
+			SortedParameterOffsets.Emplace(ParamOffsetPair.Key, ParamOffsetPair.Value, FNiagaraLwcStructConverter());
 		}
 		ParameterOffsets.Empty();
 	}
@@ -1099,5 +1368,4 @@ void FNiagaraParameterStore::RemoveAllOnChangedHandlers(const void* InUserObject
 	OnChangedDelegate.RemoveAll(InUserObject);
 }
 #endif
-
 //////////////////////////////////////////////////////////////////////////

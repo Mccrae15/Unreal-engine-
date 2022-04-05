@@ -36,6 +36,7 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.AddRange(
 					new string[]
 					{
+						"DeveloperToolSettings",
 						"LevelSequenceEditor",
 						"Sequencer",
 						"UnrealEd",

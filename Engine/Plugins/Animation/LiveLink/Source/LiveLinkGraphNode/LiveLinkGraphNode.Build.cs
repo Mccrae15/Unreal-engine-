@@ -24,6 +24,7 @@ namespace UnrealBuildTool.Rules
 					"InputCore",
 					"KismetCompiler",
 					"LiveLink",
+					"LiveLinkAnimationCore",
 					"LiveLinkInterface",
 					"Persona",
 					"SlateCore",
@@ -35,6 +36,7 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.AddRange(
 					new string[]
 					{
+						"EditorFramework",
 						"UnrealEd",
 						"Kismet",
 						"AnimGraph",

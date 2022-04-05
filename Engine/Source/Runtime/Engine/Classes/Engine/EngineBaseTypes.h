@@ -14,9 +14,12 @@
 #include "UObject/WeakObjectPtr.h"
 #include "Misc/CoreMisc.h"
 #include "Async/TaskGraphInterfaces.h"
+#include "Net/Core/Connection/NetEnums.h"
+
 #include "EngineBaseTypes.generated.h"
 
 class UActorComponent;
+struct FSlateBrush;
 struct FTickContext;
 
 //
@@ -512,70 +515,6 @@ struct TStructOpsTypeTraits<FActorComponentTickFunction> : public TStructOpsType
 	};
 };
 
-/** Types of network failures broadcast from the engine */
-UENUM(BlueprintType)
-namespace ENetworkFailure
-{
-	enum Type
-	{
-		/** A relevant net driver has already been created for this service */
-		NetDriverAlreadyExists,
-		/** The net driver creation failed */
-		NetDriverCreateFailure,
-		/** The net driver failed its Listen() call */
-		NetDriverListenFailure,
-		/** A connection to the net driver has been lost */
-		ConnectionLost,
-		/** A connection to the net driver has timed out */
-		ConnectionTimeout,
-		/** The net driver received an NMT_Failure message */
-		FailureReceived,
-		/** The client needs to upgrade their game */
-		OutdatedClient,
-		/** The server needs to upgrade their game */
-		OutdatedServer,
-		/** There was an error during connection to the game */
-		PendingConnectionFailure,
-		/** NetGuid mismatch */
-		NetGuidMismatch,
-		/** Network checksum mismatch */
-		NetChecksumMismatch
-	};
-}
-
-
-namespace ENetworkFailure
-{
-	inline const TCHAR* ToString(ENetworkFailure::Type FailureType)
-	{
-		switch (FailureType)
-		{
-		case NetDriverAlreadyExists:
-			return TEXT("NetDriverAlreadyExists");
-		case NetDriverCreateFailure:
-			return TEXT("NetDriverCreateFailure");
-		case NetDriverListenFailure:
-			return TEXT("NetDriverListenFailure");
-		case ConnectionLost:
-			return TEXT("ConnectionLost");
-		case ConnectionTimeout:
-			return TEXT("ConnectionTimeout");
-		case FailureReceived:
-			return TEXT("FailureReceived");
-		case OutdatedClient:
-			return TEXT("OutdatedClient");
-		case OutdatedServer:
-			return TEXT("OutdatedServer");
-		case PendingConnectionFailure:
-			return TEXT("PendingConnectionFailure");
-		case NetGuidMismatch:
-			return TEXT("NetGuidMismatch");
-		case NetChecksumMismatch:
-			return TEXT("NetChecksumMismatch");
-		}
-		return TEXT("Unknown ENetworkFailure error occurred.");
-	}
-}
 
 UENUM()
 namespace ENetworkLagState
@@ -911,9 +850,9 @@ UENUM()
 enum EViewModeIndex
 {
 	/** Wireframe w/ brushes. */
-	VMI_BrushWireframe = 0 UMETA(DisplayName = "Brush Wireframe"),
+	VMI_BrushWireframe = 0 UMETA(DisplayName = "Wireframe"),
 	/** Wireframe w/ BSP. */
-	VMI_Wireframe = 1 UMETA(DisplayName = "Wireframe"),
+	VMI_Wireframe = 1 UMETA(DisplayName = "CSG Wireframe"),
 	/** Unlit. */
 	VMI_Unlit = 2 UMETA(DisplayName = "Unlit"),
 	/** Lit. */
@@ -965,6 +904,18 @@ enum EViewModeIndex
 	/** Run ray tracing debug pipeline */
 	VMI_RayTracingDebug = 28 UMETA(DisplayName = "Ray Tracing Debug"),
 
+	/** Visualize various aspects of Nanite */
+	VMI_VisualizeNanite = 29 UMETA(DisplayName = "Nanite Visualization"),
+
+	/** Compare the required texture resolution to the actual resolution. */
+	VMI_VirtualTexturePendingMips = 30 UMETA(DisplayName = "Virtual Texture Pending Mips"),
+
+	/** Visualize Lumen debug views */
+	VMI_VisualizeLumen = 31 UMETA(DisplayName = "Lumen Visualization"),
+
+	/** Visualize virtual shadow map */
+	VMI_VisualizeVirtualShadowMap = 32 UMETA(DisplayName = "Virtual Shadow Map Visualization"),
+
 	VMI_Max UMETA(Hidden),
 
 	// VMI_Unknown - The value assigned to VMI_Unknown must be the highest possible of any member of EViewModeIndex, or GetViewModeName might seg-fault
@@ -984,6 +935,7 @@ public:
 	 * Get the display name associated with a particular EViewModeIndex
 	 */
 	static FText GetViewModeDisplayName(const EViewModeIndex ViewModeIndex);
+	static const FSlateBrush* GetViewModeDisplayIcon(const EViewModeIndex ViewModeIndex);
 };
 
 
@@ -1014,7 +966,7 @@ struct FExposureSettings
 		TCHAR Buffer[BUFFER_SIZE];
 		check((Comma-In)+1 < BUFFER_SIZE);
 		
-		FCString::Strncpy(Buffer, In, (Comma-In)+1);
+		FCString::Strncpy(Buffer, In, UE_PTRDIFF_TO_INT32((Comma-In)+1));
 		FixedEV100 = FCString::Atof(Buffer);
 		bFixed = !!FCString::Atoi(Comma+1);
 	}

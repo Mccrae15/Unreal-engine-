@@ -29,6 +29,13 @@ FAutoConsoleVariableRef CVarReadBufferNumFramesUnusedThresold(
 	GGlobalBufferNumFramesUnusedThresold ,
 	TEXT("Number of frames after which unused global resource allocations will be discarded. Set 0 to ignore. (default=30)"));
 
+int32 GVarDebugForceRuntimeBLAS = 0;
+FAutoConsoleVariableRef CVarDebugForceRuntimeBLAS(
+	TEXT("r.Raytracing.DebugForceRuntimeBLAS"),
+	GVarDebugForceRuntimeBLAS,
+	TEXT("Force building BLAS at runtime."),
+	ECVF_ReadOnly);
+
 FThreadSafeCounter FRenderResource::ResourceListIterationActive;
 
 TArray<int32>& GetFreeIndicesList()
@@ -83,6 +90,7 @@ void FRenderResource::InitResource()
 
 		if (PLATFORM_NEEDS_RHIRESOURCELIST || !GIsRHIInitialized)
 		{
+			LLM_SCOPE(ELLMTag::SceneRender);
 			TArray<FRenderResource*>& ResourceList = GetResourceList();
 			TArray<int32>& FreeIndicesList = GetFreeIndicesList();
 
@@ -295,15 +303,28 @@ void FTextureReference::BeginRelease_GameThread()
 	bInitialized_GameThread = false;
 }
 
+double FTextureReference::GetLastRenderTime() const
+{
+	if (bInitialized_GameThread && TextureReferenceRHI)
+	{
+		return TextureReferenceRHI->GetLastRenderTime();
+	}
+
+	return FLastRenderTimeContainer().GetLastRenderTime();
+}
+
 void FTextureReference::InvalidateLastRenderTime()
 {
-	LastRenderTimeRHI.SetLastRenderTime(-FLT_MAX);
+	if (bInitialized_GameThread && TextureReferenceRHI)
+	{
+		TextureReferenceRHI->SetLastRenderTime(-FLT_MAX);
+	}
 }
 
 void FTextureReference::InitRHI()
 {
 	SCOPED_LOADTIMER(FTextureReference_InitRHI);
-	TextureReferenceRHI = RHICreateTextureReference(&LastRenderTimeRHI);
+	TextureReferenceRHI = RHICreateTextureReference();
 }
 	
 int32 GTextureReferenceRevertsLastRenderContainer = 1;
@@ -314,44 +335,6 @@ FAutoConsoleVariableRef CVarTextureReferenceRevertsLastRenderContainer(
 
 void FTextureReference::ReleaseRHI()
 {
-#if PLATFORM_ANDROID 
-	if (TextureReferenceRHI.GetReference())
-	{
-		bool bTextureReferenceRevertsLastRenderContainer = GTextureReferenceRevertsLastRenderContainer != 0;
-		
-		// Check Android's config rules system so we can HF this at startup if needed.
-		{			
-			static bool bConfigRulesChecked = false;
-			static TOptional<bool> bConfigRulesRevertsLastRenderContainer;
-			if (!bConfigRulesChecked)
-			{
-				const FString* ConfigRulesStr = FAndroidMisc::GetConfigRulesVariable(TEXT("TextureReferenceRevertsLastRenderContainer"));
-				if (ConfigRulesStr)
-				{
-					bConfigRulesRevertsLastRenderContainer = ConfigRulesStr->Equals("true", ESearchCase::IgnoreCase);
-					UE_LOG(LogRHI, Log, TEXT("TextureReferenceRevertsLastRenderContainer, set by config rules: %d"), (int)bConfigRulesRevertsLastRenderContainer.GetValue());
-				}
-				else
-				{
-					UE_LOG(LogRHI, Log, TEXT("TextureReferenceRevertsLastRenderContainer, no config rule set: %d"), (int)bTextureReferenceRevertsLastRenderContainer);
-				}
-				bConfigRulesChecked = true;
-			}
-
-			if (bConfigRulesRevertsLastRenderContainer.IsSet())
-			{
-				bTextureReferenceRevertsLastRenderContainer = bConfigRulesRevertsLastRenderContainer.GetValue();
-			}
-		} 
-
-		if (bTextureReferenceRevertsLastRenderContainer && TextureReferenceRHI->GetLastRenderTimeContainer() == &LastRenderTimeRHI)
-		{
-			// we're going away, TextureReferenceRHI must swap out its (soon to be) dangling ref.
-			TextureReferenceRHI->SetDefaultLastRenderTimeContainer();
-		}
-	}
-#endif
-
 	TextureReferenceRHI.SafeRelease();
 }
 
@@ -372,6 +355,35 @@ TGlobalResource<FNullVertexBuffer> GNullVertexBuffer;
 
 #if RHI_RAYTRACING
 
+void FRayTracingGeometry::CreateRayTracingGeometryFromCPUData(TResourceArray<uint8>& OfflineData)
+{
+	check(OfflineData.Num() == 0 || Initializer.OfflineData == nullptr);
+	if (OfflineData.Num())
+	{
+		Initializer.OfflineData = &OfflineData;
+	}
+
+	if (GVarDebugForceRuntimeBLAS && Initializer.OfflineData != nullptr)
+	{
+		Initializer.OfflineData->Discard();
+		Initializer.OfflineData = nullptr;
+	}
+
+	bRequiresBuild = Initializer.OfflineData == nullptr;		
+	RayTracingGeometryRHI = RHICreateRayTracingGeometry(Initializer);
+}
+
+void FRayTracingGeometry::RequestBuildIfNeeded(ERTAccelerationStructureBuildPriority InBuildPriority)
+{
+	RayTracingGeometryRHI->SetInitializer(Initializer);
+
+	if (bRequiresBuild)
+	{
+		RayTracingBuildRequestIndex = GRayTracingGeometryManager.RequestBuildAccelerationStructure(this, InBuildPriority);
+		bRequiresBuild = false;
+	}	
+}
+
 void FRayTracingGeometry::CreateRayTracingGeometry(ERTAccelerationStructureBuildPriority InBuildPriority)
 {
 	// Release previous RHI object if any
@@ -380,11 +392,16 @@ void FRayTracingGeometry::CreateRayTracingGeometry(ERTAccelerationStructureBuild
 	check(RawData.Num() == 0 || Initializer.OfflineData == nullptr);
 	if (RawData.Num())
 	{
-		Initializer.bDiscardOfflineData = true;
 		Initializer.OfflineData = &RawData;
 	}
 
-	bool bAllSegmentsAreValid = Initializer.Segments.Num() > 0;
+	if (GVarDebugForceRuntimeBLAS && Initializer.OfflineData != nullptr)
+	{
+		Initializer.OfflineData->Discard();
+		Initializer.OfflineData = nullptr;
+	}
+
+	bool bAllSegmentsAreValid = Initializer.Segments.Num() > 0 || Initializer.OfflineData;
 	for (const FRayTracingGeometrySegment& Segment : Initializer.Segments)
 	{
 		if (!Segment.VertexBuffer)
@@ -394,8 +411,10 @@ void FRayTracingGeometry::CreateRayTracingGeometry(ERTAccelerationStructureBuild
 		}
 	}
 
+	const bool bWithoutNativeResource = Initializer.Type == ERayTracingGeometryInitializerType::StreamingDestination;
 	if (bAllSegmentsAreValid)
 	{
+		bValid = !bWithoutNativeResource;
 		RayTracingGeometryRHI = RHICreateRayTracingGeometry(Initializer);
 		if (Initializer.OfflineData == nullptr)
 		{
@@ -403,10 +422,17 @@ void FRayTracingGeometry::CreateRayTracingGeometry(ERTAccelerationStructureBuild
 			if (InBuildPriority != ERTAccelerationStructureBuildPriority::Skip)
 			{
 				RayTracingBuildRequestIndex = GRayTracingGeometryManager.RequestBuildAccelerationStructure(this, InBuildPriority);
+				bRequiresBuild = false;
+			}
+			else
+			{
+				bRequiresBuild = true;
 			}
 		}
 		else
 		{
+			bRequiresBuild = false;
+
 			// Offline data ownership is transferred to the RHI, which discards it after use.
 			// It is no longer valid to use it after this point.
 			Initializer.OfflineData = nullptr;
@@ -414,14 +440,44 @@ void FRayTracingGeometry::CreateRayTracingGeometry(ERTAccelerationStructureBuild
 	}
 }
 
+bool FRayTracingGeometry::IsValid() const
+{
+	return RayTracingGeometryRHI != nullptr && Initializer.TotalPrimitiveCount > 0 && bValid;
+}
+
+void FRayTracingGeometry::InitRHI()
+{
+	if (!IsRayTracingEnabled())
+		return;
+
+	ERTAccelerationStructureBuildPriority BuildPriority = Initializer.Type != ERayTracingGeometryInitializerType::Rendering
+		? ERTAccelerationStructureBuildPriority::Skip
+		: ERTAccelerationStructureBuildPriority::Normal;
+	CreateRayTracingGeometry(BuildPriority);
+}
+
 void FRayTracingGeometry::ReleaseRHI()
+{
+	RemoveBuildRequest();
+	RayTracingGeometryRHI.SafeRelease();
+}
+
+void FRayTracingGeometry::RemoveBuildRequest()
 {
 	if (HasPendingBuildRequest())
 	{
 		GRayTracingGeometryManager.RemoveBuildRequest(RayTracingBuildRequestIndex);
 		RayTracingBuildRequestIndex = INDEX_NONE;
 	}
-	RayTracingGeometryRHI.SafeRelease();
+}
+
+void FRayTracingGeometry::ReleaseResource()
+{
+	// Release any resource references held by the initializer.
+	// This includes index and vertex buffers used for building the BLAS.
+	Initializer = FRayTracingGeometryInitializer {};
+
+	FRenderResource::ReleaseResource();
 }
 
 void FRayTracingGeometry::BoostBuildPriority(float InBoostValue) const
@@ -469,7 +525,7 @@ public:
 		check(MappedBuffer == NULL);
 		check(AllocatedByteCount == 0);
 		check(IsValidRef(VertexBufferRHI));
-		MappedBuffer = (uint8*)RHILockVertexBuffer(VertexBufferRHI, 0, BufferSize, RLM_WriteOnly);
+		MappedBuffer = (uint8*)RHILockBuffer(VertexBufferRHI, 0, BufferSize, RLM_WriteOnly);
 	}
 
 	/**
@@ -479,7 +535,7 @@ public:
 	{
 		check(MappedBuffer != NULL);
 		check(IsValidRef(VertexBufferRHI));
-		RHIUnlockVertexBuffer(VertexBufferRHI);
+		RHIUnlockBuffer(VertexBufferRHI);
 		MappedBuffer = NULL;
 		AllocatedByteCount = 0;
 		NumFramesUnused = 0;
@@ -489,7 +545,7 @@ public:
 	virtual void InitRHI() override
 	{
 		check(!IsValidRef(VertexBufferRHI));
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FDynamicVertexBuffer"));
 		VertexBufferRHI = RHICreateVertexBuffer(BufferSize, BUF_Volatile, CreateInfo);
 		MappedBuffer = NULL;
 		AllocatedByteCount = 0;
@@ -674,7 +730,7 @@ public:
 		check(MappedBuffer == NULL);
 		check(AllocatedByteCount == 0);
 		check(IsValidRef(IndexBufferRHI));
-		MappedBuffer = (uint8*)RHILockIndexBuffer(IndexBufferRHI, 0, BufferSize, RLM_WriteOnly);
+		MappedBuffer = (uint8*)RHILockBuffer(IndexBufferRHI, 0, BufferSize, RLM_WriteOnly);
 	}
 
 	/**
@@ -684,7 +740,7 @@ public:
 	{
 		check(MappedBuffer != NULL);
 		check(IsValidRef(IndexBufferRHI));
-		RHIUnlockIndexBuffer(IndexBufferRHI);
+		RHIUnlockBuffer(IndexBufferRHI);
 		MappedBuffer = NULL;
 		AllocatedByteCount = 0;
 		NumFramesUnused = 0;
@@ -694,7 +750,7 @@ public:
 	virtual void InitRHI() override
 	{
 		check(!IsValidRef(IndexBufferRHI));
-		FRHIResourceCreateInfo CreateInfo;
+		FRHIResourceCreateInfo CreateInfo(TEXT("FDynamicIndexBuffer"));
 		IndexBufferRHI = RHICreateIndexBuffer(Stride, BufferSize, BUF_Volatile, CreateInfo);
 		MappedBuffer = NULL;
 		AllocatedByteCount = 0;
@@ -965,10 +1021,8 @@ bool IsRayTracingEnabled()
 
 #if DO_CHECK && WITH_EDITOR
 	{
-		FString Commandline = FCommandLine::Get();
-		bool bIsCookCommandlet = IsRunningCommandlet() && Commandline.Contains(TEXT("run=cook"));
 		// This function must not be called while cooking
-		if (bIsCookCommandlet)
+		if (IsRunningCookCommandlet())
 		{
 			return false;
 		}

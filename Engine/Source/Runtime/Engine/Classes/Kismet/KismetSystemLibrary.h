@@ -107,7 +107,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 
 	// Returns the full system path to a UObject
 	// If given a non-asset UObject, it will return an empty string
-	UFUNCTION(BlueprintPure, Category = "Utilities")
+	UFUNCTION(BlueprintPure, Category = "Utilities|Paths")
 	static FString GetSystemPath(const UObject* Object);
 
 	// Returns the display name (or actor label), for displaying as a debugging aid.
@@ -117,7 +117,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static FString GetDisplayName(const UObject* Object);
 
 	// Returns the display name of a class
-	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (DisplayName = "Get Display Name"))
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (DisplayName = "Get Class Display Name"))
 	static FString GetClassDisplayName(UClass* Class);
 
 	// Returns the outer object of an object.
@@ -127,6 +127,14 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	// Engine build number, for displaying to end users.
 	UFUNCTION(BlueprintPure, Category="Development", meta=(BlueprintThreadSafe))
 	static FString GetEngineVersion();
+
+	// Build version, for displaying to end users in diagnostics.
+	UFUNCTION(BlueprintPure, Category="Development", meta=(BlueprintThreadSafe))
+	static FString GetBuildVersion();
+
+	// Build configuration, for displaying to end users in diagnostics.
+	UFUNCTION(BlueprintPure, Category = "Development", meta = (BlueprintThreadSafe))
+	static FString GetBuildConfiguration();
 
 	/** Get the name of the current game  */
 	UFUNCTION(BlueprintPure, Category="Game", meta=(BlueprintThreadSafe))
@@ -172,6 +180,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category = "Utilities|Platform")
 	static FString GetPlatformUserDir();
 
+	/** Checks if this object implements a specific interface, works for both native and blueprint interfacse */
 	UFUNCTION(BlueprintPure, Category="Utilities")
 	static bool DoesImplementInterface(const UObject* TestObject, TSubclassOf<UInterface> Interface);
 
@@ -199,9 +208,14 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Networking", meta=(WorldContext="WorldContextObject"))
 	static bool IsStandalone(const UObject* WorldContextObject);
 	
-	/** Returns whether we're currently running in split screen (more than one local player). */
-	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (WorldContext = "WorldContextObject"))
+	/** Returns whether we currently have more than one local player. */
+	UE_DEPRECATED(5.0, "IsSplitScreen was only ever checking if there are more than one local player. Use HasMultipleLocalPlayers instead.")
+	UFUNCTION(BlueprintPure, Category = "Viewport", meta = (WorldContext = "WorldContextObject", DeprecatedFunction, DeprecationMessage = "Use HasMultipleLocalPlayers instead"))
 	static bool IsSplitScreen(const UObject* WorldContextObject);
+
+	/** Returns whether there are currently multiple local players in the given world */
+	UFUNCTION(BlueprintPure, Category = "Viewport", meta = (WorldContext = "WorldContextObject"))
+	static bool HasMultipleLocalPlayers(const UObject* WorldContextObject);
 
 	/** Returns whether this is a build that is packaged for distribution */
 	UFUNCTION(BlueprintPure, Category="Development", meta=(BlueprintThreadSafe))
@@ -215,32 +229,36 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	UFUNCTION(BlueprintPure, Category="Utilities|Platform")
 	static FString GetDeviceId();
 
+	/** Converts an object into a class */
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Cast To Class", CompactNodeTitle = "->", DeterminesOutputType = "Class"), Category="Utilities")
+	static UClass* Conv_ObjectToClass(UObject* Object, TSubclassOf<UObject> Class);
+
 	/** Converts an interfance into an object */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "ToObject (interface)", CompactNodeTitle = "->"), Category="Utilities")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "To Object (Interface)", CompactNodeTitle = "->"), Category="Utilities")
 	static UObject* Conv_InterfaceToObject(const FScriptInterface& Interface); 
 
 	/** Builds a SoftObjectPath struct. Generally you should be using Soft Object References/Ptr types instead */
-	UFUNCTION(BlueprintPure, Category = "SoftObjectPath", meta = (Keywords = "construct build", NativeMakeFunc, BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (Keywords = "construct build", NativeMakeFunc, BlueprintThreadSafe))
 	static FSoftObjectPath MakeSoftObjectPath(const FString& PathString);
 
 	/** Gets the path string out of a Soft Object Path */
-	UFUNCTION(BlueprintPure, Category = "SoftObjectPath", meta = (NativeBreakFunc, BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (NativeBreakFunc, BlueprintThreadSafe))
 	static void BreakSoftObjectPath(FSoftObjectPath InSoftObjectPath, FString& PathString);
 
 	/** Converts a Soft Object Path into a base Soft Object Reference, this is not guaranteed to be resolvable */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToSoftObjectReference (SoftObjectPath)", CompactNodeTitle = "->"), Category = "Utilities")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Soft Object Reference", CompactNodeTitle = "->"), Category = "Utilities")
 	static TSoftObjectPtr<UObject> Conv_SoftObjPathToSoftObjRef(const FSoftObjectPath& SoftObjectPath);
 
 	/** Builds a SoftClassPath struct. Generally you should be using Soft Class References/Ptr types instead */
-	UFUNCTION(BlueprintPure, Category = "SoftClassPath", meta = (Keywords = "construct build", NativeMakeFunc, BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (Keywords = "construct build", NativeMakeFunc, BlueprintThreadSafe))
 	static FSoftClassPath MakeSoftClassPath(const FString& PathString);
 
 	/** Gets the path string out of a Soft Class Path */
-	UFUNCTION(BlueprintPure, Category = "SoftClassPath", meta = (NativeBreakFunc, BlueprintThreadSafe))
+	UFUNCTION(BlueprintPure, Category = "Utilities", meta = (NativeBreakFunc, BlueprintThreadSafe))
 	static void BreakSoftClassPath(FSoftClassPath InSoftClassPath, FString& PathString);
 
 	/** Converts a Soft Class Path into a base Soft Class Reference, this is not guaranteed to be resolvable */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToSoftClassReference (SoftClassPath)", CompactNodeTitle = "->"), Category = "Utilities")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To Soft Class Reference", CompactNodeTitle = "->"), Category = "Utilities")
 	static TSoftClassPtr<UObject> Conv_SoftClassPathToSoftClassRef(const FSoftClassPath& SoftClassPath);
 
 	/** Returns true if the Soft Object Reference is not null */
@@ -248,7 +266,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool IsValidSoftObjectReference(const TSoftObjectPtr<UObject>& SoftObjectReference);
 
 	/** Converts a Soft Object Reference to a string. The other direction is not provided because it cannot be validated */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToString (SoftObjectReference)", CompactNodeTitle = "->", BlueprintThreadSafe), Category = "Utilities")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (SoftObjectReference)", CompactNodeTitle = "->", BlueprintThreadSafe), Category = "Utilities")
 	static FString Conv_SoftObjectReferenceToString(const TSoftObjectPtr<UObject>& SoftObjectReference);
 
 	/** Returns true if the values are equal (A == B) */
@@ -256,7 +274,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool EqualEqual_SoftObjectReference(const TSoftObjectPtr<UObject>& A, const TSoftObjectPtr<UObject>& B);
 
 	/** Returns true if the values are not equal (A != B) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "NotEqual (SoftObjectReference)", CompactNodeTitle = "!=", BlueprintThreadSafe), Category = "Utilities")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Not Equal (SoftObjectReference)", CompactNodeTitle = "!=", BlueprintThreadSafe), Category = "Utilities")
 	static bool NotEqual_SoftObjectReference(const TSoftObjectPtr<UObject>& A, const TSoftObjectPtr<UObject>& B);
 
 	/** Resolves or loads a Soft Object Reference immediately, this will cause hitches and Async Load Asset should be used if possible */
@@ -268,7 +286,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool IsValidSoftClassReference(const TSoftClassPtr<UObject>& SoftClassReference);
 
 	/** Converts a Soft Class Reference to a string. The other direction is not provided because it cannot be validated */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToString (SoftObjectReference)", CompactNodeTitle = "->", BlueprintThreadSafe), Category = "Utilities")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (SoftClassReference)", CompactNodeTitle = "->", BlueprintThreadSafe), Category = "Utilities")
 	static FString Conv_SoftClassReferenceToString(const TSoftClassPtr<UObject>& SoftClassReference);
 
 	/** Returns true if the values are equal (A == B) */
@@ -276,7 +294,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool EqualEqual_SoftClassReference(const TSoftClassPtr<UObject>& A, const TSoftClassPtr<UObject>& B);
 
 	/** Returns true if the values are not equal (A != B) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "NotEqual (SoftClassReference)", CompactNodeTitle = "!=", BlueprintThreadSafe), Category = "Utilities")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Not Equal (SoftClassReference)", CompactNodeTitle = "!=", BlueprintThreadSafe), Category = "Utilities")
 	static bool NotEqual_SoftClassReference(const TSoftClassPtr<UObject>& A, const TSoftClassPtr<UObject>& B);
 
 	/** Resolves or loads a Soft Class Reference immediately, this will cause hitches and Async Load Class Asset should be used if possible */
@@ -316,12 +334,28 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static int32 MakeLiteralInt(int32 Value);
 
 	/**
+	 * Creates a literal 64-bit integer
+	 * @param	Value	value to set the 64-bit integer to
+	 * @return	The literal 64-bit integer
+	 */
+	UFUNCTION(BlueprintPure, Category = "Math|Integer", meta = (BlueprintThreadSafe))
+	static int64 MakeLiteralInt64(int64 Value);
+
+	/**
 	 * Creates a literal float
 	 * @param	Value	value to set the float to
 	 * @return	The literal float
 	 */
 	UFUNCTION(BlueprintPure, Category="Math|Float", meta=(BlueprintThreadSafe))
 	static float MakeLiteralFloat(float Value);
+
+	/**
+	 * Creates a literal double
+	 * @param	Value	value to set the double to
+	 * @return	The literal double
+	 */
+	UFUNCTION(BlueprintPure, Category = "Math|Double", meta = (BlueprintThreadSafe))
+	static double MakeLiteralDouble(double Value);
 
 	/**
 	 * Creates a literal bool
@@ -364,6 +398,16 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static FText MakeLiteralText(FText Value);
 
 	/**
+	 * Prints a string to the log
+	 * If Print To Log is true, it will be visible in the Output Log window.  Otherwise it will be logged only as 'Verbose', so it generally won't show up.
+	 *
+	 * @param	InString		The string to log out
+	 * @param	bPrintToLog		Whether or not to print the output to the log
+	 */
+	UFUNCTION(BlueprintCallable, Category="Utilities|String", meta=(BlueprintThreadSafe, Keywords = "log print", DevelopmentOnly))
+	static void LogString(const FString& InString = FString(TEXT("Hello")), bool bPrintToLog = true);
+	
+	/**
 	 * Prints a string to the log, and optionally, to the screen
 	 * If Print To Log is true, it will be visible in the Output Log window.  Otherwise it will be logged only as 'Verbose', so it generally won't show up.
 	 *
@@ -371,11 +415,12 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param	bPrintToScreen	Whether or not to print the output to the screen
 	 * @param	bPrintToLog		Whether or not to print the output to the log
 	 * @param	bPrintToConsole	Whether or not to print the output to the console
-	 * @param	TextColor		Whether or not to print the output to the console
+	 * @param	TextColor		The color of the text to display
 	 * @param	Duration		The display duration (if Print to Screen is True). Using negative number will result in loading the duration time from the config.
+	 * @param	Key				If a non-empty key is provided, the message will replace any existing on-screen messages with the same key.
 	 */
-	UFUNCTION(BlueprintCallable, meta=(WorldContext="WorldContextObject", CallableWithoutWorldContext, Keywords = "log print", AdvancedDisplay = "2", DevelopmentOnly), Category="Utilities|String")
-	static void PrintString(const UObject* WorldContextObject, const FString& InString = FString(TEXT("Hello")), bool bPrintToScreen = true, bool bPrintToLog = true, FLinearColor TextColor = FLinearColor(0.0, 0.66, 1.0), float Duration = 2.f);
+	UFUNCTION(BlueprintCallable, meta=(WorldContext="WorldContextObject", CallableWithoutWorldContext, Keywords = "log print", AdvancedDisplay = "2", DevelopmentOnly), Category="Development")
+	static void PrintString(const UObject* WorldContextObject, const FString& InString = FString(TEXT("Hello")), bool bPrintToScreen = true, bool bPrintToLog = true, FLinearColor TextColor = FLinearColor(0.0, 0.66, 1.0), float Duration = 2.f, const FName Key = NAME_None);
 
 	/**
 	 * Prints text to the log, and optionally, to the screen
@@ -385,11 +430,12 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param	bPrintToScreen	Whether or not to print the output to the screen
 	 * @param	bPrintToLog		Whether or not to print the output to the log
 	 * @param	bPrintToConsole	Whether or not to print the output to the console
-	 * @param	TextColor		Whether or not to print the output to the console
+	 * @param	TextColor		The color of the text to display
 	 * @param	Duration		The display duration (if Print to Screen is True). Using negative number will result in loading the duration time from the config.
+	 * @param	Key				If a non-empty key is provided, the message will replace any existing on-screen messages with the same key.
 	 */
-	UFUNCTION(BlueprintCallable, meta=(WorldContext="WorldContextObject", CallableWithoutWorldContext, Keywords = "log", AdvancedDisplay = "2", DevelopmentOnly), Category="Utilities|Text")
-	static void PrintText(const UObject* WorldContextObject, const FText InText = INVTEXT("Hello"), bool bPrintToScreen = true, bool bPrintToLog = true, FLinearColor TextColor = FLinearColor(0.0, 0.66, 1.0), float Duration = 2.f);
+	UFUNCTION(BlueprintCallable, meta=(WorldContext="WorldContextObject", CallableWithoutWorldContext, Keywords = "log", AdvancedDisplay = "2", DevelopmentOnly), Category="Development")
+	static void PrintText(const UObject* WorldContextObject, const FText InText = INVTEXT("Hello"), bool bPrintToScreen = true, bool bPrintToLog = true, FLinearColor TextColor = FLinearColor(0.0, 0.66, 1.0), float Duration = 2.f, const FName Key = NAME_None);
 
 	/**
 	 * Prints a warning string to the log and the screen. Meant to be used as a way to inform the user that they misused the node.
@@ -402,7 +448,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static void PrintWarning(const FString& InString);
 
 	/** Sets the game window title */
-	UFUNCTION(BlueprintCallable, Category = "Utilities")
+	UFUNCTION(BlueprintCallable, Category = "Utilities|Platform")
 	static void SetWindowTitle(const FText& Title);
 
 	/**
@@ -445,7 +491,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 *	Exit the current game 
 	 * @param	SpecificPlayer	The specific player to quit the game. If not specified, player 0 will quit.
 	 * @param	QuitPreference	Form of quitting.
-	 * @param	bIgnorePlatformRestrictions	Ignores and best-practices based on platform (e.g PS4 games should never quit). Non-shipping only
+	 * @param	bIgnorePlatformRestrictions	Ignores and best-practices based on platform (e.g on some consoles, games should never quit). Non-shipping only
 	 */
 	UFUNCTION(BlueprintCallable, Category="Game",meta=(WorldContext="WorldContextObject", CallableWithoutWorldContext))
 	static void QuitGame(const UObject* WorldContextObject, class APlayerController* SpecificPlayer, TEnumAsByte<EQuitPreference::Type> QuitPreference, bool bIgnorePlatformRestrictions);
@@ -470,6 +516,15 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintCallable, Category="Utilities|FlowControl", meta=(Latent, WorldContext="WorldContextObject", LatentInfo="LatentInfo", Duration="0.2", Keywords="sleep"))
 	static void	Delay(const UObject* WorldContextObject, float Duration, struct FLatentActionInfo LatentInfo );
+
+	/**
+	 * Perform a latent action with a delay of one tick.  Calling again while it is counting down will be ignored.
+	 *
+	 * @param WorldContext	World context.
+	 * @param LatentInfo 	The latent action.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Utilities|FlowControl", meta = (Latent, WorldContext = "WorldContextObject", LatentInfo = "LatentInfo", Keywords = "sleep"))
+	static void	DelayUntilNextTick(const UObject* WorldContextObject, struct FLatentActionInfo LatentInfo);
 
 	/** 
 	 * Perform a latent action with a retriggerable delay (specified in seconds).  Calling again while it is counting down will reset the countdown to Duration.
@@ -509,6 +564,14 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 */
 	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Set Timer by Event", ScriptName = "SetTimerDelegate", AdvancedDisplay="InitialStartDelay, InitialStartDelayVariance"), Category="Utilities|Time")
 	static FTimerHandle K2_SetTimerDelegate(UPARAM(DisplayName="Event") FTimerDynamicDelegate Delegate, float Time, bool bLooping, float InitialStartDelay = 0.f, float InitialStartDelayVariance = 0.f);
+
+	/**
+	 * Set a timer to execute a delegate next tick.
+	 * @param Event						Event. Can be a K2 function or a Custom Event.
+	 * @return							The timer handle to pass to other timer functions to manipulate this timer.
+	 */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set Timer for Next Tick by Event", ScriptName = "SetTimerForNextTickDelegate"), Category = "Utilities|Time")
+	static FTimerHandle K2_SetTimerForNextTickDelegate(UPARAM(DisplayName = "Event") FTimerDynamicDelegate Delegate);
 
 	/**
 	 * Clears a set timer.
@@ -578,7 +641,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param Handle		The handle of the timer to check validity of.
 	 * @return				Whether the timer handle is valid.
 	 */
-	UFUNCTION(BlueprintPure, meta=(DisplayName = "Is Valid", ScriptName = "IsValidTimerHandle"), Category="Utilities|Time")
+	UFUNCTION(BlueprintPure, meta=(DisplayName = "Is Valid Timer Handle", ScriptName = "IsValidTimerHandle"), Category="Utilities|Time")
 	static bool K2_IsValidTimerHandle(FTimerHandle Handle);
 
 	/**
@@ -586,7 +649,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param Handle		The handle of the timer to invalidate.
 	 * @return				Return the invalidated timer handle for convenience.
 	 */
-	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Invalidate", ScriptName = "InvalidateTimerHandle"), Category="Utilities|Time")
+	UFUNCTION(BlueprintCallable, meta=(DisplayName = "Invalidate Timer Handle", ScriptName = "InvalidateTimerHandle"), Category="Utilities|Time")
 	static FTimerHandle K2_InvalidateTimerHandle(UPARAM(ref) FTimerHandle& Handle);
 
 	/**
@@ -673,6 +736,15 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static FTimerHandle K2_SetTimer(UObject* Object, FString FunctionName, float Time, bool bLooping, float InitialStartDelay = 0.f, float InitialStartDelayVariance = 0.f);
 
 	/**
+	 * Set a timer to execute a delegate on the next tick.
+	 * @param Object					Object that implements the delegate function. Defaults to self (this blueprint)
+	 * @param FunctionName				Delegate function name. Can be a K2 function or a Custom Event.
+	 * @return							The timer handle to pass to other timer functions to manipulate this timer.
+	 */
+	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Set Timer for Next Tick by Function Name", ScriptName = "SetTimerForNextTick", DefaultToSelf = "Object"), Category = "Utilities|Time")
+	static FTimerHandle K2_SetTimerForNextTick(UObject* Object, FString FunctionName);
+
+	/**
 	 * Clears a set timer.
 	 * @param Object		Object that implements the delegate function. Defaults to self (this blueprint)
 	 * @param FunctionName	Delegate function name. Can be a K2 function or a Custom Event.
@@ -757,8 +829,12 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static void SetBytePropertyByName(UObject* Object, FName PropertyName, uint8 Value);
 
 	/** Set a float property by name */
-	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly = "true"))
+	UE_DEPRECATED(5.0, "This method has been deprecated and will be removed. Use the double version instead.")
 	static void SetFloatPropertyByName(UObject* Object, FName PropertyName, float Value);
+
+	/** Set a double property by name */
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true"))
+	static void SetDoublePropertyByName(UObject* Object, FName PropertyName, double Value);
 
 	/** Set a bool property by name */
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly = "true"))
@@ -773,7 +849,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static void SetClassPropertyByName(UObject* Object, FName PropertyName, TSubclassOf<UObject> Value);
 
 	/** Set an INTERFACE property by name */
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (BlueprintInternalUseOnly = "true"))
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true"))
 	static void SetInterfacePropertyByName(UObject* Object, FName PropertyName, const FScriptInterface& Value);
 
 	/** Set a NAME property by name */
@@ -799,6 +875,10 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	/** Set a VECTOR property by name */
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly = "true", AutoCreateRefTerm = "Value" ))
 	static void SetVectorPropertyByName(UObject* Object, FName PropertyName, const FVector& Value);
+
+	/** Set a VECTOR3F property by name */
+	UFUNCTION(BlueprintCallable, meta = (BlueprintInternalUseOnly = "true", AutoCreateRefTerm = "Value"))
+	static void SetVector3fPropertyByName(UObject* Object, FName PropertyName, const FVector3f& Value);
 
 	/** Set a ROTATOR property by name */
 	UFUNCTION(BlueprintCallable, meta=(BlueprintInternalUseOnly = "true", AutoCreateRefTerm = "Value" ))
@@ -872,7 +952,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutActors		Returned array of actors. Unsorted.
 	 * @return				true if there was an overlap that passed the filters, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "SphereOverlapActors"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Sphere Overlap Actors"))
 	static bool SphereOverlapActors(const UObject* WorldContextObject, const FVector SpherePos, float SphereRadius, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, UClass* ActorClassFilter, const TArray<AActor*>& ActorsToIgnore, TArray<class AActor*>& OutActors);
 
 	/**
@@ -886,7 +966,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutActors		Returned array of actors. Unsorted.
 	 * @return				true if there was an overlap that passed the filters, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="SphereOverlapComponents"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="Sphere Overlap Components"))
 	static bool SphereOverlapComponents(const UObject* WorldContextObject, const FVector SpherePos, float SphereRadius, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, UClass* ComponentClassFilter, const TArray<AActor*>& ActorsToIgnore, TArray<class UPrimitiveComponent*>& OutComponents);
 	
 
@@ -901,7 +981,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutActors		Returned array of actors. Unsorted.
 	 * @return				true if there was an overlap that passed the filters, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="BoxOverlapActors"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="Box Overlap Actors"))
 	static bool BoxOverlapActors(const UObject* WorldContextObject, const FVector BoxPos, FVector BoxExtent, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, UClass* ActorClassFilter, const TArray<AActor*>& ActorsToIgnore, TArray<class AActor*>& OutActors);
 
 	/**
@@ -915,7 +995,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutActors		Returned array of actors. Unsorted.
 	 * @return				true if there was an overlap that passed the filters, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="BoxOverlapComponents"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="Box Overlap Components"))
 	static bool BoxOverlapComponents(const UObject* WorldContextObject, const FVector BoxPos, FVector Extent, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, UClass* ComponentClassFilter, const TArray<AActor*>& ActorsToIgnore, TArray<class UPrimitiveComponent*>& OutComponents);
 
 
@@ -931,7 +1011,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutActors		Returned array of actors. Unsorted.
 	 * @return				true if there was an overlap that passed the filters, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="CapsuleOverlapActors"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="Capsule Overlap Actors"))
 	static bool CapsuleOverlapActors(const UObject* WorldContextObject, const FVector CapsulePos, float Radius, float HalfHeight, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, UClass* ActorClassFilter, const TArray<AActor*>& ActorsToIgnore, TArray<class AActor*>& OutActors);
 
 	/**
@@ -946,7 +1026,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutActors		Returned array of actors. Unsorted.
 	 * @return				true if there was an overlap that passed the filters, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="CapsuleOverlapComponents") )
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="Capsule Overlap Components") )
 	static bool CapsuleOverlapComponents(const UObject* WorldContextObject, const FVector CapsulePos, float Radius, float HalfHeight, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, UClass* ComponentClassFilter, const TArray<AActor*>& ActorsToIgnore, TArray<class UPrimitiveComponent*>& OutComponents);
 
 
@@ -960,7 +1040,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutActors				Returned array of actors. Unsorted.
 	 * @return						true if there was an overlap that passed the filters, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(AutoCreateRefTerm="ActorsToIgnore", DisplayName="ComponentOverlapActors"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(AutoCreateRefTerm="ActorsToIgnore", DisplayName="Component Overlap Actors"))
 	static bool ComponentOverlapActors(UPrimitiveComponent* Component, const FTransform& ComponentTransform, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, UClass* ActorClassFilter, const TArray<AActor*>& ActorsToIgnore, TArray<class AActor*>& OutActors);
 
 	/**
@@ -973,7 +1053,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutActors				Returned array of actors. Unsorted.
 	 * @return						true if there was an overlap that passed the filters, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(AutoCreateRefTerm="ActorsToIgnore", DisplayName="ComponentOverlapComponents"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(AutoCreateRefTerm="ActorsToIgnore", DisplayName="Component Overlap Components"))
 	static bool ComponentOverlapComponents(UPrimitiveComponent* Component, const FTransform& ComponentTransform, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, UClass* ComponentClassFilter, const TArray<AActor*>& ActorsToIgnore, TArray<class UPrimitiveComponent*>& OutComponents);
 
 
@@ -989,7 +1069,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHit		Properties of the trace hit.
 	 * @return				True if there was a hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="LineTraceByChannel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="raycast"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName="Line Trace By Channel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="raycast"))
 	static bool LineTraceSingle(const UObject* WorldContextObject, const FVector Start, const FVector End, ETraceTypeQuery TraceChannel, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 	
 	/**
@@ -1004,7 +1084,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHit		Properties of the trace hit.
 	 * @return				True if there was a blocking hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "MultiLineTraceByChannel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="raycast"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Multi Line Trace By Channel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="raycast"))
 	static bool LineTraceMulti(const UObject* WorldContextObject, const FVector Start, const FVector End, ETraceTypeQuery TraceChannel, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1019,7 +1099,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHit		Properties of the trace hit.
 	 * @return				True if there was a hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "SphereTraceByChannel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Sphere Trace By Channel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool SphereTraceSingle(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, ETraceTypeQuery TraceChannel, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1035,7 +1115,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHits		A list of hits, sorted along the trace from start to finish.  The blocking hit will be the last hit, if there was one.
 	 * @return				True if there was a blocking hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "MultiSphereTraceByChannel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Multi Sphere Trace By Channel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool SphereTraceMulti(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, ETraceTypeQuery TraceChannel, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1051,7 +1131,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHit			Properties of the trace hit.
 	* @return				True if there was a hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext="WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "BoxTraceByChannel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext="WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Box Trace By Channel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool BoxTraceSingle(const UObject* WorldContextObject, const FVector Start, const FVector End, const FVector HalfSize, const FRotator Orientation, ETraceTypeQuery TraceChannel, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1067,7 +1147,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHits		A list of hits, sorted along the trace from start to finish. The blocking hit will be the last hit, if there was one.
 	* @return				True if there was a blocking hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext="WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "MultiBoxTraceByChannel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext="WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Multi Box Trace By Channel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool BoxTraceMulti(const UObject* WorldContextObject, const FVector Start, const FVector End, FVector HalfSize, const FRotator Orientation, ETraceTypeQuery TraceChannel, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	
@@ -1085,7 +1165,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHit		Properties of the trace hit.
 	 * @return				True if there was a hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "CapsuleTraceByChannel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Capsule Trace By Channel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool CapsuleTraceSingle(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, float HalfHeight, ETraceTypeQuery TraceChannel, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1102,7 +1182,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHits		A list of hits, sorted along the trace from start to finish.  The blocking hit will be the last hit, if there was one.
 	 * @return				True if there was a blocking hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "MultiCapsuleTraceByChannel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Multi Capsule Trace By Channel", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool CapsuleTraceMulti(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, float HalfHeight, ETraceTypeQuery TraceChannel, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1117,7 +1197,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHit		Properties of the trace hit.
 	 * @return				True if there was a hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "LineTraceForObjects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="raycast"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Line Trace For Objects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="raycast"))
 	static bool LineTraceSingleForObjects(const UObject* WorldContextObject, const FVector Start, const FVector End, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f );
 	
 	/**
@@ -1132,7 +1212,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHit		Properties of the trace hit.
 	 * @return				True if there was a hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "MultiLineTraceForObjects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="raycast"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Multi Line Trace For Objects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="raycast"))
 	static bool LineTraceMultiForObjects(const UObject* WorldContextObject, const FVector Start, const FVector End, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1147,7 +1227,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHit		Properties of the trace hit.
 	 * @return				True if there was a hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "SphereTraceForObjects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Sphere Trace For Objects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool SphereTraceSingleForObjects(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1163,7 +1243,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHits		A list of hits, sorted along the trace from start to finish.  The blocking hit will be the last hit, if there was one.
 	 * @return				True if there was a hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "MultiSphereTraceForObjects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Multi Sphere Trace For Objects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool SphereTraceMultiForObjects(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 	
 
@@ -1180,7 +1260,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHit			Properties of the trace hit.
 	* @return				True if there was a hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext="WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "BoxTraceForObjects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext="WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Box Trace For Objects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool BoxTraceSingleForObjects(const UObject* WorldContextObject, const FVector Start, const FVector End, const FVector HalfSize, const FRotator Orientation, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 
@@ -1197,7 +1277,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHits		A list of hits, sorted along the trace from start to finish.  The blocking hit will be the last hit, if there was one.
 	* @return				True if there was a hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext="WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "MultiBoxTraceForObjects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext="WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Multi Box Trace For Objects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool BoxTraceMultiForObjects(const UObject* WorldContextObject, const FVector Start, const FVector End, const FVector HalfSize, const FRotator Orientation, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1214,7 +1294,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHit		Properties of the trace hit.
 	 * @return				True if there was a hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "CapsuleTraceForObjects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Capsule Trace For Objects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool CapsuleTraceSingleForObjects(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, float HalfHeight, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1231,7 +1311,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param OutHits		A list of hits, sorted along the trace from start to finish.  The blocking hit will be the last hit, if there was one.
 	 * @return				True if there was a hit, false otherwise.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "MultiCapsuleTraceForObjects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
+	UFUNCTION(BlueprintCallable, Category="Collision", meta=(bIgnoreSelf="true", WorldContext="WorldContextObject", AutoCreateRefTerm="ActorsToIgnore", DisplayName = "Multi Capsule Trace For Objects", AdvancedDisplay="TraceColor,TraceHitColor,DrawTime", Keywords="sweep"))
 	static bool CapsuleTraceMultiForObjects(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, float HalfHeight, const TArray<TEnumAsByte<EObjectTypeQuery> > & ObjectTypes, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	// BY PROFILE
@@ -1247,7 +1327,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHit			Properties of the trace hit.
 	* @return				True if there was a hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "LineTraceByProfile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "raycast"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Line Trace By Profile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "raycast"))
 	static bool LineTraceSingleByProfile(const UObject* WorldContextObject, const FVector Start, const FVector End, FName ProfileName, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1263,7 +1343,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHit		Properties of the trace hit.
 	* @return				True if there was a blocking hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "MultiLineTraceByProfile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "raycast"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Multi Line Trace By Profile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "raycast"))
 	static bool LineTraceMultiByProfile(const UObject* WorldContextObject, const FVector Start, const FVector End, FName ProfileName, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1277,7 +1357,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHit			Properties of the trace hit.
 	* @return				True if there was a hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "SphereTraceByProfile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Sphere Trace By Profile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
 	static bool SphereTraceSingleByProfile(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, FName ProfileName, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1294,7 +1374,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHits		A list of hits, sorted along the trace from start to finish.  The blocking hit will be the last hit, if there was one.
 	* @return				True if there was a blocking hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "MultiSphereTraceByProfile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Multi Sphere Trace By Profile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
 	static bool SphereTraceMultiByProfile(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, FName ProfileName, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1309,7 +1389,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHit			Properties of the trace hit.
 	* @return				True if there was a hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "BoxTraceByProfile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Box Trace By Profile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
 	static bool BoxTraceSingleByProfile(const UObject* WorldContextObject, const FVector Start, const FVector End, const FVector HalfSize, const FRotator Orientation, FName ProfileName, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1326,7 +1406,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHits		A list of hits, sorted along the trace from start to finish. The blocking hit will be the last hit, if there was one.
 	* @return				True if there was a blocking hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "MultiBoxTraceByProfile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Multi Box Trace By Profile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
 	static bool BoxTraceMultiByProfile(const UObject* WorldContextObject, const FVector Start, const FVector End, FVector HalfSize, const FRotator Orientation, FName ProfileName, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 
@@ -1343,7 +1423,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHit			Properties of the trace hit.
 	* @return				True if there was a hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "CapsuleTraceByProfile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Capsule Trace By Profile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
 	static bool CapsuleTraceSingleByProfile(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, float HalfHeight, FName ProfileName, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, FHitResult& OutHit, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 	/**
@@ -1361,7 +1441,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	* @param OutHits		A list of hits, sorted along the trace from start to finish.  The blocking hit will be the last hit, if there was one.
 	* @return				True if there was a blocking hit, false otherwise.
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "MultiCapsuleTraceByProfile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
+	UFUNCTION(BlueprintCallable, Category = "Collision", meta = (bIgnoreSelf = "true", WorldContext = "WorldContextObject", AutoCreateRefTerm = "ActorsToIgnore", DisplayName = "Multi Capsule Trace By Profile", AdvancedDisplay = "TraceColor,TraceHitColor,DrawTime", Keywords = "sweep"))
 	static bool CapsuleTraceMultiByProfile(const UObject* WorldContextObject, const FVector Start, const FVector End, float Radius, float HalfHeight, FName ProfileName, bool bTraceComplex, const TArray<AActor*>& ActorsToIgnore, EDrawDebugTrace::Type DrawDebugType, TArray<FHitResult>& OutHits, bool bIgnoreSelf, FLinearColor TraceColor = FLinearColor::Red, FLinearColor TraceHitColor = FLinearColor::Green, float DrawTime = 5.0f);
 
 
@@ -1372,7 +1452,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param ClassFilter		If set, will only return results of this class or subclasses of it.
 	 * @param OutActorList		Start of line segment.
 	 */
-	UFUNCTION(BlueprintCallable, Category="Utilities")
+	UFUNCTION(BlueprintCallable, Category="Actor")
 	static void GetActorListFromComponentList(const TArray<class UPrimitiveComponent*>& ComponentList, UClass* ActorClassFilter, TArray<class AActor*>& OutActorList);
 
 
@@ -1418,7 +1498,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * Draw a debug cone 
 	 * Angles are specified in degrees
 	 */
-	UFUNCTION(BlueprintCallable, Category="Rendering|Debug", meta=(WorldContext="WorldContextObject", DisplayName="DrawDebugCone", DevelopmentOnly))
+	UFUNCTION(BlueprintCallable, Category="Rendering|Debug", meta=(WorldContext="WorldContextObject", DisplayName="Draw Debug Cone", DevelopmentOnly))
 	static void DrawDebugConeInDegrees(const UObject* WorldContextObject, const FVector Origin, const FVector Direction, float Length=100.f, float AngleWidth=45.f, float AngleHeight=45.f, int32 NumSides = 12, FLinearColor LineColor = FLinearColor::White, float Duration=0.f, float Thickness = 0.f);
 
 	/** Draw a debug capsule */
@@ -1687,14 +1767,14 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 * @param WorldContextObject	World context
 	 * @param State					set true to suppress transition message
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Utilities", meta = (WorldContext="WorldContextObject"))
+	UFUNCTION(BlueprintCallable, Category = "Viewport", meta = (WorldContext="WorldContextObject"))
 	static void SetSuppressViewportTransitionMessage(const UObject* WorldContextObject, bool bState);
 
 	/**
 	 * Returns an array of the user's preferred languages in order of preference
 	 * @return An array of language IDs ordered from most preferred to least
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Platform")
+	UFUNCTION(BlueprintCallable, Category = "Utilities|Internationalization")
 	static TArray<FString> GetPreferredLanguages();
 	
 	/**
@@ -1706,7 +1786,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 *  - An optional two-letter ISO 3166-1 country code (eg, "CN")
 	 * @return The language as an IETF language tag (eg, "zh-Hans-CN")
 	 */
-	UFUNCTION(BlueprintPure, Category = "Utilities|Platform")
+	UFUNCTION(BlueprintPure, Category = "Utilities|Internationalization")
 	static FString GetDefaultLanguage();
 
 	/**
@@ -1717,21 +1797,21 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	 *  - An optional two-letter ISO 3166-1 country code (eg, "CN")
 	 * @return The locale as an IETF language tag (eg, "zh-Hans-CN")
 	 */
-	UFUNCTION(BlueprintPure, Category = "Utilities|Platform")
+	UFUNCTION(BlueprintPure, Category = "Utilities|Internationalization")
 	static FString GetDefaultLocale();
 
 	/**
 	* Returns the currency code associated with the device's locale
 	* @return the currency code associated with the device's locale
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Platform")
+	UFUNCTION(BlueprintCallable, Category = "Utilities|Internationalization")
 	static FString GetLocalCurrencyCode();
 
 	/**
 	* Returns the currency symbol associated with the device's locale
 	* @return the currency symbol associated with the device's locale
 	*/
-	UFUNCTION(BlueprintCallable, Category = "Utilities|Platform")
+	UFUNCTION(BlueprintCallable, Category = "Utilities|Internationalization")
 	static FString GetLocalCurrencySymbol();
 
 	/**
@@ -1751,7 +1831,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	/**
 	 * Tells the engine what the user is doing for debug, analytics, etc.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Utilities")
+	UFUNCTION(BlueprintCallable, Category = "Development")
 	static void SetUserActivity(const FUserActivity& UserActivity);
 
 	/**
@@ -1923,7 +2003,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool IsValidPrimaryAssetId(FPrimaryAssetId PrimaryAssetId);
 
 	/** Converts a Primary Asset Id to a string. The other direction is not provided because it cannot be validated */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToString (PrimaryAssetId)", CompactNodeTitle = "->", ScriptMethod="ToString", BlueprintThreadSafe), Category = "AssetManager")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (PrimaryAssetId)", CompactNodeTitle = "->", ScriptMethod="ToString", BlueprintThreadSafe), Category = "AssetManager")
 	static FString Conv_PrimaryAssetIdToString(FPrimaryAssetId PrimaryAssetId);
 
 	/** Returns true if the values are equal (A == B) */
@@ -1931,7 +2011,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool EqualEqual_PrimaryAssetId(FPrimaryAssetId A, FPrimaryAssetId B);
 
 	/** Returns true if the values are not equal (A != B) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "NotEqual (PrimaryAssetId)", CompactNodeTitle = "!=", ScriptOperator="!=", BlueprintThreadSafe), Category = "AssetManager")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Not Equal (PrimaryAssetId)", CompactNodeTitle = "!=", ScriptOperator="!=", BlueprintThreadSafe), Category = "AssetManager")
 	static bool NotEqual_PrimaryAssetId(FPrimaryAssetId A, FPrimaryAssetId B);
 
 	/** Returns list of Primary Asset Ids for a PrimaryAssetType */
@@ -1939,7 +2019,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool IsValidPrimaryAssetType(FPrimaryAssetType PrimaryAssetType);
 
 	/** Converts a Primary Asset Type to a string. The other direction is not provided because it cannot be validated */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "ToString (PrimaryAssetType)", CompactNodeTitle = "->", ScriptMethod="ToString", BlueprintThreadSafe), Category = "AssetManager")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "To String (PrimaryAssetType)", CompactNodeTitle = "->", ScriptMethod="ToString", BlueprintThreadSafe), Category = "AssetManager")
 	static FString Conv_PrimaryAssetTypeToString(FPrimaryAssetType PrimaryAssetType);
 
 	/** Returns true if the values are equal (A == B) */
@@ -1947,7 +2027,7 @@ class ENGINE_API UKismetSystemLibrary : public UBlueprintFunctionLibrary
 	static bool EqualEqual_PrimaryAssetType(FPrimaryAssetType A, FPrimaryAssetType B);
 
 	/** Returns true if the values are not equal (A != B) */
-	UFUNCTION(BlueprintPure, meta = (DisplayName = "NotEqual (PrimaryAssetType)", CompactNodeTitle = "!=", ScriptOperator="!=", BlueprintThreadSafe), Category = "AssetManager")
+	UFUNCTION(BlueprintPure, meta = (DisplayName = "Not Equal (PrimaryAssetType)", CompactNodeTitle = "!=", ScriptOperator="!=", BlueprintThreadSafe), Category = "AssetManager")
 	static bool NotEqual_PrimaryAssetType(FPrimaryAssetType A, FPrimaryAssetType B);
 
 	/** Unloads a primary asset, which allows it to be garbage collected if nothing else is referencing it */
@@ -1996,7 +2076,17 @@ FORCEINLINE int32 UKismetSystemLibrary::MakeLiteralInt(int32 Value)
 	return Value;
 }
 
+FORCEINLINE int64 UKismetSystemLibrary::MakeLiteralInt64(int64 Value)
+{
+	return Value;
+}
+
 FORCEINLINE float UKismetSystemLibrary::MakeLiteralFloat(float Value)
+{
+	return Value;
+}
+
+FORCEINLINE double UKismetSystemLibrary::MakeLiteralDouble(double Value)
 {
 	return Value;
 }

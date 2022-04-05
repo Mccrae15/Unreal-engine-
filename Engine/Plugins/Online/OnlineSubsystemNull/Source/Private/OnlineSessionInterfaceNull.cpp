@@ -5,16 +5,20 @@
 #include "OnlineSubsystem.h"
 #include "OnlineSubsystemNull.h"
 #include "OnlineSubsystemNullTypes.h"
+#if WITH_ENGINE
 #include "OnlineSubsystemUtils.h"
+#endif //WITH_ENGINE
 #include "OnlineAsyncTaskManager.h"
 #include "SocketSubsystem.h"
 #include "NboSerializerNull.h"
+#include "Interfaces/OnlineIdentityInterface.h"
+#include "UObject/CoreNet.h"
 
 
 
 FOnlineSessionInfoNull::FOnlineSessionInfoNull() :
 	HostAddr(NULL),
-	SessionId(TEXT("INVALID"))
+	SessionId(FUniqueNetIdNull::EmptyId())
 {
 }
 
@@ -37,11 +41,14 @@ void FOnlineSessionInfoNull::Init(const FOnlineSubsystemNull& Subsystem)
 	}
 
 	// Now set the port that was configured
+#if WITH_ENGINE
+	// jntodo: can we put anything here if we don't have engine code?
 	HostAddr->SetPort(GetPortFromNetDriver(Subsystem.GetInstanceName()));
+#endif //WITH_ENGINE
 
 	FGuid OwnerGuid;
 	FPlatformMisc::CreateGuid(OwnerGuid);
-	SessionId = FUniqueNetIdNull(OwnerGuid.ToString());
+	SessionId = FUniqueNetIdNull::Create(OwnerGuid.ToString());
 }
 
 /**
@@ -451,6 +458,24 @@ bool FOnlineSessionNull::DestroySession(FName SessionName, const FOnDestroySessi
 		UE_LOG_ONLINE_SESSION(Warning, TEXT("Can't destroy a null online session (%s)"), *SessionName.ToString());
 	}
 
+#if WITH_ENGINE
+	if (GetNumSessions() == 0)
+	{
+		IOnlineVoicePtr VoiceInt = NullSubsystem->GetVoiceInterface();
+		if (VoiceInt.IsValid())
+		{
+			if (!NullSubsystem->IsDedicated())
+			{
+				// Stop local talkers
+				VoiceInt->UnregisterLocalTalkers();
+			}
+
+			// Stop remote voice 
+			VoiceInt->RemoveAllRemoteTalkers();
+		}
+	}
+#endif //WITH_ENGINE
+
 	if (Result != ONLINE_IO_PENDING)
 	{
 		CompletionDelegate.ExecuteIfBound(SessionName, (Result == ONLINE_SUCCESS) ? true : false);
@@ -807,6 +832,7 @@ FOnlineSessionSettings* FOnlineSessionNull::GetSessionSettings(FName SessionName
 
 void FOnlineSessionNull::RegisterLocalPlayers(FNamedOnlineSession* Session)
 {
+#if WITH_ENGINE
 	if (!NullSubsystem->IsDedicated())
 	{
 		IOnlineVoicePtr VoiceInt = NullSubsystem->GetVoiceInterface();
@@ -819,10 +845,12 @@ void FOnlineSessionNull::RegisterLocalPlayers(FNamedOnlineSession* Session)
 			}
 		}
 	}
+#endif //WITH_ENGINE
 }
 
 void FOnlineSessionNull::RegisterVoice(const FUniqueNetId& PlayerId)
 {
+#if WITH_ENGINE
 	IOnlineVoicePtr VoiceInt = NullSubsystem->GetVoiceInterface();
 	if (VoiceInt.IsValid())
 	{
@@ -836,10 +864,12 @@ void FOnlineSessionNull::RegisterVoice(const FUniqueNetId& PlayerId)
 			VoiceInt->ProcessMuteChangeNotification();
 		}
 	}
+#endif //WITH_ENGINE
 }
 
 void FOnlineSessionNull::UnregisterVoice(const FUniqueNetId& PlayerId)
 {
+#if WITH_ENGINE
 	IOnlineVoicePtr VoiceInt = NullSubsystem->GetVoiceInterface();
 	if (VoiceInt.IsValid())
 	{
@@ -851,6 +881,7 @@ void FOnlineSessionNull::UnregisterVoice(const FUniqueNetId& PlayerId)
 			}
 		}
 	}
+#endif //WITH_ENGINE
 }
 
 bool FOnlineSessionNull::RegisterPlayer(FName SessionName, const FUniqueNetId& PlayerId, bool bWasInvited)
@@ -1070,13 +1101,13 @@ void FOnlineSessionNull::ReadSessionFromPacket(FNboSerializeFromBufferNull& Pack
 #endif
 
 	/** Owner of the session */
-	FUniqueNetIdNull* UniqueId = new FUniqueNetIdNull;
-	Packet >> *UniqueId
+	FUniqueNetIdNullRef OwningUserId = FUniqueNetIdNull::Create();
+	Packet >> const_cast<FUniqueNetIdNull&>(*OwningUserId)
 		>> Session->OwningUserName
 		>> Session->NumOpenPrivateConnections
 		>> Session->NumOpenPublicConnections;
 
-	Session->OwningUserId = MakeShareable(UniqueId);
+	Session->OwningUserId = OwningUserId;
 
 	// Allocate and read the connection data
 	FOnlineSessionInfoNull* NullSessionInfo = new FOnlineSessionInfoNull();
@@ -1241,12 +1272,14 @@ void FOnlineSessionNull::UnregisterLocalPlayer(const FUniqueNetId& PlayerId, FNa
 
 void FOnlineSessionNull::SetPortFromNetDriver(const FOnlineSubsystemNull& Subsystem, const TSharedPtr<FOnlineSessionInfo>& SessionInfo)
 {
+#if WITH_ENGINE
 	auto NetDriverPort = GetPortFromNetDriver(Subsystem.GetInstanceName());
 	auto SessionInfoNull = StaticCastSharedPtr<FOnlineSessionInfoNull>(SessionInfo);
 	if (SessionInfoNull.IsValid() && SessionInfoNull->HostAddr.IsValid())
 	{
 		SessionInfoNull->HostAddr->SetPort(NetDriverPort);
 	}
+#endif //WITH_ENGINE
 }
 
 bool FOnlineSessionNull::IsHost(const FNamedOnlineSession& Session) const

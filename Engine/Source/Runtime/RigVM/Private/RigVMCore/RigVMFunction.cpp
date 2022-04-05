@@ -12,3 +12,33 @@ FName FRigVMFunction::GetMethodName() const
 	}
 	return NAME_None;
 }
+
+FString FRigVMFunction::GetModuleName() const
+{
+#if WITH_EDITOR
+	if (Struct)
+	{
+		if (UPackage* Package = Struct->GetPackage())
+		{
+			return Package->GetName();
+		}
+	}
+#endif
+	return FString();
+}
+
+FString FRigVMFunction::GetModuleRelativeHeaderPath() const
+{
+#if WITH_EDITOR
+	if (Struct)
+	{
+		FString ModuleRelativePath;
+		if (Struct->GetStringMetaDataHierarchical(TEXT("ModuleRelativePath"), &ModuleRelativePath))
+		{
+			return ModuleRelativePath;
+		}
+	}
+#endif
+	return FString();
+}
+

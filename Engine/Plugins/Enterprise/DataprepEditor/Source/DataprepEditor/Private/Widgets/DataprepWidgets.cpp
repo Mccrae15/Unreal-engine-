@@ -50,7 +50,7 @@
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "Widgets/Text/STextBlock.h"
 #include "UObject/UObjectGlobals.h"
-
+#include "PropertyCustomizationHelpers.h"
 #define LOCTEXT_NAMESPACE "DataprepSlateHelper"
 
 namespace DataprepWidgetUtils
@@ -61,7 +61,7 @@ namespace DataprepWidgetUtils
 		SLATE_BEGIN_ARGS(SCustomSplitter) {}
 			SLATE_ARGUMENT( TSharedPtr<SWidget>, NameWidget )
 			SLATE_ARGUMENT( TSharedPtr<SWidget>, ValueWidget )
-			SLATE_ARGUMENT( TSharedPtr< FDataprepDetailsViewColumnSizeData >, ColumnSizeData )
+			SLATE_ARGUMENT( TSharedPtr< FDetailColumnSizeData >, ColumnSizeData )
 		SLATE_END_ARGS();
 
 		void Construct(const FArguments& InArgs)
@@ -77,15 +77,15 @@ namespace DataprepWidgetUtils
 			ColumnSizeData = InArgs._ColumnSizeData;
 
 			AddSlot()
-			.Value(ColumnSizeData->LeftColumnWidth)
-			.OnSlotResized( SSplitter::FOnSlotResized::CreateLambda( [](float InNewWidth) -> void {} ) )
+			.Value(ColumnSizeData->NameColumnWidth)
+			.OnSlotResized(ColumnSizeData->OnNameColumnResized)
 			[
 				InArgs._NameWidget.ToSharedRef()
 			];
 
 			AddSlot()
-			.Value(InArgs._ColumnSizeData->RightColumnWidth)
-			.OnSlotResized(ColumnSizeData->OnWidthChanged)
+			.Value(InArgs._ColumnSizeData->ValueColumnWidth)
+			.OnSlotResized(ColumnSizeData->OnValueColumnResized)
 			[
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot()
@@ -108,24 +108,24 @@ namespace DataprepWidgetUtils
 				const FVector2D AllottedSize = AllottedGeometry.GetLocalSize();
 
 				FVector2D LocalPosition = FVector2D::ZeroVector;
-				FVector2D LocalSize(  AllottedSize.X * ColumnSizeData->LeftColumnWidth.Get(0.f), AllottedSize.Y );
+				FVector2D LocalSize(  AllottedSize.X * ColumnSizeData->NameColumnWidth.Get(0.f), AllottedSize.Y );
 
 				ArrangedChildren.AddWidget( EVisibility::Visible, AllottedGeometry.MakeChild( LeftChild.GetWidget(), LocalPosition, LocalSize ));
 
 				const SSplitter::FSlot& RightChild = Children[1];
 
 				LocalPosition = FVector2D(LocalSize.X, 0.f);
-				LocalSize.X = AllottedSize.X * ColumnSizeData->RightColumnWidth.Get(0.f);
+				LocalSize.X = AllottedSize.X * ColumnSizeData->ValueColumnWidth.Get(0.f);
 
 				ArrangedChildren.AddWidget( EVisibility::Visible, AllottedGeometry.MakeChild( RightChild.GetWidget(), LocalPosition, LocalSize ));
 			}
 		}
 
 	private:
-		TSharedPtr< FDataprepDetailsViewColumnSizeData > ColumnSizeData;
+		TSharedPtr< FDetailColumnSizeData > ColumnSizeData;
 	};
 
-	TSharedRef<SWidget> CreatePropertyWidget( TSharedPtr<SWidget> NameWidget, TSharedPtr<SWidget> ValueWidget, TSharedPtr< FDataprepDetailsViewColumnSizeData > ColumnSizeData, float Spacing, bool bResizableColumn = true)
+	TSharedRef<SWidget> CreatePropertyWidget( TSharedPtr<SWidget> NameWidget, TSharedPtr<SWidget> ValueWidget, TSharedPtr< FDetailColumnSizeData > ColumnSizeData, float Spacing, bool bResizableColumn = true)
 	{
 		if (bResizableColumn)
 		{
@@ -445,7 +445,7 @@ void SDataprepDetailsView::OnObjectReplaced(const TMap<UObject*, UObject*>& Repl
 void SDataprepDetailsView::ForceRefresh()
 {
 	// ueent_hotfix Hotfix for 4.24 (Remove the ui flickering)
-	InvalidatePrepass();
+	Invalidate(EInvalidateWidgetReason::Prepass);
 	bRefreshObjectToDisplay = true;
 }
 
@@ -638,25 +638,21 @@ void SDataprepDetailsView::Construct(const FArguments& InArgs)
 
 	StringArrayDetailedObject = Cast<UDataprepStringFilterMatchingArray>( DetailedObject );
 
-	if (InArgs._ColumnSizeData.IsValid())
+	if ( InArgs._ColumnSizeData.IsValid() )
 	{
 		ColumnSizeData = InArgs._ColumnSizeData;
 	}
 	else
 	{
-		ColumnWidth = 0.7f;
-		ColumnSizeData = MakeShared<FDataprepDetailsViewColumnSizeData>();
-		ColumnSizeData->LeftColumnWidth = TAttribute<float>(this, &SDataprepDetailsView::OnGetLeftColumnWidth);
-		ColumnSizeData->RightColumnWidth = TAttribute<float>(this, &SDataprepDetailsView::OnGetRightColumnWidth);
-		ColumnSizeData->OnWidthChanged = SSplitter::FOnSlotResized::CreateSP(this, &SDataprepDetailsView::OnSetColumnWidth);
+		ColumnSizeData = MakeShared<FDetailColumnSizeData>();
 	}
-	
+
 	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
 	FPropertyRowGeneratorArgs Args;
 	Generator = PropertyEditorModule.CreatePropertyRowGenerator(Args);
 
-	if( DetailedObject != nullptr )
+	if ( DetailedObject != nullptr )
 	{
 		TArray< UObject* > Objects;
 		Objects.Add( DetailedObject );
@@ -665,11 +661,8 @@ void SDataprepDetailsView::Construct(const FArguments& InArgs)
 
 	OnPropertyChangedHandle = Generator->OnFinishedChangingProperties().AddSP( this, &SDataprepDetailsView::OnPropertyChanged );
 
-	if ( GEditor )
-	{
-		OnObjectReplacedHandle = GEditor->OnObjectsReplaced().AddSP(this, &SDataprepDetailsView::OnObjectReplaced);
-		OnObjectTransactedHandle = FCoreUObjectDelegates::OnObjectTransacted.AddSP( this, &SDataprepDetailsView::OnObjectTransacted );
-	}
+	OnObjectReplacedHandle = FCoreUObjectDelegates::OnObjectsReplaced.AddSP(this, &SDataprepDetailsView::OnObjectReplaced);
+	OnObjectTransactedHandle = FCoreUObjectDelegates::OnObjectTransacted.AddSP( this, &SDataprepDetailsView::OnObjectTransacted );
 
 	Construct();
 }
@@ -744,11 +737,8 @@ SDataprepDetailsView::~SDataprepDetailsView()
 {
 	Generator->OnFinishedChangingProperties().Remove( OnPropertyChangedHandle );
 
-	if ( GEditor )
-	{
-		GEditor->OnObjectsReplaced().Remove( OnObjectReplacedHandle );
-		FCoreUObjectDelegates::OnObjectTransacted.Remove( OnObjectTransactedHandle );
-	}
+	FCoreUObjectDelegates::OnObjectsReplaced.Remove( OnObjectReplacedHandle );
+	FCoreUObjectDelegates::OnObjectTransacted.Remove( OnObjectTransactedHandle );
 
 	if ( UDataprepAsset* DataprepAsset = DataprepAssetForParameterization.Get() )
 	{
@@ -838,19 +828,7 @@ void SDataprepInstanceParentWidget::Construct(const FArguments& InArgs)
 		return;
 	}
 
-	if (InArgs._ColumnSizeData.IsValid())
-	{
-		ColumnSizeData = InArgs._ColumnSizeData;
-	}
-	else
-	{
-		ColumnWidth = 0.5f;
-		ColumnSizeData = MakeShared<FDataprepDetailsViewColumnSizeData>();
-		ColumnSizeData->LeftColumnWidth = TAttribute<float>(this, &SDataprepInstanceParentWidget::OnGetLeftColumnWidth);
-		ColumnSizeData->RightColumnWidth = TAttribute<float>(this, &SDataprepInstanceParentWidget::OnGetRightColumnWidth);
-		ColumnSizeData->OnWidthChanged = SSplitter::FOnSlotResized::CreateSP(this, &SDataprepInstanceParentWidget::OnSetColumnWidth);
-	}
-
+	ColumnSizeData = InArgs._ColumnSizeData;
 
 	TSharedRef<SWidget> NameWidget = SNew(SHorizontalBox)
 	.Clipping(EWidgetClipping::OnDemand)

@@ -13,6 +13,7 @@
 
 namespace Chaos
 {	
+	extern int GSingleThreadedPhysics;
 	void FPhysicsSolverBase::ChangeBufferMode(EMultiBufferMode InBufferMode)
 	{
 		BufferMode = InBufferMode;
@@ -48,6 +49,16 @@ namespace Chaos
 		return EventPostSolve.Remove(InHandle);
 	}
 
+	FDelegateHandle FPhysicsSolverBase::AddTeardownCallback(FSolverTeardown::FDelegate InDelegate)
+	{
+		return EventTeardown.Add(InDelegate);
+	}
+
+	bool FPhysicsSolverBase::RemoveTeardownCallback(FDelegateHandle InHandle)
+	{
+		return EventTeardown.Remove(InHandle);
+	}
+
 	FAutoConsoleTaskPriority CPrio_FPhysicsTickTask(
 		TEXT("TaskGraph.TaskPriorities.PhysicsTickTask"),
 		TEXT("Task and thread priotiry for Chaos physics tick"),
@@ -55,6 +66,9 @@ namespace Chaos
 		ENamedThreads::NormalTaskPriority, // .. at normal task priority
 		ENamedThreads::HighTaskPriority // if we don't have hi pri threads, then use normal priority threads at high task priority instead
 	);
+
+	int32 PhysicsRunsOnGT = 0;
+	FAutoConsoleVariableRef CVarPhysicsRunsOnGT(TEXT("p.PhysicsRunsOnGT"), PhysicsRunsOnGT, TEXT("If true the physics thread runs on the game thread, but will still go wide on tasks like collision detection"));
 
 	FPhysicsSolverAdvanceTask::FPhysicsSolverAdvanceTask(FPhysicsSolverBase& InSolver, FPushPhysicsData& InPushData)
 		: Solver(InSolver)
@@ -69,7 +83,7 @@ namespace Chaos
 
 	ENamedThreads::Type FPhysicsSolverAdvanceTask::GetDesiredThread()
 	{
-		return CPrio_FPhysicsTickTask.Get();
+		return PhysicsRunsOnGT == 0 ? CPrio_FPhysicsTickTask.Get() : ENamedThreads::GameThread;
 	}
 
 	ESubsequentsMode::Type FPhysicsSolverAdvanceTask::GetSubsequentsMode()
@@ -87,9 +101,10 @@ namespace Chaos
 	{
 		using namespace Chaos;
 
-		LLM_SCOPE(ELLMTag::Chaos);
+		LLM_SCOPE(ELLMTag::ChaosUpdate);
 		SCOPE_CYCLE_COUNTER(STAT_ChaosTick);
 		CSV_SCOPED_TIMING_STAT_EXCLUSIVE(Physics);
+		CSV_SCOPED_TIMING_STAT(PhysicsVerbose, StepSolver);
 
 #if PHYSICS_THREAD_CONTEXT
 		FPhysicsThreadContextScope Scope(/*IsPhysicsThreadContext=*/true);
@@ -102,15 +117,12 @@ namespace Chaos
 		// E.g., for 4 steps this will be: 1/4, 1/3, 1/2, 1
 		const FReal PseudoFraction = (FReal)1 / (FReal)(PushData->IntervalNumSteps - PushData->IntervalStep);
 		
-		Solver.AdvanceSolverBy(PushData->ExternalDt, FSubStepInfo{PseudoFraction, PushData->IntervalStep, PushData->IntervalNumSteps });
+		Solver.AdvanceSolverBy(PushData->ExternalDt, FSubStepInfo{PseudoFraction, PushData->IntervalStep, PushData->IntervalNumSteps, PushData->bSolverSubstepped});
 		Solver.GetMarshallingManager().FreeDataToHistory_Internal(PushData);	//cannot use push data after this point
 		PushData = nullptr;
 
 		Solver.ConditionalApplyRewind_Internal();
 	}
-
-	CHAOS_API FRealSingle DefaultAsyncDt = -1;
-	FAutoConsoleVariableRef CVarDefaultAsyncDt(TEXT("p.DefaultAsyncDt"), DefaultAsyncDt,TEXT("Whether to use async results -1 means not async"));
 
 	CHAOS_API int32 UseAsyncInterpolation = 1;
 	FAutoConsoleVariableRef CVarUseAsyncInterpolation(TEXT("p.UseAsyncInterpolation"), UseAsyncInterpolation, TEXT("Whether to interpolate when async mode is enabled"));
@@ -129,26 +141,65 @@ namespace Chaos
 		" 1 blocks on everything except the single most recent task (including tasks from current frame). 1 should gurantee we will always have a future output for interpolation from 2 frames in the past."));
 
 
-	FPhysicsSolverBase::FPhysicsSolverBase(const EMultiBufferMode BufferingModeIn,const EThreadingModeTemp InThreadingMode,UObject* InOwner)
+	FPhysicsSolverBase::FPhysicsSolverBase(const EMultiBufferMode BufferingModeIn,const EThreadingModeTemp InThreadingMode,UObject* InOwner, Chaos::FReal InAsyncDt)
 		: BufferMode(BufferingModeIn)
-		, ThreadingMode(InThreadingMode)
-		, PullResultsManager(MakeUnique<FChaosResultsManager>())
+		, ThreadingMode(!!GSingleThreadedPhysics ? EThreadingModeTemp::SingleThread : InThreadingMode)
+		, PullResultsManager(MakeUnique<FChaosResultsManager>(MarshallingManager))
 		, PendingSpatialOperations_External(MakeUnique<FPendingSpatialDataQueue>())
 		, bUseCollisionResimCache(false)
 		, bPaused_External(false)
 		, Owner(InOwner)
-		, ExternalDataLock_External(new FPhysicsSceneGuard())
+		, ExternalDataLock_External(new FPhysSceneLock())
 		, bIsShuttingDown(false)
-		, AsyncDt(DefaultAsyncDt)
+		, AsyncDt(InAsyncDt)
 		, AccumulatedTime(0)
+		, MMaxDeltaTime(0.0)
+		, MMinDeltaTime(SMALL_NUMBER)
+		, MMaxSubSteps(1)
 		, ExternalSteps(0)
 #if !UE_BUILD_SHIPPING
 		, bStealAdvanceTasksForTesting(false)
 #endif
 	{
+		UE_LOG(LogChaos, Log, TEXT("FPhysicsSolverBase::AsyncDt:%f"), IsUsingAsyncResults() ? AsyncDt : -1);
+
+		//If user is running with -PhysicsRunsOnGT override the cvar (doing it here to avoid parsing every time task is scheduled)
+		if(FParse::Param(FCommandLine::Get(), TEXT("PhysicsRunsOnGT")))
+		{
+			PhysicsRunsOnGT = 1;
+		}
 	}
 
-	FPhysicsSolverBase::~FPhysicsSolverBase() = default;
+	void FPhysicsSolverBase::EnableAsyncMode(FReal FixedDt)
+	{
+		AsyncDt = FixedDt;
+		if (AsyncDt != FixedDt)
+		{
+			AccumulatedTime = 0;
+			UE_LOG(LogChaos, Log, TEXT("FPhysicsSolverBase::AsyncDt:%f"), IsUsingAsyncResults() ? AsyncDt : -1);
+		}
+	}
+
+	void FPhysicsSolverBase::DisableAsyncMode()
+	{
+		AsyncDt = -1;
+		UE_LOG(LogChaos, Log, TEXT("FPhysicsSolverBase::AsyncDt:%f"), AsyncDt);
+	}
+
+
+	FPhysicsSolverBase::~FPhysicsSolverBase()
+	{
+		//free pull results before MarshallingManager is destroyed (technically should be safe because constructed after, but this makes it more explicit)
+		PullResultsManager->SetHistoryLength_External(0);	//ok to use _External because solver going away means external thread released it
+		//reset history buffer before freeing any unremoved callback objects
+		MarshallingManager.SetHistoryLength_Internal(0);
+
+		//if any callback objects are still registered, just delete them here
+		for(ISimCallbackObject* CallbackObject : SimCallbackObjects)
+		{
+			delete CallbackObject;
+		}
+	}
 
 	void FPhysicsSolverBase::DestroySolver(FPhysicsSolverBase& InSolver)
 	{
@@ -186,7 +237,9 @@ namespace Chaos
 		// Advance in single threaded because we cannot block on an async task here if in multi threaded mode. see above comments.
 		InSolver.SetThreadingMode_External(EThreadingModeTemp::SingleThread);
 		InSolver.MarkShuttingDown();
-		InSolver.AdvanceAndDispatch_External(0);	//flush any pending commands are executed (for example unregister object)
+		{
+			InSolver.AdvanceAndDispatch_External(0);	//flush any pending commands are executed (for example unregister object)
+		}
 
 		// verify callbacks have been processed and we're not leaking.
 		// TODO: why is this still firing in 14.30? (Seems we're still leaking)
@@ -208,6 +261,17 @@ namespace Chaos
 		SpatialData.SpatialIdx = Particle->SpatialIdx();
 		SpatialData.AccelerationHandle = AccelerationHandle;
 		SpatialData.SyncTimestamp = MarshallingManager.GetExternalTimestamp_External();
+	}
+
+	void FPhysicsSolverBase::EnqueueSimcallbackRewindRegisteration(ISimCallbackObject* Callback)
+	{
+		EnqueueCommandImmediate([this, Callback]()
+		{
+			if (ensure(MRewindCallback.IsValid()))
+			{
+				MRewindCallback->RegisterRewindableSimCallback_Internal(Callback);
+			}
+		});
 	}
 
 #if !UE_BUILD_SHIPPING
@@ -247,14 +311,6 @@ namespace Chaos
 			UniqueIdxToGTParticles[Idx] = nullptr;
 		}
 	}
-	
-	void FPhysicsSolverBase::EnableRewindCapture(int32 NumFrames, bool InUseCollisionResimCache, TUniquePtr<IRewindCallback>&& RewindCallback)
-	{
-		MRewindData = MakeUnique<FRewindData>(NumFrames, InUseCollisionResimCache, ((FPBDRigidsSolver*)this)->GetCurrentFrame()); // FIXME
-		bUseCollisionResimCache = InUseCollisionResimCache;
-		MRewindCallback = MoveTemp(RewindCallback);
-		MarshallingManager.SetHistoryLength_Internal(NumFrames);
-	}
 
 	void FPhysicsSolverBase::SetRewindCallback(TUniquePtr<IRewindCallback>&& RewindCallback)
 	{
@@ -264,14 +320,17 @@ namespace Chaos
 
 	FGraphEventRef FPhysicsSolverBase::AdvanceAndDispatch_External(FReal InDt)
 	{
+		const bool bSubstepping = MMaxSubSteps > 1;
+		SetSolverSubstep_External(bSubstepping);
 		const FReal DtWithPause = bPaused_External ? 0.0f : InDt;
+		PullResultsManager->SetLastExternalDt_External(DtWithPause);
 		FReal InternalDt = DtWithPause;
 		int32 NumSteps = 1;
 
-		if (IsUsingFixedDt())
+		if(IsUsingFixedDt())
 		{
 			AccumulatedTime += DtWithPause;
-			if (InDt == 0)	//this is a special flush case
+			if(InDt == 0)	//this is a special flush case
 			{
 				//just use any remaining time and sync up to latest no matter what
 				InternalDt = AccumulatedTime;
@@ -280,18 +339,34 @@ namespace Chaos
 			}
 			else
 			{
+
 				InternalDt = AsyncDt;
-				NumSteps = FMath::FloorToInt(AccumulatedTime / InternalDt);
-				AccumulatedTime -= InternalDt * NumSteps;
+				NumSteps = FMath::FloorToInt32(AccumulatedTime / InternalDt);
+				AccumulatedTime -= InternalDt * static_cast<FReal>(NumSteps);
+			}
+		}
+		else if (bSubstepping && InDt > 0)
+		{
+			NumSteps = FMath::CeilToInt32(DtWithPause / MMaxDeltaTime);
+			if (NumSteps > MMaxSubSteps)
+			{
+				// Hitting this case means we're losing time, given the constraints of MaxSteps and MaxDt we can't
+				// fully handle the Dt requested, the simulation will appear to the viewer to run slower than realtime
+				NumSteps = MMaxSubSteps;
+				InternalDt = MMaxDeltaTime;
+			}
+			else
+			{
+				InternalDt = DtWithPause / static_cast<FReal>(NumSteps);
 			}
 		}
 
-		if (InDt > 0)
+		if(InDt > 0)
 		{
 			ExternalSteps++;	//we use this to average forces. It assumes external dt is about the same. 0 dt should be ignored as it typically has nothing to do with force
 		}
 
-		if (NumSteps > 0)
+		if(NumSteps > 0)
 		{
 			//make sure any GT state is pushed into necessary buffer
 			PushPhysicsState(InternalDt, NumSteps, FMath::Max(ExternalSteps, 1));
@@ -301,19 +376,19 @@ namespace Chaos
 		// Ensures we block on any tasks generated from previous frames
 		FGraphEventRef BlockingTasks = PendingTasks;
 
-		while (FPushPhysicsData* PushData = MarshallingManager.StepInternalTime_External())
+		while(FPushPhysicsData* PushData = MarshallingManager.StepInternalTime_External())
 		{
 			if(MRewindCallback && !bIsShuttingDown)
 			{
 				MRewindCallback->ProcessInputs_External(PushData->InternalStep, PushData->SimCallbackInputs);
 			}
 
-			if (ThreadingMode == EThreadingModeTemp::SingleThread)
+			if(ThreadingMode == EThreadingModeTemp::SingleThread)
 			{
 				ensure(!PendingTasks || PendingTasks->IsComplete());	//if mode changed we should have already blocked
 				FPhysicsSolverAdvanceTask ImmediateTask(*this, *PushData);
 #if !UE_BUILD_SHIPPING
-				if (bStealAdvanceTasksForTesting)
+				if(bStealAdvanceTasksForTesting)
 				{
 					StolenSolverAdvanceTasks.Emplace(MoveTemp(ImmediateTask));
 				}
@@ -328,27 +403,29 @@ namespace Chaos
 			else
 			{
 				// If enabled, block on all but most recent physics task, even tasks generated this frame.
-				if (AsyncPhysicsBlockMode == 1)
+				if(AsyncPhysicsBlockMode == 1)
 				{
 					BlockingTasks = PendingTasks;
 				}
 
 				FGraphEventArray Prereqs;
-				if (PendingTasks && !PendingTasks->IsComplete())
+				if(PendingTasks && !PendingTasks->IsComplete())
 				{
 					Prereqs.Add(PendingTasks);
 				}
 
 				PendingTasks = TGraphTask<FPhysicsSolverAdvanceTask>::CreateTask(&Prereqs).ConstructAndDispatchWhenReady(*this, *PushData);
-				if (IsUsingAsyncResults() == false)
+				if(IsUsingAsyncResults() == false)
 				{
 					BlockingTasks = PendingTasks;	//block right away
 				}
 			}
 
-			if (IsUsingAsyncResults() == false)
+			// This break is mainly here to satisfy unit testing. The call to StepInternalTime_External will decrement the
+			// delay in the marshaling manager and throw of tests that are explicitly testing for propagation delays
+			if (IsUsingAsyncResults() == false && !bSubstepping)
 			{
-				break;	//non async can only process one step at a time
+				break;
 			}
 		}
 

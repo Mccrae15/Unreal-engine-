@@ -12,7 +12,6 @@
 #include "IHeadMountedDisplayModule.h"
 #include "IHeadMountedDisplayVulkanExtensions.h"
 
-
 #if PLATFORM_ANDROID
 // this path crashes within libvulkan during vkDestroySwapchainKHR on some versions of Android. See FORT-250079
 int32 GVulkanKeepSwapChain = 0;
@@ -24,6 +23,19 @@ static FAutoConsoleVariableRef CVarVulkanKeepSwapChain(
 	GVulkanKeepSwapChain,
 	TEXT("Whether to keep old swap chain to pass through when creating the next one"),
 	ECVF_RenderThreadSafe
+);
+
+#if PLATFORM_ANDROID
+// On Android swapchain may include more images than we have requested and rendering to those images does not work correctly, so we just ignore them
+int32 GVulkanSwapChainIgnoreExtraImages = 1;
+#else
+int32 GVulkanSwapChainIgnoreExtraImages = 0;
+#endif
+static FAutoConsoleVariableRef CVarVulkanSwapChainIgnoreExtraImages(
+	TEXT("r.Vulkan.SwapChainIgnoreExtraImages"),
+	GVulkanSwapChainIgnoreExtraImages,
+	TEXT("Whether to ignore extra images created in swapchain and stick with a requested number of images"),
+	ECVF_ReadOnly
 );
 
 int32 GShouldCpuWaitForFence = 1;
@@ -471,9 +483,7 @@ FVulkanSwapChain::FVulkanSwapChain(VkInstance InInstance, FVulkanDevice& InDevic
 	
 	SwapChainInfo.clipped = VK_TRUE;
 	SwapChainInfo.compositeAlpha = CompositeAlpha;
-
-	*InOutDesiredNumBackBuffers = DesiredNumBuffers;
-
+	
 	{
 		//#todo-rco: Crappy workaround
 		if (SwapChainInfo.imageExtent.width == 0)
@@ -558,6 +568,11 @@ FVulkanSwapChain::FVulkanSwapChain(VkInstance InInstance, FVulkanDevice& InDevic
 	uint32 NumSwapChainImages;
 	VERIFYVULKANRESULT_EXPANDED(VulkanRHI::vkGetSwapchainImagesKHR(Device.GetInstanceHandle(), SwapChain, &NumSwapChainImages, nullptr));
 
+	if (GVulkanSwapChainIgnoreExtraImages != 0)
+	{
+		NumSwapChainImages = DesiredNumBuffers;
+	}
+
 	OutImages.AddUninitialized(NumSwapChainImages);
 	VERIFYVULKANRESULT_EXPANDED(VulkanRHI::vkGetSwapchainImagesKHR(Device.GetInstanceHandle(), SwapChain, &NumSwapChainImages, OutImages.GetData()));
 
@@ -569,12 +584,14 @@ FVulkanSwapChain::FVulkanSwapChain(VkInstance InInstance, FVulkanDevice& InDevic
 		ImageAcquiredFences[BufferIndex] = Device.GetFenceManager().AllocateFence(true);
 	}
 #endif
-	ImageAcquiredSemaphore.AddUninitialized(DesiredNumBuffers);
-	for (uint32 BufferIndex = 0; BufferIndex < DesiredNumBuffers; ++BufferIndex)
+	ImageAcquiredSemaphore.AddUninitialized(NumSwapChainImages);
+	for (uint32 BufferIndex = 0; BufferIndex < NumSwapChainImages; ++BufferIndex)
 	{
 		ImageAcquiredSemaphore[BufferIndex] = new VulkanRHI::FSemaphore(Device);
 		ImageAcquiredSemaphore[BufferIndex]->AddRef();
 	}
+
+	*InOutDesiredNumBackBuffers = NumSwapChainImages;
 
 	PresentID = 0;
 }
@@ -656,6 +673,8 @@ int32 FVulkanSwapChain::AcquireImageIndex(VulkanRHI::FSemaphore** OutSemaphore)
 #endif
 	VkResult Result;
 	{
+		const uint32 MaxImageIndex = ImageAcquiredSemaphore.Num() - 1;
+
 		SCOPE_CYCLE_COUNTER(STAT_VulkanAcquireBackBuffer);
 		uint32 IdleStart = FPlatformTime::Cycles();
 		Result = VulkanRHI::vkAcquireNextImageKHR(
@@ -665,6 +684,18 @@ int32 FVulkanSwapChain::AcquireImageIndex(VulkanRHI::FSemaphore** OutSemaphore)
 			ImageAcquiredSemaphore[SemaphoreIndex]->GetHandle(),
 			AcquiredFence,
 			&ImageIndex);
+
+		// The swapchain may have more images than we have requested on creating it. Ignore all extra images
+		while (ImageIndex > MaxImageIndex && (Result == VK_SUCCESS || Result == VK_SUBOPTIMAL_KHR))
+		{
+			Result = VulkanRHI::vkAcquireNextImageKHR(
+				Device.GetInstanceHandle(),
+				SwapChain,
+				UINT64_MAX,
+				ImageAcquiredSemaphore[SemaphoreIndex]->GetHandle(),
+				AcquiredFence,
+				&ImageIndex);
+		}
 
 		uint32 ThisCycles = FPlatformTime::Cycles() - IdleStart;
 		if (IsInRHIThread())
@@ -887,7 +918,7 @@ void FVulkanSwapChain::CreateQCOMDepthStencil(const FVulkanSurface& InSurface) c
 	check(UEFlags & TexCreate_DepthStencilTargetable);
 
 	QCOMDepthStencilSurface = new FVulkanSurface(*InSurface.Device, nullptr, InSurface.GetViewType(), InSurface.PixelFormat, InSurface.Height, InSurface.Width,
-													InSurface.Depth, 1, InSurface.GetNumMips(), InSurface.GetNumSamples(), UEFlags, ERHIAccess::Unknown, FRHIResourceCreateInfo());
+													InSurface.Depth, 1, InSurface.GetNumMips(), InSurface.GetNumSamples(), UEFlags, ERHIAccess::Unknown, FRHIResourceCreateInfo(TEXT("FVulkanSwapChain")));
 
 	check(QCOMDepthStencilSurface->GetViewType() == VK_IMAGE_VIEW_TYPE_2D);
 	check(QCOMDepthStencilSurface->Image != VK_NULL_HANDLE);

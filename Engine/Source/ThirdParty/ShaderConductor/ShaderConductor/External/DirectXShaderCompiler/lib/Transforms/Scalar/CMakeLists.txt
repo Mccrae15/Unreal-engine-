@@ -51,6 +51,7 @@ add_llvm_library(LLVMScalarOpts
   DxilFixConstArrayInitializer.cpp # HLSL Change
   DxilEliminateVector.cpp # HLSL Change
   DxilConditionalMem2Reg.cpp # HLSL Change
+  DxilRemoveUnstructuredLoopExits.cpp # HLSL Change
   Scalarizer.cpp
   SeparateConstOffsetFromGEP.cpp
   SimplifyCFGPass.cpp
@@ -66,3 +67,5 @@ add_llvm_library(LLVMScalarOpts
   )
 
 add_dependencies(LLVMScalarOpts intrinsics_gen)
+
+target_link_libraries(LLVMScalarOpts PUBLIC LLVMDXIL) # HLSL Change

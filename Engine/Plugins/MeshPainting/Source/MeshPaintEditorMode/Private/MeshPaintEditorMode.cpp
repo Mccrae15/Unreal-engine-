@@ -1,7 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "MeshPaintEditorMode.h"
-#include "EditorModeRegistry.h"
 #include "Modules/ModuleManager.h"
 #include "MeshPaintMode.h"
 #include "EditorModeManager.h"
@@ -14,7 +13,6 @@
 #include "MeshPaintSplineMeshAdapter.h"
 #include "MeshPaintStaticMeshAdapter.h"
 #include "MeshPaintSkeletalMeshAdapter.h"
-#include "Settings/LevelEditorMiscSettings.h"
 
 class FMeshPaintEditorModeModule : public IModuleInterface
 {
@@ -44,6 +42,10 @@ protected:
 
 void FMeshPaintEditorModeModule::Register()
 {
+	// Note: factories must be registered in the order of most to least specialized!!
+	// The factory lookup currently uses first found rather than determining most specialized. Due to this, the SplineMesh factory must be 
+	// registered *before* the StaticMesh factory, since both factories will succeed in constructing adapters for USplineMeshComponent
+	// since it derives from UStaticMeshComponent.
 	RegisterGeometryAdapterFactory(MakeShareable(new FMeshPaintSplineMeshComponentAdapterFactory));
 	RegisterGeometryAdapterFactory(MakeShareable(new FMeshPaintStaticMeshComponentAdapterFactory));
 	RegisterGeometryAdapterFactory(MakeShareable(new FMeshPaintSkeletalMeshComponentAdapterFactory));
@@ -57,12 +59,9 @@ void FMeshPaintEditorModeModule::Register()
 
 void FMeshPaintEditorModeModule::OnPostEngineInit()
 {
-	if (!GetDefault<ULevelEditorMiscSettings>()->bEnableLegacyMeshPaintMode)
-	{
-		Register();
-		FMeshPaintingToolActionCommands::RegisterAllToolActions();
-		FMeshPaintEditorModeCommands::Register();
-	}
+	Register();
+	FMeshPaintingToolActionCommands::RegisterAllToolActions();
+	FMeshPaintEditorModeCommands::Register();
 }
 
 void FMeshPaintEditorModeModule::StartupModule()
@@ -97,9 +96,6 @@ void FMeshPaintEditorModeModule::OnMeshPaintModeButtonClicked()
 	// *Important* - activate the mode first since FEditorModeTools::DeactivateMode will
 	// activate the default mode when the stack becomes empty, resulting in multiple active visible modes.
 	GLevelEditorModeTools().ActivateMode(GetDefault<UMeshPaintMode>()->GetID());
-
-	// Find and disable any other 'visible' modes since we only ever allow one of those active at a time.
-	GLevelEditorModeTools().DeactivateOtherVisibleModes(GetDefault<UMeshPaintMode>()->GetID());
 
 }
 

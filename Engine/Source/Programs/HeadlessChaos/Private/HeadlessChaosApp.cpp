@@ -59,9 +59,9 @@
 #include "GeometryCollection/GeometryCollectionTestSpatialHash.h"
 #include "GeometryCollection/GeometryCollectionTestVisibility.h"
 #include "GeometryCollection/GeometryCollectionTestEvents.h"
-#include "GeometryCollection/GeometryCollectionTestSkeletalMeshPhysicsProxy.h"
 #include "GeometryCollection/GeometryCollectionTestSerialization.h"
 
+#include "CompGeom/ExactPredicates.h"
 
 IMPLEMENT_APPLICATION(HeadlessChaos, "HeadlessChaos");
 
@@ -132,6 +132,10 @@ TEST(Clustering, Clustering) {
 }
 
 TEST(SerializationTests, Serialization) {
+	// LWC-TODO : re-enable that when we have proper double serialization in LWC mode
+#if 0
+	ChaosTest::SimpleTypesSerialization();
+#endif
 	ChaosTest::SimpleObjectsSerialization();
 	ChaosTest::SharedObjectsSerialization();
 	ChaosTest::GraphSerialization();
@@ -168,8 +172,11 @@ TEST(RaycastTests, Raycast) {
 	//ChaosTest::CylinderRaycast();
 	//ChaosTest::TaperedCylinderRaycast();
 	ChaosTest::CapsuleRaycast();
+	ChaosTest::CapsuleRaycastFastLargeDistance();
+	ChaosTest::CapsuleRaycastMissWithEndPointOnBounds();
 	ChaosTest::TriangleRaycast();
 	ChaosTest::BoxRaycast();
+	ChaosTest::VectorizedAABBRaycast();
 	ChaosTest::ScaledRaycast();
 	//ChaosTest::TransformedRaycast();
 	//ChaosTest::UnionRaycast();
@@ -230,7 +237,11 @@ TEST(BP, BroadphaseTests) {
 	ChaosTest::GridBPTest();
 	ChaosTest::GridBPTest2();
 	ChaosTest::AABBTreeTest();
+	ChaosTest::AABBTreeTestDynamic();
+	ChaosTest::AABBTreeDirtyGridTest();
 	ChaosTest::AABBTreeTimesliceTest();
+	ChaosTest::DoForSweepIntersectCellsImpTest();
+	ChaosTest::BoundingVolumeNoBoundsTest();
 	ChaosTest::BroadphaseCollectionTest();
 	SUCCEED();
 }
@@ -429,7 +440,9 @@ class UEGTestPrinter : public ::testing::EmptyTestEventListener
 
 INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 {
-    // start up the main loop
+	UE::Geometry::ExactPredicates::GlobalInit();
+
+	// start up the main loop
 	GEngineLoop.PreInit(ArgC, ArgV);
 	FModuleManager::Get().StartProcessingNewlyLoadedObjects();
 	
@@ -441,9 +454,9 @@ INT32_MAIN_INT32_ARGC_TCHAR_ARGV()
 
 	ensure(RUN_ALL_TESTS() == 0);
 
-	FCoreDelegates::OnExit.Broadcast();
+	FEngineLoop::AppPreExit();
 	FModuleManager::Get().UnloadModulesAtShutdown();
-
+	FEngineLoop::AppExit();
 	FPlatformMisc::RequestExit(false);
 
 	return 0;

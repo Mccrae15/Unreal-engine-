@@ -5,10 +5,11 @@
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
 #include "Misc/MemStack.h"
-//#include "Animation/AnimationAsset.h"
+#include "Algo/Transform.h"
 #include "Animation/AnimLinkableElement.h"
 #include "Animation/AnimEnums.h"
 #include "Misc/SecureHash.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "AnimTypes.generated.h"
 
 struct FMarkerPair;
@@ -17,6 +18,7 @@ struct FPassedMarker;
 
 class FMemoryReader;
 class FMemoryWriter;
+class UMirrorDataTable;
 
 // Disable debugging information for shipping and test builds.
 #define ENABLE_ANIM_DEBUG (1 && !(UE_BUILD_SHIPPING || UE_BUILD_TEST))
@@ -26,6 +28,8 @@ class FMemoryWriter;
 
 // Enable this if you want to locally measure detailed anim perf.  Disabled by default as it is introduces a lot of additional profile markers and associated overhead.
 #define ENABLE_VERBOSE_ANIM_PERF_TRACKING 0
+
+#define MAX_ANIMATION_TRACKS 65535
 
 namespace EAnimEventTriggerOffsets
 {
@@ -303,10 +307,10 @@ struct FAnimNotifyEvent : public FAnimLinkableElement
 	FName NotifyName;
 
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category=AnimNotifyEvent)
-	class UAnimNotify * Notify;
+	TObjectPtr<class UAnimNotify>  Notify;
 
 	UPROPERTY(EditAnywhere, Instanced, BlueprintReadWrite, Category=AnimNotifyEvent)
-	class UAnimNotifyState * NotifyStateClass;
+	TObjectPtr<class UAnimNotifyState>  NotifyStateClass;
 
 	UPROPERTY()
 	float Duration;
@@ -439,6 +443,9 @@ public:
 
 	/** Get the NotifyName pre-appended to "AnimNotify_", for calling the event */
 	ENGINE_API FName GetNotifyEventName() const;
+	
+	/** Get the mirrored NotifyName pre-appended to "AnimNotify_", for calling the event. If Notify is not mirrored returns result of GetNotifyEventName()*/
+	ENGINE_API FName GetNotifyEventName(const UMirrorDataTable* MirrorDataTable) const;
 };
 
 #if WITH_EDITORONLY_DATA
@@ -508,6 +515,16 @@ struct FAnimSyncMarker
 
 	/** This can be used with the Sort() function on a TArray of FAnimSyncMarker to sort the notifies array by time, earliest first. */
 	ENGINE_API bool operator <(const FAnimSyncMarker& Other) const { return Time < Other.Time; }
+
+	ENGINE_API bool operator ==(const FAnimSyncMarker& Other) const
+	{
+		return MarkerName == Other.MarkerName &&
+#if WITH_EDITORONLY_DATA
+			TrackIndex == Other.TrackIndex &&
+			Guid == Other.Guid &&
+#endif
+			Time == Other.Time;
+	}
 };
 
 #if WITH_EDITORONLY_DATA
@@ -630,7 +647,10 @@ struct FMarkerSyncData
 	TArray<FName>				UniqueMarkerNames;
 
 	void GetMarkerIndicesForTime(float CurrentTime, bool bLooping, const TArray<FName>& ValidMarkerNames, FMarkerPair& OutPrevMarker, FMarkerPair& OutNextMarker, float SequenceLength) const;
+	
+	UE_DEPRECATED(5.0, "Use other GetMarkerSyncPositionFromMarkerIndicies signature")
 	FMarkerSyncAnimPosition GetMarkerSyncPositionfromMarkerIndicies(int32 PrevMarker, int32 NextMarker, float CurrentTime, float SequenceLength) const;
+	FMarkerSyncAnimPosition GetMarkerSyncPositionFromMarkerIndicies(int32 PrevMarker, int32 NextMarker, float CurrentTime, float SequenceLength, const UMirrorDataTable* MirrorTable = nullptr) const;
 	void CollectUniqueNames();
 	void CollectMarkersInRange(float PrevPosition, float NewPosition, TArray<FPassedMarker>& OutMarkersPassedThisTick, float TotalDeltaMove);
 };
@@ -829,22 +849,22 @@ struct ENGINE_API FTrackToSkeletonMap
 * One element is used as a simple compression scheme where if all keys are the same, they'll be
 * reduced to 1 key that is constant over the entire sequence.
 */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct ENGINE_API FRawAnimSequenceTrack
 {
 	GENERATED_USTRUCT_BODY()
 
 	/** Position keys. */
 	UPROPERTY()
-	TArray<FVector> PosKeys;
+	TArray<FVector3f> PosKeys;
 
 	/** Rotation keys. */
 	UPROPERTY()
-	TArray<FQuat> RotKeys;
+	TArray<FQuat4f> RotKeys;
 
 	/** Scale keys. */
 	UPROPERTY()
-	TArray<FVector> ScaleKeys;
+	TArray<FVector3f> ScaleKeys;
 
 	// Serializer.
 	friend FArchive& operator<<(FArchive& Ar, FRawAnimSequenceTrack& T)
@@ -852,12 +872,66 @@ struct ENGINE_API FRawAnimSequenceTrack
 		T.PosKeys.BulkSerialize(Ar);
 		T.RotKeys.BulkSerialize(Ar);
 
-		if (Ar.UE4Ver() >= VER_UE4_ANIM_SUPPORT_NONUNIFORM_SCALE_ANIMATION)
+		if (Ar.UEVer() >= VER_UE4_ANIM_SUPPORT_NONUNIFORM_SCALE_ANIMATION)
 		{
 			T.ScaleKeys.BulkSerialize(Ar);
 		}
 
 		return Ar;
+	}
+
+	static const uint32 SingleKeySize = sizeof(FVector3f) + sizeof(FQuat4f) + sizeof(FVector3f);
+};
+
+UCLASS()
+class ENGINE_API URawAnimSequenceTrackExtensions : public UBlueprintFunctionLibrary
+{
+	GENERATED_BODY()
+public:
+
+	/**
+	* Returns the positional keys contained by the FRawAnimSequenceTrack	
+	*/
+	UFUNCTION(BlueprintPure, Category = Animation, meta=(ScriptMethod))
+	static TArray<FVector> GetPositionalKeys(UPARAM(ref)const FRawAnimSequenceTrack& Track)
+	{
+		TArray<FVector> Keys;
+		Algo::Transform(Track.PosKeys, Keys, [](FVector3f FloatKey)
+		{
+			return FVector(FloatKey);
+		});
+
+		return Keys;
+	}
+
+	/**
+	* Returns the rotational keys contained by the FRawAnimSequenceTrack	
+	*/
+	UFUNCTION(BlueprintPure, Category = Animation, meta=(ScriptMethod))
+	static TArray<FQuat> GetRotationalKeys(UPARAM(ref)const FRawAnimSequenceTrack& Track)
+	{
+		TArray<FQuat> Keys;
+		Algo::Transform(Track.RotKeys, Keys, [](FQuat4f FloatKey)
+		{
+			return FQuat(FloatKey);
+		});
+
+		return Keys;
+	}
+
+	/**
+	* Returns the scale keys contained by the FRawAnimSequenceTrack	
+	*/
+	UFUNCTION(BlueprintPure, Category = Animation, meta=(ScriptMethod))
+	static TArray<FVector> GetScaleKeys(UPARAM(ref)const FRawAnimSequenceTrack& Track)
+	{
+		TArray<FVector> Keys;
+		Algo::Transform(Track.ScaleKeys, Keys, [](FVector3f FloatKey)
+		{
+			return FVector(FloatKey);
+		});
+
+		return Keys;
 	}
 };
 
@@ -869,7 +943,7 @@ class FBoneData
 {
 public:
 	FQuat		Orientation;
-	FVector		Position;
+	FVector3f		Position;
 	/** Bone name. */
 	FName		Name;
 	/** Direct descendants.  Empty for end effectors. */

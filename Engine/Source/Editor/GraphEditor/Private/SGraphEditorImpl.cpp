@@ -681,6 +681,7 @@ void SGraphEditorImpl::Construct( const FArguments& InArgs )
 			//.OnUpdateGraphPanel( this, &SGraphEditorImpl::GraphEd_OnPanelUpdated )
 			.OnDisallowedPinConnection( InArgs._GraphEvents.OnDisallowedPinConnection )
 			.ShowGraphStateOverlay(InArgs._ShowGraphStateOverlay)
+			.OnDoubleClicked(InArgs._GraphEvents.OnDoubleClicked)
 		]
 
 		// Indicator of current zoom level
@@ -895,7 +896,7 @@ void SGraphEditorImpl::AddContextMenuCommentSection(UToolMenu* InMenu)
 					FToolMenuSection& Section = InMenu->AddSection("GraphNodeComment", LOCTEXT("NodeCommentMenuHeader", "Node Comment"));
 					Section.AddEntry(FToolMenuEntry::InitWidget("NodeCommentBox", NodeCommentBox, FText::GetEmpty()));
 				}
-				TWeakObjectPtr<UEdGraphNode> SelectedNodeWeakPtr = MakeWeakObjectPtr(const_cast<UEdGraphNode*>(Context->Node));
+				TWeakObjectPtr<UEdGraphNode> SelectedNodeWeakPtr = MakeWeakObjectPtr(const_cast<UEdGraphNode*>(ToRawPtr(Context->Node)));
 
 				FText NodeCommentText;
 				if (UEdGraphNode* SelectedNode = SelectedNodeWeakPtr.Get())
@@ -909,6 +910,8 @@ void SGraphEditorImpl::AddContextMenuCommentSection(UToolMenu* InMenu)
 				NodeCommentBox->AddSlot()
 					.VAlign(VAlign_Center)
 					.FillWidth(1.0f)
+					.MaxWidth(250.0f)
+					.Padding(FMargin(10.0f, 0.0f))
 					[
 						SNew(SMultiLineEditableTextBox)
 						.Text(NodeCommentText)
@@ -916,6 +919,7 @@ void SGraphEditorImpl::AddContextMenuCommentSection(UToolMenu* InMenu)
 						.OnTextCommitted_Static(&Local::OnNodeCommentTextCommitted, SelectedNodeWeakPtr)
 						.SelectAllTextWhenFocused(true)
 						.RevertTextOnEscape(true)
+						.AutoWrapText(true)						
 						.ModiferKeyForNewLine(EModifierKey::Control)
 					];
 			}
@@ -943,7 +947,7 @@ void SGraphEditorImpl::AddContextMenuCommentSection(UToolMenu* InMenu)
 					LOCTEXT("MultiCommentDesc", "Create Comment from Selection"),
 					LOCTEXT("CommentToolTip", "Create a resizable comment box around selection."),
 					FSlateIcon(),
-					FExecuteAction::CreateStatic(SCommentUtility::CreateComment, GraphSchema, const_cast<UEdGraph*>(Context->Graph)
+					FExecuteAction::CreateStatic(SCommentUtility::CreateComment, GraphSchema, const_cast<UEdGraph*>(ToRawPtr(Context->Graph))
 				));
 			}
 		}
@@ -1060,7 +1064,7 @@ void SGraphEditorImpl::RegisterContextMenu(const UEdGraphSchema* Schema, FToolMe
 		Menu->AddDynamicSection("EdGraphSchemaPinActions", FNewToolMenuDelegate::CreateLambda([](UToolMenu* InMenu)
 			{
 				UGraphNodeContextMenuContext* NodeContext = InMenu->FindContext<UGraphNodeContextMenuContext>();
-				if (NodeContext && NodeContext->Graph)
+				if (NodeContext && NodeContext->Graph && NodeContext->Pin)
 				{
 					if (TSharedPtr<SGraphEditorImpl> GraphEditor = StaticCastSharedPtr<SGraphEditorImpl>(FindGraphEditorForGraph(NodeContext->Graph)))
 					{
@@ -1167,6 +1171,11 @@ FActionMenuContent SGraphEditorImpl::GraphEd_OnGetContextMenuFor(const FGraphCon
 				UAssetEditorToolkitMenuContext* ToolkitMenuContext = NewObject<UAssetEditorToolkitMenuContext>();
 				ToolkitMenuContext->Toolkit = AssetEditorToolkit;
 				Context.AddObject(ToolkitMenuContext);
+
+				if (TSharedPtr<FAssetEditorToolkit> SharedToolKit = AssetEditorToolkit.Pin())
+				{
+					SharedToolKit->InitToolMenuContext(Context);
+				}
 
 				// Need to additionally pass through the asset toolkit to hook up those commands?
 
@@ -1529,7 +1538,7 @@ void SGraphEditorImpl::OnStraightenConnections()
 }
 
 /** Distribute the specified array of node data evenly */
-void DistributeNodes(TArray<FAlignmentData>& InData)
+void DistributeNodes(TArray<FAlignmentData>& InData, bool bIsHorizontal)
 {
 	// Sort the data
 	InData.Sort([](const FAlignmentData& A, const FAlignmentData& B) {
@@ -1549,14 +1558,50 @@ void DistributeNodes(TArray<FAlignmentData>& InData)
 	float TargetPosition = InData[0].GetTarget() + PaddingAmount;
 
 	// Now set all the properties on the target
-	for (int32 Index = 1; Index < InData.Num() - 1; ++Index)
+	if (InData.Num() > 1)
 	{
-		FAlignmentData& Entry = InData[Index];
+		UEdGraph* Graph = InData[0].Node->GetGraph();
+		if (Graph)
+		{
+			const UEdGraphSchema* Schema = Graph->GetSchema();
 
-		Entry.Node->Modify();
-		Entry.TargetProperty = TargetPosition;
+			// similar to FAlignmentHelper::Align(), first try using GraphSchema to move the nodes if applicable
+			if (Schema)
+			{
+				for (int32 Index = 1; Index < InData.Num() - 1; ++Index)
+				{
+					FAlignmentData& Entry = InData[Index];
 
-		TargetPosition = Entry.GetTarget() + PaddingAmount;
+					FVector2D Target2DPosition(Entry.Node->NodePosX, Entry.Node->NodePosY);
+ 
+					if (bIsHorizontal)
+					{
+						Target2DPosition.X = TargetPosition;
+					}
+					else
+					{ 
+						Target2DPosition.Y = TargetPosition;
+					}
+
+					Schema->SetNodePosition(Entry.Node, Target2DPosition);
+
+					TargetPosition = Entry.GetTarget() + PaddingAmount;
+				} 
+
+				return;
+			}
+		}
+
+		// fall back to the old approach if there isn't a schema
+		for (int32 Index = 1; Index < InData.Num() - 1; ++Index)
+		{
+			FAlignmentData& Entry = InData[Index];
+
+			Entry.Node->Modify();
+			Entry.TargetProperty = TargetPosition;
+
+			TargetPosition = Entry.GetTarget() + PaddingAmount;
+		}
 	}
 }
 
@@ -1574,7 +1619,7 @@ void SGraphEditorImpl::OnDistributeNodesH()
 	if (AlignData.Num() > 2)
 	{
 		const FScopedTransaction Transaction(FGraphEditorCommands::Get().DistributeNodesHorizontally->GetLabel());
-		DistributeNodes(AlignData);
+		DistributeNodes(AlignData, true);
 	}
 }
 
@@ -1592,7 +1637,7 @@ void SGraphEditorImpl::OnDistributeNodesV()
 	if (AlignData.Num() > 2)
 	{
 		const FScopedTransaction Transaction(FGraphEditorCommands::Get().DistributeNodesVertically->GetLabel());
-		DistributeNodes(AlignData);
+		DistributeNodes(AlignData, false);
 	}
 }
 
@@ -1605,6 +1650,11 @@ UEdGraphNode* SGraphEditorImpl::GetSingleSelectedNode() const
 {
 	const FGraphPanelSelectionSet SelectedNodes = GetSelectedNodes();
 	return (SelectedNodes.Num() == 1) ? Cast<UEdGraphNode>(*SelectedNodes.CreateConstIterator()) : nullptr;
+}
+
+SGraphPanel* SGraphEditorImpl::GetGraphPanel() const
+{
+	return GraphPanel.Get();
 }
 
 /////////////////////////////////////////////////////

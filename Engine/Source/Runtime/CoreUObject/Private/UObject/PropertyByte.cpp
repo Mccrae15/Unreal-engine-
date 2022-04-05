@@ -11,6 +11,7 @@
 #include "Algo/Find.h"
 #include "UObject/LinkerLoad.h"
 #include "Misc/NetworkVersion.h"
+#include "Hash/Blake3.h"
 
 // WARNING: This should always be the last include in any file that needs it (except .generated.h)
 #include "UObject/UndefineUPropertyMacros.h"
@@ -182,7 +183,7 @@ struct TConvertIntToEnumProperty
 		OldIntType OldValue;
 		Slot << OldValue;
 
-		uint8 NewValue = OldValue;
+		uint8 NewValue = (uint8)OldValue;
 		if (OldValue > (OldIntType)TNumericLimits<uint8>::Max() || !Enum->IsValidEnumValue(NewValue))
 		{
 			UE_LOG(
@@ -324,6 +325,24 @@ EConvertFromTypeResult FByteProperty::ConvertFromType(const FPropertyTag& Tag, F
 	return EConvertFromTypeResult::Converted;
 }
 
+#if WITH_EDITORONLY_DATA
+void FByteProperty::AppendSchemaHash(FBlake3& Builder, bool bSkipEditorOnly) const
+{
+	Super::AppendSchemaHash(Builder, bSkipEditorOnly);
+	if (Enum)
+	{
+		FNameBuilder NameBuilder;
+		Enum->GetPathName(nullptr, NameBuilder);
+		Builder.Update(NameBuilder.GetData(), NameBuilder.Len() * sizeof(NameBuilder.GetData()[0]));
+		int32 Num = Enum->NumEnums();
+		for (int32 Index = 0; Index < Num; ++Index)
+		{
+			AppendHash(Builder, Enum->GetNameByIndex(Index));
+		}
+	}
+}
+#endif
+
 void FByteProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue, const void* DefaultValue, UObject* Parent, int32 PortFlags, UObject* ExportRootScope ) const
 {
 	if (0 != (PortFlags & PPF_ExportCpp))
@@ -331,8 +350,8 @@ void FByteProperty::ExportTextItem( FString& ValueStr, const void* PropertyValue
 		if (Enum)
 		{
 			const int32 ActualValue = *(const uint8*)PropertyValue;
-			const int32 MaxValue = Enum->GetMaxEnumValue();
-			const int32 GoodValue = Enum->IsValidEnumValue(ActualValue) ? ActualValue : MaxValue;
+			const int64 MaxValue = Enum->GetMaxEnumValue();
+			const int64 GoodValue = Enum->IsValidEnumValue(ActualValue) ? ActualValue : MaxValue;
 			const bool bNonNativeEnum = Enum->GetClass() != UEnum::StaticClass();
 			ensure(!bNonNativeEnum || Enum->CppType.IsEmpty());
 			const FString FullyQualifiedEnumName = bNonNativeEnum ? ::UnicodeToCPPIdentifier(Enum->GetName(), false, TEXT("E__"))

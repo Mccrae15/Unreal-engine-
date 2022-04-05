@@ -10,6 +10,7 @@
 #include "Engine/GameEngine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/GameViewportClient.h"
+#include "RenderGraphUtils.h"
 
 #include "Slate/SceneViewport.h"
 
@@ -80,12 +81,7 @@ namespace
 
 FTextureShareDisplayManager::FTextureShareDisplayManager(FTextureShareModule& InTextureShareModule)
 	: TextureShareModule(InTextureShareModule)
-{ }
-
-FTextureShareDisplayManager::~FTextureShareDisplayManager()
-{
-	EndSceneSharing();
-}
+{}
 
 TSharedPtr<FTextureShareDisplayExtension, ESPMode::ThreadSafe> FTextureShareDisplayManager::FindOrAddDisplayConfiguration(FViewport* InViewport)
 {
@@ -118,27 +114,22 @@ bool FTextureShareDisplayManager::IsTrackingViewport(const FViewport* InViewport
 	return DisplayExtensions.ContainsByPredicate([InViewport](const TSharedPtr<FTextureShareDisplayExtension, ESPMode::ThreadSafe>& Other) { return  Other.IsValid() && InViewport == Other->GetAssociatedViewport(); });
 }
 
-void FTextureShareDisplayManager::OnBeginRenderViewFamily(FSceneViewFamily& InViewFamily)
-{
-	TextureShareModule.OnBeginRenderViewFamily(InViewFamily);
-}
-
-void FTextureShareDisplayManager::OnPreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+void FTextureShareDisplayManager::PreRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
 {
 	// Save current viewfamily (Call from FTextureShareDisplayExtension::PreRenderViewFamily_RenderThread)
 	CurrentSceneViewFamily = &InViewFamily;
 }
 
-void FTextureShareDisplayManager::OnResolvedSceneColor_RenderThread(FRHICommandListImmediate& RHICmdList, class FSceneRenderTargets& SceneContext)
+void FTextureShareDisplayManager::OnResolvedSceneColor_RenderThread(FRDGBuilder& GraphBuilder, const FSceneTextures& SceneTextures)
 {
 	// Forward renderer cb with saved viewfamily (Call from RendererModule->GetResolvedSceneColorCallbacks)
 	if (IsSceneSharingValid() && CurrentSceneViewFamily)
 	{
-		TextureShareModule.OnResolvedSceneColor_RenderThread(RHICmdList, SceneContext, *CurrentSceneViewFamily);
+		TextureShareModule.OnResolvedSceneColor_RenderThread(GraphBuilder, SceneTextures, *CurrentSceneViewFamily);
 	}
 }
 
-void FTextureShareDisplayManager::OnPostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
+void FTextureShareDisplayManager::PostRenderViewFamily_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneViewFamily& InViewFamily)
 {
 	// Forward resolved backbuffer cb (Call from FTextureShareDisplayExtension::PostRenderViewFamily_RenderThread)
 	CurrentSceneViewFamily = nullptr;

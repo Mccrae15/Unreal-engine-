@@ -48,6 +48,10 @@ namespace RemoteControlWebSocketServer
 			{
 				Message.RequestPayload = MakeArrayView(InPayload).Slice(PayloadDelimiters.BlockStart, PayloadDelimiters.BlockEnd - PayloadDelimiters.BlockStart);
 			}
+			if (!Request.Passphrase.IsEmpty())
+			{
+				Message.Header.FindOrAdd(WebRemoteControlUtils::PassphraseHeader) = TArray<FString>({Request.Passphrase});
+			}
 			Message.MessageName = MoveTemp(Request.MessageName);
 			ParsedMessage = MoveTemp(Message);
 		}
@@ -62,6 +66,23 @@ void FWebsocketMessageRouter::Dispatch(const FRemoteControlWebSocketMessage& Mes
 	{
 		Callback->ExecuteIfBound(Message);
 	}
+}
+
+void FWebsocketMessageRouter::AddPreDispatch(TFunction<bool(const FRemoteControlWebSocketMessage& Message)> WebsocketPreprocessor)
+{
+	DispatchPreProcessor.Add(WebsocketPreprocessor);
+}
+
+bool FWebsocketMessageRouter::PreDispatch(const FRemoteControlWebSocketMessage& Message) const
+{
+	for (TFunction<bool(const FRemoteControlWebSocketMessage&)> PreprocessFunction : DispatchPreProcessor)
+	{
+		if (!PreprocessFunction(Message))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 void FWebsocketMessageRouter::BindRoute(const FString& MessageName, FWebSocketMessageDelegate OnMessageReceived)
@@ -93,7 +114,7 @@ bool FRCWebSocketServer::Start(uint32 Port, TSharedPtr<FWebsocketMessageRouter> 
 	}
 
 	Router = MoveTemp(InRouter);
-	TickerHandle = FTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FRCWebSocketServer::Tick));
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FRCWebSocketServer::Tick));
 
 	return true;
 }
@@ -122,7 +143,8 @@ void FRCWebSocketServer::Stop()
 {
 	if (TickerHandle.IsValid())
 	{
-		FTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+		TickerHandle.Reset();
 	}
 	Router.Reset();
 	Server.Reset();
@@ -197,6 +219,12 @@ void FRCWebSocketServer::ReceivedRawPacket(void* Data, int32 Size, FGuid ClientI
 	if (TOptional<FRemoteControlWebSocketMessage> Message = RemoteControlWebSocketServer::ParseWebsocketMessage(Payload))
 	{
 		Message->ClientId = ClientId;
+		
+		if (!Router->PreDispatch(*Message))
+		{
+			return;
+		}
+	
 		Router->Dispatch(*Message);
 	}
 }

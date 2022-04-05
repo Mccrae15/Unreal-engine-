@@ -36,11 +36,14 @@ public class MovieSceneTools : ModuleRules
 		PrivateDependencyModuleNames.AddRange(
 			new string[] {
                 "ActorPickerMode",
+				"AnimationBlueprintLibrary",
 				"AppFramework",
 				"CinematicCamera",
+				"DataLayerEditor",
                 "CurveEditor",
                 "DesktopPlatform",
                 "Json",
+                "EditorFramework",
                 "JsonUtilities",
 				"LevelSequence",
                 "LiveLinkInterface",
@@ -54,6 +57,7 @@ public class MovieSceneTools : ModuleRules
                 "ContentBrowser",
 				"Slate",
 				"SlateCore",
+				"SceneOutliner",
                 "EditorStyle",
 				"PropertyEditor",
                 "MaterialEditor",
@@ -76,6 +80,7 @@ public class MovieSceneTools : ModuleRules
                 "Settings",
 				"SceneOutliner",
                 "MainFrame",
+				"EditorFramework",
                 "UnrealEd",
                 "Analytics",
             }
@@ -85,8 +90,7 @@ public class MovieSceneTools : ModuleRules
 			new string[] {
                 "AssetRegistry",
 				"AssetTools",
-				"SceneOutliner",
-                "MainFrame",
+			    "MainFrame",
 			}
 		);
 

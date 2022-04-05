@@ -13,6 +13,7 @@
 #include "Framework/Text/IRichTextMarkupWriter.h"
 #include "RenderingThread.h"
 #include "Editor/WidgetCompilerLog.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 #define LOCTEXT_NAMESPACE "UMG"
 
@@ -38,7 +39,7 @@ private:
 };
 
 template< class ObjectType >
-FORCEINLINE SharedPointerInternals::FRawPtrProxy< ObjectType > MakeShareableDeferredCleanup(ObjectType* InObject)
+FORCEINLINE TSharedPtr< ObjectType > MakeShareableDeferredCleanup(ObjectType* InObject)
 {
 	return MakeShareable(InObject, [](ObjectType* ObjectToDelete) { BeginCleanup(new FDeferredDeletor<ObjectType>(ObjectToDelete)); });
 }
@@ -48,6 +49,7 @@ URichTextBlock::URichTextBlock(const FObjectInitializer& ObjectInitializer)
 {
 	Visibility = ESlateVisibility::SelfHitTestInvisible;
 	TextTransformPolicy = ETextTransformPolicy::None;
+	TextOverflowPolicy = ETextOverflowPolicy::Clip;
 }
 
 void URichTextBlock::ReleaseSlateResources(bool bReleaseChildren)
@@ -56,6 +58,7 @@ void URichTextBlock::ReleaseSlateResources(bool bReleaseChildren)
 
 	MyRichTextBlock.Reset();
 	StyleInstance.Reset();
+	InstanceDecorators.Empty();
 }
 
 TSharedRef<SWidget> URichTextBlock::RebuildWidget()
@@ -79,11 +82,16 @@ void URichTextBlock::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
 
-	MyRichTextBlock->SetText(Text);
-	MyRichTextBlock->SetTransformPolicy(TextTransformPolicy);
-	MyRichTextBlock->SetMinDesiredWidth(MinDesiredWidth);
+	if (MyRichTextBlock.IsValid())
+	{
+		MyRichTextBlock->SetText(Text);
+		MyRichTextBlock->SetTransformPolicy(TextTransformPolicy);
+		MyRichTextBlock->SetMinDesiredWidth(MinDesiredWidth);
 
-	Super::SynchronizeTextLayoutProperties( *MyRichTextBlock );
+		MyRichTextBlock->SetOverflowPolicy(TextOverflowPolicy);
+
+		Super::SynchronizeTextLayoutProperties(*MyRichTextBlock);
+	}
 }
 
 void URichTextBlock::UpdateStyleData()
@@ -277,6 +285,30 @@ void URichTextBlock::ClearAllDefaultStyleOverrides()
 	}
 }
 
+UMaterialInstanceDynamic* URichTextBlock::GetDefaultDynamicMaterial()
+{
+	TObjectPtr<UObject>& MaterialObject = bOverrideDefaultStyle ? DefaultTextStyleOverride.Font.FontMaterial : DefaultTextStyle.Font.FontMaterial;
+
+	if (UMaterialInterface* Material = Cast<UMaterialInterface>(MaterialObject.Get()))
+	{
+		UMaterialInstanceDynamic* DynamicMaterial = Cast<UMaterialInstanceDynamic>(Material);
+
+		if (!DynamicMaterial)
+		{
+			BeginDefaultStyleOverride();
+
+			DynamicMaterial = UMaterialInstanceDynamic::Create(Material, this);
+			DefaultTextStyleOverride.Font.FontMaterial = DynamicMaterial;
+			
+			ApplyUpdatedDefaultTextStyle();
+		}
+
+		return DynamicMaterial;
+	}
+
+	return nullptr;
+}
+
 void URichTextBlock::SetDefaultColorAndOpacity(FSlateColor InColorAndOpacity)
 {
 	BeginDefaultStyleOverride();
@@ -349,11 +381,29 @@ void URichTextBlock::SetTextTransformPolicy(ETextTransformPolicy InTransformPoli
 	}
 }
 
+void URichTextBlock::SetTextOverflowPolicy(ETextOverflowPolicy InOverflowPolicy)
+{
+	TextOverflowPolicy = InOverflowPolicy;
+
+	if (MyRichTextBlock.IsValid())
+	{
+		MyRichTextBlock->SetOverflowPolicy(TextOverflowPolicy);
+	}
+}
+
 void URichTextBlock::ApplyUpdatedDefaultTextStyle()
 {
 	if (MyRichTextBlock.IsValid())
 	{
 		MyRichTextBlock->SetTextStyle(bOverrideDefaultStyle ? DefaultTextStyleOverride : DefaultTextStyle);
+	}
+}
+
+void URichTextBlock::RefreshTextLayout()
+{
+	if (MyRichTextBlock.IsValid())
+	{
+		MyRichTextBlock->Refresh();
 	}
 }
 

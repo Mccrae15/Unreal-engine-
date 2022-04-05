@@ -50,7 +50,7 @@ public:
 			Pilot = ViewportPtr->GetLevelViewportClient().GetActiveActorLock().Get();
 		}
 
-		return Pilot && Pilot->bLockLocation ? EVisibility::Visible : EVisibility::Collapsed;
+		return Pilot && Pilot->IsLockLocation() ? EVisibility::Visible : EVisibility::Collapsed;
 	}
 
 	void Construct(const FArguments& InArgs)
@@ -64,7 +64,7 @@ public:
 		FToolBarBuilder ToolbarBuilder(InArgs._Viewport->GetCommandList(), FMultiBoxCustomization::None);
 
 		// Use a custom style
-		FName ToolBarStyle = "ViewportMenu";
+		FName ToolBarStyle = "LegacyViewportMenu";
 		ToolbarBuilder.SetStyle(&FEditorStyle::Get(), ToolBarStyle);
 		ToolbarBuilder.SetStyle(&FEditorStyle::Get(), ToolBarStyle);
 		ToolbarBuilder.SetLabelVisibility(EVisibility::Collapsed);
@@ -116,8 +116,6 @@ public:
 			SNew( SBorder )
 			.BorderImage( FEditorStyle::GetBrush("NoBorder") )
 			.Padding(FMargin(4.f, 0.f))
-			// Color and opacity is changed based on whether or not the mouse cursor is hovering over the toolbar area
-			.ColorAndOpacity( this, &SViewportToolBar::OnGetColorAndOpacity )
 			[
 				ToolbarBuilder.MakeWidget()
 			]

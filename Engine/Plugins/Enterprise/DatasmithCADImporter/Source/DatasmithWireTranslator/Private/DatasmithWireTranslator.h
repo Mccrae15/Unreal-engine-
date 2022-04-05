@@ -4,13 +4,16 @@
 
 #include "CoreMinimal.h"
 
-#include "DatasmithCoreTechTranslator.h"
+#include "ParametricSurfaceTranslator.h"
 #include "UObject/ObjectMacros.h"
+
+
+namespace UE_DATASMITHWIRETRANSLATOR_NAMESPACE
+{
 
 class FWireTranslatorImpl;
 
-
-class FDatasmithWireTranslator : public FDatasmithCoreTechTranslator
+class FDatasmithWireTranslator : public FParametricSurfaceTranslator
 {
 public:
 	FDatasmithWireTranslator();
@@ -41,3 +44,5 @@ protected:
 private:
 	TSharedPtr<FWireTranslatorImpl> Translator;
 };
+
+}

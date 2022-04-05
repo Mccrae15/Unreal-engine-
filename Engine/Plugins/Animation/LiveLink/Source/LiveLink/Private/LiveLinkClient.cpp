@@ -53,14 +53,14 @@ DEFINE_LOG_CATEGORY(LogLiveLink);
 
 static TAutoConsoleVariable<int32> CVarMaxNewStaticDataPerUpdate(
 	TEXT("LiveLink.Client.MaxNewStaticDataPerUpdate"),
-	64,
-	TEXT("Maximun number of new static data that can be added in a single UE4 frame."),
+	256,
+	TEXT("Maximun number of new static data that can be added in a single UE frame."),
 	ECVF_Default);
 
 static TAutoConsoleVariable<int32> CVarMaxNewFrameDataPerUpdate(
 	TEXT("LiveLink.Client.MaxNewFrameDataPerUpdate"),
-	64,
-	TEXT("Maximun number of new frame data that can be added in a single UE4 frame."),
+	2048,
+	TEXT("Maximun number of new frame data that can be added in a single UE frame."),
 	ECVF_Default);
 
 
@@ -71,6 +71,7 @@ FLiveLinkClient::FLiveLinkClient()
 #endif
 
 	Collection = MakeUnique<FLiveLinkSourceCollection>();
+	OnLiveLinkSubjectRemoved().AddRaw(this, &FLiveLinkClient::OnSubjectRemovedCallback);
 	FCoreDelegates::OnPreExit.AddRaw(this, &FLiveLinkClient::Shutdown);
 
 	//IMediaModule& MediaModule = FModuleManager::LoadModuleChecked<IMediaModule>("Media");
@@ -215,6 +216,8 @@ void FLiveLinkClient::Shutdown()
 
 	if (Collection)
 	{
+		OnLiveLinkSubjectRemoved().RemoveAll(this);
+
 		double Timeout = 2.0;
 		GConfig->GetDouble(TEXT("LiveLink"), TEXT("ClientShutdownTimeout"), Timeout, GGameIni);
 
@@ -257,6 +260,7 @@ void FLiveLinkClient::HandleSubjectRebroadcast(ILiveLinkSubject* InSubject, cons
 					StaticDataCopy.InitializeWith(InSubject->GetStaticData());
 					RebroadcastLiveLinkProvider->UpdateSubjectStaticData(InSubject->GetSubjectKey().SubjectName, InSubject->GetRole(), MoveTemp(StaticDataCopy));
 					InSubject->SetStaticDataAsRebroadcasted(true);
+					RebroadcastedSubjects.Add(InSubject->GetSubjectKey());
 				}
 				
 				// Make a copy of the data for use by the rebroadcaster
@@ -273,10 +277,29 @@ void FLiveLinkClient::HandleSubjectRebroadcast(ILiveLinkSubject* InSubject, cons
 	}
 	else if (InSubject->HasStaticDataBeenRebroadcasted())
 	{
-		if (RebroadcastLiveLinkProvider.IsValid())
+		RemoveRebroadcastedSubject(InSubject->GetSubjectKey());
+		InSubject->SetStaticDataAsRebroadcasted(false);
+	}
+}
+
+void FLiveLinkClient::OnSubjectRemovedCallback(FLiveLinkSubjectKey InSubjectKey)
+{
+	RemoveRebroadcastedSubject(InSubjectKey);
+}
+
+void FLiveLinkClient::RemoveRebroadcastedSubject(FLiveLinkSubjectKey InSubjectKey)
+{
+	if (RebroadcastLiveLinkProvider.IsValid())
+	{
+		if (RebroadcastedSubjects.Contains(InSubjectKey))
 		{
-			RebroadcastLiveLinkProvider->RemoveSubject(InSubject->GetSubjectKey().SubjectName);
-			InSubject->SetStaticDataAsRebroadcasted(false);
+			RebroadcastLiveLinkProvider->RemoveSubject(InSubjectKey.SubjectName);
+			RebroadcastedSubjects.Remove(InSubjectKey);
+
+			if (RebroadcastedSubjects.Num() <= 0)
+			{
+				RebroadcastLiveLinkProvider.Reset();
+			}
 		}
 	}
 }
@@ -1111,8 +1134,10 @@ bool FLiveLinkClient::IsSubjectTimeSynchronized(FLiveLinkSubjectName InSubjectNa
 	return false;
 }
 
-TSubclassOf<ULiveLinkRole> FLiveLinkClient::GetSubjectRole(const FLiveLinkSubjectKey& InSubjectKey) const
+TSubclassOf<ULiveLinkRole> FLiveLinkClient::GetSubjectRole_AnyThread(const FLiveLinkSubjectKey& InSubjectKey) const
 {
+	FScopeLock Lock(&CollectionAccessCriticalSection);
+
 	if (const FLiveLinkCollectionSubjectItem* SubjectItem = Collection->FindSubject(InSubjectKey))
 	{
 		return SubjectItem->GetSubject()->GetRole();
@@ -1121,8 +1146,10 @@ TSubclassOf<ULiveLinkRole> FLiveLinkClient::GetSubjectRole(const FLiveLinkSubjec
 	return TSubclassOf<ULiveLinkRole>();
 }
 
-TSubclassOf<ULiveLinkRole> FLiveLinkClient::GetSubjectRole(FLiveLinkSubjectName InSubjectName) const
+TSubclassOf<ULiveLinkRole> FLiveLinkClient::GetSubjectRole_AnyThread(FLiveLinkSubjectName InSubjectName) const
 {
+	FScopeLock Lock(&CollectionAccessCriticalSection);
+
 	if (const FLiveLinkCollectionSubjectItem* SubjectItem = Collection->FindEnabledSubject(InSubjectName))
 	{
 		return SubjectItem->GetSubject()->GetRole();
@@ -1131,8 +1158,10 @@ TSubclassOf<ULiveLinkRole> FLiveLinkClient::GetSubjectRole(FLiveLinkSubjectName 
 	return TSubclassOf<ULiveLinkRole>();
 }
 
-bool FLiveLinkClient::DoesSubjectSupportsRole(const FLiveLinkSubjectKey& InSubjectKey, TSubclassOf<ULiveLinkRole> InSupportedRole) const
+bool FLiveLinkClient::DoesSubjectSupportsRole_AnyThread(const FLiveLinkSubjectKey& InSubjectKey, TSubclassOf<ULiveLinkRole> InSupportedRole) const
 {
+	FScopeLock Lock(&CollectionAccessCriticalSection);
+
 	if (const FLiveLinkCollectionSubjectItem* SubjectItem = Collection->FindSubject(InSubjectKey))
 	{
 		return SubjectItem->GetSubject()->SupportsRole(InSupportedRole);
@@ -1141,8 +1170,10 @@ bool FLiveLinkClient::DoesSubjectSupportsRole(const FLiveLinkSubjectKey& InSubje
 	return false;
 }
 
-bool FLiveLinkClient::DoesSubjectSupportsRole(FLiveLinkSubjectName InSubjectName, TSubclassOf<ULiveLinkRole> InSupportedRole) const
+bool FLiveLinkClient::DoesSubjectSupportsRole_AnyThread(FLiveLinkSubjectName InSubjectName, TSubclassOf<ULiveLinkRole> InSupportedRole) const
 {
+	FScopeLock Lock(&CollectionAccessCriticalSection);
+
 	if (const FLiveLinkCollectionSubjectItem* SubjectItem = Collection->FindEnabledSubject(InSubjectName))
 	{
 		return SubjectItem->GetSubject()->SupportsRole(InSupportedRole);
@@ -1336,7 +1367,7 @@ FSimpleMulticastDelegate& FLiveLinkClient::OnLiveLinkTicked()
 	return OnLiveLinkTickedDelegate;
 }
 
-TArray<FGuid> FLiveLinkClient::GetDisplayableSources() const
+TArray<FGuid> FLiveLinkClient::GetDisplayableSources(bool bIncludeVirtualSources) const
 {
 	TArray<FGuid> Results;
 
@@ -1345,7 +1376,7 @@ TArray<FGuid> FLiveLinkClient::GetDisplayableSources() const
 
 	for (const FLiveLinkCollectionSourceItem& Data : PresetSources)
 	{
-		if (Data.Source->CanBeDisplayedInUI())
+		if (Data.Source->CanBeDisplayedInUI() || (bIncludeVirtualSources && Data.IsVirtualSource()))
 		{
 			Results.Add(Data.Guid);
 		}
@@ -1764,14 +1795,24 @@ void FLiveLinkClient_Base_DEPRECATED::ClearAllSubjectsFrames()
 	ClearAllSubjectsFrames_AnyThread();
 }
 
-void FLiveLinkClient_Base_DEPRECATED::AddSourceToSubjectWhiteList(FName SubjectName, FGuid SourceGuid)
+TSubclassOf<ULiveLinkRole> FLiveLinkClient_Base_DEPRECATED::GetSubjectRole(const FLiveLinkSubjectKey& SubjectKey) const
 {
-	SetSubjectEnabled({ SourceGuid, SubjectName }, true);
+	return GetSubjectRole_AnyThread(SubjectKey);
 }
 
-void FLiveLinkClient_Base_DEPRECATED::RemoveSourceFromSubjectWhiteList(FName SubjectName, FGuid SourceGuid)
+TSubclassOf<ULiveLinkRole> FLiveLinkClient_Base_DEPRECATED::GetSubjectRole(FLiveLinkSubjectName SubjectName) const
 {
-	SetSubjectEnabled({ SourceGuid, SubjectName}, false);
+	return GetSubjectRole_AnyThread(SubjectName);
+}
+
+bool FLiveLinkClient_Base_DEPRECATED::DoesSubjectSupportsRole(const FLiveLinkSubjectKey& SubjectKey, TSubclassOf<ULiveLinkRole> SupportedRole) const
+{
+	return DoesSubjectSupportsRole_AnyThread(SubjectKey, SupportedRole);
+}
+
+bool FLiveLinkClient_Base_DEPRECATED::DoesSubjectSupportsRole(FLiveLinkSubjectName SubjectName, TSubclassOf<ULiveLinkRole> SupportedRole) const
+{
+	return DoesSubjectSupportsRole_AnyThread(SubjectName, SupportedRole);
 }
 
 PRAGMA_ENABLE_DEPRECATION_WARNINGS

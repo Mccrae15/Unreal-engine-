@@ -61,9 +61,9 @@ void UTextureRenderTarget2DArray::InitAutoFormat(uint32 InSizeX, uint32 InSizeY,
 
 void UTextureRenderTarget2DArray::UpdateResourceImmediate(bool bClearRenderTarget/*=true*/)
 {
-	if (Resource)
+	if (GetResource())
 	{
-		FTextureRenderTarget2DArrayResource* InResource = static_cast<FTextureRenderTarget2DArrayResource*>(Resource);
+		FTextureRenderTarget2DArrayResource* InResource = static_cast<FTextureRenderTarget2DArrayResource*>(GetResource());
 		ENQUEUE_RENDER_COMMAND(UpdateResourceImmediate)(
 			[InResource, bClearRenderTarget](FRHICommandListImmediate& RHICmdList)
 			{
@@ -78,12 +78,12 @@ void UTextureRenderTarget2DArray::GetResourceSizeEx(FResourceSizeEx& CumulativeR
 
 	// Calculate size based on format.
 	const EPixelFormat Format = GetFormat();
-	const int32 BlockSizeX	= GPixelFormats[Format].BlockSizeX;
-	const int32 BlockSizeY	= GPixelFormats[Format].BlockSizeY;
-	const int32 BlockBytes	= GPixelFormats[Format].BlockBytes;
-	const int32 NumBlocksX	= (SizeX + BlockSizeX - 1) / BlockSizeX;
-	const int32 NumBlocksY	= (SizeY + BlockSizeY - 1) / BlockSizeY;
-	const int32 NumBytes	= NumBlocksX * NumBlocksY * Slices * BlockBytes;
+	const int64 BlockSizeX	= GPixelFormats[Format].BlockSizeX;
+	const int64 BlockSizeY	= GPixelFormats[Format].BlockSizeY;
+	const int64 BlockBytes	= GPixelFormats[Format].BlockBytes;
+	const int64 NumBlocksX	= (SizeX + BlockSizeX - 1) / BlockSizeX;
+	const int64 NumBlocksY	= (SizeY + BlockSizeY - 1) / BlockSizeY;
+	const int64 NumBytes	= NumBlocksX * NumBlocksY * Slices * BlockBytes;
 
 	CumulativeResourceSize.AddUnknownMemoryBytes(NumBytes);
 }
@@ -200,7 +200,7 @@ UTexture2DArray* UTextureRenderTarget2DArray::ConstructTexture2DArray(UObject* O
 	Texture2DArray->Source.UnlockMip(0);
 	Texture2DArray->SRGB = bSRGB;
 	// If HDR source image then choose HDR compression settings..
-	Texture2DArray->CompressionSettings = TextureFormat == TSF_RGBA16F ? TextureCompressionSettings::TC_HDR : TextureCompressionSettings::TC_Default;
+	Texture2DArray->CompressionSettings = TextureFormat == TSF_RGBA16F ? TextureCompressionSettings::TC_HDR : TextureCompressionSettings::TC_Default; //-V547 - future proofing
 	// Default to no mip generation for cube render target captures.
 	Texture2DArray->MipGenSettings = TextureMipGenSettings::TMGS_NoMipmaps;
 	Texture2DArray->PostEditChange();
@@ -240,7 +240,7 @@ void FTextureRenderTarget2DArrayResource::InitDynamicRHI()
 		}
 
 		{
-			FRHIResourceCreateInfo CreateInfo = { FClearValueBinding(Owner->ClearColor) };
+			FRHIResourceCreateInfo CreateInfo(TEXT("FTextureRenderTarget2DArrayResource"), FClearValueBinding(Owner->ClearColor));
 			RHICreateTargetableShaderResource2DArray(
 				Owner->SizeX,
 				Owner->SizeY,
@@ -255,7 +255,7 @@ void FTextureRenderTarget2DArrayResource::InitDynamicRHI()
 			);
 		}
 
-		if ((TexCreateFlags & TexCreate_UAV) != 0)
+		if (EnumHasAnyFlags(TexCreateFlags, TexCreate_UAV))
 		{
 			UnorderedAccessViewRHI = RHICreateUnorderedAccessView(RenderTarget2DArrayRHI);
 		}

@@ -220,8 +220,9 @@ struct CORE_API FGenericPlatformStackWalk
 	 * @param	ThreadId			ID of the thread to trace
 	 * @param	BackTrace			[out] Pointer to array to take backtrace
 	 * @param	MaxDepth			Entries in BackTrace array
+	 * @param	Context				Optional thread context information
 	 */
-	static uint32 CaptureThreadStackBackTrace(uint64 ThreadId, uint64* BackTrace, uint32 MaxDepth);
+	static uint32 CaptureThreadStackBackTrace(uint64 ThreadId, uint64* BackTrace, uint32 MaxDepth, void* Context = nullptr);
 
 	/**
 	 * Walks the stack and appends the human readable string to the passed in one.
@@ -233,7 +234,18 @@ struct CORE_API FGenericPlatformStackWalk
 	 * @param	Context				Optional thread context information
 	 */ 
 	static void StackWalkAndDump( ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, int32 IgnoreCount, void* Context = nullptr );
-	
+
+	/**
+	 * Walks the stack and appends the human readable string to the passed in one.
+	 * @warning: The code assumes that HumanReadableString is large enough to contain the information.
+	 *
+	 * @param	HumanReadableString	String to concatenate information with
+	 * @param	HumanReadableStringSize size of string in characters
+	 * @param	ProgramCounter		Instruction address that should be at the top of the stack
+	 * @param	Context				Optional thread context information
+	 */ 
+	static void StackWalkAndDump( ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, void* ProgramCounter, void* Context = nullptr );
+
 	/**
 	 * Walks the stack and updates the Stack array with the symbol information for each line in the stack.
 	 *
@@ -269,6 +281,17 @@ struct CORE_API FGenericPlatformStackWalk
 	 * @param	Context				Optional thread context information
 	 */ 
 	static void StackWalkAndDumpEx( ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, int32 IgnoreCount, uint32 Flags, void* Context = nullptr );
+	/**
+	 * Walks the stack and appends the human readable string to the passed in one.
+	 * @warning: The code assumes that HumanReadableString is large enough to contain the information.
+	 *
+	 * @param	HumanReadableString	String to concatenate information with
+	 * @param	HumanReadableStringSize size of string in characters
+	 * @param	ProgramCounter		Instruction address that should be at the top of the stack
+	 * @param   Flags				Used to pass additional information (see StackWalkFlags)
+	 * @param	Context				Optional thread context information
+	 */ 
+	static void StackWalkAndDumpEx( ANSICHAR* HumanReadableString, SIZE_T HumanReadableStringSize, void* ProgramCounter, uint32 Flags, void* Context = nullptr );
 
 	/**
 	 * Returns the number of modules loaded by the currently running process.

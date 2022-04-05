@@ -3,10 +3,7 @@
 #pragma once
 
 #include "RenderGraphDefinitions.h"
-#include "RendererInterface.h"
 #include "Misc/GeneratedTypeName.h"
-
-class FRDGBlackboard;
 
 /** Declares a struct for use by the RDG blackboard. */
 #define RDG_REGISTER_BLACKBOARD_STRUCT(StructType)										\
@@ -53,14 +50,6 @@ class FRDGBlackboard;
 class FRDGBlackboard
 {
 public:
-	FRDGBlackboard(FRDGAllocator& InAllocator)
-		: Allocator(InAllocator)
-	{}
-
-	/** Copy / Move not allowed. */
-	FRDGBlackboard(FRDGBlackboard&&) = delete;
-	FRDGBlackboard(const FRDGBlackboard&) = delete;
-
 	/** Creates a new instance of a struct. Asserts if one already existed. */
 	template <typename StructType, typename... ArgsType>
 	StructType& Create(ArgsType&&... Args)
@@ -70,12 +59,12 @@ public:
 		const int32 StructIndex = GetStructIndex<StructType>();
 		if (StructIndex >= Blackboard.Num())
 		{
-			Blackboard.SetNum(StructIndex + 1);
+			Blackboard.SetNumZeroed(StructIndex + 1);
 		}
 
 		FStruct*& Result = Blackboard[StructIndex];
 		checkf(!Result, TEXT("RDGBlackboard duplicate Create called on struct '%s'. Only one Create call per struct is allowed."), GetGeneratedTypeName<StructType>());
-		Result = Allocator.AllocObject<HelperStructType>(Forward<ArgsType&&>(Args)...);
+		Result = Allocator.Alloc<HelperStructType>(Forward<ArgsType&&>(Args)...);
 		check(Result);
 		return static_cast<HelperStructType*>(Result)->Struct;
 	}
@@ -89,7 +78,10 @@ public:
 		const int32 StructIndex = GetStructIndex<StructType>();
 		if (StructIndex < Blackboard.Num())
 		{
-			return &static_cast<const HelperStructType*>(Blackboard[StructIndex])->Struct;
+			if (const HelperStructType* Element = static_cast<const HelperStructType*>(Blackboard[StructIndex]))
+			{
+				return &Element->Struct;
+			}
 		}
 		return nullptr;
 	}
@@ -103,12 +95,16 @@ public:
 		return *Struct;
 	}
 
+private:
+	FRDGBlackboard(FRDGAllocator& InAllocator)
+		: Allocator(InAllocator)
+	{}
+
 	void Clear()
 	{
 		Blackboard.Empty();
 	}
 
-private:
 	struct FStruct
 	{
 		virtual ~FStruct() = default;
@@ -147,5 +143,7 @@ private:
 	}
 
 	FRDGAllocator& Allocator;
-	TArray<FStruct*, SceneRenderingAllocator> Blackboard;
+	TArray<FStruct*, FRDGArrayAllocator> Blackboard;
+
+	friend class FRDGBuilder;
 };

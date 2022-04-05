@@ -22,6 +22,7 @@
 #include "Modules/ModuleManager.h"
 #include "SceneOutlinerModule.h"
 #include "SceneOutlinerPublicTypes.h"
+#include "ActorTreeItem.h"
 #include "ScopedTransaction.h"
 #include "Styling/SlateIconFinder.h"
 #include "Textures/SlateIcon.h"
@@ -475,7 +476,6 @@ const UClass* FVariantManagerActorNode::GetClassForObjectBinding() const
 void FVariantManagerActorNode::AddAssignActorSubMenu(FMenuBuilder& MenuBuilder)
 {
 	// Copied from FSequencer::AssignActor
-	using namespace SceneOutliner;
 
 	// If we're showing this menu, we know for a fact only our actor node is selected,
 	// so we only have to check our variant
@@ -505,20 +505,18 @@ void FVariantManagerActorNode::AddAssignActorSubMenu(FMenuBuilder& MenuBuilder)
 							 TAttribute<FText>(this, &FVariantManagerActorNode::GetRebindToSelectedTooltip));
 
 	// Set up a menu entry to assign an actor to the object binding node
-	FInitializationOptions InitOptions;
+	FSceneOutlinerInitializationOptions InitOptions;
 	{
-		InitOptions.Mode = ESceneOutlinerMode::ActorPicker;
-
 		// We hide the header row to keep the UI compact.
 		InitOptions.bShowHeaderRow = false;
 		InitOptions.bShowSearchBox = true;
 		InitOptions.bShowCreateNewFolder = false;
 		InitOptions.bFocusSearchBoxWhenOpened = true;
 		// Only want the actor label column
-		InitOptions.ColumnMap.Add(FBuiltInColumnTypes::Label(), FColumnInfo(EColumnVisibility::Visible, 0));
+		InitOptions.ColumnMap.Add(FSceneOutlinerBuiltInColumnTypes::Label(), FSceneOutlinerColumnInfo(ESceneOutlinerColumnVisibility::Visible, 0));
 
 		// Only display actors that are not possessed already
-		InitOptions.Filters->AddFilterPredicate( FActorFilterPredicate::CreateLambda( IsActorValidForAssignment ) );
+		InitOptions.Filters->AddFilterPredicate<FActorTreeItem>(FActorTreeItem::FFilterPredicate::CreateLambda( IsActorValidForAssignment ));
 	}
 
 	// actor selector to allow the user to choose an actor
@@ -528,7 +526,7 @@ void FVariantManagerActorNode::AddAssignActorSubMenu(FMenuBuilder& MenuBuilder)
 		.MaxDesiredHeight(400.0f)
 		.WidthOverride(300.0f)
 		[
-			SceneOutlinerModule.CreateSceneOutliner(
+			SceneOutlinerModule.CreateActorPicker(
 				InitOptions,
 				FOnActorPicked::CreateLambda([&](AActor* Actor)
 				{

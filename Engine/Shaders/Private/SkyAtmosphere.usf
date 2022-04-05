@@ -63,6 +63,10 @@
 #define SAMPLE_ATMOSPHERE_ON_CLOUDS 0
 #endif
 
+#ifndef VIRTUAL_SHADOW_MAP
+#define VIRTUAL_SHADOW_MAP 0
+#endif
+
 #if SAMPLE_OPAQUE_SHADOW
 
 #define DYNAMICALLY_SHADOWED 1
@@ -84,7 +88,11 @@
 #undef VOLUME_SHADOW_SAMPLING_INPUT
 #endif
 
+#if VIRTUAL_SHADOW_MAP
+#include "VirtualShadowMaps/VirtualShadowMapProjectionCommon.ush"
 #endif
+
+#endif // SAMPLE_OPAQUE_SHADOW
 
 
 #if (SAMPLE_CLOUD_SHADOW || SAMPLE_CLOUD_SKYAO)
@@ -95,6 +103,10 @@
 #if SAMPLE_ATMOSPHERE_ON_CLOUDS
 Texture2D<float>	VolumetricCloudDepthTexture;
 Texture2D<float4>	InputCloudLuminanceTransmittanceTexture;
+#endif
+
+#if MSAA_SAMPLE_COUNT > 1
+Texture2DMS<float, MSAA_SAMPLE_COUNT> MSAADepthTexture;
 #endif
 
 
@@ -135,34 +147,34 @@ float RaySphereIntersectNearest(float3 RayOrigin, float3 RayDir, float3 SphereCe
 }
 
 
-float4 GetScreenWorldPos(float4 SVPos, float DeviceZ)
+float4 GetScreenTranslatedWorldPos(float4 SVPos, float DeviceZ)
 {
 #if HAS_INVERTED_Z_BUFFER
 	DeviceZ = max(0.000000000001, DeviceZ);	// TODO: investigate why SvPositionToWorld returns bad values when DeviceZ is far=0 when using inverted z
 #endif
-	return float4(SvPositionToWorld(float4(SVPos.xy, DeviceZ, 1.0)), 1.0);
+	return float4(SvPositionToTranslatedWorld(float4(SVPos.xy, DeviceZ, 1.0)), 1.0);
 }
 
 float3 GetScreenWorldDir(in float4 SVPos)
 {
 	float2 ScreenPosition = SvPositionToScreenPosition(SVPos).xy;
 	const float Depth = 1000000.0f;
-	float4 WorldPos = mul(float4(ScreenPosition * Depth, Depth, 1), View.ScreenToWorld);
-	return normalize(WorldPos.xyz - View.WorldCameraOrigin);
+	float4 WorldPos = mul(float4(ScreenPosition * Depth, Depth, 1), View.ScreenToTranslatedWorld);
+	return normalize(WorldPos.xyz - View.TranslatedWorldCameraOrigin);
 }
 
 // This is the world position of the camera. It is also force to be at the top of the virutal planet surface. 
 // This is to always see the sky even when the camera is buried into the virtual planet.
-float3 GetCameraWorldPos()
+float3 GetCameraTranslatedWorldPos()
 {
-	return View.SkyWorldCameraOrigin;
+	return View.SkyCameraTranslatedWorldOrigin;
 }
 
 // This is the camera position relative to the virtual planet center.
 // This is convenient because for all the math in this file using world position relative to the virtual planet center.
-float3 GetCameraPlanetPos()
+float3 GetTranslatedCameraPlanetPos()
 {
-	return (GetCameraWorldPos() - View.SkyPlanetCenterAndViewHeight.xyz)*CM_TO_SKY_UNIT;
+	return (GetCameraTranslatedWorldPos() - View.SkyPlanetTranslatedWorldCenterAndViewHeight.xyz)*CM_TO_SKY_UNIT;
 }
 
 bool MoveToTopAtmosphere(inout float3 WorldPos, in float3 WorldDir, in float AtmosphereTopRadius)
@@ -186,90 +198,6 @@ bool MoveToTopAtmosphere(inout float3 WorldPos, in float3 WorldDir, in float Atm
 	return true; // ok to start tracing
 }
 
-
-
-////////////////////////////////////////////////////////////
-// Participating medium properties
-////////////////////////////////////////////////////////////
-
-float RayleighPhase(float CosTheta)
-{
-	float Factor = 3.0f / (16.0f * PI);
-	return Factor * (1.0f + CosTheta * CosTheta);
-}
-
-float HgPhase(float G, float CosTheta)
-{
-	// Reference implementation (i.e. not schlick approximation). 
-	// See http://www.pbr-book.org/3ed-2018/Volume_Scattering/Phase_Functions.html
-	float Numer = 1.0f - G * G;
-	float Denom = 1.0f + G * G + 2.0f * G * CosTheta;
-	return Numer / (4.0f * PI * Denom * sqrt(Denom));
-}
-
-float3 GetAlbedo(float3 Scattering, float3 Extinction)
-{
-	return Scattering / max(0.001f, Extinction);
-}
-
-struct MediumSampleRGB
-{
-	float3 Scattering;
-	float3 Absorption;
-	float3 Extinction;
-
-	float3 ScatteringMie;
-	float3 AbsorptionMie;
-	float3 ExtinctionMie;
-
-	float3 ScatteringRay;
-	float3 AbsorptionRay;
-	float3 ExtinctionRay;
-
-	float3 ScatteringOzo;
-	float3 AbsorptionOzo;
-	float3 ExtinctionOzo;
-
-	float3 Albedo;
-};
-
-// If this is changed, please also update USkyAtmosphereComponent::GetTransmittance 
-MediumSampleRGB SampleMediumRGB(in float3 WorldPos)
-{
-	const float SampleHeight = max(0.0, (length(WorldPos) - Atmosphere.BottomRadiusKm));
-
-	const float DensityMie = exp(Atmosphere.MieDensityExpScale * SampleHeight);
-
-	const float DensityRay = exp(Atmosphere.RayleighDensityExpScale * SampleHeight);
-
-	const float DensityOzo = SampleHeight < Atmosphere.AbsorptionDensity0LayerWidth ?
-		saturate(Atmosphere.AbsorptionDensity0LinearTerm * SampleHeight + Atmosphere.AbsorptionDensity0ConstantTerm) :	// We use saturate to allow the user to create plateau, and it is free on GCN.
-		saturate(Atmosphere.AbsorptionDensity1LinearTerm * SampleHeight + Atmosphere.AbsorptionDensity1ConstantTerm);
-
-	MediumSampleRGB s;
-
-	s.ScatteringMie = DensityMie * Atmosphere.MieScattering.rgb;
-	s.AbsorptionMie = DensityMie * Atmosphere.MieAbsorption.rgb;
-	s.ExtinctionMie = DensityMie * Atmosphere.MieExtinction.rgb;
-
-	s.ScatteringRay = DensityRay * Atmosphere.RayleighScattering.rgb;
-	s.AbsorptionRay = 0.0f;
-	s.ExtinctionRay = s.ScatteringRay + s.AbsorptionRay;
-
-	s.ScatteringOzo = 0.0f;
-	s.AbsorptionOzo = DensityOzo * Atmosphere.AbsorptionExtinction.rgb;
-	s.ExtinctionOzo = s.ScatteringOzo + s.AbsorptionOzo;
-
-	s.Scattering = s.ScatteringMie + s.ScatteringRay + s.ScatteringOzo;
-	s.Absorption = s.AbsorptionMie + s.AbsorptionRay + s.AbsorptionOzo;
-	s.Extinction = s.ExtinctionMie + s.ExtinctionRay + s.ExtinctionOzo;
-	s.Albedo = GetAlbedo(s.Scattering, s.Extinction);
-
-	return s;
-}
-
-
-
 ////////////////////////////////////////////////////////////
 // LUT functions
 ////////////////////////////////////////////////////////////
@@ -282,18 +210,7 @@ MediumSampleRGB SampleMediumRGB(in float3 WorldPos)
 void UvToLutTransmittanceParams(out float ViewHeight, out float ViewZenithCosAngle, in float2 UV)
 {
 	//UV = FromSubUvsToUnit(UV, SkyAtmosphere.TransmittanceLutSizeAndInvSize); // No real impact so off
-	float Xmu = UV.x;
-	float Xr = UV.y;
-
-	float H = sqrt(Atmosphere.TopRadiusKm * Atmosphere.TopRadiusKm - Atmosphere.BottomRadiusKm * Atmosphere.BottomRadiusKm);
-	float Rho = H * Xr;
-	ViewHeight = sqrt(Rho * Rho + Atmosphere.BottomRadiusKm * Atmosphere.BottomRadiusKm);
-
-	float Dmin = Atmosphere.TopRadiusKm - ViewHeight;
-	float Dmax = Rho + H;
-	float D = Dmin + Xmu * (Dmax - Dmin);
-	ViewZenithCosAngle = D == 0.0f ? 1.0f : (H * H - Rho * Rho - D * D) / (2.0f * ViewHeight * D);
-	ViewZenithCosAngle = clamp(ViewZenithCosAngle, -1.0f, 1.0f);
+	fromTransmittanceLutUVs(ViewHeight, ViewZenithCosAngle, Atmosphere.BottomRadiusKm, Atmosphere.TopRadiusKm, UV);
 }
 
 void LutTransmittanceParamsToUv(in float ViewHeight, in float ViewZenithCosAngle, out float2 UV)
@@ -351,7 +268,7 @@ void UvToSkyViewLutParams(out float3 ViewDir, in float ViewHeight, in float2 UV)
 // Utilities
 ////////////////////////////////////////////////////////////
 
-#if USE_PREEXPOSURE && VIEWDATA_AVAILABLE
+#if VIEWDATA_AVAILABLE
 // Exposure used for regular views by the FastSky and AP LUTs.
 #define ViewPreExposure			View.PreExposure
 #define ViewOneOverPreExposure	View.OneOverPreExposure
@@ -382,19 +299,23 @@ Texture2D<float3> VolumetricCloudSkyAOTexture;
 float VolumetricCloudShadowStrength0;
 float VolumetricCloudShadowStrength1;
 
+int VirtualShadowMapId0;
+int VirtualShadowMapId1;
+
 
 #if SOURCE_DISK_ENABLED
 
 uint SourceDiskEnabled; 
 
-float3 GetLightDiskLuminance(float3 WorldPos, float3 WorldDir, uint LightIndex)
+float3 GetLightDiskLuminance(float3 PlanetCenterToCamera, float3 WorldDir, uint LightIndex)
 {
-	float t = RaySphereIntersectNearest(WorldPos, WorldDir, float3(0.0f, 0.0f, 0.0f), Atmosphere.BottomRadiusKm);
+	float t = RaySphereIntersectNearest(PlanetCenterToCamera, WorldDir, float3(0.0f, 0.0f, 0.0f), Atmosphere.BottomRadiusKm);
 	if (t < 0.0f												// No intersection with the planet
 		&& View.RenderingReflectionCaptureMask==0.0f)	// Do not render light disk when in reflection capture in order to avoid double specular. The sun contribution is already computed analyticaly.
 	{
+		// GetLightDiskLuminance contains a tiny soft edge effect
 		float3 LightDiskLuminance = GetLightDiskLuminance(
-			WorldPos, WorldDir, Atmosphere.BottomRadiusKm, Atmosphere.TopRadiusKm,
+			PlanetCenterToCamera, WorldDir, Atmosphere.BottomRadiusKm, Atmosphere.TopRadiusKm,
 			TransmittanceLutTexture, TransmittanceLutTextureSampler,
 			View.AtmosphereLightDirection[LightIndex].xyz, View.AtmosphereLightDiscCosHalfApexAngle[LightIndex].x, View.AtmosphereLightDiscLuminance[LightIndex].xyz);
 
@@ -402,16 +323,6 @@ float3 GetLightDiskLuminance(float3 WorldPos, float3 WorldDir, uint LightIndex)
 		const float3 MaxLightLuminance = 64000.0f;
 		float3 ExposedLightLuminance = LightDiskLuminance * OutputPreExposure;
 		ExposedLightLuminance = min(ExposedLightLuminance, MaxLightLuminance);
-
-#if 1
-		const float ViewDotLight = dot(WorldDir, View.AtmosphereLightDirection[LightIndex].xyz);
-		const float CosHalfApex = View.AtmosphereLightDiscCosHalfApexAngle[LightIndex].x;
-		const float HalfCosHalfApex = CosHalfApex + (1.0f - CosHalfApex) * 0.25; // Start fading when at 75% distance from light disk center (in cosine space)
-
-		// Apply smooth fading at edge. This is currently an eye balled fade out that works well in many cases.
-		const float Weight = 1.0-saturate((HalfCosHalfApex - ViewDotLight) / (HalfCosHalfApex - CosHalfApex));
-		ExposedLightLuminance = ExposedLightLuminance * Weight;
-#endif 
 
 		return ExposedLightLuminance;
 	}
@@ -477,6 +388,7 @@ struct SamplingSetup
 	float DistanceToSampleCountMaxInv;
 };
 
+// In this function, all world position are relative to the planet center (itself expressed within translated world space)
 SingleScatteringResult IntegrateSingleScatteredLuminance(
 	in float4 SVPos, in float3 WorldPos, in float3 WorldDir,
 	in bool Ground, in SamplingSetup Sampling, in float DeviceZ, in bool MieRayPhase,
@@ -536,9 +448,9 @@ SingleScatteringResult IntegrateSingleScatteredLuminance(
 #else // SAMPLE_ATMOSPHERE_ON_CLOUDS
 	if (DeviceZ != FarDepthValue)
 	{
-		const float3 DepthBufferWorldPosKm = GetScreenWorldPos(SVPos, DeviceZ).xyz * CM_TO_SKY_UNIT;
-		const float3 TraceStartWorldPosKm = WorldPos + View.SkyPlanetCenterAndViewHeight.xyz * CM_TO_SKY_UNIT; // apply planet offset to go back to world from planet local referencial.
-		const float3 TraceStartToSurfaceWorldKm = DepthBufferWorldPosKm - TraceStartWorldPosKm;
+		const float3 DepthBufferTranslatedWorldPosKm = GetScreenTranslatedWorldPos(SVPos, DeviceZ).xyz * CM_TO_SKY_UNIT;
+		const float3 TraceStartTranslatedWorldPosKm  = WorldPos + View.SkyPlanetTranslatedWorldCenterAndViewHeight.xyz * CM_TO_SKY_UNIT; // apply planet offset to go back to world from planet local referencial.
+		const float3 TraceStartToSurfaceWorldKm = DepthBufferTranslatedWorldPosKm - TraceStartTranslatedWorldPosKm;
 		float tDepth = length(TraceStartToSurfaceWorldKm);
 		if (tDepth < tMax)
 		{
@@ -682,20 +594,32 @@ SingleScatteringResult IntegrateSingleScatteredLuminance(
 		float tPlanet0 = RaySphereIntersectNearest(P, Light0Dir, PlanetO + PLANET_RADIUS_OFFSET * UpVector, Atmosphere.BottomRadiusKm);
 		float PlanetShadow0 = tPlanet0 >= 0.0f ? 0.0f : 1.0f;
 		float3 ShadowP0 = P;
+		bool bUnused = false;
 #if SKYVIEWLUT_PASS
-		ShadowP0 = GetCameraPlanetPos() + t * mul(LocalReferencial, WorldDir); // Inverse of the local SkyViewLUT referencial transform
+		ShadowP0 = GetTranslatedCameraPlanetPos() + t * mul(LocalReferencial, WorldDir); // Inverse of the local SkyViewLUT referencial transform
 #endif
 #if SAMPLE_OPAQUE_SHADOW
-		PlanetShadow0 *= ComputeLight0VolumeShadowing(ShadowP0 * SKY_UNIT_TO_CM + View.SkyPlanetCenterAndViewHeight.xyz, false, false);
+		{
+			float3 ShadowSampleWorldPosition0 = ShadowP0 * SKY_UNIT_TO_CM + View.SkyPlanetTranslatedWorldCenterAndViewHeight.xyz;
+			PlanetShadow0 *= ComputeLight0VolumeShadowing(ShadowSampleWorldPosition0 /* - LWCHackToFloat(PrimaryView.PreViewTranslation)*/, false, false, bUnused);
+
+		#if VIRTUAL_SHADOW_MAP
+			if (VirtualShadowMapId0 != INDEX_NONE)
+			{
+				FVirtualShadowMapSampleResult VirtualShadowMapSample = SampleVirtualShadowMapLWCHack(VirtualShadowMapId0, ShadowSampleWorldPosition0);
+				PlanetShadow0 *= VirtualShadowMapSample.ShadowFactor;
+			}
+		#endif // VIRTUALSHADOW_MAP
+		}
 #endif
 #if SAMPLE_CLOUD_SKYAO
 		float OutOpticalDepth = 0.0f;
-		MultiScatteredLuminance0 *= GetCloudVolumetricShadow(ShadowP0 * SKY_UNIT_TO_CM + View.SkyPlanetCenterAndViewHeight.xyz, VolumetricCloudCommonParameters.CloudSkyAOWorldToLightClipMatrix,
+		MultiScatteredLuminance0 *= GetCloudVolumetricShadow(ShadowP0 * SKY_UNIT_TO_CM + View.SkyPlanetTranslatedWorldCenterAndViewHeight.xyz, VolumetricCloudCommonParameters.CloudSkyAOTranslatedWorldToLightClipMatrix,
 			VolumetricCloudCommonParameters.CloudSkyAOFarDepthKm, VolumetricCloudSkyAOTexture, VolumetricCloudSkyAOTextureSampler, OutOpticalDepth);
 #endif
 #if SAMPLE_CLOUD_SHADOW
 		float OutOpticalDepth2 = 0.0f;
-		PlanetShadow0 *= saturate(lerp(1.0f, GetCloudVolumetricShadow(ShadowP0 * SKY_UNIT_TO_CM + View.SkyPlanetCenterAndViewHeight.xyz, VolumetricCloudCommonParameters.CloudShadowmapWorldToLightClipMatrix[0],
+		PlanetShadow0 *= saturate(lerp(1.0f, GetCloudVolumetricShadow(ShadowP0 * SKY_UNIT_TO_CM + View.SkyPlanetTranslatedWorldCenterAndViewHeight.xyz, VolumetricCloudCommonParameters.CloudShadowmapTranslatedWorldToLightClipMatrix[0],
 			VolumetricCloudCommonParameters.CloudShadowmapFarDepthKm[0].x, VolumetricCloudShadowMapTexture0, VolumetricCloudShadowMapTexture0Sampler, OutOpticalDepth2), VolumetricCloudShadowStrength0));
 #endif
 		// MultiScatteredLuminance is already pre-exposed, atmospheric light contribution needs to be pre exposed
@@ -708,13 +632,23 @@ SingleScatteringResult IntegrateSingleScatteredLuminance(
 		float3 ShadowP1 = P;
 #if SAMPLE_OPAQUE_SHADOW
 	#if SKYVIEWLUT_PASS
-		ShadowP1 = GetCameraPlanetPos() + t * mul(LocalReferencial, WorldDir); // Inverse of the local SkyViewLUT referencial transform
+		ShadowP1 = GetTranslatedCameraPlanetPos() + t * mul(LocalReferencial, WorldDir); // Inverse of the local SkyViewLUT referencial transform
 	#endif
-		PlanetShadow1 *= ComputeLight1VolumeShadowing(ShadowP1 * SKY_UNIT_TO_CM + View.SkyPlanetCenterAndViewHeight.xyz, false, false);
-#endif
+		{
+			float3 ShadowSampleWorldPosition1 = ShadowP1 * SKY_UNIT_TO_CM + View.SkyPlanetTranslatedWorldCenterAndViewHeight.xyz;
+			PlanetShadow1 *= ComputeLight1VolumeShadowing(ShadowSampleWorldPosition1/* - LWCHackToFloat(PrimaryView.PreViewTranslation)*/, false, false, bUnused);
+		#if VIRTUAL_SHADOW_MAP
+			if (VirtualShadowMapId1 != INDEX_NONE)
+			{
+				FVirtualShadowMapSampleResult VirtualShadowMapSample = SampleVirtualShadowMapLWCHack(VirtualShadowMapId1, ShadowSampleWorldPosition1);
+				PlanetShadow1 *= VirtualShadowMapSample.ShadowFactor;
+			}
+		#endif // VIRTUALSHADOW_MAP
+		}
+#endif // SAMPLE_OPAQUE_SHADOW
 #if SAMPLE_CLOUD_SHADOW
 		float OutOpticalDepth3 = 0.0f;
-		PlanetShadow1 *= saturate(lerp(1.0f, GetCloudVolumetricShadow(ShadowP1 * SKY_UNIT_TO_CM + View.SkyPlanetCenterAndViewHeight.xyz, VolumetricCloudCommonParameters.CloudShadowmapWorldToLightClipMatrix[1],
+		PlanetShadow1 *= saturate(lerp(1.0f, GetCloudVolumetricShadow(ShadowP1 * SKY_UNIT_TO_CM + View.SkyPlanetTranslatedWorldCenterAndViewHeight.xyz, VolumetricCloudCommonParameters.CloudShadowmapTranslatedWorldToLightClipMatrix[1],
 			VolumetricCloudCommonParameters.CloudShadowmapFarDepthKm[1].x, VolumetricCloudShadowMapTexture1, VolumetricCloudShadowMapTexture1Sampler, OutOpticalDepth3), VolumetricCloudShadowStrength1));
 #endif
 		//  Multi-scattering can work for the second light but it is disabled for the sake of performance.
@@ -817,6 +751,9 @@ void RenderSkyAtmosphereRayMarchingPS(
 #if COLORED_TRANSMITTANCE_ENABLED
 	, float4 Transmittance : SV_TARGET1;	// For dual source blending when available
 #endif
+#if MSAA_SAMPLE_COUNT > 1
+	, in uint SampleIndex : SV_SampleIndex
+#endif
 )
 {
 	OutLuminance = 0;
@@ -833,7 +770,8 @@ void RenderSkyAtmosphereRayMarchingPS(
 	//	return;
 	//}
 
-	float3 WorldPos = GetCameraPlanetPos();
+	// World position are relative to the planet center (itself expressed within translated world space)
+	float3 WorldPos = GetTranslatedCameraPlanetPos();
 	float3 WorldDir = GetScreenWorldDir(SVPos);
 
 	float3 PreExposedL = 0;
@@ -854,10 +792,16 @@ void RenderSkyAtmosphereRayMarchingPS(
 	float DeviceZ = CloudDepthKm; // Warning: for simplicity, we use DeviceZ as world distance in kilometer when SAMPLE_ATMOSPHERE_ON_CLOUDS. See special case in IntegrateSingleScatteredLuminance.
 
 #else // SAMPLE_ATMOSPHERE_ON_CLOUDS
-	// Get the light disk luminance to draw 
+
+#if  MSAA_SAMPLE_COUNT > 1
+	float DeviceZ = DepthReadDisabled ? FarDepthValue : MSAADepthTexture.Load(int2(PixPos), SampleIndex).x;
+#else
 	float DeviceZ = DepthReadDisabled ? FarDepthValue : LookupDeviceZ(UvBuffer);
+#endif
+
 	if (DeviceZ == FarDepthValue)
 	{
+		// Get the light disk luminance to draw 
 		LuminanceScale = SkyAtmosphere.SkyLuminanceFactor;
 #if SOURCE_DISK_ENABLED
 		if (SourceDiskEnabled > 0)
@@ -922,12 +866,12 @@ void RenderSkyAtmosphereRayMarchingPS(
 #error The FASTAERIALPERSPECTIVE_ENABLED path does not support COLORED_TRANSMITTANCE_ENABLED.
 #else
 
-	float3 DepthBufferWorldPos = GetScreenWorldPos(SVPos, DeviceZ).xyz;
-	float4 NDCPosition = mul(float4(DepthBufferWorldPos.xyz, 1), View.WorldToClip);
+	float3 DepthBufferTranslatedWorldPos = GetScreenTranslatedWorldPos(SVPos, DeviceZ).xyz;
+	float4 NDCPosition = mul(float4(DepthBufferTranslatedWorldPos.xyz, 1), View.TranslatedWorldToClip);
 
 	float4 AP = GetAerialPerspectiveLuminanceTransmittance(
 		ResolvedView.RealTimeReflectionCapture, ResolvedView.SkyAtmosphereCameraAerialPerspectiveVolumeSizeAndInvSize,
-		NDCPosition, DepthBufferWorldPos*CM_TO_SKY_UNIT, GetCameraWorldPos()*CM_TO_SKY_UNIT,
+		NDCPosition, DepthBufferTranslatedWorldPos *CM_TO_SKY_UNIT, GetCameraTranslatedWorldPos()*CM_TO_SKY_UNIT,
 		CameraAerialPerspectiveVolumeTexture, CameraAerialPerspectiveVolumeTextureSampler,
 		SkyAtmosphere.CameraAerialPerspectiveVolumeDepthResolutionInv,
 		SkyAtmosphere.CameraAerialPerspectiveVolumeDepthResolution,
@@ -970,7 +914,8 @@ void RenderSkyAtmosphereRayMarchingPS(
 	SingleScatteringResult ss = IntegrateSingleScatteredLuminance(
 		SVPos, WorldPos, WorldDir,
 		Ground, Sampling, DeviceZ, MieRayPhase,
-		View.AtmosphereLightDirection[0].xyz, View.AtmosphereLightDirection[1].xyz, View.AtmosphereLightColor[0].rgb, View.AtmosphereLightColor[1].rgb,
+		View.AtmosphereLightDirection[0].xyz, View.AtmosphereLightDirection[1].xyz, 
+		View.AtmosphereLightIlluminanceOuterSpace[0].rgb, View.AtmosphereLightIlluminanceOuterSpace[1].rgb,
 		AerialPespectiveViewDistanceScale);
 
 	PreExposedL += ss.L * LuminanceScale;
@@ -1181,7 +1126,7 @@ void RenderSkyViewLutCS(uint3 ThreadId : SV_DispatchThreadID)
 	float2 PixPos = float2(ThreadId.xy) + 0.5f;
 	float2 UV = PixPos * SkyAtmosphere.SkyViewLutSizeAndInvSize.zw;
 
-	float3 WorldPos = GetCameraPlanetPos();
+	float3 WorldPos = GetTranslatedCameraPlanetPos();
 
 	// For the sky view lut to work, and not be distorted, we need to transform the view and light directions 
 	// into a referential with UP being perpendicular to the ground. And with origin at the planet center.
@@ -1226,7 +1171,8 @@ void RenderSkyViewLutCS(uint3 ThreadId : SV_DispatchThreadID)
 	SingleScatteringResult ss = IntegrateSingleScatteredLuminance(
 		float4(PixPos, 0.0f, 1.0f), WorldPos, WorldDir,
 		Ground, Sampling, DeviceZ, MieRayPhase,
-		AtmosphereLightDirection0, AtmosphereLightDirection1, View.AtmosphereLightColor[0].rgb, View.AtmosphereLightColor[1].rgb,
+		AtmosphereLightDirection0, AtmosphereLightDirection1,
+		View.AtmosphereLightIlluminanceOuterSpace[0].rgb, View.AtmosphereLightIlluminanceOuterSpace[1].rgb,
 		AerialPespectiveViewDistanceScale);
 
 	SkyViewLutUAV[int2(PixPos)] = ss.L;
@@ -1242,8 +1188,8 @@ RWTexture2D<float3> DistantSkyLightLutUAV;
 //Buffer<float4> UniformSphereSamplesBuffer;
 float4 AtmosphereLightDirection0;
 float4 AtmosphereLightDirection1;
-float4 AtmosphereLightColor0;
-float4 AtmosphereLightColor1;
+float4 AtmosphereLightIlluminanceOuterSpace0;
+float4 AtmosphereLightIlluminanceOuterSpace1;
 float DistantSkyLightSampleAltitude;
 
 groupshared float3 GroupSkyLuminanceSamples[THREADGROUP_SIZE*THREADGROUP_SIZE];
@@ -1281,7 +1227,8 @@ void RenderDistantSkyLightLutCS(uint3 ThreadId : SV_DispatchThreadID)
 	SingleScatteringResult ss = IntegrateSingleScatteredLuminance(
 		float4(PixPos, 0.0f, 1.0f), SamplePos, SampleDir,
 		Ground, Sampling, DeviceZ, MieRayPhase,
-		AtmosphereLightDirection0.xyz, AtmosphereLightDirection1.xyz, AtmosphereLightColor0.rgb, AtmosphereLightColor1.rgb,
+		AtmosphereLightDirection0.xyz, AtmosphereLightDirection1.xyz, 
+		AtmosphereLightIlluminanceOuterSpace0.rgb, AtmosphereLightIlluminanceOuterSpace1.rgb,
 		AerialPespectiveViewDistanceScale);
 
 	GroupSkyLuminanceSamples[LinearIndex] = ss.L * SkyAtmosphere.SkyLuminanceFactor;
@@ -1355,9 +1302,9 @@ void RenderCameraAerialPerspectiveVolumeCS(uint3 ThreadId : SV_DispatchThreadID)
 	float2 PixPos = float2(ThreadId.xy) + 0.5f;
 	float2 UV = PixPos  * SkyAtmosphere.CameraAerialPerspectiveVolumeSizeAndInvSize.zw;
 
-	float4 SVPos = float4(UV*View.ViewSizeAndInvSize.xy, 0.0f, 1.0f);// SV_POS as if resolution was the one from the scene view.
+	float4 SVPos = float4(View.ViewRectMin.xy + UV * View.ViewSizeAndInvSize.xy, 0.0f, 1.0f);// SV_POS as if resolution was the one from the scene view.
 	float3 WorldDir = GetScreenWorldDir(SVPos);
-	float3 CamPos = GetCameraPlanetPos();
+	float3 CamPos = GetTranslatedCameraPlanetPos();
 
 	if (RealTimeReflection360Mode)
 	{
@@ -1406,7 +1353,7 @@ void RenderCameraAerialPerspectiveVolumeCS(uint3 ThreadId : SV_DispatchThreadID)
 		float3 VoxelGroundToRayStart = CamPos - VoxProjOnGround;
 		if (BelowHorizon && dot(normalize(VoxelGroundToRayStart), VoxelWorldPosNorm) < 0.0001f)
 		{
-			// We are behing the sphere and the psehre normal is pointing away from V: we are below the horizon.
+			// We are behind the sphere and the sphere normal is pointing away from V: we are below the horizon.
 			float3 MiddlePoint = 0.5f * (CamProjOnGround + VoxProjOnGround);
 			float MiddlePointHeight = length(MiddlePoint);
 
@@ -1470,7 +1417,8 @@ void RenderCameraAerialPerspectiveVolumeCS(uint3 ThreadId : SV_DispatchThreadID)
 	SingleScatteringResult ss = IntegrateSingleScatteredLuminance( 
 		float4(PixPos, 0.0f, 1.0f), RayStartWorldPos, WorldDir,
 		Ground, Sampling, DeviceZ, MieRayPhase,
-		View.AtmosphereLightDirection[0].xyz, View.AtmosphereLightDirection[1].xyz, View.AtmosphereLightColor[0].rgb, View.AtmosphereLightColor[1].rgb,
+		View.AtmosphereLightDirection[0].xyz, View.AtmosphereLightDirection[1].xyz, 
+		View.AtmosphereLightIlluminanceOuterSpace[0].rgb, View.AtmosphereLightIlluminanceOuterSpace[1].rgb,
 		AerialPespectiveViewDistanceScale,
 		tMaxMax);
 
@@ -1492,10 +1440,14 @@ float Mean3(float3 v)
 	return dot(v, float3(1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f));
 }
 
+float3 SimpleTonemap(float3 Luminance)
+{
+	return pow(Luminance, 1.0 / 2.2);
+}
+
 void RenderSkyAtmosphereDebugPS(
 	in float4 SVPos : SV_POSITION,
-	out float4 OutLuminance : SV_Target0,
-	out float OutDepth : SV_DEPTH)
+	out float4 OutLuminance : SV_Target0)
 {
 	float2 PixPos = SVPos.xy;
 
@@ -1513,7 +1465,7 @@ void RenderSkyAtmosphereDebugPS(
 	const float AerialPespectiveViewDistanceScale = 1.0f;
 
 	// We position the camera at the same height as the view port camera, along z-up vector
-	float3 WorldPos = float3(0.0f, 0.0f, length((View.WorldCameraOrigin - View.SkyPlanetCenterAndViewHeight.xyz) * CM_TO_SKY_UNIT));
+	float3 WorldPos = float3(0.0f, 0.0f, length((View.TranslatedWorldCameraOrigin - View.SkyPlanetTranslatedWorldCenterAndViewHeight.xyz) * CM_TO_SKY_UNIT));
 
 	// Some organisation constants
 	const float Margin = 2.0f;
@@ -1525,7 +1477,6 @@ void RenderSkyAtmosphereDebugPS(
 	float2 DebugPos = float2(2.0f, ViewPortHeight - DebugSize.y - TimeOfDayTop);
 	if(all(PixPos < (DebugPos+DebugSize)) && all(PixPos > DebugPos))
 	{
-		OutDepth = NearDepthValue;
 		float2 UV = clamp(PixPos - DebugPos, 0.0f, DebugSize) / DebugSize;
 
 		UV = UV * 2.0f - 1.0f;
@@ -1539,9 +1490,10 @@ void RenderSkyAtmosphereDebugPS(
 			SingleScatteringResult SS = IntegrateSingleScatteredLuminance(
 				SVPos, WorldPos, WorldDir,
 				Ground, Sampling, DeviceZ, MieRayPhase,
-				View.AtmosphereLightDirection[0].xyz, NullLightDirection, View.AtmosphereLightColor[0].rgb, NullLightIlluminance,
+				View.AtmosphereLightDirection[0].xyz, NullLightDirection, 
+				View.AtmosphereLightIlluminanceOuterSpace[0].rgb, NullLightIlluminance,
 				AerialPespectiveViewDistanceScale);
-			OutLuminance = float4(SS.L, 0.0f);
+			OutLuminance = float4(SimpleTonemap(SS.L), 0.0f);
 			return;
 		}
 		OutLuminance = 0.0f;
@@ -1557,7 +1509,6 @@ void RenderSkyAtmosphereDebugPS(
 	DebugSize.x = NumTimeOfDay * DesiredTimeOfDayWidth;
 	if (all(PixPos < (DebugPos + DebugSize)) && all(PixPos > DebugPos))
 	{
-		OutDepth = NearDepthValue;
 		float2 UV = clamp(PixPos - DebugPos, 0.0f, DebugSize) / DebugSize;
 
 		float CurrentTimeOfDay = floor(UV.x*NumTimeOfDay) / NumTimeOfDay;
@@ -1579,19 +1530,19 @@ void RenderSkyAtmosphereDebugPS(
 		SingleScatteringResult SS = IntegrateSingleScatteredLuminance(
 			SVPos, WorldPos, WorldDir,
 			Ground, Sampling, DeviceZ, MieRayPhase,
-			LightDir, NullLightDirection, View.AtmosphereLightColor[0].rgb, NullLightIlluminance,
+			LightDir, NullLightDirection, 
+			View.AtmosphereLightIlluminanceOuterSpace[0].rgb, NullLightIlluminance,
 			AerialPespectiveViewDistanceScale);
 
-		OutLuminance = float4(SS.L, 0.0f);
+		OutLuminance = float4(SimpleTonemap(SS.L), 0.0f);
 		return;
 	}
-
+	 
 	// Atmosphere density distribution.
 	DebugSize = float2(ViewPortWidth * 0.2f, ViewPortHeight * 0.7f);
 	DebugPos = float2(ViewPortWidth - DebugSize.x - 2.0f, ViewPortHeight * 0.1f);
 	if (all(PixPos < (DebugPos + DebugSize)) && all(PixPos > DebugPos))
 	{
-		OutDepth = NearDepthValue;
 		float2 UV = clamp(PixPos - DebugPos, 0.0f, DebugSize) / DebugSize;
 		UV.y = 1.0f - UV.y;
 		UV = UV.yx;
@@ -1622,13 +1573,12 @@ void RenderSkyAtmosphereDebugPS(
 	DebugSize.y += 15.0f;
 	if (all(PixPos < (DebugPos + DebugSize)) && all(PixPos > DebugPos))
 	{
-		OutDepth = NearDepthValue;
 		OutLuminance = float4(float3(0.125f, 0.05f, 0.005f), 0.0f); // No exposure for constant visual
 		return;
 	}
 
 	clip(-1.0f);
-	OutLuminance = 0.0f;
+	OutLuminance = float4(0.0f, 0.0f, 0.0f, 1.0f);
 	return;
 }
 

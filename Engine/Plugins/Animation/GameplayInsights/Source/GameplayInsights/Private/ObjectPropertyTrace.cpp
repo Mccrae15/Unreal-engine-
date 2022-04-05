@@ -10,17 +10,9 @@
 #if OBJECT_PROPERTY_TRACE_ENABLED
 UE_TRACE_CHANNEL(ObjectProperties)
 
-UE_TRACE_EVENT_BEGIN(Object, ClassPropertyStringId, Important)
+UE_TRACE_EVENT_BEGIN(Object, ClassPropertyStringId, NoSync|Important)
 	UE_TRACE_EVENT_FIELD(uint32, Id)
-	UE_TRACE_EVENT_FIELD(Trace::WideString, Value)
-UE_TRACE_EVENT_END()
-
-UE_TRACE_EVENT_BEGIN(Object, ClassProperty, Important)
-	UE_TRACE_EVENT_FIELD(uint64, ClassId)
-	UE_TRACE_EVENT_FIELD(int32, Id)
-	UE_TRACE_EVENT_FIELD(int32, ParentId)
-	UE_TRACE_EVENT_FIELD(uint32, TypeId)
-	UE_TRACE_EVENT_FIELD(uint32, KeyId)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Value)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(Object, PropertiesStart)
@@ -33,22 +25,22 @@ UE_TRACE_EVENT_BEGIN(Object, PropertiesEnd)
 	UE_TRACE_EVENT_FIELD(uint64, ObjectId)
 UE_TRACE_EVENT_END()
 
-UE_TRACE_EVENT_BEGIN(Object, PropertyValue)
+UE_TRACE_EVENT_BEGIN(Object, PropertyValue2)
 	UE_TRACE_EVENT_FIELD(uint64, Cycle)
 	UE_TRACE_EVENT_FIELD(uint64, ObjectId)
-	UE_TRACE_EVENT_FIELD(int32, PropertyId)
-	UE_TRACE_EVENT_FIELD(Trace::WideString, Value)
+	UE_TRACE_EVENT_FIELD(int32, ParentId)
+	UE_TRACE_EVENT_FIELD(uint32, TypeId)
+	UE_TRACE_EVENT_FIELD(uint32, KeyId)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Value)
 UE_TRACE_EVENT_END()
 
 namespace ObjectPropertyTrace
 {
-	static FDelegateHandle TickerHandle;
+	static FTSTicker::FDelegateHandle TickerHandle;
 	static TArray<TWeakObjectPtr<const UObject>> Objects;
 
 	static uint32 CurrentClassPropertyStringId = 0;
 	static TMap<FString, uint32> StringIdMap;
-
-	static TSet<uint64> TracedClassIds;
 
 	typedef TFunctionRef<void(const FString&, const FString&, const FString&, int32, int32)> IterateFunction;
 
@@ -61,23 +53,11 @@ namespace ObjectPropertyTrace
 
 		uint32 NewId = StringIdMap.Add(InString, ++CurrentClassPropertyStringId);
 
-		UE_TRACE_LOG(Object, ClassPropertyStringId, ObjectProperties)
+		UE_TRACE_LOG(Object, ClassPropertyStringId, ObjectProperties, InString.Len() * sizeof(TCHAR))
 			<< ClassPropertyStringId.Id(NewId)
-			<< ClassPropertyStringId.Value(*InString);
+			<< ClassPropertyStringId.Value(*InString, InString.Len());
 
 		return NewId;
-	}
-
-	static bool ShouldTraceClassProperties(uint64 InClassId)
-	{
-		if(uint64* ExistingIdPtr = TracedClassIds.Find(InClassId))
-		{
-			return false;
-		}
-
-		TracedClassIds.Add(InClassId);
-
-		return true;
 	}
 
 	static void IteratePropertiesRecursive(FProperty* InProperty, const void* InContainer, const FString& InKey, IterateFunction InFunction, int32& InId, int32 InParentId)
@@ -211,28 +191,19 @@ namespace ObjectPropertyTrace
 					<< PropertiesStart.ObjectId(ObjectId);
 				
 				uint64 ClassId = FObjectTrace::GetObjectId(TracedObject->GetClass());
-				const bool bTraceClassProperties = ShouldTraceClassProperties(ClassId);
 
-				IterateProperties(TracedObject->GetClass(), TracedObject, [StartCycle, ClassId, ObjectId, bTraceClassProperties](const FString& InType, const FString& InKey, const FString& InValue, int32 InId, int32 InParentId)
+				IterateProperties(TracedObject->GetClass(), TracedObject, [StartCycle, ClassId, ObjectId](const FString& InType, const FString& InKey, const FString& InValue, int32 InId, int32 InParentId)
 				{
-					if(bTraceClassProperties)
-					{
-						uint32 TypeId = TraceStringId(InType);
-						uint32 KeyId = TraceStringId(InKey);
+					uint32 TypeId = TraceStringId(InType);
+					uint32 KeyId = TraceStringId(InKey);
 
-						UE_TRACE_LOG(Object, ClassProperty, ObjectProperties)
-							<< ClassProperty.ClassId(ClassId)
-							<< ClassProperty.Id(InId)
-							<< ClassProperty.ParentId(InParentId)
-							<< ClassProperty.TypeId(TypeId)
-							<< ClassProperty.KeyId(KeyId);
-					}
-
-					UE_TRACE_LOG(Object, PropertyValue, ObjectProperties)
-						<< PropertyValue.Cycle(StartCycle)
-						<< PropertyValue.ObjectId(ObjectId)
-						<< PropertyValue.PropertyId(InId)
-						<< PropertyValue.Value(*InValue);
+					UE_TRACE_LOG(Object, PropertyValue2, ObjectProperties)
+						<< PropertyValue2.Cycle(StartCycle)
+						<< PropertyValue2.ObjectId(ObjectId)
+						<< PropertyValue2.Value(*InValue)
+						<< PropertyValue2.ParentId(InParentId)
+						<< PropertyValue2.TypeId(TypeId)
+						<< PropertyValue2.KeyId(KeyId);
 				});
 
 				uint64 EndCycle = FPlatformTime::Cycles64();
@@ -248,7 +219,7 @@ namespace ObjectPropertyTrace
 void FObjectPropertyTrace::Init()
 {
 	check(!ObjectPropertyTrace::TickerHandle.IsValid());
-	ObjectPropertyTrace::TickerHandle = FTicker::GetCoreTicker().AddTicker(TEXT("ObjectPropertyTrace"), 0.0f, [](float InDelta)
+	ObjectPropertyTrace::TickerHandle = FTSTicker::GetCoreTicker().AddTicker(TEXT("ObjectPropertyTrace"), 0.0f, [](float InDelta)
 	{
 		if(UE_TRACE_CHANNELEXPR_IS_ENABLED(ObjectProperties))
 		{
@@ -262,7 +233,7 @@ void FObjectPropertyTrace::Init()
 void FObjectPropertyTrace::Destroy()
 {
 	check(ObjectPropertyTrace::TickerHandle.IsValid());
-	FTicker::GetCoreTicker().RemoveTicker(ObjectPropertyTrace::TickerHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(ObjectPropertyTrace::TickerHandle);
 }
 
 bool FObjectPropertyTrace::IsEnabled()

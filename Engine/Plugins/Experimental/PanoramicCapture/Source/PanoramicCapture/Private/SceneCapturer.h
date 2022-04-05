@@ -21,7 +21,7 @@ DECLARE_CYCLE_STAT( TEXT( "SampleSpherical" ), STAT_SPSampleSpherical, STATGROUP
 DECLARE_CYCLE_STAT( TEXT( "ReadStrip" ),       STAT_SPReadStrip,       STATGROUP_SP );
 DECLARE_CYCLE_STAT( TEXT( "FillAlpha" ),       STAT_SPFillAlpha,       STATGROUP_SP );
 
-const static FName StereoPanoramaLogName("LogStereoPanorama");
+extern const FName StereoPanoramaLogName;
 
 USTRUCT()
 struct FPostProcessVolumeData
@@ -98,7 +98,7 @@ public:
 
 public:
 
-	void InitCaptureComponent( USceneCaptureComponent2D* CaptureComponent, float HFov, float VFov, EStereoscopicPass InStereoPass );
+	void InitCaptureComponent( USceneCaptureComponent2D* CaptureComponent, float HFov, float VFov);
 
 	void CaptureComponent(int32 CurrentHorizontalStep, int32 CurrentVerticalStep, FString Folder, USceneCaptureComponent2D* CaptureComponent, TArray<FLinearColor>& Atlas);
 

@@ -66,27 +66,24 @@ struct SLATE_API FLayoutSaveRestore
 	 * @param OldConfigFileName The name of the old configuration file.
 	 * @param NewConfigFileName The name of the new configuration file.
 	 */
-	static void MigrateConfig( const FString& OldConfigFileName, const FString& NewConfigFileName );
+	static void MigrateConfig(const FString& OldConfigFileName, const FString& NewConfigFileName);
+
+	/** 
+	 * Duplicate the layout config from one file to another.
+	 * @param SourceConfigFileName The name of the source configuration file.
+	 * @param TargetConfigFileName The name of the target configuration file.
+	 */
+	static bool DuplicateConfig(const FString& SourceConfigFileName, const FString& TargetConfigFileName);
 
 	/**
 	 * It checks whether a file is a valid layout config file.
 	 * @param InConfigFileName file to be read.
+	 * @param bAllowFallback Whether a config should be considered valid if EditorLayoutsSectionName is missing but DefaultEditorLayoutsSectionName is found
 	 * @return Whether the file is a valid layout config file.
 	 */
-	static bool IsValidConfig(const FString& InConfigFileName);
+	static bool IsValidConfig(const FString& InConfigFileName, bool bAllowFallback = true);
 
 private:
-	/**
-	 * Make a Json string friendly for writing out to UE .ini config files.
-	 * The opposite of GetLayoutStringFromIni.
-	 */
-	static FString PrepareLayoutStringForIni(const FString& LayoutString);
-
-	/**
-	 * Convert from UE .ini Json string to a vanilla Json string.
-	 * The opposite of PrepareLayoutStringForIni.
-	 */
-	static FString GetLayoutStringFromIni(const FString& LayoutString);
 
 	/**
 	 * Auxiliary function for both public versions of LoadFromConfig

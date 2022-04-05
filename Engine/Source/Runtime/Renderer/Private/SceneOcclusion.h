@@ -24,12 +24,12 @@ struct FViewOcclusionQueries
 	using FPlanarReflectionArray = TArray<FPlanarReflectionSceneProxy const*, SceneRenderingAllocator>;
 	using FRenderQueryArray = TArray<FRHIRenderQuery*, SceneRenderingAllocator>;
 
-	FProjectedShadowArray PointLightQueryInfos;
+	FProjectedShadowArray LocalLightQueryInfos;
 	FProjectedShadowArray CSMQueryInfos;
-	FProjectedShadowArray ShadowQuerieInfos;
-	FPlanarReflectionArray ReflectionQuerieInfos;
+	FProjectedShadowArray ShadowQueryInfos;
+	FPlanarReflectionArray ReflectionQueryInfos;
 
-	FRenderQueryArray PointLightQueries;
+	FRenderQueryArray LocalLightQueries;
 	FRenderQueryArray CSMQueries;
 	FRenderQueryArray ShadowQueries;
 	FRenderQueryArray ReflectionQueries;
@@ -71,13 +71,13 @@ public:
 	{
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, RHICmdList.GetBoundVertexShader(), View.ViewUniformBuffer);
 
-		FVector4 StencilingSpherePosAndScale;
+		FVector4f StencilingSpherePosAndScale;
 		StencilingGeometry::GStencilSphereVertexBuffer.CalcTransform(StencilingSpherePosAndScale, BoundingSphere, View.ViewMatrices.GetPreViewTranslation());
 		StencilingGeometryParameters.Set(RHICmdList, this, StencilingSpherePosAndScale);
 
 		if (GEngine && GEngine->StereoRenderingDevice)
 		{
-			SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewId, GEngine->StereoRenderingDevice->GetViewIndexForPass(View.StereoPass));
+			SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewId, View.StereoViewIndex);
 		}
 	}
 
@@ -86,11 +86,11 @@ public:
 		FGlobalShader::SetParameters<FViewUniformShaderParameters>(RHICmdList, RHICmdList.GetBoundVertexShader(),View.ViewUniformBuffer);
 
 		// Don't transform if rendering frustum
-		StencilingGeometryParameters.Set(RHICmdList, this, FVector4(0,0,0,1));
+		StencilingGeometryParameters.Set(RHICmdList, this, FVector4f(0,0,0,1));
 
 		if (GEngine && GEngine->StereoRenderingDevice)
 		{
-			SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewId, GEngine->StereoRenderingDevice->GetViewIndexForPass(View.StereoPass));
+			SetShaderValue(RHICmdList, RHICmdList.GetBoundVertexShader(), ViewId, View.StereoViewIndex);
 		}
 	}
 
@@ -113,3 +113,5 @@ public:
 	FOcclusionQueryPS() {}
 };
 
+// Returns whether occlusion queries should be downsampled.
+extern RENDERER_API bool UseDownsampledOcclusionQueries();

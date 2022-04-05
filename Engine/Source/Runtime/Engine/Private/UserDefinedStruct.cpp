@@ -116,9 +116,9 @@ void UUserDefinedStruct::Serialize(FStructuredArchive::FRecord Record)
 				if (!(UnderlyingArchive.GetPortFlags() & PPF_Duplicate))
 				{
 					if(!DefaultStructInstance.IsValid())
-				{
-					FStructureEditorUtils::RecreateDefaultInstanceInEditorData(this);
-				}
+					{
+						FStructureEditorUtils::RecreateDefaultInstanceInEditorData(this);
+					}
 					else
 					{
 						UUserDefinedStructEditorData* UDSEditorData = Cast<UUserDefinedStructEditorData>(EditorData);
@@ -350,10 +350,6 @@ FGuid UUserDefinedStruct::GetCustomGuid() const
 ENGINE_API FString GetPathPostfix(const UObject* ForObject)
 {
 	FString FullAssetName = ForObject->GetOutermost()->GetPathName();
-	if (FullAssetName.StartsWith(UDynamicClass::GetTempPackagePrefix(), ESearchCase::CaseSensitive))
-	{
-		FullAssetName.RemoveFromStart(UDynamicClass::GetTempPackagePrefix(), ESearchCase::CaseSensitive);
-	}
 	FString AssetName = FPackageName::GetLongPackageAssetName(FullAssetName);
 	// append a hash of the path, this uniquely identifies assets with the same name, but different folders:
 	FullAssetName.RemoveFromEnd(AssetName);

@@ -51,7 +51,9 @@
 #include "ISourceControlModule.h"
 #include "ISourceControlProvider.h"
 #include "Misc/MessageDialog.h"
-
+#include "Subsystems/PlacementSubsystem.h"
+#include "Elements/Framework/TypedElementRegistry.h"
+#include "Elements/Interfaces/TypedElementObjectInterface.h"
 
 namespace AssetSelectionUtils
 {
@@ -292,11 +294,6 @@ namespace AssetSelectionUtils
 						ActorInfo.bHaveEmitter = true;
 					}
 
-					if ( CurrentActor->IsA( AMatineeActor::StaticClass() ) )
-					{
-						ActorInfo.bHaveMatinee = true;
-					}
-
 					if ( CurrentActor->IsTemporarilyHiddenInEditor() )
 					{
 						ActorInfo.bHaveHidden = true;
@@ -451,12 +448,12 @@ namespace ActorPlacementUtils
 			// Don't prompt user for checks in unattended mode
 			return true;
 		}
-		if (InLevel && GetDefault<ULevelEditorMiscSettings>()->bPromptWhenAddingToLevelBeforeCheckout && SourceControlHelpers::IsAvailable())
+		if (InLevel && InLevel->GetPromptWhenAddingToLevelBeforeCheckout() && SourceControlHelpers::IsAvailable())
 		{
 			FString FileName = SourceControlHelpers::PackageFilename(InLevel->GetPathName());
 			// Query file state also checks the source control status
 			FSourceControlStatePtr SCState = ISourceControlModule::Get().GetProvider().GetState(FileName, EStateCacheUsage::Use);
-			if (!InLevel->bLevelOkayForPlacementWhileCheckedIn && !(SCState->IsCheckedOut() || SCState->IsAdded() || SCState->CanAdd() || SCState->IsUnknown()))
+			if (!(SCState->IsCheckedOut() || SCState->IsAdded() || SCState->CanAdd() || SCState->IsUnknown()))
 			{
 				FText Title = NSLOCTEXT("UnrealEd", "LevelCheckout_Title", "Level Checkout Warning");
 				if (EAppReturnType::Ok != FMessageDialog::Open(EAppMsgType::OkCancel, NSLOCTEXT("UnrealEd","LevelNotCheckedOutMsg", "This actor will be placed in a level that is in source control but not currently checked out. Continue?"), &Title))
@@ -465,7 +462,7 @@ namespace ActorPlacementUtils
 				}
 				else
 				{
-					InLevel->bLevelOkayForPlacementWhileCheckedIn = true;
+					InLevel->bPromptWhenAddingToLevelBeforeCheckout = false;
 				}
 			}
 		}
@@ -484,7 +481,7 @@ namespace ActorPlacementUtils
 				return true;
 			}
 		}
-		if (InLevel && GetDefault<ULevelEditorMiscSettings>()->bPromptWhenAddingToLevelOutsideBounds)
+		if (InLevel && InLevel->GetPromptWhenAddingToLevelOutsideBounds())
 		{
 			FBox CurrentLevelBounds(ForceInit);
 			if (InLevel->LevelBoundsActor.IsValid())
@@ -506,7 +503,7 @@ namespace ActorPlacementUtils
 			FVector ExpandedScale = FVector(1.0f + (GetDefault<ULevelEditorMiscSettings>()->PercentageThresholdForPrompt / 100.0f));
 			FTransform ExpandedScaleTransform = FTransform::Identity;
 			ExpandedScaleTransform.SetScale3D(ExpandedScale);
-			CurrentLevelBounds.TransformBy(ExpandedScaleTransform);
+			CurrentLevelBounds = CurrentLevelBounds.TransformBy(ExpandedScaleTransform);
 			for (int32 ActorTransformIndex = 0; ActorTransformIndex < InActorTransforms.Num(); ++ActorTransformIndex)
 			{
 				FTransform ActorTransform = InActorTransforms[ActorTransformIndex];
@@ -516,6 +513,11 @@ namespace ActorPlacementUtils
 					if (EAppReturnType::Ok != FMessageDialog::Open(EAppMsgType::OkCancel, NSLOCTEXT("UnrealEd", "LevelBoundsMsg", "The actor will be placed outside the bounds of the current level. Continue?"), &Title))
 					{
 						return false;
+					}
+					else
+					{
+						InLevel->bPromptWhenAddingToLevelOutsideBounds = false;
+						break;
 					}
 				}
 			}
@@ -606,10 +608,41 @@ static AActor* PrivateAddActor( UObject* Asset, UActorFactory* Factory, bool Sel
 		FScopedTransaction Transaction( NSLOCTEXT("UnrealEd", "CreateActor", "Create Actor"), (ObjectFlags & RF_Transactional) != 0 );
 		
 		// Create the actor.
-		FActorSpawnParameters SpawnParams;
-		SpawnParams.ObjectFlags = ObjectFlags;
-		SpawnParams.Name = Name;
-		Actor = Factory->CreateActor(Asset, DesiredLevel, ActorTransform, SpawnParams);
+		UPlacementSubsystem* PlacementSubsystem = GEditor->GetEditorSubsystem<UPlacementSubsystem>();
+		if (PlacementSubsystem)
+		{
+			FAssetPlacementInfo PlacementInfo;
+			PlacementInfo.AssetToPlace = FAssetData(Asset);
+			PlacementInfo.PreferredLevel = DesiredLevel;
+			PlacementInfo.NameOverride = Name;
+			PlacementInfo.FinalizedTransform = ActorTransform;
+			PlacementInfo.FactoryOverride = Factory;
+
+			FPlacementOptions PlacementOptions;
+			PlacementOptions.bIsCreatingPreviewElements = FLevelEditorViewportClient::IsDroppingPreviewActor();
+
+			TArray<FTypedElementHandle> PlacedElements = PlacementSubsystem->PlaceAsset(PlacementInfo, PlacementOptions);
+			if (PlacedElements.Num())
+			{
+				if (TTypedElement<ITypedElementObjectInterface> ObjectInterface = UTypedElementRegistry::GetInstance()->GetElement<ITypedElementObjectInterface>(PlacedElements[0]))
+				{
+					Actor = ObjectInterface.GetObjectAs<AActor>();
+					if (Actor)
+					{
+						Actor->SetFlags(ObjectFlags);
+					}
+				}
+			}
+		}
+		
+		if (!Actor)
+		{
+			FActorSpawnParameters SpawnParams;
+			SpawnParams.ObjectFlags = ObjectFlags;
+			SpawnParams.Name = Name;
+			Actor = Factory->CreateActor(Asset, DesiredLevel, ActorTransform, SpawnParams);
+		}
+
 		if (Actor)
 		{
 			if ( SelectActor )
@@ -671,7 +704,7 @@ namespace AssetUtil
 
 				for (const FString& DroppedAssetString : DroppedAssetStrings)
 				{
-					if (DroppedAssetString.Len() < NAME_SIZE && FName::IsValidXName(DroppedAssetString, INVALID_OBJECTNAME_CHARACTERS INVALID_LONGPACKAGE_CHARACTERS))
+					if (DroppedAssetString.Len() < NAME_SIZE && FName::IsValidXName(DroppedAssetString, INVALID_OBJECTPATH_CHARACTERS))
 					{
 						FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FName(*DroppedAssetString));
 						if (AssetData.IsValid())

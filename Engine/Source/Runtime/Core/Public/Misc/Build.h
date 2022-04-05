@@ -2,7 +2,6 @@
 
 #pragma once
 
-
 /*--------------------------------------------------------------------------------
 	Build configuration coming from UBT, do not modify
 --------------------------------------------------------------------------------*/
@@ -45,7 +44,6 @@
 	#error Exactly one of [UE_BUILD_DEBUG UE_BUILD_DEVELOPMENT UE_BUILD_TEST UE_BUILD_SHIPPING] should be defined to be 1
 #endif
 
-
 /*--------------------------------------------------------------------------------
 	Legacy defined we want to make sure don't compile if they came in a merge.
 --------------------------------------------------------------------------------*/
@@ -81,6 +79,13 @@
 #ifndef WITH_UNREAL_DEVELOPER_TOOLS
 	#define WITH_UNREAL_DEVELOPER_TOOLS		0	// for auto-complete
 	#error UBT should always define WITH_UNREAL_DEVELOPER_TOOLS to be 0 or 1
+#endif
+
+ /**
+  *	Whether we are compiling with developer tools that may use other platforms or external connected devices, etc
+  */
+#ifndef WITH_UNREAL_TARGET_DEVELOPER_TOOLS
+	#define WITH_UNREAL_TARGET_DEVELOPER_TOOLS		WITH_UNREAL_DEVELOPER_TOOLS // a subset of WITH_UNREAL_DEVELOPER_TOOLS, but can be disabled separately
 #endif
 
 /**
@@ -146,6 +151,18 @@
 #ifndef WITH_HOT_RELOAD
 	#define WITH_HOT_RELOAD (!IS_MONOLITHIC && !UE_BUILD_SHIPPING && !UE_BUILD_TEST && !UE_GAME && !UE_SERVER)
 #endif
+
+/**
+* Make sure that live coding define is available.  Normally this is supplied by UBT
+*/
+#ifndef WITH_LIVE_CODING
+	#define WITH_LIVE_CODING 0
+#endif
+
+/**
+* Whether we support any type of live reloading
+*/
+#define WITH_RELOAD (WITH_HOT_RELOAD || WITH_LIVE_CODING)
 
 /**
 * Whether we include support for text archive formats. Disabling support allows de-virtualizing archive calls
@@ -289,50 +306,26 @@
 		#define NO_LOGGING										!USE_LOGGING_IN_SHIPPING
 	#endif
 #elif UE_BUILD_SHIPPING
-	#if WITH_EDITOR
-		#ifndef DO_GUARD_SLOW
-			#define DO_GUARD_SLOW								0
-		#endif
-		#ifndef DO_CHECK
-			#define DO_CHECK									1
-		#endif
-		#ifndef DO_ENSURE
-			#define DO_ENSURE									1
-		#endif
-		#ifndef STATS
-			#define STATS										1
-		#endif
-		#ifndef ALLOW_DEBUG_FILES
-			#define ALLOW_DEBUG_FILES							1
-		#endif
-		#ifndef ALLOW_CONSOLE
-			#define ALLOW_CONSOLE								0
-		#endif
-		#ifndef NO_LOGGING
-			#define NO_LOGGING									0
-		#endif
-	#else
-		#ifndef DO_GUARD_SLOW
-			#define DO_GUARD_SLOW								0
-		#endif
-		#ifndef DO_CHECK
-			#define DO_CHECK									USE_CHECKS_IN_SHIPPING
-		#endif
-		#ifndef DO_ENSURE
-			#define DO_ENSURE									USE_ENSURES_IN_SHIPPING
-		#endif
-		#ifndef STATS
-			#define STATS										(FORCE_USE_STATS && !ENABLE_STATNAMEDEVENTS)
-		#endif
-		#ifndef ALLOW_DEBUG_FILES
-			#define ALLOW_DEBUG_FILES							0
-		#endif
-		#ifndef ALLOW_CONSOLE
-			#define ALLOW_CONSOLE								ALLOW_CONSOLE_IN_SHIPPING
-		#endif
-		#ifndef NO_LOGGING
-			#define NO_LOGGING									!USE_LOGGING_IN_SHIPPING
-		#endif
+	#ifndef DO_GUARD_SLOW
+		#define DO_GUARD_SLOW								0
+	#endif
+	#ifndef DO_CHECK
+		#define DO_CHECK									USE_CHECKS_IN_SHIPPING
+	#endif
+	#ifndef DO_ENSURE
+		#define DO_ENSURE									USE_ENSURES_IN_SHIPPING
+	#endif
+	#ifndef STATS
+		#define STATS										(FORCE_USE_STATS && !ENABLE_STATNAMEDEVENTS)
+	#endif
+	#ifndef ALLOW_DEBUG_FILES
+		#define ALLOW_DEBUG_FILES							WITH_EDITOR
+	#endif
+	#ifndef ALLOW_CONSOLE
+		#define ALLOW_CONSOLE								ALLOW_CONSOLE_IN_SHIPPING
+	#endif
+	#ifndef NO_LOGGING
+		#define NO_LOGGING									!USE_LOGGING_IN_SHIPPING
 	#endif
 #else
 	#error Exactly one of [UE_BUILD_DEBUG UE_BUILD_DEVELOPMENT UE_BUILD_TEST UE_BUILD_SHIPPING] should be defined to be 1
@@ -389,6 +382,17 @@
 // draw events with "TOGGLEDRAWEVENTS" "r.ShowMaterialDrawEvents" (for ProfileGPU, Pix, Razor, RenderDoc, ...) and the "ProfileGPU" command are normally compiled out for TEST and SHIPPING
 #define WITH_PROFILEGPU (!(UE_BUILD_SHIPPING || UE_BUILD_TEST) || (UE_BUILD_TEST && ALLOW_PROFILEGPU_IN_TEST) || (UE_BUILD_SHIPPING && ALLOW_PROFILEGPU_IN_SHIPPING))
 
+#ifndef ALLOW_DUMPGPU_IN_TEST
+	#define ALLOW_DUMPGPU_IN_TEST 1
+#endif
+
+#ifndef ALLOW_DUMPGPU_IN_SHIPPING
+	#define ALLOW_DUMPGPU_IN_SHIPPING 0
+#endif
+
+// DumpGPU command
+#define WITH_DUMPGPU (!(UE_BUILD_SHIPPING || UE_BUILD_TEST) || (UE_BUILD_TEST && ALLOW_DUMPGPU_IN_TEST) || (UE_BUILD_SHIPPING && ALLOW_DUMPGPU_IN_SHIPPING))
+
 #ifndef ALLOW_CHEAT_CVARS_IN_TEST
 	#define ALLOW_CHEAT_CVARS_IN_TEST 1
 #endif
@@ -437,7 +441,25 @@
 #ifndef GET_DEVICE_ID_UNAVAILABLE
 	#define GET_DEVICE_ID_UNAVAILABLE 0
 #endif
-// Controls whether to enable loading cooked packages from I/O store in editor builds
-#ifndef WITH_IOSTORE_IN_EDITOR
-#define WITH_IOSTORE_IN_EDITOR 0
+
+// Controls whether the executable is compiled with cooked editor functionality
+#ifndef UE_IS_COOKED_EDITOR
+#define UE_IS_COOKED_EDITOR 0
 #endif
+// Controls whether to enable loading cooked packages from I/O store in editor builds. Defaults to UE_IS_COOKED_EDITOR
+// but can be defined separately if needed
+#ifndef WITH_IOSTORE_IN_EDITOR
+#define WITH_IOSTORE_IN_EDITOR UE_IS_COOKED_EDITOR
+#endif
+
+// Controls whether or not to make a global object to load COnfig.bin as soon as possible
+#ifndef PRELOAD_BINARY_CONFIG
+	#define PRELOAD_BINARY_CONFIG 1
+#endif
+
+#ifndef WITH_COTF
+	#define WITH_COTF ((WITH_ENGINE) && !(IS_PROGRAM || UE_BUILD_SHIPPING))
+#endif
+
+// Controls if the config system can stores configs for other platforms than the running one
+#define ALLOW_OTHER_PLATFORM_CONFIG		WITH_UNREAL_DEVELOPER_TOOLS

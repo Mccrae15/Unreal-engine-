@@ -24,6 +24,7 @@ class IDisplayClusterProjectionPolicy;
 
 class  UDisplayClusterConfigurationViewport;
 struct FDisplayClusterConfigurationProjection;
+struct FDisplayClusterRenderFrameSettings;
 
 class FViewport;
 
@@ -48,20 +49,33 @@ public:
 
 	virtual bool IsSceneOpened() const override;
 
-	virtual bool UpdateConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const FString& InClusterNodeId, class ADisplayClusterRootActor* InRootActorPtr) override;
+	virtual bool UpdateConfiguration(EDisplayClusterRenderFrameMode InRenderMode, const FString& InClusterNodeId, class ADisplayClusterRootActor* InRootActorPtr, const FDisplayClusterPreviewSettings* InPreviewSettings = nullptr) override;
 
-	virtual bool BeginNewFrame(class FViewport* InViewport, UWorld* InWorld, FDisplayClusterRenderFrame& OutRenderFrame) override;
+	virtual bool BeginNewFrame(FViewport* InViewport, UWorld* InWorld, FDisplayClusterRenderFrame& OutRenderFrame) override;
 	virtual void FinalizeNewFrame() override;
+
+	virtual FSceneViewFamily::ConstructionValues CreateViewFamilyConstructionValues(
+		const FDisplayClusterRenderFrame::FFrameRenderTarget& InFrameTarget,
+		FSceneInterface* InScene,
+		FEngineShowFlags InEngineShowFlags,
+		const bool bInAdditionalViewFamily
+	) const override;
 
 	virtual void ConfigureViewFamily(const FDisplayClusterRenderFrame::FFrameRenderTarget& InFrameTarget, const FDisplayClusterRenderFrame::FFrameViewFamily& InFrameViewFamily, FSceneViewFamilyContext& InOutViewFamily) override;
 	
 	virtual void RenderFrame(FViewport* InViewport) override;
 
 #if WITH_EDITOR
-	virtual bool UpdatePreviewConfiguration(const FDisplayClusterConfigurationViewportPreview& PreviewConfiguration, class ADisplayClusterRootActor* InRootActorPtr) override;
-	virtual bool RenderInEditor(class FDisplayClusterRenderFrame& InRenderFrame, FViewport* InViewport) override;
+	virtual bool RenderInEditor(class FDisplayClusterRenderFrame& InRenderFrame, FViewport* InViewport, const uint32 InFirstViewportNum, const int32 InViewportsAmount, int32& OutViewportsAmount, bool& bOutFrameRendered) override;
 	
 	void ImplUpdatePreviewRTTResources();
+
+	const TArray<FDisplayClusterViewport*>& ImplGetWholeClusterViewports_Editor() const
+	{
+		check(IsInGameThread());
+
+		return Viewports;
+	}
 #endif
 
 	virtual IDisplayClusterViewport* FindViewport(const FString& InViewportId) const override
@@ -69,12 +83,16 @@ public:
 		return ImplFindViewport(InViewportId);
 	}
 
-	virtual IDisplayClusterViewport* FindViewport(const EStereoscopicPass StereoPassType, uint32* OutContextNum = nullptr) const override;
+	virtual IDisplayClusterViewport* FindViewport(const int32 ViewIndex, uint32* OutContextNum = nullptr) const override;
 
 	virtual const TArrayView<IDisplayClusterViewport*> GetViewports() const override
 	{
-		return TArrayView<IDisplayClusterViewport*>((IDisplayClusterViewport**)(Viewports.GetData()), Viewports.Num());
+		return TArrayView<IDisplayClusterViewport*>((IDisplayClusterViewport**)(ClusterNodeViewports.GetData()), ClusterNodeViewports.Num());
 	}
+
+	virtual void MarkComponentGeometryDirty(const FName InComponentName = NAME_None) override;
+
+	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
 	// internal use only
 	bool CreateViewport(const FString& ViewportId, const class UDisplayClusterConfigurationViewport* ConfigurationViewport);
@@ -87,7 +105,7 @@ public:
 	const TArray<FDisplayClusterViewport*>& ImplGetViewports() const
 	{
 		check(IsInGameThread());
-		return Viewports;
+		return ClusterNodeViewports;
 	}
 
 	FDisplayClusterViewport* ImplFindViewport(const FString& InViewportId) const;
@@ -102,15 +120,22 @@ public:
 		return *ViewportManagerProxy;
 	}
 
+	const FDisplayClusterRenderFrameSettings& GetRenderFrameSettings() const;
+
 	TSharedPtr<FDisplayClusterViewportPostProcessManager, ESPMode::ThreadSafe> GetPostProcessManager() const
 	{ return PostProcessManager; }
+
+	bool ShouldUseAdditionalFrameTargetableResource() const;
+	bool ShouldUseFullSizeFrameTargetableResource() const;
 
 	void SetViewportBufferRatio(FDisplayClusterViewport& DstViewport, float InBufferRatio);
 
 private:
+	void UpdateDesiredNumberOfViews(FDisplayClusterRenderFrame& InOutRenderFrame);
 	void ResetSceneRenderTargetSize();
 	void UpdateSceneRenderTargetSize();
 	void HandleViewportRTTChanges(const TArray<FDisplayClusterViewport_Context>& PrevContexts, const TArray<FDisplayClusterViewport_Context>& Contexts);
+	void ImplUpdateClusterNodeViewports(const EDisplayClusterRenderFrameMode InRenderMode, const FString& InClusterNodeId);
 
 protected:
 	friend FDisplayClusterViewportManagerProxy;
@@ -125,7 +150,8 @@ public:
 private:
 	TUniquePtr<FDisplayClusterRenderFrameManager>  RenderFrameManager;
 
-	TArray<FDisplayClusterViewport*>      Viewports;
+	TArray<FDisplayClusterViewport*> Viewports;
+	TArray<FDisplayClusterViewport*> ClusterNodeViewports;
 
 	/** Render thread proxy manager. Deleted on render thread */
 	FDisplayClusterViewportManagerProxy* ViewportManagerProxy = nullptr;
@@ -144,4 +170,7 @@ private:
 	// Support for resetting RTT size (GROW method always grows and does not recover FPS when the viewport size or buffer ratio is changed)
 	ESceneRenderTargetResizeMethod SceneRenderTargetResizeMethod = ESceneRenderTargetResizeMethod::None;
 	int32 FrameHistoryCounter = 0;
+
+	// Handle special features
+	TSharedPtr<class FDisplayClusterViewportManagerViewExtension, ESPMode::ThreadSafe> ViewportManagerViewExtension;
 };

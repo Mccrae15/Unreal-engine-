@@ -61,12 +61,84 @@ void FSocialInteraction_JoinParty::ExecuteInteraction(USocialUser& User)
 }
 
 //////////////////////////////////////////////////////////////////////////
+// RequestToJoinParty
+//////////////////////////////////////////////////////////////////////////
+
+FText FSocialInteraction_RequestToJoinParty::GetDisplayName(const USocialUser& User)
+{
+	return LOCTEXT("RequestToJoinParty", "Request to Join");
+}
+
+FString FSocialInteraction_RequestToJoinParty::GetSlashCommandToken()
+{
+	return LOCTEXT("SlashCommand_RequestToJoinParty", "requesttojoin").ToString();
+}
+
+bool FSocialInteraction_RequestToJoinParty::CanExecute(const USocialUser& User)
+{
+	return User.CanRequestToJoin();
+}
+
+void FSocialInteraction_RequestToJoinParty::ExecuteInteraction(USocialUser& User)
+{
+	User.GetOwningToolkit().RequestToJoinParty(User);
+}
+
+//////////////////////////////////////////////////////////////////////////
+// AcceptJoinRequest
+//////////////////////////////////////////////////////////////////////////
+
+FText FSocialInteraction_AcceptJoinRequest::GetDisplayName(const USocialUser& User)
+{
+	return LOCTEXT("AcceptJoinRequest", "Accept Request");
+}
+
+FString FSocialInteraction_AcceptJoinRequest::GetSlashCommandToken()
+{
+	return LOCTEXT("SlashCommand_AcceptJoinRequest", "acceptjoinrequest").ToString();
+}
+
+bool FSocialInteraction_AcceptJoinRequest::CanExecute(const USocialUser& User)
+{
+	return User.HasRequestedToJoinUs();
+}
+
+void FSocialInteraction_AcceptJoinRequest::ExecuteInteraction(USocialUser& User)
+{
+	User.AcceptRequestToJoinParty();
+}
+
+//////////////////////////////////////////////////////////////////////////
+// DismissJoinRequest
+//////////////////////////////////////////////////////////////////////////
+
+FText FSocialInteraction_DismissJoinRequest::GetDisplayName(const USocialUser& User)
+{
+	return LOCTEXT("DismissJoinRequest", "Dismiss Request");
+}
+
+FString FSocialInteraction_DismissJoinRequest::GetSlashCommandToken()
+{
+	return LOCTEXT("SlashCommand_DismissJoinRequest", "dismissjoinrequest").ToString();
+}
+
+bool FSocialInteraction_DismissJoinRequest::CanExecute(const USocialUser& User)
+{
+	return User.HasRequestedToJoinUs();
+}
+
+void FSocialInteraction_DismissJoinRequest::ExecuteInteraction(USocialUser& User)
+{
+	User.DismissRequestToJoinParty();
+}
+
+//////////////////////////////////////////////////////////////////////////
 // AcceptPartyInvite
 //////////////////////////////////////////////////////////////////////////
 
 FText FSocialInteraction_AcceptPartyInvite::GetDisplayName(const USocialUser& User)
 {
-	return LOCTEXT("AcceptPartyInvite", "Accept");
+	return LOCTEXT("AcceptPartyInvite", "Accept Invite");
 }
 
 FString FSocialInteraction_AcceptPartyInvite::GetSlashCommandToken()
@@ -91,7 +163,7 @@ void FSocialInteraction_AcceptPartyInvite::ExecuteInteraction(USocialUser& User)
 
 FText FSocialInteraction_RejectPartyInvite::GetDisplayName(const USocialUser& User)
 {
-	return LOCTEXT("RejectPartyInvite", "Reject");
+	return LOCTEXT("RejectPartyInvite", "Reject Invite");
 }
 
 FString FSocialInteraction_RejectPartyInvite::GetSlashCommandToken()

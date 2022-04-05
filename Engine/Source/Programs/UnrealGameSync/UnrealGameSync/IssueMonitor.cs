@@ -12,7 +12,6 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Web.Caching;
 
 using Thread = System.Threading.Thread;
 
@@ -28,42 +27,42 @@ namespace UnrealGameSync
 
 	public class IssueBuildData
 	{
-		public long Id;
-		public string Stream;
-		public int Change;
-		public string JobName;
-		public string JobUrl;
-		public string JobStepName;
-		public string JobStepUrl;
-		public string ErrorUrl;
-		public IssueBuildOutcome Outcome;
+		public long Id { get; set; }
+		public string Stream { get; set; }
+		public int Change { get; set; }
+		public string JobName { get; set; }
+		public string JobUrl { get; set; }
+		public string JobStepName { get; set; }
+		public string JobStepUrl { get; set; }
+		public string ErrorUrl { get; set; }
+		public IssueBuildOutcome Outcome { get; set; }
 	}
 
 	public class IssueDiagnosticData
 	{
-		public long? BuildId;
-		public string Message;
-		public string Url;
+		public long? BuildId { get; set; }
+		public string Message { get; set; }
+		public string Url { get; set; }
 	}
 
 	public class IssueData
 	{
-		public int Version;
-		public long Id;
-		public DateTime CreatedAt;
-		public DateTime RetrievedAt;
-		public string Project;
-		public string Summary;
-		public string Details;
-		public string Owner;
-		public string NominatedBy;
-		public DateTime? AcknowledgedAt;
-		public int FixChange;
-		public DateTime? ResolvedAt;
-		public bool bNotify;
-		public bool bIsWarning;
-		public string BuildUrl;
-		public List<string> Streams;
+		public int Version { get; set; }
+		public long Id { get; set; }
+		public DateTime CreatedAt { get; set; }
+		public DateTime RetrievedAt { get; set; }
+		public string Project { get; set; }
+		public string Summary { get; set; }
+		public string Details { get; set; }
+		public string Owner { get; set; }
+		public string NominatedBy { get; set; }
+		public DateTime? AcknowledgedAt { get; set; }
+		public int FixChange { get; set; }
+		public DateTime? ResolvedAt { get; set; }
+		public bool bNotify { get; set; }
+		public bool bIsWarning { get; set; }
+		public string BuildUrl { get; set; }
+		public List<string> Streams { get;set; }
 
 		HashSet<string> CachedProjects;
 
@@ -112,12 +111,12 @@ namespace UnrealGameSync
 
 	public class IssueUpdateData
 	{
-		public long Id;
-		public string Owner;
-		public string NominatedBy;
-		public bool? Acknowledged;
-		public int? FixChange;
-		public bool? Resolved;
+		public long Id { get; set; }
+		public string Owner { get; set; }
+		public string NominatedBy { get; set; }
+		public bool? Acknowledged { get; set; }
+		public int? FixChange { get; set; }
+		public bool? Resolved { get; set; }
 	}
 
 	[Flags]
@@ -312,7 +311,7 @@ namespace UnrealGameSync
 				RefreshEvent.Set();
 				if(!WorkerThread.Join(100))
 				{
-					WorkerThread.Abort();
+					WorkerThread.Interrupt();
 					WorkerThread.Join();
 				}
 				WorkerThread = null;

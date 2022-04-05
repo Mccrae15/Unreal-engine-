@@ -41,14 +41,14 @@ void UBoxComponent::SetBoxExtent(FVector NewBoxExtent, bool bUpdateOverlaps)
 }
 
 
-template <EShapeBodySetupHelper UpdateBodySetupAction>
-bool InvalidateOrUpdateBoxBodySetup(UBodySetup*& ShapeBodySetup, bool bUseArchetypeBodySetup, FVector BoxExtent)
+template <EShapeBodySetupHelper UpdateBodySetupAction, typename BodySetupType>
+bool InvalidateOrUpdateBoxBodySetup(BodySetupType& ShapeBodySetup, bool bUseArchetypeBodySetup, FVector BoxExtent)
 {
 	check((bUseArchetypeBodySetup && UpdateBodySetupAction == EShapeBodySetupHelper::InvalidateSharingIfStale) || (!bUseArchetypeBodySetup && UpdateBodySetupAction == EShapeBodySetupHelper::UpdateBodySetup));
 	check(ShapeBodySetup->AggGeom.BoxElems.Num() == 1);
 	FKBoxElem* se = ShapeBodySetup->AggGeom.BoxElems.GetData();
 
-	// @todo UE4 do we allow this now?
+	// @todo do we allow this now?
 	// check for malformed values
 	if (BoxExtent.X < KINDA_SMALL_NUMBER)
 	{

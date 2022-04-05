@@ -63,6 +63,12 @@ UTakeRecorderSource* UTakeRecorderActorSource::AddSourceForActor(AActor* InActor
 		return nullptr;
 	}
 
+	if (!TakeRecorderSourcesUtils::IsActorRecordable(InActor))
+	{
+		FFrame::KismetExecutionMessage(*FString::Printf(TEXT("The Actor: %s is not recordable."), *InActor->GetPathName()), ELogVerbosity::Error);
+		return nullptr;
+	}
+
 	//Look through our sources and see if one actor matches the incoming one either from editor or PIE world.
 	{
 		//Cache  InputActor comparison data
@@ -639,6 +645,11 @@ void UTakeRecorderActorSource::ProcessRecordedTimes(ULevelSequence* InSequence)
 		return;
 	}
 
+	// In case we need it later, get the earliest timecode source *before* we
+	// add the take section, since its timecode source will be default
+	// constructed as all zeros and might accidentally compare as earliest.
+	const FMovieSceneTimecodeSource EarliestTimecodeSource = MovieScene->GetEarliestTimecodeSource();
+
 	for (UMovieSceneTrack* Track : Binding->GetTracks())
 	{
 		for (UMovieSceneSection* Section : Track->GetAllSections())
@@ -724,6 +735,29 @@ void UTakeRecorderActorSource::ProcessRecordedTimes(ULevelSequence* InSequence)
 		TakeSection->SubFramesCurve.Set(Times, SubFrames);
 	}
 
+	// Since the take section was created post recording here in this
+	// function, it wasn't available at the start of recording to have
+	// its timecode source set with the other sections, so we set it here.
+	if (TakeSection->HoursCurve.GetNumKeys() > 0)
+	{
+		// We populated the take section's timecode curves with data, so
+		// use the first values as the timecode source.
+		const int32 Hours = TakeSection->HoursCurve.GetValues()[0];
+		const int32 Minutes = TakeSection->MinutesCurve.GetValues()[0];
+		const int32 Seconds = TakeSection->SecondsCurve.GetValues()[0];
+		const int32 Frames = TakeSection->FramesCurve.GetValues()[0];
+		const bool bIsDropFrame = false;
+		const FTimecode Timecode(Hours, Minutes, Seconds, Frames, bIsDropFrame);
+		TakeSection->TimecodeSource = FMovieSceneTimecodeSource(Timecode);
+	}
+	else
+	{
+		// Otherwise, adopt the earliest timecode source from one of the movie
+		// scene's other sections as the timecode source for the take section.
+		// This case is unlikely.
+		TakeSection->TimecodeSource = EarliestTimecodeSource;
+	}
+
 	if (UTakeMetaData* TakeMetaData = InSequence->FindMetaData<UTakeMetaData>())
 	{
 		TakeSection->Slate.SetDefault(FString::Printf(TEXT("%s_%d"), *TakeMetaData->GetSlate(), TakeMetaData->GetTakeNumber()));
@@ -735,7 +769,7 @@ void UTakeRecorderActorSource::ProcessRecordedTimes(ULevelSequence* InSequence)
 	}
 }
 
-TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PostRecording(ULevelSequence* InSequence, class ULevelSequence* InMasterSequence)
+TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PostRecording(ULevelSequence* InSequence, class ULevelSequence* InMasterSequence, const bool bCancelled)
 {
 	FTakeRecorderParameters Parameters;
 	Parameters.User = GetDefault<UTakeRecorderUserSettings>()->Settings;
@@ -759,33 +793,43 @@ TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PostRecording(ULevelSeque
 
 		// takerecorder-todo: Section Recorders should have display names, update this to use those.
 		SlowTask.EnterProgressFrame(1.0f, FText::Format(LOCTEXT("FinalizingTrackRecorder", "Finalizing Section Recorder {0}/{1}"), SectionRecorderIndex, TrackRecorders.Num()));
-		SectionRecorder->FinalizeTrack();
-	}
-
-	if (Parameters.Project.bRecordTimecode)
-	{
-		ProcessRecordedTimes(InSequence);
-	}
-
-	// Expand the Movie Scene Playback Range to encompass all of the sections now that they've all been created.
-	SequenceRecorderUtils::ExtendSequencePlaybackRange(InSequence);
-
-	if (Target.IsValid())
-	{
-		// Automatically add or update the camera cut track if there is a camera component
-		AActor* TargetActor = Target.Get();
-
-		if (TargetActor->GetComponentByClass(UCameraComponent::StaticClass()))
+		if (bCancelled)
 		{
-			FGuid RecordedCameraGuid = GetRecordedActorGuid(Target.Get());
-			FMovieSceneSequenceID RecordedCameraSequenceID = GetLevelSequenceID(Target.Get());
-			TakesUtils::CreateCameraCutTrack(InMasterSequence, RecordedCameraGuid, RecordedCameraSequenceID, InSequence->GetMovieScene()->GetPlaybackRange());
+			SectionRecorder->CancelTrack();
+		}
+		else
+		{
+			SectionRecorder->FinalizeTrack();
+		}
+	}
+
+	if (!bCancelled)
+	{
+		if (Parameters.Project.bRecordTimecode)
+		{
+			ProcessRecordedTimes(InSequence);
 		}
 
-		// Swap our target actor to the Editor actor (in case the recording was added while in PIE)
-		if (AActor* EditorActor = EditorUtilities::GetEditorWorldCounterpartActor(Target.Get()))
+		// Expand the Movie Scene Playback Range to encompass all of the sections now that they've all been created.
+		SequenceRecorderUtils::ExtendSequencePlaybackRange(InSequence);
+
+		if (Target.IsValid())
 		{
-			Target = EditorActor;
+			// Automatically add or update the camera cut track if there is a camera component
+			AActor* TargetActor = Target.Get();
+
+			if (TargetActor->GetComponentByClass(UCameraComponent::StaticClass()))
+			{
+				FGuid RecordedCameraGuid = GetRecordedActorGuid(Target.Get());
+				FMovieSceneSequenceID RecordedCameraSequenceID = GetLevelSequenceID(Target.Get());
+				TakesUtils::CreateCameraCutTrack(InMasterSequence, RecordedCameraGuid, RecordedCameraSequenceID, InSequence->GetMovieScene()->GetPlaybackRange());
+			}
+
+			// Swap our target actor to the Editor actor (in case the recording was added while in PIE)
+			if (AActor* EditorActor = EditorUtilities::GetEditorWorldCounterpartActor(Target.Get()))
+			{
+				Target = EditorActor;
+			}
 		}
 	}
 
@@ -800,12 +844,15 @@ TArray<UTakeRecorderSource*> UTakeRecorderActorSource::PostRecording(ULevelSeque
 	CachedObjectTemplate = nullptr;
 	CachedComponentList.Empty();
 
-	//DON"T null these out they can be used for doing cross sequence object binding via GetLevelSequenceID
-	//TargetLevelSequence = nullptr;
-	//MasterLevelSequence = nullptr;
-
 	// We may have generated some temporary recording sources
 	return AddedActorSources;
+}
+
+void UTakeRecorderActorSource::FinalizeRecording()
+{
+	// Null these out there and NOT in PostRecording because they are used for cross sequence object binding via GetLevelSequenceID in PostRecording
+	TargetLevelSequence = nullptr;
+	MasterLevelSequence = nullptr;
 }
 
 void UTakeRecorderActorSource::PostProcessTrackRecorders(ULevelSequence* InSequence)
@@ -854,10 +901,9 @@ void UTakeRecorderActorSource::PostProcessTrackRecorders(ULevelSequence* InSeque
 			break;
 		}
 	}
-
-	if (RootTransformRecorder && FirstAnimationRecorder)
+	// We need to take the root motion data from the animation and override the data the Transform Track had originally captured if we are removing root
+	if (RootTransformRecorder && FirstAnimationRecorder && FirstAnimationRecorder->RootWasRemoved())
 	{
-		// We need to take the root motion data from the animation and override the data the Transform Track had originally captured
 		RootTransformRecorder->PostProcessAnimationData(FirstAnimationRecorder);
 		FirstAnimationRecorder->RemoveRootMotion();
 	}
@@ -869,7 +915,7 @@ void UTakeRecorderActorSource::PostProcessTrackRecorders(ULevelSequence* InSeque
 		{
 			UMovieSceneAnimationTrackRecorder* AnimationTrackRecorder = Cast<UMovieSceneAnimationTrackRecorder>(TrackRecorder);
 			
-			if (TrackRecorder != FirstAnimationRecorder)
+			if (TrackRecorder != FirstAnimationRecorder && AnimationTrackRecorder->RootWasRemoved())
 			{
 				AnimationTrackRecorder->RemoveRootMotion();
 			}
@@ -1198,7 +1244,7 @@ void UTakeRecorderActorSource::RebuildRecordedPropertyMapRecursive(const FFieldV
 		UE_LOG(LogTakesCore, Log, TEXT("Component: %s EditorOnly: %d Transient: %d"), *Component->GetFName().ToString(), Component->IsEditorOnly(), Component->HasAnyFlags(RF_Transient));
 		// takerecorder-todo: When merged with Dev Framework, CL 4279185, switch this to checking against
 		// IsVisualizationComponent() so that we can exclude things like default component billboards.
-		// We also need a blacklist of classes, such as those that derive from the input framework that are
+		// We also need a deny list of classes, such as those that derive from the input framework that are
 		// added at runtime, we don't want to record those.
 		if (Component->IsEditorOnly())
 		{

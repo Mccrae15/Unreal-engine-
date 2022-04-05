@@ -40,9 +40,6 @@ enum class EFocusCause : uint8
 	WindowActivate,
 };
 
-UE_DEPRECATED(4.18, "EKeyboardFocusCause is deprecated and was renamed to EFocusCause. Please use that type instead.")
-typedef EFocusCause EKeyboardFocusCause;
-
 /**
  * FFocusEvent is used when notifying widgets about keyboard focus changes
  * It is passed to event handlers dealing with keyboard focus
@@ -614,7 +611,7 @@ public:
  * It is passed to event handlers dealing with pointer-based input.
  */
 USTRUCT(BlueprintType)
-struct FPointerEvent
+struct SLATECORE_API FPointerEvent
 	: public FInputEvent
 {
 	GENERATED_USTRUCT_BODY()
@@ -811,6 +808,17 @@ public:
 		, bIsTouchForceChanged(false)
 		, bIsTouchFirstMove(false)
 	{ }
+
+	/** A constructor to alter cursor positions */
+	FPointerEvent(
+		const FPointerEvent& Other,
+		const FVector2D& InScreenSpacePosition,
+		const FVector2D& InLastScreenSpacePosition)
+	{
+		*this = Other;
+		ScreenSpacePosition = InScreenSpacePosition;
+		LastScreenSpacePosition = InLastScreenSpacePosition;
+	}
 	
 public:
 
@@ -830,7 +838,7 @@ public:
 	FKey GetEffectingButton() const { return EffectingButton; }
 	
 	/** How much did the mouse wheel turn since the last mouse event */
-	float GetWheelDelta() const { return WheelOrGestureDelta.Y; }
+	float GetWheelDelta() const { return UE_REAL_TO_FLOAT(WheelOrGestureDelta.Y); }
 
 	/** Returns the index of the user that caused the event */
 	int32 GetUserIndex() const { return UserIndex; }
@@ -888,9 +896,9 @@ public:
 		bIsTouchFirstMove = Other.bIsTouchFirstMove;
 	}
 
-	SLATECORE_API virtual FText ToText() const override;
+	virtual FText ToText() const override;
 
-	SLATECORE_API virtual bool IsPointerEvent() const override;
+	virtual bool IsPointerEvent() const override;
 
 	template<typename PointerEventType>
 	static PointerEventType MakeTranslatedEvent( const PointerEventType& InPointerEvent, const FVirtualPointerPosition& VirtualPosition )

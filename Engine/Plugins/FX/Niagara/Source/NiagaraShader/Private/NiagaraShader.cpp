@@ -103,9 +103,9 @@ void* FNiagaraShaderMapPointerTable::GetIndexedPointer(const FTypeLayoutDesc& Ty
 	return Super::GetIndexedPointer(TypeDesc, i);
 }
 
-void FNiagaraShaderMapPointerTable::SaveToArchive(FArchive& Ar, void* FrozenContent, bool bInlineShaderResources) const
+void FNiagaraShaderMapPointerTable::SaveToArchive(FArchive& Ar, const FPlatformTypeLayoutParameters& LayoutParams, const void* FrozenObject) const
 {
-	Super::SaveToArchive(Ar, FrozenContent, bInlineShaderResources);
+	Super::SaveToArchive(Ar, LayoutParams, FrozenObject);
 
 	int32 NumDITypes = DITypes.Num();
 
@@ -119,9 +119,9 @@ void FNiagaraShaderMapPointerTable::SaveToArchive(FArchive& Ar, void* FrozenCont
 	}
 }
 
-void FNiagaraShaderMapPointerTable::LoadFromArchive(FArchive& Ar, void* FrozenContent, bool bInlineShaderResources, bool bLoadedByCookedMaterial)
+bool FNiagaraShaderMapPointerTable::LoadFromArchive(FArchive& Ar, const FPlatformTypeLayoutParameters& LayoutParams, void* FrozenObject)
 {
-	Super::LoadFromArchive(Ar, FrozenContent, bInlineShaderResources, bLoadedByCookedMaterial);
+	const bool bResult = Super::LoadFromArchive(Ar, LayoutParams, FrozenObject);
 	INiagaraShaderModule * Module = INiagaraShaderModule::Get();
 
 	int32 NumDITypes = 0;
@@ -136,6 +136,8 @@ void FNiagaraShaderMapPointerTable::LoadFromArchive(FArchive& Ar, void* FrozenCo
 		UNiagaraDataInterfaceBase* DIType = Module->RequestDefaultDataInterface(*DIClassName);
 		DITypes.LoadIndexedPointer(DIType);
 	}
+
+	return bResult;
 }
 
 
@@ -341,25 +343,41 @@ void FNiagaraShaderMapId::AppendKeyString(FString& KeyString) const
 		}
 	}
 
-	for (const FShaderTypeDependency& Dependency : ShaderTypeDependencies)
+	TSortedMap<const TCHAR*, FCachedUniformBufferDeclaration, FDefaultAllocator, FUniformBufferNameSortOrder> ReferencedUniformBuffers;
+	for (const FShaderTypeDependency& ShaderTypeDependency : ShaderTypeDependencies)
 	{
+		const FShaderType* ShaderType = FindShaderTypeByName(ShaderTypeDependency.ShaderTypeName);
+
 		KeyString += TEXT("_");
-		KeyString += Dependency.SourceHash.ToString();
+		KeyString += ShaderTypeDependency.SourceHash.ToString();
+
+		if (const FShaderParametersMetadata* ParameterStructMetadata = ShaderType->GetRootParametersMetadata())
+		{
+			KeyString += FString::Printf(TEXT("%08x"), ParameterStructMetadata->GetLayoutHash());
+		}
+
+		// Add the serialization history to the key string so that we can detect changes to shader serialization without a corresponding .usf change
+		const FSHAHash LayoutHash = Freeze::HashLayout(ShaderType->GetLayout(), LayoutParams);
+		KeyString += LayoutHash.ToString();
+
+		const TMap<const TCHAR*, FCachedUniformBufferDeclaration>& ReferencedUniformBufferStructsCache = ShaderType->GetReferencedUniformBufferStructsCache();
+		for (TMap<const TCHAR*, FCachedUniformBufferDeclaration>::TConstIterator It(ReferencedUniformBufferStructsCache); It; ++It)
+		{
+			ReferencedUniformBuffers.Add(It.Key(), It.Value());
+		}
 	}
 
-	/*
-	ParameterSet.AppendKeyString(KeyString);
-
-	KeyString += TEXT("_");
-	KeyString += FString::FromInt(Usage);
-	KeyString += TEXT("_");
-
-	// Add any referenced functions to the key so that we will recompile when they are changed
-	for (int32 FunctionIndex = 0; FunctionIndex < ReferencedFunctions.Num(); FunctionIndex++)
 	{
-		KeyString += ReferencedFunctions[FunctionIndex].ToString();
+		TArray<uint8> TempData;
+		FSerializationHistory SerializationHistory;
+		FMemoryWriter Ar(TempData, true);
+		FShaderSaveArchive SaveArchive(Ar, SerializationHistory);
+
+		// Save uniform buffer member info so we can detect when layout has changed
+		SerializeUniformBufferInfo(SaveArchive, ReferencedUniformBuffers);
+
+		SerializationHistory.AppendKeyString(KeyString);
 	}
-	*/
 }
 
 
@@ -400,36 +418,28 @@ void FNiagaraShaderType::BeginCompileShader(
 	Script->GetScriptHLSLSource(NewJob->Input.Environment.IncludeVirtualPathToContentsMap.Add(TEXT("/Engine/Generated/NiagaraEmitterInstance.ush")));
 	NewJob->Input.Environment.SetDefine(TEXT("SHADER_STAGE_PERMUTATION"), PermutationId);
 
-	const bool bUsesSimulationStages = Script->GetUsesSimulationStages();
-	if (bUsesSimulationStages)
-	{
-		const int32 StageIndex = Script->PermutationIdToShaderStageIndex(PermutationId);
-		NewJob->Input.Environment.SetDefine(TEXT("NIAGARA_SHADER_PERMUTATIONS"), 1);
-		NewJob->Input.Environment.SetDefine(TEXT("DefaultSimulationStageIndex"), 0);
-		NewJob->Input.Environment.SetDefine(TEXT("SimulationStageIndex"), StageIndex);
-		NewJob->Input.Environment.SetDefine(TEXT("USE_SIMULATION_STAGES"), 1);
+	NewJob->Input.Environment.SetDefine(TEXT("NIAGARA_SHADER_PERMUTATIONS"), 1);
+	NewJob->Input.Environment.SetDefine(TEXT("DefaultSimulationStageIndex"), 0);
+	NewJob->Input.Environment.SetDefine(TEXT("SimulationStageIndex"), PermutationId);
+	NewJob->Input.Environment.SetDefine(TEXT("USE_SIMULATION_STAGES"), 1);
 
-		if (PermutationId > 0)
-		{
-			TConstArrayView<FSimulationStageMetaData> SimStageMetaDataArray = const_cast<FNiagaraShaderScript*>(Script)->GetBaseVMScript()->GetSimulationStageMetaData();
-			const FSimulationStageMetaData& SimStageMetaData = SimStageMetaDataArray[PermutationId - 1];
-			if (SimStageMetaData.bWritesParticles && SimStageMetaData.bPartialParticleUpdate)
-			{
-				NewJob->Input.Environment.SetDefine(TEXT("NIAGARA_PARTICLE_PARTIAL_ENABLED"), 1);
-			}
-		}
-	}
-	else
+	TConstArrayView<FSimulationStageMetaData> SimStageMetaDataArray = const_cast<FNiagaraShaderScript*>(Script)->GetBaseVMScript()->GetSimulationStageMetaData();
+	const FSimulationStageMetaData& SimStageMetaData = SimStageMetaDataArray[PermutationId];
+	if (SimStageMetaData.bWritesParticles && SimStageMetaData.bPartialParticleUpdate)
 	{
-		const bool bUsesOldShaderStages = Script->GetUsesOldShaderStages();
-
-		NewJob->Input.Environment.SetDefine(TEXT("NIAGARA_SHADER_PERMUTATIONS"), 0);
-		NewJob->Input.Environment.SetDefine(TEXT("USE_SIMULATION_STAGES"), bUsesOldShaderStages ? 1 : 0);
+		NewJob->Input.Environment.SetDefine(TEXT("NIAGARA_PARTICLE_PARTIAL_ENABLED"), 1);
 	}
 
 	NewJob->Input.Environment.SetDefine(TEXT("NIAGARA_COMPRESSED_ATTRIBUTES_ENABLED"), Script->GetUsesCompressedAttributes() ? 1 : 0);
 
-	Script->ModifyCompilationEnvironment(NewJob->Input.Environment);
+	const FIntVector ThreadGroupSize = SimStageMetaData.GpuDispatchNumThreads;
+	NewJob->Input.Environment.SetDefine(TEXT("NIAGARA_DISPATCH_TYPE"), int(SimStageMetaData.GpuDispatchType));
+	NewJob->Input.Environment.SetDefine(TEXT("THREADGROUP_SIZE"), ThreadGroupSize.X * ThreadGroupSize.Y * ThreadGroupSize.Z);
+	NewJob->Input.Environment.SetDefine(TEXT("THREADGROUP_SIZE_X"), ThreadGroupSize.X);
+	NewJob->Input.Environment.SetDefine(TEXT("THREADGROUP_SIZE_Y"), ThreadGroupSize.Y);
+	NewJob->Input.Environment.SetDefine(TEXT("THREADGROUP_SIZE_Z"), ThreadGroupSize.Z);
+
+	Script->ModifyCompilationEnvironment(Platform, NewJob->Input.Environment);
 
 	AddReferencedUniformBufferIncludes(NewJob->Input.Environment, NewJob->Input.SourceFilePrefix, (EShaderPlatform)Target.Platform);
 	
@@ -484,10 +494,10 @@ void FNiagaraShaderType::CacheUniformBufferIncludes(TMap<const TCHAR*, FCachedUn
 void FNiagaraShaderType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvironment& OutEnvironment, FString& OutSourceFilePrefix, EShaderPlatform Platform) const
 {
 	// Cache uniform buffer struct declarations referenced by this shader type's files
-	if (!bCachedUniformBufferStructDeclarations)
+	if (CachedUniformBufferPlatform != Platform)
 	{
 		CacheUniformBufferIncludes(ReferencedUniformBufferStructsCache, Platform);
-		bCachedUniformBufferStructDeclarations = true;
+		CachedUniformBufferPlatform = Platform;
 	}
 
 	FString UniformBufferIncludes;
@@ -506,7 +516,7 @@ void FNiagaraShaderType::AddReferencedUniformBufferIncludes(FShaderCompilerEnvir
 		{
 			if (It.Key() == StructIt->GetShaderVariableName())
 			{
-				StructIt->AddResourceTableEntries(OutEnvironment.ResourceTableMap, OutEnvironment.ResourceTableLayoutHashes, OutEnvironment.ResourceTableLayoutSlots);
+				StructIt->AddResourceTableEntries(OutEnvironment.ResourceTableMap, OutEnvironment.UniformBufferMap);
 			}
 		}
 	}
@@ -1194,6 +1204,7 @@ void FNiagaraShader::BindParams(const TArray<FNiagaraDataInterfaceGPUParamInfo>&
 	FloatInputBufferParam.Bind(ParameterMap, TEXT("InputFloat"));
 	IntInputBufferParam.Bind(ParameterMap, TEXT("InputInt"));
 	HalfInputBufferParam.Bind(ParameterMap, TEXT("InputHalf"));
+	StaticInputFloatParam.Bind(ParameterMap, TEXT("StaticInputFloat"));
 	FloatOutputBufferParam.Bind(ParameterMap, TEXT("OutputFloat"));
 	IntOutputBufferParam.Bind(ParameterMap, TEXT("OutputInt"));
 	HalfOutputBufferParam.Bind(ParameterMap, TEXT("OutputHalf"));
@@ -1210,17 +1221,12 @@ void FNiagaraShader::BindParams(const TArray<FNiagaraDataInterfaceGPUParamInfo>&
 	EmitterSpawnInfoOffsetsParam.Bind(ParameterMap, TEXT("EmitterSpawnInfoOffsets"));
 	EmitterSpawnInfoParamsParam.Bind(ParameterMap, TEXT("EmitterSpawnInfoParams"));
 
-	NumEventsPerParticleParam.Bind(ParameterMap, TEXT("NumEventsPerParticle"));
-	NumParticlesPerEventParam.Bind(ParameterMap, TEXT("NumParticlesPerEvent"));
-	CopyInstancesBeforeStartParam.Bind(ParameterMap, TEXT("CopyInstancesBeforeStart"));
-
 	NumSpawnedInstancesParam.Bind(ParameterMap, TEXT("SpawnedInstances"));
-	UpdateStartInstanceParam.Bind(ParameterMap, TEXT("UpdateStartInstance"));
-	DefaultSimulationStageIndexParam.Bind(ParameterMap, TEXT("DefaultSimulationStageIndex"));
-	SimulationStageIndexParam.Bind(ParameterMap, TEXT("SimulationStageIndex"));
 
 	SimulationStageIterationInfoParam.Bind(ParameterMap, TEXT("SimulationStageIterationInfo"));
 	SimulationStageNormalizedIterationIndexParam.Bind(ParameterMap, TEXT("SimulationStageNormalizedIterationIndex"));
+	ParticleIterationStateInfoParam.Bind(ParameterMap, TEXT("ParticleIterationStateInfo"));
+	DispatchThreadIdBoundsParam.Bind(ParameterMap, TEXT("DispatchThreadIdBounds"));
 	DispatchThreadIdToLinearParam.Bind(ParameterMap, TEXT("DispatchThreadIdToLinear"));
 
 	ComponentBufferSizeReadParam.Bind(ParameterMap, TEXT("ComponentBufferSizeRead"));
@@ -1238,31 +1244,6 @@ void FNiagaraShader::BindParams(const TArray<FNiagaraDataInterfaceGPUParamInfo>&
 	OwnerConstantBufferParam[1].Bind(ParameterMap, TEXT("PREV_FNiagaraOwnerParameters"));
 	EmitterConstantBufferParam[1].Bind(ParameterMap, TEXT("PREV_FNiagaraEmitterParameters"));
 	ExternalConstantBufferParam[1].Bind(ParameterMap, TEXT("PREV_FNiagaraExternalParameters"));
-
-	// params for event buffers
-	// this is horrendous; need to do this in a uniform buffer instead.
-	//
-	for (uint32 i = 0; i < MAX_CONCURRENT_EVENT_DATASETS; i++)
-	{
-		FString VarName = TEXT("WriteDataSetFloat") + FString::FromInt(i + 1);
-		EventFloatUAVParams[i].Bind(ParameterMap, *VarName);
-		VarName = TEXT("WriteDataSetInt") + FString::FromInt(i + 1);
-		EventIntUAVParams[i].Bind(ParameterMap, *VarName);
-
-		VarName = TEXT("ReadDataSetFloat") + FString::FromInt(i + 1);
-		EventFloatSRVParams[i].Bind(ParameterMap, *VarName);
-		VarName = TEXT("ReadDataSetInt") + FString::FromInt(i + 1);
-		EventIntSRVParams[i].Bind(ParameterMap, *VarName);
-
-		VarName = TEXT("DSComponentBufferSizeReadFloat") + FString::FromInt(i + 1);
-		EventReadFloatStrideParams[i].Bind(ParameterMap, *VarName);
-		VarName = TEXT("DSComponentBufferSizeWriteFloat") + FString::FromInt(i + 1);
-		EventWriteFloatStrideParams[i].Bind(ParameterMap, *VarName);
-		VarName = TEXT("DSComponentBufferSizeReadInt") + FString::FromInt(i + 1);
-		EventReadIntStrideParams[i].Bind(ParameterMap, *VarName);
-		VarName = TEXT("DSComponentBufferSizeWriteInt") + FString::FromInt(i + 1);
-		EventWriteIntStrideParams[i].Bind(ParameterMap, *VarName);
-	}
 
 	DataInterfaceParameters.Empty(InDIParamInfo.Num());
 	for(const FNiagaraDataInterfaceGPUParamInfo& DIParamInfo : InDIParamInfo)
@@ -1318,6 +1299,11 @@ void FNiagaraDataInterfaceParamRef::WriteFrozenParameters(FMemoryImageWriter& Wr
 {
 	const UNiagaraDataInterfaceBase* Base = DIType.Get(Writer.TryGetPrevPointerTable());
 	InParameters.WriteMemoryImageWithDerivedType(Writer, Base->GetComputeParametersTypeDesc());
+}
+
+bool FNiagaraDataInterfaceGPUParamInfo::IsUserParameter() const
+{
+	return DataInterfaceHLSLSymbol.StartsWith(TEXT("User_"));
 }
 
 bool FNiagaraDataInterfaceGPUParamInfo::Serialize(FArchive& Ar)

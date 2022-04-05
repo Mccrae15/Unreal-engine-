@@ -22,9 +22,9 @@
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLightmapDensityPassUniformParameters, )
 	SHADER_PARAMETER_STRUCT(FSceneTextureUniformParameters, SceneTextures)
-	SHADER_PARAMETER(FVector4, LightMapDensity)
-	SHADER_PARAMETER(FVector4, DensitySelectedColor) // The color to apply to selected objects.
-	SHADER_PARAMETER(FVector4, VertexMappedColor) // The color to apply to vertex mapped objects.
+	SHADER_PARAMETER(FVector4f, LightMapDensity)
+	SHADER_PARAMETER(FVector4f, DensitySelectedColor) // The color to apply to selected objects.
+	SHADER_PARAMETER(FVector4f, VertexMappedColor) // The color to apply to vertex mapped objects.
 	SHADER_PARAMETER_TEXTURE(Texture2D, GridTexture) // The "Grid" texture to visualize resolution.
 	SHADER_PARAMETER_SAMPLER(SamplerState, GridTextureSampler)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
@@ -39,8 +39,8 @@ public:
 
 	typename LightMapPolicyType::ElementDataType LightMapPolicyElementData;
 
-	FVector BuiltLightingAndSelectedFlags;
-	FVector2D LightMapResolutionScale; 
+	FVector3f BuiltLightingAndSelectedFlags;
+	FVector2f LightMapResolutionScale; 
 	bool bTextureMapped;
 };
 
@@ -100,77 +100,6 @@ public:
 };
 
 /**
- * The base shader type for hull shaders that render the emissive color, and light-mapped/ambient lighting of a mesh.
- */
-template<typename LightMapPolicyType>
-class TLightMapDensityHS : public FBaseHS
-{
-	DECLARE_SHADER_TYPE(TLightMapDensityHS,MeshMaterial);
-
-public:
-
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-
-		static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
-		bool bAllowStaticLighting = AllowStaticLightingVar->GetValueOnAnyThread() != 0;
-
-		return AllowDebugViewmodes(Parameters.Platform) 
-			&& bAllowStaticLighting
-			&& FBaseHS::ShouldCompilePermutation(Parameters)
-			&& TLightMapDensityVS<LightMapPolicyType>::ShouldCompilePermutation(Parameters);
-	}
-
-	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		LightMapPolicyType::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	/** Initialization constructor. */
-	TLightMapDensityHS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer):
-		FBaseHS(Initializer)
-	{}
-
-	TLightMapDensityHS() {}
-};
-
-/**
- * The base shader type for domain shaders that render the emissive color, and light-mapped/ambient lighting of a mesh.
- */
-template<typename LightMapPolicyType>
-class TLightMapDensityDS : public FBaseDS
-{
-	DECLARE_SHADER_TYPE(TLightMapDensityDS,MeshMaterial);
-
-public:
-
-	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
-	{
-		static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
-		bool bAllowStaticLighting = AllowStaticLightingVar->GetValueOnAnyThread() != 0;
-
-		return AllowDebugViewmodes(Parameters.Platform) 
-			&& bAllowStaticLighting
-			&& FBaseDS::ShouldCompilePermutation(Parameters)
-			&& TLightMapDensityVS<LightMapPolicyType>::ShouldCompilePermutation(Parameters);		
-	}
-
-	static void ModifyCompilationEnvironment(const FMaterialShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
-	{
-		FMeshMaterialShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-		LightMapPolicyType::ModifyCompilationEnvironment(Parameters, OutEnvironment);
-	}
-
-	/** Initialization constructor. */
-	TLightMapDensityDS(const FMeshMaterialShaderType::CompiledShaderInitializerType& Initializer):
-		FBaseDS(Initializer)
-	{}
-
-	TLightMapDensityDS() {}
-};
-
-/**
  * The base type for pixel shaders that render the emissive color, and light-mapped/ambient lighting of a mesh.
  * The base type is shared between the versions with and without sky light.
  */
@@ -180,7 +109,6 @@ class TLightMapDensityPS : public FMeshMaterialShader, public LightMapPolicyType
 	DECLARE_SHADER_TYPE_EXPLICIT_BASES(TLightMapDensityPS,MeshMaterial, FMeshMaterialShader, typename LightMapPolicyType::PixelParametersType);
 
 public:
-
 	static bool ShouldCompilePermutation(const FMeshMaterialShaderPermutationParameters& Parameters)
 	{
 		static const auto AllowStaticLightingVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.AllowStaticLighting"));
@@ -230,7 +158,7 @@ public:
 		ShaderBindings.Add(BuiltLightingAndSelectedFlags, ShaderElementData.BuiltLightingAndSelectedFlags);
 		ShaderBindings.Add(LightMapResolutionScale, ShaderElementData.LightMapResolutionScale);
 
-		FVector4 OptionsParameter(
+		FVector4f OptionsParameter(
 			GEngine->bRenderLightMapDensityGrayscale ? GEngine->RenderLightMapDensityGrayscaleScale : 0.0f,
 			GEngine->bRenderLightMapDensityGrayscale ? 0.0f : GEngine->RenderLightMapDensityColorScale,
 			(ShaderElementData.bTextureMapped == true) ? 1.0f : 0.0f,
@@ -257,8 +185,16 @@ public:
 
 private:
 
+	bool TryAddMeshBatch(
+		const FMeshBatch& RESTRICT MeshBatch,
+		uint64 BatchElementMask,
+		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
+		int32 StaticMeshId,
+		const FMaterialRenderProxy& MaterialRenderProxy,
+		const FMaterial& Material);
+
 	template<typename LightMapPolicyType>
-	void Process(
+	bool Process(
 		const FMeshBatch& MeshBatch,
 		uint64 BatchElementMask,
 		const FPrimitiveSceneProxy* RESTRICT PrimitiveSceneProxy,
@@ -272,3 +208,8 @@ private:
 
 	FMeshPassProcessorRenderState PassDrawRenderState;
 };
+
+void RenderLightMapDensities(
+	FRDGBuilder& GraphBuilder,
+	TArrayView<const FViewInfo> Views,
+	const FRenderTargetBindingSlots& RenderTargets);

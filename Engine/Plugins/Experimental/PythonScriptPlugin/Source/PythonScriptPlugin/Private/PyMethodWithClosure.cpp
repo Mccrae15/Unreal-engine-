@@ -146,14 +146,6 @@ PyObject* FPyMethodWithClosureDef::Call(FPyMethodWithClosureDef* InDef, PyObject
 {
 	const int FuncFlags = InDef->MethodFlags & ~(METH_CLASS | METH_STATIC | METH_COEXIST);
 
-#if PY_MAJOR_VERSION < 3
-	if (FuncFlags == METH_OLDARGS)
-	{
-		PyErr_Format(PyExc_TypeError, "%s() METH_OLDARGS isn't supported", InDef->MethodName);
-		return nullptr;
-	}
-#endif	// PY_MAJOR_VERSION < 3
-
 	// Keywords take precedence
 	if (FuncFlags & METH_KEYWORDS)
 	{
@@ -446,14 +438,6 @@ PyTypeObject InitializePyCFunctionWithClosureType()
 
 		static PyObject* GetSelf(FPyCFunctionWithClosureObject* InSelf, void* InClosure)
 		{
-#if PY_MAJOR_VERSION < 3
-			if (PyEval_GetRestricted())
-			{
-				PyErr_SetString(PyExc_RuntimeError, "method.__self__ not accessible in restricted mode");
-				return nullptr;
-			}
-#endif	// PY_MAJOR_VERSION < 3
-
 			PyObject* Self = InSelf->SelfArg ? InSelf->SelfArg : Py_None;
 			Py_INCREF(Self);
 			return Self;
@@ -484,6 +468,7 @@ PyTypeObject InitializePyCFunctionWithClosureType()
 	PyType.tp_traverse = (traverseproc)&FFuncs::Traverse;
 	PyType.tp_clear = (inquiry)&FFuncs::Clear;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Str;
 	PyType.tp_richcompare = (richcmpfunc)&FFuncs::RichCmp;
 	PyType.tp_hash = (hashfunc)&FFuncs::Hash;
 	PyType.tp_call = (ternaryfunc)&FFuncs::Call;
@@ -606,6 +591,7 @@ PyTypeObject InitializePyMethodWithClosureDescrType()
 	PyType.tp_traverse = (traverseproc)&FFuncs::Traverse;
 	PyType.tp_clear = (inquiry)&FFuncs::Clear;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Str;
 	PyType.tp_call = (ternaryfunc)&FFuncs::Call;
 	PyType.tp_descr_get = (descrgetfunc)&FFuncs::DescrGet;
 	PyType.tp_getattro = (getattrofunc)&PyObject_GenericGetAttr;
@@ -710,6 +696,7 @@ PyTypeObject InitializePyClassMethodWithClosureDescrType()
 	PyType.tp_traverse = (traverseproc)&FFuncs::Traverse;
 	PyType.tp_clear = (inquiry)&FFuncs::Clear;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Str;
 	PyType.tp_call = (ternaryfunc)&FFuncs::Call;
 	PyType.tp_descr_get = (descrgetfunc)&FFuncs::DescrGet;
 	PyType.tp_getattro = (getattrofunc)&PyObject_GenericGetAttr;

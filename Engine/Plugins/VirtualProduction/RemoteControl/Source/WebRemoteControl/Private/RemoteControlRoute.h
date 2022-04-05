@@ -15,6 +15,7 @@ struct FRemoteControlWebSocketMessage
 	int32 MessageId = -1;
 	FGuid ClientId;
 	TArrayView<uint8> RequestPayload;
+	TMap<FString, TArray<FString>> Header;
 };
 
 DECLARE_DELEGATE_RetVal_TwoParams(bool, FRequestHandlerDelegate, const FHttpServerRequest&, const FHttpResultCallback&);

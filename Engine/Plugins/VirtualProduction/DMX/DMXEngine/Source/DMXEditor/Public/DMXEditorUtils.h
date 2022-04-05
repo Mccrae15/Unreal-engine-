@@ -11,42 +11,25 @@ class UDMXEntityFixtureType;
 class UDMXEntityFader;
 class UDMXEntityFixturePatch;
 
-
+/** 
+ * Generic Editor Utilities.
+ * for Fixture Type, refer to DMXFixtureTypeSharedData instead.
+ */
 class DMXEDITOR_API FDMXEditorUtils
 {
 public:
 	typedef TArray<UDMXEntityFixturePatch*> FUnassignedPatchesArray;
-		
-	/**
-	 * Generates a unique name given a base one and a list of existing ones, by appending an index to
-	 * existing names. If InBaseName is an empty String, it returns "Default name".
-	 */
+
+	UE_DEPRECATED(5.0, "Moved to DMXRuntimeUtils to allow using it at runtime.")
 	static FString GenerateUniqueNameFromExisting(const TSet<FString>& InExistingNames, const FString& InBaseName);
 
-	/**
-	 * Creates an unique name for an Entity from a specific type, using the type name as base.
-	 * @param InLibrary		The DMXLibrary object the entity will belong to.
-	 * @param InEntityClass	The class of the Entity, to check the name against others from same type.
-	 * @param InBaseName	Optional base name to use instead of the type name.
-	 * @return Unique name for an Entity amongst others from the same type.
-	 */
+	UE_DEPRECATED(5.0, "Deprecated in favor of UDMXRuntimeUtils::FindUniqueEntityName.")
 	static FString FindUniqueEntityName(const UDMXLibrary* InLibrary, TSubclassOf<UDMXEntity> InEntityClass, const FString& InBaseName = TEXT(""));
 
-	/**
-	 * Set unique names for Fixture Types' Modes and Functions when they have just been created.
-	 * We simply rename the Modes/Functions with no name. The user can't set a blank name afterwards, so it's
-	 * a good way to know which are the new ones.
-	 */
+	UE_DEPRECATED(5.0, "Deprecated to reduce redundant code. Instead use UDMXRuntimeUtils::FindUniqueEntityName.")
 	static void SetNewFixtureFunctionsNames(UDMXEntityFixtureType* InFixtureType);
 
-	/**
-	 * Creates a named Entity from the specified type and add it to the DMXLibrary.
-	 * @param InLibrary			The DMXLibrary object the entity will belong to.
-	 * @param NewEntityName		A name for the new Entity.
-	 * @param NewEntityClass	Type of the new Entity.
-	 * @param OutNewEntity		Returns the created entity.
-	 * @return True if the creation was successful.
-	 */
+	UE_DEPRECATED(5.0, "Deprecated in favor of new UDMXEntityFixtureType::CreateFixtureType and UDMXEntityFixturePatch::CreateFixturePatch that support creating patches in blueprints.")
 	static bool AddEntity(UDMXLibrary* InLibrary, const FString& NewEntityName, TSubclassOf<UDMXEntity> NewEntityClass, UDMXEntity** OutNewEntity = nullptr);
 
 	/**
@@ -65,20 +48,27 @@ public:
 	/**  Checks if the Entity is being referenced by other objects. */
 	static bool IsEntityUsed(const UDMXLibrary* InLibrary, const UDMXEntity* InEntity);
 
-	/**  Removes the entities and fixes references to it. */
+	/** DEPRECATED 5.0 */
+	UE_DEPRECATED(5.0, "Replaced with UDMXEntityFixtureType::RemoveFixtureTypeFromLibrary and UDMXEntityFixturePatch::RemoveFixturePatchFromLibrary to support blueprint and runtime changes.")
 	static void RemoveEntities(UDMXLibrary* InLibrary, const TArray<UDMXEntity*>& InEntities);
 
 	/**  Copies Entities to the operating system's clipboard. */
 	static void CopyEntities(const TArray<UDMXEntity*>&& EntitiesToCopy);
 
 	/**  Determines whether the current contents of the clipboard contain paste-able DMX Entity information */
-	static bool CanPasteEntities();
+	static bool CanPasteEntities(UDMXLibrary* ParentLibrary);
+
+	/** DEPRECATED 5.0 */
+	UE_DEPRECATED(5.0, "Replaced with FDMXEditorUtils::CreateEntitiesFromClipboard. NOTE: GetEntitiesFromClipboard no longer returns any entities, as entities can only be created within a DMXLibrary.")
+	static void GetEntitiesFromClipboard(TArray<UDMXEntity*>& OutNewObjects);
 
 	/**
-	 * Gets the copied DMX Entities from the clipboard without attempting to paste/apply them in any way
-	 * @param OutNewObjectMap			Contains the name->instance object mapping of the copied DMX Entities
+	 * Creates the copied DMX Entities from the clipboard without attempting to paste/apply them in any way
+	 * 
+	 * @param ParentLibrary			The library in which the entities are created.
+	 * @return						The array of newly created enities.
 	 */
-	static void GetEntitiesFromClipboard(TArray<UDMXEntity*>& OutNewObjects);
+	static TArray<UDMXEntity*> CreateEntitiesFromClipboard(UDMXLibrary* ParentLibrary);
 
 	/**
 	 * Compares the property values of two Fixture Types, including properties in arrays,
@@ -90,8 +80,7 @@ public:
 	/**  Returns the Entity class type name (e.g: Fixture Type for UDMXEntityFixtureType) in singular or plural */
 	static FText GetEntityTypeNameText(TSubclassOf<UDMXEntity> EntityClass, bool bPlural = false);
 
-	
-	
+
 // Auto Assign:
 	
 	/**

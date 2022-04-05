@@ -37,13 +37,22 @@ public:
 	/** Set the value of Filter, AddressU, AddressV, AddressW and MipBias from FStreamableTextureResource on the gamethread. */
 	void CacheSamplerStateInitializer(const UTexture2D* InOwner);
 
+	/** Returns the platform mip size for the given mip count. */
+	virtual uint64 GetPlatformMipsSize(uint32 NumMips) const override;
+
+	virtual void InitRHI() override;
+	virtual bool IsProxy() const override { return ProxiedResource != nullptr; }
 private:
+	/**
+	 * Make this Texture2DResource Proxy another one.
+	 *
+	 * @param InOwner             UTexture2D which this FTexture2DResource represents.
+	 * @param InProxiedResource   The resource to proxy.
+	 */
+	FTexture2DResource(UTexture2D* InOwner, const FTexture2DResource* InProxiedResource);
 
 	virtual void CreateTexture() final override;
 	virtual void CreatePartiallyResidentTexture() final override;
-#if STATS
-	virtual void CalcRequestedMipsSize() final override;
-#endif
 
 	/** Texture streaming command classes that need to be friends in order to call Update/FinalizeMipCount.	*/
 	friend class UTexture2D;
@@ -51,6 +60,9 @@ private:
 
 	/** Resource memory allocated by the owner for serialize bulk mip data into								*/
 	FTexture2DResourceMem* ResourceMem;
+
+	/** Another resource being proxied by this one. */
+	const FTexture2DResource* const ProxiedResource = nullptr;
 
 	/** Local copy/ cache of mip data between creation and first call to InitRHI.							*/
 	TArray<void*, TInlineAllocator<MAX_TEXTURE_MIP_COUNT> > MipData;

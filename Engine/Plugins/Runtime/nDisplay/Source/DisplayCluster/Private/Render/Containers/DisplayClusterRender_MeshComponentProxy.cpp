@@ -16,13 +16,20 @@ FDisplayClusterRender_MeshComponentProxy::FDisplayClusterRender_MeshComponentPro
 
 FDisplayClusterRender_MeshComponentProxy::~FDisplayClusterRender_MeshComponentProxy()
 {
-	Release_RenderThread();
+	check(IsInRenderingThread());
+
+	ImplRelease_RenderThread();
 }
 
 void FDisplayClusterRender_MeshComponentProxy::Release_RenderThread()
 {
 	check(IsInRenderingThread());
 
+	ImplRelease_RenderThread();
+}
+
+void FDisplayClusterRender_MeshComponentProxy::ImplRelease_RenderThread()
+{
 	VertexBufferRHI.SafeRelease();
 	IndexBufferRHI.SafeRelease();
 
@@ -30,11 +37,16 @@ void FDisplayClusterRender_MeshComponentProxy::Release_RenderThread()
 	NumVertices = 0;
 }
 
-bool FDisplayClusterRender_MeshComponentProxy::BeginRender_RenderThread(FRHICommandListImmediate& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit) const
+bool FDisplayClusterRender_MeshComponentProxy::IsEnabled_RenderThread() const
 {
 	check(IsInRenderingThread());
 
-	if (IsValid_RenderThread())
+	return NumTriangles > 0 && NumVertices > 0 && VertexBufferRHI.IsValid() && IndexBufferRHI.IsValid();
+}
+
+bool FDisplayClusterRender_MeshComponentProxy::BeginRender_RenderThread(FRHICommandListImmediate& RHICmdList, FGraphicsPipelineStateInitializer& GraphicsPSOInit) const
+{
+	if (IsEnabled_RenderThread())
 	{
 		GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GDisplayClusterMeshVertexDeclaration.VertexDeclarationRHI;
 		return true;
@@ -45,9 +57,7 @@ bool FDisplayClusterRender_MeshComponentProxy::BeginRender_RenderThread(FRHIComm
 
 bool  FDisplayClusterRender_MeshComponentProxy::FinishRender_RenderThread(FRHICommandListImmediate& RHICmdList) const
 {
-	check(IsInRenderingThread());
-
-	if (IsValid_RenderThread())
+	if (IsEnabled_RenderThread())
 	{
 		// Support update
 		RHICmdList.SetStreamSource(0, VertexBufferRHI, 0);
@@ -62,46 +72,52 @@ void FDisplayClusterRender_MeshComponentProxy::UpdateRHI_RenderThread(FRHIComman
 {
 	check(IsInRenderingThread());
 
-	Release_RenderThread();
+	ImplRelease_RenderThread();
 
 	if (InMeshData && InMeshData->IsValid())
 	{
 		NumTriangles = InMeshData->GetNumTriangles();
 		NumVertices = InMeshData->GetNumVertices();
 
-		uint32 Usage = BUF_ShaderResource | BUF_Static;
+		EBufferUsageFlags Usage = BUF_ShaderResource | BUF_Static;
 
 		// Create Vertex buffer RHI:
 		{
-			FRHIResourceCreateInfo CreateInfo;
-			size_t VertexDataSize = sizeof(FDisplayClusterMeshVertex) * NumVertices;
+			size_t VertexDataSize = sizeof(FDisplayClusterMeshVertexType) * NumVertices;
 			if (VertexDataSize == 0)
 			{
 				UE_LOG(LogDisplayClusterRender, Warning, TEXT("MeshComponent has a vertex size of 0, please make sure a mesh is assigned."))
-					return;
+				return;
 			}
-
+		
+			FRHIResourceCreateInfo CreateInfo(TEXT("DisplayClusterRender_MeshComponentProxy_VertexBuffer"));
 			VertexBufferRHI = RHICreateVertexBuffer(VertexDataSize, Usage, CreateInfo);
-			FDisplayClusterMeshVertex* DestVertexData = reinterpret_cast<FDisplayClusterMeshVertex*>(RHILockVertexBuffer(VertexBufferRHI, 0, VertexDataSize, RLM_WriteOnly));
+
+			FDisplayClusterMeshVertexType* DestVertexData = reinterpret_cast<FDisplayClusterMeshVertexType*>(RHILockBuffer(VertexBufferRHI, 0, VertexDataSize, RLM_WriteOnly));
 			if (DestVertexData)
 			{
-				FPlatformMemory::Memcpy(DestVertexData, InMeshData->GetVertexData().GetData(), VertexDataSize);
-				RHIUnlockVertexBuffer(VertexBufferRHI);
+				const FDisplayClusterMeshVertex* SrcVertexData = InMeshData->GetVertexData().GetData();
+				for (uint32 VertexIdx = 0; VertexIdx < NumVertices; VertexIdx++)
+				{
+					DestVertexData[VertexIdx].SetVertexData(SrcVertexData[VertexIdx]);
+				}
+			
+				RHIUnlockBuffer(VertexBufferRHI);
 			}
 		}
 
 		// Create Index buffer RHI:
 		{
-			FRHIResourceCreateInfo CreateInfo;
 			size_t IndexDataSize = sizeof(uint32) * InMeshData->GetIndexData().Num();
 
+			FRHIResourceCreateInfo CreateInfo(TEXT("DisplayClusterRender_MeshComponentProxy_IndexBuffer"));
 			IndexBufferRHI = RHICreateIndexBuffer(sizeof(uint32), IndexDataSize, Usage, CreateInfo);
 
-			uint32* DestIndexData = reinterpret_cast<uint32*>(RHILockIndexBuffer(IndexBufferRHI, 0, IndexDataSize, RLM_WriteOnly));
-			if (DestIndexData)
+			uint32* DestIndexData = reinterpret_cast<uint32*>(RHILockBuffer(IndexBufferRHI, 0, IndexDataSize, RLM_WriteOnly));
+			if(DestIndexData)
 			{
 				FPlatformMemory::Memcpy(DestIndexData, InMeshData->GetIndexData().GetData(), IndexDataSize);
-				RHIUnlockIndexBuffer(IndexBufferRHI);
+				RHIUnlockBuffer(IndexBufferRHI);
 			}
 		}
 	}

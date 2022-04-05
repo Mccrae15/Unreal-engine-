@@ -5,7 +5,7 @@
 #include "../SceneTextureParameters.ush"
 #include "../DeferredShadingCommon.ush"
 #include "../ShaderDrawDebug.ush"
-
+#include "../PositionReconstructionCommon.ush" 
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 uint3 PositionToCoord(float3 P, float3 InMinAABB, float3 InMaxAABB, uint3 InResolution)
@@ -48,15 +48,6 @@ bool IsInVoxelBounds(float3 P, float3 MinP, float3 MaxP)
 	return
 		P.x >= MinP.x && P.y >= MinP.y && P.z >= MinP.z &&
 		P.x <= MaxP.x && P.y <= MaxP.y && P.z <= MaxP.z;
-}
-
-float3 ReconstructWorldPositionFromDepth(float2 UV, float Depth)
-{
-	float2 ScreenPosition = (UV - View.ScreenPositionScaleBias.wz) / View.ScreenPositionScaleBias.xy;
-	float4 HomogeneousWorldPosition = mul(float4(ScreenPosition * Depth, Depth, 1), View.ScreenToWorld);
-	float3 WorldPosition = HomogeneousWorldPosition.xyz / HomogeneousWorldPosition.w;
-
-	return WorldPosition;
 }
 
 float3 EncodeTangent(float3 N)
@@ -115,14 +106,14 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	if (uint(PixelCoord.x) == 0 && uint(PixelCoord.y) == 0)
 	{
-		AddAABB(Voxel_MinBound, Voxel_MaxBound, float4(1, 0.5f, 0, 1));
+		AddAABBWS(Voxel_MinBound, Voxel_MaxBound, float4(1, 0.5f, 0, 1));
 	}
 
 	bool bIsValid = false;
 	float3 HitColor = 0;
 	{
 		// Reverse-Z
-		const float3 O = View.WorldCameraOrigin;
+		const float3 O = LWCHackToFloat(PrimaryView.WorldCameraOrigin);
 		const float3 E = ReconstructWorldPositionFromDepth(UV, ConvertFromDeviceZ(0.0001f));
 		const float3 D = (E - O);
 
@@ -205,10 +196,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 					//HitColor = float(Density) / 10.f;
 					if (bDebugEnabled)
 					{
-						//AddLine(HitP, HitP + UnoccludedDirection * 3, float4(1, 0, 0, 1), float4(1, 1, 0, 1));
+						//AddLineWS(HitP, HitP + UnoccludedDirection * 3, float4(1, 0, 0, 1), float4(1, 1, 0, 1));
 
-						AddLine(HitP, HitP + Tangent * 3, float4(0, 0, 1, 1), float4(0, 0, 1, 1));
-						AddLine(HitP, HitP + Normal * 3, float4(1, 0, 0, 1), float4(1, 0, 0, 1));
+						AddLineWS(HitP, HitP + Tangent * 3, float4(0, 0, 1, 1), float4(0, 0, 1, 1));
+						AddLineWS(HitP, HitP + Normal * 3, float4(1, 0, 0, 1), float4(1, 0, 0, 1));
 					}
 
 					break;

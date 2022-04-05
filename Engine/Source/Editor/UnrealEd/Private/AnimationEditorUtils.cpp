@@ -525,7 +525,7 @@ namespace AnimationEditorUtils
 					FAssetRegistryModule::AssetDeleted(ObjectToDelete);
 					ObjectToDelete->ClearFlags(RF_Standalone | RF_Public);
 					ObjectToDelete->RemoveFromRoot();
-					ObjectToDelete->MarkPendingKill();
+					ObjectToDelete->MarkAsGarbage();
 				}
 				CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 			}
@@ -578,7 +578,7 @@ namespace AnimationEditorUtils
 							{
 								ObjectToDelete->ClearFlags(RF_Standalone | RF_Public);
 								ObjectToDelete->RemoveFromRoot();
-								ObjectToDelete->MarkPendingKill();
+								ObjectToDelete->MarkAsGarbage();
 							}
 							CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 						}
@@ -630,7 +630,7 @@ namespace AnimationEditorUtils
 					{
 						ObjectToDelete->ClearFlags(RF_Standalone | RF_Public);
 						ObjectToDelete->RemoveFromRoot();
-						ObjectToDelete->MarkPendingKill();
+						ObjectToDelete->MarkAsGarbage();
 					}
 					CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 				}
@@ -816,7 +816,13 @@ namespace AnimationEditorUtils
 			}
 			else if(UAnimStateNodeBase* StateNode = Cast<UAnimStateNodeBase>(CurrentNode))
 			{
-				ChildGraphs.AddUnique(StateNode->GetBoundGraph());
+				UEdGraph* BoundGraph = StateNode->GetBoundGraph();
+				if (BoundGraph == nullptr)
+				{
+					continue;
+				}
+
+				ChildGraphs.AddUnique(BoundGraph);
 
 				if(UAnimStateTransitionNode* TransitionNode = Cast<UAnimStateTransitionNode>(StateNode))
 				{
@@ -833,24 +839,36 @@ namespace AnimationEditorUtils
 		}
 	}
 
+	static FOnPoseWatchesChanged OnPoseWatchesChangedDelegate;
+
 	void SetPoseWatch(UPoseWatch* PoseWatch, UAnimBlueprint* AnimBlueprintIfKnown)
 	{
 #if WITH_EDITORONLY_DATA
-		if (UAnimGraphNode_Base* TargetNode = Cast<UAnimGraphNode_Base>(PoseWatch->Node))
-		{
-			UAnimBlueprint* AnimBlueprint = AnimBlueprintIfKnown ? AnimBlueprintIfKnown : Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(TargetNode));
-
-			if ((AnimBlueprint != NULL) && (AnimBlueprint->GeneratedClass != NULL))
+			if (UAnimGraphNode_Base* TargetNode = Cast<UAnimGraphNode_Base>(PoseWatch->Node))
 			{
-				if (UAnimBlueprintGeneratedClass* AnimBPGenClass = Cast<UAnimBlueprintGeneratedClass>(*AnimBlueprint->GeneratedClass))
+				UAnimBlueprint* AnimBlueprint = AnimBlueprintIfKnown ? AnimBlueprintIfKnown : Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(TargetNode));
+				if ((AnimBlueprint != NULL) && (AnimBlueprint->GeneratedClass != NULL))
 				{
-					// Find the insertion point from the debugging data
-					int32 LinkID = AnimBPGenClass->GetLinkIDForNode<FAnimNode_Base>(TargetNode);
-					AnimBPGenClass->GetAnimBlueprintDebugData().AddPoseWatch(LinkID, PoseWatch->PoseWatchColour);
+					if (UAnimBlueprintGeneratedClass* AnimBPGenClass = Cast<UAnimBlueprintGeneratedClass>(*AnimBlueprint->GeneratedClass))
+					{
+						// Find the insertion point from the debugging data
+						int32 LinkID = AnimBPGenClass->GetLinkIDForNode<FAnimNode_Base>(TargetNode);
+						AnimBPGenClass->GetAnimBlueprintDebugData().AddPoseWatch(LinkID, PoseWatch);
+						OnPoseWatchesChangedDelegate.Broadcast(AnimBlueprint, TargetNode);
+					}
 				}
 			}
+#endif
+	}
+
+	void RemovePoseWatchesFromGraph(UAnimBlueprint* AnimBlueprint, class UEdGraph* Graph)
+	{
+#if WITH_EDITORONLY_DATA
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			RemovePoseWatchFromNode(Node, AnimBlueprint);
 		}
-#endif	//#if WITH_EDITORONLY_DATA
+#endif
 	}
 
 	UPoseWatch* FindPoseWatchForNode(const UEdGraphNode* Node, UAnimBlueprint* AnimBlueprintIfKnown)
@@ -882,15 +900,17 @@ namespace AnimationEditorUtils
 #endif
 	}
 
-	void MakePoseWatchForNode(UAnimBlueprint* AnimBlueprint, UEdGraphNode* Node, FColor PoseWatchColour)
+	UPoseWatch* MakePoseWatchForNode(UAnimBlueprint* AnimBlueprint, UEdGraphNode* Node)
 	{
 #if WITH_EDITORONLY_DATA
 		UPoseWatch* NewPoseWatch = NewObject<UPoseWatch>(AnimBlueprint);
 		NewPoseWatch->Node = Node;
-		NewPoseWatch->PoseWatchColour = PoseWatchColour;
+		NewPoseWatch->SetUniqueDefaultLabel();
 		AnimBlueprint->PoseWatches.Add(NewPoseWatch);
-
 		SetPoseWatch(NewPoseWatch, AnimBlueprint);
+		return NewPoseWatch;
+#else
+		return nullptr;
 #endif
 	}
 
@@ -900,42 +920,109 @@ namespace AnimationEditorUtils
 		if (UAnimGraphNode_Base* TargetNode = Cast<UAnimGraphNode_Base>(PoseWatch->Node))
 		{
 			UAnimBlueprint* AnimBlueprint = AnimBlueprintIfKnown ? AnimBlueprintIfKnown : Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(TargetNode));
-
 			if (AnimBlueprint)
 			{
 				AnimBlueprint->PoseWatches.Remove(PoseWatch);
-
 				if (UAnimBlueprintGeneratedClass* AnimBPGenClass = AnimBlueprint->GetAnimBlueprintGeneratedClass())
 				{
 					int32 LinkID = AnimBPGenClass->GetLinkIDForNode<FAnimNode_Base>(Cast<UAnimGraphNode_Base>(PoseWatch->Node));
 					AnimBPGenClass->GetAnimBlueprintDebugData().RemovePoseWatch(LinkID);
+					OnPoseWatchesChangedDelegate.Broadcast(AnimBlueprint, TargetNode);
 				}
 			}
 		}
 #endif
 	}
 
-	void UpdatePoseWatchColour(UPoseWatch* PoseWatch, FColor NewPoseWatchColour)
+	void RemovePoseWatchFromNode(UEdGraphNode* Node, UAnimBlueprint* AnimBlueprint)
 	{
 #if WITH_EDITORONLY_DATA
-		PoseWatch->PoseWatchColour = NewPoseWatchColour;
-
-		if (UAnimGraphNode_Base* TargetNode = Cast<UAnimGraphNode_Base>(PoseWatch->Node))
+		if (AnimBlueprint)
 		{
-			UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(TargetNode));
-
-			if ((AnimBlueprint != NULL) && (AnimBlueprint->GeneratedClass != NULL))
+			for (UPoseWatch* SomePoseWatch : AnimBlueprint->PoseWatches)
 			{
-				if (UAnimBlueprintGeneratedClass* AnimBPGenClass = Cast<UAnimBlueprintGeneratedClass>(*AnimBlueprint->GeneratedClass))
+				if (SomePoseWatch->Node == Node)
 				{
-					// Find the insertion point from the debugging data
-					int32 LinkID = AnimBPGenClass->GetLinkIDForNode<FAnimNode_Base>(TargetNode);
+					if (UAnimBlueprintGeneratedClass* AnimBPGenClass = AnimBlueprint->GetAnimBlueprintGeneratedClass())
+					{
+						int32 LinkID = AnimBPGenClass->GetLinkIDForNode<FAnimNode_Base>(Cast<UAnimGraphNode_Base>(SomePoseWatch->Node));
+						AnimBPGenClass->GetAnimBlueprintDebugData().RemovePoseWatch(LinkID);
 
-					AnimBPGenClass->GetAnimBlueprintDebugData().UpdatePoseWatchColour(LinkID, NewPoseWatchColour);
+						OnPoseWatchesChangedDelegate.Broadcast(AnimBlueprint, Node);
+					}
+
+					SomePoseWatch->OnRemoved();
+					return;
 				}
 			}
 		}
 #endif
+	}
+
+	FOnPoseWatchesChanged& OnPoseWatchesChanged()
+	{
+		return OnPoseWatchesChangedDelegate;
+	}
+
+	int32 GetPoseWatchNodeLinkID(UPoseWatch* PoseWatch, UAnimBlueprintGeneratedClass*& OutAnimBPGenClass)
+	{
+#if WITH_EDITORONLY_DATA
+		if (UAnimGraphNode_Base* TargetNode = Cast<UAnimGraphNode_Base>(PoseWatch->Node))
+		{
+			UAnimBlueprint* AnimBlueprint = Cast<UAnimBlueprint>(FBlueprintEditorUtils::FindBlueprintForNode(TargetNode));
+
+			if ((AnimBlueprint != nullptr) && (AnimBlueprint->GeneratedClass != nullptr))
+			{
+				if (UAnimBlueprintGeneratedClass* AnimBPGenClass = Cast<UAnimBlueprintGeneratedClass>(*AnimBlueprint->GeneratedClass))
+				{
+					// Find the insertion point from the debugging data
+					OutAnimBPGenClass = AnimBPGenClass;
+					return AnimBPGenClass->GetLinkIDForNode<FAnimNode_Base>(TargetNode);
+				}
+			}
+		}
+#endif
+		return INDEX_NONE;
+	}
+
+	void SetupDebugLinkedAnimInstances(UAnimBlueprint* InAnimBlueprint, UObject* InRootObjectBeingDebugged)
+	{
+		check(IsInGameThread());
+		
+		static bool bSettingDebugInstances = false;
+
+		if(!bSettingDebugInstances)
+		{
+			TGuardValue<bool> GuardValue(bSettingDebugInstances, true);
+			if(InRootObjectBeingDebugged)
+			{
+				if(const USkeletalMeshComponent* Component = Cast<USkeletalMeshComponent>(InRootObjectBeingDebugged->GetOuter()))
+				{
+					// See if we have any linked instances
+					for(UAnimInstance* LinkedInstance : Component->GetLinkedAnimInstances())
+					{
+						if(UAnimBlueprint* LinkedAnimBlueprint = Cast<UAnimBlueprint>(LinkedInstance->GetClass()->ClassGeneratedBy))
+						{
+							LinkedAnimBlueprint->SetObjectBeingDebugged(LinkedInstance);
+						}
+					}
+				}
+			}
+			else if(UObject* OldDebuggedObject = InAnimBlueprint->GetObjectBeingDebugged())
+			{
+				if(const USkeletalMeshComponent* Component = Cast<USkeletalMeshComponent>(OldDebuggedObject->GetOuter()))
+				{
+					// See if we have any linked instances
+					for(UAnimInstance* LinkedInstance : Component->GetLinkedAnimInstances())
+					{
+						if(UAnimBlueprint* LinkedAnimBlueprint = Cast<UAnimBlueprint>(LinkedInstance->GetClass()->ClassGeneratedBy))
+						{
+							LinkedAnimBlueprint->SetObjectBeingDebugged(nullptr);
+						}
+					}
+				}
+			}
+		}
 	}
 }
 

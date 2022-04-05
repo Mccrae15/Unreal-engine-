@@ -71,18 +71,18 @@ FORCEINLINE void Move(T& A,typename TMoveSupportTraits<T>::Move B)
  * Generically gets the data pointer of a contiguous container
  */
 template<typename T, typename = typename TEnableIf<TIsContiguousContainer<T>::Value>::Type>
-auto GetData(T&& Container) -> decltype(Container.GetData())
+constexpr auto GetData(T&& Container) -> decltype(Container.GetData())
 {
 	return Container.GetData();
 }
 
-template <typename T, SIZE_T N> CONSTEXPR       T* GetData(      T (& Container)[N]) { return Container; }
-template <typename T, SIZE_T N> CONSTEXPR       T* GetData(      T (&&Container)[N]) { return Container; }
-template <typename T, SIZE_T N> CONSTEXPR const T* GetData(const T (& Container)[N]) { return Container; }
-template <typename T, SIZE_T N> CONSTEXPR const T* GetData(const T (&&Container)[N]) { return Container; }
+template <typename T, SIZE_T N> constexpr T* GetData(      T (& Container)[N]) { return Container; }
+template <typename T, SIZE_T N> constexpr T* GetData(      T (&&Container)[N]) { return Container; }
+template <typename T, SIZE_T N> constexpr const T* GetData(const T (& Container)[N]) { return Container; }
+template <typename T, SIZE_T N> constexpr const T* GetData(const T (&&Container)[N]) { return Container; }
 
 template <typename T>
-CONSTEXPR const T* GetData(std::initializer_list<T> List)
+constexpr const T* GetData(std::initializer_list<T> List)
 {
 	return List.begin();
 }
@@ -91,15 +91,15 @@ CONSTEXPR const T* GetData(std::initializer_list<T> List)
 * Generically gets the number of items in a contiguous container
 */
 template<typename T, typename = typename TEnableIf<TIsContiguousContainer<T>::Value>::Type>
-auto GetNum(T&& Container) -> decltype(Container.Num())
+constexpr auto GetNum(T&& Container) -> decltype(Container.Num())
 {
 	return Container.Num();
 }
 
-template <typename T, SIZE_T N> CONSTEXPR SIZE_T GetNum(      T (& Container)[N]) { return N; }
-template <typename T, SIZE_T N> CONSTEXPR SIZE_T GetNum(      T (&&Container)[N]) { return N; }
-template <typename T, SIZE_T N> CONSTEXPR SIZE_T GetNum(const T (& Container)[N]) { return N; }
-template <typename T, SIZE_T N> CONSTEXPR SIZE_T GetNum(const T (&&Container)[N]) { return N; }
+template <typename T, SIZE_T N> constexpr SIZE_T GetNum(      T (& Container)[N]) { return N; }
+template <typename T, SIZE_T N> constexpr SIZE_T GetNum(      T (&&Container)[N]) { return N; }
+template <typename T, SIZE_T N> constexpr SIZE_T GetNum(const T (& Container)[N]) { return N; }
+template <typename T, SIZE_T N> constexpr SIZE_T GetNum(const T (&&Container)[N]) { return N; }
 
 /**
  * Gets the number of items in an initializer list.
@@ -108,7 +108,7 @@ template <typename T, SIZE_T N> CONSTEXPR SIZE_T GetNum(const T (&&Container)[N]
  * Realistically, an initializer list should not exceed the limits of int32.
  */
 template <typename T>
-CONSTEXPR int32 GetNum(std::initializer_list<T> List)
+constexpr int32 GetNum(std::initializer_list<T> List)
 {
 	return static_cast<int32>(List.size());
 }
@@ -158,20 +158,46 @@ constexpr FORCEINLINE const T (&AsConst(T (&Array)[N]))[N]
 	return Array;
 }
 
+/** Test if value can make a lossless static_cast roundtrip via OutType without a sign change */
+template<typename OutType, typename InType>
+constexpr bool IntFitsIn(InType In)
+{
+	static_assert(std::is_integral_v<InType> && std::is_integral_v<OutType>, "Only integers supported");
+	
+	OutType Out = static_cast<OutType>(In);
+	bool bRoundtrips = In == static_cast<InType>(Out);
+	
+	// Signed <-> unsigned cast requires sign test, signed -> smaller signed is covered by roundtrip sign-extension.
+	if constexpr ((static_cast<InType>(-1) < InType{}) != (static_cast<OutType>(-1) < OutType{}))
+	{
+		return bRoundtrips && (In < InType{} == Out < OutType{});
+	}
+	
+	return bRoundtrips;
+}
+
+/** Cast and check that value fits in OutType */
+template<typename OutType, typename InType>
+OutType IntCastChecked(InType In)
+{
+	check(IntFitsIn<OutType>(In));
+	return static_cast<OutType>(In);
+}
+
 /*----------------------------------------------------------------------------
 	Standard macros.
 ----------------------------------------------------------------------------*/
 
 #ifdef __clang__
 	template <typename T>
-	auto UE4ArrayCountHelper(T& t) -> typename TEnableIf<__is_array(T), char(&)[sizeof(t) / sizeof(t[0]) + 1]>::Type;
+	auto UEArrayCountHelper(T& t) -> typename TEnableIf<__is_array(T), char(&)[sizeof(t) / sizeof(t[0]) + 1]>::Type;
 #else
 	template <typename T, uint32 N>
-	char (&UE4ArrayCountHelper(const T (&)[N]))[N + 1];
+	char (&UEArrayCountHelper(const T (&)[N]))[N + 1];
 #endif
 
 // Number of elements in an array.
-#define UE_ARRAY_COUNT( array ) (sizeof(UE4ArrayCountHelper(array)) - 1)
+#define UE_ARRAY_COUNT( array ) (sizeof(UEArrayCountHelper(array)) - 1)
 #define ARRAY_COUNT( array ) DEPRECATED_MACRO(4.24, "The ARRAY_COUNT macro has been deprecated in favor of UE_ARRAY_COUNT.") UE_ARRAY_COUNT( array )
 
 // Offset of a struct member.

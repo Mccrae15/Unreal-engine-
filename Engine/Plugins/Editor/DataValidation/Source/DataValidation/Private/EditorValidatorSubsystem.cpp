@@ -6,6 +6,8 @@
 #include "AssetToolsModule.h"
 #include "ObjectTools.h"
 #include "AssetRegistryModule.h"
+#include "IDirectoryWatcher.h"
+#include "DirectoryWatcherModule.h"
 #include "EditorUtilityBlueprint.h"
 #include "Settings/EditorLoadingSavingSettings.h"
 #include "UnrealEdGlobals.h"
@@ -14,6 +16,9 @@
 #include "Logging/MessageLog.h"
 #include "Misc/ScopedSlowTask.h"
 #include "AssetData.h"
+#include "ISourceControlModule.h"
+#include "DataValidationChangelist.h"
+#include "DataValidationModule.h"
 
 #define LOCTEXT_NAMESPACE "EditorValidationSubsystem"
 
@@ -67,6 +72,9 @@ void UEditorValidatorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 			}
 		}
 	}
+
+	// Register to SCC pre-submit callback
+	ISourceControlModule::Get().RegisterPreSubmitDataValidation(FSourceControlPreSubmitDataValidationDelegate::CreateUObject(this, &UEditorValidatorSubsystem::ValidateChangelistPreSubmit));
 }
 
 // Rename to BP validators
@@ -103,6 +111,7 @@ void UEditorValidatorSubsystem::RegisterBlueprintValidators()
 			UObject* ValidatorObject = BPAssetData.ToSoftObjectPath().ResolveObject();
 			if (ValidatorObject == nullptr)
 			{
+				FSoftObjectPathSerializationScope SerializationScope(NAME_None, NAME_None, ESoftObjectPathCollectType::EditorOnlyCollect, ESoftObjectPathSerializeType::AlwaysSerialize);
 				ValidatorObject = BPAssetData.ToSoftObjectPath().TryLoad();
 			}
 			if (ValidatorObject)
@@ -119,6 +128,9 @@ void UEditorValidatorSubsystem::Deinitialize()
 {
 	CleanupValidators();
 
+	// Unregister to SCC pre-submit callback
+	ISourceControlModule::Get().UnregisterPreSubmitDataValidation();
+
 	Super::Deinitialize();
 }
 
@@ -126,7 +138,7 @@ void UEditorValidatorSubsystem::AddValidator(UEditorValidatorBase* InValidator)
 {
 	if (InValidator)
 	{
-		Validators.Add(InValidator->GetClass(), InValidator);
+		Validators.Add(InValidator->GetClass()->GetPathName(), InValidator);
 	}
 }
 
@@ -135,7 +147,7 @@ void UEditorValidatorSubsystem::CleanupValidators()
 	Validators.Empty();
 }
 
-EDataValidationResult UEditorValidatorSubsystem::IsObjectValid(UObject* InObject, TArray<FText>& ValidationErrors, TArray<FText>& ValidationWarnings) const
+EDataValidationResult UEditorValidatorSubsystem::IsObjectValid(UObject* InObject, TArray<FText>& ValidationErrors, TArray<FText>& ValidationWarnings, const EDataValidationUsecase InValidationUsecase) const
 {
 	EDataValidationResult Result = EDataValidationResult::NotValidated;
 	
@@ -146,9 +158,9 @@ EDataValidationResult UEditorValidatorSubsystem::IsObjectValid(UObject* InObject
 		// If the asset is still valid or there wasn't a class-level validation, keep validating with custom validators
 		if (Result != EDataValidationResult::Invalid)
 		{
-			for (TPair<UClass*, UEditorValidatorBase*> ValidatorPair : Validators)
+			for (auto ValidatorPair : Validators)
 			{
-				if (ValidatorPair.Value && ValidatorPair.Value->IsEnabled() && ValidatorPair.Value->CanValidateAsset(InObject))
+				if (ValidatorPair.Value && ValidatorPair.Value->IsEnabled() && ValidatorPair.Value->CanValidate(InValidationUsecase) && ValidatorPair.Value->CanValidateAsset(InObject))
 				{
 					ValidatorPair.Value->ResetValidationState();
 					EDataValidationResult NewResult = ValidatorPair.Value->ValidateLoadedAsset(InObject, ValidationErrors);
@@ -170,14 +182,14 @@ EDataValidationResult UEditorValidatorSubsystem::IsObjectValid(UObject* InObject
 	return Result;
 }
 
-EDataValidationResult UEditorValidatorSubsystem::IsAssetValid(FAssetData& AssetData, TArray<FText>& ValidationErrors, TArray<FText>& ValidationWarnings) const
+EDataValidationResult UEditorValidatorSubsystem::IsAssetValid(const FAssetData& AssetData, TArray<FText>& ValidationErrors, TArray<FText>& ValidationWarnings, const EDataValidationUsecase InValidationUsecase) const
 {
 	if (AssetData.IsValid())
 	{
 		UObject* Obj = AssetData.GetAsset();
 		if (Obj)
 		{
-			return IsObjectValid(Obj, ValidationErrors, ValidationWarnings);
+			return IsObjectValid(Obj, ValidationErrors, ValidationWarnings, InValidationUsecase);
 		}
 		return EDataValidationResult::NotValidated;
 	}
@@ -187,9 +199,21 @@ EDataValidationResult UEditorValidatorSubsystem::IsAssetValid(FAssetData& AssetD
 
 int32 UEditorValidatorSubsystem::ValidateAssets(TArray<FAssetData> AssetDataList, bool bSkipExcludedDirectories, bool bShowIfNoFailures) const
 {
+	FValidateAssetsSettings Settings;
+	FValidateAssetsResults Results;
+
+	Settings.bSkipExcludedDirectories = bSkipExcludedDirectories;
+	Settings.bShowIfNoFailures = bShowIfNoFailures;
+	
+	return ValidateAssetsWithSettings(AssetDataList, Settings, Results);
+}
+
+int32 UEditorValidatorSubsystem::ValidateAssetsWithSettings(const TArray<FAssetData>& AssetDataList, const FValidateAssetsSettings& InSettings, FValidateAssetsResults& OutResults) const
+{
 	FScopedSlowTask SlowTask(1.0f, LOCTEXT("ValidatingDataTask", "Validating Data..."));
-	SlowTask.Visibility = bShowIfNoFailures ? ESlowTaskVisibility::ForceVisible : ESlowTaskVisibility::Invisible;
-	if (bShowIfNoFailures)
+	SlowTask.Visibility = InSettings.bShowIfNoFailures ? ESlowTaskVisibility::ForceVisible : ESlowTaskVisibility::Invisible;
+	
+	if (InSettings.bShowIfNoFailures)
 	{
 		SlowTask.MakeDialogDelayed(.1f);
 	}
@@ -236,13 +260,13 @@ int32 UEditorValidatorSubsystem::ValidateAssets(TArray<FAssetData> AssetDataList
 	};
 
 	// Now add to map or update as needed
-	for (FAssetData& Data : AssetDataList)
+	for (const FAssetData& Data : AssetDataList)
 	{
 		FText ValidatingMessage = FText::Format(LOCTEXT("ValidatingFilename", "Validating {0}"), FText::FromString(Data.GetFullName()));
 		SlowTask.EnterProgressFrame(1.0f / NumFilesToValidate, ValidatingMessage);
 
 		// Check exclusion path
-		if (bSkipExcludedDirectories && IsPathExcludedFromValidation(Data.PackageName.ToString()))
+		if (InSettings.bSkipExcludedDirectories && IsPathExcludedFromValidation(Data.PackageName.ToString()))
 		{
 			++NumFilesSkipped;
 			continue;
@@ -252,7 +276,7 @@ int32 UEditorValidatorSubsystem::ValidateAssets(TArray<FAssetData> AssetDataList
 
 		TArray<FText> ValidationErrors;
 		TArray<FText> ValidationWarnings;
-		EDataValidationResult Result = IsAssetValid(Data, ValidationErrors, ValidationWarnings);
+		EDataValidationResult Result = IsAssetValid(Data, ValidationErrors, ValidationWarnings, InSettings.ValidationUsecase);
 		++NumFilesChecked;
 
 		AddAssetLogTokens(EMessageSeverity::Error, ValidationErrors, Data.PackageName);
@@ -283,7 +307,7 @@ int32 UEditorValidatorSubsystem::ValidateAssets(TArray<FAssetData> AssetDataList
 			}
 			else if (Result == EDataValidationResult::NotValidated)
 			{
-				if (bShowIfNoFailures)
+				if (InSettings.bShowIfNoFailures)
 				{
 					DataValidationLog.Info()->AddToken(FAssetNameToken::Create(Data.PackageName.ToString()))
 						->AddToken(FTextToken::Create(LOCTEXT("NotValidatedDataResult", "has no data validation.")));
@@ -296,7 +320,14 @@ int32 UEditorValidatorSubsystem::ValidateAssets(TArray<FAssetData> AssetDataList
 	const bool bFailed = (NumInvalidFiles > 0);
 	const bool bAtLeastOneWarning = (NumFilesWithWarnings > 0);
 
-	if (bFailed || bAtLeastOneWarning || bShowIfNoFailures)
+	OutResults.NumChecked = NumFilesChecked;
+	OutResults.NumValid = NumValidFiles;
+	OutResults.NumInvalid = NumInvalidFiles;
+	OutResults.NumSkipped = NumFilesSkipped;
+	OutResults.NumWarnings = NumFilesWithWarnings;
+	OutResults.NumUnableToValidate = NumFilesUnableToValidate;
+
+	if (bFailed || bAtLeastOneWarning || InSettings.bShowIfNoFailures)
 	{
 		FFormatNamedArguments Arguments;
 		Arguments.Add(TEXT("Result"), bFailed ? LOCTEXT("Failed", "FAILED") : LOCTEXT("Succeeded", "SUCCEEDED"));
@@ -317,14 +348,18 @@ int32 UEditorValidatorSubsystem::ValidateAssets(TArray<FAssetData> AssetDataList
 
 void UEditorValidatorSubsystem::ValidateOnSave(TArray<FAssetData> AssetDataList) const
 {
+	ValidateOnSave(AssetDataList, false /* bProceduralSave */);
+}
+
+void UEditorValidatorSubsystem::ValidateOnSave(TArray<FAssetData> AssetDataList, bool bProceduralSave) const
+{
 	// Only validate if enabled and not auto saving
 	if (!GetDefault<UDataValidationSettings>()->bValidateOnSave || GEditor->IsAutosaving())
 	{
 		return;
 	}
 
-	bool bIsCooking = GIsCookerLoadingPackage;
-	if ((!bValidateAssetsWhileSavingForCook && bIsCooking))
+	if ((!bValidateAssetsWhileSavingForCook && bProceduralSave))
 	{
 		return;
 	}
@@ -332,7 +367,15 @@ void UEditorValidatorSubsystem::ValidateOnSave(TArray<FAssetData> AssetDataList)
 	FMessageLog DataValidationLog("AssetCheck");
 	FText SavedAsset = AssetDataList.Num() == 1 ? FText::FromName(AssetDataList[0].AssetName) : LOCTEXT("MultipleErrors", "multiple assets");
 	DataValidationLog.NewPage(FText::Format(LOCTEXT("DataValidationLogPage", "Asset Save: {0}"), SavedAsset));
-	if (ValidateAssets(MoveTemp(AssetDataList), true, false) > 0)
+
+	FValidateAssetsSettings Settings;
+	FValidateAssetsResults Results;
+
+	Settings.bSkipExcludedDirectories = true;
+	Settings.bShowIfNoFailures = false;
+	Settings.ValidationUsecase = EDataValidationUsecase::Save;
+
+	if (ValidateAssetsWithSettings(AssetDataList, Settings, Results) > 0)
 	{
 		const FText ErrorMessageNotification = FText::Format(
 			LOCTEXT("ValidationFailureNotification", "Validation failed when saving {0}, check Data Validation log"), SavedAsset);
@@ -342,15 +385,19 @@ void UEditorValidatorSubsystem::ValidateOnSave(TArray<FAssetData> AssetDataList)
 
 void UEditorValidatorSubsystem::ValidateSavedPackage(FName PackageName)
 {
+	ValidateSavedPackage(PackageName, false /* bProceduralSave */);
+}
+
+void UEditorValidatorSubsystem::ValidateSavedPackage(FName PackageName, bool bProceduralSave)
+{
 	// Only validate if enabled and not auto saving
 	if (!GetDefault<UDataValidationSettings>()->bValidateOnSave || GEditor->IsAutosaving())
 	{
 		return;
 	}
 
-	// For performance reasons, don't validate when cooking by default. Assumption is we validated when saving previously. 
-	bool bIsCooking = GIsCookerLoadingPackage;
-	if ((!bValidateAssetsWhileSavingForCook && bIsCooking))
+	// For performance reasons, don't validate when making a procedural save by default. Assumption is we validated when saving previously. 
+	if ((!bValidateAssetsWhileSavingForCook && bProceduralSave))
 	{
 		return;
 	}
@@ -383,26 +430,14 @@ void UEditorValidatorSubsystem::ValidateAllSavedPackages()
 	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
 
-	// Prior to validation, make sure Asset Registry is updated.
-	// DirectoryWatcher is responsible of scanning modified asset files, but validation can be called before.
-	if (SavedPackagesToValidate.Num())
+	// Prior to validation, make sure Asset Registry is updated. This is done by ticking the DirectoryWatcher module, which 
+	// is responsible of scanning modified asset files.
+	if( !FApp::IsProjectNameEmpty() )
 	{
-		TArray<FString> FilesToScan;
-		FilesToScan.Reserve(SavedPackagesToValidate.Num());
-		for (FName PackageName : SavedPackagesToValidate)
-		{
-			FString PackageFilename;
-			if (FPackageName::FindPackageFileWithoutExtension(FPackageName::LongPackageNameToFilename(PackageName.ToString()), PackageFilename))
-			{
-				FilesToScan.Add(PackageFilename);
-			}
-		}
-		if (FilesToScan.Num())
-		{
-			AssetRegistry.ScanModifiedAssetFiles(FilesToScan);
-		}
+		static FName DirectoryWatcherName("DirectoryWatcher");
+		FDirectoryWatcherModule& DirectoryWatcherModule = FModuleManager::Get().LoadModuleChecked<FDirectoryWatcherModule>(DirectoryWatcherName);
+		DirectoryWatcherModule.Get()->Tick(1.f);
 	}
-
 	// We need to query the in-memory data as the disk cache may not be accurate
 	FARFilter Filter;
 	Filter.PackageNames = SavedPackagesToValidate;
@@ -411,9 +446,29 @@ void UEditorValidatorSubsystem::ValidateAllSavedPackages()
 	TArray<FAssetData> Assets;
 	AssetRegistry.GetAssets(Filter, Assets);
 
-	ValidateOnSave(MoveTemp(Assets));
+	bool bProceduralSave = false; // The optional suppression for ProceduralSaves was checked before adding to SavedPackagesToValidate
+	ValidateOnSave(MoveTemp(Assets), bProceduralSave);
 
 	SavedPackagesToValidate.Empty();
+}
+
+void UEditorValidatorSubsystem::ValidateChangelistPreSubmit(FSourceControlChangelistPtr InChangelist, EDataValidationResult& OutResult, TArray<FText>& OutValidationErrors, TArray<FText>& OutValidationWarnings) const
+{
+	FScopedSlowTask SlowTask(1.0f, LOCTEXT("ValidatingChangelistTask", "Validating changelist..."));
+	SlowTask.Visibility = ESlowTaskVisibility::Invisible;
+	SlowTask.MakeDialogDelayed(.1f);
+
+	check(InChangelist);
+
+	// Create temporary changelist object to do most of the heavy lifting
+	UDataValidationChangelist* Changelist = NewObject<UDataValidationChangelist>();
+	Changelist->Initialize(InChangelist);
+	Changelist->AddToRoot();
+
+	SlowTask.EnterProgressFrame(1.0f, LOCTEXT("ValidatingChangelist", "Validating changelist to submit"));
+	OutResult = IsObjectValid(Changelist, OutValidationErrors, OutValidationWarnings, EDataValidationUsecase::PreSubmit);
+
+	Changelist->RemoveFromRoot();
 }
 
 #undef LOCTEXT_NAMESPACE

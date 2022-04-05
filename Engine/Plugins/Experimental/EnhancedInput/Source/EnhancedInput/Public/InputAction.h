@@ -25,6 +25,11 @@ public:
 	// Track actions that have had their ValueType changed to update blueprints referencing them.
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	static TSet<const UInputAction*> ActionsWithModifiedValueTypes;
+	
+	/**
+	 * Returns a bitmask of supported trigger events that is built from each UInputTrigger on this Action.
+	 */
+	ETriggerEventsSupported GetSupportedTriggerEvents() const;
 #endif
 
 	// Should this action swallow any inputs bound to it or allow them to pass through to affect lower priority bound actions?
@@ -60,6 +65,43 @@ public:
 	TArray<UInputModifier*> Modifiers;
 };
 
+// Calculate a collective representation of trigger state from evaluations of all triggers in one or more trigger groups.
+struct FTriggerStateTracker
+{
+	// Trigger rules by evaluated trigger count:
+	// Implicits == 0, Explicits == 0	- Always fire, unless value is 0.
+	// Implicits == 0, Explicits  > 0	- At least one explict has fired.
+	// Implicits  > 0, Explicits == 0	- All implicits have fired.
+	// Implicits  > 0, Explicits  > 0	- All implicits and at least one explicit have fired.
+	// Blockers   > 0					- Override all other triggers to force trigger failure.
+
+	// Add a group of triggers to the evaluated state, returning the new trigger state.
+	ETriggerState EvaluateTriggers(const UEnhancedPlayerInput* PlayerInput, const TArray<UInputTrigger*>& Triggers, FInputActionValue ModifiedValue, float DeltaTime);
+
+	ETriggerState GetState() const;
+
+	void SetMappingTriggerApplied(bool bNewVal) { bMappingTriggerApplied = bNewVal; }
+	bool GetMappingTriggerApplied() const { return bMappingTriggerApplied; }
+
+	bool operator>=(const FTriggerStateTracker& Other) const { return GetState() >= Other.GetState(); }
+
+	// TODO: Hacky. This is the state we should return if we have evaluated no valid triggers. Set during action evaluation based on final ModifiedValue.
+	void SetStateForNoTriggers(ETriggerState State);
+
+private:
+	ETriggerState NoTriggerState = ETriggerState::None;
+
+	bool bEvaluatedInput = false;		// Non-zero input value was provided at some point in the evaluation
+	bool bEvaluatedTriggers = false;	// At least one valid trigger was evaluated
+	bool bFoundActiveTrigger = false;	// If any trigger is in an ongoing or triggered state the final state must be at least ongoing (with the exception of blocking triggers!)
+	bool bAnyExplictTriggered = false;
+	bool bFoundExplicit = false;		// If no explicits are found the trigger may fire through implicit testing only. If explicits exist at least one must be met.
+	bool bAllImplicitsTriggered = true;
+	bool bBlocking = false;				// If any trigger is blocking, we can't fire.
+	bool bMappingTriggerApplied = false; // Set to true when an actionmapping is processed and triggers were found
+};
+
+
 // Run time queryable action instance
 // Generated from UInputAction templates above
 USTRUCT(BlueprintType)
@@ -71,14 +113,15 @@ struct ENHANCEDINPUT_API FInputActionInstance
 	GENERATED_BODY()
 
 private:
-	UPROPERTY()
+
+	// The source action that this instance is created from
+	UPROPERTY(BlueprintReadOnly, Category = "Input", Meta = (AllowPrivateAccess))
 	const UInputAction* SourceAction = nullptr;
 
 	// Internal trigger states
 	ETriggerState LastTriggerState = ETriggerState::None;
-	ETriggerState MappingTriggerState = ETriggerState::None;
+	FTriggerStateTracker TriggerStateTracker;
 	ETriggerEventInternal TriggerEventInternal = ETriggerEventInternal(0);	// TODO: Expose access to ETriggerEventInternal?
-	bool bMappingTriggerApplied = false;
 
 protected:
 	// TODO: Just hold a duplicate of the UInputAction in here?
@@ -105,6 +148,10 @@ protected:
 	UPROPERTY(BlueprintReadOnly, Category = Action)
 	float ElapsedTriggeredTime = 0.f;
 
+	// The last time that this evaluated to a Triggered State
+	UPROPERTY(BlueprintReadOnly, Category = Action)
+	float LastTriggeredWorldTime = 0.0f;
+
 	// Trigger state
 	UPROPERTY(BlueprintReadOnly, Category = Action)
 	ETriggerEvent TriggerEvent = ETriggerEvent::None;
@@ -125,9 +172,15 @@ public:
 	// Time the action has been actively triggered (Triggered only)
 	float GetTriggeredTime() const { return ElapsedTriggeredTime; }
 
+	// Time that this action was last actively triggered
+	float GetLastTriggeredWorldTime() const { return LastTriggeredWorldTime; }
+
 	const TArray<UInputTrigger*>& GetTriggers() const { return Triggers; }
 	const TArray<UInputModifier*>& GetModifiers() const { return Modifiers; }
 
 	UE_DEPRECATED(4.26, "GetModifiers(EModifierExecutionPhase) is deprecated. Use GetModifiers()")
 	const TArray<UInputModifier*>& GetModifiers(EModifierExecutionPhase ForPhase) const { return Modifiers; }
+
+	// The source action that this instance is created from
+	const UInputAction* GetSourceAction() const { return SourceAction; }
 };

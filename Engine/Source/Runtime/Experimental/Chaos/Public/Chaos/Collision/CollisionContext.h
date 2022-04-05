@@ -5,6 +5,8 @@
 
 namespace Chaos
 {
+	class FMultiShapePairCollisionDetector;
+
 	/**
 	 * Data passed down into the collision detection functions.
 	 */
@@ -13,8 +15,11 @@ namespace Chaos
 	public:
 		FCollisionContext()
 			: bFilteringEnabled(true)
-			, bDeferUpdate(true)
+			, bDeferUpdate(false)
 			, bAllowManifolds(false)
+			, bAllowManifoldReuse(false)
+			, bForceDisableCCD(false)
+			, CollisionAllocator(nullptr)
 		{
 		}
 
@@ -26,7 +31,18 @@ namespace Chaos
 		// which could be undesirable in some cases (destruction?).
 		bool bDeferUpdate;
 
-		// Whether to use manifolds where supported [default: false]
+		// Whether to use one-shot manifolds where supported [default: false]
 		bool bAllowManifolds;
+
+		// Whether we can reuse manifolds between frames if contacts have not moved far [default: false]
+		bool bAllowManifoldReuse;
+
+		// Force disable CCD
+		bool bForceDisableCCD;
+
+		// This is used in the older collision detection path which is still used for particles that do not flatten their implicit hierrarchies
+		// into the Particle's ShapesArray. Currently this is only Clusters.
+		// @todo(chaos): remove thsi from here and make it a parameter on ConstructCollisions and all inner functions.
+		FMultiShapePairCollisionDetector* CollisionAllocator;
 	};
 }

@@ -18,6 +18,7 @@ class UDamageType;
 UDELEGATE(BlueprintAuthorityOnly)
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams( FInstigatedAnyDamageSignature, float, Damage, const UDamageType*, DamageType, AActor*, DamagedActor, AActor*, DamageCauser );
 DECLARE_MULTICAST_DELEGATE_OneParam(FPawnChangedSignature, APawn* /*NewPawn*/);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnPossessedPawnChanged, APawn*, OldPawn, APawn*, NewPawn);
 
 /**
  * Controllers are non-physical actors that can possess a Pawn to control
@@ -36,7 +37,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FPawnChangedSignature, APawn* /*NewPawn*/);
  * 
  * @see https://docs.unrealengine.com/latest/INT/Gameplay/Framework/Controller/
  */
-UCLASS(abstract, notplaceable, NotBlueprintable, HideCategories=(Collision,Rendering,"Utilities|Transformation")) 
+UCLASS(abstract, notplaceable, NotBlueprintable, HideCategories=(Collision,Rendering,Transformation)) 
 class ENGINE_API AController : public AActor, public INavAgentInterface
 {
 	GENERATED_BODY()
@@ -47,7 +48,7 @@ public:
 
 	/** PlayerState containing replicated information about the player using this controller (only exists for players, not NPCs). */
 	UPROPERTY(replicatedUsing = OnRep_PlayerState, BlueprintReadOnly, Category=Controller)
-	APlayerState* PlayerState;
+	TObjectPtr<APlayerState> PlayerState;
 
 	/** Actor marking where this controller spawned in. */
 	TWeakObjectPtr<class AActor> StartSpot;
@@ -56,6 +57,10 @@ public:
 	UPROPERTY(BlueprintAssignable)
 	FInstigatedAnyDamageSignature OnInstigatedAnyDamage;
 
+	/** Called on both authorities and clients when the possessed pawn changes (either OldPawn or NewPawn might be nullptr) */
+	UPROPERTY(BlueprintAssignable, Category=Pawn)
+	FOnPossessedPawnChanged OnPossessedPawnChanged;
+
 	/** Current gameplay state this controller is in */
 	UPROPERTY()
 	FName StateName;
@@ -63,7 +68,7 @@ public:
 private:
 	/** Pawn currently being controlled by this controller.  Use Pawn.Possess() to take control of a pawn */
 	UPROPERTY(replicatedUsing=OnRep_Pawn)
-	APawn* Pawn;
+	TObjectPtr<APawn> Pawn;
 
 	/**
 	 * Used to track when pawn changes during OnRep_Pawn. 
@@ -73,14 +78,14 @@ private:
 
 	/** Character currently being controlled by this controller.  Value is same as Pawn if the controlled pawn is a character, otherwise nullptr */
 	UPROPERTY()
-	ACharacter* Character;
+	TObjectPtr<ACharacter> Character;
 
 	/** Component to give controllers a transform and enable attachment if desired. */
 	UPROPERTY()
-	USceneComponent* TransformComponent;
+	TObjectPtr<USceneComponent> TransformComponent;
 
 protected:
-	/** Delegate broadcasted when possessing a new pawn or unpossessing one */
+	/** Delegate broadcast on authorities when possessing a new pawn or unpossessing one */
 	FPawnChangedSignature OnNewPawn;
 
 	/** The control rotation of the Controller. See GetControlRotation. */
@@ -187,11 +192,6 @@ public:
 	{
 		return Cast<T>(PlayerState);
 	}
-
-	/** DEPRECATED! Use the standard "Cast To" node instead. Casts this Controller to a Player Controller, if possible. */
-	UE_DEPRECATED(4.11, "CastToPlayerController has been replaced by the standard Cast To node.")
-	UFUNCTION(BlueprintCallable, Category=Pawn, meta=(DeprecatedFunction, DeprecationMessage="Use standard Cast To node instead."))
-	class APlayerController* CastToPlayerController();
 
 	/** Replicated function to set the pawn location and rotation, allowing server to force (ex. teleports). */
 	UFUNCTION(Reliable, Client, WithValidation)
@@ -329,6 +329,7 @@ public:
 	 * @output	out_Location, view location of player
 	 * @output	out_rotation, view rotation of player
 	 */
+	UFUNCTION(BlueprintCallable, Category = Pawn)
 	virtual void GetPlayerViewPoint( FVector& Location, FRotator& Rotation ) const;
 
 	/** GameMode failed to spawn pawn for me. */

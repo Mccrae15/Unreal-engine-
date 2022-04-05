@@ -1,73 +1,46 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #pragma once
 
-#include "Chaos/Array.h"
 #include "Chaos/PBDSpringConstraintsBase.h"
-#include "Chaos/PBDConstraintContainer.h"
-#include "Chaos/GraphColoring.h"
 
-namespace Chaos
+namespace Chaos::Softs
 {
 
-template<class T, int d>
-class TPBDParticles;
-
-template<class T, int d>
-class TRigidParticles;
-
-template<class T, int d>
-class TPBDRigidParticles;
-
-class CHAOS_API FPBDSpringConstraints : public FPBDSpringConstraintsBase, public FPBDConstraintContainer
+class CHAOS_API FPBDSpringConstraints : public FPBDSpringConstraintsBase
 {
 	typedef FPBDSpringConstraintsBase Base;
-	using Base::MConstraints;
+	using Base::Constraints;
+	using Base::Stiffness;
 
-  public:
-	FPBDSpringConstraints(const FReal Stiffness = (FReal)1)
-	    : FPBDSpringConstraintsBase(Stiffness)
-	{}
-
-	FPBDSpringConstraints(const FDynamicParticles& InParticles, TArray<TVec2<int32>>&& Constraints, const FReal Stiffness = (FReal)1, bool bStripKinematicConstraints = false)
-	    : FPBDSpringConstraintsBase(InParticles, MoveTemp(Constraints), Stiffness, bStripKinematicConstraints)
+public:
+	template<int32 Valence>
+	FPBDSpringConstraints(
+		const FSolverParticles& Particles,
+		int32 ParticleOffset,
+		int32 ParticleCount,
+		const TArray<TVector<int32, Valence>>& InConstraints,
+		const TConstArrayView<FRealSingle>& StiffnessMultipliers,
+		const FSolverVec2& InStiffness,
+		bool bTrimKinematicConstraints = false,
+		typename TEnableIf<Valence >= 2 && Valence <= 4>::Type* = nullptr)
+		: Base(Particles, ParticleOffset, ParticleCount, InConstraints, StiffnessMultipliers, InStiffness, bTrimKinematicConstraints)
 	{
-		InitColor(InParticles);
-	}
-	FPBDSpringConstraints(const TRigidParticles<FReal, 3>& InParticles, TArray<TVec2<int32>>&& Constraints, const FReal Stiffness = (FReal)1, bool bStripKinematicConstraints = false)
-	    : FPBDSpringConstraintsBase(InParticles, MoveTemp(Constraints), Stiffness, bStripKinematicConstraints) 
-	{}
-
-	FPBDSpringConstraints(const FDynamicParticles& InParticles, const TArray<TVec3<int32>>& Constraints, const FReal Stiffness = (FReal)1, bool bStripKinematicConstraints = false)
-	    : FPBDSpringConstraintsBase(InParticles, Constraints, Stiffness, bStripKinematicConstraints)
-	{
-		InitColor(InParticles);
+		InitColor(Particles);
 	}
 
-	FPBDSpringConstraints(const FDynamicParticles& InParticles, const TArray<TVec4<int32>>& Constraints, const FReal Stiffness = (FReal)1, bool bStripKinematicConstraints = false)
-	    : FPBDSpringConstraintsBase(InParticles, Constraints, Stiffness, bStripKinematicConstraints)
-	{
-		InitColor(InParticles);
-	}
+	virtual ~FPBDSpringConstraints() override {}
 
-	virtual ~FPBDSpringConstraints() {}
-
-	const TArray<TVec2<int32>>& GetConstraints() const { return MConstraints; }
-	TArray<TVec2<int32>>& GetConstraints() { return MConstraints; }
-	TArray<TVec2<int32>>& Constraints() { return MConstraints; }
-
-	template<class T_PARTICLES>
-	void Apply(T_PARTICLES& InParticles, const FReal Dt, const int32 InConstraintIndex) const;
-	void Apply(TPBDParticles<FReal, 3>& InParticles, const FReal Dt) const;
-
-	void Apply(TPBDRigidParticles<FReal, 3>& InParticles, const FReal Dt, const TArray<int32>& InConstraintIndices) const;
+	void Apply(FSolverParticles& Particles, const FSolverReal Dt) const;
 
 private:
-	void InitColor(const FDynamicParticles& InParticles);
+	void InitColor(const FSolverParticles& InParticles);
+	void ApplyHelper(FSolverParticles& Particles, const FSolverReal Dt, const int32 ConstraintIndex, const FSolverReal ExpStiffnessValue) const;
 
-	TArray<TArray<int32>> MConstraintsPerColor;
+private:
+	TArray<int32> ConstraintsPerColorStartIndex; // Constraints are ordered so each batch is contiguous. This is ColorNum + 1 length so it can be used as start and end.
 };
 
-}
+}  // End namespace Chaos::Softs
 
 // Support ISPC enable/disable in non-shipping builds
 #if !INTEL_ISPC

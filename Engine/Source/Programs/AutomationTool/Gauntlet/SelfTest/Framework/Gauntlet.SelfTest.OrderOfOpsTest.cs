@@ -91,6 +91,13 @@ namespace Gauntlet.SelfTest
 			return TestResult.Passed;
 		}
 
+		/// <summary>
+		/// Manually set the value of the test result
+		/// </summary>
+		public void SetTestResult(TestResult testResult)
+		{
+		}
+
 		public string GetTestSummary()
 		{
 			SetNewStage(TestStages.Summary);
@@ -140,7 +147,11 @@ namespace Gauntlet.SelfTest
 			return true;
 		}
 
-		public void StopTest(bool WasCancelled)
+		public virtual void SetCancellationReason(string Reason)
+		{
+		}
+
+		public void StopTest(StopReason InReason)
 		{
 			SetNewStage(TestStages.StopTest);
 		}

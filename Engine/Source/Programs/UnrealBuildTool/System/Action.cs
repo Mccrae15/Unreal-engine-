@@ -2,12 +2,14 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -17,6 +19,10 @@ namespace UnrealBuildTool
 	enum ActionType
 	{
 		BuildProject,
+
+		GatherModuleDependencies,
+
+		CompileModuleInterface,
 
 		Compile,
 
@@ -33,10 +39,99 @@ namespace UnrealBuildTool
 		ParseTimingInfo,
 	}
 
+	interface IExternalAction
+	{
+		/// <summary>
+		/// The type of this action (for debugging purposes).
+		/// </summary>
+		ActionType ActionType { get; }
+
+		/// <summary>
+		/// Every file this action depends on.  These files need to exist and be up to date in order for this action to even be considered
+		/// </summary>
+		IEnumerable<FileItem> PrerequisiteItems { get; }
+
+		/// <summary>
+		/// The files that this action produces after completing
+		/// </summary>
+		IEnumerable<FileItem> ProducedItems { get; }
+
+		/// <summary>
+		/// Items that should be deleted before running this action
+		/// </summary>
+		IEnumerable<FileItem> DeleteItems { get; }
+
+		/// <summary>
+		/// For C++ source files, specifies a dependency list file used to check changes to header files
+		/// </summary>
+		FileItem? DependencyListFile { get; }
+
+		/// <summary>
+		/// Directory from which to execute the program to create produced items
+		/// </summary>
+		DirectoryReference WorkingDirectory { get; }
+
+		/// <summary>
+		/// The command to run to create produced items
+		/// </summary>
+		FileReference CommandPath { get; }
+
+		/// <summary>
+		/// Command-line parameters to pass to the program
+		/// </summary>
+		string CommandArguments { get; }
+
+		/// <summary>
+		/// Version of the command used for this action. This will be considered a dependency.
+		/// </summary>
+		string CommandVersion { get; }
+
+		/// <summary>
+		/// Optional friendly description of the type of command being performed, for example "Compile" or "Link".  Displayed by some executors.
+		/// </summary>
+		string CommandDescription { get; }
+
+		/// <summary>
+		/// Human-readable description of this action that may be displayed as status while invoking the action.  This is often the name of the file being compiled, or an executable file name being linked.  Displayed by some executors.
+		/// </summary>
+		string StatusDescription { get; }
+
+		/// <summary>
+		/// True if this action is allowed to be run on a remote machine when a distributed build system is being used, such as XGE
+		/// </summary>
+		bool bCanExecuteRemotely { get; }
+
+		/// <summary>
+		/// True if this action is allowed to be run on a remote machine with SNDBS. Files with #import directives must be compiled locally. Also requires bCanExecuteRemotely = true.
+		/// </summary>
+		bool bCanExecuteRemotelyWithSNDBS { get; }
+
+		/// <summary>
+		/// True if this action is using the GCC compiler.  Some build systems may be able to optimize for this case.
+		/// </summary>
+		bool bIsGCCCompiler { get; }
+
+		/// <summary>
+		/// Whether we should log this action, whether executed locally or remotely.  This is useful for actions that take time
+		/// but invoke tools without any console output.
+		/// </summary>
+		bool bShouldOutputStatusDescription { get; }
+
+		/// <summary>
+		/// True if any libraries produced by this action should be considered 'import libraries'
+		/// </summary>
+		bool bProducesImportLibrary { get; }
+
+		/// <summary>
+		/// Whether changes in the command line used to generate these produced items should invalidate the action
+		/// </summary>
+		bool bUseActionHistory { get; }
+	}
+
 	/// <summary>
 	/// A build action.
 	/// </summary>
-	class Action
+	class Action : IExternalAction
 	{
 		///
 		/// Preparation and Assembly (serialized)
@@ -45,130 +140,90 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// The type of this action (for debugging purposes).
 		/// </summary>
-		public readonly ActionType ActionType;
+		public ActionType ActionType { get; set; }
 
 		/// <summary>
 		/// Every file this action depends on.  These files need to exist and be up to date in order for this action to even be considered
 		/// </summary>
-		public List<FileItem> PrerequisiteItems = new List<FileItem>();
+		public List<FileItem> PrerequisiteItems { get; set; } = new List<FileItem>();
 
 		/// <summary>
 		/// The files that this action produces after completing
 		/// </summary>
-		public List<FileItem> ProducedItems = new List<FileItem>();
+		public List<FileItem> ProducedItems { get; set; } = new List<FileItem>();
 
 		/// <summary>
 		/// Items that should be deleted before running this action
 		/// </summary>
-		public List<FileItem> DeleteItems = new List<FileItem>();
+		public List<FileItem> DeleteItems { get; set; } = new List<FileItem>();
 
 		/// <summary>
 		/// For C++ source files, specifies a dependency list file used to check changes to header files
 		/// </summary>
-		public FileItem DependencyListFile;
-
-		/// <summary>
-		/// For C++ source files, specifies a timing file used to track timing information.
-		/// </summary>
-		public FileItem TimingFile;
-
-		/// <summary>
-		/// Set of other actions that this action depends on. This set is built when the action graph is linked.
-		/// </summary>
-		public HashSet<Action> PrerequisiteActions;
+		public FileItem? DependencyListFile { get; set; }
 
 		/// <summary>
 		/// Directory from which to execute the program to create produced items
 		/// </summary>
-		public DirectoryReference WorkingDirectory = null;
-
-		/// <summary>
-		/// True if we should log extra information when we run a program to create produced items
-		/// </summary>
-		public bool bPrintDebugInfo = false;
+		public DirectoryReference WorkingDirectory { get; set; } = null!;
 
 		/// <summary>
 		/// The command to run to create produced items
 		/// </summary>
-		public FileReference CommandPath = null;
+		public FileReference CommandPath { get; set; } = null!;
 
 		/// <summary>
-		/// Command-line parameters to pass to the program.  This will be considered a dependency.
+		/// Command-line parameters to pass to the program
 		/// </summary>
-		public string CommandArguments = null;
-
+		public string CommandArguments { get; set; } = null!;
+		
 		/// <summary>
 		/// Version of the command used for this action. This will be considered a dependency.
 		/// </summary>
-		public string CommandVersion = "0";
+		public string CommandVersion { get; set; } = "0";
 
 		/// <summary>
 		/// Optional friendly description of the type of command being performed, for example "Compile" or "Link".  Displayed by some executors.
 		/// </summary>
-		public string CommandDescription = null;
+		public string CommandDescription { get; set; } = null!;
 
 		/// <summary>
 		/// Human-readable description of this action that may be displayed as status while invoking the action.  This is often the name of the file being compiled, or an executable file name being linked.  Displayed by some executors.
 		/// </summary>
-		public string StatusDescription = "...";
-
-		/// <summary>
-		/// If set, will be output whenever the group differs to the last executed action. Set when executing multiple targets at once.
-		/// </summary>
-		public List<string> GroupNames = new List<string>();
+		public string StatusDescription { get; set; } = "...";
 
 		/// <summary>
 		/// True if this action is allowed to be run on a remote machine when a distributed build system is being used, such as XGE
 		/// </summary>
-		public bool bCanExecuteRemotely = false;
+		public bool bCanExecuteRemotely { get; set; } = false;
 
 		/// <summary>
 		/// True if this action is allowed to be run on a remote machine with SNDBS. Files with #import directives must be compiled locally. Also requires bCanExecuteRemotely = true.
 		/// </summary>
-		public bool bCanExecuteRemotelyWithSNDBS = true;
+		public bool bCanExecuteRemotelyWithSNDBS { get; set; } = true;
 
 		/// <summary>
 		/// True if this action is using the GCC compiler.  Some build systems may be able to optimize for this case.
 		/// </summary>
-		public bool bIsGCCCompiler = false;
+		public bool bIsGCCCompiler { get; set; } = false;
 
 		/// <summary>
 		/// Whether we should log this action, whether executed locally or remotely.  This is useful for actions that take time
 		/// but invoke tools without any console output.
 		/// </summary>
-		public bool bShouldOutputStatusDescription = true;
+		public bool bShouldOutputStatusDescription { get; set; } = true;
 
 		/// <summary>
 		/// True if any libraries produced by this action should be considered 'import libraries'
 		/// </summary>
-		public bool bProducesImportLibrary = false;
+		public bool bProducesImportLibrary { get; set; } = false;
 
+		/// <inheritdoc/>
+		public bool bUseActionHistory { get; set; } = true;
 
-
-		///
-		/// Preparation only (not serialized)
-		///
-
-		/// <summary>
-		/// Total number of actions depending on this one.
-		/// </summary>
-		public int NumTotalDependentActions = 0;
-
-
-		///
-		/// Assembly only (not serialized)
-		///
-
-		/// <summary>
-		/// Start time of action, optionally set by executor.
-		/// </summary>
-		public DateTimeOffset StartTime = DateTimeOffset.MinValue;
-
-		/// <summary>
-		/// End time of action, optionally set by executor.
-		/// </summary>
-		public DateTimeOffset EndTime = DateTimeOffset.MinValue;
-
+		IEnumerable<FileItem> IExternalAction.PrerequisiteItems => PrerequisiteItems;
+		IEnumerable<FileItem> IExternalAction.ProducedItems => ProducedItems;
+		IEnumerable<FileItem> IExternalAction.DeleteItems => DeleteItems;
 
 		public Action(ActionType InActionType)
 		{
@@ -181,25 +236,46 @@ namespace UnrealBuildTool
 			}
 		}
 
+		public Action(IExternalAction InOther)
+		{
+			ActionType = InOther.ActionType;
+			PrerequisiteItems = new List<FileItem>(InOther.PrerequisiteItems);
+			ProducedItems = new List<FileItem>(InOther.ProducedItems);
+			DeleteItems = new List<FileItem>(InOther.DeleteItems);
+			DependencyListFile = InOther.DependencyListFile;
+			WorkingDirectory = InOther.WorkingDirectory;
+			CommandPath = InOther.CommandPath;
+			CommandArguments = InOther.CommandArguments;
+			CommandVersion = InOther.CommandVersion;
+			CommandDescription = InOther.CommandDescription;
+			StatusDescription = InOther.StatusDescription;
+			bCanExecuteRemotely = InOther.bCanExecuteRemotely;
+			bCanExecuteRemotelyWithSNDBS = InOther.bCanExecuteRemotelyWithSNDBS;
+			bIsGCCCompiler = InOther.bIsGCCCompiler;
+			bShouldOutputStatusDescription = InOther.bShouldOutputStatusDescription;
+			bProducesImportLibrary = InOther.bProducesImportLibrary;
+			bUseActionHistory = InOther.bUseActionHistory;
+		}
+
 		public Action(BinaryArchiveReader Reader)
 		{
 			ActionType = (ActionType)Reader.ReadByte();
-			WorkingDirectory = Reader.ReadDirectoryReference();
-			bPrintDebugInfo = Reader.ReadBool();
+			WorkingDirectory = Reader.ReadDirectoryReferenceNotNull();
 			CommandPath = Reader.ReadFileReference();
-			CommandArguments = Reader.ReadString();
-			CommandVersion = Reader.ReadString();
-			CommandDescription = Reader.ReadString();
-			StatusDescription = Reader.ReadString();
+			CommandArguments = Reader.ReadString()!;
+			CommandVersion = Reader.ReadString()!;
+			CommandDescription = Reader.ReadString()!;
+			StatusDescription = Reader.ReadString()!;
 			bCanExecuteRemotely = Reader.ReadBool();
 			bCanExecuteRemotelyWithSNDBS = Reader.ReadBool();
 			bIsGCCCompiler = Reader.ReadBool();
 			bShouldOutputStatusDescription = Reader.ReadBool();
 			bProducesImportLibrary = Reader.ReadBool();
-			PrerequisiteItems = Reader.ReadList(() => Reader.ReadFileItem());
-			ProducedItems = Reader.ReadList(() => Reader.ReadFileItem());
-			DeleteItems = Reader.ReadList(() => Reader.ReadFileItem());
+			PrerequisiteItems = Reader.ReadList(() => Reader.ReadFileItem())!;
+			ProducedItems = Reader.ReadList(() => Reader.ReadFileItem())!;
+			DeleteItems = Reader.ReadList(() => Reader.ReadFileItem())!;
 			DependencyListFile = Reader.ReadFileItem();
+			bUseActionHistory = Reader.ReadBool();
 		}
 
 		/// <summary>
@@ -209,7 +285,6 @@ namespace UnrealBuildTool
 		{
 			Writer.WriteByte((byte)ActionType);
 			Writer.WriteDirectoryReference(WorkingDirectory);
-			Writer.WriteBool(bPrintDebugInfo);
 			Writer.WriteFileReference(CommandPath);
 			Writer.WriteString(CommandArguments);
 			Writer.WriteString(CommandVersion);
@@ -224,6 +299,7 @@ namespace UnrealBuildTool
 			Writer.WriteList(ProducedItems, Item => Writer.WriteFileItem(Item));
 			Writer.WriteList(DeleteItems, Item => Writer.WriteFileItem(Item));
 			Writer.WriteFileItem(DependencyListFile);
+			Writer.WriteBool(bUseActionHistory);
 		}
 
 		/// <summary>
@@ -234,48 +310,42 @@ namespace UnrealBuildTool
 		{
 			Action Action = new Action(Object.GetEnumField<ActionType>("Type"));
 
-			string WorkingDirectory;
+			string? WorkingDirectory;
 			if(Object.TryGetStringField("WorkingDirectory", out WorkingDirectory))
 			{
 				Action.WorkingDirectory = new DirectoryReference(WorkingDirectory);
 			}
 
-			string CommandPath;
+			string? CommandPath;
 			if(Object.TryGetStringField("CommandPath", out CommandPath))
 			{
 				Action.CommandPath = new FileReference(CommandPath);
 			}
 			
-			string CommandArguments;
+			string? CommandArguments;
 			if(Object.TryGetStringField("CommandArguments", out CommandArguments))
 			{
 				Action.CommandArguments = CommandArguments;
 			}
 
-			string CommandVersion;
+			string? CommandVersion;
 			if (Object.TryGetStringField("CommandVersion", out CommandVersion))
 			{
 				Action.CommandVersion = CommandVersion;
 			}
 
-			string CommandDescription;
+			string? CommandDescription;
 			if(Object.TryGetStringField("CommandDescription", out CommandDescription))
 			{
 				Action.CommandDescription = CommandDescription;
 			}
 			
-			string StatusDescription;
+			string? StatusDescription;
 			if(Object.TryGetStringField("StatusDescription", out StatusDescription))
 			{
 				Action.StatusDescription = StatusDescription;
 			}
 
-			bool bPrintDebugInfo;
-			if(Object.TryGetBoolField("bPrintDebugInfo", out bPrintDebugInfo))
-			{
-				Action.bPrintDebugInfo = bPrintDebugInfo;
-			}
-			
 			bool bCanExecuteRemotely;
 			if(Object.TryGetBoolField("bCanExecuteRemotely", out bCanExecuteRemotely))
 			{
@@ -306,177 +376,31 @@ namespace UnrealBuildTool
 				Action.bProducesImportLibrary = bProducesImportLibrary;
 			}
 
-			string[] PrerequisiteItems;
+			string[]? PrerequisiteItems;
 			if (Object.TryGetStringArrayField("PrerequisiteItems", out PrerequisiteItems))
 			{
 				Action.PrerequisiteItems.AddRange(PrerequisiteItems.Select(x => FileItem.GetItemByPath(x)));
 			}
 
-			string[] ProducedItems;
+			string[]? ProducedItems;
 			if (Object.TryGetStringArrayField("ProducedItems", out ProducedItems))
 			{
 				Action.ProducedItems.AddRange(ProducedItems.Select(x => FileItem.GetItemByPath(x)));
 			}
 
-			string[] DeleteItems;
+			string[]? DeleteItems;
 			if (Object.TryGetStringArrayField("DeleteItems", out DeleteItems))
 			{
 				Action.DeleteItems.AddRange(DeleteItems.Select(x => FileItem.GetItemByPath(x)));
 			}
 
-			string DependencyListFile;
+			string? DependencyListFile;
 			if (Object.TryGetStringField("DependencyListFile", out DependencyListFile))
 			{
 				Action.DependencyListFile = FileItem.GetItemByPath(DependencyListFile);
 			}
 
 			return Action;
-		}
-
-		/// <summary>
-		/// Writes an action to a json file
-		/// </summary>
-		/// <param name="Writer">Writer to receive the output</param>
-		public void ExportJson(JsonWriter Writer)
-		{
-			Writer.WriteEnumValue("Type", ActionType);
-			Writer.WriteValue("WorkingDirectory", WorkingDirectory.FullName);
-			Writer.WriteValue("CommandPath", CommandPath.FullName);
-			Writer.WriteValue("CommandArguments", CommandArguments);
-			Writer.WriteValue("CommandVersion", CommandVersion);
-			Writer.WriteValue("CommandDescription", CommandDescription);
-			Writer.WriteValue("StatusDescription", StatusDescription);
-			Writer.WriteValue("bPrintDebugInfo", bPrintDebugInfo);
-			Writer.WriteValue("bCanExecuteRemotely", bCanExecuteRemotely);
-			Writer.WriteValue("bCanExecuteRemotelyWithSNDBS", bCanExecuteRemotelyWithSNDBS);
-			Writer.WriteValue("bIsGCCCompiler", bIsGCCCompiler);
-			Writer.WriteValue("bShouldOutputStatusDescription", bShouldOutputStatusDescription);
-			Writer.WriteValue("bProducesImportLibrary", bProducesImportLibrary);
-
-			Writer.WriteArrayStart("PrerequisiteItems");
-			foreach(FileItem PrerequisiteItem in PrerequisiteItems)
-			{
-				Writer.WriteValue(PrerequisiteItem.AbsolutePath);
-			}
-			Writer.WriteArrayEnd();
-
-			Writer.WriteArrayStart("ProducedItems");
-			foreach(FileItem ProducedItem in ProducedItems)
-			{
-				Writer.WriteValue(ProducedItem.AbsolutePath);
-			}
-			Writer.WriteArrayEnd();
-
-			Writer.WriteArrayStart("DeleteItems");
-			foreach(FileItem DeleteItem in DeleteItems)
-			{
-				Writer.WriteValue(DeleteItem.AbsolutePath);
-			}
-			Writer.WriteArrayEnd();
-
-			if (DependencyListFile != null)
-			{
-				Writer.WriteValue("DependencyListFile", DependencyListFile.AbsolutePath);
-			}
-		}
-
-		/// <summary>
-		/// Finds conflicts betwee two actions, and prints them to the log
-		/// </summary>
-		/// <param name="Other">Other action to compare to.</param>
-		/// <returns>True if any conflicts were found, false otherwise.</returns>
-		public bool CheckForConflicts(Action Other)
-		{
-			bool bResult = true;
-			if(ActionType != Other.ActionType)
-			{
-				LogConflict("action type is different", ActionType.ToString(), Other.ActionType.ToString());
-				bResult = false;
-			}
-			if(!Enumerable.SequenceEqual(PrerequisiteItems, Other.PrerequisiteItems))
-			{
-				LogConflict("prerequisites are different", String.Join(", ", PrerequisiteItems.Select(x => x.Location)), String.Join(", ", Other.PrerequisiteItems.Select(x => x.Location)));
-				bResult = false;
-			}
-			if(!Enumerable.SequenceEqual(DeleteItems, Other.DeleteItems))
-			{
-				LogConflict("deleted items are different", String.Join(", ", DeleteItems.Select(x => x.Location)), String.Join(", ", Other.DeleteItems.Select(x => x.Location)));
-				bResult = false;
-			}
-			if(DependencyListFile != Other.DependencyListFile)
-			{
-				LogConflict("dependency list is different", (DependencyListFile == null)? "(none)" : DependencyListFile.AbsolutePath, (Other.DependencyListFile == null)? "(none)" : Other.DependencyListFile.AbsolutePath);
-				bResult = false;
-			}
-			if(WorkingDirectory != Other.WorkingDirectory)
-			{
-				LogConflict("working directory is different", WorkingDirectory.FullName, Other.WorkingDirectory.FullName);
-				bResult = false;
-			}
-			if(CommandPath != Other.CommandPath)
-			{
-				LogConflict("command path is different", CommandPath.FullName, Other.CommandPath.FullName);
-				bResult = false;
-			}
-			if(CommandArguments != Other.CommandArguments)
-			{
-				LogConflict("command arguments are different", CommandArguments, Other.CommandArguments);
-				bResult = false;
-			}
-			if (CommandVersion != Other.CommandVersion)
-			{
-				LogConflict("command versions are different", CommandVersion, Other.CommandVersion);
-				bResult = false;
-			}
-			return bResult;
-		}
-
-		/// <summary>
-		/// Adds the description of a merge error to an output message
-		/// </summary>
-		/// <param name="Description">Description of the difference</param>
-		/// <param name="OldValue">Previous value for the field</param>
-		/// <param name="NewValue">Conflicting value for the field</param>
-		void LogConflict(string Description, string OldValue, string NewValue)
-		{
-			Log.TraceError("Unable to merge actions producing {0}: {1}", ProducedItems[0].Location.GetFileName(), Description);
-			Log.TraceLog("  Previous: {0}", OldValue);
-			Log.TraceLog("  Conflict: {0}", NewValue);
-		}
-
-		/// <summary>
-		/// Increment the number of dependents, recursively
-		/// </summary>
-		/// <param name="VisitedActions">Set of visited actions</param>
-		public void IncrementDependentCount(HashSet<Action> VisitedActions)
-		{
-			if(VisitedActions.Add(this))
-			{
-				NumTotalDependentActions++;
-				foreach(Action PrerequisiteAction in PrerequisiteActions)
-				{
-					PrerequisiteAction.IncrementDependentCount(VisitedActions);
-				}
-			}
-		}
-
-		/// <summary>
-		/// Compares two actions based on total number of dependent items, descending.
-		/// </summary>
-		/// <param name="A">Action to compare</param>
-		/// <param name="B">Action to compare</param>
-		public static int Compare(Action A, Action B)
-		{
-			// Primary sort criteria is total number of dependent files, up to max depth.
-			if (B.NumTotalDependentActions != A.NumTotalDependentActions)
-			{
-				return Math.Sign(B.NumTotalDependentActions - A.NumTotalDependentActions);
-			}
-			// Secondary sort criteria is number of pre-requisites.
-			else
-			{
-				return Math.Sign(B.PrerequisiteItems.Count - A.PrerequisiteItems.Count);
-			}
 		}
 
 		public override string ToString()
@@ -492,20 +416,177 @@ namespace UnrealBuildTool
 			}
 			return ReturnString;
 		}
+	}
+
+	/// <summary>
+	/// Extension methods for action classes
+	/// </summary>
+	static class ActionExtensions
+	{
+		/// <summary>
+		/// Writes an action to a json file
+		/// </summary>
+		/// <param name="Action">The action to write</param>
+		/// <param name="LinkedActionToId">Map of action to unique id</param>
+		/// <param name="Writer">Writer to receive the output</param>
+		public static void ExportJson(this LinkedAction Action, Dictionary<LinkedAction, int> LinkedActionToId, JsonWriter Writer)
+		{
+			Writer.WriteValue("Id", LinkedActionToId[Action]);
+			Writer.WriteEnumValue("Type", Action.ActionType);
+			Writer.WriteValue("WorkingDirectory", Action.WorkingDirectory.FullName);
+			Writer.WriteValue("CommandPath", Action.CommandPath.FullName);
+			Writer.WriteValue("CommandArguments", Action.CommandArguments);
+			Writer.WriteValue("CommandVersion", Action.CommandVersion);
+			Writer.WriteValue("CommandDescription", Action.CommandDescription);
+			Writer.WriteValue("StatusDescription", Action.StatusDescription);
+			Writer.WriteValue("bCanExecuteRemotely", Action.bCanExecuteRemotely);
+			Writer.WriteValue("bCanExecuteRemotelyWithSNDBS", Action.bCanExecuteRemotelyWithSNDBS);
+			Writer.WriteValue("bIsGCCCompiler", Action.bIsGCCCompiler);
+			Writer.WriteValue("bShouldOutputStatusDescription", Action.bShouldOutputStatusDescription);
+			Writer.WriteValue("bProducesImportLibrary", Action.bProducesImportLibrary);
+
+			Writer.WriteArrayStart("PrerequisiteActions");
+			foreach (LinkedAction PrerequisiteAction in Action.PrerequisiteActions)
+			{
+				Writer.WriteValue(LinkedActionToId[PrerequisiteAction]);
+			}
+			Writer.WriteArrayEnd();
+
+			Writer.WriteArrayStart("ProducedItems");
+			foreach (FileItem ProducedItem in Action.ProducedItems)
+			{
+				Writer.WriteValue(ProducedItem.AbsolutePath);
+			}
+			Writer.WriteArrayEnd();
+
+			Writer.WriteArrayStart("DeleteItems");
+			foreach (FileItem DeleteItem in Action.DeleteItems)
+			{
+				Writer.WriteValue(DeleteItem.AbsolutePath);
+			}
+			Writer.WriteArrayEnd();
+
+			if (Action.DependencyListFile != null)
+			{
+				Writer.WriteValue("DependencyListFile", Action.DependencyListFile.AbsolutePath);
+			}
+		}
+	}
+
+	/// <summary>
+	/// Default serializer for <see cref="Action"/> instances
+	/// </summary>
+	class DefaultActionSerializer : ActionSerializerBase<Action>
+	{
+		/// <inheritdoc/>
+		public override Action Read(BinaryArchiveReader Reader)
+		{
+			return new Action(Reader);
+		}
+
+		/// <inheritdoc/>
+		public override void Write(BinaryArchiveWriter Writer, Action Action)
+		{
+			Action.Write(Writer);
+		}
+	}
+
+	/// <summary>
+	/// Information about an action queued to be executed
+	/// </summary>
+	[DebuggerDisplay("{StatusDescription}")]
+	class LinkedAction : IExternalAction
+	{
+		/// <summary>
+		/// The inner action instance
+		/// </summary>
+		public IExternalAction Inner;
 
 		/// <summary>
-		/// Returns the amount of time that this action is or has been executing in.
+		/// A target that this action contributes to
 		/// </summary>
-		public TimeSpan Duration
-		{
-			get
-			{
-				if (EndTime == DateTimeOffset.MinValue)
-				{
-					return DateTimeOffset.Now - StartTime;
-				}
+		public TargetDescriptor? Target;
 
-				return EndTime - StartTime;
+		/// <summary>
+		/// Set of other actions that this action depends on. This set is built when the action graph is linked.
+		/// </summary>
+		public HashSet<LinkedAction> PrerequisiteActions = null!;
+
+		/// <summary>
+		/// Total number of actions depending on this one.
+		/// </summary>
+		public int NumTotalDependentActions = 0;
+
+		/// <summary>
+		/// If set, will be output whenever the group differs to the last executed action. Set when executing multiple targets at once.
+		/// </summary>
+		public List<string> GroupNames = new List<string>();
+
+		#region Wrapper implementation of IAction
+
+		public ActionType ActionType => Inner.ActionType;
+		public IEnumerable<FileItem> PrerequisiteItems => Inner.PrerequisiteItems;
+		public IEnumerable<FileItem> ProducedItems => Inner.ProducedItems;
+		public IEnumerable<FileItem> DeleteItems => Inner.DeleteItems;
+		public FileItem? DependencyListFile => Inner.DependencyListFile;
+		public DirectoryReference WorkingDirectory => Inner.WorkingDirectory;
+		public FileReference CommandPath => Inner.CommandPath;
+		public string CommandArguments => Inner.CommandArguments;
+		public string CommandVersion => Inner.CommandVersion;
+		public string CommandDescription => Inner.CommandDescription;
+		public string StatusDescription => Inner.StatusDescription;
+		public bool bCanExecuteRemotely => Inner.bCanExecuteRemotely;
+		public bool bCanExecuteRemotelyWithSNDBS => Inner.bCanExecuteRemotelyWithSNDBS;
+		public bool bIsGCCCompiler => Inner.bIsGCCCompiler;
+		public bool bShouldOutputStatusDescription => Inner.bShouldOutputStatusDescription;
+		public bool bProducesImportLibrary => Inner.bProducesImportLibrary;
+		public bool bUseActionHistory => Inner.bUseActionHistory;
+
+		#endregion
+
+		/// <summary>
+		/// Constructor
+		/// </summary>
+		/// <param name="Inner">The inner action instance</param>
+		/// <param name="Target"></param>
+		public LinkedAction(IExternalAction Inner, TargetDescriptor? Target)
+		{
+			this.Inner = Inner;
+			this.Target = Target;
+		}
+
+		/// <summary>
+		/// Increment the number of dependents, recursively
+		/// </summary>
+		/// <param name="VisitedActions">Set of visited actions</param>
+		public void IncrementDependentCount(HashSet<LinkedAction> VisitedActions)
+		{
+			if (VisitedActions.Add(this))
+			{
+				NumTotalDependentActions++;
+				foreach (LinkedAction PrerequisiteAction in PrerequisiteActions)
+				{
+					PrerequisiteAction.IncrementDependentCount(VisitedActions);
+				}
+			}
+		}
+
+		/// <summary>
+		/// Compares two actions based on total number of dependent items, descending.
+		/// </summary>
+		/// <param name="A">Action to compare</param>
+		/// <param name="B">Action to compare</param>
+		public static int Compare(LinkedAction A, LinkedAction B)
+		{
+			// Primary sort criteria is total number of dependent files, up to max depth.
+			if (B.NumTotalDependentActions != A.NumTotalDependentActions)
+			{
+				return Math.Sign(B.NumTotalDependentActions - A.NumTotalDependentActions);
+			}
+			// Secondary sort criteria is number of pre-requisites.
+			else
+			{
+				return Math.Sign(B.PrerequisiteItems.Count() - A.PrerequisiteItems.Count());
 			}
 		}
 	}

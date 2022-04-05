@@ -54,8 +54,7 @@ void FModulationPatchEditor::RegisterTabSpawners(const TSharedRef<FTabManager>& 
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
 		.SetIcon(FSlateIcon(FEditorStyle::GetStyleSetName(), "LevelEditor.Tabs.Details"));
 
-	FSlateIcon CurveIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.CurveBase");
-
+	FSlateIcon CurveIcon(FEditorStyle::GetStyleSetName(), "ModulationPatchEditor.Tabs.Properties");
 	InTabManager->RegisterTabSpawner(CurveTabId, FOnSpawnTab::CreateLambda([this](const FSpawnTabArgs& Args) { return SpawnTab_OutputCurve(Args); }))
 		.SetDisplayName(LOCTEXT("TransformCurvesTab", "Transform Curves"))
 		.SetGroup(WorkspaceMenuCategory.ToSharedRef())
@@ -93,18 +92,11 @@ void FModulationPatchEditor::Init(const EToolkitMode::Type Mode, const TSharedPt
 	PropertiesView = PropertyModule.CreateDetailView(Args);
 	PropertiesView->SetObject(InPatchToEdit);
 
-	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_ModulationPatchEditor_Layout_v1")
+	TSharedRef<FTabManager::FLayout> StandaloneDefaultLayout = FTabManager::NewLayout("Standalone_ModulationPatchEditor_Layout_v2")
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
 			->SetOrientation(Orient_Vertical)
-			->Split
-			(
-				FTabManager::NewStack()
-				->SetSizeCoefficient(0.1f)
-				->SetHideTabWell(true)
-				->AddTab(GetToolbarTabId(), ETabState::OpenedTab)
-			)
 			->Split
 			(
 				FTabManager::NewSplitter()
@@ -335,7 +327,6 @@ TSharedRef<SDockTab> FModulationPatchEditor::SpawnTab_Properties(const FSpawnTab
 	check(Args.GetTabId() == PropertiesTabId);
 
 	return SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("LevelEditor.Tabs.Details"))
 		.Label(LOCTEXT("SoundModulationPatchDetailsTitle", "Details"))
 		[
 			PropertiesView.ToSharedRef()
@@ -348,16 +339,15 @@ TSharedRef<SDockTab> FModulationPatchEditor::SpawnTab_OutputCurve(const FSpawnTa
 	CurveEditor->ZoomToFit();
 
 	TSharedRef<SDockTab> NewDockTab = SNew(SDockTab)
-		.Icon(FEditorStyle::GetBrush("ModulationPatchEditor.Tabs.Properties"))
 		.Label(FText::Format(LOCTEXT("ModulationPatchFilterTitle", "Filter Transform Curve: {0}"), FText::FromString(GetEditingObject()->GetName())))
 		.TabColorScale(GetTabColorScale())
 		[
 			SNew(SBorder)
 			.BorderImage(FEditorStyle::GetBrush("ToolPanel.GroupBorder"))
-		.Padding(0.0f)
-		[
-			CurvePanel.ToSharedRef()
-		]
+			.Padding(0.0f)
+			[
+				CurvePanel.ToSharedRef()
+			]
 		];
 
 		return NewDockTab;

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "RigVMPin.h"
+#include "RigVMCore/RigVM.h"
 #include "RigVMNode.generated.h"
 
 class URigVMGraph;
@@ -33,23 +34,30 @@ public:
 	// names used to reach this Node within the Graph.
 	// (for now this is the same as the Node's name)
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
-	FString GetNodePath() const;
+	FString GetNodePath(bool bRecursive = false) const;
+
+	// Splits a NodePath at the start, so for example "CollapseNodeA|CollapseNodeB|CollapseNodeC" becomes "CollapseNodeA" and "CollapseNodeB|CollapseNodeC"
+	static bool SplitNodePathAtStart(const FString& InNodePath, FString& LeftMost, FString& Right);
+
+	// Splits a NodePath at the end, so for example "CollapseNodeA|CollapseNodeB|CollapseNodeC" becomes "CollapseNodeA|CollapseNodeB" and "CollapseNodeC"
+	static bool SplitNodePathAtEnd(const FString& InNodePath, FString& Left, FString& RightMost);
+
+	// Splits a NodePath into all segments, so for example "Node.Color.R" becomes ["Node", "Color", "R"]
+	static bool SplitNodePath(const FString& InNodePath, TArray<FString>& Parts);
+
+	// Joins a NodePath from to segments, so for example "CollapseNodeA" and "CollapseNodeB|CollapseNodeC" becomes "CollapseNodeA|CollapseNodeB|CollapseNodeC"
+	static FString JoinNodePath(const FString& Left, const FString& Right);
+
+	// Joins a NodePath from to segments, so for example ["CollapseNodeA", "CollapseNodeB", "CollapseNodeC"] becomes "CollapseNodeA|CollapseNodeB|CollapseNodeC"
+	static FString JoinNodePath(const TArray<FString>& InParts);
 
 	// Returns the current index of the Node within the Graph.
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	int32 GetNodeIndex() const;
 
-	// Returns the current index of the instruction in the stack (or INDEX_NONE)
-	UFUNCTION(BlueprintCallable, Category = RigVMNode)
-	int32 GetInstructionIndex() const;
-
-	// Returns the index of the block this node belongs to
-	UFUNCTION(BlueprintCallable, Category = RigVMNode)
-	int32 GetBlockIndex() const;
-
 	// Returns all of the top-level Pins of this Node.
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
-	const TArray<URigVMPin*>& GetPins() const;
+	virtual const TArray<URigVMPin*>& GetPins() const;
 
 	// Returns all of the Pins of this Node (including SubPins).
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
@@ -60,9 +68,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	URigVMPin* FindPin(const FString& InPinPath) const;
 
+	// Returns all of the top-level orphaned Pins of this Node.
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+    virtual const TArray<URigVMPin*>& GetOrphanedPins() const;
+
+	// Returns true if the node has orphaned pins - which leads to a compiler error
+	UFUNCTION(BlueprintPure, Category = RigVMNode)
+    FORCEINLINE bool HasOrphanedPins() const { return GetOrphanedPins().Num() > 0; }
+
 	// Returns the Graph of this Node
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	URigVMGraph* GetGraph() const;
+
+	// Returns the top level / root Graph of this Node
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+    URigVMGraph* GetRootGraph() const;
 
 	// Returns the injection info of this Node (or nullptr)
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
@@ -119,6 +139,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	virtual bool IsMutable() const;
 
+	// Returns true if this node has an unknown type pin
+	bool HasUnknownTypePin() const;
+
 	virtual bool ContributesToResult() const { return IsMutable(); }
 
 	// Returns true if this Node is the beginning of a scope
@@ -150,6 +173,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	bool IsLinkedTo(URigVMNode* InNode) const;
 
+	// Returns all links to any pin on this node
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+	TArray<URigVMLink*> GetLinks() const;
+
 	// Returns a list of Nodes connected as sources to
 	// this Node as the target.
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
@@ -160,15 +187,33 @@ public:
 	UFUNCTION(BlueprintCallable, Category = RigVMNode)
 	TArray<URigVMNode*> GetLinkedTargetNodes() const;
 
-	// Returns the name of the slice context for a pin
-	virtual FName GetSliceContextForPin(URigVMPin* InRootPin, const FRigVMUserDataArray& InUserData);
+	// Returns the name of the node prior to the renaming
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+	FName GetPreviousFName() const { return PreviousName; }
 
-	// returns the number of slices on this node
-	int32 GetNumSlices(const FRigVMUserDataArray& InUserData);
+	// Returns the indices of associated instructions for this node
+	const TArray<int32>& GetInstructionsForVM(URigVM* InVM, const FRigVMASTProxy& InProxy = FRigVMASTProxy()) const;
 
-	// Returns the number of slices for a given context
-	virtual int32 GetNumSlicesForContext(const FName& InContextName, const FRigVMUserDataArray& InUserData);
+	// Returns the number of visited / run instructions for this node
+	virtual int32 GetInstructionVisitedCount(URigVM* InVM, const FRigVMASTProxy& InProxy = FRigVMASTProxy()) const;
 
+	// Returns the accumulated duration of all of instructions for this node 
+	double GetInstructionMicroSeconds(URigVM* InVM, const FRigVMASTProxy& InProxy = FRigVMASTProxy()) const;
+
+	// return true if this node is a loop node
+	virtual bool IsLoopNode() const { return false; }
+
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+	bool HasBreakpoint() const { return bHasBreakpoint; }
+
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+	void SetHasBreakpoint(const bool bValue) { bHasBreakpoint = bValue; }
+
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+	bool ExecutionIsHaltedAtThisNode() const { return bHaltedAtThisNode; }
+
+	UFUNCTION(BlueprintCallable, Category = RigVMNode)
+	void SetExecutionIsHaltedAtThisNode(const bool bValue) { bHaltedAtThisNode = bValue; }
 private:
 
 	static const FString NodeColorName;
@@ -178,6 +223,7 @@ private:
 
 protected:
 
+	virtual TArray<int32> GetInstructionsForVMImpl(URigVM* InVM, const FRigVMASTProxy& InProxy = FRigVMASTProxy()) const; 
 	virtual FText GetToolTipTextForPin(const URigVMPin* InPin) const;
 	virtual bool AllowsLinksOn(const URigVMPin* InPin) const { return true; }
 
@@ -193,18 +239,36 @@ protected:
 	UPROPERTY()
 	FLinearColor NodeColor;
 
-private:
 	UPROPERTY(transient)
-	int32 InstructionIndex;
+	FName PreviousName;
 
 	UPROPERTY(transient)
-	int32 BlockIndex;
+	bool bHasBreakpoint;
+
+	UPROPERTY(transient)
+	bool bHaltedAtThisNode;
+
+private:
 
 	UPROPERTY()
-	TArray<URigVMPin*> Pins;
+	TArray<TObjectPtr<URigVMPin>> Pins;
 
-	int32 GetSliceContextBracket;
+	UPROPERTY()
+	TArray<TObjectPtr<URigVMPin>> OrphanedPins;
 
+#if WITH_EDITOR
+	struct FProfilingCache
+	{
+		mutable int32 VisitedCount;
+		mutable double MicroSeconds;
+		mutable TArray<int32> Instructions;
+	};
+	const FProfilingCache* UpdateProfilingCacheIfNeeded(URigVM* InVM, const FRigVMASTProxy& InProxy) const;
+	mutable uint32 ProfilingHash;
+	mutable TMap<uint32, TSharedPtr<FProfilingCache>> ProfilingCache;
+	static TArray<int32> EmptyInstructionArray;
+#endif
+	
 	friend class URigVMController;
 	friend class URigVMGraph;
 	friend class URigVMPin;

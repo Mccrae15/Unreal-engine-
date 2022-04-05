@@ -246,6 +246,15 @@ enum EPixelFormat
 	PF_R32G32_UINT,
 	PF_ETC2_R11_EAC,
 	PF_ETC2_RG11_EAC,
+	PF_R8,
+	PF_B5G5R5A1_UNORM,
+	PF_G16R16_SNORM,
+	PF_R8G8_UINT,
+	PF_R32G32B32_UINT,
+	PF_R32G32B32_SINT,
+	PF_R32G32B32F,
+	PF_R8_SINT,
+	PF_R64_UINT,
 	PF_MAX,
 };
 
@@ -310,7 +319,7 @@ enum class EUnit : uint8
 	Degrees, Radians,
 	
 	/** Speed units */
-	MetersPerSecond, KilometersPerHour, MilesPerHour,
+	CentimetersPerSecond, MetersPerSecond, KilometersPerHour, MilesPerHour,
 	
 	/** Temperature units */
 	Celsius, Farenheit, Kelvin,
@@ -402,6 +411,13 @@ namespace EAppMsgType
 	};
 }
 
+/**
+ * A struct used as stub for deleted ones. 
+ */
+USTRUCT(noexport)
+struct FFallbackStruct
+{
+};
 
 /** A globally unique identifier (mirrored from Guid.h) */
 USTRUCT(immutable, noexport, BlueprintType)
@@ -424,39 +440,144 @@ struct FGuid
  * A point or direction FVector in 3d space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector.h
  */
-USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeVector", HasNativeBreak="Engine.KismetMathLibrary.BreakVector"))
-struct FVector
+USTRUCT(immutable, noexport, BlueprintType, meta = (HasNativeBreak = "Engine.KismetMathLibrary.BreakVector3f"))
+struct FVector3f
 {
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector, SaveGame)
+	UPROPERTY(EditAnywhere, Category = Vector, SaveGame)
 	float X;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector, SaveGame)
+	UPROPERTY(EditAnywhere, Category = Vector, SaveGame)
 	float Y;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector, SaveGame)
+	UPROPERTY(EditAnywhere, Category = Vector, SaveGame)
 	float Z;
+};
+
+/**
+ * A point or direction FVector in 3d space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector.h
+ */
+USTRUCT(immutable, noexport)
+struct FVector3d
+{
+	UPROPERTY(EditAnywhere, Category = Vector, SaveGame)
+	double X;
+
+	UPROPERTY(EditAnywhere, Category = Vector, SaveGame)
+	double Y;
+
+	UPROPERTY(EditAnywhere, Category = Vector, SaveGame)
+	double Z;
+};
+
+/**
+ * A point or direction FVector in 3d space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector.h
+ */
+USTRUCT(immutable, noexport, BlueprintType, meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeVector", HasNativeBreak = "Engine.KismetMathLibrary.BreakVector"))
+struct FVector
+{
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Vector, SaveGame)
+	FLargeWorldCoordinatesReal X;		// Alias for float/double depending on LWC status. Note: Will be refactored to double before UE5 ships.
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Vector, SaveGame)
+	FLargeWorldCoordinatesReal Y;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Vector, SaveGame)
+	FLargeWorldCoordinatesReal Z;
+};
+
+
+/**
+* A 4-D homogeneous vector.
+* @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector4.h
+*/
+USTRUCT(immutable, noexport)
+struct FVector4f
+{
+	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
+	float X;
+
+	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
+	float Y;
+
+	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
+	float Z;
+
+	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
+	float W;
 };
 
 /**
 * A 4-D homogeneous vector.
 * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector4.h
 */
-USTRUCT(immutable, noexport, BlueprintType)
+USTRUCT(immutable, noexport)
+struct FVector4d
+{
+	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
+	double X;
+
+	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
+	double Y;
+
+	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
+	double Z;
+
+	UPROPERTY(EditAnywhere, Category = Vector4, SaveGame)
+	double W;
+};
+
+
+/**
+* A 4-D homogeneous vector.
+* @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector4.h
+*/
+USTRUCT(immutable, noexport, BlueprintType, meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeVector4", HasNativeBreak = "Engine.KismetMathLibrary.BreakVector4"))
 struct FVector4
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector4, SaveGame)
+	FLargeWorldCoordinatesReal X;		// Alias for float/double depending on LWC status. Note: Will be refactored to double before UE5 ships.
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector4, SaveGame)
+	FLargeWorldCoordinatesReal Y;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector4, SaveGame)
+	FLargeWorldCoordinatesReal Z;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector4, SaveGame)
+	FLargeWorldCoordinatesReal W;
+};
+
+
+/**
+* A vector in 2-D space composed of components (X, Y) with floating point precision.
+* @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector2D.h
+*/
+USTRUCT(immutable, noexport)
+struct FVector2f
+{
+	UPROPERTY(EditAnywhere, Category=Vector2D, SaveGame)
 	float X;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector4, SaveGame)
+	UPROPERTY(EditAnywhere, Category=Vector2D, SaveGame)
 	float Y;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector4, SaveGame)
-	float Z;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector4, SaveGame)
-	float W;
-
 };
+
+/**
+* A vector in 2-D space composed of components (X, Y) with floating point precision.
+* @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Vector2D.h
+*/
+// LWC_TODO: CRITICAL! Name collision in UHT with FVector2D due to case insensitive FNames!
+// USTRUCT(immutable, noexport)
+// struct FVector2d
+// {
+// 	UPROPERTY(EditAnywhere, Category=Vector2D, SaveGame)
+// 	double X;
+//
+// 	UPROPERTY(EditAnywhere, Category=Vector2D, SaveGame)
+// 	double Y;
+// };
 
 /**
  * A vector in 2-D space composed of components (X, Y) with floating point precision.
@@ -466,11 +587,10 @@ USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMa
 struct FVector2D
 {
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector2D, SaveGame)
-	float X;
+	FLargeWorldCoordinatesReal X;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Vector2D, SaveGame)
-	float Y;
-
+	FLargeWorldCoordinatesReal Y;
 };
 
 /** A pair of 3D vectors (mirrored from TwoVectors.h). */
@@ -488,11 +608,74 @@ struct FTwoVectors
  * A plane definition in 3D space.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Plane.h
  */
+USTRUCT(immutable, noexport)
+struct FPlane4f : public FVector3f
+{
+	UPROPERTY(EditAnywhere, Category=Plane, SaveGame)
+	float W;
+};
+
+/**
+ * A plane definition in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Plane.h
+ */
+USTRUCT(immutable, noexport)
+struct FPlane4d : public FVector3d
+{
+	UPROPERTY(EditAnywhere, Category = Plane, SaveGame)
+	double W;
+};
+
+/**
+ * A plane definition in 3D space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Plane.h
+ */
 USTRUCT(immutable, noexport, BlueprintType)
 struct FPlane : public FVector
 {
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Plane, SaveGame)
-	float W;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Plane, SaveGame)
+	FLargeWorldCoordinatesReal W;
+};
+
+
+/**
+ * An orthogonal rotation in 3d space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Rotator.h
+ */
+USTRUCT(immutable, noexport)
+struct FRotator3f
+{
+	/** Pitch (degrees) around Y axis */
+	UPROPERTY(EditAnywhere, Category=Rotator, SaveGame, meta=(DisplayName="Y"))
+	float Pitch;
+
+	/** Yaw (degrees) around Z axis */
+	UPROPERTY(EditAnywhere, Category=Rotator, SaveGame, meta=(DisplayName="Z"))
+	float Yaw;
+
+	/** Roll (degrees) around X axis */
+	UPROPERTY(EditAnywhere, Category=Rotator, SaveGame, meta=(DisplayName="X"))
+	float Roll;
+};
+
+/**
+ * An orthogonal rotation in 3d space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Rotator.h
+ */
+USTRUCT(immutable, noexport)
+struct FRotator3d
+{
+	/** Pitch (degrees) around Y axis */
+	UPROPERTY(EditAnywhere, Category=Rotator, SaveGame, meta=(DisplayName="Y"))
+	double Pitch;
+
+	/** Yaw (degrees) around Z axis */
+	UPROPERTY(EditAnywhere, Category=Rotator, SaveGame, meta=(DisplayName="Z"))
+	double Yaw;
+
+	/** Roll (degrees) around X axis */
+	UPROPERTY(EditAnywhere, Category=Rotator, SaveGame, meta=(DisplayName="X"))
+	double Roll;
 };
 
 /**
@@ -504,38 +687,81 @@ struct FRotator
 {
 	/** Pitch (degrees) around Y axis */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Rotator, SaveGame, meta=(DisplayName="Y"))
-	float Pitch;
+	FLargeWorldCoordinatesReal Pitch;
 
 	/** Yaw (degrees) around Z axis */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Rotator, SaveGame, meta=(DisplayName="Z"))
-	float Yaw;
+	FLargeWorldCoordinatesReal Yaw;
 
 	/** Roll (degrees) around X axis */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Rotator, SaveGame, meta=(DisplayName="X"))
-	float Roll;
-
+	FLargeWorldCoordinatesReal Roll;
 };
 
 /**
  * Quaternion.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Quat.h
  */
-USTRUCT(immutable, noexport, BlueprintType)
-struct FQuat
+USTRUCT(immutable, noexport)
+struct FQuat4f
 {
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Quat, SaveGame)
+	UPROPERTY(EditAnywhere, Category=Quat, SaveGame)
 	float X;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Quat, SaveGame)
+	UPROPERTY(EditAnywhere, Category=Quat, SaveGame)
 	float Y;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Quat, SaveGame)
+	UPROPERTY(EditAnywhere, Category=Quat, SaveGame)
 	float Z;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Quat, SaveGame)
+	UPROPERTY(EditAnywhere, Category=Quat, SaveGame)
 	float W;
 
 };
+
+
+/**
+ * Quaternion.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Quat.h
+ */
+USTRUCT(immutable, noexport)
+struct FQuat4d
+{
+	UPROPERTY(EditAnywhere, Category = Quat, SaveGame)
+	double X;
+
+	UPROPERTY(EditAnywhere, Category = Quat, SaveGame)
+	double Y;
+
+	UPROPERTY(EditAnywhere, Category = Quat, SaveGame)
+	double Z;
+
+	UPROPERTY(EditAnywhere, Category = Quat, SaveGame)
+	double W;
+
+};
+
+
+/**
+ * Quaternion.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Quat.h
+ */
+USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake ="Engine.KismetMathLibrary.MakeQuat", HasNativeBreak="Engine.KismetMathLibrary.BreakQuat"))
+struct FQuat
+{
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Quat, SaveGame)
+	FLargeWorldCoordinatesReal X;		// Alias for float/double depending on LWC status. Note: Will be refactored to double before UE5 ships.
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Quat, SaveGame)
+	FLargeWorldCoordinatesReal Y;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Quat, SaveGame)
+	FLargeWorldCoordinatesReal Z;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Quat, SaveGame)
+	FLargeWorldCoordinatesReal W;
+};
+
 
 /**
  * A packed normal.
@@ -658,6 +884,41 @@ struct FLinearColor
 };
 
 /**
+ * A point or direction FVector in 3d space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box.h
+ */
+USTRUCT(immutable, noexport)
+struct FBox3f
+{
+	UPROPERTY(EditAnywhere, Category = Box, SaveGame)
+	FVector3f Min;
+
+	UPROPERTY(EditAnywhere, Category = Box, SaveGame)
+	FVector3f Max;
+
+	UPROPERTY()
+	uint8 IsValid;
+};
+
+
+/**
+ * A point or direction FVector in 3d space.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box.h
+ */
+USTRUCT(immutable, noexport)
+struct FBox3d
+{
+	UPROPERTY(EditAnywhere, Category = Box, SaveGame)
+	FVector3d Min;
+
+	UPROPERTY(EditAnywhere, Category = Box, SaveGame)
+	FVector3d Max;
+
+	UPROPERTY()
+	uint8 IsValid;
+};
+
+/**
  * A bounding box.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box.h
  */
@@ -672,13 +933,47 @@ struct FBox
 
 	UPROPERTY()
 	uint8 IsValid;
-
 };
 
 /**
  * A rectangular 2D Box.
  * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box2D.h
  */
+USTRUCT(immutable, noexport)
+struct FBox2f
+{
+	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame)
+	FVector2f Min;
+
+	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame)
+	FVector2f Max;
+
+	UPROPERTY()
+	uint8 bIsValid;
+};
+
+/**
+* A rectangular 2D Box.
+* @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box2D.h
+*/
+// LWC_TODO: CRITICAL! Name collision in UHT with FBox2D due to case insensitive FNames!
+// USTRUCT(immutable, noexport)
+// struct FBox2d
+// {
+// 	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame)
+// 	FVector2d Min;
+//
+// 	UPROPERTY(EditAnywhere, Category=Box2D, SaveGame)
+// 	FVector2d Max;
+//
+// 	UPROPERTY()
+// 	uint8 bIsValid;
+// };
+
+/**
+* A rectangular 2D Box.
+* @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Box2D.h
+*/
 USTRUCT(immutable, noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeBox2D"))
 struct FBox2D
 {
@@ -690,14 +985,53 @@ struct FBox2D
 
 	UPROPERTY()
 	uint8 bIsValid;
-
 };
 
 /**
  * A bounding box and bounding sphere with the same origin.
  * @note The full C++ class is located here : Engine\Source\Runtime\Core\Public\Math\BoxSphereBounds.h
  */
-USTRUCT(noexport, BlueprintType)
+USTRUCT(noexport)
+struct FBoxSphereBounds3f
+{
+	/** Holds the origin of the bounding box and sphere. */
+	UPROPERTY(EditAnywhere, Category = BoxSphereBounds, SaveGame)
+	FVector3f Origin;
+
+	/** Holds the extent of the bounding box, which is half the size of the box in 3D space */
+	UPROPERTY(EditAnywhere, Category = BoxSphereBounds, SaveGame)
+	FVector3f BoxExtent;
+
+	/** Holds the radius of the bounding sphere. */
+	UPROPERTY(EditAnywhere, Category = BoxSphereBounds, SaveGame)
+	float SphereRadius;
+};
+
+/**
+ * A bounding box and bounding sphere with the same origin.
+ * @note The full C++ class is located here : Engine\Source\Runtime\Core\Public\Math\BoxSphereBounds.h
+ */
+USTRUCT(noexport)
+struct FBoxSphereBounds3d
+{
+	/** Holds the origin of the bounding box and sphere. */
+	UPROPERTY(EditAnywhere, Category = BoxSphereBounds, SaveGame)
+	FVector3d Origin;
+
+	/** Holds the extent of the bounding box, which is half the size of the box in 3D space */
+	UPROPERTY(EditAnywhere, Category = BoxSphereBounds, SaveGame)
+	FVector3d BoxExtent;
+
+	/** Holds the radius of the bounding sphere. */
+	UPROPERTY(EditAnywhere, Category = BoxSphereBounds, SaveGame)
+	double SphereRadius;
+};
+
+/**
+ * A bounding box and bounding sphere with the same origin.
+ * @note The full C++ class is located here : Engine\Source\Runtime\Core\Public\Math\BoxSphereBounds.h
+ */
+USTRUCT(noexport, BlueprintType, meta = (HasNativeMake = "Engine.KismetMathLibrary.MakeBoxSphereBounds", HasNativeBreak = "Engine.KismetMathLibrary.BreakBoxSphereBounds"))
 struct FBoxSphereBounds
 {
 	/** Holds the origin of the bounding box and sphere. */
@@ -710,8 +1044,7 @@ struct FBoxSphereBounds
 
 	/** Holds the radius of the bounding sphere. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=BoxSphereBounds, SaveGame)
-	float SphereRadius;
-
+	FLargeWorldCoordinatesReal SphereRadius;
 };
 
 /**
@@ -739,15 +1072,57 @@ struct FOrientedBox
 
 	/** Holds the extent of the box along its x-axis. */
 	UPROPERTY(EditAnywhere, Category=OrientedBox, SaveGame)
-	float ExtentX;
+	FLargeWorldCoordinatesReal ExtentX;
 	
 	/** Holds the extent of the box along its y-axis. */
 	UPROPERTY(EditAnywhere, Category=OrientedBox, SaveGame)
-	float ExtentY;
+	FLargeWorldCoordinatesReal ExtentY;
 
 	/** Holds the extent of the box along its z-axis. */
 	UPROPERTY(EditAnywhere, Category=OrientedBox, SaveGame)
-	float ExtentZ;
+	FLargeWorldCoordinatesReal ExtentZ;
+};
+
+/**
+ * A 4x4 matrix.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Matrix.h
+ */
+USTRUCT(immutable, noexport)
+struct FMatrix44f
+{
+	UPROPERTY(EditAnywhere, Category=Matrix, SaveGame)
+	FPlane4f XPlane;
+
+	UPROPERTY(EditAnywhere, Category=Matrix, SaveGame)
+	FPlane4f YPlane;
+
+	UPROPERTY(EditAnywhere, Category=Matrix, SaveGame)
+	FPlane4f ZPlane;
+
+	UPROPERTY(EditAnywhere, Category=Matrix, SaveGame)
+	FPlane4f WPlane;
+
+};
+
+/**
+ * A 4x4 matrix.
+ * @note The full C++ class is located here: Engine\Source\Runtime\Core\Public\Math\Matrix.h
+ */
+USTRUCT(immutable, noexport)
+struct FMatrix44d
+{
+	UPROPERTY(EditAnywhere, Category = Matrix, SaveGame)
+	FPlane4d XPlane;
+
+	UPROPERTY(EditAnywhere, Category = Matrix, SaveGame)
+	FPlane4d YPlane;
+
+	UPROPERTY(EditAnywhere, Category = Matrix, SaveGame)
+	FPlane4d ZPlane;
+
+	UPROPERTY(EditAnywhere, Category = Matrix, SaveGame)
+	FPlane4d WPlane;
+
 };
 
 /**
@@ -757,16 +1132,16 @@ struct FOrientedBox
 USTRUCT(immutable, noexport, BlueprintType)
 struct FMatrix
 {
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Matrix, SaveGame)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Matrix, SaveGame)
 	FPlane XPlane;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Matrix, SaveGame)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Matrix, SaveGame)
 	FPlane YPlane;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Matrix, SaveGame)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Matrix, SaveGame)
 	FPlane ZPlane;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Matrix, SaveGame)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Matrix, SaveGame)
 	FPlane WPlane;
 
 };
@@ -1064,6 +1439,46 @@ struct FInterpCurveLinearColor
  * Transform composed of Quat/Translation/Scale.
  * @note This is implemented in either TransformVectorized.h or TransformNonVectorized.h depending on the platform.
  */
+USTRUCT(immutable, noexport)
+struct FTransform3f
+{
+	/** Rotation of this transformation, as a quaternion. */
+	UPROPERTY(EditAnywhere, Category = Transform, SaveGame)
+	FQuat4f Rotation;
+
+	/** Translation of this transformation, as a vector. */
+	UPROPERTY(EditAnywhere, Category = Transform, SaveGame)
+	FVector3f Translation;
+
+	/** 3D scale (always applied in local space) as a vector. */
+	UPROPERTY(EditAnywhere, Category = Transform, SaveGame)
+	FVector3f Scale3D;
+};
+
+/**
+ * Transform composed of Quat/Translation/Scale.
+ * @note This is implemented in either TransformVectorized.h or TransformNonVectorized.h depending on the platform.
+ */
+USTRUCT(immutable, noexport)
+struct FTransform3d
+{
+	/** Rotation of this transformation, as a quaternion. */
+	UPROPERTY(EditAnywhere, Category = Transform, SaveGame)
+	FQuat4d Rotation;
+
+	/** Translation of this transformation, as a vector. */
+	UPROPERTY(EditAnywhere, Category = Transform, SaveGame)
+	FVector3d Translation;
+
+	/** 3D scale (always applied in local space) as a vector. */
+	UPROPERTY(EditAnywhere, Category = Transform, SaveGame)
+	FVector3d Scale3D;
+};
+
+/**
+ * Transform composed of Quat/Translation/Scale.
+ * @note This is implemented in either TransformVectorized.h or TransformNonVectorized.h depending on the platform.
+ */
 USTRUCT(noexport, BlueprintType, meta=(HasNativeMake="Engine.KismetMathLibrary.MakeTransform", HasNativeBreak="Engine.KismetMathLibrary.BreakTransform"))
 struct FTransform
 {
@@ -1076,7 +1491,7 @@ struct FTransform
 	FVector Translation;
 
 	/** 3D scale (always applied in local space) as a vector. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Transform, SaveGame, meta=(MakeStructureDefaultValue = "1,1,1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Transform, SaveGame)
 	FVector Scale3D;
 };
 
@@ -1255,12 +1670,6 @@ struct FPrimaryAssetId
 	FName PrimaryAssetName;
 };
 
-/** A struct used as stub for deleted ones. */
-USTRUCT(noexport)
-struct FFallbackStruct  
-{
-};
-
 /** Enumerates the valid types of range bounds (mirrored from RangeBound.h) */
 UENUM(BlueprintType)
 namespace ERangeBoundTypes
@@ -1392,15 +1801,15 @@ private:
  * An interval of floats, defined by inclusive min and max values
  * @note This is a mirror of TInterval<float>, defined in Interval.h
  */
-USTRUCT(noexport)
+USTRUCT(noexport, BlueprintType)
 struct FFloatInterval
 {
 	/** Values must be >= Min */
-	UPROPERTY(EditAnywhere, Category=Interval)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Interval)
 	float Min;
 
 	/** Values must be <= Max */
-	UPROPERTY(EditAnywhere, Category=Interval)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Interval)
 	float Max;
 };
 
@@ -1408,15 +1817,15 @@ struct FFloatInterval
  * An interval of integers, defined by inclusive min and max values
  * @note This is a mirror of TInterval<int32>, defined in Interval.h
  */
-USTRUCT(noexport)
+USTRUCT(noexport, BlueprintType)
 struct FInt32Interval
 {
 	/** Values must be >= Min */
-	UPROPERTY(EditAnywhere, Category=Interval)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Interval)
 	int32 Min;
 
 	/** Values must be <= Max */
-	UPROPERTY(EditAnywhere, Category=Interval)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category=Interval)
 	int32 Max;
 };
 
@@ -1648,17 +2057,17 @@ USTRUCT(noexport)
 struct FTestUninitializedScriptStructMembersTest
 {
 	UPROPERTY(Transient)
-	UObject* UninitializedObjectReference;
+	TObjectPtr<UObject> UninitializedObjectReference;
 
 	UPROPERTY(Transient)
-	UObject* InitializedObjectReference;
+	TObjectPtr<UObject> InitializedObjectReference;
 
 	UPROPERTY(Transient)
 	float UnusedValue;
 };
 
 /**
- * Direct base class for all UE4 objects
+ * Direct base class for all UE objects
  * @note The full C++ class is located here: Engine\Source\Runtime\CoreUObject\Public\UObject\Object.h
  */
 UCLASS(abstract, noexport)
@@ -1678,6 +2087,34 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, meta=(BlueprintInternalUseOnly = "true"))
 	void ExecuteUbergraph(int32 EntryPoint);
 };
+
+/** Structure for file paths that are displayed in the editor with a picker UI. */
+USTRUCT(noexport, BlueprintType)
+struct FFilePath
+{
+	GENERATED_BODY()
+
+	/**
+		* The path to the file.
+		*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = FilePath)
+	FString FilePath;
+};
+
+/** Structure for directory paths that are displayed in the editor with a picker UI. */
+USTRUCT(noexport, BlueprintType)
+struct FDirectoryPath
+{
+	GENERATED_BODY()
+
+	/**
+		* The path to the directory.
+		*/
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = Path)
+	FString Path;
+};
+
+
 
 /// @endcond
 

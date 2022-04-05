@@ -1946,7 +1946,7 @@ void UPaperSprite::RefreshBakedData()
 UTexture2D* UPaperSprite::GetBakedTexture() const
 {
 #if WITH_EDITOR
-	return (BakedSourceTexture != nullptr) ? BakedSourceTexture : GetSourceTexture();
+	return (BakedSourceTexture != nullptr) ? ToRawPtr(BakedSourceTexture) : GetSourceTexture();
 #else
 	return BakedSourceTexture;
 #endif
@@ -1954,7 +1954,7 @@ UTexture2D* UPaperSprite::GetBakedTexture() const
 
 void UPaperSprite::GetBakedAdditionalSourceTextures(FAdditionalSpriteTextureArray& OutTextureList) const
 {
-	OutTextureList = AdditionalSourceTextures;
+	OutTextureList = ToRawPtrTArrayUnsafe(AdditionalSourceTextures);
 }
 
 UMaterialInterface* UPaperSprite::GetMaterial(int32 MaterialIndex) const

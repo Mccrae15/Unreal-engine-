@@ -7,7 +7,7 @@
 #include "IAssetTypeActions.h"
 #include "AssetData.h"
 #include "AssetRenameManager.h"
-#include "Misc/BlacklistNames.h"
+#include "Misc/NamePermissionList.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Factories/Factory.h"
 #include "AssetTools.generated.h"
@@ -29,6 +29,7 @@ struct FAssetImportParams
 		, bSyncToBrowser(true)
 		, bForceOverrideExisting(false)
 		, bAutomated(false)
+		, bAllowAsyncImport(false)
 	{}
 
 	/** Factory to use for importing files */
@@ -43,6 +44,8 @@ struct FAssetImportParams
 	bool bForceOverrideExisting : 1;
 	/** Whether or not this is an automated import */
 	bool bAutomated : 1;
+	/** Temporary setting to enable the async import. (We will figure a better solution in a later release) */
+	bool bAllowAsyncImport : 1;
 };
 
 
@@ -72,9 +75,8 @@ public:
 	virtual void GetClassTypeActionsList( TArray<TWeakPtr<IClassTypeActions>>& OutClassTypeActionsList ) const override;
 	virtual TWeakPtr<IClassTypeActions> GetClassTypeActionsForClass( UClass* Class ) const override;
 	virtual UObject* CreateAsset(const FString& AssetName, const FString& PackagePath, UClass* AssetClass, UFactory* Factory, FName CallingContext = NAME_None) override;
-	virtual UObject* CreateAsset(UClass* AssetClass, UFactory* Factory, FName CallingContext = NAME_None) override;
 	virtual UObject* CreateAssetWithDialog(UClass* AssetClass, UFactory* Factory, FName CallingContext = NAME_None) override;
-	virtual UObject* CreateAssetWithDialog(const FString& AssetName, const FString& PackagePath, UClass* AssetClass, UFactory* Factory, FName CallingContext = NAME_None) override;
+	virtual UObject* CreateAssetWithDialog(const FString& AssetName, const FString& PackagePath, UClass* AssetClass, UFactory* Factory, FName CallingContext = NAME_None, const bool bCallConfigureProperties = true) override;
 	virtual UObject* DuplicateAsset(const FString& AssetName, const FString& PackagePath, UObject* OriginalObject) override;
 	virtual UObject* DuplicateAssetWithDialog(const FString& AssetName, const FString& PackagePath, UObject* OriginalObject) override;
 	virtual UObject* DuplicateAssetWithDialogAndTitle(const FString& AssetName, const FString& PackagePath, UObject* OriginalObject, FText DialogTitle) override;
@@ -83,9 +85,9 @@ public:
 	virtual void FindSoftReferencesToObject(FSoftObjectPath TargetObject, TArray<UObject*>& ReferencingObjects) override;
 	virtual void FindSoftReferencesToObjects(const TArray<FSoftObjectPath>& TargetObjects, TMap<FSoftObjectPath, TArray<UObject*>>& ReferencingObjects) override;
 	virtual void RenameReferencingSoftObjectPaths(const TArray<UPackage *> PackagesToCheck, const TMap<FSoftObjectPath, FSoftObjectPath>& AssetRedirectorMap) override;
-	virtual TArray<UObject*> ImportAssets(const FString& DestinationPath) override;
 	virtual TArray<UObject*> ImportAssetsWithDialog(const FString& DestinationPath) override;
-	virtual TArray<UObject*> ImportAssets(const TArray<FString>& Files, const FString& DestinationPath, UFactory* ChosenFactory, bool bSyncToBrowser = true, TArray<TPair<FString, FString>>* FilesAndDestinations = nullptr) const override;
+	virtual void ImportAssetsWithDialogAsync(const FString& DestinationPath) override;
+	virtual TArray<UObject*> ImportAssets(const TArray<FString>& Files, const FString& DestinationPath, UFactory* ChosenFactory, bool bSyncToBrowser = true, TArray<TPair<FString, FString>>* FilesAndDestinations = nullptr, bool bAllowAsyncImport = false) const override;
 	virtual TArray<UObject*> ImportAssetsAutomated(const UAutomatedAssetImportData* ImportData) override;
 	virtual void ImportAssetTasks(const TArray<UAssetImportTask*>& ImportTasks) override;
 	virtual void ExportAssets(const TArray<FString>& AssetsToExport, const FString& ExportPath) override;
@@ -100,7 +102,7 @@ public:
 	virtual bool CreateDiffProcess(const FString& DiffCommand, const FString& OldTextFilename, const FString& NewTextFilename, const FString& DiffArgs = FString("")) const override;
 	virtual void MigratePackages(const TArray<FName>& PackageNamesToMigrate) const override;
 	virtual void BeginAdvancedCopyPackages(const TArray<FName>& InputNamesToCopy, const FString& TargetPath) const override;
-	virtual void FixupReferencers(const TArray<UObjectRedirector*>& Objects, bool bCheckoutDialogPrompt = true) const override;
+	virtual void FixupReferencers(const TArray<UObjectRedirector*>& Objects, bool bCheckoutDialogPrompt = true, ERedirectFixupMode FixupMode = ERedirectFixupMode::DeleteFixedUpRedirectors) const override;
 	virtual bool IsFixupReferencersInProgress() const override;
 	virtual FAssetPostRenameEvent& OnAssetPostRename() override { return AssetRenameManager->OnAssetPostRenameEvent(); }
 	virtual void ExpandDirectories(const TArray<FString>& Files, const FString& DestinationPath, TArray<TPair<FString, FString>>& FilesAndDestinations) const override;
@@ -116,19 +118,17 @@ public:
 	virtual void ConvertVirtualTextures(const TArray<UTexture2D*>& Textures, bool bConvertBackToNonVirtual, const TArray<UMaterial*>* RelatedMaterials = nullptr) const override;
 	virtual bool IsAssetClassSupported(const UClass* AssetClass) const override;
 	virtual TArray<UFactory*> GetNewAssetFactories() const override;
-	virtual TSharedRef<FBlacklistNames>& GetAssetClassBlacklist() override;
-	virtual TSharedRef<FBlacklistPaths>& GetFolderBlacklist() override;
-	virtual TSharedRef<FBlacklistPaths>& GetWritableFolderBlacklist() override;
+	virtual TSharedRef<FNamePermissionList>& GetAssetClassPermissionList() override;
+	virtual TSharedRef<FPathPermissionList>& GetFolderPermissionList() override;
+	virtual TSharedRef<FPathPermissionList>& GetWritableFolderPermissionList() override;
 	virtual bool AllPassWritableFolderFilter(const TArray<FString>& InPaths) const override;
 	virtual void NotifyBlockedByWritableFolderFilter() const;
-
+	
+	virtual void SyncBrowserToAssets(const TArray<UObject*>& AssetsToSync) override;
+	virtual void SyncBrowserToAssets(const TArray<FAssetData>& AssetsToSync) override;
 public:
 	/** Gets the asset tools singleton as a FAssetTools for asset tools module use */
 	static UAssetToolsImpl& Get();
-
-	/** Syncs the primary content browser to the specified assets, whether or not it is locked. Most syncs that come from AssetTools -feel- like they came from the content browser, so this is okay. */
-	void SyncBrowserToAssets(const TArray<UObject*>& AssetsToSync);
-	void SyncBrowserToAssets(const TArray<FAssetData>& AssetsToSync);
 
 	/** The manager to handle renaming assets */
 	TSharedPtr<FAssetRenameManager> AssetRenameManager;
@@ -136,6 +136,8 @@ public:
 	/** The manager to handle fixing up redirectors */
 	TSharedPtr<FAssetFixUpRedirectors> AssetFixUpRedirectors;
 private:
+	static FString GenerateAdvancedCopyDestinationPackageName(const FString& SourcePackage, const FString& SourcePath, const FString& DestinationFolder);
+
 	/** Checks to see if a package is marked for delete then ask the user if he would like to check in the deleted file before he can continue. Returns true when it is safe to proceed. */
 	bool CheckForDeletedPackage(const UPackage* Package) const;
 
@@ -144,6 +146,8 @@ private:
 
 	/** Begins the package migration, after assets have been discovered */
 	void PerformMigratePackages(TArray<FName> PackageNamesToMigrate) const;
+
+	TArray<FName> ExpandAssetsAndFoldersToJustAssets(TArray<FName> SelectedAssetAndFolderNames) const;
 
 	/** Begins the package advanced copy, after assets have been discovered */
 	void PerformAdvancedCopyPackages(TArray<FName> SelectedPackageNames, FString TargetPath) const;
@@ -155,7 +159,7 @@ private:
 	void AdvancedCopyPackages_ReportConfirmed(FAdvancedCopyParams CopyParam, TArray<TMap<FString, FString>> DestinationMap) const;
 
 	/** Gets the dependencies of the specified package recursively */
-	void RecursiveGetDependencies(const FName& PackageName, TSet<FName>& AllDependencies, const FString& OriginalRoot) const;
+	void RecursiveGetDependencies(const FName& PackageName, TSet<FName>& AllDependencies, TSet<FString>& ExternalObjectsPaths) const;
 
 	/** Gets the dependencies of the specified package recursively while omitting things that don't pass the FARFilter passed in from FAdvancedCopyParams */
 	void RecursiveGetDependenciesAdvanced(const FName& PackageName, FAdvancedCopyParams& CopyParams, TArray<FName>& AllDependencies, TMap<FName, FName>& DependencyMap, const class UAdvancedCopyCustomization* CopyCustomization, TArray<FAssetData>& OptionalAssetData) const;
@@ -175,7 +179,7 @@ private:
 	UObject* PerformDuplicateAsset(const FString& AssetName, const FString& PackagePath, UObject* OriginalObject, bool bWithDialog);
 
 	/** Internal method that performs actions when asset class blacklist filter changes */
-	void AssetClassBlacklistChanged();
+	void AssetClassPermissionListChanged();
 
 	/**
 	 * Add sub content blacklist filter for a new mount point
@@ -185,6 +189,9 @@ private:
 
 	/** Called when a new mount is added to add the proper sub content blacklist to it. */
 	void OnContentPathMounted(const FString& InAssetPath, const FString& FileSystemPath);
+
+	/** Implementation for the import with dialog functions */
+	TArray<UObject*> ImportAssetsWithDialogImplementation(const FString& DestinationPath, bool bAllowAsyncImport);
 
 private:
 	/** The list of all registered AssetTypeActions */
@@ -199,16 +206,16 @@ private:
 	/** The next user category bit to allocate (set to 0 when there are no more bits left) */
 	uint32 NextUserCategoryBit;
 
-	/** Blacklist of assets by class name */
-	TSharedRef<FBlacklistNames> AssetClassBlacklist;
+	/** Permission list of assets by class name */
+	TSharedRef<FNamePermissionList> AssetClassPermissionList;
 
-	/** Blacklist of folder paths */
-	TSharedRef<FBlacklistPaths> FolderBlacklist;
+	/** Permission list of folder paths */
+	TSharedRef<FPathPermissionList> FolderPermissionList;
 
-	/** Blacklist of folder paths to write to */
-	TSharedRef<FBlacklistPaths> WritableFolderBlacklist;
+	/** Permission list of folder paths to write to */
+	TSharedRef<FPathPermissionList> WritableFolderPermissionList;
 
-	/** List of sub content path blacklisted for every mount. */
+	/** List of sub content paths denied for every mount. */
 	TArray<FString> SubContentBlacklistPaths;
 };
 

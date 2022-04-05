@@ -18,7 +18,7 @@ struct UNREALED_API FMaterialGraphSchemaAction_NewNode : public FEdGraphSchemaAc
 
 	/** Class of expression we want to create */
 	UPROPERTY()
-	class UClass* MaterialExpressionClass;
+	TObjectPtr<class UClass> MaterialExpressionClass;
 
 	// Simple type info
 	static FName StaticGetTypeId() {static FName Type("FMaterialGraphSchemaAction_NewNode"); return Type;}
@@ -74,6 +74,31 @@ struct UNREALED_API FMaterialGraphSchemaAction_NewFunctionCall : public FEdGraph
 	//~ End FEdGraphSchemaAction Interface
 };
 
+/** Action to add a composite node to the graph */
+USTRUCT()
+struct UNREALED_API FMaterialGraphSchemaAction_NewComposite : public FEdGraphSchemaAction
+{
+	GENERATED_USTRUCT_BODY();
+
+	// Simple type info
+	static FName StaticGetTypeId() { static FName Type("FMaterialGraphSchemaAction_NewComposite"); return Type; }
+	virtual FName GetTypeId() const override { return StaticGetTypeId(); }
+
+	FMaterialGraphSchemaAction_NewComposite()
+		: FEdGraphSchemaAction()
+	{}
+
+	FMaterialGraphSchemaAction_NewComposite(FText InNodeCategory, FText InMenuDesc, FText InToolTip, const int32 InGrouping)
+		: FEdGraphSchemaAction(MoveTemp(InNodeCategory), MoveTemp(InMenuDesc), MoveTemp(InToolTip), InGrouping)
+	{}
+
+	//~ Begin FEdGraphSchemaAction Interface
+	virtual UEdGraphNode* PerformAction(class UEdGraph* ParentGraph, UEdGraphPin* FromPin, const FVector2D Location, bool bSelectNewNode = true) override;
+	//~ End FEdGraphSchemaAction Interface
+
+	static UEdGraphNode* SpawnNode(class UEdGraph* ParentGraph, const FVector2D Location);
+};
+
 /** Action to add a comment node to the graph */
 USTRUCT()
 struct UNREALED_API FMaterialGraphSchemaAction_NewComment : public FEdGraphSchemaAction
@@ -105,7 +130,7 @@ struct UNREALED_API FMaterialGraphSchemaAction_NewNamedRerouteUsage : public FEd
 
 	// Declaration that we want to add an usage of
 	UPROPERTY()
-	class UMaterialExpressionNamedRerouteDeclaration* Declaration = nullptr;
+	TObjectPtr<class UMaterialExpressionNamedRerouteDeclaration> Declaration = nullptr;
 
 	// Simple type info
 	static FName StaticGetTypeId() {static FName Type("FMaterialGraphSchemaAction_NewNamedRerouteUsage"); return Type;}
@@ -157,6 +182,7 @@ class UMaterialGraphSchema : public UEdGraphSchema
 	UNREALED_API static const FName PC_Required;
 	UNREALED_API static const FName PC_Optional;
 	UNREALED_API static const FName PC_MaterialInput;
+	UNREALED_API static const FName PC_Exec;
 
 	// Common PinType.PinSubCategory values
 	UNREALED_API static const FName PSC_Red;
@@ -164,6 +190,8 @@ class UMaterialGraphSchema : public UEdGraphSchema
 	UNREALED_API static const FName PSC_Blue;
 	UNREALED_API static const FName PSC_Alpha;
 	UNREALED_API static const FName PSC_RGBA;
+
+	UNREALED_API static const FName PN_Execute; // Category=PC_Exec, singleton, input
 
 	// Color of certain pins/connections
 	UNREALED_API static const FLinearColor ActivePinColor;
@@ -225,6 +253,7 @@ class UMaterialGraphSchema : public UEdGraphSchema
 	virtual void BreakNodeLinks(UEdGraphNode& TargetNode) const override;
 	virtual void BreakPinLinks(UEdGraphPin& TargetPin, bool bSendsNodeNotifcation) const override;
 	virtual void BreakSinglePinLink(UEdGraphPin* SourcePin, UEdGraphPin* TargetPin) const override;
+	virtual bool CanEncapuslateNode(UEdGraphNode const& TestNode) const override;
 	virtual void DroppedAssetsOnGraph(const TArray<struct FAssetData>& Assets, const FVector2D& GraphPosition, UEdGraph* Graph) const override;
 	virtual int32 GetNodeSelectionCount(const UEdGraph* Graph) const override;
 	virtual TSharedPtr<FEdGraphSchemaAction> GetCreateCommentAction() const override;
@@ -239,6 +268,8 @@ class UMaterialGraphSchema : public UEdGraphSchema
 private:
 	/** Adds actions for all Material Functions */
 	void GetMaterialFunctionActions(FGraphActionMenuBuilder& ActionMenuBuilder) const;
+	/** Adds action for creating a composite */
+	void GetCompositeAction(FGraphActionMenuBuilder& ActionMenuBuilder, const UEdGraph* CurrentGraph = NULL) const;
 	/** Adds action for creating a comment */
 	void GetCommentAction(FGraphActionMenuBuilder& ActionMenuBuilder, const UEdGraph* CurrentGraph = NULL) const;
 	/** Adds actions for local variables */

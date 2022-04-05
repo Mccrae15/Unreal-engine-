@@ -3,6 +3,9 @@
 #pragma once
 
 #include "UObject/Object.h"
+
+#include "GameFramework/Actor.h"
+#include "Engine/Classes/Components/ActorComponent.h"
 #include "UObject/ObjectMacros.h"
 #include "UObject/SoftObjectPtr.h"
 #include "UObject/WeakObjectPtrTemplates.h"
@@ -44,6 +47,12 @@ public:
 	 */
 	virtual bool IsBound(const TSoftObjectPtr<UObject>& Object) const PURE_VIRTUAL(URemoteControlBinding::IsBound, return false;);
 
+	/**
+	 * Remove objects that were deleted from the binding.
+	 * @return true if at least one object was removed from this binding's objects.
+	 */
+	virtual bool PruneDeletedObjects() PURE_VIRTUAL(URemoteControlBinding::PruneDeletedObjects, return false;);
+
 public:
 	/**
 	 * The name of this binding. Defaults to the bound object's name.
@@ -63,6 +72,7 @@ public:
 	virtual UObject* Resolve() const override;
 	virtual bool IsValid() const override;
 	virtual bool IsBound(const TSoftObjectPtr<UObject>& Object) const override;
+	virtual bool PruneDeletedObjects() override;
 
 private:
 	/**
@@ -70,6 +80,57 @@ private:
 	 */
 	UPROPERTY()
 	TSoftObjectPtr<UObject> BoundObject;
+};
+
+USTRUCT()
+struct FRemoteControlInitialBindingContext
+{
+	GENERATED_BODY()
+
+	/*
+	 * The class that's supported by this binding.
+	 */
+	UPROPERTY()
+	TSoftClassPtr<UObject> SupportedClass;
+
+	/**
+	 *  Name of the component if any.
+	 */
+	UPROPERTY()
+	FName ComponentName;
+
+	/**
+	 * The class of the actor that's targeted by this binding or the class of the actor that owns the component that is targeted.
+	 */
+	UPROPERTY()
+	TSoftClassPtr<AActor> OwnerActorClass;
+
+	/**
+	 * Name of the initial actor that was targetted by this binding.
+	 */
+	UPROPERTY()
+	FName OwnerActorName;
+
+	bool IsEmpty() const
+	{
+		return SupportedClass.GetUniqueID().ToString().IsEmpty()
+			&& ComponentName.IsNone() 
+			&& OwnerActorClass.GetUniqueID().ToString().IsEmpty()
+			&& OwnerActorName.IsNone();
+	}
+
+	friend bool operator==(const FRemoteControlInitialBindingContext& LHS, const FRemoteControlInitialBindingContext& RHS)
+	{
+		return LHS.SupportedClass == RHS.SupportedClass
+			&& LHS.ComponentName == RHS.ComponentName
+			&& LHS.OwnerActorClass == RHS.OwnerActorClass
+			&& LHS.OwnerActorName == RHS.OwnerActorName;
+	}
+
+	friend bool operator!=(const FRemoteControlInitialBindingContext& LHS, const FRemoteControlInitialBindingContext& RHS)
+	{
+		return !(LHS == RHS);
+	}
 };
 
 UCLASS(BlueprintType)
@@ -84,6 +145,7 @@ public:
 	virtual UObject* Resolve() const override;
 	virtual bool IsValid() const override;
 	virtual bool IsBound(const TSoftObjectPtr<UObject>& Object) const override;
+	virtual bool PruneDeletedObjects() override;
 	//~ Begin URemoteControlBinding Interface
 
 	/**
@@ -93,13 +155,27 @@ public:
 	void SetBoundObject(const TSoftObjectPtr<ULevel>& Level, const TSoftObjectPtr<UObject>& BoundObject);
 
 	/**
+	 * Set the bound object and reinitialize the context used for rebinding purposes.
+	 */
+	void SetBoundObject_OverrideContext(const TSoftObjectPtr<UObject>& InObject);
+
+	/**
 	 * Initialize this binding to be used with the new current level.
 	 * Copies the binding from the last successful resolve in case the level was duplicated.
 	 */
 	void InitializeForNewLevel();
 
+	/**
+	 * Get the suppported class of the bound object or of the owner of the bound object in the case of a bound component.
+	 */
+	UClass* GetSupportedOwnerClass() const;
+
+	/** Get the current world. */
+	static UWorld* GetCurrentWorld();
 private:
-	TSoftObjectPtr<UObject> FindObjectFromCurrentWorld() const;
+	TSoftObjectPtr<UObject> ResolveForCurrentWorld() const;
+
+	void InitializeBindingContext(UObject* InObject) const;
 
 private:
 	/**
@@ -109,13 +185,23 @@ private:
 	TMap<TSoftObjectPtr<ULevel>, TSoftObjectPtr<UObject>> BoundObjectMap;
 
 	/**
+	 * Keeps track of which sublevel was last used when binding in a particular world.
+	 * Used in the case where a binding points to objects that end up in the same world but in different sublevels, 
+	 * this ensures that we know which object was last 
+	 */
+	UPROPERTY()
+	mutable TMap<TSoftObjectPtr<UWorld>, TSoftObjectPtr<ULevel>> SubLevelSelectionMap;
+
+	/**
 	 * Caches the last level that had a successful resolve.
 	 * Used to decide which level to use when reinitializing this binding in a new level.
 	 */
 	UPROPERTY()
 	mutable TSoftObjectPtr<ULevel> LevelWithLastSuccessfulResolve;
 
-private:
-	/** Get the current world. */
-	UWorld* GetCurrentWorld() const;
+	UPROPERTY()
+	mutable FRemoteControlInitialBindingContext BindingContext;
+
+	friend class FRemoteControlPresetRebindingManager;
+	friend class URemoteControlPreset;
 };

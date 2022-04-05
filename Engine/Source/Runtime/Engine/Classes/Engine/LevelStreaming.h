@@ -6,13 +6,22 @@
 #include "UObject/ObjectMacros.h"
 #include "UObject/Object.h"
 #include "UObject/ScriptMacros.h"
+#include "UObject/UObjectAnnotation.h"
 #include "Engine/LatentActionManager.h"
 #include "LatentActions.h"
+#include "ProfilingDebugging/ProfilingHelpers.h"
+
+#if WITH_EDITOR
+#include "Folder.h"
+#include "Misc/Optional.h"
+#endif
 
 class ALevelScriptActor;
 class ALevelStreamingVolume;
 class ULevel;
 class ULevelStreaming;
+
+ENGINE_API DECLARE_LOG_CATEGORY_EXTERN(LogLevelStreaming, Log, All);
 
 // Stream Level Action
 class ENGINE_API FStreamLevelAction : public FPendingLatentAction
@@ -108,6 +117,25 @@ private:
 	static const TCHAR* EnumToString(ETargetState InTargetState);
 
 public:
+	static ULevelStreaming* FindStreamingLevel(const ULevel* Level);
+	static void RemoveLevelAnnotation(const ULevel* Level);
+
+	// Annotation for fast inverse lookup
+	struct FLevelAnnotation
+	{
+		FLevelAnnotation() {}
+		FLevelAnnotation(ULevelStreaming* InLevelStreaming) : LevelStreaming(InLevelStreaming){}
+	
+		FORCEINLINE bool IsDefault()
+		{
+			return !LevelStreaming;
+		}
+
+		ULevelStreaming* LevelStreaming = nullptr;
+	};
+
+	static FUObjectAnnotationSparse<FLevelAnnotation, false> LevelAnnotations;
+
 
 #if WITH_EDITORONLY_DATA
 	/** Deprecated name of the package containing the level to load. Use GetWorldAsset() or GetWorldAssetPackageFName() instead.		*/
@@ -115,10 +143,14 @@ public:
 	FName PackageName_DEPRECATED;
 #endif
 
-private:
+protected:
 	/** The reference to the world containing the level to load																	*/
 	UPROPERTY(Category=LevelStreaming, VisibleAnywhere, BlueprintReadOnly, meta=(DisplayName = "Level", AllowPrivateAccess="true"))
 	TSoftObjectPtr<UWorld> WorldAsset;
+
+	/** The relative priority of considering the streaming level. Changing the priority will not interrupt the currently considered level, but will affect the next time a level is being selected for evaluation. */
+	UPROPERTY(EditAnywhere, Category = LevelStreaming, BlueprintSetter = SetPriority)
+	int32 StreamingPriority;
 
 public:
 
@@ -137,21 +169,15 @@ public:
 	UPROPERTY(EditAnywhere, Category=LevelStreaming, BlueprintReadWrite)
 	FTransform LevelTransform;
 
+	/** Applied to LoadedLevel						                                                                            */
+	UPROPERTY()
+	bool bClientOnlyVisible;
+
 private:
 
 	/** Requested LOD. Non LOD sub-levels have Index = -1  */
 	UPROPERTY(transient, Category = LevelStreaming, BlueprintSetter = SetLevelLODIndex)
 	int32 LevelLODIndex;
-
-	/** The relative priority of considering the streaming level. Changing the priority will not interrupt the currently considered level, but will affect the next time a level is being selected for evaluation. */
-	UPROPERTY(EditAnywhere, Category=LevelStreaming, BlueprintSetter = SetPriority)
-	int32 StreamingPriority;
-
-	/** What the current streamed state of the streaming level is */
-	ECurrentState CurrentState;
-
-	/** What streamed state the streaming level is transitioning towards */
-	ETargetState TargetState;
 
 	/** Whether this level streaming object's level should be unloaded and the object be removed from the level list.			*/
 	uint8 bIsRequestingUnloadAndRemoval:1;
@@ -176,6 +202,12 @@ protected:
 	/** Whether the level should be loaded																						*/
 	UPROPERTY(Category=LevelStreaming, BlueprintSetter=SetShouldBeLoaded, BlueprintGetter=ShouldBeLoaded)
 	uint8 bShouldBeLoaded:1;
+
+	/** What the current streamed state of the streaming level is */
+	ECurrentState CurrentState;
+
+	/** What streamed state the streaming level is transitioning towards */
+	ETargetState TargetState;
 
 public:
 
@@ -221,7 +253,7 @@ public:
 
 	/** The level streaming volumes bound to this level. */
 	UPROPERTY(EditAnywhere, Category=LevelStreaming, meta=(DisplayName = "Streaming Volumes", NoElementDuplicate))
-	TArray<ALevelStreamingVolume*> EditorStreamingVolumes;
+	TArray<TObjectPtr<ALevelStreamingVolume>> EditorStreamingVolumes;
 
 	/** Cooldown time in seconds between volume-based unload requests.  Used in preventing spurious unload requests. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Category=LevelStreaming, meta=(ClampMin = "0", UIMin = "0", UIMax = "10"))
@@ -276,6 +308,9 @@ public:
 	UFUNCTION(BlueprintSetter)
 	void SetShouldBeVisible(bool bInShouldBeVisible);
 
+	/** Returns whether level should start to render only when it will be fully added to the world or not. */
+	virtual bool ShouldRequireFullVisibilityToRender() const { return LODPackageNames.Num() > 0; }
+
 	/** 
 	 * Virtual that can be overriden to change whether a streaming level should be loaded.
 	 * Doesn't do anything at the base level as should be loaded defaults to true 
@@ -321,26 +356,29 @@ public:
 #if WITH_EDITOR
 	/** Sets if the streaming level should be visible in the editor. */
 	void SetShouldBeVisibleInEditor(bool bInShouldBeVisibleInEditor);
+
+	/** Returns if the streaming level is visible in LevelCollectionModel */
+	virtual bool ShowInLevelCollection() const { return true; }
 #endif
 
 	/** Returns a constant reference to the world asset this streaming level object references  */
 	const TSoftObjectPtr<UWorld>& GetWorldAsset() const { return WorldAsset; }
 
 	/** Setter for WorldAsset. Use this instead of setting WorldAsset directly to update the cached package name. */
-	void SetWorldAsset(const TSoftObjectPtr<UWorld>& NewWorldAsset);
+	virtual void SetWorldAsset(const TSoftObjectPtr<UWorld>& NewWorldAsset);
 
 	/** Gets the package name for the world asset referred to by this level streaming */
 	FString GetWorldAssetPackageName() const;
 
 	/** Gets the package name for the world asset referred to by this level streaming as an FName */
 	UFUNCTION(BlueprintCallable, Category = "Game")
-	FName GetWorldAssetPackageFName() const;
+	virtual FName GetWorldAssetPackageFName() const;
 
 	/** Sets the world asset based on the package name assuming it contains a world of the same name. */
 	void SetWorldAssetByPackageName(FName InPackageName);
 
 	/** Rename package name to PIE appropriate name */
-	void RenameForPIE(int PIEInstanceID);
+	void RenameForPIE(int PIEInstanceID, bool bKeepWorldAssetName = false);
 
 	/**
 	 * Return whether this level should be present in memory which in turn tells the 
@@ -420,12 +458,26 @@ public:
 	/** Returns false if the level package associated to that streaming level is invalid. */
 	bool IsValidStreamingLevel() const;
 
+	/** Used for debugging Level's status */
+	EStreamingStatus GetLevelStreamingStatus() const;
+
+	/** Utility that gets a color for a particular level status */
+	static FColor GetLevelStreamingStatusColor(EStreamingStatus Status);
+
+	/** Utility that returns a string for a streaming level status */
+	static const TCHAR* GetLevelStreamingStatusDisplayName(EStreamingStatus Status);
+
+	/** Utility that draws a legend of level streaming status */
+	static void DebugDrawLegend(const UWorld* World, class UCanvas* Canvas, const FVector2D& Offset);
+
 #if WITH_EDITOR
 	/** Get the folder path for this level for use in the world browser. Only available in editor builds */
 	const FName& GetFolderPath() const;
 
 	/** Sets the folder path for this level in the world browser. Only available in editor builds */
 	void SetFolderPath(const FName& InFolderPath);
+
+	virtual TOptional<FFolder::FRootObject> GetFolderRootObject() const;
 #endif	// WITH_EDITOR
 
 	//~==============================================================================================
@@ -481,17 +533,8 @@ public:
 	void AddLevelToCollectionAfterReload();
 #endif
 
-private:
-	/** @return Name of the LOD level package used for loading.																		*/
-	FName GetLODPackageName() const;
-
-	/** @return Name of the LOD package on disk to load to the new package named PackageName, Name_None otherwise					*/
-	FName GetLODPackageNameToLoad() const;
-
-	/** @return Name of the level package that is currently loaded.																	*/
-	FName GetLoadedLevelPackageName() const;
-
-	/** 
+protected:
+	/**
 	 * Try to find loaded level in memory, issue a loading request otherwise
 	 *
 	 * @param	PersistentWorld			Persistent world
@@ -499,11 +542,35 @@ private:
 	 * @param	BlockPolicy				Whether loading operation should block
 	 * @return							true if the load request was issued or a package was already loaded
 	 */
-	bool RequestLevel(UWorld* PersistentWorld, bool bAllowLevelLoadRequests, EReqLevelBlock BlockPolicy);
-	
+	virtual bool RequestLevel(UWorld* PersistentWorld, bool bAllowLevelLoadRequests, EReqLevelBlock BlockPolicy);
+
+	/** Sets loaded level, fixups for PIE, notifies level is loaded, apply necessary modifications on level once loaded. */
+	void PrepareLoadedLevel(ULevel* InLevel, UPackage* InLevelPackage, int32 InPIEInstanceID);
+
 	/** Sets the value of LoadedLevel */
-	void SetLoadedLevel(ULevel* Level);
-	
+	virtual void SetLoadedLevel(ULevel* Level);
+
+	/** Called by SetLoadedLevel */
+	virtual void OnLevelLoadedChanged(ULevel* Level) {}
+
+	/** @return Name of the level package that is currently loaded.																	*/
+	FName GetLoadedLevelPackageName() const;
+
+	/** Pointer to Level object if currently loaded/ streamed in.																*/
+	UPROPERTY(transient)
+	TObjectPtr<class ULevel> LoadedLevel;
+
+	/** Pointer to a Level object that was previously active and was replaced with a new LoadedLevel (for LOD switching) */
+	UPROPERTY(transient)
+	TObjectPtr<class ULevel> PendingUnloadLevel;
+
+private:
+	/** @return Name of the LOD level package used for loading.																		*/
+	FName GetLODPackageName() const;
+
+	/** @return Name of the LOD package on disk to load to the new package named PackageName, Name_None otherwise					*/
+	FName GetLODPackageNameToLoad() const;
+
 	/** Hide and queue for unloading previously used level */
 	void DiscardPendingUnloadLevel(UWorld* PersistentWorld);
 
@@ -513,14 +580,6 @@ private:
 	 * @param LevelPackage	Loaded level package
 	 */
 	void AsyncLevelLoadComplete(const FName& PackageName, UPackage* LevelPackage, EAsyncLoadingResult::Type Result);
-
-	/** Pointer to Level object if currently loaded/ streamed in.																*/
-	UPROPERTY(transient)
-	class ULevel* LoadedLevel;
-
-	/** Pointer to a Level object that was previously active and was replaced with a new LoadedLevel (for LOD switching) */
-	UPROPERTY(transient)
-	class ULevel* PendingUnloadLevel;
 
 #if WITH_EDITORONLY_DATA
 	/** The folder path for this level within the world browser. This is only available in editor builds. 

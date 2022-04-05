@@ -6,6 +6,7 @@
 #include "AudioModulationLogging.h"
 #include "AudioModulationSystem.h"
 #include "Engine/World.h"
+#include "SoundModulationGeneratorProxy.h"
 #include "Templates/Function.h"
 
 
@@ -30,36 +31,49 @@ namespace AudioModulation
 #if WITH_EDITOR
 void USoundModulationGenerator::PostEditChangeProperty(FPropertyChangedEvent& InPropertyChangedEvent)
 {
-	AudioModulation::IterateModulationImpl([this](AudioModulation::FAudioModulation& OutModulation)
+	// Guards against slamming the modulation system with changes when using sliders.
+	if (InPropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
-		OutModulation.UpdateModulator(*this);
-	});
+		AudioModulation::IterateModulationManagers([this](AudioModulation::FAudioModulationManager& OutModulation)
+		{
+			OutModulation.UpdateModulator(*this);
+		});
+	}
 
 	Super::PostEditChangeProperty(InPropertyChangedEvent);
 }
 #endif // WITH_EDITOR
 
+TUniquePtr<Audio::IProxyData> USoundModulationGenerator::CreateNewProxyData(const Audio::FProxyDataInitParams& InitParams)
+{
+	using namespace AudioModulation;
+	return MakeUnique<FSoundModulatorAssetProxy>(*this);
+}
+
+TUniquePtr<Audio::IModulatorSettings> USoundModulationGenerator::CreateProxySettings() const
+{
+	using namespace AudioModulation;
+	return TUniquePtr<Audio::IModulatorSettings>(new FModulationGeneratorSettings(*this));
+}
+
 void USoundModulationGenerator::BeginDestroy()
 {
 	using namespace AudioModulation;
 
-	Super::BeginDestroy();
-
-	UWorld* World = GetWorld();
-	if (!World)
+	if (UWorld* World = GetWorld())
 	{
-		return;
-	}
-
-	FAudioDeviceHandle AudioDevice = World->GetAudioDevice();
-	if (AudioDevice.IsValid())
-	{
-		check(AudioDevice->IsModulationPluginEnabled());
-		if (IAudioModulation* ModulationInterface = AudioDevice->ModulationInterface.Get())
+		FAudioDeviceHandle AudioDevice = World->GetAudioDevice();
+		if (AudioDevice.IsValid())
 		{
-			FAudioModulation* Modulation = static_cast<FAudioModulation*>(ModulationInterface);
-			check(Modulation);
-			Modulation->DeactivateGenerator(*this);
+			check(AudioDevice->IsModulationPluginEnabled());
+			if (IAudioModulationManager* ModulationInterface = AudioDevice->ModulationInterface.Get())
+			{
+				FAudioModulationManager* Modulation = static_cast<FAudioModulationManager*>(ModulationInterface);
+				check(Modulation);
+				Modulation->DeactivateGenerator(*this);
+			}
 		}
 	}
+
+	Super::BeginDestroy();
 }

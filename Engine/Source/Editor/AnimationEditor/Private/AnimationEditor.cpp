@@ -50,6 +50,10 @@
 #include "Algo/Transform.h"
 #include "ISequenceRecorder.h"
 #include "IAnimSequenceCurveEditor.h"
+#include "EditorModeManager.h"
+#include "IPersonaEditorModeManager.h"
+#include "Toolkits/AssetEditorToolkit.h"
+#include "PersonaToolMenuContext.h"
 
 const FName AnimationEditorAppIdentifier = FName(TEXT("AnimationEditorApp"));
 
@@ -71,25 +75,16 @@ DEFINE_LOG_CATEGORY(LogAnimationEditor);
 
 #define LOCTEXT_NAMESPACE "AnimationEditor"
 
-FAnimationEditor::FAnimationEditor()
-{
-	UEditorEngine* Editor = Cast<UEditorEngine>(GEngine);
-	if (Editor != nullptr)
-	{
-		Editor->RegisterForUndo(this);
-	}
-}
-
 FAnimationEditor::~FAnimationEditor()
 {
-	UEditorEngine* Editor = Cast<UEditorEngine>(GEngine);
-	if (Editor != nullptr)
-	{
-		Editor->UnregisterForUndo(this);
-	}
-
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->OnAssetPostImport.RemoveAll(this);
 	FReimportManager::Instance()->OnPostReimport().RemoveAll(this);
+	//Make sure all delegate for preview mesh change are removed, by setting it to nullptr
+	if (PersonaToolkit.IsValid())
+	{
+		constexpr bool bSetPreviewMeshInAsset = false;
+		PersonaToolkit->SetPreviewMesh(nullptr, bSetPreviewMeshInAsset);
+	}
 }
 
 void FAnimationEditor::RegisterTabSpawners(const TSharedRef<class FTabManager>& InTabManager)
@@ -164,6 +159,16 @@ FLinearColor FAnimationEditor::GetWorldCentricTabColorScale() const
 	return FLinearColor(0.3f, 0.2f, 0.5f, 0.5f);
 }
 
+void FAnimationEditor::InitToolMenuContext(FToolMenuContext& MenuContext)
+{
+	FAssetEditorToolkit::InitToolMenuContext(MenuContext);
+
+	UPersonaToolMenuContext* Context = NewObject<UPersonaToolMenuContext>();
+	Context->SetToolkit(GetPersonaToolkit());
+
+	MenuContext.AddObject(Context);
+}
+
 void FAnimationEditor::Tick(float DeltaTime)
 {
 	GetPersonaToolkit()->GetPreviewScene()->InvalidateViews();
@@ -194,10 +199,6 @@ void FAnimationEditor::BindCommands()
 	ToolkitCommands->MapAction(FAnimationEditorCommands::Get().ReimportAnimation,
 		FExecuteAction::CreateSP(this, &FAnimationEditor::OnReimportAnimation),
 		FCanExecuteAction::CreateSP(this, &FAnimationEditor::HasValidAnimationSequence));
-
-	ToolkitCommands->MapAction(FAnimationEditorCommands::Get().ApplyAnimation,
-		FExecuteAction::CreateSP(this, &FAnimationEditor::OnApplyRawAnimChanges),
-		FCanExecuteAction::CreateSP(this, &FAnimationEditor::CanApplyRawAnimChanges));
 
 	ToolkitCommands->MapAction(FAnimationEditorCommands::Get().ExportToFBX_AnimData,
 		FExecuteAction::CreateSP(this, &FAnimationEditor::OnExportToFBX, EExportSourceOption::CurrentAnimation_AnimData),
@@ -261,7 +262,7 @@ void FAnimationEditor::ExtendToolbar()
 			ToolbarBuilder.BeginSection("Animation");
 			{
 				ToolbarBuilder.AddToolBarButton(FAnimationEditorCommands::Get().ReimportAnimation);
-				ToolbarBuilder.AddToolBarButton(FAnimationEditorCommands::Get().ApplyCompression, NAME_None, LOCTEXT("Toolbar_ApplyCompression", "Compression"));
+				ToolbarBuilder.AddToolBarButton(FAnimationEditorCommands::Get().ApplyCompression, NAME_None, LOCTEXT("Toolbar_ApplyCompression", "Apply Compression"));
 
 				{
 					ToolbarBuilder.AddComboButton(
@@ -278,7 +279,6 @@ void FAnimationEditor::ExtendToolbar()
 			ToolbarBuilder.BeginSection("Editing");
 			{
 				ToolbarBuilder.AddToolBarButton(FAnimationEditorCommands::Get().SetKey, NAME_None, LOCTEXT("Toolbar_SetKey", "Key"));
-				ToolbarBuilder.AddToolBarButton(FAnimationEditorCommands::Get().ApplyAnimation, NAME_None, LOCTEXT("Toolbar_ApplyAnimation", "Apply"));
 			}
 			ToolbarBuilder.EndSection();
 
@@ -310,14 +310,6 @@ void FAnimationEditor::ExtendMenu()
 
 				MenuBuilder.AddMenuEntry(FAnimationEditorCommands::Get().AddLoopingInterpolation);
 				MenuBuilder.AddMenuEntry(FAnimationEditorCommands::Get().RemoveBoneTracks);
-
-				MenuBuilder.AddSubMenu(
-					LOCTEXT("CopyCurvesToSoundWave", "Copy Curves To SoundWave"),
-					LOCTEXT("CopyCurvesToSoundWave_ToolTip", "Copy curves from this animation to the selected SoundWave"),
-					FNewMenuDelegate::CreateSP(InAnimationEditor, &FAnimationEditor::FillCopyToSoundWaveMenu),
-					false,
-					FSlateIcon(FEditorStyle::GetStyleSetName(), "ClassIcon.")
-				);
 			}
 			MenuBuilder.EndSection();
 		}
@@ -362,16 +354,6 @@ void FAnimationEditor::HandleObjectSelected(UObject* InObject)
 	}
 }
 
-void FAnimationEditor::PostUndo(bool bSuccess)
-{
-	OnPostUndo.Broadcast();
-}
-
-void FAnimationEditor::PostRedo(bool bSuccess)
-{
-	OnPostUndo.Broadcast();
-}
-
 void FAnimationEditor::HandleDetailsCreated(const TSharedRef<IDetailsView>& InDetailsView)
 {
 	DetailsView = InDetailsView;
@@ -385,7 +367,7 @@ TSharedPtr<SDockTab> FAnimationEditor::OpenNewAnimationDocumentTab(UAnimationAss
 	{
 		FString	DocumentLink;
 
-		FAnimDocumentArgs Args(PersonaToolkit->GetPreviewScene(), GetPersonaToolkit(), GetSkeletonTree()->GetEditableSkeleton(), OnPostUndo, OnSectionsChanged);
+		FAnimDocumentArgs Args(PersonaToolkit->GetPreviewScene(), GetPersonaToolkit(), GetSkeletonTree()->GetEditableSkeleton(), OnSectionsChanged);
 		Args.OnDespatchObjectsSelected = FOnObjectsSelected::CreateSP(this, &FAnimationEditor::HandleObjectsSelected);
 		Args.OnDespatchInvokeTab = FOnInvokeTab::CreateSP(this, &FAssetEditorToolkit::InvokeTab);
 		Args.OnDespatchSectionsChanged = FSimpleDelegate::CreateSP(this, &FAnimationEditor::HandleSectionsChanged);
@@ -422,7 +404,8 @@ TSharedPtr<SDockTab> FAnimationEditor::OpenNewAnimationDocumentTab(UAnimationAss
 
 		TAttribute<FText> NameAttribute = TAttribute<FText>::Create(TAttribute<FText>::FGetter::CreateStatic(&Local::GetObjectName, (UObject*)InAnimAsset));
 
-		if (SharedAnimDocumentTab.IsValid())
+		const bool bIsReusedEditor = SharedAnimDocumentTab.IsValid();
+		if (bIsReusedEditor)
 		{
 			OpenedTab = SharedAnimDocumentTab.Pin();
 			OpenedTab->SetContent(TabContents);
@@ -455,10 +438,16 @@ TSharedPtr<SDockTab> FAnimationEditor::OpenNewAnimationDocumentTab(UAnimationAss
 			SharedAnimDocumentTab = OpenedTab;
 		}
 
-		// Invoke the preview tab if this is a montage
+		// Invoke the montage sections tab, and make sure the asset browser is there and in focus when we are dealing with a montage.
 		if(InAnimAsset->IsA<UAnimMontage>())
 		{
 			TabManager->TryInvokeTab(AnimationEditorTabs::AnimMontageSectionsTab);
+
+			// Only activate the asset browser tab when this is a reused Animation Editor window.
+			if (bIsReusedEditor)
+			{
+				TabManager->TryInvokeTab(AnimationEditorTabs::AssetBrowserTab);
+			}
 			OnSectionsChanged.Broadcast();
 		}
 		else
@@ -582,37 +571,6 @@ void FAnimationEditor::OnSetKey()
 	}
 }
 
-bool FAnimationEditor::CanApplyRawAnimChanges() const
-{
-	UAnimSequence* AnimSequence = Cast<UAnimSequence>(AnimationAsset);
-
-	// ideally would be great if we can only show if something changed
-	return (AnimSequence && (AnimSequence->DoesNeedRebake() || AnimSequence->DoesNeedRecompress()));
-}
-
-void FAnimationEditor::OnApplyRawAnimChanges()
-{
-	UAnimSequence* AnimSequence = Cast<UAnimSequence>(AnimationAsset);
-	if (AnimSequence)
-	{
-		if (AnimSequence->DoesNeedRebake() || AnimSequence->DoesNeedRecompress())
-		{
-			FScopedTransaction ScopedTransaction(LOCTEXT("BakeAnimation", "Bake Animation"));
-			if (AnimSequence->DoesNeedRebake())
-			{
-				AnimSequence->Modify(true);
-				AnimSequence->BakeTrackCurvesToRawAnimation();
-			}
-
-			if (AnimSequence->DoesNeedRecompress())
-			{
-				AnimSequence->Modify(true);
-				AnimSequence->RequestSyncAnimRecompression(false);
-			}
-		}
-	}
-}
-
 void FAnimationEditor::OnReimportAnimation()
 {
 	UAnimSequence* AnimSequence = Cast<UAnimSequence>(AnimationAsset);
@@ -700,13 +658,14 @@ void FAnimationEditor::OnRemoveBoneTrack()
 {
 	if ( FMessageDialog::Open(EAppMsgType::YesNo, LOCTEXT("WarningOnRemovingBoneTracks", "This will clear all bone transform of the animation, source data, and edited layer information. This doesn't remove notifies, and curves. Do you want to continue?")) == EAppReturnType::Yes)
 	{
-		FScopedTransaction ScopedTransaction(LOCTEXT("RemoveAnimation", "Remove Track"));
-
 		UAnimSequence* AnimSequence = Cast<UAnimSequence>(AnimationAsset);
 		if (AnimSequence)
 		{
-			AnimSequence->Modify();
-			AnimSequence->RemoveAllTracks();
+			IAnimationDataController& Controller = AnimSequence->GetController();
+			IAnimationDataController::FScopedBracket ScopedBracket(Controller, LOCTEXT("OnRemoveBoneTrack_Bracket", "Removing all Bone Animation and Transform Curve Tracks"));
+
+			Controller.RemoveAllBoneTracks();
+			Controller.RemoveAllCurvesOfType(ERawCurveTrackTypes::RCT_Transform);			
 		}
 	}
 }
@@ -718,29 +677,6 @@ TSharedRef< SWidget > FAnimationEditor::GenerateExportAssetMenu() const
 	FillExportAssetMenu(MenuBuilder);
 	return MenuBuilder.MakeWidget();
 }
-
-void FAnimationEditor::FillCopyToSoundWaveMenu(FMenuBuilder& MenuBuilder) const
-{
-	FAssetPickerConfig AssetPickerConfig;
-	AssetPickerConfig.Filter.ClassNames.Add(*USoundWave::StaticClass()->GetName());
-	AssetPickerConfig.bAllowNullSelection = false;
-	AssetPickerConfig.OnAssetSelected = FOnAssetSelected::CreateRaw(this, &FAnimationEditor::CopyCurveToSoundWave);
-	AssetPickerConfig.InitialAssetViewType = EAssetViewType::List;
-
-	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
-
-	MenuBuilder.AddWidget(
-		SNew(SBox)
-		.WidthOverride(300.0f)
-		.HeightOverride(300.0f)
-		[
-			ContentBrowserModule.Get().CreateAssetPicker(AssetPickerConfig)
-		],
-		FText::GetEmpty()
-	);
-
-}
-
 void FAnimationEditor::FillExportAssetMenu(FMenuBuilder& MenuBuilder) const
 {
 	MenuBuilder.BeginSection("AnimationExport", LOCTEXT("ExportAssetMenuHeading", "Export"));
@@ -788,13 +724,10 @@ void FAnimationEditor::CopyCurveToSoundWave(const FAssetData& SoundWaveAssetData
 	UCurveTable* CurveTable = SoundWave->GetInternalCurveData();
 
 	// iterate over curves in anim data
-	const int32 NumCurves = Sequence->RawCurveData.FloatCurves.Num();
-	for (int32 CurveIdx = 0; CurveIdx < NumCurves; CurveIdx++)
+	for (const FFloatCurve& FloatCurve : Sequence->GetDataModel()->GetFloatCurves())
 	{
-		FFloatCurve& AnimCurve = Sequence->RawCurveData.FloatCurves[CurveIdx];
-
-		FRichCurve* Curve = FindOrAddCurve(CurveTable, AnimCurve.Name.DisplayName);
-		*Curve = AnimCurve.FloatCurve; // copy data
+		FRichCurve* Curve = FindOrAddCurve(CurveTable, FloatCurve.Name.DisplayName);
+		*Curve = FloatCurve.FloatCurve; // copy data
 	}
 
 	// we will need to add a curve to tell us the time we want to start playing audio

@@ -7,10 +7,11 @@
 #include "InputCoreTypes.h"
 #include "GameFramework/Actor.h"
 #include "Camera/CameraComponent.h"
-#include "UnrealWidget.h"
+#include "UnrealWidgetFwd.h"
 #include "EditorViewportClient.h"
 #include "UObject/ObjectKey.h"
 #include "UnrealEdMisc.h"
+#include "Elements/Framework/TypedElementListFwd.h"
 
 struct FAssetData;
 struct FMinimalViewInfo;
@@ -21,7 +22,9 @@ class ILevelEditor;
 class SLevelViewport;
 class UActorFactory;
 class UModel;
+class UTypedElementSelectionSet;
 struct FWorldContext;
+struct FTypedElementHandle;
 
 /** Describes an object that's currently hovered over in the level viewport */
 struct FViewportHoverTarget
@@ -101,18 +104,21 @@ struct UNREALED_API FTrackingTransaction
 
 	bool IsPending() const { return TrackingTransactionState == ETransactionState::Pending; }
 	
-	int32 TransCount;
+	int32 TransCount = 0;
 
 private:
 
+	const UTypedElementSelectionSet* GetSelectionSet() const;
+	UTypedElementSelectionSet* GetMutableSelectionSet() const;
+
 	/** Editor selection changed delegate handler */	
-	void OnEditorSelectionChanged(UObject* NewSelection);
+	void OnEditorSelectionChanged(const UTypedElementSelectionSet* InSelectionSet);
 
 	/** The current transaction. */
-	class FScopedTransaction*	ScopedTransaction;
+	class FScopedTransaction* ScopedTransaction = nullptr;
 
 	/** This is set to Active if TrackingStarted() has initiated a transaction, Pending if a transaction will begin before the next delta change */
-	ETransactionState::Enum TrackingTransactionState;
+	ETransactionState::Enum TrackingTransactionState = ETransactionState::Inactive;
 
 	/** The description to use if a pending transaction turns into a real transaction */
 	FText PendingDescription;
@@ -156,6 +162,9 @@ struct UNREALED_API FLevelViewportActorLock
 /** */
 class UNREALED_API FLevelEditorViewportClient : public FEditorViewportClient
 {
+	friend class FActorElementLevelEditorViewportInteractionCustomization;
+	friend class FComponentElementLevelEditorViewportInteractionCustomization;
+
 public:
 
 	/** @return Returns the current global drop preview actor, or a NULL pointer if we don't currently have one */
@@ -181,7 +190,7 @@ public:
 	virtual void Draw(const FSceneView* View,FPrimitiveDrawInterface* PDI) override;
 	// End of FViewElementDrawer interface
 	
-	virtual FSceneView* CalcSceneView(FSceneViewFamily* ViewFamily, const EStereoscopicPass StereoPass = eSSP_FULL) override;
+	virtual FSceneView* CalcSceneView(FSceneViewFamily* ViewFamily, const int32 StereoViewIndex = INDEX_NONE) override;
 
 	////////////////////////////
 	// FEditorViewportClient interface
@@ -198,7 +207,7 @@ public:
 	virtual void TrackingStarted( const struct FInputEventState& InInputState, bool bIsDraggingWidget, bool bNudge ) override;
 	virtual void TrackingStopped() override;
 	virtual void AbortTracking() override;
-	virtual FWidget::EWidgetMode GetWidgetMode() const override;
+	virtual UE::Widget::EWidgetMode GetWidgetMode() const override;
 	virtual FVector GetWidgetLocation() const override;
 	virtual FMatrix GetWidgetCoordSystem() const override;
 	virtual void SetupViewForRendering( FSceneViewFamily& ViewFamily, FSceneView& View ) override;
@@ -234,6 +243,11 @@ public:
 	 * Initialize visibility flags
 	 */
 	void InitializeVisibilityFlags();
+
+	/**
+	 * Initialize viewport interaction
+	 */
+	void InitializeViewportInteraction();
 
 	/**
 	 * Reset the camera position and rotation.  Used when creating a new level.
@@ -307,6 +321,19 @@ public:
 	void ApplyDeltaToActors( const FVector& InDrag, const FRotator& InRot, const FVector& InScale );
 	void ApplyDeltaToActor( AActor* InActor, const FVector& InDeltaDrag, const FRotator& InDeltaRot, const FVector& InDeltaScale );
 	void ApplyDeltaToComponent(USceneComponent* InComponent, const FVector& InDeltaDrag, const FRotator& InDeltaRot, const FVector& InDeltaScale);
+	
+	void ApplyDeltaToSelectedElements(const FTransform& InDeltaTransform);
+	void ApplyDeltaToElement(const FTypedElementHandle& InElementHandle, const FTransform& InDeltaTransform);
+
+	void MirrorSelectedActors(const FVector& InMirrorScale);
+	void MirrorSelectedElements(const FVector& InMirrorScale);
+
+	bool GetFocusBounds(FTypedElementListConstRef InElements, FBoxSphereBounds& OutBounds);
+
+	/**
+	 * Get the elements (from the current selection set) that this viewport can manipulate (eg, via the transform gizmo).
+	 */
+	FTypedElementListConstRef GetElementsToManipulate(const bool bForceRefresh = false);
 
 	virtual void SetIsSimulateInEditorViewport( bool bInIsSimulateInEditorViewport ) override;
 
@@ -450,13 +477,6 @@ public:
 	 * Static: Clears viewport hover effects from any objects that currently have that
 	 */
 	static void ClearHoverFromObjects();
-
-
-	/**
-	 * Helper function for ApplyDeltaTo* functions - modifies scale based on grid settings.
-	 * Currently public so it can be re-used in FEdModeBlueprint.
-	 */
-	void ModifyScale( USceneComponent* InComponent, FVector& ScaleDelta ) const;
 
 	/** Set the global ptr to the current viewport */
 	void SetCurrentViewport();
@@ -679,31 +699,8 @@ protected:
 	/** Delegate handler for ActorMoved events */
 	void OnActorMoved(AActor* InActor);
 
-	/** FEditorViewportClient Interface*/
-
-	/**
-	 * Collects the set of components and actors on which to apply move operations during or after drag operations.
-	 */
-	void GetSelectedActorsAndComponentsForMove(TArray<AActor*>& OutActorsToMove, TArray<USceneComponent*>& OutComponentsToMove) const;
-
-	/**
-	 * Determines if it is valid to move an actor in this viewport.
-	 *
-	 * @param InActor - the actor that the viewport may be interested in moving.
-	 * @returns true if it is valid for this viewport to update the given actor's transform.
-	 */
-	bool CanMoveActorInViewport(const AActor* InActor) const;
-
-	/** Performs the legacy behavior for calling post edit move and updating transforms from ApplyDeltaToActors function. */
-	UE_DEPRECATED(4.26, "This functions is meant to be used for ease of rollback if too many post edit move calls degrade performance during drag operations. See ULevelEditorSettings::bUseLegacyPostEditBehavior to toggle legacy behavior.")
-	bool LegacyApplyDeltasForSelectedComponentsAndActors(const FVector& InDrag, const FRotator& InRot, const FVector& ModifiedScale);
-
-	/** Performs the legacy behavior for applying transforms and calling post edit move and property changed events from TrackingStopped function. */
-	UE_DEPRECATED(4.26, "This functions is meant to be used for ease of rollback if too many post edit move calls degrade performance during drag operations. See ULevelEditorSettings::bUseLegacyPostEditBehavior to toggle legacy behavior.")
-	bool LegacyTrackingStoppedForSelectedComponentsAndActors(FPropertyChangedEvent& PropertyChangedEvent);
-
 public:
-
+	/** FEditorViewportClient Interface*/
 	virtual void UpdateLinkedOrthoViewports(bool bInvalidate = false) override;
 	virtual ELevelViewportType GetViewportType() const override;
 	virtual void SetViewportType(ELevelViewportType InViewportType) override;
@@ -719,6 +716,8 @@ protected:
 	virtual void RedrawAllViewportsIntoThisScene() override;
 
 private:
+	FTransform CachePreDragActorTransform(const AActor* InActor);
+
 	/**
 	 * Checks to see the viewports locked actor need updating
 	 */
@@ -732,6 +731,22 @@ private:
 	
 	/** @return	Returns true if the delta tracker was used to modify any selected actors or BSP.  Must be called before EndTracking(). */
 	bool HaveSelectedObjectsBeenChanged() const;
+
+	/** Cache the list of elements to manipulate based on the current selection set. */
+	void CacheElementsToManipulate(const bool bForceRefresh = false);
+
+	/** Reset the list of elements to manipulate */
+	void ResetElementsToManipulate(const bool bClearList = true);
+
+	/** Reset the list of elements to manipulate, because the selection set they were cached from has changed */
+	void ResetElementsToManipulateFromSelectionChange(const UTypedElementSelectionSet* InSelectionSet);
+
+	/** Reset the list of elements to manipulate, because the typed element registry is about to process deferred deletion */
+	void ResetElementsToManipulateFromProcessingDeferredElementsToDestroy();
+
+	/** Get the selection set that associated with our level editor. */
+	const UTypedElementSelectionSet* GetSelectionSet() const;
+	UTypedElementSelectionSet* GetMutableSelectionSet() const;
 
 	/**
 	 * Called when to attempt to apply an object to a BSP surface
@@ -805,10 +820,6 @@ private:
 	 */
 	bool DropObjectsOnWidget(FSceneView* View, struct FViewportCursorLocation& Cursor, const TArray<UObject*>& DroppedObjects, bool bCreateDropPreview = false);
 
-	/** Helper functions for ApplyDeltaTo* functions - modifies scale based on grid settings */
-	void ModifyScale( AActor* InActor, FVector& ScaleDelta, bool bCheckSmallExtent = false ) const;
-	void ValidateScale( const FVector& InOriginalPreDragScale, const FVector& CurrentScale, const FVector& BoxExtent, FVector& ScaleDelta, bool bCheckSmallExtent = false ) const;
-
 	/** Project the specified actors into the world according to the current drag parameters */
 	void ProjectActorsIntoWorld(const TArray<AActor*>& Actors, FViewport* Viewport, const FVector& Drag, const FRotator& Rot);
 
@@ -874,6 +885,12 @@ public:
 	/** True if this viewport is to change its view (aspect ratio, post processing, FOV etc) to match that of the currently locked camera, if applicable */
 	bool					bLockedCameraView;
 
+	/** true if the viewport needs to restore the flag when tracking ends */
+	bool					bNeedToRestoreComponentBeingMovedFlag;
+
+	/** true if gizmo manipulation was started from a tracking event */
+	bool					bHasBegunGizmoManipulation;
+
 	/** Whether this viewport recently received focus. Used to determine whether component selection is permissible. */
 	bool bReceivedFocusRecently;
 
@@ -888,7 +905,11 @@ private:
 	static bool bIsDroppingPreviewActor;
 
 	/** A map of actor locations before a drag operation */
-	mutable TMap<TWeakObjectPtr<AActor>, FTransform> PreDragActorTransforms;
+	mutable TMap<TWeakObjectPtr<const AActor>, FTransform> PreDragActorTransforms;
+
+	/** The elements (from the current selection set) that this viewport can manipulate (eg, via the transform gizmo) */
+	bool bHasCachedElementsToManipulate = false;
+	FTypedElementListRef CachedElementsToManipulate;
 
 	/** Bit array representing the visibility of every sprite category in the current viewport */
 	TBitArray<>	SpriteCategoryVisibility;
@@ -940,7 +961,7 @@ private:
 	/** Caching for expensive FindViewComponentForActor. Invalidated once per Tick. */
 	static TMap<TObjectKey<AActor>, TWeakObjectPtr<UActorComponent>> ViewComponentForActorCache;
 
-	/** If true, we switched between two different cameras. Set by matinee, used by the motion blur to invalidate this frames motion vectors */
+	/** If true, we switched between two different cameras. Set by cinematics, used by the motion blur to invalidate this frames motion vectors */
 	bool					bEditorCameraCut;
 
 	/** Stores the previous frame's value of bEditorCameraCut in order to reset it back to false on the next frame */

@@ -387,7 +387,7 @@ void FSlateFrameGraphTrack::AddAllSeries(const ITimingTrackUpdateContext& Contex
 	bool bFirstSeries = AllSeries.Num() == 0;
 	if(SlateProvider && bFirstSeries)
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
 		FSlateStyleSet& StyleSet = FSlateInsightsStyle::Get();
 		{
 			
@@ -422,14 +422,14 @@ void FSlateFrameGraphTrack::AddAllSeries(const ITimingTrackUpdateContext& Contex
 			Series->SetColor_Detail(StyleSet.GetColor("SlateGraph.Color.RepaintCount"));
 			AllSeries.Add(Series);
 		}
-		{
-			TSharedRef<Private::FSlateFrameGraphSeries> Series = MakeShared<Private::FSlateFrameGraphSeries>(&Message::FApplicationTickedMessage::VolatilePaintCount);
-			Series->SetVisibility(true);
-			Series->SetName(LOCTEXT("VolatilePaintName", "Volatile Paint Count"));
-			Series->SetDescription(LOCTEXT("VolatilePaintDescription", "Volatile Paint Count"));
-			Series->SetColor_Detail(StyleSet.GetColor("SlateGraph.Color.VolatilePaintCount"));
-			AllSeries.Add(Series);
-		}
+		//{
+		//	TSharedRef<Private::FSlateFrameGraphSeries> Series = MakeShared<Private::FSlateFrameGraphSeries>(&Message::FApplicationTickedMessage::VolatilePaintCount);
+		//	Series->SetVisibility(true);
+		//	Series->SetName(LOCTEXT("VolatilePaintName", "Volatile Paint Count"));
+		//	Series->SetDescription(LOCTEXT("VolatilePaintDescription", "Volatile Paint Count"));
+		//	Series->SetColor_Detail(StyleSet.GetColor("SlateGraph.Color.VolatilePaintCount"));
+		//	AllSeries.Add(Series);
+		//}
 		{
 			TSharedRef<Private::FSlateFrameGraphSeries> Series = MakeShared<Private::FSlateFrameGraphSeries>(&Message::FApplicationTickedMessage::PaintCount);
 			Series->SetVisibility(true);
@@ -462,7 +462,7 @@ void FSlateFrameGraphTrack::UpdateSeries(const FTimingTrackViewport& InViewport,
 {
 	if (const FSlateProvider* SlateProvider = SharedData.GetAnalysisSession().ReadProvider<FSlateProvider>(FSlateProvider::ProviderName))
 	{
-		Trace::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
+		TraceServices::FAnalysisSessionReadScope SessionReadScope(SharedData.GetAnalysisSession());
 
 		for (TSharedPtr<Private::FSlateFrameGraphSeries>& Serie : Series)
 		{
@@ -470,8 +470,8 @@ void FSlateFrameGraphTrack::UpdateSeries(const FTimingTrackViewport& InViewport,
 		}
 
 		{
-			const FSlateProvider::TApplicationTickedTimeline& ApplicationTimeline = SlateProvider->GetApplicationTickedTimeline();
-			FSlateProvider::FScopedEnumerateOutsideRange<FSlateProvider::TApplicationTickedTimeline> ScopedRange(ApplicationTimeline);
+			const FSlateProvider::FApplicationTickedTimeline& ApplicationTimeline = SlateProvider->GetApplicationTickedTimeline();
+			FSlateProvider::TScopedEnumerateOutsideRange<FSlateProvider::FApplicationTickedTimeline> ScopedRange(ApplicationTimeline);
 
 			ApplicationTimeline.EnumerateEvents(InViewport.GetStartTime(), InViewport.GetEndTime(),
 				[&Series](double StartTime, double EndTime, uint32 /*Depth*/, const Message::FApplicationTickedMessage& Message)
@@ -480,7 +480,7 @@ void FSlateFrameGraphTrack::UpdateSeries(const FTimingTrackViewport& InViewport,
 					{
 						Serie->AddEvent(StartTime, EndTime, Message);
 					}
-					return Trace::EEventEnumerate::Continue;
+					return TraceServices::EEventEnumerate::Continue;
 				});
 		}
 

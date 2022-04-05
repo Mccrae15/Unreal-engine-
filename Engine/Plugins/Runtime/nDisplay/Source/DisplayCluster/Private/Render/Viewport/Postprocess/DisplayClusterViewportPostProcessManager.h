@@ -27,7 +27,7 @@ public:
 
 	bool IsAnyPostProcessRequired(const TSharedPtr<IDisplayClusterPostProcess, ESPMode::ThreadSafe>& PostprocessInstance) const;
 
-	bool ShouldUseAdditionalFrameTargetableResource_PostProcess() const;
+	bool ShouldUseAdditionalFrameTargetableResource() const;
 	bool ShouldUseFullSizeFrameTargetableResource() const;
 
 	void PerformPostProcessBeforeWarpBlend_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy) const;
@@ -37,6 +37,13 @@ public:
 
 	bool HandleStartScene();
 	void HandleEndScene();
+
+	void HandleSetupNewFrame();
+	void HandleBeginNewFrame(FDisplayClusterRenderFrame& InOutRenderFrame);
+
+	void HandleRenderFrameSetup_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy);
+	void HandleBeginUpdateFrameResources_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy);
+	void HandleEndUpdateFrameResources_RenderThread(FRHICommandListImmediate& RHICmdList, const FDisplayClusterViewportManagerProxy* InViewportManagerProxy);
 
 	// Send data to render thread
 	void FinalizeNewFrame();

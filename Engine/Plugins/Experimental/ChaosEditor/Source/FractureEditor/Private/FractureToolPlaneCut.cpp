@@ -7,6 +7,8 @@
 #include "GeometryCollection/GeometryCollectionObject.h"
 #include "FractureEditorModeToolkit.h"
 #include "FractureToolContext.h"
+#include "Drawing/MeshDebugDrawing.h"
+#include "FrameTypes.h"
 
 #define LOCTEXT_NAMESPACE "FracturePlanar"
 
@@ -16,7 +18,27 @@ UFractureToolPlaneCut::UFractureToolPlaneCut(const FObjectInitializer& ObjInit)
 {
 	PlaneCutSettings = NewObject<UFracturePlaneCutSettings>(GetTransientPackage(), UFracturePlaneCutSettings::StaticClass());
 	PlaneCutSettings->OwnerTool = this;
+
+	GizmoSettings = NewObject<UFractureTransformGizmoSettings>(GetTransientPackage(), UFractureTransformGizmoSettings::StaticClass());
+	GizmoSettings->OwnerTool = this;
 }
+
+
+void UFractureToolPlaneCut::Setup()
+{
+	Super::Setup();
+	GizmoSettings->Setup(this);
+	PlaneCutSettings->bCanCutWithMultiplePlanes = !GizmoSettings->bUseGizmo;
+	NotifyOfPropertyChangeByTool(PlaneCutSettings);
+}
+
+
+void UFractureToolPlaneCut::Shutdown()
+{
+	Super::Shutdown();
+	GizmoSettings->Shutdown();
+}
+
 
 FText UFractureToolPlaneCut::GetDisplayText() const
 {
@@ -35,39 +57,58 @@ FSlateIcon UFractureToolPlaneCut::GetToolIcon() const
 
 void UFractureToolPlaneCut::RegisterUICommand( FFractureEditorCommands* BindingContext ) 
 {
-	UI_COMMAND_EXT( BindingContext, UICommandInfo, "Planar", "Planar", "Planar Voronoi Fracture", EUserInterfaceActionType::ToggleButton, FInputChord() );
+	UI_COMMAND_EXT( BindingContext, UICommandInfo, "Planar", "Planar", "Fracture with planes.", EUserInterfaceActionType::ToggleButton, FInputChord() );
 	BindingContext->Planar = UICommandInfo;
 }
 
 void UFractureToolPlaneCut::Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI)
 {
 	const UFracturePlaneCutSettings* LocalCutSettings = PlaneCutSettings;
-
 	if (CutterSettings->bDrawDiagram)
 	{
-		if (LocalCutSettings->ReferenceActor != nullptr) // so we update with the ref actor realtime
+		// Draw a point centered at plane origin, and a square on the plane around it.
+		auto DrawPlane = [&PDI](const FTransform& Transform, float PlaneSize, FVector Offset)
 		{
-			FTransform Transform(LocalCutSettings->ReferenceActor->GetActorTransform());
-			PDI->DrawPoint(Transform.GetLocation(), FLinearColor::Green, 4.f, SDPG_Foreground);
+			FVector Center = Transform.GetLocation() + Offset;
+			FVector X = (PlaneSize * .5) * Transform.GetUnitAxis(EAxis::X);
+			FVector Y = (PlaneSize * .5) * Transform.GetUnitAxis(EAxis::Y);
+			FVector Corners[4]
+			{
+				Center - X - Y,
+				Center + X - Y,
+				Center + X + Y,
+				Center - X + Y
+			};
+			PDI->DrawPoint(Center, FLinearColor::Green, 4.f, SDPG_Foreground);
+			PDI->DrawLine(Corners[0], Corners[1], FLinearColor(255, 0, 0), SDPG_Foreground);
+			PDI->DrawLine(Corners[1], Corners[2], FLinearColor(0, 255, 0), SDPG_Foreground);
+			PDI->DrawLine(Corners[2], Corners[3], FLinearColor(255, 0, 0), SDPG_Foreground);
+			PDI->DrawLine(Corners[3], Corners[0], FLinearColor(0, 255, 0), SDPG_Foreground);
 
-			PDI->DrawLine(Transform.GetLocation(), Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * 100.f, FLinearColor(255, 0, 0), SDPG_Foreground);
-			PDI->DrawLine(Transform.GetLocation(), Transform.GetLocation() + Transform.GetUnitAxis(EAxis::Y) * 100.f, FLinearColor(0, 255, 0), SDPG_Foreground);
+			// Put some grid lines in that square
+			const int32 NumGridLines = 20;
+			const float GridLineSpacing = PlaneSize / (NumGridLines - 1);
+			const FColor GridColor(64, 64, 64, 128);
+			const float GridThickness = 1.0f;
+			const UE::Geometry::FFrame3d DrawFrame(Center, Transform.GetRotation());
+			MeshDebugDraw::DrawSimpleGrid(DrawFrame, NumGridLines, GridLineSpacing, GridThickness, GridColor, true, PDI, FTransform::Identity);
+		};
 
-			PDI->DrawLine(Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * 100.f, Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * 100.f + Transform.GetUnitAxis(EAxis::Y) * 100.f, FLinearColor(255, 0, 0), SDPG_Foreground);
-			PDI->DrawLine(Transform.GetLocation() + Transform.GetUnitAxis(EAxis::Y) * 100.f, Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * 100.f + Transform.GetUnitAxis(EAxis::Y) * 100.f, FLinearColor(0, 255, 0), SDPG_Foreground);
+		if (GizmoSettings->IsGizmoEnabled())
+		{
+			const FTransform& Transform = GizmoSettings->GetTransform();
+			EnumerateVisualizationMapping(PlanesMappings, RenderCuttingPlanesTransforms.Num(), [&](int32 Idx, FVector ExplodedVector)
+			{
+				DrawPlane(Transform, 100.f, ExplodedVector);
+			});
 		}
 		else // draw from computed transforms
 		{
-			for (const FTransform& Transform : RenderCuttingPlanesTransforms)
+			EnumerateVisualizationMapping(PlanesMappings, RenderCuttingPlanesTransforms.Num(), [&](int32 Idx, FVector ExplodedVector)
 			{
-				PDI->DrawPoint(Transform.GetLocation(), FLinearColor::Green, 4.f, SDPG_Foreground);
-
-				PDI->DrawLine(Transform.GetLocation(), Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize, FLinearColor(255, 0, 0), SDPG_Foreground);
-				PDI->DrawLine(Transform.GetLocation(), Transform.GetLocation() + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, FLinearColor(0, 255, 0), SDPG_Foreground);
-
-				PDI->DrawLine(Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize, Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, FLinearColor(255, 0, 0), SDPG_Foreground);
-				PDI->DrawLine(Transform.GetLocation() + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, Transform.GetLocation() + Transform.GetUnitAxis(EAxis::X) * RenderCuttingPlaneSize + Transform.GetUnitAxis(EAxis::Y) * RenderCuttingPlaneSize, FLinearColor(0, 255, 0), SDPG_Foreground);
-			}
+				const FTransform& Transform = RenderCuttingPlanesTransforms[Idx];
+				DrawPlane(Transform, RenderCuttingPlaneSize, ExplodedVector);
+			});
 		}
 	}
 }
@@ -75,28 +116,50 @@ void UFractureToolPlaneCut::Render(const FSceneView* View, FViewport* Viewport, 
 TArray<UObject*> UFractureToolPlaneCut::GetSettingsObjects() const
  {
 	TArray<UObject*> Settings;
+	Settings.Add(PlaneCutSettings);
+	Settings.Add(GizmoSettings);
 	Settings.Add(CutterSettings);
 	Settings.Add(CollisionSettings);
-	Settings.Add(PlaneCutSettings);
 	return Settings;
 }
 
+
+void UFractureToolPlaneCut::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.Property->GetFName() == GET_MEMBER_NAME_CHECKED(UFractureTransformGizmoSettings, bUseGizmo))
+	{
+		PlaneCutSettings->bCanCutWithMultiplePlanes = !GizmoSettings->bUseGizmo;
+		NotifyOfPropertyChangeByTool(PlaneCutSettings);
+	}
+	
+	Super::PostEditChangeChainProperty(PropertyChangedEvent);
+}
+
+
 void UFractureToolPlaneCut::FractureContextChanged()
 {
+	UpdateDefaultRandomSeed();
 	TArray<FFractureToolContext> FractureContexts = GetFractureToolContexts();
 
-	RenderCuttingPlanesTransforms.Empty();
+	ClearVisualizations();
 
 	RenderCuttingPlaneSize = FLT_MAX;
 	for (FFractureToolContext& FractureContext : FractureContexts)
 	{
-		// Move the local bounds to the actor so we we'll draw in the correct location
-		FractureContext.TransformBoundsToWorld();
+		FBox Bounds = FractureContext.GetWorldBounds();
+		if (!Bounds.IsValid)
+		{
+			continue;
+		}
+		int32 CollectionIdx = VisualizedCollections.Add(FractureContext.GetGeometryCollectionComponent());
+		int32 BoneIdx = FractureContext.GetSelection().Num() == 1 ? FractureContext.GetSelection()[0] : INDEX_NONE;
+		PlanesMappings.AddMapping(CollectionIdx, BoneIdx, RenderCuttingPlanesTransforms.Num());
+
 		GenerateSliceTransforms(FractureContext, RenderCuttingPlanesTransforms);
 
-		if (FractureContext.GetBounds().GetExtent().GetMax() < RenderCuttingPlaneSize)
+		if (Bounds.GetExtent().GetMax() < RenderCuttingPlaneSize)
 		{
-			RenderCuttingPlaneSize = FractureContext.GetBounds().GetExtent().GetMax();
+			RenderCuttingPlaneSize = Bounds.GetExtent().GetMax();
 		}
 	}
 }
@@ -108,10 +171,10 @@ int32 UFractureToolPlaneCut::ExecuteFracture(const FFractureToolContext& Fractur
 		const UFracturePlaneCutSettings* LocalCutSettings = PlaneCutSettings;
 
 		TArray<FPlane> CuttingPlanes;
-		if (LocalCutSettings->ReferenceActor != nullptr)
+		if (GizmoSettings->IsGizmoEnabled())
 		{
-			FTransform Transform(LocalCutSettings->ReferenceActor->GetActorTransform());
-			CuttingPlanes.Add(FPlane(Transform.GetLocation() - FractureContext.GetTransform().GetLocation(), Transform.GetUnitAxis(EAxis::Z)));
+			FTransform Transform = GizmoSettings->GetTransform();
+			CuttingPlanes.Add(FPlane(Transform.GetLocation(), Transform.GetUnitAxis(EAxis::Z)));
 		}
 		else
 		{
@@ -127,13 +190,14 @@ int32 UFractureToolPlaneCut::ExecuteFracture(const FFractureToolContext& Fractur
 		FNoiseSettings NoiseSettings;
 		if (CutterSettings->Amplitude > 0.0f)
 		{
-			NoiseSettings.Amplitude = CutterSettings->Amplitude;
-			NoiseSettings.Frequency = CutterSettings->Frequency;
-			NoiseSettings.Octaves = CutterSettings->OctaveNumber;
-			NoiseSettings.PointSpacing = CutterSettings->SurfaceResolution;
+			CutterSettings->TransferNoiseSettings(NoiseSettings);
 			InternalSurfaceMaterials.NoiseSettings = NoiseSettings;
 		}
-		return CutMultipleWithMultiplePlanes(CuttingPlanes, InternalSurfaceMaterials, *FractureContext.GetGeometryCollection(), FractureContext.GetSelection(), 0, 0);
+
+		// Proximity is invalidated.
+		ClearProximity(FractureContext.GetGeometryCollection().Get());
+
+		return CutMultipleWithMultiplePlanes(CuttingPlanes, InternalSurfaceMaterials, *FractureContext.GetGeometryCollection(), FractureContext.GetSelection(), CutterSettings->Grout, CollisionSettings->GetPointSpacing(), FractureContext.GetSeed(), FractureContext.GetTransform());
 	}
 
 	return INDEX_NONE;
@@ -143,14 +207,21 @@ void UFractureToolPlaneCut::GenerateSliceTransforms(const FFractureToolContext& 
 {
 	FRandomStream RandStream(Context.GetSeed());
 
-	const FVector Extent(Context.GetBounds().Max - Context.GetBounds().Min);
+	FBox Bounds = Context.GetWorldBounds();
+	const FVector Extent(Bounds.Max - Bounds.Min);
 
 	CuttingPlaneTransforms.Reserve(CuttingPlaneTransforms.Num() + PlaneCutSettings->NumberPlanarCuts);
 	for (int32 ii = 0; ii < PlaneCutSettings->NumberPlanarCuts; ++ii)
 	{
-		FVector Position(Context.GetBounds().Min + FVector(RandStream.FRand(), RandStream.FRand(), RandStream.FRand()) * Extent);
+		FVector Position(Bounds.Min + FVector(RandStream.FRand(), RandStream.FRand(), RandStream.FRand()) * Extent);
 		CuttingPlaneTransforms.Emplace(FTransform(FRotator(RandStream.FRand() * 360.0f, RandStream.FRand() * 360.0f, 0.0f), Position));
 	}
+}
+
+void UFractureToolPlaneCut::SelectedBonesChanged()
+{
+	GizmoSettings->ResetGizmo();
+	Super::SelectedBonesChanged();
 }
 
 #undef LOCTEXT_NAMESPACE

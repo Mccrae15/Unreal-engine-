@@ -38,15 +38,6 @@ bool ExtractFormatArgumentValue(FPyWrapperText* InSelf, PyObject* InObj, FFormat
 	}
 
 	// Don't use PyConversion for numeric types as they would allow coercion from float<->int
-#if PY_MAJOR_VERSION < 3
-	if (PyInt_Check(InObj))
-	{
-		OutFormatArg.ArgumentValueType = EFormatArgumentType::Int;
-		OutFormatArg.ArgumentValueInt = PyInt_AsLong(InObj);
-		return true;
-	}
-#endif	// PY_MAJOR_VERSION < 3
-
 	if (PyLong_Check(InObj))
 	{
 		OutFormatArg.ArgumentValueType = EFormatArgumentType::Int;
@@ -68,11 +59,7 @@ bool ExtractFormatArgumentValue(FPyWrapperText* InSelf, PyObject* InObj, FFormat
 bool ExtractFormatArguments(FPyWrapperText* InSelf, PyObject* InObj, const int32 InArgIndex, TArray<FFormatArgumentData>& InOutFormatArgs)
 {
 	// Is this some kind of container, or a single value?
-#if PY_MAJOR_VERSION < 3
-	const bool bIsStringType = PyUnicode_Check(InObj) || PyString_Check(InObj);
-#else	// PY_MAJOR_VERSION < 3
-	const bool bIsStringType = PyUnicode_Check(InObj);
-#endif	// PY_MAJOR_VERSION < 3
+	const bool bIsStringType = static_cast<bool>(PyUnicode_Check(InObj));
 	if (!bIsStringType && PyUtil::HasLength(InObj))
 	{
 		const Py_ssize_t SequenceLen = PyObject_Length(InObj);
@@ -242,6 +229,11 @@ PyTypeObject InitializePyWrapperTextType()
 		static PyObject* Str(FPyWrapperText* InSelf)
 		{
 			return PyUnicode_FromString(TCHAR_TO_UTF8(*InSelf->Value.ToString()));
+		}
+
+		static PyObject* Repr(FPyWrapperText* InSelf)
+		{
+			return PyUnicode_FromString(TCHAR_TO_UTF8(*FString::Printf(TEXT("Text(\"%s\")"), *InSelf->Value.ToString())));
 		}
 
 		static PyObject* RichCmp(FPyWrapperText* InSelf, PyObject* InOther, int InOp)
@@ -465,10 +457,11 @@ PyTypeObject InitializePyWrapperTextType()
 		{ nullptr, nullptr, 0, nullptr }
 	};
 
-	PyTypeObject PyType = InitializePyWrapperBasicType<FPyWrapperText>("Text", "Type for all UE4 exposed text instances");
+	PyTypeObject PyType = InitializePyWrapperBasicType<FPyWrapperText>("Text", "Type for all Unreal exposed text instances");
 
 	PyType.tp_init = (initproc)&FFuncs::Init;
 	PyType.tp_str = (reprfunc)&FFuncs::Str;
+	PyType.tp_repr = (reprfunc)&FFuncs::Repr;
 	PyType.tp_richcompare = (richcmpfunc)&FFuncs::RichCmp;
 	PyType.tp_hash = (hashfunc)&FFuncs::Hash;
 

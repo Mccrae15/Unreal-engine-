@@ -6,27 +6,6 @@
 
 #pragma once
 
-#if WINVER == 0x0502
-// Windows XP uses Win7 sdk, and in that one winerror.h doesn't include them
-
-#define DXGI_ERROR_INVALID_CALL                 MAKE_DXGI_HRESULT(1)
-#define DXGI_ERROR_NOT_FOUND                    MAKE_DXGI_HRESULT(2)
-#define DXGI_ERROR_MORE_DATA                    MAKE_DXGI_HRESULT(3)
-#define DXGI_ERROR_UNSUPPORTED                  MAKE_DXGI_HRESULT(4)
-#define DXGI_ERROR_DEVICE_REMOVED               MAKE_DXGI_HRESULT(5)
-#define DXGI_ERROR_DEVICE_HUNG                  MAKE_DXGI_HRESULT(6)
-#define DXGI_ERROR_DEVICE_RESET                 MAKE_DXGI_HRESULT(7)
-#define DXGI_ERROR_WAS_STILL_DRAWING            MAKE_DXGI_HRESULT(10)
-#define DXGI_ERROR_FRAME_STATISTICS_DISJOINT    MAKE_DXGI_HRESULT(11)
-#define DXGI_ERROR_GRAPHICS_VIDPN_SOURCE_IN_USE MAKE_DXGI_HRESULT(12)
-#define DXGI_ERROR_DRIVER_INTERNAL_ERROR        MAKE_DXGI_HRESULT(32)
-#define DXGI_ERROR_NONEXCLUSIVE                 MAKE_DXGI_HRESULT(33)
-#define DXGI_ERROR_NOT_CURRENTLY_AVAILABLE      MAKE_DXGI_HRESULT(34)
-#define DXGI_ERROR_REMOTE_CLIENT_DISCONNECTED   MAKE_DXGI_HRESULT(35)
-#define DXGI_ERROR_REMOTE_OUTOFMEMORY           MAKE_DXGI_HRESULT(36)
-
-#endif
-
 #define D3D11RHI_IMMEDIATE_CONTEXT	(GD3D11RHI->GetDeviceContext())
 #define D3D11RHI_DEVICE				(GD3D11RHI->GetDevice())
 
@@ -83,6 +62,8 @@ struct FD3D11ResizeViewportState
 extern D3D11RHI_API void VerifyD3D11ResizeViewportResult(HRESULT D3DResult, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line,
 	const FD3D11ResizeViewportState& OldState, const FD3D11ResizeViewportState& NewState, ID3D11Device* Device);
 
+extern D3D11RHI_API void VerifyD3D11CreateViewResult(HRESULT D3DResult, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, ID3D11Device* Device, FRHITexture* Texture, const D3D11_UNORDERED_ACCESS_VIEW_DESC& Desc);
+extern D3D11RHI_API void VerifyD3D11CreateViewResult(HRESULT D3DResult, const ANSICHAR* Code, const ANSICHAR* Filename, uint32 Line, ID3D11Device* Device, FRHIBuffer* Buffer, const D3D11_UNORDERED_ACCESS_VIEW_DESC& Desc);
 
 /**
  * A macro for using VERIFYD3D11RESULT that automatically passes in the code and filename/line.
@@ -94,6 +75,8 @@ extern D3D11RHI_API void VerifyD3D11ResizeViewportResult(HRESULT D3DResult, cons
 #define VERIFYD3D11RESULT_NOEXIT(x)		{HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11ResultNoExit(hr,#x,__FILE__,__LINE__, 0); }}
 #define VERIFYD3D11CREATETEXTURERESULT(x,UEFormat,SizeX,SizeY,SizeZ,Format,NumMips,Flags,Usage,CPUAccessFlags,MiscFlags,SampleCount,SampleQuality,SubResPtr,SubResPitch,SubResSlicePitch,Device) {HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11CreateTextureResult(hr, UEFormat,#x,__FILE__,__LINE__,SizeX,SizeY,SizeZ,Format,NumMips,Flags,Usage,CPUAccessFlags,MiscFlags,SampleCount,SampleQuality,SubResPtr,SubResPitch,SubResSlicePitch,Device); }}
 #define VERIFYD3D11RESIZEVIEWPORTRESULT(x, OldState, NewState, Device) { HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11ResizeViewportResult(hr, #x, __FILE__, __LINE__, OldState, NewState, Device); }}
+#define VERIFYD3D11CREATEVIEWRESULT(x, Device, Resource, Desc) {HRESULT hr = x; if (FAILED(hr)) { VerifyD3D11CreateViewResult(hr, #x, __FILE__, __LINE__, Device, Resource, Desc); }}
+
 /**
  * Checks that a COM object has the expected number of references.
  */
@@ -296,18 +279,10 @@ inline bool ShouldNotEnqueueRHICommand()
 	return RHICmdList.Bypass() || (IsRunningRHIInSeparateThread() && IsInRHIThread()) || (!IsRunningRHIInSeparateThread() && IsInRenderingThread());
 }
 
-inline void D3D11StallRHIThread()
+struct FScopedD3D11RHIThreadStaller : public FScopedRHIThreadStaller
 {
-	if (IsRunningRHIInSeparateThread() && IsInRenderingThread() && GRHICommandList.IsRHIThreadActive())
+	FScopedD3D11RHIThreadStaller(bool bDoStall = true)
+		: FScopedRHIThreadStaller(FRHICommandListExecutor::GetImmediateCommandList(), bDoStall && IsInRenderingThread() && GRHICommandList.IsRHIThreadActive())
 	{
-		FRHICommandListExecutor::GetImmediateCommandList().StallRHIThread();
 	}
-}
-
-inline void D3D11UnstallRHIThread()
-{
-	if (IsRunningRHIInSeparateThread() && IsInRenderingThread() && FRHICommandListExecutor::GetImmediateCommandList().IsStalled())
-	{
-		FRHICommandListExecutor::GetImmediateCommandList().UnStallRHIThread();
-	}
-}
+};

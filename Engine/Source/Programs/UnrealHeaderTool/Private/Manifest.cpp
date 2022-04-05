@@ -1,17 +1,20 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Manifest.h"
+#include "Exceptions.h"
+#include "IScriptGeneratorPluginInterface.h"
 #include "UnrealHeaderTool.h"
 #include "Misc/DateTime.h"
 #include "Logging/LogMacros.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
-#include "UObject/ErrorException.h"
 #include "Misc/PackageName.h"
 #include "UnrealHeaderToolGlobals.h"
 #include "Serialization/JsonTypes.h"
 #include "Serialization/JsonSerializer.h"
+
+FString GManifestFilename;
 
 namespace
 {
@@ -27,7 +30,7 @@ namespace
 	{
 		if (JsonValue->Type != TJsonFieldType<T>::Value)
 		{
-			FError::Throwf(TEXT("'%s' is the wrong type"), Outer);
+			FUHTMessage(GManifestFilename).Throwf(TEXT("'%s' is the wrong type"), Outer);
 		}
 
 		JsonValue->AsArgumentType(OutVal);
@@ -40,12 +43,12 @@ namespace
 
 		if (!JsonValue)
 		{
-			FError::Throwf(TEXT("Unable to find field '%s' in '%s'"), FieldName, Outer);
+			FUHTMessage(GManifestFilename).Throwf(TEXT("Unable to find field '%s' in '%s'"), FieldName, Outer);
 		}
 
 		if ((*JsonValue)->Type != TJsonFieldType<T>::Value)
 		{
-			FError::Throwf(TEXT("Field '%s' in '%s' is the wrong type"), Outer);
+			FUHTMessage(GManifestFilename).Throwf(TEXT("Field '%s' in '%s' is the wrong type"), Outer);
 		}
 
 		(*JsonValue)->AsArgumentType(OutVal);
@@ -63,13 +66,14 @@ namespace
 
 FManifest FManifest::LoadFromFile(const FString& Filename)
 {
+	GManifestFilename = Filename;
 	FManifest Result;
 	FString FilenamePath = FPaths::GetPath(Filename);
 	FString Json;
 
 	if (!FFileHelper::LoadFileToString(Json, *Filename))
 	{
-		FError::Throwf(TEXT("Unable to load manifest: %s"), *Filename);
+		FUHTMessage(Filename).Throwf(TEXT("Unable to load manifest: %s"), *Filename);
 	}
 
 	TSharedPtr<FJsonObject> RootObject = TSharedPtr<FJsonObject>();
@@ -77,7 +81,7 @@ FManifest FManifest::LoadFromFile(const FString& Filename)
 
 	if (!FJsonSerializer::Deserialize(Reader, RootObject))
 	{
-		FError::Throwf(TEXT("Manifest is malformed: %s"), *Filename);
+		FUHTMessage(Filename).Throwf(TEXT("Manifest is malformed: %s"), *Filename);
 	}
 
 	TArray<TSharedPtr<FJsonValue>> ModulesArray;
@@ -118,6 +122,7 @@ FManifest FManifest::LoadFromFile(const FString& Filename)
 
 		TArray<TSharedPtr<FJsonValue>> ClassesHeaders;
 		TArray<TSharedPtr<FJsonValue>> PublicHeaders;
+		TArray<TSharedPtr<FJsonValue>> InternalHeaders;
 		TArray<TSharedPtr<FJsonValue>> PrivateHeaders;
 
 		Result.Modules.AddZeroed();
@@ -132,6 +137,7 @@ FManifest FManifest::LoadFromFile(const FString& Filename)
 		GetJsonFieldValue(KnownModule.SaveExportedHeaders,       ModuleObj, TEXT("SaveExportedHeaders"),      *Outer);
 		GetJsonFieldValue(ClassesHeaders,                        ModuleObj, TEXT("ClassesHeaders"),           *Outer);
 		GetJsonFieldValue(PublicHeaders,                         ModuleObj, TEXT("PublicHeaders"),            *Outer);
+		GetJsonFieldValue(InternalHeaders,                       ModuleObj, TEXT("InternalHeaders"),          *Outer);
 		GetJsonFieldValue(PrivateHeaders,                        ModuleObj, TEXT("PrivateHeaders"),           *Outer);
 		GetJsonFieldValue(KnownModule.GeneratedCPPFilenameBase,  ModuleObj, TEXT("GeneratedCPPFilenameBase"), *Outer);
 		GetJsonFieldValue(GeneratedCodeVersionString, ModuleObj, TEXT("UHTGeneratedCodeVersion"), *Outer);
@@ -158,19 +164,22 @@ FManifest FManifest::LoadFromFile(const FString& Filename)
 		if (!KnownModule.IncludeBase              .EndsWith(TEXT("/"))) { KnownModule.IncludeBase              .AppendChar(TEXT('/')); }
 		if (!KnownModule.GeneratedIncludeDirectory.EndsWith(TEXT("/"))) { KnownModule.GeneratedIncludeDirectory.AppendChar(TEXT('/')); }
 
-		KnownModule.PublicUObjectClassesHeaders.AddZeroed(ClassesHeaders.Num());
-		KnownModule.PublicUObjectHeaders       .AddZeroed(PublicHeaders .Num());
-		KnownModule.PrivateUObjectHeaders      .AddZeroed(PrivateHeaders.Num());
+		KnownModule.PublicUObjectClassesHeaders.AddZeroed(ClassesHeaders .Num());
+		KnownModule.PublicUObjectHeaders       .AddZeroed(PublicHeaders  .Num());
+		KnownModule.InternalUObjectHeaders     .AddZeroed(InternalHeaders.Num());
+		KnownModule.PrivateUObjectHeaders      .AddZeroed(PrivateHeaders .Num());
 
-		ProcessHeaderArray(KnownModule.PublicUObjectClassesHeaders.GetData(), ClassesHeaders, *(Outer + TEXT(".ClassHeaders")));
-		ProcessHeaderArray(KnownModule.PublicUObjectHeaders       .GetData(), PublicHeaders , *(Outer + TEXT(".PublicHeaders" )));
-		ProcessHeaderArray(KnownModule.PrivateUObjectHeaders      .GetData(), PrivateHeaders, *(Outer + TEXT(".PrivateHeaders")));
+		ProcessHeaderArray(KnownModule.PublicUObjectClassesHeaders.GetData(), ClassesHeaders , *(Outer + TEXT(".ClassHeaders")));
+		ProcessHeaderArray(KnownModule.PublicUObjectHeaders       .GetData(), PublicHeaders  , *(Outer + TEXT(".PublicHeaders" )));
+		ProcessHeaderArray(KnownModule.InternalUObjectHeaders     .GetData(), InternalHeaders, *(Outer + TEXT(".InternalHeaders")));
+		ProcessHeaderArray(KnownModule.PrivateUObjectHeaders      .GetData(), PrivateHeaders , *(Outer + TEXT(".PrivateHeaders")));
 
 		// Sort the headers alphabetically.  This is just to add determinism to the compilation dependency order, since we currently
 		// don't rely on explicit includes (but we do support 'dependson')
 		// @todo uht: Ideally, we should sort these by sensical order before passing them in -- or better yet, follow include statements ourselves in here.
 		KnownModule.PublicUObjectClassesHeaders.Sort();
 		KnownModule.PublicUObjectHeaders       .Sort();
+		KnownModule.InternalUObjectHeaders     .Sort();
 		KnownModule.PrivateUObjectHeaders      .Sort();
 
 		UE_LOG(LogCompile, Log, TEXT("  %s"), *KnownModule.Name);
@@ -225,6 +234,15 @@ bool FManifestModule::NeedsRegeneration() const
 		}
 	}
 
+	for (const FString& Header : InternalUObjectHeaders)
+	{
+		if (IFileManager::Get().GetTimeStamp(*Header) > TimestampFileLastModify)
+		{
+			UE_LOG(LogCompile, Log, TEXT("File %s is newer than last timestamp. Regenerating reflection data for module %s."), *Header, *Name);
+			return true;
+		}
+	}
+
 	for (const FString& Header : PrivateUObjectHeaders)
 	{
 		if (IFileManager::Get().GetTimeStamp(*Header) > TimestampFileLastModify)
@@ -250,6 +268,7 @@ bool FManifestModule::IsCompatibleWith(const FManifestModule& ManifestModule)
 		&& GeneratedIncludeDirectory == ManifestModule.GeneratedIncludeDirectory
 		&& PublicUObjectClassesHeaders == ManifestModule.PublicUObjectClassesHeaders
 		&& PublicUObjectHeaders == ManifestModule.PublicUObjectHeaders
+		&& InternalUObjectHeaders == ManifestModule.InternalUObjectHeaders
 		&& PrivateUObjectHeaders == ManifestModule.PrivateUObjectHeaders
 		&& GeneratedCPPFilenameBase == ManifestModule.GeneratedCPPFilenameBase;
 }

@@ -108,7 +108,7 @@ void FMeshMergeDataTracker::AddLightMapPixels(int32 Dimension)
 
 int32 FMeshMergeDataTracker::GetLightMapDimension() const
 {
-	return FMath::CeilToInt(FMath::Sqrt(SummedLightMapPixels));
+	return FMath::CeilToInt(FMath::Sqrt(static_cast<float>(SummedLightMapPixels)));
 }
 
 bool FMeshMergeDataTracker::DoesLODContainVertexColors(int32 LODIndex) const
@@ -250,8 +250,9 @@ void FMeshMergeDataTracker::ProcessRawMeshes()
 		const int32 LODIndex = Key.GetLODIndex();
 		const FMeshDescription& RawMesh = MeshPair.Value;
 
-		TVertexInstanceAttributesConstRef<FVector4> VertexInstanceColors = RawMesh.VertexInstanceAttributes().GetAttributesRef<FVector4>(MeshAttribute::VertexInstance::Color);
-		TVertexInstanceAttributesConstRef<FVector2D> VertexInstanceUVs = RawMesh.VertexInstanceAttributes().GetAttributesRef<FVector2D>(MeshAttribute::VertexInstance::TextureCoordinate);
+		FStaticMeshConstAttributes Attributes(RawMesh);
+		TVertexInstanceAttributesConstRef<FVector4f> VertexInstanceColors = Attributes.GetVertexInstanceColors();
+		TVertexInstanceAttributesConstRef<FVector2f> VertexInstanceUVs = Attributes.GetVertexInstanceUVs();
 
 		// hash vertex color buffer so we can see if instances have unique vertex data
 		if(VertexInstanceColors.GetNumElements() > 0)
@@ -264,7 +265,7 @@ void FMeshMergeDataTracker::ProcessRawMeshes()
 		
 		if (VertexInstanceUVs.GetNumElements() > 0)
 		{
-			for (int32 ChannelIndex = 0; ChannelIndex < FMath::Min(VertexInstanceUVs.GetNumIndices(), (int32)MAX_MESH_TEXTURE_COORDS_MD); ++ChannelIndex)
+			for (int32 ChannelIndex = 0; ChannelIndex < FMath::Min(VertexInstanceUVs.GetNumChannels(), (int32)MAX_MESH_TEXTURE_COORDS_MD); ++ChannelIndex)
 			{
 				bOcuppiedUVChannels[LODIndex][ChannelIndex] = true;
 				bPotentialLODLightmapUVChannels[LODIndex][ChannelIndex] = (ChannelIndex == LightmapChannelIdx);

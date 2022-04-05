@@ -12,12 +12,16 @@
 #include "RenderGraphDefinitions.h"
 
 class FCanvas;
-class FGPUSpriteResources;
-class UVectorFieldComponent;
+class FGPUSortManager;
 struct FGPUSpriteEmitterInfo;
 struct FGPUSpriteResourceData;
+class FGPUSpriteResources;
 struct FParticleEmitterInstance;
-class FGPUSortManager;
+class FRHIUniformBuffer;
+class FScene;
+class FSceneInterface;
+class UVectorFieldComponent;
+class FGlobalDistanceFieldParameterData;
 
 /*-----------------------------------------------------------------------------
 	Forward declarations.
@@ -104,8 +108,7 @@ inline bool RHISupportsGPUParticles()
 	return FXConsoleVariables::bAllowGPUParticles
 		&& GSupportsWideMRT
 		&& GPixelFormats[PF_G32R32F].Supported 
-		&& GSupportsTexture3D 
-		&& GSupportsResourceView;
+		&& GSupportsTexture3D;
 }
 
 class FFXSystemInterface;
@@ -126,7 +129,7 @@ public:
 	/**
 	 * Create an effects system instance.
 	 */
-	ENGINE_API static FFXSystemInterface* Create(ERHIFeatureLevel::Type InFeatureLevel, EShaderPlatform InShaderPlatform);
+	ENGINE_API static FFXSystemInterface* Create(ERHIFeatureLevel::Type InFeatureLevel, FSceneInterface* Scene);
 
 	/**
 	 * Destroy an effects system instance.
@@ -168,7 +171,7 @@ public:
 	 * Tick the effects system.
 	 * @param DeltaSeconds The number of seconds by which to step simulations forward.
 	 */
-	virtual void Tick(float DeltaSeconds) = 0;
+	virtual void Tick(UWorld* World, float DeltaSeconds) = 0;
 
 #if WITH_EDITOR
 	/**
@@ -232,9 +235,9 @@ public:
 	 * Notification from the renderer that it is about to perform visibility
 	 * checks on FX belonging to this system.
 	 */
-	virtual void PreInitViews(FRHICommandListImmediate& RHICmdList, bool bAllowGPUParticleUpdate) = 0;
+	virtual void PreInitViews(FRDGBuilder& GraphBuilder, bool bAllowGPUParticleUpdate) = 0;
 
-	virtual void PostInitViews(FRHICommandListImmediate& RHICmdList, FRHIUniformBuffer* ViewUniformBuffer, bool bAllowGPUParticleUpdate) = 0;
+	virtual void PostInitViews(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate) = 0;
 
 	virtual bool UsesGlobalDistanceField() const = 0;
 
@@ -242,26 +245,28 @@ public:
 
 	virtual bool RequiresEarlyViewUniformBuffer() const = 0;
 
+	virtual bool RequiresRayTracingScene() const = 0;
+
 	/**
 	 * Notification from the renderer that it is about to draw FX belonging to
 	 * this system.
 	 */
-	virtual void PreRender(FRHICommandListImmediate& RHICmdList, const class FGlobalDistanceFieldParameterData* GlobalDistanceFieldParameterData, bool bAllowGPUParticleSceneUpdate) = 0;
+	virtual void PreRender(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate) = 0;
 
 	/**
 	 * Notification from the renderer that opaque primitives have rendered.
 	 */
-	virtual void PostRenderOpaque(
-		FRHICommandListImmediate& RHICmdList, 
-		FRHIUniformBuffer* ViewUniformBuffer,
-		const class FShaderParametersMetadata* SceneTexturesUniformBufferStruct,
-		FRHIUniformBuffer* SceneTexturesUniformBuffer,
-		bool bAllowGPUParticleUpdate) = 0;
+	virtual void PostRenderOpaque(FRDGBuilder& GraphBuilder, TConstArrayView<FViewInfo> Views, bool bAllowGPUParticleUpdate) = 0;
 
 	bool IsPendingKill() const { return bIsPendingKill; }
 
 	/** Get the shared SortManager, used in the rendering loop to call FGPUSortManager::OnPreRender() and FGPUSortManager::OnPostRenderOpaque() */
 	virtual FGPUSortManager* GetGPUSortManager() const = 0;
+
+	virtual void SetSceneTexturesUniformBuffer(FRHIUniformBuffer* InSceneTexturesUniformParams) {}
+
+	FORCEINLINE FScene* GetScene()const { return Scene; }
+	FORCEINLINE void SetScene(FScene* InScene) { Scene = InScene; }
 
 protected:
 	
@@ -270,9 +275,15 @@ protected:
 	/** By making the destructor protected, an instance must be destroyed via FFXSystemInterface::Destroy. */
 	ENGINE_API virtual ~FFXSystemInterface() {}
 
+	ENGINE_API static FRHIUniformBuffer* GetReferenceViewUniformBuffer(TConstArrayView<FViewInfo> Views);
+	ENGINE_API static bool GetReferenceAllowGPUUpdate(TConstArrayView<FViewInfo> Views);
+	ENGINE_API static const FGlobalDistanceFieldParameterData* GetReferenceGlobalDistanceFieldData(TConstArrayView<FViewInfo> Views);
+
 private:
 
 	bool bIsPendingKill = false;
+
+	class FScene* Scene = nullptr;
 
 	static TMap<FName, FCreateCustomFXSystemDelegate> CreateCustomFXDelegates;
 };

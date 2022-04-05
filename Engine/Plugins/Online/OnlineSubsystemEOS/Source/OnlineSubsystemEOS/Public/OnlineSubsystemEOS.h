@@ -5,7 +5,6 @@
 #include "CoreMinimal.h"
 #include "OnlineSubsystemNames.h"
 #include "OnlineSubsystemImpl.h"
-#include "SocketSubsystemEOS.h"
 
 #include COMPILED_PLATFORM_HEADER(EOSHelpers.h)
 
@@ -15,6 +14,7 @@ DECLARE_STATS_GROUP(TEXT("EOS"), STATGROUP_EOS, STATCAT_Advanced);
 
 #include "eos_sdk.h"
 
+class FSocketSubsystemEOS;
 class IEOSSDKManager;
 using IEOSPlatformHandlePtr = TSharedPtr<class IEOSPlatformHandle, ESPMode::ThreadSafe>;
 
@@ -48,14 +48,6 @@ class FOnlineUserCloudEOS;
 typedef TSharedPtr<class FOnlineUserCloudEOS, ESPMode::ThreadSafe> FOnlineUserCloudEOSPtr;
 
 typedef TSharedPtr<FPlatformEOSHelpers, ESPMode::ThreadSafe> FPlatformEOSHelpersPtr;
-
-#ifndef EOS_PRODUCTNAME_MAX_BUFFER_LEN
-	#define EOS_PRODUCTNAME_MAX_BUFFER_LEN 64
-#endif
-
-#ifndef EOS_PRODUCTVERSION_MAX_BUFFER_LEN
-	#define EOS_PRODUCTVERSION_MAX_BUFFER_LEN 64
-#endif
 
 /**
  *	OnlineSubsystemEOS - Implementation of the online subsystem for EOS services
@@ -92,6 +84,7 @@ public:
 	virtual FText GetOnlineServiceName() const override;
 	virtual IOnlineStatsPtr GetStatsInterface() const override;
 	virtual bool Exec(class UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar) override;
+	virtual void ReloadConfigs(const TSet<FString>& ConfigSections) override;
 
 	virtual IOnlineGroupsPtr GetGroupsInterface() const override { return nullptr; }
 	virtual IOnlinePartyPtr GetPartyInterface() const override { return nullptr; }
@@ -108,7 +101,7 @@ public:
 	virtual bool Shutdown() override;
 	virtual FString GetAppId() const override;
 
-// FTickerObjectBase
+// FTSTickerObjectBase
 	virtual bool Tick(float DeltaTime) override;
 
 	IVoiceChatUser* GetVoiceChatUserInterface(const FUniqueNetId& LocalUserId);
@@ -118,8 +111,7 @@ PACKAGE_SCOPE:
 	FOnlineSubsystemEOS() = delete;
 	explicit FOnlineSubsystemEOS(FName InInstanceName);
 
-	char ProductNameAnsi[EOS_PRODUCTNAME_MAX_BUFFER_LEN];
-	char ProductVersionAnsi[EOS_PRODUCTVERSION_MAX_BUFFER_LEN];
+	FString ProductId;
 
 	IEOSSDKManager* EOSSDKManager;
 
@@ -136,7 +128,6 @@ PACKAGE_SCOPE:
 	EOS_HLeaderboards LeaderboardsHandle;
 	EOS_HMetrics MetricsHandle;
 	EOS_HAchievements AchievementsHandle;
-	EOS_HP2P P2PHandle;
 	EOS_HEcom EcomHandle;
 	EOS_HTitleStorage TitleStorageHandle;
 	EOS_HPlayerDataStorage PlayerDataStorageHandle;

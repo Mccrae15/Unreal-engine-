@@ -5,7 +5,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Tools.DotNETCommon;
+using EpicGames.Core;
+using UnrealBuildBase;
 
 namespace UnrealBuildTool
 {
@@ -22,17 +23,17 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// Path to a zip file containing the framework. May be null.
 		/// </summary>
-		public readonly FileReference ZipFile;
+		public readonly FileReference? ZipFile;
 
 		/// <summary>
 		/// Path to the framework on disk.
 		/// </summary>
-		public readonly DirectoryReference FrameworkDirectory;
+		public readonly DirectoryReference? FrameworkDirectory;
 
 		/// <summary>
 		/// 
 		/// </summary>
-		public readonly string CopyBundledAssets;
+		public readonly string? CopyBundledAssets;
 
 		/// <summary>
 		/// Copy the framework to the target's Framework directory
@@ -42,14 +43,14 @@ namespace UnrealBuildTool
 		/// <summary>
 		/// File created after the framework has been extracted. Used to add dependencies into the action graph.
 		/// </summary>
-		public FileItem ExtractedTokenFile;
+		public FileItem? ExtractedTokenFile;
 
 		/// <summary>
 		/// Constructor
 		/// </summary>
 		/// <param name="Name">The framework name</param>
 		/// <param name="CopyBundledAssets"></param>
-		public UEBuildFramework(string Name, string CopyBundledAssets = null)
+		public UEBuildFramework(string Name, string? CopyBundledAssets = null)
 		{
 			this.Name = Name;
 			this.CopyBundledAssets = CopyBundledAssets;
@@ -63,7 +64,7 @@ namespace UnrealBuildTool
 		/// <param name="OutputDirectory">Path for the extracted zip file</param>
 		/// <param name="CopyBundledAssets"></param>
 		/// <param name="bCopyFramework">Copy the framework to the target's Framework directory</param>
-		public UEBuildFramework(string Name, FileReference ZipFile, DirectoryReference OutputDirectory, string CopyBundledAssets, bool bCopyFramework)
+		public UEBuildFramework(string Name, FileReference? ZipFile, DirectoryReference? OutputDirectory, string? CopyBundledAssets, bool bCopyFramework)
 		{
 			this.Name = Name;
 			this.ZipFile = ZipFile;
@@ -79,7 +80,7 @@ namespace UnrealBuildTool
 		/// <param name="FrameworkDirectory">Path for the framework on disk</param>
 		/// <param name="CopyBundledAssets"></param>
 		/// <param name="bCopyFramework">Copy the framework to the target's Framework directory</param>
-		public UEBuildFramework(String Name, DirectoryReference FrameworkDirectory, string CopyBundledAssets, bool bCopyFramework)
+		public UEBuildFramework(String Name, DirectoryReference? FrameworkDirectory, string? CopyBundledAssets, bool bCopyFramework)
 		{
 			this.Name = Name;
 			this.FrameworkDirectory = FrameworkDirectory;

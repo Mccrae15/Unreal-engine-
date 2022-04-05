@@ -33,6 +33,8 @@
 
 #define LOCTEXT_NAMESPACE "LogStereoPanorama"
 
+const FName StereoPanoramaLogName("LogStereoPanorama");
+
 // always combine both eyes
 const bool CombineAtlasesOnOutput = true;
 
@@ -84,11 +86,10 @@ const SamplingPattern g_ssPatterns[] =
 
 };
 
-void USceneCapturer::InitCaptureComponent(USceneCaptureComponent2D* CaptureComponent, float HFov, float VFov, EStereoscopicPass InStereoPass)
+void USceneCapturer::InitCaptureComponent(USceneCaptureComponent2D* CaptureComponent, float HFov, float VFov)
 {
 	CaptureComponent->SetVisibility( true );
 	CaptureComponent->SetHiddenInGame( false );
-	CaptureComponent->CaptureStereoPass = InStereoPass;
 	CaptureComponent->FOVAngle = FMath::Max( HFov, VFov );
 	CaptureComponent->bCaptureEveryFrame = false;
 	CaptureComponent->bCaptureOnMovement = false;
@@ -102,7 +103,7 @@ void USceneCapturer::InitCaptureComponent(USceneCaptureComponent2D* CaptureCompo
 	CaptureComponent->TextureTarget->TargetGamma = 2.2f;
 	CaptureComponent->RegisterComponentWithWorld( GetWorld() ); //GWorld
 
-	// UE4 cannot serialize an array of subobject pointers, so add these objects to the root
+	// Unreal Engine cannot serialize an array of subobject pointers, so add these objects to the root
 	CaptureComponent->AddToRoot();
 }
 
@@ -296,7 +297,7 @@ USceneCapturer::USceneCapturer()
     UnprojectedAtlasWidth  = NumberOfHorizontalSteps * StripWidth;
     UnprojectedAtlasHeight = NumberOfVerticalSteps   * StripHeight;
 
-    //NOTE: ikrimae: Ensure that the main gameview is > CaptureWidth x CaptureHeight. Bug in UE4 that won't re-alloc scene render targets to the correct size
+    //NOTE: ikrimae: Ensure that the main gameview is > CaptureWidth x CaptureHeight. Bug in Unreal Engine that won't re-alloc scene render targets to the correct size
     //               when the scenecapture component > current window render target. https://answers.unrealengine.com/questions/80531/scene-capture-2d-max-resolution.html
     //TODO: ikrimae: Ensure that r.SceneRenderTargetResizeMethod=2
     FSystemResolution::RequestResolutionChange(CaptureWidth, CaptureHeight, EWindowMode::Windowed);
@@ -310,20 +311,13 @@ USceneCapturer::USceneCapturer()
 
 	for( int CaptureIndex = 0; CaptureIndex < FStereoPanoramaManager::ConcurrentCaptures->GetInt(); CaptureIndex++ )
 	{
-		EStereoscopicPass StereoPass = EStereoscopicPass::eSSP_LEFT_EYE;
-		if (bMonoscopicMode)
-		{
-			// use left eye for monoscopic capture
-			StereoPass = EStereoscopicPass::eSSP_FULL;
-		}
-
 		// initialize left eye
 		FString LeftCounter = FString::Printf(TEXT("LeftEyeCaptureComponent_%04d"), CaptureIndex);
 		USceneCaptureComponent2D* LeftEyeCaptureComponent = CreateDefaultSubobject<USceneCaptureComponent2D>(*LeftCounter);
 		LeftEyeCaptureComponent->bTickInEditor = false;
 		LeftEyeCaptureComponent->SetComponentTickEnabled(false);
 		LeftEyeCaptureComponent->AttachToComponent(CaptureSceneComponent, FAttachmentTransformRules::KeepRelativeTransform);
-		InitCaptureComponent( LeftEyeCaptureComponent, captureHFov, captureVFov, StereoPass);
+		InitCaptureComponent( LeftEyeCaptureComponent, captureHFov, captureVFov);
 		LeftEyeCaptureComponents.Add( LeftEyeCaptureComponent );
 
 		// initialize right eye
@@ -332,7 +326,7 @@ USceneCapturer::USceneCapturer()
 		RightEyeCaptureComponent->bTickInEditor = false;
 		RightEyeCaptureComponent->SetComponentTickEnabled(false);
 		RightEyeCaptureComponent->AttachToComponent(CaptureSceneComponent, FAttachmentTransformRules::KeepRelativeTransform);
-		InitCaptureComponent(RightEyeCaptureComponent, captureHFov, captureVFov, EStereoscopicPass::eSSP_RIGHT_EYE);
+		InitCaptureComponent(RightEyeCaptureComponent, captureHFov, captureVFov);
 		RightEyeCaptureComponents.Add(RightEyeCaptureComponent);
 	}
 
@@ -422,7 +416,7 @@ UMaterial* USceneCapturer::GetCurrentBlendableMaterial()
 UWorld* USceneCapturer::GetTickableGameObjectWorld() const 
 {
 	// Check SceneCapturer have CaptureComponents and parent scene component is not marked as pending kill.
-	if (LeftEyeCaptureComponents.Num() > 0 && !CaptureSceneComponent->IsPendingKill())
+	if (LeftEyeCaptureComponents.Num() > 0 && IsValid(CaptureSceneComponent))
 	{
 		return CaptureSceneComponent->GetWorld();
 	}
@@ -442,13 +436,13 @@ void USceneCapturer::Reset()
 		LeftEyeCaptureComponent->SetVisibility( false );
 		LeftEyeCaptureComponent->SetHiddenInGame( true );
 		
-		// UE4 cannot serialize an array of subobject pointers, so work around the GC problems
+		// Unreal Engine cannot serialize an array of subobject pointers, so work around the GC problems
 		LeftEyeCaptureComponent->RemoveFromRoot();
 
 		RightEyeCaptureComponent->SetVisibility( false );
 		RightEyeCaptureComponent->SetHiddenInGame( true );
 		
-		// UE4 cannot serialize an array of subobject pointers, so work around the GC problems
+		// Unreal Engine cannot serialize an array of subobject pointers, so work around the GC problems
 		RightEyeCaptureComponent->RemoveFromRoot();
 	}
 
@@ -470,8 +464,8 @@ void USceneCapturer::RemoveAllBlendables(USceneCaptureComponent2D* CaptureCompon
 // Disable screen space post processes we cannot use while capturing
 void USceneCapturer::DisableUnsupportedPostProcesses(USceneCaptureComponent2D* CaptureComponent)
 {
-	CaptureComponent->PostProcessSettings.bOverride_GrainIntensity = true;
-	CaptureComponent->PostProcessSettings.GrainIntensity = 0.0f;
+	CaptureComponent->PostProcessSettings.bOverride_FilmGrainIntensity = true;
+	CaptureComponent->PostProcessSettings.FilmGrainIntensity = 0.0f;
 	CaptureComponent->PostProcessSettings.bOverride_MotionBlurAmount = true;
 	CaptureComponent->PostProcessSettings.MotionBlurAmount = 0.0f;
 	CaptureComponent->PostProcessSettings.bOverride_ScreenSpaceReflectionIntensity = true;
@@ -982,7 +976,7 @@ TArray<FLinearColor> USceneCapturer::SaveAtlas(FString Folder, const TArray<FLin
 		FString FrameStringUnprojected = FString::Printf(TEXT("%s_%05d_Unprojected.png"), *Folder, CurrentFrameCount);
 		FString AtlasNameUnprojected = OutputDir / Timestamp / FrameStringUnprojected;
 		ImageWrapper->SetRaw(SurfaceData.GetData(), SurfaceData.GetAllocatedSize(), UnprojectedAtlasWidth, UnprojectedAtlasHeight, ERGBFormat::BGRA, 32);
-		const TArray64<uint8>& PNGDataUnprojected = ImageWrapper->GetCompressed(100);
+		const TArray64<uint8> PNGDataUnprojected = ImageWrapper->GetCompressed(100);
 		FFileHelper::SaveArrayToFile(PNGDataUnprojected, *AtlasNameUnprojected);
 		ImageWrapper.Reset();
 	}
@@ -1061,7 +1055,7 @@ void USceneCapturer::CaptureComponent(int32 CurrentHorizontalStep, int32 Current
 			}
 
 			ImageWrapper->SetRaw(SurfaceDataWhole.GetData(), SurfaceDataWhole.GetAllocatedSize(), CaptureWidth, CaptureHeight, ERGBFormat::BGRA, 32);
-			const TArray64<uint8>& PNGData = ImageWrapper->GetCompressed(100);
+			const TArray64<uint8> PNGData = ImageWrapper->GetCompressed(100);
 
 			FFileHelper::SaveArrayToFile(PNGData, *CaptureName);
 			ImageWrapper.Reset();
@@ -1078,7 +1072,7 @@ void USceneCapturer::CaptureComponent(int32 CurrentHorizontalStep, int32 Current
 
 			TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
 			ImageWrapper->SetRaw(SurfaceData.GetData(), SurfaceData.GetAllocatedSize(), StripWidth, StripHeight, ERGBFormat::BGRA, 32);
-			const TArray64<uint8>& PNGData = ImageWrapper->GetCompressed(100);
+			const TArray64<uint8> PNGData = ImageWrapper->GetCompressed(100);
 
 			FFileHelper::SaveArrayToFile(PNGData, *CaptureName);
 			ImageWrapper.Reset();
@@ -1250,10 +1244,10 @@ void USceneCapturer::Tick( float DeltaTime )
 			{
 				// switch to 8 bit/channel
 				TArray<FColor> CombinedAtlas8bit;
+				CombinedAtlas8bit.Empty( CombinedAtlas.Num() );
 				for (FLinearColor& Color : CombinedAtlas)
 				{
-					FColor t = Color.Quantize();
-					CombinedAtlas8bit.Add(t);
+					CombinedAtlas8bit.Add( Color.QuantizeRound() );
 				}
 
 				// save as png 8bit/channel
@@ -1265,7 +1259,7 @@ void USceneCapturer::Tick( float DeltaTime )
 				// write
 				TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
 				ImageWrapper->SetRaw(CombinedAtlas8bit.GetData(), CombinedAtlas8bit.GetAllocatedSize(), SphericalAtlasWidth, SphericalAtlasHeight * EyeCount, ERGBFormat::BGRA, 8);
-				const TArray64<uint8>& ImageData = ImageWrapper->GetCompressed(100);
+				const TArray64<uint8> ImageData = ImageWrapper->GetCompressed(100);
 				FFileHelper::SaveArrayToFile(ImageData, *AtlasName);
 				ImageWrapper.Reset();
 				FMessageLog(StereoPanoramaLogName).Message(EMessageSeverity::Info, LOCTEXT("Done", "Done!"));
@@ -1280,8 +1274,8 @@ void USceneCapturer::Tick( float DeltaTime )
 
 				// write
 				TSharedPtr<IImageWrapper> ImageWrapper = ImageWrapperModule.CreateImageWrapper(EImageFormat::EXR);
-				ImageWrapper->SetRaw(CombinedAtlas.GetData(), CombinedAtlas.GetAllocatedSize(), SphericalAtlasWidth, SphericalAtlasHeight * EyeCount, ERGBFormat::RGBA, 32);
-				const TArray64<uint8>& ImageData = ImageWrapper->GetCompressed((int32)EImageCompressionQuality::Default);
+				ImageWrapper->SetRaw(CombinedAtlas.GetData(), CombinedAtlas.GetAllocatedSize(), SphericalAtlasWidth, SphericalAtlasHeight * EyeCount, ERGBFormat::RGBAF, 32);
+				const TArray64<uint8> ImageData = ImageWrapper->GetCompressed();
 				FFileHelper::SaveArrayToFile(ImageData, *AtlasName);
 				ImageWrapper.Reset();
 				FMessageLog(StereoPanoramaLogName).Message(EMessageSeverity::Info, LOCTEXT("Done", "Done!"));

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IConcertSyncClient.h"
 #include "Misc/ITransaction.h"
 #include "IConcertClientWorkspace.h"
 #include "IConcertSessionHandler.h"
@@ -27,7 +28,7 @@ struct FScopedSlowTask;
 class FConcertClientWorkspace : public IConcertClientWorkspace
 {
 public:
-	FConcertClientWorkspace(TSharedRef<FConcertSyncClientLiveSession> InLiveSession, IConcertClientPackageBridge* InPackageBridge, IConcertClientTransactionBridge* InTransactionBridge, TSharedPtr<IConcertFileSharingService> InFileSharingService);
+	FConcertClientWorkspace(TSharedRef<FConcertSyncClientLiveSession> InLiveSession, IConcertClientPackageBridge* InPackageBridge, IConcertClientTransactionBridge* InTransactionBridge, TSharedPtr<IConcertFileSharingService> InFileSharingService, IConcertSyncClient* InOwnerSyncClient);
 	virtual ~FConcertClientWorkspace();
 
 	// IConcertClientWorkspace interface
@@ -39,6 +40,7 @@ public:
 	virtual TFuture<FConcertResourceLockResponse> UnlockResources(TArray<FName> InResourceNames) override;
 	virtual bool HasSessionChanges() const override;
 	virtual TArray<FName> GatherSessionChanges(bool IgnorePersisted = true) override;
+	virtual TOptional<FString> GetValidPackageSessionPath(FName PackageName) const override;
 	virtual bool PersistSessionChanges(TArrayView<const FName> InPackagesToPersist, ISourceControlProvider* SourceControlProvider, TArray<FText>* OutFailureReasons = nullptr) override;
 	virtual bool HasLiveTransactionSupport(UPackage* InPackage) const override;
 	virtual bool ShouldIgnorePackageDirtyEvent(class UPackage* InPackage) const override;
@@ -58,6 +60,8 @@ public:
 
 	virtual void AddWorkspaceCanProcessPackagesDelegate(FName InDelegateName, FCanProcessPendingPackages Delegate) override;
 	virtual void RemoveWorkspaceCanProcessPackagesDelegate(FName InDelegateName) override;
+
+	virtual bool IsReloadingPackage(FName PackageName) const override;
 
 	/** Indicates if we can process any pending package updates. */
 	bool CanProcessPendingPackages() const;
@@ -204,6 +208,9 @@ private:
 
 	/** */
 	IConcertClientPackageBridge* PackageBridge;
+
+	/** The sync client that owns the workspace. */
+	IConcertSyncClient *OwnerSyncClient;
 
 	/** */
 	TSharedPtr<FConcertSyncClientLiveSession> LiveSession;

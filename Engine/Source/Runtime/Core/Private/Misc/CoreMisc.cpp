@@ -18,8 +18,9 @@
 #include "Misc/ConfigCacheIni.h"
 
 #include "Modules/ModuleManager.h"
-#include "DerivedDataCacheInterface.h"
+#include "DerivedDataCacheModule.h"
 #include "Interfaces/ITargetPlatformManagerModule.h"
+#include "Interfaces/ITargetPlatform.h"
 
 DEFINE_LOG_CATEGORY(LogSHA);
 DEFINE_LOG_CATEGORY(LogStats);
@@ -82,7 +83,7 @@ bool FStaticSelfRegisteringExec::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutpu
 }
 
 
-			// Remove old UE4 crash contexts
+// Remove old crash contexts
 
 
 /*-----------------------------------------------------------------------------
@@ -91,7 +92,7 @@ bool FStaticSelfRegisteringExec::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutpu
 
 FDerivedDataCacheInterface* GetDerivedDataCache()
 {
-	static FDerivedDataCacheInterface* const* DDC;
+	static FDerivedDataCacheInterface* const* Cache;
 	static bool bInitialized = false;
 	if (!bInitialized)
 	{
@@ -101,22 +102,22 @@ FDerivedDataCacheInterface* GetDerivedDataCache()
 			bInitialized = true;
 			if (IDerivedDataCacheModule* Module = FModuleManager::LoadModulePtr<IDerivedDataCacheModule>("DerivedDataCache"))
 			{
-				DDC = Module->CreateOrGetCache();
+				Cache = Module->CreateOrGetCache();
 			}
 		}
 	}
-	return DDC ? *DDC : nullptr;
+	return Cache ? *Cache : nullptr;
 }
 
 FDerivedDataCacheInterface& GetDerivedDataCacheRef()
 {
-	FDerivedDataCacheInterface* DDC = GetDerivedDataCache();
-	if (!DDC)
+	FDerivedDataCacheInterface* Cache = GetDerivedDataCache();
+	if (!Cache)
 	{
 		UE_LOG(LogInit, Fatal, TEXT("Derived Data Cache was requested, but not available."));
-		CA_ASSUME(DDC); // Suppress static analysis warning in unreachable code (fatal error)
+		CA_ASSUME(Cache); // Suppress static analysis warning in unreachable code (fatal error)
 	}
-	return *DDC;
+	return *Cache;
 }
 
 class ITargetPlatformManagerModule* GetTargetPlatformManager(bool bFailOnInitErrors)
@@ -152,7 +153,33 @@ class ITargetPlatformManagerModule& GetTargetPlatformManagerRef()
 	return *SingletonInterface;
 }
 
+bool WillNeedAudioVisualData()
+{
+	class ITargetPlatformManagerModule* SingletonInterface = GetTargetPlatformManager();
+#if WITH_ENGINE
+	// quick check to see if we are targeting non-running platforms
+	if (SingletonInterface && SingletonInterface->RestrictFormatsToRuntimeOnly() == false)
+	{
+		for (ITargetPlatform* Platform : SingletonInterface->GetActiveTargetPlatforms())
+		{
+			if (Platform->AllowAudioVisualData())
+			{
+				return true;
+			}
+		}
+
+		// if nothing in the loop above returned true, then we don't need AV data
+		return false;
+	}
+#endif
+
+	// default to needing AV data because some commandlets may need the data for processing - otherwise we could use "FApp::CanEverRender() || FApp::CanEverRenderAudio()"
+	return true;
+}
+
 //-----------------------------------------------------------------------------
+
+PRAGMA_DISABLE_DEPRECATION_WARNINGS
 
 class FCoreTicker : public FTicker {};
 
@@ -165,6 +192,8 @@ void FTicker::TearDownCoreTicker()
 {
 	TLazySingleton<FCoreTicker>::TearDown();
 }
+
+PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 /*----------------------------------------------------------------------------
 	Runtime functions.
@@ -453,7 +482,7 @@ static FAutoConsoleVariableRef CVarGEnsureOnNANDiagnostic(
 #endif
 
 #if DO_CHECK
-namespace UE4Asserts_Private
+namespace UEAsserts_Private
 {
 	void VARARGS InternalLogNANDiagnosticMessage(const TCHAR* FormattedMsg, ...)
 	{		

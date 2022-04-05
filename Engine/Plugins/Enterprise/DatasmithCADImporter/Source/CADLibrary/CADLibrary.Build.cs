@@ -14,8 +14,8 @@ public class CADLibrary : ModuleRules
 			new string[]
 			{
 				"Core",
-				"CADInterfaces",
 				"CADTools",
+				"CADKernel",
 				"DatasmithCore",
 				"MeshDescription",
 				"StaticMeshDescription"

@@ -1,16 +1,14 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 #include "DatasmithMeshBuilder.h"
 
-#include "CoreTechHelper.h"
-
+#include "CADData.h"
 #include "IDatasmithSceneElements.h"
+#include "MeshDescriptionHelper.h"
 #include "Utility/DatasmithMeshHelper.h"
 
 #include "HAL/FileManager.h"
 #include "MeshDescription.h"
 #include "Misc/Paths.h"
-
-using namespace CADLibrary;
 
 FDatasmithMeshBuilder::FDatasmithMeshBuilder(TMap<uint32, FString>& CADFileToMeshFile, const FString& InCachePath, const CADLibrary::FImportParameters& InImportParameters)
 	: CachePath(InCachePath)
@@ -32,7 +30,7 @@ void FDatasmithMeshBuilder::LoadMeshFiles(TMap<uint32, FString>& CADFileToMeshFi
 		}
 		TArray<CADLibrary::FBodyMesh>& BodyMeshSet = BodyMeshes.Emplace_GetRef();
 		DeserializeBodyMeshFile(*MeshFile, BodyMeshSet);
-		for (FBodyMesh& Body : BodyMeshSet)
+		for (CADLibrary::FBodyMesh& Body : BodyMeshSet)
 		{
 			MeshActorNameToBodyMesh.Emplace(Body.MeshActorName, &Body);
 		}
@@ -42,31 +40,31 @@ void FDatasmithMeshBuilder::LoadMeshFiles(TMap<uint32, FString>& CADFileToMeshFi
 TOptional<FMeshDescription> FDatasmithMeshBuilder::GetMeshDescription(TSharedRef<IDatasmithMeshElement> OutMeshElement, CADLibrary::FMeshParameters& OutMeshParameters)
 {
 	const TCHAR* NameLabel = OutMeshElement->GetName();
-	CADUUID BodyUuid = (CADUUID) FCString::Atoi64(OutMeshElement->GetName()+2);  // +2 to remove 2 first char (Ox)
+	FCADUUID BodyUuid = (FCADUUID) FCString::Atoi64(OutMeshElement->GetName() + 2);  // +2 to remove 2 first char (Ox)
 	if (BodyUuid == 0)
 	{
 		return TOptional<FMeshDescription>();
 	}
 
-	FBodyMesh** PPBody = MeshActorNameToBodyMesh.Find(BodyUuid);
+	CADLibrary::FBodyMesh** PPBody = MeshActorNameToBodyMesh.Find(BodyUuid);
 	if(PPBody == nullptr || *PPBody == nullptr)
 	{
 		return TOptional<FMeshDescription>();
 	}
 
-	FBodyMesh& Body = **PPBody;
+	CADLibrary::FBodyMesh& Body = **PPBody;
 
 	// FDatasmithSceneBaseGraphBuilder::BuildBody is performing a special treatment for
 	// FBodyMesh without color. Replicate the treatment here too.
-	int32 Num = Body.ColorSet.Num();
-	if (!Body.ColorSet.Num())
+	int32 Num = Body.ColorSet.Num() + Body.MaterialSet.Num();
+	if (!Num)
 	{
 		ensure(OutMeshElement->GetMaterialSlotCount() == 1);
 		int32 MaterialSlotId = OutMeshElement->GetMaterialSlotAt(0)->GetId();
 
 		Body.ColorSet.Add(MaterialSlotId);
 
-		for (FTessellationData& Face : Body.Faces)
+		for (CADLibrary::FTessellationData& Face : Body.Faces)
 		{
 			Face.ColorName = MaterialSlotId;
 		}
@@ -75,7 +73,7 @@ TOptional<FMeshDescription> FDatasmithMeshBuilder::GetMeshDescription(TSharedRef
 	FMeshDescription MeshDescription;
 	DatasmithMeshHelper::PrepareAttributeForStaticMesh(MeshDescription);
 
-	if (ConvertCTBodySetToMeshDescription(ImportParameters, OutMeshParameters, Body, MeshDescription))
+	if (ConvertBodyMeshToMeshDescription(ImportParameters, OutMeshParameters, Body, MeshDescription))
 	{
 		return MoveTemp(MeshDescription);
 	}

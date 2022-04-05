@@ -79,7 +79,9 @@ void FWinHttpHttpManager::OnBeforeFork()
 
 void FWinHttpHttpManager::HandleApplicationSuspending()
 {
-	Flush(false);
+	SCOPED_ENTER_BACKGROUND_EVENT(FWinHttpHttpManager_HandleApplicationSuspending);
+
+	Flush(EHttpFlushReason::Background);
 	ActiveSessions.Reset();
 }
 

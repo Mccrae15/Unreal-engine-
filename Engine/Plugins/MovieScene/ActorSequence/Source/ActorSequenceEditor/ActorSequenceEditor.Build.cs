@@ -12,6 +12,7 @@ public class ActorSequenceEditor : ModuleRules
 				"BlueprintGraph",
 				"Core",
 				"CoreUObject",
+				"EditorFramework",
 				"Engine",
 				"InputCore",
 				"Kismet",
@@ -21,6 +22,8 @@ public class ActorSequenceEditor : ModuleRules
 				"EditorStyle",
 				"Slate",
 				"SlateCore",
+				"SubobjectEditor",
+				"SubobjectDataInterface",
 				"UnrealEd",
 				"TimeManagement"
 			}

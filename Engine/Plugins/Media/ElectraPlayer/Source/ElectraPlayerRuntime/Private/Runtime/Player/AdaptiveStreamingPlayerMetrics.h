@@ -160,6 +160,7 @@ namespace Metrics
 		bool			bDidTimeout = false;				//!< true if a timeout occurred. Only set if timeouts are enabled. Usually the ABR will monitor and abort.
 		bool			bParseFailure = false;				//!< true if the segment could not be parsed
 		bool			bInsertedFillerData = false;
+		bool			bIsCachedResponse = false;
 
 		// ABR state
 		FABRState		ABRState;
@@ -276,6 +277,11 @@ public:
 	virtual void ReportDataAvailabilityChange(const Metrics::FDataAvailabilityChange& DataAvailability) = 0;
 
 	/**
+	 * Called when the format of the stream being decoded changes in some way.
+	 */
+	virtual void ReportDecodingFormatChange(const FStreamCodecInformation& NewDecodingFormat) = 0;
+
+	/**
 	 * Called when decoders start to decode first data to pre-roll the pipeline.
 	 */
 	virtual void ReportPrerollStart() = 0;
@@ -317,6 +323,12 @@ public:
 	 * Called when playback is terminally stopped.
 	 */
 	virtual void ReportPlaybackStopped() = 0;
+
+	/**
+	 * Called when a seek has completed such that the first new data is ready.
+	 * Future data may still be buffering.
+	 */
+	virtual void ReportSeekCompleted() = 0;
 
 	/**
 	 * Called when an error occurs. Errors always result in termination of playback.

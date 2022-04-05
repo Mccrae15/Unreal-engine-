@@ -80,6 +80,13 @@ public:
 		return NULL;
 	}
 
+	virtual const TArray<TSharedRef<class IClassViewerFilter>>& GetClassViewerFilters() const override
+	{
+		// not implemented
+		static TArray<TSharedRef<class IClassViewerFilter>> NotImplemented;
+		return NotImplemented;
+	}
+
 	virtual void NotifyFinishedChangingProperties(const FPropertyChangedEvent& PropertyChangedEvent) override {}
 
 	virtual bool DontUpdateValueWhileEditing() const override
@@ -381,7 +388,7 @@ const FSlateBrush* SPropertyTreeViewImpl::OnGetFavoriteButtonImageResource() con
 {
 	if( bFavoritesEnabled )
 	{
-		return FEditorStyle::GetBrush(TEXT("PropertyWindow.Favorites_Enabled"));
+		return FEditorStyle::GetBrush(TEXT("Icons.Star"));
 	}
 	else
 	{
@@ -686,19 +693,8 @@ void SPropertyTreeViewImpl::OnGetChildrenForPropertyNode( TSharedPtr<FPropertyNo
 		FProperty* Property = ChildNode->GetProperty();
 		if(Property != NULL && IsPropertyVisible.IsBound())
 		{
-			TArray< TWeakObjectPtr<UObject> > Objects;
-			if ( ObjNode )
-			{
-				for (int32 ObjectIndex = 0; ObjectIndex < ObjNode->GetNumObjects(); ++ObjectIndex)
-				{
-					Objects.Add(ObjNode->GetUObject(ObjectIndex));
-				}
-			}
-
-			TSharedPtr<IPropertyHandle> ChildHandle = PropertyEditorHelpers::GetPropertyHandle(ChildNode.ToSharedRef(), nullptr, nullptr);
-			FPropertyAndParent PropertyAndParent(ChildHandle.ToSharedRef(), Objects);
-
-			bPropertyVisible = IsPropertyVisible.Execute( PropertyAndParent );
+			FPropertyAndParent PropertyAndParent(ChildNode.ToSharedRef());
+			bPropertyVisible = IsPropertyVisible.Execute(PropertyAndParent);
 		}
 
 		if(bPropertyVisible)

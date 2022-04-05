@@ -235,7 +235,14 @@ public:
 class DATASMITHCORE_API FDatasmithUniqueNameProviderBase
 {
 public:
+	FDatasmithUniqueNameProviderBase() = default;
+	FDatasmithUniqueNameProviderBase(const FDatasmithUniqueNameProviderBase& Other);
+	FDatasmithUniqueNameProviderBase(FDatasmithUniqueNameProviderBase&& Other);
+
 	virtual ~FDatasmithUniqueNameProviderBase() = default;
+
+	FDatasmithUniqueNameProviderBase* operator=(const FDatasmithUniqueNameProviderBase& Other);
+	FDatasmithUniqueNameProviderBase* operator=(FDatasmithUniqueNameProviderBase&& Other);
 
 	/**
 	 * Generates a unique name
@@ -257,6 +264,11 @@ public:
 	 */
 	virtual void RemoveExistingName(const FString& Name) = 0;
 
+	/**
+	 * Flushes all known names
+	 */
+	virtual void Clear();
+
 protected:
 
 	/**
@@ -269,6 +281,7 @@ protected:
 
 private:
 	TMap<FString, int32> FrequentlyUsedNames;
+	mutable FCriticalSection CriticalSection;
 };
 
 /**
@@ -277,14 +290,17 @@ private:
 class DATASMITHCORE_API FDatasmithUniqueNameProvider : public FDatasmithUniqueNameProviderBase
 {
 public:
+	using Super = FDatasmithUniqueNameProviderBase;
+
 	void Reserve( int32 NumberOfName ) { KnownNames.Reserve(NumberOfName); }
 
 	virtual void AddExistingName(const FString& Name) override { KnownNames.Add(Name); }
 	virtual void RemoveExistingName(const FString& Name) override { KnownNames.Remove(Name); }
 
+	virtual void Clear() override { Super::Clear(); KnownNames.Empty(); }
+
 protected:
 	virtual bool Contains(const FString& Name) override { return KnownNames.Contains(Name); }
-	void Clear() { KnownNames.Empty(); }
 
 private:
 	TSet<FString> KnownNames;
